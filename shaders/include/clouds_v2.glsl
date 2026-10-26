@@ -186,6 +186,9 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // x steps; the high layer is a soft haze there), y that footprint (m); z (perf pass 3) "God ray reads": the sky pass's
     // Sun shadow reads a step within 30 km (half that beyond; 8 as built), w spare.
     vec4  perf;
+    // 2026-10-25: the aerial-perspective volume (include/sky_ap.glsl, sky_ap.comp): x 1 = it ran this frame (the sky pass
+    // reads it), y its first slice depth d0 (m), z the horizon band where the sky pass keeps its own loop (sin), w spare
+    vec4  skyAp;
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO

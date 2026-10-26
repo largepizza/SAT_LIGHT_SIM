@@ -1,0 +1,297 @@
+#version 450
+#extension GL_EXT_control_flow_attributes : enable
+// ── The aerial-perspective volume (2026-10-25, branch perf-frames; include/sky_ap.glsl has the layout) ───────────────
+// sat_sky.frag's single-scattering atmosphere loop (Rayleigh + Mie with the Sun's path, the Earth's shadow, the clouds'
+// and terrain's shadows = god rays, the haze near clouds, the orbital terminator gate, a solar eclipse, the city glow,
+// the green / sodium airglow, the sky-lit shadowed air) once per screen tile: one thread a tile marches its ray from the
+// atmosphere's entry and writes the running sums at kSkyApZ normalised depths. KEEP THE STEP IN STEP WITH sat_sky.frag's
+// N_VIEW loop (main(), "Single-scattering atmosphere integration"): the band round the horizon still runs that loop,
+// and the two must agree at its edge. What differs: the steps follow the slices (fine near the eye, <= the pixel loop's
+// step length beyond: sub-steps), the god rays read this tile's own froxel column (the same ray), the air split in front
+// of the clouds is a second lookup in the pixel instead of a piece of a step, and the shadowed air's sky light is taken
+// at the mean point of the shadow UP TO each slice (the pixel takes it up to its own end: the same thing at that slice).
+// Same descriptor set 0 and push constants as cloud_v2_march.comp; set 1 = the volume. Run after the froxel pass.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_v2_march.comp)
+    mat4  skyView;
+    float fovYRad;
+    float aspect;
+    float waveTime;
+    float obsEffH;
+    vec4  sunDirENU;
+    vec4  moonDirENU;
+    vec4  obsECEFDir;
+} pc;
+
+#define CLOUD_PARAMS_BINDING 0
+#include "cloud_params.glsl"
+#include "common.glsl"
+#define CV2_PARAMS_BINDING  1
+#define CV2_MORPH_BINDING   20
+#define CV2_WEATHER_BINDING 2
+#define CV2_SHAPE_BINDING   3
+#define CV2_MESO_BINDING    5
+#include "clouds_v2.glsl"
+#define CV2_FLASH_BINDING 12
+#define CV2_SUN_CASC_FN
+#include "cloud_lightning.glsl"
+#include "eclipse.glsl"
+#include "atmosphere.glsl"
+layout(std430, set = 0, binding = 8) readonly buffer TerrainFrame { vec4 terrainFrame; };   // x the eye's ground height
+layout(set = 0, binding = 7) uniform sampler2D earthNightTex;
+#define SKY_AP_SET 1
+#define SKY_AP_BINDING 0
+#define SKY_AP_WRITE
+#include "sky_ap.glsl"
+
+bool dbgSkipSunOD() { return (cloud.dbgDisableMask & 4u) != 0u; }
+#include "sky_atmos.glsl"
+const float kEclipseMultiScatter = 2.0;   // == sat_sky.frag
+
+void apWrite(int ci, vec3 accR, float accM, vec3 shadow, float city, float odR, float odM, float airG, float airS, vec2 nrm)
+{
+    const float k = kSkyApScale;
+    vec2 inv = 1.0 / nrm;   // per unit of air column (skyApNorm)
+    accR *= inv.x; city *= inv.x; shadow *= inv.x; odR *= inv.x;
+    accM *= inv.y; odM *= inv.y;
+    skyAp2[2 * ci]     = uvec2(packHalf2x16(vec2(accR.x, accR.y) * k), packHalf2x16(vec2(accR.z, accM) * k));
+    skyAp2[2 * ci + 1] = uvec2(packHalf2x16(shadow.xy), packHalf2x16(vec2(shadow.z, city * k)));
+    skyAp2[2 * kSkyApCells + ci] = uvec2(packHalf2x16(vec2(odR, odM) * k), packHalf2x16(vec2(airG, airS) * k));
+}
+
+// This tile's god-ray froxel column at distance t (cv2GodFroxT along one column: the same ray and sample offset).
+float apGodT(int x, int y, float t, float jz)
+{
+    float f  = clamp(log(max(t, cv2.frox.y) / cv2.frox.y) / cv2.frox.z - jz, 0.0, float(kCv2FroxZ - 1) - 1e-3);
+    int   z0 = int(f);
+    int   b  = (z0 * kCv2FroxY + y) * kCv2FroxX + x;
+    return mix(cv2GodFrox[b], cv2GodFrox[b + kCv2FroxX * kCv2FroxY], f - float(z0));
+}
+
+void main()
+{
+    ivec2 g = ivec2(gl_GlobalInvocationID.xy);
+    if (g.x >= kSkyApX || g.y >= kSkyApY) return;
+
+    vec3  BETA_R = BETA_R_BASE * cloud.atmosRayleighGain;
+    float BETA_M = BETA_M_BASE * cloud.atmosMieGain;
+    vec3  enuZ = normalize(pc.obsECEFDir.xyz);
+    vec3  enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ));
+    vec3  enuY = cross(enuZ, enuX);
+    vec3  sunDir = normalize(pc.sunDirENU.xyz);
+
+    // The tile's ray: cloud_v2_froxel.comp's, through the same sample point (so apGodT reads its own column).
+    vec3  jit = cv2FroxJitter();
+    vec2  ndc = (vec2(g) + jit.xy) / vec2(kSkyApX, kSkyApY) * 2.0 - 1.0;
+    float th  = tan(pc.fovYRad * 0.5);
+    vec3  dir = normalize(mat3(transpose(pc.skyView)) * vec3(ndc.x * th * pc.aspect, -ndc.y * th, -1.0));
+
+    float obsEffH = terrainFrame.x;
+    vec3  obsPos  = vec3(0.0, 0.0, R_EARTH + obsEffH + 2.0);   // terrain.glsl observerPos
+
+    vec2  tAtmos = raySphere(obsPos, dir, R_ATMOS);
+    vec2  tBase  = raySphere(obsPos, dir, R_EARTH);
+    float tEnd   = max(0.0, (tBase.x > 0.0) ? min(tAtmos.y, tBase.x) : tAtmos.y);
+    float tStart = clamp(tAtmos.x, 0.0, tEnd);
+    float L      = tEnd - tStart;
+    if (L <= 1.0 || (cloud.dbgDisableMask & 2u) != 0u) {
+        for (int z = 0; z < kSkyApZ; ++z) apWrite(skyApCell(g.x, g.y, z), vec3(0.0), 0.0, vec3(0.0), 0.0, 0.0, 0.0, 0.0, 0.0, vec2(1.0));
+        return;
+    }
+
+    // The pixel loop's step length (its adaptive N_VIEW: kAtmosRefTEnd / viewSamplesMin), the cap on a sub-step here.
+    float viewSamplesMin = max(2.0, cloud.viewSamplesMin);
+    float targetStepLen  = 100000.0 / viewSamplesMin;
+    float cosA   = dot(dir, sunDir);
+    float sunShK = (cv2.stvH.z > 0.5 || cv2.tsh0.w > 0.5) ? clamp(cv2.lightVol.w, 0.0, 1.0) : 0.0;
+    // The god-ray samples' phase along each step: per tile and per frame (the pixel's interleaved gradient noise).
+    float frm = max(cv2.frox.w, 0.0);
+    float shaftJit = (cv2.frox.w < 0.0) ? 0.5
+                   : fract(52.9829189 * fract(dot(vec2(g) + 5.588238 * frm, vec2(0.06711056, 0.00583715))));
+    float cityGlowOrbitK = smoothstep(800000.0, 3000000.0, obsEffH);
+    bool  cityGlowOn = smoothstep(-0.05, 0.1, pc.sunDirENU.w) < 1.0;
+    float atmTermSpace = clamp((obsEffH - 40000.0) / 60000.0, 0.0, 1.0) * clamp(cloud.atmosTermStrength, 0.0, 1.0);
+    float atmTermW     = max(1e-4, cloud.atmosTermWidth);
+    int   gNear = clamp(int(cv2.perf.z + 0.5), 2, 8), gFar = max(gNear / 2, 1);
+    bool  frx = cv2.frox.x > 0.5;
+
+    float tShA = 1e30, tShB = -1e30;
+    {
+        vec2 sh = earthShadowSpan(obsPos, dir, sunDir);
+        tShA = sh.x; tShB = sh.y;
+    }
+    float atmTCl = -dot(obsPos, dir);
+    float atmOO  = dot(obsPos, obsPos), atmB2 = -2.0 * atmTCl;
+    float atmHCl = sqrt(max(atmOO - atmTCl * atmTCl, 0.0)) - R_EARTH;
+
+    vec3  accumR = vec3(0.0), shR = vec3(0.0);
+    float accumM = 0.0, shM = 0.0, shT = 0.0, shD = 0.0, accumCity = 0.0, airG = 0.0, airS = 0.0;
+    float odR_cam = 0.0, odM_cam = 0.0;
+    vec3  skyShadow = vec3(0.0);
+    float shDSky = 0.0;                 // shD when skyShadow's sky colour was last taken
+
+    float atmHPrev = max(0.0, length(obsPos + dir * tStart) - R_EARTH);
+    vec3  atmEPrev = exp(-atmHPrev * kAtmInvH);
+    float aSl = cv2.skyAp.y / L;
+    float tPrev = tStart;
+    [[dont_unroll]] for (int z = 1; z < kSkyApZ; ++z) {
+        float tSl  = (z == kSkyApZ - 1) ? tEnd : tStart + L * skyApSliceInvU(float(z), aSl);
+        int   nSub = clamp(int(ceil((tSl - tPrev) / targetStepLen)), 1, 24);
+        float segLen = (tSl - tPrev) / float(nSub);
+        [[dont_unroll]] for (int i = 0; i < nSub; ++i) {
+            float tSe0 = tPrev + float(i) * segLen;
+            float tSe1 = tSe0 + segLen;
+            float tMid = tSe0 + 0.5 * segLen;
+            vec3  sp  = obsPos + dir * tMid;
+            float len = length(sp);
+            if (len < R_EARTH) sp *= R_EARTH / len;
+            float h = max(0.0, len - R_EARTH);
+            float hA = atmHPrev;
+            float hB = max(0.0, sqrt(max(atmOO + tSe1 * (atmB2 + tSe1), 0.0)) - R_EARTH);
+            vec3  eA = atmEPrev;
+            vec3  eB = exp(-hB * kAtmInvH);
+            vec3  stepAvg;
+            if (atmTCl > tSe0 && atmTCl < tSe1) {
+                vec3 eM = exp(-h * kAtmInvH);
+                stepAvg = 0.5 * (atmHalfAvg3(eA, eM, h - hA) + atmHalfAvg3(eM, eB, hB - h));
+            } else {
+                stepAvg = atmHalfAvg3(eA, eB, hB - hA);
+            }
+            atmHPrev = hB;
+            atmEPrev = eB;
+            float densR = stepAvg.x * segLen;
+            float densM = stepAvg.y * segLen;
+            float hLo = min(min(hA, hB), h);
+            if (cv2.mid3.w > 0.0 && hLo < 12000.0) {
+                vec3  dS  = normalize(sp.x * enuX + sp.y * enuY + sp.z * enuZ);
+                float dph = cloud.cloudPhase * cloud.layers[0].driftMult;
+                vec4  wx  = textureLod(cv2WeatherTex, vec3(dS.x * cos(dph) - dS.y * sin(dph), dS.x * sin(dph) + dS.y * cos(dph), dS.z), 3.0);
+                densM += cv2.mid3.w * (0.25 + 0.75 * smoothstep(0.05, 0.4, wx.r) + 0.6 * wx.b) * stepAvg.z
+                       * (1.0 - smoothstep(7000.0, 12000.0, hLo)) * segLen;
+            }
+            odR_cam += densR;
+            odM_cam += densM;
+
+            vec3  spDirENU = sp * (1.0 / max(len, R_EARTH));
+            float sampleSunDotGeo = dot(spDirENU, sunDir);
+            if (cityGlowOn) {
+                vec3  spDirECEF = spDirENU.x * enuX + spDirENU.y * enuY + spDirENU.z * enuZ;
+                float spLat = asin(clamp(spDirECEF.z, -1.0, 1.0));
+                float spLon = atan(spDirECEF.y, spDirECEF.x);
+                vec2  spUV  = vec2((spLon + PI) / (2.0 * PI), (0.5 * PI - spLat) / PI);
+                float spLod = mix(4.0, clamp(log2(max(length(sp) - R_EARTH, 1500.0) * (3.0 / 4900.0)), 0.0, 4.0), cityGlowOrbitK);
+                float spLum = dot(textureLod(earthNightTex, spUV, spLod).rgb, vec3(0.2126, 0.7152, 0.0722));
+                vec3  attnCam = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
+                accumCity += cityBrightness(spLum) * densR * dot(attnCam, vec3(1.0 / 3.0));
+            }
+            {
+                float airDayness = clamp((sampleSunDotGeo + 0.15) / 0.3, 0.0, 1.0);
+                float airNight   = 1.0 - airDayness;
+                if (airNight > 0.001 && h > 62000.0 && h < 130000.0) {
+                    vec3  spDirECEF = spDirENU.x * enuX + spDirENU.y * enuY + spDirENU.z * enuZ;
+                    float airPatch = 0.6 + 0.4 * warpPerlin3(spDirECEF * kAirglowNoiseFreq + vec3(pc.waveTime * kAirglowDriftRate, 17.0, -5.0));
+                    float coverageG = airglowCoverageMask(spDirECEF, pc.waveTime, vec3(3.0, 29.0, -11.0));
+                    float coverageS = airglowCoverageMask(spDirECEF, pc.waveTime, vec3(-37.0, 6.0, 44.0));
+                    float covGainC  = clamp(cloud.airglowCoverageGain, 0.0, 1.0);
+                    float dzG = (h - kAirglowGreenPeakM) / kAirglowGreenHalfWidthM;
+                    float dzS = (h - kAirglowSodiumPeakM) / kAirglowSodiumHalfWidthM;
+                    airG += exp(-dzG * dzG) * segLen * mix(1.0, coverageG, covGainC) * airNight * airPatch;
+                    airS += exp(-dzS * dzS) * segLen * mix(1.0, coverageS, covGainC) * airNight * airPatch;
+                }
+            }
+
+            float ovSh = max(0.0, min(tSe1, tShB) - max(tSe0, tShA));
+            float litF = clamp(1.0 - ovSh / segLen, 0.0, 1.0);
+            float densR0 = densR, densM0 = densM;
+            if (litF < 1.0) {
+                float shF = 1.0 - litF;
+                vec3 aC = exp(-(BETA_R * (odR_cam - 0.5 * densR0) + BETA_M * 1.1 * (odM_cam - 0.5 * densM0)));
+                shR += aC * densR * shF; shM += dot(aC, vec3(1.0 / 3.0)) * densM * shF;
+                shT += densR * shF * tMid;
+                shD += densR * shF;
+                if (litF <= 0.0) continue;
+            }
+            vec3 spL = sp;
+            if (litF < 1.0) {
+                float tL = (tShA <= tSe0) ? 0.5 * (tShB + tSe1) : 0.5 * (tSe0 + tShA);
+                spL = obsPos + dir * tL;
+                float lenL = length(spL);
+                if (lenL < R_EARTH) spL *= R_EARTH / lenL;
+            }
+            densR *= litF;
+            densM *= litF;
+            vec2 tSun  = raySphere(spL, sunDir, R_ATMOS);
+            vec2 sunOD = (tSun.y > 0.0) ? optDepth(spL, sunDir, tSun.y) : vec2(0.0);
+            vec3 tau  = BETA_R       * (odR_cam - 0.5 * densR0 + sunOD.x)
+                      + BETA_M * 1.1 * (odM_cam - 0.5 * densM0 + sunOD.y);
+            vec3 attn = exp(-tau);
+            float atmTermW8 = mix(1.0, smoothstep(-atmTermW, atmTermW, sampleSunDotGeo), atmTermSpace);
+            if (sunShK < 1.0 && cloud.sunCloudT < 1.0) {
+                float dPerp = cosA < 0.0 ? tMid : tMid * sqrt(max(1.0 - cosA * cosA, 0.0));
+                atmTermW8 *= mix(1.0, cloud.sunCloudT, (1.0 - smoothstep(8000.0, 14000.0, h))
+                                                      * exp(-tMid / 50000.0 - dPerp / 3000.0) * (1.0 - sunShK));
+            }
+            vec3  attnPre = attn;
+            float shKMie  = 0.0;
+            bool shAbove = false;
+            if (sunShK > 0.0 && sampleSunDotGeo > 0.05) {
+                float hMin = (atmTCl > tSe0 && atmTCl < tSe1) ? atmHCl : min(hA, hB);
+                shAbove = hMin > ((cv2.stvH.z > 0.5) ? max(cv2.stvH.y, 9400.0) : 9400.0) + 3000.0;
+            }
+            if (sunShK > 0.0 && !shAbove) {
+                // The pixel loop's reads: gNear within 30 km, gFar beyond, fewer on a short sub-step (one per ~500 m).
+                int   nF = clamp(int(ceil(segLen / 500.0)), 1, (tSe0 < 30000.0) ? gNear : gFar);
+                vec2  zRM = vec2(dir.z / 7994.0, dir.z / 1500.0) * (segLen / float(nF));
+                vec2  wRM = exp(-clamp(zRM * shaftJit, -8.0, 30.0)), qRM = exp(-clamp(zRM, -2.0, 8.0));
+                float accR = 0.0, wSR = 0.0, accMie = 0.0, wSM = 0.0;
+                [[dont_unroll]] for (int k = 0; k < nF; ++k) {
+                    float tk = tSe0 + segLen * (float(k) + shaftJit) / float(nF);
+                    float Tk = frx ? apGodT(g.x, g.y, tk, jit.z)
+                                   : cv2StvTFine(dir * tk, length(obsPos + dir * tk) - R_EARTH) * cv2TerrSunTFine(dir * tk);
+                    accR += wRM.x * Tk; wSR += wRM.x; wRM.x *= qRM.x;
+                    accMie += wRM.y * Tk; wSM += wRM.y; wRM.y *= qRM.y;
+                }
+                float shK = sunShK * (1.0 - accR / wSR);
+                shKMie = sunShK * (1.0 - accMie / wSM);
+                if (shK > 0.001) {
+                    vec3 aC = exp(-(BETA_R * (odR_cam - 0.5 * densR0) + BETA_M * 1.1 * (odM_cam - 0.5 * densM0)));
+                    shR += aC * densR * shK; shM += dot(aC, vec3(1.0 / 3.0)) * densM * shKMie;
+                    shT += densR * shK * tMid;
+                    shD += densR * shK;
+                    attn *= 1.0 - shK;
+                }
+            }
+            if (cloud.moonMisc.y > 0.5) {
+                vec3  spK = sp * 1e-3;
+                float vD  = eclipseSunVis(spK, sunDir, 0.0);
+                vec3  eclK = vD + (1.0 - vD) * kEclipseMultiScatter * eclipseSkyLight(spK, sunDir, h);
+                attn *= eclK; attnPre *= eclK;
+            }
+            accumR += attn * densR * atmTermW8;
+            accumM += dot(attnPre, vec3(1.0 / 3.0)) * (1.0 - shKMie) * densM * atmTermW8;
+        }
+        tPrev = tSl;
+
+        // The shadowed air's sky light up to here (sat_sky.frag after its loop: the zenith sky over the shadowed
+        // stretch's mean point, half of it, isotropic), re-taken only when the shadow grew.
+        if (shD > 0.0 && atmTermSpace < 1.0 && shD > shDSky * 1.002) {
+            vec3  pm  = obsPos + dir * (shT / shD);
+            float rm  = max(length(pm), R_EARTH);
+            pm *= rm / length(pm);
+            float hS  = -sqrt(max(1.0 - (R_EARTH / rm) * (R_EARTH / rm), 0.0));
+            float su  = dot(pm / rm, sunDir);
+            vec3  sky = skyZenithSky(pm, sunDir, BETA_R, BETA_M) * smoothstep(hS - 0.09, hS + 0.04, su);
+            skyShadow = (1.0 - atmTermSpace) * 0.5 * sky;
+            shDSky = shD;
+        }
+        vec2 nrm = skyApNorm(obsPos, dir, tSl);
+        apWrite(skyApCell(g.x, g.y, z), accumR, accumM, skyShadow * (BETA_R * shR + vec3(BETA_M * shM)), accumCity,
+                odR_cam, odM_cam, airG, airS, nrm);
+        // Slice 0 (the ray's start, no air yet) takes slice 1's values per unit of air: a near surface multiplies them
+        // by its own (small) column. The airglow columns start at 0 there.
+        if (z == 1)
+            apWrite(skyApCell(g.x, g.y, 0), accumR, accumM, skyShadow * (BETA_R * shR + vec3(BETA_M * shM)), accumCity,
+                    odR_cam, odM_cam, 0.0, 0.0, nrm);
+    }
+}

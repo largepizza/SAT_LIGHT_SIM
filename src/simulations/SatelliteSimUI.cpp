@@ -6526,6 +6526,9 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {"Near cirrus stride (1 = off)", &cv2NearCirrusStride, 1.0f, 4.0f, 1.0f, "%.0f", 335},
         // 2026-10-24 (perf pass 3): the sky pass's god-ray reads a step within 30 km (8 = as built; 4 is cheaper).
         {"God ray reads (near, 8 = full)", &cv2GodrayReads, 2.0f, 8.0f, 1.0f, "%.0f", 336},
+        // 2026-10-25: the sky's atmosphere once per screen tile (sky_ap.comp) instead of per pixel; 0 = per pixel (A/B).
+        {"Aerial perspective volume (0/1)", &cv2SkyAp, 0.0f, 1.0f, 1.0f, "%.0f", 337},
+        {"Aerial perspective horizon band (deg)", &cv2SkyApBandDeg, 0.0f, 10.0f, 0.25f, "%.2f", 338},
     };
 #define CLOUD_SEC(title, arr) {title, arr, (int)(sizeof(arr) / sizeof((arr)[0]))}
     CloudSliderSection sections[] = {
@@ -8878,6 +8881,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2GodrayFroxels = c.value("godray_froxels", cv2GodrayFroxels);
         cv2NearCirrusStride = settingClamp(c.value("near_cirrus_stride", cv2NearCirrusStride), 1.0f, 4.0f);
         cv2GodrayReads = settingClamp(c.value("godray_reads", cv2GodrayReads), 2.0f, 8.0f);
+        cv2SkyAp = settingClamp(c.value("sky_ap", cv2SkyAp), 0.0f, 1.0f);
+        cv2SkyApBandDeg = settingClamp(c.value("sky_ap_band_deg", cv2SkyApBandDeg), 0.0f, 10.0f);
+        cv2SkyApBandSteps = settingClamp(c.value("sky_ap_band_steps", cv2SkyApBandSteps), 1.0f, 16.0f);
         cv2TerrainGodrays = settingClamp(c.value("terrain_godrays", cv2TerrainGodrays), 0.0f, 1.0f);
         cv2MieOptics = c.value("mie_optics", cv2MieOptics);
         cv2ShapeCaps = c.value("shape_caps", cv2ShapeCaps);
@@ -9524,6 +9530,9 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"godray_froxels", cv2GodrayFroxels},
         {"near_cirrus_stride", cv2NearCirrusStride},
         {"godray_reads", cv2GodrayReads},
+        {"sky_ap", cv2SkyAp},
+        {"sky_ap_band_deg", cv2SkyApBandDeg},
+        {"sky_ap_band_steps", cv2SkyApBandSteps},
         {"terrain_godrays", cv2TerrainGodrays},
         {"mie_optics", cv2MieOptics},
         {"shape_caps", cv2ShapeCaps},

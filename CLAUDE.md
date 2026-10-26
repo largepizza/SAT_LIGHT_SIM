@@ -7979,6 +7979,51 @@ half-res texels can map to ground points kilometres apart at grazing angles.
 
 ---
 
+## Subsystem: Aerial-perspective volume (2026-10-25, branch perf-frames)
+
+`sat_sky.frag`'s single-scattering atmosphere loop (the N_VIEW loop: Rayleigh + Mie with the Sun's path, the Earth's
+shadow, god rays, haze near clouds, the orbital terminator gate, an eclipse, the city glow, green / sodium airglow, the
+sky-lit shadowed air) ran for EVERY pixel: ~4.4 ms of the sky pass on the ground, more at dusk. `shaders/sky_ap.comp` now
+runs it ONCE PER SCREEN TILE and stores its running sums along the tile's ray; the sky pass reads them at the pixel's
+distance. Layout and lookup: `include/sky_ap.glsl`; the shared helpers (optDepth, the Earth's shadow, skyZenithSky,
+atmHalfAvg3, airglow noise, cityBrightness) moved unchanged into `include/sky_atmos.glsl`, included by both.
+- **Grid** = the god-ray froxels' tiles (320 x 180, `cv2FroxJitter`'s per-frame offset; the sky TAA averages the tent),
+  48 slices at a NORMALISED depth: u = (t - tStart) / L, tStart the ray's entry into the atmosphere, L its length to the
+  atmosphere's exit or the sea-level sphere, slices log-spaced from BOTH ends (d0 = 200 m, `skyApSlice`). A pixel maps its
+  distance through its own ray's tStart and L, so a sky pixel reads the last slice exactly. A log from the start alone
+  put the last ~17% of a descending ray (from orbit, from an aircraft: where its dense air is) in one slice and brightened
+  every raised surface.
+- **Stored per unit of air** (`skyApNorm`: the ray's analytic Rayleigh / Mie column from the eye, `atmosphere.glsl`
+  atmColumn): the raw sums grow like the path (1 / cos of the incidence near the limb) and a tile's bilinear blend of that
+  convex growth read up to ~9 levels brighter from orbit (0.42 -> 0.08 levels mean once normalised). The airglow columns
+  are raw. 12 half floats a cell (accumR, accumM, the shadow light, the city glow, odR, odM, green, sodium), one runtime
+  `uvec2` array, x 1e-4: ~63 MB, made the first frame it runs (`ensureSkyAp`; the flash buffer is the placeholder at sky
+  binding 33 until then, never read: `cv2.skyAp.x` is 0).
+- **The pass** (one thread a tile, after the froxel pass in the cloud bucket, march set + set 1, the march's push
+  constants): steps follow the slices, cut into sub-steps no longer than the pixel loop's step (100 km / "View samples
+  min"); the god rays read the tile's own froxel column (the same ray and offset); the shadowed air's sky light is taken at
+  the shadow's mean point UP TO each slice. **Keep its step in step with the N_VIEW loop** — the band below still runs the
+  loop. ~0.3-0.7 ms (RTX 3070 Ti).
+- **The band**: within `clouds_v2.sky_ap_band_deg` (2 deg, at least 2.5 tiles) of the horizon / the Earth's limb (and the
+  atmosphere's top seen from above it), where the integral changes too fast across a tile, the loop runs as before; over
+  the band's outer part (2.5 tiles out to its edge) the pixel takes BOTH and cross-fades (`apW`). The volume is the MORE
+  accurate (finer slices: against a 64-1024-sample loop 0.01-0.34 levels mean where the default loop is 0.6-0.8, ~5 levels
+  at dusk near the horizon), so a hard edge was a step of ~1-4 levels. `sky_ap_band_steps` (no UI, 1) multiplies the loop's
+  steps in the band: 4 matches the volume but doubled the sky pass from orbit (the band is the whole limb).
+- **Off**: above 1000 km of eye altitude (the loop starts at the atmosphere's top and is cheap there; the pass cost more
+  than it saved), SKY_LITE / Potato / SKY_ENV / SKY_REFL (no volume), the HQ photo (`cv2SkyAp` saved / set 0), knockout bit 2.
+  "Aerial perspective volume (0/1)" (`clouds_v2.sky_ap`, slot 337; 0 = the loop everywhere, the A/B), "... horizon band
+  (deg)" (slot 338).
+- **Measured** (RTX 3070 Ti, 1920x1009, `harness_runs/ap/`): sky pass summed over 17 scenes 191 -> 146 ms (-24%), the GPU
+  frame 425 -> 385 ms; `frame_bench.py` wall clock (uncapped, one run a side) stills 834.5 -> 767.4 ms (-8.0%), motion
+  paths 1408 -> 1293 ms (-8.2%; ground and air -7..-14%, the eclipse -20..-25%, orbit -1..-11%). Matrix suite on vs off:
+  every motion and noise number within 0.01-0.07 levels. Sky TAA pipeline 168 registers both, binary 811 -> 835 KB.
+  Validation clean.
+- Open: the pass is one thread a tile (57,600 threads, long loops); the band from orbit is the whole limb ring and keeps
+  the loop's (less accurate) result there.
+
+---
+
 ## Subsystem: Sky TAA — temporal anti-aliasing of the background (2026-09-30)
 
 The user asked for terrain anti-aliasing; silhouettes, detail normals, far textures and city glitter all

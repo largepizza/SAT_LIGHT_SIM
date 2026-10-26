@@ -9202,6 +9202,7 @@ void SatelliteSim::requestPhoto()
     photoSavedPointMax = pointSigmaMaxPx;
     photoSavedGlareSize = glareSizePx;
     photoSavedGodrayFroxels = cv2GodrayFroxels;
+    photoSavedSkyAp = cv2SkyAp;
     timePaused = true;              // one instant, so the clouds' history and the sky TAA converge on it
     cv2FullRateAboveKm = 0.0f;      // every half-res cloud pixel marched every frame
     cv2SparseWhenStill = 0.0f;
@@ -9211,6 +9212,7 @@ void SatelliteSim::requestPhoto()
     // The god rays' exact path for the photo: each pixel reads the Sun transmittance volume itself instead of the
     // froxels' screen tiles (sharper shafts; ~25 ms more a frame at 1920x1009, paid only while the photo settles).
     cv2GodrayFroxels = 0.0f;
+    cv2SkyAp = 0.0f;                // and the exact atmosphere loop in every pixel (no aerial-perspective volume)
     photoScaleActive = (uint32_t)s;
     photoState = 1;
     photoFrame = 0;
@@ -9251,6 +9253,7 @@ void SatelliteSim::endPhoto()
     pointSigmaMaxPx = photoSavedPointMax;
     glareSizePx = photoSavedGlareSize;
     cv2GodrayFroxels = photoSavedGodrayFroxels;
+    cv2SkyAp = photoSavedSkyAp;
     photoScaleActive = 0;
     photoState = 0;
 }
@@ -12706,7 +12709,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     }
 
     // ── Descriptor set layout: 0=GlowBuf, 1=noise, 2=moon, 3=earthDay, 4=earthNight, 5=earthElev, 6=earthSpec, 7=earthClouds, 8=cloudNoise3D, 9=CloudParams UBO, 10/11=half-res cloud march targets A/B, 12=lightDomeBuf, 13=milkyWayTex, 14=cityDayDetail, 15=cityNightDetail, 16=auroraNoise3D, 17=reflectBeamsBuf, 18=beamGlowDomeBuf, 19=sceneDepthTex, 20=oceanGlintBuf, 21=groundBeamsBuf
-    VkDescriptorSetLayoutBinding bindings[33] = {};
+    VkDescriptorSetLayoutBinding bindings[34] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
@@ -12768,12 +12771,14 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // 32 (2026-10-20): the dust list (kDustBuf), whose tail holds the engine / floodlight lights: the sea mirrors them
     // from where they are (sat_sky.frag; written by writeCloudsV2ConsumerDescriptors, once kDustBuf exists).
     bindings[32] = {32, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
-    li.bindingCount = 33;
+    // 33 (2026-10-25): the aerial-perspective volume (sky_ap.comp; writeCloudsV2ConsumerDescriptors, ensureSkyAp).
+    bindings[33] = {33, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    li.bindingCount = 34;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &skyDescLayout);
 
     VkDescriptorPoolSize ps[4] = {
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 11},
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 12},
         {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 16},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4},

@@ -871,6 +871,7 @@ struct GpuCloudV2Params
     glm::vec4 stvL0, stvL1, stvL2, stvL3, stvH, stvV;   // 2026-10-22: S3, the Sun transmittance volume (clouds_v2.glsl)
     glm::vec4 tsh0, tsh1, tsh2, tsh3;   // 2026-10-22: the terrain Sun-horizon map (clouds_v2.glsl)
     glm::vec4 perf;                     // 2026-10-24: x "Near cirrus stride" (1 = off), y its footprint (m), zw spare
+    glm::vec4 skyAp;                    // 2026-10-25: the aerial-perspective volume: x ran this frame, y d0 (m), z band (sin)
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -897,7 +898,8 @@ static_assert(offsetof(GpuCloudV2Params, anvil3) == 288 + 48 * kCloudV2Types + 1
 static_assert(offsetof(GpuCloudV2Params, stvL0) == 288 + 48 * kCloudV2Types + 1024, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, tsh0) == 288 + 48 * kCloudV2Types + 1120, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, perf) == 288 + 48 * kCloudV2Types + 1184, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1200, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, skyAp) == 288 + 48 * kCloudV2Types + 1200, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1216, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -5196,6 +5198,29 @@ private:
     // binding 12 of the march set and 21 of cloud_march's.
     VkPipeline cv2LightningPipeline = VK_NULL_HANDLE;
     VkPipeline cv2FroxPipeline = VK_NULL_HANDLE;   // the god rays' froxel volume (2026-10-22, cloud_v2_froxel.comp)
+    // The aerial-perspective volume (2026-10-25, sky_ap.comp, include/sky_ap.glsl): the sky pass's atmosphere loop once per
+    // froxel tile, its sums at kSkyApZ normalised depths; sat_sky.frag reads them (sky set binding 33) outside a band round
+    // the horizon / the limb. The buffer (~66 MB) is made the first frame the volume runs (ensureSkyAp): until then binding
+    // 33 holds the flash buffer as a placeholder (never read: cv2.skyAp.x is 0). Set 1 of its pipeline = the buffer.
+    static constexpr uint32_t kSkyApX = 320, kSkyApY = 180, kSkyApZ = 48;   // == include/sky_ap.glsl
+    static constexpr VkDeviceSize kSkyApBytes = (VkDeviceSize)kSkyApX * kSkyApY * kSkyApZ * 24;
+    VkPipeline            skyApPipeline   = VK_NULL_HANDLE;
+    VkPipelineLayout      skyApPipeLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout skyApSetLayout  = VK_NULL_HANDLE;
+    VkDescriptorPool      skyApPool       = VK_NULL_HANDLE;
+    VkDescriptorSet       skyApSet        = VK_NULL_HANDLE;
+    VkBuffer              skyApBuf        = VK_NULL_HANDLE;
+    VkDeviceMemory        skyApMem        = VK_NULL_HANDLE;
+    // "Aerial perspective volume" (clouds_v2.sky_ap, slot 337): on by default; 0 = the per-pixel loop everywhere (the A/B).
+    float cv2SkyAp = 1.0f;
+    // "... horizon band (deg)" (clouds_v2.sky_ap_band_deg, slot 338): the band either side of the horizon / limb (and the
+    // atmosphere's top seen from above it) where the sky pass keeps its own loop; at least 2.5 tiles.
+    float cv2SkyApBandDeg = 2.0f;
+    // The loop's step factor inside the band (clouds_v2.sky_ap_band_steps, no UI): it matches the volume's accuracy there.
+    float cv2SkyApBandSteps = 1.0f;
+    float photoSavedSkyAp = 1.0f;                  // the HQ photo takes the exact loop everywhere
+    bool  skyApRanThisFrame = false;
+    bool  ensureSkyAp(VulkanContext &ctx);         // makes the buffer + set the first time; false = not available
     VkPipeline cv2TshPipeline = VK_NULL_HANDLE;    // the terrain Sun-horizon map (2026-10-22, cloud_v2_terrsun.comp)
     float cv2TerrainGodrays = 1.0f;                // "Terrain god rays" (clouds_v2.terrain_godrays): the terrain shadows the air,
                                                    // the fog / dust through the Sun-horizon map (not the ground: it has its own)

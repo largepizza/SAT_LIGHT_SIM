@@ -627,6 +627,17 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     cv2LightningPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_lightning.comp.spv", cv2MarchPipeLayout);
     cv2SunLutPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_sunlut.comp.spv", cv2MarchPipeLayout);
     cv2FroxPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_froxel.comp.spv", cv2MarchPipeLayout);
+    {   // The aerial-perspective volume: the march set + set 1 (the volume), the march's push constants.
+        skyApSetLayout = makeSetLayout(dev, {SSBO});
+        VkDescriptorSetLayout lays[2] = {cv2MarchDescLayout, skyApSetLayout};
+        VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        pli.setLayoutCount = 2;
+        pli.pSetLayouts = lays;
+        pli.pushConstantRangeCount = 1;
+        pli.pPushConstantRanges = &pcr;
+        vkCreatePipelineLayout(dev, &pli, nullptr, &skyApPipeLayout);
+        skyApPipeline = makeComputePipeline(ctx, "shaders/sky_ap.comp.spv", skyApPipeLayout);
+    }
     cv2TshPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_terrsun.comp.spv", cv2MarchPipeLayout);
     cv2FarPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_far.comp.spv", cv2MarchPipeLayout);
     {   // The clipmap's two passes: specialization constant 2 = 0 check, 1 bake.
@@ -901,6 +912,8 @@ std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::s
     swap(cv2LightningPipeline, pick(lightningSpv, "shaders/cloud_v2_lightning.comp.spv"), cv2MarchPipeLayout, nullptr);
     swap(cv2SunLutPipeline, "shaders/cloud_v2_sunlut.comp.spv", cv2MarchPipeLayout, nullptr);
     swap(cv2FroxPipeline, "shaders/cloud_v2_froxel.comp.spv", cv2MarchPipeLayout, nullptr);
+    if (skyApPipeLayout)
+        swap(skyApPipeline, "shaders/sky_ap.comp.spv", skyApPipeLayout, nullptr);
     swap(cv2TshPipeline, "shaders/cloud_v2_terrsun.comp.spv", cv2MarchPipeLayout, nullptr);
     cv2SunLutKey[0] = -1.0f;   // bake it again with the new shader
     swap(cv2FarPipeline, "shaders/cloud_v2_far.comp.spv", cv2MarchPipeLayout, nullptr);
@@ -986,6 +999,14 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     cv2SunLutPipeline = VK_NULL_HANDLE;
     if (cv2FroxPipeline) vkDestroyPipeline(device, cv2FroxPipeline, nullptr);
     cv2FroxPipeline = VK_NULL_HANDLE;
+    if (skyApPipeline) vkDestroyPipeline(device, skyApPipeline, nullptr);
+    if (skyApPipeLayout) vkDestroyPipelineLayout(device, skyApPipeLayout, nullptr);
+    if (skyApPool) vkDestroyDescriptorPool(device, skyApPool, nullptr);
+    if (skyApSetLayout) vkDestroyDescriptorSetLayout(device, skyApSetLayout, nullptr);
+    if (skyApBuf) vkDestroyBuffer(device, skyApBuf, nullptr);
+    if (skyApMem) vkFreeMemory(device, skyApMem, nullptr);
+    skyApPipeline = VK_NULL_HANDLE; skyApPipeLayout = VK_NULL_HANDLE; skyApPool = VK_NULL_HANDLE;
+    skyApSetLayout = VK_NULL_HANDLE; skyApSet = VK_NULL_HANDLE; skyApBuf = VK_NULL_HANDLE; skyApMem = VK_NULL_HANDLE;
     if (cv2TshPipeline) vkDestroyPipeline(device, cv2TshPipeline, nullptr);
     cv2TshPipeline = VK_NULL_HANDLE;
     if (cv2FarPipeline) vkDestroyPipeline(device, cv2FarPipeline, nullptr);
@@ -1113,12 +1134,15 @@ void SatelliteSim::writeCloudsV2ConsumerDescriptors(VulkanContext &ctx)
     VkDescriptorImageInfo weatherCube{cv2RepeatSampler, cv2WeatherView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo farLayer{VK_NULL_HANDLE, cv2FarView, VK_IMAGE_LAYOUT_GENERAL};   // review 18
     VkDescriptorBufferInfo engineLights{kDustBuf, 0, VK_WHOLE_SIZE};   // the dust list's tail: the sea's light glints
+    // 33: the aerial-perspective volume, or the flash buffer as its placeholder until it exists (never read then).
+    VkDescriptorBufferInfo skyAp{skyApBuf ? skyApBuf : cv2FlashBuf, 0, VK_WHOLE_SIZE};
     VkWriteDescriptorSet w[] = {
         imageWrite(skyDescSet, 7, TEX, &weatherCube),
         imageWrite(skyDescSet, 29, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &farLayer),
         bufferWrite(skyDescSet, 30, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &flashes),   // the Sun shadow cascade
         bufferWrite(skyDescSet, 31, UBO, &v2Info),
         bufferWrite(skyDescSet, 32, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &engineLights),
+        bufferWrite(skyDescSet, 33, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &skyAp),
         bufferWrite(cloudMarchDescSet, 21, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &flashes),
         bufferWrite(cloudMarchDescSet, 15, UBO, &v2Info),
         imageWrite(cloudMarchDescSet, 16, TEX, &weather),
@@ -1134,6 +1158,36 @@ void SatelliteSim::writeCloudsV2ConsumerDescriptors(VulkanContext &ctx)
         imageWrite(beamSelfMarchDescSet, 9, TEX, &morph),
         bufferWrite(beamSelfMarchDescSet, 10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &storms)};
     frameSafeUpdateDescriptorSets(ctx.device, (uint32_t)(sizeof(w) / sizeof(w[0])), w, 0, nullptr);
+}
+
+// The aerial-perspective volume's buffer and set, the first frame it runs (it is ~66 MB, and the light tiers never use it).
+// Rebinding the sky set's binding 33 drains the frames in flight once.
+bool SatelliteSim::ensureSkyAp(VulkanContext &ctx)
+{
+    if (skyApSet)
+        return true;
+    if (!skyApSetLayout)
+        return false;
+    ctx.createBuffer(kSkyApBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, skyApBuf, skyApMem);
+    if (!skyApBuf)
+        return false;
+    VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+    VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pi.maxSets = 1;
+    pi.poolSizeCount = 1;
+    pi.pPoolSizes = &ps;
+    vkCreateDescriptorPool(ctx.device, &pi, nullptr, &skyApPool);
+    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    ai.descriptorPool = skyApPool;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &skyApSetLayout;
+    vkAllocateDescriptorSets(ctx.device, &ai, &skyApSet);
+    VkDescriptorBufferInfo bi{skyApBuf, 0, VK_WHOLE_SIZE};
+    VkWriteDescriptorSet w[2] = {bufferWrite(skyApSet, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &bi),
+                                 bufferWrite(skyDescSet, 33, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &bi)};
+    frameSafeUpdateDescriptorSets(ctx.device, 2, w, 0, nullptr);
+    Log::line("sky: aerial-perspective volume created (" + std::to_string(kSkyApBytes >> 20) + " MB)");
+    return true;
 }
 
 // ─── Per frame ────────────────────────────────────────────────────────────────────────────────────
@@ -1839,6 +1893,10 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.anvil3 = glm::vec4(std::clamp(cv2AnvilPuff, 0.0f, 2.0f), std::clamp(cv2AnvilLiftM, 0.0f, 3000.0f), lowTopB[0], lowTopB[1]);
     p.perf = glm::vec4(std::clamp(std::round(cv2NearCirrusStride), 1.0f, 4.0f), 12.0f,
                        std::clamp(std::round(cv2GodrayReads), 2.0f, 8.0f), 0.0f);   // "Near cirrus stride", "God ray reads"
+    // The aerial-perspective volume: x is set to 1 in the mirrored copy by recordCloudsV2 once it is dispatched this frame.
+    p.skyAp = glm::vec4(0.0f, 200.0f, std::sin(glm::radians(std::clamp(cv2SkyApBandDeg, 0.0f, 20.0f))),
+                        std::clamp(cv2SkyApBandSteps, 1.0f, 16.0f));
+    skyApRanThisFrame = false;
     p.grid = glm::vec4((float)cv2HalfW, (float)cv2HalfH, cv2FullResActive() ? 1.0f : 0.0f, cv2FullResActive() ? 1.0f : 0.0f);
     // Full-res clouds in motion from altitude (full_res_moving_mode; 2026-10-22, issues 20261022_210358 / _220214): 0 the
     // sparse rotation (default), 1 the sample held at one pixel of each 2x2 block, 2 full rate (above). Modes 1-2 were the
@@ -2141,7 +2199,22 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2FroxPipeline);
         vkCmdDispatch(cmd, (kCv2FroxX + 7) / 8, (kCv2FroxY + 7) / 8, kCv2FroxZ / 4);
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    }
+    // The aerial-perspective volume (sky_ap.comp): the sky pass's atmosphere loop once per froxel tile, for the full sky
+    // shader (not SKY_LITE / Potato, nor the HQ photo: cv2SkyAp is 0 there). It reads the froxels when they ran. Not from
+    // above 1000 km: the loop starts at the top of the atmosphere there and is cheap, and the volume's pass (~0.4 ms) cost
+    // more than it saved (5000 km: +0.3 ms a frame; 420-500 km about even; 2026-10-25, harness_runs/ap/pt1).
+    if (skyApPipeline && cv2SkyAp > 0.5f && !(debugDisableMask & (262144u | 524288u)) && cpc.obsEffH < 1.0e6f && ensureSkyAp(ctx))
+    {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, skyApPipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, skyApPipeLayout, 1, 1, &skyApSet, 0, nullptr);
+        vkCmdDispatch(cmd, (kSkyApX + 7) / 8, (kSkyApY + 7) / 8, 1);
+        memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        ((GpuCloudV2Params *)cv2ParamsMapped)->skyAp.x = 1.0f;   // the mirror is copied up after the frame is recorded
+        skyApRanThisFrame = true;
     }
     cv2PassStampTo(cmd, 2);   // lightning + the Sun shadow bakes (+ the froxel volume)
     // The cloud density clipmap (EXPERIMENT, cv2_cdc.glsl): stale cells re-baked within the budget; the march reads it.
