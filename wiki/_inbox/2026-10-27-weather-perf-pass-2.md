@@ -1,5 +1,5 @@
 ---
-pages: [rendering/clouds/weather.md, development/performance.md]
+pages: [rendering/clouds/weather.md, development/profiling.md]
 code: [src/simulations/SatelliteSimCloudsV2.cpp, src/simulations/SatelliteSimWeather.cpp, shaders/cloud_v2_weather.comp]
 ---
 ## Now
