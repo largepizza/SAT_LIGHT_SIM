@@ -211,7 +211,13 @@ program's `park_km`:
 \]
 
 with \(\theta_{\text{ins}}\) the track's downrange angle at SECO and \(n_{\text{park}}\) Kepler's mean motion. The
-payload is deployed `deploy_after_seco_s` later (see [Launches](launches.md)).
+payload is deployed `deploy_after_seco_s` later (see [Launches](launches.md#leaving-the-stage)).
+
+**Starship's payload door** is a steel panel (`payload_door` in its upper-stage model) over a black slot on the
+leeward side, 31.1 m up the ship. It stays closed except around deployment: it slides up open over 20 s starting
+90 s before the first satellite's release, and closes over 20 s starting 60 s after the last (`transientLegs()`
+drives it as the part's unfolding progress). The slot has its own dark material, not the engine bells' `soot`,
+which glows white-hot while the engines burn.
 
 ### Deorbit
 
@@ -239,10 +245,14 @@ An expendable stage ends there as a re-entry fireball lasting 200 s, drawn by th
 
 ### Venting
 
-A share of upper stages (`vent_chance`, 0.15-0.5 by vehicle) vents its residual propellant while tumbling: about 10 t
-over two minutes as a 700 m/s jet, starting 50 s after the deorbit burn begins (10 minutes after deployment for a
-returning stage). Seen from below in sunlight against a dark sky this draws the kind of spiral that has been seen over Norway and
-New Zealand.
+A share of upper stages (`vent_chance`, 0.15-0.5 by vehicle) vents its residual propellant (`ventStart()`):
+
+- **An expendable stage** dumps it while spinning: about 10 t over two minutes as a 700 m/s jet whose direction
+  turns about the velocity, starting 50 s after the deorbit burn begins. Seen from below in sunlight against a dark
+  sky this draws the kind of spiral that has been seen over Norway and New Zealand.
+- **A returning ship** (Starship) makes a controlled dump out of its aft end along its own axis: about 10 t over
+  three minutes at 350 m/s, starting 20 minutes before its deorbit burn and never earlier than 3 h after
+  deployment, by which time its train has drifted kilometres away.
 
 ## Attitude
 
@@ -436,9 +446,9 @@ feedback-delay-network echo with a 3.4-s decay, the roar off the ground and land
 |---|---|---|
 | Launches and retirements | `launches.enabled` | on |
 
-The rockets' appearance settings ("Exhaust plumes", "Rocket light on clouds") are on
-[Launch visuals](../rendering/launch-visuals.md); the schedule's ("Satellite design life", "Deployment era") on
-[Launches](launches.md).
+The setting is in Settings > Launches, section LAUNCHES. The rockets' appearance settings (the exhaust, flame and
+rocket-light sliders) are on [Launch visuals](../rendering/launch-visuals.md#settings); the schedule's ("Satellite
+design life", "Deployment era") on [Launches](launches.md#settings).
 
 ## Checking the physics
 

@@ -32,7 +32,7 @@ flowchart LR
 
 | Effect | Where it is drawn | Units |
 |---|---|---|
-| Exhaust plumes, ground clouds | `dustCloudsCS` in `shaders/cloud_march.comp`, half resolution, in the cloud composite | Sun's light per unit solar irradiance, in the sky's units |
+| Exhaust plumes, ground clouds | `dustCloudsCS` in `shaders/cloud_march.comp`, half resolution, composited through the clouds by depth | Sun's light per unit solar irradiance, in the sky's units |
 | Flames, a ship's deck glow at a distance | the same list, emissive (`col.w = 1`) | on-screen energy of a point, or surface brightness once resolved |
 | Rocket heads, pad and ship lights | point sprites appended to the visible list from `kFireBuf` | effectFlare, like a satellite |
 | Engine and flood light on clouds, haze, ground | `shaders/lightning.frag` mode 2, full resolution after the sky TAA | intensity in suns × m² |
@@ -40,10 +40,13 @@ flowchart LR
 | The same lights on meshes | `shaders/sat_mesh.frag` local lights | same |
 | The same lights mirrored in the sea | `shaders/sat_sky.frag` | same |
 
-The dust buffer is shared with the [Kessler dust clouds and re-entry trails](../simulation/kessler.md): of its
-1024 Gaussians the Kessler dust takes at most 384, re-entry fireball trails up to 704, and plumes and flames the
-rest. Plumes are capped at 384 Gaussians a frame (a wide one covers much of the screen and costs every pixel it
-covers).
+The dust buffer is shared with the [Kessler dust clouds and re-entry trails](../simulation/kessler.md), and with
+the other volumetric events drawn the same way: [wildfire smoke and flames](../simulation/wildfires.md), the far
+field of [haboob](../simulation/haboobs.md) dust walls and tornado funnels. Of its 1024 Gaussians the Kessler dust
+takes at most 384, re-entry fireball trails up to 704, and plumes and flames the rest. Plumes are capped at 384
+Gaussians a frame (a wide one covers much of the screen and costs every pixel it covers). Everything on this page
+that lives in the list (plumes, flames, ground clouds) is shaded and composited by the same code as smoke and
+funnels, described under [Shading](#shading-in-dustcloudscs).
 
 ## Exhaust parcels
 
@@ -70,12 +73,21 @@ lift-off, only for launches within about 4500 km of the eye, and not past 1 h/s 
   a jet near 12 km, strong winds near 95 km, layered oscillation above about 35 km. The direction turns with height
   (vertical wavelengths of 9 and 23 km, strongest above 50 km), so high trails twist and kink over minutes, like the
   corkscrewed trails of real twilight launches.
-- **Condensation and evaporation.** The condensed share is \( e^{-a/\tau_{evap}} (1 - e^{-a/\tau_{cond}}) \). The
-  exhaust is invisible at the nozzle: \( \tau_{cond} \) runs from 0.25 s low down to 1.5 s at 90 km. It evaporates
-  over 7 minutes below 3 km, 25 minutes to 18 km, an hour above (sea spray and ground clouds set their own).
+- **Condensation and evaporation.** The condensed share is
+  \( e^{-a/\tau_{evap}} (1 - e^{-a/\tau_{cond}}) \,\big(1 - \text{smoothstep}(0.4, 1, a/a_{max})\big) \). The exhaust
+  is invisible at the nozzle: \( \tau_{cond} \) runs from 0.25 s low down to 1.5 s at 90 km. It evaporates over
+  7 minutes below 3 km, 25 minutes to 18 km, an hour above (sea spray and ground clouds set their own). The last
+  factor fades a parcel out over the last 60% of its life \( a_{max} \) (2400 s for a parcel emitted below 40 km,
+  3600 s above), so nothing is left of it when it ends.
 - **Turbulent growth** (`ParcelOpts::growK`): the radius also grows at `growK` × the speed through the air, capped
   at 60 m/s (a young parcel still moves at km/s). The ascent trail uses 0.05 below about 1.5 km above the pad,
   fading out by 6 km: the low column thickens as it entrains.
+- **Dispersal with age** (`ParcelOpts::richK`): old exhaust keeps widening by turbulence and shear, a Richardson
+  term \( \dot\sigma \mathrel{+}= k_R\,\sigma^{1/3} \) (m/s) with \( k_R = 0.18 \) × "Plume growth" ×
+  `launches.plume_dispersal` in the troposphere, half that above 12-20 km and none in the bells above 60-90 km
+  (already hundreds of kilometres wide there, widened further they would veil the whole sky). The cross-section
+  stays the same, so a widening trail thins: a low trail is about 1 km wide after 10 minutes and about 5 km at the
+  end of its life. Only burn exhaust disperses this way; vents and the ground clouds keep their own growth.
 - **The ground** (`ParcelOpts::groundM`): a parcel that reaches it spreads along it with a small rebound. Parcels
   within 30 km of the pad rest on the pad's own ground height.
 
@@ -93,8 +105,14 @@ youngest knot to the burning stage's nozzle and grows with the burn; when the ne
 replaces it is the same Gaussian. So the trail leaves the stage continuously, with no step each time a parcel is
 emitted.
 
-Old, wide parcels overlap their neighbours, so every 2nd, 4th or 8th knot stands for its neighbours past 2, 10 and
-30 minutes, but only once the parcel is 2, 4 or 8 times wider than its spacing.
+Old, wide parcels overlap their neighbours, so a burn's knots are **thinned by width**, continuously. A knot's
+level is \( \lambda = \log_2(\sigma / 1.5\,\ell) \) (its width over its spacing \( \ell \)), limited to one level
+per 4 s of age from 20 s on, at most 6: at level \( L \) only every \( 2^L \)-th knot is kept, up to every 64th
+(a vacuum bell's 1-s parcels are about 150 km wide after 90 s, twenty overlapping Gaussians where one does). Over the
+last 60% of each level's step, a knot the next level drops slides onto the midpoint of the two that stay (its
+centre, radius and condensed share move to their means), so when it is dropped the chord through it is already the
+chord that replaces it: the cross-section is kept and nothing jumps. The puffs of a ground cloud are never dropped;
+each is drawn × \( 2^\lambda \) (at most 16) instead.
 
 ### Rims
 
@@ -132,11 +150,20 @@ Candidates are ranked by cross-section over range squared, raised by their peak 
 and the first past the cut are sorted (`std::partial_sort`). Near the cut a Gaussian fades by priority, to zero at
 the cut and full at three times it, so pieces of a trail do not switch on and off as plumes age and the view moves.
 
+**Each launch keeps a share.** Every launch drawing plumes is reserved its strongest
+\( R = \min(48, \text{room} / (2\,n_{launches})) \) Gaussians, drawn whatever their rank; the rest of the budget
+goes by priority. \( R \) is eased by a quarter of a rank a frame (taken at once only when it must halve, after a
+jump), and a launch's last 8 reserved ranks fade, so a new launch starting to draw does not cut pieces out of an
+older plume: an old bell thins out over a minute or so instead. Candidates under a quarter of last frame's cut, and
+of their launch's weakest reserved priority, are not finished at all, which saves the colour and rim work on the
+CPU.
+
 ## Shading in `dustCloudsCS`
 
 For each plume Gaussian the shader integrates its optical depth along the ray in closed form (an erf), as for the
 Kessler dust. Plumes are real clouds: their optical depths are summed, their light per unit optical depth
-averaged, and the composite is \( 1 - e^{-\tau} \).
+averaged, and the composite is \( 1 - e^{-\tau} \). They are composited **through** the volumetric clouds by depth
+([below](#compositing-through-the-clouds)), and lit by the clouds' shadows and sky light.
 
 The list is culled three ways, none of which changes the image by more than a bound far under one display level:
 
@@ -170,15 +197,20 @@ Knockout bits 16777216 (tile cull and faint skip off) and 33554432 (CPU cull off
   where its light comes from: the closest approach moved toward the eye by up to 1.5 sigma as the ray's optical
   depth grows (a thick puff is seen by its near surface). A floor of 0.4 (0.25 low down) stands for multiple
   scattering.
-- **Phase and multiple scattering.** Single scattering uses an ice phase, 0.45 HG(g 0.8) + 0.55 isotropic. A
-  multiple-scattering term grows with the summed optical depth (0.075 (1 − e^{−0.6τ})) plus a second for optically
-  thick exhaust (0.17 (1 − e^{−0.25τ²})), which brings a sunlit steam cloud to about albedo / π. The engine lights
-  use only the first term.
-- **Compositing.** The plumes' distance is weighted by their light, not their optical depth, so a bright exhaust
-  beside a stage is not pushed behind a dim, thick cloud kilometres away. In front of the clouds (nearer than the
-  cloud's mean distance) a plume covers them; behind, it is seen through them. Either way it dims what lies behind
-  it by \( e^{-\tau} + 0.85\,a\,(1 - e^{-\tau}) \) with \( a \) its albedo: a clean plume scatters the sky's light
-  back and barely dims the sky, a sooty one silhouettes against it.
+- **Lit by the clouds.** Below 16 km a plume Gaussian with \( \tau > 0.01 \) takes the Sun through the clouds'
+  shadow (the [Sun transmittance volume](clouds/march.md#the-suns-shadow-beyond-the-light-march), `cv2StvT()`, at
+  its lit point), its sky light through the cloud above it (the deck's diffuse transmission \( T_d \),
+  `cv2VtUpCell()` / `cv2VtUpH()`), and the sunlight that deck scatters down,
+  \( 2\mu\,\big((\tfrac12 + \tfrac34\mu)\,T_d - T_{sun}\big) \) with \( \mu \) the Sun's cosine, isotropically. A
+  plume or ground cloud under an overcast is therefore lit as the clouds round it are, not as under a clear sky.
+  Tornado funnels are lit on the CPU through their storm's column instead.
+- **Phase and multiple scattering.** Single scattering uses an ice phase, 0.45 HG(g 0.8) + 0.55 isotropic. The
+  Sun's and the sky's multiple scattering is that of the **stack** of Gaussians along the ray,
+  \( \tau\,m(\tau) \) with \( m(x) = 0.075\,(1 - e^{-0.6x}) + 0.17\,(1 - e^{-0.25x^2}) \): each Gaussian takes its
+  share \( x_b\,m(x_b) - x_a\,m(x_a) \), where the running optical depth goes from \( x_a \) to \( x_b \) across it.
+  The second term brings an optically thick sunlit steam cloud to about albedo / π. Taken per Gaussian instead, a
+  trail or smoke pall made of hundreds of thin pieces would lose most of its light. The engine lights use only the
+  first term, per Gaussian.
 
 !!! warning "Invariant"
     A half-res texel with no cloud of its own but a plume or flame carries that light's distance in the cloud
@@ -188,9 +220,47 @@ Knockout bits 16777216 (tile cull and faint skip off) and 33554432 (CPU cull off
     texels, or it lights the exhaust a second time (`lightning.frag`'s engine-light mode and the sea's reflection
     do).
 
+### Compositing through the clouds
+
+The volumetric cloud march records each ray's **opacity profile** (`cv2Profile`, one entry per 2×2 block of the
+cloud grid): the cloud's first contact, its half-opacity point and its last contact, as log-distance codes, and its
+transmittance. It is written before the fog and dust march, so fog is not in it. The composite scales the profile to
+the resolved cloud's opacity and splits every Gaussian's optical depth and light over its four depth segments
+(`dustSegW()`: three erfs, skipped where the ray meets no cloud). It then composites front to back: in each segment
+the cloud's light there (its share of the resolved radiance), dimmed by the plumes in front and half the segment's
+own; and the plumes' light, dimmed by the cloud in front of each Gaussian's own closest approach (linear to the
+half-opacity point, then an exponential approach to the last contact). Emissive light (flames, the lit exhaust,
+fireball trails) is dimmed by the cloud in front of it the same way. A plume inside a cloud, or a funnel in a rain
+shaft, is therefore hidden by the part of the cloud in front of it and covers the part behind. A texel with no
+profile this frame uses the cloud's mean distance × (0.85, 1, 1.15) as its three depths.
+
+Whatever lies behind a plume is dimmed by \( e^{-\tau} + 0.85\,a\,(1 - e^{-\tau}) \) with \( a \) its albedo: a clean
+plume scatters the sky's light back and barely dims the sky, a sooty one silhouettes against it. The plumes'
+distance, used for the air split and the mesh test below, is weighted by their light, not their optical depth, so a
+bright exhaust beside a stage is not pushed behind a dim, thick cloud kilometres away.
+
+A Gaussian the eye is inside thins (above), except a tornado's: within about a kilometre of a funnel the eye is
+inside its wide base and debris Gaussians, which must stay opaque.
+
 A burning stage sits inside its own exhaust, whose light-weighted distance is about the hull's. `sat_sky.frag`
 therefore composites the cloud texel over a mesh pixel with a soft depth test: fully when nearer than the mesh,
 not at all past 1.25 × its distance + 20 m.
+
+### Under the sky TAA
+
+The [sky TAA](atmosphere-and-sky.md#sky-taa) reprojects a static world, and meshes and the exhaust have no motion
+vectors. `sat_sky.frag -DSKY_TAA` marks a mesh pixel, and a composite texel lit only by plume or flame Gaussians
+(the flagged alpha above), in the TAA input's alpha (0.875). The resolve (`sky_taa.comp`) stores their depth
+negated, so the next frame knows where they were (`taa_depth_restore.frag` takes the absolute value), and wherever
+the 3×3 neighbourhood or the history's 2×2 holds one it clips the history and depth-tests it even when the view is
+still. A rocket descending past the camera leaves no trail or translucent ghost.
+
+The half-resolution composite meets a mesh per texel: a half-res texel is clamped to a mesh when any pixel of it, or
+the one-pixel ring round it, is mesh; a mesh pixel tests each of its four texels' composite distance against its
+own; the engine-light pass lights cloud or fog on a mesh pixel only in front of the mesh; and a resolved cloud whose
+distance is past the texel's surface is dropped. A catch tower's open lattice therefore shows the fog in front of it
+and the cloud behind it with no half-res staircase along its members (details on
+[Satellite meshes](satellite-meshes.md)).
 
 ## Ground clouds
 
@@ -404,14 +474,26 @@ on it (−3.5); once its mesh resolves, the mesh lights take over.
 
 ## Settings
 
-| UI label (Settings > Constellations > LAUNCHES) | settings.json key | Default |
-|---|---|---|
-| Exhaust plumes (Off / x0.3 / x1 / x3) | `launches.plume_gain` | 1 |
-| Rocket light on clouds (Off / x0.3 / x1 / x3) | `launches.engine_light_gain` | 1 |
-| Launch site graphics | `launches.pad_graphics` | true |
-| (no UI: the flames' brightness) | `launches.rocket_gain` | 1 |
+**Settings > Launches**, section GRAPHICS: ROCKETS AND EXHAUST. Every exhaust slider at 1 is the tuned look;
+"Reset exhaust to defaults" sets them all back to 1.
 
-The Missions window's Controls tab shows the same section; see [Missions](../using/missions.md).
+| UI label | settings.json key | Range | Default |
+|---|---|---|---|
+| Launch site graphics | `launches.pad_graphics` | on / off | on |
+| Plume opacity (x) | `launches.plume_gain` | 0-5 | 1 |
+| Plume brightness (x): × the scattered light | `launches.plume_brightness` | 0-5 | 1 |
+| Plume width (x): same cross-section, so wider is thinner | `launches.plume_width` | 0.25-4 | 1 |
+| Plume billows (x): the noise's contrast | `launches.plume_billows` | 0-3 | 1 |
+| Plume growth (x): the turbulent growth and dispersal parcels are built with | `launches.plume_growth` | 0-5 | 1 |
+| Ground clouds (x): lift-off steam, landing dust or spray | `launches.ground_cloud_gain` | 0-5 | 1 |
+| Flame brightness (x) | `launches.rocket_gain` | 0-10 | 1 |
+| Rocket light on clouds (x) | `launches.engine_light_gain` | 0-10 | 1 |
+| (no UI) plume dispersal with age, 0 = off | `launches.plume_dispersal` | ≥ 0 | 1 |
+
+Opacity, brightness, width and billows act at once. Growth and dispersal are built into the parcels, so changing
+them rebuilds the plumes in view (a moment). The same tab's LAUNCHES and THE SUN'S FURY sections are on
+[Launches](../simulation/launches.md#settings) and [Kessler syndrome](../simulation/kessler.md#settings); its
+GRAPHICS: DEBRIS AND RE-ENTRIES section (dust, fireball colours, small re-entries) on the latter.
 
 ## Costs and limits
 
@@ -424,6 +506,10 @@ Measured on an RTX 3070 Ti at 1600×900:
   3.3 → 3.0 ms following a stage at night from 300 m. Time these with no other app on the GPU.
 - The engine-light pass: +0.26 ms (Starship at T+15 s under broken cumulus, 6 km from the pad); the exhaust's
   engine lighting +0.05 to +0.25 ms of cloud march.
+- Compositing through the clouds' profile and lighting by the clouds: within noise to +0.2 ms of the cloud bucket
+  at a launch.
+- Dispersal at its default: the Twilight Starship bookmark at T+10 min costs about 8.3-9.2 ms of `cloud_march`,
+  against about 7.8 ms with `launches.plume_dispersal` 0 (wider, fainter Gaussians are admitted to the budget).
 
 Not modelled: the engine light does not know a cloud surface's orientation (the screen derivatives of the half-res
 distance draw a crosshatch); a light inside a cloud does not diffuse through it as lightning does; terrain does not
@@ -448,7 +534,9 @@ composite's register count. Scripts: `tools/harness/scripts/pad_smoke.satcmd`, `
   `launchFillShipLights()`, `shipLightsOf()`, `launchFillShipGlow()`, `shipSwell()`, `shipFrame()`,
   `launchMeshJobs()`, `launchShipJobs()`, `launchStackJobs()`.
 - `src/simulations/SatelliteSim.cpp`: `recordMeshScene()` (mesh local lights, lattice threshold phase).
-- `shaders/cloud_march.comp`: `dustCloudsCS()` and the plume compositing at the end of `main()`.
+- `shaders/cloud_march.comp`: `dustCloudsCS()`, `dustSegW()`, `cullDustForTile()` and the plume compositing at the
+  end of `main()`; `shaders/cloud_v2_march.comp` writes the opacity profile (`cv2Profile`).
+- `shaders/sky_taa.comp`, `shaders/taa_depth_restore.frag`: the moving-object marks under the sky TAA.
 - `shaders/lightning.frag` (mode 2), `shaders/include/lightning_draw.glsl`.
 - `shaders/sat_mesh.frag`: local lights, nozzle glow, lattice threshold.
 - `shaders/sat_sky.frag`: the mesh soft test, the sea's light glints and reflection filter, `padFlood`.
