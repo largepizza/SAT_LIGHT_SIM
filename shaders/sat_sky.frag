@@ -146,6 +146,7 @@ struct GroundBeam {
 // Must match GpuSolarSite in SatelliteSim.h exactly (hand-mirrored).
 #define SOLAR_SITE_MAX 8
 #define REFR_N 512   // refr::kTableN
+#define SUN_GROUP_MAX 16   // GpuRefraction::spots / 2
 struct SolarSite {
     vec4 centerQ;  // xyz site centre, w = outline radius (m)
     vec4 across;   // xyz the row-spacing axis, w = seed
@@ -167,6 +168,8 @@ layout(std430, set = 0, binding = 21) readonly buffer GroundBeamsBuf {
     vec4 refrInfo;    // x = N (0 = none), y = above the table: x Saemundsson, z = 1 refraction on, w = Sun disc gain
     vec4 refrSun;     // x = the Sun centre's refraction (rad), y = its visible share, z = shimmer gain, w = aoa there
     vec4 refrSunCol;  // the columns at the Sun's centre: Rayleigh, Mie, ozone, haze (m)
+    vec4 refrSpotInfo;   // sunspot groups (GpuRefraction::spotInfo / spots, fillSunspots): x = count, y = cycle activity
+    vec4 refrSpots[2 * SUN_GROUP_MAX];
     vec4 refrE[REFR_N * 2];   // entry i: [2i] = (R, G, B refraction, aoa), [2i + 1] = (colR, colM, colO3, colH)
 #endif
 };
@@ -3332,6 +3335,115 @@ float refrNoise(vec2 p)
     f = f * f * (3.0 - 2.0 * f);
     float a = refrHash(i), b = refrHash(i + vec2(1, 0)), c = refrHash(i + vec2(0, 1)), d = refrHash(i + vec2(1, 1));
     return mix(mix(a, b, f.x), mix(c, d, f.x), f.y) * 2.0 - 1.0;
+}
+// ── Sunspots (2026-10-27, issue 20261027_000948) ──────────────────────────────────────────────────────────────────
+// Active regions as BIPOLAR GROUPS on the solar sphere (SatelliteSimRefraction.cpp fillSunspots: a pure function of sim
+// time, in the 11-year cycle's numbers, latitudes and Joy's-law tilts, rotating with the Sun's differential rotation;
+// the Sun's Fury's flare region near the central meridian on 2037-07-14). Each group is a leader spot (west, nearer
+// the equator), a follower or a cluster of followers, and a scatter of PORES: pinprick dots with no penumbra. Only
+// spots past ~2500 km have an umbra inside a ragged, filamented penumbra; a complex (delta) group has umbrae sharing
+// one penumbra. Faculae brighten the groups toward the limb. Sizes are in the sphere's radius (the DRAWN disc).
+uint spHashU(uint x)
+{
+    x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
+    return x;
+}
+float spH(uint s, uint i) { return float(spHashU(s * 0x9E3779B1u + i * 0x85EBCA77u + 0x165667B1u) >> 8) * (1.0 / 16777216.0); }
+
+// One spot: the photosphere factor at distance d (uv offset q) from a spot of radius r, at pixel size aa.
+float spotProfile(vec2 q, float r, float aa, uint sd, float penK)
+{
+    float d  = length(q);
+    if (d > 1.6 * r + 2.0 * aa) return 1.0;
+    if (r < 0.009) {
+        // a pore: a dark dot, its darkness kept when it is smaller than a pixel (area-weighted)
+        float w  = max(r, 0.7 * aa);
+        float k  = (r * r) / (w * w);
+        return 1.0 - 0.62 * k * (1.0 - smoothstep(0.55 * w, 1.25 * w, d));
+    }
+    float th = atan(q.y, q.x);
+    // a ragged outline: low angular orders, the phases per spot
+    float rr = r * (1.0 + 0.13 * sin(3.0 * th + 6.28 * spH(sd, 1u)) + 0.07 * sin(5.0 * th + 6.28 * spH(sd, 2u))
+                        + 0.04 * sin(9.0 * th + 6.28 * spH(sd, 3u)));
+    float pen = 1.0 - smoothstep(rr - aa, rr + aa, d);
+    // the umbra: ~0.42 of the spot, a little off centre, its own outline
+    vec2  uo = r * 0.08 * vec2(spH(sd, 4u) - 0.5, spH(sd, 5u) - 0.5);
+    float ru = 0.42 * r * (1.0 + 0.10 * sin(4.0 * th + 6.28 * spH(sd, 6u)));
+    float um = 1.0 - smoothstep(ru - aa, ru + aa, length(q - uo));
+    // radial penumbral filaments, faded out once they are under ~2 pixels apart
+    float nF  = 34.0;
+    float fil = 0.07 * sin(nF * th + 4.0 * sin(2.0 * th + spH(sd, 7u) * 6.28)) * (1.0 - smoothstep(0.3, 1.0, aa * nF / max(d, 1e-5)));
+    float penV = mix(0.80, 0.66, smoothstep(rr, ru, d)) + fil;   // darker toward the umbra
+    return mix(1.0, mix(penV, 0.16, um), pen * penK);
+}
+
+// The photosphere factor at sphere point p (unit; -sunD = toward the eye), mu = cos of the emission angle.
+float sunspotFactor(vec3 p, float mu, vec3 sunD, float pxS)
+{
+    int n = int(refrSpotInfo.x + 0.5);
+    if (n <= 0) return 1.0;
+    vec3  A  = cloud.eclipticPoleENU.xyz;
+    A = normalize(A - sunD * dot(A, sunD));
+    vec3  B1 = -sunD;
+    vec3  B2 = cross(A, B1);
+    float lat = asin(clamp(dot(p, A), -1.0, 1.0));
+    float lon = atan(dot(p, B2), dot(p, B1));
+    float f   = 1.0;
+    float fac = 0.0;
+    float aa  = max(pxS, 3e-4);
+    for (int gi = 0; gi < SUN_GROUP_MAX; ++gi) {
+        if (gi >= n) break;
+        vec4  ga = refrSpots[2 * gi], gb = refrSpots[2 * gi + 1];
+        float E  = ga.z;
+        float dl = lon - ga.y;
+        dl -= 6.2831853 * round(dl / 6.2831853);
+        vec2  q  = vec2(dl * cos(ga.x), lat - ga.x);
+        if (dot(q, q) > 2.6 * E * E) continue;
+        // the group's axis: the leader to the west (+lon), tilted toward the equator (Joy's law)
+        float sg = ga.x >= 0.0 ? 1.0 : -1.0;
+        vec2  ax = vec2(cos(gb.x), -sg * sin(gb.x));
+        vec2  uv = vec2(dot(q, ax), ax.x * q.y - ax.y * q.x);
+        uint  sd = uint(ga.w);
+        float env = gb.y, cx = gb.z, sz = gb.w;
+        // faculae: the plage round the group, outliving its spots
+        fac = max(fac, exp(-dot(uv, uv) / (0.8 * E * E)) * clamp(0.3 + 1.2 * env, 0.0, 1.0));
+        float big = smoothstep(0.2, 0.7, sz);
+        float rL  = E * (0.16 + 0.10 * big) * sqrt(env) * (0.8 + 0.4 * spH(sd, 10u));
+        // the leader, a little west of the axis' middle
+        vec2  cL  = vec2(0.42 * E, 0.08 * E * (spH(sd, 11u) - 0.5));
+        f = min(f, spotProfile(uv - cL, rL, aa, sd * 31u + 1u, 1.0));
+        // a delta group: two more umbrae inside the leader's penumbra
+        if (cx > 0.5) {
+            for (int k = 0; k < 2; ++k) {
+                vec2 o = rL * 0.55 * vec2(spH(sd, 20u + uint(k)) - 0.5, spH(sd, 22u + uint(k)) - 0.5) * 2.0;
+                f = min(f, spotProfile(uv - cL - o, rL * 0.55, aa, sd * 31u + 5u + uint(k), 1.0));
+            }
+        }
+        // the followers: one spot, or a cluster in larger groups
+        int nFol = 1 + int(3.0 * big + 0.5);
+        for (int k = 0; k < 4; ++k) {
+            if (k >= nFol) break;
+            float hk = spH(sd, 30u + uint(k));
+            // the main follower behind the axis' middle; the others strung between it and the leader
+            vec2  cF = (k == 0) ? vec2(-0.40 * E + 0.15 * E * (hk - 0.5), 0.25 * E * (spH(sd, 34u + uint(k)) - 0.5))
+                                : vec2((-0.55 + 0.8 * hk) * E, 0.35 * E * (spH(sd, 34u + uint(k)) - 0.5));
+            float rF = rL * (k == 0 ? 0.70 : 0.34) * (0.6 + 0.7 * spH(sd, 38u + uint(k)));
+            f = min(f, spotProfile(uv - cF, rF, aa, sd * 31u + 9u + uint(k), 1.0));
+        }
+        // pores: pinpricks, crowded near the two poles of the group, a few between
+        int nP = 8 + int(14.0 * clamp(sz + 0.3 * cx, 0.0, 1.0));
+        for (int k = 0; k < 22; ++k) {
+            if (k >= nP) break;
+            float h0 = spH(sd, 50u + uint(k)), h1 = spH(sd, 80u + uint(k)), h2 = spH(sd, 110u + uint(k));
+            float side = h0 < 0.45 ? 0.40 : (h0 < 0.85 ? -0.40 : 0.0);
+            vec2  cP = vec2(side * E + (h1 - 0.5) * (side == 0.0 ? 0.8 : 0.45) * E,
+                            (h2 - 0.5) * 0.5 * E);
+            float rP = (0.0022 + 0.0045 * spH(sd, 140u + uint(k))) * (0.4 + 0.6 * sqrt(env));
+            f = min(f, spotProfile(uv - cP, rP, aa, sd * 31u + 40u + uint(k), 1.0));
+        }
+    }
+    // faculae show toward the limb (their contrast grows as mu falls)
+    return f * (1.0 + 0.30 * fac * pow(1.0 - mu, 1.5));
 }
 #endif
 
@@ -7318,17 +7430,11 @@ void main() {
                 vec2  xy = vec2(dot(dTg, e1), dot(dTg, e2)) / max(rD, 1e-6);
                 float rr = min(dot(xy, xy), 1.0);
                 float ld = 1.0 - 0.6 * (1.0 - sqrt(1.0 - rr));   // limb darkening (u = 0.6)
-                // sunspots: 2 at a quiet Sun to 8 in a storm (Kp), umbra ~70% dark with a penumbra
-                int   nS = 2 + int(6.0 * clamp(cloud.stormStrength, 0.0, 1.0) + 0.5);
-                float sp = 1.0;
-                for (int k = 0; k < 8; ++k) {
-                    if (k >= nS) break;
-                    float a  = 6.2831853 * fract(0.61803 * float(k) + 0.137);
-                    float rk = 0.75 * sqrt(fract(0.75487 * float(k) + 0.411));
-                    float sz = 0.035 + 0.045 * fract(0.56984 * float(k) + 0.29);
-                    float dk = length(xy - rk * vec2(cos(a), sin(a)));
-                    sp *= 1.0 - 0.45 * (1.0 - smoothstep(sz, 2.2 * sz, dk)) - 0.25 * (1.0 - smoothstep(0.3 * sz, 0.9 * sz, dk));
-                }
+                // sunspots (2026-10-27): bipolar groups on the solar sphere (sunspotFactor; the CPU's fillSunspots). It
+                // was 2-8 identical round spots by Kp at fixed places on the disc.
+                float muS = sqrt(max(1.0 - rr, 0.0));
+                vec3  pS  = xy.x * e1 + xy.y * e2 - muS * sunDir;
+                float sp  = sunspotFactor(pS, muS, sunDir, pxA / max(rD, 1e-6) / max(muS, 0.15));
                 // 4 pi / Omega_sun / (1 - u/3) = 2.3e5: the disc centre in the sky's units (pi L / E with mean-1 phases)
                 vec3  L  = exposure * 2.3e5 * (tabOn ? refrInfo.w : 1.0) * T * ld * sp;
                 dLight = (vec3(1.0) - exp(-L / 250.0)) * cov3;
