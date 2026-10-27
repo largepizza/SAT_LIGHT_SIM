@@ -198,6 +198,18 @@ Source:  Solar System Scope (https://www.solarsystemscope.com/textures/)
 License: Creative Commons Attribution 4.0 International (CC BY 4.0)
 
 --------------------------------------------------------------------
+Moon albedo and elevation maps
+--------------------------------------------------------------------
+File:    moon_maps.rgba16f (baked by tools/make_moon_maps.py)
+Source:  NASA Scientific Visualization Studio, "CGI Moon Kit"
+         (https://svs.gsfc.nasa.gov/4720), Ernie Wright: the Lunar
+         Reconnaissance Orbiter Camera (LROC) Wide Angle Camera colour
+         mosaic (lroc_color_poles_4k.tif) and the Lunar Orbiter Laser
+         Altimeter (LOLA) elevation map (ldem_16.tif). Credit: NASA's
+         Scientific Visualization Studio; LRO LROC and LOLA teams.
+License: NASA imagery, no copyright (NASA open data policy); credit as above
+
+--------------------------------------------------------------------
 Full moon texture
 --------------------------------------------------------------------
 File:    full_moon.png

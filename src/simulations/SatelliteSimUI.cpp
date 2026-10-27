@@ -5010,6 +5010,10 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
             // The Moon is a body at its true distance; 1 = its real size (within a few degrees of the Sun
             // it is always drawn at its true size, so eclipses are right).
             {"Moon size (x real)", &moonSizeScale, 0.25f, 4.0f, 0.05f, "%.2f", 220},
+            // The disc's relief (2026-10-27): x the LOLA heights (0 = the smooth sphere), and the heightfield's cast
+            // shadows near the terminator (crater floors, mountain shadows).
+            {"Moon relief (x LOLA heights)", &moonRelief, 0.0f, 4.0f, 0.05f, "%.2f", 355},
+            {"Moon shadows (0/1)", &moonShadows, 0.0f, 1.0f, 1.0f, "%.0f", 356},
         };
         uiSection("PhotoSec", 11, "EXPOSURE AND MOON");
         buildCloudSliderRows(inp, ui, secExposure, (int)(sizeof(secExposure) / sizeof(secExposure[0])));
@@ -7083,7 +7087,10 @@ void SatelliteSim::buildSettingsAttributionsTab(const UIInput &inp, UIRenderer &
           "solarsystemscope.com/textures (CC BY 4.0)");
     entry(i++, "Milky Way skybox", "\"The Milky Way panorama\" (eso0932a) - ESO/S. Brunier", nullptr,
           "European Southern Observatory - eso.org (CC BY 4.0)");
-    entry(i++, "Full moon texture", "papereater", nullptr, nullptr);
+    entry(i++, "Moon albedo and elevation maps",
+          "NASA SVS CGI Moon Kit: LRO Camera WAC colour mosaic, LOLA elevation", nullptr,
+          "svs.gsfc.nasa.gov/4720 (NASA, public domain)");
+    entry(i++, "Full moon texture (Potato preset)", "papereater", nullptr, nullptr);
     entry(i++, "City lights detail textures",
           "From KSP mod RSSVE, NASA Visible Earth imagery, edited by Theysen", nullptr,
           "CC BY-NC-SA 4.0 - Sat Light Sim is distributed as free software");
@@ -9240,6 +9247,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         auroraSheetGain = c.value("aurora_sheets", auroraSheetGain);
         orbitGrade = c.value("orbit_grade", orbitGrade);
         moonSizeScale = c.value("moon_size", moonSizeScale);
+        moonRelief = c.value("moon_relief", moonRelief);
+        moonShadows = c.value("moon_shadows", moonShadows);
         auroraSheetSpacingDeg = c.value("aurora_sheet_spacing_deg", auroraSheetSpacingDeg);
         auroraSheetCrisp = c.value("aurora_sheet_crisp", auroraSheetCrisp);
         auroraSheetFold = c.value("aurora_sheet_fold", auroraSheetFold);
@@ -9548,6 +9557,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"aurora_sheets", auroraSheetGain},
         {"orbit_grade", orbitGrade},
         {"moon_size", moonSizeScale},
+        {"moon_relief", moonRelief},
+        {"moon_shadows", moonShadows},
         {"aurora_sheet_spacing_deg", auroraSheetSpacingDeg},
         {"aurora_sheet_crisp", auroraSheetCrisp},
         {"aurora_sheet_fold", auroraSheetFold},

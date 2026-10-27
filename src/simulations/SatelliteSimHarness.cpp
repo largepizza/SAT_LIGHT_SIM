@@ -420,7 +420,17 @@ json SatelliteSim::harnessStateJson()
                  {"sep_from_sun_deg", glm::degrees(std::acos(std::clamp(glm::dot(glm::normalize(moon), glm::normalize(sun)), -1.0f, 1.0f)))},
                  {"drawn_radius_deg", glm::degrees(moonAngR)}, {"sun_radius_deg", glm::degrees(sunAngRTrue)},
                  {"sun_seen_frac", moonEclipseSolarObs}, {"sky_light_frac", moonEclipseSkyObs}, {"sky_exposure", skyExposure()}, {"solar_possible", moonEclipseSolarPossible},
-                 {"lunar_possible", moonEclipseLunarPossible}};
+                 {"lunar_possible", moonEclipseLunarPossible},
+                 {"libration_lon_deg", moonLibLonDeg}, {"libration_lat_deg", moonLibLatDeg}, {"pole_pa_deg", moonPolePADeg},
+                 {"relief", moonRelief}, {"shadows", moonShadows}};
+    {
+        // The sub-lunar point (geocentric), for placing an observer relative to the Moon (e.g. beyond it).
+        const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        const glm::dvec3 mD = glm::normalize(glm::dvec3(moonDirECI));
+        double lon = glm::degrees(std::atan2(mD.y, mD.x) - earthRotationAngle(tNow));
+        j["moon"]["sublunar_lat_deg"] = glm::degrees(std::asin(mD.z));
+        j["moon"]["sublunar_lon_deg"] = std::fmod(lon + 540.0, 360.0) - 180.0;
+    }
 
     j["aurora"] = auroraStateJson();
     j["refraction"] = refractionJson();

@@ -1901,8 +1901,13 @@ struct GpuCloudParams
     glm::vec4 fireV[kMaxFiresGpu];         // xyz across axis, w seed
     glm::vec4 fireAux[kMaxFiresGpu];       // x freshness, y 1 / edge softness (m)
     glm::uvec4 fireK[kMaxFiresGpu * 4];    // fingers' radial factor at 64 angles, 4 bytes a uint
+    // The Moon's body frame (12224 -> 12256, 2026-10-27, updatePositions: the IAU rotation model, so the optical
+    // libration is real), in the observer's ENU: moonPole xyz the lunar north pole, w "Moon relief" (x the LOLA
+    // heights; 0 = the smooth sphere); moonPrime xyz the body x axis (0 deg longitude on the equator), w "Moon shadows".
+    glm::vec4 moonPole;
+    glm::vec4 moonPrime;
 };
-static_assert(sizeof(GpuCloudParams) == 12224, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 12256, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -4346,6 +4351,17 @@ private:
     VkImage moonTex = VK_NULL_HANDLE;
     VkDeviceMemory moonTexMem = VK_NULL_HANDLE;
     VkImageView moonTexView = VK_NULL_HANDLE;
+    // The Moon's albedo + LOLA elevation map (binding 2 since 2026-10-27; tools/make_moon_maps.py). moonTex above is the
+    // old face-on photo, kept for Potato's sat_sky_minimal.frag (updateMoonDescriptor swaps binding 2) and as the map's
+    // fallback.
+    VkImage moonMap = VK_NULL_HANDLE;
+    VkDeviceMemory moonMapMem = VK_NULL_HANDLE;
+    VkImageView moonMapView = VK_NULL_HANDLE;
+    VkSampler moonMapSampler = VK_NULL_HANDLE;
+    uint32_t moonMapW = 0, moonMapH = 0;
+    bool moonDescLegacy = false;
+    void createMoonMap(VulkanContext &ctx, const std::vector<unsigned char> &legacy, int lw, int lh);
+    void updateMoonDescriptor(VulkanContext &ctx, bool legacy);
     VkSampler moonSampler = VK_NULL_HANDLE;
     // Earth day texture (binding 3): 8K equirectangular colour map.
     VkImage earthDayImg = VK_NULL_HANDLE;
@@ -6471,6 +6487,11 @@ private:
     float moonAngR = 0.004578f;
     float sunAngRTrue = 0.0046542f; // the Sun's true angular radius (rad) this frame, from its distance
     glm::vec3 moonCenterENUkm{0.0f};
+    glm::vec3 moonPoleENU{0.0f, 0.0f, 1.0f};   // the Moon's body frame in the observer's ENU (IAU rotation model)
+    glm::vec3 moonPrimeENU{1.0f, 0.0f, 0.0f};
+    double moonLibLonDeg = 0.0, moonLibLatDeg = 0.0, moonPolePADeg = 0.0;   // the sub-Earth point (geocentric optical libration)
+    float moonRelief = 1.0f;                // "Moon relief" (x the LOLA heights on the disc; slot 355)
+    float moonShadows = 1.0f;               // "Moon shadows" (0/1: the heightfield's cast shadows; slot 356)
     float moonEclipseSolarObs = 1.0f;
     float moonEclipseSkyObs = 1.0f;   // the sky light's share at the observer in a solar eclipse (eclipse.glsl's blurred visibility)
     bool moonEclipseSolarPossible = false, moonEclipseLunarPossible = false;
@@ -7470,7 +7491,7 @@ private:
     bool draggingPhoto[39] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 355;   // 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
+    static constexpr int kCloudSliderSlots = 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
     // gust fronts, drop persistence); 326: "Tropical cyclones (x)"; 325: "Storm complexes"; 321-324 (2026-10-23): storm
     // objects (frequency, life, cloud field, moat);
     // was 321: 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);

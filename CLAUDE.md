@@ -7722,8 +7722,25 @@ more in deep space), the true angular radius x "Moon size (x real)" (`moonSizeSc
 EXPOSURE AND MOON section since 2026-10-06, key
 `clouds.moon_size`; the old disc was a fixed 3x at infinity), the Earth-centred position in the observer's ENU
 (km) and the eclipse state — all into `cloud.moonCenter` / `cloud.moonMisc` (UBO 784 -> 816).
-- **Tidally locked**: the texture frame's z axis points at the EARTH'S CENTRE (it pointed at the observer, so
-  the face never turned); the far side (from space) is the near-side image flattened toward its mean.
+- **A real surface (2026-10-27): albedo + LOLA relief, the IAU rotation.** Binding 2 is `moon_maps.rgba16f`
+  (`tools/make_moon_maps.py`: NASA SVS CGI Moon Kit, the LROC WAC colour mosaic + LOLA `ldem_16`, cached in
+  build/moon_cache/), an RGBA16F equirect mip chain 2048 x 1024 in selenographic lon / lat (RGB albedo scaled so the
+  near side's face-on mean = the old photo's, A the height in km); `createMoonMap` uploads it (no decoding), and
+  without the file spreads full_moon.png over the near hemisphere. The body frame is the IAU WGCCRE 2009 model
+  (updatePositions, double, ICRF taken as the sim's ECI) -> `cloud.moonPole` / `moonPrime` (UBO 12224 -> 12256, w =
+  "Moon relief" / "Moon shadows", Photometry EXPOSURE AND MOON, slots 355-356, `clouds.moon_relief` / `moon_shadows`):
+  real optical libration and the pole near the ECLIPTIC pole (the old face-on photo was turned by the celestial pole,
+  without libration, its far side the photo mirrored and greyed). sat_sky.frag: the level from the pixel footprint
+  (`textureLod`, the longitude seam breaks derivatives), the normal tilted by the height gradient at that level (faded
+  in at 8-30 px of disc radius), Lommel-Seeliger with the tilted normal (the full Moon stays flat) scaled by Allen's
+  law at THIS view's phase angle (moonDirENU.w is geocentric: wrong from beyond the Moon), and near the terminator
+  (Sun < ~17 deg over the smooth sphere, disc > 20 px) `moonTerrainSunVis`: a 14-step march toward the Sun over the
+  heightfield, the share of the Sun's disc over the terrain (crater floors, mountain shadows, lit peaks past the
+  terminator). SKY_LITE: the map with its implicit level, no relief (its size budget); SKY_ENV: the map, no relief.
+  **Potato's sat_sky_minimal.frag still reads the old face-on photo at binding 2**: `updateMoonDescriptor` (top of
+  recordCompute) rebinds binding 2 when the minimal sky is in use. Cost within noise (RTX 3070 Ti, 1600x900, a quarter
+  Moon filling the frame: GPU 7.7-8.1 ms old vs 7.6-7.8 new). Harness `state` -> `moon.libration_lon_deg / _lat_deg /
+  pole_pa_deg / sublunar_lat_deg / _lon_deg` (an observer beyond the Moon: `observer alt=6e8` off its axis; `harness_runs/moon/`).
 - **Its light follows the PHASE LAW (review 16):** `moonDirENU.w` is the Moon's light relative to full (Allen:
   V = V0 + 0.026 a + 4e-9 a^4, a = the phase angle; quarter 0.09, a 32% crescent 0.04), read by every moonlit term
   (clouds, ground, sky, halo, star/satellite dimming). It was the lit FRACTION, linear: a crescent lit the clouds and
