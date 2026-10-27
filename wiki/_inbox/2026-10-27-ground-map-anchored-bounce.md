@@ -29,4 +29,6 @@ the storm; ordinary cumulus scenes unchanged, cloud march within noise (13.34 ->
 The far sample at a fixed 1.6 x was inside a flat anvil base or under it by the sample's height alone: towers lit above
 one height and shadowed below, a straight band across a storm seen from near that height (issue 20261027_002051 shot 1);
 via S2 it read far clearer than the field and stepped in boxes moving with the eye. Still-view grain at a 3-km cumulus
-view rose 1.32 -> 1.79 (mean frame diff) with the jitter; cloud march within noise.
+view (6 frames 7 apart, two runs each): fixed far sample 0.53, jittered 0.53 / 0.56, before the change 0.40 / 0.60 mean
+frame-to-frame difference, i.e. within run-to-run noise (a first single-pair reading of 1.32 -> 1.79 was noise). Tried
+and dropped: two stratified far samples (grain no better, +0.3-1.0 ms), a narrower jitter (1.4-1.8 x).
