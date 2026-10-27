@@ -37,7 +37,26 @@ and the Sun's **true angular radius** \( \arcsin(R_\odot / r_\odot) \) with \( R
 eclipse is total or annular.
 
 The direction is geocentric: the Sun's parallax from the Earth's surface (at most 8.8 arcsec) is ignored,
-except in the eclipse limits below.
+except in the eclipse limits below. Near the horizon the drawn Sun is refracted, flattened and possibly mirrored by
+the air's profile at the eye; see [The Sun as an object](../rendering/refraction.md).
+
+### Sunspots
+
+The Sun carries bipolar active-region groups, a pure function of sim time so that time warp, reverse play and
+bookmarks see the same disc (`fillSunspots()`):
+
+- 48 slots, each a sequence of groups with its own cycle of 24-64 days. A group exists with a chance that follows
+  the 11-year solar cycle's activity (the same cycle that drives the space weather and the aurora); it lives 4 to 60
+  days (bigger groups longer), grows over its first ~12 % and decays over its second half.
+- Sizes are heavy-tailed: most groups are a few pores, a few are large, complex regions.
+- Each sits 6-32° from the solar equator in either hemisphere, tilted by **Joy's law** (the leader nearer the
+  equator, by about half the latitude), and is carried across the disc east to west by the Sun's **differential
+  rotation**, a synodic rate of \( 14.713 - 2.396\sin^2\varphi - 1.787\sin^4\varphi - 0.9856 \) °/day.
+- The Sun's Fury's flare region is a large delta group at 14° N that crosses the central meridian at the scenario's
+  X-class flare and stays on the disc for the two weeks around it ([Kessler syndrome](kessler.md)).
+
+The 16 largest groups on the visible side are sent to the sky pass, which draws them; see
+[The Sun as an object](../rendering/refraction.md#sunspots). The Sun's rotation axis is taken as the ecliptic pole.
 
 ## The Moon
 
@@ -82,10 +101,25 @@ totality and annularity happen at their real times.
 
 ### Orientation
 
-The Moon is tidally locked: its texture's facing axis points at the **Earth's centre**, not at the
-observer, so the face does not turn as the observer moves. Seen from the Earth's centre the same face
-always points back exactly: there is no optical libration, apart from the observer's own parallax. The far side, seen from deep space, is the near-side
-image flattened toward its mean.
+The Moon's body frame follows the IAU WGCCRE 2009 rotation model (Archinal et al. 2011, Table 2), evaluated in
+double each frame:
+
+\[
+\begin{aligned}
+\alpha_0 &= 269.9949^\circ + 0.0031^\circ\,T - 3.8787^\circ \sin E_1 - 0.1204^\circ \sin E_2 + \dots \\
+\delta_0 &= 66.5392^\circ + 0.0130^\circ\,T + 1.5419^\circ \cos E_1 + 0.0239^\circ \cos E_2 - \dots \\
+W &= 38.3213^\circ + 13.17635815^\circ\,d - 1.4\times10^{-12}\,d^2 + 3.5610^\circ \sin E_1 + 0.1208^\circ \sin E_2 - \dots
+\end{aligned}
+\]
+
+with the periodic arguments \(E_1 = 125.045^\circ - 0.0529921^\circ\,d\) through \(E_{13}\). \(\alpha_0, \delta_0\) give
+the north pole and \(W\) the prime meridian's angle. The model is in the ICRF, taken as the sim's inertial frame,
+which is of date: the roughly 0.5° of precession between the two by the 2030s is left out. Everything the face shows
+comes from it: the **optical libration** (up to about ±7.9° in longitude and ±6.7° in latitude as seen from the
+Earth's centre), the pole's position angle (the lunar pole lies
+near the ecliptic pole, so the face is tilted as it really is), the observer's own parallax, and the real far side
+seen from deep space. The drawn surface (albedo and relief maps) is on
+[Moon and eclipses](../rendering/moon-and-eclipses.md#the-moons-disc).
 
 ### Brightness: the phase law
 
@@ -97,8 +131,9 @@ The Moon's light relative to full Moon follows Allen's phase law,
 
 which is about 0.09 at quarter and 0.04 for a 32% crescent, far less than the lit fraction because of the
 lunar surface's opposition surge. This value drives the Moon's light on clouds, the ground, the sky and
-the star field. The lit **fraction** \( (1 - \hat{\mathbf{s}}\cdot\hat{\mathbf{m}})/2 \) is used for the
-disk's own shading.
+the star field. The drawn disc follows the same law at the viewer's own phase angle (which differs from the
+geocentric one from deep space), shaded with the Lommel-Seeliger law of the regolith; the lit **fraction**
+\( (1 - \hat{\mathbf{s}}\cdot\hat{\mathbf{m}})/2 \) remains only in its earthshine term and in the Planetarium tier's simpler shading.
 
 !!! note
     The satellites' moonlit-sky suppression in `sat_flare.comp` computes its own moon term from the lit
@@ -215,7 +250,8 @@ up to about a magnitude too faint when the rings are wide open. The phase angle 
 
 A planet's magnitude is converted to a relative flux \( 10^{-0.4V} \) and goes through the same sky,
 extinction, light-pollution and point-spread chain as a star (see
-[Seeing a satellite from the ground](visibility.md)), except that planets do not twinkle. Colours are
+[Seeing a satellite from the ground](visibility.md)), except that planets do not twinkle: their discs average
+the scintillation out, though their images still jitter with the turbulence. Colours are
 fixed tints (planets have no B−V index to derive them from); Mars is the only one that is distinctly
 coloured.
 
@@ -243,8 +279,17 @@ The Sun and the Moon are computed in the mean equinox **of date**; stars, the Mi
 planetary ecliptic are J2000. General precession is 50.3 arcsec per year, so in the 2030s the two frames
 differ by about 0.5 deg, mostly along the ecliptic. Star patterns are unaffected (they rotate together),
 but a star's position relative to the Sun, the Moon or the horizon is off by up to that amount. Nutation
-(up to 17 arcsec), stellar proper motion and annual aberration are also not applied, and there is no
-atmospheric refraction.
+(up to 17 arcsec), stellar proper motion and annual aberration are also not applied.
+
+## Atmospheric refraction
+
+Stars, planets and the Sun's disc are refracted by the air above the observer: within about 1.7° of the horizon
+each is placed at its **apparent** elevation from a table traced through the air's profile at the eye (a standard
+atmosphere, the surface layer over a warmer or cooler sea, sometimes an elevated inversion), so a star a little below
+the true horizon still shows and one below the apparent horizon does not. Higher up the refraction continues as
+Saemundsson's formula scaled to the table. The same table gives the turbulence that makes stars twinkle and their
+images jitter. Satellites and the Moon are not refracted. The model, its profile and the table are on
+[The Sun as an object](../rendering/refraction.md).
 
 ## Settings
 
@@ -258,7 +303,8 @@ atmospheric refraction.
 | File | Function / symbol |
 |---|---|
 | `src/simulations/SatPhotometry.cpp` | `sunDirEciAt()`, `sunDistAuAt()`, `moonGeoEciAt()` |
-| `src/simulations/SatelliteSim.cpp` | `updatePositions()` (Moon size, phase law, eclipse fractions, planets), `keplerEclipticPos()`, `planetApparentMagnitude()`, `kPlanetElements`, `kPlanetColor`, `discOverlapFrac()`, `findEclipse()`, `initStars()`, `updateStars()`, `updatePlanets()` |
+| `src/simulations/SatelliteSim.cpp` | `updatePositions()` (Moon size, phase law, the Moon's IAU body frame, eclipse fractions, planets), `keplerEclipticPos()`, `planetApparentMagnitude()`, `kPlanetElements`, `kPlanetColor`, `discOverlapFrac()`, `findEclipse()`, `initStars()`, `updateStars()`, `updatePlanets()` |
+| `src/simulations/SatelliteSimRefraction.cpp` | `fillSunspots()`, `refractEnu()` (stars and planets near the horizon) |
 | `shaders/include/eclipse.glsl` | `eclipseSunVis()`, `eclipseSkyLight()` |
 | `src/simulations/star_catalog.h` | the catalogue (generated) |
 | `tools/parse_bsc.py` | catalogue generator |

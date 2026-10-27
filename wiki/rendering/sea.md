@@ -79,6 +79,14 @@ against the land.
 with \( g \) = "Sea state from weather" (0 gives a constant sea). The amplitude scales by `seaState`, and the
 choppiness rises with it (`clamp((seaState - 1) x 1.2, -1.2, 2)`).
 
+**Tropical cyclones.** The CPU passes the two nearest cyclones (`cloud.seaCycA/B`: centre, radius of maximum wind,
+peak wind, reach). Their wind rises to the peak at the radius of maximum wind, falls as \( (r_\text{max}/r)^{0.6} \)
+beyond it, is calm in the eye and fades over the outer 40 % of the reach. The sea state there is at least
+\( \min((U / 9\,\text{m/s})^{1.3}, 5) \): a wind sea's height grows with \(U^2\), its slopes less, so a Category 3
+eyewall makes waves about five times the base sea, whitecapped, with surf on a coast it makes landfall on. Above
+about 20 m/s the wind also counts as rain for the [storm sea trails](#storm-sea-trails). The cyclones themselves are on
+[Tropical cyclones](../simulation/tropical-cyclones.md).
+
 The CPU keeps a mirror of this rule, `shipSeaState()`, for the swell the landing ships ride (heave, pitch and
 roll from three sinusoids of 6-14 s scaled by the sea state at the ship; see
 [Launch visuals](launch-visuals.md)). The CPU has no weather cube, so its storm term comes from the cloud map's
@@ -97,6 +105,27 @@ metres, from the same water map and coves (`tdShoreOffset()`) the land uses, so 
 - **The waterline is anti-aliased half from each side**: on the water side the colour blends toward wet sand
   over one pixel footprint; on the land side the beach blends toward a dark water albedo
   ([Beaches](cities.md#beaches)).
+
+## Storm surge
+
+A tropical cyclone's onshore wind piles the sea up on the coast to the right of its track (left in the southern
+hemisphere). The rise and the shoreline it moves are part of the shared height function, so the march, both depth
+passes, the observer's ground and the shore all agree; the model is on
+[Terrain](terrain.md#storm-surge). For the sea:
+
+- **Only the sea rises** (water at level 0 and sea-level water). Its surface stands at the surge's level, tapered
+  to zero from 0.45 to 0.95 of the water map's reach offshore, so the open ocean is drawn as before. A ray that
+  steps over that raised surface is re-intersected with the sphere at its level (`waterLevelM`), and the raised sea
+  is a "lake" hit for the march.
+- **Flooded land is shallow water.** Over land the surge has covered (`gSeaFlood`, fading out about 8 km offshore,
+  so the old coastline does not show as an outline from orbit), the waves are depth-limited (the depth falls from the
+  surge's level at the old coast to zero at the moved shore) and the water is muddy brown.
+- **No beach on a flood line**: `shoreSignedDist()` takes the moved shore, and the beach fades out where the shore
+  moved more than 30-150 m (`gShoreSurgeShift`).
+
+Gated by a uniform first (`cloud.surgeInfo.x`, no cyclone with a surge) and then by each storm's reach, so a frame
+far from a cyclone pays nothing. Over the open sea past 0.975 of the water map's reach the surge is not evaluated at
+all (the rise is zero there whatever the field). Not in `SKY_LITE` or `SKY_ENV`.
 
 ## Finding the wave surface
 
@@ -144,8 +173,8 @@ far sea.
 | Fresnel | \( \min((1 - n \cdot v)^3, 0.5) \) for the reflection weight |
 | Reflected direction | `reflect(dir, n)` tilted up by `0.12 x seaRough`, darkened by `1 - 0.45 seaRough` (half of the roughened lobe sees the next wave's water) |
 | Below-horizon facets | a steep facet mirrors the next wave, not the sky: the reflection falls to 0.2 x the horizon's light over a few degrees below it |
-| Sky reflection | its own atmosphere march along the reflected ray, "Refl samples" (6) samples on **u-squared spacing**. Uniform samples over a 1000 km grazing path overestimate extinction and turn the reflected horizon tan. |
-| Body | `kSeaBase x seaE` plus a forward-scatter term, where `seaE` is the Sun and sky irradiance on the sea (with the cloud shadow), like the foam. Mixed with the reflection by the Fresnel. |
+| Sky reflection | its own atmosphere march along the reflected ray, "Refl samples" (6) samples on **u-squared spacing**. Uniform samples over a 1000 km grazing path overestimate extinction and turn the reflected horizon tan. With the multiple-scattering sky model it takes the same multiple scattering and exact, ozone-bearing Sun path as the sky ([Atmosphere and sky](atmosphere-and-sky.md#media-and-the-suns-path)), so the reflected twilight matches the sky above it. |
+| Body | `kSeaBase x seaE` plus a forward-scatter term, where `seaE` is the Sun and sky irradiance on the sea (with the cloud shadow), like the foam. The sky part is the terrain's sky light ([Terrain](terrain.md#lighting)): the sky hemisphere's irradiance, through the cloud over the point. Mixed with the reflection by the Fresnel. |
 | Crest | a little water colour above the mean height, fading within about 300 m |
 | Moon glint | a Phong lobe (power 120) x the Moon's brightness, by night |
 
@@ -207,14 +236,34 @@ the reflected ray. Both are hidden behind reflected clouds and fade with the wav
 
 ### The Sun glint
 
-A Beckmann microfacet lobe, in the surface units (\( \pi L / E \)):
+A Beckmann microfacet lobe about the resolved wave normal, in the surface units (\( \pi L / E \)):
 
-\[ \sigma^2 = 0.003 + 0.00512\,W + 0.06\,\text{seaRoughFoot} + 2 \times 10^{-5}, \qquad W = 7\,\text{m/s} \times \text{seaState} \]
+\[ \sigma^2 = 0.003 + 0.00512\,W + 0.06\,\text{seaRoughFoot} + 2 \times 10^{-5}, \qquad W = 7\,\text{m/s} \times \text{clamp}(\text{seaState}, 0.2, 2.5) \]
 
 the Cox and Munk slope variance, plus the slope the footprint filter removed, plus the Sun's disc. Schlick
-Fresnel (F0 = 0.02), Smith masking (Walter's rational fit) for view and light, times the Sun's real
-transmittance (`sunTransMax`, since the tint is hue-normalised), capped at 400. Because the filtered slope
-widens the lobe instead of flattening it, the glitter path survives at every distance, from orbit included.
+Fresnel (F0 = 0.02) and Smith shadowing-masking (Walter's rational fit), times the Sun's real transmittance
+(`sunTransMax`, since the tint is hue-normalised) and "Sea glitter (Sun)" (3 by default; 1 is the physical lobe).
+The shadowing and masking are the **whole
+wave field's**, taken against the **mean** sea surface (the Cox-Munk glitter model, after Saunders), since the slope
+variance is the whole field's. Taken against the resolved wave normal instead, every back slope facing away from a
+low Sun would go black and the glitter shrink to lines along the crests. Because the filtered slope widens the lobe
+instead of flattening it, the glitter path survives at every distance, from orbit included.
+
+**Sparkles.** The lobe is a pixel's mean. A sea is millions of facets, and the few tilted right each mirror the
+Sun's whole disc, so where they cover a small share of the pixel the light arrives as flashes. In the full variants:
+
+- the facets' share of the pixel is \( f_s = \text{glint} / (F \cdot 1.8\times10^{5}) \) (the disc's radiance in
+  these units), and a pixel holds \( N = \max(150, (\text{footprint} / 0.3\,\text{m})^2) \) facets;
+- sparkles are 2 × 2-pixel cells: a cell lights with chance \( q = \operatorname{clamp}(4 f_s N, 0.02, 1) \), redrawn
+  six times a second of sim time by an integer hash of the cell and the time step;
+- 40 % of the glint stays the smooth path and 60 % rides in the sparkles, a lit cell carrying \(0.6/q\) of the mean
+  (up to 30 times it), so the energy is kept; the glint is capped at 4000;
+- from orbit a pixel covers millions of facets, \(q\) reaches 1 and the glint is its smooth mean.
+
+A lit sparkle where \(q < 0.5\) is flagged to the [sky TAA](atmosphere-and-sky.md#sky-taa) (alpha 0.6), which takes it whole instead
+of averaging it into the history: a real flash on the waves in a still view. The hash must be an integer hash: a
+`sin`-based hash of large arguments draws repeating diagonal streaks across the glint. `SKY_LITE` keeps the smooth
+lobe, capped at 400. The same physics for the Sun's own disc is on [The Sun as an object](refraction.md).
 
 ### Foam, whitecaps, surf and wet sand
 
@@ -253,11 +302,14 @@ Stored in `settings.json` under `clouds`. Ocean tab unless noted.
 | Far sea ripple | `ocean_far_ripple` | 1.7 | ripple strength in the far band |
 | Far sea ripple size (px) | `ocean_far_ripple_size` | 1.5 | ripple cell in along-view footprints (1.5-16); lower = finer, more shimmer |
 | Storm sea trails | `ocean_storm_trails` | 1 | how much history the sky TAA keeps on a raining, rough sea |
+| Sea glitter (Sun) | `ocean_sun_glitter` | 3 | x the Sun's glint, its path and its sparkles (0-20; 1 = the physical lobe) |
 | Sea warp | `ocean_warp` | 3.5 | the 430 m warp |
 | Sea warp detail | `ocean_warp_detail` | 1.2 | the 140 m warp |
 | Ocean flare refl | `ocean_glint_gain` | 0.02 | satellite glints on the water |
 | Flare refl floor | `ocean_glint_min_flux` | 37.9 | faintest satellite (effectFlare) that glints |
 | Ocean MW refl (Atmosphere tab) | `ocean_mw_refl_gain` | 0.4 | Milky Way in the sea |
+
+"Storm surge" (`clouds_v2.storm_surge`, default 1, 0-2, no UI row) scales the cyclones' surge; 0 turns it off.
 
 The graphics presets set the three sample counts (Planetarium and Potato: 3 / 5 / 3 and no ocean reflection,
 knockout bit 8; the others 3 / 5 / 6).
@@ -280,7 +332,9 @@ Harness `debugview`:
 
 | File | What |
 |---|---|
-| `shaders/sat_sky.frag` | `seaHeight()`, `seaMap()`, `seaMapDetail()`, `seaRippleLevel()`, `oceanSeaState()`, `shoreSignedDist()`, the ocean branch of `main()` |
+| `shaders/sat_sky.frag` | `seaHeight()`, `seaMap()`, `seaMapDetail()`, `seaRippleLevel()`, `oceanSeaState()`, `shoreSignedDist()`, the ocean branch of `main()` (glint, sparkles, flood water) |
+| `shaders/include/terrain_detail.glsl` | `tdSurgeAt()`, the surge in `tdDemAt()` |
+| `src/simulations/SatelliteSimWeather.cpp` | `weatherFillSeaParams()`: the nearest cyclones and their surge into `CloudParams` |
 | `shaders/sat_flare.comp` | the satellite ocean-glint list |
 | `shaders/sky_taa.comp` | the storm sea trails in the history blend |
 | `src/simulations/SatelliteSim.cpp` | the world offset and its wrap into `oceanState` |

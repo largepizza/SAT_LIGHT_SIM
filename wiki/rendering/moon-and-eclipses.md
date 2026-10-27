@@ -22,6 +22,8 @@ ride in the `CloudParams` UBO and the push constants:
 | `cloud.moonMisc.y` | UBO | 1 when a solar eclipse is possible this frame (the Moon within 2° of the Sun, geocentric) |
 | `cloud.moonMisc.z` | UBO | 1 when a lunar eclipse is possible (the Moon within 2.5° of the antisolar point) |
 | `cloud.moonMisc.w` | UBO | the Moon's distance, km |
+| `cloud.moonPole.xyz`, `cloud.moonPrime.xyz` | UBO | the Moon's body frame in the observer's ENU: its north pole and the direction of its prime meridian on the equator (the IAU rotation model, below) |
+| `cloud.moonPole.w`, `cloud.moonPrime.w` | UBO | "Moon relief" and "Moon shadows" |
 | `cloud.taaJitter.w` | UBO | the Sun's **true** angular radius (0.2624° in July to 0.2711° in January) |
 
 The Sun's true radius is what decides whether an eclipse is total or annular, so it is computed from the Sun's
@@ -38,17 +40,44 @@ Moon's direction. On a hit:
 - **Size.** The drawn radius is the true radius × "Moon size (x real)" (default 2.5: the true 0.5° is only a
   few pixels at a wide field of view). Within 1.5°-4° of the Sun the scale eases back to 1, so a solar eclipse's
   contacts, totality and annularity happen at their real geometry.
-- **Orientation: tidally locked.** The texture frame's z axis points at the **Earth's centre**
-  (`-moonCenter.xyz`), and its "up" is the celestial north pole in the observer's frame, so the face rotates
-  with the parallactic angle as the observer moves across the Earth, and from deep space or behind the Moon the
-  face turns away as it should. The surface normal is projected orthographically onto the face plane for the
-  texture UV, rotated 180° to align the image's north with the lunar north pole.
-- **The far side.** Seen only from space. The texture is the near side; mirrored through the face plane it
-  would show the familiar maria, which the far side lacks, so it is flattened 70 % toward its mean luminance.
-- **Shading.** Lambert on the Sun direction × the lit fraction, limb darkening \(0.35 + 0.65\sqrt{\mu}\),
-  and earthshine \(0.0008\,\mu\,(1 - f)\), strongest at new Moon when the Earth seen from the Moon is full.
+- **Orientation: the real rotation.** The surface point is turned into the Moon's body frame (`cloud.moonPrime`,
+  `moonPole`) and looked up by selenographic longitude and latitude. The body frame is the IAU WGCCRE 2009 rotation
+  model (Archinal et al. 2011: the pole's right ascension and declination and the prime meridian's angle, with the
+  periodic terms E1 to E13), computed on the CPU in double, in the ICRF taken as the sim's inertial frame. The optical
+  libration (about ±8° in longitude and ±7° in latitude), the pole's position angle (the lunar pole lies near the
+  ecliptic pole, not the celestial one) and the parallax of the observer's own position all come out of it, and from
+  deep space or behind the Moon the real far side shows.
+- **The map** (`assets/textures/moon_maps.rgba16f`, binding 2): an RGBA16F equirectangular mip chain, 2048 × 1024 at
+  level 0, in selenographic longitude and latitude. RGB is the albedo from the LROC WAC colour mosaic, A the height in
+  km from the LOLA elevation model (`ldem_16`). `tools/make_moon_maps.py` bakes it from the NASA SVS CGI Moon Kit
+  (cached in `build/moon_cache/`), scaling the albedo so the near side's face-on mean matches the photometry the
+  disc was tuned with. The file is `"SLMN"`, width, height and mip count (little-endian `uint32`), then the levels'
+  half floats, level 0 first; the app uploads it without decoding. If the file is missing, `createMoonMap()` spreads
+  the face-on `full_moon.png` over the near hemisphere instead. The level is chosen from the pixel's footprint on the sphere (explicitly: the longitude seam
+  would break derivatives).
+- **Relief.** The heights' gradient at that level tilts the normal, × "Moon relief" (× the LOLA heights; 0 is the
+  smooth sphere), faded in as the disc's radius passes 8 to 30 pixels.
+- **Cast shadows** ("Moon shadows"). Near the terminator, where the Sun is less than about 17° above the smooth
+  sphere and the disc is over 20 pixels in radius, `moonTerrainSunVis()` marches 14 steps toward the Sun over the
+  heightfield, growing geometrically from 1.5 texels of the pixel's level (reading coarser levels as the steps grow,
+  so nothing aliases), and takes the least elevation margin over the terrain against the Sun's angular radius: the
+  share of the Sun's disc a point sees. Crater floors and mountain shadows fill the terminator, and peaks past it
+  catch the light.
+- **Photometry: Lommel-Seeliger.** Regolith scatters as \( 2\mu_0 / (\mu_0 + \mu) \) (\(\mu_0\), \(\mu\) the cosines
+  to the Sun and to the eye on the tilted normal), not as Lambert: the full Moon is a flat disc and a half Moon is
+  bright up to its terminator. The disc's total light follows Allen's phase law at **this view's** phase angle
+  (`moonDirENU.w` is the geocentric one, which differs by up to 180° from beyond the Moon), divided by the
+  Lommel-Seeliger sphere's own integrated phase function, so the disc carries exactly the phase law's light; the
+  scale keeps the full Moon's total light. A constant 0.605 stands in for the limb darkening the photo carried.
+- **Earthshine** \(0.0008\,\mu\,(1 - f)\), with \(f\) the lit fraction: strongest at new Moon, when the Earth seen
+  from the Moon is full.
 - **Air.** The disc is attenuated by the camera-side Rayleigh and Mie column, like a surface.
 - **Occlusion.** Any terrain, sea or opaque cloud on the pixel's ray hides it.
+
+**Variants.** The environment probes (`SKY_ENV`) draw the map without relief or shadows. `SKY_LITE` (Planetarium)
+reads the map with the implicit level and keeps Lambert × the lit fraction with the limb darkening
+\(0.35 + 0.65\sqrt{\mu}\), within its size budget. Potato's `sat_sky_minimal.frag` keeps a face-on full-Moon photo:
+`updateMoonDescriptor()` rebinds binding 2 when the minimal sky is in use.
 
 **Glow.** After the tonemap the Moon adds a tight corona at the disc's edge and a wide diffuse halo, both scaled
 by the air the ray crosses, so neither appears above the atmosphere. See
@@ -94,7 +123,7 @@ everything the Sun lights.
 
 Near the Moon (centre separation below about 2°, eased between 0.02 and 0.035 rad) the Sun's disc changes:
 
-- it takes its **true** radius (it is normally drawn about 1.8 times larger for visibility);
+- it takes its **true** radius (it is normally drawn 1.5 times larger for visibility);
 - pixels on the Moon's disc hide it;
 - the glare lobes and the wide corona scale with `cloud.moonMisc.x`, the share of the Sun the observer sees;
 - at totality (weight \((1 - \text{share})^6\)) the **solar corona** is drawn around the Moon's black disc.
@@ -144,7 +173,8 @@ Every term lit by the Sun must take it, or that part of the scene stays at full 
 
 | Term | Where | Factor |
 |---|---|---|
-| sky in-scatter, per sample | `sat_sky.frag` atmosphere loop | direct + 2 × sky light |
+| sky in-scatter, per sample | `sat_sky.frag` atmosphere loop and `sky_ap.comp` | direct + 2 × sky light |
+| sky multiple scattering, per sample | the same | direct + 2 × sky light |
 | sky reflected in the sea | `sat_sky.frag` reflection march | direct + 2 × sky light |
 | land, direct sun | `sat_sky.frag` (`sunDiscVis`) | `moonSunVisible()` = direct |
 | sea, direct sun | `sat_sky.frag` (`directSun`) | direct |
@@ -165,8 +195,9 @@ None of these change the cloud march's register count; it stays at 128 (see
 `SatelliteSim::skyExposure()` multiplies its dayness by the sky light left at the observer
 (`moonEclipseSkyObs`, the 180-km blurred visibility), so it moves linearly toward the night exposure: at the
 umbra's few percent of sky light it is about twilight's. `skyExposure()` sets the exposure of the environment
-probes and the mesh bloom threshold. The sky pass's own exposure ramp in `sat_sky.frag` uses the Sun's elevation
-only; the point sources follow the global exposure (`globalExposureEV()`), which an eclipse does not change.
+probes and the mesh bloom threshold. The sky pass's own exposure ramp in `sat_sky.frag` applies the same factor
+(`cloud.moonMisc.y` carries 1 + the sky light left while an eclipse is possible), so the two agree; the point
+sources follow the global exposure (`globalExposureEV()`), which an eclipse does not change.
 
 ## The solar corona
 
@@ -195,18 +226,23 @@ only near totality and within 9 solar radii of the Sun (`kCoronaMaxR`), and scal
 | UI label (tab) | `settings.json` key | Default |
 |---|---|---|
 | Moon size (x real) (Photometry) | `clouds.moon_size` | 2.5 |
+| Moon relief (x LOLA heights) (Photometry) | `clouds.moon_relief` | 1 (0-4) |
+| Moon shadows (0/1) (Photometry) | `clouds.moon_shadows` | 1 |
 | Moon gain (Terrain): the moonlight's brightness on terrain and clouds | `clouds.moon_gain` | 0.0053 |
 
 The eclipse model has no settings; its constants (`kEclipseSkyBlurKm` 180, `kEclipseSideKm` 80,
 `kEclipseMultiScatter` 2, `kCoronaGain` 0.4) are in the shaders. The harness command `eclipse solar|lunar` jumps
-to the next eclipse and places the observer in it (see [Automation harness](../development/harness.md)).
+to the next eclipse and places the observer in it (see [Automation harness](../development/harness.md)). Harness
+`state` → `moon` reports the libration (`libration_lon_deg`, `libration_lat_deg`), the pole's position angle
+(`pole_pa_deg`) and the sublunar point (`sublunar_lat_deg`, `sublunar_lon_deg`).
 
 ## Where in the code
 
-- `shaders/sat_sky.frag`: the "Moon disc" block, `discOverlapFrac()`, `moonSunVisible()`, `solarCoronaAt()`,
-  the eclipse terms in the atmosphere loop and the Sun disc block.
+- `shaders/sat_sky.frag`: the "Moon disc" block, `moonMapUV()`, `moonTerrainSunVis()`, `discOverlapFrac()`,
+  `moonSunVisible()`, `solarCoronaAt()`, the eclipse terms in the atmosphere loop and the Sun disc block.
+- `tools/make_moon_maps.py`: the albedo and elevation map.
 - `shaders/include/eclipse.glsl`: `eclipseSunVis()`, `eclipseSkyLight()`.
 - `shaders/cloud_v2_march.comp`, `shaders/cloud_v2_far.comp`: the cloud and fog terms.
 - `shaders/star_point.vert`: the star cull behind the Moon.
-- `src/simulations/SatelliteSim.cpp`: the Moon block of `updatePositions()`, `skyExposure()`, the `CloudParams`
-  fill.
+- `src/simulations/SatelliteSim.cpp`: the Moon block of `updatePositions()` (the IAU body frame), `skyExposure()`,
+  the `CloudParams` fill, `createMoonMap()`, `updateMoonDescriptor()`.

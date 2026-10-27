@@ -4,7 +4,8 @@
 terrain, sea, satellite meshes, clouds, Sun, Moon, Milky Way and zodiacal light, tonemapped. It is also the
 **compositor**: it reads the results of every earlier pass and writes the unified depth that point sources are
 tested against. This page follows `main()` in order. Terrain, sea, clouds, aurora and the Moon have their own
-pages; here they appear only where the sky pass consumes them.
+pages, and the Sun's disc, refraction and mirages are on [The Sun as an object](refraction.md); here they appear
+only where the sky pass consumes them.
 
 ## Inputs
 
@@ -20,13 +21,14 @@ pages; here they appear only where the sky pass consumes them.
 | 10 / 11 | `cloud_march.comp` | `cloudTargetA` (cloud light, signed-km distance) / `cloudTargetB` (transmittance, ground shadow), ½ res |
 | 19 | `scene_depth.comp` | `sceneDepthTex`, ½ res, metres |
 | 20 | `sat_flare.comp` | the ocean-glint list |
-| 21 | CPU | Reflect-beam ground spots and solar park sites |
+| 21 | CPU | Reflect-beam ground spots, solar park sites, and the refraction table with the sunspots ([The Sun as an object](refraction.md)) |
 | 22 / 23 | mesh scene pass | mesh radiance / distance, full res (`imageLoad`) |
 | 26 | `scene_depth.comp` | `terrainFrame.x`, the eye's detailed ground height |
 | 29 | `cloud_v2_far.comp` | the far cloud layer, full res (`imageLoad`) |
-| 30 | `cloud_v2_lightning.comp` | the clouds' flash buffer: the Sun shadow cascade and shaft rings (god rays) |
+| 30 | cloud passes | the clouds' flash buffer: the Sun transmittance volume, the god-ray froxels, the multiple-scattering table \( \Psi \), the ground's sky-light table and the cloud cover map over the ground |
 | 31 | CPU | the clouds v2 UBO (`clouds_v2.glsl` with `CV2_PARAMS_ONLY`) |
-| 32 | CPU | the engine and floodlight list (the tail of the dust buffer), which the sea mirrors |
+| 32 | CPU | the dust list: wildfire smoke (for the Sun's light on the ground) and, at its tail, the engine and floodlight list the sea mirrors |
+| 33 | `sky_ap.comp` | the [aerial-perspective volume](#the-aerial-perspective-volume) |
 
 "½ res" means half of the render-scaled extent (see [Resolution scaling](#resolution-scaling)). The
 sampled-image bindings sit exactly at the Vulkan per-stage minimum of 16 (see
@@ -79,109 +81,207 @@ cloudB.rgb *= mix(1.0, T_far, farBlend);
   nearest real cloud. A far-layer share uses the far sphere's distance.
 - `tCloudFrontM` is the nearest real cloud, for the city glow split.
 
-## The atmosphere: single scattering
+The distance in the alpha already accounts for plumes. `cloud_march.comp` pulls it toward the light-weighted
+distance of every plume in front of the cloud (a tornado, a haboob wall, wildfire smoke, launch exhaust that no
+engine light reaches), by the plume's opacity there: an opaque funnel a few km away in front of rain or haze tens
+of km out must not have all the horizon haze in between laid over it. The smoke's distance is that of the plumes in front of the cloud
+(the opacity profile's first segment), never pulled nearer by the fog and dust haze in the resolved mean. Engine-lit
+exhaust is left out: the engine-light pass would light it a second time as cloud. See
+[Launch visuals](launch-visuals.md).
+
+## The atmosphere
 
 **Range.** From the ray's **entry** into the atmosphere (`tStart`, 0 from inside it) to
 `min(atmosphere exit, tSurface)`. The atmosphere is a shell 100 km thick (`R_ATMOS`). Starting at the entry
-matters from orbit, where nearly every step from the eye would fall in vacuum; measured at 2000 km it cut the
-sky pass from 16.5 ms to 4.9 ms with images within about 1/255.
+matters from orbit, where nearly every step from the eye would fall in vacuum and the few left in the air would
+undersample it.
 
-**Steps.** A uniform midpoint march whose step length is held at about \(100\,\text{km}/N_\text{min}\):
+**Two ways to integrate it.** Most pixels read the integral from the
+[aerial-perspective volume](#the-aerial-perspective-volume), computed once per screen tile by a compute pass. Within a
+band round the horizon and the Earth's limb, where the light changes too fast across a tile, the sky pass runs the
+same integral itself, per pixel, as described in the rest of this section.
+
+!!! warning "Invariant: one integral in two places"
+    `sky_ap.comp` duplicates the per-pixel loop of `sat_sky.frag` (the step rule, the media, the shadows, the god
+    rays, the eclipse, the city glow, the airglow). The two meet at the band's edge, so any change to one must be
+    made to the other, or a step appears round every horizon.
+
+### Steps
+
+A march whose step length is held at about \(100\,\text{km}/N_\text{min}\):
 
 \[
 N_\text{VIEW} = \operatorname{clamp}\!\left(\left\lceil \frac{t_\text{end} - t_\text{start}}{100\,\text{km} / N_\text{min}} \right\rceil,\ N_\text{min},\ N_\text{max}\right)
 \]
 
 A grazing ray therefore gets more steps than a steep one from the same altitude, instead of a coarser step.
-The Sun's column at each step comes from `optDepth()`, a midpoint march of `N_LIGHT` ("Light samples") steps
-to the atmosphere boundary.
 
-**Media.** Rayleigh with \(\beta_R = (5.8, 13.5, 33.1) \times 10^{-6}\,\text{m}^{-1}\), scale height 7994 m,
+Each step's densities are **integrated over the step**, not sampled at its middle: for a height that is linear from
+the step's start to its end, the mean of \( e^{-h/H} \) is exact (`atmHalfAvg3()`, one reciprocal for the three
+columns), and the step that holds the ray's lowest point (a ray from altitude dipping toward the horizon) is split at
+its middle. The step's light is attenuated by the camera column to the step's **middle**. With the default
+\(N_\text{min}\) = 6.5 (steps of about 15 km looking up), a midpoint sample of the Mie (1.2 km scale height) or the
+haze near clouds (2.5 km) would be off by up to fifty times, and since \(N_\text{VIEW}\) is a whole number that grows
+with the path, the error would jump every few degrees from the zenith: concentric rings round the zenith. Integrated,
+the sky has almost no step-count structure: the step count still changes, but the result does not.
+
+The step's start height and its exponentials are carried from the previous step's end, so each step costs one
+vector `exp`.
+
+### Media and the Sun's path
+
+Rayleigh with \(\beta_R = (5.8, 13.5, 33.1) \times 10^{-6}\,\text{m}^{-1}\), scale height 7994 m,
 phase \(\tfrac34(1+\cos^2\theta)\). Mie with \(\beta_M = 2.1 \times 10^{-5}\,\text{m}^{-1}\), scale height 1200 m,
-Cornette-Shanks phase with g = 0.26, and extinction 1.1 × scattering for aerosol absorption. Both coefficients
-are multiplied by the "Rayleigh gain" and "Mie/haze gain" sliders. The sky march has no ozone term (the
-clouds' sun path and the eclipse sky light do).
+Cornette-Shanks phase with g = 0.26, and extinction 1.1 × scattering for aerosol absorption. Both coefficients are
+multiplied by the "Rayleigh gain" and "Mie/haze gain" sliders.
 
-Per step, with \(\tau_\text{cam}\) the column back to the eye:
+**Haze near clouds.** Humid air under and around weather systems carries more aerosol. Below 12 km each step's Mie
+column gets an extra term, "Haze near clouds" × (0.25 + 0.75 × the weather cube's cover + 0.6 × its rain), with a
+2.5 km scale height, integrated over the step like the others. Aerosol scatters forward: with it a sunlit stretch
+between cloud shadows glows toward the Sun as a ray, where clean air would show only darker bands.
+
+**The Sun's path** to a sample is, with the multiple-scattering sky model (the default), exact: the Chapman Rayleigh
+and Mie columns plus **ozone** (`sunPathTauExact()`, `include/sky_atmos.glsl`). Ozone is a uniform layer from 15 to
+35 km with the Chappuis band's vertical optical depths 0.019 / 0.027 / 0.0016 at 680 / 550 / 440 nm, crossed for the
+ray's exact chord (`atmOzoneTau()`, `include/atmosphere.glsl`). A thin shell at 25 km times a secant would be
+infinite where a sample's Sun ray grazes it and draw a hard-edged ghost in the twilight sky; the chord through a
+layer stays finite. Every copy of the ozone model (the clouds' Sun table, the far cloud layer, the lightning pass)
+uses the same layer. With the single-scattering model the Sun's column comes from `optDepth()`, a midpoint march of
+"Light samples" steps without ozone.
+
+### Per step
+
+With \(\tau_\text{cam}\) the column back to the eye:
 
 - **Sunlit sample** (the Sun is not behind the Earth from it):
-  \( a = \exp(-[\beta_R(\tau^R_\text{cam} + \tau^R_\text{sun}) + 1.1\beta_M(\tau^M_\text{cam} + \tau^M_\text{sun})]) \),
-  accumulated into Rayleigh and Mie in-scatter weighted by the local densities, then multiplied by:
+  \( a = \exp(-[\beta_R(\tau^R_\text{cam} + \tau^R_\text{sun}) + 1.1\beta_M(\tau^M_\text{cam} + \tau^M_\text{sun})] - \tau_{O_3}) \),
+  (the ozone term with the multiple-scattering model only), accumulated into Rayleigh and Mie in-scatter weighted
+  by the step's integrated densities, then multiplied by:
     - the **orbital terminator gate**, above 40 km of eye altitude only, weighted by the sample's own
       geographic Sun elevation. It is a deliberate tone-mapping correction rather than physics: the twilight
       tail of the scattering integral is correct but survives the tonemap far more visibly than in orbital
       photographs. Daylit samples are untouched.
-    - the **clouds' shadow** ([god rays](#god-rays-the-clouds-shadows-on-the-air)), when the Sun shadow cascade
-      is on;
-    - the **cloud-hidden Sun**: `cloud.sunCloudT` (the eye's transmittance toward the Sun) for air below
-      8-14 km, within about 50 km along the ray and about 3 km of the eye's line to the Sun. One cumulus in
-      front of the Sun must not darken the whole sky, but under a storm the haze's forward peak must not draw
-      a bright Sun-shaped glow where the disc is hidden. This term gives way to the god rays as "God rays" rises
-      (× (1 − "God rays")), since the cascade shades the same air properly;
+    - the **god rays**: the shadow of clouds and terrain on the air (below);
+    - the **cloud-hidden Sun**, only while the god rays do not already shade the air: `cloud.sunCloudT` (the eye's
+      transmittance toward the Sun) for air below 8-14 km, within about 50 km along the ray and about 3 km of the
+      eye's line to the Sun. One cumulus in front of the Sun must not darken the whole sky, but under a storm the
+      haze's forward peak must not draw a bright Sun-shaped glow where the disc is hidden;
     - the **eclipse**: see [Moon and eclipses](moon-and-eclipses.md#the-sky-in-the-moons-shadow).
 - **The Earth's shadow, exactly.** Once per pixel the shader solves the interval of the view ray that lies inside
   the Earth's shadow cylinder (`tShA`, `tShB`, a quadratic), and each step takes the **sunlit share** of its
   length. Its Sun path is taken from the middle of the lit part. A test at each step's midpoint would make a step
   of 10-15 km lit or shadowed as a block, and near the horizon the first step holds almost all the haze, so at the
-  elevation where its midpoint left the shadow the sky would change brightness and colour in a hard band (a few
-  degrees above the horizon with the Sun just below it), and that band would be laid over every cloud in it
-  through the air split. The same exact share (`earthShadowSpan()`, `earthShadowLit()`) is used by every other
-  Earth-shadow integral in the shader: the zenith sky light (`skyZenithSky()`), the terrain's sky light, the flat
-  layers' twilight and the sea's sky reflection.
-- **The shadowed share** is accumulated as *shadowed air*. After the loop it is lit as isotropic in-scatter of
-  half the zenith sky's radiance at its density-weighted mean point (`skyZenithSky()`), faded over the first few
-  degrees of Sun depression there. Single scattering alone leaves the air beyond the terminator black, and the
-  horizon facing away from a just-set Sun would read as a dark band. Off from orbit, where the terminator gate owns
-  the twilight air.
+  elevation where its midpoint left the shadow the sky would change brightness and colour in a hard band, laid over
+  every cloud in it through the air split. The same exact share (`earthShadowSpan()`, `earthShadowLit()`) is used by
+  every other Earth-shadow integral in the shader: the zenith sky light (`skyZenithSky()`), the flat layers'
+  twilight and the sea's sky reflection.
+- **Multiple scattering** (the default sky model): each step adds
+  \( (\beta_R \rho_R + \beta_M \rho_M)\, \Psi_\text{ms}(h, \mu_\odot) \) attenuated by the camera column, where
+  \(\Psi_\text{ms}\) is Hillaire's (2020) multiple-scattering function: the light that sunlit air at height \(h\)
+  and Sun cosine \(\mu_\odot\) receives from all orders of scattering, per unit of scattering. It is the 32 × 32
+  table the clouds' sky-light bake already makes (`cloud_v2_sunlut.comp`, ground albedo "Ground albedo (sky light)"),
+  read from the flash buffer by `cv2SkyPsiAt()`. This is what lights the air in the Earth's and the clouds' shadow
+  and turns the twilight zenith blue-violet; during a solar eclipse it takes the eclipse's direct share and sky light.
+- **Single-scattering model**: the shadowed share is accumulated as *shadowed air* instead, and after the loop it is
+  lit as isotropic in-scatter of half the zenith sky's radiance at its density-weighted mean point
+  (`skyZenithSky()`), faded over the first few degrees of Sun depression there; off from orbit, where the terminator
+  gate owns the twilight air. Without it the air beyond the terminator is black and the horizon facing away from a
+  just-set Sun reads as a dark band.
 - **City glow**: the night map under the sample, attenuated toward the eye. From the ground and aircraft the
   map is read at mip 4 (about 80 km texels): a horizon glow gathers the light of a whole region. Air at height
   h is lit by the cities within a few h, so seen from high orbit (blended in over 800-3000 km of eye altitude)
   the mip follows the sample's height, \( \log_2(3h / 4.9\ \text{km}) \) clamped to 0-4 (about 1.5 at the
   8 km scale height): a town's glow is a halo the shape of the town rather than a disc some 150 km wide. Below
-  800 km a 10-20 km texel spans tens of pixels, and bilinear filtering would draw it as squares.
-- **Airglow**: the green (96 km) and sodium (90 km) bands, gated by the sample's own geographic night. The red
-  band is marched at half resolution in `cloud_march.comp`. See [Aurora and airglow](aurora-airglow.md).
-- **Front copies**: the share of each step in front of `tAirFrontM` also goes to separate "front"
-  accumulators, and the city glow in front of the nearest cloud to `accumCityFront`.
+  800 km a 10-20 km texel spans tens of pixels, and bilinear filtering would draw it as squares. Skipped while the
+  composite would multiply it by 0 (by day).
+- **Airglow**: the green (96 km) and sodium (90 km) bands, gated by the sample's own geographic night, with their
+  noise evaluated only between 62 and 130 km, where the profiles are not negligible. The red band is marched at half
+  resolution in `cloud_march.comp`. See [Aurora and airglow](aurora-airglow.md).
+- **The piece in front of the clouds.** The step the air split falls in is cut there. The piece in front takes its
+  own integrated density, its own share of the Earth's shadow and of the clouds' shadow (four god-ray reads of its
+  own), and reaches the eye through the air to the piece's own middle, not the step's. It goes to separate "front"
+  accumulators, as do whole steps in front of the split; the city glow in front of the nearest cloud goes to
+  `accumCityFront`. A step below the horizon is about 16 km long and one just above it up to 24 km, so a piece that
+  took the whole step's light or attenuation would be wrong by kilometres of low, hazy air: a light band along the
+  horizon across shaded clouds, or a dark line through a wall or funnel a few km away.
 
 After the loop:
 
 ```glsl
-color    = pR*βR*accumR + pM*βM*accumM + shadowed-air term + city dome + airglow + ...
-airFront = pR*βR*accumRF + pM*βM*accumMF + shadowed-air front term
+color    = SUN * (pR*βR*accumR + pM*βM*accumM) + multiple scattering (or the shadowed-air term) + city dome + airglow + ...
+airFront = SUN * (pR*βR*accumRF + pM*βM*accumMF) + the same terms for the front pieces
 cityGlowFront = (city glow in front of the nearest cloud) * smoothstep(40 km, 150 km, tCloudFront)
 ```
 
 `color` holds the air along the **whole** path to the surface, including the stretch in front of any cloud.
 
-### God rays: the clouds' shadows on the air
+### God rays: shadows on the air
 
 The air between the clouds is shaded by the same Sun shadow the clouds themselves take, so clouds and the air
-around them share one light. The clouds' lightning pass bakes the shadow as lattices of parallel rays toward the
-Sun: a **cascade** reaching about 205 km from the eye ("Far cloud shadow range"), and near the eye **shaft rings**
-of 250 m cells (see [The cloud march](clouds/march.md)). They reach the sky pass through binding 30 (the flash
-buffer) and 31 (the clouds v2 UBO), compiled in under `SKY_SUN_SHADOW` (every variant except `SKY_LITE` and the
-`SKY_ENV` probes and mirrors).
+around them share one light. The shadow is the clouds' **Sun transmittance volume** (four nested lattices of
+parallel rays toward the Sun, 250 m to 16 km cells, see [The cloud march](clouds/march.md)) times the terrain's own
+Sun-horizon map ("Terrain god rays"). The sky pass reads it in the full variants (`SKY_SUN_SHADOW`: every variant
+except `SKY_LITE` and the `SKY_ENV` probes and mirrors).
+
+**The froxel volume.** Rather than reading the lattices directly at every step of every pixel, the sky pass reads a
+froxel volume (`cloud_v2_froxel.comp`, "God-ray froxels", on by default): 320 × 180 screen tiles × 64 depths spaced
+logarithmically from 50 m to 400 km, filled each frame from the transmittance volume. Each froxel samples its own
+point in its cell, stepped each frame along an R-sequence (`cv2FroxJitter()`, two depths a froxel), and the sky pass
+reconstructs trilinearly from those same points (`cv2GodFroxT()`), so the [sky TAA](#sky-taa) averages successive
+frames into a smooth tent over each tile: shaft edges have no staircase and thin shafts do not alias. Without the
+sky TAA the samples sit at the cells' centres (four depths a froxel). With the froxels off the sky pass reads the
+transmittance volume and the terrain map directly (`cv2StvTFine()`, `cv2TerrSunTFine()`): exact per pixel, about
+20-25 ms a frame more at 1920 × 1009, which is what the HQ photo uses while it settles.
 
 Per atmosphere step:
 
-1. The cascade's transmittance is read at three points along the step (half a knot sunward of each) and
-   averaged. A step is 10 km or more and a storm's shadow a slab a few km deep, so one read per step would draw
-   its edge as bands.
-2. Over the step's first ~14 km, while the shaft rings are live, 24 jittered reads of the inner ring replace it,
-   weighted by the haze thinning with height along the ray, so the gaps between single clouds draw their own rays.
-3. The step's sunlight is scaled by \( 1 - k\,(1 - T) \), with \(k\) = "God rays" (0 to 1, how much of the shadow
-   the air takes). The shadowed share is added to the shadowed air, lit by the sky as the air in the Earth's shadow
-   is, so a storm's shadow is a blue-grey wedge, not a black one. The air split (`airFront`) takes it too, so the
-   haze in front of a cloud is shadowed exactly like the sky beside it.
+1. **Skip where nothing shades.** A step whose lowest point is more than 3 km above the transmittance volume's top
+   (and the terrain ceiling, 9.4 km), under a Sun above the sample's horizon, is in no shadow; its reads all return
+   1 and are skipped. Most of a horizon ray's steps run up there.
+2. **Reads.** "God ray reads" points along the step within 30 km of the eye (8 by default), half that beyond, at a
+   per-pixel and per-frame phase. Each read is weighted twice, by how the Rayleigh (7994 m) and the Mie and haze
+   (1500 m) columns thin along the step with height, giving one shadow share for each, so a step's shadow sits where
+   its air is. The weights are ray constants, computed once per pixel.
+3. **Shading.** The step's sunlight is scaled by \( 1 - k\,(1 - T) \), with \(k\) = "God rays" (0 to 1, how much of
+   the shadow the air takes). The shadowed air is lit by the sky like the air in the Earth's shadow (by multiple
+   scattering, or the shadowed-air term), so a storm's shadow is a blue-grey wedge, not a black one. The piece in
+   front of the clouds takes its own four reads in the same loop, so the haze in front of a cloud is shadowed like
+   the sky beside it.
 
-**Haze near clouds.** Humid air under and around weather systems carries more aerosol. Below 12 km the Mie density
-of each step gets an extra term, "Haze near clouds" × (0.25 + 0.75 × the weather cube's cover + 0.6 × its rain),
-with a 2.5 km scale height. Aerosol is what scatters forward: with it a sunlit stretch between cloud shadows glows
-toward the Sun as a ray, where clean air would show only darker bands.
+Looking down-Sun at sunset the shadows converge on the antisolar point (anticrepuscular rays).
 
-Looking down-Sun at sunset the shadows converge on the antisolar point (anticrepuscular rays). Cost: about
-0.7-1.0 ms of the sky pass at 1920 × 1009, more with a strong haze.
+### The aerial-perspective volume
+
+`shaders/sky_ap.comp` runs the atmosphere loop above **once per screen tile** instead of once per pixel, and stores
+its running sums at 48 depths along each tile's ray (`include/sky_ap.glsl`):
+
+- **Grid.** The god-ray froxels' tiles (320 × 180: about 6 pixels at 1920 wide) with their per-frame sample offset, so
+  the sky TAA averages the reconstruction. Depths are a **normalised** distance \( u = (t - t_\text{start}) / L \)
+  along the ray's path through the air (to the atmosphere's exit or the sea-level sphere), spaced logarithmically
+  from **both** ends (200 m from each end): fine near the eye for near surfaces, and fine near the end, where a ray
+  descending into dense air (from orbit, from an aircraft) gathers most of its light. A pixel maps its own distance
+  through its own ray's \(t_\text{start}\) and \(L\), so a sky pixel reads the last slice exactly.
+- **What is stored.** Per cell 12 half floats: the Rayleigh and Mie in-scatter, the light of the air in shadow
+  (multiple scattering or the shadowed-air term), the city glow, the camera's Rayleigh and Mie columns, and the
+  green and sodium airglow columns. The in-scatter, glow and columns are stored **per unit of the ray's own air
+  column** to that depth (`skyApNorm()`, the Chapman column of each species) and multiplied back by the pixel's own.
+  Raw sums grow like the path (as 1 / cos of the incidence near the limb), and a tile's bilinear blend of that
+  convex growth reads brighter than the pixel; per unit of air they vary slowly. The shadowed and multiply scattered
+  light is stored × 10⁴, since per unit of air it lies below a half float's normal range and would quantise to
+  contours.
+- **The pass.** One thread a tile, after the froxel pass. Its steps follow the slices, cut into sub-steps not longer
+  than the pixel loop's step; the god rays read the tile's own froxel column; the shadowed air's sky light is taken
+  at the shadow's mean point up to each slice. Cost about 0.3-0.7 ms on an RTX 3070 Ti at 1920 × 1009.
+- **The read.** The sky pass reads the sums trilinearly at the pixel's distance, at the air split (for the air in
+  front of the clouds) and at the nearest cloud (for the city glow's split).
+- **The band.** Within "Aerial perspective horizon band" (2°, at least 2.5 tiles) of the horizon or the Earth's limb
+  (and of the atmosphere's top seen from above it) the per-pixel loop runs. Over the band's outer part, from 2.5 tiles
+  out to its edge, the pixel computes both and cross-fades. The volume is the more accurate of the two (its slices
+  are finer than the loop's default steps), so a hard edge would be a visible step. Every term mixes across the
+  cross-fade, the shadowed air's sky light included.
+- **Off** above 1000 km of eye altitude (the loop then starts at the top of the atmosphere and is cheap; the pass
+  would cost more than it saves), on the light tiers, in the environment probes and mirrors, and in the HQ photo,
+  which runs the exact loop in every pixel. "Aerial perspective volume" at 0 runs the loop everywhere.
 
 ## Surfaces and pre-tonemap terms
 
@@ -274,11 +374,20 @@ In order, at the end of `main()`:
    out between 11.5° and 1° of Sun. A low Sun's colour is the look; adaptation is for a Sun well up, where
    without it every cloud reads beige. Near the horizon the sunlight's colour swings with altitude, and
    dividing by it would flip the same clouds gold to white as the observer climbs.
-2. **Tonemap.** With \(x = E \cdot c\):
+2. **Tonemap: AgX** (Troy Sobotka's, in Benjamin Wrensch's polynomial fit; `skyAgX()`). With \(x = E \cdot c\),
+   the colour is taken into an inset gamut (a matrix pulling the primaries inward), mapped by a log2 curve over
+   −12.5 to +4 EV about mid grey through a sixth-order polynomial, given a **look** (a power on the curve's output
+   for contrast, "AgX contrast"; saturation about the luminance, "AgX saturation"), and taken back out of the inset
+   gamut to display-linear for the sRGB swapchain. Highlights roll off to white **keeping their hue**. A
+   per-channel curve saturates each channel on its own, so bright orange skews yellow and sunlit cloud flattens to
+   paper white. Mid grey 0.18 maps to about 0.18, so the exposure keeps its meaning. A low Sun's disc stays a disc
+   in its glow, and a twilight band goes pinker rather than clipping to yellow.
+
+   With "Tonemap" at 0 the curve is the per-channel exponential
    \[ c' = \operatorname{mix}\!\left(1 - e^{-x},\ 1 - \frac{1}{1 + x + x^2/2},\ r\right) \]
-   where r is "Highlight roll-off". The second curve equals the first to second order (same toe and
-   midtones) but has a long shoulder: at x = 4 it is 0.92 against 0.98, so sunlit cloud and the sky around the
-   Sun keep their gradations.
+   where r is "Highlight roll-off" (read only by this curve). The second curve equals the first to second order
+   (same toe and midtones) but has a long shoulder. `SKY_LITE` and Potato always use this curve; the `SKY_ENV`
+   probes output HDR and are tonemapped by the view that shows them.
 3. **Orbit colour grade.** Weighted by "Orbit colour grade" × a ramp from 30 to 300 km of eye altitude, and
    per pixel by the Sun's elevation at the surface point (or the limb's tangent point), from −6° to +3°:
    \( g = \min(1.16\,c'^{2.2}, 1) \), desaturated 30 %. It applies only on the sunlit Earth: on the night side
@@ -323,15 +432,12 @@ wide diffuse halo, both scaled by the air the ray crosses so they vanish above t
 
 ### Sun disc, glare and corona
 
-Drawn when the Sun is above the limb (`limbZ`, the sine of the horizon's depression from the eye's altitude):
-
-- the **disc**, drawn about 1.8 times its true radius for visibility away from the Moon, with colour by
-  elevation;
-- three stacked **glare** lobes \(\cos^{1800}\), \(\cos^{320}\), \(\cos^{55}\) (σ ≈ 0.024, 0.056, 0.135 rad) that
-  bridge the disc to the dim wide **corona**; without them the disc steps straight down to the corona and reads
-  as a dark ring after the tonemap;
-- the whole term × `min(cloud transmittance, cloud.sunCloudT)` and hidden by any surface or opaque cloud on
-  the pixel's own ray (`sunGate`), including the wide corona.
+Drawn when the Sun is above the limb (`limbZ`, the sine of the horizon's depression from the eye's altitude). In
+the full variants the disc is drawn through the refraction table: flattened near the horizon, with mirages, a green
+rim and a boiling limb, at its physical radiance through each disc pixel's bent air column and the cloud composite,
+with limb darkening and sunspots. Three stacked glare lobes and a wide corona follow the light of the visible disc.
+All of that is on [The Sun as an object](refraction.md). The disc and its veil are hidden by any surface or opaque
+cloud on the pixel's own ray (`sunGate`) and scaled by `min(cloud transmittance, cloud.sunCloudT)`.
 
 Near the Moon the disc takes its true radius and is hidden under the Moon's disc, the glare and corona follow
 the visible share of the Sun, and at totality the solar corona is drawn. See
@@ -444,6 +550,17 @@ smear into trails like blown spray. The share fades out over 1-4 px of parallax 
 does not drag the clouds above the sea across the water. "Storm sea trails" at 0 turns this off. See
 [The sea](sea.md#storm-sea-trails).
 
+Two more marks on the sea. A **Sun-glint sparkle** the sea drew on purpose (alpha 0.6) is taken whole rather than
+averaged into the history, where a lone flash would come out about ten times dimmer. Any other lone sea spark while
+the eye moves (a glint on a sub-pixel wave facet caught by one jitter phase) is capped at the 3 × 3's second-largest
+luma, since in motion the history does not average it away.
+
+**Things that move on their own.** Reprojection assumes a static world, and satellite meshes and plume or flame
+light have no motion vectors. `sat_sky.frag` marks them (alpha 0.875: a mesh pixel, or a composite texel flagged as
+emissive), and the resolve stores their depth negated so the next frame knows where they were
+(`taa_depth_restore.frag` takes the absolute value). Wherever the 3 × 3 or the history's 2 × 2 holds one, the still
+view's exemptions (no clip, the widened depth test) are off, so a moving rocket leaves no trail.
+
 **Unjittered city lights.** City lights are pixel-sized points that their inputs switch on and off (the night map
 near zero at a city's fringe, the terrain contour, the glitter pattern), so under the jitter a light could be lit
 in only one or two phases. Where the unjittered ray meets the ground at more than about 12° (\(|\cos| > 0.2\)),
@@ -529,14 +646,23 @@ mirror-smooth pixel of the current instance; its view direction is the reflected
 | Zodiacal width (deg) (Atmosphere) | `clouds.zodiacal_width_deg` | 10 |
 | Orbit colour grade (Atmosphere) | `clouds.orbit_grade` | 1.0 |
 | Exposure (EV) (Photometry) | `clouds_v2.exposure_ev` | 0 |
-| Highlight roll-off (Photometry) | `clouds_v2.highlight_rolloff` | 0.5 |
+| Tonemap (0 exponential / 1 AgX) (Photometry) | `clouds_v2.tonemap` | 1 |
+| AgX saturation (Photometry) | `clouds_v2.tonemap_saturation` | 1.15 |
+| AgX contrast (Photometry) | `clouds_v2.tonemap_contrast` | 1.15 |
+| Highlight roll-off (Photometry; the exponential curve only) | `clouds_v2.highlight_rolloff` | 1.0 |
 | Auto exposure (day) (Photometry) | `clouds_v2.auto_exposure` | 1.0 |
 | White balance (Photometry) | `clouds_v2.white_balance` | 0.6 |
 | Extinction (Photometry) | `photometry.extinction_coeff` | 0.18 |
-| God rays (Clouds) | `clouds_v2.godrays` | 1.0 (0-1) |
-| Haze near clouds (Clouds) | `clouds_v2.haze_aloft` | 1.9 |
-| Far cloud shadows (0/1) (Clouds) | `clouds_v2.sun_cascade` | 1 |
-| Far cloud shadow range (km) (Clouds) | `clouds_v2.sun_cascade_range_km` | 205 |
+| Sky model (0 single / 1 multi-scatter + ozone) (Clouds) | `clouds_v2.sky_multiple_scattering` | 1 |
+| Ground albedo (sky light) (Clouds) | `clouds_v2.sky_ground_albedo` | 0.25 |
+| God rays (Weather) | `clouds_v2.godrays` | 1.0 (0-1) |
+| Terrain god rays (0/1) (Weather) | `clouds_v2.terrain_godrays` | 1 |
+| Haze near clouds (Weather) | `clouds_v2.haze_aloft` | 1.9 |
+| God-ray froxels (0/1) (Weather, Rebuild experiments) | `clouds_v2.godray_froxels` | 1 |
+| God ray reads (near, 8 = full) (Weather, Rebuild experiments) | `clouds_v2.godray_reads` | 8 (2-8; 4 saves 0.5-1.1 ms of the sky pass) |
+| Aerial perspective volume (0/1) (Weather, Rebuild experiments) | `clouds_v2.sky_ap` | 1 |
+| Aerial perspective horizon band (deg) (Weather, Rebuild experiments) | `clouds_v2.sky_ap_band_deg` | 2 |
+| (no UI) the loop's step multiplier inside the band | `clouds_v2.sky_ap_band_steps` | 1 |
 | Temporal anti-aliasing (Display) | `display.sky_taa` | on |
 | (no UI) | `display.sky_taa_weight` / `display.sky_taa_weight_moving` | 0.1 / 0.35 |
 | Render scale (Display) | `display.render_scale` | 1.0 (the preset sets it) |
@@ -549,11 +675,19 @@ The graphics presets override the sample counts and render scale; see
 
 ## Where in the code
 
-- `shaders/sat_sky.frag`: `main()`, `optDepth()`, `skyZenithSky()`, `earthShadowSpan()`, `earthShadowLit()`,
-  `evalCloudLayer()`, `lensFlare()`, `solarCoronaAt()`.
-- `shaders/include/cloud_lightning.glsl`: `cv2SunCascT()`, `cv2SunShaftT()` (the god rays' lattice reads).
+- `shaders/sat_sky.frag`: `main()`, `skyAgX()`, `evalCloudLayer()`, `lensFlare()`, `solarCoronaAt()`.
+- `shaders/include/sky_atmos.glsl`: `atmHalfAvg3()`, `optDepth()`, `sunPathTauExact()`, `earthShadowSpan()`,
+  `earthShadowLit()`, `skyZenithSky()` (shared by the sky pass and `sky_ap.comp`).
+- `shaders/sky_ap.comp`, `shaders/include/sky_ap.glsl`: the aerial-perspective volume (`skyApSlice()`,
+  `skyApNorm()`, `skyApRead()`).
+- `shaders/include/cloud_lightning.glsl`: `cv2FroxJitter()`, `cv2GodFroxT()`, `cv2StvTFine()`, `cv2TerrSunTFine()`
+  (the god rays), `cv2SkyPsiAt()` (multiple scattering); `shaders/cloud_v2_froxel.comp` fills the froxels and
+  `shaders/cloud_v2_sunlut.comp` bakes \(\Psi\).
 - `shaders/sky_taa.comp`, `shaders/taa_depth_restore.frag`, `shaders/taa_fullscreen.vert`.
-- `shaders/include/darksky.glsl`, `shaders/include/atmosphere.glsl`, `shaders/include/common.glsl`.
+- `shaders/include/darksky.glsl`, `shaders/include/atmosphere.glsl` (`atmColumn()`, `atmOzoneTau()`),
+  `shaders/include/common.glsl`.
+- `src/simulations/SatelliteSimCloudsV2.cpp`: the froxel and aerial-perspective dispatches in `recordCloudsV2()`,
+  `ensureSkyAp()`.
 - `src/simulations/SatelliteSim.cpp`: `buildSkyDrawPC()`, the `CloudParams` fill in `recordCompute()`,
   `recordPrePass()`, `recordSkyTaa()`, `skyTaaWanted()`, `skyTaaInExtent()`, `computeHalfExtent()`,
   `recreateComputeScaledTargets()`, `updateDynamicResolution()`, `readExposureMeter()`, `skyExposure()`,
