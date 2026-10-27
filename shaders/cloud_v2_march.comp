@@ -203,7 +203,7 @@ void lightAmbOD(vec3 rel, vec3 ldir, vec3 up, float eyeH, mat3 enuToEcef, int nL
         // Each step at its OWN offset (golden-ratio steps from the shared jitter, 2026-10-14): one offset for all of them
         // moved every sample forward or back together, and their errors added (raw std 26.5 -> 18.8 levels alone).
         vec3  off = (k < nL) ? ldir * (s + ((lodN && k + 1 < nL) ? lSeg * (1.0 + kLightRatio) : lSeg) * fract(jitter + 0.6180340 * float(k)))
-                  : (k == nL) ? ldir * (cv2.light.x * 1.6)
+                  : (k == nL) ? ldir * (cv2.light.x * (1.2 + 0.8 * fract(jitter + 0.4142136)))
                   : (k == nL + 1) ? up * 250.0
                   : (k <= nL + 4) ? bdir * (sb + sg * 0.5)
                   : ldir * (-cv2.ms.w * ((k == nL + 5) ? 0.25 * fract(jitter + 0.3819660) : 0.25 + 0.75 * fract(jitter + 0.7639320)));
@@ -215,10 +215,18 @@ void lightAmbOD(vec3 rel, vec3 ldir, vec3 up, float eyeH, mat3 enuToEcef, int nL
         CV2Field lf;
         float mC;
         // (And the march away from the light, nL + 5..6: in a storm each field read there walks the towers and shields.)
-        if (cv2.cdcC.x > 0.5 && ((k >= 2 && k <= nL) || k >= nL + 5)
+        // The far sample is jittered over the interval it stands for (1.2 .. 2.0 x the march's length, 2026-10-27): at a
+        // fixed 1.6 x it was inside a flat anvil base or under it by chance of the sample's height, a lit / shadowed step
+        // at one height across a storm (seen edge-on from near that height, a straight band).
+        // NOT the far sample (k == nL, 2 km at 1.6 x the march's length; 2026-10-27, issue 20261027_002051): in a storm the
+        // cells' moments there read far clearer than the field (towers' far shadows gone), and where S2 held it and where
+        // it fell back to the field (the clipmap's levels, unbaked cells) the clouds' light stepped: a lit band with a
+        // straight edge at the clipmap's z cells across the storm and box-shaped shadows, moving with the eye.
+        if (cv2.cdcC.x > 0.5 && ((k >= 2 && k < nL) || k >= nL + 5)
             && cv2CdcMeanAt(rel + off, R_EARTH + eyeH,
                             (k < nL) ? ((lodN && k + 1 < nL) ? lSeg * (1.0 + kLightRatio) : lSeg)
-                            : (k == nL) ? cv2.light.x * 0.8 : cv2.ms.w * ((k == nL + 5) ? 0.25 : 0.75), mC)) {
+                            : (k == nL) ? cv2.light.x * 0.8 : cv2.ms.w * ((k == nL + 5) ? 0.25 : 0.75),
+                            fract(jitter + 0.7548777 * float(k) + 0.31), mC)) {
             lf.sigma = mC; lf.thin = 0.0; lf.soft = 0.0;
         } else
             lf = cv2Field(cv2Pos(rel + off, eyeH, enuToEcef), k < 2 ? detailAmt : 0.0, fpFar);

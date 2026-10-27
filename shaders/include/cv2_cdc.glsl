@@ -74,7 +74,11 @@ int cv2CdcLevel(vec3 rel, float eyeR)
 // when the cell is valid (S2). The cell's mean and variance of the light extinction e give the gamma model
 // E[exp(-L e)] = (1 + L var / mean)^(-mean^2 / var) (the layer shadow map's): exp(-L mean) of a cell holding cloud and
 // gaps is darker than the mean transmittance the point samples converge to (Jensen; s2 runs: -1..-18 levels).
-bool cv2CdcMeanAt(vec3 rel, float eyeR, float L, out float m)
+// u (0..1, a per-step dither): over the outer 40% of the last level S2 reads (kCv2CdcFadeQ) the cell means give way to
+// the field stochastically (2026-10-27, issue 20261027_002051: the moments and the point samples differ by many levels in a
+// storm, and the hard switch at that level's reach drew a box round the eye in the clouds' light, moving with it; the
+// history averages the dither into a ramp).
+bool cv2CdcMeanAt(vec3 rel, float eyeR, float L, float u, out float m)
 {
     m = 0.0;
     vec3  d  = vec3(rel.xy, rel.z + eyeR);
@@ -86,8 +90,9 @@ bool cv2CdcMeanAt(vec3 rel, float eyeR, float L, out float m)
     vec2  uv = vec2(dot(d, cv2.layE.xyz), dot(d, cv2.layN.xyz)) * (kCv2CdcR / dA);
     vec2  du = abs(uv - cv2.cdcA.xy);
     int   lv = int(ceil(log2(max(max(du.x, du.y) / (cv2.cdcA.z * float(kCv2CdcN / 2 - 2)), 1.0))));
-    if (lv >= min(kCv2CdcL, int(cv2.cdcB.w))) return false;
-    if (lv >= int(cv2.cdcC.y)) return false;   // only the finest levels (cdc_light_levels): see the bake
+    int   lvM = min(min(kCv2CdcL, int(cv2.cdcB.w)), int(cv2.cdcC.y));   // only the finest levels (cdc_light_levels)
+    if (lv >= lvM) return false;
+    if (lv == lvM - 1 && u < smoothstep(0.6, 1.0, max(du.x, du.y) / (cv2CdcCell(lv) * float(kCv2CdcN / 2 - 2)))) return false;
     // TRILINEAR between the 8 nearest cell centres (2026-10-22, issue 20261022_175215 "blend the voxels"): the moments
     // (mean and mean square) are linear, so they interpolate exactly and the gamma model takes the result. One cell read
     // drew a caster's shadow with the cells' faces: a flat-topped, vertical-sided grey box on a cumulus, its edges the
@@ -95,24 +100,36 @@ bool cv2CdcMeanAt(vec3 rel, float eyeR, float L, out float m)
     vec3  g  = vec3(uv / cv2CdcCell(lv), h / kCv2CdcDZ) - 0.5;
     ivec3 c0 = ivec3(floor(g));
     vec3  fr = g - vec3(c0);
-    float s1 = 0.0, s2 = 0.0;
+    // A corner not baked yet (its stamp) drops out and the rest are renormalised; the field takes the point with the
+    // missing share's chance (u): all-or-nothing, a cell region still waiting for its bake drew the field's light as a box
+    // inside the moments' (2026-10-27, issue 20261027_002051).
+    float s1 = 0.0, s2 = 0.0, wk = 0.0;
     [[dont_unroll]] for (int k = 0; k < 8; ++k) {
         ivec3 o  = ivec3(k & 1, (k >> 1) & 1, k >> 2);
         ivec3 c  = c0 + o;
         c.z = clamp(c.z, 0, kCv2CdcNZ - 1);
         int   ci = cv2CdcIndex(c, lv);
-        if ((cv2CdcData[ci] >> 16u) != cv2CdcStamp(c, lv)) return false;
         vec3  wv = mix(1.0 - fr, fr, vec3(o));
-        float w  = wv.x * wv.y * wv.z;
+        float w  = ((cv2CdcData[ci] >> 16u) == cv2CdcStamp(c, lv)) ? wv.x * wv.y * wv.z : 0.0;
         s1 += w * float(cv2CdcData[kCv2CdcTotal + ci]);
         s2 += w * float(cv2CdcData[2 * kCv2CdcTotal + ci]);
+        wk += w;
     }
+    if (wk <= 1e-4 || wk < 1.0 - u) return false;
+    s1 /= wk; s2 /= wk;
     float n  = cv2.cdcA.w > 1.5 ? 36.0 : 9.0;
     float mu = s1 / (kCv2CdcMeanQ * n);
     float m2 = s2 / (kCv2CdcMeanQ * n);
     float va = max(m2 - mu * mu, 0.0);
     if (mu <= 1e-9) return true;
-    m = (va <= 1e-6 * mu * mu) ? mu : (mu * mu / va) * log(1.0 + L * va / mu) / L;
+    // The gamma model over at most a cell's length (2026-10-27, issue 20261027_002051): the cell's variance is of points
+    // within it, and a path longer than the cell crosses cells that are not independent draws of it (a tower is cloud for
+    // kilometres). Over the light march's far sample (0.8 x its 2.5-km length) E[exp(-L e)] of a broken tower cell was
+    // most of the way to clear: the far shadow of every tower vanished where S2 held the far sample and stayed where the
+    // field did, a lit / shadowed edge at the clipmap's z cells and levels across the storm (the "odd band").
+    // -ln(E[exp(-Lc e)]) / Lc for independent cells of length Lc along the path.
+    float Lc = min(L, max(cv2CdcCell(lv), kCv2CdcDZ));
+    m = (va <= 1e-6 * mu * mu) ? mu : (mu * mu / va) * log(1.0 + Lc * va / mu) / Lc;
     return true;
 }
 bool cv2CdcEmpty(vec3 rel, float eyeR)
