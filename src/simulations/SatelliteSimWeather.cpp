@@ -607,7 +607,7 @@ void SatelliteSim::updateStorms()
     auto *dst = reinterpret_cast<GpuStormTower *>(static_cast<char *>(stormMapped) + kStormTowersOffset);
     stormEntries.clear();      // (key, tower) pairs, towers strongest first
     stormGpuTowers.resize(nT);
-    parallelEntries(stormCatalog.get(), nT, 4096u, stormEntries, [&](uint32_t i, std::vector<StormEntry> &ents) {
+    parallelEntries(stormCatalog.get(), nT, tight ? 384u : 4096u, stormEntries, [&](uint32_t i, std::vector<StormEntry> &ents) {
         const wx::Tower &tw = stormTowers[i];
         const glm::dvec3 d = glm::normalize(tw.dir);
         const glm::dvec3 east = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), d) + glm::dvec3(1e-12, 0, 0));
@@ -678,7 +678,7 @@ void SatelliteSim::updateStorms()
         auto *sdst = reinterpret_cast<GpuStormShield *>(static_cast<char *>(stormMapped) + kShieldsOffset);
         stormGpuShields.resize(nS);
         shieldEntries.clear();
-        parallelEntries(stormCatalog.get(), nS, 4096u, shieldEntries, [&](uint32_t i, std::vector<StormEntry> &ents) {
+        parallelEntries(stormCatalog.get(), nS, tight ? 384u : 4096u, shieldEntries, [&](uint32_t i, std::vector<StormEntry> &ents) {
             const wx::Shield &s = stormShields[i];
             GpuStormShield g;
             g.a = glm::vec4(glm::vec3(s.a), s.strength);
