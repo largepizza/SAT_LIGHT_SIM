@@ -305,6 +305,10 @@ struct ParcelOpts
     double buoy = 0.0;     // upward acceleration (m/s^2), fading over buoyS
     double buoyS = 60.0;
     double sig0 = 8.0;     // starting radius (m)
+    // (2026-10-26, issue 20261026_210053) dispersal by turbulence and shear: d(sigma)/dt += richK x sigma^(1/3)
+    // (Richardson's 4/3 law, m^(2/3)/s), so an old trail keeps widening (sigma^(2/3) grows linearly with age) and its
+    // optical depth falls as 1 / sigma^2: it is a wide, faint sheet long before it is removed.
+    double richK = 0.0;
 };
 struct Parcel
 {

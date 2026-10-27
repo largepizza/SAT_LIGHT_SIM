@@ -8875,6 +8875,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         launchPlumeWidth = settingClamp(lj.value("plume_width", launchPlumeWidth), 0.05f, 20.0f);
         launchPlumeBillows = settingClamp(lj.value("plume_billows", launchPlumeBillows), 0.0f, 10.0f);
         launchPlumeGrowth = settingClamp(lj.value("plume_growth", launchPlumeGrowth), 0.0f, 20.0f);
+        launchPlumeDispersal = settingClamp(lj.value("plume_dispersal", launchPlumeDispersal), 0.0f, 20.0f);
         launchGroundCloudGain = settingClamp(lj.value("ground_cloud_gain", launchGroundCloudGain), 0.0f, 100.0f);
         launchAfterStorm = settingClamp(lj.value("after_storm", launchAfterStorm), 0, 1);
         launchPadGraphics = lj.value("pad_graphics", launchPadGraphics);
@@ -9845,6 +9846,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
                      {"plume_width", launchPlumeWidth},
                      {"plume_billows", launchPlumeBillows},
                      {"plume_growth", launchPlumeGrowth},
+                     {"plume_dispersal", launchPlumeDispersal},
                      {"ground_cloud_gain", launchGroundCloudGain},
                      {"after_storm", launchAfterStorm},
                      {"pad_graphics", launchPadGraphics},
