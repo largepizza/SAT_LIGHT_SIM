@@ -2545,6 +2545,9 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
 
 // Diagnostics only (harness `launch jitter`): build records and drift the old way, for a before / after comparison.
 static inline bool gLegacyRecords = false;
+// launchOrbitElems: the CPU's elements exact at the current sim time (default; harness `launch exact off` = the
+// written record, for an A/B).
+static inline bool gExactElems = true;
 // Diagnostics only (harness `launch formation ... before=1`): each formation member on its own raise schedule, as
 // before 2026-10-20.
 static inline bool gPerMemberRaise = false;
@@ -6017,6 +6020,26 @@ void SatelliteSim::launchUpdate(VulkanContext &ctx, VkCommandBuffer cmd)
             --budget;
         return true;
     };
+    if (on && LaunchImpl::gExactElems)
+    {
+        // (2026-10-26, issue 20261026_205544) The members drawn as meshes last frame first, every frame: a record is a
+        // Kepler orbit and the path leaves it (the climb's ramp, the ease from free flight into the slot's path: up to
+        // ~0.05 m/s^2), and under time warp the 1200-a-frame budget lets records age 30 s (1 min/s) to 250 s (5 min/s)
+        // of sim time — 14 m to 940 m off — so a mesh's own point, bloom and glare left it and snapped back at each
+        // rewrite. The mesh itself is placed from the exact path (launchOrbitElems).
+        for (uint32_t slot : meshLaunchSlots)
+        {
+            if (slot >= L.slots.size())
+                continue;
+            const SlotInfo &si = L.slots[slot];
+            if (!si.live || !si.shown || si.owner == 0 || si.tw == t)
+                continue;
+            auto it = L.batches.find(si.owner / 2);
+            if (it == L.batches.end() || si.m >= it->second.mem.size())
+                continue;
+            writeMember(it->second, (int)(si.owner % 2), si.m, slot);
+        }
+    }
     if (on)
     {
         // A batch's records are rewritten together, when due: never written, 20 s of sim time since, or a retiree's
@@ -6240,11 +6263,39 @@ uint64_t SatelliteSim::launchSlotOwner(uint32_t slot, uint32_t &m) const
     return si.live ? si.owner : 0;
 }
 
+// A launch record's elements on the CPU (meshes, follow, the selection's readouts). (2026-10-26, issue 20261026_205544)
+// For a train member or a retiree they are its OSCULATING orbit at the current sim time, rebuilt from its exact path
+// (memberRecord), not the record last written: that is a Kepler orbit, and the path (CW free flight eased into its
+// own, the climb's ramp, the fall) leaves it between the rewrites — every 2 s / 20 s of SIM time, i.e. 3-30 times a
+// second of wall time at 1 min/s, so the meshes up close jumped at every rewrite. The GPU's point keeps the written
+// record (sub-pixel at any range it is drawn as a point).
 SatOrbitElems SatelliteSim::launchOrbitElems(uint32_t slot) const
 {
     if (!launchState || slot >= launchState->elems.size())
         return SatOrbitElems{};
-    return launchState->elems[slot];
+    const LaunchState &L = *launchState;
+    if (LaunchImpl::gExactElems && slot < L.slots.size())
+    {
+        const SlotInfo &si = L.slots[slot];
+        if (si.live && si.owner != 0)
+        {
+            auto it = L.batches.find(si.owner / 2);
+            if (it != L.batches.end() && si.m < it->second.mem.size())
+            {
+                const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+                GpuKepOrbit g{};
+                SatOrbitElems ce{};
+                if (LaunchImpl::memberRecord(*this, it->second, it->second.mem[si.m], (int)(si.owner % 2), t, t, g, ce))
+                    return ce;
+            }
+        }
+    }
+    return L.elems[slot];
+}
+
+void SatelliteSim::launchExactElems(bool on)
+{
+    LaunchImpl::gExactElems = on;
 }
 
 std::string SatelliteSim::launchLabel(uint32_t slot) const
@@ -9037,6 +9088,57 @@ nlohmann::json SatelliteSim::launchJitterJson(int maxBatches)
         j[legacy ? "before" : "after"] = out;
     }
     LaunchImpl::gLegacyRecords = keepLegacy;
+    // (2026-10-26, issue 20261026_205544) The live slots NOW: each record's position (what the GPU's point and, until
+    // then, the mesh drew) against the member's exact path, by the time since the record was written — the jump the
+    // next rewrite makes — and what the CPU places a mesh at (launchOrbitElems).
+    {
+        const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        double maxRec = 0.0, sumRec = 0.0, maxAge = 0.0, maxMesh = 0.0, meshSlotRec = 0.0;
+        size_t n = 0, nMeshSlots = 0;
+        nlohmann::json byAge = nlohmann::json::object();
+        double binMax[6] = {0, 0, 0, 0, 0, 0};
+        size_t binN[6] = {0, 0, 0, 0, 0, 0};
+        static const char *kBin[6] = {"lt2s", "2_10s", "10_30s", "30_120s", "120_600s", "gt600s"};
+        for (uint32_t s = 0; s < (uint32_t)L.slots.size(); ++s)
+        {
+            const SlotInfo &si = L.slots[s];
+            if (!si.shown || !si.live || si.owner == 0)
+                continue;
+            auto it = L.batches.find(si.owner / 2);
+            if (it == L.batches.end() || si.m >= it->second.mem.size())
+                continue;
+            glm::dvec3 r, v;
+            if (!LaunchImpl::memberState(*this, it->second, it->second.mem[si.m], (int)(si.owner % 2), t, r, v))
+                continue;
+            const double dRec = glm::length(satOrbitStateAt(L.elems[s], t).posEci - r);
+            const double dMesh = glm::length(satOrbitStateAt(launchOrbitElems(s), t).posEci - r);
+            const double age = t - si.tw;
+            if (std::find(meshLaunchSlots.begin(), meshLaunchSlots.end(), s) != meshLaunchSlots.end())
+            {
+                meshSlotRec = std::max(meshSlotRec, dRec);
+                ++nMeshSlots;
+            }
+            const int b =age < 2.0 ? 0 : age < 10.0 ? 1 : age < 30.0 ? 2 : age < 120.0 ? 3 : age < 600.0 ? 4 : 5;
+            binMax[b] = std::max(binMax[b], dRec);
+            ++binN[b];
+            maxRec = std::max(maxRec, dRec);
+            maxMesh = std::max(maxMesh, dMesh);
+            maxAge = std::max(maxAge, age);
+            sumRec += dRec;
+            ++n;
+        }
+        for (int b = 0; b < 6; ++b)
+            byAge[kBin[b]] = {{"slots", binN[b]}, {"record_err_m_max", binMax[b]}};
+        j["live"] = {{"slots", n},
+                     {"record_err_m_max", maxRec},
+                     {"record_err_m_mean", n ? sumRec / n : 0.0},
+                     {"mesh_err_m_max", maxMesh},
+                     {"meshed_slots", nMeshSlots},
+                     {"meshed_record_err_m_max", meshSlotRec},
+                     {"record_age_s_max", maxAge},
+                     {"by_age", byAge},
+                     {"writes_total", L.nWrites}};
+    }
     return j;
 }
 

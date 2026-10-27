@@ -5731,7 +5731,18 @@ launches follow per-program cadences (no real manifest).
   float Kepler) and reports the jump at each: before (`launch legacy on` rebuilds the old records in the app) 7-290 m
   CPU / 80-300 m GPU mean, after 0.003-0.1 m CPU / ~1.3 m GPU (the float angle's floor, ~3 m at 7e6 m); in the app at
   10x a member's screen motion's second difference fell from 2.4 px max (0.37 mean) to 0.011 px.
-  `SatOrbit::launchSlot` -> `launchOrbitElems` for the CPU mirror (parity 0.8 m). 8-slot chunks per batch and kind.
+  `SatOrbit::launchSlot` -> `launchOrbitElems` for the CPU mirror. 8-slot chunks per batch and kind.
+  **The CPU never draws from the written record (2026-10-26, issue 20261026_205544: "the 3D foreground sats jump at
+  regular intervals" at 1 min/s):** a record is a Kepler orbit and the path is not one (the climb's ramp, the ease from
+  free flight into the slot's path: up to ~0.05 m/s^2 of "thrust"), and under time warp the 1200-a-frame budget lets
+  ~32k live records age 20-40 s of sim time at 1 min/s, 130-255 s at 5 min/s: harness `launch jitter` -> `live`
+  measured them 10-43 m and 260-1700 m off their path (`record_err_m_max`), each snapping back at its rewrite — every
+  1/3-2/3 s of wall time at 1 min/s, i.e. a mesh 60 m away jumped ~10 px. `launchOrbitElems` now rebuilds a live
+  member's elements at the CURRENT sim time from its exact path (`memberRecord` at t: osculating there, `mesh_err_m_max`
+  0.0009 m at every warp), so meshes, Go to, Track and the readouts follow the path; and the slots recordMeshScene drew
+  as meshes last frame (`meshLaunchSlots`) get their GPU record rewritten EVERY frame ahead of the round-robin (<= 256),
+  so a mesh's own point / bloom / glare stays on it (`meshed_record_err_m_max` 0.0008 m). Far points keep the old
+  cadence (a 1-km error at 300 km is ~2 px from a wide view: open). `launch exact off` restores the old behaviour (A/B).
   **Never assume `satOrbits.size() == activeSatCount + kPool.size()`** or that indices past the roster are debris:
   per-constellation scans run over `activeSatCount`; empty launch entries have `constIdx = UINT32_MAX`.
 - **Rockets** (`rocketPos`): the booster's whole flight is a 2D track (downrange along the ground azimuth, altitude:
