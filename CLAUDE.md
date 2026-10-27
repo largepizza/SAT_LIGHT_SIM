@@ -1967,7 +1967,9 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   updateStorms makes every face stale each frame and the worst-first pick took face 0 every time, freezing the other five
   until the warp stopped. GPU within noise at 1 h/s from orbit (29.95 vs 29.88 ms). `clouds_v2.weather_one_face` (no UI)
   restores the old schedule (A/B); harness `state` -> `weather.cube` (rebakes, all_six_bakes, face_lag_s, tick_s, and
-  since 2026-10-25 the bake's own GPU timestamps: bake_ms, bake_faces, bake_ms_per_face).
+  since 2026-10-25 the bake's own GPU timestamps: bake_ms, bake_faces, bake_ms_per_face; since 2026-10-27 rect_bake,
+  rect_bakes, env_job_ms). **In time warp a face in view bakes its fine levels only over the rectangle the eye can see**
+  (2026-10-27, `weatherViewRect`; GPU Performance Profiling "Weather perf pass 2").
   **Resolution and tick (2026-10-25, the user: overlooking a hurricane from space, "the square cells update and move in a
   blocky manner", clouds jumping):**
   - **2048 faces, ~5 km** (`kCv2WeatherFace`, 9 mips): the finest level matches the 8K source map. Every OTHER read names
@@ -8407,6 +8409,46 @@ ground (`storms go kind=super dist_km=35 alt=300`), the Maritime Continent storm
 - **What remains:** the storm CLOUD (the eyewall's towers ~6.7 ms from 12 km, the CDO / anvils 3-4 ms, the cirrus band the
   eye is inside), the cluster's shield loop (~1.8 ms by the probe at 128 bins: the group's longest bin, not the mean, sets
   it), the bake's map reads at warp (~4-5 ms a frame at 1 h/s).
+
+**Weather perf pass 2 (2026-10-27, same machine and method; views: the hurricane eye from 12 km and from 30 m, and from
+420 km, `time j2000 1164300000` then `storms go cyclone=strongest`; look checks = the same 40-frame 1 h/s run from one
+moment, variants A B A B, with `clouds_v2.auto_exposure false`: the first run of a batch drifts from the rest).**
+- **Kept: the visible-rectangle bake at warp** (`weatherViewRect`, `recordWeatherEvolution`; `clouds_v2.weather_rect_bake`
+  true, `weather_rect_levels` 5, `weather_rect_max_share` 0.5, `weather_rect_margin_deg` 12, no UI). In time warp (the
+  all-six path) a face in view bakes its levels of 128+ texels a side (0-4) only over the eye's cap projected onto the
+  face: the eye's horizon + 12 deg (the cloud tops beyond the horizon, the flow's and evolution's displacements, the Sun
+  volume's and the lightning lattice's reach), padded 16 + N/64 texels (coarser levels 2 texels: every level is read
+  filtered); levels under 128 and a face whose rectangle is over half of it bake whole. A face's visible part is due by
+  `max(cv2WxRectT, cv2WxBakedT)` when the new rectangle lies inside the last one, else by `cv2WxBakedT`; its remainder is
+  due at the out-of-view rate and takes the frame's ONE full bake in turn with the faces out of view (the most behind).
+  Outside time warp (slices) nothing changes. The shader takes a first column (`wx.w`, the PC's unused w) as it took a
+  first row. Bake GPU time a frame (state `weather.cube.bake_ms`, 3 reps): 12-km eye 3.38 -> 1.70 ms, sea level 2.79 ->
+  1.89, 420 km 5.78 -> 4.26; 5 min/s unchanged (~1.5, the quota bakes ~one face a frame either way). Look: A-B pairs 0.21 /
+  0.27 / 0.62 levels against A-A 0.53 / 0.87 / 0.93 (eye, eye with levels 0-4, toward the limb from 420 km; heatmaps alike).
+  `weather_rect_max_share` 0.9 was no better (orbit 3.60 -> 4.29 ms: more faces as rectangles crowd the one full bake).
+- **Kept: the bake's envelope index off the main thread** (`clouds_v2.storm_env_async` true, no UI). After a frame that
+  baked in time warp (`cv2WxLastAllSix`) and took the volumetric path (`stormsMainPathLast`), `updateStorms` runs at the top
+  of `recordCompute`, right after the frame's sim time is final (it reads only that and the settings; recordCloudsV2 then
+  skips its own call), and `buildStormEnvIndex` starts on threads of its own (`ownThreadEntries`: half the hardware
+  threads, the same chunks joined in order; NOT the storm pool, which the main thread uses later in the frame:
+  `Pool::run` is not reentrant), joined in `recordScreenshotCopy` before the frame's uploads (also at the top of
+  updateStorms, before a new job, and in `destroyStormBuffer`); the mirror ranges are marked at the join. Same data in the
+  same order. 12-km eye at 1 h/s: main-thread `record_compute` 5.26 / 5.43 -> 4.47 / 4.71 ms, the join waits 0.003 ms;
+  the job itself 1.2-1.35 ms (state `weather.cube.env_job_ms`). Started where recordWeatherEvolution decides to bake (the
+  first cut) it overlapped only the frame's last ~1.5 ms and the join waited ~1.1 ms (no gain).
+- **Tried and dropped:** (1) `fillStormIndex` hashing each entry once and writing its GPU table slot by slot instead of a
+  1 MB copy: env.towerIndex 0.60 -> 0.68 ms (noise; the cost is not the copy or the second hash). (2) Prewarming the next
+  year's cyclone seasons on a worker: no effect measured — at the warps that cross a year in practice the storm update
+  does no work (`updateStorms` 0.001 ms at 1 d/s), and the seasons a jump needs (~2.3 ms on the frame, with the
+  catalog's new bins ~5.5) cannot be predicted. Note the year index is t / 365.2422 days from J2000: it turns on a
+  different hour every year (2030 -> 2031 at 2030-12-31 ~12:12 UTC in sim time), and the default start already caches
+  y +- 1.
+- **Hitches** near the cyclone (12 km, threshold 50): 1x / 1 min/s / 1 h/s max 42 / 51 / 49 ms, every frame over 50 the
+  GPU (`app.wait_fence` 45 ms); a 1 d jump and a jump to another year at 1x: max 51 ms.
+- **Remaining:** the bake's one full face a frame at warp (~1.35 ms: the faces out of view and the in-view faces'
+  remainders, which nothing on screen reads), the eye view's storm cloud (content: the eyewall towers, CDO and cirrus), the
+  warp's `march_a` without the clipmap (+2-4 ms at 5 min/s and 1 h/s vs 1x: the clipmap is off above `cdc_max_rate`, its
+  cells would expire faster than the budget bakes them), the main thread's `updateStorms` ~1 ms a frame.
 
 ---
 
