@@ -5446,7 +5446,7 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   layout: roster words, deployment era, launch block, records), and the old buffers are destroyed two frames later
   (`kRetired`, `kesslerRetireTick` after the fence). Every record already up stays up and the launch block is kept
   (`kesslerBufGen` is not bumped). It was `vkDeviceWaitIdle` + a synchronous roster upload + every record re-sent:
-  20-30 ms, ~4 times a session. Restarts and the init still take the synchronous path. The worker's output is
+  20-30 ms, ~4 times a session. Restarts and the init still take the synchronous path. **(2026-10-27) Nothing in a growth waits:** the five sets binding the pool's buffers are swapped for fresh copies (`swapSatRosterDescriptors`, their own pool, retired a few frames later) — the in-place update drained both frames in flight, 24-62 ms at 1 d/s after the CME (the allocation itself is 0.5-2.6 ms) — and the sync stops at the first record past the capacity while the buffers made ahead are not ready (`kesslerGrowReady`: sim time holds at the frontier; `kessler state` -> `grow_holds`). The worker's output is
   mirrored within `kSyncBudgetMs` (3 ms) a frame, all of it: pool changes, then roster changes, events and small-
   fragment streams in pieces of 4096 with a look at the clock after each, resuming where it stopped
   (`SyncBatch::rdNext / evNext / stNext`; the batch's frontier is taken only once it is all in, so sim time holds
@@ -8450,7 +8450,7 @@ moment, variants A B A B, with `clouds_v2.auto_exposure false`: the first run of
   threads, the same chunks joined in order; NOT the storm pool, which the main thread uses later in the frame:
   `Pool::run` is not reentrant), joined in `recordScreenshotCopy` before the frame's uploads (also at the top of
   updateStorms, before a new job, and in `destroyStormBuffer`); the mirror ranges are marked at the join. Same data in the
-  same order. 12-km eye at 1 h/s: main-thread `record_compute` 5.26 / 5.43 -> 4.47 / 4.71 ms, the join waits 0.003 ms;
+  same order. 12-km eye at 1 h/s: main-thread `record_compute` 5.26 / 5.43 -> 4.47 / 4.71 ms, the join waits 0.003 ms (since 2026-10-27 at most 1 ms, `kStormEnvJoinWaitMs`, a spin: hitch_check D saw 11.7 ms at 1 mo/s; a job still running then is joined by the next updateStorms, the frame's bake reads the previous index, and that next frame starts no job, `stormEnvHoldFrame`; `weather.cube.env_late`);
   the job itself 1.2-1.35 ms (state `weather.cube.env_job_ms`). Started where recordWeatherEvolution decides to bake (the
   first cut) it overlapped only the frame's last ~1.5 ms and the join waited ~1.1 ms (no gain).
 - **Tried and dropped:** (1) `fillStormIndex` hashing each entry once and writing its GPU table slot by slot instead of a
