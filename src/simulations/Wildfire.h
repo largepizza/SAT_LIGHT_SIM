@@ -52,6 +52,10 @@ double fireFrontRadiusK(const Fire &f, const FireState &s, double a);
 // long gaps (re-drawn over ~1.5 h, nothing between runs), with a few isolated flare-ups off the arc; 0 where the
 // ground there cannot burn (bio: the biome map's fuel less its built-up mask: lakes, towns, bare desert). 0..~1.5.
 double fireFrontHeat(const Fire &f, const FireState &s, double a, double t, const BiomeMap *bio = nullptr);
+// The share of the front's heat on ground that can burn now (0..1; the smoke and the flames are x it): a fire whose
+// front has run into a town, the sea or bare ground is out though its state still burns (2026-10-27: the Weather
+// window and the harness ranked such fires first and framed a fire with no smoke or flames).
+double fireBurningShare(const Fire &f, const FireState &s, double t, const BiomeMap &bio);
 // The lat / lon of a point x, y metres east / north of the ignition point.
 void fireOffsetLatLon(const Fire &f, const glm::dvec2 &q, double &latDeg, double &lonDeg);
 // The flames: their height (m) and the depth of the flaming zone (m) at a front heat of 1.

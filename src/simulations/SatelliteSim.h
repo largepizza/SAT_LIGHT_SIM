@@ -5194,12 +5194,14 @@ private:
     float haboobGain = 1.0f;          // clouds_v2.haboobs: x the dust walls (0 = none)
     int haboobsNow = 0;               // storms drawing one this frame
     double haboobNearestKm = -1.0;
-    // (towers: the towers to build it from; nullptr = this frame's, stormTowers)
+    // (towers: the towers to build it from; nullptr = this frame's, stormTowers. lagCat: the catalog the lingering
+    // outflow's past towers come from; nullptr = the main catalog when towers is nullptr, else none)
     void haboobFrontOf(const wx::Storm &S, double t, std::vector<HaboobPoint> &pts,
-                       const std::vector<wx::Tower> *towers = nullptr) const;
+                       const std::vector<wx::Tower> *towers = nullptr, wx::Catalog *lagCat = nullptr) const;
     double haboobPointK(const HaboobPoint &q) const;   // the dust raised there: the biome map's dust x the front's strength x gain
-    // The haboob of storm S at t: the front point with the most dust (false: none drawn). Builds the storm's towers itself.
-    bool haboobStrongestPoint(const wx::Storm &S, double t, HaboobPoint &best, double &bestK) const;
+    // The haboob of storm S at t: the front point with the most dust (false: none drawn). Builds the storm's towers
+    // itself, from cat (nullptr = the main catalog; the Weather window's forward search passes its scout).
+    bool haboobStrongestPoint(const wx::Storm &S, double t, HaboobPoint &best, double &bestK, wx::Catalog *cat = nullptr) const;
     // The Sun on a haboob's face at an Earth-fixed point, clear of its storm's anvil (0..1), and the storm's parts for it.
     double haboobSunOnFace(const glm::dvec3 &pE, double t, const std::vector<wx::Tower> &tw,
                            const std::vector<wx::Shield> &sh) const;

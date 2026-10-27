@@ -674,8 +674,14 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
             // the low trail and the ground clouds); the sky light diffusely; the engine lights with the light multiple
             // scattering they were tuned with. Per GAUSSIAN (2026-10-26: was of the whole stack along the ray, which the
             // depth segments below no longer sum).
+            // The Sun's and the sky's multiple scattering is the STACK's along the ray (2026-10-27), as before the unified
+            // composite: each Gaussian takes its share of x ms(x) at the running optical depth x (summed: tauP ms(tauP)). Per
+            // Gaussian alone, a smoke pall of hundreds of thin pieces (tau ~0.01-0.1 each, ~1+ stacked) lost most of its light
+            // and with clouds in view the smoke all but vanished. The engine lights keep theirs per Gaussian.
             float msI0 = 0.075 * (1.0 - exp(-0.6 * tau));
-            float msI  = msI0 + 0.17 * (1.0 - exp(-0.25 * tau * tau));
+            float xa   = tauP - tau, xb = tauP;   // (tauP already holds this Gaussian)
+            float msI  = (xb * (0.075 * (1.0 - exp(-0.6 * xb)) + 0.17 * (1.0 - exp(-0.25 * xb * xb))) -
+                          xa * (0.075 * (1.0 - exp(-0.6 * xa)) + 0.17 * (1.0 - exp(-0.25 * xa * xa)))) / max(tau, 1e-9);
             vec3  LiP  = lpI * (phaseP + msI) + lfI * (1.0 / (4.0 * PI) + msI) + lpeI * (1.0 / (4.0 * PI) + msI0);
             // The caller dims a segment's plume light by the cloud's opacity at the SEGMENT's middle (kSegXm); in rain the
             // segments are km long (half opacity a few hundred m out, the last contact tens of km), so a funnel 1 km away

@@ -4564,6 +4564,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             {
                 const double m = momentOf(g);
                 if (m < 0.0) continue;
+                // (a fire whose front has run onto ground that cannot burn makes no smoke or flames: skip it)
+                if (wx::fireBurningShare(g, wx::fireStateAt(g, m), m, biomeMap) < 0.4) continue;
                 if (seen++ == want) { f = g; tPick = m; break; }
             }
             if (tPick < 0.0) fail("fires go: no fire burns at that local time");
@@ -4691,6 +4693,31 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             if (!wxFeat[kFeatHaboob].found) fail("haboob: none found in the search's window (48 h)");
             std::string msg;
             r["in_min"] = (wxFeat[kFeatHaboob].tEvent - ((double)simDayJ2000 * 86400.0 + simSecInDay)) / 60.0;
+            {
+                // (diagnostics: the front the Watch reads at the event's moment)
+                const WxFeatured &F = wxFeat[kFeatHaboob];
+                const double tE = std::max(F.tEvent, (double)simDayJ2000 * 86400.0 + simSecInDay);
+                std::vector<wx::Tower> tw;
+                std::vector<wx::Shield> shl;
+                haboobStormParts(*stormCatalog, F.storm, tE, tw, shl);
+                std::vector<HaboobPoint> pts;
+                haboobFrontOf(F.storm, tE, pts, &tw, stormCatalog.get());
+                double maxDust = 0.0, maxS = 0.0, maxK = 0.0;
+                int nOn = 0;
+                auto latOf = [](const glm::dvec3 &e) { return glm::degrees(std::asin(std::clamp(e.z, -1.0, 1.0))); };
+                auto lonOf = [](const glm::dvec3 &e) { return glm::degrees(std::atan2(e.y, e.x)); };
+                for (const HaboobPoint &q : pts)
+                {
+                    const double d = biomeMap.dustAt(latOf(q.dir), lonOf(q.dir));
+                    maxDust = std::max(maxDust, d);
+                    maxS = std::max(maxS, q.strength);
+                    maxK = std::max(maxK, haboobPointK(q));
+                    nOn += haboobPointK(q) >= 0.08 ? 1 : 0;
+                }
+                r["diag"] = {{"towers", tw.size()}, {"points", pts.size()}, {"max_dust", maxDust}, {"max_strength", maxS},
+                             {"max_k", maxK}, {"points_k_ok", nOn}, {"kind", wx::stormKindName(F.storm.kind)},
+                             {"age_h", (tE - F.storm.t0) / 3600.0}, {"lat", latOf(F.earth)}, {"lon", lonOf(F.earth)}};
+            }
             if (!weatherFeaturedAct(kFeatHaboob, c.num("aloft", 0.0) > 0.0 ? 1 : 0, msg)) fail("haboob: " + msg);
             r["message"] = msg;
             return Status::Done;

@@ -43,10 +43,12 @@ double hbNoise1(double x, uint64_t seed)
 // The gust front points of one storm now (Earth-fixed unit directions, the front's local tangent and outward
 // direction, and the local strength 0..1). Empty when the storm has no mature tower.
 void SatelliteSim::haboobFrontOf(const wx::Storm &S, double t, std::vector<HaboobPoint> &pts,
-                                 const std::vector<wx::Tower> *towers) const
+                                 const std::vector<wx::Tower> *towers, wx::Catalog *lagCat) const
 {
     pts.clear();
-    const double ph = cloudDriftPhase(), cph = std::cos(ph), sph = std::sin(ph);
+    // (the map's drift at t, not now: the Weather window's forward search builds fronts hours ahead, 2026-10-27)
+    const double ph = (double)cloudDriftRate * (t - kCloudDriftEpochS) + cloudDriftPhaseOffset;
+    const double cph = std::cos(ph), sph = std::sin(ph);
     auto toE = [&](const glm::dvec3 &m) { return glm::dvec3(m.x * cph + m.y * sph, -m.x * sph + m.y * cph, m.z); };
     const double sp = glm::length(S.vel);
     const glm::dvec3 nAx = sp > 1e-9 ? glm::normalize(glm::cross(S.pos0, S.vel)) : glm::dvec3(0, 0, 1);
@@ -69,9 +71,11 @@ void SatelliteSim::haboobFrontOf(const wx::Storm &S, double t, std::vector<Haboo
     // The outflow outlives its towers (2026-10-26, issue 20261026_192211: "when they are done, they just disappear"): the
     // cold pool keeps spreading and the dust settles over the better part of an hour after a cell collapses. The towers
     // of 15 / 30 / 45 min ago, carried forward with the storm, feed the front too, their strength decaying to nothing an
-    // hour on; a tower still there keeps the larger of the two. A pure function of t (the catalog's closed form), main
-    // catalog only (the scout passes its own towers).
-    if (!towers && stormCatalog)
+    // hour on; a tower still there keeps the larger of the two. A pure function of t (the catalog's closed form), from
+    // the main catalog for this frame's towers, else the catalog the caller names (the Watch and the Weather window's
+    // search pass theirs: without the lagged towers their front was weaker than the one drawn, 2026-10-27).
+    wx::Catalog *lc = towers ? lagCat : stormCatalog.get();
+    if (lc)
     {
         // Lagged towers only SUSTAIN the current ones (a match within 15 km keeps the larger strength); when the storm has
         // none left, the latest lag that had towers stands in for them on its own (mixed in as extra sources they made a
@@ -83,7 +87,7 @@ void SatelliteSim::haboobFrontOf(const wx::Storm &S, double t, std::vector<Haboo
         {
             const double lag = 900.0 * k;
             past.clear();
-            stormCatalog->towersAt(t - lag, one, past);
+            lc->towersAt(t - lag, one, past);
             const glm::dvec3 moved = c - glm::normalize(S.centreAt(t - lag));
             const double decay = 1.0 - glm::smoothstep(0.0, 2700.0, lag);
             bool used = false;
@@ -394,15 +398,16 @@ void SatelliteSim::haboobStormParts(wx::Catalog &cat, const wx::Storm &S, double
     cat.shieldsAt(t, one, sp, sh);
 }
 
-bool SatelliteSim::haboobStrongestPoint(const wx::Storm &S, double t, HaboobPoint &best, double &bestK) const
+bool SatelliteSim::haboobStrongestPoint(const wx::Storm &S, double t, HaboobPoint &best, double &bestK, wx::Catalog *cat) const
 {
     bestK = 0.0;
-    if (!stormCatalog || !biomeMap.ready()) return false;
+    if (!cat) cat = stormCatalog.get();
+    if (!cat || !biomeMap.ready()) return false;
     std::vector<wx::Tower> tw;
     std::vector<wx::Shield> shl;
-    haboobStormParts(*stormCatalog, S, t, tw, shl);
+    haboobStormParts(*cat, S, t, tw, shl);
     std::vector<HaboobPoint> pts;
-    haboobFrontOf(S, t, pts, &tw);
+    haboobFrontOf(S, t, pts, &tw, cat);
     // The strongest stretch of the front (a 5-point running mean: one dusty point among farmland draws little), weighted
     // toward where the Sun stands behind a viewer ahead of it (the front curves back at a line's ends) and reaches the
     // face past the anvil: front-lit.

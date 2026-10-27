@@ -241,7 +241,7 @@ void SatelliteSim::weatherScanStep(WxScanState &S) const
                 const glm::dvec3 ea = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), c) + glm::dvec3(1e-12, 0, 0));
                 const glm::dvec3 no = glm::cross(c, ea);
                 const glm::dvec3 L = ea * std::cos((double)St->lineAz) + no * std::sin((double)St->lineAz);
-                const double dG = 5000.0 + 14000.0 * glm::smoothstep(1800.0, 3.0 * 3600.0, age);
+                const double dG = 8000.0 + 22000.0 * glm::smoothstep(1800.0, 3.0 * 3600.0, age);   // (haboobFrontOf's, a line's)
                 int on = 0;
                 double sum = 0.0;
                 for (int q = -4; q <= 4; ++q)
@@ -273,12 +273,19 @@ void SatelliteSim::weatherScanStep(WxScanState &S) const
                 const int rank = (lit > 0.5 && sunEl >= 18.0 ? 2 : 0) + (sunEl >= 25.0 && sunEl <= 60.0 ? 1 : 0);
                 // Inland: within ~150 km of the sea the coast's fog and haze (cv2FogDust) hid the wall from a Go to.
                 const bool inland = oceanFraction(std::asin(std::clamp(ce.z, -1.0, 1.0)), std::atan2(ce.y, ce.x), 150000.0, 2) < 0.05f;
-                if (on >= 6 && sum / 9.0 >= 0.4 && inland && (!Fh.found || rank > Fh.rank))
+                // ... and the front the Watch will stand in front of raises a wall then (haboobStrongestPoint, the same
+                // test, on the scout's towers): the leading edge's dust alone accepted lines whose front was gapped or
+                // whose towers were too weak at that moment, and the Watch found nothing (2026-10-27).
+                const double tEv = std::max(tk, S.now);
+                HaboobPoint hq;
+                double hk = 0.0;
+                if (on >= 6 && sum / 9.0 >= 0.4 && inland && (!Fh.found || rank > Fh.rank) &&
+                    haboobStrongestPoint(*St, tEv, hq, hk, wxScout.get()))
                 {
                     Fh.found = true;
                     Fh.rank = rank;
                     Fh.searching = rank < 3;
-                    Fh.tEvent = std::max(tk, S.now);
+                    Fh.tEvent = tEv;
                     Fh.tEnd = std::min(St->t0 + St->life * 0.7, St->t0 + (double)ts.sysOff - (double)ts.sysRamp);
                     Fh.day = true;
                     Fh.earth = ce;
@@ -429,7 +436,10 @@ void SatelliteSim::weatherFeaturedUpdate()
         {
             const wx::FireState fst = wx::fireStateAt(f, wxFireJobT);
             if (fst.activity <= 0.05) continue;
-            const double s = (double)f.size * (0.3 + fst.activity) * (1.0 + (double)f.pyro);
+            // (only fires whose front still burns: one run into a town or onto bare ground has no smoke or flames)
+            const double share = (double)f.size * (0.3 + fst.activity) > bestS ? wx::fireBurningShare(f, fst, wxFireJobT, biomeMap) : 0.0;
+            if (share < 0.4) continue;
+            const double s = (double)f.size * (0.3 + fst.activity) * (1.0 + (double)f.pyro) * share;
             if (s > bestS)
             {
                 bestS = s;
@@ -521,16 +531,27 @@ bool SatelliteSim::weatherFeaturedAct(int slot, int act, std::string &msg)
         const bool aloft = act == 1;
         HaboobPoint q;
         double k = 0.0;
-        if (!haboobStrongestPoint(S, t, q, k))
+        // (The search found a wall at tEvent; a moment later its regenerating towers may be weaker: the first moment from
+        // t on, in 2-min steps up to an hour or the event's end, where the front raises one.)
+        double tW = t;
+        bool okW = haboobStrongestPoint(S, tW, q, k);
+        for (int i = 1; !okW && i <= 30 && t + 120.0 * i <= std::max(F.tEnd, t); ++i)
+        {
+            tW = t + 120.0 * i;
+            okW = haboobStrongestPoint(S, tW, q, k);
+        }
+        if (!okW)
         {
             msg = "Its gust front raises no dust at that moment";
             return false;
         }
+        if (tW != t)
+            setT(tW);
         const double D = aloft ? 9000.0 : 6000.0;
         const glm::dvec3 oe = glm::normalize(q.dir + q.out * (D / kRe));
         placeLooking(oe, aloft ? 2000.0 : 2.0, q.dir, aloft ? -6.0f : 6.0f);
         camera.fovYDeg = 70.0f;
-        updatePositions(t);
+        updatePositions(tW);
         msg = std::string("A haboob's dust wall over ") + wx::biomeName(biomeMap.at(latOf(q.dir), lonOf(q.dir))) +
               (aloft ? ", 9 km away, seen from 2 km up" : ", 6 km away and coming toward you");
         return true;
@@ -592,13 +613,20 @@ bool SatelliteSim::weatherFeaturedAct(int slot, int act, std::string &msg)
             if (glm::dot(se, G) > 0.0 && glm::dot(se, cv) > 0.0)
                 sgn = -1.0;   // the eye at -cv looks along +cv, toward the Sun: stand on the other side
         }
+        // (Beside the COLUMN, not the head: the smoke rises from the active front's heat-weighted sections, which on a
+        // big fire stand km from the head; looking at the head, the Watch framed a front with its smoke out of view,
+        // 2026-10-27. The anchor is the smoke ~10 min old, where the column leans over; looked at a few degrees up.)
+        const glm::dvec3 sm = wx::fireSmokeAt(F.fire, fs, t, 600.0, wx::fireInjectionHeightM(F.fire, fs, t));
+        const glm::dvec3 Sd = glm::normalize(G + (east * sm.x + north * sm.y) / kRe);
+        const double dSide = 5000.0;
         const glm::dvec3 oe = orbit ? glm::normalize(Hd - cv * (300000.0 / kRe))
-                                    : glm::normalize(Hd - cv * (sgn * 4000.0 / kRe) - wv * (1500.0 / kRe));
-        placeLooking(oe, orbit ? 400000.0 : 150.0, Hd, orbit ? -45.0f : 2.0f);   // (Watch: 4 km beside, the flames read)
+                                    : glm::normalize(Sd - cv * (sgn * dSide / kRe) - wv * (1500.0 / kRe));
+        const float elW = (float)std::clamp(0.5 * glm::degrees(std::atan2(std::max(sm.z, 300.0), dSide)), 3.0, 12.0);
+        placeLooking(oe, orbit ? 400000.0 : 150.0, orbit ? Hd : Sd, orbit ? -45.0f : elW);   // (Watch: 5 km beside the column)
         fireCacheRate = -1.0f;   // rescan the fires round the new eye
         updatePositions(t);
         msg = std::string("A wildfire in ") + wx::biomeName(biomeMap.at(F.fire.latDeg, F.fire.lonDeg)) +
-              (orbit ? ", from orbit" : ", 4 km beside its burning front");
+              (orbit ? ", from orbit" : ", 5 km beside its smoke column");
         return true;
     }
     default: break;
