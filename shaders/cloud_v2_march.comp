@@ -1192,7 +1192,24 @@ void main()
             // base sees only the ground it shades (unchanged).
             float hiK  = smoothstep(4000.0, 9000.0, p.h);
             vec3  keyB = keyCol;
-            if (!moonIsKey && cloud.moonMisc.y < 0.5) keyB += (sunCol * sunVis * cv2.look2.y - keyCol) * (kBounceOpen * hiK);
+            // With the ground map (cv2.gnd.x, 2026-10-27, issue 20261027_002051 "Storm Cell Lighting": a Cb's shaded walls dark
+            // blue right up against an anvil underside lit light grey): the light under the sample is the map's (the cell's
+            // mean direct + diffuse Sun on the ground, over its gaps), where the Sun's ray from the ground crosses the sample's
+            // height (h / tan(elevation) sunward, so a narrow anvil's own shadow falls aside). The open-country share went only
+            // to samples 4-9 km up, from the unshadowed Sun: an anvil over a storm complex took it although everything under it
+            // was the storm's shadow, and the towers beside it, a few km lower, took almost none.
+            if (!moonIsKey && cloud.moonMisc.y < 0.5) {
+                if (cv2.gnd.x > 0.5 && !thin) {
+                    float muB = max(dot(up, sunDir), 0.05);
+                    vec3  hS  = sunDir - up * dot(up, sunDir);
+                    vec3  pG  = vec3(rel.xy, rel.z + R_EARTH + eyeH)
+                              + hS * (min(max(p.h, 0.0) * sqrt(max(1.0 - muB * muB, 0.0)) / muB, 30000.0) / max(length(hS), 1e-4));
+                    vec4  vg  = cv2VtAt4(enuToEcef * pG);
+                    keyB = sunCol * sunVis * cv2.look2.y * min(vg.w + vg.y, 1.0);
+                } else {
+                    keyB += (sunCol * sunVis * cv2.look2.y - keyCol) * (kBounceOpen * hiK);
+                }
+            }
             vec3 bounceS = keyB * max(dot(up, keyDir), 0.0) * mix(0.15, kBounceAlbHigh, hiK) * cv2.look2.x
                          * (1.0 - f.hf) * (1.0 - f.hf);
             // Ice high above other cloud is lit from below by it: the clouds under cirrus reflect

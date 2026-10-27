@@ -57,9 +57,15 @@ const int   kCv2StvK = 48;
 const int   kCv2TshN = 128;
 const int   kCv2SkyPsiN = 32;
 const int   kCv2GroundSkyW = 64, kCv2GroundSkyH = 16;
-// The cloud over the ground (cv2Vt): kCv2VtL nested levels of kCv2VtN^2 columns on the gnomonic plane at the eye's
-// sea-level point, cells kCv2VtCell0 x 4^level (1 km .. 256 km: +-16 .. +-4096 km).
+// The cloud over the ground (cv2Vt): kCv2VtL nested levels of kCv2VtN^2 columns, cells kCv2VtCell0 x 4^level (1 km ..
+// 256 km: +-16 .. +-4096 km), on the gnomonic plane at an ANCHOR (2026-10-27, issue 20261027_002401 "Lighting persistence"):
+// the cells are fixed on that plane and the window of 32^2 round the eye's cell is stored toroidally (slot = cell & 31), so
+// flying moves the window by whole cells and only the cells entering it start their means again; the anchor follows the
+// eye only past kCv2VtAnchorM (re-anchored, the level restarts). It was centred ON the eye and restarted whenever the eye
+// had moved half a cell since the level's last visit (every 5 frames): at a boost's 8.5 km/s levels 0-1 restarted from 2
+// jittered columns a cell at EVERY visit, a box of light round the eye that changed every few frames.
 const int   kCv2VtL = 5, kCv2VtN = 32;
+const float kCv2VtAnchorM = 2000000.0;
 const float kCv2VtCell0 = 1000.0;   // cv2GroundSky: every 4th column of the Sun table, rows 0..15
 layout(std430, set = 0, binding = CV2_FLASH_BINDING)
 #if !defined(CV2_FLASH_WRITE) && !defined(CV2_EVAL_COUNT)
@@ -109,7 +115,8 @@ buffer CV2FlashBuf {
     // axis (ECEF) + the cell (m), [4 l + 1] north, [4 l + 2] up, [4 l + 3].x the frame it was baked in.
     // cv2Vt[l N^2 + y N + x], running means over the cell's columns (2 a visit, jittered): x the sky light's diffuse
     // transmission 1 / (1 + 0.11 tau), y the Sun's light scattered down through the cloud (its total transmission less the
-    // direct beam, per unit of the direct beam's irradiance), z the vertical tau (thin ice delta-scaled, x 0.2), w spare.
+    // direct beam, per unit of the direct beam's irradiance), z the vertical tau (thin ice delta-scaled, x 0.2), w the
+    // direct beam's transmission exp(-tau / mu) (2026-10-27: the clouds' light from below, cloud_v2_march.comp).
     // Means of the columns, not the transmission of a mean column: scattered cumulus (tau ~25 over a third of the cell) is
     // gaps and thick cloud, not a uniform tau-8 sheet that turns most of the Sun into diffuse light.
     vec4     cv2VtHdr[kCv2VtL * 4];
@@ -117,6 +124,8 @@ buffer CV2FlashBuf {
     // The same cells' cloud ABOVE four heights (1, 2.5, 5, 9 km above sea level): means over the columns of the sky light's
     // diffuse transmission through the cloud above each (the clouds' ambient under a deck, cloud_v2_march.comp).
     vec4     cv2VtUp[kCv2VtL * kCv2VtN * kCv2VtN];
+    // Each slot's stamp (2026-10-27, cloud_v2_lightning.comp): the window cell it holds, the anchor's epoch, a visit count.
+    uint     cv2VtStamp[kCv2VtL * kCv2VtN * kCv2VtN];
 };
 // Psi at a point (bilinear): the radiance of the light the air scattered twice or more reaching it, as if isotropic,
 // in the sky's units; the in-scatter it gives is (sigma_R + sigma_M) x Psi (the phase's mean, 1).
@@ -133,58 +142,79 @@ vec3 cv2SkyPsiAt(float mu, float h)
 }
 // The sky's light on a horizontal face at height h with the Sun's zenith cosine mu (bilinear): the cosine-weighted mean
 // radiance of the sky above it (irradiance / pi), in the sky's units. Needs cv2_sunlut.glsl.
+#ifdef CV2_PARAMS_BINDING
+// Level l's window coordinate of pE (sample centres at 0 .. N-1; the header: [4l] east axis + the cell, [4l + 1] north,
+// [4l + 2] up of the ANCHOR plane, [4l + 3] = (the frame it was baked in, the window's centre cell x, y, the anchor's
+// epoch)); false where the level is stale or unset. The stored slot of window column j is (j + c0 - N/2) & (N - 1).
+bool cv2VtWin(int l, vec3 pE, out vec2 g, out ivec2 c0)
+{
+    vec4 hx = cv2VtHdr[4 * l], hy = cv2VtHdr[4 * l + 1], hz = cv2VtHdr[4 * l + 2], hw = cv2VtHdr[4 * l + 3];
+    float qz = dot(pE, hz.xyz);
+    g = vec2(0.0); c0 = ivec2(0);
+    if (mod(cv2.frame.x - hw.x + 65536.0, 65536.0) > 16.0 || hx.w <= 0.0 || qz <= 0.0) return false;
+    c0 = ivec2(hw.yz);
+    g  = vec2(dot(pE, hx.xyz), dot(pE, hy.xyz)) / qz * (R_EARTH / hx.w) - 0.5 - (hw.yz - 0.5 * float(kCv2VtN));
+    return true;
+}
+int cv2VtSlot(int l, int jx, int jy, ivec2 c0)
+{
+    return l * kCv2VtN * kCv2VtN + ((jy + c0.y - kCv2VtN / 2) & (kCv2VtN - 1)) * kCv2VtN
+                                 + ((jx + c0.x - kCv2VtN / 2) & (kCv2VtN - 1));
+}
 // The cloud over a ground point (pE: its ECEF position from the Earth's centre, any length): cv2Vt's (x, y, z) at it, the
 // finest level holding it, bilinear, blended into the next over its outer 3 cells; clear sky (1, 0, 0) past the last or
 // where a level is stale (> 16 frames: the lightning pass did not run). Needs the cv2 UBO (cv2.frame.x).
-#ifdef CV2_PARAMS_BINDING
-vec3 cv2VtAt(vec3 pE)
+vec4 cv2VtAt4(vec3 pE)
 {
     // Finest level first; each takes the share of the weight its edge fade gives, the rest goes on to the next (the same
     // as mixing coarse to fine), so a point well inside level 0 reads one level.
-    vec3  res = vec3(0.0);
+    vec4  res = vec4(0.0);
     float rem = 1.0;
     for (int l = 0; l < kCv2VtL; ++l) {
-        vec4 hx = cv2VtHdr[4 * l], hy = cv2VtHdr[4 * l + 1], hz = cv2VtHdr[4 * l + 2];
-        float age = mod(cv2.frame.x - cv2VtHdr[4 * l + 3].x + 65536.0, 65536.0);
-        float qz = dot(pE, hz.xyz);
-        if (age > 16.0 || hx.w <= 0.0 || qz <= 0.0) continue;
-        vec2 g = vec2(dot(pE, hx.xyz), dot(pE, hy.xyz)) / qz * (R_EARTH / hx.w) + 0.5 * float(kCv2VtN) - 0.5;
+        vec2 g; ivec2 c0;
+        if (!cv2VtWin(l, pE, g, c0)) continue;
         float e = min(min(g.x, g.y), float(kCv2VtN - 1) - max(g.x, g.y));
         if (e <= 0.0) continue;
         ivec2 i0 = ivec2(floor(g));
         ivec2 i1 = min(i0 + 1, ivec2(kCv2VtN - 1));
         vec2  f  = g - vec2(i0);
-        int   b  = l * kCv2VtN * kCv2VtN;
-        vec3 v = mix(mix(cv2Vt[b + i0.y * kCv2VtN + i0.x].xyz, cv2Vt[b + i0.y * kCv2VtN + i1.x].xyz, f.x),
-                     mix(cv2Vt[b + i1.y * kCv2VtN + i0.x].xyz, cv2Vt[b + i1.y * kCv2VtN + i1.x].xyz, f.x), f.y);
+        vec4 v = mix(mix(cv2Vt[cv2VtSlot(l, i0.x, i0.y, c0)], cv2Vt[cv2VtSlot(l, i1.x, i0.y, c0)], f.x),
+                     mix(cv2Vt[cv2VtSlot(l, i0.x, i1.y, c0)], cv2Vt[cv2VtSlot(l, i1.x, i1.y, c0)], f.x), f.y);
         float w = smoothstep(0.0, 3.0, e);
         res += rem * w * v;
         rem *= 1.0 - w;
         if (rem < 1e-3) break;
     }
-    return res + rem * vec3(1.0, 0.0, 0.0);
+    return res + rem * vec4(1.0, 0.0, 0.0, 1.0);
 }
+vec3 cv2VtAt(vec3 pE) { return cv2VtAt4(pE).xyz; }
 #endif
 // The cloud above a point (pE as cv2VtAt): cv2VtUp's four knots (the sky light's diffuse transmission through the cloud
-// above 1, 2.5, 5 and 9 km) at the finest level holding it, bilinear; vec4(1) where there is no map. cv2VtUpH: at height h
+// above 1, 2.5, 5 and 9 km), bilinear, the finest level holding it blended into the next over its outer 3 cells as
+// cv2VtAt (2026-10-27: it switched levels at the window's edge, a 4x coarser field 16 km from the eye: a vertical wall of
+// light round the eye, issues 20261027_002051 / _002401); vec4(1) where there is no map. cv2VtUpH: at height h
 // (m above sea level), linear between the knots (the total below 1 km, to 1 at 14 km).
 #ifdef CV2_PARAMS_BINDING
 vec4 cv2VtUpCell(vec3 pE)
 {
+    vec4  res = vec4(0.0);
+    float rem = 1.0;
     for (int l = 0; l < kCv2VtL; ++l) {
-        vec4 hx = cv2VtHdr[4 * l], hy = cv2VtHdr[4 * l + 1], hz = cv2VtHdr[4 * l + 2];
-        float qz = dot(pE, hz.xyz);
-        if (mod(cv2.frame.x - cv2VtHdr[4 * l + 3].x + 65536.0, 65536.0) > 16.0 || hx.w <= 0.0 || qz <= 0.0) continue;
-        vec2 g = vec2(dot(pE, hx.xyz), dot(pE, hy.xyz)) / qz * (R_EARTH / hx.w) + 0.5 * float(kCv2VtN) - 0.5;
-        if (min(g.x, g.y) < 0.0 || max(g.x, g.y) > float(kCv2VtN - 1)) continue;
+        vec2 g; ivec2 c0;
+        if (!cv2VtWin(l, pE, g, c0)) continue;
+        float e = min(min(g.x, g.y), float(kCv2VtN - 1) - max(g.x, g.y));
+        if (e <= 0.0) continue;
         ivec2 i0 = ivec2(floor(g));
         ivec2 i1 = min(i0 + 1, ivec2(kCv2VtN - 1));
         vec2  f  = g - vec2(i0);
-        int   b  = l * kCv2VtN * kCv2VtN;
-        return mix(mix(cv2VtUp[b + i0.y * kCv2VtN + i0.x], cv2VtUp[b + i0.y * kCv2VtN + i1.x], f.x),
-                   mix(cv2VtUp[b + i1.y * kCv2VtN + i0.x], cv2VtUp[b + i1.y * kCv2VtN + i1.x], f.x), f.y);
+        vec4 v = mix(mix(cv2VtUp[cv2VtSlot(l, i0.x, i0.y, c0)], cv2VtUp[cv2VtSlot(l, i1.x, i0.y, c0)], f.x),
+                     mix(cv2VtUp[cv2VtSlot(l, i0.x, i1.y, c0)], cv2VtUp[cv2VtSlot(l, i1.x, i1.y, c0)], f.x), f.y);
+        float w = smoothstep(0.0, 3.0, e);
+        res += rem * w * v;
+        rem *= 1.0 - w;
+        if (rem < 1e-3) break;
     }
-    return vec4(1.0);
+    return res + rem;
 }
 float cv2VtUpH(vec4 v, float h)
 {
