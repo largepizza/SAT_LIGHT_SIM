@@ -3341,6 +3341,14 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["message"] = std::string("legacy launch records ") + (lower(pos(1)) == "on" ? "on" : "off");
             return Status::Done;
         }
+        if (sub == "exact")
+        {
+            // (2026-10-26) the CPU's launch-record elements exact at the current sim time (meshes, follow, readouts),
+            // or the written Kepler record as before (A/B of issue 20261026_205544)
+            launchExactElems(lower(pos(1)) != "off");
+            r["message"] = std::string("exact launch elements ") + (lower(pos(1)) != "off" ? "on" : "off");
+            return Status::Done;
+        }
         if (sub == "jitter")
         {
             r["jitter"] = launchJitterJson((int)c.num("batches", 6.0));

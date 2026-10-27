@@ -2564,6 +2564,9 @@ private:
     int meshSceneSatIdx = -1;     // the FOLLOWED satellite drawn this frame (-1 none) — its sprite fade
                                   // goes through SatFlarePC; GPU candidates fade their own
     std::vector<GpuSatListHeader::MeshCandidate> meshCandidates; // last frame's (read with the header)
+    // (2026-10-26) the launch-record slots recordMeshScene drew as meshes last frame: launchUpdate rewrites their GPU
+    // records every frame, so each one's point (bloom, glare, its fading sprite) stays on its mesh at any warp.
+    std::vector<uint32_t> meshLaunchSlots;
     bool meshesDrawnThisFrame = false;
     // The selected satellite's direction from the CPU orbit (double), refreshed after
     // updatePositions(): the selection panel places itself with it, so a satellite stays "in view"
@@ -3210,6 +3213,7 @@ private:
     nlohmann::json launchTraceBatchJson(uint64_t key);
     const void *launchEnsureBatch(uint64_t key); // (an LBatch*: SatelliteSimLaunches.cpp)
     nlohmann::json launchFormationJson(uint64_t key, int samples, bool before = false);
+    void launchExactElems(bool on);                 // harness `launch exact on|off`
     void launchLegacyRecords(bool on);              // harness `launch legacy on|off`
     bool launchSelect(int kind, std::string &msg, int member = -1); // member >= 0: only that member of a batch
     bool launchGoToNextReentry(std::string &msg, bool watch = false); // watch: mid-glow, the fireball tracked

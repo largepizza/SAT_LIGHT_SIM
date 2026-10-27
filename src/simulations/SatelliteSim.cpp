@@ -5208,6 +5208,11 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
             }
         }
     }
+    meshLaunchSlots.clear();
+    for (const Job &jb : jobs)
+        if (jb.sat >= (int)activeSatCount && jb.sat < (int)activeSatCount + (int)kLaunchCap &&
+            satOrbits[jb.sat].launchSlot >= 0)
+            meshLaunchSlots.push_back((uint32_t)satOrbits[jb.sat].launchSlot);
     const SatGroundSiteAim aim = groundSiteAim();
 
     // One instance, faded by its on-screen size computed HERE, this frame, in double: the same
