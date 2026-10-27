@@ -274,7 +274,7 @@ vec3 tornadoCyl(vec3 r0, vec3 up, vec3 e1, vec3 e2, float ph)
 // depth order, and the emissive light is dimmed by the cloud in front of it (LeX: its derivative w.r.t. the cloud's T).
 vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, float pOH, float oR, out vec3 Le, out float tScat,
                   out vec4 sTau, out vec4 sU, out vec3 sL[4], out vec3 LeX, out float tauP, out float tP, out float aP, out float tE,
-                  out float tauSm)
+                  out float tauSm, out float tauAir)
 {
     sTau = vec4(0.0);
     sU = vec4(0.0);   // per segment, the plumes' tau-weighted share of the segment's cloud IN FRONT of them
@@ -282,6 +282,7 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
     LeX = vec3(0.0);
     vec4 kSegXm = vec4(0.0, 0.5 * pOH, 0.5 * (pOH + 1.0), 1.0);   // each segment's mean share of the cloud's opacity
     tauSm = 0.0;   // wildfire smoke's share of tauP (spectral: the caller, kSmokeSpec)
+    tauAir = 0.0;  // the share of tauP that may carry the air's split (the caller's plumeAir)
     uint smF = smokeFirst(dustPad0), smN = smokeCount(dustPad0);
     vec3 smSpec = smokeSpecK(cv2.gnd.y);
     Le = vec3(0.0);
@@ -350,14 +351,29 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
         // curved sheet would be denser than the flat one (a ray low down far from the centre) the flat column runs along
         // hundreds of km of the plane, and raising it to the sheet's peak density drew a solid column of smoke (tried).
         // A few flops for the aerosol range only.
+        // 2026-10-27 (issue 20261027_002826 "Yellow circles around storms"): the thinning cut every big pall off at a hard
+        // circle ~150-200 km from its centre when seen from ABOVE: a near-vertical ray meets the flat sheet where the
+        // ground has dropped d^2 / 2R below it (3 km at 200 km), so hS - hP was the whole drop and the factor e^-2.5 at a
+        // 1.4-km sigma, though the curved sheet there gives that ray the same column as at the centre. The Gaussian is now
+        // MOVED DOWN by the ground's drop below its tangent plane at the flat closest approach (one step; the sheet as the
+        // locally translated plane), and evaluated again: from above the full column at any distance, at the limb the far
+        // part of the plane lowered onto the ground instead of standing in space.
         if ((i - smF) < smN && tau > 0.0) {
             vec3  Cw  = obsPos + d.c.xyz;
-            vec3  upC = normalize(Cw);
+            float rC  = length(Cw);
+            vec3  upC = Cw / rC;
             vec3  dP  = tc * dir - d.c.xyz;                       // closest approach - centre (no large cancellation)
-            float hP  = dot(dP, upC);
-            float hS  = length(Cw + dP) - length(Cw);
-            float kU  = dot(upC, dustMul(d, upC));
-            tau *= exp(min(-0.5 * (hS * hS - hP * hP) * kU, 0.0));
+            vec3  hv  = dP - upC * dot(dP, upC);
+            float dr  = dot(hv, hv) * (0.5 / rC);                 // the ground's drop below the centre's tangent plane
+            if (dr > 1.0) {
+                o  += upC * dr;
+                tc  = -dot(dir, dustMul(d, o)) / q;
+                r   = o + tc * dir;
+                e   = dot(r, dustMul(d, r));
+                E0  = dustErf(-sq * tc);
+                ET  = dustErf(sq * (T - tc));
+                tau = d.ia.w * d.c.w * max(exp(-0.5 * e) * sqrt(PI / (2.0 * q)) * (ET - E0), 0.0);
+            }
         }
         // A plume that adds nothing to THIS texel is skipped before its lighting (2026-10-21): its optical depth here
         // under 1e-5 of dimming, and its light (the Sun / sky colour at the phase's peak with multiple scattering, x the
@@ -616,6 +632,10 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
                 lpeI += el.ia.rgb * (tau * lumpA * shL * (d.col.w - 2.0) * el.c.w / (r2 + sAl2 + el.ia.w * el.ia.w));
             }
             if (isSm) tauSm += tau;                   // (smoke dims what is behind it spectrally: the caller)
+            // The plumes that may carry the air's split (2026-10-27, issue 20261027_001835): all but those an engine light
+            // reaches (a burning rocket's exhaust: the engine-light pass would light it again as cloud at the pulled
+            // distance, the "bright ball"). Smoke always (its fires' glows are engine lights).
+            if (isSm || sDustLM[i] == 0u) tauAir += tau;
             // its albedo (col.w = 2 + albedo): the caller gives back 0.85 x albedo x (1 - exp(-tau)) of the BACKGROUND, the sky's
             // light it scatters toward the eye. A tornado (seedK >= 256) carries its own sky light, the storm's (the CPU's
             // iso term x lightK): with the give-back 0.85 x 0.45 = 38% of whatever stood behind the funnel showed through
@@ -2200,6 +2220,7 @@ void main() {
     // Kessler dust clouds: above the weather, so seen from below the clouds hide them as they hide the aurora.
     float tEmitNear = kNoSurfaceT;
     float pSmokeK   = 0.0;   // wildfire smoke's (and haboob dust's) share of the plumes' optical depth here
+    float pAirK     = 0.0;   // the plumes' share that may carry the air's split (dustCloudsCS tauAir)
     if (dustCount > 0u) {
         // Extinction to the cloud, not to infinity: looking down from above the air, the path to infinity ends in
         // the ground through the whole atmosphere, and every cloud and fireball trail below the eye went dark.
@@ -2228,8 +2249,9 @@ void main() {
         vec3  dLe, LeX;
         vec4  sTau, sU;
         vec3  sL[4];
-        float dT, pTau, pT, pA, eT, pTauS;
-        vec3  dc = dustCloudsCS(obsPos, dir, sunDir, tScene, pK, pOH, oR, dLe, dT, sTau, sU, sL, LeX, pTau, pT, pA, eT, pTauS);
+        float dT, pTau, pT, pA, eT, pTauS, pTauA;
+        vec3  dc = dustCloudsCS(obsPos, dir, sunDir, tScene, pK, pOH, oR, dLe, dT, sTau, sU, sL, LeX, pTau, pT, pA, eT, pTauS, pTauA);
+        pAirK = pTau > 1e-6 ? pTauA / pTau : 0.0;
         // Where the nearest emissive / plume light is, for a texel with no cloud of its own (alpha below): sat_sky.frag
         // composites this texel over a satellite / rocket MESH only when its distance is nearer than the mesh, and
         // the no-cloud marker (60000 km) hid a burning stage's flame behind the stage's own hull (2026-10-20).
@@ -2643,7 +2665,13 @@ void main() {
     // as seen through it. Smoke-dominated plumes only (pSmokeK): the engine-light pass lights unflagged distances as cloud,
     // and a rocket's exhaust in front of a cloud would be lit twice (the "bright ball", 2026-10-20). cloud_v2_combine.comp
     // does the same at full resolution (DA.a below carries whether it may).
-    bool  smokeAir = pSmokeK > 0.5 && tEmitNear < kNoSurfaceT;
+    // Every plume, not smoke alone (2026-10-27, issue 20261027_001835 "Tornados/Event Volumetrics are still transparent"):
+    // a TORNADO in front of rain, fog or the desert's dust haze (any resolved v2 opacity: the fog / dust march is in it)
+    // took the air's split at that cloud's mean distance, tens of km out along a low ray, and the sky pass added all the
+    // horizon haze in front of it, and the horizon itself where that distance passed the ground, x (1 - T) with T ~ 0: the
+    // funnel opaque in the composite but the haze and a dark horizon line drawn straight through it. Only the plumes an
+    // engine light reaches are left out (pAirK, dustCloudsCS: they would be lit a second time as cloud there).
+    bool  smokeAir = max(pSmokeK, pAirK) > 0.5 && tEmitNear < kNoSurfaceT;
     float tAirM = tCloudMeanT;
     if (smokeAir && tCloudMeanT < kNoSurfaceT && gBB < 0.999) {
         float oP = 1.0 - gBB, oC = gBB * (1.0 - rc.a);

@@ -4285,6 +4285,12 @@ void main() {
         bool  fPart = fwC > 0.0 && fwC < 1.0;
         float lenF  = fwC * segLen;
         float densR0 = densR, densM0 = densM, fRK = 1.0, fMK = 1.0, litFF = litF;
+        // The piece's light reaches the eye through the air to the PIECE's middle (2026-10-27, issue 20261027_001835: a
+        // dark line along the horizon drawn through opaque haboob walls and tornadoes). It took the step's middle: with
+        // the split ~1-3 km out and the first step ~16 km long below the horizon (the ray ends at the ground) and up to
+        // ~24 km above it, the air in front of a near wall or funnel was dimmed by 8-12 km of low hazy air it does not
+        // have, more the flatter the ray (darkening toward the horizon) and less just below it (a step there).
+        vec3  aFK = vec3(1.0);
         if (fPart) {
             // The piece's own density per metre over the step's (both integrated as the step's, atmStepAvg).
             float hF  = max(0.0, length(obsPos + dir * (tS0 + 0.5 * lenF)) - R_EARTH);
@@ -4294,6 +4300,11 @@ void main() {
             fRK = min(avF.x / max(stepAvg.x, 1e-30), 50.0);
             fMK = min(avF.y / max(stepAvg.y, 1e-30), 50.0);
             litFF = clamp(1.0 - max(0.0, min(tS0 + lenF, tShB) - max(tS0, tShA)) / lenF, 0.0, 1.0);
+            // (the camera column: the steps before this one + half the piece's own, instead of + half the step's; not in
+            //  SKY_LITE: no volumetric clouds there, and it is at its size budget)
+#ifndef SKY_LITE
+            aFK = exp(-(BETA_R * (densR0 * (0.5 * fRK * fwC - 0.5)) + BETA_M * 1.1 * (densM0 * (0.5 * fMK * fwC - 0.5))));
+#endif
         }
 #ifdef SKY_SUN_SHADOW
         if (skyMsOn) {
@@ -4305,7 +4316,7 @@ void main() {
                 ps *= vD + (1.0 - vD) * kEclipseMultiScatter * eclipseSkyLight(spK, sunDir, h);
             }
             msS  += aM * (BETA_R * densR0 + BETA_M * densM0) * ps;
-            msSF += aM * (BETA_R * (densR0 * fRK) + BETA_M * (densM0 * fMK)) * (fwC * ps);
+            msSF += aM * aFK * (BETA_R * (densR0 * fRK) + BETA_M * (densM0 * fMK)) * (fwC * ps);
         }
 #endif
         if (litF < 1.0) {
@@ -4313,7 +4324,7 @@ void main() {
             float shF = 1.0 - litF;
             vec3 aC = exp(-(BETA_R * (odR_cam - 0.5 * densR0) + BETA_M * 1.1 * (odM_cam - 0.5 * densM0)));
             shR += aC * densR * shF; shM += dot(aC, vec3(1.0 / 3.0)) * densM * shF;
-            shRF += aC * densR0 * fRK * (1.0 - litFF) * fwC; shMF += dot(aC, vec3(1.0 / 3.0)) * densM0 * fMK * (1.0 - litFF) * fwC;
+            shRF += aC * aFK * densR0 * fRK * (1.0 - litFF) * fwC; shMF += dot(aC * aFK, vec3(1.0 / 3.0)) * densM0 * fMK * (1.0 - litFF) * fwC;
             shT += densR * shF * (tS0 + 0.5 * segLen);
             shD += densR * shF;
             if (litF <= 0.0) continue;
@@ -4436,7 +4447,7 @@ void main() {
             shKF = fPart ? sunShK * (1.0 - accF / wF) : shK;
             vec3 aC = exp(-(BETA_R * (odR_cam - 0.5 * densR0) + BETA_M * 1.1 * (odM_cam - 0.5 * densM0)));
             if (shKF > 0.001) {
-                shRF += aC * densR0 * fRK * litFF * shKF * fwC; shMF += dot(aC, vec3(1.0 / 3.0)) * densM0 * fMK * litFF * shKF * fwC;
+                shRF += aC * aFK * densR0 * fRK * litFF * shKF * fwC; shMF += dot(aC * aFK, vec3(1.0 / 3.0)) * densM0 * fMK * litFF * shKF * fwC;
             }
             if (shK > 0.001) {
                 shR += aC * densR * shK; shM += dot(aC, vec3(1.0 / 3.0)) * densM * shKMie;
@@ -4465,7 +4476,7 @@ void main() {
         accumR += attn * densR * atmTermW8;                  // Rayleigh: wavelength-dependent (blue sky)
         accumM += dot(attnPre, vec3(1.0 / 3.0)) * (1.0 - shKMie) * densM * atmTermW8; // Mie: wavelength-neutral (white haze/corona)
         // The piece in front (fwC, above): its own density, Earth shadow and clouds' shadow; the step's own when whole.
-        vec3 attnF = attnPre * (1.0 - shKF);
+        vec3 attnF = attnPre * aFK * (1.0 - shKF);
         accumRF += attnF * densR0 * fRK * litFF * atmTermW8 * fwC;
         accumMF += dot(attnF, vec3(1.0 / 3.0)) * densM0 * fMK * litFF * atmTermW8 * fwC;
     }
