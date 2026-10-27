@@ -53,6 +53,8 @@ The default table is initialised in `SatelliteSim::init()`:
 | `KB_FOLLOW_RETURN` | Go To: Return | H | none | event (back to the followed object, or follow the last one again) |
 | `KB_MILESTONE_NEXT` | Next Mission Milestone | `]` | none | event |
 | `KB_MILESTONE_PREV` | Previous Mission Milestone | `[` | none | event |
+| `KB_WEATHER` | Weather | N | none | event (the Weather window) |
+| `KB_VIDEO` | Record Video | F6 | none | event (start or stop a video recording) |
 
 Event actions are dispatched by `dispatchKeyAction()`, shared by `onKey()` (keyboard) and `pollGamepad()`
 (gamepad edge detection), so the two input paths cannot drift apart. Held actions are polled each frame in
@@ -172,7 +174,8 @@ version only when stored graphics values would not make sense against the curren
 ## Slider slots
 
 Most tuning sliders (the Clouds, Weather, Atmosphere, Terrain, Night lights, Ocean and Beams tabs, the Sound
-tab's ambience mix, the Controls tab's move speed and the Display tab's HQ photo rows) are rows built by
+tab's ambience mix, the Controls tab's move speed, the Display tab's HQ photo rows and the Launches tab's exhaust
+sliders) are rows built by
 `buildCloudSliderRows()` from `CloudSlider` entries:
 
 ```cpp
@@ -196,9 +199,10 @@ TRAILS), each group naming its rows' `idx` values.
 
 !!! warning "Invariant"
     A new Photometry row must be added to a display group as well as to `photoParams`; a row in no group is never
-    drawn, and its setting is reachable only through `settings.json`. Editing a slider on any tab except Sound switches the
-graphics preset label to Custom unless the row passes `marksPreset = false` (the Sound, Controls and Display
-rows do).
+    drawn, and its setting is reachable only through `settings.json`.
+
+Editing a slider on any tab switches the graphics preset label to Custom unless the row passes
+`marksPreset = false` (the Sound, Controls, Display and Launches rows do).
 
 ## Settings tabs and sections
 
@@ -214,6 +218,7 @@ scroll view, so a long strip never stretches a short window.
 | 2 | Controls | GENERAL | |
 | 1 | Sound | GENERAL | |
 | 0 | Constellations | SKY | |
+| 15 | Launches | SKY | |
 | 5 | Photometry | SKY | |
 | 6 | Clouds | RENDERING | yes |
 | 12 | Weather | RENDERING | yes |
@@ -248,7 +253,7 @@ so every window looks and behaves the same:
 | `uiButton(inp, ui, key, idx, label, tip, on, enabled, grow)` | a 20-px pill button; returns true on click |
 | `uiToggleRow(inp, ui, key, idx, label, v, tip, onWord, offWord)` | a label and an On / Off pill (the knockouts use the words Skip / On) |
 | `uiChoiceRow(inp, ui, key, idx, label, labels, n, current, tip)` | a label and a row of segmented pills; returns the picked index or -1 |
-| `uiDangerButton(inp, ui, key, idx, label, tip, armed, enabled, grow)` | a button in the orange danger colours (`Pal::btnDanger*`), for a destructive action such as the info window's Explode |
+| `uiDangerButton(inp, ui, key, idx, label, tip, armed, enabled, grow)` | a button in the orange danger colours (`Pal::btnDanger*`), for a destructive action such as the info window's Explode; `armed` draws the second state of a two-click confirmation where one is used |
 
 Element ids are `CLAY_SIDI(key, idx)`, so a harness script clicks a kit element as `Key:index`
 (`ui click ReplayIntroBtn:0`). The previous frame's hover state lives in one map (`uiHov_`), so a kit row needs no
@@ -276,6 +281,8 @@ integer, which is why Potato comes after Custom: appending kept every existing i
 | `oceanSeaOctaves`, `oceanDetailOctaves`, `oceanReflSamples` | sea quality |
 | `terrainDistFadeStartM/EndM`, `cloudDistFadeStartM/EndM` | reach of terrain and clouds |
 | terrain detail, shadow, material and close-up texture strengths | on for Low, Medium, High and Ultra |
+| `cv2AdaptiveRate`, `cv2SparseWhenStill`, `computeFollowsRenderScale` | the cloud march's cheap configuration (adaptive rate, sparse when still, the half-resolution passes following the render scale): on for every tier but High and Ultra |
+| `cv2FullRes` | full-resolution clouds: on for Medium, High and Ultra |
 
 Low and Medium share every value but the render scale (50% and 67%); Planetarium and Potato are the tiers that
 switch effects off. Everything outside this list belongs to the user and is never touched by a preset, including

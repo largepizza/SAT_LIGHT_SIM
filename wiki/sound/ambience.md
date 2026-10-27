@@ -1,7 +1,7 @@
 # Ambience
 
 The ambience is a set of sound *layers*, each a looping sample, a stream of one-shots or a procedural
-synthesiser voice, whose volumes follow the camera's context: altitude, the Sun, the ground underneath,
+synthesiser voice, whose volumes follow the camera's context: altitude, the Sun, the ground underneath, the rain and wind,
 nearby satellites, the flares on screen. This page documents the layer table so it can be edited, lists
 every context value a layer can depend on, and describes the voices, samples and level conventions.
 
@@ -144,6 +144,10 @@ it, not the parked ground observer.
 | `wind` | 0..1 | a smooth pseudo-random wind strength over position (about 500 km cells) and sim time (hours); deterministic for a place and time |
 | `cloud` | 0..1 | the 2D cloud coverage map directly overhead, with the same drift the clouds use; eased over 1.5 s; 1 if the map failed to load |
 | `rain` | 0..1 | the rain rate around the eye (below), times the liquid share; eased over 2 s |
+| `rain_driven` | 0..1.2 | `rain` pushed up by up to 60% in a gust: wind-driven rain lands harder |
+| `gust` | 0..2 | the envelope of the gust fronts the rain and snow particles are blown by: 0 in calm air, about 1.5 at a strong gust's peak, rising over 1 to 2 s and decaying over 5 to 20 s ([Weather](../rendering/clouds/weather.md)) |
+| `surface_wind` | 0..2 | the surface wind's speed at the eye over 15 m/s: the mean wind, storm outflow, gust fronts and a tropical cyclone's wind field |
+| `tornado` | 0..2 | the funnels on the ground near the listener, each \( \sqrt{w / 150\,\text{m}} \times \ell / (1 + (d / 2\,\text{km})^2) \) for a funnel of width \(w\), lifecycle \(\ell\) (rising as it touches down, gone as it ropes out) and distance \(d\) to its nearest point between the ground and its cloud base; a waterspout counts half |
 | `thunder` | 0/1 | 1 while thunder or a rocket's roar is arriving, about to arrive (within about 2 s) or ended less than 4 s ago; 0 otherwise ([below](#rain-and-thunder)) |
 | `aurora` | 0..1 | inside the auroral oval (the band only, no curtain noise), 0 when the aurora gain is 0 |
 
@@ -166,7 +170,8 @@ not ice" is the better test for open grassland.
 \( b = \tfrac12 \log_2 F \) for an effective flare \(F\), passes the glare threshold. They count only flares
 inside the view, with a soft frame edge (full at 95% of the half-extent, none past 115%), so a flare leaving
 the frame fades out. They do not test occlusion by terrain or cloud. The input is the flare compute pass's
-list of bright flares, copied to the CPU every frame. Facing the Reflect Orbital ring from a lit site,
+list of bright flares, read back from the GPU every frame (the result of the frame two frames earlier). Facing the
+Reflect Orbital ring from a lit site,
 `glare_n` reaches about 470.
 
 `beam_site` is about 180 standing on a busy beam site and about 10 from 120 km away.
@@ -267,7 +272,7 @@ gusts swing in decibels, not linearly, so they are audible as gusts.
 
 | Group | Layers |
 |---|---|
-| wind | `wind_ground` (follows `cloud`), `wind_desert`, `wind_alpine`, `wind_glacier`, `sea_wind`, `air_low`, `jetstream` (7 to 22 km), `stratosphere` (15 to 70 km) |
+| wind | `wind_ground` (follows `cloud`), `wind_gust`, `tornado_roar`, `wind_desert`, `wind_alpine`, `wind_glacier`, `sea_wind`, `air_low`, `jetstream` (7 to 22 km), `stratosphere` (15 to 70 km) |
 | water | `rain`, `thunder`, `beach_waves`, `sea_open` |
 | nature | `gulls` (events), `crickets`, `tropical_night`, `birds_forest`, `birds_dawn`, `jungle_day`, `jungle_night` |
 | city | `city_day`, `city_night` |
@@ -275,7 +280,8 @@ gusts swing in decibels, not linearly, so they are audible as gusts.
 | machines | `datacenter_hum` (inside the AI datacenter disk) |
 
 The ground wind follows the weather overhead (`cloud`): a full bed under cloud and a light breeze in clear
-air, so the wind is loud in some places and quiet in others. The `thunder` layer is up only while `thunder` is (so
+air, so the wind is loud in some places and quiet in others. The open-sea surf (`sea_open`) grows louder, fizzier
+and quicker with `surface_wind`: a storm sea, or a hurricane's. The `thunder` layer is up only while `thunder` is (so
 *Ambience now* lists it only when there is some) and below about 12 to 25 km above the ground; it carries the
 rockets' roar as well as thunder ([Rockets](#rockets)). Crickets and tropical night sounds fall silent
 in Reflect Orbital light (`beam` above 20 000). Most nature and city layers fade out under time warp faster
@@ -304,13 +310,24 @@ louder, gains drive and sub, throbs faster and sags further and more slowly in p
 
 ## Rain and thunder
 
-Rain, thunder and the rockets' roar are all procedural: there are no sample files for them.
+Rain, the storm wind, tornadoes, thunder and the rockets' roar are all procedural: there are no sample files for them.
 
 **Rain.** The cloud renderer keeps a 32 x 32 map of the rain rate around the eye (40 m cells, about 640 m
 either side). The `rain` driver is the mean of its central 6 x 6 cells, so what is heard is what falls on
 screen and a passing shaft is heard as it arrives. It is multiplied by the liquid share of precipitation at
 the eye's temperature (snow is silent) and is 0 above 6 km. The `rain` layer's `intensity` follows the rate:
-a drizzle is a thin hiss with a few ticks, a cumulonimbus core a roar.
+a drizzle is a thin hiss with a few ticks, a cumulonimbus core a roar. The `intensity` reads `rain_driven`, so a gust
+makes the rain land harder.
+
+**Gusts.** The `wind_gust` layer (synth `wind`, gain 0.25, below about 1.5 km above the ground) swells with `gust`:
+its level follows the gust's envelope and its band slides from 340 to 620 Hz, so the roar rises as the rain on
+screen leans over in the same gust.
+
+**Tornadoes.** The `tornado_roar` layer (synth `wind`, gain 0.5, below about 3 to 6 km above the ground) is a low,
+churning rumble on the `tornado` driver: a broad band centred near 130 Hz far away, rising to 360 Hz and widening
+close up, with fast gusts and flutter so it never settles into a steady hiss, and debris hiss joining within about a
+kilometre. Recorded alone offline it measures about -36 dBFS RMS 1 km from a funnel (the whole ambience there about
+-35), -39 at 3 km and -48 at 12 km.
 
 **Thunder is streamed from sound shells.** When a lightning flash first appears, the host builds its channel as
 geometry (see [Weather: lightning](../rendering/clouds/weather.md#lightning)), and every flash except a red sprite
@@ -351,7 +368,7 @@ Measured with the layer alone at gain 1 (loudest second, RMS): a ground stroke 1
 ## Rockets
 
 Each burning rocket within about 150 km is heard on a thunder voice of its own. Its sound is the one it
-made at the **retarded time**: the latest moment \(	au\) whose sound, travelling at 343 m/s through air that moves
+made at the **retarded time**: the latest moment \(\tau\) whose sound, travelling at 343 m/s through air that moves
 with the Earth, reaches the listener now. `launchSounds()` scans back over 440 s (150 km of sound) for the latest
 such moment, in either direction of approach, so a booster's supersonic descent is heard in reverse order; it stops
 once the burns that made the sound have been heard. The level grows with the square root of the engines' mass flow,
@@ -448,8 +465,9 @@ wrong layer from a wrong mix while flying around.
 | File | Main functions |
 |---|---|
 | `src/simulations/Ambience.h/.cpp` | `Ambience::load()`, `evalTarget()`, `update()`, `tickEvents()`, `stateJson()` |
-| `src/simulations/SatelliteSimAmbience.cpp` | `initAmbience()` (registers the drivers), `computeAmbienceContext()`, `updateAmbience()`, `updateThunder()`, `thunderStep()` (the sound shells and the rocket voices) |
+| `src/simulations/SatelliteSimAmbience.cpp` | `initAmbience()` (registers the drivers), `computeAmbienceContext()` (including the rain, wind and tornado drivers), `updateAmbience()`, `updateThunder()`, `thunderStep()` (the sound shells and the rocket voices) |
 | `src/simulations/SatelliteSimLightning.cpp` | `addThunderSource()` (a flash's channel as a sound source) |
+| `src/simulations/SatelliteSimRain.cpp` | `surfaceWindAt()`: the surface wind and gust fronts behind `gust`, `surface_wind` and `rain_driven` |
 | `src/simulations/SatelliteSimLaunches.cpp` | `launchSounds()` (each rocket's level, distance and pan at its retarded time) |
 | `src/AmbientSynth.h/.cpp` | `AmbientSynth::create()`, one class per kind (`ThunderSynth` also plays the rockets) |
 | `src/AudioSystem.h/.cpp` | `addAmbienceLoop()`, `addAmbienceSynth()`, `playAmbienceOneShot()`, `renderWav()` |

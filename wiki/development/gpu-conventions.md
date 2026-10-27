@@ -9,8 +9,9 @@ image is wrong.
 ## `VulkanContext`
 
 `VulkanContext` (`src/VulkanContext.h`) holds the core objects simulations read (`device`, `physicalDevice`,
-`graphicsQueue`, `commandPool`, `commandBuffer`, `swapExtent`, `swapFormat`, `swapImages`, `renderPass`,
-`renderPassLoad`, `renderPassBoot`, `framebuffers`, `depthFormat`, `pipelineCache`) and a few helpers:
+`graphicsQueue`, `commandPool`, `commandBuffer` (the current frame slot's), `swapExtent`, `swapFormat`,
+`swapImages`, `renderPass`, `renderPassLoad`, `renderPassBoot`, `framebuffers`, `depthFormat`, `pipelineCache`)
+and a few helpers; the helpers for memory the CPU and GPU share are listed under [Frames in flight](#frames-in-flight):
 
 | Helper | What it does |
 |---|---|
@@ -20,7 +21,7 @@ image is wrong.
 | `findMemoryType(filter, props)` | a memory type index |
 | `generateMipmaps(cmd, img, fmt, w, h, mips)` | blits mips 1..n-1 from mip 0 (in `TRANSFER_DST_OPTIMAL` on entry); all mips end in `SHADER_READ_ONLY_OPTIMAL` |
 | `bestBlitFilter(fmt)` | `LINEAR` if the format supports linear blit filtering, else `NEAREST` |
-| `beginOneTimeCommands()` / `endOneTimeCommands(cmd)` | a one-shot command buffer, submitted and waited on (init-time uploads) |
+| `beginOneTimeCommands()` / `endOneTimeCommands(cmd)` | a one-shot command buffer, submitted and waited on (init-time uploads; at runtime it stalls the frame, and the harness counts it) |
 | `imageBarrier(cmd, img, srcAccess, dstAccess, oldLayout, newLayout, srcStage, dstStage)` | one image memory barrier |
 
 `imageBarrier()` covers the colour aspect, mip 0 and layer 0 only. A barrier on a depth image, a mip chain or
@@ -36,12 +37,56 @@ which limit failed. Device features are checked before `vkCreateDevice` for the 
 unsupported one fails with `VK_ERROR_FEATURE_NOT_PRESENT` and no indication of which. The current margins are
 listed on [Weak-hardware tiers](../rendering/hardware-tiers.md).
 
-## Synchronisation
+## Frames in flight
 
-The app has **one command buffer and one frame in flight**. `App::drawFrame()` waits on the frame fence first,
-so anything the GPU wrote last frame (timestamps, readback buffers, screenshot copies) can be read on the CPU
-afterwards in the same frame. Host-visible buffers the CPU writes each frame and the GPU reads in the same
-frame need no barrier for the same reason.
+The app keeps **two frames in flight**: the CPU records frame *f* while the GPU still runs frame *f* - 1, so a
+frame costs max(CPU, GPU) rather than CPU + GPU. Each frame slot (`kMaxFramesInFlight` = 2) has its own command
+buffer, upload command buffer, fence and acquire semaphore. `App::drawFrame()` starts with
+`ctx.beginFrameSlot()`, which waits only for the previous frame that used this slot (two frames back) and points
+`commandBuffer`, `fenceFrame`, every slotted buffer and every readback pointer at the slot. The environment
+variable `SATLIGHTSIM_FRAMES_IN_FLIGHT=1` selects the serial single-frame mode at launch, so one build can A/B
+both.
+
+**The GPU still runs frames one after another.** Every frame's GPU work opens with a full memory barrier
+(`ALL_COMMANDS` to `ALL_COMMANDS`, every write made visible to every read): the first command of the slot's
+upload command buffer, and `beginFrameGpu()` at the top of the main one. Device-local resources (cloud and TAA
+histories, the depth targets, every compute output) therefore need nothing: frame *f*'s GPU work sees the whole
+result of frame *f* - 1, exactly as with one frame. **Only memory the CPU touches needs care**, and it goes
+through these helpers:
+
+| Helper | For | How |
+|---|---|---|
+| `mirrorUpload(dst, mem, size, whole, name)` | a buffer the CPU rewrites (the `CloudParams` and clouds uniform blocks, the satellite type header and tables, the storm buffer, mesh instances, ...) | returns a pointer to a CPU **shadow**; code writes it as it would the mapped memory. `recordFrameUploads()` copies the shadow through a per-slot ring into the device buffer at the start of the frame's GPU work: the whole buffer when `whole`, else only the ranges marked with `mirrorDirty(base, off, len)` (merged; `mirrorDirtyAll()`). With one frame in flight it returns the mapped memory itself |
+| `uploadPatch(dst, off, data, len)`, `uploadFill(...)` | a few scattered bytes into a GPU buffer (a probe request, a counter reset, a cleared level) | applied at the start of this frame's GPU work, in both modes |
+| `slotted(&buf, &mem, &ptr, size, usage, props, name)` | staging the CPU fills and this frame copies, the UI's vertex and index buffers, host readback targets | one copy per slot; the bound variables are swapped at `beginFrameSlot()` |
+| `readbackCreate(size, &ptr, name)` | a GPU result the CPU reads (the glow histogram, the beam list, the clouds' flash buffer head) | one host-cached copy per slot, filled by a copy the frame records (`recordFrameReadbacks()`); after `beginFrameSlot()` the pointer holds the data of `completedFrame()` |
+| `stagingAlloc(bytes)` | staging for an image upload recorded into this frame (the radar, the Kessler tracker's globe, the cyclone track map) | slot-owned host memory, reused when the slot comes round |
+| `deferDestroy(buf, mem)` | a buffer a frame in flight may still use | destroyed once its last user has finished |
+
+!!! warning "Invariant"
+    A CPU write into a mirrored buffer that is not `whole` must be marked with `mirrorDirty()`, or the GPU never
+    sees it. A descriptor set must never bind a slotted buffer (the binding would change every frame): slotted
+    buffers are copy sources and destinations and vertex input only.
+
+**Readbacks are two frames old.** Picking, the peak magnitude, the exposure meter, the beam list and the other
+per-frame readbacks hold the result of the frame that last used this slot. State a readback must be paired with
+(the observer basis the beam list was written in, the lightning list's observer direction, the tornado probes'
+ids, the glint list's validity, the exposure meter's pending flag) is kept per slot too: stored once, it would
+pair the result of frame *f* - 2 with the state of frame *f* - 1. One-shot readbacks (the weather radar, the
+harness probe, the photometric check, a screenshot copy) record the frame index they were requested in and read
+once `ctx.completedFrame()` reaches it; `finalizeScreenshotCopy(true)` drains instead, for the recorders that need
+exactly one rendered frame per recorded frame.
+
+**Descriptor writes and recreation drain.** A descriptor set the previous frame bound must not be rewritten while
+that frame runs, so every `vkUpdateDescriptorSets` outside `init()` goes through `frameSafeUpdateDescriptorSets()`,
+which drains the frames in flight first (and counts the write). Resource recreation at runtime (the render-scale
+targets, the low-resolution sky, the deferred full-sky pipelines, the swapchain) calls `drainFrames()`. A steady
+frame does neither: the harness's `perf` reports a `frames_in_flight` block (about 400 KB uploaded a frame, 0
+drains, 0 descriptor writes, 0 one-time submits). **A drain or a descriptor write every frame is a bug**: it
+silently restores the single frame. The timestamp query pool holds `kTimestampCount` slots per frame slot, and
+each frame writes and resolves its own range.
+
+## Synchronisation
 
 Barrier habits:
 
@@ -141,9 +186,13 @@ compiled on their own, and every shader is rebuilt when any header changes
 | `earth_env.glsl` | an analytic Earth and atmosphere along any ray (reflection fallback) |
 | `sat_mesh_common.glsl` | the satellite mesh pipelines' descriptor set |
 | `aurora_oval.glsl` | the auroral oval's geometry (a Sun-fixed ring whose edges follow the activity index) |
-| `cv2_sunlut.glsl` | reading the clouds' Sun-colour and zenith-sky table |
-| `cv2_layer_map.glsl` | the mid and high cloud layers' shadow map |
+| `cv2_sunlut.glsl` | reading the clouds' Sun-colour, sky and multiple-scattering table |
+| `cv2_cdc.glsl` | the cloud density clipmap (the occupancy the cloud march skips empty space with) |
+| `cv2_storms.glsl` | the storm objects' towers and anvil shields and their spatial index |
 | `cv2_optics.glsl` | bows, halos and phase lobes, shared by the cloud march and the rain particles |
+| `sky_atmos.glsl` | the sky's single-scattering helpers, shared by the per-pixel atmosphere loop and the aerial-perspective volume |
+| `sky_ap.glsl` | the aerial-perspective volume's layout and lookup |
+| `smoke.glsl` | wildfire smoke's spectral extinction and scattering |
 | `rain_particles.glsl`, `lightning_draw.glsl` | the rain particles' and the lightning draw's push constants and shared code |
 | `glare_mesh_vert.glsl` | the body of the mesh-glint glare vertex shaders |
 
@@ -189,7 +238,7 @@ function, `earthRotationAngle()`; see [Time and reference frames](../simulation/
 Vulkan guarantees 16 sampled images (and 16 samplers) per shader stage. `sat_sky.frag` uses all 16. A new
 texture for the sky pass must merge into an existing one (as two maps into an array, or as extra channels),
 or be read as a storage image with `imageLoad`, which has its own budget (4 guaranteed; the sky pass and the
-cloud march each use all 4). The sky descriptor set has 32 bindings in total; most are storage buffers. A new
+cloud march each use all 4). The sky descriptor set has 34 bindings in total; most are storage buffers. A new
 small per-frame list for an existing pass can often ride at the end of a buffer the pass already binds (the
 launch engine lights travel at the tail of the dust-cloud buffer, for example) rather than take a binding.
 `sat_orbit.comp`'s set binds 12 storage buffers, above the guaranteed 4, and the device check asks for that. On macOS, MoltenVK
@@ -220,6 +269,18 @@ run through every optimisation of this shader:
 code size. The light march, sky probe and other secondary samples share one call. Marking the field functions
 `DontInline` in the SPIR-V is honoured by the driver and runs several times slower.
 
+Code that never runs still costs: the instructions a step executes are only part of it, and the code merely
+present in the inlined field slows every view. A uniform branch does not help; a **specialization constant**
+does, because the driver then compiles a variant without the code. The haboob dust wall is the standing example:
+the march is built twice (specialization constant 3, `kCv2DustOn` in `clouds_v2.glsl`), and the host binds the
+variant without the haboob code whenever the dust grid holds no wall (`dustGpuOn`). A feature that is absent from
+most views and lives inside the field should follow the same pattern.
+
+When measuring what a piece of the field costs, run its loop twice **inside** its function (an idempotent repeat,
+such as a maximum taken twice) rather than calling the function twice: a second inlined copy of a large function
+costs far more than its share (the extra code size is part of the cost), while a duplicate in a branch never taken
+costs nothing.
+
 **The register cliff.** On NVIDIA the shader is compiled either to 128 registers (with a small spill) or to roughly
 220 to 230 (no spill), and the second is 20 to 60% slower. Trivial edits flip it: an extra per-sample loop bound, a
 few debug counters, values cached in globals, an extra member in the field's result struct, a value carried out of
@@ -231,6 +292,23 @@ Before timing a variant, check its register count: the harness's `shaders reload
 from the SPIR-V on disk and reports the driver's statistics (register count, binary size, spill memory) through
 `VK_KHR_pipeline_executable_properties`. Compare variants interleaved in one running app; run-to-run noise is
 5 to 10%. See [Profiling](profiling.md#ab-testing-a-shader-change).
+
+## CPU access to host-visible memory
+
+Host-visible memory is not ordinary RAM, and two access patterns are slow enough to show in a frame:
+
+- **Never loop over mapped GPU memory on the CPU; copy it out first.** Memory that is `HOST_VISIBLE` and
+  `HOST_COHERENT` without `HOST_CACHED` is uncached, so each scalar read is a bus transaction (tens of
+  nanoseconds), and device-local host-visible memory is read across PCIe (around a microsecond a read). A loop of
+  a few thousand byte or float reads (an exposure meter, a rain map) costs most of a millisecond. `memcpy` the
+  block into local memory and loop over that; readbacks made with `readbackCreate()` are host-cached already.
+- **Write device-local host-visible memory in one run.** It is write-combined: scattered stores are slow, while a
+  sequential copy is fast. Large per-frame structures written slot by slot (the storm buffer's tower, shield and
+  envelope indices) are filled into host memory first and copied in one pass.
+
+The clouds' flash buffer (the Sun transmittance volume, the rain map, the god-ray froxels) lives in device-local,
+host-visible memory when the device offers it, because every lit cloud sample and the sky pass's god rays read
+it and reads of system memory cross PCIe. `SATLIGHTSIM_FLASH_HOSTMEM=1` forces it into system memory.
 
 ## Validation layers
 
@@ -249,7 +327,8 @@ round down) and a render-pass dependency mismatch were found.
 
 | File | What |
 |---|---|
-| `src/VulkanContext.h/.cpp` | helpers, `pickPhysicalDevice()`, `logDeviceLimits()`, render passes, validation setup |
+| `src/VulkanContext.h/.cpp` | helpers, `pickPhysicalDevice()`, `logDeviceLimits()`, render passes, validation setup; the frame slots (`beginFrameSlot()`, `beginFrameGpu()`, `recordFrameUploads()`, `drainFrames()`, `completedFrame()`), `mirrorUpload()`, `slotted()`, `readbackCreate()`, `frameSafeUpdateDescriptorSets()` |
+| `src/simulations/SatelliteSim.cpp` | `recordFrameReadbacks()`: the per-slot readback copies each frame records |
 | `src/simulations/SatelliteSim.h` | every push-constant struct and GPU record mirror, with their assertions |
 | `shaders/include/` | the shared headers |
 | `tools/check_cloud_params.py` | the `CloudParams` mirror check |

@@ -1,8 +1,8 @@
 # Code architecture
 
 How the C++ code is organised: the three layers, the interface a simulation implements, what happens in one
-frame, how SatelliteSim is split across files, how satellite indices are laid out, the loading screen, and which
-work runs off the main thread.
+frame (with two frames in flight), video recording, how SatelliteSim is split across files, how satellite indices are
+laid out, the loading screen, and which work runs off the main thread.
 The rendering passes themselves (what each shader computes and in what order) are described in
 [Rendering](../rendering/index.md).
 
@@ -10,8 +10,8 @@ The rendering passes themselves (what each shader computes and in what order) ar
 
 | Layer | Files | Role | Changes |
 |---|---|---|---|
-| Platform | `src/VulkanContext.h/.cpp` | instance, device, swapchain, render passes, depth buffer, command buffer, sync objects, timestamp queries, pipeline cache, and small helpers | rarely |
-| Framework | `src/App.h/.cpp`, `src/Simulation.h`, `src/UIRenderer.h/.cpp`, `src/AudioSystem.h/.cpp`, `src/Harness.h/.cpp`, `src/Log`, `src/Paths` | the window, the frame loop, UI rendering, audio, the harness's command language | occasionally |
+| Platform | `src/VulkanContext.h/.cpp` | instance, device, swapchain, render passes, depth buffer, the frame slots (command buffers, fences, semaphores) and the helpers for memory the CPU and GPU share, timestamp queries, pipeline cache, and small helpers | rarely |
+| Framework | `src/App.h/.cpp`, `src/Simulation.h`, `src/UIRenderer.h/.cpp`, `src/AudioSystem.h/.cpp`, `src/Harness.h/.cpp`, `src/FrameCapture`, `src/VideoEncoder`, `src/VideoRecorder`, `src/Log`, `src/Paths` | the window, the frame loop, UI rendering, audio, the harness's command language, frame readback and video encoding | occasionally |
 | Simulation | `src/simulations/SatelliteSim*` and its helpers | everything the app actually does | constantly |
 
 `main.cpp` parses the harness flags (they decide where logs and settings live), initialises the log, changes
@@ -42,8 +42,9 @@ snapshots, issue reports, bookmarks, caches and exports are written. In order:
 | `recordPrePass(cmd, ctx, dt, imgIdx)` | after compute, before the render pass | offscreen work blitted into the swapchain image |
 | `activeRenderPass(ctx)` | before the render pass | `ctx.renderPass` (clears colour) or `ctx.renderPassLoad` (keeps what the pre-pass blitted) |
 | `recordDraw(cmd, ctx, dt)` | inside the main render pass | the scene's draws; `App` owns begin and end |
-| `recordScreenshotCopy(cmd, ctx, image)` | after the render pass ends | copy the finished frame to a staging buffer if a screenshot is pending |
-| `finalizeScreenshot()` | after the next frame's fence wait | read that staging buffer back |
+| `wantsPreUiCopy()`, `recordPreUiCopy(cmd, ctx, image)` | after `recordDraw()` | when true, `App` ends the main pass, lets the sim copy the frame before the UI (a clean video recording, the harness's settle probe) and draws the UI in the load variant of the pass |
+| `recordScreenshotCopy(cmd, ctx, image)` | after the render pass ends | copy the finished frame to a staging buffer if a screenshot is pending; also the frame's per-slot readback copies |
+| `finalizeScreenshot()` | after the slot's fence wait, once the copy's frame has completed | read that staging buffer back |
 | `photoScaleRequest()` | each frame | a factor > 0 makes `App` render into an offscreen target that many times the window size |
 | `onKey`, `onChar`, `onCursorPos`, `capturesKeyboard()` | input callbacks | `capturesKeyboard()` true keeps `App` from closing the window on Esc |
 | `setAudio(audio)`, `setWindow(window)` | once after init | |
@@ -51,34 +52,42 @@ snapshots, issue reports, bookmarks, caches and exports are written. In order:
 | `virtualCursor(x, y, lmb)` | before `beginFrame()` | the gamepad's virtual cursor overrides the mouse for the UI pass |
 | `targetFpsCap()`, `consumeSwapchainRebuildRequest()` | each frame | frame limiter and present-mode changes |
 | `setBootStatus()` / `bootStatus(line)` | during `init()` | the loading screen ([below](#the-loading-screen)) |
+| `prepareBootChooser(ctx, spec)`, `setBootChoice(option, askAgain)` | before `init()` | the startup graphics chooser ([Controls and settings](controls-and-settings.md#first-run-and-startup)) |
+| `prepareUI(ui)` | once, just before the main loop | load what the first frame's UI needs (the icon atlas) |
 
 ## One frame
 
-There is **one command buffer and one frame in flight**. `App::drawFrame()` waits on the frame fence at the
-top, so everything the previous frame wrote is complete and readable on the CPU at that point: timestamp
-queries, screenshot copies and host-visible readback buffers are all read there or later in the frame.
+The app keeps **two frames in flight**: the CPU records frame *f* while the GPU still runs frame *f* - 1, so a frame
+costs the larger of the CPU and GPU time rather than their sum. The GPU itself still runs the frames one after another
+(each frame's GPU work opens with a full barrier), so only memory the CPU touches needs care: buffers the CPU rewrites
+are mirrored and copied in at the start of the frame's GPU work, staging and readback buffers exist once per frame
+slot, and GPU results read on the CPU are two frames old. The rules are on
+[GPU conventions](gpu-conventions.md#frames-in-flight); `SATLIGHTSIM_FRAMES_IN_FLIGHT=1` runs a single frame.
 
 ```mermaid
 sequenceDiagram
   participant App
   participant Sim as SatelliteSim
   participant GPU
-  App->>GPU: wait for the frame fence
-  App->>App: resolve last frame's timestamps
+  App->>GPU: beginFrameSlot(): wait for this slot's previous frame (two frames back)
+  App->>App: resolve that frame's timestamps
   App->>Sim: finalizeScreenshot()
   App->>Sim: photoScaleRequest() (switch to/from the photo target)
   App->>GPU: acquire swapchain image (not in photo mode)
   App->>Sim: frameDt(), then UI beginFrame
   App->>App: AudioSystem::update() (playlist)
   App->>Sim: buildUI()
+  App->>GPU: beginFrameGpu(): the barrier against the previous frame
   App->>Sim: recordCompute()
   App->>Sim: recordPrePass()
   App->>GPU: begin render pass (activeRenderPass)
   App->>Sim: recordDraw()
+  App->>Sim: recordPreUiCopy() (only when wantsPreUiCopy())
   App->>App: UI record (skipped for a clean screenshot or a photo)
   App->>GPU: end render pass
-  App->>Sim: recordScreenshotCopy()
-  App->>GPU: submit, present
+  App->>Sim: recordScreenshotCopy() (and the frame's readback copies)
+  App->>GPU: recordFrameUploads(), then submit the uploads and the frame together
+  App->>GPU: present
 ```
 
 In SatelliteSim:
@@ -86,7 +95,7 @@ In SatelliteSim:
 - **`buildUI()`** starts by publishing the previous frame's CPU timings (`beginCpuFrameTiming()`), then runs
   the harness (`harnessTick()`) and the cinematic player (`cineTick()`), so a scripted command's effect is in
   the frame it ran in. Then it builds the HUD and windows and handles camera look and picking.
-- **`recordCompute()`** reads last frame's GPU timings, polls the gamepad, applies movement, advances sim
+- **`recordCompute()`** reads the latest resolved GPU timings, polls the gamepad, applies movement, advances sim
   time and updates the Sun, Moon, observer frame, stars, planets and ambience on the CPU. It then records the
   GPU work: the satellite mesh pass, the shared scene-depth pass, the orbit and photometry compute passes, the
   cloud passes, the flare and glare passes, trails and the model viewer. The order and the data flow are on
@@ -98,10 +107,39 @@ In SatelliteSim:
 
 `App` writes GPU timestamp slots 0 (frame start), 7 (after `recordDraw()`) and 8 (after the UI); SatelliteSim
 writes slots 1 to 6. The slot table lives in `VulkanContext.h`; see [Profiling](profiling.md#gpu-timestamp-buckets).
+Every `App` phase is a section of the frame profile (`app.wait_fence`, `app.build_ui`, `app.record_compute`,
+`app.uploads`, `app.submit`, `app.present`, ...), which is how a slow frame is attributed
+([Profiling](profiling.md#frame-profile-and-hitches)).
 
 While the HQ photo target is active, `App` neither acquires nor presents. A few times a second it presents a
 progress frame instead (`App::photoProgressFrame()`): it blits the photo image down into a swapchain image and
 draws the UI over it, so a long export shows progress rather than a frozen window.
+
+## Video recording
+
+Video is recorded by three framework classes and one sim file:
+
+| Piece | Role |
+|---|---|
+| `src/FrameCapture.h/.cpp` | asynchronous readback: a ring of host-cached buffers the frame's own command buffer copies the image into (blitted to the output size when it differs); a slot is read only once `completedFrame()` has passed its frame |
+| `src/VideoEncoder.h/.cpp` | NV12 (BT.709, limited range) to an H.264 `.mp4`: Windows Media Foundation's sink writer (a hardware encoder where the driver has one, else the software one; nothing is bundled), else an `ffmpeg` on `PATH` fed raw NV12 |
+| `src/VideoRecorder.h/.cpp` | the clock, the worker thread that converts and encodes, the statistics |
+| `src/simulations/SatelliteSimVideo.cpp` | the player's recording, the REC badge, the harness's settle probe |
+
+**The frame thread never waits.** A frame with no free readback slot is dropped and its time given to the next
+capture, which is written repeated, so a video keeps the clock it was recorded on (wall time when playing, the
+fixed step in a harness run). The lossless mode (the harness's `path play ... video=` and the Cinematics window's
+export) instead requests each frame and holds the path back briefly until a slot is free.
+
+A clean video while the player sees the UI: `wantsPreUiCopy()` makes `App` end the main pass after `recordDraw()`,
+call `recordPreUiCopy()` (which leaves the swapchain image in `TRANSFER_DST_OPTIMAL`) and draw the UI in the load
+variant of the pass. A video with the UI is copied in `recordScreenshotCopy()` instead. The HQ photo target is never
+recorded. The harness's `wait settle auto` reuses `FrameCapture` as a quarter-size probe of every settle frame
+before the UI ([Automation harness](harness.md#flow-and-time)).
+
+Recording costs about nothing on the frame: at 1920 x 1009 on an RTX 3070 Ti the frame time and the GPU move by
+0 to 0.5 ms. The worker's NV12 conversion takes about 3.7 ms and the hardware encode about 0.8 ms per 1920 x 1008
+frame.
 
 ## SatelliteSim's files
 
@@ -123,6 +161,11 @@ source files by subject:
 | `SatelliteSimLightning.cpp`, `SatelliteSimRain.cpp` | lightning channels and the rain particles |
 | `SatelliteSimLaunches.cpp` | launches: the schedule, trains and retirees, rockets, plumes, pads, ships, crew flights, mission milestones |
 | `SatelliteSimMissions.cpp` | the Missions window |
+| `SatelliteSimKesslerTracker.cpp` | the Missions window's Kessler tracker (counts, the debris globe, the latest breakups) |
+| `SatelliteSimWeather.cpp`, `SatelliteSimWeatherWindow.cpp`, `SatelliteSimWeatherFeatured.cpp`, `SatelliteSimWeatherCyclones.cpp` | the storm objects' per-frame upload and indices, tornadoes; the Weather window, its radar, featured events and named storms |
+| `SatelliteSimWildfire.cpp`, `SatelliteSimHaboob.cpp` | wildfires (points, flames, smoke, burn scars) and haboob dust walls |
+| `SatelliteSimRefraction.cpp` | the atmospheric refraction table round the eye ([Refraction](../rendering/refraction.md)) |
+| `SatelliteSimVideo.cpp` | video recording and the harness's settle probe |
 | `SatelliteSimKessler.cpp` | the Sun's Fury: the background worker, the main thread's mirror of its output, uploads, dust clouds and re-entry fireballs |
 | `UIPalette.h` | the UI colour palette and themes shared by the UI files |
 
@@ -130,8 +173,10 @@ Helpers with their own classes: `SatModel` (geometry, materials, attitude, lobe 
 photometric evaluator), `SatMesh` / `SatMeshRenderer` / `SatEnvProbes` (satellite meshes, the model viewer,
 environment probes), `SatBench` / `SatBenchmark` / `SatTrace` (benchmarking and traces), `Ambience`,
 `Cinematic`, `SpaceWeather` (the aurora's activity as a function of time), `Launches` (the launch catalogue,
-booster and upper-stage tracks, orbit raising and exhaust parcels) and `Kessler` (the debris world: breakups, the
-collision engine, the event log). `SatModel`, `SatPhotometry`, `SatBenchmark`, `SatBench` and `SatTrace` have no
+booster and upper-stage tracks, orbit raising and exhaust parcels), `Kessler` (the debris world: breakups, the
+collision engine, the event log), `Weather` and `StormClimatology` (the storm catalog: storms, lines, cyclones as
+pure functions of sim time), `Biome` and `Wildfire` (the land-cover map and the fires) and `Refraction` (the ray
+tracer behind the refracted Sun). `SatModel`, `SatPhotometry`, `SatBenchmark`, `SatBench` and `SatTrace` have no
 Vulkan dependency, which is what lets `SatModelTool` compile them without the app.
 
 ## Satellite indices
@@ -219,13 +264,23 @@ The renderer and the simulation run on the main thread. Work moved off it:
 | Thread | Work |
 |---|---|
 | miniaudio's audio thread | mixing; synth voices render there and read their parameters once per 64-frame block |
+| ambience voice creation | a voice is made on a worker the first time its layer becomes audible; it plays once made, at the gain set meanwhile |
 | music analysis worker (`music::Library`) | analyses the soundtrack at startup, cache first; synchronous in a harness run so the key is deterministic |
 | bulk export worker | the photometry bulk export (Settings, Photometry tab), over snapshots of the type and orbit data |
 | screenshot encoder | PNG encoding of a screenshot or capture; the next `finalizeScreenshot()` joins the previous encode |
+| video worker (`VideoRecorder`) | converts read-back frames to NV12 and feeds the encoder ([Video recording](#video-recording)) |
+| log writer (`Log::lineDeferred()`) | writes and syncs log lines a slow frame would otherwise pay for (the hitch lines, the launch jobs' and tornado probes' messages) |
+| model bakes at startup | the satellite, rocket, pad and ship models are tessellated and baked on up to 15 threads, largest first, their log lines written in roster order afterwards |
 | `parallelFor()` | short-lived threads that evaluate the satellite mesh instances' photometry and poses each frame, and build new launch batches in parallel (at most about 8 ms of building a frame) |
-| the launch batch builder | after a time jump (more than 48 batches missing) or past 1 h/s of warp, builds the missing launch batches in chunks at below-normal priority on all cores but two; the main thread moves each finished prefix into the cache within about 2 ms a frame |
+| the launch batch builder | after a time jump of an hour or more, after a walk with many batches missing, or past 1 h/s of warp, builds the missing launch batches in chunks at below-normal priority on all cores but two; the main thread moves each finished prefix into the cache within about 2 ms a frame |
+| Missions window refresh | builds the batches the Missions window's rows need on a worker of its own; the rows wait for it |
 | plume parcel jobs (`std::async`) | a launch's exhaust parcels, integrated from 2 minutes before lift-off; at most four in flight |
 | the debris cascade worker (`KesslerWorker`) | the Sun's Fury collision engine, at below-normal priority, simulating a minute of the current time warp ahead of sim time; the main thread mirrors its output within a budget of a few milliseconds a frame, and sim time holds at the mirrored frontier |
+| debris restart, dispose and retire threads | rebuilding the debris world after a breakup that has no rollback point, freeing a replaced world, freeing the GPU buffers a pool growth retired |
+| the storm catalog's thread pool | a persistent pool (3/4 of the hardware threads, at most 12; `SATLIGHTSIM_STORM_THREADS` overrides it) that builds missing storm spawn bins, squall-line bins and cyclone seasons after a time jump, lists towers and shields into their bins each frame, and builds a wildfire's front points; the results are joined in a fixed order, so they are identical to a serial build |
+| the storm envelope index | in time warp, the weather bake's envelope index is built on threads of its own while the main thread records the frame, and joined before the frame's uploads |
+| the Weather window's event search | the forward search for the featured events runs on a second ("scout") storm catalog on a worker while the window is open; the main catalog is never asked about other times, since that would evict the bins the renderer needs |
+| wildfire world scan | the fires burning worldwide, for the Weather window's cards |
 | harness watchdog | hard-exits a harness run past its `--timeout` |
 
 ## Where in the code
@@ -235,7 +290,8 @@ The renderer and the simulation run on the main thread. Work moved off it:
 | `src/main.cpp` | flag parsing, log, working directory, simulation choice |
 | `src/App.cpp` | `run()`, `drawFrame()`, `bootFrame()`, `bootStatus()`, `photoProgressFrame()`, GLFW callbacks |
 | `src/Simulation.h` | the interface |
-| `src/VulkanContext.h/.cpp` | platform layer, timestamp slots, `beginPhotoTarget()`, pipeline cache |
+| `src/VulkanContext.h/.cpp` | platform layer, frame slots and the shared-memory helpers, timestamp slots, `beginPhotoTarget()`, pipeline cache |
+| `src/FrameCapture.*`, `src/VideoEncoder.*`, `src/VideoRecorder.*`, `src/simulations/SatelliteSimVideo.cpp` | video recording |
 | `src/Paths.cpp` | `exeDir()`, `userDataDir()` |
 | `src/simulations/SatelliteSim.h` | the class, all members and GPU struct mirrors, `kLaunchCap`, `poolIdx0()`, `SatRng` |
 | `src/simulations/SatelliteSim.cpp` | `buildOrbits()`, `uploadSatOrbits()`, `rebuildRoster()` |
