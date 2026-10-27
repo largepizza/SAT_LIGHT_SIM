@@ -153,6 +153,11 @@ struct DustCloud
 // the sky's radiance, SatelliteSim::skyExposure()), for the faint plumes' skip in dustCloudsCS; dustPad2 = floatBits(the
 // plumes' billow contrast, "Plume billows", 1 = as tuned).
 layout(set = 0, binding = 23) readonly buffer DustBuf { uint dustCount; uint dustPad0, dustPad1, dustPad2; DustCloud dust[]; };
+// The v2 march's per-ray cloud OPACITY PROFILE (2026-10-26, cloud_v2_march.comp cv2Profile): per 2x2 block of the cloud
+// grid, x = first contact | half opacity << 16, y = last contact | transmittance x 65535 << 16 (depths log2 m x 65534/27,
+// 0xFFFF none; all ones = no cloud). The plumes, smoke and flames are composited through the cloud by it.
+layout(std430, set = 0, binding = 26) readonly buffer CloudProfile { uvec2 cv2Profile[]; };
+float cv2ProfileDepth(uint code) { return exp2(float(code) * (27.0 / 65534.0)); }
 
 // Per-tile cull of the dust / plume / flame list (2026-10-21, Forward+ like cullBeamsForTile below): one workgroup owns
 // a 16x16-texel tile, its 256 threads test every Gaussian's view cone once against the tile's bounding cone and set a
@@ -222,6 +227,23 @@ float dustErf(float x)
     return sign(x) * sqrt(max(t, 0.0));
 }
 
+// A Gaussian's share of its optical depth (along the ray, over [0, T]) in each of the cloud profile's four depth segments:
+// [0, K.x) before the cloud, [K.x, K.y) to its half opacity, [K.y, K.z) to its last contact, past it.
+vec4 dustSegW(float tc, float sq, float T, vec3 K, float E0, float ET)
+{
+    if (K.x >= T) return vec4(1.0, 0.0, 0.0, 0.0);   // no cloud on this ray before its end (the common case)
+    float den = ET - E0;
+    if (den < 1e-6) {
+        float tm = clamp(tc, 0.0, T);
+        return tm < K.x ? vec4(1.0, 0.0, 0.0, 0.0) : tm < K.y ? vec4(0.0, 1.0, 0.0, 0.0)
+             : tm < K.z ? vec4(0.0, 0.0, 1.0, 0.0) : vec4(0.0, 0.0, 0.0, 1.0);
+    }
+    float e1 = dustErf(sq * (clamp(K.x, 0.0, T) - tc));
+    float e2 = dustErf(sq * (clamp(K.y, 0.0, T) - tc));
+    float e3 = dustErf(sq * (clamp(K.z, 0.0, T) - tc));
+    return max(vec4(e1 - E0, e2 - e1, e3 - e2, ET - e3), vec4(0.0)) / den;
+}
+
 vec3 dustMul(DustCloud d, vec3 v)
 {
     return vec3(d.ia.x * v.x + d.ib.x * v.y + d.ib.y * v.z,
@@ -246,9 +268,18 @@ vec3 tornadoCyl(vec3 r0, vec3 up, vec3 e1, vec3 e2, float ph)
 // Rocket plumes (launches, 2026-10-18: SatelliteSimLaunches.cpp) are real clouds: their optical depth is summed
 // (tauP), their light per unit optical depth averaged (Lp / tauP), so a thick trail saturates and hides what is
 // behind it (the caller composites 1 - exp(-tauP)); tP = the distance their light comes from (light-weighted).
-vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le, out float tScat,
-                  out vec3 Lp, out float tauP, out float tP, out float aP, out float tE, out float tauSm)
+// pK / pOH / oR (2026-10-26): the cloud's opacity profile along this ray (cv2Profile: first contact, half opacity, last
+// contact; pOH = the share of the cloud's opacity reached at K.y; oR = the cloud's opacity): every Gaussian's optical depth
+// and light are split over the profile's four depth segments (sTau, sL) for the caller to composite through the cloud in
+// depth order, and the emissive light is dimmed by the cloud in front of it (LeX: its derivative w.r.t. the cloud's T).
+vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, float pOH, float oR, out vec3 Le, out float tScat,
+                  out vec4 sTau, out vec3 sL[4], out vec3 LeX, out float tauP, out float tP, out float aP, out float tE,
+                  out float tauSm)
 {
+    sTau = vec4(0.0);
+    sL[0] = vec3(0.0); sL[1] = vec3(0.0); sL[2] = vec3(0.0); sL[3] = vec3(0.0);
+    LeX = vec3(0.0);
+    vec4 kSegXm = vec4(0.0, 0.5 * pOH, 0.5 * (pOH + 1.0), 1.0);   // each segment's mean share of the cloud's opacity
     tauSm = 0.0;   // wildfire smoke's share of tauP (spectral: the caller, kSmokeSpec)
     uint smF = smokeFirst(dustPad0), smN = smokeCount(dustPad0);
     Le = vec3(0.0);
@@ -256,7 +287,6 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
     float wE = 0.0;
     float wPL = 0.0, tPL = 0.0;   // plumes: their LIGHT-weighted distance (below)
     tScat = 0.0;
-    Lp = vec3(0.0);
     tauP = 0.0;
     tP = 0.0;
     aP = 0.0;
@@ -275,11 +305,9 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
     vec3 L = vec3(0.0);
     float wT = 0.0;
     float Ls = 0.0;
-    vec3 Lf = vec3(0.0);   // plumes: the sky's light (isotropic, unshadowed: launchFillVisuals)
     // The engine lights (2026-10-20, SatelliteSim::engineLightAdd: the dust list's tail, count in dustPad0): the
     // burning engines and the pads' floodlights light the plumes (and the exhaust round the pad) at night.
     uint nEL = min(dustPad0 & 255u, 32u);
-    vec3 LpE = vec3(0.0);
     vec3 plEnuX, plEnuY, plEnuZ;   // the eye's ENU axes in ECEF (the plumes' Earth-fixed billow field, below)
     enuBasis(pc.obsECEFDir.xyz, plEnuX, plEnuY, plEnuZ);
     vec3 plSunE = sunDir.x * plEnuX + sunDir.y * plEnuY + sunDir.z * plEnuZ;
@@ -306,7 +334,8 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
         if (e > 60.0)
             continue;
         float sq = sqrt(0.5 * q);
-        float I  = exp(-0.5 * e) * sqrt(PI / (2.0 * q)) * (dustErf(sq * (T - tc)) - dustErf(-sq * tc));
+        float E0 = dustErf(-sq * tc), ET = dustErf(sq * (T - tc));
+        float I  = exp(-0.5 * e) * sqrt(PI / (2.0 * q)) * (ET - E0);
         float tau = d.ia.w * d.c.w * max(I, 0.0);
         // Smoke / dust sheets follow the Earth's curve (2026-10-25, issue 20261025_185309 "Odd line from space"): a
         // wildfire's pall is a FLAT Gaussian up to ~500 km by 350 km sigma and ~1-2 km thick, tangent at its centre, and
@@ -350,8 +379,11 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
             }
             if (tau * lb * expo < 2e-7) continue;
         }
+        vec4 wSeg = (d.col.w > 0.5) ? dustSegW(tc, sq, T, pK, E0, ET) : vec4(0.0);
         if (d.col.w > 0.5 && d.col.w < 1.5) {   // emissive (a re-entry fireball's trail): no phase, no shadow
-            Le += d.col.rgb * tau;
+            float xmE = dot(wSeg, kSegXm);     // its mean share of the cloud's opacity in front of it
+            Le  += d.col.rgb * tau * (1.0 - oR * xmE);
+            LeX += d.col.rgb * tau * xmE;
             float we = tau * dot(d.col.rgb, vec3(0.3333));
             wE += we;
             tE += we * clamp(tc, 0.0, T);
@@ -503,14 +535,28 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
             // Smoke: the light that comes out of a thick column has crossed some of it on the way out (blue lost
             // first): thick cores orange-brown, thin edges grey-blue.
             if (isSm) redd *= exp(-(isWall ? min(0.5 * tau, 1.2) : min(0.15 * tau, 0.3)) * (kSmokeSpec - kSmokeSpec.r));
-            Lp   += tau * d.col.rgb * redd * (litP * shade * (1.0 - flS));   // the sunlight it scatters (phase below)
-            Lf   += tau * d.col.rgb * redd * (flS * mix(shade, 1.0, 0.5));   // the sky's light
+            // The CLOUDS' light on it (2026-10-26, the unified composite), as the march lights its own samples: the Sun
+            // through the clouds' shadow (the Sun transmittance volume at its lit point) and the sky light through the
+            // cloud above it (cv2VtUp: the deck's diffuse transmission), plus the sunlight the deck scatters down
+            // (Eddington: (1/2 + 3/4 mu) Td less the direct beam, x 2 for the fluence of a diffuse dome on an isotropic
+            // scatterer). Until then a plume, a smoke column or a ground cloud under an overcast stood fully sunlit and
+            // under a clear blue sky. Not tornadoes (sk >= 256: the CPU lights them through their storm's column, probed).
+            float stvP = 1.0, tdP = 1.0;
+            float hPl  = length(P) - R_EARTH;
+            if (tau > 0.01 && sk < 256.0 && hPl < 16000.0) {
+                if (cv2.stvH.z > 0.5) stvP = cv2StvT((tLit >= 0.0 ? tLit : clamp(tc, 0.0, T)) * dir, hPl);
+                if (cv2.gnd.x > 0.5) tdP = cv2VtUpH(cv2VtUpCell(plEnuX * P.x + plEnuY * P.y + plEnuZ * P.z), hPl);
+            }
+            float muP = max(dot(P, sunDir) / max(length(P), 1.0), 0.0);
+            float dnP = 2.0 * muP * max(min((0.5 + 0.75 * muP) * tdP, 1.0) - stvP, 0.0);
+            vec3  lpI = tau * d.col.rgb * redd * (litP * shade * stvP * (1.0 - flS));   // the sunlight it scatters (phase below)
+            vec3  lfI = tau * d.col.rgb * redd * mix(shade, 1.0, 0.5) * (flS * tdP + litP * (1.0 - flS) * dnP);   // diffuse
             // (2026-10-20, QA: a burning stage seen from 300 m sat in a white ball hundreds of metres across: its
             // newest exhaust Gaussians are wide, and each was lit as if all its mass sat at the ray's closest
             // approach, next to the flame. The mass along the ray spreads over ~1 / sqrt(q): the mean inverse square
             // over it is ~1 / (r^2 + 1 / q).)
             float sAl2 = 1.0 / q;
-            vec3  lpe0 = LpE;
+            vec3  lpeI = vec3(0.0);
             // Only the lights that can reach this Gaussian at all (cullDustForTile's per-Gaussian mask; view-independent).
             uint lm = sDustLM[i];
             while (lm != 0u) {
@@ -540,7 +586,7 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
                                (dustErf(sL * (lL + bL)) - dustErf(sL * bL));
                     shL = mix(exp(-d.ia.w * d.c.w * max(IL, 0.0)), 1.0, 0.25);
                 }
-                LpE += el.ia.rgb * (tau * lumpA * shL * (d.col.w - 2.0) * el.c.w / (r2 + sAl2 + el.ia.w * el.ia.w));
+                lpeI += el.ia.rgb * (tau * lumpA * shL * (d.col.w - 2.0) * el.c.w / (r2 + sAl2 + el.ia.w * el.ia.w));
             }
             if (isSm) tauSm += tau;                   // (smoke dims what is behind it spectrally: the caller)
             // its albedo (col.w = 2 + albedo): the caller gives back 0.85 x albedo x (1 - exp(-tau)) of the BACKGROUND, the sky's
@@ -555,9 +601,19 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
             // exhaust beside a burning stage 300 m off, and the glow vanished wherever a far cloud stood behind it
             // (dark half-res blocks along the horizon).
             float wl = tau * dot(d.col.rgb, vec3(1.0 / 3.0)) * (litP * shade * (1.0 - flS) + flS) +
-                       dot(LpE - lpe0, vec3(1.0 / 3.0)) + 1e-9 * tau;
+                       dot(lpeI, vec3(1.0 / 3.0)) + 1e-9 * tau;
             wPL += wl;
             tPL += wl * clamp(tc, 0.0, T);
+            // Per unit optical depth: single scattering by the phase, and as the parcel thickens multiple scattering takes
+            // over (a thick sunlit trail is a white cloud, ~albedo / pi), + a term for optically THICK exhaust (tau >~ 2,
+            // the low trail and the ground clouds); the sky light diffusely; the engine lights with the light multiple
+            // scattering they were tuned with. Per GAUSSIAN (2026-10-26: was of the whole stack along the ray, which the
+            // depth segments below no longer sum).
+            float msI0 = 0.075 * (1.0 - exp(-0.6 * tau));
+            float msI  = msI0 + 0.17 * (1.0 - exp(-0.25 * tau * tau));
+            vec3  LiP  = lpI * (phaseP + msI) + lfI * (1.0 / (4.0 * PI) + msI) + lpeI * (1.0 / (4.0 * PI) + msI0);
+            sTau  += tau * wSeg;
+            sL[0] += LiP * wSeg.x; sL[1] += LiP * wSeg.y; sL[2] += LiP * wSeg.z; sL[3] += LiP * wSeg.w;
             continue;
         }
         float sp = dot(P, sunDir);
@@ -571,18 +627,6 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, out vec3 Le,
     tE = wE > 0.0 ? tE / wE : 0.0;
     if (tauP > 0.0) {
         tP = wPL > 0.0 ? tPL / wPL : tP / tauP;
-        // Per unit optical depth: single scattering by the phase, and as the trail thickens multiple scattering
-        // takes over (a thick sunlit trail is a white cloud: ~albedo / pi, not the phase's 0.05); the sky light on
-        // it diffusely. Then the trail's opacity.
-        // (2026-10-20: + a second term for optically THICK exhaust, tau >~ 2: the low trail and the ground clouds, a
-        // white cumulus of steam in sunlight, reach ~albedo / pi as the comment says; at 0.075 alone they were as dim
-        // as the horizon haze behind them, invisible from a few km by day. Thin trails (the twilight bells) unchanged.)
-        float ms0 = 0.075 * (1.0 - exp(-0.6 * tauP));
-        float ms  = ms0 + 0.17 * (1.0 - exp(-0.25 * tauP * tauP));
-        // (the engine lights keep the multiple scattering they were tuned with: with the thick term the steam round a
-        // night launch saturated into a featureless orange-white ball)
-        Lp = (Lp * (phaseP + ms) + Lf * (1.0 / (4.0 * PI) + ms) + LpE * (1.0 / (4.0 * PI) + ms0)) / tauP *
-             (1.0 - exp(-tauP));
         aP = Ls / max(tauP - tauSm, 1e-9);
     }
     return L * phase;
@@ -2116,9 +2160,33 @@ void main() {
     if (dustCount > 0u) {
         // Extinction to the cloud, not to infinity: looking down from above the air, the path to infinity ends in
         // the ground through the whole atmosphere, and every cloud and fireball trail below the eye went dark.
-        vec3  dLe, pL;
+        // The cloud's opacity profile along this ray (cv2Profile, this frame's ray of the 2x2 block of the cloud grid),
+        // scaled to the resolved cloud's opacity (the profile gives the depths, the resolve the amount). Without one (no
+        // cloud in this frame's ray, the far layer) the cloud's mean distance +-15% stands in.
+        float oR  = clamp(1.0 - rc.a, 0.0, 1.0);
+        vec3  pK  = vec3(1e30);
+        float pOH = 1.0;
+        if (oR > 1e-3) {
+            ivec2 rsz = textureSize(cv2ResolvedTex, 0), osz = imageSize(targetA);
+            ivec2 pb  = min((coord * rsz) / max(osz, ivec2(1)), rsz - 1) >> 1;
+            uvec2 pr  = cv2Profile[pb.y * ((rsz.x + 1) / 2) + pb.x];
+            if (pr.x != 0xFFFFFFFFu && tCloudMeanT < kNoSurfaceT) {
+                float tF = cv2ProfileDepth(pr.x & 0xFFFFu), tL = max(cv2ProfileDepth(pr.y & 0xFFFFu), tF);
+                float Tp = float(pr.y >> 16u) * (1.0 / 65535.0);
+                bool  hH = (pr.x >> 16u) != 0xFFFFu;
+                float tH = hH ? clamp(cv2ProfileDepth(pr.x >> 16u), tF, tL) : tL;
+                pK  = vec3(tF, tH, tL);
+                pOH = hH ? clamp(0.5 / max(1.0 - Tp, 0.5), 0.0, 1.0) : 1.0;
+            } else if (tCloudMeanT < kNoSurfaceT) {
+                pK  = tCloudMeanT * vec3(0.85, 1.0, 1.15);
+                pOH = 0.5;
+            }
+        }
+        vec3  dLe, LeX;
+        vec4  sTau;
+        vec3  sL[4];
         float dT, pTau, pT, pA, eT, pTauS;
-        vec3  dc = dustCloudsCS(obsPos, dir, sunDir, tScene, dLe, dT, pL, pTau, pT, pA, eT, pTauS);
+        vec3  dc = dustCloudsCS(obsPos, dir, sunDir, tScene, pK, pOH, oR, dLe, dT, sTau, sL, LeX, pTau, pT, pA, eT, pTauS);
         // Where the nearest emissive / plume light is, for a texel with no cloud of its own (alpha below): sat_sky.frag
         // composites this texel over a satellite / rocket MESH only when its distance is nearer than the mesh, and
         // the no-cloud marker (60000 km) hid a burning stage's flame behind the stage's own hull (2026-10-20).
@@ -2133,18 +2201,34 @@ void main() {
             // Wildfire smoke (2026-10-23) absorbs and scatters out of the line of sight SPECTRALLY and gives no sky light
             // back (its own sky light is in pL): the Sun through it is dimmed and red.
             pSmokeK = pTauS / pTau;
-            float pTauO = max(pTau - pTauS, 0.0);
-            vec3  pTr  = vec3(exp(-pTauO) + 0.85 * pA * (1.0 - exp(-pTauO))) * exp(-pTauS * kSmokeSpec);
-            // In front of / behind the cloud by a BLEND over +-(15% + 150 m) of the distance (2026-10-23): a tornado's
-            // funnel top and wall cloud sit at the cloud base's own distance, and a hard switch on the cloud's noisy
-            // mean distance cut a cloud-shaped hole round the funnel's top.
-            float fF   = (tCloudMeanT >= kNoSurfaceT) ? 1.0
-                       : smoothstep(-1.0, 1.0, (tCloudMeanT - pT) / (0.15 * pT + 150.0));
-            B_total = mix(B_total + pL * pExt * A_total, B_total * pTr + pL * pExt, fF);
-            gBB = mix(gBB, gBB * dot(pTr, vec3(1.0 / 3.0)), fF);
-            gBA = mix(gBA + pL * pExt * gAA, gBA * pTr, fF);
-            A_total *= pTr;
-            gAA *= pTr;
+            // THROUGH the cloud, in depth order (2026-10-26, the unified composite): the four segments of the cloud's
+            // opacity profile, front to back. In each, the cloud's light there (its share of the resolved radiance) is
+            // dimmed by the plumes in front and half of the segment's own; the plumes' light there by the cloud in front
+            // (its opacity at the segment's middle) and the plumes in front. The rest of the composite (legacy cirrus,
+            // aurora: behind the cloud) by every plume. It replaced ONE front / behind switch at the cloud's mean distance
+            // (blended over +-15%): a plume inside a cloud, a funnel in a rain shaft, smoke against a deck were wholly in
+            // front or behind, cut along the half-res grid where the mean distance crossed them.
+            vec3  Bbg = B_total - B_cloud;
+            vec3  Pf  = vec3(1.0), Bn = vec3(0.0), gBAn = vec3(0.0);
+            float gBBn = 0.0;
+            vec4  xA = vec4(0.0, 0.0, pOH, 1.0), xB = vec4(0.0, pOH, 1.0, 1.0);
+            for (int j = 0; j < 4; ++j) {
+                float tj  = sTau[j];
+                float tO  = tj * (1.0 - pSmokeK), tS = tj * pSmokeK;
+                vec3  trF = vec3(exp(-tO) + 0.85 * pA * (1.0 - exp(-tO))) * exp(-tS * kSmokeSpec);
+                vec3  trH = vec3(exp(-0.5 * tO) + 0.85 * pA * (1.0 - exp(-0.5 * tO))) * exp(-0.5 * tS * kSmokeSpec);
+                vec3  Lj  = tj > 1e-9 ? sL[j] * ((1.0 - exp(-tj)) / tj) * pExt : vec3(0.0);
+                float f   = xB[j] - xA[j], xm = 0.5 * (xA[j] + xB[j]);
+                Bn   += B_cloud * f * Pf * trH + Lj * (1.0 - oR * xm) * Pf;
+                gBBn += f * dot(Pf * trH, vec3(1.0 / 3.0));
+                gBAn += Lj * xm * Pf;
+                Pf   *= trF;
+            }
+            B_total = Bbg * Pf + Bn;
+            gBA = gBA * Pf + gBAn;
+            gBB *= gBBn;
+            A_total *= Pf;
+            gAA *= Pf;
         }
         if (dot(dc, dc) + dot(dLe, dLe) > 0.0) {
             float ext = dot(dc, dc) > 0.0 ? pow(10.0, -0.4 * atmExtinctionMag(obsPos, dir, max(dT, 1.0), cloud.extinctionCoeff)) : 0.0;
@@ -2154,12 +2238,13 @@ void main() {
             // The emissive light (a rocket's flame and its lit exhaust, a fireball's trail) only where the clouds are
             // NOT behind it (2026-10-20, issue 20261019_222829): a launch's glow seen from 3.7 km over a cumulus far
             // below it was cut out by that cloud, a black hole in the glow.
-            bool  eFront = dot(dLe, dLe) > 0.0 && eT < tCloudMeanT;
-            float supE = eFront ? 1.0 : sup;
-            B_total += dc * ext * sup + dLe * supE;
+            // (2026-10-26: the emissive light is dimmed by the cloud in front of it by depth in dustCloudsCS, the opacity
+            // profile; LeX its derivative with respect to the cloud's transmittance.)
+            B_total += dc * ext * sup + dLe;
+            gBA += LeX;
             float mA = dot(A_total, vec3(1.0 / 3.0));
             if (obsEffH < 20000.0 && mA > 0.0 && mA < 1.0)
-                gBA += (dc * ext + (eFront ? vec3(0.0) : dLe)) * (3.0 * mA * mA * dot(gAA, vec3(1.0 / 3.0)));
+                gBA += dc * ext * (3.0 * mA * mA * dot(gAA, vec3(1.0 / 3.0)));
         }
     }
 

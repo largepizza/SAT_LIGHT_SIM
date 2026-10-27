@@ -5347,6 +5347,10 @@ private:
     VkBuffer cv2FlashHeadBuf = VK_NULL_HANDLE;
     VkDeviceMemory cv2FlashHeadMem = VK_NULL_HANDLE;
     VkBuffer cv2BlueNoiseBuf = VK_NULL_HANDLE;   // 64x64 blue-noise tile (march binding 15)
+    // The march's per-ray cloud opacity profile (2026-10-26): one uvec2 per 2x2 block of the cloud grid, march binding 22,
+    // cloud_march.comp binding 26 (the unified volumetric composite). Sized with the cloud targets.
+    VkBuffer       cv2ProfileBuf = VK_NULL_HANDLE;
+    VkDeviceMemory cv2ProfileMem = VK_NULL_HANDLE;
     VkDeviceMemory cv2BlueNoiseMem = VK_NULL_HANDLE;
     static constexpr uint32_t kCv2FlashMax = 128;             // == kCv2FlashMax in cloud_lightning.glsl
     // + review 22's rain map (cloud_lightning.glsl): 4 workgroup maxima and 32 x 32 rain rates after the flashes.

@@ -113,6 +113,12 @@ layout(std430, set = 0, binding = 19) buffer TileBuf { uint tPad, tDispX, tDispY
 layout(std430, set = 0, binding = 15) readonly buffer BlueNoise { uint cv2BlueNoise[1024]; };   // 64x64, 8-bit ranks
 layout(set = 0, binding = 14) uniform sampler2DArray cv2SunLutTex;   // layer 0 the Sun's colour, 1 the zenith sky's
 layout(set = 0, binding = 11, rg32f)   uniform writeonly image2D outDepth;
+// The ray's cloud OPACITY PROFILE (2026-10-26, the unified volumetric composite): per 2x2 block of the cloud grid (this
+// frame's ray), the depths of first contact, half opacity and last contact + the cloud's transmittance, so
+// cloud_march.comp can put each plume / smoke / flame Gaussian in front of, inside or behind the cloud by depth instead
+// of one front/behind switch at the mean distance. Packed by cv2ProfileCode (log2 metres in 16 bits; 0xFFFF none).
+layout(std430, set = 0, binding = 22) writeonly buffer CloudProfile { uvec2 cv2Profile[]; };
+uint cv2ProfileCode(float t) { return uint(clamp(log2(max(t, 1.0)) * (65534.0 / 27.0), 0.0, 65534.0)); }
 
 const int N_LIGHT = 12;
 vec2 optDepth(vec3 p, vec3 d, float segTotal) {
@@ -681,6 +687,7 @@ void main()
     // cloud bases.
     float Tent = -1.0;
     float dAcc = 0.0, wAcc = 0.0, tHalf = -1.0;
+    float tFst = 1e30, tLst = 0.0;   // first / last cloud contact (the opacity profile, cv2Profile)
     float odRain = 0.0;                               // debug view 5
     vec4  odLayer = vec4(0.0);                        // debug view 7: low, mid, anvil, high
     bool  dbgLayers = int(cv2.shell.z + 0.5) == 7;
@@ -890,6 +897,7 @@ void main()
             bF[nB] = f; bT[nB] = t; bTr[nB] = T / Tent; bCov[nB] = covB; bW[nB] = w; bH[nB] = hV; ++nB;
             wAcc += w;
             dAcc += w * t;
+            if (w > 1e-5) { tFst = min(tFst, t); tLst = t + stepW; }
             T    *= Tstep;
             if (tHalf < 0.0 && T < 0.5) tHalf = t;
             if (tq.x > 1e29 && T < 0.8)  tq.x = t;
@@ -1232,6 +1240,15 @@ void main()
         dAcc += w * (dAcc / wAcc + remLen * 0.5);
         wAcc += w;
         T    *= Trem;
+    }
+
+    {   // The opacity profile (cv2Profile): the cloud's own, before the fog / dust (not in it yet).
+        ivec2 pb = pix >> 1;
+        uint  pi = uint(pb.y * ((halfSize.x + 1) / 2) + pb.x);
+        bool  pv = wAcc > 1e-4 && T < 0.999;
+        cv2Profile[pi] = pv ? uvec2(cv2ProfileCode(tFst) | (((T < 0.5 && tHalf > 0.0) ? cv2ProfileCode(tHalf) : 0xFFFFu) << 16u),
+                                    cv2ProfileCode(max(tLst, tFst)) | (uint(clamp(T, 0.0, 1.0) * 65535.0 + 0.5) << 16u))
+                            : uvec2(0xFFFFFFFFu);
     }
 
     // ── Fog and dust (cv2FogDust): a short march of their own, after the clouds' ──

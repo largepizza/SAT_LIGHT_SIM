@@ -682,7 +682,6 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
             imageWrite(cv2MarchDescSet, 25, TEX, &elevI),
             bufferWrite(cv2MarchDescSet, 15, SSBO, &blueNoise),
             bufferWrite(cv2MarchDescSet, 19, SSBO, &tiles),
-            bufferWrite(cv2MarchDescSet, 22, SSBO, &blueNoise),
             bufferWrite(cv2MarchDescSet, 23, SSBO, &cdc),
             bufferWrite(cv2MarchDescSet, 26, SSBO, &storms),
             imageWrite(cv2MarchDescSet, 24, TEX, &mieI),
@@ -744,6 +743,10 @@ void SatelliteSim::createCloudsV2Targets(VulkanContext &ctx)
          cv2AgeImg, cv2AgeMem, cv2AgeView);
     make(cv2HalfW, cv2HalfH, VK_FORMAT_R32_SFLOAT, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
          cv2AgeHistImg, cv2AgeHistMem, cv2AgeHistView);
+    // The opacity profile: one uvec2 per 2x2 block of the cloud grid (every block takes one ray a frame on the sparse grid).
+    ctx.createBuffer((VkDeviceSize)cv2QuarterW * cv2QuarterH * 8u + 16u,
+                     VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                     cv2ProfileBuf, cv2ProfileMem);
 
     VkCommandBuffer cmd = ctx.beginOneTimeCommands();
     for (VkImage img : {cv2NewImg, cv2NewDepthImg, cv2ResolvedImg, cv2ResolvedDepthImg, cv2HistoryImg, cv2FullImg, cv2FullDepthImg,
@@ -764,9 +767,11 @@ void SatelliteSim::createCloudsV2Targets(VulkanContext &ctx)
     old.float32[0] = 64.0f;
     vkCmdClearColorImage(cmd, cv2AgeImg, VK_IMAGE_LAYOUT_GENERAL, &old, 1, &rng);
     vkCmdClearColorImage(cmd, cv2AgeHistImg, VK_IMAGE_LAYOUT_GENERAL, &old, 1, &rng);
+    vkCmdFillBuffer(cmd, cv2ProfileBuf, 0, VK_WHOLE_SIZE, 0xFFFFFFFFu);   // "no profile"
     ctx.endOneTimeCommands(cmd);
 
     VkDescriptorImageInfo depthInfo{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkDescriptorBufferInfo profInfo{cv2ProfileBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorImageInfo newOut{VK_NULL_HANDLE, cv2NewView, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo newDepthOut{VK_NULL_HANDLE, cv2NewDepthView, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo newIn{cv2ClampSampler, cv2NewView, VK_IMAGE_LAYOUT_GENERAL};
@@ -785,6 +790,7 @@ void SatelliteSim::createCloudsV2Targets(VulkanContext &ctx)
     const VkDescriptorType TEX = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, IMG = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     VkWriteDescriptorSet w[] = {
         imageWrite(cv2MarchDescSet, 6, TEX, &depthInfo),
+        bufferWrite(cv2MarchDescSet, 22, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &profInfo),
         imageWrite(cv2MarchDescSet, 10, IMG, &newOut),
         imageWrite(cv2MarchDescSet, 11, IMG, &newDepthOut),
         imageWrite(cv2ResolveDescSet, 1, TEX, &newIn),
@@ -814,6 +820,10 @@ void SatelliteSim::destroyCloudsV2Targets(VkDevice device)
                        &cv2FullImg, &cv2FullDepthImg, &cv2FarImg, &cv2AgeImg, &cv2AgeHistImg};
     VkDeviceMemory *mems[] = {&cv2NewMem, &cv2NewDepthMem, &cv2ResolvedMem, &cv2ResolvedDepthMem, &cv2HistoryMem,
                               &cv2FullMem, &cv2FullDepthMem, &cv2FarMem, &cv2AgeMem, &cv2AgeHistMem};
+    if (cv2ProfileBuf) vkDestroyBuffer(device, cv2ProfileBuf, nullptr);
+    if (cv2ProfileMem) vkFreeMemory(device, cv2ProfileMem, nullptr);
+    cv2ProfileBuf = VK_NULL_HANDLE;
+    cv2ProfileMem = VK_NULL_HANDLE;
     for (int i = 0; i < 10; ++i)
     {
         if (*views[i]) vkDestroyImageView(device, *views[i], nullptr);
@@ -1173,6 +1183,7 @@ void SatelliteSim::writeCloudsV2ConsumerDescriptors(VulkanContext &ctx)
     VkDescriptorImageInfo resDepth{cv2ClampSampler, cv2ResolvedDepthView, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorBufferInfo flashes{cv2FlashBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo storms{stormBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorBufferInfo profile{cv2ProfileBuf, 0, VK_WHOLE_SIZE};   // the march's opacity profile (composite 26)
     // The sky set's binding 7 (sat_sky.frag's flat layers, its SKY_ENV / SKY_LITE variants and Potato):
     // the weather cube, so every flat stand-in shows the same evolving map as the volumetric clouds.
     VkDescriptorImageInfo weatherCube{cv2RepeatSampler, cv2WeatherView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -1188,6 +1199,7 @@ void SatelliteSim::writeCloudsV2ConsumerDescriptors(VulkanContext &ctx)
         bufferWrite(skyDescSet, 32, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &engineLights),
         bufferWrite(skyDescSet, 33, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &skyAp),
         bufferWrite(cloudMarchDescSet, 21, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &flashes),
+        bufferWrite(cloudMarchDescSet, 26, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &profile),
         bufferWrite(cloudMarchDescSet, 15, UBO, &v2Info),
         imageWrite(cloudMarchDescSet, 16, TEX, &weather),
         imageWrite(cloudMarchDescSet, 17, TEX, &shape),
