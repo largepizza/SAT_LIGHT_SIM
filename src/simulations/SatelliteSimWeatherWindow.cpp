@@ -2029,6 +2029,15 @@ void SatelliteSim::buildWeatherControlsTab(const UIInput &inp, UIRenderer &ui)
         "x the calibrated fire rate: fuel (the biome map) x the season's dryness (clouds_v2.wildfires; 0 = none)");
     num(8, "Wildfire smoke", wildfireSmoke, 0.0f, 5.0f, 0.05f, "%.2f",
         "x the smoke's optical depth: the columns and the regional pall (clouds_v2.wildfire_smoke)");
+    num(12, "Smoke brightness", wildfireSmokeBright, 0.0f, 5.0f, 0.05f, "%.2f",
+        "x the light the smoke scatters (clouds_v2.wildfire_smoke_brightness)");
+    num(13, "Smoke tint (-1 blue .. +1 brown)", wildfireSmokeTint, -1.0f, 1.0f, 0.05f, "%.2f",
+        "The smoke's own colour: 0 neutral grey, + toward brown, - toward blue-grey (clouds_v2.wildfire_smoke_tint)");
+    num(14, "Smoke spread (x)", wildfireSmokeSpread, 0.25f, 4.0f, 0.05f, "%.2f",
+        "x the plumes' and the pall's width; the same smoke, thinner when wider (clouds_v2.wildfire_smoke_spread)");
+    num(15, "Smoke spectral (x)", wildfireSmokeSpectral, 0.0f, 2.0f, 0.05f, "%.2f",
+        "x the smoke's Angstrom exponent (1 = ~1.6, physical): the Sun and sky seen through it reddened, its thin parts "
+        "blue-grey; 0 = grey at every wavelength (clouds_v2.wildfire_smoke_spectral)");
     num(9, "Wildfire light", wildfireLight, 0.0f, 5.0f, 0.05f, "%.2f",
         "x the fire front's light: the flickering points and their glow at night (clouds_v2.wildfire_light)");
     num(11, "Haboobs (x)", haboobGain, 0.0f, 5.0f, 0.05f, "%.2f",

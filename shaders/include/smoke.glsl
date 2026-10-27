@@ -3,6 +3,16 @@
 // Smoke is spectral: fine combustion aerosol extinguishes blue more than red (Angstrom exponent ~1.6, 650 / 550 /
 // 450 nm), so the Sun seen through it, and the light that reaches the ground under it, turn orange and red.
 const vec3 kSmokeSpec = vec3(0.765, 1.0, 1.378);
+// x the Angstrom exponent ("Smoke spectral", CloudV2Params gnd.y; 1 = the physical ~1.6, 0 = grey).
+vec3 smokeSpecK(float s) { return pow(kSmokeSpec, vec3(max(s, 0.0))); }
+// The colour of the light a smoke Gaussian of optical depth tau (at 550 nm) scatters, luminance 1 (2026-10-26, "it appears
+// so beige"): its scattering is as spectral as its extinction (sp = smokeSpecK), so a thin veil scatters blue light
+// (aged smoke from the side is blue-grey) and a thick one saturates to grey: (1 - e^(-tau sp)) / (1 - e^(-tau)).
+vec3 smokeScatterColor(float tau, vec3 sp)
+{
+    vec3 F = (vec3(1.0) - exp(-tau * sp)) / max(1.0 - exp(-tau), 1e-5);
+    return F / max(dot(F, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
+}
 uint smokeFirst(uint hdrWord) { return (hdrWord >> 8u) & 1023u; }
 uint smokeCount(uint hdrWord) { return (hdrWord >> 18u) & 1023u; }
 

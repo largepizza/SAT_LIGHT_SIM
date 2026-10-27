@@ -366,7 +366,11 @@ vec3 smokeSunTransmit(vec3 pRel, vec3 sunDir)
         if (dot(cx, cx) > 12.5 * s2) continue;
         tau += smokeColumn(x, sunDir, d.ia, d.ib, d.ia.w * d.c.w);
     }
+#ifdef SKY_SUN_SHADOW
+    return exp(-tau * smokeSpecK(cv2.gnd.y));
+#else
     return exp(-tau * kSmokeSpec);
+#endif
 }
 const uint kSkyEngineLightBase = 1024u;   // == SatelliteSim::kMaxDustClouds
 const uint kSkyEngineLightMax  = 32u;     // == SatelliteSim::kMaxEngineLights

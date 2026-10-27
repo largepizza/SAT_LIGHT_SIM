@@ -27,6 +27,8 @@
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <functional>
 #include <cmath>
 
 namespace launchsim { double demElevCpu(double latDeg, double lonDeg); }
@@ -279,33 +281,33 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
     fireStateScope.end();
     fireSmokeSources = 0;
     fprof::Scope fireSmokeScope("fire.smoke");
-    for (FireNow &fn : firesNow)
-    {
-        const wx::Fire &f = fn.f;
-        const wx::FireState &s = fn.s;
-        if (s.ageS <= 0.0) continue;
-        const glm::dvec3 G = llDir(f.latDeg, f.lonDeg);
-        const glm::dvec3 eE = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), G) + glm::dvec3(1e-12, 0, 0));
-        const glm::dvec3 nE = glm::cross(G, eE);
-        const double ground = fn.groundM;
-        auto dirAt = [&](double x, double y) { return glm::normalize(G + (eE * x + nE * y) / kReF); };
-        auto at = [&](double x, double y, double z) { return dirAt(x, y) * (kReF + ground + z); };
+    // ── Smoke: TRAJECTORIES (2026-10-26, issue 20261026_204239: "smoke kind of just wavers around randomly and sometimes
+    // just changes direction entirely. Wind flow needs to be localized: changing wind direction at the fire's source
+    // should have no effect on smoke farther down the trail") ──────────────────────────────────────────────────────────
+    // Each source's streak is a chain of PARCELS emitted at fixed times on a nested grid (spacing d x 2^l for the ages in
+    // band l, m knots a band: fine near the fire, geometric down the trail; a parcel whose emission time is not on the
+    // next band's grid merges into its neighbours over the last 35% of its band, no pop). A parcel leaves the column's
+    // source as the fire was then (its sections, its injection height and activity at that moment) and is advected step
+    // by step through wx::windAt at ITS OWN position, height and time (fireSmokeAdvect, the schedule fireSmokeStepS): a
+    // trajectory, cached (smokeTrajs) and only ever extended, so a turn of the wind at the fire bends only the smoke
+    // emitted after it. The streak until then was re-walked every frame from the fire with each stretch's wind taken at
+    // the moment that stretch's AGE ago: the whole trail rode on the source's newest wind and swung as one body.
+    // The pall (the smoke older than the streak) is the mass-weighted mean of a few long trajectories (4-h grid) the same way.
+    const uint32_t sFrame = ++smokeFrame;
+    smokeSegDbg.clear();
+    smokeTrajSteps = 0;
+    const float spread = std::max(wildfireSmokeSpread, 0.05f);
+    // The fire's sections now or at an emission time: its active front's heat cut into S sections of equal heat (each a
+    // source at its heat-weighted centre, as wide as the section, carrying its share), its injection height, activity,
+    // smoke production and the ground wind (the smoke leaves the flames downwind).
+    auto sources = [&](const wx::Fire &f, double tq, int S, SmokeEmit &em) {
+        const wx::FireState s = wx::fireStateAt(f, tq);
         const double sz = (double)f.size;
-        const double tau0 = (2.5 + 5.5 * sz) * (0.6 + 0.4 * f.fuel) * wildfireSmoke;
-        if (!(tau0 > 0.02) || fn.rangeKm >= 2500.0)
-        {
-            fn.gauss = 0;
-            continue;
-        }
-        // The fire's smoke production (cross-section a second at activity 1): from the head front's width, as before.
+        const double tau0 = (2.5 + 5.5 * sz) * (0.6 + 0.4 * f.fuel);
         const double wSrc = std::max(150.0, 0.3 * s.halfWidthM) + 300.0 * sz;
-        const double Q = tau0 * std::sqrt(2.0 * kPiF) * wSrc * 5.0;
-        const double H = wx::fireInjectionHeightM(f, s, t);
-        const double w0 = wx::fireUpdraftMps(f);
-        const double tauMax = std::clamp((3.0 + 9.0 * sz) * 3600.0 * (0.6 + 0.4 * s.activity), 2.0 * 3600.0, 14.0 * 3600.0);
-        const int S = fn.rangeKm < 150.0 ? 5 : fn.rangeKm < 500.0 ? 3 : fn.rangeKm < 1200.0 ? 2 : 1;
-        const int K = fn.rangeKm < 150.0 ? 9 : fn.rangeKm < 500.0 ? 6 : fn.rangeKm < 1200.0 ? 4 : 2;
-        // The front's heat round it (48 samples: heat x length).
+        em.Q = tau0 * std::sqrt(2.0 * kPiF) * wSrc * 5.0;
+        em.H = wx::fireInjectionHeightM(f, s, tq);
+        em.act = s.activity;
         constexpr int kHs = 48;
         glm::dvec2 hq[kHs];
         double hw[kHs], hTot = 0.0;
@@ -316,24 +318,18 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
             hq[k] = wx::fireFrontAt(f, s, a, &dsda);
             double la, lo;
             wx::fireOffsetLatLon(f, hq[k], la, lo);
-            hw[k] = wx::fireFrontHeat(f, s, a, t) * glm::smoothstep(0.08, 0.3, (double)biomeMap.burnableAt(la, lo)) * dsda;
+            hw[k] = wx::fireFrontHeat(f, s, a, tq) * glm::smoothstep(0.08, 0.3, (double)biomeMap.burnableAt(la, lo)) * dsda;
             hTot += hw[k];
         }
-        // The sections: S runs of the cumulative heat starting at the arc's cold end (the angle with the least heat
-        // before it), so a section never straddles the gap behind the fire.
         int k0 = 0;
         {
             double best = 1e300;
             for (int k = 0; k < kHs; ++k)
                 if (hw[k] < best) { best = hw[k]; k0 = k; }
         }
-        struct Src
-        {
-            glm::dvec2 c{0.0};
-            double w = 0.0, m = 0.0, ext = 0.0;
-        };
-        Src src[5];
-        int nS = 0;
+        glm::dvec2 c[5]{};
+        double m[5]{}, ext[5]{};
+        em.nS = 0;
         if (hTot > 1e-6)
         {
             double acc = 0.0;
@@ -341,157 +337,447 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
             for (int j = 0; j < kHs; ++j)
             {
                 const int k = (k0 + j) % kHs;
-                src[si].c += hw[k] * hq[k];
-                src[si].m += hw[k];
+                c[si] += hw[k] * hq[k];
+                m[si] += hw[k];
                 acc += hw[k];
                 if (acc >= hTot * (si + 1) / S - 1e-9 && si < S - 1) ++si;
             }
             for (int i = 0; i < S; ++i)
-                if (src[i].m > 0.0) src[i].c /= src[i].m;
-            // each section's extent: the heat-weighted rms distance of its samples from its centre
+                if (m[i] > 0.0) c[i] /= m[i];
             acc = 0.0;
             si = 0;
             for (int j = 0; j < kHs; ++j)
             {
                 const int k = (k0 + j) % kHs;
-                if (src[si].m > 0.0) src[si].ext += hw[k] * glm::dot(hq[k] - src[si].c, hq[k] - src[si].c);
+                if (m[si] > 0.0) ext[si] += hw[k] * glm::dot(hq[k] - c[si], hq[k] - c[si]);
                 acc += hw[k];
                 if (acc >= hTot * (si + 1) / S - 1e-9 && si < S - 1) ++si;
             }
             for (int i = 0; i < S; ++i)
-                if (src[i].m > 0.0)
+                if (m[i] > 0.0)
                 {
-                    src[i].ext = std::sqrt(src[i].ext / src[i].m);
-                    src[i].w = src[i].m / hTot;
-                    src[nS++] = src[i];
+                    em.c[em.nS] = c[i];
+                    em.ext[em.nS] = std::sqrt(ext[i] / m[i]);
+                    em.w[em.nS] = m[i] / hTot;
+                    ++em.nS;
                 }
         }
-        if (nS == 0)
+        // Labelled by their bearing round the burnt ellipse's centre from its (fixed) spread axis, not by the order the
+        // cut found them in: the cut starts at the arc's coldest point, which jumps, and a parcel's source index then named
+        // another stretch of the front at another emission time (the streak zig-zagged across the fire between knots).
+        if (em.nS > 1)
         {
-            src[0].c = wx::fireFrontAt(f, s, 0.0);
-            src[0].w = 1.0;
-            src[0].ext = 0.3 * s.halfWidthM;
-            nS = 1;
-        }
-        // The wind at the ground carries each source's smoke off the flames (the flames stand upwind of it).
-        glm::dvec2 wDir;
-        {
-            const glm::dvec2 u = wx::windAt(G, 10.0, t);
-            wDir = glm::length(u) > 0.05 ? u / glm::length(u) : glm::dvec2(std::sin(s.windAz), std::cos(s.windAz));
-        }
-        int emitted = 0;
-        glm::dvec2 lastXY = src[0].c;
-        double lastZ = H;
-        int mainSrc = 0;
-        for (int i = 1; i < nS; ++i)
-            if (src[i].w > src[mainSrc].w) mainSrc = i;
-        // A quarter of the main source's smoke detrains low (the boundary layer's own wind: the plume fans out with
-        // height); near fires only.
-        const bool lowLayer = fn.rangeKm < 800.0 && H > 1200.0;
-        for (int si = 0; si < nS + (lowLayer ? 1 : 0); ++si)
-        {
-            const bool low = si == nS;
-            const Src &sc = src[low ? mainSrc : si];
-            const double massK = low ? 0.2 * sc.w : (si == mainSrc && lowLayer ? sc.w - 0.2 * sc.w : sc.w);
-            // (a weaker section's smoke rises less: its share of the fire's heat x S, 1 = an even share)
-            const double Hb = low ? 0.4 * H : H * std::clamp(0.7 + 0.3 * std::sqrt(sc.w * nS), 0.55, 1.1);
-            const double Tr = Hb / w0;
-            // The source's width: the section's extent (a curtain along the front), and how wide its column starts.
-            const double sB0 = std::max(120.0, 1.2 * sc.ext / std::sqrt((double)nS)) + 100.0 * sz;
-            double taus[24];
-            int nt = 0;
-            taus[nt++] = 0.12 * Tr;   // (the smoke starts above the flames: the hot gas over them is clear)
-            if (K >= 7)
-                for (double fx : {0.25, 0.6, 1.2, 2.2})
-                    taus[nt++] = fx * Tr;
+            const glm::dvec2 ctr = 0.5 * (wx::fireFrontAt(f, s, 0.0) + wx::fireFrontAt(f, s, kPiF));
+            const glm::dvec2 ax(std::sin(s.windAz), std::cos(s.windAz)), px(ax.y, -ax.x);
+            int ord[5] = {0, 1, 2, 3, 4};
+            double th[5];
+            for (int i = 0; i < em.nS; ++i)
             {
-                const double ta = std::max(taus[nt - 1], 60.0);
-                const int rest = std::max(1, K - (nt - 1));
-                for (int j = 1; j <= rest; ++j)
-                    taus[nt++] = ta * std::pow(tauMax / ta, (double)j / rest);
+                const glm::dvec2 r = em.c[i] - ctr;
+                th[i] = std::atan2(glm::dot(r, px), glm::dot(r, ax));
             }
-            glm::dvec2 xy = sc.c + wDir * (120.0 + 0.4 * wx::fireFlameDepthM(f));
-            double z0 = wx::fireSmokeRiseM(taus[0], Hb, w0);
-            glm::dvec3 P0 = at(xy.x, xy.y, z0);
-            double sb0 = sB0, sz0 = 0.5 * sB0;
-            for (int k = 0; k + 1 < nt; ++k)
+            std::sort(ord, ord + em.nS, [&](int a, int b) { return th[a] < th[b]; });
+            SmokeEmit o = em;
+            for (int i = 0; i < em.nS; ++i)
             {
-                const double ta = taus[k], tb = taus[k + 1], tm = 0.5 * (ta + tb);
-                if (tm > s.ageS) break;   // (a young fire: its streak is as old as it is)
-                const double zb = wx::fireSmokeRiseM(tb, Hb, w0);
-                const glm::dvec2 u = wx::windAt(dirAt(xy.x, xy.y), 0.5 * (z0 + zb), t - tm);
-                xy += u * (tb - ta);
-                const glm::dvec3 P1 = at(xy.x, xy.y, zb);
-                // Width: the source, then the plume's turbulent spread; thin vertically (it flattens).
-                const double sb1 = sB0 + 0.25 * zb + 1.1 * std::pow(tb, 0.85);
-                const double sz1 = std::min(sb1, 120.0 + 0.22 * Hb + 0.12 * std::pow(tb, 0.85));
+                em.c[i] = o.c[ord[i]];
+                em.w[i] = o.w[ord[i]];
+                em.ext[i] = o.ext[ord[i]];
+            }
+        }
+        if (em.nS == 0)
+        {
+            em.c[0] = wx::fireFrontAt(f, s, 0.0);
+            em.w[0] = 1.0;
+            em.ext[0] = 0.3 * s.halfWidthM;
+            em.nS = 1;
+        }
+        em.mainSrc = 0;
+        for (int i = 1; i < em.nS; ++i)
+            if (em.w[i] > em.w[em.mainSrc]) em.mainSrc = i;
+        const glm::dvec2 u = wx::windAt(llDir(f.latDeg, f.lonDeg), 10.0, tq);
+        em.wDir = glm::length(u) > 0.05 ? u / glm::length(u) : glm::dvec2(std::sin(s.windAz), std::cos(s.windAz));
+        em.ready = true;
+    };
+    // Source si of S: the section at its rank (an emission whose front cut into fewer sections shares them out), and
+    // the share of the smoke it carries.
+    auto secOf = [](const SmokeEmit &em, int si, int S) {
+        if (si >= 5) return em.mainSrc;
+        if (em.nS == S) return si;
+        return std::clamp((int)std::floor((si + 0.5) * em.nS / S), 0, em.nS - 1);
+    };
+    auto shareOf = [&](const SmokeEmit &em, int si, int S) {
+        return em.w[secOf(em, si, S)] * (si >= 5 || em.nS == S ? 1.0 : (double)em.nS / S);
+    };
+    // A parcel's layer and its start (the section's centre, 120 m + 0.4 x the flaming depth downwind).
+    auto parcelHb = [&](const SmokeEmit &em, int si, int S) {
+        if (si == 5) return 0.4 * em.H;
+        if (si == 6) return 0.8 * em.H + 200.0;
+        return em.H * std::clamp(0.7 + 0.3 * std::sqrt(shareOf(em, si, S) * S), 0.55, 1.1);
+    };
+    auto parcelStart = [&](const wx::Fire &f, const SmokeEmit &em, int si, int S) {
+        return em.c[secOf(em, si, S)] + em.wDir * (120.0 + 0.4 * wx::fireFlameDepthM(f));
+    };
+    auto keyOf = [](uint64_t fid, int S, int si, int64_t tEi) {
+        return fwMix(fid ^ fwMix(((uint64_t)S << 56) ^ ((uint64_t)(si + 1) << 48) ^ (uint64_t)(tEi & 0xFFFFFFFFFFFFull)));
+    };
+
+    // Phase 1: each fire's knots (which parcels exist now), creating the cache entries they need.
+    struct Knot
+    {
+        SmokeTraj *tr = nullptr;
+        double age = 0.0, fade = 0.0;   // fade: merging into its neighbours (0..1)
+    };
+    struct SrcPlan
+    {
+        int si = 0;
+        std::vector<Knot> k;   // by age, youngest first
+    };
+    struct FirePlan
+    {
+        bool on = false;
+        int S = 1;
+        double tauMax = 0.0, aHead = 0.0;
+        SmokeEmit cur;
+        std::vector<SrcPlan> src;
+        std::vector<Knot> pall;
+        bool lowLayer = false;
+    };
+    std::vector<FirePlan> plans(firesNow.size());
+    std::vector<SmokeEmit *> emitJobs;
+    std::vector<const wx::Fire *> emitFire;
+    std::vector<double> emitT;
+    std::vector<int> emitS;
+    std::vector<SmokeTraj *> trajJobs;
+    auto getTraj = [&](const wx::Fire &f, int S, int si, double tE) -> SmokeTraj * {
+        const int64_t tEi = (int64_t)std::llround(tE / 60.0);
+        const uint64_t ek = keyOf(f.id, S, -1, tEi);
+        auto ei = smokeEmits.try_emplace(ek);
+        SmokeEmit &em = ei.first->second;
+        em.frame = sFrame;
+        if (ei.second)
+        {
+            emitJobs.push_back(&em);
+            emitFire.push_back(&f);
+            emitT.push_back(tE);
+            emitS.push_back(S);
+        }
+        auto ti = smokeTrajs.try_emplace(keyOf(f.id, S, si, tEi));
+        SmokeTraj &tr = ti.first->second;
+        tr.frame = sFrame;
+        tr.f = &f;
+        if (ti.second)
+        {
+            tr.em = &em;
+            tr.si = si;
+            tr.tE = tE;
+            tr.w0 = wx::fireUpdraftMps(f);
+        }
+        return &tr;
+    };
+    for (size_t fi = 0; fi < firesNow.size(); ++fi)
+    {
+        FireNow &fn = firesNow[fi];
+        FirePlan &pl = plans[fi];
+        const wx::Fire &f = fn.f;
+        const wx::FireState &s = fn.s;
+        fn.gauss = 0;
+        if (s.ageS <= 0.0) continue;
+        const double sz = (double)f.size;
+        if (!((2.5 + 5.5 * sz) * (0.6 + 0.4 * f.fuel) * wildfireSmoke > 0.02) || fn.rangeKm >= 2500.0) continue;
+        pl.on = true;
+        pl.S = fn.rangeKm < 150.0 ? 5 : fn.rangeKm < 500.0 ? 3 : fn.rangeKm < 1200.0 ? 2 : 1;
+        // (fixed per fire: a length that followed the activity stretched every knot of the streak as the day went on)
+        pl.tauMax = std::clamp((3.0 + 9.0 * sz) * 3600.0 * 0.8, 2.0 * 3600.0, 14.0 * 3600.0);
+        sources(f, t, pl.S, pl.cur);
+        pl.lowLayer = fn.rangeKm < 800.0 && pl.cur.H > 1200.0;
+        pl.aHead = 0.12 * pl.cur.H / wx::fireUpdraftMps(f);   // (the smoke starts above the flames: the hot gas is clear)
+        const double ageCap = std::min(pl.tauMax, s.ageS);
+        for (int si = 0; si < pl.S + (pl.lowLayer ? 1 : 0); ++si)
+        {
+            SrcPlan sp;
+            sp.si = si < pl.S ? si : 5;
+            const bool isMain = sp.si < 5 && secOf(pl.cur, sp.si, pl.S) == pl.cur.mainSrc && fn.rangeKm < 150.0;
+            const double d = fn.rangeKm < 150.0 ? (isMain ? 60.0 : 120.0) : fn.rangeKm < 500.0 ? 120.0 : fn.rangeKm < 1200.0 ? 240.0 : 480.0;
+            const double mK = isMain ? 2.0 : 1.0;
+            for (int l = 0; l < 16; ++l)
+            {
+                const double D = d * std::ldexp(1.0, l);
+                const double bA = mK * d * (std::ldexp(1.0, l) - 1.0), bB = mK * d * (std::ldexp(1.0, l + 1) - 1.0);
+                if (bA >= ageCap) break;
+                const int64_t kHi = (int64_t)std::floor((t - bA) / D), kLo = (int64_t)std::floor((t - bB) / D) + 1;
+                for (int64_t kk = kHi; kk >= kLo; --kk)
+                {
+                    const double tE = (double)kk * D, age = t - tE;
+                    if (age < bA || age >= bB || age > ageCap || age <= pl.aHead + 1.0) continue;
+                    Knot kn;
+                    kn.age = age;
+                    if ((kk & 1) != 0) kn.fade = glm::smoothstep(0.65, 1.0, (age - bA) / (bB - bA));
+                    kn.tr = getTraj(f, pl.S, sp.si, tE);
+                    sp.k.push_back(kn);
+                }
+            }
+            std::sort(sp.k.begin(), sp.k.end(), [](const Knot &a, const Knot &b) { return a.age < b.age; });
+            pl.src.push_back(std::move(sp));
+        }
+        // the pall's parcels: a 4-h grid over [tauMax, tauMax + 36 h]
+        {
+            const double D = 4.0 * 3600.0;
+            const int64_t kHi = (int64_t)std::floor((t - pl.tauMax) / D), kLo = (int64_t)std::floor((t - pl.tauMax - 36.0 * 3600.0) / D) + 1;
+            for (int64_t kk = kHi; kk >= kLo; --kk)
+            {
+                const double tE = (double)kk * D, age = t - tE;
+                if (age > s.ageS || age < pl.tauMax) continue;
+                Knot kn;
+                kn.age = age;
+                kn.fade = std::pow(std::sin(kPiF * (age - pl.tauMax) / (36.0 * 3600.0)), 2.0);   // (its weight in the pall)
+                kn.tr = getTraj(f, pl.S, 6, tE);
+                pl.pall.push_back(kn);
+            }
+        }
+    }
+    // Phase 2: the new emissions' sections (parallel), then the trajectories extended to their ages now (parallel).
+    auto par = [&](size_t n, const std::function<void(size_t)> &fn) {
+        if (stormCatalog && n >= 4)
+            stormCatalog->parallelFor(n, fn);
+        else
+            for (size_t i = 0; i < n; ++i) fn(i);
+    };
+    par(emitJobs.size(), [&](size_t i) { sources(*emitFire[i], emitT[i], emitS[i], *emitJobs[i]); });
+    for (size_t fi = 0; fi < firesNow.size(); ++fi)
+    {
+        auto need = [&](Knot &kn) {
+            SmokeTraj &tr = *kn.tr;
+            if (tr.a.empty())
+            {
+                tr.Hb = parcelHb(*tr.em, tr.si, plans[fi].S);
+                tr.p.push_back(parcelStart(*tr.f, *tr.em, tr.si, plans[fi].S));
+                tr.a.push_back(0.0);
+            }
+            tr.need = std::max(tr.need, kn.age);
+            if (tr.Hb > 0.0 && tr.a.back() < kn.age && (trajJobs.empty() || trajJobs.back() != &tr)) trajJobs.push_back(&tr);
+        };
+        for (SrcPlan &sp : plans[fi].src)
+            for (Knot &kn : sp.k) need(kn);
+        for (Knot &kn : plans[fi].pall) need(kn);
+    }
+    std::sort(trajJobs.begin(), trajJobs.end());
+    trajJobs.erase(std::unique(trajJobs.begin(), trajJobs.end()), trajJobs.end());
+    std::atomic<uint32_t> steps{0};
+    par(trajJobs.size(), [&](size_t i) {
+        SmokeTraj &tr = *trajJobs[i];
+        uint32_t n = 0;
+        while (tr.a.back() < tr.need)
+        {
+            const double a = tr.a.back(), h = wx::fireSmokeStepS(a);
+            tr.p.push_back(wx::fireSmokeAdvect(*tr.f, tr.p.back(), a, h, tr.tE, std::max(tr.Hb, 30.0), tr.w0));
+            tr.a.push_back(a + h);
+            ++n;
+        }
+        steps += n;
+    });
+    smokeTrajSteps = steps.load();
+    auto trajAt = [](const SmokeTraj &tr, double age) {
+        if (tr.a.size() < 2) return tr.p[0];
+        auto it = std::upper_bound(tr.a.begin(), tr.a.end(), age);
+        const size_t j = (size_t)std::clamp<ptrdiff_t>(it - tr.a.begin(), 1, (ptrdiff_t)tr.a.size() - 1);
+        const double u = std::clamp((age - tr.a[j - 1]) / std::max(tr.a[j] - tr.a[j - 1], 1e-6), 0.0, 1.0);
+        return glm::mix(tr.p[j - 1], tr.p[j], u);
+    };
+    // the cache: entries not used for ~10 s of frames go
+    if ((sFrame & 255u) == 0u)
+    {
+        for (auto it = smokeTrajs.begin(); it != smokeTrajs.end();)
+            it = (sFrame - it->second.frame > 600u) ? smokeTrajs.erase(it) : std::next(it);
+        for (auto it = smokeEmits.begin(); it != smokeEmits.end();)
+            it = (sFrame - it->second.frame > 600u) ? smokeEmits.erase(it) : std::next(it);
+    }
+
+    // Phase 3: the Gaussians. The smoke's colour (2026-10-26, "it appears so beige"): grey — fresh smoke a little darker
+    // (black carbon), aged paler and a touch cooler; the sky's light on it BLUE (it was a warm grey (0.80, 0.79, 0.76)); the
+    // tint setting leans it brown or blue-grey. cloud_march.comp gives thin smoke the blue of its own scattering (Angstrom).
+    const double tintK = (double)std::clamp(wildfireSmokeTint, -1.0f, 1.0f);
+    const glm::dvec3 tintMul(1.0 + 0.10 * tintK, 1.0 + 0.01 * tintK, 1.0 - 0.14 * tintK);
+    const glm::dvec3 kSkyBlue(0.66, 0.82, 1.08);
+    const double bright = std::max((double)wildfireSmokeBright, 0.0);
+    for (size_t fi = 0; fi < firesNow.size(); ++fi)
+    {
+        FireNow &fn = firesNow[fi];
+        FirePlan &pl = plans[fi];
+        if (!pl.on) continue;
+        const wx::Fire &f = fn.f;
+        const wx::FireState &s = fn.s;
+        const glm::dvec3 G = llDir(f.latDeg, f.lonDeg);
+        const glm::dvec3 eE = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), G) + glm::dvec3(1e-12, 0, 0));
+        const glm::dvec3 nE = glm::cross(G, eE);
+        const double ground = fn.groundM;
+        auto dirAt = [&](double x, double y) { return glm::normalize(G + (eE * x + nE * y) / kReF); };
+        auto at = [&](double x, double y, double z) { return dirAt(x, y) * (kReF + ground + z); };
+        const double sz = (double)f.size;
+        const double w0 = wx::fireUpdraftMps(f);
+        int emitted = 0;
+        glm::dvec2 lastXY = pl.cur.c[pl.cur.mainSrc];
+        double lastZ = pl.cur.H;
+        for (SrcPlan &sp : pl.src)
+        {
+            const bool low = sp.si == 5;
+            // A knot: its place, its widths and the smoke rate it carries (cross-section a second).
+            struct KP
+            {
+                glm::dvec3 q{0.0};
+                double sb = 0.0, sz = 0.0, thin = 0.0, rate = 0.0, age = 0.0;
+            };
+            auto knotOf = [&](const SmokeEmit &em, int si, double age, const glm::dvec2 &xy, double Hb) {
+                KP k;
+                const double z = wx::fireSmokeRiseM(age, Hb, w0);
+                k.q = glm::dvec3(xy, z);
+                const int sc = secOf(em, si, pl.S);
+                const double sB0 = std::max(120.0, 1.2 * em.ext[sc] / std::sqrt((double)em.nS)) + 100.0 * sz;
+                const double ap = std::pow(age, 0.85);
+                k.sb = spread * (sB0 + 0.25 * z + 1.1 * ap);
+                k.sz = std::min(k.sb, spread * (120.0 + 0.22 * Hb + 0.12 * ap));
+                k.thin = std::min(k.sb, spread * (200.0 + 0.15 * z + 0.6 * ap));
+                const double wq = shareOf(em, si, pl.S);
+                const double massK = low ? 0.2 * wq : (sc == em.mainSrc && pl.lowLayer ? 0.8 * wq : wq);
+                k.rate = massK * em.Q * wildfireSmoke * std::max(em.act, 0.05);
+                k.age = age;
+                return k;
+            };
+            std::vector<KP> ks;
+            ks.reserve(sp.k.size() + 1);
+            {   // the head: emitted aHead ago from the sources as they are now (only the head segment rides on the wind now)
+                const int si = sp.si;
+                const double Hb = parcelHb(pl.cur, si, pl.S);
+                glm::dvec2 xy = parcelStart(f, pl.cur, si, pl.S);
+                double a = 0.0;
+                while (a < pl.aHead)
+                {
+                    const double h = std::min(wx::fireSmokeStepS(a), pl.aHead - a);
+                    xy = wx::fireSmokeAdvect(f, xy, a, h, t - pl.aHead, Hb, w0);
+                    a += h;
+                }
+                ks.push_back(knotOf(pl.cur, si, pl.aHead, xy, Hb));
+            }
+            for (const Knot &kn : sp.k)
+            {
+                if (kn.tr->Hb <= 0.0) continue;
+                ks.push_back(knotOf(*kn.tr->em, kn.tr->si, kn.age, trajAt(*kn.tr, kn.age), kn.tr->Hb));
+            }
+            // the merging parcels move toward their neighbours' mean as their band ends (no pop when they go)
+            {
+                std::vector<KP> raw = ks;
+                size_t j = 1;
+                for (const Knot &kn : sp.k)
+                {
+                    if (kn.tr->Hb <= 0.0) continue;
+                    if (kn.fade > 0.0 && j + 1 < raw.size())
+                    {
+                        const KP &a = raw[j - 1], &b = raw[j + 1];
+                        KP &k = ks[j];
+                        const double u = kn.fade;
+                        k.q = glm::mix(k.q, 0.5 * (a.q + b.q), u);
+                        k.sb = glm::mix(k.sb, 0.5 * (a.sb + b.sb), u);
+                        k.sz = glm::mix(k.sz, 0.5 * (a.sz + b.sz), u);
+                        k.thin = glm::mix(k.thin, 0.5 * (a.thin + b.thin), u);
+                    }
+                    ++j;
+                }
+            }
+            for (size_t k = 0; k + 1 < ks.size(); ++k)
+            {
+                const KP &A = ks[k], &B = ks[k + 1];
+                const glm::dvec3 P0 = at(A.q.x, A.q.y, A.q.z), P1 = at(B.q.x, B.q.y, B.q.z);
+                const double tm = 0.5 * (A.age + B.age);
                 const glm::dvec3 seg = P1 - P0;
                 const double len = std::max(glm::length(seg), 1.0);
                 const glm::dvec3 a = seg / len;
                 glm::dvec3 b = glm::cross(a, glm::normalize(P0));
                 b = glm::length(b) > 1e-6 ? glm::normalize(b) : eE;
                 const glm::dvec3 c = glm::cross(a, b);
-                const double sb = 0.5 * (sb0 + sb1), szv = 0.5 * (sz0 + sz1);
+                const double sb = 0.5 * (A.sb + B.sb), szv = 0.5 * (A.sz + B.sz);
                 // c is near vertical for a flat stretch (its thickness) and near horizontal along the wind for the
                 // rising column: a curtain along the front, thin in the wind's direction.
                 const double cUp = std::fabs(glm::dot(c, glm::normalize(P0)));
-                const double thinA = std::min(sb, 200.0 + 0.15 * zb + 0.6 * std::pow(tb, 0.85));
-                const double sC = glm::mix(thinA, szv, cUp);
-                const double actThen = wx::fireStateAt(f, t - tm).activity;
-                const double Sigma = massK * Q * std::max(actThen, 0.05) * (tb - ta) * std::exp(-tm / (2.0 * 86400.0));
+                const double sC = glm::mix(0.5 * (A.thin + B.thin), szv, cUp);
+                const double endK = 1.0 - glm::smoothstep(0.8 * pl.tauMax, pl.tauMax, B.age);
+                const double Sigma = 0.5 * (A.rate + B.rate) * (B.age - A.age) * std::exp(-tm / (2.0 * 86400.0)) * endK;
+                if (smokeSegDbg.size() < 256)
+                    smokeSegDbg.push_back({(float)(fi * 10 + sp.si), (float)A.age, (float)B.age, (float)len, (float)sb, (float)sC,
+                                           (float)Sigma, (float)(Sigma / (2.0 * kPiF * sb * sC)), (float)B.q.z});
                 const glm::dvec3 Cc = 0.5 * (P0 + P1);
                 const double age01 = glm::smoothstep(0.0, 3.0 * 3600.0, tm);
-                const glm::dvec3 tint = glm::mix(glm::dvec3(0.60, 0.58, 0.55), glm::dvec3(0.74, 0.73, 0.71), age01);
-                const double alb = glm::mix(0.38, 0.55, age01);
+                const glm::dvec3 tint = tintMul * glm::mix(glm::dvec3(0.62, 0.62, 0.62), glm::dvec3(0.75, 0.76, 0.78), age01);
+                const double alb = glm::mix(0.45, 0.6, age01);
                 glm::dvec3 sunC;
                 double amb;
                 sunLightAt(Cc, sunC, amb);
-                const glm::dvec3 sunL = 4.0 * kPiF * alb * tint * sunC;
-                const glm::dvec3 skyL = 4.0 * kPiF * alb * tint * (0.18 * amb) * glm::dvec3(0.80, 0.79, 0.76);
+                const glm::dvec3 sunL = bright * 4.0 * kPiF * alb * tint * sunC;
+                const glm::dvec3 skyL = bright * 4.0 * kPiF * alb * tint * (0.18 * amb) * kSkyBlue;
                 if (emit(Cc, a, b, c, std::max((k == 0 ? 0.3 : 0.5) * len, (k == 0 ? 0.25 : 0.6) * sC), (k == 0 ? 0.6 : 1.0) * sb, sC,
-                         Sigma, sunL, skyL, alb, f.id ^ (uint64_t)(k + 1 + 64 * si), cap, -1.0))
+                         Sigma, sunL, skyL, alb, f.id ^ (uint64_t)(k + 1 + 64 * sp.si), cap, -1.0))
                     ++emitted;
-                P0 = P1;
-                sb0 = sb1;
-                sz0 = sz1;
-                z0 = zb;
-                if (si == mainSrc && !low)
+                if (!low && secOf(pl.cur, sp.si, pl.S) == pl.cur.mainSrc)
                 {
-                    lastXY = xy;
-                    lastZ = zb;
-                    if (fn.knots.size() < 24) fn.knots.push_back(glm::vec4((float)xy.x, (float)xy.y, (float)zb, (float)tb));
+                    lastXY = glm::dvec2(B.q);
+                    lastZ = B.q.z;
+                    if (fn.knots.size() < 24) fn.knots.push_back(glm::vec4((float)B.q.x, (float)B.q.y, (float)B.q.z, (float)B.age));
                 }
             }
             ++fireSmokeSources;
         }
-        // The pall: the smoke older than the streaks, carried on downwind and spread wide and flat. MASS-CONSERVING:
-        // what the fire made (at its mean activity) over its life past the streak, less ~4 days of removal; a column of
-        // ~0.01-0.05 from above for one big fire, so a fire season's palls overlap into the regional haze.
+        // The pall: the smoke older than the streaks, spread wide and flat, at the mass-weighted mean of its parcels'
+        // trajectories (each carried by the winds it met); MASS-CONSERVING: what the fire made (at its mean activity)
+        // over its life past the streak, less ~4 days of removal; ~0.01-0.05 from above for one big fire, so a fire
+        // season's palls overlap into the regional haze.
         {
             const double kRem = 4.0 * 86400.0;
-            const double older = std::max(s.ageS - tauMax, 0.0);
-            const double dt = std::min(older, 36.0 * 3600.0);
-            const glm::dvec2 uP = wx::windAt(dirAt(lastXY.x, lastXY.y), lastZ, t - tauMax - 0.5 * dt);
-            const glm::dvec2 off = lastXY + uP * (0.5 * dt);
-            const double sh = std::min(20e3 + 0.25 * glm::length(uP) * dt + 1.1 * std::pow(tauMax, 0.85), 350e3);
-            const double zP = 0.8 * H + 200.0;
-            const double Sigma = Q * 0.6 * kRem * (1.0 - std::exp(-older / kRem));
+            const double older = std::max(s.ageS - pl.tauMax, 0.0);
+            glm::dvec2 m(0.0);
+            double ws = 0.05;
+            m += ws * lastXY;
+            std::vector<glm::dvec2> ps;
+            for (const Knot &kn : pl.pall)
+            {
+                const glm::dvec2 q = trajAt(*kn.tr, kn.age);
+                ps.push_back(q);
+                m += kn.fade * q;
+                ws += kn.fade;
+            }
+            m /= ws;
+            double rms = 0.0;
+            {
+                double w2 = 0.05;
+                rms += 0.05 * glm::dot(lastXY - m, lastXY - m);
+                for (size_t i = 0; i < ps.size(); ++i)
+                {
+                    rms += pl.pall[i].fade * glm::dot(ps[i] - m, ps[i] - m);
+                    w2 += pl.pall[i].fade;
+                }
+                rms = std::sqrt(rms / w2);
+            }
+            const double sh = std::min(spread * (20e3 + 0.7 * rms + 1.1 * std::pow(pl.tauMax, 0.85)), 350e3);
+            const double zP = 0.8 * pl.cur.H + 200.0;
+            const double Sigma = pl.cur.Q * wildfireSmoke * 0.6 * kRem * (1.0 - std::exp(-older / kRem));
             const double sAlong = 1.4 * sh;
             const double tauTop = Sigma / (2.0 * kPiF * sAlong * sh);
-            const glm::dvec3 Cp = at(off.x, off.y, zP);
+            const glm::dvec3 Cp = at(m.x, m.y, zP);
             const glm::dvec3 upP = glm::normalize(Cp);
-            glm::dvec3 wv = eE * uP.x + nE * uP.y;
-            wv = glm::length(wv) > 1e-6 ? wv / glm::length(wv) : nE;
+            glm::dvec2 dv = lastXY - m;
+            glm::dvec3 wv = eE * dv.x + nE * dv.y;
+            wv = glm::length(wv) > 1.0 ? wv / glm::length(wv) : nE;
             const glm::dvec3 ap = glm::normalize(wv - upP * glm::dot(wv, upP));
             const glm::dvec3 bp = glm::cross(upP, ap);
-            const glm::dvec3 tintP(0.76, 0.75, 0.73);
-            const double albP = 0.55;
+            const glm::dvec3 tintP = tintMul * glm::dvec3(0.75, 0.76, 0.78);
+            const double albP = 0.6;
             glm::dvec3 sunC;
             double amb;
             sunLightAt(Cp, sunC, amb);
-            if (tauTop > 0.002 && emit(Cp, ap, bp, upP, sAlong, sh, 0.35 * H + 400.0, Sigma,
-                                      4.0 * kPiF * albP * tintP * sunC,
-                                      4.0 * kPiF * albP * tintP * (0.18 * amb) * glm::dvec3(0.80, 0.79, 0.76), albP,
+            if (smokeSegDbg.size() < 256)
+                smokeSegDbg.push_back({(float)(fi * 10 + 9), (float)older, (float)ps.size(), (float)sAlong, (float)sh,
+                                       (float)(0.35 * pl.cur.H + 400.0), (float)Sigma, (float)tauTop, (float)zP});
+            if (tauTop > 0.002 && emit(Cp, ap, bp, upP, sAlong, sh, 0.35 * pl.cur.H + 400.0, Sigma,
+                                      bright * 4.0 * kPiF * albP * tintP * sunC,
+                                      bright * 4.0 * kPiF * albP * tintP * (0.18 * amb) * kSkyBlue, albP,
                                       f.id ^ 0xFA11ull, cap, -1.0))
                 ++emitted;
         }
@@ -896,6 +1182,18 @@ nlohmann::json SatelliteSim::wildfiresJson(bool world)
     o["rate"] = wildfireRate;
     o["smoke_gain"] = wildfireSmoke;
     o["light_gain"] = wildfireLight;
+    o["smoke_brightness"] = wildfireSmokeBright;
+    o["smoke_tint"] = wildfireSmokeTint;
+    o["smoke_spread"] = wildfireSmokeSpread;
+    o["smoke_spectral"] = wildfireSmokeSpectral;
+    o["smoke_trajectories"] = smokeTrajs.size();
+    o["smoke_emissions"] = smokeEmits.size();
+    o["smoke_traj_steps_frame"] = smokeTrajSteps;
+    {
+        nlohmann::json sg = nlohmann::json::array();
+        for (const auto &a : smokeSegDbg) sg.push_back(std::vector<float>(a.begin(), a.end()));
+        o["smoke_segments_si_a0_a1_len_sb_sc_sigma_tau_z"] = sg;
+    }
     o["near_count"] = firesNow.size();
     o["smoke_range"] = {smokeHdrBits >> 8u & 1023u, smokeHdrBits >> 18u & 1023u};
     o["points"] = firePointsLast;

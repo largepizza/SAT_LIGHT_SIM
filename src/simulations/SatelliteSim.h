@@ -5058,6 +5058,40 @@ private:
     float wildfireRate = 1.0f;     // clouds_v2.wildfires: x the calibrated fire rate (0 = none)
     float wildfireSmoke = 1.0f;    // clouds_v2.wildfire_smoke: x the smoke's optical depth
     float wildfireLight = 1.0f;    // clouds_v2.wildfire_light: x the fire front's light (points and the glow)
+    // The smoke's look (2026-10-26, issues 20261026_204045 / _204239: "too beige", "do we have any controls for smoke?"):
+    float wildfireSmokeBright = 1.0f;   // clouds_v2.wildfire_smoke_brightness: x the light the smoke scatters
+    float wildfireSmokeTint = 0.0f;     // clouds_v2.wildfire_smoke_tint: -1 blue-grey .. 0 neutral grey .. +1 brown
+    float wildfireSmokeSpread = 1.0f;   // clouds_v2.wildfire_smoke_spread: x the plumes' width (same mass: thinner)
+    float wildfireSmokeSpectral = 0.6f; // clouds_v2.wildfire_smoke_spectral: x the Angstrom exponent (1 = ~1.6: the
+                                        // Sun / sky through smoke reddened and its thin parts blue; 0 = grey)
+    // Smoke trajectories (2026-10-26, SatelliteSimWildfire.cpp): each parcel advected from its emission through the wind
+    // at its own place and time, cached and only extended (a pure function of its emission time).
+    struct SmokeEmit
+    {
+        int nS = 0, mainSrc = 0;
+        glm::dvec2 c[5]{};
+        double w[5]{}, ext[5]{};
+        double H = 0.0, act = 0.0, Q = 0.0;
+        glm::dvec2 wDir{0.0, 1.0};
+        bool ready = false;
+        uint32_t frame = 0;
+    };
+    struct SmokeTraj
+    {
+        const SmokeEmit *em = nullptr;
+        const wx::Fire *f = nullptr;   // (valid while being extended this frame only)
+        int si = 0;                    // the source; 5 = the low layer (main source), 6 = the pall's parcels
+        double tE = 0.0, Hb = 0.0, w0 = 0.0;
+        std::vector<glm::dvec2> p;     // positions at the schedule's ages a (fireSmokeStepS)
+        std::vector<double> a;
+        double need = 0.0;             // the age it must reach this frame
+        uint32_t frame = 0;
+    };
+    std::unordered_map<uint64_t, SmokeEmit> smokeEmits;
+    std::unordered_map<uint64_t, SmokeTraj> smokeTrajs;
+    uint32_t smokeFrame = 0;
+    uint32_t smokeTrajSteps = 0;       // steps integrated this frame (harness `fires`)
+    std::vector<std::array<float, 9>> smokeSegDbg;   // the nearest fire's segments (harness `fires`)
     std::vector<wx::Fire> fireCache;           // born in [fireCacheB0, fireCacheB1] round (fireCacheLat, fireCacheLon)
     double fireCacheLat = 1e9, fireCacheLon = 1e9, fireCacheR = 0.0;
     int64_t fireCacheB0 = 0, fireCacheB1 = -1;
