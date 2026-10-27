@@ -51,7 +51,9 @@ constexpr double kDay = 86400.0;
 constexpr double kYear = 365.25 * 86400.0;
 constexpr double kR = satphot::kEarthRadiusM;
 constexpr double kEndAltM = 200000.0;   // a retiree is lowered to here, then re-enters
-constexpr double kPlumeAgeLow = 2400.0; // how long the exhaust is drawn
+// How long the exhaust is drawn (2026-10-26, issue 20261026_210053: it fades out over the last 60% of this, in
+// launch::makeParcel; it used to end here with a third to a half of its optical depth left).
+constexpr double kPlumeAgeLow = 2400.0;
 constexpr double kPlumeAgeHigh = 3600.0;
 
 glm::dvec3 rotZ(const glm::dvec3 &v, double th)
@@ -280,6 +282,8 @@ struct LBatch
     bool vents = false;
     bool parcelsBuilt = false;
     float plumeGrow = 1.0f; // "Plume growth" (launches.plume_growth) the parcels were / are being built with
+    float plumeDisp = 1.0f; // launches.plume_dispersal, likewise
+    double plumeResPri = 0.0; // (2026-10-26) last frame's weakest priority in its reserved share (0: all reserved)
     std::vector<launch::Parcel> parcels;
     double tVisEnd = 0.0;
     int shifts = 0, rivals = 0; // pad deconfliction: passes skipped, candidates checked
@@ -688,6 +692,7 @@ struct SatelliteSim::LaunchState
     uint64_t buildGen = 0;
     uint32_t jobsRun = 0;
     double plumeCutPrev = 0.0;   // (2026-10-21b) last frame's plume priority cut (launchFillVisuals)
+    double plumeResEased = 48.0; // (2026-10-26) each launch's reserved share of the plume budget, eased (ranks)
     uint32_t plumeSkipped = 0, plumeSkippedLast = 0;
     double lastJobMs = 0.0;
     size_t lastJobN = 0;
@@ -768,6 +773,17 @@ struct SatelliteSim::LaunchState
         double isoShare = -1.0;  // the share of it lit isotropically (the sky); < 0: none
     };
     std::vector<PlumeDbg> plumeDbg;
+    // (2026-10-26, issue 20261026_210053) per launch drawing plumes this frame: its candidates, how many were drawn,
+    // their summed cross-section (before / after the budget's cut and fade), parcels alive / built, the largest
+    // decimation step (launch state -> plume_groups).
+    struct PlumeGrpDbg
+    {
+        uint64_t key = 0;
+        double tPlus = 0.0;
+        int cand = 0, drawn = 0, parcels = 0, alive = 0, maxDec = 1;
+        double sigC = 0.0, sigD = 0.0, rangeKm = 0.0;
+    };
+    std::vector<PlumeGrpDbg> plumeGrpDbg;
     // (2026-10-21) The entry plasma Gaussians drawn this frame (launch state -> entry_plasma): range, the resolved share,
     // the face-on surface brightness asked for and as capped x the sky exposure (displayed), the weight, the view hold.
     struct PlasmaDbg
@@ -3757,6 +3773,13 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
         launch::ParcelOpts O;
         O.growK = vent ? 0.0 : 0.05 * (double)B.plumeGrow * (1.0 - glm::smoothstep(1500.0, 6000.0, h - padGround));
         O.groundM = glm::length(glm::normalize(p) - B.G0) * kR < 30000.0 ? padGround : 3.0;
+        // (2026-10-26, issue 20261026_210053) and it keeps spreading with age (turbulence, shear): Richardson growth,
+        // ~1 km wide after 10 min and ~5 km by the end of its life in the troposphere (it was ~250 m), half the rate in the stable
+        // stratosphere, none in the bells above 60-90 km: already hundreds of km wide, widened further they became a
+        // grey veil over the whole sky (and cost the cloud composite ~2.7 ms, every pixel inside their cones).
+        O.richK = vent ? 0.0
+                       : 0.18 * (double)(B.plumeGrow * B.plumeDisp) * glm::mix(1.0, 0.5, glm::smoothstep(12000.0, 20000.0, h)) *
+                             (1.0 - glm::smoothstep(60000.0, 90000.0, h));
         B.parcels.push_back(launch::makeParcel(tau, p, vel + vex * ex, m, vent ? 2000.0 : kappaAt(h) * kappaMul, albedoAt(h),
                                                vent ? ex : (spd > 5.0 ? vel / spd : up), vent ? vex * dtE : len,
                                                maxAge, windDir, windGain, vent ? 30.0 : 2000.0, windPhase, &O));
@@ -6428,6 +6451,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
     L.nRockets = L.nPlumes = L.nReentries = 0;
     L.nFairings = 0;
     L.plumeDbg.clear();
+    L.plumeGrpDbg.assign(L.visList.size(), LaunchState::PlumeGrpDbg{});
     L.plasmaDbg.clear();
     L.stackDraws.clear();
     if (!L.loaded)
@@ -6459,6 +6483,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         GpuDustCloud d;
         int grp = -1;      // the launch (visList index) it belongs to
         double key = 0.0;  // what the budget sorts by: pri, boosted for each launch's reserved share (below)
+        double res = 0.0;  // its weight as part of that share (0 .. 1: the share's last ranks fade)
     };
     // (2026-10-26, issue 20261026_193912) each launch's count of candidates this frame, for the reserved share
     static std::vector<int> grpCount;
@@ -7341,7 +7366,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         // (2026-10-20) Built on a worker thread (LaunchState::parcelJobs), from up to 2 min before lift-off, so it is
         // ready when the rocket lifts off; a plume asked for later appears a few frames after it is first wanted.
         // "Plume growth" changed since these parcels were built (2026-10-21): build them again.
-        if (B.parcelsBuilt && B.plumeGrow != launchPlumeGrowth)
+        if (B.parcelsBuilt && (B.plumeGrow != launchPlumeGrowth || B.plumeDisp != launchPlumeDispersal))
         {
             B.parcelsBuilt = false;
             B.parcels.clear();
@@ -7375,6 +7400,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 {
                     const LaunchState *Lc = &L;
                     B.plumeGrow = launchPlumeGrowth; // (the copy below carries it to the worker)
+                    B.plumeDisp = launchPlumeDispersal;
                     L.parcelJobs.emplace(jobKey, std::async(std::launch::async, [Lc, Bc = B]() mutable {
                                              LaunchImpl::buildParcels(*Lc, Bc);
                                              return std::move(Bc.parcels);
@@ -7424,7 +7450,10 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             // (2026-10-21b, CPU) Far below last frame's cut it cannot be drawn (it would fade to nothing there): its
             // colour and rim are not worked out. Self-correcting: a frame whose cut fell past the margin turns it off.
             // (not before this launch has its reserved share of candidates: those are drawn whatever the cut)
-            if (pri < 0.25 * L.plumeCutPrev && curGrp >= 0 && grpCount[(size_t)curGrp] >= 48)
+            // (2026-10-26, issue 20261026_210053) and not one its launch's reserved share could hold: those are drawn
+            // whatever the cut (the share is the launch's strongest by priority, not the first emitted: skipping by
+            // emission count dropped some of them for a frame and not the next).
+            if (pri < 0.25 * L.plumeCutPrev && curGrp >= 0 && pri < 0.25 * L.visList[(size_t)curGrp].second->plumeResPri)
             {
                 ++L.plumeSkipped;
                 return;
@@ -7432,6 +7461,12 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             Cand c;
             c.pri = pri;
             c.grp = curGrp;
+            if (curGrp >= 0 && (size_t)curGrp < L.plumeGrpDbg.size())
+            {
+                L.plumeGrpDbg[(size_t)curGrp].cand++;
+                L.plumeGrpDbg[(size_t)curGrp].sigC += Sigma;
+                L.plumeGrpDbg[(size_t)curGrp].rangeKm = range / 1000.0;
+            }
             if (curGrp >= 0)
                 ++grpCount[(size_t)curGrp];
             GpuDustCloud &d = c.d;
@@ -7600,36 +7635,85 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         }
         FPROF_SCOPE("launch.plumeEmit");
         const double gain = (double)launchPlumeGain;
+        {
+            LaunchState::PlumeGrpDbg &gd = L.plumeGrpDbg[li];
+            gd.key = L.visList[li].first;
+            gd.tPlus = tau;
+            gd.parcels = (int)B.parcels.size();
+            for (const PState &q : ps)
+                gd.alive += q.ok ? 1 : 0;
+        }
         // A burn's parcels are the knots of a polyline: each draws the stretch of trail since the knot before it
         // (centre the midpoint, axis and length the chord between the two as they are NOW, so the trail bends and
         // shears with the winds that carry its parcels), and the youngest knot connects to the burning stage's nozzle
         // (the head grows with the burn instead of a parcel appearing every interval: the trail used to arrive in
         // jumps, each new parcel a needle reaching ahead of the rocket - the user's "intermittent, squished" trail).
+        // Old parcels are wide and overlap their neighbours, so a burn's knots are thinned: every 2nd stands for two,
+        // every 4th for four ... up to 64, by WIDTH (2026-10-26, issue 20261026_193912: a vacuum bell's parcels are
+        // ~150 km wide 90 s after their 1-s emission, 20 overlapping Gaussians where one does). Each level needs the
+        // parcels 1.5x as wide as the stretch the survivor stands for, so no gaps.
+        // (2026-10-26, issue 20261026_210053) CONTINUOUS: the level is lam = log2(width / 1.5 spacing), and a knot
+        // that the next level drops slides onto the midpoint of the two knots that stay (its radius, condensed share
+        // and sweep onto their mean) over the last 60% of lam's step, so when it is dropped the chord through it is
+        // already the chord that replaces it (same cross-section: a chord sums its parcels). Stepped, half a trail's
+        // Gaussians moved at once - a visible jump, in time warp a pop. The ground clouds' separate puffs (outside a
+        // burn) were never dropped, only drawn x their step (Sigma x dec: an accidental 8-16x from 20 s of age, which
+        // the ground clouds' look was tuned with); that factor is now continuous, 2^lam (wOf), and still capped at 16.
+        static std::vector<PState> pb;
+        static std::vector<uint8_t> decOf;
+        static std::vector<float> wOf;
+        pb = ps;
+        decOf.assign(B.parcels.size(), 1);
+        wOf.assign(B.parcels.size(), 1.0f);
+        for (size_t pi = 0; pi < B.parcels.size(); ++pi)
+        {
+            const launch::Parcel &pc = B.parcels[pi];
+            if (!ps[pi].ok || pc.thin)
+                continue;
+            const bool puff = pc.stream < 0;
+            const double age = tau - pc.t0;
+            const double wr = ps[pi].sig / std::max(pc.len, 1.0);
+            double lam = std::log2(std::max(wr, 1e-6) / 1.5);
+            // (from 20 s of age, a level per 4 s at most; up to every 64th: the trails that keep widening reach it)
+            const double lamMax = puff ? 4.0 : 6.0;
+            lam = std::min({lam, (age - 20.0) / 4.0, lamMax});
+            if (lam <= 0.0)
+                continue;
+            const int Lv = std::min((int)std::floor(lam), (int)lamMax);
+            const size_t dec = (size_t)1 << Lv;
+            decOf[pi] = (uint8_t)dec;
+            if (puff)
+            {
+                wOf[pi] = (float)std::exp2(lam);
+                continue;
+            }
+            if (Lv >= 6 || pi % (2 * dec) != dec || pi < dec || pi + dec >= B.parcels.size())
+                continue;
+            const double g = glm::smoothstep(0.4, 1.0, lam - (double)Lv);
+            const size_t ia = pi - dec, ib = pi + dec;
+            if (g <= 0.0 || !ps[ia].ok || !ps[ib].ok || B.parcels[ia].stream != pc.stream ||
+                B.parcels[ib].stream != pc.stream)
+                continue;
+            PState &q = pb[pi];
+            q.cE = glm::mix(ps[pi].cE, 0.5 * (ps[ia].cE + ps[ib].cE), g);
+            q.sig = glm::mix(ps[pi].sig, 0.5 * (ps[ia].sig + ps[ib].sig), g);
+            q.cond = glm::mix(ps[pi].cond, 0.5 * (ps[ia].cond + ps[ib].cond), g);
+            q.sweep = glm::mix(ps[pi].sweep, 0.5 * (ps[ia].sweep + ps[ib].sweep), g);
+        }
         int prev = -1;
         for (size_t pi = 0; pi < B.parcels.size(); ++pi)
         {
             const launch::Parcel &pc = B.parcels[pi];
-            const PState &s = ps[pi];
+            const PState &s = pb[pi];
             if (!s.ok)
                 continue;
             const double age = tau - pc.t0;
             if (prev >= 0 && B.parcels[(size_t)prev].stream != pc.stream)
                 prev = -1;
-            // Old parcels are wide and overlap their neighbours: every 2nd stands for two past 2 min, every 4th for
-            // four past 10 min, every 8th past 30 min (the budget then reaches the whole bell, not just its young
-            // part) - but only once they are wide against the spacing (pc.len): thinned earlier, a trail showed gaps.
-            // (2026-10-26, issue 20261026_193912) by WIDTH, not age: a vacuum bell's parcels are ~150 km wide 90 s
-            // after their 1-s emission, 20 overlapping Gaussians where one does; with the 384 budget full, the next
-            // launch's young trail pushed a whole older bell under the cut and it vanished. Each level needs the
-            // parcels 1.5x as wide as the stretch the survivor stands for (the old age-gated rule: 1x), so no gaps.
-            const double wr = s.sig / std::max(pc.len, 1.0);
-            const int dec = (pc.thin || age < 20.0) ? 1
-                            : wr > 24.0 ? 16
-                            : wr > 12.0 ? 8
-                            : wr > 6.0  ? 4
-                            : wr > 3.0  ? 2 : 1;
+            const int dec = decOf[pi]; // (the thinning level, above)
             const bool last = pi + 1 >= B.parcels.size() || B.parcels[pi + 1].stream != pc.stream || pc.stream < 0 ||
                               !ps[pi + 1].ok;
+            L.plumeGrpDbg[li].maxDec = std::max(L.plumeGrpDbg[li].maxDec, dec);
             if (pi % (size_t)dec != 0 && !last)
                 continue;
             const uint64_t rimSeed = B.seed ^ (uint64_t)(pc.t0 * 10.0);
@@ -7637,13 +7721,13 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             if (pc.stream < 0 || prev < 0)
             {
                 // A vent's jet stretch, the pad's ground cloud, or the first knot of a burn: as emitted.
-                const double Sigma = pc.kappa * pc.m * s.cond * gain * (double)dec;
+                const double Sigma = pc.kappa * pc.m * s.cond * gain * (double)wOf[pi];
                 addPlume(s.cE, pc.axis, 0.5 * pc.len, s.sig, Sigma, s.sweep, pc.albedo, age, rimSeed, pc.stream >= 0,
                          pc.tint);
             }
             else
             {
-                const PState &q = ps[(size_t)prev];
+                const PState &q = pb[(size_t)prev];
                 glm::dvec3 seg = s.cE - q.cE;
                 const double sl = glm::length(seg);
                 const glm::dvec3 axE = sl > 1e-3 ? seg / sl : pc.axis;
@@ -7705,6 +7789,20 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 groups += gc > 0 ? 1 : 0;
             const size_t room0 = nMax > n ? (size_t)(nMax - n) : 0;
             const int R = groups > 0 ? std::min<int>(48, (int)(room0 / 2) / groups) : 0;
+            // (2026-10-26, issue 20261026_210053) The share is EASED (0.25 rank a frame) and its last 8 ranks fade
+            // (c.res: the weight a reserved Gaussian is drawn with at least): when another launch started drawing, R
+            // stepped down and the ranks it no longer reserved fell under the cut at once - pieces of every older
+            // plume popped out together. Never more than the room allows (room0 / groups); a share that has to halve
+            // at once (a jump in time or place) is taken at once.
+            {
+                const double Rmax = groups > 0 ? (double)room0 / (double)groups : 48.0;
+                double &Re = L.plumeResEased;
+                if ((double)R < 0.5 * Re)
+                    Re = (double)R;
+                Re = Re > (double)R ? std::max((double)R, Re - 0.25) : std::min((double)R, Re + 0.25);
+                Re = std::min(Re, Rmax);
+            }
+            const double Re = L.plumeResEased;
             std::sort(plumes.begin(), plumes.end(), [](const Cand &a, const Cand &b) {
                 return a.grp != b.grp ? a.grp < b.grp : a.pri > b.pri;
             });
@@ -7713,7 +7811,20 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             {
                 rank = c.grp == prevG ? rank + 1 : 0;
                 prevG = c.grp;
-                c.key = (c.grp >= 0 && rank < R) ? c.pri * 1e12 + 1e-30 : c.pri;
+                c.res = c.grp >= 0 ? glm::clamp((Re - (double)rank) / 8.0, 0.0, 1.0) : 0.0;
+                c.key = c.res > 0.0 ? c.pri * 1e12 + 1e-30 : c.pri;
+                // (the weakest of the share, for next frame's skip test; 0 = the launch has fewer than the share)
+                if (c.grp >= 0)
+                    L.visList[(size_t)c.grp].second->plumeResPri = 0.0;
+            }
+            rank = 0;
+            prevG = -2;
+            for (const Cand &c : plumes)
+            {
+                rank = c.grp == prevG ? rank + 1 : 0;
+                prevG = c.grp;
+                if (c.grp >= 0 && rank == (int)std::ceil(Re))
+                    L.visList[(size_t)c.grp].second->plumeResPri = c.pri;
             }
         }
         std::partial_sort(plumes.begin(), plumes.begin() + nOrd, plumes.end(),
@@ -7741,7 +7852,13 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 continue;
             out[n] = c.d;
             if (cut > 0.0)
-                out[n].c.w *= (float)glm::clamp((c.key - cut) / (2.0 * cut), 0.0, 1.0);
+                out[n].c.w *= (float)(c.key > 1e6 * cut ? std::max(c.res, glm::clamp((c.pri - cut) / (2.0 * cut), 0.0, 1.0))
+                                                         : glm::clamp((c.key - cut) / (2.0 * cut), 0.0, 1.0));
+            if (c.grp >= 0 && (size_t)c.grp < L.plumeGrpDbg.size())
+            {
+                L.plumeGrpDbg[(size_t)c.grp].drawn++;
+                L.plumeGrpDbg[(size_t)c.grp].sigD += out[n].c.w;
+            }
             ++n;
             ++L.nPlumes;
         }
@@ -8041,6 +8158,16 @@ nlohmann::json SatelliteSim::launchStateJson() const
                       {"sun_col", {pd[i].col.x, pd[i].col.y, pd[i].col.z}}});
     j["plume_high"] = hi;
     j["plume_parcels"] = pd.size();
+    {
+        nlohmann::json g = nlohmann::json::array();
+        for (const auto &e : L.plumeGrpDbg)
+            if (e.cand > 0 || e.parcels > 0)
+                g.push_back({{"key", e.key}, {"t_plus_s", e.tPlus}, {"cand", e.cand}, {"drawn", e.drawn},
+                             {"parcels", e.parcels}, {"alive", e.alive}, {"max_dec", e.maxDec},
+                             {"sigma_cand", e.sigC}, {"sigma_drawn", e.sigD}, {"range_km", e.rangeKm}});
+        j["plume_groups"] = g;
+        j["plume_cut"] = L.plumeCutPrev;
+    }
     // The ground clouds (2026-10-20): lift-off and landing parcels drawn, and the thickest of them.
     {
         std::sort(pd.begin(), pd.end(), [](const auto &a, const auto &b) { return a.tauPeak > b.tauPeak; });

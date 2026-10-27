@@ -879,7 +879,11 @@ Parcel makeParcel(double t0, const glm::dvec3 &p0, const glm::dvec3 &v0, double 
         pc.age.push_back((float)age);
         pc.c.push_back(p);
         pc.sig.push_back((float)sig);
-        pc.cond.push_back((float)(std::exp(-age / tauEvap) * (1.0 - std::exp(-age / tauCond))));
+        // (2026-10-26, issue 20261026_210053) and fading out over the last 60% of its life: a parcel ends at maxAge
+        // (Parcel::at returns false), and with ~0.2-0.5 of its condensed share left there the whole stretch of trail
+        // it stood for vanished at once - every parcel of a burn within a minute or two of each other.
+        const double endFade = 1.0 - glm::smoothstep(0.4 * maxAge, maxAge, age);
+        pc.cond.push_back((float)(std::exp(-age / tauEvap) * (1.0 - std::exp(-age / tauCond)) * endFade));
         pc.sweep.push_back((float)(Me / m));
     };
     record();
@@ -918,7 +922,8 @@ Parcel makeParcel(double t0, const glm::dvec3 &p0, const glm::dvec3 &v0, double 
         const double Kd = hk < 15.0 ? 25.0 : hk < 60.0 ? 8.0 : 400.0;
         // (turbulent growth at the parcel's speed through the air, capped at 60 m/s: a young exhaust parcel still moves
         // at km/s, and uncapped it swelled to hundreds of metres in a second)
-        const double sigDot = vExp * (m / M) + Kd / sig + O.growK * std::min(glm::length(vr), 60.0);
+        const double sigDot = vExp * (m / M) + Kd / sig + O.growK * std::min(glm::length(vr), 60.0) +
+                              O.richK * std::cbrt(sig);
         // Entrainment: the air swept by the growing surface and the parcel's motion through the air. High up the
         // air is so thin (mean free path ~1 km at 200 km) that the exhaust largely passes through it: the coupling
         // weakens, and the bell grows to hundreds of km as seen in twilight launches.

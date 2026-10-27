@@ -5951,6 +5951,29 @@ launches follow per-program cadences (no real manifest).
   2nd / 4th / 8th / 16th, from 20 s of age; it was age-gated from 2 min, and a vacuum bell's 1-s parcels were 20
   overlapping 150-km Gaussians at 90 s); (2) each launch drawing plumes is reserved its strongest min(48, half the budget
   / launches) Gaussians (`Cand::grp` / `key`), the rest by priority. The bell now fades out over ~1.5 min.
+  **No removal is a step (2026-10-26, issue 20261026_210053 "plume disappearance still instant", a launch's bell seen
+  from 53.6 km over the Gulf going out piece by piece between T+62 and T+65 min):** the cause was the parcel LIFETIME —
+  a parcel ends at `kPlumeAgeHigh` 3600 s / `kPlumeAgeLow` 2400 s (`Parcel::at` returns false) and its condensed share
+  was still exp(-age / tauEvap) = 0.2-0.5 there, so each stretch of trail vanished whole as its parcel aged out (the
+  budget was not binding: 310 of 384 drawn, cut 0; `launch state` -> `plume_groups` per launch: candidates, drawn,
+  parcels alive, largest thinning, summed cross-section). Now: (1) `makeParcel` multiplies `cond` by
+  1 - smoothstep(0.4, 1) of age / maxAge, so a parcel reaches 0 at its end; (2) old exhaust keeps WIDENING:
+  `ParcelOpts::richK` adds richK sigma^(1/3) to d(sigma)/dt (Richardson's 4/3 law, same cross-section: thinner as it
+  widens), 0.18 x "Plume growth" x `launches.plume_dispersal` (key only, default 1) in the troposphere, half above
+  12-20 km, none in the bells above 60-90 km (widened they became a grey veil over the sky and +2.7 ms of composite):
+  a low trail ~1 km wide after 10 min, ~5 km at the end (it was ~250 m); ground clouds keep their own growth;
+  (3) the knot THINNING is continuous: lam = log2(width / 1.5 spacing), from 20 s of age at most a level per 4 s, up
+  to every 64th (was 16), and the knot the next level drops slides onto the midpoint of the two that stay (radius,
+  `cond`, sweep too) over the last 60% of lam's step, so its removal changes nothing; ground-cloud puffs (outside a
+  burn) were never dropped but drawn x their step (an accidental 8-16x from 20 s of age, which their look was tuned
+  with) — that factor is now 2^lam, continuous; (4) the reserved share is eased (`plumeResEased`, 0.25 rank a frame,
+  snapped when it must halve: a jump) and its last 8 ranks fade (`Cand::res`), and the CPU skip tests a launch's own
+  reserved boundary (`LBatch::plumeResPri`) instead of the first 48 emitted. Measured (RTX 3070 Ti, 1600x900, the
+  report's view, crop of the plumes, mean / max frame-to-frame change in `vsheet.py`): 10x 0.123 / 1.29 -> 0.109 / 0.47,
+  1 min/s 0.264 / 1.48 -> 0.244 / 0.60 (the max now at the H.264 keyframes); the T+62-min bell is already faint there
+  (by design). Cost: twilight bookmark at T+10 min cloud_march 7.9 -> 7.8 (dispersal 0) / 8.0 (0.5) / 8.3-9.2 ms (1);
+  beside a pad after it 6.5-6.7 -> 7.3-7.7 (0) / 8.2-8.6 ms (1), the budget then admitting wider, fainter Gaussians;
+  CPU within noise. Open: a cost-aware budget (coverage, not count).
 - **What the Gaussian list costs, and the three culls (2026-10-21).** `dustCloudsCS` costs every texel the work of
   every Gaussian whose cone covers it; old, wide or Earth-shadowed exhaust (bells hundreds of km across, trails in the
   night) covers the whole sky while adding nothing: in the droneship bench view 160 of 390 Gaussians were in every

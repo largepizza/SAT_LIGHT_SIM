@@ -3051,6 +3051,7 @@ private:
     float launchPlumeWidth = 1.0f;   // launches.plume_width: every plume Gaussian's radius x (same mass: thinner wide)
     float launchPlumeBillows = 1.0f; // launches.plume_billows: the billows' contrast x (cloud_march.comp)
     float launchPlumeGrowth = 1.0f;  // launches.plume_growth: the low trail's / ground clouds' turbulent growth x
+    float launchPlumeDispersal = 1.0f; // launches.plume_dispersal (2026-10-26): old exhaust's widening with age x (no UI)
     float launchGroundCloudGain = 1.0f; // launches.ground_cloud_gain: lift-off steam / landing dust & spray density x
     // Rocket light on clouds, haze, plumes and the ground (2026-10-20, launches.engine_light_gain): the burning
     // engines (ascent, boostback, entry and landing burns), a ship's entry glow and the pads' floodlights as point
