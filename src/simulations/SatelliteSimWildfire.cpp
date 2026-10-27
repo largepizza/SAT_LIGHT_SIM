@@ -1315,6 +1315,8 @@ nlohmann::json SatelliteSim::wildfiresJson(bool world)
         r["plume_top_m"] = f.s.plumeTopM;
         r["flame_h_m"] = wx::fireFlameHeightM(f.f, f.s);
         r["gaussians"] = f.gauss;
+        // (the share of the front's heat on ground that can burn: the smoke and flames are x it; < 0.4 = not an event)
+        r["front_burnable_share"] = wx::fireBurningShare(f.f, f.s, t, biomeMap);
         if (i == 0)
         {
             nlohmann::json kn = nlohmann::json::array();

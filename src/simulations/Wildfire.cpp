@@ -261,6 +261,25 @@ void fireOffsetLatLon(const Fire &f, const glm::dvec2 &q, double &latDeg, double
     lonDeg = f.lonDeg + q.x / (111195.0 * std::max(std::cos(f.latDeg * kPi / 180.0), 0.05));
 }
 
+double fireBurningShare(const Fire &f, const FireState &s, double t, const BiomeMap &bio)
+{
+    // (as the smoke's sources weigh it, SatelliteSimWildfire.cpp: 48 points round the front, heat x ds/da)
+    double hTot = 0.0, hRaw = 0.0;
+    for (int k = 0; k < 48; ++k)
+    {
+        const double a = 2.0 * kPi * (k + 0.5) / 48.0;
+        double dsda = 0.0;
+        const glm::dvec2 q = fireFrontAt(f, s, a, &dsda);
+        const double h0 = fireFrontHeat(f, s, a, t) * dsda;
+        if (h0 <= 0.0) continue;
+        double la, lo;
+        fireOffsetLatLon(f, q, la, lo);
+        hTot += h0 * sstep(0.08, 0.3, (double)bio.burnableAt(la, lo));
+        hRaw += h0;
+    }
+    return hRaw > 1e-12 ? std::clamp(hTot / hRaw, 0.0, 1.0) : 0.0;
+}
+
 double fireFrontHeat(const Fire &f, const FireState &s, double a, double t, const BiomeMap *bio)
 {
     // The ACTIVE ARC (2026-10-24): a new fire burns all round; within ~half a day only the head and the upper flanks are

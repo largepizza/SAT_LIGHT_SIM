@@ -436,7 +436,10 @@ void SatelliteSim::weatherFeaturedUpdate()
         {
             const wx::FireState fst = wx::fireStateAt(f, wxFireJobT);
             if (fst.activity <= 0.05) continue;
-            const double s = (double)f.size * (0.3 + fst.activity) * (1.0 + (double)f.pyro);
+            // (only fires whose front still burns: one run into a town or onto bare ground has no smoke or flames)
+            const double share = (double)f.size * (0.3 + fst.activity) > bestS ? wx::fireBurningShare(f, fst, wxFireJobT, biomeMap) : 0.0;
+            if (share < 0.4) continue;
+            const double s = (double)f.size * (0.3 + fst.activity) * (1.0 + (double)f.pyro) * share;
             if (s > bestS)
             {
                 bestS = s;
@@ -610,13 +613,20 @@ bool SatelliteSim::weatherFeaturedAct(int slot, int act, std::string &msg)
             if (glm::dot(se, G) > 0.0 && glm::dot(se, cv) > 0.0)
                 sgn = -1.0;   // the eye at -cv looks along +cv, toward the Sun: stand on the other side
         }
+        // (Beside the COLUMN, not the head: the smoke rises from the active front's heat-weighted sections, which on a
+        // big fire stand km from the head; looking at the head, the Watch framed a front with its smoke out of view,
+        // 2026-10-27. The anchor is the smoke ~10 min old, where the column leans over; looked at a few degrees up.)
+        const glm::dvec3 sm = wx::fireSmokeAt(F.fire, fs, t, 600.0, wx::fireInjectionHeightM(F.fire, fs, t));
+        const glm::dvec3 Sd = glm::normalize(G + (east * sm.x + north * sm.y) / kRe);
+        const double dSide = 5000.0;
         const glm::dvec3 oe = orbit ? glm::normalize(Hd - cv * (300000.0 / kRe))
-                                    : glm::normalize(Hd - cv * (sgn * 4000.0 / kRe) - wv * (1500.0 / kRe));
-        placeLooking(oe, orbit ? 400000.0 : 150.0, Hd, orbit ? -45.0f : 2.0f);   // (Watch: 4 km beside, the flames read)
+                                    : glm::normalize(Sd - cv * (sgn * dSide / kRe) - wv * (1500.0 / kRe));
+        const float elW = (float)std::clamp(0.5 * glm::degrees(std::atan2(std::max(sm.z, 300.0), dSide)), 3.0, 12.0);
+        placeLooking(oe, orbit ? 400000.0 : 150.0, orbit ? Hd : Sd, orbit ? -45.0f : elW);   // (Watch: 5 km beside the column)
         fireCacheRate = -1.0f;   // rescan the fires round the new eye
         updatePositions(t);
         msg = std::string("A wildfire in ") + wx::biomeName(biomeMap.at(F.fire.latDeg, F.fire.lonDeg)) +
-              (orbit ? ", from orbit" : ", 4 km beside its burning front");
+              (orbit ? ", from orbit" : ", 5 km beside its smoke column");
         return true;
     }
     default: break;

@@ -4554,6 +4554,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             {
                 const double m = momentOf(g);
                 if (m < 0.0) continue;
+                // (a fire whose front has run onto ground that cannot burn makes no smoke or flames: skip it)
+                if (wx::fireBurningShare(g, wx::fireStateAt(g, m), m, biomeMap) < 0.4) continue;
                 if (seen++ == want) { f = g; tPick = m; break; }
             }
             if (tPick < 0.0) fail("fires go: no fire burns at that local time");
