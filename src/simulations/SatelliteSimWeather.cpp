@@ -274,13 +274,11 @@ StormIndexStats fillStormIndex(const std::vector<E> &ents, std::vector<glm::uvec
                                uint32_t *list, glm::uvec2 *gpuTable)
 {
     StormIndexStats st;
-    static std::vector<uint32_t> old, hostList, entSlot;   // main thread only
-    bool fullCopy = false;   // (the GPU copy is written slot by slot: only a fresh table copies whole)
+    static std::vector<uint32_t> old, hostList;   // main thread only
     if (table.size() != tableSize)
     {
         table.assign(tableSize, glm::uvec2(0u));
         used.clear();
-        fullCopy = true;
     }
     if (counts.size() < tableSize) counts.resize(tableSize, 0u);
     static std::vector<uint64_t> occ;   // occupied slots; all zero between calls
@@ -298,18 +296,13 @@ StormIndexStats fillStormIndex(const std::vector<E> &ents, std::vector<glm::uvec
         }
         return 0xFFFFFFFFu;
     };
-    // Each entry's slot is kept from this pass (the fill below hashed every entry a second time).
-    if (entSlot.size() < ents.size()) entSlot.resize(ents.size());
-    for (size_t i = 0; i < ents.size(); ++i)
+    for (const E &e : ents)
     {
-        const E &e = ents[i];
-        entSlot[i] = 0xFFFFFFFFu;
         if (st.bins * 2u >= tableSize) { ++st.lost; continue; }
         const uint32_t sl = slotOf(e.key);
         if (sl == 0xFFFFFFFFu) { ++st.lost; continue; }
         if (table[sl].x == 0u) { table[sl].x = e.key; ++st.bins; used.push_back(sl); occ[sl >> 6] |= 1ull << (sl & 63u); }
         ++counts[sl];
-        entSlot[i] = sl;
     }
     // The occupied slots in slot order from the bitmap (std::sort of ~10-40k slots was 0.4-1.3 ms a call).
     used.clear();
@@ -327,10 +320,9 @@ StormIndexStats fillStormIndex(const std::vector<E> &ents, std::vector<glm::uvec
         start += c;
     }
     if (hostList.size() < start) hostList.resize(start);
-    for (size_t i = 0; i < ents.size(); ++i)
+    for (const E &e : ents)
     {
-        const E &e = ents[i];
-        const uint32_t sl = entSlot[i];
+        const uint32_t sl = slotOf(e.key);
         if (sl == 0xFFFFFFFFu || table[sl].x != e.key) continue;
         const uint32_t c = table[sl].y & 31u;
         if (c >= maxPerBin) continue;
@@ -340,14 +332,7 @@ StormIndexStats fillStormIndex(const std::vector<E> &ents, std::vector<glm::uvec
     }
     for (uint32_t sl : used) counts[sl] = 0u;
     std::memcpy(list, hostList.data(), sizeof(uint32_t) * start);
-    if (fullCopy)
-        std::memcpy(gpuTable, table.data(), sizeof(glm::uvec2) * tableSize);
-    else
-    {
-        // The GPU copy held last call's table: clear its slots, then write this call's (the same table as a full copy).
-        for (uint32_t sl : old) gpuTable[sl] = glm::uvec2(0u);
-        for (uint32_t sl : used) gpuTable[sl] = table[sl];
-    }
+    std::memcpy(gpuTable, table.data(), sizeof(glm::uvec2) * tableSize);
     st.used = start;
     return st;
 }
