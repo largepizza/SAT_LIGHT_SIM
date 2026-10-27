@@ -31,7 +31,8 @@ the satellites themselves.
 | [Getting started](getting-started.md) | Download, install, build from source, the first launch, where files are kept |
 | [Controls](controls.md) | Keyboard, mouse and gamepad, rebinding, movement speed, follow mode, typing values |
 | [Features tour](features.md) | Selecting satellites, rockets and planets, the satellite window, magnitude traces, time, launches, the Sun's Fury, bookmarks, photos, cinematics, issue reports, the settings tabs |
-| [Missions](missions.md) | The Missions window (upcoming launches, what is flying, the Sun's Fury) and skipping between mission milestones |
+| [Missions](missions.md) | The Missions window: upcoming launches, what is flying, the Kessler tracker and the Sun's Fury, each with one Watch button |
+| [Weather](weather.md) | The Weather window: radar, storm events (tornadoes, hurricanes, haboobs, wildfires), tropical cyclones, one Watch per event |
 | [Graphics settings](graphics-settings.md) | Presets, render scale, temporal anti-aliasing, frame limiter, UI themes, the sliders that cost the most |
 
 ## The screen at a glance
@@ -54,8 +55,8 @@ the satellites themselves.
   type a time.
 - The **position readout** (bottom right) shows the observer's latitude, longitude and altitude. Hover any of
   them and scroll to change it, or click to type a value. The small button beside the altitude switches between
-  height above sea level (MSL) and above the ground (AGL). The panel ends in the menu buttons: Issue reports (a
-  flag), Missions (a rocket), Bookmarks, Cinematics and Settings (the gear).
+  height above sea level (MSL) and above the ground (AGL). The panel ends in the menu buttons: Missions (a rocket),
+  Weather (a cloud), Bookmarks, Cinematics, Issue reports (a flag) and Settings (the gear).
 - **Tab** hides and shows the whole interface.
 
 !!! tip

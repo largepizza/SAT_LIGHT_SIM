@@ -260,7 +260,9 @@ separate Potato shader `sat_sky_minimal.frag`. The variants are described on
 | Page | Covers |
 |---|---|
 | [Atmosphere and sky](atmosphere-and-sky.md) | `sat_sky.frag` as compositor: scattering, the cloud composite, Sun, stars, Milky Way, exposure, tonemap, sky TAA |
+| [The Sun as an object](refraction.md) | refraction, mirages and turbulence near the horizon, the Sun's disc and glare |
 | [Clouds](clouds/field.md) | the density field, the march, the temporal resolve and far layer, weather |
+| [Storms in the cloud field](clouds/storms.md) | towers, anvil shields, cyclones, tornadoes and dust walls drawn from the storm objects |
 | [Terrain](terrain.md) | the height function, the terrain march and its seed pyramid, land shading |
 | [The sea](sea.md) | waves, sea state, shore, reflections |
 | [Cities, farms and solar parks](cities.md) | procedural ground detail and night lights |

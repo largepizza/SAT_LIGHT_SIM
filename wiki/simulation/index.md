@@ -127,6 +127,10 @@ orbital phase after a week. The rules that keep the simulation accurate:
 | [Rockets](rockets.md) | booster and upper-stage flight, staging, deorbit, ship entry, tower catches, booster recovery, mission milestones |
 | [Crew flights](crew-flights.md) | crew rotations, visiting vehicles, the stations they serve |
 | [Kessler syndrome](kessler.md) | The Sun's Fury storm, the collision cascade, debris, dust clouds, re-entry fireballs, player breakups |
+| [Weather and storms](weather.md) | the storm catalog: thunderstorms, squall lines and MCSs, anvil shields, tornadoes, the wind fields |
+| [Tropical cyclones](tropical-cyclones.md) | basins, tracks, intensity, names, the cyclone's structure, storm surge |
+| [Wildfires](wildfires.md) | the biome map, fire ignition and spread, the burning front, smoke trajectories |
+| [Haboobs](haboobs.md) | gust-front dust walls raised by storms over dry land |
 
 ## Where in the code
 
@@ -141,3 +145,5 @@ orbital phase after a week. The rules that keep the simulation accurate:
 | `shaders/include/point_style.glsl` | magnitude to point-spread function |
 | `src/simulations/Launches.h/.cpp`, `SatelliteSimLaunches.cpp` | launch schedule, rocket tracks, trains, retirees |
 | `src/simulations/Kessler.h/.cpp`, `SatelliteSimKessler.cpp` | the Kessler world, breakups, collision engine, debris drawing |
+| `src/simulations/Weather.h/.cpp`, `SatelliteSimWeather*.cpp` | the storm catalog and tropical cyclones |
+| `src/simulations/Biome.h/.cpp`, `Wildfire.h/.cpp`, `SatelliteSimWildfire.cpp`, `SatelliteSimHaboob.cpp` | the biome map, wildfires, haboobs |
