@@ -52,9 +52,12 @@ void SatelliteSim::haboobFrontOf(const wx::Storm &S, double t, std::vector<Haboo
     const glm::dvec3 nAx = sp > 1e-9 ? glm::normalize(glm::cross(S.pos0, S.vel)) : glm::dvec3(0, 0, 1);
     const double age = t - S.t0;
     const bool line = wx::isLineSystem(S.kind);
-    // The outflow leads the towers by a few km once the storm has rained a while, more for the organised systems.
+    // The outflow leads the towers once the storm has rained a while, more for the organised systems: a mature squall
+    // line's gust front runs ~30 km ahead of its convective line, a cell's ~15 km (2026-10-26, issue 20261026_204749:
+    // "the haboobs should be more advanced of the storms". At 5 + 14 km the wall stood inside the line's own cumulus and
+    // shelf band, and the clear air ahead of it carved the storm; now it runs out in the subsidence ahead of the line).
     const double grow = glm::smoothstep(1800.0, 3.0 * 3600.0, age);
-    const double dG = line ? 5000.0 + 14000.0 * grow : 3000.0 + 7000.0 * grow;
+    const double dG = line ? 8000.0 + 22000.0 * grow : 4000.0 + 11000.0 * grow;
     struct TP { glm::dvec3 d; double s; double along; };
     std::vector<TP> tw;
     for (const wx::Tower &T : towers ? *towers : stormTowers)
@@ -272,7 +275,7 @@ void SatelliteSim::weatherFillHaboobs(GpuDustCloud *out, uint32_t &n)
             }
             const double ground = std::max(0.0, (double)cpuTerrainHeightM((float)lat, (float)lon));
             const uint64_t h = hbMix(S->id ^ (uint64_t)(i * 2654435761u));
-            const double H = (1500.0 + 1500.0 * std::min(1.0, k)) * (0.85 + 0.3 * ((h & 1023) / 1023.0));
+            const double H = (800.0 + 800.0 * std::min(1.0, k)) * (0.85 + 0.3 * ((h & 1023) / 1023.0));
             const double sinE = glm::dot(q.dir, sunE);
             const double dayK = glm::smoothstep(-0.06, 0.06, sinE);
             const double airm = 1.0 / (std::max(sinE, 0.0) + 0.05);
@@ -549,7 +552,10 @@ void SatelliteSim::weatherFillDustGrid()
             m.seed = S->id;
             m.e0 = std::min(1.0, 2.0 * k);
             const uint64_t h = hbMix(S->id ^ (uint64_t)(i * 2654435761u));
-            m.H0 = (1300.0 + 900.0 * std::min(1.0, k)) * (0.7 + 0.6 * ((h & 1023) / 1023.0));   // 0.9-2.9 km, head by head
+            // Head by head 0.5-1.8 km (2026-10-26, issue 20261026_204749): a haboob wall is ~1-2 km tall (rarely ~3), under a
+            // dry-desert cumulonimbus base 2.5-4 km up; at 0.9-2.9 km (x 1.2 at the heads, + the lobes) it reached the cloud
+            // base, and the clear air above it (1.35 x the tallest head) cut the storm's lower 5 km away.
+            m.H0 = (700.0 + 500.0 * std::min(1.0, k)) * (0.75 + 0.5 * ((h & 1023) / 1023.0));
             // The point on the plane, and the front's axes there.
             const glm::dvec3 sp = q.dir * kReH - sea;
             m.px = glm::dot(sp, E);
@@ -639,7 +645,9 @@ void SatelliteSim::weatherFillDustGrid()
                         if (ac > cAhead || ac < cLo || std::abs(al) > aMax) continue;
                         const double wAl = 1.0 - glm::smoothstep(0.55 * m.spc, aMax, std::abs(al));
                         uint32_t &dst = dustGridCpu[(size_t)iy * G + ix];
-                        double clr = wAl * (1.0 - glm::smoothstep(9000.0, cAhead, ac)) * glm::smoothstep(-2500.0, 0.0, ac);
+                        // (and over the wall's pall behind it, 8 km back: the low cloud's base lifted over the dust, so the
+                        // wall's top is not inside cloud; the lift's height is the walls' own, clouds_v2.glsl cv2Field)
+                        double clr = wAl * (1.0 - glm::smoothstep(9000.0, cAhead, ac)) * glm::smoothstep(-8000.0, -3000.0, ac);
                         for (const glm::dvec2 &h : tornHold)
                         {
                             const double hx = (ix - 0.5 * G + 0.5) * cell - h.x, hy = (iy - 0.5 * G + 0.5) * cell - h.y;

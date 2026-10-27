@@ -1725,6 +1725,14 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             // a time jump or a reset) invalidates every cell. Each level's cells expire after half a cell of wind slide at
             // 40 m/s of sim time (staggered per cell); paused, nothing expires.
             const uint32_t cdcEpoch0 = cv2CdcEpoch;
+            // A haboob's dust and its clear air are in the field the cells are baked from: when a wall appears or leaves
+            // (the march swaps its dust specialisation) or the haboob settings change, the cells baked empty under the clear
+            // air would skip the cloud now there (with time paused never expiring): cloud missing in clipmap-cell rectangles
+            // that popped in as they expired (2026-10-26, issue 20261026_204749, the "lighting snaps near haboobs" of 191842).
+            const float cdcDustKey = dustGpuOn ? haboobGain * (haboobField ? 1.0f : -1.0f) + 2.0f : 0.0f;
+            if (cdcDustKey != cv2CdcDustKeyUsed)
+                ++cv2CdcEpoch;
+            cv2CdcDustKeyUsed = cdcDustKey;
             if (!lightValid || cdcNewAnchor || cv2CdcFpUsed != cv2CdcFp || cv2CdcSkipUsed != cv2CdcSkip
                 || cv2CdcLightUsed != cv2CdcLight || cv2CdcLightLevelsUsed != cv2CdcLightLevels || cv2CdcMaxLevelUsed != cv2CdcMaxLevel)
                 ++cv2CdcEpoch;

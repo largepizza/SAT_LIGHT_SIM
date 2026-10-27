@@ -2038,7 +2038,7 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     }
     // (the edge noise fades to nothing at both ends of the ramp: continuous where the grid reads 0 or 1 exactly)
     clr += 1.3 * smoothstep(0.0, 0.12, clr) * (1.0 - smoothstep(0.88, 1.0, clr)) * lobD;
-    clr *= 1.0 - smoothstep(hT, hT + kCv2DustClearFadeM, aglD - 2400.0 * lobG);
+    clr *= 1.0 - smoothstep(hT, hT + kCv2DustClearFadeM, aglD - 1200.0 * lobG);
     f.sigma *= 1.0 - smoothstep(0.0, 0.8, clr);
 #endif
     if (sd > 0.0) {

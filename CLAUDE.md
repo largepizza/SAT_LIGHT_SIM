@@ -1178,6 +1178,24 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   lets the outflow OUTLIVE its towers: the towers of 15 / 30 / 45 min ago (`towersAt`, carried with the storm) sustain
   the current ones' strength, decaying to 0 over 45 min, and stand in alone when the storm has none left (a storm stays
   a candidate while it lives: `stormOrganisedNow`). Mixing lagged towers in as extra sources made a zigzag front (tried).
+  **Lower walls, further ahead, the storm left whole (2026-10-26, issue 20261026_204749, 18.1 S 17.3 E: "hyper eroded,
+  cavities carved out", "giant chunk missing out of squall line", "does it span all the way up to the cloud base?").**
+  The cavities were the CLEAR AIR: it removed all low cloud below 1.35 x the tallest head (~5 km AGL with heads to
+  3.4 km) from 2.5 km behind the front to 12 km ahead, and with the front only 5-19 km (cells 3-10) ahead of the towers
+  that strip ran through the line's own storm cumulus (it reaches 31 km past a tower's edge): a 5-km tunnel under the
+  storm (shot 5; with `clouds_v2.haboobs 0` the cloud is there; debug view 7 shows it is the low layer). Now: walls
+  0.5-1.8 km a head (`m.H0` (700 + 500 k) x 0.75-1.25; the far-field Gaussians' H 0.7-1.9 km) — a real haboob is ~1-2 km,
+  rarely ~3, under a dry-desert Cb base 2.5-4 km up — so the clear air is a BASE LIFT to ~3 km AGL (its edge lumps
+  1200 m x the coarse lobes, was 2400), and it reaches back over the pall to 8 km behind the front (the wall's top was
+  inside cloud there); the front leads a line by 8 + 22 km x the age ramp (~30 km mature, in the line's subsidence
+  ahead of the shelf band) and a cell by 4 + 11 km. Harness `haboob aloft=1` stands 2 km up (2.5 was now inside the
+  cloud above the walls). **The clipmap is rebuilt when the dust field changes** (`cv2CdcDustKeyUsed`: dust on / off,
+  gain, form): cells baked empty under the clear air kept skipping the cloud after the march swapped to the dust-free
+  specialisation, never expiring with time paused (rectangles of missing cloud, popping in as cells expired — the
+  likely "lighting snaps near haboobs" of 20261026_191842, whose trail did not show a snap on or off afterwards). The
+  shot-6 "eroded top layer" is the ANVIL shields (`clouds_v2.anvil 0` removes it; storm erosion, the mid and high
+  layers do not), and its pop-in after a turn is the resolve converging that thin, frayed ice: Sun volume, clipmap,
+  S2 light and the faint-sample skip off each leave the convergence unchanged (harness_runs/hb26, untracked).
 - **The Weather window (2026-10-23, `SatelliteSimWeatherWindow.cpp`, `shaders/weather_radar.comp`; the weather-cloud
   button beside Missions on the right HUD panel (`TimeWeatherBtn`, `pixel--weather.png` from `tools/make_icons.py`), key N
   `KB_WEATHER`, window id 12, `wxChrome`; harness `ui open weather [tab=radar|storms|controls]`, `weather ...`).** Missions-
