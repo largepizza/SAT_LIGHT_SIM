@@ -468,6 +468,11 @@ void SatelliteSim::updateStorms()
 {
     FPROF_SCOPE("updateStorms");
     finishStormEnvIndex();   // (last frame's, if a frame ended before its join)
+    if (stormEnvLate)
+    {
+        stormEnvLate = false;
+        stormEnvHoldFrame = true;   // its ranges are uploaded this frame: no new job writes the shadow before that
+    }
     if (!stormMapped)
         return;
     const auto t0 = std::chrono::steady_clock::now();
@@ -832,6 +837,8 @@ void SatelliteSim::buildStormEnvIndex()
     if (stormEnvAsync && stormEnvJob.valid() && stormEnvJobT == tNow)
         return;   // started earlier this frame (startStormEnvJob)
     finishStormEnvIndex();
+    if (stormEnvAsync && stormEnvHoldFrame)
+        return;   // this frame uploads the previous (late) job's index; the next frame builds again
     if (stormEnvAsync)
         startStormEnvJob();
     else
@@ -847,6 +854,8 @@ void SatelliteSim::startStormEnvJob()
     if (!stormMapped)
         return;
     finishStormEnvIndex();
+    if (stormEnvHoldFrame)
+        return;
     stormEnvJobT = (double)simDayJ2000 * 86400.0 + simSecInDay;
     stormEnvJob = std::async(std::launch::async, [this] { return buildStormEnvIndexWork(true); });
 }

@@ -930,8 +930,20 @@ void SatelliteSim::kesslerSyncProcess(int32_t nowSec, double budgetMs)
         KesslerWorker::SyncBatch &sb = W.syncQ.front();
         while (sb.next < sb.pool.size())
         {
-            const KesslerWorker::OutPoolChange &c = sb.pool[sb.next++];
+            const KesslerWorker::OutPoolChange &c = sb.pool[sb.next];
             const uint32_t j = c.slot;
+            // (2026-10-27) A new record past the GPU pool's capacity: the growth takes the buffers allocated ahead on a
+            // worker (kesslerPreallocTick). While they are not ready the sync stops HERE (sim time holds at the mirrored
+            // frontier, the banner), instead of the frame waiting on the allocation: at 1 d/s after the CME the pool went
+            // from 40% to full in a few frames and the frame waited 24-59 ms (122 ms worst, hitch_check D). An unbounded
+            // drain (a player breakup's rewind) still grows at once.
+            if (c.isRecord && j >= kPoolCap && budgetMs < 1e29 && !kesslerGrowReady(j))
+            {
+                stopped = true;
+                ++kGrowHolds;
+                break;
+            }
+            ++sb.next;
             if (c.isRecord)
             {
                 if (j >= kPool.size() || kPoolGen[j] == UINT32_MAX)
@@ -1137,6 +1149,15 @@ const std::vector<SatelliteSim::KSmallRe> &SatelliteSim::kesslerSmallReHour(int3
     return out;
 }
 
+// (2026-10-27) The sets that bind the pool's buffers, re-pointed at the new ones during a frame: swapped for fresh copies
+// (no drain of the frames in flight), else written in place (which drains them).
+void SatelliteSim::kesslerGrowDescriptors(VulkanContext &ctx)
+{
+    FPROF_SCOPE("kessler.growDescriptors");
+    if (!swapSatRosterDescriptors(ctx))
+        writeSatRosterDescriptors(ctx);
+}
+
 void SatelliteSim::kesslerEnsureCapacity(VulkanContext &ctx, size_t records, bool inFrame)
 {
     FPROF_SCOPE("kesslerEnsureCapacity");
@@ -1169,8 +1190,11 @@ void SatelliteSim::kesslerEnsureCapacity(VulkanContext &ctx, size_t records, boo
         // The buffers the worker allocated ahead (kesslerPreallocTick), when they are big enough.
         if (kPreFut.valid())
         {
-            FPROF_SCOPE("kessler.growWaitPrealloc");
-            KPrealloc p = kPreFut.get();
+            KPrealloc p;
+            {
+                FPROF_SCOPE("kessler.growWaitPrealloc"); // (the allocation itself; the descriptors are timed apart)
+                p = kPreFut.get();
+            }
             if (p.cap >= cap && p.poolWord0 == kPoolWord0 && p.k != VK_NULL_HANDLE)
             {
                 kPoolCap = p.cap;
@@ -1182,11 +1206,11 @@ void SatelliteSim::kesslerEnsureCapacity(VulkanContext &ctx, size_t records, boo
                 kesslerMem = p.kM;
                 kPoolBaseBuf = p.b;
                 kPoolBaseMem = p.bM;
-                writeSatRosterDescriptors(ctx);
+                kesslerGrowDescriptors(ctx);
                 char msg[200];
                 snprintf(msg, sizeof(msg),
-                         "kessler: GPU pool capacity %u records (%.0f MB; allocated ahead, copied on the GPU)", kPoolCap,
-                         (double)kPoolCap * (64 + 16 + sizeof(GpuSatVisible) + 4) / (1024.0 * 1024.0));
+                         "kessler: GPU pool capacity %u records (%.0f MB; allocated ahead in %.1f ms, copied on the GPU)",
+                         kPoolCap, (double)kPoolCap * (64 + 16 + sizeof(GpuSatVisible) + 4) / (1024.0 * 1024.0), p.ms);
                 Log::line(msg);
                 return;
             }
@@ -1212,7 +1236,7 @@ void SatelliteSim::kesslerEnsureCapacity(VulkanContext &ctx, size_t records, boo
                                  VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                              VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, kPoolBaseBuf, kPoolBaseMem);
         }
-        writeSatRosterDescriptors(ctx);
+        kesslerGrowDescriptors(ctx);
         char msg[200];
         snprintf(msg, sizeof(msg), "kessler: GPU pool capacity %u records (%.0f MB; grown in frame, copied on the GPU)",
                  kPoolCap, (double)kPoolCap * (64 + 16 + sizeof(GpuSatVisible) + 4) / (1024.0 * 1024.0));
@@ -1297,16 +1321,19 @@ void SatelliteSim::kesslerUploadAllSync(VulkanContext &ctx)
 }
 
 // (2026-10-21) Allocates the next growth's buffers on a worker once the pool passes 40% of its capacity (one at a time).
-void SatelliteSim::kesslerPreallocTick(VulkanContext &ctx)
+void SatelliteSim::kesslerPreallocTick(VulkanContext &ctx, bool force)
 {
     const uint32_t maxCap = kessler::WorldSettings{}.poolCapacity;
-    if (kPreFut.valid() || kesslerBuf == VK_NULL_HANDLE || kPoolCap >= maxCap || kPool.size() * 5 < (size_t)kPoolCap * 2)
+    if (kPreFut.valid() || kesslerBuf == VK_NULL_HANDLE || kPoolCap >= maxCap ||
+        (!force && kPool.size() * 5 < (size_t)kPoolCap * 2))
         return;
     const uint32_t cap = (uint32_t)std::min<uint64_t>((uint64_t)kPoolCap * 4, maxCap);
     const VkDeviceSize slots = (VkDeviceSize)std::max<uint32_t>(activeSatCount, 1u) + kLaunchCap + cap + kCitySpriteMax;
     const uint32_t word0 = kPoolWord0;
     VulkanContext *c = &ctx;
+    kPreCap = cap;
     kPreFut = std::async(std::launch::async, [c, cap, slots, word0]() {
+        const auto t0 = std::chrono::steady_clock::now();
         KPrealloc p;
         p.cap = cap;
         p.poolWord0 = word0;
@@ -1320,8 +1347,31 @@ void SatelliteSim::kesslerPreallocTick(VulkanContext &ctx)
         c->createBuffer(16ull * cap,
                         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, p.b, p.bM);
+        p.ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         return p;
     });
+}
+
+// (2026-10-27) Whether the sync may append record slot (at or past kPoolCap) now. Ready: the allocation made ahead is
+// done; the pool grows here, mid-sync, onto it (copied on the GPU this frame). Not ready (or none started: one is
+// started now): false, and the caller holds the sync (sim time holds at the frontier) until a later frame.
+bool SatelliteSim::kesslerGrowReady(uint32_t slot)
+{
+    if (!ctx_ || kesslerBuf == VK_NULL_HANDLE)
+        return true;
+    if (kGrowCopy.oldK != VK_NULL_HANDLE)
+        return false; // grown once this frame already: the copy is recorded with this frame's uploads
+    if (!kPreFut.valid())
+    {
+        kesslerPreallocTick(*ctx_, true);
+        return !kPreFut.valid(); // (none possible: at the world's cap, the sync's own growth handles it)
+    }
+    if (kPreFut.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+        return false;
+    if ((size_t)slot + 1 > kPreCap)
+        return true; // (cannot happen: the sync stops at every capacity; the growth then allocates in the frame)
+    kesslerEnsureCapacity(*ctx_, (size_t)slot + 1, true);
+    return true;
 }
 
 // Waits for an allocation in flight and gets rid of it (destroyed now, or with the retired buffers).
@@ -2990,6 +3040,8 @@ nlohmann::json SatelliteSim::kesslerStateJsonImpl(bool full) const
     j["time_held"] = !kesslerStatusLine().empty();
     j["records"] = kPool.size();
     j["records_gpu"] = kPoolGpu;
+    j["pool_capacity_gpu"] = kPoolCap;
+    j["grow_holds"] = kGrowHolds; // frames whose sync waited for the next pool buffers (sim time held)
     j["capacity"] = kPoolCap;
     j["hash"] = cacheName(kHash);
     j["dust_clouds_drawn"] = kDustCount;

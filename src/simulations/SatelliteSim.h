@@ -3646,11 +3646,16 @@ private:
     struct KPrealloc
     {
         uint32_t cap = 0, poolWord0 = 0;
+        double ms = 0.0; // how long the allocation took (logged)
         VkBuffer vis = VK_NULL_HANDLE, idx = VK_NULL_HANDLE, k = VK_NULL_HANDLE, b = VK_NULL_HANDLE;
         VkDeviceMemory visM = VK_NULL_HANDLE, idxM = VK_NULL_HANDLE, kM = VK_NULL_HANDLE, bM = VK_NULL_HANDLE;
     };
     std::future<KPrealloc> kPreFut;
-    void kesslerPreallocTick(VulkanContext &ctx);
+    uint32_t kPreCap = 0; // the capacity the allocation in flight is for
+    uint64_t kGrowHolds = 0; // frames whose sync stopped at the GPU pool's capacity waiting for the allocation
+    void kesslerPreallocTick(VulkanContext &ctx, bool force = false);
+    void kesslerGrowDescriptors(VulkanContext &ctx);
+    bool kesslerGrowReady(uint32_t slot);
     void kesslerPreallocDrop(VkDevice device, bool retire);
     void kesslerUploadAllSync(VulkanContext &ctx); // after (re)allocating: roster ends now, records progressively
     bool kesslerUserEvent(uint8_t kind, uint32_t satA, uint32_t satB, std::string *why);
@@ -5246,6 +5251,14 @@ private:
     StormEnvDirty buildStormEnvIndexWork(bool ownThreads);
     void finishStormEnvIndex();
     std::future<StormEnvDirty> stormEnvJob;
+    // (2026-10-27) A job still running kStormEnvJoinWaitMs into the frame's end is not waited for (it was 11.7 ms in one
+    // frame at 1 mo/s): the
+    // frame's bake reads the previous index (the GPU copy: the job's ranges were not marked dirty), the job is joined at
+    // the next updateStorms and uploaded that frame, and that frame starts no new job (stormEnvHoldFrame: the shadow
+    // ranges it uploads must not be written meanwhile).
+    bool stormEnvLate = false, stormEnvHoldFrame = false;
+    static constexpr float kStormEnvJoinWaitMs = 1.0f;   // the most the frame waits for the job at its end
+    uint64_t stormEnvLateCount = 0;   // (harness state weather.cube.env_late)
     double stormEnvJobT = -1e300;
     float stormEnvJobMs = 0.0f;     // the last envelope index's own time (harness state weather.cube.env_job_ms)   // the sim time the job in flight was started for
     bool cv2WxLastAllSix = false;
@@ -7645,7 +7658,14 @@ private:
     std::vector<ConstellationConfig> constellationDefs;
     void createSatRosterBuffers(VulkanContext &ctx);   // the per-satellite GPU buffers (roster + Kessler pool)
     void destroySatRosterBuffers(VkDevice device);
-    void writeSatRosterDescriptors(VulkanContext &ctx); // every set binding one of them
+    void writeSatRosterDescriptors(VulkanContext &ctx, bool noDrain = false); // every set binding one of them
+    // (2026-10-27) A pool growth during a frame (kesslerEnsureCapacity) re-points the sets above at the new buffers
+    // WITHOUT draining the frames in flight: the sets are copied into fresh ones (a pool of their own), the new buffers
+    // written there, and the handles swapped; the old sets stay valid for the frames still using them, and their pool
+    // is destroyed a few frames later. Updating the sets in place drained both frames: 24-62 ms at 1 d/s after the CME.
+    bool swapSatRosterDescriptors(VulkanContext &ctx);
+    VkDescriptorPool rosterSetPool = VK_NULL_HANDLE;   // the pool the current swapped sets came from
+    std::vector<std::pair<VkDescriptorPool, uint64_t>> rosterSetPoolsOld;   // (pool, retire frame)
     void rebuildRoster(VulkanContext &ctx);             // after `constellations` changed (drops index-keyed state)
     bool rosterRemove(VulkanContext &ctx, const std::string &name);
     bool rosterAdd(VulkanContext &ctx, const std::string &name, std::string *why = nullptr);
