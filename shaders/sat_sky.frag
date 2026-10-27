@@ -6476,7 +6476,13 @@ void main() {
                 vec3  hv   = normalize(sunDir - dir);
                 float nh   = max(dot(waveN, hv), 1e-3);
                 float nv   = max(dot(waveN, -dir), 1e-3);
-                float nl   = dot(waveN, sunDir);
+                // The shadowing and masking are the WAVE FIELD's, taken against the mean sea surface (Saunders 1967, the
+                // Cox-Munk glitter model: the slope variance below is the whole field's). They were taken against the
+                // resolved wave normal, and the glint was cut wherever that normal faced away from the Sun: under a low
+                // Sun the back slopes of every resolved wave went black and the glitter shrank to lines along the crests
+                // (2026-10-27, issue 20261027_001448 shot 1, "the specular flashes should be much more intense").
+                float nl   = dot(surfUp, sunDir);
+                float nvM  = max(dot(surfUp, -dir), 1e-3);
                 float wind = 7.0 * clamp(seaState, 0.2, 2.5);
                 float s2   = 0.003 + 0.00512 * wind + 0.06 * seaRoughFoot + 2e-5;
                 float c2   = nh * nh;
@@ -6485,7 +6491,7 @@ void main() {
                 // Smith shadowing-masking (Beckmann, Walter's rational fit): at a grazing view most facets that would
                 // glint are hidden behind the waves in front of them.
                 float sq   = sqrt(s2);
-                float aV   = nv / (sq * sqrt(max(1.0 - nv * nv, 1e-6)));
+                float aV   = nvM / (sq * sqrt(max(1.0 - nvM * nvM, 1e-6)));
                 float aL   = max(nl, 1e-3) / (sq * sqrt(max(1.0 - nl * nl, 1e-6)));
                 float gV   = aV < 1.6 ? (3.535 * aV + 2.181 * aV * aV) / (1.0 + 2.276 * aV + 2.577 * aV * aV) : 1.0;
                 float gL   = aL < 1.6 ? (3.535 * aL + 2.181 * aL * aL) / (1.0 + 2.276 * aL + 2.577 * aL * aL) : 1.0;
