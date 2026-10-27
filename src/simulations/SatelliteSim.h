@@ -3646,11 +3646,16 @@ private:
     struct KPrealloc
     {
         uint32_t cap = 0, poolWord0 = 0;
+        double ms = 0.0; // how long the allocation took (logged)
         VkBuffer vis = VK_NULL_HANDLE, idx = VK_NULL_HANDLE, k = VK_NULL_HANDLE, b = VK_NULL_HANDLE;
         VkDeviceMemory visM = VK_NULL_HANDLE, idxM = VK_NULL_HANDLE, kM = VK_NULL_HANDLE, bM = VK_NULL_HANDLE;
     };
     std::future<KPrealloc> kPreFut;
-    void kesslerPreallocTick(VulkanContext &ctx);
+    uint32_t kPreCap = 0; // the capacity the allocation in flight is for
+    uint64_t kGrowHolds = 0; // frames whose sync stopped at the GPU pool's capacity waiting for the allocation
+    void kesslerPreallocTick(VulkanContext &ctx, bool force = false);
+    void kesslerGrowDescriptors(VulkanContext &ctx);
+    bool kesslerGrowReady(uint32_t slot);
     void kesslerPreallocDrop(VkDevice device, bool retire);
     void kesslerUploadAllSync(VulkanContext &ctx); // after (re)allocating: roster ends now, records progressively
     bool kesslerUserEvent(uint8_t kind, uint32_t satA, uint32_t satB, std::string *why);
@@ -7645,7 +7650,14 @@ private:
     std::vector<ConstellationConfig> constellationDefs;
     void createSatRosterBuffers(VulkanContext &ctx);   // the per-satellite GPU buffers (roster + Kessler pool)
     void destroySatRosterBuffers(VkDevice device);
-    void writeSatRosterDescriptors(VulkanContext &ctx); // every set binding one of them
+    void writeSatRosterDescriptors(VulkanContext &ctx, bool noDrain = false); // every set binding one of them
+    // (2026-10-27) A pool growth during a frame (kesslerEnsureCapacity) re-points the sets above at the new buffers
+    // WITHOUT draining the frames in flight: the sets are copied into fresh ones (a pool of their own), the new buffers
+    // written there, and the handles swapped; the old sets stay valid for the frames still using them, and their pool
+    // is destroyed a few frames later. Updating the sets in place drained both frames: 24-62 ms at 1 d/s after the CME.
+    bool swapSatRosterDescriptors(VulkanContext &ctx);
+    VkDescriptorPool rosterSetPool = VK_NULL_HANDLE;   // the pool the current swapped sets came from
+    std::vector<std::pair<VkDescriptorPool, uint64_t>> rosterSetPoolsOld;   // (pool, retire frame)
     void rebuildRoster(VulkanContext &ctx);             // after `constellations` changed (drops index-keyed state)
     bool rosterRemove(VulkanContext &ctx, const std::string &name);
     bool rosterAdd(VulkanContext &ctx, const std::string &name, std::string *why = nullptr);

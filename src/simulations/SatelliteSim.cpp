@@ -8144,6 +8144,12 @@ void SatelliteSim::cleanup(VkDevice device)
     vkDestroyPipelineLayout(device, drawPipeLayout, nullptr);
     vkDestroyDescriptorPool(device, descPool, nullptr);
     vkDestroyDescriptorSetLayout(device, descLayout, nullptr);
+    for (auto &pr : rosterSetPoolsOld)
+        vkDestroyDescriptorPool(device, pr.first, nullptr);
+    rosterSetPoolsOld.clear();
+    if (rosterSetPool)
+        vkDestroyDescriptorPool(device, rosterSetPool, nullptr);
+    rosterSetPool = VK_NULL_HANDLE;
     vkDestroyDescriptorPool(device, skyDescPool, nullptr);
     vkDestroyDescriptorSetLayout(device, skyDescLayout, nullptr);
     // ── Flare/corona render-to-texture pipeline (flare architecture overhaul) ──
@@ -10408,7 +10414,7 @@ void SatelliteSim::destroySatRosterBuffers(VkDevice device)
 // Points every descriptor set that binds a per-satellite buffer at the current ones: descSet 1 / 9
 // (sat_flare, the point / flare-source / trail / glare draws), the orbit set 0 / 1 / 6, the rebake
 // set 0 / 1, the city-sprite set 0 / 1 (created lazily on the first frame).
-void SatelliteSim::writeSatRosterDescriptors(VulkanContext &ctx)
+void SatelliteSim::writeSatRosterDescriptors(VulkanContext &ctx, bool noDrain)
 {
     VkDescriptorBufferInfo vis{satVisibleBuf, 0, VK_WHOLE_SIZE}, idx{satVisibleIdxBuf, 0, VK_WHOLE_SIZE},
         orb{satOrbitBuf, 0, VK_WHOLE_SIZE}, base{satPhaseBaseBuf, 0, VK_WHOLE_SIZE},
@@ -10433,7 +10439,70 @@ void SatelliteSim::writeSatRosterDescriptors(VulkanContext &ctx)
     add(citySpriteDescSet, 1, &idx);
     add(kFireDescSet, 0, &vis);
     add(kFireDescSet, 1, &idx);
-    frameSafeUpdateDescriptorSets(ctx.device, (uint32_t)w.size(), w.data(), 0, nullptr);
+    if (noDrain)
+        vkUpdateDescriptorSets(ctx.device, (uint32_t)w.size(), w.data(), 0, nullptr); // (fresh sets: not in use)
+    else
+        frameSafeUpdateDescriptorSets(ctx.device, (uint32_t)w.size(), w.data(), 0, nullptr);
+}
+
+bool SatelliteSim::swapSatRosterDescriptors(VulkanContext &ctx)
+{
+    if (ctx.framesInFlight <= 1)
+        return false; // (one frame in flight: the update in place drains nothing anyway)
+    struct Pair { VkDescriptorSet *set; VkDescriptorSetLayout layout; uint32_t first, count; };
+    // The sets writeSatRosterDescriptors writes, with every binding of their layouts (descSet: 1..12).
+    const Pair pairs[] = {{&descSet, descLayout, 1, 12},
+                          {&orbitDescSet, orbitDescLayout, 0, 12},
+                          {&satRebakeDescSet, satRebakeDescLayout, 0, 4},
+                          {&citySpriteDescSet, citySpriteDescLayout, 0, 9},
+                          {&kFireDescSet, kFireDescLayout, 0, 5}};
+    // Old pools whose sets no frame in flight can still use (retired at least framesInFlight + 1 frames ago).
+    for (size_t i = 0; i < rosterSetPoolsOld.size();)
+        if (rosterSetPoolsOld[i].second + ctx.framesInFlight + 1 < kRetireFrame)
+        {
+            vkDestroyDescriptorPool(ctx.device, rosterSetPoolsOld[i].first, nullptr);
+            rosterSetPoolsOld.erase(rosterSetPoolsOld.begin() + (long)i);
+        }
+        else
+            ++i;
+    VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 48},
+                                  {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8},
+                                  {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 8}};
+    VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pi.poolSizeCount = 3;
+    pi.pPoolSizes = ps;
+    pi.maxSets = 5;
+    VkDescriptorPool pool = VK_NULL_HANDLE;
+    if (vkCreateDescriptorPool(ctx.device, &pi, nullptr, &pool) != VK_SUCCESS)
+        return false;
+    VkDescriptorSet fresh[5] = {};
+    std::vector<VkCopyDescriptorSet> copies;
+    for (int k = 0; k < 5; ++k)
+    {
+        if (*pairs[k].set == VK_NULL_HANDLE)
+            continue;
+        VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        ai.descriptorPool = pool;
+        ai.descriptorSetCount = 1;
+        ai.pSetLayouts = &pairs[k].layout;
+        if (vkAllocateDescriptorSets(ctx.device, &ai, &fresh[k]) != VK_SUCCESS)
+        {
+            vkDestroyDescriptorPool(ctx.device, pool, nullptr);
+            return false;
+        }
+        for (uint32_t b = pairs[k].first; b < pairs[k].first + pairs[k].count; ++b)
+            copies.push_back({VK_STRUCTURE_TYPE_COPY_DESCRIPTOR_SET, nullptr, *pairs[k].set, b, 0, fresh[k], b, 0, 1});
+    }
+    // Copying FROM a set a pending command buffer uses is allowed (only the destination must not be in use).
+    vkUpdateDescriptorSets(ctx.device, 0, nullptr, (uint32_t)copies.size(), copies.data());
+    for (int k = 0; k < 5; ++k)
+        if (fresh[k] != VK_NULL_HANDLE)
+            *pairs[k].set = fresh[k];
+    if (rosterSetPool != VK_NULL_HANDLE)
+        rosterSetPoolsOld.push_back({rosterSetPool, kRetireFrame});
+    rosterSetPool = pool;
+    writeSatRosterDescriptors(ctx, true);
+    return true;
 }
 
 // Rebuilds every satellite from `constellations` (after entries were added, removed or edited) and
