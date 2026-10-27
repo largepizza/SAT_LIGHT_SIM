@@ -4856,6 +4856,7 @@ private:
     // is due at the out-of-view rate. cv2WxRectT / cv2WxRect: the last such bake (level-0 texels [x0, y0, x1, y1)).
     bool weatherViewRect(int face, const glm::dvec3 &mapEye, double capRad, glm::ivec4 &rect) const;
     bool cv2WxRectBake = true;         // clouds_v2.weather_rect_bake (no UI): the A/B
+    int cv2WxRectLevels = 5;           // clouds_v2.weather_rect_levels: the levels baked as the rectangle (from 0; >= 128 a side)
     double cv2WxRectT[6] = {-1e30, -1e30, -1e30, -1e30, -1e30, -1e30};
     glm::ivec4 cv2WxRect[6]{};
     uint32_t cv2WxRectBakes = 0;       // faces baked as a rectangle so far (harness state)

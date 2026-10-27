@@ -2131,9 +2131,10 @@ void SatelliteSim::recordWeatherBakeDispatches(VkCommandBuffer cmd, int face, ui
                                  nullptr, 0, nullptr);
         }
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2WxPipeLayout, 0, 1, &cv2WxSets[m], 0, nullptr);
-        if (m <= 1u && face < 0 && rectMask != 0u)
+        if ((int)m < cv2WxRectLevels && (kCv2WeatherFace >> m) >= 128u && face < 0 && rectMask != 0u)
         {
-            // Levels 0 and 1 of the faces baked as a rectangle (level 1 two texels wider: level 0 reads it filtered).
+            // The fine levels of the faces baked as a rectangle (the coarser ones two texels wider: level 0 reads level 1
+            // filtered, and every level is read filtered); levels under 128 texels a side bake whole.
             const uint32_t size = kCv2WeatherFace >> m;
             const uint32_t all = faceMask == 0u ? 63u : faceMask;
             const uint32_t fullM = all & ~rectMask;
@@ -2150,7 +2151,7 @@ void SatelliteSim::recordWeatherBakeDispatches(VkCommandBuffer cmd, int face, ui
                 if (!((rectMask >> f) & 1u))
                     continue;
                 const glm::ivec4 &r = cv2WxRect[f];
-                const int sh = (int)m, padL = m == 1u ? 2 : 0;
+                const int sh = (int)m, padL = m >= 1u ? 2 : 0;
                 const int x0 = std::max(0, (r.x >> sh) - padL), y0 = std::max(0, (r.y >> sh) - padL);
                 const int x1 = std::min((int)size, ((r.z + (1 << sh) - 1) >> sh) + padL);
                 const int y1 = std::min((int)size, ((r.w + (1 << sh) - 1) >> sh) + padL);
