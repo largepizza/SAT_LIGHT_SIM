@@ -6497,12 +6497,22 @@ void main() {
                 // with chance q and then carries glint / q (energy kept), re-drawn as the waves move (6 per s). Half the
                 // light stays the smooth path: sparkles past the display's white lose energy, and a sparse field
                 // of them read as the path gone (first cut, q down to 0.04).
+                // (2026-10-27, issue 20261027_001706 "Pattern noise on ocean speculars", from 2000 km): a pixel holds
+                // ~150 such facets only close up; it holds (its ground footprint / ~0.3 m)^2, so from orbit it is
+                // millions and the sparkle is its mean (q -> 1). The hash was fract(sin(dot(...)) * 43758) of the
+                // pixel plus 7.13 x a frame counter up to 6000: at those arguments the GPU's sin is no hash, and its
+                // error drew diagonal streaks repeating across the glint. An integer hash (pcg-like) now.
                 {
-                    float fs = glint / max(F * 1.8e5, 1e-6);
-                    float q  = clamp(fs * 150.0, 0.15, 1.0);
+                    float fs   = glint / max(F * 1.8e5, 1e-6);
+                    float foot = pixAngle * dist;
+                    float nFac = max(150.0, foot * seaFootW / 0.09);
+                    float q    = clamp(fs * nFac, 0.15, 1.0);
                     if (q < 0.999 && glint > 1e-4) {
-                        float tb = floor(mod(pc.waveTime, 1000.0) * 6.0);
-                        float hs = fract(sin(dot(floor(gl_FragCoord.xy) + vec2(tb * 7.13, tb * 3.71), vec2(12.9898, 78.233))) * 43758.5453);
+                        uint  tb = uint(floor(mod(pc.waveTime, 1000.0) * 6.0));
+                        uvec2 fc = uvec2(gl_FragCoord.xy);
+                        uint  hh = fc.x * 0x8da6b343u ^ fc.y * 0xd8163841u ^ tb * 0xcb1ab31fu;
+                        hh ^= hh >> 16; hh *= 0x7feb352du; hh ^= hh >> 15; hh *= 0x846ca68bu; hh ^= hh >> 16;
+                        float hs = float(hh >> 8) * (1.0 / 16777216.0);
                         glint *= 0.5 + ((hs < q) ? 0.5 / q : 0.0);
                     }
                 }
