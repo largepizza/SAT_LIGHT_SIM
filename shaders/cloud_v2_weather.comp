@@ -350,6 +350,7 @@ void main()
         id.z = f;
     }
     id.y += int(pc.wx.z);   // (a slice of rows: SatelliteSim::recordWeatherBakeDispatches)
+    id.x += int(pc.wx.w);   // (a rectangle's first column: the faces in view at time warp, weatherViewRect)
     if (id.x >= pc.faceSize || id.y >= pc.faceSize || id.z >= 6) return;
     const bool fine = pc.pad > 1.5;   // level 0
 

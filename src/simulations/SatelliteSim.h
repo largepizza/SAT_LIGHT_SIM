@@ -4850,7 +4850,18 @@ private:
     GpuWeatherPC weatherEvoPC(int face, uint32_t mip) const;
     uint64_t weatherBakeHash() const;  // the settings the weather cube was baked with (a change re-bakes every face)
     void recordWeatherEvolution(VkCommandBuffer cmd);
-    void recordWeatherBakeDispatches(VkCommandBuffer cmd, int face, uint32_t faceMask, int slice = -1);
+    void recordWeatherBakeDispatches(VkCommandBuffer cmd, int face, uint32_t faceMask, int slice = -1, uint32_t rectMask = 0u);
+    // (2026-10-27, weather perf pass 2) In time warp a face in view bakes its two finest levels only over the rectangle
+    // the eye can see (its horizon + the cloud tops beyond it + the flow's reach: weatherViewRect); the rest of the face
+    // is due at the out-of-view rate. cv2WxRectT / cv2WxRect: the last such bake (level-0 texels [x0, y0, x1, y1)).
+    bool weatherViewRect(int face, const glm::dvec3 &mapEye, double capRad, glm::ivec4 &rect) const;
+    bool cv2WxRectBake = true;         // clouds_v2.weather_rect_bake (no UI): the A/B
+    float cv2WxRectMaxShare = 0.5f;    // clouds_v2.weather_rect_max_share: a rectangle over this share of a face bakes whole
+    float cv2WxRectMarginDeg = 12.0f;  // clouds_v2.weather_rect_margin_deg: the cap past the eye's horizon (deg)
+    int cv2WxRectLevels = 5;           // clouds_v2.weather_rect_levels: the levels baked as the rectangle (from 0; >= 128 a side)
+    double cv2WxRectT[6] = {-1e30, -1e30, -1e30, -1e30, -1e30, -1e30};
+    glm::ivec4 cv2WxRect[6]{};
+    uint32_t cv2WxRectBakes = 0;       // faces baked as a rectangle so far (harness state)
     // One face's re-bake outside time warp is spread over kCv2WxSlices frames of rows (a 2048 face is ~1.2 ms).
     static constexpr int kCv2WxSlices = 4;
     int cv2WxSliceFace = -1, cv2WxSliceNext = 0;
@@ -5209,6 +5220,21 @@ private:
     void destroyStormBuffer(VkDevice device);
     void updateStorms();                         // per frame, before the clouds are recorded
     void buildStormEnvIndex();                   // on a frame the weather bake runs (its storm cloud field)
+    // (2026-10-27, weather perf pass 2) The envelope index is built on a worker (stormEnvJob), its own threads, not the
+    // storm pool (the main thread uses that later in the frame), and joined before the frame's uploads
+    // (finishStormEnvIndex: recordScreenshotCopy; also at the top of updateStorms and before a new job). It reads only
+    // what updateStorms left this frame. clouds_v2.storm_env_async (no UI): false = built on the frame, the A/B.
+    struct StormEnvDirty { uint32_t n = 0, listUsed = 0, nS = 0, shieldListUsed = 0; };
+    StormEnvDirty buildStormEnvIndexWork(bool ownThreads);
+    void finishStormEnvIndex();
+    std::future<StormEnvDirty> stormEnvJob;
+    double stormEnvJobT = -1e300;
+    float stormEnvJobMs = 0.0f;     // the last envelope index's own time (harness state weather.cube.env_job_ms)   // the sim time the job in flight was started for
+    bool cv2WxLastAllSix = false;
+    bool stormsUpdatedEarly = false;   // updateStorms ran at the top of this frame's recordCompute (time warp)
+    bool stormsMainPathLast = false;   // last frame went through recordCloudsV2 (not Potato's flat path)   // last frame's bake was a time-warp bake (the index's job starts early)
+    void startStormEnvJob();
+    bool stormEnvAsync = true;
     uint64_t stormEnvHash() const;
     // The towers nearest the observer (Earth-fixed lat / lon, distance, bearing, strength ...); dominantOnly: role 1.
     nlohmann::json stormNearestJson(int n, float minStrength = 0.0f, float rangeKm = 1e9f, bool dominantOnly = false) const;
