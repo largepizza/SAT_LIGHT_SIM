@@ -7285,15 +7285,18 @@ void main() {
             }
             vec4  cC   = tabOn ? refrSunCol : vec4(-1.0);
             vec3  sunApp = normalize(sunDir * cos(refrSun.x) + puS * sin(refrSun.x));   // the Sun's centre as seen
+            // Above the table (the Sun over ~4 deg) the exact path has no haze-near-clouds column; the table's rows do:
+            // a flat-layer column (2.5-km scale height) keeps the two continuous (2026-10-27).
+            float hzH  = tabOn ? hazeK * BETA_M * 2500.0 * exp(-max(length(obsPos) - R_EARTH, 0.0) / 2500.0) : 0.0;
             vec3  Tc   = (cC.x >= 0.0 ? exp(-refrTau(cC, BETA_R, BETA_M, hazeK))
-                                      : exp(-sunPathTauExact(obsPos, sunApp, BETA_R, BETA_M))) * cloudB.rgb;
+                                      : exp(-sunPathTauExact(obsPos, sunApp, BETA_R, BETA_M) - hzH / max(dot(sunApp, upO), 0.05))) * cloudB.rgb;
             float lc   = dot(Tc, vec3(0.2126, 0.7152, 0.0722));
             float gs   = 1.0 - exp(-60.0 * lc);                  // veiling glare follows the light that arrives
             vec3  hueC = Tc / max(max(Tc.r, max(Tc.g, Tc.b)), 1e-6);
             vec3  dLight = vec3(0.0);
             if (max(cov3.r, max(cov3.g, cov3.b)) > 0.0) {
                 vec3  T  = (cols.x >= 0.0 ? exp(-refrTau(cols, BETA_R, BETA_M, hazeK))
-                                          : exp(-sunPathTauExact(obsPos, dJ, BETA_R, BETA_M))) * cloudB.rgb;
+                                          : exp(-sunPathTauExact(obsPos, dJ, BETA_R, BETA_M) - hzH / max(cz, 0.05))) * cloudB.rgb;
                 // disc coordinates (green's true direction), in drawn radii
                 vec3  e1 = normalize(cross(sunDir, abs(sunDir.z) < 0.99 ? vec3(0, 0, 1) : vec3(1, 0, 0)));
                 vec3  e2 = cross(sunDir, e1);

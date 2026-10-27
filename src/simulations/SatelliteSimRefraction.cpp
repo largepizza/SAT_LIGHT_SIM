@@ -216,6 +216,17 @@ void SatelliteSim::refrDerive()
     const double r = kSunDrawnR;
     double area = 0.0;
     const double eTop = t.eAt(refr::kTableN - 1);
+    // The air columns the Sun's VISIBLE disc is seen through (2026-10-27, issue 20261027_001448 shots 2-3: "at a certain
+    // stage in the sunset the Sun suddenly gets brighter"). The glare and corona follow the light that arrives, and took
+    // the columns of the ray through the disc's CENTRE: while that ray grazed the sea it crossed hundreds of km of air
+    // (no glare at all over a bright half-set disc), and the frame its apparent centre went below the horizon the
+    // lookup gave the short column of a ray ending on the sea, and the whole veil came on at once (the frame's mean
+    // 0.23 -> 0.73 between two 4-s steps). Now: the mean over the visible rows, weighted by chord x transmittance, then
+    // scaled so its transmittance (green, base extinction) is the rows' mean transmittance. Continuous as rows set.
+    double wSum = 0.0, tSum = 0.0, cAcc[4] = {0.0, 0.0, 0.0, 0.0};
+    auto tauRef = [](double cR, double cM, double cO, double cH) {   // green, common.glsl's base extinction
+        return 13.5e-6 * cR + 2.1e-5 * 1.1 * cM + 0.027 * cO + 0.0 * cH;
+    };
     for (int i = 0; i < refr::kTableN; ++i)
     {
         const refr::Entry &e = t.e[i];
@@ -223,7 +234,12 @@ void SatelliteSim::refrDerive()
         const double eA = t.eAt(i), x = eA - e.dR[1] - eS;
         if (std::abs(x) >= r) continue;
         const double de = 0.5 * (t.eAt(std::min(i + 1, refr::kTableN - 1)) - t.eAt(std::max(i - 1, 0)));
-        area += 2.0 * std::sqrt(r * r - x * x) * de;
+        const double ch = 2.0 * std::sqrt(r * r - x * x) * de;
+        area += ch;
+        const double tr = std::exp(-tauRef(e.colR, e.colM, e.colO3, e.colH));
+        wSum += ch;
+        tSum += ch * tr;
+        cAcc[0] += ch * tr * e.colR; cAcc[1] += ch * tr * e.colM; cAcc[2] += ch * tr * e.colO3; cAcc[3] += ch * tr * e.colH;
     }
     // the part of the disc above the table (no mirages there)
     if (eS + r > eTop)
@@ -268,7 +284,19 @@ void SatelliteSim::refrDerive()
     g.map = glm::vec4((float)t.eC, (float)t.c, (float)t.alpha, (float)t.u0);
     g.info = glm::vec4((float)refr::kTableN, (float)t.topScale, refrEnabled ? 1.0f : 0.0f, sunDiscGain);
     g.sun = glm::vec4(refrEnabled ? (float)refrSunR : 0.0f, (float)refrSunVis, refrTurbulence, ce.aoa);
-    g.sunCol = glm::vec4(ce.colR, ce.colM, ce.colO3, ce.colH);
+    if (eS + r > eTop)
+        g.sunCol = glm::vec4(-1.0f);   // (part of) the disc above the table: the shader's exact Sun path (the top entry's
+                                       // columns, ~4 deg up, used to tint and dim the glare of every higher Sun)
+    else if (tSum > 1e-30 && wSum > 0.0)
+    {
+        const double m[4] = {cAcc[0] / tSum, cAcc[1] / tSum, cAcc[2] / tSum, cAcc[3] / tSum};
+        const double tm = tauRef(m[0], m[1], m[2], m[3]);
+        const double want = -std::log(std::max(tSum / wSum, 1e-300));
+        const double s = tm > 1e-12 ? want / tm : 1.0;
+        g.sunCol = glm::vec4((float)(s * m[0]), (float)(s * m[1]), (float)(s * m[2]), (float)(s * m[3]));
+    }
+    else
+        g.sunCol = glm::vec4(ce.colR, ce.colM, ce.colO3, ce.colH);
     for (int i = 0; i < refr::kTableN; ++i)
     {
         const refr::Entry &e = t.e[i];
