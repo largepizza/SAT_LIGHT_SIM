@@ -273,10 +273,11 @@ vec3 tornadoCyl(vec3 r0, vec3 up, vec3 e1, vec3 e2, float ph)
 // and light are split over the profile's four depth segments (sTau, sL) for the caller to composite through the cloud in
 // depth order, and the emissive light is dimmed by the cloud in front of it (LeX: its derivative w.r.t. the cloud's T).
 vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, float pOH, float oR, out vec3 Le, out float tScat,
-                  out vec4 sTau, out vec3 sL[4], out vec3 LeX, out float tauP, out float tP, out float aP, out float tE,
+                  out vec4 sTau, out vec4 sU, out vec3 sL[4], out vec3 LeX, out float tauP, out float tP, out float aP, out float tE,
                   out float tauSm)
 {
     sTau = vec4(0.0);
+    sU = vec4(0.0);   // per segment, the plumes' tau-weighted share of the segment's cloud IN FRONT of them
     sL[0] = vec3(0.0); sL[1] = vec3(0.0); sL[2] = vec3(0.0); sL[3] = vec3(0.0);
     LeX = vec3(0.0);
     vec4 kSegXm = vec4(0.0, 0.5 * pOH, 0.5 * (pOH + 1.0), 1.0);   // each segment's mean share of the cloud's opacity
@@ -396,8 +397,11 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
             // hundreds of metres wide and the eye sat in several: summed along every ray they were one bright ball
             // ~300 m across round the camera, hiding the vehicle and the trail's structure (close-up launch footage
             // shows the plume as the structure in front, not a fog the camera is in). Far views: unchanged.
+            // Not a tornado's (seedK >= 256, 2026-10-26, issue 20261026_191508): within ~1 km of a funnel the eye is inside
+            // its wide base and debris Gaussians, and thinned to 10% the funnel went see-through close up.
             float eM = e + tc * tc * q;   // = o.M.o (e = o.M.o - q tc^2: both terms >= 0, so far views stay large)
-            tau *= mix(0.1, 1.0, smoothstep(2.25, 9.0, eM));
+            if (d.ib.w < 1024.0)
+                tau *= mix(0.1, 1.0, smoothstep(2.25, 9.0, eM));
             // Billows (2026-10-19): the optical depth through each Gaussian is modulated by two octaves of the
             // baked cloud noise at the ray's closest approach, in the Gaussian's own sigma units (so the structure
             // rides with its parcel and stretches as it spreads and shears), seeded per parcel (ib.w = 4 x seed +
@@ -612,6 +616,22 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
             float msI0 = 0.075 * (1.0 - exp(-0.6 * tau));
             float msI  = msI0 + 0.17 * (1.0 - exp(-0.25 * tau * tau));
             vec3  LiP  = lpI * (phaseP + msI) + lfI * (1.0 / (4.0 * PI) + msI) + lpeI * (1.0 / (4.0 * PI) + msI0);
+            // The caller dims a segment's plume light by the cloud's opacity at the SEGMENT's middle (kSegXm); in rain the
+            // segments are km long (half opacity a few hundred m out, the last contact tens of km), so a funnel 1 km away
+            // was dimmed as if ~10 km deep in the shaft (2026-10-26, issue 20261026_191508: "transparent" funnels in
+            // rain). Corrected here to the opacity in front of THIS Gaussian's closest approach: linear to half opacity,
+            // then an exponential approach to the last contact.
+            if (oR > 1e-3 && pK.x < T) {
+                float tcc = clamp(tc, 0.0, T);
+                float xT  = tcc <= pK.x ? 0.0
+                          : tcc <= pK.y ? pOH * (tcc - pK.x) / max(pK.y - pK.x, 1.0)
+                          : tcc <= pK.z ? pOH + (1.0 - pOH) * (1.0 - exp(-3.0 * (tcc - pK.y) / max(pK.z - pK.y, 1.0))) * (1.0 / 0.950213)
+                          : 1.0;
+                LiP *= clamp((1.0 - oR * xT) / max(1.0 - oR * dot(wSeg, kSegXm), 0.02), 0.0, 20.0);
+                sU += tau * wSeg * clamp((vec4(xT) - vec4(0.0, 0.0, pOH, 1.0)) / max(vec4(1.0, pOH, 1.0 - pOH, 1.0), vec4(1e-3)), 0.0, 1.0);
+            }
+            else
+                sU += tau * wSeg * 0.5;
             sTau  += tau * wSeg;
             sL[0] += LiP * wSeg.x; sL[1] += LiP * wSeg.y; sL[2] += LiP * wSeg.z; sL[3] += LiP * wSeg.w;
             continue;
@@ -2183,10 +2203,10 @@ void main() {
             }
         }
         vec3  dLe, LeX;
-        vec4  sTau;
+        vec4  sTau, sU;
         vec3  sL[4];
         float dT, pTau, pT, pA, eT, pTauS;
-        vec3  dc = dustCloudsCS(obsPos, dir, sunDir, tScene, pK, pOH, oR, dLe, dT, sTau, sL, LeX, pTau, pT, pA, eT, pTauS);
+        vec3  dc = dustCloudsCS(obsPos, dir, sunDir, tScene, pK, pOH, oR, dLe, dT, sTau, sU, sL, LeX, pTau, pT, pA, eT, pTauS);
         // Where the nearest emissive / plume light is, for a texel with no cloud of its own (alpha below): sat_sky.frag
         // composites this texel over a satellite / rocket MESH only when its distance is nearer than the mesh, and
         // the no-cloud marker (60000 km) hid a burning stage's flame behind the stage's own hull (2026-10-20).
@@ -2216,7 +2236,11 @@ void main() {
                 float tj  = sTau[j];
                 float tO  = tj * (1.0 - pSmokeK), tS = tj * pSmokeK;
                 vec3  trF = vec3(exp(-tO) + 0.85 * pA * (1.0 - exp(-tO))) * exp(-tS * kSmokeSpec);
-                vec3  trH = vec3(exp(-0.5 * tO) + 0.85 * pA * (1.0 - exp(-0.5 * tO))) * exp(-0.5 * tS * kSmokeSpec);
+                // the segment's cloud light: its share in front of the segment's plumes (uj) undimmed, the rest behind
+                // them dimmed by all of them (it was half the segment's optical depth for all of it, wherever the plume
+                // stood in the segment: a funnel near a rain segment's start hid only half the rain behind it)
+                float uj  = tj > 1e-9 ? clamp(sU[j] / tj, 0.0, 1.0) : 0.5;
+                vec3  trH = mix(trF, vec3(1.0), uj);
                 vec3  Lj  = tj > 1e-9 ? sL[j] * ((1.0 - exp(-tj)) / tj) * pExt : vec3(0.0);
                 float f   = xB[j] - xA[j], xm = 0.5 * (xA[j] + xB[j]);
                 Bn   += B_cloud * f * Pf * trH + Lj * (1.0 - oR * xm) * Pf;

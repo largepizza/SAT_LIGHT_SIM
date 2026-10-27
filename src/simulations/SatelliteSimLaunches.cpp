@@ -401,13 +401,15 @@ constexpr double kReleaseGapM = 30.0;
 // leaves with (members differ only across the plane, which never brings two together). Mostly up out of the stack,
 // a little back for a dispenser point; forward off the nose for a column (its satellites' lateral directions go
 // across the plane). (A pure along-track push collides with itself 0.41 orbit later: release spans stay short.)
+// Never a purely radial push (2026-10-26, issue 20261026_194340): that is a CLOSED 2:1 ellipse, so every member came
+// back to the door it left an orbit later, and every orbit after (until kFreeFlightS). The along-track share (-0.24:
+// a little retrograde) drifts each orbit ~3 x 0.24 x sp x T ahead (~2.8 km at Starship's 0.7 m/s) and costs no
+// member-to-member separation (releaseMinRate stays sp).
 static glm::dvec2 releaseInPlane(int layout, double sp)
 {
     if (layout == launch::Stack::Column)
         return sp * glm::dvec2(0.25, 0.968);
-    if (layout == launch::Stack::Pez || layout == launch::Stack::Flat)
-        return glm::dvec2(sp, 0.0);
-    return sp * glm::dvec2(0.97, -0.22);
+    return sp * glm::dvec2(0.97, -0.24);
 }
 // The least speed of that trajectory relative to the stage (min over an orbit of |dX/dt|): two members released dt
 // apart stay at least this x dt apart.
@@ -3627,11 +3629,13 @@ static glm::dvec3 shipEntry(const LBatch &B, double te, double *vOut, double *hO
     return (kR + hAt(u)) * (std::cos(th) * B.U0 + std::sin(th) * B.A0) + fo * B.entryOff;
 }
 
-// When the upper stage vents what is left, spinning (after its deorbit burn, or 10 min after deploying for a stage
-// that returns).
+// When the upper stage vents what is left. An expendable stage: spinning, after its deorbit burn (the Falcon 9 dump
+// spirals). A returning ship (2026-10-26, issue 20261026_194151): a CONTROLLED dump out of its aft end along its own
+// axis, 20 min before its deorbit burn — hours after deployment, km from its train (it was 10 min after deploying,
+// among the satellites, and spinning like an out-of-control stage).
 static double ventStart(const SatelliteSim::LaunchState &L, const LBatch &B)
 {
-    return L.cat.vehicles[B.veh].upperDeorbit ? B.tDeorbBurn + 50.0 : B.tD + 600.0;
+    return L.cat.vehicles[B.veh].upperDeorbit ? B.tDeorbBurn + 50.0 : std::max(B.tDeorbBurn - 1200.0, B.tD + 3.0 * 3600.0);
 }
 
 // A rocket model's engines (tools/make_rocket_models.py): the exit plane's height on the body axis (the origin is the
@@ -3722,6 +3726,12 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
         }
         else if (mode == 2)
             ex = spd > 5.0 ? vel / spd : up; // retrograde burn: the exhaust goes forward
+        else if (mode == 4)
+        {
+            // A controlled dump: out of the aft end, along the stage's axis (stageNose, ECI -> ECEF).
+            const glm::dvec3 nz = stageNose(L, B, stage, tau);
+            ex = glm::length(nz) > 0.5 ? -glm::normalize(eciToEcef(nz, B.tL + tau)) : (spd > 5.0 ? -vel / spd : -up);
+        }
         else
         {
             // Venting while spinning: the jet turns about the velocity (a spiral seen from the ground).
@@ -3737,7 +3747,7 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
         const double len = std::max(spd * dtE, 10.0);
         const double maxAge = h > 40000.0 ? kPlumeAgeHigh : kPlumeAgeLow;
         // Vented propellant: droplets freezing to ice, a large cross-section, spreading slowly (the dump spirals).
-        const bool vent = mode == 3;
+        const bool vent = mode >= 3;
         // (A vent's parcel is a stretch of its jet, not of the stage's path: the stage carries the jet with it.)
         // The low trail (2026-10-20): a turbulent column that billows and thickens as it entrains the air (it grows
         // ~0.05x its speed through the air, fading out by 6 km), resting on the pad's ground near the pad.
@@ -3962,8 +3972,12 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
     if (B.vents)
     {
         const double tv = ventStart(L, B) - B.tL;
-        for (double tau = tv; tau < tv + 120.0; tau += 0.5)
-            emit(1, tau, 0.5, 80.0, 700.0, 3); // ~10 t of residual propellant over two minutes
+        if (vh.upperDeorbit)
+            for (double tau = tv; tau < tv + 120.0; tau += 0.5)
+                emit(1, tau, 0.5, 80.0, 700.0, 3); // ~10 t of residual propellant over two minutes
+        else
+            for (double tau = tv; tau < tv + 180.0; tau += 0.5)
+                emit(1, tau, 0.5, 55.0, 350.0, 4); // ~10 t over three minutes through the vents, slower
     }
 }
 
@@ -6392,7 +6406,13 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
     {
         double pri;
         GpuDustCloud d;
+        int grp = -1;      // the launch (visList index) it belongs to
+        double key = 0.0;  // what the budget sorts by: pri, boosted for each launch's reserved share (below)
     };
+    // (2026-10-26, issue 20261026_193912) each launch's count of candidates this frame, for the reserved share
+    static std::vector<int> grpCount;
+    grpCount.assign(L.visList.size(), 0);
+    int curGrp = -1;
     // The view cone a Gaussian (centre relENU from the eye, extent R m) can touch: the shader skips it elsewhere.
     auto coneOf = [&](const glm::dvec3 &relEnu, double R) {
         const double d = glm::length(relEnu);
@@ -6683,6 +6703,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         const uint64_t key = L.visList[li].first;
         LBatch &B = *L.visList[li].second;
         const launch::Vehicle &vh = L.cat.vehicles[B.veh];
+        curGrp = (int)li;
         // Retirees re-entering: their fireballs.
         bool anyRe = false;
         if (t >= B.tA && !B.first)
@@ -7351,13 +7372,17 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             const double pri = Sigma / (range * range) * (1.0 + std::min(tauPeak, 4.0));
             // (2026-10-21b, CPU) Far below last frame's cut it cannot be drawn (it would fade to nothing there): its
             // colour and rim are not worked out. Self-correcting: a frame whose cut fell past the margin turns it off.
-            if (pri < 0.25 * L.plumeCutPrev)
+            // (not before this launch has its reserved share of candidates: those are drawn whatever the cut)
+            if (pri < 0.25 * L.plumeCutPrev && curGrp >= 0 && grpCount[(size_t)curGrp] >= 48)
             {
                 ++L.plumeSkipped;
                 return;
             }
             Cand c;
             c.pri = pri;
+            c.grp = curGrp;
+            if (curGrp >= 0)
+                ++grpCount[(size_t)curGrp];
             GpuDustCloud &d = c.d;
             const glm::dvec3 a = toEnu(ax);
             glm::dvec3 b2 = glm::cross(a, glm::dvec3(0, 0, 1));
@@ -7489,6 +7514,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     auto Mr = [&](int p, int q) { return iT * tg[p] * tg[q] + iN * nrm[p] * nrm[q] + iV * vE[p] * vE[q]; };
                     Cand cr;
                     cr.pri = pri * shellK / K;
+                    cr.grp = c.grp;
                     GpuDustCloud &dr = cr.d;
                     const glm::dvec3 ce = toEnu(rel) + off;
                     dr.c = glm::vec4(glm::vec3(ce), (float)(Sigma * shellK / K));
@@ -7541,10 +7567,16 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             // Old parcels are wide and overlap their neighbours: every 2nd stands for two past 2 min, every 4th for
             // four past 10 min, every 8th past 30 min (the budget then reaches the whole bell, not just its young
             // part) - but only once they are wide against the spacing (pc.len): thinned earlier, a trail showed gaps.
-            const int dec = pc.thin ? 1
-                            : (age > 1800.0 && s.sig > 8.0 * pc.len) ? 8
-                            : (age > 600.0 && s.sig > 4.0 * pc.len)  ? 4
-                            : (age > 120.0 && s.sig > 2.0 * pc.len)  ? 2 : 1;
+            // (2026-10-26, issue 20261026_193912) by WIDTH, not age: a vacuum bell's parcels are ~150 km wide 90 s
+            // after their 1-s emission, 20 overlapping Gaussians where one does; with the 384 budget full, the next
+            // launch's young trail pushed a whole older bell under the cut and it vanished. Each level needs the
+            // parcels 1.5x as wide as the stretch the survivor stands for (the old age-gated rule: 1x), so no gaps.
+            const double wr = s.sig / std::max(pc.len, 1.0);
+            const int dec = (pc.thin || age < 20.0) ? 1
+                            : wr > 24.0 ? 16
+                            : wr > 12.0 ? 8
+                            : wr > 6.0  ? 4
+                            : wr > 3.0  ? 2 : 1;
             const bool last = pi + 1 >= B.parcels.size() || B.parcels[pi + 1].stream != pc.stream || pc.stream < 0 ||
                               !ps[pi + 1].ok;
             if (pi % (size_t)dec != 0 && !last)
@@ -7612,12 +7644,33 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         const uint32_t nMax = std::min<uint32_t>(kMaxDustClouds, n + 384u);
         // Only the drawn ones and the first past the cut need their order (2026-10-20, CPU: a full sort of thousands).
         const size_t nOrd = std::min(plumes.size(), (size_t)(nMax > n ? nMax - n : 0) + 1);
+        // A fair share first (2026-10-26, issue 20261026_193912: "once more plumes occur, old ones pretty obviously
+        // immediately disappear"): with the budget full, a new launch's young trail outranked a whole older bell and it
+        // left in a frame or two. Each launch's strongest Gaussians, up to half the budget split evenly among the
+        // launches drawing plumes (at most 48 each), are kept whatever their rank; the rest go by priority as before.
+        {
+            int groups = 0;
+            for (int gc : grpCount)
+                groups += gc > 0 ? 1 : 0;
+            const size_t room0 = nMax > n ? (size_t)(nMax - n) : 0;
+            const int R = groups > 0 ? std::min<int>(48, (int)(room0 / 2) / groups) : 0;
+            std::sort(plumes.begin(), plumes.end(), [](const Cand &a, const Cand &b) {
+                return a.grp != b.grp ? a.grp < b.grp : a.pri > b.pri;
+            });
+            int rank = 0, prevG = -2;
+            for (Cand &c : plumes)
+            {
+                rank = c.grp == prevG ? rank + 1 : 0;
+                prevG = c.grp;
+                c.key = (c.grp >= 0 && rank < R) ? c.pri * 1e12 + 1e-30 : c.pri;
+            }
+        }
         std::partial_sort(plumes.begin(), plumes.begin() + nOrd, plumes.end(),
-                          [](const Cand &a, const Cand &b) { return a.pri > b.pri; });
+                          [](const Cand &a, const Cand &b) { return a.key > b.key; });
         // Near the cut a Gaussian fades by its priority (to 0 at the cut, full at 3x it): as plumes age and the view
         // moves their ranks shift, and a hard cut switched pieces of a trail on and off (blocky in time warp).
         const size_t room = nMax > n ? (size_t)(nMax - n) : 0;
-        const double cut = plumes.size() > room && room > 0 ? plumes[room].pri : 0.0;
+        const double cut = plumes.size() > room && room > 0 ? plumes[room].key : 0.0;
         // (the skip in addPlume is exact while this frame's cut stayed above its margin)
         const bool unsafe = L.plumeSkipped > 0 && (cut <= 0.0 || cut < 0.25 * L.plumeCutPrev);
         L.plumeCutPrev = unsafe ? 0.0 : cut;
@@ -7637,7 +7690,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 continue;
             out[n] = c.d;
             if (cut > 0.0)
-                out[n].c.w *= (float)glm::clamp((c.pri - cut) / (2.0 * cut), 0.0, 1.0);
+                out[n].c.w *= (float)glm::clamp((c.key - cut) / (2.0 * cut), 0.0, 1.0);
             ++n;
             ++L.nPlumes;
         }
@@ -11254,35 +11307,13 @@ float SatelliteSim::cloudCoverAtEcef(const glm::dvec3 &e) const
 
 bool SatelliteSim::launchWatchKey(uint64_t key, double afterS, std::string &msg)
 {
-    const bool late = afterS > 60.0;
-    // A twilight launch: the first moment its upper stage (and the exhaust round it) leaves the Earth's shadow, + 40 s
-    // for the bell to spread, between 2.5 min and SECO (at a fixed 3-5 min the stage was often still in the shadow:
-    // a dark sky with one dot).
-    if (late && launchState)
-    {
-        if (const LBatch *Bp = static_cast<const LBatch *>(launchEnsureBatch(key)))
-        {
-            const double tSeco = Bp->tL + launchState->cat.vehicles[Bp->veh].t2;
-            launchWatchLitT = -1.0;
-            launchWatchScanN = 0;
-            for (double t = Bp->tL + 150.0; t < tSeco; t += 10.0)
-            {
-                SelTransient st;
-                if (!launchRocketTransient(key, t, st))
-                    continue;
-                ++launchWatchScanN;
-                const glm::dvec3 s = sunDirEciAt(t);
-                const double along = glm::dot(st.pos, s);
-                if (along > 0.0 || glm::length(st.pos - along * s) > kR + 20000.0)
-                {
-                    afterS = std::min(t + 40.0, tSeco) - Bp->tL;
-                    launchWatchLitT = t - Bp->tL;
-                    break;
-                }
-            }
-        }
-    }
-    if (!launchGoToKey(key, true, -afterS, msg, late ? 40000.0 : 5000.0))
+    // (2026-10-26, issue 20261026_193645) T-60 s at 1x, on the ground beside the pad (12 km for a twilight launch: its
+    // exhaust rises over most of the sky), the camera on the stack. NOT tracked: the player watches it climb (a tracked
+    // Watch landed on a stage they did not expect); the stack is selected so its label and Info are one click away.
+    // `afterS` (kWatchLiftoffS / kWatchTwilightS) only says which kind of Watch it is.
+    const bool twilight = afterS > 60.0;
+    const double leadS = kWatchLeadS;
+    if (!launchGoToKey(key, true, leadS, msg, twilight ? 12000.0 : 5000.0))
         return false;
     LaunchState &L = *launchState;
     auto it = L.batches.find(key);
@@ -11290,23 +11321,21 @@ bool SatelliteSim::launchWatchKey(uint64_t key, double afterS, std::string &msg)
         return true;
     const LBatch &B = it->second;
     const launch::Vehicle &vh = L.cat.vehicles[B.veh];
-    const int stage = afterS < vh.t1 ? 0 : 1; // the stack, else the upper stage
     selectedSatIndex = -1;
     selectedPlanetIndex = -1;
     selTransientKey = 0;
-    launchWantSelKey = (key << 3) ^ (uint64_t)(stage + 1);
-    launchWantTrack = true;
-    launchWantSelUntil = B.tL + afterS + 120.0;
-    camera.fovYDeg = late ? 60.0f : 40.0f;
+    launchWantSelKey = (key << 3) ^ 1ull; // the stack on its pad
+    launchWantTrack = false;
+    launchWantSelUntil = B.tL + 120.0;
+    camera.fovYDeg = twilight ? 60.0f : 40.0f;
+    launchWatchLitT = -1.0;
+    launchWatchScanN = 0;
     const launch::Site &st = L.cat.sites[B.site];
     const launch::Program &pr = L.cat.programs[B.prog];
     char b[320];
     const std::string what = pr.crew ? (std::string("to ") + constellations[L.planes[B.plane].constIdx].name) : pr.name;
-    if (late)
-        snprintf(b, sizeof(b), "%s (%s) %.0f min after lift-off from %s: its exhaust lit by the Sun high over the dark ground",
-                 vh.name.c_str(), what.c_str(), afterS / 60.0, st.name.c_str());
-    else
-        snprintf(b, sizeof(b), "%s lifting off from %s (%s)", vh.name.c_str(), st.name.c_str(), what.c_str());
+    snprintf(b, sizeof(b), "%s (%s) on the pad at %s: lift-off in %.0f s%s", vh.name.c_str(), what.c_str(), st.name.c_str(),
+             leadS, twilight ? " (twilight: its exhaust will catch the Sun high up)" : "");
     msg = b;
     return true;
 }
@@ -14873,6 +14902,8 @@ nlohmann::json SatelliteSim::launchTraceBatchJson(uint64_t key)
             // the second of the two leaves, gap_ratio = closest later / that.)
             const size_t nm = std::min<size_t>(B.mem.size(), 48);
             double dMin = 1e30, dStage = 1e30, ratio = 1e30, relMin = 1e30, d60 = 1e30, d60At = 0.0, d10 = 1e30;
+            double dStageLate = 1e30; // from 3/4 of an orbit on: a member must not come back to the stage
+            const double tOrbit = glm::two_pi<double>() / std::max(B.nPark, 1e-6);
             std::array<int, 2> d60Pair{-1, -1};
             std::vector<double> dRel(nm * nm, -1.0), dLow(nm * nm, 1e30);
             for (size_t a = 0; a < nm; ++a)
@@ -14900,6 +14931,8 @@ nlohmann::json SatelliteSim::launchTraceBatchJson(uint64_t key)
                         up[i] = 1;
                         if (sOk && B.mem[i].tRel + 30.0 <= t)
                             dStage = std::min(dStage, glm::length(rs[i] - S));
+                        if (sOk && B.mem[i].tRel + 0.75 * tOrbit <= t)
+                            dStageLate = std::min(dStageLate, glm::length(rs[i] - S));
                     }
                 }
                 for (size_t a = 0; a < nm; ++a)
@@ -14932,6 +14965,7 @@ nlohmann::json SatelliteSim::launchTraceBatchJson(uint64_t key)
             p["min_member_gap_after_60s_at_s"] = d60At;
             p["min_member_gap_after_60s_pair"] = d60Pair;
             p["min_stage_gap_2h_m"] = dStage < 1e29 ? dStage : -1.0;
+            p["min_stage_gap_after_orbit_m"] = dStageLate < 1e29 ? dStageLate : -1.0;
         }
         if (B.mem.size() > 1)
             phase("deployment_end", B.mem.back().tRel);

@@ -29,6 +29,15 @@ uint64_t hbMix(uint64_t x)
     x = (x ^ (x >> 27)) * 0x94D049BB133111EBull;
     return x ^ (x >> 31);
 }
+// A smooth 1D value noise in [0, 1] (cubic between hashed knots), seeded.
+double hbNoise1(double x, uint64_t seed)
+{
+    const double i = std::floor(x), f = x - i;
+    const double a = (double)(hbMix(seed ^ (uint64_t)(int64_t)i) >> 11) * (1.0 / 9007199254740992.0);
+    const double b = (double)(hbMix(seed ^ (uint64_t)(int64_t)(i + 1.0)) >> 11) * (1.0 / 9007199254740992.0);
+    const double u = f * f * (3.0 - 2.0 * f);
+    return a + (b - a) * u;
+}
 } // namespace
 
 // The gust front points of one storm now (Earth-fixed unit directions, the front's local tangent and outward
@@ -49,10 +58,52 @@ void SatelliteSim::haboobFrontOf(const wx::Storm &S, double t, std::vector<Haboo
     struct TP { glm::dvec3 d; double s; double along; };
     std::vector<TP> tw;
     for (const wx::Tower &T : towers ? *towers : stormTowers)
-        if (T.stormId == S.id && (line || T.role >= 0.99f) && T.strength > 0.25f)
-            tw.push_back({T.dir, (double)T.strength, 0.0});
-    if (tw.empty()) return;
+        // (2026-10-26, issue 20261026_192211) faded with the tower's own strength, not cut at 0.25: a decaying tower
+        // took its stretch of wall with it in one frame, and the last tower the whole haboob.
+        if (T.stormId == S.id && (line || T.role >= 0.99f) && T.strength > 0.03f)
+            tw.push_back({T.dir, (double)T.strength * glm::smoothstep(0.03, 0.4, (double)T.strength), 0.0});
     const glm::dvec3 c = glm::normalize(S.centreAt(t));
+    // The outflow outlives its towers (2026-10-26, issue 20261026_192211: "when they are done, they just disappear"): the
+    // cold pool keeps spreading and the dust settles over the better part of an hour after a cell collapses. The towers
+    // of 15 / 30 / 45 min ago, carried forward with the storm, feed the front too, their strength decaying to nothing an
+    // hour on; a tower still there keeps the larger of the two. A pure function of t (the catalog's closed form), main
+    // catalog only (the scout passes its own towers).
+    if (!towers && stormCatalog)
+    {
+        // Lagged towers only SUSTAIN the current ones (a match within 15 km keeps the larger strength); when the storm has
+        // none left, the latest lag that had towers stands in for them on its own (mixed in as extra sources they made a
+        // zigzag front of old and new tower places).
+        std::vector<const wx::Storm *> one{&S};
+        std::vector<wx::Tower> past;
+        const bool none = tw.empty();
+        for (int k = 1; k <= 3; ++k)
+        {
+            const double lag = 900.0 * k;
+            past.clear();
+            stormCatalog->towersAt(t - lag, one, past);
+            const glm::dvec3 moved = c - glm::normalize(S.centreAt(t - lag));
+            const double decay = 1.0 - glm::smoothstep(0.0, 2700.0, lag);
+            bool used = false;
+            for (const wx::Tower &T : past)
+            {
+                if (T.stormId != S.id || !(line || T.role >= 0.99f) || T.strength <= 0.03f)
+                    continue;
+                const double sp = (double)T.strength * glm::smoothstep(0.03, 0.4, (double)T.strength) * decay;
+                const glm::dvec3 d = glm::normalize(T.dir + moved);
+                if (none)
+                {
+                    if (sp > 0.02) { tw.push_back({d, sp, 0.0}); used = true; }
+                    continue;
+                }
+                for (TP &q : tw)
+                    if (glm::length(q.d - d) * kReH < 15000.0)
+                        q.s = std::max(q.s, sp);
+            }
+            if (none && used)
+                break;
+        }
+    }
+    if (tw.empty()) return;
     glm::dvec3 mv = glm::normalize(glm::cross(nAx, c));            // the motion at the centre (map frame)
     if (sp < 0.5) mv = glm::normalize(glm::dvec3(S.shear));
     // The outflow leads the storm's motion OVER THE GROUND: its motion in the map frame plus the map's drift. Where the two
@@ -68,7 +119,16 @@ void SatelliteSim::haboobFrontOf(const wx::Storm &S, double t, std::vector<Haboo
     const glm::dvec3 acr = glm::normalize(glm::cross(c, mv));      // across the motion
     for (TP &p : tw) p.along = glm::dot(p.d - c, acr) * kReH;
     std::sort(tw.begin(), tw.end(), [](const TP &a, const TP &b) { return a.along < b.along; });
+    // The front is ARCS, not one wall (2026-10-26, issue 20261026_192211: "pretty huge and continuous, I'd expect just
+    // an arc front"): the outflow bows ahead of each tower (below) and is dusty only along stretches of it, a ~60-km
+    // noise of the arc length thresholded so roughly half the front raises a wall and the rest is gaps.
+    // (The noise is read at the point's place across the storm's motion, a coordinate fixed to the storm, so the
+    // stretches stay put as towers come and go at the line's ends; the flanks curving back read their depth too.)
+    const uint64_t gapSeed = hbMix(S.id ^ 0x4AB00Bull);
     auto push = [&](const glm::dvec3 &mapDir, const glm::dvec3 &outMap, double s) {
+        const double xs = (glm::dot(mapDir - c, acr) + 0.6 * std::abs(glm::dot(mapDir - c, mv))) * kReH + 1.0e6;
+        const double gn = hbNoise1(xs / 60000.0, gapSeed) * 0.7 + hbNoise1(xs / 22000.0, gapSeed ^ 7) * 0.3;
+        s *= glm::smoothstep(0.38, 0.62, gn);
         HaboobPoint q;
         const glm::dvec3 e = glm::normalize(toE(mapDir));
         glm::dvec3 o = toE(outMap);
@@ -95,7 +155,9 @@ void SatelliteSim::haboobFrontOf(const wx::Storm &S, double t, std::vector<Haboo
             {
                 const double f = (double)k / nS;
                 const glm::dvec3 d = glm::normalize(glm::mix(at(i), at(i + 1), f));
-                push(ahead(d, mv, dG), mv, glm::mix(tw[i].s, tw[i + 1].s, f));
+                // scalloped: furthest ahead in front of each tower, ~0.55 of that midway between two
+                const double sn = std::sin(kPiH * f);
+                push(ahead(d, mv, dG * (1.0 - 0.45 * sn * sn)), mv, glm::mix(tw[i].s, tw[i + 1].s, f));
             }
         }
         for (int end = 0; end < 2; ++end)
@@ -160,6 +222,18 @@ void SatelliteSim::weatherFillHaboobs(GpuDustCloud *out, uint32_t &n)
         for (auto &p : ids)
             if (p.second == tw.stormId) { p.first = std::min(p.first, km); have = true; }
         if (!have) ids.push_back({km, tw.stormId});
+    }
+    // (and the organised storms whose towers have died: their outflow lingers, haboobFrontOf)
+    for (const auto &so : stormOrganisedNow)
+    {
+        bool have = false;
+        for (auto &p : ids)
+            if (p.second == so.first) { have = true; break; }
+        if (have) continue;
+        const glm::dvec3 d = so.second;
+        const glm::dvec3 ed(d.x * cph + d.y * sph, -d.x * sph + d.y * cph, d.z);
+        const double km = std::acos(std::clamp(glm::dot(ed, up), -1.0, 1.0)) * 6371.0;
+        if (km <= reachKm) ids.push_back({km, so.first});
     }
     std::sort(ids.begin(), ids.end());
     std::vector<HaboobPoint> pts;
@@ -435,6 +509,18 @@ void SatelliteSim::weatherFillDustGrid()
         for (auto &p : ids)
             if (p.second == tw.stormId) { p.first = std::min(p.first, km); have = true; }
         if (!have) ids.push_back({km, tw.stormId});
+    }
+    // (and the organised storms whose towers have died: their outflow lingers, haboobFrontOf)
+    for (const auto &so : stormOrganisedNow)
+    {
+        bool have = false;
+        for (auto &p : ids)
+            if (p.second == so.first) { have = true; break; }
+        if (have) continue;
+        const glm::dvec3 d = so.second;
+        const glm::dvec3 ed(d.x * cph + d.y * sph, -d.x * sph + d.y * cph, d.z);
+        const double km = std::acos(std::clamp(glm::dot(ed, up), -1.0, 1.0)) * 6371.0;
+        if (km <= half / 1000.0 * 1.42 + 60.0) ids.push_back({km, so.first});
     }
     std::sort(ids.begin(), ids.end());
     std::vector<HaboobPoint> pts;

@@ -7138,10 +7138,100 @@ void main() {
         vec3  solarCorona = vec3(0.0);
         if (tot > 0.001 && angle < kCoronaMaxR * kSunAngR && !moonDiscHit)
             solarCorona = solarCoronaAt(dir, sunDir) * (tot * sunGate * kCoronaGain);
+#ifdef SKY_SUN_SHADOW
+        // The Sun as an OBJECT (2026-10-26, issue 20261026_192501: "a half faded fuzzball" low on the horizon, through
+        // smoke "a sharp red disk, fading and diluting"). It was a fixed, hand-reddened colour with full glare whatever
+        // the air did to it. Now:
+        //  - its light is the real transmittance of each disc pixel's ray (Rayleigh + Mie + ozone, sunPathTauExact, and
+        //    the wildfire smoke), tonemapped with the frame's exposure, hue kept: white overhead, a sharp orange disc on
+        //    the horizon (its lower limb redder), dim red through smoke; limb darkening, sunspots with the activity;
+        //  - its glare and corona (veiling light: as strong as the Sun reaching the eye) scale with the centre's
+        //    transmittance, so an attenuated Sun shows its disc;
+        //  - REFRACTION: each pixel's apparent ray is bent back to the true direction it came from (Saemundsson, x the
+        //    air's density: at the observer, or twice at the ray's tangent height for a ray grazing the limb from
+        //    altitude), per colour (dispersion: red 0.985, blue 1.018), so a low Sun is flattened and keeps a green
+        //    rim at its upper limb as it sets (the green flash, when the red has gone below). Not the moon, stars or
+        //    satellites yet.
+        {
+            vec3  upO  = normalize(obsPos);
+            float cz   = dot(upO, dir);
+            float hO   = max(obsEffH, 0.0);
+            float Rref = 0.0;   // the refraction of this ray (rad, green)
+            if (cz >= 0.0) {
+                float ha = degrees(asin(clamp(cz, 0.0, 1.0)));
+                Rref = radians((1.02 / tan(radians(ha + 10.3 / (ha + 5.11)))) / 60.0) * exp(-hO / 8000.0);
+            } else {
+                float rO = length(obsPos);
+                float ht = rO * sqrt(max(1.0 - cz * cz, 0.0)) - R_EARTH;
+                Rref = ht > 0.0 ? 0.01003 * max(2.0 * exp(-ht / 8000.0) - exp(-hO / 8000.0), 0.0) : 0.0;
+                // (the tangent height falls ~r |cz| per radian of elevation: below ~12 km this model's bending changes
+                // faster than the elevation and FOLDED the sky onto the disc, a wide white ellipse from 168 km; real
+                // rays that low are all but extinct. Its rate capped at 0.8.)
+                float gR = 2.0 * 0.01003 / 8000.0 * exp(-max(ht, 0.0) / 8000.0) * rO * abs(cz);
+                Rref *= min(1.0, 0.8 / max(gR, 1e-9));
+            }
+            vec3  pu   = upO - dir * cz;
+            pu = dot(pu, pu) > 1e-12 ? normalize(pu) : vec3(0.0);
+            const vec3 kDisp = vec3(0.985, 1.0, 1.018);
+            float rD   = r0;                                    // the drawn radius (1.5x true; the true one near the Moon)
+            float pxA  = pc.fovYRad / cloud.skyScreenH;
+            vec3  ang3;
+            vec3  dTg  = dir;
+            for (int c = 0; c < 3; ++c) {
+                float Rc = Rref * kDisp[c];
+                vec3  dt = dir * cos(Rc) - pu * sin(Rc);        // the TRUE direction this channel's light came from
+                if (c == 1) dTg = dt;
+                ang3[c] = acos(clamp(dot(dt, sunDir), -1.0, 1.0));
+            }
+            vec3  cov3 = (vec3(1.0) - smoothstep(vec3(rD - pxA), vec3(rD + pxA), ang3)) * sunGate * (moonDiscHit ? 0.0 : 1.0);
+            vec3  dLight = vec3(0.0);
+            float gs = 1.0;
+            vec3  hueC = vec3(1.0);
+            if (angle < 0.6) {
+                // (x the cloud / plume composite's own transmittance here, IN COLOUR: the wildfire smoke and the
+                // haboob dust are in it, spectral; the grey cloudBlock left a smoke-dimmed Sun white)
+                vec3 Tc = exp(-sunPathTauExact(obsPos, normalize(sunDir + pu * Rref), BETA_R, BETA_M)) * cloudB.rgb;
+                float lc = dot(Tc, vec3(0.2126, 0.7152, 0.0722));
+                gs   = 1.0 - exp(-10.0 * lc);
+                hueC = Tc / max(max(Tc.r, max(Tc.g, Tc.b)), 1e-6);
+                if (max(cov3.r, max(cov3.g, cov3.b)) > 0.0) {
+                    vec3  T  = exp(-sunPathTauExact(obsPos, dir, BETA_R, BETA_M)) * cloudB.rgb;
+                    // disc coordinates (green's true direction), in drawn radii
+                    vec3  e1 = normalize(cross(sunDir, abs(sunDir.z) < 0.99 ? vec3(0, 0, 1) : vec3(1, 0, 0)));
+                    vec3  e2 = cross(sunDir, e1);
+                    vec2  xy = vec2(dot(dTg, e1), dot(dTg, e2)) / max(rD, 1e-6);
+                    float rr = min(dot(xy, xy), 1.0);
+                    float ld = 1.0 - 0.6 * (1.0 - sqrt(1.0 - rr));   // limb darkening (u = 0.6)
+                    // sunspots: 2 at a quiet Sun to 8 in a storm (Kp), umbra ~70% dark with a penumbra
+                    int   nS = 2 + int(6.0 * clamp(cloud.stormStrength, 0.0, 1.0) + 0.5);
+                    float sp = 1.0;
+                    for (int k = 0; k < 8; ++k) {
+                        if (k >= nS) break;
+                        float a  = 6.2831853 * fract(0.61803 * float(k) + 0.137);
+                        float rk = 0.75 * sqrt(fract(0.75487 * float(k) + 0.411));
+                        float sz = 0.035 + 0.045 * fract(0.56984 * float(k) + 0.29);
+                        float dk = length(xy - rk * vec2(cos(a), sin(a)));
+                        sp *= 1.0 - 0.45 * (1.0 - smoothstep(sz, 2.2 * sz, dk)) - 0.25 * (1.0 - smoothstep(0.3 * sz, 0.9 * sz, dk));
+                    }
+                    float L   = exposure * 300.0 * dot(T, vec3(0.2126, 0.7152, 0.0722)) * ld * sp;
+                    vec3  hue = T / max(max(T.r, max(T.g, T.b)), 1e-6);
+                    dLight = mix(hue * (1.0 - exp(-L)), vec3(1.0), 1.0 - exp(-L / 300.0)) * cov3;
+                }
+            }
+            // (apparent elevation for the geometric fade: the refracted Sun shows above the horizon before it rises)
+            float geomFadeR = smoothstep(limbZ - kSunAngR, limbZ + kSunAngR, sunDirENU.w + Rref * step(angle, 0.1));
+            vec3  gCol = mix(sunCol, 1.5 * hueC, 0.8);
+            color += dLight * geomFadeR * cloud.sunCloudT
+                   + (glare  * geomFade * gCol * obsSunF * gs
+                      + corona * geomFade * gCol * 0.12 * obsSunF * gs
+                      + solarCorona * geomFade) * min(cloudBlock, cloud.sunCloudT);
+        }
+#else
         color += (discVis * geomFade * sunCol
                   + glare  * geomFade * sunCol * obsSunF
                   + corona * geomFade * sunCol * 0.12 * obsSunF
                   + solarCorona * geomFade) * min(cloudBlock, cloud.sunCloudT);
+#endif
         // (Review 22: x the Sun's own cloud transmittance from the eye, 400 km toward it: a horizon Sun's pixels
         // see past the march's clouds, so cloudBlock alone let it shine through a storm's overcast.)
     }

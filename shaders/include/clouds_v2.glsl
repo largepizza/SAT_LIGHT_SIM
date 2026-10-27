@@ -705,7 +705,10 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
     // several km wide) shape each cloud: its top (eB below) and the turret over each cell (capS). Until
     // review 19 they also placed the near field's clouds (a convective field of cells, a stratiform
     // baseline broken along the closed-cell rims, thresholded by the 5-km coverage).
-    float deep       = smoothstep(0.45, 0.85, w.g);   // cumulus (0.5) ~0, congestus (0.75) ~0.8
+    // ... and any cloud whose span is that of a congestus / tower (2026-10-26, issue 20261026_192322: the storm cumulus
+    // round a weak tower, raised to "Storm cumulus top" (12 km) on the fine 1-2 km cells of a cumulus-typed map, stood
+    // as rows of narrow spikes; a tall cloud is as wide as it is deep).
+    float deep       = max(smoothstep(0.45, 0.85, w.g), smoothstep(3500.0, 8000.0, topMax - base));   // cumulus (0.5) ~0, congestus (0.75) ~0.8
     // At a FIXED coarse mip (or the footprint's, once coarser): these set a cell's width and height,
     // and at footprint + 2 (+ 4 below) they changed with the viewing distance, so every storm was
     // stretched along the view rays into fins radiating from the camera (user snaps, pass 13).

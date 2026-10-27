@@ -81,6 +81,7 @@ THRESHOLDS = [
     ("deployment", "min_member_gap_after_60s_m", ">", 20.0, "", "nor anywhere in their free flight (6 h about the stage's parking circle: one trajectory, deploy interval apart)"),
     ("deployment", "member_gap_ratio_min", ">", 0.9, "info", "closest approach of a pair / its gap when the later one left"),
     ("deployment", "min_stage_gap_2h_m", ">", 1.0, "", "nor through the stage"),
+    ("deployment", "min_stage_gap_after_orbit_m", ">", 500.0, "", "the train drifts away: no member comes back to the stage an orbit later"),
     ("raising", "max_proper_accel_after_2_5d_m_s2", "<", 0.3, "", "a gentle climb once the release offset is gone (the radius ramp's corners: 0.1-0.25 m/s per s)"),
     ("raising", "descend_after_2_5d_m_max", "<", 200.0, "", "the climb does not sink (raising is monotonic)"),
     ("raising", "max_1s_step_over_circular_m", "<", 100.0, "", "no position jumps while raising"),

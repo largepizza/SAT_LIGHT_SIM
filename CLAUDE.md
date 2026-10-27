@@ -815,6 +815,11 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   own lobe strength. (4) The map-fed shield (`cv2AnvilSigmaP`, still available) is smooth: fray 0.15
   (was 0.45), a soft edge (presence 0-0.6, squared), a gentler underside — it was lumpy and grey
   (snapshot 5). A separate storm layer not rooted in the map (hurricanes) is a possible later step.
+- **Storm cumulus is wide cells (2026-10-26, issue 20261026_192322, "large narrow spikes"):** cv2FieldLow's coarse
+  "deep" cells were chosen by the map's TYPE only, so the storm cumulus round a weak tower, raised to "Storm cumulus
+  top" (12 km) on a cumulus-typed map, was 1-2 km cells extruded 10 km: rows of spires. `deep` also follows the cloud's
+  own span (smoothstep 3.5-8 km of topMax - base). Ordinary cumulus A/B (cloud suite towers / trade / cu_air / sea):
+  visually identical, cost equal; 128 registers.
 - **Storm OBJECTS (2026-10-22/23, branch `weather`, `.plans/WEATHER_EVENTS_PLAN.md`):** the towers are no longer a
   lattice over the map's Cb regions (continent-sized alleys of anvils) but storms spawned by `wx::Catalog`
   (`Weather.h/.cpp`): hashed per (equal-area cell, 30-min bin) at a flash-density climatology (`StormClimatology`,
@@ -984,6 +989,15 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   the observer on its inflow side; `state` -> `weather.tornadoes`. Known: a neighbouring storm's forward flank can still
   rain over the view (harness_runs/wx4: 2036-11-22 14:00); the cloud field inside a hurricane does not swirl (its noise is
   map-fixed; the flow is one global curl field).
+  **Still transparent close up (2026-10-26, issue 20261026_191508)** — two causes: (1) cloud_march.comp's "a Gaussian the
+  EYE is inside thins to 10%" (meant for a rocket's exhaust beside a followed stage) took the funnel's wide base and debris
+  Gaussians within ~1 km: tornado Gaussians (ib.w >= 1024) are exempt; (2) the unified composite dimmed a plume's light by
+  the cloud opacity at its depth SEGMENT's middle, and in rain a segment runs from a few hundred m to tens of km: a
+  plume's light is now corrected to the opacity in front of its own closest approach, and the cloud light of its
+  segment is dimmed only behind it (`sU`, the plumes' tau-weighted share of the segment's cloud in front of them; it
+  was half their optical depth for all of it). Composite at 128 registers. **Terrain gate:** a supercell's tornado
+  needs ground under 1000 m with under 400 m of relief within ~20 km at its touchdown (`tornadoOf`, CPU DEM; it touched
+  down in the Nepal mid-hills); waterspouts unchanged.
 - **Biome map + wildfires (2026-10-23, reworked 2026-10-24 from issue 20261023_225322 and again the same day from the
   user's QA; `Biome.h/.cpp`, `Wildfire.h/.cpp`, `SatelliteSimWildfire.cpp`, `shaders/wildfire_ground.comp`,
   `shaders/include/smoke.glsl`; plan `.plans/WEATHER_HAZARDS_PLAN.md`).** `wx::BiomeMap`
@@ -1157,6 +1171,13 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     `harness_runs/hb/` (untracked; `final.satcmd`). Not yet: the wall from orbit is still the Gaussians; the regional dust
     haze (`cv2FogDust`) and the walls are separate; the Sun-lit test for a Go to knows the storm's anvil, not the weather
     map's own overcast.
+  **Arcs that fade (2026-10-26, issue 20261026_192211: "when they are done, they just disappear ... pretty huge and
+  continuous, I'd expect just an arc front"):** `haboobFrontOf` weights each tower by its strength (smoothstep 0.03-0.4;
+  a hard 0.25 cut took the wall with it), scallops a line's front (furthest ahead at each tower, 0.55 of that between
+  two), leaves dusty only ~half of it (a 60 / 22-km value noise across the storm's motion, a storm-fixed coordinate) and
+  lets the outflow OUTLIVE its towers: the towers of 15 / 30 / 45 min ago (`towersAt`, carried with the storm) sustain
+  the current ones' strength, decaying to 0 over 45 min, and stand in alone when the storm has none left (a storm stays
+  a candidate while it lives: `stormOrganisedNow`). Mixing lagged towers in as extra sources made a zigzag front (tried).
 - **The Weather window (2026-10-23, `SatelliteSimWeatherWindow.cpp`, `shaders/weather_radar.comp`; the weather-cloud
   button beside Missions on the right HUD panel (`TimeWeatherBtn`, `pixel--weather.png` from `tools/make_icons.py`), key N
   `KB_WEATHER`, window id 12, `wxChrome`; harness `ui open weather [tab=radar|storms|controls]`, `weather ...`).** Missions-
@@ -5605,6 +5626,11 @@ launches follow per-program cadences (no real manifest).
   radial pair first). `launch trace` -> deployment `min_member_gap_1_10min_m` / `min_member_gap_after_60s_m` (now over
   the whole free flight): >= 20 m (mission_ops FAIL below). Offline design check: the CW model of every layout gave
   28-31 m minima over 6 h.
+  **Never a purely radial push (2026-10-26, issue 20261026_194340):** Pez (Starship's door) and flat stacks left with
+  (sp, 0): a radial CW impulse is a CLOSED 2:1 ellipse, so every Starmind came back to the door it left one orbit later,
+  and every orbit after. All but columns now leave with sp x (0.97, -0.24) (`releaseInPlane`): ~2.8 km an orbit of drift
+  ahead at 0.7 m/s, the member-to-member rate unchanged. `launch trace` -> deployment `min_stage_gap_after_orbit_m` (from
+  3/4 of an orbit on; mission_ops FAIL under 500 m): 1.4 km for Starmind.
 - **Unfolding after release** (2026-10-19): a model's stowable parts (`SatComponent::stow`, JSON
   `"stow": {"axis", "root", "scale", "phase"}`; model `"deployment": {"unfold_delay_s", "unfold_s"}`) leave the
   dispenser packed — an accordion array or a folded radiator scaled along `axis` toward the plane dot(axis, x) = root
@@ -5751,6 +5777,10 @@ launches follow per-program cadences (no real manifest).
   from now, burning, altitude, the nose's angle from retrograde); `launch check` -> `booster_nose_max_deg_per_s` (18),
   `upper_nose_max_deg_per_s` (2.0) and `upper_max_step_m_per_s` (7893: 1-s steps through the burn and the entry
   interface, i.e. no jump).
+  **A returning ship's vent is a CONTROLLED dump (2026-10-26, issue 20261026_194151):** emit mode 4, out of its aft end
+  along its own axis (`stageNose`), ~10 t over 3 min at 350 m/s, 20 min before its deorbit burn and at least 3 h after
+  deployment (`ventStart`) — it was 10 min after deploying, spinning, among its train. Expendable stages keep the spiral
+  after their deorbit burn (the real Falcon 9 dump spirals).
 - **Attitude** (`stageNose`, 2026-10-19): the booster's nose is a pitch angle in its trajectory's vertical plane
   (`boosterPitchRaw`: along the velocity on the way up, engines first after staging, along the thrust in its burns,
   upright for landing; branch [-90, 270) deg so nothing wraps), averaged over 10 s: the flip after MECO and the flip
@@ -5849,6 +5879,11 @@ launches follow per-program cadences (no real manifest).
   the dark barely dims the sky, a sooty trail silhouettes (as pure absorbers they were dark smudges at night).
   Each Gaussian carries a view cone (80-B `GpuDustCloud`): the shader skips it with one dot product. At night the
   plumes' sunlight is raised up to 10x as the eye's sky darkens (the night exposure is not physical: see the dust).
+  **The budget keeps every launch's plume (2026-10-26, issue 20261026_193912: an older bell left in a frame as the next
+  launch's young trail outranked it):** (1) parcels are decimated by WIDTH (sigma / spacing > 3 / 6 / 12 / 24 -> every
+  2nd / 4th / 8th / 16th, from 20 s of age; it was age-gated from 2 min, and a vacuum bell's 1-s parcels were 20
+  overlapping 150-km Gaussians at 90 s); (2) each launch drawing plumes is reserved its strongest min(48, half the budget
+  / launches) Gaussians (`Cand::grp` / `key`), the rest by priority. The bell now fades out over ~1.5 min.
 - **What the Gaussian list costs, and the three culls (2026-10-21).** `dustCloudsCS` costs every texel the work of
   every Gaussian whose cone covers it; old, wide or Earth-shadowed exhaust (bells hundreds of km across, trails in the
   night) covers the whole sky while adding nothing: in the droneship bench view 160 of 390 Gaussians were in every
@@ -6539,6 +6574,12 @@ launches follow per-program cadences (no real manifest).
   **The Sun's Fury card is pinned under the list on Upcoming** (2026-10-20: outside the `MsList` scroll view; at the
   default height it was the last card and needed scrolling). Ongoing launch rows have **Next >** (`missionsMilestone`):
   the batch's next milestone, carrying a selected / followed stage of it.
+  **Launch Watch = T-1 min, NOT tracked (2026-10-26, issue 20261026_193645; the user: "We should not be auto tracking
+  the vessel. We should also warp to T-1"):** every launch Watch (`launchWatchKey`: Upcoming rows, the pinned twilight /
+  crewed rows, Settings > Launches) lands `kWatchLeadS` (60 s) before lift-off at 1x, on the ground 5 km from the pad
+  (12 km and FOV 60 for a twilight one), the camera on the stack, the STACK selected (`launchWantSelKey` = key << 3 ^ 1)
+  and no camera lock. The twilight Watch's sunlit-stage scan is gone. A tracked Watch locked a playtester onto a stage they
+  did not recognise.
 - **QA sweep (2026-10-21):** the MISSION section's progress bar is progress through the milestone LIST (interpolated in
   time between the last passed and the next), so it agrees with "(n of N milestones)"; the selection panel's magnitude
   is the Info window's MAGNITUDE rule (the GROUND observer's: below the horizon, dark, or magnitude + extinction; also
@@ -7514,6 +7555,25 @@ struct GpuGlowBuf {
 `kGlowBins` and `kMaxFlares` must match constants in `sat_sky.frag`. `glowBuf` must be zeroed with `vkCmdFillBuffer` before each `sat_flare.comp` dispatch (floatBitsToUint(0.0) == 0u, so fill value 0 correctly marks bins empty).
 
 ---
+
+## Subsystem: The Sun as an object (2026-10-26, issue 20261026_192501)
+
+sat_sky.frag's sun block (after the tonemap, display units), full variants only (`SKY_SUN_SHADOW`; SKY_LITE / SKY_ENV keep
+the old hand-tinted disc). It was a fixed colour (reddened by its height above the limb) with full glare whatever the
+air did to it: "a half faded fuzzball" low down.
+- **Light:** each disc pixel's ray's real transmittance (`sunPathTauExact`: Rayleigh + Mie + ozone) x the cloud / plume
+  composite's own transmittance `cloudB.rgb` IN COLOUR (wildfire smoke and haboob dust are spectral there; the grey
+  `cloudBlock` left a smoke-dimmed Sun white), L = exposure x 300 x luminance, shown as hue x (1 - e^-L) whitened by
+  1 - e^(-L/300): white overhead, a sharp orange disc on the horizon with a redder lower limb; limb darkening (u 0.6);
+  2-8 sunspots by the activity (`cloud.stormStrength`), fixed on the disc. Drawn at the old 1.5x radius.
+- **Glare and corona** (veiling light) x gs = 1 - exp(-10 x the centre's transmittance luminance) and tinted by its hue.
+- **Refraction:** each pixel's apparent ray bent back to its true direction (Saemundsson x exp(-h/8 km) at the observer;
+  from altitude below the horizontal 0.01003 (2 e^(-ht/8km) - e^(-h/8km)) at the ray's tangent height, its rate capped at
+  0.8 per radian of elevation — uncapped it FOLDED the sky onto the disc from 168 km), per colour (dispersion red 0.985,
+  blue 1.018): a low Sun is flattened and keeps a green rim at the top as it sets; the geometric fade uses the apparent
+  elevation. The Moon, stars and satellites are not refracted yet (and not twinkled by it).
+- Views: `harness_runs/bf26/b7.satcmd` (smoke, 168 km limb, a sea sunset at 0.6 / 0.05 deg zoomed to 3 deg, a high Sun).
+  The issue's smoke view changes little: its smoke is thin along the Sun's ray (the glow there is forward scattering).
 
 ## Subsystem: The Moon as a body (2026-09-30)
 

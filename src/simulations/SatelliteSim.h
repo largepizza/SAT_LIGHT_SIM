@@ -3238,7 +3238,8 @@ private:
     bool launchWatchKey(uint64_t key, double afterS, std::string &msg);
     double launchWatchLitT = -1.0; int launchWatchScanN = 0; // (harness: a twilight Watch's sunlit search)
     static constexpr double kWatchLiftoffS = 8.0;    // a launch's Watch: lift-off + this (clear of the tower)
-    static constexpr double kWatchTwilightS = 300.0; // a twilight launch's: the exhaust bell high up in sunlight
+    static constexpr double kWatchTwilightS = 300.0; // marks a twilight launch's Watch (from further back)
+    static constexpr double kWatchLeadS = 60.0;      // every launch Watch lands this long before lift-off (T-1 min)
     bool launchWatchCatch(std::string &msg); // the next Starship catch, in its landing burn, the ship tracked
     float cloudCoverAtEcef(const glm::dvec3 &dirEcef) const; // the cloud map's cover there (0..1, CPU copy; a Watch's sky)
     struct MissionOngoing
@@ -4909,6 +4910,9 @@ private:
     // The slots each table filled last (fillStormIndex clears and re-uploads only those).
     std::vector<uint32_t> stormTableUsed, stormEnvTableUsed, shieldTableUsed, shieldEnvTableUsed;
     std::vector<wx::Shield> stormShields;        // this frame's anvil shields
+    // (2026-10-26) the organised storms alive this frame (id, centre in the map frame): the haboobs' candidates, so a
+    // storm whose towers have just died keeps its outflow's dust (haboobFrontOf's lagged towers)
+    std::vector<std::pair<uint64_t, glm::dvec3>> stormOrganisedNow;
     std::vector<GpuStormShield> stormGpuShields; // as uploaded (the bake's flowed copy is made from these)
     std::vector<StormEntry> shieldEntries, shieldEnvEntries;
     std::vector<glm::uvec2> shieldTable, shieldEnvTable;

@@ -443,6 +443,10 @@ void SatelliteSim::updateStorms()
     std::vector<const wx::Storm *> stormsNow;
     stormCatalog->stormsAt(t, stormsNow);
     stormCatalog->towersAt(t, stormsNow, stormTowers);
+    stormOrganisedNow.clear();
+    for (const wx::Storm *S : stormsNow)
+        if (S->kind != wx::StormKind::AirMass && S->kind != wx::StormKind::Tropical)
+            stormOrganisedNow.push_back({S->id, glm::normalize(S->centreAt(t))});
     // Tropical cyclones: their eyewall and inner-band towers join the list (Earth-fixed tracks, in the map frame now).
     stormCatalog->cyclonesAt(t, stormCyclonesNow);
     stormCatalog->cycloneTowersAt(t, stormCyclonesNow, stormTowers);
@@ -841,6 +845,25 @@ bool SatelliteSim::tornadoOf(const wx::Storm &S, double t, TornadoNow &out) cons
     if (w1 - w0 < dur) return false;
     out.t0 = S.t0 + w0 + (w1 - w0 - dur) * tnU(tnMix(h ^ 2));
     out.t1 = out.t0 + dur;
+    if (!out.spout)
+    {
+        // (2026-10-26, issue 20261026_191508: a tornado in the Nepal mid-hills) A supercell's tornado needs low, open
+        // ground: none where the storm stands, at touchdown, over ground above 1000 m or relief over 400 m within
+        // ~20 km (a pure function of the storm: decided at its own t0, not per frame).
+        const glm::dvec3 g = weatherMapToEarth(glm::normalize(S.centreAt(out.t0)), out.t0);
+        const double lat = glm::degrees(std::asin(glm::clamp(g.z, -1.0, 1.0))), lon = glm::degrees(std::atan2(g.y, g.x));
+        const double dLat = 0.18, dLon = 0.18 / std::max(std::cos(glm::radians(lat)), 0.2);
+        float hMin = 1e9f, hMax = -1e9f;
+        for (int k = 0; k < 5; ++k)
+        {
+            const double la = lat + (k == 1 ? dLat : k == 2 ? -dLat : 0.0), lo = lon + (k == 3 ? dLon : k == 4 ? -dLon : 0.0);
+            const float hh = cpuTerrainHeightM((float)la, (float)lo);
+            hMin = std::min(hMin, hh);
+            hMax = std::max(hMax, hh);
+        }
+        if (hMax > 1000.0f || hMax - hMin > 400.0f)
+            return false;
+    }
     out.seed = (uint32_t)(tnMix(h ^ 3) >> 32);
     out.stormId = S.id;
     out.r0 = (float)(out.spout ? 25.0 + 40.0 * tnU(tnMix(h ^ 4)) : 60.0 + 160.0 * std::pow(tnU(tnMix(h ^ 4)), 1.5));
