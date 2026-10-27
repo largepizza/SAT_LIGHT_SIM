@@ -379,7 +379,10 @@ void tdDemAt(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY,
         // Storm surge: the sea's level and how far its shore moves inland near a cyclone (tdSurgeAt).
         float sDs = 0.0, sS = 0.0;
 #if !defined(SKY_LITE) && !defined(SKY_ENV)
-        if (cloud.surgeInfo.x > 0.5) sS = tdSurgeAt(elevTex, q, enuX, enuY, enuZ, uv, h0, sDs);
+        // (Not over the open sea past 0.95 of the water map's reach, where the rise tapers to nothing and the shore
+        // offset is 0 whatever the shift (2026-10-27, exact): it ran on every height evaluation over a cyclone's sea,
+        // ~0.5 ms of the sky pass at sea level under a hurricane.)
+        if (cloud.surgeInfo.x > 0.5 && (wm.r < 0.975 || cK > 0.0)) sS = tdSurgeAt(elevTex, q, enuX, enuY, enuZ, uv, h0, sDs);
 #endif
         // Near the observer AND the shore (the moved one too), filtered by hand like the DEM: hardware
         // filtering's 8-bit weights step the shoreline every ~20 m.
