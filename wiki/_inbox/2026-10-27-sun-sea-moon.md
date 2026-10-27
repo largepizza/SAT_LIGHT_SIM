@@ -22,7 +22,10 @@ table (the disc over ~4 deg) the exact Sun path is used.
 **The sea's glitter** is drawn with an integer hash (it was a sin hash, which drew repeating diagonal streaks from orbit),
 and its sparkle contrast falls with the number of facets a pixel covers ((footprint / 0.3 m)^2, at least 150): from
 orbit the glint is its smooth mean. The glint's shadowing and masking are the whole wave field's, taken against the
-mean sea surface (Saunders / Cox-Munk), so a resolved wave's back slope under a low Sun still glints.
+mean sea surface (Saunders / Cox-Munk), so a resolved wave's back slope under a low Sun still glints. "Sea glitter
+(Sun)" (Ocean tab, `clouds.ocean_sun_glitter`, default 3, 1 = the physical lobe) scales the glint. Sparkles are 2 x 2
+pixel cells carrying 60% of the glint's light, up to 50x the cell's mean, and are flagged to the sky TAA (alpha 0.6),
+which takes them whole: real flashes on the waves in a still view (the TAA had averaged them ~10x down).
 
 **The Moon's face** is Lommel-Seeliger, 2 mu0 / (mu0 + mu): a flat full disc, a bright face up to the terminator; its
 total light follows the phase law (Allen's, the same brightness everything the Moon lights uses) over the

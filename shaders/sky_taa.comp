@@ -143,7 +143,9 @@ void main() {
     // single bright sample, and in motion the history (clipped, at the moving weight) no longer averages it away. Where
     // this pixel is the 3x3's strict maximum it is capped at the second-largest luma (an isolated spark only: a glitter
     // path or a lit crest spans neighbours). Not in a still view (the history averages the phases there).
-    if (seaA < 0.75 && pc.eyeDelta.w < 1.5) {
+    // (0.6 = a Sun-glint sparkle sat_sky.frag drew on purpose (gSeaSpark, 2026-10-27): not a jitter spark, kept.)
+    const bool spark = seaA > 0.55 && seaA < 0.65;
+    if (seaA < 0.75 && !spark && pc.eyeDelta.w < 1.5) {
         float yc = toYCoCg(cur).x;
         if (yc > y2nd && yc > 1e-6) cur *= y2nd / yc;
     }
@@ -276,6 +278,7 @@ void main() {
             // The spark-proof mean only when nothing moved: in motion it fired less often and the history lagged
             // (+3% on the climb benchmark), and the specks it removes are a still-view problem.
             w = max(w, smoothstep(0.3, 1.2, (((still || sea) ? mRob : m1.x) - h.x) / max(h.x, 0.02)));   // sea: spark-proof in motion too (glints took their frame raw)
+            if (spark) w = max(w, 0.9);   // a glint sparkle: its flash at once (the history would average it ~10x down)
             w *= conf;   // upscaling: a sample far from this pixel moves it less (1 at 100%)
             if (dbg == 4) w = 0.0;
             dPar = par; dParF = parF; dMv = mv;

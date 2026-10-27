@@ -511,7 +511,8 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     // -- Storm surge (11104 -> 11184, 2026-10-23; SatelliteSim::weatherFillSeaParams, terrain_detail.glsl tdSurgeAt): per
     // cyclone k of seaCyc*, surgeA xyz its motion (Earth-fixed unit tangent at the centre), w the peak rise of the sea at
     // the coast (m, 0 = none); surgeB xyz the surge side (right of the motion north of the equator, left south), w cos
-    // of the field's angular reach. surgeInfo x 1 = any surge (the uniform gate), y the largest peak (m), zw unused.
+    // of the field's angular reach. surgeInfo x 1 = any surge (the uniform gate), y the largest peak (m), z the Sun's sea glitter gain
+    // (2026-10-27, 'Sea glitter (Sun)', sat_sky.frag), w unused.
     vec4  surgeA[2];
     vec4  surgeB[2];
     vec4  surgeInfo;

@@ -1892,7 +1892,7 @@ struct GpuCloudParams
     // Storm surge (11104 -> 11184, 2026-10-23, weatherFillSeaParams; terrain_detail.glsl tdSurgeAt), per seaCyc* entry.
     glm::vec4 surgeA[2];    // xyz the motion (Earth-fixed unit tangent), w the peak rise at the coast (m; 0 = none)
     glm::vec4 surgeB[2];    // xyz the surge side (right of the motion in the north, left in the south), w cos(reach)
-    glm::vec4 surgeInfo;    // x 1 = any surge, y the largest peak (m)
+    glm::vec4 surgeInfo;    // x 1 = any surge, y the largest peak (m), z the Sun's sea glitter gain
     // Wildfire burn scars (11184 -> 12224, 2026-10-24, SatelliteSimWildfire.cpp weatherFillFireParams): the nearest
     // kMaxFiresGpu fires' burnt ellipses in the q frame (cloud_params.glsl for the fields).
     glm::vec4 fireInfo;                    // x count
@@ -6391,6 +6391,9 @@ private:
     // file carries both keys, so this changes nothing for it; a settings.json written by an older
     // build (neither key present) now gets this look instead of the old hardcoded one.
     float oceanGlintGain = 0.020175438f;  // multiplier on the whole glint term (0 = no flare glints on water)
+    // "Sea glitter (Sun)" (2026-10-27, issue 20261027_001448 shot 1): x the Sun's glint on the waves (the smooth path and
+    // its sparkles alike), clouds.ocean_sun_glitter, UBO surgeInfo.z. 1 = the physical microfacet lobe.
+    float oceanSunGlitter = 3.0f;
     float oceanGlintMinFlux = 37.894737f; // min effectFlare of an entry that draws at all (the writer's
                                           // own floor, OCEAN_GLINT_THRESH, is 1.0)
     float zodiacalWidthDeg = 10.0f;    // ecliptic-latitude Gaussian sigma near the sun (degrees)
@@ -7435,7 +7438,7 @@ private:
     bool draggingPhoto[39] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 354;   // 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
+    static constexpr int kCloudSliderSlots = 355;   // 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
     // gust fronts, drop persistence); 326: "Tropical cyclones (x)"; 325: "Storm complexes"; 321-324 (2026-10-23): storm
     // objects (frequency, life, cloud field, moat);
     // was 321: 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);
