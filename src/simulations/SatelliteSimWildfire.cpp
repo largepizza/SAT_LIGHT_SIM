@@ -90,6 +90,7 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
     firePointsLast = 0;
     fireFlamesLast = 0;
     fireLightsLast = 0;
+    fireGlowDbg.clear();
     firePtCount = 0;
     flameCount = 0;
     if (!out) return;
@@ -225,7 +226,8 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
 
     const double kTwoPi15 = 15.749609945722419;
     const uint32_t first = n;
-    const uint32_t cap = std::min<uint32_t>(kMaxDustClouds, n + 384u);
+    // (640: the trail pieces below; at least 96 left for the flames after the smoke)
+    const uint32_t cap = std::max<uint32_t>(n, std::min<uint32_t>(kMaxDustClouds > 96u ? kMaxDustClouds - 96u : kMaxDustClouds, n + 640u));
     // One Gaussian: centre C (ECEF), orthonormal axes a, b, c with sigmas, Sigma = cross-section, its light.
     auto emit = [&](const glm::dvec3 &C, const glm::dvec3 &a, const glm::dvec3 &b, const glm::dvec3 &c, double sA,
                     double sB, double sC, double Sigma, const glm::dvec3 &sunL, const glm::dvec3 &skyL, double albedo,
@@ -310,7 +312,7 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
         em.act = s.activity;
         constexpr int kHs = 48;
         glm::dvec2 hq[kHs];
-        double hw[kHs], hTot = 0.0;
+        double hw[kHs], hTot = 0.0, hRaw = 0.0;
         for (int k = 0; k < kHs; ++k)
         {
             const double a = 2.0 * kPiF * (k + 0.5) / kHs;
@@ -318,9 +320,14 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
             hq[k] = wx::fireFrontAt(f, s, a, &dsda);
             double la, lo;
             wx::fireOffsetLatLon(f, hq[k], la, lo);
-            hw[k] = wx::fireFrontHeat(f, s, a, tq) * glm::smoothstep(0.08, 0.3, (double)biomeMap.burnableAt(la, lo)) * dsda;
+            const double h0 = wx::fireFrontHeat(f, s, a, tq) * dsda;
+            hw[k] = h0 * glm::smoothstep(0.08, 0.3, (double)biomeMap.burnableAt(la, lo));
             hTot += hw[k];
+            hRaw += h0;
         }
+        // The smoke made is the share of the front still on burnable ground (2026-10-27, issue 20261027_000126: a fire
+        // whose front had all run into the sea or onto bare rock kept its full smoke, from a stand-in source at the head).
+        em.Q *= hRaw > 1e-9 ? std::clamp(hTot / hRaw, 0.0, 1.0) : 0.0;
         int k0 = 0;
         {
             double best = 1e300;
@@ -600,6 +607,14 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
     const glm::dvec3 tintMul(1.0 + 0.10 * tintK, 1.0 + 0.01 * tintK, 1.0 - 0.14 * tintK);
     const glm::dvec3 kSkyBlue(0.66, 0.82, 1.08);
     const double bright = std::max((double)wildfireSmokeBright, 0.0);
+    // Segments still to emit (each takes at least one Gaussian; the trail pieces share what is left of the cap).
+    int64_t segLeft = 0;
+    for (const FirePlan &pl : plans)
+        if (pl.on)
+        {
+            for (const SrcPlan &sp : pl.src) segLeft += (int64_t)sp.k.size() + 1;
+            segLeft += 1;
+        }
     for (size_t fi = 0; fi < firesNow.size(); ++fi)
     {
         FireNow &fn = firesNow[fi];
@@ -713,9 +728,56 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                 sunLightAt(Cc, sunC, amb);
                 const glm::dvec3 sunL = bright * 4.0 * kPiF * alb * tint * sunC;
                 const glm::dvec3 skyL = bright * 4.0 * kPiF * alb * tint * (0.18 * amb) * kSkyBlue;
-                if (emit(Cc, a, b, c, std::max((k == 0 ? 0.3 : 0.5) * len, (k == 0 ? 0.25 : 0.6) * sC), (k == 0 ? 0.6 : 1.0) * sb, sC,
-                         Sigma, sunL, skyL, alb, f.id ^ (uint64_t)(k + 1 + 64 * sp.si), cap, -1.0))
-                    ++emitted;
+                // Pieces (2026-10-27, issue 20261027_000414 "Smoke trail geometry": from 165 km the trail was a chain of
+                // huge stretched ovals whose ends swung as the knots moved). The knots stand on a nested time grid whose
+                // spacing doubles down the trail, so a segment was 15-30x as long as the smoke is wide at every age: ONE
+                // Gaussian of sigma 0.5 x its length, straight, kinked at each knot. A segment is now cut into m round-ish
+                // pieces along a Catmull-Rom curve through its neighbours' knots (the trail bends smoothly), spaced at
+                // most ~2.2 x its width and never closer than 6 px on screen; each carries its share of the mass.
+                int m = 1;
+                if (k > 0 && segLeft > 0)
+                {
+                    const double wSeg = std::max(std::max(sb, sC), 1.0);
+                    const double rng = std::max(glm::length(Cc - eye), 1.0);
+                    const double lenPx = len / (rng * pixFull);
+                    const int mWant = (int)std::ceil(std::min(len / (2.2 * wSeg), lenPx / 6.0));
+                    const int fair = (int)std::max<int64_t>(0, (int64_t)(cap - n) - (int64_t)segLeft);
+                    m = std::clamp(mWant, 1, std::min(12, 1 + fair));
+                }
+                --segLeft;
+                if (m == 1)
+                {
+                    if (emit(Cc, a, b, c, std::max((k == 0 ? 0.3 : 0.5) * len, (k == 0 ? 0.25 : 0.6) * sC), (k == 0 ? 0.6 : 1.0) * sb, sC,
+                             Sigma, sunL, skyL, alb, f.id ^ (uint64_t)(k + 1 + 64 * sp.si), cap, -1.0))
+                        ++emitted;
+                }
+                else
+                {
+                    const KP &Am = ks[k - 1], &Bp = (k + 2 < ks.size()) ? ks[k + 2] : B;
+                    auto crq = [&](double u) {   // Catmull-Rom (uniform) through Am, A, B, Bp; u in [0, 1]
+                        const double u2 = u * u, u3 = u2 * u;
+                        return 0.5 * ((2.0 * A.q) + (-Am.q + B.q) * u + (2.0 * Am.q - 5.0 * A.q + 4.0 * B.q - Bp.q) * u2 +
+                                      (-Am.q + 3.0 * A.q - 3.0 * B.q + Bp.q) * u3);
+                    };
+                    for (int j = 0; j < m; ++j)
+                    {
+                        const double u0 = (double)j / m, u1 = (double)(j + 1) / m, uc = 0.5 * (u0 + u1);
+                        const glm::dvec3 qc = crq(uc), qa = crq(u0), qb = crq(u1);
+                        const glm::dvec3 Pc = at(qc.x, qc.y, qc.z);
+                        glm::dvec3 tg = at(qb.x, qb.y, qb.z) - at(qa.x, qa.y, qa.z);
+                        const double lp = std::max(glm::length(tg), 1.0);
+                        const glm::dvec3 aj = tg / lp;
+                        glm::dvec3 bj = glm::cross(aj, glm::normalize(Pc));
+                        bj = glm::length(bj) > 1e-6 ? glm::normalize(bj) : eE;
+                        const glm::dvec3 cj = glm::cross(aj, bj);
+                        const double sbj = glm::mix(A.sb, B.sb, uc), szj = glm::mix(A.sz, B.sz, uc);
+                        const double cUpj = std::fabs(glm::dot(cj, glm::normalize(Pc)));
+                        const double sCj = glm::mix(glm::mix(A.thin, B.thin, uc), szj, cUpj);
+                        if (emit(Pc, aj, bj, cj, std::max(0.62 * lp, 0.6 * sCj), sbj, sCj, Sigma / m, sunL, skyL, alb,
+                                 f.id ^ (uint64_t)(k + 1 + 64 * sp.si) ^ ((uint64_t)(j + 1) << 40), cap, -1.0))
+                            ++emitted;
+                    }
+                }
                 if (!low && secOf(pl.cur, sp.si, pl.S) == pl.cur.mainSrc)
                 {
                     lastXY = glm::dvec2(B.q);
@@ -1102,13 +1164,37 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                     acc += lw[k];
                     if (acc >= Itot * (part + 1) / 3.0 && part < 2) ++part;
                 }
+                // Each third's extent along the front (the rms distance of its heat from its centre): the light stands
+                // for a stretch of burning front kilometres long, not a point (2026-10-27, issue 20261027_002954: from
+                // 152 m over a big fire at night, a point light with a 250-m core drew a bright, smooth spotlight oval on
+                // the ground under the eye, nowhere near the flames). Its core radius is now that stretch's (the light
+                // spread along it: dimmer and wider at its peak), at most 4 km.
+                double e3[3] = {0.0, 0.0, 0.0};
+                {
+                    double acc2 = 0.0;
+                    int part2 = 0;
+                    for (int k = 0; k < 24; ++k)
+                    {
+                        if (w3[part2] > 0.0)
+                        {
+                            const glm::dvec2 dq = lq[k] - c3[part2] / w3[part2];
+                            e3[part2] += lw[k] * glm::dot(dq, dq);
+                        }
+                        acc2 += lw[k];
+                        if (acc2 >= Itot * (part2 + 1) / 3.0 && part2 < 2) ++part2;
+                    }
+                }
                 for (int p = 0; p < 3 && lightsAdded < 6; ++p)
                 {
                     if (w3[p] <= 0.0) continue;
                     const glm::dvec2 c = c3[p] / w3[p];
+                    const double ext = std::sqrt(e3[p] / w3[p]);
+                    const double r0L = std::clamp(0.8 * ext, std::max(250.0, 0.25 * std::max(s.halfWidthM, 200.0)), 4000.0);
                     const glm::dvec3 Pl = at(c.x, c.y, 30.0 + 0.5 * hFl);
+                    if (fireGlowDbg.size() < 12)
+                        fireGlowDbg.push_back(glm::vec4(glm::vec3(toEnu(Pl - eye)), (float)r0L));
                     engineLightAdd(fwEcefToEci(Pl, gr), Il * w3[p] / Itot, glm::vec3(1.0f, 0.42f, 0.12f),
-                                   std::max(250.0, 0.25 * std::max(s.halfWidthM, 200.0)), glm::dvec3(0.0), 0.0, 0.0, false, 0.0);
+                                   r0L, glm::dvec3(0.0), 0.0, 0.0, false, 0.0);
                     ++lightsAdded;
                     ++fireLightsLast;
                 }
@@ -1199,6 +1285,11 @@ nlohmann::json SatelliteSim::wildfiresJson(bool world)
     o["points"] = firePointsLast;
     o["flames"] = fireFlamesLast;
     o["lights"] = fireLightsLast;
+    {
+        nlohmann::json gl = nlohmann::json::array();
+        for (const glm::vec4 &g : fireGlowDbg) gl.push_back({std::round(g.x), std::round(g.y), std::round(g.z), std::round(g.w)});
+        o["glow_lights_enu_m_r0"] = gl;
+    }
     o["point_lod_scale"] = fireLodScale;
     o["point_peak_flare"] = firePeakFlare;
     o["point_flare_sum"] = fireFlareSum;

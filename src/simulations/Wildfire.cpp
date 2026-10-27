@@ -101,8 +101,37 @@ bool fireInCell(int ilat, int ilon, int64_t db, const BiomeMap &bio, float rateS
     if (fuel < 0.1f) return false;
     const double doy = std::fmod((double)db + 1.0, 365.2422);
     const double dry = BiomeMap::seasonalDryness(lat, doy < 0 ? doy + 365.2422 : doy);
-    const double lam = kBirthRate * rateScale * fuel * dry * dry * std::cos(lat * kPi / 180.0);
+    // How readily the land ignites, by biome (2026-10-27, issue 20261027_003452 "Wildfires are probably too common"):
+    // savanna and grassland burn most (~70% of the world's burnt area is tropical savanna), boreal forest and the humid
+    // forests far less often per area (fewer, larger fires). It was the fuel alone, so the boreal belt (fuel 0.95) burnt
+    // as often as the Sahel: from orbit over Siberia a dozen smoke columns in one view.
+    double ign = 0.0;
+    switch (bio.at(lat, lon))
+    {
+    case Biome::Savanna: ign = 1.0; break;
+    case Biome::Grassland: ign = 0.45; break;
+    case Biome::Shrubland: ign = 0.5; break;
+    case Biome::TropicalForest: ign = 0.4; break;
+    case Biome::TemperateForest: ign = 0.2; break;
+    case Biome::Boreal: ign = 0.18; break;
+    case Biome::Tundra: ign = 0.03; break;
+    default: ign = 0.0; break;
+    }
+    const double lam = kBirthRate * rateScale * ign * fuel * dry * dry * std::cos(lat * kPi / 180.0);
     if (u01(mix64(h0 ^ 3)) >= lam) return false;
+    // Real land round it (2026-10-27, issue 20261027_000126 "Wildfire in the ocean"): a fire needs a land mass that can
+    // carry it, not one biome texel (~20 km) of an island. At least 6 of 8 points ~30 km round it must be burnable land
+    // (the Aleutians, the small Pacific islands and the coasts' last texel fail; a peninsula or a big island passes).
+    {
+        int landN = 0;
+        const double rLat = 0.27, rLon = 0.27 / std::max(std::cos(lat * kPi / 180.0), 0.1);
+        for (int k = 0; k < 8; ++k)
+        {
+            const double a = k * (kPi / 4.0);
+            landN += bio.burnableAt(lat + rLat * std::sin(a), lon + rLon * std::cos(a)) >= 0.08f;
+        }
+        if (landN < 6) return false;
+    }
     f.id = h0;
     f.seed = (uint32_t)(h0 >> 32);
     f.latDeg = lat;
