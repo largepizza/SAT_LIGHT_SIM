@@ -2,16 +2,18 @@
 
 How to find out where frame time goes: the GPU timestamp buckets, the CPU frame buckets, the frame profile
 that explains a single slow frame, the knockout bits that switch individual shader blocks off, the automated
-knockout sweep, perf snapshots and their analysis script, and the harness commands for timing and for comparing
-shader variants reliably. Measured costs of
-particular features are on their own pages (for example [Rendering](../rendering/index.md)); this page is about
-the instruments.
+knockout sweep, perf snapshots and their analysis script, the harness commands and benchmarks for timing and for
+comparing shader variants reliably, and the rules that measurement has established. Measured costs of particular
+features are on their own pages (for example [Rendering](../rendering/index.md)); this page is about the instruments
+and the method.
 
 ## GPU timestamp buckets
 
-`VulkanContext` owns a timestamp query pool with 9 slots (`kTimestampCount`). Slots are written at points in
-the frame; the difference between consecutive slots is a bucket. With one frame in flight, `App::drawFrame()`
-resolves the previous frame's queries right after its fence wait, with no stall.
+`VulkanContext` owns a timestamp query pool with 9 slots (`kTimestampCount`) per frame slot. Slots are written at
+points in the frame; the difference between consecutive slots is a bucket. `App::drawFrame()` resolves a frame
+slot's queries right after `beginFrameSlot()` has waited for that slot's previous frame, so the read never stalls;
+with two frames in flight the buckets describe the frame two frames back
+([GPU conventions](gpu-conventions.md#frames-in-flight)).
 
 | Slot | Written after | Writer |
 |---|---|---|
@@ -27,7 +29,7 @@ resolves the previous frame's queries right after its fence wait, with no stall.
 
 `updateGpuTimingStats()` turns the slots into eight buckets: `scene_depth`, `beam_cloud_block` (the vestigial
 slot-2 bucket, about 0), `orbit_compute`, `cloud_march`, `flare_compute`, `sky_background_draw`,
-`satellite_star_draw`, `ui_overlay`, plus the total. `gpuMsRaw[]` holds the last frame's raw values and
+`satellite_star_draw`, `ui_overlay`, plus the total. `gpuMsRaw[]` holds the latest resolved frame's raw values and
 `gpuMsSmoothed[]` an exponential moving average (factor 0.1) for display in Settings → **Performance** →
 *GPU frame (ms)*. The Performance tab is one of the advanced tabs, shown once *Show advanced settings* (Display
 tab) is on; it holds every instrument on this page that has a UI. A pass skipped in a frame writes its slot anyway, so its bucket reads 0 rather than stale data. The
@@ -59,10 +61,12 @@ The CPU counterpart, in Settings → Performance → *CPU frame (ms)*:
 
 Timers are scoped (`SatelliteSim::CpuTimer`, an RAII object that adds to its bucket, so one bucket can be timed
 at several sites). `beginCpuFrameTiming()` must stay the **first statement of `buildUI()`**: it publishes the
-previous complete frame and clears the accumulator, so it never publishes a half-filled frame. The resulting
-one-frame lag matches the GPU buckets', so a sample of both comes from the same frame.
+previous complete frame and clears the accumulator, so it never publishes a half-filled frame. The CPU buckets are
+therefore one frame old and the GPU buckets two; an average over many frames (the sweep, `perf`) is unaffected.
 
-A large `other` is a finding: it is fixed per-frame cost that this table does not look at.
+With a single frame in flight, a large `other` is a finding: it is fixed per-frame cost that this table does not look
+at. With two frames in flight the GPU's time overlaps the CPU's, so the wall frame is close to the larger of the two
+and `other` reads low or negative; attribute such time with the frame profile's `app.*` sections instead.
 
 The `launches` bucket has its own breakdown: the harness's `launch state` reports `cpu_split_ms` (eased over 30
 frames), with the window walk, the live list, freeing, record writes, the visuals, plume builds and sorting,
@@ -82,9 +86,10 @@ FPROF_SCOPE("kessler.sync");   // adds this scope's wall time to the section "ke
 Sections are inclusive (a nested section also counts inside its parent), so read the names as a tree. A call from
 any thread other than the main one is ignored, which makes a scope safe in code a worker also runs.
 `App::drawFrame()` publishes each frame first thing (`fprof::beginFrame()`) and contributes the `app.*` sections
-(`app.wait_fence` is waiting for the GPU; `app.build_ui`, `app.record_compute`, `app.record_draw`, `app.submit`,
-`app.present` and the smaller phases between them); `recordDraw()` adds the CPU buckets as `cpu.*`. The cost is a
-clock read per scope.
+(`app.wait_fence` is waiting for the GPU, that is for the frame slot's previous frame; `app.build_ui`,
+`app.record_compute`, `app.record_draw`, `app.uploads`, `app.submit`, `app.present` and the smaller phases between
+them, such as `app.cmd_begin`, `app.cmd_end` and `app.pace`); `recordDraw()` adds the CPU buckets as `cpu.*`. The cost
+is a clock read per scope. `fprof::Scope::end()` ends a scope early.
 
 Two more kinds of section help narrow a slow frame down:
 
@@ -93,8 +98,8 @@ Two more kinds of section help narrow a slow frame down:
   nothing is scoped yet.
 - **Splits.** `fprof::markReset()` starts a stopwatch and each `fprof::mark("name")` adds the time since the
   previous mark to the section `name`. A long function can be cut into consecutive pieces without nesting scopes:
-  `recordCompute()` reports `rc.seg1_pre` through `rc.seg7_flare`, and the debris cascade's sync adds its own
-  `kru.*` splits.
+  `recordCompute()` reports `rc.seg1_pre` through `rc.seg7_flare`, `buildUI()` reports `ui.seg1` to `ui.seg6`, and
+  the debris cascade's sync adds its own `kru.*` splits.
 
 **The harness's own work does not count.** Each frame's statistics and the hitch test use its wall time less the
 section `harnessTick` (the harness writes and syncs a result line for every command, which can take 10 to 15 ms on
@@ -109,6 +114,13 @@ The harness reads them with `hitches` (the frame-time distribution since `hitche
 frames over 50, 100 and 250 ms, the sections summed over the hitch frames, and every hitch frame with its largest
 sections, worst first) and `hitches threshold <ms>`. `tools/harness/scripts/hitch_ladder.satcmd` steps through every
 time rate from 1x to 1 yr/s right after load.
+
+**A mean frame's breakdown.** The hitch machinery also profiles steady frames: `hitches threshold 1; hitches clear;
+wait 120; hitches bysum=1 list=0` makes every frame a hitch, and `sections_in_hitches` then lists every section by its
+time summed over the frames (divide by `wall_ms.frames` for the per-frame mean).
+
+Hitch lines are written to the log by a writer thread (`Log::lineDeferred()`): a run of slow frames would otherwise
+pay several milliseconds each to sync its own line.
 
 ### The hitch check
 
@@ -151,7 +163,9 @@ polls while it runs. A scenario that shared the machine is rerun (`--alone-retri
     belongs in the load, not the first frame. The launch batch builds (about 8 ms of wall time a frame, the bulk after a
     time jump on a background thread), the plume
     parcels, the debris cascade's mirror (3 ms a frame), its reuse-history prune (about 1 ms a frame), the GPU debris
-    pool's growth and the ambience voices all work this way; see [Code architecture](architecture.md#threads).
+    pool's growth, the ambience voices, the storm catalog's bin builds, the Weather window's event search and the
+    weather bake's storm index all work this way; see [Code architecture](architecture.md#threads). A one-time
+    pipeline a button needs (the weather radar's) is built during loading, not on first use.
 
 ## Knockout bits
 
@@ -168,7 +182,7 @@ Performance → *Knockouts* (it reads **Skip** while the bit is set, **On** othe
 | Bit | Key | Switches off |
 |---|---|---|
 | 1 | `terrain_march` | the terrain march in the sky pass |
-| 2 | `atmosphere_loop` | the sky pass's atmosphere scattering loop |
+| 2 | `atmosphere_loop` | the sky pass's atmosphere scattering loop, and the aerial-perspective volume that replaces it per tile |
 | 4 | `sun_optical_depth` | the Sun's optical depth along the light path (`optDepth`) |
 | 8 | `ocean_sky_reflection` | the sea's sky reflection |
 | 16 | `airglow_red` | the red airglow march |
@@ -246,8 +260,18 @@ each bit: a bit can sit in a different pass than expected.
 
 `perf [frames=60] [name=]` averages the raw GPU and CPU buckets over N frames and reports the GPU total and
 wall frame-time distributions (`gpu_total_ms` mean, p50, p90, max); `name=` also appends it to the run's perf
-log. `perf` measures a still view. For the cost while moving, `path play` reports `gpu_ms_mean` over the path
-and the worst frame's buckets, since spikes hide in a mean.
+log. It also reports a `frames_in_flight` block: kilobytes uploaded and patched per frame, copies per frame, drains,
+descriptor writes and one-time submits. A steady frame drains nothing and writes no descriptors; anything else there
+means a frame is silently waiting for the GPU ([GPU conventions](gpu-conventions.md#frames-in-flight)). `perf`
+measures a still view. For the cost while moving, `path play` reports `gpu_ms_mean` over the path and the worst
+frame's buckets, since spikes hide in a mean.
+
+Finer attribution inside the cloud bucket comes from `state`: `clouds_v2.pass_ms` is the GPU time of each pass in
+the bucket (a timer of its own with nine stamps), and `clouds_v2.eval_count` the number of cloud field evaluations per
+caller, filled only by shader variants compiled with `-DCV2_EVAL_COUNT` and loaded with `shaders reload`. Evaluation
+counts are not cost: coarse steps through empty air are most of the evaluations and cheap. `weather.cube.bake_ms`
+(and `bake_faces`, `bake_ms_per_face`, `rect_bakes`, `env_job_ms`) times the weather cube's re-bakes, which matter in
+time warp ([Weather](../rendering/clouds/weather.md)).
 
 ```
 preset Medium
@@ -271,13 +295,15 @@ comparison:
 
 1. Keep **one app running** (`live.py start`) and compare variants inside it, interleaved (A, B, A, B), at fixed,
    settled views.
-2. For the clouds, build the variants' SPIR-V (`cmake --build build --config Release --target
-   CompileShaders`) and load each with `shaders reload march=<spv path>` (also `resolve=`, `lightning=`,
-   `composite=`, `layers=` for those passes), which rebuilds the cloud pipelines from the files on disk without a
-   relaunch. Copy the SPIR-V into `build/Release/shaders/` by hand: the full build's
-   post-build copy fails while the app holds the files open.
+2. Build the variants' SPIR-V (`cmake --build build --config Release --target CompileShaders`) and load each
+   with `shaders reload march=<spv path>` (also `resolve=`, `lightning=`, `composite=` for those cloud passes,
+   `sky=` and `sky_taa=` for the sky pass, `weather=` for the weather bake), which rebuilds those pipelines from the
+   files on disk without a relaunch. Copy the SPIR-V into `build/Release/shaders/` by hand: the full build's
+   post-build copy fails while the app holds the files open. Variants made by text substitution of one shader file
+   are the quickest way to try several restructurings in one launch.
 3. **Check the register count before timing.** `shaders reload` reports the driver's statistics for the
-   rebuilt pipeline (register count, binary size, spill memory) through `VK_KHR_pipeline_executable_properties`.
+   rebuilt pipeline (register count, binary size, spill memory) through `VK_KHR_pipeline_executable_properties`
+   (`sky_stats` for the sky pass's TAA pipeline, which sits at 168 registers).
    On NVIDIA the cloud march compiles either to 128 registers or to roughly 220 to 230, and the second is 20 to 60% slower
    whatever the change was meant to do. A variant that flipped allocation measures the flip, not the change
    ([GPU conventions](gpu-conventions.md#register-pressure-in-the-cloud-march)). `wg=<X>x<Y>` sets the march's
@@ -286,6 +312,52 @@ comparison:
    change that is faster because it draws something different is not an optimisation.
 
 The first launch after shader changes recompiles pipelines and is slow; never read timings from it.
+
+## Benchmarks
+
+Fixed sets of scenes, each run in one harness launch, scored by a script and compared against an earlier run of
+the same script ([Automation harness](harness.md#analysis-tools)):
+
+| Tool | Measures | Use it for |
+|---|---|---|
+| `tools/harness/matrix_suite.py` | altitude rows (the ground to 5000 km) and context rows (storms, sea, night, beams, aurora, a followed satellite, a launch, an eclipse) crossed with motion columns (still, flicker, time running, walking, boost, looking round, climbing): GPU cost, still-view noise and motion error | the first check for anything that moves or changes with altitude |
+| `tools/harness/frame_bench.py` | wall-clock frame time with uncapped present in the matrix scenes: stills, time at 1x, 1 min/s and 1 h/s, every motion path | changes to how CPU and GPU overlap, or to the CPU's serial part; A/B frames in flight with `SATLIGHTSIM_FRAMES_IN_FLIGHT=1` against the default 2 |
+| `tools/harness/cloud_suite.py` | eleven ordinary daytime cloud scenes, each settled, paused, live and in motion | cloud changes, beside the storm views |
+| `tools/harness/launch_bench.py` | fixed launch scenes with launches on and off | the launch system's own cost |
+| `tools/harness/hitch_check.py` | single slow frames across the time-rate ladder | stalls ([above](#the-hitch-check)) |
+
+`frame_bench.py compare` takes several runs a side (run-to-run noise is 3 to 10%) and flags a row only outside both
+sides' spread.
+
+## What measurement has established
+
+These rules come from many measured passes over the renderer; each one has been learned at some cost.
+
+- **Interleave variants in one app.** Run-to-run noise between launches (5 to 10%) is larger than most changes worth
+  making. Load the variants with `shaders reload` or `set` and time them A, B, A, B at fixed, settled views.
+- **Have the GPU to yourself.** Another app on the GPU (another agent's harness run) adds 20 to 100 ms to frames and
+  can make a scene look several milliseconds more expensive than it is. Treat a measurement taken while another app
+  ran as void.
+- **Wait for the caches to refill.** A `shaders reload`, a `report load`, a time jump or a change to the cloud field
+  invalidates the cloud density clipmap, the Sun transmittance volume and the temporal histories; for 100 to 150
+  frames afterwards the clouds cost up to twice their settled cost. Measure after that, and never compare a refilling
+  frame with a settled one.
+- **Check images against the noise floor.** Capture the same view with the same shader reloaded twice: that
+  difference is the floor. A variant whose difference from the baseline stays under it draws the same image.
+- **Check the register count first** (NVIDIA's 128-register cliff in the cloud march; [GPU
+  conventions](gpu-conventions.md#register-pressure-in-the-cloud-march)).
+- **A group of 32 rays costs its slowest ray.** A skip that differs between neighbouring rays (a per-tower reject, an
+  early exit of opaque rays) often costs more in divergence than it saves; an exact skip that every ray of a group
+  takes together (a bound tested against uniforms, a cutoff computed on the CPU) is the kind that pays.
+- **Code size costs even when it never runs.** Measure a loop's share by running it twice inside its function, not by
+  calling the function twice, and move rare features behind a specialization constant.
+- **Measure what a feature's content costs before optimising its machinery.** Switching the content off (a layer's
+  amount to 0, a knockout) shows whether the time is in the search structures or in drawing what they find. In storm
+  views it is mostly the storms' own cloud, not the code that finds the towers and shields.
+- **The frame is the larger of CPU and GPU.** With two frames in flight, CPU work that stays under the GPU's time is
+  hidden; a slow frame whose largest section is `app.wait_fence` is the GPU's. Optimise the CPU's serial part only
+  where it is the larger.
+- **Never loop over mapped GPU memory on the CPU** ([GPU conventions](gpu-conventions.md#cpu-access-to-host-visible-memory)).
 
 ## Where in the code
 
@@ -299,3 +371,5 @@ The first launch after shader changes recompiles pipelines and is slow; never re
 | `tools/perf_analysis/` | `analyze_profile.py`, `live_perf_table.py` |
 | `tools/harness/launch_bench.py`, `tools/harness/scripts/hitch_ladder*.satcmd` | launch cost benchmark, hitch ladders |
 | `tools/harness/hitch_check.py`, `tools/harness/hitch_thresholds.json` | the hitch regression check and its limits |
+| `tools/harness/matrix_suite.py`, `frame_bench.py`, `cloud_suite.py` | the matrix, frame-time and cloud benchmarks |
+| `src/Log.cpp` | `Log::lineDeferred()`, the writer thread for hitch lines |

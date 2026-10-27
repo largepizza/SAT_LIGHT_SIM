@@ -15,7 +15,7 @@ Satellites reach the screen through one **compact visible list** (`satVisibleBuf
    workgroup and one global atomic per 64 satellites, and keeps the indirect arguments current with
    `atomicMax`.
 2. `sat_flare.comp`, dispatched indirectly over that list, finishes each record **in place**: the day and
-   Moon sky dimming, line-of-sight extinction, light pollution, a soft ceiling, the mesh hand-off and the sprite
+   Moon sky dimming, line-of-sight extinction, light pollution, the mesh hand-off and the sprite
    size. Its output brightness is the **displayed effectFlare** (see [Displayed brightness](#displayed-brightness)),
    with 0.008 equal to magnitude 6 before the display shift.
 3. `city_sprites.comp` appends finished records for far city lights; launch pad lights, rockets and re-entry
@@ -43,7 +43,8 @@ Stars and planets have their own small host-written buffers in the same record f
 ## Displayed brightness
 
 A satellite's record carries one value that the point, the bloom, the glare, the sky glow bins and the ocean
-glints all read: the physical effectFlare times three display factors.
+glints all read: the physical effectFlare times three display factors. The record is not capped: a flare of
+magnitude −10 carries ten times the light of one of −7.5, and its point and glare show it.
 
 \[
 F_\text{disp} = F_\text{phys} \cdot 10^{0.4\,g} \cdot k_\text{resolved} \cdot n_\text{merge},
@@ -107,8 +108,9 @@ D = 10^{-0.4\,\gamma\,(m - m_\text{ref})} - 10^{-0.4\,\gamma\,(m_\text{lim} - m_
 
 - \(D \le 1\): a Gaussian of peak D and sigma \(\sigma_0\).
 - \(D > 1\): the point saturates. Its sigma grows as \(\sigma = \min(\sigma_0\sqrt{D},\ \sigma_\text{max})\) with
-  peak \(D\sigma_0^2/\sigma^2\), so the drawn flux keeps growing as D; past \(\sigma_\text{max}\) the core
-  brightens instead.
+  peak \(\min(D\sigma_0^2/\sigma^2,\ 1)\), so the drawn flux keeps growing as D up to \(\sigma_\text{max}\);
+  past it the core stays at white and the [glare](#glare) carries the rest. (A core allowed past 1 would only be
+  clipped by the display, a hard-edged white disc.)
 - The sprite edge is \(2(3\sigma + 1)\) pixels: three sigma plus a pixel of margin each side, never smaller
   than about 5 px, which keeps a sub-pixel point from flickering as it crosses pixel boundaries.
 - Subtracting the value at the limit magnitude makes a point fade to exactly nothing there; `sat_flare.comp`
@@ -172,8 +174,13 @@ flowchart LR
 ```
 
 1. **Flare source** (`flare_source.vert/.frag`, its own render pass).
-    - Each satellite seeds a small Gaussian of strength \(\operatorname{clamp}(\log_2(\text{effectFlare})/2,\ 0,\ 4)\),
+    - Each satellite seeds a small Gaussian of strength \(\operatorname{clamp}(\log_2(F_c)/2,\ 0,\ 4)\),
       tested per fragment against cloud (`cloudPointVisibilityAt()`, power 1) and the half-res scene depth.
+      \(F_c\) is the record's effectFlare \(F\) through a **soft ceiling** relative to the Sun's own seed,
+      \(F_c = R F / (F + R)\) with \(R\) = 40 (`sunFlareRefIntensity`, passed as `FlareSourcePC::satCeilingBits`):
+      linear for ordinary flares, saturating at \(R\), so no satellite's bloom outshines the Sun's while its
+      ordering is kept. The same ceiling applies to the sky glow bins and the ocean glints, whose response is
+      tuned to it; the point and the glare read the uncapped value.
     - The Sun adds its own seed (instance index 1), × its cloud transmittance and the share seen past the Moon.
     - `mesh_bloom.frag` adds the satellite meshes' light (see
       [Satellite meshes](satellite-meshes.md#how-meshes-join-the-frame)).
@@ -202,8 +209,9 @@ serves every source, as a camera's aperture gives every point light the same spi
   fading along its length as \((1 - r/\text{len})^{\text{falloff}}\);
 - everything windowed by \((1 - x^2)^2\) to zero at the sprite's edge, so overlapping glares sum softly.
 
-**Which sources glare.** A source's bloom response is \(b = \operatorname{clamp}(\log_2(\text{effectFlare})/2,\ 0,\ 4)\);
-it glares when \(b\) exceeds "Glare threshold". The sprite radius is
+**Which sources glare.** A source's response is \(b = \operatorname{clamp}(\log_2(\text{effectFlare})/2,\ 0,\ b_\text{max})\),
+with \(b_\text{max}\) = 8 for satellite sprites (the uncapped record, so a very bright flare keeps growing its
+spikes) and 4 for mesh glints; it glares when \(b\) exceeds "Glare threshold". The sprite radius is
 
 \[
 R = \text{sizePx} \cdot (0.6 + b - \text{threshold}) \cdot \text{near}(r),

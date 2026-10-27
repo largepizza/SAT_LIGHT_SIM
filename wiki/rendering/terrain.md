@@ -100,6 +100,36 @@ because hardware filtering's 8-bit sub-texel weights step the shoreline every ~2
 A water point is marked by setting the regional height `hMip3` to `kTdWaterMark` (\(-10^4\)). That mark
 turns the detail amplitude off there and lets a hit tell water from land.
 
+### Storm surge
+
+Near a tropical cyclone the sea rises and its shore moves inland (`tdSurgeAt()`, called inside `tdDemAt()`, with the
+water adjustment `waterAdjustHeightSurge()`), so every pass that finds the ground sees the flooded coast.
+
+- **The peak at the coast** (CPU, `weatherFillSeaParams()`, two cyclones in `cloud.surgeA/B`) follows the storm's
+  wind over the last ~6 h, \( v = \max(v_\text{max}(t), 0.85\,v_\text{max}(t - 3\,\text{h}), 0.7\,v_\text{max}(t - 6\,\text{h})) \),
+  since the sea needs hours to pile up and to drain:
+  \( H = 1.2\,\text{m} \cdot ((v - 17)/16)^{1.4} \times (r_\text{max}/40\,\text{km})^{0.3} \) (the size factor clamped to
+  0.5-2), at most 9 m, times "Storm surge". That is about 1.2 m at Category 1 (33 m/s), 3.3 m at Category 3 (50 m/s)
+  and 6.4 m at 70 m/s; a wide storm pushes more water.
+- **The field**, in the storm's frame in units of its radius of maximum wind: across the track a Gaussian about 1
+  radius on the surge side (right of the motion north of the equator, left south of it), σ = 1.8 outward and 0.9
+  toward the other side; along the track about the centre, σ = 4 ahead (the sea rises over the ~12 h before landfall)
+  and 2.5 behind (it drains as the storm moves on). It reaches 10 radii.
+- **The shelf.** Bathymetry is not available, so the flatness of the land around stands for a shallow shelf: the
+  rise is × 1 where the DEM's mip-5 mean (about 85 km) is flat, falling to 0.45 over high land (40-500 m).
+- **Only the sea rises** (water of level 0): it takes the rise, tapered to zero from 0.45 to 0.95 of the water map's
+  reach offshore.
+- **The shore moves inland** by the rise over the coastal plain's slope (that mean height over 40 km, clamped to
+  0.25-20 m/km), at most 0.7 of the water map's reach (about 14 km), and only through the DEM's lowest land class
+  (below 30-60 m): the 8-bit DEM cannot tell 2 m from 30 m, so the regional mean decides which coast is low. The
+  coves follow the moved shore.
+
+How the flooded sea is drawn is on [The sea](sea.md#storm-surge); the cyclones on
+[Tropical cyclones](../simulation/tropical-cyclones.md). `SatelliteSim::surgeAtDir()` is the CPU mirror of the field
+(harness `state` → `weather.surge_m`, the rise at the eye, and `weather.surge`). Cost: nothing away from a cyclone
+(a uniform gate, then each storm's reach; the open sea past 0.975 of the map's reach is not evaluated); about 0.2 ms
+of scene depth over a large flood at Medium. Not in `SKY_LITE` or `SKY_ENV`.
+
 ## The height function
 
 `tdDemAt()` (`shaders/include/terrain_detail.glsl`) returns two things for a point:
@@ -284,7 +314,8 @@ stops early and counts near misses of a crest as hits. A seed is therefore never
 pass will find, and the 0.5% slack covers only float error. Each pass's descriptor set samples the *other*
 image (binding 7), so neither is read in the layout it is being written in.
 
-`sceneDepthImg` is R32F, linear metres along the view ray, `kNoSurfaceT` (1e30) for sky. Its size is half the
+`sceneDepthImg` is RG32F: R is linear metres along the view ray, `kNoSurfaceT` (1e30) for sky; G is the
+terrain's sun shadow at the hit (below). Its size is half the
 swap extent (half the render-scaled extent when "Clouds follow render scale" is on), always matching the cloud
 march targets, so `cloud_march.comp` can read it 1:1 with `texelFetch`. Knockout bit
 1024 fills it with "nothing" (meshes only) and skips both passes. See
@@ -329,7 +360,18 @@ A satellite mesh nearer than all of this becomes the pixel's surface ([Satellite
 - **Penumbra**: the minimum of \( 6 \cdot \text{gap} / t \) along the ray, so it widens with distance.
 - **Steps**: \( \text{clamp}(0.7\,\text{gap}, \max(6\,\text{m}, 0.08\,t), 5\,\text{km}) \); stop above 9.6 km or
   past 50 km.
-- Only where the Sun is up at the point and the face can see it. Not in `SKY_LITE` or `SKY_ENV`.
+- Only where the Sun is up at the point and the face can see it, and not where the clouds' shadow already takes the
+  direct Sun (cloud transmittance toward the Sun below 0.1 %): every use of the terrain shadow is multiplied by the
+  cloud shadow, so under an overcast the march would change the pixel by less than a thousandth of the sunlit
+  ground's light. Not in `SKY_LITE` or `SKY_ENV`.
+- **At half resolution** ("Terrain shadows at half resolution", on by default): the half-res depth pass computes the
+  shadow once per texel at its own hit and stores it in `sceneDepthImg.g`. The sky pass takes the bilinear mean of the
+  four half-res texels around the pixel whose surface is the pixel's own (distance within 2 % + 5 m) and marches per
+  pixel only where none is (a silhouette, a mesh).
+
+The terrain also shadows the **air**: its Sun-horizon map (`cloud_v2_terrsun.comp`) joins the clouds' Sun
+transmittance in the god rays ("Terrain god rays"; see
+[Atmosphere and sky](atmosphere-and-sky.md#god-rays-shadows-on-the-air)).
 
 ## Land shading
 
@@ -360,6 +402,12 @@ In order of application:
     Snow is detected in the map as bright (luminance 0.40-0.62) and unsaturated (saturation below 0.10-0.28).
     All of it fades out as the pixel footprint passes 60-400 m, so orbit views show the day map untouched.
 4. **Close-up material textures** ("Close-up textures"): see below.
+5. **Wildfire burn scars** (`fireScarAt()`): the burnt ellipses of the 8 nearest fires (`FIRE_MAX`, filled by
+   `weatherFillFireParams()` into the UBO's `fire*` block), with the same radial fingers as the fire's front. Behind
+   the front the day map goes to charcoal (0.028) with grey-white ash patches (about 110 m) and unburnt islands (about
+   300 m), averaged to their means as the footprint passes them; never on lit ground (the night map's lights there),
+   and faded over the last 15 % of the fire's life. From orbit by day a fire is a dark scar with smoke leaving its
+   active edge. See [Wildfires](../simulation/wildfires.md). Not in `SKY_LITE` or `SKY_ENV`.
 
 ### Close-up material textures
 
@@ -396,11 +444,11 @@ The array is binding 27 of the sky pass, a `sampler2DArray`: the stage's 16th an
 | Day gate (`dayFrac`) | the Sun's elevation at the point's **geographic** horizon, `smoothstep(-0.03, 0.02, up.sun)`. Independent of the shading normal: a detail facet turned away from the Sun still sees the sky. |
 | Twilight gate (`twilightFrac`) | `smoothstep(sin(-6 deg), 0.02, up.sun)`: civil twilight. Albedo is dimmed by light, not replaced by the night map, all the way down. |
 | Sun visibility (`sunDiscVis`) | the Sun's disc above this point's own **dipped** horizon (\( \sin \text{dip} = \sqrt{1 - (R/|p|)^2} \)), with a soft edge of the solar radius, times the eclipse factor ([Moon and eclipses](moon-and-eclipses.md)) |
-| Sun colour | the transmittance toward the Sun (`optDepth`), hue-normalised (`sunSpecTint`), with the direction clamped to the local horizon so ground below the shadow line keeps the sunset's red. Its brightness is kept separately (`sunTransMax`) for glints. |
+| Sun colour | the transmittance toward the Sun, hue-normalised (`sunSpecTint`), with the direction clamped to the local horizon so ground below the shadow line keeps the sunset's red. With the multiple-scattering sky model it is the exact Chapman path with ozone (`sunPathTauExact()`), the sky's own Sun; otherwise `optDepth()`. Its brightness is kept separately (`sunTransMax`) for glints. Under wildfire smoke it is also multiplied by the smoke's spectral transmittance toward the Sun (`smokeSunTransmit()`: the columns of the first 96 smoke Gaussians, the nearest fires first), so the ground and sea under a plume are dimmed and reddened; skipped at night and under full cloud shadow. |
 | Direct sun | `albedo x sunSpecTint x (sunLit x mix(0.15, 1, terrainShadow) + bounce) x cloudShadow x dayFrac x sunDiscVis`. `sunLit` is 1.5 x Lambert reaching a 0.05 floor smoothly (a hard clamp draws contour rims around facets). |
 | Ground bounce | `0.3 x "Terrain materials" x day-map luminance x the Sun's local height`: light off the sunlit ground around a face. Snow (about 0.8) lifts its shaded faces; forest barely moves. It is the albedo's light, not the relief's, so all land takes it, inside the terrain march's range and past it (with terrain detail on); otherwise the march's range ("Terrain fade end") would show from orbit as a brighter disc round the nadir over snow and ice. |
 | Cloud shadow | `cloudMarchTargetB.a`, read through a [1 2 1] x [1 2 1] tent at one half-res texel, which averages the cloud march's 2 x 2 ordered shadow jitter exactly. Direct sun only. |
-| Sky light | `albedo x skyAmbientTerrain x 0.4 x "Terrain sky light" x skyView x twilightFrac`. `skyAmbientTerrain` is a 4-step single-scatter integral up the local zenith (2 steps in `SKY_LITE`), each step taking its exact sunlit share outside the Earth's shadow (`earthShadowLit()`, as the sky loop does; a midpoint test draws contour lines on the ground at twilight), times the eclipse sky light; `skyView = 0.5 + 0.5 n.up` (1 flat, 1/2 vertical). At the default "Terrain sky light" of 8, twilight terrain follows the sky's glow as the naked eye sees it. |
+| Sky light | `albedo x skyAmbientTerrain x 0.4 x "Terrain sky light" x skyView`, `skyView = 0.5 + 0.5 n.up` (1 flat, 1/2 vertical). See [The sky's light on the ground](#the-skys-light-on-the-ground). |
 | Moon | `albedo x max(n.moon, 0) x horizon gate x the Moon's phase-law brightness x moon gain` |
 | Night sky | `albedo x (moonlit sky + "Night sky light") x moon gain x skyView`, slightly cool. The moonlit sky is 0.15 of the direct Moon; "Night sky light" is the moonless sky (starlight and airglow) as a fraction of the full Moon overhead. |
 | City lights | emission from the night map, see below |
@@ -410,6 +458,30 @@ The array is binding 27 of the sky pass, a `sampler2DArray`: the stage's 16th an
 Flooded paddies and solar-park glass add their own sky reflection and Sun glint
 ([Cities](cities.md)). Reflect-beam ground spots are added after the land or sea branch
 ([Reflectors and beams](../simulation/reflectors.md)).
+
+### The sky's light on the ground
+
+With the multiple-scattering sky model ("Sky model", the default), `skyAmbientTerrain` is the **cosine-weighted mean
+radiance of the upper sky hemisphere** at the point's height and Sun cosine (`cv2GroundSkyAt()`, a table the clouds'
+Sun and sky bake writes into the flash buffer: single plus multiple scattering plus ozone), divided by 3.2. Every use
+multiplies by 0.4 × "Terrain sky light", so at the default of 8 the ground takes the physical irradiance (albedo ×
+that mean, in the sky's units). The light follows the sky the eye sees: whiter by day than the zenith alone (whose
+blue is about 1.5 times too strong for a face that sees the whole sky), blue-violet rather than olive at twilight, and
+with no cut-off at civil twilight.
+
+**Under cloud** ("Ground light under cloud", on, needs the sky model) the sky's light comes through the cloud over the
+point. The lightning pass keeps a map of the cloud over the ground round the eye (`cv2VtAt()`: five nested 32 × 32
+levels on the plane tangent at the eye's sea-level point, cells of 1, 4, 16, 64 and 256 km, one level baked a frame
+from two jittered vertical columns per cell, as running means). Each cell stores the **means over its columns** of
+the sky light's diffuse transmission \(1/(1 + 0.11\tau)\) and of the sunlight the cloud scatters down (Eddington's
+\( (1/2 + 3/4\,\mu)\,/\,(1 + 0.11\tau) \) less the direct beam), not of \(\tau\) itself: scattered cumulus would
+otherwise read as a uniform thin sheet that turns all of the Sun diffuse. The sky part is multiplied by the first, and
+the scattered Sun is added in the direct term's units (1.5 μ, its colour). Under a thick deck the shadowed ground is
+neutral grey at about 20-30 % of the sunlit ground, not the clear sky's blue. Cost about 0.1-0.15 ms.
+
+With the single-scattering model, `skyAmbientTerrain` is a 4-step single-scatter integral up the local zenith (2 steps
+in `SKY_LITE`), each step taking its exact sunlit share outside the Earth's shadow (`earthShadowLit()`), times a
+civil-twilight gate. Either way it takes the eclipse sky light during a solar eclipse.
 
 ### City light emission
 
@@ -433,9 +505,9 @@ light reaches the terrain through the sky ambient.
 
 ### Aerial perspective
 
-The surface is not lit through a separate fog. The atmosphere loop integrates from the atmosphere entry up to
-the surface distance and attenuates the surface by the camera-side optical depth; see
-[Atmosphere and sky](atmosphere-and-sky.md).
+The surface is not lit through a separate fog. The atmosphere's integral from the atmosphere entry up to the surface
+distance (from the aerial-perspective volume, or the per-pixel loop near the horizon) attenuates the surface by the
+camera-side optical depth and adds the air's light; see [Atmosphere and sky](atmosphere-and-sky.md).
 
 ## Launch sites on the ground
 
@@ -562,6 +634,11 @@ All on the Terrain tab, stored in `settings.json` under `clouds`. "Night sky lig
 | Terrain shadows | `terrain_shadow_strength` | 1 | the terrain sun shadow |
 | Terrain sky light | `terrain_sky_light` | 8 | x the sky ambient on the ground (0-20) |
 | Night sky light | `terrain_night_sky_light` | 0.2 | moonless night sky on the albedo, fraction of the full Moon |
+| Terrain shadows at half resolution (0/1) (Weather tab, Rebuild experiments) | `terrain_shadow_half_res` | 1 | the sun shadow from the half-res depth pass; 0 = marched per pixel |
+
+Two `clouds_v2` keys on the Clouds tab change the ground's sky light: "Sky model (0 single / 1 multi-scatter +
+ozone)" (`sky_multiple_scattering`, 1) and "Ground light under cloud (0/1)" (`ground_overcast`, 1; needs the sky
+model). "Storm surge" (`clouds_v2.storm_surge`, 1, 0-2, no UI row) scales the surge.
 
 The presets override the four strengths and the fade distances. "Launch site graphics"
 (`launches.pad_graphics`, on; the launch controls in the [Missions window](../using/missions.md), independent of
@@ -589,6 +666,8 @@ Harness `debugview <name>` (see [Automation harness](../development/harness.md))
 | `terms`, `direct`, `skyamb`, `night`, `moon`, `nightsky`, `citylights` | lighting terms as linear radiance x 100 (x 20 for the maps), so a capture's pixels are the numbers |
 | `gates`, `factors`, `aofactors`, `geodot`, `sunvis`, `suntint`, `skyambraw`, `day`, `nightmap` | the gates and factors behind them |
 | `solar` | solar-park coverage |
+| `skyambhemi` | the sky hemisphere's light on a horizontal face (× 2) |
+| `groundtau` | the cloud map over the ground: R \( \log_2(1 + \tau)/10 \), G the sky light's transmission, B the Sun scattered down |
 
 The harness's `probe x y` runs the march for one pixel in `shaders/terrain_probe.comp` and reports seed, steps
 and hit. Note that it does not run the fragment shader's classification step.
@@ -598,9 +677,11 @@ and hit. Note that it does not run the fragment shader's classification step.
 | File | What |
 |---|---|
 | `shaders/include/terrain.glsl` | DEM decode, `waterAdjustHeight()`, `cityTerrainLimit()`, `observerEffHeight()`, ENU basis |
-| `shaders/include/terrain_detail.glsl` | `tdDemAt()`, value and erosion octaves, LODs, `terrainMarchDetailed()`, `terrainSunShadow()`, `observerEffHeightDetailed()` |
-| `shaders/scene_depth.comp` | the quarter and half passes, `terrainFrameBuf` |
-| `shaders/sat_sky.frag` | the seeded full-res march, hit classification, `tmSample()`, land shading |
+| `shaders/include/terrain_detail.glsl` | `tdDemAt()`, `tdSurgeAt()`, value and erosion octaves, LODs, `terrainMarchDetailed()`, `terrainSunShadow()`, `observerEffHeightDetailed()` |
+| `shaders/scene_depth.comp` | the quarter and half passes, `terrainFrameBuf`, the half-res sun shadow |
+| `shaders/sat_sky.frag` | the seeded full-res march, hit classification, `tmSample()`, land shading, `fireScarAt()`, `smokeSunTransmit()` |
+| `shaders/include/cloud_lightning.glsl` | `cv2GroundSkyAt()`, `cv2VtAt()`: the ground's sky light and the cloud over it |
+| `src/simulations/SatelliteSimWeather.cpp` | `weatherFillSeaParams()`, `surgeAtDir()`: the surge's parameters and CPU mirror |
 | `shaders/terrain_probe.comp` | the harness probe |
 | `src/simulations/SatelliteSim.cpp` | texture loading (`readRawR8()`), the anchor cell and observer texel in the CloudParams fill |
 | `shaders/include/terrain_detail.glsl` (again) | `tdPadFlat()` (pad grading), `tdCoastPatch()`, `tdCoastWm()` (coast patches) |

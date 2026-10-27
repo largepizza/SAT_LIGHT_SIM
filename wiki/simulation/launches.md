@@ -142,7 +142,7 @@ satellites become retirees at \( t_A \).
 ### Leaving the stage
 
 Members leave the dispenser one after another, `deploy_interval_s` apart (the stack's own value when it has
-one). Each starts **at the dispenser** (Starship's payload door, 31.1 m up the ship on its leeward side; a
+one). Each starts **at the dispenser** (Starship's [payload door](rockets.md#ascent-to-the-parking-orbit), 31.1 m up the ship on its leeward side; a
 fairing vehicle's stack slot or dispenser point) with the dispenser's velocity plus a separation push.
 
 For the first 6 h each member flies **free**: Clohessy-Wiltshire motion about one reference orbit for the
@@ -157,24 +157,32 @@ z &= c\,z_0 + \tfrac{s}{n}\dot z_0, \qquad c = \cos nt,\ s = \sin nt .
 \end{aligned}
 \]
 
-Every member gets the **same in-plane push** (`releaseInPlane()`): straight up for Starship's door and a
-flat stack, 0.97 up / 0.22 back for a dispenser point, mostly forward for a column. Members differ only
-across the plane (a column's sideways exits, plus a small golden-ratio-stepped spread), and each gets an
-along-track trim of \( -2 n x_0 \) that cancels the secular drift its radial offset would cause. Their
-relative motion is then one trajectory shifted in time, which never closes below the chord it leaves with.
+Every member gets the **same in-plane push** (`releaseInPlane()`): 0.97 of the separation speed up and 0.24
+back (retrograde) for Starship's door, a flat stack and a dispenser point; 0.25 up and 0.97 forward for a column.
+Members differ only across the plane (a column's sideways exits, plus a small golden-ratio-stepped spread), and
+each gets an along-track trim of \( -2 n x_0 \) that cancels the secular drift its radial offset would cause.
+Their relative motion is then one trajectory shifted in time, which never closes below the chord it leaves with.
 The deploy interval is raised until consecutive members stay at least 30 m apart over an orbit
-(`kReleaseGapM` over the trajectory's least speed):
+(`kReleaseGapM` over the trajectory's least speed, `releaseMinRate()`):
 
 | Release | Push | Interval |
 |---|---|---|
-| Starship door (Starmind, Starlink) | 0.7 m/s up | 45 s |
+| Starship door (Starmind, Starlink) | 0.7 m/s | 45 s |
 | Falcon 9 dispenser point | 0.45 m/s | about 67 s |
 | Starlink Gen1 flat stack | 0.3 m/s | 100 s |
 | Guowang column | 0.4 m/s | 75 s |
 | Qianfan flat stack | 0.35 m/s | about 86 s |
 
-A Starmind train therefore leaves as one clean string along one arc, curving up and back from the ship.
-After 6 h the member's own propulsion takes over: its offset from its own phased path eases out by a
+!!! warning "Invariant"
+    The push from a stage is never purely radial. A radial impulse is, in the Clohessy-Wiltshire solution, a
+    closed 2:1 ellipse: every satellite would come back to the door it left one orbit later, and every orbit
+    after. The retrograde part makes the train drift ahead of the stage, about
+    \( 6\pi\,|\dot y_0| / n \approx 2.8 \) km an orbit at Starship's 0.7 m/s, so from three-quarters of an
+    orbit on it stays more than a kilometre from the ship (`launch trace` reports this as
+    `min_stage_gap_after_orbit_m`).
+
+A Starmind train therefore leaves as one clean string along one arc, curving up and back from the ship and
+drifting ahead of it. After 6 h the member's own propulsion takes over: its offset from its own phased path eases out by a
 smoothstep until two days after release.
 
 !!! warning "Invariant"
@@ -221,8 +229,8 @@ A program's `"stack"` says how its satellites ride:
 
 | Layout | Used by | Geometry | Exit |
 |---|---|---|---|
-| `pez` | Starmind, Starlink, direct-to-cell on Starship | flat across the ship at the door | out of the door, up |
-| `flat` | Starlink Gen1 on Falcon 9 (2 × 16), Qianfan (2 × 9) | nadir face down, one or two a tier | up, off the stack's side |
+| `pez` | Starmind, Starlink, direct-to-cell on Starship | flat across the ship at the door | out of the door, up and a little back |
+| `flat` | Starlink Gen1 on Falcon 9 (2 × 16), Qianfan (2 × 9) | nadir face down, one or two a tier | up and a little back, off the stack's side |
 | `column` | Guowang (two tiers of five) | around a dispenser column, nadir face out | radially |
 
 Payloads per launch follow from what fits: eight Starmind satellites (each bus folded in half, stowed
@@ -318,8 +326,22 @@ it on as a Kepler orbit until the next rewrite. A batch's records are rewritten 
 time, every 2 s while its train is leaving the stage (and 10 min after) or when a member has a phasing
 residual, and whenever one of its retirees' re-entries passes. At most 1200 records are written a frame,
 round-robin. Two flag bits ride in the record's type word: bit 25 (joints at rest: the open-book pose) and
-bit 26 (still unfolding; the progress rate and phase sit in the tumble words). The CPU keeps the same
-elements (`launchOrbitElems()`), so CPU and GPU agree to about a metre.
+bit 26 (still unfolding; the progress rate and phase sit in the tumble words).
+
+A member's path is not a Kepler orbit (the climb's ramp, the ease from free flight into its slot's path, up to
+about 0.05 m/s² of effective thrust), so a record drifts off it between rewrites, and under time warp the write
+budget lets records age: at 1 min/s about 20-40 s of sim time (tens of metres), at 5 min/s a few minutes
+(hundreds of metres to a kilometre). Two rules keep that out of anything seen close up:
+
+- **The CPU never reads the written record.** `launchOrbitElems()` rebuilds a live member's osculating elements
+  from its exact path at the current sim time each time it is asked (`memberRecord()`), so its mesh, Go to, Track
+  and the info readouts follow the path to under a millimetre at any warp.
+- **Meshed members are rewritten every frame.** The slots drawn as meshes last frame (`meshLaunchSlots`, at most
+  256) get their GPU record rewritten ahead of the round-robin, so a mesh's own point, bloom and glare stay on it.
+
+Far points keep the round-robin's record error: a kilometre at 300 km is a couple of pixels in a wide view. Harness
+`launch jitter` reports the record errors of the live records by age (`live`, `record_err_m_max`,
+`meshed_record_err_m_max`, `mesh_err_m_max`); `launch exact off` reads the records instead, for an A/B.
 
 !!! warning "Invariant"
     Never assume `satOrbits.size() == activeSatCount + pool size`, or that an index past the roster is
@@ -336,9 +358,12 @@ elements (`launchOrbitElems()`), so CPU and GPU agree to about a metre.
 | After the Sun's Fury | `launches.after_storm` | Stand down (0); Resume (1) |
 | In the deployment era (benchmark shells) | `launches.era_benchmark_shells` | off |
 
-The plume, rocket-light and pad-graphics settings are on [Launch visuals](../rendering/launch-visuals.md).
-These controls sit in the Missions window's Controls tab with the "Watch the next launch", "Watch a twilight
-launch", "Watch a Starship catch" and "Watch a retired satellite re-enter" buttons.
+These controls are in **Settings > Launches**, section LAUNCHES, with the "Watch the next launch", "Watch a
+twilight launch", "Watch a Starship catch" and "Watch a retired satellite re-enter" buttons (each lands on the
+event as the Missions window's Watch does; see [Missions](../using/missions.md)) and the next launch, the launches
+in the next 24 h and the satellites climbing and deorbiting. The graphics sections of the same tab (plumes, flames,
+rocket light, pads) are on [Launch visuals](../rendering/launch-visuals.md#settings), the Sun's Fury on
+[Kessler syndrome](kessler.md#settings).
 
 ## `data/launches.json` at a glance
 
@@ -367,8 +392,8 @@ batches do not fly), `launch list`, `launch jitter` (record jumps at rewrites, C
 `launch padstats` (same-pad launches within 90 min), and `tools/harness/mission_ops.py`, which traces the next
 launch of every vehicle-program pair at three epochs and judges each phase against one threshold table.
 
-Measured with `launch jitter`: a member's record jumps by under 0.1 m on the CPU path and about 1 m on the GPU
-(its float floor) at each rewrite.
+Measured with `launch jitter`: at each rewrite a member's record moves by under 0.1 m in double precision and
+about 1 m in the GPU's float propagation (its floor).
 
 ## Cost
 
@@ -379,10 +404,12 @@ frame at 1x and about 3.4 ms at 1 h/s, where plume integration for newly visible
 their measured cost so a load or a fast warp does not stall a frame, and the window of batches that matter is
 re-walked only when sim time moves more than 300 s.
 
-**Background builds.** When the walk finds many batches missing (more than 48, as after a time jump: a bookmark Go,
-a typed time, a Missions Go to) or the warp is past 1 h/s, it sorts them by urgency (the launches nearest now first),
-builds at most 16 itself (none at a fast warp) and hands the rest to one background thread at below-normal priority
-on all cores but two. That thread builds them in chunks, and each frame the main thread moves the finished prefix
+**Background builds.** When the walk finds more than 48 batches missing, or more than four past 1 h/s of warp, or
+any after a time jump of an hour or more (a bookmark Go, a typed time, a Watch), it sorts them by urgency (the
+launches nearest now first), builds the four most urgent itself (none at a fast warp or after a jump, where the
+first builds of a day would look up cold rival lists on the main thread) and hands the rest to one background
+thread at below-normal priority on all cores but two. The rockets of the moment after a jump appear a few frames
+later. That thread builds them in chunks, and each frame the main thread moves the finished prefix
 into the batch cache within about 2 ms. The batches are identical to those built on the main thread
 (`SATLIGHTSIM_LAUNCH_BG=0` turns the background build off for the A/B: `launch list` and `padstats` match). A jump
 to a busy deployment-era day (about 9700 batches) fills in about a second, with the launch CPU near 3.4 ms a frame

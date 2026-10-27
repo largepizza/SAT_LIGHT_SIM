@@ -62,7 +62,8 @@ The spread is isotropic, so it slightly over-blurs a cylinder along its axis.
    (they move independently).
 
 A merged lobe stores area-weighted means of its materials' albedo, \( F_0 \), \( \alpha^2 \) and
-transmission. Its normal is the direction of \( \sum_k A_k \hat{\mathbf{n}}_k \), and the spread of the
+transmission, and a Minnaert exponent weighted by albedo × area (see [Minnaert diffuse](#minnaert-diffuse)).
+Lobes of different build dates (stations built module by module) never merge. Its normal is the direction of \( \sum_k A_k \hat{\mathbf{n}}_k \), and the spread of the
 merged normals is kept through the **mean resultant length**
 
 \[
@@ -74,7 +75,8 @@ less in its mean direction than a flat one of the same area) and an extra roughn
 \( \alpha^2 \mathrel{+}= 2(1 - \bar{R}) \). A lobe is GGX or Beckmann by the majority of its area.
 
 The **lobe budget** is 48 for types flown by more than 10 000 satellites and 256 for smaller rosters
-(stations, telescopes, depots), because GPU cost is (visible satellites of the type) × (lobes). Every
+(stations, telescopes, depots), because GPU cost is (visible satellites of the type) × (lobes). A lobe of a
+material with a [haze](#a-materials-haze) is emitted as two lobes and counts twice against the budget. Every
 model is checked at load against a brute-force per-triangle evaluation over random Sun and observer
 directions (`validateSatLobes()`); the log reports p95 and maximum \( |\Delta m| \) over configurations
 within 5 mag of the model's median brightness. The shipped models are exact within their budget except
@@ -82,7 +84,7 @@ the ISS (514 exact lobes, p95 0.08 mag at 256).
 
 ## The reflectance of one lobe
 
-For a lobe of area \( A \), diffuse area \( A_d \), Lambertian albedo \( \rho_d \), Fresnel reflectance
+For a lobe of area \( A \), diffuse area \( A_d \), diffuse albedo \( \rho_d \), Fresnel reflectance
 at normal incidence \( F_0 \), roughness \( \alpha \) and transmission \( T \), with
 \( \mu_s = \hat{\mathbf{n}}\cdot\hat{\mathbf{s}} \), \( \mu_o = \hat{\mathbf{n}}\cdot\hat{\mathbf{o}} \) and
 the half vector \( \hat{\mathbf{h}} = \widehat{\hat{\mathbf{s}}+\hat{\mathbf{o}}} \):
@@ -92,13 +94,15 @@ I_\text{lobe} =
 \begin{cases}
 0 & \mu_o \le 0 \\[2pt]
 \dfrac{T}{\pi} A_d\, (-\mu_s)\, \mu_o & \mu_s \le 0 \quad\text{(light through the face)} \\[8pt]
-\dfrac{\rho_d}{\pi} A_d\, \mu_s \mu_o \;+\; A\, \dfrac{D(\hat{\mathbf{h}})\, F(\hat{\mathbf{s}}\cdot\hat{\mathbf{h}})\, G_1(\mu_s)\, G_1(\mu_o)}{4} & \mu_s > 0
+\rho_d A_d\, f_d(\mu_s, \mu_o) \;+\; A\, \dfrac{D(\hat{\mathbf{h}})\, F(\hat{\mathbf{s}}\cdot\hat{\mathbf{h}})\, G_1(\mu_s)\, G_1(\mu_o)}{4} & \mu_s > 0
 \end{cases}
 \]
 
-This is the radiant intensity of a surface with the standard microfacet BRDF
-\( f = \rho_d/\pi + DFG/(4\mu_s\mu_o) \), integrated over its area. Its pieces:
+This is the radiant intensity of a surface with a diffuse term plus the standard microfacet specular
+\( DFG/(4\mu_s\mu_o) \), integrated over its area. Its pieces:
 
+- **Diffuse** \( f_d \): Lambert, \( \mu_s\mu_o/\pi \), unless the material sets a
+  [Minnaert exponent](#minnaert-diffuse).
 - **Fresnel** (Schlick): \( F(c) = F_0 + (1 - F_0)(1 - c)^5 \).
 - **GGX** distribution and Smith masking, the default:
 
@@ -121,30 +125,95 @@ This is the radiant intensity of a surface with the standard microfacet BRDF
 
     Beckmann's tails are Gaussian where GGX's are a power law; at the same \( \alpha \), GGX is about
     10 times brighter 30 deg off the peak. Beckmann is the right choice when \( \alpha \) comes from a
-    Phong \( \cos^n \) fit (\( \alpha = \sqrt{2/(n+2)} \)), and for mirror films whose grazing-angle
-    forward scatter GGX overstates.
+    Phong \( \cos^n \) fit (\( \alpha = \sqrt{2/(n+2)} \)), for mirror films whose grazing-angle forward
+    scatter GGX overstates, and for a polished bus whose glow away from the specular beam GGX's tail
+    overstates (the 2020 Starlink models).
 
 - **Transmission** (`"transmission"`, e.g. arrays on a translucent Kapton blanket): light falling on the
   back of a face leaves the front diffusely, \( T/\pi\, A_d\, (-\mu_s)\,\mu_o \). The renderer tints it
-  and lets it through only between solar cells; photometrically it is the area mean.
+  and lets it through only between solar cells; photometrically it is the area mean. Transmission is always
+  Lambertian.
 - **Open lattices** (`"coverage"` \( c < 1 \), trusses): each facet counts \( c \times \) its area, and a
   closed primitive adds its inner faces seen through the gaps at \( c(1 - c) \). A lattice never shadows
   anything.
 
-### The Sun's disk: `SUN_ALPHA`
+### Minnaert diffuse
 
-The Sun is not a point: its angular radius is about 0.27 deg. Rather than convolving every lobe with a
-disk, the source size is folded into the roughness. For the Sun,
+A material may set `"minnaert": k` (0.2 to 1, default 1). Its diffuse intensity is then
 
 \[
-\alpha^2_\text{eff} = \alpha^2_\text{lobe} + \alpha_\odot^2, \qquad \alpha_\odot = 0.0023 \approx \tan\!\left(\tfrac{\theta_\odot}{2}\right).
+\rho_d A_d\, \frac{k+1}{2\pi}\, (\mu_s\mu_o)^k
 \]
 
-This gives a perfectly flat mirror its physical peak. A GGX lobe at \( \alpha = \alpha_\odot \) peaks at
-\( I = A F / (4\pi\alpha_\odot^2) = 1.50 \times 10^4\, AF \) m² sr⁻¹ at normal incidence; the exact
-value for a flat mirror reflecting a uniform solar disk, \( AF/\Omega_\odot \), is
-\( 1.47 \times 10^4\, AF \). The 2% excess is the price of the closed form. There is therefore no
-separate "mirror boost" or cross-section fudge for geometry-model types.
+instead of Lambert's \( \rho_d A_d\, \mu_s\mu_o/\pi \); at \( k = 1 \) the two are identical. For \( k < 1 \)
+the face sends the same power as a Lambertian one with light and view overhead and is brighter with either
+grazing: a rough or limb-flattened surface. Mallama (2020a) measured \( k = 0.58 \pm 0.08 \) for the original
+Starlink from 830 passes; the 2020 Starlink models use 0.65 on their bus, antenna and visor diffuse terms (fitted,
+see [Results](../accuracy/results.md#fitted-and-estimated-values)).
+
+\( k \) is stored as a 7-bit code, \( k = 1 - \text{code}/127 \) (`satMinnaertCode()`), in bits 1-7 of
+`GpuSatLobe::distribution` (bit 0 is the GGX/Beckmann flag) and of the mesh material's `beckmann` word. The loader
+snaps a material's \( k \) to that resolution, so the baked lobes, the brute-force references and the GPU all use
+the same value, and a material without the key is Lambertian bit for bit. Under the broad earthshine source the
+face's effective \( \mu_s \) is its irradiance divided by the cap's total, \( E_n / E_\oplus \).
+
+### A material's haze
+
+A silvered film reflects most of its specular light in a sharp core but scatters a share into wide wings around
+it. A material may carry a **haze**, `"haze": {"fraction": f, "roughness": α_h}` (\( \alpha_h \) default 0.04,
+same distribution as the core). Its specular becomes
+
+\[
+F \cdot \big((1 - f)\, D_\text{core} + f\, D_\text{haze}\big)\, \frac{G}{4},
+\]
+
+with diffuse and transmission unchanged. The bake emits each hazy facet group as **two lobes** with the same
+normal, area, build date, stowing and occlusion samples: the core (specular area × \( (1 - f) \), all the diffuse
+and transmission) and the haze (specular area × \( f \), nothing else). Splitting the specular *area* rather than
+\( F_0 \) keeps Schlick's Fresnel exact. The Iridium validation model uses a haze of 0.3 at \( \alpha_h \) 0.04 on
+its Main Mission Antennas (see [Results](../accuracy/results.md#iridium-flares)).
+
+### The Sun's disc as a source
+
+The Sun is not a point: its angular radius \( R \) is about 0.27 deg. Rather than convolving every lobe with the
+disc, the disc is folded into the lobe's roughness, though not as one isotropic number. A disc of fixed angular
+size maps onto half vectors as an **ellipse**: semi-axis \( R/2 \) in the plane of incidence and
+\( R/(2\cos\theta_d) \) across it, where \( \theta_d \) is the angle between the Sun and the half vector (from
+\( d\omega_o = 4(\hat{\mathbf{o}}\cdot\hat{\mathbf{h}})\,d\omega_h \)). Every lobe lit by the Sun therefore takes
+an anisotropic \( \alpha^2 \) pair in the frame \( (\hat{\mathbf{p}}, \hat{\mathbf{q}}, \hat{\mathbf{h}}) \), with
+\( \hat{\mathbf{p}} \) in the plane of the Sun and the observer and
+\( \hat{\mathbf{q}} \propto \hat{\mathbf{s}}\times\hat{\mathbf{o}} \) across it:
+
+\[
+\alpha_p^2 = \alpha_m^2 + S\,w\!\left(\frac{\alpha_m^2}{S}\right), \qquad
+\alpha_q^2 = \alpha_m^2 + \frac{S}{c^2}\,w\!\left(\frac{\alpha_m^2 c^2}{S}\right), \qquad
+c = \hat{\mathbf{s}}\cdot\hat{\mathbf{h}},
+\]
+
+\[
+w(x) = v + \frac{1 - v}{1 + kx}, \qquad S = \alpha_\odot^2, \quad \alpha_\odot = 0.00208,
+\]
+
+where \( \alpha_m \) is the lobe's own roughness. \( \alpha_\odot = (R/2)\sqrt{1 - u/3} \) is the centre of a
+limb-darkened disc (\( u = 0.6 \)). \( S\,w \) is the disc's share of the convolution's peak: the disc's centre for
+a material sharper than the disc, its variance for a broad one (GGX \( v = 1.125,\ k = 4 \); Beckmann
+\( v = 0.5625,\ k = 3 \), since GGX's peak curvature is twice Beckmann's at one \( \alpha \)). \( D \) is the
+anisotropic GGX or Beckmann distribution of that pair; the masking term keeps \( \alpha_p \). The Earth, a broad
+isotropic source, keeps a plain \( \alpha^2 \) sum (see
+[Earthshine](#a-broad-source-the-spherical-harmonic-fit)).
+
+Against the material lobe convolved with a limb-darkened disc by brute force, the peak agrees within 0.006 mag
+(GGX) and 0.036 mag (Beckmann) for incidence 0 to 75 deg and \( \alpha \) 0 to 0.3, and the energy within 0.3%.
+A flat mirror's reflected beam is round, as the Sun's image is; its half-maximum radius is about 0.15 deg
+against the disc's 0.26 deg, because the kernel is GGX-shaped with its peak and energy matched rather than a
+true disc. There is no separate "mirror boost" or cross-section fudge for geometry-model types.
+
+!!! warning "Invariant"
+    The disc term exists in four copies that must agree: `sunDiscA2()` in `src/simulations/SatModel.cpp`,
+    `sunA2()` in `shaders/sat_orbit.comp` and in `shaders/sat_mesh.frag`, and `sun_a2()` in
+    `tools/video/vidkit/photometry.py`. Code lights a lobe by the Sun with `satLobeIntensitySun()` (the lobe's
+    own \( \alpha^2 \); the disc is added inside) and by an isotropic source with `satLobeIntensity()` (the
+    source's \( \alpha^2 \) already folded in). Never add \( \alpha_\odot^2 \) by hand.
 
 ## Earthshine
 
@@ -229,6 +298,10 @@ I_{\oplus,\text{lobe}} = \frac{\rho_d E(\hat{\mathbf{n}}) + T\,E(-\hat{\mathbf{n
 \;+\; E_\oplus\, I_\text{spec}(\hat{\mathbf{e}}_\oplus, \hat{\mathbf{o}};\ \alpha^2_\text{lobe} + \alpha^2_\oplus).
 \]
 
+This is written for a Lambertian face; a Minnaert face replaces the diffuse part as described in
+[Minnaert diffuse](#minnaert-diffuse). A hazy material's haze lobe adds its own specular term at
+\( \alpha_h^2 + \alpha_\oplus^2 \).
+
 ### Limits of the earthshine model
 
 The Earth is uniform: no clouds, no ocean glint, no seasonal or land/sea albedo. Real local albedo ranges
@@ -261,7 +334,7 @@ This is evaluated at run time against the model's own primitives, posed at the l
   (either side, for a translucent lobe lit from behind); this per-lobe mask is fixed at bake time.
 
 Against a ray-cast reference (25 points per triangle, about one per 0.5 m² on large ones) the 16-sample
-version has p95 errors of 0.14 mag (VisorSat), 0.17 (ISS), 0.07 (V2 Mini) and under 0.02 for the other
+version has p95 errors of 0.13 mag (VisorSat), 0.17 (ISS), 0.07 (V2 Mini), 0.24 (the Iridium validation model) and under 0.02 for the other
 models.
 
 ### On the GPU
@@ -358,8 +431,8 @@ the legacy formula.
 
 | File | Function / symbol |
 |---|---|
-| `src/simulations/SatModel.h/.cpp` | `tessellateSatModel()`, `bakeSatLobes()`, `lobeIntensity()`, `validateSatLobes()`, `buildSatOcclusion()`, `satLobeVisibility()`, `packSatOcclusionGpu()`, `SatEarthLight`, `kSunAlpha` |
+| `src/simulations/SatModel.h/.cpp` | `tessellateSatModel()`, `bakeSatLobes()`, `lobeIntensity()`, `validateSatLobes()`, `buildSatOcclusion()`, `satLobeVisibility()`, `packSatOcclusionGpu()`, `SatEarthLight`, `kSunAlpha`, `sunDiscA2()`, `minnaertDiffuse()`, `satLobeIntensitySun()`, `satMinnaertCode()`, `SatMaterial::hazeFraction` |
 | `src/simulations/SatPhotometry.cpp` | `earthshineExact()`, `earthshineLut()`, `earthshineLight()`, `evalSatPhotometry()`, `satMagnitudeFromIntensity()` |
 | `src/simulations/SatelliteSim.cpp` | `bakeModelType()` (budget, validation), `updateSelectedPhotometry()` (parity) |
-| `shaders/sat_orbit.comp` | `lobeIntensity()`, `earthshineAt()`, `modelFlux()`, `occludedIntensity()`, `legacyFlux()`, `K_FLUX`, `SUN_ALPHA` |
+| `shaders/sat_orbit.comp` | `lobeIntensity()`, `earthshineAt()`, `modelFlux()`, `occludedIntensity()`, `legacyFlux()`, `sunA2()`, `lobeDiffuse()`, `K_FLUX`, `SUN_ALPHA` |
 | `tools/sat_model_tool/` | `SatModelTool`: bake, validate and self-test models without the app |

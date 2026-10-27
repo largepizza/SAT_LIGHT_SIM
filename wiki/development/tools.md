@@ -1,8 +1,8 @@
 # Tools
 
 Everything in `tools/` besides the harness drivers: the offline C++ tools, the scripts that bake assets and
-generate satellite, rocket, pad and station models, the consistency checkers and the analysis scripts. The harness and its image, motion and audio analysis tools
-are on [Automation harness](harness.md).
+generate satellite, rocket, pad and station models, the consistency checkers, the analysis scripts and the video
+toolkit. The harness and its image, motion, audio and benchmark tools are on [Automation harness](harness.md).
 
 Python tools that need third-party packages use one of two virtual environments: `tools/harness/.venv`
 (Pillow, numpy, soundfile, scipy; `tools/harness/requirements.txt`) and `tools/perf_analysis/.venv` (pandas,
@@ -35,6 +35,9 @@ status, and any unexplained part).
 | `--set [<model>/]<material>.<field>=<value>` | override a material after loading (echoed into reports) |
 | `--summarize-samples <csv>` | statistics of a samples CSV (a SatBench run's, or the app's bulk export); checks a run's own statistics are reproduced |
 | `--replay-trace <csv> [--models-dir D]` | re-evaluate an exported magnitude trace from the inputs in its header and check every row matches |
+| `--pass <spec.json> [--pass-out <out.json>]` | evaluate a satellite along a given track of states (for example a TLE propagated with SGP4) sample by sample, with occlusion and extinction; how real passes are replayed against observations (repeatable without `--pass-out`) |
+| `--dump-json <out.json>` | the model's triangles, its lobes at several budget levels, lobe-against-brute-force validation samples and brightness spheres, for visualisation; `MODEL` in the path is replaced by the model id |
+| `--flare-tilt <deg>` | the flare-mitigation tilt the attitude law applies |
 
 The `accuracy-gate` build target runs `--selftest`, `--benchmark` and `--run-benchmark` over every model and
 benchmark file; CI runs it on every pull request. See [SatBench and the accuracy gate](../accuracy/satbench.md)
@@ -86,6 +89,9 @@ rebuild afterwards so the runtime-file sync copies the result next to the execut
 | `tools/make_terrain_materials.py [--size 1024]` | `assets/textures/terrain_materials.rgba8` | CC0 ambientCG texture sets, cached in `build/terrain_material_cache/` | two layers per material: albedo ratio and height; normal, roughness and occlusion |
 | `tools/make_cloud_morph.py [--size 1024] [--preview out.png]` | `assets/textures/cloud_morph.rgba8` | four public-domain MODIS scenes (NASA GIBS), one per channel | the cloud morphology texture ([The cloud field](../rendering/clouds/field.md)); `make_cloud_morph_procedural.py` is a procedural alternative |
 | `tools/parse_bsc.py` | C++ initialisers for `src/simulations/star_catalog.h` | the Yale Bright Star Catalogue (BSC5) from CDS | stars to the script's magnitude limit, brightest first, with B-V colour |
+| `tools/make_mie_lut.py [--check]` | `assets/textures/cloud_mie.rgba16f` | the Lorenz-Mie series (BHMIE) for water droplets | a phase table for cloud droplets: 2048 angles by 12 effective radii from 4 to 30 um, a gamma size distribution integrated over 400-700 nm against sunlight into linear sRGB, with a second set of rows holding only the optical structure (corona, cloudbow, glory). numpy, Pillow for the preview; `--check` prints the asymmetry parameter and the bow and glory positions ([The cloud march](../rendering/clouds/march.md)) |
+| `tools/make_moon_maps.py [--width 2048] [--preview out.png]` | `assets/textures/moon_maps.rgba16f` | the NASA SVS CGI Moon Kit: the LROC WAC colour mosaic and LOLA `ldem_16` elevation, cached in `build/moon_cache/` | an RGBA16F equirectangular mip chain in selenographic longitude and latitude: RGB albedo, A the height in km. numpy, Pillow ([Moon and eclipses](../rendering/moon-and-eclipses.md)) |
+| `tools/make_storm_climatology.py --hrmc <nc> --lrdc <nc>` | `assets/textures/storm_climatology.bin` | the NASA LIS/OTD gridded lightning climatology (local copies; the download needs a free Earthdata login) | monthly and diurnal flash density for the storm catalog; without the file the catalog uses its analytic model. numpy, h5py ([Weather](../simulation/weather.md)) |
 | `tools/make_pad_coasts.py` | `data/launch_coasts.json` | Natural Earth 10 m land and lakes (the same cache as the water map) | a small signed-distance grid of the coastline around each group of coastal launch sites, with every pad's graded disc forced to land, and each patch's ground colour. Needs numpy and pyshp. Re-run after editing the sites in `data/launches.json` ([Terrain](../rendering/terrain.md)) |
 
 ## Model generators
@@ -125,17 +131,41 @@ little-endian dimensions, so the app reads them without an image decoder.
 |---|---|
 | `tools/perf_analysis/analyze_profile.py [profile_log.jsonl]` | reads perf snapshots and knockout sweeps: GPU cost by resolution and per megapixel, a matched-altitude resolution ratio, knockout costs, correlations with scene variables, plots under `analysis_output/`, and a ranked table per sweep ([Profiling](profiling.md#perf-snapshots-and-analyze_profilepy)) |
 | `tools/perf_analysis/live_perf_table.py <outbox.json\|results.jsonl> [baseline]` | tabulates harness `perf name=` results, optionally against a baseline |
+| `tools/cloud_ms_reference.py [--quick] [--png out.png]` | a path-traced reference for the clouds' multiple scattering: renders small cloud blobs lit from several sides and prints, per blob, the correlation and mean level of the march's multiple-scattering models against it (numpy, scipy, Pillow) |
 | `tools/cloud_stats.py image.png [...] [--km-per-px] [--crop] [--mask]` | cloud-field statistics for comparing renders from space with satellite imagery: cover, perimeter-area fractal dimension, object-size exponent, the mask's spectral slope, holes per 1000 km² (numpy, scipy, Pillow) |
 | `tools/run_latest.py [--no-gate] [-- app args]` | starts the newest `build/Release` executable interactively (a person's normal launch, the shared `user_data/` settings), through the harness's launch gate, and records its exit |
 | `tools/make_capture_bundle.sh` | macOS: wraps the built executable in a minimal `.app` that declares `MetalCaptureEnabled`, so MoltenVK's auto-capture or Xcode can capture a GPU frame for occupancy analysis (reading the trace needs full Xcode) |
+
+## The video toolkit (vidkit)
+
+`tools/video/` builds technical explainer videos from three parts: Manim scenes drawn from data the app's own tools
+export (`SatModelTool --dump-json`, `--pass`, benchmark reports), engine clips recorded through the harness, and an
+ffmpeg edit (clips normalised to one size and frame rate, captions, crossfades, music). Each video is a folder under
+`tools/video/projects/` (`project.json`: size, frame rate, data steps, clips, the timeline; `scenes.py`; the clips'
+harness scripts); `projects/sat_lighting` is the satellite lighting-model video and `projects/_template` the starting
+point. Everything generated goes to the gitignored `tools/video/out/`.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\video\setup.ps1    # once: a Python 3.10-3.12 venv, MiKTeX, ffmpeg
+cd tools\video
+.venv\Scripts\python -m vidkit data     sat_lighting            # data steps, skipping up-to-date outputs
+.venv\Scripts\python -m vidkit render   sat_lighting [Scene]    # Manim at preview quality
+.venv\Scripts\python -m vidkit clips    sat_lighting            # record the harness clips (launches the app)
+.venv\Scripts\python -m vidkit all      sat_lighting --quality final
+```
+
+`tools/video/README.md` documents the project format and the library. A clip that needs extra satellites can set
+`SATLIGHTSIM_EXTRA_CONSTELLATIONS=<file>`: the app appends that JSON file's `satellite_types` and `constellations` to
+the roster at load.
 
 ## Where in the code
 
 | Path | What |
 |---|---|
-| `tools/sat_model_tool/main.cpp`, `bench_run.cpp` | SatModelTool |
+| `tools/sat_model_tool/main.cpp`, `bench_run.cpp`, `pass_eval.cpp`, `dump_json.cpp` | SatModelTool |
 | `tools/sound_tool/main.cpp` | SoundTool |
 | `tools/upload_stress/main.cpp` | UploadStress |
 | `tools/*.py` | bakers, model generators and checkers |
 | `tools/benchmarks/`, `tools/perf_analysis/` | analysis scripts |
 | `cmake/AccuracyGate.cmake` | the accuracy gate's list of checks |
+| `tools/video/vidkit/`, `tools/video/projects/` | the video toolkit and its projects |

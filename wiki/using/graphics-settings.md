@@ -253,7 +253,8 @@ tab (turn on *Show advanced settings* in Display).
 | Adaptive rate while moving (0/1), Sparse when still (0/1) | Clouds | Below *Full rate above*, march only a quarter of the cloud pixels each frame while still, and only the screen tiles with visible cloud parallax at full rate while moving. Off on High and Ultra, on below: turning both on is the largest single saving in cloudy views, at the cost of grain while the history fills in |
 | Light march (m) | Clouds | How far each cloud sample looks toward the Sun for its shadow; longer is costlier |
 | Accumulation (samples, 0 = off) | Clouds | How many frames a cloud pixel averages; higher cleans up a still view faster after it changes. Free |
-| Far cloud shadows (0/1), Layer shadows (mid / high) | Weather | The shadows of distant clouds and of the higher cloud layers; together a few tenths of a millisecond |
+| Sun shadow cell (m) | Weather | The cell size of the clouds' shadow volume near you (the shadows on the clouds, the ground and the air). Smaller is sharper and costs a little more |
+| God ray reads (near, 8 = full) | Weather | How many times each sky step within 30 km reads the cloud and terrain shadows for the god rays. 4 saves 0.5 to 1 ms with a slightly grainier result in motion |
 | View samples (min / max) | Atmosphere | Samples along each sky ray |
 | Terrain detail, Terrain shadows | Terrain | The procedural relief on top of the elevation map and its sun shadows: several milliseconds on the ground in mountains, little from aircraft height, nothing from orbit |
 | Terrain fade start / end (m) | Terrain | How far the detailed terrain march reaches |
@@ -266,6 +267,21 @@ Some photometry options are expensive at the scale of a million satellites:
   Off by default; with millions of satellites it costs roughly ten times the orbit computation.
 - **Full-renderer reflections** and **Sharp mirror reflections** (Photometry, *Satellite models*): what satellite
   meshes reflect. They only cost anything when satellites are drawn as meshes.
+
+### Aerial perspective volume
+
+The sky's light along each view ray (sunlit and shadowed air, the god rays, haze near clouds, city glow, airglow and
+a solar eclipse's shadow) is computed once for every tile of a 320 × 180 grid over the screen (6 × 6 pixels at
+1920 × 1080) and stored at 48 depths along the tile's ray; every pixel reads it at its own distance. The pass costs
+0.3 to 0.7 ms on an RTX 3070 Ti, far less than computing the same light for every pixel, and it is closer to the exact
+result than the per-pixel computation at its default step count. Within a band round the horizon, or round the Earth's limb seen
+from orbit, the light changes too fast across a tile, so there the sky pass computes it per pixel and blends the two
+over the band's outer part. The volume is not used above 1000 km, on Planetarium and Potato, or in an HQ photo.
+
+| Setting (Weather tab, *Rebuild experiments*) | `settings.json` key | Default |
+|---|---|---|
+| Aerial perspective volume (0/1) | `clouds_v2.sky_ap` | 1 (0 = per pixel everywhere) |
+| Aerial perspective horizon band (deg) | `clouds_v2.sky_ap_band_deg` | 2 |
 
 ## Performance tips
 
@@ -295,5 +311,6 @@ Some photometry options are expensive at the scale of a million satellites:
   `updateDynamicResolution()`, `computeHalfExtent()` and `recreateComputeScaledTargets()` (the clouds following
   the render scale).
 - `shaders/sky_taa.comp`: the temporal resolve and upscaler.
+- `shaders/sky_ap.comp`, `shaders/include/sky_ap.glsl`: the aerial perspective volume.
 - `src/simulations/SatelliteSim.h`: `GraphicsPreset`, `FpsCapMode`.
 - The weak-hardware sky shaders are described on [Weak-hardware tiers](../rendering/hardware-tiers.md).

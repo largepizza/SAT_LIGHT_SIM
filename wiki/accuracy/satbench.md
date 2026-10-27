@@ -70,12 +70,17 @@ Repeat until the requested number of samples is drawn:
 
 1. **Site.** Pick an observing site with probability proportional to its weight. The weight is the number of
    the paper's own observations attributed to that observer (an observation's `source` appearing in the site
-   name); failing that, the site's published `count`; failing both, equal weights.
+   name); failing that, the site's published `count`; failing both, equal weights. The site is drawn **once
+   per sample** and kept through every rejected time and satellite below, so each site's share of the samples
+   is its weight. (Redrawing it after each rejection would under-sample a site with a narrower window, a higher
+   elevation limit or a shorter twilight by its acceptance rate.)
 2. **Time.** Pick a time uniformly within the benchmark's period (the end date inclusive). Reject it unless
-   the Sun's altitude at the site is within the twilight window (default \(-18°\) to \(-6°\)).
+   the Sun's altitude at the site is within the site's window: its own `sun_altitude_deg` if it has one, else
+   the file's, else the default \(-18°\) to \(-6°\).
 3. **Satellite.** Draw a random satellite of the shell: a circular orbit at the shell's altitude and
    inclination, with uniform right ascension of the ascending node and uniform argument of latitude at that
-   time. Evaluate it; accept it if it is at or above the minimum elevation (default 20°) and fully sunlit
+   time. Evaluate it; accept it if it is at or above the minimum elevation (the site's, else the file's, else
+   20°) and fully sunlit
    (shadow factor ≥ 0.999, so penumbra is excluded as the papers exclude it). Up to 4000 satellites are tried
    per time; the first accepted one becomes the sample.
 4. **Censoring.** At a site whose instrument is `visual`, if the satellite's magnitude is fainter than the
@@ -95,19 +100,22 @@ samples on a fixed cadence (below), which is what lets the two be compared.
 
 ### Assumptions are configuration, and are reported
 
-Papers rarely state their selection limits. Everything SatBench needs and the paper does not give is a field
-of `BenchRunConfig`, and every report echoes it:
+Papers rarely state their selection limits. A benchmark file may give them (measured, with a note saying how;
+see [Benchmark datasets](benchmarks.md#sampling)) in `sampling.constraints` and per site; those replace the
+defaults below. Everything SatBench needs and neither the paper nor the file gives is a field of
+`BenchRunConfig`, and every report echoes it. The run prints the window it used, and each site that has its own:
 
 | Field | Default | Why |
 |---|---|---|
-| `minElevationDeg` | 20 | the papers do not state an elevation limit |
-| `sunAltMinDeg`, `sunAltMaxDeg` | −18, −6 | twilight to astronomical night; not stated |
+| `minElevationDeg` | 20, or the file's `min_elevation_deg` | the papers do not state an elevation limit |
+| `sunAltMinDeg`, `sunAltMaxDeg` | −18, −6, or the file's `sun_altitude_deg` | twilight to astronomical night; not stated |
 | `periodStartFallback` | 2020-01-01 <!-- history-ok --> | for a period with no stated start |
 | `censor` | true | apply the paper's censoring rule at visual sites |
 
 `--sensitivity` reruns the same benchmark four more times with the elevation limit at 10° and 30° and the Sun
 window at −12…−6° and −18…−12°, and reports each run's mean and median and its shift against the base run.
-Those shifts are the size of the uncertainty that the unpublished selection contributes.
+Those shifts are the size of the uncertainty that the unpublished selection contributes. The variants replace
+the run-wide limits only; a site with its own window keeps it.
 
 ### Determinism
 
@@ -135,7 +143,8 @@ when the file has them, otherwise the paper's printed values.
 | `mean_m1000_phase_matched` | informational (observations only) | — |
 | `phase_slope_mag_per_deg`, `phase_fit_at_90deg` | informational | — |
 
-A run passes when no gated metric fails. The 0.3 mag tolerance is provisional. It is much wider than the
+A metric the benchmark file lists in `ungated_metrics` that misses its tolerance gets the verdict `known`
+instead of `fail`. A run passes when no gated metric fails. The 0.3 mag tolerance is provisional. It is much wider than the
 standard errors of the published means (0.02 to 0.09 mag) because those reflect only the number of
 observations, not the observers' unpublished selection of passes or the satellites' unpublished attitude;
 independent campaigns of the same satellites can differ by more than that (two V2 Mini datasets give 7.87 and
@@ -188,7 +197,7 @@ SatModelTool --run-benchmark data/benchmarks/mallama2020b_oneweb.json \
 | `--budget N` | 256 | lobe budget; 256 bakes every benchmark model's lobes exactly |
 | `--report-dir D` | `benchmark_runs` | where reports and sample CSVs go |
 | `--models-dir D` | `<benchmark dir>/../satellite_models` | where the model named by the benchmark is loaded from |
-| `--set [<model>/]<material>.<field>=<value>` | none | override `diffuse_albedo`, `specular_f0`, `roughness` or `distribution` (`ggx`/`beckmann`) after loading; repeatable; echoed into the report |
+| `--set [<model>/]<material>.<field>=<value>` | none | override `diffuse_albedo`, `specular_f0`, `roughness`, `distribution` (`ggx`/`beckmann`), `haze_fraction`, `haze_roughness` or `minnaert` after loading; repeatable; echoed into the report |
 
 Occlusion between parts is on by default in SatBench even though it is off by default in the app, where it is
 an opt-in for performance. SatBench is a physics check, so it uses the full model.
@@ -210,7 +219,7 @@ Each run writes `<benchmark id>__<model id>__seed<S>.json` in the report directo
 | `config` | the `BenchRunConfig` used (samples, seed, elevation limit, Sun window, fallback, censoring) |
 | `reference` | source (observations or published summary), n, mean, median, sd, linear phase fit |
 | `result` | n, censored count, mean, median, sd, standard error, linear phase fit, share brighter than \( m_{1000} = 5 \), satellite and time draws |
-| `comparison` | one row per metric: model, reference, delta, tolerance, verdict (`pass`/`fail`/`info`/`n/a`) |
+| `comparison` | one row per metric: model, reference, delta, tolerance, verdict (`pass`/`fail`/`known`/`info`/`n/a`) |
 | `phase_curve` | per 10° bin: observed and simulated counts and means, delta, whether scored |
 | `sensitivity` | the alternative runs, when requested |
 | `dominant_surface` | per lobe: group, body normal, area, albedo, share |
@@ -252,6 +261,16 @@ error against the brute force as information; the accepted values are in [Result
 The tool also prints each model's **provenance** (counts of sourced, derived, calibrated and estimated parts,
 every non-sourced entry, and any part with no `sources` entry at all); see [Model provenance](provenance.md).
 
+## Light-curve replays
+
+`SatModelTool --pass <spec.json> --pass-out <out.json>` evaluates one model along a given track of states (for
+example SGP4 positions from archived element sets) for an observer at a geodetic position, with occlusion and
+line-of-sight extinction, and writes the magnitudes per instant. It is how a model is compared with a measured
+light curve rather than with a campaign's statistics; the results are on [Results](results.md). The observer
+stands on the WGS84 ellipsoid, and the extinction, whose atmosphere is a 6371 km sphere, is evaluated from the
+observer's geodetic height above that sphere (written as `obs_height_m`), not from \( |\mathbf{r}| - 6371 \)
+km. The tool and its spec format are described on [Tools](../development/tools.md).
+
 ## Magnitude traces
 
 The selection panel's **Trace pass** button runs the evaluator over the selected satellite's current pass, or
@@ -288,7 +307,9 @@ observer and time. Choose the source (the selected satellite or a constellation)
 next 7 days from the sim time) and the cadence (10, 30 or 60 s). A worker thread (`runBulkExport()`) visits
 every instant at the cadence with the Sun in SatBench's twilight window, and for every satellite of the
 source records those instants where it is at or above 20° and fully sunlit, evaluated with `benchEvalSample()`, the
-same function SatBench uses. Consecutive visible instants of one satellite are numbered as one `pass`.
+same function SatBench uses. Consecutive visible instants of one satellite are numbered as one `pass`. The
+window is SatBench's default (Sun −18 to −6 deg, elevation ≥ 20 deg), not a benchmark's measured one, so an
+export's mean is comparable to a benchmark only where that benchmark samples the same window.
 
 The output is `<user data>/exports/samples_<source>_<sim time>.csv`, format `sat-light-sim-samples/1`, which
 is the one schema for simulated observations: SatBench's `.samples.csv` uses it too. The header records the
@@ -345,13 +366,15 @@ benchmark, and a dataset the model is known not to reproduce is marked ungated r
 
 - `src/simulations/SatPhotometry.h/.cpp`: `evalSatPhotometry()`, `satOrbitStateAt()`, `satGroundSiteIdeal()`,
   earthshine, extinction, `sunDirEciAt()`, `observerEciAt()`, `earthRotationAngle()`.
+- `src/simulations/SatBenchmark.h/.cpp`: the benchmark file, including `sampling.constraints` and per-site windows.
 - `src/simulations/SatBench.h/.cpp`: `BenchRunConfig`, `runDistributionBenchmark()`, `benchEvalSample()`,
   `runBulkExport()`, `writeBenchSamplesCsv()`/`readBenchSamplesCsv()`.
 - `src/simulations/SatTrace.h/.cpp`: `evalSatTraceRow()`, `satTracePassWindow()`, the trace CSV.
 - `src/simulations/SatelliteSim.cpp`: `updateSelectedPhotometry()` (parity check), `exportTrace()`,
   the bulk-export job; `SatelliteSimUI.cpp` for the trace window and the Photometry tab.
 - `tools/sat_model_tool/main.cpp`: the CLI, self-tests, `checkBenchmark()`, `replayTrace()`,
-  `summarizeSamples()`; `tools/sat_model_tool/bench_run.cpp`: `--run-benchmark` and the report.
+  `summarizeSamples()`; `tools/sat_model_tool/bench_run.cpp`: `--run-benchmark` and the report;
+  `tools/sat_model_tool/pass_eval.cpp`: `--pass`.
 - `cmake/AccuracyGate.cmake`, `CMakeLists.txt` (`accuracy-gate` target), `CMakePresets.json`
   (`linux-accuracy-gate`), `.github/workflows/release.yml`.
 - `tools/benchmarks/scan_overrides.py`, `tools/benchmarks/plot_benchrun.py`.

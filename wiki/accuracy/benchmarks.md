@@ -27,6 +27,7 @@ a file whose `format` is anything else, whose `id` is empty, or whose `kind` is 
 | `transcription` | `source`, `method`, `date`, `check`: how the numbers were read and how they were verified |
 | `columns`, `observations` | individual measurements, when the paper publishes them |
 | `gated` | optional, default `true`; `false` reports a miss without failing (below) |
+| `ungated_metrics`, `ungated_note` | optional: metrics whose miss is reported as `known` without failing (below) |
 
 ### Published statistics and locators
 
@@ -57,9 +58,19 @@ ones, the locator says so and shows the arithmetic; for example a population siz
   then uses a fallback date).
 - `sites`: each observer with `name`, `lat_deg`, `lon_deg` (east positive), `instrument` and, where
   published, `count` (observations from that site). The word `visual` in `instrument` matters: the censoring
-  rule applies only at visual sites.
-- `constraints`: `penumbra_excluded`, `sun_altitude_deg`, `min_elevation_deg` and a `note`. A `null` is an
-  honest "the paper does not say", and SatBench fills it with an explicit, reported assumption.
+  rule applies only at visual sites. A site may also carry its own `sun_altitude_deg` and `min_elevation_deg`,
+  which replace the file-level constraints for that site's draws (an instrument that follows high passes, or
+  observes in a different twilight, than the visual observers).
+- `constraints`: `penumbra_excluded`, `sun_altitude_deg` (`[min, max]`, the Sun's altitude at the observer in
+  degrees), `min_elevation_deg` (a number) and a `note`. SatBench samples inside these limits. A `null` is an
+  honest "the paper does not say", and SatBench then uses its own reported assumptions (Sun −18 to −6 deg,
+  elevation ≥ 20 deg). A malformed value (not `null`, not a pair with min < max, not a number) fails the load.
+
+Papers rarely state their observers' windows, so where a file gives one it is **measured**, and the
+constraint's `note` says how: from the paper's own per-pass rows when it lists them (the 2.5 to 97.5 percentile
+of the Sun's altitude in a replay of those passes), or from the same observers in another campaign. The windows
+matter: a satellite seen with the Sun well below −18 deg is seen against a dark sky at a different phase angle
+than one seen in bright twilight.
 - `censoring`: visual observers report satellites they could not see. `limiting_mag_apparent` is the faintest
   apparent magnitude they could see, `not_seen_assigned_apparent` the magnitude the paper assigned to a
   satellite that was not seen, and `count` the number of such rows.
@@ -88,6 +99,10 @@ miss is printed as a failure, but it does not fail `SatModelTool` or the accurac
 dataset the model is known not to reproduce yet, so that the miss stays visible in every report rather than
 the file being dropped. It is not a way to silence a regression: every ungated file is listed with its gap in
 `KNOWN_RESIDUALS.md`. One file is ungated: Guowang during orbit raising.
+
+`"ungated_metrics": ["phase_curve_rms"]` (with an `ungated_note`) is the narrower form: a miss of a listed metric
+prints `known` and does not fail, while the file's other metrics stay gated. VisorSat uses it for its phase-curve
+RMS (see [Results](results.md#starlink-visorsat-mallama-2021)).
 
 ## The transcription-trust rule
 
@@ -140,18 +155,24 @@ photometry against nearby catalogue stars, or extinction-corrected), in V or clo
 | `mallama2025_starlink_v15` | Mallama et al. 2025, arXiv:2507.00107, Table 1 | Starlink V1.5 | `starlink_v1_5` | 268 | 6.34 ± 0.05 | summary | the gen-1 mirror film and translucent backsheet |
 | `mallama2026_amazon_leo` | Mallama, Cole, Respler & Harrington 2026, arXiv:2601.07708 | Amazon Leo, operational | `amazon_leo` | 758 | 6.81 ± 0.02 | summary | held out; a layout read from the authors' interpretation of imagery |
 | `mallama2025_guowang` | Mallama et al. 2025, arXiv:2507.00107, Table 1 | Guowang, orbit raising | `guowang` | 455 | 4.21 ± 0.04 | summary | **not gated**: unpublished hardware and attitude |
+| `mallama2023_bluewalker3` | Mallama, Cole, Tilley, Bassa & Harrington 2023, arXiv:2305.00831 | BlueWalker 3, regular (nominal attitude) | `bluewalker3` | 298 (derived) | 3.09 ± 0.04 | summary | a large flat phased array; the face albedo is fitted to the same visual data |
 
 ### Notes on individual files
 
 **Mallama 2020a (V1.0).** Six observers including MMT9, with per-site counts from the paper's Table 1. The
 start of the period is not stated (the paper covers observations "through May 2020"). Selection limits are
-not stated. It also prints a flat-panel fit (magnitude against the projected nadir area toward observer and
+not stated; the file gives measured ones: the visual sites Sun −24 to −10 deg and elevation ≥ 30 deg (as for
+VisorSat), MMT9 its own Sun −33 to −11 deg and elevation ≥ 45 deg from its V1.0 tracks. It also prints a flat-panel fit (magnitude against the projected nadir area toward observer and
 Sun), stored for reference and not compared.
 
 **Mallama 2021 (VisorSat).** Two visual observers and MMT. The observations are the appendix's rows,
 transcribed with the "not seen" rows (printed in red) flagged from the page images. The censoring rule:
 visual observers' limit is apparent magnitude 8.0 and a satellite not seen is assigned 8.5. The site weights
-in a simulation come from how many rows each observer contributed.
+in a simulation come from how many rows each observer contributed. The windows are measured: the visual sites
+Sun −24 to −10 deg (the same observers' rows in the BlueWalker 3 campaign) and elevation ≥ 30 deg (at ≥ 15 deg the
+sampler censors about 40% of the visual samples as not seen, where the table has 2.4%; at ≥ 30 deg about 1%);
+MMT Sun −24 to −11 deg and elevation ≥ 45 deg (MMT follows high passes; the sampler's median elevation then
+matches MMT's 56 deg). The file lists `phase_curve_rms` under `ungated_metrics`.
 
 **Mallama et al. 2023 (V2 Mini).** Only the mitigated population is modelled; the model does not fly the
 early, unmitigated attitude. The paper does not print the mitigated count, so `n` is derived from its
@@ -166,6 +187,14 @@ assumption written into the file).
 export shifts the count column by one row; it was realigned by hand, as `transcription.method` records.
 Observers, split and period are assumptions. For Guowang the satellites were orbit raising, from about
 900 km to 1170 km (mean 1053 km), in an attitude nobody has published.
+
+**Mallama et al. 2023b (BlueWalker 3).** The paper's "regular" magnitudes only: after deployment, outside the
+three faint periods when the operator rolled the zenith solar face toward the Sun, and without its
+pseudo-specular values. The sampler cannot filter on the roll, but the model flies the nominal attitude
+throughout, which is what the subset measures. `n` is derived from the standard deviation and standard error.
+The window is measured from the paper's Appendix B visual rows (155 rows replayed with SGP4): Sun −24 to −10 deg
+(44% of them below −18 deg: at 516 km the satellite stays lit long after astronomical twilight), elevation
+≥ 15 deg. The shell is from the satellite's element sets: 516 km, 53.2°.
 
 **Mallama et al. 2026 (Amazon Leo).** Satellites holding 630 km in the operational attitude, from the paper's
 Table 3. Observations by a 50 cm telescope of orbit-raising satellites are excluded.

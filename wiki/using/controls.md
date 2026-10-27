@@ -53,7 +53,9 @@ second.
 | F8 | HQ photo: a supersampled, settled picture (see [Features](features.md#pictures)) |
 | F9 | Save a shot into the active issue report (see [Reporting a problem](features.md#reporting-a-problem)) |
 | F7 | Start a new issue report with a shot of the current view |
+| F6 | Start / stop recording a video (see [Videos](features.md#videos)) |
 | `M` | Open or close the [Missions](missions.md) window |
+| `N` | Open or close the [Weather](weather.md) window |
 | `]` / `[` | Skip to the next / previous [mission milestone](missions.md#mission-milestones) of the followed or selected launch object |
 | `G` | Leave Go to and stay where the camera is (see [Follow mode](#follow-mode-go-to)) |
 | `H` | Go to: return to the followed object's default view, or follow the last object again |
@@ -130,7 +132,8 @@ height. You can climb to 100 000 km above sea level; `Z` puts you back on the gr
 
 ## Follow mode (Go to)
 
-**Go to**, in a selected object's panel, its satellite window or a row of the Missions window, flies the camera out
+**Go to**, in a selected object's panel or its satellite window (and a **Watch** on a flight, station or train in the
+Missions window), flies the camera out
 to it and keeps it there, riding along (only for objects with a [geometry model](../modding/satellite-models.md):
 modelled satellites, rockets and debris pieces). From the ground the flight takes 0.8 to 2.5 s and arrives on the
 line from your ground position to the object, so you see the same side of it, and the same flare, that you saw from

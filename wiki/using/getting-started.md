@@ -87,17 +87,42 @@ details are on [Building and releasing](../development/building.md).
    step when the measurement calls for it: down when frames are slow (more than about 18 ms: Medium to Low, Low
    to Planetarium, Planetarium to Potato), up when they are fast (under about 5 ms: Potato to Planetarium, Low to
    Medium, Medium to High). A notice then says which preset is active. A skipped intro changes nothing.
-4. **The tutorial.** After the intro, a card at the bottom of the screen walks through looking around, moving,
-   climbing, boosting and selecting a satellite. Each of these steps finishes when you do it, and a picture of the
-   keyboard, mouse or gamepad lights the input to use. Later cards outline the selection buttons, the time
-   controls, the picture buttons and the menu buttons (Bookmarks, Cinematics, Settings) on the screen. When the
-   program is on Planetarium or Potato, a last **Graphics** card says that there are no clouds and that **Low**
-   (Settings → Display → Preset) brings them and every other effect back at half resolution. **Skip** ends the
-   tutorial; with a gamepad, **Start** goes to the next card and **View** skips. It runs once; Settings →
-   Display → **Replay tutorial** runs it again.
+4. **The tutorial.** After the intro, a card at the bottom of the screen walks you through the program in thirteen
+   steps; see [The tutorial](#the-tutorial) below. It runs once; Settings → Display → **Replay tutorial** runs it
+   again.
 
 Whether the intro plays at every launch is the **Play intro on startup** setting (Display tab; on for a new
 install). **Replay intro** plays it once on demand.
+
+### The tutorial
+
+One card at a time, each finished by doing what it asks. A picture of the keyboard, mouse or gamepad lights the
+input to use, and the cards that are about the interface outline just the button they mean.
+
+| Step | What it asks |
+|---|---|
+| Look around | Drag with the right mouse button (or the right stick) |
+| Move over the Earth | Walk with `W A S D` (or the left stick) |
+| Climb and descend | `Q` and `E` (or the triggers) |
+| Go faster | Hold boost while moving |
+| Pick a satellite | Click one, or press `T` (A) for the one nearest the middle of the view |
+| Satellite info | Open the selected satellite's window with **Info** |
+| Go to: ride along | Fly out to it with **Go to**, then leave: **Exit** flies you home, **Stay here** (`G`) leaves you floating where the camera is |
+| Trace and Track | Try **Trace pass** or **Track** |
+| Time | Slow down, pause, speed up or reverse time |
+| Pictures | The screenshot, HQ photo and star trails buttons |
+| Missions: what's next | Open the [Missions](missions.md) window (the rocket button or `M`) and use a **Watch** on its Upcoming tab: a launch, or the Sun's Fury |
+| Missions: under way | Look at the Ongoing tab for 5 s, or use one of its buttons |
+| Menus | Bookmarks, Cinematics, Issue reports and Settings |
+
+The steps about the selected satellite need a satellite with a 3D model; when none is selected, the card offers
+**Pick one for me** (with a mouse), which selects a sunlit station or Starlink high in your sky and turns the camera to it. Once the
+Missions step has moved the clock and taken you somewhere, every later card offers **Back to** *date and time*,
+which returns you to the time, place, view, clock speed and clouds you had before. When the program is on
+Planetarium or Potato, a last **Graphics** card says that there are no clouds and that **Low** (Settings → Display →
+Preset) brings them and every other effect back at half resolution.
+
+**Skip** ends the tutorial; with a gamepad, **Start** goes to the next card and **View** skips.
 
 !!! note "Crash recovery"
     The program keeps a `session.lock` file while it runs. If it is still there at the next launch, the previous
@@ -125,6 +150,7 @@ What is in it:
 | `pipeline_cache.bin` | Compiled shader pipelines, so later launches start fast (next to the exe when writable). Safe to delete |
 | `session.lock` | Present while the program runs; see crash recovery above |
 | `cinematics/` | Saved cinematics, one JSON file each |
+| `videos/` | Recorded videos (F6), `satlight_<date>_<time>.mp4` |
 | `traces/` | Magnitude traces exported as CSV |
 | `exports/` | Bulk brightness exports (CSV) |
 | `perf_profiles/profile_log.jsonl` | Performance snapshots: one line per issue shot (F9, F7) and per Settings → Performance → Save snapshot |
@@ -143,7 +169,7 @@ cannot be created):
 |---|---|
 | Screenshot (F12) | `screenshots/satlight_<date>_<time>.png` |
 | HQ photo (F8) | `screenshots/satlight_hq_<date>_<time>.png` |
-| Cinematic export | `screenshots/cinematics/<name>_<stamp>/` (one PNG per frame; `_hq` suffix for an HQ export) |
+| Cinematic export | `screenshots/cinematics/<name>_<stamp>/` (one PNG per frame, or `<name>.mp4` for a video export; `_hq` suffix for an HQ export) |
 
 **Resetting.** Settings → Display → **Reset to defaults** deletes the saved settings; the next launch starts
 from the defaults as a first run. Deleting `settings.json` by hand does the same.

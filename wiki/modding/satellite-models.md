@@ -185,8 +185,9 @@ Satellites whose root group uses the `tumble` law only spin in a RandomShell she
 
 ## Materials
 
-A material is a Lambertian diffuse term plus a microfacet specular lobe (GGX by default, or Beckmann), with
-Schlick Fresnel. A component may name a preset directly, or a model-local material:
+A material is a diffuse term (Lambertian by default) plus a microfacet specular lobe (GGX by default, or
+Beckmann), with Schlick Fresnel, and optionally a second, broader specular lobe (a haze). The equations are on
+[Satellite photometry](../simulation/photometry.md#the-reflectance-of-one-lobe). A component may name a preset directly, or a model-local material:
 
 ```json
 "materials": [
@@ -203,16 +204,30 @@ overrides any field:
 |---|---|---|---|
 | `name` | string | required | Referred to by `material` / `back_material` / `arc_material` / `inner_material` |
 | `preset` | string | none | Base material. An unknown name is logged and the defaults below are used |
-| `diffuse_albedo` | 0 to 1 | 0.1 | Lambertian albedo \( \rho_d \) |
+| `diffuse_albedo` | 0 to 1 | 0.1 | Diffuse albedo \( \rho_d \) |
+| `minnaert` | 0.2 to 1 | 1 | Minnaert exponent \( k \) of the diffuse term; 1 is Lambert (below) |
 | `specular_f0` | 0 to 1 | 0.04 | Reflectance at normal incidence: about 0.04 for paint and glass, 0.9 for metal and mirrors |
 | `roughness` | number | 0.2 | Microfacet \( \alpha \): 0.0005 is a mirror, 0.5 matte |
 | `distribution` | `ggx` or `beckmann` | `ggx` | GGX has long tails; Beckmann's are Gaussian, right for smooth dielectric films |
+| `haze` | `{"fraction": f, "roughness": α}` | none | A share \( f \) (0 to 1) of the specular reflectance in a second lobe of roughness α (default 0.04), same distribution (below) |
 | `color` | `[r, g, b]` | `[1, 1, 1]` | Visual tint in the 3D view and the OBJ export |
 | `transmission` | 0 to 1 | 0 | Diffuse transmission: the share of light falling on the other side that leaves this side, diffusely |
 | `transmission_color` | `[r, g, b]` | `[1, 0.55, 0.15]` | Tint of transmitted light in the 3D view (amber, as through Kapton) |
 | `coverage` | (0, 1] | 1 | Open lattice: the solid fraction of the surface (below) |
 | `truss_pitch` | metres, ≥ 0.05 | 1 | Bay size of the lattice cut-out |
 | `pattern` | see below | from the preset | Procedural surface detail, visual only |
+
+**Minnaert diffuse.** With `minnaert` below 1 the diffuse intensity is \( \rho_d (k+1)/(2\pi)\,(\cos i \cos e)^k \)
+per unit area instead of Lambert's \( \rho_d \cos i \cos e / \pi \): the same with light and view overhead, brighter
+than Lambert with either grazing. Rough and painted surfaces often behave so; Mallama measured \( k \approx 0.58 \)
+for the original Starlink. The value is stored at a resolution of 1/127, and a value outside [0.2, 1] is logged and
+replaced by 1. Transmission stays Lambertian. The 2020 Starlink models use 0.65.
+
+**Haze.** A silvered or polished film puts most of its reflection in a sharp core and scatters a share into wide
+wings around it, which one lobe cannot do. With `"haze": {"fraction": 0.3, "roughness": 0.04}` the material
+reflects 70% of its specular light through its own `roughness` and 30% through a lobe of α 0.04. Each hazy facet
+group bakes into two lobes, so it counts twice against the lobe budget. A fraction outside [0, 1] is logged and
+replaced by 0, a roughness outside (0, 1] by 0.04. `iridium_block1.json` uses it on its Main Mission Antennas.
 
 **Transmission** models a translucent part such as a flexible solar array on a Kapton blanket: a backlit array
 glows through the gaps between its cells. It is part of the brightness model, not only the picture.
@@ -476,7 +491,8 @@ from an exact per-triangle evaluation, and the provenance counts with any unexpl
 | `--budget <lobes>` | Bake with a different lobe budget (default 48, the budget of a large shell) |
 | `--selftest <N>` | Run the brightness self-tests on N random geometries, including the part-shadowing check |
 | `--shadow-study <N>` | Study how parts shadow each other |
-| `--set [<model>/]<material>.<field>=<value>` | Try a material change without editing the file |
+| `--set [<model>/]<material>.<field>=<value>` | Try a material change without editing the file (`diffuse_albedo`, `specular_f0`, `roughness`, `distribution`, `haze_fraction`, `haze_roughness`, `minnaert`) |
+| `--dump-json <file>` | Write the model's triangles, lobes per budget level, validation pairs and brightness spheres as JSON (`MODEL` in the name is replaced by the model id); the technical videos read it |
 
 The benchmark options are described on [SatBench and the accuracy gate](../accuracy/satbench.md), and the tool
 itself on [Tools](../development/tools.md).

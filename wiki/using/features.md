@@ -1,10 +1,10 @@
 # Features tour
 
 A walk through what you can do in SAT LIGHT SIM: find your way around the screen, pick out satellites, rockets and
-planets, inspect one in 3D, plot how bright it gets over a pass, control time, watch launches and the Sun's Fury,
-save places as bookmarks, take pictures and films, report a problem, and find your way around the settings. The
-keys are on [Controls](controls.md), the Missions window on [Missions](missions.md); how each thing is computed is
-linked from each section.
+planets, inspect one in 3D, plot how bright it gets over a pass, control time, watch launches, storms and the Sun's
+Fury, save places as bookmarks, take pictures, videos and films, report a problem, and find your way around the
+settings. The keys are on [Controls](controls.md), the Missions window on [Missions](missions.md), the Weather window
+on [Weather](weather.md); how each thing is computed is linked from each section.
 
 ## The screen
 
@@ -12,8 +12,8 @@ Two panels sit along the bottom of the screen; **Tab** hides them for a clean vi
 
 | Panel | Contents |
 |---|---|
-| Bottom left | The UTC clock and speed, the time buttons (slower, pause, faster, reverse) and the picture buttons (Screenshot, HQ photo, Star trails) |
-| Bottom right | Latitude, longitude, altitude with an **MSL / AGL** switch (above sea level or above the ground), the frame rate, the version, and the menu buttons: **Issue reports**, **Missions**, **Bookmarks**, **Cinematics** and **Settings**. A menu button is lit while its window is open |
+| Bottom left | The UTC clock and speed, the time buttons (slower, pause, faster, reverse) and the picture buttons (Screenshot, HQ photo, Star trails, Record video) |
+| Bottom right | Latitude, longitude, altitude with an **MSL / AGL** switch (above sea level or above the ground), the frame rate, the version, and the menu buttons: **Missions**, **Weather**, **Bookmarks**, **Cinematics**, **Issue reports** and **Settings**. A menu button is lit while its window is open |
 
 The icons are solid white silhouettes; hover any button to see its name.
 
@@ -210,10 +210,24 @@ into a sunlit bell high above a dark ground. Boosters fly back and land, Starshi
 their towers, and every upper stage deorbits. The roar arrives at the speed of sound.
 
 The launch sites are drawn on the ground: graded concrete, flame trenches, towers, tank farms and landing zones,
-with floodlights and beacons at night. Everything about launches is in the [Missions](missions.md) window: the
-schedule, what is flying, the settings, and the milestones of each flight. The physics is on
+with floodlights and beacons at night. The [Missions](missions.md) window lists the schedule and what is flying, and
+its **Watch** buttons take you to a launch as it lifts off; the settings are in Settings → **Launches**, and each
+flight's milestones are in its satellite window. The physics is on
 [Launches](../simulation/launches.md), [Rocket flight](../simulation/rockets.md) and
 [Crew flights](../simulation/crew-flights.md).
+
+## Weather and storms
+
+The clouds carry real storms: thunderstorms that form, grow, flash with lightning, rain and die over a few hours,
+supercells that put down tornadoes, squall lines that sweep across a region, tropical cyclones with names, eyes and
+spiral arms that cross whole oceans over days, haboobs (walls of dust raised by a storm's outflow over a desert) and
+wildfires with their smoke. Each one is fixed when it forms, so going back and forth in time shows the same storms.
+
+The **Weather** button (a cloud, bottom right) or **N** opens the [Weather](weather.md) window: a local rain radar,
+the most interesting events happening now or soon (the next tornado, the strongest hurricane, the next haboob, and
+so on), the storms near you, the named tropical cyclones with their tracks, and the main storm settings. Every event
+has one **Watch** button that takes you to it while it is happening. How the storms work is on
+[Weather](../simulation/weather.md).
 
 ## The Sun's Fury
 
@@ -221,8 +235,10 @@ On 15 July 2037 at 03:00 UTC <!-- history-ok -->, two days after the Great Austr
 solar storm arrives. Its aurora reaches the mid-latitudes, it kills a share of the satellites in orbit, and the dead
 tumble and collide. Every collision is a cloud of debris that feeds the next: a Kessler cascade, computed at
 physical rates. Before the storm nothing differs from the plain sky. There is no mode to switch on: the storm
-happens when sim time gets there. The [Missions](missions.md#the-suns-fury-card) window counts down to it and has
-buttons to go there.
+happens when sim time gets there. The [Missions](missions.md#the-suns-fury-card) window counts down to it and its
+**Watch** goes to the storm's first night; its **Kessler** tab
+[tracks the cascade](missions.md#kessler-the-debris-tracker) with counts, a globe of the debris shells and the latest
+breakups.
 
 What you can see after it:
 
@@ -251,7 +267,7 @@ settings below removes all of yours.
 
 ### Settings
 
-In the Missions window's **Controls** tab, section THE SUN'S FURY:
+In Settings → **Launches**, sections THE SUN'S FURY and GRAPHICS: DEBRIS AND RE-ENTRIES:
 
 | UI label | `settings.json` key | Default | Effect |
 |---|---|---|---|
@@ -263,9 +279,11 @@ In the Missions window's **Controls** tab, section THE SUN'S FURY:
 | Fireball material colours | `kessler.fireball_colors` | Vivid | Off, Subtle, Vivid: aluminium white, copper green, titanium blue-white, sodium yellow, lithium crimson |
 | Small re-entry brightness | `kessler.small_reentry_gain` | x30 | Off, x1, x3, x10, x30, x100 for the small fragments' streaks. x1 is physical, about magnitude +1 from 100 km |
 
-**Watch the next re-entry** jumps to the next satellite or large piece coming down over a dark sky, 25 s before it
-breaks up, from beside its track. Live counts follow: days since the storm, how far the cascade is computed, dead
-satellites, destroyed or re-entered satellites, large pieces, small fragments made, collisions, and your breakups.
+The first four re-simulate the cascade when changed; the last three only change how it looks. **Watch the next
+re-entry** jumps to the next dead satellite or large piece burning up over a dark sky, in mid-glow about 35 s before
+it breaks up, seen from the ground beside its track on the side with the clearer sky; the fireball is selected and
+tracked. Live counts follow (days since the storm, how far the cascade is computed, collisions), with **Open the
+Kessler tracker** and, once you have broken something up, the number of your breakups and **Undo my breakups**.
 
 The **Collision debris** row of the Constellations tab shows or hides the debris; its **HLT** tints the pieces
 orange and draws each as a visible dot, to see the cloud's pattern.
@@ -291,7 +309,7 @@ thumbnails as PNG files beside it.
 
 ### The bookmarks that ship with the sim
 
-A first run, with no `bookmarks.json` yet, starts with nine bookmarks. Deleting all of them leaves an empty list,
+A first run, with no `bookmarks.json` yet, starts with ten bookmarks. Deleting all of them leaves an empty list,
 which stays empty; **Restore defaults** brings them back.
 
 | Bookmark | What it shows |
@@ -305,6 +323,7 @@ which stays empty; **Restore defaults** brings them back.
 | The Sun's Fury | Monument Valley on the storm's first night, three and a half hours after it arrives: the aurora overhead |
 | Twilight Starship Launch | A Starship lift-off from Starbase Louisiana at twilight, from the ground |
 | Starmind Deployment | A sunlit Starship releasing Starmind satellites, seen from 350 km. Starts paused |
+| Super Typhoon over Luzon | A Category 4 super typhoon seen from about 885 km straight above its eye, two hours before it comes ashore on Luzon. Starts paused |
 
 A bookmark may also set the clock when you go to it: the shipped ones run at 1x, and those marked above start
 paused. The shipped files live in `default_bookmarks/` next to the program.
@@ -317,6 +336,7 @@ paused. The shipped files live in `default_bookmarks/` next to the program.
 | Screenshot with UI | F10 | The same, always with the interface |
 | HQ photo | F8, or the sparkle-camera button | `screenshots/satlight_hq_<date>_<time>.png` |
 | Star trails | `F`, or the trails button | A long exposure: stars, planets and satellites leave streaks until you switch it off |
+| Video | F6, or the video-camera button | Starts and stops a recording: `videos/satlight_<date>_<time>.mp4` in the user data folder (see [Videos](#videos)) |
 
 A screenshot with the interface keeps every window you had open, but never the things that exist only because of
 the shot: its own notice, the issue note bar and the Issue reports window. The picture is the frame shown right
@@ -325,8 +345,9 @@ after the key press.
 **HQ photo** pauses time, renders the scene offscreen at a multiple of the window size and lets it settle for a
 number of frames before saving, so the clouds and other temporally accumulated effects are fully converged. All
 the detail that depends on pixel size (terrain, city lights) follows the finer pixels, so a photo shows more
-detail than the window, not just more pixels. At 2× a 1600 × 900 window (a 3200 × 1800 photo) it takes a
-couple of seconds.
+detail than the window, not just more pixels. The god rays (the shadows of clouds and mountains on the air) are
+traced for every pixel of the photo, so their edges are as sharp as its resolution. At 2× a 1920 × 1009 window it
+takes about 6 s.
 
 | Setting (Display tab) | `settings.json` key | Default |
 |---|---|---|
@@ -336,6 +357,30 @@ couple of seconds.
 | Settle frames (*HQ photo*) | `display.photo_frames` | 48 |
 
 Star trails' decay and brightness are the **Trail decay (s)** and **Trail gain** sliders on the Photometry tab.
+
+### Videos
+
+**F6** ("Record Video", rebindable) or the video-camera button at the end of the bottom-left panel starts a
+recording; the same key or button stops it. While it runs, a **REC** badge at the top left shows the elapsed time,
+and a notice names the file when it has been written. The video is an H.264 `.mp4` in `videos/` in the user data
+folder.
+
+- By default the video holds the scene alone, while you still see the interface on screen. **Videos include the UI**
+  records the interface too.
+- The video keeps real time: a frame the program did not draw in time repeats the previous one, so motion plays at
+  the speed you saw it.
+- Recording costs almost nothing on the frame rate: the frames are copied from the GPU two frames later and encoded on
+  a separate thread.
+- On Windows the encoder is the one Windows ships (a hardware encoder where the graphics driver provides one); on
+  Linux and macOS it is an `ffmpeg` found on the `PATH`. Nothing is bundled.
+- A minute of 1080p at 60 fps is about 105 MB with motion and 40 to 50 MB of a still view; about 15 MB at 50% and
+  30 fps.
+
+| Setting (Display tab, *Video*) | `settings.json` key | Default |
+|---|---|---|
+| Videos include the UI | `display.video_ui` | off |
+| Frame rate | `display.video_fps` | 60 (30 or 60) |
+| Resolution (of the window) | `display.video_scale` | 100% (100, 75 or 50%) |
 
 ## Cinematics
 
@@ -357,18 +402,19 @@ The **Cinematics** button (a clapperboard, bottom right) opens the **Cinematics*
 - **Save** writes `<name>.json` into `cinematics/` in the user data folder; a new name saves a copy. The saved
   list underneath has **Load** and a two-click **Delete**.
 
-**Exporting** writes one PNG per frame to `screenshots/cinematics/<name>_<stamp>/`:
+**Exporting** writes into `screenshots/cinematics/<name>_<stamp>/`:
 
 | Export | What it does |
 |---|---|
-| **Export preview** | Renders each frame at window size, at the chosen frames per second |
-| **Export HQ** | Renders each frame as an HQ photo (resolution and settle frames set in the window). The window shows the expected time before it starts |
+| **Export preview** | Renders each frame at window size, at the chosen frames per second, as one PNG per frame |
+| **Export video** | The same frames as one `<name>.mp4` (H.264), every frame kept, no motion blur. Falls back to PNG frames when no video encoder is available |
+| **Export HQ** | Renders each frame as an HQ photo (resolution and settle frames set in the window), one PNG per frame. The window shows the expected time before it starts |
 
 In an HQ export, each frame's settle frames are averaged evenly, and the previous frame's result counts as one more
 frame's worth, so each exported frame is the mean of about twice the settle frames. Fine cloud edges therefore do not
 flicker from frame to frame; after a cut between shots the average starts afresh.
 
-**Motion blur (subframes)** renders each exported frame as several subframes across a half-frame shutter and
+**Motion blur (subframes)** renders each exported PNG frame as several subframes across a half-frame shutter and
 averages them in linear light. While an export runs, a progress bar with the frame count, the time left and
 **Stop** stays on screen.
 
@@ -395,18 +441,19 @@ to Open again. The format and the developer's side are on [Issue reports](../dev
 ## Settings
 
 The **Settings** button (a gear, bottom right) opens the settings window. Its tabs are listed down the left side
-under four headings, in a list that scrolls on its own. Six tabs are always there; eight more appear when **Show
+under four headings, in a list that scrolls on its own. Seven tabs are always there; eight more appear when **Show
 advanced settings** (Display tab) is on.
 
 | Heading | Tab | What it holds |
 |---|---|---|
-| GENERAL | Display | *Graphics*: preset, render scale, automatic render scale, clouds following the render scale, temporal anti-aliasing, frame limiter, beam pointing rays. *Window*: window mode, text scale, units, UI theme, window opacity. *Screenshots*. *HQ photo*. *Startup*: play the intro on startup, ask for the graphics mode on startup, replay the intro or the tutorial. *Settings*: show advanced settings, dev mode, reset to defaults |
+| GENERAL | Display | *Graphics*: preset, render scale, automatic render scale, clouds following the render scale, temporal anti-aliasing, frame limiter, beam pointing rays. *Window*: window mode, text scale, units, UI theme, window opacity. *Screenshots*. *Video*. *HQ photo*. *Startup*: play the intro on startup, ask for the graphics mode on startup, replay the intro or the tutorial. *Settings*: show advanced settings, dev mode, reset to defaults |
 | | Controls | *Movement* (move speed), *Bindings* (each action's key and gamepad button, with Rebind and Bind), *Mouse* (look, zoom, select), *Invert look*, *Help* (the controls overlay); see [Controls](controls.md) |
 | | Sound | Volume, music, ambience and the ambience mix; see [Sound](../sound/index.md) |
-| SKY | Constellations | The constellations, grouped (below); the planets; a button that opens the Missions window |
+| SKY | Constellations | The constellations, grouped (below); the planets; a button that opens the Launches tab |
+| | Launches | Rocket, exhaust and launch-site graphics, the debris and re-entry graphics, the launch settings and the Sun's Fury; see [Missions](missions.md#settings-the-launches-tab) |
 | | Photometry | *Exposure and Moon* (exposure, auto exposure, highlight roll-off, white balance, the Moon's drawn size), *Brightness*, *Sky dimming*, *Point sources*, *Bloom and glare*, *Dark sky* (Milky Way and zodiacal light), *Star trails*, *Satellite models* (part occlusion, reflections), *Bulk export* |
 | RENDERING *(advanced)* | Clouds | The volumetric clouds: shape, lighting, quality |
-| | Weather | Storms, lightning, rain and snow, weather evolution, fog, dust, ice fog, cloud shadows and god rays |
+| | Weather | Storm objects, storms, lightning, rain and snow, weather evolution, fog, dust, ice fog, cloud shadows and god rays, and experimental rendering options |
 | | Atmosphere | Scattering, airglow, zodiacal light, aurora (with a live readout of the current space weather) |
 | | Terrain | Relief detail, materials, shadows, close-up textures |
 | | Night lights | City lights, roads, light sprites, night sky light |
@@ -462,4 +509,6 @@ three are under *Point sources*, the last under *Bloom and glare*.
 - `src/simulations/SatelliteSimBookmarks.cpp`: bookmarks.
 - `src/simulations/SatelliteSimReports.cpp`, `src/simulations/SatelliteSimReportsWindow.cpp`: issue reports.
 - `src/simulations/SatelliteSimCinematic.cpp`, `src/simulations/Cinematic.cpp`: cinematics.
+- `src/simulations/SatelliteSimVideo.cpp` (`videoToggle()`, `videoStart()`), `src/VideoRecorder.cpp`,
+  `src/VideoEncoder.cpp`, `src/FrameCapture.cpp`: video recording.
 - `src/simulations/SatelliteSimTutorial.cpp`: the tutorial.

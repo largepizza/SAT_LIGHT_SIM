@@ -81,6 +81,7 @@ nav:
       - Controls: using/controls.md
       - Features tour: using/features.md
       - Missions and launches: using/missions.md
+      - Weather window: using/weather.md
       - Graphics settings: using/graphics-settings.md
   - Modding:
       - modding/index.md
@@ -100,6 +101,10 @@ nav:
       - Rocket flight and recovery: simulation/rockets.md
       - Crew flights: simulation/crew-flights.md
       - Kessler syndrome (The Sun's Fury): simulation/kessler.md
+      - Weather and storms: simulation/weather.md
+      - Tropical cyclones: simulation/tropical-cyclones.md
+      - Wildfires: simulation/wildfires.md
+      - Haboobs: simulation/haboobs.md
   - Accuracy:
       - accuracy/index.md
       - Benchmark datasets: accuracy/benchmarks.md
@@ -109,11 +114,13 @@ nav:
   - Rendering:
       - rendering/index.md
       - Atmosphere and sky: rendering/atmosphere-and-sky.md
+      - The Sun as an object: rendering/refraction.md
       - Clouds:
           - The cloud field: rendering/clouds/field.md
           - The cloud march: rendering/clouds/march.md
           - Temporal resolve and the far layer: rendering/clouds/temporal.md
           - Weather, rain, lightning, fog: rendering/clouds/weather.md
+          - Storms in the cloud field: rendering/clouds/storms.md
       - Terrain: rendering/terrain.md
       - The sea: rendering/sea.md
       - Cities, farms and solar parks: rendering/cities.md

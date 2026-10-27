@@ -211,6 +211,15 @@ with \( V \) the cube's volume and \( w \) the objects' weights.
 The collisions found are spread over the step at hashed times and applied in time order, so collisions do not
 all happen in the same second. Collision radii are \( \sqrt{A/\pi} \) of each object's mean projected area.
 
+**Where a collision happens.** A pair is together only at the sample time, but its collision is applied at its
+own, spread time. At that time the target is placed on its orbit and the **projectile is placed on the target**,
+with the velocity it had relative to the target at the sample time, expressed in the target's local frame (radial,
+along-track, orbit normal) and turned into that frame at the event time (`Event::sampleDt` carries the offset
+between the two times). The impact speed and geometry are the ones the engine sampled, and both objects' fragments
+start from one point: the event's recorded place (`Event::pos`, `Event::vel`). That is where its
+[dust cloud](#dust-clouds) is drawn and where the [tracker's](#the-kessler-tracker) Watch looks. Harness
+`kessler poscheck [n=] [ev=]` measures every piece's distance from that place at the event time (0 km).
+
 **Before the storm** (only when the player breaks something up early), working satellites dodge everything
 (avoidance 1) and are left out of the sample: only the dead, the debris and passive junk collide. The
 configured avoidance applies from the CME on.
@@ -392,9 +401,13 @@ They are drawn with the same model as 1 to 3 pieces, at magnitude \( -1.5 - 2.5\
 divided by "Small re-entry brightness" (×1 is physical: about +1 for a typical 0.1 kg piece, meteor-faint). They
 are not drawn past 1 h/s of time warp. From the ground they are obvious streaks; from orbit, moving dots.
 
-"Watch the next re-entry" (harness `kessler reentry`) jumps to the next dead satellite coming down over a dark
-sky (Sun below −8 deg there) within 48 hours, or else the heaviest piece within 6 hours: 25 s before breakup,
-at 1x, from 120 km beside its track and 80 km back, looking at the breakup point.
+"Watch the next re-entry" (Settings > Launches, harness `kessler reentry watch=1`) finds the next dead satellite
+coming down over a dark sky (Sun below −8 deg there) within 48 hours, or else the heaviest piece within 6 hours,
+and lands on it already burning: 45 s into its glow (the main breakup about 35 s later), at 1x, on the ground
+120 km beside its track and 80 km back, on the side under the clearer sky (from the coarse cloud map), looking at
+the breakup point with a 35 deg field of view, the fireball selected and tracked. Without `watch=1` the harness
+lands 25 s before the breakup at the same distances (always on one side), with an 80 deg field of view and nothing
+selected.
 
 ## Measured behaviour
 
@@ -417,10 +430,38 @@ Drawing is cheap: with a full pool the orbit pass costs about 2.2 ms. What slows
 warping past the computed frontier, and the engine's threads competing for the CPU during the busiest stretch.
 The CPU bucket `kessler` (Performance tab, harness `perf`) holds the main thread's share.
 
+## The Kessler tracker
+
+The Missions window's **Kessler** tab (see [Missions](../using/missions.md)) shows the cascade at a glance
+(`SatelliteSimKesslerTracker.cpp`):
+
+- **A Sun's Fury strip**: the countdown to the CME, then "DAY n" of the cascade, and "computing" while the
+  frontier holds sim time.
+- **Big counts**: collisions, catastrophic ones, pieces of 1 m and more, 10 cm fragments made, dead, destroyed and
+  re-entered satellites, satellites still working.
+- **A globe** seen from the equator, with the debris shells drawn round it as a polar plot: radius = altitude
+  (exaggerated 1.6 times), angle = latitude. The limb of an equatorial view is a meridian, so each latitude band's
+  density sits where that latitude meets the sky. Blue marks where working satellites fly; a heat scale shows the
+  chance a year that a 10 m² satellite there is hit by a tracked object (dead satellites and pieces of 1 m and
+  more, not the small-fragment field),
+  \[ P = 1 - e^{-n\,v\,A\,t}, \quad v = 10\ \text{km/s},\ A = 10\ \text{m}^2,\ t = 1\ \text{yr}, \]
+  with \( n \) the objects per km³ of the shell's altitude-latitude cell. Numbered markers show the eight latest
+  significant breakups (catastrophic collisions, explosions, ASAT tests, the player's) at their exaggerated place,
+  and a cyan dot the observer. Dragging the globe turns it.
+- **Collisions per day** since the CME, as a plot.
+- **The latest breakups**, each with **Watch**: the clock goes to 3 s after it, at 1x, the eye 80 km beside the
+  orbit (across its velocity) and 25 km below it so the debris shows against black space, with a 70 deg field of
+  view; once the main thread's mirror holds a piece of that breakup it is selected and tracked.
+
+Everything on the tab comes from the counts walk, which is spread over frames while the tab is open, so nothing
+there walks the event log or the pool in one go. The globe is a CPU raster (256² pixels) re-drawn only when its
+inputs change (a finished walk, a drag, the Sun moving about a degree), at most four times a second.
+
 ## Settings
 
-The settings are in the Missions window's Controls tab, section THE SUN'S FURY (Settings > Constellations has
-a pointer to it). Changing the rate, avoidance or horizon re-simulates from the storm.
+The settings are in **Settings > Launches**: THE SUN'S FURY holds the simulation, GRAPHICS: DEBRIS AND
+RE-ENTRIES the look. Changing the rate, avoidance or horizon re-simulates from the storm; the graphics settings
+re-simulate nothing.
 
 | UI label | `settings.json` key | Default |
 |---|---|---|
@@ -433,11 +474,11 @@ a pointer to it). Changing the rate, avoidance or horizon re-simulates from the 
 | Small re-entry brightness (Off, ×1 to ×100) | `kessler.small_reentry_gain` | 30 |
 
 Avoidance is the share of encounters between a working satellite and a tracked object (a dead satellite or a
-fragment) that the working satellite dodges; dead satellites dodge nothing. The section also shows live counts
-(days since the storm, how far the history is computed, dead, destroyed and re-entered satellites, large pieces,
-small fragments made, collisions) and, when the player has broken something, "Undo my breakups". The default
-bookmark "The Sun's Fury" lands on the storm's first night over Monument Valley, and the Missions window's
-Upcoming tab carries a card counting down to the CME. Launches stand down at the CME; see [Launches](launches.md).
+fragment) that the working satellite dodges; dead satellites dodge nothing. THE SUN'S FURY also has "Watch the
+next re-entry", live counts (days since the storm, how far the history is computed, collisions), "Open the Kessler
+tracker" and, when the player has broken something, their count and "Undo my breakups". The default bookmark
+"The Sun's Fury" lands on the storm's first night over Monument Valley, and the Missions window's Upcoming tab
+carries a card counting down to the CME. Launches stand down at the CME; see [Launches](launches.md).
 
 The harness has `kessler state | wait [days=] [done] | breakup <sat> [kind=explosion|asat] | collide <a> <b> |
 select [k=] | select dead | reentry` (see [Harness](../development/harness.md)).
@@ -455,8 +496,9 @@ select [k=] | select dead | reentry` (see [Harness](../development/harness.md)).
 
 | File | Function / symbol |
 |---|---|
-| `src/simulations/Kessler.h/.cpp` | `kessler::World` (`apply()`, `simulate()`, `rollback()`, `checkpoint()`), `breakupCollision()`, `breakupExplosion()`, `engineSample()`, `DebrisGrid`, `decayTime()`, `stormSeedEvents()`, `deadTumble()`, `formationDriftTurns()` |
-| `src/simulations/SatelliteSimKessler.cpp` | `KesslerWorker`, `kesslerRestart()`, `kesslerSync()`, `kesslerBreakupInPlace()`, `explodeSatellite()`, `rosterFateAt()`, `kesslerFillDust()`, `kesslerFillFireballs()`, `fbFrag()`, `kesslerGoToNextReentry()`, the cache, `buildKesslerSettingsSection()`, `kCacheVersion` |
+| `src/simulations/Kessler.h/.cpp` | `kessler::World` (`apply()`, `simulate()`, `rollback()`, `checkpoint()`), `Event` (`pos`, `vel`, `sampleDt`), `breakupCollision()`, `breakupExplosion()`, `engineSample()`, `DebrisGrid`, `decayTime()`, `stormSeedEvents()`, `deadTumble()`, `formationDriftTurns()` |
+| `src/simulations/SatelliteSimKessler.cpp` | `KesslerWorker`, `kesslerRestart()`, `kesslerSync()`, `kesslerBreakupInPlace()`, `explodeSatellite()`, `rosterFateAt()`, `kesslerFillDust()`, `kesslerFillFireballs()`, `fbFrag()`, `kesslerGoToNextReentry()`, the cache, `buildKesslerSettingsSection()`, `buildKesslerGraphicsSection()`, `kCacheVersion` |
+| `src/simulations/SatelliteSimKesslerTracker.cpp` | the Missions window's Kessler tab: `buildKesslerTrackerTab()`, the globe raster, `kesslerWatchEvent()`, `kesslerWatchPieceTick()` |
 | `src/simulations/SatelliteSim.cpp` | the frontier hold in `recordCompute()` |
 | `src/simulations/SpaceWeather.cpp` | the scripted storm (`spaceWeatherSetScriptedStorm()`) |
 | `shaders/sat_orbit.comp` | dead satellites' tumble and drift, pool records |

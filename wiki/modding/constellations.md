@@ -525,6 +525,15 @@ surfaces, and its exact twin written with explicit attitude groups:
 The same file adds a type whose wing tracks the Sun on a gimbal, which no legacy mode can express. For a real
 model type with parts and materials, start from a shipped model; see [Satellite models](satellite-models.md).
 
+## An extra roster for a scripted run
+
+The environment variable `SATLIGHTSIM_EXTRA_CONSTELLATIONS=<file>` names a second JSON file whose
+`satellite_types` and `constellations` lists are **appended** to those of `constellations.json` at load, in the
+same format. Appending keeps every shipped entry's index, so nothing that depends on the load order (cluster
+jitter, the debris history, the launch schedule) moves. It exists for scripted runs, such as a technical video
+that replays one real satellite's pass beside the shipped sky, without editing the shipped file. A file that
+cannot be parsed is ignored; `satlight_log.txt` records how many entries were appended.
+
 ## The shipped roster
 
 `data/constellations.json` carries 28 types, all geometry models, flown by 30 entries: about 1.38 million

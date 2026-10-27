@@ -1,22 +1,40 @@
 # Missions
 
 Everything in the sky that comes and goes is gathered in one place: the **Missions** window lists the next
-launches, what is flying now and the Sun's Fury, and a launch object's **mission milestones** let you skip from
-one event of its flight to the next. This page explains both. How launches are scheduled and how rockets fly is on
+launches, what is flying now and the Sun's Fury, and tracks the debris cascade; a launch object's **mission
+milestones** let you skip from one event of its flight to the next; and Settings → **Launches** holds the settings
+for launches and the Sun's Fury. This page explains all three. How launches are scheduled and how rockets fly is on
 [Launches](../simulation/launches.md), [Rocket flight](../simulation/rockets.md) and
 [Crew flights](../simulation/crew-flights.md); the storm and the debris cascade are on
-[The Sun's Fury](../simulation/kessler.md).
+[The Sun's Fury](../simulation/kessler.md). Storms, hurricanes and wildfires have a window of their own, described
+on [Weather](weather.md).
 
 ## Opening the window
 
-The rocket button on the right of the bottom-right panel (between the Issue reports flag and Bookmarks), or **M**
-("Missions" in the key bindings). The window opens at the right edge of the screen and can be moved and resized.
-Its top row holds three tabs, **Upcoming**, **Ongoing** and **Controls**, and the current sim time in UTC. A line
-under the tabs (amber) reports the result of the last button you pressed, for example where a Go to took you or why
-nothing was found; it disappears after 12 s. A docking port is named as words (*IDA-2 Harmony forward*,
-*node port nadir*) here, in the follow bar and in the milestones.
+The rocket button, the first of the menu buttons on the bottom-right panel, or **M** ("Missions" in the key
+bindings). The window opens at the right edge of the screen and can be moved and resized. Its top row holds three
+tabs, **Upcoming**, **Ongoing** and **Kessler**, and the current sim time in UTC. A line under the tabs (amber)
+reports the result of the last button you pressed, for example what a Watch has put in view or why nothing was found;
+it disappears after 12 s. A docking port is named as words (*IDA-2 Harmony forward*, *node port nadir*) here, in the
+follow bar and in the milestones.
 
 The rows are refreshed twice a second, and at once after a jump in time; only the countdowns change every frame.
+
+## Watch: one button for every row
+
+Every row of the window has a single button, **Watch**. It lands on the event at a moment when there is something to
+see, sets time to 1x and puts the subject in view; the line under the tabs says what you are looking at.
+
+| Watch on | Where it puts you |
+|---|---|
+| A launch (Upcoming) | 5 s before lift-off, on the ground 5 km from the pad (on land), the camera on the rocket with a 40 degree view. The rocket is selected but the camera is not locked to it: you watch it climb away |
+| A twilight launch | The same, 5 s before lift-off, but 12 km from the pad with a 60 degree view, so the exhaust can spread over the sky as it climbs into sunlight |
+| The Sun's Fury | The storm's first night over Monument Valley, three and a half hours after it arrives, the aurora overhead |
+| A crew flight or a rocket in flight (Ongoing) | Flies out to it and rides along ([follow mode](controls.md#follow-mode-go-to)) |
+| A crewed station | Selects it and flies alongside |
+| A train of new satellites | Rides along with the nearest of them |
+| Retired satellites coming down | The next retired satellite of any program burning up over a dark sky, seen from the ground beside its track (on the side with the clearer sky), in mid-glow about 35 s before it breaks up. The fireball is selected and tracked |
+| A breakup (Kessler tab) | 3 s after it, 80 km beside the orbit and 25 km below it, so the debris is seen against space; a piece of it is selected and tracked |
 
 ## Upcoming
 
@@ -25,22 +43,15 @@ The rows are refreshed twice a second, and at once after a jump in time; only th
 **NEXT LAUNCHES** lists the next five lift-offs over the coming two days. Each card shows:
 
 - tags: **CREWED** (a crew flight), **CARGO** (a supply flight to a station), **TWILIGHT** (lift-off with the Sun
-  5 to 16 degrees below the pad's horizon), **BUILD-OUT** (a first fill of an empty plane during the
+  5 to 10 degrees below the pad's horizon), **BUILD-OUT** (a first fill of an empty plane during the
   [deployment era](#the-deployment-era));
 - the vehicle, the program and the number of satellites (for a crew flight: the spacecraft, the station and the
   number of crew);
 - the pad, the date and time in UTC and the Sun's elevation at the pad;
-- the countdown (`T- 3d 04h`, `T- 12m 03s`, `T- 42 s`).
+- the countdown (`T- 3d 04h`, `T- 12m 03s`, `T- 42 s`) and **Watch**.
 
-Two buttons act on the launch:
-
-| Button | What it does |
-|---|---|
-| **Go to** | Puts you on the ground about 12 km from the pad, on land, looking at it, 45 s before lift-off, with time at 1x |
-| **Watch** | Only moves the clock to 45 s before lift-off; you stay where you are |
-
-When there is nothing to list, the card says why: launches are off (Controls), none fall in the next two weeks, or
-launches have stood down at the Sun's Fury.
+When there is nothing to list, the card says why: launches are off (Settings → Launches), none fall in the next two
+weeks, or launches have stood down at the Sun's Fury.
 
 ### Pinned launches
 
@@ -48,10 +59,8 @@ Under the list, whatever their order, two launches are always shown:
 
 | Section | What it holds |
 |---|---|
-| NEXT TWILIGHT LAUNCH (JELLYFISH) | The next lift-off within a week with the Sun 5 to 16 degrees below the pad. The exhaust high up is then sunlit while the ground below is already dark, and spreads into a glowing bell |
+| NEXT TWILIGHT LAUNCH (JELLYFISH) | The next lift-off within a week with the Sun 5 to 10 degrees below the pad. The exhaust high up is then sunlit while the ground below is already dark, and spreads into a glowing bell. With the Sun lower than that, the bell stays in the Earth's shadow |
 | NEXT CREWED LAUNCH | The next crew flight to any station |
-
-Both have the same Go to and Watch buttons as the list.
 
 ### The Sun's Fury card
 
@@ -59,73 +68,103 @@ A card pinned under the list, always visible on the Upcoming tab, follows the [S
 the scripted solar storm of 15 July 2037 <!-- history-ok -->. Before the storm it counts down to the arrival of the
 coronal mass ejection and gives the times of the flare and of the arrival. Once the storm has arrived it reads
 **DAY n** and the cascade's counts: dead satellites tumbling, satellites destroyed or re-entered, collisions and how
-many were catastrophic.
+many were catastrophic. On a short window the card keeps only its title, countdown and button.
 
-| Button | What it does |
-|---|---|
-| **Go to the arrival** | Two minutes before the storm arrives: dusk over Monument Valley, looking north |
-| **The storm night** | Three and a half hours in, the aurora overhead (the same view as the bookmark *The Sun's Fury*) |
-| **Controls** | Shown instead when the scenario is off: opens the Controls tab, where it can be switched on |
+Its **Watch** goes to the storm night (the same view as the bookmark *The Sun's Fury*). When the scenario is off, a
+**Settings** button opens Settings → Launches, where it can be switched on.
 
 ## Ongoing
 
-The Ongoing tab lists what is happening now, in sections, in this order.
+The Ongoing tab lists what is happening now, in sections, in this order. Each row has a **Watch** (see
+[above](#watch-one-button-for-every-row)).
 
-| Section | Rows | Buttons |
-|---|---|---|
-| CREW TRANSFERS | Crew and cargo flights between lift-off and docking: their phase (ascent, phasing, approach, docking in ...) | **Select**, **Go to**, **Next >** |
-| CREWED STATIONS | Every station: altitude, and when the next crew flies (or that a new crew is on its way) | **Select**, **Go to** |
-| SATELLITE LAUNCHES | Rockets in flight: phase (first stage, upper stage, parking orbit, deployment) | **Select**, **Go to**, **Next >** |
-| SATELLITE OPERATIONS | Per program, the trains of new satellites climbing to their slots (count, progress, next arrival) and the retired satellites coming down (next re-entry) | **Select** and **Go to** the nearest one; for retirees also **Watch** |
-| BUILD-OUT (DEPLOYMENT ERA) | Deployment era only. A summary line, *n of N constellations complete*, with **Show** / **Hide**, then one row per constellation: satellites in place out of the target, the share, launches a day, the date it completes (or completed), with a progress bar. The rows start hidden once every constellation is complete | **Show** / **Hide** |
-
-- **Select** selects the object even when it is not drawn from where you are (below your horizon, or too faint):
-  the selection panel then points to it from the edge of the screen.
-- **Go to** flies the camera to it and rides along ([follow mode](controls.md#follow-mode-go-to)). For a rocket that
-  is still on the pad, it is placed where its launch puts it.
-- **Next >** skips to just before that launch's next milestone (see [below](#mission-milestones)). A stage of it that
-  is selected or followed stays selected or followed.
-- **Watch** on a retiree row jumps to the next retired satellite of any program coming down over a dark sky, 25 s
-  before it breaks up.
+| Section | Rows |
+|---|---|
+| CREW TRANSFERS | Crew and cargo flights between lift-off and docking: their phase (ascent, phasing, approach, docking in ...) |
+| CREWED STATIONS | Every station: altitude, and when the next crew flies (or that a new crew is on its way) |
+| SATELLITE LAUNCHES | Rockets in flight: phase (first stage, upper stage, parking orbit, deployment) |
+| SATELLITE OPERATIONS | Per program, the trains of new satellites climbing to their slots (count, progress, next arrival) and the retired satellites coming down (next re-entry) |
+| BUILD-OUT (DEPLOYMENT ERA) | Deployment era only, last. A summary line, *n of N constellations complete*, with **Show** / **Hide**, then one row per constellation: satellites in place out of the target, the share, launches a day, the date it completes (or completed), with a progress bar. The rows start hidden once every constellation is complete |
 
 A station that has been destroyed or has re-entered (after a breakup in the [Sun's Fury](#the-suns-fury-card) or
-one you caused) reads *Destroyed* or *Re-entered* with the date and "no more crew flights", and its Select and
-Go to are disabled. A station that has not been launched yet in the deployment era reads *Not launched yet*.
+one you caused) reads *Destroyed* or *Re-entered* with the date and "no more crew flights", and its Watch is
+disabled. A station that has not been launched yet in the deployment era reads *Not launched yet*.
 
-## Controls
+To step through a flight's events, use the [mission milestones](#mission-milestones) of the object you are riding
+along with.
 
-The Controls tab holds the settings for launches and for the Sun's Fury. The Constellations tab of the settings
-window keeps a button, **Open the Missions window**, that leads here.
+## Kessler: the debris tracker
+
+The third tab follows the debris cascade of the Sun's Fury.
+
+- **THE SUN'S FURY**: before the storm, its countdown and three tiles (working satellites, the arrival time, the
+  current geomagnetic Kp index); after it, **DAY n**, and how far the cascade has been computed.
+- **Counts**, as large tiles: collisions, catastrophic collisions, pieces of a metre and more, fragments of 10 cm and
+  more made, dead satellites tumbling, satellites destroyed, satellites re-entered, and satellites still working.
+- **DEBRIS SHELLS**: a small globe seen from the equator, with the orbital shells drawn round it like a polar plot:
+  distance from the Earth is altitude (exaggerated 1.6 times), the angle is latitude. Blue marks where the working
+  satellites fly; the heat colours show the chance a year that a 10 m² satellite there is hit by a tracked object (a
+  dead satellite or a piece of a metre or more). Numbered markers show the eight latest significant breakups, your
+  position is a cyan dot, and you can drag the globe to turn it. A line names the worst shell.
+- **COLLISIONS PER DAY SINCE THE CME**: a plot of all collisions (orange) and the catastrophic ones (red), with the
+  peak. Over a long time the bins widen to several days.
+- **LATEST BREAKUPS**: the same numbered breakups listed with their kind (yours are marked), the objects involved,
+  when and where, the impact speed for a collision, and **Watch**.
+
+With the scenario off, the tab says so and offers **Open the settings**.
+
+## Settings: the Launches tab
+
+Settings → **Launches** (under SKY, after Constellations) holds every setting for launches and the Sun's Fury, in four
+sections, graphics first. A button at its top opens the Missions window, and the Constellations tab keeps a
+**Launches** button that leads here.
+
+### GRAPHICS: ROCKETS AND EXHAUST
+
+| UI label | `settings.json` key | Default | Effect |
+|---|---|---|---|
+| Launch site graphics | `launches.pad_graphics` | on | The pads on the ground: graded concrete, flame trenches, towers, landing zones, their lights at night; no city lights within about 3 km |
+| Plume opacity (x) | `launches.plume_gain` | 1 (0 to 5) | How thick the exhaust trails and the high bells are |
+| Plume brightness (x) | `launches.plume_brightness` | 1 (0 to 5) | How much light the exhaust scatters |
+| Plume width (x) | `launches.plume_width` | 1 (0.25 to 4) | The width of the exhaust; the same exhaust, so a wider plume is thinner |
+| Plume billows (x) | `launches.plume_billows` | 1 (0 to 3) | The contrast of the exhaust's billows |
+| Plume growth (x) | `launches.plume_growth` | 1 (0 to 5) | How fast the exhaust spreads as it mixes with the air. Changing it rebuilds the plumes in view (a short pause) |
+| Ground clouds (x) | `launches.ground_cloud_gain` | 1 (0 to 5) | The steam cloud at lift-off and the dust or spray at a landing |
+| Flame brightness (x) | `launches.rocket_gain` | 1 (0 to 10) | The rockets' flames |
+| Rocket light on clouds (x) | `launches.engine_light_gain` | 1 (0 to 10) | At night the engines light the clouds, haze, exhaust and ground around them |
+
+Every slider at 1 is the tuned look; **Reset exhaust to defaults** puts them all back.
+
+### GRAPHICS: DEBRIS AND RE-ENTRIES
+
+**Dust cloud brightness**, **Fireball material colours** and **Small re-entry brightness**: see
+[The Sun's Fury](features.md#the-suns-fury) on the features page.
 
 ### LAUNCHES
 
 | UI label | `settings.json` key | Default | Effect |
 |---|---|---|---|
 | Launches and retirements | `launches.enabled` | on | Every constellation is kept flying by launches; the satellites they replace deorbit and re-enter |
-| Launch site graphics | `launches.pad_graphics` | on | The pads on the ground: graded concrete, flame trenches, towers, landing zones, their lights at night; no city lights within about 3 km |
 | Deployment era (2019-2036) | `launches.deployment_era` | on | The constellations are built up by launches up to 2036. Off: the full 2036 roster at every date |
 | Satellite design life | `launches.life_scale` | x1 | x0.5, x1, x2, x4 of each program's design life (5 to 7 years). Shorter means more launches and re-entries. Changing it reshuffles the schedule |
-| Exhaust plumes | `launches.plume_gain` | x1 | Off, x0.3, x1, x3: the exhaust trails and the high bells |
-| Rocket light on clouds | `launches.engine_light_gain` | x1 | Off, x0.3, x1, x3: at night the engines light the clouds, haze, exhaust and ground around them |
 | After the Sun's Fury | `launches.after_storm` | Stand down | Stand down: no launches from the storm on. Resume: launches return three weeks after it |
 
-Four buttons jump to an event:
+Four buttons follow the same Watch rule as the Missions window:
 
 | Button | Where it takes you |
 |---|---|
-| Watch the next launch | 30 s before the next lift-off, beside the pad |
-| Watch a twilight launch | The next lift-off within a week with the Sun 5 to 16 degrees below the pad |
-| Watch a Starship catch | 90 s before the next ship comes home to a tower, 2.5 km from the pad: its descent, flip and landing burn |
-| Watch a retired satellite re-enter | The next retiree coming down over a dark sky within 48 h, 25 s before it breaks up |
+| Watch the next launch | The next lift-off, 5 s before, from beside the pad |
+| Watch a twilight launch | The next lift-off within a week with the Sun 5 to 10 degrees below the pad, 5 s before, from 12 km |
+| Watch a Starship catch | The next ship coming home to its tower, in its flip and landing burn 25 s before the catch, 2.5 km from the pad; the ship is selected and tracked |
+| Watch a retired satellite re-enter | The next retiree burning up over a dark sky within 48 h, in mid-glow, from beside its track |
 
 Under them, live counts: the next launch, launches in the next 24 h, satellites in trains climbing, and retired
-satellites deorbiting. The rockets' brightness has no button; it is `launches.rocket_gain` (default 1) in
-`settings.json`.
+satellites deorbiting.
 
 ### THE SUN'S FURY
 
-The settings of the storm and the debris cascade; see [The Sun's Fury](features.md#the-suns-fury) on the features
-page for the table and what they do.
+The scenario, its collision settings, **Watch the next re-entry**, **Open the Kessler tracker** and **Undo my
+breakups**; see [The Sun's Fury](features.md#the-suns-fury) on the features page.
 
 ### The deployment era
 
@@ -168,7 +207,6 @@ it, and the reverse. While following, the camera keeps its offset and view relat
 | `[` | Previous mission milestone ("Previous Mission Milestone") |
 | Follow bar: `<` and **Next: ... >** | While following a launch object, the previous and next milestone; the button names the next one |
 | Info window, MISSION section | **< Previous**, **Next: ... >**, and a **Skip** (ahead) or **Back** button on every milestone row |
-| Missions window, Ongoing: **Next >** | That launch's next milestone |
 
 The keys act on the object you are following, or else on the selection. With neither, a notice says to select a
 rocket, a train or a satellite first. Both keys can be rebound in Settings → Controls.
@@ -191,10 +229,16 @@ section right after STATUS, open by default:
 ## Where in the code
 
 - `src/simulations/SatelliteSimMissions.cpp`: the window (`buildMissionsWindow()`), the cached rows
-  (`missionsRefresh()`), the Sun's Fury card and its jumps (`missionsGoToFury()`).
-- `src/simulations/SatelliteSimLaunches.cpp`: the schedule queries behind the rows (`launchUpcoming()`), the
-  LAUNCHES settings (`buildLaunchSettingsSection()`), the milestones (`missionBatchMilestones()`,
-  `missionSubjectOfIndex()`) and the skips (`missionJump()`, `missionJumpNow()`, `missionAttachAt()`).
-- `src/simulations/SatelliteSimUI.cpp`: the MISSION section (`buildMissionTimeline()`) and the follow bar
-  (`buildFollowHud()`).
-- `src/simulations/SatelliteSimKessler.cpp`: THE SUN'S FURY settings (`buildKesslerSettingsSection()`).
+  (`missionsRefresh()`), the Sun's Fury card and its Watch (`missionsGoToFury()`), the Ongoing Watches
+  (`missionsOngoingAct()`).
+- `src/simulations/SatelliteSimKesslerTracker.cpp`: the Kessler tab (`buildKesslerTrackerTab()`), its globe and the
+  breakups' Watch (`kesslerWatchEvent()`).
+- `src/simulations/SatelliteSimLaunches.cpp`: the schedule queries behind the rows (`launchUpcoming()`), the launch
+  Watch (`launchWatchKey()`), the retiree Watch (`launchGoToNextReentry()`), the catch (`launchWatchCatch()`), the
+  Launches tab's sections (`buildLaunchGraphicsSection()`, `buildLaunchSettingsSection()`), the milestones
+  (`missionBatchMilestones()`, `missionSubjectOfIndex()`) and the skips (`missionJump()`, `missionJumpNow()`,
+  `missionAttachAt()`).
+- `src/simulations/SatelliteSimUI.cpp`: the Launches tab (`buildSettingsLaunchesTab()`), the MISSION section
+  (`buildMissionTimeline()`) and the follow bar (`buildFollowHud()`).
+- `src/simulations/SatelliteSimKessler.cpp`: THE SUN'S FURY settings and its graphics (`buildKesslerSettingsSection()`,
+  `buildKesslerGraphicsSection()`).
