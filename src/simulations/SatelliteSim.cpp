@@ -8851,7 +8851,36 @@ float SatelliteSim::cpuTerrainHeightM(float latDeg, float lonDeg) const
 // command buffer is ended.
 void SatelliteSim::recordScreenshotCopy(VkCommandBuffer cmd, VulkanContext &ctx, VkImage image)
 {
-    finishStormEnvIndex();   // the weather bake's envelope index (a worker): in the shadow before this frame's uploads
+    // The weather bake's envelope index (a worker): in the shadow before this frame's uploads. Waited for at most
+    // kStormEnvJoinWaitMs (2026-10-27: it once waited 11.7 ms at 1 mo/s); still running after that (stormEnvLate), this
+    // frame's bake reads the previous index and the next frame uploads it. (Two frames in flight only: with one, the
+    // shadow IS the mapped buffer, which the job must not write under the GPU.)
+    stormEnvHoldFrame = false;
+    bool envLate = false;
+    if (stormEnvJob.valid() && stormEnvAsync && ctx.framesInFlight > 1)
+    {
+        FPROF_SCOPE("storms.envJoinWait");
+        // Polled, not wait_for(1 ms): MSVC's timed wait oversleeps to the system timer (9 ms measured).
+        const auto w0 = std::chrono::steady_clock::now();
+        while (stormEnvJob.wait_for(std::chrono::seconds(0)) == std::future_status::timeout)
+        {
+            if (std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - w0).count() >
+                kStormEnvJoinWaitMs)
+            {
+                envLate = true;
+                break;
+            }
+            // (a spin, no yield: the CPU is busy with the other workers at a fast warp, and a yielded main thread was
+            // not back for up to 8 ms)
+        }
+    }
+    if (envLate)
+    {
+        stormEnvLate = true;
+        ++stormEnvLateCount;
+    }
+    else
+        finishStormEnvIndex();
     FPROF_SCOPE("recordScreenshotCopy");
     // ── The exposure meter (every frame): the frame as displayed, its central 60% (most HUD panels
     // sit outside it), blitted down to 64x36 into a linear RGBA8 image (the blit decodes sRGB) and

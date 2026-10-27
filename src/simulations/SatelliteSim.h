@@ -5251,6 +5251,14 @@ private:
     StormEnvDirty buildStormEnvIndexWork(bool ownThreads);
     void finishStormEnvIndex();
     std::future<StormEnvDirty> stormEnvJob;
+    // (2026-10-27) A job still running kStormEnvJoinWaitMs into the frame's end is not waited for (it was 11.7 ms in one
+    // frame at 1 mo/s): the
+    // frame's bake reads the previous index (the GPU copy: the job's ranges were not marked dirty), the job is joined at
+    // the next updateStorms and uploaded that frame, and that frame starts no new job (stormEnvHoldFrame: the shadow
+    // ranges it uploads must not be written meanwhile).
+    bool stormEnvLate = false, stormEnvHoldFrame = false;
+    static constexpr float kStormEnvJoinWaitMs = 1.0f;   // the most the frame waits for the job at its end
+    uint64_t stormEnvLateCount = 0;   // (harness state weather.cube.env_late)
     double stormEnvJobT = -1e300;
     float stormEnvJobMs = 0.0f;     // the last envelope index's own time (harness state weather.cube.env_job_ms)   // the sim time the job in flight was started for
     bool cv2WxLastAllSix = false;
