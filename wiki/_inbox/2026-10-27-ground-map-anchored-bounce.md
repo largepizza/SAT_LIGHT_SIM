@@ -1,6 +1,6 @@
 ---
 pages: [rendering/clouds/march.md]
-code: [shaders/cloud_v2_lightning.comp, shaders/include/cloud_lightning.glsl, shaders/cloud_v2_march.comp]
+code: [shaders/cloud_v2_lightning.comp, shaders/include/cloud_lightning.glsl, shaders/cloud_v2_march.comp, shaders/include/cv2_cdc.glsl, shaders/include/clouds_v2.glsl]
 ---
 ## Now
 The cloud-over-the-ground map (cv2Vt / cv2VtUp: 5 nested levels of 32 x 32 columns, cells 1 km x 4^level) keeps its
@@ -13,6 +13,10 @@ With "ground_overcast" on, a cloud's light from below is the map's mean direct +
 the columns' direct transmission) at the point where the Sun's ray from the ground crosses the sample's height
 (h / tan(elevation) sunward, at most 30 km), x the old albedo (0.15 low .. 0.3 high) x (1 - hf)^2.
 
+The light march's far sample (standing for 1.2-2.0 x the march's length) is jittered over that interval and always
+reads the field, never the clipmap's moments (S2); S2's gamma model spans at most one cell, unbaked cells fade in, and
+its last level fades into the field over its outer 40%. The mid layer's base and top wander +-450 m at its own period.
+
 ## History
 2026-10-27, issues 20261027_002401 ("Lighting persistence") and 20261027_002051 ("Storm Cell Lighting"). The map was
 centred on the eye and restarted a level whenever the eye had moved half a cell since its last visit; at a boost's
@@ -22,5 +26,7 @@ edge, a hard wall 16 km from the eye (a lit/dark boundary across a storm). The b
 for samples 4-9 km up (kBounceOpen, the 2026-10-24 "Anvil darkness" fix): an anvil over a storm complex was lit light
 grey from below while the Cb walls a few km lower, taking almost none, were dark blue. Now both take the light under
 the storm; ordinary cumulus scenes unchanged, cloud march within noise (13.34 -> 13.43 ms at the report's view).
-Open: the mid layer's altostratus sheet seen edge-on from near its height still draws a straight translucent band
-across a storm (mid_amount 0 removes it).
+The far sample at a fixed 1.6 x was inside a flat anvil base or under it by the sample's height alone: towers lit above
+one height and shadowed below, a straight band across a storm seen from near that height (issue 20261027_002051 shot 1);
+via S2 it read far clearer than the field and stepped in boxes moving with the eye. Still-view grain at a 3-km cumulus
+view rose 1.32 -> 1.79 (mean frame diff) with the jitter; cloud march within noise.
