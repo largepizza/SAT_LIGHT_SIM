@@ -47,3 +47,17 @@ float cloudPointVisibilityAt(sampler2D texA, sampler2D texB, vec2 uv, float rang
 }
 
 #endif
+
+// The air split of a cloud texel seen through wildfire smoke (2026-10-26, issue 20261026_204045: far clouds "poke through"
+// the smoke as light-blue shapes): sat_sky.frag adds the air from the eye to this distance in front of the cloud,
+// undimmed. Physically it is the air to the smoke (tS) + the smoke's transmittance x the air from there to the cloud (tC);
+// the split is solved so the air to it carries that much light, in AIR-BRIGHTNESS space (1 - e^(-t / 40 km)): the
+// horizon's air saturates within ~50 km, and a split by distance (tS + T (tC - tS)) put almost the whole bright horizon
+// haze in front of every far cloud. kS = the share of the texel's opacity that is the cloud seen through the smoke.
+float smokeAirSplitM(float tS, float tC, float kS)
+{
+    const float L = 40000.0;
+    float bS = 1.0 - exp(-tS / L), bC = 1.0 - exp(-tC / L);
+    float b  = bS + clamp(kS, 0.0, 1.0) * max(bC - bS, 0.0);
+    return min(-L * log(max(1.0 - b, 1e-6)), tC);
+}

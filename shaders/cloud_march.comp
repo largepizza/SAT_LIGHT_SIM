@@ -283,6 +283,7 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
     vec4 kSegXm = vec4(0.0, 0.5 * pOH, 0.5 * (pOH + 1.0), 1.0);   // each segment's mean share of the cloud's opacity
     tauSm = 0.0;   // wildfire smoke's share of tauP (spectral: the caller, kSmokeSpec)
     uint smF = smokeFirst(dustPad0), smN = smokeCount(dustPad0);
+    vec3 smSpec = smokeSpecK(cv2.gnd.y);
     Le = vec3(0.0);
     tE = 0.0;   // the emissive light's brightness-weighted distance (a rocket's flame in front of its own mesh)
     float wE = 0.0;
@@ -523,7 +524,8 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
                     shade = mix(exp(-tauS), 1.0, mix(0.4, 0.25, lowK));
                     // (light deeper in is multiply scattered: capped; wildfire smoke is mostly grey-brown, not orange:
                     // its reddening is weaker than a haboob wall's, 2026-10-23 b)
-                    if (isSm) redd = exp(-min(isWall ? tauS : 0.6 * tauS, isWall ? 3.0 : 1.0) * (kSmokeSpec - kSmokeSpec.r));
+                    if (isSm) redd = isWall ? exp(-min(tauS, 3.0) * (kSmokeSpec - kSmokeSpec.r))
+                                            : exp(-min(0.6 * tauS, 1.0) * (smSpec - smSpec.r));
                 }
                 shade *= lumpL;
             }
@@ -538,7 +540,11 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
             }
             // Smoke: the light that comes out of a thick column has crossed some of it on the way out (blue lost
             // first): thick cores orange-brown, thin edges grey-blue.
-            if (isSm) redd *= exp(-(isWall ? min(0.5 * tau, 1.2) : min(0.15 * tau, 0.3)) * (kSmokeSpec - kSmokeSpec.r));
+            // Wildfire smoke instead (2026-10-26, "it appears so beige"): its scattering is as spectral as its extinction,
+            // so a thin veil scatters bluish light and a thick one grey (smokeScatterColor). The exit reddening it had
+            // (0.15 x tau) and its warm tint made every plume beige whatever the light.
+            if (isWall) redd *= exp(-min(0.5 * tau, 1.2) * (kSmokeSpec - kSmokeSpec.r));
+            else if (isSm) redd *= smokeScatterColor(tau, smSpec);
             // The CLOUDS' light on it (2026-10-26, the unified composite), as the march lights its own samples: the Sun
             // through the clouds' shadow (the Sun transmittance volume at its lit point) and the sky light through the
             // cloud above it (cv2VtUp: the deck's diffuse transmission), plus the sunlight the deck scatters down
@@ -2235,7 +2241,7 @@ void main() {
             for (int j = 0; j < 4; ++j) {
                 float tj  = sTau[j];
                 float tO  = tj * (1.0 - pSmokeK), tS = tj * pSmokeK;
-                vec3  trF = vec3(exp(-tO) + 0.85 * pA * (1.0 - exp(-tO))) * exp(-tS * kSmokeSpec);
+                vec3  trF = vec3(exp(-tO) + 0.85 * pA * (1.0 - exp(-tO))) * exp(-tS * smokeSpecK(cv2.gnd.y));
                 // the segment's cloud light: its share in front of the segment's plumes (uj) undimmed, the rest behind
                 // them dimmed by all of them (it was half the segment's optical depth for all of it, wherever the plume
                 // stood in the segment: a funnel near a rain segment's start hid only half the rain behind it)
@@ -2624,7 +2630,10 @@ void main() {
     float tAirM = tCloudMeanT;
     if (smokeAir && tCloudMeanT < kNoSurfaceT && gBB < 0.999) {
         float oP = 1.0 - gBB, oC = gBB * (1.0 - rc.a);
-        tAirM = (oC * tCloudMeanT + oP * tEmitNear) / max(oC + oP, 1e-4);
+        // (the smoke IN FRONT of the cloud: its light-weighted distance is a pall's whole spread, often PAST the cloud,
+        // and the split then moved farther, the air in front of a far cloud added undimmed: clouds "poking through" the
+        // smoke as light-blue shapes, 2026-10-26 issue 20261026_204045; that smoke lies between the eye and the cloud)
+        tAirM = smokeAirSplitM(min(tEmitNear, 0.6 * tCloudMeanT), tCloudMeanT, oC / max(oC + oP, 1e-4));
     }
     float occKm = (tCloudOcclude >= 0.0) ? ((tAirM < kNoSurfaceT && tAirM > 0.0) ? tAirM : tCloudOcclude) * 0.001
                 : -((tAirM < kNoSurfaceT) ? tAirM * 0.001 : (tEmitNear < kNoSurfaceT ? tEmitNear * 0.001 : 60000.0));

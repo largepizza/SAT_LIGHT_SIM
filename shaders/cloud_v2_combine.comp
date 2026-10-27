@@ -118,7 +118,7 @@ void main()
     // Smoke in front of the cloud pulls the distance toward the smoke's (cloud_march.comp, issue 20261025_185309)
     if (tEmitR >= 0.0 && tMean < kNoSurfaceT && gBB < 0.999) {
         float oP = 1.0 - gBB, oC = gBB * (1.0 - rc.a);
-        tMean = (oC * tMean + oP * tEmit * 1000.0) / max(oC + oP, 1e-4);
+        tMean = smokeAirSplitM(min(tEmit * 1000.0, 0.6 * tMean), tMean, oC / max(oC + oP, 1e-4));   // (cloud_occlusion.glsl)
     }
     float occKm = (tOcc >= 0.0) ? ((tMean < kNoSurfaceT && tMean > 0.0) ? tMean : tOcc) * 0.001
                 : -((tMean < kNoSurfaceT) ? tMean * 0.001 : (tEmit >= 0.0 ? tEmit : 60000.0));

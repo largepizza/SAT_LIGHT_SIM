@@ -1076,24 +1076,57 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     at its heat-weighted centre, 120 m + 0.4 x the flaming depth downwind, as wide as the section (1.2 x its rms extent /
     sqrt S), carrying its share of the fire's smoke and rising to its own layer (`fireInjectionHeightM` x (0.7 + 0.3
     sqrt(share x S)), 0.55-1.1: a weaker section injects lower); 20% of the strongest source's goes to the low layer (0.4
-    x, near fires). Each source is a STREAK: parcels rise (`fireSmokeRiseM`, the updraft `fireUpdraftMps` 5-19 m/s) from
-    0.12 of the rise time on (the hot gas right over the flames is clear: started at the ground, the first Gaussian's
-    tails hid the flames from the side) toward their layer, each stretch carried by `windAt` at its height at the moment
-    it travelled (older smoke followed older winds), knots the rise finely then geometric to 2-14 h (9 / 6 / 4 / 2 by
-    range). So the sources leave the front as a curtain along it and merge downwind into one plume. A stretch's mass =
-    the source rate (`tau0` 2.5-8 x the head front's width, as before: the total is unchanged) x its share x the fire's
-    activity WHEN it was emitted. `wx::fireSmokeAt` still walks one streak from the head (harness `fires go view=under`,
-    `fires look what=plume`). Plus one flat, MASS-CONSERVING **pall** per fire (the smoke older than the streaks, ~4-day
-    removal, 20-350 km: ~0.01-0.05 from above each). Up to 384 Gaussians a frame (~55 a near fire: was 29). A contiguous
+    x, near fires). Each source is a chain of PARCELS rising (`fireSmokeRiseM`, the updraft `fireUpdraftMps` 5-19 m/s)
+    toward their layer, drawn from 0.12 of the rise time on (the hot gas right over the flames is clear: started at the
+    ground, the first Gaussian's tails hid the flames from the side); a stretch's mass = the source rate (`tau0` 2.5-8 x
+    the head front's width) x its share x the fire's activity WHEN it was emitted. Plus one flat, MASS-CONSERVING **pall**
+    per fire (the smoke older than the streaks, ~4-day removal, 20-350 km: ~0.01-0.05 from above each). Up to 384
+    Gaussians a frame (~60 a near fire). A contiguous
     range of the dust list (with the haboobs), its bounds in the list header's word 1 (bits 8-17 first, 18-27 count; bits
     0-7 the engine lights' count: every reader masks `& 255`).
-  - **Smoke light**: GREY — fresh (0.60, 0.58, 0.55) albedo 0.38 (black carbon) to aged / pall (0.74-0.76) 0.55, sky
-    light on it brown-grey; the Sun's colour at each Gaussian's centre (`atmExtinctionMag` along its path, the rocket
+  - **The smoke follows TRAJECTORIES** (2026-10-26, issue 20261026_204239: at 5 min/s "smoke kind of just wavers around
+    randomly and sometimes just changes direction entirely ... changing wind direction at the fire's source should have
+    no effect on smoke farther down the trail"). The streak was re-walked from the fire every frame with each stretch's
+    wind taken at the time that stretch's AGE ago: every knot sat on the walk through the source's NEWEST wind, so a
+    turn of the wind at the fire swung the whole trail as one body, and the pall was put at the trail's end + its wind
+    now x up to 18 h (hundreds of km a swing). Now each parcel has a fixed EMISSION time on a nested grid (spacing d x
+    2^l for the ages in band l, m knots a band: d = 60 s and m = 2 for a near fire's main source, 120 s / 1 for its
+    others and mid-range fires, 240 / 480 s far; a parcel not on the next band's grid moves to its neighbours' mean over
+    its band's last 35% and drops out where it coincides: no pop), leaves from the fire as it was then (the sections,
+    injection height, activity and smoke production at that moment: `SmokeEmit`, cached) and is advected by
+    `wx::fireSmokeAdvect` (Euler: windAt at ITS OWN position, height and time) on a fixed schedule of ages
+    (`fireSmokeStepS`: 0.15 x the age, 20-900 s), cached as `SmokeTraj` (positions at the schedule's ages, interpolated)
+    and only extended: a trajectory is a pure function of its emission time (time reversal reads the cache, a jump
+    integrates from the emission). Only the head segment (the column's last ~1 min) rides on the wind now. The sections
+    are labelled by their bearing round the burnt ellipse's centre from the spread axis (by the cut's start, which
+    jumps, a parcel's source index named another stretch of the front at another emission: the streak zig-zagged), and
+    an emission cut into fewer sections shares them out by rank. The trail's length is fixed per fire ((3 + 9 size) x
+    0.8 h, 2-14 h; it followed the activity and stretched every knot as the day went on), its last segments fade over
+    0.8-1 of it. The pall is the mass-weighted mean (sin^2 over [tauMax, tauMax + 36 h]) of parcels on a 4-h grid, each
+    carried 2-50 h by the winds it met, its width from their spread. `wx::fireSmokeAt` (harness `fires go view=under`,
+    `fires look what=plume`) integrates the same trajectory. Cost: the parcels' extension is a few windAt a frame
+    (`fires` -> `smoke_traj_steps_frame`); after a jump ~80 steps a parcel, in parallel on the storm catalog's pool; the
+    cache (`smoke_trajectories`, `smoke_emissions`: ~100-400 near four fires) drops entries unused for 600 frames.
+  - **Smoke light**: GREY (2026-10-26, issues 20261026_204045 / _204239 "it appears so beige") — fresh (0.62 grey)
+    albedo 0.45 (black carbon) to aged / pall (0.75, 0.76, 0.78) 0.6, the sky's light on it BLUE (0.66, 0.82, 1.08: it
+    was a brown-grey (0.80, 0.79, 0.76)), x "Smoke tint" (-1 blue-grey .. +1 brown) and "Smoke brightness"; its scattered
+    light is as spectral as its extinction (smoke.glsl `smokeScatterColor`: (1 - e^(-tau sp)) / (1 - e^(-tau)), luminance
+    1: a thin veil blue-grey from the side, a thick column grey), replacing the reddening of the light leaving it (0.15 x
+    its view depth) that, with the warm tints, made every plume beige. Brown-orange now only where the light crossed
+    smoke or air toward a low Sun. The Sun's colour at each Gaussian's centre (`atmExtinctionMag` along its path, the rocket
     plumes' k), and in `cloud_march.comp` the Earth's shadow PER PIXEL for smoke (a 350-km pall lit as at its fire glowed
     over the night side: "glow is stupidly intense", and at dusk "smoke looks super bright"). Composited SPECTRALLY
     (`kSmokeSpec`, Angstrom ~1.6: the Sun seen through it dimmed and red, no sky light given back); the light inside
-    reddened by its own path to the Sun (0.6 x, capped 1) and leaving it by 0.15 x its view depth (capped 0.3) — the
-    haboob walls keep their stronger 1 / 3 and 0.5 / 1.2 (the first cut's orange-brown smoke). Billows per Gaussian, a
+    reddened by its own path to the Sun (0.6 x, capped 1) — the haboob walls keep their stronger 1 / 3 and their exit
+    reddening 0.5 / 1.2 (the first cut's orange-brown smoke). The Angstrom exponent is x "Smoke spectral" (`kSmokeSpec`^s,
+    CloudV2Params `gnd.y`, also in `smokeSunTransmit`; 1 = fresh smoke's ~1.6,
+    default 0.6: at 1 every cloud seen through a plume turned tan). **Far clouds behind smoke** (issue 20261026_204045:
+    "they pock through the smoke layer", light-blue shapes): the air split's pull toward the smoke (cloud_march.comp,
+    cloud_v2_combine.comp) used the smoke's light-weighted distance, for a pall often PAST the cloud (the split moved
+    farther, the bright horizon air in front of the cloud added undimmed), and split linearly in distance, where the
+    horizon air saturates within ~50 km. Now the smoke distance is at most 0.6 of the cloud's, and the split is solved in
+    air-brightness space (`smokeAirSplitM`, cloud_occlusion.glsl: air to the smoke + the cloud's share x the air from
+    there, 1 - e^(-t / 40 km)). Still not spectral (the air between smoke and cloud is not reddened by it). Billows per Gaussian, a
     second octave at ~4x for smoke. `sat_sky.frag` (`smokeSunTransmit`) dims and reddens the Sun on land and sea under
     it (the first 96 Gaussians; skipped where the Sun is down: it cost ~1 ms from orbit at night).
   - **Flames close up** (within 40 km, faded 25-40 km): emissive Gaussians (dust list `col.w` 1, AFTER the smoke's range
@@ -1107,7 +1140,12 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     0.06 of it at the head (~2000 suns m^2 for a big fire: x the night's ~2600x lift it lit the haze and the ground
     orange over a whole view from 5-100 km: "light is overwhelming"). Now it lights the smoke column's base and the
     ground round the fire, a few km.
-  - Settings `clouds_v2.wildfires` / `wildfire_smoke` / `wildfire_light` (Weather window > Controls > WILDFIRES). Harness
+  - Settings `clouds_v2.wildfires` / `wildfire_smoke` (x optical depth) / `wildfire_light`, and (2026-10-26) the smoke's
+    look: `wildfire_smoke_brightness` 1 (0-5, x its scattered light), `wildfire_smoke_tint` 0 (-1 blue-grey .. +1 brown),
+    `wildfire_smoke_spread` 1 (0.25-4, x the plumes' and the pall's width, same mass), `wildfire_smoke_spectral` 0.6 (0-2, x
+    the Angstrom exponent ~1.6: 0.6 = ~1, aged smoke's; 0 = grey) (Weather window > Controls > WILDFIRES). Harness `fires` also
+    gives `smoke_*` (those settings, the cache sizes) and `smoke_segments_si_a0_a1_len_sb_sc_sigma_tau_z` (every drawn
+    segment: 10 x fire index + source, 5 = low layer, 9 = the pall). Harness
     `fires [world=1]` (points, flames, lights, point_lod_scale, point_peak_flare / point_flare_sum, glow_suns_m2,
     smoke_sources, ground_snap; per fire flame height, ground, wind at 10 m / 3 km; the nearest's smoke knots; world=1:
     `world_ignition_on_lights` / `world_front_on_lights`), `fires go [k] [view=side|under|orbit] [local_h=] [dist_km=]

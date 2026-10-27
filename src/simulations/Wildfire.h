@@ -76,9 +76,17 @@ double fireSmokeRiseM(double ageS, double Hb, double w0);
 // Where the column starts (m east / north of the ignition point): a little downwind of the head, so the flames stand
 // upwind of their smoke and are seen from the side (the near-ground smoke is the flames' own, carried off downwind).
 glm::dvec2 fireSmokeSource(const Fire &f, const FireState &s, double t);
-// Where the smoke emitted ageS ago into the layer Hb is now (x, y metres east / north of the ignition point, z its
-// height): walked from the head through the wind of each height at the moment it travelled (the sim's streak walks the
-// same steps at its own knots).
+// Smoke TRAJECTORIES (2026-10-26, issue 20261026_204239 "the smoke wavers around randomly and sometimes changes direction
+// entirely ... changing wind direction at the fire's source should have no effect on smoke farther down the trail"):
+// every parcel of smoke is advected from where and when it left the fire, through windAt at ITS OWN position, height and
+// time, step by step (Euler on a fixed schedule of ages, so a trajectory is a pure function of its emission time: the
+// sim caches them and only ever extends them). fireSmokeStepS = the step from age a to the next knot of the schedule.
+double fireSmokeStepS(double ageS);
+// One step of a parcel: xy (m east / north of the ignition point) at age a, emitted at tE, rising to Hb with updraft w0.
+glm::dvec2 fireSmokeAdvect(const Fire &f, const glm::dvec2 &xy, double ageS, double h, double tE, double Hb, double w0);
+// Where the smoke emitted ageS ago (at t - ageS, from the column's source then) into the layer Hb is now (x, y metres
+// east / north of the ignition point, z its height): its trajectory integrated on the schedule (the harness; the sim
+// caches the same trajectories). s is unused (kept for the callers: the state at the emission is computed).
 glm::dvec3 fireSmokeAt(const Fire &f, const FireState &s, double t, double ageS, double Hb, int steps = 16);
 
 // Every fire born in the 1-degree cells within radiusKm of (lat, lon) over the last kMaxLife, alive at time t.

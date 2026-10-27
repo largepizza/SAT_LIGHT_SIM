@@ -343,26 +343,33 @@ glm::dvec2 fireSmokeSource(const Fire &f, const FireState &s, double t)
     return fireFrontAt(f, s, 0.0) + w * (250.0 + 0.1 * s.halfWidthM);
 }
 
-glm::dvec3 fireSmokeAt(const Fire &f, const FireState &s, double t, double ageS, double Hb, int steps)
+double fireSmokeStepS(double ageS) { return std::clamp(0.15 * ageS, 20.0, 900.0); }
+
+glm::dvec2 fireSmokeAdvect(const Fire &f, const glm::dvec2 &xy, double ageS, double h, double tE, double Hb, double w0)
 {
     const double la = f.latDeg * kPi / 180.0, lo = f.lonDeg * kPi / 180.0;
     const glm::dvec3 G(std::cos(la) * std::cos(lo), std::cos(la) * std::sin(lo), std::sin(la));
     const glm::dvec3 eE = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), G) + glm::dvec3(1e-12, 0, 0));
     const glm::dvec3 nE = glm::cross(G, eE);
+    const glm::dvec3 d = glm::normalize(G + (eE * xy.x + nE * xy.y) / 6371000.0);
+    const double am = ageS + 0.5 * h;
+    return xy + windAt(d, fireSmokeRiseM(am, Hb, w0), tE + am) * h;
+}
+
+glm::dvec3 fireSmokeAt(const Fire &f, const FireState &, double t, double ageS, double Hb, int)
+{
+    const double tE = t - std::max(ageS, 0.0);
+    const FireState sE = fireStateAt(f, std::max(tE, f.t0));
     const double w0 = fireUpdraftMps(f);
-    glm::dvec2 xy = fireSmokeSource(f, s, t);
-    double z0 = fireSmokeRiseM(0.0, Hb, w0), ta = 0.0;
-    const double t1 = std::max(ageS, 1.0), tA = std::min(60.0, t1);
-    for (int j = 0; j <= steps; ++j)
+    glm::dvec2 xy = fireSmokeSource(f, sE, tE);
+    double a = 0.0;
+    while (a < ageS)
     {
-        const double tb = j == 0 ? tA : tA * std::pow(t1 / tA, (double)j / steps);
-        const double zb = fireSmokeRiseM(tb, Hb, w0);
-        const glm::dvec3 d = glm::normalize(G + (eE * xy.x + nE * xy.y) / 6371000.0);
-        xy += windAt(d, 0.5 * (z0 + zb), t - 0.5 * (ta + tb)) * (tb - ta);
-        z0 = zb;
-        ta = tb;
+        const double h = std::min(fireSmokeStepS(a), ageS - a);
+        xy = fireSmokeAdvect(f, xy, a, h, tE, Hb, w0);
+        a += h;
     }
-    return glm::dvec3(xy, z0);
+    return glm::dvec3(xy, fireSmokeRiseM(ageS, Hb, w0));
 }
 
 void firesNear(double t, double latDeg, double lonDeg, double radiusKm, const BiomeMap &bio, float rateScale,
