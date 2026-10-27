@@ -9069,6 +9069,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2DebugView = c.value("debug_view", cv2DebugView);
         cv2WxOneFace = c.value("weather_one_face", cv2WxOneFace);
         cv2WxRectBake = c.value("weather_rect_bake", cv2WxRectBake);
+        stormEnvAsync = c.value("storm_env_async", stormEnvAsync);
+        cv2WxRectMaxShare = c.value("weather_rect_max_share", cv2WxRectMaxShare);
+        cv2WxRectMarginDeg = c.value("weather_rect_margin_deg", cv2WxRectMarginDeg);
         cv2WxRectLevels = std::clamp(c.value("weather_rect_levels", cv2WxRectLevels), 0, 9);
         cv2WxTickS = settingClamp(c.value("weather_tick_s", cv2WxTickS), 0.5f, 120.0f);
         cv2CoverClear = c.value("cover_clear", cv2CoverClear);
@@ -9748,6 +9751,9 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"debug_view", cv2DebugView},
         {"weather_one_face", cv2WxOneFace},
         {"weather_rect_bake", cv2WxRectBake},
+        {"storm_env_async", stormEnvAsync},
+        {"weather_rect_max_share", cv2WxRectMaxShare},
+        {"weather_rect_margin_deg", cv2WxRectMarginDeg},
         {"weather_rect_levels", cv2WxRectLevels},
         {"weather_tick_s", cv2WxTickS},
         {"cover_clear", cv2CoverClear},

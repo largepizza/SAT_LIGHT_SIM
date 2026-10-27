@@ -2106,7 +2106,7 @@ bool SatelliteSim::weatherViewRect(int f, const glm::dvec3 &m, double capR, glm:
         rect = glm::ivec4(0);   // the cap misses this face: nothing in it to bake
         return true;
     }
-    if ((double)(x1 - x0) * (double)(y1 - y0) > 0.5 * N * N)
+    if ((double)(x1 - x0) * (double)(y1 - y0) > (double)std::clamp(cv2WxRectMaxShare, 0.0f, 1.0f) * N * N)
         return false;
     rect = glm::ivec4(x0, y0, x1, y1);
     return true;
@@ -2343,7 +2343,7 @@ void SatelliteSim::recordWeatherEvolution(VkCommandBuffer cmd)
     if (allSix && !anyInvalid && cv2WxRectBake)
     {
         const double capR = std::acos(std::clamp(satphot::kEarthRadiusM / (satphot::kEarthRadiusM + eyeH), -1.0, 1.0)) +
-                            glm::radians(12.0);
+                            glm::radians((double)std::clamp(cv2WxRectMarginDeg, 4.0f, 60.0f));
         glm::ivec4 rc[6];
         bool rok[6];
         double visLag[6], fullLag[6];
@@ -2429,6 +2429,7 @@ void SatelliteSim::recordWeatherEvolution(VkCommandBuffer cmd)
         return;
     if (stormsStamped && slice <= 0)
         buildStormEnvIndex();   // the storms' cloud field: the towers as they are now, where the cube is read for them
+    cv2WxLastAllSix = allSix;
     if (allSix)
     {
         for (int f = 0; f < 6; ++f)
@@ -2541,7 +2542,10 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
             cv2WxQuery = VK_NULL_HANDLE;
     }
     fillCloudsV2Params(ctx, cpc);   // cloud_march.comp reads the v2 UBO (beams, debug views) either way
-    updateStorms();                 // the storm objects' towers at this sim time (march, lightning, beams, clipmap)
+    if (!stormsUpdatedEarly)        // (in time warp: already, at the top of recordCompute)
+        updateStorms();             // the storm objects' towers at this sim time (march, lightning, beams, clipmap)
+    stormsUpdatedEarly = false;
+    stormsMainPathLast = true;
     weatherFillDustGrid();          // the haboobs' dust walls round the observer (the march draws them as cloud)
     // The weather cube keeps evolving with the clouds off: the flat stand-ins (sat_sky.frag's flat layers,
     // SKY_LITE, Potato's deck, reflections and probes) read it.

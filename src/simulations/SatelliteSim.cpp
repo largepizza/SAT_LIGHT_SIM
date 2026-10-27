@@ -1684,6 +1684,18 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     kesslerTrackerRecordUpload(cmd); // the Kessler tracker's globe (SatelliteSimKesslerTracker.cpp), when re-rastered
     weatherRadarRecordUpload(cmd);   // the Weather window's radar image (SatelliteSimWeatherWindow.cpp), when re-rastered
     fprof::mark("rc.seg2_kessler");
+    // (2026-10-27, weather perf pass 2) In time warp the storms are updated here, as soon as this frame's sim time is
+    // final (updateStorms reads only it and the settings), and the weather bake's envelope index starts on a worker, so
+    // it runs alongside the rest of the frame; recordCloudsV2 then skips its own updateStorms. Only after a frame that
+    // took the volumetric path and baked in time warp (else nothing changes).
+    stormsUpdatedEarly = false;
+    if (stormEnvAsync && cv2WxLastAllSix && stormsMainPathLast)
+    {
+        updateStorms();
+        stormsUpdatedEarly = true;
+        if (stormObjects && cv2CbColumns > 0.0f && stormCloudField > 0.0f)
+            startStormEnvJob();
+    }
     }
     if (std::abs(simDayJ2000 - orbitEpochDay) >= kOrbitRebakeDays)
     {
@@ -3403,6 +3415,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         updateLightningBolts();
         // Potato's flat deck reads the weather cube: it keeps evolving (a dispatch only when a face is due).
         recordWeatherEvolution(cmd);
+        stormsMainPathLast = false;
     }
     else if (!dbgEnv("SATLIGHTSIM_SKIP_CLOUDMARCH"))
     {
@@ -8807,6 +8820,7 @@ float SatelliteSim::cpuTerrainHeightM(float latDeg, float lonDeg) const
 // command buffer is ended.
 void SatelliteSim::recordScreenshotCopy(VkCommandBuffer cmd, VulkanContext &ctx, VkImage image)
 {
+    finishStormEnvIndex();   // the weather bake's envelope index (a worker): in the shadow before this frame's uploads
     FPROF_SCOPE("recordScreenshotCopy");
     // ── The exposure meter (every frame): the frame as displayed, its central 60% (most HUD panels
     // sit outside it), blitted down to 64x36 into a linear RGBA8 image (the blit decodes sRGB) and

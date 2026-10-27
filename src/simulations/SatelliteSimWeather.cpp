@@ -365,6 +365,36 @@ void parallelEntries(wx::Catalog *cat, uint32_t n, uint32_t minN, std::vector<E>
     out.reserve(tot);
     for (uint32_t c = 0; c < nc; ++c) out.insert(out.end(), parts[c].begin(), parts[c].end());
 }
+// parallelEntries on threads of its own (a worker that must not touch the storm pool): the same chunks, joined in order.
+template <class E, class F>
+void ownThreadEntries(uint32_t n, std::vector<E> &out, F &&body)
+{
+    constexpr uint32_t kChunk = 96;
+    const uint32_t nc = (n + kChunk - 1) / kChunk;
+    const uint32_t nt = std::min<uint32_t>(nc, std::max(2u, std::thread::hardware_concurrency() / 2u));
+    if (nt <= 1)
+    {
+        for (uint32_t i = 0; i < n; ++i) body(i, out);
+        return;
+    }
+    std::vector<std::vector<E>> parts(nt);
+    std::vector<std::future<void>> fs;
+    const uint32_t per = (nc + nt - 1) / nt;   // chunks per thread, contiguous: their lists join in i order
+    for (uint32_t k = 1; k < nt; ++k)
+        fs.push_back(std::async(std::launch::async, [&, k] {
+            const uint32_t i0 = std::min(n, k * per * kChunk), i1 = std::min(n, (k + 1) * per * kChunk);
+            for (uint32_t i = i0; i < i1; ++i) body(i, parts[k]);
+        }));
+    {
+        const uint32_t i1 = std::min(n, per * kChunk);
+        for (uint32_t i = 0; i < i1; ++i) body(i, parts[0]);
+    }
+    for (auto &f : fs) f.get();
+    size_t tot = out.size();
+    for (auto &pp : parts) tot += pp.size();
+    out.reserve(tot);
+    for (auto &pp : parts) out.insert(out.end(), pp.begin(), pp.end());
+}
 } // namespace
 
 void SatelliteSim::createStormBuffer(VulkanContext &ctx)
@@ -408,6 +438,8 @@ void SatelliteSim::createStormBuffer(VulkanContext &ctx)
 
 void SatelliteSim::destroyStormBuffer(VkDevice device)
 {
+    if (stormEnvJob.valid())
+        stormEnvJob.get();   // (a worker may be writing the shadow)
     if (stormMapped && ctx_ && ctx_->framesInFlight > 1)
         ctx_->mirrorForget(stormMapped);
     else if (stormMapped)
@@ -435,6 +467,7 @@ uint64_t SatelliteSim::stormEnvHash() const
 void SatelliteSim::updateStorms()
 {
     FPROF_SCOPE("updateStorms");
+    finishStormEnvIndex();   // (last frame's, if a frame ended before its join)
     if (!stormMapped)
         return;
     const auto t0 = std::chrono::steady_clock::now();
@@ -795,6 +828,49 @@ void SatelliteSim::buildStormEnvIndex()
     FPROF_SCOPE("buildStormEnvIndex");
     if (!stormMapped)
         return;
+    const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    if (stormEnvAsync && stormEnvJob.valid() && stormEnvJobT == tNow)
+        return;   // started earlier this frame (startStormEnvJob)
+    finishStormEnvIndex();
+    if (stormEnvAsync)
+        startStormEnvJob();
+    else
+    {
+        const StormEnvDirty d = buildStormEnvIndexWork(false);
+        stormEnvJob = std::async(std::launch::deferred, [d] { return d; });
+        finishStormEnvIndex();
+    }
+}
+
+void SatelliteSim::startStormEnvJob()
+{
+    if (!stormMapped)
+        return;
+    finishStormEnvIndex();
+    stormEnvJobT = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    stormEnvJob = std::async(std::launch::async, [this] { return buildStormEnvIndexWork(true); });
+}
+
+void SatelliteSim::finishStormEnvIndex()
+{
+    if (!stormEnvJob.valid())
+        return;
+    FPROF_SCOPE("finishStormEnvIndex");
+    const StormEnvDirty d = stormEnvJob.get();
+    if (!stormMapped)
+        return;
+    ctx_->mirrorDirty(stormMapped, kStormEnvTowersOffset, 48ull * d.n);
+    ctx_->mirrorDirty(stormMapped, kStormEnvTableOffset, 8ull * kStormEnvTableSize);
+    ctx_->mirrorDirty(stormMapped, kStormEnvListOffset, 4ull * d.listUsed);
+    ctx_->mirrorDirty(stormMapped, kShieldEnvOffset, 64ull * d.nS);
+    ctx_->mirrorDirty(stormMapped, kShieldEnvTableOffset, 8ull * kShieldTableSize);
+    ctx_->mirrorDirty(stormMapped, kShieldEnvListOffset, 4ull * d.shieldListUsed);
+}
+
+SatelliteSim::StormEnvDirty SatelliteSim::buildStormEnvIndexWork(bool own)
+{
+    StormEnvDirty dirty;
+    const auto jobT0 = std::chrono::steady_clock::now();
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     auto flowed = [&](const glm::dvec3 &wd) -> glm::dvec3 { return stormFlowedDir(wd, t); };
     auto splitT = std::chrono::steady_clock::now();
@@ -808,7 +884,7 @@ void SatelliteSim::buildStormEnvIndex()
     const bool tight = stormIndexTight;
     if (tight) binGeom(kStormBinsPerFace);
     const uint32_t n =(uint32_t)std::min<size_t>(stormGpuTowers.size(), kStormMaxTowers);
-    parallelEntries(stormCatalog.get(), n, 256u, stormEnvEntries, [&](uint32_t i, std::vector<StormEntry> &ents) {
+    auto towerBody = [&](uint32_t i, std::vector<StormEntry> &ents) {
         GpuStormTower g = stormGpuTowers[i];
         const glm::dvec3 df = flowed(glm::normalize(glm::dvec3(glm::vec3(g.a))));
         g.a = glm::vec4(glm::vec3(df), g.a.w);
@@ -821,15 +897,16 @@ void SatelliteSim::buildStormEnvIndex()
             else
                 listStormBins(df, rr, i, kStormBinsPerFace, ents);
         }
-    });
+    };
+    if (own) ownThreadEntries(n, stormEnvEntries, towerBody);
+    else parallelEntries(stormCatalog.get(), n, 256u, stormEnvEntries, towerBody);
     split("env.towerBins");
     auto *envList = reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kStormEnvListOffset);
     const StormIndexStats ex = fillStormIndex(stormEnvEntries, stormEnvTable, stormEnvTableUsed, stormCounts,
                                               kStormEnvTableSize, kStormEnvListSize, kStormMaxPerBin, envList,
                                               reinterpret_cast<glm::uvec2 *>(static_cast<char *>(stormMapped) + kStormEnvTableOffset));
-    ctx_->mirrorDirty(stormMapped, kStormEnvTowersOffset, 48ull * n);
-    ctx_->mirrorDirty(stormMapped, kStormEnvTableOffset, 8ull * kStormEnvTableSize);
-    ctx_->mirrorDirty(stormMapped, kStormEnvListOffset, 4ull * ex.used);
+    dirty.n = n;
+    dirty.listUsed = ex.used;
     stormStats.envBins = (int)ex.bins;
     stormStats.envEntries = (int)ex.entries;
     stormStats.envTruncated = (int)ex.truncated;
@@ -840,7 +917,7 @@ void SatelliteSim::buildStormEnvIndex()
     auto *envShields = reinterpret_cast<GpuStormShield *>(static_cast<char *>(stormMapped) + kShieldEnvOffset);
     shieldEnvEntries.clear();
     const uint32_t nS = (uint32_t)std::min<size_t>(stormGpuShields.size(), kShieldMax);
-    parallelEntries(stormCatalog.get(), nS, 256u, shieldEnvEntries, [&](uint32_t i, std::vector<StormEntry> &ents) {
+    auto shieldBody = [&](uint32_t i, std::vector<StormEntry> &ents) {
         GpuStormShield g = stormGpuShields[i];
         const glm::dvec3 a = flowed(glm::normalize(glm::dvec3(glm::vec3(g.a))));
         const glm::dvec3 b = flowed(glm::normalize(glm::dvec3(glm::vec3(g.b))));
@@ -853,15 +930,18 @@ void SatelliteSim::buildStormEnvIndex()
         // + the clear air ahead of the line (100 km past the capsule, stormStamp).
         listStormBins(mid, 1.03 * (half + std::max(g.c.x, g.b.w)) + 100000.0 + 1000.0 * std::floor(0.5 * g.c.w), i,
                       kShieldEnvBinsPerFace, ents);   // (+ the line's bow)
-    });
+    };
+    if (own) ownThreadEntries(nS, shieldEnvEntries, shieldBody);
+    else parallelEntries(stormCatalog.get(), nS, 256u, shieldEnvEntries, shieldBody);
     auto *senv = reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kShieldEnvListOffset);
     const StormIndexStats sx = fillStormIndex(shieldEnvEntries, shieldEnvTable, shieldEnvTableUsed, stormCounts,
                                               kShieldTableSize, kShieldListSize, kShieldMaxPerBin, senv,
                                               reinterpret_cast<glm::uvec2 *>(static_cast<char *>(stormMapped) + kShieldEnvTableOffset));
-    ctx_->mirrorDirty(stormMapped, kShieldEnvOffset, 64ull * nS);
-    ctx_->mirrorDirty(stormMapped, kShieldEnvTableOffset, 8ull * kShieldTableSize);
-    ctx_->mirrorDirty(stormMapped, kShieldEnvListOffset, 4ull * sx.used);
+    dirty.nS = nS;
+    dirty.shieldListUsed = sx.used;
     split("env.shields");
+    stormEnvJobMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - jobT0).count();
+    return dirty;
 }
 
 nlohmann::json SatelliteSim::stormNearestJson(int n, float minStrength, float rangeKm, bool dominantOnly) const
