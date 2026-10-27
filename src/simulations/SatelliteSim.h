@@ -4508,13 +4508,13 @@ private:
     float cv2Lean = 0.15f;             // horizontal shift of a tower per metre of height
     float cv2InteriorErosion = 0.74f;  // share of the erosion that applies deep inside a cloud
     float cv2ColumnEdge = 1.7f;        // 1 / the column edge's softness (fraction of the span)
-    float cv2AmbientGain = 1.5f;       // sky light (zenith radiance x this)
-    float cv2SunGain = 2.3f;
+    float cv2AmbientGain = 2.0f;       // sky light (zenith radiance x this)
+    float cv2SunGain = 1.0f;
     float cv2MoonGain = 1.0f;          // x the terrain's moonlight (cloud.moonGain) as the night key light
     float cv2BounceGain = 0.95f;        // light reflected up from the ground
-    float cv2Powder = 0.29f;
-    float cv2MsExtinction = 0.12f;     // multiple scattering: extinction ratio per octave ...
-    float cv2MsStrength = 0.27f;        // ... and contribution ratio per octave
+    float cv2Powder = 0.21f;
+    float cv2MsExtinction = 0.21f;     // multiple scattering: extinction ratio per octave ...
+    float cv2MsStrength = 0.56f;        // ... and contribution ratio per octave
     float cv2PhaseG = 0.57f;            // forward-scattering lobe (silver lining)
     float cv2HistoryWeightMoving = 0.05f; // the same weight once the view moves (parallax past ~2 half-res px)
     float cv2HistoryWeight = 0.046f;     // weight of a new sample over its reprojected history (still view;
@@ -4535,7 +4535,7 @@ private:
     float cv2LightningSprites = 0.013f;    // chance a ground stroke sets off a red sprite 50-90 km up (0 = never)
     float cv2EvoWindMps = 8.0f;           // the weather map's evolution: its advecting wind (m/s); 0 = static
     float cv2EvoGrowth = 0.12f;           // ... and how much its coverage grows and decays (0 = none)
-    float cv2EvoWindowH = 0.1f;            // ... each advected copy's window (h): the displacement's bound
+    float cv2EvoWindowH = 0.01f;            // ... each advected copy's window (h): the displacement's bound
     float cv2EvoDiurnal = 0.6f;           // afternoon convection over land (0 = none)
     float cv2FogAmount = 0.26f;           // fog (cv2FogDust): how readily it forms (0 = none)
     float cv2FogDepthM = 200.0f;          // ... its depth over the smoothed ground (valleys fill deeper)
@@ -4557,7 +4557,7 @@ private:
     float cv2CdcMaxLevel = 6.0f;          // ... levels the march may use (0-8)
     float cv2CdcFpUsed = -1.0f, cv2CdcMaxLevelUsed = -1.0f, cv2CdcSkipUsed = -1.0f;
     float cv2CdcMaxRate = 4.0f;           // ... used only up to this time rate (x real time)
-    float cv2CdcLight = 0.0f;             // S2 (2026-10-22): the light march reads the clipmap's mean beyond its first 2 steps
+    float cv2CdcLight = 1.0f;             // S2 (2026-10-22): the light march reads the clipmap's mean beyond its first 2 steps
     float cv2CdcLightUsed = -1.0f;
     float cv2CdcLightLevels = 3.0f, cv2CdcLightLevelsUsed = -1.0f;   // ... on levels below this (cells to 400 m)
     float cv2CdcNearM = 0.0f;             // coarse steps skip only beyond this distance (m)
@@ -4576,9 +4576,9 @@ private:
     double cv2CdcRefS = 0.0;               // ... and its distance scale then
     bool  cv2CdcWasActive = false;
     int   cv2CdcSlowFrames = 0;
-    float cv2MiePhase = 0.0f;             // "Mie phase" (2026-10-22): the droplets' Mie phase's share of single scattering
-    float cv2MieOptics = 0.0f;            // "Mie optics": the tuned phase x the Mie table's structure (corona, cloudbow, glory)
-    float cv2DropletReffUm = 10.0f;       // ... their effective radius (um): 4 continental .. 15+ maritime / rain-forming
+    float cv2MiePhase = 0.11f;             // "Mie phase" (2026-10-22): the droplets' Mie phase's share of single scattering
+    float cv2MieOptics = 0.33f;            // "Mie optics": the tuned phase x the Mie table's structure (corona, cloudbow, glory)
+    float cv2DropletReffUm = 9.7f;       // ... their effective radius (um): 4 continental .. 15+ maritime / rain-forming
     // 2026-10-11 (clouds_v2.glsl tune / mid2 / mid3 / samp; slots 270-282).
     // 2026-10-13 (issue 20261012_235712, slots 289-295, UBO cu / cu2): the cumulus shape.
     float cv2CuHeightVar = 0.6f;          // "Cumulus height variation": each cloud's top varies by this (x) across a field
@@ -4598,7 +4598,7 @@ private:
     float cv2MidFieldKm = 0.0f;           // the mid layer's field size (km; 0 = the cluster field's patches)
     float cv2MidCover = 0.0f;             // mid layer cover bias (sd of its regime noise; + = more sheet)
     float cv2SampAccum = 39.0f;           // the resolve's per-pixel accumulation: the sample count it caps at (0 = off)
-    float cv2SampNewSmooth = 0.8f;        // how much a young pixel leans on its neighbourhood's estimate
+    float cv2SampNewSmooth = 0.42f;        // how much a young pixel leans on its neighbourhood's estimate
     float cv2MsOctaves = 2.0f;            // multiple-scattering octaves (2-8): strength^k x exp(-od x extinction^k)
     // Multiple scattering as a delta-Eddington diffuse field (2026-10-26, cloud_v2_march.comp cv2DiffuseField): dark
     // wisps and edges, bright cores. 0 = the octaves above (with "Powder", which only that model uses).
@@ -4619,7 +4619,7 @@ private:
     float cv2ToneContrast = 1.15f;        // AgX look: power on the curve's output (contrast about mid grey)
     float cv2LobeOcclusion = 0.0f;        // sky light darker in the creases between lobes, brighter on their tips
     float cv2LightFootprint = 0.0f;       // the light march's samples read the field at this x its length (0 = point samples). 0.08 hid grain but a cumulus lost its self-shadow: flat, glowing (issue 20261013_181252)
-    float cv2SampClampSd = 1.25f;         // the history clamp in motion (sd of the new samples around)
+    float cv2SampClampSd = 1.4f;         // the history clamp in motion (sd of the new samples around)
     // "Sun shadow cell (m)": the Sun transmittance volume's finest level's cell (levels 1-3: x4 / x16 / x64). Key
     // `shadow_ring1_cell_m`, kept from the shaft lattice's ring 1, which it replaced.
     float cv2ShadowRing1CellM = 250.0f;
@@ -4636,7 +4636,7 @@ private:
     float cv2SparseWhenStill = 0.0f;   // > 0.5: while the view is still, march 1 pixel in 4 (history fills in)
     int   cv2StillFrames = 0;          // consecutive frames with no camera / eye / time-warp motion
     int   cv2EyeStillFrames = 0;       // consecutive frames whose EYE motion showed under 1/4 half-res px of parallax (no time warp, history kept)
-    float cv2MidAmount = 1.1f;         // the mid-level layer (altocumulus / altostratus), 0 = off
+    float cv2MidAmount = 0.75f;         // the mid-level layer (altocumulus / altostratus), 0 = off
     float cv2StormScale = 12.0f;        // deep convection's lobes and erosion are this much larger
     float cv2StormDetail = 0.24f;       // share of the erosion kept on deep convection
     float cv2Anvil = 8.0f;             // the anvil shield's density ("Anvils"), 0 = off. With storm objects each storm's
@@ -4705,14 +4705,14 @@ private:
     // used to read the shape volume at cv2ShapePeriodM).
     float cv2CirrusPeriodM = 11000.0f;  // cirrus fibre spacing across the wind (along it: x stretch)
     float cv2MidPeriodM = 5300.0f;     // altocumulus cloudlets
-    float cv2MidDensity = 0.3f;        // x the mid layer's extinction (the low system keeps "Density")
+    float cv2MidDensity = 0.47f;        // x the mid layer's extinction (the low system keeps "Density")
     float cv2CloudSunRayleigh = 0.86f;  // Rayleigh on the sunlight reaching cloud, x physical (the sky's own
                                        // gain no longer reddens every low-sun cloud)
     float cv2TwilightSky = 0.0f;       // extra sky light on cloud while the Sun is low or just set at it
     float cv2BeamLines = 0.25f;        // each beam's own faint streak beside the shafts (the shafts cluster converged beams)
     float cv2FlowWarp = 0.018f;        // the flow field's displacement, as a fraction of its period (curved systems)
     float cv2FlowPeriodKm = 6000.0f;   // the flow field's scale (swirls of about half this)
-    float cv2LayerSpread = 0.69f;       // 0: mid/high cloud only over the low cloud; 1: spread around whole systems
+    float cv2LayerSpread = 0.57f;       // 0: mid/high cloud only over the low cloud; 1: spread around whole systems
     // Convective shape (pass 12): each cell is one cloud with a vertical profile — a narrower base,
     // widest high up, a domed top under the cell's own height — instead of a cone per column.
     float cv2TopHeavy = 1.0f;          // how much narrower the base is than the body (0 = straight sides)
@@ -4735,7 +4735,7 @@ private:
     float cv2CbColumns = 2.0f;         // Cb column density (0 = no towers: a storm is tall congestus; the pass-14 deep cores are gone)
     float cv2CbSpacingKm = 30.0f;      // lattice cell: about one tower per cell where storms are strong
     float cv2CbRadiusKm = 15.0f;        // a tower's base radius (waist ~0.7x, head ~1.6x)
-    float cv2CbCumulusTopKm = 2.6f;    // the low (cumulus/congestus) field's top in storm regions
+    float cv2CbCumulusTopKm = 12.0f;    // the low (cumulus/congestus) field's top in storm regions
     float cv2CbWaist = 0.89f;           // a tower's waist, x its base radius (1 = none: <1 read as smokestacks)
     float cv2CbFlare = 1.4f;           // its head under the anvil, x its base radius
     float cv2CbHeadDriftKm = 15.0f;     // how far downwind the head is blown
@@ -4753,10 +4753,10 @@ private:
     bool   cv2CdcAnchorSet = false;
     int    cv2StvBoost = 0;                        // frames left of levels 0-1's second bake (catching up)
     float cv2AnvilLiftM = 230.0f;       // "Anvil top lift (m)": how far the head lobes raise / lower its top
-    float cv2CbSparsity = 0.35f;       // 0: a tower in every lattice cell of a storm; 1: only the strongest
+    float cv2CbSparsity = 0.33f;       // 0: a tower in every lattice cell of a storm; 1: only the strongest
     float cv2CbFill = 0.48f;            // share of 3x3 lattice blocks holding a storm cell (a dominant tower + a flanking line)
     float cv2CbCumulusVar = 0.8f;      // the storm cumulus top's regional variation (+- fraction of it)
-    float cv2CbCumulusReachKm = 10.0f;  // how far beyond a tower's edge the low cloud takes the storm cumulus top
+    float cv2CbCumulusReachKm = 31.0f;  // how far beyond a tower's edge the low cloud takes the storm cumulus top
     float cv2CbOvershootKm = 0.14f;     // a tower's overshooting dome above the anvil lid (every tower meets it)
     float cv2AnvilThickKm = 3.7f;      // the anvil shield's thickness over the storm's core
     float cv2AnvilHangKm = 0.87f;       // how much lower it hangs around a tower's head (the mushroom)
@@ -5154,7 +5154,7 @@ private:
     VkImage cv2ShapeCapsImg = VK_NULL_HANDLE;
     VkDeviceMemory cv2ShapeCapsMem = VK_NULL_HANDLE;
     VkImageView cv2ShapeCapsView = VK_NULL_HANDLE;
-    float cv2ShapeCaps = 0.0f, cv2ShapeCapsUsed = 0.0f;
+    float cv2ShapeCaps = 1.0f, cv2ShapeCapsUsed = 0.0f;
     VkImageView cv2ShapeActiveView() const { return (cv2ShapeCaps > 0.5f && cv2ShapeCapsView) ? cv2ShapeCapsView : cv2ShapeView; }
     void cv2SyncShapeVolume(VulkanContext &ctx);
     VkImage cv2MieImg = VK_NULL_HANDLE;
@@ -5186,7 +5186,7 @@ private:
     // on its coverage (field units), its optical depth and the softness of its sub-pixel edges.
     // The bias is 0 since issue 20261021_173412: cv2FarColumn finds the march's own (eroded) cloud edge, and the old
     // +0.12 doubled the far layer's cloud against the march's.
-    float cv2FarSlant = 0.91f, cv2FarCoverBias = 0.0f, cv2FarDensity = 1.2f, cv2FarSoftness = 1.0f;   // review 24b: the user's tuning
+    float cv2FarSlant = 0.91f, cv2FarCoverBias = -0.1f, cv2FarDensity = 1.2f, cv2FarSoftness = 1.0f;   // review 24b: the user's tuning
     float cv2FarLowSun = 0.38f;   // slot 255: the far layer's key light goes as mu0^(1 / (1 + this)) (0 = a flat slab)
     float cv2FarKeyGain = 4.1f, cv2FarSkyGain = 0.6f;   // review 24b: the user's tuning (was 10 / 0.3)   // "Far cloud layer sunlight / sky light" (review 21: matched to the march's cloud radiance at 1460 km and its image at 3000-8000 km)
     float cv2FarLayerFullKm = 8900.0f;   // review 24b: the user's tuning (was 1500)
@@ -5284,7 +5284,7 @@ private:
     // "Near cirrus stride" (2026-10-24, the perf pass; key near_cirrus_stride, slot 335): a pure thin-ice sample within a
     // 12-m footprint (the eye inside the high layer, where it is a soft haze) stands for this many view steps. 1 = off (the
     // look). From 12.4 km under an anvil (issue 20261023_230322): cloud march 34.6 -> 27.8 ms at 2, 25.0 at 4.
-    float cv2NearCirrusStride = 1.0f;
+    float cv2NearCirrusStride = 4.0f;
     // "Smooth tiles at half density" (2026-10-25, perf-storm; keys smooth_tiles / smooth_tile_threshold, slots 339-340):
     // with full-resolution clouds, the 32x32 tiles whose last resolved frame varies by less than the threshold (display
     // levels / 255 over any 4x4 window; transmittance twice that) are marched at the half-res sparse grid's density and
@@ -6141,8 +6141,8 @@ private:
     // Measured against the volumetric at MIP 0: volumetric (coverage 1.00, sun gain 0.46)
     // matched flat (coverage 0.69, sun gain 1.84). Defaults encode those ratios so the shared
     // sliders now move both paths together instead of only ever suiting one of them.
-    float flatCoverageScale = 0.57f;
-    float flatSunGainScale = 1.8f;
+    float flatCoverageScale = 0.18f;
+    float flatSunGainScale = 1.3f;
     // Clouds at 11 km have a ground-level horizon of ~374 km, so this band puts the transition
     // near the horizon when standing on the surface, and makes everything 2D from orbit.
     float cloudDistFadeStartM = 150000.0f;
@@ -6371,16 +6371,16 @@ private:
     bool moonEclipseSolarPossible = false, moonEclipseLunarPossible = false;
     glm::dvec3 moonGeoEciM(double t) const;
     double findEclipse(bool solar, double t0) const;                // orbit colour grade (Atmosphere tab, slot 219; the Artemis II photos)
-    float auroraSheetGain = 1.4f;           // aurora sheets (Atmosphere tab, slots 215-218): strength, 0 = off
-    float auroraSheetSpacingDeg = 0.34f;     // colatitude between sheets
-    float auroraSheetCrisp = 0.77f;          // share of crisp (thin) sheets
-    float auroraSheetFold = 1.1f;           // curls / spirals
+    float auroraSheetGain = 1.7f;           // aurora sheets (Atmosphere tab, slots 215-218): strength, 0 = off
+    float auroraSheetSpacingDeg = 0.35f;     // colatitude between sheets
+    float auroraSheetCrisp = 0.61f;          // share of crisp (thin) sheets
+    float auroraSheetFold = 1.2f;           // curls / spirals
     // Aurora storms (Atmosphere tab, slots 298-301, 2026-10-14; cloud_params.glsl auroraStorm).
     float auroraStormFeatures = 1.2f;       // tall red-topped curtains + magenta borders above Kp ~5
     float auroraBlueRayChance = 0.004f;     // rare giant rayed bands with sunlit blue tops (per ~220-km sheet stretch)
     float auroraArcSystems = 1.0f;          // sheets grouped into a few bright arc systems (0 = all alike; 0..1, was
                                             // 2 outside its 0-1 slider until 2026-10-21: the shader maps 1 to that look)
-    float auroraStormRedGain = 1.1f;        // storm-time 630-nm red equatorward of the oval
+    float auroraStormRedGain = 0.96f;        // storm-time 630-nm red equatorward of the oval
     float oceanSeaStateGain = 1.0f;          // waves follow the weather (Ocean tab, slot 213; 0 = fixed sea)
     float oceanWhitecapGain = 1.0f;          // whitecap foam gain (Ocean tab, slot 214)
     float oceanWaveRangeKm = 100.0f;         // review 21: waves fade to flat from 0.6x this (was a fixed 3-8 km; slot 237)
@@ -6414,10 +6414,10 @@ private:
                                              // in that formula, so it needs a much lower default than
                                              // terrain/ocean to land in the same plausible range)
     float auroraGroundGain = 0.0075f;        // C16: ambient aurora light on terrain/ocean only
-    float auroraCoverageFreq = 0.58f;        // C16: coverage patch size (per-degree colat frequency)
+    float auroraCoverageFreq = 0.42f;        // C16: coverage patch size (per-degree colat frequency)
     float auroraCoverageAzFreq = 3.1f;       // C16: coverage azimuthal wobble frequency
     float auroraCoverageDriftRate = 0.0012f; // C16: coverage evolution speed (wall-clock rad/s)
-    float auroraShimmerRate = 0.0f;       // C16: curtain fold noise evolution speed (wall-clock rad/s)
+    float auroraShimmerRate = 0.041f;       // C16: curtain fold noise evolution speed (wall-clock rad/s)
     VulkanContext *ctx_ = nullptr;           // set in init(), used for lazy icon loading
     AudioSystem *audio_ = nullptr;           // set via setAudio(), used in buildUI()
     std::string exeDir_;                     // directory containing the exe (read-only game data); set in init()
