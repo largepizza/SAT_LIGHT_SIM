@@ -161,6 +161,80 @@ void SatelliteSim::updateRefraction()
     }
     (void)took;
     refrDerive();
+    fillSunspots(simT);
+}
+
+// Sunspots (2026-10-27, issue 20261027_000948 "Sunspot look": "only circular ... we need pinprick dotted dark spots,
+// umbras and penumbras only on large spots or clusters"). Active regions as BIPOLAR GROUPS on the solar sphere, a
+// pure function of sim time (time warp, reversal and bookmarks see the same Sun):
+//   - kSlots slots, each a sequence of groups: slot k's cycle C_k (24-64 days), the group of cycle c exists with a
+//     chance following the 11-year cycle's activity (spaceWeather_.cycle), lives 4-60 days (bigger = longer),
+//     grows over its first ~12% and decays over its second half;
+//   - its size is heavy-tailed (most groups are a few pores, a few are large, complex regions), its latitude 6-32
+//     degrees in either hemisphere, its tilt Joy's law (leader nearer the equator, ~half the latitude), and it rides
+//     the Sun's differential rotation (synodic rate 14.71 - 2.40 sin^2 - 1.79 sin^4 deg/day less the Earth's 0.986);
+//   - the Sun's Fury's flare region (2037-07-14 09:30 UTC): a large delta group crossing the central meridian at
+//     the flare, on the disc for the two weeks round it (the user: "we'd expect a large cluster in the centre").
+// The shader (sat_sky.frag sunspotFactor) draws each as a leader, followers and pores; the 16 largest on the visible
+// side are sent.
+void SatelliteSim::fillSunspots(double simT)
+{
+    GpuRefraction &g = refrGpu;
+    constexpr double kDay = 86400.0;
+    constexpr int kSlots = 48, kMax = 16;
+    const double act = std::clamp(spaceWeather_.cycle, 0.0, 1.0);
+    auto omegaSyn = [](double latR) {
+        const double s2 = std::sin(latR) * std::sin(latR);
+        return glm::radians(14.713 - 2.396 * s2 - 1.787 * s2 * s2 - 0.9856) / kDay;
+    };
+    auto wrapPi = [](double a) { return a - kTwoPi * std::floor((a + 0.5 * kTwoPi) / kTwoPi); };
+    struct G { glm::vec4 a, b; double rank; };
+    G gs[kSlots + 1];
+    int n = 0;
+    for (int k = 0; k < kSlots; ++k)
+    {
+        const double C = (24.0 + 40.0 * rHash(k, 0, 0, 301u)) * kDay;
+        const double x = simT / C + rHash(k, 1, 0, 301u);
+        const int64_t c = (int64_t)std::floor(x);
+        const double tAge = (x - (double)c) * C;
+        if (rHash(k, c, 2, 301u) > 0.2 + 0.8 * act) continue;
+        const double sz = std::pow(rHash(k, c, 3, 301u), 2.4);
+        const double life = std::min((4.0 + 56.0 * sz) * kDay, 0.9 * C);
+        if (tAge > life) continue;
+        const double a01 = tAge / life;
+        const double env = smooth01(0.0, 0.12, a01) * (1.0 - smooth01(0.5, 1.0, a01));
+        if (env < 0.03) continue;
+        const double latD = 6.0 + 26.0 * std::pow(rHash(k, c, 5, 301u), 1.3);
+        const double lat = glm::radians(latD) * (rHash(k, c, 4, 301u) < 0.5 ? -1.0 : 1.0);
+        const double lonCM = wrapPi(kTwoPi * rHash(k, c, 6, 301u) + omegaSyn(lat) * tAge);
+        if (std::abs(lonCM) > glm::radians(100.0)) continue;
+        const double E = 0.02 + 0.13 * sz;
+        const double tilt = glm::radians(0.5 * latD + 14.0 * (rHash(k, c, 7, 301u) - 0.5));
+        const double cx = sz > 0.45 ? rHash(k, c, 8, 301u) : 0.0;
+        const uint32_t seed = (uint32_t)(k * 4099 + (int)(((c % 4093) + 4093) % 4093) + 1);
+        gs[n++] = {glm::vec4((float)lat, (float)lonCM, (float)E, (float)seed),
+                   glm::vec4((float)tilt, (float)env, (float)cx, (float)sz), sz * env};
+    }
+    {
+        const double dt = simT - (kesslerEpoch() - 17.5 * 3600.0);   // the Sun's Fury's X-class flare
+        if (dt > -16.0 * kDay && dt < 20.0 * kDay)
+        {
+            const double lat = glm::radians(14.0);
+            const double lonCM = omegaSyn(lat) * dt;
+            const double env = smooth01(-16.0 * kDay, -9.0 * kDay, dt) * (1.0 - smooth01(9.0 * kDay, 20.0 * kDay, dt));
+            if (std::abs(lonCM) < glm::radians(100.0) && env > 0.03)
+                gs[n++] = {glm::vec4((float)lat, (float)lonCM, 0.24f, 7777.0f), glm::vec4(glm::radians(9.0f), (float)env, 1.0f, 1.0f), 10.0};
+        }
+    }
+    std::sort(gs, gs + n, [](const G &p, const G &q) { return p.rank > q.rank; });
+    n = std::min(n, kMax);
+    g.spotInfo = glm::vec4((float)n, (float)act, 0.0f, 0.0f);
+    for (int i = 0; i < n; ++i)
+    {
+        g.spots[2 * i] = gs[i].a;
+        g.spots[2 * i + 1] = gs[i].b;
+    }
+    sunspotGroups = n;
 }
 
 void SatelliteSim::refrDerive()
@@ -216,6 +290,17 @@ void SatelliteSim::refrDerive()
     const double r = kSunDrawnR;
     double area = 0.0;
     const double eTop = t.eAt(refr::kTableN - 1);
+    // The air columns the Sun's VISIBLE disc is seen through (2026-10-27, issue 20261027_001448 shots 2-3: "at a certain
+    // stage in the sunset the Sun suddenly gets brighter"). The glare and corona follow the light that arrives, and took
+    // the columns of the ray through the disc's CENTRE: while that ray grazed the sea it crossed hundreds of km of air
+    // (no glare at all over a bright half-set disc), and the frame its apparent centre went below the horizon the
+    // lookup gave the short column of a ray ending on the sea, and the whole veil came on at once (the frame's mean
+    // 0.23 -> 0.73 between two 4-s steps). Now: the mean over the visible rows, weighted by chord x transmittance, then
+    // scaled so its transmittance (green, base extinction) is the rows' mean transmittance. Continuous as rows set.
+    double wSum = 0.0, tSum = 0.0, cAcc[4] = {0.0, 0.0, 0.0, 0.0};
+    auto tauRef = [](double cR, double cM, double cO, double cH) {   // green, common.glsl's base extinction
+        return 13.5e-6 * cR + 2.1e-5 * 1.1 * cM + 0.027 * cO + 0.0 * cH;
+    };
     for (int i = 0; i < refr::kTableN; ++i)
     {
         const refr::Entry &e = t.e[i];
@@ -223,7 +308,12 @@ void SatelliteSim::refrDerive()
         const double eA = t.eAt(i), x = eA - e.dR[1] - eS;
         if (std::abs(x) >= r) continue;
         const double de = 0.5 * (t.eAt(std::min(i + 1, refr::kTableN - 1)) - t.eAt(std::max(i - 1, 0)));
-        area += 2.0 * std::sqrt(r * r - x * x) * de;
+        const double ch = 2.0 * std::sqrt(r * r - x * x) * de;
+        area += ch;
+        const double tr = std::exp(-tauRef(e.colR, e.colM, e.colO3, e.colH));
+        wSum += ch;
+        tSum += ch * tr;
+        cAcc[0] += ch * tr * e.colR; cAcc[1] += ch * tr * e.colM; cAcc[2] += ch * tr * e.colO3; cAcc[3] += ch * tr * e.colH;
     }
     // the part of the disc above the table (no mirages there)
     if (eS + r > eTop)
@@ -268,7 +358,19 @@ void SatelliteSim::refrDerive()
     g.map = glm::vec4((float)t.eC, (float)t.c, (float)t.alpha, (float)t.u0);
     g.info = glm::vec4((float)refr::kTableN, (float)t.topScale, refrEnabled ? 1.0f : 0.0f, sunDiscGain);
     g.sun = glm::vec4(refrEnabled ? (float)refrSunR : 0.0f, (float)refrSunVis, refrTurbulence, ce.aoa);
-    g.sunCol = glm::vec4(ce.colR, ce.colM, ce.colO3, ce.colH);
+    if (eS + r > eTop)
+        g.sunCol = glm::vec4(-1.0f);   // (part of) the disc above the table: the shader's exact Sun path (the top entry's
+                                       // columns, ~4 deg up, used to tint and dim the glare of every higher Sun)
+    else if (tSum > 1e-30 && wSum > 0.0)
+    {
+        const double m[4] = {cAcc[0] / tSum, cAcc[1] / tSum, cAcc[2] / tSum, cAcc[3] / tSum};
+        const double tm = tauRef(m[0], m[1], m[2], m[3]);
+        const double want = -std::log(std::max(tSum / wSum, 1e-300));
+        const double s = tm > 1e-12 ? want / tm : 1.0;
+        g.sunCol = glm::vec4((float)(s * m[0]), (float)(s * m[1]), (float)(s * m[2]), (float)(s * m[3]));
+    }
+    else
+        g.sunCol = glm::vec4(ce.colR, ce.colM, ce.colO3, ce.colH);
     for (int i = 0; i < refr::kTableN; ++i)
     {
         const refr::Entry &e = t.e[i];
@@ -346,6 +448,17 @@ nlohmann::json SatelliteSim::refractionJson() const
     j["sun_true_el_deg"] = glm::degrees(std::asin(std::clamp((double)sunDirENU.w, -1.0, 1.0)));
     j["sun_refraction_arcmin"] = refrSunR * 3437.75;
     j["sun_visible_share"] = refrSunVis;
+    {
+        nlohmann::json sg = nlohmann::json::array();
+        for (int i = 0; i < sunspotGroups; ++i)
+        {
+            const glm::vec4 a = refrGpu.spots[2 * i], b = refrGpu.spots[2 * i + 1];
+            sg.push_back({{"lat_deg", glm::degrees(a.x)}, {"lon_cm_deg", glm::degrees(a.y)}, {"half_len", a.z},
+                          {"env", b.y}, {"complex", b.z}, {"size", b.w}});
+        }
+        j["sunspot_groups"] = sg;
+        j["solar_cycle"] = refrGpu.spotInfo.y;
+    }
     auto at = [&](double eDeg) {
         refr::Entry e;
         double dRg;

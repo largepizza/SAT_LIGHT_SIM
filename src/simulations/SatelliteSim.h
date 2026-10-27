@@ -1513,9 +1513,13 @@ struct GpuRefraction
     glm::vec4 info;   // x = N (0 = no table), y = refraction above the table / Saemundsson, z = 1 refraction on, w = Sun disc gain
     glm::vec4 sun;    // x = the Sun centre's refraction (rad), y = its visible share (0..), z = shimmer gain, w = aoa there (rad)
     glm::vec4 sunCol; // the columns at the Sun's centre (as GpuRefrEntry::b)
+    // Sunspot groups on the disc now (2026-10-27, SatelliteSimRefraction.cpp fillSunspots; sat_sky.frag sunspotFactor).
+    glm::vec4 spotInfo;  // x = groups, y = the solar cycle's activity 0..1
+    glm::vec4 spots[2 * 16];   // group g: [2g] = (latitude, longitude from the central meridian (rad, + west), half-length (sphere radii), seed),
+                               // [2g + 1] = (Joy's-law tilt (rad), envelope 0..1, complexity (delta) 0..1, size 0..1)
     GpuRefrEntry e[refr::kTableN];
 };
-static_assert(sizeof(GpuRefraction) == 64 + refr::kTableN * 32, "GpuRefraction layout mismatch");
+static_assert(sizeof(GpuRefraction) == 80 + 2 * 16 * 16 + refr::kTableN * 32, "GpuRefraction layout mismatch");
 struct GpuGroundBeams
 {
     uint32_t count;
@@ -7164,10 +7168,12 @@ private:
     std::vector<glm::dvec2> refrInv;     // (true, apparent) elevation of the primary image, ascending
     GpuRefraction refrGpu{};
     double refrSunR = 0.0, refrSunVis = 1.0;
+    int sunspotGroups = 0;   // fillSunspots: the groups sent this frame
     std::atomic<float> refrBuildMs{0.0f};
     std::atomic<int> refrBuilds{0};
     refr::Profile refrProfileAt(double simT) const;
     void updateRefraction();
+    void fillSunspots(double simT);
     void refrDerive();                          // the inverse map and the Sun's quantities, from refrTable
     bool refractEnu(glm::vec3 &enu, float &aoa, float &scint) const;   // a source at infinity: false = below the apparent horizon
     nlohmann::json refractionJson() const;
