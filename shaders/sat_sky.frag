@@ -4650,9 +4650,24 @@ void main() {
             // The disc keeps the lit FRACTION (moonDirENU.w is the Moon's light vs full since review 16, for
             // everything the Moon lights; the disc's look is unchanged).
             float mFrac    = 0.5 * (1.0 - dot(sunDir, moonDir3));
-            float diffuse  = max(0.0, dot(n, sunDir)) * mFrac;
             float mu       = max(0.0, dot(n, -moonDir3));
+            // Lunar photometry (2026-10-27, issue 20261027_003747): regolith scatters as LOMMEL-SEELIGER,
+            // 2 mu0 / (mu0 + mu), not Lambert: the full Moon is a flat disc and a gibbous or half Moon stays bright
+            // up to its terminator. It was Lambert x the lit fraction x a strong limb darkening (0.35 + 0.65 sqrt mu):
+            // a shaded ball, its light 1.8-2x the phase law's at quarter / gibbous. The disc's total now follows the
+            // phase law (moonDirENU.w, Allen's, as everything the Moon lights) over the Lommel-Seeliger sphere's own
+            // integrated phase function; the scale keeps the full Moon's total light as it was.
+            // (SKY_LITE keeps the old shading: its compiled-size budget, CMakeLists SKY_LITE_MAX_BYTES.)
+#ifndef SKY_LITE
+            float mu0      = max(0.0, dot(n, sunDir));
+            float aPh      = min(acos(clamp(-dot(sunDir, moonDir3), -1.0, 1.0)), 3.0);   // the phase angle
+            float phiLS    = max(1.0 - sin(0.5 * aPh) * tan(0.5 * aPh) * log(1.0 / tan(max(0.25 * aPh, 1e-4))), 0.02);
+            float diffuse  = 2.0 * mu0 / max(mu0 + mu, 1e-4) * clamp(moonDirENU.w / phiLS, 0.0, 1.5);
+            float limbDark = 0.605;
+#else
+            float diffuse  = max(0.0, dot(n, sunDir)) * mFrac;
             float limbDark = 0.35 + 0.65 * sqrt(mu);
+#endif
             // Earthshine inversely follows moon phase: new moon (full Earth) = maximum.
             float earthshine = 0.0008 * mu * (1.0 - mFrac);
 
