@@ -8,8 +8,9 @@ anvil shield only in the bins its capsule (1.6 radii along the spine) can touch:
 from both ends by a test on the bin's centre and chord circumradius (setting `clouds_v2.storm_index_tight`, default on;
 exact). Tower bins stay 256 per face side (~39 km); the march's shield bins are 128 per face side (~78 km, the count in
 `cv2ShieldHead.y`; tables 32768 / 131072 entries), while the weather bake's envelope index keeps 64. The per-frame listing
-runs on the storm catalog's thread pool. In the Maritime Continent storm cluster the cloud march is ~1.1 ms cheaper
-(16.0 -> 14.9 ms, RTX 3070 Ti, 1600x900, the user's High settings); other storm views are unchanged. The storm surge test
+runs on the storm catalog's thread pool. The shield loop stops once no remaining listed shield can be stronger than the
+best found, and the anvil's noise fetches are skipped past the outline's largest reach. In the Maritime Continent storm cluster the cloud march is ~0.8-1.1 ms cheaper
+(15.6-16.0 -> 14.8-14.9 ms, RTX 3070 Ti, 1600x900, the user's High settings); other storm views are unchanged. The storm surge test
 is skipped over the open sea past the water map's reach, where it has no effect: ~0.35 ms of the sky pass at sea level
 under a hurricane. `clouds_v2.storm_shield_bins_ab 64` (no UI) lists the old shield bins for an A/B.
 

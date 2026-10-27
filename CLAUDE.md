@@ -8374,6 +8374,13 @@ ground (`storms go kind=super dist_km=35 alt=300`), the Maritime Continent storm
   build's cluster capture matches the old build's at 0.55 levels vs a 0.58 floor). Entries (cluster): towers 13758 ->
   11714, shields 3578 -> 7459 in 4912 bins (from 2221). CPU: updateStorms ~+0.05-0.1 ms a frame (0.95-1.05 -> 1.0-1.15 at
   1x). `clouds_v2.storm_shield_bins_ab 64` (no UI, not for players) lists the old shield bins: the A/B.
+- **Kept: two exact skips in the shield path** (128 registers): `cv2ShieldAt` breaks once the best shield found is at least
+  as strong as the next listed (a bin lists them strongest first, and a shield's share never exceeds its strength), and
+  `cv2AnvilSigmaP` returns before its three fetches where the best shield's distance is past 1.25 / 0.8 radii (the fray is
+  floored at 0.8: the outline is 0 there whatever the noise) and no tower head is near. Cluster: -0.30 ms (the fetch skip
+  -0.19, the break -0.05); the eye view within noise. **All together** (the old listing and bins vs the new, one app, the
+  same layout): cluster 15.64 -> 14.83 and 16.03 -> 14.91 ms in two runs; a calm view at 3 km, orbit at 420 km and the
+  ground: within noise, captures at the floor.
 - **Kept: no surge test over the open sea** (terrain_detail.glsl `tdDemAt`, exact): `tdSurgeAt` ran on every height
   evaluation over a cyclone's sea; past 0.975 of the water map's reach (its rise tapers to 0 by 0.95, the shore offset is 0
   whatever the shift) it is skipped. Sky pass at sea level under a hurricane 7.27 -> 6.92 ms; at the landfall view (the
@@ -8394,7 +8401,8 @@ ground (`storms go kind=super dist_km=35 alt=300`), the Maritime Continent storm
 - **CPU** (hitches bysum, 1x / 1 min/s / 1 h/s): the frames are GPU-bound (wait_fence 12-34 ms); weather on the main thread
   is updateStorms ~1 ms a frame (catalog 0.15, tower bins 0.15-0.2, index 0.25-0.3, shields 0.3-0.45), at warp + the
   envelope index 1.1-1.3 ms on frames the bake runs (every frame from ~1 min/s), the dust grid every 2 s on workers, the
-  Weather window's Storms tab 0.15 ms of build_ui. Not changed: rebuilding the bins only every ~20 s of sim time at low
+  Weather window's Storms tab 0.15 ms of build_ui. A time jump costs one frame of updateStorms ~10-15 ms (the catalog's
+  new bins, a new year's cyclone seasons ~7 ms: `wx.buildSeasons`). Not changed: rebuilding the bins only every ~20 s of sim time at low
   warp (keyed tower slots, ~0.6 ms a frame) — the frames are GPU-bound and new towers would wait for the next build.
 - **What remains:** the storm CLOUD (the eyewall's towers ~6.7 ms from 12 km, the CDO / anvils 3-4 ms, the cirrus band the
   eye is inside), the cluster's shield loop (~1.8 ms by the probe at 128 bins: the group's longest bin, not the mean, sets
