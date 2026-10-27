@@ -11,6 +11,8 @@
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
+#include <future>
+#include <cstdlib>
 
 namespace wx {
 
@@ -232,6 +234,7 @@ struct Catalog::Impl {
     // Each bin's storms' (birth, end) packed: stormsAt scans these, not the ~1.3 KB Storm records (a cache miss each).
     std::map<int64_t, std::vector<glm::dvec2>> binT, lineBinT;
     std::map<int64_t, std::vector<Cyclone>> seasons;   // key basin * 100000 + year
+    bool noSeasonPrewarm = false;                      // SATLIGHTSIM_NO_SEASON_PREWARM=1: the A/B
     void buildSeason(int basin, int year, std::vector<Cyclone> &out) const;   // Weather.cpp, tropical cyclones
     const std::vector<Cyclone> &season(int basin, int year) {
         const int64_t k = (int64_t)basin * 100000 + year;
@@ -783,14 +786,29 @@ struct Catalog::Impl {
         accL /= 12.0;
         KLine = (accL > 0.0) ? (double)set.targetLineActive / accL : 0.0;
     }
+    // (2026-10-27, weather perf pass 2) The cyclone seasons a year ahead (and behind, playing backwards) are built on a
+    // worker before sim time reaches them: crossing a year at warp built six seasons on that frame. The result is only
+    // added to the cache (buildSeason is a pure function of the basin, the year and the settings), so nothing else
+    // changes. Declared last: destroyed (joined) first. configure() drops a job in flight (the settings may change).
+    std::future<std::vector<std::pair<int64_t, std::vector<Cyclone>>>> seasonJob;
+    void joinSeasonJob(bool install) {
+        if (!seasonJob.valid()) return;
+        auto v = seasonJob.get();
+        if (install)
+            for (auto &kv : v)
+                if (seasons.find(kv.first) == seasons.end()) seasons.emplace(kv.first, std::move(kv.second));
+    }
 };
 
-Catalog::Catalog() : impl_(std::make_unique<Impl>()) {}
+Catalog::Catalog() : impl_(std::make_unique<Impl>()) {
+    if (const char *e = std::getenv("SATLIGHTSIM_NO_SEASON_PREWARM")) impl_->noSeasonPrewarm = std::atoi(e) != 0;
+}
 Catalog::~Catalog() = default;
 
 void Catalog::configure(const Env &env, const Settings &s, const StormClimatology *clim, uint64_t envKey) {
     Impl &I = *impl_;
     FPROF_SCOPE("wx.configure");
+    I.joinSeasonJob(false);   // (it reads the settings and the env being replaced)
     const bool sameSet = I.configured && clim == I.clim && s.frequency == I.set.frequency &&
                          s.targetActive == I.set.targetActive && s.moistureMin == I.set.moistureMin &&
                          s.moistureFull == I.set.moistureFull && s.towerRadiusM == I.set.towerRadiusM &&
@@ -1491,6 +1509,8 @@ void Catalog::cyclonesAt(double t, std::vector<CycloneState> &out) {
     // The seasons that can hold a storm alive at t: this year's and the last (genesis up to 18 days before).
     const double yf = t / (365.2422 * kDay) + 2000.0;
     const int y = (int)std::floor(yf);
+    if (I.seasonJob.valid() && I.seasonJob.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+        I.joinSeasonJob(true);
     for (auto it = I.seasons.begin(); it != I.seasons.end();) {
         const int yy = (int)(it->first % 100000);
         it = (yy < y - 2 || yy > y + 2) ? I.seasons.erase(it) : std::next(it);
@@ -1509,6 +1529,24 @@ void Catalog::cyclonesAt(double t, std::vector<CycloneState> &out) {
                 I.buildSeason((int)(miss[j] / 100000), (int)(miss[j] % 100000), built[j]);
             });
             for (size_t j = 0; j < miss.size(); ++j) I.seasons.emplace(miss[j], std::move(built[j]));
+        }
+        // The years either side of the three in use, on a worker (they are kept by the erase above: y +- 2).
+        if (!I.seasonJob.valid()) {
+            std::vector<int64_t> ahead;
+            for (int yy : {y + 2, y - 2})
+                for (int b = 0; b < kCycloneBasins; ++b) {
+                    const int64_t k = (int64_t)b * 100000 + yy;
+                    if (I.seasons.find(k) == I.seasons.end()) ahead.push_back(k);
+                }
+            if (!ahead.empty() && !I.noSeasonPrewarm)
+                I.seasonJob = std::async(std::launch::async, [&I, ahead] {
+                    std::vector<std::pair<int64_t, std::vector<Cyclone>>> out(ahead.size());
+                    for (size_t j = 0; j < ahead.size(); ++j) {
+                        out[j].first = ahead[j];
+                        I.buildSeason((int)(ahead[j] / 100000), (int)(ahead[j] % 100000), out[j].second);
+                    }
+                    return out;
+                });
         }
     }
     // Map frame from Earth-fixed: the inverse of Env::mapToEarth (a rotation about the pole), from its basis images.

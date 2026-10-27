@@ -4850,7 +4850,15 @@ private:
     GpuWeatherPC weatherEvoPC(int face, uint32_t mip) const;
     uint64_t weatherBakeHash() const;  // the settings the weather cube was baked with (a change re-bakes every face)
     void recordWeatherEvolution(VkCommandBuffer cmd);
-    void recordWeatherBakeDispatches(VkCommandBuffer cmd, int face, uint32_t faceMask, int slice = -1);
+    void recordWeatherBakeDispatches(VkCommandBuffer cmd, int face, uint32_t faceMask, int slice = -1, uint32_t rectMask = 0u);
+    // (2026-10-27, weather perf pass 2) In time warp a face in view bakes its two finest levels only over the rectangle
+    // the eye can see (its horizon + the cloud tops beyond it + the flow's reach: weatherViewRect); the rest of the face
+    // is due at the out-of-view rate. cv2WxRectT / cv2WxRect: the last such bake (level-0 texels [x0, y0, x1, y1)).
+    bool weatherViewRect(int face, const glm::dvec3 &mapEye, double capRad, glm::ivec4 &rect) const;
+    bool cv2WxRectBake = true;         // clouds_v2.weather_rect_bake (no UI): the A/B
+    double cv2WxRectT[6] = {-1e30, -1e30, -1e30, -1e30, -1e30, -1e30};
+    glm::ivec4 cv2WxRect[6]{};
+    uint32_t cv2WxRectBakes = 0;       // faces baked as a rectangle so far (harness state)
     // One face's re-bake outside time warp is spread over kCv2WxSlices frames of rows (a 2048 face is ~1.2 ms).
     static constexpr int kCv2WxSlices = 4;
     int cv2WxSliceFace = -1, cv2WxSliceNext = 0;

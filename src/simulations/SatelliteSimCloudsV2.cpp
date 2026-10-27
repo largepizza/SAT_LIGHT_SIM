@@ -22,6 +22,7 @@
 #include "Log.h"
 
 #include <bitset>
+#include <bit>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -2060,7 +2061,58 @@ SatelliteSim::GpuWeatherPC SatelliteSim::weatherEvoPC(int face, uint32_t mip) co
 
 // The bake's dispatches for one face (face >= 0), all six (face -1, mask 0) or the faces in mask (face -1): levels 1..8,
 // then level 0 (2048), which reads level 1 (cloud_v2_weather.comp). The cube is in GENERAL throughout.
-void SatelliteSim::recordWeatherBakeDispatches(VkCommandBuffer cmd, int face, uint32_t faceMask, int slice)
+bool SatelliteSim::weatherViewRect(int f, const glm::dvec3 &m, double capR, glm::ivec4 &rect) const
+{
+    // The cap of radius capR about m projected onto face f (gnomonic: a convex region, bounded by its boundary's
+    // projection), in level-0 texels. False = bake the whole face (the cap reaches round the face's side, or covers most).
+    if (capR >= glm::radians(70.0))
+        return false;
+    auto proj = [f](const glm::dvec3 &p, double &a, double &b) -> bool {
+        double c;
+        switch (f)
+        {
+        case 0: c = p.x; if (c <= 0.05) return false; a = -p.z / c; b = -p.y / c; break;
+        case 1: c = -p.x; if (c <= 0.05) return false; a = p.z / c; b = -p.y / c; break;
+        case 2: c = p.y; if (c <= 0.05) return false; a = p.x / c; b = p.z / c; break;
+        case 3: c = -p.y; if (c <= 0.05) return false; a = p.x / c; b = -p.z / c; break;
+        case 4: c = p.z; if (c <= 0.05) return false; a = p.x / c; b = -p.y / c; break;
+        default: c = -p.z; if (c <= 0.05) return false; a = -p.x / c; b = -p.y / c; break;
+        }
+        return true;
+    };
+    const glm::dvec3 ref = std::fabs(m.z) < 0.9 ? glm::dvec3(0, 0, 1) : glm::dvec3(1, 0, 0);
+    const glm::dvec3 u = glm::normalize(glm::cross(m, ref)), v = glm::cross(m, u);
+    const double cr = std::cos(capR), sr = std::sin(capR);
+    double a0 = 1e9, a1 = -1e9, b0 = 1e9, b1 = -1e9;
+    const int nS = 128;
+    for (int i = 0; i < nS; ++i)
+    {
+        const double th = glm::two_pi<double>() * (double)i / nS;
+        const glm::dvec3 p = m * cr + (u * std::cos(th) + v * std::sin(th)) * sr;
+        double a, b;
+        if (!proj(p, a, b))
+            return false;
+        a0 = std::min(a0, a); a1 = std::max(a1, a);
+        b0 = std::min(b0, b); b1 = std::max(b1, b);
+    }
+    // (the boundary's samples miss the region's extremes by at most (1 - cos(pi / nS)) of the extent: padded)
+    const double N = (double)kCv2WeatherFace;
+    const double pad = 16.0 + N / 64.0;
+    auto tx = [N](double a) { return (a + 1.0) * 0.5 * N; };
+    const int x0 = (int)std::clamp(std::floor(tx(a0) - pad), 0.0, N), x1 = (int)std::clamp(std::ceil(tx(a1) + pad), 0.0, N);
+    const int y0 = (int)std::clamp(std::floor(tx(b0) - pad), 0.0, N), y1 = (int)std::clamp(std::ceil(tx(b1) + pad), 0.0, N);
+    if (x1 <= x0 || y1 <= y0)
+    {
+        rect = glm::ivec4(0);   // the cap misses this face: nothing in it to bake
+        return true;
+    }
+    if ((double)(x1 - x0) * (double)(y1 - y0) > 0.5 * N * N)
+        return false;
+    rect = glm::ivec4(x0, y0, x1, y1);
+    return true;
+}
+
+void SatelliteSim::recordWeatherBakeDispatches(VkCommandBuffer cmd, int face, uint32_t faceMask, int slice, uint32_t rectMask)
 {
     uint32_t nFaces = face >= 0 ? 1u : 0u;
     if (face < 0)
@@ -2079,6 +2131,40 @@ void SatelliteSim::recordWeatherBakeDispatches(VkCommandBuffer cmd, int face, ui
                                  nullptr, 0, nullptr);
         }
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2WxPipeLayout, 0, 1, &cv2WxSets[m], 0, nullptr);
+        if (m <= 1u && face < 0 && rectMask != 0u)
+        {
+            // Levels 0 and 1 of the faces baked as a rectangle (level 1 two texels wider: level 0 reads it filtered).
+            const uint32_t size = kCv2WeatherFace >> m;
+            const uint32_t all = faceMask == 0u ? 63u : faceMask;
+            const uint32_t fullM = all & ~rectMask;
+            if (fullM != 0u)
+            {
+                GpuWeatherPC pcv = weatherEvoPC(-1, m);
+                pcv.evo1.w = (float)fullM;
+                const uint32_t g = std::max(1u, (size + 7) / 8);
+                vkCmdPushConstants(cmd, cv2WxPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pcv), &pcv);
+                vkCmdDispatch(cmd, g, g, (uint32_t)std::popcount(fullM));
+            }
+            for (int f = 0; f < 6; ++f)
+            {
+                if (!((rectMask >> f) & 1u))
+                    continue;
+                const glm::ivec4 &r = cv2WxRect[f];
+                const int sh = (int)m, padL = m == 1u ? 2 : 0;
+                const int x0 = std::max(0, (r.x >> sh) - padL), y0 = std::max(0, (r.y >> sh) - padL);
+                const int x1 = std::min((int)size, ((r.z + (1 << sh) - 1) >> sh) + padL);
+                const int y1 = std::min((int)size, ((r.w + (1 << sh) - 1) >> sh) + padL);
+                if (x1 <= x0 || y1 <= y0)
+                    continue;
+                GpuWeatherPC pcv = weatherEvoPC(f, m);
+                pcv.evo1.w = 0.0f;
+                pcv.wx.z = (float)y0;
+                pcv.wx.w = (float)x0;
+                vkCmdPushConstants(cmd, cv2WxPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pcv), &pcv);
+                vkCmdDispatch(cmd, (uint32_t)(x1 - x0 + 7) / 8, (uint32_t)(y1 - y0 + 7) / 8, 1);
+            }
+            continue;
+        }
         GpuWeatherPC pcv = weatherEvoPC(face, m);
         pcv.evo1.w = (float)(face < 0 ? faceMask : 0u);
         const uint32_t size = kCv2WeatherFace >> m;
@@ -2165,11 +2251,15 @@ void SatelliteSim::recordWeatherEvolution(VkCommandBuffer cmd)
     // acos(R / (R + h)) about it, + 6 deg for the flow's and the evolution's displacements. Faces out of view are due at
     // a quarter of the rate (a 2048 face is ~1 ms to bake), and are caught up the frame they come into view.
     uint32_t viewMask = 0u;
+    glm::dvec3 mapEye(0.0, 0.0, 1.0);
+    double eyeH = 0.0;
     {
         const double dr = cloudDriftPhase();
         const glm::dvec3 e = glm::normalize(glm::dvec3(obsDir));
         const glm::dvec3 m(e.x * std::cos(dr) - e.y * std::sin(dr), e.x * std::sin(dr) + e.y * std::cos(dr), e.z);
         const double h = std::max((double)obsHeightOffset, 0.0);
+        mapEye = m;
+        eyeH = h;
         const double cap = std::acos(std::clamp(satphot::kEarthRadiusM / (satphot::kEarthRadiusM + h), -1.0, 1.0)) + glm::radians(6.0 + 54.74);
         const double ax[6] = {m.x, -m.x, m.y, -m.y, m.z, -m.z};
         for (int f = 0; f < 6; ++f)
@@ -2243,6 +2333,80 @@ void SatelliteSim::recordWeatherEvolution(VkCommandBuffer cmd)
         if (faceMask == 63u || faceMask == 0u)
             faceMask = 0u;   // (0: all six)
     }
+    // (2026-10-27, weather perf pass 2) In time warp a face in view bakes its two finest levels (~80% of a face's cost)
+    // only over the rectangle the eye can see: its horizon + 12 deg (the cloud tops past the horizon, the flow's and the
+    // evolution's displacements, the Sun volume's and the lightning lattice's reach). The rest of such a face is due at the
+    // out-of-view rate and takes the frame's one full bake in turn with the faces out of view. A face whose rectangle is
+    // over half of it bakes whole, as before; outside time warp (slices) nothing changes.
+    uint32_t rectMask = 0u;
+    if (allSix && !anyInvalid && cv2WxRectBake)
+    {
+        const double capR = std::acos(std::clamp(satphot::kEarthRadiusM / (satphot::kEarthRadiusM + eyeH), -1.0, 1.0)) +
+                            glm::radians(12.0);
+        glm::ivec4 rc[6];
+        bool rok[6];
+        double visLag[6], fullLag[6];
+        for (int f = 0; f < 6; ++f)
+        {
+            const bool inView = (viewMask >> f) & 1u;
+            fullLag[f] = std::fabs(t - cv2WxBakedT[f]);
+            rok[f] = inView && weatherViewRect(f, mapEye, capR, rc[f]);
+            visLag[f] = fullLag[f];
+            if (rok[f])
+            {
+                const glm::ivec4 &o = cv2WxRect[f];
+                const bool empty = rc[f].z <= rc[f].x || rc[f].w <= rc[f].y;
+                const bool inside = empty || (rc[f].x >= o.x && rc[f].y >= o.y && rc[f].z <= o.z && rc[f].w <= o.w);
+                visLag[f] = std::fabs(t - (inside ? std::max(cv2WxRectT[f], cv2WxBakedT[f]) : cv2WxBakedT[f]));
+            }
+        }
+        int nVis = 0;
+        for (int f = 0; f < 6; ++f)
+            nVis += (viewMask >> f) & 1u ? 1 : 0;
+        int quota = std::clamp((int)std::ceil((double)std::max(nVis, 1) * frameDt / due), 1, 6);
+        uint32_t rectSel = 0u, fullSel = 0u;
+        // The faces in view whose visible part is due, the most behind first, up to the quota (as before).
+        for (; quota > 0; --quota)
+        {
+            int best = -1;
+            double bl = due;
+            for (int f = 0; f < 6; ++f)
+                if (((viewMask >> f) & 1u) && !(((rectSel | fullSel) >> f) & 1u) && visLag[f] > bl)
+                {
+                    bl = visLag[f];
+                    best = f;
+                }
+            if (best < 0)
+                break;
+            (rok[best] ? rectSel : fullSel) |= 1u << best;
+        }
+        // One full bake a frame: the most behind of the faces out of view and the rest of the faces in view.
+        if (quota > 0 || rectSel != 0u)
+        {
+            int best = -1;
+            double bl = 4.0 * due;
+            for (int f = 0; f < 6; ++f)
+                if (!((fullSel >> f) & 1u) && fullLag[f] > bl)
+                {
+                    bl = fullLag[f];
+                    best = f;
+                }
+            if (best >= 0)
+            {
+                fullSel |= 1u << best;
+                rectSel &= ~(1u << best);
+            }
+        }
+        for (int f = 0; f < 6; ++f)
+            if ((rectSel >> f) & 1u)
+                cv2WxRect[f] = rc[f];
+        faceMask = rectSel | fullSel;
+        rectMask = rectSel;
+        if (faceMask == 0u)
+            face = -1;   // nothing due this frame
+        else if (faceMask == 63u)
+            faceMask = 0u;
+    }
     // Outside time warp a due face is re-baked over kCv2WxSlices frames of rows (one 2048 face is ~1.2 ms of GPU).
     int slice = -1;
     if (allSix)
@@ -2269,7 +2433,13 @@ void SatelliteSim::recordWeatherEvolution(VkCommandBuffer cmd)
         for (int f = 0; f < 6; ++f)
             if (faceMask == 0u || (faceMask >> f) & 1u)
             {
-                cv2WxBakedT[f] = t;
+                if ((rectMask >> f) & 1u)
+                {
+                    cv2WxRectT[f] = t;
+                    ++cv2WxRectBakes;
+                }
+                else
+                    cv2WxBakedT[f] = t;
                 ++cv2WxRebakes;
             }
         ++cv2WxAllSixBakes;
@@ -2303,7 +2473,7 @@ void SatelliteSim::recordWeatherEvolution(VkCommandBuffer cmd)
     }
     faceBarrier(VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, VK_ACCESS_SHADER_READ_BIT,
                 VK_ACCESS_SHADER_WRITE_BIT);
-    recordWeatherBakeDispatches(cmd, face, faceMask, slice);
+    recordWeatherBakeDispatches(cmd, face, faceMask, slice, rectMask);
     faceBarrier(VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_SHADER_WRITE_BIT,
                 VK_ACCESS_SHADER_READ_BIT);
     if (cv2WxQuery)
