@@ -235,6 +235,15 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
         if (n >= capN || Sigma < 1.0) return false;
         const glm::dvec3 rel = C - eye;
         const double range = std::max(glm::length(rel), 1.0);
+        if (colW < 0.0)
+        {
+            // smoke: no sigma under ~1.5 full-res pixels as seen (the column kept): thinner, the half-res composite
+            // draws its edges as stairs (2026-10-27, issue 20261027_003452)
+            const double sMin = 1.5 * range * pixFull;
+            sA = std::max(sA, sMin);
+            sB = std::max(sB, sMin);
+            sC = std::max(sC, sMin);
+        }
         const glm::dvec3 ae = toEnu(a), be = toEnu(b), ce = toEnu(c);
         const double iA = 1.0 / (sA * sA), iB = 1.0 / (sB * sB), iC = 1.0 / (sC * sC);
         auto Mx = [&](int p, int q) { return iA * ae[p] * ae[q] + iB * be[p] * be[q] + iC * ce[p] * ce[q]; };
@@ -735,7 +744,8 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                 // pieces along a Catmull-Rom curve through its neighbours' knots (the trail bends smoothly), spaced at
                 // most ~2.2 x its width and never closer than 6 px on screen; each carries its share of the mass.
                 int m = 1;
-                if (k > 0 && segLeft > 0)
+                static const bool kPiecesOff = [] { const char *e = std::getenv("SATLIGHTSIM_SMOKE_PIECES"); return e && e[0] == '0'; }();
+                if (k > 0 && segLeft > 0 && !kPiecesOff)
                 {
                     const double wSeg = std::max(std::max(sb, sC), 1.0);
                     const double rng = std::max(glm::length(Cc - eye), 1.0);
@@ -823,6 +833,10 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
             const double sAlong = 1.4 * sh;
             const double tauTop = Sigma / (2.0 * kPiF * sAlong * sh);
             const glm::dvec3 Cp = at(m.x, m.y, zP);
+            // Its thickness at least ~3 full-res pixels as seen (the column kept: Sigma is unchanged): a pall ~1 km thick
+            // seen edge-on from orbit, ~1000 km off, is under a pixel thick, and the half-res composite drew its top edge
+            // along the limb as a hard 2-px staircase (2026-10-27, issue 20261027_003452).
+            const double sPz = std::max(0.35 * pl.cur.H + 400.0, 3.0 * glm::length(Cp - eye) * pixFull);
             const glm::dvec3 upP = glm::normalize(Cp);
             glm::dvec2 dv = lastXY - m;
             glm::dvec3 wv = eE * dv.x + nE * dv.y;
@@ -836,8 +850,8 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
             sunLightAt(Cp, sunC, amb);
             if (smokeSegDbg.size() < 256)
                 smokeSegDbg.push_back({(float)(fi * 10 + 9), (float)older, (float)ps.size(), (float)sAlong, (float)sh,
-                                       (float)(0.35 * pl.cur.H + 400.0), (float)Sigma, (float)tauTop, (float)zP});
-            if (tauTop > 0.002 && emit(Cp, ap, bp, upP, sAlong, sh, 0.35 * pl.cur.H + 400.0, Sigma,
+                                       (float)sPz, (float)Sigma, (float)tauTop, (float)zP});
+            if (tauTop > 0.002 && emit(Cp, ap, bp, upP, sAlong, sh, sPz, Sigma,
                                       bright * 4.0 * kPiF * albP * tintP * sunC,
                                       bright * 4.0 * kPiF * albP * tintP * (0.18 * amb) * kSkyBlue, albP,
                                       f.id ^ 0xFA11ull, cap, -1.0))
@@ -1112,7 +1126,14 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                 T = glm::normalize(T - upP * glm::dot(T, upP) + glm::dvec3(1e-9, 0, 0));
                 const glm::dvec3 Cx = glm::cross(T, upP);
                 // (a tongue, not a tube: narrower than the spacing, so the front shows its gaps)
-                const double sA = 0.35 * hh + 0.05 * ds, sV = 0.33 * hh, sC = std::max(0.25 * dFl, 2.0);
+                // (the spacing's share is capped at a few flame heights, 2026-10-27, issue 20261027_002954: the spacing
+                // follows the range to the fire's CENTRE, ~1 km for a big fire 20 km off, so a flame on the front right
+                // under the eye was a glowing pancake ~50 m wide and 2 m tall: seen from 150 m up, an oval spotlight of
+                // orange light filling half the view)
+                // (its depth across the front no more than its width: seen from above, a 24-m-deep flaming zone made a
+                // flat glowing slab)
+                const double sA = 0.35 * hh + 0.05 * std::min(ds, 6.0 * hh), sV = 0.33 * hh,
+                             sC = std::max(std::min(0.25 * dFl, 0.5 * hh + 1.0), 1.0);
                 const double Sigma = 2.0 * kPiF * sA * sV;   // the side-on peak optical depth 1: the radiance is its colour
                 // The flame's radiance in the sky's units (pi L / the Sun's illuminance ~0.5 of a sunlit white), CAPPED in
                 // displayed light at 0.6 (an orange flame, not a white blob at the night exposure; a few overlap along a flank).
@@ -1164,32 +1185,11 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                     acc += lw[k];
                     if (acc >= Itot * (part + 1) / 3.0 && part < 2) ++part;
                 }
-                // Each third's extent along the front (the rms distance of its heat from its centre): the light stands
-                // for a stretch of burning front kilometres long, not a point (2026-10-27, issue 20261027_002954: from
-                // 152 m over a big fire at night, a point light with a 250-m core drew a bright, smooth spotlight oval on
-                // the ground under the eye, nowhere near the flames). Its core radius is now that stretch's (the light
-                // spread along it: dimmer and wider at its peak), at most 4 km.
-                double e3[3] = {0.0, 0.0, 0.0};
-                {
-                    double acc2 = 0.0;
-                    int part2 = 0;
-                    for (int k = 0; k < 24; ++k)
-                    {
-                        if (w3[part2] > 0.0)
-                        {
-                            const glm::dvec2 dq = lq[k] - c3[part2] / w3[part2];
-                            e3[part2] += lw[k] * glm::dot(dq, dq);
-                        }
-                        acc2 += lw[k];
-                        if (acc2 >= Itot * (part2 + 1) / 3.0 && part2 < 2) ++part2;
-                    }
-                }
                 for (int p = 0; p < 3 && lightsAdded < 6; ++p)
                 {
                     if (w3[p] <= 0.0) continue;
                     const glm::dvec2 c = c3[p] / w3[p];
-                    const double ext = std::sqrt(e3[p] / w3[p]);
-                    const double r0L = std::clamp(0.8 * ext, std::max(250.0, 0.25 * std::max(s.halfWidthM, 200.0)), 4000.0);
+                    const double r0L = std::max(250.0, 0.25 * std::max(s.halfWidthM, 200.0));
                     const glm::dvec3 Pl = at(c.x, c.y, 30.0 + 0.5 * hFl);
                     if (fireGlowDbg.size() < 12)
                         fireGlowDbg.push_back(glm::vec4(glm::vec3(toEnu(Pl - eye)), (float)r0L));
