@@ -217,14 +217,17 @@ dims objects the same way, without the isotropic floor (a beam is a horizon-hugg
 
 ## The brightness ceiling
 
-After the suppressions, a soft ceiling keeps any satellite from out-shining the Sun's own glare:
+The satellite's own record is not capped: the point and its glare take the effectFlare as computed, so a
+brighter flare draws as a brighter, wider point. What is capped is everything that spreads a satellite's light
+over the sky: its bloom seed, the sky glow bins and the ocean glints. Those take
 
 \[
-F \leftarrow \frac{S\,F}{F + S},
+F_c = \frac{S\,F}{F + S},
 \]
 
-where \( S \) is the Sun's reference brightness (40 in flare units) times the cloud transmittance toward
-the Sun. It is linear for faint objects and saturates at \( S \).
+where \( S \) = 40 (`sunFlareRefIntensity`, the Sun's own bloom reference, not dimmed by cloud). It is linear
+for faint objects and saturates at \( S \), so no satellite's glow outshines the Sun's while the ordering of
+bright flares is kept. See [Points, bloom and glare](../rendering/points-bloom-glare.md).
 
 ## From magnitude to pixels: the point-spread model
 
@@ -281,7 +284,7 @@ mag 10.7) is dropped before drawing.
 | File | Function / symbol |
 |---|---|
 | `shaders/sat_orbit.comp` | Earth shadow (`litFactor`), eclipse tint, horizon cull, beam glow dome |
-| `shaders/sat_flare.comp` | sky suppression, extinction, light pollution, ceiling, point size |
+| `shaders/sat_flare.comp` | sky suppression, extinction, light pollution, the glow and glint ceiling, point size |
 | `shaders/include/atmosphere.glsl` | `atmColumnInf()`, `atmColumn()`, `atmExtinctionMag()` |
 | `shaders/include/point_style.glsl` | `pointPsf()`, `satFlareToMag()`, `pointSpriteSizePx()` |
 | `src/simulations/SatPhotometry.cpp` | `atmColumn()`, `atmExtinctionMag()` (CPU mirror) |

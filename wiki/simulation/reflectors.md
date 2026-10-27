@@ -119,6 +119,15 @@ at no more than a maximum angular rate \( \dot\theta_\text{max} \) ("Mirror max 
   where \( \hat{\mathbf{n}}_\text{live} \) is the ideal toward this window's winner at its **current**
   position.
 
+**When no target wins** a window, the mirror pre-aims at a **fallback**: the nearest night-side target with no
+elevation gate, or the flat-mirror aim (the normal halfway between the Sun and nadir) when no target is on the
+night side. Like the winner, the fallback site is chosen once per window, at that window's start
+(`nearFallbackIndex()`), and only its position is followed live (`nearFallbackIdealFor()`). So a switch of the
+nearest site happens at a window boundary and goes through the same rate-limited ease as any change of winner;
+re-chosen from the live position, the nearest site could change mid-window and the mirror would snap to it.
+\( \hat{\mathbf{n}}_0 \), \( \hat{\mathbf{n}}_1 \) and \( \hat{\mathbf{n}}_\text{live} \) above use the previous
+and current windows' fallbacks wherever those windows have no winner.
+
 When the winner does not change (the common case), \( \Delta = 0 \) and the mirror simply tracks its
 target for the whole window. A swing is capped at one window, so it can never run into the next
 window's independently computed ease. The angle left between the eased and the live aim is reported per
@@ -258,7 +267,7 @@ Each beam's glint off the panels, seen from other directions, is drawn by the te
 | File | Function / symbol |
 |---|---|
 | `src/simulations/SatelliteSim.cpp` | `loadReflectorTargets()`, `computeReflectorTargetElevationRadius()`, `fillSolarSites()`, the beam readback in `recordCompute()` |
-| `shaders/sat_orbit.comp` | `hashU()`, `pairScore()`, `findWinner()`, `nearFallbackIdeal()`, `idealTowards()`, the ground-site block of `processSatellite()` |
+| `shaders/sat_orbit.comp` | `hashU()`, `pairScore()`, `findWinner()`, `nearFallbackIndex()`, `nearFallbackIdealFor()`, `idealTowards()`, the ground-site block of `processSatellite()` |
 | `src/simulations/SatPhotometry.cpp` | `satGroundSiteIdeal()` (CPU mirror) |
 | `shaders/beam_self_march.comp` | per-beam cloud transmittance |
 | `shaders/include/reflect_beam.glsl` | `ReflectBeam`, `BEAM_MAX_ACTIVE` |

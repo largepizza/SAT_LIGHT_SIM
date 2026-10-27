@@ -36,9 +36,14 @@ The mesh shader (`shaders/sat_mesh.frag`) works in the sky pass's units: **pre-e
 solar irradiance**, so a sunlit white Lambertian face reads albedo × cos, like terrain. Its BRDF is the
 photometry's, per pixel:
 
-- Lambert diffuse;
+- Lambert diffuse, or Minnaert where the material sets an exponent (`minnaertFac()`, for the Sun, the Moon,
+  the local lights and the earthshine or probe irradiance alike);
 - GGX (or Beckmann, per material) × Schlick Fresnel × Smith shadowing (Walter's rational fit for Beckmann);
-- the Sun's angular disc folded into the roughness, \(\alpha^2 \leftarrow \alpha^2 + 0.0023^2\) (`SUN_ALPHA`).
+- the Sun's disc folded into the roughness as the photometry's anisotropic pair (`sunA2()`, see
+  [Satellite photometry](../simulation/photometry.md#the-suns-disc-as-a-source));
+- a material's haze as a second lobe at its own roughness, \((1 - f)\) core + \(f\) haze (`specCosMat()`). The
+  haze fraction and roughness ride in the high halves of `GpuSatMeshMaterial`'s `beckmann` and `pattern` words,
+  the Minnaert code in bits 1-7 of `beckmann`.
 
 Because the units and BRDF match, summing a render's pixels reproduces the lobe model's radiant intensity; the
 [photometric check](#the-photometric-check) measures exactly that.
@@ -213,8 +218,9 @@ seed) lets a mesh glint glare as the sprite did (see [Points, bloom and glare](p
 \(1 - \operatorname{smoothstep}(0.04, 0.10, \alpha)\) of its roughness (`meshGlareRoughK()`): mirrors, quartz
 radiators, dielectric film and solar glass glare; stainless steel (0.12) and paint do not. A rough lobe spreads
 the Sun over degrees, but at grazing incidence (Fresnel near 1, the masking term's \(1/2\alpha\)) it still reaches
-glare levels, and every edge and panel seam of a sunlit Starship would flare. The viewer's glare source applies
-the same gate. Mesh glints take part in the screen-space glare clustering like every other glare (see
+glare levels, and every edge and panel seam of a sunlit Starship would flare. A hazy material's core and haze
+lobes are gated separately, each by its own roughness, so a haze broader than α 0.10 adds no glare. The viewer's glare source
+applies the same gate. Mesh glints take part in the screen-space glare clustering like every other glare (see
 [Points, bloom and glare](points-bloom-glare.md)).
 
 **Picking.** Meshed satellites are hit-tested against their model's bounding circle (`meshDrawn`), ahead of
@@ -259,6 +265,30 @@ The mesh targets are read with `imageLoad`, because `sat_sky.frag` sits at the 1
 | `sat_sky.frag` | radiance and distance | a nearer mesh **is** the pixel's surface: the atmosphere loop stops there and attenuates it, disc gates hide behind it, the cloud composite is skipped where the cloud is farther, and the unified depth includes it |
 | `mesh_bloom.frag` (inside the flare-source pass) | radiance | each quarter-res texel sums its pixels' photometric light × `bloomScale` into the bloom seed, and their Sun-like light × `glareNorm` into the glint alpha |
 | hardware depth | via the sky pass | a sprite at 98 % of its range stays in front of its own mesh |
+
+### Meshes in the half-resolution and temporal passes
+
+Several passes that composite over a mesh run at half resolution or accumulate over frames. A mesh is sharp and
+moves on its own, so each has a rule for it:
+
+- **Scene depth.** A half-resolution texel takes the nearest mesh distance over its full-resolution pixels **and
+  the ring of one pixel round them** (`meshDistAt()` in `scene_depth.comp`). An open lattice (a catch tower's
+  truss) otherwise leaves whole texels in its holes, which the cloud and fog march past the mesh while their
+  neighbours stop at it: the lattice shows as a field of odd squares.
+- **Composite over a mesh pixel.** So a mesh texel's cloud and fog composite holds only what is in front of the
+  mesh, while a neighbouring texel may also hold what is behind it. Every full-resolution consumer tests per
+  texel: `sat_sky.frag`'s joint-bilateral upsample always runs on a mesh pixel and drops each of its four texels
+  whose composite distance is past the mesh (one filtered value would average near fog with a far cloud bank and
+  draw a dark half-resolution staircase along every mesh edge); the engine-light pass (`lightning.frag` mode 2)
+  lights cloud and fog on a mesh pixel only in front of the mesh; and `cloud_march.comp` drops a resolved
+  volumetric cloud whose distance is past the texel's surface (the cloud resolve's history would otherwise carry
+  the clouds behind a moving hull across it as dark blocks).
+- **Sky TAA.** The resolve reprojects a static world, and meshes (satellites, rockets, pads) have no motion
+  vectors. The sky pass marks a mesh pixel, and a texel lit only by the plume and flame Gaussians, with alpha
+  0.875 in the TAA input; `sky_taa.comp` stores such pixels' depth negated, so the next frame knows where they
+  were (`taa_depth_restore.frag` takes the absolute value). Wherever this frame's 3×3 or the history's 2×2 holds
+  one, the still view's exemptions are off: the history is clipped and depth-tested as in motion. A moving rocket
+  therefore leaves no trail or translucent ghost.
 
 **Veiling glare over a mesh.** The Sun's glare lobes and corona in `sat_sky.frag` are veiling light (scatter in
 the eye or lens), in front of whatever the Sun is seen past. Over a mesh pixel they are kept while the Sun itself
@@ -448,7 +478,8 @@ settings.
   `src/simulations/SatelliteSimLaunches.cpp`: the launch objects' mesh jobs, `launchArmJobs()`, `viewerArmParts()`,
   `meshLightAdd()`, `meshLightMask()`; `src/simulations/SatelliteSimUI.cpp`:
   `updateViewerView()`, the info window and pop-out, `viewerGoneFate()`, `buildViewerGoneLabel()`;
-  `shaders/sat_sky.frag`: the veiling-glare gate over meshes.
+  `shaders/sat_sky.frag`: the veiling-glare gate over meshes, the joint-bilateral upsample and the TAA marker;
+  `shaders/scene_depth.comp` (`meshDistAt()`), `shaders/sky_taa.comp`, `shaders/taa_depth_restore.frag`.
 - `shaders/sat_mesh.vert/.frag`, `shaders/include/sat_mesh_common.glsl`, `shaders/include/earth_env.glsl`,
   `shaders/mesh_bloom.frag`, `shaders/mesh_refl_add.comp`, `shaders/env_probe_sh.comp`,
   `shaders/sat_mesh_bg.frag`, `shaders/sat_mesh_marker.frag`, `shaders/viewer_glare_find.comp`.
