@@ -528,4 +528,9 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     vec4  fireV[FIRE_MAX];
     vec4  fireAux[FIRE_MAX];
     uvec4 fireK[FIRE_MAX * 4];
+    // -- The Moon's body frame (12224 -> 12256, 2026-10-27; SatelliteSim::updatePositions, the IAU rotation model): in the
+    // observer's ENU, moonPole xyz the lunar north pole, w "Moon relief" (x the LOLA heights, 0 = smooth); moonPrime xyz
+    // the body x axis (0 deg selenographic longitude on the equator), w "Moon shadows" (0/1).
+    vec4  moonPole;
+    vec4  moonPrime;
 } cloud;

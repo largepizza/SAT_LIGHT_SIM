@@ -3237,6 +3237,36 @@ float discOverlapFrac(float a, float b, float d) {
 // decides total vs annular (CPU sunAngRTrue).
 #define kSunAngR (cloud.taaJitter.w)
 const float kMoonRkm  = 1737.4;
+// The Moon's map (binding 2, 2026-10-27, tools/make_moon_maps.py): equirectangular in selenographic longitude /
+// latitude, RGB the LROC WAC albedo, A the LOLA height (km). b = a direction in the Moon's body frame (x 0 deg lon on
+// the equator, y 90 E, z the north pole: cloud.moonPrime / moonPole on the CPU's IAU rotation model).
+vec2 moonMapUV(vec3 b) {
+    return vec2(atan(b.y, b.x) * (0.5 / PI) + 0.5, 0.5 - asin(clamp(b.z, -1.0, 1.0)) * (1.0 / PI));
+}
+#if !defined(SKY_LITE) && !defined(SKY_ENV)
+// The share of the Sun's disc a point of the Moon sees over the heightfield (crater and mountain shadows near the
+// terminator): a march toward the Sun in the body frame, the least elevation margin (rad) over the terrain against the
+// Sun's angular radius. p0 = the point (km from the Moon's centre, body frame), s = the Sun (body frame), lod0 = the
+// pixel's level, relief = x the heights. Steps grow geometrically from 1.5 texels of that level to dMax (km).
+float moonTerrainSunVis(vec3 p0, vec3 s, float lod0, float relief, float dMax, float texH) {
+    const int kSteps = 14;
+    float texKm0 = PI * kMoonRkm / texH;                        // a level-0 texel (km)
+    float dMin = max(1.5 * texKm0 * exp2(lod0), 1.0);
+    dMax = max(dMax, dMin * 2.0);
+    float ratio = pow(dMax / dMin, 1.0 / float(kSteps - 1));
+    float d = dMin, minA = 1.0;
+    for (int k = 0; k < kSteps; ++k) {
+        vec3  q  = p0 + s * d;
+        float r  = length(q);
+        float lodK = max(lod0, log2(d / (4.0 * texKm0)));     // coarser as the step grows: no aliasing far out
+        float hT = textureLod(moonTex, moonMapUV(q / r), lodK).a * relief;
+        minA = min(minA, (r - kMoonRkm - hT - 0.03) / d);
+        if (minA < -2.0 * kSunAngR) break;
+        d *= ratio;
+    }
+    return clamp(0.5 + 0.5 * minA / max(kSunAngR, 1e-4), 0.0, 1.0);
+}
+#endif
 // The fraction of the Sun a point sees past the Moon (a solar eclipse): p = Earth-centred ENU, metres.
 float moonSunVisible(vec3 p, vec3 sunD) {
     if (cloud.moonMisc.y < 0.5) return 1.0;
@@ -4743,10 +4773,6 @@ void main() {
     // since that's where the actual march runs; see cloud_march.comp's auroraMarchCS.
 
     // ── Moon disc ─────────────────────────────────────────────────────────────
-    // kMoonTexRotDeg: rotates the texture CW in the UV plane to align the image's
-    // north pole with the physical lunar north pole as seen from the observer.
-    // Tune this until the terminator's shadow boundary matches the image poles.
-    const float kMoonTexRotDeg = 180.0;
     // Its true topocentric angular radius (x "Moon size"; the CPU's ephemeris) — it was a fixed 3x disc.
     float kMoonAngR = max(cloud.moonCenter.w, 1e-5);
     const float kMoonBright    = 0.54;
@@ -4777,6 +4803,51 @@ void main() {
             // everything the Moon lights; the disc's look is unchanged).
             float mFrac    = 0.5 * (1.0 - dot(sunDir, moonDir3));
             float mu       = max(0.0, dot(n, -moonDir3));
+            // The map (2026-10-27): the point's selenographic longitude / latitude in the body frame, the level from the
+            // pixel's footprint on the sphere (explicit: the longitude seam would break derivatives).
+            vec3  mPole = cloud.moonPole.xyz, mPrime = cloud.moonPrime.xyz, mEast = cross(mPole, mPrime);
+            vec3  nB    = vec3(dot(n, mPrime), dot(n, mEast), dot(n, mPole));
+            vec2  mUV   = moonMapUV(nB);
+#ifdef SKY_LITE   // its size budget: the implicit level (the longitude seam is on the far side)
+            vec4  mTex  = texture(moonTex, mUV);
+            const float mShadow = 1.0;
+#define nS n
+#else
+            float mTexH = float(textureSize(moonTex, 0).y);
+            float mLod  = max(log2(envPixAngle / kMoonAngR / max(mu, 0.08) * mTexH / PI), 0.0);
+            vec4  mTex  = textureLod(moonTex, mUV, mLod);
+            vec3  nS    = n;                                     // the smooth sphere (eclipses)
+            float mShadow = 1.0;
+#endif
+#if !defined(SKY_LITE) && !defined(SKY_ENV)
+            float mDiscPx = kMoonAngR / max(envPixAngle, 1e-7);  // the disc's radius in pixels
+            // Relief: the LOLA heights' gradient at that level tilts the normal (x "Moon relief", faded in as the disc
+            // passes ~8-30 px). Cast shadows: near the terminator (the Sun < ~17 deg over the smooth sphere), a march
+            // toward the Sun over the heightfield.
+            float mRelief = cloud.moonPole.w * smoothstep(8.0, 30.0, mDiscPx);
+            if (mRelief > 0.0) {
+                float tl   = exp2(mLod);
+                float mTexW = 2.0 * mTexH;
+                vec2  du = vec2(tl / mTexW, 0.0), dv = vec2(0.0, tl / mTexH);
+                float hE = textureLod(moonTex, mUV + du, mLod).a, hW = textureLod(moonTex, mUV - du, mLod).a;
+                float hN = textureLod(moonTex, mUV - dv, mLod).a, hS = textureLod(moonTex, mUV + dv, mLod).a;
+                float sLat = clamp(nB.z, -1.0, 1.0), cLat = sqrt(max(1.0 - sLat * sLat, 0.0));
+                float lonA = atan(nB.y, nB.x);
+                float sx = (hE - hW) * mRelief / (2.0 * kMoonRkm * max(cLat, 0.05) * (2.0 * PI * tl / mTexW));
+                float sy = (hN - hS) * mRelief / (2.0 * kMoonRkm * (PI * tl / mTexH));
+                vec3  tE = -sin(lonA) * mPrime + cos(lonA) * mEast;                         // local east (ENU)
+                vec3  tN = -sLat * (cos(lonA) * mPrime + sin(lonA) * mEast) + cLat * mPole; // local north
+                n = normalize(n - sx * tE - sy * tN);
+                vec3  sB   = vec3(dot(sunDir, mPrime), dot(sunDir, mEast), dot(sunDir, mPole));
+                float sinE = dot(nB, sB);                        // the Sun's height over the smooth sphere
+                if (cloud.moonPrime.w > 0.5 && sinE > -0.06 && sinE < 0.3 && mDiscPx > 20.0) {
+                    float dMax = clamp(14.0 * mRelief / max(sinE + 0.02, 0.01), 40.0, 900.0);
+                    float vis = moonTerrainSunVis(nB * (kMoonRkm + mTex.a * mRelief), sB, mLod, mRelief, dMax, mTexH);
+                    mShadow = mix(vis, 1.0, smoothstep(0.22, 0.3, sinE));
+                }
+            }
+#endif
+            mu = max(dot(n, -moonDir3), 0.0);
             // Lunar photometry (2026-10-27, issue 20261027_003747): regolith scatters as LOMMEL-SEELIGER,
             // 2 mu0 / (mu0 + mu), not Lambert: the full Moon is a flat disc and a gibbous or half Moon stays bright
             // up to its terminator. It was Lambert x the lit fraction x a strong limb darkening (0.35 + 0.65 sqrt mu):
@@ -4788,7 +4859,11 @@ void main() {
             float mu0      = max(0.0, dot(n, sunDir));
             float aPh      = min(acos(clamp(-dot(sunDir, moonDir3), -1.0, 1.0)), 3.0);   // the phase angle
             float phiLS    = max(1.0 - sin(0.5 * aPh) * tan(0.5 * aPh) * log(1.0 / tan(max(0.25 * aPh, 1e-4))), 0.02);
-            float diffuse  = 2.0 * mu0 / max(mu0 + mu, 1e-4) * clamp(moonDirENU.w / phiLS, 0.0, 1.5);
+            // Allen's law at THIS view's phase angle (moonDirENU.w is the geocentric one: from beyond the Moon the
+            // two differ by up to 180 deg).
+            float aPhD     = degrees(aPh);
+            float mPhase   = exp2(-1.3288 * (0.026 * aPhD + 4.0e-9 * aPhD * aPhD * aPhD * aPhD));
+            float diffuse  = 2.0 * mu0 / max(mu0 + mu, 1e-4) * clamp(mPhase / phiLS, 0.0, 1.5);
             float limbDark = 0.605;
 #else
             float diffuse  = max(0.0, dot(n, sunDir)) * mFrac;
@@ -4797,42 +4872,16 @@ void main() {
             // Earthshine inversely follows moon phase: new moon (full Earth) = maximum.
             float earthshine = 0.0008 * mu * (1.0 - mFrac);
 
-            // Build the moon's local face frame: moonZ points toward the EARTH'S CENTRE (tidally locked near
-            // side; 2026-09-30 — it pointed at the observer, so the face never turned: from deep space or behind
-            // the Moon the same disc image faced the camera). moonX/moonY span the near-side face plane.
-            // refUp = celestial north pole in ENU: converts ECEF (0,0,1) to observer ENU
-            // by dotting with the ENU basis vectors (enuX/Y/Z are in ECEF-space).
-            // This correctly rotates the texture with parallactic angle as the observer
-            // moves across Earth, instead of always aligning north with local zenith.
-            vec3 moonZ = normalize(-cloud.moonCenter.xyz);
-            vec3 northCelENU = vec3(enuX.z, enuY.z, enuZ.z);
-            vec3 refUp = (abs(dot(northCelENU, moonZ)) < 0.99) ? northCelENU : vec3(1.0, 0.0, 0.0);
-            vec3 moonX = normalize(cross(refUp, moonZ));
-            vec3 moonY = cross(moonZ, moonX);
-
-            // Orthographic projection of the surface normal onto the face plane.
-            // At the disc centre n == moonZ → UV (0.5, 0.5); at the limb UV spans [0,1].
-            vec2 moonUV = vec2(dot(n, moonX), dot(n, moonY)) * 0.5 + 0.5;
-
-            // Rotate UV around disc centre by kMoonTexRotDeg to align image north pole
-            // with the physical lunar north pole. Positive = CCW rotation of the texture.
-            float rotRad = radians(kMoonTexRotDeg);
-            float cosR = cos(rotRad), sinR = sin(rotRad);
-            vec2  uvc  = moonUV - 0.5;
-            moonUV = vec2(cosR * uvc.x - sinR * uvc.y,
-                          sinR * uvc.x + cosR * uvc.y) + 0.5;
-
-            vec3 texColor = texture(moonTex, moonUV).rgb;
-            // The far side (seen only from space): the texture is the near side's; mirrored through the face
-            // plane it would show the familiar maria, which the far side lacks — flattened toward its mean.
-            if (dot(n, moonZ) < 0.0)
-                texColor = mix(texColor, vec3(dot(texColor, vec3(0.2126, 0.7152, 0.0722))) * 1.15, 0.7);
+            // The albedo (LROC WAC, the old photo's units): the far side is real since the map (2026-10-27). The
+            // face-on photo this replaced was mapped orthographically, turned by the celestial pole (the lunar pole is
+            // near the ECLIPTIC one) and without libration; the far side was that photo mirrored and greyed.
+            vec3 texColor = mTex.rgb;
             // Lunar eclipse: the Earth's disc against the Sun's, seen from this point of the Moon (penumbra to
             // umbra), and in the umbra the red light the Earth's atmosphere bends into its shadow.
             float lunarLit = 1.0;
             vec3  lunarRed = vec3(0.0);
             if (cloud.moonMisc.z > 0.5) {
-                vec3  pM  = cloud.moonCenter.xyz + n * kMoonRkm;          // km, Earth-centred ENU
+                vec3  pM  = cloud.moonCenter.xyz + nS * kMoonRkm;         // km, Earth-centred ENU
                 vec3  toE = -pM;
                 float dE  = length(toE);
                 vec3  sM  = normalize(sunDir * 1.496e8 - pM);            // the Sun from the Moon (0.15 deg of parallax)
@@ -4849,7 +4898,7 @@ void main() {
             // visibly intact even under a thick deck — the composite dims it but doesn't blank
             // the fine albedo detail the way a genuinely opaque cloud should.
             float discFade = (tSurface > 0.0 || tCloudOcclude >= 0.0) ? 0.0 : 1.0;
-            vec3 moonColor = texColor * (diffuse * lunarLit + earthshine + lunarRed * max(0.0, dot(n, sunDir) + 0.3)) * limbDark * kMoonBright;
+            vec3 moonColor = texColor * (diffuse * lunarLit * mShadow + earthshine + lunarRed * max(0.0, dot(n, sunDir) + 0.3)) * limbDark * kMoonBright;
             vec3 moonAttn  = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
             color += discFade * moonColor * moonAttn;
         }

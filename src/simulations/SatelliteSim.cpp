@@ -1494,6 +1494,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         FPROF_SCOPE("rc.ensureFullSkyPipelines");
         ensureFullSkyPipelines(ctx);
     }
+    // Binding 2: the old face-on Moon photo for Potato's minimal sky, the albedo + elevation map otherwise. Before
+    // anything below binds skyDescSet.
+    updateMoonDescriptor(ctx, (debugDisableMask & 262144u) != 0u);
     // The half-res compute targets follow the render scale (computeHalfExtent): recreate them when the
     // slider, a preset, the harness, the settings load or the automatic scale moved it. Before anything is
     // recorded, so no set it patches is bound yet; single frame in flight, so the GPU is done with the old
@@ -2771,6 +2774,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.surgeInfo.z = oceanSunGlitter; // the Sun's sea glitter gain (surgeInfo.z was unused; sat_sky.frag)
         weatherFillFireParams(cp); // the wildfires' burn scars on the ground (SatelliteSimWildfire.cpp)
         cp.moonCenter = glm::vec4(moonCenterENUkm, moonAngR);
+        cp.moonPole = glm::vec4(moonPoleENU, std::max(moonRelief, 0.0f));
+        cp.moonPrime = glm::vec4(moonPrimeENU, moonShadows > 0.5f ? 1.0f : 0.0f);
         // y: 0 = no solar eclipse possible, else 1 + the observer's eclipse sky light (0..1), which sat_sky.frag's
         // exposure applies exactly as skyExposure() does (every `y > 0.5` test still reads it as the flag).
         cp.moonMisc = glm::vec4(moonEclipseSolarObs,
@@ -8226,6 +8231,26 @@ void SatelliteSim::cleanup(VkDevice device)
         vkFreeMemory(device, moonTexMem, nullptr);
         moonTexMem = VK_NULL_HANDLE;
     }
+    if (moonMapSampler)
+    {
+        vkDestroySampler(device, moonMapSampler, nullptr);
+        moonMapSampler = VK_NULL_HANDLE;
+    }
+    if (moonMapView)
+    {
+        vkDestroyImageView(device, moonMapView, nullptr);
+        moonMapView = VK_NULL_HANDLE;
+    }
+    if (moonMap)
+    {
+        vkDestroyImage(device, moonMap, nullptr);
+        moonMap = VK_NULL_HANDLE;
+    }
+    if (moonMapMem)
+    {
+        vkFreeMemory(device, moonMapMem, nullptr);
+        moonMapMem = VK_NULL_HANDLE;
+    }
     if (earthDaySampler)
     {
         vkDestroySampler(device, earthDaySampler, nullptr);
@@ -11656,6 +11681,179 @@ void SatelliteSim::createCityRoads(VulkanContext &ctx)
               std::to_string(bytes / 1000000) + " MB");
 }
 
+// ─── createMoonMap ────────────────────────────────────────────────────────────
+// The Moon's albedo + elevation (sky binding 2, sat_sky.frag "Moon disc", 2026-10-27): assets/textures/moon_maps.rgba16f
+// from tools/make_moon_maps.py — "SLMN", uint32 width, height, mips, then each level's RGBA16F rows (RGB albedo, A the
+// LOLA height in km), equirectangular in selenographic longitude / latitude. Raw like the DEM (no decoding at launch,
+// docs/FREEZES.md). Without the file the old face-on photo is spread over the near hemisphere (the far side its mean,
+// the heights 0), so the shader path is the same.
+void SatelliteSim::createMoonMap(VulkanContext &ctx, const std::vector<unsigned char> &legacy, int lw, int lh)
+{
+    uint32_t w = 0, h = 0, mips = 0;
+    std::vector<std::vector<uint16_t>> levels;
+    {
+        const char *path = "assets/textures/moon_maps.rgba16f";
+        Log::line(std::string("init: texture: ") + path);
+        FILE *f = std::fopen(path, "rb");
+        if (f)
+        {
+            char magic[4];
+            uint32_t hdr[3];
+            if (std::fread(magic, 1, 4, f) == 4 && std::memcmp(magic, "SLMN", 4) == 0 && std::fread(hdr, 4, 3, f) == 3 &&
+                hdr[0] > 0 && hdr[0] <= 16384 && hdr[1] > 0 && hdr[1] <= 8192 && hdr[2] > 0 && hdr[2] <= 15)
+            {
+                w = hdr[0];
+                h = hdr[1];
+                mips = hdr[2];
+                levels.resize(mips);
+                for (uint32_t m = 0; m < mips; ++m)
+                {
+                    const size_t n = (size_t)std::max(1u, w >> m) * std::max(1u, h >> m) * 4;
+                    levels[m].resize(n);
+                    if (std::fread(levels[m].data(), 2, n, f) != n)
+                    {
+                        levels.clear();
+                        break;
+                    }
+                }
+            }
+            std::fclose(f);
+        }
+    }
+    if (levels.empty())
+    {
+        Log::line("init: moon_maps.rgba16f missing (tools/make_moon_maps.py): the face-on photo on the near side");
+        w = 512;
+        h = 256;
+        mips = 1;
+        levels.assign(1, std::vector<uint16_t>((size_t)w * h * 4));
+        double mean = 0.0;
+        for (size_t i = 0; i < legacy.size(); i += 4)
+            mean += legacy[i] / 255.0;
+        mean /= (double)std::max<size_t>(legacy.size() / 4, 1);
+        for (uint32_t y = 0; y < h; ++y)
+            for (uint32_t x = 0; x < w; ++x)
+            {
+                const double lon = ((x + 0.5) / w - 0.5) * 2.0 * glm::pi<double>();
+                const double lat = (0.5 - (y + 0.5) / h) * glm::pi<double>();
+                const double px = std::cos(lat) * std::sin(lon), py = std::sin(lat), pz = std::cos(lat) * std::cos(lon);
+                glm::vec3 c((float)mean);
+                if (pz > 0.0 && lw > 0 && lh > 0)
+                {
+                    // The old shader's mapping: the image rotated 180 deg on the face (east = the image's left).
+                    const int ix = std::clamp((int)((0.5 - 0.5 * px) * lw), 0, lw - 1);
+                    const int iy = std::clamp((int)((0.5 + 0.5 * py) * lh), 0, lh - 1);
+                    const unsigned char *t = &legacy[((size_t)iy * lw + ix) * 4];
+                    c = glm::vec3(t[0], t[1], t[2]) / 255.0f;
+                }
+                uint16_t *o = &levels[0][((size_t)y * w + x) * 4];
+                o[0] = (uint16_t)(glm::packHalf2x16(glm::vec2(c.r, 0.0f)) & 0xFFFFu);
+                o[1] = (uint16_t)(glm::packHalf2x16(glm::vec2(c.g, 0.0f)) & 0xFFFFu);
+                o[2] = (uint16_t)(glm::packHalf2x16(glm::vec2(c.b, 0.0f)) & 0xFFFFu);
+                o[3] = (uint16_t)(glm::packHalf2x16(glm::vec2(0.0f, 0.0f)) & 0xFFFFu);
+            }
+    }
+    VkDeviceSize total = 0;
+    for (auto &lv : levels)
+        total += lv.size() * 2;
+    VkBuffer stageBuf;
+    VkDeviceMemory stageMem;
+    ctx.createBuffer(total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stageBuf, stageMem);
+    std::vector<VkBufferImageCopy> regions(mips);
+    {
+        void *mapped;
+        vkMapMemory(ctx.device, stageMem, 0, total, 0, &mapped);
+        VkDeviceSize off = 0;
+        for (uint32_t m = 0; m < mips; ++m)
+        {
+            std::memcpy((unsigned char *)mapped + off, levels[m].data(), levels[m].size() * 2);
+            regions[m] = {};
+            regions[m].bufferOffset = off;
+            regions[m].imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, m, 0, 1};
+            regions[m].imageExtent = {std::max(1u, w >> m), std::max(1u, h >> m), 1};
+            off += levels[m].size() * 2;
+        }
+        vkUnmapMemory(ctx.device, stageMem);
+    }
+    VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ici.imageType = VK_IMAGE_TYPE_2D;
+    ici.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    ici.extent = {w, h, 1};
+    ici.mipLevels = mips;
+    ici.arrayLayers = 1;
+    ici.samples = VK_SAMPLE_COUNT_1_BIT;
+    ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+    ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    vkCreateImage(ctx.device, &ici, nullptr, &moonMap);
+    VkMemoryRequirements req;
+    vkGetImageMemoryRequirements(ctx.device, moonMap, &req);
+    VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    mai.allocationSize = req.size;
+    mai.memoryTypeIndex = ctx.findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    vkAllocateMemory(ctx.device, &mai, nullptr, &moonMapMem);
+    vkBindImageMemory(ctx.device, moonMap, moonMapMem, 0);
+    {
+        auto cmd = ctx.beginOneTimeCommands();
+        VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image = moonMap;
+        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mips, 0, 1};
+        b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                             nullptr, 1, &b);
+        vkCmdCopyBufferToImage(cmd, stageBuf, moonMap, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mips, regions.data());
+        b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr,
+                             0, nullptr, 1, &b);
+        ctx.endOneTimeCommands(cmd);
+    }
+    vkDestroyBuffer(ctx.device, stageBuf, nullptr);
+    vkFreeMemory(ctx.device, stageMem, nullptr);
+    VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vci.image = moonMap;
+    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vci.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mips, 0, 1};
+    vkCreateImageView(ctx.device, &vci, nullptr, &moonMapView);
+    VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    sci.magFilter = VK_FILTER_LINEAR;
+    sci.minFilter = VK_FILTER_LINEAR;
+    sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;           // longitude wraps
+    sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sci.maxLod = (float)mips;
+    vkCreateSampler(ctx.device, &sci, nullptr, &moonMapSampler);
+    moonMapW = w;
+    moonMapH = h;
+    Log::line("init: moon map " + std::to_string(w) + "x" + std::to_string(h) + ", " + std::to_string(mips) + " mips");
+}
+
+// Potato's sky (sat_sky_minimal.frag) reads binding 2 as the old face-on photo; every other sky as the map. Rewritten
+// only when the drawn sky changes between them (a preset change), through the frame-safe update.
+void SatelliteSim::updateMoonDescriptor(VulkanContext &ctx, bool legacy)
+{
+    if (legacy == moonDescLegacy || !skyDescSet)
+        return;
+    moonDescLegacy = legacy;
+    VkDescriptorImageInfo ii{legacy ? moonSampler : moonMapSampler, legacy ? moonTexView : moonMapView,
+                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet wr{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    wr.dstSet = skyDescSet;
+    wr.dstBinding = 2;
+    wr.descriptorCount = 1;
+    wr.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    wr.pImageInfo = &ii;
+    frameSafeUpdateDescriptorSets(ctx.device, 1, &wr, 0, nullptr);
+}
+
 // ─── createTerrainMaterials ───────────────────────────────────────────────────
 // The close-up terrain material array (terrain v2 P3, sky binding 27): assets/textures/
 // terrain_materials.rgba8 from tools/make_terrain_materials.py — "SLTA", uint32 width, height, layers,
@@ -12015,6 +12213,8 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
         vkMapMemory(ctx.device, stageMem, 0, imgBytes, 0, &mapped);
         memcpy(mapped, pixels, (size_t)imgBytes);
         vkUnmapMemory(ctx.device, stageMem);
+        std::vector<unsigned char> legacyPx(pixels, pixels + imgBytes);
+        const int legacyW = w, legacyH = h;
         stbi_image_free(pixels);
 
         ctx.createImage((uint32_t)w, (uint32_t)h,
@@ -12057,6 +12257,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
         sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         vkCreateSampler(ctx.device, &sci, nullptr, &moonSampler);
+        createMoonMap(ctx, legacyPx, legacyW, legacyH);
     }
 
     // ── Earth day texture (binding 3): 8K equirectangular colour map ─────────
@@ -12868,7 +13069,10 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
 
     VkDescriptorBufferInfo bufInfo{glowBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorImageInfo noiseImgInfo{noiseSampler, noiseTexView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkDescriptorImageInfo moonImgInfo{moonSampler, moonTexView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    // Binding 2 = the Moon's albedo + elevation map (sat_sky.frag); Potato's sat_sky_minimal.frag still reads the old
+    // face-on photo there, so updateMoonDescriptor() swaps it when that sky is drawn.
+    moonDescLegacy = false;
+    VkDescriptorImageInfo moonImgInfo{moonMapSampler, moonMapView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo dayImgInfo{earthDaySampler, earthDayView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo nightImgInfo{earthNightSampler, earthNightView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo elevImgInfo{elevSamplerFinal, elevViewFinal, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -17630,6 +17834,44 @@ void SatelliteSim::updatePositions(double t, float dt)
             moonAngR = (float)(std::asin(std::min(kMoonR / dM, 1.0)) * drawScale);
         }
         moonCenterENUkm = glm::vec3((float)(glm::dot(mE, e) * 1e-3), (float)(glm::dot(mE, n) * 1e-3), (float)(glm::dot(mE, u) * 1e-3));
+        // The Moon's body frame (2026-10-27): the IAU WGCCRE 2009 rotation model (Archinal et al. 2011, Table 2: the pole
+        // and prime meridian with the E1..E13 periodic terms), in ICRF, taken as the sim's ECI (of date; the ~0.5 deg of
+        // precession by 2036 is left out). It turns the disc's albedo / LOLA map (mean Earth / polar axis, the frame the
+        // IAU model approximates) to the face the Moon really shows: the optical libration (+-7.9 deg in longitude,
+        // +-6.7 deg in latitude) and the pole's tilt (it is near the ECLIPTIC pole, not the celestial one).
+        {
+            const double d = t / 86400.0, T = d / 36525.0, r = glm::pi<double>() / 180.0;
+            const double E1 = (125.045 - 0.0529921 * d) * r, E2 = (250.089 - 0.1059842 * d) * r,
+                         E3 = (260.008 + 13.0120009 * d) * r, E4 = (176.625 + 13.3407154 * d) * r,
+                         E5 = (357.529 + 0.9856003 * d) * r, E6 = (311.589 + 26.4057084 * d) * r,
+                         E7 = (134.963 + 13.0649930 * d) * r, E8 = (276.617 + 0.3287146 * d) * r,
+                         E9 = (34.226 + 1.7484877 * d) * r, E10 = (15.134 - 0.1589763 * d) * r,
+                         E11 = (119.743 + 0.0036096 * d) * r, E12 = (239.961 + 0.1643573 * d) * r,
+                         E13 = (25.053 + 12.9590088 * d) * r;
+            const double a0 = (269.9949 + 0.0031 * T - 3.8787 * std::sin(E1) - 0.1204 * std::sin(E2) + 0.0700 * std::sin(E3) -
+                               0.0172 * std::sin(E4) + 0.0072 * std::sin(E6) - 0.0052 * std::sin(E10) + 0.0043 * std::sin(E13)) * r;
+            const double d0 = (66.5392 + 0.0130 * T + 1.5419 * std::cos(E1) + 0.0239 * std::cos(E2) - 0.0278 * std::cos(E3) +
+                               0.0068 * std::cos(E4) - 0.0029 * std::cos(E6) + 0.0009 * std::cos(E7) + 0.0008 * std::cos(E10) -
+                               0.0009 * std::cos(E13)) * r;
+            const double W = std::fmod(38.3213 + 13.17635815 * d - 1.4e-12 * d * d + 3.5610 * std::sin(E1) + 0.1208 * std::sin(E2) -
+                                       0.0642 * std::sin(E3) + 0.0158 * std::sin(E4) + 0.0252 * std::sin(E5) - 0.0066 * std::sin(E6) -
+                                       0.0047 * std::sin(E7) - 0.0046 * std::sin(E8) + 0.0028 * std::sin(E9) + 0.0052 * std::sin(E10) +
+                                       0.0040 * std::sin(E11) + 0.0019 * std::sin(E12) - 0.0044 * std::sin(E13), 360.0) * r;
+            const glm::dvec3 P(std::cos(d0) * std::cos(a0), std::cos(d0) * std::sin(a0), std::sin(d0));
+            const glm::dvec3 N(-std::sin(a0), std::cos(a0), 0.0);         // the body equator's ascending node on the ICRF equator
+            const glm::dvec3 M = glm::cross(P, N);
+            const glm::dvec3 X = std::cos(W) * N + std::sin(W) * M;      // 0 deg longitude
+            const glm::dvec3 Y = glm::cross(P, X);                       // 90 deg east
+            moonPoleENU = glm::vec3((float)glm::dot(P, e), (float)glm::dot(P, n), (float)glm::dot(P, u));
+            moonPrimeENU = glm::vec3((float)glm::dot(X, e), (float)glm::dot(X, n), (float)glm::dot(X, u));
+            const glm::dvec3 toEarth = -glm::normalize(mE);              // the sub-Earth point (geocentric libration)
+            moonLibLatDeg = std::asin(std::clamp(glm::dot(toEarth, P), -1.0, 1.0)) / r;
+            moonLibLonDeg = std::atan2(glm::dot(toEarth, Y), glm::dot(toEarth, X)) / r;
+            // The pole's position angle on the geocentric sky (north through east), the ephemerides' "P".
+            const glm::dvec3 dG = -toEarth, zC(0.0, 0.0, 1.0);
+            const glm::dvec3 nSky = glm::normalize(zC - dG * glm::dot(zC, dG)), eSky = glm::normalize(glm::cross(zC, dG));
+            moonPolePADeg = std::atan2(glm::dot(P, eSky), glm::dot(P, nSky)) / r;
+        }
         // Eclipses: the fraction of the Sun's disc the observer sees past the Moon (solar), and whether
         // either kind is possible at all this frame (the shader skips the per-pixel work otherwise).
         const glm::dvec3 sE = glm::normalize(glm::dvec3(sunDirECI));
