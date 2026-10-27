@@ -1227,6 +1227,7 @@ CV2Far cv2FarColumn(CV2Pos q, float fpM)
 // Perlin channel, 8-64 km) says so. Altocumulus — rounded cloudlets from the shape volume's 3D
 // Worley octaves (220-875 m) in a thin lens-shaped sheet — where the low cloud is broken;
 // altostratus — a smooth translucent sheet the sun shows through — where it is stratiform.
+const float kCv2MidWanderM = 450.0;
 float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out float deckMid)
 {
     hfMid = 0.0; topMid = 0.0; deckMid = 0.0;
@@ -1283,13 +1284,20 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
     float cr    = clamp(0.5 + (cl.r - 0.5) * 4.4, 0.0, 1.0);
     float base  = 3000.0 + gl + 2600.0 * cr;
     float thick = mix(1200.0, 450.0, cr) * cv2.mid2.y;
-    float zm    = (q.h - base) / thick;
-    if (zm <= 0.0 || zm >= 1.0) return 0.0;
+    // The sheet's base and top wander by up to +-kCv2MidWanderM over a few km (the shape volume at the layer's own
+    // period, already read for the cloudlets; 2026-10-27, issue 20261027_002051 shot 1): with only the cluster-scale
+    // height (8-64 km) it was flat over the tens of km a view along it crosses, and seen edge-on from near its height
+    // its top and base lined up into a straight translucent strip across a storm.
+    if (q.h <= base - kCv2MidWanderM || q.h >= base + thick + kCv2MidWanderM) return 0.0;
     float strat = 1.0 - smoothstep(0.3, 0.55, w.g);                 // stratiform below -> As
     // Its own period (anchorMid): on the cumulus shape period, enlarging the cumulus lobes made the
     // altocumulus cloudlets huge too.
     vec4  sh    = textureLod(cv2ShapeTex, cv2.anchorMid.xyz + cv2Drift(q.rSeaE) * cv2.anchorMid.w,
                              cv2Lod(fpM, cv2.anchorMid.w));
+    float bW    = base + kCv2MidWanderM * clamp(2.5 * (sh.a - 0.5), -1.0, 1.0);
+    float tW    = base + thick + kCv2MidWanderM * clamp(2.5 * (sh.g - 0.5), -1.0, 1.0);
+    float zm    = (q.h - bW) / max(tW - bW, 150.0);
+    if (zm <= 0.0 || zm >= 1.0) return 0.0;
     // A lens: thin at its edges and top and bottom, the cloudlets' own lobes shaping both faces.
     float lens  = smoothstep(0.0, 0.3, zm + (sh.a - 0.5) * 0.4) * (1.0 - smoothstep(0.55, 1.0, zm + (sh.b - 0.45) * 0.5));
     float ac    = clamp((sh.b * 0.7 + sh.g * 0.3 - (1.0 - regime * 0.8)) * 5.0, 0.0, 1.0);
@@ -1303,7 +1311,7 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
     ac          = mix(ac, haze, smoothstep(400.0, 3000.0, fpM));
     float as_   = clamp(regime * 1.3, 0.0, 1.0) * mix(0.7, 1.0, sh.a);
     hfMid       = zm;
-    topMid      = base + thick;
+    topMid      = tW;
     deckMid     = strat;
     return lens * mix(ac * 0.035, as_ * 0.004 * cv2.mid2.x, strat) * cv2.atmo.z;
 }
