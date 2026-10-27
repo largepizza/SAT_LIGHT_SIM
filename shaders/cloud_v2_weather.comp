@@ -153,7 +153,8 @@ vec3 cycloneSwirl(vec3 d)
     return normalize(o);
 }
 
-float gRainFree = 0.0;   // stormStamp: 0..1, a rear-flank rain-free base (the map's rain is cleared there)
+float gRainFree = 0.0;
+float gCycDeck  = 0.0;   // stormStampFinish: 0..1, under a cyclone's central dense overcast (its deck: overcast)   // stormStamp: 0..1, a rear-flank rain-free base (the map's rain is cleared there)
 // In two parts (2026-10-25): the towers' and lines' fields (smooth over tens of km: read once at a texel's centre), then
 // the cyclones' and the final scaling (stormStampFinish: a hurricane's arms are a few km sharp, so main() averages it
 // over the texel). stormStamp(d) = stormStampFinish(stormStampTowers(d), d).
@@ -252,7 +253,7 @@ vec4 stormStampFinish(vec4 o, vec3 d)
     // Tropical cyclones (2026-10-23): spiral rainbands (logarithmic spirals trailing the cyclonic rotation) beyond the
     // central dense overcast, the eyewall's ring of convection, the CDO's deck, heavy rain in the eyewall and bands,
     // subsidence between the bands, and the eye cleared outright.
-    float eyeAcc = 0.0;
+    float eyeAcc = 0.0, deckC = 0.0;
     for (uint i = 0u; i < min(cv2CycHead.x, kCv2CycloneMax); ++i) {
         CV2Cyclone cy = cv2Cyclones[i];
         vec3  off = (d - cy.b.xyz) * R_EARTH_W;
@@ -303,13 +304,21 @@ vec4 stormStampFinish(vec4 o, vec3 d)
         float wall   = exp(-((r - rmw) * (r - rmw)) / (0.16 * rmw * rmw));
         // (An arm's coverage: at 0.45 x a weak storm's band it added ~0.3 of coverage, which the low cloud draws as
         // scattered cumulus, not a band: weak storms showed no arms at all.)
-        o.y = max(o.y, max(inner * mix(0.55, 1.0, I), band * bandsK * mix(0.8, 1.0, I) * wisp));
+        // (The CDO's deck: near overcast whatever the intensity (2026-10-27, issue 20261027_003307: a Category 1 typhoon
+        // over Laos, I 0.29, took mix(0.55, 1, I) = 0.68, i.e. ~+0.35 of brightness: where the map itself was clear the
+        // low cloud under the CDO was a broken field, and the rain (cv2FieldLow's shafts need a formed column, e > 0.3)
+        // fell only within ~2 rmw of the eye; 77 km out, under tau ~230 of shield, it was dry.)
+        o.y = max(o.y, max(inner * mix(0.9, 1.0, I), band * bandsK * mix(0.8, 1.0, I) * wisp));
         // (Typed convective: rainbands are lines of cumulonimbus; half-stratiform they drew as smooth painted arcs.)
         o.x = max(o.x, max(wall * smoothstep(0.05, 0.4, I), band * bandsK * wisp));
-        o.z = max(o.z, max(wall * mix(0.6, 1.0, I), max(inner * 0.55, band * bandsK * 0.7)));
+        // (The CDO's rain heavier toward the core, thinning to light stratiform rain at its edge: with the deck under the
+        // whole CDO now overcast, a flat 0.55 drew one uniform 40-dBZ disc 400 km across on the radar.)
+        o.z = max(o.z, max(wall * mix(0.6, 1.0, I), max(inner * mix(0.6, 0.25, smoothstep(rmw, cdo, r)), band * bandsK * 0.7)));
         o.w = max(o.w, (1.0 - band) * bandsK * 0.7);
         if (cy.c.x > 0.0) eyeAcc = max(eyeAcc, (1.0 - smoothstep(0.7 * cy.c.x, 1.15 * cy.c.x, r)) * smoothstep(0.15, 0.4, I));
+        deckC = max(deckC, inner);
     }
+    gCycDeck = max(gCycDeck, deckC * pc.storm2.x * (1.0 - eyeAcc));
     o.xyz *= pc.storm2.x;
     o.w   *= pc.storm2.x * pc.storm2.y * (1.0 - max(o.x, o.y));
     // The eye: clear (x4 the moat's weight: the full coverage span).
@@ -398,6 +407,7 @@ void main()
     // cyclone can reach; the towers' and lines' fields once (smooth over tens of km; 9 reads of them over the tropics'
     // storm envelopes cost ~1 ms a 2048 face).
     gRainFree = 0.0;
+    gCycDeck  = 0.0;
     vec4  sT  = stormStampTowers(d);
     vec4  sst = vec4(0.0);
     if (cycloneNear(d, texel)) {
@@ -412,8 +422,13 @@ void main()
     }
     float sSpan = max(pc.remap.z - pc.remap.y, 1e-3) / max(pc.remap.x, 1e-3);
     float stormAdd = (0.4 * sst.x + 0.5 * sst.y - 0.25 * sst.w) * sSpan;
-    cov = clamp(cov + stormAdd, 0.0, 1.0);
-    m1  = clamp(m1 + stormAdd, 0.0, 1.0);
+    // Under a cyclone's central dense overcast the low cloud is OVERCAST (a raining nimbostratus deck under the shield),
+    // whatever the map had there (2026-10-27, issue 20261027_003307): an additive brightness left a clear map broken,
+    // so the deck under the CDO was scattered cloud and no rain fell from it. A floor at the full threshold, in
+    // brightness units; it fades out with the CDO's edge (stormStampFinish's inner).
+    float deckFloor = gCycDeck * pc.remap.z / max(pc.remap.x, 1e-3);
+    cov = clamp(max(cov + stormAdd, deckFloor), 0.0, 1.0);
+    m1  = clamp(max(m1 + stormAdd, deckFloor), 0.0, 1.0);
     // Systems strengthen and weaken: clear air clouds over where the field rises, overcast thins where it
     // falls (the types below follow the new coverage, so storms grow and decay with it).
     if (pc.evo1.y > 0.0) cov = clamp(cov + pc.evo1.y * evoGrowth(d), 0.0, 1.0);
@@ -525,7 +540,7 @@ void main()
                 for (int i = 0; i < N; ++i) {
                     vec2  o = ((vec2(i, j) + 0.5) / float(N) - 0.5) * texel;
                     float b = textureLod(earthCloudsTex, eqTap(dc, uvc, latc, tx, ty, o), lodT).r;
-                    acc += clamp(((b + add) * pc.remap.x - pc.remap.y) / span, 0.0, 1.0);
+                    acc += clamp((max(b + add, deckFloor) * pc.remap.x - pc.remap.y) / span, 0.0, 1.0);
                 }
             frac += wc * acc / float(N * N);
         }
