@@ -208,6 +208,8 @@ float cv2ShieldAt(vec3 wd, out float thickK, out float ageK, out float uOut)
     }
     [[dont_unroll]] for (uint k = 0u; k < bin.y; ++k) {
         CV2Shield s = cv2Shields[cv2ShieldList[bin.x + k]];
+        // (A bin lists its shields strongest first, and p <= sT <= a.w: none after this can do better. Exact.)
+        if (s.a.w <= best) break;
         vec3  ab = s.b.xyz - s.a.xyz;
         float t  = clamp(dot(wd - s.a.xyz, ab) / max(dot(ab, ab), 1e-14), 0.0, 1.0);
         float r  = mix(s.c.x, s.b.w, t);
