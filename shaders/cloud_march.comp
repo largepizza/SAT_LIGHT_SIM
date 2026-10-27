@@ -304,6 +304,8 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
     float hgP = (1.0 - gP * gP) / pow(max(1.0 + gP * gP - 2.0 * gP * cosT, 1e-4), 1.5);
     float phaseP = (0.45 * hgP + 0.55) * (1.0 / (4.0 * PI));
     float T = min(tScene, 2.0e7);
+    // This texel's angular size (rad): the billows' footprint filter below.
+    float pixAngC = 2.0 * tan(pc.fovYRad * 0.5) / float(max(imageSize(targetA).y, 1));
     vec3 L = vec3(0.0);
     float wT = 0.0;
     float Ls = 0.0;
@@ -446,13 +448,23 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
                     float sW = sqrt(2.0 / max(d.ia.x + d.ia.y + d.ia.z, 1e-30));
                     vec3  rl = (r0.x * plEnuX + r0.y * plEnuY + r0.z * plEnuZ) / sW;
                     vec3  sd = fract(sk * vec3(0.6180339, 0.3819660, 0.1372341)) * 7.0;
+                    // Filtered to the pixel's footprint (2026-10-27, issue 20261027_004019 "gigantic glitchy smudge"): the
+                    // noise volume has no mips, and its coordinate is in units of the Gaussian's SMALLEST sigma — for a
+                    // wildfire pall (hundreds of km across, ~1 km thick) seen from 85 km a half-res pixel spanned ~25
+                    // texels of it: a fixed honeycomb of pixel-sized dots over the whole pall. Each octave fades to its
+                    // mean as its texels per pixel pass 0.5 -> 2 (exact in the mean: the billows are mean ~1).
+                    float fpT = pixAngC * clamp(tc, 0.0, T) / sW * (0.25 * 192.0);   // octave 1's texels per pixel
+                    float aa1 = 1.0 - smoothstep(0.5, 2.0, fpT);
                     // R = the baked Perlin-Worley (three octaves: billows of ~1 sigma down to a quarter of it).
-                    float nz = textureLod(cloudNoiseTex, rl * 0.25 + sd, 0.0).r;
-                    mN += (1.0 - lowK) * 1.3 * (nz - kPlumeNoiseMean);
+                    if (aa1 > 0.0) {
+                        float nz = textureLod(cloudNoiseTex, rl * 0.25 + sd, 0.0).r;
+                        mN += aa1 * (1.0 - lowK) * 1.3 * (nz - kPlumeNoiseMean);
+                    }
                     // (wildfire smoke, 2026-10-23 b: a second octave at ~4x, its Gaussians being km wide: billows
                     // within billows, not one smooth lump)
-                    if (isSm && !isWall)
-                        mN += 0.8 * (textureLod(cloudNoiseTex, rl * 1.05 + sd.yzx, 0.0).r - kPlumeNoiseMean);
+                    float aa2 = 1.0 - smoothstep(0.5, 2.0, fpT * 4.2);
+                    if (isSm && !isWall && aa2 > 0.0)
+                        mN += aa2 * 0.8 * (textureLod(cloudNoiseTex, rl * 1.05 + sd.yzx, 0.0).r - kPlumeNoiseMean);
                 }
                 if (lowK > 0.0 && sk >= 256.0) {
                     // A TORNADO's Gaussian (2026-10-23, SatelliteSim::weatherFillTornadoes: seedK = 256 + its spin phase
@@ -485,11 +497,16 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
                     vec3  pw  = cloud.terrainAnchorRel.xyz + qE.x * plEnuX + qE.y * plEnuY + qE.z * plEnuZ;
                     float nW  = textureLod(cloudNoiseTex, pw * (3.0 / 2048.0), 0.0).r;
                     float nW2 = textureLod(cloudNoiseTex, pw * (9.0 / 2048.0) + vec3(0.37, 0.71, 0.13), 0.0).r;
+                    // (footprint filter, as the parcels' own billows above: 3.6-m texels alias from km away)
+                    float fpE = pixAngC * clamp(tc, 0.0, T) * (3.0 * 192.0 / 2048.0);
+                    float aaW = 1.0 - smoothstep(0.5, 2.0, fpE), aaW2 = 1.0 - smoothstep(0.5, 2.0, 3.0 * fpE);
+                    nW  = mix(kPlumeNoiseMean, nW, aaW);
+                    nW2 = mix(kPlumeNoiseMean, nW2, aaW2);
                     mN += lowK * (2.4 * (nW - kPlumeNoiseMean) + 1.1 * (nW2 - kPlumeNoiseMean));
                     // The billows' own light and shade: the field's change toward the Sun (one more fetch, ~70 m
                     // sunward): denser toward the Sun = in a lobe's shadow, thinner = its lit face. Shared by every
                     // Gaussian here, so the lumps of the whole mass are lit as one surface.
-                    float nWs = textureLod(cloudNoiseTex, (pw + plSunE * 70.0) * (3.0 / 2048.0), 0.0).r;
+                    float nWs = mix(kPlumeNoiseMean, textureLod(cloudNoiseTex, (pw + plSunE * 70.0) * (3.0 / 2048.0), 0.0).r, aaW);
                     lumpL = mix(1.0, clamp(1.0 - 3.5 * (nWs - nW), 0.3, 1.35), lowK);
                     lumpA = mix(1.0, clamp(1.0 - 2.2 * (nW - kPlumeNoiseMean) - 1.0 * (nW2 - kPlumeNoiseMean), 0.3, 1.3), lowK);
                 }

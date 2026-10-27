@@ -1912,8 +1912,15 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // marched at a quarter of its density (cloud_v2_tiles.comp). Needs a history (it is classified from it), the 16x16
     // workgroups (a tile is one), and the tile list's capacity (4096 tiles: 2048x2048 of cloud grid).
     {
+        // ...and only once the history has settled after the eye last moved (2026-10-27, issue 20261027_004019): a fast
+        // flight replaces the history with the quarter grid's tent, which reads SMOOTH everywhere, and those tiles were then
+        // marched at a quarter of the density from a history without their detail: 64-px squares of the quarter lattice's
+        // dots, greyer than their neighbours and missing the cirrus streaks, for ~1.5 s after the eye stopped. At the still
+        // history weight (~0.05) 64 frames leave ~4% of the old history.
+        constexpr int kSmoothSettleFrames = 64;
         const uint32_t qTiles = ((cv2QuarterW + 15) / 16) * ((cv2QuarterH + 15) / 16);
         cv2SmoothNow = cv2SmoothTiles > 0.5f && cv2FullResActive() && !cv2FullRateNow && !cv2AdaptiveNow && !cv2HalfRateNow &&
+                       cv2EyeStillFrames >= kSmoothSettleFrames &&
                        valid && cv2HistoryValid && glm::length(eye - cv2PrevEye) <= 150.0 && cv2MarchWg[0] == 16 &&
                        cv2MarchWg[1] == 16 && qTiles <= kCv2MaxTiles && cv2MarchPassFPipeline != VK_NULL_HANDLE &&
                        cv2MarchPassFNoDustPipeline != VK_NULL_HANDLE && cv2TilesSmoothPipeline != VK_NULL_HANDLE &&
