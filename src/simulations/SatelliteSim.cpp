@@ -2756,6 +2756,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.auroraSky = glm::vec4(1.0f / std::max(lightPollutionGain, 1e-4f), 0.0f, 0.0f, 0.0f);
         launchFillPadParams(cp); // the launch pads on the ground (SatelliteSimLaunches.cpp)
         weatherFillSeaParams(cp); // tropical cyclones' winds on the sea (SatelliteSimWeather.cpp)
+        cp.surgeInfo.z = oceanSunGlitter; // the Sun's sea glitter gain (surgeInfo.z was unused; sat_sky.frag)
         weatherFillFireParams(cp); // the wildfires' burn scars on the ground (SatelliteSimWildfire.cpp)
         cp.moonCenter = glm::vec4(moonCenterENUkm, moonAngR);
         // y: 0 = no solar eclipse possible, else 1 + the observer's eclipse sky light (0..1), which sat_sky.frag's

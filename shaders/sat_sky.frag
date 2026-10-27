@@ -2645,6 +2645,9 @@ float gSeaFlood  = 0.0;
 // trails" x the sea state's storm share), written to the TAA colour's alpha. Any sea pixel also opts out of the
 // resolve's still-camera no-clip rule: the waves move while the camera does not, and the crests smeared.
 float gTaaSeaTrail = -1.0;
+// 1 = this pixel shows a Sun-glint SPARKLE (2026-10-27): the sky TAA takes it at once (alpha 0.6) instead of averaging
+// it into the history, where a lone flash came out ~10x dimmer.
+float gSeaSpark = 0.0;
 // Review 14: the pixel footprint (m) the wave NORMAL is filtered to (0 = none). Octaves whose cells fall
 // below ~2 footprints fade out: grazing views of a rough sea under a low Sun aliased into glittering pixel
 // noise that crawled whenever the camera moved (user snapshot 4, the South Atlantic at 630 m).
@@ -6507,6 +6510,9 @@ void main() {
                 float gV   = aV < 1.6 ? (3.535 * aV + 2.181 * aV * aV) / (1.0 + 2.276 * aV + 2.577 * aV * aV) : 1.0;
                 float gL   = aL < 1.6 ? (3.535 * aL + 2.181 * aL * aL) / (1.0 + 2.276 * aL + 2.577 * aL * aL) : 1.0;
                 float glint = nl > 0.0 ? PI * F * D * gV * gL / (4.0 * nv) : 0.0;
+#ifndef SKY_LITE   // (its size budget)
+                glint *= cloud.surgeInfo.z;   // "Sea glitter (Sun)" (2026-10-27, issue 20261027_001448)
+#endif
 #ifdef SKY_SUN_SHADOW
                 // Glitter (2026-10-26, issue 20261026_203414 shot 5): the lobe above is the pixel's MEAN; a sea is
                 // millions of facets, the few tilted right each mirroring the Sun's whole disc (radiance F x the disc).
@@ -6523,14 +6529,20 @@ void main() {
                     float fs   = glint / max(F * 1.8e5, 1e-6);
                     float foot = pixAngle * dist;
                     float nFac = max(150.0, foot * seaFootW / 0.09);
-                    float q    = clamp(fs * nFac, 0.15, 1.0);
+                    // (2026-10-27, issue 20261027_001448 shot 1, "the flashes should be much more intense"): a sparkle is a
+                    // 2 x 2 pixel cell (a lone pixel is what the sky TAA's flash rule treats as a speck), the cell holds 4
+                    // pixels' facets, 60% of the light rides in the sparkles and a sparkle may carry up to 1 / 0.02 of the
+                    // cell's mean (it was 0.15: never past ~3.8x, a texture, not flashes); it is flagged for the TAA
+                    // (gSeaSpark), which takes it whole instead of averaging it away in a still view.
+                    float q    = clamp(fs * nFac * 4.0, 0.02, 1.0);
                     if (q < 0.999 && glint > 1e-4) {
                         uint  tb = uint(floor(mod(pc.waveTime, 1000.0) * 6.0));
-                        uvec2 fc = uvec2(gl_FragCoord.xy);
+                        uvec2 fc = uvec2(gl_FragCoord.xy * 0.5);
                         uint  hh = fc.x * 0x8da6b343u ^ fc.y * 0xd8163841u ^ tb * 0xcb1ab31fu;
                         hh ^= hh >> 16; hh *= 0x7feb352du; hh ^= hh >> 15; hh *= 0x846ca68bu; hh ^= hh >> 16;
                         float hs = float(hh >> 8) * (1.0 / 16777216.0);
-                        glint *= 0.5 + ((hs < q) ? 0.5 / q : 0.0);
+                        glint *= 0.4 + ((hs < q) ? 0.6 / q : 0.0);
+                        if (hs < q && q < 0.5) gSeaSpark = 1.0;
                     }
                 }
                 surfColor += sunSpecTint * sunTransMax * min(glint, 4000.0) * directSun;
@@ -7570,6 +7582,8 @@ void main() {
     // Alpha 1 = not sea; [0, 0.5] = sea, 0.5 x (1 - trail). Cloud in front keeps its own clip (it would ghost).
     if (gTaaSeaTrail >= 0.0 && !meshHit && !terrainDebugActive)
         outColor.a = 0.5 * (1.0 - clamp(gTaaSeaTrail * (1.0 - localCloudOpacity), 0.0, 1.0));
+    // 0.6 = a Sun-glint sparkle (gSeaSpark): sky_taa.comp takes it at once.
+    if (gSeaSpark > 0.5 && !meshHit && !terrainDebugActive && localCloudOpacity < 0.5) outColor.a = 0.6;
     // 0.875 = something that moves on its own the resolve cannot reproject (2026-10-21, issue 20261021_174219: "crazy
     // trails on all models" with TAA on): a satellite / rocket / pad mesh, or a texel lit only by the plume and flame
     // Gaussians (the composite's emissive flag, read gathered: a filtered alpha is no flag). sky_taa.comp clips and

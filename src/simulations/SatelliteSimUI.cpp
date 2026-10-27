@@ -6653,6 +6653,8 @@ void SatelliteSim::buildSettingsOceanTab(const UIInput &inp, UIRenderer &ui)
         {"Far sea ripple size (px)", &oceanFarRippleSize, 1.5f, 16.0f, 0.25f, "%.2f", 256},
         {"Sea warp", &oceanWarp, 0.0f, 6.0f, 0.1f, "%.1f", 249},
         {"Sea warp detail", &oceanWarpDetail, 0.0f, 3.0f, 0.05f, "%.2f", 250},
+        // 2026-10-27 (issue 20261027_001448): x the Sun's glint on the waves, its path and its sparkles.
+        {"Sea glitter (Sun)", &oceanSunGlitter, 0.0f, 20.0f, 0.1f, "%.1f", 354},
         {"Ocean flare refl", &oceanGlintGain, 0.0f, 4.0f, 0.05f, "%.2f", 110},
         {"Flare refl floor", &oceanGlintMinFlux, 0.0f, 64.0f, 0.5f, "%.1f", 111},
     };
@@ -9226,6 +9228,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         // 2026-09-26). Stored under "clouds" because they are GpuCloudParams fields, same as the
         // airglow/zodiacal/ocean-MW block below.
         oceanGlintGain = c.value("ocean_glint_gain", oceanGlintGain);
+        oceanSunGlitter = settingClamp(c.value("ocean_sun_glitter", oceanSunGlitter), 0.0f, 20.0f);
         oceanSeaStateGain = c.value("ocean_sea_state", oceanSeaStateGain);
         auroraSheetGain = c.value("aurora_sheets", auroraSheetGain);
         orbitGrade = c.value("orbit_grade", orbitGrade);
@@ -9533,6 +9536,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"zodiacal_gain", zodiacalGain},
         {"ocean_mw_refl_gain", oceanMwReflGain},
         {"ocean_glint_gain", oceanGlintGain},
+        {"ocean_sun_glitter", oceanSunGlitter},
         {"ocean_sea_state", oceanSeaStateGain},
         {"aurora_sheets", auroraSheetGain},
         {"orbit_grade", orbitGrade},
