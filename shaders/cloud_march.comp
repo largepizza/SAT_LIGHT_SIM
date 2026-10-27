@@ -418,8 +418,11 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
             // shows the plume as the structure in front, not a fog the camera is in). Far views: unchanged.
             // Not a tornado's (seedK >= 256, 2026-10-26, issue 20261026_191508): within ~1 km of a funnel the eye is inside
             // its wide base and debris Gaussians, and thinned to 10% the funnel went see-through close up.
+            // Not wildfire smoke / haboob dust either (the aerosol range; 2026-10-27, issue 20261027_001835 shot 3): a pall is
+            // hundreds of km wide and ~1-2 km thick, and from 747 m the eye stood inside it: thinned to 10%, every cloud
+            // beyond showed through what should be a smoke-filled sky.
             float eM = e + tc * tc * q;   // = o.M.o (e = o.M.o - q tc^2: both terms >= 0, so far views stay large)
-            if (d.ib.w < 1024.0)
+            if (d.ib.w < 1024.0 && !((i - smF) < smN))
                 tau *= mix(0.1, 1.0, smoothstep(2.25, 9.0, eM));
             // Billows (2026-10-19): the optical depth through each Gaussian is modulated by two octaves of the
             // baked cloud noise at the ray's closest approach, in the Gaussian's own sigma units (so the structure
@@ -534,7 +537,11 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
                 }
                 // (a tornado's funnel / debris / wall cloud keeps 0.3 of its optical depth in the billows' troughs: at 0.05
                 // the trough was a hole through the funnel's core, 2026-10-24; its edge is still lumpy, the cut below)
-                tau *= max(mN, sk >= 256.0 ? 0.3 : mix(0.2, 0.05, lowK));
+                // (wildfire smoke: the billows fade in over tau 0.01-0.05 instead of switching on at 0.01: a pall's edge,
+                // seen grazing from orbit, was a hard ragged line with holes where its column crossed 0.01, 2026-10-27,
+                // issue 20261027_003452)
+                float mnK = (isSm && !isWall) ? smoothstep(0.01, 0.05, tau) : 1.0;
+                tau *= mix(1.0, max(mN, sk >= 256.0 ? 0.3 : mix(0.2, 0.05, lowK)), mnK);
                 // ...and its faint tails cut where the billows thin it (low down): each puff gets a crisp, lumpy edge
                 // (a Gaussian's tail is a soft halo hundreds of metres wide: the ground cloud read as a glowing ball).
                 tau *= mix(1.0, smoothstep(0.02, 0.35, tau), lowK);
@@ -629,7 +636,10 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
                                (dustErf(sL * (lL + bL)) - dustErf(sL * bL));
                     shL = mix(exp(-d.ia.w * d.c.w * max(IL, 0.0)), 1.0, 0.25);
                 }
-                lpeI += el.ia.rgb * (tau * lumpA * shL * (d.col.w - 2.0) * el.c.w / (r2 + sAl2 + el.ia.w * el.ia.w));
+                // (faded over the outer part of its reach, as lightning.frag's terms are: cut at the reach, a fire's glow
+                // drew a hard-edged sphere on its smoke column at night, 2026-10-27, issue 20261027_002954)
+                float rW = 1.0 - smoothstep(0.36 * el.col.z * el.col.z, el.col.z * el.col.z, r2);
+                lpeI += el.ia.rgb * (tau * lumpA * shL * rW * (d.col.w - 2.0) * el.c.w / (r2 + sAl2 + el.ia.w * el.ia.w));
             }
             if (isSm) tauSm += tau;                   // (smoke dims what is behind it spectrally: the caller)
             // The plumes that may carry the air's split (2026-10-27, issue 20261027_001835): all but those an engine light

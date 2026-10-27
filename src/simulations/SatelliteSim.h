@@ -5116,6 +5116,7 @@ private:
     float fireLodScale = 1.0f;                 // x the front points' spacing: widened when a crowd of fires overflows
                                                // the frame's point budget, relaxed back slowly (the levels cross-fade)
     uint32_t firePointsLast = 0, fireFlamesLast = 0, fireLightsLast = 0;   // this frame (harness `fires`)
+    std::vector<glm::vec4> fireGlowDbg;   // this frame's glow lights: ENU from the eye (m) xyz, w = r0 (harness `fires`)
     double firePeakFlare = 0.0, fireFlareSum = 0.0, fireGlowSum = 0.0;     // this frame's points / glow (harness `fires`)
     uint32_t fireSmokeSources = 0;                                          // this frame's smoke streaks (harness `fires`)
     // The night map's luminance (earthNightCpu: ~18 km, 0..255 sRGB; the land's blue base ~14): the built-up mask.

@@ -157,8 +157,14 @@ float BiomeMap::seasonalDryness(double latDeg, double dayOfYear)
     const double kTwoPi = 6.283185307179586;
     const double alat = std::fabs(latDeg);
     const double north = latDeg >= 0.0 ? 1.0 : -1.0;
-    // Extratropical: summer peak.
-    const double summer = 0.5 + 0.5 * std::cos(kTwoPi * (dayOfYear - (north > 0 ? 210.0 : 25.0)) / 365.25);
+    // Extratropical: a summer season that NARROWS poleward (2026-10-27, issue 20261027_000126: a fire on an Aleutian
+    // island in late November). It was the cosine itself, 0.29 at 53 N on 22 November (0.09 after the rate's square):
+    // the boreal and subarctic fire season is a few months of summer (June-August), the mid-latitudes' a longer one
+    // (May-October), and in the winter half nothing burns. The season is the part of the year whose cosine passes c0,
+    // c0 rising from -0.45 at 30 deg to 0.35 by 62 deg.
+    const double cS = std::cos(kTwoPi * (dayOfYear - (north > 0 ? 210.0 : 25.0)) / 365.25);
+    const double c0 = -0.45 + 0.8 * ss(30.0f, 62.0f, (float)alat);
+    const double summer = ss((float)c0, 1.0f, (float)cS);
     // Tropical: the dry season half a year from the summer monsoon (the Sahel's peaks Dec-Jan, southern Africa's Aug).
     const double drySeason = 0.5 + 0.5 * std::cos(kTwoPi * (dayOfYear - (north > 0 ? 15.0 : 220.0)) / 365.25);
     const double wTrop = 1.0 - ss(18.0f, 30.0f, (float)alat);
