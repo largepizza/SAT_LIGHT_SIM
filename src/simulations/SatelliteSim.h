@@ -4886,8 +4886,9 @@ private:
     // The anvil SHIELDS (2026-10-23, = cv2_storms.glsl CV2Shield / kCv2Shield*): one per storm, in coarser bins.
     struct GpuStormShield { glm::vec4 a, b, c, d; };
     static_assert(sizeof(GpuStormShield) == 64, "GpuStormShield == cv2_storms.glsl's CV2Shield");
-    static constexpr uint32_t kShieldMax = 4096, kShieldTableSize = 16384, kShieldListSize = 65536,
-                              kShieldBinsPerFace = 64, kShieldMaxPerBin = 31;   // (31: a cyclone's arm cirrus)
+    static constexpr uint32_t kShieldMax = 4096, kShieldTableSize = 32768, kShieldListSize = 131072,
+                              kShieldBinsPerFace = 128, kShieldMaxPerBin = 31;   // (31: a cyclone's arm cirrus)
+    static constexpr uint32_t kShieldEnvBinsPerFace = 64;   // the bake's envelope index (= kCv2ShieldEnvBinsPerFace)
     static constexpr VkDeviceSize kShieldHeadOffset = kStormListOffset + 4ull * kStormListSize;
     static constexpr VkDeviceSize kShieldsOffset = kShieldHeadOffset + 16;
     static constexpr VkDeviceSize kShieldTableOffset = kShieldsOffset + 64ull * kShieldMax;
@@ -5054,6 +5055,8 @@ private:
     float stormMoat = 1.0f;                      // clouds_v2.storm_moat: the clear moat round a storm (x the field)
     bool  stormIndexTight = true;                // clouds_v2.storm_index_tight: list a bin only where a tower / shield can reach it
                                                  // (2026-10-27; false = every bin of the bounding rectangle, the A/B)
+    int   stormShieldBinsAB = 0;                 // clouds_v2.storm_shield_bins_ab (no UI): 64 = list shields in the old
+                                                 // 156-km bins (an A/B); 0 = kShieldBinsPerFace (128)
     float stormArmCirrus = 1.0f;                 // clouds_v2.storm_arm_cirrus: the cirrus along a cyclone's arms (x, 0 = none)
     // Wildfires (2026-10-23, Wildfire.h, SatelliteSimWildfire.cpp): hashed on the biome map's fuel x the season's
     // dryness; smoke as plume Gaussians (a contiguous range of the dust list, spectral: smoke.glsl), the front as point

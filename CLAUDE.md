@@ -827,7 +827,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   supercell with their whole lifecycle fixed at birth, so every storm is a pure function of sim time (warp, reverse,
   bookmarks). They live in the MAP frame (cv2Drift) and ride with it. Each frame `updateStorms` (SatelliteSimWeather.cpp)
   uploads the towers alive (`GpuStormTower` = `CV2Tower`, 48 B; strength = the lifecycle, a weaker tower is SHORTER)
-  and an open-addressed hash of 256-per-face cube bins (each tower listed in every bin its reach touches) into
+  and an open-addressed hash of 256-per-face cube bins (each tower listed in every bin its reach touches — only those, since
+  2026-10-27: `clouds_v2.storm_index_tight`, see "Weather perf pass" under GPU Performance Profiling) into
   `stormBuf` (device-local host-visible): march binding 26, beam occlusion 10, lightning, cdc. `cv2ColumnSigma` loops
   over its point's bin; lightning flashes only from them. Settings `clouds_v2.storm_objects / storm_frequency /
   storm_life` (Weather tab "Storm objects"); harness `storms`, `storms go`, `state` -> `weather`; `tools/weather_tool`.
@@ -846,7 +847,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   The rain core under a dominant tower is its body (it was an ellipse 2.5x longer downwind, under the anvil, where
   there is no cloud below). Cost: within noise at 1 h/s (bake), 128 registers.
   **Anvil SHIELDS (2026-10-23, issues 20261023_002905 / _001522):** every storm has one (`wx::Shield`, `Catalog::shieldsAt`;
-  `CV2Shield` 64 B + its own index of 64-per-face bins, `cv2ShieldAt`, between the tower list and the env block of
+  `CV2Shield` 64 B + its own index of 128-per-face bins (64 until 2026-10-27; the count is `cv2ShieldHead.y`; the bake's
+  envelope copy keeps 64), `cv2ShieldAt`, between the tower list and the env block of
   `stormBuf`): a capsule from 0.3 rA upwind of the anvil-reaching towers' heads (strength-weighted) to L downwind (L grows
   at 0.6 x the storm's `upperWind` to 45 / 90 / 160 km by kind), radius rA (the head) growing to 1.15 rA + 0.25 L. Its
   strength rises over 15 min after a tower first passes 0.42 (`TowerSpec::anvOn`, precomputed at birth) and LINGERS

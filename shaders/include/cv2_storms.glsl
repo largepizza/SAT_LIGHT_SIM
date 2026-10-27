@@ -23,11 +23,14 @@ const uint kCv2StormMaxPerBin   = 12u;      // the CPU truncates a bin's list (s
 // listed out to cv2StormEnvRadius(its reach) instead of its reach.
 const uint kCv2StormEnvTableSize = 131072u;
 const uint kCv2StormEnvListSize  = 393216u;
-// The anvil SHIELDS (2026-10-23): one per storm (cv2AnvilSigmaP), listed in coarser bins (~156 km).
+// The anvil SHIELDS (2026-10-23): one per storm (cv2AnvilSigmaP), listed in coarser bins (~78 km; 156 km until
+// 2026-10-27, when a sample in a storm cluster walked ~3.8x the shields that can reach it: a shield's 1.6-radius disc
+// grown by a whole bin). The envelope index (the bake's) keeps 156-km bins.
 const uint kCv2ShieldMax          = 4096u;
-const uint kCv2ShieldTableSize    = 16384u;
-const uint kCv2ShieldListSize     = 65536u;
-const uint kCv2ShieldBinsPerFace  = 64u;
+const uint kCv2ShieldTableSize    = 32768u;
+const uint kCv2ShieldListSize     = 131072u;
+const uint kCv2ShieldBinsPerFace  = 128u;
+const uint kCv2ShieldEnvBinsPerFace = 64u;
 const uint kCv2ShieldMaxPerBin    = 31u;      // (5 bits of a bin entry: 2026-10-23, a cyclone's arm cirrus)
 const uint kCv2CycloneMax         = 8u;   // tropical cyclones (the weather bake stamps their bands, eyewall and eye)
 // The HABOOB dust walls (2026-10-24): a grid on the tangent plane at the observer's sea-level point, Earth-fixed axes,
@@ -67,8 +70,9 @@ layout(std430, set = 0, binding = CV2_STORM_BINDING) readonly buffer CV2StormBuf
     CV2Tower cv2Towers[kCv2StormMaxTowers];
     uvec2    cv2StormTable[kCv2StormTableSize];     // x key (0 = empty), y (list start << 4) | count
     uint     cv2StormList[kCv2StormListSize];       // tower indices
-    uvec4    cv2ShieldHead;                         // x shields, y 1 = storm objects on (shields replace the map's
-                                                    // cumulonimbus as the anvils' source), z bins, w list entries used
+    uvec4    cv2ShieldHead;                         // x shields, y non-zero = storm objects on (shields replace the map's
+                                                    // cumulonimbus as the anvils' source): the bins per face side
+                                                    // (kCv2ShieldBinsPerFace), z bins, w list entries used
     CV2Shield cv2Shields[kCv2ShieldMax];
     uvec2    cv2ShieldTable[kCv2ShieldTableSize];   // as cv2StormTable, kCv2ShieldBinsPerFace bins
     uint     cv2ShieldList[kCv2ShieldListSize];
@@ -193,7 +197,7 @@ float cv2ShieldAt(vec3 wd, out float thickK, out float ageK, out float uOut)
     float best = 0.0, bestS = 0.0;
 #ifdef CV2_STORM_BINDING
     if (cv2ShieldHead.x == 0u) return 0.0;
-    uint key = cv2StormBinKeyN(wd, kCv2ShieldBinsPerFace);
+    uint key = cv2StormBinKeyN(wd, cv2ShieldHead.y);   // (y: the bins per face side the CPU listed them in)
     uint h   = cv2StormHash(key) & (kCv2ShieldTableSize - 1u);
     uvec2 bin = uvec2(0u);
     [[dont_unroll]] for (int p = 0; p < 32; ++p) {
@@ -223,7 +227,7 @@ float cv2ShieldAt(vec3 wd, out float thickK, out float ageK, out float uOut)
 uvec2 cv2ShieldEnvBin(vec3 wd)
 {
     if (cv2ShieldHead.x == 0u) return uvec2(0u);
-    uint key = cv2StormBinKeyN(wd, kCv2ShieldBinsPerFace);
+    uint key = cv2StormBinKeyN(wd, kCv2ShieldEnvBinsPerFace);
     uint h   = cv2StormHash(key) & (kCv2ShieldTableSize - 1u);
     [[dont_unroll]] for (int p = 0; p < 32; ++p) {
         uvec2 e = cv2ShieldEnvTable[h];
