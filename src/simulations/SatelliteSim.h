@@ -4575,6 +4575,7 @@ private:
     float cv2CdcFp = -1.0f;               // ... the bake's read footprint: > 0 x the cell, < 0 x the march's own footprint there
     float cv2CdcMaxLevel = 6.0f;          // ... levels the march may use (0-8)
     float cv2CdcFpUsed = -1.0f, cv2CdcMaxLevelUsed = -1.0f, cv2CdcSkipUsed = -1.0f;
+    float cv2CdcDustKeyUsed = -1.0f;   // the haboob field the clipmap's cells were baked with (dust on, gain, cloud form)
     float cv2CdcMaxRate = 4.0f;           // ... used only up to this time rate (x real time)
     float cv2CdcLight = 1.0f;             // S2 (2026-10-22): the light march reads the clipmap's mean beyond its first 2 steps
     float cv2CdcLightUsed = -1.0f;

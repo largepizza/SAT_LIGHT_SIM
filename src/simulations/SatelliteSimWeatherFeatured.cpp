@@ -511,8 +511,8 @@ bool SatelliteSim::weatherFeaturedAct(int slot, int act, std::string &msg)
         if (!F.hasStorm) break;
         // In front of the wall itself: the strongest stretch of the storm's gust front over dust at that moment (its towers
         // built for it, haboobStrongestPoint), standing D ahead of it and looking back at it (act 0, Watch: 6 km on the
-        // ground, the wall filling the view's lower third and reaching you in ~6 min; act 1 (harness): 9 km ahead, 2.5 km
-        // up, over its heads: from 3-4 km up the storm's own cumulus often stood in the way, from 1.2 km the regional dust haze). The first cut stood a fixed distance from the storm's
+        // ground, the wall filling the view's lower third and reaching you in ~6 min; act 1 (harness): 9 km ahead, 2 km
+        // up (2.5 km until the walls were lowered to 0.5-1.8 km, 2026-10-26: that was inside the cloud above them), over its heads: from 3-4 km up the storm's own cumulus often stood in the way, from 1.2 km the regional dust haze). The first cut stood a fixed distance from the storm's
         // CENTRE, measured to an estimate of the front (bow + the outflow's lead): its real front, built from the towers
         // standing then, was 40-80 km away and a haze on the horizon, and the aloft view showed none.
         const double t = std::max(F.tEvent, (double)simDayJ2000 * 86400.0 + simSecInDay);
@@ -528,11 +528,11 @@ bool SatelliteSim::weatherFeaturedAct(int slot, int act, std::string &msg)
         }
         const double D = aloft ? 9000.0 : 6000.0;
         const glm::dvec3 oe = glm::normalize(q.dir + q.out * (D / kRe));
-        placeLooking(oe, aloft ? 2500.0 : 2.0, q.dir, aloft ? -6.0f : 6.0f);
+        placeLooking(oe, aloft ? 2000.0 : 2.0, q.dir, aloft ? -6.0f : 6.0f);
         camera.fovYDeg = 70.0f;
         updatePositions(t);
         msg = std::string("A haboob's dust wall over ") + wx::biomeName(biomeMap.at(latOf(q.dir), lonOf(q.dir))) +
-              (aloft ? ", 9 km away, seen from 2.5 km up" : ", 6 km away and coming toward you");
+              (aloft ? ", 9 km away, seen from 2 km up" : ", 6 km away and coming toward you");
         return true;
     }
     case kFeatSupercell:
