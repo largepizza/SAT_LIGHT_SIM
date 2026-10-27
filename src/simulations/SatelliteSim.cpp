@@ -1773,6 +1773,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // leaving the direction information intact for darkSkySkyMag() to use.
         updateLightPollutionDome(dt);
     }
+    updateRefraction();   // the air's profile at the eye: the Sun's disc, the stars' places and twinkle (2026-10-26)
     {
         CpuTimer _t(cpuAccumMs[CPU_UPDATE_STARS]);
         updateStars();
@@ -2508,6 +2509,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         }
 
         fillSolarSites(groundBeams, solarBeamHits, dt);
+        groundBeams.refr = refrGpu;   // the refraction table (SatelliteSimRefraction.cpp)
         std::memcpy(groundBeamsMapped, &groundBeams, sizeof(GpuGroundBeams));
         std::memcpy(beamCloudLightMapped, &cloudLights, sizeof(GpuBeamCloudLights));
 
@@ -15613,10 +15615,17 @@ void SatelliteSim::updateStars()
                       glm::dot(rec.eciDir, glm::vec3(eci2enuY)),
                       glm::dot(rec.eciDir, glm::vec3(eci2enuZ))};
 
+        // Refraction and turbulence (2026-10-26, SatelliteSimRefraction.cpp): the star drawn where the air bends it
+        // (a star a little below the true horizon still shows), its twinkle and image jitter from the same table.
+        float starAoa = 0.0f, starScint = -1.0f;
+        bool belowLimb = enu.z < limbSin;
+        if (refrTable.valid && enu.z > limbSin - 0.03f && nightFactorEff > 0.0f)
+            belowLimb = !refractEnu(enu, starAoa, starScint);
+        dst[i].meshPx = starScint >= 0.0f ? 1.0f + std::floor(std::min(starAoa * 1e6f, 60000.0f)) + 0.99f * std::min(starScint, 1.0f) : 0.0f;
         // A star below the limb, or any star while the sky's day gate is shut, has intensity 0 whatever the rest
         // says (2026-10-23): skip the dome, extinction (a double Chapman column) and sizing for it. They were
         // ~0.8 ms of every DAYTIME frame for 9000 stars that all drew nothing. Same output.
-        if (enu.z < limbSin || nightFactorEff <= 0.0f)
+        if (belowLimb || nightFactorEff <= 0.0f)
         {
             dst[i].skyDir = enu;
             dst[i].flareIntensity = 0.0f;
@@ -15673,7 +15682,7 @@ void SatelliteSim::updateStars()
         float extinction = exp2f(-kPsfK * extinctMag);   // 10^(-0.4 m)
 
         // Above the Earth limb: visible. Below: culled.
-        float intensity = (enu.z >= limbSin)
+        float intensity = !belowLimb
                               ? rec.rawIntensity * nightFactorEff * extinction * (1.0f - domeVal * kStarPollutionMaxDim) * (1.0f - beamDomeVal * kStarBeamPollutionMaxDim) * (1.0f - moonBrightStar * kStarMoonMaxDim)
                               : 0.0f;
 
@@ -15771,7 +15780,14 @@ void SatelliteSim::updatePlanets()
                                                    (double)ps.distanceAU * kAuM, extinctionCoeff);
         float extinction = powf(10.0f, -0.4f * extinctMag);
 
-        float intensity = (enu.z >= limbSin)
+        // Refraction (2026-10-26): a planet is placed where the air bends it and jitters with the turbulence; its disc
+        // (10-40") averages the scintillation out (meshPx's twinkle share 0).
+        float plAoa = 0.0f, plScint = -1.0f;
+        bool plBelow = enu.z < limbSin;
+        if (refrTable.valid && enu.z > limbSin - 0.03f)
+            plBelow = !refractEnu(enu, plAoa, plScint);
+        dst[i].meshPx = plScint >= 0.0f ? 1.0f + std::floor(std::min(plAoa * 1e6f, 60000.0f)) : 0.0f;
+        float intensity = !plBelow
                               ? rawIntensity * nightFactorEff * extinction * (1.0f - domeVal * kPlanetPollutionMaxDim) * (1.0f - beamDomeVal * kPlanetBeamPollutionMaxDim) * (1.0f - moonBrightP * kPlanetMoonMaxDim)
                               : 0.0f;
 

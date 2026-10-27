@@ -49,7 +49,7 @@ scripted storm, dead satellites, debris pool, cascade engine, event log) · *Lau
 rockets, plumes, crew rotations, the Missions window: the roster's slots refreshed on a schedule) · *Reflect-Orbital Beam Cloud Occlusion* ·
 *GpuSatInput* (a tombstone — the buffer was deleted 2026-09-22).
 
-**Rendering** — *UIRenderer / Clay* (icon atlas, the SDF font atlas, manual hit-testing, the **UI kit** every window is built from, HUD text entry) · *Sky TAA* (the background's temporal AA, and the main pass's shared dependencies) · *The Moon as a body* (true position and size, eclipses) · *The sea* (periodic waves, sea state, shore) ·
+**Rendering** — *UIRenderer / Clay* (icon atlas, the SDF font atlas, manual hit-testing, the **UI kit** every window is built from, HUD text entry) · *Sky TAA* (the background's temporal AA, and the main pass's shared dependencies) · *The Sun as an object* (refraction, mirages, turbulence: one ray tracer, Refraction.h) · *The Moon as a body* (true position and size, eclipses) · *The sea* (periodic waves, sea state, shore) ·
 *Photometry / Shader Constants* (lobe model, bloom and glare) · *Light Pollution Dome* · *Atmospheric
 Extinction* · *Sky Glow SSBO* · *Planets* · *Cloud Shadows* · *Resolution Scaling* · *Weak-Hardware
 Sky Tiers (Potato / SKY_LITE)*. The mesh renderer, model viewer and environment probes are
@@ -7556,24 +7556,68 @@ struct GpuGlowBuf {
 
 ---
 
-## Subsystem: The Sun as an object (2026-10-26, issue 20261026_192501)
+## Subsystem: The Sun as an object (2026-10-26, issues 20261026_192501, 20261026_203414)
 
 sat_sky.frag's sun block (after the tonemap, display units), full variants only (`SKY_SUN_SHADOW`; SKY_LITE / SKY_ENV keep
 the old hand-tinted disc). It was a fixed colour (reddened by its height above the limb) with full glare whatever the
 air did to it: "a half faded fuzzball" low down.
-- **Light:** each disc pixel's ray's real transmittance (`sunPathTauExact`: Rayleigh + Mie + ozone) x the cloud / plume
-  composite's own transmittance `cloudB.rgb` IN COLOUR (wildfire smoke and haboob dust are spectral there; the grey
-  `cloudBlock` left a smoke-dimmed Sun white), L = exposure x 300 x luminance, shown as hue x (1 - e^-L) whitened by
-  1 - e^(-L/300): white overhead, a sharp orange disc on the horizon with a redder lower limb; limb darkening (u 0.6);
-  2-8 sunspots by the activity (`cloud.stormStrength`), fixed on the disc. Drawn at the old 1.5x radius.
-- **Glare and corona** (veiling light) x gs = 1 - exp(-10 x the centre's transmittance luminance) and tinted by its hue.
-- **Refraction:** each pixel's apparent ray bent back to its true direction (Saemundsson x exp(-h/8 km) at the observer;
-  from altitude below the horizontal 0.01003 (2 e^(-ht/8km) - e^(-h/8km)) at the ray's tangent height, its rate capped at
-  0.8 per radian of elevation — uncapped it FOLDED the sky onto the disc from 168 km), per colour (dispersion red 0.985,
-  blue 1.018): a low Sun is flattened and keeps a green rim at the top as it sets; the geometric fade uses the apparent
-  elevation. The Moon, stars and satellites are not refracted yet (and not twinkled by it).
-- Views: `harness_runs/bf26/b7.satcmd` (smoke, 168 km limb, a sea sunset at 0.6 / 0.05 deg zoomed to 3 deg, a high Sun).
-  The issue's smoke view changes little: its smoke is thin along the Sun's ray (the glow there is forward scattering).
+- **Refraction, mirages and turbulence: ONE ray tracer** (`Refraction.h/.cpp`, app-independent; `SatelliteSimRefraction.cpp`;
+  issue 20261026_203414 "Sun refraction mk 2"). `refrProfileAt` builds the air's profile at the eye, a pure function of
+  place and sim time: a standard atmosphere through the air temperature at the eye (`cv2EyeTempC`), refractivity
+  N = 77.6 P/T with Edlen dispersion (R / G / B at 610 / 545 / 465 nm: 0.9955 / 1.0005 / 1.0097 of 550 nm — the old
+  0.985 / 1.018 was ~3x physical); the SURFACE LAYER over the surface (a log profile, z0 2e-4 m, zRef 10 m): over the sea
+  the water 0.2-1.6 K warmer than the air (smooth value noise over 3-deg cells and 12-h steps; 1 day in 5 a colder sea,
+  -0.3..-1.8 K: looming), over land the Sun's heating by day and -2 K after dusk, x (1 + 0.25 sin(t/83 s) + 0.12
+  sin(t/29 s)) (the convection breathing); an ELEVATED INVERSION on ~45% of days at sea (30% on land), 3-400 m up
+  (median ~35), 5-35 m thick, 0.5-4 K, riding 170-s / 53-s gravity waves; Cn^2 = (2e-15 + 6e-15 dT^2) z^-4/3 e^(-z/1 km)
+  + Hufnagel-Valley's free troposphere. `refr::build` traces 512 APPARENT elevations from the eye (e = eC + c sinh(alpha
+  (u - u0)): 3" steps at the horizon, ~30" at 0.5 deg, the table from the geometric dip - 0.34 deg to + 4 deg), 3
+  channels each, 2D in the eye's vertical plane (dd/ds = grad ln n - (.) d, midpoint steps sized by the profile's
+  local scale and the ray's curvature), to the top of the air (100 km), the sea / ground (`kHit`) or a duct (4000 km).
+  Per entry: the refraction per channel, the Rayleigh / Mie / ozone / haze-near-clouds columns along the BENT path,
+  the angle-of-arrival rms (2.91 D^-1/3 int Cn^2 ds, D 1 cm) and the scintillation sigma_I (sqrt(1 - e^(-sigma_R^2)),
+  Rytov 2.25 k^(7/6) int Cn^2 s^(5/6) ds). Above the table: x Saemundsson's shape, the jitter as 1 / sin e, Rytov as
+  sin(e)^(-11/6) (the zenith ray's). Built on a worker (`std::async`, 6 threads, 7-11 ms), 10 times a second while the
+  Sun is within ~4.5 deg of the limb, once a second otherwise, at once on a 2% change of eye height; the first table on
+  the frame itself. Shipped in GpuGroundBeams' tail (`GpuRefraction`, 16 KB; sat_sky.frag sits at its storage-buffer
+  budget). CPU derives (`refrDerive`): the primary image's inverse map (true -> apparent, for stars), the Sun centre's
+  refraction and the visible share of its disc over every image (glare).
+- **The disc** maps each pixel's apparent elevation, jittered by the turbulence (a value-noise field ~40" x 12" cells,
+  drifting and boiling with sim time, x the table's rms), through the table per channel: flattened, the inferior
+  mirage's inverted image under a warm sea (the Etruscan vase merging into the Omega, then the "flat lid"), slices under
+  an inversion, a green rim (the green flash when the red has set). Over the far sea (no terrain / mesh / opaque cloud)
+  the table, not the drawn horizon, decides: the inverted image shows below the drawn sea line. The OLD pair (Saemundsson
+  above the horizontal, 0.01003 (2 e^(-ht/8km) - e^(-h/8km)) at the tangent height below it with a 0.8 rate cap) disagreed
+  at the horizontal (0.48 vs 0.57 deg) and the cap halved the bending just below it: every low Sun's disc was cut flat at
+  the horizontal with a step (the report's "Cut" / "Odd section").
+- **Light:** each disc pixel's transmittance from the table's columns along its bent path (Rayleigh + Mie x 1.1 + ozone +
+  "Haze near clouds" x the weather 80 km toward the Sun, as the sky loop's) x the cloud / plume composite `cloudB.rgb` in
+  colour; L = exposure x 2.3e5 (4 pi / Omega_sun / (1 - u/3): the disc centre in the sky's units, mean-1 phases) x
+  "Sun disc gain" x T x limb darkening (u 0.6) x sunspots, shown per channel 1 - e^(-L/250). It was 300 x luminance with
+  the hue kept (~1/600 of physical): a horizon Sun was no brighter than the sky round it — the report's "dim, sharp
+  reddened disc". **What reddens it** (asked in the report): only the columns (Rayleigh + the Mie aerosol, 1.2-km scale
+  height, zenith AOD 0.03 x `atmos_mie_gain`, + the haze near clouds) — not the fog / dust layers: the composite's
+  transmittance toward the Sun was 1.0 in the report's view and fog, dust and haze off moved the disc 0-7 levels.
+- **Glare and corona** (veiling light) about the Sun AS SEEN, x the visible share, x 1 - exp(-60 x the centre's
+  transmittance luminance) (was 10, with the 300 disc), drawn over the far sea too.
+- **Stars and planets** (`updateStars`, `updatePlanets`, `refractEnu`): placed at the primary image's apparent elevation
+  (a star just under the true horizon shows; below the apparent horizon it does not), and their record's `meshPx` carries
+  1 + floor(aoa urad) + 0.99 sigma_I: star_point.vert jitters the image by the aoa (sines, per star) and twinkles by
+  sigma_I / 0.55 (the old artistic airmass ramp only without a table). Planets: jitter, no twinkle. Satellites and the
+  Moon are not refracted yet.
+- **The sea glint sparkles** (the Beckmann lobe is the pixel's mean; the facets that mirror the Sun cover fs = glint /
+  (F x 1.8e5) of it): half the light stays the smooth path, the other half lights a pixel with chance q = clamp(150 fs,
+  0.15, 1) at 0.5 glint / q, redrawn 6 times a second of sim time (cap 4000, was 400). A first cut at q >= 0.04 and all
+  the light in sparkles read as the path GONE (sparkles past the display's white lose their energy). The sea's own sun
+  direction is still the TRUE Sun (not refracted).
+- Settings (`refraction.*`, no UI yet): `enabled` (true), `mirage` (1, x the temperature steps), `turbulence` (1, x Cn^2),
+  `dispersion` (1 = physical), `sun_disc_gain` (1); overrides `force_sea_air_dt` (< -50 auto), `force_inversion_m` (< 0
+  auto, 0 none), `force_inversion_dt` / `_dz`. Harness `refraction [rebuild]` (profile, horizon, Sun refraction and share,
+  samples, the app -> true map), `state` -> `refraction`. Views + videos: `harness_runs/refr/v2.satcmd`, `v3.satcmd`
+  (gitignored; the report's place at 10x, an inversion under a 97-m eye).
+- **Cost** (RTX 3070 Ti, 1920x1009, the report's shot 2 view, old vs new SKY_TAA SPV interleaved with `shaders reload
+  sky_taa=`): sky pass 21.42 / 21.34 -> 21.44 / 21.40 ms (+0.05), 168 registers both, binary 871 -> 885 KB; the table
+  7-13 ms on a worker. SKY_LITE unchanged (230024 B).
 
 ## Subsystem: The Moon as a body (2026-09-30)
 

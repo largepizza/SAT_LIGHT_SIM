@@ -145,6 +145,7 @@ struct GroundBeam {
 // (SatelliteSim::fillSolarSites) in the observer's ENU frame from its SEA-LEVEL point, terrainQ's frame.
 // Must match GpuSolarSite in SatelliteSim.h exactly (hand-mirrored).
 #define SOLAR_SITE_MAX 8
+#define REFR_N 512   // refr::kTableN
 struct SolarSite {
     vec4 centerQ;  // xyz site centre, w = outline radius (m)
     vec4 across;   // xyz the row-spacing axis, w = seed
@@ -158,6 +159,16 @@ layout(std430, set = 0, binding = 21) readonly buffer GroundBeamsBuf {
     uint        groundBeamPad1, groundBeamPad2;
     GroundBeam  groundBeams[GROUND_BEAM_MAX];
     SolarSite   solarSites[SOLAR_SITE_MAX];
+#if !defined(SKY_LITE) && !defined(SKY_ENV)
+    // The refraction table (2026-10-26, SatelliteSimRefraction.cpp / Refraction.h; GpuRefraction): for REFR_N apparent
+    // elevations round the horizon, the refraction per channel (>= 1 = the ray ends on the surface), the angle-of-arrival
+    // jitter and the air columns along the bent path.
+    vec4 refrMap;     // e(u) = x + y sinh(z (u - w)), u = i / (N - 1)
+    vec4 refrInfo;    // x = N (0 = none), y = above the table: x Saemundsson, z = 1 refraction on, w = Sun disc gain
+    vec4 refrSun;     // x = the Sun centre's refraction (rad), y = its visible share, z = shimmer gain, w = aoa there
+    vec4 refrSunCol;  // the columns at the Sun's centre: Rayleigh, Mie, ozone, haze (m)
+    vec4 refrE[REFR_N * 2];   // entry i: [2i] = (R, G, B refraction, aoa), [2i + 1] = (colR, colM, colO3, colH)
+#endif
 };
 
 // (binding 18 was cloudShadowTex, cloud_shadow.comp's 128x128 grid. That whole pass is gone —
@@ -3278,6 +3289,48 @@ vec3 solarCoronaAt(vec3 dir, vec3 sunD)
     return col;
 }
 
+#ifdef SKY_SUN_SHADOW
+// ── The refraction table (2026-10-26; GroundBeamsBuf's refr* block, SatelliteSimRefraction.cpp) ─────────────────────
+// Saemundsson's refraction (rad) at apparent elevation e (rad), for a ground eye.
+float refrSaem(float e) { float h = degrees(max(e, -0.0175)); return radians((1.02 / tan(radians(h + 10.3 / (h + 5.11)))) / 60.0); }
+// The table at apparent elevation e: xyz = refraction per channel (rad; >= 1 = the ray ends on the surface), w = rms
+// angle-of-arrival jitter (rad); cols = the air columns along the bent path (x < 0: none, use the straight Chapman one).
+vec4 refrLookup(float e, out vec4 cols)
+{
+    float N = refrInfo.x;
+    cols = vec4(-1.0);
+    if (N < 1.5) return vec4(vec3(e >= 0.0 ? refrSaem(e) : 0.0), 0.0);
+    float u = refrMap.w + asinh((e - refrMap.x) / refrMap.y) / refrMap.z;
+    int   n = int(N);
+    if (u >= 1.0) {   // above the table: Saemundsson's shape, the jitter falling as 1 / sqrt(sin e)
+        float eTop = refrMap.x + refrMap.y * sinh(refrMap.z * (1.0 - refrMap.w));
+        return vec4(vec3(refrInfo.y * refrSaem(e)), refrE[2 * (n - 1)].w * sqrt(max(sin(eTop), 1e-3) / max(sin(e), 1e-3)));
+    }
+    float fi = max(u, 0.0) * float(n - 1);
+    int   i  = min(int(fi), n - 2);
+    float w  = clamp(fi - float(i), 0.0, 1.0);
+    vec4  a0 = refrE[2 * i], a1 = refrE[2 * i + 2];
+    vec3  hit = max(step(1.0, a0.xyz), step(1.0, a1.xyz));
+    vec3  R  = mix(mix(a0.xyz, a1.xyz, w), (w < 0.5) ? a0.xyz : a1.xyz, hit);   // at a surface edge: the nearest entry
+    cols = (hit.y > 0.5) ? refrE[2 * ((w < 0.5) ? i : i + 1) + 1] : mix(refrE[2 * i + 1], refrE[2 * i + 3], w);
+    return vec4(R, mix(a0.w, a1.w, w));
+}
+// The optical depth of those columns: Rayleigh, Mie (x 1.1 extinction, as sunPathTauExact), ozone, the haze near clouds.
+vec3 refrTau(vec4 c, vec3 BR, float BM, float hazeK)
+{
+    return BR * c.x + vec3(BM * 1.1 * c.y) + vec3(0.019, 0.027, 0.0016) * c.z + vec3(hazeK * BM * c.w);
+}
+// Smooth value noise in [-1, 1] (the turbulence field the rays are jittered by).
+float refrHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+float refrNoise(vec2 p)
+{
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = refrHash(i), b = refrHash(i + vec2(1, 0)), c = refrHash(i + vec2(0, 1)), d = refrHash(i + vec2(1, 1));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y) * 2.0 - 1.0;
+}
+#endif
+
 void main() {
     // Runtime-tunable scattering strength — shadows the physical base constants (common.glsl)
     // with the user-facing "Rayleigh gain"/"Mie/haze gain" sliders, visible to every use of
@@ -6306,7 +6359,26 @@ void main() {
                 float gV   = aV < 1.6 ? (3.535 * aV + 2.181 * aV * aV) / (1.0 + 2.276 * aV + 2.577 * aV * aV) : 1.0;
                 float gL   = aL < 1.6 ? (3.535 * aL + 2.181 * aL * aL) / (1.0 + 2.276 * aL + 2.577 * aL * aL) : 1.0;
                 float glint = nl > 0.0 ? PI * F * D * gV * gL / (4.0 * nv) : 0.0;
+#ifdef SKY_SUN_SHADOW
+                // Glitter (2026-10-26, issue 20261026_203414 shot 5): the lobe above is the pixel's MEAN; a sea is
+                // millions of facets, the few tilted right each mirroring the Sun's whole disc (radiance F x the disc).
+                // Where those facets cover a small share fs of the pixel, the light comes as sparkles: a pixel lights
+                // with chance q and then carries glint / q (energy kept), re-drawn as the waves move (6 per s). Half the
+                // light stays the smooth path: sparkles past the display's white lose energy, and a sparse field
+                // of them read as the path gone (first cut, q down to 0.04).
+                {
+                    float fs = glint / max(F * 1.8e5, 1e-6);
+                    float q  = clamp(fs * 150.0, 0.15, 1.0);
+                    if (q < 0.999 && glint > 1e-4) {
+                        float tb = floor(mod(pc.waveTime, 1000.0) * 6.0);
+                        float hs = fract(sin(dot(floor(gl_FragCoord.xy) + vec2(tb * 7.13, tb * 3.71), vec2(12.9898, 78.233))) * 43758.5453);
+                        glint *= 0.5 + ((hs < q) ? 0.5 / q : 0.0);
+                    }
+                }
+                surfColor += sunSpecTint * sunTransMax * min(glint, 4000.0) * directSun;
+#else
                 surfColor += sunSpecTint * sunTransMax * min(glint, 400.0) * directSun;
+#endif
             }
 #if !defined(SKY_LITE) && !defined(SKY_ENV)
             // The engine / floodlight / ship lights mirrored by the sea FROM WHERE THEY ARE (2026-10-20, issue
@@ -7139,91 +7211,121 @@ void main() {
         if (tot > 0.001 && angle < kCoronaMaxR * kSunAngR && !moonDiscHit)
             solarCorona = solarCoronaAt(dir, sunDir) * (tot * sunGate * kCoronaGain);
 #ifdef SKY_SUN_SHADOW
-        // The Sun as an OBJECT (2026-10-26, issue 20261026_192501: "a half faded fuzzball" low on the horizon, through
-        // smoke "a sharp red disk, fading and diluting"). It was a fixed, hand-reddened colour with full glare whatever
-        // the air did to it. Now:
-        //  - its light is the real transmittance of each disc pixel's ray (Rayleigh + Mie + ozone, sunPathTauExact, and
-        //    the wildfire smoke), tonemapped with the frame's exposure, hue kept: white overhead, a sharp orange disc on
-        //    the horizon (its lower limb redder), dim red through smoke; limb darkening, sunspots with the activity;
-        //  - its glare and corona (veiling light: as strong as the Sun reaching the eye) scale with the centre's
-        //    transmittance, so an attenuated Sun shows its disc;
-        //  - REFRACTION: each pixel's apparent ray is bent back to the true direction it came from (Saemundsson, x the
-        //    air's density: at the observer, or twice at the ray's tangent height for a ray grazing the limb from
-        //    altitude), per colour (dispersion: red 0.985, blue 1.018), so a low Sun is flattened and keeps a green
-        //    rim at its upper limb as it sets (the green flash, when the red has gone below). Not the moon, stars or
-        //    satellites yet.
+        // The Sun as an OBJECT (2026-10-26, issue 20261026_192501, then 20261026_203414 "Sun refraction mk 2"):
+        //  - REFRACTION, MIRAGES AND TURBULENCE through the table SatelliteSimRefraction.cpp traces each frame through the
+        //    air's profile at the eye (Refraction.h: a standard atmosphere, the surface layer over a warmer / cooler sea,
+        //    an elevated inversion some days). For each pixel's APPARENT elevation it gives the true direction per colour
+        //    channel, whether the ray ends on the sea, and the air columns along the bent path: a low Sun is flattened,
+        //    an inferior mirage over a warm sea adds its inverted image below (the Etruscan vase, the Omega Sun), an
+        //    inversion cuts it into slices, and the dispersion leaves a green rim on the upper limb (the green flash
+        //    when the mirage magnifies it). The rays are jittered by the angle-of-arrival turbulence of the same table
+        //    (the limb "boils"; the same model twinkles the stars, updateStars). It replaced Saemundsson above the
+        //    horizontal and a tangent-height formula below it, which were 0.57 vs 0.48 deg apart at the horizontal and
+        //    capped below it: the disc's bottom was cut flat at the horizontal (the report's "Cut") and stepped there.
+        //  - its light is the real transmittance of each disc pixel's bent ray (Rayleigh + Mie + ozone + the haze near
+        //    clouds, and the cloud / smoke composite), at the disc's PHYSICAL radiance (4 pi / Omega_sun x limb darkening
+        //    in the sky's units, x "Sun disc gain"), saturating per channel: white overhead, yellow-orange and brilliant
+        //    on a clean sea horizon, a dim red disc only where the column is long and dirty. It was 300 (~1/600 of
+        //    physical): a horizon Sun no brighter than the sky round it.
+        //  - its glare and corona (veiling light) follow the visible share of the disc and the centre's transmittance.
         {
             vec3  upO  = normalize(obsPos);
-            float cz   = dot(upO, dir);
-            float hO   = max(obsEffH, 0.0);
-            float Rref = 0.0;   // the refraction of this ray (rad, green)
-            if (cz >= 0.0) {
-                float ha = degrees(asin(clamp(cz, 0.0, 1.0)));
-                Rref = radians((1.02 / tan(radians(ha + 10.3 / (ha + 5.11)))) / 60.0) * exp(-hO / 8000.0);
-            } else {
-                float rO = length(obsPos);
-                float ht = rO * sqrt(max(1.0 - cz * cz, 0.0)) - R_EARTH;
-                Rref = ht > 0.0 ? 0.01003 * max(2.0 * exp(-ht / 8000.0) - exp(-hO / 8000.0), 0.0) : 0.0;
-                // (the tangent height falls ~r |cz| per radian of elevation: below ~12 km this model's bending changes
-                // faster than the elevation and FOLDED the sky onto the disc, a wide white ellipse from 168 km; real
-                // rays that low are all but extinct. Its rate capped at 0.8.)
-                float gR = 2.0 * 0.01003 / 8000.0 * exp(-max(ht, 0.0) / 8000.0) * rO * abs(cz);
-                Rref *= min(1.0, 0.8 / max(gR, 1e-9));
+            vec3  dJ   = dir;
+            float cz   = dot(upO, dJ);
+            float e0   = asin(clamp(cz, -1.0, 1.0));
+            vec3  puS  = normalize(upO - sunDir * dot(upO, sunDir));
+            vec3  sdS  = normalize(cross(puS, sunDir));                    // horizontal, across the Sun
+            bool  tabOn = refrInfo.x > 1.5;
+            vec4  cols;
+            vec4  rs   = refrLookup(e0, cols);
+            // Turbulence: the angle of arrival jittered by a field drifting with the wind and boiling (Taylor's frozen
+            // turbulence + evolution), its rms the table's at this elevation; cells ~40" across, ~12" high.
+            float aoaJ = rs.w * refrSun.z;
+            if (aoaJ > 1e-7) {
+                float tt = mod(pc.waveTime, 600.0);
+                vec2  q  = vec2(dot(dJ, sdS) / 2.0e-4, e0 / 6.0e-5);
+                float nv = refrNoise(q + vec2(tt * 0.9, tt * 0.35)) + 0.6 * refrNoise(q * 2.1 + vec2(-tt * 1.7, tt * 0.6) + 17.3);
+                float nh = refrNoise(q * 0.7 + vec2(tt * 0.5, -tt * 0.4) + 41.7);
+                dJ  = normalize(dJ + upO * (aoaJ * 1.2 * nv) + sdS * (aoaJ * 0.9 * nh));
+                cz  = dot(upO, dJ);
+                e0  = asin(clamp(cz, -1.0, 1.0));
+                rs  = refrLookup(e0, cols);
             }
-            vec3  pu   = upO - dir * cz;
+            vec3  pu   = upO - dJ * cz;
             pu = dot(pu, pu) > 1e-12 ? normalize(pu) : vec3(0.0);
-            const vec3 kDisp = vec3(0.985, 1.0, 1.018);
             float rD   = r0;                                    // the drawn radius (1.5x true; the true one near the Moon)
             float pxA  = pc.fovYRad / cloud.skyScreenH;
             vec3  ang3;
-            vec3  dTg  = dir;
+            vec3  dTg  = dJ;
+            vec3  onS  = vec3(1.0);                             // 0 = this channel's ray ends on the sea / ground
             for (int c = 0; c < 3; ++c) {
-                float Rc = Rref * kDisp[c];
-                vec3  dt = dir * cos(Rc) - pu * sin(Rc);        // the TRUE direction this channel's light came from
+                float Rc = (refrInfo.z > 0.5) ? rs[c] : 0.0;
+                if (Rc >= 1.0) { onS[c] = 0.0; Rc = 0.0; }
+                vec3  dt = dJ * cos(Rc) - pu * sin(Rc);         // the TRUE direction this channel's light came from
                 if (c == 1) dTg = dt;
                 ang3[c] = acos(clamp(dot(dt, sunDir), -1.0, 1.0));
             }
-            vec3  cov3 = (vec3(1.0) - smoothstep(vec3(rD - pxA), vec3(rD + pxA), ang3)) * sunGate * (moonDiscHit ? 0.0 : 1.0);
-            vec3  dLight = vec3(0.0);
-            float gs = 1.0;
-            vec3  hueC = vec3(1.0);
-            if (angle < 0.6) {
-                // (x the cloud / plume composite's own transmittance here, IN COLOUR: the wildfire smoke and the
-                // haboob dust are in it, spectral; the grey cloudBlock left a smoke-dimmed Sun white)
-                vec3 Tc = exp(-sunPathTauExact(obsPos, normalize(sunDir + pu * Rref), BETA_R, BETA_M)) * cloudB.rgb;
-                float lc = dot(Tc, vec3(0.2126, 0.7152, 0.0722));
-                gs   = 1.0 - exp(-10.0 * lc);
-                hueC = Tc / max(max(Tc.r, max(Tc.g, Tc.b)), 1e-6);
-                if (max(cov3.r, max(cov3.g, cov3.b)) > 0.0) {
-                    vec3  T  = exp(-sunPathTauExact(obsPos, dir, BETA_R, BETA_M)) * cloudB.rgb;
-                    // disc coordinates (green's true direction), in drawn radii
-                    vec3  e1 = normalize(cross(sunDir, abs(sunDir.z) < 0.99 ? vec3(0, 0, 1) : vec3(1, 0, 0)));
-                    vec3  e2 = cross(sunDir, e1);
-                    vec2  xy = vec2(dot(dTg, e1), dot(dTg, e2)) / max(rD, 1e-6);
-                    float rr = min(dot(xy, xy), 1.0);
-                    float ld = 1.0 - 0.6 * (1.0 - sqrt(1.0 - rr));   // limb darkening (u = 0.6)
-                    // sunspots: 2 at a quiet Sun to 8 in a storm (Kp), umbra ~70% dark with a penumbra
-                    int   nS = 2 + int(6.0 * clamp(cloud.stormStrength, 0.0, 1.0) + 0.5);
-                    float sp = 1.0;
-                    for (int k = 0; k < 8; ++k) {
-                        if (k >= nS) break;
-                        float a  = 6.2831853 * fract(0.61803 * float(k) + 0.137);
-                        float rk = 0.75 * sqrt(fract(0.75487 * float(k) + 0.411));
-                        float sz = 0.035 + 0.045 * fract(0.56984 * float(k) + 0.29);
-                        float dk = length(xy - rk * vec2(cos(a), sin(a)));
-                        sp *= 1.0 - 0.45 * (1.0 - smoothstep(sz, 2.2 * sz, dk)) - 0.25 * (1.0 - smoothstep(0.3 * sz, 0.9 * sz, dk));
-                    }
-                    float L   = exposure * 300.0 * dot(T, vec3(0.2126, 0.7152, 0.0722)) * ld * sp;
-                    vec3  hue = T / max(max(T.r, max(T.g, T.b)), 1e-6);
-                    dLight = mix(hue * (1.0 - exp(-L)), vec3(1.0), 1.0 - exp(-L / 300.0)) * cov3;
-                }
+            // The sea under a mirage: rays the drawn sea hides may climb back off the warm layer (the inverted image);
+            // the table decides there. Terrain, meshes and opaque cloud still hide the disc.
+            float gateR = sunGate;
+            if (tabOn && tHit <= 0.0 && tSeaLvl > 0.0 && tCloudOcclude < 0.0 && !meshHit && !moonDiscHit) gateR = 1.0;
+            vec3  cov3 = (vec3(1.0) - smoothstep(vec3(rD - pxA), vec3(rD + pxA), ang3)) * onS * gateR * (moonDiscHit ? 0.0 : 1.0);
+            // The haze near clouds (the sky loop's 2.5-km aerosol) toward the Sun, from the weather ~80 km that way.
+            float hazeK = 0.0;
+            if (cv2.mid3.w > 0.0) {
+                vec3  pS  = obsPos + normalize(sunDir - upO * dot(sunDir, upO)) * 80000.0;
+                vec3  dS  = normalize(pS.x * enuX + pS.y * enuY + pS.z * enuZ);
+                float dph = cloud.cloudPhase * cloud.layers[0].driftMult;
+                vec4  wx  = textureLod(earthCloudsCube, vec3(dS.x * cos(dph) - dS.y * sin(dph), dS.x * sin(dph) + dS.y * cos(dph), dS.z), 4.0);
+                hazeK = cv2.mid3.w * (0.25 + 0.75 * smoothstep(0.05, 0.4, wx.r) + 0.6 * wx.b);
             }
-            // (apparent elevation for the geometric fade: the refracted Sun shows above the horizon before it rises)
-            float geomFadeR = smoothstep(limbZ - kSunAngR, limbZ + kSunAngR, sunDirENU.w + Rref * step(angle, 0.1));
+            vec4  cC   = tabOn ? refrSunCol : vec4(-1.0);
+            vec3  sunApp = normalize(sunDir * cos(refrSun.x) + puS * sin(refrSun.x));   // the Sun's centre as seen
+            vec3  Tc   = (cC.x >= 0.0 ? exp(-refrTau(cC, BETA_R, BETA_M, hazeK))
+                                      : exp(-sunPathTauExact(obsPos, sunApp, BETA_R, BETA_M))) * cloudB.rgb;
+            float lc   = dot(Tc, vec3(0.2126, 0.7152, 0.0722));
+            float gs   = 1.0 - exp(-60.0 * lc);                  // veiling glare follows the light that arrives
+            vec3  hueC = Tc / max(max(Tc.r, max(Tc.g, Tc.b)), 1e-6);
+            vec3  dLight = vec3(0.0);
+            if (max(cov3.r, max(cov3.g, cov3.b)) > 0.0) {
+                vec3  T  = (cols.x >= 0.0 ? exp(-refrTau(cols, BETA_R, BETA_M, hazeK))
+                                          : exp(-sunPathTauExact(obsPos, dJ, BETA_R, BETA_M))) * cloudB.rgb;
+                // disc coordinates (green's true direction), in drawn radii
+                vec3  e1 = normalize(cross(sunDir, abs(sunDir.z) < 0.99 ? vec3(0, 0, 1) : vec3(1, 0, 0)));
+                vec3  e2 = cross(sunDir, e1);
+                vec2  xy = vec2(dot(dTg, e1), dot(dTg, e2)) / max(rD, 1e-6);
+                float rr = min(dot(xy, xy), 1.0);
+                float ld = 1.0 - 0.6 * (1.0 - sqrt(1.0 - rr));   // limb darkening (u = 0.6)
+                // sunspots: 2 at a quiet Sun to 8 in a storm (Kp), umbra ~70% dark with a penumbra
+                int   nS = 2 + int(6.0 * clamp(cloud.stormStrength, 0.0, 1.0) + 0.5);
+                float sp = 1.0;
+                for (int k = 0; k < 8; ++k) {
+                    if (k >= nS) break;
+                    float a  = 6.2831853 * fract(0.61803 * float(k) + 0.137);
+                    float rk = 0.75 * sqrt(fract(0.75487 * float(k) + 0.411));
+                    float sz = 0.035 + 0.045 * fract(0.56984 * float(k) + 0.29);
+                    float dk = length(xy - rk * vec2(cos(a), sin(a)));
+                    sp *= 1.0 - 0.45 * (1.0 - smoothstep(sz, 2.2 * sz, dk)) - 0.25 * (1.0 - smoothstep(0.3 * sz, 0.9 * sz, dk));
+                }
+                // 4 pi / Omega_sun / (1 - u/3) = 2.3e5: the disc centre in the sky's units (pi L / E with mean-1 phases)
+                vec3  L  = exposure * 2.3e5 * (tabOn ? refrInfo.w : 1.0) * T * ld * sp;
+                dLight = (vec3(1.0) - exp(-L / 250.0)) * cov3;
+            }
+            // Glare and corona about the Sun AS SEEN, x the share of its disc that reaches the eye.
+            float cosAp  = dot(dir, sunApp);
+            float angAp  = acos(clamp(cosAp, -1.0, 1.0));
+            float gAp    = max(cosAp, 0.0);
+            float glareA = (pow(gAp, 1800.0) * 0.85 + pow(gAp, 320.0) * 0.13 + pow(gAp, 55.0) * 0.03) * veilGate;
+            float coronA = exp(-angAp * angAp / (2.0 * coronaSig * coronaSig)) * veilGate;
+            if (tabOn && tHit <= 0.0 && tSeaLvl > 0.0 && tCloudOcclude < 0.0 && !meshHit) {   // veiling light over the far sea too
+                glareA = pow(gAp, 1800.0) * 0.85 + pow(gAp, 320.0) * 0.13 + pow(gAp, 55.0) * 0.03;
+                coronA = exp(-angAp * angAp / (2.0 * coronaSig * coronaSig));
+            }
+            float visS = tabOn ? clamp(refrSun.y, 0.0, 1.0) : geomFade;
             vec3  gCol = mix(sunCol, 1.5 * hueC, 0.8);
-            color += dLight * geomFadeR * cloud.sunCloudT
-                   + (glare  * geomFade * gCol * obsSunF * gs
-                      + corona * geomFade * gCol * 0.12 * obsSunF * gs
+            color += dLight * cloud.sunCloudT
+                   + (glareA * visS * gCol * obsSunF * gs
+                      + coronA * visS * gCol * 0.12 * obsSunF * gs
                       + solarCorona * geomFade) * min(cloudBlock, cloud.sunCloudT);
         }
 #else

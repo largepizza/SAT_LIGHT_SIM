@@ -423,6 +423,7 @@ json SatelliteSim::harnessStateJson()
                  {"lunar_possible", moonEclipseLunarPossible}};
 
     j["aurora"] = auroraStateJson();
+    j["refraction"] = refractionJson();
     {
         // The light-pollution dome, 16 sectors of 22.5 deg clockwise from north (sector i centred on
         // (i + 0.5) x 22.5): `gained` the linear dome satellites and stars dim by, `dark_sky` the eased
@@ -1853,6 +1854,21 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         snprintf(buf, sizeof(buf), "%s eclipse at j2000 %.0f s, observer %.2f, %.2f (Sun seen %.3f)", kind.c_str(), t,
                  obsLatDeg, obsLonDeg, moonEclipseSolarObs);
         r["message"] = buf;
+        return Status::Done;
+    }
+
+    // ── refraction: the air's profile at the eye and its table (2026-10-26, SatelliteSimRefraction.cpp); `refraction
+    //    rebuild` builds the table now, on this frame (after a `set refraction.*`, a jump) ──
+    if (n == "refraction")
+    {
+        if (lower(pos(0)) == "rebuild")
+        {
+            if (refrJob.valid())
+                refrJob.get();   // drop a build of the old profile
+            refrTable.valid = false;
+            updateRefraction();
+        }
+        r["refraction"] = refractionJson();
         return Status::Done;
     }
 

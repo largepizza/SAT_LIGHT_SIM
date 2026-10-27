@@ -8863,6 +8863,22 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
             kRestartPending = true;
     }
 
+    if (j.contains("refraction") && j["refraction"].is_object())
+    {
+        // Refraction, mirages and turbulence (2026-10-26, SatelliteSimRefraction.cpp): a change rebuilds the table.
+        const auto &rj = j["refraction"];
+        refrEnabled = rj.value("enabled", refrEnabled);
+        refrMirage = settingClamp(rj.value("mirage", refrMirage), 0.0f, 5.0f);
+        refrTurbulence = settingClamp(rj.value("turbulence", refrTurbulence), 0.0f, 20.0f);
+        refrDispersion = settingClamp(rj.value("dispersion", refrDispersion), 0.0f, 10.0f);
+        sunDiscGain = settingClamp(rj.value("sun_disc_gain", sunDiscGain), 0.0f, 10.0f);
+        refrForceDt = rj.value("force_sea_air_dt", refrForceDt);
+        refrForceInvZ = rj.value("force_inversion_m", refrForceInvZ);
+        refrForceInvDT = rj.value("force_inversion_dt", refrForceInvDT);
+        refrForceInvDz = settingClamp(rj.value("force_inversion_dz", refrForceInvDz), 0.5f, 500.0f);
+        refrLastStart = {};   // rebuild now
+    }
+
     if (j.contains("launches") && j["launches"].is_object())
     {
         const auto &lj = j["launches"];
@@ -9835,6 +9851,15 @@ nlohmann::json SatelliteSim::buildSettingsJson()
                     {"dust_gain", kesslerDustGain},
                     {"small_reentry_gain", kesslerSmallReGain},
                     {"fireball_colors", kesslerFireColor}};
+    j["refraction"] = {{"enabled", refrEnabled},
+                       {"mirage", refrMirage},
+                       {"turbulence", refrTurbulence},
+                       {"dispersion", refrDispersion},
+                       {"sun_disc_gain", sunDiscGain},
+                       {"force_sea_air_dt", refrForceDt},
+                       {"force_inversion_m", refrForceInvZ},
+                       {"force_inversion_dt", refrForceInvDT},
+                       {"force_inversion_dz", refrForceInvDz}};
     // Launches (SatelliteSimLaunches.cpp).
     j["launches"] = {{"enabled", launchesEnabled},
                      {"life_scale", launchLifeScale},

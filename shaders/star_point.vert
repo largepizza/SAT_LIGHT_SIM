@@ -62,8 +62,25 @@ void main() {
     }
 
     float tanHalfFov = tan(pc.fovYRad * 0.5);
-    gl_Position  = vec4( cam.x / (-cam.z) / (tanHalfFov * pc.aspect),
-                        -cam.y / (-cam.z) /  tanHalfFov,
+    // Turbulence (2026-10-26, SatelliteSimRefraction.cpp): the CPU packs this star's rms angle-of-arrival jitter and
+    // scintillation index from the refraction table along its own (bent) line of sight into meshPx: 1 + floor(urad) +
+    // 0.99 sigma_I. The image dances by the jitter (seen at long focal lengths) and twinkles by sigma_I below.
+    float aoaRad = 0.0, scintI = -1.0;
+    if (sat.meshPx >= 1.0) {
+        float q = sat.meshPx - 1.0;
+        aoaRad = floor(q) * 1e-6;
+        scintI = fract(q) / 0.99;
+    }
+    vec2 jit = vec2(0.0);
+    if (aoaRad > 0.0) {
+        float hj = fract(sin(dot(sat.skyDir, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+        float tj = pc.waveTime;
+        const float P2 = 6.28318530718;
+        jit = aoaRad * vec2(sin(P2 * fract(fract(tj * 1.31) + hj)) + 0.5 * sin(P2 * fract(fract(tj * 3.70) + hj * 1.7)),
+                            sin(P2 * fract(fract(tj * 1.07) + hj * 2.3)) + 0.5 * sin(P2 * fract(fract(tj * 2.90) + hj * 0.6))) * 0.9;
+    }
+    gl_Position  = vec4( cam.x / (-cam.z) / (tanHalfFov * pc.aspect) + jit.x / (tanHalfFov * pc.aspect),
+                        -cam.y / (-cam.z) /  tanHalfFov + jit.y / tanHalfFov,
                          kDepthFar, 1.0); // at infinity: behind every surface (include/depth.glsl)
     gl_PointSize = sat.angularSize;
 
@@ -106,7 +123,14 @@ void main() {
              + sin(p3 * PI2) * 0.30;
     tw /= 1.90;  // normalise to [-1, 1]
 
-    // Atmospheric fraction: 1 at sea level, decays above ~80 km.
+    // The turbulence model's scintillation index (the refraction table: Rytov's 2.25 k^(7/6) int Cn^2 s^(5/6) ds along the
+    // star's line of sight, saturated): tw's rms is ~0.55, so the amplitude is sigma_I / 0.55.
+    if (scintI >= 0.0) {
+        fragTwinkle = max(0.0, 1.0 + tw * min(scintI / 0.55, 1.6));
+        return;
+    }
+
+    // (No table: the old artistic amplitude.) Atmospheric fraction: 1 at sea level, decays above ~80 km.
     // obsECEFDir.w = obsHeightOffset (user altitude above terrain, metres).
     float obsHeight = max(0.0, pc.obsECEFDir.w);
     float atmFrac   = clamp(exp(-obsHeight / 80000.0), 0.0, 1.0);

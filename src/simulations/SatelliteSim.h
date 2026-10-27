@@ -15,6 +15,7 @@
 #include "SatModel.h"      // attitude groups, satellite models, baked lobes (lighting overhaul)
 #include "SatPhotometry.h" // earthshine table axes (satTypeBuf layout)
 #include "SatTrace.h"      // magnitude trace + CSV export (benchmarking M9)
+#include "Refraction.h"   // refraction, mirages, turbulence (2026-10-26)
 #include "SpaceWeather.h"  // aurora activity over sim time + the oval (2026-10-03)
 #include "Kessler.h"       // Kessler syndrome: breakups, the debris pool, the cascade (2026-10-16)
 #include "Weather.h"       // weather events: storm objects (2026-10-22, .plans/WEATHER_EVENTS_PLAN.md)
@@ -1499,6 +1500,22 @@ struct GpuSolarSite
     glm::vec4 params;   // x = block fill (area / disk), y = 1 tracker / 0 fixed, z = projected panel width (m), w = segment length (m)
 };
 static_assert(sizeof(GpuSolarSite) == 80, "GpuSolarSite layout mismatch");
+// The refraction table (2026-10-26, SatelliteSimRefraction.cpp; Refraction.h): appended to GpuGroundBeams (no new
+// sky binding: sat_sky.frag sits at its storage-buffer budget). Mirrored by RefrTable in sat_sky.frag.
+struct GpuRefrEntry
+{
+    glm::vec4 a; // xyz = refraction per channel (rad; >= 1 = the ray ends on the surface), w = rms angle-of-arrival jitter (rad)
+    glm::vec4 b; // x = Rayleigh column, y = Mie column, z = ozone (path in the layer / 20 km), w = haze column (all m)
+};
+struct GpuRefraction
+{
+    glm::vec4 map;    // e(u) = x + y sinh(z (u - w)), u = i / (N - 1): the apparent elevation of entry i
+    glm::vec4 info;   // x = N (0 = no table), y = refraction above the table / Saemundsson, z = 1 refraction on, w = Sun disc gain
+    glm::vec4 sun;    // x = the Sun centre's refraction (rad), y = its visible share (0..), z = shimmer gain, w = aoa there (rad)
+    glm::vec4 sunCol; // the columns at the Sun's centre (as GpuRefrEntry::b)
+    GpuRefrEntry e[refr::kTableN];
+};
+static_assert(sizeof(GpuRefraction) == 64 + refr::kTableN * 32, "GpuRefraction layout mismatch");
 struct GpuGroundBeams
 {
     uint32_t count;
@@ -1506,8 +1523,9 @@ struct GpuGroundBeams
     uint32_t pad1, pad2;
     GpuGroundBeam entries[kMaxGroundBeams];
     GpuSolarSite solar[kMaxSolarSites];
+    GpuRefraction refr;
 };
-static_assert(sizeof(GpuGroundBeams) == 16 + kMaxGroundBeams * 32 + kMaxSolarSites * 80, "GpuGroundBeams layout mismatch");
+static_assert(sizeof(GpuGroundBeams) == 16 + kMaxGroundBeams * 32 + kMaxSolarSites * 80 + sizeof(GpuRefraction), "GpuGroundBeams layout mismatch");
 static_assert(offsetof(GpuGroundBeams, solar) == 16 + kMaxGroundBeams * 32, "GpuGroundBeams layout mismatch");
 
 // ── Per-layer cloud shell descriptor (std140: 32 bytes, 2 × vec4) ─────────────
@@ -7087,6 +7105,32 @@ private:
     // ── Sun + observer state (updated each frame in updatePositions) ──────────
     glm::vec3 sunDirECI{1, 0, 0};    // unit vector from Earth toward Sun in ECI
     glm::vec4 sunDirENU{0, 1, 0, 0}; // sun direction in ENU (xyz), w = sin(elevation)
+
+    // ── Refraction, mirages and optical turbulence (2026-10-26, SatelliteSimRefraction.cpp, Refraction.h) ──
+    bool  refrEnabled = true;       // refraction.enabled: the Sun's disc and the stars bent by the air's profile
+    float refrMirage = 1.0f;        // refraction.mirage: x the surface layer's and the inversion's temperature steps
+    float refrTurbulence = 1.0f;    // refraction.turbulence: x Cn^2 (shimmer, the stars' twinkle and jitter)
+    float refrDispersion = 1.0f;    // refraction.dispersion: x the physical dispersion (the green rim)
+    float sunDiscGain = 1.0f;       // refraction.sun_disc_gain: x the Sun disc's physical radiance
+    float refrForceDt = -100.0f;    // refraction.force_sea_air_dt: < -50 = from place and time (K)
+    float refrForceInvZ = -1.0f;    // refraction.force_inversion_m: < 0 from place and time, 0 none, > 0 its height (m)
+    float refrForceInvDT = 2.0f;    // refraction.force_inversion_dt (K, with force_inversion_m > 0)
+    float refrForceInvDz = 15.0f;   // refraction.force_inversion_dz (m)
+    refr::Table refrTable;
+    refr::Profile refrProfileUsed;
+    std::future<refr::Table> refrJob;
+    refr::Profile refrJobProfile;
+    std::chrono::steady_clock::time_point refrLastStart{};
+    std::vector<glm::dvec2> refrInv;     // (true, apparent) elevation of the primary image, ascending
+    GpuRefraction refrGpu{};
+    double refrSunR = 0.0, refrSunVis = 1.0;
+    std::atomic<float> refrBuildMs{0.0f};
+    std::atomic<int> refrBuilds{0};
+    refr::Profile refrProfileAt(double simT) const;
+    void updateRefraction();
+    void refrDerive();                          // the inverse map and the Sun's quantities, from refrTable
+    bool refractEnu(glm::vec3 &enu, float &aoa, float &scint) const;   // a source at infinity: false = below the apparent horizon
+    nlohmann::json refractionJson() const;
     glm::vec3 obsECI{0, 0, 6371000}; // observer ECI position (meters)
 
     // ── Planets (updated each frame in updatePositions/updatePlanets) ─────────
