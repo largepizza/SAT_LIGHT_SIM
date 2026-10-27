@@ -827,7 +827,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   supercell with their whole lifecycle fixed at birth, so every storm is a pure function of sim time (warp, reverse,
   bookmarks). They live in the MAP frame (cv2Drift) and ride with it. Each frame `updateStorms` (SatelliteSimWeather.cpp)
   uploads the towers alive (`GpuStormTower` = `CV2Tower`, 48 B; strength = the lifecycle, a weaker tower is SHORTER)
-  and an open-addressed hash of 256-per-face cube bins (each tower listed in every bin its reach touches) into
+  and an open-addressed hash of 256-per-face cube bins (each tower listed in every bin its reach touches — only those, since
+  2026-10-27: `clouds_v2.storm_index_tight`, see "Weather perf pass" under GPU Performance Profiling) into
   `stormBuf` (device-local host-visible): march binding 26, beam occlusion 10, lightning, cdc. `cv2ColumnSigma` loops
   over its point's bin; lightning flashes only from them. Settings `clouds_v2.storm_objects / storm_frequency /
   storm_life` (Weather tab "Storm objects"); harness `storms`, `storms go`, `state` -> `weather`; `tools/weather_tool`.
@@ -846,7 +847,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   The rain core under a dominant tower is its body (it was an ellipse 2.5x longer downwind, under the anvil, where
   there is no cloud below). Cost: within noise at 1 h/s (bake), 128 registers.
   **Anvil SHIELDS (2026-10-23, issues 20261023_002905 / _001522):** every storm has one (`wx::Shield`, `Catalog::shieldsAt`;
-  `CV2Shield` 64 B + its own index of 64-per-face bins, `cv2ShieldAt`, between the tower list and the env block of
+  `CV2Shield` 64 B + its own index of 128-per-face bins (64 until 2026-10-27; the count is `cv2ShieldHead.y`; the bake's
+  envelope copy keeps 64), `cv2ShieldAt`, between the tower list and the env block of
   `stormBuf`): a capsule from 0.3 rA upwind of the anvil-reaching towers' heads (strength-weighted) to L downwind (L grows
   at 0.6 x the storm's `upperWind` to 45 / 90 / 160 km by kind), radius rA (the head) growing to 1.15 rA + 0.25 L. Its
   strength rises over 15 min after a tower first passes 0.42 (`TowerSpec::anvOn`, precomputed at birth) and LINGERS
@@ -8348,6 +8350,63 @@ with `shaders reload` variants, `hr/` scripts in the perf4 worktree, untracked).
   supercell 17.3 / 13.7, squall line 19.1 / 14.1, wildfire 25.8 / 15.4, launch 12.6 / 7.5, twilight 16.2 / 10.1, crew 23.9 /
   14.2, the Sun's Fury 21.7 / 13.3, re-entry 13.2 / 7.1 (separate launches: +-0.4 run to run; the hurricane card found no
   storm at that moment).
+
+**Weather perf pass (2026-10-27, on perf-frames; RTX 3070 Ti, the harness's 1600x900, default settings except the
+Maritime view's (`report load` of issue 20261023_230322 = the user's High settings); every number an interleaved A/B in ONE
+live app, 3-4 reps, captures against the same configuration reloaded twice).** Views: a hurricane from 12 km over its eye
+and from sea level (`storms go cyclone=strongest dist_km=10 alt=12000|30`), a squall line from 6 km, a supercell from the
+ground (`storms go kind=super dist_km=35 alt=300`), the Maritime Continent storm cluster, a haboob (`haboob`).
+- **What the storm objects cost, measured first.** Loop-doubling probes (the tower loop / the shield loop run twice inside
+  their functions: idempotent maxima) put the tower loop at ~0 in the hurricane, squall and supercell views, 0.6 ms in the
+  haboob view, ~1 ms in the Maritime cluster, the shield loop at ~0 everywhere but the cluster (2.4-2.6 ms there). The bin
+  lookups themselves (two atans + the hash probe for every field sample below the tropopause) are 0.07 ms in a calm view.
+  What storms cost is mostly their CLOUD, not the search: `cb_columns 0` takes 6.7 ms off the 12-km eye view (the loop:
+  0), `anvil 0` 3.3-4.0 ms (eye, cluster), `high_amount 0` 4-6 ms.
+- **Kept: the tight index (`clouds_v2.storm_index_tight`, default on, exact).** `listStormBins` listed a tower (a shield)
+  in every bin of the rectangle bounding its reach disc (its capsule's bounding disc): a sample walked every tower whose
+  disc touched its BIN, ~2.2x (towers) / ~3.8x (shields, 156-km bins) the ones that can reach it. Now each row of the
+  rectangle is cut, from both ends, to the bins that can hold a point within the reach (the shield's 1.6 radii along its
+  spine, `KeepDisc` / `KeepCapsule`: from the bin's centre and its chord circumradius, `BinGeom`; the run between the ends
+  is kept whole: a superset). The march's shield index is now 128 bins a face side (~78 km; the count rides in
+  `cv2ShieldHead.y`, tables 32768 / 131072; the bake's envelope index keeps 64), and the per-frame listings run on the
+  storm pool from 384 items. Maritime cluster, cloud march: 16.03 -> 14.91 ms (-1.1, every rep lower; tight alone at 64 /
+  128 bins ~-0.3 each, 128 bins ~-0.4); the other views within noise; captures within the floor everywhere (and the new
+  build's cluster capture matches the old build's at 0.55 levels vs a 0.58 floor). Entries (cluster): towers 13758 ->
+  11714, shields 3578 -> 7459 in 4912 bins (from 2221). CPU: updateStorms ~+0.05-0.1 ms a frame (0.95-1.05 -> 1.0-1.15 at
+  1x). `clouds_v2.storm_shield_bins_ab 64` (no UI, not for players) lists the old shield bins: the A/B.
+- **Kept: two exact skips in the shield path** (128 registers): `cv2ShieldAt` breaks once the best shield found is at least
+  as strong as the next listed (a bin lists them strongest first, and a shield's share never exceeds its strength), and
+  `cv2AnvilSigmaP` returns before its three fetches where the best shield's distance is past 1.25 / 0.8 radii (the fray is
+  floored at 0.8: the outline is 0 there whatever the noise) and no tower head is near. Cluster: -0.30 ms (the fetch skip
+  -0.19, the break -0.05); the eye view within noise. **All together** (the old listing and bins vs the new, one app, the
+  same layout): cluster 15.64 -> 14.83 and 16.03 -> 14.91 ms in two runs; a calm view at 3 km, orbit at 420 km and the
+  ground: within noise, captures at the floor.
+- **Kept: no surge test over the open sea** (terrain_detail.glsl `tdDemAt`, exact): `tdSurgeAt` ran on every height
+  evaluation over a cyclone's sea; past 0.975 of the water map's reach (its rise tapers to 0 by 0.95, the shore offset is 0
+  whatever the shift) it is skipped. Sky pass at sea level under a hurricane 7.27 -> 6.92 ms; at the landfall view (the
+  coast, where it applies) unchanged; captures within the floor.
+- **The weather bake at 1 h/s** (`state` -> `weather.cube.bake_ms_per_face`, `shaders reload weather=` variants): 1.35-1.4 ms
+  a face near a cyclone or the cluster, ~3-4 faces a frame. Probes: the towers' / lines' stamp 0.25 ms a face, the
+  cyclone's 3x3 supersample 0.12, the coarse levels' coverage fraction 0.15; the rest is the map reads. acos -> dot in
+  `cycloneSwirl` / `cycloneNear`: -0.01 (noise, not kept). The tight envelope index changed nothing on the GPU (the bake's
+  cost is its lookups and map reads, not its loops) and -0.1 ms of `env.towerIndex`.
+- **Tried and dropped:** (1) a FAR-BODY SKIP in the tower loop (a tower whose body cannot come within a bound of the lobes'
+  and the head lift's largest reach takes no profile; exact with a bound uniform across the sample's towers): +0.3-0.45 ms
+  in the cluster, 0 elsewhere — the skip diverges within a group of 32 rays and adds code. (2) The tower bins' count read
+  from the head (runtime n, `cv2StormBinKeyN`): +0.18 ms (n=3) in the cluster; the towers keep the constant 256. (3) Tower
+  bins 512 (tight): within noise of 256, 3x the entries (CPU, and the list's capacity at 8192 towers). (4) Shield bins 256:
+  the 16384 table overflowed (entries lost: a look change); with room, within noise of 128. (5) The first cut of the tight
+  test read a bin's radius before setting it (`keep(binCentre(..., rad), rad)`: argument order unspecified) and dropped
+  bins it needed; its -1.3 ms in the cluster was partly that.
+- **CPU** (hitches bysum, 1x / 1 min/s / 1 h/s): the frames are GPU-bound (wait_fence 12-34 ms); weather on the main thread
+  is updateStorms ~1 ms a frame (catalog 0.15, tower bins 0.15-0.2, index 0.25-0.3, shields 0.3-0.45), at warp + the
+  envelope index 1.1-1.3 ms on frames the bake runs (every frame from ~1 min/s), the dust grid every 2 s on workers, the
+  Weather window's Storms tab 0.15 ms of build_ui. A time jump costs one frame of updateStorms ~10-15 ms (the catalog's
+  new bins, a new year's cyclone seasons ~7 ms: `wx.buildSeasons`). Not changed: rebuilding the bins only every ~20 s of sim time at low
+  warp (keyed tower slots, ~0.6 ms a frame) — the frames are GPU-bound and new towers would wait for the next build.
+- **What remains:** the storm CLOUD (the eyewall's towers ~6.7 ms from 12 km, the CDO / anvils 3-4 ms, the cirrus band the
+  eye is inside), the cluster's shield loop (~1.8 ms by the probe at 128 bins: the group's longest bin, not the mean, sets
+  it), the bake's map reads at warp (~4-5 ms a frame at 1 h/s).
 
 ---
 

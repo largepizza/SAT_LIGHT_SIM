@@ -8952,6 +8952,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         stormCloudField = settingClamp(c.value("storm_field", stormCloudField), 0.0f, 3.0f);
         stormMoat = settingClamp(c.value("storm_moat", stormMoat), 0.0f, 3.0f);
         stormArmCirrus = settingClamp(c.value("storm_arm_cirrus", stormArmCirrus), 0.0f, 3.0f);
+        stormIndexTight = c.value("storm_index_tight", stormIndexTight);
+        stormShieldBinsAB = c.value("storm_shield_bins_ab", stormShieldBinsAB);
         wildfireRate = settingClamp(c.value("wildfires", wildfireRate), 0.0f, 10.0f);
         wildfireSmoke = settingClamp(c.value("wildfire_smoke", wildfireSmoke), 0.0f, 5.0f);
         wildfireLight = settingClamp(c.value("wildfire_light", wildfireLight), 0.0f, 5.0f);
@@ -9627,6 +9629,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"storm_field", stormCloudField},
         {"storm_moat", stormMoat},
         {"storm_arm_cirrus", stormArmCirrus},
+        {"storm_index_tight", stormIndexTight},
+        {"storm_shield_bins_ab", stormShieldBinsAB},
         {"wildfires", wildfireRate},
         {"wildfire_smoke", wildfireSmoke},
         {"wildfire_light", wildfireLight},

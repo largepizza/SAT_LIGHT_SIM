@@ -21,6 +21,7 @@
 #include <bit>
 #include <cstdlib>
 #include <cstring>
+#include <type_traits>
 
 namespace launchsim { double demElevCpu(double latDeg, double lonDeg); }   // (SatelliteSimLaunches.cpp: the full DEM)
 
@@ -73,11 +74,112 @@ bool faceAngles(const glm::dvec3 &d, int face, double &ax, double &ay)
 
 struct BinEntry { uint32_t key, tower; };   // = SatelliteSim::StormEntry
 
+// The geometry of the equal-angle bins with n per face side (2026-10-27, the tight listing): the tangent of each
+// row's / column's centre angle, and each bin's circumradius as a CHORD on the unit sphere (the largest distance from
+// its centre direction to a corner). Every face is the same, so (i, j) alone.
+struct BinGeom
+{
+    uint32_t n = 0;
+    std::vector<double> tanC;     // n
+    std::vector<glm::dvec2> geo;  // n x n: x 1 / |(1, tan, tan)| (the centre's normalisation), y the chord radius
+};
+BinGeom makeBinGeom(uint32_t n)
+{
+    BinGeom g;
+    const double binA = 1.5707963267948966 / n;
+    g.tanC.resize(n);
+    std::vector<double> tanE(n + 1);
+    for (uint32_t i = 0; i < n; ++i) g.tanC[i] = std::tan(-0.7853981633974483 + (i + 0.5) * binA);
+    for (uint32_t i = 0; i <= n; ++i) tanE[i] = std::tan(-0.7853981633974483 + i * binA);
+    g.geo.resize((size_t)n * n);
+    for (uint32_t j = 0; j < n; ++j)
+        for (uint32_t i = 0; i < n; ++i)
+        {
+            const glm::dvec3 c = glm::normalize(glm::dvec3(1.0, g.tanC[i], g.tanC[j]));
+            double r = 0.0;
+            for (int cj = 0; cj < 2; ++cj)
+                for (int ci = 0; ci < 2; ++ci)
+                    r = std::max(r, glm::length(c - glm::normalize(glm::dvec3(1.0, tanE[i + ci], tanE[j + cj]))));
+            g.geo[(size_t)j * n + i] = glm::dvec2(1.0 / std::sqrt(1.0 + g.tanC[i] * g.tanC[i] + g.tanC[j] * g.tanC[j]), r);
+        }
+    g.n = n;
+    return g;
+}
+// The index's two bin sizes, built once (thread-safe static initialisation; no lock on the per-tower path).
+const BinGeom &binGeom(uint32_t n)
+{
+    static const BinGeom g64 = makeBinGeom(64), g128 = makeBinGeom(128), g256 = makeBinGeom(256);
+    return n == 64 ? g64 : n == 128 ? g128 : g256;
+}
+
+// The centre direction of bin (face, i, j) and its chord circumradius.
+inline glm::dvec3 binCentre(const BinGeom &g, int face, uint32_t i, uint32_t j, double &rad)
+{
+    const glm::dvec2 q = g.geo[(size_t)j * g.n + i];
+    rad = q.y;
+    const int fc = face >> 1;
+    const double sg = (face & 1) ? -1.0 : 1.0, tu = g.tanC[i], tv = g.tanC[j];
+    const glm::dvec3 v = (fc == 0) ? glm::dvec3(sg, tu, tv) : (fc == 1) ? glm::dvec3(tu, sg, tv) : glm::dvec3(tu, tv, sg);
+    return v * q.x;
+}
+
+// A tight test for the bins a listing's rectangle holds (2026-10-27): keep a bin only if some point of it can lie
+// within the shape (a disc of `chordR` about d, or a capsule), from its centre and chord circumradius (a bin is the
+// spherical rectangle inside that ball; distance to a disc's centre or a segment is 1-Lipschitz). 60 m of slack for the
+// GPU's float bin key at an edge.
+struct KeepDisc
+{
+    glm::dvec3 d; double chordR;
+    bool operator()(const glm::dvec3 &c, double rad) const
+    {
+        const glm::dvec3 e = c - d;
+        return glm::dot(e, e) <= (chordR + rad) * (chordR + rad);
+    }
+};
+struct KeepCapsule   // = cv2ShieldAt's metric: the chord to the clamped spine point, radius mix(ra, rb, t) x k
+{
+    glm::dvec3 a, ab; double ra, rb, k, pad, invAb2, invDl;
+    KeepCapsule(const glm::dvec3 &a_, const glm::dvec3 &b_, double ra_, double rb_, double k_, double pad_)
+        : a(a_), ab(b_ - a_), ra(ra_), rb(rb_), k(k_), pad(pad_)
+    {
+        const double ab2 = std::max(glm::dot(ab, ab), 1e-14);
+        invAb2 = 1.0 / ab2;
+        invDl = 1.0 / std::sqrt(ab2);
+    }
+    bool operator()(const glm::dvec3 &c, double rad) const
+    {
+        const double t = std::clamp(glm::dot(c - a, ab) * invAb2, 0.0, 1.0);
+        const double dt = rad * invDl;   // the projection moves at most rad along the spine
+        const double r = std::max(ra + (rb - ra) * std::clamp(t - dt, 0.0, 1.0), ra + (rb - ra) * std::clamp(t + dt, 0.0, 1.0));
+        const glm::dvec3 e = c - (a + ab * t);
+        const double lim = r * k + pad + rad;
+        return glm::dot(e, e) <= lim * lim;
+    }
+};
+struct KeepAll { bool operator()(const glm::dvec3 &, double) const { return true; } };
+
+// A row of a listing's rectangle cut to the bins the shape can touch: in from both ends to the first kept bin. A disc's
+// or a capsule's bins along a row are one run, and everything between the two ends found is kept (a superset).
+template <class Keep>
+inline void tightRow(const BinGeom &g, const Keep &keep, int face, int jj, int &lo, int &hi)
+{
+    auto kept = [&](int ii) {
+        double rad = 0.0;
+        const glm::dvec3 c = binCentre(g, face, (uint32_t)ii, (uint32_t)jj, rad);   // (sets rad: evaluated first)
+        return keep(c, rad);
+    };
+    while (lo <= hi && !kept(lo)) ++lo;
+    while (hi > lo && !kept(hi)) --hi;
+}
+
 // Every bin within `radius` of d: on every face the rim touches, the rectangle of bins spanned by 16 points on the
 // rim and the centre (equal-angle bins: the rectangle bounds the disc's image).
-template <class E>
-void listStormBins(const glm::dvec3 &d, double radius, uint32_t tower, uint32_t nB, std::vector<E> &out)
+template <class E, class Keep = KeepAll>
+void listStormBins(const glm::dvec3 &d, double radius, uint32_t tower, uint32_t nB, std::vector<E> &out,
+                   const Keep &keep = Keep())
 {
+    constexpr bool kTight = !std::is_same_v<Keep, KeepAll>;
+    const BinGeom *bg = kTight ? &binGeom(nB) : nullptr;
     const glm::dvec3 east = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), d) + glm::dvec3(1e-12, 0, 0));
     const glm::dvec3 north = glm::cross(d, east);
     const double binA = 1.5707963267948966 / nB;
@@ -103,8 +205,13 @@ void listStormBins(const glm::dvec3 &d, double radius, uint32_t tower, uint32_t 
             };
             const int i0 = idx(cx - dAx), i1 = idx(cx + dAx), j0 = idx(cy - dAy), j1 = idx(cy + dAy);
             for (int jj = j0; jj <= j1; ++jj)
-                for (int ii = i0; ii <= i1; ++ii)
+            {
+                int lo = i0, hi = i1;
+                if constexpr (kTight)
+                    tightRow(*bg, keep, f0, jj, lo, hi);
+                for (int ii = lo; ii <= hi; ++ii)
                     out.push_back({1u + (uint32_t)f0 * nB * nB + (uint32_t)jj * nB + (uint32_t)ii, tower});
+            }
             return;
         }
     }
@@ -142,8 +249,13 @@ rim:
         };
         const int i0 = idx(lo[0]), i1 = idx(hi[0]), j0 = idx(lo[1]), j1 = idx(hi[1]);
         for (int jj = j0; jj <= j1; ++jj)
-            for (int ii = i0; ii <= i1; ++ii)
+        {
+            int lo = i0, hi = i1;
+            if constexpr (kTight)
+                tightRow(*bg, keep, faces[q], jj, lo, hi);
+            for (int ii = lo; ii <= hi; ++ii)
                 out.push_back({1u + (uint32_t)faces[q] * nB * nB + (uint32_t)jj * nB + (uint32_t)ii, tower});
+        }
     }
 }
 
@@ -424,6 +536,11 @@ void SatelliteSim::updateStorms()
             return;
         }
     }
+    {
+        const int idxKey = (stormIndexTight ? 1 : 0) + 2 * stormShieldBinsAB;
+        static int lastIdxKey = -1;
+        if (idxKey != lastIdxKey) { lastIdxKey = idxKey; stormUploadedT = -1e300; }   // (the index's layout changed)
+    }
     if (t == stormUploadedT)
         return;   // paused: nothing moved
     // The weather cube carries each storm's own cloud (cloud_v2_weather.comp stormStamp) and re-bakes a face at a time
@@ -479,11 +596,18 @@ void SatelliteSim::updateStorms()
     const double span = std::max((double)(cv2Types[4].alt.y - cv2Types[4].alt.x), 0.0);
     const double cuReach = std::clamp((double)cv2CbCumulusReachKm, 0.0, 60.0) * 1000.0;
 
+    // The tight listing (2026-10-27, clouds_v2.storm_index_tight): a bin only where the tower's reach / the shield's
+    // capsule can touch it, not every bin of the disc's bounding rectangle.
+    // (clouds_v2.storm_shield_bins_ab 64: the old shield bins, an A/B; the shaders read the count from the head.)
+    const uint32_t shieldBinsN = stormShieldBinsAB == 64 ? 64u : kShieldBinsPerFace;
+    const uint32_t towerBinsN = kStormBinsPerFace;
+    const bool tight = stormIndexTight;
+    if (tight) { binGeom(towerBinsN); binGeom(shieldBinsN); }
     auto *head = static_cast<uint32_t *>(stormMapped);
     auto *dst = reinterpret_cast<GpuStormTower *>(static_cast<char *>(stormMapped) + kStormTowersOffset);
     stormEntries.clear();      // (key, tower) pairs, towers strongest first
     stormGpuTowers.resize(nT);
-    parallelEntries(stormCatalog.get(), nT, 4096u, stormEntries, [&](uint32_t i, std::vector<StormEntry> &ents) {
+    parallelEntries(stormCatalog.get(), nT, tight ? 384u : 4096u, stormEntries, [&](uint32_t i, std::vector<StormEntry> &ents) {
         const wx::Tower &tw = stormTowers[i];
         const glm::dvec3 d = glm::normalize(tw.dir);
         const glm::dvec3 east = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), d) + glm::dvec3(1e-12, 0, 0));
@@ -517,7 +641,10 @@ void SatelliteSim::updateStorms()
         g.c = glm::vec4((float)reach, seedF, (float)anvilK, (float)driftK);
         dst[i] = g;
         stormGpuTowers[i] = g;   // the envelope index's copy is made from these (buildStormEnvIndex)
-        listStormBins(d, reach, i, kStormBinsPerFace, ents);
+        if (tight)
+            listStormBins(d, reach, i, towerBinsN, ents, KeepDisc{d, reach / kReW + 60.0 / kReW});
+        else
+            listStormBins(d, reach, i, towerBinsN, ents);
     });
     split("storms.towerBins");
     auto *list = reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kStormListOffset);
@@ -551,7 +678,7 @@ void SatelliteSim::updateStorms()
         auto *sdst = reinterpret_cast<GpuStormShield *>(static_cast<char *>(stormMapped) + kShieldsOffset);
         stormGpuShields.resize(nS);
         shieldEntries.clear();
-        parallelEntries(stormCatalog.get(), nS, 4096u, shieldEntries, [&](uint32_t i, std::vector<StormEntry> &ents) {
+        parallelEntries(stormCatalog.get(), nS, tight ? 384u : 4096u, shieldEntries, [&](uint32_t i, std::vector<StormEntry> &ents) {
             const wx::Shield &s = stormShields[i];
             GpuStormShield g;
             g.a = glm::vec4(glm::vec3(s.a), s.strength);
@@ -568,7 +695,12 @@ void SatelliteSim::updateStorms()
             const glm::dvec3 mid = glm::normalize(s.a + s.b);
             const double half = 0.5 * std::acos(std::clamp(glm::dot(s.a, s.b), -1.0, 1.0)) * kReW;
             // (The shader frays the outline out to 1.6 radii: cv2ShieldAt.)
-            listStormBins(mid, 1.03 * (half + 1.6 * std::max(s.rA, s.rB)) + 2000.0, i, kShieldBinsPerFace, ents);
+            if (tight)
+                listStormBins(mid, 1.03 * (half + 1.6 * std::max(s.rA, s.rB)) + 2000.0, i, shieldBinsN, ents,
+                              KeepCapsule(glm::dvec3(glm::vec3(g.a)), glm::dvec3(glm::vec3(g.b)), (double)g.c.x / kReW,
+                                          (double)g.b.w / kReW, 1.6 * 1.02, 1000.0 / kReW));
+            else
+                listStormBins(mid, 1.03 * (half + 1.6 * std::max(s.rA, s.rB)) + 2000.0, i, shieldBinsN, ents);
         });
         auto *slist = reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kShieldListOffset);
         const StormIndexStats sx = fillStormIndex(shieldEntries, shieldTable, shieldTableUsed, stormCounts, kShieldTableSize,
@@ -576,7 +708,7 @@ void SatelliteSim::updateStorms()
                                                   reinterpret_cast<glm::uvec2 *>(static_cast<char *>(stormMapped) + kShieldTableOffset));
         auto *shead = reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kShieldHeadOffset);
         shead[0] = nS;
-        shead[1] = stormObjects ? 1u : 0u;
+        shead[1] = stormObjects ? shieldBinsN : 0u;   // (non-zero = on: the bins per face side, cv2ShieldAt)
         shead[2] = sx.bins;
         shead[3] = sx.used;
         stormStats.shields = (int)nS;
@@ -673,14 +805,22 @@ void SatelliteSim::buildStormEnvIndex()
     };
     auto *envTowers = reinterpret_cast<GpuStormTower *>(static_cast<char *>(stormMapped) + kStormEnvTowersOffset);
     stormEnvEntries.clear();
-    const uint32_t n = (uint32_t)std::min<size_t>(stormGpuTowers.size(), kStormMaxTowers);
+    const bool tight = stormIndexTight;
+    if (tight) binGeom(kStormBinsPerFace);
+    const uint32_t n =(uint32_t)std::min<size_t>(stormGpuTowers.size(), kStormMaxTowers);
     parallelEntries(stormCatalog.get(), n, 256u, stormEnvEntries, [&](uint32_t i, std::vector<StormEntry> &ents) {
         GpuStormTower g = stormGpuTowers[i];
         const glm::dvec3 df = flowed(glm::normalize(glm::dvec3(glm::vec3(g.a))));
         g.a = glm::vec4(glm::vec3(df), g.a.w);
         envTowers[i] = g;
         if (g.a.w > 0.05f)
-            listStormBins(df, 1.04 * (double)stormEnvRadius(g.c.x), i, kStormBinsPerFace, ents);
+        {
+            const double rr = 1.04 * (double)stormEnvRadius(g.c.x);
+            if (tight)
+                listStormBins(df, rr, i, kStormBinsPerFace, ents, KeepDisc{df, rr / kReW + 60.0 / kReW});
+            else
+                listStormBins(df, rr, i, kStormBinsPerFace, ents);
+        }
     });
     split("env.towerBins");
     auto *envList = reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kStormEnvListOffset);
@@ -712,7 +852,7 @@ void SatelliteSim::buildStormEnvIndex()
         const double half = 0.5 * std::acos(std::clamp(glm::dot(a, b), -1.0, 1.0)) * kReW;
         // + the clear air ahead of the line (100 km past the capsule, stormStamp).
         listStormBins(mid, 1.03 * (half + std::max(g.c.x, g.b.w)) + 100000.0 + 1000.0 * std::floor(0.5 * g.c.w), i,
-                      kShieldBinsPerFace, ents);   // (+ the line's bow)
+                      kShieldEnvBinsPerFace, ents);   // (+ the line's bow)
     });
     auto *senv = reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kShieldEnvListOffset);
     const StormIndexStats sx = fillStormIndex(shieldEnvEntries, shieldEnvTable, shieldEnvTableUsed, stormCounts,

@@ -1792,6 +1792,9 @@ float cv2AnvilSigmaP(CV2Pos q, float fpM, float colNear, bool wantPres, out floa
         }
     }
     if (max(stormA, colNear) <= 0.0) return 0.0;
+    // (The frayed outline below is 0 past 1.25 / 0.8 of the radius whatever the noise (the fray is floored at 0.8): no
+    // fetches there. Exact; the cluster's cloud march -0.2 ms.)
+    if (shOn && shU * 0.8 >= 1.25 && colNear <= 0.0) return 0.0;
     vec4  cl     = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + cv2Drift(q.seaProjE) * cv2.anchorCluster.w,
                               cv2Lod(fpM, cv2.anchorCluster.w));
     vec4  sh     = cv2ShapeSmooth(cv2.anchorStorm.xyz + cv2Drift(q.rSeaE) * cv2.anchorStorm.w,
