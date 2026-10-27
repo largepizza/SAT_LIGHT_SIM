@@ -1792,6 +1792,30 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   base-vs-base floor at every view up to 1.0; 0.5 changed cumulus lobe rims seen from 3 km): from 6 km INSIDE the mid layer
   (Brisbane, -27.5 153.0 at 02:06 UTC, az 60 el -4; its haze was 25 of 34 ms) 33 -> 25.5 ms; matrix suite total -4.2 ms,
   every quality metric unchanged (harness_runs/mxc/on vs fo02).
+- **The unified volumetric composite (2026-10-26, branch perf-frames; the user: the plumes, smoke and tornadoes "feel entirely
+  distinct in quality" and clip against rain, dust, smoke and clouds).** The dust list's Gaussians (launch plumes, flames,
+  wildfire smoke, tornado funnels, haboob far field, Kessler dust and fireball trails) are still composited in cloud_march.comp
+  at half resolution, but THROUGH the cloud by depth: the v2 march writes each ray's cloud **opacity profile**
+  (`cv2Profile`, march binding 22 / composite binding 26, `cv2ProfileBuf`, one uvec2 per 2x2 block of the cloud grid, sized
+  with the cloud targets: first contact, half opacity, last contact as log2-metre 16-bit codes, + the cloud's transmittance;
+  written before the fog / dust march, so fog is not in it). The composite scales it to the RESOLVED cloud's opacity, splits
+  each Gaussian's optical depth and light over its four depth segments (`dustSegW`: three erfs, skipped where the ray has no
+  cloud) and composites front to back: in each segment the cloud's light there (its share of the resolved radiance) dimmed by
+  the plumes in front and half the segment's own, the plumes' light by the cloud in front (its opacity at the segment's
+  middle); legacy cirrus / aurora behind it all. Emissive light is dimmed by the cloud in front of it the same way (it was
+  "front if nearer than the mean distance", else the old 3rd-power suppression). The S9 derivatives follow (`gBB` = the
+  plumes' transmission over the cloud's light, `gBA` + the plumes' / emissive light x their mean opacity share). No profile
+  this frame: the mean distance x (0.85, 1, 1.15). It replaced ONE front / behind blend over +-(15% + 150 m) of the cloud's
+  mean distance: a funnel 3 km away in a rain shaft was hidden whole (the rain's mean distance in front), a plume inside a
+  cloud was wholly in front or behind.
+  **Lit by the clouds** (plumes and smoke, not tornadoes: the CPU lights those through their storm's probed column): the Sun
+  through `cv2StvT` at the Gaussian's lit point, the sky share through the deck above (`cv2VtUpCell` / `cv2VtUpH`) and the
+  sunlight the deck scatters down (2 mu ((1/2 + 3/4 mu) Td - the direct), isotropic), below 16 km. Multiple scattering is
+  per GAUSSIAN now (was of the whole stack along the ray, which the segments no longer sum). Not yet: the fog / dust march in
+  the profile, the rain particles (post-TAA) against plumes, the plumes' sky light from the hemisphere tables (still the CPU's
+  constant blue below 25 km) and their night x10 boost. Composite 128 registers. Cost (RTX 3070 Ti, user settings,
+  interleaved x3): cloud bucket tornado / haboob / launch within noise .. +0.2 ms, a big wildfire's smoke +0.5 ms (each of
+  the two lookups ~0.15). Scenes: `harness_runs/uv/` (u8 = the tornado in rain, `storms tornado dist_km=3 alt=60 el=12`).
 - **AgX tonemap (2026-10-26, branch cloud-ms; sat_sky.frag `skyAgX`).** The sky pass tonemapped 1 - e^-x per channel
   ("Highlight roll-off" blends a longer shoulder): each channel saturates alone, so bright orange skews yellow and sunlit
   cloud flattens to paper white (where the physical multiple scattering puts it). AgX (Sobotka; Wrensch's polynomial
