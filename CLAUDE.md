@@ -6574,9 +6574,9 @@ launches follow per-program cadences (no real manifest).
   **The Sun's Fury card is pinned under the list on Upcoming** (2026-10-20: outside the `MsList` scroll view; at the
   default height it was the last card and needed scrolling). Ongoing launch rows have **Next >** (`missionsMilestone`):
   the batch's next milestone, carrying a selected / followed stage of it.
-  **Launch Watch = T-1 min, NOT tracked (2026-10-26, issue 20261026_193645; the user: "We should not be auto tracking
-  the vessel. We should also warp to T-1"):** every launch Watch (`launchWatchKey`: Upcoming rows, the pinned twilight /
-  crewed rows, Settings > Launches) lands `kWatchLeadS` (60 s) before lift-off at 1x, on the ground 5 km from the pad
+  **Launch Watch = T-5 s, NOT tracked (2026-10-26, issue 20261026_193645; the user: "We should not be auto tracking
+  the vessel"; T-1 min was then too long a wait, cut to 5 s):** every launch Watch (`launchWatchKey`: Upcoming rows, the pinned twilight /
+  crewed rows, Settings > Launches) lands `kWatchLeadS` (5 s) before lift-off at 1x, on the ground 5 km from the pad
   (12 km and FOV 60 for a twilight one), the camera on the stack, the STACK selected (`launchWantSelKey` = key << 3 ^ 1)
   and no camera lock. The twilight Watch's sunlit-stage scan is gone. A tracked Watch locked a playtester onto a stage they
   did not recognise.

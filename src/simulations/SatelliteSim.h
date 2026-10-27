@@ -3239,7 +3239,7 @@ private:
     double launchWatchLitT = -1.0; int launchWatchScanN = 0; // (harness: a twilight Watch's sunlit search)
     static constexpr double kWatchLiftoffS = 8.0;    // a launch's Watch: lift-off + this (clear of the tower)
     static constexpr double kWatchTwilightS = 300.0; // marks a twilight launch's Watch (from further back)
-    static constexpr double kWatchLeadS = 60.0;      // every launch Watch lands this long before lift-off (T-1 min)
+    static constexpr double kWatchLeadS = 5.0;       // every launch Watch lands this long before lift-off (T-5 s)
     bool launchWatchCatch(std::string &msg); // the next Starship catch, in its landing burn, the ship tracked
     float cloudCoverAtEcef(const glm::dvec3 &dirEcef) const; // the cloud map's cover there (0..1, CPU copy; a Watch's sky)
     struct MissionOngoing

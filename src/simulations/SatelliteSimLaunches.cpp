@@ -11307,7 +11307,7 @@ float SatelliteSim::cloudCoverAtEcef(const glm::dvec3 &e) const
 
 bool SatelliteSim::launchWatchKey(uint64_t key, double afterS, std::string &msg)
 {
-    // (2026-10-26, issue 20261026_193645) T-60 s at 1x, on the ground beside the pad (12 km for a twilight launch: its
+    // (2026-10-26, issue 20261026_193645) T-5 s at 1x (kWatchLeadS; it was T-60 s, the user: too long a wait), on the ground beside the pad (12 km for a twilight launch: its
     // exhaust rises over most of the sky), the camera on the stack. NOT tracked: the player watches it climb (a tracked
     // Watch landed on a stage they did not expect); the stack is selected so its label and Info are one click away.
     // `afterS` (kWatchLiftoffS / kWatchTwilightS) only says which kind of Watch it is.

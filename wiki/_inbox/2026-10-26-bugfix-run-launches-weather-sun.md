@@ -3,7 +3,7 @@ pages: [using/missions.md, simulation/launches.md, rendering/launch-visuals.md, 
 code: [src/simulations/SatelliteSimLaunches.cpp, src/simulations/SatelliteSimHaboob.cpp, src/simulations/SatelliteSimWeather.cpp, shaders/cloud_march.comp, shaders/include/clouds_v2.glsl, shaders/sat_sky.frag]
 ---
 ## Now
-- **Launch Watch** (Missions window, Settings > Launches): lands 60 s before lift-off at 1x, on the ground 5 km from the pad (12 km, FOV 60 for a twilight launch), the camera on the stack, the stack selected, no camera lock.
+- **Launch Watch** (Missions window, Settings > Launches): lands 5 s before lift-off at 1x, on the ground 5 km from the pad (12 km, FOV 60 for a twilight launch), the camera on the stack, the stack selected, no camera lock.
 - **Release from a stack**: Starship's door and flat stacks push satellites mostly up and a little retrograde (0.97, -0.24 of the separation speed), so the train drifts ~2.8 km an orbit away from the ship instead of returning to it every orbit; columns unchanged.
 - **Vents**: a returning Starship dumps what is left as a controlled jet out of its aft end along its axis, 20 min before its deorbit burn (>= 3 h after deployment); expendable stages keep the spinning dump spiral after their deorbit burn.
 - **Plume budget** (384 Gaussians): parcels are thinned by width (sigma / spacing > 3, 6, 12, 24 -> every 2nd .. 16th), and each launch is reserved its strongest min(48, half the budget / launches) Gaussians, so an older bell fades over ~1.5 min instead of vanishing when a new launch starts.
