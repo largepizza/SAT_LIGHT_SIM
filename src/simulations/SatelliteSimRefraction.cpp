@@ -9,6 +9,8 @@
 // slices and the green rim / flash come out of the same tracer), updateStars() places and twinkles the stars with it.
 #include "SatelliteSim.h"
 #include "../FrameProfile.h"
+#include "Log.h"
+#include <cstdio>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -52,8 +54,17 @@ refr::Profile SatelliteSim::refrProfileAt(double simT) const
     refr::Profile p;
     const double lat = obsLatDeg, lon = obsLonDeg;
     const bool sea = oceanAt(glm::radians(lat), glm::radians(lon));
-    p.T0 = 273.15 + (double)cv2EyeTempC;
     p.surfaceZ = sea ? 0.0 : std::max((double)obsGroundM(), 0.0);
+    // T0 is the air zRef above the SURFACE: the eye temperature's sea-level climate (SatelliteSimCloudsV2.cpp, the
+    // rain block's tC: keep in step) less 6.5 C/km to the surface. It was 273.15 + cv2EyeTempC, the air at the EYE:
+    // from ~33 km up T0 fell below ~70 K, the profile's standard atmosphere passed 0 K above it, every table entry
+    // was NaN and refr::lookup indexed the table with (int)NaN (the 2026-10-26 crashes climbing to orbit).
+    const double latR = glm::radians(lat);
+    const double sunDec = std::asin(std::clamp((double)glm::normalize(sunDirECI).z, -1.0, 1.0));
+    const double season = (sunDec / glm::radians(23.44)) * (lat >= 0.0 ? 1.0 : -1.0);
+    const double tSurfC = -18.0 + 45.0 * std::pow(std::cos(latR), 1.5) + std::min(0.25 * std::abs(lat), 15.0) * season
+                        - 0.0065 * (p.surfaceZ + p.zRef);
+    p.T0 = std::clamp(273.15 + tSurfC, 200.0, 330.0);
     // The surface layer. Over the sea the water is usually warmer than the air above it at dusk (0.4-2 K in the
     // subtropics: the Omega / Etruscan-vase sunsets), now and then colder (warm air advected over a cold current:
     // a looming, superior-mirage sea). Over land the ground heats by day and cools after sunset.
@@ -161,6 +172,31 @@ void SatelliteSim::refrDerive()
         g.info = glm::vec4(0.0f);
         return;
     }
+    {
+        int bad = 0, firstBad = -1;
+        for (int i = 0; i < refr::kTableN; ++i)
+        {
+            const refr::Entry &e = t.e[i];
+            if (!std::isfinite(e.dR[0]) || !std::isfinite(e.dR[1]) || !std::isfinite(e.dR[2]) || !std::isfinite(e.colR))
+            {
+                if (firstBad < 0) firstBad = i;
+                ++bad;
+            }
+        }
+        static int logged = 0;
+        if ((bad || !std::isfinite(t.c) || !std::isfinite(t.alpha) || !std::isfinite(t.eC)) && logged < 3)
+        {
+            ++logged;
+            const refr::Profile &p = refrProfileUsed;
+            char buf[512];
+            std::snprintf(buf, sizeof buf,
+                          "refraction: table has %d non-finite entries (first %d), map eC %g c %g alpha %g u0 %g, h0 %g; profile "
+                          "surfaceZ %g T0 %g P0 %g dTs %g invZ %g invDz %g invDT %g cnSurf %g",
+                          bad, firstBad, t.eC, t.c, t.alpha, t.u0, t.h0, p.surfaceZ, p.T0, p.P0, p.dTs, p.invZ, p.invDz,
+                          p.invDT, p.cnSurf);
+            Log::line(buf);
+        }
+    }
     // The primary image: from the top down while the true elevation keeps falling.
     refrInv.clear();
     double minT = 1e9;
@@ -210,6 +246,20 @@ void SatelliteSim::refrDerive()
     }
     else if (!refrInv.empty())
         eApp = eS + (refrInv.front().y - refrInv.front().x);
+    if (!std::isfinite(eApp) || !std::isfinite(refrSunVis))
+    {
+        static int loggedSun = 0;
+        if (loggedSun++ < 3)
+        {
+            char buf[384];
+            std::snprintf(buf, sizeof buf, "refraction: non-finite Sun (eS %g eApp %g vis %g sunDirENU %g %g %g %g, inv %zu, obsDir %g %g %g, h %g)",
+                          eS, eApp, refrSunVis, sunDirENU.x, sunDirENU.y, sunDirENU.z, sunDirENU.w, refrInv.size(),
+                          obsDir.x, obsDir.y, obsDir.z, obsHeightOffset);
+            Log::line(buf);
+        }
+        eApp = std::isfinite(eS) ? eS : 0.0;
+        if (!std::isfinite(refrSunVis)) refrSunVis = 0.0;
+    }
     refrSunR = eApp - eS;
     refr::Entry ce;
     double dRg;

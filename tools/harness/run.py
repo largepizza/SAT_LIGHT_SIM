@@ -28,7 +28,8 @@ def find_exe(config):
             os.path.join(REPO, "build", config, "SAT_LIGHT_SIM_V_*")]
     found = []
     for p in pats:
-        found += [f for f in glob.glob(p) if os.path.isfile(f)]
+        # the extensionless pattern is for Linux / macOS builds; never pick up the .pdb beside the exe
+        found += [f for f in glob.glob(p) if os.path.isfile(f) and os.path.splitext(f)[1] in ("", ".exe")]
     if not found:
         sys.exit(f"no built app under build/{config} - build it first "
                  f"(cmake --build build --config {config} --target SatLightSim)")

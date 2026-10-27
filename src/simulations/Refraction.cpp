@@ -270,6 +270,13 @@ bool lookup(const Table &t, double eApp, double &dRg, Entry *outI)
         return false;
     }
     const double u = t.uOf(eApp);
+    if (!std::isfinite(u))
+    {
+        // A NaN index cast to int reads far outside the table (the 2026-10-26 crash): no refraction instead.
+        dRg = 0.0;
+        if (outI) *outI = Entry{};
+        return false;
+    }
     if (u >= 1.0)
     {
         dRg = t.topScale * saemundsson(eApp);
