@@ -5,14 +5,15 @@ on the planet. This page describes that field: its inputs (a weather cube baked 
 noise volumes, a morphology texture made from satellite imagery), how it moves and evolves, and how the low,
 mid and high layers and the cumulonimbus towers are built from them. How the field is ray-marched and lit is in
 [The cloud march](march.md); how the march is accumulated over frames, and the far-orbit stand-in, are in
-[Temporal resolve and the far layer](temporal.md); rain, lightning, fog and dust are in
+[Temporal resolve and the far layer](temporal.md); where storms come from and how they are carried to the GPU is in
+[Storms in the cloud field](storms.md); rain, lightning, fog and dust are in
 [Weather, rain, lightning, fog](weather.md).
 
 ## One field for every consumer
 
 Every pass that needs to know "is there cloud here" calls the same function, `cv2Field()` in
 `shaders/include/clouds_v2.glsl`, so the clouds a Reflect beam is blocked by, the shadow on the ground, the Sun
-shadow lattices and the cloud on screen are the same cloud.
+transmittance volume and the cloud on screen are the same cloud.
 
 ```mermaid
 flowchart LR
@@ -21,19 +22,21 @@ flowchart LR
     N[noise volumes<br/>shape, detail, meso]
     M[morphology texture<br/>MODIS imagery]
   end
-  subgraph cpu[CPU, per frame, double]
+  subgraph cpu[CPU, per frame]
     A[anchors, drift, flow phase]
+    S[storm buffer<br/>towers, shields, dust walls]
   end
   W --> F["cv2Field(p, detailAmt, footprint)"]
   N --> F
   M --> F
   A --> F
+  S --> F
   F --> V[view march + light march]
-  F --> G[ground shadow]
+  F --> CDC[density clipmap bake]
+  F --> L[lightning pass:<br/>Sun transmittance volume, cloud over the ground,<br/>eye rain map, flash and tornado probes]
   F --> B[Reflect-beam occlusion]
-  F --> L[lightning pass:<br/>flash column probe, eye rain map,<br/>eye Sun ray, Sun shadow lattices]
+  F --> R[weather radar]
   F -.2D copy.-> FAR[far cloud layer<br/>cv2FarColumn]
-  F -.column copies.-> LM[layer shadow map<br/>cv2MidColumn, cv2HighColumn]
 ```
 
 | Consumer | Shader | `detailAmt` | Footprint |
@@ -41,12 +44,14 @@ flowchart LR
 | View march, fine steps | `cloud_v2_march.comp` | 1 near, fading to 0 between 8.9 and 36 km | pixel width at the sample's distance |
 | View march, coarse steps | same | −1 (no erosion: an upper bound) | same |
 | Light march (first two steps) | same, `lightAmbOD()` | as the view sample | the view sample's, or "Light march footprint" × its length |
-| Light march (other steps), sky probe, beam steps | same | 0 (mean erosion) | as above |
-| Ground shadow | `cloud_march.comp`, `cloudGroundShadowV2()` | 0 | the shadow step's length |
+| Light march (other steps, far sample, march away from the light), sky probe, beam steps | same | 0 (mean erosion) | as above |
+| Density clipmap bake | `cloud_v2_cdc.comp` | −1 (occupancy); 0 (the light extinction's moments) | the march's footprint at the cell |
+| Sun transmittance volume bake | `cloud_v2_lightning.comp` | 0 | max(150 m, a quarter cell) |
+| Cloud over the ground map | same | −1 | max(100 m, an eighth of a cell) |
+| Eye Sun ray, rain light at the eye | same | 0 | about half the step |
+| Eye rain map; flash column probe; tornado column probe | same | −1; −1; 0 | 40 m; 400 m; 60-100 m |
 | Reflect-beam occlusion | `beam_self_march.comp` | 0 | 60 m |
-| Eye rain map; flash column probe | `cloud_v2_lightning.comp` | −1 | 40 m; 400 m |
-| Eye Sun ray; Sun shadow grid, cascade and shaft rings | same | 0 | about half the step |
-| Layer shadow map | `cloud_v2_layers.comp` | mid and high layers only (`cv2MidColumn()`, `cv2HighColumn()`) | 100 m |
+| Weather radar | `weather_radar.comp` | −1 | the radar cell |
 | Far cloud layer | `cloud_v2_far.comp` | 2D column only (`cv2FarColumn()`) | pixel ground footprint |
 
 The `detailAmt` argument decides erosion: a positive value fetches the detail volume at that strength, 0 uses
@@ -57,17 +62,18 @@ noise read is mip-mapped at that footprint, so detail finer than a pixel average
 
 !!! warning "Invariant"
     Every consumer must bind the same inputs that decide **where** cloud is: the weather cube, the shape and
-    meso volumes and the morphology texture (`CV2_MORPH_BINDING`). A pass that omits the morphology texture
-    places its clouds somewhere else. Only the detail volume is optional: it changes the clouds' texture, not
-    their placement, and passes that omit it use the mean erosion.
+    meso volumes, the morphology texture (`CV2_MORPH_BINDING`) and the storm buffer (`CV2_STORM_BINDING`). A pass
+    that omits the morphology texture places its clouds somewhere else; one that omits the storm buffer has no
+    towers and no anvils. Only the detail volume is optional: it changes the clouds' texture, not their placement,
+    and passes that omit it use the mean erosion.
 
 !!! warning "Invariant"
-    Two hand-kept copies must follow the field. `cv2FarColumn()` is a 2D copy of `cv2FieldLow()`'s placement
-    (same flowed weather lookup, same coarse fraction, same cell and imagery blend): change the low layer's
-    placement in both, or the far layer and the march disagree across their cross-fade. `cv2MidColumn()` and
-    `cv2HighColumn()` (`shaders/include/cv2_layer_map.glsl`) are copies of `cv2MidSigma()` and `cv2HighSigma()`
-    with their 2D terms evaluated once per column, including `cv2Field()`'s two suppressions (the mid layer under
-    Cb storms, cirrus under anvils): change the layers in both, or their far shadows fall elsewhere.
+    `cv2FarColumn()` is a hand-kept 2D copy of `cv2FieldLow()`: the same flowed weather lookup, coarse fraction,
+    cell and imagery blend, and a bisection that finds where the low layer's **eroded** density at the cloud's widest
+    point survives (the small-cumulus lift, the convective profile's cap and minimum, the surface ramp, the sub-pixel
+    share, the mean erosion with billow and wisps). Change the low layer's placement, profile or erosion in both, or
+    the far layer and the march disagree across their cross-fade
+    ([Temporal: the far cloud layer](temporal.md#the-far-cloud-layer)).
 
 ## Coordinates and anchors
 
@@ -109,7 +115,7 @@ clouds evolve on top of the map's drift instead of sliding as one rigid sheet.
 ### Drift: the map moves with the wind
 
 The source cloud map drifts in longitude. One angle drives every consumer (the volumetric field, the flat
-layers, cirrus, beam occlusion, the ambience's cloud driver):
+layers, cirrus, beam occlusion, the storms' frame, the ambience's cloud driver):
 
 \[
 \phi_\text{drift} = \text{rate} \times (t - t_\text{epoch}) + \text{offset} \pmod{2\pi}
@@ -133,19 +139,23 @@ height (`cv2Ground()`), read at the Earth-fixed direction, because the terrain d
 
 ## The weather cube
 
-`cv2WeatherTex` is a cube map, 1024 × 1024 RGBA8 per face with 8 mips, baked by `cloud_v2_weather.comp` from
-the 8K equirectangular cloud map, the water map and the DEM. A cube rather than the equirect source means no
-`atan`/`asin` per sample, no seam at the antimeridian and no pinching at the poles. Mip 0 is about 12 km per
-texel at a face centre and about 6 km near the corners; the source map's own texels are about 5 km at the
-equator. Each mip is baked directly from the source at a matching source mip, not box-filtered from the
-level above.
+`cv2WeatherTex` is a cube map, 2048 × 2048 RGBA8 per face with 9 mips, baked by `cloud_v2_weather.comp` from
+the 8K equirectangular cloud map, the water map and the DEM, with the storms' own cloud stamped in
+([Storms: the weather bake's storm stamp](storms.md#the-weather-bakes-storm-stamp)). A cube rather than the
+equirect source means no `atan`/`asin` per sample, no seam at the antimeridian and no pinching at the poles. Mip 0
+is about 6 km per texel at a face centre and about 3 km near the corners, matching the source map's own ~5 km
+texels at the equator.
 
 | Channel | Meaning | How it is made |
 |---|---|---|
-| R | coverage, stored as map brightness | Mip 0: the map's brightness, 2 × 2 supersampled. Mips ≥ 1: a brightness chosen so that the coverage formula below returns the **true mean coverage** of the N × N fine taps under the texel |
-| G | cloud type, 0..1 across the type table | classified (below) |
-| B | precipitation, 0..1 | deep cloud × convective-to-Cb type, plus some from deep stratiform |
-| A | ground height / 8 km | the DEM, 2 × 2 supersampled at the mip's scale; read Earth-fixed |
+| R | coverage, stored as map brightness | Mip 0: the map's brightness through both advected copies (below), 2 × 2 supersampled, with the storm stamp and the growth terms. Coarser mips: a brightness chosen so that the coverage formula below returns the **true mean coverage** of the N × N fine taps under the texel |
+| G | cloud type, 0..1 across the type table | classified (below); mip 0 takes mip 1's |
+| B | precipitation, 0..1 | deep cloud × convective-to-Cb type, plus some from deep stratiform; computed at mip 0 from its own coverage |
+| A | ground height / 8 km | the DEM at the mip's scale; mip 0 takes mip 1's; read Earth-fixed |
+
+**Logical mips.** Every read except the low layer's fine placement names the mip of a 1024-texel cube it was tuned
+against, `CV2_WX_LOD(l)` = l + 1, so types, rain, ground and the coarse lookups keep their scale; only
+`cv2WeatherSmooth()`'s fine read uses the 2048 level. On this page "mip n" means logical mip n.
 
 **Coverage.** Every consumer turns R into a cloud fraction the same way:
 
@@ -164,45 +174,53 @@ average to a brightness near the threshold). Storing the brightness whose covera
 makes a coarse read a real cloud fraction, which the low layer's placement and the far layer rely on.
 
 **Type classification.** The imagery carries no cloud type, so the bake infers one. Starting at 0.25
-(stratocumulus), the type rises with convective texture (the local standard deviation of brightness over about
-8 texels), with deep (bright) convective cloud, more so in the tropics and over land, and falls for smooth cloud
-over cold ocean (stratus). The result is rough by construction, which is why the type is always interpolated
-across the table rather than switched.
+(stratocumulus), the type rises with convective texture (the local standard deviation of brightness), with deep
+(bright) convective cloud, more so in the tropics and over land, and falls for smooth cloud over cold ocean
+(stratus). The result is rough by construction, which is why the type is always interpolated across the table
+rather than switched. With storm objects on, the map's own bright broken regions stop at congestus: cumulonimbus
+comes from the storms.
 
 **Read paths.** The cube is read four ways, chosen by what the read feeds:
 
 | Function | Filtering | Used for |
 |---|---|---|
 | `textureLod` | hardware | early-outs; mid, high, anvil and fog lookups |
-| `cv2WeatherSmooth()` | C1-smooth: the fractional texel coordinate is smoothstep-remapped before one fetch | the low layer's mip-0 lookup (linear filtering of coarse texels draws flat facets with straight creases, which tall clouds extrude into walls) |
-| `cv2WeatherBilinear()` | four texel-centre fetches blended in float | Cb tower strength at mip 3 |
+| `cv2WeatherSmooth()` | C1-smooth: the fractional texel coordinate is smoothstep-remapped before one fetch | the low layer's mip-0 lookup (linear filtering draws flat facets with straight creases, which tall clouds extrude into walls) |
+| `cv2WeatherBilinear()` | four texel-centre fetches blended in float | reads scaled up by a large factor |
 | `cv2Ground()` | alpha × 8000 at mip 1.5, cached once per field sample | terrain-relative bases |
+
+A compile-time option, `CV2_WX_BSPLINE`, reads the fine level as a cubic B-spline from four bilinear fetches:
+smoother outlines from orbit for about 0.3 ms, but it thins a hurricane's narrow arms.
 
 !!! warning "Invariant"
     Never read a displacement, or anything multiplied up by a large factor, through a hardware-filtered 8-bit
     texture. Hardware bilinear uses 8-bit sub-texel weights, so a mip-3 read (~40 km texels) moves in ~150 m
-    steps. Scaled to a 15 km tower radius, that draws vertical flutes up the tower wall; this is why tower
-    strength uses `cv2WeatherBilinear()` and why the flow field is analytic.
+    steps; scaled to a 15 km radius that draws vertical flutes up a tower wall. This is why such reads use
+    `cv2WeatherBilinear()` and why the flow field is analytic.
 
 ### Weather evolution
 
-The cube is re-baked as sim time advances (`SatelliteSim::recordWeatherEvolution()`): one face per frame,
-with all its mips, whenever a face lags by about 300 m of evolution wind drift (between 5 and 120 s of sim
-time) or the evolution settings change. Inside the bake:
+The cube is re-baked as sim time advances (`SatelliteSim::recordWeatherEvolution()`). A face is due once it lags by
+about 300 m of evolution wind drift (between 5 and 120 s of sim time), or by "Weather cube tick" (10 s) while storms
+are stamped; faces out of view are due at a quarter of the rate. At ordinary speed a due face is baked over four
+frames of rows; in time warp the faces in view go by a quota per frame, all at one sim time, and only the part of
+each in-view face the eye can see is baked at the fine levels. The schedule is described with the storm stamp on
+[Storms: when faces are re-baked](storms.md#when-faces-are-re-baked). Inside the bake:
 
 - **Advection.** The map is read through **two copies** advected backward along a slow analytic curl wind
   (eight waves of about 4000 km, turning over a day). Each copy lives over its own window P ("Weather evolution
-  window", 0.1 h); the two are offset by P/2 and weighted by \( \sin^2 \) of their phase, so the weights sum to
+  window", 0.01 h); the two are offset by P/2 and weighted by \( \sin^2 \) of their phase, so the weights sum to
   1 and each copy fades out before it resets. This is the flow-map double-phase technique: the map moves
   locally but never drifts away from itself (the displacement is at most wind × P).
 - **Growth and decay.** Coverage is raised or lowered by a smooth field of about 1500 km whose waves cycle over
-  10 to 30 h. The type and precipitation are classified from the new coverage, so storms strengthen and weaken.
+  10 to 30 h. The type and precipitation are classified from the new coverage, so convection strengthens and weakens.
 - **Afternoon land convection.** Over land where the Sun stood high three hours ago and the map has cloud
-  nearby, coverage rises by up to 0.2 and the type is pushed toward congestus and cumulonimbus. The map is one
-  moment's clouds; this supplies the diurnal cycle it cannot carry.
+  nearby, coverage rises by up to 0.2 and the type is pushed toward congestus. The map is one moment's clouds;
+  this supplies the diurnal cycle it cannot carry.
 
 Setting the evolution wind, growth and diurnal terms to 0 reproduces the static map. The rigid drift above
-applies on top. A face bake costs about 0.1 ms.
+applies on top. A face costs about 0.7 to 1.3 ms to bake on an RTX 3070 Ti (level 0 about 0.4 ms plus the storm
+stamp).
 
 ## Noise volumes
 
@@ -211,9 +229,14 @@ a power of two and wraps with a bit mask, so each volume tiles exactly.
 
 | Volume | R | G | B | A |
 |---|---|---|---|---|
-| shape | Perlin-Worley | inverted-Worley fBm, 4/8/16 cells | inverted-Worley fBm, 8/16/32 | Perlin fBm |
+| shape | Perlin-Worley | Worley lobes, 4/8/16 cells | Worley lobes, 8/16/32 | Perlin fBm |
 | detail | smooth-F1 inverted-Worley fBm, 4/8/16 (no creases) | same, 16/32/64 | Perlin fBm | Perlin fBm |
 | meso | cluster: Worley lifted by Perlin | cumulus cells: three sizes of domed blobs (8/16/32 per period), soft-unioned, Perlin-warped and clumped | closed cells: Voronoi rims (0 on the rim, 1 inside) | Perlin fBm |
+
+The shape volume's lobe channels (G, B) are built as **rounded caps**, each Worley feature a dome
+\( x/\sqrt{x + 0.04} \) with \( x = 1 - (F_1/0.7)^2 \), remapped to the mean and spread of the cone profile it
+replaces: rounder cauliflower lobes, clouds in the same places. "Cap lobes" (`shape_caps`, on) chooses between the
+two volumes by swapping a descriptor.
 
 The meso volume is read on the sea-level sphere, so it is constant along a vertical: it decides where clouds
 are, the shape and detail volumes decide their 3D form.
@@ -261,6 +284,8 @@ bunching them into folds. Its amplitude is "Flow warp" (0.018 of the period, cap
   shear, and stretched cells extrude into fins. Local convection is placed by the flow, not deformed by it.
 - `cv2Field()` evaluates it once per sample (`gCv2FlowSet`); every layer that follows the low cloud's weather
   reads the same flowed direction (`cv2FlowWeatherDirAt()`), or it would sit up to ~100 km from its systems.
+- The storms' weather stamp is placed at each tower's **flowed** position through a double-precision CPU copy of
+  this function ([Storms: the envelope index](storms.md#the-envelope-index)).
 
 !!! warning "Invariant"
     Keep a warp's shear (\( |\nabla D| \approx A \cdot 2\pi/\lambda \)) well under 1. Above 1 the warp folds the
@@ -274,32 +299,37 @@ cv2Field(q, detailAmt, footprint):
     ground = cv2Ground(dirE)                   once per sample (gCv2Ground)
     col    = cv2ColumnSigma(q)                 Cb towers; sets the rain core and storm proximity
     f      = cv2FieldLow(q, ..., col.prox)     low layer, stratus .. storm cumulus, rain shafts
+    f     *= 1 − clear air ahead of a haboob   (kCv2DustOn builds only)
+    f     += dust wall                         haboob walls; f.soft = −its share
     f     += cv2MidSigma(q) × (1 − storm)      altocumulus / altostratus; f.soft = its share
     f     += col                               towers
-    f     += cv2AnvilSigmaP(q)                 map-fed anvil shield (off by default)
+    f     += cv2AnvilSigmaP(q)                 anvil shields
     f     += cv2HighSigma(q) × (1 − anvil)     cirrus family; f.thin = its share
 ```
 
-The towers run first because the low layer needs their proximity and the rain core under them. The result is
-a `CV2Field`; layers combine through `cv2Add()`, where extinctions sum, `topH` takes the maximum and `deck` is
+The towers run first because the low layer needs their proximity and the rain core under them. The haboob terms
+(the dust wall, and the clearing of low cloud ahead of a gust front) are described on
+[Storms: haboob dust walls](storms.md#haboob-dust-walls); the march is built with and without them. The result
+is a `CV2Field`; layers combine through `cv2Add()`, where extinctions sum, `topH` takes the maximum and `deck` is
 a density-weighted mean.
 
 | Member | Meaning | Read by |
 |---|---|---|
 | `sigma` | extinction, 1/m | everyone |
-| `hf` | height fraction within this cloud, 0 base to 1 top | powder, ambient, ground bounce |
+| `hf` | height fraction within this cloud, 0 base to 1 top | ambient, light from below, ground bounce, the diffuse field's far side |
 | `msBright`, `ambient` | per-type multiple-scattering and ambient multipliers (dimmed in lobe creases) | march lighting |
 | `deck`, `topH` | stratiform share; the cloud top's altitude | the march's grazing-light shadow on decks |
 | `thin` | share of extinction that is high-layer ice | cheap lighting, ice phase, delta scaling, shadow bakes |
-| `soft` | share of extinction that is the mid layer | "Mid layer shadow", silver lining, shadow bakes |
-| `rain` | 1 for a rain-shaft sample | rain phase, the eye's rain map |
+| `soft` | share of extinction that is the mid layer; **negative**: a haboob's dust share | "Mid layer shadow", silver lining, shadow bakes (as max(soft, 0)); the dust tint |
+| `rain` | share of extinction that is rain | rain phase, the eye's rain map, shadow bakes (at 15 percent) |
 
 !!! warning "Invariant"
     The march inlines `cv2Field()` at each call site, and its speed is set by register allocation (see
     [The cloud march](march.md#design-constraints)). Adding anything to `cv2Field()` or `CV2Field`, even an
     unused struct member, can push the march from 128 to about 220 registers and cost 20 to 60 percent. This
-    is why fog and dust are a separate function with their own march. Removing code is often what brings the
-    march back to 128 registers; folding maths into fewer variables usually does not.
+    is why fog and dust are a separate function with their own march, and why the dust wall's share rides in the
+    sign of `soft`. Removing code is often what brings the march back to 128 registers; folding maths into fewer
+    variables usually does not.
 
 ## The low layer
 
@@ -320,6 +350,19 @@ A five-row table (`cv2Types` in `SatelliteSim.h`), interpolated linearly by the 
 The vertical span is scaled by `cv2Tropo()`, the tropopause height by latitude: ×1.35 in the tropics down to
 ×0.8 at the poles. Nimbostratus is a stratiform deck thickened by up to 3.5 km where the map rains.
 
+### Early outs
+
+Most samples in a storm view lie above any low cloud (in the anvil and cirrus band), so the function returns before
+its texture reads wherever that can be known:
+
+- **The exact top bound.** The CPU computes, each frame, the largest top any mix of two adjacent types can reach at
+  the tropopause factor's two ends (`anvil3.zw`; the bound is convex in the factor, so the shader interpolates
+  between them). A sample above it, plus the ground, returns at once unless a tower is within reach.
+- **Near a tower** the bound is the storm cumulus target ("Storm cumulus top" × its regional variation), first at
+  its largest value, then with its real value here once the cluster field has been read.
+- **The coarse weather read.** A 20 km read at the flowed position returns where it holds less than a sixteenth
+  of one cloudy texel.
+
 ### Terrain-relative heights
 
 Bases and tops follow the ground, smoothed over tens of km. The regional ground (mip 4, about 80 km, never
@@ -338,7 +381,7 @@ One placement serves every distance; a wider footprint only filters it.
    ("Weather warp", 7 km) that hides the cube's texels, read C1-smooth: this gives `cov`. A coarse fraction
    `covF` is read at mip 2 (about 20 km), and the threshold uses `covT = max(cov, 0.5·covF)`, so scattered
    cloud can appear inside a clear 5 km texel of a broken region.
-2. **Field value.** A convective field built from the cumulus cells (the coarse cells for deep types, giving
+2. **Field value.** A convective field built from the cumulus cells (the coarse cells for deep cloud, giving
    wider towers), clustered by the cluster channel; a stratiform field built from the closed-cell rims and
    cells; mixed by the type's convective weight.
 3. **Mesoscale term.** The cluster Perlin at 1×, 4× and 16× (a normal deviate `fz`) is mixed with the imagery
@@ -355,6 +398,11 @@ One placement serves every distance; a wider footprint only filters it.
    `presFar = clamp(0.5 + (field − thr) / (2.5 σ_U))`, where σ_U is the cell variance the mip averaged
    away. This is a haze of the right opacity at the same place, never a second placement.
 
+**Deep cells.** A cloud uses the coarse (several-km) cells, read two mips coarser and four for the cell scale,
+wherever its type is deep (congestus and up) **or** its own height span passes about 3.5 to 8 km. The storm cumulus
+round a tower is raised to "Storm cumulus top" on a cumulus-typed map; built on the fine 1-2 km cells it would stand
+as rows of narrow spires, where a tall cloud is about as wide as it is deep.
+
 ### Shape: a 3D margin, not a heightfield
 
 A heightfield cannot bulge or undercut, so a cloud built as "2D presence under a top height" is a can with
@@ -365,22 +413,22 @@ m = m_0(e, z) + 2(A + A_\text{sh}) \cdot \text{lobes}(x, y, z) - \frac{g_\text{b
 \]
 
 - **Convective profile** (cumulus to Cb). Each **cell** is one cloud. Its top T comes from the cell-scale
-  strength (the cells read two mips coarser, four for deep types), at most "Tower top" (0.85) of the span, and
-  varies across a field: by region and, on shallow types, by fine cell, by "Cumulus height variation" (0.6), with
-  a floor that falls from 0.25 to 0.12 of the span as the variation rises, so a weak cell is a small puff. The
-  strength a column needs to reach height \( \zeta = z/T \) is parabolic about the cloud's widest point (0.55 to
-  0.65 of T): more at the base (a narrower stem, scaled by "Top-heavy", 1.0, for tall cells only) and
-  \( 1 + 0.5 \) × "Cumulus top headroom" (0.5) at the top, past what a column has, so tops are shaped by the field
-  and the lobes rather than cut flat at one level. The column's strength is capped by the cells' own dome with a
-  smooth minimum, so a dense field keeps a turret over each cell instead of a flat mesa.
+  strength, at most "Tower top" (0.85) of the span, and varies across a field: by region and, on shallow types, by
+  fine cell, by "Cumulus height variation" (0.6), with a floor that falls from 0.25 to 0.12 of the span as the
+  variation rises, so a weak cell is a small puff. The strength a column needs to reach height \( \zeta = z/T \) is
+  parabolic about the cloud's widest point (0.55 to 0.65 of T): more at the base (a narrower stem, scaled by
+  "Top-heavy", 1.0, for tall cells only) and \( 1 + 0.5 \) × "Cumulus top headroom" (0.5) at the top, past what a
+  column has, so tops are shaped by the field and the lobes rather than cut flat at one level. The column's
+  strength is capped by the cells' own dome with a smooth minimum, so a dense field keeps a turret over each cell
+  instead of a flat mesa.
 - **Stratiform profile.** `e − 1.2 · smoothstep(0.3, 1, z / zTop)`: a flat base and a lumpy top. A deck's
   thickness and base follow a km-scale variation (`deckVar`, from the closed cells and Perlin), so a thicker
   part hangs lower and an overcast seen from below shows texture in the light it transmits. A deck type other
   than stratus is shaped as cells where coverage is low (fading over 0.25 to 0.65), so a broken deck is shallow
   cumulus rather than a smooth lens a few hundred metres thick; placement is unchanged.
-- **Lobes.** Inverted-Worley octaves of the shape volume, in field units: cauliflower lobes, overhangs and
-  necks. Decks use "Lobes (3D)" (0.21), × 2.4 on stratocumulus. On convective types the strength runs with height
-  from "Cumulus lobes (bottom)" (0.044) to "(top)" (0.23), multiplied by 2.5, and varies by region by "Lobe
+- **Lobes.** Worley octaves of the shape volume, in field units: cauliflower lobes, overhangs and necks. Decks
+  use "Lobes (3D)" (0.21), × 2.4 on stratocumulus. On convective types the strength runs with height from
+  "Cumulus lobes (bottom)" (0.044) to "(top)" (0.23), multiplied by 2.5, and varies by region by "Lobe
   variation" (0.5). Lobes fade at large footprints and are damped near the base by "Base flatness" (0.91).
 - **Lobe lift.** As a margin alone the lobes move a dome's top by tens of metres, because the profile is steep
   there. To first order they also **lift** a convective cloud's upper surface by 900 m × their strength, at most
@@ -409,7 +457,7 @@ m = m_0(e, z) + 2(A + A_\text{sh}) \cdot \text{lobes}(x, y, z) - \frac{g_\text{b
   fades. The fine octave's share rises close to the eye (below an 80 m footprint). Near the base it bites lumps
   (wispy); higher up it bites the cracks between them (billows). The strength is the type's erosion × "Erosion
   detail" (0.77), varied by region by "Erosion variation" (0.6), reduced to "Interior erosion" (0.74) deep inside
-  dense cloud (full erosion holes the interior), and × "Storm erosion" (0) on deep convection. Cumulus bases keep
+  dense cloud (full erosion holes the interior), and × "Storm erosion" (0.24) on deep convection. Cumulus bases keep
   less of it, so bases read flat.
 - **Wisps.** "Cumulus wisps" (0.5) raises the erosion 1.7× and releases the edge sharpening on weak cells (`e`
   under 0.05 to 0.3) and on the parts of formed clouds the shape volume's Perlin channel picks (a flank, a
@@ -433,33 +481,39 @@ rate    = max(rain · smoothstep(0.3, 0.8, e) · mix(0.4, 1, convective),  rainC
 
 `shaft` is the shape volume read in a frame compressed 85 percent vertically (streaks that fall) and slanted
 downwind below the base, read 1.5 mips coarser so curtains are soft; sub-pixel curtains fade to a mean of 0.45.
-`rainCore` (`gCv2RainCore`) is heavy rain under each anvil-reaching tower, 2.5 times longer downwind, set by
-the tower search. Rain samples are marked `rain = 1`. The shell floor drops to 0 m whenever rain, fog or ice fog
-is enabled, so rain reaches the ground. How rain is seen is in [Weather](weather.md#rain-shafts).
+`rainCore` (`gCv2RainCore`) is heavy rain under each dominant tower's body, set by the tower search. Rain falls
+from **inside** the cloud: up to 400 m above the base the same shaft is a rain floor that the cloud's samples start
+from, thickening toward the base and fading out inside the cloud, so the shafts and the drops at the eye do not end
+a few hundred metres under a visible base. Rain carries its share in `f.rain`. The shell floor drops to 0 m
+whenever rain, fog or ice fog is enabled, so rain reaches the ground. How rain is seen is in
+[Weather](weather.md#rain-shafts).
 
 ## The mid layer: altocumulus and altostratus
 
 `cv2MidSigma()` adds an independent layer so clouds overlap in altitude.
 
 - **Lens.** Base 3.0 to 5.6 km plus 0.8 × the ground, thickness 450 to 1200 m × "Mid layer thickness" (1.0),
-  from the cluster Perlin stretched to ±2 σ (read raw it would be one flat sheet).
+  from the cluster Perlin stretched to ±2 σ (read raw it would be one flat sheet). The base and top **wander** by up
+  to ±450 m over a few km (the shape volume at the layer's own period, already read for the cloudlets): with only
+  the cluster-scale height the sheet is flat over the tens of km a view along it crosses, and seen edge-on from near
+  its height its top and base line up into a straight strip across a storm.
 - **Regime.** Where the cluster field (blended with the closed-cell morphology) crosses a threshold biased by
-  coverage over about 80 km ("Layer spread", 0.69: 0 ties it to the low cloud below, 1 spreads it over whole
+  coverage over about 80 km ("Layer spread", 0.57: 0 ties it to the low cloud below, 1 spreads it over whole
   systems) and by "Mid layer cover bias" (0, in standard deviations of the regime noise), scaled by "Mid layer
-  (Ac/As)" (1.1). "Mid layer field size" (0 km) replaces most of the cluster field with the regime's own noise
+  (Ac/As)" (0.75). "Mid layer field size" (0 km) replaces most of the cluster field with the regime's own noise
   at that size on the flowed sphere: 700 km gives sheets hundreds of km across instead of patches. It fades in
   with coverage and is never switched on by `cov > 0` alone, because the source map is a JPEG whose 8 × 8 blocks
   hover around the clear threshold.
 - **Forms.** Altocumulus cloudlets (the shape volume at "Mid layer period", 5300 m) where the low cloud is
   broken; a translucent altostratus sheet where it is stratiform. Past a 400 to 3000 m footprint cloudlets
   become a haze of their area fraction, drawn from the closed-cell morphology.
-- **Storms.** It gives way wherever Cb towers can stand, or it would slice each tower with a flat plate.
-- Extinction 0.035 (Ac) or 0.004 × "Altostratus density" (2.5) (As), × "Mid layer density" (0.3).
+- **Storms.** It gives way wherever towers stand (the towers' storm strength), or it would slice each tower with
+  a flat plate.
+- Extinction 0.035 (Ac) or 0.004 × "Altostratus density" (2.5) (As), × "Mid layer density" (0.47).
 - **Shadow.** The layer's share of the extinction is `f.soft`. The shadow it casts on other cloud (in the light
-  march and the cascade) counts only "Mid layer shadow" (0.3) of it: a sheet crossed at a grazing Sun is an
-  optical depth of tens along an 8 km light march, which draws a hard horizontal shadow line across every
-  cumulus rising through it. Its far shadow comes from the layer shadow map
-  ([march](march.md#the-layer-shadow-map)).
+  march and the Sun transmittance volume) counts only "Mid layer shadow" (0.3) of it: a sheet crossed at a grazing
+  Sun is an optical depth of tens along a light march, which draws a hard horizontal shadow line across every
+  cumulus rising through it.
 
 ## The high layer: cirrus, cirrostratus, cirrocumulus
 
@@ -481,53 +535,48 @@ is enabled, so rain reaches the ground. How rain is seen is in [Weather](weather
 - **Other forms.** Cirrostratus veils where the map is stratiform; cirrocumulus patches by a cluster channel.
 - **Distance and inside views.** Fibres far below a pixel become a banded haze; from inside the layer (view
   footprint under 20 m) they become the layer's mean haze, since an observer in cirrus sees a soft veil.
-- **Interactions.** It gives way under anvils, which are the high cloud around a storm. No erosion is applied,
-  and it sets `thin`, which makes the march light it cheaply. It casts no shadow in the Sun shadow lattices;
-  its far shadow comes from the layer shadow map.
+- **Interactions.** It gives way under anvil shields, which are the high cloud around a storm. No erosion is
+  applied, and it sets `thin`, which makes the march light it cheaply. In shadow bakes and the light march it
+  counts at 20 percent of its extinction (delta-scaled ice, [march](march.md#phase-functions)).
 - Extinction 0.0008 (Ci), 0.0003 (Cs) or 0.0016 (Cc) × "High layer density" (0.32).
 
 ## Cumulonimbus towers
 
 Deep convection is drawn as discrete towers by `cv2ColumnSigma()`, not by the low layer's margin, because a
-field thresholded per height cannot narrow to a waist and flare out again into an anvil. With "Cb columns" at 0
-the tower layer is off and a storm is tall congestus.
+field thresholded per height cannot narrow to a waist and flare out again into an anvil. Towers exist only where a
+**storm object** stands: the CPU's storm catalog lists each frame the towers alive, with their lifecycle strength,
+role, size and shear, and bins them so a sample loops only over the towers whose reach touches it
+([Storms: towers](storms.md#towers)). With "Cb columns" at 0 the tower layer is off and a storm is tall congestus.
 
 ```text
- lid (tropopause − 250 m)  ┌───────── flared head = the anvil ─────────┐   ← overshooting dome (optional)
+ lid (tropopause − 250 m)  ┌───────── flared head = the anvil ─────────┐   ← overshooting dome (some towers)
                            └───┐                                     ┌──┘
                                │   waist (Cb waist × radius)        │
                                │                                      │
  base (900 m + ground)     ────┴──── base radius (Cb tower radius) ──┴────   storm cumulus around it
 ```
 
-**Lattice.** Towers stand on a 2D lattice on an equal-angle cube map of the drifted sphere. The cell is at
-least "Cb spacing" (30 km) and at least the tower's full reach / 1.12, where the reach counts the flared head,
-its downwind drift and lean. Centres are jittered over 0.15 to 0.85 of a cell, which makes a 2 × 2 search exact
-to 0.65 cell and a 3 × 3 search exact to 1.15. The 3 × 3 search runs only above mid-height, where a flared head
-can reach that far. A point searches only its own cube face, so towers near a face edge fade out: a tower-free
-band, never a cut.
-
-**Gating.** Tower strength is the float-bilinear weather at mip 3: type at least about 0.6 with coverage.
-"Cb sparsity" (0.35) thins towers toward a storm's edge.
-
-**Storm cells.** Lattice cells are grouped in 3 × 3 blocks (`cv2CbRole()`, shared with the lightning pass). A
-block holds a storm cell with probability "Cb fill" (0.48): one **dominant** tower that reaches the anvil, plus a
-flanking line of 0 to 2 towers stepping down beside it (height × 0.7 and × 0.5). "Cb columns" (2.0) multiplies
-the towers' density.
-
 **Shape of a tower.**
 
-- A weaker tower is shorter, not thinner: its top sinks from just under the lid at full strength to its base.
-- Only anvil-reaching towers get the waist ("Cb waist", 0.7), the head flare under the lid ("Cb head flare",
-  1.4, which *is* the anvil), downwind head drift ("Cb head drift", 6 km) and, on about a third of them, an
-  overshooting dome up to "Cb overshoot" (0 km by default) above the lid.
-- The outline bulges into turrets (3rd and 5th angular orders, turning with height, within about 23 percent so
-  the search still covers it). The top rounds off over 1.5 km (dominant) to 3 km (others), and a head stays
-  about 300 m inside the lid unless it overshoots.
-- Storm-scale lobes ("Cb lobes", 0.18, and "Cb head lobes", 0.086, on the head), faded near the lid so the head
-  reads smooth under the anvil's thin top, plus the cumulus-scale lobes on their crowns as a displacement of up to
-  500 m × "Cb tower fine lobes" (0.5); storm-scale erosion × "Storm erosion"; a surface ramp of about 300 m
-  whatever the size.
+- **Radius.** "Cb tower radius" (15 km) × 0.7 to 1.3 by the tower's size, × 0.8 to 1 by its strength, × 0.75 to 1
+  by its role (the dominant tower of a storm cell 1, its flanking towers 0.7 and 0.5).
+- **Height.** A weaker tower is shorter, not thinner: its top sinks from 300 m under the lid at full strength to
+  its base, so a tower rising or decaying through its lifecycle grows or settles into the cumulus.
+- **Anvil-reaching towers only** (the dominant tower at full strength) get the waist ("Cb waist", 0.89), the head
+  flare under the lid ("Cb head flare", 1.4, × the storm's own anvil factor, which grows as it matures and is largest
+  for supercells and organised systems), downwind head drift ("Cb head drift", 15 km, × the storm's drift factor)
+  and, on about a third of them, an overshooting dome up to "Cb overshoot" (0.14 km) above the lid.
+- **Outline.** It bulges into turrets (3rd and 5th angular orders, turning with height, within about 23 percent so
+  the reach still covers it). The top rounds off over 1.5 km (anvil-reaching) to 3 km (others), and a head stays
+  about 300 m inside the lid unless it overshoots. The tower leans downwind by "Tower lean" (0.15 m per m of height).
+- **Lobes.** Storm-scale lobes ("Cb lobes", 0.37), with the head's own strength "Cb head lobes" (0.12) × (1 + 1.5 ×
+  "Anvil puffiness"), plus the cumulus-scale lobes on their crowns as a displacement of up to 500 m × "Cb tower
+  fine lobes" (0.5). The surface ramps in over about 300 m whatever the tower's size; a head's edge over up to
+  another 500 m × puffiness, since its ice thins out over a few hundred metres.
+- **Anvil puffiness.** "Anvil puffiness" (0.45) keeps the flared head's lobes and raises its top by them,
+  "Anvil top lift (m)" (230) × the lobes, upward only: troughs dug into the top read as holes. The erosion stays
+  faded on the head's top, where its cracks read as rock. At 0 the heads are smooth plates.
+- **Erosion.** Storm-scale detail × "Storm erosion", biting the cracks between lumps on the surface.
 - **The lobes flow with the tower.** The towers read the storm shape volume at a wind-free anchor, displaced
   against a flow that runs up the stalk and, in an anvil-reaching tower's head, outward from its axis: the
   updraft spreading under the lid. Two phases half a cycle apart are cross-faded (the flow-map trick), so the
@@ -536,24 +585,28 @@ the towers' density.
   would slide along one fixed direction through towers that stand still, and sink down the columns wherever that
   direction points downward. The towers' erosion detail is wind-free too; the low layer's lobes still slide along
   the wind.
-- The tower leans downwind by "Tower lean" (0.15 m per m of height).
+- **Height share for lighting.** In an anvil-reaching tower's head, `hf` is measured in the head's own band (0 at
+  70 percent of the tower's height, where the overhang's underside is), so the underside is lit from below as a
+  cloud's base is. With the whole tower's height fraction it takes almost no light from below and reads near black.
 
-**Outputs** (`CV2Col`): `sigma` (× "Cb columns"), `topH` (the tower's top over this point, so the deck shadow
-term is local), `prox` (proximity to a tower's edge), `near` (under a dominant head, used by the anvil shield),
+**Outputs** (`CV2Col`): `sigma` (× "Cb columns", 2.0), `topH` (the tower's top over this point, so the deck shadow
+term is local), `prox` (proximity to a tower's edge), `near` (under a dominant head, where the anvil hangs lower),
 `storm` (tower strength, used by the mid and high layers to give way), and the rain core.
 
 ### Storm cumulus
 
-The map types whole regions hundreds of km wide as cumulonimbus. Away from towers such a region is capped at
-the ordinary cumulus top. Within "Storm cumulus reach" (10 km) of a tower's edge, the low layer's tops rise
-toward "Storm cumulus top" (2.6 km), varied by region by ± "Storm cumulus variation" (0.8). The proximity is
-computed at every height, including below the tower base, so the low tops do not step there.
+Away from towers a region the map types as deep convection is capped at the ordinary cumulus top. Within "Storm
+cumulus reach" (31 km) of a tower's edge, the low layer's tops rise toward "Storm cumulus top" (12 km), varied by
+region by ± "Storm cumulus variation" (0.8). The proximity is computed at every height, including below the tower
+base, so the low tops do not step there. Such tall cumulus uses the coarse cells ([deep cells](#placement-where-cloud-is)).
 
-### Map-fed anvil shield
+### Anvil shields
 
-`cv2AnvilSigmaP()` is an optional smooth ice shield under the tropopause, fed by Cb-typed weather at the point
-and 12, 25 and 40 km upwind and thickened under dominant heads ("Anvil thickness" 0.95 km, "Anvil hang"
-2.4 km). It is off by default ("Anvils" 0): with the default tower settings the flared heads are the anvils.
+`cv2AnvilSigmaP()` draws an ice shield under the tropopause from each storm's anvil **shield**, a capsule spread
+downwind by its anvil-reaching towers that outlives them ([Storms: anvil shields](storms.md#anvil-shields)): a
+frayed outline, a thickness of "Anvil thickness" (3.7 km) over the storm, hanging "Anvil hang" (0.87 km) lower under
+a dominant head, a lumpy underside and a flat lid with low domes, density × "Anvils" (8). The cirrus layer gives way
+under it.
 
 ## Debug views
 
@@ -562,7 +615,7 @@ Set `clouds_v2.debug_view` (Clouds tab, or harness `set`). The field-related vie
 | View | Shows |
 |---|---|
 | 4 | the weather cube where the ray enters the shell: R coverage, G type, B precipitation |
-| 7 | optical depth per layer: red low (with rain), green mid, blue anvil and towers, white high |
+| 7 | optical depth per layer: red low (with rain and the dust wall), green mid, blue anvils and towers, white high |
 
 View 7 is the first thing to check when a cloud artifact has an unknown owner. The march and temporal views are
 listed on their pages.
@@ -583,9 +636,9 @@ storms and weather evolution.
 | Weather warp (km) | `weather_warp_km` | 7 |
 | Flow warp (curved systems) | `flow_warp` | 0.018 |
 | Flow scale (km) | `flow_period_km` | 6000 |
-| Layer spread (mid/high) | `layer_spread` | 0.69 |
-| Mid layer (Ac/As) | `mid_amount` | 1.1 |
-| Mid layer density | `mid_density` | 0.3 |
+| Layer spread (mid/high) | `layer_spread` | 0.57 |
+| Mid layer (Ac/As) | `mid_amount` | 0.75 |
+| Mid layer density | `mid_density` | 0.47 |
 | Altostratus density (x) | `altostratus_density` | 2.5 |
 | Mid layer thickness (x) | `mid_thickness` | 1.0 |
 | Mid layer field size (km, 0 = patches) | `mid_field_km` | 0 |
@@ -646,27 +699,26 @@ storms and weather evolution.
 | Morphology period (km) | `morph_period_km` | 320 |
 | Far-field sharpness | `far_sharpness` | 0 |
 
-**Weather tab, "Storms (cumulonimbus)"**
+**Weather tab, "Storms (cumulonimbus)"** (the storm objects' own rows, "Anvils", "Anvil thickness" and "Anvil
+hang" are on [the storms page](storms.md#settings))
 
 | Label | Key | Default |
 |---|---|---|
-| Cb fill (share of cells) | `cb_fill` | 0.48 |
-| Cb columns (0 = old cores) | `cb_columns` | 2.0 (0 turns the towers off) |
-| Cb spacing (km) | `cb_spacing_km` | 30 |
+| Cb columns (0 = none) | `cb_columns` | 2.0 |
 | Cb tower radius (km) | `cb_radius_km` | 15 |
-| Cb waist (x radius) | `cb_waist` | 0.7 |
+| Cb waist (x radius) | `cb_waist` | 0.89 |
 | Cb head flare (x radius) | `cb_flare` | 1.4 |
-| Cb head drift (km) | `cb_head_drift_km` | 6 |
-| Cb lobes / Cb head lobes | `cb_lobes` / `cb_head_lobes` | 0.18 / 0.086 |
-| Cb sparsity | `cb_sparsity` | 0.35 |
-| Cb overshoot (km) | `cb_overshoot_km` | 0 |
-| Storm cumulus top (km) | `cb_cumulus_top_km` | 2.6 |
+| Cb head drift (km) | `cb_head_drift_km` | 15 |
+| Cb lobes / Cb head lobes | `cb_lobes` / `cb_head_lobes` | 0.37 / 0.12 |
+| Anvil puffiness | `anvil_puffiness` | 0.45 |
+| Anvil top lift (m) | `anvil_lift_m` | 230 |
+| Cb overshoot (km) | `cb_overshoot_km` | 0.14 |
+| Storm cumulus top (km) | `cb_cumulus_top_km` | 12 |
 | Storm cumulus variation | `cb_cumulus_variation` | 0.8 |
-| Storm cumulus reach (km) | `cb_cumulus_reach_km` | 10 |
+| Storm cumulus reach (km) | `cb_cumulus_reach_km` | 31 |
 | Storm feature size | `storm_scale` | 12 |
-| Storm erosion | `storm_erosion` | 0 |
-| Anvils | `anvil` | 0 |
-| Anvil thickness (km) / hang (km) | `anvil_thick_km` / `anvil_hang_km` | 0.95 / 2.4 |
+| Storm erosion | `storm_erosion` | 0.24 |
+| Cb fill / Cb spacing (km) / Cb sparsity | `cb_fill` / `cb_spacing_km` / `cb_sparsity` | 0.48 / 30 / 0.33 (not read: the storm objects place the towers) |
 
 **Weather tab, "Weather evolution"**
 
@@ -674,21 +726,28 @@ storms and weather evolution.
 |---|---|---|
 | Weather evolution wind (m/s) | `evo_wind_mps` | 8 |
 | Weather growth / decay | `evo_growth` | 0.12 |
-| Weather evolution window (h) | `evo_window_h` | 0.1 (0.1-24) |
+| Weather evolution window (h) | `evo_window_h` | 0.01 |
 | Afternoon land convection | `evo_diurnal` | 0.6 |
+
+**Weather tab, "Rebuild experiments"** (the field's row): "Cap lobes (0/1)" `shape_caps` 1.
+
+Without UI: `weather_tick_s` (10), `weather_one_face` (false: the A/B of the time-warp schedule),
+`weather_rect_bake` (true), `weather_rect_levels` (5), `weather_rect_max_share` (0.5), `weather_rect_margin_deg`
+(12).
 
 Every setting that changes what a pixel shows also invalidates the temporal history for a frame.
 
 ## Where in the code
 
 - `shaders/include/clouds_v2.glsl`: `cv2Field()`, `cv2FieldLow()`, `cv2MidSigma()`, `cv2HighSigma()`,
-  `cv2ColumnSigma()`, `cv2CbRole()`, `cv2AnvilSigmaP()`, `cv2FarColumn()`, `cv2FlowDisp()`, `cv2MorphZ()`,
+  `cv2ColumnSigma()`, `cv2AnvilSigmaP()`, `cv2DustWallSigma()`, `cv2FarColumn()`, `cv2FlowDisp()`, `cv2MorphZ()`,
   `cv2Pos()`, the weather read helpers, and the `CloudV2Params` UBO (mirrored by `GpuCloudV2Params` in
   `src/simulations/SatelliteSim.h`, with `offsetof` asserts; keep the order).
-- `shaders/include/cv2_layer_map.glsl`: `cv2MidColumn()`, `cv2HighColumn()` (hand-kept copies of the layers).
-- `shaders/cloud_v2_weather.comp`: the weather cube bake and its evolution.
-- `shaders/cloud_v2_noise.comp`: the three noise volumes.
+- `shaders/include/cv2_storms.glsl`: the storm buffer the towers, shields and dust walls are read from.
+- `shaders/cloud_v2_weather.comp`: the weather cube bake, its evolution and the storm stamp.
+- `shaders/cloud_v2_noise.comp`: the noise volumes (mode 3: the cap-lobe shape volume).
 - `tools/make_cloud_morph.py`: the morphology texture.
-- `src/simulations/SatelliteSimCloudsV2.cpp`: `createCloudsV2()`, `fillCloudsV2Params()` (anchors, drift,
-  per-frame UBO), `weatherEvoPC()`, `recordWeatherEvolution()`, `createCloudMorph()`.
+- `src/simulations/SatelliteSimCloudsV2.cpp`: `createCloudsV2()`, `fillCloudsV2Params()` (anchors, drift, the low
+  field's top bound, per-frame UBO), `weatherEvoPC()`, `recordWeatherEvolution()`, `createCloudMorph()`,
+  `cv2SyncShapeVolume()`.
 - `src/simulations/SatelliteSim.cpp`: `cloudDriftPhase()`.
