@@ -29,6 +29,7 @@
 #include "SkyEvents.h"    // the Sky events window (2026-10-27)
 #include "LunarBases.h"   // the lunar bases' solar-array glints (2026-10-27)
 #include "Meteors.h"      // meteor showers and the sporadic background (2026-10-27)
+#include "Comets.h"       // comets: orbits, brightness, tails (2026-10-27)
 #include <memory>
 
 // Forward declaration only — savePerfSnapshot/buildPerfSnapshotJson are the sole users and both
@@ -3502,6 +3503,83 @@ private:
     bool meteorWatchShower(int shower, double t0, double t1, double tPeak, std::string &msg);
     void skySearchMeteorShowers(const sky::SearchCtx &c, std::vector<sky::Event> &out) const;
     bool skyWatchMeteorShower(const sky::Event &e, std::string &msg);
+    // ── Comets (2026-10-27, SatelliteSimComets.cpp + Comets.h; CLAUDE.md "Comets") ──────────────────────────────
+    // The Great Comet of 2037 (a scripted sungrazer passing 560,000 km from the Earth) and minor comets hashed per year,
+    // on heliocentric conics (pure functions of sim time). The head is a point in kFireBuf (point, bloom, glare); the
+    // tail (dust sheet, ion ribbon) and the coma are triangle grids of sky directions drawn by comet_tail.vert/.frag
+    // after the sky, at infinity, gated against the sky's surface brightness (darksky.glsl) like the Milky Way.
+    struct CometGeom
+    {
+        comet::State s;
+        double r = 1.0, delta = 1.0, phaseDeg = 90.0, elongDeg = 90.0, mag = 99.0;
+        double comaRad = 0.0, ionLenAU = 0.0, tailDeg = 0.0;
+        glm::dvec3 toComet{0.0, 0.0, 1.0}; // ecliptic unit vector from the observer
+    };
+    struct CometNow
+    {
+        int idx = -1;                       // into comets_
+        CometGeom g;
+        double pointShare = 1.0, magPoint = 99.0, magSeen = 99.0, extMag = 0.0, flare = 0.0;
+        glm::vec3 headEnu{0, 0, 1}, headEnuDrawn{0, 0, 1};
+        bool below = false, drawnHead = false;
+        int tailSlot = -1;
+        float peakLum = 0.0f;
+        glm::vec3 tailAimEnu{0, 0, 1};   // the visible tail's far end (lum > ~23.7 mag/arcsec^2), for the Watch's framing
+        float tailSpanDeg = 0.0f;        // ... and its angle from the head
+    };
+    struct CometTailCache
+    {
+        std::string name;
+        comet::DustGrid grid;
+        std::future<comet::DustGrid> job;
+        bool used = false;
+    };
+    bool cometsEnabled = true;               // comets.enabled
+    bool cometsMinor = true;                 // comets.minor: the hashed minor comets as well as the Great Comet
+    bool cometTailsEnabled = true;           // comets.tails
+    float cometTailGain = 1.0f;              // comets.tail_gain: x the tails' physical brightness
+    float cometTailGainDisplay = 1.0f;       // comets.display_gain: x what the tail pass shows (exposure-like)
+    std::vector<comet::Elements> comets_;    // the catalog near now
+    double cometsCatalogT = -1e300;
+    std::vector<CometNow> cometNow_;         // this frame
+    std::vector<CometTailCache> cometTails_;
+    float cometMoonBright = 0.0f, cometAtmFrac = 1.0f;
+    double cometCpuMs = 0.0;
+    uint64_t cometTailBuilds = 0;
+    uint32_t cometPatchCount = 0, cometVertCount = 0, cometDrawsLast = 0;
+    VkBuffer cometBuf = VK_NULL_HANDLE;
+    VkDeviceMemory cometMem = VK_NULL_HANDLE;
+    void *cometMapped = nullptr;
+    VkDescriptorSetLayout cometDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool cometDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet cometDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout cometPipeLayout = VK_NULL_HANDLE;
+    VkPipeline cometPipeline = VK_NULL_HANDLE;
+    int selectedCometIndex = -1;
+    char cometInfoLine[kSelInfoLines][kSelInfoLineLen] = {};
+    void cometGeometry(const comet::Elements &el, double t, const glm::dvec3 &obsHelio, CometGeom &g) const;
+    glm::dvec3 cometObserverHelio(double t) const;
+    glm::vec3 cometEnu(const glm::dvec3 &dirEcl, double t) const;
+    glm::vec3 cometHeadEnu(int i) const;
+    glm::vec3 cometTailEnu(int i) const;
+    int cometIndexByName(const char *name) const;
+    void cometsRefreshCatalog(double t, bool force);
+    void cometsUpdate();                     // recordCompute, after updatePlanets
+    void cometsBuildTails(double t, const glm::dvec3 &obsHelio);
+    void cometsFillHeads();                  // kesslerFillDust's finish: the heads into kFireBuf
+    void cometsInit(VulkanContext &ctx);
+    void cometsWriteDescriptors(VulkanContext &ctx); // also after the cloud / depth targets are recreated
+    void cometsRecordDraw(VkCommandBuffer cmd, VulkanContext &ctx, const PointDrawPC &pc);
+    void cometsDestroy(VkDevice device);
+    int pickCometAt(float x, float y, float w, float h);
+    void formatSelectedCometInfo();
+    bool cometWatchAt(int idx, double t, double sunMaxDeg, bool fromOrbit, std::string &msg);
+    bool cometBestWindow(const comet::Elements &el, double t0, double t1, double &tBest, double &w0, double &w1,
+                         double &magBest, double &tailBest) const;
+    harness::Status harnessComets(harness::Active &a);
+    void skySearchComets(const sky::SearchCtx &c, std::vector<sky::Event> &out) const;
+    bool skyWatchComet(const sky::Event &e, std::string &msg);
+
     // shared by the Watches: the moment (1x, unpaused), the place, the aim and the selection
     void skyJumpTo(double t);
     void skyPlaceAt(const glm::dvec3 &siteEcef, double t);

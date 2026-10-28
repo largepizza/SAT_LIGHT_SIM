@@ -643,6 +643,7 @@ void SatelliteSim::loadUiIcons(UIRenderer &ui)
             "assets/icons/ui/pixel--sky-occultation.png",
             "assets/icons/ui/pixel--sky-moonglint.png", // 37: the Moon-base glints (SatelliteSimSkyEvents.cpp)
             "assets/icons/ui/pixel--sky-meteors.png",   // 38: meteor showers (SatelliteSimSkyEvents.cpp)
+            "assets/icons/ui/pixel--sky-comet.png",     // 39: comets (SatelliteSimSkyEvents.cpp)
         };
         // The count comes from the list itself — the hand-maintained "bump this when you add an icon"
         // number used to be a silent way to drop the last icon of the array.
@@ -864,8 +865,21 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // they're rare and the more interesting selection; mutually exclusive with satellite selection.
     if (inp.lmbPressed && !ui.mouseOverUI())
     {
-        int planetHit = pickPlanetAt(inp.mouseX, inp.mouseY, inp.screenW, inp.screenH);
-        if (planetHit >= 0)
+        int cometHit = pickCometAt(inp.mouseX, inp.mouseY, inp.screenW, inp.screenH);
+        int planetHit = cometHit >= 0 ? -1 : pickPlanetAt(inp.mouseX, inp.mouseY, inp.screenW, inp.screenH);
+        if (cometHit >= 0)
+        {
+            if (cometHit != selectedCometIndex || selectedSatIndex >= 0 || selectedPlanetIndex >= 0)
+            {
+                selectedCometIndex = cometHit;
+                selectedSatIndex = -1;
+                selectedPlanetIndex = -1;
+                formatSelectedCometInfo();
+                if (audio_)
+                    audio_->playSfx("assets/sound/ui/buttonclick.wav");
+            }
+        }
+        else if (planetHit >= 0)
         {
             if (planetHit != selectedPlanetIndex || selectedSatIndex >= 0)
             {
@@ -879,10 +893,11 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         else
         {
             int hit = pickSatelliteAt(inp.mouseX, inp.mouseY, inp.screenW, inp.screenH);
-            if (hit != selectedSatIndex || selectedPlanetIndex >= 0)
+            if (hit != selectedSatIndex || selectedPlanetIndex >= 0 || selectedCometIndex >= 0)
             {
                 selectedSatIndex = hit;
                 selectedPlanetIndex = -1;
+                selectedCometIndex = -1;
                 formatSelectedSatInfo();
                 if (hit >= 0 && audio_)
                     audio_->playSfx("assets/sound/ui/buttonclick.wav"); // confirmation chirp — only on an actual (re)selection, not on deselect
@@ -1593,14 +1608,27 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
         padFocus = 0;
         padFocusStep(0); // onto the first button this satellite has
     }
-    if (selectedSatIndex < 0 && selectedPlanetIndex < 0)
+    const bool isComet = selectedSatIndex < 0 && selectedPlanetIndex < 0 && selectedCometIndex >= 0;
+    if (selectedSatIndex < 0 && selectedPlanetIndex < 0 && !isComet)
         return;
 
-    bool isPlanet = selectedPlanetIndex >= 0;
+    bool isPlanet = selectedPlanetIndex >= 0 || isComet; // a comet's panel is a planet's (a readout, no model)
     glm::vec3 pickSkyDir;
     float pickFlare;
     const char (*infoLines)[kSelInfoLineLen];
-    if (isPlanet)
+    if (isComet)
+    {
+        pickSkyDir = glm::vec3(0, 0, 1);
+        pickFlare = 0.0f;
+        for (const CometNow &cn : cometNow_)
+            if (cn.idx == selectedCometIndex)
+            {
+                pickSkyDir = cn.headEnuDrawn;
+                pickFlare = 1.0f;
+            }
+        infoLines = cometInfoLine;
+    }
+    else if (isPlanet)
     {
         const GpuSatVisible *entries = static_cast<const GpuSatVisible *>(planetMapped);
         pickSkyDir = entries[selectedPlanetIndex].skyDir;
@@ -3144,10 +3172,11 @@ bool SatelliteSim::padBack()
         stopFollow(true);
     else if (trackActive)
         stopTrack();
-    else if (selectedSatIndex >= 0 || selectedPlanetIndex >= 0)
+    else if (selectedSatIndex >= 0 || selectedPlanetIndex >= 0 || selectedCometIndex >= 0)
     {
         selectedSatIndex = -1;
         selectedPlanetIndex = -1;
+        selectedCometIndex = -1;
     }
     else
         return false;
@@ -8930,6 +8959,23 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         meteorFireballGain = settingClamp(mj.value("fireball_rate", meteorFireballGain), 0.0f, 100.0f);
     }
 
+    if (j.contains("comets") && j["comets"].is_object())
+    {
+        // Comets (2026-10-27, SatelliteSimComets.cpp). The minor comets change the catalog and the sky-event search.
+        const auto &cj = j["comets"];
+        const bool m0 = cometsMinor;
+        cometsEnabled = cj.value("enabled", cometsEnabled);
+        cometsMinor = cj.value("minor", cometsMinor);
+        cometTailsEnabled = cj.value("tails", cometTailsEnabled);
+        cometTailGain = settingClamp(cj.value("tail_gain", cometTailGain), 0.0f, 100.0f);
+        cometTailGainDisplay = settingClamp(cj.value("display_gain", cometTailGainDisplay), 0.0f, 100.0f);
+        if (m0 != cometsMinor)
+        {
+            cometsCatalogT = -1e300;
+            skScanBase = -1e300;
+        }
+    }
+
     if (j.contains("launches") && j["launches"].is_object())
     {
         const auto &lj = j["launches"];
@@ -9944,6 +9990,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
                        {"force_inversion_m", refrForceInvZ},
                        {"force_inversion_dt", refrForceInvDT},
                        {"force_inversion_dz", refrForceInvDz}};
+    j["comets"] = {{"enabled", cometsEnabled}, {"minor", cometsMinor}, {"tails", cometTailsEnabled}, {"tail_gain", cometTailGain},
+                   {"display_gain", cometTailGainDisplay}};
     j["moon_bases"] = {{"enabled", moonBaseGlints}, {"tilt_jitter_scale", moonBaseJitter}, {"event_mag_limit", moonBaseMagLimit}};
     j["meteors"] = {{"enabled", meteorsEnabled}, {"rate", meteorRateGain}, {"fireball_rate", meteorFireballGain}};
     // Launches (SatelliteSimLaunches.cpp).

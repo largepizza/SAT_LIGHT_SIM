@@ -634,6 +634,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     }
     initStars(ctx);
     initPlanets(ctx); // must run after initStars() — reuses starDescLayout/starPipeline
+    cometsInit(ctx);  // the comets' tail pass (SatelliteSimComets.cpp)
     // Long-exposure trail pipeline — needs drawPipeLayout/descSet (createDrawPipeline/
     // createDescriptors above) AND starPipeLayout/starDescSet/planetDescSet (initStars/initPlanets
     // just above) for its splat-stage pipelines, plus flareSampler (createFlareResources above)
@@ -849,6 +850,7 @@ void SatelliteSim::recreateComputeScaledTargets(VulkanContext &ctx)
     depthWrites[5] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, planetDescSet, 4, 0, 1,
                       VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &depthSampledInfo, nullptr, nullptr};
     frameSafeUpdateDescriptorSets(ctx.device, 6, depthWrites, 0, nullptr);
+    cometsWriteDescriptors(ctx); // the comet tail pass reads the cloud targets and the depth (SatelliteSimComets.cpp)
 
     // Clouds v2: its screen-sized images, and every set that points at them (or at the scene depth
     // just recreated above).
@@ -1798,6 +1800,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     {
         CpuTimer _t(cpuAccumMs[CPU_UPDATE_PLANETS]);
         updatePlanets();
+        cometsUpdate(); // the comets near now: heads, tails (SatelliteSimComets.cpp)
     }
     // Ambient sound: the context (camera position, Sun, ground beams, shells) is this frame's.
     updateAmbience(dt);
@@ -1808,6 +1811,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // updatePositions() just refreshed this frame.
     if (selectedPlanetIndex >= 0)
         formatSelectedPlanetInfo();
+    if (selectedCometIndex >= 0)
+        formatSelectedCometInfo();
 
     // Read previous frame's GPU glow results for the magnitude UI.
     // glowBuf is HOST_COHERENT; by the time recordCompute is called the previous
@@ -7767,6 +7772,9 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float dt)
         ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 6);
     }
 
+    // ── Pass 1.5: comet tails and comae (SatelliteSimComets.cpp): at infinity, after the sky, under the points ──
+    cometsRecordDraw(cmd, ctx, pc);
+
     // ── Pass 2: satellite points (additive blending) ──────────────────────────
     if (activeSatCount > 0)
     {
@@ -8103,6 +8111,7 @@ void SatelliteSim::cleanup(VkDevice device)
     vkDestroyDescriptorPool(device, cloudMarchDescPool, nullptr);
     vkDestroyDescriptorSetLayout(device, cloudMarchDescLayout, nullptr);
     kesslerDestroyFireballPass(device);
+    cometsDestroy(device);
     launchDestroy(device);
     if (kDustBuf != VK_NULL_HANDLE)
     {
@@ -9429,8 +9438,21 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
             break;
         float w = (float)ctx_->swapExtent.width;
         float h = (float)ctx_->swapExtent.height;
-        int planetHit = pickPlanetAt(w * 0.5f, h * 0.5f, w, h);
-        if (planetHit >= 0)
+        int cometHit = pickCometAt(w * 0.5f, h * 0.5f, w, h);
+        int planetHit = cometHit >= 0 ? -1 : pickPlanetAt(w * 0.5f, h * 0.5f, w, h);
+        if (cometHit >= 0)
+        {
+            if (cometHit != selectedCometIndex || selectedSatIndex >= 0 || selectedPlanetIndex >= 0)
+            {
+                selectedCometIndex = cometHit;
+                selectedSatIndex = -1;
+                selectedPlanetIndex = -1;
+                formatSelectedCometInfo();
+                if (audio_)
+                    audio_->playSfx("assets/sound/ui/buttonclick.wav");
+            }
+        }
+        else if (planetHit >= 0)
         {
             if (planetHit != selectedPlanetIndex || selectedSatIndex >= 0)
             {
@@ -9444,10 +9466,11 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
         else
         {
             int hit = pickSatelliteAt(w * 0.5f, h * 0.5f, w, h);
-            if (hit != selectedSatIndex || selectedPlanetIndex >= 0)
+            if (hit != selectedSatIndex || selectedPlanetIndex >= 0 || selectedCometIndex >= 0)
             {
                 selectedSatIndex = hit;
                 selectedPlanetIndex = -1;
+                selectedCometIndex = -1;
                 formatSelectedSatInfo();
                 if (hit >= 0 && audio_)
                     audio_->playSfx("assets/sound/ui/buttonclick.wav");
@@ -14214,6 +14237,9 @@ void skyPlanetGeoAt(int p, double t, glm::dvec3 &dirEci, double &distAU, float &
     const double phase = glm::degrees(std::acos(glm::clamp(glm::dot(planetHelio, geo) / (sunDistAU * distAU), -1.0, 1.0)));
     vmag = planetApparentMagnitude((PlanetId)p, sunDistAU, distAU, phase);
 }
+
+// Comets.h: the planets' Earth (the EM barycentre of kEarthElements), heliocentric J2000 ecliptic, AU, at t.
+glm::dvec3 skyEarthHelioAt(double t) { return keplerEclipticPos(kEarthElements, t / 86400.0 / 36525.0); }
 
 // ─── createDrawPipeline ───────────────────────────────────────────────────────
 void SatelliteSim::createDrawPipeline(VulkanContext &ctx)
