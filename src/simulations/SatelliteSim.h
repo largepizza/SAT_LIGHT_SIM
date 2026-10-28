@@ -1957,8 +1957,16 @@ struct GpuCloudParams
     // heights; 0 = the smooth sphere); moonPrime xyz the body x axis (0 deg longitude on the equator), w "Moon shadows".
     glm::vec4 moonPole;
     glm::vec4 moonPrime;
+    // The Milky Way's look (12256 -> 12288, 2026-10-28, sat_sky.frag "Milky Way"): mwLook x the gain under the air
+    // ("Milky Way gain (ground)"), y above it ("... (space)"), z the contrast above the air (a power on the band's
+    // luminance about 0.01, 1 = the photograph's), w 1 = the baked RGBA16F panorama is bound (A = the denoised glow).
+    // mwLook2 x "Milky Way star clouds" (the share of the light in sub-texel points when zoomed in), y "Milky Way night
+    // vision" (the ground's blue-grey: rod vision), z "Milky Way zoom detail" (the dust's sub-texel structure), w an
+    // input pixel's angle (rad).
+    glm::vec4 mwLook;
+    glm::vec4 mwLook2;
 };
-static_assert(sizeof(GpuCloudParams) == 12256, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 12288, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -4857,6 +4865,8 @@ private:
     VkImageView milkyWayView = VK_NULL_HANDLE;
     VkSampler milkyWaySampler = VK_NULL_HANDLE;
     uint32_t milkyWayMips = 1;
+    bool milkyWayBaked = false;   // the RGBA16F panorama with milky_way_glow.r16f in A (sat_sky.frag zoom path)
+    bool createMilkyWayBaked(VulkanContext &ctx);
     // Cloud params UBO (binding 9): host-visible, persistently mapped, updated each frame.
     VkBuffer cloudParamsBuf = VK_NULL_HANDLE;
     VkDeviceMemory cloudParamsMem = VK_NULL_HANDLE;
@@ -5999,6 +6009,14 @@ private:
     // Glare clusters (2026-10-20, issue 20261019_222938): how strongly a glare in a crowd gives up its spikes to
     // the brighter / summed light around it (include/glare.glsl). 0 = every source draws its own star (as before).
     float glareClusterMerge = 1.0f;
+    // The Milky Way's look (2026-10-28, GpuCloudParams::mwLook; Photometry tab, photometry.milky_way_*).
+    float mwGainGround = 1.0f;
+    float mwGainSpace = 2.5f;
+    float mwContrastSpace = 1.25f;
+    float mwNightVision = 0.5f;
+    float mwStarClouds = 0.7f;
+    float mwZoomDetail = 0.6f;
+    bool mwZoomOn = true;   // photometry.milky_way_zoom (no UI): false = the old single fetch at every field of view (A/B)
     // ...and they stay exactly that for a source at `glareNearRangeKm` or beyond: proximity scales the
     // sprite's SIZE alone, so a satellite up in the sky is untouched while one resolved metres away (the
     // 3D viewer) or closing in on a zoomed 3D mesh spreads a much wider glare than a distant point
@@ -7860,9 +7878,10 @@ private:
     // aperture, 28-32 glare, 33/34 glare near.
     // [38] since 2026-10-07 (35-37: resolved satellites, satellite adaptation, formation merge; photoBufs too).
     // [39] since 2026-10-20 (38: glare cluster merge).
-    bool hovPhotoMinus[39] = {};
-    bool hovPhotoPlus[39] = {};
-    bool draggingPhoto[39] = {};
+    // [45] since 2026-10-28 (39-44: the Milky Way's look; photoBufs too).
+    bool hovPhotoMinus[45] = {};
+    bool hovPhotoPlus[45] = {};
+    bool draggingPhoto[45] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
     static constexpr int kCloudSliderSlots = 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,

@@ -2755,6 +2755,11 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             cp.skyScreenW = (float)inE.width;
             cp.skyScreenH = (float)inE.height;
         }
+        // The Milky Way's look and its zoomed view (GpuCloudParams::mwLook). The pixel is the INPUT sample's (under the
+        // temporal upscale a point narrower than it is hit or missed by the jitter), at the centre of the view.
+        cp.mwLook = glm::vec4(mwGainGround, mwGainSpace, mwContrastSpace, (milkyWayBaked && mwZoomOn) ? 1.0f : 0.0f);
+        cp.mwLook2 = glm::vec4(std::clamp(mwStarClouds, 0.0f, 1.0f), std::clamp(mwNightVision, 0.0f, 1.0f), mwZoomDetail,
+                               2.0f * std::tan(glm::radians(camera.fovYDeg) * 0.5f) / std::max(cp.skyScreenH, 1.0f));
         // Zodiacal light (see GpuCloudParams / cloud_params.glsl). eclipticPoleENU is
         // recomputed each frame in updatePositions(), alongside the Milky Way basis.
         cp.zodiacalWidthDeg = zodiacalWidthDeg;
@@ -11832,6 +11837,165 @@ void SatelliteSim::createCityRoads(VulkanContext &ctx)
               std::to_string(bytes / 1000000) + " MB");
 }
 
+// ─── createMilkyWayBaked ─────────────────────────────────────────────────────
+// Sky binding 13 as RGBA16F (2026-10-28): RGB = assets/textures/8k_stars_milky_way.jpg decoded to linear (exactly what
+// the old R8G8B8A8_SRGB sampler returned), A = assets/textures/milky_way_glow.r16f (tools/make_milky_way.py: "SLMA",
+// uint32 width, height, mips, then each level's float16 values), the denoised glow sat_sky.frag reads when zoomed in
+// and in the faint sky. The RGB mips are 2 x 2 box means in linear, as the A file's are. Fills milkyWayImg / View /
+// Sampler like the JPEG path; false = no (or a mismatched) glow file: the caller loads the plain JPEG.
+bool SatelliteSim::createMilkyWayBaked(VulkanContext &ctx)
+{
+    const char *path = "assets/textures/milky_way_glow.r16f";
+    uint32_t w = 0, h = 0, mips = 0;
+    std::vector<uint16_t> glow;
+    {
+        FILE *f = std::fopen(path, "rb");
+        if (!f)
+            return false;
+        char magic[4];
+        uint32_t hdr[3];
+        bool ok = std::fread(magic, 1, 4, f) == 4 && std::memcmp(magic, "SLMA", 4) == 0 && std::fread(hdr, 4, 3, f) == 3 &&
+                  hdr[0] > 0 && hdr[0] <= 16384 && hdr[1] > 0 && hdr[1] <= 8192 && hdr[2] > 0 && hdr[2] <= 15;
+        if (ok)
+        {
+            w = hdr[0];
+            h = hdr[1];
+            mips = hdr[2];
+            size_t total = 0;
+            for (uint32_t m = 0; m < mips; ++m)
+                total += (size_t)std::max(1u, w >> m) * std::max(1u, h >> m);
+            glow.resize(total);
+            ok = std::fread(glow.data(), 2, total, f) == total;
+        }
+        std::fclose(f);
+        if (!ok)
+        {
+            Log::line(std::string("init: ") + path + " unreadable: the plain JPEG Milky Way");
+            return false;
+        }
+    }
+    Log::line("init: texture: assets/textures/8k_stars_milky_way.jpg + " + std::string(path));
+    bootStatus("Milky Way");
+    int jw = 0, jh = 0, jch = 0;
+    stbi_uc *px = stbi_load("assets/textures/8k_stars_milky_way.jpg", &jw, &jh, &jch, 4);
+    if (!px)
+        throw std::runtime_error("SatelliteSim: failed to load assets/textures/8k_stars_milky_way.jpg");
+    if ((uint32_t)jw != w || (uint32_t)jh != h)
+    {
+        stbi_image_free(px);
+        Log::line(std::string("init: ") + path + " does not match the JPEG's size: the plain JPEG Milky Way");
+        return false;
+    }
+    float lut[256];
+    for (int i = 0; i < 256; ++i)
+    {
+        const float c = i / 255.0f;
+        lut[i] = c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+    }
+    // Every level in float, box-filtered down, then packed to half.
+    std::vector<VkBufferImageCopy> regions(mips);
+    size_t totalTexels = 0;
+    for (uint32_t m = 0; m < mips; ++m)
+        totalTexels += (size_t)std::max(1u, w >> m) * std::max(1u, h >> m);
+    std::vector<uint16_t> data(totalTexels * 4);
+    std::vector<glm::vec3> cur((size_t)w * h), nxt;
+    for (size_t i = 0; i < (size_t)w * h; ++i)
+        cur[i] = glm::vec3(lut[px[4 * i]], lut[px[4 * i + 1]], lut[px[4 * i + 2]]);
+    stbi_image_free(px);
+    size_t off = 0;
+    uint32_t cw = w, chh = h;
+    for (uint32_t m = 0; m < mips; ++m)
+    {
+        regions[m] = {};
+        regions[m].bufferOffset = off * 8;
+        regions[m].imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, m, 0, 1};
+        regions[m].imageExtent = {cw, chh, 1};
+        for (size_t i = 0; i < (size_t)cw * chh; ++i)
+        {
+            const glm::uvec2 rg = glm::uvec2(glm::packHalf2x16(glm::vec2(cur[i].r, cur[i].g)));
+            uint16_t *o = &data[(off + i) * 4];
+            o[0] = (uint16_t)(rg.x & 0xFFFFu);
+            o[1] = (uint16_t)(rg.x >> 16);
+            o[2] = (uint16_t)(glm::packHalf2x16(glm::vec2(cur[i].b, 0.0f)) & 0xFFFFu);
+            o[3] = glow[off + i];
+        }
+        off += (size_t)cw * chh;
+        if (m + 1 < mips)
+        {
+            const uint32_t nw = std::max(1u, cw >> 1), nh = std::max(1u, chh >> 1);
+            nxt.assign((size_t)nw * nh, glm::vec3(0.0f));
+            for (uint32_t y = 0; y < nh; ++y)
+                for (uint32_t x = 0; x < nw; ++x)
+                {
+                    const uint32_t x0 = std::min(2 * x, cw - 1), x1 = std::min(2 * x + 1, cw - 1);
+                    const uint32_t y0 = std::min(2 * y, chh - 1), y1 = std::min(2 * y + 1, chh - 1);
+                    nxt[(size_t)y * nw + x] = 0.25f * (cur[(size_t)y0 * cw + x0] + cur[(size_t)y0 * cw + x1] +
+                                                       cur[(size_t)y1 * cw + x0] + cur[(size_t)y1 * cw + x1]);
+                }
+            cur.swap(nxt);
+            cw = nw;
+            chh = nh;
+        }
+    }
+    glow = {};
+
+    const VkDeviceSize bytes = (VkDeviceSize)data.size() * 2;
+    VkBuffer stageBuf;
+    VkDeviceMemory stageMem;
+    ctx.createBuffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stageBuf, stageMem);
+    {
+        void *mapped;
+        vkMapMemory(ctx.device, stageMem, 0, bytes, 0, &mapped);
+        std::memcpy(mapped, data.data(), (size_t)bytes);
+        vkUnmapMemory(ctx.device, stageMem);
+    }
+    data = {};
+    ctx.createImage(w, h, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                    milkyWayImg, milkyWayMem, mips);
+    milkyWayMips = mips;
+    {
+        auto cmd = ctx.beginOneTimeCommands();
+        VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image = milkyWayImg;
+        b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mips, 0, 1};
+        b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                             nullptr, 1, &b);
+        vkCmdCopyBufferToImage(cmd, stageBuf, milkyWayImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mips, regions.data());
+        b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr,
+                             0, nullptr, 1, &b);
+        ctx.endOneTimeCommands(cmd);
+    }
+    vkDestroyBuffer(ctx.device, stageBuf, nullptr);
+    vkFreeMemory(ctx.device, stageMem, nullptr);
+    VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vci.image = milkyWayImg;
+    vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vci.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+    vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, mips, 0, 1};
+    vkCreateImageView(ctx.device, &vci, nullptr, &milkyWayView);
+    VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    sci.magFilter = VK_FILTER_LINEAR;
+    sci.minFilter = VK_FILTER_LINEAR;
+    sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sci.maxLod = (float)mips;
+    vkCreateSampler(ctx.device, &sci, nullptr, &milkyWaySampler);
+    Log::line("init: Milky Way " + std::to_string(w) + "x" + std::to_string(h) + " RGBA16F, " + std::to_string(mips) +
+              " mips");
+    return true;
+}
+
 // ─── createMoonMap ────────────────────────────────────────────────────────────
 // The Moon's albedo + elevation (sky binding 2, sat_sky.frag "Moon disc", 2026-10-27): assets/textures/moon_maps.rgba16f
 // from tools/make_moon_maps.py — "SLMN", uint32 width, height, mips, then each level's RGBA16F rows (RGB albedo, A the
@@ -12506,6 +12670,12 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // Same load pattern as earthDay (SRGB, mipmapped). Sampled in sat_sky.frag against a
     // CPU-computed ENU->galactic direction; see the "Milky Way skybox basis" block in
     // updatePositions().
+    // 2026-10-28: RGBA16F — RGB the JPEG decoded to linear (the default view is unchanged), A the denoised glow from
+    // assets/textures/milky_way_glow.r16f (tools/make_milky_way.py) that the zoomed view and the faint sky read
+    // (sat_sky.frag "Milky Way at a narrow field of view"). Without the glow file the plain sRGB JPEG, and
+    // milkyWayBaked false (the shader then keeps the old single fetch at every field of view).
+    milkyWayBaked = createMilkyWayBaked(ctx);
+    if (!milkyWayBaked)
     {
         Log::line("init: texture: assets/textures/8k_stars_milky_way.jpg");
         bootStatus("Milky Way");

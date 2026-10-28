@@ -2043,6 +2043,130 @@ const float kMwRefLum    = 0.05;
 const float kMwRefMag    = 21.0;
 const float kMwMagSpread = 0.85;
 
+// ── The Milky Way at a narrow field of view (2026-10-28) ─────────────────────────────────────
+// The panorama is 4096 x 2048 (0.088 deg a texel), from an 8-bit JPEG: below ~25 deg of field its texels were
+// magnified into squares and its 8-bit / JPEG noise into grain. When a pixel is under ~0.6 texel the band is drawn
+// from three things instead, all keyed to the texture so they never contradict it:
+//   * the smooth glow — the baked texture's A channel (tools/make_milky_way.py: a denoised luminance) through a C1
+//     fetch (the texel fraction smoothstep-remapped: no bilinear diamonds), the colour from a blurred mip;
+//   * the dust's sub-texel structure — two octaves of value noise whose contrast is the local dust depth
+//     (ln of the broad glow over the local one): dark lanes break into ragged filaments, open star clouds stay smooth;
+//   * star clouds — a share of the light ("Milky Way star clouds") carried by unresolved points on an
+//     iso-latitude lattice in galactic coordinates whose cell follows the pixel (4 input pixels, two levels
+//     cross-faded), each a ~0.6-pixel Gaussian with a power-law weight (most faint, a few bright) and a stellar
+//     tint, present in 90% of cells. Their mean is the glow (the city glitter's construction, cityGlitter;
+//     measured within ~1.5% in-app), so the light is conserved at every zoom. Not in the faint sky between the
+//     star clouds nor on the magenta emission nebulae (those stay a smooth glow). At the default field of view
+//     the share is 0 and the old single fetch is all.
+// Not in SKY_LITE (cut) or SKY_ENV (probes and mirrors are far coarser than a texel).
+#if !defined(SKY_LITE) && !defined(SKY_ENV)
+#ifndef MW_SIG
+#define MW_SIG 0.9   // the points' sigma in input pixels: 0.6 shimmered under the sky TAA's jitter in a pan (frame-to-frame, registered: 0.41 -> 0.36 mean, p99.9 7.8 -> 4.9 levels)
+#endif
+const float kMwStarP = 0.9;   // share of lattice cells holding a point
+float mwVNoise(vec3 p, int salt) {
+    vec3 i = floor(p), f = p - i;
+    f = f * f * (3.0 - 2.0 * f);
+    ivec3 c = ivec3(i);
+    float n000 = tdRand3(ivec3(c.x, c.y, c.z * 977 + salt)).x;
+    float n100 = tdRand3(ivec3(c.x + 1, c.y, c.z * 977 + salt)).x;
+    float n010 = tdRand3(ivec3(c.x, c.y + 1, c.z * 977 + salt)).x;
+    float n110 = tdRand3(ivec3(c.x + 1, c.y + 1, c.z * 977 + salt)).x;
+    float n001 = tdRand3(ivec3(c.x, c.y, (c.z + 1) * 977 + salt)).x;
+    float n101 = tdRand3(ivec3(c.x + 1, c.y, (c.z + 1) * 977 + salt)).x;
+    float n011 = tdRand3(ivec3(c.x, c.y + 1, (c.z + 1) * 977 + salt)).x;
+    float n111 = tdRand3(ivec3(c.x + 1, c.y + 1, (c.z + 1) * 977 + salt)).x;
+    return mix(mix(mix(n000, n100, f.x), mix(n010, n110, f.x), f.y),
+               mix(mix(n001, n101, f.x), mix(n011, n111, f.x), f.y), f.z);
+}
+// The star-cloud points of lattice level k (cell c0 x 2^k rad) at galactic (lon, lat), sigma in rad. Returns the
+// points' light as a tinted multiplier of mean 1.
+vec3 mwStarLevel(float lon, float lat, int k, float c0, float sigma) {
+    float c   = c0 * float(1 << k);
+    float y   = lat / c;
+    int   j0  = int(floor(y - 0.5));
+    float cl  = cos(lat);
+    float sg  = sigma / c;
+    vec3  e   = vec3(0.0);
+    [[dont_unroll]] for (int n = 0; n < 4; ++n) {
+        int   j    = j0 + (n >> 1);
+        float bj   = (float(j) + 0.5) * c;
+        int   nLon = max(1, int(6.2831853 * max(cos(bj), 0.0) / c));
+        float cw   = 6.2831853 / float(nLon);
+        float x    = (lon + 3.14159265) / cw;
+        int   i0   = int(floor(x - 0.5)) + (n & 1);
+        int   iw   = ((i0 % nLon) + nLon) % nLon;
+        vec3  r    = tdRand3(ivec3(iw, j, 7919 + 31 * k));
+        if (r.z * 0.5 + 0.5 > kMwStarP) continue;
+        vec3  r2   = tdRand3(ivec3(iw, j, 7927 + 31 * k)) * 0.5 + 0.5;
+        float pLon = (float(i0) + 0.5 + 0.45 * r.x) * cw - 3.14159265;
+        float pLat = (float(j) + 0.5 + 0.45 * r.y) * c;
+        vec2  d    = vec2((lon - pLon) * cl, lat - pLat) / c;
+        float r2d  = dot(d, d);
+        // A power-law luminosity function, mean 1: most points faint, a few carry much of the light (a star field,
+        // not even salt). (1 - a) u^-a, a 0.65; the hash's 11 bits cap the brightest at ~50x the mean.
+        float w    = 0.35 * pow(max(r2.x, 1.0 / 2047.0), -0.65);
+        float g    = exp(-0.5 * r2d / (sg * sg)) / (6.2831853 * sg * sg) * (1.0 - smoothstep(0.1225, 0.3025, r2d));
+        // A stellar tint, luminance 1: K giants to B stars, most near white.
+        float t    = r2.y * 2.0 - 1.0;
+        float t3   = abs(t * t * t);
+        vec3  tint = mix(vec3(1.0), t < 0.0 ? vec3(1.22, 0.96, 0.70) : vec3(0.84, 1.00, 1.38), t3);
+        e += w * g * tint;
+    }
+    // The window (0.35-0.55 cells) cuts the Gaussian's tail: divide by what it keeps (1 - e^(-0.1035 / sg^2) fits
+    // the integral to 1% for sg 0.1-0.3), so the points' light is the glow's.
+    return e / (kMwStarP * (1.0 - exp(-0.1035 / (sg * sg))));
+}
+// The zoomed Milky Way at galactic dir g (lon, lat) / uv: returns the colour (the panorama's units) and, in lumOut,
+// the smooth glow's luminance (the dark-sky gate's input). pixA = an input pixel's angle (rad).
+vec3 mwZoomDetail(vec2 uv, float lon, float lat, vec3 dirGal, float pixA, out float lumOut) {
+    vec2  ts   = vec2(textureSize(milkyWayTex, 0));
+    float texA = 6.2831853 / ts.x;
+    vec2  tc   = uv * ts - 0.5;
+    vec2  ti   = floor(tc);
+    vec2  tf   = tc - ti;
+    tf         = tf * tf * (3.0 - 2.0 * tf);
+    float gl   = max(textureLod(milkyWayTex, (ti + tf + 0.5) / ts, 0.0).a, 0.0);
+    float glB  = max(textureLod(milkyWayTex, uv, 3.0).a, 1e-7);
+    vec3  col  = textureLod(milkyWayTex, uv, 1.5).rgb;
+    col       /= max(dot(col, vec3(0.2126, 0.7152, 0.0722)), 1e-7);
+    // Dust: where this texel is darker than its ~8-texel surroundings, ragged sub-texel structure.
+    float dust = clamp(log(glB / max(gl, 1e-7)), 0.0, 2.5);
+    float fine = clamp(texA / max(6.0 * pixA, 1e-9), 0.0, 1.0);    // the octaves fade in as they resolve
+    float fine2 = clamp(texA / max(18.0 * pixA, 1e-9), 0.0, 1.0);
+    float nz   = mwVNoise(dirGal * (3.0 / texA), 11) + 0.5 * fine * mwVNoise(dirGal * (9.0 / texA), 23)
+               + 0.25 * fine2 * mwVNoise(dirGal * (27.0 / texA), 37);
+    float a    = cloud.mwLook2.z * (0.35 + dust);
+    // Local contrast about the ~8-texel mean (lanes deeper, star clouds brighter): the texel-scale structure the
+    // bilinear fetch blurred reads crisp again. Geometric about glB, so the light over a region is ~kept.
+    float cz   = 0.4 * cloud.mwLook2.z;
+    float det  = pow(max(gl, 1e-7) / glB, cz) * exp(a * nz) * exp(-0.11 * a * a);
+    lumOut     = gl;
+    // Star clouds: cells of ~4 input pixels, between texel / 64 and one texel.
+    float c0   = texA / 64.0;
+    float lvl  = clamp(log2(4.0 * pixA / c0), 0.0, 5.99);
+    int   k0   = int(floor(lvl));
+    float fr   = lvl - float(k0);
+    float sig  = MW_SIG * pixA;
+    // The two levels through ONE call site (a second inlined copy is ~10 KB of the pass's binary).
+    float fw   = smoothstep(0.0, 1.0, fr);
+    vec3  M    = vec3(0.0);
+    [[dont_unroll]] for (int li = 0; li < 2; ++li) {
+        float wl = li == 0 ? 1.0 - fw : fw;
+        if (wl > 0.01)
+            M += wl * mwStarLevel(lon, lat, k0 + li, c0, sig);
+    }
+    M /= max((fw > 0.99 ? 0.0 : 1.0 - fw) + (fw > 0.01 ? fw : 0.0), 1e-3);
+    // The faint sky between the band's star clouds stays a smooth glow (points there read as static), and so does an
+    // emission nebula (Carina, North America, the Cygnus clouds: gas, not stars). The panorama's nebulae are MAGENTA
+    // (H-alpha + H-beta: red and blue over green; min(r, b) - g of the chroma, p99 of the band 0.16), where the
+    // dust-reddened star clouds round the bulge are red-orange (blue low) and keep their points.
+    float mag  = min(col.r, col.b) - col.g;
+    float S    = cloud.mwLook2.x * smoothstep(0.003, 0.02, gl) * (1.0 - smoothstep(0.06, 0.2, mag));
+    return col * gl * det * ((1.0 - S) + S * M);
+}
+#endif
+
 // ── Cloud noise domain frequencies ─────────────────────────────────────────────
 // Cloud procedural noise (cloudNoiseTex) is sampled by TRUE 3D unit-sphere position
 // (dirECEF = normalize(pECEF)), not by lat/lon UV. A sphere embedded in R^3 carries its
@@ -7329,7 +7453,60 @@ void main() {
         float lonGal = atan(dirGal.y, dirGal.x);
         float latGal = asin(clamp(dirGal.z, -1.0, 1.0));
         vec2  mwUV   = vec2(0.5 + lonGal / (2.0 * PI), 0.5 + latGal / PI);
-        vec3  mwColor = texture(milkyWayTex, mwUV).rgb * cloud.mwBasisRow0.w;
+        vec4  mwTex   = texture(milkyWayTex, mwUV);
+        vec3  mwColor = mwTex.rgb * cloud.mwBasisRow0.w;
+        float mwLum = dot(mwColor, vec3(0.2126, 0.7152, 0.0722));
+#ifndef SKY_ENV
+        // The faint, noise-dominated sky (8-bit steps there are tens of % of the light: the JPEG's grain, lifted by the
+        // space gain) takes the baked denoised luminance at every field of view; the band itself keeps the photograph's
+        // texels exactly. Same fetch (A).
+        if (cloud.mwLook.w > 0.5) {
+            // Above the air the gain and contrast lift the band's mid-tones too: a wider range there.
+            float wq = 1.0 - smoothstep(0.003, mix(0.012, 0.04, 1.0 - atmFracSky), mwTex.a * cloud.mwBasisRow0.w);
+            float lq = mix(mwLum, mwTex.a * cloud.mwBasisRow0.w, wq);
+            mwColor *= lq / max(mwLum, 1e-8);
+            mwLum = lq;
+        }
+        // Zoomed in (an input pixel under ~0.6 texel, the baked panorama bound): the glow, the dust's sub-texel
+        // structure and the star clouds (mwZoomDetail, file scope). zk eases it in from 0.6 to 0.3 texel a pixel, so
+        // the default field of view is the single fetch above, unchanged.
+        {
+            float mwPixA = cloud.mwLook2.w;
+            float mwTexA = 6.2831853 / float(textureSize(milkyWayTex, 0).x);
+            float zk = cloud.mwLook.w * (1.0 - smoothstep(0.3, 0.6, mwPixA / mwTexA));
+            if (zk > 0.0) {
+                float zLum;
+                vec3  zCol = mwZoomDetail(mwUV, lonGal, latGal, dirGal, mwPixA, zLum) * cloud.mwBasisRow0.w;
+                mwColor = mix(mwColor, zCol, zk);
+                mwLum   = mix(mwLum, zLum * cloud.mwBasisRow0.w, zk);
+            }
+        }
+#endif
+        // The Andromeda galaxy (2026-10-28). The panorama has the Magellanic Clouds but no M31 (nothing above its
+        // noise at l 121.2, b -21.6), though it is a naked-eye object (V 3.4, ~3 deg long). Drawn analytically in the
+        // panorama's own photometry: its integrated light is the panorama's LMC (measured in the texture, 1.0e-4 lum sr
+        // above the sky; its SMC 1.55e-5, the real ratio within 25%) x 10^(-0.4 (3.44 - 0.9)) = 9.6e-6, split 30 / 70 between an exponential
+        // bulge (0.04 deg, axis ratio 0.8, warm) and disk (0.39 deg, 0.3, the inclined disk; neutral-blue), centre and
+        // major axis (PA 38 deg) in the panorama's galactic frame (lon = -l). Analytic, so it is sharp at any zoom.
+        {
+            const vec3 kM31C = vec3(-0.48138244, -0.79566133, -0.36768736);
+            const vec3 kM31A = vec3(-0.6965243, 0.09259287, 0.71153387);
+            float cm = dot(dirGal, kM31C);
+            if (cm > 0.9976) {   // within 4 deg
+                vec3  dm = dirGal - kM31C * cm;
+                float mx = dot(dm, kM31A), my = dot(dm, cross(kM31C, kM31A));
+                // Widened by the pixel (flux kept): the bulge's 0.04-deg cusp point-sampled by a 0.09-deg pixel sparkled.
+                float pf = 0.6 * cloud.mwLook2.w;
+                float hb = sqrt(0.04 * 0.04 * 3.0462e-4 + pf * pf), hd = sqrt(0.39 * 0.39 * 3.0462e-4 + pf * pf);
+                float rb = sqrt(mx * mx + (my / 0.8) * (my / 0.8)) / hb;
+                float rd = sqrt(mx * mx + (my / 0.3) * (my / 0.3)) / hd;
+                float Ib = 0.3 * 9.6e-6 / (6.2831853 * hb * hb * 0.8) * exp(-rb);
+                float Id = 0.7 * 9.6e-6 / (6.2831853 * hd * hd * 0.3) * exp(-rd);
+                vec3  m31 = (Ib * vec3(1.16, 1.0, 0.80) + Id * vec3(0.96, 1.0, 1.10)) * cloud.mwBasisRow0.w;
+                mwColor += m31;
+                mwLum   += dot(m31, vec3(0.2126, 0.7152, 0.0722));
+            }
+        }
 
         // Cloud suppression: CUBED, not linear — same reasoning as the aurora's auroraCloudSuppress
         // above (session 28 follow-up #11). A plain `* cloudBlock` still let the Milky Way show
@@ -7353,7 +7530,6 @@ void main() {
         // gates the same panorama on the same curve — two copies would be free to drift, and the
         // symptom (a reflection fading at a different sky brightness than the sky it reflects)
         // would be subtle.
-        float mwLum = dot(mwColor, vec3(0.2126, 0.7152, 0.0722));
         float mwObjMag = darkSkySurfMag(mwLum, kMwRefLum, kMwRefMag, kMwMagSpread);
 
         float visibility = nightFactorEffSky
@@ -7366,6 +7542,21 @@ void main() {
                           * (moonDiscHit ? 0.0 : 1.0)    // blocked by the Moon's own opaque disc
                           * pow(clamp(cloudBlock, 0.0, 1.0), kMWCloudSuppressPower);
 #ifndef SKY_ENV
+        // The look (2026-10-28, cloud.mwLook): under the air a dark-adapted eye sees the band in rod vision, a faint
+        // blue-grey ("Milky Way night vision": the colour pulled toward its luminance in a cool grey, luminance kept);
+        // above the air the camera's view (Don Pettit's ISS frames): brighter, and contrastier about the band's
+        // mid-tone (mwLook.z, a power on the luminance about 0.01), at full colour. atmFracSky blends the two.
+        {
+            float mwAbove = 1.0 - atmFracSky;
+            float mwC     = mix(1.0, cloud.mwLook.z, mwAbove);
+            // The contrast keys on the smooth glow's luminance (mwLum, the gate's input), not the pixel's: zoomed in, a
+            // star-cloud point is 10-50x its glow, and a power on that lifted the points (not the band) by up to 2x.
+            float mwL     = max(dot(mwColor, vec3(0.2126, 0.7152, 0.0722)), 1e-8);
+            float cK      = pow(max(mwLum, 1e-8) / 0.01, mwC - 1.0);
+            float rod     = cloud.mwLook2.y * atmFracSky;
+            mwColor       = mix(mwColor, vec3(0.90, 1.00, 1.24) * mwL, rod) * cK;
+            mwColor      *= mix(cloud.mwLook.x, cloud.mwLook.y, mwAbove);
+        }
         color += mwColor * visibility * cloud.exposureScale;   // the global exposure (SatelliteSim.h)
 #else
         color += mwColor * visibility;

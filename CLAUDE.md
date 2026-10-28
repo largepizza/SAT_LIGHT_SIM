@@ -53,7 +53,7 @@ rockets, plumes, crew rotations, the Missions window: the roster's slots refresh
 2037 Betelgeuse supernova).
 
 **Rendering** — *UIRenderer / Clay* (icon atlas, the SDF font atlas, manual hit-testing, the **UI kit** every window is built from, HUD text entry) · *Sky TAA* (the background's temporal AA, and the main pass's shared dependencies) · *The Sun as an object* (refraction, mirages, turbulence: one ray tracer, Refraction.h) · *The Moon as a body* (true position and size, eclipses) · *The sea* (periodic waves, sea state, shore) ·
-*Photometry / Shader Constants* (lobe model, bloom and glare) · *Light Pollution Dome* · *Atmospheric
+*Photometry / Shader Constants* (lobe model, bloom and glare) · *The Milky Way* (the panorama, its zoomed star clouds, Andromeda) · *Light Pollution Dome* · *Atmospheric
 Extinction* · *Sky Glow SSBO* · *Planets* · *Cloud Shadows* · *Resolution Scaling* · *Weak-Hardware
 Sky Tiers (Potato / SKY_LITE)*. The mesh renderer, model viewer and environment probes are
 subsections of *Satellite Types* (Phases 4b–4f).
@@ -7815,6 +7815,62 @@ Stars (`SatelliteSim::updateStars`, CPU-side) apply the same three suppression s
 independently, with their own fixed (non-slider) response caps: `kStarPollutionMaxDim=0.85`,
 `kStarMoonMaxDim=0.9`. Day suppression for stars is `nightFactorEff` (sun-elevation ramp), not
 `dayBright`/`daySuppression` — a separate, older formula; the two were never unified.
+
+## Subsystem: The Milky Way (2026-10-28, branch feat/milkyway-particles)
+
+Sky binding 13, drawn in `sat_sky.frag`'s Milky Way block (post-tonemap, under the dark-sky gate, moonlight, the
+pollution and beam domes, extinction, the Sun's glare, terrain / Moon / cloud occlusion — all unchanged). Full sky
+pass and SKY_ENV only: SKY_LITE (Planetarium) and Potato have no Milky Way.
+- **The texture**: the ESO / S. Brunier starless panorama, `8k_stars_milky_way.jpg`, 4096 x 2048 (0.088 deg a texel),
+  8-bit sRGB JPEG, galactic coordinates with **lon = -l** (u = 0.5 + lon / 2pi; the LMC is at u 0.727), b up the rows.
+  Linear luminance: empty sky ~0.0006-0.001 (8-bit values 1-3: every step is 30-50% of the light), faint band ~0.003,
+  mid-band ~0.015, the core 0.05-0.13 (peak 100/255): ~2 decades, heavily quantised at the faint end, with JPEG 8 x 8
+  blocks. It holds the Magellanic Clouds and the emission nebulae (magenta: Carina at u 0.70, the North America / Cygnus
+  region at u 0.27-0.30) but **no Andromeda** (nothing above its noise at l 121, b -22).
+- **Since 2026-10-28 it is RGBA16F** (`createMilkyWayBaked`): RGB the JPEG decoded to linear at load (exactly what the
+  old R8G8B8A8_SRGB sampler returned; mips 2 x 2 box means in linear), A = `assets/textures/milky_way_glow.r16f`
+  ("SLMA" + width, height, mips + float16 levels) from `tools/make_milky_way.py`: a denoised luminance (3 x 3 median
+  of log luminance on noise-dominated texels, then a 1.3-texel Gaussian weighted by the texel's 8-bit step; totals
+  kept per 64 x 64; a bilateral filter posterised, dropped). Without the file the plain sRGB JPEG and
+  `milkyWayBaked` false. VRAM 43 -> 85 MB. Load ~+0.15 s (the CPU decode and mips).
+- **The default view is the photograph** (`mwLook.w` = baked && `photometry.milky_way_zoom`): one fetch; the faint
+  sky (A < 0.003 .. 0.012, to 0.04 above the air where the gain lifts the mid-tones) takes A's luminance (same fetch),
+  the band its texels. FOV 90 old vs new (night vision 0): mean |diff| 0.05 levels, max 8, total light 1.0008.
+- **Zoomed in** (`mwZoomDetail`, file scope, `#if !SKY_LITE && !SKY_ENV`): eased in as an input pixel goes from 0.6
+  to 0.3 texel (`cloud.mwLook2.w` = 2 tan(fov/2) / skyScreenH, the INPUT pixel: a point narrower than it is hit or
+  missed by the TAA jitter). The glow = A through a C1 fetch (texel fraction smoothstep-remapped: no bilinear
+  diamonds) x the colour of mip 1.5; dust structure = local contrast about mip 3's mean ((A / A3)^(0.4 detail)) x
+  three octaves of value noise (3 / 9 / 27 per texel, each faded in as it resolves) whose contrast is the dust depth
+  ln(A3 / A); **star clouds** = a share S ("Milky Way star clouds") of that light in unresolved points
+  (`mwStarLevel`): an iso-latitude lattice in (lon, lat) (row j's cell count floor(2 pi cos b / c): square cells, no
+  pole pinch, the lon wrap at the anticentre exact), cells c0 x 2^k with c0 = texel / 64 and the level from 4 input
+  pixels, two levels cross-faded through ONE call site (a second inlined copy was +9 KB of binary), the 2 x 2 nearest
+  cells, 90% holding a point, weight 0.35 u^-0.65 (a power law, mean 1: most faint, a few bright), a stellar tint
+  (luminance ~1), a Gaussian of sigma `MW_SIG` 0.9 input px windowed at 0.35-0.55 cells and divided by what the window
+  keeps (1 - e^(-0.1035 / sg^2)). Its mean is the glow: zoom on vs off, total light 0.976-0.99 on the ground (the rest
+  the display clipping a few points; from orbit at the space gain 0.88: 1.7% of pixels clip). S fades to 0 in the faint
+  sky (A 0.003 -> 0.02: points there read as static) and on magenta texels (min(r, b) - g of the chroma 0.06 -> 0.2:
+  the emission nebulae stay a glow; the dust-reddened bulge is red-orange and keeps its points). Still view: 0.0003
+  levels mean frame to frame; a 0.6 deg/s pan at FOV 8, registered: 0.36 levels mean, p99.9 4.9 (0.6-px points: 7.8).
+- **Andromeda** (all variants with the block, SKY_ENV too): analytic, centre / major axis (PA 38) constants in the
+  panorama's frame, light 9.6e-6 lum sr = the panorama's measured LMC (1.0e-4) x 10^(-0.4 (3.44 - 0.9)); 30% an
+  exponential bulge (0.04 deg, q 0.8, warm), 70% a disk (0.39 deg, q 0.3); both widened by 0.6 of the pixel (flux kept:
+  the cusp point-sampled sparkled). Within 4 deg only.
+- **The look** (`cloud.mwLook`, GpuCloudParams 12256 -> 12288): blended by atmFracSky (ground 1, above 100 km 0).
+  Ground: x "Milky Way gain (ground)" 1, the colour pulled toward a cool grey of the same luminance by "Milky Way night
+  vision" 0.5 (rod vision: the faint blue-grey band). Above the air: x "Milky Way gain (space)" 2.5 and a power
+  "Milky Way contrast (space)" 1.25 on the SMOOTH glow's luminance about 0.01 (`mwLum`; on the pixel's it lifted the
+  zoomed points up to 2x), full colour. "Milky Way zoom detail" 0.6, "Milky Way star clouds" 0.7. Photometry tab slots
+  39-44, keys `photometry.milky_way_*`; `photometry.milky_way_zoom` (no UI) = the A/B (false: the old single fetch,
+  no denoise, no star clouds; Andromeda and the look stay).
+- **Cost** (RTX 3070 Ti, 1600x900, interleaved with the old shader in one app): sky pass FOV 90 +0.0 (6.58 vs 6.21 /
+  6.56), FOV 8 +0.25 ms (1.29 -> 1.55; every pixel zoomed), ISS +0.07; sky TAA 168 registers both, binary 937 -> 950 KB;
+  SKY_LITE SPIR-V +88 B (the UBO). Scripts and captures: `harness_runs/mw_tools/` (azel.py: a target's az / el for a
+  time and place; energy.py: linear-light ratios of two captures), `harness_runs/mw_live2/` (untracked).
+- Open: the existing dark-sky gate's dome (`darkSkyDomeT`, a log ramp from 1e-6) reads most sites within tens of km of
+  a town as city (a "Bortle 4" place south-west of Santiago shows only a ghost of the band); the star clouds are drawn
+  in the sky pass, so they ride the sky TAA (the catalogue stars are drawn after it); M33 and other faint galaxies are
+  not drawn; the panorama's colours are a long-exposure photograph's (the night-vision term is the only eye model).
 
 ## Subsystem: Light Pollution Dome
 

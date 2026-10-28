@@ -4918,7 +4918,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         const char *fmt;
         int idx;
     };
-    static char photoBufs[39][12];
+    static char photoBufs[45][12];
     PhotoParam photoParams[] = {
         {"Brightness", &brightnessScale, 0.05f, 20.0f, 0.25f, "%.2f", 0},
         {"Day suppress", &daySuppression, 5.0f, 5000.0f, 5.0f, "%.0f", 1},
@@ -4997,6 +4997,15 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         {"Resolved satellites", &satResolvedStrength, 0.0f, 1.0f, 0.05f, "%.2f", 35},
         {"Satellite adaptation", &satAdaptationStrength, 0.0f, 2.0f, 0.05f, "%.2f", 36},
         {"Merge formations", &formationMergeStrength, 0.0f, 1.0f, 0.05f, "%.2f", 37},
+        // The Milky Way (2026-10-28, sat_sky.frag "Milky Way"): its gain under the air and above it, the contrast above it
+        // (1 = the photograph's), the blue-grey of rod vision under the air, and the zoomed view's star clouds (the share of
+        // the light in sub-texel points) and dust detail.
+        {"Milky Way gain (ground)", &mwGainGround, 0.0f, 4.0f, 0.05f, "%.2f", 39},
+        {"Milky Way gain (space)", &mwGainSpace, 0.0f, 8.0f, 0.05f, "%.2f", 40},
+        {"Milky Way contrast (space)", &mwContrastSpace, 0.5f, 2.0f, 0.05f, "%.2f", 41},
+        {"Milky Way night vision", &mwNightVision, 0.0f, 1.0f, 0.05f, "%.2f", 42},
+        {"Milky Way star clouds", &mwStarClouds, 0.0f, 1.0f, 0.05f, "%.2f", 43},
+        {"Milky Way zoom detail", &mwZoomDetail, 0.0f, 2.0f, 0.05f, "%.2f", 44},
     };
     auto photoRow = [&](PhotoParam &pp)
     {
@@ -8720,6 +8729,13 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         satResolvedStrength = p.value("sat_resolved", satResolvedStrength);
         satAdaptationStrength = p.value("sat_adaptation", satAdaptationStrength);
         formationMergeStrength = p.value("formation_merge", formationMergeStrength);
+        mwGainGround = p.value("milky_way_gain_ground", mwGainGround);
+        mwGainSpace = p.value("milky_way_gain_space", mwGainSpace);
+        mwContrastSpace = p.value("milky_way_contrast_space", mwContrastSpace);
+        mwNightVision = p.value("milky_way_night_vision", mwNightVision);
+        mwStarClouds = p.value("milky_way_star_clouds", mwStarClouds);
+        mwZoomDetail = p.value("milky_way_zoom_detail", mwZoomDetail);
+        mwZoomOn = p.value("milky_way_zoom", mwZoomOn);
         mwPollutionThresholdLo = p.value("mw_pollution_threshold_lo", mwPollutionThresholdLo);
         mwPollutionThresholdHi = p.value("mw_pollution_threshold_hi", mwPollutionThresholdHi);
         darkSkyCityMag = p.value("dark_sky_city_mag", darkSkyCityMag);
@@ -9546,6 +9562,13 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"sat_resolved", satResolvedStrength},
         {"sat_adaptation", satAdaptationStrength},
         {"formation_merge", formationMergeStrength},
+        {"milky_way_gain_ground", mwGainGround},
+        {"milky_way_gain_space", mwGainSpace},
+        {"milky_way_contrast_space", mwContrastSpace},
+        {"milky_way_night_vision", mwNightVision},
+        {"milky_way_star_clouds", mwStarClouds},
+        {"milky_way_zoom_detail", mwZoomDetail},
+        {"milky_way_zoom", mwZoomOn},
         {"mw_pollution_threshold_lo", mwPollutionThresholdLo},
         {"mw_pollution_threshold_hi", mwPollutionThresholdHi},
         {"dark_sky_city_mag", darkSkyCityMag},
