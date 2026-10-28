@@ -543,6 +543,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     // machine again the log should say which of these steps it reached.
     Log::line("constellation: building...");
     bootStatus("Constellations");
+    moonBasesLoad(); // the lunar bases' arrays (data/lunar_bases.json): read-only from here on
     initConstellation();
     Log::line("constellation: " + std::to_string(activeSatCount) + " satellites, " +
               std::to_string(satTypes.size()) + " types, " + std::to_string(constellations.size()) +
@@ -17973,28 +17974,9 @@ void SatelliteSim::updatePositions(double t, float dt)
         // IAU model approximates) to the face the Moon really shows: the optical libration (+-7.9 deg in longitude,
         // +-6.7 deg in latitude) and the pole's tilt (it is near the ECLIPTIC pole, not the celestial one).
         {
-            const double d = t / 86400.0, T = d / 36525.0, r = glm::pi<double>() / 180.0;
-            const double E1 = (125.045 - 0.0529921 * d) * r, E2 = (250.089 - 0.1059842 * d) * r,
-                         E3 = (260.008 + 13.0120009 * d) * r, E4 = (176.625 + 13.3407154 * d) * r,
-                         E5 = (357.529 + 0.9856003 * d) * r, E6 = (311.589 + 26.4057084 * d) * r,
-                         E7 = (134.963 + 13.0649930 * d) * r, E8 = (276.617 + 0.3287146 * d) * r,
-                         E9 = (34.226 + 1.7484877 * d) * r, E10 = (15.134 - 0.1589763 * d) * r,
-                         E11 = (119.743 + 0.0036096 * d) * r, E12 = (239.961 + 0.1643573 * d) * r,
-                         E13 = (25.053 + 12.9590088 * d) * r;
-            const double a0 = (269.9949 + 0.0031 * T - 3.8787 * std::sin(E1) - 0.1204 * std::sin(E2) + 0.0700 * std::sin(E3) -
-                               0.0172 * std::sin(E4) + 0.0072 * std::sin(E6) - 0.0052 * std::sin(E10) + 0.0043 * std::sin(E13)) * r;
-            const double d0 = (66.5392 + 0.0130 * T + 1.5419 * std::cos(E1) + 0.0239 * std::cos(E2) - 0.0278 * std::cos(E3) +
-                               0.0068 * std::cos(E4) - 0.0029 * std::cos(E6) + 0.0009 * std::cos(E7) + 0.0008 * std::cos(E10) -
-                               0.0009 * std::cos(E13)) * r;
-            const double W = std::fmod(38.3213 + 13.17635815 * d - 1.4e-12 * d * d + 3.5610 * std::sin(E1) + 0.1208 * std::sin(E2) -
-                                       0.0642 * std::sin(E3) + 0.0158 * std::sin(E4) + 0.0252 * std::sin(E5) - 0.0066 * std::sin(E6) -
-                                       0.0047 * std::sin(E7) - 0.0046 * std::sin(E8) + 0.0028 * std::sin(E9) + 0.0052 * std::sin(E10) +
-                                       0.0040 * std::sin(E11) + 0.0019 * std::sin(E12) - 0.0044 * std::sin(E13), 360.0) * r;
-            const glm::dvec3 P(std::cos(d0) * std::cos(a0), std::cos(d0) * std::sin(a0), std::sin(d0));
-            const glm::dvec3 N(-std::sin(a0), std::cos(a0), 0.0);         // the body equator's ascending node on the ICRF equator
-            const glm::dvec3 M = glm::cross(P, N);
-            const glm::dvec3 X = std::cos(W) * N + std::sin(W) * M;      // 0 deg longitude
-            const glm::dvec3 Y = glm::cross(P, X);                       // 90 deg east
+            const double r = glm::pi<double>() / 180.0;
+            glm::dvec3 P, X, Y; // (lunar::moonBodyFrame: the one copy, also the Moon-base glints' frame)
+            lunar::moonBodyFrame(t, P, X, Y);
             moonPoleENU = glm::vec3((float)glm::dot(P, e), (float)glm::dot(P, n), (float)glm::dot(P, u));
             moonPrimeENU = glm::vec3((float)glm::dot(X, e), (float)glm::dot(X, n), (float)glm::dot(X, u));
             const glm::dvec3 toEarth = -glm::normalize(mE);              // the sub-Earth point (geocentric libration)

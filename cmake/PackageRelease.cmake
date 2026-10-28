@@ -63,6 +63,7 @@ foreach(f data/constellations.json
           data/launches.json
           data/launch_coasts.json
           data/geo_satellites.json
+          data/lunar_bases.json
           THIRD_PARTY_NOTICES.txt)
     if(NOT EXISTS "${SRC_DIR}/${f}")
         message(FATAL_ERROR "PackageRelease.cmake: required file missing: ${SRC_DIR}/${f}")

@@ -183,6 +183,16 @@ target_include_directories(SatModelTool PRIVATE src/simulations)
 target_link_libraries(SatModelTool PRIVATE glm::glm nlohmann_json::nlohmann_json)
 sat_strict_warnings(SatModelTool)
 
+# LunarGlintTool (Moon-base glints, LunarBases.cpp): the single-panel check against the hand formula and the glint
+# windows over a span, no Vulkan. Not part of ALL:
+#   cmake --build build --config Release --target LunarGlintTool
+#   build/Release/LunarGlintTool.exe data/lunar_bases.json [--from 2036-11-22] [--days 730] [--limit 6] [--jitter 1]
+add_executable(LunarGlintTool EXCLUDE_FROM_ALL tools/lunar_glint_tool/main.cpp src/simulations/LunarBases.cpp
+               src/simulations/SatModel.cpp src/simulations/SatPhotometry.cpp)
+target_include_directories(LunarGlintTool PRIVATE src/simulations)
+target_link_libraries(LunarGlintTool PRIVATE glm::glm nlohmann_json::nlohmann_json)
+sat_strict_warnings(LunarGlintTool)
+
 # SoundTool (ambient sound): runs the soundtrack analysis (MusicAnalysis.cpp — key, tuning curve,
 # chords) and renders any AmbientSynth voice to a WAV with keyframed parameters — the offline loop
 # for tuning the ambience without launching the app. Not part of ALL:
@@ -423,6 +433,9 @@ function(sat_copy_runtime_files tgt)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${CMAKE_CURRENT_SOURCE_DIR}/data/geo_satellites.json"
                 "$<TARGET_FILE_DIR:${tgt}>/geo_satellites.json"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_CURRENT_SOURCE_DIR}/data/lunar_bases.json"
+                "$<TARGET_FILE_DIR:${tgt}>/lunar_bases.json"
             COMMENT "Copying data files next to ${tgt}"
         )
         # Satellite geometry models (lighting overhaul Phase 3), referenced from constellations.json
@@ -503,7 +516,7 @@ function(sat_sync_runtime_sources tgt)
                 "$<TARGET_FILE_DIR:${tgt}>/default_bookmarks")
     endif()
     foreach(f data/constellations.json data/constellations.schema.json data/reflector_targets.json data/launches.json
-              data/launch_coasts.json data/geo_satellites.json
+              data/launch_coasts.json data/geo_satellites.json data/lunar_bases.json
               THIRD_PARTY_NOTICES.txt)
         if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${f}")
             list(APPEND sync_files "${CMAKE_CURRENT_SOURCE_DIR}/${f}")

@@ -27,6 +27,7 @@
 #include "../VideoRecorder.h" // video export (SatelliteSimVideo.cpp, 2026-10-25)
 #include "SatEnvProbes.h" // Phase 4: satellite meshes (model viewer; scene pass in 4c)
 #include "SkyEvents.h"    // the Sky events window (2026-10-27)
+#include "LunarBases.h"   // the lunar bases' solar-array glints (2026-10-27)
 #include <memory>
 
 // Forward declaration only — savePerfSnapshot/buildPerfSnapshotJson are the sole users and both
@@ -3440,6 +3441,31 @@ private:
     bool skyWatchLunar(const sky::Event &e, std::string &msg);
     bool skyWatchConjunction(const sky::Event &e, std::string &msg);
     bool skyWatchOccultation(const sky::Event &e, std::string &msg);
+    void skySearchMoonGlints(const sky::SearchCtx &c, std::vector<sky::Event> &out) const;
+    bool skyWatchMoonGlint(const sky::Event &e, std::string &msg);
+
+    // ── Moon-base glints (2026-10-27, SatelliteSimMoonBases.cpp; CLAUDE.md "Moon-base glints") ──────────────────
+    // The lunar south-pole bases' sun-tracking solar arrays (data/lunar_bases.json, lunar::Base) mirror the Sun to
+    // the Earth near full Moon: a point source on the drawn Moon at the base's place, appended to kFireBuf (point,
+    // bloom, glare). The bases are read once at init and never written after (the sky-event search reads them on a
+    // worker).
+    std::vector<lunar::Base> lunarBases_;
+    bool moonBaseGlints = true;           // moon_bases.enabled
+    float moonBaseJitter = 1.0f;          // moon_bases.tilt_jitter_scale: x the rows' tilt / azimuth errors
+    float moonBaseMagLimit = 3.0f;        // moon_bases.event_mag_limit: a sky event when brighter than this
+    struct MoonBaseNow                    // this frame, per base (harness `moonbase`)
+    {
+        bool built = false, sunUp = false, drawn = false;
+        double magTop = 99.0, magSeen = 99.0, extinction = 0.0, flare = 0.0, rowsLit = 0.0;
+        double obsElevDeg = 0.0, phaseDeg = 0.0, beamOffDeg = 0.0, sunElevDeg = 0.0, sunVisible = 0.0;
+        glm::vec3 enu{0.0f, 0.0f, 1.0f};   // drawn, refracted (ENU)
+    };
+    std::vector<MoonBaseNow> moonBaseNow_;
+    void moonBasesLoad();
+    void moonBasesFill();                  // kesslerFillDust's finish: the glints into kFireBuf
+    // The base's place on the DRAWN Moon (x "Moon size"), refracted, from the observer (ENU); false if not loaded.
+    bool moonBaseDrawnEnu(int i, glm::vec3 &enu) const;
+    harness::Status harnessMoonBase(harness::Active &a);
     // shared by the Watches: the moment (1x, unpaused), the place, the aim and the selection
     void skyJumpTo(double t);
     void skyPlaceAt(const glm::dvec3 &siteEcef, double t);
