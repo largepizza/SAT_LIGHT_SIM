@@ -28,6 +28,8 @@
 #include "SatEnvProbes.h" // Phase 4: satellite meshes (model viewer; scene pass in 4c)
 #include "SkyEvents.h"    // the Sky events window (2026-10-27)
 #include "LunarBases.h"   // the lunar bases' solar-array glints (2026-10-27)
+#include "Meteors.h"      // meteor showers and the sporadic background (2026-10-27)
+#include "Comets.h"       // comets: orbits, brightness, tails (2026-10-27)
 #include <memory>
 
 // Forward declaration only — savePerfSnapshot/buildPerfSnapshotJson are the sole users and both
@@ -602,6 +604,53 @@ struct PlanetState
     float distanceAU = 0.0f;    // Earth-planet distance (AU)
     float sunDistAU = 0.0f;     // Sun-planet distance (AU)
     float phaseAngleDeg = 0.0f; // Sun-Planet-Earth angle (illumination phase)
+    glm::dvec3 geoEci{0.0};     // Earth -> planet, AU (J2000 equatorial = the sim's ECI)
+    glm::dvec3 helioEci{0.0};   // Sun -> planet, AU
+};
+
+// Jupiter's Galilean moons (2026-10-27): entries kPlanetCount.. of planetBuf (drawn as points by the star pipeline,
+// selectable like a planet). Positions from Meeus ch. 44 (low accuracy), SatelliteSimPlanets.cpp.
+static constexpr int kGalileanCount = 4;
+static constexpr int kPlanetBodyCount = kPlanetCount + kGalileanCount;
+const char *planetBodyName(int body);   // a planet's or a Galilean moon's name
+float planetApparentMagnitude(PlanetId id, double rAU, double deltaAU, double alphaDeg, double sinRingB = 0.0);
+
+// Resolved planet discs (2026-10-27): mirror of shaders/include/planet_disc.glsl (std140, vec4s only).
+struct GpuPlanetDisc
+{
+    glm::vec4 c, bx, by, pole, x0, sun, tint, lin, pt, ring, misc, pad;
+};
+static_assert(sizeof(GpuPlanetDisc) == 192, "GpuPlanetDisc layout");
+struct GpuPlanetDiscUBO
+{
+    glm::uvec4 head;
+    glm::vec4 tone;
+    glm::vec4 moons[4];
+    GpuPlanetDisc disc[kPlanetCount];
+};
+static_assert(sizeof(GpuPlanetDiscUBO) == 96 + 192 * kPlanetCount, "GpuPlanetDiscUBO layout");
+
+// What the disc renderer and the selection panel know about each body this frame (SatelliteSimPlanets.cpp).
+struct PlanetView
+{
+    float angRadiusArcsec = 0.0f; // equatorial angular radius
+    float discPx = 0.0f;          // equatorial radius on screen, px
+    float share = 0.0f;           // 0 point .. 1 resolved disc
+    float ringTiltDeg = 0.0f;     // Saturn: the rings' opening toward the Earth
+    float cmLonDeg = 0.0f;        // central-meridian longitude (Jupiter: System II, west; others east)
+    float extinction = 1.0f;      // updatePlanets: the line of sight's transmission (V)
+    float extMag = 0.0f;
+    float supp = 0.0f;            // updatePlanets: drawn intensity / (raw x extinction): day, Moon, light pollution
+    float sinRingB = 0.0f;        // Saturn: the rings' tilt toward the Earth (the magnitude's ring term)
+    float handScale = 1.0f;       // the disc's light x this at the hand-off (1 = physical)
+    bool above = false;           // updatePlanets: above the (apparent) horizon
+};
+struct GalileanState
+{
+    float x = 0.0f, y = 0.0f, z = 0.0f; // the disc's local frame (equatorial radii): x the view's right, y its up, z toward the Earth
+    float xWest = 0.0f, yNorth = 0.0f;  // the same offset on the sky: celestial west / north
+    float mag = 99.0f;
+    bool transit = false, occulted = false, eclipsed = false, shadowOnJupiter = false;
 };
 
 // Compute push constants (must match sat_flare.comp push_constant block exactly).
@@ -3469,6 +3518,117 @@ private:
     // The base's place on the DRAWN Moon (x "Moon size"), refracted, from the observer (ENU); false if not loaded.
     bool moonBaseDrawnEnu(int i, glm::vec3 &enu) const;
     harness::Status harnessMoonBase(harness::Active &a);
+
+    // ── Meteors (2026-10-27, Meteors.h, SatelliteSimMeteors.cpp; CLAUDE.md "Meteors") ──────────────────────────────
+    // The major annual showers + the sporadic background, generated as a pure function of sim time near the observer
+    // (meteors::generate), drawn each frame in kesslerFillDust's finish: heads as points in kFireBuf (bloom, glare),
+    // their streaks over the eye's persistence as emissive Gaussians in the dust list, fragments, persistent trains.
+    bool meteorsEnabled = true;           // meteors.enabled
+    float meteorRateGain = 1.0f;          // meteors.rate (x the showers' flux)
+    float meteorFireballGain = 1.0f;      // meteors.fireball_rate (x the rate of fireballs / bolides, M <= -4)
+    std::vector<meteors::Meteor> meteorForced_; // harness `meteors force`
+    // The generated meteors per (shower, band, time bin), kept while the eye stays within 30 km of where they were
+    // generated: each frame generates only the bins that have just begun (a bin is 2 s for the faint bands).
+    std::unordered_map<uint64_t, std::vector<meteors::Meteor>> meteorBinCache_;
+    glm::dvec3 meteorCacheEye_{0.0};
+    double meteorCacheGain_[2] = {-1.0, -1.0};
+    uint64_t meteorForcedCount_ = 0;
+    struct MeteorNow                      // drawn this frame (harness `meteors`)
+    {
+        int shower = 0;
+        float M = 0.0f, mag = 99.0f, flare = 0.0f, azDeg = 0.0f, elDeg = 0.0f, age = 0.0f, dur = 0.0f, vKms = 0.0f;
+        float rangeKm = 0.0f, hKm = 0.0f;
+        int fragments = 0, trainSegs = 0, gauss = 0;
+        bool forced = false;
+    };
+    std::vector<MeteorNow> meteorNow_;
+    double meteorCpuMs = 0.0;             // the fill's time a frame (eased)
+    int meteorDraws_ = 0, meteorGenerated_ = 0, meteorHeads_ = 0, meteorGauss_ = 0, meteorDustAt_ = 0;
+    bool meteorWarpOff_ = false;          // this frame: not drawn (time warp)
+    void meteorsFill(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull); // kesslerFillDust's finish
+    float meteorSkySuppress(const glm::vec3 &enu) const; // the stars' sky dimming (night, dome, Moon) in that direction
+    harness::Status harnessMeteors(harness::Active &a);
+    // The Watch: a dark, clear site with the radiant well up, near the shower's peak (within [t0, t1]), at 1x.
+    bool meteorWatchShower(int shower, double t0, double t1, double tPeak, std::string &msg);
+    void skySearchMeteorShowers(const sky::SearchCtx &c, std::vector<sky::Event> &out) const;
+    bool skyWatchMeteorShower(const sky::Event &e, std::string &msg);
+    // ── Comets (2026-10-27, SatelliteSimComets.cpp + Comets.h; CLAUDE.md "Comets") ──────────────────────────────
+    // The Great Comet of 2037 (a scripted sungrazer passing 560,000 km from the Earth) and minor comets hashed per year,
+    // on heliocentric conics (pure functions of sim time). The head is a point in kFireBuf (point, bloom, glare); the
+    // tail (dust sheet, ion ribbon) and the coma are triangle grids of sky directions drawn by comet_tail.vert/.frag
+    // after the sky, at infinity, gated against the sky's surface brightness (darksky.glsl) like the Milky Way.
+    struct CometGeom
+    {
+        comet::State s;
+        double r = 1.0, delta = 1.0, phaseDeg = 90.0, elongDeg = 90.0, mag = 99.0;
+        double comaRad = 0.0, ionLenAU = 0.0, tailDeg = 0.0;
+        glm::dvec3 toComet{0.0, 0.0, 1.0}; // ecliptic unit vector from the observer
+    };
+    struct CometNow
+    {
+        int idx = -1;                       // into comets_
+        CometGeom g;
+        double pointShare = 1.0, magPoint = 99.0, magSeen = 99.0, extMag = 0.0, flare = 0.0;
+        glm::vec3 headEnu{0, 0, 1}, headEnuDrawn{0, 0, 1};
+        bool below = false, drawnHead = false;
+        int tailSlot = -1;
+        float peakLum = 0.0f;
+        glm::vec3 tailAimEnu{0, 0, 1};   // the visible tail's far end (lum > ~23.7 mag/arcsec^2), for the Watch's framing
+        float tailSpanDeg = 0.0f;        // ... and its angle from the head
+    };
+    struct CometTailCache
+    {
+        std::string name;
+        comet::DustGrid grid;
+        std::future<comet::DustGrid> job;
+        bool used = false;
+    };
+    bool cometsEnabled = true;               // comets.enabled
+    bool cometsMinor = true;                 // comets.minor: the hashed minor comets as well as the Great Comet
+    bool cometTailsEnabled = true;           // comets.tails
+    float cometTailGain = 1.0f;              // comets.tail_gain: x the tails' physical brightness
+    float cometTailGainDisplay = 1.0f;       // comets.display_gain: x what the tail pass shows (exposure-like)
+    std::vector<comet::Elements> comets_;    // the catalog near now
+    double cometsCatalogT = -1e300;
+    std::vector<CometNow> cometNow_;         // this frame
+    std::vector<CometTailCache> cometTails_;
+    float cometMoonBright = 0.0f, cometAtmFrac = 1.0f;
+    double cometCpuMs = 0.0;
+    uint64_t cometTailBuilds = 0;
+    uint32_t cometPatchCount = 0, cometVertCount = 0, cometDrawsLast = 0;
+    VkBuffer cometBuf = VK_NULL_HANDLE;
+    VkDeviceMemory cometMem = VK_NULL_HANDLE;
+    void *cometMapped = nullptr;
+    VkDescriptorSetLayout cometDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool cometDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet cometDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout cometPipeLayout = VK_NULL_HANDLE;
+    VkPipeline cometPipeline = VK_NULL_HANDLE;
+    int selectedCometIndex = -1;
+    char cometInfoLine[kSelInfoLines][kSelInfoLineLen] = {};
+    void cometGeometry(const comet::Elements &el, double t, const glm::dvec3 &obsHelio, CometGeom &g) const;
+    glm::dvec3 cometObserverHelio(double t) const;
+    glm::vec3 cometEnu(const glm::dvec3 &dirEcl, double t) const;
+    glm::vec3 cometHeadEnu(int i) const;
+    glm::vec3 cometTailEnu(int i) const;
+    int cometIndexByName(const char *name) const;
+    void cometsRefreshCatalog(double t, bool force);
+    void cometsUpdate();                     // recordCompute, after updatePlanets
+    void cometsBuildTails(double t, const glm::dvec3 &obsHelio);
+    void cometsFillHeads();                  // kesslerFillDust's finish: the heads into kFireBuf
+    void cometsInit(VulkanContext &ctx);
+    void cometsWriteDescriptors(VulkanContext &ctx); // also after the cloud / depth targets are recreated
+    void cometsRecordDraw(VkCommandBuffer cmd, VulkanContext &ctx, const PointDrawPC &pc);
+    void cometsDestroy(VkDevice device);
+    int pickCometAt(float x, float y, float w, float h);
+    void formatSelectedCometInfo();
+    bool cometWatchAt(int idx, double t, double sunMaxDeg, bool fromOrbit, std::string &msg);
+    bool cometBestWindow(const comet::Elements &el, double t0, double t1, double &tBest, double &w0, double &w1,
+                         double &magBest, double &tailBest) const;
+    harness::Status harnessComets(harness::Active &a);
+    void skySearchComets(const sky::SearchCtx &c, std::vector<sky::Event> &out) const;
+    bool skyWatchComet(const sky::Event &e, std::string &msg);
+
     // shared by the Watches: the moment (1x, unpaused), the place, the aim and the selection
     void skyJumpTo(double t);
     void skyPlaceAt(const glm::dvec3 &siteEcef, double t);
@@ -4092,7 +4252,8 @@ private:
     // ── The star catalogue's metadata, the faint stars, the selectable stars and the 2037 supernova (2026-10-27,
     // SatelliteSimStars.cpp; CLAUDE.md "Stars"). starRecords / starInfo_ are one list sorted by magnitude (brightest
     // first), from assets/stars/star_catalog.bin (tools/make_star_catalog.py: HYG v4.1 to mag 8.5), else the
-    // compiled-in BSC5 set (star_catalog.h, no names). A selected star is selectedPlanetIndex = kPlanetCount + i.
+    // compiled-in BSC5 set (star_catalog.h, no names). A selected star is selectedStarIndex (its index; the other selections
+    // win: buildSelectedSatPanel drops it while a satellite, planet or comet is selected).
     struct StarInfo
     {
         float vmag = 0.0f, bv = 0.0f, distPc = 0.0f; // catalogue V, B-V, distance (0 = unknown)
@@ -4111,7 +4272,9 @@ private:
     std::string starDisplayName(int i) const;
     int pickStarAt(float clickX, float clickY, float screenW, float screenH, float *distPx = nullptr) const;
     void formatSelectedStarInfo(int i);
-    bool skyObjectEnu(int obj, glm::vec3 &enu, float *flare = nullptr) const; // a planet (0..5) or a star (kPlanetCount + i)
+    bool starEnuNow(int i, glm::vec3 &enu, float *flare = nullptr) const; // star i's direction now (ENU) and drawn intensity
+    int selectedStarIndex = -1;
+    char starInfoLine[kSelInfoLines][kSelInfoLineLen] = {};
     uint32_t starDrawCount = 0;                       // the prefix of starRecords written this frame (sorted by mag)
     uint32_t starVisibleCount = 0;                    // ... of which drawn (intensity > 0), harness `stars`
     float starLimitMagFrame = 0.0f;                   // the faintest catalogue magnitude that could show this frame
@@ -4159,6 +4322,23 @@ private:
     VkDescriptorPool planetDescPool = VK_NULL_HANDLE; // starDescPool is sized maxSets=1, so this
                                                       // gets its own tiny pool for one more set
     VkDescriptorSet planetDescSet = VK_NULL_HANDLE;   // allocated with starDescLayout (same shape)
+    // Resolved planet discs (2026-10-27, planet_disc.vert/.frag, SatelliteSimPlanets.cpp): their own small pipeline and
+    // set (sat_sky.frag is at the 16 sampled-image floor): 0 the disc UBO, 1-2 the cloud composite, 3 the scene depth,
+    // 4 the planet maps (a 2D array: Mars, Jupiter, Saturn, Saturn's ring profile).
+    VkBuffer planetDiscBuf = VK_NULL_HANDLE;
+    VkDeviceMemory planetDiscMem = VK_NULL_HANDLE;
+    void *planetDiscMapped = nullptr;
+    VkDescriptorSetLayout planetDiscLayout = VK_NULL_HANDLE;
+    VkDescriptorPool planetDiscPool = VK_NULL_HANDLE;
+    VkDescriptorSet planetDiscSet = VK_NULL_HANDLE;
+    VkPipelineLayout planetDiscPipeLayout = VK_NULL_HANDLE;
+    VkPipeline planetDiscPipeline = VK_NULL_HANDLE;
+    VkImage planetMapImg = VK_NULL_HANDLE;
+    VkDeviceMemory planetMapMem = VK_NULL_HANDLE;
+    VkImageView planetMapView = VK_NULL_HANDLE;
+    VkSampler planetMapSampler = VK_NULL_HANDLE;
+    uint32_t planetMapLayers = 0;
+    uint32_t planetDiscCount = 0;   // this frame's resolved discs (0 = the pass draws nothing)
 
     // ── Simulation state ──────────────────────────────────────────────────────
     SkyCamera camera;
@@ -7429,6 +7609,10 @@ private:
     PlanetState planetStates[kPlanetCount]{};                                // ephemeris; direction/distance/phase
     bool planetEnabled[kPlanetCount] = {true, true, true, true, true, true}; // per-planet toggle
     bool showPlanets = true;                                                 // global toggle, settings-persisted
+    bool planetDiscs = true;          // resolved planet discs (settings planets.resolved_discs)
+    float planetDiscGain = 1.5f;      // x their physical surface brightness (planets.disc_gain)
+    PlanetView planetView[kPlanetCount]{};
+    GalileanState galilean[kGalileanCount]{};
     int selectedPlanetIndex = -1;                                            // index into planetStates[]/kPlanetNames[], -1 = none selected;
                                                                              // mutually exclusive with selectedSatIndex (see its declaration)
 
@@ -8007,6 +8191,14 @@ private:
                                                                                 // pickSatelliteAt but reads the already host-mapped
                                                                                 // planetBuf directly — no device->host staging copy
     void formatSelectedPlanetInfo();                                            // mirrors formatSelectedSatInfo, fills planetInfoLine[]
+    void createPlanetDiscs(VulkanContext &ctx);         // maps, UBO, set, pipeline (after initPlanets)
+    void createPlanetDiscPipeline(VulkanContext &ctx);  // (viewport baked in: rebuilt on resize)
+    void writePlanetDiscTargets(VulkanContext &ctx);    // the cloud composite / scene depth after they are recreated
+    void destroyPlanetDiscs(VkDevice device);
+    void updatePlanetDiscs(GpuSatVisible *dst);         // from updatePlanets: the discs, the moons, the hand-off
+    void recordPlanetDiscs(VkCommandBuffer cmd, const PointDrawPC &pc);
+    double planetSinRingB(int planet) const;             // Saturn's rings' tilt toward the Earth (sin B); 0 for the rest
+    nlohmann::json planetsJson() const;                  // harness state: the discs and the Galilean moons
     void updateLightPollutionDome(float dt);                                    // called each frame before updateStars(): fills lightDomeAz[]
     void easeDarkSkyDome(float dt, const float *rawSectors);                    // log-maps + eases lightDomeEasedAz[] (nullptr = pristine)
     void uploadLightDome();                                                     // memcpys both dome halves into lightDomeBuf

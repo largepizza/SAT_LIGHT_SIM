@@ -159,7 +159,8 @@ void SatelliteSim::updateRefraction()
             return t;
         });
     }
-    (void)took;
+    if (took)
+        ++refrSerial_; // a new table: updateStars rebuilds its per-elevation table
     refrDerive();
     fillSunspots(simT);
 }
@@ -282,7 +283,6 @@ void SatelliteSim::refrDerive()
     }
     // The primary image: from the top down while the true elevation keeps falling.
     refrInv.clear();
-    ++refrSerial_; // (updateStars rebuilds its per-elevation table)
     double minT = 1e9;
     for (int i = refr::kTableN - 1; i >= 0; --i)
     {

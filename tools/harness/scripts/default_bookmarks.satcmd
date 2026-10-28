@@ -26,12 +26,13 @@ wait 5
 
 # 2. The 2037-01-31 total lunar eclipse (greatest ~13:59:48 UTC; totality ends ~14:32) from Anchorage, 60 m over
 #    the city at 05:10 local time: the red Moon ~29 degrees up in the west-southwest over the city lights (the
-#    user's framing: their "Blood Moon" bookmark from Fairbanks, az -116 el 21).
+#    user's framing: their "Blood Moon" bookmark from Fairbanks, az -116 el 21). 2026-10-27: the Moon is drawn at its
+#    true size by default, so the view is on the Moon at a 10-degree field (at 45 it was a few pixels).
 drift default
 time set 2037-01-31T14:10:00Z
 observer lat=61.22 lon=-149.9 agl=60
 camera look moon
-camera el=17 fov=45
+camera fov=10
 wait settle
 wait 30
 bookmark add Blood Moon from Anchorage id=default_blood_moon_anchorage scale=0 paused=0

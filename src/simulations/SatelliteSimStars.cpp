@@ -6,8 +6,9 @@
 // distances); without it the compiled-in BSC5 set (star_catalog.h, 8404 stars to 6.5, no names). updateStars
 // (SatelliteSim.cpp) draws a PREFIX of it each frame: the stars that can show at all under this frame's sky.
 //
-// A selected star is selectedPlanetIndex = kPlanetCount + its index, so everything that clears a planet selection
-// clears a star's too; the panel, the harness and the Sky events read it through skyObjectEnu.
+// A selected star is selectedStarIndex (2026-10-28: its own index, as the comets'; it was selectedPlanetIndex =
+// kPlanetCount + i, which clashed with the Galilean moons). The panel, the harness and the Sky events read its place
+// through starEnuNow.
 //
 // The supernova: Betelgeuse (168 pc, Joyce et al. 2020; A_V ~0.5) explodes as a Type II-P on 2037-12-25 03:00 UTC.
 // Its V light curve (supernovaMagAt) is a pure function of sim time: shock breakout (minutes, to -6), the cooling
@@ -175,20 +176,9 @@ int SatelliteSim::starIndexByName(const std::string &nameIn) const
     return -1;
 }
 
-// A planet (0 .. kPlanetCount - 1) or a star (kPlanetCount + i): its drawn direction (ENU, refracted) and its drawn
-// intensity this frame (0 = not drawn). A star outside this frame's drawn prefix: its true direction, intensity 0.
-bool SatelliteSim::skyObjectEnu(int obj, glm::vec3 &enu, float *flare) const
+// Star i's direction now (ENU, refracted when this frame's record is current) and its drawn intensity (0 = not drawn).
+bool SatelliteSim::starEnuNow(int i, glm::vec3 &enu, float *flare) const
 {
-    if (obj < 0) return false;
-    if (obj < kPlanetCount)
-    {
-        if (!planetMapped) return false;
-        const GpuSatVisible &v = static_cast<const GpuSatVisible *>(planetMapped)[obj];
-        enu = v.skyDir;
-        if (flare) *flare = v.flareIntensity;
-        return true;
-    }
-    const int i = obj - kPlanetCount;
     if (i >= (int)starRecords.size()) return false;
     // The direction from this moment's frame (eci2enu): the drawn record is the last updateStars', which a harness
     // command or a Watch that moved the time or the observer this frame has not refreshed yet. The drawn record's
@@ -225,7 +215,7 @@ int SatelliteSim::pickStarAt(float clickX, float clickY, float screenW, float sc
         if (s.vmag > 4.5f && s.name == 0) { if (s.vmag > 6.5f) break; continue; }
         glm::vec3 d;
         float fl = 0.0f;
-        if (!skyObjectEnu(kPlanetCount + (int)i, d, &fl) || fl <= 0.0f) continue;
+        if (!starEnuNow((int)i, d, &fl) || fl <= 0.0f) continue;
         float sx, sy;
         if (!projectSkyDirToScreen(d, screenW, screenH, sx, sy)) continue;
         const float dist = std::hypot(sx - clickX, sy - clickY);
@@ -244,7 +234,7 @@ int SatelliteSim::pickStarAt(float clickX, float clickY, float screenW, float sc
 
 void SatelliteSim::formatSelectedStarInfo(int i)
 {
-    for (auto &line : planetInfoLine) line[0] = '\0';
+    for (auto &line : starInfoLine) line[0] = '\0';
     if (i < 0 || i >= (int)starInfo_.size()) return;
     const StarInfo &s = starInfo_[(size_t)i];
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
@@ -252,24 +242,24 @@ void SatelliteSim::formatSelectedStarInfo(int i)
     float vNow = s.vmag;
     const bool sn = i == starBetelgeuse && supernovaEnabled && t >= kSupernovaT0;
     if (i == starBetelgeuse) vNow = betelgeuseMagAt(t, &bv);
-    snprintf(planetInfoLine[0], sizeof(planetInfoLine[0]), "%s%s", starDisplayName(i).c_str(), sn ? " (supernova)" : "");
+    snprintf(starInfoLine[0], sizeof(starInfoLine[0]), "%s%s", starDisplayName(i).c_str(), sn ? " (supernova)" : "");
     const char *spect = starStr(s.spect), *con = starStr(s.conName);
-    snprintf(planetInfoLine[1], sizeof(planetInfoLine[1]), "%s%s%s%s%s", sn ? "Supernova (Type II-P)" : "Star",
+    snprintf(starInfoLine[1], sizeof(starInfoLine[1]), "%s%s%s%s%s", sn ? "Supernova (Type II-P)" : "Star",
              spect[0] && !sn ? ", " : "", sn ? "" : spect, con[0] ? ", in " : "", con);
     if (sn)
-        snprintf(planetInfoLine[2], sizeof(planetInfoLine[2]), "Mag: %.1f (day %.0f since breakout)", vNow,
+        snprintf(starInfoLine[2], sizeof(starInfoLine[2]), "Mag: %.1f (day %.0f since breakout)", vNow,
                  std::floor((t - kSupernovaT0) / 86400.0) + 1.0);
     else
-        snprintf(planetInfoLine[2], sizeof(planetInfoLine[2]), "Mag: %.2f%s", vNow, s.variable || i == starBetelgeuse ? " (variable)" : "");
+        snprintf(starInfoLine[2], sizeof(starInfoLine[2]), "Mag: %.2f%s", vNow, s.variable || i == starBetelgeuse ? " (variable)" : "");
     if (s.distPc > 0.0f)
-        snprintf(planetInfoLine[3], sizeof(planetInfoLine[3]), "Distance: %.0f ly (%.0f pc)", s.distPc * 3.26156f, s.distPc);
+        snprintf(starInfoLine[3], sizeof(starInfoLine[3]), "Distance: %.0f ly (%.0f pc)", s.distPc * 3.26156f, s.distPc);
     else
-        snprintf(planetInfoLine[3], sizeof(planetInfoLine[3]), "Distance: unknown");
+        snprintf(starInfoLine[3], sizeof(starInfoLine[3]), "Distance: unknown");
     std::string ids = s.desig ? starStr(s.desig) : "";
     if (s.hr) ids += (ids.empty() ? "" : ", ") + std::string("HR ") + std::to_string(s.hr);
     if (s.hip) ids += (ids.empty() ? "" : ", ") + std::string("HIP ") + std::to_string(s.hip);
-    snprintf(planetInfoLine[4], sizeof(planetInfoLine[4]), "%s", ids.c_str());
-    snprintf(planetInfoLine[5], sizeof(planetInfoLine[5]), "Colour: %s (B-V %.2f)", colourWord(bv), bv);
+    snprintf(starInfoLine[4], sizeof(starInfoLine[4]), "%s", ids.c_str());
+    snprintf(starInfoLine[5], sizeof(starInfoLine[5]), "Colour: %s (B-V %.2f)", colourWord(bv), bv);
 }
 
 // ── The supernova ──────────────────────────────────────────────────────────────────────────────────────────────────
@@ -398,11 +388,11 @@ harness::Status SatelliteSim::harnessStars(harness::Active &a)
                            {"sn_diffuse_moon_frac", snDiffuseMoonFrac},
                            {"breakout_utc", fmtUtcReadable(kSupernovaT0)},
                            {"fades_below_0_5_utc", fmtUtcReadable(supernovaEndT())}};
-        if (selectedPlanetIndex >= kPlanetCount)
-            r["selected_star"] = starDisplayName(selectedPlanetIndex - kPlanetCount);
+        if (selectedStarIndex >= 0)
+            r["selected_star"] = starDisplayName(selectedStarIndex);
         char b[200];
-        snprintf(b, sizeof(b), "%zu stars, %u drawn (%u lit), limit %.2f, NELM zenith %.2f, %.3f ms", starInfo_.size(),
-                 starDrawCount, starVisibleCount, starLimitMagFrame, starNelmZenith, starUpdateMs);
+        snprintf(b, sizeof(b), "%zu stars, %u drawn (%u lit), limit %.2f, NELM zenith %.2f, %.3f ms (prep %.3f)", starInfo_.size(),
+                 starDrawCount, starVisibleCount, starLimitMagFrame, starNelmZenith, starUpdateMs, starPrepMs);
         r["message"] = b;
         return harness::Status::Done;
     }
@@ -413,7 +403,7 @@ harness::Status SatelliteSim::harnessStars(harness::Active &a)
         const StarInfo &s = starInfo_[(size_t)i];
         glm::vec3 d;
         float fl = 0.0f;
-        skyObjectEnu(kPlanetCount + i, d, &fl);
+        starEnuNow(i, d, &fl);
         r = {{"index", i}, {"name", starDisplayName(i)}, {"vmag", s.vmag}, {"bv", s.bv}, {"dist_pc", s.distPc},
              {"hip", s.hip}, {"hr", s.hr}, {"spect", starStr(s.spect)}, {"con", starStr(s.conName)},
              {"az_deg", glm::degrees(std::atan2(d.x, d.y))}, {"el_deg", glm::degrees(std::asin(std::clamp(d.z, -1.0f, 1.0f)))},
@@ -421,7 +411,9 @@ harness::Status SatelliteSim::harnessStars(harness::Active &a)
         if (sub == "select")
         {
             selectedSatIndex = -1;
-            selectedPlanetIndex = kPlanetCount + i;
+            selectedPlanetIndex = -1;
+            selectedCometIndex = -1;
+            selectedStarIndex = i;
             formatSelectedStarInfo(i);
             stopTrack();
         }

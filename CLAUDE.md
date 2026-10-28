@@ -47,7 +47,7 @@ Constellations* · *GPU Orbital Pipeline* (two-dispatch pattern, buffers, `Gpu*`
 constants) · *TargetedReflector / Mirror Ground Targets* · *Kessler syndrome — "The Sun's Fury"* (the
 scripted storm, dead satellites, debris pool, cascade engine, event log) · *Launches* (trains, retirements,
 rockets, plumes, crew rotations, the Missions window: the roster's slots refreshed on a schedule) · *Reflect-Orbital Beam Cloud Occlusion* ·
-*GpuSatInput* (a tombstone — the buffer was deleted 2026-09-22). · *Sky events window* (eclipses, conjunctions, occultations, Moon-base glints: a table of event kinds, each a search + a Watch) · *Moon-base glints* (the lunar bases' solar arrays mirroring the Sun to Earth near full Moon, LunarBases.h)
+*GpuSatInput* (a tombstone — the buffer was deleted 2026-09-22). · *Sky events window* (eclipses, conjunctions, occultations, Moon-base glints, meteor showers, comets: a table of event kinds, each a search + a Watch) · *Meteors* (the annual showers + sporadics as a pure function of sim time; heads, streaks, fireballs, trains) · *Moon-base glints* (the lunar bases' solar arrays mirroring the Sun to Earth near full Moon, LunarBases.h) · *Comets* (the Great Comet of 2037 and hashed minor comets: conic orbits, the magnitude law, tails as grids of sky directions in their own pass)
 
 **Stars** — *Stars* (the HYG catalogue to V 8.5, faint stars only under dark skies, selectable stars, the scripted
 2037 Betelgeuse supernova).
@@ -3124,6 +3124,148 @@ exe, packaged), `tools/lunar_glint_tool` (`LunarGlintTool`, EXCLUDE_FROM_ALL: th
   model beyond the 0.9 day dimming; the 10-row upcoming list fills with glints in a season (two bases glint together);
   no UI for the settings; panels never lean (lean_deg is in the data for a later design); the Watch's clear-sky choice
   reads the cloud map at the jumped time only.
+
+## Subsystem: Meteors (2026-10-27)
+
+`Meteors.h/.cpp` (app-independent: the shower table, the flux a ZHR stands for, the generator, light curve, fragments,
+train wind, colour), `SatelliteSimMeteors.cpp` (the frame's fill, the Watch, the harness `meteors`), the sky-event kind
+`meteors` (METEOR SHOWER, icon 38 `sky-meteors`, `skySearchMeteorShowers` / `skyWatchMeteorShower` in
+SatelliteSimSkyEvents.cpp). Settings `meteors.enabled` (on), `meteors.rate` (1, x the flux), `meteors.fireball_rate`
+(1, x the rate of M <= -4); no UI row yet.
+- **The showers** (`kShowers`, the IMO working list, J2000): Quadrantids, Lyrids, Eta Aquariids, Southern Delta
+  Aquariids, Perseids, Draconids, Orionids, Southern and Northern Taurids, Leonids, Geminids, Ursids + the sporadic
+  background (row `kSporadic`, ZHR 10). Each: peak solar longitude, ZHR, the profile's slopes ZHR x 10^(-B |dLam|)
+  (B- / B+, the Geminids' asymmetric; the Perseids add a broad ZHR-22 component, B 0.05), population index r (mag 2 ..
+  6.5) and a bright-end index rb (brighter than mag 2; the Taurids' 1.35 makes them fireball-rich), entry speed, radiant
+  RA / Dec + drift per degree of solar longitude, the radiant's spread. The solar longitude is the Sun's ecliptic
+  longitude from `sunDirEciAt`. **APPEND rows before `kSporadic` only by moving it** (it is the last row; the generator's
+  seeds take the row index, so a reorder reshuffles every meteor).
+- **Rates**: the flux brighter than absolute mag +6.5 per km^2 per hour = ZHR (13.1 r - 16.5)(r - 1.3)^0.748 / 37200
+  / 1000 (Koschack & Rendtel 1990), x sin(the radiant's elevation) at each cell (the horizontal surface's share), x the
+  cumulative magnitude distribution `magFrac` (r^(M - 6.5) above mag 2, x rb^(M - 2) below). Sporadic radiants are drawn
+  per meteor from the apex (Sun-centred ecliptic longitude 270, ~58 km/s), helion (340) and antihelion (200) sources
+  (~28 km/s), accepted by their elevation (the cell's rate x 4 to compensate): the dawn-heavy diurnal cycle falls out.
+- **Generation is a pure function of sim time** (`meteors::generate`): six absolute-magnitude bands (edges -14, -8,
+  -4, -1, 2, 4.5, 6.5), each with its own time bin and longest age (bolides 120 s / 240 s, fireballs 30 / 60, -4..-1
+  8 / 16, fainter 2 / 8); Earth-fixed 1-deg cells (equal-ish area: 360 cos(lat) per latitude band) within the eye's
+  reach (a meteor 120 km up on its horizon) and the band's visibility distance (100 km x 10^((cull + 1 - M_bright) / 5),
+  cull = the point model's effective limit `pointEffLimitMag()`); a Poisson count per (shower, band, cell, bin) from a
+  splitmix hash, each meteor's start, place, magnitude (the band's piecewise power law), speed (+-3%), radiant (the
+  shower's + its spread) hashed. The distance cull only drops meteors that could not be seen, and the bands are nested,
+  so a meteor exists or not regardless of the observer. Time warp, reverse and bookmarks see the same meteors.
+- **A meteor**: begins at 80 + 0.55 v km (v in km/s: Leonids ~119, Geminids ~99, Draconids ~91), ends at 65 + 0.35 v +
+  2.5 M km (clamped 20 .. begin - 8: bright and slow ones go deeper, a -10 Taurid bolide ~55 km), straight from the
+  radiant, path <= 250 km, duration = path / v (0.2-1 s for most). Light curve 6.75 x^2 (1 - x) (peak at 2/3) + 1-3
+  flares for M <= -1 (and some down to 1.5), a terminal burst for bolides (M <= -8). Fireballs (M <= -4) shed 2-5
+  fragments after the first flare (sideways 40-260 m/s, decelerating 1.5-7.5 km/s^2, 12-47% of the body's light). A
+  persistent train for M <= -5.5: decay 2.5 x 10^(0.2 (-5.5 - M)) s, x2 above 45 km/s (a -10 Leonid ~40 s).
+  Colour: white; fast and bright toward the green of Mg / Fe / O, slow toward sodium's orange-yellow; flares whiter.
+- **Drawn** (`meteorsFill`, kesslerFillDust's finish after the Kessler fireballs, before the launches): the apparent
+  magnitude = M - 2.5 log10(light curve) + 5 log10(range / 100 km) + `atmExtinctionMag` along the line of sight, then x
+  `meteorSkySuppress` (a hand-kept copy of updateStars' chain: the night gate with a 9-mag daylight floor, the
+  light-pollution dome with its isotropic floor, the Moon) -> effectFlare. So a city or a bright Moon removes the faint
+  ones through the point model's own limit, as it does the stars. Heads are kFireBuf points (kessler_fireballs.comp:
+  point, bloom, glare); the STREAK is the path swept over the eye's persistence (0.1 s): three emissive Gaussians in the
+  dust list, front brightest (0.5 / 0.3 / 0.2 of 0.6 x the flare; the head keeps 0.4) once it is longer than 1.5 px —
+  the motion within one frame, not a stepping point. Fragments: heads + a short streak each. The train: ten Gaussians
+  along the 78-108 km part of the path already passed, drifting with a hashed wind (25-75 m/s, turning 8-22 deg per km
+  of height), widening 12 m/s, green for its first seconds then dim orange, ~7 mag under the meteor + a +2-mag wake over
+  its first second. **Budget**: at most 96 meteor Gaussians and never past kMaxDustClouds - 200 (the launches,
+  tornadoes, haboobs, wildfire smoke come after), the brightest meteors first; at most 600 heads. **Not drawn above 2x
+  of time warp** (`meteorWarpOff_`): at 10x a 0.5 s meteor flashes for 3 frames and ten times as often.
+- **The Watch** (`meteorWatchShower`, the sky event's and harness `meteors go`): hourly times across the peak +-14 h
+  (or the next 24 h when the window is under way), a 3 x 4 deg grid of sites with the Sun <= -15 deg and the radiant >=
+  25 deg up, scored sin(radiant elevation) x the profile x (1 - 0.75 Moon up x lit) - the night map's lights; then at
+  that moment (the cloud map's drift) the 60 best sites re-ranked by the CPU cloud map and land. 1x, unpaused, the camera
+  45 deg from the radiant at ~50 deg elevation, FOV 75. Card: "Perseids peak, ZHR 102, <UTC>" / "Moon 23% lit: dark
+  skies" (some moonlight from 25%, bright Moon from 60%).
+- **Measured** (RTX 3070 Ti, 1600x900, live harness; `harness_runs/meteors_*`, untracked). Rates (`meteors count
+  minutes=60`, all sky, at each meteor's peak): the Perseid peak's Watch site (38 N 80 W, radiant 59 deg up, Moon down)
+  1784 / h brighter than 6.5, 322 / h brighter than 4, 56 / h in a 75-deg cone round the view; 37 brighter than 0, 7
+  brighter than -4, no bolide in the hour; the same moment from Manhattan (the dome dims the zenith 5 mag) 190 / h,
+  none brighter than -4; 35 N 110 W on 2037-01-31 (full Moon up, sporadics only) 0 / h, on 01-17 (no Moon) 13 / h; the
+  Quadrantid Watch 2776 / h. Cost: the fill 0.06-0.07 ms a frame on the main thread (`kessler` bucket 0.26 -> 0.33 ms),
+  0.34 ms on the frame a new 2-s bin is generated (the cache: each (shower, band, bin) once while the eye stays within
+  30 km); GPU within noise (8.81 vs 8.80 ms, a few Gaussians); 15 s at 1x: no frame over 50 ms.
+- **Open**: the sporadic rate is probably low in the evening (r 3.0 and the apex below the horizon: 13 / h all sky at
+  23:00 local); the train is ten straight segments (kinks show when it twists); no sonic boom; a bolide's light
+  (`engineLightAdd`) follows "Rocket light on clouds"; satellites are not refracted and neither are meteors; the
+  persistence streak is a fixed 0.1 s.
+- Harness `meteors [state]|count|force|go` (docs/HARNESS.md).
+
+## Subsystem: Comets (2026-10-27)
+
+`Comets.h/.cpp` (app-independent: orbits, magnitudes, the catalog, the dust grid), `SatelliteSimComets.cpp` (per frame,
+the tail pass, selection, the Watch, harness `comets`), `shaders/comet_tail.vert/.frag`, `tools/comet_design.py` (solves
+the Great Comet's elements against the sim's own Earth). Sky-event kind `comet` (icon 38, `pixel--sky-comet.png`).
+- **Orbits**: a perihelion state (q, e, i, node, argument of perihelion, perihelion time; J2000 ECLIPTIC, AU and days, the
+  planets' frame) carried by a universal-variable Kepler propagator (Stumpff functions, Laguerre-Conway iteration), so
+  parabolas, hyperbolas and long ellipses alike, a pure function of sim time. The observer is `skyEarthHelioAt(t)`
+  (SatelliteSim.cpp: `keplerEclipticPos(kEarthElements)`, the planets' Earth) + `obsECI` turned into the ecliptic, so a
+  close comet shows its parallax (~0.7 deg at 560,000 km).
+- **The Great Comet of 2037** (`C/2036 X1`, `comet::greatComet()`): a retrograde Kreutz-like sungrazer, q 0.0062 AU
+  (1.33 solar radii), i 142 deg, perihelion 2037-02-17 16:49 UTC (behind the Sun at that moment; near the Feb 15 new
+  Moon, clear of the 2037-01-31 lunar eclipse; visible in daylight / bright twilight a few degrees from the Sun the days
+  round it), then out along the Sun-Earth line: a morning object 20-35 deg from the Sun for weeks (phase ~140 deg: the
+  forward-scattering surge, as McNaught), passing **560,000 km from the Earth on 2037-03-17 03:30 UTC** (outside the
+  Moon's orbit, over the northern hemisphere, at the Mar 16 new Moon, far from the 2037-07-13 solar eclipse; it sweeps
+  ~90 deg of sky in hours, mag ~-6, the coma ~15-20 deg across, the tail ~120 deg), then an evening object fading over
+  a month. To move it: edit and re-run `tools/comet_design.py` (it mirrors the Earth elements and checks the closest
+  approach by brute force) and paste the elements into `makeGreat()`.
+- **Minor comets** (`minorCometsOfYear`): 6 a year hashed from (year, index); 60% long-period (q 0.35-2.75 AU, e
+  0.995-1.002, H 4.5-11), 40% Jupiter-family (q 0.9-2.3, e 0.3-0.65, i < 26 deg, H 8-13), named from the half-month of
+  perihelion ("C/2036 N2 (Iwamoto)"). Most peak at mag 9-13; about one a year reaches naked eye (2036: Iwamoto 5.7). A
+  JFC is a single apparition (no return). The catalog near now (`catalogNear`, +-1.2 years) refreshes every 20 sim-days.
+- **Brightness** (`comet::magnitude`): m = H + 5 log Delta + 2.5 n log r_eff, r_eff = sqrt(r^2 + 0.04^2) (a sungrazer
+  saturates near the Sun: the Great Comet peaks ~-8 to -9 at perihelion), minus Marcus' (2007) forward-scattering surge
+  with the compound Henyey-Greenstein dust phase normalised at 90 deg (dust-to-gas 0.6 x `dust`).
+- **The head** is the inner coma within ~1 arcmin (a 1/rho coma: share = 1' / the coma's radius, 0.003..1) as a point:
+  appended to kFireBuf by `cometsFillHeads` (kesslerFillDust's finish) at range 2e9 m (infinity), so point, bloom and
+  glare draw it; dimmed by day / Moon like a satellite (`dayBright x daySuppression`: the Great Comet shows near the Sun
+  in daylight), by the light-pollution dome like a planet, extinction along its line of sight, refracted. **Not on
+  Potato** (no kesslerFillDust there).
+- **The tail pass** (`cometsRecordDraw`, recordDraw after the sky background, before the satellite points): grids of sky
+  directions (ENU), one draw per grid (`gl_InstanceIndex` = patch; six vertices a cell from a storage buffer, no vertex
+  buffer; `gl_Position` with w = the camera depth, so cells reaching behind the eye clip correctly and the coma's
+  tangent-plane coordinates interpolate perspective-correctly), at kDepthFar (terrain, sea, the Moon and opaque cloud
+  hide it), additive, dynamic viewport (no resize handling). Patch kinds:
+  - **dust**: a syndyne/synchrone sheet. `comet::buildDustGrid` releases grains of beta 0.004-0.95 at emission ages
+    log-spaced to 45 days plus a dense run round the perihelion's emission (in one log row it drew a jagged band), each
+    propagated under mu (1 - beta). Per vertex the flux = production (r^-2, saturated, integrated over the row's share
+    of the ages) x size weight beta^0.5 e^-(beta/0.55)^2 x the dust phase at the particle / (r^2 Delta^2), over the
+    grid's solid angle per unit (ln beta, days) by central differences, floored by the sheet's thickness seen edge-on.
+    Striae in the fragment along the emission time (McNaught's fan), from ~1 day of age.
+  - **ion**: a ribbon along the solar wind as the comet sees it (400 km/s radial minus its velocity), ~0.06-0.15 AU,
+    Gaussian across with drifting streamers, blue.
+  - **coma**: 1/rho on the tangent plane, C2 green outward, white core.
+  Vertices carry the surface brightness in the Milky Way's anchor units (lum 0.05 = 21 mag/arcsec^2; `kLumPerFluxSr`
+  2.95e-4 per mag-0 flux per sr; physical slope, 2.5 mag a decade). Per vertex the sky's own surface brightness
+  (`cometSkyMag`: the aurora's physical city-glow form, twilight, daylight 11 -> 4 mag/arcsec^2 with a 1/theta^2 aureole
+  round the Sun, moonlight ~18, eye glare round a visible Sun from orbit) and the extinction; per pixel `darkSkyVis`
+  against it, the global exposure, cloud occlusion (`cloudPointVisibilityAt`, cubed) and a soft shoulder
+  0.9 x / (0.9 + x) (1 - e^-x made the coma a flat white disc). Up to 3 comets with mag < 9 get tails; by day on the
+  ground (Sun > ~6 deg up) none is built. Nothing new in sat_sky.frag / SKY_LITE / sat_sky_minimal.frag.
+- **The dust grid is rebuilt off the frame** (`std::async`) every 2-30 min of sim time by the comet's distance from the
+  Sun (on the frame after a jump of > 2 days, a few ms); between rebuilds it rides with the nucleus (positions relative
+  to it). Projection, Jacobians and the upload run every frame (~0.4 ms CPU with the Great Comet's tail up, ~0.02 ms
+  otherwise; booked in `CPU_UPDATE_PLANETS`).
+- **Selection**: `pickCometAt` (before planets in both click paths), `selectedCometIndex` (dropped whenever a satellite
+  or planet is selected), the planet-style panel from `cometInfoLine` (magnitude, distances, elongation, tail and coma,
+  perihelion). Harness `state` -> `selection.comet`.
+- **Sky events** (`skySearchComets` / `skyWatchComet` in SatelliteSimSkyEvents.cpp): each comet's best display (6-h
+  steps refined to 30 min, >= 20 deg from the Sun, score = -mag + 2.5 log10(1 + tail / 5 deg); the window while within
+  ~2.5 mag of it), kept when brighter than mag 8; the card shows the BRIGHTEST under way or within a year
+  (`skyEventNext`'s comet rule). Watch (`cometWatchAt`): the moment (inside the window, never before it), a place where
+  the head is >= 8 deg up (less near the Sun) and the Sun <= -12 deg, clearer sky first, nearest the player, framing the
+  head and the visible tail's far end (`tailAimEnu`, lum > 0.004) at 1x; `skyEventsTick` keeps the aim (sky bodies
+  `kBodyComet0` / `kBodyCometTail0`).
+- Settings `comets.enabled` / `minor` / `tails` / `tail_gain` (x the tails' physical brightness) / `display_gain` (no UI).
+- Measured (RTX 3070 Ti, 1600x900, on / off interleaved at the closest approach and the +20 d display): the pass
+  +0.02 ms in the satellite/star bucket, GPU total within noise; CPU +0.4 ms with the tail up; with no comet bright
+  enough, no draw and ~0.02 ms CPU. Captures in `harness_runs/comets_live/` (untracked).
+- Open: the tail is not in reflections (sea, mirrors) nor env probes; no ion-tail disconnection events; the coma's size
+  is a fixed 2e5 km x r^-0.5 (no gas production model); Potato draws no head; minor comets have no return apparitions;
+  no Settings UI rows yet.
 
 ## Subsystem: Automation harness (2026-09-25)
 
@@ -8134,6 +8276,59 @@ already uses. Persisted as `j["planets"]` (`{show_planets, list:[{name,enabled}]
 `saveSettings()`/`loadSettings()`, same shape and same ungated (non-schema-versioned) treatment as
 `j["constellations"]` — not a graphics-tuning value a schema mismatch needs to guard against.
 
+### Resolved discs and the Galilean moons (2026-10-27)
+
+`SatelliteSimPlanets.cpp`, `shaders/planet_disc.vert/.frag`, `include/planet_disc.glsl` (mirror: `GpuPlanetDiscUBO` in
+SatelliteSim.h, std140 vec4s), `tools/make_planet_maps.py` -> `assets/textures/planet_maps.rgba8`. At the 0.5-deg field the
+camera reaches, Jupiter is ~24 px across, Venus near inferior conjunction ~28, Saturn's rings ~25, Mars at opposition ~9.
+- **Its own small pipeline, not sat_sky.frag** (at the 16 sampled-image floor, and SKY_LITE at its budget): one quad per
+  resolved planet drawn right after the planet points (`recordPlanetDiscs`), additive, at kDepthFar with the depth test
+  (terrain, opaque cloud and the Moon hide it), the cloud composite dimming it as star_point.frag does. Set: 0 the disc UBO,
+  1-2 the cloud targets, 3 the scene depth (manual test below render scale 1), 4 the maps (a 2D array: Mars, Jupiter,
+  Saturn, Saturn's ring profile). `writePlanetDiscTargets` follows the cloud/depth recreation in
+  `recreateComputeScaledTargets`; the pipeline is rebuilt in onResize. Nothing resolved = no draw (~0 cost).
+- **Share**: `smoothstep(1, 2.5 px)` of the equatorial radius on screen; a resolved planet's planetBuf record gets
+  `angularSize < 0` (star_point.vert skips it; picking and the panel keep it) and the disc shader draws the point's
+  remaining (1 - share) itself.
+- **Light**: the planet's magnitude (Saturn: Meeus with the rings' term -2.60 sin|B| + 1.25 sin^2 B, now also the
+  point's; the ball's normalisation uses B = 0) spread by its law (Lommel-Seeliger: Mercury, Mars; Minnaert k 0.8-0.9:
+  Venus, Jupiter, Saturn, Uranus) on the oblate spheroid; the law's disc mean is a CPU integral (32 x 32) so the disc's
+  total is the magnitude. Units pi L / E x 1.35 (the sim's Moon disc is ~1.35x physical) x `planets.disc_gain` (1.5), the
+  sky exposure and the sky's tonemap (AgX with the tone settings). NOT x the point's suppression (day, Moon, light
+  pollution are the point model's stand-in for sky contrast; a disc is added to the real sky, like the Moon: Venus shows
+  in daylight). Extinction as the point's (reddened 0.75 / 1 / 1.4). Rings and Venus's rim are in I/F x 1 / r^2.
+- **Hand-off**: the point style is not linear (zoomed points are 6-px-sigma saturated blobs: up to +7 mag of zoom
+  aperture), so at 2.5 px the disc's light is scaled (`handScale`, bisected on a grey AgX) to the point's displayed
+  energy, clamped to +-3 stops, relaxing to physical by 5 px.
+- **Orientation**: IAU WGCCRE 2009 poles and W (light-time corrected; `x0` = longitude 0 in the disc's local frame: x the
+  view's right, y up toward the zenith, z toward us); Jupiter: Meeus's System II central meridian, the map's Great Red
+  Spot (u 0.3682) put at System II 55 deg + 18 deg / yr from 2024.5 (an extrapolation). Maps: u = 0.5 + east lon / 360
+  (checked: Syrtis Major); stored sqrt(ratio to the map's mean / 8) so the disc's mean stays the magnitude's.
+- **Saturn's rings**: ray / plane, the profile layer (C, B, Cassini division, A, Encke / Keeler gaps; optical depth +
+  albedo, made by the bake script), lit or unlit face, the ball's shadow on them, their shadow on the ball, the ball seen
+  through them. **Venus**: a forward-scattering rim round the limb past ~140 deg of phase, a full ring near inferior
+  conjunction. **Jupiter**: the moons' shadows (soft by the Sun's disc).
+- **Galilean moons** = planetBuf records kPlanetCount.. (`kPlanetBodyCount` 10; `planetBodyName`), points of the star
+  pipeline, selectable (`select planet Io`). Meeus ch. 44 low accuracy (light time in it), placed in Jupiter's frame (IAU
+  pole, the Earth's direction): eclipsed by Jupiter's shadow (soft), hidden behind the disc, x 0.05 in transit over a
+  resolved disc; flags transit / occulted / eclipsed / shadow on Jupiter. **Checked against JPL Horizons** (2036-11-22
+  07:00 UT, offsets from Jupiter): Io 86.8" E (Horizons 86.2), Europa 206.3" W (205.7), Ganymede 353.1" W (352.6),
+  Callisto 399.4" E (398.7); north offsets within ~2". An Io transit predicted by a Python replica (11:30 UT) shows Io
+  and its shadow on the disc in the app.
+- **Panel**: angular diameter (and px), phase angle; Jupiter's moon line (east to west, `[J]`, flags), Saturn's ring
+  opening, Mars's central meridian; a moon: offset in Jupiter radii and arcsec, its state. The reticle surrounds the disc.
+  Harness: `state` -> `planets` {bodies[], discs_drawn, galilean[]}, `selection.planet_lines`; `camera look <planet>`
+  aims at the REFRACTED direction now (near the horizon a 0.5-deg field is narrower than the refraction).
+- Settings: `planets.resolved_discs` (on; Constellations tab "Resolved planet discs"), `planets.disc_gain` (1.5, no UI).
+- **Cost** (RTX 3070 Ti, 1600x900, Jupiter at 0.5 deg, interleaved on/off x2): GPU within noise (5.51 / 5.54 vs 5.54 /
+  5.50 ms), CPU update_planets 0.009 -> 0.052 ms with a disc resolved. Maps 11.2 MB (1024 x 512 x 4 layers, mips).
+- **Texture vs procedural**: Mars needs its albedo map (no procedural stand-in reads as Mars) and Jupiter's belts and GRS
+  read far better from the Cassini map than from noise; at <= ~25 px a texture fetch is cheaper than banded noise.
+  Saturn's ball is a map too (free in the array); its rings are a 1D profile; Mercury, Venus and Uranus are flat colours.
+- Open: no differential refraction (the disc stays round near the horizon); seeing is only a mip bias (the refraction
+  table's aoa) and a whole-disc jitter; the GRS longitude is an extrapolation; Saturn's ring brightness against the ball
+  unjudged at 5 px; Neptune not modelled; the trails skip a resolved planet.
+
 ---
 
 ## Subsystem: Stars (2026-10-27)
@@ -8163,10 +8358,13 @@ already uses. Persisted as `j["planets"]` (`{show_planets, list:[{name,enabled}]
   divided by a pristine sky's, so a pristine sky draws every star as the point style alone would. The old linear dims
   (dome, beam dome, Moon) are kept on top.
 - **Selectable stars**: named or brighter than V 4.5, drawn this frame (`pickStarAt`). A selected star is
-  `selectedPlanetIndex = kPlanetCount + i` (every "clear the selection" site clears it; anything that indexes planet
-  arrays by `selectedPlanetIndex` must test `< kPlanetCount`). Click / centre-select order: a planet, a star within
-  4 px, a satellite, a star within its hit radius. Panel (`formatSelectedStarInfo`, every frame): name, spectral type
-  and constellation, V (variable), distance (ly, pc), designation / HR / HIP, colour (B-V). No Track / Info buttons.
+  `selectedStarIndex` (its own index, as the comets' `selectedCometIndex`; the first cut used `selectedPlanetIndex =
+  kPlanetCount + i`, which the Galilean moons now occupy). Any other selection wins: `buildSelectedSatPanel` drops
+  the star while a satellite, planet or comet is selected, and `skyJumpTo` (every Watch) clears it. Click / centre-select
+  order: a comet, a planet, a star within 4 px, a satellite, a star within its hit radius. Panel (`starInfoLine`,
+  `formatSelectedStarInfo` every frame): name, spectral type and constellation, V (variable), distance (ly, pc),
+  designation / HR / HIP, colour (B-V). No Track / Info buttons. Its place: `starEnuNow(i)` (this frame's eci2enu, the
+  drawn record's refraction when current).
 - **The 2037 Betelgeuse supernova** (`supernovaMagAt`, a pure function of sim time; `stars.supernova`, default on):
   breakout 2037-12-25 03:00 UTC (`kSupernovaT0`), V to -6 in 20 min, the cooling envelope to -7 by 6 h, the rise to
   -11.2 at day 7 (M_V ~ -17.8 at 168 pc with A_V ~0.5: the bright end of II-P), the plateau to -10.2 by day 100, the
@@ -8179,7 +8377,23 @@ already uses. Persisted as `j["planets"]` (`{show_planets, list:[{name,enabled}]
   overhead): ground and cloud ambient. No shadows. Sky events kind `kSupernova` (`skySearchSupernova`: one record when
   its window meets the range; `skyWatchSupernova`: the peak, or now while under way, a dark site with Betelgeuse
   >= 20 deg up (Sun <= -15, -9, -4, else up), the camera on the Betelgeuse-Rigel midpoint at 42 deg, Betelgeuse
-  selected). Icon `sky-supernova` (38).
+  selected). Kind appended after meteors and comets; icon `sky-supernova` (40).
+- **Under a dark sky the faint stars are drawn as if the point limit were 1 mag fainter** (`stars.dark_sky_extra`,
+  0-3): the point model subtracts its value at the limit, so at limit 8 a mag-7.5 star was ~0.004 of white and a
+  pristine sky read nearly empty. Per star the intensity is remapped (I^gamma + w x the difference of the two limits'
+  offsets) so pointPsf(limit) draws what pointPsf(limit + extra) would, w = how close ITS sky is to pristine (the gate's
+  Ilim within 1.5 mag of a pristine sky's) x the night gate. Stars only: satellites and planets keep the shared limit.
+  Measured (600x400 zenith crop, Atacama, moonless): pixels > 12 levels over the sky 1918 -> 2788; a Colorado suburb
+  (40.25 N 105.0 W) 11 -> 15, a rural Colorado sky 17 -> 15: suburban skies are not busier.
+- **Cost** (RTX 3070 Ti, 1600x900, harness `perf` cpu `update_stars`): pristine night (all 61,816 in the prefix, ~32k
+  lit) 0.49 ms, LA at night 0.20, by day 0.02, supernova peak from a dark site 0.36; GPU frame within noise of before
+  (6.0-6.5 ms in these views). The loop runs in 2048-star chunks on the storm catalog's pool
+  (`stormCatalog->parallelFor`; single-threaded it was 2.7 ms), the naked-eye limit comes from a 25 x 33 grid over
+  (elevation, bearing) built per frame, the dark-sky remap uses a polynomial log2 / exp2, and the elevation table is
+  rebuilt only on a new refraction table (`refrSerial_`, bumped in updateRefraction when a table is taken: refrDerive
+  runs every frame), a metre of eye height or a new k (rebuilt every frame it cost 0.18 ms). The old BSC5 loop was
+  0.26-0.5 ms at night. A GPU pass is the next step for a much larger point set (the Milky Way's particles): the
+  catalogue, the prefix draw and the per-star constants are ready for it.
 - Harness: `stars [state] | find <name> | select <name>`, `select star <name>`, `camera look|track <star>`
   (docs/HARNESS.md). Scripts `harness_runs/stars_scripts/` (untracked).
 

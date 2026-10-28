@@ -408,6 +408,25 @@ def build_sky_moonglint():
     return [moon, star(31.0, 34.0, 12.0, 3.0)]
 
 
+def build_sky_meteors():
+    """A meteor shower: three streaks from the upper right, a bright head on the longest (2026-10-27)."""
+    shapes = []
+    for (x0, y0, x1, y1, w) in [(45.0, 3.0, 14.0, 34.0, 3.2), (44.0, 18.0, 27.0, 35.0, 2.6), (30.0, 3.0, 13.0, 20.0, 2.6)]:
+        shapes.append(seg(x0, y0, x1, y1, w))
+    shapes.append(disc(12.0, 36.0, 6.5))
+    return shapes
+
+
+def build_sky_comet():
+    """A comet: a round head (upper right) with a broad curved fan of dust and a straight ion streak trailing to the
+    lower left, both cut clear of the head so it reads at 16 px (2026-10-27)."""
+    gap = disc(35.0, 13.0, 10.5)
+    head = disc(35.0, 13.0, 7.5)
+    fan = cut(tri((35.0, 13.0), (2.0, 30.0), (17.0, 46.0)), gap)
+    ion = cut(seg(35.0, 13.0, 4.0, 16.0, 2.2), gap, tri((35.0, 13.0), (0.0, 26.0), (19.0, 48.0)))
+    return [head, fan, ion]
+
+
 def build_sky_supernova():
     """A supernova (the scripted 2037 Betelgeuse explosion, 2026-10-27): a solid core with eight spikes, the four
     on the axes long, the diagonals short, read as a burst at 16 px."""
@@ -449,6 +468,8 @@ ICONS = {
     "sky-conjunction": build_sky_conjunction,
     "sky-occultation": build_sky_occultation,
     "sky-moonglint": build_sky_moonglint,
+    "sky-meteors": build_sky_meteors,
+    "sky-comet": build_sky_comet,
     "sky-supernova": build_sky_supernova,
 }
 
@@ -457,7 +478,7 @@ ICONS = {
 # beside them read as another icon family (the user, 2026-10-03).
 PIXEL_STYLE = {"storm-tornado", "storm-hurricane", "storm-haboob", "storm-supercell", "storm-squall",
                "storm-waterspout", "storm-fire", "storm-cell", "weather", "missions", "report", "bookmark", "film", "photo", "record", "maximize", "observer", "spin", "studio",
-               "sky-events", "sky-solar", "sky-lunar", "sky-conjunction", "sky-occultation", "sky-moonglint", "sky-supernova"}
+               "sky-events", "sky-solar", "sky-lunar", "sky-conjunction", "sky-occultation", "sky-moonglint", "sky-meteors", "sky-comet", "sky-supernova"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

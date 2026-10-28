@@ -22,6 +22,8 @@ enum Kind : int
     kConjunction,
     kOccultation,
     kMoonGlint,     // a lunar base's solar array mirroring the Sun to the Earth (LunarBases.h, 2026-10-27)
+    kMeteorShower,  // a meteor shower's peak (Meteors.h, 2026-10-27)
+    kComet,         // a comet at its best (Comets.h, 2026-10-27): the Great Comet of 2037, the minor comets
     kSupernova,     // the scripted Betelgeuse supernova, 2037-12-25 (SatelliteSimStars.cpp, 2026-10-27)
     kKindCount
 };
@@ -31,6 +33,9 @@ constexpr int kBodyMoon = 10;
 constexpr int kBodySun = 11;
 // A lunar base's glint point on the drawn Moon (a = kBodyMoonBase0 + the base's index in lunar_bases.json).
 constexpr int kBodyMoonBase0 = 20;
+// A comet's head / a point down its tail (index into the sim's live comet list; the Watch resolves it by name).
+constexpr int kBodyComet0 = 100;
+constexpr int kBodyCometTail0 = 200;
 // A star of the catalogue (a = kBodyStar0 + its index in SatelliteSim::starRecords; checked before the bases).
 constexpr int kBodyStar0 = 1000;
 
@@ -59,6 +64,7 @@ struct SearchCtx
     float moonSizeScale = 1.0f;           // the drawn Moon is this x its true size (occultation contacts as drawn)
     float moonBaseJitter = 1.0f;          // x the bases' row tilt / azimuth errors (moon_bases.tilt_jitter_scale)
     float moonBaseMagLimit = 3.0f;        // a Moon-base glint is an event when brighter than this (moon_bases.event_mag_limit)
+    bool cometsMinor = true;              // comets.minor: the minor comets as well as the Great Comet
     bool supernova = true;                // stars.supernova (the scripted 2037 Betelgeuse supernova)
     const std::atomic<bool> *cancel = nullptr;
     bool cancelled() const { return cancel && cancel->load(std::memory_order_relaxed); }

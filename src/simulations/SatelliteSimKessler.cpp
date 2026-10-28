@@ -1935,6 +1935,7 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
         {
             s->selTransients.clear();
             s->kesslerFillFireballs(out, n, toSky, pixFull);
+            s->meteorsFill(out, n, toSky, pixFull); // meteor showers (SatelliteSimMeteors.cpp): heads, streaks, trains
             {
                 // Booked as launches, not as the cascade (this runs inside the dust fill's kessler timer).
                 const auto l0 = std::chrono::steady_clock::now();
@@ -1943,6 +1944,7 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
                 s->weatherFillHaboobs(out, n);                // haboob dust walls (SatelliteSimHaboob.cpp)
                 s->weatherFillWildfires(out, n, pixFull);              // wildfire smoke + fronts (SatelliteSimWildfire.cpp)
                 s->moonBasesFill();                                    // the lunar bases' glints (SatelliteSimMoonBases.cpp)
+                s->cometsFillHeads();                                  // the comets' heads (SatelliteSimComets.cpp)
                 s->supernovaFill();                                    // the 2037 Betelgeuse supernova (SatelliteSimStars.cpp)
                 s->engineLightsFlush(); // the burning engines' and the pads' light (dust buffer tail, header word 1)
                 const float ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - l0).count();

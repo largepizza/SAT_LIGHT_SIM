@@ -52,6 +52,8 @@ struct SkyEventsFriend
     static void cardConj(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2);
     static void cardOcc(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2);
     static void cardGlint(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2);
+    static void cardMeteor(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2);
+    static void cardComet(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2);
     static void cardSupernova(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2);
     static const SkyKindDef kinds[sky::kKindCount];
 };
@@ -87,6 +89,7 @@ const char *bodyName(int b)
     if (b == sky::kBodyMoon) return "Moon";
     if (b == sky::kBodySun) return "Sun";
     if (b >= sky::kBodyStar0) return "Betelgeuse"; // (the one star event: the 2037 supernova)
+    if (b >= sky::kBodyComet0) return "Comet";
     if (b >= sky::kBodyMoonBase0) return "Moon base";
     return b >= 0 && b < kPlanetCount ? kPlanetNames[b] : "?";
 }
@@ -313,6 +316,12 @@ std::string eventTitle(const sky::Event &e)
     case sky::kMoonGlint:
         snprintf(b, sizeof(b), "%s array glint, mag %.1f", e.label, e.magA);
         break;
+    case sky::kMeteorShower:
+        snprintf(b, sizeof(b), "%s peak, ZHR %.0f", e.label, e.magA);
+        break;
+    case sky::kComet:
+        snprintf(b, sizeof(b), "%s, mag %.1f", e.label, e.magA);
+        break;
     case sky::kSupernova:
         snprintf(b, sizeof(b), "Betelgeuse goes supernova, peak mag %.1f", e.magA);
         break;
@@ -365,6 +374,24 @@ void SkyEventsFriend::cardGlint(SatelliteSim &S, const sky::Event &e, double, co
     l2 = S.skStr("%s at %s", utcShort(e.t).c_str(), whereText(e.site).c_str());
 }
 
+// A shower's card: its peak and ZHR, then the Moon at the peak (tAux = its lit fraction) and a quality note.
+void SkyEventsFriend::cardMeteor(SatelliteSim &S, const sky::Event &e, double, const char *&l1, const char *&l2)
+{
+    const double lit = e.tAux;
+    const char *q = lit < 0.25 ? "dark skies" : lit < 0.6 ? "some moonlight" : "bright Moon";
+    l1 = S.skStr("%s, %s", eventTitle(e).c_str(), utcShort(e.t).c_str());
+    l2 = S.skStr("Moon %.0f%% lit: %s", 100.0 * lit, q);
+}
+
+void SkyEventsFriend::cardComet(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2)
+{
+    l1 = S.skStr("%s", e.label);
+    if (now >= e.t0 && now < e.t1)
+        l2 = S.skStr("mag %.1f, best %s (tail %.0f deg)", e.magA, utcShort(e.t).substr(0, 10).c_str(), e.sepDeg);
+    else
+        l2 = S.skStr("best %s, mag %.1f, tail %.0f deg", utcShort(e.t).substr(0, 10).c_str(), e.magA, e.sepDeg);
+}
+
 // The supernova: a countdown to the breakout, then its magnitude now and the day since.
 void SkyEventsFriend::cardSupernova(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2)
 {
@@ -393,7 +420,12 @@ const SkyKindDef SkyEventsFriend::kinds[sky::kKindCount] = {
     {"moonglint", "MOON BASE GLINT", 37, &Pal::tagTwilight, &SatelliteSim::skySearchMoonGlints,
      &SatelliteSim::skyWatchMoonGlint, &SkyEventsFriend::cardGlint, "none in the next 2 years",
      "A lunar base's solar array flashing on the Moon, through a telescope"},
-    {"supernova", "SUPERNOVA", 38, &Pal::btnDanger, &SatelliteSim::skySearchSupernova, &SatelliteSim::skyWatchSupernova,
+    {"meteors", "METEOR SHOWER", 38, &Pal::progressFill, &SatelliteSim::skySearchMeteorShowers,
+     &SatelliteSim::skyWatchMeteorShower, &SkyEventsFriend::cardMeteor, "none in the next 2 years",
+     "Meteors near the peak, from a dark site with the radiant up"},
+    {"comet", "COMET", 39, &Pal::progressFill, &SatelliteSim::skySearchComets, &SatelliteSim::skyWatchComet,
+     &SkyEventsFriend::cardComet, "no bright comet in the next 2 years", "The comet and its tail, from a dark place"},
+    {"supernova", "SUPERNOVA", 40, &Pal::btnDanger, &SatelliteSim::skySearchSupernova, &SatelliteSim::skyWatchSupernova,
      &SkyEventsFriend::cardSupernova, "none in the next 2 years", "Betelgeuse blazing in Orion, from a dark site"},
 };
 static_assert(sizeof(SkyEventsFriend::kinds) / sizeof(SkyEventsFriend::kinds[0]) == sky::kKindCount, "one row per sky::Kind");
@@ -426,6 +458,11 @@ nlohmann::json eventJson(const sky::Event &e, double now)
     }
     if (e.watchT != 0.0) o["watch_utc"] = fmtUtcReadable(e.watchT);
     if (e.label[0]) o["label"] = e.label;
+    if (e.kind == sky::kMeteorShower)
+    {
+        o["zhr"] = e.magA;
+        o["moon_lit"] = e.tAux;
+    }
     return o;
 }
 } // namespace
@@ -672,6 +709,7 @@ void SatelliteSim::skySearchOccultations(const sky::SearchCtx &c, std::vector<sk
 // ── Watches (main thread) ────────────────────────────────────────────────────────────────────────────────────────
 void SatelliteSim::skyJumpTo(double t)
 {
+    selectedStarIndex = -1; // (a Watch selects its own subject)
     if (followActive) stopFollow();
     stopTrack();
     const double d = std::floor(t / kDay);
@@ -696,11 +734,13 @@ glm::vec3 SatelliteSim::skyBodyEnu(int body) const
     if (body >= sky::kBodyStar0)
     {
         glm::vec3 e(0.0f, 0.0f, 1.0f);
-        skyObjectEnu(kPlanetCount + (body - sky::kBodyStar0), e);
+        starEnuNow(body - sky::kBodyStar0, e);
         return e;
     }
     if (body == sky::kBodySun) return glm::normalize(glm::vec3(sunDirENU));
     if (body == sky::kBodyMoon) return glm::normalize(glm::vec3(moonDirENU));
+    if (body >= sky::kBodyCometTail0) return cometTailEnu(body - sky::kBodyCometTail0);
+    if (body >= sky::kBodyComet0) return cometHeadEnu(body - sky::kBodyComet0);
     if (body >= sky::kBodyMoonBase0)
     {
         glm::vec3 e;
@@ -950,6 +990,45 @@ bool SatelliteSim::skyWatchMoonGlint(const sky::Event &e, std::string &msg)
     return true;
 }
 
+// ── Meteor showers (2026-10-27; Meteors.h, SatelliteSimMeteors.cpp) ─────────────────────────────────────────────
+// Each major shower's peaks in the range (meteors::peakAfter: the solar longitude of its maximum), the window where its
+// ZHR is at least half the peak's, the Moon's lit fraction at the peak. Pure functions of time (a worker).
+void SatelliteSim::skySearchMeteorShowers(const sky::SearchCtx &c, std::vector<sky::Event> &out) const
+{
+    for (int s = 0; s < meteors::kSporadic && !c.cancelled(); ++s)
+    {
+        const meteors::Shower &S = meteors::shower(s);
+        double t = c.t0 - 20.0 * kDay;
+        for (int guard = 0; guard < 6; ++guard)
+        {
+            double t0, t1;
+            const double tp = meteors::peakAfter(s, t, &t0, &t1);
+            if (tp > c.t1 + 20.0 * kDay) break;
+            t = tp + 300.0 * kDay;
+            if (t1 < c.t0 || tp > c.t1) continue;
+            sky::Event e;
+            e.kind = sky::kMeteorShower;
+            e.t = tp;
+            e.t0 = t0;
+            e.t1 = t1;
+            e.magA = (float)(S.zhr + S.zhr2);
+            const glm::dvec3 md = glm::normalize(moonGeoEciAt(tp)), sd = glm::normalize(sunDirEciAt(tp));
+            e.tAux = 0.5 * (1.0 + std::cos(std::acos(std::clamp(-glm::dot(md, sd), -1.0, 1.0))));
+            e.score = (S.zhr + S.zhr2) * (1.0 - 0.7 * e.tAux);
+            snprintf(e.label, sizeof(e.label), "%s", S.name);
+            out.push_back(e);
+        }
+    }
+    std::sort(out.begin(), out.end(), [](const sky::Event &x, const sky::Event &y) { return x.t < y.t; });
+}
+
+bool SatelliteSim::skyWatchMeteorShower(const sky::Event &e, std::string &msg)
+{
+    const int s = meteors::showerByName(e.label);
+    if (s < 0) return false;
+    return meteorWatchShower(s, e.t0, e.t1, e.t, msg);
+}
+
 // ── The Betelgeuse supernova (2026-10-27; SatelliteSimStars.cpp, CLAUDE.md "Stars") ─────────────────────────────────
 // A fixed scripted event: one record when its window [breakout, fading below the star it was] meets the range.
 void SatelliteSim::skySearchSupernova(const sky::SearchCtx &c, std::vector<sky::Event> &out) const
@@ -1012,7 +1091,9 @@ bool SatelliteSim::skyWatchSupernova(const sky::Event &e, std::string &msg)
     }
     skyPlaceAt(site, tw);
     selectedSatIndex = -1;
-    selectedPlanetIndex = kPlanetCount + starBetelgeuse;
+    selectedPlanetIndex = -1;
+    selectedCometIndex = -1;
+    selectedStarIndex = starBetelgeuse;
     formatSelectedStarInfo(starBetelgeuse);
     // Orion framed: the middle of Betelgeuse and Rigel (19 deg apart), with Betelgeuse in the upper part.
     const int rigel = starIndexByName("Rigel");
@@ -1080,6 +1161,7 @@ void SatelliteSim::skyEventsUpdate()
         ctx.moonSizeScale = moonSizeScale;
         ctx.moonBaseJitter = moonBaseJitter;
         ctx.moonBaseMagLimit = moonBaseMagLimit;
+        ctx.cometsMinor = cometsMinor;
         ctx.supernova = supernovaEnabled && starBetelgeuse >= 0;
         ctx.cancel = &skScanCancel;
         skScanCancel = false;
@@ -1112,6 +1194,14 @@ void SatelliteSim::skyEventsFinish(double maxS)
 const sky::Event *SatelliteSim::skyEventNext(int kind) const
 {
     const double now = (double)simDayJ2000 * kDay + simSecInDay;
+    if (kind == sky::kComet)
+    {
+        // the brightest comet under way or coming within a year (a faint one sooner does not hide a great one)
+        const sky::Event *best = nullptr;
+        for (const sky::Event &e : skFound[kind])
+            if (e.t1 > now && e.t0 < now + 365.25 * kDay && (!best || e.magA < best->magA)) best = &e;
+        if (best) return best;
+    }
     for (const sky::Event &e : skFound[kind])
         if (e.t1 > now) return &e;
     return nullptr;
@@ -1411,10 +1501,53 @@ harness::Status SatelliteSim::harnessSkyEvents(harness::Active &a)
         r["sun_el_deg"] = glm::degrees(std::asin(std::clamp(sunDirENU.z, -1.0f, 1.0f)));
         r["moon_el_deg"] = glm::degrees(std::asin(std::clamp(moonDirENU.z, -1.0f, 1.0f)));
         r["sun_seen_fraction"] = moonEclipseSolarObs;
-        r["selected_planet"] = selectedPlanetIndex >= 0 && selectedPlanetIndex < kPlanetCount ? kPlanetNames[selectedPlanetIndex] : "";
-        if (selectedPlanetIndex >= kPlanetCount) r["selected_star"] = starDisplayName(selectedPlanetIndex - kPlanetCount);
+        r["selected_planet"] = selectedPlanetIndex >= 0 ? planetBodyName(selectedPlanetIndex) : "";
+        if (selectedStarIndex >= 0) r["selected_star"] = starDisplayName(selectedStarIndex);
         r["message"] = msg;
         return harness::Status::Done;
     }
     throw std::runtime_error("skyevents: state | events | list <kind> | watch <kind> [n=] | watch <row>");
+}
+
+// ── Comets (2026-10-27; Comets.h, SatelliteSimComets.cpp, CLAUDE.md "Comets") ──────────────────────────────────────
+// Every comet of the catalog over the range (comet::catalogNear: pure, so the worker builds its own) at its best:
+// the day the head's light and the tail's length score highest with the comet >= 20 deg from the Sun
+// (SatelliteSim::cometBestWindow), the window while it stays within ~2.5 mag of that. Kept when the best is brighter
+// than mag 8 (binoculars).
+void SatelliteSim::skySearchComets(const sky::SearchCtx &c, std::vector<sky::Event> &out) const
+{
+    std::vector<comet::Elements> cat;
+    comet::catalogNear(0.5 * (c.t0 + c.t1), 0.5 * (c.t1 - c.t0) / (365.25 * kDay) + 0.6, cat);
+    for (const comet::Elements &el : cat)
+    {
+        if (c.cancelled()) return;
+        if (!el.great && !c.cometsMinor) continue;
+        const double a = std::max(c.t0, el.tPeri - 200.0 * kDay), b = std::min(c.t1, el.tPeri + 200.0 * kDay);
+        if (b <= a) continue;
+        double tb = 0, w0 = 0, w1 = 0, mb = 99, tl = 0;
+        if (!cometBestWindow(el, a, b, tb, w0, w1, mb, tl) || mb > 8.0) continue;
+        sky::Event e;
+        e.kind = sky::kComet;
+        e.t = tb;
+        e.t0 = w0;
+        e.t1 = w1;
+        e.magA = (float)mb;
+        e.sepDeg = tl;
+        e.score = -mb;
+        e.watchT = tb;
+        e.tAux = el.tPeri;
+        snprintf(e.label, sizeof(e.label), "%s", el.name);
+        out.push_back(e);
+    }
+    std::sort(out.begin(), out.end(), [](const sky::Event &x, const sky::Event &y) { return x.t < y.t; });
+}
+
+bool SatelliteSim::skyWatchComet(const sky::Event &e, std::string &msg)
+{
+    const double now = (double)simDayJ2000 * kDay + simSecInDay;
+    const double tw = (now >= e.t0 && now < e.t1) ? now : e.watchT;
+    cometsRefreshCatalog(tw, true);
+    const int idx = cometIndexByName(e.label);
+    if (idx < 0) return false;
+    return cometWatchAt(idx, tw, -12.0, false, msg);
 }
