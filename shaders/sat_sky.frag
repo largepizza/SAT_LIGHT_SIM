@@ -6563,35 +6563,97 @@ void main() {
                 glint *= cloud.surgeInfo.z;   // "Sea glitter (Sun)" (2026-10-27, issue 20261027_001448)
 #endif
 #ifdef SKY_SUN_SHADOW
-                // Glitter (2026-10-26, issue 20261026_203414 shot 5): the lobe above is the pixel's MEAN; a sea is
-                // millions of facets, the few tilted right each mirroring the Sun's whole disc (radiance F x the disc).
-                // Where those facets cover a small share fs of the pixel, the light comes as sparkles: a pixel lights
-                // with chance q and then carries glint / q (energy kept), re-drawn as the waves move (6 per s). Half the
-                // light stays the smooth path: sparkles past the display's white lose energy, and a sparse field
-                // of them read as the path gone (first cut, q down to 0.04).
-                // (2026-10-27, issue 20261027_001706 "Pattern noise on ocean speculars", from 2000 km): a pixel holds
-                // ~150 such facets only close up; it holds (its ground footprint / ~0.3 m)^2, so from orbit it is
-                // millions and the sparkle is its mean (q -> 1). The hash was fract(sin(dot(...)) * 43758) of the
-                // pixel plus 7.13 x a frame counter up to 6000: at those arguments the GPU's sin is no hash, and its
-                // error drew diagonal streaks repeating across the glint. An integer hash (pcg-like) now.
+                // Glitter: the lobe above is the pixel's MEAN; a sea is millions of facets, the few tilted right each
+                // mirroring the Sun's whole disc. Where they cover a small share fs of the surface the light comes as
+                // sparkles. 0.4 of the light stays the smooth path: sparkles past the display's white lose energy.
+                // (2026-10-27, issue 20261027_180609 "a screen-space mess ... pixels shifting around on a timer"): the
+                // sparkles were a hash of the SCREEN pixel (2 x 2 blocks) and of a 6-per-second time bin, tied to nothing
+                // on the sea. Now they are FACETS ON THE SEA: a world-fixed lattice on the wave field's own coordinates
+                // (posM), cells 0.25 m x 2^k about two pixel footprints along and across the view (two levels blended,
+                // as the city glitter's; lattice orientation below), each cell one facet whose unresolved slope (the glint's own variance s2, Beckmann: N(0,
+                // s2 / 2) per axis) turns continuously with time (two Gaussians rotated at the cell's own rate: still
+                // N(0, s2 / 2) at every instant). The cell flashes while that slope is within r of the slope that mirrors
+                // the Sun to the eye (from the resolved wave normal), r^2 set so the chance of a flash is q = fs x the
+                // facets the cell stands for, and then carries glint / q (energy kept on average). A sparkle stays on its
+                // patch of water as the camera moves, lasts as long as its facet takes to turn through the Sun's image,
+                // and the field follows the waves' slopes; from high up a cell holds many facets, q -> 1: the mean.
                 {
-                    float fs   = glint / max(F * 1.8e5, 1e-6);
-                    float foot = pixAngle * dist;
-                    float nFac = max(150.0, foot * seaFootW / 0.09);
-                    // (2026-10-27, issue 20261027_001448 shot 1, "the flashes should be much more intense"): a sparkle is a
-                    // 2 x 2 pixel cell (a lone pixel is what the sky TAA's flash rule treats as a speck), the cell holds 4
-                    // pixels' facets, 60% of the light rides in the sparkles and a sparkle may carry up to 1 / 0.02 of the
-                    // cell's mean (it was 0.15: never past ~3.8x, a texture, not flashes); it is flagged for the TAA
-                    // (gSeaSpark), which takes it whole instead of averaging it away in a still view.
-                    float q    = clamp(fs * nFac * 4.0, 0.02, 1.0);
-                    if (q < 0.999 && glint > 1e-4) {
-                        uint  tb = uint(floor(mod(pc.waveTime, 1000.0) * 6.0));
-                        uvec2 fc = uvec2(gl_FragCoord.xy * 0.5);
-                        uint  hh = fc.x * 0x8da6b343u ^ fc.y * 0xd8163841u ^ tb * 0xcb1ab31fu;
-                        hh ^= hh >> 16; hh *= 0x7feb352du; hh ^= hh >> 15; hh *= 0x846ca68bu; hh ^= hh >> 16;
-                        float hs = float(hh >> 8) * (1.0 / 16777216.0);
-                        glint *= 0.4 + ((hs < q) ? 0.6 / q : 0.0);
-                        if (hs < q && q < 0.5) gSeaSpark = 1.0;
+                    float fs     = glint / max(F * 1.8e5, 1e-6);
+                    float footX  = pixAngle * dist;                              // a pixel across the view, m
+                    float footA  = footX / max(abs(dot(dir, surfUp)), 0.02);     // ... and along it
+                    // The lattice is turned to the view's azimuth in 22.5-deg steps (the two nearest cross-faded) and its
+                    // cells are ~2 pixel footprints along each of its axes, so a cell is ~2 x 2 pixels on screen at any
+                    // grazing angle (a square cell is tens of pixels wide across a grazing view, or sub-pixel along it:
+                    // aliased noise). Each orientation's lattice is fixed on the sea; turning the camera fades between two.
+                    vec2  hz     = dir.xy / max(length(dir.xy), 1e-6);
+                    // The lattice is read at the UNJITTERED ray's point on the sea (the sky TAA's sub-pixel jitter moves
+                    // a grazing ray's sea point by up to half a cell along the view: a sparkle switched cells phase by
+                    // phase, and the resolve takes a sparkle at once).
+                    vec2  posC   = posM;
+#ifdef SKY_TAA
+                    {
+                        float c0 = dot(gDirTaa0, surfUp);
+                        if (c0 < -0.004)
+                            posC -= (dir * dist - gDirTaa0 * (dist * dot(dir, surfUp) / c0)).xy;
+                    }
+#endif
+                    float azS    = atan(hz.y, hz.x) / 0.39269908;
+                    float o0     = floor(azS);
+                    float frO    = azS - o0;
+                    // The slope that mirrors the Sun, in the resolved normal's frame.
+                    vec3  tA     = normalize(abs(waveN.z) < 0.9 ? cross(waveN, vec3(0.0, 0.0, 1.0)) : cross(waveN, vec3(1.0, 0.0, 0.0)));
+                    vec3  tB     = cross(waveN, tA);
+                    vec2  mS     = vec2(dot(hv, tA), dot(hv, tB)) / nh;
+                    float m2     = dot(mS, mS);
+                    float sigA   = sqrt(0.5 * s2);
+                    float wSum   = 0.0;
+                    bool  lit    = false;
+                    float qMin   = 1.0;
+                    [[dont_unroll]] for (int j = 0; j < 4; ++j) {
+                        float oj  = o0 + float(j & 1);
+                        float th  = oj * 0.39269908;
+                        vec2  ax  = vec2(cos(th), sin(th));
+                        float cd  = abs(dot(ax, hz)), sd = sqrt(max(1.0 - cd * cd, 0.0));
+                        // The pixel footprint's extent along the lattice's axes (u ~ along the view, v across it).
+                        float eu  = 2.0 * sqrt(footA * footA * cd * cd + footX * footX * sd * sd);
+                        float ev  = 2.0 * sqrt(footA * footA * sd * sd + footX * footX * cd * cd);
+                        float lu  = log2(max(eu / 0.25, 1.0)), lvv = log2(max(ev / 0.25, 1.0));
+                        float fl  = 0.5 * (fract(lu) + fract(lvv));
+                        float ku  = floor(lu) + float(j >> 1), kv = floor(lvv) + float(j >> 1);
+                        float Cu  = 0.25 * exp2(ku), Cv = 0.25 * exp2(kv);
+                        float qL  = clamp(fs * max(150.0, Cu * Cv / 0.09), 0.02, 1.0);
+                        float wL  = 1.0;                                          // the mean, for q -> 1
+                        if (qL < 0.999) {
+                            vec2  pl  = vec2(dot(posC, ax), dot(posC, vec2(-ax.y, ax.x)));
+                            ivec2 cid = ivec2(floor(pl / vec2(Cu, Cv)));
+                            uint  oid = uint(int(oj) & 15);
+                            uint  hh  = uint(cid.x) * 0x8da6b343u ^ uint(cid.y) * 0xd8163841u
+                                      ^ (uint(ku + 7.0) * 0xcb1ab31fu + uint(kv + 7.0) * 0x165667b1u + oid * 0x27d4eb2du);
+                            hh ^= hh >> 16; hh *= 0x7feb352du; hh ^= hh >> 15; hh *= 0x846ca68bu; hh ^= hh >> 16;
+                            uint  h2  = hh * 0x9e3779b9u + 0x632be5abu;
+                            h2 ^= h2 >> 15; h2 *= 0x2c1b3c6du; h2 ^= h2 >> 12;
+                            vec4  u   = vec4(float(hh & 0xFFFFu), float(hh >> 16), float(h2 & 0xFFFFu), float(h2 >> 16)) / 65536.0
+                                      + 1.0 / 131072.0;
+                            // Two Gaussian pairs (Box-Muller) and the facet's own rate (0.6-2.4 rad/s).
+                            float ra  = sqrt(-2.0 * log(u.x)), rb = sqrt(-2.0 * log(u.z));
+                            vec2  g1  = ra * vec2(cos(6.2831853 * u.y), sin(6.2831853 * u.y));
+                            vec2  g2  = rb * vec2(cos(6.2831853 * u.w), sin(6.2831853 * u.w));
+                            float om  = 0.6 + 1.8 * fract(u.x * 7.31 + u.w * 3.17);
+                            float ph  = om * mod(pc.waveTime, 6283.1853) + 6.2831853 * fract(u.y * 5.13 + u.z * 2.71);
+                            vec2  tS  = sigA * (g1 * cos(ph) + g2 * sin(ph));
+                            // r^2 so that P(|t - m| < r) = q: the slope pdf at m is exp(-m2 / s2) / (pi s2).
+                            float r2  = qL * s2 * exp(min(m2 / s2, 30.0));
+                            vec2  dS  = tS - mS;
+                            bool  on  = dot(dS, dS) < r2;
+                            wL  = on ? 1.0 / qL : 0.0;
+                            lit = lit || (on && qL < 0.5);
+                        }
+                        wSum += ((j & 1) == 0 ? 1.0 - frO : frO) * ((j >> 1) == 0 ? 1.0 - fl : fl) * wL;
+                        qMin  = min(qMin, qL);
+                    }
+                    if (qMin < 0.999 && glint > 1e-4) {
+                        glint *= 0.4 + 0.6 * wSum;
+                        if (lit) gSeaSpark = 1.0;
                     }
                 }
                 surfColor += sunSpecTint * sunTransMax * min(glint, 4000.0) * directSun;

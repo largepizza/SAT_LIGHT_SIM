@@ -120,6 +120,18 @@ namespace
         }
     }
 
+    // Whether an element's box (last frame's) is inside its scroll view's: only thumbnails on screen hold atlas
+    // cells. Every card is laid out whether scrolled to or not, so with more issues than cells "drawn last frame"
+    // covered them all, and the cards past the cells' count were marked "No image" for good (2026-10-27).
+    bool rpBoxVisible(Clay_ElementId el, Clay_ElementId view)
+    {
+        const Clay_ElementData e = Clay_GetElementData(el), v = Clay_GetElementData(view);
+        if (!e.found || !v.found)
+            return true; // its first frame: not known yet
+        const Clay_BoundingBox &a = e.boundingBox, &b = v.boundingBox;
+        return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+    }
+
     UIImage atlasRect(uint32_t uiId, int x, int y, int w, int h, int atlas)
     {
         UIImage im;
@@ -236,6 +248,63 @@ void SatelliteSim::reportsLoad()
     }
     if (!reportViewId_.empty() && !reportFind(reportViewId_))
         reportViewId_.clear();
+}
+
+// ─── The field being edited ─────────────────────────────────────────────────────
+// A text box applies its commit when it is next drawn (textEdit_.doneId). A click on Back, another issue's card,
+// Export or the window's close commits the field, but the next frame does not draw it, so the commit was dropped
+// (textEditEndFrame) and the typed description / note was lost; an export taken the same frame missed it too
+// (issue 20261027_184917). Each report field names itself while drawn; this saves what it holds.
+void SatelliteSim::reportNoteEditTarget(uint32_t id, const std::string &issue, int shot, const char *field, size_t maxLen, bool trim)
+{
+    if (textEdit_.id != id && textEdit_.doneId != id)
+        return;
+    reportEditTarget_ = ReportEditTarget{id, issue, field, shot, maxLen, trim};
+}
+
+void SatelliteSim::reportFlushEdit()
+{
+    ReportEditTarget &t = reportEditTarget_;
+    if (t.id == 0 || t.issue.empty())
+        return;
+    std::string v;
+    if (textEdit_.id == t.id)
+    {
+        v = textEdit_.buf;
+        textEdit_.id = 0;
+        textEdit_.selAll = false;
+        textEdit_.anchor = -1;
+        taDragging_ = false;
+    }
+    else if (textEdit_.doneId == t.id)
+    {
+        v = textEdit_.doneBuf;
+        textEdit_.doneId = 0;
+    }
+    else
+        return;
+    const ReportEditTarget tt = t;
+    t = ReportEditTarget{};
+    v = v.substr(0, tt.maxLen);
+    if (tt.trim)
+        while (!v.empty() && (v.back() == '\n' || v.back() == ' '))
+            v.pop_back();
+    // Unchanged text writes nothing (as the field itself would not).
+    if (const ReportIssueInfo *is = reportFind(tt.issue))
+    {
+        const std::string *cur = nullptr;
+        if (tt.field == "title")
+            cur = &is->title;
+        else if (tt.field == "description")
+            cur = &is->description;
+        else
+            for (const ReportShotInfo &s : is->shots)
+                if (s.n == tt.shot)
+                    cur = &s.note;
+        if (cur && *cur == v)
+            return;
+    }
+    reportSetField(tt.issue, tt.shot, tt.field.c_str(), v);
 }
 
 // ─── Images ──────────────────────────────────────────────────────────────────
@@ -365,8 +434,26 @@ void SatelliteSim::reportThumbTick(UIRenderer &ui)
 
     auto want = [&](ReportIssueInfo &is, ReportShotInfo &s) -> bool
     {
-        if (s.cell >= 0 || s.thumbTried || s.image.empty())
+        if (s.cell >= 0 || s.thumbTried || s.image.empty() || !s.onScreen)
             return false;
+        // A cell first: this shot's own, a free one, else the least recently drawn (never one drawn last frame).
+        // With none free the shot waits (it used to be marked tried: "No image" until the next reload).
+        int cell = -1;
+        for (int c = 0; c < kRpCells && cell < 0; ++c)
+            if (reportCells_[c].key.empty())
+                cell = c;
+        if (cell < 0)
+        {
+            uint64_t oldest = reportCellClock_ - 1;
+            for (int c = 0; c < kRpCells; ++c)
+                if (reportCells_[c].used < oldest)
+                {
+                    oldest = reportCells_[c].used;
+                    cell = c;
+                }
+            if (cell < 0)
+                return false; // every cell is on screen
+        }
         const fs::path dir = fs::path(reportDir()) / is.id;
         const fs::path thumb = dir / thumbName(s.image), full = dir / s.image;
         std::error_code ec;
@@ -399,23 +486,9 @@ void SatelliteSim::reportThumbTick(UIRenderer &ui)
         s.thumbTried = true;
         if (cellPx.empty())
             return true;
-        // A cell: this shot's own, a free one, else the least recently drawn (never one drawn last frame).
         const std::string key = is.id + "/" + std::to_string(s.n);
-        int cell = -1;
-        for (int c = 0; c < kRpCells && cell < 0; ++c)
-            if (reportCells_[c].key.empty())
-                cell = c;
-        if (cell < 0)
+        if (!reportCells_[cell].key.empty())
         {
-            uint64_t oldest = reportCellClock_ - 1;
-            for (int c = 0; c < kRpCells; ++c)
-                if (reportCells_[c].used < oldest)
-                {
-                    oldest = reportCells_[c].used;
-                    cell = c;
-                }
-            if (cell < 0)
-                return true; // every cell is on screen
             for (ReportIssueInfo &o : reportIssues_)
                 for (ReportShotInfo &os : o.shots)
                     if (os.cell == cell)
@@ -799,7 +872,10 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
     if (!inp.lmbDown && !inp.lmbReleased)
         rpMarkDrag_ = false; // (a mark's drag that ended while the window was not drawn)
     if (!rpChrome.open)
+    {
+        reportFlushEdit(); // closed with a field in edit (its commit has no field left to take it)
         return;
+    }
     if (rpChrome.w <= 0.0f)
     {
         // 720 x 700 where it fits; on a small screen ~60% of the width, ~72% of the height (2026-10-21)
@@ -908,9 +984,12 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                                             if (n && inp.lmbPressed)
                                                 openId = is.id;
                                             ReportShotInfo *first = is.shots.empty() ? nullptr : &is.shots.front();
+                                            if (first)
+                                                first->onScreen = rpBoxVisible(tid, CLAY_ID("RpList"));
                                             if (thumbs && first && first->cell >= 0)
                                             {
-                                                reportCells_[first->cell].used = reportCellClock_;
+                                                if (first->onScreen)
+                                                    reportCells_[first->cell].used = reportCellClock_;
                                                 CLAY(CLAY_IDI("RpThumbImg", i), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}},
                                                                                  .custom = {.customData = &first->img}}) {}
                                             }
@@ -1002,6 +1081,7 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                             std::string t = is.title;
                             if (textField(inp, ui, CLAY_ID("RpTitle"), t, bodyW - (float)fs(11) * 4.0f, 13, "The issue in a few words", kReportTitleMax))
                                 reportSetField(is.id, 0, "title", t);
+                            reportNoteEditTarget(CLAY_ID("RpTitle").id, is.id, 0, "title", kReportTitleMax, false);
                         }
                         int cur = -1;
                         for (int k = 0; k < 9; ++k)
@@ -1041,6 +1121,7 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                                          "What is wrong, what you expected to see, and how to see it (click to type; Ctrl+Enter or a click elsewhere saves)",
                                          kReportDescMax, 16))
                                 reportSetField(is.id, 0, "description", d);
+                            reportNoteEditTarget(CLAY_ID("RpDesc").id, is.id, 0, "description", kReportDescMax, true);
                         }
 
                         // ── The selected shot's frame, and its pin ────────────────────────────────────
@@ -1183,9 +1264,11 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                                     ui.tooltip(inp, n, "Show this shot below", fs(11));
                                     if (n && inp.lmbPressed)
                                         selShot = s.n;
+                                    s.onScreen = rpBoxVisible(tid, CLAY_ID("RpView"));
                                     if (thumbs && s.cell >= 0)
                                     {
-                                        reportCells_[s.cell].used = reportCellClock_;
+                                        if (s.onScreen)
+                                            reportCells_[s.cell].used = reportCellClock_;
                                         CLAY(CLAY_IDI("RpShotImg", i), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}},
                                                                         .custom = {.customData = &s.img}}) {}
                                     }
@@ -1202,6 +1285,7 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                                     if (textArea(inp, ui, CLAY_IDI("RpShotNote", i), note, std::max(120.0f, bodyW - tW - 36.0f), 3, 12,
                                                  "What this shot shows (click to type)", kReportNoteMax, 9))
                                         reportSetField(is.id, s.n, "note", note);
+                                    reportNoteEditTarget(CLAY_IDI("RpShotNote", i).id, is.id, s.n, "note", kReportNoteMax, true);
                                     CLAY(CLAY_IDI("RpShotBtns", i), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
                                                                                 .childGap = 4,
                                                                                 .layoutDirection = CLAY_LEFT_TO_RIGHT}})
@@ -1238,6 +1322,11 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
     // After the layout. What reshapes the list (New, Delete) waits for the next reportTick.
     if (inp.lmbPressed && !delClicked)
         reportDeleteArmed_.clear(); // any click that is not on a Delete button disarms it
+    // Anything that takes the open issue's fields off screen (or reads its file) saves the one being edited
+    // first: its commit would otherwise wait for a field that is never drawn again, and be dropped.
+    if (back || !openId.empty() || !exportId.empty() || goShot > 0 || refresh || newIssue || !delIssue.empty() || delShot > 0 ||
+        !rpChrome.open)
+        reportFlushEdit();
     if (refresh)
         reportsDirty_ = true;
     if (!exportId.empty())
