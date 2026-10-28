@@ -382,7 +382,7 @@ static glm::dvec3 keplerEclipticPos(const KeplerElements &el, double T)
 // — a standard, widely-cited amateur-astronomy reference. Saturn's ring-brightness contribution
 // (which needs Saturnicentric ring-plane geometry, not just phase angle) is deliberately omitted —
 // accepted simplification, Saturn will read slightly dim near ring-plane-open oppositions.
-static float planetApparentMagnitude(PlanetId id, double rAU, double deltaAU, double alphaDeg)
+float planetApparentMagnitude(PlanetId id, double rAU, double deltaAU, double alphaDeg, double sinRingB)
 {
     double base = 5.0 * log10(rAU * deltaAU);
     switch (id)
@@ -396,7 +396,9 @@ static float planetApparentMagnitude(PlanetId id, double rAU, double deltaAU, do
     case kJupiter:
         return (float)(-9.25 + base + 0.014 * alphaDeg);
     case kSaturn:
-        return (float)(-9.00 + base + 0.044 * alphaDeg);
+        // Meeus (Astronomical Algorithms, ch. 41) with the rings: -2.60 sin|B| + 1.25 sin^2 B, B the rings' tilt toward
+        // the Earth (2026-10-27; updatePlanets passes it, other callers 0 = the ball and rings edge-on).
+        return (float)(-8.88 + base + 0.044 * alphaDeg - 2.60 * std::abs(sinRingB) + 1.25 * sinRingB * sinRingB);
     case kUranus:
         return (float)(-7.15 + base + 0.001 * alphaDeg);
     default:
@@ -634,6 +636,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     }
     initStars(ctx);
     initPlanets(ctx); // must run after initStars() — reuses starDescLayout/starPipeline
+    createPlanetDiscs(ctx); // the resolved discs' maps, set and pipeline (SatelliteSimPlanets.cpp)
     // Long-exposure trail pipeline — needs drawPipeLayout/descSet (createDrawPipeline/
     // createDescriptors above) AND starPipeLayout/starDescSet/planetDescSet (initStars/initPlanets
     // just above) for its splat-stage pipelines, plus flareSampler (createFlareResources above)
@@ -810,6 +813,7 @@ void SatelliteSim::recreateComputeScaledTargets(VulkanContext &ctx)
     starCloudWrites[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, planetDescSet, 3, 0, 1,
                           VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &starCloudBInfo, nullptr, nullptr};
     frameSafeUpdateDescriptorSets(ctx.device, 4, starCloudWrites, 0, nullptr);
+    writePlanetDiscTargets(ctx); // (its depth binding is rewritten again below, once the depth is recreated)
 
     // ── Shared scene depth — same swapchain-size dependency, same destroy/recreate/patch dance.
     // Two sets reference it: its own (as a storage image, for writing) and skyDescSet binding 20
@@ -849,6 +853,7 @@ void SatelliteSim::recreateComputeScaledTargets(VulkanContext &ctx)
     depthWrites[5] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, planetDescSet, 4, 0, 1,
                       VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &depthSampledInfo, nullptr, nullptr};
     frameSafeUpdateDescriptorSets(ctx.device, 6, depthWrites, 0, nullptr);
+    writePlanetDiscTargets(ctx);
 
     // Clouds v2: its screen-sized images, and every set that points at them (or at the scene depth
     // just recreated above).
@@ -931,6 +936,7 @@ void SatelliteSim::onResize(VulkanContext &ctx)
     vkDestroyPipeline(ctx.device, starPipeline, nullptr);
     starPipeline = VK_NULL_HANDLE;
     createStarPipeline(ctx);
+    createPlanetDiscPipeline(ctx);
 
     if (rainPipeline)
     {
@@ -3968,7 +3974,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                                     starPipeLayout, 0, 1, &planetDescSet, 0, nullptr);
             vkCmdPushConstants(cmd, starPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                0, sizeof(ppc), &ppc);
-            vkCmdDraw(cmd, kPlanetCount, 1, 0, 0);
+            vkCmdDraw(cmd, kPlanetBodyCount, 1, 0, 0);
         }
 
         vkCmdEndRenderPass(cmd); // finalLayout=GENERAL — ready for next frame's fade compute /
@@ -6769,9 +6775,9 @@ int SatelliteSim::pickPlanetAt(float clickX, float clickY, float screenW, float 
 
     int best = -1;
     float bestDist = 0.0f;
-    for (int i = 0; i < kPlanetCount; ++i)
+    for (int i = 0; i < kPlanetBodyCount; ++i)
     {
-        if (!planetEnabled[i])
+        if (!planetEnabled[i < kPlanetCount ? i : (int)kJupiter])
             continue;
         const GpuSatVisible &v = entries[i];
         if (v.flareIntensity <= 0.0f)
@@ -6781,7 +6787,12 @@ int SatelliteSim::pickPlanetAt(float clickX, float clickY, float screenW, float 
             continue;
         float dx = sx - clickX, dy = sy - clickY;
         float dist = sqrtf(dx * dx + dy * dy);
-        float hitRadius = std::max(v.angularSize * 0.5f, kMinHitRadiusPx);
+        // A resolved disc (its record's angularSize is negative then): its whole disc and rings.
+        float hitRadius = std::max(std::abs(v.angularSize) * 0.5f, kMinHitRadiusPx);
+        if (i < kPlanetCount)
+            hitRadius = std::max(hitRadius, planetView[i].discPx * (i == kSaturn ? 2.3f : 1.1f));
+        else
+            hitRadius = std::min(hitRadius, 6.0f); // a moon beside Jupiter: Jupiter's disc wins outside 6 px
         if (dist <= hitRadius && (best < 0 || dist < bestDist))
         {
             best = i;
@@ -6796,27 +6807,7 @@ int SatelliteSim::pickPlanetAt(float clickX, float clickY, float screenW, float 
 // dynamic — recomputed fresh from this frame's planetStates[] rather than static orbital elements
 // — so unlike the satellite version, re-call this every frame the selection is active, not only
 // when the selection changes (see buildSelectedSatPanel).
-void SatelliteSim::formatSelectedPlanetInfo()
-{
-    if (selectedPlanetIndex < 0 || selectedPlanetIndex >= kPlanetCount)
-    {
-        for (auto &line : planetInfoLine)
-            line[0] = '\0';
-        return;
-    }
-
-    const PlanetState &ps = planetStates[selectedPlanetIndex];
-    float vmag = planetApparentMagnitude((PlanetId)selectedPlanetIndex, ps.sunDistAU, ps.distanceAU, ps.phaseAngleDeg);
-    float illumFrac = (1.0f + cosf(glm::radians(ps.phaseAngleDeg))) * 0.5f; // 1=full, 0=new
-
-    snprintf(planetInfoLine[0], sizeof(planetInfoLine[0]), "%s", kPlanetNames[selectedPlanetIndex]);
-    snprintf(planetInfoLine[1], sizeof(planetInfoLine[1]), "Planet");
-    snprintf(planetInfoLine[2], sizeof(planetInfoLine[2]), "Mag: %.1f", vmag);
-    snprintf(planetInfoLine[3], sizeof(planetInfoLine[3]), "Distance: %.2f AU", ps.distanceAU);
-    snprintf(planetInfoLine[4], sizeof(planetInfoLine[4]), "Phase: %.0f%%", illumFrac * 100.0f);
-    snprintf(planetInfoLine[5], sizeof(planetInfoLine[5]), "Sun dist: %.2f AU", ps.sunDistAU);
-    planetInfoLine[6][0] = '\0'; // 7th slot is satellite-only (flare-mitigation power readout)
-}
+// (formatSelectedPlanetInfo: SatelliteSimPlanets.cpp, with the discs and the Galilean moons.)
 
 // ─── formatSelectedSatInfo ─────────────────────────────────────────────────────
 // Fills selInfoLine[] from static, CPU-resident orbital-element data (satOrbits/constellations/
@@ -7809,7 +7800,8 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float dt)
                                 starPipeLayout, 0, 1, &planetDescSet, 0, nullptr);
         vkCmdPushConstants(cmd, starPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(pc), &pc);
-        vkCmdDraw(cmd, kPlanetCount, 1, 0, 0);
+        vkCmdDraw(cmd, kPlanetBodyCount, 1, 0, 0);   // (a resolved planet's record is skipped: angularSize < 0)
+        recordPlanetDiscs(cmd, pc);                  // the resolved discs (SatelliteSimPlanets.cpp)
     }
 
     // ── Pass 4: flare/corona composite (flare architecture overhaul) ──────────
@@ -8632,6 +8624,7 @@ void SatelliteSim::cleanup(VkDevice device)
     vkDestroyDescriptorPool(device, planetDescPool, nullptr);
     vkDestroyBuffer(device, planetBuf, nullptr);
     vkFreeMemory(device, planetMem, nullptr);
+    destroyPlanetDiscs(device);
 
     if (meterImg) { vkDestroyImage(device, meterImg, nullptr); vkFreeMemory(device, meterImgMem, nullptr); }
     if (meterBuf) ctx_->slottedDestroy(&meterBuf); // every slot's copy
@@ -15514,7 +15507,7 @@ void SatelliteSim::initStars(VulkanContext &ctx)
 // see recordDraw()'s planet draw call, which binds starPipeline with a different desc set).
 void SatelliteSim::initPlanets(VulkanContext &ctx)
 {
-    VkDeviceSize bufSize = kPlanetCount * sizeof(GpuSatVisible);
+    VkDeviceSize bufSize = kPlanetBodyCount * sizeof(GpuSatVisible); // + the Galilean moons
     planetMapped = createMirrored(ctx, bufSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, planetBuf, planetMem, true, "planets");
 
     // Reuses starDescLayout (binding=1 STORAGE_BUFFER vertex-stage + bindings=2/3 cloud occlusion +
@@ -16071,8 +16064,9 @@ void SatelliteSim::updatePlanets()
     if (!showPlanets)
     {
         auto *dst = static_cast<GpuSatVisible *>(planetMapped);
-        for (int i = 0; i < kPlanetCount; ++i)
+        for (int i = 0; i < kPlanetBodyCount; ++i)
             dst[i].flareIntensity = 0.0f;
+        planetDiscCount = 0;
         return;
     }
 
@@ -16109,10 +16103,13 @@ void SatelliteSim::updatePlanets()
         {
             dst[i].skyDir = enu;
             dst[i].flareIntensity = 0.0f;
+            planetView[i].supp = 0.0f;
+            planetView[i].above = false;
             continue;
         }
 
-        float vmag = planetApparentMagnitude((PlanetId)i, ps.sunDistAU, ps.distanceAU, ps.phaseAngleDeg);
+        planetView[i].sinRingB = (float)planetSinRingB(i);
+        float vmag = planetApparentMagnitude((PlanetId)i, ps.sunDistAU, ps.distanceAU, ps.phaseAngleDeg, planetView[i].sinRingB);
         float rawIntensity = powf(10.0f, -vmag / 2.5f);
 
         float bearing = atan2f(enu.x, enu.y);
@@ -16153,12 +16150,17 @@ void SatelliteSim::updatePlanets()
         // reads at the same visual weight as an equally bright star.
         float angSize = pointSpriteSizePx(pointPsf(intensity > 0.0f ? -2.5f * log10f(intensity) : 99.0f).y);
 
+        planetView[i].above = !plBelow;
+        planetView[i].extinction = extinction;
+        planetView[i].extMag = extinctMag;
+        planetView[i].supp = rawIntensity * extinction > 0.0f ? intensity / (rawIntensity * extinction) : 0.0f;
         dst[i].skyDir = enu;
         dst[i].flareIntensity = intensity;
         dst[i].color = packVisibleColor(kPlanetColor[i]); // hand-picked approximate true color — see its own comment
         dst[i].rangeM = 0.0f;                              // at infinity
         dst[i].angularSize = angSize;
     }
+    updatePlanetDiscs(dst); // resolved discs, the Galilean moons, the point-to-disc hand-off (SatelliteSimPlanets.cpp)
 }
 
 // ─── initConstellation ────────────────────────────────────────────────────────
@@ -18026,6 +18028,10 @@ void SatelliteSim::updatePositions(double t, float dt)
             planetStates[p].distanceAU = (float)distAU;
             planetStates[p].sunDistAU = (float)sunDistAU;
             planetStates[p].phaseAngleDeg = (float)glm::degrees(acos(glm::clamp(cosPhase, -1.0, 1.0)));
+            auto toEci = [&](const glm::dvec3 &v)
+            { return glm::dvec3(v.x, v.y * cos(epsR) - v.z * sin(epsR), v.y * sin(epsR) + v.z * cos(epsR)); };
+            planetStates[p].geoEci = toEci(geo);
+            planetStates[p].helioEci = toEci(planetHelio);
         }
     }
 

@@ -1305,7 +1305,7 @@ harness::Status SatelliteSim::harnessSkyEvents(harness::Active &a)
         r["sun_el_deg"] = glm::degrees(std::asin(std::clamp(sunDirENU.z, -1.0f, 1.0f)));
         r["moon_el_deg"] = glm::degrees(std::asin(std::clamp(moonDirENU.z, -1.0f, 1.0f)));
         r["sun_seen_fraction"] = moonEclipseSolarObs;
-        r["selected_planet"] = selectedPlanetIndex >= 0 ? kPlanetNames[selectedPlanetIndex] : "";
+        r["selected_planet"] = selectedPlanetIndex >= 0 ? planetBodyName(selectedPlanetIndex) : "";
         r["message"] = msg;
         return harness::Status::Done;
     }

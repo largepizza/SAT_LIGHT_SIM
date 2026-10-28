@@ -323,11 +323,22 @@ bool SatelliteSim::harnessLookDir(int track, int planet, glm::vec3 &d)
         return true;
     case 4:
     {
+        if (planet >= kPlanetCount && planet < kPlanetBodyCount && planetMapped)
+        {   // a Galilean moon: its drawn direction (last frame's)
+            d = glm::normalize(static_cast<const GpuSatVisible *>(planetMapped)[planet].skyDir);
+            return true;
+        }
         if (planet < 0 || planet >= kPlanetCount)
             return false;
         const glm::dvec3 e = planetStates[planet].eciDir;
         d = glm::normalize(glm::vec3((float)glm::dot(e, glm::dvec3(eci2enuX)), (float)glm::dot(e, glm::dvec3(eci2enuY)),
                                      (float)glm::dot(e, glm::dvec3(eci2enuZ))));
+        {   // where it is drawn: the air lifts it (a 0.5-deg field near the horizon is narrower than the refraction)
+            glm::vec3 r = d;
+            float ao, sc;
+            if (refrTable.valid && refractEnu(r, ao, sc))
+                d = glm::normalize(r);
+        }
         return true;
     }
     }
@@ -671,8 +682,17 @@ json SatelliteSim::harnessStateJson()
         }
     }
     if (selectedPlanetIndex >= 0)
-        sel["planet"] = kPlanetNames[selectedPlanetIndex];
+        sel["planet"] = planetBodyName(selectedPlanetIndex);
+    if (selectedPlanetIndex >= 0)
+    {
+        nlohmann::json lines = nlohmann::json::array();
+        for (const auto &l : planetInfoLine)
+            if (l[0])
+                lines.push_back(l);
+        sel["planet_lines"] = lines;
+    }
     j["selection"] = sel;
+    j["planets"] = planetsJson();
     // The v2 march's rate this frame: sparse (1 pixel in 4), full, half (checkerboard) or adaptive.
     j["clouds_v2"] = {{"rate", cv2AdaptiveNow ? "adaptive" : cv2HalfRateNow ? "half" : cv2FullRateNow ? "full" : cv2FullResHeldNow ? "sparse held" : "sparse"},
                       {"still_frames", cv2StillFrames}, {"eye_still_frames", cv2EyeStillFrames}, {"history_valid", cv2HistoryValid}, {"cdc_active", cv2CdcActive}, {"smooth_tiles_now", cv2SmoothNow}, {"cdc_slow_frames", cv2CdcSlowFrames}, {"cdc_epoch", cv2CdcEpoch},
@@ -2097,8 +2117,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         else if (sub == "planet")
         {
             int pi = -1;
-            for (int i = 0; i < kPlanetCount; ++i)
-                if (ieq(pos(1), kPlanetNames[i]))
+            for (int i = 0; i < kPlanetBodyCount; ++i)
+                if (ieq(pos(1), planetBodyName(i)))
                     pi = i;
             if (pi < 0)
                 fail("select planet: unknown planet '" + pos(1) + "'");

@@ -602,6 +602,53 @@ struct PlanetState
     float distanceAU = 0.0f;    // Earth-planet distance (AU)
     float sunDistAU = 0.0f;     // Sun-planet distance (AU)
     float phaseAngleDeg = 0.0f; // Sun-Planet-Earth angle (illumination phase)
+    glm::dvec3 geoEci{0.0};     // Earth -> planet, AU (J2000 equatorial = the sim's ECI)
+    glm::dvec3 helioEci{0.0};   // Sun -> planet, AU
+};
+
+// Jupiter's Galilean moons (2026-10-27): entries kPlanetCount.. of planetBuf (drawn as points by the star pipeline,
+// selectable like a planet). Positions from Meeus ch. 44 (low accuracy), SatelliteSimPlanets.cpp.
+static constexpr int kGalileanCount = 4;
+static constexpr int kPlanetBodyCount = kPlanetCount + kGalileanCount;
+const char *planetBodyName(int body);   // a planet's or a Galilean moon's name
+float planetApparentMagnitude(PlanetId id, double rAU, double deltaAU, double alphaDeg, double sinRingB = 0.0);
+
+// Resolved planet discs (2026-10-27): mirror of shaders/include/planet_disc.glsl (std140, vec4s only).
+struct GpuPlanetDisc
+{
+    glm::vec4 c, bx, by, pole, x0, sun, tint, lin, pt, ring, misc, pad;
+};
+static_assert(sizeof(GpuPlanetDisc) == 192, "GpuPlanetDisc layout");
+struct GpuPlanetDiscUBO
+{
+    glm::uvec4 head;
+    glm::vec4 tone;
+    glm::vec4 moons[4];
+    GpuPlanetDisc disc[kPlanetCount];
+};
+static_assert(sizeof(GpuPlanetDiscUBO) == 96 + 192 * kPlanetCount, "GpuPlanetDiscUBO layout");
+
+// What the disc renderer and the selection panel know about each body this frame (SatelliteSimPlanets.cpp).
+struct PlanetView
+{
+    float angRadiusArcsec = 0.0f; // equatorial angular radius
+    float discPx = 0.0f;          // equatorial radius on screen, px
+    float share = 0.0f;           // 0 point .. 1 resolved disc
+    float ringTiltDeg = 0.0f;     // Saturn: the rings' opening toward the Earth
+    float cmLonDeg = 0.0f;        // central-meridian longitude (Jupiter: System II, west; others east)
+    float extinction = 1.0f;      // updatePlanets: the line of sight's transmission (V)
+    float extMag = 0.0f;
+    float supp = 0.0f;            // updatePlanets: drawn intensity / (raw x extinction): day, Moon, light pollution
+    float sinRingB = 0.0f;        // Saturn: the rings' tilt toward the Earth (the magnitude's ring term)
+    float handScale = 1.0f;       // the disc's light x this at the hand-off (1 = physical)
+    bool above = false;           // updatePlanets: above the (apparent) horizon
+};
+struct GalileanState
+{
+    float x = 0.0f, y = 0.0f, z = 0.0f; // the disc's local frame (equatorial radii): x the view's right, y its up, z toward the Earth
+    float xWest = 0.0f, yNorth = 0.0f;  // the same offset on the sky: celestial west / north
+    float mag = 99.0f;
+    bool transit = false, occulted = false, eclipsed = false, shadowOnJupiter = false;
 };
 
 // Compute push constants (must match sat_flare.comp push_constant block exactly).
@@ -4098,6 +4145,23 @@ private:
     VkDescriptorPool planetDescPool = VK_NULL_HANDLE; // starDescPool is sized maxSets=1, so this
                                                       // gets its own tiny pool for one more set
     VkDescriptorSet planetDescSet = VK_NULL_HANDLE;   // allocated with starDescLayout (same shape)
+    // Resolved planet discs (2026-10-27, planet_disc.vert/.frag, SatelliteSimPlanets.cpp): their own small pipeline and
+    // set (sat_sky.frag is at the 16 sampled-image floor): 0 the disc UBO, 1-2 the cloud composite, 3 the scene depth,
+    // 4 the planet maps (a 2D array: Mars, Jupiter, Saturn, Saturn's ring profile).
+    VkBuffer planetDiscBuf = VK_NULL_HANDLE;
+    VkDeviceMemory planetDiscMem = VK_NULL_HANDLE;
+    void *planetDiscMapped = nullptr;
+    VkDescriptorSetLayout planetDiscLayout = VK_NULL_HANDLE;
+    VkDescriptorPool planetDiscPool = VK_NULL_HANDLE;
+    VkDescriptorSet planetDiscSet = VK_NULL_HANDLE;
+    VkPipelineLayout planetDiscPipeLayout = VK_NULL_HANDLE;
+    VkPipeline planetDiscPipeline = VK_NULL_HANDLE;
+    VkImage planetMapImg = VK_NULL_HANDLE;
+    VkDeviceMemory planetMapMem = VK_NULL_HANDLE;
+    VkImageView planetMapView = VK_NULL_HANDLE;
+    VkSampler planetMapSampler = VK_NULL_HANDLE;
+    uint32_t planetMapLayers = 0;
+    uint32_t planetDiscCount = 0;   // this frame's resolved discs (0 = the pass draws nothing)
 
     // ── Simulation state ──────────────────────────────────────────────────────
     SkyCamera camera;
@@ -7368,6 +7432,10 @@ private:
     PlanetState planetStates[kPlanetCount]{};                                // ephemeris; direction/distance/phase
     bool planetEnabled[kPlanetCount] = {true, true, true, true, true, true}; // per-planet toggle
     bool showPlanets = true;                                                 // global toggle, settings-persisted
+    bool planetDiscs = true;          // resolved planet discs (settings planets.resolved_discs)
+    float planetDiscGain = 1.5f;      // x their physical surface brightness (planets.disc_gain)
+    PlanetView planetView[kPlanetCount]{};
+    GalileanState galilean[kGalileanCount]{};
     int selectedPlanetIndex = -1;                                            // index into planetStates[]/kPlanetNames[], -1 = none selected;
                                                                              // mutually exclusive with selectedSatIndex (see its declaration)
 
@@ -7949,6 +8017,14 @@ private:
                                                                                 // pickSatelliteAt but reads the already host-mapped
                                                                                 // planetBuf directly — no device->host staging copy
     void formatSelectedPlanetInfo();                                            // mirrors formatSelectedSatInfo, fills planetInfoLine[]
+    void createPlanetDiscs(VulkanContext &ctx);         // maps, UBO, set, pipeline (after initPlanets)
+    void createPlanetDiscPipeline(VulkanContext &ctx);  // (viewport baked in: rebuilt on resize)
+    void writePlanetDiscTargets(VulkanContext &ctx);    // the cloud composite / scene depth after they are recreated
+    void destroyPlanetDiscs(VkDevice device);
+    void updatePlanetDiscs(GpuSatVisible *dst);         // from updatePlanets: the discs, the moons, the hand-off
+    void recordPlanetDiscs(VkCommandBuffer cmd, const PointDrawPC &pc);
+    double planetSinRingB(int planet) const;             // Saturn's rings' tilt toward the Earth (sin B); 0 for the rest
+    nlohmann::json planetsJson() const;                  // harness state: the discs and the Galilean moons
     void updateLightPollutionDome(float dt);                                    // called each frame before updateStars(): fills lightDomeAz[]
     void easeDarkSkyDome(float dt, const float *rawSectors);                    // log-maps + eases lightDomeEasedAz[] (nullptr = pristine)
     void uploadLightDome();                                                     // memcpys both dome halves into lightDomeBuf
