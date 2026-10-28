@@ -408,6 +408,16 @@ def build_sky_moonglint():
     return [moon, star(31.0, 34.0, 12.0, 3.0)]
 
 
+def build_sky_comet():
+    """A comet: a round head (upper right) with a broad curved fan of dust and a straight ion streak trailing to the
+    lower left, both cut clear of the head so it reads at 16 px (2026-10-27)."""
+    gap = disc(35.0, 13.0, 10.5)
+    head = disc(35.0, 13.0, 7.5)
+    fan = cut(tri((35.0, 13.0), (2.0, 30.0), (17.0, 46.0)), gap)
+    ion = cut(seg(35.0, 13.0, 4.0, 16.0, 2.2), gap, tri((35.0, 13.0), (0.0, 26.0), (19.0, 48.0)))
+    return [head, fan, ion]
+
+
 ICONS = {
     "storm-tornado": build_storm_tornado,
     "storm-hurricane": build_storm_hurricane,
@@ -435,6 +445,7 @@ ICONS = {
     "sky-conjunction": build_sky_conjunction,
     "sky-occultation": build_sky_occultation,
     "sky-moonglint": build_sky_moonglint,
+    "sky-comet": build_sky_comet,
 }
 
 # Drawn in the HUD's "pixel" style: solid silhouettes with hard edges on a 24-px grid, doubled to 48 —
@@ -442,7 +453,7 @@ ICONS = {
 # beside them read as another icon family (the user, 2026-10-03).
 PIXEL_STYLE = {"storm-tornado", "storm-hurricane", "storm-haboob", "storm-supercell", "storm-squall",
                "storm-waterspout", "storm-fire", "storm-cell", "weather", "missions", "report", "bookmark", "film", "photo", "record", "maximize", "observer", "spin", "studio",
-               "sky-events", "sky-solar", "sky-lunar", "sky-conjunction", "sky-occultation", "sky-moonglint"}
+               "sky-events", "sky-solar", "sky-lunar", "sky-conjunction", "sky-occultation", "sky-moonglint", "sky-comet"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
