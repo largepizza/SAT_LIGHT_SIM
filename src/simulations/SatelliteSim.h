@@ -26,6 +26,7 @@
 #include "SatMeshRenderer.h"
 #include "../VideoRecorder.h" // video export (SatelliteSimVideo.cpp, 2026-10-25)
 #include "SatEnvProbes.h" // Phase 4: satellite meshes (model viewer; scene pass in 4c)
+#include "SkyEvents.h"    // the Sky events window (2026-10-27)
 #include <memory>
 
 // Forward declaration only — savePerfSnapshot/buildPerfSnapshotJson are the sole users and both
@@ -3384,6 +3385,66 @@ private:
     bool missionsMilestone(int row, int dir, int index, std::string &msg); // an Ongoing row's next / previous milestone
     nlohmann::json missionsStateJson();
     void buildMissionsWindow(const UIInput &inp, UIRenderer &ui);
+
+    // ── The Sky events window (2026-10-27, SatelliteSimSkyEvents.cpp; CLAUDE.md "Sky events window") ─────────
+    // Celestial events: solar and lunar eclipses, conjunctions (two planets, or a planet and the Moon), lunar
+    // occultations of the bright planets. One fixed-height card per kind (the next one) and the next ~10 events of
+    // every kind within two years, each with ONE Watch (the event already happening, in frame, 1x). The kinds are a
+    // table (kSkyKinds): a new kind is a search + a Watch + a card text. The searches run on a worker (skScanJob),
+    // one kind after another, over [base - 4 h, base + 2 y], restarted when sim time leaves [base - 1 h, base + 30 d].
+    // The sky-events button on the right HUD panel, key K (KB_SKY_EVENTS), harness `ui open skyevents` / `skyevents`.
+    friend struct SkyEventsFriend;           // SatelliteSimSkyEvents.cpp: the kind table and its helpers
+    WindowChrome skChrome;
+    bool hovSkClose = false, hovTimeSky = false;
+    struct SkyScanResult
+    {
+        double base = 0.0;
+        int kind = 0;
+        std::vector<sky::Event> events;
+        double ms = 0.0;
+    };
+    std::future<SkyScanResult> skScanJob;
+    std::atomic<bool> skScanCancel{false};
+    bool skScanJobStale = false;
+    double skScanBase = -1e300;              // the search's start; < -1e299 = never searched
+    int skScanKind = 0;                      // the next kind to search (kKindCount = done)
+    double skScanMs[sky::kKindCount] = {};   // each kind's search time on the worker (state)
+    int skScanRestarts = 0;
+    std::vector<sky::Event> skFound[sky::kKindCount]; // every event of each kind in the range, by time
+    std::vector<sky::Event> skUpcoming;      // the next events of every kind (rebuilt when a kind comes in, or 2 s)
+    double skUpcomingWall = -1e300, skUpcomingSim = -1e300;
+    int skPendingKind = -1, skPendingRow = -1; // a Watch pressed this frame (acted on after the layout)
+    std::string skStatus, skStatusShown;
+    double skStatusWall = 0.0;
+    std::deque<std::string> skText_;
+    const char *skStr(const char *fmt, ...);
+    // The Watch's aim kept on the bodies while the player does not move the camera (the sky turns ~0.25 deg a minute):
+    int skAimA = -1, skAimB = -1;           // body ids (sky::kBodyMoon / kBodySun / a planet), -1 = none
+    double skAimUntil = 0.0;                // sim time it stops
+    float skAimAz = 0.0f, skAimEl = 0.0f;   // what it set last frame (a difference = the player looked away)
+    void skyEventsUpdate();                  // the worker: take a finished kind, start the next; restart on a jump
+    void skyEventsFinish(double maxS);       // the harness: the searches run to their end
+    void skyEventsRefreshUpcoming(bool force);
+    void skyEventsTick();                    // buildUI, after updateTrack: the kept aim
+    bool skyEventWatch(const sky::Event &e, std::string &msg); // dispatches to the kind's Watch
+    const sky::Event *skyEventNext(int kind) const; // the kind's card: the next one not over (nullptr = none)
+    void buildSkyEventsWindow(const UIInput &inp, UIRenderer &ui);
+    nlohmann::json skyEventsJson();
+    harness::Status harnessSkyEvents(harness::Active &a);
+    // The kinds (one search + one Watch + the card's lines each; the table in SatelliteSimSkyEvents.cpp)
+    void skySearchSolar(const sky::SearchCtx &c, std::vector<sky::Event> &out) const;
+    void skySearchLunar(const sky::SearchCtx &c, std::vector<sky::Event> &out) const;
+    void skySearchConjunctions(const sky::SearchCtx &c, std::vector<sky::Event> &out) const;
+    void skySearchOccultations(const sky::SearchCtx &c, std::vector<sky::Event> &out) const;
+    bool skyWatchSolar(const sky::Event &e, std::string &msg);
+    bool skyWatchLunar(const sky::Event &e, std::string &msg);
+    bool skyWatchConjunction(const sky::Event &e, std::string &msg);
+    bool skyWatchOccultation(const sky::Event &e, std::string &msg);
+    // shared by the Watches: the moment (1x, unpaused), the place, the aim and the selection
+    void skyJumpTo(double t);
+    void skyPlaceAt(const glm::dvec3 &siteEcef, double t);
+    glm::vec3 skyBodyEnu(int body) const;    // after updatePositions: the body's direction from the observer (ENU)
+    void skyAimAt(int a, int b, float fovDeg, double until);
 
     // ── The Weather window (2026-10-23, SatelliteSimWeatherWindow.cpp) ──────────────────────────────────────
     // Like Missions, for the storm objects (Weather.h): Radar (a local precipitation radar centred on the observer,
@@ -6882,7 +6943,8 @@ private:
         KB_MILESTONE_PREV = 26, // event — ... its previous one; [
         KB_WEATHER = 27,       // event — the Weather window (radar, storms) open / closed; N
         KB_VIDEO = 28,         // event — start / stop a video recording (videoToggle); F6
-        KB_COUNT = 29,
+        KB_SKY_EVENTS = 29,    // event — the Sky events window (eclipses, conjunctions, occultations) open / closed; K
+        KB_COUNT = 30,
     };
 
     // Dispatches the event-style action for keybindings[bindIdx] — shared by onKey()

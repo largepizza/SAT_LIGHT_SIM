@@ -210,7 +210,7 @@ const char *kHelp =
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s] [wait=1]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [sky=<spv>] [sky_taa=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|pick|return|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [sky=<spv>] [sky_taa=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; skyevents [state]|events|list <kind>|watch <solar|lunar|conjunction|occultation|row> [n=]; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|pick|return|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=] [frames=] [video=]; video start [name] [fps=] [scale=] [ui=on]|stop|state; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
@@ -1827,6 +1827,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
 
     // ── camera ──────────────────────────────────────────────────────────────────
     // ── eclipse solar|lunar: the sim's next eclipse — time, the observer under the Moon, aimed at it ──
+    if (n == "skyevents")
+        return harnessSkyEvents(a); // the Sky events window (SatelliteSimSkyEvents.cpp)
     if (n == "eclipse")
     {
         const std::string kind = lower(pos(0));
@@ -3695,6 +3697,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 return &msChrome;
             if (l == "weather")
                 return &wxChrome;
+            if (l == "skyevents" || l == "sky")
+                return &skChrome;
             return nullptr;
         };
         if (sub == "dump")
@@ -4007,7 +4011,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             };
             if (lower(pos(1)) == "all" || pos(1).empty())
                 for (WindowChrome *ch : {&settingsChrome, &viewControlsChrome, &traceChrome, &infoChrome, &viewerChrome,
-                                         &cineChrome, &bmChrome, &msChrome, &rpChrome, &wxChrome})
+                                         &cineChrome, &bmChrome, &msChrome, &rpChrome, &wxChrome, &skChrome})
                     reset(*ch);
             else if (WindowChrome *ch = chromeOf(pos(1)))
                 reset(*ch);
@@ -4018,7 +4022,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         {
             if (lower(pos(1)) == "all")
                 consoleOpen_ = settingsChrome.open = viewControlsChrome.open = traceChrome.open = infoChrome.open =
-                    viewerChrome.open = cineChrome.open = bmChrome.open = msChrome.open = rpChrome.open = wxChrome.open = false;
+                    viewerChrome.open = cineChrome.open = bmChrome.open = msChrome.open = rpChrome.open = wxChrome.open =
+                        skChrome.open = false;
             else if (lower(pos(1)) == "console")
                 consoleOpen_ = false;
             else if (WindowChrome *ch = chromeOf(pos(1)))

@@ -357,6 +357,46 @@ def build_storm_cell():
     return [lambda px, py: (any(d(px, py) for d in puffs) or base(px, py)) and py <= 37.0]
 
 
+def build_sky_events():
+    """Sky events (the celestial events window, 2026-10-27): a solid crescent Moon with a four-point star beside it."""
+    moon = cut(disc(20.0, 26.0, 16.0), disc(29.0, 20.0, 14.0))
+    star = [tri((38.0, 4.0), (35.5, 13.0), (40.5, 13.0)), tri((38.0, 22.0), (35.5, 13.0), (40.5, 13.0)),
+            tri((29.0, 13.0), (38.0, 10.5), (38.0, 15.5)), tri((47.0, 13.0), (38.0, 10.5), (38.0, 15.5))]
+    return [moon] + star
+
+
+def build_sky_solar():
+    """A total solar eclipse: the Moon's black disc punched out of the Sun, with corona rays round it."""
+    corona = cut(disc(24.0, 24.0, 15.0), disc(24.0, 24.0, 10.0))
+    rays = []
+    for k in range(8):
+        a = math.radians(22.5 + 45.0 * k)
+        rays.append(seg(24.0 + 17.0 * math.cos(a), 24.0 + 17.0 * math.sin(a),
+                        24.0 + 22.5 * math.cos(a), 24.0 + 22.5 * math.sin(a), 2.2))
+    return [corona] + rays
+
+
+def build_sky_lunar():
+    """A lunar eclipse: the full Moon with the Earth's curved shadow biting into it (the shadow's edge a gap)."""
+    moon = disc(24.0, 24.0, 18.0)
+    return [cut(moon, ring(42.0, 30.0, 20.0, 2.2), disc(42.0, 30.0, 18.0)), cut(disc(42.0, 30.0, 17.0), lambda x, y: not moon(x, y))]
+
+
+def build_sky_conjunction():
+    """A conjunction: two planets close together, a large one and a small ringed one."""
+    big = disc(17.0, 28.0, 11.0)
+    small = disc(35.0, 15.0, 6.0)
+    rng = cut(seg(25.0, 19.0, 45.0, 11.0, 1.8), disc(35.0, 15.0, 7.5))
+    return [big, small, rng]
+
+
+def build_sky_occultation():
+    """A lunar occultation: the Moon's disc with a small planet just emerging at its limb."""
+    moon = cut(disc(21.0, 25.0, 17.0), disc(39.0, 15.0, 8.0))
+    planet = disc(39.0, 15.0, 5.0)
+    return [moon, planet]
+
+
 ICONS = {
     "storm-tornado": build_storm_tornado,
     "storm-hurricane": build_storm_hurricane,
@@ -378,13 +418,19 @@ ICONS = {
     "spin": build_spin,
     "studio": build_studio,
     "track": build_track,
+    "sky-events": build_sky_events,
+    "sky-solar": build_sky_solar,
+    "sky-lunar": build_sky_lunar,
+    "sky-conjunction": build_sky_conjunction,
+    "sky-occultation": build_sky_occultation,
 }
 
 # Drawn in the HUD's "pixel" style: solid silhouettes with hard edges on a 24-px grid, doubled to 48 —
 # the look of the gear, the camera, play / pause, the crosshair and the eye. Soft-edged thin strokes
 # beside them read as another icon family (the user, 2026-10-03).
 PIXEL_STYLE = {"storm-tornado", "storm-hurricane", "storm-haboob", "storm-supercell", "storm-squall",
-               "storm-waterspout", "storm-fire", "storm-cell", "weather", "missions", "report", "bookmark", "film", "photo", "record", "maximize", "observer", "spin", "studio"}
+               "storm-waterspout", "storm-fire", "storm-cell", "weather", "missions", "report", "bookmark", "film", "photo", "record", "maximize", "observer", "spin", "studio",
+               "sky-events", "sky-solar", "sky-lunar", "sky-conjunction", "sky-occultation"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
