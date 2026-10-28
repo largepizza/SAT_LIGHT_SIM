@@ -472,13 +472,16 @@ Surface applyPattern(MeshMaterial mat, MeshInstance inst, vec3 N)
         const float mGap = 6.0;                      // the felt between tiles: off-white under black tiles
         float mTile = (1.0 - gFrac * mGap) / (1.0 - gFrac);
         vec3  hr = hash3(uvec3(ivec3(ivec2(floor(id * 2.0)) + ivec2(16384), 7)));
+        // Pale replacement tiles are a grey TILE, darker than the felt round them so their gap outline still shows
+        // (2026-10-27, issue 20261027_184725 "Missing tiles on starship"): at 2.5x in the felt's grey (0.62) they
+        // filled the whole hexagon in about the gaps' tone and read as tiles missing.
         bool  pale = hr.x < 0.015;
-        float shade = pale ? 2.5 : 1.0 + 0.5 * (hr.y - 0.5);
-        shade /= 1.0225;                             // the population mean (pale tiles included) is 1
+        float shade = pale ? 1.6 : 1.0 + 0.5 * (hr.y - 0.5);
+        shade /= 1.009;                              // the population mean (pale tiles included) is 1
         float resolve = clamp((tileP - 3.0 * max(fwUv.x, fwUv.y)) / (3.0 * max(fwUv.x, fwUv.y) + 1e-6), 0.0, 1.0);
         float m = mix(mTile * shade, mGap, gap);
         s.albedoM = mix(1.0, m, resolve);
-        s.tint = mix(mix(mat.color, vec3(0.62, 0.62, 0.60), pale ? 1.0 - gap : 0.0), vec3(0.55, 0.53, 0.50), gap * resolve);
+        s.tint = mix(mix(mat.color, vec3(0.50, 0.50, 0.49), pale ? 1.0 - gap : 0.0), vec3(0.55, 0.53, 0.50), gap * resolve);
         s.N = jitterNormal(N, R, ivec2(floor(id * 2.0)), 0.011 * resolve);
     }
     return s;
