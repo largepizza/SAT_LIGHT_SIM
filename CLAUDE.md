@@ -47,7 +47,7 @@ Constellations* · *GPU Orbital Pipeline* (two-dispatch pattern, buffers, `Gpu*`
 constants) · *TargetedReflector / Mirror Ground Targets* · *Kessler syndrome — "The Sun's Fury"* (the
 scripted storm, dead satellites, debris pool, cascade engine, event log) · *Launches* (trains, retirements,
 rockets, plumes, crew rotations, the Missions window: the roster's slots refreshed on a schedule) · *Reflect-Orbital Beam Cloud Occlusion* ·
-*GpuSatInput* (a tombstone — the buffer was deleted 2026-09-22). · *Sky events window* (eclipses, conjunctions, occultations: a table of event kinds, each a search + a Watch)
+*GpuSatInput* (a tombstone — the buffer was deleted 2026-09-22). · *Sky events window* (eclipses, conjunctions, occultations, Moon-base glints: a table of event kinds, each a search + a Watch) · *Moon-base glints* (the lunar bases' solar arrays mirroring the Sun to Earth near full Moon, LunarBases.h)
 
 **Rendering** — *UIRenderer / Clay* (icon atlas, the SDF font atlas, manual hit-testing, the **UI kit** every window is built from, HUD text entry) · *Sky TAA* (the background's temporal AA, and the main pass's shared dependencies) · *The Sun as an object* (refraction, mirages, turbulence: one ray tracer, Refraction.h) · *The Moon as a body* (true position and size, eclipses) · *The sea* (periodic waves, sea state, shore) ·
 *Photometry / Shader Constants* (lobe model, bloom and glare) · *Light Pollution Dome* · *Atmospheric
@@ -3022,6 +3022,62 @@ The crescent-Moon button `TimeSkyBtn` beside Weather on the right HUD panel (`pi
   Sun's glare (the renderer's); a planet emerging beside a bright Moon is faint (the point photometry's Moon
   suppression); a Watch after the CME (2037-07-15) holds at the Kessler frontier while the cascade computes; clouds can
   still hide an event (solar eclipses take the central line whatever the weather).
+
+## Subsystem: Moon-base glints (2026-10-27)
+
+`LunarBases.h/.cpp` (app-independent: the bases, the Moon's IAU body frame as a pure function of t, the array's
+photometry, the best place on Earth and the windows search), `SatelliteSimMoonBases.cpp` (the point in the sky, harness
+`moonbase`), the sky-event kind `moonglint` in `SatelliteSimSkyEvents.cpp`, `data/lunar_bases.json` (copied next to the
+exe, packaged), `tools/lunar_glint_tool` (`LunarGlintTool`, EXCLUDE_FROM_ALL: the single-panel check + the windows).
+- **The scenario (every value a labelled assumption in the data file):** China's ILRS on the Shackleton south-east ridge
+  (88.8 S 123.4 E, the Chang'e-7 target), a generous array of 1 km^2 in 500 rows, built 2032-01 .. 2035-06; NASA's
+  Artemis Base Camp where the Shackleton - de Gerlache connecting ridge meets Shackleton's rim (89.684 S 196.739 E, LROC /
+  Glaser et al. 2014), 0.1 km^2 in 100 rows, 2032-06 .. 2033-12 (Fission Surface Power carries the rest). Elevations
+  1.6 / 1.9 km, horizon dip 1.5 deg, row tilt sigma 0.8 / 0.6 deg, row azimuth sigma 0.3 / 0.25 deg, panel flatness
+  0.05 deg, lean 0, glass F0 0.04. Rows appear in order between `online` and `complete` (deployment-era style).
+- **Physics:** vertical panels on vertical-axis trackers facing the Sun's azimuth (+ each row's hashed errors). A panel
+  facing the Sun mirrors it back toward the Sun's AZIMUTH at elevation 2 lean - e_sun, so the beam reaches the Earth only
+  with the Earth at about the Sun's azimuth in the base's sky (the Moon within a few degrees of full) and at that
+  elevation (the Moon near a node: the eclipse seasons). Per row: Schlick F(cos i) x A_row x cos i x p(Delta) / D^2 in
+  units of the Sun's irradiance (p = the mirrored Sun's disc smoothed by 2 x the flatness: 0.5 erfc((Delta - r_s) /
+  (sqrt2 sigma)) / (pi (r_s^2 + sigma^2)), normalised so one perfect panel is the hand formula
+  m = -26.74 - 2.5 log10(R A cos i / (Omega_sun D^2))); summed, x the Sun's visible share at the base: its disc over the
+  local horizon (-dip) AND past the Earth (a lunar eclipse hides the glint: the first cut had glints during the
+  2037-01-31 totality). `glintAggregate` takes the rows' scatter as one Gaussian beam (sigma 2 x the errors, + the disc)
+  for the search and the per-frame pre-test; `glintRows` is the measured value (its far tail can hold no row: the windows
+  keep only peaks the rows make brighter than the limit).
+- **Checked:** `moonbase check` / LunarGlintTool: one flat panel at sun elevations -1 .. 1.2 deg and leans 0 .. 5 deg,
+  beam elevation = 2 lean - e_sun exactly, magnitude = the hand formula to 1e-6 mag; 0.5 deg off the mirrored Sun's
+  centre nothing.
+- **Measured (2036-11-22 .. 2038-11-22, limit mag 3 above the air, from the best place with the Moon >= 10 deg up and
+  the Sun <= -6 deg):** ILRS 12 windows, Artemis 7 (jitter x0.5: 8 / 6; x1.5: 15 / 8). All at a Moon phase angle of
+  0.4-5 deg, in two seasons a year (January-March and May-July in 2037-38, round the eclipse seasons), 2-11 h each;
+  peaks ILRS -1.2 .. -2.4, Artemis 0 .. +1.9 (seen through the air ~0.8 mag fainter at 12 deg up). The best place is
+  usually where the Moon is low (the beam grazes the Earth's limb; the base sees the Earth at its horizon).
+- **Drawn:** `moonBasesFill` (kesslerFillDust's finish, after the wildfires): per built base with its Sun up, the
+  aggregate first (rows only when brighter than mag 14), then a point in kFireBuf as a city light (point, bloom, glare;
+  meshPx -1: no trail, manual terrain test only, so the Moon's disc does not hide it): at the base's place on the DRAWN
+  disc (moonDir + moonAngR x the body vector: the disc's own sphere, x "Moon size"), clamped to 0.98 of the drawn radius
+  (the glints come with the base at the limb, and a point a hair past the per-pixel-refracted edge read as floating),
+  refracted (`refractEnu`), extinguished along the line of sight, x (1 - 0.9 dayness), capped at flare 60, the base's
+  tint. CPU 0.004 ms a frame with no glint, ~0.09 ms during one (both bases' rows); nothing on the GPU per pixel; no
+  shader changed (SKY_LITE untouched).
+- **The sky event `moonglint`** (MOON BASE GLINT, icon 37 `sky-moonglint`): `skySearchMoonGlints` = `lunar::findWindows`
+  over the search range (30-min pre-test on the mean beam's angle from the Earth, 5-min steps inside, a 5/1/0.25-deg grid
+  for the best place; ~3.5 s for 2 years on the worker); `sky::Event::label` carries the base's short name, `a` =
+  `sky::kBodyMoonBase0` + its index, `tAux` the Moon's phase angle. Watch: the clock into the window (the peak, or now if
+  under way), 1x; the brightest place by the rows, or the clearest place within 1 mag of it when that is under cloud
+  (> 0.3 on the CPU cloud map); the camera on the base's drawn place at a 1-deg FOV (`skyBodyEnu` knows the base ids, so
+  the kept aim follows it); the toast names the base, the magnitude, the place, the Moon's height and phase angle.
+- Settings (no UI): `moon_bases.enabled` (true), `moon_bases.tilt_jitter_scale` (1, x the rows' errors),
+  `moon_bases.event_mag_limit` (3); a change of the last two re-runs the sky-event search.
+- Harness: `moonbase [state] | windows [days=] [limit=] [jitter=] | check` (docs/HARNESS.md);
+  `tools/harness/scripts/moon_glints.satcmd`. Captures: `harness_runs/mg1`, `harness_runs/mg2run` (untracked).
+- Open: the local terrain horizon is a single dip angle (no LOLA horizon mask: a ridge toward the Earth would hide it);
+  the base sits on the smooth sphere + its elevation (the drawn limb's LOLA relief is not consulted); no daytime contrast
+  model beyond the 0.9 day dimming; the 10-row upcoming list fills with glints in a season (two bases glint together);
+  no UI for the settings; panels never lean (lean_deg is in the data for a later design); the Watch's clear-sky choice
+  reads the cloud map at the jumped time only.
 
 ## Subsystem: Automation harness (2026-09-25)
 

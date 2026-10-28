@@ -18,6 +18,8 @@
 //                   through the Moon's centre meets the Earth, kept only if at the Watch moment the place is dark
 //                   (Sun <= -9 deg, -4 for Mercury / Venus) and the Moon >= 10 deg up; the contacts there are the DRAWN
 //                   disc's ("Moon size (x real)"), and the Watch lands a minute before the planet reappears at the limb
+//   Moon base glint a lunar base's solar array mirroring the Sun to the Earth (LunarBases.h, SatelliteSimMoonBases.cpp):
+//                   lunar::findWindows; watched from the brightest clear place, the camera on the base at a 1-deg FOV
 // Positions are the sim's own (the Moon of date from satphot::moonGeoEciAt, the planets J2000 as planetStates), so a
 // conjunction or occultation found here is one the sim draws, even where the two frames' ~0.5 deg of precession makes
 // it differ from the real sky.
@@ -49,6 +51,7 @@ struct SkyEventsFriend
     static void cardLunar(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2);
     static void cardConj(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2);
     static void cardOcc(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2);
+    static void cardGlint(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2);
     static const SkyKindDef kinds[sky::kKindCount];
 };
 
@@ -82,6 +85,7 @@ const char *bodyName(int b)
 {
     if (b == sky::kBodyMoon) return "Moon";
     if (b == sky::kBodySun) return "Sun";
+    if (b >= sky::kBodyMoonBase0) return "Moon base";
     return b >= 0 && b < kPlanetCount ? kPlanetNames[b] : "?";
 }
 // The Moon's apparent magnitude (Allen's phase law, as updatePositions' moonlight).
@@ -304,6 +308,9 @@ std::string eventTitle(const sky::Event &e)
     case sky::kOccultation:
         snprintf(b, sizeof(b), "The Moon hides %s", bodyName(e.a));
         break;
+    case sky::kMoonGlint:
+        snprintf(b, sizeof(b), "%s array glint, mag %.1f", e.label, e.magA);
+        break;
     default:
         snprintf(b, sizeof(b), "Event");
     }
@@ -347,6 +354,12 @@ void SkyEventsFriend::cardOcc(SatelliteSim &S, const sky::Event &e, double, cons
     l2 = S.skStr("%s at %s", utcShort(e.t).c_str(), whereText(e.site).c_str());
 }
 
+void SkyEventsFriend::cardGlint(SatelliteSim &S, const sky::Event &e, double, const char *&l1, const char *&l2)
+{
+    l1 = S.skStr("%s, %.0f h", eventTitle(e).c_str(), (e.t1 - e.t0) / 3600.0);
+    l2 = S.skStr("%s at %s", utcShort(e.t).c_str(), whereText(e.site).c_str());
+}
+
 const SkyKindDef SkyEventsFriend::kinds[sky::kKindCount] = {
     {"solar", "SOLAR ECLIPSE", 33, &Pal::progressFill, &SatelliteSim::skySearchSolar, &SatelliteSim::skyWatchSolar, &SkyEventsFriend::cardSolar,
      "none in the next 2 years", "The Moon covering the Sun, from where the shadow falls"},
@@ -356,6 +369,9 @@ const SkyKindDef SkyEventsFriend::kinds[sky::kKindCount] = {
      &SatelliteSim::skyWatchConjunction, &SkyEventsFriend::cardConj, "none in the next 2 years", "Both bodies in frame, from a dark site"},
     {"occultation", "OCCULTATION", 36, &Pal::btnAccent, &SatelliteSim::skySearchOccultations,
      &SatelliteSim::skyWatchOccultation, &SkyEventsFriend::cardOcc, "none in the next 2 years", "The planet behind the Moon, a minute before it reappears"},
+    {"moonglint", "MOON BASE GLINT", 37, &Pal::tagTwilight, &SatelliteSim::skySearchMoonGlints,
+     &SatelliteSim::skyWatchMoonGlint, &SkyEventsFriend::cardGlint, "none in the next 2 years",
+     "A lunar base's solar array flashing on the Moon, through a telescope"},
 };
 static_assert(sizeof(SkyEventsFriend::kinds) / sizeof(SkyEventsFriend::kinds[0]) == sky::kKindCount, "one row per sky::Kind");
 namespace
@@ -386,6 +402,7 @@ nlohmann::json eventJson(const sky::Event &e, double now)
         o["site_lon"] = lonOf(e.site);
     }
     if (e.watchT != 0.0) o["watch_utc"] = fmtUtcReadable(e.watchT);
+    if (e.label[0]) o["label"] = e.label;
     return o;
 }
 } // namespace
@@ -655,6 +672,11 @@ glm::vec3 SatelliteSim::skyBodyEnu(int body) const
 {
     if (body == sky::kBodySun) return glm::normalize(glm::vec3(sunDirENU));
     if (body == sky::kBodyMoon) return glm::normalize(glm::vec3(moonDirENU));
+    if (body >= sky::kBodyMoonBase0)
+    {
+        glm::vec3 e;
+        return moonBaseDrawnEnu(body - sky::kBodyMoonBase0, e) ? e : glm::normalize(glm::vec3(moonDirENU));
+    }
     if (body < 0 || body >= kPlanetCount) return glm::vec3(0, 1, 0);
     const glm::vec3 e = planetStates[body].eciDir;
     return glm::normalize(glm::vec3(glm::dot(e, glm::vec3(eci2enuX)), glm::dot(e, glm::vec3(eci2enuY)), glm::dot(e, glm::vec3(eci2enuZ))));
@@ -815,6 +837,90 @@ bool SatelliteSim::skyWatchOccultation(const sky::Event &e, std::string &msg)
     return true;
 }
 
+// ── Moon-base glints (2026-10-27; LunarBases.h, CLAUDE.md "Moon-base glints") ──────────────────────────────────────
+// The windows when a base's array mirrors the Sun to somewhere on Earth's night side brighter than the limit (with the
+// Moon >= 10 deg up and the Sun <= -6 deg there): lunar::findWindows, ~3 s for 2 years on the worker. It reads
+// lunarBases_, which is written once at init.
+void SatelliteSim::skySearchMoonGlints(const sky::SearchCtx &c, std::vector<sky::Event> &out) const
+{
+    if (lunarBases_.empty()) return;
+    std::vector<lunar::Window> w;
+    lunar::findWindows(lunarBases_, c.t0, c.t1, c.moonBaseMagLimit, c.moonBaseJitter, 0.0,
+                       [](const void *p) { return static_cast<const sky::SearchCtx *>(p)->cancelled(); }, &c, w);
+    for (const lunar::Window &x : w)
+    {
+        sky::Event e;
+        e.kind = sky::kMoonGlint;
+        e.t = x.tPeak;
+        e.t0 = x.t0;
+        e.t1 = x.t1;
+        e.a = sky::kBodyMoonBase0 + x.base;
+        e.magA = (float)x.peakMag;
+        e.score = -x.peakMag;
+        e.hasSite = true;
+        e.site = x.site.ecef;
+        e.watchT = x.tPeak;
+        e.tAux = x.moonPhaseDeg;
+        snprintf(e.label, sizeof(e.label), "%s", lunarBases_[(size_t)x.base].shortName.c_str());
+        out.push_back(e);
+    }
+}
+
+bool SatelliteSim::skyWatchMoonGlint(const sky::Event &e, std::string &msg)
+{
+    const int bi = e.a - sky::kBodyMoonBase0;
+    if (bi < 0 || bi >= (int)lunarBases_.size()) return false;
+    const lunar::Base &B = lunarBases_[(size_t)bi];
+    const double now = (double)simDayJ2000 * kDay + simSecInDay;
+    const double tw = (now >= e.t0 && now < e.t1) ? now : e.watchT;
+    skyJumpTo(tw); // (first: the cloud map's drift, which the clear-sky choice below reads, is that moment's)
+    // The brightest place (the rows), then, if it is under cloud, the clearest place round it within 1 mag of it.
+    lunar::Site best;
+    glm::dvec3 site = e.site;
+    double mag = e.magA;
+    if (lunar::bestSite(B, tw, moonBaseJitter, 0.0, best, 10.0, -6.0, true))
+    {
+        site = best.ecef;
+        mag = best.mag;
+    }
+    if (cloudCoverAtEcef(site) > 0.3f)
+    {
+        glm::dvec3 P, X, Y;
+        lunar::moonBodyFrame(tw, P, X, Y);
+        const glm::dvec3 M = moonGeoEciAt(tw);
+        const lunar::Geometry g = lunar::geometryAt(B, tw, M, P, X, Y);
+        const glm::dvec3 se = eciToEcef(glm::normalize(sunDirEciAt(tw)), tw);
+        float bestCloud = cloudCoverAtEcef(site);
+        const double la0 = latOf(site), lo0 = lonOf(site);
+        for (double dla = -12.0; dla <= 12.0; dla += 3.0)
+            for (double dlo = -15.0; dlo <= 15.0; dlo += 3.0)
+            {
+                const double la = std::clamp(la0 + dla, -85.0, 85.0), lo = lo0 + dlo;
+                const glm::dvec3 u(std::cos(rad(la)) * std::cos(rad(lo)), std::cos(rad(la)) * std::sin(rad(lo)), std::sin(rad(la)));
+                if (glm::dot(se, u) > std::sin(rad(-6.0))) continue;
+                const glm::dvec3 O = observerEciAt(u, kRe, tw);
+                if (glm::dot(glm::normalize(M - O), glm::normalize(O)) < std::sin(rad(10.0))) continue;
+                const float cc = cloudCoverAtEcef(u);
+                if (cc > bestCloud - 0.1f) continue;
+                const lunar::Glint gl = lunar::glintRows(B, g, tw, O, moonBaseJitter);
+                if (gl.mag > mag + 1.0) continue;
+                bestCloud = cc;
+                site = u;
+                mag = gl.mag;
+            }
+    }
+    skyPlaceAt(site, tw);
+    selectedSatIndex = -1;
+    selectedPlanetIndex = -1;
+    skyAimAt(e.a, -1, 1.0f, e.t1);
+    char b[260];
+    snprintf(b, sizeof(b), "%s: its solar array mirroring the Sun, mag %.1f, seen from %s (Moon %.0f deg up, phase angle %.1f deg)",
+             B.name.c_str(), mag, whereText(site).c_str(), glm::degrees(std::asin(std::clamp(moonDirENU.z, -1.0f, 1.0f))),
+             e.tAux);
+    msg = b;
+    return true;
+}
+
 bool SatelliteSim::skyEventWatch(const sky::Event &e, std::string &msg)
 {
     FPROF_SCOPE("skyEventWatch");
@@ -867,6 +973,8 @@ void SatelliteSim::skyEventsUpdate()
         ctx.t0 = skScanBase - kBackS;
         ctx.t1 = skScanBase + kAheadS;
         ctx.moonSizeScale = moonSizeScale;
+        ctx.moonBaseJitter = moonBaseJitter;
+        ctx.moonBaseMagLimit = moonBaseMagLimit;
         ctx.cancel = &skScanCancel;
         skScanCancel = false;
         const int k = skScanKind;

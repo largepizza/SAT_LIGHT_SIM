@@ -397,6 +397,17 @@ def build_sky_occultation():
     return [moon, planet]
 
 
+def build_sky_moonglint():
+    """A Moon-base glint: the Moon's disc with a four-point sparkle at its south limb (the bases' solar arrays),
+    the sparkle cut clear of the disc round it so it reads at 16 px (2026-10-27)."""
+    def star(cx, cy, r, w):
+        arms = [tri((cx, cy - r), (cx - w, cy), (cx + w, cy)), tri((cx, cy + r), (cx - w, cy), (cx + w, cy)),
+                tri((cx - r, cy), (cx, cy - w), (cx, cy + w)), tri((cx + r, cy), (cx, cy - w), (cx, cy + w))]
+        return lambda px, py: any(a(px, py) for a in arms)
+    moon = cut(disc(22.0, 20.0, 17.0), star(31.0, 34.0, 15.0, 5.5))
+    return [moon, star(31.0, 34.0, 12.0, 3.0)]
+
+
 ICONS = {
     "storm-tornado": build_storm_tornado,
     "storm-hurricane": build_storm_hurricane,
@@ -423,6 +434,7 @@ ICONS = {
     "sky-lunar": build_sky_lunar,
     "sky-conjunction": build_sky_conjunction,
     "sky-occultation": build_sky_occultation,
+    "sky-moonglint": build_sky_moonglint,
 }
 
 # Drawn in the HUD's "pixel" style: solid silhouettes with hard edges on a 24-px grid, doubled to 48 —
@@ -430,7 +442,7 @@ ICONS = {
 # beside them read as another icon family (the user, 2026-10-03).
 PIXEL_STYLE = {"storm-tornado", "storm-hurricane", "storm-haboob", "storm-supercell", "storm-squall",
                "storm-waterspout", "storm-fire", "storm-cell", "weather", "missions", "report", "bookmark", "film", "photo", "record", "maximize", "observer", "spin", "studio",
-               "sky-events", "sky-solar", "sky-lunar", "sky-conjunction", "sky-occultation"}
+               "sky-events", "sky-solar", "sky-lunar", "sky-conjunction", "sky-occultation", "sky-moonglint"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

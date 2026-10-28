@@ -641,6 +641,7 @@ void SatelliteSim::loadUiIcons(UIRenderer &ui)
             "assets/icons/ui/pixel--sky-lunar.png",
             "assets/icons/ui/pixel--sky-conjunction.png",
             "assets/icons/ui/pixel--sky-occultation.png",
+            "assets/icons/ui/pixel--sky-moonglint.png", // 37: the Moon-base glints (SatelliteSimSkyEvents.cpp)
         };
         // The count comes from the list itself — the hand-maintained "bump this when you add an icon"
         // number used to be a silent way to drop the last icon of the array.
@@ -8907,6 +8908,18 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         refrLastStart = {};   // rebuild now
     }
 
+    if (j.contains("moon_bases") && j["moon_bases"].is_object())
+    {
+        // The lunar bases' solar-array glints (2026-10-27, SatelliteSimMoonBases.cpp). A change of the jitter or the
+        // limit re-runs the sky-event search.
+        const auto &mj = j["moon_bases"];
+        const float j0 = moonBaseJitter, l0 = moonBaseMagLimit;
+        moonBaseGlints = mj.value("enabled", moonBaseGlints);
+        moonBaseJitter = settingClamp(mj.value("tilt_jitter_scale", moonBaseJitter), 0.0f, 5.0f);
+        moonBaseMagLimit = settingClamp(mj.value("event_mag_limit", moonBaseMagLimit), -10.0f, 12.0f);
+        if (j0 != moonBaseJitter || l0 != moonBaseMagLimit) skScanBase = -1e300;
+    }
+
     if (j.contains("launches") && j["launches"].is_object())
     {
         const auto &lj = j["launches"];
@@ -9917,6 +9930,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
                        {"force_inversion_m", refrForceInvZ},
                        {"force_inversion_dt", refrForceInvDT},
                        {"force_inversion_dz", refrForceInvDz}};
+    j["moon_bases"] = {{"enabled", moonBaseGlints}, {"tilt_jitter_scale", moonBaseJitter}, {"event_mag_limit", moonBaseMagLimit}};
     // Launches (SatelliteSimLaunches.cpp).
     j["launches"] = {{"enabled", launchesEnabled},
                      {"life_scale", launchLifeScale},

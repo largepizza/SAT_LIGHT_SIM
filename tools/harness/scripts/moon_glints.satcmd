@@ -1,0 +1,34 @@
+# Moon-base glints (2026-10-27, SatelliteSimMoonBases.cpp; CLAUDE.md "Moon-base glints").
+#   python tools/harness/run.py tools/harness/scripts/moon_glints.satcmd
+# The single-panel check, the bases' state and windows, the sky-event search, a Watch landing (glint on the Moon at a
+# 1-deg FOV), the same view with the glints off (A/B), and the cost of an ordinary night with and without them.
+moonbase check
+moonbase state
+moonbase windows days=730
+skyevents events
+skyevents list moonglint
+skyevents watch moonglint n=0
+wait settle
+wait 40
+moonbase state
+capture glint_watch0
+set moon_bases.enabled false
+wait 4
+capture glint_watch0_off
+set moon_bases.enabled true
+wait 4
+camera fov=6
+wait 4
+capture glint_watch0_fov6
+skyevents watch moonglint n=2
+wait settle
+wait 40
+moonbase state
+capture glint_watch2
+perf frames=120 name=glint_on
+set moon_bases.enabled false
+perf frames=120 name=glint_off
+set moon_bases.enabled true
+ui open skyevents
+wait 10
+capture skyevents_window ui=1

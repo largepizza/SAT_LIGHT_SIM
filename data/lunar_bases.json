@@ -1,0 +1,57 @@
+{
+  "_comment": [
+    "Lunar south-pole bases and their sun-tracking solar arrays (2026-10-27, CLAUDE.md 'Moon-base glints'; read by src/simulations/LunarBases.cpp).",
+    "EVERY size, layout, date and material below is a SCENARIO ASSUMPTION (the 2036+ setting: a fast expansion into space), to be tuned here.",
+    "Places: published candidate sites, approximate. Arrays: vertical panels on vertical-axis trackers following the Sun's azimuth (the Sun is within ~1.5 deg of the horizon at the pole).",
+    "lat/lon: selenographic (mean Earth / polar axis), east longitude. elev_m: above the 1737.4-km datum. horizon_dip_deg: how far below the horizontal the base sees (an elevated rim).",
+    "array: area_km2 at full build-out, split into `rows` trackers that appear in order between `online` and `complete` (UTC). row_tilt_sigma_deg / row_azimuth_sigma_deg: each row's tilt and tracking error (hashed, Gaussian). panel_flatness_deg: the slope error within a row (blurs the mirrored Sun). lean_deg: the panels' lean back from vertical. glass_f0: the cover glass' reflectance at normal incidence (Schlick)."
+  ],
+  "sources": [
+    "ILRS site: the Chang'e-7 target, a peak near the southeast ridge of Shackleton crater, ~88.8 S 123.4 E (https://en.wikipedia.org/wiki/Chang%27e_7; https://www.planetary.org/space-missions/change-7: the preferred candidate is Shackleton's rim). China's International Lunar Research Station is planned in the south-pole region (CNSA / Roscosmos ILRS guide, 2021: basic model by 2035).",
+    "Artemis base: the intersection of the Shackleton - de Gerlache connecting ridge with Shackleton's rim, 89.684 S 196.739 E (LROC image 'Traversing the Shackleton de Gerlache Ridge', https://lroc.im-ldi.com/images/1247; Glaser et al. 2014, 'Connecting Ridge - a landing site at the lunar south pole with extended illumination', https://elib.dlr.de/94242). NASA's Artemis III candidate regions (2022) include 'Connecting Ridge' and 'Peak near Shackleton'.",
+    "NASA power: Fission Surface Power (a 40-kWe reactor, NASA / DOE, 2022-) supplies most of it: the array is small (assumption).",
+    "Elevations: the Shackleton rim stands ~1.5-2 km above the datum in the LOLA heights (approximate)."
+  ],
+  "bases": [
+    {
+      "name": "ILRS (China)",
+      "short": "ILRS",
+      "lat_deg": -88.8,
+      "lon_deg": 123.4,
+      "elev_m": 1600,
+      "horizon_dip_deg": 1.5,
+      "tint": [1.0, 0.97, 0.92],
+      "array": {
+        "area_km2": 1.0,
+        "rows": 500,
+        "row_tilt_sigma_deg": 0.8,
+        "row_azimuth_sigma_deg": 0.3,
+        "panel_flatness_deg": 0.05,
+        "lean_deg": 0.0,
+        "glass_f0": 0.04,
+        "online": "2032-01-01",
+        "complete": "2035-06-01"
+      }
+    },
+    {
+      "name": "Artemis Base Camp (NASA)",
+      "short": "Artemis",
+      "lat_deg": -89.684,
+      "lon_deg": 196.739,
+      "elev_m": 1900,
+      "horizon_dip_deg": 1.5,
+      "tint": [1.0, 0.97, 0.92],
+      "array": {
+        "area_km2": 0.1,
+        "rows": 100,
+        "row_tilt_sigma_deg": 0.6,
+        "row_azimuth_sigma_deg": 0.25,
+        "panel_flatness_deg": 0.05,
+        "lean_deg": 0.0,
+        "glass_f0": 0.04,
+        "online": "2032-06-01",
+        "complete": "2033-12-01"
+      }
+    }
+  ]
+}

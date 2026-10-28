@@ -1942,6 +1942,7 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
                 s->weatherFillTornadoes(out, n);              // tornadoes and waterspouts (SatelliteSimWeather.cpp)
                 s->weatherFillHaboobs(out, n);                // haboob dust walls (SatelliteSimHaboob.cpp)
                 s->weatherFillWildfires(out, n, pixFull);              // wildfire smoke + fronts (SatelliteSimWildfire.cpp)
+                s->moonBasesFill();                                    // the lunar bases' glints (SatelliteSimMoonBases.cpp)
                 s->engineLightsFlush(); // the burning engines' and the pads' light (dust buffer tail, header word 1)
                 const float ms = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - l0).count();
                 s->cpuAccumMs[CPU_LAUNCHES] += ms;
