@@ -3475,7 +3475,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         vkCmdPushConstants(cmd, cloudMarchPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                            0, sizeof(cpc), &cpc);
         vkCmdDispatch(cmd, (halfW + 15) / 16, (halfH + 15) / 16, 1);
-        recordCloudCombine(cmd, ctx);   // S9 full-res clouds: the final targets at full res (else nothing)
+        recordCloudCombine(cmd, ctx, cpc);   // S9 full-res clouds: the final targets at full res (else nothing)
         if (cv2PassStampNext < kCv2PassStamps)
             cv2PassStampTo(cmd, kCv2PassStamps - 1);   // cloud_march.comp (the half-res composite) + the combine
 

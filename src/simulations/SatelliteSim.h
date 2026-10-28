@@ -3957,7 +3957,7 @@ private:
     void createCloudCombineTargets(VulkanContext &ctx);       // the half images (1x1 while off) + every set that points at them
     void destroyCloudCombineTargets(VkDevice device);
     void destroyCloudCombine(VkDevice device);
-    void recordCloudCombine(VkCommandBuffer cmd, VulkanContext &ctx);
+    void recordCloudCombine(VkCommandBuffer cmd, VulkanContext &ctx, const CloudMarchPC &cpc);
     void recreateComputeScaledTargets(VulkanContext &ctx);
     // Automatic render scale (2026-10-04, Settings > Display "Automatic render scale"): moves renderScale
     // in 5% steps between dynResMinScale and 1 to keep the GPU frame under the target frame rate's budget

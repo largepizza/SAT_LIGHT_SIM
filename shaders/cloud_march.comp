@@ -370,6 +370,18 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
             vec3  dP  = tc * dir - d.c.xyz;                       // closest approach - centre (no large cancellation)
             vec3  hv  = dP - upC * dot(dP, upC);
             float dr  = dot(hv, hv) * (0.5 / rC);                 // the ground's drop below the centre's tangent plane
+            // ...but not with the EYE in or near the sheet (2026-10-27, issue 20261027_182936 shot 3, "white ring artifacts
+            // that trace around the horizon"): from 1.1 km, inside a pall ~1 km thick, a ray along the horizon has its flat
+            // closest approach ~200 km out, and lowering the sheet by the drop there put the ray's smoke at that depth,
+            // behind the horizon's clouds (dustSegW): the bright far cloud band shown through the smoke as a white line along
+            // the horizon. The move is faded out as the eye comes within 4 -> 2 vertical sigma of the curved sheet (the
+            // flat sheet, as before the move, is right where such a ray's smoke is: near the eye).
+            {
+                vec3  hvE = o - upC * dot(o, upC);                 // the eye's horizontal offset from the centre
+                float drE = dot(hvE, hvE) * (0.5 / rC);
+                float zE  = abs(dot(o, upC) + drE) * sqrt(max(dot(upC, dustMul(d, upC)), 1e-30));
+                dr *= smoothstep(2.0, 4.0, zE);
+            }
             if (dr > 1.0) {
                 o  += upC * dr;
                 tc  = -dot(dir, dustMul(d, o)) / q;
@@ -655,7 +667,10 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
             // light it scatters toward the eye. A tornado (seedK >= 256) carries its own sky light, the storm's (the CPU's
             // iso term x lightK): with the give-back 0.85 x 0.45 = 38% of whatever stood behind the funnel showed through
             // its opaque core ("Tornados are transparent", 2026-10-24), under a storm base far more than its own light.
-            else      Ls += tau * (sk >= 256.0 ? 0.0 : d.col.w - 2.0);
+            // (its own `if`: from 2026-10-27 (ddfad7e) until the same day's fix the tauAir line above sat between `if (isSm)` and
+            // this `else`, which then paired with it: only plumes an engine light reaches gave back any sky light, and a
+            // rocket's trail in daylight silhouetted dark against the sky)
+            if (!isSm) Ls += tau * (sk >= 256.0 ? 0.0 : d.col.w - 2.0);
             tauP += tau;
             tP   += tau * clamp(tc, 0.0, T);
             // (2026-10-20, QA) where the plumes' LIGHT comes from: the caller puts it in front of or behind the
@@ -2722,7 +2737,7 @@ void main() {
         // opacity, the split dipped there: a dark 1-2 px outline round every gap the smoke shows through.
         bool  cProf = pCloudT < kNoSurfaceT;
         float tSm = cProf ? min(pFrontT, tCloudMeanT) : tEmitNear;
-        tAirM = smokeAirSplitM(tSm, cProf ? tCloudMeanT : max(tCloudMeanT, tSm), oC / max(oC + oP, 1e-4));
+        tAirM = smokeAirSplitM(obsPos, dir, tSm, cProf ? tCloudMeanT : max(tCloudMeanT, tSm), oC / max(oC + oP, 1e-4));
     }
     float occKm = (tCloudOcclude >= 0.0) ? ((tAirM < kNoSurfaceT && tAirM > 0.0) ? tAirM : tCloudOcclude) * 0.001
                 : -((tAirM < kNoSurfaceT) ? tAirM * 0.001 : (tEmitNear < kNoSurfaceT ? tEmitNear * 0.001 : 60000.0));

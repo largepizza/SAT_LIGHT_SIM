@@ -1128,7 +1128,17 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     farther, the bright horizon air in front of the cloud added undimmed), and split linearly in distance, where the
     horizon air saturates within ~50 km. Now the smoke distance is at most 0.6 of the cloud's, and the split is solved in
     air-brightness space (`smokeAirSplitM`, cloud_occlusion.glsl: air to the smoke + the cloud's share x the air from
-    there, 1 - e^(-t / 40 km)). Still not spectral (the air between smoke and cloud is not reddened by it). Billows per Gaussian, a
+    there). Still not spectral (the air between smoke and cloud is not reddened by it). **The air's brightness is the ray's own
+    air** (2026-10-27, issue 20261027_182936 "Orange weirdness from orbit"): 1 - e^(-0.2 c(t)), c = the molecular column
+    from the eye along THIS ray (`atmColumn`, inverted by bisection; 0.2 c = t / 40 km for a level ray at sea level, the form it
+    replaced). With 1 - e^(-t / 40 km) from orbit both ends had saturated (the split clamped at 552 km): every cloud past it
+    seen through a trace of smoke (pTau > 1e-3) lost the limb's blue haze in front of it, a hard-edged orange-yellow patch the
+    shape of the pall's reach, whatever its optical depth (wildfire_smoke 0.1, spectral 0, brightness 0 all kept it). The
+    combine pass takes the camera now (`CloudMarchPC` as push constants). **The sheet's curvature drop fades out with the eye
+    in the pall** (within 4 -> 2 vertical sigma of the curved sheet): from 1.1 km inside a 1-km-thick pall a ray along the
+    horizon has its flat closest approach ~200 km out, the drop there put its smoke past the horizon's clouds (dustSegW), and
+    the bright cloud band showed through as a white line along the horizon (same issue, shot 3). Open: a pall from one big fire
+    is tau ~0.4 from above here (the comment at its emit says 0.01-0.05). Billows per Gaussian, a
     second octave at ~4x for smoke. `sat_sky.frag` (`smokeSunTransmit`) dims and reddens the Sun on land and sea under
     it (the first 96 Gaussians; skipped where the Sun is down: it cost ~1 ms from orbit at night).
   - **Flames close up** (within 40 km, faded 25-40 km): emissive Gaussians (dust list `col.w` 1, AFTER the smoke's range
@@ -1855,7 +1865,11 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   **Clouds under a deck take it too (2026-10-26):** the bake also stores `cv2VtUp` (the same cells: the means of the sky
   light's diffuse transmission through the cloud ABOVE 1 / 2.5 / 5 / 9 km), and the march's new-model ambient
   (`cv2.amb.x`) takes the deck over each lit non-thin sample beyond its own column (`cv2VtUpCell` + `cv2VtUpH`, per sample:
-  tau_deck = the map's equivalent tau less the sample's `tauUp`): both hemispheres x its diffuse transmission, plus the
+  tau_deck = the map's equivalent tau over the sample's own cloud TOP, `f.topH`; 2026-10-27, issue 20261027_183553: it was
+  the map's tau over the sample's height less its `tauUp`, two quantities of different kinds, and under an anvil the cumulus
+  cores, tauUp past the map's, lost the deck and took the clear sky's blue while their edges took its diffuse sunlight: dark
+  blue cores, bright white veins over the anvil's whole shadow; mottling high-pass 8.0 -> 4.1 levels, shadow B/R 1.10 -> 1.04,
+  the cumulus under the cuair overcast darker and lumpier, march -0.8 ms there): both hemispheres x its diffuse transmission, plus the
   Sun it scatters down, 2 mu ((1/2 + 3/4 mu) Td - e^(-tau / mu)) x sunCol above and x the albedo below. The probe (250 m
   up) and the column estimate see only the sample's own cloud: cumulus under an overcast took the clear sky (navy, issue
   view cuair: -37.8, 145.0 from 3 km at 02:06 UTC) and now read neutral grey. Cost ~+0.4 ms of march from orbit
@@ -8482,6 +8496,15 @@ moment, variants A B A B, with `clouds_v2.auto_exposure false`: the first run of
   y +- 1.
 - **Hitches** near the cyclone (12 km, threshold 50): 1x / 1 min/s / 1 h/s max 42 / 51 / 49 ms, every frame over 50 the
   GPU (`app.wait_fence` 45 ms); a 1 d jump and a jump to another year at 1x: max 51 ms.
+- **Storm FPS (2026-10-27, issue 20261027_183909 "FPS near storms": 12.2 km at 20.9 N 98.3 E, the user's High settings, FOV
+  120, 1920x1009).** Uncontended, still: GPU ~33 ms = cloud bucket 25.5 (march_a 22.6, resolve 1.1, composite 0.7, lightning
+  0.5, froxels 0.5, sky_ap 0.4, clipmap 0.4) + sky 5.5 + scene depth 1.4 + orbit 0.6; CPU ~2.7 ms of record_compute (storms
+  ~1). Settings A/Bs, interleaved, each after 170 frames (a field change refills the clipmap: ~40 frames after one read
+  +10 ms): full-resolution clouds -12 ms, the high layer (the eye at 12.2 km is INSIDE the cirrus band, as perf pass 2)
+  -10.7, anvil shields -6.8, storm objects -6, Cb columns -3.8, mid layer and light steps 3 ~0, near cirrus stride 1 +2.6.
+  Flying the report's trail (~40 km/s at 8-12 km, `path play fps=60`): GPU 40.5 ms, cloud 31.5; `cdc_motion_guard 0` 25.0:
+  the clipmap's motion guard (off past 0.4% of 20 km a frame) costs the ~6 ms of moving. Content, no bug found; the first
+  path play after a load read 60-74 ms (spikes to 742 ms): refills, not steady state. Its scene: harness_runs/q1027 (untracked).
 - **Remaining:** the bake's one full face a frame at warp (~1.35 ms: the faces out of view and the in-view faces'
   remainders, which nothing on screen reads), the eye view's storm cloud (content: the eyewall towers, CDO and cirrus), the
   warp's `march_a` without the clipmap (+2-4 ms at 5 min/s and 1 h/s vs 1x: the clipmap is off above `cdc_max_rate`, its

@@ -51,13 +51,30 @@ float cloudPointVisibilityAt(sampler2D texA, sampler2D texB, vec2 uv, float rang
 // The air split of a cloud texel seen through wildfire smoke (2026-10-26, issue 20261026_204045: far clouds "poke through"
 // the smoke as light-blue shapes): sat_sky.frag adds the air from the eye to this distance in front of the cloud,
 // undimmed. Physically it is the air to the smoke (tS) + the smoke's transmittance x the air from there to the cloud (tC);
-// the split is solved so the air to it carries that much light, in AIR-BRIGHTNESS space (1 - e^(-t / 40 km)): the
-// horizon's air saturates within ~50 km, and a split by distance (tS + T (tC - tS)) put almost the whole bright horizon
-// haze in front of every far cloud. kS = the share of the texel's opacity that is the cloud seen through the smoke.
-float smokeAirSplitM(float tS, float tC, float kS)
+// the split is solved so the air to it carries that much light, in AIR-BRIGHTNESS space: the horizon's air saturates
+// within ~50 km, and a split by distance (tS + T (tC - tS)) put almost the whole bright horizon haze in front of every far
+// cloud. kS = the share of the texel's opacity that is the cloud seen through the smoke.
+// The brightness is 1 - e^(-0.2 c(t)), c = the molecular column along THIS ray from the eye (atmosphere.glsl, sea-level
+// vertical columns; 0.2 c = t / 40 km for a level ray at sea level, the form it replaced, 2026-10-27). It was
+// 1 - e^(-t / 40 km) whatever the ray: from orbit the air in front of a cloud is all in its last ~100 km, hundreds of km
+// out, where that form had saturated (both ends at b ~ 1, the split clamped at 552 km): every cloud past 552 km seen
+// through even a trace of smoke lost the air in front of it, the limb's blue haze, and read orange-yellow in a hard-edged
+// patch wherever the smoke's optical depth passed 1e-3 (issue 20261027_182936, Queensland from 156 / 1834 km).
+#ifdef ATMOSPHERE_GLSL
+float smokeAirSplitM(vec3 eye, vec3 dir, float tS, float tC, float kS)
 {
-    const float L = 40000.0;
-    float bS = 1.0 - exp(-tS / L), bC = 1.0 - exp(-tC / L);
+    tS = clamp(tS, 0.0, tC);
+    float cS = atmColumn(eye, dir, max(tS, 1.0), ATM_H_RAY), cC = atmColumn(eye, dir, max(tC, 1.0), ATM_H_RAY);
+    float bS = 1.0 - exp(-0.2 * cS), bC = 1.0 - exp(-0.2 * cC);
     float b  = bS + clamp(kS, 0.0, 1.0) * max(bC - bS, 0.0);
-    return min(-L * log(max(1.0 - b, 1e-6)), tC);
+    // the column the split must reach, then its distance: c(t) grows with t, bisected over [tS, tC]
+    float cT = min(-5.0 * log(max(1.0 - b, 1e-7)), cC);
+    if (cT <= cS + 1e-6) return tS;
+    float lo = tS, hi = tC;
+    [[dont_unroll]] for (int k = 0; k < 14; ++k) {
+        float m = 0.5 * (lo + hi);
+        if (atmColumn(eye, dir, max(m, 1.0), ATM_H_RAY) < cT) lo = m; else hi = m;
+    }
+    return 0.5 * (lo + hi);
 }
+#endif

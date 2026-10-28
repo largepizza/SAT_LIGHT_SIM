@@ -2991,6 +2991,9 @@ void SatelliteSim::createCloudCombine(VulkanContext &ctx)
     VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     pli.setLayoutCount = 1;
     pli.pSetLayouts = &cv2CombineDescLayout;
+    VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CloudMarchPC)};   // the camera (smoke air split)
+    pli.pushConstantRangeCount = 1;
+    pli.pPushConstantRanges = &pcr;
     vkCreatePipelineLayout(dev, &pli, nullptr, &cv2CombinePipeLayout);
     cv2CombinePipeline = makeComputePipeline(ctx, "shaders/cloud_v2_combine.comp.spv", cv2CombinePipeLayout);
     VkDescriptorBufferInfo cp{cloudParamsBuf, 0, sizeof(GpuCloudParams)};
@@ -3070,7 +3073,7 @@ void SatelliteSim::destroyCloudCombine(VkDevice device)
 }
 
 // After cloud_march.comp, with the final targets in GENERAL (recordCompute's barriers around it).
-void SatelliteSim::recordCloudCombine(VkCommandBuffer cmd, VulkanContext &ctx)
+void SatelliteSim::recordCloudCombine(VkCommandBuffer cmd, VulkanContext &ctx, const CloudMarchPC &cpc)
 {
     if (!cv2FullResActive() || !cv2CombinePipeline || computeCloudExtentBuilt.width != computeHalfExtentBuilt.width * 2)
         return;
@@ -3079,6 +3082,7 @@ void SatelliteSim::recordCloudCombine(VkCommandBuffer cmd, VulkanContext &ctx)
                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2CombinePipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2CombinePipeLayout, 0, 1, &cv2CombineDescSet, 0, nullptr);
+    vkCmdPushConstants(cmd, cv2CombinePipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(cpc), &cpc);
     vkCmdDispatch(cmd, (computeCloudExtentBuilt.width + 15) / 16, (computeCloudExtentBuilt.height + 15) / 16, 1);
     (void)ctx;
 }
