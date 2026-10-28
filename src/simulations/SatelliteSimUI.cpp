@@ -55,6 +55,7 @@ static constexpr int kIconBookmark = 19; // pixel--bookmark.png — the Bookmark
 static constexpr int kIconMissions = 21; // pixel--missions.png — the Missions window (2026-10-19)
 static constexpr int kIconWeather = 22;  // pixel--weather.png — the Weather window (2026-10-23)
 static constexpr int kIconRecord = 31;   // pixel--record.png — record a video (2026-10-25)
+static constexpr int kIconSkyEvents = 32; // pixel--sky-events.png — the Sky events window (2026-10-27); 33-36 its kinds
 
 // The satellite action buttons (the selection panel's, the out-of-view chip's and the info window's)
 // are ICON-ONLY: the button's name is the tooltip, never a sentence. `kSelIconBtnMin` matches the view
@@ -634,6 +635,12 @@ void SatelliteSim::loadUiIcons(UIRenderer &ui)
             "assets/icons/ui/pixel--storm-fire.png",
             "assets/icons/ui/pixel--storm-cell.png",
             "assets/icons/ui/pixel--record.png", // 31: kIconRecord
+            // 32-36: the Sky events window (SatelliteSimSkyEvents.cpp kIconSky*, tools/make_icons.py)
+            "assets/icons/ui/pixel--sky-events.png",
+            "assets/icons/ui/pixel--sky-solar.png",
+            "assets/icons/ui/pixel--sky-lunar.png",
+            "assets/icons/ui/pixel--sky-conjunction.png",
+            "assets/icons/ui/pixel--sky-occultation.png",
         };
         // The count comes from the list itself — the hand-maintained "bump this when you add an icon"
         // number used to be a silent way to drop the last icon of the array.
@@ -680,6 +687,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // lock is on, so the aim ends up being the last word on the camera's direction.
     fprof::mark("ui.seg1_ticks");
     updateTrack();
+    skyEventsTick(); // (the Sky events Watch keeps its bodies in frame until the player looks away)
     fprof::mark("ui.seg2_track");
 
     // Apply camera mouse look.
@@ -911,6 +919,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     fprof::mark("ui.seg4_hud_settings");
     buildMissionsWindow(inp, ui);
     buildWeatherWindow(inp, ui);
+    buildSkyEventsWindow(inp, ui);
     updateViewerView(inp, ui); // the satellite windows' shared prologue (target, drag, readouts)
     fprof::mark("ui.seg5_missions_weather");
     buildInfoWindow(inp, ui);
@@ -951,6 +960,8 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // behind it — a selection change and ~10 ms of picking on the click's frame.
     if (wxChrome.open)
         ui.addMouseCaptureRect(wxChrome.x, wxChrome.y, wxChrome.w, wxChrome.h);
+    if (skChrome.open)
+        ui.addMouseCaptureRect(skChrome.x, skChrome.y, skChrome.w, skChrome.h);
     if (cineChrome.open)
         ui.addMouseCaptureRect(cineChrome.x, cineChrome.y, cineChrome.w, cineChrome.h);
     // The satellite windows: without these a drag on a render also clicked the sky behind the window
@@ -1501,6 +1512,14 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
             wxChrome.open = !wxChrome.open;
             if (wxChrome.open)
                 wxRowsWall = -1e300;
+        }
+        menuBtn(CLAY_ID("TimeSkyBtn"), CLAY_ID("TimeSkyIcon"), kIconSkyEvents, hovTimeSky, Pal::btnAccent, skChrome.open,
+                "Sky events", toggled);
+        if (toggled)
+        {
+            skChrome.open = !skChrome.open;
+            if (skChrome.open)
+                skUpcomingWall = -1e300;
         }
         menuBtn(CLAY_ID("TimeBookmarkBtn"), CLAY_ID("TimeBookmarkIcon"), kIconBookmark, hovTimeBookmark, Pal::btnAccent,
                 bmChrome.open, "Bookmarks", toggled);

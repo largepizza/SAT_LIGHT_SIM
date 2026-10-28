@@ -47,7 +47,7 @@ Constellations* · *GPU Orbital Pipeline* (two-dispatch pattern, buffers, `Gpu*`
 constants) · *TargetedReflector / Mirror Ground Targets* · *Kessler syndrome — "The Sun's Fury"* (the
 scripted storm, dead satellites, debris pool, cascade engine, event log) · *Launches* (trains, retirements,
 rockets, plumes, crew rotations, the Missions window: the roster's slots refreshed on a schedule) · *Reflect-Orbital Beam Cloud Occlusion* ·
-*GpuSatInput* (a tombstone — the buffer was deleted 2026-09-22).
+*GpuSatInput* (a tombstone — the buffer was deleted 2026-09-22). · *Sky events window* (eclipses, conjunctions, occultations: a table of event kinds, each a search + a Watch)
 
 **Rendering** — *UIRenderer / Clay* (icon atlas, the SDF font atlas, manual hit-testing, the **UI kit** every window is built from, HUD text entry) · *Sky TAA* (the background's temporal AA, and the main pass's shared dependencies) · *The Sun as an object* (refraction, mirages, turbulence: one ray tracer, Refraction.h) · *The Moon as a body* (true position and size, eclipses) · *The sea* (periodic waves, sea state, shore) ·
 *Photometry / Shader Constants* (lobe model, bloom and glare) · *Light Pollution Dome* · *Atmospheric
@@ -2951,6 +2951,63 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   sliders: none (55-57 went to terrain v2's sky light / night sky light / close-up textures, 58 and 77 to the city street / major road lights, Terrain tab). (Slots 189-199: Cb fill, cumulus variation, sprites, adaptive rate, adaptive
   parallax, fog x3, dust x3.) Several `GpuCloudParams` fields are now unread (v1-only: marchSteps, lightSteps, hgG,
   shadowMaxDistM, maxRenderDistM, the AO/shadow knobs, cloudsV2) — a later compaction can reclaim them.
+
+## Subsystem: Sky events window (2026-10-27)
+
+`SkyEvents.h` (the event record and the search context), `SatelliteSimSkyEvents.cpp` (the kinds, the worker, the
+window, the Watches, the harness), `skyPlanetGeoAt` (SatelliteSim.cpp: planetStates' ephemeris as a pure function of t).
+The crescent-Moon button `TimeSkyBtn` beside Weather on the right HUD panel (`pixel--sky-events.png`, icons 32-36 from
+`tools/make_icons.py`: `sky-events`, `sky-solar`, `sky-lunar`, `sky-conjunction`, `sky-occultation`), key K
+(`KB_SKY_EVENTS`), window id 13, `skChrome`; harness `ui open skyevents`, `skyevents ...` (docs/HARNESS.md).
+- **It is the shell later features plug into** (the user's plan: Moon-base solar-array glints, a scripted Betelgeuse
+  supernova on 2037-12-25, meteor showers with their own particles). **A kind is one row of `SkyEventsFriend::kinds`**
+  (`SkyKindDef`): id (harness / json name), card title, icon, accent, SEARCH (`void (SatelliteSim::*)(const
+  sky::SearchCtx &, std::vector<sky::Event> &) const`: append every event in [ctx.t0, ctx.t1], a pure function of the
+  range, run on a worker: read only ephemeris functions, constants and the context — never members the main thread
+  writes; `ctx.cancelled()` between steps), WATCH (`bool (SatelliteSim::*)(const sky::Event &, std::string &msg)`), the
+  card's two text lines, the "none" status and the Watch tooltip. **To add a kind:** append a `sky::Kind` before
+  `kKindCount`, declare its search + Watch in SatelliteSim.h's block, add the row (the static_assert counts them), an
+  icon in make_icons.py + the icon list in `loadUiIcons`. The window, worker, upcoming list, json and harness need no
+  change. `sky::Event` carries kind, the moment `t`, the window `[t0, t1)` a Watch may land in, bodies `a` / `b`
+  (0-5 PlanetId, `kBodyMoon`, `kBodySun`), `sepDeg`, magnitudes, `score`, `total` / `annular`, a `site` (Earth-fixed
+  unit) and `watchT` / `tAux` (kind-specific). A fixed scripted event (the supernova) is a search that pushes one
+  record when its date is in range.
+- **The searches** (all over [base - 4 h, base + 2 y], one kind after another on `skScanJob` (std::async), the next
+  started by `skyEventsUpdate` when one comes in; restarted (the running one cancelled and its result dropped) when sim
+  time leaves [base - 1 h, base + 30 d]): **solar / lunar eclipses** = `findEclipse` from the range's start, one after
+  another (+20 days), the window from `findEclipse`'s own separation / limit (`eclipseSepLim`, keep in step); a solar
+  eclipse's place is the central line (`axisPoint`, the harness `eclipse solar` placement) while the Sun is >= 15 deg up
+  there, else the place with the Sun >= 15 deg up that sees the most of it (`solarSite`, a grid); a lunar eclipse's a
+  grid site with the Moon ~40 deg up and the Sun <= -12 deg (`pickSite`). **Conjunctions**: Mercury .. Saturn pairs
+  (6-h steps) within 2.5 deg, the Moon and a planet brighter than mag 1.5 (hourly) within 1.5 deg but outside an
+  occultation's limit, both >= 12 deg from the Sun, minima refined by golden section; a site where both are >= 10 deg up
+  and the Sun <= -6 deg somewhere in the window, else dropped; score = the fainter body's light / separation.
+  **Occultations**: Moon-planet minima under the true disc's horizontal parallax + radius; `occultationSites`: where the
+  line from the planet through the Moon's centre meets the Earth (every 2 min over +-4 h), the contacts there with the
+  DRAWN disc (x "Moon size", 1 near the Sun as updatePositions), kept only if at the Watch moment (a minute before the
+  planet reappears at the limb) the place is dark (Sun <= -9 deg, -4 for Mercury / Venus) and the Moon >= 10 deg up — the
+  drawn disc makes an occultation 2-3 h long at one place, and the first cut (judged at the central moment) landed with
+  the Moon setting. Searches take ~5 / 8 / 70-90 / 50-65 ms (solar, lunar, conjunctions, occultations) on the worker.
+- **Positions are the sim's own**: the Moon of date (satphot::moonGeoEciAt), the planets J2000 (planetStates), so the
+  events are the ones the sim draws even where those frames' ~0.5 deg of precession makes them differ from the real sky.
+- **ONE Watch per event** (the user rule): `skyJumpTo` (the moment: inside the window, never before t0; 1x, unpaused,
+  histories reset), `skyPlaceAt` (the observer on the ground there), `skyAimAt` (the body or the pair's midpoint; FOV:
+  solar 16, lunar 12, conjunction 4 x the separation (4-40), occultation 5), the planet selected; the toast and the
+  window's status line say what you see. The aim is kept on the bodies each frame (`skyEventsTick`, buildUI after
+  `updateTrack`) until the camera is moved (a 0.05-deg difference from what it set), follow / Track / a cinematic, or the
+  event ends. The Watches that pick a place (lunar, conjunction, an occultation under cloud) jump the clock FIRST so the
+  CPU cloud map's drift (`cloudCoverAtEcef`) is that moment's: a clear sky scores first, then land, then near the player.
+- **The window**: a status line, NEXT OF EACH KIND (one fixed-height card per kind: icon, title + "in ..." /
+  "HAPPENING NOW", two short lines — a card's text is clipped, and at 1024 x 768 a line holds ~40 characters), UPCOMING
+  (always 10 fixed rows: the next events of every kind within 2 years by time, a row under way highlighted). Nothing runs
+  while it is closed. Watches are applied after the layout (`skPendingKind` / `skPendingRow`).
+- **Measured** (RTX 3070 Ti, 1600x900, harness `hitches threshold 1`, 180 frames): build_ui 0.06 -> 0.13 ms a frame with
+  the window open; a Watch 4 ms on its frame (the jump's own scene cost on top); `ui_lowres.py --only skyevents` passes at
+  every size. Captures: `harness_runs/sky/r1`..`r5` (untracked).
+- Not included (the user's call): ISS / station transits of the Sun or Moon. Open: a partial solar eclipse is lost in the
+  Sun's glare (the renderer's); a planet emerging beside a bright Moon is faint (the point photometry's Moon
+  suppression); a Watch after the CME (2037-07-15) holds at the Kessler frontier while the cascade computes; clouds can
+  still hide an event (solar eclipses take the central line whatever the weather).
 
 ## Subsystem: Automation harness (2026-09-25)
 

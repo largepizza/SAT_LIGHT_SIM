@@ -493,8 +493,9 @@ void SatelliteSim::init(VulkanContext &ctx)
         {"Previous Mission Milestone", GLFW_KEY_LEFT_BRACKET, -1, false, false},             // KB_MILESTONE_PREV (event) — missionJumpNow(-1)
         {"Weather", GLFW_KEY_N, -1, false, false},                                           // KB_WEATHER (event) — the Weather window (radar, storms)
         {"Record Video", GLFW_KEY_F6, -1, false, false},                                     // KB_VIDEO (event) — start / stop a video (videoToggle)
+        {"Sky Events", GLFW_KEY_K, -1, false, false},                                        // KB_SKY_EVENTS (event) — the Sky events window
     };
-    static_assert(KB_COUNT == 29, "KB enum and keybindings initializer are out of sync");
+    static_assert(KB_COUNT == 30, "KB enum and keybindings initializer are out of sync");
 
     // Launch breadcrumbs: one fsynced `init: <step>` log line before each step (a launch that dies
     // names the step it died in), and a bootStatus() line for the loading screen (App), which
@@ -9481,6 +9482,14 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
             wxRowsWall = -1e300;
         }
         break;
+    case KB_SKY_EVENTS:
+        skChrome.open = !skChrome.open;
+        if (skChrome.open)
+        {
+            uiVisible = true;
+            skUpcomingWall = -1e300;
+        }
+        break;
     case KB_FOLLOW_STAY:
         if (followActive && !cineActive())
             stopFollowHere();
@@ -14177,6 +14186,23 @@ double SatelliteSim::findEclipse(bool solar, double t0) const
         prev = cur;
     }
     return -1.0;
+}
+
+// The Sky events window (SatelliteSimSkyEvents.cpp): planet p's geocentric ECI direction, distance and apparent
+// magnitude at t, exactly as updatePositions computes planetStates[] (the same elements, Tcent and obliquity).
+void skyPlanetGeoAt(int p, double t, glm::dvec3 &dirEci, double &distAU, float &vmag)
+{
+    const double dJ2000 = t / 86400.0, Tcent = dJ2000 / 36525.0;
+    const double epsR = (23.439 - 0.0000004 * dJ2000) * (glm::pi<double>() / 180.0);
+    const glm::dvec3 earthHelio = keplerEclipticPos(kEarthElements, Tcent);
+    const glm::dvec3 planetHelio = keplerEclipticPos(kPlanetElements[p], Tcent);
+    const glm::dvec3 geo = planetHelio - earthHelio;
+    distAU = glm::length(geo);
+    const double sunDistAU = glm::length(planetHelio);
+    const glm::dvec3 g = geo / distAU;
+    dirEci = glm::dvec3(g.x, g.y * std::cos(epsR) - g.z * std::sin(epsR), g.y * std::sin(epsR) + g.z * std::cos(epsR));
+    const double phase = glm::degrees(std::acos(glm::clamp(glm::dot(planetHelio, geo) / (sunDistAU * distAU), -1.0, 1.0)));
+    vmag = planetApparentMagnitude((PlanetId)p, sunDistAU, distAU, phase);
 }
 
 // ─── createDrawPipeline ───────────────────────────────────────────────────────
