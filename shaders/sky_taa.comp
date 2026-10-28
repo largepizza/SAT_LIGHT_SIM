@@ -278,7 +278,14 @@ void main() {
             // The spark-proof mean only when nothing moved: in motion it fired less often and the history lagged
             // (+3% on the climb benchmark), and the specks it removes are a still-view problem.
             w = max(w, smoothstep(0.3, 1.2, (((still || sea) ? mRob : m1.x) - h.x) / max(h.x, 0.02)));   // sea: spark-proof in motion too (glints took their frame raw)
-            if (spark) w = max(w, 0.9);   // a glint sparkle: its flash at once (the history would average it ~10x down)
+            // a glint sparkle: its flash at once (the history would average it ~10x down). Only while sim time RUNS
+            // (eyeDelta.w 1 or 2; 3 = still and frozen, 1.25 = moving and frozen; 2026-10-27, the matrix suite: sea_20m
+            // still noise 0.22 -> 0.58, storm_gnd look 0.98 -> 1.66 mean): with time frozen the sparkles are facets fixed
+            // on the sea and do not change, but whether a pixel's jittered sample falls inside a facet's flash does, phase
+            // by phase (its mirror slope is the pixel's own wave normal); taken whole, every sparkle flickered on the
+            // jitter cycle. Frozen, the history averages the phases to the facet's coverage of the pixel.
+            const bool simRuns = pc.eyeDelta.w < 1.1 || (pc.eyeDelta.w > 1.5 && pc.eyeDelta.w < 2.5);
+            if (spark && simRuns) w = max(w, 0.9);
             w *= conf;   // upscaling: a sample far from this pixel moves it less (1 at 100%)
             if (dbg == 4) w = 0.0;
             dPar = par; dParF = parF; dMv = mv;

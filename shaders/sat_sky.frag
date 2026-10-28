@@ -4795,14 +4795,21 @@ void main() {
 #ifdef SKY_SUN_SHADOW   // (not in SKY_LITE: its size budget; SKY_ENV probes are a satellite's eye)
         vec3  dirC[3] = vec3[3](dir, dir, dir);
         vec3  onSM    = vec3(1.0);
-        if (refrInfo.x > 1.5 && refrInfo.z > 0.5) {
+        // Only near the disc (2026-10-27, the matrix suite: the sky pass +0.8 ms in every cell with the Moon up): the
+        // table lookups, the turbulence noise and the three bent rays ran for every pixel of the sky. Refraction moves a
+        // ray by at most ~1.2 deg (from orbit), the jitter by arcseconds: 0.035 rad (2 deg) past the disc's edge.
+        if (refrInfo.x > 1.5 && refrInfo.z > 0.5 && dot(dir, moonDir3) > cos(kMoonAngR + 0.035)) {
             vec3  upO = normalize(obsPos);
             vec3  dJ  = dir;
             float cz  = dot(upO, dJ);
             float e0  = asin(clamp(cz, -1.0, 1.0));
-            vec4  rs  = refrLookup(e0, mCols);
-            float aoaJ = rs.w * refrSun.z;
-            if (aoaJ > 1e-7) {
+            vec4  rs  = vec4(0.0);
+            // ONE call site of the table lookup (2026-10-27): the pass's speed follows its code size, and the second
+            // inlined copy (after the jitter) was most of the +0.5 ms the Moon's refraction cost every daytime sky.
+            [[dont_unroll]] for (int k = 0; k < 2; ++k) {
+                rs = refrLookup(e0, mCols);
+                float aoaJ = rs.w * refrSun.z;
+                if (k == 1 || aoaJ <= 1e-7) break;
                 vec3  puM = upO - moonDir3 * dot(upO, moonDir3);
                 puM = dot(puM, puM) > 1e-12 ? normalize(puM) : vec3(0.0, 0.0, 1.0);
                 vec3  sdM = normalize(cross(puM, moonDir3));
@@ -4813,7 +4820,6 @@ void main() {
                 dJ  = normalize(dJ + upO * (aoaJ * 1.2 * nv) + sdM * (aoaJ * 0.9 * nh));
                 cz  = dot(upO, dJ);
                 e0  = asin(clamp(cz, -1.0, 1.0));
-                rs  = refrLookup(e0, mCols);
             }
             vec3  pu = upO - dJ * cz;
             pu = dot(pu, pu) > 1e-12 ? normalize(pu) : vec3(0.0);
@@ -6711,9 +6717,13 @@ void main() {
                             // r^2 so that P(|t - m| < r) = q: the slope pdf at m is exp(-m2 / s2) / (pi s2).
                             float r2  = qL * s2 * exp(min(m2 / s2, 30.0));
                             vec2  dS  = tS - mS;
-                            bool  on  = dot(dS, dS) < r2;
-                            wL  = on ? 1.0 / qL : 0.0;
-                            lit = lit || (on && qL < 0.5);
+                            // A soft edge (2026-10-27, the matrix suite's sea / storm cells): mS is this pixel's own
+                            // (jittered) wave normal's, so a hard |t - m| < r drew each facet's edge pixels lit or dark by
+                            // the jitter phase. 1 - smoothstep(0.6, 1.4) of (d / r)^2 has the same area as the disc (energy
+                            // kept), and only the core (inside 0.6) is flagged for the sky TAA to take whole.
+                            float xr  = dot(dS, dS) / max(r2, 1e-30);
+                            wL  = (1.0 - smoothstep(0.6, 1.4, xr)) / qL;
+                            lit = lit || (xr < 0.6 && qL < 0.5);
                         }
                         wSum += ((j & 1) == 0 ? 1.0 - frO : frO) * ((j >> 1) == 0 ? 1.0 - fl : fl) * wL;
                         qMin  = min(qMin, qL);

@@ -7790,7 +7790,11 @@ air did to it: "a half faded fuzzball" low down.
   the extinction is the table's bent-path columns + the haze near clouds toward the Moon (the straight view ray's above
   the table). Its glow (corona, halo) centres on the Moon AS SEEN (`GpuRefraction::spotInfo.z` = the centre's
   refraction, `fillSunspots`), and the stars' Moon cull (`PointDrawPC::moonDirENU`) takes the refracted direction.
-  SKY_LITE / SKY_ENV keep the straight ray (SKY_LITE's budget: 229940 of 230400 B).
+  SKY_LITE / SKY_ENV keep the straight ray (SKY_LITE's budget: 229940 of 230400 B). Cost (2026-10-27, the matrix suite:
+  the sky pass +0.7..+0.9 ms in every daytime cell with the Moon up, sky TAA 913 -> 934 KB): the lookups, noise and bent
+  rays ran for EVERY sky pixel; now only within the disc + 0.035 rad (-0.3 ms), and the table lookup has one call site
+  (a 2-pass loop, -3 KB). ~0.2-0.4 ms over the pre-merge sky remains (code size: the block compiled out reads as the
+  old cost; nothing per pixel runs away from the Moon).
 - **Cloud in front of the Sun** (2026-10-27, issue 20261027_182140 "Sun occlusion on far clouds": "some clouds appear to
   render behind the sun"): the disc is hidden by cloud through its TRANSMITTANCE (a 4x4-texel tent of the half-res
   composite over the disc, `cloudTs`), fading out over 0.1 -> 0.02 (`cloudKnown`: the march stops at T 0.01, so below
@@ -7816,7 +7820,15 @@ air did to it: "a half faded fuzzball" low down.
   cell holds (C_u C_v / 0.09 m^2, at least 150), carrying glint / q; 0.4 of the light stays the smooth path. A sparkle
   stays on its patch of water when the camera moves (a 0.1-deg pan: 43% of sparkle pixels coincide at the world shift,
   4% at the screen position; the old 15% / 24%), and from high up q -> 1, the mean (at 3 km the old speckle is gone).
-  Cost within noise. The `gSeaSpark` TAA flag is kept. A cell lattice does not divide the field's period: the pattern
+  Cost within noise. The `gSeaSpark` TAA flag is kept, but sky_taa.comp takes a sparkle whole only while SIM TIME RUNS
+  (`eyeDelta.w` 1 or 2; the CPU sends 1.25 for "camera moved, time frozen", 3 for still + frozen): the mirror slope m is
+  the pixel's own jittered wave normal's, so with time frozen whether a pixel is in a facet's flash changed with the
+  jitter phase, and taken whole every sparkle flickered (matrix suite, 2026-10-27: sea_20m still noise 0.23 -> 0.59,
+  storm_gnd look 0.98 -> 1.66 mean / 0.02 -> 0.57% past 16; after: 0.21 / 1.23 and 0.05%). The flash's edge is soft
+  (1 - smoothstep(0.6, 1.4) of (d / r)^2, the same area as the disc) and only its core (inside 0.6) is flagged, so with
+  time running the edges are averaged and only cores flash whole. storm_gnd look's remaining +0.25 over the old screen
+  hash is the facets themselves (a frozen screen hash was identical in the moving frame and its settled reference). A
+  cell lattice does not divide the field's period: the pattern
   re-hashes when the CPU wraps the world offset (every ~21-28 km of travel). The sea's own sun
   direction is still the TRUE Sun (not refracted).
 - Settings (`refraction.*`, no UI yet): `enabled` (true), `mirage` (1, x the temperature steps), `turbulence` (1, x Cn^2),

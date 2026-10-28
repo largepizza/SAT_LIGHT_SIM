@@ -14068,7 +14068,10 @@ bool SatelliteSim::recordSkyTaa(VkCommandBuffer cmd, VulkanContext &ctx, uint32_
     const bool timeFrozen = dSimS < 1e-6;
     const bool timeStill = timeFrozen || dSimS <= 1.5 * (double)skyTaaFrameDt + 1e-4;
     // 3 = also frozen: the waves (sim time) do not move, so the sea may skip the clip like everything else.
-    tp.eyeDelta = glm::vec4(glm::vec3(dEnu), valid ? (camStill && timeStill ? (timeFrozen ? 3.0f : 2.0f) : 1.0f) : 0.0f);
+    // 1.25 = the camera moved but sim time is frozen (2026-10-27): every comparison against 1.5 / 2.5 reads it as
+    // moving, and sky_taa.comp takes a sea sparkle whole only while sim time runs (the facets do not change then).
+    tp.eyeDelta = glm::vec4(glm::vec3(dEnu), valid ? (camStill && timeStill ? (timeFrozen ? 3.0f : 2.0f)
+                                                                       : (timeFrozen ? 1.25f : 1.0f)) : 0.0f);
     // The spare w's: this frame's jitter (input px) and the input extent (render scale < 1 = upscale).
     tp.c2e[0].w = skyTaaJitterNow.x;
     tp.c2e[1].w = skyTaaJitterNow.y;
