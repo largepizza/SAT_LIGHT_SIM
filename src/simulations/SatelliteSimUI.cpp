@@ -1694,7 +1694,9 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
     const bool tracked = trackActive;
     const float kBoxSize = 6.0f;
     const float kBorderW = 2.0f;
-    const float kRadius = tracked ? 7.0f : 10.0f;
+    float kRadius = tracked ? 7.0f : 10.0f;
+    if (isPlanet && selectedPlanetIndex < kPlanetCount)   // a resolved disc: the brackets round the disc (and rings)
+        kRadius = std::max(kRadius, planetView[selectedPlanetIndex].discPx * (selectedPlanetIndex == kSaturn ? 2.3f : 1.0f) + 4.0f);
     struct ReticuleCorner
     {
         float ox, oy; // top-left offset of this corner's box, relative to (sx, sy)
@@ -4113,6 +4115,8 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
     // preferences survive), they're just moot until it's back on.
     uiSection("ConstSec", 1, "PLANETS");
     uiToggleRow(inp, ui, "ShowPlanetsBtn", 0, "Show planets", showPlanets, "Each planet below keeps its own choice while this is off");
+    uiToggleRow(inp, ui, "PlanetDiscsBtn", 0, "Resolved planet discs", planetDiscs,
+                "Zoomed in, a planet becomes its real disc: phase, belts, Saturn's rings, Jupiter's moons and their shadows");
     for (int pi = 0; pi < kPlanetCount; ++pi)
     {
         bool hov = hovPlanetBtn[pi];
@@ -7140,6 +7144,8 @@ void SatelliteSim::buildSettingsAttributionsTab(const UIInput &inp, UIRenderer &
     entry(i++, "Moon albedo and elevation maps",
           "NASA SVS CGI Moon Kit: LRO Camera WAC colour mosaic, LOLA elevation", nullptr,
           "svs.gsfc.nasa.gov/4720 (NASA, public domain)");
+    entry(i++, "Mars, Jupiter and Saturn surface maps (resolved planets)", "Solar System Scope (based on NASA imagery)", nullptr,
+          "solarsystemscope.com/textures (CC BY 4.0)");
     entry(i++, "Full moon texture (Potato preset)", "papereater", nullptr, nullptr);
     entry(i++, "City lights detail textures",
           "From KSP mod RSSVE, NASA Visible Earth imagery, edited by Theysen", nullptr,
@@ -9000,6 +9006,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
     {
         auto &pj = j["planets"];
         showPlanets = pj.value("show_planets", showPlanets);
+        planetDiscs = pj.value("resolved_discs", planetDiscs);
+        planetDiscGain = settingClamp(pj.value("disc_gain", planetDiscGain), 0.1f, 10.0f);
         if (pj.contains("list"))
         {
             std::unordered_map<std::string, const nlohmann::json *> byName;
@@ -9972,7 +9980,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
     nlohmann::json planetArr = nlohmann::json::array();
     for (int pi = 0; pi < kPlanetCount; ++pi)
         planetArr.push_back({{"name", kPlanetNames[pi]}, {"enabled", planetEnabled[pi]}});
-    j["planets"] = {{"show_planets", showPlanets}, {"list", planetArr}};
+    j["planets"] = {{"show_planets", showPlanets}, {"resolved_discs", planetDiscs}, {"disc_gain", planetDiscGain}, {"list", planetArr}};
     // Kessler ("The Sun's Fury"): applied at launch (the world is built once the roster is).
     j["kessler"] = {{"enabled", kesslerEnabled},
                     {"rate_multiplier", kesslerRateMult},

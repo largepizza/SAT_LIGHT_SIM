@@ -51,7 +51,8 @@ void main() {
     // The Moon's real angular radius rides in moonDirENU.w (2026-09-30: a body at its true distance).
     bool behindMoon = dot(sat.skyDir, normalize(pc.moonDirENU.xyz)) > cos(max(pc.moonDirENU.w, 1e-5));
 
-    if (sat.flareIntensity <= 0.0 || cam.z >= -0.001 || behindMoon) {
+    // angularSize < 0: a planet drawn as a resolved disc this frame (planet_disc.frag carries its point too).
+    if (sat.flareIntensity <= 0.0 || sat.angularSize < 0.0 || cam.z >= -0.001 || behindMoon) {
         gl_Position  = vec4(0.0, 0.0, 2.0, 1.0);
         gl_PointSize = 0.001;
         fragColor     = vec3(0.0);

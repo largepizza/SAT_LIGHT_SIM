@@ -8271,6 +8271,59 @@ already uses. Persisted as `j["planets"]` (`{show_planets, list:[{name,enabled}]
 `saveSettings()`/`loadSettings()`, same shape and same ungated (non-schema-versioned) treatment as
 `j["constellations"]` — not a graphics-tuning value a schema mismatch needs to guard against.
 
+### Resolved discs and the Galilean moons (2026-10-27)
+
+`SatelliteSimPlanets.cpp`, `shaders/planet_disc.vert/.frag`, `include/planet_disc.glsl` (mirror: `GpuPlanetDiscUBO` in
+SatelliteSim.h, std140 vec4s), `tools/make_planet_maps.py` -> `assets/textures/planet_maps.rgba8`. At the 0.5-deg field the
+camera reaches, Jupiter is ~24 px across, Venus near inferior conjunction ~28, Saturn's rings ~25, Mars at opposition ~9.
+- **Its own small pipeline, not sat_sky.frag** (at the 16 sampled-image floor, and SKY_LITE at its budget): one quad per
+  resolved planet drawn right after the planet points (`recordPlanetDiscs`), additive, at kDepthFar with the depth test
+  (terrain, opaque cloud and the Moon hide it), the cloud composite dimming it as star_point.frag does. Set: 0 the disc UBO,
+  1-2 the cloud targets, 3 the scene depth (manual test below render scale 1), 4 the maps (a 2D array: Mars, Jupiter,
+  Saturn, Saturn's ring profile). `writePlanetDiscTargets` follows the cloud/depth recreation in
+  `recreateComputeScaledTargets`; the pipeline is rebuilt in onResize. Nothing resolved = no draw (~0 cost).
+- **Share**: `smoothstep(1, 2.5 px)` of the equatorial radius on screen; a resolved planet's planetBuf record gets
+  `angularSize < 0` (star_point.vert skips it; picking and the panel keep it) and the disc shader draws the point's
+  remaining (1 - share) itself.
+- **Light**: the planet's magnitude (Saturn: Meeus with the rings' term -2.60 sin|B| + 1.25 sin^2 B, now also the
+  point's; the ball's normalisation uses B = 0) spread by its law (Lommel-Seeliger: Mercury, Mars; Minnaert k 0.8-0.9:
+  Venus, Jupiter, Saturn, Uranus) on the oblate spheroid; the law's disc mean is a CPU integral (32 x 32) so the disc's
+  total is the magnitude. Units pi L / E x 1.35 (the sim's Moon disc is ~1.35x physical) x `planets.disc_gain` (1.5), the
+  sky exposure and the sky's tonemap (AgX with the tone settings). NOT x the point's suppression (day, Moon, light
+  pollution are the point model's stand-in for sky contrast; a disc is added to the real sky, like the Moon: Venus shows
+  in daylight). Extinction as the point's (reddened 0.75 / 1 / 1.4). Rings and Venus's rim are in I/F x 1 / r^2.
+- **Hand-off**: the point style is not linear (zoomed points are 6-px-sigma saturated blobs: up to +7 mag of zoom
+  aperture), so at 2.5 px the disc's light is scaled (`handScale`, bisected on a grey AgX) to the point's displayed
+  energy, clamped to +-3 stops, relaxing to physical by 5 px.
+- **Orientation**: IAU WGCCRE 2009 poles and W (light-time corrected; `x0` = longitude 0 in the disc's local frame: x the
+  view's right, y up toward the zenith, z toward us); Jupiter: Meeus's System II central meridian, the map's Great Red
+  Spot (u 0.3682) put at System II 55 deg + 18 deg / yr from 2024.5 (an extrapolation). Maps: u = 0.5 + east lon / 360
+  (checked: Syrtis Major); stored sqrt(ratio to the map's mean / 8) so the disc's mean stays the magnitude's.
+- **Saturn's rings**: ray / plane, the profile layer (C, B, Cassini division, A, Encke / Keeler gaps; optical depth +
+  albedo, made by the bake script), lit or unlit face, the ball's shadow on them, their shadow on the ball, the ball seen
+  through them. **Venus**: a forward-scattering rim round the limb past ~140 deg of phase, a full ring near inferior
+  conjunction. **Jupiter**: the moons' shadows (soft by the Sun's disc).
+- **Galilean moons** = planetBuf records kPlanetCount.. (`kPlanetBodyCount` 10; `planetBodyName`), points of the star
+  pipeline, selectable (`select planet Io`). Meeus ch. 44 low accuracy (light time in it), placed in Jupiter's frame (IAU
+  pole, the Earth's direction): eclipsed by Jupiter's shadow (soft), hidden behind the disc, x 0.05 in transit over a
+  resolved disc; flags transit / occulted / eclipsed / shadow on Jupiter. **Checked against JPL Horizons** (2036-11-22
+  07:00 UT, offsets from Jupiter): Io 86.8" E (Horizons 86.2), Europa 206.3" W (205.7), Ganymede 353.1" W (352.6),
+  Callisto 399.4" E (398.7); north offsets within ~2". An Io transit predicted by a Python replica (11:30 UT) shows Io
+  and its shadow on the disc in the app.
+- **Panel**: angular diameter (and px), phase angle; Jupiter's moon line (east to west, `[J]`, flags), Saturn's ring
+  opening, Mars's central meridian; a moon: offset in Jupiter radii and arcsec, its state. The reticle surrounds the disc.
+  Harness: `state` -> `planets` {bodies[], discs_drawn, galilean[]}, `selection.planet_lines`; `camera look <planet>`
+  aims at the REFRACTED direction now (near the horizon a 0.5-deg field is narrower than the refraction).
+- Settings: `planets.resolved_discs` (on; Constellations tab "Resolved planet discs"), `planets.disc_gain` (1.5, no UI).
+- **Cost** (RTX 3070 Ti, 1600x900, Jupiter at 0.5 deg, interleaved on/off x2): GPU within noise (5.51 / 5.54 vs 5.54 /
+  5.50 ms), CPU update_planets 0.009 -> 0.052 ms with a disc resolved. Maps 11.2 MB (1024 x 512 x 4 layers, mips).
+- **Texture vs procedural**: Mars needs its albedo map (no procedural stand-in reads as Mars) and Jupiter's belts and GRS
+  read far better from the Cassini map than from noise; at <= ~25 px a texture fetch is cheaper than banded noise.
+  Saturn's ball is a map too (free in the array); its rings are a 1D profile; Mercury, Venus and Uranus are flat colours.
+- Open: no differential refraction (the disc stays round near the horizon); seeing is only a mip bias (the refraction
+  table's aoa) and a whole-disc jitter; the GRS longitude is an extrapolation; Saturn's ring brightness against the ball
+  unjudged at 5 px; Neptune not modelled; the trails skip a resolved planet.
+
 ---
 
 ## Subsystem: VulkanContext Helpers

@@ -198,6 +198,16 @@ Source:  Solar System Scope (https://www.solarsystemscope.com/textures/)
 License: Creative Commons Attribution 4.0 International (CC BY 4.0)
 
 --------------------------------------------------------------------
+Planet surface maps (resolved planets)
+--------------------------------------------------------------------
+File:    planet_maps.rgba8 (baked by tools/make_planet_maps.py from
+         2k_mars.jpg, 2k_jupiter.jpg and 2k_saturn.jpg; Saturn's ring
+         profile in the same file is made by the script itself)
+Source:  Solar System Scope (https://www.solarsystemscope.com/textures/),
+         based on NASA imagery
+License: Creative Commons Attribution 4.0 International (CC BY 4.0)
+
+--------------------------------------------------------------------
 Moon albedo and elevation maps
 --------------------------------------------------------------------
 File:    moon_maps.rgba16f (baked by tools/make_moon_maps.py)
