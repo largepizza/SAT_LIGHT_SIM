@@ -1000,6 +1000,17 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   was half their optical depth for all of it). Composite at 128 registers. **Terrain gate:** a supercell's tornado
   needs ground under 1000 m with under 400 m of relief within ~20 km at its touchdown (`tornadoOf`, CPU DEM; it touched
   down in the Nepal mid-hills); waterspouts unchanged.
+  **A tornado needs a storm base over it (2026-10-27, issue 20261027_212628 "Tornado formation under absolutely zero
+  cloud cover", a supercell 16 km off over the Argentine plains, the funnel standing in clear sky).** The probe
+  (cloud_v2_lightning.comp threads 2-5) had found NO cloud in the column (0xFFFF, `base_probed` false) and the funnel hung
+  from the Cb type's base anyway. Now the funnel, wall cloud, debris and roar are x `TornadoNow::present` (eased per
+  storm over ~0.25 s in `TornadoProbe`), 1 only while the LAST probe found a base within 3.5 km of the ground with a
+  tau >= 3 of cloud above it (`kTornadoMaxBaseAglM`, `kTornadoMinTauAbove`, weatherFillTornadoes); never probed (clouds
+  v2 / the lightning pass off): none. Over that storm's spot the column held rain (from the anvil, 16 km from the tower
+  with the user's 15-km "Cb tower radius") and the anvil above 6 km, no low cloud; a coverage floor at the stamp's
+  rear-flank rain-free base (cloud_v2_weather.comp) was tried and changed nothing there (reverted). Three other
+  tornadoes found by `storms tornado` (2037-01-16 .. 19) have bases 1.0-2.4 km up (tau above 530-1020) and draw as
+  before. Harness `state` -> `weather.tornado_list[].present`.
 - **Biome map + wildfires (2026-10-23, reworked 2026-10-24 from issue 20261023_225322 and again the same day from the
   user's QA; `Biome.h/.cpp`, `Wildfire.h/.cpp`, `SatelliteSimWildfire.cpp`, `shaders/wildfire_ground.comp`,
   `shaders/include/smoke.glsl`; plan `.plans/WEATHER_HAZARDS_PLAN.md`).** `wx::BiomeMap`
