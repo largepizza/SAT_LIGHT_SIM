@@ -1514,7 +1514,7 @@ struct GpuRefraction
     glm::vec4 sun;    // x = the Sun centre's refraction (rad), y = its visible share (0..), z = shimmer gain, w = aoa there (rad)
     glm::vec4 sunCol; // the columns at the Sun's centre (as GpuRefrEntry::b)
     // Sunspot groups on the disc now (2026-10-27, SatelliteSimRefraction.cpp fillSunspots; sat_sky.frag sunspotFactor).
-    glm::vec4 spotInfo;  // x = groups, y = the solar cycle's activity 0..1
+    glm::vec4 spotInfo;  // x = groups, y = the solar cycle's activity 0..1, z = the Moon centre's refraction (rad)
     glm::vec4 spots[2 * 16];   // group g: [2g] = (latitude, longitude from the central meridian (rad, + west), half-length (sphere radii), seed),
                                // [2g + 1] = (Joy's-law tilt (rad), envelope 0..1, complexity (delta) 0..1, size 0..1)
     GpuRefrEntry e[refr::kTableN];

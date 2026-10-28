@@ -132,6 +132,7 @@ RayOut trace(const Air &air, double h0, double e0, double f, bool columns)
     double px = 0.0, py = kR + h0;
     double dx = std::cos(e0), dy = std::sin(e0);
     double s = 0.0;
+    double sAir = 0.0;   // where the ray entered the air: the duct test counts the path IN the air (below)
     // From above the air: straight to its top (or past the Earth).
     if (h0 > kTop)
     {
@@ -144,6 +145,7 @@ RayOut trace(const Air &air, double h0, double e0, double f, bool columns)
         }
         const double t = -b - std::sqrt(disc) + 1.0;
         px += dx * t; py += dy * t; s += t;
+        sAir = s;
     }
     auto grad = [&](double x, double y, double &gx, double &gy, double &z, double &nn, double &dn) {
         const double r = std::sqrt(x * x + y * y);
@@ -163,7 +165,11 @@ RayOut trace(const Air &air, double h0, double e0, double f, bool columns)
         const double sinE = (px * dx + py * dy) / r;
         if (z < air.p.surfaceZ) { o.hit = true; return o; }
         if (z > kTop && sinE > 0.0) break;
-        if (s > 4.0e6) { o.hit = true; return o; }   // trapped in a duct
+        // Trapped in a duct: 4000 km IN the air (2026-10-27, issue 20261027_185311). It counted from the eye, so from
+        // orbit the straight leg to the air's top (~3300 km from 790 km) used most of it and every ray grazing the
+        // limb (a ~2300-km chord through the 100-km shell) was taken as ducted: the apparent horizon stood 0.8 deg
+        // above the drawn limb and the Sun's disc was cut flat there, in mid-air.
+        if (s - sAir > 4.0e6) { o.hit = true; return o; }
         const double L = air.scale(z);
         const double kap = std::abs(dn) + 1.0 / kR;
         double ds = std::min(0.15 * L / std::max(std::abs(sinE), 1e-7), std::sqrt(0.3 * L / kap));

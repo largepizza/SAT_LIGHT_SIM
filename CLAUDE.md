@@ -7692,7 +7692,9 @@ air did to it: "a half faded fuzzball" low down.
   + Hufnagel-Valley's free troposphere. `refr::build` traces 512 APPARENT elevations from the eye (e = eC + c sinh(alpha
   (u - u0)): 3" steps at the horizon, ~30" at 0.5 deg, the table from the geometric dip - 0.34 deg to + 4 deg), 3
   channels each, 2D in the eye's vertical plane (dd/ds = grad ln n - (.) d, midpoint steps sized by the profile's
-  local scale and the ray's curvature), to the top of the air (100 km), the sea / ground (`kHit`) or a duct (4000 km).
+  local scale and the ray's curvature), to the top of the air (100 km), the sea / ground (`kHit`) or a duct (4000 km
+  IN the air: counted from the eye until 2026-10-27, so from orbit the straight leg to the air's top used most of it and
+  every limb-grazing ray read as ducted — issue 20261027_185311, the Sun cut flat 0.8 deg above the drawn limb from 790 km).
   Per entry: the refraction per channel, the Rayleigh / Mie / ozone / haze-near-clouds columns along the BENT path,
   the angle-of-arrival rms (2.91 D^-1/3 int Cn^2 ds, D 1 cm) and the scintillation sigma_I (sqrt(1 - e^(-sigma_R^2)),
   Rytov 2.25 k^(7/6) int Cn^2 s^(5/6) ds). Above the table: x Saemundsson's shape, the jitter as 1 / sin e, Rytov as
@@ -7722,8 +7724,30 @@ air did to it: "a half faded fuzzball" low down.
 - **Stars and planets** (`updateStars`, `updatePlanets`, `refractEnu`): placed at the primary image's apparent elevation
   (a star just under the true horizon shows; below the apparent horizon it does not), and their record's `meshPx` carries
   1 + floor(aoa urad) + 0.99 sigma_I: star_point.vert jitters the image by the aoa (sines, per star) and twinkles by
-  sigma_I / 0.55 (the old artistic airmass ramp only without a table). Planets: jitter, no twinkle. Satellites and the
-  Moon are not refracted yet.
+  sigma_I / 0.55 (the old artistic airmass ramp only without a table). Planets: jitter, no twinkle. Satellites are not
+  refracted yet.
+- **The Moon** (2026-10-27, issue 20261027_184332 "Moon Refraction"): its disc goes through the same table as the Sun's
+  (sat_sky.frag moon block, full variants only): each pixel's apparent elevation, jittered by the same turbulence
+  field, maps per channel to the true direction (flattened low, raised past the limb from orbit, dispersion rims); a
+  channel whose ray ends on the surface sees nothing; the shading follows the first channel that hits (green first);
+  the extinction is the table's bent-path columns + the haze near clouds toward the Moon (the straight view ray's above
+  the table). Its glow (corona, halo) centres on the Moon AS SEEN (`GpuRefraction::spotInfo.z` = the centre's
+  refraction, `fillSunspots`), and the stars' Moon cull (`PointDrawPC::moonDirENU`) takes the refracted direction.
+  SKY_LITE / SKY_ENV keep the straight ray (SKY_LITE's budget: 229940 of 230400 B).
+- **Cloud in front of the Sun** (2026-10-27, issue 20261027_182140 "Sun occlusion on far clouds": "some clouds appear to
+  render behind the sun"): the disc is hidden by cloud through its TRANSMITTANCE (a 4x4-texel tent of the half-res
+  composite over the disc, `cloudTs`), fading out over 0.1 -> 0.02 (`cloudKnown`: the march stops at T 0.01, so below
+  ~0.02 means "optically thick"); it was
+  a binary gate on the composite's >= 90% opacity flag per half-res texel (a speckle of disc and cloud along a thick
+  cloud's edge) with the disc drawn at full brightness through everything thinner. And the cloud between gets its
+  forward DIFFRACTION glow (the aureole: droplets put about half of what they scatter into a ~1 deg peak the march's
+  HG lobes do not hold): pi L / E = 0.25 / sigma^2 x tau e^(-tau) x a Gaussian in the angle from the Sun as seen
+  (sigma^2 = 0.012^2 + rD^2 / 2), x the Sun's air transmittance, visible share, eclipse share and the eye's Sun-line
+  cloud transmittance beyond the march, x `cloudKnown`; combined with the disc as 1 - (1 - disc)(1 - aureole). A thin
+  cloud across the Sun glows round it with the disc showing through (in front, not behind). PHYSICS NOTE: the disc is
+  ~2.3e5 x a sunlit white cloud, so it still shows (saturated) through any cloud thinner than tau ~8, and the aureole is
+  only ~1/400 of the disc: at the report's sunset (the Sun's air transmittance ~1e-2) it is a faint glow and the view
+  looks much as before (the grain along the thick band's top is the cloud composite's own at 1.2 deg FOV). By day (air transmittance ~0.8) the model gives a white glow ~1.5 deg across round a thinly covered Sun (not yet framed in a test).
 - **The sea glint sparkles are FACETS ON THE SEA** (2026-10-27, issue 20261027_180609: the first cut hashed the screen
   pixel and a 6-per-second time bin, "a screen-space mess ... on a timer" at every altitude). The Beckmann lobe is the
   pixel's mean; the facets that mirror the Sun cover fs = glint / (F x 1.8e5) of the sea. A world-fixed lattice on the

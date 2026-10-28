@@ -228,7 +228,16 @@ void SatelliteSim::fillSunspots(double simT)
     }
     std::sort(gs, gs + n, [](const G &p, const G &q) { return p.rank > q.rank; });
     n = std::min(n, kMax);
-    g.spotInfo = glm::vec4((float)n, (float)act, 0.0f, 0.0f);
+    // z: the Moon centre's refraction (rad; sat_sky.frag centres its glow on the Moon as seen, 2026-10-27).
+    float moonR = 0.0f;
+    {
+        const glm::vec3 m = glm::normalize(glm::vec3(moonDirENU));
+        glm::vec3 a = m;
+        float ao, sc;
+        if (refrEnabled && refractEnu(a, ao, sc))
+            moonR = std::asin(std::clamp(a.z, -1.0f, 1.0f)) - std::asin(std::clamp(m.z, -1.0f, 1.0f));
+    }
+    g.spotInfo = glm::vec4((float)n, (float)act, moonR, 0.0f);
     for (int i = 0; i < n; ++i)
     {
         g.spots[2 * i] = gs[i].a;
