@@ -1109,6 +1109,21 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     `fires look what=plume`) integrates the same trajectory. Cost: the parcels' extension is a few windAt a frame
     (`fires` -> `smoke_traj_steps_frame`); after a jump ~80 steps a parcel, in parallel on the storm catalog's pool; the
     cache (`smoke_trajectories`, `smoke_emissions`: ~100-400 near four fires) drops entries unused for 600 frames.
+  - **Stable sources, pieces shared by what is on screen** (2026-10-27, issue 20261027_212509 "Smoke trails": from 43 km
+    over Thailand at 1 h/s, "ultra stretched particles", a star of needles below the fire). (1) The low layer (si 5) and
+    the pall (si 6) left from the emission's STRONGEST section (`mainSrc`); on a weeks-old fire (front 126 km, five
+    sections of nearly equal heat) that flipped between emissions minutes apart, so the low layer's knots jumped ~25 km
+    across the fire (a segment 106-346 s old was 23 km long, ~300 m thick): needles crossing in a star, a new star every
+    frame. They now go with the MIDDLE-rank section (`S / 2`: ranks are labelled by bearing, so the same stretch of front
+    at every emission), and so does the "main" streak (the fine knot grid, its 0.8 mass with a low layer, `lastXY`). The
+    heat-weighted centre was tried: on a long curved front it lies in the burnt area (one round puff). (2) The trail
+    pieces are planned in two passes (`SegPlan`): pass 0 measures every segment (in view, pieces wanted: <= 2.2 x its
+    width apart, >= 6 px on screen), then the budget (cap less one per pall) goes to every segment IN VIEW (nearest fires
+    first), up to a quarter of the rest to segments off screen (their shadow, `smokeSunTransmit`), and the pieces by a
+    water fill (the largest count M, <= `kSmokeMaxPieces` 32, whose extra pieces fit). The old share (cap - n - every
+    segment left, at most 12) went to 0 whenever the fires in reach had more segments than the cap: every segment one
+    Gaussian of sigma 0.5 x its length. `clouds_v2.wildfire_smoke_alloc` 0 (no UI) = the old share (A/B); harness `fires`
+    -> `smoke_segments_drawn / _single / smoke_piece_gaussians / smoke_segments_off_view_dropped / _in_view_lost`.
   - **Smoke light**: GREY (2026-10-26, issues 20261026_204045 / _204239 "it appears so beige") — fresh (0.62 grey)
     albedo 0.45 (black carbon) to aged / pall (0.75, 0.76, 0.78) 0.6, the sky's light on it BLUE (0.66, 0.82, 1.08: it
     was a brown-grey (0.80, 0.79, 0.76)), x "Smoke tint" (-1 blue-grey .. +1 brown) and "Smoke brightness"; its scattered
@@ -1141,7 +1156,24 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     is tau ~0.4 from above here (the comment at its emit says 0.01-0.05). Billows per Gaussian, a
     second octave at ~4x for smoke. `sat_sky.frag` (`smokeSunTransmit`) dims and reddens the Sun on land and sea under
     it (the first 96 Gaussians; skipped where the Sun is down: it cost ~1 ms from orbit at night).
-  - **Flames close up** (within 40 km, faded 25-40 km): emissive Gaussians (dust list `col.w` 1, AFTER the smoke's range
+  - **The flame band** (2026-10-27, issue 20261027_212337 "Flame particles": "the sprites seem to disappear when up close
+    and are just dots"; `clouds_v2.wildfire_flame_band` 1, no UI, 0 = the old tongues below). Two causes: the close-up
+    flames, their share of the points and the glow were gated on the range to the IGNITION point (a fire burning for
+    three weeks had its front ~100 km from it: 44 m over that front, 125 km from its ignition, no flame at all; now
+    `nearKm`, the nearest of 64 front samples), and the tongues stood >= 40 px apart by the range to the fire's centre,
+    each its true size (sub-pixel from a few km, missed by the half-res composite). Now tongues stand `kFlamePx` (9 px)
+    apart on screen at the level their own range asks (64 base segments, nearest first, each walked down to 2^16 round;
+    levels cross-fade as the points'), budget 256 (smoke's cap is the dust list less that), `flameLodScale` widening the
+    spacing when it binds. A tongue the eye resolves (`res` = smoothstep(2, 6) of its height in px) keeps its shape and
+    gets two LICKS (narrow, taller, swaying and flickering on their own phases); an unresolved one is its stretch of
+    front (a ribbon segment 0.35 x the spacing along it, >= 0.9 px tall) carrying the stretch's flames' light (60% of
+    its area at the flame's radiance): no brighter than the flames. Radiance / the on-screen overlap where the front
+    runs along the view (flames are near opaque; additive tongues there were a glowing tube). The points keep half
+    their flame light within the band's range (their glare / bloom). Measured (RTX 3070 Ti, 1600x900): +0.7-1.4 ms GPU
+    500 m from the front. Harness `fires` -> `flame_band`, `flames_wanted`, `flame_lod_scale`,
+    `flame_band_top_range_ds_sA_sV_res_K_lv_rad`. Open: the near end of a front running at the eye is still a bright
+    glow; the licks are Gaussians, not textured flame.
+  - **Flames close up** (the old tongues, `wildfire_flame_band` 0; within 40 km, faded 25-40 km): emissive Gaussians (dust list `col.w` 1, AFTER the smoke's range
     so `smokeSunTransmit` does not take them for smoke) standing on the active arc, tongues 0.66 x the flame height tall
     and 0.35 x it + 0.05 x their spacing wide (were 0.3 x the spacing: neighbours merged into one band), spaced >= 40 px,
     radiance the flame's pi L / E_sun (~0.5 of a white sunlit surface) x heat^1.5 CAPPED in displayed light at 0.6 (x
