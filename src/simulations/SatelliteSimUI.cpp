@@ -8986,6 +8986,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         wildfireSmokeBright = settingClamp(c.value("wildfire_smoke_brightness", wildfireSmokeBright), 0.0f, 5.0f);
         wildfireSmokeTint = settingClamp(c.value("wildfire_smoke_tint", wildfireSmokeTint), -1.0f, 1.0f);
         wildfireSmokeSpread = settingClamp(c.value("wildfire_smoke_spread", wildfireSmokeSpread), 0.25f, 4.0f);
+        wildfireSmokeAlloc = c.value("wildfire_smoke_alloc", wildfireSmokeAlloc);
+        wildfireFlameBand = c.value("wildfire_flame_band", wildfireFlameBand);
         wildfireSmokeSpectral = settingClamp(c.value("wildfire_smoke_spectral", wildfireSmokeSpectral), 0.0f, 2.0f);
         haboobGain = settingClamp(c.value("haboobs", haboobGain), 0.0f, 5.0f);
         haboobField = c.value("haboob_field", haboobField);
@@ -9672,6 +9674,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"wildfire_smoke_brightness", wildfireSmokeBright},
         {"wildfire_smoke_tint", wildfireSmokeTint},
         {"wildfire_smoke_spread", wildfireSmokeSpread},
+        {"wildfire_smoke_alloc", wildfireSmokeAlloc},
+        {"wildfire_flame_band", wildfireFlameBand},
         {"wildfire_smoke_spectral", wildfireSmokeSpectral},
         {"haboobs", haboobGain},
         {"haboob_field", haboobField},

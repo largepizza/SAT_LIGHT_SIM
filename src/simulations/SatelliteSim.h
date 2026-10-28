@@ -5164,6 +5164,10 @@ private:
     // The smoke's look (2026-10-26, issues 20261026_204045 / _204239: "too beige", "do we have any controls for smoke?"):
     float wildfireSmokeBright = 1.0f;   // clouds_v2.wildfire_smoke_brightness: x the light the smoke scatters
     float wildfireSmokeTint = 0.0f;     // clouds_v2.wildfire_smoke_tint: -1 blue-grey .. 0 neutral grey .. +1 brown
+    int wildfireFlameBand = 1;           // clouds_v2.wildfire_flame_band (no UI): 1 = the close-up flames as a band of tongues on screen, 0 = the old sparse tongues (A/B)
+    float flameLodScale = 1.0f;          // x the close-up flames' spacing on screen: widened when they overflow their budget
+    uint32_t flamesWantedLast = 0;
+    int wildfireSmokeAlloc = 1;          // clouds_v2.wildfire_smoke_alloc (no UI): 1 = trail pieces shared by what is on screen, 0 = the old fair share (A/B)
     float wildfireSmokeSpread = 1.0f;   // clouds_v2.wildfire_smoke_spread: x the plumes' width (same mass: thinner)
     float wildfireSmokeSpectral = 0.6f; // clouds_v2.wildfire_smoke_spectral: x the Angstrom exponent (1 = ~1.6: the
                                         // Sun / sky through smoke reddened and its thin parts blue; 0 = grey)
@@ -5216,6 +5220,7 @@ private:
     uint32_t firePointsLast = 0, fireFlamesLast = 0, fireLightsLast = 0;   // this frame (harness `fires`)
     std::vector<glm::vec4> fireGlowDbg;   // this frame's glow lights: ENU from the eye (m) xyz, w = r0 (harness `fires`)
     double firePeakFlare = 0.0, fireFlareSum = 0.0, fireGlowSum = 0.0;     // this frame's points / glow (harness `fires`)
+    uint32_t smokeSegsLast = 0, smokePiecesLast = 0, smokeSinglesLast = 0, smokeOffViewLast = 0, smokeLostLast = 0;   // (harness `fires`)
     uint32_t fireSmokeSources = 0;                                          // this frame's smoke streaks (harness `fires`)
     // The night map's luminance (earthNightCpu: ~18 km, 0..255 sRGB; the land's blue base ~14): the built-up mask.
     float nightLumCpu(float latDeg, float lonDeg) const
