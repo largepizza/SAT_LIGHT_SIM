@@ -408,6 +408,15 @@ def build_sky_moonglint():
     return [moon, star(31.0, 34.0, 12.0, 3.0)]
 
 
+def build_sky_meteors():
+    """A meteor shower: three streaks from the upper right, a bright head on the longest (2026-10-27)."""
+    shapes = []
+    for (x0, y0, x1, y1, w) in [(45.0, 3.0, 14.0, 34.0, 3.2), (44.0, 18.0, 27.0, 35.0, 2.6), (30.0, 3.0, 13.0, 20.0, 2.6)]:
+        shapes.append(seg(x0, y0, x1, y1, w))
+    shapes.append(disc(12.0, 36.0, 6.5))
+    return shapes
+
+
 ICONS = {
     "storm-tornado": build_storm_tornado,
     "storm-hurricane": build_storm_hurricane,
@@ -435,6 +444,7 @@ ICONS = {
     "sky-conjunction": build_sky_conjunction,
     "sky-occultation": build_sky_occultation,
     "sky-moonglint": build_sky_moonglint,
+    "sky-meteors": build_sky_meteors,
 }
 
 # Drawn in the HUD's "pixel" style: solid silhouettes with hard edges on a 24-px grid, doubled to 48 —
@@ -442,7 +452,7 @@ ICONS = {
 # beside them read as another icon family (the user, 2026-10-03).
 PIXEL_STYLE = {"storm-tornado", "storm-hurricane", "storm-haboob", "storm-supercell", "storm-squall",
                "storm-waterspout", "storm-fire", "storm-cell", "weather", "missions", "report", "bookmark", "film", "photo", "record", "maximize", "observer", "spin", "studio",
-               "sky-events", "sky-solar", "sky-lunar", "sky-conjunction", "sky-occultation", "sky-moonglint"}
+               "sky-events", "sky-solar", "sky-lunar", "sky-conjunction", "sky-occultation", "sky-moonglint", "sky-meteors"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

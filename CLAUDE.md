@@ -47,7 +47,7 @@ Constellations* · *GPU Orbital Pipeline* (two-dispatch pattern, buffers, `Gpu*`
 constants) · *TargetedReflector / Mirror Ground Targets* · *Kessler syndrome — "The Sun's Fury"* (the
 scripted storm, dead satellites, debris pool, cascade engine, event log) · *Launches* (trains, retirements,
 rockets, plumes, crew rotations, the Missions window: the roster's slots refreshed on a schedule) · *Reflect-Orbital Beam Cloud Occlusion* ·
-*GpuSatInput* (a tombstone — the buffer was deleted 2026-09-22). · *Sky events window* (eclipses, conjunctions, occultations, Moon-base glints: a table of event kinds, each a search + a Watch) · *Moon-base glints* (the lunar bases' solar arrays mirroring the Sun to Earth near full Moon, LunarBases.h)
+*GpuSatInput* (a tombstone — the buffer was deleted 2026-09-22). · *Sky events window* (eclipses, conjunctions, occultations, Moon-base glints, meteor showers: a table of event kinds, each a search + a Watch) · *Meteors* (the annual showers + sporadics as a pure function of sim time; heads, streaks, fireballs, trains) · *Moon-base glints* (the lunar bases' solar arrays mirroring the Sun to Earth near full Moon, LunarBases.h)
 
 **Rendering** — *UIRenderer / Clay* (icon atlas, the SDF font atlas, manual hit-testing, the **UI kit** every window is built from, HUD text entry) · *Sky TAA* (the background's temporal AA, and the main pass's shared dependencies) · *The Sun as an object* (refraction, mirages, turbulence: one ray tracer, Refraction.h) · *The Moon as a body* (true position and size, eclipses) · *The sea* (periodic waves, sea state, shore) ·
 *Photometry / Shader Constants* (lobe model, bloom and glare) · *Light Pollution Dome* · *Atmospheric
@@ -3121,6 +3121,74 @@ exe, packaged), `tools/lunar_glint_tool` (`LunarGlintTool`, EXCLUDE_FROM_ALL: th
   model beyond the 0.9 day dimming; the 10-row upcoming list fills with glints in a season (two bases glint together);
   no UI for the settings; panels never lean (lean_deg is in the data for a later design); the Watch's clear-sky choice
   reads the cloud map at the jumped time only.
+
+## Subsystem: Meteors (2026-10-27)
+
+`Meteors.h/.cpp` (app-independent: the shower table, the flux a ZHR stands for, the generator, light curve, fragments,
+train wind, colour), `SatelliteSimMeteors.cpp` (the frame's fill, the Watch, the harness `meteors`), the sky-event kind
+`meteors` (METEOR SHOWER, icon 38 `sky-meteors`, `skySearchMeteorShowers` / `skyWatchMeteorShower` in
+SatelliteSimSkyEvents.cpp). Settings `meteors.enabled` (on), `meteors.rate` (1, x the flux), `meteors.fireball_rate`
+(1, x the rate of M <= -4); no UI row yet.
+- **The showers** (`kShowers`, the IMO working list, J2000): Quadrantids, Lyrids, Eta Aquariids, Southern Delta
+  Aquariids, Perseids, Draconids, Orionids, Southern and Northern Taurids, Leonids, Geminids, Ursids + the sporadic
+  background (row `kSporadic`, ZHR 10). Each: peak solar longitude, ZHR, the profile's slopes ZHR x 10^(-B |dLam|)
+  (B- / B+, the Geminids' asymmetric; the Perseids add a broad ZHR-22 component, B 0.05), population index r (mag 2 ..
+  6.5) and a bright-end index rb (brighter than mag 2; the Taurids' 1.35 makes them fireball-rich), entry speed, radiant
+  RA / Dec + drift per degree of solar longitude, the radiant's spread. The solar longitude is the Sun's ecliptic
+  longitude from `sunDirEciAt`. **APPEND rows before `kSporadic` only by moving it** (it is the last row; the generator's
+  seeds take the row index, so a reorder reshuffles every meteor).
+- **Rates**: the flux brighter than absolute mag +6.5 per km^2 per hour = ZHR (13.1 r - 16.5)(r - 1.3)^0.748 / 37200
+  / 1000 (Koschack & Rendtel 1990), x sin(the radiant's elevation) at each cell (the horizontal surface's share), x the
+  cumulative magnitude distribution `magFrac` (r^(M - 6.5) above mag 2, x rb^(M - 2) below). Sporadic radiants are drawn
+  per meteor from the apex (Sun-centred ecliptic longitude 270, ~58 km/s), helion (340) and antihelion (200) sources
+  (~28 km/s), accepted by their elevation (the cell's rate x 4 to compensate): the dawn-heavy diurnal cycle falls out.
+- **Generation is a pure function of sim time** (`meteors::generate`): six absolute-magnitude bands (edges -14, -8,
+  -4, -1, 2, 4.5, 6.5), each with its own time bin and longest age (bolides 120 s / 240 s, fireballs 30 / 60, -4..-1
+  8 / 16, fainter 2 / 8); Earth-fixed 1-deg cells (equal-ish area: 360 cos(lat) per latitude band) within the eye's
+  reach (a meteor 120 km up on its horizon) and the band's visibility distance (100 km x 10^((cull + 1 - M_bright) / 5),
+  cull = the point model's effective limit `pointEffLimitMag()`); a Poisson count per (shower, band, cell, bin) from a
+  splitmix hash, each meteor's start, place, magnitude (the band's piecewise power law), speed (+-3%), radiant (the
+  shower's + its spread) hashed. The distance cull only drops meteors that could not be seen, and the bands are nested,
+  so a meteor exists or not regardless of the observer. Time warp, reverse and bookmarks see the same meteors.
+- **A meteor**: begins at 80 + 0.55 v km (v in km/s: Leonids ~119, Geminids ~99, Draconids ~91), ends at 65 + 0.35 v +
+  2.5 M km (clamped 20 .. begin - 8: bright and slow ones go deeper, a -10 Taurid bolide ~55 km), straight from the
+  radiant, path <= 250 km, duration = path / v (0.2-1 s for most). Light curve 6.75 x^2 (1 - x) (peak at 2/3) + 1-3
+  flares for M <= -1 (and some down to 1.5), a terminal burst for bolides (M <= -8). Fireballs (M <= -4) shed 2-5
+  fragments after the first flare (sideways 40-260 m/s, decelerating 1.5-7.5 km/s^2, 12-47% of the body's light). A
+  persistent train for M <= -5.5: decay 2.5 x 10^(0.2 (-5.5 - M)) s, x2 above 45 km/s (a -10 Leonid ~40 s).
+  Colour: white; fast and bright toward the green of Mg / Fe / O, slow toward sodium's orange-yellow; flares whiter.
+- **Drawn** (`meteorsFill`, kesslerFillDust's finish after the Kessler fireballs, before the launches): the apparent
+  magnitude = M - 2.5 log10(light curve) + 5 log10(range / 100 km) + `atmExtinctionMag` along the line of sight, then x
+  `meteorSkySuppress` (a hand-kept copy of updateStars' chain: the night gate with a 9-mag daylight floor, the
+  light-pollution dome with its isotropic floor, the Moon) -> effectFlare. So a city or a bright Moon removes the faint
+  ones through the point model's own limit, as it does the stars. Heads are kFireBuf points (kessler_fireballs.comp:
+  point, bloom, glare); the STREAK is the path swept over the eye's persistence (0.1 s): three emissive Gaussians in the
+  dust list, front brightest (0.5 / 0.3 / 0.2 of 0.6 x the flare; the head keeps 0.4) once it is longer than 1.5 px —
+  the motion within one frame, not a stepping point. Fragments: heads + a short streak each. The train: ten Gaussians
+  along the 78-108 km part of the path already passed, drifting with a hashed wind (25-75 m/s, turning 8-22 deg per km
+  of height), widening 12 m/s, green for its first seconds then dim orange, ~7 mag under the meteor + a +2-mag wake over
+  its first second. **Budget**: at most 96 meteor Gaussians and never past kMaxDustClouds - 200 (the launches,
+  tornadoes, haboobs, wildfire smoke come after), the brightest meteors first; at most 600 heads. **Not drawn above 2x
+  of time warp** (`meteorWarpOff_`): at 10x a 0.5 s meteor flashes for 3 frames and ten times as often.
+- **The Watch** (`meteorWatchShower`, the sky event's and harness `meteors go`): hourly times across the peak +-14 h
+  (or the next 24 h when the window is under way), a 3 x 4 deg grid of sites with the Sun <= -15 deg and the radiant >=
+  25 deg up, scored sin(radiant elevation) x the profile x (1 - 0.75 Moon up x lit) - the night map's lights; then at
+  that moment (the cloud map's drift) the 60 best sites re-ranked by the CPU cloud map and land. 1x, unpaused, the camera
+  45 deg from the radiant at ~50 deg elevation, FOV 75. Card: "Perseids peak, ZHR 102, <UTC>" / "Moon 23% lit: dark
+  skies" (some moonlight from 25%, bright Moon from 60%).
+- **Measured** (RTX 3070 Ti, 1600x900, live harness; `harness_runs/meteors_*`, untracked). Rates (`meteors count
+  minutes=60`, all sky, at each meteor's peak): the Perseid peak's Watch site (38 N 80 W, radiant 59 deg up, Moon down)
+  1784 / h brighter than 6.5, 322 / h brighter than 4, 56 / h in a 75-deg cone round the view; 37 brighter than 0, 7
+  brighter than -4, no bolide in the hour; the same moment from Manhattan (the dome dims the zenith 5 mag) 190 / h,
+  none brighter than -4; 35 N 110 W on 2037-01-31 (full Moon up, sporadics only) 0 / h, on 01-17 (no Moon) 13 / h; the
+  Quadrantid Watch 2776 / h. Cost: the fill 0.06-0.07 ms a frame on the main thread (`kessler` bucket 0.26 -> 0.33 ms),
+  0.34 ms on the frame a new 2-s bin is generated (the cache: each (shower, band, bin) once while the eye stays within
+  30 km); GPU within noise (8.81 vs 8.80 ms, a few Gaussians); 15 s at 1x: no frame over 50 ms.
+- **Open**: the sporadic rate is probably low in the evening (r 3.0 and the apex below the horizon: 13 / h all sky at
+  23:00 local); the train is ten straight segments (kinks show when it twists); no sonic boom; a bolide's light
+  (`engineLightAdd`) follows "Rocket light on clouds"; satellites are not refracted and neither are meteors; the
+  persistence streak is a fixed 0.1 s.
+- Harness `meteors [state]|count|force|go` (docs/HARNESS.md).
 
 ## Subsystem: Automation harness (2026-09-25)
 

@@ -1935,6 +1935,7 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
         {
             s->selTransients.clear();
             s->kesslerFillFireballs(out, n, toSky, pixFull);
+            s->meteorsFill(out, n, toSky, pixFull); // meteor showers (SatelliteSimMeteors.cpp): heads, streaks, trains
             {
                 // Booked as launches, not as the cascade (this runs inside the dust fill's kessler timer).
                 const auto l0 = std::chrono::steady_clock::now();

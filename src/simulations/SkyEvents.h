@@ -22,6 +22,7 @@ enum Kind : int
     kConjunction,
     kOccultation,
     kMoonGlint,     // a lunar base's solar array mirroring the Sun to the Earth (LunarBases.h, 2026-10-27)
+    kMeteorShower,  // a meteor shower's peak (Meteors.h, 2026-10-27)
     kKindCount
 };
 

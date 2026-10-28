@@ -642,6 +642,7 @@ void SatelliteSim::loadUiIcons(UIRenderer &ui)
             "assets/icons/ui/pixel--sky-conjunction.png",
             "assets/icons/ui/pixel--sky-occultation.png",
             "assets/icons/ui/pixel--sky-moonglint.png", // 37: the Moon-base glints (SatelliteSimSkyEvents.cpp)
+            "assets/icons/ui/pixel--sky-meteors.png",   // 38: meteor showers (SatelliteSimSkyEvents.cpp)
         };
         // The count comes from the list itself — the hand-maintained "bump this when you add an icon"
         // number used to be a silent way to drop the last icon of the array.
@@ -8920,6 +8921,15 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         if (j0 != moonBaseJitter || l0 != moonBaseMagLimit) skScanBase = -1e300;
     }
 
+    if (j.contains("meteors") && j["meteors"].is_object())
+    {
+        // Meteor showers (2026-10-27, SatelliteSimMeteors.cpp).
+        const auto &mj = j["meteors"];
+        meteorsEnabled = mj.value("enabled", meteorsEnabled);
+        meteorRateGain = settingClamp(mj.value("rate", meteorRateGain), 0.0f, 100.0f);
+        meteorFireballGain = settingClamp(mj.value("fireball_rate", meteorFireballGain), 0.0f, 100.0f);
+    }
+
     if (j.contains("launches") && j["launches"].is_object())
     {
         const auto &lj = j["launches"];
@@ -9935,6 +9945,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
                        {"force_inversion_dt", refrForceInvDT},
                        {"force_inversion_dz", refrForceInvDz}};
     j["moon_bases"] = {{"enabled", moonBaseGlints}, {"tilt_jitter_scale", moonBaseJitter}, {"event_mag_limit", moonBaseMagLimit}};
+    j["meteors"] = {{"enabled", meteorsEnabled}, {"rate", meteorRateGain}, {"fireball_rate", meteorFireballGain}};
     // Launches (SatelliteSimLaunches.cpp).
     j["launches"] = {{"enabled", launchesEnabled},
                      {"life_scale", launchLifeScale},

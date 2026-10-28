@@ -28,6 +28,7 @@
 #include "SatEnvProbes.h" // Phase 4: satellite meshes (model viewer; scene pass in 4c)
 #include "SkyEvents.h"    // the Sky events window (2026-10-27)
 #include "LunarBases.h"   // the lunar bases' solar-array glints (2026-10-27)
+#include "Meteors.h"      // meteor showers and the sporadic background (2026-10-27)
 #include <memory>
 
 // Forward declaration only — savePerfSnapshot/buildPerfSnapshotJson are the sole users and both
@@ -3467,6 +3468,40 @@ private:
     // The base's place on the DRAWN Moon (x "Moon size"), refracted, from the observer (ENU); false if not loaded.
     bool moonBaseDrawnEnu(int i, glm::vec3 &enu) const;
     harness::Status harnessMoonBase(harness::Active &a);
+
+    // ── Meteors (2026-10-27, Meteors.h, SatelliteSimMeteors.cpp; CLAUDE.md "Meteors") ──────────────────────────────
+    // The major annual showers + the sporadic background, generated as a pure function of sim time near the observer
+    // (meteors::generate), drawn each frame in kesslerFillDust's finish: heads as points in kFireBuf (bloom, glare),
+    // their streaks over the eye's persistence as emissive Gaussians in the dust list, fragments, persistent trains.
+    bool meteorsEnabled = true;           // meteors.enabled
+    float meteorRateGain = 1.0f;          // meteors.rate (x the showers' flux)
+    float meteorFireballGain = 1.0f;      // meteors.fireball_rate (x the rate of fireballs / bolides, M <= -4)
+    std::vector<meteors::Meteor> meteorForced_; // harness `meteors force`
+    // The generated meteors per (shower, band, time bin), kept while the eye stays within 30 km of where they were
+    // generated: each frame generates only the bins that have just begun (a bin is 2 s for the faint bands).
+    std::unordered_map<uint64_t, std::vector<meteors::Meteor>> meteorBinCache_;
+    glm::dvec3 meteorCacheEye_{0.0};
+    double meteorCacheGain_[2] = {-1.0, -1.0};
+    uint64_t meteorForcedCount_ = 0;
+    struct MeteorNow                      // drawn this frame (harness `meteors`)
+    {
+        int shower = 0;
+        float M = 0.0f, mag = 99.0f, flare = 0.0f, azDeg = 0.0f, elDeg = 0.0f, age = 0.0f, dur = 0.0f, vKms = 0.0f;
+        float rangeKm = 0.0f, hKm = 0.0f;
+        int fragments = 0, trainSegs = 0, gauss = 0;
+        bool forced = false;
+    };
+    std::vector<MeteorNow> meteorNow_;
+    double meteorCpuMs = 0.0;             // the fill's time a frame (eased)
+    int meteorDraws_ = 0, meteorGenerated_ = 0, meteorHeads_ = 0, meteorGauss_ = 0, meteorDustAt_ = 0;
+    bool meteorWarpOff_ = false;          // this frame: not drawn (time warp)
+    void meteorsFill(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull); // kesslerFillDust's finish
+    float meteorSkySuppress(const glm::vec3 &enu) const; // the stars' sky dimming (night, dome, Moon) in that direction
+    harness::Status harnessMeteors(harness::Active &a);
+    // The Watch: a dark, clear site with the radiant well up, near the shower's peak (within [t0, t1]), at 1x.
+    bool meteorWatchShower(int shower, double t0, double t1, double tPeak, std::string &msg);
+    void skySearchMeteorShowers(const sky::SearchCtx &c, std::vector<sky::Event> &out) const;
+    bool skyWatchMeteorShower(const sky::Event &e, std::string &msg);
     // shared by the Watches: the moment (1x, unpaused), the place, the aim and the selection
     void skyJumpTo(double t);
     void skyPlaceAt(const glm::dvec3 &siteEcef, double t);

@@ -52,6 +52,7 @@ struct SkyEventsFriend
     static void cardConj(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2);
     static void cardOcc(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2);
     static void cardGlint(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2);
+    static void cardMeteor(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2);
     static const SkyKindDef kinds[sky::kKindCount];
 };
 
@@ -311,6 +312,9 @@ std::string eventTitle(const sky::Event &e)
     case sky::kMoonGlint:
         snprintf(b, sizeof(b), "%s array glint, mag %.1f", e.label, e.magA);
         break;
+    case sky::kMeteorShower:
+        snprintf(b, sizeof(b), "%s peak, ZHR %.0f", e.label, e.magA);
+        break;
     default:
         snprintf(b, sizeof(b), "Event");
     }
@@ -360,6 +364,15 @@ void SkyEventsFriend::cardGlint(SatelliteSim &S, const sky::Event &e, double, co
     l2 = S.skStr("%s at %s", utcShort(e.t).c_str(), whereText(e.site).c_str());
 }
 
+// A shower's card: its peak and ZHR, then the Moon at the peak (tAux = its lit fraction) and a quality note.
+void SkyEventsFriend::cardMeteor(SatelliteSim &S, const sky::Event &e, double, const char *&l1, const char *&l2)
+{
+    const double lit = e.tAux;
+    const char *q = lit < 0.25 ? "dark skies" : lit < 0.6 ? "some moonlight" : "bright Moon";
+    l1 = S.skStr("%s, %s", eventTitle(e).c_str(), utcShort(e.t).c_str());
+    l2 = S.skStr("Moon %.0f%% lit: %s", 100.0 * lit, q);
+}
+
 const SkyKindDef SkyEventsFriend::kinds[sky::kKindCount] = {
     {"solar", "SOLAR ECLIPSE", 33, &Pal::progressFill, &SatelliteSim::skySearchSolar, &SatelliteSim::skyWatchSolar, &SkyEventsFriend::cardSolar,
      "none in the next 2 years", "The Moon covering the Sun, from where the shadow falls"},
@@ -372,6 +385,9 @@ const SkyKindDef SkyEventsFriend::kinds[sky::kKindCount] = {
     {"moonglint", "MOON BASE GLINT", 37, &Pal::tagTwilight, &SatelliteSim::skySearchMoonGlints,
      &SatelliteSim::skyWatchMoonGlint, &SkyEventsFriend::cardGlint, "none in the next 2 years",
      "A lunar base's solar array flashing on the Moon, through a telescope"},
+    {"meteors", "METEOR SHOWER", 38, &Pal::progressFill, &SatelliteSim::skySearchMeteorShowers,
+     &SatelliteSim::skyWatchMeteorShower, &SkyEventsFriend::cardMeteor, "none in the next 2 years",
+     "Meteors near the peak, from a dark site with the radiant up"},
 };
 static_assert(sizeof(SkyEventsFriend::kinds) / sizeof(SkyEventsFriend::kinds[0]) == sky::kKindCount, "one row per sky::Kind");
 namespace
@@ -403,6 +419,11 @@ nlohmann::json eventJson(const sky::Event &e, double now)
     }
     if (e.watchT != 0.0) o["watch_utc"] = fmtUtcReadable(e.watchT);
     if (e.label[0]) o["label"] = e.label;
+    if (e.kind == sky::kMeteorShower)
+    {
+        o["zhr"] = e.magA;
+        o["moon_lit"] = e.tAux;
+    }
     return o;
 }
 } // namespace
@@ -919,6 +940,45 @@ bool SatelliteSim::skyWatchMoonGlint(const sky::Event &e, std::string &msg)
              e.tAux);
     msg = b;
     return true;
+}
+
+// ── Meteor showers (2026-10-27; Meteors.h, SatelliteSimMeteors.cpp) ─────────────────────────────────────────────
+// Each major shower's peaks in the range (meteors::peakAfter: the solar longitude of its maximum), the window where its
+// ZHR is at least half the peak's, the Moon's lit fraction at the peak. Pure functions of time (a worker).
+void SatelliteSim::skySearchMeteorShowers(const sky::SearchCtx &c, std::vector<sky::Event> &out) const
+{
+    for (int s = 0; s < meteors::kSporadic && !c.cancelled(); ++s)
+    {
+        const meteors::Shower &S = meteors::shower(s);
+        double t = c.t0 - 20.0 * kDay;
+        for (int guard = 0; guard < 6; ++guard)
+        {
+            double t0, t1;
+            const double tp = meteors::peakAfter(s, t, &t0, &t1);
+            if (tp > c.t1 + 20.0 * kDay) break;
+            t = tp + 300.0 * kDay;
+            if (t1 < c.t0 || tp > c.t1) continue;
+            sky::Event e;
+            e.kind = sky::kMeteorShower;
+            e.t = tp;
+            e.t0 = t0;
+            e.t1 = t1;
+            e.magA = (float)(S.zhr + S.zhr2);
+            const glm::dvec3 md = glm::normalize(moonGeoEciAt(tp)), sd = glm::normalize(sunDirEciAt(tp));
+            e.tAux = 0.5 * (1.0 + std::cos(std::acos(std::clamp(-glm::dot(md, sd), -1.0, 1.0))));
+            e.score = (S.zhr + S.zhr2) * (1.0 - 0.7 * e.tAux);
+            snprintf(e.label, sizeof(e.label), "%s", S.name);
+            out.push_back(e);
+        }
+    }
+    std::sort(out.begin(), out.end(), [](const sky::Event &x, const sky::Event &y) { return x.t < y.t; });
+}
+
+bool SatelliteSim::skyWatchMeteorShower(const sky::Event &e, std::string &msg)
+{
+    const int s = meteors::showerByName(e.label);
+    if (s < 0) return false;
+    return meteorWatchShower(s, e.t0, e.t1, e.t, msg);
 }
 
 bool SatelliteSim::skyEventWatch(const sky::Event &e, std::string &msg)
