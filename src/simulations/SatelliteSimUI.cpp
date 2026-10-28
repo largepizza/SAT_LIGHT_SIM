@@ -4926,26 +4926,16 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         {"Vis threshold", &visThresh, 0.0001f, 0.1f, 0.0001f, "%.3f", 3},
         {"Highlight flare", &highlightFlare, 0.01f, 1.0f, 0.01f, "%.2f", 4},
         {"Moon suppress", &moonSuppression, 0.0f, 500.0f, 5.0f, "%.0f", 5},
-        {"Pollution gain", &lightPollutionGain, 0.0f, 100.0f, 0.1f, "%.2f", 6},
+        // x the calibrated skyglow model (updateLightPollutionDome): 1 = the sky brightness measured at real sites.
+        {"Skyglow (x calibrated)", &skyglowGain, 0.0f, 10.0f, 0.05f, "%.2f", 6},
         {"Extinction", &extinctionCoeff, 0.0f, 1.0f, 0.02f, "%.2f", 7},
         {"Sunlit sky vis", &sunlitBgVisibility, 0.0f, 1.0f, 0.01f, "%.2f", 8},
         // Flare architecture overhaul: replaces the deleted per-pixel flareEntries loop with a
         // render-to-texture + blur/streak pipeline (see FlareSourcePC's comment in SatelliteSim.h).
         {"Flare glow gain", &flareGlowGain, 0.0f, 0.01f, 0.0005f, "%.2f", 9},
         {"Flare streak", &flareStreakGain, 0.0f, 1.0f, 0.02f, "%.2f", 10},
-        // Dark-sky exposure gate (Milky Way / zodiacal / aurora) — deliberately separate from
-        // "Pollution gain"/"Extinction" above so tuning those for star/satellite realism never
-        // forces a dark-sky retune. Lo/Hi are the two ends of the sky-brightness ramp and
-        // "City sky mag" is the value it ramps TO; the fade times ease the dome feeding it. See
-        // the mwPollutionThresholdLo/darkSkyCityMag member comments (SatelliteSim.h) and
-        // shaders/include/darksky.glsl.
-        {"MW pollution lo", &mwPollutionThresholdLo, 0.0f, 0.5f, 0.005f, "%.3f", 11},
-        {"MW pollution hi", &mwPollutionThresholdHi, 0.001f, 0.5f, 0.005f, "%.3f", 12},
-        // mag/arcsec^2, so LOWER = brighter city sky = harsher suppression. 22 is pristine (the gate
-        // does nothing); ~16 is already brighter than any real site. The floor goes to 1.0 anyway —
-        // below the real-world range on purpose — as an artistic knob for fully washing dark-sky
-        // features out under city glow. Default (SatelliteSim.h) is 13.0.
-        {"City sky mag", &darkSkyCityMag, 1.0f, 22.0f, 0.1f, "%.1f", 13},
+        // Dark-sky exposure gate (Milky Way / zodiacal / aurora): the twilight half (the city half is the skyglow
+        // model above; slots 11-13 were its old log-ramp sliders, removed 2026-10-28).
         // Twilight half of the same gate. "Twilight end" is the one to reach for first: it is the
         // solar depression at which the sky is considered fully dark, so it directly sets how long
         // after sunset dark-sky features come out (18 deg = real astronomical twilight).
@@ -8707,7 +8697,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         visThresh = p.value("vis_thresh", visThresh);
         highlightFlare = p.value("highlight_flare", highlightFlare);
         moonSuppression = p.value("moon_suppression", moonSuppression);
-        lightPollutionGain = p.value("light_pollution_gain", lightPollutionGain);
+        skyglowGain = p.value("skyglow_gain", skyglowGain); // light_pollution_gain (x25 of an older model) is not read
         extinctionCoeff = p.value("extinction_coeff", extinctionCoeff);
         pointRefMag = p.value("point_ref_mag", pointRefMag);
         pointGamma = p.value("point_gamma", pointGamma);
@@ -8736,9 +8726,6 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         mwStarClouds = p.value("milky_way_star_clouds", mwStarClouds);
         mwZoomDetail = p.value("milky_way_zoom_detail", mwZoomDetail);
         mwZoomOn = p.value("milky_way_zoom", mwZoomOn);
-        mwPollutionThresholdLo = p.value("mw_pollution_threshold_lo", mwPollutionThresholdLo);
-        mwPollutionThresholdHi = p.value("mw_pollution_threshold_hi", mwPollutionThresholdHi);
-        darkSkyCityMag = p.value("dark_sky_city_mag", darkSkyCityMag);
         darkSkyTwilightMag0 = p.value("dark_sky_twilight_mag0", darkSkyTwilightMag0);
         darkSkyTwilightEndDeg = p.value("dark_sky_twilight_end_deg", darkSkyTwilightEndDeg);
         darkSkyTwilightAniso = p.value("dark_sky_twilight_aniso", darkSkyTwilightAniso);
@@ -9540,7 +9527,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"vis_thresh", visThresh},
         {"highlight_flare", highlightFlare},
         {"moon_suppression", moonSuppression},
-        {"light_pollution_gain", lightPollutionGain},
+        {"skyglow_gain", skyglowGain},
         {"extinction_coeff", extinctionCoeff},
         {"point_ref_mag", pointRefMag},
         {"point_gamma", pointGamma},
@@ -9569,9 +9556,6 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"milky_way_star_clouds", mwStarClouds},
         {"milky_way_zoom_detail", mwZoomDetail},
         {"milky_way_zoom", mwZoomOn},
-        {"mw_pollution_threshold_lo", mwPollutionThresholdLo},
-        {"mw_pollution_threshold_hi", mwPollutionThresholdHi},
-        {"dark_sky_city_mag", darkSkyCityMag},
         {"dark_sky_twilight_mag0", darkSkyTwilightMag0},
         {"dark_sky_twilight_end_deg", darkSkyTwilightEndDeg},
         {"dark_sky_twilight_aniso", darkSkyTwilightAniso},

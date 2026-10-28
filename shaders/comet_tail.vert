@@ -16,6 +16,7 @@
 layout(std430, set = 0, binding = 5) readonly buffer LightDomeBuf {
     float lightDome[16];
     float lightDomeEased[16];
+    vec4  skyglowInfo;         // x = the skyglow model\'s zenith ratio (artificial / natural), eased x gain
 };
 #include "atmosphere.glsl"
 #include "darksky.glsl"
@@ -42,23 +43,14 @@ layout(location = 3) out float vExt;
 layout(location = 4) flat out uint vKind;
 layout(location = 5) flat out vec4 vCol;
 
-// The sky's surface brightness (mag/arcsec^2) in direction d: city glow (the physical form, as the aurora reads it)
+// The sky's surface brightness (mag/arcsec^2) in direction d: city glow (the skyglow model, darksky.glsl)
 // + twilight + daylight (+ its aureole round the Sun) + moonlight, added as light. Twilight and day only with air round
 // the eye; the glare round the Sun (the eye's, the camera's) from anywhere it is above the horizon.
 float cometSkyMag(vec3 d)
 {
     const float kM = 0.4 * 2.302585093;
-    // city glow (darkSkySkyMagLinear's first half)
-    float az      = mod(atan(d.x, d.y) + 6.283185307, 6.283185307);
-    float secF    = az * (16.0 / 6.283185307) - 0.5;
-    int   sec0    = int(floor(secF));
-    float secFrac = secF - float(sec0);
-    int   sec0w   = ((sec0 % 16) + 16) % 16;
-    int   sec1w   = (sec0w + 1) % 16;
-    float raw     = mix(lightDome[sec0w], lightDome[sec1w], secFrac) * cloud.auroraSky.x;
-    float dd      = max(raw, 0.0) * 0.08 / max(1.0 - raw, 0.02);
-    float elevTerm = 0.4 + 0.6 * (0.35 / (max(d.z, 0.0) + 0.35));
-    float mCity   = kSkyMagPristine - 2.5 * log(1.0 + dd * elevTerm / 0.0241) / log(10.0);
+    // city glow (darksky.glsl's skyglow model)
+    float mCity   = darkSkyPollutionMagPhys(d);
     float L = exp(-kM * mCity);
     float atm = pc.obs.z;
     // twilight

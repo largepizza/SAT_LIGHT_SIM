@@ -4681,6 +4681,27 @@ private:
     // southern zenith identically. Easing moved here, onto the dome ITSELF (the input), so the
     // hysteresis still does its job without flattening the direction information out of it.
     float lightDomeEasedAz[kNumLightSectors]{};
+    // The skyglow model (2026-10-28, CLAUDE.md "Light Pollution Dome"): every lit texel of the night map within 300 km
+    // (assets/textures/skyglow_sources.bin, tools/make_skyglow_sources.py) summed with a Walker's-law kernel into the
+    // ARTIFICIAL / natural sky brightness ratio: skyglowZ at the zenith, skyglowD[s] each sector's directional excess
+    // (shaders/include/darksky.glsl darkSkyArtRatio: ratio = Z iso(el) + D(az) dome(el)). *Eased are the eased values
+    // (mwFadeIn/OutTimeS); the GPU gets them x skyglowGain (lightDomeEasedAz[] = D, buffer float 32 = Z).
+    struct SkyglowSrc { uint16_t loc; uint16_t groundM; float flux; };
+    std::vector<SkyglowSrc> skyglowSrc;
+    std::vector<uint32_t> skyglowTileOff;
+    int skyglowW = 0, skyglowH = 0, skyglowTile = 64;
+    float skyglowZ = 0.0f, skyglowD[kNumLightSectors]{};          // this place's target
+    float skyglowZEased = 0.0f, skyglowDEased[kNumLightSectors]{};
+    double skyglowLastLat = 1e9, skyglowLastLon = 1e9;
+    float skyglowLastAlt = -1e9f;
+    float skyglowGain = 1.0f;          // "Skyglow (x calibrated)", photometry.skyglow_gain
+    double skyglowMs = 0.0;            // the last recompute's cost
+    int skyglowSourcesUsed = 0;
+    void loadSkyglowSources();
+    void computeSkyglow(double latDeg, double lonDeg, float altM, float &Z, float *D, int *nUsed) const;
+    // The sky in a direction (ENU), ratio artificial / natural, from the eased values x gain (the CPU mirror of
+    // darkSkyArtRatio).
+    float skyglowRatioAt(float bearingRad, float z) const;
     VkDescriptorSetLayout skyDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool skyDescPool = VK_NULL_HANDLE;
     VkDescriptorSet skyDescSet = VK_NULL_HANDLE;
@@ -6126,11 +6147,6 @@ private:
     // (not nearest-neighbor) so it doesn't itself alias before anything samples it.
     std::vector<uint8_t> earthNightCpu;
     int earthNightCpuW = 0, earthNightCpuH = 0;
-    // Half-resolution box-blur of earthNightCpu (~37km/px) — updateLightPollutionDome() samples
-    // this bilinearly instead of earthNightCpu directly, the CPU-array equivalent of picking a
-    // coarser mip level, to smooth the dome's blocky per-sector transitions.
-    std::vector<uint8_t> earthNightCpuBlur;
-    int earthNightCpuBlurW = 0, earthNightCpuBlurH = 0;
     // Full-resolution (14999x7500, ~2.7 km/px) ocean mask from the DEM, one bit per texel (DEM
     // pixel <= 15/255, the ocean baseline — lakes are land here), ~14 MB. The ambience's
     // ocean/beach drivers; the 18 km/px earthElevCpu turns every coastal town into half ocean.
@@ -6340,8 +6356,6 @@ private:
     float highlightFlare = 0.01f;
     float moonSuppression = 6.6f;    // sky background suppression from moonlight (mirrors daySuppression,
                                      // user-tuned value — moon is ~14 magnitudes dimmer than the sun)
-    float lightPollutionGain = 25.0f; // multiplies lightDomeAz[] at the source (updateLightPollutionDome),
-                                     // so satellites + stars stay coherently scaled by construction
     float extinctionCoeff = 0.18f;  // sea-level ZENITH extinction, magnitudes (atmosphere.glsl);
                                      // ~0.2-0.3 is typical clear-sky V band. One line-of-sight
                                      // formula for satellites, stars, planets and the Milky Way.
@@ -6420,32 +6434,9 @@ private:
     // formatSelectedSatInfo(). 0° = no mitigation, bit-identical to plain SunTracking.
     float flareMitigationTiltDeg = 0.0f;
     // ── Dark-sky exposure gate (Milky Way / zodiacal / aurora) ────────────────
-    // Anchors of the sky-background curve in shaders/include/darksky.glsl. Still against the RAW
-    // (pre-lightPollutionGain) local city-brightness signal, so retuning lightPollutionGain for
-    // star/satellite realism never silently shifts where dark-sky features cut off — that
-    // decoupling is why these sliders exist and it is preserved verbatim.
-    //
-    // Their MEANING is now the two ends of a logarithmic sky-brightness ramp rather than the ends
-    // of a hard visibility smoothstep: Lo is the level at/below which the sky reads as pristine
-    // (kSkyMagPristine, 22.0 mag/arcsec^2), Hi the level at which it has fully reached
-    // darkSkyCityMag. The tuned values below are unchanged and still bracket the same transition —
-    // a factor of ~16 between them is ~3 magnitudes, which is about the real rural-to-city span.
-    // What changed is that the ramp is now evaluated PER DIRECTION and each feature is then gated
-    // on its own per-sample surface brightness, so the transition sweeps across a feature (faint
-    // arms first, galactic core last) instead of dimming all of it as a block.
-    float mwPollutionThresholdLo = 0.0f; // at/below this: sky reads as pristine (22.0 mag/arcsec^2).
-                                         // 0 is a legitimate tuned value, not "unset": easeDarkSkyDome
-                                         // guards with max(lo, 1e-6), so 0 means "the ramp starts at
-                                         // the faintest signal the night texture can express", which
-                                         // is what stretches it over ~4.9 decades instead of ~1.2
-    float mwPollutionThresholdHi = 0.075f;  // at/above this: sky has fully reached darkSkyCityMag
-    // Sky background surface brightness at the Hi end, mag/arcsec^2 (LARGER = FAINTER — the
-    // astronomical convention). ~18 is a real Bortle 8-9 inner-city zenith; the default and the
-    // slider floor (1.0, see SatelliteSimUI.cpp) both sit below any real site on purpose — this is
-    // an artistic suppression knob, and a value under the real-world floor is how you get dark-sky
-    // features to fully wash out under bright city glow. Pushed to both shaders as
-    // GpuCloudParams::darkSkyCityMag.
-    float darkSkyCityMag = 13.0f;
+    // The city half of the sky background is the skyglow model since 2026-10-28 (skyglowGain, updateLightPollutionDome,
+    // shaders/include/darksky.glsl): mwPollutionThresholdLo/Hi and darkSkyCityMag (a log ramp of the night map from
+    // 1e-6 toward an artistic 13 mag/arcsec^2) are gone, with their settings keys.
     // Twilight half of the same gate — the sun's own contribution to sky brightness. See
     // darkSkyTwilightMag() in shaders/include/darksky.glsl for the model and why the old
     // nightFactorEff ramp alone was not enough (it stops suppressing anything with the sun only
@@ -8219,7 +8210,6 @@ private:
     double planetSinRingB(int planet) const;             // Saturn's rings' tilt toward the Earth (sin B); 0 for the rest
     nlohmann::json planetsJson() const;                  // harness state: the discs and the Galilean moons
     void updateLightPollutionDome(float dt);                                    // called each frame before updateStars(): fills lightDomeAz[]
-    void easeDarkSkyDome(float dt, const float *rawSectors);                    // log-maps + eases lightDomeEasedAz[] (nullptr = pristine)
     void uploadLightDome();                                                     // memcpys both dome halves into lightDomeBuf
                                                                                 // + uploads to lightDomeBuf for sat_flare.comp
     void updateGpuTimingStats(VulkanContext &ctx);                              // called at top of recordCompute(): EMA-smooths

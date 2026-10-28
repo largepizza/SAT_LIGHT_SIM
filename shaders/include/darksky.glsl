@@ -37,16 +37,16 @@
 // parameter and losing the unroll. Nothing here has a loop to unroll.
 // ─────────────────────────────────────────────────────────────────────────────
 // REQUIRES, declared before this file is included:
-//   * cloud_params.glsl — darkSkySkyMag reads cloud.darkSkyCityMag / darkSkyTwilightMag0 /
-//     darkSkyTwilightEndDeg / darkSkyTwilightAniso directly rather than taking eight parameters
-//     at every call site.
-//   * a `LightDomeBuf` block exposing `float lightDomeEased[16]` — the dark-sky dome half. Both
-//     consumers (sat_sky.frag, cloud_march.comp) declare it above their include of this file.
+//   * cloud_params.glsl — darkSkyTwilightMag reads cloud.darkSkyTwilightMag0 / darkSkyTwilightEndDeg /
+//     darkSkyTwilightAniso directly rather than taking parameters at every call site.
+//   * a `LightDomeBuf` block exposing `float lightDomeEased[16]` (the skyglow's directional excess per sector) and
+//     `vec4 skyglowInfo` (x = its zenith ratio) — sat_sky.frag, cloud_march.comp and comet_tail.* declare it above
+//     their include of this file.
 #ifndef DARKSKY_GLSL
 #define DARKSKY_GLSL
 
 // Sky background surface brightness of a pristine site, mag/arcsec^2 — Bortle 1 zenith is
-// ~21.9-22.0 in reality. The dome darkens the sky FROM this value toward cloud.darkSkyCityMag.
+// ~21.9-22.0 in reality (Falchi et al.'s natural sky, 174 ucd/m^2). Artificial skyglow adds to it: darkSkyArtRatio.
 const float kSkyMagPristine = 22.0;
 
 // Response curve, in magnitudes of (sky background - feature surface brightness). Positive means
@@ -84,46 +84,33 @@ const float kTwilightFloorMag = 26.0;
 const float kVisSharpness = 1.40;
 const float kVisKnee      = -0.60;
 
-// ── Directional sky background ───────────────────────────────────────────────
-// domeT: this direction's light-pollution level as a normalized [0,1] "how far from pristine
-// toward inner-city" figure, interpolated between the two nearest sector CENTERS of
-// lightDomeEased[] — the second half of LightDomeBuf. The CPU has already done the work there
-// (SatelliteSim::updateLightPollutionDome): it log-maps each sector's RAW, PRE-lightPollutionGain
-// city brightness against the mwPollutionThresholdLo/Hi band and temporally eases the result.
-//
-// Raw and not gained on purpose: it preserves the existing deliberate decoupling (see those
-// members' comments) whereby retuning lightPollutionGain for star/satellite realism does not
-// silently move where dark-sky features cut off. Logarithmic because magnitudes are, and because
-// those two sliders' tuned values (0.0022 / 0.036 — a factor of ~16, i.e. ~3 magnitudes) already
-// bracket the real transition.
-//
-// elevFalloff + kIsotropicFrac are the SAME shape sat_flare.comp/updateStars()/the old per-object
-// copies use — city glow hangs low in the sky, but real urban skyglow also has a large
-// isotropically-scattered component that reaches the zenith (S2c, RELEASE_v1_1_PLAN.md). Keep this
-// constant identical to the copies in those files.
-//
-// It enters as a magnitude OFFSET rather than as a scale on t, and that distinction is not
-// cosmetic. Those copies multiply a linear BRIGHTNESS by this term; scaling t instead would apply
-// it to a logarithmic magnitude drop, which over-applies it by the ratio between the two scales —
-// concretely, a zenith term of 0.556 is worth 2.5*log10(1/0.556) = 0.64 magnitudes, but scaling t
-// by it across a 4-magnitude range removes 1.78. That put a full inner-city zenith at 19.8
-// mag/arcsec^2 (about a rural sky) instead of the ~18.4 a Bortle 8 zenith really measures, and
-// left the galactic core clearly visible from downtown. Converting to magnitudes here keeps the
-// horizon behaviour identical to the linear copies while making the zenith land where it should.
-//
-// Scaled by t so a pristine sky has no elevation gradient at all: with no city there is no city
-// glow to fall off with elevation.
-float darkSkyPollutionMagC(float domeT, float dirZ, float cityMag) {
-    float elevFalloff = 0.35 / (max(dirZ, 0.0) + 0.35); // 1.0 at horizon, ~0.26 at zenith
-    const float kIsotropicFrac = 0.4;
-    float elevTerm = kIsotropicFrac + (1.0 - kIsotropicFrac) * elevFalloff;
-    float t = clamp(domeT, 0.0, 1.0);
-    // -2.5*log10(elevTerm) — positive, since elevTerm <= 1. GLSL has no log10.
-    float elevMag = -(2.5 / log(10.0)) * log(max(elevTerm, 1e-4));
-    return mix(kSkyMagPristine, cityMag, t) + elevMag * t;
+// ── Artificial sky brightness (2026-10-28, the skyglow model) ────────────────
+// The CPU (SatelliteSim::updateLightPollutionDome, CLAUDE.md "Light Pollution Dome") sums every lit texel of the night
+// map within 300 km with a Walker's-law kernel and gives, as the ratio of ARTIFICIAL to natural sky brightness (Falchi
+// et al. 2016's convention): skyglowInfo.x = Z, the zenith; lightDomeEased[16] = D, each compass sector's directional
+// excess toward its horizon (the share of the glow from sources far enough to be seen as a dome in their direction).
+// Both eased, both x "Skyglow" (photometry.skyglow_gain). In a direction:
+//     ratio = Z x iso(el) + D(az) x dome(el)
+// iso: the isotropic part brightens toward the horizon as the air path grows (1 at the zenith, 1.8 at the horizon: the
+// old 0.4 + 0.6 elevFalloff shape, normalised to the zenith); dome: the horizon-hugging part, 0 at the zenith (so the
+// zenith has no azimuth seam), 1 at the horizon. Calibrated against 16 sites with published zenith sky brightness
+// (Paranal .. Manhattan, 0.28 mag rms; the table is in CLAUDE.md). Sky = natural x (1 + ratio).
+float darkSkyArtRatio(vec3 dir) {
+    float az      = mod(atan(dir.x, dir.y) + 6.283185307, 6.283185307);
+    float secF    = az * (16.0 / 6.283185307) - 0.5;
+    int   sec0    = int(floor(secF));
+    float secFrac = secF - float(sec0);
+    int   sec0w   = ((sec0 % 16) + 16) % 16;
+    int   sec1w   = (sec0w + 1) % 16;
+    float D       = mix(lightDomeEased[sec0w], lightDomeEased[sec1w], secFrac);
+    float ef      = 0.35 / (max(dir.z, 0.0) + 0.35);           // 1 at the horizon, 0.259 at the zenith
+    float iso     = (0.4 + 0.6 * ef) * (1.0 / 0.5556);
+    float dome    = max(ef - 0.2593, 0.0) * (1.0 / 0.7407);
+    return max(skyglowInfo.x, 0.0) * iso + max(D, 0.0) * dome;
 }
-float darkSkyPollutionMag(float domeT, float dirZ) {
-    return darkSkyPollutionMagC(domeT, dirZ, cloud.darkSkyCityMag);
+// Its sky brightness alone, mag/arcsec^2.
+float darkSkyPollutionMagPhys(vec3 dir) {
+    return kSkyMagPristine - 2.5 * log(1.0 + darkSkyArtRatio(dir)) / log(10.0);
 }
 
 // ── Twilight ─────────────────────────────────────────────────────────────────
@@ -160,67 +147,25 @@ float darkSkyTwilightMag(vec3 dir, vec3 sunDirENU, float sunSinEl) {
 }
 
 // ── Combined sky background ──────────────────────────────────────────────────
-// City glow and twilight are independent light sources, so they ADD as brightnesses — which in
-// magnitudes means going through linear and back, not min() or a mix(). The constant is
-// 0.4*ln(10); at the magnitudes involved (~12 at sunset, 22 pristine) the linear values run
-// 1.6e-5 to 1.5e-9, comfortably inside float32.
-// Sector-interpolated dark-sky dome lookup for a view direction. Interpolates between the two
-// nearest sector CENTERS rather than hard-binning — 16 discrete wedges show visible blocky
-// transitions over wide, fairly uniform bright regions. Folded in here rather than left at the
-// call sites: this exact expression had reached four copies (Milky Way, zodiacal, aurora, and now
-// the ocean Milky Way reflection), and it is a pure declaration-style helper with no loop, so the
-// codegen hazard that keeps optDepth duplicated does not apply.
-float darkSkyDomeT(vec3 dir) {
-    float az      = mod(atan(dir.x, dir.y) + 6.283185307, 6.283185307);
-    float secF    = az * (16.0 / 6.283185307) - 0.5;
-    int   sec0    = int(floor(secF));
-    float secFrac = secF - float(sec0);
-    int   sec0w   = ((sec0 % 16) + 16) % 16;
-    int   sec1w   = (sec0w + 1) % 16;
-    return mix(lightDomeEased[sec0w], lightDomeEased[sec1w], secFrac);
-}
-
-// cityMag: the sky at the dome's bright end. The Milky Way and zodiacal light take the artistic
-// cloud.darkSkyCityMag (13, far brighter than any real city, so they wash out); the aurora takes a
-// physical one (cloud_march.comp, 2026-10-14): a storm display is seen from suburbs and cities.
-float darkSkySkyMagC(vec3 dir, vec4 sunDirENU, float cityMag) {
-    float a = darkSkyPollutionMagC(darkSkyDomeT(dir), dir.z, cityMag);
-    float b = darkSkyTwilightMag(dir, sunDirENU.xyz, sunDirENU.w);
-    const float kM = 0.4 * 2.302585093;
-    return -(1.0 / kM) * log(exp(-kM * a) + exp(-kM * b));
-}
+// City glow and twilight are independent light sources, so they ADD as brightnesses — which in magnitudes means going
+// through linear and back, not min() or a mix(). The constant is 0.4*ln(10).
+//
+// ONE physical sky for every dark-sky feature (2026-10-28): the Milky Way, the zodiacal light, the aurora and the
+// comets all read darkSkySkyMag. Until then the Milky Way and zodiacal light read a LOG ramp of the dome from 1e-6 of
+// the night map's brightness toward an artistic 13 mag/arcsec^2 (`darkSkyDomeT`, deleted): a raw of 1e-3 was already
+// 61% of the way to "city", so a dark site within tens of km of a village (La Palma's observatory, a Bortle 4 field
+// south-west of Santiago) read 16-18 mag/arcsec^2 and the Milky Way was a ghost or gone. darkSkySkyMagLinear (the
+// aurora's name for it since 2026-10-14) is the same function.
 float darkSkySkyMag(vec3 dir, vec4 sunDirENU) {
-    return darkSkySkyMagC(dir, sunDirENU, cloud.darkSkyCityMag);
-}
-
-// A PHYSICAL sky background (2026-10-14, the aurora; cloud_march.comp): skyglow is light ADDED to the natural
-// sky, so the sky is pristine x (1 + raw / ref), with raw the dome's linear city brightness in this direction
-// (lightDome[] / "Pollution gain", the 0..1 compressed signal of updateLightPollutionDome, x the same elevation
-// term) and ref set so a downtown core (raw ~0.9) reads ~18 mag/arcsec^2, a real Bortle 8-9 zenith. The log
-// ramp the Milky Way reads (darkSkyDomeT, from 1e-6) is fine as an artistic fade but useless as a brightness:
-// a raw of 0.01 is already 83% of the way to the city end, so a faint glow beside a dark sector cut the aurora
-// off at a hard azimuth (issue 20261014_193231 shot 1), and populated farmland read as downtown in every
-// direction (shot 5). Needs `float lightDome[16]` in the LightDomeBuf block (both consumers declare it).
-float darkSkySkyMagLinear(vec3 dir, vec4 sunDirENU) {
-    float az      = mod(atan(dir.x, dir.y) + 6.283185307, 6.283185307);
-    float secF    = az * (16.0 / 6.283185307) - 0.5;
-    int   sec0    = int(floor(secF));
-    float secFrac = secF - float(sec0);
-    int   sec0w   = ((sec0 % 16) + 16) % 16;
-    int   sec1w   = (sec0w + 1) % 16;
-    float raw     = mix(lightDome[sec0w], lightDome[sec1w], secFrac) * cloud.auroraSky.x;
-    // The dome stores d / (d + 0.08) (kCityCompressK, updateLightPollutionDome): undo it, so the glow is
-    // linear in the night map's weighted city light d. Read as linear, the compressed value put rural Arizona
-    // (0.22) and Iowa farmland at a suburban 19.6-20.3; undone they read ~21.3 (Bortle 3-4), Fairbanks ~20.
-    float d = max(raw, 0.0) * 0.08 / max(1.0 - raw, 0.02);
-    float elevFalloff = 0.35 / (max(dir.z, 0.0) + 0.35);
-    float elevTerm    = 0.4 + 0.6 * elevFalloff;               // = darkSkyPollutionMag's kIsotropicFrac 0.4
-    const float kDRef = 0.0241;                                // a downtown core (d ~0.94) -> x40 -> 18 mag
-    float a = kSkyMagPristine - 2.5 * log(1.0 + d * elevTerm / kDRef) / log(10.0);
+    float a = darkSkyPollutionMagPhys(dir);
     float b = darkSkyTwilightMag(dir, sunDirENU.xyz, sunDirENU.w);
     const float kM = 0.4 * 2.302585093;
     return -(1.0 / kM) * log(exp(-kM * a) + exp(-kM * b));
 }
+float darkSkySkyMagLinear(vec3 dir, vec4 sunDirENU) {
+    return darkSkySkyMag(dir, sunDirENU);
+}
+
 
 // ── Feature surface brightness ───────────────────────────────────────────────
 // Converts a sample's own linear luminance to mag/arcsec^2 against a (refLum -> refMag) anchor.

@@ -2719,7 +2719,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.beamSkyGlowGain = beamSkyGlowGain;
         cp.beamGlowBleedGain = beamGlowBleedGain;
         cp.beamProximityGlow = beamProximityGlow;
-        cp.darkSkyCityMag = darkSkyCityMag;
+        cp.darkSkyCityMag = 0.0f; // unread since 2026-10-28 (the skyglow model, darksky.glsl)
         cp.darkSkyTwilightMag0 = darkSkyTwilightMag0;
         cp.darkSkyTwilightEndDeg = darkSkyTwilightEndDeg;
         cp.darkSkyTwilightAniso = darkSkyTwilightAniso;
@@ -2787,7 +2787,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         }
         cp.auroraSheets = glm::vec4(auroraSheetGain, auroraSheetSpacingDeg, auroraSheetCrisp, auroraSheetFold);
         cp.auroraStorm = glm::vec4(auroraStormFeatures, auroraBlueRayChance, auroraArcSystems, auroraStormRedGain);
-        cp.auroraSky = glm::vec4(1.0f / std::max(lightPollutionGain, 1e-4f), 0.0f, 0.0f, 0.0f);
+        cp.auroraSky = glm::vec4(0.0f); // unread since 2026-10-28 (the aurora reads the skyglow model)
         launchFillPadParams(cp); // the launch pads on the ground (SatelliteSimLaunches.cpp)
         weatherFillSeaParams(cp); // tropical cyclones' winds on the sea (SatelliteSimWeather.cpp)
         cp.surgeInfo.z = oceanSunGlitter; // the Sun's sea glitter gain (surgeInfo.z was unused; sat_sky.frag)
@@ -9744,7 +9744,7 @@ void SatelliteSim::createBuffers(VulkanContext &ctx)
     // 2 * kNumLightSectors: [0,16) = lightDomeAz (gain-scaled linear, satellites/stars),
     // [16,32) = lightDomeEasedAz (normalized + eased, the dark-sky exposure gate). sat_flare.comp
     // declares only the first half and is unaffected — trailing SSBO storage is simply not read.
-    lightDomeMapped = createMirrored(ctx, sizeof(float) * kNumLightSectors * 2, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+    lightDomeMapped = createMirrored(ctx, sizeof(float) * (kNumLightSectors * 2 + 4), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                                      lightDomeBuf, lightDomeMem, true, "lightDome");
 
     // mirrorNormalsBuf (persistent lock/slew state) and reflectorTargetsBuf (per-frame CPU-
@@ -12799,20 +12799,8 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
             }
         }
 
-        // Half-resolution box-blur (~37km/px) — see the member comment in SatelliteSim.h. One 2×2
-        // averaging pass over the already-box-filtered earthNightCpu above.
-        earthNightCpuBlurW = earthNightCpuW / 2;
-        earthNightCpuBlurH = earthNightCpuH / 2;
-        earthNightCpuBlur.resize((size_t)earthNightCpuBlurW * earthNightCpuBlurH);
-        for (int by = 0; by < earthNightCpuBlurH; ++by)
-        {
-            for (int bx = 0; bx < earthNightCpuBlurW; ++bx)
-            {
-                int x0 = bx * 2, y0 = by * 2;
-                int sum = earthNightCpu[y0 * earthNightCpuW + x0] + earthNightCpu[y0 * earthNightCpuW + x0 + 1] + earthNightCpu[(y0 + 1) * earthNightCpuW + x0] + earthNightCpu[(y0 + 1) * earthNightCpuW + x0 + 1];
-                earthNightCpuBlur[by * earthNightCpuBlurW + bx] = (uint8_t)(sum / 4);
-            }
-        }
+        // The skyglow model's sources (updateLightPollutionDome): baked from this map by tools/make_skyglow_sources.py.
+        loadSkyglowSources();
         stbi_image_free(pixels);
 
         ctx.createImage((uint32_t)w, (uint32_t)h, VK_FORMAT_R8G8B8A8_SRGB,
@@ -15881,216 +15869,217 @@ void SatelliteSim::createStarPipeline(VulkanContext &ctx)
     vkDestroyShaderModule(ctx.device, frag, nullptr);
 }
 
+// ─── The skyglow model (2026-10-28) ──────────────────────────────────────────
+// CLAUDE.md "Light Pollution Dome". The artificial sky brightness at the observer, as the ratio of artificial to
+// natural sky (Falchi et al. 2016's convention; natural = 22.0 mag/arcsec^2), from every lit texel of the night map
+// within kSkyglowReachKm: each source's flux (tools/make_skyglow_sources.py: the base-removed linear light x 1 + 5 x
+// its clipped neighbours' share, x its area) through
+//   * Walker's law, (d^2 + d0^2)^-1.25 (d0 = 4 km: the near field of a 5-km texel and the light's own spread),
+//   * the extinction of the long paths, e^(-d / 120 km),
+//   * the observer's height above the SOURCE (its texel's DEM height): the glow is scattered mostly by the lowest air,
+//     0.2 e^(-dh / 8 km) (molecules) + 0.8 e^(-dh / 1.2 km) (the boundary layer's aerosol): a mountain observatory
+//     above its island's towns sees a quarter of their glow, an airliner over a city a few percent, orbit nothing.
+// x kSkyglowK (fitted: 16 reference sites, 0.28 mag rms). Z = the zenith ratio; D[s] = the share of each source's
+// glow seen as a dome toward its horizon, d / (d + 15 km) of it (a source overhead lights the whole sky alike), put
+// into the sector of its bearing x 16 and blurred +-45 deg (a real dome is broad). darksky.glsl turns them into a sky
+// per direction.
+namespace
+{
+constexpr float kSkyglowK = 4.37f;
+constexpr float kSkyglowReachKm = 300.0f;
+constexpr float kSkyglowD0Km = 4.0f;
+constexpr float kSkyglowExtKm = 120.0f;
+constexpr float kSkyglowDomeKm = 15.0f;
+constexpr float kSkyglowMaxAltM = 60000.0f; // above it nothing reaches the eye (e^-50 aerosol, 0.2 e^-7.5 molecules)
+// The legacy point-source wash-out (lightDomeAz[], read by sat_flare.comp, planets, comets, meteors): R / (R + this),
+// R the ratio toward the sector's horizon. Half at a Bortle 7 sky (~19 mag/arcsec^2).
+constexpr float kSkyglowWashHalf = 15.0f;
+} // namespace
+
+void SatelliteSim::loadSkyglowSources()
+{
+    skyglowSrc.clear();
+    skyglowTileOff.clear();
+    const char *path = "assets/textures/skyglow_sources.bin";
+    FILE *f = std::fopen(path, "rb");
+    if (!f)
+    {
+        Log::line(std::string("skyglow: ") + path + " missing: no light pollution (run tools/make_skyglow_sources.py)");
+        return;
+    }
+    char magic[4];
+    uint32_t hdr[4]; // width, height, tile, count
+    bool ok = std::fread(magic, 1, 4, f) == 4 && std::memcmp(magic, "SLSG", 4) == 0 && std::fread(hdr, 4, 4, f) == 4 &&
+              hdr[2] > 0 && hdr[0] % hdr[2] == 0 && hdr[1] % hdr[2] == 0;
+    if (ok)
+    {
+        skyglowW = (int)hdr[0];
+        skyglowH = (int)hdr[1];
+        skyglowTile = (int)hdr[2];
+        const size_t nTiles = (size_t)(skyglowW / skyglowTile) * (skyglowH / skyglowTile);
+        skyglowTileOff.resize(nTiles + 1);
+        skyglowSrc.resize(hdr[3]);
+        ok = std::fread(skyglowTileOff.data(), 4, nTiles + 1, f) == nTiles + 1 &&
+             std::fread(skyglowSrc.data(), sizeof(SkyglowSrc), hdr[3], f) == hdr[3] && skyglowTileOff.back() == hdr[3];
+    }
+    std::fclose(f);
+    if (!ok)
+    {
+        skyglowSrc.clear();
+        skyglowTileOff.clear();
+        Log::line(std::string("skyglow: ") + path + " unreadable: no light pollution");
+        return;
+    }
+    Log::line("skyglow: " + std::to_string(skyglowSrc.size()) + " sources");
+}
+
+void SatelliteSim::computeSkyglow(double latDeg, double lonDeg, float altM, float &Z, float *D, int *nUsed) const
+{
+    static_assert(sizeof(SkyglowSrc) == 8, "skyglow_sources.bin entry");
+    Z = 0.0f;
+    for (int s = 0; s < kNumLightSectors; ++s)
+        D[s] = 0.0f;
+    int used = 0;
+    if (skyglowSrc.empty() || altM > kSkyglowMaxAltM)
+    {
+        if (nUsed)
+            *nUsed = 0;
+        return;
+    }
+    const int T = skyglowTile, tx = skyglowW / T, ty = skyglowH / T;
+    const double y0 = (90.0 - latDeg) / 180.0 * skyglowH;
+    const double x0 = (lonDeg + 180.0) / 360.0 * skyglowW;
+    const float dyKm = (float)(glm::pi<double>() * 6371.0 / skyglowH);
+    const float dxKm = dyKm * (2.0f * skyglowH / skyglowW) * std::max((float)std::cos(glm::radians(latDeg)), 0.02f);
+    const int jy0 = std::max(0, (int)std::floor((y0 - kSkyglowReachKm / dyKm) / T));
+    const int jy1 = std::min(ty - 1, (int)std::floor((y0 + kSkyglowReachKm / dyKm) / T));
+    const int nxT = std::min(tx / 2, (int)(kSkyglowReachKm / dxKm / T) + 1);
+    const int cx = (int)std::floor(x0 / T);
+    const float reach2 = kSkyglowReachKm * kSkyglowReachKm, d02 = kSkyglowD0Km * kSkyglowD0Km;
+    const float secK = (float)kNumLightSectors / (2.0f * glm::pi<float>());
+    float acc[kNumLightSectors] = {};
+    for (int j = jy0; j <= jy1; ++j)
+    {
+        for (int ii = cx - nxT; ii <= cx + nxT; ++ii)
+        {
+            const int i = ((ii % tx) + tx) % tx;
+            const uint32_t a = skyglowTileOff[(size_t)j * tx + i], b = skyglowTileOff[(size_t)j * tx + i + 1];
+            if (a == b)
+                continue;
+            const float baseY = (float)(y0 - (double)j * T - 0.5);  // north km = (baseY - ly) x dyKm
+            const float baseX = (float)((double)ii * T + 0.5 - x0); // east km  = (baseX + lx) x dxKm
+            for (uint32_t k = a; k < b; ++k)
+            {
+                const SkyglowSrc &s = skyglowSrc[k];
+                const float north = (baseY - (float)(s.loc >> 6)) * dyKm;
+                const float east = (baseX + (float)(s.loc & 63)) * dxKm;
+                const float d2 = north * north + east * east;
+                if (d2 >= reach2)
+                    continue;
+                const float q = d2 + d02;
+                const float d = std::sqrt(d2);
+                const float dh = std::max(altM - (float)s.groundM, 0.0f);
+                const float altW = 0.2f * std::exp(-dh * (1.0f / 8000.0f)) + 0.8f * std::exp(-dh * (1.0f / 1200.0f));
+                const float c = s.flux * altW * std::exp(-d * (1.0f / kSkyglowExtKm)) / (q * std::sqrt(std::sqrt(q)));
+                Z += c;
+                ++used;
+                // The dome share, into the sector of its bearing (linear between sector centres).
+                const float beta = d / (d + kSkyglowDomeKm);
+                float bear = std::atan2(east, north);
+                if (bear < 0.0f)
+                    bear += 2.0f * glm::pi<float>();
+                const float sf = bear * secK - 0.5f;
+                const int s0 = (int)std::floor(sf);
+                const float fr = sf - (float)s0;
+                const int w0 = ((s0 % kNumLightSectors) + kNumLightSectors) % kNumLightSectors;
+                acc[w0] += c * beta * (1.0f - fr);
+                acc[(w0 + 1) % kNumLightSectors] += c * beta * fr;
+            }
+        }
+    }
+    Z *= kSkyglowK;
+    const float kBlur[5] = {0.1f, 0.2f, 0.4f, 0.2f, 0.1f};
+    for (int s = 0; s < kNumLightSectors; ++s)
+    {
+        float v = 0.0f;
+        for (int k = -2; k <= 2; ++k)
+            v += acc[((s + k) % kNumLightSectors + kNumLightSectors) % kNumLightSectors] * kBlur[k + 2];
+        D[s] = v * kSkyglowK * (float)kNumLightSectors;
+    }
+    if (nUsed)
+        *nUsed = used;
+}
+
+float SatelliteSim::skyglowRatioAt(float bearingRad, float z) const
+{
+    const float secF = bearingRad * ((float)kNumLightSectors / (2.0f * glm::pi<float>())) - 0.5f;
+    const int sec0 = (int)std::floor(secF);
+    const float fr = secF - (float)sec0;
+    const int s0 = ((sec0 % kNumLightSectors) + kNumLightSectors) % kNumLightSectors, s1 = (s0 + 1) % kNumLightSectors;
+    const float Dd = (skyglowDEased[s0] + (skyglowDEased[s1] - skyglowDEased[s0]) * fr) * skyglowGain;
+    const float ef = 0.35f / (std::max(z, 0.0f) + 0.35f);
+    return skyglowZEased * skyglowGain * (0.4f + 0.6f * ef) * (1.0f / 0.5556f) +
+           std::max(Dd, 0.0f) * std::max(ef - 0.2593f, 0.0f) * (1.0f / 0.7407f);
+}
+
 // ─── updateLightPollutionDome ────────────────────────────────────────────────
-// Builds an 8-azimuth-sector "how much city glow is in this compass direction" dome around
-// the observer, replacing the old single-scalar "brightness at the observer's own position"
-// approximation that dimmed stars/satellites uniformly regardless of which way they appeared
-// in the sky (session 25 follow-up per user feedback). Each sector samples earthNightCpuBlur
-// (bilinearly) at a few radii along that bearing — a flat-Earth tangent-plane lat/lon offset,
-// adequate at the tens-of-km scale light pollution actually reaches — and combines them with a
-// weighted max
-// (one nearby bright city should dominate that direction's glow, not get averaged away by
-// darker samples at other radii in the same sector). Sector convention matches GlowBuf's
-// existing 8-sector azBin in sat_flare.comp exactly (bearing clockwise from North, 45° each)
-// so both consumers read consistent geometry. Uploaded to lightDomeBuf for sat_flare.comp;
-// updateStars() (called right after this) reads lightDomeAz[] directly, no upload needed there.
+// The skyglow model above, recomputed when the eye moves 200 m or 20 m in height, eased (mwFadeInTimeS toward a
+// darker sky, mwFadeOutTimeS toward a brighter one: a flight over a town's edge does not pop), and uploaded: [0,16)
+// lightDomeAz (the legacy point-source wash-out), [16,32) lightDomeEasedAz = the eased directional excess D x gain,
+// [32] the eased zenith ratio Z x gain. updateStars() reads them on the CPU.
 void SatelliteSim::updateLightPollutionDome(float dt)
 {
     FPROF_SCOPE("updateLightPollutionDome");
-    float obsR = glm::length(obsECI);
-    float obsHeight = obsR - kEarthRadius;
-    // Altitude falloff: light pollution's visible skyglow washes out within a few km — a much
-    // tighter scale than the atmosphere's own 80km Rayleigh height. Effectively zero by aircraft
-    // cruise altitude, let alone orbit. Same for every sector (observer's own altitude).
-    float altFalloff = glm::clamp(glm::exp(-obsHeight / 3000.0f), 0.0f, 1.0f);
-
-    if (earthNightCpuBlur.empty() || altFalloff <= 0.0f)
+    const float obsAlt = (float)(glm::length(glm::dvec3(obsECI)) - (double)kEarthRadius);
+    const double kmPerDeg = 111.2;
+    const double dN = ((double)obsLatDeg - skyglowLastLat) * kmPerDeg;
+    double dLon = (double)obsLonDeg - skyglowLastLon;
+    dLon -= 360.0 * std::floor((dLon + 180.0) / 360.0);
+    const double dE = dLon * kmPerDeg * std::cos(glm::radians((double)obsLatDeg));
+    const bool above = obsAlt > kSkyglowMaxAltM;
+    if (above)
     {
-        for (int i = 0; i < kNumLightSectors; ++i)
-            lightDomeAz[i] = 0.0f;
-        // No data, or above the altitude at which skyglow reaches the observer at all — the sky is
-        // pristine in every direction. Still routed through the easing rather than snapped to 0:
-        // "ascending into space" is one of the two cases mwFadeInTimeS was written for (see that
-        // member), and it is the case where a snap would be most obvious.
-        easeDarkSkyDome(dt, nullptr);
-        uploadLightDome();
-        return;
+        skyglowZ = 0.0f;
+        for (float &v : skyglowD)
+            v = 0.0f;
+        skyglowLastAlt = obsAlt;
     }
-
-    // Bilinear sample of earthNightCpuBlur (the coarser, box-blurred level — see the member
-    // comment in SatelliteSim.h) — previously a nearest-pixel lookup against the sharp array,
-    // which made each of the 4 per-sector radius samples snap between ~18km cells as the
-    // observer moved or as neighboring sectors sampled nearby bearings, reading as sharp,
-    // blocky transitions. Longitude wraps; latitude clamps at the poles.
-    auto sampleDomeLum = [this](float u, float v) -> float
+    else if (dN * dN + dE * dE > 0.2 * 0.2 || std::fabs(obsAlt - skyglowLastAlt) > 20.0f)
     {
-        float fx = u * (float)earthNightCpuBlurW - 0.5f;
-        float fy = v * (float)earthNightCpuBlurH - 0.5f;
-        int x0 = (int)floorf(fx), y0 = (int)floorf(fy);
-        float tx = fx - (float)x0, ty = fy - (float)y0;
-        auto wrapX = [this](int x)
-        { return ((x % earthNightCpuBlurW) + earthNightCpuBlurW) % earthNightCpuBlurW; };
-        int x0w = wrapX(x0), x1w = wrapX(x0 + 1);
-        int y0c = std::clamp(y0, 0, earthNightCpuBlurH - 1);
-        int y1c = std::clamp(y0 + 1, 0, earthNightCpuBlurH - 1);
-        float v00 = earthNightCpuBlur[y0c * earthNightCpuBlurW + x0w] / 255.0f;
-        float v10 = earthNightCpuBlur[y0c * earthNightCpuBlurW + x1w] / 255.0f;
-        float v01 = earthNightCpuBlur[y1c * earthNightCpuBlurW + x0w] / 255.0f;
-        float v11 = earthNightCpuBlur[y1c * earthNightCpuBlurW + x1w] / 255.0f;
-        return glm::mix(glm::mix(v00, v10, tx), glm::mix(v01, v11, tx), ty);
+        const auto t0 = std::chrono::steady_clock::now();
+        computeSkyglow(obsLatDeg, obsLonDeg, obsAlt, skyglowZ, skyglowD, &skyglowSourcesUsed);
+        skyglowMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        skyglowLastLat = obsLatDeg;
+        skyglowLastLon = obsLonDeg;
+        skyglowLastAlt = obsAlt;
+    }
+    // Asymmetric easing, as the dark-sky dome always had: "fade in" (features appearing) = the sky darkening.
+    auto ease = [&](float &cur, float target)
+    {
+        const float rate =
+            (target > cur) ? (1.0f / std::max(mwFadeOutTimeS, 0.01f)) : (1.0f / std::max(mwFadeInTimeS, 0.01f));
+        cur = glm::mix(cur, target, 1.0f - std::exp(-dt * rate));
     };
-
-    // Same brightness-response curve (kNightFloor/kCityCompressK) as the sky-glow/cloud
-    // city-light effects in sat_sky.frag, so all of these read one consistent "how bright is
-    // this city" signal instead of drifting out of tune with each other.
-    const float kNightFloor = 0.06f, kCityCompressK = 0.08f;
-    // 2 km near sample added (session 26 follow-up): the observer's *own* position can sit inside
-    // a bright pixel while every 8+ km ring around it is already dark countryside (small/isolated
-    // towns) — without a near sample the dome can miss the pollution source entirely and read as
-    // "no effect" even directly under city lights. This is the direct analog of the old scalar's
-    // distance-0 sample, which this replaced.
-    //
-    // Radii/falloff widened (session follow-up, per user feedback): the old 45km outer sample with
-    // a 20km falloff scale meant a city's contribution was already down to ~10% by 45km and
-    // essentially gone by 60-80km, so any gap between two cities much wider than that read as flat
-    // pitch black — reads as far more localized than real skyglow, which stays visible over tens
-    // to a hundred+ km for a sizeable city (Falchi et al., World Atlas of Artificial Night Sky
-    // Brightness). Two more (90/150km) far radii plus a longer 35km falloff scale spread the same
-    // weighted-max combine further out: close-in behaviour barely changes (all four original radii
-    // still land at broadly the same relative weights), 45km roughly triples in contribution, and
-    // the two new far radii add a gentle regional tail that only a genuinely large/bright city can
-    // still reach by 150km. A spot with no city within that whole radius still correctly falls to
-    // ~0 and stays dark enough for the Milky Way — this is reach, not a raised floor.
-    const float kSampleRadiiM[6] = {2000.0f, 8000.0f, 20000.0f, 45000.0f, 90000.0f, 150000.0f};
-    const float kRadiusFalloffM = 35000.0f;
-    float obsLatRad = glm::radians(obsLatDeg);
-    float obsLonRad = glm::radians(obsLonDeg);
-    float cosObsLat = std::max(0.05f, cosf(obsLatRad)); // guard near the poles
-
-    // Per-sector RAW (pre-lightPollutionGain) city brightness, kept alongside the gained
-    // lightDomeAz[] below. This was a single mwRawMax — the MAX across every sector — which is
-    // precisely what made a city on one horizon suppress the Milky Way in the opposite, darkest
-    // part of the sky. Keeping it per-sector is the whole directional fix; it feeds the dark-sky
-    // exposure gate through mwPollutionThresholdLo/Hi, still deliberately independent of the gain
-    // slider that scales lightDomeAz[] for stars/satellites.
-    float rawAz[kNumLightSectors];
-    for (int sec = 0; sec < kNumLightSectors; ++sec)
+    ease(skyglowZEased, skyglowZ);
+    for (int s = 0; s < kNumLightSectors; ++s)
     {
-        float bearing = (float(sec) + 0.5f) * (2.0f * glm::pi<float>() / float(kNumLightSectors));
-        float domeRaw = 0.0f;
-        for (float D : kSampleRadiiM)
-        {
-            float dLat = (D / kEarthRadius) * cosf(bearing);
-            float dLon = (D / kEarthRadius) * sinf(bearing) / cosObsLat;
-            float sampleLatRad = glm::clamp(obsLatRad + dLat, -glm::half_pi<float>(), glm::half_pi<float>());
-            float sampleLonRad = obsLonRad + dLon;
-            while (sampleLonRad > glm::pi<float>())
-                sampleLonRad -= 2.0f * glm::pi<float>();
-            while (sampleLonRad < -glm::pi<float>())
-                sampleLonRad += 2.0f * glm::pi<float>();
-
-            float u = (sampleLonRad + glm::pi<float>()) / (2.0f * glm::pi<float>());
-            float v = (0.5f * glm::pi<float>() - sampleLatRad) / glm::pi<float>();
-            float lum = sampleDomeLum(u, v);
-            float raw = std::max(0.0f, lum - kNightFloor);
-            float weight = expf(-D / kRadiusFalloffM);
-            domeRaw = std::max(domeRaw, raw * weight);
-        }
-        float cityBrightness = domeRaw / (domeRaw + kCityCompressK);
-        // lightPollutionGain applied once at the source so satellites (via lightDomeBuf) and
-        // stars (reading lightDomeAz[] directly) stay coherently scaled by construction — same
-        // array, not two separately-tuned gains that could drift apart like daySuppression vs.
-        // the stars' fixed kStarPollutionMaxDim did.
-        // NOT clamped to 1.0 here (session 26 follow-up — this was a real bug): elevFalloff
-        // (applied downstream by each consumer, ≤1 for anything off the horizon) was multiplying
-        // an already-saturated value, so no gain above the point where cityBrightness*altFalloff*
-        // gain first hit 1.0 (around gain≈5) could push non-horizon directions any brighter —
-        // gain=500 read identically to gain=5. Leaving this unclamped lets high gain compensate
-        // for elevFalloff's reduction; the final domeVal clamp downstream still bounds the result.
-        lightDomeAz[sec] = cityBrightness * altFalloff * lightPollutionGain;
-        rawAz[sec] = cityBrightness * altFalloff;
+        ease(skyglowDEased[s], skyglowD[s]);
+        lightDomeEasedAz[s] = skyglowDEased[s] * skyglowGain;
+        const float Rh = (skyglowZEased * 1.8f + skyglowDEased[s]) * skyglowGain;
+        lightDomeAz[s] = Rh / (Rh + kSkyglowWashHalf);
     }
-
-    // Circular smoothing pass (session 26 follow-up): each sector is a single bearing ray, so a
-    // real city's edge — which doesn't line up with 22.5° sector boundaries — can put a bright
-    // sector directly next to a dark one. Center-to-center interpolation (in the consumers) only
-    // smooths *within* a sector's span; it doesn't reduce how different two neighboring raw
-    // values are, so sharp swings still read as fast, unsubtle pops when panning across a sector
-    // boundary — worst exactly at the horizon, where elevFalloff is largest and fully exposes any
-    // sampling noise. 5-tap blur (~±45°) trades a little directional sharpness for removing that
-    // noise while keeping the broad "city here, dark ocean there" structure intact.
-    float smoothed[kNumLightSectors];
-    float smoothedRaw[kNumLightSectors];
-    const float kBlurWeights[5] = {0.1f, 0.2f, 0.4f, 0.2f, 0.1f};
-    for (int i = 0; i < kNumLightSectors; ++i)
-    {
-        float acc = 0.0f, accRaw = 0.0f;
-        for (int k = -2; k <= 2; ++k)
-        {
-            int idx = ((i + k) % kNumLightSectors + kNumLightSectors) % kNumLightSectors;
-            acc += lightDomeAz[idx] * kBlurWeights[k + 2];
-            // rawAz gets the identical blur, for the identical reason — it is sampled along the
-            // same single bearing ray per sector and carries the same edge noise. Applied here, to
-            // the raw brightness, rather than after the log-map in easeDarkSkyDome: the log-map is
-            // non-linear so the two are NOT equivalent, and this is the order the blur was
-            // designed for (it smooths a physical city-brightness signal, and it keeps both dome
-            // halves derived from the same smoothed numbers).
-            accRaw += rawAz[idx] * kBlurWeights[k + 2];
-        }
-        smoothed[i] = acc;
-        smoothedRaw[i] = accRaw;
-    }
-    memcpy(lightDomeAz, smoothed, sizeof(smoothed));
-
-    easeDarkSkyDome(dt, smoothedRaw);
     uploadLightDome();
 }
 
-// ─── easeDarkSkyDome ─────────────────────────────────────────────────────────
-// Log-maps each sector's raw (pre-lightPollutionGain) city brightness onto the normalized [0,1]
-// "pristine -> inner city" axis the dark-sky exposure gate reads, then eases toward it with the
-// same asymmetric 1 - exp(-dt/tau) idiom skyGlareEased uses.
-//
-// Logarithmic because the consumer works in magnitudes (shaders/include/darksky.glsl): the raw
-// signal spans orders of magnitude and a linear ramp across mwPollutionThresholdLo/Hi would spend
-// almost all of its range on the brightest handful of sectors. mwPollutionThresholdLo/Hi keep
-// their tuned values and still bracket the same transition — see their member comments for what
-// changed about their meaning.
-//
-// rawSectors == nullptr means "no pollution data at all in any direction" (no night texture, or
-// the observer is above the altitude skyglow reaches) — target 0, i.e. pristine, still eased.
-void SatelliteSim::easeDarkSkyDome(float dt, const float *rawSectors)
-{
-    float loS = std::max(mwPollutionThresholdLo, 1e-6f);
-    float hiS = std::max(mwPollutionThresholdHi, loS * 1.001f);
-    float invLogRange = 1.0f / std::log(hiS / loS);
-
-    for (int i = 0; i < kNumLightSectors; ++i)
-    {
-        float target = 0.0f;
-        if (rawSectors)
-            target = glm::clamp(std::log(std::max(rawSectors[i], loS) / loS) * invLogRange, 0.0f, 1.0f);
-
-        // Asymmetric, same convention as mwSuppressEased had: "fade in" is the direction that
-        // makes features MORE visible (pollution dropping, target falling), "fade out" the
-        // direction that hides them. Preserves what those two sliders meant to a user who has
-        // already tuned them, even though the quantity being eased is now the dome itself.
-        float rate = (target > lightDomeEasedAz[i]) ? (1.0f / std::max(mwFadeOutTimeS, 0.01f))
-                                                    : (1.0f / std::max(mwFadeInTimeS, 0.01f));
-        lightDomeEasedAz[i] = glm::mix(lightDomeEasedAz[i], target, 1.0f - std::exp(-dt * rate));
-    }
-}
-
 // ─── uploadLightDome ─────────────────────────────────────────────────────────
-// Both halves of lightDomeBuf in one shot: [0,16) the gain-scaled linear dome (satellites via
-// sat_flare.comp), [16,32) the normalized+eased dark-sky dome (Milky Way/zodiacal in
-// sat_sky.frag, aurora in cloud_march.comp). updateStars() reads lightDomeAz[] from the CPU array
-// directly and needs no upload.
+// lightDomeBuf in one shot: [0,16) the legacy wash-out (sat_flare.comp), [16,32) the skyglow's eased directional
+// excess x gain, [32,36) skyglowInfo (x = the eased zenith ratio x gain). updateStars() reads the CPU copies.
 void SatelliteSim::uploadLightDome()
 {
     memcpy(lightDomeMapped, lightDomeAz, sizeof(lightDomeAz));
-    memcpy(static_cast<char *>(lightDomeMapped) + sizeof(lightDomeAz),
-           lightDomeEasedAz, sizeof(lightDomeEasedAz));
+    memcpy(static_cast<char *>(lightDomeMapped) + sizeof(lightDomeAz), lightDomeEasedAz, sizeof(lightDomeEasedAz));
+    const float info[4] = {skyglowZEased * skyglowGain, 0.0f, 0.0f, 0.0f};
+    memcpy(static_cast<char *>(lightDomeMapped) + 2 * sizeof(lightDomeAz), info, sizeof(info));
 }
 
 // ─── updateStars ──────────────────────────────────────────────────────────────
@@ -16229,8 +16218,8 @@ void SatelliteSim::updateStars()
     }
 
     // ── The sky's brightness, for the faint stars (darksky.glsl's linear model, + the Moon and the supernova) ──
-    // In linear units of 10^(-0.4 B), B in mag/arcsec^2: pristine 22; the city dome as darkSkySkyMagLinear (the
-    // compression undone); twilight darkSkyTwilightMag (its anisotropy one exp2 a star); the Moon / supernova as a sky
+    // In linear units of 10^(-0.4 B), B in mag/arcsec^2: pristine 22; the city glow as the skyglow model (skyglowRatioAt,
+    // darksky.glsl's darkSkyArtRatio); twilight darkSkyTwilightMag (its anisotropy one exp2 a star); the Moon / supernova as a sky
     // of 18 mag/arcsec^2 at the full Moon high up.
     const float kPsfK = 1.3287712f;   // 0.4 * log2(10)
     const float Lp = exp2f(-kPsfK * 22.0f);
@@ -16239,7 +16228,6 @@ void SatelliteSim::updateStars()
     const float twBase = glm::mix(darkSkyTwilightMag0, 26.0f, twT);
     const float twL0 = exp2f(-kPsfK * (twBase + 0.5f * darkSkyTwilightAniso)); // at prox = 0 (antisolar)
     const float Lmoon = (moonBrightStar + snSkyBright) * exp2f(-kPsfK * 18.0f);
-    const float invGain = 1.0f / std::max(lightPollutionGain, 1e-4f);
     const glm::vec3 sunEnu = glm::normalize(glm::vec3(sunDirENU));
     // Schaefer-style naked-eye limit (Garstang 1986 / Schaefer 1990, simplified): V_lim = 7.93 - 5 log10(1 + 10^(4.316
     // - B/5)), i.e. the limiting intensity 10^(-0.4 x 7.93) x (1 + c sqrt(L))^2 with c = 10^4.316. starLimitBoost (mag)
@@ -16253,19 +16241,10 @@ void SatelliteSim::updateStars()
         return I0 * q * q * exp2f(-kPsfK * starLimitBoost * w);
     };
     const float IlimPristine = ilimOf(Lp);
-    // The darkest direction this frame: the faintest catalogue magnitude that can show anywhere.
-    float domeMin = 1e9f;
-    for (int k = 0; k < kNumLightSectors; ++k)
-        domeMin = std::min(domeMin, lightDomeAz[k]);
-    auto cityL = [&](float raw, float z) {
-        raw = std::max(raw * invGain, 0.0f);
-        const float d = raw * 0.08f / std::max(1.0f - raw, 0.02f);
-        const float elevFalloff = 0.35f / (std::max(z, 0.0f) + 0.35f);
-        return Lp * d * (0.4f + 0.6f * elevFalloff) / 0.0241f;
-    };
-    const float Lmin = Lp + cityL(domeMin, 1.0f) + twL0 + Lmoon;
+    // The darkest direction this frame: the zenith's city glow (the skyglow only brightens toward the horizon).
+    const float Lmin = Lp * (1.0f + skyglowRatioAt(0.0f, 1.0f)) + twL0 + Lmoon;
     const float IlimMin = ilimOf(Lmin);
-    starNelmZenith = -2.5f * log10f(ilimOf(Lp + cityL(0.5f * (lightDomeAz[0] + lightDomeAz[8]), 1.0f) +
+    starNelmZenith = -2.5f * log10f(ilimOf(Lp * (1.0f + skyglowRatioAt(0.0f, 1.0f)) +
                                            twL0 * exp2f(kPsfK * darkSkyTwilightAniso * (0.5f + 0.5f * sunEnu.z)) + Lmoon));
     // Under a dark sky the faint stars are drawn as if the point style's limit were starDarkExtraMag fainter
     // (stars.dark_sky_extra, 1 mag): the point model subtracts its value at the limit, so at limit 8 a mag-7.5 star is
@@ -16368,7 +16347,7 @@ void SatelliteSim::updateStars()
             const int sec0 = (int)floorf(secF);
             const float secFrac = secF - float(sec0);
             const int s0 = ((sec0 % kNumLightSectors) + kNumLightSectors) % kNumLightSectors, s1 = (s0 + 1) % kNumLightSectors;
-            const float domeAz = lightDomeAz[s0] + (lightDomeAz[s1] - lightDomeAz[s0]) * secFrac;
+            (void)s1; (void)secFrac;
             for (int g = 0; g <= kGu; ++g)
             {
                 const float uu = (float)g / kGu;
@@ -16376,7 +16355,7 @@ void SatelliteSim::updateStars()
                 const float ch = std::sqrt(std::max(1.0f - mu * mu, 0.0f));
                 const glm::vec3 d(sb * ch, cb * ch, mu);
                 const float prox = 0.5f + 0.5f * glm::dot(d, sunEnu);
-                const float L = Lp + cityL(domeAz, mu) + twL0 * exp2f(kPsfK * darkSkyTwilightAniso * prox) + Lmoon;
+                const float L = Lp * (1.0f + skyglowRatioAt(bear, mu)) + twL0 * exp2f(kPsfK * darkSkyTwilightAniso * prox) + Lmoon;
                 gridLim[g][a] = ilimOf(L) / IlimPristine;
             }
         }
@@ -16458,7 +16437,8 @@ void SatelliteSim::updateStars()
                 const float xp = IlimPristine / Iapp, x = rl * xp;
                 g = std::min(1.0f, (1.0f + xp * xp * xp) / (1.0f + x * x * x));
             }
-            float intensity = Iapp * nightFactorEff * g * (1.0f - domeVal * kStarPollutionMaxDim) *
+            // The city glow is in the naked-eye gate (g) when it is on: the old linear dome dim only without it.
+            float intensity = Iapp * nightFactorEff * g * (1.0f - (starSkyLimit ? 0.0f : domeVal) * kStarPollutionMaxDim) *
                               (1.0f - beamDomeVal * kStarBeamPollutionMaxDim) * (1.0f - moonBrightStar * kStarMoonMaxDim) *
                               (1.0f - std::min(snSkyBright, 1.0f) * kStarMoonMaxDim);
             if (darkAdd > 0.0f && intensity > 0.0f && intensity < 30.0f * Ithr)

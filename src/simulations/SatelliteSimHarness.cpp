@@ -456,6 +456,33 @@ json SatelliteSim::harnessStateJson()
         json g = json::array(), e = json::array();
         for (int i = 0; i < kNumLightSectors; ++i) { g.push_back(lightDomeAz[i]); e.push_back(lightDomeEasedAz[i]); }
         j["light_dome"] = {{"gained", g}, {"dark_sky", e}};
+        // The skyglow model (2026-10-28): the artificial sky brightness as mag/arcsec^2 (natural 22.0), at the zenith
+        // and at 20 / 10 deg elevation (the darkest and brightest bearing), from the EASED values the renderer uses
+        // (`target_*` = this place's, before easing), and the naked-eye limit at the zenith (starNelmZenith: + twilight
+        // and the Moon).
+        auto mag = [](float r) { return 22.0f - 2.5f * std::log10(1.0f + std::max(r, 0.0f)); };
+        float lo20 = 1e9f, hi20 = 0.0f, lo10 = 1e9f, hi10 = 0.0f;
+        int hiBear = 0;
+        for (int b = 0; b < 72; ++b)
+        {
+            const float br = glm::radians(5.0f * b);
+            const float r20 = skyglowRatioAt(br, std::sin(glm::radians(20.0f)));
+            const float r10 = skyglowRatioAt(br, std::sin(glm::radians(10.0f)));
+            lo20 = std::min(lo20, r20); hi20 = std::max(hi20, r20);
+            lo10 = std::min(lo10, r10);
+            if (r10 > hi10) { hi10 = r10; hiBear = 5 * b; }
+        }
+        json dj = json::array();
+        for (int i = 0; i < kNumLightSectors; ++i) dj.push_back(skyglowDEased[i] * skyglowGain);
+        j["sky_quality"] = {
+            {"zenith_mag", mag(skyglowRatioAt(0.0f, 1.0f))},
+            {"zenith_ratio", skyglowZEased * skyglowGain},
+            {"target_zenith_mag", mag(skyglowZ * skyglowGain)},
+            {"el20_mag_darkest", mag(lo20)}, {"el20_mag_brightest", mag(hi20)},
+            {"el10_mag_darkest", mag(lo10)}, {"el10_mag_brightest", mag(hi10)}, {"el10_brightest_bearing_deg", hiBear},
+            {"nelm_zenith", starNelmZenith},
+            {"dome_d", dj}, {"gain", skyglowGain},
+            {"sources_used", skyglowSourcesUsed}, {"compute_ms", skyglowMs}};
     }
 
     json ko = json::array();

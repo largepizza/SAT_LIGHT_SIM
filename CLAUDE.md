@@ -7666,7 +7666,7 @@ except `brightnessScale`/`mirrorBoost`, which the reflectance model in `sat_orbi
 | `visThresh` | 0.0 | visibility cull threshold |
 | `highlightFlare` | 0.05 | fixed flare for highlight/census mode |
 | `moonSuppression` | 4.0 | sky background suppression ratio (moon) |
-| `lightPollutionGain` | 1.0 | multiplies the light-pollution dome at its source — see "Subsystem: Light Pollution Dome" |
+| `skyglowGain` | 1.0 | x the calibrated skyglow model (`photometry.skyglow_gain`) — see "Subsystem: Light Pollution Dome" |
 | `extinctionCoeff` | 0.18 | sea-level zenith extinction, magnitudes — see "Subsystem: Atmospheric Extinction" |
 
 `effectFlare = flare / (1 + (dayBright × daySuppression + moonBright × moonSuppression) × atmFrac)`,
@@ -7867,82 +7867,83 @@ pass and SKY_ENV only: SKY_LITE (Planetarium) and Potato have no Milky Way.
   6.56), FOV 8 +0.25 ms (1.29 -> 1.55; every pixel zoomed), ISS +0.07; sky TAA 168 registers both, binary 937 -> 950 KB;
   SKY_LITE SPIR-V +88 B (the UBO). Scripts and captures: `harness_runs/mw_tools/` (azel.py: a target's az / el for a
   time and place; energy.py: linear-light ratios of two captures), `harness_runs/mw_live2/` (untracked).
-- Open: the existing dark-sky gate's dome (`darkSkyDomeT`, a log ramp from 1e-6) reads most sites within tens of km of
-  a town as city (a "Bortle 4" place south-west of Santiago shows only a ghost of the band); the star clouds are drawn
+- Open: the star clouds are drawn
   in the sky pass, so they ride the sky TAA (the catalogue stars are drawn after it); M33 and other faint galaxies are
   not drawn; the panorama's colours are a long-exposure photograph's (the night-vision term is the only eye model).
 
 ## Subsystem: Light Pollution Dome
 
-Session 26 replaced a single scalar (city brightness at the *observer's own* lat/lon — correct
-about moving with the observer, wrong about being uniform across every direction of the sky) with
-a 16-azimuth-sector dome, interpolated between sector centers, brighter near the horizon toward
-nearby cities and fainter elsewhere — consumed identically by both satellites and stars.
+**The skyglow model (2026-10-28, branch fix/darksky-gate).** One physical sky brightness for every night-sky feature:
+the ARTIFICIAL sky brightness at the observer as the ratio of artificial to natural sky (Falchi et al. 2016's
+convention; natural = `kSkyMagPristine` 22.0 mag/arcsec^2), so the sky is 22 - 2.5 log10(1 + ratio). Code:
+`computeSkyglow` / `updateLightPollutionDome` / `skyglowRatioAt` (SatelliteSim.cpp), `darkSkyArtRatio` /
+`darkSkySkyMag` (shaders/include/darksky.glsl), `tools/make_skyglow_sources.py` -> `assets/textures/skyglow_sources.bin`.
+- **Sources** (the tool, offline): every texel of the 8K night map (~4.9 km) whose light, decoded as linear
+  (L/255)^2.2 - (16/255)^2.2 (the map's blue base, luminance 2.5-16.5 worldwide, removed), passes 1e-3, x (1 + 5 f) with
+  f the share of CLIPPED texels (L > 235) in the 5 x 5 round it — the map is tone-mapped and clips every town's core, so
+  a small town and a megacity's core read alike; the clipped neighbours restore the difference — x its area (km^2),
+  with its DEM height. 394,634 sources, 3.2 MB, tiled 64 x 64 texels. Re-run the tool after changing the night map.
+- **Propagation** (CPU, every source within 300 km): Walker's law (d^2 + 4^2)^-1.25 (d in km; d0 = the texel's own
+  near field), x e^(-d / 120 km) (the long paths' extinction), x the observer's height above the SOURCE's ground,
+  0.2 e^(-dh / 8 km) + 0.8 e^(-dh / 1.2 km) (the glow is scattered mostly in the boundary layer: a mountain observatory
+  above its island's towns sees a quarter of their glow, an airliner a few percent, nothing from 60 km up), x
+  `kSkyglowK` 4.37. Z = the sum (the zenith ratio). Each source also puts d / (d + 15 km) of its share (a source
+  overhead lights the whole sky alike, a distant one is a dome on its horizon) into the sector of its bearing (16 x,
+  linear between sector centres), blurred +-45 deg: D[16], the directional excess toward each horizon.
+- **In a direction** (darkSkyArtRatio, its CPU mirror skyglowRatioAt): ratio = Z x iso + D(az) x dome, iso =
+  (0.4 + 0.6 ef) / 0.5556 (1 at the zenith, 1.8 at the horizon: the air path), dome = (ef - 0.259) / 0.741 (0 at the
+  zenith, so the zenith has no azimuth seam; 1 at the horizon), ef = 0.35 / (z + 0.35).
+- **Recomputed** when the eye moves 200 m or 20 m in height (5-30k sources, 0.01-0.2 ms; nothing in a still view),
+  eased (`mwFadeInTimeS` toward a darker sky, `mwFadeOutTimeS` toward a brighter one), x "Skyglow (x calibrated)"
+  (`photometry.skyglow_gain`, 1 = calibrated; Photometry slot 6, where "Pollution gain" was).
+- **lightDomeBuf** (36 floats, mirrored whole): [0,16) `lightDomeAz` = the legacy point-source wash-out R / (R + 15), R
+  the ratio toward the sector's horizon (half at ~19 mag/arcsec^2), read by sat_flare.comp, planets, comets' heads and
+  meteors through their old `domeVal = clamp(domeAz x (0.4 + 0.6 elevFalloff))` x a max dim; [16,32) `lightDomeEasedAz`
+  = D x gain; [32] `skyglowInfo.x` = Z x gain. Readers of the physical model declare `vec4 skyglowInfo` after the two
+  arrays (sat_sky.frag, cloud_march.comp, comet_tail.*); sat_flare.comp declares only the first array.
+- **Consumers of the physical sky**: the Milky Way, zodiacal light and the ocean's Milky Way reflection (sat_sky.frag),
+  the aurora (cloud_march.comp: `darkSkySkyMagLinear` is now the same function), comet tails (`darkSkyPollutionMagPhys`),
+  the stars' naked-eye limit (updateStars: `Lp (1 + skyglowRatioAt(bearing, z))`; the old linear dome dim on stars is
+  applied only with `stars.sky_limit` off — it double-counted the city glow, and at "Pollution gain" 25 dimmed stars 99%
+  near any light).
+- **Calibration** (2026-10-28; harness `state` -> `sky_quality`, run at a moonless astronomical night 2036-11-19; the
+  references are published SQM / V zenith values or, marked ~, estimates for the Bortle class: +-0.3 mag at best):
 
-**`SatelliteSim::updateLightPollutionDome()`** (CPU, called each frame in `recordCompute()` right
-before `updateStars()`): for each of 16 sectors (22.5° each, bearing clockwise from North —
-independent of `sat_flare.comp`'s unrelated `GlowBuf` 8-sector `azBin`, decoupled on purpose),
-samples `earthNightCpu` at 4 radii (2/8/20/45 km) along that bearing using a flat-Earth
-tangent-plane lat/lon offset (adequate at this scale), combined via **weighted max** (a single
-nearby bright city should dominate that direction, not get averaged down by darker samples at
-other radii in the same sector) with `exp(-D/20000)` distance weighting. The 2 km near sample
-exists because the observer's own position can sit inside a bright pixel while every 8+ km ring
-around it is already dark countryside (small/isolated towns) — without it the dome could miss the
-pollution source entirely, the direct analog of the old scalar's distance-0 sample. Response curve
-(`kNightFloor`/`kCityCompressK`) and the observer's own altitude falloff (`exp(-obsHeight/3000)`)
-match the pre-session-26 scalar's constants exactly — only the sampling geometry changed. Result
-scaled by `lightPollutionGain` (settings-window slider "Pollution gain", default 1.0, user-widened
-range) applied once here at the source — **intentionally left unclamped**, not `clamp`ed to `[0,1]`
-— so satellites and stars stay coherently scaled by construction (same array). A 5-tap circular
-blur (`[0.1, 0.2, 0.4, 0.2, 0.1]`, ~±45°) then smooths the 16 raw per-sector values before storing:
-each sector is a single bearing ray, so a real city's edge (which doesn't line up with 22.5° sector
-boundaries) could put a bright sector directly next to a dark one — sampling noise, not genuine
-geography, and the direct cause of "stars/satellites suddenly get much brighter" pops reported
-when panning across a sector boundary near the horizon (worst there because `elevFalloff` is
-largest at the horizon, fully exposing the noise). Result: `lightDomeAz[16]`, a CPU member array.
+  | Site | Ref | Before (Milky Way gate / aurora + stars) | After |
+  |---|---|---|---|
+  | Paranal | 21.8 | 19.51 / 22.00 | 22.00 |
+  | NamibRand | 21.9 | 22.00 / 22.00 | 22.00 |
+  | La Palma, Roque de los Muchachos | 21.7 | 13.78 / 21.86 | 21.63 |
+  | Mauna Kea | 21.7 | 15.82 / 21.98 | 21.99 |
+  | Death Valley | 21.6 | 14.87 / 21.96 | 21.90 |
+  | Cherry Springs | 21.6 | 14.30 / 21.94 | 21.88 |
+  | Kitt Peak | 21.6 | 15.51 / 21.92 | 21.91 |
+  | Palomar | ~21.0 | 13.64 / 21.57 | 21.44 |
+  | Santiago SW field (-33.95, -71.45) | ~21.3 | 15.28 / 21.85 | 21.84 |
+  | Lick | ~20.3 | 13.64 / 21.05 | 20.51 |
+  | Flagstaff (lighting code: excluded) | ~20.4 | 13.64 / 21.75 | 19.28 |
+  | Mount Wilson | ~19.2 | 13.64 / 20.98 | 18.93 |
+  | Boulder | ~18.8 | 13.64 / 21.23 | 18.60 |
+  | Santiago centre | ~17.3 | 13.64 / 20.58 | 17.55 |
+  | Los Angeles downtown | 17.0 | 13.64 / 19.48 | 17.10 |
+  | Manhattan | 16.8 | 13.64 / 18.86 | 17.09 |
+  | London centre | 17.3 | 13.64 / 18.86 | 17.23 |
 
-**Delivery:** `lightDomeAz` is memcpy'd into `lightDomeBuf` (host-visible/coherent, 16 floats,
-binding 3 in the sat_flare.comp descriptor set — same `reflectorTargetsBuf`-style "CPU writes,
-GPU reads this frame" pattern; since frames in flight a whole-buffer `mirrorUpload`) for `sat_flare.comp`.
-`updateStars()` reads the `lightDomeAz` CPU array directly, no upload round-trip needed.
-
-**Per-consumer lookup** (both `sat_flare.comp` and `updateStars()` compute this the same way, GLSL
-and C++ mirrors of each other): rather than a hard `azBin` lookup, interpolates between the two
-nearest sector *centers* — `secF = bearing/22.5° - 0.5`, `sec0 = floor(secF)`,
-`domeAz = mix(lightDomeAz[sec0], lightDomeAz[sec0+1], frac(secF))` (both indices wrapped mod 16).
-Hard-binning (even at 16 sectors) showed visible blocky transitions over wide, fairly uniform
-bright regions (e.g. flying over Europe) — the interpolation, not the sector count, is what fixes
-that. Then `elevFalloff = 0.35 / (max(skyDir.z, 0) + 0.35)` (1.0 at the horizon, ~0.26 at zenith —
-city glow hangs low in the sky, not overhead). **The only clamp is here**, after `elevFalloff`:
-`domeVal = clamp(domeAz * elevFalloff, 0, 1)` — clamping `lightDomeAz` itself upstream was a real
-bug (fixed same session): it let `elevFalloff` (≤1 off the horizon) silently cap the *effective*
-max well below 1.0 at every non-horizon angle, no matter how high `lightPollutionGain` went, so
-gain past the point where it first saturated the pre-`elevFalloff` value (~5) looked identical to
-gain=500. `domeVal` feeds the existing `1 - domeVal × kPollutionMaxDim` dimming multiplier
-unchanged (`kSatPollutionMaxDim` = 0.85 in `sat_flare.comp`, `kStarPollutionMaxDim` = 0.99 in
-`updateStars()`, both user-tuned — still a hard ceiling on max dimming regardless of gain).
-
-**S2c isotropic floor (RELEASE_v1_1_PLAN.md, session 30):** `elevFalloff` alone bottoms out at
-~0.26 at zenith, so no `kPollutionMaxDim` could ever dim a straight-overhead target — satellite,
-star, or the Milky Way — by more than ~26%, regardless of how bright the city or how high
-`lightPollutionGain` went. This is why the Milky Way stayed visible near cities: it's a large,
-mostly-high-in-the-sky feature living almost entirely in the region `elevFalloff` can't reach. Real
-urban skyglow raises zenith brightness far more (Bortle 8 zenith ≈ 50× Bortle 1) via isotropically
-scattered light, not just the horizon-hugging direct glow `elevFalloff` models. Fix, applied
-identically at all four consumers (`sat_flare.comp`, `sat_sky.frag`'s Milky Way, `cloud_march.comp`'s
-aurora, `updateStars()`) — `beamDomeVal`/beam-glow dome copies are deliberately left alone, since a
-Reflect-Orbital beam flash is a genuinely horizon-hugging point source, not city skyglow:
-```
-domeVal = clamp(domeAz * (kIsotropicFrac + (1 - kIsotropicFrac) * elevFalloff), 0, 1)
-```
-`kIsotropicFrac = 0.4` (hand-duplicated at each site, same convention as `elevFalloff` itself).
-Horizon behaviour (`elevFalloff≈1`) is unchanged; zenith now floors at `domeAz * kIsotropicFrac`
-instead of `domeAz * 0.26`. Expect `lightPollutionGain` to need re-tuning after this — it now reaches
-brightness levels near cities it structurally could not reach before.
-
-**Not built:** the elevation falloff shape is a fixed analytic curve, not itself sampled/measured —
-a true 2D (azimuth × elevation) dome would need real atmospheric-scattering-height modeling, judged
-not worth the complexity over the fixed-curve approximation.
+  rms 0.27 mag (Flagstaff excluded), worst 0.54 (the Santiago field, whose reference is the least certain); the Milky
+  Way's gate was 5.5 mag rms off, the aurora / stars' linear model 1.5 (cities ~2 mag too dark). Dark sites read 0.1-0.3
+  too dark: the natural sky varies (airglow, the solar cycle) and is fixed at 22.0. Naked-eye limit at the zenith:
+  7.8 pristine, 7.2 Teide / Arizona (B3), 5.5-5.7 Ames / Ithaca (B6), 3.2 downtown LA. The Kp 9 aurora views of issue
+  20261014_193231 (BC, Iowa farm, Arizona) read 21.7 / 21.7 / 21.0 and look as before.
+- **Known residuals**: the map does not know lighting codes or shielding (Flagstaff 1.1 too bright; La Palma's ORM is
+  right only through the altitude term), clips everything brighter than a suburb, and smears every light over ~5 km;
+  the sky pass's own rendered city glow (the orange in-scatter, `accumCity`) is a separate model and is not calibrated
+  to this one.
+- **What it replaced** (the reason the Milky Way vanished near any village): the dome sampled a 37-km blur of the map
+  at six radii per sector with a weighted MAX, compressed d / (d + 0.08), x "Pollution gain" 25; the Milky Way and
+  zodiacal light then log-mapped it from 1e-6 (`mwPollutionThresholdLo` 0) to 0.075 toward an artistic 13 mag/arcsec^2
+  (`darkSkyCityMag`): a raw 1e-3 was already 61% of the way to "city", so Paranal read 19.5 mag/arcsec^2 and La
+  Palma's observatory 13.8. Those three settings and `light_pollution_gain` are gone (not read). Before that the
+  dome was a single scalar at the observer's position (session 26 made it 16 sectors).
 
 ## Subsystem: Atmospheric Extinction
 
@@ -8412,7 +8413,8 @@ camera reaches, Jupiter is ~24 px across, Venus near inferior conjunction ~28, S
   darksky.glsl's linear model (pristine 22 + the city dome with its compression undone + twilight with its anisotropy +
   the Moon and the supernova as an 18 mag/arcsec^2 sky at the full Moon high up). Response 1 / (1 + (Ilim / I)^3),
   divided by a pristine sky's, so a pristine sky draws every star as the point style alone would. The old linear dims
-  (dome, beam dome, Moon) are kept on top.
+  (beam dome, Moon) are kept on top; the city dome's only with `stars.sky_limit` off (since 2026-10-28 the city glow is
+  the skyglow model, "Light Pollution Dome": NELM 7.8 pristine, 5.5-5.7 a B6 town, 3.2 downtown LA).
 - **Selectable stars**: named or brighter than V 4.5, drawn this frame (`pickStarAt`). A selected star is
   `selectedStarIndex` (its own index, as the comets' `selectedCometIndex`; the first cut used `selectedPlanetIndex =
   kPlanetCount + i`, which the Galilean moons now occupy). Any other selection wins: `buildSelectedSatPanel` drops
@@ -9783,7 +9785,8 @@ Read it at the start of any terrain-related session before making changes.
     ADDED light, sky = pristine x (1 + d / 0.0241) with d the dome's compression undone (d / (d + 0.08) ->
     d), so a downtown core reads ~18 (Bortle 8-9), rural Arizona / Iowa ~21.3, Fairbanks ~20; and the aurora's
     brightness scale is the physical 2.5 mag per decade (was 0.85: every part of a display went at once). Still 1 under
-    a pristine sky. The Milky Way and zodiacal light keep their own gate (`darkSkySkyMag`, unchanged).
+    a pristine sky. **Since 2026-10-28 the sky is the skyglow model** ("Light Pollution Dome"), shared with the Milky Way
+    and zodiacal light (`darkSkySkyMagLinear` = `darkSkySkyMag`): Iowa farm 21.7, Arizona 21.0, BC 21.7 mag/arcsec^2.
   - **Arc systems** (`auroraArcWeight`): sheets in groups of 5, ~70% of groups an arc system bright over 1-2 stretches
     of the oval (thousands of km), mean ~1, bright parts ~6x; the diffuse volume follows at 0.6. The storm coverage
     no longer fills the oval (-0.35 instead of -0.6 at "Arc systems" 1; both copies of `auroraCoverage`). A first cut

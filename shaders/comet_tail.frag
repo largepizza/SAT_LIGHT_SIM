@@ -14,6 +14,7 @@
 layout(std430, set = 0, binding = 5) readonly buffer LightDomeBuf {
     float lightDome[16];
     float lightDomeEased[16];
+    vec4  skyglowInfo;         // x = the skyglow model\'s zenith ratio (artificial / natural), eased x gain
 };
 #include "atmosphere.glsl"
 #include "darksky.glsl"

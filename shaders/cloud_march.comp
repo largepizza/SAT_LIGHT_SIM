@@ -73,6 +73,7 @@ layout(set = 0, binding = 25, rgba16f) uniform writeonly image2D targetDA;
 layout(std430, set = 0, binding = 7) readonly buffer LightDomeBuf {
     float lightDome[16];
     float lightDomeEased[16];   // dark-sky dome half — see sat_sky.frag's copy / uploadLightDome()
+    vec4  skyglowInfo;         // x = the skyglow model\'s zenith ratio (artificial / natural), eased x gain
 };
 layout(set = 0, binding = 8) uniform sampler3D auroraNoiseTex;
 // Baked cloud/cirrus domain-warp field (see cloud_warp_noise.comp) — replaces the 3 live

@@ -222,15 +222,15 @@ layout(set = 0, binding = 11) uniform sampler2D cloudTargetB;
 
 // Light pollution dome (binding 12): same buffer as sat_flare.comp's binding 3, CPU-written each
 // frame, TWO halves of 16 azimuth sectors each (see SatelliteSim::uploadLightDome).
-//   lightDome[]      — gain-scaled linear city brightness; what satellites/stars are dimmed by.
-//   lightDomeEased[] — the DARK-SKY dome: the same sectors' RAW (pre-lightPollutionGain) brightness
-//                      log-mapped to a normalized [0,1] pristine->inner-city axis and temporally
-//                      eased. Feeds darkSkySkyMag() for the Milky Way and zodiacal light below,
-//                      and for the aurora in cloud_march.comp.
+//   lightDome[]      — the legacy point-source wash-out (satellites, planets, comets, meteors dim by it).
+//   lightDomeEased[] + skyglowInfo — the skyglow model (artificial / natural sky, eased): per sector the directional
+//                      excess, x the zenith. Feeds darkSkySkyMag() (darksky.glsl) for the Milky Way and zodiacal
+//                      light below, and for the aurora in cloud_march.comp.
 // sat_flare.comp declares only the first half and is unaffected by the growth.
 layout(std430, set = 0, binding = 12) readonly buffer LightDomeBuf {
     float lightDome[16];
     float lightDomeEased[16];
+    vec4  skyglowInfo;         // x = the skyglow model\'s zenith ratio (artificial / natural), eased x gain
 };
 
 // Milky Way skybox (binding 13): 8K equirectangular galactic panorama. Sampled against the
