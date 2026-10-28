@@ -11,7 +11,6 @@
 #include "../Log.h"
 #include "version.h"
 #include "clay.h"
-#include "star_catalog.h"
 #include "stb_image.h"
 #include "stb_image_write.h" // UC6 — implementation lives in UIRenderer.cpp (one TU only)
 
@@ -2845,7 +2844,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             cp.terrainMaterialStrength = terrainMaterialStrength;
             cp.terrainTextureStrength = terrainTextureStrength;
             cp.terrainDebugView = (float)terrainDebugView;
-            cp.terrainErosion = glm::vec4(terrainErosionStrength, terrainErosionBranch, terrainNightSkyLight, terrainSkyLight);
+            cp.terrainErosion = glm::vec4(terrainErosionStrength, terrainErosionBranch, terrainNightSkyLight + snDiffuseMoonFrac, terrainSkyLight); // (+ the 2037 supernova's light, SatelliteSimStars.cpp)
         }
         cp.cloudOpacityScale = cloudOpacityScale;
         cp.cityLightBlurLod = 0.0f; // unread since 2026-10-06 (the blur under cloud was removed)
@@ -3957,7 +3956,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                                     starPipeLayout, 0, 1, &starDescSet, 0, nullptr);
             vkCmdPushConstants(cmd, starPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                0, sizeof(tpc), &tpc);
-            vkCmdDraw(cmd, starCount, 1, 0, 0);
+            if (starDrawCount > 0)
+                vkCmdDraw(cmd, starDrawCount, 1, 0, 0);
         }
         if (showPlanets && planetDescSet != VK_NULL_HANDLE && trailStarPipeline != VK_NULL_HANDLE)
         {
@@ -6798,6 +6798,11 @@ int SatelliteSim::pickPlanetAt(float clickX, float clickY, float screenW, float 
 // when the selection changes (see buildSelectedSatPanel).
 void SatelliteSim::formatSelectedPlanetInfo()
 {
+    if (selectedPlanetIndex >= kPlanetCount) // a star (SatelliteSimStars.cpp)
+    {
+        formatSelectedStarInfo(selectedPlanetIndex - kPlanetCount);
+        return;
+    }
     if (selectedPlanetIndex < 0 || selectedPlanetIndex >= kPlanetCount)
     {
         for (auto &line : planetInfoLine)
@@ -7791,7 +7796,8 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float dt)
         // occlusion — must match starPipeLayout's push constant range exactly.
         vkCmdPushConstants(cmd, starPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(pc), &pc);
-        vkCmdDraw(cmd, starCount, 1, 0, 0);
+        if (starDrawCount > 0)
+            vkCmdDraw(cmd, starDrawCount, 1, 0, 0);
     }
 
     // ── Pass 3.5: planets (additive blending, same pipeline/shaders as stars) ──────────────
@@ -9430,6 +9436,12 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
         float w = (float)ctx_->swapExtent.width;
         float h = (float)ctx_->swapExtent.height;
         int planetHit = pickPlanetAt(w * 0.5f, h * 0.5f, w, h);
+        // A bright star (SatelliteSimStars.cpp) right under the centre beats a satellite; one a little off only when
+        // no satellite is there.
+        float starDist = 1e9f;
+        const int starHit = pickStarAt(w * 0.5f, h * 0.5f, w, h, &starDist);
+        if (planetHit < 0 && starHit >= 0 && (starDist <= 4.0f || pickSatelliteAt(w * 0.5f, h * 0.5f, w, h) < 0))
+            planetHit = kPlanetCount + starHit;
         if (planetHit >= 0)
         {
             if (planetHit != selectedPlanetIndex || selectedSatIndex >= 0)
@@ -15304,8 +15316,12 @@ static uint32_t starEnvCell(const glm::dvec3 &d, uint32_t G)
 
 void SatelliteSim::createStarEnvBuffer(VulkanContext &ctx)
 {
-    constexpr int kCount = (int)(sizeof(kStarCatalog) / sizeof(kStarCatalog[0]));
-    static_assert(kCount == kStarEnvCount, "sat_sky.frag's STAR_ENV_COUNT must equal the catalogue");
+    // The env renderer draws the brightest kStarEnvCount stars of the catalogue (sat_sky.frag's STAR_ENV_COUNT; the
+    // catalogue is sorted by magnitude, 2026-10-27: the faint stars past them are below a probe texel's reach).
+    if (starInfo_.empty())
+        loadStarCatalog();
+    constexpr int kCount = kStarEnvCount;
+    const int nCat = std::min(kCount, (int)starInfo_.size());
     constexpr uint32_t G = kStarEnvGrid;
     // Reach of the widest PSF drawn (sat_sky.frag envStars: 3 sigma, sigma <= kStarEnvMaxSigmaPx pixels of
     // the coarsest render, a scene probe's 256-texel face).
@@ -15314,8 +15330,13 @@ void SatelliteSim::createStarEnvBuffer(VulkanContext &ctx)
     std::vector<glm::vec4> recs(2u * kCount);
     for (int i = 0; i < kCount; ++i)
     {
-        const StarEntry &s = kStarCatalog[i];
-        const double ra = glm::radians((double)s.ra_deg), dec = glm::radians((double)s.dec_deg);
+        if (i >= nCat)
+        {
+            recs[2 * i] = glm::vec4(0.0f, 0.0f, 1.0f, 99.0f); // (a shorter catalogue: never drawn, in no cell)
+            continue;
+        }
+        const StarInfo &s = starInfo_[(size_t)i];
+        const double ra = glm::radians((double)starRaDec_[(size_t)i].x), dec = glm::radians((double)starRaDec_[(size_t)i].y);
         const glm::dvec3 d(std::cos(dec) * std::cos(ra), std::cos(dec) * std::sin(ra), std::sin(dec));
         const float bv = s.bv; // initStars' colour
         const glm::vec3 col{glm::clamp(0.90f + 0.10f * bv, 0.60f, 1.0f), glm::clamp(1.00f - 0.15f * bv, 0.50f, 1.0f),
@@ -15395,17 +15416,19 @@ void SatelliteSim::uploadStarEnvHeader()
 void SatelliteSim::initStars(VulkanContext &ctx)
 {
     starRecords.clear();
-    const int kCatSize = sizeof(kStarCatalog) / sizeof(kStarCatalog[0]);
+    if (starInfo_.empty())
+        loadStarCatalog(); // assets/stars/star_catalog.bin, else the compiled-in BSC5 (SatelliteSimStars.cpp)
+    const int kCatSize = (int)starInfo_.size();
     starRecords.reserve(kCatSize);
 
     for (int i = 0; i < kCatSize; ++i)
     {
-        const auto &s = kStarCatalog[i];
+        const StarInfo &s = starInfo_[(size_t)i];
 
         // RA/Dec (degrees, J2000) → ECI unit vector.
         // ECI is the J2000 equatorial frame: X toward vernal equinox, Z toward north pole.
-        float ra = glm::radians(s.ra_deg);
-        float dec = glm::radians(s.dec_deg);
+        float ra = glm::radians(starRaDec_[(size_t)i].x);
+        float dec = glm::radians(starRaDec_[(size_t)i].y);
         glm::vec3 eciDir{cosf(dec) * cosf(ra),
                          cosf(dec) * sinf(ra),
                          sinf(dec)};
@@ -15430,9 +15453,9 @@ void SatelliteSim::initStars(VulkanContext &ctx)
     starCount = (uint32_t)starRecords.size();
     starPackedColor_.clear();   // (re-packed by updateStars)
 
-    // Host-visible buffer (tiny: ~8404 × 32 bytes = ~263 KB — negligible against 78,000 satellites).
+    // ~62k x 32 bytes = ~2 MB. Not re-uploaded whole: updateStars writes (and marks) only the prefix drawn this frame.
     VkDeviceSize bufSize = starCount * sizeof(GpuSatVisible);
-    starMapped = createMirrored(ctx, bufSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, starBuf, starMem, true, "stars");
+    starMapped = createMirrored(ctx, bufSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, starBuf, starMem, false, "stars");
 
     // Descriptor layout: binding=1 (vertex shader reads GpuSatVisible) + bindings=2/3 (cloud
     // occlusion, session 30 bug fix — see star_point.frag's own comment) + binding=4 (shared
@@ -15864,95 +15887,207 @@ void SatelliteSim::uploadLightDome()
 // ─── updateStars ──────────────────────────────────────────────────────────────
 // Transforms star ECI unit vectors into ENU each frame (Earth rotates under stars).
 // Stars fade out during civil/nautical twilight — invisible in full daylight.
+//
+// 2026-10-27 (CLAUDE.md "Stars"): the catalogue runs to V 8.5 (~62k stars, sorted brightest first), so this writes only
+// the PREFIX of it that can show at all this frame (the faintest catalogue magnitude below both the point style's
+// limit and the darkest direction's naked-eye limit, + 2) and draws that many. Everything that depends only on the
+// star's elevation (the line of sight's extinction, the refraction, its jitter and twinkle) is one table lookup
+// (starElTab_). Faint stars are gated by the naked-eye limit of the sky in their own direction (the city dome, the
+// twilight, the Moon and the supernova, Schaefer-style), normalised so a pristine sky draws every star as before.
 void SatelliteSim::updateStars()
 {
     FPROF_SCOPE("updateStars");
     if (!starMapped || starCount == 0)
         return;
+    const auto wall0 = std::chrono::steady_clock::now();
+    const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
 
     // Stars become visible as the sun sinks below the horizon.
     // sin(elevation) = sunDirENU.w: 0 at horizon, -0.2 at ~11.5° below.
     float nightFactor = glm::clamp(-sunDirENU.w * 5.0f, 0.0f, 1.0f);
 
-    // In space the sky is dark regardless of sun angle — no atmosphere to scatter.
-    // atmFrac used to decay with the same 80 km scale height used for satellites' orbital day
-    // suppression (correct for them — satellites fly hundreds of km up) — but reused here that
-    // decayed too fast for a still-in-atmosphere observer: even a modest few-km cloud-deck
-    // altitude already left atmFrac ~0.9, leaking ~10% of full night brightness into a clear
-    // daytime sky, visible on the brightest stars. Real daytime sky glow doesn't meaningfully
-    // thin until far above any cloud deck, so hold atmFrac at 1.0 (fully day/night gated, no
-    // leak) through the whole flyable atmosphere and only fade toward "space, nothing to hide
-    // behind" over the last stretch of the simulated atmosphere shell (R_ATMOS - R_EARTH = 100 km).
+    // In space the sky is dark regardless of sun angle: hold atmFrac at 1 through the flyable atmosphere and fade it
+    // over the last stretch of the simulated shell (see the git history of this block for the reasoning).
     const float kStarSpaceFadeStartM = 40000.0f;
     const float kStarSpaceFadeEndM = 100000.0f;
     float obsR = glm::length(obsECI);
     float obsHeight = obsR - kEarthRadius;
     float atmFrac = 1.0f - glm::clamp((obsHeight - kStarSpaceFadeStartM) / (kStarSpaceFadeEndM - kStarSpaceFadeStartM), 0.0f, 1.0f);
-    // skyGlareEased (computed once per frame in recordCompute(), right before this call) replaces
-    // the old flat 1.0 space target — sun-on-screen or unshielded sunlight still gates visibility
-    // even with no atmosphere left to explain it away. At atmFrac==1 (fully in-atmosphere) this
-    // has no effect, since it's weighted out by (1-atmFrac)==0 and nightFactor alone governs.
+    // skyGlareEased gates visibility in space (the Sun on screen); in the atmosphere nightFactor alone does.
     float nightFactorEff = glm::mix(skyGlareEased, nightFactor, atmFrac);
 
     // Earth-limb elevation cutoff: from altitude, stars are visible below the 0° horizon.
     float r = kEarthRadius / obsR;
     float limbSin = (obsHeight > 1.0f) ? -sqrtf(glm::max(0.0f, 1.0f - r * r)) : 0.0f;
 
-    // Light pollution dome caps: kStarPollutionMaxDim caps how dark the directional dome
-    // (lightDomeAz[], filled by updateLightPollutionDome() just above) can push a star, so the
-    // brightest stars/planets still peek through even in a maximally lit city, like reality.
+    // Light pollution dome cap: the brightest stars and planets still peek through a maximally lit city.
     const float kStarPollutionMaxDim = 0.99f;
 
-    // Moonlight sky-brightness dimming: same physical ramp (elevation × phase illumination) as
-    // sat_flare.comp's moonBright term, computed here CPU-side since stars are drawn from this
-    // same per-frame pass. Reuses moonDirENU.w (illuminated fraction, already computed this frame
-    // in updatePositions()) instead of re-deriving it from sunDirECI/moonDirECI. Unlike satellites'
-    // user-tunable moonSuppression gain, this uses a fixed response cap — mirrors how nightFactor
-    // above and kStarPollutionMaxDim are both fixed formulas with no settings-window knob; stars
-    // have never exposed per-suppression-source sliders, only the geometry-driven inputs.
+    // Moonlight sky-brightness dimming: same physical ramp (elevation x phase) as sat_flare.comp's moonBright.
     float moonElevStar = glm::dot(moonDirECI, glm::normalize(obsECI));
     float tmStar = glm::clamp(moonElevStar / 0.5f, 0.0f, 1.0f);
     float moonBrightStar = tmStar * tmStar * moonDirENU.w;
     const float kStarMoonMaxDim = 0.9f; // full moon dims naked-eye stars but never Venus/Jupiter/Sirius
 
-    // The extinction along a star's line of sight depends only on the observer's radius and the star's elevation
-    // (a spherical atmosphere), so it is tabulated over sin(elevation) once per observer radius (2026-10-23; the
-    // double Chapman columns per star were most of this loop's ~0.7 ms at night). 1024 knots, quadratic toward the
-    // limb where it is steep: within 0.001 mag of atmExtinctionMag for every star brighter than 6 mag of extinction
-    // in the atmosphere, 0.003 from 400 km.
-    constexpr int kExtN = 1024;
-    if (!starExtTab_ || starExtTabR_ != (double)obsR || starExtTabK_ != extinctionCoeff)
+    // ── Betelgeuse: its variability, and the supernova (a pure function of sim time) ──
+    snFlare = 0.0;
+    snMagSeen = 99.0f;
+    snDiffuseMoonFrac = 0.0f;
+    snAbove = false;
+    float snSkyBright = 0.0f; // the supernova's light on the sky, as moonBrightStar (x the full Moon high up)
+    bool snAsPoint = false;
+    if (starBetelgeuse >= 0 && starBetelgeuse < (int)starRecords.size())
     {
-        if (!starExtTab_)
-            starExtTab_.reset(new float[kExtN]);
-        starExtTabR_ = (double)obsR;
-        starExtTabK_ = extinctionCoeff;
-        const glm::dvec3 o(0.0, 0.0, (double)obsR);
-        for (int k = 0; k < kExtN; ++k)
+        float bvB = 1.5f;
+        const float mB = betelgeuseMagAt(tNow, &bvB);
+        StarRecord &rb = starRecords[(size_t)starBetelgeuse];
+        rb.rawIntensity = mB < 50.0f ? std::min(powf(10.0f, -0.4f * mB), 1e7f) : 0.0f;
+        const glm::vec3 colB{glm::clamp(0.90f + 0.10f * bvB, 0.60f, 1.0f), glm::clamp(1.00f - 0.15f * bvB, 0.50f, 1.0f),
+                             glm::clamp(1.00f - 0.90f * bvB, 0.10f, 1.0f)};
+        rb.color = colB;
+        if ((size_t)starBetelgeuse < starPackedColor_.size())
+            starPackedColor_[(size_t)starBetelgeuse] = packVisibleColor(colB);
+        if (supernovaEnabled && tNow >= kSupernovaT0)
         {
-            const double u = (double)k / (kExtN - 1);
-            const double mu = (double)limbSin + (1.0 - (double)limbSin) * u * u;
-            const glm::dvec3 d(std::sqrt(std::max(0.0, 1.0 - mu * mu)), 0.0, mu);
-            starExtTab_[k] = (float)atmExtinctionMag(o, d, 0.0, extinctionCoeff);
+            glm::vec3 e{glm::dot(rb.eciDir, glm::vec3(eci2enuX)), glm::dot(rb.eciDir, glm::vec3(eci2enuY)),
+                        glm::dot(rb.eciDir, glm::vec3(eci2enuZ))};
+            float aoaB = 0.0f, scB = -1.0f;
+            snAbove = e.z >= limbSin;
+            if (refrTable.valid && e.z > limbSin - 0.03f)
+                snAbove = refractEnu(e, aoaB, scB);
+            const float extB = snAbove ? (float)atmExtinctionMag(glm::dvec3(obsECI), glm::dvec3(rb.eciDir), 0.0, extinctionCoeff) : 0.0f;
+            snMagSeen = mB + extB;
+            snEnu = e;
+            snColor = colB;
+            // Its light, as the full Moon's (-12.7) high up: on the sky (dims the faint stars) and on the ground.
+            const float lit = snAbove ? powf(10.0f, -0.4f * (snMagSeen + 12.7f)) : 0.0f;
+            const float elK = glm::clamp(e.z / 0.5f, 0.0f, 1.0f);
+            snSkyBright = lit * elK * elK;
+            snDiffuseMoonFrac = lit * std::max(e.z, 0.0f) * (1.0f - glm::clamp((sunDirENU.w + 0.1f) / 0.2f, 0.0f, 1.0f));
+            if (mB < -1.0f && snAbove)
+            {
+                // Bright: a kFireBuf point (bloom, glare; supernovaFill). By day it keeps ~6.5 mag less contrast: near its
+                // peak it still shows in daylight (an object of mag ~ -4 is visible by day to an eye that knows where).
+                snAsPoint = true;
+                const float dayFac = glm::mix(powf(10.0f, -0.4f * 6.5f), 1.0f, nightFactorEff);
+                snFlare = std::min(0.008 * std::pow(10.0, 0.4 * (6.0 - (double)snMagSeen)) * (double)dayFac, 2.0e4);
+            }
         }
     }
-    auto starExtMag = [&](float mu) {
-        const float span = std::max(1.0f - limbSin, 1e-6f);
-        const float u = std::sqrt(std::clamp((mu - limbSin) / span, 0.0f, 1.0f)) * (float)(kExtN - 1);
-        const int k = std::min((int)u, kExtN - 2);
-        const float f = u - (float)k;
-        return starExtTab_[k] + (starExtTab_[k + 1] - starExtTab_[k]) * f;
-    };
 
-    // Per-frame constants of the point model (pointPsf), hoisted (2026-10-24, perf: pointPsf re-derived the effective
-    // reference / limit magnitudes, two log10s of the optics gain, for every star): for intensity I = 10^(-0.4 m),
-    // pointPsf's d = 10^(-0.4 gamma (m - ref)) - dl = I^gamma 10^(0.4 gamma ref) - dl, and the sprite size needs only its
-    // sigma. The same values (to float rounding); the stars' packed colours are fixed, packed once.
+    // ── The per-elevation table: extinction, refraction, jitter, twinkle ──
+    constexpr int kElN = 1024;
+    const float mu0 = limbSin - 0.03f;
+    const bool refrOn = refrTable.valid;
+    if (!starElTab_ || starElTabR_ != (double)obsR || starElTabK_ != extinctionCoeff || starElTabRefr_ != refrSerial_ ||
+        starElTabRefrOn_ != refrOn)
+    {
+        if (!starElTab_)
+            starElTab_.reset(new glm::vec4[kElN]);
+        starElTabR_ = (double)obsR;
+        starElTabK_ = extinctionCoeff;
+        starElTabRefr_ = refrSerial_;
+        starElTabRefrOn_ = refrOn;
+        const glm::dvec3 o(0.0, 0.0, (double)obsR);
+        for (int k = 0; k < kElN; ++k)
+        {
+            const double u = (double)k / (kElN - 1);
+            const double mu = (double)mu0 + (1.0 - (double)mu0) * u * u;
+            const double muE = std::max(mu, (double)limbSin); // (below the limb the column at the limb)
+            const glm::dvec3 d(std::sqrt(std::max(0.0, 1.0 - muE * muE)), 0.0, muE);
+            glm::vec4 &t = starElTab_[k];
+            t.x = (float)atmExtinctionMag(o, d, 0.0, extinctionCoeff);
+            t.y = mu < (double)limbSin ? -2.0f : 0.0f;
+            t.z = 0.0f;
+            t.w = -1.0f;
+            if (refrOn)
+            {
+                glm::vec3 e((float)std::sqrt(std::max(0.0, 1.0 - mu * mu)), 0.0f, (float)mu);
+                float aoa = 0.0f, sc = -1.0f;
+                if (refractEnu(e, aoa, sc))
+                {
+                    t.y = std::asin(std::clamp(e.z, -1.0f, 1.0f)) - (float)std::asin(std::clamp(mu, -1.0, 1.0));
+                    t.z = aoa;
+                    t.w = sc;
+                }
+                else
+                    t.y = -2.0f;
+            }
+        }
+    }
+
+    // ── The sky's brightness, for the faint stars (darksky.glsl's linear model, + the Moon and the supernova) ──
+    // In linear units of 10^(-0.4 B), B in mag/arcsec^2: pristine 22; the city dome as darkSkySkyMagLinear (the
+    // compression undone); twilight darkSkyTwilightMag (its anisotropy one exp2 a star); the Moon / supernova as a sky
+    // of 18 mag/arcsec^2 at the full Moon high up.
     const float kPsfK = 1.3287712f;   // 0.4 * log2(10)
+    const float Lp = exp2f(-kPsfK * 22.0f);
+    const float sunElDeg = glm::degrees(std::asin(std::clamp(sunDirENU.w, -1.0f, 1.0f)));
+    const float twT = glm::clamp(-sunElDeg / std::max(darkSkyTwilightEndDeg, 0.1f), 0.0f, 1.0f);
+    const float twBase = glm::mix(darkSkyTwilightMag0, 26.0f, twT);
+    const float twL0 = exp2f(-kPsfK * (twBase + 0.5f * darkSkyTwilightAniso)); // at prox = 0 (antisolar)
+    const float Lmoon = (moonBrightStar + snSkyBright) * exp2f(-kPsfK * 18.0f);
+    const float invGain = 1.0f / std::max(lightPollutionGain, 1e-4f);
+    const glm::vec3 sunEnu = glm::normalize(glm::vec3(sunDirENU));
+    // Schaefer-style naked-eye limit (Garstang 1986 / Schaefer 1990, simplified): V_lim = 7.93 - 5 log10(1 + 10^(4.316
+    // - B/5)), i.e. the limiting intensity 10^(-0.4 x 7.93) x (1 + c sqrt(L))^2 with c = 10^4.316. starLimitBoost (mag)
+    // reaches a keen dark-adapted eye's ~7.8 under a pristine sky, fading out as the sky brightens; the zoom's optics
+    // gain is an aperture.
+    const float kNelmC = 20701.0f;
+    const float I0 = exp2f(-kPsfK * (7.93f + opticsGainMag()));
+    auto ilimOf = [&](float L) {
+        const float w = 1.0f / (1.0f + std::max(L / Lp - 1.0f, 0.0f) * 0.25f);
+        const float q = 1.0f + kNelmC * std::sqrt(L);
+        return I0 * q * q * exp2f(-kPsfK * starLimitBoost * w);
+    };
+    const float IlimPristine = ilimOf(Lp);
+    // The darkest direction this frame: the faintest catalogue magnitude that can show anywhere.
+    float domeMin = 1e9f;
+    for (int k = 0; k < kNumLightSectors; ++k)
+        domeMin = std::min(domeMin, lightDomeAz[k]);
+    auto cityL = [&](float raw, float z) {
+        raw = std::max(raw * invGain, 0.0f);
+        const float d = raw * 0.08f / std::max(1.0f - raw, 0.02f);
+        const float elevFalloff = 0.35f / (std::max(z, 0.0f) + 0.35f);
+        return Lp * d * (0.4f + 0.6f * elevFalloff) / 0.0241f;
+    };
+    const float Lmin = Lp + cityL(domeMin, 1.0f) + twL0 + Lmoon;
+    const float IlimMin = ilimOf(Lmin);
+    starNelmZenith = -2.5f * log10f(ilimOf(Lp + cityL(0.5f * (lightDomeAz[0] + lightDomeAz[8]), 1.0f) +
+                                           twL0 * exp2f(kPsfK * darkSkyTwilightAniso * (0.5f + 0.5f * sunEnu.z)) + Lmoon));
+    float cutMag = pointEffLimitMag();
+    if (starSkyLimit)
+        cutMag = std::min(cutMag, -2.5f * log10f(IlimMin) + 2.0f);
+    starLimitMagFrame = cutMag;
+    // The prefix: every star brighter than cutMag (the catalogue is sorted); none while the day gate is shut, except
+    // Betelgeuse while the supernova outshines the daylight.
+    uint32_t drawN = 0;
+    if (nightFactorEff > 0.0f)
+    {
+        uint32_t lo = 0, hi = starCount;
+        while (lo < hi)
+        {
+            const uint32_t m = (lo + hi) / 2;
+            if (starInfo_[m].vmag <= cutMag) lo = m + 1; else hi = m;
+        }
+        drawN = lo;
+    }
+    if (starBetelgeuse >= 0)
+    {
+        // Betelgeuse's own magnitude moves (variable, then the supernova): keep it in the prefix while it may show.
+        const float mB = -2.5f * log10f(std::max(starRecords[(size_t)starBetelgeuse].rawIntensity, 1e-30f));
+        if ((nightFactorEff > 0.0f && mB <= cutMag) || snAsPoint)
+            drawN = std::max(drawN, (uint32_t)starBetelgeuse + 1u);
+    }
+
+    // Per-frame constants of the point model (pointPsf), hoisted: for intensity I, pointPsf's d = I^gamma 10^(0.4 gamma
+    // ref) - dl; below Ithr (d = 1) the sigma is the base one and no pow is needed.
     const float psfRef = pointEffRefMag(), psfLim = pointEffLimitMag();
     const float psfC  = exp2f(kPsfK * pointGamma * psfRef);
     const float psfDl = exp2f(-kPsfK * pointGamma * (psfLim - psfRef));
+    const float Ithr = powf((1.0f + psfDl) / psfC, 1.0f / pointGamma);
     auto starSigma = [&](float I) {
+        if (I <= Ithr) return pointSigmaPx;
         const float d = std::max(powf(I, pointGamma) * psfC - psfDl, 0.0f);
         return d <= 1.0f ? pointSigmaPx : std::min(pointSigmaPx * sqrtf(d), pointSigmaMaxPx);
     };
@@ -15962,96 +16097,104 @@ void SatelliteSim::updateStars()
         for (uint32_t i = 0; i < starCount; ++i)
             starPackedColor_[i] = packVisibleColor(starRecords[i].color);
     }
+    const float sectorK = float(kNumLightSectors) / (2.0f * glm::pi<float>());
+    const float elSpan = std::max(1.0f - mu0, 1e-6f);
+    const glm::vec3 ex(eci2enuX), ey(eci2enuY), ez(eci2enuZ);
+    // atan2 to ~0.001 rad (enough for 16 sectors), branch-light.
+    auto fastAtan2 = [](float y, float x) {
+        const float ax = std::fabs(x), ay = std::fabs(y);
+        const float a = std::min(ax, ay) / std::max(std::max(ax, ay), 1e-30f);
+        const float s = a * a;
+        float rr = ((-0.0464964749f * s + 0.15931422f) * s - 0.327622764f) * s * a + a;
+        if (ay > ax) rr = 1.57079637f - rr;
+        if (x < 0.0f) rr = 3.14159274f - rr;
+        return y < 0.0f ? -rr : rr;
+    };
 
     auto *dst = static_cast<GpuSatVisible *>(starMapped);
-    for (uint32_t i = 0; i < starCount; ++i)
+    uint32_t lit = 0;
+    for (uint32_t i = 0; i < drawN; ++i)
     {
         const auto &rec = starRecords[i];
-
-        // Rotate from inertial ECI into the observer's local ENU frame.
-        glm::vec3 enu{glm::dot(rec.eciDir, glm::vec3(eci2enuX)),
-                      glm::dot(rec.eciDir, glm::vec3(eci2enuY)),
-                      glm::dot(rec.eciDir, glm::vec3(eci2enuZ))};
-
-        // Refraction and turbulence (2026-10-26, SatelliteSimRefraction.cpp): the star drawn where the air bends it
-        // (a star a little below the true horizon still shows), its twinkle and image jitter from the same table.
-        float starAoa = 0.0f, starScint = -1.0f;
-        bool belowLimb = enu.z < limbSin;
-        if (refrTable.valid && enu.z > limbSin - 0.03f && nightFactorEff > 0.0f)
-            belowLimb = !refractEnu(enu, starAoa, starScint);
-        dst[i].meshPx = starScint >= 0.0f ? 1.0f + std::floor(std::min(starAoa * 1e6f, 60000.0f)) + 0.99f * std::min(starScint, 1.0f) : 0.0f;
-        // A star below the limb, or any star while the sky's day gate is shut, has intensity 0 whatever the rest
-        // says (2026-10-23): skip the dome, extinction (a double Chapman column) and sizing for it. They were
-        // ~0.8 ms of every DAYTIME frame for 9000 stars that all drew nothing. Same output.
-        if (belowLimb || nightFactorEff <= 0.0f)
+        GpuSatVisible &o = dst[i];
+        o.color = starPackedColor_[i];
+        o.rangeM = 0.0f; // at infinity
+        glm::vec3 enu{glm::dot(rec.eciDir, ex), glm::dot(rec.eciDir, ey), glm::dot(rec.eciDir, ez)};
+        const float mu = enu.z;
+        if (mu < mu0 || nightFactorEff <= 0.0f || ((int)i == starBetelgeuse && snAsPoint))
         {
-            dst[i].skyDir = enu;
-            dst[i].flareIntensity = 0.0f;
-            dst[i].color = starPackedColor_[i];
-            dst[i].rangeM = 0.0f;
-            dst[i].angularSize = rec.angSize;
+            o.skyDir = enu;
+            o.flareIntensity = 0.0f;
+            o.meshPx = 0.0f;
+            o.angularSize = rec.angSize;
             continue;
         }
+        const float uu = std::sqrt((mu - mu0) / elSpan) * (float)(kElN - 1);
+        const int k = std::min((int)uu, kElN - 2);
+        const float f = uu - (float)k;
+        const glm::vec4 T = starElTab_[k] + (starElTab_[k + 1] - starElTab_[k]) * f;
+        if (T.y < -1.0f)
+        {
+            o.skyDir = enu;
+            o.flareIntensity = 0.0f;
+            o.meshPx = 0.0f;
+            o.angularSize = rec.angSize;
+            continue;
+        }
+        if (T.y != 0.0f)
+        {
+            // Refraction (2026-10-26): the star drawn where the air bends it, along its own vertical.
+            const float c2 = std::max(1.0f - mu * mu, 1e-12f);
+            const float z2 = std::clamp(mu + std::sqrt(c2) * T.y, -1.0f, 1.0f);
+            const float h = std::sqrt(std::max(1.0f - z2 * z2, 0.0f) / c2);
+            enu = glm::vec3(enu.x * h, enu.y * h, z2);
+        }
+        o.skyDir = enu;
+        o.meshPx = T.w >= 0.0f ? 1.0f + std::floor(std::min(T.z * 1e6f, 60000.0f)) + 0.99f * std::min(T.w, 1.0f) : 0.0f;
 
-        // Directional light pollution: same interpolated-dome/elevFalloff formula as
-        // sat_flare.comp, so stars and satellites read the same dome consistently in a given
-        // direction. Interpolated between the two nearest sector CENTERS (not hard-binned) —
-        // 16 discrete wedges still showed visible blocky transitions over wide, fairly uniform
-        // bright regions (e.g. flying over Europe).
-        float bearing = atan2f(enu.x, enu.y); // matches GPU's atan(skyDir.x, skyDir.y) convention
+        // Directional light pollution (the same interpolated dome / elevFalloff as sat_flare.comp).
+        float bearing = fastAtan2(enu.x, enu.y);
         if (bearing < 0.0f)
             bearing += 2.0f * glm::pi<float>();
-        float secF = bearing * (float(kNumLightSectors) / (2.0f * glm::pi<float>())) - 0.5f;
-        int sec0 = (int)floorf(secF);
-        float secFrac = secF - float(sec0);
-        int sec0w = ((sec0 % kNumLightSectors) + kNumLightSectors) % kNumLightSectors;
-        int sec1w = (sec0w + 1) % kNumLightSectors;
-        float domeAz = glm::mix(lightDomeAz[sec0w], lightDomeAz[sec1w], secFrac);
-        // 0.35 (not 0.15): matches the sat_flare.comp softening — the steeper curve crushed the
-        // effect to near-zero above ~20° elevation, where most visible stars actually sit.
-        float elevFalloff = 0.35f / (std::max(enu.z, 0.0f) + 0.35f); // 1.0 at horizon, ~0.26 at zenith
-        // domeAz is intentionally unclamped upstream — the clamp only happens here, after
-        // elevFalloff, so high lightPollutionGain can compensate for elevFalloff's reduction at
-        // non-horizon angles instead of saturating uselessly before elevFalloff is even applied.
-        // S2c (RELEASE_v1_1_PLAN.md): elevFalloff alone bottoms out at ~0.26 at zenith, wrong for
-        // real (isotropically-scattered) urban skyglow, which raises zenith brightness far more
-        // than that. kIsotropicFrac gives the dome a real floor at zenith; horizon behaviour is
-        // unchanged. Same constant/formula in sat_flare.comp, sat_sky.frag (Milky Way), and
-        // cloud_march.comp (aurora) — keep them coherent.
-        const float kIsotropicFrac = 0.4f;
-        float domeVal = glm::clamp(domeAz * (kIsotropicFrac + (1.0f - kIsotropicFrac) * elevFalloff), 0.0f, 1.0f);
-
-        // C12 follow-up #31: same suppression shape, second independent source — a nearby
-        // Reflect-Orbital beam should wash out this star the same way real light pollution does.
-        // beamGlowDomeAz[] is the one-frame-stale CPU readback of sat_orbit.comp's atomicMax'd
-        // dome (see recordCompute()'s top-of-frame read), same interpolation convention as
-        // lightDomeAz above.
-        float beamDomeAz = glm::mix(beamGlowDomeAz[sec0w], beamGlowDomeAz[sec1w], secFrac);
-        float beamDomeVal = glm::clamp(beamDomeAz * elevFalloff, 0.0f, 1.0f);
+        const float secF = bearing * sectorK - 0.5f;
+        const int sec0 = (int)floorf(secF);
+        const float secFrac = secF - float(sec0);
+        const int sec0w = ((sec0 % kNumLightSectors) + kNumLightSectors) % kNumLightSectors;
+        const int sec1w = (sec0w + 1) % kNumLightSectors;
+        const float domeAz = lightDomeAz[sec0w] + (lightDomeAz[sec1w] - lightDomeAz[sec0w]) * secFrac;
+        const float elevFalloff = 0.35f / (std::max(enu.z, 0.0f) + 0.35f); // 1.0 at horizon, ~0.26 at zenith
+        const float kIsotropicFrac = 0.4f; // S2c — same constant as sat_flare.comp / sat_sky.frag / cloud_march.comp
+        const float domeVal = glm::clamp(domeAz * (kIsotropicFrac + (1.0f - kIsotropicFrac) * elevFalloff), 0.0f, 1.0f);
+        const float beamDomeAz = beamGlowDomeAz[sec0w] + (beamGlowDomeAz[sec1w] - beamGlowDomeAz[sec0w]) * secFrac;
+        const float beamDomeVal = glm::clamp(beamDomeAz * elevFalloff, 0.0f, 1.0f);
         const float kStarBeamPollutionMaxDim = 0.99f;
 
-        // Atmospheric extinction along this star's line of sight — atmExtinctionMag(), the CPU
-        // mirror of atmosphere.glsl that sat_flare.comp uses, so a star and a satellite in the same
-        // direction dim by the same amount, from sea level, a mountain, an aircraft or orbit. Also
-        // the smooth baseline the pollution dome's directional variation sits on. Deliberately not
-        // the observer-height atmFrac above: that is the bright sky AROUND the observer.
-        // sin(elevation) from the observer's own up (the ENU z the limb test uses is the same quantity).
-        float extinctMag = starExtMag(glm::dot(rec.eciDir, obsECI) / obsR);
-        float extinction = exp2f(-kPsfK * extinctMag);   // 10^(-0.4 m)
-
-        // Above the Earth limb: visible. Below: culled.
-        float intensity = !belowLimb
-                              ? rec.rawIntensity * nightFactorEff * extinction * (1.0f - domeVal * kStarPollutionMaxDim) * (1.0f - beamDomeVal * kStarBeamPollutionMaxDim) * (1.0f - moonBrightStar * kStarMoonMaxDim)
-                              : 0.0f;
-
-        dst[i].skyDir = enu;
-        dst[i].flareIntensity = intensity;
-        dst[i].color = starPackedColor_[i];
-        dst[i].rangeM = 0.0f; // at infinity
-        // Sized every frame from the magnitude it is drawn at, by the shared point-source model
-        // star_point.frag draws it with (point_style.glsl) — the same as satellites and planets.
-        dst[i].angularSize = intensity > 0.0f ? pointSpriteSizePx(starSigma(intensity)) : rec.angSize;
+        const float extinction = exp2f(-kPsfK * T.x); // 10^(-0.4 m)
+        const float Iapp = rec.rawIntensity * extinction;
+        float g = 1.0f;
+        if (starSkyLimit && Iapp < 2000.0f * IlimPristine)
+        {
+            // The naked-eye limit in this direction; the response 1 / (1 + (Ilim / I)^3) (~0.7 mag from 10% to 90%),
+            // relative to a pristine sky's.
+            const float prox = 0.5f + 0.5f * glm::dot(enu, sunEnu);
+            const float L = Lp + cityL(domeAz, enu.z) + twL0 * exp2f(kPsfK * darkSkyTwilightAniso * prox) + Lmoon;
+            const float x = ilimOf(L) / Iapp, xp = IlimPristine / Iapp;
+            g = std::min(1.0f, (1.0f + xp * xp * xp) / (1.0f + x * x * x));
+        }
+        const float intensity = Iapp * nightFactorEff * g * (1.0f - domeVal * kStarPollutionMaxDim) *
+                                (1.0f - beamDomeVal * kStarBeamPollutionMaxDim) * (1.0f - moonBrightStar * kStarMoonMaxDim) *
+                                (1.0f - std::min(snSkyBright, 1.0f) * kStarMoonMaxDim);
+        o.flareIntensity = intensity;
+        // Sized by the shared point-source model star_point.frag draws it with (point_style.glsl).
+        o.angularSize = intensity > 0.0f ? pointSpriteSizePx(starSigma(intensity)) : rec.angSize;
+        lit += intensity > 0.0f;
     }
+    starDrawCount = drawN;
+    starVisibleCount = lit;
+    if (drawN > 0 && ctx_)
+        ctx_->mirrorDirty(starMapped, 0, (VkDeviceSize)drawN * sizeof(GpuSatVisible));
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - wall0).count();
+    starUpdateMs = 0.9 * starUpdateMs + 0.1 * ms;
 }
 
 // ─── updatePlanets ────────────────────────────────────────────────────────────

@@ -49,6 +49,9 @@ scripted storm, dead satellites, debris pool, cascade engine, event log) · *Lau
 rockets, plumes, crew rotations, the Missions window: the roster's slots refreshed on a schedule) · *Reflect-Orbital Beam Cloud Occlusion* ·
 *GpuSatInput* (a tombstone — the buffer was deleted 2026-09-22). · *Sky events window* (eclipses, conjunctions, occultations, Moon-base glints: a table of event kinds, each a search + a Watch) · *Moon-base glints* (the lunar bases' solar arrays mirroring the Sun to Earth near full Moon, LunarBases.h)
 
+**Stars** — *Stars* (the HYG catalogue to V 8.5, faint stars only under dark skies, selectable stars, the scripted
+2037 Betelgeuse supernova).
+
 **Rendering** — *UIRenderer / Clay* (icon atlas, the SDF font atlas, manual hit-testing, the **UI kit** every window is built from, HUD text entry) · *Sky TAA* (the background's temporal AA, and the main pass's shared dependencies) · *The Sun as an object* (refraction, mirages, turbulence: one ray tracer, Refraction.h) · *The Moon as a body* (true position and size, eclipses) · *The sea* (periodic waves, sea state, shore) ·
 *Photometry / Shader Constants* (lobe model, bloom and glare) · *Light Pollution Dome* · *Atmospheric
 Extinction* · *Sky Glow SSBO* · *Planets* · *Cloud Shadows* · *Resolution Scaling* · *Weak-Hardware
@@ -3043,8 +3046,8 @@ The crescent-Moon button `TimeSkyBtn` beside Weather on the right HUD panel (`pi
   line from the planet through the Moon's centre meets the Earth (every 2 min over +-4 h), the contacts there with the
   DRAWN disc (x "Moon size", 1 near the Sun as updatePositions), kept only if at the Watch moment (a minute before the
   planet reappears at the limb) the place is dark (Sun <= -9 deg, -4 for Mercury / Venus) and the Moon >= 10 deg up — the
-  drawn disc makes an occultation 2-3 h long at one place, and the first cut (judged at the central moment) landed with
-  the Moon setting. Searches take ~5 / 8 / 70-90 / 50-65 ms (solar, lunar, conjunctions, occultations) on the worker.
+  drawn disc made an occultation 2-3 h long at one place at the old 2.5x default (1x since 2026-10-27), and the first cut
+  (judged at the central moment) landed with the Moon setting. Searches take ~5 / 8 / 70-90 / 50-65 ms (solar, lunar, conjunctions, occultations) on the worker.
 - **Positions are the sim's own**: the Moon of date (satphot::moonGeoEciAt), the planets J2000 (planetStates), so the
   events are the ones the sim draws even where those frames' ~0.5 deg of precession makes them differ from the real sky.
 - **ONE Watch per event** (the user rule): `skyJumpTo` (the moment: inside the window, never before t0; 1x, unpaused,
@@ -7983,9 +7986,11 @@ EXPOSURE AND MOON section since 2026-10-06, key
   V = V0 + 0.026 a + 4e-9 a^4, a = the phase angle; quarter 0.09, a 32% crescent 0.04), read by every moonlit term
   (clouds, ground, sky, halo, star/satellite dimming). It was the lit FRACTION, linear: a crescent lit the clouds and
   the sky at a third of full. The disc's own shading recomputes the fraction; harness `state` gives both (`illum`,
-  `brightness_vs_full`). "Moon size (x real)" defaults to 2.5 (the true 0.5 deg is a few pixels at a wide FOV);
-  within 1.5-4 deg of the Sun the drawn disc eases back to its TRUE size (`moonAngR`), so a solar eclipse's
-  contacts, totality and annularity are the real ones (at 2.5x the Moon swallowed the Sun long before contact).
+  `brightness_vs_full`). "Moon size (x real)" defaults to 1 (2026-10-27, the user: true size for conjunctions,
+  occultations and the other sky events; review 16 had made it 2.5, "the true 0.5 deg is a few pixels at a wide FOV",
+  and the slider keeps 0.25-4); within 1.5-4 deg of the Sun the drawn disc eases back to its TRUE size (`moonAngR`),
+  so a solar eclipse's contacts, totality and annularity are the real ones at any setting. The occultation search
+  (`sky::SearchCtx::moonSizeScale`) and the Moon-base glints' place on the disc follow the setting.
 - **The eye stops at 100,000 km** above sea level (`kMaxObsHeightM`: Q/E, the altitude scroll, the follow offset;
   review 16 — boost reached the Moon).
 - **Lunar eclipses** per surface point: the Earth's disc (enlarged 1/85 for the atmosphere, Danjon) against the

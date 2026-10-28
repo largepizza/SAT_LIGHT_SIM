@@ -207,10 +207,10 @@ const char *kHelp =
     "wait <frames> | wait seconds <s> | wait settle [frames] | wait settle auto [max=160] [min=40] [thr=0.1] [hold=4] [noise=1.5]; "
     "time [set <iso>|add <s>|sun <el deg|noon|midnight> [rising|setting]|pause|play|scale <label>|reverse on/off]; "
     "observer lat= lon= [agl=|alt=]; beams [list] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [clamp=on] [drift=intro|default]; report list [dir] | report info <issue dir> | report load <issue dir> [shot=1] [settings=on|off] [clamp=on] [trail=on|off] | report shot [note] [new=1] [title=] [bar=1] | report mark [issue] shot= [pin=x,y|off] [rect=x,y,w,h|off] | report export [issue]; drift [default] [phase=] [rate=]; camera [az= el= fov=] | camera look|track <sun|moon|sel|planet name|off>; "
-    "select sat <i> | select const <name> [n=<k>] | select planet <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
+    "select sat <i> | select const <name> [n=<k>] | select planet <name> | select star <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s] [wait=1]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [sky=<spv>] [sky_taa=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; skyevents [state]|events|list <kind>|watch <solar|lunar|conjunction|occultation|moonglint|row> [n=]; moonbase [state]|windows [days=] [limit=] [jitter=]|base <i> [lean=] [jitter=]; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|pick|return|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [sky=<spv>] [sky_taa=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; skyevents [state]|events|list <kind>|watch <solar|lunar|conjunction|occultation|moonglint|supernova|row> [n=]; stars [state]|find <name>|select <name>; moonbase [state]|windows [days=] [limit=] [jitter=]|base <i> [lean=] [jitter=]; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|pick|return|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=] [frames=] [video=]; video start [name] [fps=] [scale=] [ui=on]|stop|state; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
@@ -323,6 +323,8 @@ bool SatelliteSim::harnessLookDir(int track, int planet, glm::vec3 &d)
         return true;
     case 4:
     {
+        if (planet >= kPlanetCount) // a star (SatelliteSimStars.cpp)
+            return skyObjectEnu(planet, d);
         if (planet < 0 || planet >= kPlanetCount)
             return false;
         const glm::dvec3 e = planetStates[planet].eciDir;
@@ -670,8 +672,16 @@ json SatelliteSim::harnessStateJson()
             sel["glints"] = arr;
         }
     }
-    if (selectedPlanetIndex >= 0)
+    if (selectedPlanetIndex >= 0 && selectedPlanetIndex < kPlanetCount)
         sel["planet"] = kPlanetNames[selectedPlanetIndex];
+    if (selectedPlanetIndex >= kPlanetCount)
+    {
+        sel["star"] = starDisplayName(selectedPlanetIndex - kPlanetCount);
+        nlohmann::json lines = nlohmann::json::array();
+        for (const auto &l : planetInfoLine)
+            lines.push_back(std::string(l));
+        sel["star_lines"] = lines;
+    }
     j["selection"] = sel;
     // The v2 march's rate this frame: sparse (1 pixel in 4), full, half (checkerboard) or adaptive.
     j["clouds_v2"] = {{"rate", cv2AdaptiveNow ? "adaptive" : cv2HalfRateNow ? "half" : cv2FullRateNow ? "full" : cv2FullResHeldNow ? "sparse held" : "sparse"},
@@ -1831,6 +1841,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         return harnessSkyEvents(a); // the Sky events window (SatelliteSimSkyEvents.cpp)
     if (n == "moonbase")
         return harnessMoonBase(a); // the lunar bases' glints (SatelliteSimMoonBases.cpp)
+    if (n == "stars")
+        return harnessStars(a); // the star catalogue, the faint-star limit, the supernova (SatelliteSimStars.cpp)
     if (n == "eclipse")
     {
         const std::string kind = lower(pos(0));
@@ -1988,7 +2000,13 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                     if (ieq(t, kPlanetNames[i]))
                         planet = i;
                 if (planet < 0)
-                    fail("camera: unknown target '" + name + "' (sun, moon, sel, a planet name, off)");
+                {
+                    const int si = starIndexByName(name); // a star's name or designation (SatelliteSimStars.cpp)
+                    if (si >= 0)
+                        planet = kPlanetCount + si;
+                }
+                if (planet < 0)
+                    fail("camera: unknown target '" + name + "' (sun, moon, sel, a planet or star name, off)");
             }
         };
         if (sub == "look" || sub == "track")
@@ -2106,8 +2124,21 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             selectedSatIndex = -1;
             formatSelectedPlanetInfo();
         }
+        else if (sub == "star")
+        {
+            // select star <name>: a proper name ("Betelgeuse"), a designation ("Alpha Orionis"), HIP n or HR n.
+            std::string nm;
+            for (size_t i = 1; i < c.pos.size(); ++i)
+                nm += (i > 1 ? " " : "") + c.pos[i];
+            const int si = starIndexByName(nm);
+            if (si < 0)
+                fail("select star: no star '" + nm + "'");
+            selectedPlanetIndex = kPlanetCount + si;
+            selectedSatIndex = -1;
+            formatSelectedPlanetInfo();
+        }
         else
-            fail("select: sat <i> | const <name> [n=<k>] | planet <name> | none");
+            fail("select: sat <i> | const <name> [n=<k>] | planet <name> | star <name> | none");
         if (selectedSatIndex < 0)
             stopTrack(); // deselected, or switched to a planet: there is no orbit left to lock onto
         r = harnessStateJson()["selection"];

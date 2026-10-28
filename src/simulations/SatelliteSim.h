@@ -3443,6 +3443,8 @@ private:
     bool skyWatchOccultation(const sky::Event &e, std::string &msg);
     void skySearchMoonGlints(const sky::SearchCtx &c, std::vector<sky::Event> &out) const;
     bool skyWatchMoonGlint(const sky::Event &e, std::string &msg);
+    void skySearchSupernova(const sky::SearchCtx &c, std::vector<sky::Event> &out) const;
+    bool skyWatchSupernova(const sky::Event &e, std::string &msg);
 
     // ── Moon-base glints (2026-10-27, SatelliteSimMoonBases.cpp; CLAUDE.md "Moon-base glints") ──────────────────
     // The lunar south-pole bases' sun-tracking solar arrays (data/lunar_bases.json, lunar::Base) mirror the Sun to
@@ -4087,6 +4089,62 @@ private:
     VkPipelineLayout starPipeLayout = VK_NULL_HANDLE;
     VkPipeline starPipeline = VK_NULL_HANDLE;
     uint32_t starCount = 0;
+    // ── The star catalogue's metadata, the faint stars, the selectable stars and the 2037 supernova (2026-10-27,
+    // SatelliteSimStars.cpp; CLAUDE.md "Stars"). starRecords / starInfo_ are one list sorted by magnitude (brightest
+    // first), from assets/stars/star_catalog.bin (tools/make_star_catalog.py: HYG v4.1 to mag 8.5), else the
+    // compiled-in BSC5 set (star_catalog.h, no names). A selected star is selectedPlanetIndex = kPlanetCount + i.
+    struct StarInfo
+    {
+        float vmag = 0.0f, bv = 0.0f, distPc = 0.0f; // catalogue V, B-V, distance (0 = unknown)
+        uint32_t hip = 0, hr = 0;
+        uint32_t name = 0, desig = 0, spect = 0, conName = 0; // offsets into starStrings_ (0 = "")
+        char con[4] = {};                                  // IAU abbreviation
+        bool variable = false;
+    };
+    std::vector<StarInfo> starInfo_;
+    std::string starStrings_;
+    bool starCatalogFromFile = false;
+    const char *starStr(uint32_t off) const { return off < starStrings_.size() ? starStrings_.c_str() + off : ""; }
+    bool loadStarCatalog();                           // fills starInfo_ / starStrings_ and the RA/Dec it returns via
+    std::vector<glm::vec2> starRaDec_;                // ... this (degrees, J2000)
+    int starIndexByName(const std::string &name) const; // proper name, designation, "HIP n" / "HR n"; -1 if none
+    std::string starDisplayName(int i) const;
+    int pickStarAt(float clickX, float clickY, float screenW, float screenH, float *distPx = nullptr) const;
+    void formatSelectedStarInfo(int i);
+    bool skyObjectEnu(int obj, glm::vec3 &enu, float *flare = nullptr) const; // a planet (0..5) or a star (kPlanetCount + i)
+    uint32_t starDrawCount = 0;                       // the prefix of starRecords written this frame (sorted by mag)
+    uint32_t starVisibleCount = 0;                    // ... of which drawn (intensity > 0), harness `stars`
+    float starLimitMagFrame = 0.0f;                   // the faintest catalogue magnitude that could show this frame
+    float starNelmZenith = 0.0f;                      // naked-eye limit at the zenith (harness `stars`)
+    double starUpdateMs = 0.0;                        // updateStars' wall time (eased)
+    int starBetelgeuse = -1;                          // its index (HIP 27989), -1 without it
+    // The per-elevation table updateStars reads: x the line of sight's extinction (mag), y the refraction (rad,
+    // apparent - true; < -1 = below the apparent horizon), z the angle-of-arrival jitter (rad), w the scintillation
+    // (-1 = no table), over sin(true elevation) from the limb up, quadratic toward the limb.
+    std::unique_ptr<glm::vec4[]> starElTab_;
+    double starElTabR_ = -1.0;
+    float starElTabK_ = -1.0f;
+    uint64_t starElTabRefr_ = ~0ull;
+    bool starElTabRefrOn_ = false;
+    uint64_t refrSerial_ = 0;                         // bumped when the refraction table is re-derived
+    // Faint stars only under dark skies (the naked-eye limit from the sky's brightness in each direction).
+    bool starSkyLimit = true;                         // stars.sky_limit
+    float starLimitBoost = 1.2f;                      // stars.limit_boost: mag beyond the formula's dark-sky NELM
+    // The scripted Betelgeuse supernova (Type II-P), 2037-12-25. A pure function of sim time.
+    bool supernovaEnabled = true;                     // stars.supernova
+    bool betelgeuseVariable = true;                   // stars.betelgeuse_variable
+    static constexpr double kSupernovaT0 = 1198594800.0; // 2037-12-25 03:00:00 UTC (s since J2000): shock breakout
+    static double supernovaMagAt(double t, float *bv = nullptr); // apparent V (extinction by the ISM in it), 99 before
+    static double supernovaEndT();                    // when it fades below the star it was (+0.5)
+    float betelgeuseMagAt(double t, float *bv) const;   // the star's V and B-V now (the supernova from kSupernovaT0)
+    float snMagSeen = 99.0f;                          // this frame: + the air's extinction (99 = not a supernova now)
+    glm::vec3 snEnu{0.0f, 0.0f, 1.0f};
+    glm::vec3 snColor{1.0f};
+    bool snAbove = false;                             // above the apparent horizon
+    float snDiffuseMoonFrac = 0.0f;                   // its light on the ground, x the full Moon overhead
+    double snFlare = 0.0;
+    void supernovaFill();                             // kesslerFillDust's finish: the supernova into kFireBuf
+    harness::Status harnessStars(harness::Active &a);
 
     // ── Planets ──────────────────────────────────────────────────────────────
     // Reuses starPipeline/starPipeLayout/starDescLayout unchanged (same GpuSatVisible-shaped
@@ -6592,7 +6650,7 @@ private:
     float oceanDetailOctaves = 5.0f;         // seaMapDetail() octave count (wave normal)
     float orbitGrade = 1.0f;
     // The Moon as a body (updatePositions): true topocentric position and size, eclipses.
-    float moonSizeScale = 2.5f;             // "Moon size (x real)" (Atmosphere tab, slot 220; the old disc was 3x). Review 16: 2.5 by default — the true 0.5 deg is a few pixels at a wide FOV
+    float moonSizeScale = 1.0f;             // "Moon size (x real)" (slot 220; the old disc was 3x). 1 = true size by default since 2026-10-27 (conjunctions, occultations, eclipses as they are); review 16 had 2.5
     // The farthest the player's eye may climb above sea level (review 16: Q/E boost reached the Moon). Past GEO
     // and the full-disc views the high-orbit ambience is built for, a quarter of the way to the Moon.
     static constexpr float kMaxObsHeightM = 1.0e8f;
@@ -7939,10 +7997,7 @@ private:
     uint32_t rainInstancesLastFrame = 0;
     int rainLevelsLastFrame = 0;
     void updateStars();
-    // updateStars()'s extinction table over sin(elevation), rebuilt when the observer radius or k changes.
-    std::unique_ptr<float[]> starExtTab_;
-    double starExtTabR_ = -1.0;
-    float starExtTabK_ = -1.0f;
+    // (its per-elevation table: starElTab_, with the catalogue's members above)
     void initPlanets(VulkanContext &ctx);                                       // planetBuf + planetDescSet, reusing starDescLayout
     void updatePlanets();                                                       // mirrors updateStars(); called right after it
     int pickPlanetAt(float clickX, float clickY, float screenW, float screenH); // mirrors

@@ -312,10 +312,21 @@ License: Creative Commons Attribution-NonCommercial-ShareAlike 3.0
 --------------------------------------------------------------------
 Star catalogue
 --------------------------------------------------------------------
-Source:  Yale Bright Star Catalogue, 5th Revised Edition
-         (Hoffleit & Warren, 1991), CDS catalogue V/50.
-Note:    Star positions/magnitudes only; additional stars may be added from
-         the same catalogue in future updates.
+Source:  HYG database v4.1, Astronomy Nexus (David Nash)
+         https://github.com/astronexus/HYG-Database
+         A compilation of the Hipparcos catalogue (ESA 1997; van Leeuwen
+         2007), the Yale Bright Star Catalogue and the Gliese catalogue of
+         nearby stars, with the IAU Working Group on Star Names' proper names.
+License: Creative Commons Attribution-ShareAlike 4.0 International
+         (https://creativecommons.org/licenses/by-sa/4.0/).
+Used as: assets/stars/star_catalog.bin, derived by tools/make_star_catalog.py
+         (stars to V 8.5: positions, magnitudes, B-V, distances, names,
+         designations, spectral types, constellations; Betelgeuse's distance
+         set to 168 pc after Joyce et al. 2020, ApJ 902, 63). The derived file
+         is distributed under the same CC BY-SA 4.0 license.
+Fallback: Yale Bright Star Catalogue, 5th Revised Edition
+         (Hoffleit & Warren, 1991), CDS catalogue V/50 (compiled in:
+         positions/magnitudes only).
 
 --------------------------------------------------------------------
 Satellite constellation data

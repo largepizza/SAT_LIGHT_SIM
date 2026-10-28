@@ -408,6 +408,20 @@ def build_sky_moonglint():
     return [moon, star(31.0, 34.0, 12.0, 3.0)]
 
 
+def build_sky_supernova():
+    """A supernova (the scripted 2037 Betelgeuse explosion, 2026-10-27): a solid core with eight spikes, the four
+    on the axes long, the diagonals short, read as a burst at 16 px."""
+    core = disc(24.0, 24.0, 8.5)
+    spikes = []
+    for k in range(8):
+        a = math.radians(45.0 * k)
+        r = 23.0 if k % 2 == 0 else 17.5
+        w = 4.5 if k % 2 == 0 else 4.5
+        ca, sa = math.cos(a), math.sin(a)
+        spikes.append(tri((24.0 + r * ca, 24.0 + r * sa), (24.0 - w * sa, 24.0 + w * ca), (24.0 + w * sa, 24.0 - w * ca)))
+    return [core] + spikes
+
+
 ICONS = {
     "storm-tornado": build_storm_tornado,
     "storm-hurricane": build_storm_hurricane,
@@ -435,6 +449,7 @@ ICONS = {
     "sky-conjunction": build_sky_conjunction,
     "sky-occultation": build_sky_occultation,
     "sky-moonglint": build_sky_moonglint,
+    "sky-supernova": build_sky_supernova,
 }
 
 # Drawn in the HUD's "pixel" style: solid silhouettes with hard edges on a 24-px grid, doubled to 48 —
@@ -442,7 +457,7 @@ ICONS = {
 # beside them read as another icon family (the user, 2026-10-03).
 PIXEL_STYLE = {"storm-tornado", "storm-hurricane", "storm-haboob", "storm-supercell", "storm-squall",
                "storm-waterspout", "storm-fire", "storm-cell", "weather", "missions", "report", "bookmark", "film", "photo", "record", "maximize", "observer", "spin", "studio",
-               "sky-events", "sky-solar", "sky-lunar", "sky-conjunction", "sky-occultation", "sky-moonglint"}
+               "sky-events", "sky-solar", "sky-lunar", "sky-conjunction", "sky-occultation", "sky-moonglint", "sky-supernova"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

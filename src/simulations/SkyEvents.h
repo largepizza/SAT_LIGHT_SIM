@@ -22,6 +22,7 @@ enum Kind : int
     kConjunction,
     kOccultation,
     kMoonGlint,     // a lunar base's solar array mirroring the Sun to the Earth (LunarBases.h, 2026-10-27)
+    kSupernova,     // the scripted Betelgeuse supernova, 2037-12-25 (SatelliteSimStars.cpp, 2026-10-27)
     kKindCount
 };
 
@@ -30,6 +31,8 @@ constexpr int kBodyMoon = 10;
 constexpr int kBodySun = 11;
 // A lunar base's glint point on the drawn Moon (a = kBodyMoonBase0 + the base's index in lunar_bases.json).
 constexpr int kBodyMoonBase0 = 20;
+// A star of the catalogue (a = kBodyStar0 + its index in SatelliteSim::starRecords; checked before the bases).
+constexpr int kBodyStar0 = 1000;
 
 struct Event
 {
@@ -53,9 +56,10 @@ struct Event
 struct SearchCtx
 {
     double t0 = 0.0, t1 = 0.0;
-    float moonSizeScale = 2.5f;           // the drawn Moon is this x its true size (occultation contacts as drawn)
+    float moonSizeScale = 1.0f;           // the drawn Moon is this x its true size (occultation contacts as drawn)
     float moonBaseJitter = 1.0f;          // x the bases' row tilt / azimuth errors (moon_bases.tilt_jitter_scale)
     float moonBaseMagLimit = 3.0f;        // a Moon-base glint is an event when brighter than this (moon_bases.event_mag_limit)
+    bool supernova = true;                // stars.supernova (the scripted 2037 Betelgeuse supernova)
     const std::atomic<bool> *cancel = nullptr;
     bool cancelled() const { return cancel && cancel->load(std::memory_order_relaxed); }
 };

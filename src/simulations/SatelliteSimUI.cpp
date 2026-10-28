@@ -642,6 +642,7 @@ void SatelliteSim::loadUiIcons(UIRenderer &ui)
             "assets/icons/ui/pixel--sky-conjunction.png",
             "assets/icons/ui/pixel--sky-occultation.png",
             "assets/icons/ui/pixel--sky-moonglint.png", // 37: the Moon-base glints (SatelliteSimSkyEvents.cpp)
+            "assets/icons/ui/pixel--sky-supernova.png", // 38: the 2037 Betelgeuse supernova (SatelliteSimStars.cpp)
         };
         // The count comes from the list itself — the hand-maintained "bump this when you add an icon"
         // number used to be a silent way to drop the last icon of the array.
@@ -864,6 +865,12 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     if (inp.lmbPressed && !ui.mouseOverUI())
     {
         int planetHit = pickPlanetAt(inp.mouseX, inp.mouseY, inp.screenW, inp.screenH);
+        // A bright star (SatelliteSimStars.cpp; selectedPlanetIndex = kPlanetCount + its index): one right under the
+        // cursor beats a satellite, one a little off only when no satellite is there.
+        float starDist = 1e9f;
+        const int starHit = pickStarAt(inp.mouseX, inp.mouseY, inp.screenW, inp.screenH, &starDist);
+        if (planetHit < 0 && starHit >= 0 && (starDist <= 4.0f || pickSatelliteAt(inp.mouseX, inp.mouseY, inp.screenW, inp.screenH) < 0))
+            planetHit = kPlanetCount + starHit;
         if (planetHit >= 0)
         {
             if (planetHit != selectedPlanetIndex || selectedSatIndex >= 0)
@@ -1601,9 +1608,9 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
     const char (*infoLines)[kSelInfoLineLen];
     if (isPlanet)
     {
-        const GpuSatVisible *entries = static_cast<const GpuSatVisible *>(planetMapped);
-        pickSkyDir = entries[selectedPlanetIndex].skyDir;
-        pickFlare = entries[selectedPlanetIndex].flareIntensity;
+        pickSkyDir = glm::vec3(0.0f, 0.0f, 1.0f);
+        pickFlare = 0.0f;
+        skyObjectEnu(selectedPlanetIndex, pickSkyDir, &pickFlare); // a planet or a star
         infoLines = planetInfoLine;
     }
     else
@@ -7133,8 +7140,9 @@ void SatelliteSim::buildSettingsAttributionsTab(const UIInput &inp, UIRenderer &
     entry(i++, "Ocean shader (heavy inspiration, modified)",
           "\"Seascape\" by Alexander Alekseev aka TDM - 2014", nullptr,
           "shadertoy.com/view/Ms2SD1 (CC BY-NC-SA 3.0)");
-    entry(i++, "Star catalogue", "Yale Bright Star Catalogue (Hoffleit & Warren 1991, CDS V/50)", nullptr,
-          nullptr);
+    entry(i++, "Star catalogue", "HYG database v4.1, Astronomy Nexus (Hipparcos, Yale BSC, Gliese; IAU names)",
+          "Fallback: Yale Bright Star Catalogue (Hoffleit & Warren 1991, CDS V/50)",
+          "github.com/astronexus/HYG-Database (CC BY-SA 4.0)");
     entry(i++, "Icons", "HackerNoon's Pixel Icon Library", nullptr,
           "github.com/hackernoon/pixel-icon-library (MIT)");
 
@@ -8920,6 +8928,18 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         if (j0 != moonBaseJitter || l0 != moonBaseMagLimit) skScanBase = -1e300;
     }
 
+    if (j.contains("stars") && j["stars"].is_object())
+    {
+        // The stars (2026-10-27, SatelliteSimStars.cpp): faint stars only under dark skies, the 2037 supernova.
+        const auto &sj = j["stars"];
+        const bool sn0 = supernovaEnabled;
+        starSkyLimit = sj.value("sky_limit", starSkyLimit);
+        starLimitBoost = settingClamp(sj.value("limit_boost", starLimitBoost), -2.0f, 3.0f);
+        supernovaEnabled = sj.value("supernova", supernovaEnabled);
+        betelgeuseVariable = sj.value("betelgeuse_variable", betelgeuseVariable);
+        if (sn0 != supernovaEnabled) skScanBase = -1e300;
+    }
+
     if (j.contains("launches") && j["launches"].is_object())
     {
         const auto &lj = j["launches"];
@@ -9935,6 +9955,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
                        {"force_inversion_dt", refrForceInvDT},
                        {"force_inversion_dz", refrForceInvDz}};
     j["moon_bases"] = {{"enabled", moonBaseGlints}, {"tilt_jitter_scale", moonBaseJitter}, {"event_mag_limit", moonBaseMagLimit}};
+    j["stars"] = {{"sky_limit", starSkyLimit}, {"limit_boost", starLimitBoost}, {"supernova", supernovaEnabled},
+                  {"betelgeuse_variable", betelgeuseVariable}};
     // Launches (SatelliteSimLaunches.cpp).
     j["launches"] = {{"enabled", launchesEnabled},
                      {"life_scale", launchLifeScale},

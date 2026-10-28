@@ -282,6 +282,7 @@ void SatelliteSim::refrDerive()
     }
     // The primary image: from the top down while the true elevation keeps falling.
     refrInv.clear();
+    ++refrSerial_; // (updateStars rebuilds its per-elevation table)
     double minT = 1e9;
     for (int i = refr::kTableN - 1; i >= 0; --i)
     {
