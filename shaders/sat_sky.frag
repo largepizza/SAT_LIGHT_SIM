@@ -4451,15 +4451,13 @@ void main() {
             aFK = exp(-(BETA_R * (densR0 * (0.5 * fRK * fwC - 0.5)) + BETA_M * 1.1 * (densM0 * (0.5 * fMK * fwC - 0.5))));
 #endif
         }
+        // A solar eclipse: the step's factor once, for the multiple scattering and the sunlight below (eclipse.glsl
+        // eclipseLightK: one geometry, 1 outside the penumbra; the pair was called twice a step).
 #ifdef SKY_SUN_SHADOW
+        vec3 eclK = (cloud.moonMisc.y > 0.5) ? eclipseLightK(sp * 1e-3, sunDir, h, kEclipseMultiScatter) : vec3(1.0);
         if (skyMsOn) {
             vec3 aM = exp(-(BETA_R * (odR_cam - 0.5 * densR0) + BETA_M * 1.1 * (odM_cam - 0.5 * densM0)));
-            vec3 ps = cv2SkyPsiAt(dot(normalize(sp), sunDir), h);
-            if (cloud.moonMisc.y > 0.5) {
-                vec3  spK = sp * 1e-3;
-                float vD  = eclipseSunVis(spK, sunDir, 0.0);
-                ps *= vD + (1.0 - vD) * kEclipseMultiScatter * eclipseSkyLight(spK, sunDir, h);
-            }
+            vec3 ps = cv2SkyPsiAt(dot(normalize(sp), sunDir), h) * eclK;
             msS  += aM * (BETA_R * densR0 + BETA_M * densM0) * ps;
             msSF += aM * aFK * (BETA_R * (densR0 * fRK) + BETA_M * (densM0 * fMK)) * (fwC * ps);
         }
@@ -4606,12 +4604,16 @@ void main() {
         // the sunlit air around it. The whole sky used to be dimmed by the Sun the EYE saw: from inside the umbra the
         // horizon was as dark as the zenith (no orange ring), and from space the air over the shadow stayed blue-lit,
         // blurring the shadow on the ground.
+#ifdef SKY_SUN_SHADOW
+        attn *= eclK; attnPre *= eclK;
+#else   // (SKY_LITE's size budget: the old pair)
         if (cloud.moonMisc.y > 0.5) {
             vec3  spK = sp * 1e-3;
             float vD  = eclipseSunVis(spK, sunDir, 0.0);
             vec3  eclK = vD + (1.0 - vD) * kEclipseMultiScatter * eclipseSkyLight(spK, sunDir, h);
             attn *= eclK; attnPre *= eclK;
         }
+#endif
 
         // Accumulate in-scattered radiance for each particle type.
         // Multiplying by density (densR/densM) weights by how many particles are at this altitude.
@@ -6078,19 +6080,53 @@ void main() {
             // ── heightMapTracing (low altitude only) ──────────────────────────
             // Bracket: ±2.5 m vertical around the sea-sphere intersection.
             // hm > 0 at the near end (above waves), hx < 0 at the far end (inside).
+            // The eye above the waves (2026-10-27, the eye at the sea surface: "the water has a clipping issue there"). The
+            // wave field stands on the sea-level sphere (heights 0 .. ~5 m x the sea state), and the eye was 2 m over that
+            // sphere at 0 m: inside the waves. Crests stood over the eye as walls cut through the camera, and the trace's
+            // bracket began behind the eye. For the WAVES only (the trace, the normal, the glints) the eye stands at least
+            // 1 m over 0.8 of the highest crest the octaves can make for the sea state where it is (static in time: no
+            // bobbing for the temporal passes to reproject); the sky, the air and the depth keep the true eye.
+#ifndef SKY_LITE   // (its size budget: Planetarium keeps the 2-m eye)
+            float eyeSea = obsEffH + 2.0 - waterLevelM;   // the eye over the water level (m)
+#else
+#define eyeSea (obsEffH + 2.0 - waterLevelM)
+#endif
             if (altFade > 0.01 && dist < 5000.0) {
+#ifndef SKY_LITE
+                float seaLift = 0.0;
+                if (eyeSea < 60.0) {
+                    float rainKeep = gSeaRain;
+                    float sE  = oceanSeaState(enuZ);
+                    gSeaRain  = rainKeep;
+                    float nO  = clamp(cloud.oceanSeaOctaves, 1.0, 8.0);
+                    float hMx = 2.0 * kSeaHeight * sE * (1.0 - pow(0.22, nO)) / 0.78;
+                    seaLift   = max(0.0, 0.8 * hMx + 1.0 - eyeSea);
+                }
+#endif
+#ifndef SKY_LITE
+                float eyeT   = eyeSea + seaLift;
+                // The level sphere from the lifted eye (flat over the few km the trace runs: the same ray, further on).
+                float tLvl   = tSeaLvl * eyeT / max(eyeSea, 0.05);
+#else
+#define eyeT eyeSea
+#define tLvl tSeaLvl
+#endif
                 float cosEl  = max(0.05, abs(dot(dir, surfUp)));
                 float traceR = min(60.0, 2.5 * max(1.0, seaState) / cosEl);
-                float tm     = tSeaLvl - traceR;
-                float tx     = tSeaLvl + traceR;
+#ifndef SKY_LITE
+                float tm     = max(tLvl - traceR, 0.05);   // never behind the eye
+#else
+                float tm     = tLvl - traceR;
+#endif
+                float tx     = tLvl + traceR;
 
                 // Height above sea level computed as obsEffH + 2 + t*dir.z — avoids
                 // catastrophic cancellation in length(p)-R_EARTH at sea level (float
                 // ULP at 6.37 M m is 0.76 m, which quantises 1.5 m waves into ~2 steps).
                 vec3  plo = obsPos + tm * dir;
-                float hm  = seaMap(plo.xy + obsPhase, obsEffH + 2.0 - waterLevelM + tm * dir.z, seaTime);
+                float hm  = seaMap(plo.xy + obsPhase, eyeT + tm * dir.z, seaTime);
                 vec3  phi = obsPos + tx * dir;
-                float hx  = seaMap(phi.xy + obsPhase, obsEffH + 2.0 - waterLevelM + tx * dir.z, seaTime);
+                float hx  = seaMap(phi.xy + obsPhase, eyeT + tx * dir.z, seaTime);
 
                 if (hx < 0.0) {
                     // 2026-09-30: step to the FIRST crossing before refining. A grazing ray crosses several
@@ -6101,14 +6137,14 @@ void main() {
                     for (int k = 1; k <= 5; ++k) {
                         float tk = mix(tm, tx, float(k) / 5.0);
                         float hk = (k == 5) ? hx : seaMap((obsPos + tk * dir).xy + obsPhase,
-                                                          obsEffH + 2.0 - waterLevelM + tk * dir.z, seaTime);
+                                                          eyeT + tk * dir.z, seaTime);
                         if (hk < 0.0) { tm = tA; hm = hA; tx = tk; hx = hk; break; }
                         tA = tk; hA = hk;
                     }
                     for (int i = 0; i < 6; i++) {
                         float tmid = mix(tm, tx, hm / (hm - hx));
                         vec3  pm   = obsPos + tmid * dir;
-                        float hmid = seaMap(pm.xy + obsPhase, obsEffH + 2.0 - waterLevelM + tmid * dir.z, seaTime);
+                        float hmid = seaMap(pm.xy + obsPhase, eyeT + tmid * dir.z, seaTime);
                         if (hmid < 0.0) { tx = tmid; hx = hmid; }
                         else             { tm = tmid; hm = hmid; }
                         if (abs(hmid) < 0.001) break;
@@ -6118,11 +6154,19 @@ void main() {
                     surfUp = normalize(hitPt);
                     posM   = hitPt.xy + obsPhase;
                     dist   = tWave;
+#ifndef SKY_LITE
+                    eyeSea = eyeT;
+#endif
                 }
             }
 
             // Same precision fix: obsEffH + 2 + dist*dir.z instead of length(hitPt)-R_EARTH.
-            float pHeight = obsEffH + 2.0 - waterLevelM + dist * dir.z;
+            float pHeight = eyeSea + dist * dir.z;
+#ifdef SKY_LITE
+#undef eyeSea
+#undef eyeT
+#undef tLvl
+#endif
             vec3  viewDir = normalize(-dir);
 
             // ── getNormal (central differences on seaMapDetail) ───────────────
@@ -6294,10 +6338,7 @@ void main() {
 #ifdef SKY_SUN_SHADOW
                         if (skyMsOn) {
                             vec3 ps = cv2SkyPsiAt(dot(normalize(rp), sunDir), rh);
-                            if (cloud.moonMisc.y > 0.5) {
-                                float vD = eclipseSunVis(rp * 1e-3, sunDir, 0.0);
-                                ps *= vD + (1.0 - vD) * kEclipseMultiScatter * eclipseSkyLight(rp * 1e-3, sunDir, rh);
-                            }
+                            if (cloud.moonMisc.y > 0.5) ps *= eclipseLightK(rp * 1e-3, sunDir, rh, kEclipseMultiScatter);
                             rMs += exp(-(BETA_R * (rodR - 0.5 * rdR) + BETA_M * 1.1 * (rodM - 0.5 * rdM)))
                                  * (BETA_R * rdR + BETA_M * rdM) * ps;
                         }
@@ -6317,10 +6358,8 @@ void main() {
                         vec3 rtau  = BETA_R * rodR + BETA_M * 1.1 * rodM
                                    + (skyMsOn ? sunPathTauExact(rp, sunDir, BETA_R, BETA_M) : BETA_R * sOD.x + BETA_M * 1.1 * sOD.y);
                         vec3 rattn = exp(-rtau);
-                        if (cloud.moonMisc.y > 0.5) {                // a solar eclipse, as in the sky loop
-                            float vD = eclipseSunVis(rp * 1e-3, sunDir, 0.0);
-                            rattn *= vD + (1.0 - vD) * kEclipseMultiScatter * eclipseSkyLight(rp * 1e-3, sunDir, rh);
-                        }
+                        if (cloud.moonMisc.y > 0.5)                  // a solar eclipse, as in the sky loop
+                            rattn *= eclipseLightK(rp * 1e-3, sunDir, rh, kEclipseMultiScatter);
                         rAccR += rattn * rdR;
                         rAccM += dot(rattn, vec3(1.0 / 3.0)) * rdM;
                     }
@@ -6690,11 +6729,14 @@ void main() {
                         // The pixel footprint's extent along the lattice's axes (u ~ along the view, v across it).
                         float eu  = 2.0 * sqrt(footA * footA * cd * cd + footX * footX * sd * sd);
                         float ev  = 2.0 * sqrt(footA * footA * sd * sd + footX * footX * cd * cd);
-                        float lu  = log2(max(eu / 0.25, 1.0)), lvv = log2(max(ev / 0.25, 1.0));
+                        // Cells follow the footprint below 0.25 m too, to 1/32 of it (2026-10-27, the eye at the surface:
+                        // floored at 0.25 m a cell was tens of pixels a few metres off and a flash lit it whole, a white
+                        // quad: "pixelated"); a cell under 0.25 m holds the 150 facets' density, 150 (C / 0.25 m)^2.
+                        float lu  = log2(max(eu / 0.25, 0.03125)), lvv = log2(max(ev / 0.25, 0.03125));
                         float fl  = 0.5 * (fract(lu) + fract(lvv));
                         float ku  = floor(lu) + float(j >> 1), kv = floor(lvv) + float(j >> 1);
                         float Cu  = 0.25 * exp2(ku), Cv = 0.25 * exp2(kv);
-                        float qL  = clamp(fs * max(150.0, Cu * Cv / 0.09), 0.02, 1.0);
+                        float qL  = clamp(fs * max(min(150.0, 2400.0 * Cu * Cv), Cu * Cv / 0.09), 0.02, 1.0);
                         float wL  = 1.0;                                          // the mean, for q -> 1
                         if (qL < 0.999) {
                             vec2  pl  = vec2(dot(posC, ax), dot(posC, vec2(-ax.y, ax.x)));
@@ -6715,14 +6757,23 @@ void main() {
                             float ph  = om * mod(pc.waveTime, 6283.1853) + 6.2831853 * fract(u.y * 5.13 + u.z * 2.71);
                             vec2  tS  = sigA * (g1 * cos(ph) + g2 * sin(ph));
                             // r^2 so that P(|t - m| < r) = q: the slope pdf at m is exp(-m2 / s2) / (pi s2).
-                            float r2  = qL * s2 * exp(min(m2 / s2, 30.0));
+                            // The disc stays small enough for that (2026-10-27, the eye at the surface): where the mirror slope
+                            // is out in the tail (m2 > ~2 s2) the r^2 that makes the chance q at the pdf's value at m outgrew
+                            // the distribution (q s2 e^(m2 / s2)): the disc took in its centre, nearly every cell flashed at
+                            // 1 / q and the tail glinted up to 50x its mean — a band of white cells off the glitter path,
+                            // whole white quads near the eye. Capped where the pdf is still near-constant over it (r <= s2 /
+                            // (2 |m|), r <= sigma), its real chance pL <= q, and the rest of the cell's energy (1 - pL / q)
+                            // stays smooth: E[w] = 1 at any m.
+                            float xS  = m2 / s2;
+                            float r2  = min(qL * s2 * exp(min(xS, 30.0)), min(0.5 * s2, s2 / (4.0 * max(xS, 1e-6))));
+                            float pL  = r2 * exp(-xS) / s2;
                             vec2  dS  = tS - mS;
                             // A soft edge (2026-10-27, the matrix suite's sea / storm cells): mS is this pixel's own
                             // (jittered) wave normal's, so a hard |t - m| < r drew each facet's edge pixels lit or dark by
                             // the jitter phase. 1 - smoothstep(0.6, 1.4) of (d / r)^2 has the same area as the disc (energy
                             // kept), and only the core (inside 0.6) is flagged for the sky TAA to take whole.
                             float xr  = dot(dS, dS) / max(r2, 1e-30);
-                            wL  = (1.0 - smoothstep(0.6, 1.4, xr)) / qL;
+                            wL  = (1.0 - smoothstep(0.6, 1.4, xr)) / qL + (1.0 - pL / qL);
                             lit = lit || (xr < 0.6 && qL < 0.5);
                         }
                         wSum += ((j & 1) == 0 ? 1.0 - frO : frO) * ((j >> 1) == 0 ? 1.0 - fl : fl) * wL;
@@ -7570,10 +7621,21 @@ void main() {
         // Remaining soft dimming (cloudBlock, A_total's luminance) still applies on top for thin/
         // translucent cloud the hard gate above doesn't trip on — a hazy, dimmed disc through mist
         // is correct; sunGate only handles the "actually opaque" case that dimming alone can't.
-        float tot = pow(1.0 - obsSunF, 6.0);                   // totality
+        // Totality: the corona shows only once nearly all of the photosphere is hidden (2026-10-27, issue
+        // 20261027_212202 "Refraction silliness during eclipses"). It was (1 - the share seen)^6, so a partial eclipse
+        // with a third of the Sun left drew the corona at 8% — its pink chromosphere a ring round the Sun — and, zoomed
+        // in, evaluated it over the whole screen (9 solar radii): ~10 ms of the sky pass at FOV 2 deg.
+#ifdef SKY_SUN_SHADOW
+        float tot = 1.0 - smoothstep(0.0, 0.02, obsSunF);
+        tot *= tot;
+#else   // (SKY_LITE's size budget)
+        float tot = pow(1.0 - obsSunF, 6.0);
+#endif
         vec3  solarCorona = vec3(0.0);
+#ifndef SKY_SUN_SHADOW   // there: about the Sun AS SEEN, in the refraction block below
         if (tot > 0.001 && angle < kCoronaMaxR * kSunAngR && !moonDiscHit)
             solarCorona = solarCoronaAt(dir, sunDir) * (tot * sunGate * kCoronaGain);
+#endif
 #ifdef SKY_SUN_SHADOW
         // The Sun as an OBJECT (2026-10-26, issue 20261026_192501, then 20261026_203414 "Sun refraction mk 2"):
         //  - REFRACTION, MIRAGES AND TURBULENCE through the table SatelliteSimRefraction.cpp traces each frame through the
@@ -7629,6 +7691,10 @@ void main() {
                 if (c == 1) dTg = dt;
                 ang3[c] = acos(clamp(dot(dt, sunDir), -1.0, 1.0));
             }
+            // The corona through the same bent rays as the disc (2026-10-27, issue 20261027_212202): it was drawn about the
+            // TRUE (unrefracted) Sun while the disc and the Moon were refracted, a ring below the Sun near the horizon.
+            if (tot > 0.001 && ang3.g < kCoronaMaxR * kSunAngR && !moonDiscHit && onS.g > 0.5)
+                solarCorona = solarCoronaAt(dTg, sunDir) * (tot * sunGate * kCoronaGain);
             // The sea under a mirage: rays the drawn sea hides may climb back off the warm layer (the inverted image);
             // the table decides there. Terrain, meshes and opaque cloud still hide the disc.
             // Surfaces hide the disc outright; CLOUD by its transmittance (2026-10-27, issue 20261027_182140 "Sun occlusion

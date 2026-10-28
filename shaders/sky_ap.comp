@@ -209,14 +209,12 @@ void main()
             float ovSh = max(0.0, min(tSe1, tShB) - max(tSe0, tShA));
             float litF = clamp(1.0 - ovSh / segLen, 0.0, 1.0);
             float densR0 = densR, densM0 = densM;
+            // An eclipse: the step's factor once (both uses below; eclipseLightK, eclipse.glsl).
+            vec3 eclK = (cloud.moonMisc.y > 0.5) ? eclipseLightK(sp * 1e-3, sunDir, h, kEclipseMultiScatter) : vec3(1.0);
             if (skyMsOn) {
                 vec3 aM = exp(-(BETA_R * (odR_cam - 0.5 * densR0) + BETA_M * 1.1 * (odM_cam - 0.5 * densM0)));
                 vec3 ps = cv2SkyPsiAt(sampleSunDotGeo, h);
-                if (cloud.moonMisc.y > 0.5) {
-                    vec3  spK = sp * 1e-3;
-                    float vD  = eclipseSunVis(spK, sunDir, 0.0);
-                    ps *= vD + (1.0 - vD) * kEclipseMultiScatter * eclipseSkyLight(spK, sunDir, h);
-                }
+                ps *= eclK;
                 msS += aM * (BETA_R * densR0 + BETA_M * densM0) * ps;
             }
             if (litF < 1.0) {
@@ -277,12 +275,7 @@ void main()
                     attn *= 1.0 - shK;
                 }
             }
-            if (cloud.moonMisc.y > 0.5) {
-                vec3  spK = sp * 1e-3;
-                float vD  = eclipseSunVis(spK, sunDir, 0.0);
-                vec3  eclK = vD + (1.0 - vD) * kEclipseMultiScatter * eclipseSkyLight(spK, sunDir, h);
-                attn *= eclK; attnPre *= eclK;
-            }
+            attn *= eclK; attnPre *= eclK;
             accumR += attn * densR * atmTermW8;
             accumM += dot(attnPre, vec3(1.0 / 3.0)) * (1.0 - shKMie) * densM * atmTermW8;
         }

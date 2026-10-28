@@ -7829,7 +7829,19 @@ air did to it: "a half faded fuzzball" low down.
   time running the edges are averaged and only cores flash whole. storm_gnd look's remaining +0.25 over the old screen
   hash is the facets themselves (a frozen screen hash was identical in the moving frame and its settled reference). A
   cell lattice does not divide the field's period: the pattern
-  re-hashes when the CPU wraps the world offset (every ~21-28 km of travel). The sea's own sun
+  re-hashes when the CPU wraps the world offset (every ~21-28 km of travel).
+  **At the sea surface (2026-10-27, the user: at ~0 m "the glitter falls apart and looks pixelated, and the water has a
+  clipping issue")**: (1) cells follow the footprint below 0.25 m too (to 1/32 of it), holding the 150 facets' density
+  (150 (C / 0.25 m)^2): floored at 0.25 m a cell was tens of pixels a few metres off and a flash lit it whole (white
+  quads); (2) the flash disc is capped where the slope pdf is near-constant over it (r <= sigma, r <= s2 / (2 |m|)) and the
+  share of the cell's energy that cap removes stays smooth (wL = flash / q + 1 - pL / q): out in the tail (m^2 > ~2 s2)
+  r^2 = q s2 e^(m^2 / s2) outgrew the distribution, nearly every cell flashed at 1 / q and the glint there was up to 50x
+  its mean (white cells off the glitter path); (3) the WAVES' eye (the trace, the normal, the glints; not the sky, the air
+  or the depth) stands at least 1 m over 0.8 of the field's highest crest for the eye's sea state (static: nothing for the
+  temporal passes to reproject), and the trace's bracket never starts behind the eye — the field stands on the sea-level
+  sphere (0 .. ~5 m x the sea state) and the 2-m eye was inside it, crests as walls through the camera. Not in SKY_LITE.
+  Normal altitudes (20 m, 300 m) unchanged within the run-to-run noise (single captures of one config differ by more
+  than old vs new: the waves are not frame-deterministic); GPU within noise. The sea's own sun
   direction is still the TRUE Sun (not refracted).
 - Settings (`refraction.*`, no UI yet): `enabled` (true), `mirage` (1, x the temperature steps), `turbulence` (1, x Cn^2),
   `dispersion` (1 = physical), `sun_disc_gain` (1); overrides `force_sea_air_dt` (< -50 auto), `force_inversion_m` (< 0
@@ -7910,7 +7922,16 @@ EXPOSURE AND MOON section since 2026-10-06, key
   legacy cirrus volume (`cloudNoiseTex`) read on that circle — fine across the lines, stretched along them; footpoints
   mirrored about the solar equator (taken per hemisphere they jumped there: a seam), where a streamer stalk is drawn;
   coarse reads for streamers; Baumbach's radial profile; H-alpha pink chromosphere and prominences at the limb. The
-  solar axis is the ecliptic pole. `kCoronaGain` 0.4.
+  solar axis is the ecliptic pole. `kCoronaGain` 0.4. **Only at totality, about the Sun as seen** (2026-10-27, issue
+  20261027_212202 "Refraction silliness during eclipses", 160 km over the Arctic, a partial eclipse at the limb, FOV 2 deg):
+  `tot` was (1 - the share seen)^6, so with a third of the Sun left the corona drew at 8% — its pink chromosphere a ring —
+  and it was centred on the TRUE Sun while the disc and the Moon are refracted (lifted ~0.3 deg there): a phantom circle
+  under the crescent. Now `tot` = (1 - smoothstep(0, 0.02, seen))^2 and the corona reads the disc's bent ray (`dTg`) in
+  the refraction block (SKY_LITE keeps the old pair: its size budget). **The eclipse's per-step term** in the sky loop,
+  the AP volume and the sea's reflection march is `eclipseLightK` (eclipse.glsl: one geometry for the direct and the
+  blurred visibility, exactly 1 outside the penumbra); the loop evaluated the pair twice a step. The report's view (the
+  whole frame in the horizon band, the loop per pixel): GPU 63.5-63.9 -> 57.1 ms, the same view a day later (no eclipse)
+  51.7-52.1 ms; sky pass 40.1-40.3 -> 34.3 (30.2-30.4 without). The rest is that zoomed limb view's own cost.
 - **The Moon writes its distance into the unified depth**, so stars and planets behind it are depth-occluded
   and satellites (nearer) draw in front; star_point.vert's cull takes the real radius from
   `PointDrawPC::moonDirENU.w`.
@@ -8650,6 +8671,13 @@ atmHalfAvg3, airglow noise, cityBrightness) moved unchanged into `include/sky_at
   are raw. 12 half floats a cell (accumR, accumM, the shadow light, the city glow, odR, odM, green, sodium), one runtime
   `uvec2` array, x 1e-4: ~63 MB, made the first frame it runs (`ensureSkyAp`; the flash buffer is the placeholder at sky
   binding 33 until then, never read: `cv2.skyAp.x` is 0).
+  **Short segments take the column directly** (2026-10-27, issue 20261027_212920 "Water glitter issues when moving",
+  0 m over a stormy sea in rain): `atmColumn` is a difference of two Chapman columns to infinity (~35 scale heights each
+  along a level ray, r - R good to ~0.5 m in float), so a column of metres was noise of ~1e-3 columns, often 0 (floored
+  1e-7); the air in front of rain a few metres off (`tAirFrontM`) read sums / 1e-7 x noise: isolated white pixels over
+  the sea, many after every history reset and in motion (blue-noise-patterned: the rain texels' distances). `skyApNorm`
+  integrates exp(-h / H) by Simpson along any segment climbing or falling under half a scale height (both sides use it).
+  White isolated pixels in the report's path: 4800 / 10704 / 7212 per frame -> 0.
 - **The pass** (one thread a tile, after the froxel pass in the cloud bucket, march set + set 1, the march's push
   constants): steps follow the slices, cut into sub-steps no longer than the pixel loop's step (100 km / "View samples
   min"); the god rays read the tile's own froxel column (the same ray and offset); the shadowed air's sky light is taken at

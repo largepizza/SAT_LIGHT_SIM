@@ -65,10 +65,32 @@ float skyApSliceInvU(float s, float a)
 // by the pixel's own: per unit of air they change slowly across the screen and along the ray, where the raw sums grow
 // like the path (1 / cos of the incidence near the limb), and a tile's bilinear blend of that convex growth read brighter
 // than the pixel. The airglow columns are stored raw (a thin shell 90 km up). Needs atmosphere.glsl.
+// A SHORT segment's column directly (2026-10-27, issue 20261027_212920 "Water glitter issues when moving", at sea level
+// in rain): atmColumn is a difference of two Chapman columns to infinity, each ~35 scale heights along a level ray, in
+// float with r - R good to ~0.5 m, so a column of metres came out as noise of ~1e-3 columns, often 0 (floored at 1e-7).
+// The volume stores its sums per unit of this column and the pixel multiplies them back by its own: the air in front of
+// a cloud a few metres away (rain at the eye) read sums / 1e-7 x noise, isolated white pixels over the sea that came and
+// went with the cloud history's distances (after every reset, in motion). Simpson on exp(-h / H) along the segment,
+// h(s) = h0 + cz s + (1 - cz^2) s^2 / (2 r0), while the height changes by under half a scale height.
+float skyApColumnShort(float h0, float cz, float k2, float t, float H)
+{
+    float s = 0.0;
+    for (int i = 0; i <= 4; ++i) {
+        float si = t * 0.25 * float(i);
+        float wi = (i == 0 || i == 4) ? 1.0 : ((i & 1) != 0 ? 4.0 : 2.0);
+        s += wi * exp(-(h0 + cz * si + k2 * si * si) / H);
+    }
+    return s * t / (12.0 * H);
+}
 vec2 skyApNorm(vec3 o, vec3 d, float t)
 {
     float tt = max(t, 1.0);
-    return max(vec2(atmColumn(o, d, tt, H_R), atmColumn(o, d, tt, H_M)), vec2(1e-7));
+    float r0 = length(o), cz = dot(o, d) / r0;
+    float h0 = r0 - ATM_R, k2 = (1.0 - cz * cz) / (2.0 * r0);
+    float lim = 0.5 / max(abs(cz), 0.05);                 // x H: under half a scale height of climb or descent
+    float cR = (tt < lim * H_R) ? skyApColumnShort(h0, cz, k2, tt, H_R) : atmColumn(o, d, tt, H_R);
+    float cM = (tt < lim * H_M) ? skyApColumnShort(h0, cz, k2, tt, H_M) : atmColumn(o, d, tt, H_M);
+    return max(vec2(cR, cM), vec2(1e-7));
 }
 
 struct SkyApSum {

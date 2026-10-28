@@ -45,3 +45,29 @@ vec3 eclipseSkyLight(vec3 pKm, vec3 sunD, float hM)
                      - vec3(0.019, 0.027, 0.0016) * 20.0);
     return s * mix(tint, vec3(1.0), s);
 }
+
+// The factor on a sunlit sample's light in an eclipse, vD + (1 - vD) x msK x the sky light (vD the direct Sun's share): the
+// sky loops' and the aerial-perspective volume's per-step term (2026-10-27, issue 20261027_212202 "Refraction silliness
+// during eclipses": with the loop running for every pixel near the limb from orbit, the eclipse cost the sky pass ~11 ms).
+// One geometry for both visibilities, and exactly 1 outside the penumbra (vD = 1 there whatever the sky light) without
+// the blurred share or the tint. The loops called the pair twice a step (the multiple scattering's and the sunlight's).
+vec3 eclipseLightK(vec3 pKm, vec3 sunD, float hM, float msK)
+{
+    vec3  v  = cloud.moonCenter.xyz - pKm;
+    float dv = length(v);
+    if (dot(v, sunD) <= 0.0) return vec3(1.0);
+    float d  = length(cross(v, sunD)) / dv;
+    float am = 1737.4 / dv, as = cloud.taaJitter.w;
+    float lo = abs(am - as), hi = am + as;
+    if (d >= hi) return vec3(1.0);
+    float vMin = as > am ? 1.0 - (am * am) / (as * as) : 0.0;
+    float u  = clamp((d - lo) / (hi - lo), 0.0, 1.0);
+    float vD = 1.0 - (1.0 - vMin) * (2.0 / 3.14159265) * (acos(u) - u * sqrt(max(1.0 - u * u, 0.0)));
+    float b  = kEclipseSkyBlurKm / dv;
+    float uB = clamp((d - lo + b) / (hi - lo + 2.0 * b), 0.0, 1.0);
+    float sB = 1.0 - (1.0 - vMin) * (2.0 / 3.14159265) * (acos(uB) - uB * sqrt(max(1.0 - uB * uB, 0.0)));
+    float h  = max(hM, 0.0);
+    vec3  tint = exp(-(BETA_R_BASE * exp(-h / H_R) + vec3(1.1 * BETA_M_BASE * exp(-h / H_M))) * (kEclipseSideKm * 1000.0)
+                     - vec3(0.019, 0.027, 0.0016) * 20.0);
+    return vD + (1.0 - vD) * msK * (sB * mix(tint, vec3(1.0), sB));
+}
