@@ -18,6 +18,8 @@
 //                   through the Moon's centre meets the Earth, kept only if at the Watch moment the place is dark
 //                   (Sun <= -9 deg, -4 for Mercury / Venus) and the Moon >= 10 deg up; the contacts there are the DRAWN
 //                   disc's ("Moon size (x real)"), and the Watch lands a minute before the planet reappears at the limb
+//   Moon base glint a lunar base's solar array mirroring the Sun to the Earth (LunarBases.h, SatelliteSimMoonBases.cpp):
+//                   lunar::findWindows; watched from the brightest clear place, the camera on the base at a 1-deg FOV
 // Positions are the sim's own (the Moon of date from satphot::moonGeoEciAt, the planets J2000 as planetStates), so a
 // conjunction or occultation found here is one the sim draws, even where the two frames' ~0.5 deg of precession makes
 // it differ from the real sky.

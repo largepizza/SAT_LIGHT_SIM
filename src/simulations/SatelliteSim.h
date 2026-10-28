@@ -3461,6 +3461,7 @@ private:
         glm::vec3 enu{0.0f, 0.0f, 1.0f};   // drawn, refracted (ENU)
     };
     std::vector<MoonBaseNow> moonBaseNow_;
+    double moonBaseCpuMs = 0.0;            // the fill's time a frame (eased; harness moonbase -> cpu_ms)
     void moonBasesLoad();
     void moonBasesFill();                  // kesslerFillDust's finish: the glints into kFireBuf
     // The base's place on the DRAWN Moon (x "Moon size"), refracted, from the observer (ENU); false if not loaded.

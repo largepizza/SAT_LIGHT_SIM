@@ -16,6 +16,7 @@
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -60,7 +61,13 @@ bool SatelliteSim::moonBaseDrawnEnu(int i, glm::vec3 &enu) const
     const glm::dvec3 tDir = glm::normalize(M - glm::dvec3(obsECI));
     // The drawn disc is a sphere of angular radius moonAngR about the Moon's direction (sat_sky.frag): the base's
     // place on it is moonDir + moonAngR x its body vector.
-    const glm::dvec3 d = glm::normalize(tDir + (double)moonAngR * n);
+    // A base just past the smooth limb (it sees the Earth over its elevated rim: the glints come exactly then) is drawn
+    // on the limb, 2% inside the drawn edge: the disc's own pixels are refracted and jittered per pixel, and a point a
+    // hair outside it read as floating beside the Moon.
+    glm::dvec3 off = (double)moonAngR * (n - tDir * glm::dot(n, tDir));
+    const double ol = glm::length(off), lim = 0.98 * (double)moonAngR;
+    if (ol > lim) off *= lim / ol;
+    const glm::dvec3 d = glm::normalize(tDir + off);
     const glm::dvec3 ex(eci2enuX), ey(eci2enuY), ez(eci2enuZ);
     enu = glm::normalize(glm::vec3((float)glm::dot(d, ex), (float)glm::dot(d, ey), (float)glm::dot(d, ez)));
     if (refrEnabled && refrTable.valid)
@@ -75,6 +82,13 @@ bool SatelliteSim::moonBaseDrawnEnu(int i, glm::vec3 &enu) const
 void SatelliteSim::moonBasesFill()
 {
     FPROF_SCOPE("moonBasesFill");
+    const auto c0 = std::chrono::steady_clock::now();
+    struct Clock
+    {
+        std::chrono::steady_clock::time_point c0;
+        double &out;
+        ~Clock() { out = 0.9 * out + 0.1 * std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count(); }
+    } clock{c0, moonBaseCpuMs};
     if (moonBaseNow_.size() != lunarBases_.size()) moonBaseNow_.assign(lunarBases_.size(), MoonBaseNow());
     for (MoonBaseNow &m : moonBaseNow_) m = MoonBaseNow();
     if (!moonBaseGlints || lunarBases_.empty() || !kFireMapped) return;
@@ -208,6 +222,7 @@ harness::Status SatelliteSim::harnessMoonBase(harness::Active &a)
         r["jitter_scale"] = moonBaseJitter;
         r["event_mag_limit"] = moonBaseMagLimit;
         r["moon_drawn_radius_deg"] = deg((double)moonAngR);
+        r["cpu_ms"] = moonBaseCpuMs; // the fill's time a frame (eased)
         r["message"] = std::to_string(lunarBases_.size()) + " moon bases";
         return harness::Status::Done;
     }
