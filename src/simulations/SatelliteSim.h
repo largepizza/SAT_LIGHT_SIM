@@ -7136,7 +7136,8 @@ private:
         float rectX = 0.0f, rectY = 0.0f, rectW = 0.0f, rectH = 0.0f;
         int imgW = 0, imgH = 0;
         int cell = -1;                 // thumbnail cell in the atlas, -1 = none yet
-        bool thumbTried = false;
+        bool thumbTried = false;       // its image file was read (and failed, if cell is still -1)
+        bool onScreen = true;          // its thumbnail box was inside the scroll view last frame (only those get cells)
         UIImage img;
     };
     struct ReportIssueInfo
@@ -7148,6 +7149,19 @@ private:
     };
     std::vector<ReportIssueInfo> reportIssues_;
     bool reportsLoaded_ = false, reportsDirty_ = false;
+    // The report text field being edited (title, description or a shot's note), so its text is saved even when
+    // the field is not drawn again to take its commit (Back, another issue, Export, the window closed):
+    // reportFlushEdit writes the live (or committed, not yet applied) text into report.json.
+    struct ReportEditTarget
+    {
+        uint32_t id = 0;               // the field's Clay id
+        std::string issue, field;      // "title" / "description" / "note"
+        int shot = 0;                  // n, for a note
+        size_t maxLen = 0;
+        bool trim = false;             // a textArea: trailing newlines / spaces dropped as it does
+    } reportEditTarget_;
+    void reportNoteEditTarget(uint32_t id, const std::string &issue, int shot, const char *field, size_t maxLen, bool trim);
+    void reportFlushEdit();
     WindowChrome rpChrome;
     bool hovRpClose = false, hovTimeReport = false;
     std::string reportViewId_;          // the issue the window shows ("" = the list)

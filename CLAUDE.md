@@ -3156,7 +3156,17 @@ its record there with a `report` {id, shot} key (tools/perf_analysis and `snapsh
     handed out least-recently-drawn first. `shot_NN_thumb.png` is written with the shot, from the same frame
     (`reportWriteThumb` in finalizeScreenshot, main thread); an older shot's is made from its PNG when first
     shown. At most one image file is read per frame, and never a PNG while a capture is in flight (the encode
-    thread may be writing it).
+    thread may be writing it). **Only thumbnails inside the scroll view hold cells** (`ReportShotInfo::onScreen`, from
+    last frame's boxes, `rpBoxVisible`; 2026-10-27, issue 20261027_184917): Clay lays out every card whether scrolled to
+    or not, so with more than 96 issues every cell was "drawn last frame", nothing could be evicted, and each further
+    card (a NEW issue first: it sorts to the top) was marked "No image" until the window was reloaded. A shot that finds
+    no free cell now waits instead of being marked tried.
+  - **The field being edited is saved when it leaves the screen** (`reportEditTarget_`, `reportFlushEdit`; 2026-10-27,
+    issue 20261027_184917 "issues lose text"): a text box applies its commit when it is next DRAWN, so a description /
+    title / note committed by a click on Back, another card, Export, Refresh, Go, Delete or the window's close never
+    reached report.json (the commit expired undrawn), and an export the same frame zipped the old text (most exported
+    zips before this had an empty description). Each report field names itself after drawing while focused or holding
+    a commit; those actions (and the window being closed) write its live text first.
   - **Go** = `harnessApplyViewRecord` without settings (place, camera, moment paused, drift; histories reset).
     **Go + settings** applies the shot's settings as saved — they replace the user's and are what is saved on
     exit, hence its own button.
@@ -4362,7 +4372,8 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   - **Procedural surface detail** (`SatMaterial::pattern`, JSON `"pattern"`: none / solar_cells / mli
     / panel_seams / truss / hex_tiles; -1 = from the preset — `solar_cell` → cells, `mli_foil` → crinkle).
     `hex_tiles` (2026-10-19, Starship's heat shield): 0.31-m hexagons, 6-mm off-white felt gaps (x6 albedo), each tile
-    ±25% in shade with 1.5% pale replacement tiles, ~0.6° of normal jitter; fades to the plain material below ~3 px a
+    ±25% in shade with 1.5% paler grey replacement tiles (1.6x, grey 0.5: darker than the felt so their gap
+    outline shows; at 2.5x in the felt's grey they read as missing tiles, issue 20261027_184725), ~0.6° of normal jitter; fades to the plain material below ~3 px a
     tile. Visual only and
     **photometrically neutral**: each pattern scales albedo by a factor with area mean 1, leaves the
     specular alone, and is an exact box filter (`lineCover`/`gridCover`) so it keeps
@@ -7699,10 +7710,19 @@ air did to it: "a half faded fuzzball" low down.
   1 + floor(aoa urad) + 0.99 sigma_I: star_point.vert jitters the image by the aoa (sines, per star) and twinkles by
   sigma_I / 0.55 (the old artistic airmass ramp only without a table). Planets: jitter, no twinkle. Satellites and the
   Moon are not refracted yet.
-- **The sea glint sparkles** (the Beckmann lobe is the pixel's mean; the facets that mirror the Sun cover fs = glint /
-  (F x 1.8e5) of it): half the light stays the smooth path, the other half lights a pixel with chance q = clamp(150 fs,
-  0.15, 1) at 0.5 glint / q, redrawn 6 times a second of sim time (cap 4000, was 400). A first cut at q >= 0.04 and all
-  the light in sparkles read as the path GONE (sparkles past the display's white lose their energy). The sea's own sun
+- **The sea glint sparkles are FACETS ON THE SEA** (2026-10-27, issue 20261027_180609: the first cut hashed the screen
+  pixel and a 6-per-second time bin, "a screen-space mess ... on a timer" at every altitude). The Beckmann lobe is the
+  pixel's mean; the facets that mirror the Sun cover fs = glint / (F x 1.8e5) of the sea. A world-fixed lattice on the
+  wave field's coordinates (posM, read at the UNJITTERED sky-TAA ray's sea point), turned to the view azimuth in
+  22.5-deg steps (two orientations cross-faded) with cells 0.25 m x 2^k about two pixel footprints along and across the
+  view (two levels blended); each cell is one facet whose unresolved slope (N(0, s2 / 2) per axis, the glint's own s2)
+  turns continuously at its own rate (two Gaussians rotated, 0.6-2.4 rad/s). It flashes while that slope is within r of
+  the slope mirroring the Sun from the resolved wave normal, r^2 = q s2 exp(m^2 / s2) so P = q = fs x the facets the
+  cell holds (C_u C_v / 0.09 m^2, at least 150), carrying glint / q; 0.4 of the light stays the smooth path. A sparkle
+  stays on its patch of water when the camera moves (a 0.1-deg pan: 43% of sparkle pixels coincide at the world shift,
+  4% at the screen position; the old 15% / 24%), and from high up q -> 1, the mean (at 3 km the old speckle is gone).
+  Cost within noise. The `gSeaSpark` TAA flag is kept. A cell lattice does not divide the field's period: the pattern
+  re-hashes when the CPU wraps the world offset (every ~21-28 km of travel). The sea's own sun
   direction is still the TRUE Sun (not refracted).
 - Settings (`refraction.*`, no UI yet): `enabled` (true), `mirage` (1, x the temperature steps), `turbulence` (1, x Cn^2),
   `dispersion` (1 = physical), `sun_disc_gain` (1); overrides `force_sea_air_dt` (< -50 auto), `force_inversion_m` (< 0
