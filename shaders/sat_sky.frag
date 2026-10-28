@@ -168,7 +168,7 @@ layout(std430, set = 0, binding = 21) readonly buffer GroundBeamsBuf {
     vec4 refrInfo;    // x = N (0 = none), y = above the table: x Saemundsson, z = 1 refraction on, w = Sun disc gain
     vec4 refrSun;     // x = the Sun centre's refraction (rad), y = its visible share, z = shimmer gain, w = aoa there
     vec4 refrSunCol;  // the columns at the Sun's centre: Rayleigh, Mie, ozone, haze (m)
-    vec4 refrSpotInfo;   // sunspot groups (GpuRefraction::spotInfo / spots, fillSunspots): x = count, y = cycle activity
+    vec4 refrSpotInfo;   // sunspot groups (GpuRefraction::spotInfo / spots, fillSunspots): x = count, y = cycle activity, z = the Moon centre's refraction (rad)
     vec4 refrSpots[2 * SUN_GROUP_MAX];
     vec4 refrE[REFR_N * 2];   // entry i: [2i] = (R, G, B refraction, aoa), [2i + 1] = (colR, colM, colO3, colH)
 #endif
@@ -4782,8 +4782,54 @@ void main() {
     // separately block the Milky Way via their own existing visibility terms, so this only
     // needs to be the pure geometric hit, not discFade.
     bool moonDiscHit = false;
-    if (moonDirENU.z > limbZ - kMoonAngR * 2.0) {
+    if (moonDirENU.z > limbZ - kMoonAngR * 2.0 - 0.025) {   // (0.025: refraction lifts it, up to ~1.2 deg from orbit)
         vec3  moonDir3 = normalize(moonDirENU.xyz);
+        // The Moon through the refraction table (2026-10-27, issue 20261027_184332 "Moon Refraction"), as the Sun is
+        // drawn below: each pixel's APPARENT elevation, jittered by the same angle-of-arrival turbulence, maps to the
+        // TRUE direction its light came from per colour channel (flattened near the horizon, raised past the limb from
+        // orbit, dispersion rims, the limb boiling), a channel whose ray ends on the sea / ground sees nothing, and the
+        // extinction is the table's columns along the BENT path. It was the straight ray: a round, unrefracted disc.
+        vec3  dirMn = dir;
+        vec3  hitC  = vec3(1.0);
+        vec4  mCols = vec4(-1.0);
+#ifdef SKY_SUN_SHADOW   // (not in SKY_LITE: its size budget; SKY_ENV probes are a satellite's eye)
+        vec3  dirC[3] = vec3[3](dir, dir, dir);
+        vec3  onSM    = vec3(1.0);
+        if (refrInfo.x > 1.5 && refrInfo.z > 0.5) {
+            vec3  upO = normalize(obsPos);
+            vec3  dJ  = dir;
+            float cz  = dot(upO, dJ);
+            float e0  = asin(clamp(cz, -1.0, 1.0));
+            vec4  rs  = refrLookup(e0, mCols);
+            float aoaJ = rs.w * refrSun.z;
+            if (aoaJ > 1e-7) {
+                vec3  puM = upO - moonDir3 * dot(upO, moonDir3);
+                puM = dot(puM, puM) > 1e-12 ? normalize(puM) : vec3(0.0, 0.0, 1.0);
+                vec3  sdM = normalize(cross(puM, moonDir3));
+                float tt = mod(pc.waveTime, 600.0);
+                vec2  q  = vec2(dot(dJ, sdM) / 2.0e-4, e0 / 6.0e-5);
+                float nv = refrNoise(q + vec2(tt * 0.9, tt * 0.35)) + 0.6 * refrNoise(q * 2.1 + vec2(-tt * 1.7, tt * 0.6) + 17.3);
+                float nh = refrNoise(q * 0.7 + vec2(tt * 0.5, -tt * 0.4) + 41.7);
+                dJ  = normalize(dJ + upO * (aoaJ * 1.2 * nv) + sdM * (aoaJ * 0.9 * nh));
+                cz  = dot(upO, dJ);
+                e0  = asin(clamp(cz, -1.0, 1.0));
+                rs  = refrLookup(e0, mCols);
+            }
+            vec3  pu = upO - dJ * cz;
+            pu = dot(pu, pu) > 1e-12 ? normalize(pu) : vec3(0.0);
+            for (int c = 0; c < 3; ++c) {
+                float Rc = rs[c];
+                if (Rc >= 1.0) { onSM[c] = 0.0; Rc = 0.0; }
+                dirC[c] = dJ * cos(Rc) - pu * sin(Rc);
+            }
+        }
+        // Which channels reach the disc; the shading follows the first that does (green first).
+        for (int c = 0; c < 3; ++c) {
+            float bc = dot(-moonDir3, dirC[c]);
+            hitC[c] = (bc * bc - (1.0 - kMoonAngR * kMoonAngR) >= 0.0 && bc < 0.0) ? onSM[c] : 0.0;
+        }
+        dirMn = (hitC.g > 0.5) ? dirC[1] : ((hitC.r > 0.5) ? dirC[0] : dirC[2]);
+#endif
 
         // (An atmospheric-refraction "squish" — compressing the disc vertically near the horizon
         // via a Bennett-formula differential-refraction term — used to live here. It was disabled
@@ -4791,13 +4837,17 @@ void main() {
         // compute a value that fed the identity `dir.z * (1.0 + 0.0)`. Removed, Phase 0 —
         // SKY_OPTIMIZATION_PLAN.md. Re-add from git history if the effect is ever wanted back.)
         vec3  oc    = -moonDir3;
-        float bm    = dot(oc, dir);
+        float bm    = dot(oc, dirMn);
         float cm    = 1.0 - kMoonAngR * kMoonAngR;
         float discm = bm * bm - cm;
         float tm    = -bm - sqrt(max(discm, 0.0));
+#ifdef SKY_SUN_SHADOW
+        if (discm >= 0.0 && tm > 0.0 && max(hitC.r, max(hitC.g, hitC.b)) > 0.5) {
+#else
         if (discm >= 0.0 && tm > 0.0) {
+#endif
             moonDiscHit = true;
-            vec3  hp = tm * dir;
+            vec3  hp = tm * dirMn;
             vec3  n  = normalize(hp - moonDir3);
             // The disc keeps the lit FRACTION (moonDirENU.w is the Moon's light vs full since review 16, for
             // everything the Moon lights; the disc's look is unchanged).
@@ -4900,6 +4950,23 @@ void main() {
             float discFade = (tSurface > 0.0 || tCloudOcclude >= 0.0) ? 0.0 : 1.0;
             vec3 moonColor = texColor * (diffuse * lunarLit * mShadow + earthshine + lunarRed * max(0.0, dot(n, sunDir) + 0.3)) * limbDark * kMoonBright;
             vec3 moonAttn  = exp(-(BETA_R * odR_cam + BETA_M * 1.1 * odM_cam));
+#ifdef SKY_SUN_SHADOW
+            if (mCols.x >= 0.0) {   // the bent path's air, with the haze near clouds that way (as the Sun's)
+                float hazeM = 0.0;
+                if (cv2.mid3.w > 0.0) {
+                    vec3  upM = normalize(obsPos);
+                    vec3  pS  = obsPos + normalize(moonDir3 - upM * dot(moonDir3, upM)) * 80000.0;
+                    vec3  dS  = normalize(pS.x * enuX + pS.y * enuY + pS.z * enuZ);
+                    float dph = cloud.cloudPhase * cloud.layers[0].driftMult;
+                    vec4  wx  = textureLod(earthCloudsCube, vec3(dS.x * cos(dph) - dS.y * sin(dph), dS.x * sin(dph) + dS.y * cos(dph), dS.z), 4.0);
+                    hazeM = cv2.mid3.w * (0.25 + 0.75 * smoothstep(0.05, 0.4, wx.r) + 0.6 * wx.b);
+                }
+                moonAttn = exp(-refrTau(mCols, BETA_R, BETA_M, hazeM));
+            }
+#endif
+#ifdef SKY_SUN_SHADOW
+            moonAttn *= hitC;
+#endif
             color += discFade * moonColor * moonAttn;
         }
     }
@@ -7343,6 +7410,12 @@ void main() {
     // ── Moon glow: tight corona + wide diffuse halo (atmosphere-only) ─────────
     if (moonDirENU.z > limbZ - 0.05) {
         vec3  moonDir3  = normalize(moonDirENU.xyz);
+#ifdef SKY_SUN_SHADOW
+        if (refrInfo.x > 1.5 && refrInfo.z > 0.5) {   // about the Moon AS SEEN (its centre's refraction, the CPU's)
+            vec3 upM = normalize(obsPos), puM = upM - moonDir3 * dot(upM, moonDir3);
+            if (dot(puM, puM) > 1e-12) moonDir3 = normalize(moonDir3 * cos(refrSpotInfo.z) + normalize(puM) * sin(refrSpotInfo.z));
+        }
+#endif
         float moonAngle = acos(clamp(dot(dir, moonDir3), -1.0, 1.0));
         float moonFade  = smoothstep(limbZ - 0.006, limbZ + 0.002, moonDirENU.z);
 
@@ -7486,8 +7559,25 @@ void main() {
             }
             // The sea under a mirage: rays the drawn sea hides may climb back off the warm layer (the inverted image);
             // the table decides there. Terrain, meshes and opaque cloud still hide the disc.
-            float gateR = sunGate;
-            if (tabOn && tHit <= 0.0 && tSeaLvl > 0.0 && tCloudOcclude < 0.0 && !meshHit && !moonDiscHit) gateR = 1.0;
+            // Surfaces hide the disc outright; CLOUD by its transmittance (2026-10-27, issue 20261027_182140 "Sun occlusion
+            // on far clouds": "some clouds appear to render behind the sun"). It was hidden only where the composite's
+            // opacity flag said >= 90% (a binary per half-res texel, so a thick cloud's edge was a speckle of disc and
+            // cloud) and drawn at full brightness through everything thinner — right for the transmitted beam (the Sun
+            // through a tau-2 cloud is still ~1000x a sunlit cloud), but the cloud between had no forward glow of its own
+            // (the aureole, below), so a thin cloud crossing the disc read as behind it. The march stops at T 0.01, so
+            // the stored transmittance means "opaque" below ~0.02: the disc fades out over 0.02-0.1.
+            float gateR = (tSurface > 0.0) ? 0.0 : 1.0;
+            if (tabOn && tHit <= 0.0 && tSeaLvl > 0.0 && !meshHit && !moonDiscHit) gateR = 1.0;
+            // The cloud's transmittance over the disc is a 4x4-texel tent of the half-res composite: its per-texel grain
+            // (the march's jitter) near the cutoff otherwise switches whole texels of a saturated disc on and off.
+            vec3  cloudTs = cloudB.rgb;
+            if (min(ang3.r, min(ang3.g, ang3.b)) < rD + 2.0 * pxA) {
+                vec2 ht = 1.0 / vec2(textureSize(cloudTargetB, 0));
+                cloudTs = 0.25 * (texture(cloudTargetB, cloudUV + vec2(-ht.x, -ht.y)).rgb + texture(cloudTargetB, cloudUV + vec2(ht.x, -ht.y)).rgb
+                                + texture(cloudTargetB, cloudUV + vec2(-ht.x, ht.y)).rgb + texture(cloudTargetB, cloudUV + vec2(ht.x, ht.y)).rgb);
+            }
+            float cloudKnown = smoothstep(0.02, 0.1, dot(cloudTs, vec3(1.0 / 3.0)));   // 0 = the march stopped: optically thick
+            gateR *= cloudKnown;
             vec3  cov3 = (vec3(1.0) - smoothstep(vec3(rD - pxA), vec3(rD + pxA), ang3)) * onS * gateR * (moonDiscHit ? 0.0 : 1.0);
             // The haze near clouds (the sky loop's 2.5-km aerosol) toward the Sun, from the weather ~80 km that way.
             float hazeK = 0.0;
@@ -7503,15 +7593,16 @@ void main() {
             // Above the table (the Sun over ~4 deg) the exact path has no haze-near-clouds column; the table's rows do:
             // a flat-layer column (2.5-km scale height) keeps the two continuous (2026-10-27).
             float hzH  = tabOn ? hazeK * BETA_M * 2500.0 * exp(-max(length(obsPos) - R_EARTH, 0.0) / 2500.0) : 0.0;
-            vec3  Tc   = (cC.x >= 0.0 ? exp(-refrTau(cC, BETA_R, BETA_M, hazeK))
-                                      : exp(-sunPathTauExact(obsPos, sunApp, BETA_R, BETA_M) - hzH / max(dot(sunApp, upO), 0.05))) * cloudB.rgb;
+            vec3  TcAir = cC.x >= 0.0 ? exp(-refrTau(cC, BETA_R, BETA_M, hazeK))
+                                      : exp(-sunPathTauExact(obsPos, sunApp, BETA_R, BETA_M) - hzH / max(dot(sunApp, upO), 0.05));
+            vec3  Tc   = TcAir * cloudB.rgb;
             float lc   = dot(Tc, vec3(0.2126, 0.7152, 0.0722));
             float gs   = 1.0 - exp(-60.0 * lc);                  // veiling glare follows the light that arrives
             vec3  hueC = Tc / max(max(Tc.r, max(Tc.g, Tc.b)), 1e-6);
             vec3  dLight = vec3(0.0);
             if (max(cov3.r, max(cov3.g, cov3.b)) > 0.0) {
                 vec3  T  = (cols.x >= 0.0 ? exp(-refrTau(cols, BETA_R, BETA_M, hazeK))
-                                          : exp(-sunPathTauExact(obsPos, dJ, BETA_R, BETA_M) - hzH / max(cz, 0.05))) * cloudB.rgb;
+                                          : exp(-sunPathTauExact(obsPos, dJ, BETA_R, BETA_M) - hzH / max(cz, 0.05))) * cloudTs;
                 // disc coordinates (green's true direction), in drawn radii
                 vec3  e1 = normalize(cross(sunDir, abs(sunDir.z) < 0.99 ? vec3(0, 0, 1) : vec3(1, 0, 0)));
                 vec3  e2 = cross(sunDir, e1);
@@ -7527,6 +7618,27 @@ void main() {
                 vec3  L  = exposure * 2.3e5 * (tabOn ? refrInfo.w : 1.0) * T * ld * sp;
                 dLight = (vec3(1.0) - exp(-L / 250.0)) * cov3;
             }
+            // The AUREOLE of the cloud in front of the Sun (2026-10-27, issue 20261027_182140): cloud droplets send about
+            // half of what they scatter into a diffraction peak ~1 deg wide, which the march's broad phase lobes (HG 0.8-0.92,
+            // tens of degrees) do not hold. Single scattering of the Sun's beam by the optical depth tau in front of it:
+            // pi L / E = 0.5 tau e^(-tau) / (2 sigma^2) x a Gaussian in the angle from the Sun as seen (sigma 0.012 rad,
+            // widened by the drawn disc). A thin cloud across the Sun glows white round it and the disc shows through the
+            // glow (a cloud in front, not behind); a thick one (the stored T at its floor) gets none. Not over surfaces.
+            vec3 dAur = vec3(0.0);
+            {
+                float lT   = max(cloudBlock, 1e-4);
+                float tauA = -log(lT);
+                float cosA2 = dot(dir, sunApp);
+                float a2   = acos(clamp(cosA2, -1.0, 1.0));
+                float sg2  = 0.012 * 0.012 + 0.5 * rD * rD;
+                float aur  = 0.25 / sg2 * tauA * lT * exp(-0.5 * a2 * a2 / sg2) * cloudKnown;
+                if (aur > 1e-4 && tSurface <= 0.0) {
+                    vec3 La = exposure * (tabOn ? refrInfo.w : 1.0) * aur * TcAir * (tabOn ? clamp(refrSun.y, 0.0, 1.0) : geomFade)
+                            * obsSunF * clamp(cloud.sunCloudT / lT, 0.0, 1.0);
+                    dAur = vec3(1.0) - exp(-La / 250.0);
+                }
+            }
+            dLight = vec3(1.0) - (vec3(1.0) - dLight * cloud.sunCloudT) * (vec3(1.0) - dAur);
             // Glare and corona about the Sun AS SEEN, x the share of its disc that reaches the eye.
             float cosAp  = dot(dir, sunApp);
             float angAp  = acos(clamp(cosAp, -1.0, 1.0));
@@ -7539,7 +7651,7 @@ void main() {
             }
             float visS = tabOn ? clamp(refrSun.y, 0.0, 1.0) : geomFade;
             vec3  gCol = mix(sunCol, 1.5 * hueC, 0.8);
-            color += dLight * cloud.sunCloudT
+            color += dLight
                    + (glareA * visS * gCol * obsSunF * gs
                       + coronA * visS * gCol * 0.12 * obsSunF * gs
                       + solarCorona * geomFade) * min(cloudBlock, cloud.sunCloudT);

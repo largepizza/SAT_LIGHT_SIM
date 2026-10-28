@@ -7601,7 +7601,13 @@ PointDrawPC SatelliteSim::buildPointDrawPC(VulkanContext &ctx)
     pc.aspect = (float)ctx.swapExtent.width / (float)ctx.swapExtent.height;
     pc.waveTime = simSecInDay * 1.0f;
     pc.noTwinkle = 0.0f;
-    pc.moonDirENU = glm::vec4(glm::vec3(moonDirENU), moonAngR);   // w: the Moon's angular radius (star cull)
+    {   // w: the Moon's angular radius (star cull); xyz the Moon AS SEEN (refracted like the stars, 2026-10-27)
+        glm::vec3 mApp = glm::normalize(glm::vec3(moonDirENU));
+        float ao, sc;
+        if (refrEnabled && !refractEnu(mApp, ao, sc))
+            mApp = glm::normalize(glm::vec3(moonDirENU));
+        pc.moonDirENU = glm::vec4(mApp, moonAngR);
+    }
     pc.obsECEFDir = glm::vec4(obsDir, obsHeightOffset);
     pc.screenSizePx = glm::vec2((float)ctx.swapExtent.width, (float)ctx.swapExtent.height);
     pc.debugDisableMask = debugDisableMask;
