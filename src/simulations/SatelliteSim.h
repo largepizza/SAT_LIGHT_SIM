@@ -4117,6 +4117,8 @@ private:
     float starLimitMagFrame = 0.0f;                   // the faintest catalogue magnitude that could show this frame
     float starNelmZenith = 0.0f;                      // naked-eye limit at the zenith (harness `stars`)
     double starUpdateMs = 0.0;                        // updateStars' wall time (eased)
+    double starPrepMs = 0.0;                          // ... of which before the per-star loop (tables, grid)
+    uint64_t starElTabBuilds = 0;                     // per-elevation table rebuilds (harness `stars`)
     int starBetelgeuse = -1;                          // its index (HIP 27989), -1 without it
     // The per-elevation table updateStars reads: x the line of sight's extinction (mag), y the refraction (rad,
     // apparent - true; < -1 = below the apparent horizon), z the angle-of-arrival jitter (rad), w the scintillation
@@ -4130,6 +4132,7 @@ private:
     // Faint stars only under dark skies (the naked-eye limit from the sky's brightness in each direction).
     bool starSkyLimit = true;                         // stars.sky_limit
     float starLimitBoost = 1.2f;                      // stars.limit_boost: mag beyond the formula's dark-sky NELM
+    float starDarkExtraMag = 1.0f;                    // stars.dark_sky_extra: the point limit this much fainter for stars under a dark sky
     // The scripted Betelgeuse supernova (Type II-P), 2037-12-25. A pure function of sim time.
     bool supernovaEnabled = true;                     // stars.supernova
     bool betelgeuseVariable = true;                   // stars.betelgeuse_variable

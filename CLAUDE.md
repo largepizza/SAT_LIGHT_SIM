@@ -8136,6 +8136,53 @@ already uses. Persisted as `j["planets"]` (`{show_planets, list:[{name,enabled}]
 
 ---
 
+## Subsystem: Stars (2026-10-27)
+
+`SatelliteSimStars.cpp` (catalogue, picking, panel, the supernova, harness `stars`), `updateStars` / `initStars` /
+`createStarEnvBuffer` (SatelliteSim.cpp), `tools/make_star_catalog.py`.
+- **The catalogue is `assets/stars/star_catalog.bin`** (`tools/make_star_catalog.py`: the HYG database v4.1, CC BY-SA 4.0,
+  downloaded into `build/star_cache/`): every star to V 8.5 (61,816; 417 with IAU proper names), **sorted brightest
+  first**, 48-byte records (RA / Dec J2000, V, B-V, distance pc, HIP, HR, string offsets for the proper name,
+  Bayer / Flamsteed designation, spectral type and constellation name, the IAU abbreviation with a variable flag) + a
+  string blob. Overrides: Betelgeuse at 168 pc (Joyce et al. 2020), Capella's spectral type. Without the file: the
+  compiled-in BSC5 (`star_catalog.h`, 8404 to 6.5, no names). `starRecords` / `starInfo_` / `starRaDec_` share the index.
+  The env renderer's star grid (SKY_ENV, `STAR_ENV_COUNT` 8404) takes the brightest 8404: sat_sky.frag is unchanged.
+- **updateStars draws a PREFIX.** Each frame it writes, uploads (`mirrorDirty` of the prefix only: the buffer is no
+  longer re-sent whole) and draws (`starDrawCount`, both star draws) the stars brighter than the frame's cutoff: the
+  point style's limit (`pointEffLimitMag`) and the darkest direction's naked-eye limit + 2 (`starLimitMagFrame`); none
+  while the day gate is shut. Never index a star record past `starDrawCount` expecting this frame's values
+  (`skyObjectEnu` handles it). Everything that depends only on a star's elevation (the line of sight's extinction, the
+  refraction of the primary image, its jitter and twinkle) is ONE lookup in `starElTab_` (1024 knots over sin(true
+  elevation) from 0.03 under the limb, quadratic toward it), rebuilt when the observer radius, `extinctionCoeff` or the
+  refraction table change (`refrSerial_`, bumped in `refrDerive`); it replaced `refractEnu` + a Chapman table per star.
+- **Faint stars only under dark skies** (`stars.sky_limit`, default on; `stars.limit_boost` 1.2 mag): each star is gated
+  by the naked-eye limit of the sky in ITS direction, a Schaefer-style V_lim = 7.93 - 5 log10(1 + 10^(4.316 - B/5)) +
+  boost (the boost a keen dark-adapted eye's, fading out as the sky brightens; + the zoom's optics gain), the sky B from
+  darksky.glsl's linear model (pristine 22 + the city dome with its compression undone + twilight with its anisotropy +
+  the Moon and the supernova as an 18 mag/arcsec^2 sky at the full Moon high up). Response 1 / (1 + (Ilim / I)^3),
+  divided by a pristine sky's, so a pristine sky draws every star as the point style alone would. The old linear dims
+  (dome, beam dome, Moon) are kept on top.
+- **Selectable stars**: named or brighter than V 4.5, drawn this frame (`pickStarAt`). A selected star is
+  `selectedPlanetIndex = kPlanetCount + i` (every "clear the selection" site clears it; anything that indexes planet
+  arrays by `selectedPlanetIndex` must test `< kPlanetCount`). Click / centre-select order: a planet, a star within
+  4 px, a satellite, a star within its hit radius. Panel (`formatSelectedStarInfo`, every frame): name, spectral type
+  and constellation, V (variable), distance (ly, pc), designation / HR / HIP, colour (B-V). No Track / Info buttons.
+- **The 2037 Betelgeuse supernova** (`supernovaMagAt`, a pure function of sim time; `stars.supernova`, default on):
+  breakout 2037-12-25 03:00 UTC (`kSupernovaT0`), V to -6 in 20 min, the cooling envelope to -7 by 6 h, the rise to
+  -11.2 at day 7 (M_V ~ -17.8 at 168 pc with A_V ~0.5: the bright end of II-P), the plateau to -10.2 by day 100, the
+  drop of 3.2 mag over 25 days, the 56Co tail (0.98 mag / 100 d, + 0.4 / 100 d from day 400 as dust forms); B-V -0.35
+  (breakout) .. 1.5 (tail). Below +0.5 again ~2 years on (`supernovaEndT`). Before it Betelgeuse varies about V 0.45
+  (416 d and 2100 d, +-0.35; `stars.betelgeuse_variable`). Brighter than -1 it is a **kFireBuf point** (`supernovaFill`
+  after `moonBasesFill`: point, bloom, glare, the Moon-base glints' path, range 9e8 m so the Moon hides it) and its star
+  record is dark; by day it keeps 6.5 mag of contrast (visible in daylight near its peak). Its light dims the faint
+  stars like moonlight and adds to "Night sky light" (`cp.terrainErosion.z` += `snDiffuseMoonFrac`, x the full Moon
+  overhead): ground and cloud ambient. No shadows. Sky events kind `kSupernova` (`skySearchSupernova`: one record when
+  its window meets the range; `skyWatchSupernova`: the peak, or now while under way, a dark site with Betelgeuse
+  >= 20 deg up (Sun <= -15, -9, -4, else up), the camera on the Betelgeuse-Rigel midpoint at 42 deg, Betelgeuse
+  selected). Icon `sky-supernova` (38).
+- Harness: `stars [state] | find <name> | select <name>`, `select star <name>`, `camera look|track <star>`
+  (docs/HARNESS.md). Scripts `harness_runs/stars_scripts/` (untracked).
+
 ## Subsystem: VulkanContext Helpers
 
 ```cpp

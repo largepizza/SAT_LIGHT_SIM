@@ -15456,6 +15456,17 @@ void SatelliteSim::initStars(VulkanContext &ctx)
     // ~62k x 32 bytes = ~2 MB. Not re-uploaded whole: updateStars writes (and marks) only the prefix drawn this frame.
     VkDeviceSize bufSize = starCount * sizeof(GpuSatVisible);
     starMapped = createMirrored(ctx, bufSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, starBuf, starMem, false, "stars");
+    {
+        // The fields updateStars leaves alone (a culled star writes only its intensity): set once.
+        auto *d0 = static_cast<GpuSatVisible *>(starMapped);
+        for (uint32_t i = 0; i < starCount; ++i)
+        {
+            d0[i] = GpuSatVisible{};
+            d0[i].rangeM = 0.0f; // at infinity
+            d0[i].color = packVisibleColor(starRecords[i].color);
+            d0[i].angularSize = starRecords[i].angSize;
+        }
+    }
 
     // Descriptor layout: binding=1 (vertex shader reads GpuSatVisible) + bindings=2/3 (cloud
     // occlusion, session 30 bug fix — see star_point.frag's own comment) + binding=4 (shared
@@ -15988,6 +15999,7 @@ void SatelliteSim::updateStars()
         starElTabK_ = extinctionCoeff;
         starElTabRefr_ = refrSerial_;
         starElTabRefrOn_ = refrOn;
+        ++starElTabBuilds;
         const glm::dvec3 o(0.0, 0.0, (double)obsR);
         for (int k = 0; k < kElN; ++k)
         {
@@ -15996,7 +16008,7 @@ void SatelliteSim::updateStars()
             const double muE = std::max(mu, (double)limbSin); // (below the limb the column at the limb)
             const glm::dvec3 d(std::sqrt(std::max(0.0, 1.0 - muE * muE)), 0.0, muE);
             glm::vec4 &t = starElTab_[k];
-            t.x = (float)atmExtinctionMag(o, d, 0.0, extinctionCoeff);
+            t.x = (float)std::pow(10.0, -0.4 * atmExtinctionMag(o, d, 0.0, extinctionCoeff)); // (the transmission)
             t.y = mu < (double)limbSin ? -2.0f : 0.0f;
             t.z = 0.0f;
             t.w = -1.0f;
@@ -16055,7 +16067,13 @@ void SatelliteSim::updateStars()
     const float IlimMin = ilimOf(Lmin);
     starNelmZenith = -2.5f * log10f(ilimOf(Lp + cityL(0.5f * (lightDomeAz[0] + lightDomeAz[8]), 1.0f) +
                                            twL0 * exp2f(kPsfK * darkSkyTwilightAniso * (0.5f + 0.5f * sunEnu.z)) + Lmoon));
-    float cutMag = pointEffLimitMag();
+    // Under a dark sky the faint stars are drawn as if the point style's limit were starDarkExtraMag fainter
+    // (stars.dark_sky_extra, 1 mag): the point model subtracts its value at the limit, so at limit 8 a mag-7.5 star is
+    // ~0.004 of white — a naked-eye dark sky's peppering of faint stars read as nearly empty. Per star the intensity is
+    // remapped so pointPsf(limit) draws what pointPsf(limit + extra) would, weighted by how dark ITS sky is (the gate's
+    // Ilim within 1.5 mag of pristine); a suburban or moonlit sky is unchanged. Stars only: satellites and planets keep
+    // the shared limit.
+    float cutMag = pointEffLimitMag() + std::max(starDarkExtraMag, 0.0f);
     if (starSkyLimit)
         cutMag = std::min(cutMag, -2.5f * log10f(IlimMin) + 2.0f);
     starLimitMagFrame = cutMag;
@@ -16086,6 +16104,9 @@ void SatelliteSim::updateStars()
     const float psfC  = exp2f(kPsfK * pointGamma * psfRef);
     const float psfDl = exp2f(-kPsfK * pointGamma * (psfLim - psfRef));
     const float Ithr = powf((1.0f + psfDl) / psfC, 1.0f / pointGamma);
+    const float psfDlX = exp2f(-kPsfK * pointGamma * (psfLim + std::max(starDarkExtraMag, 0.0f) - psfRef));
+    const float darkAdd = (psfDl - psfDlX) / psfC; // added to I^gamma under a pristine sky
+    const float invGamma = 1.0f / pointGamma;
     auto starSigma = [&](float I) {
         if (I <= Ithr) return pointSigmaPx;
         const float d = std::max(powf(I, pointGamma) * psfC - psfDl, 0.0f);
@@ -16111,84 +16132,136 @@ void SatelliteSim::updateStars()
         return y < 0.0f ? -rr : rr;
     };
 
-    auto *dst = static_cast<GpuSatVisible *>(starMapped);
-    uint32_t lit = 0;
-    for (uint32_t i = 0; i < drawN; ++i)
+    // The naked-eye limit's grid (2026-10-27, perf): Ilim over (elevation as the table's u, kGu rows) x (bearing, kGa
+    // columns), filled per frame and read bilinearly per star; the sky's brightness varies over tens of degrees (the dome
+    // sectors are 22.5 deg, the twilight's anisotropy follows the Sun). Divided by the pristine limit: the gate needs
+    // only Ilim / Ipristine x (Ipristine / I).
+    constexpr int kGu = 24, kGa = 32;
+    float gridLim[kGu + 1][kGa + 1];
+    if (starSkyLimit)
     {
-        const auto &rec = starRecords[i];
-        GpuSatVisible &o = dst[i];
-        o.color = starPackedColor_[i];
-        o.rangeM = 0.0f; // at infinity
-        glm::vec3 enu{glm::dot(rec.eciDir, ex), glm::dot(rec.eciDir, ey), glm::dot(rec.eciDir, ez)};
-        const float mu = enu.z;
-        if (mu < mu0 || nightFactorEff <= 0.0f || ((int)i == starBetelgeuse && snAsPoint))
+        for (int a = 0; a <= kGa; ++a)
         {
-            o.skyDir = enu;
-            o.flareIntensity = 0.0f;
-            o.meshPx = 0.0f;
-            o.angularSize = rec.angSize;
-            continue;
+            const float bear = (float)a * (2.0f * glm::pi<float>() / kGa);
+            const float sb = std::sin(bear), cb = std::cos(bear);
+            const float secF = bear * sectorK - 0.5f;
+            const int sec0 = (int)floorf(secF);
+            const float secFrac = secF - float(sec0);
+            const int s0 = ((sec0 % kNumLightSectors) + kNumLightSectors) % kNumLightSectors, s1 = (s0 + 1) % kNumLightSectors;
+            const float domeAz = lightDomeAz[s0] + (lightDomeAz[s1] - lightDomeAz[s0]) * secFrac;
+            for (int g = 0; g <= kGu; ++g)
+            {
+                const float uu = (float)g / kGu;
+                const float mu = std::min(mu0 + elSpan * uu * uu, 1.0f);
+                const float ch = std::sqrt(std::max(1.0f - mu * mu, 0.0f));
+                const glm::vec3 d(sb * ch, cb * ch, mu);
+                const float prox = 0.5f + 0.5f * glm::dot(d, sunEnu);
+                const float L = Lp + cityL(domeAz, mu) + twL0 * exp2f(kPsfK * darkSkyTwilightAniso * prox) + Lmoon;
+                gridLim[g][a] = ilimOf(L) / IlimPristine;
+            }
         }
-        const float uu = std::sqrt((mu - mu0) / elSpan) * (float)(kElN - 1);
-        const int k = std::min((int)uu, kElN - 2);
-        const float f = uu - (float)k;
-        const glm::vec4 T = starElTab_[k] + (starElTab_[k + 1] - starElTab_[k]) * f;
-        if (T.y < -1.0f)
-        {
-            o.skyDir = enu;
-            o.flareIntensity = 0.0f;
-            o.meshPx = 0.0f;
-            o.angularSize = rec.angSize;
-            continue;
-        }
-        if (T.y != 0.0f)
-        {
-            // Refraction (2026-10-26): the star drawn where the air bends it, along its own vertical.
-            const float c2 = std::max(1.0f - mu * mu, 1e-12f);
-            const float z2 = std::clamp(mu + std::sqrt(c2) * T.y, -1.0f, 1.0f);
-            const float h = std::sqrt(std::max(1.0f - z2 * z2, 0.0f) / c2);
-            enu = glm::vec3(enu.x * h, enu.y * h, z2);
-        }
-        o.skyDir = enu;
-        o.meshPx = T.w >= 0.0f ? 1.0f + std::floor(std::min(T.z * 1e6f, 60000.0f)) + 0.99f * std::min(T.w, 1.0f) : 0.0f;
-
-        // Directional light pollution (the same interpolated dome / elevFalloff as sat_flare.comp).
-        float bearing = fastAtan2(enu.x, enu.y);
-        if (bearing < 0.0f)
-            bearing += 2.0f * glm::pi<float>();
-        const float secF = bearing * sectorK - 0.5f;
-        const int sec0 = (int)floorf(secF);
-        const float secFrac = secF - float(sec0);
-        const int sec0w = ((sec0 % kNumLightSectors) + kNumLightSectors) % kNumLightSectors;
-        const int sec1w = (sec0w + 1) % kNumLightSectors;
-        const float domeAz = lightDomeAz[sec0w] + (lightDomeAz[sec1w] - lightDomeAz[sec0w]) * secFrac;
-        const float elevFalloff = 0.35f / (std::max(enu.z, 0.0f) + 0.35f); // 1.0 at horizon, ~0.26 at zenith
-        const float kIsotropicFrac = 0.4f; // S2c — same constant as sat_flare.comp / sat_sky.frag / cloud_march.comp
-        const float domeVal = glm::clamp(domeAz * (kIsotropicFrac + (1.0f - kIsotropicFrac) * elevFalloff), 0.0f, 1.0f);
-        const float beamDomeAz = beamGlowDomeAz[sec0w] + (beamGlowDomeAz[sec1w] - beamGlowDomeAz[sec0w]) * secFrac;
-        const float beamDomeVal = glm::clamp(beamDomeAz * elevFalloff, 0.0f, 1.0f);
-        const float kStarBeamPollutionMaxDim = 0.99f;
-
-        const float extinction = exp2f(-kPsfK * T.x); // 10^(-0.4 m)
-        const float Iapp = rec.rawIntensity * extinction;
-        float g = 1.0f;
-        if (starSkyLimit && Iapp < 2000.0f * IlimPristine)
-        {
-            // The naked-eye limit in this direction; the response 1 / (1 + (Ilim / I)^3) (~0.7 mag from 10% to 90%),
-            // relative to a pristine sky's.
-            const float prox = 0.5f + 0.5f * glm::dot(enu, sunEnu);
-            const float L = Lp + cityL(domeAz, enu.z) + twL0 * exp2f(kPsfK * darkSkyTwilightAniso * prox) + Lmoon;
-            const float x = ilimOf(L) / Iapp, xp = IlimPristine / Iapp;
-            g = std::min(1.0f, (1.0f + xp * xp * xp) / (1.0f + x * x * x));
-        }
-        const float intensity = Iapp * nightFactorEff * g * (1.0f - domeVal * kStarPollutionMaxDim) *
-                                (1.0f - beamDomeVal * kStarBeamPollutionMaxDim) * (1.0f - moonBrightStar * kStarMoonMaxDim) *
-                                (1.0f - std::min(snSkyBright, 1.0f) * kStarMoonMaxDim);
-        o.flareIntensity = intensity;
-        // Sized by the shared point-source model star_point.frag draws it with (point_style.glsl).
-        o.angularSize = intensity > 0.0f ? pointSpriteSizePx(starSigma(intensity)) : rec.angSize;
-        lit += intensity > 0.0f;
     }
+
+    const auto wallLoop = std::chrono::steady_clock::now();
+    starPrepMs = 0.9 * starPrepMs + 0.1 * std::chrono::duration<double, std::milli>(wallLoop - wall0).count();
+    auto *dst = static_cast<GpuSatVisible *>(starMapped);
+    // The loop, in chunks on the storm catalog's thread pool (main thread only; the caller is one of the workers): each
+    // star's record depends only on its own catalogue entry and this frame's constants.
+    constexpr uint32_t kChunk = 4096;
+    const uint32_t nChunks = (drawN + kChunk - 1) / kChunk;
+    uint32_t litChunk[64] = {};
+    auto runChunk = [&](size_t c) {
+        const uint32_t i0 = (uint32_t)c * kChunk, i1 = std::min(drawN, i0 + kChunk);
+        uint32_t litN = 0;
+        for (uint32_t i = i0; i < i1; ++i)
+        {
+            const auto &rec = starRecords[i];
+            GpuSatVisible &o = dst[i];
+            glm::vec3 enu{glm::dot(rec.eciDir, ex), glm::dot(rec.eciDir, ey), glm::dot(rec.eciDir, ez)};
+            const float mu = enu.z;
+            if (mu < mu0 || nightFactorEff <= 0.0f || ((int)i == starBetelgeuse && snAsPoint))
+            {
+                o.flareIntensity = 0.0f; // (star_point.vert culls it first: nothing else is read)
+                continue;
+            }
+            const float un = std::sqrt((mu - mu0) / elSpan);
+            const float uu = un * (float)(kElN - 1);
+            const int k = std::min((int)uu, kElN - 2);
+            const float f = uu - (float)k;
+            const glm::vec4 T = starElTab_[k] + (starElTab_[k + 1] - starElTab_[k]) * f;
+            if (T.y < -1.0f)
+            {
+                o.flareIntensity = 0.0f;
+                continue;
+            }
+            if (T.y != 0.0f)
+            {
+                // Refraction (2026-10-26): the star drawn where the air bends it, along its own vertical.
+                const float c2 = std::max(1.0f - mu * mu, 1e-12f);
+                const float z2 = std::clamp(mu + std::sqrt(c2) * T.y, -1.0f, 1.0f);
+                const float h = std::sqrt(std::max(1.0f - z2 * z2, 0.0f) / c2);
+                enu = glm::vec3(enu.x * h, enu.y * h, z2);
+            }
+            o.skyDir = enu;
+            o.color = starPackedColor_[i];
+            o.meshPx = T.w >= 0.0f ? 1.0f + std::floor(std::min(T.z * 1e6f, 60000.0f)) + 0.99f * std::min(T.w, 1.0f) : 0.0f;
+
+            // Directional light pollution (the same interpolated dome / elevFalloff as sat_flare.comp).
+            float bearing = fastAtan2(enu.x, enu.y);
+            if (bearing < 0.0f)
+                bearing += 2.0f * glm::pi<float>();
+            const float secF = bearing * sectorK - 0.5f;
+            const int sec0 = (int)floorf(secF);
+            const float secFrac = secF - float(sec0);
+            const int sec0w = ((sec0 % kNumLightSectors) + kNumLightSectors) % kNumLightSectors;
+            const int sec1w = (sec0w + 1) % kNumLightSectors;
+            const float domeAz = lightDomeAz[sec0w] + (lightDomeAz[sec1w] - lightDomeAz[sec0w]) * secFrac;
+            const float elevFalloff = 0.35f / (std::max(enu.z, 0.0f) + 0.35f); // 1.0 at horizon, ~0.26 at zenith
+            const float kIsotropicFrac = 0.4f; // S2c — same constant as sat_flare.comp / sat_sky.frag / cloud_march.comp
+            const float domeVal = glm::clamp(domeAz * (kIsotropicFrac + (1.0f - kIsotropicFrac) * elevFalloff), 0.0f, 1.0f);
+            const float beamDomeAz = beamGlowDomeAz[sec0w] + (beamGlowDomeAz[sec1w] - beamGlowDomeAz[sec0w]) * secFrac;
+            const float beamDomeVal = glm::clamp(beamDomeAz * elevFalloff, 0.0f, 1.0f);
+            const float kStarBeamPollutionMaxDim = 0.99f;
+
+            const float Iapp = rec.rawIntensity * T.x; // T.x = the extinction's transmission
+            float g = 1.0f, rl = 1.0f;
+            if (starSkyLimit && Iapp < 2000.0f * IlimPristine)
+            {
+                // The naked-eye limit in this direction (gridLim, / the pristine one); the response 1 / (1 + (Ilim / I)^3)
+                // (~0.7 mag from 10% to 90%), relative to a pristine sky's.
+                const float ga = bearing * (kGa / (2.0f * glm::pi<float>()));
+                const float gu = un * kGu;
+                const int a0 = std::min((int)ga, kGa - 1), u0 = std::min((int)gu, kGu - 1);
+                const float fa = ga - (float)a0, fu = gu - (float)u0;
+                rl = (gridLim[u0][a0] * (1.0f - fa) + gridLim[u0][a0 + 1] * fa) * (1.0f - fu) +
+                                 (gridLim[u0 + 1][a0] * (1.0f - fa) + gridLim[u0 + 1][a0 + 1] * fa) * fu;
+                const float xp = IlimPristine / Iapp, x = rl * xp;
+                g = std::min(1.0f, (1.0f + xp * xp * xp) / (1.0f + x * x * x));
+            }
+            float intensity = Iapp * nightFactorEff * g * (1.0f - domeVal * kStarPollutionMaxDim) *
+                              (1.0f - beamDomeVal * kStarBeamPollutionMaxDim) * (1.0f - moonBrightStar * kStarMoonMaxDim) *
+                              (1.0f - std::min(snSkyBright, 1.0f) * kStarMoonMaxDim);
+            if (darkAdd > 0.0f && intensity > 0.0f && intensity < 30.0f * Ithr)
+            {
+                const float w = glm::clamp((4.0f - rl) / 3.0f, 0.0f, 1.0f) * nightFactorEff;
+                if (w > 0.0f)
+                    intensity = powf(powf(intensity, pointGamma) + w * darkAdd, invGamma);
+            }
+            o.flareIntensity = intensity;
+            // Sized by the shared point-source model star_point.frag draws it with (point_style.glsl).
+            o.angularSize = intensity > 0.0f ? pointSpriteSizePx(starSigma(intensity)) : rec.angSize;
+            litN += intensity > 0.0f;
+        }
+        litChunk[c] = litN;
+    };
+    if (nChunks > 1 && stormCatalog && nChunks <= 64)
+        stormCatalog->parallelFor(nChunks, runChunk);
+    else
+        for (uint32_t c = 0; c < nChunks; ++c)
+            runChunk(c);
+    uint32_t lit = 0;
+    for (uint32_t c = 0; c < nChunks && c < 64; ++c)
+        lit += litChunk[c];
     starDrawCount = drawN;
     starVisibleCount = lit;
     if (drawN > 0 && ctx_)

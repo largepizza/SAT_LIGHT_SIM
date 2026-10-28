@@ -8935,6 +8935,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         const bool sn0 = supernovaEnabled;
         starSkyLimit = sj.value("sky_limit", starSkyLimit);
         starLimitBoost = settingClamp(sj.value("limit_boost", starLimitBoost), -2.0f, 3.0f);
+        starDarkExtraMag = settingClamp(sj.value("dark_sky_extra", starDarkExtraMag), 0.0f, 3.0f);
         supernovaEnabled = sj.value("supernova", supernovaEnabled);
         betelgeuseVariable = sj.value("betelgeuse_variable", betelgeuseVariable);
         if (sn0 != supernovaEnabled) skScanBase = -1e300;
@@ -9955,7 +9956,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
                        {"force_inversion_dt", refrForceInvDT},
                        {"force_inversion_dz", refrForceInvDz}};
     j["moon_bases"] = {{"enabled", moonBaseGlints}, {"tilt_jitter_scale", moonBaseJitter}, {"event_mag_limit", moonBaseMagLimit}};
-    j["stars"] = {{"sky_limit", starSkyLimit}, {"limit_boost", starLimitBoost}, {"supernova", supernovaEnabled},
+    j["stars"] = {{"sky_limit", starSkyLimit}, {"limit_boost", starLimitBoost}, {"dark_sky_extra", starDarkExtraMag}, {"supernova", supernovaEnabled},
                   {"betelgeuse_variable", betelgeuseVariable}};
     // Launches (SatelliteSimLaunches.cpp).
     j["launches"] = {{"enabled", launchesEnabled},

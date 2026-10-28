@@ -190,22 +190,26 @@ bool SatelliteSim::skyObjectEnu(int obj, glm::vec3 &enu, float *flare) const
     }
     const int i = obj - kPlanetCount;
     if (i >= (int)starRecords.size()) return false;
-    if (i == starBetelgeuse && snFlare > 0.0)
+    // The direction from this moment's frame (eci2enu): the drawn record is the last updateStars', which a harness
+    // command or a Watch that moved the time or the observer this frame has not refreshed yet. The drawn record's
+    // refraction (< 0.6 deg at the horizon) is added back from it when the record is current.
+    const glm::vec3 &e = starRecords[(size_t)i].eciDir;
+    enu = glm::vec3(glm::dot(e, glm::vec3(eci2enuX)), glm::dot(e, glm::vec3(eci2enuY)), glm::dot(e, glm::vec3(eci2enuZ)));
+    if (flare) *flare = 0.0f;
+    if (i == starBetelgeuse && snFlare > 0.0) // (the supernova, drawn as a kFireBuf point: updateStars' snEnu)
     {
-        enu = snEnu;
+        if (glm::dot(snEnu, enu) > 0.9999f)
+            enu = snEnu;
         if (flare) *flare = 1.0f;
         return true;
     }
     if ((uint32_t)i < starDrawCount && starMapped)
     {
         const GpuSatVisible &v = static_cast<const GpuSatVisible *>(starMapped)[i];
-        enu = v.skyDir;
+        if (glm::dot(v.skyDir, enu) > 0.9999f) // (within ~0.8 deg: the same frame, refracted)
+            enu = v.skyDir;
         if (flare) *flare = v.flareIntensity;
-        return true;
     }
-    const glm::vec3 &e = starRecords[(size_t)i].eciDir;
-    enu = glm::vec3(glm::dot(e, glm::vec3(eci2enuX)), glm::dot(e, glm::vec3(eci2enuY)), glm::dot(e, glm::vec3(eci2enuZ)));
-    if (flare) *flare = 0.0f;
     return true;
 }
 
@@ -379,6 +383,8 @@ harness::Status SatelliteSim::harnessStars(harness::Active &a)
         r["nelm_zenith"] = starNelmZenith;
         r["point_limit_mag"] = pointEffLimitMag();
         r["update_ms"] = starUpdateMs;
+        r["prep_ms"] = starPrepMs;
+        r["el_table_builds"] = starElTabBuilds;
         r["sky_limit"] = starSkyLimit;
         float bv = 0.0f;
         r["betelgeuse"] = {{"index", starBetelgeuse},
