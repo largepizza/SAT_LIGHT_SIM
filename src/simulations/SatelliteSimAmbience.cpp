@@ -586,7 +586,7 @@ void SatelliteSim::computeAmbienceContext(float dt)
             const double dz = std::max(0.0, (double)(eyeAsl - ground) - (double)std::max(T.baseAglM, 300.0f));
             const double d = std::sqrt(dh * dh + dz * dz);
             const double size = std::sqrt(std::max((double)T.r0, 10.0) / 150.0) * (T.spout ? 0.5 : 1.0);
-            loud += (float)(size * lower * lower * fade / (1.0 + (d / 2000.0) * (d / 2000.0)));
+            loud += (float)(size * lower * lower * fade * (double)T.present / (1.0 + (d / 2000.0) * (d / 2000.0)));
         }
         a.set(ambD_.tornado, std::min(loud, 2.0f));
     }

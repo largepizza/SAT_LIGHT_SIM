@@ -5086,6 +5086,10 @@ private:
         // type's base), the optical depth of the cloud above, and the light on the funnel relative to clear sky.
         float baseAglM = 0.0f, tauAbove = 0.0f, lightK = 1.0f;
         bool  baseProbed = false;
+        // (2026-10-27, issue 20261027_212628) 0..1: whether a real storm base stands over it (the probe found cloud within
+        // kTornadoMaxBaseAglM of the ground with at least kTornadoMinTauAbove above it), eased. The funnel, wall cloud,
+        // debris and roar are x this: no cloud over the column, no tornado.
+        float present = 0.0f;
     };
     std::vector<TornadoNow> tornadoesNow;   // drawn this frame
     // The tornado probes (cloud_v2_lightning.comp threads 2-5): the columns asked for this frame (storm ids, 0 = none) and
@@ -5095,7 +5099,9 @@ private:
     uint64_t tornadoProbeIdsS[VulkanContext::kMaxFramesInFlight][4] = {};
     bool tornadoProbeRanS[VulkanContext::kMaxFramesInFlight] = {};
     bool harnessTornadoHidden_ = false;   // harness `storms tornado draw=0`: the funnels are listed but not drawn (A/B)
-    struct TornadoProbe { float baseAsl = 0.0f, tau = 0.0f; bool valid = false; double wall = 0.0; };
+    // found: the LAST answer held a base (0xFFFF = no cloud in the column); present: the eased presence (see TornadoNow).
+    struct TornadoProbe { float baseAsl = 0.0f, tau = 0.0f, present = 0.0f; bool valid = false, found = false;
+                          double wall = 0.0, presWall = 0.0; };
     std::unordered_map<uint64_t, TornadoProbe> tornadoProbes;
     // Each funnel's ground (2026-10-25): the full DEM under it (launchsim::demElevCpu), xyz = the Earth-fixed direction it
     // was read at, w = metres above sea level; re-read once the funnel has moved ~500 m. (weatherFillTornadoes)

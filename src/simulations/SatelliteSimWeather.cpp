@@ -1182,7 +1182,8 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
                 const double dtW = std::clamp(wallNow - P.wall, 0.0, 1.0);
                 P.wall = wallNow;
                 const uint32_t b = res[k] & 0xFFFFu;
-                if (b == 0xFFFFu) continue;   // no cloud found over it: keep what it had (or the type's base)
+                P.found = b != 0xFFFFu;
+                if (!P.found) continue;   // no cloud found over it: keep the last base (the funnel fades out: `present`)
                 const float baseAsl = (float)b, tauA = (float)(res[k] >> 16) * (1.0f / 64.0f);
                 if (!P.valid)
                 {
@@ -1241,13 +1242,35 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
         double Hb = std::max(800.0, (double)cv2Types[4].alt.x) * (T.spout ? 0.8 : 1.0);
         double tauAbove = 0.0;
         {
+            // (2026-10-27, issue 20261027_212628 "Tornado formation under absolutely zero cloud cover") A tornado hangs from a
+            // storm's base or not at all. The probe found NO cloud over the column (a supercell 16 km off, the map clear over
+            // the rear flank) and the funnel hung from the Cb type's base in clear sky. Now it is drawn (and heard) only
+            // while the probe finds a base within kTornadoMaxBaseAglM of the ground with a real storm column above it
+            // (kTornadoMinTauAbove), faded in / out over ~0.6 s; never probed (clouds v2 off, no lightning pass): none.
+            constexpr double kTornadoMaxBaseAglM = 3500.0, kTornadoMinTauAbove = 3.0;
+            bool ok = false;
             const auto it = tornadoProbes.find(T.stormId);
             if (it != tornadoProbes.end() && it->second.valid)
             {
                 Hb = std::clamp((double)it->second.baseAsl - ground, 250.0, 5000.0);
                 tauAbove = it->second.tau;
                 T.baseProbed = true;
+                ok = it->second.found && (double)it->second.baseAsl - ground <= kTornadoMaxBaseAglM
+                     && tauAbove >= kTornadoMinTauAbove;
             }
+            float present = 0.0f;
+            if (it != tornadoProbes.end())
+            {
+                TornadoProbe &P = it->second;
+                const double wallNow = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+                const double dtW = P.presWall > 0.0 ? std::clamp(wallNow - P.presWall, 0.0, 1.0) : 0.0;
+                P.presWall = wallNow;
+                const float a = (float)(1.0 - std::exp(-dtW / 0.25));
+                P.present += ((ok ? 1.0f : 0.0f) - P.present) * a;
+                if (P.present < 0.01f) P.present = ok ? P.present : 0.0f;
+                present = P.present;
+            }
+            T.present = present;
         }
         // The light under the storm, as the cloud march lights the base it hangs from (cloud_v2_march.comp: the sky's
         // light from above x the column's DIFFUSE transmission 1 / (1 + 0.11 tau), plus the ground's and the horizon's
@@ -1265,7 +1288,8 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
         const double life = T.t1 - T.t0, tau = t - T.t0;
         const double lower = glm::smoothstep(0.0, std::min(90.0, 0.2 * life), tau);
         const double rope = glm::smoothstep(0.66, 1.0, tau / life);
-        const double fade = 1.0 - glm::smoothstep(0.92, 1.0, tau / life);
+        const double fade = (1.0 - glm::smoothstep(0.92, 1.0, tau / life)) * (double)T.present;
+        if (fade <= 0.0) continue;
         const double zBot = (1.0 - lower) * 0.65 * Hb;
         const glm::dvec3 eE = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), T.earthDir) + glm::dvec3(1e-12, 0, 0));
         const glm::dvec3 nE = glm::cross(T.earthDir, eE);

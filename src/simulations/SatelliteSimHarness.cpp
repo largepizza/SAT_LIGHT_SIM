@@ -833,7 +833,7 @@ json SatelliteSim::harnessStateJson()
                 const double distKm = std::acos(std::clamp(glm::dot(up, T.earthDir), -1.0, 1.0)) * 6371.0;
                 tl.push_back({{"storm", T.stormId}, {"lat", lat}, {"lon", lon}, {"dist_km", distKm}, {"spout", T.spout},
                               {"radius_m", T.r0}, {"base_agl_m", T.baseAglM}, {"base_probed", T.baseProbed},
-                              {"tau_above", T.tauAbove}, {"light_k", T.lightK}});
+                              {"tau_above", T.tauAbove}, {"light_k", T.lightK}, {"present", T.present}});
             }
             w["tornado_list"] = tl;
         }
