@@ -1368,14 +1368,28 @@ vec3 auroraMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
     float boundHi = farValid ? farExit : atExit;
     const int kAuroraBoundSamples = 5;
     float minBoundColatDeg = 1e6;
+    // (2026-10-29, perfhigh) Every emission term is x the sample's geographic night (auroraCurtainSample: 0 once the
+    // Sun's cosine there passes 0.15). The ray's points seen from the Earth's centre lie on a great-circle arc, along which
+    // that cosine changes by at most the arc's angle: with the lowest cosine between two bound samples at least their
+    // lower one less half their separation, a ray lit all along marches nothing (exact). From 96 km at sunrise over the
+    // oval the march was ~2 ms of daylit rays (issue 20261028_192855's view).
+    float minDayDot = 1e6;
+    vec3  bPrevDir  = vec3(0.0);
+    float bPrevDot  = 0.0;
     for (int bi = 0; bi < kAuroraBoundSamples; ++bi) {
         vec3 bp       = obsPos + dir * mix(boundLo, boundHi, float(bi) / float(kAuroraBoundSamples - 1));
         vec3 bDirECEF = normalize(bp.x * enuX + bp.y * enuY + bp.z * enuZ);
         vec3 bPole    = (dot(bDirECEF, kGeomagPoleECEF) > 0.0) ? kGeomagPoleECEF : -kGeomagPoleECEF;
         minBoundColatDeg = min(minBoundColatDeg, degrees(acos(clamp(dot(bDirECEF, bPole), -1.0, 1.0))));
+        float bDot = dot(bDirECEF, sunDirECEF);
+        if (bi > 0)
+            minDayDot = min(minDayDot, min(bDot, bPrevDot) - 0.5 * acos(clamp(dot(bDirECEF, bPrevDir), -1.0, 1.0)));
+        bPrevDir = bDirECEF;
+        bPrevDot = bDot;
     }
     // The largest colatitude the oval can light now (auroraOval2.y) + 10 deg for the 5-sample spacing.
     if (minBoundColatDeg > cloud.auroraOval2.y + 10.0) return vec3(0.0);
+    if (minDayDot > 0.151) return vec3(0.0);
 
     // Past this point the march genuinely runs — record the entry distance for terrain
     // suppression. Unlike cloudMarchCS/cirrusMarchCS, this canNOT just reuse atEnter: the march
@@ -2242,7 +2256,9 @@ void main() {
     // correct: terrain that blocks the view of the much-closer cloud layer necessarily blocks the
     // far higher aurora shell along that same ray too).
     vec3 auroraContrib = vec3(0.0);
-    if ((cloud.dbgDisableMask & 32u) == 0u) {
+    // (2026-10-29, perfhigh) Not behind opaque cloud seen from below: the composite takes the aurora x its transmittance
+    // cubed (below), under 1e-6 at a transmittance of 0.01.
+    if ((cloud.dbgDisableMask & 32u) == 0u && !(obsEffH < kAuroraShellInnerM && dot(A_total, vec3(1.0 / 3.0)) < 0.01)) {
         auroraContrib = auroraMarchCS(obsPos, dir, enuX, enuY, enuZ, sunDir, sunDirECEF,
                                        obsEffH, pc.moonDirENU, tScene);
     }

@@ -4431,6 +4431,19 @@ void main() {
             tCloudFrontM = min(tCloudFrontM, tFarL);
         }
     }
+    // (2026-10-29, perfhigh) Behind (nearly) opaque cloud the air is composited x the cloud's transmittance (< 1e-3):
+    // the loop ends just past the air's split (tAirFrontM) instead of the surface or the atmosphere's exit, so its steps
+    // cover the air in front. Band pixels only (the volume costs the same either way): storm views -0.5..-0.6 ms.
+#ifdef SKY_SUN_SHADOW
+    if (!useAp && N_VIEW > 0 && max(cloudB.r, max(cloudB.g, cloudB.b)) < SKY_SURF_HIDDEN_T && tAirFrontM < 1e11) {
+        float tE2 = max(tStart, min(tEnd, 1.1 * tAirFrontM + 2000.0));
+        if (tE2 < tEnd) {
+            tEnd   = tE2;
+            N_VIEW = int(clamp(ceil((tEnd - tStart) / targetStepLen), viewSamplesMin, viewSamplesMax));
+            segLen = (tEnd - tStart) / float(N_VIEW);
+        }
+    }
+#endif
     // Cloud composite debug views (harness `debugview 46..48`): 46 the air split distance (/100 km, red past
     // it), 47 the cloud transmittance, 48 the cloud radiance x20, 49 the raw alpha (r opaque tHalf, g
     // translucent mean distance, /100 km).
