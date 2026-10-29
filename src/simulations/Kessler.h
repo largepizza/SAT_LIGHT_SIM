@@ -226,6 +226,67 @@ struct Event
     float vel[3] = {0, 0, 0};
 };
 
+// The world's applied events (2026-10-28, the memory audit): segments of 65536 behind a FIXED table of segment pointers,
+// so growing never moves an element and never reallocates the table. The main thread reads the same storage (its
+// kEvents view, up to the count the worker has published under its mutex): one copy of the event log instead of two
+// (~88 B an event, ~31M events by 3 years: 2.7 GB saved). Elements are never written after push_back; shrinking
+// (a rollback, a reset) happens only with the worker stopped and the view's count lowered with it.
+class EventLog
+{
+  public:
+    static constexpr unsigned kBits = 16;
+    static constexpr size_t kSeg = size_t(1) << kBits;
+    static constexpr size_t kMaxSegs = 16384; // 1G events
+    EventLog() : segs_(new Event *[kMaxSegs]()) {}
+    ~EventLog() { clear(); }
+    EventLog(const EventLog &) = delete;
+    EventLog &operator=(const EventLog &) = delete;
+    size_t size() const { return n_; }
+    bool empty() const { return n_ == 0; }
+    const Event &operator[](size_t i) const { return segs_[i >> kBits][i & (kSeg - 1)]; }
+    void push_back(const Event &e)
+    {
+        const size_t s = n_ >> kBits;
+        if (!segs_[s])
+            segs_[s] = new Event[kSeg];
+        segs_[s][n_ & (kSeg - 1)] = e;
+        ++n_;
+    }
+    // Shrinks (the segments past it are freed), or grows with default events.
+    void resize(size_t n)
+    {
+        while (n_ < n)
+            push_back(Event{});
+        n_ = n;
+        for (size_t s = (n_ + kSeg - 1) >> kBits; s < kMaxSegs && segs_[s]; ++s)
+        {
+            delete[] segs_[s];
+            segs_[s] = nullptr;
+        }
+    }
+    void clear() { resize(0); }
+    size_t bytes() const { return ((n_ + kSeg - 1) >> kBits) * kSeg * sizeof(Event) + kMaxSegs * sizeof(Event *); }
+    struct const_iterator
+    {
+        const EventLog *log;
+        size_t i;
+        const Event &operator*() const { return (*log)[i]; }
+        const Event *operator->() const { return &(*log)[i]; }
+        const_iterator &operator++()
+        {
+            ++i;
+            return *this;
+        }
+        bool operator!=(const const_iterator &o) const { return i != o.i; }
+    };
+    const_iterator begin() const { return {this, 0}; }
+    const_iterator end() const { return {this, n_}; }
+
+  private:
+    std::unique_ptr<Event *[]> segs_;
+    size_t n_ = 0;
+};
+
 // Event::pad on an engine grid hit read from the compact event log: its projectile's speed and mass are drawn at
 // replay (World::fillGridHits), as the sampling step drew them.
 constexpr uint8_t kEvNeedsGridDraw = 1;
@@ -243,7 +304,7 @@ Event engineEventOf(double t0, double t1, uint64_t stepK, uint32_t a, uint32_t b
 // engineEventOf, a grid hit's speed and mass at replay (with a per-step check of what the sampling step drew). A
 // step that does not rebuild exactly (any other event, another order) is stored whole. The grid hits' gaps are Rice
 // coded (~1.4 bytes a hit; deflate gained nothing on them).
-bool packEngineEvents(const World &w, const std::vector<Event> &events, std::vector<uint8_t> &out);
+bool packEngineEvents(const World &w, const EventLog &events, std::vector<uint8_t> &out);
 class EngineEventReader
 {
 public:
@@ -255,6 +316,7 @@ public:
     // (hasCheck false: stored whole, nothing to draw).
     void next(const World &w, std::vector<Event> &out, uint32_t &check, bool &hasCheck);
     size_t eventsLeft() const { return evLeft; }
+    size_t bytes() const { return buf.capacity(); } // (harness `kessler mem`)
 
 private:
     std::vector<uint8_t> buf;
@@ -399,7 +461,7 @@ public:
         return i >= rosterBorn.size() || (sec >= rosterBorn[i] && sec < rosterGone[i]);
     }
     std::vector<PoolRec> pool;
-    std::vector<Event> events;        // applied, in time order
+    EventLog events;                  // applied, in time order (shared with the main thread's view)
     DebrisGrid grid;                  // the small fragments
     std::map<int32_t, DeathBucket> deathBuckets; // by window index (30 days from the epoch): leave the grid at its end
     static constexpr double kDeathBucketS = 30.0 * 86400.0;
@@ -464,6 +526,7 @@ public:
     void checkpoint(double t, size_t pendingNext);      // at a step start (simulate): journal from here on
     void dropCheckpointsBefore(double t);               // keep the latest at or before t, and the later ones
     void dropJournal();                                 // no rollback any more (until the next checkpoint)
+    void capJournal();                                  // drops the journal past journalCap (every step)
     int checkpointAtOrBefore(double t) const;           // the latest checkpoint at or before t, or -1
     size_t journalSize() const { return journal.size(); }
     // Rewinds to checkpoint k (which is dropped with every later one); returns its pendingNext. The outbox
@@ -491,6 +554,8 @@ public:
     // Runs from the frontier to tEnd: due seed / user events (in `pending`, sorted by time) and engine
     // samples. Stops early when *stop turns true.
     void simulate(double tEnd, std::vector<Event> &pending, size_t &pendingNext, const bool *stop);
+    // (2026-10-28) What each structure holds, in bytes (harness `kessler mem`; approximate for maps / deques).
+    void memReport(std::vector<std::pair<std::string, double>> &out) const;
 
 private:
     uint32_t addRecord(const PoolRec &r);

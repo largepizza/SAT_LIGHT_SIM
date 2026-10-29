@@ -781,6 +781,15 @@ void World::checkpoint(double t, size_t pendingNext)
         dropJournal(); // too much since the oldest kept one: no rollback until the next checkpoint
 }
 
+// (2026-10-28, the memory audit) The cap holds at every step, not only at the next checkpoint: when the player's time
+// jumped ahead of the frontier, the last checkpoint stayed behind and every change since was journaled until the world
+// got there (a jump to day 170 journaled ~50M changes: 10.7 GB, freed only at the next checkpoint).
+void World::capJournal()
+{
+    if (journalOn && journal.size() > journalCap)
+        dropJournal();
+}
+
 void World::dropJournal()
 {
     journal.clear();
@@ -796,6 +805,15 @@ void World::dropCheckpointsBefore(double t)
     for (size_t k = 0; k < checkpoints.size(); ++k)
         if (checkpoints[k].t <= t)
             keep = k;
+    // (2026-10-28) The latest one at or before t is more than a day older than t (time jumped ahead of the frontier):
+    // useless for a breakup at the player's time (rewinding there would replay all of it on the main thread), and it
+    // would keep everything since journaled. Dropped: the next checkpoint starts afresh.
+    if (!checkpoints.empty() && checkpoints[keep].t <= t && checkpoints[keep].t < t - 86400.0 &&
+        (keep + 1 >= checkpoints.size()))
+    {
+        dropJournal();
+        return;
+    }
     if (keep == 0)
         return;
     const size_t cut = checkpoints[keep].journal - journalOff;
@@ -2017,6 +2035,7 @@ void World::simulate(double tEnd, std::vector<Event> &pending, size_t &pendingNe
         const double t0 = frontier, t1 = std::min(stepStart(frontier) + s.stepS, tEnd);
         if (t0 == stepStart(t0) && wantCheckpoints && t0 >= checkpointFrom)
             checkpoint(t0, pendingNext);
+        capJournal();
         // A step applies its scripted events, then the engine's, then the player's (sortPending's order: a replay of
         // the step from its engine events gives the same history as sampling it).
         while (pendingNext < pending.size() && pending[pendingNext].t <= t1 && pending[pendingNext].origin != ORIGIN_USER)
@@ -2346,7 +2365,7 @@ bool sameBits(const void *a, const void *b, size_t n) { return std::memcmp(a, b,
 bool canonLess(const Event &x, const Event &y) { return x.t != y.t ? x.t < y.t : (x.a != y.a ? x.a < y.a : x.b < y.b); }
 } // namespace
 
-bool packEngineEvents(const World &w, const std::vector<Event> &events, std::vector<uint8_t> &out)
+bool packEngineEvents(const World &w, const EventLog &events, std::vector<uint8_t> &out)
 {
     std::vector<uint8_t> head, grid, pair, raw;
     std::vector<const Event *> eng;
@@ -2555,5 +2574,39 @@ void EngineEventReader::next(const World &w, std::vector<Event> &out, uint32_t &
     --stepsLeft;
     if (stepsLeft > 0 && !readHead())
         stepsLeft = 0;
+}
+
+// (2026-10-28) Memory by structure (harness `kessler mem`). Vectors by capacity; maps / deques with a node estimate.
+void World::memReport(std::vector<std::pair<std::string, double>> &out) const
+{
+    auto vb = [](const auto &v) { return (double)v.capacity() * sizeof(v[0]); };
+    out.push_back({"world.roster", vb(roster) + vb(types)});
+    out.push_back({"world.roster_seconds", vb(rosterDead) + vb(rosterEnd) + vb(rosterDecay) + vb(rosterBorn) + vb(rosterGone)});
+    out.push_back({"world.pool", vb(pool)});
+    out.push_back({"world.pool_gen_free_heap", vb(poolGen) + vb(poolFree) + vb(releaseHeap)});
+    out.push_back({"world.events", (double)events.bytes()});
+    out.push_back({"world.grid", vb(grid.cnt) + vb(grid.massG)});
+    double db = 0.0;
+    for (const auto &kv : deathBuckets)
+        db += vb(kv.second.cnt) + vb(kv.second.massG) + 64.0;
+    out.push_back({"world.death_buckets", db});
+    {
+        // (what a sparse form would take: 8 B index + 8 B value per non-zero cell)
+        double nz = 0.0;
+        for (const auto &kv : deathBuckets)
+        {
+            for (int64_t v : kv.second.cnt)
+                nz += v != 0;
+            for (int64_t v : kv.second.massG)
+                nz += v != 0;
+        }
+        out.push_back({"world.death_buckets_if_sparse", nz * 16.0});
+    }
+    out.push_back({"world.outbox", vb(smallStreams) + vb(poolChanges) + vb(rosterChanged)});
+    out.push_back({"world.checkpoints", vb(checkpoints)});
+    out.push_back({"world.journal", (double)journal.size() * sizeof(JEntry)});
+    out.push_back({"world.lifetime_table", vb(lifeTab)});
+    out.push_back({"world.touch", vb(poolTouch) + vb(rosterTouch)});
+    out.push_back({"world.dep_queue", vb(depQueue)});
 }
 } // namespace kessler

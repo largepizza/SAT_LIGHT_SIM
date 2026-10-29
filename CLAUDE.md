@@ -6000,8 +6000,34 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
     box, 16 threads, harness, default settings, a fresh launch): the supernova Watch (day 163) 416 s -> 41 s;
     2038-06-01 652 -> 62 s; 2039-01-01 901 -> 93 s; 1 week/s from the CME: 95 days reached in 3 min (held all the way)
     -> sim time never held to day ~1100 (frame mean 35 -> 27 ms). The Sun's Fury bookmark (day 0.15) was already
-    instant. Live sampling past the prebake: ~1.1 s a day. Open: the working set still reaches 10-35 GB late in a long
-    replay (the mirror and world; pre-existing).
+    instant. Live sampling past the prebake: ~1.1 s a day.
+- **Memory (2026-10-28, the memory audit; harness `kessler mem` = bytes by structure + working set / private bytes).**
+  The 10-35 GB working sets of a long replay were the ROLLBACK JOURNAL: its cap (1M entries, ~200 B each) was checked only
+  at the next checkpoint, and when the player's time jumped ahead of the frontier the last checkpoint stayed behind, so
+  every change of the replay was journaled until the world got there (a jump to the supernova: 10.7 GB, freed at day 170).
+  Now `World::capJournal()` holds the cap every step and `dropCheckpointsBefore` drops a lone checkpoint more than a day
+  behind the player (rewinding there would replay it all on the main thread anyway: a breakup then rebuilds async).
+  Also: **the event log is ONE copy**: `World::events` is a `kessler::EventLog` (65536-event segments behind a FIXED table
+  of 16384 segment pointers: growing never moves an element or the table) and the main thread's `kEvents` is a VIEW of it
+  (`KEventView`: the world's log + the count the mirror has taken in; set at install / reset / rewind; elements are never
+  written after push_back; shrinking only with the worker stopped). Publishes carry the event count, not copies.
+  **Generations dropped at publish** (`KesslerWorker::pruneOldGenerations`): a generation whose slot's NEXT generation in
+  the same publish was born more than 8 days before the player's time (the mirror's 7-day history + a day) never reaches
+  the mirror, nor do its deaths; `kHistPrunedUntil` takes the replacing generation's birth (going back before it replays,
+  as the mirror's own prune). `SATLIGHTSIM_KESSLER_PUBLISH_PRUNE=0` = the A/B. **Backpressure**: the worker waits while the
+  mirror has > 3M published pool changes still to take (`kBacklogCap`, `syncBacklog`). `w.poolChanges` is shrunk after a
+  big publish (a replay's 30-day chunk left ~600 MB of capacity for good). The mirror drops small-fragment streams, their
+  expanded hours and re-entry index hours more than 30 days before the shown second (`kesslerPruneOldIndexes`; raises
+  `kHistPrunedUntil`). Results identical: `kessler fingerprint` at days 30 / 60 / 100 / 163 / 365 / 700 / 1100 equal to
+  the pre-change exe's, and with / without the publish prune across an in-place breakup, a 5-day rewind and a 40-day
+  replay. Measured (harness, RTX 3070 Ti box, 16 threads, default settings; `harness_runs`-style scripts in the audit's
+  report): the supernova Watch from sim start 79 s -> 32 s, peak working set 17.6 -> 4.1 GB, settled 5.0 -> 3.9 GB;
+  replaying 0 -> 1100 days in steps 720 s -> 260 s, peak 22.7 -> 6.4 GB, at day 1100 9.8 -> 6.4 GB working set. What is
+  left at day 1100 (6.4 GB): the event log 2.4 GB (31M x 80 B), the small-fragment streams 0.73 GB (mostly future
+  windows), the pool three times over (world 0.53, mirror `kPool` 0.50, `satOrbits`' pool tail 0.48), death buckets 0.22,
+  the roster ~0.3, the rest of the app ~1.3. Boot (no cascade yet): ~1.6 GB working set; private bytes ~4.4 GB, ~1 GB of it
+  the pool's reserved (committed, untouched) `kPool` / `satOrbits` / `kPoolGen` capacity. The bench line also gives the
+  replay split (`chunks` = seeds, retire, log read, grid hits, batches; publish; waiting for the mirror; dropped).
 - **Roster rebuilds and determinism** (also needed by the cache): `buildOrbits()` draws from `SatRng` (MSVC's
   rand() LCG, one stream per constellation, recorded on the first build — the shipped layout is bit-identical on
   Windows and now the same everywhere), the cluster jitter is keyed by load order (`defIndex`), terminator planes
