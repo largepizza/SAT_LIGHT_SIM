@@ -297,7 +297,7 @@ class EventLog
     double droppedUntil() const { return droppedUntil_; }
     size_t bytes() const;
     size_t spillCount() const { return nSpill_; }
-    bool save(std::FILE *f) const; // (a world snapshot's part; load only with no concurrent reader)
+    bool save(std::vector<uint8_t> &out) const; // (a world snapshot's part; load only with no concurrent reader)
     bool load(std::FILE *f);
     size_t detailSegments() const;
     struct const_iterator
@@ -600,7 +600,7 @@ public:
     void memReport(std::vector<std::pair<std::string, double>> &out) const;
     // (2026-10-29) A snapshot: the world's state at its frontier, between steps (no journal, an empty outbox). loadState
     // expects a world built and reset from the same inputs (roster, settings, start): the snapshot's key is the world hash.
-    bool saveState(std::FILE *f) const;
+    bool saveState(std::vector<uint8_t> &out) const;
     bool loadState(std::FILE *f, std::string &why);
 
 private:

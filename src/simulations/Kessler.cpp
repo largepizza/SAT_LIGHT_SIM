@@ -1480,18 +1480,8 @@ void World::flushDeposits()
     }
     if (!gridIdx.empty() && grid.cnt.empty())
         grid.clear();
-    // (2026-10-29) Every target (the grid, each death bucket) with many deposits is split over threads into private
-    // partial arrays, summed after: integer sums, so the result is the same in any order. Each bucket on one thread (the
-    // old split) left a replay's busy windows serial: deposits were ~40% of a jump's apply time.
-    struct Target
-    {
-        std::vector<int64_t> *c, *m;
-        const std::vector<size_t> *idx;
-        size_t parts, part0;
-    };
-    std::vector<Target> tg;
-    if (!gridIdx.empty())
-        tg.push_back({&grid.cnt, &grid.massG, &gridIdx, 1, 0});
+    std::vector<DeathBucket *> bks;
+    std::vector<const std::vector<size_t> *> bkIdx;
     for (auto &kv : byKey)
     {
         DeathBucket &bk = deathBuckets[kv.first];
@@ -1500,62 +1490,50 @@ void World::flushDeposits()
             bk.cnt.assign((size_t)DebrisGrid::NR * DebrisGrid::NL * DebrisGrid::NH, 0);
             bk.massG.assign((size_t)DebrisGrid::NR * DebrisGrid::NL, 0);
         }
-        tg.push_back({&bk.cnt, &bk.massG, &kv.second, 1, 0});
+        bks.push_back(&bk);
+        bkIdx.push_back(&kv.second);
     }
-    size_t nParts = 0;
-    for (Target &t : tg)
-    {
-        t.parts = std::clamp<size_t>(t.idx->size() / 4096, 1, 8); // (a part zeroes and sums 0.7 MB: worth it from ~4096 deposits)
-        t.part0 = nParts;
-        nParts += t.parts;
-    }
-    std::vector<DeathBucket> parts(nParts);
-    std::vector<std::pair<size_t, size_t>> tasks; // (target, part)
-    for (size_t k = 0; k < tg.size(); ++k)
-        for (size_t q = 0; q < tg[k].parts; ++q)
-            tasks.push_back({k, q});
-    parallelChunks(tasks.size(), [&](size_t a, size_t b) {
+    const size_t nGridParts = gridIdx.size() < 2048 ? 1 : 8;
+    std::vector<DeathBucket> parts(nGridParts > 1 ? nGridParts : 0);
+    const size_t tasks = nGridParts + bks.size();
+    parallelChunks(tasks, [&](size_t a, size_t b) {
         for (size_t t = a; t < b; ++t)
         {
-            const Target &T = tg[tasks[t].first];
-            const size_t q = tasks[t].second, n = T.idx->size();
-            const size_t i0 = q * n / T.parts, i1 = (q + 1) * n / T.parts;
-            std::vector<int64_t> *c = T.c, *m = T.m;
-            if (T.parts > 1)
+            if (t < nGridParts)
             {
-                DeathBucket &pt = parts[T.part0 + q];
-                pt.cnt.assign(T.c->size(), 0);
-                pt.massG.assign(T.m->size(), 0);
-                c = &pt.cnt;
-                m = &pt.massG;
+                const size_t i0 = t * gridIdx.size() / nGridParts, i1 = (t + 1) * gridIdx.size() / nGridParts;
+                std::vector<int64_t> *c = &grid.cnt, *m = &grid.massG;
+                if (nGridParts > 1)
+                {
+                    parts[t].cnt.assign(grid.cnt.size(), 0);
+                    parts[t].massG.assign(grid.massG.size(), 0);
+                    c = &parts[t].cnt;
+                    m = &parts[t].massG;
+                }
+                for (size_t q = i0; q < i1; ++q)
+                {
+                    const Deposit &d = depQueue[gridIdx[q]];
+                    grid.depositInto(*c, *m, d.a, d.e, d.i, d.argp, d.w, d.m, d.seed);
+                }
             }
-            for (size_t i = i0; i < i1; ++i)
+            else
             {
-                const Deposit &d = depQueue[(*T.idx)[i]];
-                grid.depositInto(*c, *m, d.a, d.e, d.i, d.argp, d.w, d.m, d.seed);
-            }
-        }
-    }, 2);
-    std::vector<size_t> sumT;
-    for (size_t k = 0; k < tg.size(); ++k)
-        if (tg[k].parts > 1)
-            sumT.push_back(k);
-    parallelChunks(sumT.size(), [&](size_t a, size_t b) {
-        for (size_t z = a; z < b; ++z)
-        {
-            const Target &T = tg[sumT[z]];
-            for (size_t q = 0; q < T.parts; ++q)
-            {
-                const DeathBucket &pt = parts[T.part0 + q];
-                int64_t *dc = T.c->data(), *dm = T.m->data();
-                const int64_t *sc = pt.cnt.data(), *sm = pt.massG.data();
-                for (size_t i = 0, n = T.c->size(); i < n; ++i)
-                    dc[i] += sc[i];
-                for (size_t i = 0, n = T.m->size(); i < n; ++i)
-                    dm[i] += sm[i];
+                const size_t k = t - nGridParts;
+                for (size_t i : *bkIdx[k])
+                {
+                    const Deposit &d = depQueue[i];
+                    grid.depositInto(bks[k]->cnt, bks[k]->massG, d.a, d.e, d.i, d.argp, d.w, d.m, d.seed);
+                }
             }
         }
     }, 2);
+    for (const DeathBucket &pt : parts)
+    {
+        for (size_t i = 0; i < grid.cnt.size(); ++i)
+            grid.cnt[i] += pt.cnt[i];
+        for (size_t i = 0; i < grid.massG.size(); ++i)
+            grid.massG[i] += pt.massG[i];
+    }
     depQueue.clear();
     profFlush += profClock() - q0;
 }
@@ -2297,12 +2275,12 @@ namespace
 {
 struct SnapW
 {
-    std::FILE *f;
+    std::vector<uint8_t> &out; // (built in memory, written to disk on a thread of its own: SatelliteSimKessler.cpp)
     bool ok = true;
     void raw(const void *p, size_t n)
     {
-        if (ok && n > 0 && std::fwrite(p, 1, n, f) != n)
-            ok = false;
+        if (n > 0)
+            out.insert(out.end(), (const uint8_t *)p, (const uint8_t *)p + n);
     }
     template <class T> void pod(const T &v) { raw(&v, sizeof(T)); }
     template <class T> void vec(const std::vector<T> &v)
@@ -2339,9 +2317,9 @@ constexpr uint32_t kSnapWorldMagic = 0x57534B53u; // "SKSW"
 constexpr uint32_t kSnapWorldVersion = 1;
 } // namespace
 
-bool EventLog::save(std::FILE *f) const
+bool EventLog::save(std::vector<uint8_t> &out) const
 {
-    SnapW w{f};
+    SnapW w{out};
     const uint64_t n = n_, ns = nSpill_, ds = dropSeg_;
     w.pod(n);
     w.pod(ns);
@@ -2405,9 +2383,11 @@ bool EventLog::load(std::FILE *f)
     return r.ok;
 }
 
-bool World::saveState(std::FILE *f) const
+bool World::saveState(std::vector<uint8_t> &out) const
 {
-    SnapW w{f};
+    out.reserve(out.size() + pool.size() * sizeof(PoolRec) + events.bytes() + grid.cnt.size() * 8 * (deathBuckets.size() + 2) +
+                rosterDead.size() * 12 + releaseHeap.size() * sizeof(Release) + poolGen.size() * 8 + (64u << 20));
+    SnapW w{out};
     w.pod(kSnapWorldMagic);
     w.pod(kSnapWorldVersion);
     const uint64_t nRoster = roster.size(), poolCap = s.poolCapacity;
@@ -2439,7 +2419,7 @@ bool World::saveState(std::FILE *f) const
     }
     if (!w.ok)
         return false;
-    return events.save(f);
+    return events.save(out);
 }
 
 bool World::loadState(std::FILE *f, std::string &why)

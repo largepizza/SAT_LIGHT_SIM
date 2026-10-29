@@ -2985,8 +2985,13 @@ private:
         // (2026-10-29) Restored from a world snapshot (SatelliteSimKessler.cpp, "Snapshots"): the mirror is rebuilt from
         // the world at install, with these streams (made before the snapshot, windows still to come).
         bool fromSnap = false;
-        std::vector<kessler::SmallStream> snapStreams;
         double snapLoadMs = 0.0;
+        // (made on the restart's thread, swapped in at install: ~2.5 s on the main thread otherwise)
+        std::vector<kessler::PoolRec> snapPool;
+        std::vector<uint32_t> snapGen;
+        std::unordered_map<int32_t, std::vector<std::pair<uint32_t, int32_t>>> snapReentries;
+        std::map<int32_t, std::vector<kessler::SmallStream>> snapStreams;
+        size_t snapStreamCount = 0;
     };
     std::filesystem::path kSnapRestore; // the snapshot the next kesslerRestart starts from (consumed by it)
     bool kesslerSnapshots = true;       // settings: kessler.snapshots (no UI)
