@@ -166,13 +166,16 @@ bool debugToggleAt(int i, uint32_t &bit, const char *&label, const char *&jsonKe
 // Controls and no longer has a button (its index still opens Controls).
 // 2026-10-21: "Launches" (15, issue 20261021_175638): the Missions window's Controls tab moved here, the
 // graphics grouped and the exhaust sliders added; under SKY after Constellations.
-static constexpr int kSettingsTabCount = 16;
+// 2026-10-28 (issue 20261028_222345, the settings round-up): "Sky" (16) under SKY: the stars, the planets (out of
+// Constellations), the Moon, comets, meteors, the Moon-base glints and the refraction / mirage settings, most of which
+// had no UI. The search box over the strip filters every tab (Settings search, below).
+static constexpr int kSettingsTabCount = 17;
 static constexpr const char *kSettingsTabNames[kSettingsTabCount] = {
     "Constellations", "Sound", "Controls", "Camera",
     "Display", "Photometry", "Clouds", "Ocean", "Terrain", "Atmosphere", "Beams", "Attributions",
-    "Weather", "Night lights", "Performance", "Launches"};
+    "Weather", "Night lights", "Performance", "Launches", "Sky"};
 static constexpr const char *kSettingsStripHeadings[] = {"GENERAL", "SKY", "RENDERING", "ABOUT"};
-static constexpr int kSettingsStrip[] = {-1, 4, 2, 1, -2, 0, 15, 5, -3, 6, 12, 9, 8, 13, 7, 10, 14, -4, 11};
+static constexpr int kSettingsStrip[] = {-1, 4, 2, 1, -2, 0, 16, 15, 5, -3, 6, 12, 9, 8, 13, 7, 10, 14, -4, 11};
 bool settingsTabIsAdvanced(int i) { return (i >= 6 && i <= 10) || i == 12 || i == 13 || i == 14; }
 int settingsTabIndexByName(const std::string &name)
 {
@@ -3640,6 +3643,59 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
         // is the preset selector, not a wall of tuning knobs. hovTab[]/settingsActiveTab still
         // index by the tab's real (unchanged) id even while its button is skipped here, so
         // nothing about the other tabs' state needs remapping.
+        // ── Search (2026-10-28): the query filters every tab's rows as it is typed (buildSettingsSearchBody) ──
+        const Clay_ElementId searchId = CLAY_ID("SettingsSearch");
+        auto clearSearch = [&]()
+        {
+            search_.query.clear();
+            if (textEdit_.id == searchId.id)
+                textEdit_.id = 0;
+            if (textEdit_.doneId == searchId.id)
+                textEdit_.doneId = 0;
+        };
+        if (searchClickPending_ >= 0) // a tab link in last frame's results
+        {
+            settingsActiveTab = searchClickPending_;
+            if (settingsTabIsAdvanced(searchClickPending_))
+                showAdvancedSettings = true;
+            searchClickPending_ = -1;
+            clearSearch();
+        }
+        CLAY(CLAY_ID("SettingsSearchLbl"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}, .padding = {2, 2, 0, 2}}})
+        {
+            CLAY_TEXT(CLAY_STRING("SEARCH"), CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(10), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+        }
+        textField(inp, ui, searchId, search_.query, 124.0f, 11,
+                  "Type part of a setting's name: every tab's matching settings are listed (Esc or Clear to go back)", 48);
+        {
+            // Live: the box's text while it is focused, the committed query otherwise.
+            const std::string &live = textEdit_.id == searchId.id ? textEdit_.buf : search_.query;
+            search_.words.clear();
+            std::string w;
+            for (size_t i = 0; i <= live.size(); ++i)
+            {
+                const char c = i < live.size() ? (char)std::tolower((unsigned char)live[i]) : ' ';
+                if (c == ' ')
+                {
+                    if (!w.empty())
+                        search_.words.push_back(w);
+                    w.clear();
+                }
+                else
+                    w += c;
+            }
+            size_t total = 0;
+            for (const std::string &s : search_.words)
+                total += s.size();
+            if (total < 2) // one letter matches nearly every row
+                search_.words.clear();
+        }
+        if (!search_.words.empty() || !search_.query.empty())
+        {
+            if (uiButton(inp, ui, "SettingsSearchClear", 0, "Clear", "Back to the tab"))
+                clearSearch();
+        }
+        CLAY(CLAY_ID("SettingsSearchGap"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(4)}}}) {}
         for (int oi = 0; oi < (int)(sizeof(kSettingsStrip) / sizeof(kSettingsStrip[0])); ++oi)
         {
             const int ti = kSettingsStrip[oi];
@@ -3661,7 +3717,7 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
             bool isAdvancedTab = settingsTabIsAdvanced(ti);
             if (isAdvancedTab && !showAdvancedSettings)
                 continue;
-            bool active = settingsActiveTab == ti || (ti == 2 && settingsActiveTab == 3);
+            bool active = search_.words.empty() && (settingsActiveTab == ti || (ti == 2 && settingsActiveTab == 3));
             Clay_Color tabBg = active ? Pal::btnAccent : (hovTab[ti] ? Pal::btnHover : Clay_Color{0, 0, 0, 0});
             CLAY(CLAY_IDI("SettingsTab", ti), {.layout = {
                                                    .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(26)},
@@ -3674,7 +3730,10 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
                 sndRollover(n, hovTab[ti]);
                 sndClick(n, inp.lmbPressed);
                 if (n && inp.lmbPressed)
+                {
                     settingsActiveTab = ti;
+                    clearSearch(); // a tab ends the search
+                }
                 hovTab[ti] = n;
                 Clay_String tabStr{false, (int32_t)strlen(kSettingsTabNames[ti]), kSettingsTabNames[ti]};
                 CLAY_TEXT(tabStr, CLAY_TEXT_CONFIG({.textColor = active ? Pal::textPrimary : Pal::volLabel, .fontSize = fs(12)}));
@@ -3694,59 +3753,72 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
                                           .layoutDirection = CLAY_TOP_TO_BOTTOM},
                                       .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}})
     {
-        switch (settingsActiveTab)
-        {
-        case 0:
-            buildSettingsConstellationsTab(inp, ui);
-            break;
-        case 1:
-            buildSettingsSoundTab(inp, ui);
-            break;
-        case 2:
-            buildSettingsControlsTab(inp, ui);
-            break;
-        case 3: // Camera: folded into Controls (2026-10-03)
-            buildSettingsControlsTab(inp, ui);
-            break;
-        case 4:
-            buildSettingsDisplayTab(inp, ui);
-            break;
-        case 5:
-            buildSettingsPhotometryTab(inp, ui);
-            break;
-        case 6:
-            buildSettingsCloudsTab(inp, ui);
-            break;
-        case 7:
-            buildSettingsOceanTab(inp, ui);
-            break;
-        case 8:
-            buildSettingsTerrainTab(inp, ui);
-            break;
-        case 9:
-            buildSettingsAuroraTab(inp, ui);
-            break;
-        case 10:
-            buildSettingsBeamsTab(inp, ui);
-            break;
-        case 11:
-            buildSettingsAttributionsTab(inp, ui);
-            break;
-        case 12:
-            buildSettingsWeatherTab(inp, ui);
-            break;
-        case 13:
-            buildSettingsNightLightsTab(inp, ui);
-            break;
-        case 14:
-            buildSettingsPerformanceTab(inp, ui);
-            break;
-        case 15:
-            buildSettingsLaunchesTab(inp, ui);
-            break;
-        }
+        // A query: every tab's matching rows (Settings search); else the active tab.
+        if (!search_.words.empty())
+            buildSettingsSearchBody(inp, ui);
+        else
+            buildSettingsTabBody(inp, ui, settingsActiveTab);
     }
     ui.scrollbar(CLAY_ID("SettingsContent"));
+}
+
+// One tab's body: the strip's active tab, or each tab in turn for Settings search.
+void SatelliteSim::buildSettingsTabBody(const UIInput &inp, UIRenderer &ui, int tab)
+{
+    switch (tab)
+    {
+    case 0:
+        buildSettingsConstellationsTab(inp, ui);
+        break;
+    case 1:
+        buildSettingsSoundTab(inp, ui);
+        break;
+    case 2:
+        buildSettingsControlsTab(inp, ui);
+        break;
+    case 3: // Camera: folded into Controls (2026-10-03)
+        buildSettingsControlsTab(inp, ui);
+        break;
+    case 4:
+        buildSettingsDisplayTab(inp, ui);
+        break;
+    case 5:
+        buildSettingsPhotometryTab(inp, ui);
+        break;
+    case 6:
+        buildSettingsCloudsTab(inp, ui);
+        break;
+    case 7:
+        buildSettingsOceanTab(inp, ui);
+        break;
+    case 8:
+        buildSettingsTerrainTab(inp, ui);
+        break;
+    case 9:
+        buildSettingsAuroraTab(inp, ui);
+        break;
+    case 10:
+        buildSettingsBeamsTab(inp, ui);
+        break;
+    case 11:
+        buildSettingsAttributionsTab(inp, ui);
+        break;
+    case 12:
+        buildSettingsWeatherTab(inp, ui);
+        break;
+    case 13:
+        buildSettingsNightLightsTab(inp, ui);
+        break;
+    case 14:
+        buildSettingsPerformanceTab(inp, ui);
+        break;
+    case 15:
+        buildSettingsLaunchesTab(inp, ui);
+        break;
+    case 16:
+        buildSettingsSkyTab(inp, ui);
+        break;
+    }
 }
 
 // ─── buildSettingsLaunchesTab ────────────────────────────────────────────────
@@ -3769,6 +3841,147 @@ void SatelliteSim::buildSettingsLaunchesTab(const UIInput &inp, UIRenderer &ui)
     buildKesslerGraphicsSection(inp, ui);
     buildLaunchSettingsSection(inp, ui);
     buildKesslerSettingsSection(inp, ui);
+}
+
+// ─── buildSettingsSkyTab (2026-10-28, issue 20261028_222345) ──────────────────
+// What is in the sky besides the satellites: the stars (the naked-eye limit, Betelgeuse), the planets (out of the
+// Constellations tab), the Moon (out of Photometry), comets, meteors, the Moon-base glints and the refraction and
+// mirages. Most of these had settings.json keys and no UI. The Milky Way, the twinkle and the turbulence warp are
+// photometry (the Photometry tab). Slots 400-413 of the shared slider arrays.
+void SatelliteSim::buildSettingsSkyTab(const UIInput &inp, UIRenderer &ui)
+{
+    uiKV("SkyKV", 0, "", "The Milky Way, the stars' twinkle and the turbulence warp: the Photometry tab.", 4.0f, &Pal::textDim);
+
+    uiSection("SkySec", 0, "STARS");
+    uiToggleRow(inp, ui, "SkyStarLimit", 0, "Faint stars only under dark skies", starSkyLimit,
+                "Each star is drawn only if the naked eye could see it against the sky in its direction (city glow, "
+                "twilight, the Moon). Off: every catalogue star to the point limit (stars.sky_limit)");
+    {
+        CloudSlider st[] = {
+            {"Naked-eye limit boost (mag)", &starLimitBoost, -2.0f, 3.0f, 0.1f, "%.1f", 400},
+            {"Dark-sky extra stars (mag)", &starDarkExtraMag, 0.0f, 3.0f, 0.1f, "%.1f", 401},
+        };
+        buildCloudSliderRows(inp, ui, st, 2, false);
+    }
+    uiToggleRow(inp, ui, "SkySupernova", 0, "Betelgeuse supernova (2037-12-25)", supernovaEnabled,
+                "The scripted supernova: brighter than the full Moon for weeks, fading over two years (stars.supernova)");
+    uiToggleRow(inp, ui, "SkyBetelVar", 0, "Betelgeuse varies", betelgeuseVariable,
+                "Before the supernova: its 416-day and 2100-day pulsations (stars.betelgeuse_variable)");
+
+    // ── Planets ────────────────────────────────────────────────────────────
+    // Same ON/OFF toggle-row pattern as the constellation list above — no new UI pattern
+    // invented (RELEASE_v1_1_PLAN.md follow-up, session 30). A global "Show planets" toggle
+    // sits above the per-planet rows; per-planet rows still work when the global is off (so
+    // preferences survive), they're just moot until it's back on.
+    uiSection("SkySec", 1, "PLANETS");
+    uiToggleRow(inp, ui, "ShowPlanetsBtn", 0, "Show planets", showPlanets, "Each planet below keeps its own choice while this is off");
+    uiToggleRow(inp, ui, "PlanetDiscsBtn", 0, "Resolved planet discs", planetDiscs,
+                "Zoomed in, a planet becomes its real disc: phase, belts, Saturn's rings, Jupiter's moons and their shadows");
+    {
+        CloudSlider pg[] = {{"Planet disc brightness (x)", &planetDiscGain, 0.1f, 5.0f, 0.05f, "%.2f", 402}};
+        buildCloudSliderRows(inp, ui, pg, 1, false);
+    }
+    for (int pi = 0; pi < kPlanetCount; ++pi)
+    {
+        if (!searchRow(CLAY_IDI("PlanetRow", pi).id, kPlanetNames[pi]))
+            continue;
+        bool hov = hovPlanetBtn[pi];
+        Clay_Color rowBg = planetEnabled[pi] ? Pal::rowEnabled : Pal::rowDisabled;
+        CLAY(CLAY_IDI("PlanetRow", pi), {.layout = {
+                                             .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(24)},
+                                             .padding = {4, 4, 3, 3},
+                                             .childGap = 6,
+                                             .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                             .layoutDirection = CLAY_LEFT_TO_RIGHT},
+                                         .backgroundColor = rowBg,
+                                         .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            Clay_Color btnBg = planetEnabled[pi] ? Pal::btnAccent : (hov ? Pal::btnAccentHv : Pal::btnIdle);
+            CLAY(CLAY_IDI("PlanetBtn", pi), {.layout = {
+                                                 .sizing = {CLAY_SIZING_FIXED(30), CLAY_SIZING_FIXED(18)},
+                                                 .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                             .backgroundColor = btnBg,
+                                             .cornerRadius = CLAY_CORNER_RADIUS(3)})
+            {
+                bool n = Clay_Hovered();
+                sndRollover(n, hov);
+                sndClick(n, inp.lmbPressed);
+                hovPlanetBtn[pi] = n;
+                if (hov && inp.lmbPressed)
+                    planetEnabled[pi] = !planetEnabled[pi];
+                CLAY_TEXT(planetEnabled[pi] ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
+                          CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(10)}));
+            }
+            CLAY(CLAY_IDI("PlanetName", pi), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}})
+            {
+                Clay_String nameStr{false, (int32_t)strlen(kPlanetNames[pi]), kPlanetNames[pi]};
+                CLAY_TEXT(nameStr, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+            }
+        }
+    }
+
+    uiSection("SkySec", 2, "THE MOON");
+    {
+        // Moved from Photometry's EXPOSURE AND MOON (2026-10-28); slots and keys unchanged (clouds.moon_size ...).
+        CloudSlider mn[] = {
+            // The Moon is a body at its true distance; 1 = its real size (within a few degrees of the Sun it is always
+            // drawn at its true size, so eclipses are right).
+            {"Moon size (x real)", &moonSizeScale, 0.25f, 4.0f, 0.05f, "%.2f", 220},
+            // The disc's relief (2026-10-27): x the LOLA heights (0 = the smooth sphere), and the heightfield's cast
+            // shadows near the terminator (crater floors, mountain shadows).
+            {"Moon relief (x LOLA heights)", &moonRelief, 0.0f, 4.0f, 0.05f, "%.2f", 355},
+            {"Moon shadows (0/1)", &moonShadows, 0.0f, 1.0f, 1.0f, "%.0f", 356},
+        };
+        buildCloudSliderRows(inp, ui, mn, (int)(sizeof(mn) / sizeof(mn[0])));
+    }
+    uiToggleRow(inp, ui, "SkyMoonBases", 0, "Moon-base glints", moonBaseGlints,
+                "The lunar bases' solar arrays mirroring the Sun to Earth near full Moon (moon_bases.enabled)");
+    {
+        CloudSlider mb[] = {
+            {"Moon-base array errors (x)", &moonBaseJitter, 0.0f, 5.0f, 0.05f, "%.2f", 408},
+            {"Moon-base event limit (mag)", &moonBaseMagLimit, -5.0f, 8.0f, 0.25f, "%.2f", 409},
+        };
+        buildCloudSliderRows(inp, ui, mb, 2, false);
+    }
+
+    uiSection("SkySec", 3, "COMETS");
+    uiToggleRow(inp, ui, "SkyComets", 0, "Comets", cometsEnabled, "The Great Comet of 2037 and the minor comets (comets.enabled)");
+    if (uiToggleRow(inp, ui, "SkyCometsMinor", 0, "Minor comets", cometsMinor,
+                    "A few faint comets a year besides the Great Comet (comets.minor)"))
+        cometsRefreshCatalog((double)simDayJ2000 * 86400.0 + simSecInDay, true);
+    uiToggleRow(inp, ui, "SkyCometTails", 0, "Comet tails", cometTailsEnabled, "The dust and ion tails (comets.tails)");
+    {
+        CloudSlider cm[] = {
+            {"Comet tail brightness (x physical)", &cometTailGain, 0.0f, 10.0f, 0.05f, "%.2f", 403},
+            {"Comet tail display (x)", &cometTailGainDisplay, 0.0f, 10.0f, 0.05f, "%.2f", 404},
+        };
+        buildCloudSliderRows(inp, ui, cm, 2, false);
+    }
+
+    uiSection("SkySec", 4, "METEORS");
+    uiToggleRow(inp, ui, "SkyMeteors", 0, "Meteors", meteorsEnabled, "The annual showers and the sporadic meteors (meteors.enabled)");
+    {
+        CloudSlider me[] = {
+            {"Meteor rate (x)", &meteorRateGain, 0.0f, 20.0f, 0.1f, "%.1f", 405},
+            {"Fireball rate (x)", &meteorFireballGain, 0.0f, 20.0f, 0.1f, "%.1f", 406},
+            {"Meteor train duration (x)", &meteorTrainDuration, 0.0f, 2.0f, 0.05f, "%.2f", 407},
+        };
+        buildCloudSliderRows(inp, ui, me, 3, false);
+    }
+
+    uiSection("SkySec", 5, "REFRACTION AND MIRAGES");
+    uiToggleRow(inp, ui, "SkyRefraction", 0, "Refraction", refrEnabled,
+                "The air bends the Sun, the Moon and the stars near the horizon: a flattened Sun, mirages, the green rim "
+                "(refraction.enabled)");
+    {
+        CloudSlider rf[] = {
+            {"Mirage strength (x)", &refrMirage, 0.0f, 5.0f, 0.05f, "%.2f", 410},
+            {"Air turbulence (x)", &refrTurbulence, 0.0f, 20.0f, 0.1f, "%.1f", 411},
+            {"Dispersion (green rim, x)", &refrDispersion, 0.0f, 10.0f, 0.1f, "%.1f", 412},
+            {"Sun disc brightness (x)", &sunDiscGain, 0.0f, 10.0f, 0.05f, "%.2f", 413},
+        };
+        buildCloudSliderRows(inp, ui, rf, 4, false);
+    }
 }
 
 // ─── buildSettingsConstellationsTab ─────────────────────────────────────────
@@ -3826,6 +4039,7 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
     uiKV("ConstHintKV", 0, "", "Grouped by kind. Click a group's name to fold it; its ON / HLT set every entry in it.", 4.0f,
          &Pal::textDim);
     // Column header over the buttons: Show / Highlight / actions, the name, the satellite count.
+    if (!searchActive())
     CLAY(CLAY_ID("ConstHeader"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                              .padding = {4, 4, 4, 0},
                                              .childGap = 6,
@@ -3890,7 +4104,11 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
         }
         const int n = (int)groups[g].size();
         const char *title = g < std::size(kTitles) ? kTitles[g] : keep(cat);
+        // Settings search: the group's title is a heading over its matching entries (all of them if it matches).
+        if (searchActive())
+            searchSection(title);
         // ── Group header ────────────────────────────────────────────
+        else
         CLAY(CLAY_IDI("ConstGrp", (int)g), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(26)},
                                                       .padding = {4, 4, 4, 4},
                                                       .childGap = 6,
@@ -3932,7 +4150,7 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
             }
             text(CLAY_IDI("ConstGrpCnt", (int)g), fmtCount(total), 64, Pal::textCamera, 11, true);
         }
-        if (!open)
+        if (!open && !searchActive())
             continue;
         if (cat == "Benchmarks")
         {
@@ -3953,6 +4171,8 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
             const bool isList = c.distribution == OrbitDistribution::List;
             const bool single = c.orbitCount == 1 && ci != kDebrisConst;
             Clay_Color rowBg = c.highlight ? Pal::rowHighlight : (c.enabled ? Pal::rowEnabled : Pal::rowDisabled);
+            if (!searchRow(CLAY_IDI("ConstRow", ci).id, c.name.c_str()))
+                continue;
             CLAY(CLAY_IDI("ConstRow", ci), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(24)},
                                                        .padding = {14, 4, 3, 3},
                                                        .childGap = 6,
@@ -4010,7 +4230,7 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
                 text(CLAY_IDI("ConstName", ci), c.name.c_str(), 0.0f, Pal::volLabel, 12);
                 text(CLAY_IDI("ConstCnt", ci), fmtCount(countOf(ci)), 64, Pal::textCamera, 11, true);
             }
-            if (isList && constListOpen_ == ci)
+            if (isList && constListOpen_ == ci && !searchActive())
             {
                 // ── The members: search, pages of 25, sorted west to east for a GEO list ──
                 CLAY(CLAY_IDI("ConstListTools", ci), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
@@ -4110,51 +4330,7 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
     if (uiButton(inp, ui, "ConstLdOpen", 0, "Launches", "Launches, rockets and exhaust, the Sun's Fury"))
         settingsActiveTab = 15;
 
-    // ── Planets ────────────────────────────────────────────────────────────
-    // Same ON/OFF toggle-row pattern as the constellation list above — no new UI pattern
-    // invented (RELEASE_v1_1_PLAN.md follow-up, session 30). A global "Show planets" toggle
-    // sits above the per-planet rows; per-planet rows still work when the global is off (so
-    // preferences survive), they're just moot until it's back on.
-    uiSection("ConstSec", 1, "PLANETS");
-    uiToggleRow(inp, ui, "ShowPlanetsBtn", 0, "Show planets", showPlanets, "Each planet below keeps its own choice while this is off");
-    uiToggleRow(inp, ui, "PlanetDiscsBtn", 0, "Resolved planet discs", planetDiscs,
-                "Zoomed in, a planet becomes its real disc: phase, belts, Saturn's rings, Jupiter's moons and their shadows");
-    for (int pi = 0; pi < kPlanetCount; ++pi)
-    {
-        bool hov = hovPlanetBtn[pi];
-        Clay_Color rowBg = planetEnabled[pi] ? Pal::rowEnabled : Pal::rowDisabled;
-        CLAY(CLAY_IDI("PlanetRow", pi), {.layout = {
-                                             .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(24)},
-                                             .padding = {4, 4, 3, 3},
-                                             .childGap = 6,
-                                             .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                             .layoutDirection = CLAY_LEFT_TO_RIGHT},
-                                         .backgroundColor = rowBg,
-                                         .cornerRadius = CLAY_CORNER_RADIUS(3)})
-        {
-            Clay_Color btnBg = planetEnabled[pi] ? Pal::btnAccent : (hov ? Pal::btnAccentHv : Pal::btnIdle);
-            CLAY(CLAY_IDI("PlanetBtn", pi), {.layout = {
-                                                 .sizing = {CLAY_SIZING_FIXED(30), CLAY_SIZING_FIXED(18)},
-                                                 .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                             .backgroundColor = btnBg,
-                                             .cornerRadius = CLAY_CORNER_RADIUS(3)})
-            {
-                bool n = Clay_Hovered();
-                sndRollover(n, hov);
-                sndClick(n, inp.lmbPressed);
-                hovPlanetBtn[pi] = n;
-                if (hov && inp.lmbPressed)
-                    planetEnabled[pi] = !planetEnabled[pi];
-                CLAY_TEXT(planetEnabled[pi] ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
-                          CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(10)}));
-            }
-            CLAY(CLAY_IDI("PlanetName", pi), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}})
-            {
-                Clay_String nameStr{false, (int32_t)strlen(kPlanetNames[pi]), kPlanetNames[pi]};
-                CLAY_TEXT(nameStr, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
-            }
-        }
-    }
+    // The planets: the Sky tab (2026-10-28).
 }
 
 // ─── buildSettingsSoundTab ──────────────────────────────────────────────────
@@ -4178,6 +4354,8 @@ void SatelliteSim::buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui)
     uiSection("SoundSec", 0, "VOLUME");
     for (auto &vr : volRows)
     {
+        if (!searchRow(CLAY_IDI("VolRow", vr.bufIdx).id, uiKitStr("%s volume", vr.label)))
+            continue;
         snprintf(volBufs[vr.bufIdx], sizeof(volBufs[0]), "%3.0f%%", vr.vol * 100.0f);
         Clay_String volStr{false, (int32_t)strlen(volBufs[vr.bufIdx]), volBufs[vr.bufIdx]};
         CLAY(CLAY_IDI("VolRow", vr.bufIdx), {.layout = {
@@ -4286,6 +4464,7 @@ void SatelliteSim::buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui)
                      name.c_str(), pos, len);
     }
     uiSection("SoundSec", 1, "MUSIC");
+    if (searchRow(CLAY_ID("MusicRow").id, "Music player (track, pause, next)"))
     CLAY(CLAY_ID("MusicRow"), {.layout = {
                                    .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(30)},
                                    .padding = {4, 4, 4, 4},
@@ -4335,6 +4514,7 @@ void SatelliteSim::buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui)
     uiSection("SoundSec", 2, "AMBIENCE");
     static char nowPlaying[256];
     snprintf(nowPlaying, sizeof(nowPlaying), "%s", ambienceNowPlaying().c_str());
+    if (searchRow(CLAY_ID("AmbNowPlaying").id, "Ambience playing now"))
     CLAY(CLAY_ID("AmbNowPlaying"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                                .padding = {2, 2, 1, 1},
                                                .childGap = 8,
@@ -4408,6 +4588,7 @@ void SatelliteSim::buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui)
             CLAY_TEXT((Clay_String{false, (int32_t)strlen(s), s}), CLAY_TEXT_CONFIG({.textColor = c, .fontSize = size, .wrapMode = CLAY_TEXT_WRAP_NONE}));
         }
     };
+    if (!searchActive())
     CLAY(CLAY_ID("KbHeader"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                           .padding = {4, 4, 4, 0},
                                           .childGap = 6,
@@ -4422,6 +4603,8 @@ void SatelliteSim::buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui)
     for (int ki = 0; ki < (int)keybindings.size() && ki < KB_COUNT; ++ki)
     {
         KeyBinding &kb = keybindings[ki];
+        if (!searchRow(CLAY_IDI("KbRow", ki).id, kb.action))
+            continue;
         snprintf(kbKeyBuf[ki], sizeof(kbKeyBuf[ki]), "%s", keyDisplayName(kb.key));
         snprintf(kbPadBuf[ki], sizeof(kbPadBuf[ki]), "%s", kb.gpButton >= 0 ? gamepadButtonDisplayName(kb.gpButton) : "-");
         const Clay_Color rowBg = (kb.listening || kb.listeningPad) ? Pal::listenRow : (ki % 2 ? Pal::rowStripe : Clay_Color{0, 0, 0, 0});
@@ -4508,6 +4691,25 @@ void SatelliteSim::buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui)
     }
 }
 
+// A row of buttons (Replay intro / Replay tutorial ...): searching, the buttons are rows of their own (each matched by
+// its label), so the row container is left out and a heading never lands inside it.
+template <class F>
+static void settingsButtonRow(bool flat, Clay_ElementId id, F &&body)
+{
+    if (flat)
+    {
+        body();
+        return;
+    }
+    CLAY(id, {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                         .padding = {2, 2, 4, 2},
+                         .childGap = 6,
+                         .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    {
+        body();
+    }
+}
+
 // ─── buildSettingsDisplayTab ────────────────────────────────────────────────
 void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
 {
@@ -4519,6 +4721,9 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     {
         bool changed = false;
         const Clay_String ks{false, (int32_t)strlen(key), key};
+        if (!searchRow(CLAY_SIDI(ks, 0x60000u).id, label))
+            return false;
+        SearchRowScope inRow(*this);
         CLAY(CLAY_SIDI(ks, 0x60000u), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT((float)fs(20) + 6.0f)},
                                                                                             .padding = {2, 2, 2, 2},
                                                                                             .childGap = 4,
@@ -4552,6 +4757,40 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
         }
         return changed;
     };
+
+    // ── Show advanced settings: on its own at the top (2026-10-28, issue 20261028_222345: the one switch that opens every
+    // tab that changes how the sim looks). Dev mode stays under SETTINGS below.
+    {
+        bool adv = showAdvancedSettings;
+        bool changed = false;
+        if (searchActive())
+            changed = uiToggleRow(inp, ui, "AdvancedToggle", 0, "Show advanced settings", adv);
+        else
+        {
+            CLAY(CLAY_ID("DispAdvCard"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                     .padding = {10, 10, 6, 8},
+                                                     .childGap = 2,
+                                                     .layoutDirection = CLAY_TOP_TO_BOTTOM},
+                                          .backgroundColor = Pal::sectionHdr,
+                                          .cornerRadius = CLAY_CORNER_RADIUS(4),
+                                          .border = {.color = adv ? Pal::btnAccent : Pal::fieldBorder, .width = CLAY_BORDER_ALL(1)}})
+            {
+                changed = uiToggleRow(inp, ui, "AdvancedToggle", 0, "Show advanced settings", adv,
+                                      "The rendering tabs: Clouds, Weather, Atmosphere, Terrain, Night lights, Ocean, Beams, "
+                                      "Performance");
+                CLAY_TEXT(CLAY_STRING("Every control of how the sim looks: the clouds, weather, atmosphere, terrain, night "
+                                      "lights, ocean and beams tabs. The search box above the tabs finds any setting."),
+                          CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_WORDS}));
+            }
+        }
+        if (changed)
+        {
+            showAdvancedSettings = adv;
+            // A hidden tab can't be clicked back to: bounce off it now.
+            if (!showAdvancedSettings && settingsTabIsAdvanced(settingsActiveTab))
+                settingsActiveTab = 4; // Display
+        }
+    }
 
     // ── GRAPHICS ───────────────────────────────────────────────────────────────────────────────────────────
     uiSection("DispSec", 0, "GRAPHICS");
@@ -4596,6 +4835,15 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
         graphicsPreset = GraphicsPreset::Custom; // in the preset table since 2026-10-20 (applyGraphicsPreset)
     uiToggleRow(inp, ui, "SkyTaa", 0, "Temporal anti-aliasing", skyTaaEnabled,
                 "Terrain, sky and sea; below 100% render scale it also upscales (rebuilds full resolution over frames)");
+    if (skyTaaEnabled && showAdvancedSettings)
+    {
+        // 2026-10-28: had no UI (display.sky_taa_weight / _moving): the new frame's share, still and in motion.
+        CloudSlider taa[] = {
+            {"TAA new frame (still)", &skyTaaWeightStill, 0.02f, 1.0f, 0.01f, "%.2f", 426},
+            {"TAA new frame (moving)", &skyTaaWeightMoving, 0.02f, 1.0f, 0.01f, "%.2f", 427},
+        };
+        buildCloudSliderRows(inp, ui, taa, 2, false);
+    }
     {
         // MAILBOX was the old unconditional default, which runs the GPU flat out on a laptop; V-Sync (FIFO) is.
         static const char *kFpsCapLabels[5] = {"Off", "30", "60", "120", "V-Sync"};
@@ -4711,10 +4959,7 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     // The startup graphics chooser (SatelliteSimBootChooser.cpp): asked on the loading screen, before
     // anything heavy loads. A crashed last session shows it regardless.
     uiToggleRow(inp, ui, "AskGfxMode", 0, "Ask for graphics mode on startup", askGraphicsModeOnStartup);
-    CLAY(CLAY_ID("DispStartupBtns"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                                 .padding = {2, 2, 4, 2},
-                                                 .childGap = 6,
-                                                 .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    settingsButtonRow(searchActive(), CLAY_ID("DispStartupBtns"), [&]()
     {
         if (uiButton(inp, ui, "ReplayIntroBtn", 0, "Replay intro", nullptr, false, !showIntro))
         {
@@ -4737,20 +4982,12 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
             settingsChrome.open = false; // the tutorial starts with the view, not this window
             startTutorial();
         }
-    }
+    });
 
     // ── SETTINGS ───────────────────────────────────────────────────────────────────────────────────────────
     uiSection("DispSec", 4, "SETTINGS");
     {
-        bool adv = showAdvancedSettings;
-        if (uiToggleRow(inp, ui, "AdvancedToggle", 0, "Show advanced settings", adv,
-                        "The rendering tabs (Clouds, Weather, Atmosphere, Terrain, Night lights, Ocean, Beams, Performance)"))
-        {
-            showAdvancedSettings = adv;
-            // A hidden tab can't be clicked back to: bounce off it now.
-            if (!showAdvancedSettings && settingsTabIsAdvanced(settingsActiveTab))
-                settingsActiveTab = 4; // Display
-        }
+        // "Show advanced settings" is the card at the top of this tab.
         if (showAdvancedSettings)
             uiToggleRow(inp, ui, "DevUnboundedToggle", 0, "Dev mode: unbounded values", devUnboundedValues,
                         "A number typed into a settings slider's value is taken as typed, outside the slider's range. "
@@ -4760,9 +4997,7 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     // a third hand-kept copy of the settings field list).
     if (resetDefaultsMsgTimer > 0.0f)
         resetDefaultsMsgTimer = std::max(0.0f, resetDefaultsMsgTimer - inp.dt);
-    CLAY(CLAY_ID("DispResetRow"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                              .padding = {2, 2, 4, 2},
-                                              .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    settingsButtonRow(searchActive(), CLAY_ID("DispResetRow"), [&]()
     {
         if (uiButton(inp, ui, "ResetDefaultsBtn", 0, resetDefaultsMsgTimer > 0.0f ? "Restart to apply" : "Reset to defaults",
                      "Delete saved settings and restore the defaults on the next launch", resetDefaultsMsgTimer > 0.0f))
@@ -4771,7 +5006,7 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
             std::filesystem::remove((std::filesystem::path(userDataDir_) / "settings.json"), ec);
             resetDefaultsMsgTimer = 3.0f;
         }
-    }
+    });
 }
 
 // ─── buildSettingsPerformanceTab (2026-10-03, out of the Display tab) ──────
@@ -4812,10 +5047,7 @@ void SatelliteSim::buildSettingsPerformanceTab(const UIInput &inp, UIRenderer &u
     uiSection("PerfSec", 2, "RECORD");
     if (snapshotMsgTimer > 0.0f)
         snapshotMsgTimer = std::max(0.0f, snapshotMsgTimer - inp.dt);
-    CLAY(CLAY_ID("PerfRecordBtns"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                                .padding = {2, 2, 4, 2},
-                                                .childGap = 6,
-                                                .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+    settingsButtonRow(searchActive(), CLAY_ID("PerfRecordBtns"), [&]()
     {
         if (uiButton(inp, ui, "SaveSnapshotBtn", 0, snapshotMsgTimer > 0.0f ? "Saved" : "Save snapshot",
                      "Append the current view, settings and timings to perf_profiles/profile_log.jsonl", snapshotMsgTimer > 0.0f))
@@ -4830,7 +5062,7 @@ void SatelliteSim::buildSettingsPerformanceTab(const UIInput &inp, UIRenderer &u
                      sweepActive || sweepDoneMsgTimer > 0.0f) &&
             !sweepActive)
             startKnockoutSweep();
-    }
+    });
 
     // ── Knockouts: each disables one shader block or dispatch (rendering is wrong while on) to read its cost from
     // the breakdowns above. kDebugToggles drives these rows and the sweep. 1024 (the scene depth pass) reverts the
@@ -4988,6 +5220,9 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
     auto photoRow = [&](PhotoParam &pp)
     {
         int pi = pp.idx;
+        if (!searchRow(CLAY_IDI("PhotoRow", pi).id, pp.label))
+            return;
+        SearchRowScope inRow(*this);
         snprintf(photoBufs[pi], sizeof(photoBufs[pi]), pp.fmt, *pp.val);
         Clay_String valStr{false, (int32_t)strlen(photoBufs[pi]), photoBufs[pi]};
         float t = glm::clamp((*pp.val - pp.vmin) / (pp.vmax - pp.vmin), 0.0f, 1.0f);
@@ -5079,15 +5314,9 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
             {"Tonemap (0 exponential / 1 AgX)", &cv2Tonemap, 0.0f, 1.0f, 1.0f, "%.0f", 349},
             {"AgX saturation", &cv2ToneSat, 0.0f, 2.0f, 0.05f, "%.2f", 350},
             {"AgX contrast", &cv2ToneContrast, 0.5f, 2.0f, 0.05f, "%.2f", 351},
-            // The Moon is a body at its true distance; 1 = its real size (within a few degrees of the Sun
-            // it is always drawn at its true size, so eclipses are right).
-            {"Moon size (x real)", &moonSizeScale, 0.25f, 4.0f, 0.05f, "%.2f", 220},
-            // The disc's relief (2026-10-27): x the LOLA heights (0 = the smooth sphere), and the heightfield's cast
-            // shadows near the terminator (crater floors, mountain shadows).
-            {"Moon relief (x LOLA heights)", &moonRelief, 0.0f, 4.0f, 0.05f, "%.2f", 355},
-            {"Moon shadows (0/1)", &moonShadows, 0.0f, 1.0f, 1.0f, "%.0f", 356},
+            // The Moon's size, relief and shadows: the Sky tab (2026-10-28).
         };
-        uiSection("PhotoSec", 11, "EXPOSURE AND MOON");
+        uiSection("PhotoSec", 11, "EXPOSURE");
         buildCloudSliderRows(inp, ui, secExposure, (int)(sizeof(secExposure) / sizeof(secExposure[0])));
     }
     // 2026-10-03: grouped by what they act on (each row keeps its idx: PhotoVal:<idx> etc.).
@@ -5115,6 +5344,22 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
     for (int g = 0; g < (int)(sizeof(kGroups) / sizeof(kGroups[0])); ++g)
     {
         uiSection("PhotoSec", g, kGroups[g].title);
+        // 2026-10-28 (the settings round-up): the switches beside their sliders (the HUD's star trails button; the zoomed
+        // Milky Way had no UI).
+        if (strcmp(kGroups[g].title, "STAR TRAILS") == 0)
+        {
+            bool tr = trailEnabled;
+            if (uiToggleRow(inp, ui, "PhotoTrailsOn", 0, "Star trails", tr, "Long-exposure trails (the HUD's trails button)"))
+            {
+                trailEnabled = tr;
+                if (trailEnabled)
+                    trailClearPending = true; // a fresh exposure, as the HUD button
+            }
+        }
+        if (strncmp(kGroups[g].title, "MILKY WAY STAR CLOUDS", 21) == 0)
+            uiToggleRow(inp, ui, "PhotoMwZoom", 0, "Milky Way zoomed detail", mwZoomOn,
+                        "Zoomed in: the denoised glow, dust structure and star clouds. Off: the photograph at every field of "
+                        "view (photometry.milky_way_zoom)");
         for (int k = 0; k < kGroups[g].n; ++k)
             for (auto &pp : photoParams)
                 if (pp.idx == kGroups[g].ids[k])
@@ -5170,6 +5415,9 @@ void SatelliteSim::buildBulkExportRows(const UIInput &inp, UIRenderer &ui)
     auto row = [&](int id, const char *name, const char *value, bool &hov, const char *tip)
     {
         bool clicked = false;
+        if (!searchRow(CLAY_IDI("BulkRow", id).id, uiKitStr("Bulk export: %s", name)))
+            return false;
+        SearchRowScope inRow(*this);
         CLAY(CLAY_IDI("BulkRow", id), {.layout = {
                                            .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(28)},
                                            .padding = {4, 4, 4, 4},
@@ -5211,6 +5459,7 @@ void SatelliteSim::buildBulkExportRows(const UIInput &inp, UIRenderer &ui)
     if (row(3, "Export", running ? bulkProgressBuf : "Export CSV", hovBulkGo,
             running ? "Stop the export" : "Sample every visible pass for the current observer"))
         startBulkExport();
+    if (!searchActive())
     CLAY(CLAY_ID("BulkNotes"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                            .padding = {4, 4, 2, 2},
                                            .childGap = 2,
@@ -5251,8 +5500,143 @@ bool SatelliteSim::uiHovRoll(uint32_t id, bool nowHov)
     return nowHov;
 }
 
+// ─── Settings search (2026-10-28, issue 20261028_222345) ─────────────────────────────────────────────────
+// See SettingsSearch in SatelliteSim.h. A row matches when every word of the query is in its label (or in its
+// section's title, which lists the whole section). Case-insensitive substrings; no ranking: rows keep their tab
+// and section order, under the tab's and the section's headings.
+bool SatelliteSim::searchMatch(const char *text) const
+{
+    if (!text || !*text || search_.words.empty())
+        return false;
+    std::string t = text;
+    for (char &c : t)
+        c = (char)std::tolower((unsigned char)c);
+    for (const std::string &w : search_.words)
+        if (t.find(w) == std::string::npos)
+            return false;
+    return true;
+}
+
+void SatelliteSim::searchSection(const char *title)
+{
+    if (!search_.on)
+        return;
+    search_.sec = title ? title : "";
+    search_.secShown = false;
+    search_.secMatch = searchMatch(title);
+}
+
+bool SatelliteSim::searchRow(uint32_t id, const char *label, const char *tip)
+{
+    SettingsSearch &S = search_;
+    if (!S.on || S.rowDepth > 0)
+        return true;
+    if (id != 0u && S.seen.count(id))
+        return false; // drawn already (a slider slot listed in two tabs)
+    (void)tip;        // labels only: tips are sentences, and matched every row of a tab
+    if (!S.secMatch && !searchMatch(label))
+        return false;
+    if (id != 0u)
+        S.seen.insert(id);
+    if (S.countOnly)
+    {
+        ++S.hiddenMatches;
+        return false;
+    }
+    ++S.matches;
+    // The headings this row sits under, drawn once: the tab (a link to it), then its section.
+    if (!S.tabShown)
+    {
+        S.tabShown = true;
+        const char *tn = settingsTabName(S.tab);
+        const Clay_ElementId hid = CLAY_IDI("SrchTab", S.tab);
+        CLAY(hid, {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                              .padding = {6, 6, 4, 4},
+                              .childGap = 8,
+                              .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                              .layoutDirection = CLAY_LEFT_TO_RIGHT},
+                   .backgroundColor = uiHov_[hid.id] ? Pal::btnHover : Pal::sectionHdr,
+                   .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        {
+            const bool h = Clay_Hovered();
+            uiHovRoll(hid.id, h);
+            CLAY_TEXT((Clay_String{false, (int32_t)strlen(tn), tn}),
+                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+            CLAY(CLAY_IDI("SrchTabGap", S.tab), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
+            CLAY_TEXT(CLAY_STRING("Open tab"), CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(10), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+            if (h && searchClickPending_ < 0 && uiInputLmbPressed_)
+                searchClickPending_ = S.tab;
+        }
+    }
+    if (!S.secShown && !S.sec.empty())
+    {
+        S.secShown = true;
+        const uint32_t n = (uint32_t)(S.hdrN++);
+        CLAY(CLAY_IDI("SrchSec", n), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}, .padding = {2, 0, 6, 1}}})
+        {
+            S.text.push_back(S.sec); // Clay reads the text when the frame is recorded: a copy that outlives S.sec
+            const std::string &t = S.text.back();
+            CLAY_TEXT((Clay_String{false, (int32_t)t.size(), t.c_str()}),
+                      CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+        }
+    }
+    return true;
+}
+
+// The Settings body with a query: the tabs whose name matches, then every tab's matching rows in the strip's order.
+// The advanced tabs are searched while they are hidden too, and counted ("N more in the advanced tabs").
+void SatelliteSim::buildSettingsSearchBody(const UIInput &inp, UIRenderer &ui)
+{
+    SettingsSearch &S = search_;
+    S.matches = S.hiddenMatches = S.hdrN = 0;
+    S.seen.clear();
+    S.text.clear();
+    uiInputLmbPressed_ = inp.lmbPressed;
+    // Tabs by name.
+    int tabHits = 0;
+    for (int ti : kSettingsStrip)
+    {
+        if (ti < 0 || (settingsTabIsAdvanced(ti) && !showAdvancedSettings) || !searchMatch(settingsTabName(ti)))
+            continue;
+        if (tabHits++ == 0)
+            uiKV("SrchTabsKV", 0, "", "Tabs", 4.0f, &Pal::textHint);
+        if (uiButton(inp, ui, "SrchTabBtn", ti, uiKitStr("Open %s", settingsTabName(ti)), nullptr))
+            searchClickPending_ = ti;
+    }
+    S.on = true;
+    for (int ti : kSettingsStrip)
+    {
+        if (ti < 0 || ti == 11) // headings; Attributions has no settings
+            continue;
+        S.tab = ti;
+        S.tabShown = false;
+        S.sec.clear();
+        S.secShown = S.secMatch = false;
+        S.countOnly = settingsTabIsAdvanced(ti) && !showAdvancedSettings;
+        buildSettingsTabBody(inp, ui, ti);
+    }
+    S.on = false;
+    S.countOnly = false;
+    S.rowDepth = 0;
+    if (S.hiddenMatches > 0)
+    {
+        uiKV("SrchHiddenKV", 0, "",
+             uiKitStr("%d more in the advanced tabs (the rendering tabs)", S.hiddenMatches),
+             4.0f, &Pal::textDim);
+        if (uiButton(inp, ui, "SrchShowAdv", 0, "Show advanced settings", "Show the rendering tabs (Display > Show advanced settings)"))
+            showAdvancedSettings = true;
+    }
+    if (S.matches == 0 && S.hiddenMatches == 0 && tabHits == 0)
+        uiKV("SrchNoneKV", 0, "", "No setting matches the search", 4.0f, &Pal::textDim);
+}
+
 void SatelliteSim::uiSection(const char *key, int idx, const char *title)
 {
+    if (search_.on)
+    {
+        searchSection(title); // a heading, drawn above its first matching row
+        return;
+    }
     CLAY(CLAY_SIDI(kitStr(key), (uint32_t)idx * 2u), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                                                  .padding = {0, 0, 10, 2}}})
     {
@@ -5264,6 +5648,9 @@ void SatelliteSim::uiSection(const char *key, int idx, const char *title)
 
 void SatelliteSim::uiKV(const char *key, int idx, const char *label, const char *value, float labelW, const Clay_Color *valueColor)
 {
+    // Searching: a readout with a label is a row; a note (no label) is left out.
+    if (search_.on && search_.rowDepth == 0 && (!label || !*label || !searchRow(CLAY_SIDI(kitStr(key), (uint32_t)idx).id, label)))
+        return;
     const float lw = labelW > 0.0f ? labelW : (float)fs(11) * 8.0f;
     CLAY(CLAY_SIDI(kitStr(key), (uint32_t)idx), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                                             .padding = {2, 2, 1, 1},
@@ -5287,6 +5674,8 @@ void SatelliteSim::uiKV(const char *key, int idx, const char *label, const char 
 
 void SatelliteSim::uiStatTile(const char *key, int idx, const char *label, const char *value, Clay_Color valueColor)
 {
+    if (!searchRow(CLAY_SIDI(kitStr(key), (uint32_t)idx).id, label))
+        return;
     CLAY(CLAY_SIDI(kitStr(key), (uint32_t)idx), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                                             .padding = {8, 8, 5, 6},
                                                             .childGap = 1,
@@ -5304,6 +5693,8 @@ bool SatelliteSim::uiButton(const UIInput &inp, UIRenderer &ui, const char *key,
                             bool on, bool enabled, bool grow)
 {
     const Clay_ElementId id = CLAY_SIDI(kitStr(key), (uint32_t)idx);
+    if (!searchRow(id.id, label)) // a button on its own is a row (Settings search); inside a row it always draws
+        return false;
     const bool hovPrev = enabled && uiHov_[id.id];
     const Clay_Color bg = !enabled ? kBtnOff : on ? (hovPrev ? Pal::btnAccentHv : Pal::btnAccent) : (hovPrev ? Pal::btnHover : Pal::btnIdle);
     bool clicked = false;
@@ -5332,6 +5723,8 @@ bool SatelliteSim::uiDangerButton(const UIInput &inp, UIRenderer &ui, const char
                                   bool armed, bool enabled, bool grow)
 {
     const Clay_ElementId id = CLAY_SIDI(kitStr(key), (uint32_t)idx);
+    if (!searchRow(id.id, label))
+        return false;
     const bool hovPrev = enabled && uiHov_[id.id];
     const Clay_Color bg = !enabled ? kBtnOff : armed ? Pal::btnDangerArmed : (hovPrev ? Pal::btnDangerHv : Pal::btnDanger);
     bool clicked = false;
@@ -5361,6 +5754,9 @@ bool SatelliteSim::uiDangerButton(const UIInput &inp, UIRenderer &ui, const char
 bool SatelliteSim::uiToggleRow(const UIInput &inp, UIRenderer &ui, const char *key, int idx, const char *label, bool &v,
                                const char *tip, const char *onText, const char *offText)
 {
+    if (!searchRow(CLAY_SIDI(kitStr(key), (uint32_t)idx + 0x30000u).id, label, tip))
+        return false;
+    SearchRowScope inRow(*this);
     bool changed = false;
     CLAY(CLAY_SIDI(kitStr(key), (uint32_t)idx + 0x30000u), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT((float)fs(20) + 6.0f)},
                                                                         .padding = {2, 2, 2, 2},
@@ -5401,6 +5797,9 @@ bool SatelliteSim::uiToggleRow(const UIInput &inp, UIRenderer &ui, const char *k
 int SatelliteSim::uiChoiceRow(const UIInput &inp, UIRenderer &ui, const char *key, int idx, const char *label,
                               const char *const *options, int count, int current, const char *tip)
 {
+    if (!searchRow(CLAY_SIDI(kitStr(key), (uint32_t)idx + 0x30000u).id, label, tip))
+        return -1;
+    SearchRowScope inRow(*this);
     int picked = -1;
     CLAY(CLAY_SIDI(kitStr(key), (uint32_t)idx + 0x30000u), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT((float)fs(20) + 6.0f)},
                                                                         .padding = {2, 2, 2, 2},
@@ -6203,6 +6602,9 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
         int ci = cs.idx;
         if (ci < 0 || ci >= kCloudSliderSlots)
             continue; // an id past the shared arrays would write into their neighbours
+        if (!searchRow(CLAY_IDI("CloudRow", ci).id, cs.label))
+            continue; // Settings search
+        SearchRowScope inRow(*this);
         snprintf(cloudBufs[ci], sizeof(cloudBufs[ci]), cs.fmt, *cs.val);
         Clay_String valStr{false, (int32_t)strlen(cloudBufs[ci]), cloudBufs[ci]};
         float t = glm::clamp((*cs.val - cs.vmin) / (cs.vmax - cs.vmin), 0.0f, 1.0f);
@@ -6315,6 +6717,13 @@ void SatelliteSim::buildCloudSliderSections(const UIInput &inp, UIRenderer &ui,
     {
         const int si = base + ci;
         CloudSliderSection &sec = sections[ci];
+        if (search_.on)
+        {
+            // Searching: no fold; the title is a heading above the section's first match (all of it if it matches).
+            searchSection(sec.title);
+            buildCloudSliderRows(inp, ui, sec.sliders, sec.count);
+            continue;
+        }
         bool open = cloudSectionOpen[si];
         snprintf(sectCountBufs[si], sizeof(sectCountBufs[si]), "%d", sec.count);
         Clay_String cntStr{false, (int32_t)strlen(sectCountBufs[si]), sectCountBufs[si]};
@@ -6576,6 +6985,20 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {"Storm clear moat", &stormMoat, 0.0f, 3.0f, 0.05f, "%.2f", 324},
         {"Storm complexes (x)", &stormComplexes, 0.0f, 10.0f, 0.05f, "%.2f", 325},
         {"Tropical cyclones (x)", &stormCyclones, 0.0f, 10.0f, 0.05f, "%.2f", 326},
+        // 2026-10-28 (the settings round-up): until then only in the Weather window's Controls tab.
+        {"Hurricane arm cirrus", &stormArmCirrus, 0.0f, 3.0f, 0.05f, "%.2f", 414},
+        {"Storm surge (x)", &stormSurge, 0.0f, 2.0f, 0.05f, "%.2f", 415},
+    };
+    // Wildfires and haboobs (the Weather window's Controls tab had them; settings keys clouds_v2.wildfire* / haboobs).
+    CloudSlider secFire[] = {
+        {"Wildfires (x)", &wildfireRate, 0.0f, 10.0f, 0.05f, "%.2f", 416},
+        {"Wildfire smoke", &wildfireSmoke, 0.0f, 5.0f, 0.05f, "%.2f", 417},
+        {"Smoke brightness", &wildfireSmokeBright, 0.0f, 5.0f, 0.05f, "%.2f", 418},
+        {"Smoke tint (-1 blue .. +1 brown)", &wildfireSmokeTint, -1.0f, 1.0f, 0.05f, "%.2f", 419},
+        {"Smoke spread (x)", &wildfireSmokeSpread, 0.25f, 4.0f, 0.05f, "%.2f", 420},
+        {"Smoke spectral (x)", &wildfireSmokeSpectral, 0.0f, 2.0f, 0.05f, "%.2f", 421},
+        {"Wildfire light", &wildfireLight, 0.0f, 5.0f, 0.05f, "%.2f", 422},
+        {"Haboobs (x)", &haboobGain, 0.0f, 5.0f, 0.05f, "%.2f", 423},
     };
     CloudSlider secStorms[] = {
         {"Cb fill (share of cells)", &cv2CbFill, 0.05f, 1.0f, 0.05f, "%.2f", 189},
@@ -6682,6 +7105,7 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
     CloudSliderSection sections[] = {
         CLOUD_SEC("Storm objects", secStormObjects),
         CLOUD_SEC("Storms (cumulonimbus)", secStorms),
+        CLOUD_SEC("Wildfires & haboobs", secFire),
         CLOUD_SEC("Lightning", secLightning),
         CLOUD_SEC("Rain & snow", secRain),
         CLOUD_SEC("Weather evolution", secEvo),
@@ -6690,6 +7114,21 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         CLOUD_SEC("Rebuild experiments", secRebuild),
     };
 #undef CLOUD_SEC
+    // The switches (2026-10-28: the Weather window's Controls tab had the first two; the scars had no UI).
+    {
+        bool v = stormObjects;
+        if (uiToggleRow(inp, ui, "WxSetOn", 0, "Storm objects", v,
+                        "Off: no storm towers, anvils, tornadoes or cyclones; only the cloud map (clouds_v2.storm_objects)"))
+        {
+            stormObjects = v;
+            graphicsPreset = GraphicsPreset::Custom;
+            wxRowsWall = -1e300;
+        }
+    }
+    uiToggleRow(inp, ui, "WxSetOn", 1, "Haboobs as cloud", haboobField,
+                "On: the dust walls are drawn by the volumetric clouds; Off: plume Gaussians everywhere (clouds_v2.haboob_field)");
+    uiToggleRow(inp, ui, "WxSetOn", 2, "Wildfire burn scars", wildfireScars,
+                "The burnt ground under a fire: charcoal, ash and unburnt islands (clouds_v2.wildfire_scars)");
     buildCloudSliderSections(inp, ui, sections, (int)(sizeof(sections) / sizeof(sections[0])), 12);
 }
 
@@ -6739,6 +7178,8 @@ void SatelliteSim::buildSettingsOceanTab(const UIInput &inp, UIRenderer &ui)
         {"Sea glitter (Sun)", &oceanSunGlitter, 0.0f, 20.0f, 0.1f, "%.1f", 354},
         {"Ocean flare refl", &oceanGlintGain, 0.0f, 4.0f, 0.05f, "%.2f", 110},
         {"Flare refl floor", &oceanGlintMinFlux, 0.0f, 64.0f, 0.5f, "%.1f", 111},
+        // 2026-10-22: the wave octaves filtered at the pixel footprint while the eye moves (1 = on; 0 = shimmer kept).
+        {"Wave motion filter", &oceanMotionFilter, 0.0f, 1.0f, 0.05f, "%.2f", 424},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 }
@@ -6786,6 +7227,9 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
     };
 #undef CLOUD_SEC
     buildCloudSliderSections(inp, ui, sections, (int)(sizeof(sections) / sizeof(sections[0])), 30);
+    // 2026-10-28: had no UI (terrain.solar_arrays).
+    uiToggleRow(inp, ui, "TerrSolarParks", 0, "Solar parks", solarArraysEnabled,
+                "The PV parks at the Reflect Orbital targets: rows of trackers, their glass glinting in the Sun and the beams");
 }
 
 // ─── buildSettingsNightLightsTab ─────────────────────────────────────────────
@@ -6873,142 +7317,34 @@ void SatelliteSim::buildSettingsBeamsTab(const UIInput &inp, UIRenderer &ui)
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 
-    // ── Reflect-Orbital beam diagnostic (C12) ────────────────────────
-    // lastActiveBeamCount/lastNearestBeamDistM are read back from reflectBeamsBuf each frame
-    // (one-frame-stale, same idiom as peakMagnitude) — a quick way to tell "is anything being
-    // written at all" and "how far is the nearest one" apart from the render itself, since a
-    // beam's target being merely tens of km away can still be too far to notice visually.
+    // ── Diagnostics (C12; kit readouts since 2026-10-28, so Settings search finds them) ──────────────────────────
+    // Active beams / nearest: read back from reflectBeamsBuf each frame (one frame stale) — is anything being written,
+    // and how far is the nearest one. Cloud lights: live tracked lights in each reserved pool against their caps
+    // (pinned at the cap = entries respawning instead of matching; see TrackedBeamLight). blockOpacity: raw min / max /
+    // avg across every active beam (beam_self_march.comp; max stuck at 0 under visible cloud = the march finds none).
+    // Beam sound: the ambience's beam_glare / beam_site_hum drivers.
+    uiSection("BeamSec", 0, "DIAGNOSTICS");
     {
-        static char beamCountBuf[24];
-        static char beamDistBuf[24];
-        snprintf(beamCountBuf, sizeof(beamCountBuf), "%d", lastActiveBeamCount);
-        if (lastNearestBeamDistM >= 0.0f)
-            snprintf(beamDistBuf, sizeof(beamDistBuf), "%.1f km", lastNearestBeamDistM / 1000.0f);
-        else
-            snprintf(beamDistBuf, sizeof(beamDistBuf), "none");
-        CLAY(CLAY_ID("BeamDiagRow"), {.layout = {
-                                          .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(22)},
-                                          .padding = {4, 4, 2, 2},
-                                          .childGap = 8,
-                                          .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                          .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-        {
-            CLAY_TEXT(CLAY_STRING("Active beams / nearest"), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
-            CLAY(CLAY_ID("BeamDiagSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-            Clay_String countStr{false, (int32_t)strlen(beamCountBuf), beamCountBuf};
-            Clay_String distStr{false, (int32_t)strlen(beamDistBuf), beamDistBuf};
-            CLAY_TEXT(countStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-            CLAY_TEXT(CLAY_STRING(" / "), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
-            CLAY_TEXT(distStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-        }
+        const float lw = (float)fs(12) * 13.0f;
+        uiKV("BeamDiagKV", 0, "Active beams / nearest",
+             lastNearestBeamDistM >= 0.0f ? uiKitStr("%d / %.1f km", lastActiveBeamCount, lastNearestBeamDistM / 1000.0f)
+                                          : uiKitStr("%d / none", lastActiveBeamCount),
+             lw);
+        uiKV("BeamDiagKV", 1, "Cloud lights",
+             uiKitStr("%d/%d clusters, %d/%d individual", lastClusterLightCount, kMaxClusterCloudLights, lastIndividualLightCount,
+                      kMaxIndividualCloudLights),
+             lw);
+        uiKV("BeamDiagKV", 2, "Beam blockOpacity",
+             uiKitStr("min %.2f / max %.2f / avg %.2f / occluded %d/%d", dbgBeamOpacityMin, dbgBeamOpacityMax, dbgBeamOpacityAvg,
+                      dbgBeamOccludedCount, dbgBeamSampleCount),
+             lw);
+        uiKV("BeamDiagKV", 3, "Beam sound",
+             uiKitStr("glare %.1f / %.1f (%d)  site %.1f", ambGlareN, ambGlareSum, ambGlareCount, std::max(ambBeamSite, 0.0f)), lw);
     }
-
-    // ── Cloud-light pool occupancy (2026-08-12) ────────────────────────
-    // Live tracked lights in each reserved pool, against their caps. Directly answers the two
-    // questions the 2026-08-11 revert left open: is the cluster count sitting near the real active
-    // TARGET count (healthy — identities are being recognized frame to frame) or pinned at the cap
-    // (churn: entries respawning instead of matching, which is what made that attempt expensive),
-    // and are transiting beams actually getting slots. A count that climbs well past the number of
-    // sites in view and stays there means fade-out is holding entries longer than it should — turn
-    // "Beam light fade out (s)" down.
-    {
-        static char lightPoolBuf[48];
-        snprintf(lightPoolBuf, sizeof(lightPoolBuf), "%d/%d clusters, %d/%d individual",
-                 lastClusterLightCount, kMaxClusterCloudLights,
-                 lastIndividualLightCount, kMaxIndividualCloudLights);
-        CLAY(CLAY_ID("BeamLightPoolRow"), {.layout = {
-                                               .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(22)},
-                                               .padding = {4, 4, 2, 2},
-                                               .childGap = 8,
-                                               .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                               .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-        {
-            CLAY_TEXT(CLAY_STRING("Cloud lights"), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
-            CLAY(CLAY_ID("BeamLightPoolSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-            Clay_String poolStr{false, (int32_t)strlen(lightPoolBuf), lightPoolBuf};
-            CLAY_TEXT(poolStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-        }
-    }
-
-    // ── beam_self_march.comp occlusion debug (2026-08-09, BEAM_CLOUD_PLAN.md) ────────
-    // Raw min/max/avg blockOpacity across every active beam this frame, and how many currently
-    // read as occluded (>0.1) — no per-target aggregation in the way, unlike what the ray/ground
-    // spot/cloud-lighting consumers each apply on top. Max stuck at 0.00 with visible cloud cover
-    // on screen means the MARCH itself isn't finding cloud; Max >0 but no visible change means the
-    // bug is in a consumer instead. See that shader's header and the memory note this was added
-    // to debug.
-    {
-        static char opBuf[64];
-        snprintf(opBuf, sizeof(opBuf), "min %.2f / max %.2f / avg %.2f / occluded %d/%d",
-                 dbgBeamOpacityMin, dbgBeamOpacityMax, dbgBeamOpacityAvg,
-                 dbgBeamOccludedCount, dbgBeamSampleCount);
-        CLAY(CLAY_ID("BeamOpacityDiagRow"), {.layout = {
-                                                 .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(22)},
-                                                 .padding = {4, 4, 2, 2},
-                                                 .childGap = 8,
-                                                 .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                                 .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-        {
-            CLAY_TEXT(CLAY_STRING("Beam blockOpacity"), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
-            CLAY(CLAY_ID("BeamOpacityDiagSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-            Clay_String opStr{false, (int32_t)strlen(opBuf), opBuf};
-            CLAY_TEXT(opStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-        }
-    }
-
-    // ── Beam sound drivers (ambience layers beam_glare, beam_site_hum) ────
-    // The glare pad's input — flares glaring ON SCREEN: their effective count (glare_n) and combined
-    // strength past the glare threshold (glare_sum), eased, with the number of glaring sources in
-    // view — and the site hum's (beam_site: converged beams on sites near the camera). Pan a glaring
-    // mirror out of frame and the first two fall; fly away from the sites and the last one does.
-    {
-        static char swellBuf[96];
-        snprintf(swellBuf, sizeof(swellBuf), "glare %.1f / %.1f (%d)  site %.1f", ambGlareN, ambGlareSum, ambGlareCount,
-                 std::max(ambBeamSite, 0.0f));
-        CLAY(CLAY_ID("BeamSwellDiagRow"), {.layout = {
-                                               .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(22)},
-                                               .padding = {4, 4, 2, 2},
-                                               .childGap = 8,
-                                               .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                               .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-        {
-            CLAY_TEXT(CLAY_STRING("Beam sound"), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
-            CLAY(CLAY_ID("BeamSwellDiagSpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-            Clay_String swellStr{false, (int32_t)strlen(swellBuf), swellBuf};
-            CLAY_TEXT(swellStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-        }
-    }
-
-    // ── Debug pointing-ray visualization (C12 follow-up #12) ─────────
-    // Draws each active beam's mirror's ACTUAL current reflected-sunlight direction as a thin
-    // off-white ray from the satellite — not a knockout toggle (doesn't disable anything normal),
-    // so it gets its own checkbox rather than living in debugDisableMask.
-    CLAY(CLAY_ID("BeamDebugRayRow"), {.layout = {
-                                          .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(26)},
-                                          .padding = {4, 4, 2, 2},
-                                          .childGap = 8,
-                                          .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                          .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-    {
-        CLAY_TEXT(CLAY_STRING("Show beam pointing rays"), CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
-        CLAY(CLAY_ID("BeamDebugRaySpacer"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-        Clay_Color rayChkBg = showBeamDebugRays ? Pal::btnAccent : (hovBeamDebugRaysToggle ? Pal::btnHover : Pal::btnIdle);
-        CLAY(CLAY_ID("BeamDebugRayChk"), {.layout = {
-                                              .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIXED(22)},
-                                              .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                          .backgroundColor = rayChkBg,
-                                          .cornerRadius = CLAY_CORNER_RADIUS(3)})
-        {
-            bool n = Clay_Hovered();
-            sndRollover(n, hovBeamDebugRaysToggle);
-            sndClick(n, inp.lmbPressed);
-            if (n && inp.lmbPressed)
-                showBeamDebugRays = !showBeamDebugRays;
-            hovBeamDebugRaysToggle = n;
-            CLAY_TEXT(showBeamDebugRays ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
-                      CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11)}));
-        }
-    }
+    // Each active beam's mirror's ACTUAL reflected-sunlight direction as a thin ray from the satellite (C12 follow-up
+    // #12): not a knockout, so a toggle of its own (also on the Display tab).
+    uiToggleRow(inp, ui, "BeamDebugRayChk", 0, "Show beam pointing rays", showBeamDebugRays,
+                "The Reflect Orbital mirrors' beams as lines from the satellites");
 }
 
 // ─── buildSettingsAuroraTab ──────────────────────────────────────────────────

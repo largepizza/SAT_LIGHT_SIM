@@ -40,7 +40,7 @@ WIN_NAMES = {0: "settings", 1: "controls", 2: "trace", 3: "viewer", 4: "info", 5
 HUD_IDS = ("LeftPanel", "RightPanel", "SelSatChip", "FollowAgainBtn", "FollowHud", "CineHud")
 
 SETTINGS_TABS = ["Display", "Controls", "Sound", "Constellations", "Photometry", "Clouds", "Weather",
-                 "Atmosphere", "Terrain", "Night lights", "Ocean", "Beams", "Performance", "Attributions", "Launches"]
+                 "Atmosphere", "Terrain", "Night lights", "Ocean", "Beams", "Performance", "Attributions", "Launches", "Sky"]
 ISS = 'select const "International Space Station"'
 
 
@@ -49,6 +49,9 @@ def views():
     v = [("hud", [], []), ("hud_sel", [ISS, "wait 5"], [])]
     for t in SETTINGS_TABS:
         v.append(("set_" + t.lower().replace(" ", "").replace("&", "and"), [f'ui open settings tab="{t}"', "wait 4"], ["ui close settings"]))
+    # Settings search (2026-10-28): a query listing rows from many tabs.
+    v.append(("set_search", ['ui open settings tab="Display"', "ui click SettingsSearch", "ui type cloud", "wait 4"],
+              ["ui key esc", "ui close settings"]))
     for t in ("upcoming", "ongoing", "kessler"):
         v.append(("ms_" + t, [f"ui open missions tab={t}", "wait 12"], ["ui close missions"]))
     for t in ("radar", "storms", "cyclones", "controls"):
