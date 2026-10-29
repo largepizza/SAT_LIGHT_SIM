@@ -11,6 +11,7 @@
 #include "../Harness.h"
 #include "../Log.h"
 #include "../Paths.h"
+#include "../AudioSystem.h"
 #include "SatelliteSim.h"
 #include "SatPhotometry.h"
 
@@ -266,4 +267,170 @@ harness::Status SatelliteSim::harnessMoonBase(harness::Active &a)
         return harness::Status::Done;
     }
     throw std::runtime_error("moonbase: state | windows [days=] [limit=] [jitter=] | check");
+}
+
+// ── Selecting a base's glint (2026-10-28, issue 20261028_192740 "should be a selectable object") ──────────────────────
+// A click within ~8 px of a glint drawn this frame. The panel reads like a star's (buildSelectedSatPanel), with Track.
+int SatelliteSim::pickMoonBaseAt(float clickX, float clickY, float screenW, float screenH) const
+{
+    constexpr float kHitPx = 8.0f;
+    int best = -1;
+    float bestD = 0.0f;
+    for (size_t i = 0; i < moonBaseNow_.size() && i < lunarBases_.size(); ++i)
+    {
+        if (!moonBaseNow_[i].drawn) continue;
+        float sx, sy;
+        if (!projectSkyDirToScreen(moonBaseNow_[i].enu, screenW, screenH, sx, sy)) continue;
+        const float d = std::hypot(sx - clickX, sy - clickY);
+        if (d <= kHitPx && (best < 0 || d < bestD))
+        {
+            best = (int)i;
+            bestD = d;
+        }
+    }
+    return best;
+}
+
+void SatelliteSim::formatSelectedMoonBaseInfo()
+{
+    for (auto &l : moonBaseInfoLine) l[0] = '\0';
+    const int i = selectedMoonBase;
+    if (i < 0 || i >= (int)lunarBases_.size()) return;
+    const lunar::Base &B = lunarBases_[(size_t)i];
+    const MoonBaseNow m = (i < (int)moonBaseNow_.size()) ? moonBaseNow_[(size_t)i] : MoonBaseNow();
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const double built = lunar::builtShare(B, t);
+    const double lonE = B.lonDeg > 180.0 ? B.lonDeg - 360.0 : B.lonDeg;
+    snprintf(moonBaseInfoLine[0], kSelInfoLineLen, "%s solar arrays", B.name.c_str());
+    snprintf(moonBaseInfoLine[1], kSelInfoLineLen, "Moon base glint, %.1f %c %.1f %c", std::abs(B.latDeg),
+             B.latDeg < 0.0 ? 'S' : 'N', std::abs(lonE), lonE < 0.0 ? 'W' : 'E');
+    if (m.drawn)
+        snprintf(moonBaseInfoLine[2], kSelInfoLineLen, "Mag: %.1f (%.1f above the air)", m.magSeen, m.magTop);
+    else if (built <= 0.0)
+        snprintf(moonBaseInfoLine[2], kSelInfoLineLen, "Not built yet");
+    else if (!m.sunUp)
+        snprintf(moonBaseInfoLine[2], kSelInfoLineLen, "No glint: the Sun is down at the base");
+    else
+        snprintf(moonBaseInfoLine[2], kSelInfoLineLen, "No glint from here (beam %.1f deg off)", m.beamOffDeg);
+    snprintf(moonBaseInfoLine[3], kSelInfoLineLen, "Arrays: %.2f km^2, %d rows (%.0f%% built)", B.areaM2 * 1e-6, B.rows,
+             100.0 * built);
+    // The Moon's phase angle (Sun - Moon - observer: 0 = full; the glints come within a few degrees of it).
+    const glm::vec3 md = glm::normalize(glm::vec3(moonDirENU));
+    const double ph = deg(std::acos(std::clamp(-(double)glm::dot(glm::normalize(glm::vec3(sunDirENU)), md), -1.0, 1.0)));
+    snprintf(moonBaseInfoLine[4], kSelInfoLineLen, "Moon phase angle: %.1f deg", ph);
+    // The glint window (the sky event's: brighter than the event limit from the best place on Earth), cached over
+    // [-1 d, +3 d] round the time it was built; rebuilt when time leaves it or another base is picked.
+    if (moonBaseWinFor != i || t < moonBaseWinT0 + 6.0 * 3600.0 || t > moonBaseWinT1 - 86400.0)
+    {
+        moonBaseWinFor = i;
+        moonBaseWinT0 = t - 86400.0;
+        moonBaseWinT1 = t + 3.0 * 86400.0;
+        moonBaseWin_.clear();
+        const std::vector<lunar::Base> one(1, B);
+        lunar::findWindows(one, moonBaseWinT0, moonBaseWinT1, moonBaseMagLimit, moonBaseJitter, 0.0, nullptr, nullptr,
+                           moonBaseWin_);
+    }
+    const lunar::Window *cur = nullptr, *next = nullptr;
+    for (const lunar::Window &w : moonBaseWin_)
+    {
+        if (w.t0 <= t && t <= w.t1)
+            cur = &w;
+        else if (w.t0 > t && !next)
+            next = &w;
+    }
+    if (cur)
+        snprintf(moonBaseInfoLine[5], kSelInfoLineLen, "Glint window: now, ends %s (peak %.1f)",
+                 fmtUtcReadable(cur->t1).c_str(), cur->peakMag);
+    else if (next)
+        snprintf(moonBaseInfoLine[5], kSelInfoLineLen, "Next glint window: %s (peak %.1f)",
+                 fmtUtcReadable(next->t0).c_str(), next->peakMag);
+    else
+        snprintf(moonBaseInfoLine[5], kSelInfoLineLen, "No glint window brighter than %.0f within 2 days",
+                 (double)moonBaseMagLimit);
+    if (m.drawn)
+        snprintf(moonBaseInfoLine[6], kSelInfoLineLen, "Rows lit: %.0f of %d, the Sun %.1f deg up there", m.rowsLit,
+                 B.rows, m.sunElevDeg);
+}
+
+// The whole pick chain at a screen point: a comet, a Moon-base glint, a planet (or a Galilean moon clear of Jupiter),
+// a bright star right under the point, a satellite, a star a little off when no satellite is there.
+std::string SatelliteSim::pickAndSelectAt(float x, float y, float w, float h)
+{
+    auto click = [&]() {
+        if (audio_)
+            audio_->playSfx("assets/sound/ui/buttonclick.wav");
+    };
+    const int cometHit = pickCometAt(x, y, w, h);
+    if (cometHit >= 0)
+    {
+        if (cometHit != selectedCometIndex || selectedSatIndex >= 0 || selectedPlanetIndex >= 0)
+        {
+            selectedCometIndex = cometHit;
+            selectedSatIndex = -1;
+            selectedPlanetIndex = -1;
+            formatSelectedCometInfo();
+            click();
+        }
+        return "comet";
+    }
+    const int mbHit = pickMoonBaseAt(x, y, w, h);
+    if (mbHit >= 0)
+    {
+        if (mbHit != selectedMoonBase || selectedSatIndex >= 0 || selectedPlanetIndex >= 0 || selectedCometIndex >= 0 ||
+            selectedStarIndex >= 0)
+        {
+            selectedMoonBase = mbHit;
+            selectedSatIndex = -1;
+            selectedPlanetIndex = -1;
+            selectedCometIndex = -1;
+            selectedStarIndex = -1;
+            stopTrack();
+            formatSelectedMoonBaseInfo();
+            click();
+        }
+        return "moonbase";
+    }
+    const int planetHit = pickPlanetAt(x, y, w, h);
+    if (planetHit >= 0)
+    {
+        if (planetHit != selectedPlanetIndex || selectedSatIndex >= 0)
+        {
+            selectedPlanetIndex = planetHit;
+            selectedSatIndex = -1;
+            formatSelectedPlanetInfo();
+            click();
+        }
+        return "planet";
+    }
+    // A bright star (SatelliteSimStars.cpp): one right under the point beats a satellite, one a little off only when no
+    // satellite is there.
+    float starDist = 1e9f;
+    const int starHit = pickStarAt(x, y, w, h, &starDist);
+    const int hit = pickSatelliteAt(x, y, w, h);
+    if (starHit >= 0 && (starDist <= 4.0f || hit < 0))
+    {
+        if (starHit != selectedStarIndex || selectedSatIndex >= 0 || selectedPlanetIndex >= 0 || selectedCometIndex >= 0)
+        {
+            selectedStarIndex = starHit;
+            selectedSatIndex = -1;
+            selectedPlanetIndex = -1;
+            selectedCometIndex = -1;
+            formatSelectedStarInfo(starHit);
+            click();
+        }
+        return "star";
+    }
+    if (hit != selectedSatIndex || selectedPlanetIndex >= 0 || selectedCometIndex >= 0 || selectedStarIndex >= 0 ||
+        selectedMoonBase >= 0)
+    {
+        selectedSatIndex = hit;
+        selectedPlanetIndex = -1;
+        selectedCometIndex = -1;
+        selectedStarIndex = -1;
+        selectedMoonBase = -1;
+        formatSelectedSatInfo();
+        if (hit >= 0)
+            click();
+    }
+    return hit >= 0 ? "satellite" : "";
 }

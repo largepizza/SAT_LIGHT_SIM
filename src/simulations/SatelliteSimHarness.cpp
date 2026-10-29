@@ -733,6 +733,15 @@ json SatelliteSim::harnessStateJson()
                 lines.push_back(std::string(l));
         sel["star_lines"] = lines;
     }
+    if (selectedMoonBase >= 0 && selectedMoonBase < (int)lunarBases_.size())
+    {
+        sel["moonbase"] = lunarBases_[(size_t)selectedMoonBase].name;
+        nlohmann::json lines = nlohmann::json::array();
+        for (const auto &l : moonBaseInfoLine)
+            if (l[0])
+                lines.push_back(std::string(l));
+        sel["moonbase_lines"] = lines;
+    }
     j["selection"] = sel;
     j["planets"] = planetsJson();
     // The v2 march's rate this frame: sparse (1 pixel in 4), full, half (checkerboard) or adaptive.
@@ -2122,11 +2131,52 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             if (selectedSatIndex != idx)
                 fail(std::string(what) + ": satellite " + std::to_string(idx) + " could not be selected");
         };
+        std::string pickedWhat;
         if (sub == "none")
         {
             selectedSatIndex = -1;
             selectedPlanetIndex = -1;
             selectedStarIndex = -1;
+            selectedMoonBase = -1;
+        }
+        else if (sub == "pick")
+        {
+            // select pick <x> <y>: the whole click chain at a frame pixel (comet, Moon-base glint, planet / Galilean moon,
+            // star, satellite), as a mouse click there does (2026-10-28).
+            if (!ctx_)
+                fail("select pick: no device");
+            const float W = (float)ctx_->swapExtent.width, H = (float)ctx_->swapExtent.height;
+            const std::string what = pickAndSelectAt((float)parseNum(pos(1), "select pick x"), (float)parseNum(pos(2), "select pick y"), W, H);
+            pickedWhat = what.empty() ? "nothing" : what;
+        }
+        else if (sub == "moonbase")
+        {
+            // select moonbase [<index>|<name part>]: a lunar base's glint (default the first drawn, else base 0).
+            int bi = -1;
+            if (c.pos.size() > 1)
+            {
+                const std::string q = pos(1);
+                for (int i = 0; i < (int)lunarBases_.size() && bi < 0; ++i)
+                    if (q == std::to_string(i) || lunarBases_[(size_t)i].name.find(q) != std::string::npos ||
+                        ieq(q, lunarBases_[(size_t)i].shortName.c_str()))
+                        bi = i;
+            }
+            else
+            {
+                for (int i = 0; i < (int)moonBaseNow_.size() && bi < 0; ++i)
+                    if (moonBaseNow_[(size_t)i].drawn)
+                        bi = i;
+                if (bi < 0 && !lunarBases_.empty())
+                    bi = 0;
+            }
+            if (bi < 0)
+                fail("select moonbase: no such base (" + std::to_string(lunarBases_.size()) + " loaded)");
+            selectedSatIndex = -1;
+            selectedPlanetIndex = -1;
+            selectedCometIndex = -1;
+            selectedStarIndex = -1;
+            selectedMoonBase = bi;
+            formatSelectedMoonBaseInfo();
         }
         else if (sub == "sat")
         {
@@ -2198,8 +2248,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             formatSelectedStarInfo(si);
         }
         else
-            fail("select: sat <i> | const <name> [n=<k>] | planet <name> | star <name> | none");
-        if (selectedSatIndex < 0)
+            fail("select: sat <i> | const <name> [n=<k>] | planet <name> | star <name> | moonbase [<i>|<name>] | pick <x> <y> | none");
+        if (selectedSatIndex < 0 && !(sub == "pick" && selectedMoonBase >= 0))
             stopTrack(); // deselected, or switched to a planet: there is no orbit left to lock onto
         r = harnessStateJson()["selection"];
         std::string msg = "selected";
@@ -2210,8 +2260,14 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                                                                        : std::string());
         if (r.contains("planet"))
             msg += " " + r["planet"].get<std::string>();
+        if (r.contains("moonbase"))
+            msg += " " + r["moonbase"].get<std::string>();
+        if (r.contains("star"))
+            msg += " " + r["star"].get<std::string>();
         if (r.empty())
             msg = "selection cleared";
+        if (!pickedWhat.empty())
+            r["picked"] = pickedWhat;
         r["message"] = msg;
         return Status::Done;
     }
@@ -2674,8 +2730,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             fail("track: on|off");
         if (want)
         {
-            if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
-                fail("track: select a satellite first (`select sat <i>` or `select const <name>`)");
+            if ((selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size()) && selectedMoonBase < 0)
+                fail("track: select a satellite (`select sat <i>` / `select const <name>`) or a Moon-base glint first");
             startTrack();
         }
         else

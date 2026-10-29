@@ -1820,6 +1820,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         formatSelectedCometInfo();
     if (selectedStarIndex >= 0)
         formatSelectedStarInfo(selectedStarIndex); // (Betelgeuse varies, the supernova evolves)
+    if (selectedMoonBase >= 0)
+        formatSelectedMoonBaseInfo();              // (the glint's magnitude changes by the minute)
 
     // Read previous frame's GPU glow results for the magnitude UI.
     // glowBuf is HOST_COHERENT; by the time recordCompute is called the previous
@@ -6593,7 +6595,8 @@ void SatelliteSim::aimCameraAzEl(float azDeg, float elDeg)
 
 void SatelliteSim::startTrack()
 {
-    if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
+    const bool baseSel = selectedSatIndex < 0 && selectedMoonBase >= 0;   // a Moon-base glint (2026-10-28)
+    if (!baseSel && (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size()))
         return;
     trackActive = true;
     updateTrack(); // aim on the click's own frame, not the next one
@@ -6611,6 +6614,15 @@ void SatelliteSim::updateTrack()
 {
     if (!trackActive)
         return;
+    // A Moon-base glint (2026-10-28, issue 20261028_192740): its place on the drawn Moon.
+    if (!followActive && selectedSatIndex < 0 && selectedMoonBase >= 0 && selectedPlanetIndex < 0 && selectedCometIndex < 0 &&
+        selectedStarIndex < 0)
+    {
+        glm::vec3 d;
+        if (moonBaseDrawnEnu(selectedMoonBase, d))
+            aimCameraAzEl(glm::degrees(atan2f(d.x, d.y)), glm::degrees(asinf(glm::clamp(d.z, -1.0f, 1.0f))));
+        return;
+    }
     if (followActive || selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
     {
         // Nothing to track: follow mode drives the camera itself, and a planet selection (or none) has
@@ -9457,64 +9469,8 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
         // swapExtent without needing a UIInput here.
         if (!ctx_)
             break;
-        float w = (float)ctx_->swapExtent.width;
-        float h = (float)ctx_->swapExtent.height;
-        int cometHit = pickCometAt(w * 0.5f, h * 0.5f, w, h);
-        int planetHit = cometHit >= 0 ? -1 : pickPlanetAt(w * 0.5f, h * 0.5f, w, h);
-        if (cometHit >= 0)
-        {
-            if (cometHit != selectedCometIndex || selectedSatIndex >= 0 || selectedPlanetIndex >= 0)
-            {
-                selectedCometIndex = cometHit;
-                selectedSatIndex = -1;
-                selectedPlanetIndex = -1;
-                formatSelectedCometInfo();
-                if (audio_)
-                    audio_->playSfx("assets/sound/ui/buttonclick.wav");
-            }
-        }
-        else if (planetHit >= 0)
-        {
-            if (planetHit != selectedPlanetIndex || selectedSatIndex >= 0)
-            {
-                selectedPlanetIndex = planetHit;
-                selectedSatIndex = -1;
-                formatSelectedPlanetInfo();
-                if (audio_)
-                    audio_->playSfx("assets/sound/ui/buttonclick.wav");
-            }
-        }
-        else
-        {
-            // A bright star (SatelliteSimStars.cpp): one right under the point beats a satellite, one a little off only
-            // when no satellite is there.
-            float starDist = 1e9f;
-            const int starHit = pickStarAt(w * 0.5f, h * 0.5f, w, h, &starDist);
-            int hit = pickSatelliteAt(w * 0.5f, h * 0.5f, w, h);
-            if (starHit >= 0 && (starDist <= 4.0f || hit < 0))
-            {
-                if (starHit != selectedStarIndex || selectedSatIndex >= 0 || selectedPlanetIndex >= 0 || selectedCometIndex >= 0)
-                {
-                    selectedStarIndex = starHit;
-                    selectedSatIndex = -1;
-                    selectedPlanetIndex = -1;
-                    selectedCometIndex = -1;
-                    formatSelectedStarInfo(starHit);
-                    if (audio_)
-                        audio_->playSfx("assets/sound/ui/buttonclick.wav");
-                }
-            }
-            else if (hit != selectedSatIndex || selectedPlanetIndex >= 0 || selectedCometIndex >= 0 || selectedStarIndex >= 0)
-            {
-                selectedSatIndex = hit;
-                selectedPlanetIndex = -1;
-                selectedCometIndex = -1;
-                selectedStarIndex = -1;
-                formatSelectedSatInfo();
-                if (hit >= 0 && audio_)
-                    audio_->playSfx("assets/sound/ui/buttonclick.wav");
-            }
-        }
+        pickAndSelectAt((float)ctx_->swapExtent.width * 0.5f, (float)ctx_->swapExtent.height * 0.5f,
+                        (float)ctx_->swapExtent.width, (float)ctx_->swapExtent.height);
         break;
     }
     case KB_SCREENSHOT:

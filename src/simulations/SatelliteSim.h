@@ -3534,6 +3534,18 @@ private:
     // The base's place on the DRAWN Moon (x "Moon size"), refracted, from the observer (ENU); false if not loaded.
     bool moonBaseDrawnEnu(int i, glm::vec3 &enu) const;
     harness::Status harnessMoonBase(harness::Active &a);
+    // A selected base's glint (2026-10-28, issue 20261028_192740; SatelliteSimMoonBases.cpp): picked by a click on its
+    // drawn glint, a readout panel like a star's with Track. Gives way to any other selection (buildSelectedSatPanel).
+    int selectedMoonBase = -1;
+    char moonBaseInfoLine[kSelInfoLines][kSelInfoLineLen] = {};
+    std::vector<lunar::Window> moonBaseWin_;      // the selected base's glint windows round now (cached)
+    int moonBaseWinFor = -1;
+    double moonBaseWinT0 = 0.0, moonBaseWinT1 = 0.0;
+    int pickMoonBaseAt(float clickX, float clickY, float screenW, float screenH) const;
+    void formatSelectedMoonBaseInfo();
+    // The whole click / centre-select chain at a screen point (comet, Moon-base glint, planet, star, satellite), the one
+    // used by the mouse, the select key and harness `select pick`. Returns what it selected ("" = nothing new).
+    std::string pickAndSelectAt(float x, float y, float screenW, float screenH);
 
     // ── Meteors (2026-10-27, Meteors.h, SatelliteSimMeteors.cpp; CLAUDE.md "Meteors") ──────────────────────────────
     // The major annual showers + the sporadic background, generated as a pure function of sim time near the observer

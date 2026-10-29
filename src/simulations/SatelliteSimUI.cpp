@@ -865,64 +865,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // Planets get priority on an exact overlap (pickPlanetAt tried first, only 6 candidates) —
     // they're rare and the more interesting selection; mutually exclusive with satellite selection.
     if (inp.lmbPressed && !ui.mouseOverUI())
-    {
-        int cometHit = pickCometAt(inp.mouseX, inp.mouseY, inp.screenW, inp.screenH);
-        int planetHit = cometHit >= 0 ? -1 : pickPlanetAt(inp.mouseX, inp.mouseY, inp.screenW, inp.screenH);
-        if (cometHit >= 0)
-        {
-            if (cometHit != selectedCometIndex || selectedSatIndex >= 0 || selectedPlanetIndex >= 0)
-            {
-                selectedCometIndex = cometHit;
-                selectedSatIndex = -1;
-                selectedPlanetIndex = -1;
-                formatSelectedCometInfo();
-                if (audio_)
-                    audio_->playSfx("assets/sound/ui/buttonclick.wav");
-            }
-        }
-        else if (planetHit >= 0)
-        {
-            if (planetHit != selectedPlanetIndex || selectedSatIndex >= 0)
-            {
-                selectedPlanetIndex = planetHit;
-                selectedSatIndex = -1;
-                formatSelectedPlanetInfo();
-                if (audio_)
-                    audio_->playSfx("assets/sound/ui/buttonclick.wav");
-            }
-        }
-        else
-        {
-            // A bright star (SatelliteSimStars.cpp): one right under the point beats a satellite, one a little off only
-            // when no satellite is there.
-            float starDist = 1e9f;
-            const int starHit = pickStarAt(inp.mouseX, inp.mouseY, inp.screenW, inp.screenH, &starDist);
-            int hit = pickSatelliteAt(inp.mouseX, inp.mouseY, inp.screenW, inp.screenH);
-            if (starHit >= 0 && (starDist <= 4.0f || hit < 0))
-            {
-                if (starHit != selectedStarIndex || selectedSatIndex >= 0 || selectedPlanetIndex >= 0 || selectedCometIndex >= 0)
-                {
-                    selectedStarIndex = starHit;
-                    selectedSatIndex = -1;
-                    selectedPlanetIndex = -1;
-                    selectedCometIndex = -1;
-                    formatSelectedStarInfo(starHit);
-                    if (audio_)
-                        audio_->playSfx("assets/sound/ui/buttonclick.wav");
-                }
-            }
-            else if (hit != selectedSatIndex || selectedPlanetIndex >= 0 || selectedCometIndex >= 0 || selectedStarIndex >= 0)
-            {
-                selectedSatIndex = hit;
-                selectedPlanetIndex = -1;
-                selectedCometIndex = -1;
-                selectedStarIndex = -1;
-                formatSelectedSatInfo();
-                if (hit >= 0 && audio_)
-                    audio_->playSfx("assets/sound/ui/buttonclick.wav");
-            }
-        }
-    }
+        pickAndSelectAt(inp.mouseX, inp.mouseY, inp.screenW, inp.screenH);
 
     fprof::mark("ui.seg3c_icons_pick");
     buildHarnessConsole(inp, ui);  // the ~ console draws even with the HUD hidden
@@ -1630,12 +1573,16 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
     // A star (SatelliteSimStars.cpp) gives way to any other selection, however that was made.
     if (selectedStarIndex >= 0 && (selectedSatIndex >= 0 || selectedPlanetIndex >= 0 || selectedCometIndex >= 0))
         selectedStarIndex = -1;
+    // So does a Moon-base glint (SatelliteSimMoonBases.cpp, 2026-10-28).
+    if (selectedMoonBase >= 0 && (selectedSatIndex >= 0 || selectedPlanetIndex >= 0 || selectedCometIndex >= 0 || selectedStarIndex >= 0))
+        selectedMoonBase = -1;
     const bool isComet = selectedSatIndex < 0 && selectedPlanetIndex < 0 && selectedCometIndex >= 0;
     const bool isStar = selectedSatIndex < 0 && selectedPlanetIndex < 0 && !isComet && selectedStarIndex >= 0;
-    if (selectedSatIndex < 0 && selectedPlanetIndex < 0 && !isComet && !isStar)
+    const bool isMoonBase = selectedSatIndex < 0 && selectedPlanetIndex < 0 && !isComet && !isStar && selectedMoonBase >= 0;
+    if (selectedSatIndex < 0 && selectedPlanetIndex < 0 && !isComet && !isStar && !isMoonBase)
         return;
 
-    bool isPlanet = selectedPlanetIndex >= 0 || isComet || isStar; // a comet's / star's panel is a planet's (a readout)
+    bool isPlanet = selectedPlanetIndex >= 0 || isComet || isStar || isMoonBase; // a comet's / star's / base's panel is a planet's (a readout)
     glm::vec3 pickSkyDir;
     float pickFlare;
     const char (*infoLines)[kSelInfoLineLen];
@@ -1657,6 +1604,12 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
         pickFlare = 0.0f;
         starEnuNow(selectedStarIndex, pickSkyDir, &pickFlare);
         infoLines = starInfoLine;
+    }
+    else if (isMoonBase)
+    {
+        pickSkyDir = glm::vec3(0.0f, 0.0f, 1.0f);
+        pickFlare = moonBaseDrawnEnu(selectedMoonBase, pickSkyDir) && moonDirENU.z > -0.3f ? 1.0f : 0.0f;
+        infoLines = moonBaseInfoLine;
     }
     else if (isPlanet)
     {
@@ -1708,6 +1661,8 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
                 buildTraceButton(inp, ui, 0);
                 buildTrackButton(inp, ui, 0);
             }
+            else if (isMoonBase)
+                buildTrackButton(inp, ui, 0);
         }
         captureLaidOut(ui, CLAY_ID("SelSatChip"), kMargin, chipY, 360.0f, 34.0f);
         return;
@@ -1725,7 +1680,7 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
     const float kBoxSize = 6.0f;
     const float kBorderW = 2.0f;
     float kRadius = tracked ? 7.0f : 10.0f;
-    if (isPlanet && selectedPlanetIndex < kPlanetCount)   // a resolved disc: the brackets round the disc (and rings)
+    if (isPlanet && selectedPlanetIndex >= 0 && selectedPlanetIndex < kPlanetCount)   // (>= 0: a star / comet / base read planetView[-1])   // a resolved disc: the brackets round the disc (and rings)
         kRadius = std::max(kRadius, planetView[selectedPlanetIndex].discPx * (selectedPlanetIndex == kSaturn ? 2.3f : 1.0f) + 4.0f);
     struct ReticuleCorner
     {
@@ -1796,6 +1751,14 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
                 Clay_String lineStr{false, (int32_t)strlen(infoLines[i]), infoLines[i]};
                 CLAY_TEXT(lineStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12)}));
             }
+            if (isMoonBase) // a base's glint can be tracked (the camera follows it across the sky)
+                CLAY(CLAY_ID("SelSatButtons"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
+                                                           .childGap = 6,
+                                                           .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                           .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                {
+                    buildTrackButton(inp, ui, 1);
+                }
         }
         else
         {
@@ -3443,7 +3406,8 @@ void SatelliteSim::buildTraceButton(const UIInput &inp, UIRenderer &ui, int idx)
 // released by the `camera` command, by deselecting, by selecting a planet and by follow mode.
 void SatelliteSim::buildTrackButton(const UIInput &inp, UIRenderer &ui, int idx)
 {
-    if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
+    const bool baseSel = selectedSatIndex < 0 && selectedMoonBase >= 0;   // a Moon-base glint (2026-10-28)
+    if (!baseSel && (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size()))
         return;
     if (buildSelActionButton(inp, ui, idx * 4 + 3, "Track", kIconTrack, trackActive, hovSelTrackBtn))
     {
