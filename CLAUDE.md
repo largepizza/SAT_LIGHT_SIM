@@ -3220,10 +3220,25 @@ SatelliteSimSkyEvents.cpp). Settings `meteors.enabled` (on), `meteors.rate` (1, 
   along the 78-108 km part of the path already passed, drifting with a hashed wind (25-75 m/s, turning 8-22 deg per km
   of height), widening 12 m/s, green for its first seconds then dim orange, ~7 mag under the meteor + a +2-mag wake over
   its first second. **Budget**: at most 96 meteor Gaussians and never past kMaxDustClouds - 200 (the launches,
-  tornadoes, haboobs, wildfire smoke come after), the brightest meteors first; at most 600 heads. **Time warp**: past 2x
-  only bands 0-1 (fireballs and bolides, M <= -4) are drawn, up to 1 min/s (`meteorBandMax_`); past that none
-  (`meteorWarpOff_`): at 10x a 0.5 s faint meteor flashes for 3 frames and ten times as often, but a bolide replayed at 10x
-  must still show (2026-10-28, issue 20261028_191529 "Bollide Trails"). **Train duration** `meteors.train_duration` (0.3,
+  tornadoes, haboobs, wildfire smoke come after), the brightest meteors first; at most 600 heads. **Time warp = TIME-LAPSE**
+  (2026-10-28, issue 20261028_220640: they stopped past 1 min/s; `meteors.timelapse`, default on, false = the old rule:
+  bands 0-1 only past 2x, none past 1 min/s): past 2x every meteor that burned during the frame's sim-time interval
+  [t - dt, t] (dt = this frame's sim step; the first frame or a jump: warp / 60) is drawn as the streak it drew in that
+  interval — 1-4 Gaussians by its length on screen, each carrying its piece's light (`meteors::lightIntegral`: the light
+  curve integrated in closed form, flares and terminal burst included) / the exposure E = clamp(dt, 0.1 s,
+  `meteors.timelapse_exposure_s` 0.1 s = the 1x streak's persistence, so a streak keeps the 1x streak's surface brightness at any rate; 0.5 s and 1 s read too faint: a 4-h run at 1 h/s showed ~6 streaks); 0.7 of it in the streak, 0.3 a point at its brightest piece (bloom, glare; a piece not drawn gives its light to the point; at least half the brightest moment's flare, as the 1x head, so each meteor reads as a real-time one — the streak alone left a Perseid peak at ~1 visible meteor a frame). At 1 h/s each frame shows the minute's meteors as whole
+  streaks from the radiant. Trains: each segment's light integrated over the part of its life inside the interval / E,
+  drawn at that part's middle (a 20-s train is a fraction of a frame at 1 h/s). No fragments in time-lapse. Bins are
+  generated for [t - dt - the band's longest age, t], the missing ones in parallel (`stormCatalog->parallelFor`, from 8);
+  the faintest bands are left out while the estimated Poisson draws of the frame's new bins pass 350k (band 0 always;
+  harness `meteors state` -> `timelapse`, `timelapse_interval_s`, `timelapse_exposure_s`, `draws_estimate`,
+  `band_max`), 192 Gaussians in time-lapse (96 at 1x; a streak with none left is dropped, never drawn as a lone point: hundreds of them read as a star cluster), candidates below 2e-4 of flare not drawn. A bolide replayed at 10x
+  shows as before (issue 20261028_191529). Measured (RTX 3070 Ti, 1600x900, the report's place -10 148 2037-07-29 and the
+  Perseid Watch, on / off interleaved, Kessler off so time runs): meteors' CPU 0.05 ms (1x), 0.2 (1 min/s), 0.55 (5 min/s),
+  2.7-3.9 ms at 1 h/s (~300k draws, 6-10k candidates; generation 2.2-2.8, ranking 0.4-0.6 on the pool), frame time and GPU
+  within noise. `generate()` builds its cell list once per call and `meteorsFill` asks runs of up to 16 consecutive bins
+  per call (`Meteor::bin` splits them back); a sporadic meteor's source longitude is its bin's (`meteors count` at the
+  report's place unchanged: 906 / h). Videos: `screenshots/meteorwarp/` (rep_1h, rep_5m, rep_1m, per_1h, per_5m, stacks). **Train duration** `meteors.train_duration` (0.3,
   x the decay time, no UI; 1 = the old): drawn to 4 decay times (was 5 at x1: a -12 Taurid's train ~270 s; now ~65 s).
   **Determinism vs the eye**: the bin cache (`meteorBinCache_`) serves every eye within `kMeteorCacheRadiusM` (30 km)
   of where it was made, so generation takes `GenParams::eyeMarginM` = that radius (reach from the eye's height + it,

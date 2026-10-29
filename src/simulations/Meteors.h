@@ -69,6 +69,7 @@ struct Meteor
     double hB = 0.0, hE = 0.0; // heights (m)
     float trainLife = 0.0f;  // persistent train's decay time (s; 0 = none)
     int forced = 0;          // a harness-forced meteor (not generated)
+    int64_t bin = 0;         // its time bin (floor(tStart / its band's bin), as generated)
 };
 
 struct GenParams
@@ -90,6 +91,9 @@ int generate(const GenParams &p, const std::function<void(const Meteor &)> &cb);
 
 // The light curve: relative intensity (peak 1 at the main maximum, flares above it) at fraction x of the flight.
 double lightCurve(const Meteor &m, double x);
+// Its integral over the flight fraction [x0, x1] (closed form: the curve's polynomial + its flares' Gaussians), in
+// units of (peak intensity x flight): x m.dur gives peak-seconds. The time-lapse draw's energy (2026-10-28).
+double lightIntegral(const Meteor &m, double x0, double x1);
 // Fragments of a fireball (M <= -4): count, and fragment k's offset (ECEF, m) from the main body and its intensity
 // relative to the main body's, tau seconds after the start. Returns false when the fragment is not glowing.
 int fragmentCount(const Meteor &m);
