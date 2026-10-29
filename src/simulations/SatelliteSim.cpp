@@ -6793,6 +6793,15 @@ int SatelliteSim::pickPlanetAt(float clickX, float clickY, float screenW, float 
 
     const GpuSatVisible *entries = static_cast<const GpuSatVisible *>(planetMapped);
     constexpr float kMinHitRadiusPx = 8.0f;
+    // A Galilean moon is pickable only when it stands clear of Jupiter on screen (2026-10-28, issue 20261028_190641:
+    // at a wide field the moons are 1-3 px from Jupiter, and a click on Jupiter usually landed nearer one of them):
+    // more than kMoonClearPx from Jupiter's centre, or outside its resolved disc by that margin.
+    constexpr float kMoonClearPx = 8.0f;
+    float jupX = 0.0f, jupY = 0.0f;
+    bool jupOn = false;
+    if (planetEnabled[kJupiter] && entries[kJupiter].flareIntensity > 0.0f)
+        jupOn = projectSkyDirToScreen(entries[kJupiter].skyDir, screenW, screenH, jupX, jupY);
+    const float jupClear = std::max(kMoonClearPx, planetView[kJupiter].discPx + kMoonClearPx * 0.5f);
 
     int best = -1;
     float bestDist = 0.0f;
@@ -6806,6 +6815,8 @@ int SatelliteSim::pickPlanetAt(float clickX, float clickY, float screenW, float 
         float sx, sy;
         if (!projectSkyDirToScreen(v.skyDir, screenW, screenH, sx, sy))
             continue;
+        if (i >= kPlanetCount && jupOn && std::hypot(sx - jupX, sy - jupY) <= jupClear)
+            continue; // not clear of Jupiter: the click is Jupiter's
         float dx = sx - clickX, dy = sy - clickY;
         float dist = sqrtf(dx * dx + dy * dy);
         // A resolved disc (its record's angularSize is negative then): its whole disc and rings.
