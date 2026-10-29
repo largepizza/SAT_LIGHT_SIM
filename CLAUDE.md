@@ -1138,6 +1138,19 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     segment left, at most 12) went to 0 whenever the fires in reach had more segments than the cap: every segment one
     Gaussian of sigma 0.5 x its length. `clouds_v2.wildfire_smoke_alloc` 0 (no UI) = the old share (A/B); harness `fires`
     -> `smoke_segments_drawn / _single / smoke_piece_gaussians / smoke_segments_off_view_dropped / _in_view_lost`.
+  - **The curtain** (2026-10-28, issue 20261028_192133 "Smoke effects still spawn oversized oval particles": a bright round
+    dot led every streak, and the ovals stretched as the trail turned). Each streak Gaussian is built from the smoke's own
+    COVARIANCE (`emitCov`): its share of the trail's length along the Catmull-Rom tangent + the section's extent along the
+    section's principal axis (`SmokeEmit::ax / extL / extW`, from the heat-weighted points' 2x2 covariance; sigma 1.7 x
+    its rms so neighbouring sections join into one curtain along the front) + a round spread + the thickness. It was a
+    frame on the segment (width always ACROSS it, `sB0` = 1.2 x the section rms / sqrt S: km-wide ovals that swung with
+    every turn, and the head drawn at 0.3 x its length: the young column seen from above as a dense round dot). A
+    segment's Gaussians stand on NESTED NODES in u = fixed emission times between its two knots (they age together: u
+    does not slide), level s = nodes j / 2^s (0 = the midpoint alone), the next level's nodes fading in with the mass shared
+    (the pieces were len / m apart and re-cut at every integer m: a jump). Pass 0's `want` is the node count (2^(s+1)+1).
+    `clouds_v2.wildfire_smoke_curtain` 0 (no UI) = the old pieces (A/B). Videos at 1 min/s and 1 h/s from the report:
+    harness_runs/fs/sm2 (worktree, untracked). Isolate the smoke from the ground with `clouds_v2.wildfire_scars false`
+    (no UI): the report's "blue speckled oval" is the burn scar under the haze.
   - **Smoke light**: GREY (2026-10-26, issues 20261026_204045 / _204239 "it appears so beige") — fresh (0.62 grey)
     albedo 0.45 (black carbon) to aged / pall (0.75, 0.76, 0.78) 0.6, the sky's light on it BLUE (0.66, 0.82, 1.08: it
     was a brown-grey (0.80, 0.79, 0.76)), x "Smoke tint" (-1 blue-grey .. +1 brown) and "Smoke brightness"; its scattered
@@ -1187,6 +1200,36 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     500 m from the front. Harness `fires` -> `flame_band`, `flames_wanted`, `flame_lod_scale`,
     `flame_band_top_range_ds_sA_sV_res_K_lv_rad`. Open: the near end of a front running at the eye is still a bright
     glow; the licks are Gaussians, not textured flame.
+  - **The front close up, reworked** (2026-10-28, issue 20261028_191813 "Fire effects": "Fountains of Bellagio. Rhythmic
+    pillars always spawning in pairs ... more fluttering shape, maybe embers ... the flame front needs to be less of a line";
+    and "panning disappearance").
+    - **The panning bug**: the front's points and flames were placed over the full DEM at the IGNITION point + the
+      18-km copy's change across the fire; 47 km from the ignition that put the front by the eye ~130 m above the drawn
+      ground (harness `fires` -> `flame_band_nearest`: el +68 deg at 86 m). The GPU snap moved them down, but the CPU view
+      cull had tested the raised place, so looking down at the front beside you every flame and point there was culled.
+      Now `groundAbsAt`: the 18-km copy at the point itself, shifted near the eye (3 -> 25 km) to the GPU's ground under
+      the eye; the culls allow 25-30 m for what the snap still moves.
+    - **A ragged band, not a line**: `wx::fireFrontWiggleM` (four octaves along the arc from the BACK, ~35 m .. 2 km,
+      re-drawn over 20 min .. 8 h) moves the edge for the points, the flames and the near smoke (`edgeOf`); each tongue
+      stands at a hashed depth into the flaming zone, a third get a smaller flame burning out behind, spot flames ahead
+      of the head (8%).
+    - **Clusters, not paired licks**: a resolved tongue is 1-4 flames at hashed places along it, each a body + a tip
+      leaning downwind and swaying, its height pulsing with smooth value noise in t at the puffing frequency of its
+      width (~1.5 / sqrt(D) Hz), the bigger ones shedding a rising, fading puff. Budget 512 (smoke n + 576): two passes
+      (`FlameCand`), the nearest tongues take the most flames that still leave every farther one a single flame;
+      `flameLodScale` widens the spacing only when even that overflows (`flameNearScale`, the floor 1.4 x the flame
+      height, only once that saturates). `kFlamePx` 12. Unresolved ribbons overlap (0.45 x the spacing).
+    - **Embers**: kFireBuf points from resolved tongues within 2.5 km (1-4 a tongue, `emberCap` 900 past the points):
+      born on a hashed 2.5-7 s cycle, rising on an exponentially slowing updraft, drifting with the 10-m wind, swirling,
+      cooling yellow -> red. Their height rides in the direction's length like the points' (the snap).
+    - **Smoke at the flames** (`nearSmokeLast`, reserve 80 Gaussians in the smoke's range, fires whose front is within
+      8 km): columns ~55 px / 8 flame heights apart, two dark (albedo 0.14-0.26) puffs a column on 10-25 s cycles rising
+      a few m/s, widening and fading below the streaks. Not ground-snapped.
+    - Measured (RTX 3070 Ti, 1920x1009, the report's place at night 50 m up, FOV 90): GPU 37.25 vs 36.90 ms with the new
+      flames + near smoke off (`clouds_v2.wildfire_debug` 9), CPU (the fill, `launches` bucket) 2.04 vs 1.17 ms.
+      Harness `fires` -> `embers`, `near_smoke`, `flame_near_scale`, `flame_max_sub`, `flame_band_nearest`,
+      `points_nearest_m`; `clouds_v2.wildfire_debug` bits 1 no flames, 2 no points, 4 no smoke, 8 no near smoke, 16 no
+      embers (no UI). Captures harness_runs/fs/fn1 (worktree).
   - **Flames close up** (the old tongues, `wildfire_flame_band` 0; within 40 km, faded 25-40 km): emissive Gaussians (dust list `col.w` 1, AFTER the smoke's range
     so `smokeSunTransmit` does not take them for smoke) standing on the active arc, tongues 0.66 x the flame height tall
     and 0.35 x it + 0.05 x their spacing wide (were 0.3 x the spacing: neighbours merged into one band), spaced >= 40 px,

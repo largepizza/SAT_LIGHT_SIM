@@ -255,6 +255,32 @@ glm::dvec2 fireFrontAt(const Fire &f, const FireState &s, double a, double *dsda
     return w * (off + k * semi * std::cos(a)) + c * (k * s.halfWidthM * std::sin(a));
 }
 
+double fireFrontWiggleM(const Fire &f, double sArcM, double t)
+{
+    // 1D value noise (smooth) along the arc, cross-faded between draws every T seconds (per octave).
+    auto vn = [&](double x, uint64_t seed, double T) {
+        const double fx = std::floor(x), u = x - fx;
+        const double su = u * u * (3.0 - 2.0 * u);
+        const int64_t i0 = (int64_t)fx;
+        const double e = std::floor(t / T), w = t / T - e;
+        const double sw = w * w * (3.0 - 2.0 * w);
+        auto v = [&](int64_t i, double ep) {
+            return u01(mix64(seed ^ ((uint64_t)i * 0x9E3779B97F4A7C15ull) ^ mix64((uint64_t)(int64_t)ep + 91))) - 0.5;
+        };
+        const double a0 = v(i0, e) + (v(i0 + 1, e) - v(i0, e)) * su;
+        const double a1 = v(i0, e + 1) + (v(i0 + 1, e + 1) - v(i0, e + 1)) * su;
+        return a0 + (a1 - a0) * sw;
+    };
+    const double k = 0.6 + 0.8 * (double)f.size;
+    static const double lam[4] = {35.0, 140.0, 560.0, 2240.0};
+    static const double amp[4] = {10.0, 34.0, 110.0, 300.0};
+    static const double per[4] = {1200.0, 3600.0, 3.0 * 3600.0, 8.0 * 3600.0};
+    double d = 0.0;
+    for (int o = 0; o < 4; ++o)
+        d += amp[o] * k * vn(sArcM / lam[o], f.id ^ (0xF00Dull + (uint64_t)o * 0x51ull), per[o]);
+    return d;
+}
+
 void fireOffsetLatLon(const Fire &f, const glm::dvec2 &q, double &latDeg, double &lonDeg)
 {
     latDeg = f.latDeg + q.y / 111195.0;
