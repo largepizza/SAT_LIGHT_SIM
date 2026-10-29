@@ -3195,6 +3195,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["day"] = (t - kesslerEpoch()) / 86400.0;
             r["frontier_days"] = (kFrontier - kesslerEpoch()) / 86400.0;
         }
+        else if (sub == "mem")
+            r["mem"] = kesslerMemJson();
         else if (!sub.empty() && sub != "state")
             fail("kessler: state | breakup <sat> [kind=explosion|asat] | collide <a> <b> | wait [days=] [done] | select [k=] | fingerprint");
         r["kessler"] = kesslerStateJson();

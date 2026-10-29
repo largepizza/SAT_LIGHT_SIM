@@ -111,7 +111,10 @@ struct SatelliteSim::KesslerWorker
         kessler::PoolRec rec;
     };
     std::vector<OutPoolChange> outPool;
-    std::vector<kessler::Event> outEvents;
+    size_t outEventsEnd = 0; // the world's event count at the last publish (the main thread's view reads up to it)
+    int32_t outPrunedUntil = INT32_MIN; // generations dropped at publish (pruneOldGenerations): no history before this
+    std::atomic<size_t> syncBacklog{0};
+    uint64_t droppedTotal = 0; // pool changes dropped at publish (harness `kessler mem`) // pool changes the main thread has taken and not mirrored yet (backpressure)
     std::vector<kessler::SmallStream> outStreams;
     struct RosterChange
     {
@@ -126,32 +129,95 @@ struct SatelliteSim::KesslerWorker
     {
         std::vector<OutPoolChange> pool;
         size_t next = 0;
-        std::vector<kessler::Event> ev;
+        size_t evEnd = 0; // the events up to here (the world's own storage)
+        int32_t prunedUntil = INT32_MIN;
         std::vector<kessler::SmallStream> st;
         std::vector<RosterChange> rd;
         double frontier = 0.0;
         // (2026-10-21) The rest of a batch is also taken within the budget, where it stopped: roster changes, events,
         // small-fragment streams (at 1 yr/s a batch held hundreds of thousands of each: 6-14 ms in one go).
-        size_t rdNext = 0, evNext = 0, stNext = 0;
+        size_t rdNext = 0, stNext = 0;
     };
     std::deque<SyncBatch> syncQ;
     double syncQFrontier = 0.0;
+    size_t syncQEvEnd = 0;
+
+    // (2026-10-28, the memory audit) The pool changes of this publish that belong to generations ended long before the
+    // player's time: a generation is dropped when a LATER generation of its slot, placed in this same publish, was born
+    // more than kGenKeepS before the player's time (so it ended, and its slot changed hands, before that too). Exactly
+    // what the mirror's own prune (kHistKeepS, 7 days) would drop on arrival: only the generations not drawn at any
+    // time the mirror can still show without a replay. Its deaths go with it (a death of a generation from an earlier
+    // publish is kept). prunedUntil = the latest birth of a generation that replaced a dropped one: going back before it
+    // replays (kHistPrunedUntil). Off with SATLIGHTSIM_KESSLER_PUBLISH_PRUNE=0 (the A/B).
+    static constexpr int32_t kGenKeepS = 8 * 86400; // the mirror's 7 days + a day of margin
+    bool publishPrune = true;
+    std::vector<uint8_t> pruneOldGenerations(int32_t &prunedUntil, size_t &dropped) const
+    {
+        dropped = 0;
+        std::vector<uint8_t> drop;
+        const size_t n = w.poolChanges.size();
+        if (!publishPrune || n < 4096)
+            return drop;
+        const int32_t cut = w.secOf(simNow.load()) - kGenKeepS;
+        const size_t nSlots = w.pool.size();
+        std::vector<int32_t> laterBorn(nSlots, INT32_MAX);
+        std::vector<uint32_t> keepFrom(nSlots, 0u), firstGen(nSlots, UINT32_MAX);
+        drop.assign(n, 0);
+        for (size_t i = n; i-- > 0;)
+        {
+            const kessler::World::PoolChange &c = w.poolChanges[i];
+            if (!c.isRecord || c.slot >= nSlots)
+                continue;
+            firstGen[c.slot] = c.gen;
+            if (laterBorn[c.slot] < cut)
+            {
+                drop[i] = 1;
+                ++dropped;
+                prunedUntil = std::max(prunedUntil, laterBorn[c.slot]);
+                keepFrom[c.slot] = std::max(keepFrom[c.slot], c.gen + 1);
+            }
+            else
+                laterBorn[c.slot] = c.rec.bornSec;
+        }
+        if (dropped == 0)
+            return {};
+        for (size_t i = 0; i < n; ++i)
+        {
+            const kessler::World::PoolChange &c = w.poolChanges[i];
+            if (!c.isRecord && c.slot < nSlots && c.gen >= firstGen[c.slot] && c.gen < keepFrom[c.slot])
+            {
+                drop[i] = 1;
+                ++dropped;
+            }
+        }
+        return drop;
+    }
 
     void publish()
     {
         // (2026-10-21) Built outside the lock, then handed over under it (a swap when the main thread has taken the
         // last batch, which it does every frame): built under the lock, a replay's publish of ~4.7M pool changes held
         // the mutex ~300 ms, and the main thread's kesslerSync waited on it for a whole frame.
+        // (2026-10-28) Generations that ended long before the player's time are dropped here (pruneOldGenerations): the
+        // mirror would only prune them again, and a jump far ahead replayed tens of millions of them through it.
+        int32_t prunedUntil = INT32_MIN;
+        size_t dropped = 0;
+        std::vector<uint8_t> drop = pruneOldGenerations(prunedUntil, dropped);
+        droppedTotal += dropped;
         std::vector<OutPoolChange> pool;
-        pool.reserve(w.poolChanges.size());
-        for (const kessler::World::PoolChange &c : w.poolChanges)
+        pool.reserve(w.poolChanges.size() - dropped);
+        for (size_t i = 0; i < w.poolChanges.size(); ++i)
         {
             // Every generation goes, in order (one that lived and was replaced between two publishes too: its
-            // fireball and its stretch of the timeline need it).
+            // fireball and its stretch of the timeline need it) - but those dropped above.
+            if (!drop.empty() && drop[i])
+                continue;
+            const kessler::World::PoolChange &c = w.poolChanges[i];
             pool.push_back({c.slot, c.gen, c.deathSec, c.isRecord, c.rec});
         }
         w.poolChanges.clear();
-        std::vector<kessler::Event> ev(w.events.begin() + (ptrdiff_t)pubEvents, w.events.end());
+        if (w.poolChanges.capacity() > (size_t(1) << 18))
+            w.poolChanges.shrink_to_fit(); // (a replay's 30-day chunk left ~600 MB of capacity behind for good)
         pubEvents = w.events.size();
         std::vector<kessler::SmallStream> st;
         st.swap(w.smallStreams);
@@ -168,12 +234,14 @@ struct SatelliteSim::KesslerWorker
         };
         std::lock_guard<std::mutex> lk(mx);
         give(outPool, pool);
-        give(outEvents, ev);
+        outEventsEnd = pubEvents;
+        outPrunedUntil = std::max(outPrunedUntil, prunedUntil);
         give(outStreams, st);
         give(outRoster, rd);
         outFrontier = w.frontier;
     }
 
+    static constexpr size_t kBacklogCap = 3000000; // pool changes (~112 B each)
     std::filesystem::path prebakePath; // a compact log to replay (the cache, or the shipped prebake): opened by run()
 
     void run()
@@ -213,6 +281,18 @@ struct SatelliteSim::KesslerWorker
                 cv.wait_for(lk, std::chrono::milliseconds(30), [&] { return stop; });
                 continue;
             }
+            {
+                // (2026-10-28) Backpressure: the mirror works through the published pool changes within a time budget a
+                // frame, and a replay ran far ahead of it (a jump to the supernova held ~10 GB of copies in the queue).
+                std::unique_lock<std::mutex> lk(mx);
+                if (outPool.size() + syncBacklog.load() > kBacklogCap)
+                {
+                    const auto wq = std::chrono::steady_clock::now();
+                    cv.wait_for(lk, std::chrono::milliseconds(15), [&] { return stop; });
+                    profWaitS += std::chrono::duration<double>(std::chrono::steady_clock::now() - wq).count();
+                    continue;
+                }
+            }
             const bool sampling = w.frontier >= replayUntil;
             const double chunk = sampling ? 86400.0 : 30.0 * 86400.0;
             double to = std::min({w.frontier + chunk, tEnd, std::max(want, w.frontier + w.s.stepS)});
@@ -221,9 +301,13 @@ struct SatelliteSim::KesslerWorker
             if (!sampling)
                 to = std::min(to, replayUntil);
             kessler::setEngineThreadsWide(!sampling || userWaiting.load());
+            const auto c0 = std::chrono::steady_clock::now();
             simulateChunk(to, sampling);
+            profChunkS += std::chrono::duration<double>(std::chrono::steady_clock::now() - c0).count();
             kessler::setEngineThreadsWide(false);
+            const auto p0 = std::chrono::steady_clock::now();
             publish();
+            profPublishS += std::chrono::duration<double>(std::chrono::steady_clock::now() - p0).count();
             // Throughput log every 10 simulated days (the benchmark reads these).
             if (w.frontier - lastLog >= 10.0 * 86400.0)
             {
@@ -232,7 +316,7 @@ struct SatelliteSim::KesslerWorker
                 const int32_t sec = w.secOf(w.frontier);
                 for (const kessler::PoolRec &r : w.pool)
                     live += (sec >= r.bornSec && sec < r.deathSec);
-                char m[520];
+                char m[700];
                 snprintf(m, sizeof(m),
                          "kessler: bench day %.0f wall %.1f s: %zu events, %zu records (%zu live), %zu death buckets, "
                          "%.3g small fragments (%llu re-entry streams), %.0f MB working set; engine refs %.1f states %.1f pairs %.1f "
@@ -244,6 +328,13 @@ struct SatelliteSim::KesslerWorker
                          w.profState, w.profPairs, w.profApply, w.profAllApply, w.profFrag, w.profSmall, w.profPrep, w.profFlush,
                          (unsigned long long)w.prepHits, (unsigned long long)(w.prepHits + w.prepMisses),
                          sampling ? "sampling" : "replay");
+                Log::line(m);
+                snprintf(m, sizeof(m),
+                         "kessler: bench day %.0f split: chunks %.1f s (seeds %.1f, retire %.1f, log read %.1f, grid hits %.1f, "
+                         "batches %.1f), publish %.1f s, waiting for the mirror %.1f s, %llu pool changes dropped at publish",
+                         (w.frontier - w.s.epoch) / 86400.0, profChunkS, profSeedS, profRetireS, profReadS, profFillS,
+                         profBatchS, profPublishS, profWaitS,
+                         (unsigned long long)droppedTotal);
                 Log::line(m);
             }
         }
@@ -273,10 +364,14 @@ struct SatelliteSim::KesslerWorker
             const double t0 = w.frontier, t1 = std::min(w.stepStart(w.frontier) + w.s.stepS, to);
             if (w.frontier == w.stepStart(w.frontier) && w.wantCheckpoints && w.frontier >= w.checkpointFrom)
                 w.checkpoint(w.frontier, pendingNext);
+            const auto s0 = std::chrono::steady_clock::now();
             while (pendingNext < pending.size() && pending[pendingNext].t <= t1 &&
                    pending[pendingNext].origin == kessler::ORIGIN_SEED)
                 w.apply(pending[pendingNext++]);
+            const auto s1 = std::chrono::steady_clock::now();
             w.retireParticles(0.5 * (t0 + t1));
+            profSeedS += std::chrono::duration<double>(s1 - s0).count();
+            profRetireS += std::chrono::duration<double>(std::chrono::steady_clock::now() - s1).count();
             const int64_t K = w.stepIndex(w.stepStart(t0));
             while (reader && !reader->done() && reader->peekStep() < K)
             {
@@ -288,8 +383,12 @@ struct SatelliteSim::KesslerWorker
             {
                 uint32_t ck = 0;
                 bool hasCheck = false;
+                const auto q0 = std::chrono::steady_clock::now();
                 reader->next(w, stepEv, ck, hasCheck);
+                const auto q1 = std::chrono::steady_clock::now();
                 const uint32_t got = w.fillGridHits(stepEv.data(), stepEv.size(), t0, t0 + w.s.stepS);
+                profReadS += std::chrono::duration<double>(q1 - q0).count();
+                profFillS += std::chrono::duration<double>(std::chrono::steady_clock::now() - q1).count();
                 if (hasCheck && got != ck)
                 {
                     // Not the history the log was made from (it never should be): sample from here on.
@@ -302,15 +401,20 @@ struct SatelliteSim::KesslerWorker
                     w.frontier = t0;
                     return;
                 }
+                const auto a0 = std::chrono::steady_clock::now();
                 w.applyBatch(stepEv.data(), stepEv.size());
+                profBatchS += std::chrono::duration<double>(std::chrono::steady_clock::now() - a0).count();
             }
             while (pendingNext < pending.size() && pending[pendingNext].t <= t1)
                 w.apply(pending[pendingNext++]);
             ++w.sampleCount;
             w.frontier = t1;
+            w.capJournal();
         }
     }
     std::unique_ptr<kessler::EngineEventReader> reader; // the compact log being replayed (the cache, the prebake)
+    double profReadS = 0.0, profFillS = 0.0, profPublishS = 0.0, profWaitS = 0.0; // (the bench line)
+    double profSeedS = 0.0, profRetireS = 0.0, profBatchS = 0.0, profChunkS = 0.0;
     std::vector<kessler::Event> stepEv;
 
     // Rollback checkpoints: one per step from a step before the player's time on; older ones go.
@@ -671,6 +775,8 @@ void SatelliteSim::kesslerShutdown()
     if (kUserEvents.empty() && kWorker->w.frontier > kCacheFrontier + 1.0)
         writeCache(std::filesystem::path(Paths::userDataDir()) / "kessler" / cacheName(kHash), kHash, kWorker->w,
                    kWorker->w.frontier);
+    kEvents.clear();
+    kEvents.src = nullptr; // (the view reads the world's log)
     kWorker.reset();
 }
 
@@ -756,6 +862,7 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
     // The main thread's mirror starts empty; the pool tail of satOrbits goes with it.
     kPool.clear();
     kEvents.clear();
+    kEvents.src = nullptr; // (the old world's log goes with it)
     kRosterWords.assign(2ull * activeSatCount, kessler::kNever);
     kRosterDecay.assign(activeSatCount, kessler::kNever);
     kReentries.clear();
@@ -935,6 +1042,9 @@ void SatelliteSim::kesslerRestartInstall(RestartOut &out)
     kHash = out.hash;
     kCacheFrontier = out.cacheFrontier;
     kWorker = std::move(out.wk);
+    kEvents.src = &kWorker->w.events;
+    kWorker->publishPrune = !(std::getenv("SATLIGHTSIM_KESSLER_PUBLISH_PRUNE") &&
+                              std::atoi(std::getenv("SATLIGHTSIM_KESSLER_PUBLISH_PRUNE")) == 0);
     kWorker->startThread();
 }
 
@@ -1024,12 +1134,15 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
         // (2026-10-21) Never wait for the worker: if it is handing over a batch right now, take it next frame.
         std::unique_lock<std::mutex> lk(W.mx, std::try_to_lock);
         if (lk.owns_lock() &&
-            (!W.outPool.empty() || !W.outEvents.empty() || !W.outStreams.empty() || !W.outRoster.empty() ||
+            (!W.outPool.empty() || W.outEventsEnd != W.syncQEvEnd || !W.outStreams.empty() || !W.outRoster.empty() ||
              (W.outFrontier > 0.0 && W.outFrontier != W.syncQFrontier)))
         {
             KesslerWorker::SyncBatch b;
             b.pool.swap(W.outPool);
-            b.ev.swap(W.outEvents);
+            b.evEnd = W.outEventsEnd;
+            W.syncQEvEnd = b.evEnd;
+            b.prunedUntil = W.outPrunedUntil;
+            W.outPrunedUntil = INT32_MIN;
             b.st.swap(W.outStreams);
             b.rd.swap(W.outRoster);
             b.frontier = W.outFrontier > 0.0 ? W.outFrontier : kFrontier;
@@ -1046,6 +1159,11 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
         const bool held = tNow >= kWorldStart && tNow + 1.0 >= kFrontier + leadH;
         kWorker->userWaiting = held;
         kesslerSyncProcess(nowSec, held ? kSyncBudgetHeldMs : kSyncBudgetMs);
+        size_t backlog = 0;
+        for (const auto &b : kWorker->syncQ)
+            backlog += b.pool.size() - b.next;
+        kWorker->syncBacklog = backlog;
+        kWorker->cv.notify_all();
     }
     if (kWorker->done && !kWorkerDone && kWorker->syncQ.empty())
     {
@@ -1077,6 +1195,7 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
             kHistPruneWall = nowWall;
             kHistPrunedAt = nowSec;
             kPruneBucket = 0; // a pass starts (below, a few buckets a frame)
+            kesslerPruneOldIndexes();
         }
     }
     // (2026-10-28) ... and while sim time stands still (held at the frontier after a jump, paused) whenever the mirrored
@@ -1090,6 +1209,7 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
             kHistPruneWall = nowWall;
             kHistPruneFrontier = kFrontier;
             kPruneBucket = 0;
+            kesslerPruneOldIndexes();
         }
     }
     // (2026-10-21) The prune is a pass over kPoolHist's buckets, within ~1 ms a frame: in one go it was 16-48 ms late in
@@ -1279,13 +1399,11 @@ void SatelliteSim::kesslerSyncProcess(int32_t nowSec, double budgetMs)
             }
             stopped = over();
         }
-        while (sb.evNext < sb.ev.size() && !stopped)
-        {
-            const size_t e = std::min(sb.ev.size(), sb.evNext + 4 * kPiece);
-            kEvents.append(sb.ev.begin() + (ptrdiff_t)sb.evNext, sb.ev.begin() + (ptrdiff_t)e);
-            sb.evNext = e;
-            stopped = over();
-        }
+        // The events are the world's own storage (EventLog): the view's count moves (2026-10-28: no copy). The
+        // generations dropped at publish make going back before their replacements' births a replay.
+        kEvents.src = &W.w.events;
+        kEvents.n = std::max(kEvents.n, sb.evEnd);
+        kHistPrunedUntil = std::max(kHistPrunedUntil, sb.prunedUntil);
         while (sb.stNext < sb.st.size() && !stopped)
         {
             const size_t e = std::min(sb.st.size(), sb.stNext + kPiece);
@@ -1868,6 +1986,8 @@ bool SatelliteSim::kesslerUserEvent(uint8_t kind, uint32_t satA, uint32_t satB, 
     {
         kesslerEnabled = true;
         spaceWeatherSetScriptedStorm(true, kFuryArriveT, kFuryPeakKp);
+        kEvents.clear();
+        kEvents.src = nullptr;
         kWorker.reset(); // a fresh world below (it cannot be running while disabled)
     }
     kessler::Event ev;
@@ -1979,7 +2099,8 @@ bool SatelliteSim::kesslerBreakupInPlace(const kessler::Event &ev)
         // are kept.
         {
             std::lock_guard<std::mutex> lk(W.mx);
-            kEvents.append(W.outEvents.begin(), W.outEvents.end());
+            kEvents.src = &w.events;
+            kEvents.n = std::max(kEvents.n, W.outEventsEnd);
             std::vector<kessler::SmallStream> keep;
             const int32_t ckSec = w.secOf(ck.t);
             for (const kessler::SmallStream &ss : W.outStreams)
@@ -1987,7 +2108,6 @@ bool SatelliteSim::kesslerBreakupInPlace(const kessler::Event &ev)
                     keep.push_back(ss);
             if (!keep.empty())
                 kesslerAddStreams(keep.data(), keep.size());
-            W.outEvents.clear();
             W.outPool.clear();
             W.outStreams.clear();
             W.outRoster.clear();
@@ -2003,10 +2123,9 @@ bool SatelliteSim::kesslerBreakupInPlace(const kessler::Event &ev)
         kessler::sortPending(P, W.pendingNext, w);
         W.replayUntil = stepEnd;
         W.pubEvents = w.events.size();
-        if (kEvents.size() >= w.events.size())
-            kEvents.resize(w.events.size());
-        else
-            kEvents.assign(w.events.begin(), w.events.end());
+        kEvents.src = &w.events;
+        kEvents.n = w.events.size();
+        W.outEventsEnd = W.syncQEvEnd = kEvents.n;
         kesslerMirrorRewind(ck.t);
     }
     else
@@ -2557,6 +2676,42 @@ FbFrag fbFrag(uint64_t seed, int k, int N, double tau, float matK = 0.0f)
     return f;
 }
 } // namespace
+
+// (2026-10-28, the memory audit) The small-fragment streams, their expanded hours and the re-entry index for times
+// more than kIndexKeepS before the shown second: only drawn when time goes back that far, which then replays (they were
+// kept for ever: ~0.3 GB of streams by day 170, growing with the cascade).
+void SatelliteSim::kesslerPruneOldIndexes()
+{
+    if (kShownSec == INT32_MIN)
+        return;
+    constexpr int32_t kIndexKeepS = 30 * 86400;
+    const int32_t cut = kShownSec - kIndexKeepS;
+    bool erased = false;
+    // Streams by the day their window opens: a window is at most ~10 days wide, so a day's streams serve no hour after
+    // day + 11 (kesslerSmallReHour reads days dLast - 11 .. dLast).
+    const int32_t dayCut = (int32_t)std::floor(cut / 86400.0) - 12;
+    for (auto it = kSmallStreams.begin(); it != kSmallStreams.end() && it->first < dayCut;)
+    {
+        kSmallStreamCount -= std::min(kSmallStreamCount, it->second.size());
+        it = kSmallStreams.erase(it);
+        erased = true;
+    }
+    const int32_t hrCut = (int32_t)std::floor(cut / 3600.0);
+    for (auto it = kSmallReHours.begin(); it != kSmallReHours.end() && it->first < hrCut;)
+        it = kSmallReHours.erase(it);
+    for (auto it = kReentries.begin(); it != kReentries.end();)
+    {
+        if (it->first < hrCut)
+        {
+            it = kReentries.erase(it);
+            erased = true;
+        }
+        else
+            ++it;
+    }
+    if (erased)
+        kHistPrunedUntil = std::max(kHistPrunedUntil, cut);
+}
 
 void SatelliteSim::kesslerIndexReentry(uint32_t sat, int32_t sec)
 {
@@ -3255,6 +3410,88 @@ const nlohmann::json &SatelliteSim::kesslerStateCached() const
 }
 
 nlohmann::json SatelliteSim::kesslerStateJson() const { return kesslerStateJsonImpl(true); }
+
+// (2026-10-28) Memory by structure: harness `kessler mem`. Vectors by capacity, maps with a node estimate (~32-48 B a
+// node); read from the main thread while the worker may run (sizes only: a race is harmless here).
+nlohmann::json SatelliteSim::kesslerMemJson()
+{
+    std::vector<std::pair<std::string, double>> v;
+    auto vb = [](const auto &x) { return (double)x.capacity() * sizeof(x[0]); };
+    if (kWorker)
+    {
+        KesslerWorker &W = *kWorker;
+        W.w.memReport(v);
+        v.push_back({"worker.pending", vb(W.pending)});
+        v.push_back({"worker.reader", W.reader ? (double)W.reader->bytes() : 0.0});
+        v.push_back({"worker.step_events", vb(W.stepEv)});
+        double ob = vb(W.outPool) + vb(W.outStreams) + vb(W.outRoster);
+        for (const auto &b : W.syncQ)
+            ob += vb(b.pool) + vb(b.st) + vb(b.rd);
+        v.push_back({"worker.outbox_syncq", ob});
+    }
+    v.push_back({"mirror.kPool", vb(kPool)});
+    v.push_back({"mirror.kPoolGen", vb(kPoolGen)});
+    v.push_back({"mirror.roster_words", vb(kRosterWords) + vb(kRosterDecay)});
+    {
+        double b = (double)kReentries.bucket_count() * 8.0;
+        for (const auto &kv : kReentries)
+            b += 48.0 + vb(kv.second);
+        v.push_back({"mirror.kReentries", b});
+    }
+    {
+        double b = (double)kPoolHist.bucket_count() * 8.0;
+        for (const auto &kv : kPoolHist)
+            b += 48.0 + vb(kv.second);
+        v.push_back({"mirror.kPoolHist", b});
+        v.push_back({"mirror.kGenBounds", (double)kGenBounds.size() * 48.0});
+    }
+    {
+        double b = 0.0;
+        for (const auto &kv : kSmallStreams)
+            b += 64.0 + vb(kv.second);
+        v.push_back({"mirror.kSmallStreams", b});
+        b = 0.0;
+        for (const auto &kv : kSmallReHours)
+            b += 64.0 + vb(kv.second);
+        v.push_back({"mirror.kSmallReHours", b});
+    }
+    v.push_back({"mirror.kEvents", 0.0}); // (a view of world.events since 2026-10-28)
+    v.push_back({"mirror.dirty", vb(kDirtyRoster) + vb(kDirtyPool) + vb(kUserEvents)});
+    v.push_back({"satOrbits.roster_launch", (double)std::min<size_t>(satOrbits.size(), poolIdx0()) * sizeof(SatOrbit)});
+    v.push_back({"satOrbits.pool_tail", (double)(satOrbits.capacity() - std::min<size_t>(satOrbits.size(), poolIdx0())) *
+                                            sizeof(SatOrbit)});
+    v.push_back({"cpu_maps", vb(earthElevCpu) + vb(earthNightCpu) + vb(oceanMaskCpu) + vb(earthDayCpu) +
+                                 vb(earthCloudsCpu) + vb(dustGridCpu)});
+    launchMemReport(v);
+    nlohmann::json j;
+    double sum = 0.0;
+    for (const auto &p : v)
+    {
+        j["mb"][p.first] = std::round(p.second / (1024.0 * 1024.0) * 10.0) / 10.0;
+        sum += p.second;
+    }
+    j["accounted_mb"] = std::round(sum / (1024.0 * 1024.0));
+#ifdef _WIN32
+    PROCESS_MEMORY_COUNTERS_EX pmc{};
+    if (K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *)&pmc, sizeof(pmc)))
+    {
+        j["working_set_mb"] = std::round((double)pmc.WorkingSetSize / (1024.0 * 1024.0));
+        j["peak_working_set_mb"] = std::round((double)pmc.PeakWorkingSetSize / (1024.0 * 1024.0));
+        j["private_mb"] = std::round((double)pmc.PrivateUsage / (1024.0 * 1024.0));
+    }
+#endif
+    j["frontier_days"] = (kFrontier - kFuryArriveT) / 86400.0;
+    j["publish_dropped"] = kWorker ? kWorker->droppedTotal : 0;
+    j["hist_slots"] = kPoolHist.size();
+    j["hist_pruned_until_days"] = kHistPrunedUntil == INT32_MIN ? -1e9 : kHistPrunedUntil / 86400.0;
+    j["world_frontier_days"] = kWorker ? (kWorker->w.frontier - kFuryArriveT) / 86400.0 : 0.0;
+    j["events"] = kEvents.size();
+    j["pool"] = kPool.size();
+    j["sizeof"] = {{"PoolRec", sizeof(kessler::PoolRec)}, {"Event", sizeof(kessler::Event)}, {"SatOrbit", sizeof(SatOrbit)},
+                   {"SmallStream", sizeof(kessler::SmallStream)}, {"KGen", sizeof(KGen)}};
+    return j;
+}
+
 
 nlohmann::json SatelliteSim::kesslerStateJsonImpl(bool full) const
 {

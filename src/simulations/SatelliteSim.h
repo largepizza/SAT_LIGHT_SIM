@@ -2935,6 +2935,7 @@ private:
     void kesslerShowGen(uint32_t j, int32_t sec);
     const kessler::PoolRec *kesslerPoolGenWithDecay(uint32_t j, int32_t decaySec) const;
     void kesslerIndexReentry(uint32_t sat, int32_t sec);
+    void kesslerPruneOldIndexes(); // (2026-10-28) streams / re-entry index older than 30 days before now
     // The fireballs (round 3): heads as point sprites appended to the visible list by kessler_fireballs.comp
     // (CPU-built, host-visible kFireBuf), trails as emissive Gaussians in the dust buffer.
     static constexpr uint32_t kFireballMax = 8192;
@@ -2976,7 +2977,32 @@ private:
     // track, looking at the breakup point. False (and why in msg) when none is due in the next 6 h.
     bool kesslerGoToNextReentry(std::string &msg, bool watch = false); // watch: mid-glow, the fireball tracked
     bool selWantTrack = false;        // the selWant* fireball's camera lock (a Watch)
-    SegVec<kessler::Event> kEvents;      // ... of the applied events (segmented: it never moves, 2026-10-21)
+    // ... of the applied events: since 2026-10-28 a VIEW of the world's own EventLog (no copy), up to the count the
+    // worker published and the mirror has taken in (kesslerSyncProcess).
+    struct KEventView
+    {
+        const kessler::EventLog *src = nullptr;
+        size_t n = 0;
+        size_t size() const { return n; }
+        bool empty() const { return n == 0; }
+        const kessler::Event &operator[](size_t i) const { return (*src)[i]; }
+        void clear() { n = 0; }
+        template <class K, class Less>
+        size_t lowerBound(const K &key, Less less) const
+        {
+            size_t lo = 0, hi = n;
+            while (lo < hi)
+            {
+                const size_t mid = lo + (hi - lo) / 2;
+                if (less((*src)[mid], key))
+                    lo = mid + 1;
+                else
+                    hi = mid;
+            }
+            return lo;
+        }
+    };
+    KEventView kEvents;
     double kFrontier = 0.0;               // simulated up to here (J2000 s)
     double kCacheFrontier = 0.0;          // the loaded cache's frontier: a cache is only ever rewritten longer
     bool kWorkerDone = false;
@@ -3936,6 +3962,8 @@ private:
     void kesslerInit(VulkanContext &ctx); // after the roster's buffers exist: storm, world, cache, worker
     void kesslerShutdown();               // stop the worker, write the cache
     double kesslerSaveCacheNow(const std::string &copyTo, std::string &where); // harness `kessler savecache`
+    nlohmann::json kesslerMemJson(); // harness `kessler mem` (2026-10-28): bytes by structure + the process's figures
+    void launchMemReport(std::vector<std::pair<std::string, double>> &out) const; // its part for the launches
     // syncUntil > 0: when the world starts within two steps of it (a breakup before the CME starts the world at its own
     // step), that step is computed before this returns (its debris is up the same frame).
     void kesslerRestart(VulkanContext &ctx, const std::vector<kessler::Event> &userEvents, double keepEngineBefore,

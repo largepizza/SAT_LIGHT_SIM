@@ -15868,3 +15868,31 @@ glm::dvec3 SatelliteSim::rocketEngineGeom(int typeIdx) const
         return glm::dvec3(0.0, 2.0, 40.0);
     return LaunchImpl::engineGeomOf(satTypes[(size_t)typeIdx]);
 }
+
+// (2026-10-28) The launches' share of the harness's `kessler mem` report.
+void SatelliteSim::launchMemReport(std::vector<std::pair<std::string, double>> &out) const
+{
+    if (!launchState)
+        return;
+    const LaunchState &L = *launchState;
+    auto vb = [](const auto &x) { return (double)x.capacity() * sizeof(x[0]); };
+    double bat = (double)L.batches.bucket_count() * 8.0, parcels = 0.0;
+    for (const auto &kv : L.batches)
+    {
+        const LBatch &B = kv.second;
+        bat += sizeof(LBatch) + 32.0 + vb(B.mem) + vb(B.chunks[0]) + vb(B.chunks[1]) + vb(B.ends);
+        parcels += vb(B.parcels);
+    }
+    out.push_back({"launch.batches", bat});
+    out.push_back({"launch.parcels", parcels});
+    double pl = vb(L.planes);
+    for (const auto &p : L.planes)
+        pl += vb(p.sats) + vb(p.fillT);
+    out.push_back({"launch.planes", pl});
+    double riv = (double)L.rivalIdx.size() * 64.0 + (double)L.cands.size() * 96.0;
+    for (const auto &kv : L.rivalIdx)
+        if (kv.second)
+            riv += vb(*kv.second);
+    out.push_back({"launch.cands_rivals", riv});
+    out.push_back({"launch.slots_elems", vb(L.slots) + vb(L.elems)});
+}
