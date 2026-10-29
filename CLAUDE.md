@@ -3115,6 +3115,12 @@ exe, packaged), `tools/lunar_glint_tool` (`LunarGlintTool`, EXCLUDE_FROM_ALL: th
   under way), 1x; the brightest place by the rows, or the clearest place within 1 mag of it when that is under cloud
   (> 0.3 on the CPU cloud map); the camera on the base's drawn place at a 1-deg FOV (`skyBodyEnu` knows the base ids, so
   the kept aim follows it); the toast names the base, the magnitude, the place, the Moon's height and phase angle.
+- **Selectable** (2026-10-28, issue 20261028_192740): a click within 8 px of a glint drawn this frame
+  (`pickMoonBaseAt`) selects the base (`selectedMoonBase`); the star-like panel (`formatSelectedMoonBaseInfo`, each
+  frame: magnitude seen / above the air, arrays, the Moon's phase angle, the glint window from `lunar::findWindows` over
+  -1 .. +3 days, cached; rows lit) has Track (`updateTrack` aims at `moonBaseDrawnEnu`). It gives way to any other
+  selection. The pick chain (comet, glint, planet, star, satellite) is `pickAndSelectAt` (mouse, the select key,
+  harness `select pick`); harness `select moonbase [<i>|<name>]`.
 - Settings (no UI): `moon_bases.enabled` (true), `moon_bases.tilt_jitter_scale` (1, x the rows' errors),
   `moon_bases.event_mag_limit` (3); a change of the last two re-runs the sky-event search.
 - Harness: `moonbase [state] | windows [days=] [limit=] [jitter=] | check` (docs/HARNESS.md);
@@ -7863,6 +7869,13 @@ pass and SKY_ENV only: SKY_LITE (Planetarium) and Potato have no Milky Way.
   zoomed points up to 2x), full colour. "Milky Way zoom detail" 0.6, "Milky Way star clouds" 0.7. Photometry tab slots
   39-44, keys `photometry.milky_way_*`; `photometry.milky_way_zoom` (no UI) = the A/B (false: the old single fetch,
   no denoise, no star clouds; Andromeda and the look stay).
+- **The star clouds' tunables** (2026-10-28, issue 20261028_191142; Photometry "MILKY WAY STAR CLOUDS (ZOOMED IN)", slots
+  45-53, `cloud.mwStar0-2`, UBO 12288 -> 12336): `photometry.milky_way_star_zoom_from` 0.6 / `_zoom_full` 0.3 (input px
+  per texel), `_fill` 0.9, `_size_px` 0.9, `_spacing_px` 4 (cell), `_brightness_spread` 0.65 (the power law's a),
+  `_faint_from` 0.003 / `_faint_full` 0.02, `_nebula_exclusion` 1. Defaults = the old constants (the report's view vs
+  the old shader: 0.003 levels mean). SKY_LITE is 230272 of its 230400 B after it: the next UBO field needs room.
+- **No seam at the anticentre** (2026-10-28, issues 20261028_190641 / _191529): the main fetch is `textureGrad` with the
+  longitude wrap taken out of the derivatives; the implicit level took the coarsest mip at u 0/1 (a thin dark line).
 - **Cost** (RTX 3070 Ti, 1600x900, interleaved with the old shader in one app): sky pass FOV 90 +0.0 (6.58 vs 6.21 /
   6.56), FOV 8 +0.25 ms (1.29 -> 1.55; every pixel zoomed), ISS +0.07; sky TAA 168 registers both, binary 937 -> 950 KB;
   SKY_LITE SPIR-V +88 B (the UBO). Scripts and captures: `harness_runs/mw_tools/` (azel.py: a target's az / el for a
@@ -8162,6 +8175,12 @@ more in deep space), the true angular radius x "Moon size (x real)" (`moonSizeSc
 EXPOSURE AND MOON section since 2026-10-06, key
 `clouds.moon_size`; the old disc was a fixed 3x at infinity), the Earth-centred position in the observer's ENU
 (km) and the eclipse state — all into `cloud.moonCenter` / `cloud.moonMisc` (UBO 784 -> 816).
+- **The disc is anti-aliased and stable under the sky TAA** (2026-10-28, issue 20261028_191038, "flickers" from 1538 km):
+  full variants measure each channel's angle off the centre as the small offset vector (`mOff`; the ray-sphere test's
+  bm^2 - (1 - R^2) cancelled in float to ~1 px of the radius: a jagged limb) and take its coverage over one input pixel
+  (`hitC`); the normal is from the lateral offset. Moon pixels carry the TAA marker 0.975 (`moonCovTaa`) and
+  sky_taa.comp skips its flash rule on them while still (it reset crater rims and the limb to each jittered sample).
+  Still view: > 4 levels 1.0% -> 0.08% of the disc, max std 58 -> 19.
 - **A real surface (2026-10-27): albedo + LOLA relief, the IAU rotation.** Binding 2 is `moon_maps.rgba16f`
   (`tools/make_moon_maps.py`: NASA SVS CGI Moon Kit, the LROC WAC colour mosaic + LOLA `ldem_16`, cached in
   build/moon_cache/), an RGBA16F equirect mip chain 2048 x 1024 in selenographic lon / lat (RGB albedo scaled so the
@@ -8366,7 +8385,8 @@ camera reaches, Jupiter is ~24 px across, Venus near inferior conjunction ~28, S
   through them. **Venus**: a forward-scattering rim round the limb past ~140 deg of phase, a full ring near inferior
   conjunction. **Jupiter**: the moons' shadows (soft by the Sun's disc).
 - **Galilean moons** = planetBuf records kPlanetCount.. (`kPlanetBodyCount` 10; `planetBodyName`), points of the star
-  pipeline, selectable (`select planet Io`). Meeus ch. 44 low accuracy (light time in it), placed in Jupiter's frame (IAU
+  pipeline, selectable (`select planet Io`) — by a click only when clear of Jupiter on screen (> 8 px from its centre or
+  4 px outside its disc, 2026-10-28, issue 20261028_190641: at a wide field a click on Jupiter picked a moon 2 px off). Meeus ch. 44 low accuracy (light time in it), placed in Jupiter's frame (IAU
   pole, the Earth's direction): eclipsed by Jupiter's shadow (soft), hidden behind the disc, x 0.05 in transit over a
   resolved disc; flags transit / occulted / eclipsed / shadow on Jupiter. **Checked against JPL Horizons** (2036-11-22
   07:00 UT, offsets from Jupiter): Io 86.8" E (Horizons 86.2), Europa 206.3" W (205.7), Ganymede 353.1" W (352.6),
