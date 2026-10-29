@@ -1972,6 +1972,39 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         return Status::Done;
     }
 
+    // ── corona: the corona's structure now (SatelliteSimCorona.cpp) | cme [halo=1] [r=4] [days=60] (jump to the next CME
+    //    whose front is r solar radii out) ──
+    if (n == "corona")
+    {
+        if (lower(pos(0)) == "cme")
+        {
+            const bool wantHalo = c.num("halo", 0.0) > 0.5;
+            const double rWant = c.num("r", 4.0);
+            const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            const double maxDays = c.num("days", 60.0);
+            double found = -1.0;
+            for (double t = now + 300.0; t < now + maxDays * 86400.0 && found < 0.0; t += 300.0)
+            {
+                fillCorona(t);
+                for (int i = 0; i < coronaCmes; ++i)
+                {
+                    const glm::vec4 a = refrGpu.corCme[2 * i], b = refrGpu.corCme[2 * i + 1];
+                    if ((b.x > 0.5f) == wantHalo && a.z >= rWant && a.z < rWant + 1.5f) { found = t; break; }
+                }
+            }
+            if (found < 0.0)
+                fail("corona cme: none within the search window");
+            const double dd = std::floor(found / 86400.0);
+            simDayJ2000 = (int64_t)dd;
+            simSecInDay = found - dd * 86400.0;
+            trailClearPending = true;
+            updatePositions(found, 0.0f);
+            fillCorona(found);
+        }
+        r["corona"] = coronaJson();
+        return Status::Done;
+    }
+
     // ── aurora: the activity now | next <kp> (jump to the peak of the next storm reaching it) | substorm
     //    (jump to ~10 min after the next substorm onset) | kp <v> (manual) | auto ──
     if (n == "aurora")
