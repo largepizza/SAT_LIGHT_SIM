@@ -51,6 +51,18 @@ foreach(dir shaders assets satellite_models default_bookmarks)
     endif()
     file(COPY "${RUNTIME_DIR}/${dir}" DESTINATION "${STAGE}")
 endforeach()
+# The prebaked Sun's Fury (2026-10-28): <exe dir>/kessler_prebake/suns_fury_<hash>.pak, the default history's engine events
+# (data/kessler; tools/make_kessler_prebake.py). Required when the source tree has it: a release without it computes the
+# cascade live (minutes of "Computing the debris cascade" on a jump past the CME).
+if(EXISTS "${SRC_DIR}/data/kessler")
+    if(NOT EXISTS "${RUNTIME_DIR}/kessler_prebake")
+        message(FATAL_ERROR "PackageRelease.cmake: ${RUNTIME_DIR}/kessler_prebake is missing — "
+                            "the build's POST_BUILD copy steps did not run.")
+    endif()
+    file(GLOB _paks "${RUNTIME_DIR}/kessler_prebake/suns_fury_*.pak")
+    file(MAKE_DIRECTORY "${STAGE}/kessler_prebake")
+    file(COPY ${_paks} DESTINATION "${STAGE}/kessler_prebake")
+endif()
 # Keep this a whitelist, and keep screenshots/ out of it. In a dev build tree <exe dir>/screenshots
 # is a junction/symlink to the source tree's screenshots/ (cmake/EnsureScreenshotDir.cmake), so
 # copying it — or copying RUNTIME_DIR wholesale — would follow that link and ship the developer's

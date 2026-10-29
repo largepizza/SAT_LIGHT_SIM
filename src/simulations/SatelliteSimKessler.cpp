@@ -84,6 +84,7 @@ static double kesslerWorkingSetMB()
 }
 
 // ── The worker ───────────────────────────────────────────────────────────────────────────────────
+static bool readCachePak(const std::filesystem::path &p, kessler::EngineEventReader &reader, std::string &why);
 struct SatelliteSim::KesslerWorker
 {
     kessler::World w;
@@ -93,6 +94,7 @@ struct SatelliteSim::KesslerWorker
     double tEnd = 0.0;
     std::atomic<double> wantUntil{0.0}; // lazy: simulate only this far (the main thread moves it with sim time)
     std::atomic<double> simNow{0.0};    // the player's sim time: checkpoints are kept from just before it (rollback)
+    std::atomic<bool> userWaiting{false}; // time is held at the frontier (the banner): the engine takes every core
     std::thread th;
     std::mutex mx;
     std::condition_variable cv; // (2026-10-21) wakes an idle worker to stop (a 30-ms sleep cost a breakup ~50 ms)
@@ -172,10 +174,32 @@ struct SatelliteSim::KesslerWorker
         outFrontier = w.frontier;
     }
 
+    std::filesystem::path prebakePath; // a compact log to replay (the cache, or the shipped prebake): opened by run()
+
     void run()
     {
         kessler::lowerThreadPriority();
         const auto t0 = std::chrono::steady_clock::now();
+        if (!prebakePath.empty() && !reader)
+        {
+            // Read here, off the main thread (tens of MB inflated at boot).
+            reader = std::make_unique<kessler::EngineEventReader>();
+            std::string why;
+            if (!readCachePak(prebakePath, *reader, why))
+            {
+                Log::line("kessler: cache " + prebakePath.string() + " unreadable (" + why + "): sampling");
+                reader.reset();
+                replayUntil = std::min(replayUntil, w.frontier);
+            }
+            else
+            {
+                char m[200];
+                snprintf(m, sizeof(m), "kessler: compact log opened: %zu engine events, %.0f ms", reader->eventsLeft(),
+                         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count());
+                Log::line(m);
+            }
+            prebakePath.clear();
+        }
         double lastLog = w.frontier;
         // Replay (no sampling) up to the cache's frontier, then simulate. A day of sim time per chunk,
         // published after each.
@@ -196,7 +220,9 @@ struct SatelliteSim::KesslerWorker
             to = std::min(w.s.epoch + std::ceil((to - w.s.epoch) / w.s.stepS - 1e-9) * w.s.stepS, tEnd);
             if (!sampling)
                 to = std::min(to, replayUntil);
+            kessler::setEngineThreadsWide(!sampling || userWaiting.load());
             simulateChunk(to, sampling);
+            kessler::setEngineThreadsWide(false);
             publish();
             // Throughput log every 10 simulated days (the benchmark reads these).
             if (w.frontier - lastLog >= 10.0 * 86400.0)
@@ -206,16 +232,18 @@ struct SatelliteSim::KesslerWorker
                 const int32_t sec = w.secOf(w.frontier);
                 for (const kessler::PoolRec &r : w.pool)
                     live += (sec >= r.bornSec && sec < r.deathSec);
-                char m[420];
+                char m[520];
                 snprintf(m, sizeof(m),
                          "kessler: bench day %.0f wall %.1f s: %zu events, %zu records (%zu live), %zu death buckets, "
                          "%.3g small fragments (%llu re-entry streams), %.0f MB working set; engine refs %.1f states %.1f pairs %.1f "
-                         "apply %.1f",
+                         "apply %.1f (all applies %.1f: serial prep %.1f, commit %.1f, parallel prep %.1f, deposits %.1f, prepared %llu/%llu; %s)",
                          (w.frontier - w.s.epoch) / 86400.0,
                          std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), w.events.size(),
                          w.pool.size(), live, (size_t)w.deathBuckets.size(), w.grid.total(), (unsigned long long)w.smallStreamsMade,
                          kesslerWorkingSetMB(), w.profRefs,
-                         w.profState, w.profPairs, w.profApply);
+                         w.profState, w.profPairs, w.profApply, w.profAllApply, w.profFrag, w.profSmall, w.profPrep, w.profFlush,
+                         (unsigned long long)w.prepHits, (unsigned long long)(w.prepHits + w.prepMisses),
+                         sampling ? "sampling" : "replay");
                 Log::line(m);
             }
         }
@@ -237,18 +265,53 @@ struct SatelliteSim::KesslerWorker
             w.simulate(to, pending, pendingNext, &stop);
             return;
         }
-        // Replay: apply the pending events only, keeping the steps (and the sample counter) aligned.
+        // Replay: apply the events only (no sampling), step by step as World::simulate does: the step's scripted
+        // events, the retirement of the small fragments at its sample time, its engine events (from `pending`, or the
+        // compact log: grid hits drawn here, from the world as the sampling step saw it, and checked), the player's.
         while (w.frontier < to && !stop)
         {
-            const double t1 = std::min(w.stepStart(w.frontier) + w.s.stepS, to);
+            const double t0 = w.frontier, t1 = std::min(w.stepStart(w.frontier) + w.s.stepS, to);
             if (w.frontier == w.stepStart(w.frontier) && w.wantCheckpoints && w.frontier >= w.checkpointFrom)
                 w.checkpoint(w.frontier, pendingNext);
+            while (pendingNext < pending.size() && pending[pendingNext].t <= t1 &&
+                   pending[pendingNext].origin == kessler::ORIGIN_SEED)
+                w.apply(pending[pendingNext++]);
+            w.retireParticles(0.5 * (t0 + t1));
+            const int64_t K = w.stepIndex(w.stepStart(t0));
+            while (reader && !reader->done() && reader->peekStep() < K)
+            {
+                uint32_t ck;
+                bool hc;
+                reader->next(w, stepEv, ck, hc); // (a step before the replay's start: not this world's)
+            }
+            if (reader && !reader->done() && reader->peekStep() == K && t0 + w.s.stepS <= replayUntil)
+            {
+                uint32_t ck = 0;
+                bool hasCheck = false;
+                reader->next(w, stepEv, ck, hasCheck);
+                const uint32_t got = w.fillGridHits(stepEv.data(), stepEv.size(), t0, t0 + w.s.stepS);
+                if (hasCheck && got != ck)
+                {
+                    // Not the history the log was made from (it never should be): sample from here on.
+                    char m[200];
+                    snprintf(m, sizeof(m), "kessler: the compact log's grid hits do not match at day %.2f: sampling from here",
+                             (t0 - w.s.epoch) / 86400.0);
+                    Log::line(m);
+                    reader.reset();
+                    replayUntil = t0;
+                    w.frontier = t0;
+                    return;
+                }
+                w.applyBatch(stepEv.data(), stepEv.size());
+            }
             while (pendingNext < pending.size() && pending[pendingNext].t <= t1)
                 w.apply(pending[pendingNext++]);
             ++w.sampleCount;
             w.frontier = t1;
         }
     }
+    std::unique_ptr<kessler::EngineEventReader> reader; // the compact log being replayed (the cache, the prebake)
+    std::vector<kessler::Event> stepEv;
 
     // Rollback checkpoints: one per step from a step before the player's time on; older ones go.
     void keepCheckpoints()
@@ -429,16 +492,45 @@ static uint64_t worldHash(const kessler::World &w)
     return h;
 }
 
-static std::string cacheName(uint64_t h)
+static std::string cacheName(uint64_t h, const char *ext = ".pak")
 {
     char b[64];
-    snprintf(b, sizeof(b), "suns_fury_%016llx.bin", (unsigned long long)h);
+    snprintf(b, sizeof(b), "suns_fury_%016llx%s", (unsigned long long)h, ext);
     return b;
 }
 
-// The cache: the engine's events (with the user events they were made beside) and the frontier.
-static bool readCache(const std::filesystem::path &p, uint64_t hash, std::vector<kessler::Event> &engineEvents,
-                      double &frontier)
+// The event cache (2026-10-28: the compact log, deflated, ".pak"; the shipped prebake is the same file next to the exe,
+// in kessler/). Older ".bin" caches (whole 80-byte events) are still read.
+constexpr uint32_t kPakMagic = 0x3346534Bu; // "KSF3" (Rice-coded grid hits)
+
+extern "C" char *stbi_zlib_decode_malloc_guesssize(const char *buffer, int len, int initial_size, int *outlen);
+
+struct KesslerCacheHead
+{
+    std::filesystem::path path;
+    bool pak = false;
+    double frontier = 0.0;
+};
+
+static bool readCacheHead(const std::filesystem::path &p, uint64_t hash, KesslerCacheHead &out)
+{
+    std::ifstream f(p, std::ios::binary);
+    if (!f)
+        return false;
+    uint32_t magic = 0, ver = 0;
+    uint64_t h = 0;
+    double fr = 0.0;
+    f.read((char *)&magic, 4).read((char *)&ver, 4).read((char *)&h, 8).read((char *)&fr, 8);
+    if (!f || (magic != kCacheMagic && magic != kPakMagic) || ver != kCacheVersion || h != hash)
+        return false;
+    out.path = p;
+    out.pak = magic == kPakMagic;
+    out.frontier = fr;
+    return true;
+}
+
+// The old format: the engine's events whole.
+static bool readCacheBin(const std::filesystem::path &p, std::vector<kessler::Event> &engineEvents)
 {
     std::ifstream f(p, std::ios::binary);
     if (!f)
@@ -447,23 +539,67 @@ static bool readCache(const std::filesystem::path &p, uint64_t hash, std::vector
     uint64_t h = 0, n = 0;
     double fr = 0.0;
     f.read((char *)&magic, 4).read((char *)&ver, 4).read((char *)&h, 8).read((char *)&fr, 8).read((char *)&n, 8);
-    if (!f || magic != kCacheMagic || ver != kCacheVersion || h != hash || n > 100000000ull)
+    if (!f || magic != kCacheMagic || n > 100000000ull)
         return false;
     engineEvents.resize((size_t)n);
     f.read((char *)engineEvents.data(), (std::streamsize)(n * sizeof(kessler::Event)));
-    if (!f)
-        return false;
-    frontier = fr;
-    return true;
+    return (bool)f;
 }
 
-static void writeCache(const std::filesystem::path &p, uint64_t hash, const std::vector<kessler::Event> &events,
-                       double frontier)
+static bool readCachePak(const std::filesystem::path &p, kessler::EngineEventReader &reader, std::string &why)
 {
-    std::vector<kessler::Event> eng;
-    for (const kessler::Event &e : events)
-        if (e.origin == kessler::ORIGIN_ENGINE)
-            eng.push_back(e);
+    std::ifstream f(p, std::ios::binary);
+    if (!f)
+    {
+        why = "cannot open";
+        return false;
+    }
+    uint32_t magic = 0, ver = 0;
+    uint64_t h = 0, rawN = 0, compN = 0;
+    double fr = 0.0;
+    f.read((char *)&magic, 4).read((char *)&ver, 4).read((char *)&h, 8).read((char *)&fr, 8);
+    f.read((char *)&rawN, 8).read((char *)&compN, 8);
+    if (!f || magic != kPakMagic || compN > 0x7FFFFFF0ull || rawN > 0x7FFFFFF0ull)
+    {
+        why = "header";
+        return false;
+    }
+    if (compN == 0)
+    {
+        std::vector<uint8_t> v((size_t)rawN);
+        f.read((char *)v.data(), (std::streamsize)rawN);
+        if (!f)
+        {
+            why = "truncated";
+            return false;
+        }
+        return reader.open(std::move(v), &why);
+    }
+    std::vector<char> comp((size_t)compN);
+    f.read(comp.data(), (std::streamsize)compN);
+    if (!f)
+    {
+        why = "truncated";
+        return false;
+    }
+    int outLen = 0;
+    char *raw = stbi_zlib_decode_malloc_guesssize(comp.data(), (int)compN, (int)rawN, &outLen);
+    if (!raw || (uint64_t)outLen != rawN)
+    {
+        free(raw);
+        why = "inflate";
+        return false;
+    }
+    std::vector<uint8_t> v((uint8_t *)raw, (uint8_t *)raw + outLen);
+    free(raw);
+    return reader.open(std::move(v), &why);
+}
+
+static void writeCache(const std::filesystem::path &p, uint64_t hash, const kessler::World &w, double frontier)
+{
+    const auto c0 = std::chrono::steady_clock::now();
+    std::vector<uint8_t> raw;
+    kessler::packEngineEvents(w, w.events, raw);
     std::error_code ec;
     std::filesystem::create_directories(p.parent_path(), ec);
     const std::filesystem::path tmp = p.string() + ".tmp";
@@ -474,24 +610,33 @@ static void writeCache(const std::filesystem::path &p, uint64_t hash, const std:
             Log::line("kessler: cannot write " + tmp.string());
             return;
         }
-        const uint64_t n = eng.size();
-        f.write((const char *)&kCacheMagic, 4).write((const char *)&kCacheVersion, 4).write((const char *)&hash, 8);
-        f.write((const char *)&frontier, 8).write((const char *)&n, 8);
-        f.write((const char *)eng.data(), (std::streamsize)(n * sizeof(kessler::Event)));
+        // compN 0: the payload is stored as is (the release archive's zip deflates it a little; deflate in-app did not).
+        const uint64_t rawN = raw.size(), cN = 0;
+        f.write((const char *)&kPakMagic, 4).write((const char *)&kCacheVersion, 4).write((const char *)&hash, 8);
+        f.write((const char *)&frontier, 8).write((const char *)&rawN, 8).write((const char *)&cN, 8);
+        f.write((const char *)raw.data(), (std::streamsize)raw.size());
     }
     std::filesystem::rename(tmp, p, ec);
-    // Keep the three newest caches (each set of settings has its own; one can be tens of MB).
+    // Keep the three newest caches (each set of settings has its own).
     {
         std::vector<std::pair<std::filesystem::file_time_type, std::filesystem::path>> all;
         for (const auto &de : std::filesystem::directory_iterator(p.parent_path(), ec))
-            if (de.path().extension() == ".bin" && de.path().filename().string().rfind("suns_fury_", 0) == 0)
+            if ((de.path().extension() == ".bin" || de.path().extension() == ".pak") &&
+                de.path().filename().string().rfind("suns_fury_", 0) == 0)
                 all.push_back({de.last_write_time(ec), de.path()});
         std::sort(all.begin(), all.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
         for (size_t k = 3; k < all.size(); ++k)
             std::filesystem::remove(all[k].second, ec);
     }
-    Log::line("kessler: cache " + p.filename().string() + (ec ? " NOT written: " + ec.message() : " written") + ", " +
-              std::to_string(eng.size()) + " engine events, day " + std::to_string((int)((frontier - kFuryArriveT) / 86400.0)));
+    size_t nEng = 0;
+    for (const kessler::Event &e : w.events)
+        nEng += e.origin == kessler::ORIGIN_ENGINE;
+    char m[300];
+    snprintf(m, sizeof(m), "kessler: cache %s %s, %zu engine events to day %.1f, %.2f MB, %.0f ms",
+             p.filename().string().c_str(), ec ? "NOT written" : "written", nEng, (frontier - kFuryArriveT) / 86400.0,
+             raw.size() / 1e6,
+             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count());
+    Log::line(m);
 }
 
 // ── Start / stop ────────────────────────────────────────────────────────────────────────────────
@@ -524,9 +669,48 @@ void SatelliteSim::kesslerShutdown()
         kWorker->th.join();
     // Cache what was simulated (only while the player has caused nothing: their breakups are session state).
     if (kUserEvents.empty() && kWorker->w.frontier > kCacheFrontier + 1.0)
-        writeCache(std::filesystem::path(Paths::userDataDir()) / "kessler" / cacheName(kHash), kHash,
-                   kWorker->w.events, kWorker->w.frontier);
+        writeCache(std::filesystem::path(Paths::userDataDir()) / "kessler" / cacheName(kHash), kHash, kWorker->w,
+                   kWorker->w.frontier);
     kWorker.reset();
+}
+
+// The cache written now (harness `kessler savecache`; the prebake). Returns the ms it took, or < 0 (why in `where`).
+double SatelliteSim::kesslerSaveCacheNow(const std::string &copyTo, std::string &where)
+{
+    if (!kWorker)
+    {
+        where = "no world";
+        return -1.0;
+    }
+    if (!kUserEvents.empty())
+    {
+        where = "the history has player breakups (the cache is the settings' history alone)";
+        return -1.0;
+    }
+    const auto c0 = std::chrono::steady_clock::now();
+    kWorker->stopThread();
+    const std::filesystem::path p = std::filesystem::path(Paths::userDataDir()) / "kessler" / cacheName(kHash);
+    writeCache(p, kHash, kWorker->w, kWorker->w.frontier);
+    kCacheFrontier = std::max(kCacheFrontier, kWorker->w.frontier);
+    where = p.string();
+    if (!copyTo.empty())
+    {
+        std::error_code ec;
+        std::filesystem::path dst = copyTo;
+        if (std::filesystem::is_directory(dst, ec))
+            dst /= cacheName(kHash);
+        std::filesystem::create_directories(dst.parent_path(), ec);
+        std::filesystem::copy_file(p, dst, std::filesystem::copy_options::overwrite_existing, ec);
+        if (ec)
+        {
+            kWorker->startThread();
+            where = "copy to " + dst.string() + ": " + ec.message();
+            return -1.0;
+        }
+        where = dst.string();
+    }
+    kWorker->startThread();
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count();
 }
 
 // (Re)starts the world from scratch: the storm's seeds, the user's events and the engine events before
@@ -582,6 +766,7 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
     kPoolHist.clear();
     kGenBounds.clear();
     kShownSec = kHistPrunedUntil = kHistPrunedAt = INT32_MIN;
+    kHistPruneFrontier = 0.0;
     kReplayPending = false;
     satOrbits.resize(poolIdx0()); // the roster and the launch block; the pool tail goes
     // (2026-10-20) Room for the whole pool now, during the load: as a cascade fills it, growing satOrbits (with the 1.4M
@@ -637,30 +822,57 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
         buildWorld(*this, wk->w, satOrbits, activeSatCount, constellations, satTypes, raanAnchorT, kFuryArriveT,
                    kesslerRateMult, kesslerAvoidance, kesslerHorizonYears, kDebrisType, kDebrisConst, kDebrisKit);
         out.hash = worldHash(wk->w);
+        if (const char *e = std::getenv("SATLIGHTSIM_KESSLER_PARALLEL"))
+            wk->w.parallelApply = std::atoi(e) != 0;
+        if (const char *e = std::getenv("SATLIGHTSIM_KESSLER_PREP"))
+            wk->w.prepAhead = std::atoi(e) != 0;
+        if (const char *e = std::getenv("SATLIGHTSIM_KESSLER_DEFER"))
+            wk->w.deferInBatch = std::atoi(e) != 0;
         wk->w.s.startT = startT;
         wk->w.reset();
         wk->tEnd = kFuryArriveT + wk->w.s.horizonS;
 
-        // The engine's events: those kept from the run being replaced, else the cache (user data, then the
-        // shipped copy next to the exe), else none.
+        // The engine's events: those kept from the run being replaced, else the cache: the longest of the user's own
+        // (user data) and the prebake shipped next to the exe (kessler/, 2026-10-28), else none. Without player events
+        // the history is a pure function of the settings, so the cache serves a replay after time went back too. With
+        // them, it serves only up to the first one's step (past it the history is another).
         double replayUntil = startT;
+        bool usedCache = false;
         if (keepEngineBefore >= 0.0)
             replayUntil = keptFrontier;
-        else if (startT >= kFuryArriveT) // a pre-CME breakup changes everything the cache holds
+        if (startT >= kFuryArriveT && (keepEngineBefore < 0.0 || userEvents.empty())) // a pre-CME breakup: no cache
         {
-            const std::string name = cacheName(out.hash);
-            std::vector<kessler::Event> cached;
-            double fr = 0.0;
-            if (readCache(std::filesystem::path(Paths::userDataDir()) / "kessler" / name, out.hash, cached, fr) ||
-                readCache(std::filesystem::path(Paths::exeDir()) / "kessler" / name, out.hash, cached, fr))
+            KesslerCacheHead best, h;
+            const std::filesystem::path ud = std::filesystem::path(Paths::userDataDir()) / "kessler";
+            const std::filesystem::path ex = std::filesystem::path(Paths::exeDir()) / "kessler_prebake";
+            for (const std::filesystem::path &c : {ud / cacheName(out.hash), ex / cacheName(out.hash),
+                                                   ud / cacheName(out.hash, ".bin")})
+                if (readCacheHead(c, out.hash, h) && h.frontier > best.frontier)
+                    best = h;
+            double cap = 1e300;
+            for (const kessler::Event &e : userEvents)
+                cap = std::min(cap, wk->w.stepStart(e.t));
+            const double useTo = std::min(best.frontier, cap);
+            if (!best.path.empty() && useTo > replayUntil)
             {
-                keptEngine = std::move(cached);
-                replayUntil = fr;
-                Log::line("kessler: cache " + name + ": " + std::to_string(keptEngine.size()) + " engine events, " +
-                          std::to_string((int)((fr - kFuryArriveT) / 86400.0)) + " days");
+                std::vector<kessler::Event> cached;
+                usedCache = true;
+                if (best.pak)
+                {
+                    keptEngine.clear();
+                    wk->prebakePath = best.path;
+                    replayUntil = useTo;
+                }
+                else if (readCacheBin(best.path, cached))
+                {
+                    keptEngine = std::move(cached);
+                    replayUntil = useTo;
+                }
+                Log::line("kessler: cache " + best.path.string() + ": " + std::to_string((int)((best.frontier - kFuryArriveT) / 86400.0)) +
+                          " days");
             }
-            else
-                Log::line("kessler: no cache " + name + " - simulating from the storm");
+            else if (keepEngineBefore < 0.0)
+                Log::line("kessler: no cache " + cacheName(out.hash) + " - simulating from the storm");
         }
         // Align the replay boundary to the engine's steps.
         replayUntil = kFuryArriveT + std::floor((replayUntil - kFuryArriveT) / wk->w.s.stepS) * wk->w.s.stepS;
@@ -673,7 +885,7 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
         kessler::sortPending(pend, 0, wk->w);
         wk->pending = std::move(pend);
         wk->replayUntil = replayUntil;
-        out.cacheFrontier = keepEngineBefore >= 0.0 ? kFuryArriveT : replayUntil;
+        out.cacheFrontier = (keepEngineBefore >= 0.0 && !usedCache) ? kFuryArriveT : replayUntil;
         wk->wantUntil = startT < kFuryArriveT ? tNow + 86400.0 : std::max(kFuryArriveT + 2.0 * 86400.0, tNow + 86400.0);
         wk->simNow = tNow;
         {
@@ -827,13 +1039,20 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
     }
     const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
     const int32_t nowSec = (int32_t)std::clamp(std::floor(tNow - kFuryArriveT), -2147483000.0, 2147483000.0);
-    kesslerSyncProcess(nowSec, kSyncBudgetMs);
+    {
+        // (2026-10-28) While time is held at the mirrored frontier (the banner: the player is waiting for it, e.g. after a
+        // jump past the CME replaying the prebake), the mirror takes a larger share of the frame.
+        const double leadH = std::clamp(2.0 * (double)kTimeScales[timeScaleIdx], 2.0, 6.0 * 3600.0);
+        const bool held = tNow >= kWorldStart && tNow + 1.0 >= kFrontier + leadH;
+        kWorker->userWaiting = held;
+        kesslerSyncProcess(nowSec, held ? kSyncBudgetHeldMs : kSyncBudgetMs);
+    }
     if (kWorker->done && !kWorkerDone && kWorker->syncQ.empty())
     {
         kWorkerDone = true;
         if (kUserEvents.empty() && kWorker->w.frontier > kCacheFrontier + 1.0)
-            writeCache(std::filesystem::path(Paths::userDataDir()) / "kessler" / cacheName(kHash), kHash,
-                       kWorker->w.events, kWorker->w.frontier);
+            writeCache(std::filesystem::path(Paths::userDataDir()) / "kessler" / cacheName(kHash), kHash, kWorker->w,
+                       kWorker->w.frontier);
     }
     // Sim time moved: slots whose hands changed between the shown second and now show the other generation.
     if (nowSec != kShownSec)
@@ -858,6 +1077,19 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
             kHistPruneWall = nowWall;
             kHistPrunedAt = nowSec;
             kPruneBucket = 0; // a pass starts (below, a few buckets a frame)
+        }
+    }
+    // (2026-10-28) ... and while sim time stands still (held at the frontier after a jump, paused) whenever the mirrored
+    // frontier has moved a day since the last pass: generations keep arriving and all of them are older than "now". With
+    // the shown second fixed the prune never ran, and a jump to day 600 held the mirror at ~33 GB.
+    if (kPruneBucket == SIZE_MAX && kShownSec != INT32_MIN && kFrontier - kHistPruneFrontier > 86400.0)
+    {
+        const auto nowWall = std::chrono::steady_clock::now();
+        if (nowWall - kHistPruneWall > std::chrono::seconds(2))
+        {
+            kHistPruneWall = nowWall;
+            kHistPruneFrontier = kFrontier;
+            kPruneBucket = 0;
         }
     }
     // (2026-10-21) The prune is a pass over kPoolHist's buckets, within ~1 ms a frame: in one go it was 16-48 ms late in

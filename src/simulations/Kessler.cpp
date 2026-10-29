@@ -3,7 +3,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <cstring>
+#include <mutex>
+#include <string>
 #include <execution>
 #include <limits>
 #include <thread>
@@ -91,6 +96,11 @@ Secular secularJ2(double a, double e, double incl)
     s.argpDot = 0.75 * n0 * k * (5.0 * ci * ci - 1.0);
     s.Mdot = n0 * (1.0 + 0.75 * k * std::sqrt(std::max(0.0, 1.0 - e * e)) * (3.0 * ci * ci - 1.0));
     return s;
+}
+
+double profClock()
+{
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
 // ── Hashing ───────────────────────────────────────────────────────────────────────────────────────
@@ -430,15 +440,131 @@ void lowerThreadPriority()
 #endif
 }
 
-static void parallelChunks(size_t n, const std::function<void(size_t, size_t)> &fn)
+// (2026-10-28) A persistent pool for parallelChunks: it spawned and joined its threads on every call, ~0.3 ms each,
+// several calls an engine step (thousands of steps in a replay). Workers take pieces of the range in turn; every caller
+// writes results that do not depend on how the range is cut. One caller at a time (others fall back to their own
+// threads).
+namespace
 {
-    // Half the cores: the cascade runs beside the app on its worker thread.
-    const size_t hw = std::max<size_t>(1, std::min<size_t>(std::thread::hardware_concurrency() / 2 - 1, 12));
-    if (n < 20000 || hw == 1)
+class ChunkPool
+{
+public:
+    explicit ChunkPool(size_t nThreads)
+    {
+        for (size_t k = 0; k < nThreads; ++k)
+            th.emplace_back([this] { loop(); });
+    }
+    ~ChunkPool()
+    {
+        {
+            std::lock_guard<std::mutex> lk(m);
+            quit = true;
+        }
+        cv.notify_all();
+        for (std::thread &t : th)
+            t.join();
+    }
+    size_t size() const { return th.size(); }
+    // Runs fn over [0, n) on up to `use` pool threads plus the caller. False if the pool is busy (another caller).
+    bool run(size_t n, size_t use, const std::function<void(size_t, size_t)> &fn)
+    {
+        std::unique_lock<std::mutex> busyLk(busy, std::try_to_lock);
+        if (!busyLk.owns_lock())
+            return false;
+        const size_t workers = std::min(use, th.size());
+        const size_t pieces = std::min(n, (workers + 1) * 4);
+        {
+            std::lock_guard<std::mutex> lk(m);
+            job = &fn;
+            jobN = n;
+            jobPieces = pieces;
+            nextPiece = 0;
+            piecesDone = 0;
+            allowed = workers;
+            ++gen;
+        }
+        cv.notify_all();
+        work();
+        std::unique_lock<std::mutex> lk(m);
+        doneCv.wait(lk, [&] { return piecesDone == jobPieces && active == 0; });
+        job = nullptr;
+        return true;
+    }
+
+private:
+    std::vector<std::thread> th;
+    std::mutex m, busy;
+    std::condition_variable cv, doneCv;
+    const std::function<void(size_t, size_t)> *job = nullptr;
+    size_t jobN = 0, jobPieces = 0, nextPiece = 0, piecesDone = 0, allowed = 0, active = 0;
+    uint64_t gen = 0;
+    bool quit = false;
+
+    // Takes pieces until none is left (the caller and the pool threads alike).
+    void work()
+    {
+        for (;;)
+        {
+            size_t p;
+            const std::function<void(size_t, size_t)> *f;
+            {
+                std::lock_guard<std::mutex> lk(m);
+                if (!job || nextPiece >= jobPieces)
+                    return;
+                p = nextPiece++;
+                f = job;
+            }
+            const size_t a = p * jobN / jobPieces, b = (p + 1) * jobN / jobPieces;
+            if (a < b)
+                (*f)(a, b);
+            {
+                std::lock_guard<std::mutex> lk(m);
+                ++piecesDone;
+            }
+            doneCv.notify_all();
+        }
+    }
+    void loop()
+    {
+        lowerThreadPriority();
+        uint64_t seen = 0;
+        std::unique_lock<std::mutex> lk(m);
+        for (;;)
+        {
+            cv.wait(lk, [&] { return quit || (gen != seen && allowed > 0); });
+            if (quit)
+                return;
+            seen = gen;
+            --allowed;
+            ++active;
+            lk.unlock();
+            work();
+            lk.lock();
+            --active;
+            doneCv.notify_all();
+        }
+    }
+};
+} // namespace
+
+// Wide (2026-10-28): every core but one, for a replay the player is waiting for; else half the cores (the cascade runs
+// beside the app on its worker thread).
+static std::atomic<bool> gWideThreads{false};
+void setEngineThreadsWide(bool wide) { gWideThreads = wide; }
+
+static void parallelChunks(size_t n, const std::function<void(size_t, size_t)> &fn, size_t minN = 20000)
+{
+    const size_t hwAll = std::max<size_t>(2, std::thread::hardware_concurrency());
+    const size_t hw = gWideThreads ? hwAll - 1
+                                   : std::max<size_t>(1, std::min<size_t>(hwAll / 2 - 1, 12));
+    if (n < minN || hw == 1)
     {
         fn(0, n);
         return;
     }
+    static ChunkPool pool(hwAll - 2); // the caller works too
+    if (pool.run(n, hw - 1, fn))
+        return;
     std::vector<std::thread> th;
     const size_t chunk = (n + hw - 1) / hw;
     for (size_t k = 0; k < hw; ++k)
@@ -949,17 +1075,38 @@ double World::lifetime(double t, double a, double e, double cdAm) const
     auto cell = [&](int i, int j) {
         float &v = lifeTab[(size_t)i * NC + j];
         if (std::isnan(v))
-        {
-            // Evaluated after the storm (a fixed time past the epoch): only the orbit and cdAm matter.
-            const double T = exact(kRMean + (100.0 + 10.0 * i) * 1e3, 0.0, std::pow(10.0, -4.0 + 0.1 * j),
-                                   s.epoch + 13.0 * 86400.0);
-            v = (float)std::log(std::max(T, 1.0));
-        }
+            v = lifeCell(i, j);
         return (double)v;
     };
     const double L = (1 - fx) * (1 - fy) * cell(ix, iy) + fx * (1 - fy) * cell(ix + 1, iy) +
                      (1 - fx) * fy * cell(ix, iy + 1) + fx * fy * cell(ix + 1, iy + 1);
     return std::exp(L);
+}
+
+// One cell of the lifetime table (lifetime()): evaluated after the storm (a fixed time past the epoch), where only the
+// orbit and cdAm matter.
+float World::lifeCell(int i, int j) const
+{
+    const double gain = s.stormDensityGain;
+    const double T = decayTime(s.epoch + 13.0 * 86400.0, kRMean + (100.0 + 10.0 * i) * 1e3, 0.0, std::pow(10.0, -4.0 + 0.1 * j),
+                               s.horizonS, [gain](double x) { return 1.0 + gain * scriptedStormShape(x); });
+    return (float)std::log(std::max(T, 1.0));
+}
+
+// The whole table filled (in parallel) before breakups are prepared on several threads (lifetime() fills it lazily).
+void World::ensureLifeTable() const
+{
+    constexpr int NH = 201, NC = 51;
+    if (lifeTabFull)
+        return;
+    if (lifeTab.empty())
+        lifeTab.assign((size_t)NH * NC, std::numeric_limits<float>::quiet_NaN());
+    parallelChunks((size_t)NH * NC, [&](size_t a, size_t b) {
+        for (size_t q = a; q < b; ++q)
+            if (std::isnan(lifeTab[q]))
+                lifeTab[q] = lifeCell((int)(q / NC), (int)(q % NC));
+    }, 1);
+    lifeTabFull = true;
 }
 
 PoolRec World::recordFromState(const State &st, double t, uint32_t parentRef, const glm::dvec3 &dv) const
@@ -1079,10 +1226,12 @@ BreakupSizes World::sizesFor(uint32_t refA, uint32_t refB, int maxLarge) const
     return sz;
 }
 
-void World::spawnFragments(const BreakupResult &br, uint32_t refA, uint32_t refB, const State &sa, const State &sb,
-                           double t, uint32_t eventIdx, uint32_t seed)
+void World::planFragments(const BreakupResult &br, uint32_t refA, uint32_t refB, const State &sa, const State &sb,
+                          double t, uint32_t seed, ApplyPrep &p) const
 {
     const bool haveB = refB != kNoRef && refB != kSmallRef;
+    p.recs.clear();
+    p.recs.reserve(br.fragments.size());
     for (size_t k = 0; k < br.fragments.size(); ++k)
     {
         const Fragment &f = br.fragments[k];
@@ -1123,10 +1272,18 @@ void World::spawnFragments(const BreakupResult &br, uint32_t refA, uint32_t refB
         // Large pieces tumble slowly (seconds to a couple of minutes a turn): their glints are long flashes.
         r.tumbleRate = (float)((0.05 + 0.75 * hash01(seed, k, 33)) / std::sqrt(std::max(f.Lc, 1.0)));
         r.tumble0 = (float)wrap2Pi(kTwoPi * hash01(seed, k, 34) - (double)r.tumbleRate * t);
-        r.event = eventIdx;
         const double td = deathTime(r, t);
         r.deathSec = std::max(r.bornSec, td >= s.epoch + s.horizonS * 1.5 ? kNever : secOf(td));
         r.decaySec = r.deathSec;
+        p.recs.push_back(r);
+    }
+}
+
+void World::commitFragments(ApplyPrep &p, uint32_t eventIdx)
+{
+    for (PoolRec &r : p.recs)
+    {
+        r.event = eventIdx;
         addRecord(r);
     }
 }
@@ -1170,8 +1327,9 @@ void World::addStructuralPieces(BreakupResult &br, uint32_t ref, int side, uint3
     }
 }
 
-// The small fragments: each statistical sample's orbit joins the density grid until drag brings it down.
-void World::spawnSmall(const BreakupResult &br, const State &st, double t, uint32_t seed, Event &ev)
+// The small fragments: each statistical sample's orbit joins the density grid until drag brings it down. The plan (pure:
+// orbits, lifetimes, the re-entry streams) and its commit (the deposits, seeded by the event's index, and the streams).
+void World::planSmall(const BreakupResult &br, const State &st, double t, ApplyPrep &p) const
 {
     double n = 0.0, dv2 = 0.0;
     struct Cand
@@ -1180,6 +1338,8 @@ void World::spawnSmall(const BreakupResult &br, const State &st, double t, uint3
         Elems el;
     };
     std::vector<Cand> cands;
+    p.smalls.clear();
+    p.streams.clear();
     for (size_t k = 0; k < br.small.size(); ++k)
     {
         const Fragment &f = br.small[k];
@@ -1188,19 +1348,19 @@ void World::spawnSmall(const BreakupResult &br, const State &st, double t, uint3
         const Elems el = elemsFromState({st.r, st.v + f.dv});
         if (el.e >= 0.99 || el.a <= 0.0 || el.a * (1.0 - el.e) <= kRMean + 120000.0)
             continue;
-        const uint64_t pseed = ((uint64_t)seed << 8) ^ (uint64_t)k ^ ((uint64_t)events.size() << 32);
         const double cdAm = std::clamp(2.2 * f.areaM2 / std::max(f.massKg, 1e-6), 1e-4, 10.0);
         const double deathT = t + lifetime(t, el.a, el.e, cdAm);
-        grid.deposit(el.a, el.e, el.i, el.argp, f.weight, f.massKg, pseed, +1);
-        jDeposit(J_GRID, 0, el.a, el.e, el.i, el.argp, f.weight, f.massKg, pseed);
-        ++smallAlive;
-        if (deathT < s.epoch + s.horizonS * 1.5)
-        {
-            const int32_t bkey = (int32_t)std::floor((deathT - s.epoch) / kDeathBucketS);
-            DeathBucket &bk = deathBuckets[bkey];
-            grid.depositInto(bk.cnt, bk.massG, el.a, el.e, el.i, el.argp, f.weight, f.massKg, pseed);
-            jDeposit(J_BUCKET, (uint32_t)bkey, el.a, el.e, el.i, el.argp, f.weight, f.massKg, pseed);
-        }
+        ApplyPrep::Small sm;
+        sm.k = (uint32_t)k;
+        sm.a = el.a;
+        sm.e = el.e;
+        sm.i = el.i;
+        sm.argp = el.argp;
+        sm.w = f.weight;
+        sm.m = f.massKg;
+        sm.bucket = deathT < s.epoch + s.horizonS * 1.5;
+        sm.bkey = sm.bucket ? (int32_t)std::floor((deathT - s.epoch) / kDeathBucketS) : 0;
+        p.smalls.push_back(sm);
         if (deathT < s.epoch + s.horizonS)
             cands.push_back({deathT, std::clamp(0.15 * (deathT - t), 3600.0, 5.0 * 86400.0), f.weight, f.massKg, el});
     }
@@ -1236,11 +1396,126 @@ void World::spawnSmall(const BreakupResult &br, const State &st, double t, uint3
         ss.massQ = (uint16_t)std::clamp((lm / w + 16.0) * 2048.0, 0.0, 65535.0);
         ss.count = (float)w;
         ss.raanDot = (float)(rd / w);
+        p.streams.push_back(ss);
+    }
+    p.nSmall = (float)n;
+    p.dvSmall = n > 0.0 ? (float)std::sqrt(dv2 / n) : 0.0f;
+}
+
+void World::commitSmall(const ApplyPrep &p, uint32_t seed, Event &ev)
+{
+    for (const ApplyPrep::Small &sm : p.smalls)
+    {
+        const uint64_t pseed = ((uint64_t)seed << 8) ^ (uint64_t)sm.k ^ ((uint64_t)events.size() << 32);
+        depositSmall(INT32_MIN, sm, pseed);
+        jDeposit(J_GRID, 0, sm.a, sm.e, sm.i, sm.argp, sm.w, sm.m, pseed);
+        ++smallAlive;
+        if (sm.bucket)
+        {
+            depositSmall(sm.bkey, sm, pseed);
+            jDeposit(J_BUCKET, (uint32_t)sm.bkey, sm.a, sm.e, sm.i, sm.argp, sm.w, sm.m, pseed);
+        }
+    }
+    for (const SmallStream &ss : p.streams)
+    {
         smallStreams.push_back(ss);
         ++smallStreamsMade;
     }
-    ev.nSmall = (float)n;
-    ev.dvSmall = n > 0.0 ? (float)std::sqrt(dv2 / n) : 0.0f;
+    ev.nSmall = p.nSmall;
+    ev.dvSmall = p.dvSmall;
+}
+
+// A small sample's deposit into the grid (key INT32_MIN) or a death bucket: now, or queued (applyBatch) and made in
+// parallel by flushDeposits. Integer sums: the order never matters.
+void World::depositSmall(int32_t key, const ApplyPrep::Small &sm, uint64_t pseed)
+{
+    if (deferDeposits)
+    {
+        depQueue.push_back({sm.a, sm.e, sm.i, sm.argp, sm.w, sm.m, pseed, key});
+        return;
+    }
+    if (key == INT32_MIN)
+        grid.deposit(sm.a, sm.e, sm.i, sm.argp, sm.w, sm.m, pseed, +1);
+    else
+    {
+        DeathBucket &bk = deathBuckets[key];
+        grid.depositInto(bk.cnt, bk.massG, sm.a, sm.e, sm.i, sm.argp, sm.w, sm.m, pseed);
+    }
+}
+
+void World::flushDeposits()
+{
+    if (depQueue.empty())
+        return;
+    const double q0 = profClock();
+    // The grid's deposits split over threads into private grids (summed after), each bucket's deposits on one thread.
+    std::vector<size_t> gridIdx;
+    std::map<int32_t, std::vector<size_t>> byKey;
+    for (size_t i = 0; i < depQueue.size(); ++i)
+    {
+        if (depQueue[i].key == INT32_MIN)
+            gridIdx.push_back(i);
+        else
+            byKey[depQueue[i].key].push_back(i);
+    }
+    if (!gridIdx.empty() && grid.cnt.empty())
+        grid.clear();
+    std::vector<DeathBucket *> bks;
+    std::vector<const std::vector<size_t> *> bkIdx;
+    for (auto &kv : byKey)
+    {
+        DeathBucket &bk = deathBuckets[kv.first];
+        if (bk.cnt.empty())
+        {
+            bk.cnt.assign((size_t)DebrisGrid::NR * DebrisGrid::NL * DebrisGrid::NH, 0);
+            bk.massG.assign((size_t)DebrisGrid::NR * DebrisGrid::NL, 0);
+        }
+        bks.push_back(&bk);
+        bkIdx.push_back(&kv.second);
+    }
+    const size_t nGridParts = gridIdx.size() < 2048 ? 1 : 8;
+    std::vector<DeathBucket> parts(nGridParts > 1 ? nGridParts : 0);
+    const size_t tasks = nGridParts + bks.size();
+    parallelChunks(tasks, [&](size_t a, size_t b) {
+        for (size_t t = a; t < b; ++t)
+        {
+            if (t < nGridParts)
+            {
+                const size_t i0 = t * gridIdx.size() / nGridParts, i1 = (t + 1) * gridIdx.size() / nGridParts;
+                std::vector<int64_t> *c = &grid.cnt, *m = &grid.massG;
+                if (nGridParts > 1)
+                {
+                    parts[t].cnt.assign(grid.cnt.size(), 0);
+                    parts[t].massG.assign(grid.massG.size(), 0);
+                    c = &parts[t].cnt;
+                    m = &parts[t].massG;
+                }
+                for (size_t q = i0; q < i1; ++q)
+                {
+                    const Deposit &d = depQueue[gridIdx[q]];
+                    grid.depositInto(*c, *m, d.a, d.e, d.i, d.argp, d.w, d.m, d.seed);
+                }
+            }
+            else
+            {
+                const size_t k = t - nGridParts;
+                for (size_t i : *bkIdx[k])
+                {
+                    const Deposit &d = depQueue[i];
+                    grid.depositInto(bks[k]->cnt, bks[k]->massG, d.a, d.e, d.i, d.argp, d.w, d.m, d.seed);
+                }
+            }
+        }
+    }, 2);
+    for (const DeathBucket &pt : parts)
+    {
+        for (size_t i = 0; i < grid.cnt.size(); ++i)
+            grid.cnt[i] += pt.cnt[i];
+        for (size_t i = 0; i < grid.massG.size(); ++i)
+            grid.massG[i] += pt.massG[i];
+    }
+    depQueue.clear();
+    profFlush += profClock() - q0;
 }
 
 void World::retireParticles(double t)
@@ -1319,40 +1594,19 @@ static double massOf(const World &w, uint32_t ref)
     return w.types[w.roster[ref].type].massKg;
 }
 
-bool World::apply(Event ev)
+// A breakup's inputs (cheap: who, masses, states) and, from them, its pure outputs (the fragments, their records, the
+// small population's plan). apply() makes them itself, or (applyBatch, 2026-10-28) takes those made in parallel ahead
+// of it when its own inputs come out bitwise the same: the outputs are a pure function of the inputs, so the history
+// is the same either way.
+bool World::prepInputs(const Event &ev, int maxRec, ApplyPrep &p) const
 {
-    const uint32_t idx = (uint32_t)events.size();
-    const uint64_t added0 = recAdded;
-    // Occupancy: live pieces (and the dead ones not yet released) over the capacity.
-    const double fill = (double)(pool.size() - poolFree.size()) / std::max<double>(s.poolCapacity, 1.0);
-    // Large-piece records: up to maxRecordsPerEvent, fewer as the pool fills (beyond: each stands for several).
-    const int maxRec = fill >= 1.0 ? 0
-                                   : std::clamp((int)std::ceil(s.maxRecordsPerEvent * (1.0 - fill)), 1,
-                                                std::max(s.maxRecordsPerEvent, 1));
-    auto setWhere = [&](const State &st) {
-        for (int k = 0; k < 3; ++k)
-        {
-            ev.pos[k] = (float)st.r[k];
-            ev.vel[k] = (float)st.v[k];
-        }
-    };
-    switch (ev.kind)
-    {
-    case EV_KILL:
-        if (!alive(ev.a, ev.t) || dead(ev.a, ev.t))
-            return false;
-        killRoster(ev.a, ev.t, idx);
-        break;
-    case EV_BUMP:
-        // a: the dead member drifting in; b: its neighbour, killed when the seed said so (catastrophic).
-        if (!alive(ev.b, ev.t) || dead(ev.b, ev.t))
-            return false;
-        if (ev.catastrophic)
-            killRoster(ev.b, ev.t, idx);
-        break;
-    case EV_COLLISION:
+    p = ApplyPrep{};
+    p.kind = ev.kind;
+    p.maxRec = maxRec;
+    if (ev.kind == EV_COLLISION)
     {
         const bool fromGrid = ev.b == kSmallRef;
+        p.fromGrid = fromGrid;
         if (!alive(ev.a, ev.t) || (!fromGrid && !alive(ev.b, ev.t)))
             return false;
         uint32_t tgt = ev.a, prj = ev.b;
@@ -1405,14 +1659,158 @@ bool World::apply(Event ev)
             v = glm::length(st.v - sp.v);
         }
         const double emr = 0.5 * std::min(mT, mP) * v * v / std::max(std::max(mT, mP), 1e-3);
-        const int rec = emr >= 40000.0 ? maxRec : (maxRec > 0 ? std::max(1, maxRec / 8) : 0);
-        BreakupResult br = breakupCollision(mT, mP, v, sizesFor(tgt, prj, rec), ev.seed);
-        if (br.catastrophic && rec > 0)
+        p.rec = emr >= 40000.0 ? maxRec : (maxRec > 0 ? std::max(1, maxRec / 8) : 0);
+        p.tgt = tgt;
+        p.prj = prj;
+        p.mT = mT;
+        p.mP = mP;
+        p.v = v;
+        p.st = st;
+        p.sp = sp;
+        p.sz = sizesFor(tgt, prj, p.rec);
+    }
+    else if (ev.kind == EV_EXPLOSION || ev.kind == EV_ASAT)
+    {
+        if (!alive(ev.a, ev.t))
+            return false;
+        p.tgt = ev.a;
+        p.prj = kNoRef;
+        p.st = stateOf(ev.a, ev.t);
+        p.sp = p.st;
+        p.mT = massOf(*this, ev.a);
+        p.rec = maxRec;
+        p.sz = sizesFor(ev.a, kNoRef, maxRec);
+    }
+    else
+        return false;
+    // The pool parents' records as read (the fragments' records take their rates; kindOf their type).
+    p.parT = (p.tgt & kPoolBit) && p.tgt != kNoRef ? pool[p.tgt & ~kPoolBit] : PoolRec{};
+    p.parP = (p.prj != kNoRef && p.prj != kSmallRef && (p.prj & kPoolBit)) ? pool[p.prj & ~kPoolBit] : PoolRec{};
+    p.ok = true;
+    return true;
+}
+
+static bool sameRec(const PoolRec &a, const PoolRec &b)
+{
+    return std::memcmp(&a, &b, offsetof(PoolRec, parent) + sizeof(uint32_t)) == 0;
+}
+static bool sameState(const State &a, const State &b) { return std::memcmp(&a, &b, sizeof(State)) == 0; }
+static bool sameSizes(const BreakupSizes &a, const BreakupSizes &b)
+{
+    return std::memcmp(&a.LcMin, &b.LcMin, 8) == 0 && std::memcmp(&a.LcRecord, &b.LcRecord, 8) == 0 &&
+           std::memcmp(&a.LcMax, &b.LcMax, 8) == 0 && a.maxLarge == b.maxLarge &&
+           std::memcmp(&a.maxLargeMass, &b.maxLargeMass, 8) == 0 && a.nSmallSamples == b.nSmallSamples;
+}
+
+bool sameApplyInputs(const ApplyPrep &a, const ApplyPrep &b)
+{
+    return a.ok && b.ok && a.kind == b.kind && a.fromGrid == b.fromGrid && a.tgt == b.tgt && a.prj == b.prj &&
+           a.rec == b.rec && a.maxRec == b.maxRec && std::memcmp(&a.mT, &b.mT, 8) == 0 &&
+           std::memcmp(&a.mP, &b.mP, 8) == 0 && std::memcmp(&a.v, &b.v, 8) == 0 && sameState(a.st, b.st) &&
+           sameState(a.sp, b.sp) && sameSizes(a.sz, b.sz) && sameRec(a.parT, b.parT) && sameRec(a.parP, b.parP);
+}
+
+void World::prepOutputs(const Event &ev, ApplyPrep &p) const
+{
+    if (p.kind == EV_COLLISION)
+    {
+        p.br = breakupCollision(p.mT, p.mP, p.v, p.sz, ev.seed);
+        if (p.br.catastrophic && p.rec > 0)
         {
-            addStructuralPieces(br, tgt, 0, ev.seed);
-            if (!fromGrid)
-                addStructuralPieces(br, prj, 1, ev.seed ^ 0x77u);
+            addStructuralPieces(p.br, p.tgt, 0, ev.seed);
+            if (!p.fromGrid)
+                addStructuralPieces(p.br, p.prj, 1, ev.seed ^ 0x77u);
         }
+        planFragments(p.br, p.tgt, p.fromGrid ? kSmallRef : p.prj, p.st, p.sp, ev.t, ev.seed, p);
+    }
+    else
+    {
+        p.br = ev.kind == EV_ASAT ? breakupCollision(p.mT, 20.0, 9000.0, p.sz, ev.seed)
+                                  : breakupExplosion(p.mT, p.sz, ev.seed);
+        if (p.maxRec > 0)
+            addStructuralPieces(p.br, p.tgt, 0, ev.seed);
+        planFragments(p.br, p.tgt, kNoRef, p.st, p.st, ev.t, ev.seed, p);
+    }
+    planSmall(p.br, p.st, ev.t, p);
+    p.outs = true;
+}
+
+bool World::apply(Event ev)
+{
+    const double qa = profClock();
+    struct ProfAdd
+    {
+        double &acc;
+        double q;
+        ~ProfAdd() { acc += profClock() - q; }
+    } profAddAll{profAllApply, qa};
+    const uint32_t idx = (uint32_t)events.size();
+    const uint64_t added0 = recAdded;
+    // Occupancy: live pieces (and the dead ones not yet released) over the capacity.
+    const double fill = (double)(pool.size() - poolFree.size()) / std::max<double>(s.poolCapacity, 1.0);
+    // Large-piece records: up to maxRecordsPerEvent, fewer as the pool fills (beyond: each stands for several).
+    const int maxRec = fill >= 1.0 ? 0
+                                   : std::clamp((int)std::ceil(s.maxRecordsPerEvent * (1.0 - fill)), 1,
+                                                std::max(s.maxRecordsPerEvent, 1));
+    auto setWhere = [&](const State &st) {
+        for (int k = 0; k < 3; ++k)
+        {
+            ev.pos[k] = (float)st.r[k];
+            ev.vel[k] = (float)st.v[k];
+        }
+    };
+    // A breakup's prep: made ahead (applyBatch) if its inputs are still these, else here.
+    ApplyPrep local;
+    ApplyPrep *prep = nullptr;
+    if (ev.kind == EV_COLLISION || ev.kind == EV_EXPLOSION || ev.kind == EV_ASAT)
+    {
+        // Prepared ahead with this budget and nothing of its objects touched since: its inputs are those, as read then.
+        const bool untouched = preAhead && preAhead->epoch != 0 && preAhead->maxRec == maxRec &&
+                               !touchedSince(ev.a, preAhead->epoch) &&
+                               !(ev.kind == EV_COLLISION && touchedSince(ev.b, preAhead->epoch));
+        if (untouched && !preAhead->ok)
+            return false;
+        if (untouched && preAhead->outs)
+        {
+            prep = preAhead;
+            ++prepHits;
+        }
+        else if (!prepInputs(ev, maxRec, local))
+            return false;
+        else if (preAhead && preAhead->outs && sameApplyInputs(*preAhead, local))
+        {
+            prep = preAhead;
+            ++prepHits;
+        }
+        else
+        {
+            const double q0 = profClock();
+            prepOutputs(ev, local);
+            profFrag += profClock() - q0;
+            prep = &local;
+            ++prepMisses;
+        }
+    }
+    switch (ev.kind)
+    {
+    case EV_KILL:
+        if (!alive(ev.a, ev.t) || dead(ev.a, ev.t))
+            return false;
+        killRoster(ev.a, ev.t, idx);
+        break;
+    case EV_BUMP:
+        // a: the dead member drifting in; b: its neighbour, killed when the seed said so (catastrophic).
+        if (!alive(ev.b, ev.t) || dead(ev.b, ev.t))
+            return false;
+        if (ev.catastrophic)
+            killRoster(ev.b, ev.t, idx);
+        break;
+    case EV_COLLISION:
+    {
+        ApplyPrep &p = *prep;
+        const bool fromGrid = p.fromGrid;
+        const uint32_t tgt = p.tgt, prj = p.prj;
+        const BreakupResult &br = p.br;
         // A hit that changes nothing visible is not an event: a cratering hit that leaves no large piece, by a
         // projectile that survives it (a small fragment, a representative record), on a target it does not kill
         // (millions of these once the debris abounds; recording them would only grow the log).
@@ -1423,13 +1821,17 @@ bool World::apply(Event ev)
             if (prjSurvives)
                 return false;
         }
-        ev.vRel = (float)v;
+        ev.vRel = (float)p.v;
         ev.nReal = (float)br.nReal;
         ev.catastrophic = br.catastrophic ? 1 : 0;
         ev.dustKg = (float)(s.dustShare * br.massKg * (br.catastrophic ? 1.0 : 0.3));
-        setWhere(st);
-        spawnFragments(br, tgt, fromGrid ? kSmallRef : prj, st, sp, ev.t, idx, ev.seed);
-        spawnSmall(br, st, ev.t, ev.seed, ev);
+        setWhere(p.st);
+        {
+            const double q1 = profClock();
+            commitFragments(p, idx);
+            commitSmall(p, ev.seed, ev);
+            profSmall += profClock() - q1;
+        }
         if (!fromGrid)
             endObject(*this, prj, ev.t, true);
         if (br.catastrophic)
@@ -1446,22 +1848,19 @@ bool World::apply(Event ev)
     case EV_EXPLOSION:
     case EV_ASAT:
     {
-        if (!alive(ev.a, ev.t))
-            return false;
-        const State st = stateOf(ev.a, ev.t);
-        const double m = massOf(*this, ev.a);
-        const BreakupSizes sz = sizesFor(ev.a, kNoRef, maxRec);
-        BreakupResult br = ev.kind == EV_ASAT ? breakupCollision(m, 20.0, 9000.0, sz, ev.seed)
-                                              : breakupExplosion(m, sz, ev.seed);
-        if (maxRec > 0)
-            addStructuralPieces(br, ev.a, 0, ev.seed);
+        ApplyPrep &p = *prep;
+        const BreakupResult &br = p.br;
         ev.vRel = ev.kind == EV_ASAT ? 9000.0f : 0.0f;
         ev.nReal = (float)br.nReal;
         ev.catastrophic = br.catastrophic ? 1 : 0;
         ev.dustKg = (float)(s.dustShare * br.massKg);
-        setWhere(st);
-        spawnFragments(br, ev.a, kNoRef, st, st, ev.t, idx, ev.seed);
-        spawnSmall(br, st, ev.t, ev.seed, ev);
+        setWhere(p.st);
+        {
+            const double q1 = profClock();
+            commitFragments(p, idx);
+            commitSmall(p, ev.seed, ev);
+            profSmall += profClock() - q1;
+        }
         endObject(*this, ev.a, ev.t, false);
         damageCluster(ev.a, ev.t, idx, ev.seed);
         break;
@@ -1472,6 +1871,140 @@ bool World::apply(Event ev)
     ev.nRec = (uint32_t)(recAdded - added0);
     events.push_back(ev);
     return true;
+}
+
+// A step's events applied in order, their breakups prepared ahead in parallel (2026-10-28): each event takes its
+// prepared outputs only if the inputs it reads when its turn comes are bitwise the ones they were made from (an earlier
+// event of the batch ended, killed or replaced one of its objects, or the pool's fill moved its record budget: it makes
+// them again itself). Same history as applying them one by one.
+void World::applyBatch(const Event *evs, size_t n)
+{
+    constexpr size_t kParMin = 48;
+    if (n < kParMin || !parallelApply)
+    {
+        for (size_t k = 0; k < n; ++k)
+            apply(evs[k]);
+        return;
+    }
+    ensureLifeTable();
+    auto curMaxRec = [&] {
+        const double fill = (double)(pool.size() - poolFree.size()) / std::max<double>(s.poolCapacity, 1.0);
+        return fill >= 1.0 ? 0
+                           : std::clamp((int)std::ceil(s.maxRecordsPerEvent * (1.0 - fill)), 1,
+                                        std::max(s.maxRecordsPerEvent, 1));
+    };
+    std::vector<ApplyPrep> preps(n);
+    int prepMax = -1;
+    // Prepared in pieces: the pool's fill moves the record budget as the records come in, and an event prepared with
+    // another budget would be prepared again (serially) at its turn. A piece ends where the budget changes.
+    auto prepFrom = [&](size_t k0) {
+        prepMax = curMaxRec();
+        const uint32_t ep = ++touchEpoch; // commits from here on mark what they touch with this epoch
+        const size_t k1 = std::min(n, k0 + std::max<size_t>(256, (n - k0) / 2));
+        const double q0 = profClock();
+        parallelChunks(k1 - k0, [&](size_t a, size_t b) {
+            for (size_t k = k0 + a; k < k0 + b; ++k)
+            {
+                if (prepInputs(evs[k], prepMax, preps[k]))
+                    prepOutputs(evs[k], preps[k]);
+                preps[k].epoch = ep;
+            }
+        }, 1);
+        profPrep += profClock() - q0;
+        return k1;
+    };
+    size_t prepped = 0;
+    deferDeposits = deferInBatch;
+    for (size_t k = 0; k < n; ++k)
+    {
+        if (prepAhead && (k >= prepped || curMaxRec() != prepMax))
+        {
+            for (size_t q = k; q < prepped; ++q)
+                preps[q] = ApplyPrep{};
+            prepped = prepFrom(k);
+        }
+        preAhead = &preps[k];
+        apply(evs[k]);
+        preAhead = nullptr;
+        preps[k] = ApplyPrep{}; // (freed as we go)
+    }
+    deferDeposits = false;
+    flushDeposits();
+}
+
+// ── The engine's draws as pure functions (2026-10-28): shared by the sampling loop and by the replay of the compact
+// event log (the shipped prebake), so the two cannot drift apart. ──────────────────────────────────────────────
+static uint64_t gridSeedOf(uint64_t stepK) { return mix64(0x6121D5ull ^ stepK); }
+
+// A grid hit's projectile mass: drawn from the small population's size distribution (most hits are by ~10-cm,
+// tens-of-gram pieces), not the cell's mean mass: with the mean (~0.5 kg) nearly every hit on a satellite was
+// catastrophic. A function of (step, ref) alone.
+static float gridProjectileMass(const WorldSettings &s, uint64_t gseed, uint32_t ref)
+{
+    const double b = 1.71, lo = s.LcMin, hi = std::max(s.LcRecord, lo * 1.5);
+    const double u = hash01(gseed, ref, 15);
+    const double Lc = std::pow(std::pow(lo, -b) - u * (std::pow(lo, -b) - std::pow(hi, -b)), -1.0 / b);
+    const double chi = sampleChi(Lc, gseed ^ (uint64_t)ref, 16);
+    return (float)(0.556945 * std::pow(Lc, 2.0047077) / std::pow(10.0, chi));
+}
+
+Event engineEventOf(double t0, double t1, uint64_t stepK, uint32_t a, uint32_t b)
+{
+    const double ts = 0.5 * (t0 + t1), dt = t1 - t0;
+    Event ev;
+    ev.a = a;
+    ev.b = b;
+    ev.kind = EV_COLLISION;
+    ev.origin = ORIGIN_ENGINE;
+    ev.seed = (uint32_t)mix64(((uint64_t)a << 32 | b) ^ (stepK * 0x9E3779B97F4A7C15ull));
+    // Each at its own time within the step (all at the midpoint, every collision of 6 h happened in the same
+    // second: dust clouds and re-entries in bursts), applied in time order.
+    ev.t = t0 + dt * hash01(ev.seed, 0x7135ull, 91);
+    if (b != kSmallRef)
+        ev.sampleDt = (float)(ev.t - ts); // (apply carries the pair's encounter from ts to ev.t)
+    return ev;
+}
+
+uint32_t gridHitsCheck(const Event *evs, size_t n)
+{
+    uint32_t check = 2166136261u;
+    for (size_t k = 0; k < n; ++k)
+    {
+        if (evs[k].b != kSmallRef)
+            continue;
+        uint32_t bits[2];
+        std::memcpy(&bits[0], &evs[k].vRel, 4);
+        std::memcpy(&bits[1], &evs[k].mProj, 4);
+        for (uint32_t w : bits)
+            for (int q = 0; q < 4; ++q)
+                check = (check ^ ((w >> (8 * q)) & 255u)) * 16777619u;
+    }
+    return check;
+}
+
+uint32_t World::fillGridHits(Event *evs, size_t n, double t0, double t1)
+{
+    const double ts = 0.5 * (t0 + t1);
+    const uint64_t gseed = gridSeedOf((uint64_t)stepIndex(t0));
+    // (independent reads of the world: on the engine's threads)
+    parallelChunks(n, [&](size_t a, size_t b) {
+        for (size_t k = a; k < b; ++k)
+        {
+            Event &ev = evs[k];
+            if (ev.b != kSmallRef || ev.pad != kEvNeedsGridDraw)
+                continue;
+            // The same draw the sampling step made: the grid's rate at the target's state at the step's sample time,
+            // with the same pick (this runs after the step's scripted events and retirement, before its engine events,
+            // as sampling does).
+            double vr = 0.0, mp = 0.0;
+            const State st = stateOf(ev.a, ts);
+            grid.rate(st.r, st.v, hash01(gseed, ev.a, 14), vr, mp);
+            ev.vRel = (float)vr;
+            ev.mProj = gridProjectileMass(s, gseed, ev.a);
+            ev.pad = 0;
+        }
+    }, 4096);
+    return gridHitsCheck(evs, n);
 }
 
 void World::simulate(double tEnd, std::vector<Event> &pending, size_t &pendingNext, const bool *stop)
@@ -1521,7 +2054,7 @@ void World::simulate(double tEnd, std::vector<Event> &pending, size_t &pendingNe
             hitV.assign(refs.size(), 0.0f);
             hitM.assign(refs.size(), 0.0f);
             const bool gridOn = grid.total() > 0.0;
-            const uint64_t gseed = mix64(0x6121D5ull ^ stepK);
+            const uint64_t gseed = gridSeedOf(stepK);
             parallelChunks(refs.size(), [&](size_t a, size_t b) {
                 for (size_t k = a; k < b; ++k)
                 {
@@ -1558,16 +2091,9 @@ void World::simulate(double tEnd, std::vector<Event> &pending, size_t &pendingNe
                                 P *= (1.0 - ep.avoidance);
                             if (hash01(gseed, ref, 13) < std::min(P, 1.0))
                             {
-                                // The projectile is drawn from the small population's size distribution (most
-                                // hits are by ~10-cm, tens-of-gram pieces), not the cell's mean mass: with the
-                                // mean (~0.5 kg) nearly every hit on a satellite was catastrophic.
                                 (void)mp;
-                                const double b = 1.71, lo = s.LcMin, hi = std::max(s.LcRecord, lo * 1.5);
-                                const double u = hash01(gseed, ref, 15);
-                                const double Lc = std::pow(std::pow(lo, -b) - u * (std::pow(lo, -b) - std::pow(hi, -b)), -1.0 / b);
-                                const double chi = sampleChi(Lc, gseed ^ (uint64_t)ref, 16);
                                 hitV[k] = (float)vr;
-                                hitM[k] = (float)(0.556945 * std::pow(Lc, 2.0047077) / std::pow(10.0, chi));
+                                hitM[k] = gridProjectileMass(s, gseed, ref);
                             }
                         }
                     }
@@ -1580,44 +2106,21 @@ void World::simulate(double tEnd, std::vector<Event> &pending, size_t &pendingNe
             profPairs += c3 - c2;
             std::vector<Event> evs;
             evs.reserve(col.size());
+            // (engineEventOf: the key, seed, time in the step and sampleDt; the compact event log rebuilds them from it)
             for (const EngineCollision &c : col)
-            {
-                Event ev;
-                ev.t = ts;
-                ev.a = c.a;
-                ev.b = c.b;
-                ev.kind = EV_COLLISION;
-                ev.origin = ORIGIN_ENGINE;
-                ev.seed = (uint32_t)mix64(((uint64_t)c.a << 32 | c.b) ^ (stepK * 0x9E3779B97F4A7C15ull));
-                evs.push_back(ev);
-            }
+                evs.push_back(engineEventOf(t0, t1, stepK, c.a, c.b));
             for (size_t k = 0; k < refs.size(); ++k)
                 if (hitV[k] > 0.0f)
                 {
-                    Event ev;
-                    ev.t = ts;
-                    ev.a = refs[k];
-                    ev.b = kSmallRef;
-                    ev.kind = EV_COLLISION;
-                    ev.origin = ORIGIN_ENGINE;
+                    Event ev = engineEventOf(t0, t1, stepK, refs[k], kSmallRef);
                     ev.vRel = hitV[k];
                     ev.mProj = hitM[k];
-                    ev.seed = (uint32_t)mix64(((uint64_t)refs[k] << 32 | kSmallRef) ^ (stepK * 0x9E3779B97F4A7C15ull));
                     evs.push_back(ev);
                 }
-            // Each at its own time within the step (all at the midpoint, every collision of 6 h happened in the same
-            // second: dust clouds and re-entries in bursts), applied in time order.
-            for (Event &ev : evs)
-            {
-                ev.t = t0 + dt * hash01(ev.seed, 0x7135ull, 91);
-                if (ev.b != kSmallRef)
-                    ev.sampleDt = (float)(ev.t - ts);   // (apply carries the pair's encounter from ts to ev.t)
-            }
             std::sort(evs.begin(), evs.end(), [](const Event &x, const Event &y) {
                 return x.t != y.t ? x.t < y.t : (x.a != y.a ? x.a < y.a : x.b < y.b);
             });
-            for (const Event &ev : evs)
-                apply(ev);
+            applyBatch(evs.data(), evs.size());
             profApply += clk() - c3;
             ++sampleCount;
         }
@@ -1700,5 +2203,357 @@ std::vector<Event> stormSeedEvents(const World &w, double arriveT, uint64_t seed
     }
     std::stable_sort(out.begin(), out.end(), [](const Event &a, const Event &b) { return a.t < b.t; });
     return out;
+}
+
+// ── The compact engine event log (2026-10-28) ────────────────────────────────────────────────────────────────────
+namespace
+{
+void putVar(std::vector<uint8_t> &o, uint64_t v)
+{
+    while (v >= 0x80)
+    {
+        o.push_back((uint8_t)(v | 0x80));
+        v >>= 7;
+    }
+    o.push_back((uint8_t)v);
+}
+bool getVar(const std::vector<uint8_t> &b, size_t &p, size_t end, uint64_t &v)
+{
+    v = 0;
+    for (int sh = 0; sh < 64; sh += 7)
+    {
+        if (p >= end)
+            return false;
+        const uint8_t c = b[p++];
+        v |= (uint64_t)(c & 0x7F) << sh;
+        if (!(c & 0x80))
+            return true;
+    }
+    return false;
+}
+uint64_t zig(int64_t v) { return ((uint64_t)v << 1) ^ (uint64_t)(v >> 63); }
+int64_t unzig(uint64_t v) { return (int64_t)(v >> 1) ^ -(int64_t)(v & 1); }
+
+// A step's grid-hit targets, sorted: their gaps are close to geometric, so Rice coded (parameter k per step: the
+// quotient in unary, k low bits), a quotient of 32 or more escaped to the raw 32-bit value. Byte aligned per step.
+struct BitOut
+{
+    std::vector<uint8_t> &o;
+    uint64_t acc = 0;
+    int n = 0;
+    void put(uint64_t v, int bits)
+    {
+        for (int b = 0; b < bits; ++b)
+        {
+            acc |= ((v >> b) & 1ull) << n;
+            if (++n == 8)
+            {
+                o.push_back((uint8_t)acc);
+                acc = 0;
+                n = 0;
+            }
+        }
+    }
+    void flush()
+    {
+        if (n > 0)
+            o.push_back((uint8_t)acc);
+        acc = 0;
+        n = 0;
+    }
+};
+struct BitIn
+{
+    const std::vector<uint8_t> &b;
+    size_t &p;
+    size_t end;
+    int n = 0;
+    bool bad = false;
+    uint64_t get(int bits)
+    {
+        uint64_t v = 0;
+        for (int k = 0; k < bits; ++k)
+        {
+            if (p >= end)
+            {
+                bad = true;
+                return v;
+            }
+            v |= (uint64_t)((b[p] >> n) & 1u) << k;
+            if (++n == 8)
+            {
+                n = 0;
+                ++p;
+            }
+        }
+        return v;
+    }
+    void align()
+    {
+        if (n > 0)
+        {
+            n = 0;
+            ++p;
+        }
+    }
+};
+int riceK(const std::vector<uint32_t> &sorted)
+{
+    if (sorted.empty())
+        return 0;
+    // The mean gap, leaving out the jump from the roster's references to the pool's (bit 31): escaped anyway.
+    double sum = 0.0, n = 0.0;
+    uint32_t prev = 0;
+    for (uint32_t a : sorted)
+    {
+        const uint32_t g = a - prev;
+        prev = a;
+        if (g < (1u << 24))
+        {
+            sum += g;
+            n += 1.0;
+        }
+    }
+    const double mean = n > 0.0 ? sum / n : 1.0;
+    int k = 0;
+    while (k < 30 && (double)(1ull << (k + 1)) <= mean * 0.69)
+        ++k;
+    return k;
+}
+void putRice(BitOut &bo, uint32_t gap, int k)
+{
+    const uint64_t q = (uint64_t)gap >> k;
+    if (q >= 32)
+    {
+        bo.put(0xFFFFFFFFull, 32);
+        bo.put(gap, 32);
+        return;
+    }
+    bo.put((1ull << q) - 1ull, (int)q);
+    bo.put(0, 1);
+    bo.put(gap & ((1ull << k) - 1ull), k);
+}
+uint32_t getRice(BitIn &bi, int k)
+{
+    uint64_t q = 0;
+    while (q < 32 && bi.get(1) == 1)
+        ++q;
+    if (q >= 32)
+        return (uint32_t)bi.get(32);
+    return (uint32_t)((q << k) | bi.get(k));
+}
+bool sameBits(const void *a, const void *b, size_t n) { return std::memcmp(a, b, n) == 0; }
+bool canonLess(const Event &x, const Event &y) { return x.t != y.t ? x.t < y.t : (x.a != y.a ? x.a < y.a : x.b < y.b); }
+} // namespace
+
+bool packEngineEvents(const World &w, const std::vector<Event> &events, std::vector<uint8_t> &out)
+{
+    std::vector<uint8_t> head, grid, pair, raw;
+    std::vector<const Event *> eng;
+    eng.reserve(events.size());
+    for (const Event &e : events)
+        if (e.origin == ORIGIN_ENGINE)
+            eng.push_back(&e);
+    uint64_t nSteps = 0;
+    int64_t prevK = 0;
+    std::vector<uint32_t> ga;
+    std::vector<std::pair<uint32_t, uint32_t>> pb;
+    std::vector<Event> tmp;
+    for (size_t i = 0; i < eng.size();)
+    {
+        const int64_t K = w.stepIndex(w.stepStart(eng[i]->t));
+        size_t j = i;
+        while (j < eng.size() && w.stepIndex(w.stepStart(eng[j]->t)) == K)
+            ++j;
+        const double t0 = w.s.epoch + (double)K * w.s.stepS, t1 = t0 + w.s.stepS;
+        const uint64_t gseed = gridSeedOf((uint64_t)K);
+        bool ok = true;
+        ga.clear();
+        pb.clear();
+        tmp.clear();
+        for (size_t k = i; k < j && ok; ++k)
+        {
+            const Event &e = *eng[k];
+            if (e.kind != EV_COLLISION || e.a == kNoRef || e.b == kNoRef)
+            {
+                ok = false;
+                break;
+            }
+            const Event r = engineEventOf(t0, t1, (uint64_t)K, e.a, e.b);
+            ok = sameBits(&r.t, &e.t, 8) && r.seed == e.seed && sameBits(&r.sampleDt, &e.sampleDt, 4) &&
+                 (k == i || canonLess(*eng[k - 1], e));
+            if (ok && e.b == kSmallRef)
+            {
+                const float m = gridProjectileMass(w.s, gseed, e.a);
+                ok = sameBits(&m, &e.mProj, 4);
+                ga.push_back(e.a);
+            }
+            else if (ok)
+                pb.push_back({e.a, e.b});
+            tmp.push_back(e);
+        }
+        putVar(head, zig(K - prevK));
+        prevK = K;
+        if (ok)
+        {
+            std::sort(ga.begin(), ga.end());
+            std::sort(pb.begin(), pb.end());
+            putVar(head, ga.size());
+            putVar(head, pb.size());
+            putVar(head, 0);
+            if (!ga.empty())
+            {
+                const uint32_t c = gridHitsCheck(tmp.data(), tmp.size());
+                for (int q = 0; q < 4; ++q)
+                    head.push_back((uint8_t)(c >> (8 * q)));
+                const int k = riceK(ga);
+                head.push_back((uint8_t)k);
+                BitOut bo{grid};
+                uint32_t prevA = 0;
+                for (uint32_t a : ga)
+                {
+                    putRice(bo, a - prevA, k);
+                    prevA = a;
+                }
+                bo.flush();
+            }
+            uint32_t prev = 0;
+            for (const auto &ab : pb)
+            {
+                putVar(pair, ab.first - prev);
+                prev = ab.first;
+                putVar(pair, ab.second);
+            }
+        }
+        else
+        {
+            putVar(head, 0);
+            putVar(head, 0);
+            putVar(head, j - i);
+            for (size_t k = i; k < j; ++k)
+            {
+                const uint8_t *p = (const uint8_t *)eng[k];
+                raw.insert(raw.end(), p, p + sizeof(Event));
+            }
+        }
+        ++nSteps;
+        i = j;
+    }
+    out.clear();
+    auto u64 = [&](uint64_t v) {
+        for (int q = 0; q < 8; ++q)
+            out.push_back((uint8_t)(v >> (8 * q)));
+    };
+    u64(nSteps);
+    u64(eng.size());
+    u64(head.size());
+    u64(grid.size());
+    u64(pair.size());
+    u64(raw.size());
+    out.insert(out.end(), head.begin(), head.end());
+    out.insert(out.end(), grid.begin(), grid.end());
+    out.insert(out.end(), pair.begin(), pair.end());
+    out.insert(out.end(), raw.begin(), raw.end());
+    return true;
+}
+
+bool EngineEventReader::open(std::vector<uint8_t> &&rawIn, std::string *why)
+{
+    buf = std::move(rawIn);
+    stepsLeft = 0;
+    auto fail = [&](const char *m) {
+        if (why)
+            *why = m;
+        stepsLeft = 0;
+        return false;
+    };
+    if (buf.size() < 48)
+        return fail("short header");
+    uint64_t v[6];
+    for (int k = 0; k < 6; ++k)
+    {
+        v[k] = 0;
+        for (int q = 0; q < 8; ++q)
+            v[k] |= (uint64_t)buf[(size_t)k * 8 + q] << (8 * q);
+    }
+    if (48 + v[2] + v[3] + v[4] + v[5] != buf.size() || v[5] % sizeof(Event) != 0)
+        return fail("section sizes");
+    pHead = 48;
+    pGrid = pHead + v[2];
+    pPair = pGrid + v[3];
+    pRaw = pPair + v[4];
+    stepsLeft = v[0];
+    evLeft = v[1];
+    nextStep = 0;
+    if (stepsLeft > 0 && !readHead())
+        return fail("step header");
+    return true;
+}
+
+bool EngineEventReader::readHead()
+{
+    uint64_t d = 0;
+    if (!getVar(buf, pHead, pGrid, d))
+        return false;
+    nextStep += unzig(d);
+    if (!getVar(buf, pHead, pGrid, curGrid) || !getVar(buf, pHead, pGrid, curPair) || !getVar(buf, pHead, pGrid, curRaw))
+        return false;
+    curCheck = 0;
+    curK = 0;
+    if (curGrid > 0)
+    {
+        if (pHead + 5 > pGrid)
+            return false;
+        for (int q = 0; q < 4; ++q)
+            curCheck |= (uint32_t)buf[pHead++] << (8 * q);
+        curK = buf[pHead++];
+        if (curK > 31)
+            return false;
+    }
+    return true;
+}
+
+void EngineEventReader::next(const World &w, std::vector<Event> &out, uint32_t &check, bool &hasCheck)
+{
+    out.clear();
+    if (stepsLeft == 0)
+        return;
+    const int64_t K = nextStep;
+    const double t0 = w.s.epoch + (double)K * w.s.stepS, t1 = t0 + w.s.stepS;
+    uint64_t prev = 0, d = 0;
+    {
+        BitIn bi{buf, pGrid, pPair};
+        for (uint64_t k = 0; k < curGrid && !bi.bad; ++k)
+        {
+            prev += getRice(bi, curK);
+            Event e = engineEventOf(t0, t1, (uint64_t)K, (uint32_t)prev, kSmallRef);
+            e.pad = kEvNeedsGridDraw;
+            out.push_back(e);
+        }
+        bi.align();
+    }
+    prev = 0;
+    for (uint64_t k = 0; k < curPair; ++k)
+    {
+        uint64_t b = 0;
+        getVar(buf, pPair, pRaw, d);
+        prev += d;
+        getVar(buf, pPair, pRaw, b);
+        out.push_back(engineEventOf(t0, t1, (uint64_t)K, (uint32_t)prev, (uint32_t)b));
+    }
+    std::sort(out.begin(), out.end(), canonLess);
+    for (uint64_t k = 0; k < curRaw && pRaw + sizeof(Event) <= buf.size(); ++k)
+    {
+        Event e;
+        std::memcpy(&e, buf.data() + pRaw, sizeof(Event));
+        pRaw += sizeof(Event);
+        out.push_back(e);
+    }
+    hasCheck = curRaw == 0 && curGrid > 0;
+    check = curCheck;
+    evLeft -= std::min<uint64_t>(evLeft, out.size());
+    --stepsLeft;
+    if (stepsLeft > 0 && !readHead())
+        stepsLeft = 0;
 }
 } // namespace kessler

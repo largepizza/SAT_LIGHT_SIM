@@ -13,6 +13,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <glm/glm.hpp>
@@ -49,6 +50,8 @@ struct Secular
     double Mdot = 0.0, argpDot = 0.0, raanDot = 0.0;
 };
 Secular secularJ2(double a, double e, double incl);
+
+double profClock(); // seconds (steady clock)
 
 // Deterministic uniforms / normals from (seed, index, channel).
 double hash01(uint64_t seed, uint64_t index, uint32_t channel);
@@ -223,6 +226,47 @@ struct Event
     float vel[3] = {0, 0, 0};
 };
 
+// Event::pad on an engine grid hit read from the compact event log: its projectile's speed and mass are drawn at
+// replay (World::fillGridHits), as the sampling step drew them.
+constexpr uint8_t kEvNeedsGridDraw = 1;
+
+class World;
+// The check over a step's grid hits' (speed, mass) bits, in order (the compact log stores it; replay compares).
+uint32_t gridHitsCheck(const Event *evs, size_t n);
+
+// An engine collision's event as the sampling step makes it from its key (the step [t0, t1), its index, the pair or
+// a grid hit's target): seed, time within the step, sampleDt. The compact event log stores only the keys.
+Event engineEventOf(double t0, double t1, uint64_t stepK, uint32_t a, uint32_t b);
+
+// ── The compact engine event log (2026-10-28; the event cache and the shipped prebake) ────────────────────────────
+// Per 6-h step the grid hits' targets (sorted, delta coded) and the pairs; time, seed and sampleDt are rebuilt with
+// engineEventOf, a grid hit's speed and mass at replay (with a per-step check of what the sampling step drew). A
+// step that does not rebuild exactly (any other event, another order) is stored whole. The grid hits' gaps are Rice
+// coded (~1.4 bytes a hit; deflate gained nothing on them).
+bool packEngineEvents(const World &w, const std::vector<Event> &events, std::vector<uint8_t> &out);
+class EngineEventReader
+{
+public:
+    // The decompressed payload; false if malformed.
+    bool open(std::vector<uint8_t> &&raw, std::string *why = nullptr);
+    bool done() const { return stepsLeft == 0; }
+    int64_t peekStep() const { return nextStep; } // the next step's index (valid while !done())
+    // The next step's events in the order the step applied them (grid hits marked kEvNeedsGridDraw), and its check
+    // (hasCheck false: stored whole, nothing to draw).
+    void next(const World &w, std::vector<Event> &out, uint32_t &check, bool &hasCheck);
+    size_t eventsLeft() const { return evLeft; }
+
+private:
+    std::vector<uint8_t> buf;
+    size_t pHead = 0, pGrid = 0, pPair = 0, pRaw = 0;
+    uint64_t stepsLeft = 0, evLeft = 0;
+    int64_t nextStep = 0;
+    uint64_t curGrid = 0, curPair = 0, curRaw = 0;
+    uint32_t curCheck = 0;
+    int curK = 0;
+    bool readHead();
+};
+
 // The small fragments as a density field: S statistical orbits per breakup, each spread over its whole orbit
 // (orbit-averaged; ECI longitude averaged) into altitude x latitude x heading cells. Counts are fixed point, so
 // adding and removing in any order is exact: the engine's draws, and so the history, never depend on order.
@@ -283,6 +327,33 @@ struct SmallStream
 };
 static_assert(sizeof(SmallStream) == 24, "SmallStream packing");
 
+// A breakup prepared (World::prepInputs / prepOutputs): its inputs and the pure outputs made from them.
+struct ApplyPrep
+{
+    bool ok = false, outs = false, fromGrid = false;
+    uint32_t epoch = 0; // World::touchEpoch when prepared (applyBatch); 0 = not prepared ahead
+    uint8_t kind = 0;
+    int maxRec = 0, rec = 0;
+    uint32_t tgt = kNoRef, prj = kNoRef;
+    double mT = 0.0, mP = 0.0, v = 0.0;
+    State st, sp;
+    BreakupSizes sz;
+    PoolRec parT, parP; // the pool parents' records as read
+    BreakupResult br;
+    std::vector<PoolRec> recs; // the large pieces' records (event index set at commit)
+    struct Small
+    {
+        uint32_t k = 0;
+        double a = 0, e = 0, i = 0, argp = 0, w = 0, m = 0;
+        bool bucket = false;
+        int32_t bkey = 0;
+    };
+    std::vector<Small> smalls; // the small population's samples that join the grid
+    std::vector<SmallStream> streams;
+    float nSmall = 0.0f, dvSmall = 0.0f;
+};
+bool sameApplyInputs(const ApplyPrep &a, const ApplyPrep &b);
+
 struct WorldSettings
 {
     double epoch = 0.0;          // the scenario epoch (J2000 s): born / death seconds count from here
@@ -338,6 +409,7 @@ public:
     double frontier = 0.0;            // simulated up to here (J2000 s)
     uint64_t sampleCount = 0;
     double profState = 0.0, profPairs = 0.0, profApply = 0.0, profRefs = 0.0; // seconds spent (the worker logs them)
+    double profAllApply = 0.0, profFrag = 0.0, profSmall = 0.0; // every apply (replay too); its fragments, its small samples
 
     // Garbage collection (round 3): a slot is freed kReleaseDelayS after its record's death (re-entry or destruction;
     // the delay lets a fireball finish) and reused by the next record born after that, so the capacity counts LIVE
@@ -401,6 +473,18 @@ public:
     bool alive(uint32_t ref, double t) const; // exists (a dead satellite still does: it can be hit)
     bool dead(uint32_t ref, double t) const;  // a roster satellite past its death (or any pool record)
     int32_t secOf(double t) const;
+    // The step [t0, t1)'s grid hits from the compact event log (kEvNeedsGridDraw): their projectile's speed and mass,
+    // drawn as the sampling step drew them, from the world as it stands after the step's scripted events and
+    // retirement. Returns the check over every grid hit's (speed, mass) bits (packEngineEvents stores it).
+    uint32_t fillGridHits(Event *evs, size_t n, double t0, double t1);
+    // The death buckets whose window has ended by t leave the grid (each step, at its sample time).
+    void retireParticles(double t);
+    // A batch of events (one step's engine events) applied in order, their breakups prepared ahead in parallel.
+    void applyBatch(const Event *evs, size_t n);
+    bool parallelApply = true; // (an A/B: false applies one by one)
+    bool prepAhead = true, deferInBatch = true; // (A/Bs of its two parts)
+    uint64_t prepHits = 0, prepMisses = 0;
+    double profPrep = 0.0, profFlush = 0.0;
     // Applies one event (fills its record range and pushes it to `events`). Returns false (and does
     // nothing) when an object it names is no longer alive at its time.
     bool apply(Event ev);
@@ -411,10 +495,27 @@ public:
 private:
     uint32_t addRecord(const PoolRec &r);
     void killRoster(uint32_t ref, double t, uint32_t eventIdx);
-    void spawnFragments(const BreakupResult &br, uint32_t refA, uint32_t refB, const State &sa, const State &sb,
-                        double t, uint32_t eventIdx, uint32_t seed);
-    void spawnSmall(const BreakupResult &br, const State &st, double t, uint32_t seed, Event &ev);
-    void retireParticles(double t);
+    bool prepInputs(const Event &ev, int maxRec, ApplyPrep &p) const;
+    void prepOutputs(const Event &ev, ApplyPrep &p) const;
+    void planFragments(const BreakupResult &br, uint32_t refA, uint32_t refB, const State &sa, const State &sb, double t,
+                       uint32_t seed, ApplyPrep &p) const;
+    void commitFragments(ApplyPrep &p, uint32_t eventIdx);
+    void planSmall(const BreakupResult &br, const State &st, double t, ApplyPrep &p) const;
+    void commitSmall(const ApplyPrep &p, uint32_t seed, Event &ev);
+    void depositSmall(int32_t key, const ApplyPrep::Small &sm, uint64_t pseed);
+    void flushDeposits();
+    struct Deposit
+    {
+        double a, e, i, argp, w, m;
+        uint64_t seed;
+        int32_t key; // INT32_MIN: the grid; else a death bucket
+    };
+    std::vector<Deposit> depQueue;
+    bool deferDeposits = false;
+    ApplyPrep *preAhead = nullptr;
+    float lifeCell(int i, int j) const;
+    void ensureLifeTable() const;
+    mutable bool lifeTabFull = false;
     BreakupSizes sizesFor(uint32_t refA, uint32_t refB, int maxLarge) const;
     int kindOf(uint32_t ref, double h) const;
     void addStructuralPieces(BreakupResult &br, uint32_t ref, int side, uint32_t seed) const;
@@ -455,8 +556,37 @@ private:
     std::deque<JEntry> journal;
     size_t journalOff = 0;   // entries dropped from the front
     bool journalOn = false;
+    // (2026-10-28) What a batch's commits change (applyBatch: a prepared event whose objects nobody touched since its
+    // preparation takes its outputs without re-reading its inputs). Every write of a pool record or a roster
+    // satellite's dead / end / decay second goes through jPool / jSimple, so they mark it.
+    std::vector<uint32_t> poolTouch, rosterTouch;
+    uint32_t touchEpoch = 1;
+    void touchPool(uint32_t slot)
+    {
+        if (slot >= poolTouch.size())
+            poolTouch.resize(std::max<size_t>(slot + 1, poolTouch.size() * 2), 0);
+        poolTouch[slot] = touchEpoch;
+    }
+    void touchRoster(uint32_t i)
+    {
+        if (i >= rosterTouch.size())
+            rosterTouch.resize(std::max<size_t>(i + 1, roster.size()), 0);
+        rosterTouch[i] = touchEpoch;
+    }
+    bool touchedSince(uint32_t ref, uint32_t epoch) const
+    {
+        if (ref == kNoRef || ref == kSmallRef)
+            return false;
+        if (ref & kPoolBit)
+        {
+            const uint32_t j = ref & ~kPoolBit;
+            return j < poolTouch.size() && poolTouch[j] >= epoch;
+        }
+        return ref < rosterTouch.size() && rosterTouch[ref] >= epoch;
+    }
     void jPool(uint32_t slot)
     {
+        touchPool(slot);
         if (journalOn)
         {
             JEntry e;
@@ -468,6 +598,8 @@ private:
     }
     void jSimple(JOp op, uint32_t a, int64_t b = 0, uint32_t c = 0)
     {
+        if (op == J_RDEAD || op == J_REND || op == J_RDECAY)
+            touchRoster(a);
         if (journalOn)
         {
             JEntry e;
@@ -503,6 +635,8 @@ glm::dvec3 poolTumbleAxis(uint32_t poolIndex);
 
 // Lowers the calling thread's priority (the engine runs beside the frame loop). No-op off Windows.
 void lowerThreadPriority();
+// The engine's parallel parts on every core but one (a replay or a computation the player is waiting for), else half.
+void setEngineThreadsWide(bool wide);
 
 // The storm's scripted history: which satellites the Carrington-class storm kills (by altitude and
 // inclination), when, and the dead formation members bumping their neighbours. Deterministic.

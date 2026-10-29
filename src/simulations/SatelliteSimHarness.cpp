@@ -3118,8 +3118,85 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 return Status::Pending; // not mirrored yet
             selectSatellite((int)poolIdx0() + found);
         }
+        else if (sub == "savecache")
+        {
+            // kessler savecache [out=<path>] (2026-10-28): writes the event cache now (as the app does at exit) to the
+            // user data folder and, with out=, a copy there (the prebake: tools/make_kessler_prebake.py).
+            std::string where;
+            const double ms = kesslerSaveCacheNow(c.str("out", ""), where);
+            if (ms < 0.0)
+                fail("kessler savecache: " + where);
+            r["path"] = where;
+            r["ms"] = ms;
+        }
+        else if (sub == "fingerprint")
+        {
+            // kessler fingerprint (2026-10-28): a hash of what the mirror shows at the current second - every slot's
+            // record alive or dead by now (the generation shown), the roster's dead / end seconds up to now, the events
+            // up to now - so a history replayed from the shipped prebake can be compared with one sampled live.
+            const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            const int32_t sec = (int32_t)std::floor(t - kesslerEpoch());
+            uint64_t hp = 1469598103934665603ull, hr = hp, he = hp;
+            auto mix = [](uint64_t h, const void *p, size_t n) {
+                const unsigned char *b = (const unsigned char *)p;
+                for (size_t i = 0; i < n; ++i)
+                    h = (h ^ b[i]) * 1099511628211ull;
+                return h;
+            };
+            size_t np = 0, nr = 0, ne = 0;
+            for (uint32_t j = 0; j < (uint32_t)kPool.size(); ++j)
+            {
+                const kessler::PoolRec &p = kPool[j];
+                if (p.bornSec > sec)
+                    continue;
+                kessler::PoolRec q = p;
+                if (q.deathSec > sec)
+                    q.deathSec = kessler::kNever; // a death still to come is not part of "now"
+                if (q.decaySec > sec)
+                    q.decaySec = kessler::kNever;
+                hp = mix(hp, &j, 4);
+                hp = mix(hp, &q.M0, offsetof(kessler::PoolRec, event) - offsetof(kessler::PoolRec, M0));
+                ++np;
+            }
+            for (size_t i = 0; i + 1 < kRosterWords.size(); i += 2)
+            {
+                const int32_t d = kRosterWords[i] <= sec ? kRosterWords[i] : kessler::kNever;
+                const int32_t e = kRosterWords[i + 1] <= sec ? kRosterWords[i + 1] : kessler::kNever;
+                if (d == kessler::kNever && e == kessler::kNever)
+                    continue;
+                const uint32_t s = (uint32_t)(i / 2);
+                hr = mix(hr, &s, 4);
+                hr = mix(hr, &d, 4);
+                hr = mix(hr, &e, 4);
+                ++nr;
+            }
+            for (size_t i = 0; i < kEvents.size(); ++i)
+            {
+                const kessler::Event &e = kEvents[i];
+                if (e.t > t)
+                    continue;
+                he = mix(he, &e.t, 8);
+                he = mix(he, &e.a, 8);
+                he = mix(he, &e.kind, 2);
+                he = mix(he, &e.seed, 4);
+                he = mix(he, &e.nRec, 4);
+                ++ne;
+            }
+            char b[64];
+            snprintf(b, sizeof(b), "%016llx", (unsigned long long)hp);
+            r["pool_hash"] = b;
+            snprintf(b, sizeof(b), "%016llx", (unsigned long long)hr);
+            r["roster_hash"] = b;
+            snprintf(b, sizeof(b), "%016llx", (unsigned long long)he);
+            r["event_hash"] = b;
+            r["pool_records"] = np;
+            r["roster_changed"] = nr;
+            r["events"] = ne;
+            r["day"] = (t - kesslerEpoch()) / 86400.0;
+            r["frontier_days"] = (kFrontier - kesslerEpoch()) / 86400.0;
+        }
         else if (!sub.empty() && sub != "state")
-            fail("kessler: state | breakup <sat> [kind=explosion|asat] | collide <a> <b> | wait [days=] [done] | select [k=]");
+            fail("kessler: state | breakup <sat> [kind=explosion|asat] | collide <a> <b> | wait [days=] [done] | select [k=] | fingerprint");
         r["kessler"] = kesslerStateJson();
         const nlohmann::json &kj = r["kessler"];
         char msg[200];
