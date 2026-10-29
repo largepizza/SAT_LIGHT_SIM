@@ -7281,6 +7281,8 @@ private:
     // Motion blur (review 17): each exported frame is the mean of cineBlurSubs_ subframes spread over a 180-degree
     // shutter (half a frame), accumulated in LINEAR light in finalizeScreenshot (cineAccum_) before the encode.
     float  cineBlurSubs_ = 1.0f;
+    float  cineVideoScale_ = 1.0f;   // the video export's output scale (harness `cine preview scale=`; 1 = the window)
+    std::string cineVideoTag_;       // appended to the video export's file name (harness `cine preview shot=N` -> _shotN)
     int    cineSub_ = 0, cineAccumSubs_ = 0, cineAccumCount_ = 0;
     std::vector<float> cineAccum_;
     bool   cineHqSettingsSaved_ = false;

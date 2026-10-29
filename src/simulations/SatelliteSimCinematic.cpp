@@ -329,8 +329,9 @@ void SatelliteSim::cineStart(CineRun mode, bool oneShot)
             // One .mp4 beside the frames' folder contents, every exported frame once (lossless: cineTick waits for a
             // free readback buffer rather than drop one).
             VideoRecordOptions o;
-            o.path = (dir / (cine_.name + ".mp4")).string();
+            o.path = (dir / (cine_.name + cineVideoTag_ + ".mp4")).string();
             o.fps = fps;
+            o.scale = std::clamp(cineVideoScale_, 0.25f, 1.0f);
             o.lossless = true;
             std::string err;
             if (!videoStart(o, harnessRunner_ != nullptr, err))
