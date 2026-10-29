@@ -110,6 +110,7 @@ nav:
       - Benchmark datasets: accuracy/benchmarks.md
       - SatBench and the accuracy gate: accuracy/satbench.md
       - Results and known residuals: accuracy/results.md
+      - Validation report: accuracy/validation.md
       - Model provenance: accuracy/provenance.md
   - Rendering:
       - rendering/index.md

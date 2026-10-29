@@ -27,6 +27,7 @@
 #include "../Log.h"
 #include "clay.h"
 #include "UIPalette.h"
+#include "../UiTextClay.h"
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -62,33 +63,33 @@ void fmtDur(double s, char *b, size_t n)
     if (m >= 60)
         snprintf(b, n, "%lldh %02lldm", m / 60, m % 60);
     else
-        snprintf(b, n, "%lld min", m);
+        snprintf(b, n, tx(Txt::FmtMin), m);
 }
 
 const char *kindName(int k)
 {
     switch (k)
     {
-    case (int)wx::StormKind::AirMass: return "Air-mass cell";
-    case (int)wx::StormKind::Multicell: return "Multicell";
-    case (int)wx::StormKind::Supercell: return "Supercell";
-    case (int)wx::StormKind::SquallLine: return "Squall line";
-    case (int)wx::StormKind::Mcs: return "Mesoscale convective system";
-    case (int)wx::StormKind::Tropical: return "Tropical cyclone";
-    default: return "Storm"; // a kind this window does not know yet
+    case (int)wx::StormKind::AirMass: return tx(Txt::ValAirMassCell);
+    case (int)wx::StormKind::Multicell: return tx(Txt::ValMulticell);
+    case (int)wx::StormKind::Supercell: return tx(Txt::ValSupercell);
+    case (int)wx::StormKind::SquallLine: return tx(Txt::ValSquallLine);
+    case (int)wx::StormKind::Mcs: return tx(Txt::ValMesoscaleConvectiveSystem);
+    case (int)wx::StormKind::Tropical: return tx(Txt::ValTropicalCyclone);
+    default: return tx(Txt::ValStorm); // a kind this window does not know yet
     }
 }
 const char *kindShort(int k)
 {
     switch (k)
     {
-    case (int)wx::StormKind::AirMass: return "Cell";
-    case (int)wx::StormKind::Multicell: return "Multi";
-    case (int)wx::StormKind::Supercell: return "Super";
-    case (int)wx::StormKind::SquallLine: return "Line";
-    case (int)wx::StormKind::Mcs: return "MCS";
-    case (int)wx::StormKind::Tropical: return "TC";
-    default: return "Storm";
+    case (int)wx::StormKind::AirMass: return tx(Txt::ValCell);
+    case (int)wx::StormKind::Multicell: return tx(Txt::ValMulti);
+    case (int)wx::StormKind::Supercell: return tx(Txt::ValSuper);
+    case (int)wx::StormKind::SquallLine: return tx(Txt::ValLine);
+    case (int)wx::StormKind::Mcs: return tx(Txt::ValMcs);
+    case (int)wx::StormKind::Tropical: return tx(Txt::ValTc);
+    default: return tx(Txt::ValStorm);
     }
 }
 const char *stageName(int s)
@@ -100,7 +101,7 @@ double wwLat(const glm::dvec3 &e) { return glm::degrees(std::asin(std::clamp(e.z
 double wwLon(const glm::dvec3 &e) { return glm::degrees(std::atan2(e.y, e.x)); }
 const char *compass(double bearingDeg)
 {
-    static const char *k[16] = {"N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"};
+    static const char *k[16] = {"N", tx(Txt::OptNne), tx(Txt::OptNe), tx(Txt::OptEne), "E", tx(Txt::OptEse), tx(Txt::OptSe), tx(Txt::OptSse), "S", tx(Txt::OptSsw), tx(Txt::OptSw), tx(Txt::OptWsw), "W", tx(Txt::OptWnw), tx(Txt::OptNw), tx(Txt::OptNnw)};
     const int i = (int)std::floor(std::fmod(bearingDeg + 360.0 + 11.25, 360.0) / 22.5) % 16;
     return k[i];
 }
@@ -432,7 +433,7 @@ bool SatelliteSim::weatherWatchTornado(uint64_t id, std::string &msg)
     TornadoNow T;
     if (!st || !tornadoOf(*st, now, T) || T.spout)
     {
-        msg = "That storm puts down no tornado";
+        msg = tx(Txt::ValThatStormPutsDownNoTornado);
         return false;
     }
     return weatherWatchTornadoOf(*st, 0, msg);
@@ -450,7 +451,7 @@ bool SatelliteSim::weatherWatchTornadoOf(const wx::Storm &stIn, int mode, std::s
     TornadoNow T;
     if (!tornadoOf(*st, now, T))
     {
-        msg = "That storm puts down no tornado";
+        msg = tx(Txt::ValThatStormPutsDownNoTornado);
         return false;
     }
     // mode 0 WATCH (the Weather window's one button, 2026-10-24: the user, "a single button that takes them to a tornado in
@@ -570,13 +571,13 @@ bool SatelliteSim::weatherWatchTornadoOf(const wx::Storm &stIn, int mode, std::s
     const char *side = compass(az + 180.0);
     const double dKm = std::acos(std::clamp(glm::dot(oe, te), -1.0, 1.0)) * kRe / 1000.0;
     if (mode == 0)
-        snprintf(sb, sizeof(sb), "A %s on the ground (%.0f min left), %.1f %s %.1f %s, a few km away", what, (T.t1 - t) / 60.0,
+        snprintf(sb, sizeof(sb), tx(Txt::FmtAOnTheGroundMinLeft), what, (T.t1 - t) / 60.0,
                  std::abs(wwLat(te)), wwLat(te) >= 0.0 ? "N" : "S", std::abs(wwLon(te)), wwLon(te) >= 0.0 ? "E" : "W");
     else if (close)
-        snprintf(sb, sizeof(sb), "A third of the way through its %s (%.0f min on the ground), %.0f km %s of it, 300 m up", what,
+        snprintf(sb, sizeof(sb), tx(Txt::FmtAThirdOfTheWayThrough), what,
                  (T.t1 - T.t0) / 60.0, dKm, side);
     else
-        snprintf(sb, sizeof(sb), "A minute before its %s touches down (%.0f min on the ground), %.0f km %s of it", what,
+        snprintf(sb, sizeof(sb), tx(Txt::FmtAMinuteBeforeItsTouchesDown), what,
                  (T.t1 - T.t0) / 60.0, dKm, side);
     msg = sb;
     return true;
@@ -710,7 +711,7 @@ bool SatelliteSim::weatherWatchPassage(uint64_t id, std::string &msg)
     const double tp = st ? weatherLinePassage(*st, now) : 0.0;
     if (tp <= 0.0)
     {
-        msg = "Its line does not pass over you";
+        msg = tx(Txt::ValItsLineDoesNotPassOver);
         return false;
     }
     const double t = std::max(now, tp - 1200.0);
@@ -735,7 +736,7 @@ bool SatelliteSim::weatherWatchPassage(uint64_t id, std::string &msg)
     skyTaaHistValid = false;
     cv2HistoryValid = false;
     wxRowsWall = -1e300;
-    msg = std::string("20 minutes before the line reaches you; looking ") + compass(az) + ", into it";
+    msg = std::string(tx(Txt::TxtMinutesBeforeTheLineReaches)) + compass(az) + tx(Txt::ValIntoIt);
     return true;
 }
 
@@ -746,7 +747,7 @@ bool SatelliteSim::weatherGoToStorm(uint64_t id, std::string &msg, double distM,
     FPROF_SCOPE("weatherGoToStorm");
     if (!stormCatalog)
     {
-        msg = "No storm catalog yet";
+        msg = tx(Txt::ValNoStormCatalogYet);
         return false;
     }
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
@@ -760,7 +761,7 @@ bool SatelliteSim::weatherGoToStorm(uint64_t id, std::string &msg, double distM,
     const bool alive = weatherStormNow(id, t, row);
     if (!best && !alive)
     {
-        msg = "That storm is not alive now";
+        msg = tx(Txt::ValThatStormIsNotAliveNow);
         return false;
     }
     const glm::dvec3 te = best ? weatherMapToEarth(best->dir, t) : row.e;
@@ -795,7 +796,7 @@ bool SatelliteSim::weatherGoToStorm(uint64_t id, std::string &msg, double distM,
     cv2HistoryValid = false;
     wxRowsWall = -1e300;
     char sb[200];
-    snprintf(sb, sizeof(sb), "%s, %s: you are %.0f km %s of it, looking %s", kindName(alive ? row.kind : (int)best->kind),
+    snprintf(sb, sizeof(sb), tx(Txt::FmtYouAreKmOfItLooking), kindName(alive ? row.kind : (int)best->kind),
              alive ? stageName(row.stage) : "alive", distM / 1000.0, compass(glm::degrees(b)), compass(az));
     msg = sb;
     return true;
@@ -811,7 +812,7 @@ bool SatelliteSim::weatherWatchStormNow(uint64_t id, std::string &msg)
     WxStormRow row;
     if (!weatherStormNow(id, now, row))
     {
-        msg = "That storm has gone";
+        msg = tx(Txt::ValThatStormHasGone);
         return false;
     }
     const wx::Storm *st = stormCatalog ? stormCatalog->find(id) : nullptr;
@@ -845,7 +846,7 @@ bool SatelliteSim::weatherWatchStormNow(uint64_t id, std::string &msg)
     wxTornFix.losMax = 0.6;
     wxTornFix.what = kindName(row.kind);
     char sb[220];
-    snprintf(sb, sizeof(sb), "%s%s, %.1f %s %.1f %s, seen from about %.0f km away", t > now + 60.0 ? "At its height: " : "",
+    snprintf(sb, sizeof(sb), tx(Txt::FmtSeenFromAboutKmAway), t > now + 60.0 ? tx(Txt::TxtAtItsHeight) : "",
              kindName(row.kind), std::abs(wwLat(row.e)), wwLat(row.e) >= 0.0 ? "N" : "S", std::abs(wwLon(row.e)),
              wwLon(row.e) >= 0.0 ? "E" : "W", dist / 1000.0);
     msg = sb;
@@ -859,7 +860,7 @@ bool SatelliteSim::weatherWatchStorm(uint64_t id, std::string &msg)
     WxStormRow row;
     if (!weatherStormNow(id, now, row))
     {
-        msg = "That storm is not alive now";
+        msg = tx(Txt::ValThatStormIsNotAliveNow);
         return false;
     }
     const double t = row.tMature;
@@ -872,8 +873,8 @@ bool SatelliteSim::weatherWatchStorm(uint64_t id, std::string &msg)
     std::string m2;
     const bool ok = weatherGoToStorm(id, m2);
     char sb[240];
-    snprintf(sb, sizeof(sb), "%s %s: %s", t >= now ? "Ahead to" : "Back to",
-             t >= now ? "its mature stage" : "its mature stage", ok ? m2.c_str() : "it has gone");
+    snprintf(sb, sizeof(sb), "%s %s: %s", t >= now ? tx(Txt::TxtAheadTo) : tx(Txt::TxtBackTo),
+             t >= now ? tx(Txt::TxtItsMatureStage) : tx(Txt::TxtItsMatureStage), ok ? m2.c_str() : tx(Txt::TxtItHasGone));
     msg = sb;
     return ok;
 }
@@ -1365,11 +1366,10 @@ void SatelliteSim::buildWeatherWindow(const UIInput &inp, UIRenderer &ui)
                                                        .childGap = 8,
                                                        .layoutDirection = CLAY_TOP_TO_BOTTOM}})
                 {
-                    CLAY_TEXT(CLAY_STRING("Weather is off in this graphics mode."),
+                    CLAY_TEXT(txc(Txt::NoteWeatherOffTitle),
                               CLAY_TEXT_CONFIG({.textColor = Pal::textBright, .fontSize = fs(13),
                                                 .wrapMode = CLAY_TEXT_WRAP_WORDS}));
-                    CLAY_TEXT(CLAY_STRING("Storms, rain, fog and the radar need the volumetric clouds. Choose Low or "
-                                          "higher in Settings > Display > Preset."),
+                    CLAY_TEXT(txc(Txt::NoteWeatherOffBody),
                               CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12),
                                                 .wrapMode = CLAY_TEXT_WRAP_WORDS}));
                 }
@@ -1409,17 +1409,17 @@ void SatelliteSim::buildWeatherWindow(const UIInput &inp, UIRenderer &ui)
                 {
                     // Drawn Storms, Radar, Cyclones, Controls (issue 20261028_222628: open on the events, like Missions and
                     // Sky events); wxTab keeps its values (0 Radar, 1 Storms, 2 Controls, 3 Cyclones; default 1).
-                    static const char *kTabs[] = {"Radar", "Storms", "Controls", "Cyclones"};
-                    static const char *kTips[] = {"A local precipitation radar centred on you: the rain the clouds draw",
-                                                  "The storms near you and the strongest worldwide (Go to, Watch)",
-                                                  "The storm objects' settings (also Settings > Weather)",
-                                                  "Named storms: the tropical cyclones, their tracks and milestones"};
+                    static const char *kTabs[] = {tx(Txt::OptRadar), tx(Txt::OptStorms), tx(Txt::TtlControls), tx(Txt::OptCyclones)};
+                    static const char *kTips[] = {tx(Txt::OptALocalPrecipitationRadarCentredOn),
+                                                  tx(Txt::OptTheStormsNearYouAndThe),
+                                                  tx(Txt::OptTheStormObjectsSettingsAlsoSettings),
+                                                  tx(Txt::OptNamedStormsTheTropicalCyclonesTheir)};
                     static const int kOrder[] = {1, 0, 3, 2};
                     for (int i : kOrder)
                         if (uiButton(inp, ui, "WxTab", i, kTabs[i], kTips[i], wxTab == i))
                             wxTab = i;
                     CLAY(CLAY_ID("WxTabsGap"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}}) {}
-                    text(wxStr("%d storms alive", wxStormsAlive), Pal::textDim, 11);
+                    text(wxStr(tx(Txt::FmtStormsAlive), wxStormsAlive), Pal::textDim, 11);
                 }
                 if (wxStatus != wxStatusShown)
                 {
@@ -1724,7 +1724,7 @@ void SatelliteSim::buildWeatherRadarTab(const UIInput &inp, UIRenderer &ui, floa
             char a[32], l[32];
             fmtDur(now - r.t0, a, sizeof(a));
             fmtDur(r.tEnd - now, l, sizeof(l));
-            ui.tooltip(inp, true, wxStr("%s, %s: %s old, %s left, ~%.1f flashes/min", kindName(r.kind), stageName(r.stage), a, l,
+            ui.tooltip(inp, true, wxStr(tx(Txt::FmtOldLeftFlashesMin), kindName(r.kind), stageName(r.stage), a, l,
                                         r.flashesPerMin), fs(11));
         }
     }
@@ -1734,17 +1734,17 @@ void SatelliteSim::buildWeatherRadarTab(const UIInput &inp, UIRenderer &ui, floa
         const time_t unixSim = (time_t)std::floor(showF->valid ? showF->simT : now) + 946728000;
         const struct tm *g = gmtime(&unixSim);
         if (g)
-            snprintf(u, sizeof(u), "%02d:%02d UTC", g->tm_hour, g->tm_min);
+            snprintf(u, sizeof(u), tx(Txt::FmtUtc4), g->tm_hour, g->tm_min);
         else
             snprintf(u, sizeof(u), "--");
         const double ago = showF->valid ? now - showF->simT : 0.0;
         if (!wxRadarRanCapable && !wxShown.valid)
-            text("The radar needs the cloud renderer (not available on the Potato preset).", Pal::textWarn, 11, true);
+            text(tx(Txt::NoteTheRadarNeedsTheCloudRenderer), Pal::textWarn, 11, true);
         else if (wxLoop && wxLoopFrames.size() >= 2)
-            text(wxStr("Loop: %s (%d of %zu frames, %.0f min ago)", u, wxLoopShownPos + 1, wxLoopFrames.size(), ago / 60.0),
+            text(wxStr(tx(Txt::FmtLoopOfFramesMinAgo), u, wxLoopShownPos + 1, wxLoopFrames.size(), ago / 60.0),
                  Pal::volValue, 11);
         else
-            text(wxStr("Radar %s, %.0f km around you; the rain the clouds draw, %.0f m over the ground", u, radiusKm, kWxSampleAglM),
+            text(wxStr(tx(Txt::FmtRadarKmAroundYouTheRain), u, radiusKm, kWxSampleAglM),
                  Pal::textDim, 11, true);
     }
     // The colour scale.
@@ -1789,8 +1789,8 @@ void SatelliteSim::buildWeatherRadarTab(const UIInput &inp, UIRenderer &ui, floa
     }
     // Range and the toggles.
     {
-        static const char *kR[] = {"50 km", "150 km", "400 km"};
-        const int p = uiChoiceRow(inp, ui, "WxRange", 0, "Range", kR, 3, wxRangeIdx, "The radar's radius");
+        static const char *kR[] = {tx(Txt::OptKm3), tx(Txt::OptKm2), tx(Txt::OptKm)};
+        const int p = uiChoiceRow(inp, ui, "WxRange", 0, tx(Txt::OptRange), kR, 3, wxRangeIdx, tx(Txt::TipTheRadarsRadius));
         if (p >= 0)
             wxRangeIdx = p;
     }
@@ -1799,21 +1799,21 @@ void SatelliteSim::buildWeatherRadarTab(const UIInput &inp, UIRenderer &ui, floa
                                            .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                            .layoutDirection = CLAY_LEFT_TO_RIGHT}})
     {
-        if (uiButton(inp, ui, "WxClouds", 0, "Clouds", "The low cloud's cover, faintly under the echoes", wxShowClouds))
+        if (uiButton(inp, ui, "WxClouds", 0, tx(Txt::BtnClouds), tx(Txt::TipTheLowCloudsCoverFaintlyUnder), wxShowClouds))
         {
             wxShowClouds = !wxShowClouds;
             weatherRadarRaster(wxShown);
         }
-        if (uiButton(inp, ui, "WxLabels", 0, "Labels", "The storms' labels (the number is their place in the Storms list)",
+        if (uiButton(inp, ui, "WxLabels", 0, tx(Txt::BtnLabels), tx(Txt::TipTheStormsLabelsTheNumberIs),
                      wxShowLabels))
             wxShowLabels = !wxShowLabels;
-        if (uiButton(inp, ui, "WxLoop", 0, "Loop",
-                     "Play the frames taken while the radar was open (one every 5 min of sim time: speed time up to fill it)",
+        if (uiButton(inp, ui, "WxLoop", 0, tx(Txt::BtnLoop),
+                     tx(Txt::TipPlayTheFramesTakenWhileThe),
                      wxLoop, wxLoopFrames.size() >= 2 || wxLoop))
             wxLoop = !wxLoop;
         CLAY(CLAY_ID("WxTogGap"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}}) {}
         if (wxStats.maxDbz > 0.0f)
-            text(wxStr("max %.0f dBZ", wxStats.maxDbz), Pal::textDim, 10);
+            text(wxStr(tx(Txt::FmtMaxDbz), wxStats.maxDbz), Pal::textDim, 10);
     }
     // The selected storm (a click on its marker).
     WxStormRow sel;
@@ -1835,11 +1835,11 @@ void SatelliteSim::buildWeatherRadarTab(const UIInput &inp, UIRenderer &ui, floa
                                                 .layoutDirection = CLAY_TOP_TO_BOTTOM}})
             {
                 text(wxStr("%s, %s", kindName(sel.kind), stageName(sel.stage)), Pal::textPrimary, 12, true);
-                text(wxStr("%.0f km %s; %s old, %s left; ~%.1f flashes/min", sel.distKm, compass(sel.bearingDeg), a, l,
+                text(wxStr(tx(Txt::FmtKmOldLeftFlashesMin), sel.distKm, compass(sel.bearingDeg), a, l,
                            sel.flashesPerMin),
                      Pal::textDim, 11, true);
             }
-            if (uiButton(inp, ui, "WxSelWatch", 0, "Watch", "The storm at its height, from the ground"))
+            if (uiButton(inp, ui, "WxSelWatch", 0, tx(Txt::BtnWatch), tx(Txt::TipTheStormAtItsHeightFrom)))
             {
                 wxPendingAct = 5;
                 wxPendingId = sel.id;
@@ -1847,8 +1847,7 @@ void SatelliteSim::buildWeatherRadarTab(const UIInput &inp, UIRenderer &ui, floa
         }
     }
     else
-        text("Click a storm marker for its details. Echoes: the rain shafts the clouds draw (the weather map's "
-             "precipitation through the clouds' own flow, and the storms' rain cores).",
+        text(tx(Txt::NoteClickAStormMarkerForIts),
              Pal::textHint, 10, true);
 }
 
@@ -1931,30 +1930,30 @@ void SatelliteSim::buildWeatherStormsTab(const UIInput &inp, UIRenderer &ui)
                     else
                         text(wxStr("%s", kindName(r.kind)), Pal::textPrimary, 12);
                     if (r.towerCount > 1)
-                        text(wxStr("(%d of %d towers)", r.towersAlive, r.towerCount), Pal::textDim, 11);
+                        text(wxStr(tx(Txt::FmtOfTowers), r.towersAlive, r.towerCount), Pal::textDim, 11);
                 }
                 const glm::dvec3 &e = r.e;
                 const double lat = glm::degrees(std::asin(std::clamp(e.z, -1.0, 1.0))), lon = glm::degrees(std::atan2(e.y, e.x));
-                text(wxStr("%.0f km %s (%.0f deg), %.1f %s %.1f %s", r.distKm, compass(r.bearingDeg), r.bearingDeg, std::abs(lat),
+                text(wxStr(tx(Txt::FmtKmDeg), r.distKm, compass(r.bearingDeg), r.bearingDeg, std::abs(lat),
                            lat >= 0.0 ? "N" : "S", std::abs(lon), lon >= 0.0 ? "E" : "W"),
                      Pal::textDim, 11);
-                text(wxStr("%s old, %s left; strength %.0f%%; ~%.1f flashes/min", a, l, 100.0f * r.strength, r.flashesPerMin),
+                text(wxStr(tx(Txt::FmtOldLeftStrengthFlashesMin), a, l, 100.0f * r.strength, r.flashesPerMin),
                      Pal::textDim, 11);
                 if (r.tTorn0 > 0.0)
                 {
                     char w[32];
                     const bool on = now >= r.tTorn0 && now < r.tTorn1;
                     fmtDur(std::abs((on ? r.tTorn1 : r.tTorn0) - now), w, sizeof(w));
-                    text(on ? wxStr("TORNADO on the ground now, %s more", w)
-                            : r.tTorn0 > now ? wxStr("Tornado: touches down in %s, for %.0f min", w, (r.tTorn1 - r.tTorn0) / 60.0)
-                                             : wxStr("Tornado: touched down %s ago", w),
+                    text(on ? wxStr(tx(Txt::FmtTornadoOnTheGroundNowMore), w)
+                            : r.tTorn0 > now ? wxStr(tx(Txt::FmtTornadoTouchesDownInForMin), w, (r.tTorn1 - r.tTorn0) / 60.0)
+                                             : wxStr(tx(Txt::FmtTornadoTouchedDownAgo), w),
                          on ? Pal::textBright : Pal::textPrimary, 11);
                 }
                 else if (r.tPass > 0.0)
                 {
                     char w[32];
                     fmtDur(r.tPass - now, w, sizeof(w));
-                    text(wxStr("Its line reaches you in %s", w), Pal::textPrimary, 11);
+                    text(wxStr(tx(Txt::FmtItsLineReachesYouIn), w), Pal::textPrimary, 11);
                 }
                 else
                     text(" ", Pal::textDim, 11);
@@ -1964,8 +1963,8 @@ void SatelliteSim::buildWeatherStormsTab(const UIInput &inp, UIRenderer &ui)
                                                                 .layoutDirection = CLAY_TOP_TO_BOTTOM}})
             {
                 const bool tornNow = r.tTorn0 > 0.0 && now >= r.tTorn0 + 30.0 && now <= r.tTorn1 - 180.0;
-                if (uiButton(inp, ui, "WxSWatch", id, "Watch",
-                             tornNow ? "Its tornado on the ground, a few km away" : "The storm at its height, from the ground", false, true, true))
+                if (uiButton(inp, ui, "WxSWatch", id, tx(Txt::BtnWatch),
+                             tornNow ? tx(Txt::TipItsTornadoOnTheGroundA) : tx(Txt::TipTheStormAtItsHeightFrom), false, true, true))
                 {
                     wxPendingAct = 5;
                     wxPendingId = r.id;
@@ -1976,13 +1975,13 @@ void SatelliteSim::buildWeatherStormsTab(const UIInput &inp, UIRenderer &ui)
     };
     if (!stormObjects)
     {
-        text("Storm objects are off (Controls, or Settings > Weather).", Pal::textDim, 11, true);
+        text(tx(Txt::NoteStormObjectsAreOffControlsOr), Pal::textDim, 11, true);
         return;
     }
     // (2026-10-23, the user: reserved spots, the cool events first, storms near you after them, nothing moving about.)
-    uiSection("WxSec", 2, "EVENTS");
+    uiSection("WxSec", 2, tx(Txt::SecEvents));
     buildWeatherFeatured(inp, ui);
-    uiSection("WxSec", 0, wxStr("NEAR YOU (WITHIN %.0f KM)", kWxNearKm));
+    uiSection("WxSec", 0, wxStr(tx(Txt::FmtNearYouWithinKm), kWxNearKm));
     for (int i = 0; i < kWxNearSlots; ++i)
     {
         const WxStormRow &r = i < (int)wxNearSlots.size() ? wxNearSlots[(size_t)i] : WxStormRow{};
@@ -1995,11 +1994,10 @@ void SatelliteSim::buildWeatherStormsTab(const UIInput &inp, UIRenderer &ui)
                                                    .backgroundColor = Pal::cardBg,
                                                    .cornerRadius = CLAY_CORNER_RADIUS(4)})
             {
-                text(i == 0 ? "No organised storm near you" : "-", Pal::textHint, 11);
+                text(i == 0 ? tx(Txt::NoteNoOrganisedStormNearYou) : "-", Pal::textHint, 11);
             }
     }
-    text("Storms live in the cloud map's frame and move with it; each is fixed at its birth, so time warp, reverse and "
-         "bookmarks see the same storms. The lightning is an estimate (the lightning pass's rate x its dominant towers).",
+    text(tx(Txt::NoteStormsLiveInTheCloudMaps),
          Pal::textHint, 10, true);
 }
 
@@ -2009,10 +2007,10 @@ void SatelliteSim::buildWeatherControlsTab(const UIInput &inp, UIRenderer &ui)
         CLAY_TEXT(cs(s), CLAY_TEXT_CONFIG({.textColor = c, .fontSize = fs(size),
                                            .wrapMode = wrap ? CLAY_TEXT_WRAP_WORDS : CLAY_TEXT_WRAP_NONE}));
     };
-    uiSection("WxCSec", 0, "STORM OBJECTS");
+    uiSection("WxCSec", 0, tx(Txt::SecStormObjects));
     {
         bool v = stormObjects;
-        if (uiToggleRow(inp, ui, "WxCOn", 0, "Storm objects", v, "Off: no storm towers at all (the cloud map only)"))
+        if (uiToggleRow(inp, ui, "WxCOn", 0, tx(Txt::LblStormObjects), v, tx(Txt::TipOffNoStormTowersAtAll)))
         {
             stormObjects = v;
             graphicsPreset = GraphicsPreset::Custom;
@@ -2046,53 +2044,51 @@ void SatelliteSim::buildWeatherControlsTab(const UIInput &inp, UIRenderer &ui)
             }
         }
     };
-    num(0, "Storm frequency (x)", stormFrequency, 0.0f, 10.0f, 0.05f, "%.2f", "x the calibrated spawn rate (clouds_v2.storm_frequency)");
-    num(1, "Storm lifetime (x)", stormLifeScale, 0.1f, 5.0f, 0.05f, "%.2f", "x every storm's lifetime (clouds_v2.storm_life)");
-    num(2, "Storm cloud field", stormCloudField, 0.0f, 3.0f, 0.05f, "%.2f",
-        "Each storm's own cloud in the weather map round it (clouds_v2.storm_field)");
-    num(3, "Storm clear moat", stormMoat, 0.0f, 3.0f, 0.05f, "%.2f", "The clear moat round a storm (clouds_v2.storm_moat)");
-    num(6, "Hurricane arm cirrus", stormArmCirrus, 0.0f, 3.0f, 0.05f, "%.2f",
-        "The ice streaming along a tropical cyclone's spiral arms (clouds_v2.storm_arm_cirrus; 0 = none)");
-    num(10, "Storm surge (x)", stormSurge, 0.0f, 2.0f, 0.05f, "%.2f",
-        "x a tropical cyclone's storm surge: the sea raised on the coast right of its track (clouds_v2.storm_surge)");
-    uiSection("WxCSec", 2, "WILDFIRES");
-    num(7, "Wildfires (x)", wildfireRate, 0.0f, 10.0f, 0.05f, "%.2f",
-        "x the calibrated fire rate: fuel (the biome map) x the season's dryness (clouds_v2.wildfires; 0 = none)");
-    num(8, "Wildfire smoke", wildfireSmoke, 0.0f, 5.0f, 0.05f, "%.2f",
-        "x the smoke's optical depth: the columns and the regional pall (clouds_v2.wildfire_smoke)");
-    num(12, "Smoke brightness", wildfireSmokeBright, 0.0f, 5.0f, 0.05f, "%.2f",
-        "x the light the smoke scatters (clouds_v2.wildfire_smoke_brightness)");
-    num(13, "Smoke tint (-1 blue .. +1 brown)", wildfireSmokeTint, -1.0f, 1.0f, 0.05f, "%.2f",
-        "The smoke's own colour: 0 neutral grey, + toward brown, - toward blue-grey (clouds_v2.wildfire_smoke_tint)");
-    num(14, "Smoke spread (x)", wildfireSmokeSpread, 0.25f, 4.0f, 0.05f, "%.2f",
-        "x the plumes' and the pall's width; the same smoke, thinner when wider (clouds_v2.wildfire_smoke_spread)");
-    num(15, "Smoke spectral (x)", wildfireSmokeSpectral, 0.0f, 2.0f, 0.05f, "%.2f",
-        "x the smoke's Angstrom exponent (1 = ~1.6, physical): the Sun and sky seen through it reddened, its thin parts "
-        "blue-grey; 0 = grey at every wavelength (clouds_v2.wildfire_smoke_spectral)");
-    num(9, "Wildfire light", wildfireLight, 0.0f, 5.0f, 0.05f, "%.2f",
-        "x the fire front's light: the flickering points and their glow at night (clouds_v2.wildfire_light)");
-    num(11, "Haboobs (x)", haboobGain, 0.0f, 5.0f, 0.05f, "%.2f",
-        "x the dust walls storms' gust fronts raise over deserts (the biome map's dust; clouds_v2.haboobs)");
+    num(0, tx(Txt::SldStormFrequencyX), stormFrequency, 0.0f, 10.0f, 0.05f, "%.2f", tx(Txt::TipXTheCalibratedSpawnRateClouds));
+    num(1, tx(Txt::SldStormLifetimeX), stormLifeScale, 0.1f, 5.0f, 0.05f, "%.2f", tx(Txt::TipXEveryStormsLifetimeCloudsV2));
+    num(2, tx(Txt::SldStormCloudField), stormCloudField, 0.0f, 3.0f, 0.05f, "%.2f",
+        tx(Txt::TipEachStormsOwnCloudInThe));
+    num(3, tx(Txt::SldStormClearMoat), stormMoat, 0.0f, 3.0f, 0.05f, "%.2f", tx(Txt::TipTheClearMoatRoundAStorm));
+    num(6, tx(Txt::SldHurricaneArmCirrus), stormArmCirrus, 0.0f, 3.0f, 0.05f, "%.2f",
+        tx(Txt::TipTheIceStreamingAlongATropical));
+    num(10, tx(Txt::SldStormSurgeX), stormSurge, 0.0f, 2.0f, 0.05f, "%.2f",
+        tx(Txt::TipXATropicalCyclonesStormSurge));
+    uiSection("WxCSec", 2, tx(Txt::SecWildfires));
+    num(7, tx(Txt::SldWildfiresX), wildfireRate, 0.0f, 10.0f, 0.05f, "%.2f",
+        tx(Txt::TipXTheCalibratedFireRateFuel));
+    num(8, tx(Txt::SldWildfireSmoke), wildfireSmoke, 0.0f, 5.0f, 0.05f, "%.2f",
+        tx(Txt::TipXTheSmokesOpticalDepthThe));
+    num(12, tx(Txt::SldSmokeBrightness), wildfireSmokeBright, 0.0f, 5.0f, 0.05f, "%.2f",
+        tx(Txt::TipXTheLightTheSmokeScatters));
+    num(13, tx(Txt::SldSmokeTint1Blue1Brown), wildfireSmokeTint, -1.0f, 1.0f, 0.05f, "%.2f",
+        tx(Txt::TipTheSmokesOwnColour0Neutral));
+    num(14, tx(Txt::SldSmokeSpreadX), wildfireSmokeSpread, 0.25f, 4.0f, 0.05f, "%.2f",
+        tx(Txt::TipXThePlumesAndThePalls));
+    num(15, tx(Txt::SldSmokeSpectralX), wildfireSmokeSpectral, 0.0f, 2.0f, 0.05f, "%.2f",
+        tx(Txt::TipXTheSmokesAngstromExponent1));
+    num(9, tx(Txt::SldWildfireLight), wildfireLight, 0.0f, 5.0f, 0.05f, "%.2f",
+        tx(Txt::TipXTheFireFrontsLightThe));
+    num(11, tx(Txt::SldHaboobsX), haboobGain, 0.0f, 5.0f, 0.05f, "%.2f",
+        tx(Txt::TipXTheDustWallsStormsGust));
     {
         bool v = haboobField;
-        if (uiToggleRow(inp, ui, "WxCOn", 1, "Haboobs as cloud", v,
-                        "On: the dust walls are drawn by the volumetric clouds, lobed and lit like cumulus, within ~100 km "
-                        "(more from the air); Off: plume Gaussians everywhere (clouds_v2.haboob_field)"))
+        if (uiToggleRow(inp, ui, "WxCOn", 1, tx(Txt::LblHaboobsAsCloud), v,
+                        tx(Txt::TipOnTheDustWallsAreDrawn2)))
             haboobField = v;
     }
-    uiSection("WxCSec", 1, "LIGHTNING");
-    num(4, "Lightning rate: Cb towers (/min each)", cv2LightningRate, 0.0f, 30.0f, 0.1f, "%.1f",
-        "Flashes a minute of a full-strength, anvil-reaching tower (clouds_v2.lightning_rate)");
-    num(5, "Lightning rate: storms (/min per 20 km)", cv2LightningStormRate, 0.0f, 10.0f, 0.05f, "%.2f",
-        "Flashes over the weather map's deep-convective regions (clouds_v2.lightning_storm_rate_per_area)");
-    if (uiButton(inp, ui, "WxCAll", 0, "All weather settings", "Settings > Weather: rain, lightning, fog, the towers' shapes"))
+    uiSection("WxCSec", 1, tx(Txt::SecLightning));
+    num(4, tx(Txt::SldLightningRateCbTowersMinEach), cv2LightningRate, 0.0f, 30.0f, 0.1f, "%.1f",
+        tx(Txt::TipFlashesAMinuteOfAFull));
+    num(5, tx(Txt::SldLightningRateStormsMinPer20), cv2LightningStormRate, 0.0f, 10.0f, 0.05f, "%.2f",
+        tx(Txt::TipFlashesOverTheWeatherMapsDeep));
+    if (uiButton(inp, ui, "WxCAll", 0, tx(Txt::BtnAllWeatherSettings), tx(Txt::TipSettingsWeatherRainLightningFogThe)))
     {
         settingsChrome.open = true;
         settingsActiveTab = 12;
         if (settingsTabIsAdvanced(12))
             showAdvancedSettings = true;
     }
-    text("Frequency and lifetime rebuild the storm catalog (every storm is a pure function of sim time and these).",
+    text(tx(Txt::NoteFrequencyAndLifetimeRebuildTheStorm),
          Pal::textHint, 10, true);
 }
 

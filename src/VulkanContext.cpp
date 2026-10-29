@@ -532,10 +532,13 @@ void VulkanContext::logDeviceLimits(const VkPhysicalDeviceLimits &lim)
          lim.maxPerStageDescriptorSamplers},
         {"per-stage storage buffers (sat_orbit.comp binds 12)", 12,
          lim.maxPerStageDescriptorStorageBuffers},
-        // AT the guaranteed minimum of 4: sat_sky.frag's set (the mesh colour and distance targets, the
-        // sharp-reflection G-buffer, the far cloud layer) and cloud_v2_march.comp (its colour and depth outputs
-        // at sparse and full rate). A fifth storage image in either needs a merge, not a bigger number here.
-        {"per-stage storage images (sat_sky.frag and cloud_v2_march.comp bind 4)", 4,
+        // The limit counts every binding of the pipeline LAYOUT visible to the stage, not only what a shader reads.
+        // sat_sky.frag's set has 4 (the mesh colour and distance targets, the sharp-reflection G-buffer, the far
+        // cloud layer); the clouds v2 march set (cv2MarchDescLayout, shared by the march, tiles, lightning, froxel,
+        // far-layer and clipmap passes) has 6: the march's colour / depth at sparse and full rate, the far layer and
+        // the Sun / sky colour table's bake target. That is 2 past the guaranteed minimum of 4; this check said 4
+        // until the v1.2 release audit (2026-10-29). Desktop GPUs report thousands, MoltenVK at least 8.
+        {"per-stage storage images (the clouds v2 march set binds 6)", 6,
          lim.maxPerStageDescriptorStorageImages},
     };
 

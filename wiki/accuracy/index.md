@@ -25,8 +25,10 @@ magnitude 5.92 from 550 km has \( m_{1000} = 7.218 \). Both values are checked b
 
 Accuracy is therefore a statement about **populations**, not single passes: "over the geometries the
 observers actually saw, the model's mean \( m_{1000} \) is within 0.3 mag of theirs". No published dataset
-gives the attitude of an individual satellite at the instant it was measured, so a per-pass comparison
-cannot be made honestly.
+gives the attitude of an individual satellite at the instant it was measured, so a single pass can only be
+compared with the satellite's nominal attitude. Such replays of real light curves are made, and they show what
+the nominal attitude gets right (the smooth curve) and what it cannot (flares): see the
+[Validation report](validation.md).
 
 ## The chain of evidence
 
@@ -66,15 +68,17 @@ The accepted gaps that remain are listed with their causes in
 | Claim | Status | How |
 |---|---|---|
 | Mean \( m_{1000} \) of eight satellite designs against published campaigns | seven within 0.3 mag; one (Guowang) known to miss and not gated | SatBench + gate, [Results](results.md) |
-| Phase-curve shape of VisorSat | weighted RMS 0.16 mag, but the visor's size is fitted to this curve | per-pass data, phase-curve RMS |
-| Difference between two designs (VisorSat minus V1.0) | validated, 1.09 vs 1.29 mag | differential benchmark |
+| Phase-curve shape of VisorSat | weighted RMS 0.35 mag, outside 0.3: reported, not gated (the table's bins carry a bright attitude mode) | per-pass data, phase-curve RMS, [Validation report](validation.md#the-visorsat-phase-curve) |
+| Difference between two designs (VisorSat minus V1.0) | validated, 1.52 vs 1.29 mag | differential benchmark |
+| Light-curve level and shape over real passes (2020 Starlinks, 94 MMT-9 tracks) | held out: median offset −0.02 (V1.0) and +0.21 (VisorSat) mag; shape followed to 0.1-0.2 mag rms inside each track | `mmt_replay.py`, [Validation report](validation.md#time-resolved-light-curves-mmt-9) |
 | Evaluator geometry (Sun position, orbit, angles, magnitude conventions) | exact or to almanac precision | `--selftest` known-value checks |
 | Facet lobes reproduce per-triangle reflectance | to < 0.001 mag | `--selftest` brute force |
 | Occlusion between parts | p95 ≤ 0.17 mag against a ray-cast reference | `--selftest` |
 | Earthshine, atmospheric extinction | ≤ 3% of irradiance, ≤ 2% of the column | `--selftest` against brute-force integrals |
 | The magnitude the app draws equals the evaluator's | to 0.02 mag, checked every frame for the selection | GPU parity check |
 | Scatter (standard deviation) of a population | **not** matched: attitude is fixed, real satellites jitter | reported, not gated |
-| Individual passes, flares at a given instant | **not** validated | no data with known attitude |
+| Starlink flares (when and how bright) | **not** reproduced: 24 observed flares of 0.4 to 2 mag, none in the model | [Validation report](validation.md#flares-the-clear-miss) |
+| A large flat mirror's flare (Iridium) | the peak and wing follow visual estimates within 0.1 to 0.6 mag per bin (the wing's haze is fitted) | [Validation report](validation.md#iridium-a-flare-the-model-can-make) |
 | Stations, debris, Starlink V3, Reflect Orbital, the AI satellite | **no benchmark**; render-level estimates | provenance lists the estimates |
 
 Three boundaries are worth stating plainly.
@@ -102,6 +106,7 @@ in penumbra are excluded, as the papers exclude them.
 | [Benchmark datasets](benchmarks.md) | the `sat-light-sim-benchmark/1` format, the transcription rule, every dataset |
 | [SatBench and the accuracy gate](satbench.md) | campaign simulation, determinism, reports, self-tests, traces, bulk export, the gate and CI |
 | [Results and known residuals](results.md) | per-benchmark numbers, pass/fail margins, accepted residuals and their causes |
+| [Validation report](validation.md) | the evidence in figures: what passes, what does not and why, light curves and flares |
 | [Model provenance](provenance.md) | the `sources` block, every shipped model's confidence, what is calibrated against what |
 
 ## Where in the code

@@ -161,18 +161,18 @@ enum CrewPhase : int
     CP_ABORT, CP_ESCAPE, CP_COUNT
 };
 const char *const kCrewPhaseNames[CP_COUNT] = {
-    "none", "separated", "phasing burn: raising", "phasing orbit", "raising to the station's altitude",
-    "approach: closing to 1 km", "approach: onto the docking axis", "approach: closing to 400 m", "hold at 400 m",
-    "approach: closing to 200 m", "hold at 200 m (go / no-go)", "final approach: closing to 20 m", "hold at 20 m",
-    "final approach: contact",
-    "approach: closing to 250 m (R-bar)", "hold at 250 m", "approach: closing to 30 m", "hold at 30 m (go for capture)",
-    "approach: closing to the capture point", "free drift at the capture point (the arm grapples it)",
-    "on the arm: moved to the berthing port", "on the arm: berthing (bolts driving)",
-    "docked", "berthed", "unberthed: on the arm to the release point", "released: free drift at the release point",
-    "undocked: backing out", "departure", "drifting away, deorbit prep",
-    "deorbit burn, falling", "entry (plasma)", "drogue parachutes", "main parachutes", "down",
-    "gliding to the runway", "final approach and flare", "rollout on the runway",
-    "the station is lost: rendezvous called off", "the station is lost: emergency undocking"};
+    "none", "separated", tx(Txt::OptPhasingBurnRaising), tx(Txt::OptPhasingOrbit), tx(Txt::OptRaisingToTheStationsAltitude),
+    tx(Txt::OptApproachClosingTo1Km), tx(Txt::OptApproachOntoTheDockingAxis), tx(Txt::OptApproachClosingTo400M), tx(Txt::OptHoldAt400M),
+    tx(Txt::OptApproachClosingTo200M), tx(Txt::OptHoldAt200MGoNo), tx(Txt::OptFinalApproachClosingTo20M), tx(Txt::OptHoldAt20M),
+    tx(Txt::OptFinalApproachContact),
+    tx(Txt::OptApproachClosingTo250MR), tx(Txt::OptHoldAt250M), tx(Txt::OptApproachClosingTo30M), tx(Txt::OptHoldAt30MGoFor),
+    tx(Txt::OptApproachClosingToTheCapturePoint), tx(Txt::OptFreeDriftAtTheCapturePoint),
+    tx(Txt::OptOnTheArmMovedToThe), tx(Txt::OptOnTheArmBerthingBoltsDriving),
+    "docked", "berthed", tx(Txt::OptUnberthedOnTheArmToThe), tx(Txt::OptReleasedFreeDriftAtTheRelease),
+    tx(Txt::OptUndockedBackingOut), "departure", tx(Txt::OptDriftingAwayDeorbitPrep),
+    tx(Txt::OptDeorbitBurnFalling), tx(Txt::OptEntryPlasma), tx(Txt::OptDrogueParachutes), tx(Txt::OptMainParachutes), "down",
+    tx(Txt::OptGlidingToTheRunway), tx(Txt::OptFinalApproachAndFlare), tx(Txt::OptRolloutOnTheRunway),
+    tx(Txt::OptTheStationIsLostRendezvousCalled), tx(Txt::OptTheStationIsLostEmergencyUndocking)};
 struct LCrewSeg
 {
     double t0 = 0.0, t1 = 0.0;
@@ -6341,11 +6341,11 @@ std::string SatelliteSim::launchLabel(uint32_t slot) const
     const char *cn = o.constIdx < constellations.size() ? constellations[o.constIdx].name.c_str() : "Satellite";
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     if (si.owner % 2 == 0)
-        snprintf(b, sizeof(b), "%s #%d (%s, raising; %s, arrives in %.1f d)", cn,
+        snprintf(b, sizeof(b), tx(Txt::FmtRaisingArrivesInD), cn,
                  (int)sat - (int)constellations[o.constIdx].orbitStart, B.first ? "first deployment" : "new",
                  L.cat.vehicles[B.veh].name.c_str(), (B.tA - t) / kDay);
     else
-        snprintf(b, sizeof(b), "%s #%d (retired, re-enters in %.1f d)", cn,
+        snprintf(b, sizeof(b), tx(Txt::FmtRetiredReEntersInD), cn,
                  (int)sat - (int)constellations[o.constIdx].orbitStart, (B.mem[si.m].tEnd - t) / kDay);
     return b;
 }
@@ -6370,13 +6370,13 @@ std::string SatelliteSim::launchStatus(uint32_t slot) const
     const double hKm = (glm::length(satOrbitStateAt(launchOrbitElems(slot), t).posEci) - kR) / 1000.0;
     char b[200];
     if (si.owner % 2 == 1)
-        snprintf(b, sizeof(b), "%s - deorbiting, %.0f km", tn, hKm);
+        snprintf(b, sizeof(b), tx(Txt::FmtDeorbitingKm), tn, hKm);
     else if (t < m.tRel)
-        snprintf(b, sizeof(b), "%s - in the dispenser, %.0f km", tn, hKm);
+        snprintf(b, sizeof(b), tx(Txt::FmtInTheDispenserKm), tn, hKm);
     else if (t < m.sRaise)
-        snprintf(b, sizeof(b), "%s - parking orbit, %.0f km", tn, hKm);
+        snprintf(b, sizeof(b), tx(Txt::FmtParkingOrbitKm), tn, hKm);
     else
-        snprintf(b, sizeof(b), "%s - %sraising to slot, %.0f/%.0f km", tn, B.first ? "first deployment, " : "", hKm,
+        snprintf(b, sizeof(b), tx(Txt::FmtRaisingToSlotKm), tn, B.first ? "first deployment, " : "", hKm,
                  (m.rSlot - kR) / 1000.0);
     return b;
 }
@@ -8204,7 +8204,7 @@ std::string fmtUtcReadable(double tJ2000)
     char b[48];
     if (!u)
         return "--";
-    snprintf(b, sizeof(b), "%04d-%02d-%02d %02d:%02d:%02d UTC", u->tm_year + 1900, u->tm_mon + 1, u->tm_mday, u->tm_hour,
+    snprintf(b, sizeof(b), tx(Txt::FmtUtc7), u->tm_year + 1900, u->tm_mon + 1, u->tm_mday, u->tm_hour,
              u->tm_min, u->tm_sec);
     return b;
 }
@@ -8421,7 +8421,7 @@ bool SatelliteSim::launchGoToNextWhen(std::string &msg, int when, const std::str
     camera.fovYDeg = 70.0f;
     updatePositions(tStart);
     char b[300];
-    snprintf(b, sizeof(b), "%s from %s in 30 s (%s, Sun %.1f deg)", (*pick)["vehicle"].get<std::string>().c_str(),
+    snprintf(b, sizeof(b), tx(Txt::FmtFromIn30SSunDeg), (*pick)["vehicle"].get<std::string>().c_str(),
              (*pick)["site"].get<std::string>().c_str(), (*pick)["constellation"].get<std::string>().c_str(),
              (*pick)["sun_elev_deg"].get<double>());
     msg = b;
@@ -9300,7 +9300,7 @@ bool SatelliteSim::launchSelect(int kind, std::string &msg, int member)
     }
     selectSatellite((int)(activeSatCount + (uint32_t)bestSlot));
     char b[240];
-    snprintf(b, sizeof(b), "%s, %.0f km away, %.0f km up", launchLabel((uint32_t)bestSlot).c_str(), best / 1000.0,
+    snprintf(b, sizeof(b), tx(Txt::FmtKmAwayKmUp), launchLabel((uint32_t)bestSlot).c_str(), best / 1000.0,
              (glm::length(satOrbitStateAt(L.elems[bestSlot], (double)simDayJ2000 * 86400.0 + simSecInDay).posEci) - kR) / 1000.0);
     msg = b;
     return true;
@@ -9407,10 +9407,10 @@ bool SatelliteSim::launchGoToNextReentry(std::string &msg, bool watch)
         selWantUntil = tb + 120.0;
         selWantViewer = false;
         selWantTrack = true;
-        snprintf(b, sizeof(b), "%s (retired) burning up on re-entry", satLabel((int)bestSat).c_str());
+        snprintf(b, sizeof(b), tx(Txt::FmtRetiredBurningUpOnReEntry), satLabel((int)bestSat).c_str());
     }
     else
-        snprintf(b, sizeof(b), "%s (retired) re-enters: breakup in 25 s", satLabel((int)bestSat).c_str());
+        snprintf(b, sizeof(b), tx(Txt::FmtRetiredReEntersBreakupIn25), satLabel((int)bestSat).c_str());
     msg = b;
     return true;
 }
@@ -9420,18 +9420,14 @@ bool SatelliteSim::launchGoToNextReentry(std::string &msg, bool watch)
 // 20261021_175638 asked for a real place in the settings window, the graphics grouped.)
 void SatelliteSim::buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui)
 {
-    uiSection("LdSec", 0, "LAUNCHES");
+    uiSection("LdSec", 0, tx(Txt::SecLaunches));
     bool on = launchesEnabled;
-    if (uiToggleRow(inp, ui, "LaunchOn", 0, "Launches and retirements", on,
-                    "Every constellation is kept flying: each orbital plane is refreshed once per design life by a "
-                    "launch from a site under it. The train climbs to its slots, the satellites it replaces deorbit "
-                    "and re-enter. Sites, rockets and programs: launches.json next to the exe."))
+    if (uiToggleRow(inp, ui, "LaunchOn", 0, tx(Txt::LblLaunchesAndRetirements), on,
+                    tx(Txt::TipEveryConstellationIsKeptFlyingEach)))
         launchesEnabled = on;
     bool eraOn = launchDeployEra;
-    if (uiToggleRow(inp, ui, "LaunchEra", 0, "Deployment era (2019-2036)", eraOn,
-                    "The constellations are built up by launches: before 2036 a constellation has only the satellites "
-                    "launched so far (Starlink from 2019, Starmind 2028-2036), stations appear on their launch dates, "
-                    "the debris field grows and the 2030s launch sites come online. Off: the 2036 roster at every date."))
+    if (uiToggleRow(inp, ui, "LaunchEra", 0, tx(Txt::LblDeploymentEra20192036), eraOn,
+                    tx(Txt::TipTheConstellationsAreBuiltUpBy)))
         launchDeployEra = eraOn;
     if (!launchesEnabled)
         return;
@@ -9441,43 +9437,40 @@ void SatelliteSim::buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui
     for (int i = 0; i < 4; ++i)
         if (std::abs(launchLifeScale - kLifeV[i]) < 1e-3f)
             lSel = i;
-    const int l = uiChoiceRow(inp, ui, "LaunchLife", 0, "Satellite design life", kLife, 4, lSel,
-                              "x1 = each program's life (5-7 years). Shorter: more launches and re-entries (Starmind at "
-                              "x1 is already ~50 Starship launches a day in 2036). Reshuffles the schedule.");
+    const int l = uiChoiceRow(inp, ui, "LaunchLife", 0, tx(Txt::LblSatelliteDesignLife), kLife, 4, lSel,
+                              tx(Txt::TipX1EachProgramsLife57));
     if (l >= 0 && l != lSel)
         launchLifeScale = kLifeV[l];
     if (kesslerEnabled)
     {
-        static const char *kAfter[] = {"Stand down", "Resume"};
-        const int as = uiChoiceRow(inp, ui, "LaunchAfterStorm", 0, "After the Sun's Fury", kAfter, 2, launchAfterStorm,
-                                   "Stand down: no launches from the storm on (the shells are filling with debris; no "
-                                   "replacements, no retirements). Resume: launches return three weeks after it (the new "
-                                   "satellites do not collide with the debris: they are not part of the cascade).");
+        static const char *kAfter[] = {tx(Txt::OptStandDown), tx(Txt::OptResume)};
+        const int as = uiChoiceRow(inp, ui, "LaunchAfterStorm", 0, tx(Txt::LblAfterTheSunsFury), kAfter, 2, launchAfterStorm,
+                                   tx(Txt::TipStandDownNoLaunchesFromThe));
         if (as >= 0 && as != launchAfterStorm)
             launchAfterStorm = as;
     }
     std::string why;
     // (2026-10-24) Each lands on the event already happening, the subject tracked (launchWatchKey).
-    if (uiButton(inp, ui, "LaunchNext", 0, "Watch the next launch", "The next rocket lifting off, from beside the pad."))
+    if (uiButton(inp, ui, "LaunchNext", 0, tx(Txt::BtnWatchTheNextLaunch), tx(Txt::TipTheNextRocketLiftingOffFrom)))
     {
         if (launchGoToNextWhen(why, 0))
             launchWatchKey(launchFocusKey, kWatchLiftoffS, why);
         snprintf(kUiMsg, sizeof(kUiMsg), "%s", why.c_str());
     }
-    if (uiButton(inp, ui, "LaunchNext", 1, "Watch a twilight launch",
-                 "A rocket's exhaust high up, lit by the Sun over the dark ground after dusk."))
+    if (uiButton(inp, ui, "LaunchNext", 1, tx(Txt::BtnWatchATwilightLaunch),
+                 tx(Txt::TipARocketsExhaustHighUpLit)))
     {
         if (launchGoToNextWhen(why, 1))
             launchWatchKey(launchFocusKey, kWatchTwilightS, why);
         snprintf(kUiMsg, sizeof(kUiMsg), "%s", why.c_str());
     }
-    if (uiButton(inp, ui, "LaunchCatch", 0, "Watch a Starship catch", "A Starship ship in its landing burn, caught by its tower."))
+    if (uiButton(inp, ui, "LaunchCatch", 0, tx(Txt::BtnWatchAStarshipCatch), tx(Txt::TipAStarshipShipInItsLanding)))
     {
         launchWatchCatch(why);
         snprintf(kUiMsg, sizeof(kUiMsg), "%s", why.c_str());
     }
-    if (uiButton(inp, ui, "LaunchReentry", 0, "Watch a retired satellite re-enter",
-                 "A retired satellite burning up over a dark sky."))
+    if (uiButton(inp, ui, "LaunchReentry", 0, tx(Txt::BtnWatchARetiredSatelliteReEnter),
+                 tx(Txt::TipARetiredSatelliteBurningUpOver2)))
     {
         launchGoToNextReentry(why, true);
         snprintf(kUiMsg, sizeof(kUiMsg), "%s", why.c_str());
@@ -9498,16 +9491,16 @@ void SatelliteSim::buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui
         {
             const nlohmann::json &o = list[0];
             char b[200];
-            snprintf(b, sizeof(b), "%s, %s, in %.1f h", o["vehicle"].get<std::string>().c_str(),
+            snprintf(b, sizeof(b), tx(Txt::FmtInH), o["vehicle"].get<std::string>().c_str(),
                      o["site"].get<std::string>().c_str(), o["in_hours"].get<double>());
             L.uiNext = b;
         }
     }
     const float lw = (float)fs(170);
-    uiKV("LaunchKV", 0, "Next launch", L.uiNext.empty() ? "none in 24 h" : L.uiNext.c_str(), lw);
-    uiKV("LaunchKV", 1, "Launches in the next 24 h", uiKitStr("%d", L.uiCount24), lw);
-    uiKV("LaunchKV", 2, "Trains climbing", uiKitStr("%u satellites", L.nTrain), lw);
-    uiKV("LaunchKV", 3, "Retired, deorbiting", uiKitStr("%u satellites", L.nRetire), lw);
+    uiKV("LaunchKV", 0, tx(Txt::LblNextLaunch), L.uiNext.empty() ? tx(Txt::ValNoneIn24H) : L.uiNext.c_str(), lw);
+    uiKV("LaunchKV", 1, tx(Txt::LblLaunchesInTheNext24H), uiKitStr("%d", L.uiCount24), lw);
+    uiKV("LaunchKV", 2, tx(Txt::LblTrainsClimbing), uiKitStr(tx(Txt::FmtSatellites), L.nTrain), lw);
+    uiKV("LaunchKV", 3, tx(Txt::LblRetiredDeorbiting), uiKitStr(tx(Txt::FmtSatellites), L.nRetire), lw);
 }
 
 // ── Settings > Launches: GRAPHICS (rockets, exhaust, launch sites) ─────────────────────────────────────
@@ -9515,30 +9508,28 @@ void SatelliteSim::buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui
 // at 1 is the look before them. Slots 313-320 of the shared slider arrays (kCloudSliderSlots).
 void SatelliteSim::buildLaunchGraphicsSection(const UIInput &inp, UIRenderer &ui)
 {
-    uiSection("LdSec", 2, "GRAPHICS: ROCKETS AND EXHAUST");
+    uiSection("LdSec", 2, tx(Txt::SecGraphicsRocketsAndExhaust));
     bool padOn = launchPadGraphics;
-    if (uiToggleRow(inp, ui, "LaunchPads", 0, "Launch site graphics", padOn,
-                    "The pads on the ground: graded flat, concrete, flame trenches, tank farms, the towers (Starship's "
-                    "catch tower), landing zones, their floodlights and beacons at night; no city lights within ~3 km."))
+    if (uiToggleRow(inp, ui, "LaunchPads", 0, tx(Txt::LblLaunchSiteGraphics), padOn,
+                    tx(Txt::TipThePadsOnTheGroundGraded)))
         launchPadGraphics = padOn;
     uiKV("LdGfxKV", 0, "",
-         "Exhaust: 1 everywhere is the tuned look. Opacity, width and brightness act at once; growth rebuilds the "
-         "plumes in view (a moment).",
+         tx(Txt::ValExhaust1EverywhereIsTheTuned),
          4.0f, &Pal::textDim);
     CloudSlider rows[] = {
-        {"Plume opacity (x)", &launchPlumeGain, 0.0f, 5.0f, 0.05f, "%.2f", 313},
-        {"Plume brightness (x)", &launchPlumeBright, 0.0f, 5.0f, 0.05f, "%.2f", 314},
-        {"Plume width (x)", &launchPlumeWidth, 0.25f, 4.0f, 0.05f, "%.2f", 315},
-        {"Plume billows (x)", &launchPlumeBillows, 0.0f, 3.0f, 0.05f, "%.2f", 316},
-        {"Plume growth (x)", &launchPlumeGrowth, 0.0f, 5.0f, 0.1f, "%.1f", 317},
-        {"Ground clouds (x)", &launchGroundCloudGain, 0.0f, 5.0f, 0.05f, "%.2f", 318},
-        {"Flame brightness (x)", &launchRocketGain, 0.0f, 10.0f, 0.1f, "%.1f", 319},
-        {"Rocket light on clouds (x)", &engineLightGain, 0.0f, 10.0f, 0.1f, "%.1f", 320},
+        {tx(Txt::SldPlumeOpacityX), &launchPlumeGain, 0.0f, 5.0f, 0.05f, "%.2f", 313},
+        {tx(Txt::SldPlumeBrightnessX), &launchPlumeBright, 0.0f, 5.0f, 0.05f, "%.2f", 314},
+        {tx(Txt::SldPlumeWidthX), &launchPlumeWidth, 0.25f, 4.0f, 0.05f, "%.2f", 315},
+        {tx(Txt::SldPlumeBillowsX), &launchPlumeBillows, 0.0f, 3.0f, 0.05f, "%.2f", 316},
+        {tx(Txt::SldPlumeGrowthX), &launchPlumeGrowth, 0.0f, 5.0f, 0.1f, "%.1f", 317},
+        {tx(Txt::SldGroundCloudsX), &launchGroundCloudGain, 0.0f, 5.0f, 0.05f, "%.2f", 318},
+        {tx(Txt::SldFlameBrightnessX), &launchRocketGain, 0.0f, 10.0f, 0.1f, "%.1f", 319},
+        {tx(Txt::SldRocketLightOnCloudsX), &engineLightGain, 0.0f, 10.0f, 0.1f, "%.1f", 320},
         // 2026-10-28 (the settings round-up): had no UI. Old exhaust's widening with age (launches.plume_dispersal).
-        {"Plume dispersal (x)", &launchPlumeDispersal, 0.0f, 5.0f, 0.05f, "%.2f", 425},
+        {tx(Txt::SldPlumeDispersalX), &launchPlumeDispersal, 0.0f, 5.0f, 0.05f, "%.2f", 425},
     };
     buildCloudSliderRows(inp, ui, rows, (int)(sizeof(rows) / sizeof(rows[0])), false);
-    if (uiButton(inp, ui, "LdGfxReset", 0, "Reset exhaust to defaults", "Every slider above back to 1"))
+    if (uiButton(inp, ui, "LdGfxReset", 0, tx(Txt::BtnResetExhaustToDefaults), tx(Txt::TipEverySliderAboveBackTo1)))
     {
         launchPlumeGain = launchPlumeBright = launchPlumeWidth = launchPlumeBillows = 1.0f;
         launchPlumeGrowth = launchGroundCloudGain = launchRocketGain = engineLightGain = launchPlumeDispersal = 1.0f;
@@ -9798,7 +9789,7 @@ bool SatelliteSim::launchGoToCrew(const std::string &station, const std::string 
             startFollow((int)transientSatIdx());
     }
     char b[320];
-    snprintf(b, sizeof(b), "%s to %s: %s in %.0f s (%s)", L.cat.programs[B.prog].spacecraft.c_str(),
+    snprintf(b, sizeof(b), tx(Txt::FmtToInS), L.cat.programs[B.prog].spacecraft.c_str(),
              constellations[L.planes[B.plane].constIdx].name.c_str(), ev.c_str(), leadS, fmtUtcReadable(bestT).c_str());
     msg = b;
     return true;
@@ -9898,9 +9889,9 @@ bool SatelliteSim::launchGoToStageEvent(std::string &msg, int ev, const std::str
         if (ev >= 2)
             launchWantSelKey = (bkey << 3) ^ 2ull; // its upper stage, selected once listed (selTransientUpdate)
         char b[240];
-        static const char *kWhat[] = {"vents in 20 s", "re-entry glow peaks in 20 s", "turns for its deorbit burn in 0 s",
-                                      "deploys in 10 s", "drops its fairing in 10 s"};
-        snprintf(b, sizeof(b), "%s upper stage from %s %s, %.0f km away", o["vehicle"].get<std::string>().c_str(),
+        static const char *kWhat[] = {tx(Txt::OptVentsIn20S), tx(Txt::OptReEntryGlowPeaksIn20), tx(Txt::OptTurnsForItsDeorbitBurnIn),
+                                      tx(Txt::OptDeploysIn10S), tx(Txt::OptDropsItsFairingIn10S)};
+        snprintf(b, sizeof(b), tx(Txt::FmtUpperStageFromKmAway), o["vehicle"].get<std::string>().c_str(),
                  o["site"].get<std::string>().c_str(), kWhat[std::clamp(ev, 0, 4)], glm::length(rel) / 1000.0);
         msg = b;
         return true;
@@ -10360,7 +10351,7 @@ void SatelliteSim::followTakeTransient(const SelTransient &s, const glm::dvec3 &
     transientWriteSlot(kLaunchCap - 2, s, t);
     followSatIndex = (int)followSlotIdx();
     followLaunchOwner = 0;
-    snprintf(followLabel, sizeof(followLabel), "Following %s", transientLabelOf(s).c_str());
+    snprintf(followLabel, sizeof(followLabel), tx(Txt::FmtFollowing), transientLabelOf(s).c_str());
 }
 
 void SatelliteSim::followTransientUpdate()
@@ -10403,7 +10394,7 @@ void SatelliteSim::followTransientUpdate()
                 followTrCur = c;
                 followTrSeenT = t;
                 transientWriteSlot(kLaunchCap - 2, c, t);
-                snprintf(followLabel, sizeof(followLabel), "Following %s", transientLabelOf(c).c_str());
+                snprintf(followLabel, sizeof(followLabel), tx(Txt::FmtFollowing), transientLabelOf(c).c_str());
             }
             return;
         }
@@ -10423,7 +10414,7 @@ void SatelliteSim::followTransientUpdate()
             followTrCur = s;
             followTrSeenT = t;
             transientWriteSlot(kLaunchCap - 2, s, t);
-            snprintf(followLabel, sizeof(followLabel), "Following %s", transientLabelOf(s).c_str()); // its height moves
+            snprintf(followLabel, sizeof(followLabel), tx(Txt::FmtFollowing), transientLabelOf(s).c_str()); // its height moves
             return;
         }
     if (std::abs(t - followTrSeenT) > transientGraceS())
@@ -10527,7 +10518,7 @@ void SatelliteSim::followCheckTarget()
                     followHandD += eciToEcef(a - b, t);
                 followSatIndex = (int)sat;
                 followLaunchOwner = 0;
-                snprintf(followLabel, sizeof(followLabel), "Following %s", satLabel((int)sat).c_str());
+                snprintf(followLabel, sizeof(followLabel), tx(Txt::FmtFollowing), satLabel((int)sat).c_str());
             }
             else if (followLaunchOwner % 2 == 1 && sat < activeSatCount)
                 awaitFireball(3, sat);
@@ -10972,7 +10963,7 @@ void SatelliteSim::transientTimeRow(const SelTransient &s, std::string &label, s
             {
                 label = ph == CP_BERTHED ? "Berthed since" : "Docked since";
                 char b[96];
-                snprintf(b, sizeof(b), "%s (%.0f days)", fmtUtcReadable(C.tDock).c_str(), std::floor((t - C.tDock) / kDay));
+                snprintf(b, sizeof(b), tx(Txt::FmtDays), fmtUtcReadable(C.tDock).c_str(), std::floor((t - C.tDock) / kDay));
                 value = b;
             }
             else if (ph >= CP_UNBERTH && ph < CP_ENTRY && t >= C.tUndock)
@@ -11033,16 +11024,16 @@ std::string SatelliteSim::transientLabelOf(const SelTransient &s) const
         LaunchImpl::crewStation(C, t, Ps, R);
         const double dPort = glm::length(P - (Ps + R * C.portPos));
         if (ph == CP_DOCKED || ph == CP_BERTHED)
-            snprintf(b, sizeof(b), "%s docked at %s (%s), undocks in %.1f days", pg.spacecraft.c_str(), stn.c_str(),
+            snprintf(b, sizeof(b), tx(Txt::FmtDockedAtUndocksInDays), pg.spacecraft.c_str(), stn.c_str(),
                      C.portName.c_str(), (C.tUndock - t) / kDay);
         else if (ph >= CP_FAR && ph <= CP_DEPART)
-            snprintf(b, sizeof(b), "%s at %s: %s, %.0f m from the port", pg.spacecraft.c_str(), stn.c_str(),
+            snprintf(b, sizeof(b), tx(Txt::FmtAtMFromThePort), pg.spacecraft.c_str(), stn.c_str(),
                      kCrewPhaseNames[ph], dPort);
         else if (ph >= CP_ENTRY)
-            snprintf(b, sizeof(b), "%s coming home: %s, %.1f km up, %.2f km/s", pg.spacecraft.c_str(), kCrewPhaseNames[ph],
+            snprintf(b, sizeof(b), tx(Txt::FmtComingHomeKmUpKmS), pg.spacecraft.c_str(), kCrewPhaseNames[ph],
                      hKm, vKms);
         else
-            snprintf(b, sizeof(b), "%s to %s: %s, %.0f km up, %.0f km from the station", pg.spacecraft.c_str(), stn.c_str(),
+            snprintf(b, sizeof(b), tx(Txt::FmtToKmUpKmFromThe), pg.spacecraft.c_str(), stn.c_str(),
                      kCrewPhaseNames[ph], hKm, dPort / 1000.0);
         return b;
     }
@@ -11051,8 +11042,8 @@ std::string SatelliteSim::transientLabelOf(const SelTransient &s) const
     {
     case 1:
     {
-        static const char *kBurn[] = {"coasting", "ascent burn", "boostback burn", "entry burn", "landing burn",
-                                      "upper-stage burn"};
+        static const char *kBurn[] = {"coasting", tx(Txt::OptAscentBurn), tx(Txt::OptBoostbackBurn), tx(Txt::OptEntryBurn), tx(Txt::OptLandingBurn),
+                                      tx(Txt::OptUpperStageBurn)};
         const char *what = s.stage == 0 ? " booster" : " upper stage";
         if (B && s.stage == 0 && s.tau < L.cat.vehicles[B->veh].t1)
             what = ""; // still one vehicle
@@ -11085,43 +11076,43 @@ std::string SatelliteSim::transientLabelOf(const SelTransient &s) const
         {
             const double t = B->tL + s.tau;
             if (B->landKind == kLandShip)
-                snprintf(b, sizeof(b), "%s booster on %s's deck, %s, %.0f km from home", veh,
+                snprintf(b, sizeof(b), tx(Txt::FmtBoosterOnSDeckKmFrom), veh,
                          L.cat.vehicles[B->veh].ships[(size_t)B->ship].name.c_str(),
                          t < B->tShipDepart ? "being secured" : "heading home",
                          std::acos(glm::clamp(glm::dot(LaunchImpl::shipEcef(*B, t) / kR, B->G0), -1.0, 1.0)) * kR / 1000.0);
             else
-                snprintf(b, sizeof(b), "%s booster, landed %s, T+%.0f s", veh,
+                snprintf(b, sizeof(b), tx(Txt::FmtBoosterLandedTS), veh,
                          B->landKind == kLandTower ? "in the tower" : B->landKind == kLandLz ? "on its landing zone"
                                                                                                : "downrange",
                          s.tau);
             break;
         }
-        snprintf(b, sizeof(b), "%s%s (%s), T%s%.0f s, %.0f km up, %.2f km/s", veh, what, doing, s.tau < 0.0 ? "-" : "+",
+        snprintf(b, sizeof(b), tx(Txt::FmtTSKmUpKmS), veh, what, doing, s.tau < 0.0 ? "-" : "+",
                  std::abs(s.tau), hKm, vKms);
         break;
     }
     case 2:
-        snprintf(b, sizeof(b), "%s ship re-entering, %.0f km up, %.2f km/s", veh, hKm, vKms);
+        snprintf(b, sizeof(b), tx(Txt::FmtShipReEnteringKmUpKm), veh, hKm, vKms);
         break;
     case 3:
-        snprintf(b, sizeof(b), "Re-entry: %s (retired), %.0f km up", satLabel((int)s.a).c_str(), hKm);
+        snprintf(b, sizeof(b), tx(Txt::FmtReEntryRetiredKmUp), satLabel((int)s.a).c_str(), hKm);
         break;
     case 4:
-        snprintf(b, sizeof(b), "Re-entry: %s upper stage, %.0f km up", veh, hKm);
+        snprintf(b, sizeof(b), tx(Txt::FmtReEntryUpperStageKmUp), veh, hKm);
         break;
     case 5:
-        snprintf(b, sizeof(b), "Re-entry: %s, %.0f km up", satLabel((int)s.a).c_str(), hKm);
+        snprintf(b, sizeof(b), tx(Txt::FmtReEntryKmUp), satLabel((int)s.a).c_str(), hKm);
         break;
     case 9:
-        snprintf(b, sizeof(b), "Re-entry: %s (burning up), %.0f km up",
+        snprintf(b, sizeof(b), tx(Txt::FmtReEntryBurningUpKmUp),
                  B ? L.cat.programs[B->prog].spacecraft.c_str() : "cargo ship", hKm);
         break;
     case 7:
-        snprintf(b, sizeof(b), "%s payload fairing half, %.0f s after separation, %.0f km up, %.2f km/s", veh, s.tau, hKm,
+        snprintf(b, sizeof(b), tx(Txt::FmtPayloadFairingHalfSAfterSeparation), veh, s.tau, hKm,
                  vKms);
         break;
     default:
-        snprintf(b, sizeof(b), "Re-entry: debris fragment, %.0f km up", hKm);
+        snprintf(b, sizeof(b), tx(Txt::FmtReEntryDebrisFragmentKmUp), hKm);
         break;
     }
     return b;
@@ -11508,10 +11499,10 @@ bool SatelliteSim::launchGoToKey(uint64_t key, bool moveObserver, double leadS, 
     cv2HistoryValid = false;
     char b[320];
     if (L.cat.programs[B.prog].crew)
-        snprintf(b, sizeof(b), "%s to %s from %s: lift-off in %.0f s", L.cat.vehicles[B.veh].name.c_str(),
+        snprintf(b, sizeof(b), tx(Txt::FmtToFromLiftOffInS), L.cat.vehicles[B.veh].name.c_str(),
                  constellations[L.planes[B.plane].constIdx].name.c_str(), st.name.c_str(), leadS);
     else
-        snprintf(b, sizeof(b), "%s (%s) from %s: lift-off in %.0f s", L.cat.vehicles[B.veh].name.c_str(),
+        snprintf(b, sizeof(b), tx(Txt::FmtFromLiftOffInS), L.cat.vehicles[B.veh].name.c_str(),
                  L.cat.programs[B.prog].name.c_str(), st.name.c_str(), leadS);
     msg = b;
     return true;
@@ -11566,7 +11557,7 @@ bool SatelliteSim::launchWatchKey(uint64_t key, double afterS, std::string &msg)
     const launch::Program &pr = L.cat.programs[B.prog];
     char b[320];
     const std::string what = pr.crew ? (std::string("to ") + constellations[L.planes[B.plane].constIdx].name) : pr.name;
-    snprintf(b, sizeof(b), "%s (%s) on the pad at %s: lift-off in %.0f s%s", vh.name.c_str(), what.c_str(), st.name.c_str(),
+    snprintf(b, sizeof(b), tx(Txt::FmtOnThePadAtLiftOff), vh.name.c_str(), what.c_str(), st.name.c_str(),
              leadS, twilight ? " (twilight: its exhaust will catch the Sun high up)" : "");
     msg = b;
     return true;
@@ -11673,9 +11664,9 @@ void SatelliteSim::launchOngoing(std::vector<MissionOngoing> &out)
                 LaunchImpl::crewPos(C, t, P, &ph);
                 const double evs[] = {C.tB1, C.tB1e, C.tB2, C.tArr, C.tAxis, C.hold[0], C.hold[1], C.hold[2], C.tDock,
                                       C.tUndock, C.tDeorb, C.tEI, C.tChute, C.tSplash, C.tGone};
-                static const char *const kNext[] = {"phasing burn", "phasing burn", "phasing burn", "approach",
-                                                    "docking axis", "hold at 400 m", "hold at 200 m", "hold at 20 m",
-                                                    "docking", "undocking", "deorbit burn", "entry interface",
+                static const char *const kNext[] = {tx(Txt::OptPhasingBurn), tx(Txt::OptPhasingBurn), tx(Txt::OptPhasingBurn), "approach",
+                                                    tx(Txt::OptDockingAxis), tx(Txt::OptHoldAt400M), tx(Txt::OptHoldAt200M), tx(Txt::OptHoldAt20M),
+                                                    "docking", "undocking", tx(Txt::OptDeorbitBurn), tx(Txt::OptEntryInterface),
                                                     "parachutes", C.lands ? "landing" : "splashdown", "recovery"};
                 m.tNext = C.tGone;
                 std::string nx = C.burns ? "burns up on entry" : "recovery";
@@ -11911,7 +11902,7 @@ bool SatelliteSim::launchSelectNearestOf(int prog, int kind, std::string &msg)
     }
     selectSatellite((int)(activeSatCount + (uint32_t)bestSlot));
     char b[240];
-    snprintf(b, sizeof(b), "%s, %.0f km away%s", launchLabel((uint32_t)bestSlot).c_str(), best / 1000.0,
+    snprintf(b, sizeof(b), tx(Txt::FmtKmAway), launchLabel((uint32_t)bestSlot).c_str(), best / 1000.0,
              above ? "" : " (below your horizon)");
     msg = b;
     return true;
@@ -12628,7 +12619,7 @@ bool SatelliteSim::launchGoToLanding(int which, double leadS, double distM, std:
         cv2HistoryValid = false;
         updatePositions(tS);
         char b[300];
-        snprintf(b, sizeof(b), "%s booster landing at sea %.0f km downrange: touchdown in %.0f s",
+        snprintf(b, sizeof(b), tx(Txt::FmtBoosterLandingAtSeaKmDownrange),
                  L.cat.vehicles[B.veh].name.c_str(), LaunchImpl::boosterTr(L, B).p.back().x / 1000.0, leadS);
         msg = b;
         return true;
@@ -12671,10 +12662,10 @@ bool SatelliteSim::launchGoToLanding(int which, double leadS, double distM, std:
     char b[300];
     if (which == 0)
         snprintf(b, sizeof(b),
-                 "%s ship to the tower at %s: catch in %.0f s (descent from %.0f km, %.0f s; flip and landing burn %.0f s)",
+                 tx(Txt::FmtShipToTheTowerAtCatch),
                  L.cat.vehicles[B.veh].name.c_str(), pd.name.c_str(), leadS, B.dH0 / 1000.0, B.T1, B.T2);
     else
-        snprintf(b, sizeof(b), "%s booster to the tower at %s: catch in %.0f s", L.cat.vehicles[B.veh].name.c_str(),
+        snprintf(b, sizeof(b), tx(Txt::FmtBoosterToTheTowerAtCatch), L.cat.vehicles[B.veh].name.c_str(),
                  pd.name.c_str(), leadS);
     msg = b;
     return true;
@@ -13242,7 +13233,7 @@ bool SatelliteSim::launchGoToShipLanding(double leadS, double distM, double azDe
     updatePositions(tS);
     const launch::Vehicle &vh = L.cat.vehicles[B.veh];
     char b[320];
-    snprintf(b, sizeof(b), "%s booster onto %s, %.0f km downrange of %s: touchdown in %.0f s (payload %.0f kg)",
+    snprintf(b, sizeof(b), tx(Txt::FmtBoosterOntoKmDownrangeOfTouchdown),
              vh.name.c_str(), vh.ships[(size_t)B.ship].name.c_str(), B.xLand / 1000.0, L.cat.sites[B.site].id.c_str(),
              leadS, B.payloadKg);
     msg = b;
@@ -13432,7 +13423,7 @@ void SatelliteSim::missionBatchMilestones(const LBatch &B, std::vector<MissionMi
         if (tq > 5.0)
         {
             char b[64];
-            snprintf(b, sizeof(b), "Max-Q (%.0f kPa)", qMax / 1000.0);
+            snprintf(b, sizeof(b), tx(Txt::FmtMaxQKpa), qMax / 1000.0);
             add(B.tL + tq, P | Bo | Tr, b);
         }
     }
@@ -13490,7 +13481,7 @@ void SatelliteSim::missionBatchMilestones(const LBatch &B, std::vector<MissionMi
         char b[160];
         if (!C.skipRaise1 && !(C.abort == 1 && C.tDeath < C.tB1))
         {
-            snprintf(b, sizeof(b), "Phasing burn 1: raising to %.0f km", (C.rP - kR) / 1000.0);
+            snprintf(b, sizeof(b), tx(Txt::FmtPhasingBurn1RaisingToKm), (C.rP - kR) / 1000.0);
             add(C.tB1, P, b);
             add(C.tB1e, P, "Phasing burn 2: circularising, the station catching up");
         }
@@ -13501,7 +13492,7 @@ void SatelliteSim::missionBatchMilestones(const LBatch &B, std::vector<MissionMi
             add(C.tDeath, P, stn + " is lost: rendezvous called off");
         if (reachesPhasing2)
         {
-            snprintf(b, sizeof(b), "Phasing burn %d: raising to the station's altitude", C.skipRaise1 ? 1 : 3);
+            snprintf(b, sizeof(b), tx(Txt::FmtPhasingBurnRaisingToTheStations), C.skipRaise1 ? 1 : 3);
             add(C.tB2, P, b);
         }
         if (C.abort != 1)
@@ -13776,7 +13767,7 @@ void SatelliteSim::missionFacts(MissionSubject &s, int idx, double t)
     for (const MissionMilestone &m : s.ms)
         if (m.t > t)
         {
-            s.facts.push_back({"Coming up", m.label + ", " + inStr(m.t - t)});
+            s.facts.push_back({tx(Txt::LblComingUp), m.label + ", " + inStr(m.t - t)});
             break;
         }
     if (!launchState)
@@ -13788,7 +13779,7 @@ void SatelliteSim::missionFacts(MissionSubject &s, int idx, double t)
     {
         const std::string st = launchStatus((uint32_t)idx - activeSatCount);
         if (!st.empty())
-            s.facts.push_back({"Now", st.substr(st.find(" - ") == std::string::npos ? 0 : st.find(" - ") + 3)});
+            s.facts.push_back({tx(Txt::LblNow2), st.substr(st.find(" - ") == std::string::npos ? 0 : st.find(" - ") + 3)});
     }
     if (B && B->valid && s.member >= 0 && (size_t)s.member < B->mem.size() && !s.roster)
     {
@@ -13796,28 +13787,28 @@ void SatelliteSim::missionFacts(MissionSubject &s, int idx, double t)
         char b[120];
         if (s.role == kMsTrain && t >= mb.sRaise && t < B->tA)
         {
-            snprintf(b, sizeof(b), "%.0f%% of the climb to %.0f km", 100.0 * (t - mb.sRaise) / std::max(1.0, B->tA - mb.sRaise),
+            snprintf(b, sizeof(b), tx(Txt::FmtOfTheClimbToKm), 100.0 * (t - mb.sRaise) / std::max(1.0, B->tA - mb.sRaise),
                      (mb.rSlot - kR) / 1000.0);
-            s.facts.push_back({"Raising", b});
+            s.facts.push_back({tx(Txt::LblRaising), b});
         }
         if (s.role == kMsTrain && t < B->tA)
-            s.facts.push_back({"Arrives", inStr(B->tA - t) + " (" + fmtUtcReadable(B->tA) + ")"});
+            s.facts.push_back({tx(Txt::LblArrives), inStr(B->tA - t) + " (" + fmtUtcReadable(B->tA) + ")"});
         if (s.role == kMsRetiree && t < mb.tEnd)
-            s.facts.push_back({"Re-enters", inStr(mb.tEnd - t) + " (" + fmtUtcReadable(mb.tEnd) + ")"});
+            s.facts.push_back({tx(Txt::LblReEnters), inStr(mb.tEnd - t) + " (" + fmtUtcReadable(mb.tEnd) + ")"});
     }
     if (s.roster)
     {
         if (LBatch *Bp = missionBatch(s.keyPrev); Bp && Bp->valid)
         {
-            s.facts.push_back({"In its slot", "since " + fmtUtcReadable(Bp->tA) + " (" + inStr(Bp->tA - t) + ")"});
+            s.facts.push_back({tx(Txt::LblInItsSlot), "since " + fmtUtcReadable(Bp->tA) + " (" + inStr(Bp->tA - t) + ")"});
             const launch::Program &pg = L.cat.programs[Bp->prog];
             const double life = progLifeS(pg, (double)launchLifeScale);
             char b[96];
-            snprintf(b, sizeof(b), "%.1f years, %.0f%% used", life / kYear, 100.0 * std::clamp((t - Bp->tA) / life, 0.0, 9.99));
-            s.facts.push_back({"Design life", b});
+            snprintf(b, sizeof(b), tx(Txt::FmtYearsUsed), life / kYear, 100.0 * std::clamp((t - Bp->tA) / life, 0.0, 9.99));
+            s.facts.push_back({tx(Txt::LblDesignLife), b});
         }
         if (B && B->valid)
-            s.facts.push_back({"Replaced", inStr(B->tA - t) + " (" + fmtUtcReadable(B->tA) + ")"});
+            s.facts.push_back({tx(Txt::LblReplaced), inStr(B->tA - t) + " (" + fmtUtcReadable(B->tA) + ")"});
     }
 }
 
@@ -13920,7 +13911,7 @@ bool SatelliteSim::missionSubjectOfIndexRaw(int idx, MissionSubject &out)
             out.title = "No launch on record for this slot";
         missionFinish(out, t);
         if (LBatch *Bn = missionBatch(kn); !Bn || !Bn->valid)
-            out.facts.push_back({"Replacement", Bn ? "none scheduled (" + Bn->why + ")" : "none scheduled"});
+            out.facts.push_back({tx(Txt::LblReplacement), Bn ? "none scheduled (" + Bn->why + ")" : "none scheduled"});
         out.ok = !out.ms.empty();
         return out.ok;
     }
@@ -13964,7 +13955,7 @@ void SatelliteSim::missionAttachAt(const MissionSubject &s, double t, bool sel, 
             followLaunchOwner = 0;
             followTrKey = 0;
             followWantKind = 0;
-            snprintf(followLabel, sizeof(followLabel), "Following %s", satLabel(idx).c_str());
+            snprintf(followLabel, sizeof(followLabel), tx(Txt::FmtFollowing), satLabel(idx).c_str());
         }
         if (sel)
             selectSatellite(idx);
@@ -14095,7 +14086,7 @@ void SatelliteSim::missionAttachAfterJump()
                 followLaunchM = msAttachM;
                 followTrKey = 0;
                 followWantKind = 0;
-                snprintf(followLabel, sizeof(followLabel), "Following %s", launchLabel(s).c_str());
+                snprintf(followLabel, sizeof(followLabel), tx(Txt::FmtFollowing), launchLabel(s).c_str());
             }
             if (msAttachSel)
             {
@@ -14173,7 +14164,7 @@ bool SatelliteSim::missionJump(const MissionSubject &s, int dir, int index, std:
     missionAttachAt(s, tNew, sel, fol);
     updatePositions(tNew);
     char b[200];
-    snprintf(b, sizeof(b), "%s in %.0f s (%s)", m.label.c_str(), m.lead, msFmtRel(m.t - s.ms.front().t).c_str());
+    snprintf(b, sizeof(b), tx(Txt::FmtInS2), m.label.c_str(), m.lead, msFmtRel(m.t - s.ms.front().t).c_str());
     msg = b;
     infoMissionWall_ = followMissionWall_ = -1e300; // the readouts refresh now
     return true;

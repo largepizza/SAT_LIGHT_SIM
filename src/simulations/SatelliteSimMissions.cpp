@@ -59,7 +59,7 @@ void fmtUtcShort(double tJ2000, char *buf, size_t n)
     if (!u)
         snprintf(buf, n, "--");
     else
-        snprintf(buf, n, "%04d-%02d-%02d %02d:%02d UTC", u->tm_year + 1900, u->tm_mon + 1, u->tm_mday, u->tm_hour, u->tm_min);
+        snprintf(buf, n, tx(Txt::FmtUtc3), u->tm_year + 1900, u->tm_mon + 1, u->tm_mday, u->tm_hour, u->tm_min);
 }
 
 // "T- 3d 04h", "T- 4h 12m", "T- 12m 03s", "T- 42 s" (dt = target - now; past: "T+").
@@ -88,13 +88,13 @@ void fmtIn(double dt, char *buf, size_t n)
     }
     const long long s = (long long)std::floor(dt);
     if (s >= 86400)
-        snprintf(buf, n, "in %lldd %02lldh", s / 86400, (s % 86400) / 3600);
+        snprintf(buf, n, tx(Txt::FmtInDH), s / 86400, (s % 86400) / 3600);
     else if (s >= 3600)
-        snprintf(buf, n, "in %lldh %02lldm", s / 3600, (s % 3600) / 60);
+        snprintf(buf, n, tx(Txt::FmtInHM), s / 3600, (s % 3600) / 60);
     else if (s >= 60)
-        snprintf(buf, n, "in %lldm %02llds", s / 60, s % 60);
+        snprintf(buf, n, tx(Txt::FmtInMS), s / 60, s % 60);
     else
-        snprintf(buf, n, "in %lld s", s);
+        snprintf(buf, n, tx(Txt::FmtInS), s);
 }
 
 Clay_String cs(const char *s) { return Clay_String{false, (int32_t)strlen(s), s}; }
@@ -187,7 +187,7 @@ bool SatelliteSim::missionsGoToFury(int which, std::string &msg)
     FPROF_SCOPE("missionsGoToFury");
     if (!kesslerEnabled)
     {
-        msg = "The Sun's Fury is off (Settings > Launches)";
+        msg = tx(Txt::ValTheSunsFuryIsOffSettings);
         return false;
     }
     if (followActive)
@@ -216,8 +216,8 @@ bool SatelliteSim::missionsGoToFury(int which, std::string &msg)
     updatePositions(t);
     skyTaaHistValid = false;
     cv2HistoryValid = false;
-    msg = which == 0 ? "The Sun's Fury: the CME arrives in 2 minutes (Monument Valley, dusk)"
-                     : "The Sun's Fury: the storm night, 3.5 h after the arrival (Monument Valley)";
+    msg = which == 0 ? tx(Txt::ValTheSunsFuryTheCmeArrives)
+                     : tx(Txt::ValTheSunsFuryTheStormNight);
     return true;
 }
 
@@ -295,10 +295,10 @@ bool SatelliteSim::missionsOngoingAct(int row, bool go, std::string &msg)
     startFollow(selectedSatIndex, true);
     if (!followActive)
     {
-        msg = what + " - selected (no model to go to)";
+        msg = what + tx(Txt::ValSelectedNoModelToGoTo);
         return false;
     }
-    msg = "Riding along: " + what;
+    msg = tx(Txt::ValRidingAlong) + what;
     return true;
 }
 
@@ -448,18 +448,18 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                     if (m.firstFill)
                         tag((uint32_t)id * 4u + 2u, "BUILD-OUT", Pal::progressFill);
                     if (m.crew)
-                        text(msStr("%s to %s (%d crew)", m.spacecraft.c_str(), m.target.c_str(), m.people), Pal::textPrimary, 12, true);
+                        text(msStr(tx(Txt::FmtToCrew), m.spacecraft.c_str(), m.target.c_str(), m.people), Pal::textPrimary, 12, true);
                     else if (m.cargo)
-                        text(msStr("%s to %s (cargo)", m.spacecraft.c_str(), m.target.c_str()), Pal::textPrimary, 12, true);
+                        text(msStr(tx(Txt::FmtToCargo), m.spacecraft.c_str(), m.target.c_str()), Pal::textPrimary, 12, true);
                     else
-                        text(msStr("%s - %s, %d satellites", m.vehicle.c_str(), m.program.c_str(), m.payload), Pal::textPrimary, 12, true);
+                        text(msStr(tx(Txt::FmtSatellites2), m.vehicle.c_str(), m.program.c_str(), m.payload), Pal::textPrimary, 12, true);
                 }
                 char u[48];
                 fmtUtcShort(m.tL, u, sizeof(u));
                 if (m.crew || m.cargo)
-                    text(msStr("%s from %s, %s", m.vehicle.c_str(), m.site.c_str(), u), Pal::textDim, 11, true);
+                    text(msStr(tx(Txt::FmtFrom), m.vehicle.c_str(), m.site.c_str(), u), Pal::textDim, 11, true);
                 else
-                    text(msStr("%s, %s, Sun %+.0f deg at the pad", m.site.c_str(), u, m.sunElevDeg), Pal::textDim, 11, true);
+                    text(msStr(tx(Txt::FmtSunDegAtThePad), m.site.c_str(), u, m.sunElevDeg), Pal::textDim, 11, true);
             }
             CLAY(CLAY_IDI("MsLRight", id), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
                                                        .childGap = 4,
@@ -473,9 +473,9 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                                                           .childGap = 4,
                                                           .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                 {
-                    if (uiButton(inp, ui, "MsWatch", id, "Watch",
-                                 (m.twilight || id == 100) ? "Its exhaust high up, lit by the Sun over the dark ground"
-                                            : "The rocket lifting off, from beside the pad"))
+                    if (uiButton(inp, ui, "MsWatch", id, tx(Txt::BtnWatch),
+                                 (m.twilight || id == 100) ? tx(Txt::TipItsExhaustHighUpLitBy)
+                                            : tx(Txt::TipTheRocketLiftingOffFromBeside)))
                         watchLaunch = id;
                 }
             }
@@ -538,19 +538,17 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                                                     .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                     .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                 {
-                    static const char *kTabs[] = {"Upcoming", "Ongoing", "Kessler"};
-                    static const char *kTips[] = {"The next launches, the next twilight and crewed launches, the Sun's Fury",
-                                                  "The constellations' build-out, crew flights, stations, rockets in flight, "
-                                                  "trains and retirements",
-                                                  "The Kessler tracker: the cascade's counts, the debris shells, the "
-                                                  "latest breakups (the settings: Settings > Launches)"};
+                    static const char *kTabs[] = {tx(Txt::OptUpcoming), tx(Txt::OptOngoing), tx(Txt::OptKessler)};
+                    static const char *kTips[] = {tx(Txt::OptTheNextLaunchesTheNextTwilight),
+                                                  tx(Txt::TipMsTabOngoing),
+                                                  tx(Txt::TipMsTabKessler)};
                     for (int i = 0; i < 3; ++i)
                         if (uiButton(inp, ui, "MsTab", i, kTabs[i], kTips[i], msTab == i))
                             msTab = i;
                     CLAY(CLAY_ID("MsTabsGap"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}}) {}
                     char u[48];
                     fmtUtcShort(now, u, sizeof(u));
-                    text(msStr("Now %s", u), Pal::textDim, 11);
+                    text(msStr(tx(Txt::FmtNow), u), Pal::textDim, 11);
                 }
                 // An action's result line goes after 12 s (2026-10-21 QA: "... lift-off in 45 s" still stood two
                 // weeks of sim time and several jumps later).
@@ -573,39 +571,39 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                     if (msTab == 0)
                     {
                         // ── Upcoming ─────────────────────────────────────────────────────────────────
-                        uiSection("MsSec", 0, "NEXT LAUNCHES");
+                        uiSection("MsSec", 0, tx(Txt::SecNextLaunches));
                         // Launches stand down at the storm (by default for good): an empty list before it says why.
                         const bool standDown = kesslerEnabled && launchAfterStorm == 0;
                         auto noneWhy = [&](double horizonDays, const char *plain) -> const char * {
                             if (standDown && now >= kesslerEpoch())
-                                return "None: launches stood down at the Sun's Fury (Settings > Launches: After the Sun's Fury).";
+                                return tx(Txt::ValNoneLaunchesStoodDownAtThe);
                             if (standDown && kesslerEpoch() - now < horizonDays * kDay)
-                                return "None before the Sun's Fury: launches stand down when it arrives.";
+                                return tx(Txt::ValNoneBeforeTheSunsFuryLaunches);
                             return plain;
                         };
                         if (!launchesEnabled)
-                            text("Launches are off (Settings > Launches).", Pal::textDim, 11);
+                            text(tx(Txt::NoteLaunchesAreOffSettingsLaunches), Pal::textDim, 11);
                         else if (msNext.empty())
-                            text(noneWhy(14.0, "None in the next two weeks."), Pal::textDim, 11, true);
+                            text(noneWhy(14.0, tx(Txt::TxtNoneInTheNextTwoWeeks)), Pal::textDim, 11, true);
                         for (int i = 0; i < (int)msNext.size(); ++i)
                             launchRow(i, msNext[(size_t)i]);
-                        uiSection("MsSec", 1, "NEXT TWILIGHT LAUNCH (JELLYFISH)");
+                        uiSection("MsSec", 1, tx(Txt::SecNextTwilightLaunchJellyfish));
                         if (msHasTwilight)
                             launchRow(100, msTwilight);
                         else if (launchesEnabled)
-                            text(noneWhy(7.0, "None in the next week."), Pal::textDim, 11, true);
-                        uiSection("MsSec", 2, "NEXT CREWED LAUNCH");
+                            text(noneWhy(7.0, tx(Txt::TxtNoneInTheNextWeek)), Pal::textDim, 11, true);
+                        uiSection("MsSec", 2, tx(Txt::SecNextCrewedLaunch));
                         if (!msCrewList.empty())
                             launchRow(101, msCrewList.front());
                         else if (launchesEnabled)
-                            text(noneWhy(400.0, "None scheduled."), Pal::textDim, 11, true);
+                            text(noneWhy(400.0, tx(Txt::TxtNoneScheduled)), Pal::textDim, 11, true);
 
                     }
                     else if (msTab == 1)
                     {
                         // ── Ongoing ──────────────────────────────────────────────────────────────────
-                        static const char *kCats[] = {"CREW TRANSFERS", "CREWED STATIONS", "SATELLITE LAUNCHES",
-                                                      "SATELLITE OPERATIONS"};
+                        static const char *kCats[] = {tx(Txt::OptCrewTransfers), tx(Txt::OptCrewedStations), tx(Txt::OptSatelliteLaunches),
+                                                      tx(Txt::OptSatelliteOperations)};
                         int rid = 0;
                         // Crew transfers.
                         uiSection("MsOSec", 0, kCats[0]);
@@ -618,16 +616,16 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                             ++n0;
                             const int idx = (int)i;
                             ongoingRow(rid++, msStr("%s", o.title.c_str()), msStr("%s", o.status.c_str()), o.tNext, o.progress, [&]() {
-                                if (uiButton(inp, ui, "MsWatchRocket", idx, "Watch", "Ride along with it"))
+                                if (uiButton(inp, ui, "MsWatchRocket", idx, tx(Txt::BtnWatch), tx(Txt::TipRideAlongWithIt)))
                                     ongoingGo = idx;
                             });
                         }
                         if (!n0)
-                            text("No crew in flight.", Pal::textDim, 11);
+                            text(tx(Txt::NoteNoCrewInFlight), Pal::textDim, 11);
                         // Stations.
                         uiSection("MsOSec", 1, kCats[1]);
                         if (msStations.empty())
-                            text("No crewed stations in the roster.", Pal::textDim, 11);
+                            text(tx(Txt::NoteNoCrewedStationsInTheRoster), Pal::textDim, 11);
                         for (size_t s = 0; s < msStations.size(); ++s)
                         {
                             const CrewStation &cs0 = msStations[s];
@@ -650,29 +648,29 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                             char fu[40];
                             fmtUtcShort(tFate, fu, sizeof(fu));
                             if (fate == 4)
-                                status = msStr("Not launched yet (%.10s)", fu);
+                                status = msStr(tx(Txt::FmtNotLaunchedYet), fu);
                             else if (fate == 5)
-                                status = msStr("Retired %.10s", fu);
+                                status = msStr(tx(Txt::FmtRetired), fu);
                             else if (fate == 1)
-                                status = msStr("Dead since %s, tumbling, uncrewed; no more crew flights", fu);
+                                status = msStr(tx(Txt::FmtDeadSinceTumblingUncrewedNoMore), fu);
                             else if (fate >= 2)
-                                status = msStr("%s %s; no more crew flights", fate == 2 ? "Destroyed" : "Re-entered", fu);
+                                status = msStr(tx(Txt::FmtNoMoreCrewFlights), fate == 2 ? "Destroyed" : "Re-entered", fu);
                             else if (!constellations[cs0.constIdx].enabled)
-                                status = msStr("Hidden (Settings > Constellations); %.0f km", altKm);
+                                status = msStr(tx(Txt::FmtHiddenSettingsConstellationsKm), altKm);
                             else if (arriving)
-                                status = msStr("Crewed, %.0f km; a new crew is on its way", altKm);
+                                status = msStr(tx(Txt::FmtCrewedKmANewCrewIs), altKm);
                             else if (nextCrew)
                             {
-                                status = msStr("Crewed, %.0f km; next crew (%s)", altKm, nextCrew->spacecraft.c_str());
+                                status = msStr(tx(Txt::FmtCrewedKmNextCrew), altKm, nextCrew->spacecraft.c_str());
                                 tN = nextCrew->tL;
                             }
                             else
-                                status = msStr("Crewed, %.0f km", altKm);
+                                status = msStr(tx(Txt::FmtCrewedKm), altKm);
                             const int sidx = (int)s;
                             // (a destroyed / re-entered station is not there to select or fly to; a dead one tumbles)
                             const bool en = constellations[cs0.constIdx].enabled && fate < 2;
                             ongoingRow(rid++, msStr("%s", constellations[cs0.constIdx].name.c_str()), status, tN, -1.0, [&]() {
-                                if (uiButton(inp, ui, "MsStWatch", sidx, "Watch", "Fly alongside the station", false, en))
+                                if (uiButton(inp, ui, "MsStWatch", sidx, tx(Txt::BtnWatch), tx(Txt::TipFlyAlongsideTheStation), false, en))
                                     stationGo = sidx;
                             });
                         }
@@ -687,12 +685,12 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                             ++n2;
                             const int idx = (int)i;
                             ongoingRow(rid++, msStr("%s", o.title.c_str()), msStr("%s", o.status.c_str()), o.tNext, o.progress, [&]() {
-                                if (uiButton(inp, ui, "MsWatchRocket", idx, "Watch", "Ride along with it"))
+                                if (uiButton(inp, ui, "MsWatchRocket", idx, tx(Txt::BtnWatch), tx(Txt::TipRideAlongWithIt)))
                                     ongoingGo = idx;
                             });
                         }
                         if (!n2)
-                            text("No rocket in flight.", Pal::textDim, 11);
+                            text(tx(Txt::NoteNoRocketInFlight), Pal::textDim, 11);
                         // Trains raising, retirees deorbiting.
                         uiSection("MsOSec", 3, kCats[3]);
                         int n3 = 0;
@@ -706,15 +704,15 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                             ongoingRow(rid++, msStr("%s", o.title.c_str()), msStr("%s", o.status.c_str()), o.tNext, o.progress, [&]() {
                                 if (o.cat == 3)
                                 {
-                                    if (uiButton(inp, ui, "MsWatchTrain", idx, "Watch", "Fly alongside the nearest of these trains"))
+                                    if (uiButton(inp, ui, "MsWatchTrain", idx, tx(Txt::BtnWatch), tx(Txt::TipFlyAlongsideTheNearestOfThese)))
                                         ongoingGo = idx;
                                 }
-                                else if (uiButton(inp, ui, "MsReentry", idx, "Watch", "A retired satellite burning up over a dark sky"))
+                                else if (uiButton(inp, ui, "MsReentry", idx, tx(Txt::BtnWatch), tx(Txt::TipARetiredSatelliteBurningUpOver)))
                                     watchReentry = true;
                             });
                         }
                         if (!n3)
-                            text(launchesEnabled ? "Nothing raising or deorbiting." : "Launches are off (Settings > Launches).", Pal::textDim, 11);
+                            text(launchesEnabled ? tx(Txt::NoteNothingRaisingOrDeorbiting) : tx(Txt::NoteLaunchesAreOffSettingsLaunches), Pal::textDim, 11);
                         // The deployment era (2026-10-20): each constellation's build-out to its 2036 size. LAST since
                         // 2026-10-21 (QA: with ~20 cohort rows on top, the stations and rockets in flight were scrolled
                         // out of view), and collapsed by default once every cohort is complete.
@@ -727,7 +725,7 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                                     ++nDone;
                             const bool allDone = !rows.empty() && nDone == (int)rows.size();
                             const bool open = msBuildOutOpen < 0 ? !allDone : msBuildOutOpen != 0;
-                            uiSection("MsOSec", 4, "BUILD-OUT (DEPLOYMENT ERA)");
+                            uiSection("MsOSec", 4, tx(Txt::SecBuildOutDeploymentEra));
                             CLAY(CLAY_ID("MsBuildHead"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                                                      .childGap = 8,
                                                                      .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
@@ -735,13 +733,13 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                             {
                                 CLAY(CLAY_ID("MsBuildHeadT"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}})
                                 {
-                                    text(rows.empty() ? "Nothing is being built up."
-                                                      : msStr("%d of %d constellations complete", nDone, (int)rows.size()),
+                                    text(rows.empty() ? tx(Txt::NoteNothingIsBeingBuiltUp)
+                                                      : msStr(tx(Txt::FmtOfConstellationsComplete), nDone, (int)rows.size()),
                                          Pal::textDim, 11);
                                 }
-                                if (!rows.empty() && uiButton(inp, ui, "MsBuildTgl", 0, open ? "Hide" : "Show",
-                                                              open ? "Hide the per-constellation build-out"
-                                                                   : "Show each constellation's build-out"))
+                                if (!rows.empty() && uiButton(inp, ui, "MsBuildTgl", 0, open ? tx(Txt::BtnHide) : tx(Txt::BtnShow),
+                                                              open ? tx(Txt::TipHideThePerConstellationBuildOut)
+                                                                   : tx(Txt::TipShowEachConstellationsBuildOut)))
                                     msBuildOutOpen = open ? 0 : 1;
                             }
                             for (size_t r = 0; open && r < rows.size(); ++r)
@@ -751,11 +749,11 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                                 char uc[48], us[48];
                                 fmtUtcShort(d.completeT, uc, sizeof(uc));
                                 fmtUtcShort(d.startT, us, sizeof(us));
-                                const char *state = f >= 0.9999 ? msStr("complete since %.10s", uc)
-                                                    : f <= 0.0  ? msStr("first launch %.10s", us)
-                                                                : msStr("complete %.10s", uc);
+                                const char *state = f >= 0.9999 ? msStr(tx(Txt::FmtCompleteSince), uc)
+                                                    : f <= 0.0  ? msStr(tx(Txt::FmtFirstLaunch), us)
+                                                                : msStr(tx(Txt::FmtComplete), uc);
                                 ongoingRow(1000 + (int)r, msStr("%s", d.name.c_str()),
-                                           msStr("%.0f of %.0f satellites (%.1f%%), %.1f launches a day; %s", d.deployed,
+                                           msStr(tx(Txt::FmtOfSatellitesLaunchesADay), d.deployed,
                                                  d.target, 100.0 * f, d.perDay, state),
                                            0.0, f, nullptr);
                             }
@@ -793,14 +791,14 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                                                                  .childGap = 2,
                                                                  .layoutDirection = CLAY_TOP_TO_BOTTOM}})
                         {
-                            text("THE SUN'S FURY", kesslerEnabled ? Pal::furyText : Pal::textDim, 16);
-                            text("Kessler simulation", kesslerEnabled ? Pal::furyText : Pal::textDim, 11);
+                            text(tx(Txt::SecTheSunsFury), kesslerEnabled ? Pal::furyText : Pal::textDim, 16);
+                            text(tx(Txt::NoteKesslerSimulation), kesslerEnabled ? Pal::furyText : Pal::textDim, 11);
                         }
                         char cd[48];
                         if (dt > 0.0)
                             fmtCountdown(dt, cd, sizeof(cd));
                         else
-                            snprintf(cd, sizeof(cd), "DAY %.1f", -dt / kDay);
+                            snprintf(cd, sizeof(cd), tx(Txt::FmtDay), -dt / kDay);
                         text(msStr("%s", cd), kesslerEnabled ? Pal::furyText : Pal::textDim, 16);
                     }
                     char ua[48], uf[48];
@@ -810,19 +808,16 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                     // its paragraph took half of a 720-px screen's list
                     const bool furyShort = msChrome.h < 620.0f;
                     if (!kesslerEnabled)
-                        text("The scenario is off. Turn it on in Settings > Launches.", Pal::textDim, 11, true);
+                        text(tx(Txt::NoteTheScenarioIsOffTurnIt), Pal::textDim, 11, true);
                     else if (!furyShort && dt > 0.0)
-                        text(msStr("%s: an X-class flare. %s: its coronal mass ejection arrives. Satellites die in "
-                                   "the storm, the dead tumble and collide, and every collision is a cloud of "
-                                   "debris that feeds the next.",
+                        text(msStr(tx(Txt::FmtAnXClassFlareItsCoronal),
                                    uf, ua),
                              Pal::textPrimary, 11, true);
                     else if (!furyShort)
                     {
                         const nlohmann::json &j = kesslerStateCached();
                         const nlohmann::json &n = j["now"];
-                        text(msStr("The cascade is running: %d dead satellites tumbling, %d destroyed or re-entered, "
-                                   "%d collisions (%d catastrophic).",
+                        text(msStr(tx(Txt::FmtTheCascadeIsRunningDeadSatellites),
                                    n.value("dead_satellites", 0), n.value("roster_gone", 0), n.value("collisions", 0),
                                    n.value("catastrophic", 0)),
                              Pal::textPrimary, 11, true);
@@ -835,11 +830,11 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                         {
                             // The storm night is the aurora: off on Planetarium / Potato (tierNeedReason).
                             const char *why = tierNeedReason(kNeedAurora);
-                            if (uiButton(inp, ui, "MsFuryGo", 1, "Watch", why ? why : "The storm night: the aurora over Monument Valley",
+                            if (uiButton(inp, ui, "MsFuryGo", 1, tx(Txt::BtnWatch), why ? why : tx(Txt::TipTheStormNightTheAuroraOver),
                                          false, why == nullptr))
                                 furyGo = 1;
                         }
-                        else if (uiButton(inp, ui, "MsFuryCtl", 0, "Settings", "The scenario's switch (Settings > Launches)"))
+                        else if (uiButton(inp, ui, "MsFuryCtl", 0, tx(Txt::BtnSettings), tx(Txt::TipTheScenariosSwitchSettingsLaunches)))
                             toSettings = true;
                     }
                 }
@@ -897,7 +892,7 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
     };
     if (stationGone(stationGo))
     {
-        msStatus = constellations[msStations[(size_t)stationGo].constIdx].name + " no longer exists";
+        msStatus = constellations[msStations[(size_t)stationGo].constIdx].name + tx(Txt::ValNoLongerExists);
         stationGo = -1;
     }
     if (stationGo >= 0 && stationGo < (int)msStations.size())
@@ -905,6 +900,6 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
         const int sat = msStations[(size_t)stationGo].sat;
         selectSatellite(sat);
         startFollow(sat, true);
-        msStatus = "Alongside " + constellations[msStations[(size_t)stationGo].constIdx].name;
+        msStatus = tx(Txt::ValAlongside) + constellations[msStations[(size_t)stationGo].constIdx].name;
     }
 }

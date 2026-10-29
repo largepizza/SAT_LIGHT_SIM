@@ -175,7 +175,9 @@ Earth day/night/cloud/specular (water mask) maps
 --------------------------------------------------------------------
 Files:   8k_earth_daymap.jpg, 8k_earth_nightmap.jpg, 8k_earth_clouds.jpg,
          8k_earth_specular_map.png (and 8k_earth_specular_map.r8, the same
-         pixels pre-decoded by tools/make_raw_textures.py)
+         pixels pre-decoded by tools/make_raw_textures.py), and
+         skyglow_sources.bin (the light-pollution sources, derived from the
+         night map by tools/make_skyglow_sources.py)
 Source:  Solar System Scope (https://www.solarsystemscope.com/textures/)
 License: Creative Commons Attribution 4.0 International (CC BY 4.0)
 Terms:   Free for personal and commercial use with attribution.
@@ -183,7 +185,8 @@ Terms:   Free for personal and commercial use with attribution.
 --------------------------------------------------------------------
 Milky Way skybox
 --------------------------------------------------------------------
-File:    8k_stars_milky_way.jpg
+File:    8k_stars_milky_way.jpg (and milky_way_glow.r16f, a denoised
+         luminance derived from it by tools/make_milky_way.py)
 Title:   "The Milky Way panorama" (eso0932a)
 Credit:  ESO/S. Brunier
 Source:  European Southern Observatory (https://www.eso.org/public/images/eso0932a/)
@@ -267,6 +270,14 @@ Source:  Natural Earth, 1:10m Cultural Vectors, Roads
 License: Public domain
 
 --------------------------------------------------------------------
+Coasts around launch sites
+--------------------------------------------------------------------
+File:    launch_coasts.json (baked by tools/make_pad_coasts.py)
+Source:  Natural Earth, 1:10m Physical Vectors, Land and Lakes
+         (https://www.naturalearthdata.com)
+License: Public domain
+
+--------------------------------------------------------------------
 Water map (lake levels + shoreline distance)
 --------------------------------------------------------------------
 Files:   earth_water_sdf.r8, earth_water_level.r8 (baked by
@@ -337,6 +348,17 @@ Used as: assets/stars/star_catalog.bin, derived by tools/make_star_catalog.py
 Fallback: Yale Bright Star Catalogue, 5th Revised Edition
          (Hoffleit & Warren, 1991), CDS catalogue V/50 (compiled in:
          positions/magnitudes only).
+
+--------------------------------------------------------------------
+Geostationary belt and lunar base sites
+--------------------------------------------------------------------
+Files:   geo_satellites.json (tools/make_geo_belt.py), lunar_bases.json
+Source:  Approximate orbital slots of real geostationary satellites from
+         operators' published fleet information and public tracking lists;
+         lunar south-pole sites from published candidate landing sites
+         (Chang'e-7 / ILRS; LROC and Glaser et al. 2014 for Connecting
+         Ridge). Facts compiled for this project; sources are listed in
+         each file. Array sizes and dates are scenario assumptions.
 
 --------------------------------------------------------------------
 Satellite constellation data
