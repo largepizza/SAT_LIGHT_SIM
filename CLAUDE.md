@@ -9444,6 +9444,35 @@ moment, variants A B A B, with `clouds_v2.auto_exposure false`: the first run of
   warp's `march_a` without the clipmap (+2-4 ms at 5 min/s and 1 h/s vs 1x: the clipmap is off above `cdc_max_rate`, its
   cells would expire faster than the budget bakes them), the main thread's `updateStorms` ~1 ms a frame.
 
+**Perf pass 5 (2026-10-29, branch perfhigh; RTX 3070 Ti, 1920x1009, the user's settings, every number an interleaved A/B
+in ONE live app alone on the GPU (`SATLIGHT_HARNESS_MAX_APPS=1`), 3 reps; captures against the same configuration twice;
+scripts `harness_runs/ph/` (untracked): `gen_ab.py` / `multi_ab.py` build batches, `abtab.py` tabulates, `mkv.py` builds
+text-substituted SPV variants, `capdiff.py` the parity check).** Harness `shaders reload depth=<spv>` (new) swaps the scene
+depth pass, so its variants interleave like the sky's and the clouds'.
+- **Centimetre terrain detail skipped** (terrain_detail.glsl `tdAmp0`: x smoothstep(0.02, 0.04 m) of the octave-0
+  amplitude). Low flat land (deltas, coastal plains: h0 a few metres from the DEM's bilinear filter) ran all eight octaves
+  and the erosion at centimetre amplitude. Shanghai from 3 km sky pass 13.2 -> 9.6 ms.
+- **The half-res terrain shadow on 0-m land** (scene_depth.comp): computed where the water map says land (the sky pass's
+  terrain rule), not only where h0 > 0; land the DEM reads at 0 m fell to the sky pass's per-pixel march.
+- **Water clearance in the terrain march** (`gTdWaterClearM`, set by tdDemAt over water: the water map's shore distance
+  less 4.5 km, none near a coast patch, a pad or a storm surge): a step over water may cover it (at most 12 km). A grazing
+  ray over the open sea took ~200 relaxation steps to its horizon. Sea from 20 m -1.8 ms, the storm from the sea -1.6.
+  Together (depth + sky): Shanghai 3 km -4.1 ms GPU, 1 km -2.6, the ground -3.0, Geneva / Big Sur / the Cape within noise.
+- **The atmosphere loop behind opaque cloud** (sat_sky.frag, full variants, band pixels only): where the cloud in front
+  is opaque (transmittance < 1e-3) the loop ends just past the air's split (`tAirFrontM`), its steps over the air in front.
+  Storm views -0.5..-0.6 ms.
+- **Aurora culls** (cloud_march.comp): no march for a ray sunlit at every point (exact: the emission is x the sample's
+  night, bounded between the 5 bound samples by half their arc), nor behind opaque cloud seen from below (x T^3). Storm at
+  dusk -0.4 ms.
+- **Moving costs the clipmap** (`cdc_motion_guard`): on the user's own storm trail (issue 20261027_183909, 12 km,
+  `report load ... trail=on; path play fps=60`) GPU 35.6 ms with the guard, 29.7 without it, but without it the frames
+  past ~5 s lose cloud masses (11% of pixels > 16 levels from the settled reference, content lost). Clearing every stamp at
+  each new epoch (so the 3-bit epoch cannot wrap onto old cells) changed nothing: the loss is the bake's footprint seen
+  from another eye position, as the guard's comment says. Open: a bake that stays conservative while the eye moves.
+- **Dead ends:** skipping the sky pass's terrain march where the four cloud texels are opaque (-0.1..-0.3 ms, changes the
+  depth the sky TAA reprojects with); the history copies (~0.1 ms); FIFO quantisation as the cause of "30 / 20 / 15 FPS"
+  (the reports' frame times are not quantised: 27 ms median at a 28 ms GPU).
+
 ---
 
 ## Subsystem: Cloud Shadows

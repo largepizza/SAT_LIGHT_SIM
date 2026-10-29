@@ -189,9 +189,16 @@ void main() {
         vec3  sd  = normalize(pc.sunDirENU.xyz);
         if (dot(upQ, sd) > -0.1) {
             float lod = tdGeomLodM(tHit, pc.fovYRad / float(2 * size.y));
-            float h0;
-            float hC3 = terrainHeightCoarse(earthElevTex, earthSpecTex, q, enuX, enuY, enuZ, lod, kTdCoarseOctaves - 1, h0);
-            shadow = (h0 > 0.0) ? terrainSunShadow(earthElevTex, earthSpecTex, q, upQ, sd, enuX, enuY, enuZ, lod, hC3) : 2.0;
+            // Land is what sat_sky.frag shades as terrain: not water by the water map (its hitWater test). It was h0 > 0, and
+            // land the DEM reads at 0 m (deltas, coastal plains: Shanghai) fell to the sky pass's per-pixel march, 4x the
+            // rays (2026-10-29, perfhigh: ~2 ms of the sky pass from 3 km over Shanghai).
+            float h0d, hM3;
+            tdDemAt(earthElevTex, earthSpecTex, q, enuX, enuY, enuZ, h0d, hM3);
+            if (hM3 > kTdWaterMark) {
+                float h0;
+                float hC3 = terrainHeightCoarse(earthElevTex, earthSpecTex, q, enuX, enuY, enuZ, lod, kTdCoarseOctaves - 1, h0);
+                shadow = terrainSunShadow(earthElevTex, earthSpecTex, q, upQ, sd, enuX, enuY, enuZ, lod, hC3);
+            }
         }
     }
     imageStore(sceneDepth, coord, vec4(quarter ? tOut : min(tOut, meshDistAt(coord, size)), shadow, 0.0, 0.0));
