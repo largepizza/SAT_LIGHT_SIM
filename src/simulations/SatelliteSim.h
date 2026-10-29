@@ -4506,6 +4506,13 @@ private:
     }
     float obsEyeRadiusM(float heightOffset) const { return (float)satphot::kEarthRadiusM + std::max(obsGroundM(), heightOffset) + 2.0f; }
     float obsEyeRadiusM() const { return obsEyeRadiusM(obsHeightOffset); }
+    // The observer every readout describes (magnitude, elevation, extinction, the Info window, the 3D view's "you"
+    // marker, picks "high in your sky"): Go to MOVES the observer, so while following it is the camera
+    // (followObsEcef); only the last ground position is remembered (followSavedObsDir / Height: Exit / Return home,
+    // settings.json). 2026-10-28, issue 20261028_223234: the readouts used that parked ground position (a "ghost"
+    // ground observer), so a satellite beside the camera read "below your horizon".
+    glm::dvec3 readoutObsEcef() const;
+    glm::dvec3 readoutObsEci(double tJ2000) const;
     // 2026-08-09 (in-app finding: beam/cloud-glow ground spots visibly "drag" behind the observer
     // while moving): satENU/reflectDirENU/targetENU read back from reflectBeamsBuf each frame are
     // expressed in the East/North/Up basis at whatever obsDir PRODUCED them (beam_self_march.comp's
@@ -7358,14 +7365,17 @@ private:
         KB_REPORT_NEW = 20,    // event — a snapshot that starts a NEW issue report (KB_SAVE_SNAPSHOT adds to the active one)
         KB_SCREENSHOT_UI = 21, // event — a screenshot that keeps the UI (default F10)
         KB_MISSIONS = 22,      // event — the Missions window (launches, crew flights, the Sun's Fury) open / closed
-        KB_FOLLOW_STAY = 23,   // event — leave Go to where the camera is (stopFollowHere); G
+        KB_FOLLOW_STAY = 23,   // event — G: with a satellite selected, Go to it; while following, leave Go to where the
+                               // camera is (stopFollowHere). One key in and out (2026-10-28, issue 20261028_223530)
         KB_FOLLOW_RETURN = 24, // event — Go to: back to the followed object, or follow the last one again; H
         KB_MILESTONE_NEXT = 25, // event — the selected / followed launch object's next mission milestone; ]
         KB_MILESTONE_PREV = 26, // event — ... its previous one; [
         KB_WEATHER = 27,       // event — the Weather window (radar, storms) open / closed; N
         KB_VIDEO = 28,         // event — start / stop a video recording (videoToggle); F6
         KB_SKY_EVENTS = 29,    // event — the Sky events window (eclipses, conjunctions, occultations) open / closed; K
-        KB_COUNT = 30,
+        KB_INFO = 30,          // event — the selected satellite's Info window open / closed; I
+        KB_TRACK = 31,         // event — Track (lock the camera on the selection) on / off; T
+        KB_COUNT = 32,
     };
 
     // Dispatches the event-style action for keybindings[bindIdx] — shared by onKey()
@@ -8591,6 +8601,11 @@ private:
     // button's own click path: buildSelActionButton), B goes back one layer (padBack). The default pad
     // bindings moved to make room (time on D-pad up/down, pause X, reverse Y): kPadLayoutVersion.
     static constexpr int kPadLayoutVersion = 2;
+    // Keyboard layout of the saved bindings (controls.key_layout). 2 (2026-10-28, issue 20261028_223530): T is Track,
+    // I Info, G Go to / leave; "Select Satellite" lost its T (a saved T is dropped once), and "Leave Go To Here" was
+    // renamed "Go To / Leave Here" (a saved key under the old name carries over).
+    static constexpr int kKeyLayoutVersion = 2;
+    bool selectionKeyAction(int bindIdx); // KB_INFO / KB_TRACK / KB_FOLLOW_STAY on the selection; false = nothing to do
     int padFocus = 0;               // 0 Info, 1 Go to, 2 Trace pass, 3 Track
     int padFocusSat = -1;           // the selection padFocus was chosen for (a new one resets it)
     bool padActivatePending = false; // A pressed: the focused button clicks in this frame's buildUI

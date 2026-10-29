@@ -174,10 +174,9 @@ bool SatelliteSim::tutPickSatellite()
 {
     tutPickMsg[0] = '\0';
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
-    const glm::vec3 obsGround = followActive ? followSavedObsDir : obsDir;
-    const float obsH = followActive ? followSavedHeight : obsHeightOffset;
-    const glm::dvec3 obs = observerEciAt(glm::dvec3(obsGround),
-                                                  satphot::kEarthRadiusM + (double)std::max(obsTerrainH, obsH), t);
+    const glm::dvec3 obs = followActive ? readoutObsEci(t)
+                                        : observerEciAt(glm::dvec3(obsDir),
+                                                        satphot::kEarthRadiusM + (double)std::max(obsTerrainH, obsHeightOffset), t);
     const glm::dvec3 up = glm::normalize(obs);
     const glm::dvec3 sun = glm::normalize(glm::dvec3(sunDirECI));
     auto lit = [&](const glm::dvec3 &p) {
@@ -716,8 +715,10 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
         snprintf(k1, sizeof(k1), "%s", K(KB_SELECT_SAT));
         if (pad)
             snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Put a satellite near the middle of the view and press %s to select it.", P(KB_SELECT_SAT));
-        else
+        else if (keybindings[KB_SELECT_SAT].key >= 0)
             snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Left-click a satellite, any moving point of light, to select it. %s picks the one nearest the middle of the view.", k1);
+        else
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Left-click a satellite, any moving point of light, to select it.");
         break;
     case TUT_INFO:
     case TUT_GOTO:
@@ -733,22 +734,32 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
                 snprintf(tutBodyBuf + strlen(tutBodyBuf), sizeof(tutBodyBuf) - strlen(tutBodyBuf), " %s", tutPickMsg);
         }
         else if (step == TUT_INFO)
-            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Info (the \"i\") opens its window: a live 3D view, its brightness, its place in your sky and its orbit. Open it.%s",
-                     pad ? " D-pad left / right picks a button, A presses it." : "");
+        {
+            snprintf(k1, sizeof(k1), "%s", K(KB_INFO));
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Info (the \"i\"%s%s) opens its window: a live 3D view, its brightness, its place in your sky and its orbit. Open it.%s",
+                     pad ? "" : ", or ", pad ? "" : k1, pad ? " D-pad left / right picks a button, A presses it." : "");
+        }
         else if (step == TUT_GOTO && !followActive)
-            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Go to (the eye) flies you out to ride beside it. Try it.%s",
-                     pad ? " D-pad to the eye, then A." : "");
+        {
+            snprintf(k1, sizeof(k1), "%s", K(KB_FOLLOW_STAY));
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Go to (the eye%s%s) flies you out to ride beside it: you are up there, and everything is seen from there. Try it.%s",
+                     pad ? "" : ", or ", pad ? "" : k1, pad ? " D-pad to the eye, then A." : "");
+        }
         else if (step == TUT_GOTO)
         {
             snprintf(k1, sizeof(k1), "%s", K(KB_FOLLOW_STAY));
             if (pad)
                 snprintf(tutBodyBuf, sizeof(tutBodyBuf), "You are riding along: move around it with the sticks. B (Exit) flies you back home; Stay here, at the top, leaves you floating up here.");
             else
-                snprintf(tutBodyBuf, sizeof(tutBodyBuf), "You are riding along: WASD and the mouse move around it. Exit flies you back home; Stay here (%s) leaves you floating up here, free to move. Use one.",
+                snprintf(tutBodyBuf, sizeof(tutBodyBuf), "You are riding along: WASD and the mouse move around it. Exit flies you back home; Stay here (%s again) leaves you floating up here, free to move. Use one.",
                          k1);
         }
         else
-            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Trace pass plots its brightness over this pass across your sky. Track keeps the camera locked on it as it moves. Try either.");
+        {
+            snprintf(k1, sizeof(k1), "%s", K(KB_TRACK));
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Trace pass plots its brightness over this pass across your sky. Track%s%s%s keeps the camera locked on it as it moves. Try either.",
+                     pad ? "" : " (", pad ? "" : k1, pad ? "" : ")");
+        }
         break;
     case TUT_TIME:
         if (pad)
