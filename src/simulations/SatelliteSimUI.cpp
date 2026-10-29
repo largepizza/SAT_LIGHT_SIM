@@ -197,6 +197,8 @@ const char *settingsTabName(int i) { return (i >= 0 && i < kSettingsTabCount) ? 
 // Helper: short display name for a GLFW key code (used in settings window + tooltips).
 const char *keyDisplayName(int key) // also SatelliteSimTutorial.cpp
 {
+    if (key < 0)
+        return "-"; // unbound
     switch (key)
     {
     case GLFW_KEY_SPACE:
@@ -3122,7 +3124,10 @@ bool SatelliteSim::buildSelActionButton(const UIInput &inp, UIRenderer &ui, int 
         sndClick(n, inp.lmbPressed);
         hov = n;
         clicked = clicked || (n && inp.lmbPressed);
-        ui.tooltip(inp, n, name, fs(11));
+        // The tooltip is the button's name and its key (2026-10-28): I Info, G Go to, T Track.
+        const int kb = (id % 4) == 0 ? (int)KB_INFO : (id % 4) == 1 ? (int)KB_FOLLOW_STAY : (id % 4) == 3 ? (int)KB_TRACK : -1;
+        const char *tip = (kb >= 0 && keybindings[kb].key >= 0) ? uiKitStr("%s (%s)", name, keyDisplayName(keybindings[kb].key)) : name;
+        ui.tooltip(inp, n, tip, fs(11));
         CLAY(CLAY_SIDI(CLAY_STRING("SelActIcon"), id),
              {.layout = {.sizing = {CLAY_SIZING_FIXED(isz), CLAY_SIZING_FIXED(isz)}},
               .image = {.imageData = (void *)(intptr_t)(iconIdx + 1)}}) {}
@@ -7278,7 +7283,9 @@ void SatelliteSim::buildViewControlsBody(const UIInput &inp, UIRenderer &ui)
         {keybindings[KB_SAVE_SNAPSHOT].action, KB_SAVE_SNAPSHOT},
         {keybindings[KB_REPORT_NEW].action, KB_REPORT_NEW},
         {keybindings[KB_MISSIONS].action, KB_MISSIONS},
+        {keybindings[KB_INFO].action, KB_INFO},
         {keybindings[KB_FOLLOW_STAY].action, KB_FOLLOW_STAY},
+        {keybindings[KB_TRACK].action, KB_TRACK},
         {keybindings[KB_FOLLOW_RETURN].action, KB_FOLLOW_RETURN},
         {keybindings[KB_TOGGLE_CURSOR].action, KB_TOGGLE_CURSOR},
     };
@@ -8900,10 +8907,18 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         // are dropped once, or B would still pause and the D-pad still change the time scale.
         const bool padLayoutCurrent = j["controls"].value("pad_layout", 1) >= kPadLayoutVersion;
         std::unordered_map<std::string, LoadedBinding> actionKey;
+        const bool keyLayoutCurrent = j["controls"].value("key_layout", 1) >= kKeyLayoutVersion;
         for (const auto &kb : j["controls"]["keybindings"])
             if (kb.contains("action") && kb.contains("key"))
-                actionKey[kb["action"].get<std::string>()] = {
-                    kb["key"].get<int>(), kb.value("gp_button", -1), kb.contains("gp_button")};
+            {
+                std::string act = kb["action"].get<std::string>();
+                if (act == "Leave Go To Here")
+                    act = "Go To / Leave Here"; // renamed in key layout 2
+                int k = kb["key"].get<int>();
+                if (!keyLayoutCurrent && act == "Select Satellite" && k == GLFW_KEY_T)
+                    k = -1; // T is Track since key layout 2
+                actionKey[act] = {k, kb.value("gp_button", -1), kb.contains("gp_button")};
+            }
         for (auto &kb : keybindings)
         {
             auto it = actionKey.find(kb.action);
@@ -8914,6 +8929,13 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
                     kb.gpButton = it->second.gpButton;
             }
         }
+        // Actions new in this build keep their default key only where no saved binding already uses it (the
+        // player's own bindings win).
+        for (int ni : {(int)KB_INFO, (int)KB_TRACK})
+            if (actionKey.find(keybindings[ni].action) == actionKey.end())
+                for (int o = 0; o < (int)keybindings.size(); ++o)
+                    if (o != ni && keybindings[o].key >= 0 && keybindings[o].key == keybindings[ni].key)
+                        keybindings[ni].key = -1;
     }
 
     if (j.contains("constellations"))
@@ -10030,6 +10052,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         kbArr.push_back({{"action", kb.action}, {"key", kb.key}, {"gp_button", kb.gpButton}});
     j["controls"]["keybindings"] = kbArr;
     j["controls"]["pad_layout"] = kPadLayoutVersion;
+    j["controls"]["key_layout"] = kKeyLayoutVersion;
     j["controls"]["invert_mouse_x"] = invertMouseX;
     j["controls"]["invert_mouse_y"] = invertMouseY;
     j["controls"]["invert_pad_x"] = invertPadX;

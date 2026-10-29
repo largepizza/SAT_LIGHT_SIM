@@ -479,7 +479,7 @@ void SatelliteSim::init(VulkanContext &ctx)
         {"Zoom In", GLFW_KEY_EQUAL, GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER, true, false},          // KB_ZOOM_IN    (held)
         {"Zoom Out", GLFW_KEY_MINUS, GLFW_GAMEPAD_BUTTON_LEFT_BUMPER, true, false},          // KB_ZOOM_OUT   (held)
         {"Reset Zoom", GLFW_KEY_0, GLFW_GAMEPAD_BUTTON_RIGHT_THUMB, false, false},           // KB_ZOOM_RESET (event)
-        {"Select Satellite", GLFW_KEY_T, GLFW_GAMEPAD_BUTTON_A, false, false},               // KB_SELECT_SAT (event) — center-of-screen pick; moved off F (session follow-up) to free F for KB_TOGGLE_TRAILS below
+        {"Select Satellite", -1, GLFW_GAMEPAD_BUTTON_A, false, false},                       // KB_SELECT_SAT (event) — center-of-screen pick; no key since key layout 2 (T is Track; a click selects)
         {"Screenshot", GLFW_KEY_F12, -1, false, false},                                      // KB_SCREENSHOT (event) — no standard gamepad "capture" button to default to
         {"Toggle Cursor", GLFW_KEY_C, GLFW_GAMEPAD_BUTTON_START, false, false},              // KB_TOGGLE_CURSOR (event) — UC5: gamepad virtual-cursor mode; no meaningful effect for KBM (mouse is always a free cursor), kept rebindable/listed for consistency
         {"Star Trails", GLFW_KEY_F, -1, false, false},                                       // KB_TOGGLE_TRAILS (event) — long-exposure trail on/off (X went to Pause, pad layout 2)
@@ -488,15 +488,17 @@ void SatelliteSim::init(VulkanContext &ctx)
         {"New Issue Snapshot", GLFW_KEY_F7, -1, false, false},                               // KB_REPORT_NEW (event) — a snapshot that starts a new issue report
         {"Screenshot with UI", GLFW_KEY_F10, -1, false, false},                              // KB_SCREENSHOT_UI (event) — a screenshot that keeps the interface
         {"Missions", GLFW_KEY_M, -1, false, false},                                          // KB_MISSIONS (event) — the Missions window
-        {"Leave Go To Here", GLFW_KEY_G, -1, false, false},                                  // KB_FOLLOW_STAY (event) — end Go to as a free observer where the camera is
+        {"Go To / Leave Here", GLFW_KEY_G, -1, false, false},                                // KB_FOLLOW_STAY (event) — Go to the selection; following: end Go to as a free observer where the camera is
         {"Go To: Return", GLFW_KEY_H, -1, false, false},                                     // KB_FOLLOW_RETURN (event) — back to the followed object / follow the last one again
         {"Next Mission Milestone", GLFW_KEY_RIGHT_BRACKET, -1, false, false},                // KB_MILESTONE_NEXT (event) — missionJumpNow(+1)
         {"Previous Mission Milestone", GLFW_KEY_LEFT_BRACKET, -1, false, false},             // KB_MILESTONE_PREV (event) — missionJumpNow(-1)
         {"Weather", GLFW_KEY_N, -1, false, false},                                           // KB_WEATHER (event) — the Weather window (radar, storms)
         {"Record Video", GLFW_KEY_F6, -1, false, false},                                     // KB_VIDEO (event) — start / stop a video (videoToggle)
         {"Sky Events", GLFW_KEY_K, -1, false, false},                                        // KB_SKY_EVENTS (event) — the Sky events window
+        {"Info Window", GLFW_KEY_I, -1, false, false},                                       // KB_INFO (event) — the selection's Info window
+        {"Track", GLFW_KEY_T, -1, false, false},                                             // KB_TRACK (event) — lock the camera on the selection
     };
-    static_assert(KB_COUNT == 30, "KB enum and keybindings initializer are out of sync");
+    static_assert(KB_COUNT == 32, "KB enum and keybindings initializer are out of sync");
 
     // Launch breadcrumbs: one fsynced `init: <step>` log line before each step (a launch that dies
     // names the step it died in), and a bootStatus() line for the loading screen (App), which
@@ -4197,6 +4199,20 @@ double SatelliteSim::formationMagnitude(int satIdx, const SatPhotInputs &in, dou
     return flux > 0.0 ? -2.5 * std::log10(flux) : std::numeric_limits<double>::infinity();
 }
 
+glm::dvec3 SatelliteSim::readoutObsEcef() const
+{
+    if (followActive)
+        return followObsEcef;
+    return glm::normalize(glm::dvec3(obsDir)) * ((double)kEarthRadius + (double)obsTerrainH + (double)obsHeightOffset);
+}
+
+glm::dvec3 SatelliteSim::readoutObsEci(double tJ2000) const
+{
+    const glm::dvec3 p = readoutObsEcef();
+    const double r = glm::length(p);
+    return r > 1.0 ? observerEciAt(p / r, r, tJ2000) : glm::dvec3(obsECI);
+}
+
 void SatelliteSim::updateViewerObserverInfo()
 {
     for (auto &l : viewerObsValue)
@@ -4215,10 +4231,7 @@ void SatelliteSim::updateViewerObserverInfo()
         // No model (a re-entry fireball after a handover, 2026-10-19): the sky position from its state, and the
         // drawn magnitude while it is the selected transient, rather than a window of dashes.
         const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
-        const glm::vec3 obsGround = followActive ? followSavedObsDir : obsDir;
-        const float obsGroundH = followActive ? followSavedHeight : obsHeightOffset;
-        const glm::dvec3 obs =
-            observerEciAt(glm::dvec3(obsGround), (double)kEarthRadius + (double)obsTerrainH + (double)obsGroundH, t);
+        const glm::dvec3 obs = readoutObsEci(t);
         const glm::dvec3 rel = satOrbitStateAt(orbitElemsOf(orb), t).posEci - obs;
         const double range = glm::length(rel);
         if (range < 1.0)
@@ -4234,7 +4247,8 @@ void SatelliteSim::updateViewerObserverInfo()
         snprintf(viewerObsValue[0], sizeof(viewerObsValue[0]), hidden ? "Below horizon" : "Above horizon");
         snprintf(viewerObsValue[1], sizeof(viewerObsValue[1]), "%.1f deg", glm::degrees(std::asin(glm::clamp(up, -1.0, 1.0))));
         snprintf(viewerObsValue[2], sizeof(viewerObsValue[2]), "%.0f deg", azDeg);
-        snprintf(viewerObsValue[3], sizeof(viewerObsValue[3]), "%.0f km", range / 1000.0);
+        snprintf(viewerObsValue[3], sizeof(viewerObsValue[3]), range < 10000.0 ? "%.0f m" : "%.0f km",
+                 range < 10000.0 ? range : range / 1000.0); // metres close up (following, 2026-10-28)
         if ((uint32_t)viewerSatIndex == transientSatIdx() && selIsTransient() && selTransientCur.flare > 0.0f && !hidden)
         {
             // The drawn flare is the camera's; carried to the ground observer (the selection panel's rule too).
@@ -4276,15 +4290,9 @@ void SatelliteSim::updateViewerObserverInfo()
     }
 
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
-    // The observer these readouts describe is the PARKED telescope on the ground, not the camera: in
-    // follow mode followObsEcef IS the camera (updateFollow sets it from the flight offset and even
-    // overwrites obsDir from it), so using it here would turn "as you see it" into a readout of the
-    // camera's own position. followSavedObsDir holds the ground observer for exactly this — saved on
-    // startFollow, restored on stopFollow.
-    const glm::vec3 obsGround = followActive ? followSavedObsDir : obsDir;
-    const float obsGroundH = followActive ? followSavedHeight : obsHeightOffset;
-    const glm::dvec3 obs =
-        observerEciAt(glm::dvec3(obsGround), (double)kEarthRadius + (double)obsTerrainH + (double)obsGroundH, t);
+    // The observer these readouts describe: the camera while following (Go to moves the observer), else the ground
+    // observer (readoutObsEci).
+    const glm::dvec3 obs = readoutObsEci(t);
     const SatOrbitElems e = orbitElemsOf(orb);
     SatPhotInputs in;
     in.sunDirEci = glm::dvec3(sunDirECI);
@@ -4315,11 +4323,12 @@ void SatelliteSim::updateViewerObserverInfo()
     // near root alone > 0 missed an observer ON the sea-level sphere, whose near root is 0: a satellite 67 deg below
     // the horizon read "Above horizon" with a magnitude, 2026-10-21 QA.)
     const bool hidden = disc > 0.0 && -b + std::sqrt(disc) > 1.0 && -b - std::sqrt(disc) < range;
-    // SKY POSITION: the ground observer's sky.
+    // SKY POSITION: the observer's sky (the camera's while following).
     snprintf(viewerObsValue[0], sizeof(viewerObsValue[0]), hidden ? "Below horizon" : "Above horizon");
     snprintf(viewerObsValue[1], sizeof(viewerObsValue[1]), "%.1f deg", elDeg);
     snprintf(viewerObsValue[2], sizeof(viewerObsValue[2]), "%.0f deg", azDeg);
-    snprintf(viewerObsValue[3], sizeof(viewerObsValue[3]), "%.0f km", range / 1000.0);
+    snprintf(viewerObsValue[3], sizeof(viewerObsValue[3]), range < 10000.0 ? "%.0f m" : "%.0f km",
+                 range < 10000.0 ? range : range / 1000.0); // metres close up (following, 2026-10-28)
     // BRIGHTNESS: what the observer sees, from the same evaluator the selection panel's magnitude uses.
     snprintf(viewerPhotValue[4], sizeof(viewerPhotValue[4]), "%.0f deg", glm::degrees(r.phaseAngleRad));
     if (!r.supported)
@@ -4437,13 +4446,8 @@ std::string SatelliteSim::constCategoryOf(const ConstellationConfig &c) const
 int SatelliteSim::pickViewerSatellite(int constIdx) const
 {
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
-    // "Highest in YOUR sky" means the parked ground observer's sky even while flying: in follow mode
-    // followObsEcef is the camera, from which nearly everything is below the horizon, so the pick would
-    // stop meaning anything (see updateViewerObserverInfo / recordModelViewer for the same point).
-    const glm::vec3 obsGround = followActive ? followSavedObsDir : obsDir;
-    const float obsGroundH = followActive ? followSavedHeight : obsHeightOffset;
-    const glm::dvec3 obs =
-        observerEciAt(glm::dvec3(obsGround), (double)kEarthRadius + (double)obsTerrainH + (double)obsGroundH, t);
+    // "Highest in YOUR sky": the observer's, i.e. the camera's while following (readoutObsEci).
+    const glm::dvec3 obs = readoutObsEci(t);
     const glm::dvec3 upObs = glm::normalize(obs);
     // Members of the constellation (stride through the big ones: a million-satellite disk needs no
     // more than ~40k candidates to find one high in the sky).
@@ -4595,12 +4599,10 @@ void SatelliteSim::recordModelViewer(VkCommandBuffer cmd, float dt)
     inst.probeSlot = kNoProbe;
 
     // ── Where the observer is (the marker, and the camera presets) ───────────
-    // The PARKED ground telescope, never the camera: in follow mode followObsEcef is the camera itself
-    // (updateFollow sets it from the flight offset), so pointing the marker and the "from you" preset
-    // at it would put the marker on the camera and aim the observer view from wherever the player is
-    // flying. followSavedObsDir/Height hold the ground observer (saved on startFollow).
-    const double obsRadius = (double)obsEyeRadiusM(followActive ? followSavedHeight : obsHeightOffset);
-    const glm::dvec3 obsEcef = glm::normalize(glm::dvec3(followActive ? followSavedObsDir : obsDir)) * obsRadius;
+    // The observer: the camera while following (Go to moves the observer; showYouMarker hides the marker when the
+    // camera is close to the model), else the ground observer.
+    const double obsRadius = (double)obsEyeRadiusM();
+    const glm::dvec3 obsEcef = followActive ? followObsEcef : glm::normalize(glm::dvec3(obsDir)) * obsRadius;
     const glm::dvec3 toObs = glm::normalize(obsEcef - P);
 
     // A burning stage's flame (2026-10-21 QA: a rocket at night rendered black with no flame here). The model's
@@ -7448,13 +7450,15 @@ void SatelliteSim::updateSelectedPhotometry()
     if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
         return;
     // The panel's magnitude follows the Info window's MAGNITUDE tile (2026-10-21 QA: a Progress in the Earth's shadow
-    // read "Mag 23.3" here, its tile "Below"): what the GROUND observer sees — below their horizon, dark, or the
-    // magnitude after extinction — never the camera's view in follow mode.
+    // read "Mag 23.3" here, its tile "Below"): what the OBSERVER sees — below their horizon, dark, or the magnitude
+    // after extinction. While following, the observer is the camera (2026-10-28, issue 20261028_223234): the
+    // dispatch's own eye (parityPending.obsECI, the frame the photometry is evaluated at) for a satellite, this
+    // frame's (obsECI, which the drawn flare is from) for a transient.
     constexpr double kSelDarkMag = 20.0; // a transient fainter than this is unlit (its model in the shadow)
     const double tNowSel = (double)simDayJ2000 * 86400.0 + simSecInDay;
-    const glm::dvec3 obsG = observerEciAt(
-        glm::dvec3(followActive ? followSavedObsDir : obsDir),
-        (double)kEarthRadius + (double)obsTerrainH + (double)(followActive ? followSavedHeight : obsHeightOffset), tNowSel);
+    glm::dvec3 obsG = followActive ? glm::dvec3(obsECI) : readoutObsEci(tNowSel);
+    if (followActive && !selIsTransient() && parityPending.valid && parityPending.satIdx == selectedSatIndex)
+        obsG = glm::dvec3(parityPending.obsECI);
     auto hiddenFrom = [&](const glm::dvec3 &pos, glm::dvec3 &d, double &range) {
         const glm::dvec3 rel = pos - obsG;
         range = std::max(glm::length(rel), 1.0);
@@ -7470,6 +7474,28 @@ void SatelliteSim::updateSelectedPhotometry()
         glm::dvec3 d;
         double range = 1.0;
         const bool hidden = hiddenFrom(selTransientCur.pos, d, range);
+        // Not burning and with a model (a coasting stage, a docked spacecraft): its sunlit model's magnitude, as the
+        // Info window gives it (2026-10-28: the drawn point gives way to the mesh close up, so a docked Shenzhou
+        // followed from 34 m read "dark").
+        const SatOrbit &so = satOrbits[selectedSatIndex];
+        if (!hidden && selTransientCur.burn == 0 && so.typeIdx < satTypes.size() && satTypes[so.typeIdx].isModel() &&
+            !attUsesGroundSite(satTypes[so.typeIdx].groups))
+        {
+            const SatelliteType &tt = satTypes[so.typeIdx];
+            SatPhotInputs tin;
+            tin.sunDirEci = glm::dvec3(sunDirECI);
+            tin.obsEci = obsG;
+            tin.flareTiltRad = glm::radians((double)flareMitigationTiltDeg);
+            tin.mirrorBoost = mirrorBoost;
+            const SatPhotResult tr = evalSatPhotometry(tt.groups, tt.lobes, orbitElemsOf(so), tNowSel, tin, nullptr,
+                                                       satOcclusionActive() ? &tt.occlusion : nullptr);
+            if (tr.supported && std::isfinite(tr.magnitude))
+            {
+                snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag %.2f  (1000 km %.2f)",
+                         tr.magnitude + atmExtinctionMag(obsG, d, range, (double)extinctionCoeff), tr.magnitude1000);
+                return;
+            }
+        }
         const double rCam = std::max(glm::length(selTransientCur.pos - glm::dvec3(obsECI)), 1.0);
         const double fObs = (double)selTransientCur.flare * (rCam / range) * (rCam / range);
         const double m = 6.0 - 2.5 * std::log10(std::max(fObs, 1e-30) / 0.008);
@@ -7538,11 +7564,8 @@ void SatelliteSim::updateSelectedPhotometry()
         snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag: legacy type (not physical)");
     else
     {
-        // Same instant as the parity check (the dispatch's); only the observer differs, and only in follow mode.
-        const SatPhotResult rg =
-            followActive ? evalSatPhotometry(type.groups, type.lobes, e, pin.tAbs, inG, &legacy,
-                                             (pin.occlusionOn && !type.occlusion.occluders.empty()) ? &type.occlusion : nullptr)
-                         : r;
+        // Same instant and observer as the parity check (the dispatch's; while following its eye is the camera).
+        const SatPhotResult &rg = r;
         glm::dvec3 d;
         double range = 1.0;
         const bool hidden = hiddenFrom(rg.orbit.posEci, d, range);
@@ -9441,6 +9464,53 @@ void SatelliteSim::endPhoto()
     photoState = 0;
 }
 
+// ─── selectionKeyAction ──────────────────────────────────────────────────────
+// The selection's keys (2026-10-28, issue 20261028_223530): I the Info window, G Go to (and, while following, leave
+// Go to where the camera is: one key in and out), T Track. Each does what its button in the selection panel does.
+bool SatelliteSim::selectionKeyAction(int bindIdx)
+{
+    const bool satSel = selectedSatIndex >= 0 && selectedSatIndex < (int)satOrbits.size();
+    const bool hasMesh = satSel && meshRenderer.typeMesh((int)satOrbits[selectedSatIndex].typeIdx) != nullptr;
+    switch (bindIdx)
+    {
+    case KB_FOLLOW_STAY:
+        if (followActive)
+        {
+            stopFollowHere();
+            return true;
+        }
+        if (!hasMesh)
+            return false;
+        startFollow(selectedSatIndex, true);
+        return true;
+    case KB_INFO:
+    {
+        if (!hasMesh)
+            return false;
+        const SatOrbit &orb = satOrbits[selectedSatIndex];
+        if (infoChrome.open && viewerSatIndex == selectedSatIndex)
+            infoChrome.open = false;
+        else
+        {
+            uiVisible = true;
+            openModelViewer((int)orb.typeIdx, satTypes[orb.typeIdx].name.c_str(), orb.altM, selectedSatIndex);
+        }
+        return true;
+    }
+    case KB_TRACK:
+        if (trackActive)
+        {
+            stopTrack();
+            return true;
+        }
+        if (!satSel && selectedMoonBase < 0)
+            return false;
+        startTrack();
+        return true;
+    }
+    return false;
+}
+
 // ─── onKey ────────────────────────────────────────────────────────────────────
 // Shared event-action dispatch — see declaration in SatelliteSim.h for why this is split
 // out of onKey (used by both the keyboard callback and pollGamepad's button edge-detect).
@@ -9533,8 +9603,10 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
         }
         break;
     case KB_FOLLOW_STAY:
-        if (followActive && !cineActive())
-            stopFollowHere();
+    case KB_INFO:
+    case KB_TRACK:
+        if (!cineActive())
+            selectionKeyAction(bindIdx);
         break;
     case KB_MILESTONE_NEXT:
     case KB_MILESTONE_PREV:
@@ -9653,7 +9725,9 @@ void SatelliteSim::onKey(GLFWwindow *w, int key, int action)
         return; // consume the key event
     }
 
-    // Dispatch via keybindings array
+    // Dispatch via keybindings array (an unbound action holds -1, which is also GLFW_KEY_UNKNOWN)
+    if (key < 0)
+        return;
     for (size_t i = 0; i < keybindings.size(); ++i)
         if (key == keybindings[i].key)
             dispatchKeyAction((int)i);

@@ -552,6 +552,17 @@ json SatelliteSim::harnessStateJson()
         // The selection panel's two text lines as drawn (formatSelectedSatInfo), and the info window's subject.
         sel["panel_lines"] = {std::string(selInfoLine[0]), std::string(selInfoLine[1])};
         sel["viewer_sat"] = viewerSatIndex;
+        // The panel's magnitude line (updateSelectedPhotometry) and the Info window's SKY POSITION / BRIGHTNESS values
+        // (updateViewerObserverInfo, when the window shows the selection): both describe the observer, the camera
+        // while following (2026-10-28).
+        sel["mag_line"] = std::string(selPhotLine[0]);
+        if (viewerSatIndex == selectedSatIndex)
+        {
+            sel["viewer_sky"] = {std::string(viewerObsValue[0]), std::string(viewerObsValue[1]),
+                                 std::string(viewerObsValue[2]), std::string(viewerObsValue[3])};
+            sel["viewer_mag"] = std::string(viewerPhotValue[0]);
+        }
+        sel["info_open"] = infoChrome.open;
         if (selIsTransient())
             sel["transient"] = {{"kind", (int)selTransientCur.kind}, {"label", transientLabel()},
                                 {"alt_km", (glm::length(selTransientCur.pos) - satphot::kEarthRadiusM) / 1000.0},
@@ -4153,6 +4164,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             for (const auto &e : keys)
                 if (k == e.first)
                     code = e.second;
+            if (code < 0 && k.size() == 1 && k[0] >= 'a' && k[0] <= 'z') // any letter (2026-10-28: the selection's I / G / T)
+                code = GLFW_KEY_A + (k[0] - 'a');
             if (code < 0)
                 fail("ui key: enter | esc | tab | backspace | delete | left | right | up | down | home | end | w | f7 | f8 | f9 | f10 | f12 | ] | [");
             onKey(win, code, GLFW_PRESS);

@@ -4151,6 +4151,17 @@ orbit is unchanged); boost and fine scale it the same way. A fixed 510 km/s cros
 Q/E follow the same setting (review 7): `moveSpeedPerHeight` x (10 m/s + 0.5 x the height above the
 ground), boost x10, fine x0.1 — it was 100 m/s + 0.5 x the height above SEA LEVEL.
 
+### The selection's keys (2026-10-28, issue 20261028_223530)
+
+With a satellite selected: **I** = Info window (open / close, `KB_INFO`), **G** = Go to, and G again leaves Go to
+where the camera is (`KB_FOLLOW_STAY`, action "Go To / Leave Here"; was only "Leave Go To Here"), **T** = Track on /
+off (`KB_TRACK`); `selectionKeyAction`. T was "Select Satellite" (the centre pick), which now has no key (pad A
+still; a click selects). Saved bindings migrate by `controls.key_layout` (`kKeyLayoutVersion` 2): a saved T on
+"Select Satellite" is dropped once, the old action name carries its key over, and I / T keep their defaults only
+where no saved binding uses them. An unbound key is -1 (`onKey` ignores GLFW_KEY_UNKNOWN; `keyDisplayName` shows
+"-"). The selection buttons' tooltips name their keys ("Info (I)"), and so do the tutorial's cards. Harness
+`ui key <letter>`.
+
 ### Gamepad layout 2 and the selection's focus (2026-10-03)
 
 Default pad bindings: A select (centre pick) · B back · X pause · Y reverse · D-pad up/down faster/slower ·
@@ -4697,13 +4708,17 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
       `recordModelViewer` runs when either window is open (it used to need the viewer open), so the
       photometric check still works with only the info window up. Both windows register mouse-capture
       rects, and the auto-grow-to-fit-column hack is gone — the sections scroll instead.
-    - **The observer is the parked ground telescope, never the camera.** In follow mode `followObsEcef`
-      is the camera itself (`updateFollow` sets it from the flight offset and even overwrites `obsDir`),
-      so the readouts, the "you" marker and the Observer preset all use `followSavedObsDir` /
-      `followSavedHeight` (saved on `startFollow`). That is also the fix for the glitchy marker line:
-      with the camera as the marker's own endpoint, the line's clip and the dot's behind-camera test
-      both degenerated. `showYouMarker` additionally hides the marker when the camera is within four
-      model radii of it. A ground-site mirror still shows a solid orange line to its site.
+    - **The observer is wherever the player is: the camera while following** (2026-10-28, issue 20261028_223234;
+      `readoutObsEcef()` / `readoutObsEci(t)`). Go to MOVES the observer (followObsEcef, which updatePositions already
+      took as the eye); only the last ground position is remembered (`followSavedObsDir` / `followSavedHeight`: Exit's
+      and Return's flight home, settings.json, the tutorial's way back). The selection panel's "Mag", the Info
+      window's SKY POSITION / BRIGHTNESS, the "you" marker and Observer preset, `pickViewerSatellite` and the
+      tutorial's pick all use it (the panel takes the dispatch's own eye, `parityPending.obsECI`, so the evaluation
+      and the GPU see one observer). Until then they used the parked ground position (a "ghost" observer): a
+      satellite 34 m from the camera read "Mag: below your horizon". The trace already used the camera's Earth-fixed
+      place (obsDir / obsEyeRadiusM). `showYouMarker` hides the marker when the camera is within four model radii
+      (the line's clip degenerates with the camera as its endpoint). A ground-site mirror still shows a solid orange
+      line to its site.
     - **Markers are drawn OVER the mesh (2026-09-25, `sat_mesh_marker.frag`, `viewerMarkerPipe`):** a
       fullscreen pass after the model, depth-tested, no depth write. Each line pixel takes the line's own
       depth there (z/w is affine in screen space), so the model hides the part behind it and the part in
