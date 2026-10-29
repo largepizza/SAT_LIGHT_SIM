@@ -5877,6 +5877,34 @@ private:
     // their outputs (lightning bolts, rain particles, thunder, the rain ambience, the Sun's cloud transmittance)
     // treats them as absent rather than reading the last frame they were written.
     bool cloudsV2Off() const { return (debugDisableMask & 32768u) != 0u; }
+    // Tier gating (2026-10-29): the Weather window and its Settings tab are greyed out without the volumetric
+    // clouds (Planetarium, Potato): storms, rain, fog and the radar are all drawn by them.
+    bool weatherUnavailable() const { return cloudsV2Off(); }
+    // The Potato sky (knockout 262144): no meshes, no cloud composite, no dust / plume list.
+    bool potatoSkyOn() const { return (debugDisableMask & 262144u) != 0u; }
+    // Planetarium's SKY_LITE or Potato: no meshes (kNoMeshBits), no procedural ground.
+    bool lightSkyOn() const { return (debugDisableMask & (262144u | 524288u)) != 0u; }
+    // What a Watch / Go needs to land on something visible. tierNeedReason = nullptr when this graphics mode draws
+    // it, else a short line for the disabled button's tooltip (SatelliteSimBookmarks.cpp, SatelliteSimSkyEvents.cpp,
+    // SatelliteSimMissions.cpp).
+    enum TierNeed : uint32_t
+    {
+        kNeedClouds = 1u,  // the volumetric clouds (storms, rain, snow, rainbows): off on Planetarium and Potato
+        kNeedAurora = 2u,  // the aurora (knockout 32): off on Planetarium and Potato
+        kNeedEclipse = 4u, // the Moon over the Sun / in the Earth's shadow: sat_sky_minimal.frag draws neither
+    };
+    static_assert(kNeedEclipse == 4u, "SatelliteSimSkyEvents.cpp skyKindNeeds() writes it as 4u");
+    const char *tierNeedReason(uint32_t needs) const
+    {
+        if ((needs & kNeedClouds) && cloudsV2Off())
+            return "Off in this graphics mode: needs the volumetric clouds (Low or higher)";
+        if ((needs & kNeedAurora) && (debugDisableMask & 32u) != 0u)
+            return "Off in this graphics mode: needs the aurora (Low or higher)";
+        if ((needs & kNeedEclipse) && potatoSkyOn())
+            return "Off in Potato mode: eclipses need Planetarium or higher";
+        return nullptr;
+    }
+    static uint32_t defaultBookmarkNeeds(const std::string &id);
     // The lightning pass (and so the rain map, the flash list and the Sun profile in cv2FlashBuf) runs this frame.
     bool cloudsV2LightningActive() const { return !cloudsV2Off() && cloudFarBlend() < 0.999f; }
     float cloudFarBlend() const

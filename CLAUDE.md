@@ -9501,6 +9501,12 @@ see the last bullets), `recordPrePass` → `recordSkyTaa`:
   and the input size. The depth restore reads the RESOLVE's full-res depth (`skyTaaRestoreSet[2]`, one per ping-pong
   side). The sky pass's detail LOD uses the OUTPUT pixel (`CloudParams::skyLodScreenH`, v1's unread maxRenderDistM).
   Cost ~1 ms over the plain stretch (the full-res resolve). The plain low-res blit stays for TAA off / SKY_LITE.
+  **In motion the nearest sample's weight is taken under a kernel one INPUT pixel wide** (`confWide`, 2026-10-29): under
+  the 0.6-output-px kernel, at 50% (Low) a pixel whose nearest sample landed 1-1.4 px away moved by 0.06-0.25 of the
+  moving weight, so the image lagged while moving; still views keep the narrow kernel. `display.sky_taa_debug 5` = the
+  old weight (A/B). tstab (profile_log_1004j 37 / 38, 1920x1009): Low walk 1.26 -> 1.14, rise 1.39 -> 1.28, the rest and
+  Medium within +-0.03 (`harness_runs/tiers/ts2`). Low stays ~20-30% above Medium on tstab: the 50% scale itself
+  (full-res clouds, clouds at the window's size or 67% did not change that; 67% costs Medium's GPU time).
 - **Point-like lights under the sky TAA (2026-10-04, user snapshots: far city lights blinking "like z-fighting").**
   Two benchmarks, run on BOTH sides of any change here (docs/HARNESS.md): the still-view flicker set
   (`harness_runs/rscale/bench4.satcmd` + `bench4.py`: Irvine horizon from 330 m, SF Bay from 1.2 km, SoCal from 1805
@@ -9708,6 +9714,44 @@ persisted int indices); `kGraphicsPresetNames` and the preset-row UI list it fir
 
 `skyLowResPipeline` (renderScale < 1.0 prepass) is **not** given a lite/minimal variant — both
 those presets force `renderScale = 1.0`, so the prepass never runs for them.
+
+**What the light tiers offer (2026-10-29, workstream C).** Every Watch / Go on Planetarium and Potato was walked
+(`harness_runs/tiers/vis1`); what lands on nothing is disabled with its reason as the tooltip, through
+`SatelliteSim::tierNeedReason(needs)` (`kNeedClouds` = the volumetric clouds, `kNeedAurora` = knockout 32,
+`kNeedEclipse` = not the Potato sky):
+- **Weather** (`weatherUnavailable()` = `cloudsV2Off()`): the HUD button is dimmed, the window shows only a notice and
+  runs nothing (no radar, no storm search), the Settings Weather tab's label is dimmed with a notice on top.
+- **Bookmarks** (`defaultBookmarkNeeds(id)`, by the shipped ids so seeded copies are gated too): Beam-lit Snow,
+  Rainbow, Typhoon need clouds; Solar Storm and The Sun's Fury need the aurora; on Potato the Great Australian
+  Eclipse and the Blood Moon (sat_sky_minimal.frag draws neither the Moon over the Sun nor the Earth's shadow on it).
+  Harness `bookmark go` fails with the same reason.
+- **Sky events**: solar and lunar eclipse Watches on Potato (`skyKindNeeds`; `skyEventWatch` refuses too).
+- **Missions**: the Sun's Fury card's Watch (the storm night is the aurora).
+- **Potato draws the point sources again**: its recordCompute branch now runs `kesslerFillDust` (the CPU fill of
+  kFireBuf: rockets, re-entry fireballs, meteor heads, comet heads, Moon-base glints, the supernova). It skipped it
+  with cloud_march.comp, so those Watches showed an empty sky and Betelgeuse went dark at its supernova. The Gaussians
+  it also lists (plumes, streaks, dust) are not drawn on Potato; launch plume parcels are not built there.
+- Everything else draws: comets (tails included), conjunctions, occultations, Moon glints, meteors (heads),
+  launches (points, + plumes and flames on Planetarium), re-entries, the twilight launch, Starmind; Planetarium draws
+  both eclipses. The validation layer is clean on both tiers through all of them.
+
+**Preset benchmark** (2026-10-29, RTX 3070 Ti, uncapped, one app alone on the GPU; `harness_runs/tiers/bench2`, script
+generator in the workstream-C report). GPU ms at 1600x900 / 1920x1009:
+
+| view | Potato | Planetarium | Low | Medium | High | Ultra |
+|---|---|---|---|---|---|---|
+| day, Alps 50 m | 1.1 / 1.1 | 1.9 / 2.1 | 8.5 / 10.0 | 11.8 / 15.0 | 19.6 / 24.2 | 21.4 / 26.4 |
+| LA night 2 km | 0.9 / 1.3 | 2.1 / 2.8 | 6.4 / 7.9 | 8.7 / 11.2 | 14.6 / 19.3 | 15.9 / 21.5 |
+| orbit 420 km | 1.3 / 1.6 | 2.5 / 2.9 | 6.2 / 7.4 | 11.1 / 14.8 | 20.2 / 26.7 | 24.0 / 30.6 |
+| storm (issue 20261023_230322) | 1.6 / 1.7 | 2.5 / 2.9 | 11.3 / 12.4 | 15.5 / 18.5 | 22.1 / 26.7 | 30.7 / 32.9 |
+| launch Watch | 1.6 / 1.8 | 4.1 / 5.3 | 8.6 / 9.6 | 10.4 / 12.2 | 15.8 / 19.5 | 18.3 / 23.3 |
+| 1 h/s, Shanghai 1 km | 2.4 / 2.6 | 3.6 / 4.2 | 7.3 / 8.4 | 11.5 / 13.9 | 23.7 / 28.8 | 26.4 / 32.8 |
+| Great Comet Watch | 2.0 / 2.4 | 2.9 / 3.6 | 8.9 / 10.1 | 11.6 / 13.7 | 16.6 / 20.0 | 18.3 / 21.8 |
+| 2037 eclipse Watch | 1.0 / 1.1 | 2.1 / 2.6 | 3.6 / 4.1 | 4.4 / 5.5 | 6.7 / 8.4 | 6.8 / 8.6 |
+| supernova Watch | 1.0 / 1.2 | 2.2 / 2.6 | 3.6 / 4.1 | 4.7 / 6.0 | 7.9 / 10.1 | 8.1 / 10.4 |
+
+The main-thread CPU (summed buckets) is 0.5-2 ms everywhere but 1 h/s (~4 ms Potato, ~6-7 ms the rest: Kessler,
+launches, storms). Potato's frame is mostly fixed cost; Planetarium is 2-5 ms; Low is ~0.6-0.75x Medium.
 
 ### All-platform changes that came out of this pass (land on `main`, not tier-gated)
 

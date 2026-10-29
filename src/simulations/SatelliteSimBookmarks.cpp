@@ -270,6 +270,19 @@ void SatelliteSim::bookmarkUpdate(int i)
     bookmarkRequestThumb(b.id);
 }
 
+// The shipped bookmarks that land on nothing in a light graphics mode (2026-10-29): by id, so a user's own copy of a
+// default (seeded into their bookmarks.json) is gated too. tierNeedReason gives the disabled Go's tooltip.
+uint32_t SatelliteSim::defaultBookmarkNeeds(const std::string &id)
+{
+    if (id == "default_beam_snow_antarctica" || id == "default_rainbow_venezuela" || id == "default_typhoon_luzon")
+        return kNeedClouds;
+    if (id == "default_aurora_orbit" || id == "default_suns_fury")
+        return kNeedAurora;
+    if (id == "default_eclipse_solar_2037" || id == "default_blood_moon_anchorage")
+        return kNeedEclipse;
+    return 0u;
+}
+
 void SatelliteSim::bookmarkGo(int i)
 {
     if (i < 0 || i >= (int)bookmarks_.size())
@@ -671,8 +684,9 @@ void SatelliteSim::buildBookmarksWindow(const UIInput &inp, UIRenderer &ui)
                                     {
                                         const bool n = Clay_Hovered();
                                         uiHovRoll(tid.id, n);
-                                        ui.tooltip(inp, n, "Go here", fs(11));
-                                        if (n && inp.lmbPressed)
+                                        const char *offWhy = tierNeedReason(defaultBookmarkNeeds(b.id));
+                                        ui.tooltip(inp, n, offWhy ? offWhy : "Go here", fs(11));
+                                        if (n && inp.lmbPressed && !offWhy)
                                             goIdx = i;
                                         if (thumbs && b.slot >= 0)
                                         {
@@ -690,7 +704,9 @@ void SatelliteSim::buildBookmarksWindow(const UIInput &inp, UIRenderer &ui)
                                                                             .childGap = 4,
                                                                             .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                                     {
-                                        if (uiButton(inp, ui, "BmGo", i, "Go", "Go to this place and moment", false, true, true))
+                                        const char *goWhy = tierNeedReason(defaultBookmarkNeeds(b.id));
+                                        if (uiButton(inp, ui, "BmGo", i, "Go", goWhy ? goWhy : "Go to this place and moment", false,
+                                                     goWhy == nullptr, true))
                                             goIdx = i;
                                         if (uiButton(inp, ui, "BmUpdate", i, "Update", "Replace it with the current view (and its thumbnail)",
                                                      false, true, true))

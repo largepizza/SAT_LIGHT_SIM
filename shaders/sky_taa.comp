@@ -81,6 +81,7 @@ void main() {
     vec3  cur;
     float d;
     float conf = 1.0;                  // how close this frame's nearest sample landed (upscaling)
+    float confWide = 1.0;              // the same at the input pixel's scale (taken in motion: see below)
     float yMax = 0.0, y2nd = 0.0;      // the 3x3's largest and second-largest luma
     float seaA = 1.0;                  // sat_sky.frag's sea marker: 1 not sea, else 0.5 x (1 - storm trail share)
     vec3 m1 = vec3(0.0), m2 = vec3(0.0);
@@ -111,7 +112,13 @@ void main() {
         ivec2 c   = clamp(ivec2(floor(ip)), ivec2(0), isz - 1);
         vec2  jit = vec2(pc.c2e0.w, pc.c2e1.w);
         vec3  acc = vec3(0.0);
-        float ws  = 0.0, wMax = 0.0;
+        float ws  = 0.0, wMax = 0.0, wMaxW = 0.0;
+        // In motion the history is worth little, so this frame's nearest sample should move the pixel whatever its
+        // sub-pixel distance: weighed by the 0.6-OUTPUT-px kernel, at 50% (input px = 2 output px) a pixel whose
+        // nearest sample is ~1-1.4 px off took 0.06-0.25 of the moving weight, so the image lagged and ghosted while
+        // turning or moving (Low; 2026-10-29). confWide is the nearest sample's weight under a kernel 0.6 INPUT px
+        // wide (= the old one at 100%); still views keep conf (the sharp accumulation of the jittered phases).
+        const float sW2 = 2.0 * 0.36 * max(k2o.x * k2o.x, 1.0);
         for (int k = 0; k < 9; ++k) {
             ivec2 q  = clamp(c + ivec2(k % 3 - 1, k / 3 - 1), ivec2(0), isz - 1);
             vec4  cq4 = texelFetch(curColor, q, 0);
@@ -120,6 +127,7 @@ void main() {
             vec2  dO = (vec2(q) + 0.5 + jit - ip) * k2o;      // sample -> pixel, OUTPUT px
             float w  = exp(-dot(dO, dO) * (1.0 / (2.0 * 0.6 * 0.6)));
             acc += cq * w; ws += w; wMax = max(wMax, w);
+            wMaxW = max(wMaxW, exp(-dot(dO, dO) / sW2));
             vec3  y = toYCoCg(cq);
             m1 += y; m2 += y * y; y2nd = max(y2nd, min(yMax, y.x)); yMax = max(yMax, y.x);
             float dq = texelFetch(curDepth, q, 0).r;
@@ -127,6 +135,7 @@ void main() {
         }
         cur  = acc / max(ws, 1e-6);
         conf = wMax;
+        confWide = wMaxW;
         seaA = texelFetch(curColor, c, 0).a;
         dynC = seaA > 0.85 && seaA < 0.95;
         d    = texelFetch(curDepth, c, 0).r;
@@ -290,7 +299,9 @@ void main() {
             // jitter cycle. Frozen, the history averages the phases to the facet's coverage of the pixel.
             const bool simRuns = pc.eyeDelta.w < 1.1 || (pc.eyeDelta.w > 1.5 && pc.eyeDelta.w < 2.5);
             if (spark && simRuns) w = max(w, 0.9);
-            w *= conf;   // upscaling: a sample far from this pixel moves it less (1 at 100%)
+            // upscaling: a sample far from this pixel moves it less (1 at 100%); in motion by the input-pixel kernel
+            // (confWide, above). sky_taa_debug 5 = conf alone (the A/B).
+            w *= (dbg == 5) ? conf : mix(conf, max(conf, confWide), ramp);
             if (dbg == 4) w = 0.0;
             dPar = par; dParF = parF; dMv = mv;
             res = fromYCoCg(mix(h, toYCoCg(cur), w));

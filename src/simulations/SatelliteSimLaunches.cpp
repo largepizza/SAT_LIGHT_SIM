@@ -7371,7 +7371,8 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             B.parcelsBuilt = false;
             B.parcels.clear();
         }
-        if (launchPlumeGain <= 0.0f || tau < -120.0 || (tau < 0.0 && B.parcelsBuilt))
+        // Potato draws no plume (no cloud composite): no parcels either (2026-10-29).
+        if (launchPlumeGain <= 0.0f || potatoSkyOn() || tau < -120.0 || (tau < 0.0 && B.parcelsBuilt))
             continue;
         struct PlumeTimer
         {

@@ -833,7 +833,10 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                     {
                         if (kesslerEnabled)
                         {
-                            if (uiButton(inp, ui, "MsFuryGo", 1, "Watch", "The storm night: the aurora over Monument Valley"))
+                            // The storm night is the aurora: off on Planetarium / Potato (tierNeedReason).
+                            const char *why = tierNeedReason(kNeedAurora);
+                            if (uiButton(inp, ui, "MsFuryGo", 1, "Watch", why ? why : "The storm night: the aurora over Monument Valley",
+                                         false, why == nullptr))
                                 furyGo = 1;
                         }
                         else if (uiButton(inp, ui, "MsFuryCtl", 0, "Settings", "The scenario's switch (Settings > Launches)"))
