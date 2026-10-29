@@ -6,6 +6,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -737,6 +738,7 @@ void World::reset()
     rosterDecay.assign(roster.size(), kNever);
     pool.clear();
     events.clear();
+    events.setParams(s.epoch, s.stepS, s.LcMin, s.LcRecord);
     poolChanges.clear();
     poolGen.clear();
     poolFree.clear();
@@ -1478,8 +1480,18 @@ void World::flushDeposits()
     }
     if (!gridIdx.empty() && grid.cnt.empty())
         grid.clear();
-    std::vector<DeathBucket *> bks;
-    std::vector<const std::vector<size_t> *> bkIdx;
+    // (2026-10-29) Every target (the grid, each death bucket) with many deposits is split over threads into private
+    // partial arrays, summed after: integer sums, so the result is the same in any order. Each bucket on one thread (the
+    // old split) left a replay's busy windows serial: deposits were ~40% of a jump's apply time.
+    struct Target
+    {
+        std::vector<int64_t> *c, *m;
+        const std::vector<size_t> *idx;
+        size_t parts, part0;
+    };
+    std::vector<Target> tg;
+    if (!gridIdx.empty())
+        tg.push_back({&grid.cnt, &grid.massG, &gridIdx, 1, 0});
     for (auto &kv : byKey)
     {
         DeathBucket &bk = deathBuckets[kv.first];
@@ -1488,50 +1500,62 @@ void World::flushDeposits()
             bk.cnt.assign((size_t)DebrisGrid::NR * DebrisGrid::NL * DebrisGrid::NH, 0);
             bk.massG.assign((size_t)DebrisGrid::NR * DebrisGrid::NL, 0);
         }
-        bks.push_back(&bk);
-        bkIdx.push_back(&kv.second);
+        tg.push_back({&bk.cnt, &bk.massG, &kv.second, 1, 0});
     }
-    const size_t nGridParts = gridIdx.size() < 2048 ? 1 : 8;
-    std::vector<DeathBucket> parts(nGridParts > 1 ? nGridParts : 0);
-    const size_t tasks = nGridParts + bks.size();
-    parallelChunks(tasks, [&](size_t a, size_t b) {
+    size_t nParts = 0;
+    for (Target &t : tg)
+    {
+        t.parts = std::clamp<size_t>(t.idx->size() / 4096, 1, 8); // (a part zeroes and sums 0.7 MB: worth it from ~4096 deposits)
+        t.part0 = nParts;
+        nParts += t.parts;
+    }
+    std::vector<DeathBucket> parts(nParts);
+    std::vector<std::pair<size_t, size_t>> tasks; // (target, part)
+    for (size_t k = 0; k < tg.size(); ++k)
+        for (size_t q = 0; q < tg[k].parts; ++q)
+            tasks.push_back({k, q});
+    parallelChunks(tasks.size(), [&](size_t a, size_t b) {
         for (size_t t = a; t < b; ++t)
         {
-            if (t < nGridParts)
+            const Target &T = tg[tasks[t].first];
+            const size_t q = tasks[t].second, n = T.idx->size();
+            const size_t i0 = q * n / T.parts, i1 = (q + 1) * n / T.parts;
+            std::vector<int64_t> *c = T.c, *m = T.m;
+            if (T.parts > 1)
             {
-                const size_t i0 = t * gridIdx.size() / nGridParts, i1 = (t + 1) * gridIdx.size() / nGridParts;
-                std::vector<int64_t> *c = &grid.cnt, *m = &grid.massG;
-                if (nGridParts > 1)
-                {
-                    parts[t].cnt.assign(grid.cnt.size(), 0);
-                    parts[t].massG.assign(grid.massG.size(), 0);
-                    c = &parts[t].cnt;
-                    m = &parts[t].massG;
-                }
-                for (size_t q = i0; q < i1; ++q)
-                {
-                    const Deposit &d = depQueue[gridIdx[q]];
-                    grid.depositInto(*c, *m, d.a, d.e, d.i, d.argp, d.w, d.m, d.seed);
-                }
+                DeathBucket &pt = parts[T.part0 + q];
+                pt.cnt.assign(T.c->size(), 0);
+                pt.massG.assign(T.m->size(), 0);
+                c = &pt.cnt;
+                m = &pt.massG;
             }
-            else
+            for (size_t i = i0; i < i1; ++i)
             {
-                const size_t k = t - nGridParts;
-                for (size_t i : *bkIdx[k])
-                {
-                    const Deposit &d = depQueue[i];
-                    grid.depositInto(bks[k]->cnt, bks[k]->massG, d.a, d.e, d.i, d.argp, d.w, d.m, d.seed);
-                }
+                const Deposit &d = depQueue[(*T.idx)[i]];
+                grid.depositInto(*c, *m, d.a, d.e, d.i, d.argp, d.w, d.m, d.seed);
             }
         }
     }, 2);
-    for (const DeathBucket &pt : parts)
-    {
-        for (size_t i = 0; i < grid.cnt.size(); ++i)
-            grid.cnt[i] += pt.cnt[i];
-        for (size_t i = 0; i < grid.massG.size(); ++i)
-            grid.massG[i] += pt.massG[i];
-    }
+    std::vector<size_t> sumT;
+    for (size_t k = 0; k < tg.size(); ++k)
+        if (tg[k].parts > 1)
+            sumT.push_back(k);
+    parallelChunks(sumT.size(), [&](size_t a, size_t b) {
+        for (size_t z = a; z < b; ++z)
+        {
+            const Target &T = tg[sumT[z]];
+            for (size_t q = 0; q < T.parts; ++q)
+            {
+                const DeathBucket &pt = parts[T.part0 + q];
+                int64_t *dc = T.c->data(), *dm = T.m->data();
+                const int64_t *sc = pt.cnt.data(), *sm = pt.massG.data();
+                for (size_t i = 0, n = T.c->size(); i < n; ++i)
+                    dc[i] += sc[i];
+                for (size_t i = 0, n = T.m->size(); i < n; ++i)
+                    dm[i] += sm[i];
+            }
+        }
+    }, 2);
     depQueue.clear();
     profFlush += profClock() - q0;
 }
@@ -1957,13 +1981,17 @@ static uint64_t gridSeedOf(uint64_t stepK) { return mix64(0x6121D5ull ^ stepK); 
 // A grid hit's projectile mass: drawn from the small population's size distribution (most hits are by ~10-cm,
 // tens-of-gram pieces), not the cell's mean mass: with the mean (~0.5 kg) nearly every hit on a satellite was
 // catastrophic. A function of (step, ref) alone.
-static float gridProjectileMass(const WorldSettings &s, uint64_t gseed, uint32_t ref)
+static float gridProjectileMassL(double lcMin, double lcRecord, uint64_t gseed, uint32_t ref)
 {
-    const double b = 1.71, lo = s.LcMin, hi = std::max(s.LcRecord, lo * 1.5);
+    const double b = 1.71, lo = lcMin, hi = std::max(lcRecord, lo * 1.5);
     const double u = hash01(gseed, ref, 15);
     const double Lc = std::pow(std::pow(lo, -b) - u * (std::pow(lo, -b) - std::pow(hi, -b)), -1.0 / b);
     const double chi = sampleChi(Lc, gseed ^ (uint64_t)ref, 16);
     return (float)(0.556945 * std::pow(Lc, 2.0047077) / std::pow(10.0, chi));
+}
+static float gridProjectileMass(const WorldSettings &s, uint64_t gseed, uint32_t ref)
+{
+    return gridProjectileMassL(s.LcMin, s.LcRecord, gseed, ref);
 }
 
 Event engineEventOf(double t0, double t1, uint64_t stepK, uint32_t a, uint32_t b)
@@ -1998,6 +2026,490 @@ uint32_t gridHitsCheck(const Event *evs, size_t n)
                 check = (check ^ ((w >> (8 * q)) & 255u)) * 16777619u;
     }
     return check;
+}
+
+// ── The event log (2026-10-29: compact cores, droppable detail; Kessler.h EventLog) ──────────────────────────────
+EventLog::EventLog()
+    : cores_(new Core *[kMaxSegs]()), details_(new std::atomic<Detail *>[kMaxSegs]), spill_(new Event *[kMaxSegs]())
+{
+    for (size_t s = 0; s < kMaxSegs; ++s)
+        details_[s].store(nullptr, std::memory_order_relaxed);
+}
+
+EventLog::~EventLog()
+{
+    resize(0);
+    reclaim();
+}
+
+void EventLog::setParams(double epoch, double stepS, double lcMin, double lcRecord)
+{
+    epoch_ = epoch;
+    stepS_ = stepS;
+    lcMin_ = lcMin;
+    lcRecord_ = lcRecord;
+}
+
+Event EventLog::rebuild(const Core &c, bool withMass) const
+{
+    const double t0 = epoch_ + (double)c.k * stepS_;
+    const bool grid = (c.fl & kGrid) != 0;
+    Event r = engineEventOf(t0, t0 + stepS_, (uint64_t)(int64_t)c.k, c.a, grid ? kSmallRef : c.bv);
+    r.kind = (uint8_t)(c.kc & 7u);
+    r.origin = (uint8_t)((c.kc >> 3) & 3u);
+    r.catastrophic = (uint8_t)((c.kc >> 5) & 1u);
+    r.nRec = c.nRec;
+    std::memcpy(&r.nSmall, &c.nSmall, 4);
+    if (grid)
+    {
+        std::memcpy(&r.vRel, &c.bv, 4);
+        if (withMass)
+            r.mProj = gridProjectileMassL(lcMin_, lcRecord_, gridSeedOf((uint64_t)(int64_t)c.k), c.a);
+    }
+    return r;
+}
+
+Event EventLog::operator[](size_t i) const
+{
+    const Core &c = core(i);
+    if (c.fl & kSpill)
+        return spill(i);
+    Event r = rebuild(c, true);
+    if (const Detail *d = details_[i >> kBits].load(std::memory_order_acquire))
+    {
+        const Detail &x = d[i & (kSeg - 1)];
+        if (!(c.fl & kGrid))
+            r.vRel = x.vRel;
+        r.nReal = x.nReal;
+        r.dustKg = x.dustKg;
+        r.dvSmall = x.dvSmall;
+        for (int q = 0; q < 3; ++q)
+        {
+            r.pos[q] = x.pos[q];
+            r.vel[q] = x.vel[q];
+        }
+    }
+    return r;
+}
+
+double EventLog::tOf(size_t i) const
+{
+    const Core &c = core(i);
+    if (c.fl & kSpill)
+        return spill(i).t;
+    const double t0 = epoch_ + (double)c.k * stepS_;
+    const uint32_t b = (c.fl & kGrid) ? kSmallRef : c.bv;
+    const uint32_t seed = (uint32_t)mix64(((uint64_t)c.a << 32 | b) ^ ((uint64_t)(int64_t)c.k * 0x9E3779B97F4A7C15ull));
+    return t0 + stepS_ * hash01(seed, 0x7135ull, 91); // (engineEventOf's time)
+}
+
+double EventLog::tUpper(size_t i) const
+{
+    const Core &c = core(i);
+    if (c.fl & kSpill)
+        return spill(i).t;
+    return epoch_ + (double)c.k * stepS_ + stepS_;
+}
+
+double EventLog::tLower(size_t i) const
+{
+    const Core &c = core(i);
+    if (c.fl & kSpill)
+        return spill(i).t;
+    return epoch_ + (double)c.k * stepS_;
+}
+
+bool EventLog::hasDetail(size_t i) const
+{
+    if (core(i).fl & kSpill)
+        return true;
+    return details_[i >> kBits].load(std::memory_order_acquire) != nullptr;
+}
+
+void EventLog::push_back(const Event &e)
+{
+    const size_t s = n_ >> kBits, o = n_ & (kSeg - 1);
+    if (!cores_[s])
+    {
+        cores_[s] = new Core[kSeg];
+        details_[s].store(new Detail[kSeg], std::memory_order_release);
+        if (segMaxT_.size() <= s)
+            segMaxT_.resize(s + 1, -1e300);
+        segMaxT_[s] = -1e300;
+    }
+    segMaxT_[s] = std::max(segMaxT_[s], e.t);
+    Core c;
+    c.a = e.a;
+    c.nRec = (uint16_t)std::min<uint32_t>(e.nRec, 0xFFFFu);
+    c.kc = (uint8_t)((e.kind & 7u) | ((e.origin & 3u) << 3) | ((e.catastrophic & 1u) << 5));
+    std::memcpy(&c.nSmall, &e.nSmall, 4);
+    bool compact = false;
+    // A catastrophic pair collision stays whole: the tracker's significant breakups (and their Watch) at any age.
+    if (e.origin == ORIGIN_ENGINE && e.kind == EV_COLLISION && e.pad == 0 && e.nRec <= 0xFFFFu && e.catastrophic <= 1 &&
+        !(e.catastrophic && e.b != kSmallRef) && e.a != kNoRef && e.b != kNoRef)
+    {
+        const double kd = std::floor((e.t - epoch_) / stepS_);
+        if (std::fabs(kd) < 2e9)
+        {
+            c.k = (int32_t)kd;
+            if (e.b == kSmallRef)
+            {
+                c.fl = kCompact | kGrid;
+                std::memcpy(&c.bv, &e.vRel, 4);
+            }
+            else
+            {
+                c.fl = kCompact;
+                c.bv = e.b;
+            }
+            // (a grid hit's projectile mass is not recomputed here: every grid hit's comes from gridProjectileMass of its
+            // step and target, the function the rebuild calls, and the step is checked through the time; the pow()s
+            // were ~2 s of a jump's serial apply)
+            Event r = rebuild(c, false);
+            if (c.fl & kGrid)
+                r.mProj = e.mProj;
+            else
+                r.vRel = e.vRel;
+            r.nReal = e.nReal;
+            r.dustKg = e.dustKg;
+            r.dvSmall = e.dvSmall;
+            for (int q = 0; q < 3; ++q)
+            {
+                r.pos[q] = e.pos[q];
+                r.vel[q] = e.vel[q];
+            }
+            compact = std::memcmp(&r, &e, sizeof(Event)) == 0;
+        }
+    }
+    if (!compact)
+    {
+        c.fl = kSpill;
+        c.bv = e.b;
+        const size_t q = nSpill_;
+        if (!spill_[q >> kBits])
+            spill_[q >> kBits] = new Event[kSeg];
+        spill_[q >> kBits][q & (kSeg - 1)] = e;
+        c.k = (int32_t)q;
+        ++nSpill_;
+    }
+    cores_[s][o] = c;
+    if (Detail *d = details_[s].load(std::memory_order_relaxed))
+    {
+        Detail &x = d[o];
+        x.vRel = e.vRel;
+        x.nReal = e.nReal;
+        x.dustKg = e.dustKg;
+        x.dvSmall = e.dvSmall;
+        for (int q = 0; q < 3; ++q)
+        {
+            x.pos[q] = e.pos[q];
+            x.vel[q] = e.vel[q];
+        }
+    }
+    ++n_;
+}
+
+void EventLog::resize(size_t n)
+{
+    while (n_ < n)
+        push_back(Event{});
+    if (n >= n_)
+        return;
+    // The spill store's count: the last spilled event that stays, + 1.
+    size_t ns = 0;
+    for (size_t i = n; i-- > 0;)
+        if (core(i).fl & kSpill)
+        {
+            ns = (size_t)core(i).k + 1;
+            break;
+        }
+    n_ = n;
+    nSpill_ = ns;
+    for (size_t s = (n_ + kSeg - 1) >> kBits; s < kMaxSegs && cores_[s]; ++s)
+    {
+        delete[] cores_[s];
+        cores_[s] = nullptr;
+        delete[] details_[s].exchange(nullptr);
+        if (s < segMaxT_.size())
+            segMaxT_[s] = -1e300;
+    }
+    for (size_t s = (nSpill_ + kSeg - 1) >> kBits; s < kMaxSegs && spill_[s]; ++s)
+    {
+        delete[] spill_[s];
+        spill_[s] = nullptr;
+    }
+    if (n_ == 0)
+    {
+        dropSeg_ = 0;
+        droppedUntil_ = -1e300;
+    }
+    else if (dropSeg_ > (n_ >> kBits))
+        dropSeg_ = n_ >> kBits; // (the drop never reaches past the kept checkpoints)
+}
+
+double EventLog::dropDetails(size_t before, double tBefore)
+{
+    while (dropSeg_ < kMaxSegs && (dropSeg_ + 1) * kSeg <= std::min(before, n_) && dropSeg_ < segMaxT_.size() &&
+           segMaxT_[dropSeg_] < tBefore)
+    {
+        if (Detail *d = details_[dropSeg_].exchange(nullptr))
+        {
+            std::lock_guard<std::mutex> lk(retireMx_);
+            retired_.push_back(d);
+        }
+        droppedUntil_ = std::max(droppedUntil_, segMaxT_[dropSeg_]);
+        ++dropSeg_;
+    }
+    return droppedUntil_;
+}
+
+void EventLog::reclaim()
+{
+    std::vector<Detail *> r;
+    {
+        std::lock_guard<std::mutex> lk(retireMx_);
+        r.swap(retired_);
+    }
+    for (Detail *d : r)
+        delete[] d;
+}
+
+size_t EventLog::detailSegments() const
+{
+    size_t k = 0;
+    for (size_t s = 0; s < kMaxSegs && cores_[s]; ++s)
+        k += details_[s].load(std::memory_order_relaxed) != nullptr;
+    return k;
+}
+
+size_t EventLog::bytes() const
+{
+    size_t segs = 0;
+    for (size_t s = 0; s < kMaxSegs && cores_[s]; ++s)
+        ++segs;
+    return segs * kSeg * sizeof(Core) + detailSegments() * kSeg * sizeof(Detail) +
+           ((nSpill_ + kSeg - 1) >> kBits) * kSeg * sizeof(Event) +
+           kMaxSegs * (2 * sizeof(void *) + sizeof(std::atomic<Detail *>)) + segMaxT_.capacity() * sizeof(double);
+}
+
+// ── Snapshots (2026-10-29): the world's state at its frontier, written and read whole ─────────────────────────────
+namespace
+{
+struct SnapW
+{
+    std::FILE *f;
+    bool ok = true;
+    void raw(const void *p, size_t n)
+    {
+        if (ok && n > 0 && std::fwrite(p, 1, n, f) != n)
+            ok = false;
+    }
+    template <class T> void pod(const T &v) { raw(&v, sizeof(T)); }
+    template <class T> void vec(const std::vector<T> &v)
+    {
+        const uint64_t n = v.size();
+        pod(n);
+        raw(v.data(), n * sizeof(T));
+    }
+};
+struct SnapR
+{
+    std::FILE *f;
+    bool ok = true;
+    void raw(void *p, size_t n)
+    {
+        if (ok && n > 0 && std::fread(p, 1, n, f) != n)
+            ok = false;
+    }
+    template <class T> void pod(T &v) { raw(&v, sizeof(T)); }
+    template <class T> void vec(std::vector<T> &v, uint64_t maxN = (uint64_t)1 << 34)
+    {
+        uint64_t n = 0;
+        pod(n);
+        if (!ok || n > maxN)
+        {
+            ok = false;
+            return;
+        }
+        v.resize((size_t)n);
+        raw(v.data(), (size_t)n * sizeof(T));
+    }
+};
+constexpr uint32_t kSnapWorldMagic = 0x57534B53u; // "SKSW"
+constexpr uint32_t kSnapWorldVersion = 1;
+} // namespace
+
+bool EventLog::save(std::FILE *f) const
+{
+    SnapW w{f};
+    const uint64_t n = n_, ns = nSpill_, ds = dropSeg_;
+    w.pod(n);
+    w.pod(ns);
+    w.pod(ds);
+    w.pod(droppedUntil_);
+    w.vec(segMaxT_);
+    for (size_t s = 0; s * kSeg < n_; ++s)
+    {
+        const size_t cnt = std::min(kSeg, n_ - s * kSeg);
+        w.raw(cores_[s], cnt * sizeof(Core));
+        const Detail *d = details_[s].load(std::memory_order_acquire);
+        const uint8_t has = d ? 1 : 0;
+        w.pod(has);
+        if (d)
+            w.raw(d, cnt * sizeof(Detail));
+    }
+    for (size_t s = 0; s * kSeg < nSpill_; ++s)
+        w.raw(spill_[s], std::min(kSeg, nSpill_ - s * kSeg) * sizeof(Event));
+    return w.ok;
+}
+
+bool EventLog::load(std::FILE *f)
+{
+    resize(0);
+    reclaim();
+    SnapR r{f};
+    uint64_t n = 0, ns = 0, ds = 0;
+    r.pod(n);
+    r.pod(ns);
+    r.pod(ds);
+    r.pod(droppedUntil_);
+    r.vec(segMaxT_);
+    if (!r.ok || n > kSeg * kMaxSegs || ns > n || ds > kMaxSegs)
+        return false;
+    for (size_t s = 0; s * kSeg < n && r.ok; ++s)
+    {
+        const size_t cnt = std::min<size_t>(kSeg, (size_t)n - s * kSeg);
+        cores_[s] = new Core[kSeg];
+        r.raw(cores_[s], cnt * sizeof(Core));
+        uint8_t has = 0;
+        r.pod(has);
+        if (has)
+        {
+            Detail *d = new Detail[kSeg];
+            r.raw(d, cnt * sizeof(Detail));
+            details_[s].store(d, std::memory_order_release);
+        }
+    }
+    for (size_t s = 0; s * kSeg < ns && r.ok; ++s)
+    {
+        spill_[s] = new Event[kSeg];
+        r.raw(spill_[s], std::min<size_t>(kSeg, (size_t)ns - s * kSeg) * sizeof(Event));
+    }
+    n_ = (size_t)n;
+    nSpill_ = (size_t)ns;
+    dropSeg_ = (size_t)ds;
+    if (segMaxT_.size() < ((n_ + kSeg - 1) >> kBits))
+        segMaxT_.resize((n_ + kSeg - 1) >> kBits, -1e300);
+    if (!r.ok)
+        resize(0);
+    return r.ok;
+}
+
+bool World::saveState(std::FILE *f) const
+{
+    SnapW w{f};
+    w.pod(kSnapWorldMagic);
+    w.pod(kSnapWorldVersion);
+    const uint64_t nRoster = roster.size(), poolCap = s.poolCapacity;
+    w.pod(nRoster);
+    w.pod(poolCap);
+    w.pod(s.epoch);
+    w.pod(s.startT);
+    w.pod(frontier);
+    w.pod(recAdded);
+    w.pod(smallAlive);
+    w.pod(smallStreamsMade);
+    w.pod(sampleCount);
+    w.vec(rosterDead);
+    w.vec(rosterEnd);
+    w.vec(rosterDecay);
+    w.vec(pool);
+    w.vec(poolGen);
+    w.vec(poolFree);
+    w.vec(releaseHeap);
+    w.vec(grid.cnt);
+    w.vec(grid.massG);
+    const uint64_t nb = deathBuckets.size();
+    w.pod(nb);
+    for (const auto &kv : deathBuckets)
+    {
+        w.pod(kv.first);
+        w.vec(kv.second.cnt);
+        w.vec(kv.second.massG);
+    }
+    if (!w.ok)
+        return false;
+    return events.save(f);
+}
+
+bool World::loadState(std::FILE *f, std::string &why)
+{
+    SnapR r{f};
+    uint32_t magic = 0, version = 0;
+    uint64_t nRoster = 0, poolCap = 0;
+    double epoch = 0.0, startT = 0.0;
+    r.pod(magic);
+    r.pod(version);
+    if (!r.ok || magic != kSnapWorldMagic || version != kSnapWorldVersion)
+    {
+        why = "not a world snapshot of this version";
+        return false;
+    }
+    r.pod(nRoster);
+    r.pod(poolCap);
+    r.pod(epoch);
+    r.pod(startT);
+    if (!r.ok || nRoster != roster.size() || poolCap != s.poolCapacity || epoch != s.epoch || startT != s.startT)
+    {
+        why = "another world (roster, capacity or start)";
+        return false;
+    }
+    r.pod(frontier);
+    r.pod(recAdded);
+    r.pod(smallAlive);
+    r.pod(smallStreamsMade);
+    r.pod(sampleCount);
+    r.vec(rosterDead, nRoster);
+    r.vec(rosterEnd, nRoster);
+    r.vec(rosterDecay, nRoster);
+    r.vec(pool, poolCap);
+    r.vec(poolGen, poolCap);
+    r.vec(poolFree, poolCap);
+    r.vec(releaseHeap);
+    r.vec(grid.cnt);
+    r.vec(grid.massG);
+    uint64_t nb = 0;
+    r.pod(nb);
+    deathBuckets.clear();
+    for (uint64_t k = 0; k < nb && r.ok; ++k)
+    {
+        int32_t key = 0;
+        r.pod(key);
+        DeathBucket &bk = deathBuckets[key];
+        r.vec(bk.cnt);
+        r.vec(bk.massG);
+    }
+    if (!r.ok || rosterDead.size() != nRoster || rosterEnd.size() != nRoster || rosterDecay.size() != nRoster ||
+        poolGen.size() != pool.size())
+    {
+        why = "truncated or inconsistent";
+        return false;
+    }
+    if (!events.load(f))
+    {
+        why = "its event log";
+        return false;
+    }
+    poolChanges.clear();
+    rosterChanged.clear();
+    smallStreams.clear();
+    journal.clear();
+    journalOff = 0;
+    journalOn = false;
+    checkpoints.clear();
+    poolTouch.clear();
+    rosterTouch.clear();
+    return true;
 }
 
 uint32_t World::fillGridHits(Event *evs, size_t n, double t0, double t1)
@@ -2365,34 +2877,28 @@ bool sameBits(const void *a, const void *b, size_t n) { return std::memcmp(a, b,
 bool canonLess(const Event &x, const Event &y) { return x.t != y.t ? x.t < y.t : (x.a != y.a ? x.a < y.a : x.b < y.b); }
 } // namespace
 
-bool packEngineEvents(const World &w, const EventLog &events, std::vector<uint8_t> &out)
+bool packEngineEvents(const World &w, const EventLog &events, std::vector<uint8_t> &out, double tBefore)
 {
     std::vector<uint8_t> head, grid, pair, raw;
-    std::vector<const Event *> eng;
-    eng.reserve(events.size());
-    for (const Event &e : events)
-        if (e.origin == ORIGIN_ENGINE)
-            eng.push_back(&e);
-    uint64_t nSteps = 0;
+    uint64_t nSteps = 0, nEng = 0;
     int64_t prevK = 0;
     std::vector<uint32_t> ga;
     std::vector<std::pair<uint32_t, uint32_t>> pb;
-    std::vector<Event> tmp;
-    for (size_t i = 0; i < eng.size();)
-    {
-        const int64_t K = w.stepIndex(w.stepStart(eng[i]->t));
-        size_t j = i;
-        while (j < eng.size() && w.stepIndex(w.stepStart(eng[j]->t)) == K)
-            ++j;
+    // (2026-10-29) Streamed one step's run at a time (the log's events are rebuilt on read: a list of every engine event
+    // held ~2.4 GB of copies at day 1100). A run = the consecutive engine events (in log order) of one step.
+    std::vector<Event> run;
+    auto flush = [&]() {
+        if (run.empty())
+            return;
+        const int64_t K = w.stepIndex(w.stepStart(run[0].t));
         const double t0 = w.s.epoch + (double)K * w.s.stepS, t1 = t0 + w.s.stepS;
         const uint64_t gseed = gridSeedOf((uint64_t)K);
         bool ok = true;
         ga.clear();
         pb.clear();
-        tmp.clear();
-        for (size_t k = i; k < j && ok; ++k)
+        for (size_t k = 0; k < run.size() && ok; ++k)
         {
-            const Event &e = *eng[k];
+            const Event &e = run[k];
             if (e.kind != EV_COLLISION || e.a == kNoRef || e.b == kNoRef)
             {
                 ok = false;
@@ -2400,7 +2906,7 @@ bool packEngineEvents(const World &w, const EventLog &events, std::vector<uint8_
             }
             const Event r = engineEventOf(t0, t1, (uint64_t)K, e.a, e.b);
             ok = sameBits(&r.t, &e.t, 8) && r.seed == e.seed && sameBits(&r.sampleDt, &e.sampleDt, 4) &&
-                 (k == i || canonLess(*eng[k - 1], e));
+                 (k == 0 || canonLess(run[k - 1], e));
             if (ok && e.b == kSmallRef)
             {
                 const float m = gridProjectileMass(w.s, gseed, e.a);
@@ -2409,7 +2915,6 @@ bool packEngineEvents(const World &w, const EventLog &events, std::vector<uint8_
             }
             else if (ok)
                 pb.push_back({e.a, e.b});
-            tmp.push_back(e);
         }
         putVar(head, zig(K - prevK));
         prevK = K;
@@ -2422,7 +2927,7 @@ bool packEngineEvents(const World &w, const EventLog &events, std::vector<uint8_
             putVar(head, 0);
             if (!ga.empty())
             {
-                const uint32_t c = gridHitsCheck(tmp.data(), tmp.size());
+                const uint32_t c = gridHitsCheck(run.data(), run.size());
                 for (int q = 0; q < 4; ++q)
                     head.push_back((uint8_t)(c >> (8 * q)));
                 const int k = riceK(ga);
@@ -2448,23 +2953,40 @@ bool packEngineEvents(const World &w, const EventLog &events, std::vector<uint8_
         {
             putVar(head, 0);
             putVar(head, 0);
-            putVar(head, j - i);
-            for (size_t k = i; k < j; ++k)
+            putVar(head, run.size());
+            for (const Event &e : run)
             {
-                const uint8_t *p = (const uint8_t *)eng[k];
+                const uint8_t *p = (const uint8_t *)&e;
                 raw.insert(raw.end(), p, p + sizeof(Event));
             }
         }
         ++nSteps;
-        i = j;
+        nEng += run.size();
+        run.clear();
+    };
+    int64_t runK = 0;
+    for (size_t i = 0; i < events.size(); ++i)
+    {
+        const EventLog::Core &c = events.core(i);
+        if (((c.kc >> 3) & 3u) != ORIGIN_ENGINE)
+            continue;
+        const Event e = events[i];
+        if (e.t >= tBefore)
+            continue;
+        const int64_t K = w.stepIndex(w.stepStart(e.t));
+        if (!run.empty() && K != runK)
+            flush();
+        runK = K;
+        run.push_back(e);
     }
+    flush();
     out.clear();
     auto u64 = [&](uint64_t v) {
         for (int q = 0; q < 8; ++q)
             out.push_back((uint8_t)(v >> (8 * q)));
     };
     u64(nSteps);
-    u64(eng.size());
+    u64(nEng);
     u64(head.size());
     u64(grid.size());
     u64(pair.size());

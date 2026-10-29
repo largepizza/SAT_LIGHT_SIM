@@ -9,9 +9,12 @@
 
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <deque>
 #include <functional>
+#include <atomic>
 #include <map>
+#include <mutex>
 #include <memory>
 #include <string>
 #include <vector>
@@ -226,52 +229,82 @@ struct Event
     float vel[3] = {0, 0, 0};
 };
 
-// The world's applied events (2026-10-28, the memory audit): segments of 65536 behind a FIXED table of segment pointers,
-// so growing never moves an element and never reallocates the table. The main thread reads the same storage (its
-// kEvents view, up to the count the worker has published under its mutex): one copy of the event log instead of two
-// (~88 B an event, ~31M events by 3 years: 2.7 GB saved). Elements are never written after push_back; shrinking
-// (a rollback, a reset) happens only with the worker stopped and the view's count lowered with it.
+// The world's applied events. Segments of 65536 behind FIXED tables of segment pointers, so growing never moves an
+// element (the main thread's kEvents view reads the same storage, up to the count the worker has published under its
+// mutex; elements are never written after push_back; shrinking only with the worker stopped).
+//
+// (2026-10-29, workstream A: compact) An event is stored as a 20-byte CORE, plus 40 bytes of DETAIL that are dropped
+// once the event is old. An engine collision's time, seed and sampleDt are rebuilt from its step index and pair
+// (engineEventOf), a grid hit's projectile mass from (step, target) (gridProjectileMass), its speed sits in the core in
+// b's place. Everything else (a scripted or player event, a catastrophic pair collision: the tracker's "significant
+// breakups", anything that does not rebuild bit for bit) is SPILLED: kept whole. push_back verifies the rebuild with a
+// memcmp of the whole Event, so operator[] returns exactly what was pushed while the detail is held.
+// The detail (nReal, dustKg, dvSmall, where and how fast; a pair's vRel) is what the dust clouds, the tracker and the
+// harness read near the shown time; dropDetails() lets it go for segments older than the player's time by days (the
+// mirror's own history window: going back there replays the cascade, which rebuilds it). Without its detail an event
+// reads those fields as 0 (hasDetail() says so). ~80 B -> ~20 B an event: 31M events by day 1100, 2.4 GB -> ~0.65 GB.
 class EventLog
 {
   public:
     static constexpr unsigned kBits = 16;
     static constexpr size_t kSeg = size_t(1) << kBits;
     static constexpr size_t kMaxSegs = 16384; // 1G events
-    EventLog() : segs_(new Event *[kMaxSegs]()) {}
-    ~EventLog() { clear(); }
+    struct Core
+    {
+        uint32_t a = 0;
+        uint32_t bv = 0;    // b; a grid hit: its vRel's bits
+        int32_t k = 0;      // a compact engine event: its step index; spilled: its index in the spill store
+        uint32_t nSmall = 0; // bits
+        uint16_t nRec = 0;
+        uint8_t kc = 0;     // kind | origin << 3 | catastrophic << 5
+        uint8_t fl = 0;     // kCompact | kGrid | kSpill
+    };
+    static constexpr uint8_t kCompact = 1, kGrid = 2, kSpill = 4;
+    struct Detail
+    {
+        float vRel = 0, nReal = 0, dustKg = 0, dvSmall = 0;
+        float pos[3] = {0, 0, 0}, vel[3] = {0, 0, 0};
+    };
+    static_assert(sizeof(Core) == 20, "EventLog::Core packing");
+
+    EventLog();
+    ~EventLog();
     EventLog(const EventLog &) = delete;
     EventLog &operator=(const EventLog &) = delete;
+    // The world's step grid and the grid hits' mass law (set by World::reset; needed to rebuild events).
+    void setParams(double epoch, double stepS, double lcMin, double lcRecord);
     size_t size() const { return n_; }
     bool empty() const { return n_ == 0; }
-    const Event &operator[](size_t i) const { return segs_[i >> kBits][i & (kSeg - 1)]; }
-    void push_back(const Event &e)
-    {
-        const size_t s = n_ >> kBits;
-        if (!segs_[s])
-            segs_[s] = new Event[kSeg];
-        segs_[s][n_ & (kSeg - 1)] = e;
-        ++n_;
-    }
-    // Shrinks (the segments past it are freed), or grows with default events.
-    void resize(size_t n)
-    {
-        while (n_ < n)
-            push_back(Event{});
-        n_ = n;
-        for (size_t s = (n_ + kSeg - 1) >> kBits; s < kMaxSegs && segs_[s]; ++s)
-        {
-            delete[] segs_[s];
-            segs_[s] = nullptr;
-        }
-    }
+    Event operator[](size_t i) const;
+    const Core &core(size_t i) const { return cores_[i >> kBits][i & (kSeg - 1)]; }
+    bool spilled(size_t i) const { return (core(i).fl & kSpill) != 0; }
+    const Event &spill(size_t i) const { const uint32_t q = (uint32_t)core(i).k; return spill_[q >> kBits][q & (kSeg - 1)]; }
+    // An event's time, exact (a compact one's from its step: cheaper than operator[]), and the latest it can be (its step's
+    // end: a test against it needs no rebuild).
+    double tOf(size_t i) const;
+    double tUpper(size_t i) const;
+    double tLower(size_t i) const; // a compact event's step start (spilled: its time)
+    bool hasDetail(size_t i) const;
+    void push_back(const Event &e);
+    // Shrinks (the storage past it is freed). Only with no concurrent reader.
+    void resize(size_t n);
     void clear() { resize(0); }
-    size_t bytes() const { return ((n_ + kSeg - 1) >> kBits) * kSeg * sizeof(Event) + kMaxSegs * sizeof(Event *); }
+    // Drops the detail of every whole segment before index `before` whose events all lie before tBefore (worker side).
+    // The detail arrays are retired, not freed: reclaim() frees them (the main thread, between its reads). Returns the
+    // latest time whose detail is gone now (or -1e300).
+    double dropDetails(size_t before, double tBefore);
+    void reclaim();
+    double droppedUntil() const { return droppedUntil_; }
+    size_t bytes() const;
+    size_t spillCount() const { return nSpill_; }
+    bool save(std::FILE *f) const; // (a world snapshot's part; load only with no concurrent reader)
+    bool load(std::FILE *f);
+    size_t detailSegments() const;
     struct const_iterator
     {
         const EventLog *log;
         size_t i;
-        const Event &operator*() const { return (*log)[i]; }
-        const Event *operator->() const { return &(*log)[i]; }
+        Event operator*() const { return (*log)[i]; }
         const_iterator &operator++()
         {
             ++i;
@@ -283,8 +316,17 @@ class EventLog
     const_iterator end() const { return {this, n_}; }
 
   private:
-    std::unique_ptr<Event *[]> segs_;
-    size_t n_ = 0;
+    std::unique_ptr<Core *[]> cores_;
+    std::unique_ptr<std::atomic<Detail *>[]> details_;
+    std::unique_ptr<Event *[]> spill_;
+    std::vector<double> segMaxT_;
+    size_t n_ = 0, nSpill_ = 0;
+    size_t dropSeg_ = 0; // segments before it have no detail
+    double droppedUntil_ = -1e300;
+    double epoch_ = 0.0, stepS_ = 21600.0, lcMin_ = 0.1, lcRecord_ = 1.0;
+    std::mutex retireMx_;
+    std::vector<Detail *> retired_;
+    Event rebuild(const Core &c, bool withMass) const;
 };
 
 // Event::pad on an engine grid hit read from the compact event log: its projectile's speed and mass are drawn at
@@ -304,7 +346,7 @@ Event engineEventOf(double t0, double t1, uint64_t stepK, uint32_t a, uint32_t b
 // engineEventOf, a grid hit's speed and mass at replay (with a per-step check of what the sampling step drew). A
 // step that does not rebuild exactly (any other event, another order) is stored whole. The grid hits' gaps are Rice
 // coded (~1.4 bytes a hit; deflate gained nothing on them).
-bool packEngineEvents(const World &w, const EventLog &events, std::vector<uint8_t> &out);
+bool packEngineEvents(const World &w, const EventLog &events, std::vector<uint8_t> &out, double tBefore = 1e300);
 class EngineEventReader
 {
 public:
@@ -556,6 +598,10 @@ public:
     void simulate(double tEnd, std::vector<Event> &pending, size_t &pendingNext, const bool *stop);
     // (2026-10-28) What each structure holds, in bytes (harness `kessler mem`; approximate for maps / deques).
     void memReport(std::vector<std::pair<std::string, double>> &out) const;
+    // (2026-10-29) A snapshot: the world's state at its frontier, between steps (no journal, an empty outbox). loadState
+    // expects a world built and reset from the same inputs (roster, settings, start): the snapshot's key is the world hash.
+    bool saveState(std::FILE *f) const;
+    bool loadState(std::FILE *f, std::string &why);
 
 private:
     uint32_t addRecord(const PoolRec &r);

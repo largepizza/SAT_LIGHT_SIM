@@ -3132,11 +3132,13 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             // kessler select [k=<n>]: the n-th record (default 0) of the newest player breakup, once the
             // worker has replayed it (Pending until then).
             const kessler::Event *ev = nullptr;
+            kessler::Event evCopy;
             size_t evAt = 0;
             for (size_t e = kEvents.size(); e-- > 0;)
-                if (kEvents[e].origin == kessler::ORIGIN_USER)
+                if (((kEvents.core(e).kc >> 3) & 3u) == kessler::ORIGIN_USER)
                 {
-                    ev = &kEvents[e];
+                    evCopy = kEvents[e];
+                    ev = &evCopy;
                     evAt = e;
                     break;
                 }

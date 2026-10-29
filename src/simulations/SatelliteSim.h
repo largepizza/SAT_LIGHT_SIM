@@ -30,6 +30,7 @@
 #include "LunarBases.h"   // the lunar bases' solar-array glints (2026-10-27)
 #include "Meteors.h"      // meteor showers and the sporadic background (2026-10-27)
 #include "Comets.h"       // comets: orbits, brightness, tails (2026-10-27)
+#include <filesystem>
 #include <memory>
 
 // Forward declaration only — savePerfSnapshot/buildPerfSnapshotJson are the sole users and both
@@ -2164,6 +2165,74 @@ struct SatOrbit
     int32_t launchSlot = -1; // >= 0: a launch record (a train raising, a retiree deorbiting; SatelliteSimLaunches.cpp)
 };
 
+// (2026-10-29, workstream A) satOrbits: the roster and the launch block in a vector; the Kessler pool's entries (one per
+// pool slot, after them) are MADE ON READ from the mirror's record (kPool[j], the rule kesslerSetPoolOrbit kept): a
+// stored copy was ~100 B a slot, ~480 MB at the pool's 5M slots, a third copy of the pool. A pool entry read through
+// operator[] lives in a small per-thread ring (the last 512 reads): read what you need from it, never keep the
+// reference. Writes go to the roster / launch block only (a pool entry written is a copy, lost).
+class SatOrbitTable
+{
+  public:
+    void bindPool(const std::vector<kessler::PoolRec> *pool, size_t poolBase)
+    {
+        pool_ = pool;
+        poolBase_ = poolBase;
+    }
+    size_t size() const { return (pool_ && base_.size() == poolBase_) ? poolBase_ + pool_->size() : base_.size(); }
+    bool empty() const { return size() == 0; }
+    const SatOrbit &operator[](size_t i) const { return i < base_.size() ? base_[i] : poolEntry(i); }
+    SatOrbit &operator[](size_t i) { return i < base_.size() ? base_[i] : const_cast<SatOrbit &>(poolEntry(i)); }
+    void resize(size_t n) { base_.resize(pool_ && n > poolBase_ ? poolBase_ : n); } // (the pool's part follows kPool)
+    void reserve(size_t n) { base_.reserve(pool_ && n > poolBase_ ? poolBase_ : n); }
+    size_t capacity() const { return base_.capacity(); }
+    void clear()
+    {
+        base_.clear();
+        pool_ = nullptr; // (a new roster: kesslerRestart binds the pool again)
+    }
+    void push_back(const SatOrbit &o) { base_.push_back(o); }
+    SatOrbit &back() { return base_.back(); }
+    const SatOrbit &back() const { return base_.back(); }
+    SatOrbit *data() { return base_.data(); }
+    const SatOrbit *data() const { return base_.data(); }
+    std::vector<SatOrbit>::iterator begin() { return base_.begin(); }
+    std::vector<SatOrbit>::iterator end() { return base_.end(); }
+    std::vector<SatOrbit>::const_iterator begin() const { return base_.begin(); }
+    std::vector<SatOrbit>::const_iterator end() const { return base_.end(); }
+    // The stored part (the roster and the launch block): for functions that read the roster.
+    operator const std::vector<SatOrbit> &() const { return base_; }
+    const std::vector<SatOrbit> &stored() const { return base_; }
+    static SatOrbit poolOrbit(const kessler::PoolRec &r, uint32_t j)
+    {
+        SatOrbit o{};
+        o.typeIdx = r.type;
+        o.constIdx = r.constIdx;
+        o.incl = (float)r.incl;
+        o.altM = (float)(r.a - satphot::kEarthRadiusM);
+        o.R_sat = (float)r.a;
+        o.meanMot = r.n;
+        o.tumbleRate = r.tumbleRate;
+        o.tumblePhase = r.tumble0;
+        o.tumbleAxis = glm::vec3(kessler::poolTumbleAxis(j));
+        o.poolSlot = (int32_t)j;
+        return o;
+    }
+
+  private:
+    std::vector<SatOrbit> base_;
+    const std::vector<kessler::PoolRec> *pool_ = nullptr;
+    size_t poolBase_ = 0;
+    const SatOrbit &poolEntry(size_t i) const
+    {
+        thread_local SatOrbit ring[512];
+        thread_local unsigned next = 0;
+        SatOrbit &o = ring[next++ & 511u];
+        const size_t j = i - poolBase_;
+        o = (pool_ && i >= poolBase_ && j < pool_->size()) ? poolOrbit((*pool_)[j], (uint32_t)j) : SatOrbit{};
+        return o;
+    }
+};
+
 // ── SatelliteSim ──────────────────────────────────────────────────────────────
 namespace launchsim
 {
@@ -2913,7 +2982,20 @@ private:
         std::unique_ptr<KesslerWorker, KesslerWorkerDelete> wk;
         uint64_t hash = 0;
         double cacheFrontier = 0.0;
+        // (2026-10-29) Restored from a world snapshot (SatelliteSimKessler.cpp, "Snapshots"): the mirror is rebuilt from
+        // the world at install, with these streams (made before the snapshot, windows still to come).
+        bool fromSnap = false;
+        std::vector<kessler::SmallStream> snapStreams;
+        double snapLoadMs = 0.0;
     };
+    std::filesystem::path kSnapRestore; // the snapshot the next kesslerRestart starts from (consumed by it)
+    bool kesslerSnapshots = true;       // settings: kessler.snapshots (no UI)
+    int kSnapRestores = 0;              // (harness `kessler mem`)
+    double kLastSnapLoadMs = 0.0, kLastSnapInstallMs = 0.0;
+    double kSnapLastMarkT = 0.0;
+    std::filesystem::path kesslerSnapDir() const;
+    bool kesslerSnapEligible() const;
+    std::filesystem::path kesslerBestSnapshot(double lo, double hi) const; // the latest snapshot with lo < F <= hi
     std::thread kRestartThread;
     std::thread kDisposeThread; // the replaced world freed off the main thread
     std::atomic<bool> kRestartReady{false};
@@ -2999,7 +3081,10 @@ private:
         size_t n = 0;
         size_t size() const { return n; }
         bool empty() const { return n == 0; }
-        const kessler::Event &operator[](size_t i) const { return (*src)[i]; }
+        kessler::Event operator[](size_t i) const { return (*src)[i]; } // (rebuilt: kessler::EventLog keeps cores)
+        const kessler::EventLog::Core &core(size_t i) const { return src->core(i); }
+        double tOf(size_t i) const { return src->tOf(i); }
+        double tUpper(size_t i) const { return src->tUpper(i); }
         void clear() { n = 0; }
         template <class K, class Less>
         size_t lowerBound(const K &key, Less less) const
@@ -7957,7 +8042,7 @@ private:
 
     // ── Orbital parameters (fixed at init, positions computed by GPU) ─────────
     std::vector<ConstellationConfig> constellations;
-    std::vector<SatOrbit> satOrbits;
+    SatOrbitTable satOrbits; // (the pool's entries made on read from kPool: SatOrbitTable)
 
     // Re-bake satOrbitBuf when the sim has advanced more than this many days from
     // the baked epoch, keeping float deltaT < 7×86400 = 604800 s (float ULP ≈ 0.07 s).

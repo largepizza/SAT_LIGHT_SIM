@@ -83,6 +83,104 @@ static double kesslerWorkingSetMB()
     return 0.0;
 }
 
+// ── Snapshots (2026-10-29, workstream A) ────────────────────────────────────────────────────────────
+// A jump far ahead replays the cascade from its start (the prebake's events, every breakup applied again: ~30 s to the
+// supernova's day 170, minutes for dates years out), and so does going back past the mirror's 7 days of slot history.
+// For the default history (no player breakups, the world starting at the CME: a pure function of the settings, keyed by
+// the world hash like the event cache) the worker therefore keeps, in the user cache:
+//  - the STREAM ARCHIVE, suns_fury_<hash>.streams: every small-fragment re-entry stream in the order the world made
+//    them (24 B each, appended at publish). The world does not keep them (the mirror does, near the shown time), and a
+//    restored mirror needs those made before its snapshot whose windows are still to come.
+//  - WORLD SNAPSHOTS, suns_fury_<hash>_dNNNNN.snap: the world's whole state at a frontier on a 30-day grid (World::
+//    saveState: pool, generations, free list, roster seconds, grid, death buckets, the compact event log), with the
+//    archive's stream count then. Written while the player waits for a catch-up (time held at the frontier), at the last
+//    30-day mark at least 8 days before the player's time, never within 60 days of another; at most kMaxSnaps a hash
+//    (the least recently used goes). ~1.2-1.6 GB each (the pool's 5M slots are ~0.5 GB of it).
+// A jump to a time past a snapshot (by more than kSnapJumpS beyond the mirrored frontier), and a replay after going back,
+// restart the world from the latest snapshot at or before the player's time: its state is read whole, the mirror rebuilt
+// from it (kesslerRestartInstall), and the worker replays only from there. Same history: the fingerprint is the same.
+namespace
+{
+constexpr uint32_t kSnapMagic = 0x4E534B53u; // "SKSN"
+constexpr uint32_t kSnapVersion = 1;
+constexpr uint32_t kArchMagic = 0x52414B53u; // "SKAR"
+constexpr uint32_t kArchVersion = 1;
+constexpr double kSnapGridS = 30.0 * 86400.0;
+constexpr double kSnapMinGapS = 60.0 * 86400.0;
+constexpr double kSnapJumpS = 30.0 * 86400.0;
+constexpr size_t kMaxSnaps = 4;
+constexpr size_t kArchHead = 16; // magic, version, hash
+
+std::filesystem::path snapFileName(const std::filesystem::path &dir, uint64_t hash, double frontier, double epoch)
+{
+    char b[96];
+    snprintf(b, sizeof(b), "suns_fury_%016llx_d%05lld.snap", (unsigned long long)hash,
+             (long long)std::llround((frontier - epoch) / 86400.0));
+    return dir / b;
+}
+std::filesystem::path archFileName(const std::filesystem::path &dir, uint64_t hash)
+{
+    char b[96];
+    snprintf(b, sizeof(b), "suns_fury_%016llx.streams", (unsigned long long)hash);
+    return dir / b;
+}
+struct SnapHead
+{
+    std::filesystem::path path;
+    double frontier = 0.0;
+    uint64_t streams = 0, pendingNext = 0;
+};
+bool readSnapHead(const std::filesystem::path &p, uint64_t hash, SnapHead &out)
+{
+    std::FILE *f = std::fopen(p.string().c_str(), "rb");
+    if (!f)
+        return false;
+    uint32_t magic = 0, ver = 0;
+    uint64_t h = 0;
+    bool ok = std::fread(&magic, 4, 1, f) == 1 && std::fread(&ver, 4, 1, f) == 1 && std::fread(&h, 8, 1, f) == 1 &&
+              std::fread(&out.frontier, 8, 1, f) == 1 && std::fread(&out.streams, 8, 1, f) == 1 &&
+              std::fread(&out.pendingNext, 8, 1, f) == 1;
+    std::fclose(f);
+    out.path = p;
+    return ok && magic == kSnapMagic && ver == kSnapVersion && h == hash;
+}
+std::vector<SnapHead> listSnaps(const std::filesystem::path &dir, uint64_t hash)
+{
+    std::vector<SnapHead> v;
+    std::error_code ec;
+    char pre[48];
+    snprintf(pre, sizeof(pre), "suns_fury_%016llx_d", (unsigned long long)hash);
+    for (const auto &de : std::filesystem::directory_iterator(dir, ec))
+    {
+        const std::string fn = de.path().filename().string();
+        if (de.path().extension() != ".snap" || fn.rfind(pre, 0) != 0)
+            continue;
+        SnapHead h;
+        if (readSnapHead(de.path(), hash, h))
+            v.push_back(h);
+    }
+    std::sort(v.begin(), v.end(), [](const SnapHead &a, const SnapHead &b) { return a.frontier < b.frontier; });
+    return v;
+}
+uint64_t archCountOf(const std::filesystem::path &p, uint64_t hash)
+{
+    std::error_code ec;
+    const uintmax_t sz = std::filesystem::file_size(p, ec);
+    if (ec || sz < kArchHead)
+        return 0;
+    std::FILE *f = std::fopen(p.string().c_str(), "rb");
+    if (!f)
+        return 0;
+    uint32_t magic = 0, ver = 0;
+    uint64_t h = 0;
+    const bool ok = std::fread(&magic, 4, 1, f) == 1 && std::fread(&ver, 4, 1, f) == 1 && std::fread(&h, 8, 1, f) == 1;
+    std::fclose(f);
+    if (!ok || magic != kArchMagic || ver != kArchVersion || h != hash)
+        return 0;
+    return (uint64_t)((sz - kArchHead) / sizeof(kessler::SmallStream));
+}
+} // namespace
+
 // ── The worker ───────────────────────────────────────────────────────────────────────────────────
 static bool readCachePak(const std::filesystem::path &p, kessler::EngineEventReader &reader, std::string &why);
 struct SatelliteSim::KesslerWorker
@@ -150,6 +248,7 @@ struct SatelliteSim::KesslerWorker
     // publish is kept). prunedUntil = the latest birth of a generation that replaced a dropped one: going back before it
     // replays (kHistPrunedUntil). Off with SATLIGHTSIM_KESSLER_PUBLISH_PRUNE=0 (the A/B).
     static constexpr int32_t kGenKeepS = 8 * 86400; // the mirror's 7 days + a day of margin
+    static constexpr double kDetailKeepS = 9.0 * 86400.0; // events keep their detail this long before the player's time
     bool publishPrune = true;
     std::vector<uint8_t> pruneOldGenerations(int32_t &prunedUntil, size_t &dropped) const
     {
@@ -219,8 +318,21 @@ struct SatelliteSim::KesslerWorker
         if (w.poolChanges.capacity() > (size_t(1) << 18))
             w.poolChanges.shrink_to_fit(); // (a replay's 30-day chunk left ~600 MB of capacity behind for good)
         pubEvents = w.events.size();
+        {
+            // (2026-10-29) Old events keep only their compact core (Kessler.h EventLog): the detail of whole segments
+            // older than kDetailKeepS before the player's time, and before every rollback checkpoint, is dropped. Going
+            // back there replays (prunedUntil: the dust clouds' window of 3 h after the newest dropped one), as going
+            // back past the mirror's own 7 days of slot history does.
+            size_t before = w.events.size();
+            for (const kessler::World::Checkpoint &ck : w.checkpoints)
+                before = std::min(before, ck.events);
+            const double until = w.events.dropDetails(before, simNow.load() - kDetailKeepS);
+            if (until > -1e299)
+                prunedUntil = std::max(prunedUntil, w.secOf(until) + 4 * 3600);
+        }
         std::vector<kessler::SmallStream> st;
         st.swap(w.smallStreams);
+        archAppend(st);
         std::vector<RosterChange> rd;
         rd.reserve(w.rosterChanged.size());
         for (uint32_t i : w.rosterChanged)
@@ -243,6 +355,119 @@ struct SatelliteSim::KesslerWorker
 
     static constexpr size_t kBacklogCap = 3000000; // pool changes (~112 B each)
     std::filesystem::path prebakePath; // a compact log to replay (the cache, or the shipped prebake): opened by run()
+    // Snapshots (above): the default history only (snapOn); the archive appended at publish, a snapshot written when the
+    // frontier reaches snapWant (set by the main thread while the player waits for a catch-up).
+    std::atomic<bool> snapOn{false}; // (cleared from the main thread by a player breakup)
+    uint64_t snapHash = 0;
+    std::filesystem::path snapDir;
+    std::FILE *arch = nullptr;
+    uint64_t archCount = 0;            // streams in the archive file
+    std::atomic<double> snapWant{0.0}; // the frontier to write a snapshot at (0 = none)
+    std::atomic<int> snapsWritten{0};
+    double lastSnapMs = 0.0, lastSnapMB = 0.0;
+    std::vector<double> snapHave;      // the snapshots on disk (frontiers), kept by the worker
+    ~KesslerWorker()
+    {
+        if (arch)
+            std::fclose(arch);
+    }
+    void archOpen()
+    {
+        const std::filesystem::path p = archFileName(snapDir, snapHash);
+        std::error_code ec;
+        std::filesystem::create_directories(snapDir, ec);
+        archCount = archCountOf(p, snapHash);
+        if (archCount == 0)
+        {
+            arch = std::fopen(p.string().c_str(), "wb");
+            if (arch)
+            {
+                const uint32_t m = kArchMagic, v = kArchVersion;
+                std::fwrite(&m, 4, 1, arch);
+                std::fwrite(&v, 4, 1, arch);
+                std::fwrite(&snapHash, 8, 1, arch);
+            }
+        }
+        else
+        {
+            arch = std::fopen(p.string().c_str(), "r+b");
+            if (arch)
+                _fseeki64(arch, (long long)(kArchHead + archCount * sizeof(kessler::SmallStream)), SEEK_SET);
+        }
+        if (!arch)
+            snapOn = false;
+    }
+    // The streams this publish hands over were made [first, first + n): those past the archive's end go to it.
+    void archAppend(const std::vector<kessler::SmallStream> &st)
+    {
+        if (!snapOn || !arch || st.empty())
+            return;
+        const uint64_t first = w.smallStreamsMade - st.size();
+        if (first > archCount)
+        {
+            // (a gap: never expected; the archive cannot serve snapshots past it)
+            snapOn = false;
+            return;
+        }
+        const uint64_t skip = archCount - first;
+        if (skip >= st.size())
+            return;
+        const size_t n = st.size() - (size_t)skip;
+        if (std::fwrite(st.data() + skip, sizeof(kessler::SmallStream), n, arch) != n)
+        {
+            snapOn = false;
+            return;
+        }
+        std::fflush(arch);
+        archCount += n;
+    }
+    // The world at its frontier (between steps, just published: its outbox is empty).
+    void writeSnapshot()
+    {
+        if (!snapOn || !arch || archCount < w.smallStreamsMade)
+            return;
+        const auto t0 = std::chrono::steady_clock::now();
+        const std::filesystem::path p = snapFileName(snapDir, snapHash, w.frontier, w.s.epoch);
+        const std::filesystem::path tmp = p.string() + ".tmp";
+        std::FILE *f = std::fopen(tmp.string().c_str(), "wb");
+        if (!f)
+            return;
+        std::vector<char> buf(8u << 20);
+        std::setvbuf(f, buf.data(), _IOFBF, buf.size());
+        const uint32_t m = kSnapMagic, v = kSnapVersion;
+        const uint64_t streams = w.smallStreamsMade, pn = pendingNext;
+        bool ok = std::fwrite(&m, 4, 1, f) == 1 && std::fwrite(&v, 4, 1, f) == 1 && std::fwrite(&snapHash, 8, 1, f) == 1 &&
+                  std::fwrite(&w.frontier, 8, 1, f) == 1 && std::fwrite(&streams, 8, 1, f) == 1 &&
+                  std::fwrite(&pn, 8, 1, f) == 1;
+        ok = ok && w.saveState(f);
+        const long long bytes = _ftelli64(f);
+        ok = std::fclose(f) == 0 && ok;
+        std::error_code ec;
+        if (!ok)
+        {
+            std::filesystem::remove(tmp, ec);
+            Log::line("kessler: snapshot NOT written (disk?)");
+            return;
+        }
+        std::filesystem::rename(tmp, p, ec);
+        snapHave.push_back(w.frontier);
+        // At most kMaxSnaps for this hash: the least recently used goes (a restore touches its file).
+        {
+            std::vector<std::pair<std::filesystem::file_time_type, std::filesystem::path>> all;
+            for (const SnapHead &h : listSnaps(snapDir, snapHash))
+                all.push_back({std::filesystem::last_write_time(h.path, ec), h.path});
+            std::sort(all.begin(), all.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
+            for (size_t k = kMaxSnaps; k < all.size(); ++k)
+                std::filesystem::remove(all[k].second, ec);
+        }
+        lastSnapMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        lastSnapMB = (double)bytes / (1024.0 * 1024.0);
+        ++snapsWritten;
+        char msg[240];
+        snprintf(msg, sizeof(msg), "kessler: snapshot %s written: day %.0f, %.0f MB, %.0f ms", p.filename().string().c_str(),
+                 (w.frontier - w.s.epoch) / 86400.0, lastSnapMB, lastSnapMs);
+        Log::line(msg);
+    }
 
     void run()
     {
@@ -300,6 +525,9 @@ struct SatelliteSim::KesslerWorker
             to = std::min(w.s.epoch + std::ceil((to - w.s.epoch) / w.s.stepS - 1e-9) * w.s.stepS, tEnd);
             if (!sampling)
                 to = std::min(to, replayUntil);
+            const double sw = snapWant.load();
+            if (snapOn && sw > w.frontier)
+                to = std::min(to, sw); // (the snapshot's mark is on the step grid)
             kessler::setEngineThreadsWide(!sampling || userWaiting.load());
             const auto c0 = std::chrono::steady_clock::now();
             simulateChunk(to, sampling);
@@ -308,6 +536,15 @@ struct SatelliteSim::KesslerWorker
             const auto p0 = std::chrono::steady_clock::now();
             publish();
             profPublishS += std::chrono::duration<double>(std::chrono::steady_clock::now() - p0).count();
+            if (snapOn && snapWant.load() > 0.0 && std::abs(w.frontier - snapWant.load()) < 1.0)
+            {
+                bool close = false;
+                for (double f : snapHave)
+                    close = close || std::abs(f - w.frontier) < kSnapMinGapS;
+                if (!close)
+                    writeSnapshot();
+                snapWant = 0.0;
+            }
             // Throughput log every 10 simulated days (the benchmark reads these).
             if (w.frontier - lastLog >= 10.0 * 86400.0)
             {
@@ -829,6 +1066,7 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
     kesslerRestartPoll(true); // one still building: finished (and replaced) first
     kRestartQueue.clear();    // (their events are in userEvents: this world has them)
     std::vector<kessler::Event> keptEngine;
+    std::vector<uint8_t> keptPak; // the run being replaced's engine events (a compact log)
     // The world starts at the CME, or at the step of the player's first breakup before it (2026-10-19).
     double startT = kFuryArriveT;
     {
@@ -843,9 +1081,10 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
         kWorker->stopThread();
         if (keepEngineBefore >= 0.0)
         {
-            for (const kessler::Event &e : kWorker->w.events)
-                if (e.origin == kessler::ORIGIN_ENGINE && e.t < keepEngineBefore)
-                    keptEngine.push_back(e);
+            // (2026-10-29) As a compact log (packEngineEvents, replayed like the prebake): the event log keeps compact
+            // cores and drops old events' detail, and a list of whole events was ~80 B each (2.4 GB at day 1100).
+            FPROF_SCOPE("kr.packKept");
+            kessler::packEngineEvents(kWorker->w, kWorker->w.events, keptPak, keepEngineBefore);
             keptFrontier = std::min(keepEngineBefore, kWorker->w.frontier);
         }
         if (async)
@@ -858,6 +1097,8 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
         }
         kWorker.reset();
     }
+    const std::filesystem::path snapRestore = kSnapRestore;
+    kSnapRestore.clear(); // (consumed: the job below takes it)
     FPROF_SCOPE("kr.mirrorReset");
     // The main thread's mirror starts empty; the pool tail of satOrbits goes with it.
     kPool.clear();
@@ -876,6 +1117,7 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
     kHistPruneFrontier = 0.0;
     kReplayPending = false;
     satOrbits.resize(poolIdx0()); // the roster and the launch block; the pool tail goes
+    satOrbits.bindPool(&kPool, poolIdx0()); // (its entries are made on read from kPool: SatOrbitTable)
     // (2026-10-20) Room for the whole pool now, during the load: as a cascade fills it, growing satOrbits (with the 1.4M
     // roster in front of the pool) and kPool meant copying hundreds of MB, 50+ ms frames. Address space only: the
     // pages are touched as the pool fills.
@@ -922,7 +1164,7 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
     // The world's build, its cache read and (a breakup before the CME) its first step: a pure function of these
     // inputs. On the main thread (async false), or (2026-10-21, a player breakup with no rollback point: ~220 ms) on a
     // thread of its own while sim time holds; kesslerRestartPoll installs the worker when it is done.
-    auto job = [this, userEvents, keepEngineBefore, keptEngine = std::move(keptEngine), keptFrontier, startT, syncUntil,
+    auto job = [this, userEvents, keepEngineBefore, keptEngine = std::move(keptEngine), keptPak = std::move(keptPak), snapPath = snapRestore, snapOk = kesslerSnapshots, snapDir = kesslerSnapDir(), keptFrontier, startT, syncUntil,
                 raanAnchorT, tNow]() mutable -> RestartOut {
         RestartOut out;
         std::unique_ptr<KesslerWorker, KesslerWorkerDelete> wk(new KesslerWorker());
@@ -946,7 +1188,20 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
         double replayUntil = startT;
         bool usedCache = false;
         if (keepEngineBefore >= 0.0)
+        {
             replayUntil = keptFrontier;
+            if (!keptPak.empty())
+            {
+                wk->reader = std::make_unique<kessler::EngineEventReader>();
+                std::string why;
+                if (!wk->reader->open(std::move(keptPak), &why))
+                {
+                    Log::line("kessler: the kept events do not read back (" + why + "): sampling");
+                    wk->reader.reset();
+                    replayUntil = startT;
+                }
+            }
+        }
         if (startT >= kFuryArriveT && (keepEngineBefore < 0.0 || userEvents.empty())) // a pre-CME breakup: no cache
         {
             KesslerCacheHead best, h;
@@ -967,11 +1222,13 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
                 if (best.pak)
                 {
                     keptEngine.clear();
+                    wk->reader.reset();
                     wk->prebakePath = best.path;
                     replayUntil = useTo;
                 }
                 else if (readCacheBin(best.path, cached))
                 {
+                    wk->reader.reset();
                     keptEngine = std::move(cached);
                     replayUntil = useTo;
                 }
@@ -992,6 +1249,91 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
         kessler::sortPending(pend, 0, wk->w);
         wk->pending = std::move(pend);
         wk->replayUntil = replayUntil;
+        // (2026-10-29) Snapshots: the default history only (no player events, the world starting at the CME).
+        wk->snapOn = snapOk && userEvents.empty() && startT == kFuryArriveT;
+        if (wk->snapOn)
+        {
+            wk->snapHash = out.hash;
+            wk->snapDir = snapDir;
+            wk->archOpen();
+            if (wk->snapOn)
+                for (const SnapHead &h : listSnaps(snapDir, out.hash))
+                    wk->snapHave.push_back(h.frontier);
+        }
+        if (wk->snapOn && !snapPath.empty())
+        {
+            const auto q0 = std::chrono::steady_clock::now();
+            SnapHead sh;
+            bool ok = readSnapHead(snapPath, out.hash, sh) && wk->archCount >= sh.streams &&
+                      sh.pendingNext <= wk->pending.size();
+            if (ok)
+            {
+                std::FILE *f = std::fopen(snapPath.string().c_str(), "rb");
+                ok = f != nullptr;
+                std::string why;
+                if (ok)
+                {
+                    std::vector<char> buf(8u << 20);
+                    std::setvbuf(f, buf.data(), _IOFBF, buf.size());
+                    _fseeki64(f, 40, SEEK_SET); // (the head: magic, version, hash, frontier, streams, pendingNext)
+                    ok = wk->w.loadState(f, why) && wk->w.frontier == sh.frontier;
+                    std::fclose(f);
+                }
+                // The scripted events applied by then are the first pendingNext (sortPending's order: by step).
+                for (size_t k = 0; ok && k < wk->pending.size(); ++k)
+                    ok = (k < sh.pendingNext) == (wk->pending[k].t <= sh.frontier);
+                if (ok)
+                {
+                    wk->pendingNext = (size_t)sh.pendingNext;
+                    // The streams made before it whose windows the mirror can still show (it keeps 30 days back, and a
+                    // day's streams serve 12 days: kesslerPruneOldIndexes).
+                    const int32_t cutSec = wk->w.secOf(std::min(tNow, sh.frontier)) - 30 * 86400;
+                    const int32_t dayCut = (int32_t)std::floor(cutSec / 86400.0) - 12;
+                    std::FILE *a = std::fopen(archFileName(snapDir, out.hash).string().c_str(), "rb");
+                    ok = a != nullptr;
+                    if (ok)
+                    {
+                        _fseeki64(a, (long long)kArchHead, SEEK_SET);
+                        std::vector<kessler::SmallStream> chunk(1u << 16);
+                        uint64_t left = sh.streams;
+                        while (ok && left > 0)
+                        {
+                            const size_t n = (size_t)std::min<uint64_t>(left, chunk.size());
+                            ok = std::fread(chunk.data(), sizeof(kessler::SmallStream), n, a) == n;
+                            for (size_t q = 0; ok && q < n; ++q)
+                            {
+                                const int32_t w0 = chunk[q].deathSec - chunk[q].halfS();
+                                if ((w0 >= 0 ? w0 : w0 - 86399) / 86400 >= dayCut)
+                                    out.snapStreams.push_back(chunk[q]);
+                            }
+                            left -= n;
+                        }
+                        std::fclose(a);
+                    }
+                }
+                if (!ok)
+                    Log::line("kessler: snapshot " + snapPath.filename().string() + " not usable (" + why + "): replaying from the start");
+            }
+            if (ok)
+            {
+                out.fromSnap = true;
+                std::error_code ec;
+                std::filesystem::last_write_time(snapPath, std::filesystem::file_time_type::clock::now(), ec); // (recently used)
+                out.snapLoadMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - q0).count();
+                char msg[240];
+                snprintf(msg, sizeof(msg), "kessler: restored snapshot %s: day %.0f, %zu events, %zu records, %zu streams, %.0f ms",
+                         snapPath.filename().string().c_str(), (sh.frontier - kFuryArriveT) / 86400.0,
+                         wk->w.events.size(), wk->w.pool.size(), out.snapStreams.size(), out.snapLoadMs);
+                Log::line(msg);
+            }
+            else
+            {
+                // (a failed read left the world half loaded: back to its start)
+                wk->w.reset();
+                wk->pendingNext = 0;
+                out.snapStreams.clear();
+            }
+        }
         out.cacheFrontier = (keepEngineBefore >= 0.0 && !usedCache) ? kFuryArriveT : replayUntil;
         wk->wantUntil = startT < kFuryArriveT ? tNow + 86400.0 : std::max(kFuryArriveT + 2.0 * 86400.0, tNow + 86400.0);
         wk->simNow = tNow;
@@ -1043,6 +1385,55 @@ void SatelliteSim::kesslerRestartInstall(RestartOut &out)
     kCacheFrontier = out.cacheFrontier;
     kWorker = std::move(out.wk);
     kEvents.src = &kWorker->w.events;
+    if (out.fromSnap)
+    {
+        // (2026-10-29) Restored from a snapshot: the mirror at its frontier, from the world (before the worker starts).
+        // Every slot shows its record at the snapshot (all born by then); going back before it replays (kHistPrunedUntil).
+        const auto q0 = std::chrono::steady_clock::now();
+        kessler::World &w = kWorker->w;
+        kPool = w.pool;
+        kPoolGen = w.poolGen;
+        kPoolHist.clear();
+        kGenBounds.clear();
+        for (uint32_t j = 0; j < (uint32_t)kPool.size(); ++j)
+            if (kPool[j].decaySec != kessler::kNever)
+                kesslerIndexReentry(poolIdx0() + j, kPool[j].decaySec);
+        for (uint32_t i = 0; i < activeSatCount && i < w.rosterDead.size(); ++i)
+        {
+            if (2ull * i + 1 >= kRosterWords.size())
+                break;
+            kRosterWords[2ull * i] = w.rosterDead[i];
+            kRosterWords[2ull * i + 1] = w.rosterEnd[i];
+            if (i < kRosterDecay.size())
+                kRosterDecay[i] = w.rosterDecay[i];
+            if (w.rosterDecay[i] != kessler::kNever)
+                kesslerIndexReentry(i, w.rosterDecay[i]);
+        }
+        kRosterFullUpload = true;
+        kSmallStreams.clear();
+        kSmallReHours.clear();
+        kSmallStreamCount = 0;
+        if (!out.snapStreams.empty())
+            kesslerAddStreams(out.snapStreams.data(), out.snapStreams.size());
+        std::vector<kessler::SmallStream>().swap(out.snapStreams);
+        kEvents.n = w.events.size();
+        kWorker->pubEvents = kWorker->outEventsEnd = kWorker->syncQEvEnd = kEvents.n;
+        kFrontier = w.frontier;
+        kWorker->syncQFrontier = kFrontier;
+        kHistPrunedUntil = w.secOf(w.frontier);
+        kHistPrunedAt = kShownSec = INT32_MIN;
+        kPoolGpu = 0;
+        kDirtyPool.clear();
+        kDirtyPoolHead = 0;
+        if (ctx_)
+            kesslerEnsureCapacity(*ctx_, kPool.size());
+        ++kSnapRestores;
+        kLastSnapLoadMs = out.snapLoadMs;
+        kLastSnapInstallMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - q0).count();
+        char msg[160];
+        snprintf(msg, sizeof(msg), "kessler: mirror rebuilt from the snapshot in %.0f ms", kLastSnapInstallMs);
+        Log::line(msg);
+    }
     kWorker->publishPrune = !(std::getenv("SATLIGHTSIM_KESSLER_PUBLISH_PRUNE") &&
                               std::atoi(std::getenv("SATLIGHTSIM_KESSLER_PUBLISH_PRUNE")) == 0);
     kWorker->startThread();
@@ -1067,6 +1458,30 @@ bool SatelliteSim::kesslerRestartPoll(bool wait)
     return false;
 }
 
+std::filesystem::path SatelliteSim::kesslerSnapDir() const
+{
+    return std::filesystem::path(Paths::userDataDir()) / "kessler";
+}
+
+bool SatelliteSim::kesslerSnapEligible() const
+{
+    return kesslerSnapshots && kesslerEnabled && kUserEvents.empty() && kWorldStart == kFuryArriveT && kHash != 0;
+}
+
+std::filesystem::path SatelliteSim::kesslerBestSnapshot(double lo, double hi) const
+{
+    std::filesystem::path best;
+    double bestF = -1e300;
+    const uint64_t have = archCountOf(archFileName(kesslerSnapDir(), kHash), kHash);
+    for (const SnapHead &h : listSnaps(kesslerSnapDir(), kHash))
+        if (h.frontier > lo && h.frontier <= hi && h.frontier > bestF && h.streams <= have)
+        {
+            best = h.path;
+            bestF = h.frontier;
+        }
+    return best;
+}
+
 // ── Per frame ───────────────────────────────────────────────────────────────────────────────────
 void SatelliteSim::kesslerWant(double tJ2000)
 {
@@ -1079,6 +1494,8 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
 {
     FPROF_SCOPE("kesslerSync");
     kesslerRetireTick(ctx.device); // (after this frame's fence wait: buffers a growth replaced two frames ago go)
+    if (kWorker)
+        kWorker->w.events.reclaim(); // (old events' detail the worker dropped: freed here, between the main thread's reads)
     if (kRestartPending)
     {
         kRestartPending = false;
@@ -1088,10 +1505,38 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
     if (kReplayPending && kWorker)
     {
         // Back past the retained generations of reused slots: rebuild the world by replaying its events (no sampling)
-        // up to the current time.
+        // up to the current time. (2026-10-29) From the latest snapshot at or before it when there is one.
         kReplayPending = false;
-        Log::line("kessler: time went back past the kept history of reused slots: replaying the cascade");
-        kesslerRestart(ctx, kUserEvents, kFrontier);
+        const double tNowJ = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        kSnapRestore = kesslerSnapEligible() ? kesslerBestSnapshot(kFuryArriveT, tNowJ) : std::filesystem::path();
+        Log::line(std::string("kessler: time went back past the kept history of reused slots: replaying the cascade") +
+                  (kSnapRestore.empty() ? "" : " from " + kSnapRestore.filename().string()));
+        kesslerRestart(ctx, kUserEvents, kFrontier, -1.0, !kSnapRestore.empty());
+    }
+    if (kWorker && !kRestartBusy && kesslerSnapEligible())
+    {
+        // (2026-10-29) A jump far past the frontier: from the latest snapshot on the way, if one is far enough ahead.
+        const double tNowJ = (double)simDayJ2000 * 86400.0 + simSecInDay;
+        if (tNowJ > kFrontier + kSnapJumpS)
+        {
+            const std::filesystem::path sp = kesslerBestSnapshot(std::max(kFrontier, kWorker->syncQFrontier) + kSnapJumpS, tNowJ);
+            if (!sp.empty())
+            {
+                kSnapRestore = sp;
+                Log::line("kessler: jump past the frontier: restarting from " + sp.filename().string());
+                kesslerRestart(ctx, kUserEvents, -1.0, -1.0, true);
+            }
+        }
+        // While the player waits for a catch-up, a snapshot at the last 30-day mark 8 days before their time (once).
+        if (kWorker && kWorker->snapOn && kWorker->userWaiting.load())
+        {
+            const double m = kFuryArriveT + std::floor((tNowJ - 8.0 * 86400.0 - kFuryArriveT) / kSnapGridS) * kSnapGridS;
+            if (m >= kFuryArriveT + kSnapGridS && m > kFrontier && m != kSnapLastMarkT)
+            {
+                kSnapLastMarkT = m;
+                kWorker->snapWant = m;
+            }
+        }
     }
     if (kesslerRestartPoll(false)) // a breakup's world still building on its thread (time holds meanwhile)
         return;
@@ -1918,7 +2363,8 @@ void SatelliteSim::kesslerRecordUploads(VkCommandBuffer cmd)
     // New records (and their J2000 phases), as many as the staging holds.
     // At most 16k new records a frame (~1 ms): building one costs a few fmods and a sin / cos.
     const size_t room = (size_t)((kStageBytes - off) / 80);
-    const size_t n = std::min({newRecs, room, (size_t)(kPoolCap - kPoolGpu), (size_t)16384});
+    // (2026-10-29: 128k a frame while the backlog is a restored snapshot's millions)
+    const size_t n = std::min({newRecs, room, (size_t)(kPoolCap - kPoolGpu), newRecs > 262144 ? (size_t)131072 : (size_t)16384});
     if (n > 0)
     {
         const VkDeviceSize recOff = off;
@@ -2000,6 +2446,8 @@ bool SatelliteSim::kesslerUserEvent(uint8_t kind, uint32_t satA, uint32_t satB, 
     if (ev.a == kessler::kNoRef || (kind == kessler::EV_COLLISION && ev.b == kessler::kNoRef))
         return no("no such satellite");
     kUserEvents.push_back(ev);
+    if (kWorker)
+        kWorker->snapOn = false; // (2026-10-29) no longer the default history: no snapshots, no stream archive
     if (kRestartBusy)
     {
         // (2026-10-21c) A rebuild is still running on its thread: queued, applied when it is in (kesslerSync). Joining
@@ -2724,19 +3172,7 @@ void SatelliteSim::kesslerIndexReentry(uint32_t sat, int32_t sec)
 // The CPU's SatOrbit for pool slot j (the shown generation).
 void SatelliteSim::kesslerSetPoolOrbit(uint32_t j)
 {
-    const kessler::PoolRec &r = kPool[j];
-    SatOrbit o{};
-    o.typeIdx = r.type;
-    o.constIdx = r.constIdx;
-    o.incl = (float)r.incl;
-    o.altM = (float)(r.a - satphot::kEarthRadiusM);
-    o.R_sat = (float)r.a;
-    o.meanMot = r.n;
-    o.tumbleRate = r.tumbleRate;
-    o.tumblePhase = r.tumble0;
-    o.tumbleAxis = glm::vec3(kessler::poolTumbleAxis(j));
-    o.poolSlot = (int32_t)j;
-    satOrbits[poolIdx0() + j] = o;
+    (void)j; // (2026-10-29) satOrbits makes a pool slot's entry from kPool[j] when it is read (SatOrbitTable::poolOrbit)
 }
 
 // Shows slot j's generation for second sec: the latest born by then (else its earliest, not yet born: hidden).
@@ -3457,9 +3893,8 @@ nlohmann::json SatelliteSim::kesslerMemJson()
     }
     v.push_back({"mirror.kEvents", 0.0}); // (a view of world.events since 2026-10-28)
     v.push_back({"mirror.dirty", vb(kDirtyRoster) + vb(kDirtyPool) + vb(kUserEvents)});
-    v.push_back({"satOrbits.roster_launch", (double)std::min<size_t>(satOrbits.size(), poolIdx0()) * sizeof(SatOrbit)});
-    v.push_back({"satOrbits.pool_tail", (double)(satOrbits.capacity() - std::min<size_t>(satOrbits.size(), poolIdx0())) *
-                                            sizeof(SatOrbit)});
+    v.push_back({"satOrbits.roster_launch", (double)satOrbits.capacity() * sizeof(SatOrbit)});
+    v.push_back({"satOrbits.pool_tail", 0.0}); // (made on read since 2026-10-29: SatOrbitTable)
     v.push_back({"cpu_maps", vb(earthElevCpu) + vb(earthNightCpu) + vb(oceanMaskCpu) + vb(earthDayCpu) +
                                  vb(earthCloudsCpu) + vb(dustGridCpu)});
     launchMemReport(v);
@@ -3486,7 +3921,30 @@ nlohmann::json SatelliteSim::kesslerMemJson()
     j["hist_pruned_until_days"] = kHistPrunedUntil == INT32_MIN ? -1e9 : kHistPrunedUntil / 86400.0;
     j["world_frontier_days"] = kWorker ? (kWorker->w.frontier - kFuryArriveT) / 86400.0 : 0.0;
     j["events"] = kEvents.size();
+    if (kWorker)
+    {
+        j["events_spilled"] = kWorker->w.events.spillCount();
+        j["event_detail_segments"] = kWorker->w.events.detailSegments();
+        j["event_detail_dropped_until_days"] = (kWorker->w.events.droppedUntil() - kFuryArriveT) / 86400.0;
+    }
     j["pool"] = kPool.size();
+    j["snapshots"] = {{"enabled", kesslerSnapshots},
+                      {"eligible", kesslerSnapEligible()},
+                      {"restores", kSnapRestores},
+                      {"last_load_ms", kLastSnapLoadMs},
+                      {"last_install_ms", kLastSnapInstallMs},
+                      {"written", kWorker ? kWorker->snapsWritten.load() : 0},
+                      {"last_write_ms", kWorker ? kWorker->lastSnapMs : 0.0},
+                      {"last_write_mb", kWorker ? kWorker->lastSnapMB : 0.0},
+                      {"archive_streams", kWorker ? kWorker->archCount : 0},
+                      {"on_disk", nlohmann::json::array()}};
+    if (kHash != 0)
+        for (const SnapHead &h : listSnaps(kesslerSnapDir(), kHash))
+        {
+            std::error_code ec;
+            j["snapshots"]["on_disk"].push_back({{"day", (h.frontier - kFuryArriveT) / 86400.0},
+                                                {"mb", (double)std::filesystem::file_size(h.path, ec) / (1024.0 * 1024.0)}});
+        }
     j["sizeof"] = {{"PoolRec", sizeof(kessler::PoolRec)}, {"Event", sizeof(kessler::Event)}, {"SatOrbit", sizeof(SatOrbit)},
                    {"SmallStream", sizeof(kessler::SmallStream)}, {"KGen", sizeof(KGen)}};
     return j;
@@ -3709,21 +4167,60 @@ bool SatelliteSim::kesslerCountsWalk(KCountsWalk &w, size_t budget) const
     }
     for (const size_t end = std::min(kEvents.size(), w.ev + 4 * budget); w.ev < end; ++w.ev)
     {
-        const kessler::Event &e = kEvents[w.ev];
-        if (e.t > w.t)
+        // (2026-10-29) From the event's compact core: no rebuild unless its time is needed (the log's cores, Kessler.h).
+        const kessler::EventLog::Core &ec = kEvents.core(w.ev);
+        const bool spilled = (ec.fl & kessler::EventLog::kSpill) != 0;
+        const kessler::Event *full = spilled ? &kEvents.src->spill(w.ev) : nullptr;
+        double et = spilled ? full->t : kEvents.tUpper(w.ev) + 1e-3; // (a compact one's step end until its time is needed)
+        bool etExact = spilled;
+        if (et > w.t && !etExact)
+        {
+            et = kEvents.tOf(w.ev);
+            etExact = true;
+        }
+        if (et > w.t)
             continue;
-        a.smallMade += e.nSmall;
-        if (e.origin == kessler::ORIGIN_USER)
+        const uint8_t eKind = (uint8_t)(ec.kc & 7u), eOrigin = (uint8_t)((ec.kc >> 3) & 3u), eCat = (uint8_t)((ec.kc >> 5) & 1u);
+        float eNSmall;
+        std::memcpy(&eNSmall, &ec.nSmall, 4);
+        a.smallMade += eNSmall;
+        if (eOrigin == kessler::ORIGIN_USER)
             ++a.user;
-        switch (e.kind)
+        switch (eKind)
         {
         case kessler::EV_KILL: ++a.kills; break;
         case kessler::EV_BUMP: ++a.bumps; break;
-        case kessler::EV_COLLISION: ++a.col; a.cat += e.catastrophic; break;
+        case kessler::EV_COLLISION: ++a.col; a.cat += eCat; break;
         case kessler::EV_EXPLOSION:
         case kessler::EV_ASAT: ++a.explosions; break;
         default: break;
         }
+        if (!spilled)
+        {
+            // Not spilled: an engine collision, never significant (Kessler.h EventLog). Its day: from its step when the
+            // step lies within one day, else from its time.
+            const double sLo = kEvents.src->tLower(w.ev);
+            double dLo = std::floor((sLo - kFuryArriveT) / 86400.0), dHi = std::floor((kEvents.tUpper(w.ev) + 1e-3 - kFuryArriveT) / 86400.0);
+            if (dLo != dHi || dLo < 0.0)
+            {
+                if (!etExact)
+                    et = kEvents.tOf(w.ev);
+                dLo = std::floor((et - kFuryArriveT) / 86400.0);
+            }
+            const size_t d = (size_t)std::max(0.0, dLo);
+            if (d < 200000)
+            {
+                if (a.colDay.size() <= d)
+                {
+                    a.colDay.resize(d + 1, 0u);
+                    a.catDay.resize(d + 1, 0u);
+                }
+                ++a.colDay[d];
+                a.catDay[d] += eCat;
+            }
+            continue;
+        }
+        const kessler::Event &e = *full;
         if (e.kind == kessler::EV_COLLISION)
         {
             // Collisions per day since the CME (before it: day 0).
