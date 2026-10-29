@@ -1,0 +1,286 @@
+# GPU vs CPU photometry parity: the selection's magnitude as sat_orbit.comp drew it vs evalSatPhotometry
+set launches.era_benchmark_shells true
+observer lat=34.0 lon=-110.0 agl=2
+time sun -10 setting
+time pause
+wait settle
+select const "Starlink Gen1"
+wait 4
+state p0_00
+select const "Starlink Gen2"
+wait 4
+state p0_01
+select const "Starlink Gen3 Broadband"
+wait 4
+state p0_02
+select const "Starlink Gen3 Direct-to-Cell"
+wait 4
+state p0_03
+select const "OneWeb"
+wait 4
+state p0_04
+select const "Amazon Leo Shell 1"
+wait 4
+state p0_05
+select const "Guowang-2 Polar"
+wait 4
+state p0_06
+select const "Qianfan (Spacesail)"
+wait 4
+state p0_07
+select const "International Space Station"
+wait 4
+state p0_08
+select const "Tiangong"
+wait 4
+state p0_09
+select const "SpaceX Starmind - sun-synchronous X-ring"
+wait 4
+state p0_10
+select const "Reflect Orbital"
+wait 4
+state p0_11
+select const "Space Junk"
+wait 4
+state p0_12
+select const "Hubble - geometry model"
+wait 4
+state p0_13
+select const "GEO belt"
+wait 4
+state p0_14
+time add 420
+wait 20
+select const "Starlink Gen1"
+wait 4
+state p1_00
+select const "Starlink Gen2"
+wait 4
+state p1_01
+select const "Starlink Gen3 Broadband"
+wait 4
+state p1_02
+select const "Starlink Gen3 Direct-to-Cell"
+wait 4
+state p1_03
+select const "OneWeb"
+wait 4
+state p1_04
+select const "Amazon Leo Shell 1"
+wait 4
+state p1_05
+select const "Guowang-2 Polar"
+wait 4
+state p1_06
+select const "Qianfan (Spacesail)"
+wait 4
+state p1_07
+select const "International Space Station"
+wait 4
+state p1_08
+select const "Tiangong"
+wait 4
+state p1_09
+select const "SpaceX Starmind - sun-synchronous X-ring"
+wait 4
+state p1_10
+select const "Reflect Orbital"
+wait 4
+state p1_11
+select const "Space Junk"
+wait 4
+state p1_12
+select const "Hubble - geometry model"
+wait 4
+state p1_13
+select const "GEO belt"
+wait 4
+state p1_14
+time add 480
+wait 20
+select const "Starlink Gen1"
+wait 4
+state p2_00
+select const "Starlink Gen2"
+wait 4
+state p2_01
+select const "Starlink Gen3 Broadband"
+wait 4
+state p2_02
+select const "Starlink Gen3 Direct-to-Cell"
+wait 4
+state p2_03
+select const "OneWeb"
+wait 4
+state p2_04
+select const "Amazon Leo Shell 1"
+wait 4
+state p2_05
+select const "Guowang-2 Polar"
+wait 4
+state p2_06
+select const "Qianfan (Spacesail)"
+wait 4
+state p2_07
+select const "International Space Station"
+wait 4
+state p2_08
+select const "Tiangong"
+wait 4
+state p2_09
+select const "SpaceX Starmind - sun-synchronous X-ring"
+wait 4
+state p2_10
+select const "Reflect Orbital"
+wait 4
+state p2_11
+select const "Space Junk"
+wait 4
+state p2_12
+select const "Hubble - geometry model"
+wait 4
+state p2_13
+select const "GEO belt"
+wait 4
+state p2_14
+time add 600
+wait 20
+select const "Starlink Gen1"
+wait 4
+state p3_00
+select const "Starlink Gen2"
+wait 4
+state p3_01
+select const "Starlink Gen3 Broadband"
+wait 4
+state p3_02
+select const "Starlink Gen3 Direct-to-Cell"
+wait 4
+state p3_03
+select const "OneWeb"
+wait 4
+state p3_04
+select const "Amazon Leo Shell 1"
+wait 4
+state p3_05
+select const "Guowang-2 Polar"
+wait 4
+state p3_06
+select const "Qianfan (Spacesail)"
+wait 4
+state p3_07
+select const "International Space Station"
+wait 4
+state p3_08
+select const "Tiangong"
+wait 4
+state p3_09
+select const "SpaceX Starmind - sun-synchronous X-ring"
+wait 4
+state p3_10
+select const "Reflect Orbital"
+wait 4
+state p3_11
+select const "Space Junk"
+wait 4
+state p3_12
+select const "Hubble - geometry model"
+wait 4
+state p3_13
+select const "GEO belt"
+wait 4
+state p3_14
+time add 900
+wait 20
+select const "Starlink Gen1"
+wait 4
+state p4_00
+select const "Starlink Gen2"
+wait 4
+state p4_01
+select const "Starlink Gen3 Broadband"
+wait 4
+state p4_02
+select const "Starlink Gen3 Direct-to-Cell"
+wait 4
+state p4_03
+select const "OneWeb"
+wait 4
+state p4_04
+select const "Amazon Leo Shell 1"
+wait 4
+state p4_05
+select const "Guowang-2 Polar"
+wait 4
+state p4_06
+select const "Qianfan (Spacesail)"
+wait 4
+state p4_07
+select const "International Space Station"
+wait 4
+state p4_08
+select const "Tiangong"
+wait 4
+state p4_09
+select const "SpaceX Starmind - sun-synchronous X-ring"
+wait 4
+state p4_10
+select const "Reflect Orbital"
+wait 4
+state p4_11
+select const "Space Junk"
+wait 4
+state p4_12
+select const "Hubble - geometry model"
+wait 4
+state p4_13
+select const "GEO belt"
+wait 4
+state p4_14
+time add 900
+wait 20
+select const "Starlink Gen1"
+wait 4
+state p5_00
+select const "Starlink Gen2"
+wait 4
+state p5_01
+select const "Starlink Gen3 Broadband"
+wait 4
+state p5_02
+select const "Starlink Gen3 Direct-to-Cell"
+wait 4
+state p5_03
+select const "OneWeb"
+wait 4
+state p5_04
+select const "Amazon Leo Shell 1"
+wait 4
+state p5_05
+select const "Guowang-2 Polar"
+wait 4
+state p5_06
+select const "Qianfan (Spacesail)"
+wait 4
+state p5_07
+select const "International Space Station"
+wait 4
+state p5_08
+select const "Tiangong"
+wait 4
+state p5_09
+select const "SpaceX Starmind - sun-synchronous X-ring"
+wait 4
+state p5_10
+select const "Reflect Orbital"
+wait 4
+state p5_11
+select const "Space Junk"
+wait 4
+state p5_12
+select const "Hubble - geometry model"
+wait 4
+state p5_13
+select const "GEO belt"
+wait 4
+state p5_14

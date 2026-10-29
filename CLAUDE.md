@@ -4535,6 +4535,14 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   −0.07 (V1.0) / −0.36 → −0.22 (VisorSat) mag per 10°. At the measured windows VisorSat 7.428 (+0.21), V1.0 5.904,
   differential 1.52; VisorSat's curve RMS 0.35 is `ungated_metrics` (the table's bin means carry bright-attitude passes).
   The flare-facet population (115 polished facets) was tested and not shipped.
+- **Validation report (2026-10-29, wiki `accuracy/validation.md`, `tools/benchmarks/accuracy_report/`).** The evidence
+  in figures: `mmt_replay.py` re-runs the 94 MMT tracks with the CURRENT models (inputs from the refit study's scratch:
+  `rows.pkl`, `fitset.pkl`, the pass specs; reproduces the logged medians exactly) and finds flares (1-s medians > 0.4
+  mag over a sigma-clipped quadratic baseline): 24 in 22 tracks, 0.4-2.0 mag, the model's excess there 0.00-0.02 mag —
+  the models make no Starlink flares (they need ~1e-5..1e-4 m² x F of near-perfect mirror; no published geometry).
+  `figures.py` draws the page's figures from it, the gate's reports, an Iridium `--dump-json`, the BlueWalker 3
+  replay and a harness parity run, printing every number the page quotes. Re-run both after a model change that moves
+  a benchmark.
 - **Selection panel (buildSelectedSatPanel) + the icon atlas (2026-09-24 UI pass).** The floating
   panel that tracks the selected satellite carries its name, its type and the magnitude readout, then
   one row of **icon-only** action buttons, all drawn by the single helper `buildSelActionButton`
