@@ -804,9 +804,9 @@ void SatelliteSim::buildWeatherFeatured(const UIInput &inp, UIRenderer &ui)
                 {
                     const WxStormRow &r = S.row;
                     fmtIn(r.tEnd - now, w, sizeof(w));
-                    ss = wxStr("%s, %s", r.kind == (int)wx::StormKind::Mcs ? tx(Txt::TxtStormComplex) : r.kind == (int)wx::StormKind::SquallLine ? tx(Txt::TxtSquallLine)
-                                                                                                                              : "supercell",
-                               stageName(r.stage));
+                    // (the card's title names the kind: only a storm complex on the squall-line card says so)
+                    ss = r.kind == (int)wx::StormKind::Mcs ? wxStr("%s, %s", tx(Txt::TxtStormComplex), stageName(r.stage))
+                                                           : wxStr("%s", stageName(r.stage));
                     s1 = where(r.e);
                     if (r.tTorn0 > now)
                     {
