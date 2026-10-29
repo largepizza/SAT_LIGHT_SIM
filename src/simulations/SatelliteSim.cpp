@@ -271,14 +271,8 @@ const char *const kPlanetNames[kPlanetCount] = {
 // the naked eye at this scale; the others are subtle by design (real gas-giant cloud tops are
 // pale, not vividly colored) — a strong gray floor stays close to the previous flat near-white
 // on Mercury/Jupiter/Saturn, with Venus/Uranus getting a faint warm/cool cast.
-static constexpr glm::vec3 kPlanetColor[kPlanetCount] = {
-    {0.92f, 0.87f, 0.80f}, // Mercury — grayish tan, faintly warm (airless, dusty regolith)
-    {1.00f, 0.94f, 0.78f}, // Venus — pale cream (sulfuric acid cloud tops)
-    {1.00f, 0.2f, 0.2f},   // Mars — the one that visibly reads as colored: rust/salmon
-    {0.96f, 0.89f, 0.76f}, // Jupiter — pale tan (ammonia cloud bands, subtle at this scale)
-    {0.95f, 0.89f, 0.68f}, // Saturn — pale gold
-    {0.72f, 0.90f, 0.93f}, // Uranus — pale cyan (methane absorption)
-};
+// (kPlanetColor, hand-picked point colours, gave way to planetPointColor 2026-10-28: one colour per planet for the point
+// and its resolved disc. Mars had been made a vivid (1, 0.2, 0.2) to tell it from the stars; issue 20261028_222744.)
 
 static constexpr KeplerElements kPlanetElements[kPlanetCount] = {
     // Mercury
@@ -2809,7 +2803,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         }
         cp.auroraSheets = glm::vec4(auroraSheetGain, auroraSheetSpacingDeg, auroraSheetCrisp, auroraSheetFold);
         cp.auroraStorm = glm::vec4(auroraStormFeatures, auroraBlueRayChance, auroraArcSystems, auroraStormRedGain);
-        cp.auroraSky = glm::vec4(0.0f); // unread since 2026-10-28 (the aurora reads the skyglow model)
+        cp.nightKeyENU = snLightK > 0.0f ? nightKeyLightENU() : glm::vec4(0.0f); // the Moon + the supernova (w 0 = the Moon)
         launchFillPadParams(cp); // the launch pads on the ground (SatelliteSimLaunches.cpp)
         weatherFillSeaParams(cp); // tropical cyclones' winds on the sea (SatelliteSimWeather.cpp)
         cp.surgeInfo.z = oceanSunGlitter; // the Sun's sea glitter gain (surgeInfo.z was unused; sat_sky.frag)
@@ -2884,7 +2878,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             cp.terrainMaterialStrength = terrainMaterialStrength;
             cp.terrainTextureStrength = terrainTextureStrength;
             cp.terrainDebugView = (float)terrainDebugView;
-            cp.terrainErosion = glm::vec4(terrainErosionStrength, terrainErosionBranch, terrainNightSkyLight + snDiffuseMoonFrac, terrainSkyLight); // (+ the 2037 supernova's light, SatelliteSimStars.cpp)
+            cp.terrainErosion = glm::vec4(terrainErosionStrength, terrainErosionBranch, terrainNightSkyLight, terrainSkyLight); // (the 2037 supernova lights through the night key, nightKeyENU)
         }
         cp.cloudOpacityScale = cloudOpacityScale;
         cp.cityLightBlurLod = 0.0f; // unread since 2026-10-06 (the blur under cloud was removed)
@@ -3473,7 +3467,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cpc.waveTime = (float)(simSecInDay * 1.0);
         cpc.obsEffH = std::max(obsTerrainH, obsHeightOffset);
         cpc.sunDirENU = sunDirENU;
-        cpc.moonDirENU = moonDirENU;
+        cpc.moonDirENU = nightKeyLightENU(); // the Moon, + the supernova's light while it is up (SatelliteSimStars.cpp)
         cpc.obsECEFDir = glm::vec4(obsDir, obsHeightOffset);
         // debugDisableMask / beamMaxRangeM / showBeamDebugRays / beamSkyGlowGain / cloudShadowRangeM
         // moved into the CloudParams UBO (this shader binds it) so CloudMarchPC fits the 128-byte
@@ -16123,7 +16117,7 @@ void SatelliteSim::updateStars()
     // ── Betelgeuse: its variability, and the supernova (a pure function of sim time) ──
     snFlare = 0.0;
     snMagSeen = 99.0f;
-    snDiffuseMoonFrac = 0.0f;
+    snLightK = 0.0f;
     snAbove = false;
     float snSkyBright = 0.0f; // the supernova's light on the sky, as moonBrightStar (x the full Moon high up)
     bool snAsPoint = false;
@@ -16150,11 +16144,14 @@ void SatelliteSim::updateStars()
             snMagSeen = mB + extB;
             snEnu = e;
             snColor = colB;
-            // Its light, as the full Moon's (-12.7) high up: on the sky (dims the faint stars) and on the ground.
+            // Its light, as the full Moon's (-12.7) high up: on the sky (dims the faint stars).
             const float lit = snAbove ? powf(10.0f, -0.4f * (snMagSeen + 12.7f)) : 0.0f;
             const float elK = glm::clamp(e.z / 0.5f, 0.0f, 1.0f);
             snSkyBright = lit * elK * elK;
-            snDiffuseMoonFrac = lit * std::max(e.z, 0.0f) * (1.0f - glm::clamp((sunDirENU.w + 0.1f) / 0.2f, 0.0f, 1.0f));
+            // ... and as a light source (the night key, nightKeyLightENU): above the air, as moonDirENU.w is (the shaders
+            // gate both by their own horizon). Illuminance 2.54e-6 lux x 10^(-0.4 m): -11.2 = 0.077 lux, the full Moon
+            // (-12.7) 0.31 lux, so 0.25 of it (a gibbous Moon's light, from a point).
+            snLightK = snAbove ? std::min(powf(10.0f, -0.4f * (mB + 12.7f)), 4.0f) : 0.0f;
             if (mB < -1.0f && snAbove)
             {
                 // Bright: a kFireBuf point (bloom, glare; supernovaFill). By day it keeps ~6.5 mag less contrast: near its
@@ -16574,7 +16571,7 @@ void SatelliteSim::updatePlanets()
         planetView[i].supp = rawIntensity * extinction > 0.0f ? intensity / (rawIntensity * extinction) : 0.0f;
         dst[i].skyDir = enu;
         dst[i].flareIntensity = intensity;
-        dst[i].color = packVisibleColor(kPlanetColor[i]); // hand-picked approximate true color — see its own comment
+        dst[i].color = packVisibleColor(planetPointColor(i)); // its true colour, the same as its disc's mean (SatelliteSimPlanets.cpp)
         dst[i].rangeM = 0.0f;                              // at infinity
         dst[i].angularSize = angSize;
     }

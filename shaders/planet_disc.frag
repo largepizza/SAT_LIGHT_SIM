@@ -205,7 +205,7 @@ void main() {
     // The point it hands over from (the point style's Gaussian, pt.x already x (1 - share)).
     if (D.pt.x > 0.0) {
         float rpx = length(vQ) / pxR;
-        vec3 tc = D.tint.rgb / max(max(D.tint.r, max(D.tint.g, D.tint.b)), 1e-4);
+        vec3 tc = D.pad.rgb; // the star pipeline's point colour (planetPointColor): the hand-off keeps its colour
         col += tc * D.pt.x * exp(-rpx * rpx / (2.0 * D.pt.y * D.pt.y));
     }
     // The cloud composite in front (as star_point.frag), and terrain where the depth buffer cannot (render scale < 1).

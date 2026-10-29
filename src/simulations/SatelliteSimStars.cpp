@@ -17,7 +17,7 @@
 // and the 56Co tail (0.98 mag / 100 days, steeper after ~400 days as dust forms); B-V from -0.35 at breakout to ~1.4
 // on the tail (H-alpha). While it is brighter than mag -1 it is drawn as a kFireBuf point (point, bloom, glare: the
 // path the Moon-base glints use) and the star record is dark; it is visible by day near its peak, dims faint stars
-// like moonlight, and adds its light to the night's ground and cloud ambient ("Night sky light").
+// like moonlight, and lights the Earth as a second Moon: the night key light (nightKeyLightENU).
 #include "../FrameProfile.h"
 #include "../Harness.h"
 #include "../Log.h"
@@ -263,6 +263,29 @@ void SatelliteSim::formatSelectedStarInfo(int i)
 }
 
 // ── The supernova ──────────────────────────────────────────────────────────────────────────────────────────────────
+glm::vec4 SatelliteSim::nightKeyLightENU() const
+{
+    if (snLightK <= 0.0f)
+        return moonDirENU;
+    // Weights for the direction: each light x its own horizon gate (a Moon below the horizon must not tilt the key down).
+    auto gate = [](float z) {
+        const float x = glm::clamp((z + 0.10f) / 0.15f, 0.0f, 1.0f);
+        return x * x * (3.0f - 2.0f * x);
+    };
+    const glm::vec3 dm = glm::normalize(glm::vec3(moonDirENU)), ds = glm::normalize(snEnu);
+    const float wm = std::max(moonDirENU.w, 0.0f);
+    const float gm = gate(dm.z), am = wm * gm, as = snLightK * gate(ds.z);
+    if (am + as <= 1e-6f)
+        return moonDirENU;
+    const glm::vec3 d = am * dm + as * ds;
+    const float dl = glm::length(d);
+    const glm::vec3 dir = dl > 1e-6f ? d / dl : ds;
+    // Their summed light; a Moon gated off (below the horizon) adds nothing where the supernova sets the direction.
+    const float fs = as / (am + as);
+    const float w = wm + snLightK - wm * (1.0f - gm) * fs;
+    return glm::vec4(dir, w);
+}
+
 double SatelliteSim::supernovaMagAt(double t, float *bv)
 {
     const double dt = t - kSupernovaT0;
@@ -385,7 +408,9 @@ harness::Status SatelliteSim::harnessStars(harness::Active &a)
                            {"sn_mag_seen", snMagSeen},
                            {"sn_flare", snFlare},
                            {"sn_above", snAbove},
-                           {"sn_diffuse_moon_frac", snDiffuseMoonFrac},
+                           {"sn_light_vs_full_moon", snLightK},
+                           {"night_key", {nightKeyLightENU().x, nightKeyLightENU().y, nightKeyLightENU().z, nightKeyLightENU().w}},
+                           {"moon_light_vs_full", moonDirENU.w},
                            {"breakout_utc", fmtUtcReadable(kSupernovaT0)},
                            {"fades_below_0_5_utc", fmtUtcReadable(supernovaEndT())}};
         if (selectedStarIndex >= 0)
