@@ -48,6 +48,8 @@ struct Entry
     float colO3;    // ozone: the path's length in the 15-35 km layer / 20 km
     float colH;     // the haze-near-clouds column (scale height 2500 m)
     float scint;    // scintillation index sigma_I of a point source along this ray (0..1)
+    float aoaS = 0; // the Cn^2-weighted mean distance along the path (m): the share of the jitter in front of a surface
+                    // d away is 1 - exp(-d / aoaS) (the turbulence warp, SatelliteSimTurbulence.cpp)
 };
 
 struct Table
@@ -56,7 +58,7 @@ struct Table
     double h0 = 0.0;                     // the observer's height it was built for (m above sea level)
     double eC = 0.0, c = 8e-4, alpha = 1.0, u0 = 0.5;   // e(u) = eC + c sinh(alpha (u - u0)), u = i / (N - 1)
     double topScale = 1.0;               // above the table: refraction = topScale x Saemundsson(e)
-    double zenAoa2 = 0.0, zenSr2 = 0.0;  // the zenith ray's jitter variance (rad^2) and Rytov variance: above the
+    double zenAoa2 = 0.0, zenSr2 = 0.0, zenAoaS = 0.0;  // the zenith ray's jitter variance (rad^2) and Rytov variance: above the
                                          // table they grow as 1 / sin(e) and sin(e)^(-11/6)
     std::vector<Entry> e;
     double eAt(int i) const;

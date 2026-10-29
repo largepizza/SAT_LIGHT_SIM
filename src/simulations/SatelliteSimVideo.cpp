@@ -123,9 +123,13 @@ void SatelliteSim::videoFrameTick(float dt)
     video_.tick(d);
 }
 
+// The pre-UI hook (App calls it for the HQ photo's frames too, 2026-10-28): the turbulence warp runs here, then the
+// clean copies (a video without the UI, the settle probe), which therefore record the warped frame. Neither copy is
+// taken from the photo target.
 bool SatelliteSim::wantsPreUiCopy() const
 {
-    return (video_.wantsCapture() && !video_.options().ui) || settleProbeWanted_;
+    const bool photo = ctx_ && ctx_->photoActive;
+    return turbWarpActive_ || (!photo && ((video_.wantsCapture() && !video_.options().ui) || settleProbeWanted_));
 }
 
 void SatelliteSim::recordPreUiCopy(VkCommandBuffer cmd, VulkanContext &ctx, VkImage image)
@@ -135,11 +139,20 @@ void SatelliteSim::recordPreUiCopy(VkCommandBuffer cmd, VulkanContext &ctx, VkIm
     ctx.imageBarrier(cmd, image, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
                      VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-    if (video_.wantsCapture() && !video_.options().ui)
+    if (turbWarpActive_)
+    {
+        recordTurbWarp(cmd, ctx, image);   // leaves the image in PRESENT_SRC_KHR (the load pass's final layout)
+        ctx.imageBarrier(cmd, image, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                         VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    }
+    const bool photo = ctx.photoActive;
+    if (!photo && video_.wantsCapture() && !video_.options().ui)
         video_.recordCopy(cmd, ctx, image, ctx.swapExtent, ctx.swapFormat);
-    if (settleProbeWanted_ && settleProbe_.created())
+    if (!photo && settleProbeWanted_ && settleProbe_.created())
         settleProbe_.record(cmd, ctx, image, ctx.swapExtent, ctx.swapFormat, 0);
-    settleProbeWanted_ = false;
+    if (!photo)
+        settleProbeWanted_ = false;
     // The UI is drawn next in the load variant of the main pass, whose initial layout is TRANSFER_DST_OPTIMAL.
     ctx.imageBarrier(cmd, image, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
                      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,

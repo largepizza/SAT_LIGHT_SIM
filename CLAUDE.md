@@ -52,7 +52,7 @@ rockets, plumes, crew rotations, the Missions window: the roster's slots refresh
 **Stars** — *Stars* (the HYG catalogue to V 8.5, faint stars only under dark skies, selectable stars, the scripted
 2037 Betelgeuse supernova).
 
-**Rendering** — *UIRenderer / Clay* (icon atlas, the SDF font atlas, manual hit-testing, the **UI kit** every window is built from, HUD text entry) · *Sky TAA* (the background's temporal AA, and the main pass's shared dependencies) · *The Sun as an object* (refraction, mirages, turbulence: one ray tracer, Refraction.h) · *The Moon as a body* (true position and size, eclipses) · *The sea* (periodic waves, sea state, shore) ·
+**Rendering** — *UIRenderer / Clay* (icon atlas, the SDF font atlas, manual hit-testing, the **UI kit** every window is built from, HUD text entry) · *Sky TAA* (the background's temporal AA, and the main pass's shared dependencies) · *The Sun as an object* (refraction, mirages, turbulence: one ray tracer, Refraction.h) · *Seeing* (the turbulence warp after the main pass, the real-time twinkle clock) · *The Moon as a body* (true position and size, eclipses) · *The sea* (periodic waves, sea state, shore) ·
 *Photometry / Shader Constants* (lobe model, bloom and glare) · *The Milky Way* (the panorama, its zoomed star clouds, Andromeda) · *Light Pollution Dome* · *Atmospheric
 Extinction* · *Sky Glow SSBO* · *Planets* · *Cloud Shadows* · *Resolution Scaling* · *Weak-Hardware
 Sky Tiers (Potato / SKY_LITE)*. The mesh renderer, model viewer and environment probes are
@@ -8152,6 +8152,44 @@ air did to it: "a half faded fuzzball" low down.
 - **Cost** (RTX 3070 Ti, 1920x1009, the report's shot 2 view, old vs new SKY_TAA SPV interleaved with `shaders reload
   sky_taa=`): sky pass 21.42 / 21.34 -> 21.44 / 21.40 ms (+0.05), 168 registers both, binary 871 -> 885 KB; the table
   7-13 ms on a worker. SKY_LITE unchanged (230024 B).
+
+## Subsystem: Seeing — the turbulence warp and the twinkle clock (2026-10-28)
+
+Issues 20261028_191408 (twinkle far too fast, faster still under warp) and 20261028_193115 (turbulence should distort the
+whole picture, the Milky Way's star-cloud points and the Moon included). `SatelliteSimTurbulence.cpp`,
+`shaders/turb_warp.frag` (+ `taa_fullscreen.vert`).
+- **Real time, not sim time.** `buildUI` advances `twinkleClock_` (real frame seconds x "Star twinkle rate",
+  `photometry.star_twinkle_rate` 0.3, mod 1000 s: every twinkle frequency is a whole number of cycles in it) and
+  `turbClock_`. `PointDrawPC::waveTime` IS the twinkle clock now (only star_point.vert read it); the twinkle amplitude
+  is still the table's scintillation index. star_point.vert no longer dances each star by its aoa.
+- **The warp** runs after the main pass, before the UI, inside the pre-UI hook (`recordPreUiCopy`, SatelliteSimVideo.cpp;
+  App now calls it for the HQ photo's frames too, the sim takes no clean copy of the photo target): the swapchain image
+  is copied to `turbFrameImg` (swap format, recreated in onResize, so the photo target's extent too), then a fullscreen
+  draw in `renderPassLoad` (its own framebuffer index from `ctx.swapImages`) resamples it (5-tap Catmull-Rom; an exact
+  texelFetch where the displacement is < 0.004 px). The clean video copy / settle probe then take the warped frame.
+- **Amplitude** per pixel = the refraction table's aoa rms at its apparent elevation (64-entry table in the UBO, denser
+  at the horizon) x sqrt(1 - exp(-d / aoaS)) (d = the scene depth / the cloud composite's opacity-weighted distance;
+  `refr::Entry::aoaS` = the Cn^2-weighted mean distance along the ray, new) x "Turbulence warp"
+  (`photometry.turbulence_warp`, 1 = physical, 0-20) x a fade from 30 to 80 km of eye altitude; anisotropic near the
+  horizon (0.9 / 1.2, the old disc jitter's).
+- **Field**: vector quintic value noise on the sky in ENU directions, anchored on the CPU in double (`anc` = the lattice
+  cell mod 4096, `frac` its fraction; the shader adds M (dir - fwd) formed without cancellation), so it neither swims
+  when the camera turns nor loses precision. Cells = max(12", 6 px, 4x the largest rms displacement in view) on
+  power-of-two levels cross-faded and keyed by the absolute level (a zoom never rescales a field: q = m dir is ~1e4
+  cells), 2x wide in E / N. **Never make the cell scale vary with elevation or the displacement exceed ~1/4 cell**: a
+  per-elevation scale shears the field by m' x 1e4 cells, and a 5.7-px rms on 6-px cells folded a setting Sun's limb
+  into saw teeth. Boils: two phases of 0.8 s, sin^2 weights renormalised, each re-drawn (a hashed jump) at zero weight,
+  plus a drift of 0.6 minimum cells / s.
+- **Runs only when it shows**: the largest 3-sigma displacement in view >= 0.3 px (`kMinRunPx`), so not at a normal
+  field of view (physically 0.3-2" rms at the zenith or from a high site, ~10" at a sea-level horizon). Not on Potato.
+  The Sun's and the Moon's disc jitter in sat_sky.frag is GONE (they boil through the warp; `refrSun.z` is unread).
+- Measured (RTX 3070 Ti, 1920x1009): copy + warp 0.24-0.26 ms when it runs (it lands in the `ui_overlay` timestamp
+  bucket), 0 otherwise; star peak-over-background -1.3% in a 0.6-deg Milky Way field (lap^2 -2.4%). Harness `state` ->
+  `turbulence` {active, max_rms_px, max_px_3sigma, frames_run, clocks}; `refraction.samples[].aoa_mean_dist_km`.
+  Scripts / captures `harness_runs/turb/` (untracked; r3: the sea-level Sun boiling, `videos/sun_boil.mp4`).
+- Open: the Milky Way's sub-pixel star-cloud points do not twinkle (no brightness scintillation in the sky pass or the
+  warp); at the user's 4.9-deg report view the physical warp is 0.05 px rms (invisible; "Turbulence warp" exaggerates);
+  the warp's discontinuity at a near silhouette (terrain in front of sky) is not smoothed.
 
 ## Subsystem: The Moon as a body (2026-09-30)
 

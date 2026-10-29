@@ -3484,15 +3484,6 @@ vec3 refrTau(vec4 c, vec3 BR, float BM, float hazeK)
 {
     return BR * c.x + vec3(BM * 1.1 * c.y) + vec3(0.019, 0.027, 0.0016) * c.z + vec3(hazeK * BM * c.w);
 }
-// Smooth value noise in [-1, 1] (the turbulence field the rays are jittered by).
-float refrHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-float refrNoise(vec2 p)
-{
-    vec2 i = floor(p), f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-    float a = refrHash(i), b = refrHash(i + vec2(1, 0)), c = refrHash(i + vec2(0, 1)), d = refrHash(i + vec2(1, 1));
-    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y) * 2.0 - 1.0;
-}
 // ── Sunspots (2026-10-27, issue 20261027_000948) ──────────────────────────────────────────────────────────────────
 // Active regions as BIPOLAR GROUPS on the solar sphere (SatelliteSimRefraction.cpp fillSunspots: a pure function of sim
 // time, in the 11-year cycle's numbers, latitudes and Joy's-law tilts, rotating with the Sun's differential rotation;
@@ -4929,24 +4920,8 @@ void main() {
             vec3  dJ  = dir;
             float cz  = dot(upO, dJ);
             float e0  = asin(clamp(cz, -1.0, 1.0));
-            vec4  rs  = vec4(0.0);
-            // ONE call site of the table lookup (2026-10-27): the pass's speed follows its code size, and the second
-            // inlined copy (after the jitter) was most of the +0.5 ms the Moon's refraction cost every daytime sky.
-            [[dont_unroll]] for (int k = 0; k < 2; ++k) {
-                rs = refrLookup(e0, mCols);
-                float aoaJ = rs.w * refrSun.z;
-                if (k == 1 || aoaJ <= 1e-7) break;
-                vec3  puM = upO - moonDir3 * dot(upO, moonDir3);
-                puM = dot(puM, puM) > 1e-12 ? normalize(puM) : vec3(0.0, 0.0, 1.0);
-                vec3  sdM = normalize(cross(puM, moonDir3));
-                float tt = mod(pc.waveTime, 600.0);
-                vec2  q  = vec2(dot(dJ, sdM) / 2.0e-4, e0 / 6.0e-5);
-                float nv = refrNoise(q + vec2(tt * 0.9, tt * 0.35)) + 0.6 * refrNoise(q * 2.1 + vec2(-tt * 1.7, tt * 0.6) + 17.3);
-                float nh = refrNoise(q * 0.7 + vec2(tt * 0.5, -tt * 0.4) + 41.7);
-                dJ  = normalize(dJ + upO * (aoaJ * 1.2 * nv) + sdM * (aoaJ * 0.9 * nh));
-                cz  = dot(upO, dJ);
-                e0  = asin(clamp(cz, -1.0, 1.0));
-            }
+            // (The limb's turbulence jitter is the turbulence warp's since 2026-10-28, turb_warp.frag.)
+            vec4  rs  = refrLookup(e0, mCols);
             vec3  pu = upO - dJ * cz;
             pu = dot(pu, pu) > 1e-12 ? normalize(pu) : vec3(0.0);
             for (int c = 0; c < 3; ++c) {
@@ -7851,23 +7826,11 @@ void main() {
             float cz   = dot(upO, dJ);
             float e0   = asin(clamp(cz, -1.0, 1.0));
             vec3  puS  = normalize(upO - sunDir * dot(upO, sunDir));
-            vec3  sdS  = normalize(cross(puS, sunDir));                    // horizontal, across the Sun
             bool  tabOn = refrInfo.x > 1.5;
             vec4  cols;
             vec4  rs   = refrLookup(e0, cols);
-            // Turbulence: the angle of arrival jittered by a field drifting with the wind and boiling (Taylor's frozen
-            // turbulence + evolution), its rms the table's at this elevation; cells ~40" across, ~12" high.
-            float aoaJ = rs.w * refrSun.z;
-            if (aoaJ > 1e-7) {
-                float tt = mod(pc.waveTime, 600.0);
-                vec2  q  = vec2(dot(dJ, sdS) / 2.0e-4, e0 / 6.0e-5);
-                float nv = refrNoise(q + vec2(tt * 0.9, tt * 0.35)) + 0.6 * refrNoise(q * 2.1 + vec2(-tt * 1.7, tt * 0.6) + 17.3);
-                float nh = refrNoise(q * 0.7 + vec2(tt * 0.5, -tt * 0.4) + 41.7);
-                dJ  = normalize(dJ + upO * (aoaJ * 1.2 * nv) + sdS * (aoaJ * 0.9 * nh));
-                cz  = dot(upO, dJ);
-                e0  = asin(clamp(cz, -1.0, 1.0));
-                rs  = refrLookup(e0, cols);
-            }
+            // (Turbulence: the disc's angle-of-arrival jitter moved to the turbulence warp, turb_warp.frag, 2026-10-28:
+            // the whole picture boils through one field, on real time.)
             vec3  pu   = upO - dJ * cz;
             pu = dot(pu, pu) > 1e-12 ? normalize(pu) : vec3(0.0);
             float rD   = r0;                                    // the drawn radius (1.5x true; the true one near the Moon)

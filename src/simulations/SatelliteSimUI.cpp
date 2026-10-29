@@ -682,6 +682,13 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     harnessTick();
     fprof::markReset(); // (buildUI's own splits: ui.seg*; recordCompute resets the mark for its rc.seg*)
     cineTick(dt); // review 17: a playing / exporting cinematic owns the camera and the clock
+    {
+        // Seeing runs on REAL (frame) time, not sim time (2026-10-28, issues 20261028_191408 / _193115): the stars'
+        // twinkle and the turbulence warp's field. (A harness settle frame's 0.5 s is capped.)
+        const double rdt = std::clamp((double)dt, 0.0, 0.25);
+        twinkleClock_ = std::fmod(twinkleClock_ + rdt * starTwinkleRate, 1000.0);
+        turbClock_ += rdt;
+    }
     reportTick(ui.input().dt); // KB_SAVE_SNAPSHOT / KB_REPORT_NEW: a shot into an issue report (SatelliteSimReports.cpp)
     syncUiTheme(); // after the harness: a `set display.ui_theme` shows in the frame it ran in
     updateUiScale(ui.input().screenH); // (2026-10-21) this frame's UI scale: the setting x the window's height
@@ -4918,7 +4925,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         const char *fmt;
         int idx;
     };
-    static char photoBufs[45][12];
+    static char photoBufs[47][12];
     PhotoParam photoParams[] = {
         {"Brightness", &brightnessScale, 0.05f, 20.0f, 0.25f, "%.2f", 0},
         {"Day suppress", &daySuppression, 5.0f, 5000.0f, 5.0f, "%.0f", 1},
@@ -4996,6 +5003,10 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         {"Milky Way night vision", &mwNightVision, 0.0f, 1.0f, 0.05f, "%.2f", 42},
         {"Milky Way star clouds", &mwStarClouds, 0.0f, 1.0f, 0.05f, "%.2f", 43},
         {"Milky Way zoom detail", &mwZoomDetail, 0.0f, 2.0f, 0.05f, "%.2f", 44},
+        // Seeing (2026-10-28): the stars' twinkle on real time x this (1 = the old 3.7 / 7.1 / 11.3 Hz), and the turbulence
+        // warp (turb_warp.frag): x the angle-of-arrival rms the whole picture is displaced by; 0 = off.
+        {"Star twinkle rate", &starTwinkleRate, 0.0f, 2.0f, 0.05f, "%.2f", 45},
+        {"Turbulence warp", &turbWarpGain, 0.0f, 20.0f, 0.1f, "%.2f", 46},
     };
     auto photoRow = [&](PhotoParam &pp)
     {
@@ -5117,6 +5128,9 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         {"BLOOM AND GLARE", {9, 10, 28, 29, 30, 31, 32, 33, 34, 38}, 10},
         {"DARK SKY (MILKY WAY, ZODIACAL LIGHT)", {11, 12, 13, 14, 15, 16, 17, 18}, 8},
         {"STAR TRAILS", {19, 20}, 2},
+        // 39-44 (the Milky Way's look, 2026-10-28) were in the table but in no group; 45-46 seeing (2026-10-28).
+        {"MILKY WAY", {39, 40, 41, 42, 43, 44}, 6},
+        {"SEEING (TWINKLE, TURBULENCE)", {45, 46}, 2},
     };
     for (int g = 0; g < (int)(sizeof(kGroups) / sizeof(kGroups[0])); ++g)
     {
@@ -8722,6 +8736,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         mwGainGround = p.value("milky_way_gain_ground", mwGainGround);
         mwGainSpace = p.value("milky_way_gain_space", mwGainSpace);
         mwContrastSpace = p.value("milky_way_contrast_space", mwContrastSpace);
+        starTwinkleRate = settingClamp(p.value("star_twinkle_rate", starTwinkleRate), 0.0f, 2.0f);
+        turbWarpGain = settingClamp(p.value("turbulence_warp", turbWarpGain), 0.0f, 20.0f);
         mwNightVision = p.value("milky_way_night_vision", mwNightVision);
         mwStarClouds = p.value("milky_way_star_clouds", mwStarClouds);
         mwZoomDetail = p.value("milky_way_zoom_detail", mwZoomDetail);
@@ -9552,6 +9568,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"milky_way_gain_ground", mwGainGround},
         {"milky_way_gain_space", mwGainSpace},
         {"milky_way_contrast_space", mwContrastSpace},
+        {"star_twinkle_rate", starTwinkleRate},
+        {"turbulence_warp", turbWarpGain},
         {"milky_way_night_vision", mwNightVision},
         {"milky_way_star_clouds", mwStarClouds},
         {"milky_way_zoom_detail", mwZoomDetail},

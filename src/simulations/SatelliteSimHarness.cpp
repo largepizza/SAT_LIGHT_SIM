@@ -449,6 +449,7 @@ json SatelliteSim::harnessStateJson()
 
     j["aurora"] = auroraStateJson();
     j["refraction"] = refractionJson();
+    j["turbulence"] = turbWarpJson();
     {
         // The light-pollution dome, 16 sectors of 22.5 deg clockwise from north (sector i centred on
         // (i + 0.5) x 22.5): `gained` the linear dome satellites and stars dim by, `dark_sky` the eased
