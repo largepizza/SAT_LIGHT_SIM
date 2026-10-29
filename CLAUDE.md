@@ -52,7 +52,7 @@ rockets, plumes, crew rotations, the Missions window: the roster's slots refresh
 **Stars** — *Stars* (the HYG catalogue to V 8.5, faint stars only under dark skies, selectable stars, the scripted
 2037 Betelgeuse supernova).
 
-**Rendering** — *UIRenderer / Clay* (icon atlas, the SDF font atlas, manual hit-testing, the **UI kit** every window is built from, HUD text entry) · *Sky TAA* (the background's temporal AA, and the main pass's shared dependencies) · *The Sun as an object* (refraction, mirages, turbulence: one ray tracer, Refraction.h) · *Seeing* (the turbulence warp after the main pass, the real-time twinkle clock) · *The Moon as a body* (true position and size, eclipses) · *The sea* (periodic waves, sea state, shore) ·
+**Rendering** — *UIRenderer / Clay* (icon atlas, the SDF font atlas, manual hit-testing, the **UI kit** every window is built from, HUD text entry, **the UI text table**) · *Sky TAA* (the background's temporal AA, and the main pass's shared dependencies) · *The Sun as an object* (refraction, mirages, turbulence: one ray tracer, Refraction.h) · *Seeing* (the turbulence warp after the main pass, the real-time twinkle clock) · *The Moon as a body* (true position and size, eclipses) · *The sea* (periodic waves, sea state, shore) ·
 *Photometry / Shader Constants* (lobe model, bloom and glare) · *The Milky Way* (the panorama, its zoomed star clouds, Andromeda) · *Light Pollution Dome* · *Atmospheric
 Extinction* · *Sky Glow SSBO* · *Planets* · *Cloud Shadows* · *Resolution Scaling* · *Weak-Hardware
 Sky Tiers (Potato / SKY_LITE)*. The mesh renderer, model viewer and environment probes are
@@ -223,7 +223,7 @@ has access to is answerable. Current margins:
 | `maxComputeSharedMemorySize` | 16 KB | ~9 KB | `env_probe_sh.comp`'s SH partial sums (`vec3 part[64][9]`, 6.9 KB packed, 9 KB with vec3 padded); the cloud tile-cull lists ~4.6 KB |
 | `maxPerStageDescriptorStorageBuffers` | 4 | **12** | `sat_orbit.comp`'s set (binding 11 = the Kessler buffer since 2026-10-16; the check said 6, for `sat_sky.frag`, long after this set passed it — corrected 2026-09-23 with the occlusion buffers); MoltenVK is the realistic place to hit it, since it maps SSBOs + UBOs + vertex buffers into Metal's 31 per-stage buffer slots |
 | `maxPerStageDescriptorSampledImages` / `Samplers` | 16 | **16** | `sat_sky.frag` — AT the floor since terrain v2 P3's material array (binding 27, 2026-09-29): a new sky texture must merge into an existing one (e.g. the two city detail maps into an array) |
-| `maxPerStageDescriptorStorageImages` | 4 | **4** | AT the floor (checked since 2026-10-06): `sat_sky.frag`'s mesh colour + distance targets (22/23), the sharp-reflection G-buffer (25) and the far cloud layer (29) — added as storage images because the sampled-image budget was full; `cloud_v2_march.comp`'s sparse + full-rate colour/depth outputs. A fifth needs a merge |
+| `maxPerStageDescriptorStorageImages` | 4 | **6** | ABOVE the floor (the v1.2 release audit, 2026-10-29: the check said 4): the limit counts the pipeline LAYOUT's bindings, and `cv2MarchDescLayout` has 6 (march colour/depth 10/11, the Sun/sky table's bake target 13, full-rate targets 17/18, the far layer 21) though the march itself reads 4. `sat_sky.frag`'s set has 4 (22/23 mesh targets, 25 the reflection G-buffer, 29 the far layer). MoltenVK reports at least 8 |
 
 **The push-constant gate in `pickPhysicalDevice()` read 144 until 2026-09-08** — the pre-trim
 `SatDrawPC` size — so it rejected precisely the hardware the trim was performed for. Keep that
@@ -3412,7 +3412,7 @@ recordCompute right after the time advance (after updateFollow, before updatePos
 this moment's ENU and sets az / el (`aimCameraAzEl`). With `inertialHold` (the default above 100 km) the eye is held in
 ECI too, so the Earth turns beneath (the ENU frame at an ECI-fixed eye is itself ECI-fixed: no roll drift); on the
 ground only the direction tracks (field rotation). Mouse look and WASD are adopted (in the previous frame's ECI). Ended
-by follow, Track, a cinematic, any sky-event Watch or the comet Watch. **Occulter** (`inertialOcculter`, "Occult the
+by follow, Track, a cinematic, any sky-event Watch or the comet Watch, a bookmark's Go and any recorded view (harness `report load` / `snapshot`, an issue shot's Go: `harnessApplyViewRecord`). **Occulter** (`inertialOcculter`, "Occult the
 Sun"): sunCloudT forced to 0 (the Sun's disc, glare, corona, lens flare, bloom seed), no sky glare (stars stay), the
 comet composite's Sun glare off, and from above 100 km the night exposure (`skyExposure` dayness 0). UI: the Sky events
 window's "Lock view to the stars" / "Occult the Sun" buttons. Harness `inertial [state] | on [hold=] | off | look
@@ -3490,6 +3490,10 @@ frame), `src/VideoEncoder.h/.cpp` (NV12 BT.709 limited range -> H.264 .mp4: Wind
   `video_fps`, `video_scale`). Harness: `video start|stop|state`, `path play video=` (docs/HARNESS.md).
 - The Cinematics window's "Export video" (`cineVideoExport_`, harness `cine export video`) is the preview export into
   one lossless .mp4 (cineTick requests each frame and holds the pose while no readback buffer is free); no motion blur.
+  Harness `cine preview <file> [shot=N] [scale=0.5] [fps=30]` (2026-10-29) is the quick framing check: it loads a saved
+  cinematic and records that export at `scale` of the window (`cineVideoScale_`, VideoRecordOptions::scale) into
+  `<name>[_shotN].mp4` (`cineVideoTag_`). Note: `report load` puts the report's camera trail into the CURRENT shot's
+  keys unless `trail=off` (it silently overwrote shots while building the v1.2 tour).
 - Measured (RTX 3070 Ti, 1920x1009, mf-hw): frame time / GPU within 0-0.5 ms of not recording; the worker's NV12
   conversion ~3.7 ms and encode ~0.8 ms a 1920x1008 frame (one thread: ~200 fps); ~105 MB a minute of motion, ~40-50
   of a still view; real time at ~40 fps into a 60-fps video: 0 drops, a third of the frames repeated.
@@ -3841,6 +3845,18 @@ pre-select; returns whether to show it) and `setBootChoice(option, askAgain)`.
 ---
 
 ## Subsystem: UIRenderer / Clay
+
+**UI text lives in one table (2026-10-29): `src/text/ui_text_en.inc`**, `UI_TEXT(Id, "text")` per line, read with
+`tx(Txt::Id)` (`src/UiText.h`, included by SatelliteSim.h; `txc(Txt::Id)` = a Clay_String, `src/UiTextClay.h`).
+**New user-facing text goes there, not into a literal** — rules and style in docs/UI_TEXT.md: ids by kind (Btn, Tip,
+Lbl, Sec, Fmt, Toast...), printf formats keep their placeholders in order, plain ASCII, no history notes ("moved
+to ...") in the UI, settings keys / harness text / log lines / keybinding action names (persisted) / data stay in the
+code. `python tools/ui_text_check.py` checks ids, ASCII and every format's argument count at its call site (MSVC
+cannot check a non-literal format: run it after rewording a Fmt string); `tools/ui_text_migrate.py` moves the
+literals left at known UI call sites. English only for now (a language = a second table with the same ids).
+Not in the table yet: the Attributions tab (credits), the knockout labels (dev), keybinding action names,
+lowercase one-word fragments, and text built by concatenating std::string pieces (Watch toasts in
+SatelliteSim.cpp / SatelliteSimLaunches.cpp, some report and bookmark messages).
 
 - `#define CLAY_IMPLEMENTATION` only in `UIRenderer.cpp`. All other files `#include "clay.h"` without it.
 - `ui.input()` → `UIInput`: per-frame mouse/scroll/button state. `scrollY` positive = scroll up. `screenW/H` = window dims.
@@ -4224,7 +4240,7 @@ ground), boost x10, fine x0.1 — it was 100 m/s + 0.5 x the height above SEA LE
 
 With a satellite selected: **I** = Info window (open / close, `KB_INFO`), **G** = Go to, and G again leaves Go to
 where the camera is (`KB_FOLLOW_STAY`, action "Go To / Leave Here"; was only "Leave Go To Here"), **T** = Track on /
-off (`KB_TRACK`); `selectionKeyAction`. T was "Select Satellite" (the centre pick), which now has no key (pad A
+off (`KB_TRACK`); `selectionKeyAction`. **During Go to, Track is Go to's aim lock** (`trackToggle`: T and the panel's Track button toggle `followAimLock`, the "Aim: locked / free" chip; the button is lit by it): Track's own lock would fight the ride, and until 2026-10-29 T did nothing there. T was "Select Satellite" (the centre pick), which now has no key (pad A
 still; a click selects). Saved bindings migrate by `controls.key_layout` (`kKeyLayoutVersion` 2): a saved T on
 "Select Satellite" is dropped once, the old action name carries its key over, and I / T keep their defaults only
 where no saved binding uses them. An unbound key is -1 (`onKey` ignores GLFW_KEY_UNKNOWN; `keyDisplayName` shows
@@ -4535,6 +4551,14 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   −0.07 (V1.0) / −0.36 → −0.22 (VisorSat) mag per 10°. At the measured windows VisorSat 7.428 (+0.21), V1.0 5.904,
   differential 1.52; VisorSat's curve RMS 0.35 is `ungated_metrics` (the table's bin means carry bright-attitude passes).
   The flare-facet population (115 polished facets) was tested and not shipped.
+- **Validation report (2026-10-29, wiki `accuracy/validation.md`, `tools/benchmarks/accuracy_report/`).** The evidence
+  in figures: `mmt_replay.py` re-runs the 94 MMT tracks with the CURRENT models (inputs from the refit study's scratch:
+  `rows.pkl`, `fitset.pkl`, the pass specs; reproduces the logged medians exactly) and finds flares (1-s medians > 0.4
+  mag over a sigma-clipped quadratic baseline): 24 in 22 tracks, 0.4-2.0 mag, the model's excess there 0.00-0.02 mag —
+  the models make no Starlink flares (they need ~1e-5..1e-4 m² x F of near-perfect mirror; no published geometry).
+  `figures.py` draws the page's figures from it, the gate's reports, an Iridium `--dump-json`, the BlueWalker 3
+  replay and a harness parity run, printing every number the page quotes. Re-run both after a model change that moves
+  a benchmark.
 - **Selection panel (buildSelectedSatPanel) + the icon atlas (2026-09-24 UI pass).** The floating
   panel that tracks the selected satellite carries its name, its type and the magnitude readout, then
   one row of **icon-only** action buttons, all drawn by the single helper `buildSelActionButton`

@@ -15,18 +15,26 @@ cities, aurora and eclipses, all rendered through Vulkan.
 
 ## Features
 
-- **Megaconstellations** — about 1.37 million satellites in the default roster (Starlink, OneWeb, Amazon
-  Leo, Guowang, SpaceX Starmind orbital data centers, Reflect Orbital mirrors, stations, debris), all
-  propagated on the GPU, moddable through `constellations.json`.
+- **Megaconstellations** — about 1.4 million satellites in the default roster (Starlink, OneWeb, Amazon
+  Leo, Guowang, Qianfan, SpaceX Starmind orbital data centers, Reflect Orbital mirrors, stations, the GEO
+  belt, debris), all propagated on the GPU, moddable through `constellations.json`.
+- **Launches and the deployment era** — rockets from real pads launch the constellations, trains of new
+  satellites climb to their slots, crews and cargo fly to the stations, old satellites re-enter; from 2019 to
+  2036 the sky fills up launch by launch.
+- **The Sun's Fury** — a scripted July 2037 solar superstorm that can set off a Kessler debris cascade,
+  with tumbling dead satellites, debris clouds and re-entry fireballs.
 - **Physical satellite brightness** — every type has a geometry model; magnitudes come from per-surface
   reflection, earthshine and atmospheric extinction, validated against published observation campaigns.
   Close up, satellites are drawn as 3D meshes reflecting the sky and Earth.
-- **Weather** — volumetric clouds from fair-weather cumulus to cumulonimbus storms with anvils, evolving
-  weather, rain / snow particles, lightning and thunder, fog and dust, rainbows and halos.
+- **Weather** — volumetric clouds from fair-weather cumulus to cumulonimbus storms with anvils, storms with a
+  life cycle, named hurricanes, tornadoes, haboobs and wildfires, rain / snow particles, lightning and thunder,
+  fog and dust, rainbows and halos, and a Weather window with a precipitation radar.
 - **The Earth** — 3D terrain detail and erosion, lakes and beaches, a sea with weather-driven waves and
   foam, procedural cities and farmland by day and night, solar parks at the reflector sites.
-- **The sky** — atmospheric scattering, the Milky Way and 8,400 stars, planets, airglow, a space-weather
-  driven aurora, and the Moon and Sun on real UTC with real eclipses.
+- **The sky** — atmospheric scattering with refraction and mirages, the Milky Way and about 62,000 stars,
+  resolved planets and Jupiter's moons, comets, meteor showers, a 2037 Betelgeuse supernova, airglow, a
+  space-weather driven aurora, and the Moon and Sun on real UTC with real eclipses; a Sky events window
+  finds what to watch.
 - **Tools for looking** — selection info and a 3D model view, pass magnitude traces with CSV export, Go to /
   Follow / Track, bookmarks, cinematics, HQ photos, star trails, ambient sound and music.
 
@@ -43,8 +51,10 @@ cities, aurora and eclipses, all rendered through Vulkan.
 | Potato | very old or integrated GPUs | a separate small sky shader, no volumetric clouds |
 | Planetarium | integrated GPUs (the default on them) | the full sky with cuts, no volumetric clouds |
 | Low | entry discrete GPUs | every effect on, rendered at 50% and temporally upscaled |
-| Medium | mid-range GPUs (the default on discrete GPUs) | every effect on, rendered at 67% |
-| High / Ultra | fast GPUs | full resolution, more samples |
+| Medium | mid-range GPUs (the default on discrete GPUs under 6 GB) | every effect on, rendered at 67% |
+| High / Ultra | fast GPUs (High is the default with 6 GB or more) | full resolution, more samples |
+
+A startup chooser (Full graphics, Planetarium or Potato) runs before anything heavy loads.
 
 An optional automatic render scale holds a target frame rate.
 
@@ -155,7 +165,7 @@ src/
     ├── SatBench.h/.cpp         ← simulate a published photometry campaign (benchmarks M5)
     ├── SatBenchmark.h/.cpp     ← benchmark dataset loading (data/benchmarks/)
     ├── SatTrace.h/.cpp         ← satellite-light-sim-trace/1 CSV in/out (M9)
-    ├── star_catalog.h          ← generated BSC5 table (mag <= 6.5, 8404 entries)
+    ├── star_catalog.h          ← generated BSC5 table (fallback when star_catalog.bin is missing)
     ├── GameOfLife.h / .cpp     ← Conway's Game of Life (legacy)
     ├── Particles.h / .cpp      ← GPU particle system (legacy)
     └── Scene3DDemo.h / .cpp    ← 3D mesh + SDF rendering (legacy, uses src/Scene3D.*)
@@ -201,11 +211,19 @@ data/
     constellations.schema.json    ← JSON Schema for the above (autocomplete + validation)
     satellite_models/<id>.json    ← geometry models referenced by "model": "<id>" (shipped)
     reflector_targets.json        ← real solar-farm sites for Reflect Orbital mirrors
+    launches.json                 ← launch sites, vehicles, programs, crew / cargo flights
+    launch_coasts.json            ← coastlines around launch sites (tools/make_pad_coasts.py)
+    geo_satellites.json           ← the named GEO belt members
+    lunar_bases.json              ← lunar south-pole bases (Moon-base glints)
+    bookmarks/                    ← the default bookmarks (shipped as default_bookmarks/)
+    kessler/                      ← the prebaked Sun's Fury cascade (shipped as kessler_prebake/)
     benchmarks/                   ← published photometry datasets + KNOWN_RESIDUALS.md
     custom/                       ← example / stress rosters (source tree only, not shipped)
 assets/
     textures/                    ← Earth day/night/elevation/clouds, water map, terrain materials,
-                                   city roads, cloud morphology, moon, Milky Way
+                                   city roads, cloud morphology, Moon and planet maps, Milky Way,
+                                   skyglow sources
+    stars/                       ← the star catalogue (HYG, tools/make_star_catalog.py)
     noise/                       ← tiled RGBA noise (cloud/aurora seed)
     sound/                       ← music tracks + upwell stems, ambience recordings + layer table
     icons/ui/                    ← PNG icon sprites packed into GPU atlas

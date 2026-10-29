@@ -56,22 +56,22 @@ Clay_Color ssClay(int cat)
 }
 const char *catShort(int cat)
 {
-    static const char *k[7] = {"TD", "TS", "C1", "C2", "C3", "C4", "C5"};
+    static const char *k[7] = {tx(Txt::OptTd), tx(Txt::OptTs), "C1", "C2", "C3", "C4", "C5"};
     return k[std::clamp(cat + 1, 0, 6)];
 }
 const char *basinShort(int b)
 {
-    static const char *k[6] = {"N Atl", "E Pac", "W Pac", "N Ind", "SW Ind", "Aus/S Pac"};
+    static const char *k[6] = {tx(Txt::OptNAtl), tx(Txt::OptEPac), tx(Txt::OptWPac), tx(Txt::OptNInd), tx(Txt::OptSwInd), tx(Txt::OptAusSPac)};
     return (b >= 0 && b < 6) ? k[b] : "?";
 }
 const char *strengthTerm(int basin)
 {
-    return basin <= 1 ? "Hurricane strength" : basin == 2 ? "Typhoon strength" : basin == 3 ? "Very severe cyclonic storm"
-                                                                                           : "Severe tropical cyclone";
+    return basin <= 1 ? tx(Txt::ValHurricaneStrength) : basin == 2 ? tx(Txt::ValTyphoonStrength) : basin == 3 ? tx(Txt::ValVerySevereCyclonicStorm)
+                                                                                           : tx(Txt::ValSevereTropicalCyclone);
 }
 const char *compass(double bearingDeg)
 {
-    static const char *k[16] = {"N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"};
+    static const char *k[16] = {"N", tx(Txt::OptNne), tx(Txt::OptNe), tx(Txt::OptEne), "E", tx(Txt::OptEse), tx(Txt::OptSe), tx(Txt::OptSse), "S", tx(Txt::OptSsw), tx(Txt::OptSw), tx(Txt::OptWsw), "W", tx(Txt::OptWnw), tx(Txt::OptNw), tx(Txt::OptNnw)};
     return k[(int)std::floor(std::fmod(bearingDeg + 360.0 + 11.25, 360.0) / 22.5) % 16];
 }
 void fmtRel(double dt, char *b, size_t n)   // "in 2d 04h" / "5h 10m ago"
@@ -84,21 +84,21 @@ void fmtRel(double dt, char *b, size_t n)   // "in 2d 04h" / "5h 10m ago"
     else if (m >= 60)
         snprintf(core, sizeof(core), "%lldh %02lldm", m / 60, m % 60);
     else
-        snprintf(core, sizeof(core), "%lld min", m);
+        snprintf(core, sizeof(core), tx(Txt::FmtMin), m);
     if (dt >= 0.0)
-        snprintf(b, n, "in %s", core);
+        snprintf(b, n, tx(Txt::FmtIn), core);
     else
-        snprintf(b, n, "%s ago", core);
+        snprintf(b, n, tx(Txt::FmtAgo), core);
 }
 void fmtDate(double tJ2000, char *b, size_t n, bool withTime)
 {
     const time_t u = (time_t)std::floor(tJ2000) + 946728000;
     const struct tm *g = gmtime(&u);
-    static const char *mon[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    static const char *mon[12] = {tx(Txt::OptJan), tx(Txt::OptFeb), tx(Txt::OptMar), tx(Txt::OptApr), tx(Txt::OptMay), tx(Txt::OptJun), tx(Txt::OptJul), tx(Txt::OptAug), tx(Txt::OptSep), tx(Txt::OptOct), tx(Txt::OptNov), tx(Txt::OptDec)};
     if (!g)
         snprintf(b, n, "--");
     else if (withTime)
-        snprintf(b, n, "%s %02d %02d:%02d UTC", mon[g->tm_mon], g->tm_mday, g->tm_hour, g->tm_min);
+        snprintf(b, n, tx(Txt::FmtUtc5), mon[g->tm_mon], g->tm_mday, g->tm_hour, g->tm_min);
     else
         snprintf(b, n, "%s %02d", mon[g->tm_mon], g->tm_mday);
 }
@@ -186,7 +186,7 @@ void SatelliteSim::weatherCycloneMilestones(const wx::Cyclone &c, std::vector<Wx
 {
     out.clear();
     const size_t n = c.vmax.size();
-    out.push_back({c.t0, "Genesis (tropical depression)", 0});
+    out.push_back({c.t0, tx(Txt::TxtGenesisTropicalDepression), 0});
     int named = -1, hur = -1, major = -1, ri = -1;
     for (size_t i = 0; i < n; ++i)
     {
@@ -199,16 +199,16 @@ void SatelliteSim::weatherCycloneMilestones(const wx::Cyclone &c, std::vector<Wx
     char b[160];
     if (named >= 0)
     {
-        snprintf(b, sizeof(b), "%s %s", c.name.empty() ? "Tropical storm" : "Named", c.name.c_str());
+        snprintf(b, sizeof(b), "%s %s", c.name.empty() ? tx(Txt::TxtTropicalStorm) : tx(Txt::TxtNamed), c.name.c_str());
         out.push_back({c.t0 + named * wx::Cyclone::kStepS, b, 1});
     }
     if (hur >= 0)
         out.push_back({c.t0 + hur * wx::Cyclone::kStepS, strengthTerm(c.basin), 2});
     if (ri >= 0)
-        out.push_back({c.t0 + ri * wx::Cyclone::kStepS, "Rapid intensification begins (+15 m/s in 24 h)", 3});
+        out.push_back({c.t0 + ri * wx::Cyclone::kStepS, tx(Txt::TxtRapidIntensificationBegins15MS), 3});
     if (major >= 0)
-        out.push_back({c.t0 + major * wx::Cyclone::kStepS, "Category 3 (major)", 4});
-    snprintf(b, sizeof(b), "Peak: %s, %.0f m/s (%.0f kt), %.0f hPa", wx::cycloneCategoryName(catOf(c.vPeak), c.basin), c.vPeak,
+        out.push_back({c.t0 + major * wx::Cyclone::kStepS, tx(Txt::TxtCategory3Major), 4});
+    snprintf(b, sizeof(b), tx(Txt::FmtPeakMSKtHpa), wx::cycloneCategoryName(catOf(c.vPeak), c.basin), c.vPeak,
              c.vPeak * 1.944f, pressureOf(c.vPeak));
     out.push_back({c.tPeak, b, 5});
     int nLand = 0;
@@ -216,11 +216,11 @@ void SatelliteSim::weatherCycloneMilestones(const wx::Cyclone &c, std::vector<Wx
         if (c.overLand[i] && !c.overLand[i - 1])
         {
             const glm::dvec3 p = c.track[std::min(i, c.track.size() - 1)];
-            snprintf(b, sizeof(b), "Landfall%s at %.1f %s %.1f %s, %s", ++nLand > 1 ? " (again)" : "", std::abs(latOf(p)),
+            snprintf(b, sizeof(b), tx(Txt::FmtLandfallAt), ++nLand > 1 ? tx(Txt::TxtAgain) : "", std::abs(latOf(p)),
                      latOf(p) >= 0 ? "N" : "S", std::abs(lonOf(p)), lonOf(p) >= 0 ? "E" : "W", catShort(catOf(c.vmax[i])));
             out.push_back({c.t0 + i * wx::Cyclone::kStepS, b, 6});
         }
-    out.push_back({c.t0 + c.life, "Dissipation", 7});
+    out.push_back({c.t0 + c.life, tx(Txt::TxtDissipation), 7});
     std::stable_sort(out.begin(), out.end(), [](const WxMilestone &a, const WxMilestone &m) { return a.t < m.t; });
 }
 
@@ -241,15 +241,15 @@ bool SatelliteSim::weatherGoToCyclone(uint64_t id, int mode, std::string &msg)
     const wx::Cyclone *cp = weatherCycloneById(id);
     if (!cp)
     {
-        msg = "That cyclone is not listed";
+        msg = tx(Txt::ValThatCycloneIsNotListed);
         return false;
     }
     const wx::Cyclone c = *cp;   // (the lists may be refreshed below)
     const double t = (double)simDayJ2000 * kDayS + simSecInDay;
     if (mode != 3 && (t < c.t0 || t > c.t0 + c.life))
     {
-        msg = (c.name.empty() ? std::string("It") : c.name) + (t < c.t0 ? " has not formed yet (Watch jumps to its genesis)"
-                                                                       : " has dissipated (Watch replays its peak)");
+        msg = (c.name.empty() ? std::string(tx(Txt::TxtIt)) : c.name) + (t < c.t0 ? tx(Txt::TxtHasNotFormedYetWatchJumps)
+                                                                       : tx(Txt::TxtHasDissipatedWatchReplaysItsPeak));
         return false;
     }
     const glm::dvec3 e = c.earthAt(t);
@@ -265,14 +265,14 @@ bool SatelliteSim::weatherGoToCyclone(uint64_t id, int mode, std::string &msg)
         const glm::dvec3 E = tangentEast(e), N = glm::cross(e, E);
         const double ang = 60000.0 / kRe;
         standAt = glm::normalize(e * std::cos(ang) + (E * std::sin(bm) + N * std::cos(bm)) * std::sin(ang));
-        what = "60 km behind it";
+        what = tx(Txt::ValKmBehindIt);
     }
     else if (mode == 1)
     {
         alt = (float)std::clamp(1.6 * outerRadiusM(c, v), 700000.0, 2500000.0);
         down = true;
         fov = 60.0f;
-        what = "over the eye from orbit";
+        what = tx(Txt::ValOverTheEyeFromOrbit);
     }
     else if (mode == 2)
     {
@@ -280,7 +280,7 @@ bool SatelliteSim::weatherGoToCyclone(uint64_t id, int mode, std::string &msg)
         el = 14.0f;
         // Look across the eye toward the eyewall, ahead of the motion.
         lookAt = c.earthAt(t + 3 * 3600.0);
-        what = v >= 33.0f ? "in the eye" : "at the centre (no eye yet)";
+        what = v >= 33.0f ? tx(Txt::ValInTheEye) : tx(Txt::ValAtTheCentreNoEyeYet);
     }
     else
     {
@@ -295,14 +295,14 @@ bool SatelliteSim::weatherGoToCyclone(uint64_t id, int mode, std::string &msg)
             }
         if (iL < 0)
         {
-            msg = (c.name.empty() ? std::string("It") : c.name) + " never makes landfall";
+            msg = (c.name.empty() ? std::string("It") : c.name) + tx(Txt::ValNeverMakesLandfall);
             return false;
         }
         standAt = c.track[(size_t)iL];
         lookAt = (t >= c.t0 && t <= c.t0 + c.life) ? e : c.track[(size_t)std::max(0, iL - 6)];
         alt = 150.0f;
         el = 8.0f;
-        what = "at its landfall point";
+        what = tx(Txt::ValAtItsLandfallPoint);
     }
     if (followActive)
         stopFollow();
@@ -322,7 +322,7 @@ bool SatelliteSim::weatherGoToCyclone(uint64_t id, int mode, std::string &msg)
     cv2HistoryValid = false;
     wxSelCyclone = c.id;
     char b[200];
-    snprintf(b, sizeof(b), "%s (%s): %s", c.name.empty() ? "Tropical depression" : c.name.c_str(),
+    snprintf(b, sizeof(b), "%s (%s): %s", c.name.empty() ? tx(Txt::TxtTropicalDepression2) : c.name.c_str(),
              wx::cycloneCategoryName(catOf(v), c.basin), what);
     msg = b;
     return true;
@@ -334,7 +334,7 @@ bool SatelliteSim::weatherWatchCyclone(uint64_t id, std::string &msg)
     const wx::Cyclone *cp = weatherCycloneById(id);
     if (!cp)
     {
-        msg = "That cyclone is not listed";
+        msg = tx(Txt::ValThatCycloneIsNotListed);
         return false;
     }
     // Watch (2026-10-24, one button): alive now -> now; else (upcoming or gone) its peak, where it is at its strongest.
@@ -358,7 +358,7 @@ bool SatelliteSim::weatherWatchCyclone(uint64_t id, std::string &msg)
     timeDir = 1.0f;
     std::string m;
     const bool ok = weatherGoToCyclone(id, 1, m);
-    msg = std::string(dawn ? "In daylight: " : alive ? "" : "At its peak: ") + m;
+    msg = std::string(dawn ? tx(Txt::TxtInDaylight) : alive ? "" : tx(Txt::TxtAtItsPeak2)) + m;
     return ok;
 }
 
@@ -367,14 +367,14 @@ bool SatelliteSim::weatherCycloneMilestone(uint64_t id, int index, std::string &
     const wx::Cyclone *cp = weatherCycloneById(id);
     if (!cp)
     {
-        msg = "That cyclone is not listed";
+        msg = tx(Txt::ValThatCycloneIsNotListed);
         return false;
     }
     std::vector<WxMilestone> ms;
     weatherCycloneMilestones(*cp, ms);
     if (index < 0 || index >= (int)ms.size())
     {
-        msg = "No such milestone";
+        msg = tx(Txt::ValNoSuchMilestone);
         return false;
     }
     const WxMilestone m = ms[(size_t)index];
@@ -429,7 +429,7 @@ bool SatelliteSim::weatherCycloneMilestone(uint64_t id, int index, std::string &
         skyTaaHistValid = false;
         cv2HistoryValid = false;
         wxSelCyclone = c.id;
-        g = landNight ? "coming ashore, from just off the coast (at night)" : "coming ashore, from just off the coast";
+        g = landNight ? tx(Txt::ValComingAshoreFromJustOffThe2) : tx(Txt::ValComingAshoreFromJustOffThe);
         ok = true;
     }
     else
@@ -539,7 +539,7 @@ void SatelliteSim::buildWeatherCyclonesTab(const UIInput &inp, UIRenderer &ui, f
     };
     if (!stormObjects || stormCyclones <= 0.0f)
     {
-        text("Tropical cyclones are off (Settings > Weather: Storm objects, Tropical cyclones).", Pal::textDim, 11, true);
+        text(tx(Txt::NoteTropicalCyclonesAreOffSettingsWeather), Pal::textDim, 11, true);
         return;
     }
     const wx::Cyclone *sel = weatherCycloneById(wxSelCyclone);
@@ -674,17 +674,17 @@ void SatelliteSim::buildWeatherCyclonesTab(const UIInput &inp, UIRenderer &ui, f
         {
             for (int c = -1; c <= 5; ++c)
                 tag(200u + (uint32_t)(c + 1), catShort(c), ssClay(c), Pal::panelSolid);
-            text(wxStr(" track: bright = so far, faint = to come"), Pal::textDim, 10);
+            text(wxStr(tx(Txt::FmtTrackBrightSoFarFaintTo)), Pal::textDim, 10);
             CLAY(CLAY_ID("WxCycKeyGap"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}}) {}
-            if (uiButton(inp, ui, "WxCycZoom", 0, wxCycZoom ? "World" : "Zoom", wxCycZoom ? "The whole world" : "The selected storm's track"))
+            if (uiButton(inp, ui, "WxCycZoom", 0, wxCycZoom ? tx(Txt::BtnWorld) : tx(Txt::LblZoom), wxCycZoom ? tx(Txt::TipTheWholeWorld) : tx(Txt::TipTheSelectedStormsTrack)))
                 wxCycZoom = !wxCycZoom;
         }
     }
 
     // ── Active ──
-    uiSection("WxCSec", 0, wxStr("ACTIVE NOW (%zu)", wxCycActive.size()));
+    uiSection("WxCSec", 0, wxStr(tx(Txt::FmtActiveNow), wxCycActive.size()));
     if (wxCycActive.empty())
-        text("No tropical cyclone anywhere now.", Pal::textDim, 11);
+        text(tx(Txt::NoteNoTropicalCycloneAnywhereNow), Pal::textDim, 11);
     for (int i = 0; i < (int)wxCycActive.size(); ++i)
     {
         const wx::Cyclone &c = wxCycActive[(size_t)i];
@@ -717,18 +717,18 @@ void SatelliteSim::buildWeatherCyclonesTab(const UIInput &inp, UIRenderer &ui, f
                                                                .layoutDirection = CLAY_LEFT_TO_RIGHT}})
             {
                 tag(10u + (uint32_t)i, catShort(cat), ssClay(cat), Pal::panelSolid);
-                text(wxStr("%s", c.name.empty() ? "Tropical depression" : c.name.c_str()), Pal::textPrimary, 13);
+                text(wxStr("%s", c.name.empty() ? tx(Txt::TxtTropicalDepression2) : c.name.c_str()), Pal::textPrimary, 13);
                 text(wxStr("%s, %s", wx::cycloneCategoryName(cat, c.basin), basinShort(c.basin)), Pal::textDim, 11, true);
             }
-            text(wxStr("%.0f m/s (%.0f kt), %.0f hPa; moving %s at %.0f m/s; formed %s%s; %.0f km from you", v, v * 1.944f,
-                       pressureOf(v), compass(bearingTo(e, e2)), sp, age, land ? "; OVER LAND" : "", dist),
+            text(wxStr(tx(Txt::FmtMSKtHpaMovingAt), v, v * 1.944f,
+                       pressureOf(v), compass(bearingTo(e, e2)), sp, age, land ? tx(Txt::TxtOverLand) : "", dist),
                  Pal::textDim, 11, true);
             CLAY(CLAY_IDI("WxCRowB", (uint32_t)i), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                                                .childGap = 4,
                                                                .layoutDirection = CLAY_LEFT_TO_RIGHT}})
             {
                 (void)anyLandfall;
-                if (uiButton(inp, ui, "WxCWatch", i, "Watch", "The whole storm now, from orbit"))
+                if (uiButton(inp, ui, "WxCWatch", i, tx(Txt::BtnWatch), tx(Txt::TipTheWholeStormNowFromOrbit)))
                 {
                     wxCycPendingAct = 2;
                     wxCycPendingId = c.id;
@@ -743,9 +743,9 @@ void SatelliteSim::buildWeatherCyclonesTab(const UIInput &inp, UIRenderer &ui, f
         const wx::Cyclone &c = *sel;
         const bool alive = now >= c.t0 && now <= c.t0 + c.life;
         const float v = alive ? c.vmaxAt(now) : c.vPeak;
-        uiSection("WxCSec", 10, wxStr("%s%s", c.name.empty() ? "TROPICAL DEPRESSION" : c.name.c_str(),
-                                       alive ? "" : now < c.t0 ? " (UPCOMING)" : " (PAST)"));
-        text(wxStr("%s, season %d; %s %.0f m/s (%.0f kt), %.0f hPa", wx::cycloneBasinName(c.basin), c.year, alive ? "now" : "peak", v, v * 1.944f, pressureOf(v)),
+        uiSection("WxCSec", 10, wxStr("%s%s", c.name.empty() ? tx(Txt::TxtTropicalDepression) : c.name.c_str(),
+                                       alive ? "" : now < c.t0 ? tx(Txt::TxtUpcoming) : tx(Txt::TxtPast)));
+        text(wxStr(tx(Txt::FmtSeasonMSKtHpa), wx::cycloneBasinName(c.basin), c.year, alive ? "now" : "peak", v, v * 1.944f, pressureOf(v)),
              Pal::textDim, 11, true);
         static std::vector<WxMilestone> ms;
         static uint64_t msFor = 0;
@@ -780,8 +780,8 @@ void SatelliteSim::buildWeatherCyclonesTab(const UIInput &inp, UIRenderer &ui, f
                     text(wxStr("%s", m.label.c_str()), m.t <= now ? Pal::textDim : Pal::textPrimary, 11, true);
                     text(wxStr("%s (%s)", d, rel), Pal::textHint, 10);
                 }
-                if (uiButton(inp, ui, "WxMsSkip", i, "Watch",
-                             m.kind == 6 ? "It coming ashore, from just off the coast" : "That moment, the storm from orbit"))
+                if (uiButton(inp, ui, "WxMsSkip", i, tx(Txt::BtnWatch),
+                             m.kind == 6 ? tx(Txt::TipItComingAshoreFromJustOff) : tx(Txt::TipThatMomentTheStormFromOrbit)))
                 {
                     wxCycPendingAct = 3;
                     wxCycPendingArg = i;
@@ -792,11 +792,11 @@ void SatelliteSim::buildWeatherCyclonesTab(const UIInput &inp, UIRenderer &ui, f
     }
 
     // ── A basin's season ──
-    uiSection("WxCSec", 1, "SEASON");
+    uiSection("WxCSec", 1, tx(Txt::SecSeason));
     {
-        static const char *kB[6] = {"N Atl", "E Pac", "W Pac", "N Ind", "SW Ind", "Aus/SP"};
+        static const char *kB[6] = {tx(Txt::OptNAtl), tx(Txt::OptEPac), tx(Txt::OptWPac), tx(Txt::OptNInd), tx(Txt::OptSwInd), tx(Txt::OptAusSp)};
         const int b = wxCycBasin >= 0 ? wxCycBasin : (!wxCycActive.empty() ? wxCycActive.front().basin : 0);
-        const int p = uiChoiceRow(inp, ui, "WxCBasin", 0, "Basin", kB, 6, b, "The basin whose season is listed");
+        const int p = uiChoiceRow(inp, ui, "WxCBasin", 0, tx(Txt::LblBasin), kB, 6, b, tx(Txt::TipTheBasinWhoseSeasonIsListed));
         if (p >= 0)
         {
             wxCycBasin = p;
@@ -804,7 +804,7 @@ void SatelliteSim::buildWeatherCyclonesTab(const UIInput &inp, UIRenderer &ui, f
         }
     }
     if (wxCycSeason.empty())
-        text("No systems in this basin within ~200 days.", Pal::textDim, 11);
+        text(tx(Txt::NoteNoSystemsInThisBasinWithin), Pal::textDim, 11);
     for (int i = 0; i < (int)wxCycSeason.size() && i < 40; ++i)
     {
         const wx::Cyclone &c = wxCycSeason[(size_t)i];
@@ -827,14 +827,14 @@ void SatelliteSim::buildWeatherCyclonesTab(const UIInput &inp, UIRenderer &ui, f
                                                                  .childGap = 1,
                                                                  .layoutDirection = CLAY_TOP_TO_BOTTOM}})
             {
-                text(wxStr("%s%s", c.name.empty() ? "(depression)" : c.name.c_str(), alive ? "  ACTIVE" : ""),
+                text(wxStr("%s%s", c.name.empty() ? tx(Txt::TxtDepression) : c.name.c_str(), alive ? tx(Txt::TxtActive) : ""),
                      alive ? Pal::textPrimary : Pal::volValue, 12);
-                text(wxStr("%s - %s %d, peak %.0f m/s; %s %s", d0, d1, c.year, c.vPeak, now < c.t0 ? "forms" : "formed", rel),
+                text(wxStr(tx(Txt::FmtPeakMS), d0, d1, c.year, c.vPeak, now < c.t0 ? "forms" : "formed", rel),
                      Pal::textHint, 10, true);
             }
             if (Clay_Hovered() && inp.lmbPressed)
                 wxSelCyclone = c.id;   // (a click on the row shows its track and milestones)
-            if (uiButton(inp, ui, "WxSeasonWatch", i, "Watch", alive ? "The whole storm now, from orbit" : "The storm at its peak, from orbit"))
+            if (uiButton(inp, ui, "WxSeasonWatch", i, tx(Txt::BtnWatch), alive ? tx(Txt::TipTheWholeStormNowFromOrbit) : tx(Txt::TipTheStormAtItsPeakFrom)))
             {
                 wxCycPendingAct = 2;
                 wxCycPendingId = c.id;
@@ -842,17 +842,17 @@ void SatelliteSim::buildWeatherCyclonesTab(const UIInput &inp, UIRenderer &ui, f
         }
     }
     // ── Next genesis per basin ──
-    uiSection("WxCSec", 2, "NEXT TO FORM");
+    uiSection("WxCSec", 2, tx(Txt::SecNextToForm));
     for (int i = 0; i < (int)wxCycNext.size(); ++i)
     {
         const wx::Cyclone &c = wxCycNext[(size_t)i];
         char rel[48];
         fmtRel(c.t0 - now, rel, sizeof(rel));
         uiKV("WxNext", i, basinShort(c.basin),
-             wxStr("%s, forms %s (peak %s)", c.name.empty() ? "a depression" : c.name.c_str(), rel,
+             wxStr(tx(Txt::FmtFormsPeak), c.name.empty() ? tx(Txt::TxtADepression) : c.name.c_str(), rel,
                    wx::cycloneCategoryName(catOf(c.vPeak), c.basin)));
     }
-    text("Every cyclone's whole track is fixed when it forms (a pure function of sim time): the forecast IS its future.",
+    text(tx(Txt::NoteEveryCyclonesWholeTrackIsFixed),
          Pal::textHint, 10, true);
 }
 

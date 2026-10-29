@@ -28,19 +28,19 @@ bool SatelliteSim::videoStart(const VideoRecordOptions &o, bool byHarness, std::
 {
     if (!ctx_)
     {
-        err = "no Vulkan context";
+        err = tx(Txt::ValNoVulkanContext);
         return false;
     }
     if (video_.busy())
     {
-        err = video_.recording() ? "already recording" : "the previous video is still being written";
+        err = video_.recording() ? tx(Txt::ValAlreadyRecording) : tx(Txt::ValThePreviousVideoIsStillBeing);
         return false;
     }
     // The swapchain's size (the photo target is never recorded: App skips the copy while it is up).
     const uint32_t w = ctx_->photoActive ? 0 : ctx_->swapExtent.width, h = ctx_->photoActive ? 0 : ctx_->swapExtent.height;
     if (w < 16 || h < 16)
     {
-        err = "no window to record (minimised, or an HQ photo is being taken)";
+        err = tx(Txt::ValNoWindowToRecordMinimisedOr);
         return false;
     }
     const double t0 = harness::nowS();
@@ -70,7 +70,7 @@ void SatelliteSim::videoToggle()
         video_.stop();
         if (!videoByHarness_)
         {
-            snprintf(screenshotToastText, sizeof(screenshotToastText), "Finishing the video...");
+            snprintf(screenshotToastText, sizeof(screenshotToastText), tx(Txt::ToastFinishingTheVideo));
             screenshotToastTimer = 2.0f;
             screenshotToastWarn = false;
         }
@@ -99,12 +99,12 @@ void SatelliteSim::videoToggle()
     std::string err;
     if (!videoStart(o, false, err))
     {
-        snprintf(screenshotToastText, sizeof(screenshotToastText), "Video failed: %.120s", err.c_str());
+        snprintf(screenshotToastText, sizeof(screenshotToastText), tx(Txt::ToastVideoFailed), err.c_str());
         screenshotToastTimer = 5.0f;
         screenshotToastWarn = true;
         return;
     }
-    snprintf(screenshotToastText, sizeof(screenshotToastText), "Recording video (%s to stop)",
+    snprintf(screenshotToastText, sizeof(screenshotToastText), tx(Txt::ToastRecordingVideoToStop),
              keyDisplayName(keybindings[KB_VIDEO].key));
     screenshotToastTimer = 2.5f;
     screenshotToastWarn = false;
@@ -186,10 +186,10 @@ void SatelliteSim::videoAfterFence()
         if (!videoByHarness_)
         {
             if (r.contains("error"))
-                snprintf(screenshotToastText, sizeof(screenshotToastText), "Video failed: %.120s",
+                snprintf(screenshotToastText, sizeof(screenshotToastText), tx(Txt::ToastVideoFailed),
                          r["error"].get<std::string>().c_str());
             else
-                snprintf(screenshotToastText, sizeof(screenshotToastText), "Saved %s (%.0f s)",
+                snprintf(screenshotToastText, sizeof(screenshotToastText), tx(Txt::ToastSavedS),
                          fs::path(videoLastFile_).filename().string().c_str(), r.value("duration_s", 0.0));
             screenshotToastTimer = 4.0f;
             screenshotToastWarn = r.contains("error");
@@ -208,10 +208,10 @@ void SatelliteSim::buildVideoHud(const UIInput &inp, UIRenderer &ui)
     static char buf[96];
     const double s = video_.secondsRecorded();
     if (video_.recording())
-        snprintf(buf, sizeof(buf), "REC  %d:%02d   %s to stop", (int)s / 60, (int)s % 60,
+        snprintf(buf, sizeof(buf), tx(Txt::FmtRecToStop), (int)s / 60, (int)s % 60,
                  keyDisplayName(keybindings[KB_VIDEO].key));
     else
-        snprintf(buf, sizeof(buf), "Writing the video...");
+        snprintf(buf, sizeof(buf), tx(Txt::FmtWritingTheVideo));
     Clay_String str{false, (int32_t)strlen(buf), buf};
     CLAY(CLAY_ID("VideoRecBadge"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)}, .padding = {10, 10, 5, 5}},
                                     .backgroundColor = Pal::recActive,

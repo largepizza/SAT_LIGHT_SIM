@@ -181,10 +181,10 @@ void SatelliteSim::reportsLoad()
             auto str = [&](const char *k) { return rep.contains(k) && rep[k].is_string() ? rep[k].get<std::string>() : std::string(); };
             const std::string commit = str("resolution_commit"), by = str("resolved_by"), when = str("resolved_utc"), claim = str("claimed_by");
             if (!is.resolution.empty())
-                snprintf(is.resLine, sizeof(is.resLine), "%s%s%s%s%s%s", commit.empty() ? "Resolved" : "Resolved in ", commit.c_str(),
-                         by.empty() ? "" : " by ", by.c_str(), when.empty() ? "" : ", ", when.c_str());
+                snprintf(is.resLine, sizeof(is.resLine), "%s%s%s%s%s%s", commit.empty() ? tx(Txt::TxtResolved) : tx(Txt::TxtResolvedIn), commit.c_str(),
+                         by.empty() ? "" : tx(Txt::TxtBy), by.c_str(), when.empty() ? "" : ", ", when.c_str());
             else if (!claim.empty())
-                snprintf(is.resLine, sizeof(is.resLine), "Being looked at by %s", claim.c_str());
+                snprintf(is.resLine, sizeof(is.resLine), tx(Txt::FmtBeingLookedAtBy), claim.c_str());
         }
         for (const json &s : rep["shots"])
         {
@@ -216,14 +216,14 @@ void SatelliteSim::reportsLoad()
             {
                 const json &rec = s["record"];
                 if (rec.contains("sim_time"))
-                    snprintf(sh.meta[0], sizeof(sh.meta[0]), "%.16s UTC", rec["sim_time"].value("utc", std::string("-")).c_str());
+                    snprintf(sh.meta[0], sizeof(sh.meta[0]), tx(Txt::FmtUtc6), rec["sim_time"].value("utc", std::string("-")).c_str());
                 if (rec.contains("observer"))
                 {
                     const double lat = rec["observer"].value("lat_deg", 0.0), lon = rec["observer"].value("lon_deg", 0.0);
                     const double alt = rec["observer"].value("height_offset_m", 0.0);
                     char a[24];
                     if (alt >= 1000.0)
-                        snprintf(a, sizeof(a), "%.1f km", alt / 1000.0);
+                        snprintf(a, sizeof(a), tx(Txt::FmtKm4), alt / 1000.0);
                     else
                         snprintf(a, sizeof(a), "%.0f m", alt);
                     snprintf(sh.meta[1], sizeof(sh.meta[1]), "%.2f %c  %.2f %c  %s", std::abs(lat), lat >= 0.0 ? 'N' : 'S', std::abs(lon),
@@ -242,7 +242,7 @@ void SatelliteSim::reportsLoad()
                 }
             is.shots.push_back(std::move(sh));
         }
-        snprintf(is.line, sizeof(is.line), "%d shot%s   %s   %s", (int)is.shots.size(), is.shots.size() == 1 ? "" : "s",
+        snprintf(is.line, sizeof(is.line), tx(Txt::FmtShot3), (int)is.shots.size(), is.shots.size() == 1 ? "" : "s",
                  is.category.empty() ? "uncategorised" : is.category.c_str(), is.status.c_str());
         reportIssues_.push_back(std::move(is));
     }
@@ -552,11 +552,11 @@ void SatelliteSim::reportGo(const std::string &id, int shot, bool withSettings)
                 harnessApplyViewRecord(s["record"], withSettings, true, false);
                 skyTaaHistValid = false; // a cut
                 cv2HistoryValid = false;
-                reportStatus_ = withSettings ? "At the shot's view, with its settings (time paused)" : "At the shot's view (time paused)";
+                reportStatus_ = withSettings ? tx(Txt::ValAtTheShotsViewWithIts) : tx(Txt::ValAtTheShotsViewTimePaused);
             }
             catch (const std::exception &e)
             {
-                reportStatus_ = std::string("Could not go there: ") + e.what();
+                reportStatus_ = std::string(tx(Txt::TxtCouldNotGoThere)) + e.what();
             }
             return;
         }
@@ -610,7 +610,7 @@ void SatelliteSim::reportSetRect(const std::string &id, int shot, bool set, floa
         fs::remove(dir / cropName(img), ec);
         // The PNG is written by the screenshot thread: never read one while a capture is in flight.
         if (set && (screenshotEncoding.load() || screenshotCopyPending || screenshotRequested))
-            reportStatus_ = "Area marked. Its crop was not written (a shot is still being saved): mark it again in a moment";
+            reportStatus_ = tx(Txt::ValAreaMarkedItsCropWasNot);
         else if (set)
         {
             int iw = 0, ih = 0, n = 0;
@@ -808,12 +808,12 @@ std::string SatelliteSim::reportExportZip(const std::string &id)
     json rep;
     if (id.empty() || !satreport::read(dir, rep))
     {
-        reportStatus_ = "Export: the issue could not be read";
+        reportStatus_ = tx(Txt::ValExportTheIssueCouldNotBe);
         return {};
     }
     if (screenshotEncoding.load() || screenshotCopyPending || screenshotRequested)
     {
-        reportStatus_ = "Export: a shot is still being written, try again in a moment";
+        reportStatus_ = tx(Txt::ValExportAShotIsStillBeing);
         return {};
     }
     // Sent, once it leaves (an issue already fixed / closed keeps its status).
@@ -827,7 +827,7 @@ std::string SatelliteSim::reportExportZip(const std::string &id)
     z.f.open(out, std::ios::binary | std::ios::trunc);
     if (!z.f)
     {
-        reportStatus_ = "Export: could not write " + out.string();
+        reportStatus_ = tx(Txt::ValExportCouldNotWrite) + out.string();
         return {};
     }
     // The folder's own files (flat: report.json, the shots, their thumbnails, anything a resolution added).
@@ -858,10 +858,10 @@ std::string SatelliteSim::reportExportZip(const std::string &id)
     }
     if (!z.finish())
     {
-        reportStatus_ = "Export: writing " + out.string() + " failed";
+        reportStatus_ = tx(Txt::ValExportWriting) + out.string() + tx(Txt::ValFailed);
         return {};
     }
-    reportStatus_ = "Exported " + out.filename().string() + " (in report_exports): send that file";
+    reportStatus_ = tx(Txt::ValExported) + out.filename().string() + tx(Txt::ValInReportExportsSendThatFile);
     Log::line("report: exported " + out.string());
     return out.string();
 }
@@ -901,7 +901,7 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
     float rectX = 0.0f, rectY = 0.0f, rectW = 0.0f, rectH = 0.0f;
 
     static char titleBuf[64];
-    snprintf(titleBuf, sizeof(titleBuf), view ? "Issue report" : "Issue reports (%d)", (int)reportIssues_.size());
+    snprintf(titleBuf, sizeof(titleBuf), view ? tx(Txt::FmtIssueReport) : tx(Txt::FmtIssueReports), (int)reportIssues_.size());
 
     buildResizableWindow(
         inp, ui, rpChrome, 7, titleBuf, true, hovRpClose, (inp.screenW - rpChrome.w) * 0.5f, 90.0f, 560.0f, 320.0f, 1600.0f, 1400.0f,
@@ -920,23 +920,23 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                                                           .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                           .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                     {
-                        if (uiButton(inp, ui, "RpNew", 0, "New issue from this view", "Take a snapshot of the view as it is and start an issue with it"))
+                        if (uiButton(inp, ui, "RpNew", 0, tx(Txt::BtnNewIssueFromThisView), tx(Txt::TipTakeASnapshotOfTheView)))
                             newIssue = true;
-                        if (uiButton(inp, ui, "RpFolder", 0, "Open folder", "The reports folder: one folder per issue"))
+                        if (uiButton(inp, ui, "RpFolder", 0, tx(Txt::BtnOpenFolder), tx(Txt::TipTheReportsFolderOneFolderPer)))
                             folder = reportDir();
-                        if (uiButton(inp, ui, "RpRefresh", 0, "Refresh", "Read the reports again (an agent or a tool may have resolved one)"))
+                        if (uiButton(inp, ui, "RpRefresh", 0, tx(Txt::BtnRefresh), tx(Txt::TipReadTheReportsAgainAnAgent)))
                             refresh = true;
                     }
                     {
                         char k1[24], k2[24];
                         snprintf(k1, sizeof(k1), "%s", keyDisplayName(keybindings[KB_SAVE_SNAPSHOT].key));
                         snprintf(k2, sizeof(k2), "%s", keyDisplayName(keybindings[KB_REPORT_NEW].key));
-                        text(uiKitStr("%s adds a shot to the active issue, %s starts a new one.", k1, k2), Pal::textHint, 11);
+                        text(uiKitStr(tx(Txt::FmtAddsAShotToTheActive), k1, k2), Pal::textHint, 11);
                     }
                     // The Display tab's setting, here too: shots with the UI show the windows you had open (a trace,
                     // the info window); this window and the note bar are always left out of them.
-                    uiToggleRow(inp, ui, "RpShotUi", 0, "Shots include the UI", reportShotUiSetting,
-                                "Keep the windows and panels you had open in the shot (this window and the note bar are left out)");
+                    uiToggleRow(inp, ui, "RpShotUi", 0, tx(Txt::LblShotsIncludeTheUi), reportShotUiSetting,
+                                tx(Txt::TipKeepTheWindowsAndPanelsYou));
                     if (!reportStatus_.empty())
                         text(reportStatus_.c_str(), {230, 190, 120, 255}, 11);
                     CLAY(CLAY_ID("RpList"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
@@ -946,7 +946,7 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                                              .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}})
                     {
                         if (reportIssues_.empty())
-                            text("No issues yet", Pal::textDim, 12);
+                            text(tx(Txt::NoteNoIssuesYet), Pal::textDim, 12);
                         const Clay_ElementData ld = Clay_GetElementData(CLAY_ID("RpList"));
                         const float listW = std::max(200.0f, (ld.found ? ld.boundingBox.width : rpChrome.w - 24.0f) - 8.0f);
                         const float gap = 8.0f, wantW = (float)fs(11) * 18.0f;
@@ -980,7 +980,7 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                                         {
                                             const bool n = Clay_Hovered();
                                             uiHovRoll(tid.id, n);
-                                            ui.tooltip(inp, n, "Open this issue", fs(11));
+                                            ui.tooltip(inp, n, tx(Txt::TipOpenThisIssue), fs(11));
                                             if (n && inp.lmbPressed)
                                                 openId = is.id;
                                             ReportShotInfo *first = is.shots.empty() ? nullptr : &is.shots.front();
@@ -994,12 +994,12 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                                                                                  .custom = {.customData = &first->img}}) {}
                                             }
                                             else
-                                                text(first ? (first->thumbTried ? "No image" : "...") : "No shots", Pal::textHint, 11);
+                                                text(first ? (first->thumbTried ? tx(Txt::NoteNoImage) : "...") : tx(Txt::NoteNoShots), Pal::textHint, 11);
                                         }
                                         CLAY(CLAY_IDI("RpCardTitle", i), {.layout = {.sizing = {CLAY_SIZING_FIXED(imgW), CLAY_SIZING_FIT(0)}},
                                                                           .clip = {.horizontal = true}})
                                         {
-                                            text(is.title.empty() ? "(untitled)" : is.title.c_str(), Pal::textPrimary, 12);
+                                            text(is.title.empty() ? tx(Txt::NoteUntitled) : is.title.c_str(), Pal::textPrimary, 12);
                                         }
                                         // "fixed" = resolved and waiting for the reporter to verify: stands out.
                                         text(is.line, is.status == "fixed" ? Pal::textOk : (active ? Pal::volValue : Pal::textDim), 11);
@@ -1007,15 +1007,15 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                                                                                     .childGap = 4,
                                                                                     .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                                         {
-                                            if (uiButton(inp, ui, "RpOpen", i, "Open", "Its description and shots", false, true, true))
+                                            if (uiButton(inp, ui, "RpOpen", i, tx(Txt::BtnOpen), tx(Txt::TipItsDescriptionAndShots), false, true, true))
                                                 openId = is.id;
-                                            if (uiButton(inp, ui, "RpAct", i, active ? "Active" : "Make active",
-                                                         active ? "New shots (the snapshot key) go to this issue" : "Send new shots (the snapshot key) to this issue",
+                                            if (uiButton(inp, ui, "RpAct", i, active ? tx(Txt::BtnActive) : tx(Txt::BtnMakeActive),
+                                                         active ? tx(Txt::TipNewShotsTheSnapshotKeyGo) : tx(Txt::TipSendNewShotsTheSnapshotKey),
                                                          active, true, true))
                                                 activeId = is.id;
                                             const bool armed = reportDeleteArmed_ == is.id;
-                                            if (uiButton(inp, ui, "RpDel", i, armed ? "Confirm" : "Delete",
-                                                         armed ? "Click again to delete the issue and its images" : "Delete (asks once more)", armed, true, true))
+                                            if (uiButton(inp, ui, "RpDel", i, armed ? tx(Txt::BtnConfirm) : tx(Txt::BtnDelete),
+                                                         armed ? tx(Txt::TipClickAgainToDeleteTheIssue) : tx(Txt::TipDeleteAsksOnceMore), armed, true, true))
                                             {
                                                 delClicked = true;
                                                 if (armed)
@@ -1043,19 +1043,19 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                                                         .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                         .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                     {
-                        if (uiButton(inp, ui, "RpBack", 0, "< Issues", "Back to the list"))
+                        if (uiButton(inp, ui, "RpBack", 0, tx(Txt::BtnIssues), tx(Txt::TipBackToTheList)))
                             back = true;
-                        if (uiButton(inp, ui, "RpAct", 1000, active ? "Active" : "Make active",
-                                     active ? "New shots (the snapshot key) go to this issue" : "Send new shots (the snapshot key) to this issue", active))
+                        if (uiButton(inp, ui, "RpAct", 1000, active ? tx(Txt::BtnActive) : tx(Txt::BtnMakeActive),
+                                     active ? tx(Txt::TipNewShotsTheSnapshotKeyGo) : tx(Txt::TipSendNewShotsTheSnapshotKey), active))
                             activeId = is.id;
-                        if (uiButton(inp, ui, "RpFolder", 1, "Open folder", "This issue's folder"))
+                        if (uiButton(inp, ui, "RpFolder", 1, tx(Txt::BtnOpenFolder), tx(Txt::TipThisIssuesFolder)))
                             folder = (fs::path(reportDir()) / is.id).string();
-                        if (uiButton(inp, ui, "RpExport", 0, "Export zip",
-                                     "One file to send: the report, its images and the end of the session log (marks an open issue Sent)"))
+                        if (uiButton(inp, ui, "RpExport", 0, tx(Txt::BtnExportZip),
+                                     tx(Txt::TipOneFileToSendTheReport)))
                             exportId = is.id;
                         const bool armed = reportDeleteArmed_ == is.id;
-                        if (uiButton(inp, ui, "RpDel", 1000, armed ? "Confirm delete" : "Delete issue",
-                                     armed ? "Click again to delete the issue and its images" : "Delete (asks once more)", armed))
+                        if (uiButton(inp, ui, "RpDel", 1000, armed ? tx(Txt::BtnConfirmDelete) : tx(Txt::BtnDeleteIssue),
+                                     armed ? tx(Txt::TipClickAgainToDeleteTheIssue) : tx(Txt::TipDeleteAsksOnceMore), armed))
                         {
                             delClicked = true;
                             if (armed)
@@ -1077,9 +1077,9 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                                                                 .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                                 .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                         {
-                            text("Title", Pal::textDim, 11);
+                            text(tx(Txt::NoteTitle), Pal::textDim, 11);
                             std::string t = is.title;
-                            if (textField(inp, ui, CLAY_ID("RpTitle"), t, bodyW - (float)fs(11) * 4.0f, 13, "The issue in a few words", kReportTitleMax))
+                            if (textField(inp, ui, CLAY_ID("RpTitle"), t, bodyW - (float)fs(11) * 4.0f, 13, tx(Txt::TxtTheIssueInAFewWords), kReportTitleMax))
                                 reportSetField(is.id, 0, "title", t);
                             reportNoteEditTarget(CLAY_ID("RpTitle").id, is.id, 0, "title", kReportTitleMax, false);
                         }
@@ -1087,22 +1087,22 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                         for (int k = 0; k < 9; ++k)
                             if (is.category == kCategories[k])
                                 cur = k;
-                        const int pc = uiChoiceRow(inp, ui, "RpCat", 0, "Category", kCategoryLabels, 9, cur,
-                                                   "Which part of the sim it is about (it decides who looks at it)");
+                        const int pc = uiChoiceRow(inp, ui, "RpCat", 0, tx(Txt::LblCategory), kCategoryLabels, 9, cur,
+                                                   tx(Txt::TipWhichPartOfTheSimIt));
                         if (pc >= 0)
                             reportSetField(is.id, 0, "category", kCategories[pc]);
                         cur = -1;
                         for (int k = 0; k < 4; ++k)
                             if (is.status == kStatuses[k])
                                 cur = k;
-                        const int ps = uiChoiceRow(inp, ui, "RpStat", 0, "Status", kStatusLabels, 4, cur);
+                        const int ps = uiChoiceRow(inp, ui, "RpStat", 0, tx(Txt::LblStatus), kStatusLabels, 4, cur);
                         if (ps >= 0)
                             reportSetField(is.id, 0, "status", kStatuses[ps]);
                         if (!is.resolution.empty() || is.resLine[0])
                         {
                             // What whoever worked on it wrote back (tools/harness/reports.py resolve): go and look
                             // (Go on a shot), then set Closed, or Open again if it is not fixed.
-                            uiSection("RpSec", 3, "RESOLUTION");
+                            uiSection("RpSec", 3, tx(Txt::SecResolution));
                             if (is.resLine[0])
                                 text(is.resLine, Pal::textDim, 11);
                             if (!is.resolution.empty())
@@ -1114,11 +1114,11 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                             }
                         }
 
-                        uiSection("RpSec", 0, "DESCRIPTION");
+                        uiSection("RpSec", 0, tx(Txt::SecDescription));
                         {
                             std::string d = is.description;
                             if (textArea(inp, ui, CLAY_ID("RpDesc"), d, bodyW, 5, 12,
-                                         "What is wrong, what you expected to see, and how to see it (click to type; Ctrl+Enter or a click elsewhere saves)",
+                                         tx(Txt::TxtWhatIsWrongWhatYouExpected),
                                          kReportDescMax, 16))
                                 reportSetField(is.id, 0, "description", d);
                             reportNoteEditTarget(CLAY_ID("RpDesc").id, is.id, 0, "description", kReportDescMax, true);
@@ -1131,7 +1131,7 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                                 selS = &s;
                         if (selS)
                         {
-                            uiSection("RpSec", 2, uiKitStr("SHOT %d", selS->n));
+                            uiSection("RpSec", 2, uiKitStr(tx(Txt::FmtShot2), selS->n));
                             const bool have = thumbs && reportPreviewOk_ && reportPreviewKey_ == is.id + "/" + std::to_string(selS->n);
                             const float aspect = selS->imgW > 0 && selS->imgH > 0 ? (float)selS->imgH / (float)selS->imgW : 9.0f / 16.0f;
                             const float pw = bodyW, ph = std::floor(pw * aspect);
@@ -1174,7 +1174,7 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                                                          .backgroundColor = Pal::insetBg})
                             {
                                 if (!have)
-                                    text(selS->image.empty() ? "This shot has no image" : (reportPreviewKey_.empty() ? "..." : "The image could not be read"),
+                                    text(selS->image.empty() ? tx(Txt::NoteThisShotHasNoImage) : (reportPreviewKey_.empty() ? "..." : tx(Txt::TxtTheImageCouldNotBeRead)),
                                          Pal::textHint, 11);
                                 else
                                 {
@@ -1223,23 +1223,23 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                                                                   .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                                   .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                             {
-                                text("Click the image to pin a point, drag to mark an area.", Pal::textHint, 11);
-                                if (selS->hasPin && uiButton(inp, ui, "RpPinClear", 0, "Clear pin", "Remove the point"))
+                                text(tx(Txt::NoteClickTheImageToPinA), Pal::textHint, 11);
+                                if (selS->hasPin && uiButton(inp, ui, "RpPinClear", 0, tx(Txt::BtnClearPin), tx(Txt::TipRemoveThePoint)))
                                     clearPin = true;
-                                if (selS->hasRect && uiButton(inp, ui, "RpRectClear", 0, "Clear area", "Remove the area and its crop"))
+                                if (selS->hasRect && uiButton(inp, ui, "RpRectClear", 0, tx(Txt::BtnClearArea), tx(Txt::TipRemoveTheAreaAndItsCrop)))
                                     clearRect = true;
                             }
                             if (selS->hasPin || selS->hasRect)
                             {
-                                const char *a = selS->hasPin ? uiKitStr("Pin at %.0f%%, %.0f%%.", selS->pinX * 100.0f, selS->pinY * 100.0f) : "";
-                                const char *b = selS->hasRect ? uiKitStr("Area %.0f%% x %.0f%% of the frame at %.0f%%, %.0f%% (saved as its own crop image).",
+                                const char *a = selS->hasPin ? uiKitStr(tx(Txt::FmtPinAt), selS->pinX * 100.0f, selS->pinY * 100.0f) : "";
+                                const char *b = selS->hasRect ? uiKitStr(tx(Txt::FmtAreaXOfTheFrameAt),
                                                                          selS->rectW * 100.0f, selS->rectH * 100.0f, selS->rectX * 100.0f, selS->rectY * 100.0f)
                                                               : "";
                                 text(uiKitStr("%s%s%s", a, *a && *b ? "  " : "", b), Pal::textHint, 11);
                             }
                         }
 
-                        uiSection("RpSec", 1, uiKitStr("SHOTS (%d)", (int)is.shots.size()));
+                        uiSection("RpSec", 1, uiKitStr(tx(Txt::FmtShots), (int)is.shots.size()));
                         const float tW = (float)fs(11) * 12.0f, tH = std::floor(tW * kRpThumbH / (float)kRpThumbW);
                         for (int i = 0; i < (int)is.shots.size(); ++i)
                         {
@@ -1261,7 +1261,7 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                                 {
                                     const bool n = Clay_Hovered();
                                     uiHovRoll(tid.id, n);
-                                    ui.tooltip(inp, n, "Show this shot below", fs(11));
+                                    ui.tooltip(inp, n, tx(Txt::TipShowThisShotBelow), fs(11));
                                     if (n && inp.lmbPressed)
                                         selShot = s.n;
                                     s.onScreen = rpBoxVisible(tid, CLAY_ID("RpView"));
@@ -1273,35 +1273,35 @@ void SatelliteSim::buildReportsWindow(const UIInput &inp, UIRenderer &ui)
                                                                         .custom = {.customData = &s.img}}) {}
                                     }
                                     else
-                                        text(s.thumbTried || s.image.empty() ? "No image" : "...", Pal::textHint, 11);
+                                        text(s.thumbTried || s.image.empty() ? tx(Txt::NoteNoImage) : "...", Pal::textHint, 11);
                                 }
                                 CLAY(CLAY_IDI("RpShotCol", i), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                                                            .childGap = 4,
                                                                            .layoutDirection = CLAY_TOP_TO_BOTTOM}})
                                 {
-                                    text(uiKitStr("Shot %d    %s    %s%s", s.n, s.meta[0], s.meta[1], s.hasPin || s.hasRect ? "    marked" : ""), Pal::volValue, 11);
+                                    text(uiKitStr(tx(Txt::FmtShot), s.n, s.meta[0], s.meta[1], s.hasPin || s.hasRect ? tx(Txt::TxtMarked) : ""), Pal::volValue, 11);
                                     std::string note = s.note;
                                     // Three lines that grow to nine, then scroll.
                                     if (textArea(inp, ui, CLAY_IDI("RpShotNote", i), note, std::max(120.0f, bodyW - tW - 36.0f), 3, 12,
-                                                 "What this shot shows (click to type)", kReportNoteMax, 9))
+                                                 tx(Txt::TxtWhatThisShotShowsClickTo), kReportNoteMax, 9))
                                         reportSetField(is.id, s.n, "note", note);
                                     reportNoteEditTarget(CLAY_IDI("RpShotNote", i).id, is.id, s.n, "note", kReportNoteMax, true);
                                     CLAY(CLAY_IDI("RpShotBtns", i), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
                                                                                 .childGap = 4,
                                                                                 .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                                     {
-                                        if (uiButton(inp, ui, "RpGo", i, "Go", "Stand in this shot's view: place, camera, moment (paused) and clouds"))
+                                        if (uiButton(inp, ui, "RpGo", i, tx(Txt::BtnGo), tx(Txt::TipStandInThisShotsViewPlace)))
                                             goShot = s.n;
-                                        if (uiButton(inp, ui, "RpGoSet", i, "Go + settings",
-                                                     "The same, and switch to the settings the shot was taken with (they replace yours)"))
+                                        if (uiButton(inp, ui, "RpGoSet", i, tx(Txt::BtnGoSettings),
+                                                     tx(Txt::TipTheSameAndSwitchToThe)))
                                         {
                                             goShot = s.n;
                                             goSettings = true;
                                         }
                                         const std::string armKey = is.id + "#" + std::to_string(s.n);
                                         const bool armed = reportDeleteArmed_ == armKey;
-                                        if (uiButton(inp, ui, "RpShotDel", i, armed ? "Confirm" : "Delete",
-                                                     armed ? "Click again to delete this shot and its image" : "Delete this shot (asks once more)", armed))
+                                        if (uiButton(inp, ui, "RpShotDel", i, armed ? tx(Txt::BtnConfirm) : tx(Txt::BtnDelete),
+                                                     armed ? tx(Txt::TipClickAgainToDeleteThisShot) : tx(Txt::TipDeleteThisShotAsksOnceMore), armed))
                                         {
                                             delClicked = true;
                                             if (armed)

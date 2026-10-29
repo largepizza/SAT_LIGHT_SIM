@@ -102,7 +102,7 @@ void fmtUtc(double tJ2000, char *buf, size_t n)
     if (!u)
         snprintf(buf, n, "--");
     else
-        snprintf(buf, n, "%04d-%02d-%02d %02d:%02d UTC", u->tm_year + 1900, u->tm_mon + 1, u->tm_mday, u->tm_hour, u->tm_min);
+        snprintf(buf, n, tx(Txt::FmtUtc3), u->tm_year + 1900, u->tm_mon + 1, u->tm_mday, u->tm_hour, u->tm_min);
 }
 
 // 1,234 / 45.6k / 1.23M
@@ -123,13 +123,13 @@ void fmtCount(double v, char *b, size_t n)
 void fmtAgo(double s, char *b, size_t n)
 {
     if (s < 120.0)
-        snprintf(b, n, "%.0f s ago", s);
+        snprintf(b, n, tx(Txt::FmtSAgo), s);
     else if (s < 7200.0)
-        snprintf(b, n, "%.0f min ago", s / 60.0);
+        snprintf(b, n, tx(Txt::FmtMinAgo), s / 60.0);
     else if (s < 3.0 * 86400.0)
-        snprintf(b, n, "%.1f h ago", s / 3600.0);
+        snprintf(b, n, tx(Txt::FmtHAgo), s / 3600.0);
     else
-        snprintf(b, n, "%.1f days ago", s / 86400.0);
+        snprintf(b, n, tx(Txt::FmtDaysAgo), s / 86400.0);
 }
 
 glm::dvec3 eciToEcef(const glm::dvec3 &v, double t)
@@ -236,11 +236,11 @@ std::string SatelliteSim::kesslerEventTitle(const kessler::Event &e) const
         if (ref == kessler::kNoRef)
             return "?";
         if (ref == kessler::kSmallRef)
-            return "a 10-cm fragment";
+            return tx(Txt::ValA10CmFragment);
         if (ref & kessler::kPoolBit)
-            return "a piece of debris";
+            return tx(Txt::ValAPieceOfDebris);
         std::string s = satLabel((int)ref);
-        const size_t p = s.find(" (dead)");
+        const size_t p = s.find(tx(Txt::TxtDead));
         if (p != std::string::npos)
             s.erase(p);
         return s;
@@ -252,10 +252,10 @@ std::string SatelliteSim::kesslerEventTitle(const kessler::Event &e) const
         snprintf(b, sizeof(b), "%s x %s", name(e.a).c_str(), name(e.b).c_str());
         break;
     case kessler::EV_EXPLOSION:
-        snprintf(b, sizeof(b), "%s exploded", name(e.a).c_str());
+        snprintf(b, sizeof(b), tx(Txt::FmtExploded), name(e.a).c_str());
         break;
     case kessler::EV_ASAT:
-        snprintf(b, sizeof(b), "ASAT strike on %s", name(e.a).c_str());
+        snprintf(b, sizeof(b), tx(Txt::FmtAsatStrikeOn), name(e.a).c_str());
         break;
     default:
         snprintf(b, sizeof(b), "%s", name(e.a).c_str());
@@ -322,7 +322,7 @@ bool SatelliteSim::kesslerWatchEvent(uint32_t ev, std::string &msg)
     kWatchPieceUntil = e.t + 120.0;
     kWatchPieceScan = 0;
     char b[400];
-    snprintf(b, sizeof(b), "%s: the debris 80 km away (%.0f km up)", kesslerEventTitle(e).c_str(), (glm::length(B) - kR) / 1000.0);
+    snprintf(b, sizeof(b), tx(Txt::FmtTheDebris80KmAwayKm), kesslerEventTitle(e).c_str(), (glm::length(B) - kR) / 1000.0);
     msg = b;
     return true;
 }
@@ -658,9 +658,9 @@ void SatelliteSim::buildKesslerTrackerTab(const UIInput &inp, UIRenderer &ui, fl
     };
     if (!kesslerEnabled)
     {
-        uiSection("TrSec", 0, "THE SUN'S FURY");
-        text("The Kessler scenario is off: no storm, no cascade. Turn it on in Settings > Launches.", Pal::textDim, 11, true);
-        if (uiButton(inp, ui, "TrOpenSettings", 0, "Open the settings", "Settings > Launches"))
+        uiSection("TrSec", 0, tx(Txt::SecTheSunsFury));
+        text(tx(Txt::NoteTheKesslerScenarioIsOffNo), Pal::textDim, 11, true);
+        if (uiButton(inp, ui, "TrOpenSettings", 0, tx(Txt::BtnOpenTheSettings), tx(Txt::TipSettingsLaunches)))
         {
             settingsChrome.open = true;
             settingsActiveTab = 15;
@@ -686,15 +686,15 @@ void SatelliteSim::buildKesslerTrackerTab(const UIInput &inp, UIRenderer &ui, fl
                                              .childGap = 2,
                                              .layoutDirection = CLAY_TOP_TO_BOTTOM}})
         {
-            text("THE SUN'S FURY", Pal::furyText, 16);
+            text(tx(Txt::SecTheSunsFury), Pal::furyText, 16);
             const std::string hold = kesslerStatusLine();
             if (!hold.empty())
                 text(msStr("%s", hold.c_str()), Pal::textWarn, 11, true);
             else if (days < 0.0)
-                text("Kessler tracker: the storm has not arrived", Pal::furyText, 11, true);
+                text(tx(Txt::NoteKesslerTrackerTheStormHasNot), Pal::furyText, 11, true);
             else
-                text(msStr("Kessler tracker: simulated to day %.1f%s", js["frontier_days"].get<double>(),
-                           kWorkerDone ? " (done)" : ""),
+                text(msStr(tx(Txt::FmtKesslerTrackerSimulatedToDay), js["frontier_days"].get<double>(),
+                           kWorkerDone ? tx(Txt::TxtDone) : ""),
                      Pal::furyText, 11, true);
         }
         if (days < 0.0)
@@ -706,7 +706,7 @@ void SatelliteSim::buildKesslerTrackerTab(const UIInput &inp, UIRenderer &ui, fl
                 text(msStr("T- %lldh %02lldm %02llds", s / 3600, (s % 3600) / 60, s % 60), Pal::furyText, 18);
         }
         else
-            text(msStr("DAY %.1f", days), Pal::furyText, 20);
+            text(msStr(tx(Txt::FmtDay), days), Pal::furyText, 20);
     }
 
     // ── The counts ───────────────────────────────────────────────────────────────────────────────
@@ -725,12 +725,11 @@ void SatelliteSim::buildKesslerTrackerTab(const UIInput &inp, UIRenderer &ui, fl
         char ua[48];
         fmtUtc(kesslerEpoch(), ua, sizeof(ua));
         row(0, [&]() {
-            uiStatTile("TrTile", 0, "WORKING SATELLITES", msStr("%s", b0), Pal::volValue);
-            uiStatTile("TrTile", 1, "CME ARRIVES", msStr("%.10s", ua), Pal::furyText);
-            uiStatTile("TrTile", 2, "KP NOW", msStr("%.1f", spaceWeather_.kp), Pal::volValue);
+            uiStatTile("TrTile", 0, tx(Txt::LblWorkingSatellites), msStr("%s", b0), Pal::volValue);
+            uiStatTile("TrTile", 1, tx(Txt::LblCmeArrives), msStr("%.10s", ua), Pal::furyText);
+            uiStatTile("TrTile", 2, tx(Txt::LblKpNow), msStr("%.1f", spaceWeather_.kp), Pal::volValue);
         });
-        text("When the storm arrives, a share of these satellites die. The dead tumble, drift out of their formations and "
-             "collide; every collision is a debris cloud that feeds the next. Blue on the globe is where they fly today.",
+        text(tx(Txt::NoteWhenTheStormArrivesAShare),
              Pal::textPrimary, 11, true);
     }
     else
@@ -740,27 +739,27 @@ void SatelliteSim::buildKesslerTrackerTab(const UIInput &inp, UIRenderer &ui, fl
         fmtCount((double)c.fragReal, b2, sizeof(b2));
         fmtCount(c.smallMade, b3, sizeof(b3));
         row(0, [&]() {
-            uiStatTile("TrTile", 0, "COLLISIONS", msStr("%s", b0), Pal::trkLine);
-            uiStatTile("TrTile", 1, "CATASTROPHIC", msStr("%s", b1), Pal::trkLineCat);
-            uiStatTile("TrTile", 2, "PIECES >= 1 M", msStr("%s", b2), Pal::volValue);
-            uiStatTile("TrTile", 3, "FRAGMENTS 10 CM+", msStr("%s", b3), Pal::volValue);
+            uiStatTile("TrTile", 0, tx(Txt::LblCollisions), msStr("%s", b0), Pal::trkLine);
+            uiStatTile("TrTile", 1, tx(Txt::LblCatastrophic), msStr("%s", b1), Pal::trkLineCat);
+            uiStatTile("TrTile", 2, tx(Txt::LblPieces1M), msStr("%s", b2), Pal::volValue);
+            uiStatTile("TrTile", 3, tx(Txt::LblFragments10Cm), msStr("%s", b3), Pal::volValue);
         });
         fmtCount((double)c.dead, b0, sizeof(b0));
         fmtCount((double)(c.rosterGone - std::min(c.rosterGone, c.reentered)), b1, sizeof(b1));
         fmtCount((double)c.reentered, b2, sizeof(b2));
         fmtCount((double)c.working, b3, sizeof(b3));
         row(1, [&]() {
-            uiStatTile("TrTile", 4, "DEAD, TUMBLING", msStr("%s", b0), Pal::textWarn);
-            uiStatTile("TrTile", 5, "DESTROYED", msStr("%s", b1), Pal::furyText);
-            uiStatTile("TrTile", 6, "RE-ENTERED", msStr("%s", b2), Pal::volValue);
-            uiStatTile("TrTile", 7, "STILL WORKING", msStr("%s", b3), Pal::trkWork);
+            uiStatTile("TrTile", 4, tx(Txt::LblDeadTumbling), msStr("%s", b0), Pal::textWarn);
+            uiStatTile("TrTile", 5, tx(Txt::LblDestroyed), msStr("%s", b1), Pal::furyText);
+            uiStatTile("TrTile", 6, tx(Txt::LblReEntered), msStr("%s", b2), Pal::volValue);
+            uiStatTile("TrTile", 7, tx(Txt::LblStillWorking), msStr("%s", b3), Pal::trkWork);
         });
         if (!kCountsLiveValid)
-            text("Counting...", Pal::textHint, 10);
+            text(tx(Txt::NoteCounting), Pal::textHint, 10);
     }
 
     // ── The globe and its legend ─────────────────────────────────────────────────────────────────
-    uiSection("TrSec", 1, "DEBRIS SHELLS");
+    uiSection("TrSec", 1, tx(Txt::SecDebrisShells));
     const bool haveImg = kesslerTrackerEnsureImage(ui);
     if (trViewLonDeg > 1e8)
         trViewLonDeg = obsLonDeg;
@@ -873,7 +872,7 @@ void SatelliteSim::buildKesslerTrackerTab(const UIInput &inp, UIRenderer &ui, fl
         {
             const float y = (float)(0.5 - 0.5 * (1.0 + kTrAltK * alts[k]) / kTrExtent) * G;
             char nb[16];
-            snprintf(nb, sizeof(nb), "%d km", alts[k]);
+            snprintf(nb, sizeof(nb), tx(Txt::FmtKm3), alts[k]);
             if (k % 2 == 1) // (500 / 1500 crowd them at this size)
                 label(cx + 3.0f, y - (float)fs(9) - 1.0f, nb, glm::vec4(0.7f));
         }
@@ -902,19 +901,19 @@ void SatelliteSim::buildKesslerTrackerTab(const UIInput &inp, UIRenderer &ui, fl
                 }
             }
         };
-        text("Round the globe: the shells, altitude outward (x1.6), latitude by angle. Drag to turn.", Pal::textDim, 10, true);
-        swatch(0, Pal::trkWork, "Working satellites");
-        swatch(1, Pal::trkHot, "Danger: the chance a year that a 10 m^2 satellite there is hit (dim: 1 in 10,000; white: 1 in 10 or more)");
-        swatch(2, Pal::trkMarker, "The latest breakups (1 = newest)");
-        swatch(3, Pal::trkMarkerUser, "Your breakups");
-        swatch(4, Pal::trkYou, "You");
+        text(tx(Txt::NoteRoundTheGlobeTheShellsAltitude), Pal::textDim, 10, true);
+        swatch(0, Pal::trkWork, tx(Txt::TxtWorkingSatellites));
+        swatch(1, Pal::trkHot, tx(Txt::TxtDangerTheChanceAYearThat));
+        swatch(2, Pal::trkMarker, tx(Txt::TxtTheLatestBreakups1Newest));
+        swatch(3, Pal::trkMarkerUser, tx(Txt::LblYourBreakups));
+        swatch(4, Pal::trkYou, tx(Txt::NoteYou));
         if (trWorstChance > 0.0f)
-            text(msStr("Worst shell: %.0f km at %.0f deg %s: %.2g%% a year", trWorstAltKm, std::abs(trWorstLatDeg),
+            text(msStr(tx(Txt::FmtWorstShellKmAtDegA), trWorstAltKm, std::abs(trWorstLatDeg),
                        trWorstLatDeg >= 0.0f ? "N" : "S", 100.0 * trWorstChance),
                  Pal::trkHot, 11, true);
         else if (days >= 0.0)
-            text("No tracked debris yet.", Pal::textHint, 10);
-        text("Tracked: dead satellites and pieces of 1 m or more (the 10-cm fragments are a density field not drawn here).",
+            text(tx(Txt::NoteNoTrackedDebrisYet), Pal::textHint, 10);
+        text(tx(Txt::NoteTrackedDeadSatellitesAndPiecesOf),
              Pal::textHint, 10, true);
     };
     CLAY(CLAY_ID("TrGlobeRow"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
@@ -953,7 +952,7 @@ void SatelliteSim::buildKesslerTrackerTab(const UIInput &inp, UIRenderer &ui, fl
         return;
 
     // ── Collisions per day ───────────────────────────────────────────────────────────────────────
-    uiSection("TrSec", 2, trPlotBin > 1 ? "COLLISIONS PER WEEK-OR-SO SINCE THE CME" : "COLLISIONS PER DAY SINCE THE CME");
+    uiSection("TrSec", 2, trPlotBin > 1 ? tx(Txt::SecCollisionsPerWeekOrSoSince) : tx(Txt::SecCollisionsPerDaySinceTheCme));
     if (trPlotX.size() >= 2)
     {
         trSeries[0] = {trPlotX.data(), trPlotY.data(), (int)trPlotX.size(), palV(Pal::trkLine), 1.75f};
@@ -968,20 +967,20 @@ void SatelliteSim::buildKesslerTrackerTab(const UIInput &inp, UIRenderer &ui, fl
             CLAY(CLAY_ID("TrPlot"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}},
                                      .custom = {.customData = &trPlot}}) {}
         }
-        text(msStr("Peak %u %s (day %d). Orange: all collisions; red: catastrophic. %s", trPlotPeak,
-                   trPlotBin > 1 ? msStr("in %d days", trPlotBin) : "in a day", trPlotPeakDay,
-                   trPlotBin > 1 ? msStr("(%d-day bins)", trPlotBin) : ""),
+        text(msStr(tx(Txt::FmtPeakDayOrangeAllCollisionsRed), trPlotPeak,
+                   trPlotBin > 1 ? msStr(tx(Txt::FmtInDays2), trPlotBin) : tx(Txt::TxtInADay), trPlotPeakDay,
+                   trPlotBin > 1 ? msStr(tx(Txt::FmtDayBins), trPlotBin) : ""),
              Pal::textDim, 10, true);
     }
     else
-        text(c.col ? "The first day: a few collisions so far." : "No collisions yet (the dead have to drift into each other first).",
+        text(c.col ? tx(Txt::NoteTheFirstDayAFewCollisions) : tx(Txt::NoteNoCollisionsYetTheDeadHave),
              Pal::textHint, 10, true);
 
     // ── The latest breakups ──────────────────────────────────────────────────────────────────────
-    uiSection("TrSec", 3, "LATEST BREAKUPS");
+    uiSection("TrSec", 3, tx(Txt::SecLatestBreakups));
     int watch = -1;
     if (c.nRecent == 0)
-        text("None yet.", Pal::textHint, 11);
+        text(tx(Txt::NoteNoneYet), Pal::textHint, 11);
     for (int k = 0; k < c.nRecent; ++k)
     {
         const uint32_t ev = c.recent[k];
@@ -1012,21 +1011,21 @@ void SatelliteSim::buildKesslerTrackerTab(const UIInput &inp, UIRenderer &ui, fl
                                                              .childGap = 2,
                                                              .layoutDirection = CLAY_TOP_TO_BOTTOM}})
             {
-                const char *kind = e.kind == kessler::EV_COLLISION ? (e.catastrophic ? "Catastrophic collision" : "Collision")
-                                   : e.kind == kessler::EV_EXPLOSION ? "Explosion"
-                                   : e.kind == kessler::EV_ASAT      ? "ASAT strike"
-                                                                     : "Breakup";
-                text(msStr("%s%s: %s", kind, user ? " (yours)" : "", kesslerEventTitle(e).c_str()), Pal::textPrimary, 12, true);
+                const char *kind = e.kind == kessler::EV_COLLISION ? (e.catastrophic ? tx(Txt::TxtCatastrophicCollision) : tx(Txt::TxtCollision))
+                                   : e.kind == kessler::EV_EXPLOSION ? tx(Txt::ValExplosion)
+                                   : e.kind == kessler::EV_ASAT      ? tx(Txt::ValAsatStrike)
+                                                                     : tx(Txt::ValBreakup);
+                text(msStr("%s%s: %s", kind, user ? tx(Txt::TxtYours) : "", kesslerEventTitle(e).c_str()), Pal::textPrimary, 12, true);
                 char u[48], ago[40];
                 fmtUtc(e.t, u, sizeof(u));
                 fmtAgo(now - e.t, ago, sizeof(ago));
                 const double lat = glm::degrees(std::asin(std::clamp(d.z, -1.0, 1.0))), lon = glm::degrees(std::atan2(d.y, d.x));
-                text(msStr("%s (%s), %.0f km up over %.0f %s %.0f %s%s", u, ago, (glm::length(B) - kR) / 1000.0, std::abs(lat),
+                text(msStr(tx(Txt::FmtKmUpOver), u, ago, (glm::length(B) - kR) / 1000.0, std::abs(lat),
                            lat >= 0.0 ? "N" : "S", std::abs(lon), lon >= 0.0 ? "E" : "W",
-                           e.kind == kessler::EV_COLLISION ? msStr(", %.1f km/s", e.vRel / 1000.0) : ""),
+                           e.kind == kessler::EV_COLLISION ? msStr(tx(Txt::FmtKmS), e.vRel / 1000.0) : ""),
                      Pal::textDim, 11, true);
             }
-            if (uiButton(inp, ui, "TrWatch", k, "Watch", "The debris just after the breakup, from 80 km beside its orbit"))
+            if (uiButton(inp, ui, "TrWatch", k, tx(Txt::BtnWatch), tx(Txt::TipTheDebrisJustAfterTheBreakup)))
                 watch = k;
         }
     }

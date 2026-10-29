@@ -498,19 +498,19 @@ void SatelliteSim::init(VulkanContext &ctx)
     // names the step it died in), and a bootStatus() line for the loading screen (App), which
     // presents a frame per step.
     Log::line("init: buffers");
-    bootStatus("Buffers");
+    bootStatus(tx(Txt::BootBuffers));
     createBuffers(ctx);
     Log::line("init: cloud noise bake");
-    bootStatus("Cloud noise");
+    bootStatus(tx(Txt::BootCloudNoise));
     createCloudNoisePipeline(ctx);
     Log::line("init: cloud warp noise bake");
-    bootStatus("Cloud warp noise");
+    bootStatus(tx(Txt::BootCloudWarpNoise));
     createCloudWarpNoisePipeline(ctx); // must run before createCloudMarchDescriptors (binding 9)
     Log::line("init: aurora noise bake");
-    bootStatus("Aurora noise");
+    bootStatus(tx(Txt::BootAuroraNoise));
     createAuroraNoisePipeline(ctx);    // must run before createGlowResources' writes (binding 16)
     Log::line("init: cloud march + scene depth targets");
-    bootStatus("Render targets");
+    bootStatus(tx(Txt::BootRenderTargets));
     createCloudMarchResources(ctx);    // images must exist before createGlowResources' writes (bindings 10/11)
     createSceneDepthResources(ctx);    // image must exist before createGlowResources' writes (binding 19)
     Log::line("init: Earth textures (decode + upload)");
@@ -527,7 +527,7 @@ void SatelliteSim::init(VulkanContext &ctx)
                   std::to_string(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - b0).count()) + " ms");
     }
     Log::line("init: clouds v2 bakes");
-    bootStatus("Clouds v2");
+    bootStatus(tx(Txt::BootCloudsV2));
     createCloudsV2(ctx); // needs the Earth textures, cloudParamsBuf, sceneDepth, terrainFrameBuf
     // Constellations are built BEFORE the descriptor sets (lighting overhaul Phase 1): the
     // per-satellite buffers are sized to the real satellite count rather than MAX_SATELLITES, so
@@ -539,7 +539,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     // memory scale with the roster (seconds and GBs at 10M), so if a large roster ever hangs a
     // machine again the log should say which of these steps it reached.
     Log::line("constellation: building...");
-    bootStatus("Constellations");
+    bootStatus(tx(Txt::BootConstellations));
     moonBasesLoad(); // the lunar bases' arrays (data/lunar_bases.json): read-only from here on
     initConstellation();
     Log::line("constellation: " + std::to_string(activeSatCount) + " satellites, " +
@@ -565,12 +565,12 @@ void SatelliteSim::init(VulkanContext &ctx)
         snprintf(msg, sizeof(msg), "satellite GPU buffers: %.0f MB device-local", satMB);
         Log::line(msg);
     }
-    bootStatus("Satellite orbits");
+    bootStatus(tx(Txt::BootSatelliteOrbits));
     uploadSatOrbits(ctx); // bake + upload GpuSatOrbit/GpuSatType data after orbits are built
     createSatRebake(ctx); // the GPU rebake of those orbits as sim time moves on
     Log::line("satellite orbits uploaded");
     Log::line("init: pipelines");
-    bootStatus("Pipelines");
+    bootStatus(tx(Txt::BootPipelines));
     createDescriptors(ctx);
     createComputePipeline(ctx);
     createOrbitDescriptors(ctx);
@@ -599,7 +599,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     createFlareDescriptors(ctx);
     createFlarePipelines(ctx);
     Log::line("init: mesh renderer + environment probes");
-    bootStatus("Satellite meshes");
+    bootStatus(tx(Txt::BootSatelliteMeshes));
     // Phase 4 mesh renderer: needs the Earth textures (createGlowResources) and the loaded models
     // (initConstellation, above).
     {
@@ -4093,7 +4093,7 @@ void SatelliteSim::viewerFillModelRows(int typeIdx)
     snprintf(viewerSatValue[0], sizeof(viewerSatValue[0]), "%s", t.name.c_str());
     snprintf(viewerSatValue[1], sizeof(viewerSatValue[1]), "%s", t.modelId.c_str());
     snprintf(viewerSatValue[2], sizeof(viewerSatValue[2]), "%.1f m", 2.0f * (tm ? tm->boundsRadius : 0.0f));
-    snprintf(viewerSatValue[3], sizeof(viewerSatValue[3]), "%d triangles, %zu parts", tm ? tm->triangles : 0,
+    snprintf(viewerSatValue[3], sizeof(viewerSatValue[3]), tx(Txt::FmtTrianglesParts), tm ? tm->triangles : 0,
              t.model ? t.model->components.size() : (size_t)0);
 }
 
@@ -4149,7 +4149,8 @@ void SatelliteSim::selectSatellite(int idx)
 // it is in the parked ground observer's sky) and the PHOTOMETRY lines (phase, brightness above the air
 // and after the line of sight's extinction).
 const char *const SatelliteSim::kViewerPhotLabels[SatelliteSim::kViewerPhotRows] = {
-    "Magnitude", "Above the air", "Extinction", "At 1000 km", "Phase angle", "Formation"};
+    tx(Txt::LblPhotMagnitude), tx(Txt::LblPhotAboveTheAir), tx(Txt::LblPhotExtinction), tx(Txt::LblPhotAt1000Km),
+    tx(Txt::LblPhotPhaseAngle), tx(Txt::LblPhotFormation)};
 
 double SatelliteSim::formationMergeFactor(const SatOrbit &o, int satIdx, double rangeM) const
 {
@@ -4238,10 +4239,10 @@ void SatelliteSim::updateViewerObserverInfo()
         const double b = glm::dot(obs, d), c = glm::dot(obs, obs) - (double)kEarthRadius * kEarthRadius;
         const double disc = b * b - c;
         const bool hidden = disc > 0.0 && -b + std::sqrt(disc) > 1.0 && -b - std::sqrt(disc) < range; // as below
-        snprintf(viewerObsValue[0], sizeof(viewerObsValue[0]), hidden ? "Below horizon" : "Above horizon");
-        snprintf(viewerObsValue[1], sizeof(viewerObsValue[1]), "%.1f deg", glm::degrees(std::asin(glm::clamp(up, -1.0, 1.0))));
-        snprintf(viewerObsValue[2], sizeof(viewerObsValue[2]), "%.0f deg", azDeg);
-        snprintf(viewerObsValue[3], sizeof(viewerObsValue[3]), range < 10000.0 ? "%.0f m" : "%.0f km",
+        snprintf(viewerObsValue[0], sizeof(viewerObsValue[0]), hidden ? tx(Txt::FmtBelowHorizon) : tx(Txt::FmtAboveHorizon));
+        snprintf(viewerObsValue[1], sizeof(viewerObsValue[1]), tx(Txt::FmtDeg2), glm::degrees(std::asin(glm::clamp(up, -1.0, 1.0))));
+        snprintf(viewerObsValue[2], sizeof(viewerObsValue[2]), tx(Txt::FmtDeg), azDeg);
+        snprintf(viewerObsValue[3], sizeof(viewerObsValue[3]), range < 10000.0 ? "%.0f m" : tx(Txt::FmtKm5),
                  range < 10000.0 ? range : range / 1000.0); // metres close up (following, 2026-10-28)
         if ((uint32_t)viewerSatIndex == transientSatIdx() && selIsTransient() && selTransientCur.flare > 0.0f && !hidden)
         {
@@ -4256,21 +4257,21 @@ void SatelliteSim::updateViewerObserverInfo()
                          m + atmExtinctionMag(obs, d, range, (double)extinctionCoeff));
         }
         else
-            snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), hidden ? "Below horizon" : "-");
+            snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), hidden ? tx(Txt::FmtBelowHorizon) : "-");
         return;
     }
     const SatelliteType &type = satTypes[orb.typeIdx];
 
     // Orbit rows. Static orbital elements, so they come before the !isModel() early return below — a
     // legacy type still has an orbit.
-    snprintf(viewerOrbitValue[0], sizeof(viewerOrbitValue[0]), "%.0f km", orb.altM / 1000.0f);
-    snprintf(viewerOrbitValue[1], sizeof(viewerOrbitValue[1]), "%.1f deg", glm::degrees(orb.incl));
+    snprintf(viewerOrbitValue[0], sizeof(viewerOrbitValue[0]), tx(Txt::FmtKm5), orb.altM / 1000.0f);
+    snprintf(viewerOrbitValue[1], sizeof(viewerOrbitValue[1]), tx(Txt::FmtDeg2), glm::degrees(orb.incl));
     if (orb.alignTerminator)
-        snprintf(viewerOrbitValue[2], sizeof(viewerOrbitValue[2]), "sun-sync (precessing)");
+        snprintf(viewerOrbitValue[2], sizeof(viewerOrbitValue[2]), tx(Txt::FmtSunSyncPrecessing));
     else
-        snprintf(viewerOrbitValue[2], sizeof(viewerOrbitValue[2]), "%.1f deg", glm::degrees(orb.raan));
+        snprintf(viewerOrbitValue[2], sizeof(viewerOrbitValue[2]), tx(Txt::FmtDeg2), glm::degrees(orb.raan));
     if (orb.meanMot > 0.0f)
-        snprintf(viewerOrbitValue[3], sizeof(viewerOrbitValue[3]), "%.1f min",
+        snprintf(viewerOrbitValue[3], sizeof(viewerOrbitValue[3]), tx(Txt::FmtMin2),
                  (2.0f * glm::pi<float>() / orb.meanMot) / 60.0f);
     viewerOrbitCount = 4;
     // Flare-mitigation power readout — only for types whose primary surface uses the tilt, exactly as
@@ -4278,7 +4279,7 @@ void SatelliteSim::updateViewerObserverInfo()
     if (type.primary.group >= 0 && type.primary.group < (int)type.groups.size() &&
         type.groups[type.primary.group].jointMode == JointMode::FlareMitigationTilt)
     {
-        snprintf(viewerOrbitValue[4], sizeof(viewerOrbitValue[4]), "%.0f%% (tilt %.0f deg)",
+        snprintf(viewerOrbitValue[4], sizeof(viewerOrbitValue[4]), tx(Txt::FmtTiltDeg),
                  cosf(glm::radians(flareMitigationTiltDeg)) * 100.0f, flareMitigationTiltDeg);
         viewerOrbitCount = 5;
     }
@@ -4318,16 +4319,16 @@ void SatelliteSim::updateViewerObserverInfo()
     // the horizon read "Above horizon" with a magnitude, 2026-10-21 QA.)
     const bool hidden = disc > 0.0 && -b + std::sqrt(disc) > 1.0 && -b - std::sqrt(disc) < range;
     // SKY POSITION: the observer's sky (the camera's while following).
-    snprintf(viewerObsValue[0], sizeof(viewerObsValue[0]), hidden ? "Below horizon" : "Above horizon");
-    snprintf(viewerObsValue[1], sizeof(viewerObsValue[1]), "%.1f deg", elDeg);
-    snprintf(viewerObsValue[2], sizeof(viewerObsValue[2]), "%.0f deg", azDeg);
-    snprintf(viewerObsValue[3], sizeof(viewerObsValue[3]), range < 10000.0 ? "%.0f m" : "%.0f km",
+    snprintf(viewerObsValue[0], sizeof(viewerObsValue[0]), hidden ? tx(Txt::FmtBelowHorizon) : tx(Txt::FmtAboveHorizon));
+    snprintf(viewerObsValue[1], sizeof(viewerObsValue[1]), tx(Txt::FmtDeg2), elDeg);
+    snprintf(viewerObsValue[2], sizeof(viewerObsValue[2]), tx(Txt::FmtDeg), azDeg);
+    snprintf(viewerObsValue[3], sizeof(viewerObsValue[3]), range < 10000.0 ? "%.0f m" : tx(Txt::FmtKm5),
                  range < 10000.0 ? range : range / 1000.0); // metres close up (following, 2026-10-28)
     // BRIGHTNESS: what the observer sees, from the same evaluator the selection panel's magnitude uses.
-    snprintf(viewerPhotValue[4], sizeof(viewerPhotValue[4]), "%.0f deg", glm::degrees(r.phaseAngleRad));
+    snprintf(viewerPhotValue[4], sizeof(viewerPhotValue[4]), tx(Txt::FmtDeg), glm::degrees(r.phaseAngleRad));
     if (!r.supported)
     {
-        snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), "n/a (ground-site aim)");
+        snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), tx(Txt::FmtNAGroundSiteAim));
         return;
     }
     if (std::isfinite(r.magnitude1000))
@@ -4340,22 +4341,22 @@ void SatelliteSim::updateViewerObserverInfo()
         const double rCam = std::max(glm::length(selTransientCur.pos - glm::dvec3(obsECI)), 1.0);
         const double fObs = (double)selTransientCur.flare * (rCam / std::max(range, 1.0)) * (rCam / std::max(range, 1.0));
         const double mAir = 6.0 - 2.5 * std::log10(std::max(fObs, 1e-30) / 0.008);
-        snprintf(viewerPhotValue[1], sizeof(viewerPhotValue[1]), "%.2f (flame)", mAir);
+        snprintf(viewerPhotValue[1], sizeof(viewerPhotValue[1]), tx(Txt::FmtFlame), mAir);
         snprintf(viewerPhotValue[3], sizeof(viewerPhotValue[3]), "%.2f", mAir + 5.0 * std::log10(1.0e6 / std::max(range, 1.0)));
         if (!hidden)
         {
             const double ext = atmExtinctionMag(obs, d, range, (double)extinctionCoeff);
             snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), "%.2f", mAir + ext);
-            snprintf(viewerPhotValue[2], sizeof(viewerPhotValue[2]), "%.2f mag", ext);
+            snprintf(viewerPhotValue[2], sizeof(viewerPhotValue[2]), tx(Txt::FmtMag5), ext);
         }
         else
-            snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), "Below horizon");
+            snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), tx(Txt::FmtBelowHorizon));
         return;
     }
     if (!std::isfinite(r.magnitude))
     {
         // Below the horizon wins over dark (the selection panel's order too).
-        snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), hidden ? "Below horizon" : "In Earth's shadow");
+        snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), hidden ? tx(Txt::FmtBelowHorizon) : tx(Txt::FmtInEarthsShadow));
         return;
     }
     snprintf(viewerPhotValue[1], sizeof(viewerPhotValue[1]), "%.2f", r.magnitude);
@@ -4370,18 +4371,18 @@ void SatelliteSim::updateViewerObserverInfo()
         const double ext = atmExtinctionMag(obs, d, range, (double)extinctionCoeff);
         viewerFlarePerI *= std::pow(10.0, -0.4 * ext);
         snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), "%.2f", r.magnitude + ext);
-        snprintf(viewerPhotValue[2], sizeof(viewerPhotValue[2]), "%.2f mag", ext);
+        snprintf(viewerPhotValue[2], sizeof(viewerPhotValue[2]), tx(Txt::FmtMag5), ext);
         formExt = ext;
     }
     else
-        snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), "Below horizon");
+        snprintf(viewerPhotValue[0], sizeof(viewerPhotValue[0]), tx(Txt::FmtBelowHorizon));
     // FORMATION: a StarMind-style cluster's members together, as one point while it is unresolved.
     if (orb.formation)
     {
         int n = 0;
         const double fm = formationMagnitude(viewerSatIndex, in, t, n);
         if (std::isfinite(fm))
-            snprintf(viewerPhotValue[5], sizeof(viewerPhotValue[5]), "%.2f (%d sats)", fm + formExt, n);
+            snprintf(viewerPhotValue[5], sizeof(viewerPhotValue[5]), tx(Txt::FmtSats), fm + formExt, n);
     }
 }
 
@@ -5849,7 +5850,7 @@ void SatelliteSim::startFollow(int satIndex, bool fly)
         followDefaultDist = glm::length(followOffset);
     }
     camera.fovYDeg = 50.0f;
-    snprintf(followLabel, sizeof(followLabel), "Following %s", satLabel(satIndex).c_str());
+    snprintf(followLabel, sizeof(followLabel), tx(Txt::FmtFollowing), satLabel(satIndex).c_str());
     followFlight = 0;
     followFlightInit = false;
     followFlightRel = false;
@@ -5945,7 +5946,7 @@ void SatelliteSim::stopFollowHere(const char *why)
         obsFacing = glm::normalize(f);
     // The temporal histories saw a camera that moved with the satellite; from here it is still.
     skyTaaHistValid = false;
-    snprintf(screenshotToastText, sizeof(screenshotToastText), "%s", why ? why : "Left Go to: you stay here");
+    snprintf(screenshotToastText, sizeof(screenshotToastText), "%s", why ? why : tx(Txt::ToastLeftGoTo));
     screenshotToastTimer = 4.0f;
     screenshotToastWarn = false;
 }
@@ -5996,8 +5997,12 @@ void SatelliteSim::followRemember()
         followLastPoolGen = followPoolGen;
     }
     const char *l = followLabel;
-    if (strncmp(l, "Following ", 10) == 0)
-        l += 10;
+    {   // the label is tx(Txt::FmtFollowing) around the object's name: drop the words before its %s
+        const char *f = tx(Txt::FmtFollowing), *ps = strstr(f, "%s");
+        const size_t pn = ps ? (size_t)(ps - f) : 0;
+        if (pn > 0 && strncmp(l, f, pn) == 0)
+            l += pn;
+    }
     snprintf(followLastLabel, sizeof(followLastLabel), "%s", l);
 }
 
@@ -6913,8 +6918,8 @@ void SatelliteSim::formatSelectedSatInfo()
         if (selU == transientSatIdx() || selU == followSlotIdx())
         {
             const SelTransient &tr = selU == transientSatIdx() ? selTransientCur : followTrCur;
-            st = tr.kind == 1 ? "Rocket stage" : tr.kind == 2 ? "Starship ship, entry" : tr.kind == 7 ? "Payload fairing half"
-                 : tr.kind == 8 ? "Visiting spacecraft" : "Re-entry fireball";
+            st = tr.kind == 1 ? tx(Txt::ValKindRocketStage) : tr.kind == 2 ? tx(Txt::ValKindShipEntry) : tr.kind == 7 ? tx(Txt::ValKindFairingHalf)
+                 : tr.kind == 8 ? tx(Txt::ValKindSpacecraft) : tx(Txt::ValKindReEntryFireball);
             if (orb.typeIdx < satTypes.size() && tr.kind <= 2) // (a spacecraft's model id, "capsule_dragon", left out)
             {
                 std::string tn = satTypes[orb.typeIdx].name; // "Rocket: starship_upper" -> "starship_upper"
@@ -6933,7 +6938,7 @@ void SatelliteSim::formatSelectedSatInfo()
     {
         // A named member (the GEO belt): its operator and slot under its name.
         if (m->geo)
-            snprintf(selInfoLine[1], sizeof(selInfoLine[1]), "%s - GEO %.1f %c", m->operatorName.c_str(),
+            snprintf(selInfoLine[1], sizeof(selInfoLine[1]), tx(Txt::FmtGeo), m->operatorName.c_str(),
                      std::fabs(m->lonDeg), m->lonDeg < 0.0f ? 'W' : 'E');
         else
             snprintf(selInfoLine[1], sizeof(selInfoLine[1]), "%s", m->operatorName.c_str());
@@ -6942,13 +6947,13 @@ void SatelliteSim::formatSelectedSatInfo()
         snprintf(selInfoLine[1], sizeof(selInfoLine[1]), "%s", type ? typeName
                                                                   : orb.typeIdx < satTypes.size() ? satTypes[orb.typeIdx].name.c_str()
                                                                                                   : "Satellite");
-    snprintf(selInfoLine[2], sizeof(selInfoLine[2]), "Alt: %.0f km", altKm);
-    snprintf(selInfoLine[3], sizeof(selInfoLine[3]), "Incl: %.1f deg", inclDeg);
+    snprintf(selInfoLine[2], sizeof(selInfoLine[2]), tx(Txt::FmtAltKm), altKm);
+    snprintf(selInfoLine[3], sizeof(selInfoLine[3]), tx(Txt::FmtInclDeg), inclDeg);
     if (orb.alignTerminator)
-        snprintf(selInfoLine[4], sizeof(selInfoLine[4]), "RAAN: sun-sync (precessing)");
+        snprintf(selInfoLine[4], sizeof(selInfoLine[4]), tx(Txt::FmtRaanSunSyncPrecessing));
     else
-        snprintf(selInfoLine[4], sizeof(selInfoLine[4]), "RAAN: %.1f deg", glm::degrees(orb.raan));
-    snprintf(selInfoLine[5], sizeof(selInfoLine[5]), "Period: %.1f min", periodMin);
+        snprintf(selInfoLine[4], sizeof(selInfoLine[4]), tx(Txt::FmtRaanDeg), glm::degrees(orb.raan));
+    snprintf(selInfoLine[5], sizeof(selInfoLine[5]), tx(Txt::FmtPeriodMin), periodMin);
     // Flare-mitigation power readout — only for satellites whose primary surface actually uses
     // the tilt (datacenter types), so an unrelated constellation's panel doesn't show a
     // meaningless "100%" row. Power loss is exactly cos(tiltDeg): computeNormal()'s
@@ -6958,7 +6963,7 @@ void SatelliteSim::formatSelectedSatInfo()
         type->groups[type->primary.group].jointMode == JointMode::FlareMitigationTilt)
     {
         float powerPct = cosf(glm::radians(flareMitigationTiltDeg)) * 100.0f;
-        snprintf(selInfoLine[6], sizeof(selInfoLine[6]), "Power: %.0f%% (tilt %.0f deg)",
+        snprintf(selInfoLine[6], sizeof(selInfoLine[6]), tx(Txt::FmtPowerTiltDeg),
                  powerPct, flareMitigationTiltDeg);
     }
     else
@@ -7042,9 +7047,9 @@ void formatSimClock(double tJ2000, char *buf, size_t n, bool withDate) // also S
 const char *SatelliteSim::photometryUnsupportedReason(const SatelliteType &type) const
 {
     if (!type.isModel())
-        return "a legacy type's brightness is in display units, not a magnitude. This needs a geometry-model type.";
+        return tx(Txt::ValNoMagnitudeSimpleType);
     if (attUsesGroundSite(type.groups) && reflectorTargetCount <= 0)
-        return "this type aims at a ground site, and no reflector targets are loaded.";
+        return tx(Txt::ValNoMagnitudeNoTargets);
     return nullptr;
 }
 
@@ -7105,8 +7110,8 @@ void SatelliteSim::computeSelectedTrace()
     traceChrome.open = true;
     if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
     {
-        snprintf(traceTitle, sizeof(traceTitle), "no satellite");
-        snprintf(traceStatus, sizeof(traceStatus), "Select a satellite, then Retrace");
+        snprintf(traceTitle, sizeof(traceTitle), tx(Txt::FmtNoSatellite));
+        snprintf(traceStatus, sizeof(traceStatus), tx(Txt::FmtSelectASatelliteThenRetrace));
         return;
     }
     const SatOrbit &orb = satOrbits[selectedSatIndex];
@@ -7120,7 +7125,7 @@ void SatelliteSim::computeSelectedTrace()
         snprintf(traceTitle, sizeof(traceTitle), "%s #%d", type.name.c_str(), selectedSatIndex);
     if (const char *why = photometryUnsupportedReason(type))
     {
-        snprintf(traceStatus, sizeof(traceStatus), "Can't trace: %s", why);
+        snprintf(traceStatus, sizeof(traceStatus), tx(Txt::FmtCantTrace), why);
         return;
     }
 
@@ -7177,7 +7182,7 @@ void SatelliteSim::computeSelectedTrace()
                        sizeof(traceTimeTickBuf[i]), false);
     const int passS = (int)std::lround(traceT1 - traceT0);
     if (!tracePassFound)
-        snprintf(traceStatus, sizeof(traceStatus), "No pass within two orbits: 10 minutes either side of now");
+        snprintf(traceStatus, sizeof(traceStatus), tx(Txt::FmtNoPassWithinTwoOrbits10));
     tracePassS = passS;
     traceMaxEl = maxEl;
     if (!std::isfinite(bright))
@@ -7291,12 +7296,12 @@ void SatelliteSim::startBulkExport()
     {
         if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
         {
-            snprintf(bulkStatus, sizeof(bulkStatus), "Select a satellite first, or pick a constellation as the source.");
+            snprintf(bulkStatus, sizeof(bulkStatus), tx(Txt::FmtSelectASatelliteFirstOrPick));
             return;
         }
         if (satOrbits[selectedSatIndex].typeIdx >= satTypes.size())
         {
-            snprintf(bulkStatus, sizeof(bulkStatus), "The selection is not a satellite.");
+            snprintf(bulkStatus, sizeof(bulkStatus), tx(Txt::FmtTheSelectionIsNotASatellite));
             return;
         }
         typeIdx = (int)satOrbits[selectedSatIndex].typeIdx;
@@ -7318,12 +7323,12 @@ void SatelliteSim::startBulkExport()
     const SatelliteType &type = satTypes[typeIdx];
     if (const char *why = photometryUnsupportedReason(type))
     {
-        snprintf(bulkStatus, sizeof(bulkStatus), "Can't export %s: %s", sourceName.c_str(), why);
+        snprintf(bulkStatus, sizeof(bulkStatus), tx(Txt::FmtCantExport), sourceName.c_str(), why);
         return;
     }
     if (job->sats.empty())
     {
-        snprintf(bulkStatus, sizeof(bulkStatus), "%s has no satellites in the loaded roster.", sourceName.c_str());
+        snprintf(bulkStatus, sizeof(bulkStatus), tx(Txt::FmtHasNoSatellitesInTheLoaded), sourceName.c_str());
         return;
     }
     job->groups = type.groups;
@@ -7393,7 +7398,7 @@ void SatelliteSim::startBulkExport()
     bulkProgress.store(0.0f);
     bulkCancel.store(false);
     bulkRunning.store(true);
-    snprintf(bulkStatus, sizeof(bulkStatus), "Exporting %zu satellites of %s...", job->sats.size(), sourceName.c_str());
+    snprintf(bulkStatus, sizeof(bulkStatus), tx(Txt::FmtExportingSatellitesOf), job->sats.size(), sourceName.c_str());
     bulkThread = std::thread([this, job]() {
         job->spec.groups = &job->groups;
         job->spec.lobes = &job->lobes;
@@ -7485,7 +7490,7 @@ void SatelliteSim::updateSelectedPhotometry()
                                                        satOcclusionActive() ? &tt.occlusion : nullptr);
             if (tr.supported && std::isfinite(tr.magnitude))
             {
-                snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag %.2f  (1000 km %.2f)",
+                snprintf(selPhotLine[0], sizeof(selPhotLine[0]), tx(Txt::FmtMag1000Km),
                          tr.magnitude + atmExtinctionMag(obsG, d, range, (double)extinctionCoeff), tr.magnitude1000);
                 return;
             }
@@ -7494,18 +7499,18 @@ void SatelliteSim::updateSelectedPhotometry()
         const double fObs = (double)selTransientCur.flare * (rCam / range) * (rCam / range);
         const double m = 6.0 - 2.5 * std::log10(std::max(fObs, 1e-30) / 0.008);
         if (hidden)
-            snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag: below your horizon");
+            snprintf(selPhotLine[0], sizeof(selPhotLine[0]), tx(Txt::FmtMagBelowYourHorizon));
         else if (!(selTransientCur.flare > 0.0f) || m > kSelDarkMag)
-            snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag: dark");
+            snprintf(selPhotLine[0], sizeof(selPhotLine[0]), tx(Txt::FmtMagDark));
         else
-            snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag %.1f",
+            snprintf(selPhotLine[0], sizeof(selPhotLine[0]), tx(Txt::FmtMag4),
                      m + atmExtinctionMag(obsG, d, range, (double)extinctionCoeff));
         return;
     }
     const ParityInputs &pin = parityPending;
     if (!pin.valid || pin.satIdx != selectedSatIndex)
     {
-        snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Photometry: measuring...");
+        snprintf(selPhotLine[0], sizeof(selPhotLine[0]), tx(Txt::FmtPhotometryMeasuring));
         return;
     }
     const SatOrbit &orb = satOrbits[selectedSatIndex];
@@ -7553,9 +7558,9 @@ void SatelliteSim::updateSelectedPhotometry()
     SatPhotInputs inG = in;
     inG.obsEci = obsG;
     if (!r.supported)
-        snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag: n/a (ground-site aim)");
+        snprintf(selPhotLine[0], sizeof(selPhotLine[0]), tx(Txt::FmtMagNAGroundSiteAim));
     else if (r.legacy)
-        snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag: legacy type (not physical)");
+        snprintf(selPhotLine[0], sizeof(selPhotLine[0]), tx(Txt::FmtMagLegacyTypeNotPhysical));
     else
     {
         // Same instant and observer as the parity check (the dispatch's; while following its eye is the camera).
@@ -7564,14 +7569,14 @@ void SatelliteSim::updateSelectedPhotometry()
         double range = 1.0;
         const bool hidden = hiddenFrom(rg.orbit.posEci, d, range);
         if (hidden)
-            snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag: below your horizon");
+            snprintf(selPhotLine[0], sizeof(selPhotLine[0]), tx(Txt::FmtMagBelowYourHorizon));
         else if (!std::isfinite(rg.magnitude))
-            snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag: dark (Earth's shadow)");
+            snprintf(selPhotLine[0], sizeof(selPhotLine[0]), tx(Txt::FmtMagDarkEarthsShadow));
         else
         {
             formExt = atmExtinctionMag(obsG, d, range, (double)extinctionCoeff);
             shown = true;
-            snprintf(selPhotLine[0], sizeof(selPhotLine[0]), "Mag %.2f  (1000 km %.2f)", rg.magnitude + formExt,
+            snprintf(selPhotLine[0], sizeof(selPhotLine[0]), tx(Txt::FmtMag1000Km), rg.magnitude + formExt,
                      rg.magnitude1000);
         }
     }
@@ -7581,7 +7586,7 @@ void SatelliteSim::updateSelectedPhotometry()
         int n = 0;
         const double fm = formationMagnitude(selectedSatIndex, inG, pin.tAbs, n);
         if (std::isfinite(fm))
-            snprintf(selPhotLine[1], sizeof(selPhotLine[1]), "Formation of %d: mag %.2f", n, fm + formExt);
+            snprintf(selPhotLine[1], sizeof(selPhotLine[1]), tx(Txt::FmtFormationOfMag), n, fm + formExt);
     }
 
     // ── GPU parity: check + log only, no readout line (the range/phase line this used to follow is the
@@ -8903,7 +8908,7 @@ void SatelliteSim::finishIntro(bool wasSkipped)
         // UC1 mechanism 3: always tell the user, never silently re-decide — this timer/text pair
         // is separate from crashRecoveryNoticeTimer since the two can in principle both be live.
         snprintf(graphicsAutoNoticeText, sizeof(graphicsAutoNoticeText),
-                 "Graphics set to %s based on your hardware -- change in Settings > Display.",
+                 tx(Txt::FmtGraphicsSetToBasedOnYour),
                  kGraphicsPresetNames[(int)graphicsPreset]);
         graphicsAutoNoticeTimer = 8.0f;
     }
@@ -9018,7 +9023,7 @@ void SatelliteSim::recordScreenshotCopy(VkCommandBuffer cmd, VulkanContext &ctx,
     if (!ctx.screenshotSupported)
     {
         snprintf(screenshotToastText, sizeof(screenshotToastText),
-                 "Screenshot not supported (GPU/driver lacks swapchain TRANSFER_SRC).");
+                 tx(Txt::ToastScreenshotNotSupportedGpuDriverLacks));
         screenshotToastTimer = 4.0f;
         screenshotToastWarn = true;
         return;
@@ -9329,9 +9334,9 @@ void SatelliteSim::finalizeScreenshotCopy(bool force)
         bool ok = stbi_write_png(path.c_str(), (int)w, (int)h, 4, pixels.data(), (int)w * 4) != 0;
         char buf[192];
         if (ok)
-            snprintf(buf, sizeof(buf), "Saved %s", std::filesystem::path(path).filename().string().c_str());
+            snprintf(buf, sizeof(buf), tx(Txt::FmtSaved), std::filesystem::path(path).filename().string().c_str());
         else
-            snprintf(buf, sizeof(buf), "Screenshot failed to write.");
+            snprintf(buf, sizeof(buf), tx(Txt::FmtScreenshotFailedToWrite));
         {
             std::lock_guard<std::mutex> lock(screenshotResultMutex);
             screenshotResultText = buf;
@@ -9391,7 +9396,7 @@ void SatelliteSim::requestPhoto()
         return;   // (a cinematic export owns the photo target)
     if (!ctx_ || !ctx_->screenshotSupported)
     {
-        snprintf(screenshotToastText, sizeof(screenshotToastText), "HQ photo not supported on this GPU/driver.");
+        snprintf(screenshotToastText, sizeof(screenshotToastText), tx(Txt::ToastHqPhotoNotSupportedOnThis));
         screenshotToastTimer = 4.0f;
         screenshotToastWarn = true;
         return;
@@ -9494,18 +9499,35 @@ bool SatelliteSim::selectionKeyAction(int bindIdx)
         return true;
     }
     case KB_TRACK:
-        if (trackActive)
-        {
-            stopTrack();
-            return true;
-        }
-        if (!satSel && selectedMoonBase < 0)
+        if (!followActive && !satSel && selectedMoonBase < 0 && !trackActive)
             return false;
-        startTrack();
+        trackToggle();
         return true;
     }
     return false;
 }
+
+// Track (the T key and the selection panel's button). During Go to the camera rides with the object and
+// Track's lock would fight it (updateTrack dropped it at once: T did nothing): there Track is Go to's own aim
+// lock, the "Aim: locked / free" chip, so the object is kept centred while you move.
+void SatelliteSim::trackToggle()
+{
+    if (followActive)
+    {
+        followAimLock = !followAimLock;
+        snprintf(screenshotToastText, sizeof(screenshotToastText), "%s",
+                 followAimLock ? tx(Txt::ToastAimLocked) : tx(Txt::ToastAimFree));
+        screenshotToastTimer = 2.0f;
+        screenshotToastWarn = false;
+        return;
+    }
+    if (trackActive)
+        stopTrack();
+    else
+        startTrack();
+}
+
+bool SatelliteSim::trackShownOn() const { return followActive ? followAimLock : trackActive; }
 
 // ─── onKey ────────────────────────────────────────────────────────────────────
 // Shared event-action dispatch — see declaration in SatelliteSim.h for why this is split
@@ -11854,7 +11876,7 @@ void SatelliteSim::createCitySprites(VulkanContext &ctx)
 // the file, a 16-byte header with an empty grid, which the shader reads as "no roads".
 void SatelliteSim::createCityRoads(VulkanContext &ctx)
 {
-    bootStatus("Roads");
+    bootStatus(tx(Txt::BootRoads));
     std::vector<uint32_t> words;
     {
         const char *path = "assets/textures/city_roads.bin";
@@ -11938,7 +11960,7 @@ bool SatelliteSim::createMilkyWayBaked(VulkanContext &ctx)
         }
     }
     Log::line("init: texture: assets/textures/8k_stars_milky_way.jpg + " + std::string(path));
-    bootStatus("Milky Way");
+    bootStatus(tx(Txt::BootMilkyWay));
     int jw = 0, jh = 0, jch = 0;
     stbi_uc *px = stbi_load("assets/textures/8k_stars_milky_way.jpg", &jw, &jh, &jch, 4);
     if (!px)
@@ -12240,7 +12262,7 @@ void SatelliteSim::updateMoonDescriptor(VulkanContext &ctx, bool legacy)
 // array of neutral texels (ratio 0.4 = the mean, flat normal), so the shader path is unchanged.
 void SatelliteSim::createTerrainMaterials(VulkanContext &ctx)
 {
-    bootStatus("Terrain materials");
+    bootStatus(tx(Txt::SldTerrainMaterials));
     uint32_t w = 1, h = 1, layers = 12;
     std::vector<unsigned char> data;
     {
@@ -12505,7 +12527,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // to produce the irregular spiky corona shape (see lensFlare() in sat_sky.frag).
     {
         Log::line("init: texture: assets/noise/rgba_noise.png");
-        bootStatus("Noise texture");
+        bootStatus(tx(Txt::BootNoiseTexture));
         int w = 0, h = 0, ch = 0;
         stbi_uc *pixels = stbi_load("assets/noise/rgba_noise.png", &w, &h, &ch, 4);
         if (!pixels)
@@ -12574,7 +12596,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // ── Moon texture: near-side face disc image (binding 2) ──────────────────
     {
         Log::line("init: texture: assets/textures/full_moon.png");
-        bootStatus("Moon");
+        bootStatus(tx(Txt::ValMoon));
         int w = 0, h = 0, ch = 0;
         stbi_uc *pixels = stbi_load("assets/textures/full_moon.png", &w, &h, &ch, 4);
         if (!pixels)
@@ -12641,7 +12663,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // ── Earth day texture (binding 3): 8K equirectangular colour map ─────────
     {
         Log::line("init: texture: assets/textures/8k_earth_daymap.jpg");
-        bootStatus("Earth day map");
+        bootStatus(tx(Txt::BootEarthDayMap));
         int w = 0, h = 0, ch = 0;
         stbi_uc *pixels = stbi_load("assets/textures/8k_earth_daymap.jpg", &w, &h, &ch, 4);
         if (!pixels)
@@ -12741,7 +12763,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     if (!milkyWayBaked)
     {
         Log::line("init: texture: assets/textures/8k_stars_milky_way.jpg");
-        bootStatus("Milky Way");
+        bootStatus(tx(Txt::BootMilkyWay));
         int w = 0, h = 0, ch = 0;
         stbi_uc *pixels = stbi_load("assets/textures/8k_stars_milky_way.jpg", &w, &h, &ch, 4);
         if (!pixels)
@@ -12812,7 +12834,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // ── Earth night texture (binding 4): 8K equirectangular night-lights map ─
     {
         Log::line("init: texture: assets/textures/8k_earth_nightmap.jpg");
-        bootStatus("Earth night lights");
+        bootStatus(tx(Txt::BootEarthNightLights));
         int w = 0, h = 0, ch = 0;
         stbi_uc *pixels = stbi_load("assets/textures/8k_earth_nightmap.jpg", &w, &h, &ch, 4);
         if (!pixels)
@@ -12934,7 +12956,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
         for (auto &t : detailTexes)
         {
             Log::line("init: texture: " + std::string(t.path));
-            bootStatus(std::strstr(t.path, "night") ? "City lights detail" : "City detail");
+            bootStatus(std::strstr(t.path, "night") ? tx(Txt::BootCityLightsDetail) : tx(Txt::BootCityDetail));
             int w = 0, h = 0, ch = 0;
             stbi_uc *pixels = stbi_load(t.path, &w, &h, &ch, 4);
             if (!pixels)
@@ -13009,7 +13031,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     //    Read PRE-DECODED from earth_elevation_0/1.r8 (readRawR8, tools/make_raw_textures.py); the PNG
     //    is the source and the fallback when the halves are missing.
     {
-        bootStatus("Earth elevation");
+        bootStatus(tx(Txt::BootEarthElevation));
         int w = 0, h = 0;
         std::vector<unsigned char> rawElev;
         readRawR8({"assets/textures/earth_elevation_0.r8", "assets/textures/earth_elevation_1.r8"}, w, h, rawElev);
@@ -13129,7 +13151,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // + the DEM; see terrain.glsl (tdWaterAt). Without the baked files, the old mask (R) with G = 0,
     // which the shaders read as "no level data" (water only where the DEM is near sea level, as before).
     {
-        bootStatus("Ocean map");
+        bootStatus(tx(Txt::BootOceanMap));
         int w = 0, h = 0;
         std::vector<unsigned char> rawSpec, rawLevel;
         unsigned char *pixels = nullptr;
@@ -13244,7 +13266,7 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
     // ── Load earth cloud map (binding 7): 8K R8_UNORM grayscale coverage ─────────
     {
         Log::line("init: texture: assets/textures/8k_earth_clouds.jpg");
-        bootStatus("Cloud map");
+        bootStatus(tx(Txt::BootCloudMap));
         int w, h, ch;
         unsigned char *pixels = stbi_load("assets/textures/8k_earth_clouds.jpg", &w, &h, &ch, 1);
         if (pixels)
@@ -16776,8 +16798,8 @@ void SatelliteSim::bakeModelType(SatelliteType &t, const SatModel &model, int bu
 
     char msg[320];
     snprintf(msg, sizeof(msg),
-             "model '%s' (type '%s', %zu satellites): %d groups, %d components, %d triangles -> %d exact lobes "
-             "-> %d lobes (budget %d); validator |dmag| p95 %.3f, max %.3f%s; %.0f ms",
+             "model '%s' (type '%s', %zu satellites): %d groups, %d components, %d triangles -> %d exact lobes -> %d lobes "
+             "(budget %d); validator |dmag| p95 %.3f, max %.3f%s; %.0f ms",
              t.modelId.c_str(), t.name.c_str(), rosterCount, (int)model.groups.size(),
              (int)model.components.size(), stats.triangles, stats.exactLobes, stats.lobes, budget,
              stats.p95ErrMag, stats.maxErrMag, objOk ? "" : " (OBJ export failed)",

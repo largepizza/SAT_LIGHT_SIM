@@ -695,7 +695,7 @@ bool SatelliteSim::meteorWatchShower(int s, double t0, double t1, double tPeak, 
     camera.fovYDeg = 75.0f;
     const double zhrNow = meteors::zhrAt(s, lam);
     char b[300];
-    snprintf(b, sizeof(b), "%s (ZHR ~%.0f now) from %.1f %s %.1f %s: radiant %.0f deg up, Sun %.0f deg down, Moon %s; looking 45 deg from the radiant",
+    snprintf(b, sizeof(b), tx(Txt::FmtZhrNowFromRadiantDegUp),
              S.name, zhrNow, std::abs(obsLatDeg), obsLatDeg >= 0 ? "N" : "S", std::abs(obsLonDeg), obsLonDeg >= 0 ? "E" : "W",
              deg(std::asin(std::clamp((double)rEnu.z, -1.0, 1.0))), -deg(std::asin(std::clamp((double)sunDirENU.z, -1.0, 1.0))),
              moonDirENU.z > 0.0f ? (moonDirENU.w > 0.5f ? "up and bright" : "up") : "down");

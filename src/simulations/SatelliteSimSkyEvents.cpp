@@ -86,11 +86,11 @@ double latOf(const glm::dvec3 &e) { return deg(std::asin(std::clamp(e.z, -1.0, 1
 double lonOf(const glm::dvec3 &e) { return deg(std::atan2(e.y, e.x)); }
 const char *bodyName(int b)
 {
-    if (b == sky::kBodyMoon) return "Moon";
-    if (b == sky::kBodySun) return "Sun";
-    if (b >= sky::kBodyStar0) return "Betelgeuse"; // (the one star event: the 2037 supernova)
-    if (b >= sky::kBodyComet0) return "Comet";
-    if (b >= sky::kBodyMoonBase0) return "Moon base";
+    if (b == sky::kBodyMoon) return tx(Txt::ValMoon);
+    if (b == sky::kBodySun) return tx(Txt::ValSun);
+    if (b >= sky::kBodyStar0) return tx(Txt::ValBetelgeuse); // (the one star event: the 2037 supernova)
+    if (b >= sky::kBodyComet0) return tx(Txt::ValComet);
+    if (b >= sky::kBodyMoonBase0) return tx(Txt::ValMoonBase);
     return b >= 0 && b < kPlanetCount ? kPlanetNames[b] : "?";
 }
 // The Moon's apparent magnitude (Allen's phase law, as updatePositions' moonlight).
@@ -299,31 +299,31 @@ std::string eventTitle(const sky::Event &e)
     switch (e.kind)
     {
     case sky::kSolarEclipse:
-        snprintf(b, sizeof(b), "%s solar eclipse", e.total ? "Total" : e.annular ? "Annular" : "Partial");
+        snprintf(b, sizeof(b), tx(Txt::FmtSolarEclipse), e.total ? "Total" : e.annular ? "Annular" : "Partial");
         break;
     case sky::kLunarEclipse:
-        snprintf(b, sizeof(b), "%s lunar eclipse", e.total ? "Total" : "Partial");
+        snprintf(b, sizeof(b), tx(Txt::FmtLunarEclipse), e.total ? "Total" : "Partial");
         break;
     case sky::kConjunction:
         if (e.b == sky::kBodyMoon || e.a == sky::kBodyMoon)
-            snprintf(b, sizeof(b), "The Moon and %s, %.1f deg apart", bodyName(e.a == sky::kBodyMoon ? e.b : e.a), e.sepDeg);
+            snprintf(b, sizeof(b), tx(Txt::FmtTheMoonAndDegApart), bodyName(e.a == sky::kBodyMoon ? e.b : e.a), e.sepDeg);
         else
-            snprintf(b, sizeof(b), "%s and %s, %.1f deg apart", bodyName(e.a), bodyName(e.b), e.sepDeg);
+            snprintf(b, sizeof(b), tx(Txt::FmtAndDegApart), bodyName(e.a), bodyName(e.b), e.sepDeg);
         break;
     case sky::kOccultation:
-        snprintf(b, sizeof(b), "The Moon hides %s", bodyName(e.a));
+        snprintf(b, sizeof(b), tx(Txt::FmtTheMoonHides), bodyName(e.a));
         break;
     case sky::kMoonGlint:
-        snprintf(b, sizeof(b), "%s array glint, mag %.1f", e.label, e.magA);
+        snprintf(b, sizeof(b), tx(Txt::FmtArrayGlintMag), e.label, e.magA);
         break;
     case sky::kMeteorShower:
-        snprintf(b, sizeof(b), "%s peak, ZHR %.0f", e.label, e.magA);
+        snprintf(b, sizeof(b), tx(Txt::FmtPeakZhr), e.label, e.magA);
         break;
     case sky::kComet:
-        snprintf(b, sizeof(b), "%s, mag %.1f", e.label, e.magA);
+        snprintf(b, sizeof(b), tx(Txt::FmtMag2), e.label, e.magA);
         break;
     case sky::kSupernova:
-        snprintf(b, sizeof(b), "Betelgeuse goes supernova, peak mag %.1f", e.magA);
+        snprintf(b, sizeof(b), tx(Txt::FmtBetelgeuseGoesSupernovaPeakMag), e.magA);
         break;
     default:
         snprintf(b, sizeof(b), "Event");
@@ -349,47 +349,47 @@ std::string whereText(const glm::dvec3 &s)
 // (Short lines: a card's text is clipped at its edge, and at 1024 x 768 a line holds ~40 characters.)
 void SkyEventsFriend::cardSolar(SatelliteSim &S, const sky::Event &e, double, const char *&l1, const char *&l2)
 {
-    l1 = S.skStr("%s, %.1f h on Earth", eventTitle(e).c_str(), (e.t1 - e.t0) / 3600.0);
-    l2 = S.skStr("%s at %s", utcShort(e.t).c_str(), whereText(e.site).c_str());
+    l1 = S.skStr(tx(Txt::FmtHOnEarth), eventTitle(e).c_str(), (e.t1 - e.t0) / 3600.0);
+    l2 = S.skStr(tx(Txt::FmtAt), utcShort(e.t).c_str(), whereText(e.site).c_str());
 }
 void SkyEventsFriend::cardLunar(SatelliteSim &S, const sky::Event &e, double, const char *&l1, const char *&l2)
 {
-    l1 = S.skStr("%s, %.0f min in the umbra", eventTitle(e).c_str(), (e.t1 - e.t0) / 60.0);
-    l2 = S.skStr("%s at %s", utcShort(e.t).c_str(), whereText(e.site).c_str());
+    l1 = S.skStr(tx(Txt::FmtMinInTheUmbra), eventTitle(e).c_str(), (e.t1 - e.t0) / 60.0);
+    l2 = S.skStr(tx(Txt::FmtAt), utcShort(e.t).c_str(), whereText(e.site).c_str());
 }
 void SkyEventsFriend::cardConj(SatelliteSim &S, const sky::Event &e, double, const char *&l1, const char *&l2)
 {
     l1 = S.skStr("%s", eventTitle(e).c_str());
-    l2 = S.skStr("%s at %s", utcShort(e.t).c_str(), whereText(e.site).c_str());
+    l2 = S.skStr(tx(Txt::FmtAt), utcShort(e.t).c_str(), whereText(e.site).c_str());
 }
 void SkyEventsFriend::cardOcc(SatelliteSim &S, const sky::Event &e, double, const char *&l1, const char *&l2)
 {
-    l1 = S.skStr("%s, hidden %.0f min", eventTitle(e).c_str(), (e.t1 - e.t0) / 60.0);
-    l2 = S.skStr("%s at %s", utcShort(e.t).c_str(), whereText(e.site).c_str());
+    l1 = S.skStr(tx(Txt::FmtHiddenMin), eventTitle(e).c_str(), (e.t1 - e.t0) / 60.0);
+    l2 = S.skStr(tx(Txt::FmtAt), utcShort(e.t).c_str(), whereText(e.site).c_str());
 }
 
 void SkyEventsFriend::cardGlint(SatelliteSim &S, const sky::Event &e, double, const char *&l1, const char *&l2)
 {
     l1 = S.skStr("%s, %.0f h", eventTitle(e).c_str(), (e.t1 - e.t0) / 3600.0);
-    l2 = S.skStr("%s at %s", utcShort(e.t).c_str(), whereText(e.site).c_str());
+    l2 = S.skStr(tx(Txt::FmtAt), utcShort(e.t).c_str(), whereText(e.site).c_str());
 }
 
 // A shower's card: its peak and ZHR, then the Moon at the peak (tAux = its lit fraction) and a quality note.
 void SkyEventsFriend::cardMeteor(SatelliteSim &S, const sky::Event &e, double, const char *&l1, const char *&l2)
 {
     const double lit = e.tAux;
-    const char *q = lit < 0.25 ? "dark skies" : lit < 0.6 ? "some moonlight" : "bright Moon";
+    const char *q = lit < 0.25 ? tx(Txt::ValDarkSkies) : lit < 0.6 ? tx(Txt::ValSomeMoonlight) : tx(Txt::ValBrightMoon);
     l1 = S.skStr("%s, %s", eventTitle(e).c_str(), utcShort(e.t).c_str());
-    l2 = S.skStr("Moon %.0f%% lit: %s", 100.0 * lit, q);
+    l2 = S.skStr(tx(Txt::FmtMoonLit), 100.0 * lit, q);
 }
 
 void SkyEventsFriend::cardComet(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2)
 {
     l1 = S.skStr("%s", e.label);
     if (now >= e.t0 && now < e.t1)
-        l2 = S.skStr("mag %.1f, best %s (tail %.0f deg)", e.magA, utcShort(e.t).substr(0, 10).c_str(), e.sepDeg);
+        l2 = S.skStr(tx(Txt::FmtMagBestTailDeg), e.magA, utcShort(e.t).substr(0, 10).c_str(), e.sepDeg);
     else
-        l2 = S.skStr("best %s, mag %.1f, tail %.0f deg", utcShort(e.t).substr(0, 10).c_str(), e.magA, e.sepDeg);
+        l2 = S.skStr(tx(Txt::FmtBestMagTailDeg), utcShort(e.t).substr(0, 10).c_str(), e.magA, e.sepDeg);
 }
 
 // The supernova: a countdown to the breakout, then its magnitude now and the day since.
@@ -397,36 +397,36 @@ void SkyEventsFriend::cardSupernova(SatelliteSim &S, const sky::Event &e, double
 {
     if (now >= e.t0)
     {
-        l1 = S.skStr("Betelgeuse now at magnitude %.1f (day %.0f)", SatelliteSim::supernovaMagAt(now), std::floor((now - e.t0) / kDay) + 1.0);
-        l2 = S.skStr("Peak %.1f on %s", e.magA, utcShort(e.t).c_str());
+        l1 = S.skStr(tx(Txt::FmtBetelgeuseNowAtMagnitudeDay), SatelliteSim::supernovaMagAt(now), std::floor((now - e.t0) / kDay) + 1.0);
+        l2 = S.skStr(tx(Txt::FmtPeakOn), e.magA, utcShort(e.t).c_str());
     }
     else
     {
-        l1 = S.skStr("Betelgeuse explodes, peak mag %.1f", e.magA);
+        l1 = S.skStr(tx(Txt::FmtBetelgeuseExplodesPeakMag), e.magA);
         const std::string pk = utcShort(e.t).substr(0, 10);
-        l2 = S.skStr("Breakout %s, peak %s", utcShort(e.t0).c_str(), pk.c_str());
+        l2 = S.skStr(tx(Txt::FmtBreakoutPeak), utcShort(e.t0).c_str(), pk.c_str());
     }
 }
 
 const SkyKindDef SkyEventsFriend::kinds[sky::kKindCount] = {
-    {"solar", "SOLAR ECLIPSE", 33, &Pal::progressFill, &SatelliteSim::skySearchSolar, &SatelliteSim::skyWatchSolar, &SkyEventsFriend::cardSolar,
-     "none in the next 2 years", "The Moon covering the Sun, from where the shadow falls"},
-    {"lunar", "LUNAR ECLIPSE", 34, &Pal::btnDanger, &SatelliteSim::skySearchLunar, &SatelliteSim::skyWatchLunar, &SkyEventsFriend::cardLunar,
-     "none in the next 2 years", "The Moon in the Earth's shadow, from a dark site"},
-    {"conjunction", "CONJUNCTION", 35, &Pal::tagTwilight, &SatelliteSim::skySearchConjunctions,
-     &SatelliteSim::skyWatchConjunction, &SkyEventsFriend::cardConj, "none in the next 2 years", "Both bodies in frame, from a dark site"},
-    {"occultation", "OCCULTATION", 36, &Pal::btnAccent, &SatelliteSim::skySearchOccultations,
-     &SatelliteSim::skyWatchOccultation, &SkyEventsFriend::cardOcc, "none in the next 2 years", "The planet behind the Moon, a minute before it reappears"},
-    {"moonglint", "MOON BASE GLINT", 37, &Pal::tagTwilight, &SatelliteSim::skySearchMoonGlints,
-     &SatelliteSim::skyWatchMoonGlint, &SkyEventsFriend::cardGlint, "none in the next 2 years",
-     "A lunar base's solar array flashing on the Moon, through a telescope"},
-    {"meteors", "METEOR SHOWER", 38, &Pal::progressFill, &SatelliteSim::skySearchMeteorShowers,
-     &SatelliteSim::skyWatchMeteorShower, &SkyEventsFriend::cardMeteor, "none in the next 2 years",
-     "Meteors near the peak, from a dark site with the radiant up"},
-    {"comet", "COMET", 39, &Pal::progressFill, &SatelliteSim::skySearchComets, &SatelliteSim::skyWatchComet,
-     &SkyEventsFriend::cardComet, "no bright comet in the next 2 years", "The comet and its tail, from a dark place"},
-    {"supernova", "SUPERNOVA", 40, &Pal::btnDanger, &SatelliteSim::skySearchSupernova, &SatelliteSim::skyWatchSupernova,
-     &SkyEventsFriend::cardSupernova, "none in the next 2 years", "Betelgeuse blazing in Orion, from a dark site"},
+    {"solar", tx(Txt::TxtSolarEclipse), 33, &Pal::progressFill, &SatelliteSim::skySearchSolar, &SatelliteSim::skyWatchSolar, &SkyEventsFriend::cardSolar,
+     tx(Txt::TxtNoneInTheNext2Years), tx(Txt::TxtTheMoonCoveringTheSunFrom)},
+    {"lunar", tx(Txt::TxtLunarEclipse), 34, &Pal::btnDanger, &SatelliteSim::skySearchLunar, &SatelliteSim::skyWatchLunar, &SkyEventsFriend::cardLunar,
+     tx(Txt::TxtNoneInTheNext2Years), tx(Txt::TxtTheMoonInTheEarthsShadow)},
+    {"conjunction", tx(Txt::TxtConjunction), 35, &Pal::tagTwilight, &SatelliteSim::skySearchConjunctions,
+     &SatelliteSim::skyWatchConjunction, &SkyEventsFriend::cardConj, tx(Txt::TxtNoneInTheNext2Years), tx(Txt::TxtBothBodiesInFrameFromA)},
+    {"occultation", tx(Txt::TxtOccultation), 36, &Pal::btnAccent, &SatelliteSim::skySearchOccultations,
+     &SatelliteSim::skyWatchOccultation, &SkyEventsFriend::cardOcc, tx(Txt::TxtNoneInTheNext2Years), tx(Txt::TxtThePlanetBehindTheMoonA)},
+    {"moonglint", tx(Txt::TxtMoonBaseGlint), 37, &Pal::tagTwilight, &SatelliteSim::skySearchMoonGlints,
+     &SatelliteSim::skyWatchMoonGlint, &SkyEventsFriend::cardGlint, tx(Txt::TxtNoneInTheNext2Years),
+     tx(Txt::TxtALunarBasesSolarArrayFlashing)},
+    {"meteors", tx(Txt::TxtMeteorShower), 38, &Pal::progressFill, &SatelliteSim::skySearchMeteorShowers,
+     &SatelliteSim::skyWatchMeteorShower, &SkyEventsFriend::cardMeteor, tx(Txt::TxtNoneInTheNext2Years),
+     tx(Txt::TxtMeteorsNearThePeakFromA)},
+    {"comet", tx(Txt::TxtComet), 39, &Pal::progressFill, &SatelliteSim::skySearchComets, &SatelliteSim::skyWatchComet,
+     &SkyEventsFriend::cardComet, tx(Txt::TxtNoBrightCometInTheNext), tx(Txt::TxtTheCometAndItsTailFrom)},
+    {"supernova", tx(Txt::TxtSupernova), 40, &Pal::btnDanger, &SatelliteSim::skySearchSupernova, &SatelliteSim::skyWatchSupernova,
+     &SkyEventsFriend::cardSupernova, tx(Txt::TxtNoneInTheNext2Years), tx(Txt::TxtBetelgeuseBlazingInOrionFromA)},
 };
 static_assert(sizeof(SkyEventsFriend::kinds) / sizeof(SkyEventsFriend::kinds[0]) == sky::kKindCount, "one row per sky::Kind");
 namespace
@@ -793,8 +793,8 @@ bool SatelliteSim::skyWatchSolar(const sky::Event &e, std::string &msg)
     selectedPlanetIndex = -1;
     skyAimAt(sky::kBodySun, -1, 16.0f, e.t1);
     char b[220];
-    snprintf(b, sizeof(b), "%s: the Moon %s the Sun, seen from %s (Sun %.0f deg up)", eventTitle(e).c_str(),
-             central ? (e.annular ? "inside" : "covering") : "biting into", whereText(site).c_str(), glm::degrees(std::asin(std::clamp(sunDirENU.z, -1.0f, 1.0f))));
+    snprintf(b, sizeof(b), tx(Txt::FmtTheMoonTheSunSeenFrom), eventTitle(e).c_str(),
+             central ? (e.annular ? "inside" : "covering") : tx(Txt::TxtBitingInto), whereText(site).c_str(), glm::degrees(std::asin(std::clamp(sunDirENU.z, -1.0f, 1.0f))));
     msg = b;
     return true;
 }
@@ -819,7 +819,7 @@ bool SatelliteSim::skyWatchLunar(const sky::Event &e, std::string &msg)
     selectedPlanetIndex = -1;
     skyAimAt(sky::kBodyMoon, -1, 12.0f, e.t1);
     char b[220];
-    snprintf(b, sizeof(b), "%s: the Moon in the Earth's shadow, seen from %s (Moon %.0f deg up)", eventTitle(e).c_str(),
+    snprintf(b, sizeof(b), tx(Txt::FmtTheMoonInTheEarthsShadow), eventTitle(e).c_str(),
              whereText(site).c_str(), glm::degrees(std::asin(std::clamp(moonDirENU.z, -1.0f, 1.0f))));
     msg = b;
     return true;
@@ -860,8 +860,8 @@ bool SatelliteSim::skyWatchConjunction(const sky::Event &e, std::string &msg)
     skyAimAt(e.a, e.b, fov, e.t1);
     char b[240];
     const bool moonPair = e.b == sky::kBodyMoon || e.a == sky::kBodyMoon;
-    snprintf(b, sizeof(b), "%s and %s %.1f deg apart, seen from %s (%.0f deg up, Sun %.0f deg down)",
-             moonPair ? "The Moon" : bodyName(e.a), moonPair ? bodyName(planet) : bodyName(e.b),
+    snprintf(b, sizeof(b), tx(Txt::FmtAndDegApartSeenFromDeg),
+             moonPair ? tx(Txt::TxtTheMoon) : bodyName(e.a), moonPair ? bodyName(planet) : bodyName(e.b),
              sepNow, whereText(site).c_str(), camera.elDeg,
              -glm::degrees(std::asin(std::clamp(sunDirENU.z, -1.0f, 1.0f))));
     msg = b;
@@ -902,7 +902,7 @@ bool SatelliteSim::skyWatchOccultation(const sky::Event &e, std::string &msg)
     formatSelectedPlanetInfo();
     skyAimAt(sky::kBodyMoon, -1, 5.0f, t1 + 600.0);
     char b[240];
-    snprintf(b, sizeof(b), "%s is behind the Moon, seen from %s; it reappears at the Moon's limb in about %.0f s",
+    snprintf(b, sizeof(b), tx(Txt::FmtIsBehindTheMoonSeenFrom),
              bodyName(e.a), whereText(site).c_str(), std::max(0.0, t1 - tw));
     msg = b;
     return true;
@@ -985,7 +985,7 @@ bool SatelliteSim::skyWatchMoonGlint(const sky::Event &e, std::string &msg)
     selectedPlanetIndex = -1;
     skyAimAt(e.a, -1, 1.0f, e.t1);
     char b[260];
-    snprintf(b, sizeof(b), "%s: its solar array mirroring the Sun, mag %.1f, seen from %s (Moon %.0f deg up, phase angle %.1f deg)",
+    snprintf(b, sizeof(b), tx(Txt::FmtItsSolarArrayMirroringTheSun),
              B.name.c_str(), mag, whereText(site).c_str(), glm::degrees(std::asin(std::clamp(moonDirENU.z, -1.0f, 1.0f))),
              e.tAux);
     msg = b;
@@ -1101,8 +1101,8 @@ bool SatelliteSim::skyWatchSupernova(const sky::Event &e, std::string &msg)
     const int rigel = starIndexByName("Rigel");
     skyAimAt(e.a, rigel >= 0 ? sky::kBodyStar0 + rigel : -1, 42.0f, e.t1);
     char b[260];
-    snprintf(b, sizeof(b), "Betelgeuse, %s (mag %.1f, day %.0f), seen from %s (%.0f deg up, Sun %.0f deg %s)",
-             now >= e.t0 && now < e.t1 ? "a supernova" : "at its peak", supernovaMagAt(tw), std::floor((tw - e.t0) / kDay) + 1.0,
+    snprintf(b, sizeof(b), tx(Txt::FmtBetelgeuseMagDaySeenFromDeg),
+             now >= e.t0 && now < e.t1 ? tx(Txt::TxtASupernova) : tx(Txt::TxtAtItsPeak), supernovaMagAt(tw), std::floor((tw - e.t0) / kDay) + 1.0,
              whereText(site).c_str(), glm::degrees(std::asin(std::clamp(skyBodyEnu(e.a).z, -1.0f, 1.0f))),
              std::abs(glm::degrees(std::asin(std::clamp(sunDirENU.z, -1.0f, 1.0f)))), sunDirENU.z < 0.0f ? "down" : "up");
     msg = b;
@@ -1256,12 +1256,12 @@ void SatelliteSim::buildSkyEventsWindow(const UIInput &inp, UIRenderer &ui)
     auto inText = [&](double s) -> const char * {
         s = std::max(s, 0.0);
         const long long m = (long long)std::floor(s / 60.0);
-        if (m >= 2 * 1440) return skStr("in %lld d %lld h", m / 1440, (m % 1440) / 60);
-        if (m >= 60) return skStr("in %lld h %02lld min", m / 60, m % 60);
-        return skStr("in %lld min", m);
+        if (m >= 2 * 1440) return skStr(tx(Txt::FmtInDH2), m / 1440, (m % 1440) / 60);
+        if (m >= 60) return skStr(tx(Txt::FmtInHMin), m / 60, m % 60);
+        return skStr(tx(Txt::FmtInMin), m);
     };
     static char titleBuf[32];
-    snprintf(titleBuf, sizeof(titleBuf), "Sky events");
+    snprintf(titleBuf, sizeof(titleBuf), tx(Txt::FmtSkyEvents));
     buildResizableWindow(
         inp, ui, skChrome, 13, titleBuf, true, hovSkClose, inp.screenW - skChrome.w - 60.0f, 100.0f, 340.0f, 300.0f, 1400.0f,
         1400.0f,
@@ -1283,9 +1283,8 @@ void SatelliteSim::buildSkyEventsWindow(const UIInput &inp, UIRenderer &ui)
                 text(skStatus.empty() ? " " : skStr("%s", skStatus.c_str()), Pal::textWarn, 11);
                 // The inertial camera lock: the view fixed on the stars (from orbit the Earth turns beneath): with time
                 // warp, a comet's or the planets' motion across the star field.
-                if (uiButton(inp, ui, "SkInertial", 0, inertialActive ? "Locked to the stars" : "Lock view to the stars",
-                             "Hold the view fixed relative to the stars (the sidereal frame). Above 100 km the eye is held "
-                             "too, so the Earth turns beneath. With time warp: a comet's swing round the Sun.",
+                if (uiButton(inp, ui, "SkInertial", 0, inertialActive ? tx(Txt::BtnLockedToTheStars) : tx(Txt::BtnLockViewToTheStars),
+                             tx(Txt::TipHoldTheViewFixedRelativeTo),
                              inertialActive))
                 {
                     if (inertialActive)
@@ -1294,9 +1293,8 @@ void SatelliteSim::buildSkyEventsWindow(const UIInput &inp, UIRenderer &ui)
                         inertialStart(obsHeightOffset > 100000.0f);
                 }
                 if (inertialActive &&
-                    uiButton(inp, ui, "SkOcculter", 0, "Occult the Sun",
-                             "A coronagraph: hide the Sun's disc and its glare while the view is locked, so a comet "
-                             "can be followed close to the Sun (as SOHO's LASCO does).",
+                    uiButton(inp, ui, "SkOcculter", 0, tx(Txt::BtnOccultTheSun),
+                             tx(Txt::TipACoronagraphHideTheSunsDisc),
                              inertialOcculter))
                     inertialOcculter = !inertialOcculter;
                 CLAY(CLAY_ID("SkList"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
@@ -1305,7 +1303,7 @@ void SatelliteSim::buildSkyEventsWindow(const UIInput &inp, UIRenderer &ui)
                                                     .layoutDirection = CLAY_TOP_TO_BOTTOM},
                                          .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}})
                 {
-                    uiSection("SkSecNext", 0, "NEXT OF EACH KIND");
+                    uiSection("SkSecNext", 0, tx(Txt::SecNextOfEachKind));
                     const float lineH = (float)fs(12) * 1.35f;
                     for (int k = 0; k < sky::kKindCount; ++k)
                     {
@@ -1313,12 +1311,12 @@ void SatelliteSim::buildSkyEventsWindow(const UIInput &inp, UIRenderer &ui)
                         const sky::Event *e = skyEventNext(k);
                         const char *st, *l1 = "", *l2 = "";
                         if (k >= skScanKind)
-                            st = "searching the next 2 years...";
+                            st = tx(Txt::ValSearchingTheNext2Years);
                         else if (!e)
                             st = K.none;
                         else
                         {
-                            st = now >= e->t0 ? skStr("HAPPENING NOW, %s left", inText(e->t1 - now) + 3)
+                            st = now >= e->t0 ? skStr(tx(Txt::FmtHappeningNowLeft), inText(e->t1 - now) + 3)
                                               : inText(e->t0 - now);
                             K.text(*this, *e, now, l1, l2);
                         }
@@ -1361,12 +1359,12 @@ void SatelliteSim::buildSkyEventsWindow(const UIInput &inp, UIRenderer &ui)
                                                                               .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                                               .layoutDirection = CLAY_TOP_TO_BOTTOM}})
                             {
-                                if (uiButton(inp, ui, "SkCardBtn", k, "Watch", K.tip, false, e != nullptr, true) && e)
+                                if (uiButton(inp, ui, "SkCardBtn", k, tx(Txt::BtnWatch), K.tip, false, e != nullptr, true) && e)
                                     skPendingKind = k;
                             }
                         }
                     }
-                    uiSection("SkSecUp", 1, "UPCOMING (NEXT 2 YEARS)");
+                    uiSection("SkSecUp", 1, tx(Txt::SecUpcomingNext2Years));
                     // Always kUpcomingRows rows of one height: a row waiting for the search, or past the list's end, is
                     // a blank line, so nothing moves as the kinds come in.
                     const float rowH = std::max((float)fs(11) * 1.35f * 2.0f + 10.0f, 34.0f);
@@ -1393,17 +1391,17 @@ void SatelliteSim::buildSkyEventsWindow(const UIInput &inp, UIRenderer &ui)
                                 {
                                     text(skStr("%s", eventTitle(*e).c_str()), Pal::textPrimary, 11);
                                     text(skStr("%s  -  %s", fmtUtcReadable(e->t).c_str(),
-                                               now >= e->t0 ? "happening now" : inText(e->t0 - now)),
+                                               now >= e->t0 ? tx(Txt::TxtHappeningNow) : inText(e->t0 - now)),
                                          Pal::textDim, 11);
                                 }
                                 else
-                                    text(skScanKind < sky::kKindCount ? "searching..." : " ", Pal::textDim, 11);
+                                    text(skScanKind < sky::kKindCount ? tx(Txt::ValSearching) : " ", Pal::textDim, 11);
                             }
                             const float bw = (float)fs(11) * 6.0f;
                             CLAY(CLAY_IDI("SkRowBtns", (uint32_t)i), {.layout = {.sizing = {CLAY_SIZING_FIXED(bw), CLAY_SIZING_FIT(0)},
                                                                                  .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}})
                             {
-                                if (uiButton(inp, ui, "SkRowBtn", i, "Watch", e ? kSkyKinds[e->kind].tip : "", false, e != nullptr, true) && e)
+                                if (uiButton(inp, ui, "SkRowBtn", i, tx(Txt::BtnWatch), e ? kSkyKinds[e->kind].tip : "", false, e != nullptr, true) && e)
                                     skPendingRow = i;
                             }
                         }
@@ -1485,7 +1483,7 @@ harness::Status SatelliteSim::harnessSkyEvents(harness::Active &a)
         nlohmann::json arr = nlohmann::json::array();
         for (const sky::Event &e : skFound[k]) arr.push_back(eventJson(e, now));
         r["events"] = arr;
-        r["message"] = std::to_string(arr.size()) + " " + kSkyKinds[k].id + " events";
+        r["message"] = std::to_string(arr.size()) + " " + kSkyKinds[k].id + tx(Txt::ValEvents);
         return harness::Status::Done;
     }
     if (sub == "watch")

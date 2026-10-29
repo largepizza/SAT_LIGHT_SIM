@@ -301,23 +301,23 @@ void SatelliteSim::formatSelectedMoonBaseInfo()
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     const double built = lunar::builtShare(B, t);
     const double lonE = B.lonDeg > 180.0 ? B.lonDeg - 360.0 : B.lonDeg;
-    snprintf(moonBaseInfoLine[0], kSelInfoLineLen, "%s solar arrays", B.name.c_str());
-    snprintf(moonBaseInfoLine[1], kSelInfoLineLen, "Moon base glint, %.1f %c %.1f %c", std::abs(B.latDeg),
+    snprintf(moonBaseInfoLine[0], kSelInfoLineLen, tx(Txt::FmtSolarArrays), B.name.c_str());
+    snprintf(moonBaseInfoLine[1], kSelInfoLineLen, tx(Txt::FmtMoonBaseGlint), std::abs(B.latDeg),
              B.latDeg < 0.0 ? 'S' : 'N', std::abs(lonE), lonE < 0.0 ? 'W' : 'E');
     if (m.drawn)
-        snprintf(moonBaseInfoLine[2], kSelInfoLineLen, "Mag: %.1f (%.1f above the air)", m.magSeen, m.magTop);
+        snprintf(moonBaseInfoLine[2], kSelInfoLineLen, tx(Txt::FmtMagAboveTheAir), m.magSeen, m.magTop);
     else if (built <= 0.0)
-        snprintf(moonBaseInfoLine[2], kSelInfoLineLen, "Not built yet");
+        snprintf(moonBaseInfoLine[2], kSelInfoLineLen, tx(Txt::FmtNotBuiltYet));
     else if (!m.sunUp)
-        snprintf(moonBaseInfoLine[2], kSelInfoLineLen, "No glint: the Sun is down at the base");
+        snprintf(moonBaseInfoLine[2], kSelInfoLineLen, tx(Txt::FmtNoGlintTheSunIsDown));
     else
-        snprintf(moonBaseInfoLine[2], kSelInfoLineLen, "No glint from here (beam %.1f deg off)", m.beamOffDeg);
-    snprintf(moonBaseInfoLine[3], kSelInfoLineLen, "Arrays: %.2f km^2, %d rows (%.0f%% built)", B.areaM2 * 1e-6, B.rows,
+        snprintf(moonBaseInfoLine[2], kSelInfoLineLen, tx(Txt::FmtNoGlintFromHereBeamDeg), m.beamOffDeg);
+    snprintf(moonBaseInfoLine[3], kSelInfoLineLen, tx(Txt::FmtArraysKm2RowsBuilt), B.areaM2 * 1e-6, B.rows,
              100.0 * built);
     // The Moon's phase angle (Sun - Moon - observer: 0 = full; the glints come within a few degrees of it).
     const glm::vec3 md = glm::normalize(glm::vec3(moonDirENU));
     const double ph = deg(std::acos(std::clamp(-(double)glm::dot(glm::normalize(glm::vec3(sunDirENU)), md), -1.0, 1.0)));
-    snprintf(moonBaseInfoLine[4], kSelInfoLineLen, "Moon phase angle: %.1f deg", ph);
+    snprintf(moonBaseInfoLine[4], kSelInfoLineLen, tx(Txt::FmtMoonPhaseAngleDeg), ph);
     // The glint window (the sky event's: brighter than the event limit from the best place on Earth), cached over
     // [-1 d, +3 d] round the time it was built; rebuilt when time leaves it or another base is picked.
     if (moonBaseWinFor != i || t < moonBaseWinT0 + 6.0 * 3600.0 || t > moonBaseWinT1 - 86400.0)
@@ -339,16 +339,16 @@ void SatelliteSim::formatSelectedMoonBaseInfo()
             next = &w;
     }
     if (cur)
-        snprintf(moonBaseInfoLine[5], kSelInfoLineLen, "Glint window: now, ends %s (peak %.1f)",
+        snprintf(moonBaseInfoLine[5], kSelInfoLineLen, tx(Txt::FmtGlintWindowNowEndsPeak),
                  fmtUtcReadable(cur->t1).c_str(), cur->peakMag);
     else if (next)
-        snprintf(moonBaseInfoLine[5], kSelInfoLineLen, "Next glint window: %s (peak %.1f)",
+        snprintf(moonBaseInfoLine[5], kSelInfoLineLen, tx(Txt::FmtNextGlintWindowPeak),
                  fmtUtcReadable(next->t0).c_str(), next->peakMag);
     else
-        snprintf(moonBaseInfoLine[5], kSelInfoLineLen, "No glint window brighter than %.0f within 2 days",
+        snprintf(moonBaseInfoLine[5], kSelInfoLineLen, tx(Txt::FmtNoGlintWindowBrighterThanWithin),
                  (double)moonBaseMagLimit);
     if (m.drawn)
-        snprintf(moonBaseInfoLine[6], kSelInfoLineLen, "Rows lit: %.0f of %d, the Sun %.1f deg up there", m.rowsLit,
+        snprintf(moonBaseInfoLine[6], kSelInfoLineLen, tx(Txt::FmtRowsLitOfTheSunDeg), m.rowsLit,
                  B.rows, m.sunElevDeg);
 }
 
