@@ -23,7 +23,7 @@
 std::vector<CineKey> &SatelliteSim::cineKeys()
 {
     if (cine_.shots.empty())
-        cine_.shots.push_back(CineShot{"shot 1"});
+        cine_.shots.push_back(CineShot{tx(Txt::TxtShot1)});
     cineShot_ = std::clamp(cineShot_, 0, (int)cine_.shots.size() - 1);
     return cine_.shots[cineShot_].keys;
 }
@@ -71,8 +71,8 @@ bool SatelliteSim::cineKeyFollowMismatch(std::string &why) const
         return false;
     if (!followActive || followSatIndex != S.followSat)
     {
-        why = "This shot follows satellite #" + std::to_string(S.followSat) +
-              ": select it and press Go to (or Follow) before taking a key";
+        why = tx(Txt::ValThisShotFollowsSatellite) + std::to_string(S.followSat) +
+              tx(Txt::ValSelectItAndPressGoTo);
         return true;
     }
     return false;
@@ -117,11 +117,11 @@ bool SatelliteSim::cineSave(const std::string &file, std::string &err)
     std::ofstream out(p);
     if (!out)
     {
-        err = "cannot write " + p.string();
+        err = tx(Txt::ValCannotWrite) + p.string();
         return false;
     }
     out << cineToJson(cine_).dump(1);
-    cineStatus_ = "Saved " + p.filename().string();
+    cineStatus_ = tx(Txt::ValSaved) + p.filename().string();
     cineFile_ = p.string();
     cineRefreshFiles();
     return true;
@@ -137,23 +137,23 @@ bool SatelliteSim::cineLoad(const std::string &file, std::string &err)
     std::ifstream in(p);
     if (!in)
     {
-        err = "cannot open " + p.string();
+        err = tx(Txt::ValCannotOpen) + p.string();
         return false;
     }
     nlohmann::json j = nlohmann::json::parse(in, nullptr, false);
     if (j.is_discarded())
     {
-        err = "not JSON: " + p.string();
+        err = tx(Txt::ValNotJson) + p.string();
         return false;
     }
     Cinematic c;
     if (!cineFromJson(j, c, err))
         return false;
-    cineStop("Loaded another cinematic");
+    cineStop(tx(Txt::TxtLoadedAnotherCinematic));
     cine_ = std::move(c);
     cineShot_ = 0;
     cineScrub_ = 0.0f;
-    cineStatus_ = "Loaded " + p.filename().string();
+    cineStatus_ = tx(Txt::ValLoaded) + p.filename().string();
     cineFile_ = p.string();
     return true;
 }
@@ -267,12 +267,12 @@ void SatelliteSim::cineStart(CineRun mode, bool oneShot)
                                : cine_.duration();
     if (cine_.shots.empty() || dur <= 0.0)
     {
-        cineStatus_ = "Nothing to play: a shot needs two keys";
+        cineStatus_ = tx(Txt::ValNothingToPlayAShotNeeds);
         return;
     }
     if (mode != CineRun::Play && (!ctx_ || !ctx_->screenshotSupported || photoState != 0))
     {
-        cineStatus_ = photoState != 0 ? "An HQ photo is being taken" : "Export needs screenshot support (GPU/driver)";
+        cineStatus_ = photoState != 0 ? tx(Txt::ValAnHqPhotoIsBeingTaken) : tx(Txt::ValExportNeedsScreenshotSupportGpuDriver);
         return;
     }
     cineSavedPaused_ = timePaused;
@@ -360,7 +360,7 @@ void SatelliteSim::cineStart(CineRun mode, bool oneShot)
     cineLastShot_ = -1;   // a start is a cut: its first shot's look and drift apply even if that shot index was the last one shown
     cineApplyAt(0.0, true);
     cineExportT0_ = glfwGetTime();
-    cineStatus_ = mode == CineRun::Play ? "Playing" : "Exporting";
+    cineStatus_ = mode == CineRun::Play ? tx(Txt::NotePlaying) : tx(Txt::ValExporting);
     Log::line("cinematic: start " + cine_.name + " (" + std::to_string(cineFrames_) + " frames)");
 }
 
@@ -392,10 +392,10 @@ void SatelliteSim::cineStop(const char *why)
         videoStop(); // the file is finished in the background (videoAfterFence's toast names it)
         cineVideoExport_ = false;
         if (exported)
-            cineStatus_ = std::string(why) + ": " + std::to_string(cineFrame_) + " frames -> " + video_.options().path;
+            cineStatus_ = std::string(why) + ": " + std::to_string(cineFrame_) + tx(Txt::ValFrames) + video_.options().path;
     }
     else if (exported)
-        cineStatus_ = std::string(why) + ": " + std::to_string(cineFrame_) + " frames -> " + cineOutDir_;
+        cineStatus_ = std::string(why) + ": " + std::to_string(cineFrame_) + tx(Txt::ValFrames) + cineOutDir_;
     else
         cineStatus_ = why;
     Log::line(std::string("cinematic: stop (") + why + ")");
@@ -490,7 +490,7 @@ void SatelliteSim::cineTick(float dt)
     cineSub_ = 0;
     ++cineFrame_;
     char buf[96];
-    snprintf(buf, sizeof(buf), "Exporting %d / %d", cineFrame_, cineFrames_);
+    snprintf(buf, sizeof(buf), tx(Txt::FmtExporting), cineFrame_, cineFrames_);
     cineStatus_ = buf;
 }
 

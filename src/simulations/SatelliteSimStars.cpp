@@ -49,12 +49,12 @@ double ss01(double x)
 const char *colourWord(float bv)
 {
     if (bv < -0.1f) return "blue";
-    if (bv < 0.15f) return "blue-white";
+    if (bv < 0.15f) return tx(Txt::ValBlueWhite);
     if (bv < 0.45f) return "white";
-    if (bv < 0.7f) return "yellow-white";
+    if (bv < 0.7f) return tx(Txt::ValYellowWhite);
     if (bv < 1.0f) return "yellow";
     if (bv < 1.4f) return "orange";
-    return "orange-red";
+    return tx(Txt::ValOrangeRed);
 }
 } // namespace
 
@@ -147,8 +147,8 @@ std::string SatelliteSim::starDisplayName(int i) const
     const StarInfo &s = starInfo_[(size_t)i];
     if (s.name) return starStr(s.name);
     if (s.desig) return starStr(s.desig);
-    if (s.hip) return "HIP " + std::to_string(s.hip);
-    return "Star #" + std::to_string(i);
+    if (s.hip) return tx(Txt::ValHip) + std::to_string(s.hip);
+    return tx(Txt::ValStar) + std::to_string(i);
 }
 
 int SatelliteSim::starIndexByName(const std::string &nameIn) const
@@ -247,19 +247,19 @@ void SatelliteSim::formatSelectedStarInfo(int i)
     snprintf(starInfoLine[1], sizeof(starInfoLine[1]), "%s%s%s%s%s", sn ? "Supernova (Type II-P)" : "Star",
              spect[0] && !sn ? ", " : "", sn ? "" : spect, con[0] ? ", in " : "", con);
     if (sn)
-        snprintf(starInfoLine[2], sizeof(starInfoLine[2]), "Mag: %.1f (day %.0f since breakout)", vNow,
+        snprintf(starInfoLine[2], sizeof(starInfoLine[2]), tx(Txt::FmtMagDaySinceBreakout), vNow,
                  std::floor((t - kSupernovaT0) / 86400.0) + 1.0);
     else
-        snprintf(starInfoLine[2], sizeof(starInfoLine[2]), "Mag: %.2f%s", vNow, s.variable || i == starBetelgeuse ? " (variable)" : "");
+        snprintf(starInfoLine[2], sizeof(starInfoLine[2]), tx(Txt::FmtMag3), vNow, s.variable || i == starBetelgeuse ? " (variable)" : "");
     if (s.distPc > 0.0f)
-        snprintf(starInfoLine[3], sizeof(starInfoLine[3]), "Distance: %.0f ly (%.0f pc)", s.distPc * 3.26156f, s.distPc);
+        snprintf(starInfoLine[3], sizeof(starInfoLine[3]), tx(Txt::FmtDistanceLyPc), s.distPc * 3.26156f, s.distPc);
     else
-        snprintf(starInfoLine[3], sizeof(starInfoLine[3]), "Distance: unknown");
+        snprintf(starInfoLine[3], sizeof(starInfoLine[3]), tx(Txt::FmtDistanceUnknown));
     std::string ids = s.desig ? starStr(s.desig) : "";
     if (s.hr) ids += (ids.empty() ? "" : ", ") + std::string("HR ") + std::to_string(s.hr);
     if (s.hip) ids += (ids.empty() ? "" : ", ") + std::string("HIP ") + std::to_string(s.hip);
     snprintf(starInfoLine[4], sizeof(starInfoLine[4]), "%s", ids.c_str());
-    snprintf(starInfoLine[5], sizeof(starInfoLine[5]), "Colour: %s (B-V %.2f)", colourWord(bv), bv);
+    snprintf(starInfoLine[5], sizeof(starInfoLine[5]), tx(Txt::FmtColourBV), colourWord(bv), bv);
 }
 
 // ── The supernova ──────────────────────────────────────────────────────────────────────────────────────────────────

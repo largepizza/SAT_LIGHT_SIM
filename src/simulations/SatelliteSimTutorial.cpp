@@ -16,6 +16,7 @@
 #include "../UIRenderer.h"
 #include "../AudioSystem.h"
 #include "clay.h"
+#include "../UiTextClay.h"
 #include "UIPalette.h"
 #include "SatPhotometry.h"
 
@@ -47,9 +48,9 @@ constexpr float kBoostS = 1.0f;
 constexpr float kOngoingS = 5.0f;   // seconds on the Missions window's Ongoing tab that finish that step
 
 const char *const kTitles[] = {
-    "Look around", "Move over the Earth", "Climb and descend", "Go faster", "Pick a satellite",
-    "Satellite info", "Go to: ride along", "Trace and Track", "Time", "Pictures",
-    "Missions: what's next", "Missions: under way", "Menus", "Graphics"};
+    tx(Txt::LblLookAround), tx(Txt::OptMoveOverTheEarth), tx(Txt::OptClimbAndDescend), tx(Txt::OptGoFaster), tx(Txt::OptPickASatellite),
+    tx(Txt::OptSatelliteInfo), tx(Txt::OptGoToRideAlong), tx(Txt::OptTraceAndTrack), tx(Txt::OptTime), tx(Txt::OptPictures),
+    tx(Txt::OptMissionsWhatsNext), tx(Txt::OptMissionsUnderWay), tx(Txt::OptMenus), tx(Txt::OptGraphics)};
 
 Clay_String clayStr(const char *s) { return Clay_String{false, (int32_t)strlen(s), s}; }
 
@@ -221,7 +222,7 @@ bool SatelliteSim::tutPickSatellite()
         selectSatellite(best);
     if (best < 0 || selectedSatIndex != best)
     {
-        snprintf(tutPickMsg, sizeof(tutPickMsg), "None is up right now: speed up time or move, then try again.");
+        snprintf(tutPickMsg, sizeof(tutPickMsg), tx(Txt::FmtNoneIsUpRightNowSpeed));
         return false;
     }
     if (!followActive)
@@ -252,10 +253,10 @@ void SatelliteSim::tutSaveReturn()
     const time_t unixSim = (time_t)std::floor(tutRetT) + 946728000;
     const struct tm *u = gmtime(&unixSim);
     if (u)
-        snprintf(tutRetLabel, sizeof(tutRetLabel), "Back to %04d-%02d-%02d %02d:%02d", u->tm_year + 1900, u->tm_mon + 1,
+        snprintf(tutRetLabel, sizeof(tutRetLabel), tx(Txt::FmtBackTo), u->tm_year + 1900, u->tm_mon + 1,
                  u->tm_mday, u->tm_hour, u->tm_min);
     else
-        snprintf(tutRetLabel, sizeof(tutRetLabel), "Back to where you were");
+        snprintf(tutRetLabel, sizeof(tutRetLabel), tx(Txt::FmtBackToWhereYouWere));
 }
 
 // Back to the time and place before the Missions step's jump (bookmarkGo's cut).
@@ -686,39 +687,39 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
     switch (step)
     {
     case TUT_LOOK:
-        snprintf(tutBodyBuf, sizeof(tutBodyBuf), pad ? "Push the right stick to look around. %s and %s zoom; click the right stick to reset it."
-                                                      : "Hold the right mouse button and drag to look around. The mouse wheel zooms.",
+        snprintf(tutBodyBuf, sizeof(tutBodyBuf), pad ? tx(Txt::FmtPushTheRightStickToLook)
+                                                      : tx(Txt::FmtHoldTheRightMouseButtonAnd),
                  P(KB_ZOOM_OUT), P(KB_ZOOM_IN));
         break;
     case TUT_MOVE:
-        snprintf(tutBodyBuf, sizeof(tutBodyBuf), "%s", pad ? "The left stick moves you over the ground, the way you are facing."
-                                                           : "W A S D move you over the ground, the way you are facing.");
+        snprintf(tutBodyBuf, sizeof(tutBodyBuf), "%s", pad ? tx(Txt::TxtTheLeftStickMovesYouOver)
+                                                           : tx(Txt::TxtWASDMoveYou));
         break;
     case TUT_ALTITUDE:
         snprintf(k1, sizeof(k1), "%s", K(KB_RAISE_ELEV));
         snprintf(k2, sizeof(k2), "%s", K(KB_LOWER_ELEV));
         if (pad)
-            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "RT climbs and LT descends: from the ground up to orbit and beyond.");
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtRtClimbsAndLtDescendsFrom));
         else
-            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "%s climbs and %s descends: from the ground up to orbit and beyond.", k1, k2);
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtClimbsAndDescendsFromTheGround), k1, k2);
         break;
     case TUT_BOOST:
         snprintf(k1, sizeof(k1), "%s", K(KB_MOVE_BOOST));
         snprintf(k2, sizeof(k2), "%s", K(KB_MOVE_FINE));
         if (pad)
-            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Click and hold the left stick (%s) while moving to go much faster. Push the sticks gently to move slowly.",
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtClickAndHoldTheLeftStick),
                      P(KB_MOVE_BOOST));
         else
-            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Hold %s while moving or climbing to go much faster. %s toggles slow, fine movement.", k1, k2);
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtHoldWhileMovingOrClimbingTo), k1, k2);
         break;
     case TUT_SELECT:
         snprintf(k1, sizeof(k1), "%s", K(KB_SELECT_SAT));
         if (pad)
-            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Put a satellite near the middle of the view and press %s to select it.", P(KB_SELECT_SAT));
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtPutASatelliteNearTheMiddle), P(KB_SELECT_SAT));
         else if (keybindings[KB_SELECT_SAT].key >= 0)
-            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Left-click a satellite, any moving point of light, to select it. %s picks the one nearest the middle of the view.", k1);
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtLeftClickASatelliteAnyMoving2), k1);
         else
-            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Left-click a satellite, any moving point of light, to select it.");
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtLeftClickASatelliteAnyMoving));
         break;
     case TUT_INFO:
     case TUT_GOTO:
@@ -726,44 +727,44 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
         if (needPick)
         {
             if (selectedSatIndex >= 0 && step != TUT_TRACE)
-                snprintf(tutBodyBuf, sizeof(tutBodyBuf), "This one has no 3D model. Select a station or a Starlink, or let the tutorial pick one.");
+                snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtThisOneHasNo3dModel));
             else
-                snprintf(tutBodyBuf, sizeof(tutBodyBuf), "%s", pad ? "Select a satellite first: put one near the middle of the view and press A."
-                                                               : "Select a satellite first (left-click one), or let the tutorial pick one for you.");
+                snprintf(tutBodyBuf, sizeof(tutBodyBuf), "%s", pad ? tx(Txt::TxtSelectASatelliteFirstPutOne)
+                                                               : tx(Txt::TxtSelectASatelliteFirstLeftClick));
             if (tutPickMsg[0])
                 snprintf(tutBodyBuf + strlen(tutBodyBuf), sizeof(tutBodyBuf) - strlen(tutBodyBuf), " %s", tutPickMsg);
         }
         else if (step == TUT_INFO)
         {
             snprintf(k1, sizeof(k1), "%s", K(KB_INFO));
-            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Info (the \"i\"%s%s) opens its window: a live 3D view, its brightness, its place in your sky and its orbit. Open it.%s",
-                     pad ? "" : ", or ", pad ? "" : k1, pad ? " D-pad left / right picks a button, A presses it." : "");
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtInfoTheIOpensItsWindow),
+                     pad ? "" : tx(Txt::TxtOr), pad ? "" : k1, pad ? tx(Txt::TxtDPadLeftRightPicksA) : "");
         }
         else if (step == TUT_GOTO && !followActive)
         {
             snprintf(k1, sizeof(k1), "%s", K(KB_FOLLOW_STAY));
-            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Go to (the eye%s%s) flies you out to ride beside it: you are up there, and everything is seen from there. Try it.%s",
-                     pad ? "" : ", or ", pad ? "" : k1, pad ? " D-pad to the eye, then A." : "");
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtGoToTheEyeFliesYou),
+                     pad ? "" : tx(Txt::TxtOr), pad ? "" : k1, pad ? tx(Txt::TxtDPadToTheEyeThen) : "");
         }
         else if (step == TUT_GOTO)
         {
             snprintf(k1, sizeof(k1), "%s", K(KB_FOLLOW_STAY));
             if (pad)
-                snprintf(tutBodyBuf, sizeof(tutBodyBuf), "You are riding along: move around it with the sticks. B (Exit) flies you back home; Stay here, at the top, leaves you floating up here.");
+                snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtYouAreRidingAlongMoveAround));
             else
-                snprintf(tutBodyBuf, sizeof(tutBodyBuf), "You are riding along: WASD and the mouse move around it. Exit flies you back home; Stay here (%s again) leaves you floating up here, free to move. Use one.",
+                snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtYouAreRidingAlongWasdAnd),
                          k1);
         }
         else
         {
             snprintf(k1, sizeof(k1), "%s", K(KB_TRACK));
-            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Trace pass plots its brightness over this pass across your sky. Track%s%s%s keeps the camera locked on it as it moves. Try either.",
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtTracePassPlotsItsBrightnessOver),
                      pad ? "" : " (", pad ? "" : k1, pad ? "" : ")");
         }
         break;
     case TUT_TIME:
         if (pad)
-            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Speed time up (%s) or slow it down (%s), pause (%s) or reverse it (%s). The satellites, Sun and stars follow the clock.",
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtSpeedTimeUpOrSlowIt),
                      P(KB_FASTER), P(KB_SLOWER), P(KB_PAUSE), P(KB_REVERSE));
         else
         {
@@ -771,7 +772,7 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
             snprintf(k2, sizeof(k2), "%s", K(KB_PAUSE));
             snprintf(k3, sizeof(k3), "%s", K(KB_FASTER));
             snprintf(k4, sizeof(k4), "%s", K(KB_REVERSE));
-            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Slow down (%s), pause (%s), speed up (%s) or reverse (%s) time. The satellites, Sun and stars follow the clock.",
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtSlowDownPauseSpeedUpOr),
                      k1, k2, k3, k4);
         }
         break;
@@ -779,41 +780,36 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
         snprintf(k1, sizeof(k1), "%s", K(KB_SCREENSHOT));
         snprintf(k2, sizeof(k2), "%s", K(KB_PHOTO));
         snprintf(k3, sizeof(k3), "%s", K(KB_TOGGLE_TRAILS));
-        snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Screenshot (%s), HQ photo (%s) for a sharper image, and Star trails (%s) for a long exposure.%s",
-                 k1, k2, k3, pad ? " On a controller, after the tutorial, Start gives a cursor for these buttons." : "");
+        snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtScreenshotHqPhotoForASharper),
+                 k1, k2, k3, pad ? tx(Txt::TxtOnAControllerAfterTheTutorial) : "");
         break;
     case TUT_MISSIONS:
         snprintf(k1, sizeof(k1), "%s", K(KB_MISSIONS));
         if (!msChrome.open)
-            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Missions (the rocket button, or %s) lists the coming launches, the flights under way and the Sun's Fury. Open it.",
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtMissionsTheRocketButtonOrLists),
                      k1);
         else if (msTab != 0)
-            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Open the Upcoming tab.");
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtOpenTheUpcomingTab));
         else
-            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Upcoming: the next launches. Watch takes you to one lifting off, beside the pad, the camera on the rocket. "
-                                                     "Pinned below: the next twilight and crewed launches, and the Sun's Fury storm. Try one.");
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtUpcomingTheNextLaunchesWatchTakes));
         break;
     case TUT_ONGOING:
         if (!msChrome.open)
-            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Open Missions again (the rocket button, or %s).", K(KB_MISSIONS));
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtOpenMissionsAgainTheRocketButton), K(KB_MISSIONS));
         else if (msTab != 1)
-            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Now open the Ongoing tab.");
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtNowOpenTheOngoingTab));
         else
-            snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Ongoing: rockets in flight, crews on their way, new satellites rising to their orbits, old ones coming down. "
-                                                     "Watch rides along with any of them.");
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtOngoingRocketsInFlightCrewsOn));
         if (tutRetValid)
-            snprintf(tutBodyBuf + strlen(tutBodyBuf), sizeof(tutBodyBuf) - strlen(tutBodyBuf), " The button below takes you back to where you were.");
+            snprintf(tutBodyBuf + strlen(tutBodyBuf), sizeof(tutBodyBuf) - strlen(tutBodyBuf), tx(Txt::FmtTheButtonBelowTakesYouBack));
         break;
     case TUT_SETTINGS:
         snprintf(k1, sizeof(k1), "%s", K(KB_TOGGLE_UI));
-        snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Bookmarks save a place and time, Cinematics record camera paths, Issue reports send us screenshots "
-                                                 "of problems, and Settings hold graphics, sound and keys. %s hides the interface.%s",
-                 pad ? P(KB_TOGGLE_UI) : k1, pad ? " After the tutorial, Start gives a cursor for these buttons." : "");
+        snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtBookmarksSaveAPlaceAndTime),
+                 pad ? P(KB_TOGGLE_UI) : k1, pad ? tx(Txt::TxtAfterTheTutorialStartGivesA) : "");
         break;
     case TUT_GRAPHICS:
-        snprintf(tutBodyBuf, sizeof(tutBodyBuf), "Graphics are on %s, the fastest preset: there are no clouds, and the terrain, sky and sea "
-                                                 "are simplified. If it runs smoothly, try Low under Settings > Display > Preset: it brings "
-                                                 "back the clouds and every effect, at half resolution.",
+        snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtGraphicsAreOnTheFastestPreset),
                  kGraphicsPresetNames[(int)graphicsPreset]);
         break;
     default:
@@ -920,8 +916,8 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
                     sndClick(n, inp.lmbPressed);
                     hovTutSkip = n;
                     clickSkip = n && inp.lmbPressed;
-                    ui.tooltip(inp, n, "Replay it from Settings > Display", fs(11));
-                    CLAY_TEXT(CLAY_STRING("Skip tutorial"), CLAY_TEXT_CONFIG({.textColor = n ? Pal::btnLabel : Pal::textDim, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+                    ui.tooltip(inp, n, tx(Txt::TipReplayItFromSettingsDisplay), fs(11));
+                    CLAY_TEXT(txc(Txt::NoteSkipTutorial), CLAY_TEXT_CONFIG({.textColor = n ? Pal::btnLabel : Pal::textDim, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
                 }
             }
 
@@ -929,7 +925,7 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
 
             if (done)
             {
-                CLAY_TEXT(last ? CLAY_STRING("All set. Replay this any time from Settings > Display.") : CLAY_STRING("Done!"),
+                CLAY_TEXT(last ? txc(Txt::NoteAllSetReplayThisAnyTime) : txc(Txt::NoteDone),
                           CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(13)}));
             }
             else if (bar)
@@ -949,18 +945,18 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
                                                  .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}})
             {
                 if (step > 0)
-                    clickBack = button(CLAY_ID("TutBack"), "Back", false, hovTutBack);
+                    clickBack = button(CLAY_ID("TutBack"), tx(Txt::BtnBack), false, hovTutBack);
                 // A controller moves through the card with Start / View (pollGamepad), no cursor needed.
                 if (pad)
-                    CLAY_TEXT(last ? CLAY_STRING("Start: finish   View: skip") : CLAY_STRING("Start: next   View: skip"),
+                    CLAY_TEXT(last ? txc(Txt::NoteStartFinishViewSkip) : txc(Txt::NoteStartNextViewSkip),
                               CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
                 CLAY(CLAY_ID("TutFootGap"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
                 if (needPick && !done && !pad)
-                    clickPick = button(CLAY_ID("TutPick"), "Pick one for me", false, hovTutPick);
+                    clickPick = button(CLAY_ID("TutPick"), tx(Txt::BtnPickOneForMe), false, hovTutPick);
                 // After the Missions step's jump: back to the time and place before it (tutReturnNow).
                 if (tutRetValid && step > TUT_MISSIONS)
                     clickReturn = button(CLAY_ID("TutReturn"), tutRetLabel, false, hovTutReturn);
-                clickNext = button(CLAY_ID("TutNext"), last ? "Finish" : "Next", true, hovTutNext);
+                clickNext = button(CLAY_ID("TutNext"), last ? tx(Txt::BtnFinish) : tx(Txt::BtnNext2), true, hovTutNext);
             }
         }
     }

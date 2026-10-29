@@ -701,14 +701,14 @@ void SatelliteSim::formatSelectedPlanetInfo()
         const float sep = std::sqrt(g.xWest * g.xWest + g.yNorth * g.yNorth);
         const float sepArc = sep * planetView[kJupiter].angRadiusArcsec;
         std::snprintf(planetInfoLine[0], L, "%s", kGalileanNames[m]);
-        std::snprintf(planetInfoLine[1], L, "Moon of Jupiter, %.2f\" across", 2.0 * kGalileanRkm[m] / (ps.distanceAU * kAuKm) / kDeg * 3600.0);
-        std::snprintf(planetInfoLine[2], L, "Mag: %.1f", g.mag);
-        std::snprintf(planetInfoLine[3], L, "%.1f Jupiter radii %s of Jupiter (%.0f\")", sep, g.xWest >= 0.0f ? "west" : "east", sepArc);
+        std::snprintf(planetInfoLine[1], L, tx(Txt::FmtMoonOfJupiterAcross), 2.0 * kGalileanRkm[m] / (ps.distanceAU * kAuKm) / kDeg * 3600.0);
+        std::snprintf(planetInfoLine[2], L, tx(Txt::FmtMag6), g.mag);
+        std::snprintf(planetInfoLine[3], L, tx(Txt::FmtJupiterRadiiOfJupiter), sep, g.xWest >= 0.0f ? "west" : "east", sepArc);
         const char *what = g.eclipsed ? "In Jupiter's shadow (eclipsed)" : g.occulted ? "Behind Jupiter (occulted)"
                          : g.transit ? (g.shadowOnJupiter ? "Transiting Jupiter, its shadow on the disc" : "Transiting Jupiter")
                          : g.shadowOnJupiter ? "Its shadow is on Jupiter" : (g.z > 0 ? "In front of Jupiter's distance" : "Beyond Jupiter");
         std::snprintf(planetInfoLine[4], L, "%s", what);
-        std::snprintf(planetInfoLine[5], L, "Distance: %.2f AU", ps.distanceAU);
+        std::snprintf(planetInfoLine[5], L, tx(Txt::FmtDistanceAu), ps.distanceAU);
         return;
     }
     const PlanetState &ps = planetStates[sel];
@@ -716,11 +716,11 @@ void SatelliteSim::formatSelectedPlanetInfo()
     const float vmag = planetApparentMagnitude((PlanetId)sel, ps.sunDistAU, ps.distanceAU, ps.phaseAngleDeg, pv.sinRingB);
     const float illumFrac = (1.0f + std::cos(glm::radians(ps.phaseAngleDeg))) * 0.5f;
     std::snprintf(planetInfoLine[0], L, "%s", kPlanetNames[sel]);
-    std::snprintf(planetInfoLine[1], L, "Planet, %.1f\" across (%.1f px)", 2.0f * pv.angRadiusArcsec, 2.0f * pv.discPx);
-    std::snprintf(planetInfoLine[2], L, "Mag: %.1f", vmag);
-    std::snprintf(planetInfoLine[3], L, "Distance: %.2f AU", ps.distanceAU);
-    std::snprintf(planetInfoLine[4], L, "Phase: %.0f%% lit (phase angle %.0f deg)", illumFrac * 100.0f, ps.phaseAngleDeg);
-    std::snprintf(planetInfoLine[5], L, "Sun dist: %.2f AU", ps.sunDistAU);
+    std::snprintf(planetInfoLine[1], L, tx(Txt::FmtPlanetAcrossPx), 2.0f * pv.angRadiusArcsec, 2.0f * pv.discPx);
+    std::snprintf(planetInfoLine[2], L, tx(Txt::FmtMag6), vmag);
+    std::snprintf(planetInfoLine[3], L, tx(Txt::FmtDistanceAu), ps.distanceAU);
+    std::snprintf(planetInfoLine[4], L, tx(Txt::FmtPhaseLitPhaseAngleDeg), illumFrac * 100.0f, ps.phaseAngleDeg);
+    std::snprintf(planetInfoLine[5], L, tx(Txt::FmtSunDistAu), ps.sunDistAU);
     if (sel == kJupiter)
     {
         // East on the left, as on the sky (north up): each moon's offset in Jupiter radii, a flag for what it is doing.
@@ -743,12 +743,12 @@ void SatelliteSim::formatSelectedPlanetInfo()
         if (!jDone)
             n += std::snprintf(buf + n, sizeof(buf) - n, "[J] ");
         std::snprintf(buf + n, sizeof(buf) - n, "W");
-        std::snprintf(planetInfoLine[6], L, "Moons: %s", buf);
+        std::snprintf(planetInfoLine[6], L, tx(Txt::FmtMoons), buf);
     }
     else if (sel == kSaturn)
-        std::snprintf(planetInfoLine[6], L, "Rings open %.1f deg (%s face)", std::abs(pv.ringTiltDeg), pv.ringTiltDeg >= 0 ? "north" : "south");
+        std::snprintf(planetInfoLine[6], L, tx(Txt::FmtRingsOpenDegFace), std::abs(pv.ringTiltDeg), pv.ringTiltDeg >= 0 ? "north" : "south");
     else if (sel == kMars)
-        std::snprintf(planetInfoLine[6], L, "Central meridian %.0f E", std::fmod(pv.cmLonDeg + 360.0f, 360.0f));
+        std::snprintf(planetInfoLine[6], L, tx(Txt::FmtCentralMeridianE), std::fmod(pv.cmLonDeg + 360.0f, 360.0f));
 }
 
 nlohmann::json SatelliteSim::planetsJson() const

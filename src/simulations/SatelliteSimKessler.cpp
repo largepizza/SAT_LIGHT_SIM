@@ -3272,10 +3272,10 @@ bool SatelliteSim::kesslerGoToNextReentry(std::string &msg, bool watch)
         selWantUntil = tb + 120.0;
         selWantViewer = false;
         selWantTrack = true;
-        snprintf(b, sizeof(b), "%s burning up on re-entry, %.0f km away", satLabel((int)sat).c_str(), glm::length(rel) / 1000.0);
+        snprintf(b, sizeof(b), tx(Txt::FmtBurningUpOnReEntryKm), satLabel((int)sat).c_str(), glm::length(rel) / 1000.0);
     }
     else
-        snprintf(b, sizeof(b), "%s re-enters: breakup in 25 s, %.0f km away", satLabel((int)sat).c_str(),
+        snprintf(b, sizeof(b), tx(Txt::FmtReEntersBreakupIn25S), satLabel((int)sat).c_str(),
                  glm::length(rel) / 1000.0);
     msg = b;
     return true;
@@ -3360,7 +3360,7 @@ std::string SatelliteSim::satLabel(int idx) const
             snprintf(b, sizeof(b), "%s #%d", constellations[o.constIdx].name.c_str(),
                      (int)i - (int)constellations[o.constIdx].orbitStart);
         else
-            snprintf(b, sizeof(b), "Satellite #%u", i);
+            snprintf(b, sizeof(b), tx(Txt::FmtSatellite), i);
         return std::string(b);
     };
     if (idx < (int)activeSatCount)
@@ -3376,7 +3376,7 @@ std::string SatelliteSim::satLabel(int idx) const
     if (j >= kPool.size())
         return "?";
     const kessler::PoolRec &r = kPool[j];
-    snprintf(b, sizeof(b), "Debris %u (breakup %u)", j, r.event);
+    snprintf(b, sizeof(b), tx(Txt::FmtDebrisBreakup), j, r.event);
     return b;
 }
 
@@ -3392,7 +3392,7 @@ std::string SatelliteSim::kesslerStatusLine() const
     if (t < kWorldStart || t + 1.0 < kFrontier + lead)
         return {};
     char b[128];
-    snprintf(b, sizeof(b), "Computing the debris cascade: day %.0f of %.0f",
+    snprintf(b, sizeof(b), tx(Txt::FmtComputingTheDebrisCascadeDayOf),
              (kFrontier - kFuryArriveT) / 86400.0, kesslerHorizonYears * 365.25);
     return b;
 }
@@ -3838,12 +3838,10 @@ void SatelliteSim::buildKesslerBanner(UIRenderer &ui)
 // it has done by the current sim time.
 void SatelliteSim::buildKesslerSettingsSection(const UIInput &inp, UIRenderer &ui)
 {
-    uiSection("LdSec", 1, "THE SUN'S FURY");
+    uiSection("LdSec", 1, tx(Txt::SecTheSunsFury));
     bool on = kesslerEnabled;
-    if (uiToggleRow(inp, ui, "KesslerOn", 0, "Scenario (a storm on 2037-07-15)", on,
-                    "A Carrington-class solar storm arrives two days after the Great Australian Eclipse. Satellites it "
-                    "kills tumble, dead ones collide, and every collision is a debris cloud (NASA breakup model). "
-                    "Nothing differs before it, unless you break something up (that starts it there)."))
+    if (uiToggleRow(inp, ui, "KesslerOn", 0, tx(Txt::LblScenarioAStormOn203707), on,
+                    tx(Txt::TipACarringtonClassSolarStormArrives)))
     {
         kesslerEnabled = on;
         spaceWeatherSetScriptedStorm(kesslerEnabled, kFuryArriveT, kFuryPeakKp);
@@ -3856,26 +3854,24 @@ void SatelliteSim::buildKesslerSettingsSection(const UIInput &inp, UIRenderer &u
     for (int i = 0; i < 4; ++i)
         if (std::abs(kesslerRateMult - kRateV[i]) < 1e-3f * kRateV[i])
             rateSel = i;
-    const int r = uiChoiceRow(inp, ui, "KesslerRate", 0, "Collision rate", kRate, 4, rateSel,
-                              "x1 is physical (the cube method: relative speed x cross-section x time / volume). "
-                              "Higher is faster, not realistic. Re-simulates from the storm.");
+    const int r = uiChoiceRow(inp, ui, "KesslerRate", 0, tx(Txt::LblCollisionRate), kRate, 4, rateSel,
+                              tx(Txt::TipX1IsPhysicalTheCubeMethod));
     static const char *kAvoid[] = {"0%", "50%", "90%", "99%"};
     static const float kAvoidV[] = {0.0f, 0.5f, 0.9f, 0.99f};
     int avoidSel = 2;
     for (int i = 0; i < 4; ++i)
         if (std::abs(kesslerAvoidance - kAvoidV[i]) < 1e-3f)
             avoidSel = i;
-    const int a = uiChoiceRow(inp, ui, "KesslerAvoid", 0, "Collision avoidance", kAvoid, 4, avoidSel,
-                              "The share of encounters between a working satellite and a tracked object (a dead satellite, a "
-                              "fragment) that it dodges. Dead satellites dodge nothing. Re-simulates from the storm.");
+    const int a = uiChoiceRow(inp, ui, "KesslerAvoid", 0, tx(Txt::LblCollisionAvoidance), kAvoid, 4, avoidSel,
+                              tx(Txt::TipTheShareOfEncountersBetweenA));
     static const char *kYears[] = {"5 y", "20 y", "50 y"};
     static const float kYearsV[] = {5.0f, 20.0f, 50.0f};
     int ySel = 1;
     for (int i = 0; i < 3; ++i)
         if (std::abs(kesslerHorizonYears - kYearsV[i]) < 0.01f)
             ySel = i;
-    const int y = uiChoiceRow(inp, ui, "KesslerYears", 0, "Simulate up to", kYears, 3, ySel,
-                              "How far after the storm the cascade is simulated (it is computed as sim time gets there).");
+    const int y = uiChoiceRow(inp, ui, "KesslerYears", 0, tx(Txt::LblSimulateUpTo), kYears, 3, ySel,
+                              tx(Txt::TipHowFarAfterTheStormThe));
     if ((r >= 0 && r != rateSel) || (a >= 0 && a != avoidSel) || (y >= 0 && y != ySel))
     {
         if (r >= 0)
@@ -3887,8 +3883,8 @@ void SatelliteSim::buildKesslerSettingsSection(const UIInput &inp, UIRenderer &u
         if (ctx_)
             kesslerRestart(*ctx_, kUserEvents, -1.0);
     }
-    if (kesslerEnabled && uiButton(inp, ui, "KesslerReentry", 0, "Watch the next re-entry",
-                                   "A dead satellite or a large piece of debris burning up over a dark sky."))
+    if (kesslerEnabled && uiButton(inp, ui, "KesslerReentry", 0, tx(Txt::BtnWatchTheNextReEntry),
+                                   tx(Txt::TipADeadSatelliteOrALarge)))
     {
         std::string why;
         kesslerGoToNextReentry(why, true);
@@ -3900,11 +3896,11 @@ void SatelliteSim::buildKesslerSettingsSection(const UIInput &inp, UIRenderer &u
     const nlohmann::json &n = j["now"];
     const float lw = (float)fs(170);
     const double days = j["days_since_cme"].get<double>();
-    uiKV("KesslerKV", 0, "Since the storm", days < 0.0 ? uiKitStr("in %.1f days", -days) : uiKitStr("%.1f days", days), lw);
-    uiKV("KesslerKV", 1, "Simulated to", uiKitStr("day %.1f%s", j["frontier_days"].get<double>(), kWorkerDone ? " (done)" : ""), lw);
-    uiKV("KesslerKV", 5, "Collisions", uiKitStr("%d (%d catastrophic)", n["collisions"].get<int>(), n["catastrophic"].get<int>()), lw);
-    if (uiButton(inp, ui, "KesslerTracker", 0, "Open the Kessler tracker",
-                 "The Missions window's Kessler tab: the counts, a globe of the debris shells, the latest breakups"))
+    uiKV("KesslerKV", 0, tx(Txt::LblSinceTheStorm), days < 0.0 ? uiKitStr(tx(Txt::FmtInDays), -days) : uiKitStr(tx(Txt::FmtDays2), days), lw);
+    uiKV("KesslerKV", 1, tx(Txt::LblSimulatedTo), uiKitStr(tx(Txt::FmtDay2), j["frontier_days"].get<double>(), kWorkerDone ? " (done)" : ""), lw);
+    uiKV("KesslerKV", 5, tx(Txt::LblCollisions2), uiKitStr(tx(Txt::FmtCatastrophic), n["collisions"].get<int>(), n["catastrophic"].get<int>()), lw);
+    if (uiButton(inp, ui, "KesslerTracker", 0, tx(Txt::BtnOpenTheKesslerTracker),
+                 tx(Txt::TipTheMissionsWindowsKesslerTabThe)))
     {
         msChrome.open = true;
         msTab = 2;
@@ -3912,8 +3908,8 @@ void SatelliteSim::buildKesslerSettingsSection(const UIInput &inp, UIRenderer &u
     }
     if (!kUserEvents.empty())
     {
-        uiKV("KesslerKV", 6, "Your breakups", uiKitStr("%d", (int)kUserEvents.size()), lw);
-        if (uiButton(inp, ui, "KesslerClear", 0, "Undo my breakups", "Re-simulate without them"))
+        uiKV("KesslerKV", 6, tx(Txt::LblYourBreakups), uiKitStr("%d", (int)kUserEvents.size()), lw);
+        if (uiButton(inp, ui, "KesslerClear", 0, tx(Txt::BtnUndoMyBreakups), tx(Txt::TipReSimulateWithoutThem)))
         {
             kUserEvents.clear();
             if (ctx_)
@@ -3927,40 +3923,35 @@ void SatelliteSim::buildKesslerSettingsSection(const UIInput &inp, UIRenderer &u
 // Settings > Launches: the scenario's GRAPHICS (dust, fireballs, small re-entries; none re-simulates).
 void SatelliteSim::buildKesslerGraphicsSection(const UIInput &inp, UIRenderer &ui)
 {
-    uiSection("LdSec", 3, "GRAPHICS: DEBRIS AND RE-ENTRIES");
+    uiSection("LdSec", 3, tx(Txt::SecGraphicsDebrisAndReEntries));
     static const char *kDust[] = {"x1", "x10", "x30", "x100", "x1000"};
     static const float kDustV[] = {1.0f, 10.0f, 30.0f, 100.0f, 1000.0f};
     int dSel = 3;
     for (int i = 0; i < 5; ++i)
         if (std::abs(kesslerDustGain - kDustV[i]) < 1e-3f * kDustV[i])
             dSel = i;
-    const int dg = uiChoiceRow(inp, ui, "KesslerDust", 0, "Dust cloud brightness", kDust, 5, dSel,
-                               "Each breakup's dust and small fragments as a glowing cloud that spreads along its orbit. x1 is "
-                               "the physical estimate (a few % of the mass as fine dust): it fades below the dark sky within "
-                               "minutes. Higher keeps the clouds visible longer.");
+    const int dg = uiChoiceRow(inp, ui, "KesslerDust", 0, tx(Txt::LblDustCloudBrightness), kDust, 5, dSel,
+                               tx(Txt::TipEachBreakupsDustAndSmallFragments));
     if (dg >= 0 && dg != dSel)
         kesslerDustGain = kDustV[dg];
-    static const char *kFireCol[] = {"Off", "Subtle", "Vivid"};
+    static const char *kFireCol[] = {tx(Txt::LblOff), tx(Txt::OptSubtle), tx(Txt::OptVivid)};
     static const float kFireColV[] = {0.0f, 0.4f, 0.8f};
     int fSel = 2;
     for (int i = 0; i < 3; ++i)
         if (std::abs(kesslerFireColor - kFireColV[i]) < 0.05f)
             fSel = i;
-    const int fc = uiChoiceRow(inp, ui, "KesslerFireCol", 0, "Fireball material colours", kFireCol, 3, fSel,
-                               "Re-entry fragments tinted by what burns: aluminium white, copper wiring green, titanium "
-                               "blue-white, sodium yellow, lithium cells crimson; steel and composites stay orange-red.");
+    const int fc = uiChoiceRow(inp, ui, "KesslerFireCol", 0, tx(Txt::LblFireballMaterialColours), kFireCol, 3, fSel,
+                               tx(Txt::TipReEntryFragmentsTintedByWhat));
     if (fc >= 0 && fc != fSel)
         kesslerFireColor = kFireColV[fc];
-    static const char *kSmallRe[] = {"Off", "x1", "x3", "x10", "x30", "x100"};
+    static const char *kSmallRe[] = {tx(Txt::LblOff), "x1", "x3", "x10", "x30", "x100"};
     static const float kSmallReV[] = {0.0f, 1.0f, 3.0f, 10.0f, 30.0f, 100.0f};
     int sSel = 4;
     for (int i = 0; i < 6; ++i)
         if (std::abs(kesslerSmallReGain - kSmallReV[i]) <= 1e-3f * std::max(kSmallReV[i], 1.0f))
             sSel = i;
-    const int sg = uiChoiceRow(inp, ui, "KesslerSmallRe", 0, "Small re-entry brightness", kSmallRe, 6, sSel,
-                               "The 10 cm - 1 m fragments coming down: thousands an hour once the cascade runs, each a short "
-                               "meteor-like streak. x1 is physical: about magnitude +1 from 100 km for a 0.1-kg piece, so "
-                               "faint from orbit. Higher makes them easier to spot.");
+    const int sg = uiChoiceRow(inp, ui, "KesslerSmallRe", 0, tx(Txt::LblSmallReEntryBrightness), kSmallRe, 6, sSel,
+                               tx(Txt::TipThe10Cm1MFragments));
     if (sg >= 0 && sg != sSel)
         kesslerSmallReGain = kSmallReV[sg];
 }

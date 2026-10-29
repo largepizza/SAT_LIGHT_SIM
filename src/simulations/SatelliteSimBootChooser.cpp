@@ -120,12 +120,12 @@ GraphicsPreset SatelliteSim::recommendedFullPreset(VulkanContext &ctx) const
 bool SatelliteSim::prepareBootChooser(VulkanContext &ctx, BootChooserSpec &spec)
 {
     peekBootSettings();
-    spec.title = "Choose a graphics mode";
+    spec.title = tx(Txt::ValChooseAGraphicsMode);
     spec.subtitle = "";
     spec.options = {
-        {"Full graphics", "Volumetric clouds and weather, detailed terrain, aurora and the full sky.", false},
-        {"Planetarium", "For those who only want to see satellites", false},
-        {"Potato (very old hardware)", "For machines that struggle with Planetarium.", true},
+        {tx(Txt::LblFullGraphics), tx(Txt::ValBootFullDesc), false},
+        {tx(Txt::OptPlanetarium), tx(Txt::ValBootPlanetariumDesc), false},
+        {tx(Txt::LblPotatoVeryOldHardware), tx(Txt::ValBootPotatoDesc), true},
     };
     const int rec = deviceRecommendedBootMode(ctx);
     spec.recommendedIdx = rec;
@@ -135,7 +135,7 @@ bool SatelliteSim::prepareBootChooser(VulkanContext &ctx, BootChooserSpec &spec)
     if (bootPeekCrash)
     { // offer the step down: the last session never reached its clean exit
         def = std::min(def + 1, (int)kBootPotato);
-        spec.note = "The last session did not close properly, so a lighter mode is selected.";
+        spec.note = tx(Txt::ValTheLastSessionDidNotClose);
     }
     spec.defaultIdx = def;
     spec.askAgain = bootPeekAsk;
