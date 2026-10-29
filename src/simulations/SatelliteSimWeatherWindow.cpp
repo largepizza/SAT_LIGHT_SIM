@@ -1377,13 +1377,14 @@ void SatelliteSim::buildWeatherWindow(const UIInput &inp, UIRenderer &ui)
                                                     .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                     .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                 {
-                    // Drawn Radar, Storms, Cyclones, Controls; wxTab keeps its values (3 = Cyclones, appended).
+                    // Drawn Storms, Radar, Cyclones, Controls (issue 20261028_222628: open on the events, like Missions and
+                    // Sky events); wxTab keeps its values (0 Radar, 1 Storms, 2 Controls, 3 Cyclones; default 1).
                     static const char *kTabs[] = {"Radar", "Storms", "Controls", "Cyclones"};
                     static const char *kTips[] = {"A local precipitation radar centred on you: the rain the clouds draw",
                                                   "The storms near you and the strongest worldwide (Go to, Watch)",
                                                   "The storm objects' settings (also Settings > Weather)",
                                                   "Named storms: the tropical cyclones, their tracks and milestones"};
-                    static const int kOrder[] = {0, 1, 3, 2};
+                    static const int kOrder[] = {1, 0, 3, 2};
                     for (int i : kOrder)
                         if (uiButton(inp, ui, "WxTab", i, kTabs[i], kTips[i], wxTab == i))
                             wxTab = i;

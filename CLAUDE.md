@@ -1338,7 +1338,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
 - **The Weather window (2026-10-23, `SatelliteSimWeatherWindow.cpp`, `shaders/weather_radar.comp`; the weather-cloud
   button beside Missions on the right HUD panel (`TimeWeatherBtn`, `pixel--weather.png` from `tools/make_icons.py`), key N
   `KB_WEATHER`, window id 12, `wxChrome`; harness `ui open weather [tab=radar|storms|controls]`, `weather ...`).** Missions-
-  like, for the storm objects. **Radar**: a local precipitation radar centred on the observer (azimuthal equidistant, north
+  like, for the storm objects. **Opens on Storms** (2026-10-28, issue 20261028_222628), drawn first: Storms, Radar, Cyclones,
+  Controls (`wxTab` keeps its values: 0 radar, 1 storms (default), 2 controls, 3 cyclones; not persisted). **Radar**: a local precipitation radar centred on the observer (azimuthal equidistant, north
   up, radius 50 / 150 / 400 km, 256 x 256 cells), NWS reflectivity colours (rain green .. yellow .. red .. magenta, snow
   blues and mixed pinks by the rain particles' air temperature 500 m over each cell's ground), range rings, you, storm
   markers (strongest tower of each storm; the label's number is its place in the Storms list; click = its row with Go to /
@@ -3039,8 +3040,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   surface & lighting), **Night lights** (city lights, roads, sprites, city light on clouds, night sky light),
   Ocean, Beams (+ the beam light in clouds), Attributions. A tab's INDEX is persisted (`display.active_tab`)
   and indexes `hovTab[]`, so new tabs are APPENDED to `kSettingsTabNames` (Weather 12, Night lights 13,
-  **Performance 14**, **Launches 15**) and the strip draws `kSettingsStrip`, grouped under headings (GENERAL: Display, Controls,
-  Sound; SKY: Constellations, Launches, Photometry; RENDERING: the advanced tabs + Performance; ABOUT: Attributions — a
+  **Performance 14**, **Launches 15**, **Sky 16**) and the strip draws `kSettingsStrip`, grouped under headings (GENERAL: Display, Controls,
+  Sound; SKY: Constellations, Sky, Launches, Photometry; RENDERING: the advanced tabs + Performance; ABOUT: Attributions — a
   negative entry is a heading) in its own vertical scroll view (an unclipped strip taller than the window
   stretched the body and spilled the content below the window). **Camera (3) has no button** since 2026-10-03:
   its two lines are the Controls tab's MOUSE section, and index 3 still opens Controls. `settingsTabIsAdvanced()`
@@ -3048,6 +3049,28 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   sections: `buildCloudSliderSections(..., base)` — each tab owns a range of `cloudSectionOpen` slots
   (Clouds 0-11, Weather 12-23, Atmosphere 24-29, Terrain 30-35; `kCloudSectionSlots` 48). Moving a slider
   between tabs changes nothing else: its slot and settings key stay.
+- **Settings round-up + search (2026-10-28, issues 20261028_222345 / _222628).** Rule: **every control that changes the
+  look has a Settings row** (windows may keep convenience copies: the Weather window's Controls tab). **Sky (16)**: stars
+  (`stars.*`), planets (moved from Constellations, + `planets.disc_gain`), the Moon (size / relief / shadows, moved from
+  Photometry; `moon_bases.*`), comets, meteors, refraction (`refraction.enabled/mirage/turbulence/dispersion/
+  sun_disc_gain`). Weather: storm objects / haboobs-as-cloud / burn scars switches, arm cirrus, surge, "Wildfires &
+  haboobs" section. Terrain: solar parks; Ocean: wave motion filter; Launches: plume dispersal; Photometry: star trails,
+  Milky Way zoom; Display (advanced): TAA weights. Slots 400-427 (`kCloudSliderSlots` 428). Still without UI, on purpose:
+  debug / A/B / perf internals (`clouds_v2.cdc_*`, `weather_*`, `storm_index_tight`, `storm_shield_bins_ab`,
+  `wildfire_debug/_alloc/_smoke_curtain/_flame_band`, `full_res_moving_mode`, `debug_view`, `sky_taa_debug/_gpu_eye/
+  _parallax_floor_m`, `refraction.force_*`, `comets.particles_sync`), state (`time`, `camera`, `hud`, keybindings,
+  `tutorial_done`) and the retired `clouds.aurora_ground_gain`. **"Show advanced settings"** is a card at the top of the
+  Display tab. **Search**: a box over the tab strip (`SettingsSearch`); with >= 2 typed characters the body builds every
+  tab (`buildSettingsSearchBody` -> `buildSettingsTabBody`) with `search_.on`, and each row asks `searchRow(id, label)`
+  (match: every word in the label, or the section title's). The kit does it itself (`uiToggleRow`, `uiChoiceRow`, `uiKV`
+  with a label — a label-less note is left out —, `uiButton` / `uiDangerButton` at the top level, `uiStatTile`,
+  `buildCloudSliderRows` / `Sections`, the Photometry rows, Display's steppers); **a hand-built row must call
+  `searchRow(its id, its label)` and hand-built non-row text must skip itself while `searchActive()`**, or it shows in
+  every search. Kit calls nested inside a row are never filtered (`SearchRowScope`). Headings (`uiSection`, slider
+  sections, constellation groups) become `searchSection()` and are drawn above their first match; the tab heading is a link.
+  Advanced tabs are searched while hidden (`countOnly`, "N more in the advanced tabs" + a button). A row id seen twice in
+  one search is drawn once. Harness: `ui click SettingsSearch; ui type <q>`, `ui click SettingsSearchClear`;
+  `ui_lowres.py`'s `set_search` view; `harness_runs/settingsui/search.satcmd`.
 - The Clouds tab's slider slots: `kCloudSliderSlots` (270 since 2026-10-10: 269 far cloud shadows; 269 since 2026-10-05: 261-266 rain particles, 267-268 storm lightning / tendrils; 258 since review 28: 257 sea wave range fade; 257 since review 27: 256 far sea ripple size; 256 since review 24: 248-250 far sea ripple, sea warp x2, 251-255 far cloud layer tunables; 248 since review 22: 244-245 cumulus lobes, 246 fast-flight LOD, 247 fovea radius; 221; 212 = ground pattern range, 213-214 sea state / whitecaps, 215-218 aurora sheets, 219 orbit grade, 220 Moon size) sizes all four per-slider arrays and
   `cloudBufs` (212 since the 2026-09-29 reviews: 200-206 city sprites, twinkle, ground share, history
   moving, ice fog x2, sprite start; 207-209 Cb head lobes, drop distance, snow wind; 210 move speed (Controls tab), 211 erosion size); v2 uses 112-199 and (pass 10-12) 2, 7, 8, 9, 16, 17, 34, 50, 61, 71, 72-76. Still free from v1's deleted

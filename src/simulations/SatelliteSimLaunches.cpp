@@ -9533,12 +9533,14 @@ void SatelliteSim::buildLaunchGraphicsSection(const UIInput &inp, UIRenderer &ui
         {"Ground clouds (x)", &launchGroundCloudGain, 0.0f, 5.0f, 0.05f, "%.2f", 318},
         {"Flame brightness (x)", &launchRocketGain, 0.0f, 10.0f, 0.1f, "%.1f", 319},
         {"Rocket light on clouds (x)", &engineLightGain, 0.0f, 10.0f, 0.1f, "%.1f", 320},
+        // 2026-10-28 (the settings round-up): had no UI. Old exhaust's widening with age (launches.plume_dispersal).
+        {"Plume dispersal (x)", &launchPlumeDispersal, 0.0f, 5.0f, 0.05f, "%.2f", 425},
     };
     buildCloudSliderRows(inp, ui, rows, (int)(sizeof(rows) / sizeof(rows[0])), false);
     if (uiButton(inp, ui, "LdGfxReset", 0, "Reset exhaust to defaults", "Every slider above back to 1"))
     {
         launchPlumeGain = launchPlumeBright = launchPlumeWidth = launchPlumeBillows = 1.0f;
-        launchPlumeGrowth = launchGroundCloudGain = launchRocketGain = engineLightGain = 1.0f;
+        launchPlumeGrowth = launchGroundCloudGain = launchRocketGain = engineLightGain = launchPlumeDispersal = 1.0f;
     }
 }
 

@@ -3739,7 +3739,7 @@ private:
     // (KB_WEATHER), harness `ui open weather` / `weather ...`. Nothing runs while it is closed.
     WindowChrome wxChrome;
     bool hovWxClose = false, hovTimeWeather = false;
-    int wxTab = 0;                       // 0 radar, 1 storms, 2 controls, 3 cyclones (drawn third)
+    int wxTab = 1;                       // 0 radar, 1 storms (drawn first, the default), 2 controls, 3 cyclones
     int wxRangeIdx = 1;                  // the radar's radius: kWxRangesKm[idx]
     static constexpr float kWxRangesKm[3] = {50.0f, 150.0f, 400.0f};
     bool wxShowClouds = true, wxShowLabels = true, wxLoop = false;
@@ -7513,6 +7513,44 @@ private:
                      const char *const *options, int count, int current, const char *tip = nullptr);
     bool uiHovRoll(uint32_t id, bool nowHov);   // rollover sound + the hover memory; returns nowHov
     std::unordered_map<uint32_t, bool> uiHov_;
+
+    // ── Settings search (2026-10-28, issue 20261028_222345; SatelliteSimUI.cpp "Settings search") ─────────────
+    // The search box over the Settings window's tab strip: with a query, the body builds every tab in turn and
+    // each ROW asks searchRow() whether to draw itself. The kit rows (uiToggleRow, uiChoiceRow, uiKV, uiButton at
+    // the top level), buildCloudSliderRows / Sections and the Photometry rows do it themselves, so a row added with
+    // them is searchable with no extra code; a hand-built row calls searchRow(its id, its label) and skips itself,
+    // and hand-built text that is not a row skips itself while searchActive(). Headings (the tab, a uiSection, a
+    // slider section) are deferred and drawn above their first matching row. Outside the Settings body (other
+    // windows use the same kit) nothing is filtered: `on` is set only while the body is built.
+    struct SettingsSearch
+    {
+        std::string query;                     // as committed (the box's live text while it is focused)
+        std::vector<std::string> words;        // lowercased; a row matches when every word is in its text
+        bool on = false;                       // building the Settings body in search mode
+        bool countOnly = false;                // an advanced tab while they are hidden: count matches, draw nothing
+        int  rowDepth = 0;                     // > 0 inside a row: nested kit calls (a choice's pills) never filter
+        int  tab = -1;                         // the tab being built
+        bool tabShown = false;
+        std::string sec;                       // the pending section heading
+        bool secShown = false, secMatch = false;
+        int  matches = 0, hiddenMatches = 0, hdrN = 0;
+        std::unordered_set<uint32_t> seen;     // rows drawn this frame (a slot shown in two tabs is listed once)
+        std::deque<std::string> text;          // this frame's heading strings (Clay keeps the pointers until record)
+    } search_;
+    bool searchActive() const { return search_.on; }
+    int  searchClickPending_ = -1;   // a tab link clicked in the results: open it (and clear the query) after the layout
+    bool uiInputLmbPressed_ = false;
+    bool searchRow(uint32_t id, const char *label, const char *tip = nullptr); // true = draw this row
+    void searchSection(const char *title);                                       // a heading, deferred
+    bool searchMatch(const char *text) const;
+    struct SearchRowScope // nested kit calls inside a row draw unconditionally
+    {
+        SatelliteSim &s;
+        explicit SearchRowScope(SatelliteSim &ss) : s(ss) { ++s.search_.rowDepth; }
+        ~SearchRowScope() { --s.search_.rowDepth; }
+    };
+    void buildSettingsSearchBody(const UIInput &inp, UIRenderer &ui);
+    void buildSettingsTabBody(const UIInput &inp, UIRenderer &ui, int tab);
     char uiKitBufs_[160][96] = {};              // per-frame strings the kit formats (labels with suffixes)
     int  uiKitBufN_ = 0;
     const char *uiKitStr(const char *fmt, ...);
@@ -7987,7 +8025,7 @@ private:
     bool hovOpenControlsWindow = false; // Controls tab's "Open Controls Reference" button
     bool hovInvertMouseX = false, hovInvertMouseY = false; // Controls tab look-invert toggles
     bool hovInvertPadX = false, hovInvertPadY = false;
-    bool hovTab[16] = {}; // one per settings-window tab (kSettingsTabNames: kSettingsTabCount)
+    bool hovTab[17] = {}; // one per settings-window tab (kSettingsTabNames: kSettingsTabCount)
     bool hovScaleMinus = false;
     bool hovScalePlus = false;
     bool hovRenderScaleMinus = false;
@@ -8037,7 +8075,7 @@ private:
     bool draggingPhoto[56] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
+    static constexpr int kCloudSliderSlots = 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
     // gust fronts, drop persistence); 326: "Tropical cyclones (x)"; 325: "Storm complexes"; 321-324 (2026-10-23): storm
     // objects (frequency, life, cloud field, moat);
     // was 321: 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);
@@ -8508,6 +8546,7 @@ private:
     void buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui);
     void buildSettingsConstellationsTab(const UIInput &inp, UIRenderer &ui);
     void buildSettingsLaunchesTab(const UIInput &inp, UIRenderer &ui); // "Launches" (2026-10-21)
+    void buildSettingsSkyTab(const UIInput &inp, UIRenderer &ui);      // "Sky" (2026-10-28): stars, planets, the Moon, comets, meteors, refraction
     void buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui);
     void buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui);
     void buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui);
