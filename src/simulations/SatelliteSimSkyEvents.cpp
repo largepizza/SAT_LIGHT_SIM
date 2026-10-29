@@ -1109,10 +1109,22 @@ bool SatelliteSim::skyWatchSupernova(const sky::Event &e, std::string &msg)
     return true;
 }
 
+// What a kind's Watch needs drawn (2026-10-29): Potato's sky draws no eclipse (sat_sky_minimal.frag has no Moon over
+// the Sun nor the Earth's shadow on the Moon), so those two Watches are disabled there with the reason.
+static uint32_t skyKindNeeds(int kind)
+{
+    return (kind == sky::kSolarEclipse || kind == sky::kLunarEclipse) ? 4u : 0u; // SatelliteSim::kNeedEclipse (private: the members below pass it to tierNeedReason)
+}
+
 bool SatelliteSim::skyEventWatch(const sky::Event &e, std::string &msg)
 {
     FPROF_SCOPE("skyEventWatch");
     if (e.kind < 0 || e.kind >= sky::kKindCount) return false;
+    if (const char *why = tierNeedReason(skyKindNeeds(e.kind)))
+    {
+        msg = why;
+        return false;
+    }
     const sky::Event copy = e; // (the lists are rebuilt after the jump)
     const bool ok = (this->*kSkyKinds[copy.kind].watch)(copy, msg);
     if (ok)
@@ -1359,7 +1371,8 @@ void SatelliteSim::buildSkyEventsWindow(const UIInput &inp, UIRenderer &ui)
                                                                               .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                                               .layoutDirection = CLAY_TOP_TO_BOTTOM}})
                             {
-                                if (uiButton(inp, ui, "SkCardBtn", k, tx(Txt::BtnWatch), K.tip, false, e != nullptr, true) && e)
+                                const char *why = tierNeedReason(skyKindNeeds(k));
+                                if (uiButton(inp, ui, "SkCardBtn", k, tx(Txt::BtnWatch), why ? why : K.tip, false, e != nullptr && !why, true) && e)
                                     skPendingKind = k;
                             }
                         }
@@ -1401,7 +1414,9 @@ void SatelliteSim::buildSkyEventsWindow(const UIInput &inp, UIRenderer &ui)
                             CLAY(CLAY_IDI("SkRowBtns", (uint32_t)i), {.layout = {.sizing = {CLAY_SIZING_FIXED(bw), CLAY_SIZING_FIT(0)},
                                                                                  .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}})
                             {
-                                if (uiButton(inp, ui, "SkRowBtn", i, tx(Txt::BtnWatch), e ? kSkyKinds[e->kind].tip : "", false, e != nullptr, true) && e)
+                                const char *why = e ? tierNeedReason(skyKindNeeds(e->kind)) : nullptr;
+                                if (uiButton(inp, ui, "SkRowBtn", i, tx(Txt::BtnWatch), why ? why : e ? kSkyKinds[e->kind].tip : "", false,
+                                             e != nullptr && !why, true) && e)
                                     skPendingRow = i;
                             }
                         }
