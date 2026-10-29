@@ -710,6 +710,7 @@ void SatelliteSim::skySearchOccultations(const sky::SearchCtx &c, std::vector<sk
 void SatelliteSim::skyJumpTo(double t)
 {
     selectedStarIndex = -1; // (a Watch selects its own subject)
+    inertialStop();         // (a Watch frames its own view)
     if (followActive) stopFollow();
     stopTrack();
     const double d = std::floor(t / kDay);
@@ -1279,6 +1280,24 @@ void SatelliteSim::buildSkyEventsWindow(const UIInput &inp, UIRenderer &ui)
                     skStatus.clear();
                 // (one fixed line: empty when there is no message, so nothing below moves)
                 text(skStatus.empty() ? " " : skStr("%s", skStatus.c_str()), Pal::textWarn, 11);
+                // The inertial camera lock: the view fixed on the stars (from orbit the Earth turns beneath): with time
+                // warp, a comet's or the planets' motion across the star field.
+                if (uiButton(inp, ui, "SkInertial", 0, inertialActive ? "Locked to the stars" : "Lock view to the stars",
+                             "Hold the view fixed relative to the stars (the sidereal frame). Above 100 km the eye is held "
+                             "too, so the Earth turns beneath. With time warp: a comet's swing round the Sun.",
+                             inertialActive))
+                {
+                    if (inertialActive)
+                        inertialStop();
+                    else
+                        inertialStart(obsHeightOffset > 100000.0f);
+                }
+                if (inertialActive &&
+                    uiButton(inp, ui, "SkOcculter", 0, "Occult the Sun",
+                             "A coronagraph: hide the Sun's disc and its glare while the view is locked, so a comet "
+                             "can be followed close to the Sun (as SOHO's LASCO does).",
+                             inertialOcculter))
+                    inertialOcculter = !inertialOcculter;
                 CLAY(CLAY_ID("SkList"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
                                                     .padding = {0, 8, 2, 4},
                                                     .childGap = 5,

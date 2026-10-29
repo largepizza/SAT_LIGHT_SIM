@@ -3563,8 +3563,9 @@ private:
     // ── Comets (2026-10-27, SatelliteSimComets.cpp + Comets.h; CLAUDE.md "Comets") ──────────────────────────────
     // The Great Comet of 2037 (a scripted sungrazer passing 560,000 km from the Earth) and minor comets hashed per year,
     // on heliocentric conics (pure functions of sim time). The head is a point in kFireBuf (point, bloom, glare); the
-    // tail (dust sheet, ion ribbon) and the coma are triangle grids of sky directions drawn by comet_tail.vert/.frag
-    // after the sky, at infinity, gated against the sky's surface brightness (darksky.glsl) like the Milky Way.
+    // tails are 3D particle clouds (comet::buildParticles: dust grains under mu (1 - beta), ion parcels in the solar
+    // wind) splatted into a half-res target (comet_splat.vert/.frag, cometsRecordSplat) and composited with the coma
+    // (comet_composite.frag) after the sky, at infinity, gated against the sky's surface brightness (darksky.glsl).
     struct CometGeom
     {
         comet::State s;
@@ -3581,14 +3582,18 @@ private:
         bool below = false, drawnHead = false;
         int tailSlot = -1;
         float peakLum = 0.0f;
+        std::shared_ptr<const comet::ParticleBuild> build; // this frame's particles (tailSlot >= 0)
         glm::vec3 tailAimEnu{0, 0, 1};   // the visible tail's far end (lum > ~23.7 mag/arcsec^2), for the Watch's framing
         float tailSpanDeg = 0.0f;        // ... and its angle from the head
     };
     struct CometTailCache
     {
         std::string name;
-        comet::DustGrid grid;
-        std::future<comet::DustGrid> job;
+        std::shared_ptr<const comet::ParticleBuild> cur;          // the build drawn
+        std::future<std::shared_ptr<const comet::ParticleBuild>> job;
+        double jobT = 0.0;
+        int uploadedSlot = -1;                                    // the GPU region holding cur (-1 none)
+        double uploadedT = -1e300;
         bool used = false;
     };
     bool cometsEnabled = true;               // comets.enabled
@@ -3603,7 +3608,27 @@ private:
     float cometMoonBright = 0.0f, cometAtmFrac = 1.0f;
     double cometCpuMs = 0.0;
     uint64_t cometTailBuilds = 0;
-    uint32_t cometPatchCount = 0, cometVertCount = 0, cometDrawsLast = 0;
+    uint32_t cometDrawsLast = 0;
+    uint32_t cometGrainN[3] = {0, 0, 0};     // grains in each GPU region (comet tail slot)
+    uint64_t cometUploadBytes = 0;
+    double cometLastBuildMs = 0.0;
+    uint64_t cometSyncBuilds = 0;
+    bool cometParticlesSync = false;         // comets.particles_sync: build on the frame (harness videos: exact)
+    float cometSplatScale = 0.5f;            // comets.splat_scale: the splat target's size x the swapchain's
+    // the splat pass: a half-res RGBA16F target the particles are added into, composited by comet_composite.frag
+    VkImage cometSplatImg = VK_NULL_HANDLE;
+    VkDeviceMemory cometSplatMem = VK_NULL_HANDLE;
+    VkImageView cometSplatView = VK_NULL_HANDLE;
+    VkSampler cometSplatSampler = VK_NULL_HANDLE;
+    VkRenderPass cometSplatRenderPass = VK_NULL_HANDLE;
+    VkFramebuffer cometSplatFramebuffer = VK_NULL_HANDLE;
+    VkExtent2D cometSplatExtent{0, 0};
+    VkPipelineLayout cometSplatPipeLayout = VK_NULL_HANDLE;
+    VkPipeline cometSplatPipeline = VK_NULL_HANDLE;
+    bool cometSplatDrawn = false;            // this frame's splat pass ran (the composite reads it)
+    void cometsCreateSplatTarget(VulkanContext &ctx);
+    void cometsDestroySplatTarget(VkDevice device);
+    void cometsRecordSplat(VkCommandBuffer cmd, VulkanContext &ctx); // recordCompute's end, outside any pass
     VkBuffer cometBuf = VK_NULL_HANDLE;
     VkDeviceMemory cometMem = VK_NULL_HANDLE;
     void *cometMapped = nullptr;
@@ -3634,6 +3659,21 @@ private:
     bool cometBestWindow(const comet::Elements &el, double t0, double t1, double &tBest, double &w0, double &w1,
                          double &magBest, double &tailBest) const;
     harness::Status harnessComets(harness::Active &a);
+    // ── The inertial (sidereal) camera lock (2026-10-28, SatelliteSimInertial.cpp; CLAUDE.md "Inertial camera lock") ──
+    bool inertialActive = false;
+    bool inertialHold = false;               // the eye held fixed in ECI too (from orbit the Earth turns beneath)
+    bool inertialTickApplyNow_ = false;
+    bool inertialOcculter = false;           // a coronagraph: the Sun's disc, glare and bloom hidden while locked
+    glm::dvec3 inertialEyeEci{0.0};          // m, geocentric ECI
+    glm::dvec3 inertialViewEci{0.0, 0.0, 1.0};
+    glm::vec3 inertialLastObsDir{0.0f};
+    float inertialLastAz = 0.0f, inertialLastEl = 0.0f;
+    double inertialLastTheta = 0.0;
+    glm::dvec3 inertialCamDirEcef() const;
+    void inertialStart(bool hold);
+    void inertialStop();
+    void inertialTick();                     // recordCompute, after the time advance (and updateFollow)
+    harness::Status harnessInertial(harness::Active &a);
     void skySearchComets(const sky::SearchCtx &c, std::vector<sky::Event> &out) const;
     bool skyWatchComet(const sky::Event &e, std::string &msg);
 
