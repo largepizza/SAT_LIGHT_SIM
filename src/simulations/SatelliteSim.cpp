@@ -2760,6 +2760,15 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.mwLook = glm::vec4(mwGainGround, mwGainSpace, mwContrastSpace, (milkyWayBaked && mwZoomOn) ? 1.0f : 0.0f);
         cp.mwLook2 = glm::vec4(std::clamp(mwStarClouds, 0.0f, 1.0f), std::clamp(mwNightVision, 0.0f, 1.0f), mwZoomDetail,
                                2.0f * std::tan(glm::radians(camera.fovYDeg) * 0.5f) / std::max(cp.skyScreenH, 1.0f));
+        {
+            const float zFrom = std::clamp(mwZoomFrom, 0.05f, 4.0f);
+            const float zFull = std::clamp(mwZoomFull, 0.01f, zFrom - 0.01f);
+            const float fLo = std::clamp(mwStarFaintLo, 0.0f, 0.5f);
+            cp.mwStar0 = glm::vec4(zFrom, zFull, std::clamp(mwStarFill, 0.05f, 1.0f), std::clamp(mwStarSize, 0.3f, 4.0f));
+            cp.mwStar1 = glm::vec4(fLo, std::max(mwStarFaintHi, fLo + 1e-4f), std::clamp(mwStarLumExp, 0.0f, 0.9f),
+                                   std::clamp(mwStarCellPx, 1.0f, 32.0f));
+            cp.mwStar2 = glm::vec4(std::clamp(mwStarNebula, 0.0f, 1.0f), 0.0f, 0.0f, 0.0f);
+        }
         // Zodiacal light (see GpuCloudParams / cloud_params.glsl). eclipticPoleENU is
         // recomputed each frame in updatePositions(), alongside the Milky Way basis.
         cp.zodiacalWidthDeg = zodiacalWidthDeg;

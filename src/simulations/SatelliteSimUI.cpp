@@ -4918,7 +4918,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         const char *fmt;
         int idx;
     };
-    static char photoBufs[45][12];
+    static char photoBufs[54][12];
     PhotoParam photoParams[] = {
         {"Brightness", &brightnessScale, 0.05f, 20.0f, 0.25f, "%.2f", 0},
         {"Day suppress", &daySuppression, 5.0f, 5000.0f, 5.0f, "%.0f", 1},
@@ -4996,6 +4996,19 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         {"Milky Way night vision", &mwNightVision, 0.0f, 1.0f, 0.05f, "%.2f", 42},
         {"Milky Way star clouds", &mwStarClouds, 0.0f, 1.0f, 0.05f, "%.2f", 43},
         {"Milky Way zoom detail", &mwZoomDetail, 0.0f, 2.0f, 0.05f, "%.2f", 44},
+        // The zoomed star clouds (2026-10-28, issue 20261028_191142): where the zoomed view starts / is complete (an input
+        // pixel per panorama texel), the share of lattice cells holding a point, a point's size, the lattice cell (smaller
+        // = denser, fainter points), the brightness spread (0 = all points equal), the glow below / above which the faint
+        // sky has no / its full share of points, and how fully the emission nebulae stay a smooth glow.
+        {"MW star zoom from (px/texel)", &mwZoomFrom, 0.1f, 2.0f, 0.05f, "%.2f", 45},
+        {"MW star zoom full (px/texel)", &mwZoomFull, 0.05f, 1.5f, 0.05f, "%.2f", 46},
+        {"MW star fill", &mwStarFill, 0.05f, 1.0f, 0.05f, "%.2f", 47},
+        {"MW star size (px)", &mwStarSize, 0.3f, 3.0f, 0.05f, "%.2f", 48},
+        {"MW star spacing (px)", &mwStarCellPx, 1.0f, 16.0f, 0.25f, "%.2f", 49},
+        {"MW star brightness spread", &mwStarLumExp, 0.0f, 0.9f, 0.05f, "%.2f", 50},
+        {"MW star faint sky from", &mwStarFaintLo, 0.0f, 0.05f, 0.0005f, "%.4f", 51},
+        {"MW star faint sky full", &mwStarFaintHi, 0.001f, 0.2f, 0.001f, "%.3f", 52},
+        {"MW star nebula exclusion", &mwStarNebula, 0.0f, 1.0f, 0.05f, "%.2f", 53},
     };
     auto photoRow = [&](PhotoParam &pp)
     {
@@ -5116,6 +5129,10 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         {"POINT SOURCES", {22, 23, 24, 25, 26, 27, 35, 36, 37}, 9},
         {"BLOOM AND GLARE", {9, 10, 28, 29, 30, 31, 32, 33, 34, 38}, 10},
         {"DARK SKY (MILKY WAY, ZODIACAL LIGHT)", {11, 12, 13, 14, 15, 16, 17, 18}, 8},
+        // 39-53 (2026-10-28): the Milky Way's look (in the table since the morning but in no group: settings.json only)
+        // and its zoomed star clouds (issue 20261028_191142).
+        {"MILKY WAY", {39, 40, 41, 42, 44}, 5},
+        {"MILKY WAY STAR CLOUDS (ZOOMED IN)", {43, 45, 46, 47, 48, 49, 50, 51, 52, 53}, 10},
         {"STAR TRAILS", {19, 20}, 2},
     };
     for (int g = 0; g < (int)(sizeof(kGroups) / sizeof(kGroups[0])); ++g)
@@ -8726,6 +8743,15 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         mwStarClouds = p.value("milky_way_star_clouds", mwStarClouds);
         mwZoomDetail = p.value("milky_way_zoom_detail", mwZoomDetail);
         mwZoomOn = p.value("milky_way_zoom", mwZoomOn);
+        mwZoomFrom = p.value("milky_way_star_zoom_from", mwZoomFrom);
+        mwZoomFull = p.value("milky_way_star_zoom_full", mwZoomFull);
+        mwStarFill = p.value("milky_way_star_fill", mwStarFill);
+        mwStarSize = p.value("milky_way_star_size_px", mwStarSize);
+        mwStarCellPx = p.value("milky_way_star_spacing_px", mwStarCellPx);
+        mwStarLumExp = p.value("milky_way_star_brightness_spread", mwStarLumExp);
+        mwStarFaintLo = p.value("milky_way_star_faint_from", mwStarFaintLo);
+        mwStarFaintHi = p.value("milky_way_star_faint_full", mwStarFaintHi);
+        mwStarNebula = p.value("milky_way_star_nebula_exclusion", mwStarNebula);
         darkSkyTwilightMag0 = p.value("dark_sky_twilight_mag0", darkSkyTwilightMag0);
         darkSkyTwilightEndDeg = p.value("dark_sky_twilight_end_deg", darkSkyTwilightEndDeg);
         darkSkyTwilightAniso = p.value("dark_sky_twilight_aniso", darkSkyTwilightAniso);
@@ -9556,6 +9582,15 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"milky_way_star_clouds", mwStarClouds},
         {"milky_way_zoom_detail", mwZoomDetail},
         {"milky_way_zoom", mwZoomOn},
+        {"milky_way_star_zoom_from", mwZoomFrom},
+        {"milky_way_star_zoom_full", mwZoomFull},
+        {"milky_way_star_fill", mwStarFill},
+        {"milky_way_star_size_px", mwStarSize},
+        {"milky_way_star_spacing_px", mwStarCellPx},
+        {"milky_way_star_brightness_spread", mwStarLumExp},
+        {"milky_way_star_faint_from", mwStarFaintLo},
+        {"milky_way_star_faint_full", mwStarFaintHi},
+        {"milky_way_star_nebula_exclusion", mwStarNebula},
         {"dark_sky_twilight_mag0", darkSkyTwilightMag0},
         {"dark_sky_twilight_end_deg", darkSkyTwilightEndDeg},
         {"dark_sky_twilight_aniso", darkSkyTwilightAniso},

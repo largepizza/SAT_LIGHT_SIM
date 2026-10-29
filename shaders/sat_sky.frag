@@ -2060,10 +2060,11 @@ const float kMwMagSpread = 0.85;
 //     the share is 0 and the old single fetch is all.
 // Not in SKY_LITE (cut) or SKY_ENV (probes and mirrors are far coarser than a texel).
 #if !defined(SKY_LITE) && !defined(SKY_ENV)
-#ifndef MW_SIG
-#define MW_SIG 0.9   // the points' sigma in input pixels: 0.6 shimmered under the sky TAA's jitter in a pan (frame-to-frame, registered: 0.41 -> 0.36 mean, p99.9 7.8 -> 4.9 levels)
-#endif
-const float kMwStarP = 0.9;   // share of lattice cells holding a point
+// The tunables are settings since 2026-10-28 (issue 20261028_191142, cloud.mwStar0-2, Photometry tab): the share of cells
+// holding a point (0.9), a point's sigma in input pixels (0.9: 0.6 shimmered under the sky TAA's jitter in a pan,
+// frame-to-frame registered 0.41 -> 0.36 mean, p99.9 7.8 -> 4.9 levels), the cell (4 input px), the brightness exponent
+// (0.65), the faint-sky gate (0.003 -> 0.02), the nebula exclusion (1) and the zoom fade-in (0.6 -> 0.3 texel a pixel).
+#define kMwStarP (cloud.mwStar0.z)
 float mwVNoise(vec3 p, int salt) {
     vec3 i = floor(p), f = p - i;
     f = f * f * (3.0 - 2.0 * f);
@@ -2104,8 +2105,8 @@ vec3 mwStarLevel(float lon, float lat, int k, float c0, float sigma) {
         vec2  d    = vec2((lon - pLon) * cl, lat - pLat) / c;
         float r2d  = dot(d, d);
         // A power-law luminosity function, mean 1: most points faint, a few carry much of the light (a star field,
-        // not even salt). (1 - a) u^-a, a 0.65; the hash's 11 bits cap the brightest at ~50x the mean.
-        float w    = 0.35 * pow(max(r2.x, 1.0 / 2047.0), -0.65);
+        // not even salt). (1 - a) u^-a, a 0.65 by default; the hash's 11 bits cap the brightest at ~50x the mean.
+        float w    = (1.0 - cloud.mwStar1.z) * pow(max(r2.x, 1.0 / 2047.0), -cloud.mwStar1.z);
         float g    = exp(-0.5 * r2d / (sg * sg)) / (6.2831853 * sg * sg) * (1.0 - smoothstep(0.1225, 0.3025, r2d));
         // A stellar tint, luminance 1: K giants to B stars, most near white.
         float t    = r2.y * 2.0 - 1.0;
@@ -2144,10 +2145,10 @@ vec3 mwZoomDetail(vec2 uv, float lon, float lat, vec3 dirGal, float pixA, out fl
     lumOut     = gl;
     // Star clouds: cells of ~4 input pixels, between texel / 64 and one texel.
     float c0   = texA / 64.0;
-    float lvl  = clamp(log2(4.0 * pixA / c0), 0.0, 5.99);
+    float lvl  = clamp(log2(cloud.mwStar1.w * pixA / c0), 0.0, 5.99);
     int   k0   = int(floor(lvl));
     float fr   = lvl - float(k0);
-    float sig  = MW_SIG * pixA;
+    float sig  = cloud.mwStar0.w * pixA;
     // The two levels through ONE call site (a second inlined copy is ~10 KB of the pass's binary).
     float fw   = smoothstep(0.0, 1.0, fr);
     vec3  M    = vec3(0.0);
@@ -2162,7 +2163,7 @@ vec3 mwZoomDetail(vec2 uv, float lon, float lat, vec3 dirGal, float pixA, out fl
     // (H-alpha + H-beta: red and blue over green; min(r, b) - g of the chroma, p99 of the band 0.16), where the
     // dust-reddened star clouds round the bulge are red-orange (blue low) and keep their points.
     float mag  = min(col.r, col.b) - col.g;
-    float S    = cloud.mwLook2.x * smoothstep(0.003, 0.02, gl) * (1.0 - smoothstep(0.06, 0.2, mag));
+    float S    = cloud.mwLook2.x * smoothstep(cloud.mwStar1.x, cloud.mwStar1.y, gl) * (1.0 - cloud.mwStar2.x * smoothstep(0.06, 0.2, mag));
     return col * gl * det * ((1.0 - S) + S * M);
 }
 #endif
@@ -7498,7 +7499,7 @@ void main() {
         {
             float mwPixA = cloud.mwLook2.w;
             float mwTexA = 6.2831853 / float(textureSize(milkyWayTex, 0).x);
-            float zk = cloud.mwLook.w * (1.0 - smoothstep(0.3, 0.6, mwPixA / mwTexA));
+            float zk = cloud.mwLook.w * (1.0 - smoothstep(cloud.mwStar0.y, cloud.mwStar0.x, mwPixA / mwTexA));
             if (zk > 0.0) {
                 float zLum;
                 vec3  zCol = mwZoomDetail(mwUV, lonGal, latGal, dirGal, mwPixA, zLum) * cloud.mwBasisRow0.w;
