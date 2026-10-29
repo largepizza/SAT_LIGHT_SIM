@@ -710,6 +710,7 @@ void SatelliteSim::skySearchOccultations(const sky::SearchCtx &c, std::vector<sk
 void SatelliteSim::skyJumpTo(double t)
 {
     selectedStarIndex = -1; // (a Watch selects its own subject)
+    selectedMoonBase = -1;
     if (followActive) stopFollow();
     stopTrack();
     const double d = std::floor(t / kDay);

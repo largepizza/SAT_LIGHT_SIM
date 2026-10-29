@@ -536,4 +536,8 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     // -- The Milky Way's look (12256 -> 12288, 2026-10-28; SatelliteSim.h GpuCloudParams::mwLook for the fields).
     vec4  mwLook;
     vec4  mwLook2;
+    // -- The zoomed star clouds' tunables (12288 -> 12336, 2026-10-28; GpuCloudParams::mwStar0 for the fields).
+    vec4  mwStar0;
+    vec4  mwStar1;
+    vec4  mwStar2;
 } cloud;

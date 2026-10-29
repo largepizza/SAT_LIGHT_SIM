@@ -1965,8 +1965,16 @@ struct GpuCloudParams
     // input pixel's angle (rad).
     glm::vec4 mwLook;
     glm::vec4 mwLook2;
+    // The zoomed star clouds' tunables (12288 -> 12336, 2026-10-28, issue 20261028_191142): mwStar0 x / y the input pixel
+    // per panorama texel where the zoomed view starts / is complete, z the share of lattice cells holding a point, w a
+    // point's sigma (input px); mwStar1 x / y the glow's smoothstep (the faint sky between the star clouds stays smooth),
+    // z the brightness distribution's exponent a (w = (1 - a) u^-a), w the lattice cell (input px); mwStar2 x the nebula
+    // exclusion (0-1), yzw unused.
+    glm::vec4 mwStar0;
+    glm::vec4 mwStar1;
+    glm::vec4 mwStar2;
 };
-static_assert(sizeof(GpuCloudParams) == 12288, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 12336, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -3526,6 +3534,18 @@ private:
     // The base's place on the DRAWN Moon (x "Moon size"), refracted, from the observer (ENU); false if not loaded.
     bool moonBaseDrawnEnu(int i, glm::vec3 &enu) const;
     harness::Status harnessMoonBase(harness::Active &a);
+    // A selected base's glint (2026-10-28, issue 20261028_192740; SatelliteSimMoonBases.cpp): picked by a click on its
+    // drawn glint, a readout panel like a star's with Track. Gives way to any other selection (buildSelectedSatPanel).
+    int selectedMoonBase = -1;
+    char moonBaseInfoLine[kSelInfoLines][kSelInfoLineLen] = {};
+    std::vector<lunar::Window> moonBaseWin_;      // the selected base's glint windows round now (cached)
+    int moonBaseWinFor = -1;
+    double moonBaseWinT0 = 0.0, moonBaseWinT1 = 0.0;
+    int pickMoonBaseAt(float clickX, float clickY, float screenW, float screenH) const;
+    void formatSelectedMoonBaseInfo();
+    // The whole click / centre-select chain at a screen point (comet, Moon-base glint, planet, star, satellite), the one
+    // used by the mouse, the select key and harness `select pick`. Returns what it selected ("" = nothing new).
+    std::string pickAndSelectAt(float x, float y, float screenW, float screenH);
 
     // ── Meteors (2026-10-27, Meteors.h, SatelliteSimMeteors.cpp; CLAUDE.md "Meteors") ──────────────────────────────
     // The major annual showers + the sporadic background, generated as a pure function of sim time near the observer
@@ -6038,6 +6058,17 @@ private:
     float mwStarClouds = 0.7f;
     float mwZoomDetail = 0.6f;
     bool mwZoomOn = true;   // photometry.milky_way_zoom (no UI): false = the old single fetch at every field of view (A/B)
+    // The zoomed star clouds' tunables (2026-10-28, issue 20261028_191142; GpuCloudParams::mwStar0-2, Photometry tab,
+    // photometry.milky_way_star_*). Defaults = the look they replaced (constants in sat_sky.frag's mwZoomDetail).
+    float mwZoomFrom = 0.6f;        // the zoomed view starts at this input pixel / panorama texel ...
+    float mwZoomFull = 0.3f;        // ... and is complete at this one
+    float mwStarFill = 0.9f;        // share of lattice cells holding a point
+    float mwStarSize = 0.9f;        // a point's sigma (input px)
+    float mwStarCellPx = 4.0f;      // lattice cell (input px): smaller = denser, fainter points
+    float mwStarLumExp = 0.65f;     // the points' brightness distribution: w = (1 - a) u^-a (0 = all equal)
+    float mwStarFaintLo = 0.003f;   // the band's glow below which the sky stays smooth (no points) ...
+    float mwStarFaintHi = 0.02f;    // ... and above which it has its full share of points
+    float mwStarNebula = 1.0f;      // how fully the magenta emission nebulae stay a smooth glow (0 = points there too)
     // ...and they stay exactly that for a source at `glareNearRangeKm` or beyond: proximity scales the
     // sprite's SIZE alone, so a satellite up in the sky is untouched while one resolved metres away (the
     // 3D viewer) or closing in on a zoomed 3D mesh spreads a much wider glare than a distant point
@@ -7870,9 +7901,10 @@ private:
     // [38] since 2026-10-07 (35-37: resolved satellites, satellite adaptation, formation merge; photoBufs too).
     // [39] since 2026-10-20 (38: glare cluster merge).
     // [45] since 2026-10-28 (39-44: the Milky Way's look; photoBufs too).
-    bool hovPhotoMinus[45] = {};
-    bool hovPhotoPlus[45] = {};
-    bool draggingPhoto[45] = {};
+    // [54] since 2026-10-28 (45-53: the Milky Way's zoomed star clouds; photoBufs too).
+    bool hovPhotoMinus[54] = {};
+    bool hovPhotoPlus[54] = {};
+    bool draggingPhoto[54] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
     static constexpr int kCloudSliderSlots = 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,

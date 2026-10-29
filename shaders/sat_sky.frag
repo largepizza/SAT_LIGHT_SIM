@@ -2060,10 +2060,11 @@ const float kMwMagSpread = 0.85;
 //     the share is 0 and the old single fetch is all.
 // Not in SKY_LITE (cut) or SKY_ENV (probes and mirrors are far coarser than a texel).
 #if !defined(SKY_LITE) && !defined(SKY_ENV)
-#ifndef MW_SIG
-#define MW_SIG 0.9   // the points' sigma in input pixels: 0.6 shimmered under the sky TAA's jitter in a pan (frame-to-frame, registered: 0.41 -> 0.36 mean, p99.9 7.8 -> 4.9 levels)
-#endif
-const float kMwStarP = 0.9;   // share of lattice cells holding a point
+// The tunables are settings since 2026-10-28 (issue 20261028_191142, cloud.mwStar0-2, Photometry tab): the share of cells
+// holding a point (0.9), a point's sigma in input pixels (0.9: 0.6 shimmered under the sky TAA's jitter in a pan,
+// frame-to-frame registered 0.41 -> 0.36 mean, p99.9 7.8 -> 4.9 levels), the cell (4 input px), the brightness exponent
+// (0.65), the faint-sky gate (0.003 -> 0.02), the nebula exclusion (1) and the zoom fade-in (0.6 -> 0.3 texel a pixel).
+#define kMwStarP (cloud.mwStar0.z)
 float mwVNoise(vec3 p, int salt) {
     vec3 i = floor(p), f = p - i;
     f = f * f * (3.0 - 2.0 * f);
@@ -2104,8 +2105,8 @@ vec3 mwStarLevel(float lon, float lat, int k, float c0, float sigma) {
         vec2  d    = vec2((lon - pLon) * cl, lat - pLat) / c;
         float r2d  = dot(d, d);
         // A power-law luminosity function, mean 1: most points faint, a few carry much of the light (a star field,
-        // not even salt). (1 - a) u^-a, a 0.65; the hash's 11 bits cap the brightest at ~50x the mean.
-        float w    = 0.35 * pow(max(r2.x, 1.0 / 2047.0), -0.65);
+        // not even salt). (1 - a) u^-a, a 0.65 by default; the hash's 11 bits cap the brightest at ~50x the mean.
+        float w    = (1.0 - cloud.mwStar1.z) * pow(max(r2.x, 1.0 / 2047.0), -cloud.mwStar1.z);
         float g    = exp(-0.5 * r2d / (sg * sg)) / (6.2831853 * sg * sg) * (1.0 - smoothstep(0.1225, 0.3025, r2d));
         // A stellar tint, luminance 1: K giants to B stars, most near white.
         float t    = r2.y * 2.0 - 1.0;
@@ -2144,10 +2145,10 @@ vec3 mwZoomDetail(vec2 uv, float lon, float lat, vec3 dirGal, float pixA, out fl
     lumOut     = gl;
     // Star clouds: cells of ~4 input pixels, between texel / 64 and one texel.
     float c0   = texA / 64.0;
-    float lvl  = clamp(log2(4.0 * pixA / c0), 0.0, 5.99);
+    float lvl  = clamp(log2(cloud.mwStar1.w * pixA / c0), 0.0, 5.99);
     int   k0   = int(floor(lvl));
     float fr   = lvl - float(k0);
-    float sig  = MW_SIG * pixA;
+    float sig  = cloud.mwStar0.w * pixA;
     // The two levels through ONE call site (a second inlined copy is ~10 KB of the pass's binary).
     float fw   = smoothstep(0.0, 1.0, fr);
     vec3  M    = vec3(0.0);
@@ -2162,7 +2163,7 @@ vec3 mwZoomDetail(vec2 uv, float lon, float lat, vec3 dirGal, float pixA, out fl
     // (H-alpha + H-beta: red and blue over green; min(r, b) - g of the chroma, p99 of the band 0.16), where the
     // dust-reddened star clouds round the bulge are red-orange (blue low) and keep their points.
     float mag  = min(col.r, col.b) - col.g;
-    float S    = cloud.mwLook2.x * smoothstep(0.003, 0.02, gl) * (1.0 - smoothstep(0.06, 0.2, mag));
+    float S    = cloud.mwLook2.x * smoothstep(cloud.mwStar1.x, cloud.mwStar1.y, gl) * (1.0 - cloud.mwStar2.x * smoothstep(0.06, 0.2, mag));
     return col * gl * det * ((1.0 - S) + S * M);
 }
 #endif
@@ -4908,6 +4909,7 @@ void main() {
     // separately block the Milky Way via their own existing visibility terms, so this only
     // needs to be the pure geometric hit, not discFade.
     bool moonDiscHit = false;
+    float moonCovTaa = 0.0;   // the Moon's coverage of this pixel (full variants; the sky TAA's marker)
     if (moonDirENU.z > limbZ - kMoonAngR * 2.0 - 0.025) {   // (0.025: refraction lifts it, up to ~1.2 deg from orbit)
         vec3  moonDir3 = normalize(moonDirENU.xyz);
         // The Moon through the refraction table (2026-10-27, issue 20261027_184332 "Moon Refraction"), as the Sun is
@@ -4955,12 +4957,25 @@ void main() {
                 dirC[c] = dJ * cos(Rc) - pu * sin(Rc);
             }
         }
-        // Which channels reach the disc; the shading follows the first that does (green first).
+        // Which channels reach the disc, as a COVERAGE of the input pixel (2026-10-28, issue 20261028_191038 "Moon
+        // flickers"): the limb was a hard hit test whose bm^2 - (1 - R^2) cancelled in float to ~1 px of the radius,
+        // so the edge was a jagged staircase that changed with the sky TAA's jitter. The angle off the Moon's centre
+        // is measured as the small offset vector itself (no cancellation) and the edge spans one input pixel. The
+        // shading follows the first channel that reaches it (green first), clamped onto the disc.
+        float mPixA = max(cloud.mwLook2.w, 1e-7);
+        vec3  mOff[3];
         for (int c = 0; c < 3; ++c) {
-            float bc = dot(-moonDir3, dirC[c]);
-            hitC[c] = (bc * bc - (1.0 - kMoonAngR * kMoonAngR) >= 0.0 && bc < 0.0) ? onSM[c] : 0.0;
+            mOff[c] = dirC[c] - moonDir3 * dot(dirC[c], moonDir3);
+            float ang = (dot(dirC[c], moonDir3) > 0.0) ? length(mOff[c]) : 10.0;
+            hitC[c] = clamp((kMoonAngR - ang) / mPixA + 0.5, 0.0, 1.0) * onSM[c];
         }
-        dirMn = (hitC.g > 0.5) ? dirC[1] : ((hitC.r > 0.5) ? dirC[0] : dirC[2]);
+        int mCh = (hitC.g > 0.0) ? 1 : ((hitC.r > 0.0) ? 0 : 2);
+        dirMn = dirC[mCh];
+        moonCovTaa = max(hitC.r, max(hitC.g, hitC.b));
+        // The point on the disc (lateral offset / R, clamped inside the limb for the edge's outer half-pixel).
+        vec3  mU = mOff[mCh] / kMoonAngR;
+        float mUl = length(mU);
+        if (mUl > 0.999) mU *= 0.999 / mUl;
 #endif
 
         // (An atmospheric-refraction "squish" — compressing the disc vertically near the horizon
@@ -4974,13 +4989,17 @@ void main() {
         float discm = bm * bm - cm;
         float tm    = -bm - sqrt(max(discm, 0.0));
 #ifdef SKY_SUN_SHADOW
-        if (discm >= 0.0 && tm > 0.0 && max(hitC.r, max(hitC.g, hitC.b)) > 0.5) {
+        if (moonCovTaa > 0.0) {
+            moonDiscHit = moonCovTaa > 0.5;
+            // The sphere's normal from the lateral offset (stable to the limb; the ray-sphere form's sqrt(discm) was the
+            // float noise at the edge). The observer is ~60 radii away: the perspective term is < 1% of a normal.
+            vec3  n  = mU - moonDir3 * sqrt(max(1.0 - dot(mU, mU), 0.0));
 #else
         if (discm >= 0.0 && tm > 0.0) {
-#endif
             moonDiscHit = true;
             vec3  hp = tm * dirMn;
             vec3  n  = normalize(hp - moonDir3);
+#endif
             // The disc keeps the lit FRACTION (moonDirENU.w is the Moon's light vs full since review 16, for
             // everything the Moon lights; the disc's look is unchanged).
             float mFrac    = 0.5 * (1.0 - dot(sunDir, moonDir3));
@@ -7453,7 +7472,14 @@ void main() {
         float lonGal = atan(dirGal.y, dirGal.x);
         float latGal = asin(clamp(dirGal.z, -1.0, 1.0));
         vec2  mwUV   = vec2(0.5 + lonGal / (2.0 * PI), 0.5 + latGal / PI);
-        vec4  mwTex   = texture(milkyWayTex, mwUV);
+        // The level from the UV's screen derivatives with the longitude's wrap taken out (2026-10-28, issues
+        // 20261028_190641 / _191529): across the seam at the galactic anticentre (u 0 <-> 1, l = 180) the implicit
+        // derivative was ~1 and the fetch took the coarsest mip there, a thin dark line across the sky. (The zoomed
+        // view's fetches and the sea's reflection name their level; the star-cloud lattice wraps by cell index.)
+        vec2  mwDx    = dFdx(mwUV), mwDy = dFdy(mwUV);
+        mwDx.x -= round(mwDx.x);
+        mwDy.x -= round(mwDy.x);
+        vec4  mwTex   = textureGrad(milkyWayTex, mwUV, mwDx, mwDy);
         vec3  mwColor = mwTex.rgb * cloud.mwBasisRow0.w;
         float mwLum = dot(mwColor, vec3(0.2126, 0.7152, 0.0722));
 #ifndef SKY_ENV
@@ -7473,7 +7499,7 @@ void main() {
         {
             float mwPixA = cloud.mwLook2.w;
             float mwTexA = 6.2831853 / float(textureSize(milkyWayTex, 0).x);
-            float zk = cloud.mwLook.w * (1.0 - smoothstep(0.3, 0.6, mwPixA / mwTexA));
+            float zk = cloud.mwLook.w * (1.0 - smoothstep(cloud.mwStar0.y, cloud.mwStar0.x, mwPixA / mwTexA));
             if (zk > 0.0) {
                 float zLum;
                 vec3  zCol = mwZoomDetail(mwUV, lonGal, latGal, dirGal, mwPixA, zLum) * cloud.mwBasisRow0.w;
@@ -8083,6 +8109,9 @@ void main() {
         if (meshHit || cloudAlphaIsEmit(gE.x) || cloudAlphaIsEmit(gE.y) || cloudAlphaIsEmit(gE.z) || cloudAlphaIsEmit(gE.w))
             outColor.a = 0.875;
     }
+    // 0.975 = the Moon's disc (2026-10-28, issue 20261028_191038): with the view still, sky_taa.comp keeps its history
+    // there (no flash rule: a crater rim's or the limb's jittered samples reset it every frame, the flicker).
+    if (moonCovTaa > 0.0 && outColor.a == 1.0) outColor.a = 0.975;
 #endif
 
     // Unified scene depth (include/depth.glsl) for the passes that follow: the TRUE distance to the
