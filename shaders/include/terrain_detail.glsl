@@ -350,10 +350,19 @@ float tdSurgeAt(sampler2D elevTex, vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, vec2
 // body's flat surface, so the march may step that far (terrainMarchDetailed). Over the open sea a grazing ray from
 // near the surface took ~200 relaxation steps of a few % of t to reach the horizon.
 const float kTdWaterClearMarginM = 4500.0;
+#if !defined(SKY_LITE) && !defined(SKY_ENV)
 float gTdWaterClearM = -1.0;
+#define TD_WATER_CLEAR gTdWaterClearM
+#define TD_STEP_FLOOR(a, f) max((a), (f))
+#else
+#define TD_WATER_CLEAR 0.0
+#define TD_STEP_FLOOR(a, f) (a)
+#endif
 void tdDemAt(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ,
              out float h0, out float hMip3) {
+#if !defined(SKY_LITE) && !defined(SKY_ENV)
     gTdWaterClearM = -1.0;
+#endif
     ivec2 sz = textureSize(elevTex, 0);
     vec2  uv;
     if (tdExactNear(q)) {
@@ -467,11 +476,12 @@ float tdAmp0(float h0, float hMip3) {
     // (2026-10-29, perfhigh) Under ~4 cm the octaves are skipped (0 below 2 cm, eased back in by 4 cm): on low flat land
     // (deltas, coastal plains: h0 a few metres from the DEM's bilinear filter) every octave and the erosion ran at
     // centimetre amplitude for nothing — Shanghai from 3 km, sky pass 13.2 -> 9.6 ms, captures within the noise floor.
-    float a = cloud.terrainDetailAmpM * cloud.terrainDetailStrength * tdRoughness(h0, hMip3) * smoothstep(0.0, 80.0, h0);
 #ifndef SKY_LITE   // (no relief there; its SPIR-V budget)
-    a *= smoothstep(0.02, 0.04, a);
+    float a = cloud.terrainDetailAmpM * cloud.terrainDetailStrength * tdRoughness(h0, hMip3) * smoothstep(0.0, 80.0, h0);
+    return a * smoothstep(0.02, 0.04, a);
+#else
+    return cloud.terrainDetailAmpM * cloud.terrainDetailStrength * tdRoughness(h0, hMip3) * smoothstep(0.0, 80.0, h0);
 #endif
-    return a;
 }
 
 // Upper bound on what octaves k.. can still add, given octave k's amplitude.
@@ -949,7 +959,9 @@ float terrainMarchDetailed(sampler2D elevTex, sampler2D specTex, float hEye, vec
         if (rayH > h0 + allBound) {
             gap = rayH - h0 - allBound;
             armed = true;
-            if (hMip3 <= kTdWaterMark) stepFloor = min(gTdWaterClearM, 12000.0);
+#if !defined(SKY_LITE) && !defined(SKY_ENV)
+            if (hMip3 <= kTdWaterMark) stepFloor = min(TD_WATER_CLEAR, 12000.0);
+#endif
         } else if (!detail) {
             gap = rayH - h0;
             if (gap < 0.0) {
@@ -1012,7 +1024,7 @@ float terrainMarchDetailed(sampler2D elevTex, sampler2D specTex, float hEye, vec
         }
         prevGapValid = false;
         tPrev = t;
-        t += max(clamp(0.6 * gap, minStep, maxStep), stepFloor);
+        t += TD_STEP_FLOOR(clamp(0.6 * gap, minStep, maxStep), stepFloor);
     }
     // Out of budget before tExit: a long grazing ray (the far side of a valley, a horizon seen from
     // a summit). Finish it in at most 48 steps sized to reach tExit, on the DEM plus the coarse
