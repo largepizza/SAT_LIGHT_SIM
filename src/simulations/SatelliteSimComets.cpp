@@ -40,9 +40,11 @@ constexpr double kLumPerFluxSr = 2.952e-4;     // lum (0.05 = 21 mag/arcsec^2) p
 constexpr double kPsfRad = 2.9e-4;             // ~1 arcmin: the inner coma the eye sees as the point
 constexpr int kMaxTails = 3;                   // comets with drawn tails
 // GPU regions of the particle buffer, one per tail slot: the brightest comet's is the large one.
-constexpr uint32_t kRegionCap[kMaxTails] = {120000u, 24000u, 24000u};
-constexpr uint32_t kRegionOff[kMaxTails] = {0u, 120000u, 144000u};
-constexpr uint32_t kGrainCap = 168000u;
+constexpr uint32_t kRegionCap[kMaxTails] = {132000u, 24000u, 24000u};
+constexpr uint32_t kRegionOff[kMaxTails] = {0u, 132000u, 156000u};
+constexpr uint32_t kGrainCap = 180000u;
+constexpr VkFormat kFieldFormat = VK_FORMAT_R32G32B32A32_SFLOAT; // the detail field (comet_field.frag)
+constexpr float kSplatCapPx = 22.0f;        // a particle's quad radius (splat px) past which it draws into a coarser level
 
 double deg(double r) { return r * (180.0 / kPi); }
 double rad(double d) { return d * (kPi / 180.0); }
@@ -66,7 +68,7 @@ struct GpuCometFrame
     glm::vec4 misc;     // x lum cull, y largest splat radius (px), z the splat pixel's angle (rad), w coma count
     glm::vec4 comet[kMaxTails][2]; // [0] xyz anchor - observer (AU), w the frame's time - the build's (days); [1] xyz anchor
     glm::vec4 coma[kMaxTails][3];  // [0] head ENU (as seen), w the coma's scale length (rad); [1] x kLum x flux / (2 pi rho_s),
-                                   // y rho0 (rad), z the gas share; [2] rgb dust colour
+                                   // y rho0 (rad), z the gas share; [2] rgb dust colour, w the comet's days from perihelion
     glm::vec4 pad[8];
 };
 static_assert(sizeof(GpuCometFrame) == 512, "GpuCometFrame is 512 bytes");
@@ -247,6 +249,13 @@ void SatelliteSim::cometsBuildTails(double t, const glm::dvec3 &oh)
 {
     for (CometTailCache &c : cometTails_) c.used = false;
     const int hw = std::max(2, (int)std::thread::hardware_concurrency());
+    // A JUMP (sim time moved > 4x the last frame's step, or the first frame) builds on the frame; steady time warp keeps
+    // the worker's build however many grid steps behind (the GPU's Taylor step carries it): at 1 d/s through
+    // perihelion the grid step is 8-500 s and a build on every frame cost ~20 ms each (hitches, 2026-10-28).
+    const double frameDt = std::abs(t - cometTailPrevT);
+    const bool jumped = !(frameDt <= 4.0 * std::max(cometTailPrevDt, 1.0));
+    cometTailPrevDt = frameDt;
+    cometTailPrevT = t;
     for (CometNow &cn : cometNow_)
     {
         if (cn.tailSlot < 0) continue;
@@ -272,7 +281,7 @@ void SatelliteSim::cometsBuildTails(double t, const glm::dvec3 &oh)
             o.du = 0.01;
             o.grainsMin = 12;
             o.grainsMax = 128;
-            o.maxGrains = (int)kRegionCap[cn.tailSlot] - 4000;
+            o.maxGrains = (int)kRegionCap[cn.tailSlot] - 12000; // (the ion parcels: up to ~10k through perihelion)
         }
         else
         {
@@ -284,10 +293,11 @@ void SatelliteSim::cometsBuildTails(double t, const glm::dvec3 &oh)
             o.v0KmS = 0.3;
             o.ionPerSlot = 6;
             o.ionDtDays = 0.02;
-            o.maxGrains = (int)kRegionCap[cn.tailSlot] - 2000;
+            o.maxGrains = (int)kRegionCap[cn.tailSlot] - 3000;
         }
         o.dustFluxK *= (double)cometTailGain;
         o.ionFluxK *= (double)cometTailGain;
+        o.detail = cometTailDetail > 0.0f;
         const double step = comet::particleBuildStepS(cn.g.r);
         const double tg = std::floor(t / step + 0.5) * step;
         auto take = [&](std::shared_ptr<const comet::ParticleBuild> b) {
@@ -297,7 +307,9 @@ void SatelliteSim::cometsBuildTails(double t, const glm::dvec3 &oh)
         const bool need = !slot->cur || slot->cur->tBuild != tg;
         if (need)
         {
-            const bool far = !slot->cur || std::abs(t - slot->cur->tBuild) > 3.0 * step || cometParticlesSync;
+            const double lag = slot->cur ? std::abs(t - slot->cur->tBuild) : 1e300;
+            const bool far = !slot->cur || cometParticlesSync ||
+                             (lag > 3.0 * step && (jumped || lag > 8.0 * std::max(frameDt, 1.0)));
             if (far)
             {
                 if (slot->job.valid())
@@ -402,7 +414,7 @@ static_assert(sizeof(CometPC) <= 128, "CometPC must fit 128 bytes");
 namespace
 {
 VkPipeline makeCometPipeline(VulkanContext &ctx, VkPipelineLayout layout, VkRenderPass rp, const char *vs, const char *fs,
-                             bool depthTest)
+                             bool depthTest, bool sumAlpha = false)
 {
     VkShaderModule vert = ctx.loadShader(vs);
     VkShaderModule frag = ctx.loadShader(fs);
@@ -439,6 +451,7 @@ VkPipeline makeCometPipeline(VulkanContext &ctx, VkPipelineLayout layout, VkRend
     cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
     cba.alphaBlendOp = VK_BLEND_OP_ADD;
     cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    if (sumAlpha) cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE; // (the field target sums all four channels)
     VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     cb.attachmentCount = 1;
     cb.pAttachments = &cba;
@@ -468,34 +481,52 @@ VkPipeline makeCometPipeline(VulkanContext &ctx, VkPipelineLayout layout, VkRend
 void SatelliteSim::cometsCreateSplatTarget(VulkanContext &ctx)
 {
     const float sc = std::clamp(cometSplatScale, 0.25f, 1.0f);
-    cometSplatExtent.width = std::max(1u, (uint32_t)std::lround(ctx.swapExtent.width * sc));
-    cometSplatExtent.height = std::max(1u, (uint32_t)std::lround(ctx.swapExtent.height * sc));
-    ctx.createImage(cometSplatExtent.width, cometSplatExtent.height, VK_FORMAT_R16G16B16A16_SFLOAT,
+    cometSplatExtent.width = std::max(2u, (uint32_t)std::lround(ctx.swapExtent.width * sc));
+    cometSplatExtent.height = std::max(2u, (uint32_t)std::lround(ctx.swapExtent.height * sc));
+    cometSplatAtlas.width = cometSplatExtent.width + (cometSplatExtent.width + 1) / 2;
+    cometSplatAtlas.height = cometSplatExtent.height;
+    ctx.createImage(cometSplatAtlas.width, cometSplatAtlas.height, VK_FORMAT_R16G16B16A16_SFLOAT,
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, cometSplatImg, cometSplatMem);
+    cometFieldExtent.width = std::max(2u, cometSplatExtent.width / 4);
+    cometFieldExtent.height = std::max(2u, cometSplatExtent.height / 4);
+    cometFieldAtlas.width = cometFieldExtent.width + (cometFieldExtent.width + 1) / 2;
+    cometFieldAtlas.height = cometFieldExtent.height;
+    ctx.createImage(cometFieldAtlas.width, cometFieldAtlas.height, kFieldFormat,
+                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, cometFieldImg, cometFieldMem);
     VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vci.format = VK_FORMAT_R16G16B16A16_SFLOAT;
     vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     vci.image = cometSplatImg;
     vkCreateImageView(ctx.device, &vci, nullptr, &cometSplatView);
+    vci.format = kFieldFormat;
+    vci.image = cometFieldImg;
+    vkCreateImageView(ctx.device, &vci, nullptr, &cometFieldView);
     // its first use is a render pass from UNDEFINED; the composite samples it only after a pass ran — but the
     // descriptor needs a valid layout: transition once to SHADER_READ_ONLY
     {
         auto cmd = ctx.beginOneTimeCommands();
-        ctx.imageBarrier(cmd, cometSplatImg, 0, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
-                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                         VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        for (VkImage im : {cometSplatImg, cometFieldImg})
+            ctx.imageBarrier(cmd, im, 0, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
         ctx.endOneTimeCommands(cmd);
     }
     VkFramebufferCreateInfo fci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
     fci.renderPass = cometSplatRenderPass;
     fci.attachmentCount = 1;
     fci.pAttachments = &cometSplatView;
-    fci.width = cometSplatExtent.width;
-    fci.height = cometSplatExtent.height;
+    fci.width = cometSplatAtlas.width;
+    fci.height = cometSplatAtlas.height;
     fci.layers = 1;
     if (vkCreateFramebuffer(ctx.device, &fci, nullptr, &cometSplatFramebuffer) != VK_SUCCESS)
         throw std::runtime_error("SatelliteSim: failed to create the comet splat framebuffer");
+    fci.renderPass = cometFieldRenderPass;
+    fci.pAttachments = &cometFieldView;
+    fci.width = cometFieldAtlas.width;
+    fci.height = cometFieldAtlas.height;
+    if (vkCreateFramebuffer(ctx.device, &fci, nullptr, &cometFieldFramebuffer) != VK_SUCCESS)
+        throw std::runtime_error("SatelliteSim: failed to create the comet field framebuffer");
 }
 
 void SatelliteSim::cometsDestroySplatTarget(VkDevice device)
@@ -504,6 +535,14 @@ void SatelliteSim::cometsDestroySplatTarget(VkDevice device)
     if (cometSplatView) vkDestroyImageView(device, cometSplatView, nullptr);
     if (cometSplatImg) vkDestroyImage(device, cometSplatImg, nullptr);
     if (cometSplatMem) vkFreeMemory(device, cometSplatMem, nullptr);
+    if (cometFieldFramebuffer) vkDestroyFramebuffer(device, cometFieldFramebuffer, nullptr);
+    cometFieldFramebuffer = VK_NULL_HANDLE;
+    if (cometFieldView) vkDestroyImageView(device, cometFieldView, nullptr);
+    if (cometFieldImg) vkDestroyImage(device, cometFieldImg, nullptr);
+    if (cometFieldMem) vkFreeMemory(device, cometFieldMem, nullptr);
+    cometFieldView = VK_NULL_HANDLE;
+    cometFieldImg = VK_NULL_HANDLE;
+    cometFieldMem = VK_NULL_HANDLE;
     cometSplatFramebuffer = VK_NULL_HANDLE;
     cometSplatView = VK_NULL_HANDLE;
     cometSplatImg = VK_NULL_HANDLE;
@@ -515,7 +554,7 @@ void SatelliteSim::cometsInit(VulkanContext &ctx)
     const VkDeviceSize sz = kHeaderBytes + sizeof(comet::GpuGrain) * kGrainCap;
     cometMapped = createMirrored(ctx, sz, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, cometBuf, cometMem, false, "comets");
     std::memset(cometMapped, 0, (size_t)sz);
-    VkDescriptorSetLayoutBinding b[7] = {};
+    VkDescriptorSetLayoutBinding b[8] = {};
     const VkShaderStageFlags vf = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     b[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, vf, nullptr};
     b[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
@@ -524,11 +563,12 @@ void SatelliteSim::cometsInit(VulkanContext &ctx)
     b[4] = {4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, vf, nullptr};
     b[5] = {5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, vf, nullptr};
     b[6] = {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    b[7] = {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 7;
+    li.bindingCount = 8;
     li.pBindings = b;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &cometDescLayout);
-    VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4},
+    VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5},
                                   {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 3;
@@ -552,7 +592,7 @@ void SatelliteSim::cometsInit(VulkanContext &ctx)
         color.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         color.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         color.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        VkAttachmentReference ref{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+        const VkAttachmentReference ref{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
         VkSubpassDescription sub{};
         sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
         sub.colorAttachmentCount = 1;
@@ -579,6 +619,11 @@ void SatelliteSim::cometsInit(VulkanContext &ctx)
         rpci.pDependencies = dep;
         if (vkCreateRenderPass(ctx.device, &rpci, nullptr, &cometSplatRenderPass) != VK_SUCCESS)
             throw std::runtime_error("SatelliteSim: failed to create the comet splat render pass");
+        VkAttachmentDescription field = color; // the detail field (comet_field.frag): its own pass at half the size
+        field.format = kFieldFormat;
+        rpci.pAttachments = &field;
+        if (vkCreateRenderPass(ctx.device, &rpci, nullptr, &cometFieldRenderPass) != VK_SUCCESS)
+            throw std::runtime_error("SatelliteSim: failed to create the comet field render pass");
     }
     {
         VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
@@ -601,6 +646,8 @@ void SatelliteSim::cometsInit(VulkanContext &ctx)
     cometSplatPipeLayout = cometPipeLayout;
     cometSplatPipeline = makeCometPipeline(ctx, cometPipeLayout, cometSplatRenderPass, "shaders/comet_splat.vert.spv",
                                            "shaders/comet_splat.frag.spv", false);
+    cometFieldPipeline = makeCometPipeline(ctx, cometPipeLayout, cometFieldRenderPass, "shaders/comet_splat.vert.spv",
+                                           "shaders/comet_field.frag.spv", false, true);
     cometPipeline = makeCometPipeline(ctx, cometPipeLayout, ctx.renderPass, "shaders/comet_composite.vert.spv",
                                       "shaders/comet_composite.frag.spv", true);
 }
@@ -613,7 +660,8 @@ void SatelliteSim::cometsWriteDescriptors(VulkanContext &ctx)
     VkDescriptorImageInfo cbi{cloudMarchSampler, cloudMarchTargetBView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo sd{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo sp{cometSplatSampler, cometSplatView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet w[7] = {};
+    VkDescriptorImageInfo fv{cometSplatSampler, cometFieldView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet w[8] = {};
     w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cometDescSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &vb, nullptr};
     w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cometDescSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &ca, nullptr, nullptr};
     w[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cometDescSet, 2, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cbi, nullptr, nullptr};
@@ -621,7 +669,8 @@ void SatelliteSim::cometsWriteDescriptors(VulkanContext &ctx)
     w[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cometDescSet, 4, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &ub, nullptr};
     w[5] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cometDescSet, 5, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &db, nullptr};
     w[6] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cometDescSet, 6, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &sp, nullptr, nullptr};
-    frameSafeUpdateDescriptorSets(ctx.device, 7, w, 0, nullptr);
+    w[7] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, cometDescSet, 7, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &fv, nullptr, nullptr};
+    frameSafeUpdateDescriptorSets(ctx.device, 8, w, 0, nullptr);
 }
 
 // The frame's header and the splat pass (recordCompute's end, outside any render pass).
@@ -660,7 +709,16 @@ void SatelliteSim::cometsRecordSplat(VkCommandBuffer cmd, VulkanContext &ctx)
         F.eclZ = glm::vec4((float)col[0].z, (float)col[1].z, (float)col[2].z, 0.0f);
     }
     const float pixAng = 2.0f * tanH / (float)cometSplatExtent.height;
-    F.misc = glm::vec4(1.0e-6f, 22.0f, pixAng, (float)kMaxTails);
+    F.misc = glm::vec4(1.0e-6f, kSplatCapPx, pixAng, (float)kMaxTails);
+    // The splat atlas (comet_frame.glsl F.pad[1]): level 0 the half-res screen at (0, 0), level k >= 1 W >> k by H >> k
+    // at (W, sum of the levels above it). A particle wider than the quad cap draws into the coarsest level holding it
+    // within the cap (its fill bounded), the composite adds the levels back, bilinear: zoomed in, every particle of the
+    // tail in view still draws (until 2026-10-28 those past 4x the cap were culled: the tail vanished at a 20 deg field).
+    F.pad[0] = glm::vec4(std::clamp(cometTailDetail, 0.0f, 4.0f), 0.0f, 0.0f, (float)cometTailDebug);
+    F.pad[1] = glm::vec4((float)cometSplatExtent.width, (float)cometSplatExtent.height, (float)cometSplatAtlas.width,
+                         (float)cometSplatAtlas.height);
+    F.pad[2] = glm::vec4((float)cometFieldExtent.width, (float)cometFieldExtent.height, (float)cometFieldAtlas.width,
+                         (float)cometFieldAtlas.height);
     for (const CometNow &cn : cometNow_)
     {
         if (cn.tailSlot < 0) continue;
@@ -669,7 +727,7 @@ void SatelliteSim::cometsRecordSplat(VkCommandBuffer cmd, VulkanContext &ctx)
         if (cn.build)
         {
             F.comet[s][0] = glm::vec4(glm::vec3(cn.build->anchor - oh), (float)((t - cn.build->tBuild) / kDay));
-            F.comet[s][1] = glm::vec4(glm::vec3(cn.build->anchor), 0.0f);
+            F.comet[s][1] = glm::vec4(glm::vec3(cn.build->anchor), (float)(el.rSat * el.rSat));
         }
         // the coma: a Haser-like column (1/rho x exp(-rho / rho_s)), its total the head's light less the point's share
         if (cn.g.comaRad > 1.5 * kPsfRad && !cn.below)
@@ -682,26 +740,48 @@ void SatelliteSim::cometsRecordSplat(VkCommandBuffer cmd, VulkanContext &ctx)
             F.coma[s][1] = glm::vec4((float)std::min(Lc, 1e9), (float)kPsfRad, gasShare, 1.0f);
             F.coma[s][2] = glm::vec4(lumNormColor(glm::vec3(1.0f, 0.95f, 0.86f)), 0.0f);
         }
+        // w: the comet's days from perihelion now (the tail detail's emission times are taken from it)
+        F.coma[s][2].w = (float)((t - el.tPeri) / kDay);
     }
     ctx.mirrorDirty(cometMapped, 0, kHeaderBytes);
 
-    VkClearValue clr{};
+    VkClearValue clr[1] = {};
     VkRenderPassBeginInfo rbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
     rbi.renderPass = cometSplatRenderPass;
     rbi.framebuffer = cometSplatFramebuffer;
-    rbi.renderArea = {{0, 0}, cometSplatExtent};
+    rbi.renderArea = {{0, 0}, cometSplatAtlas};
     rbi.clearValueCount = 1;
-    rbi.pClearValues = &clr;
+    rbi.pClearValues = clr;
     vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
     if (total > 0)
     {
-        VkViewport vp{0, 0, (float)cometSplatExtent.width, (float)cometSplatExtent.height, 0, 1};
-        VkRect2D sc{{0, 0}, cometSplatExtent};
+        VkViewport vp{0, 0, (float)cometSplatAtlas.width, (float)cometSplatAtlas.height, 0, 1};
+        VkRect2D sc{{0, 0}, cometSplatAtlas};
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, cometSplatPipeline);
         vkCmdSetViewport(cmd, 0, 1, &vp);
         vkCmdSetScissor(cmd, 0, 1, &sc);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, cometPipeLayout, 0, 1, &cometDescSet, 0, nullptr);
         CometPC pc{};
+        vkCmdPushConstants(cmd, cometPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
+        for (int s = 0; s < kMaxTails; ++s)
+            if (cometGrainN[s] > 0) vkCmdDraw(cmd, 6, cometGrainN[s], 0, kRegionOff[s]);
+    }
+    vkCmdEndRenderPass(cmd);
+    // the dust's detail field (cleared even with the detail off: the composite reads it)
+    rbi.renderPass = cometFieldRenderPass;
+    rbi.framebuffer = cometFieldFramebuffer;
+    rbi.renderArea = {{0, 0}, cometFieldAtlas};
+    vkCmdBeginRenderPass(cmd, &rbi, VK_SUBPASS_CONTENTS_INLINE);
+    if (total > 0 && cometTailDetail > 0.0f)
+    {
+        VkViewport vp{0, 0, (float)cometFieldAtlas.width, (float)cometFieldAtlas.height, 0, 1};
+        VkRect2D sc{{0, 0}, cometFieldAtlas};
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, cometFieldPipeline);
+        vkCmdSetViewport(cmd, 0, 1, &vp);
+        vkCmdSetScissor(cmd, 0, 1, &sc);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, cometPipeLayout, 0, 1, &cometDescSet, 0, nullptr);
+        CometPC pc{};
+        pc.screen.w = 1.0f;
         vkCmdPushConstants(cmd, cometPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
         for (int s = 0; s < kMaxTails; ++s)
             if (cometGrainN[s] > 0) vkCmdDraw(cmd, 6, cometGrainN[s], 0, kRegionOff[s]);
@@ -744,11 +824,15 @@ void SatelliteSim::cometsDestroy(VkDevice device)
     cometTails_.clear();
     if (cometPipeline) vkDestroyPipeline(device, cometPipeline, nullptr);
     if (cometSplatPipeline) vkDestroyPipeline(device, cometSplatPipeline, nullptr);
+    if (cometFieldPipeline) vkDestroyPipeline(device, cometFieldPipeline, nullptr);
+    cometFieldPipeline = VK_NULL_HANDLE;
     if (cometPipeLayout) vkDestroyPipelineLayout(device, cometPipeLayout, nullptr);
     if (cometDescPool) vkDestroyDescriptorPool(device, cometDescPool, nullptr);
     if (cometDescLayout) vkDestroyDescriptorSetLayout(device, cometDescLayout, nullptr);
     cometsDestroySplatTarget(device);
     if (cometSplatRenderPass) vkDestroyRenderPass(device, cometSplatRenderPass, nullptr);
+    if (cometFieldRenderPass) vkDestroyRenderPass(device, cometFieldRenderPass, nullptr);
+    cometFieldRenderPass = VK_NULL_HANDLE;
     if (cometSplatSampler) vkDestroySampler(device, cometSplatSampler, nullptr);
     cometSplatRenderPass = VK_NULL_HANDLE;
     cometSplatSampler = VK_NULL_HANDLE;
@@ -969,11 +1053,13 @@ harness::Status SatelliteSim::harnessComets(harness::Active &a)
         r["last_build_ms"] = cometLastBuildMs;
         r["particles_sync"] = cometParticlesSync;
         r["splat_extent"] = {cometSplatExtent.width, cometSplatExtent.height};
+        r["splat_atlas"] = {cometSplatAtlas.width, cometSplatAtlas.height};
         r["draws_last"] = cometDrawsLast;
         r["tail_builds"] = cometTailBuilds;
         r["cpu_ms"] = cometCpuMs;
         r["enabled"] = cometsEnabled;
         r["tail_gain"] = cometTailGain;
+        r["tail_detail"] = cometTailDetail;
         r["display_gain"] = cometTailGainDisplay;
         r["moon_bright"] = cometMoonBright;
         r["atm_frac"] = cometAtmFrac;

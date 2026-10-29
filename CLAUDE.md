@@ -3330,27 +3330,55 @@ the Great Comet's elements against the sim's own Earth). Sky-event kind `comet` 
     rate at te x the slot's days / n x the size weight, faded over the youngest 0.08 day (the coma), the oldest 45-100%
     and beta 0.45-0.95 (the sampled ranges' ends drew hard lines); never at the large-grain end (the anti-tail). Spread
     (the Gaussian a grain stands for) = 0.35 v_ej age (+ the slot's width x its speed relative to the nucleus).
-  - **Ions**: parcels every 0.01 day (12 a slot, 5 streamers, to 2.5 days), picked up at the nucleus, then the comet's
+  - **Ions**: 12 parcels a pick-up (5 streamers, to 2.5 days), picked up at the nucleus, then the comet's
     velocity decays over 0.03 day while the solar wind carries them radially, s = 250 km/s (a - 0.15 (1 - e^(-a/0.15)))
     (a in days): the tail is anti-sunward aberrated by the comet's motion and reorients round perihelion; streamer
-    angles wander, kinks travel with the plasma. Total flux `ionFluxK` 0.3 x gas x Fhead0 x r_eff^-n, e-folding 1 day.
+    angles wander, kinks travel with the plasma. **Pick-ups at every whole w = t / 0.01 day + nu / `ionDnuRad` (0.02)**
+    (nu the true anomaly, unwrapped by the orbit count; Newton for each slot's time), each standing for 1 / (dw/dt) days,
+    its spread widened by the radial's swing and the wind's travel over that time (2026-10-28, issue 20261028_221813: on
+    a time grid alone the radial turned ~0.5 rad a slot at perihelion and the swing drew the streamers as separate blue
+    puffs). 3000 parcels far from perihelion, ~6000 through the swing. **Brightness by the gas rate**: pick-ups follow
+    the production Q ~ r_eff^-(n - 2) (`ionFluxK` 0.3 x gas x Fhead0), each ion fluoresces by the sunlight where it is
+    NOW (comet_splat.vert: / (r^2 + rSat^2), rSat^2 in `F.comet[2s+1].w`), e-folding 1 day. Colour CO+ deep blue
+    (0.16, 0.42, 1.95); it read pale sky blue because the composite's shoulder was on the luminance and the blue channel
+    (2.6x it) clipped at the display: the shoulder is on the brightest channel now (comet_composite.frag). Through the
+    swing the old perihelion parcels fade with their distance from the Sun, and after it the ion tail is faint: its
+    production has fallen as r^-2 since perihelion and its ions last a day, while the dust tail is the perihelion's.
   - **Builds** are a pure function of their time on a grid: `particleBuildStepS(r)` = 0.003 of the nucleus's dynamical
     time, a power of two, 4 s .. 4 h (8192 s at 1 AU). A build (~15-20 ms on half the cores) runs on a worker
-    (`std::async`); on the frame (all cores but two) after a jump of > 3 steps, or always with `comets.particles_sync`.
-    Each particle (`comet::GpuGrain`, 48 B) stores its state at tBuild relative to an anchor (the nucleus then); the GPU
+    (`std::async`); on the frame (all cores but two) only after a JUMP (sim time moved > 4x the last frame's step) or
+    once the worker's build lags > 8 frame steps, or always with `comets.particles_sync` (2026-10-28: it rebuilt on the
+    frame whenever 3 grid steps behind, i.e. every frame at 1 d/s through perihelion: 145 frames over 50 ms in 240, 0
+    now). Each particle (`comet::GpuGrain`, 64 B) stores its state at tBuild relative to an anchor (the nucleus then); the GPU
     carries it to the frame by p + v dt + a dt^2 / 2 (a from its own heliocentric position x (1 - beta)): any warp
     shows the same tail. At 1 d/s: ~6 builds a second, a frame build (~20 ms) only near perihelion / after jumps.
   - **Drawn** in two passes: `cometsRecordSplat` (recordCompute's end, its own render pass) adds every particle as a
-    Gaussian quad into a HALF-RES RGBA16F target (`comet_splat.vert/.frag`; header `GpuCometFrame` 512 B at the buffer's
-    head, `include/comet_frame.glsl`; regions of 120k / 24k / 24k particles for the three tail slots): light = weight /
+    Gaussian quad into a HALF-RES RGBA16F ATLAS (`comet_splat.vert/.frag`; header `GpuCometFrame` 512 B at the buffer's
+    head, `include/comet_frame.glsl`; regions of 132k / 24k / 24k particles for the three tail slots): light = weight /
     Delta^2, x the Halley-Marcus phase at the grain's own scattering angle / r^2 for dust (warm white; ions blue, no
-    phase); size = sqrt((spread / Delta)^2 + (0.7 px)^2), quads capped at 22 px radius — a wider particle keeps its TRUE
-    surface brightness and is faded out (squeezed into the cap, near grains at the closest approach were bright
-    out-of-focus discs); culled under lum 1e-6. `cometsRecordDraw` composites (`comet_composite.vert/.frag`, a full-screen
+    phase); size = sqrt((spread / Delta)^2 + (0.7 px)^2). **The atlas has 6 levels** (level 0 the half-res screen, level
+    k W >> k by H >> k to its right, `F.pad[1]`): a particle wider than the 22-px quad cap draws into the coarsest level
+    holding it within the cap at its TRUE surface brightness (fill per particle bounded), past level 5 faded out as before;
+    the composite adds the levels back (bilinear). Until 2026-10-28 every particle past 4x the cap was culled: zoomed to a
+    20-deg field at the closest approach (a grain's spread is degrees there) the tail vanished. Culled under lum 1e-6. `cometsRecordDraw` composites (`comet_composite.vert/.frag`, a full-screen
     triangle at kDepthFar) the target + an analytic Haser coma per tail (Lc e^(-rho/rho_s) / sqrt(rho^2 + rho0^2),
     rho_s = the visible coma / 2.5, rho0 the point's 1 arcmin: round on the sky, no edge; white inside, C2 green outward
     by the gas share), then per pixel the extinction, `cometSkyMag` / `darkSkyVis`, exposure, cloud occlusion and the
-    0.9 x / (0.9 + x) shoulder on the luminance. The splat target is recreated in onResize.
+    0.9 x / (0.9 + x) shoulder on the brightest channel (hue kept). The splat target is recreated in onResize.
+  - **Zoom detail** (2026-10-28, issue 20261028_221703; `comets.tail_detail` 1, 0 = off, no UI; `comets.tail_debug` 1 / 2
+    the field's te / its weight and spread): each dust grain carries its local (emission time te, ln beta) field
+    (GpuGrain `d`: dP/dte and dP/dlnbeta as half floats, the field's te at the grain with its own ejection offset
+    decomposed out, from 10 zero-ejection reference grains per slot at the slot's centre and dTe later: 20 extra
+    propagations a slot, build ~15-20 ms as before). A FIELD PASS (same vertex shader, push constant `screen.w` 1,
+    `comet_field.frag`) splats (L te, L lnb, L, L te^2) into an RGBA32F atlas at a quarter of the splat resolution
+    (`F.pad[2]`; the field is linear per Gaussian, and 32-bit blending at full splat size cost ~1 ms). The composite
+    divides it back and multiplies the dust light by synchronic bands in te (periods 1.7, 0.42, 0.105, 0.026, 0.0065
+    days: time-variable emission), oblique striae in te + 0.7 lnb (0.9, 0.22 days, dust older than 2-8 days:
+    fragmentation) and filaments in lnb (0.4, 0.1), mean 1; an octave shows once its bands are 4-10 screen px apart and
+    the field's spread there (sqrt of the te variance) is under 0.12-0.3 of its period, so zooming in resolves finer ones
+    and overlapping sheets show none. Young dust (< 2-6 days) also spreads over its size stratum along the syndyne (the
+    swing's speckle). Open: closed te contours (rings) where the field has an extremum; the field is undefined where
+    synchrones and syndynes run together on screen (faded by their angle).
   - Framing for the Watch (`tailSpanDeg`, `tailAimEnu`): from each build, the angle from the head holding 92% of the dust
     light and the light-weighted direction of the 55-100% band.
 - **Selection**: `pickCometAt` (before planets in both click paths), `selectedCometIndex` (dropped whenever a satellite
@@ -3363,14 +3391,17 @@ the Great Comet's elements against the sim's own Earth). Sky-event kind `comet` 
   the head is >= 8 deg up (less near the Sun) and the Sun <= -12 deg, clearer sky first, nearest the player, framing the
   head and the visible tail's far end (`tailAimEnu`, lum > 0.004) at 1x; `skyEventsTick` keeps the aim (sky bodies
   `kBodyComet0` / `kBodyCometTail0`).
-- Measured (RTX 3070 Ti, 1600x900): the splat pass ~0.5 ms at the closest approach from the ground at a 120-deg field
+- Measured (2026-10-28, RTX 3070 Ti, 1920x1009, tails on - off, interleaved x3, splat + field + composite): closest approach
+  (issue 20261028_221703's view) 0.92 -> 0.9-1.3 ms, zoomed to 20 deg 0.6 (the tail was culled) -> 0.5-1.1, the swing
+  (Feb 19, 3140 km) 0.7-1.4 -> 0.4-1.5 (run noise +-0.3); particle buffer 8.1 -> 11.5 MB (64 B x 180k), splat atlas
+  3.9 -> 5.8 MB + field atlas 1.5 MB; 1 d/s through perihelion: 145 -> 0 frames over 50 ms in 240. Earlier: the splat pass ~0.5 ms at the closest approach from the ground at a 120-deg field
   (the report's view; 0.97 ms with a 40-px cap), 0.2 ms at +20 d; the composite < 0.1 ms; CPU ~0.02 ms a frame between
   builds. Videos and captures in `harness_runs/comet/` (untracked): r8/videos (inertial Feb 1 - Apr 1 at 1 d/s, the
   perihelion swing at 28 deg, the ground at the closest approach at 5 min/s).
 - Settings `comets.enabled` / `minor` / `tails` / `tail_gain` (x the tails' physical brightness) / `display_gain` /
-  `particles_sync` (no UI).
-- Open: the tail is not in reflections (sea, mirrors) nor env probes; no ion-tail disconnection events; no striae
-  (fragmentation); the coma's size is a fixed 2e5 km x r^-0.5; Potato draws no head; minor comets have no return
+  `particles_sync` / `tail_detail` / `tail_debug` (no UI).
+- Open: the tail is not in reflections (sea, mirrors) nor env probes; no ion-tail disconnection events; the striae are a
+  pattern in the (te, beta) field, not flown fragments; the coma's size is a fixed 2e5 km x r^-0.5; Potato draws no head; minor comets have no return
   apparitions; no Settings UI rows yet; at the closest approach the Earth's own passage through the dust is not drawn
   (grains within ~0.001 AU are faded out by the splat cap).
 

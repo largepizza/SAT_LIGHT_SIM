@@ -3683,6 +3683,8 @@ private:
     bool cometTailsEnabled = true;           // comets.tails
     float cometTailGain = 1.0f;              // comets.tail_gain: x the tails' physical brightness
     float cometTailGainDisplay = 1.0f;       // comets.display_gain: x what the tail pass shows (exposure-like)
+    int cometTailDebug = 0;                  // comets.tail_debug: 1 the detail field's emission time, 2 its weight (no UI)
+    float cometTailDetail = 1.0f;            // comets.tail_detail: the dust tail's zoom detail (bands, striae; 0 = off)
     std::vector<comet::Elements> comets_;    // the catalog near now
     double cometsCatalogT = -1e300;
     std::vector<CometNow> cometNow_;         // this frame
@@ -3695,6 +3697,7 @@ private:
     uint64_t cometUploadBytes = 0;
     double cometLastBuildMs = 0.0;
     uint64_t cometSyncBuilds = 0;
+    double cometTailPrevT = -1e300, cometTailPrevDt = 0.0; // the last frame's sim time and step (a jump vs warp)
     bool cometParticlesSync = false;         // comets.particles_sync: build on the frame (harness videos: exact)
     float cometSplatScale = 0.5f;            // comets.splat_scale: the splat target's size x the swapchain's
     // the splat pass: a half-res RGBA16F target the particles are added into, composited by comet_composite.frag
@@ -3704,7 +3707,15 @@ private:
     VkSampler cometSplatSampler = VK_NULL_HANDLE;
     VkRenderPass cometSplatRenderPass = VK_NULL_HANDLE;
     VkFramebuffer cometSplatFramebuffer = VK_NULL_HANDLE;
-    VkExtent2D cometSplatExtent{0, 0};
+    VkExtent2D cometSplatExtent{0, 0};       // level 0 of the splat atlas (the half-res screen)
+    VkExtent2D cometSplatAtlas{0, 0};        // the atlas: level 0 + levels 1-5 (each half the last) to its right
+    VkImage cometFieldImg = VK_NULL_HANDLE;  // the dust's (emission time, ln beta) field, light-weighted (RGBA32F)
+    VkDeviceMemory cometFieldMem = VK_NULL_HANDLE;
+    VkImageView cometFieldView = VK_NULL_HANDLE;
+    VkExtent2D cometFieldExtent{0, 0}, cometFieldAtlas{0, 0}; // the field atlas: half the splat atlas
+    VkRenderPass cometFieldRenderPass = VK_NULL_HANDLE;
+    VkFramebuffer cometFieldFramebuffer = VK_NULL_HANDLE;
+    VkPipeline cometFieldPipeline = VK_NULL_HANDLE;
     VkPipelineLayout cometSplatPipeLayout = VK_NULL_HANDLE;
     VkPipeline cometSplatPipeline = VK_NULL_HANDLE;
     bool cometSplatDrawn = false;            // this frame's splat pass ran (the composite reads it)
