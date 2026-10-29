@@ -9428,6 +9428,11 @@ depth pass, so its variants interleave like the sky's and the clouds'.
 - **Aurora culls** (cloud_march.comp): no march for a ray sunlit at every point (exact: the emission is x the sample's
   night, bounded between the 5 bound samples by half their arc), nor behind opaque cloud seen from below (x T^3). Storm at
   dusk -0.4 ms.
+- **Moving costs the clipmap** (`cdc_motion_guard`): on the user's own storm trail (issue 20261027_183909, 12 km,
+  `report load ... trail=on; path play fps=60`) GPU 35.6 ms with the guard, 29.7 without it, but without it the frames
+  past ~5 s lose cloud masses (11% of pixels > 16 levels from the settled reference, content lost). Clearing every stamp at
+  each new epoch (so the 3-bit epoch cannot wrap onto old cells) changed nothing: the loss is the bake's footprint seen
+  from another eye position, as the guard's comment says. Open: a bake that stays conservative while the eye moves.
 - **Dead ends:** skipping the sky pass's terrain march where the four cloud texels are opaque (-0.1..-0.3 ms, changes the
   depth the sky TAA reprojects with); the history copies (~0.1 ms); FIFO quantisation as the cause of "30 / 20 / 15 FPS"
   (the reports' frame times are not quantised: 27 ms median at a 28 ms GPU).
