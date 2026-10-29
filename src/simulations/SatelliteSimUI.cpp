@@ -8998,6 +8998,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         meteorsEnabled = mj.value("enabled", meteorsEnabled);
         meteorRateGain = settingClamp(mj.value("rate", meteorRateGain), 0.0f, 100.0f);
         meteorFireballGain = settingClamp(mj.value("fireball_rate", meteorFireballGain), 0.0f, 100.0f);
+        meteorTrainDuration = settingClamp(mj.value("train_duration", meteorTrainDuration), 0.0f, 10.0f);
     }
 
     if (j.contains("comets") && j["comets"].is_object())
@@ -10053,7 +10054,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
     j["comets"] = {{"enabled", cometsEnabled}, {"minor", cometsMinor}, {"tails", cometTailsEnabled}, {"tail_gain", cometTailGain},
                    {"display_gain", cometTailGainDisplay}};
     j["moon_bases"] = {{"enabled", moonBaseGlints}, {"tilt_jitter_scale", moonBaseJitter}, {"event_mag_limit", moonBaseMagLimit}};
-    j["meteors"] = {{"enabled", meteorsEnabled}, {"rate", meteorRateGain}, {"fireball_rate", meteorFireballGain}};
+    j["meteors"] = {{"enabled", meteorsEnabled}, {"rate", meteorRateGain}, {"fireball_rate", meteorFireballGain},
+                       {"train_duration", meteorTrainDuration}};
     j["stars"] = {{"sky_limit", starSkyLimit}, {"limit_boost", starLimitBoost}, {"dark_sky_extra", starDarkExtraMag}, {"supernova", supernovaEnabled},
                   {"betelgeuse_variable", betelgeuseVariable}};
     // Launches (SatelliteSimLaunches.cpp).

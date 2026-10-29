@@ -198,9 +198,10 @@ int generate(const GenParams &p, const std::function<void(const Meteor &)> &cb)
     int draws = 0;
     const double eyeR = glm::length(p.eyeEcef);
     const glm::dvec3 eyeU = p.eyeEcef / std::max(eyeR, 1.0);
-    const double hEye = std::max(eyeR - kR, 0.0);
-    // The ground arc to the farthest meteor the eye can see (a meteor 120 km up on the eye's horizon).
-    const double reachArc = std::acos(kR / (kR + hEye)) + std::acos(kR / (kR + 120000.0));
+    const double hEye = std::max(eyeR - kR, 0.0) + std::max(p.eyeMarginM, 0.0);
+    // The ground arc to the farthest meteor the eye can see (a meteor 120 km up on the eye's horizon), from any eye
+    // within eyeMarginM of eyeEcef (its height + the margin; the margin again sideways).
+    const double reachArc = std::acos(kR / (kR + hEye)) + std::acos(kR / (kR + 120000.0)) + std::max(p.eyeMarginM, 0.0) / kR;
     const double eyeLat = deg(std::asin(std::clamp(eyeU.z, -1.0, 1.0))), eyeLon = deg(std::atan2(eyeU.y, eyeU.x));
     for (int s = 0; s <= kSporadic; ++s)
     {
@@ -211,7 +212,7 @@ int generate(const GenParams &p, const std::function<void(const Meteor &)> &cb)
             if (p.onlyBand >= 0 && b != p.onlyBand) continue;
             const double Mlo = kBandEdge[b], Mhi = kBandEdge[b + 1], T = kBandBinS[b];
             // Too faint to be seen past this distance (5 mag per decade of distance from 100 km, +1 mag margin).
-            const double dMax = std::min(reachArc * kR, 1.0e5 * std::pow(10.0, (p.cullMag + 1.0 - Mlo) / 5.0));
+            const double dMax = std::min(reachArc * kR, 1.0e5 * std::pow(10.0, (p.cullMag + 1.0 - Mlo) / 5.0) + std::max(p.eyeMarginM, 0.0));
             if (dMax < 50000.0) continue;
             const double arcMax = dMax / kR;
             const double cosReach = std::cos(std::min(arcMax + rad(1.0), kPi));

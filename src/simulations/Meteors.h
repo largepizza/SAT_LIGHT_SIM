@@ -80,6 +80,10 @@ struct GenParams
     double rateGain = 1.0, fireballGain = 1.0;
     int onlyShower = -1;            // >= 0: that shower alone
     int onlyBand = -1;              // >= 0: that magnitude band alone
+    // The cull holds for any eye within this distance of eyeEcef (m): the reach is taken from eyeEcef's height + it and
+    // widened by it, so a cache generated at one eye holds every meteor any eye within it can see (2026-10-28: the
+    // existence of a meteor a cached bin holds must not depend on where the eye stood when the bin was made).
+    double eyeMarginM = 0.0;
 };
 // Calls cb for every meteor (deterministic order). Returns the number of Poisson draws made (the cost).
 int generate(const GenParams &p, const std::function<void(const Meteor &)> &cb);

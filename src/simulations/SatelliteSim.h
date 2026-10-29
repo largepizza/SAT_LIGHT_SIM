@@ -3534,6 +3534,7 @@ private:
     bool meteorsEnabled = true;           // meteors.enabled
     float meteorRateGain = 1.0f;          // meteors.rate (x the showers' flux)
     float meteorFireballGain = 1.0f;      // meteors.fireball_rate (x the rate of fireballs / bolides, M <= -4)
+    float meteorTrainDuration = 0.3f;     // meteors.train_duration (x the persistent trains' decay time; 1 = the old)
     std::vector<meteors::Meteor> meteorForced_; // harness `meteors force`
     // The generated meteors per (shower, band, time bin), kept while the eye stays within 30 km of where they were
     // generated: each frame generates only the bins that have just begun (a bin is 2 s for the faint bands).
@@ -3553,6 +3554,8 @@ private:
     double meteorCpuMs = 0.0;             // the fill's time a frame (eased)
     int meteorDraws_ = 0, meteorGenerated_ = 0, meteorHeads_ = 0, meteorGauss_ = 0, meteorDustAt_ = 0;
     bool meteorWarpOff_ = false;          // this frame: not drawn (time warp)
+    int meteorBandMax_ = 5;               // this frame: the faintest band drawn (1 past 2x: fireballs and bolides only)
+    static constexpr double kMeteorCacheRadiusM = 30000.0; // the bin cache serves every eye within this of its eye
     void meteorsFill(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull); // kesslerFillDust's finish
     float meteorSkySuppress(const glm::vec3 &enu) const; // the stars' sky dimming (night, dome, Moon) in that direction
     harness::Status harnessMeteors(harness::Active &a);

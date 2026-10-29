@@ -3171,8 +3171,16 @@ SatelliteSimSkyEvents.cpp). Settings `meteors.enabled` (on), `meteors.rate` (1, 
   along the 78-108 km part of the path already passed, drifting with a hashed wind (25-75 m/s, turning 8-22 deg per km
   of height), widening 12 m/s, green for its first seconds then dim orange, ~7 mag under the meteor + a +2-mag wake over
   its first second. **Budget**: at most 96 meteor Gaussians and never past kMaxDustClouds - 200 (the launches,
-  tornadoes, haboobs, wildfire smoke come after), the brightest meteors first; at most 600 heads. **Not drawn above 2x
-  of time warp** (`meteorWarpOff_`): at 10x a 0.5 s meteor flashes for 3 frames and ten times as often.
+  tornadoes, haboobs, wildfire smoke come after), the brightest meteors first; at most 600 heads. **Time warp**: past 2x
+  only bands 0-1 (fireballs and bolides, M <= -4) are drawn, up to 1 min/s (`meteorBandMax_`); past that none
+  (`meteorWarpOff_`): at 10x a 0.5 s faint meteor flashes for 3 frames and ten times as often, but a bolide replayed at 10x
+  must still show (2026-10-28, issue 20261028_191529 "Bollide Trails"). **Train duration** `meteors.train_duration` (0.3,
+  x the decay time, no UI; 1 = the old): drawn to 4 decay times (was 5 at x1: a -12 Taurid's train ~270 s; now ~65 s).
+  **Determinism vs the eye**: the bin cache (`meteorBinCache_`) serves every eye within `kMeteorCacheRadiusM` (30 km)
+  of where it was made, so generation takes `GenParams::eyeMarginM` = that radius (reach from the eye's height + it,
+  widened by it): which meteors a cached bin holds no longer depends on where the eye stood (climbing 2 -> 11 km under
+  one cache shortened the reach by ~200 km). The report's streak was the -12.2 N Taurid's train 36 s after it; it
+  reproduced after rewinds, `time set`, eye moves and 10x replays (`harness_runs/*a38_ab3`).
 - **The Watch** (`meteorWatchShower`, the sky event's and harness `meteors go`): hourly times across the peak +-14 h
   (or the next 24 h when the window is under way), a 3 x 4 deg grid of sites with the Sun <= -15 deg and the radiant >=
   25 deg up, scored sin(radiant elevation) x the profile x (1 - 0.75 Moon up x lit) - the night map's lights; then at

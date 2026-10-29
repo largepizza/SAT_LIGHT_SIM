@@ -95,22 +95,32 @@ void SatelliteSim::meteorsFill(GpuDustCloud *out, uint32_t &n, double toSky, dou
     meteorWarpOff_ = false;
     if (!meteorsEnabled || !kFireMapped) return;
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    // The persistent trains' decay time x "train_duration" (meteors.train_duration, 0.3 by default since 2026-10-28:
+    // a -10 bolide's train was drawn for ~200 s at full scale) and their cut: kTrainCut decay times after passing.
+    const double tlK = (double)std::max(meteorTrainDuration, 0.0f);
+    constexpr double kTrainCut = 4.0;
     // Drop forced meteors that are over.
     meteorForced_.erase(std::remove_if(meteorForced_.begin(), meteorForced_.end(),
                                        [&](const meteors::Meteor &m) {
-                                           return t - m.tStart > m.dur + 6.0 * m.trainLife + 2.0 || t < m.tStart - 600.0;
+                                           return t - m.tStart > m.dur + 6.0 * m.trainLife * tlK + 2.0 || t < m.tStart - 600.0;
                                        }),
                         meteorForced_.end());
-    if (timeScaleNow(timePaused, timeScaleIdx) > 2.0f)
+    // Time warp: past 2x the faint bands are not drawn (at 10x a 0.5-s meteor flashes for 3 frames and ten times as
+    // often), but fireballs and bolides (bands 0-1, M <= -4: a few an hour) are, up to 1 min/s, so a bolide and its
+    // train show whatever speed the sky is played at (2026-10-28, issue 20261028_191529: replayed at 10x it never
+    // appeared). Which meteors exist never depends on the warp.
+    const float warpNow = timeScaleNow(timePaused, timeScaleIdx);
+    if (warpNow > 60.0f)
     {
         meteorWarpOff_ = true;
         return;
     }
+    meteorBandMax_ = warpNow > 2.0f ? 1 : meteors::kBands - 1;
     const glm::dvec3 eye(obsECI);
     const glm::dvec3 eyeEcef = eciToEcef(eye, t);
     std::vector<meteors::Meteor> ms;
     // The bins alive now, each generated once (meteorBinCache_) while the eye stays within 30 km and the gains hold.
-    if (glm::length(eyeEcef - meteorCacheEye_) > 30000.0 || meteorCacheGain_[0] != meteorRateGain || meteorCacheGain_[1] != meteorFireballGain)
+    if (glm::length(eyeEcef - meteorCacheEye_) > kMeteorCacheRadiusM || meteorCacheGain_[0] != meteorRateGain || meteorCacheGain_[1] != meteorFireballGain)
     {
         meteorBinCache_.clear();
         meteorCacheEye_ = eyeEcef;
@@ -130,7 +140,7 @@ void SatelliteSim::meteorsFill(GpuDustCloud *out, uint32_t &n, double toSky, dou
     for (int sIdx = 0; sIdx < meteors::showerCount(); ++sIdx)
     {
         if (sIdx != meteors::kSporadic && meteors::zhrAt(sIdx, meteors::solarLongitudeDeg(sunDirEciAt(t))) <= 0.0) continue;
-        for (int b = 0; b < meteors::kBands; ++b)
+        for (int b = 0; b <= meteorBandMax_; ++b)
         {
             const double T = meteors::kBandBinS[b];
             const int64_t k0 = (int64_t)std::floor((t - meteors::kBandMaxAgeS[b]) / T), k1 = (int64_t)std::floor(t / T);
@@ -145,6 +155,7 @@ void SatelliteSim::meteorsFill(GpuDustCloud *out, uint32_t &n, double toSky, dou
                     gp.tA = (double)k * T;
                     gp.tB = (double)(k + 1) * T;
                     gp.eyeEcef = meteorCacheEye_;
+                    gp.eyeMarginM = kMeteorCacheRadiusM; // valid for every eye the cache serves
                     gp.cullMag = 10.0; // (fixed: the cache must not depend on the exposure; pointEffLimitMag ~8-9)
                     gp.rateGain = meteorRateGain;
                     gp.fireballGain = meteorFireballGain;
@@ -156,7 +167,7 @@ void SatelliteSim::meteorsFill(GpuDustCloud *out, uint32_t &n, double toSky, dou
                 for (const meteors::Meteor &m : it->second)
                 {
                     const double age = t - m.tStart;
-                    if (age >= 0.0 && age <= m.dur + (m.trainLife > 0.0f ? 5.0 * m.trainLife : 0.0)) ms.push_back(m);
+                    if (age >= 0.0 && age <= m.dur + (m.trainLife > 0.0f ? kTrainCut * m.trainLife * tlK : 0.0)) ms.push_back(m);
                 }
             }
         }
@@ -246,7 +257,7 @@ void SatelliteSim::meteorsFill(GpuDustCloud *out, uint32_t &n, double toSky, dou
         Seen s;
         double fl = 0.0;
         if (see(ecefToEci(meteors::pathAt(m, x), t), (double)m.M - 2.5 * std::log10(std::max(I, 1e-6)), s)) fl = I > 0.0 ? s.flare : 0.0;
-        if (m.trainLife > 0.0f) fl += 1e-3 + 0.01 * std::pow(10.0, -0.4 * (double)m.M); // a train ranks by its meteor
+        if (m.trainLife > 0.0f && tlK > 0.0) fl += 1e-3 + 0.01 * std::pow(10.0, -0.4 * (double)m.M); // a train ranks by its meteor
         order.push_back({i, fl});
     }
     std::sort(order.begin(), order.end(), [](const Cand &a, const Cand &b) { return a.flare > b.flare; });
@@ -318,7 +329,7 @@ void SatelliteSim::meteorsFill(GpuDustCloud *out, uint32_t &n, double toSky, dou
             }
         }
         // The persistent train: what the meteor passed between 78 and 108 km, glowing and drifting with the wind.
-        if (m.trainLife > 0.0f)
+        if (m.trainLife > 0.0f && tlK > 0.0)
         {
             constexpr int kSeg = 10;
             const double hLo = 78000.0, hHi = 108000.0;
@@ -336,14 +347,14 @@ void SatelliteSim::meteorsFill(GpuDustCloud *out, uint32_t &n, double toSky, dou
                 return 0.5 * (lo + hi);
             };
             const double xa = xAtH(hHi), xb = xAtH(hLo), xNow = std::min(age / m.dur, 1.0);
-            const double tl = (double)m.trainLife;
+            const double tl = (double)m.trainLife * tlK;
             for (int q = 0; q < kSeg && xb > xa + 1e-4; ++q)
             {
                 const double x0 = xa + (xb - xa) * q / kSeg, x1 = xa + (xb - xa) * (q + 1) / kSeg;
                 if (x1 > xNow) break;
                 const double xm = 0.5 * (x0 + x1);
                 const double ag = age - xm * m.dur;
-                if (ag > 5.0 * tl) continue;
+                if (ag > kTrainCut * tl) continue;
                 auto drift = [&](double x) {
                     const glm::dvec3 P = meteors::pathAt(m, x);
                     const glm::dvec3 up = glm::normalize(P);
@@ -521,6 +532,8 @@ harness::Status SatelliteSim::harnessMeteors(harness::Active &a)
         r["sky_suppress_zenith_mag"] = -2.5 * std::log10(std::max(meteorSkySuppress(glm::vec3(0, 0, 1)), 1e-12f));
         r["point_limit_mag"] = pointEffLimitMag();
         r["warp_off"] = meteorWarpOff_;
+        r["band_max"] = meteorBandMax_;
+        r["train_duration"] = meteorTrainDuration;
         r["poisson_draws"] = meteorDraws_;
         r["generated_alive"] = meteorGenerated_;
         r["heads"] = meteorHeads_;
