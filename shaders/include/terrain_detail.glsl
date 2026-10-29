@@ -344,8 +344,16 @@ float tdSurgeAt(sampler2D elevTex, vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, vec2
     return S;
 }
 #endif
+// (2026-10-29, perfhigh) Over water, how far (m, horizontally) the last tdDemAt's point is from any land: the water
+// map's shore distance less a margin for its bilinear error on ~5 km texels and the coves (tdShoreOffset); -1 = not
+// known (land, no map, a coast patch, a storm surge, a launch pad near). Every point within that distance is this water
+// body's flat surface, so the march may step that far (terrainMarchDetailed). Over the open sea a grazing ray from
+// near the surface took ~200 relaxation steps of a few % of t to reach the horizon.
+const float kTdWaterClearMarginM = 4500.0;
+float gTdWaterClearM = -1.0;
 void tdDemAt(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ,
              out float h0, out float hMip3) {
+    gTdWaterClearM = -1.0;
     ivec2 sz = textureSize(elevTex, 0);
     vec2  uv;
     if (tdExactNear(q)) {
@@ -404,6 +412,8 @@ void tdDemAt(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY,
         // The coves follow the moved shore.
         vec2 wmS = vec2(wm.r + sDs * (0.5 / kShoreSdfMaxM), wm.g);
         h0 = waterAdjustHeightSurge(h0, wm, tdShoreOffset(q, enuX, enuY, enuZ, wmS) * (1.0 - 0.7 * cK), sS, sDs, water);
+        if (water && wm.g >= 14.5 / 255.0 && cK <= 0.0 && sS <= 0.0 && sDs <= 0.0)
+            gTdWaterClearM = (wm.r - 0.5) * 2.0 * kShoreSdfMaxM - kTdWaterClearMarginM;
 #else
         h0 = waterAdjustHeight(h0, wm, tdShoreOffset(q, enuX, enuY, enuZ, wm) * (1.0 - 0.7 * cK), water);
 #endif
@@ -425,6 +435,18 @@ void tdDemAt(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY,
         } else if (gTdPadK > 0.0) {
             h0 = mix(h0, pH, gTdPadK);
         }
+        // A pad's apron is land on the map's water: the clearance stops short of every pad's graded disc.
+        if (gTdWaterClearM > 0.0) {
+            int n = int(cloud.padInfo.w + 0.5);
+            [[dont_unroll]] for (int i = 0; i < n; ++i)
+                gTdWaterClearM = min(gTdWaterClearM, length(q - cloud.padQ[i].xyz) - 2.0 * cloud.padAux[i].z - 1000.0);
+        }
+    }
+    // ... and of every coast patch (its own shore: barrier islands the map draws as sea).
+    if (gTdWaterClearM > 0.0 && cloud.coastInfo.x > 0.5) {
+        int n = int(cloud.coastInfo.x + 0.5);
+        [[dont_unroll]] for (int i = 0; i < n; ++i)
+            gTdWaterClearM = min(gTdWaterClearM, length(q - cloud.coastC[i].xyz) - 1.5 * cloud.coastC[i].w - 1000.0);
     }
 #endif
 }
@@ -442,7 +464,11 @@ float tdRoughness(float h0, float hMip3) {
 // The octave-0 amplitude at a point (0 on water, fading in over the first 80 m of land).
 float tdAmp0(float h0, float hMip3) {
     if (hMip3 <= kTdWaterMark) return 0.0;   // water: a flat surface at its level (tdDemAt)
-    return cloud.terrainDetailAmpM * cloud.terrainDetailStrength * tdRoughness(h0, hMip3) * smoothstep(0.0, 80.0, h0);
+    // (2026-10-29, perfhigh) Under ~4 cm the octaves are skipped (0 below 2 cm, eased back in by 4 cm): on low flat land
+    // (deltas, coastal plains: h0 a few metres from the DEM's bilinear filter) every octave and the erosion ran at
+    // centimetre amplitude for nothing — Shanghai from 3 km, sky pass 13.2 -> 9.6 ms, captures within the noise floor.
+    float a = cloud.terrainDetailAmpM * cloud.terrainDetailStrength * tdRoughness(h0, hMip3) * smoothstep(0.0, 80.0, h0);
+    return a * smoothstep(0.02, 0.04, a);
 }
 
 // Upper bound on what octaves k.. can still add, given octave k's amplitude.
@@ -916,9 +942,11 @@ float terrainMarchDetailed(sampler2D elevTex, sampler2D specTex, float hEye, vec
         float gap;
         float amp0 = detail ? tdAmp0(h0, hMip3) * TD_PAD_LAST : 0.0;
         float allBound = detail ? tdTailBound(amp0) + tdErosionBound(amp0) : 0.0;
+        float stepFloor = 0.0;   // over open water: the distance to any land (gTdWaterClearM), at most 12 km a step
         if (rayH > h0 + allBound) {
             gap = rayH - h0 - allBound;
             armed = true;
+            if (hMip3 <= kTdWaterMark) stepFloor = min(gTdWaterClearM, 12000.0);
         } else if (!detail) {
             gap = rayH - h0;
             if (gap < 0.0) {
@@ -981,7 +1009,7 @@ float terrainMarchDetailed(sampler2D elevTex, sampler2D specTex, float hEye, vec
         }
         prevGapValid = false;
         tPrev = t;
-        t += clamp(0.6 * gap, minStep, maxStep);
+        t += max(clamp(0.6 * gap, minStep, maxStep), stepFloor);
     }
     // Out of budget before tExit: a long grazing ray (the far side of a valley, a horizon seen from
     // a summit). Finish it in at most 48 steps sized to reach tExit, on the DEM plus the coarse

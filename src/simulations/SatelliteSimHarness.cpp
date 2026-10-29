@@ -5705,6 +5705,27 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             if (!werr.empty())
                 fail("shaders reload: weather: " + werr);
         }
+        // (2026-10-29, perfhigh) The scene depth pass (depth=<spv>; depth= with an empty value: the shipped one), so its
+        // variants interleave in one app like the cloud and sky passes'.
+        if (c.has("depth"))
+        {
+            vkDeviceWaitIdle(ctx_->device);
+            const std::string p = c.str("depth").empty() ? std::string("shaders/scene_depth.comp.spv") : c.str("depth");
+            VkShaderModule mod = ctx_->loadShader(p);
+            VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+            ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+            ci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+            ci.stage.module = mod;
+            ci.stage.pName = "main";
+            ci.layout = sceneDepthPipeLayout;
+            VkPipeline np = VK_NULL_HANDLE;
+            const VkResult vr = vkCreateComputePipelines(ctx_->device, ctx_->pipelineCache, 1, &ci, nullptr, &np);
+            vkDestroyShaderModule(ctx_->device, mod, nullptr);
+            if (vr != VK_SUCCESS)
+                fail("shaders reload: depth: pipeline creation failed");
+            vkDestroyPipeline(ctx_->device, sceneDepthPipeline, nullptr);
+            sceneDepthPipeline = np;
+        }
         // The sky pass (sky= / sky_taa=), and back to the shipped SPVs on a bare reload after an override.
         if (!c.str("sky").empty() || !c.str("sky_taa").empty() || !skyFragSpvOverride.empty() || !skyTaaFragSpvOverride.empty())
         {
