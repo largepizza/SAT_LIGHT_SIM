@@ -8086,7 +8086,13 @@ air did to it: "a half faded fuzzball" low down.
   height, zenith AOD 0.03 x `atmos_mie_gain`, + the haze near clouds) — not the fog / dust layers: the composite's
   transmittance toward the Sun was 1.0 in the report's view and fog, dust and haze off moved the disc 0-7 levels.
 - **Glare and corona** (veiling light) about the Sun AS SEEN, x the visible share, x 1 - exp(-60 x the centre's
-  transmittance luminance) (was 10, with the 300 disc), drawn over the far sea too.
+  transmittance luminance) (was 10, with the 300 disc). Added over EVERYTHING in front (clouds, the Earth, terrain,
+  the sea; 2026-10-28, issue 20261028_190911 "Sun glow below clouds from orbit": from 1625 km each far-layer cloud
+  multiplied the halo by its own transmittance, black holes in the glow): they follow only the light reaching the eye
+  from the Sun — the cloud composite (half-res + far layer) and the scene depth at the Sun's own screen place (5 taps
+  over its drawn disc; a surface counts only if nearer than the sea-level sphere, so the horizon is not counted twice
+  with the visible share), the eye's `sunCloudT`, the visible share. Taps only within 34 deg of the Sun (cost within
+  noise). A ridge or deck hiding the Sun removes the halo everywhere; the eclipse corona keeps the per-pixel cloud.
 - **Stars and planets** (`updateStars`, `updatePlanets`, `refractEnu`): placed at the primary image's apparent elevation
   (a star just under the true horizon shows; below the apparent horizon it does not), and their record's `meshPx` carries
   1 + floor(aoa urad) + 0.99 sigma_I: star_point.vert jitters the image by the aoa (sines, per star) and twinkles by
