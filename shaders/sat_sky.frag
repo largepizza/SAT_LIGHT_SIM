@@ -4908,6 +4908,7 @@ void main() {
     // separately block the Milky Way via their own existing visibility terms, so this only
     // needs to be the pure geometric hit, not discFade.
     bool moonDiscHit = false;
+    float moonCovTaa = 0.0;   // the Moon's coverage of this pixel (full variants; the sky TAA's marker)
     if (moonDirENU.z > limbZ - kMoonAngR * 2.0 - 0.025) {   // (0.025: refraction lifts it, up to ~1.2 deg from orbit)
         vec3  moonDir3 = normalize(moonDirENU.xyz);
         // The Moon through the refraction table (2026-10-27, issue 20261027_184332 "Moon Refraction"), as the Sun is
@@ -4955,12 +4956,25 @@ void main() {
                 dirC[c] = dJ * cos(Rc) - pu * sin(Rc);
             }
         }
-        // Which channels reach the disc; the shading follows the first that does (green first).
+        // Which channels reach the disc, as a COVERAGE of the input pixel (2026-10-28, issue 20261028_191038 "Moon
+        // flickers"): the limb was a hard hit test whose bm^2 - (1 - R^2) cancelled in float to ~1 px of the radius,
+        // so the edge was a jagged staircase that changed with the sky TAA's jitter. The angle off the Moon's centre
+        // is measured as the small offset vector itself (no cancellation) and the edge spans one input pixel. The
+        // shading follows the first channel that reaches it (green first), clamped onto the disc.
+        float mPixA = max(cloud.mwLook2.w, 1e-7);
+        vec3  mOff[3];
         for (int c = 0; c < 3; ++c) {
-            float bc = dot(-moonDir3, dirC[c]);
-            hitC[c] = (bc * bc - (1.0 - kMoonAngR * kMoonAngR) >= 0.0 && bc < 0.0) ? onSM[c] : 0.0;
+            mOff[c] = dirC[c] - moonDir3 * dot(dirC[c], moonDir3);
+            float ang = (dot(dirC[c], moonDir3) > 0.0) ? length(mOff[c]) : 10.0;
+            hitC[c] = clamp((kMoonAngR - ang) / mPixA + 0.5, 0.0, 1.0) * onSM[c];
         }
-        dirMn = (hitC.g > 0.5) ? dirC[1] : ((hitC.r > 0.5) ? dirC[0] : dirC[2]);
+        int mCh = (hitC.g > 0.0) ? 1 : ((hitC.r > 0.0) ? 0 : 2);
+        dirMn = dirC[mCh];
+        moonCovTaa = max(hitC.r, max(hitC.g, hitC.b));
+        // The point on the disc (lateral offset / R, clamped inside the limb for the edge's outer half-pixel).
+        vec3  mU = mOff[mCh] / kMoonAngR;
+        float mUl = length(mU);
+        if (mUl > 0.999) mU *= 0.999 / mUl;
 #endif
 
         // (An atmospheric-refraction "squish" — compressing the disc vertically near the horizon
@@ -4974,13 +4988,17 @@ void main() {
         float discm = bm * bm - cm;
         float tm    = -bm - sqrt(max(discm, 0.0));
 #ifdef SKY_SUN_SHADOW
-        if (discm >= 0.0 && tm > 0.0 && max(hitC.r, max(hitC.g, hitC.b)) > 0.5) {
+        if (moonCovTaa > 0.0) {
+            moonDiscHit = moonCovTaa > 0.5;
+            // The sphere's normal from the lateral offset (stable to the limb; the ray-sphere form's sqrt(discm) was the
+            // float noise at the edge). The observer is ~60 radii away: the perspective term is < 1% of a normal.
+            vec3  n  = mU - moonDir3 * sqrt(max(1.0 - dot(mU, mU), 0.0));
 #else
         if (discm >= 0.0 && tm > 0.0) {
-#endif
             moonDiscHit = true;
             vec3  hp = tm * dirMn;
             vec3  n  = normalize(hp - moonDir3);
+#endif
             // The disc keeps the lit FRACTION (moonDirENU.w is the Moon's light vs full since review 16, for
             // everything the Moon lights; the disc's look is unchanged).
             float mFrac    = 0.5 * (1.0 - dot(sunDir, moonDir3));
@@ -8083,6 +8101,9 @@ void main() {
         if (meshHit || cloudAlphaIsEmit(gE.x) || cloudAlphaIsEmit(gE.y) || cloudAlphaIsEmit(gE.z) || cloudAlphaIsEmit(gE.w))
             outColor.a = 0.875;
     }
+    // 0.975 = the Moon's disc (2026-10-28, issue 20261028_191038): with the view still, sky_taa.comp keeps its history
+    // there (no flash rule: a crater rim's or the limb's jittered samples reset it every frame, the flicker).
+    if (moonCovTaa > 0.0 && outColor.a == 1.0) outColor.a = 0.975;
 #endif
 
     // Unified scene depth (include/depth.glsl) for the passes that follow: the TRUE distance to the

@@ -277,7 +277,11 @@ void main() {
             // Jitter alternating across an edge leaves the 3x3 mean where it was, so edges still accumulate.
             // The spark-proof mean only when nothing moved: in motion it fired less often and the history lagged
             // (+3% on the climb benchmark), and the specks it removes are a still-view problem.
-            w = max(w, smoothstep(0.3, 1.2, (((still || sea) ? mRob : m1.x) - h.x) / max(h.x, 0.02)));   // sea: spark-proof in motion too (glints took their frame raw)
+            // Not on the Moon's disc while still (0.975, sat_sky.frag; issue 20261028_191038): the disc is drawn the same every
+            // frame, and on its crater rims and limb this rule took each jittered sample raw (the flicker).
+            const bool moonPx = seaA > 0.96 && seaA < 0.99;
+            if (!(moonPx && still))
+                w = max(w, smoothstep(0.3, 1.2, (((still || sea) ? mRob : m1.x) - h.x) / max(h.x, 0.02)));   // sea: spark-proof in motion too (glints took their frame raw)
             // a glint sparkle: its flash at once (the history would average it ~10x down). Only while sim time RUNS
             // (eyeDelta.w 1 or 2; 3 = still and frozen, 1.25 = moving and frozen; 2026-10-27, the matrix suite: sea_20m
             // still noise 0.22 -> 0.58, storm_gnd look 0.98 -> 1.66 mean): with time frozen the sparkles are facets fixed
