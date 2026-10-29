@@ -6098,6 +6098,42 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   the roster ~0.3, the rest of the app ~1.3. Boot (no cascade yet): ~1.6 GB working set; private bytes ~4.4 GB, ~1 GB of it
   the pool's reserved (committed, untouched) `kPool` / `satOrbits` / `kPoolGen` capacity. The bench line also gives the
   replay split (`chunks` = seeds, retire, log read, grid hits, batches; publish; waiting for the mirror; dropped).
+- **Memory, round 2 (2026-10-29, branch memcompact; workstream A).**
+  - **The event log keeps 20-byte CORES** (`kessler::EventLog`, Kessler.h): an engine collision's time, seed and sampleDt are
+    rebuilt from its step index and pair (`engineEventOf`), a grid hit's projectile mass from (step, target)
+    (`gridProjectileMass`), its speed sits in the core in b's place. Everything else — scripted and player events, a
+    CATASTROPHIC PAIR collision (the tracker's significant breakups), anything that does not rebuild bit for bit — is
+    SPILLED whole; `push_back` checks the rebuild with a memcmp of the whole Event. The 40 bytes of DETAIL (nReal, dustKg,
+    dvSmall, pos / vel, a pair's vRel) are per-segment arrays the worker drops (`dropDetails`, at publish) for whole
+    segments older than 31 days before the player's time and before every rollback checkpoint; the main thread frees them
+    (`reclaim`, start of `kesslerSync`); `prunedUntil` (= their newest + 4 h) makes going back there a replay, as the
+    mirror's own 30-day index window (`kesslerPruneOldIndexes`) already does (9 days, the first cut, forced replays the
+    old build did not make). `operator[]` returns an Event BY VALUE (`KEventView` too): never keep a
+    pointer to one; the counts walk reads `core(i)` / `tUpper` / `tOf` (no rebuild). Detail-less events read those fields
+    as 0. A replay of the old world's events (going back, a rebuild) goes through `packEngineEvents(..., tBefore)` (now
+    streamed) and the reader, like the prebake, not a list of whole events.
+  - **`satOrbits` is a `SatOrbitTable`** (SatelliteSim.h): the roster and the launch block in a vector, the pool's entries
+    MADE ON READ from `kPool[j]` (`SatOrbitTable::poolOrbit`, kesslerSetPoolOrbit's old rule; `bindPool` in kesslerRestart).
+    A pool entry read through operator[] lives in a per-thread ring of 512: read what you need, never keep the reference;
+    writes reach the stored part only. `resize` / `reserve` past the pool's base are clamped; `clear()` unbinds.
+  - Measured (harness, uncontended, default settings): day 1100 working set 6369 -> 4128 MB (events 2395 -> 647 MB,
+    satOrbits tail 477 -> 0), day 170 3858 -> 3026 MB; fingerprints at 30 / 100 / 163 / 170 / 365 / 535 / 700 / 1100 and
+    across an in-place breakup and a rewind equal to the pre-change exe's. Jump times unchanged by these (the supernova
+    Watch from a fresh launch 23.6 s, the worker's replay). Left at day 1100: streams 731 MB, the pool twice (world 527,
+    `kPool` 496), death buckets 224.
+- **World snapshots (2026-10-29, branch memcompact; SatelliteSimKessler.cpp "Snapshots").** Default history only (no
+  player events, the world starting at the CME; setting `kessler.snapshots`, default on, no UI). In the user cache
+  (`<user data>/kessler/`): the STREAM ARCHIVE `suns_fury_<hash>.streams` (every small-fragment stream in the order made,
+  appended at publish: the world keeps none, a restored mirror needs them) and up to 4 SNAPSHOTS
+  `suns_fury_<hash>_dNNNNN.snap` (`World::saveState`: pool, generations, free list, release heap, roster seconds, grid,
+  death buckets, the compact event log; ~0.9-1.4 GB each). One is written per catch-up while the player waits (time held
+  at the frontier: `kesslerSync` sets `snapWant` = the last 30-day mark 8 days before the player's time; never within
+  60 days of another): built in memory by the worker (~0.6 s pause), written by a thread of its own. A jump more than 30
+  days past the mirrored frontier, and a replay after going back, restart the world ASYNC from the latest snapshot at or
+  before the player's time (`kSnapRestore`, the restart job; `kesslerRestartInstall` rebuilds the mirror from the world:
+  every slot's current record, roster words, re-entry index, the archive's streams; `kHistPrunedUntil` = its frontier), and
+  the worker replays from there. A player breakup turns them off for the session (`snapOn`). Not shipped: a snapshot is
+  ~1 GB (the 5M-slot pool alone 0.5 GB), against the prebake's 45 MB. Harness `kessler mem` -> `snapshots`.
 - **Roster rebuilds and determinism** (also needed by the cache): `buildOrbits()` draws from `SatRng` (MSVC's
   rand() LCG, one stream per constellation, recorded on the first build — the shipped layout is bit-identical on
   Windows and now the same everywhere), the cluster jitter is keyed by load order (`defIndex`), terminator planes
