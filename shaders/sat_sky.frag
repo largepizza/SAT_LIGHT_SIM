@@ -7471,7 +7471,14 @@ void main() {
         float lonGal = atan(dirGal.y, dirGal.x);
         float latGal = asin(clamp(dirGal.z, -1.0, 1.0));
         vec2  mwUV   = vec2(0.5 + lonGal / (2.0 * PI), 0.5 + latGal / PI);
-        vec4  mwTex   = texture(milkyWayTex, mwUV);
+        // The level from the UV's screen derivatives with the longitude's wrap taken out (2026-10-28, issues
+        // 20261028_190641 / _191529): across the seam at the galactic anticentre (u 0 <-> 1, l = 180) the implicit
+        // derivative was ~1 and the fetch took the coarsest mip there, a thin dark line across the sky. (The zoomed
+        // view's fetches and the sea's reflection name their level; the star-cloud lattice wraps by cell index.)
+        vec2  mwDx    = dFdx(mwUV), mwDy = dFdy(mwUV);
+        mwDx.x -= round(mwDx.x);
+        mwDy.x -= round(mwDy.x);
+        vec4  mwTex   = textureGrad(milkyWayTex, mwUV, mwDx, mwDy);
         vec3  mwColor = mwTex.rgb * cloud.mwBasisRow0.w;
         float mwLum = dot(mwColor, vec3(0.2126, 0.7152, 0.0722));
 #ifndef SKY_ENV
