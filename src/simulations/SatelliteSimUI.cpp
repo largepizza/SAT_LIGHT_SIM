@@ -7502,7 +7502,8 @@ void SatelliteSim::buildSettingsAttributionsTab(const UIInput &inp, UIRenderer &
     int i = 0;
     entry(i++, "Satellite constellation data", "Jonathan McDowell", nullptr,
           "planet4589.org/space/con/conlist.html");
-    entry(i++, "Earth day, night, cloud, water-mask and elevation maps", "Solar System Scope", nullptr,
+    entry(i++, "Earth day, night, cloud, water-mask and elevation maps", "Solar System Scope",
+          "(the light-pollution sources are derived from the night map)",
           "solarsystemscope.com/textures (CC BY 4.0)");
     entry(i++, "Milky Way skybox", "\"The Milky Way panorama\" (eso0932a) - ESO/S. Brunier", nullptr,
           "European Southern Observatory - eso.org (CC BY 4.0)");
@@ -7521,7 +7522,7 @@ void SatelliteSim::buildSettingsAttributionsTab(const UIInput &inp, UIRenderer &
     entry(i++, "Terrain material textures",
           "ambientCG: Grass004, Ground037, Rock051, Snow010A, Ground054, Ground109", nullptr,
           "ambientcg.com (CC0 1.0)");
-    entry(i++, "Major roads and shorelines", "Natural Earth 1:10m: Roads; Land and Lakes", nullptr,
+    entry(i++, "Major roads, shorelines and launch-site coasts", "Natural Earth 1:10m: Roads; Land and Lakes", nullptr,
           "naturalearthdata.com (public domain)");
     entry(i++, "Music", "papereater", nullptr, nullptr);
     entry(i++, "Ambient sound recordings",

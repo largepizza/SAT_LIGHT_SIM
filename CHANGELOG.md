@@ -5,8 +5,9 @@
 The biggest update yet. The constellations now have a life cycle: rockets launch them, trains of new satellites
 climb to their slots, crews and cargo fly to the stations, old satellites re-enter, and from the late 2010s to
 2036 the sky fills up launch by launch. A scripted solar superstorm in July 2037 can set off a Kessler cascade.
-Around them: a new weather system, a living Earth from the ground to orbit, satellites you can fly up to and
-inspect as real 3D models, and a sim clock that runs on real UTC. Accepted photometric error is listed in
+Around them: a new weather system with storms, hurricanes, tornadoes, haboobs and wildfires; a night sky with the
+real stars, resolved planets, comets, meteor showers and a supernova; a living Earth from the ground to orbit;
+satellites you can fly up to and inspect as real 3D models; and a sim clock that runs on real UTC. Accepted photometric error is listed in
 `data/benchmarks/KNOWN_RESIDUALS.md`; the full reference is the project wiki (`wiki/`).
 
 ### Launches and rockets
@@ -79,6 +80,10 @@ inspect as real 3D models, and a sim clock that runs on real UTC. Accepted photo
   clock holds briefly); going back in time undoes it. A second click while that runs is queued, not waited for.
 - Settings: collision rate, collision avoidance, horizon, dust and small re-entry brightness, fireball colours;
   "Watch the next re-entry". Launches stand down after the storm (or resume three weeks later).
+- **The default cascade ships prebaked** (three years after the storm), so jumping into it is quick instead of
+  minutes of "Computing the debris cascade". A player's own breakups are computed live.
+- **The Kessler tab** of the Missions window: live counts, a globe of the debris shells with the collision risk,
+  collisions per day and the latest breakups, each with Watch.
 
 ### GEO belt
 
@@ -108,9 +113,57 @@ inspect as real 3D models, and a sim clock that runs on real UTC. Accepted photo
   circumzenithal arc, sun pillars.
 - **Fog, dust and ice fog.** Radiation fog in valleys at night, sea fog on coasts, dust plumes over dry land,
   diamond-dust ice fog over Antarctica and Greenland.
+- **Physical light.** Multiple scattering in the clouds (dark wisps, bright cores), the sky's light on clouds and
+  ground from the whole dome, multiple scattering and ozone in the sky (blue-violet twilight), the ground under an
+  overcast lit by what the clouds let through, and an AgX tone map that keeps the hue of bright highlights.
 - **Clouds from orbit.** Satellite-imagery morphology (closed and open cells, cloud streets, popcorn cumulus from
   MODIS scenes) shapes clouds seen from space; from high orbit a full-resolution far layer takes over. The clouds
   stay the same clouds as you climb.
+
+### Storms, hurricanes and wildfires
+
+- **Storms are objects with a life.** Air-mass cells, multicells, supercells, squall lines and mesoscale complexes
+  form at a thunderstorm climatology, grow, mature and decay over hours, each with its towers, anvil shield
+  (lingering as cirrus after the storm), rain core, cloud field and lightning. A pure function of sim time.
+- **Tropical cyclones.** About 80 a year across six basins, named from the WMO lists, following climatological
+  tracks with landfalls and recurvature: an eyewall, a clear eye, spiral rain bands, outflow cirrus, a whipped-up
+  sea, wind that drives the rain and the ambience, and a storm surge that floods low coasts.
+- **Tornadoes and waterspouts** under supercells and strong storms at sea, hanging from the storm's real base,
+  spinning, with a wall cloud, debris cloud and roar.
+- **Haboobs.** A storm's gust front over dry land raises a towering wall of dust, drawn as beige billowing cloud.
+- **Wildfires.** Fires start by biome, season and dryness and spread with a coherent wind: a ragged flaming front
+  with embers, smoke that follows real trajectories into a regional pall, burn scars, and their glow at night.
+- **The Weather window** (the cloud button, or N): featured events (the next tornado, the strongest hurricane, a
+  haboob, a supercell, a squall line, a waterspout, the biggest wildfire), storms near you, a local precipitation
+  radar with a loop, and the named storms with track maps and milestones. One **Watch** button per event lands on
+  it as it happens.
+
+### The night sky
+
+- **Sky events window** (the crescent button, or K): solar and lunar eclipses, planetary conjunctions, lunar
+  occultations, Moon-base glints, meteor showers and comets for the next two years, each with one Watch that puts
+  you where and when to see it.
+- **Real stars.** The HYG catalogue to magnitude 8.5 (about 62,000 stars, 417 with names): faint stars appear only
+  under dark skies, stars are selectable with name, type, distance and colour, and twinkle with the air's real
+  scintillation.
+- **Betelgeuse goes supernova** on 25 December 2037: near magnitude -11 at its peak, visible by day, lighting the
+  night landscape like a second Moon, and fading over two years.
+- **Resolved planets.** Zoomed in, Mars, Jupiter and Saturn show their surfaces, Saturn its rings, Venus its
+  phase and forward-scattering rim, Jupiter its four Galilean moons (with transits and shadows). Planets keep their
+  true colours.
+- **Comets.** The Great Comet of 2037 (a sungrazer in February, 560,000 km from the Earth in March) and a few
+  minor comets a year, with dust and ion tails drawn as 3D particles.
+- **Meteor showers.** The annual showers and the sporadic background at their real rates, with fireballs,
+  fragments and glowing trains; a time-lapse view under time warp.
+- **The Moon's real surface.** LROC colour and LOLA relief with true libration and mountain shadows along the
+  terminator; lunar south-pole bases whose solar arrays mirror the Sun to Earth near full Moon.
+- **The Milky Way** stays crisp zoomed in (star clouds, dust lanes, Andromeda), with a ground look and a space look.
+- **Light pollution, physically.** One skyglow model, calibrated against measured sites, now dims the Milky Way,
+  zodiacal light, aurora, comets and the faint stars alike.
+- **Refraction, mirages and seeing.** A ray-traced atmosphere flattens and lifts the setting Sun and Moon, draws
+  inferior mirages and green rims, and makes the image boil near the horizon. The Sun has sunspots and, at totality
+  or behind the new occulter, a dynamic corona with streamers and CMEs.
+- **Inertial camera lock:** keep the view fixed on the stars while the Earth turns beneath, with a Sun occulter.
 
 ### Sky, sea, terrain and cities
 
@@ -153,17 +206,20 @@ inspect as real 3D models, and a sim clock that runs on real UTC. Accepted photo
 
 ### UI
 
-- **Missions window** (the rocket button, or M): the next launches with Go to / Watch, pinned twilight and crewed
-  launches, the Sun's Fury countdown; what is flying now (crew transfers, stations, launches, trains, retirees,
-  build-out); and the launch and Sun's Fury settings.
+- **Missions window** (the rocket button, or M): the next launches, pinned twilight and crewed launches, the Sun's
+  Fury countdown; what is flying now (crew transfers, stations, launches, trains, retirees, build-out); and the
+  Kessler tab. Every row has one **Watch** button that lands on the event as it happens.
+- **Settings search** across every tab, a new **Sky** tab, and every control that changes the look has a row in
+  Settings.
+- **Video recording** (F6, or the record button) to MP4, with or without the UI; cinematics export video too.
 - **Mission milestones.** Skip to the next or previous milestone of a launch, train, retiree or the satellite in a
   slot (`]` / `[`, the follow HUD, the Info window's MISSION section with a progress bar by milestone).
 - **Issue reports.** F9 adds a shot (frame, place, camera, time, weather, settings, frame times, the last 12 s
   of camera motion) to an issue, F7 starts a new one; the Issue reports window adds notes, pins and areas, and
   exports a zip to send.
-- **Bookmarks** with thumbnails; **nine default bookmarks** (the Great Australian Eclipse, the Anchorage blood
+- **Bookmarks** with thumbnails; **ten default bookmarks** (the Great Australian Eclipse, the Anchorage blood
   moon, a solar storm from orbit, beam-lit snow at McMurdo, a rainbow over Venezuela, Starmind formation rings,
-  The Sun's Fury, a twilight Starship launch, a Starmind deployment).
+  The Sun's Fury, a twilight Starship launch, a Starmind deployment, a super typhoon over Luzon).
 - **Cinematics.** A camera-path editor with shots, follow shots, a timeline, saved files and frame export
   (preview, or supersampled HQ frames with motion blur).
 - **HQ photo** (F8), screenshots with or without the UI (F10 always with), star trails.
@@ -185,6 +241,8 @@ inspect as real 3D models, and a sim clock that runs on real UTC. Accepted photo
 
 ### Performance
 
+- **Two frames in flight:** the CPU prepares the next frame while the GPU draws this one (frames about 5-10% faster).
+- An **aerial-perspective volume** computes the sky's atmosphere once per screen tile (about a quarter off the sky pass).
 - **Temporal anti-aliasing** of the terrain, sky and sea, which is also a **temporal upscaler** below 100%
   render scale; render scale can scale the clouds too; optional automatic render scale.
 - **Presets:** Potato and Planetarium (the light v1.1 skies, with the 1.2 ground features compiled out and no
@@ -222,9 +280,12 @@ inspect as real 3D models, and a sim clock that runs on real UTC. Accepted photo
   same timestamp). The start time moved so the intro is unchanged.
 - "Storm strength" for the aurora is replaced by Kp (automatic by default).
 - Glare defaults are the distance-tuned values; glare grows when the camera is close to a satellite.
-- The menu buttons (Issue reports, Missions, Bookmarks, Cinematics, Settings) are on the bottom-right panel; the
-  Camera settings tab is now the Controls tab's Mouse section; launch and Sun's Fury settings are in the Missions
-  window.
+- The menu buttons (Issue reports, Missions, Weather, Sky events, Bookmarks, Cinematics, Settings) are on the
+  bottom-right panel; the Camera settings tab is now the Controls tab's Mouse section; launch and Sun's Fury
+  settings are in Settings > Launches.
+- Go to moves you: magnitudes and sky positions are read from where the camera is. With a satellite selected,
+  I opens its Info window, G is Go to and T is Track.
+- "Moon size" defaults to 1 (the true size).
 - Exposure, auto exposure, highlight roll-off, white balance and the Moon's size are in a new **Exposure and
   Moon** section of the Photometry tab (settings keys unchanged). The "City light blur LOD" slider is gone.
 - The disabled legacy-lighting Starlink Gen2 comparison shell was removed from the roster.
@@ -272,8 +333,8 @@ inspect as real 3D models, and a sim clock that runs on real UTC. Accepted photo
 ### Build / packaging
 
 - `SatModelTool` target, the `linux-accuracy-gate` preset and the accuracy gate in CI; `PackageRelease.cmake`
-  ships `satellite_models/`, `launches.json`, `geo_satellites.json`, `launch_coasts.json` and the default
-  bookmarks. Runtime files re-sync next to the exe when they change; user screenshots and user data (settings,
+  ships `satellite_models/`, `launches.json`, `geo_satellites.json`, `launch_coasts.json`, `lunar_bases.json`, the
+  default bookmarks and the prebaked Sun's Fury (`kessler_prebake/`). Runtime files re-sync next to the exe when they change; user screenshots and user data (settings,
   reports, bookmarks) live outside the build tree in a development checkout.
 
 ## v1.1.1 — 2026-09-08
