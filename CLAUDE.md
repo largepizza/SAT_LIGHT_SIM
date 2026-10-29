@@ -3177,8 +3177,16 @@ SatelliteSimSkyEvents.cpp). Settings `meteors.enabled` (on), `meteors.rate` (1, 
   along the 78-108 km part of the path already passed, drifting with a hashed wind (25-75 m/s, turning 8-22 deg per km
   of height), widening 12 m/s, green for its first seconds then dim orange, ~7 mag under the meteor + a +2-mag wake over
   its first second. **Budget**: at most 96 meteor Gaussians and never past kMaxDustClouds - 200 (the launches,
-  tornadoes, haboobs, wildfire smoke come after), the brightest meteors first; at most 600 heads. **Not drawn above 2x
-  of time warp** (`meteorWarpOff_`): at 10x a 0.5 s meteor flashes for 3 frames and ten times as often.
+  tornadoes, haboobs, wildfire smoke come after), the brightest meteors first; at most 600 heads. **Time warp**: past 2x
+  only bands 0-1 (fireballs and bolides, M <= -4) are drawn, up to 1 min/s (`meteorBandMax_`); past that none
+  (`meteorWarpOff_`): at 10x a 0.5 s faint meteor flashes for 3 frames and ten times as often, but a bolide replayed at 10x
+  must still show (2026-10-28, issue 20261028_191529 "Bollide Trails"). **Train duration** `meteors.train_duration` (0.3,
+  x the decay time, no UI; 1 = the old): drawn to 4 decay times (was 5 at x1: a -12 Taurid's train ~270 s; now ~65 s).
+  **Determinism vs the eye**: the bin cache (`meteorBinCache_`) serves every eye within `kMeteorCacheRadiusM` (30 km)
+  of where it was made, so generation takes `GenParams::eyeMarginM` = that radius (reach from the eye's height + it,
+  widened by it): which meteors a cached bin holds no longer depends on where the eye stood (climbing 2 -> 11 km under
+  one cache shortened the reach by ~200 km). The report's streak was the -12.2 N Taurid's train 36 s after it; it
+  reproduced after rewinds, `time set`, eye moves and 10x replays (`harness_runs/*a38_ab3`).
 - **The Watch** (`meteorWatchShower`, the sky event's and harness `meteors go`): hourly times across the peak +-14 h
   (or the next 24 h when the window is under way), a 3 x 4 deg grid of sites with the Sun <= -15 deg and the radiant >=
   25 deg up, scored sin(radiant elevation) x the profile x (1 - 0.75 Moon up x lit) - the night map's lights; then at
@@ -8091,7 +8099,13 @@ air did to it: "a half faded fuzzball" low down.
   height, zenith AOD 0.03 x `atmos_mie_gain`, + the haze near clouds) — not the fog / dust layers: the composite's
   transmittance toward the Sun was 1.0 in the report's view and fog, dust and haze off moved the disc 0-7 levels.
 - **Glare and corona** (veiling light) about the Sun AS SEEN, x the visible share, x 1 - exp(-60 x the centre's
-  transmittance luminance) (was 10, with the 300 disc), drawn over the far sea too.
+  transmittance luminance) (was 10, with the 300 disc). Added over EVERYTHING in front (clouds, the Earth, terrain,
+  the sea; 2026-10-28, issue 20261028_190911 "Sun glow below clouds from orbit": from 1625 km each far-layer cloud
+  multiplied the halo by its own transmittance, black holes in the glow): they follow only the light reaching the eye
+  from the Sun — the cloud composite (half-res + far layer) and the scene depth at the Sun's own screen place (5 taps
+  over its drawn disc; a surface counts only if nearer than the sea-level sphere, so the horizon is not counted twice
+  with the visible share), the eye's `sunCloudT`, the visible share. Taps only within 34 deg of the Sun (cost within
+  noise). A ridge or deck hiding the Sun removes the halo everywhere; the eclipse corona keeps the per-pixel cloud.
 - **Stars and planets** (`updateStars`, `updatePlanets`, `refractEnu`): placed at the primary image's apparent elevation
   (a star just under the true horizon shows; below the apparent horizon it does not), and their record's `meshPx` carries
   1 + floor(aoa urad) + 0.99 sigma_I: star_point.vert jitters the image by the aoa (sines, per star) and twinkles by
@@ -9126,7 +9140,7 @@ atmHalfAvg3, airglow noise, cityBrightness) moved unchanged into `include/sky_at
   min"); the god rays read the tile's own froxel column (the same ray and offset); the shadowed air's sky light is taken at
   the shadow's mean point UP TO each slice. **Keep its step in step with the N_VIEW loop** — the band below still runs the
   loop. ~0.3-0.7 ms (RTX 3070 Ti).
-- **The band**: within `clouds_v2.sky_ap_band_deg` (2 deg, at least 2.5 tiles) of the horizon / the Earth's limb (and the
+- **The band**: within `clouds_v2.sky_ap_band_deg` (2 deg, at most 12 tiles since 2026-10-28, at least 2.5 tiles) of the horizon / the Earth's limb (and the
   atmosphere's top seen from above it), where the integral changes too fast across a tile, the loop runs as before; over
   the band's outer part (2.5 tiles out to its edge) the pixel takes BOTH and cross-fades (`apW`). The volume is the MORE
   accurate (finer slices: against a 64-1024-sample loop 0.01-0.34 levels mean where the default loop is 0.6-0.8, ~5 levels
@@ -9136,6 +9150,12 @@ atmHalfAvg3, airglow noise, cityBrightness) moved unchanged into `include/sky_at
   than it saved), SKY_LITE / Potato / SKY_ENV / SKY_REFL (no volume), the HQ photo (`cv2SkyAp` saved / set 0), knockout bit 2.
   "Aerial perspective volume (0/1)" (`clouds_v2.sky_ap`, slot 337; 0 = the loop everywhere, the A/B), "... horizon band
   (deg)" (slot 338).
+- **The band is capped at 12 tiles** (2026-10-28, issue 20261028_192855: zoomed to a 0.58-deg field on the refracted Sun
+  from 96 km, a tile is 0.003 deg and the fixed 2-deg band covered the whole screen: every pixel ran the loop). Unchanged at
+  a 30-deg field and wider. That view (1920x1009, interleaved): sky pass 34.6 -> 9.3 ms (FOV 5: 23.8 -> 10.9, FOV 40 10.4 ->
+  10.2); against a 64-4096-sample loop the volume is within ~1 level everywhere, where the default loop read the ground just
+  under the limb ~15 levels dark. Its clouds (16-24 ms, run to run) cost about the same at a 40-deg field: content (march
+  ~10.5, composite 2.7, resolve 1.2, sky_ap 1.2); an LOD pixel floor at narrow fields saved ~2 ms and was not adopted.
 - **Measured** (RTX 3070 Ti, 1920x1009, `harness_runs/ap/`): sky pass summed over 17 scenes 191 -> 146 ms (-24%), the GPU
   frame 425 -> 385 ms; `frame_bench.py` wall clock (uncapped, one run a side) stills 834.5 -> 767.4 ms (-8.0%), motion
   paths 1408 -> 1293 ms (-8.2%; ground and air -7..-14%, the eclipse -20..-25%, orbit -1..-11%). Matrix suite on vs off:

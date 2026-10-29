@@ -4207,7 +4207,12 @@ void main() {
     if (cv2.skyAp.x > 0.5 && !dbgSkipAtmosphere()) {
         float limbAtm = (obsR > R_ATMOS) ? -sqrt(max(0.0, 1.0 - (R_ATMOS / obsR) * (R_ATMOS / obsR))) : limbZ;
         float inner   = 2.5 * pc.fovYRad / float(kSkyApY);
-        float band    = max(cv2.skyAp.z, inner + 1e-4);
+        // The band exists because the integral changes too fast across a TILE near the horizon: it is at most
+        // kSkyApBandTiles tiles wide (2026-10-28, issue 20261028_192855: zoomed to a 0.58-deg field on the refracted
+        // Sun from 96 km, a tile is 0.003 deg and the fixed 2-deg band covered the whole screen, so every pixel ran
+        // the loop: sky pass 34 ms). 12 tiles are 2 deg at a 30-deg field: unchanged at 30 deg and wider.
+        const float kSkyApBandTiles = 12.0;
+        float band    = max(min(cv2.skyAp.z, kSkyApBandTiles * pc.fovYRad / float(kSkyApY)), inner + 1e-4);
         float outside = max(limbZ - dir.z, dir.z - max(limbZ, limbAtm));   // sin(elevation) past the grazing range
         apW = smoothstep(inner, band, outside);
         if (apW < 1.0) {
@@ -7950,7 +7955,53 @@ void main() {
             float hzH  = tabOn ? hazeK * BETA_M * 2500.0 * exp(-max(length(obsPos) - R_EARTH, 0.0) / 2500.0) : 0.0;
             vec3  TcAir = cC.x >= 0.0 ? exp(-refrTau(cC, BETA_R, BETA_M, hazeK))
                                       : exp(-sunPathTauExact(obsPos, sunApp, BETA_R, BETA_M) - hzH / max(dot(sunApp, upO), 0.05));
-            vec3  Tc   = TcAir * cloudB.rgb;
+            // The glare and corona are VEILING light (the eye's / lens's scatter of the Sun), added in front of everything
+            // the Sun is seen past — clouds, the Earth, terrain (2026-10-28, issue 20261028_190911 "Sun glow below clouds
+            // from orbit": from 1625 km the halo over the night side was multiplied by each pixel's own cloud
+            // transmittance, so every far-layer cloud cut a black hole into it). They follow the light that reaches the
+            // eye FROM THE SUN: the cloud composite and the surfaces at the Sun's own place on screen (a few taps across
+            // its drawn disc, so a ridge or a cloud's edge crossing it fades the halo, not a per-pixel cut), the eye's
+            // Sun-line cloud transmittance (sunCloudT: the Sun off screen, or past the march), the visible share of the
+            // disc over the horizon (visS). Hidden by a deck from the ground: no halo anywhere, as before.
+            vec3  cloudAtSun = vec3(1.0);
+            float surfAtSun  = 1.0;
+            if (dot(dir, sunApp) > 0.825) {   // only where the glare / corona reach (34 deg: < 1e-6 of them past it)
+                vec3 scS = mat3(pc.skyView) * sunApp;
+                if (scS.z < -0.01) {
+                    float tHFs = tan(pc.fovYRad * 0.5);
+                    vec2  suS  = vec2(scS.x, -scS.y) / (-scS.z * tHFs * 2.0);
+                    vec2  uvS  = vec2(suS.x / pc.aspect + 0.5, suS.y + 0.5);
+                    float rUv  = rD / (2.0 * tHFs);                 // the drawn radius in uv (y)
+                    vec3  cs = vec3(0.0);
+                    float ss = 0.0, ns = 0.0;
+                    for (int k = 0; k < 5; ++k) {
+                        vec2 o  = (k == 0) ? vec2(0.0) : 0.7 * rUv * vec2((k == 1) ? 1.0 : (k == 2) ? -1.0 : 0.0, (k == 3) ? 1.0 : (k == 4) ? -1.0 : 0.0);
+                        vec2 uk = uvS + vec2(o.x / pc.aspect, o.y);
+                        if (any(lessThan(uk, vec2(0.0))) || any(greaterThan(uk, vec2(1.0)))) continue;
+                        vec3 ck = texture(cloudTargetB, uk).rgb;
+                        if (cloud.farBlend > 0.0) {
+                            ivec2 fsz = imageSize(cloudFarImg);
+                            ivec2 fpx = clamp(ivec2(uk * vec2(fsz)), ivec2(0), fsz - 1);
+                            ck *= mix(1.0, imageLoad(cloudFarImg, fpx).a, cloud.farBlend);
+                        }
+                        cs += ck;
+                        // A surface in front of the Sun (terrain, a mesh) hides it; the smooth sea-level horizon does not
+                        // count here (visS, the refraction table's share, already does: it is not counted twice).
+                        float dk = texture(sceneDepthTex, uk).r;
+                        float hidden = 0.0;
+                        if (dk < kNoSurfaceT * 0.5) {
+                            vec3  ck3 = normalize(vec3((uk.x - 0.5) * pc.aspect * 2.0 * tHFs, -(uk.y - 0.5) * 2.0 * tHFs, -1.0));
+                            vec3  dk3 = transpose(mat3(pc.skyView)) * ck3;
+                            float tSk = raySphere(obsPos, dk3, R_EARTH).x;
+                            hidden = (tSk <= 0.0 || dk < 0.98 * tSk) ? 1.0 : 0.0;
+                        }
+                        ss += 1.0 - hidden;
+                        ns += 1.0;
+                    }
+                    if (ns > 0.0) { cloudAtSun = cs / ns; surfAtSun = ss / ns; }
+                }
+            }
+            vec3  Tc   = TcAir * cloudAtSun;
             float lc   = dot(Tc, vec3(0.2126, 0.7152, 0.0722));
             float gs   = 1.0 - exp(-60.0 * lc);                  // veiling glare follows the light that arrives
             vec3  hueC = Tc / max(max(Tc.r, max(Tc.g, Tc.b)), 1e-6);
@@ -7998,18 +8049,14 @@ void main() {
             float cosAp  = dot(dir, sunApp);
             float angAp  = acos(clamp(cosAp, -1.0, 1.0));
             float gAp    = max(cosAp, 0.0);
-            float glareA = (pow(gAp, 1800.0) * 0.85 + pow(gAp, 320.0) * 0.13 + pow(gAp, 55.0) * 0.03) * veilGate;
-            float coronA = exp(-angAp * angAp / (2.0 * coronaSig * coronaSig)) * veilGate;
-            if (tabOn && tHit <= 0.0 && tSeaLvl > 0.0 && tCloudOcclude < 0.0 && !meshHit) {   // veiling light over the far sea too
-                glareA = pow(gAp, 1800.0) * 0.85 + pow(gAp, 320.0) * 0.13 + pow(gAp, 55.0) * 0.03;
-                coronA = exp(-angAp * angAp / (2.0 * coronaSig * coronaSig));
-            }
+            float glareA = (pow(gAp, 1800.0) * 0.85 + pow(gAp, 320.0) * 0.13 + pow(gAp, 55.0) * 0.03) * surfAtSun;
+            float coronA = exp(-angAp * angAp / (2.0 * coronaSig * coronaSig)) * surfAtSun;
             float visS = tabOn ? clamp(refrSun.y, 0.0, 1.0) : geomFade;
             vec3  gCol = mix(sunCol, 1.5 * hueC, 0.8);
+            float veilT = min(dot(cloudAtSun, vec3(1.0 / 3.0)), cloud.sunCloudT);
             color += dLight
-                   + (glareA * visS * gCol * obsSunF * gs
-                      + coronA * visS * gCol * 0.12 * obsSunF * gs
-                      + solarCorona * geomFade) * min(cloudBlock, cloud.sunCloudT);
+                   + (glareA * visS * gCol * obsSunF * gs + coronA * visS * gCol * 0.12 * obsSunF * gs) * veilT
+                   + solarCorona * geomFade * min(cloudBlock, cloud.sunCloudT);
         }
 #else
         color += (discVis * geomFade * sunCol
