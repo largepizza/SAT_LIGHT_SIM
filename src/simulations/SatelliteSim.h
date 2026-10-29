@@ -12,6 +12,7 @@
 
 #include "../Simulation.h"
 #include "../UIRenderer.h" // WindowChrome — used by member state below (needs complete type)
+#include "../UiText.h"   // tx(Txt::...): the UI text table (src/text/ui_text_en.inc)
 #include "SatModel.h"      // attitude groups, satellite models, baked lobes (lighting overhaul)
 #include "SatPhotometry.h" // earthshine table axes (satTypeBuf layout)
 #include "SatTrace.h"      // magnitude trace + CSV export (benchmarking M9)
@@ -8709,6 +8710,8 @@ private:
     // I Info, G Go to / leave; "Select Satellite" lost its T (a saved T is dropped once), and "Leave Go To Here" was
     // renamed "Go To / Leave Here" (a saved key under the old name carries over).
     static constexpr int kKeyLayoutVersion = 2;
+    void trackToggle();          // Track (key T, the panel's button); during Go to it is the aim lock
+    bool trackShownOn() const;   // the Track button lit
     bool selectionKeyAction(int bindIdx); // KB_INFO / KB_TRACK / KB_FOLLOW_STAY on the selection; false = nothing to do
     int padFocus = 0;               // 0 Info, 1 Go to, 2 Trace pass, 3 Track
     int padFocusSat = -1;           // the selection padFocus was chosen for (a new one resets it)

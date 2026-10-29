@@ -412,6 +412,7 @@ json SatelliteSim::harnessStateJson()
                                    {"camera_asl_m", glm::length(followObsEcef) - satphot::kEarthRadiusM},
                                    {"dist_to_target_m", glm::length(followObsEcef - followLastP)},
                                    {"flight_rel", followFlightRel},
+                                   {"aim_lock", followAimLock},
                                    // (2026-10-21) the camera along the object's motion over the ground (< 0: behind it)
                                    {"cam_along_motion_m", glm::dot(followObsEcef - followLastP, followFwdRefEcef)},
                                    {"default_side_dot", followDefaultSideDot}};
@@ -1057,6 +1058,8 @@ std::string SatelliteSim::harnessApplyViewRecord(const json &rec, bool applySett
 
     if (followActive)
         stopFollow();
+    inertialStop(); // a recorded view replaces the lock to the stars (which would otherwise hold the old camera)
+    stopTrack();
     const json &st = rec.at("sim_time");
     simDayJ2000 = st.at("day_j2000").get<int64_t>();
     simSecInDay = st.at("sec_in_day").get<double>();

@@ -52,7 +52,7 @@ rockets, plumes, crew rotations, the Missions window: the roster's slots refresh
 **Stars** — *Stars* (the HYG catalogue to V 8.5, faint stars only under dark skies, selectable stars, the scripted
 2037 Betelgeuse supernova).
 
-**Rendering** — *UIRenderer / Clay* (icon atlas, the SDF font atlas, manual hit-testing, the **UI kit** every window is built from, HUD text entry) · *Sky TAA* (the background's temporal AA, and the main pass's shared dependencies) · *The Sun as an object* (refraction, mirages, turbulence: one ray tracer, Refraction.h) · *Seeing* (the turbulence warp after the main pass, the real-time twinkle clock) · *The Moon as a body* (true position and size, eclipses) · *The sea* (periodic waves, sea state, shore) ·
+**Rendering** — *UIRenderer / Clay* (icon atlas, the SDF font atlas, manual hit-testing, the **UI kit** every window is built from, HUD text entry, **the UI text table**) · *Sky TAA* (the background's temporal AA, and the main pass's shared dependencies) · *The Sun as an object* (refraction, mirages, turbulence: one ray tracer, Refraction.h) · *Seeing* (the turbulence warp after the main pass, the real-time twinkle clock) · *The Moon as a body* (true position and size, eclipses) · *The sea* (periodic waves, sea state, shore) ·
 *Photometry / Shader Constants* (lobe model, bloom and glare) · *The Milky Way* (the panorama, its zoomed star clouds, Andromeda) · *Light Pollution Dome* · *Atmospheric
 Extinction* · *Sky Glow SSBO* · *Planets* · *Cloud Shadows* · *Resolution Scaling* · *Weak-Hardware
 Sky Tiers (Potato / SKY_LITE)*. The mesh renderer, model viewer and environment probes are
@@ -3412,7 +3412,7 @@ recordCompute right after the time advance (after updateFollow, before updatePos
 this moment's ENU and sets az / el (`aimCameraAzEl`). With `inertialHold` (the default above 100 km) the eye is held in
 ECI too, so the Earth turns beneath (the ENU frame at an ECI-fixed eye is itself ECI-fixed: no roll drift); on the
 ground only the direction tracks (field rotation). Mouse look and WASD are adopted (in the previous frame's ECI). Ended
-by follow, Track, a cinematic, any sky-event Watch or the comet Watch. **Occulter** (`inertialOcculter`, "Occult the
+by follow, Track, a cinematic, any sky-event Watch or the comet Watch, a bookmark's Go and any recorded view (harness `report load` / `snapshot`, an issue shot's Go: `harnessApplyViewRecord`). **Occulter** (`inertialOcculter`, "Occult the
 Sun"): sunCloudT forced to 0 (the Sun's disc, glare, corona, lens flare, bloom seed), no sky glare (stars stay), the
 comet composite's Sun glare off, and from above 100 km the night exposure (`skyExposure` dayness 0). UI: the Sky events
 window's "Lock view to the stars" / "Occult the Sun" buttons. Harness `inertial [state] | on [hold=] | off | look
@@ -3842,6 +3842,18 @@ pre-select; returns whether to show it) and `setBootChoice(option, askAgain)`.
 
 ## Subsystem: UIRenderer / Clay
 
+**UI text lives in one table (2026-10-29): `src/text/ui_text_en.inc`**, `UI_TEXT(Id, "text")` per line, read with
+`tx(Txt::Id)` (`src/UiText.h`, included by SatelliteSim.h; `txc(Txt::Id)` = a Clay_String, `src/UiTextClay.h`).
+**New user-facing text goes there, not into a literal** — rules and style in docs/UI_TEXT.md: ids by kind (Btn, Tip,
+Lbl, Sec, Fmt, Toast...), printf formats keep their placeholders in order, plain ASCII, no history notes ("moved
+to ...") in the UI, settings keys / harness text / log lines / keybinding action names (persisted) / data stay in the
+code. `python tools/ui_text_check.py` checks ids, ASCII and every format's argument count at its call site (MSVC
+cannot check a non-literal format: run it after rewording a Fmt string); `tools/ui_text_migrate.py` moves the
+literals left at known UI call sites. English only for now (a language = a second table with the same ids).
+Not in the table yet: the Attributions tab (credits), the knockout labels (dev), keybinding action names,
+lowercase one-word fragments, and text built by concatenating std::string pieces (Watch toasts in
+SatelliteSim.cpp / SatelliteSimLaunches.cpp, some report and bookmark messages).
+
 - `#define CLAY_IMPLEMENTATION` only in `UIRenderer.cpp`. All other files `#include "clay.h"` without it.
 - `ui.input()` → `UIInput`: per-frame mouse/scroll/button state. `scrollY` positive = scroll up. `screenW/H` = window dims.
 - `ui.mouseOverUI()` → **previous frame's** capture result. Read in `buildUI` to gate scene interaction.
@@ -4224,7 +4236,7 @@ ground), boost x10, fine x0.1 — it was 100 m/s + 0.5 x the height above SEA LE
 
 With a satellite selected: **I** = Info window (open / close, `KB_INFO`), **G** = Go to, and G again leaves Go to
 where the camera is (`KB_FOLLOW_STAY`, action "Go To / Leave Here"; was only "Leave Go To Here"), **T** = Track on /
-off (`KB_TRACK`); `selectionKeyAction`. T was "Select Satellite" (the centre pick), which now has no key (pad A
+off (`KB_TRACK`); `selectionKeyAction`. **During Go to, Track is Go to's aim lock** (`trackToggle`: T and the panel's Track button toggle `followAimLock`, the "Aim: locked / free" chip; the button is lit by it): Track's own lock would fight the ride, and until 2026-10-29 T did nothing there. T was "Select Satellite" (the centre pick), which now has no key (pad A
 still; a click selects). Saved bindings migrate by `controls.key_layout` (`kKeyLayoutVersion` 2): a saved T on
 "Select Satellite" is dropped once, the old action name carries its key over, and I / T keep their defaults only
 where no saved binding uses them. An unbound key is -1 (`onKey` ignores GLFW_KEY_UNKNOWN; `keyDisplayName` shows

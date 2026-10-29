@@ -178,7 +178,7 @@ void SatelliteSim::bookmarksSave()
     std::ofstream f(fs::path(bookmarkDir()) / "bookmarks.json");
     if (!f)
     {
-        bmStatus_ = "Could not write bookmarks.json";
+        bmStatus_ = tx(Txt::ValCouldNotWriteBookmarksJson);
         return;
     }
     f << nlohmann::json({{"format", "sat-light-sim-bookmarks/1"}, {"bookmarks", arr}}).dump(2);
@@ -189,7 +189,7 @@ void SatelliteSim::bookmarkFormatMeta(Bookmark &b) const
     const time_t unixT = (time_t)std::floor(b.simT) + 946728000;
     const struct tm *utc = gmtime(&unixT);
     if (utc)
-        snprintf(b.meta[0], sizeof(b.meta[0]), "%04d-%02d-%02d %02d:%02d UTC", utc->tm_year + 1900, utc->tm_mon + 1,
+        snprintf(b.meta[0], sizeof(b.meta[0]), tx(Txt::FmtUtc3), utc->tm_year + 1900, utc->tm_mon + 1,
                  utc->tm_mday, utc->tm_hour, utc->tm_min);
     else
         snprintf(b.meta[0], sizeof(b.meta[0]), "-");
@@ -197,7 +197,7 @@ void SatelliteSim::bookmarkFormatMeta(Bookmark &b) const
     const double lon = glm::degrees(std::atan2(b.obsDir.y, b.obsDir.x));
     char alt[24];
     if (b.heightM >= 1000.0f)
-        snprintf(alt, sizeof(alt), "%.1f km", b.heightM / 1000.0f);
+        snprintf(alt, sizeof(alt), tx(Txt::FmtKm4), b.heightM / 1000.0f);
     else
         snprintf(alt, sizeof(alt), "%.0f m", b.heightM);
     snprintf(b.meta[1], sizeof(b.meta[1]), "%.2f %c  %.2f %c  %s", std::abs(lat), lat >= 0.0 ? 'N' : 'S', std::abs(lon),
@@ -224,7 +224,7 @@ int SatelliteSim::bookmarkAdd(const std::string &name)
         bookmarksLoad();
     if ((int)bookmarks_.size() >= kBmMax)
     {
-        bmStatus_ = "The list is full (" + std::to_string(kBmMax) + "): delete one first";
+        bmStatus_ = tx(Txt::ValTheListIsFull) + std::to_string(kBmMax) + tx(Txt::ValDeleteOneFirst);
         return -1;
     }
     Bookmark b;
@@ -243,7 +243,7 @@ int SatelliteSim::bookmarkAdd(const std::string &name)
         for (int k = 2; std::any_of(bookmarks_.begin(), bookmarks_.end(), [&](const Bookmark &o) { return o.id == b.id; }); ++k)
             b.id = std::string(buf) + "_" + std::to_string(k);
     }
-    b.name = name.empty() ? "Bookmark " + std::to_string(bookmarks_.size() + 1) : name;
+    b.name = name.empty() ? tx(Txt::ValBookmark) + std::to_string(bookmarks_.size() + 1) : name;
     bookmarks_.push_back(b);
     bookmarkUpdate((int)bookmarks_.size() - 1);
     return (int)bookmarks_.size() - 1;
@@ -278,6 +278,7 @@ void SatelliteSim::bookmarkGo(int i)
     if (followActive)
         stopFollow();
     stopTrack(); // an explicit aim, like any camera key
+    inertialStop();
     const double days = std::floor(b.simT / 86400.0);
     simDayJ2000 = (int64_t)days;
     simSecInDay = b.simT - days * 86400.0;
@@ -495,8 +496,8 @@ void SatelliteSim::bookmarkTick(UIRenderer &ui)
     {
         bmRestorePending_ = false;
         const int n = bookmarkRestoreDefaults();
-        bmStatus_ = n > 0 ? "Restored " + std::to_string(n) + (n == 1 ? " default bookmark" : " default bookmarks")
-                          : std::string("Every default bookmark is already in the list");
+        bmStatus_ = n > 0 ? tx(Txt::ValRestored) + std::to_string(n) + (n == 1 ? tx(Txt::TxtDefaultBookmark) : tx(Txt::TxtDefaultBookmarks))
+                          : std::string(tx(Txt::TxtEveryDefaultBookmarkIsAlreadyIn));
     }
     if (bmAddPending_)
     {
@@ -514,7 +515,7 @@ void SatelliteSim::bookmarkTick(UIRenderer &ui)
                 fs::create_directories(bookmarkDir(), ec);
                 const std::string path = (fs::path(bookmarkDir()) / (b.id + ".png")).string();
                 if (!stbi_write_png(path.c_str(), kBmThumbW, kBmThumbH, 4, bmThumbPixels_.data(), kBmThumbW * 4))
-                    bmStatus_ = "Could not write the thumbnail";
+                    bmStatus_ = tx(Txt::ValCouldNotWriteTheThumbnail);
                 b.thumbTried = true;
                 if (bookmarkEnsureAtlas(ui))
                 {
@@ -593,7 +594,7 @@ void SatelliteSim::buildBookmarksWindow(const UIInput &inp, UIRenderer &ui)
     int goIdx = -1, updIdx = -1, delIdx = -1, renamed = -1;
     bool add = false, restore = false;
     static char titleBuf[48];
-    snprintf(titleBuf, sizeof(titleBuf), "Bookmarks (%d)", (int)bookmarks_.size());
+    snprintf(titleBuf, sizeof(titleBuf), tx(Txt::FmtBookmarks), (int)bookmarks_.size());
 
     buildResizableWindow(
         inp, ui, bmChrome, 6, titleBuf, true, hovBmClose, (inp.screenW - bmChrome.w) * 0.5f, 110.0f, 340.0f, 300.0f, 1600.0f,
@@ -611,16 +612,16 @@ void SatelliteSim::buildBookmarksWindow(const UIInput &inp, UIRenderer &ui)
                                                       .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                       .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                 {
-                    text("Name", Pal::textDim, 11);
-                    const std::string placeholder = "Bookmark " + std::to_string(bookmarks_.size() + 1);
+                    text(tx(Txt::NoteName), Pal::textDim, 11);
+                    const std::string placeholder = tx(Txt::ValBookmark) + std::to_string(bookmarks_.size() + 1);
                     std::string nm = bmNewName_.empty() ? placeholder : bmNewName_;
-                    if (textField(inp, ui, CLAY_ID("BmNewName"), nm, (float)fs(11) * 14.0f, 12, "The new bookmark's name"))
+                    if (textField(inp, ui, CLAY_ID("BmNewName"), nm, (float)fs(11) * 14.0f, 12, tx(Txt::TxtTheNewBookmarksName)))
                         bmNewName_ = nm == placeholder ? std::string() : nm;
-                    if (uiButton(inp, ui, "BmAdd", 0, "Add current view", "Save this place, camera and moment, with a thumbnail",
+                    if (uiButton(inp, ui, "BmAdd", 0, tx(Txt::BtnAddCurrentView), tx(Txt::TipSaveThisPlaceCameraAndMoment),
                                  false, (int)bookmarks_.size() < kBmMax))
                         add = true;
-                    if (uiButton(inp, ui, "BmRestore", 0, "Restore defaults",
-                                 "Add back any of the bookmarks that ship with the sim (your own are kept)", false,
+                    if (uiButton(inp, ui, "BmRestore", 0, tx(Txt::BtnRestoreDefaults),
+                                 tx(Txt::TipAddBackAnyOfTheBookmarks), false,
                                  (int)bookmarks_.size() < kBmMax))
                         restore = true;
                 }
@@ -635,7 +636,7 @@ void SatelliteSim::buildBookmarksWindow(const UIInput &inp, UIRenderer &ui)
                                          .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}})
                 {
                     if (bookmarks_.empty())
-                        text("No bookmarks yet", Pal::textDim, 12);
+                        text(tx(Txt::NoteNoBookmarksYet), Pal::textDim, 12);
                     // Columns from the list's width in the last layout (Clay has no wrapping rows).
                     const Clay_ElementData ld = Clay_GetElementData(CLAY_ID("BmList"));
                     const float listW = std::max(200.0f, (ld.found ? ld.boundingBox.width : bmChrome.w - 24.0f) - 8.0f);
@@ -671,7 +672,7 @@ void SatelliteSim::buildBookmarksWindow(const UIInput &inp, UIRenderer &ui)
                                     {
                                         const bool n = Clay_Hovered();
                                         uiHovRoll(tid.id, n);
-                                        ui.tooltip(inp, n, "Go here", fs(11));
+                                        ui.tooltip(inp, n, tx(Txt::TipGoHere), fs(11));
                                         if (n && inp.lmbPressed)
                                             goIdx = i;
                                         if (thumbs && b.slot >= 0)
@@ -680,9 +681,9 @@ void SatelliteSim::buildBookmarksWindow(const UIInput &inp, UIRenderer &ui)
                                                                              .custom = {.customData = &b.img}}) {}
                                         }
                                         else
-                                            text(bmPendingThumb_ == b.id || bmCaptureFor_ == b.id ? "..." : "No image", Pal::textHint, 11);
+                                            text(bmPendingThumb_ == b.id || bmCaptureFor_ == b.id ? "..." : tx(Txt::NoteNoImage), Pal::textHint, 11);
                                     }
-                                    if (textField(inp, ui, CLAY_IDI("BmName", i), b.name, imgW, 12, "Click to rename", 48))
+                                    if (textField(inp, ui, CLAY_IDI("BmName", i), b.name, imgW, 12, tx(Txt::TxtClickToRename), 48))
                                         renamed = i;
                                     text(b.meta[0], Pal::volValue, 11);
                                     text(b.meta[1], Pal::textDim, 11);
@@ -690,14 +691,14 @@ void SatelliteSim::buildBookmarksWindow(const UIInput &inp, UIRenderer &ui)
                                                                             .childGap = 4,
                                                                             .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                                     {
-                                        if (uiButton(inp, ui, "BmGo", i, "Go", "Go to this place and moment", false, true, true))
+                                        if (uiButton(inp, ui, "BmGo", i, tx(Txt::BtnGo), tx(Txt::TipGoToThisPlaceAndMoment), false, true, true))
                                             goIdx = i;
-                                        if (uiButton(inp, ui, "BmUpdate", i, "Update", "Replace it with the current view (and its thumbnail)",
+                                        if (uiButton(inp, ui, "BmUpdate", i, tx(Txt::BtnUpdate), tx(Txt::TipReplaceItWithTheCurrentView),
                                                      false, true, true))
                                             updIdx = i;
                                         const bool armed = bmDeleteArmed_ == b.id;
-                                        if (uiButton(inp, ui, "BmDelete", i, armed ? "Confirm" : "Delete",
-                                                     armed ? "Click again to delete it" : "Delete (asks once more)", armed, true, true))
+                                        if (uiButton(inp, ui, "BmDelete", i, armed ? tx(Txt::BtnConfirm) : tx(Txt::BtnDelete),
+                                                     armed ? tx(Txt::TipClickAgainToDeleteIt) : tx(Txt::TipDeleteAsksOnceMore), armed, true, true))
                                         {
                                             if (armed)
                                                 delIdx = i;

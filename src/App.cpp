@@ -5,6 +5,7 @@
 #include "version.h"
 #include "simulations/UIPalette.h" // the HUD palette, for the startup chooser
 #include "clay.h" // the boot screen's Clay tree (buildBootUI) — CLAY_IMPLEMENTATION lives in UIRenderer.cpp
+#include "UiTextClay.h"
 #include <stdexcept>
 #include <algorithm>
 #include <cctype>
@@ -127,7 +128,7 @@ void App::run()
         // What init() does not cover is the first drawFrame's own work (the lazy icon atlas, the
         // first-frame pipeline compiles); this last line holds the screen until then, and its log
         // line times the whole init.
-        bootStatus("Starting");
+        bootStatus(tx(Txt::BootStarting));
         // The frame just submitted still uses the UI pipeline rebuildPipeline() is about to destroy
         // (and maybe the capture buffer): destroying a pipeline a pending command buffer uses is
         // undefined, and here it lost the device on the first real frame's vkQueueSubmit.
@@ -535,7 +536,7 @@ bool App::runBootChooser()
     {
         VkPhysicalDeviceProperties props{};
         vkGetPhysicalDeviceProperties(ctx.physicalDevice, &props);
-        std::snprintf(chooserGpuLine, sizeof(chooserGpuLine), "Graphics card: %s", props.deviceName);
+        std::snprintf(chooserGpuLine, sizeof(chooserGpuLine), tx(Txt::FmtBootGraphicsCard), props.deviceName);
     }
     Log::line("boot chooser: shown (default " + chooserSpec.options[(size_t)chooserSel].label + ")");
 
@@ -640,7 +641,7 @@ void App::buildBootChooserUI(float s, int wh)
                 CLAY_TEXT(str(o.label), CLAY_TEXT_CONFIG({.textColor = sel ? Pal::volValue : textMain,
                                                           .fontSize = fsz(o.small ? 17.0f : 22.0f)}));
                 if (i == chooserSpec.recommendedIdx)
-                    CLAY_TEXT(CLAY_STRING("Recommended for this computer"), CLAY_TEXT_CONFIG({.textColor = Pal::speedFwd, .fontSize = fsz(16)}));
+                    CLAY_TEXT(txc(Txt::NoteRecommendedForThisComputer), CLAY_TEXT_CONFIG({.textColor = Pal::speedFwd, .fontSize = fsz(16)}));
                 CLAY_TEXT(str(o.detail), CLAY_TEXT_CONFIG({.textColor = textDim, .fontSize = fsz(16)}));
             }
         };
@@ -681,7 +682,7 @@ void App::buildBootChooserUI(float s, int wh)
                                                 .backgroundColor = chooserAsk ? accent : Clay_Color{0, 0, 0, 255},
                                                 .cornerRadius = CLAY_CORNER_RADIUS(Style::windowCornerRadius),
                                                 .border = {.color = Pal::textDim, .width = CLAY_BORDER_ALL(2)}}) {}
-                CLAY_TEXT(CLAY_STRING("Ask on every startup"), CLAY_TEXT_CONFIG({.textColor = textMain, .fontSize = fsz(16)}));
+                CLAY_TEXT(txc(Txt::NoteAskOnEveryStartup), CLAY_TEXT_CONFIG({.textColor = textMain, .fontSize = fsz(16)}));
             }
             CLAY(CLAY_ID("ChooserGo"), {.layout = {.sizing = {CLAY_SIZING_FIT(140.0f * s), CLAY_SIZING_FIT(0)},
                                                    .padding = {(uint16_t)(22 * s), (uint16_t)(22 * s), (uint16_t)(9 * s), (uint16_t)(9 * s)},
@@ -692,7 +693,7 @@ void App::buildBootChooserUI(float s, int wh)
                 chooserHovGo = Clay_Hovered();
                 if (chooserHovGo && click)
                     chooserDone = true;
-                CLAY_TEXT(CLAY_STRING("Start"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fsz(18)}));
+                CLAY_TEXT(txc(Txt::NoteStart), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fsz(18)}));
             }
         }
         CLAY(CLAY_ID("ChooserGap4"), {.layout = {.sizing = {CLAY_SIZING_FIXED(1), CLAY_SIZING_FIXED(14 * s)}}}) {}

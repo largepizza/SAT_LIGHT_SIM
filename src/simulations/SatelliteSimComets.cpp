@@ -871,12 +871,12 @@ void SatelliteSim::formatSelectedCometInfo()
         if (c.idx == selectedCometIndex) cn = &c;
     std::snprintf(cometInfoLine[0], kSelInfoLineLen, "%s", el.name);
     if (!cn) return;
-    std::snprintf(cometInfoLine[1], kSelInfoLineLen, "Comet, magnitude %.1f (head %.1f as seen)", cn->g.mag, cn->magSeen);
-    std::snprintf(cometInfoLine[2], kSelInfoLineLen, "From Earth %.4f AU (%.0f km)", cn->g.delta, cn->g.delta * comet::kAuKm);
-    std::snprintf(cometInfoLine[3], kSelInfoLineLen, "From the Sun %.3f AU, %.1f deg from it in the sky", cn->g.r, cn->g.elongDeg);
-    std::snprintf(cometInfoLine[4], kSelInfoLineLen, "Tail %.1f deg, coma %.2f deg", cn->g.tailDeg, deg(cn->g.comaRad));
+    std::snprintf(cometInfoLine[1], kSelInfoLineLen, tx(Txt::FmtCometMagnitudeHeadAsSeen), cn->g.mag, cn->magSeen);
+    std::snprintf(cometInfoLine[2], kSelInfoLineLen, tx(Txt::FmtFromEarthAuKm), cn->g.delta, cn->g.delta * comet::kAuKm);
+    std::snprintf(cometInfoLine[3], kSelInfoLineLen, tx(Txt::FmtFromTheSunAuDegFrom), cn->g.r, cn->g.elongDeg);
+    std::snprintf(cometInfoLine[4], kSelInfoLineLen, tx(Txt::FmtTailDegComaDeg), cn->g.tailDeg, deg(cn->g.comaRad));
     const double t = (double)simDayJ2000 * kDay + simSecInDay;
-    std::snprintf(cometInfoLine[5], kSelInfoLineLen, "Perihelion %.4f AU, %s (%+.1f d)", el.q, fmtUtcReadable(el.tPeri).substr(0, 10).c_str(),
+    std::snprintf(cometInfoLine[5], kSelInfoLineLen, tx(Txt::FmtPerihelionAuD), el.q, fmtUtcReadable(el.tPeri).substr(0, 10).c_str(),
                   (t - el.tPeri) / kDay);
 }
 
@@ -954,7 +954,7 @@ bool SatelliteSim::cometWatchAt(int idx, double t, double sunMaxDeg, bool fromOr
     char b[260];
     CometGeom gs;
     cometGeometry(el, t, cometObserverHelio(t), gs);
-    std::snprintf(b, sizeof(b), "%s, magnitude %.1f, %.0f deg from the Sun, from %.1f%c %.1f%c%s (Sun %.0f deg)%s", el.name, gs.mag,
+    std::snprintf(b, sizeof(b), tx(Txt::FmtMagnitudeDegFromTheSunFrom), el.name, gs.mag,
                   gs.elongDeg, std::abs(obsLatDeg), obsLatDeg >= 0 ? 'N' : 'S', std::abs(obsLonDeg), obsLonDeg >= 0 ? 'E' : 'W',
                   fromOrbit ? " in orbit" : "", glm::degrees(std::asin(std::clamp(sunDirENU.w, -1.0f, 1.0f))),
                   found ? "" : " (no dark place: the comet is near the Sun)");

@@ -13,6 +13,7 @@
 #include "../Harness.h"
 #include "version.h"
 #include "clay.h"
+#include "../UiTextClay.h"
 #include "UIPalette.h"
 
 #include <chrono>
@@ -174,7 +175,6 @@ static constexpr const char *kSettingsTabNames[kSettingsTabCount] = {
     "Constellations", "Sound", "Controls", "Camera",
     "Display", "Photometry", "Clouds", "Ocean", "Terrain", "Atmosphere", "Beams", "Attributions",
     "Weather", "Night lights", "Performance", "Launches", "Sky"};
-static constexpr const char *kSettingsStripHeadings[] = {"GENERAL", "SKY", "RENDERING", "ABOUT"};
 static constexpr int kSettingsStrip[] = {-1, 4, 2, 1, -2, 0, 16, 15, 5, -3, 6, 12, 9, 8, 13, 7, 10, 14, -4, 11};
 bool settingsTabIsAdvanced(int i) { return (i >= 6 && i <= 10) || i == 12 || i == 13 || i == 14; }
 int settingsTabIndexByName(const std::string &name)
@@ -195,7 +195,14 @@ int settingsTabIndexByName(const std::string &name)
     }
     return -1;
 }
-const char *settingsTabName(int i) { return (i >= 0 && i < kSettingsTabCount) ? kSettingsTabNames[i] : ""; }
+// kSettingsTabNames are the tabs' stable names (harness `ui open settings tab=`); what the strip shows comes from
+// the UI text table.
+static const Txt kSettingsTabText[kSettingsTabCount] = {
+    Txt::TabConstellations, Txt::TabSound, Txt::TabControls, Txt::TabCamera, Txt::TabDisplay, Txt::TabPhotometry,
+    Txt::TabClouds, Txt::TabOcean, Txt::TabTerrain, Txt::TabAtmosphere, Txt::TabBeams, Txt::TabAttributions,
+    Txt::TabWeather, Txt::TabNightLights, Txt::TabPerformance, Txt::TabLaunches, Txt::TabSky};
+static const Txt kSettingsStripHeadingText[] = {Txt::SecTabsGeneral, Txt::SecTabsSky, Txt::SecTabsRendering, Txt::SecTabsAbout};
+const char *settingsTabName(int i) { return (i >= 0 && i < kSettingsTabCount) ? tx(kSettingsTabText[i]) : ""; }
 
 // Helper: short display name for a GLFW key code (used in settings window + tooltips).
 const char *keyDisplayName(int key) // also SatelliteSimTutorial.cpp
@@ -205,33 +212,33 @@ const char *keyDisplayName(int key) // also SatelliteSimTutorial.cpp
     switch (key)
     {
     case GLFW_KEY_SPACE:
-        return "Space";
+        return tx(Txt::SldSpace);
     case GLFW_KEY_TAB:
-        return "Tab";
+        return tx(Txt::ValTab);
     case GLFW_KEY_COMMA:
         return ",";
     case GLFW_KEY_PERIOD:
         return ".";
     case GLFW_KEY_ESCAPE:
-        return "Esc";
+        return tx(Txt::ValEsc);
     case GLFW_KEY_ENTER:
-        return "Enter";
+        return tx(Txt::ValEnter);
     case GLFW_KEY_LEFT_SHIFT:
-        return "LShift";
+        return tx(Txt::ValLshift);
     case GLFW_KEY_RIGHT_SHIFT:
-        return "RShift";
+        return tx(Txt::ValRshift);
     case GLFW_KEY_LEFT_CONTROL:
-        return "LCtrl";
+        return tx(Txt::ValLctrl);
     case GLFW_KEY_RIGHT_CONTROL:
-        return "RCtrl";
+        return tx(Txt::ValRctrl);
     case GLFW_KEY_LEFT_ALT:
-        return "LAlt";
+        return tx(Txt::ValLalt);
     case GLFW_KEY_RIGHT_ALT:
-        return "RAlt";
+        return tx(Txt::ValRalt);
     case GLFW_KEY_LEFT_SUPER:
-        return "LSuper";
+        return tx(Txt::ValLsuper);
     case GLFW_KEY_RIGHT_SUPER:
-        return "RSuper";
+        return tx(Txt::ValRsuper);
     case GLFW_KEY_F11:
         return "F11";
     case GLFW_KEY_F1:
@@ -257,27 +264,27 @@ const char *keyDisplayName(int key) // also SatelliteSimTutorial.cpp
     case GLFW_KEY_F12:
         return "F12";
     case GLFW_KEY_UP:
-        return "Up";
+        return tx(Txt::ValUp);
     case GLFW_KEY_DOWN:
-        return "Down";
+        return tx(Txt::ValDown);
     case GLFW_KEY_LEFT:
-        return "Left";
+        return tx(Txt::ValLeft);
     case GLFW_KEY_RIGHT:
-        return "Right";
+        return tx(Txt::ValRight);
     case GLFW_KEY_PAGE_UP:
         return "PgUp";
     case GLFW_KEY_PAGE_DOWN:
         return "PgDn";
     case GLFW_KEY_HOME:
-        return "Home";
+        return tx(Txt::ValHome);
     case GLFW_KEY_END:
-        return "End";
+        return tx(Txt::ValEnd);
     case GLFW_KEY_INSERT:
-        return "Ins";
+        return tx(Txt::ValIns);
     case GLFW_KEY_DELETE:
-        return "Del";
+        return tx(Txt::ValDel);
     case GLFW_KEY_BACKSPACE:
-        return "Bksp";
+        return tx(Txt::ValBksp);
     case GLFW_KEY_SLASH:
         return "/";
     case GLFW_KEY_BACKSLASH:
@@ -327,27 +334,27 @@ const char *gamepadButtonDisplayName(int button) // also SatelliteSimTutorial.cp
     case GLFW_GAMEPAD_BUTTON_Y:
         return "Y";
     case GLFW_GAMEPAD_BUTTON_LEFT_BUMPER:
-        return "LB";
+        return tx(Txt::ValLb);
     case GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER:
-        return "RB";
+        return tx(Txt::ValRb);
     case GLFW_GAMEPAD_BUTTON_BACK:
-        return "Back";
+        return tx(Txt::BtnBack);
     case GLFW_GAMEPAD_BUTTON_START:
-        return "Start";
+        return tx(Txt::NoteStart);
     case GLFW_GAMEPAD_BUTTON_GUIDE:
-        return "Guide";
+        return tx(Txt::ValGuide);
     case GLFW_GAMEPAD_BUTTON_LEFT_THUMB:
-        return "LS";
+        return tx(Txt::ValLs);
     case GLFW_GAMEPAD_BUTTON_RIGHT_THUMB:
-        return "RS";
+        return tx(Txt::ValRs);
     case GLFW_GAMEPAD_BUTTON_DPAD_UP:
-        return "D-Up";
+        return tx(Txt::ValDUp);
     case GLFW_GAMEPAD_BUTTON_DPAD_RIGHT:
-        return "D-Right";
+        return tx(Txt::ValDRight);
     case GLFW_GAMEPAD_BUTTON_DPAD_DOWN:
-        return "D-Down";
+        return tx(Txt::ValDDown);
     case GLFW_GAMEPAD_BUTTON_DPAD_LEFT:
-        return "D-Left";
+        return tx(Txt::ValDLeft);
     default:
         return "?";
     }
@@ -525,7 +532,7 @@ bool SatelliteSim::setAltitudeFromText(const std::string &text)
 bool SatelliteSim::setSimTimeFromText(const std::string &text)
 {
     std::string s = hudTrim(text);
-    for (const char *strip : {"UTC", "utc", "Z", "z"})
+    for (const char *strip : {tx(Txt::LblUtc), "utc", "Z", "z"})
     {
         if (s.rfind(strip, 0) == 0)
             s = hudTrim(s.substr(strlen(strip)));
@@ -583,9 +590,9 @@ bool SatelliteSim::setSimTimeFromText(const std::string &text)
 static void formatAltitude(char *buf, size_t bufSize, float meters, UnitSystem unit)
 {
     if (unit == UnitSystem::Imperial)
-        snprintf(buf, bufSize, "%.2f mi", meters / 1609.344f);
+        snprintf(buf, bufSize, tx(Txt::FmtMi), meters / 1609.344f);
     else
-        snprintf(buf, bufSize, "%.2f km", meters / 1000.0f);
+        snprintf(buf, bufSize, tx(Txt::FmtKm2), meters / 1000.0f);
 }
 
 // ─── buildUI ──────────────────────────────────────────────────────────────────
@@ -1012,11 +1019,11 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
         time_t unixSim = (time_t)(simDayJ2000 * 86400LL + (int64_t)simSecInDay) + 946728000;
         struct tm *utc = gmtime(&unixSim);
         if (utc)
-            snprintf(timeBuf, sizeof(timeBuf), "UTC %04d-%02d-%02d %02d:%02d:%02d",
+            snprintf(timeBuf, sizeof(timeBuf), tx(Txt::FmtUtc2),
                      utc->tm_year + 1900, utc->tm_mon + 1, utc->tm_mday,
                      utc->tm_hour, utc->tm_min, utc->tm_sec);
         else
-            snprintf(timeBuf, sizeof(timeBuf), "UTC --");
+            snprintf(timeBuf, sizeof(timeBuf), tx(Txt::FmtUtc));
     }
     static char speedBuf[24];
     snprintf(speedBuf, sizeof(speedBuf), "%s%s",
@@ -1045,7 +1052,7 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
                                 Pal::textDim, "Click to type a UTC time: 2036-11-22 02:06, or 02:06:30 for today") &&
                 !setSimTimeFromText(typed))
             {
-                snprintf(screenshotToastText, sizeof(screenshotToastText), "Not a time: %.40s  (try 2036-11-22 02:06)", typed.c_str());
+                snprintf(screenshotToastText, sizeof(screenshotToastText), tx(Txt::ToastNotATimeTry203611), typed.c_str());
                 screenshotToastTimer = 3.0f;
                 screenshotToastWarn = true;
             }
@@ -1088,7 +1095,7 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
                     timeScaleIdx = std::max(0, timeScaleIdx - 1);
                 hovTimeSlower = n;
                 static char tip[32];
-                snprintf(tip, sizeof(tip), "Slow down time (%s)", keyDisplayName(keybindings[KB_SLOWER].key));
+                snprintf(tip, sizeof(tip), tx(Txt::FmtSlowDownTime), keyDisplayName(keybindings[KB_SLOWER].key));
                 ui.tooltip(inp, n, tip, fs(11));
                 CLAY(CLAY_ID("TimeSlowerIcon"), {.layout = {
                                                      .sizing = {CLAY_SIZING_FIXED(kIconSize), CLAY_SIZING_FIXED(kIconSize)}},
@@ -1135,7 +1142,7 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
                     timeScaleIdx = std::min(kNumTimeScales - 1, timeScaleIdx + 1);
                 hovTimeFaster = n;
                 static char tip[32];
-                snprintf(tip, sizeof(tip), "Speed up time (%s)", keyDisplayName(keybindings[KB_FASTER].key));
+                snprintf(tip, sizeof(tip), tx(Txt::FmtSpeedUpTime), keyDisplayName(keybindings[KB_FASTER].key));
                 ui.tooltip(inp, n, tip, fs(11));
                 CLAY(CLAY_ID("TimeFasterIcon"), {.layout = {
                                                      .sizing = {CLAY_SIZING_FIXED(kIconSize), CLAY_SIZING_FIXED(kIconSize)}},
@@ -1160,7 +1167,7 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
                     toggleTimeDirection();
                 hovTimeReverse = n;
                 static char tip[32];
-                snprintf(tip, sizeof(tip), "Reverse time (%s)", keyDisplayName(keybindings[KB_REVERSE].key));
+                snprintf(tip, sizeof(tip), tx(Txt::FmtReverseTime), keyDisplayName(keybindings[KB_REVERSE].key));
                 ui.tooltip(inp, n, tip, fs(11));
                 CLAY_TEXT(CLAY_STRING("R"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(13)}));
             }
@@ -1181,7 +1188,7 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
                     requestScreenshot(screenshotUiSetting);
                 hovScreenshot = n;
                 static char tip[32];
-                snprintf(tip, sizeof(tip), "Screenshot (%s)", keyDisplayName(keybindings[KB_SCREENSHOT].key));
+                snprintf(tip, sizeof(tip), tx(Txt::FmtScreenshot), keyDisplayName(keybindings[KB_SCREENSHOT].key));
                 ui.tooltip(inp, n, tip, fs(11));
                 CLAY(CLAY_ID("TimeScreenshotIcon"), {.layout = {
                                                          .sizing = {CLAY_SIZING_FIXED(kIconSize), CLAY_SIZING_FIXED(kIconSize)}},
@@ -1203,7 +1210,7 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
                     requestPhoto();
                 hovPhoto = n;
                 static char tip[48];
-                snprintf(tip, sizeof(tip), "HQ photo (%s)", keyDisplayName(keybindings[KB_PHOTO].key));
+                snprintf(tip, sizeof(tip), tx(Txt::FmtHqPhoto), keyDisplayName(keybindings[KB_PHOTO].key));
                 ui.tooltip(inp, n, tip, fs(11));
                 CLAY(CLAY_ID("TimePhotoIcon"), {.layout = {
                                                     .sizing = {CLAY_SIZING_FIXED(kIconSize), CLAY_SIZING_FIXED(kIconSize)}},
@@ -1232,7 +1239,7 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
                 }
                 hovTrailsBtn = n;
                 static char tip[40];
-                snprintf(tip, sizeof(tip), "Star trails (%s)", keyDisplayName(keybindings[KB_TOGGLE_TRAILS].key));
+                snprintf(tip, sizeof(tip), tx(Txt::FmtStarTrails), keyDisplayName(keybindings[KB_TOGGLE_TRAILS].key));
                 ui.tooltip(inp, n, tip, fs(11));
                 CLAY(CLAY_ID("TrailsIcon"), {.layout = {
                                                  .sizing = {CLAY_SIZING_FIXED(kIconSize), CLAY_SIZING_FIXED(kIconSize)}},
@@ -1255,7 +1262,7 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
                     videoToggle();
                 hovVideoBtn = n;
                 static char tip[48];
-                snprintf(tip, sizeof(tip), vidOn ? "Stop recording (%s)" : "Record video (%s)",
+                snprintf(tip, sizeof(tip), vidOn ? tx(Txt::FmtStopRecording) : tx(Txt::FmtRecordVideo),
                          keyDisplayName(keybindings[KB_VIDEO].key));
                 ui.tooltip(inp, n, tip, fs(11));
                 CLAY(CLAY_ID("TimeVideoIcon"), {.layout = {
@@ -1280,8 +1287,8 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
     {
         float absLat = fabsf(obsLatDeg);
         float absLon = fabsf(obsLonDeg);
-        snprintf(latBuf, sizeof(latBuf), "%.1f\xc2\xb0 %c", absLat, obsLatDeg >= 0.0f ? 'N' : 'S');
-        snprintf(lonBuf, sizeof(lonBuf), "%.1f\xc2\xb0 %c", absLon, obsLonDeg >= 0.0f ? 'E' : 'W');
+        snprintf(latBuf, sizeof(latBuf), tx(Txt::FmtXc2Xb0), absLat, obsLatDeg >= 0.0f ? 'N' : 'S');
+        snprintf(lonBuf, sizeof(lonBuf), tx(Txt::FmtXc2Xb0), absLon, obsLonDeg >= 0.0f ? 'E' : 'W');
         // obsHeightOffset is the eye's altitude above SEA LEVEL floored at the ground (the shaders' observerEffHeight),
         // so MSL = max(ground, offset) and AGL = max(0, offset - ground). Until 2026-10-03 this showed terrain + offset
         // as MSL and the offset as AGL — right only while standing on the ground.
@@ -1293,7 +1300,7 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
         // 1/dt is the true frame rate. EMA-smooth it so a genuinely low rate shows a steady number.
         float instFps = inp.dt > 0.0f ? 1.0f / inp.dt : 0.0f;
         fpsBadgeEma = fpsBadgeEma > 0.0f ? fpsBadgeEma + 0.1f * (instFps - fpsBadgeEma) : instFps;
-        snprintf(fpsBuf, sizeof(fpsBuf), "%.0f fps", fpsBadgeEma);
+        snprintf(fpsBuf, sizeof(fpsBuf), tx(Txt::FmtFps), fpsBadgeEma);
     }
     Clay_String fpsStr{false, (int32_t)strlen(fpsBuf), fpsBuf};
 
@@ -1308,7 +1315,7 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
             scrollMult = 0.2f;
     }
     static char geoTip[96];
-    snprintf(geoTip, sizeof(geoTip), "Click to type, scroll to adjust (%s = fast, %s = fine)",
+    snprintf(geoTip, sizeof(geoTip), tx(Txt::FmtClickToTypeScrollToAdjust),
              keyDisplayName(keybindings[KB_MOVE_BOOST].key), keyDisplayName(keybindings[KB_MOVE_FINE].key));
 
     const int kGearSz = 28;
@@ -1359,7 +1366,7 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
             if (inlineTextField(inp, ui, CLAY_ID("SBLatField"), latBuf, edit, typed, (float)fs(12) * 4.6f, 12, Pal::volValue, geoTip) &&
                 !setLatLonFromText(typed, true))
             {
-                snprintf(screenshotToastText, sizeof(screenshotToastText), "Latitude not understood: %.40s", typed.c_str());
+                snprintf(screenshotToastText, sizeof(screenshotToastText), tx(Txt::ToastLatitudeNotUnderstood), typed.c_str());
                 screenshotToastTimer = 3.0f;
                 screenshotToastWarn = true;
             }
@@ -1382,7 +1389,7 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
             if (inlineTextField(inp, ui, CLAY_ID("SBLonField"), lonBuf, edit, typed, (float)fs(12) * 4.6f, 12, Pal::volValue, geoTip) &&
                 !setLatLonFromText(typed, false))
             {
-                snprintf(screenshotToastText, sizeof(screenshotToastText), "Longitude not understood: %.40s", typed.c_str());
+                snprintf(screenshotToastText, sizeof(screenshotToastText), tx(Txt::ToastLongitudeNotUnderstood), typed.c_str());
                 screenshotToastTimer = 3.0f;
                 screenshotToastWarn = true;
             }
@@ -1408,7 +1415,7 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
             if (inlineTextField(inp, ui, CLAY_ID("SBAltField"), altBuf, edit, typed, (float)fs(12) * 5.6f, 12, Pal::volValue, geoTip) &&
                 !setAltitudeFromText(typed))
             {
-                snprintf(screenshotToastText, sizeof(screenshotToastText), "Altitude not understood: %.40s", typed.c_str());
+                snprintf(screenshotToastText, sizeof(screenshotToastText), tx(Txt::ToastAltitudeNotUnderstood), typed.c_str());
                 screenshotToastTimer = 3.0f;
                 screenshotToastWarn = true;
             }
@@ -1426,8 +1433,8 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
             if (n && inp.lmbPressed)
                 altModeSeaLevel = !altModeSeaLevel;
             hovAltModeToggle = n;
-            ui.tooltip(inp, n, "Toggle sea-level / above-terrain altitude", fs(11));
-            CLAY_TEXT(altModeSeaLevel ? CLAY_STRING("MSL") : CLAY_STRING("AGL"),
+            ui.tooltip(inp, n, tx(Txt::TipToggleSeaLevelAboveTerrainAltitude), fs(11));
+            CLAY_TEXT(altModeSeaLevel ? txc(Txt::NoteMsl) : txc(Txt::NoteAgl),
                       CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(10)}));
         }
 
@@ -1451,7 +1458,7 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
             // Built from APP_VERSION (CMake → version.h) so it can't drift from the VERSION file.
             static char versionBuf[48] = {};
             if (!versionBuf[0])
-                snprintf(versionBuf, sizeof(versionBuf), "SAT LIGHT SIM v%s", APP_VERSION);
+                snprintf(versionBuf, sizeof(versionBuf), tx(Txt::FmtSatLightSimV), APP_VERSION);
             Clay_String versionStr{false, (int32_t)strlen(versionBuf), versionBuf};
             CLAY(CLAY_ID("SBVersion"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)}}})
             {
@@ -1652,7 +1659,7 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
         // drew over each other at the top-left).
         static char chipBuf[kSelInfoLineLen + 32];
         const int nameLen = labelNameLen(infoLines[0]);
-        snprintf(chipBuf, sizeof(chipBuf), "Selected: %.*s (out of view)", nameLen, infoLines[0]);
+        snprintf(chipBuf, sizeof(chipBuf), tx(Txt::FmtSelectedOutOfView), nameLen, infoLines[0]);
         const float chipY = kMargin + (followActive ? (float)fs(11) + 30.0f : 0.0f);
         Clay_String chipStr{false, (int32_t)strlen(chipBuf), chipBuf};
         CLAY(CLAY_ID("SelSatChip"), {.layout = {
@@ -1859,7 +1866,7 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
         else
             snprintf(traceTileBuf[0], sizeof(traceTileBuf[0]), "Dark");
         snprintf(traceTileBuf[2], sizeof(traceTileBuf[2]), "%dm %02ds", tracePassS / 60, tracePassS % 60);
-        snprintf(traceTileBuf[3], sizeof(traceTileBuf[3]), "%.0f deg", traceMaxEl);
+        snprintf(traceTileBuf[3], sizeof(traceTileBuf[3]), tx(Txt::FmtDeg), traceMaxEl);
     }
     if (traceValid && traceSetup.satelliteIndex >= 0 && traceSetup.satelliteIndex < (int)satOrbits.size())
     {
@@ -1867,8 +1874,8 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
         const SatelliteType &type = satTypes[ti];
         const SatTraceRow r = evalSatTraceRow(traceSetup, type.groups, type.lobes, &type.occlusion, tNow);
         formatSimClock(tNow, traceTileBuf[4], sizeof(traceTileBuf[4]), false);
-        snprintf(traceTileBuf[6], sizeof(traceTileBuf[6]), "%.0f deg", r.elevationDeg);
-        snprintf(traceTileBuf[7], sizeof(traceTileBuf[7]), "%.0f deg", r.phaseDeg);
+        snprintf(traceTileBuf[6], sizeof(traceTileBuf[6]), tx(Txt::FmtDeg), r.elevationDeg);
+        snprintf(traceTileBuf[7], sizeof(traceTileBuf[7]), tx(Txt::FmtDeg), r.phaseDeg);
         if (r.elevationDeg <= 0.0)
             snprintf(traceTileBuf[5], sizeof(traceTileBuf[5]), "Below");
         else if (!std::isfinite(r.magApparent))
@@ -1890,7 +1897,7 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
     }
 
     static char titleBuf[128];
-    snprintf(titleBuf, sizeof(titleBuf), "Trace: %s", traceTitle);
+    snprintf(titleBuf, sizeof(titleBuf), tx(Txt::FmtTrace), traceTitle);
     auto text = [&](const char *s, Clay_Color c, float size)
     {
         Clay_String str{false, (int32_t)strlen(s), s};
@@ -1937,7 +1944,7 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
     };
     static const char *kPhaseTicks[kTracePhaseTicks] = {"180", "135", "90", "45", "0"};
     static char retraceTip[96];
-    snprintf(retraceTip, sizeof(retraceTip), "Trace the selection's pass from now (last retrace %.1f ms)", traceRetraceMs);
+    snprintf(retraceTip, sizeof(retraceTip), tx(Txt::FmtTraceTheSelectionsPassFromNow), traceRetraceMs);
     const char *status = traceStatus[0] ? traceStatus : (observerMoved && !traceLive ? "Observer moved: Retrace to update" : nullptr);
 
     buildResizableWindow(
@@ -1955,16 +1962,16 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
                     text(status, traceValid ? Pal::textWarn : Pal::listenKey, 11);
                 tileRow(0, [&]()
                         {
-                            uiStatTile("TraceTile", 0, "PEAK MAG", traceTileBuf[0], Pal::textPrimary);
-                            uiStatTile("TraceTile", 1, "PEAK AT", traceTileBuf[1], Pal::textPrimary);
-                            uiStatTile("TraceTile", 2, "PASS", traceTileBuf[2], Pal::textPrimary);
-                            uiStatTile("TraceTile", 3, "MAX ELEV", traceTileBuf[3], Pal::textPrimary); });
+                            uiStatTile("TraceTile", 0, tx(Txt::LblPeakMag), traceTileBuf[0], Pal::textPrimary);
+                            uiStatTile("TraceTile", 1, tx(Txt::LblPeakAt), traceTileBuf[1], Pal::textPrimary);
+                            uiStatTile("TraceTile", 2, tx(Txt::LblPass), traceTileBuf[2], Pal::textPrimary);
+                            uiStatTile("TraceTile", 3, tx(Txt::LblMaxElev), traceTileBuf[3], Pal::textPrimary); });
                 tileRow(1, [&]()
                         {
-                            uiStatTile("TraceTile", 4, "NOW", traceTileBuf[4], {255, 255, 255, 235});
-                            uiStatTile("TraceTile", 5, "MAGNITUDE", traceTileBuf[5], {140, 204, 255, 255});
-                            uiStatTile("TraceTile", 6, "ELEVATION", traceTileBuf[6], Pal::textPrimary);
-                            uiStatTile("TraceTile", 7, "PHASE", traceTileBuf[7], kPhaseCol); });
+                            uiStatTile("TraceTile", 4, tx(Txt::LblNow), traceTileBuf[4], {255, 255, 255, 235});
+                            uiStatTile("TraceTile", 5, tx(Txt::LblMagnitude), traceTileBuf[5], {140, 204, 255, 255});
+                            uiStatTile("TraceTile", 6, tx(Txt::LblElevation), traceTileBuf[6], Pal::textPrimary);
+                            uiStatTile("TraceTile", 7, tx(Txt::LblPhase), traceTileBuf[7], kPhaseCol); });
                 if (traceValid)
                 {
                     // Legend and axis titles on one line: mag on the left gutter, phase on the right.
@@ -2043,13 +2050,12 @@ void SatelliteSim::buildTraceWindow(const UIInput &inp, UIRenderer &ui)
                                                           .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                           .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                 {
-                    if (uiButton(inp, ui, "TraceBtn", 0, "Retrace", retraceTip))
+                    if (uiButton(inp, ui, "TraceBtn", 0, tx(Txt::BtnRetrace), retraceTip))
                         computeSelectedTrace();
-                    if (uiButton(inp, ui, "TraceBtn", 2, "Live", "Retrace up to 10 times a second when you move, the selection "
-                                                               "changes, the pass ends or a photometry setting changes",
+                    if (uiButton(inp, ui, "TraceBtn", 2, tx(Txt::OptLive), tx(Txt::TipRetraceUpTo10TimesA),
                                  traceLive))
                         traceLive = !traceLive;
-                    if (uiButton(inp, ui, "TraceBtn", 1, "Export CSV", "Write this trace as CSV (replay: SatModelTool --replay-trace)",
+                    if (uiButton(inp, ui, "TraceBtn", 1, tx(Txt::BtnExportCsv), tx(Txt::TipWriteThisTraceAsCsvReplay),
                                  false, traceValid))
                         exportTrace();
                     if (traceExportStatus[0])
@@ -2255,8 +2261,8 @@ void SatelliteSim::updateViewerView(const UIInput &inp, UIRenderer &ui)
         {
             snprintf(viewerCheckValue[0], sizeof(viewerCheckValue[0]), "%.2f", mR);
             snprintf(viewerCheckValue[1], sizeof(viewerCheckValue[1]), "%.2f", mM);
-            snprintf(viewerCheckValue[2], sizeof(viewerCheckValue[2]), "%+.3f mag", mR - mM);
-            snprintf(viewerCheckNote, sizeof(viewerCheckNote), "Sun only, phase %.0f deg%s", viewerCheckPhaseDeg,
+            snprintf(viewerCheckValue[2], sizeof(viewerCheckValue[2]), tx(Txt::FmtMag), mR - mM);
+            snprintf(viewerCheckNote, sizeof(viewerCheckNote), tx(Txt::FmtSunOnlyPhaseDeg), viewerCheckPhaseDeg,
                      viewerShadows ? ", shadows" : "");
         }
         else
@@ -2264,7 +2270,7 @@ void SatelliteSim::updateViewerView(const UIInput &inp, UIRenderer &ui)
             snprintf(viewerCheckValue[0], sizeof(viewerCheckValue[0]), "%s", std::isfinite(mR) ? "lit" : "dark");
             snprintf(viewerCheckValue[1], sizeof(viewerCheckValue[1]), "%s", std::isfinite(mM) ? "lit" : "dark");
             snprintf(viewerCheckValue[2], sizeof(viewerCheckValue[2]), "-");
-            snprintf(viewerCheckNote, sizeof(viewerCheckNote), "Not sunlit from this side (phase %.0f deg)", viewerCheckPhaseDeg);
+            snprintf(viewerCheckNote, sizeof(viewerCheckNote), tx(Txt::FmtNotSunlitFromThisSidePhase), viewerCheckPhaseDeg);
         }
     }
 
@@ -2358,9 +2364,9 @@ void SatelliteSim::buildViewerMarkerLabels(int view)
                            .attachTo = CLAY_ATTACH_TO_ELEMENT_WITH_ID}})
         {
             if (m == 0)
-                CLAY_TEXT(CLAY_STRING("You"), CLAY_TEXT_CONFIG({.textColor = kLabelColor[0], .fontSize = fs(11)}));
+                CLAY_TEXT(txc(Txt::NoteYou), CLAY_TEXT_CONFIG({.textColor = kLabelColor[0], .fontSize = fs(11)}));
             else
-                CLAY_TEXT(CLAY_STRING("Target"), CLAY_TEXT_CONFIG({.textColor = kLabelColor[1], .fontSize = fs(11)}));
+                CLAY_TEXT(txc(Txt::NoteTarget), CLAY_TEXT_CONFIG({.textColor = kLabelColor[1], .fontSize = fs(11)}));
         }
     }
 }
@@ -2475,8 +2481,8 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
     const bool tracked = viewerSatIndex >= 0 && viewerSatIndex < (int)satOrbits.size();
     const bool isSelected = tracked && selectedSatIndex == viewerSatIndex;
 
-    static const char *kInfoSectionNames[kInfoSectionCount] = {"STATUS", "BRIGHTNESS", "SKY POSITION", "ORBIT",
-                                                               "MODEL (TECHNICAL)", "3D VIEW", "PHOTOMETRY CHECK", "MISSION"};
+    static const char *kInfoSectionNames[kInfoSectionCount] = {tx(Txt::OptStatus), tx(Txt::LblBrightness), tx(Txt::OptSkyPosition), tx(Txt::OptOrbit),
+                                                               tx(Txt::OptModelTechnical), tx(Txt::OptdView), tx(Txt::OptPhotometryCheck), tx(Txt::OptMission)};
     // MISSION (2026-10-20): the viewed object's launch timeline, refreshed 4x a second or when the object changes.
     {
         const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -2489,7 +2495,7 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
         }
     }
     int msJumpIdx = -1, msJumpDir = 0; // a MISSION skip, applied after the layout
-    static const char *kSatLabels[kViewerSatRows] = {"Type", "Model", "Size", "Mesh"};
+    static const char *kSatLabels[kViewerSatRows] = {tx(Txt::OptType), tx(Txt::OptModel), tx(Txt::OptSize), tx(Txt::OptMesh)};
     // A rocket stage, Starship's ship or a re-entry fireball (SelTransient): no orbit, no pass, no breakup.
     const bool viewTransient = tracked && (uint32_t)viewerSatIndex == transientSatIdx();
     // Actions on a transient only while it is still the selection (its reserved slot follows the selection).
@@ -2516,8 +2522,8 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
         const SelTransient &st = selTransientCur;
         // Kinds 7-9 (fairing halves, visiting spacecraft, a cargo ship's re-entry) read as "Re-entry" with a
         // "Glowing for" row (2026-10-21 QA: a Progress on its final approach).
-        static const char *kKind[10] = {"Object", "Rocket", "Ship entry", "Re-entry", "Re-entry", "Re-entry",
-                                        "Re-entry", "Fairing half", "Spacecraft", "Re-entry"};
+        static const char *kKind[10] = {tx(Txt::LblObject), tx(Txt::OptRocket), tx(Txt::OptShipEntry), tx(Txt::OptReEntry), tx(Txt::OptReEntry), tx(Txt::OptReEntry),
+                                        tx(Txt::OptReEntry), tx(Txt::OptFairingHalf), tx(Txt::OptSpacecraft), tx(Txt::OptReEntry)};
         const std::string tl = transientLabel();
         statusRow(kKind[std::min<int>(st.kind, 9)], "%s", tl.c_str());
         // The title: the label up to its first comma ("Starship (ascent burn)"), not the model id openModelViewer had.
@@ -2534,10 +2540,10 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
             // The label must outlive the frame (Clay keeps the pointer): a fixed set of literals is chosen by text.
             std::string tl2, tv2;
             transientTimeRow(st, tl2, tv2);
-            static const char *kTimeLabels[] = {"Lift-off in", "Since lift-off", "Since separation", "Glowing for",
-                                                "Docked since", "Berthed since", "Since undocking", "Since unberthing",
-                                                "Since entry interface"};
-            const char *lab = "Time";
+            static const char *kTimeLabels[] = {tx(Txt::OptLiftOffIn), tx(Txt::OptSinceLiftOff), tx(Txt::OptSinceSeparation), tx(Txt::OptGlowingFor),
+                                                tx(Txt::OptDockedSince), tx(Txt::OptBerthedSince), tx(Txt::OptSinceUndocking), tx(Txt::OptSinceUnberthing),
+                                                tx(Txt::OptSinceEntryInterface)};
+            const char *lab = tx(Txt::OptTime);
             for (const char *k : kTimeLabels)
                 if (tl2 == k)
                     lab = k;
@@ -2572,9 +2578,9 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
         else
             statusRow("Status", "%s", "Collision debris");
     }
-    static const char *kOrbitLabels[kViewerOrbitRows] = {"Altitude", "Inclination", "RAAN", "Period", "Power"};
-    static const char *kObsLabels[kViewerObsRows] = {"Visibility", "Elevation", "Azimuth", "Range"};
-    static const char *kCheckLabels[3] = {"Render", "Model", "Difference"};
+    static const char *kOrbitLabels[kViewerOrbitRows] = {tx(Txt::OptAltitude), tx(Txt::OptInclination), tx(Txt::OptRaan), tx(Txt::OptPeriod), tx(Txt::OptPower)};
+    static const char *kObsLabels[kViewerObsRows] = {tx(Txt::OptVisibility), tx(Txt::OptElevation), tx(Txt::OptAzimuth), tx(Txt::OptRange)};
+    static const char *kCheckLabels[3] = {tx(Txt::OptRender), tx(Txt::OptModel), tx(Txt::OptDifference)};
     const float lw = (float)fs(11) * 8.5f;
 
     // A collapsible section: header + an indented body, the Clouds tab's form (buildCloudSliderSections). "+"/"-"
@@ -2637,9 +2643,9 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
         if (!tracked || !v[0])
             return "-";
         if (strncmp(v, "In Earth", 8) == 0)
-            return "Dark";
+            return tx(Txt::ValDark);
         if (strncmp(v, "Below", 5) == 0)
-            return "Below";
+            return tx(Txt::ValBelow);
         if (strncmp(v, "n/a", 3) == 0)
             return "n/a";
         return v;
@@ -2690,10 +2696,10 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                                                        .childGap = 4,
                                                        .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                 {
-                    uiStatTile("InfoTile", 0, "MAGNITUDE", tileVal(viewerPhotValue[0]), Pal::textPrimary);
-                    uiStatTile("InfoTile", 1, "ELEVATION", tileVal(viewerObsValue[1]), Pal::textPrimary);
-                    uiStatTile("InfoTile", 2, "RANGE", tileVal(viewerObsValue[3]), Pal::textPrimary);
-                    uiStatTile("InfoTile", 3, "PHASE", tileVal(viewerPhotValue[4]), Pal::textPrimary);
+                    uiStatTile("InfoTile", 0, tx(Txt::LblMagnitude), tileVal(viewerPhotValue[0]), Pal::textPrimary);
+                    uiStatTile("InfoTile", 1, tx(Txt::LblElevation), tileVal(viewerObsValue[1]), Pal::textPrimary);
+                    uiStatTile("InfoTile", 2, tx(Txt::LblRange), tileVal(viewerObsValue[3]), Pal::textPrimary);
+                    uiStatTile("InfoTile", 3, tx(Txt::LblPhase), tileVal(viewerPhotValue[4]), Pal::textPrimary);
                 }
                 // ── ACTIONS: never collapsed, never scrolled away (2026-10-19) ─────────────────────
                 // One row, four equal buttons (2026-10-20, the user: "line up the Explode button"): Trace pass, Go to,
@@ -2703,8 +2709,8 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                 {
                     buttonRow(10, [&]()
                               {
-                                  if (uiButton(inp, ui, "InfoActBtn", 0, "Trace pass",
-                                               viewTransient ? "A rocket or a re-entry has no pass to trace" : "Plot this satellite's magnitude over its pass",
+                                  if (uiButton(inp, ui, "InfoActBtn", 0, tx(Txt::BtnTracePass),
+                                               viewTransient ? tx(Txt::TipARocketOrAReEntry) : tx(Txt::TipPlotThisSatellitesMagnitudeOverIts),
                                                traceChrome.open && isSelected, actOk && !viewTransient, true))
                                   {
                                       selectSatellite(viewerSatIndex);
@@ -2715,8 +2721,8 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                                   const bool following = followActive && (followSatIndex == viewerSatIndex ||
                                                                            (viewTransient && followIsTransient() &&
                                                                             selTransientKey == followTrKey));
-                                  if (uiButton(inp, ui, "InfoActBtn", 1, following ? "Leave" : "Go to",
-                                               following ? "Fly back to where you were" : "Fly to it and ride along",
+                                  if (uiButton(inp, ui, "InfoActBtn", 1, following ? tx(Txt::BtnLeave) : tx(Txt::BtnGoTo),
+                                               following ? tx(Txt::TipFlyBackToWhereYouWere) : tx(Txt::TipFlyToItAndRideAlong),
                                                following, actOk && (hasMesh || following), true))
                                   {
                                       if (following)
@@ -2728,7 +2734,7 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                                       }
                                   }
                                   const bool tracking = trackActive && isSelected;
-                                  if (uiButton(inp, ui, "InfoActBtn", 2, "Track", "Keep the camera on it as it crosses the sky",
+                                  if (uiButton(inp, ui, "InfoActBtn", 2, tx(Txt::BtnTrack), tx(Txt::TipKeepTheCameraOnItAs),
                                                tracking, actOk, true))
                                   {
                                       if (tracking)
@@ -2741,9 +2747,9 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                                   }
                                   // One click (2026-10-19): the ASAT strike (a 20-kg interceptor through the collision
                                   // model) is gone from the UI; the harness keeps kind=asat for testing.
-                                  const char *tip = viewTransient ? "Only a satellite or a piece of debris can be broken up"
-                                                                  : "Break it up (NASA breakup model): its debris starts the Kessler cascade";
-                                  if (uiDangerButton(inp, ui, "InfoBreakBtn", 0, "Explode", tip, false, !viewTransient && infoFate < 2, true))
+                                  const char *tip = viewTransient ? tx(Txt::ValOnlyASatelliteOrAPiece)
+                                                                  : tx(Txt::ValBreakItUpNasaBreakupModel);
+                                  if (uiDangerButton(inp, ui, "InfoBreakBtn", 0, tx(Txt::BtnExplode), tip, false, !viewTransient && infoFate < 2, true))
                                       infoExplodeSelected(kessler::EV_EXPLOSION); });
                 }
                 // ── The sections: only these scroll ──────────────────────────────────────────────
@@ -2777,7 +2783,7 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                         infoSection(kInfoOrbit, [&]()
                                     {
                                         if (viewerOrbitCount == 0)
-                                            uiKV("InfoOrbitKV", 9, "Orbit", "-", lw);
+                                            uiKV("InfoOrbitKV", 9, tx(Txt::LblOrbit), "-", lw);
                                         for (int i = 0; i < viewerOrbitCount && i < kViewerOrbitRows; ++i)
                                             uiKV("InfoOrbitKV", i, kOrbitLabels[i], viewerOrbitValue[i], lw); });
                     // ── MODEL: the technical description (type, model id, size, mesh) ──────────────────
@@ -2788,30 +2794,30 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                     // ── VIEW: the 3D view's camera and rendering (the chips over the render carry the quick ones) ──
                     infoSection(kInfoView, [&]()
                                 {
-                                    static const char *kAim[3] = {"Free", "From you", "Toward you"};
-                                    static const char *kLight[2] = {"Live", "Studio"};
-                                    static const char *kPose[2] = {"Sunlit", "Rest"};
-                                    if (int c = uiChoiceRow(inp, ui, "InfoAim", 0, "Camera", kAim, 3, viewerAim,
-                                                            "Free orbit, from your direction (the side you see), or behind it toward you");
+                                    static const char *kAim[3] = {tx(Txt::OptFree), tx(Txt::OptFromYou), tx(Txt::OptTowardYou)};
+                                    static const char *kLight[2] = {tx(Txt::OptLive), tx(Txt::OptStudio)};
+                                    static const char *kPose[2] = {tx(Txt::OptSunlit), tx(Txt::OptRest)};
+                                    if (int c = uiChoiceRow(inp, ui, "InfoAim", 0, tx(Txt::LblCamera), kAim, 3, viewerAim,
+                                                            tx(Txt::TipFreeOrbitFromYourDirectionThe));
                                         c >= 0)
                                         viewerAim = c;
-                                    if (int c = uiChoiceRow(inp, ui, "InfoLight", 0, "Light", kLight, 2, viewerStudioLight ? 1 : 0,
-                                                            "The sim's sun and sky, or a fixed studio light");
+                                    if (int c = uiChoiceRow(inp, ui, "InfoLight", 0, tx(Txt::LblLight), kLight, 2, viewerStudioLight ? 1 : 0,
+                                                            tx(Txt::TipTheSimsSunAndSkyOr));
                                         c >= 0)
                                         viewerStudioLight = c == 1;
-                                    if (int c = uiChoiceRow(inp, ui, "InfoPose", 0, "Pose", kPose, 2, viewerSunlitPose ? 0 : 1,
-                                                            "Its attitude now, or every joint at rest");
+                                    if (int c = uiChoiceRow(inp, ui, "InfoPose", 0, tx(Txt::LblPose), kPose, 2, viewerSunlitPose ? 0 : 1,
+                                                            tx(Txt::TipItsAttitudeNowOrEveryJoint));
                                         c >= 0)
                                         viewerSunlitPose = c == 0;
-                                    uiToggleRow(inp, ui, "InfoView", 0, "Spin", viewerSpin, "The free camera turns slowly on its own");
-                                    uiToggleRow(inp, ui, "InfoView", 1, "Shadows", viewerShadows);
-                                    uiToggleRow(inp, ui, "InfoView", 2, "Reflections", viewerReflections);
-                                    uiToggleRow(inp, ui, "InfoView", 3, "Surface detail", viewerDetail);
-                                    uiToggleRow(inp, ui, "InfoView", 4, "Glare", viewerGlare, "Glare on the glints that make the flare you see");
-                                    uiToggleRow(inp, ui, "InfoView", 5, "Markers", viewerMarkers, "Your position (cyan) and a mirror's target site (orange)");
+                                    uiToggleRow(inp, ui, "InfoView", 0, tx(Txt::LblSpin), viewerSpin, tx(Txt::TipTheFreeCameraTurnsSlowlyOn));
+                                    uiToggleRow(inp, ui, "InfoView", 1, tx(Txt::LblShadows), viewerShadows);
+                                    uiToggleRow(inp, ui, "InfoView", 2, tx(Txt::LblReflections), viewerReflections);
+                                    uiToggleRow(inp, ui, "InfoView", 3, tx(Txt::LblSurfaceDetail), viewerDetail);
+                                    uiToggleRow(inp, ui, "InfoView", 4, tx(Txt::LblGlare), viewerGlare, tx(Txt::TipGlareOnTheGlintsThatMake));
+                                    uiToggleRow(inp, ui, "InfoView", 5, tx(Txt::LblMarkers), viewerMarkers, tx(Txt::TipYourPositionCyanAndAMirrors));
                                     buttonRow(1, [&]()
                                               {
-                                                  if (uiButton(inp, ui, "InfoResetView", 0, "Reset view", nullptr))
+                                                  if (uiButton(inp, ui, "InfoResetView", 0, tx(Txt::BtnResetView), nullptr))
                                                   {
                                                       viewerDist = 0.0f;
                                                       viewerYawDeg = 35.0f;
@@ -2827,8 +2833,8 @@ void SatelliteSim::buildInfoWindow(const UIInput &inp, UIRenderer &ui)
                                         uiKV("InfoCheckKV", 3, "", viewerCheckNote, lw, &Pal::textDim);
                                     buttonRow(2, [&]()
                                               {
-                                                  if (uiButton(inp, ui, "InfoCheckBtn", 0, "Run check",
-                                                               "Integrate a sun-only render from this direction and compare it with the photometric model (magnitudes at 1000 km)"))
+                                                  if (uiButton(inp, ui, "InfoCheckBtn", 0, tx(Txt::BtnRunCheck),
+                                                               tx(Txt::TipIntegrateASunOnlyRenderFrom)))
                                                       viewerCheckRequested = true; }); });
                 }
                 // A visible thumb on the section list: without it nothing says the list continues
@@ -2876,7 +2882,7 @@ void SatelliteSim::buildMissionTimeline(const UIInput &inp, UIRenderer &ui, cons
     // The mission on its own line, wrapped (a uiKV value is one line: the title was cut).
     CLAY_TEXT(clayStr(str("%s", s.title.c_str())),
               CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12), .wrapMode = CLAY_TEXT_WRAP_WORDS}));
-    uiKV("InfoMsKV", 1, "Object", str("%s", s.what.c_str()), lw);
+    uiKV("InfoMsKV", 1, tx(Txt::LblObject), str("%s", s.what.c_str()), lw);
     for (size_t f = 0; f < s.facts.size() && f < 6; ++f)
         uiKV("InfoMsKV", 2 + (int)f, str("%s", s.facts[f].first.c_str()), str("%s", s.facts[f].second.c_str()), lw);
     // Progress: through the MILESTONE LIST, interpolated in time between the last milestone passed and the next one
@@ -2898,7 +2904,7 @@ void SatelliteSim::buildMissionTimeline(const UIInput &inp, UIRenderer &ui, cons
             frac = (float)std::clamp(f / (double)(n - 1), 0.0, 1.0);
         }
     }
-    uiKV("InfoMsKV", 9, "Progress", str("%.0f%%  (%d of %d milestones)", frac * 100.0f, cur + 1, (int)s.ms.size()), lw);
+    uiKV("InfoMsKV", 9, tx(Txt::LblProgress), str("%.0f%%  (%d of %d milestones)", frac * 100.0f, cur + 1, (int)s.ms.size()), lw);
     CLAY(CLAY_SIDI(CLAY_STRING("InfoMsBar"), 0), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(3)}},
                                       .backgroundColor = Pal::trackBg})
     {
@@ -2926,10 +2932,10 @@ void SatelliteSim::buildMissionTimeline(const UIInput &inp, UIRenderer &ui, cons
         char kp[24], kn[24];
         snprintf(kp, sizeof(kp), "%s", keyDisplayName(keybindings[KB_MILESTONE_PREV].key));
         snprintf(kn, sizeof(kn), "%s", keyDisplayName(keybindings[KB_MILESTONE_NEXT].key));
-        if (uiButton(inp, ui, "InfoMsNav", 0, "< Previous", str("Back to just before the previous milestone (%s)", kp), false,
+        if (uiButton(inp, ui, "InfoMsNav", 0, tx(Txt::BtnPrevious), str("Back to just before the previous milestone (%s)", kp), false,
                      anyPrev, true))
             jumpDir = -1;
-        if (uiButton(inp, ui, "InfoMsNav", 1, nx ? str("Next: %.26s%s >", nx->label.c_str(), nx->label.size() > 26 ? "..." : "") : "Next >",
+        if (uiButton(inp, ui, "InfoMsNav", 1, nx ? str("Next: %.26s%s >", nx->label.c_str(), nx->label.size() > 26 ? "..." : "") : tx(Txt::BtnNext),
                      str("Skip to %.0f s before \"%s\", at 1x (%s)", nx ? nx->lead : 10.0, nx ? nx->label.c_str() : "", kn), false,
                      nx != nullptr, true))
             jumpDir = 1;
@@ -2958,7 +2964,7 @@ void SatelliteSim::buildMissionTimeline(const UIInput &inp, UIRenderer &ui, cons
                 const double d = s.roster ? m.t - now : m.t - tRef;
                 const long long a = (long long)std::floor(std::abs(d));
                 const char *pre = s.roster ? (d >= 0.0 ? "in " : "") : (d >= 0.0 ? "T+" : "T-");
-                const char *post = s.roster && d < 0.0 ? " ago" : "";
+                const char *post = s.roster && d < 0.0 ? tx(Txt::ValAgo) : "";
                 if (a >= 86400)
                     snprintf(rel, sizeof(rel), "%s%lldd %02lldh%s", pre, a / 86400, (a % 86400) / 3600, post);
                 else if (a >= 3600)
@@ -2971,7 +2977,7 @@ void SatelliteSim::buildMissionTimeline(const UIInput &inp, UIRenderer &ui, cons
                 CLAY_TEXT(clayStr(str("%s   %s", rel, utc)),
                           CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(10), .wrapMode = CLAY_TEXT_WRAP_NONE}));
             }
-            if (uiButton(inp, ui, "InfoMsGo", (int)i, past ? "Back" : "Skip",
+            if (uiButton(inp, ui, "InfoMsGo", (int)i, past ? tx(Txt::BtnBack) : tx(Txt::LblSkip),
                          str("%.0f s before \"%s\", at 1x", m.lead, m.label.c_str())))
                 jumpIdx = (int)i;
         }
@@ -3111,7 +3117,7 @@ bool SatelliteSim::buildSelActionButton(const UIInput &inp, UIRenderer &ui, int 
             audio_->playSfx("assets/sound/ui/buttonclick.wav");
     }
     if (focused)
-        snprintf(padHintBuf, sizeof(padHintBuf), "%s      < >  choose   A  press   B  back", name);
+        snprintf(padHintBuf, sizeof(padHintBuf), tx(Txt::FmtChooseAPressBBack), name);
     const float sz = std::max(kSelIconBtnMin, (float)fs(12) + 12.0f);
     const float isz = sz - 8.0f;
     const uint16_t ring = focused ? 2 : 0;
@@ -3209,7 +3215,7 @@ void SatelliteSim::buildInfoButton(const UIInput &inp, UIRenderer &ui, int idx)
     if (!meshRenderer.typeMesh((int)orb.typeIdx))
         return;
     const bool on = infoChrome.open && meshRendererInit && viewerSatIndex == selectedSatIndex;
-    if (buildSelActionButton(inp, ui, idx * 4 + 0, "Info", kIconInfo, on, hovSelInfoBtn))
+    if (buildSelActionButton(inp, ui, idx * 4 + 0, tx(Txt::BtnInfo), kIconInfo, on, hovSelInfoBtn))
         openModelViewer((int)orb.typeIdx, satTypes[orb.typeIdx].name.c_str(), orb.altM, selectedSatIndex);
 }
 
@@ -3224,7 +3230,7 @@ void SatelliteSim::buildFollowButton(const UIInput &inp, UIRenderer &ui, int idx
         !meshRenderer.typeMesh((int)satOrbits[selectedSatIndex].typeIdx))
         return;
     const bool on = isFollowing(selectedSatIndex);
-    if (buildSelActionButton(inp, ui, idx * 4 + 1, "Go to", kIconEye, on, hovSelFollowBtn))
+    if (buildSelActionButton(inp, ui, idx * 4 + 1, tx(Txt::BtnGoTo), kIconEye, on, hovSelFollowBtn))
     {
         if (on)
             stopFollow(true);
@@ -3246,9 +3252,9 @@ void SatelliteSim::buildFollowHud(const UIInput &inp, UIRenderer &ui)
         if (followAgainUntil <= glfwGetTime() || cineActive() || showIntro || (followLastIdx < 0 && !followLastIsTr))
             return;
         static char againBuf[200], againTip[96];
-        snprintf(againBuf, sizeof(againBuf), "Go to %.*s again", followLastLabel[0] ? labelNameLen(followLastLabel) : 15,
+        snprintf(againBuf, sizeof(againBuf), tx(Txt::FmtGoToAgain), followLastLabel[0] ? labelNameLen(followLastLabel) : 15,
                  followLastLabel[0] ? followLastLabel : "the last object");
-        snprintf(againTip, sizeof(againTip), "Follow it again, flying from here (%s)",
+        snprintf(againTip, sizeof(againTip), tx(Txt::FmtFollowItAgainFlyingFromHere),
                  keyDisplayName(keybindings[KB_FOLLOW_RETURN].key));
         bool clicked = false;
         // (2026-10-21, low resolutions) Below the top-left selection chip when, on a narrow screen, the two would meet.
@@ -3292,9 +3298,9 @@ void SatelliteSim::buildFollowHud(const UIInput &inp, UIRenderer &ui)
     static char distBuf[64];
     const double d = glm::length(followOffset);
     if (d < 1000.0)
-        snprintf(distBuf, sizeof(distBuf), "%.1f m away", d);
+        snprintf(distBuf, sizeof(distBuf), tx(Txt::FmtFollowDistM), d);
     else
-        snprintf(distBuf, sizeof(distBuf), "%.2f km away", d / 1000.0);
+        snprintf(distBuf, sizeof(distBuf), tx(Txt::FmtFollowDistKm), d / 1000.0);
     auto chipButton = [&](const char *id, const char *label, bool &hov, const char *tip)
     {
         bool clicked = false;
@@ -3330,17 +3336,16 @@ void SatelliteSim::buildFollowHud(const UIInput &inp, UIRenderer &ui)
         CLAY_TEXT(ls, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12), .wrapMode = CLAY_TEXT_WRAP_NONE}));
         Clay_String ds{false, (int32_t)strlen(distBuf), distBuf};
         CLAY_TEXT(ds, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
-        if (chipButton("FollowAimBtn", followAimLock ? "Aim: locked" : "Aim: free", hovFollowAim,
-                       "Locked: the camera keeps the satellite centred while you move. Free: look around with RMB "
-                       "(looking unlocks it)"))
+        if (chipButton("FollowAimBtn", followAimLock ? tx(Txt::BtnAimLocked) : tx(Txt::BtnAimFree), hovFollowAim,
+                       uiKitStr("%s (%s)", tx(Txt::TipAim), keyDisplayName(keybindings[KB_TRACK].key))))
             followAimLock = !followAimLock;
         static char stayTip[96];
-        snprintf(stayTip, sizeof(stayTip), "Leave Go to and stay here, as a free observer (%s)",
+        snprintf(stayTip, sizeof(stayTip), tx(Txt::FmtTipStayHere),
                  keyDisplayName(keybindings[KB_FOLLOW_STAY].key));
         static char retTip[112];
-        snprintf(retTip, sizeof(retTip), "Fly back to the default view of it, behind and above (%s)",
+        snprintf(retTip, sizeof(retTip), tx(Txt::FmtTipReturn),
                  keyDisplayName(keybindings[KB_FOLLOW_RETURN].key));
-        if (chipButton("FollowReturnBtn", "Return", hovFollowReturn, retTip))
+        if (chipButton("FollowReturnBtn", tx(Txt::BtnReturn), hovFollowReturn, retTip))
             followReturn();
         // A launch object (a rocket, its booster, a train member, a retiree, a satellite with a launch on record): its
         // mission's milestones (2026-10-20). Skips keep Go to on the object at the new time.
@@ -3366,15 +3371,15 @@ void SatelliteSim::buildFollowHud(const UIInput &inp, UIRenderer &ui)
                         anyPrev = true;
                 }
                 static char prevTip[96], nextTip[160], nextLab[64];
-                snprintf(prevTip, sizeof(prevTip), "Back to just before the previous mission milestone (%s)",
+                snprintf(prevTip, sizeof(prevTip), tx(Txt::FmtTipMilestonePrev),
                          keyDisplayName(keybindings[KB_MILESTONE_PREV].key));
                 int dir = 0;
                 if (anyPrev && chipButton("FollowMsPrevBtn", "<", hovFollowMsPrev, prevTip))
                     dir = -1;
                 if (nx)
                 {
-                    snprintf(nextLab, sizeof(nextLab), "Next: %.18s%s >", nx->label.c_str(), nx->label.size() > 18 ? "..." : "");
-                    snprintf(nextTip, sizeof(nextTip), "%.0f s before \"%s\", at 1x (%s)", nx->lead, nx->label.c_str(),
+                    snprintf(nextLab, sizeof(nextLab), tx(Txt::FmtNext), nx->label.c_str(), nx->label.size() > 18 ? "..." : "");
+                    snprintf(nextTip, sizeof(nextTip), tx(Txt::FmtTipMilestoneNext), nx->lead, nx->label.c_str(),
                              keyDisplayName(keybindings[KB_MILESTONE_NEXT].key));
                     if (chipButton("FollowMsNextBtn", nextLab, hovFollowMsNext, nextTip))
                         dir = 1;
@@ -3382,9 +3387,9 @@ void SatelliteSim::buildFollowHud(const UIInput &inp, UIRenderer &ui)
                 followMsDir = dir; // applied after the layout (it rewrites followLabel, which Clay still holds)
             }
         }
-        if (chipButton("FollowStayBtn", "Stay here", hovFollowStay, stayTip))
+        if (chipButton("FollowStayBtn", tx(Txt::BtnStayHere), hovFollowStay, stayTip))
             stopFollowHere();
-        if (chipButton("FollowExitBtn", "Exit", hovFollowExit, "Return to the ground where you were"))
+        if (chipButton("FollowExitBtn", tx(Txt::BtnExit), hovFollowExit, tx(Txt::TipExitFollow)))
             stopFollow(true);
     }
     captureLaidOut(ui, CLAY_ID("FollowHud"), inp.screenW * 0.5f - 250.0f, 12.0f, 500.0f, 34.0f);
@@ -3408,7 +3413,7 @@ void SatelliteSim::buildTraceButton(const UIInput &inp, UIRenderer &ui, int idx)
 {
     if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size() || selIsTransient())
         return; // a rocket or a fireball has no pass to trace
-    if (buildSelActionButton(inp, ui, idx * 4 + 2, "Trace pass", kIconTrace, false, hovSelTraceBtn))
+    if (buildSelActionButton(inp, ui, idx * 4 + 2, tx(Txt::BtnTracePass), kIconTrace, false, hovSelTraceBtn))
         computeSelectedTrace();
 }
 
@@ -3424,13 +3429,8 @@ void SatelliteSim::buildTrackButton(const UIInput &inp, UIRenderer &ui, int idx)
     const bool baseSel = selectedSatIndex < 0 && selectedMoonBase >= 0;   // a Moon-base glint (2026-10-28)
     if (!baseSel && (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size()))
         return;
-    if (buildSelActionButton(inp, ui, idx * 4 + 3, "Track", kIconTrack, trackActive, hovSelTrackBtn))
-    {
-        if (trackActive)
-            stopTrack();
-        else
-            startTrack();
-    }
+    if (buildSelActionButton(inp, ui, idx * 4 + 3, tx(Txt::BtnTrack), kIconTrack, trackShownOn(), hovSelTrackBtn))
+        trackToggle();
 }
 
 // ─── buildResizableWindow ───────────────────────────────────────────────────
@@ -3668,7 +3668,7 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
         }
         CLAY(CLAY_ID("SettingsSearchLbl"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}, .padding = {2, 2, 0, 2}}})
         {
-            CLAY_TEXT(CLAY_STRING("SEARCH"), CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(10), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+            CLAY_TEXT(txc(Txt::NoteSearch), CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(10), .wrapMode = CLAY_TEXT_WRAP_NONE}));
         }
         textField(inp, ui, searchId, search_.query, 124.0f, 11,
                   "Type part of a setting's name: every tab's matching settings are listed (Esc or Clear to go back)", 48);
@@ -3697,7 +3697,7 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
         }
         if (!search_.words.empty() || !search_.query.empty())
         {
-            if (uiButton(inp, ui, "SettingsSearchClear", 0, "Clear", "Back to the tab"))
+            if (uiButton(inp, ui, "SettingsSearchClear", 0, tx(Txt::BtnClear), tx(Txt::TipBackToTheTab)))
                 clearSearch();
         }
         CLAY(CLAY_ID("SettingsSearchGap"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(4)}}}) {}
@@ -3710,7 +3710,7 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
                 const int next = oi + 1 < (int)(sizeof(kSettingsStrip) / sizeof(kSettingsStrip[0])) ? kSettingsStrip[oi + 1] : -1;
                 if (next < 0 || (settingsTabIsAdvanced(next) && !showAdvancedSettings))
                     continue;
-                const char *h = kSettingsStripHeadings[-ti - 1];
+                const char *h = tx(kSettingsStripHeadingText[-ti - 1]);
                 CLAY(CLAY_IDI("SettingsTabHeading", -ti), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                                                       .padding = {8, 8, (uint16_t)(oi == 0 ? 2 : 12), 3}}})
                 {
@@ -3740,7 +3740,7 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
                     clearSearch(); // a tab ends the search
                 }
                 hovTab[ti] = n;
-                Clay_String tabStr{false, (int32_t)strlen(kSettingsTabNames[ti]), kSettingsTabNames[ti]};
+                Clay_String tabStr{false, (int32_t)strlen(settingsTabName(ti)), settingsTabName(ti)};
                 CLAY_TEXT(tabStr, CLAY_TEXT_CONFIG({.textColor = active ? Pal::textPrimary : Pal::volLabel, .fontSize = fs(12)}));
             }
         }
@@ -3833,9 +3833,7 @@ void SatelliteSim::buildSettingsTabBody(const UIInput &inp, UIRenderer &ui, int 
 // settings.json keys unchanged (launches.*, kessler.*).
 void SatelliteSim::buildSettingsLaunchesTab(const UIInput &inp, UIRenderer &ui)
 {
-    uiKV("LdKV", 0, "", "The schedule, what is flying and the Kessler tracker: the Missions window (rocket button, M).", 4.0f,
-         &Pal::textDim);
-    if (uiButton(inp, ui, "LdOpenMs", 0, "Open the Missions window", "Upcoming launches, what is flying now, the Kessler tracker"))
+    if (uiButton(inp, ui, "LdOpenMs", 0, tx(Txt::BtnOpenTheMissionsWindow), tx(Txt::TipUpcomingLaunchesWhatIsFlyingNow)))
     {
         msChrome.open = true;
         msNextWall = msPinWall = -1e300;
@@ -3855,33 +3853,32 @@ void SatelliteSim::buildSettingsLaunchesTab(const UIInput &inp, UIRenderer &ui)
 // photometry (the Photometry tab). Slots 400-413 of the shared slider arrays.
 void SatelliteSim::buildSettingsSkyTab(const UIInput &inp, UIRenderer &ui)
 {
-    uiKV("SkyKV", 0, "", "The Milky Way, the stars' twinkle and the turbulence warp: the Photometry tab.", 4.0f, &Pal::textDim);
+    uiKV("SkyKV", 0, "", tx(Txt::ValTheMilkyWayTheStarsTwinkle), 4.0f, &Pal::textDim);
 
-    uiSection("SkySec", 0, "STARS");
-    uiToggleRow(inp, ui, "SkyStarLimit", 0, "Faint stars only under dark skies", starSkyLimit,
-                "Each star is drawn only if the naked eye could see it against the sky in its direction (city glow, "
-                "twilight, the Moon). Off: every catalogue star to the point limit (stars.sky_limit)");
+    uiSection("SkySec", 0, tx(Txt::SecStars));
+    uiToggleRow(inp, ui, "SkyStarLimit", 0, tx(Txt::LblFaintStarsOnlyUnderDarkSkies), starSkyLimit,
+                tx(Txt::TipEachStarIsDrawnOnlyIf));
     {
         CloudSlider st[] = {
-            {"Naked-eye limit boost (mag)", &starLimitBoost, -2.0f, 3.0f, 0.1f, "%.1f", 400},
-            {"Dark-sky extra stars (mag)", &starDarkExtraMag, 0.0f, 3.0f, 0.1f, "%.1f", 401},
+            {tx(Txt::SldNakedEyeLimitBoostMag), &starLimitBoost, -2.0f, 3.0f, 0.1f, "%.1f", 400},
+            {tx(Txt::SldDarkSkyExtraStarsMag), &starDarkExtraMag, 0.0f, 3.0f, 0.1f, "%.1f", 401},
         };
         buildCloudSliderRows(inp, ui, st, 2, false);
     }
-    uiToggleRow(inp, ui, "SkySupernova", 0, "Betelgeuse supernova (2037-12-25)", supernovaEnabled,
-                "The scripted supernova: brighter than the full Moon for weeks, fading over two years (stars.supernova)");
-    uiToggleRow(inp, ui, "SkyBetelVar", 0, "Betelgeuse varies", betelgeuseVariable,
-                "Before the supernova: its 416-day and 2100-day pulsations (stars.betelgeuse_variable)");
+    uiToggleRow(inp, ui, "SkySupernova", 0, tx(Txt::LblBetelgeuseSupernova20371225), supernovaEnabled,
+                tx(Txt::TipTheScriptedSupernovaBrighterThanThe));
+    uiToggleRow(inp, ui, "SkyBetelVar", 0, tx(Txt::LblBetelgeuseVaries), betelgeuseVariable,
+                tx(Txt::TipBeforeTheSupernovaIts416Day));
 
     // ── Planets ────────────────────────────────────────────────────────────
     // Same ON/OFF toggle-row pattern as the constellation list above — no new UI pattern
     // invented (RELEASE_v1_1_PLAN.md follow-up, session 30). A global "Show planets" toggle
     // sits above the per-planet rows; per-planet rows still work when the global is off (so
     // preferences survive), they're just moot until it's back on.
-    uiSection("SkySec", 1, "PLANETS");
-    uiToggleRow(inp, ui, "ShowPlanetsBtn", 0, "Show planets", showPlanets, "Each planet below keeps its own choice while this is off");
-    uiToggleRow(inp, ui, "PlanetDiscsBtn", 0, "Resolved planet discs", planetDiscs,
-                "Zoomed in, a planet becomes its real disc: phase, belts, Saturn's rings, Jupiter's moons and their shadows");
+    uiSection("SkySec", 1, tx(Txt::SecPlanets));
+    uiToggleRow(inp, ui, "ShowPlanetsBtn", 0, tx(Txt::LblShowPlanets), showPlanets, tx(Txt::TipEachPlanetBelowKeepsItsOwn));
+    uiToggleRow(inp, ui, "PlanetDiscsBtn", 0, tx(Txt::LblResolvedPlanetDiscs), planetDiscs,
+                tx(Txt::TipZoomedInAPlanetBecomesIts));
     {
         CloudSlider pg[] = {{"Planet disc brightness (x)", &planetDiscGain, 0.1f, 5.0f, 0.05f, "%.2f", 402}};
         buildCloudSliderRows(inp, ui, pg, 1, false);
@@ -3914,7 +3911,7 @@ void SatelliteSim::buildSettingsSkyTab(const UIInput &inp, UIRenderer &ui)
                 hovPlanetBtn[pi] = n;
                 if (hov && inp.lmbPressed)
                     planetEnabled[pi] = !planetEnabled[pi];
-                CLAY_TEXT(planetEnabled[pi] ? CLAY_STRING("ON") : CLAY_STRING("OFF"),
+                CLAY_TEXT(planetEnabled[pi] ? txc(Txt::NoteOn) : txc(Txt::NoteOff),
                           CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(10)}));
             }
             CLAY(CLAY_IDI("PlanetName", pi), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}})
@@ -3925,65 +3922,64 @@ void SatelliteSim::buildSettingsSkyTab(const UIInput &inp, UIRenderer &ui)
         }
     }
 
-    uiSection("SkySec", 2, "THE MOON");
+    uiSection("SkySec", 2, tx(Txt::SecTheMoon));
     {
         // Moved from Photometry's EXPOSURE AND MOON (2026-10-28); slots and keys unchanged (clouds.moon_size ...).
         CloudSlider mn[] = {
             // The Moon is a body at its true distance; 1 = its real size (within a few degrees of the Sun it is always
             // drawn at its true size, so eclipses are right).
-            {"Moon size (x real)", &moonSizeScale, 0.25f, 4.0f, 0.05f, "%.2f", 220},
+            {tx(Txt::SldMoonSizeXReal), &moonSizeScale, 0.25f, 4.0f, 0.05f, "%.2f", 220},
             // The disc's relief (2026-10-27): x the LOLA heights (0 = the smooth sphere), and the heightfield's cast
             // shadows near the terminator (crater floors, mountain shadows).
-            {"Moon relief (x LOLA heights)", &moonRelief, 0.0f, 4.0f, 0.05f, "%.2f", 355},
-            {"Moon shadows (0/1)", &moonShadows, 0.0f, 1.0f, 1.0f, "%.0f", 356},
+            {tx(Txt::SldMoonReliefXLolaHeights), &moonRelief, 0.0f, 4.0f, 0.05f, "%.2f", 355},
+            {tx(Txt::SldMoonShadows01), &moonShadows, 0.0f, 1.0f, 1.0f, "%.0f", 356},
         };
         buildCloudSliderRows(inp, ui, mn, (int)(sizeof(mn) / sizeof(mn[0])));
     }
-    uiToggleRow(inp, ui, "SkyMoonBases", 0, "Moon-base glints", moonBaseGlints,
-                "The lunar bases' solar arrays mirroring the Sun to Earth near full Moon (moon_bases.enabled)");
+    uiToggleRow(inp, ui, "SkyMoonBases", 0, tx(Txt::LblMoonBaseGlints), moonBaseGlints,
+                tx(Txt::TipTheLunarBasesSolarArraysMirroring));
     {
         CloudSlider mb[] = {
-            {"Moon-base array errors (x)", &moonBaseJitter, 0.0f, 5.0f, 0.05f, "%.2f", 408},
-            {"Moon-base event limit (mag)", &moonBaseMagLimit, -5.0f, 8.0f, 0.25f, "%.2f", 409},
+            {tx(Txt::SldMoonBaseArrayErrorsX), &moonBaseJitter, 0.0f, 5.0f, 0.05f, "%.2f", 408},
+            {tx(Txt::SldMoonBaseEventLimitMag), &moonBaseMagLimit, -5.0f, 8.0f, 0.25f, "%.2f", 409},
         };
         buildCloudSliderRows(inp, ui, mb, 2, false);
     }
 
-    uiSection("SkySec", 3, "COMETS");
-    uiToggleRow(inp, ui, "SkyComets", 0, "Comets", cometsEnabled, "The Great Comet of 2037 and the minor comets (comets.enabled)");
-    if (uiToggleRow(inp, ui, "SkyCometsMinor", 0, "Minor comets", cometsMinor,
-                    "A few faint comets a year besides the Great Comet (comets.minor)"))
+    uiSection("SkySec", 3, tx(Txt::SecComets));
+    uiToggleRow(inp, ui, "SkyComets", 0, tx(Txt::LblComets), cometsEnabled, tx(Txt::TipTheGreatCometOf2037And));
+    if (uiToggleRow(inp, ui, "SkyCometsMinor", 0, tx(Txt::LblMinorComets), cometsMinor,
+                    tx(Txt::TipAFewFaintCometsAYear)))
         cometsRefreshCatalog((double)simDayJ2000 * 86400.0 + simSecInDay, true);
-    uiToggleRow(inp, ui, "SkyCometTails", 0, "Comet tails", cometTailsEnabled, "The dust and ion tails (comets.tails)");
+    uiToggleRow(inp, ui, "SkyCometTails", 0, tx(Txt::LblCometTails), cometTailsEnabled, tx(Txt::TipTheDustAndIonTailsComets));
     {
         CloudSlider cm[] = {
-            {"Comet tail brightness (x physical)", &cometTailGain, 0.0f, 10.0f, 0.05f, "%.2f", 403},
-            {"Comet tail display (x)", &cometTailGainDisplay, 0.0f, 10.0f, 0.05f, "%.2f", 404},
+            {tx(Txt::SldCometTailBrightnessXPhysical), &cometTailGain, 0.0f, 10.0f, 0.05f, "%.2f", 403},
+            {tx(Txt::SldCometTailDisplayX), &cometTailGainDisplay, 0.0f, 10.0f, 0.05f, "%.2f", 404},
         };
         buildCloudSliderRows(inp, ui, cm, 2, false);
     }
 
-    uiSection("SkySec", 4, "METEORS");
-    uiToggleRow(inp, ui, "SkyMeteors", 0, "Meteors", meteorsEnabled, "The annual showers and the sporadic meteors (meteors.enabled)");
+    uiSection("SkySec", 4, tx(Txt::SecMeteors));
+    uiToggleRow(inp, ui, "SkyMeteors", 0, tx(Txt::LblMeteors), meteorsEnabled, tx(Txt::TipTheAnnualShowersAndTheSporadic));
     {
         CloudSlider me[] = {
-            {"Meteor rate (x)", &meteorRateGain, 0.0f, 20.0f, 0.1f, "%.1f", 405},
-            {"Fireball rate (x)", &meteorFireballGain, 0.0f, 20.0f, 0.1f, "%.1f", 406},
-            {"Meteor train duration (x)", &meteorTrainDuration, 0.0f, 2.0f, 0.05f, "%.2f", 407},
+            {tx(Txt::SldMeteorRateX), &meteorRateGain, 0.0f, 20.0f, 0.1f, "%.1f", 405},
+            {tx(Txt::SldFireballRateX), &meteorFireballGain, 0.0f, 20.0f, 0.1f, "%.1f", 406},
+            {tx(Txt::SldMeteorTrainDurationX), &meteorTrainDuration, 0.0f, 2.0f, 0.05f, "%.2f", 407},
         };
         buildCloudSliderRows(inp, ui, me, 3, false);
     }
 
-    uiSection("SkySec", 5, "REFRACTION AND MIRAGES");
-    uiToggleRow(inp, ui, "SkyRefraction", 0, "Refraction", refrEnabled,
-                "The air bends the Sun, the Moon and the stars near the horizon: a flattened Sun, mirages, the green rim "
-                "(refraction.enabled)");
+    uiSection("SkySec", 5, tx(Txt::SecRefractionAndMirages));
+    uiToggleRow(inp, ui, "SkyRefraction", 0, tx(Txt::LblRefraction), refrEnabled,
+                tx(Txt::TipTheAirBendsTheSunThe));
     {
         CloudSlider rf[] = {
-            {"Mirage strength (x)", &refrMirage, 0.0f, 5.0f, 0.05f, "%.2f", 410},
-            {"Air turbulence (x)", &refrTurbulence, 0.0f, 20.0f, 0.1f, "%.1f", 411},
-            {"Dispersion (green rim, x)", &refrDispersion, 0.0f, 10.0f, 0.1f, "%.1f", 412},
-            {"Sun disc brightness (x)", &sunDiscGain, 0.0f, 10.0f, 0.05f, "%.2f", 413},
+            {tx(Txt::SldMirageStrengthX), &refrMirage, 0.0f, 5.0f, 0.05f, "%.2f", 410},
+            {tx(Txt::SldAirTurbulenceX), &refrTurbulence, 0.0f, 20.0f, 0.1f, "%.1f", 411},
+            {tx(Txt::SldDispersionGreenRimX), &refrDispersion, 0.0f, 10.0f, 0.1f, "%.1f", 412},
+            {tx(Txt::SldSunDiscBrightnessX), &sunDiscGain, 0.0f, 10.0f, 0.05f, "%.2f", 413},
         };
         buildCloudSliderRows(inp, ui, rf, 4, false);
     }
@@ -4040,8 +4036,8 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
     auto gone = [&](int sat) { return kesslerEnabled && sat >= 0 && sat < (int)activeSatCount && rosterFateAt((uint32_t)sat, tNow) >= 2; };
     int actSel = -1, actGo = -1; // applied after the layout below
 
-    uiSection("ConstSec", 0, "CONSTELLATIONS");
-    uiKV("ConstHintKV", 0, "", "Grouped by kind. Click a group's name to fold it; its ON / HLT set every entry in it.", 4.0f,
+    uiSection("ConstSec", 0, tx(Txt::SecConstellations));
+    uiKV("ConstHintKV", 0, "", tx(Txt::ValGroupedByKindClickAGroups), 4.0f,
          &Pal::textDim);
     // Column header over the buttons: Show / Highlight / actions, the name, the satellite count.
     if (!searchActive())
@@ -4058,11 +4054,11 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
     }
 
     // Groups in a fixed order; a category nobody listed here goes after them, in roster order.
-    static const char *kOrder[] = {"Broadband", "Stations", "Orbital data centers", "Reflectors", "GEO",
+    static const char *kOrder[] = {tx(Txt::LblBroadband), "Stations", "Orbital data centers", "Reflectors", "GEO",
                                    "Science", "Benchmarks", "Debris", "Other"};
-    static const char *kTitles[] = {"BROADBAND CONSTELLATIONS", "STATIONS AND DEPOTS", "ORBITAL DATA CENTERS",
-                                    "REFLECTORS", "GEOSTATIONARY BELT", "SCIENCE", "BENCHMARK SHELLS (2020)",
-                                    "DEBRIS", "OTHER"};
+    static const char *kTitles[] = {tx(Txt::OptBroadbandConstellations), tx(Txt::OptStationsAndDepots), tx(Txt::OptOrbitalDataCenters),
+                                    tx(Txt::OptReflectors), tx(Txt::OptGeostationaryBelt), tx(Txt::OptScience), tx(Txt::OptBenchmarkShells2020),
+                                    tx(Txt::OptDebris), tx(Txt::OptOther)};
     std::vector<std::string> cats(std::begin(kOrder), std::end(kOrder));
     std::vector<std::vector<int>> groups(cats.size());
     const int nConst = std::min((int)constellations.size(), (int)kMaxConstellationBits);
@@ -4123,13 +4119,13 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
                                            .cornerRadius = CLAY_CORNER_RADIUS(3)})
         {
             const bool allOn = nOn == n, allHlt = nHlt == n;
-            if (pill("ConstGrpOn", (int)g, nOn == 0 ? "OFF" : allOn ? "ON" : "MIX",
+            if (pill("ConstGrpOn", (int)g, nOn == 0 ? tx(Txt::NoteOff) : allOn ? tx(Txt::NoteOn) : tx(Txt::BtnMix),
                      nOn == 0 ? Pal::btnIdle : allOn ? Pal::btnAccent : Pal::btnAccentHv, Pal::btnHover,
-                     "Show or hide every entry in this group"))
+                     tx(Txt::TipShowOrHideEveryEntryIn)))
                 for (int ci : groups[g])
                     constellations[ci].enabled = !allOn;
-            if (pill("ConstGrpHlt", (int)g, "HLT", nHlt == 0 ? Pal::btnIdle : allHlt ? Pal::btnHighlight : Pal::btnHighlightHv,
-                     Pal::btnHover, "Highlight every entry in this group (census mode)"))
+            if (pill("ConstGrpHlt", (int)g, tx(Txt::BtnHlt), nHlt == 0 ? Pal::btnIdle : allHlt ? Pal::btnHighlight : Pal::btnHighlightHv,
+                     Pal::btnHover, tx(Txt::TipHighlightEveryEntryInThisGroup)))
                 for (int ci : groups[g])
                     constellations[ci].highlight = !allHlt;
             const Clay_ElementId nid = CLAY_IDI("ConstGrpName", (int)g);
@@ -4162,10 +4158,8 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
             // The 2020 shells stand for satellites Starlink Gen1's early first fills already fly: with the deployment era
             // on they are left out of the sky unless asked for (2026-10-21; their benchmarks never need the roster).
             bool eraB = launchEraBenchmarkShells;
-            if (uiToggleRow(inp, ui, "ConstBenchEra", 0, "In the deployment era", eraB,
-                            "Off (default): the era's sky has Starlink Gen1's own first fills in 2019-2024 and not these "
-                            "photometric reference shells, which stand for the same satellites. On: both (counted twice). "
-                            "With the era off they are always there."))
+            if (uiToggleRow(inp, ui, "ConstBenchEra", 0, tx(Txt::LblInTheDeploymentEra), eraB,
+                            tx(Txt::TipOffDefaultTheErasSkyHas)))
                 launchEraBenchmarkShells = eraB;
         }
 
@@ -4186,10 +4180,10 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
                                             .backgroundColor = rowBg,
                                             .cornerRadius = CLAY_CORNER_RADIUS(3)})
             {
-                if (pill("ConstBtn", ci, c.enabled ? "ON" : "OFF", c.enabled ? Pal::btnAccent : Pal::btnIdle, Pal::btnAccentHv,
+                if (pill("ConstBtn", ci, c.enabled ? tx(Txt::NoteOn) : tx(Txt::NoteOff), c.enabled ? Pal::btnAccent : Pal::btnIdle, Pal::btnAccentHv,
                          nullptr))
                     c.enabled = !c.enabled;
-                if (pill("ConstHltBtn", ci, "HLT", c.highlight ? Pal::btnHighlight : Pal::btnIdle, Pal::btnHighlightHv, nullptr))
+                if (pill("ConstHltBtn", ci, tx(Txt::BtnHlt), c.highlight ? Pal::btnHighlight : Pal::btnIdle, Pal::btnHighlightHv, nullptr))
                     c.highlight = !c.highlight;
                 // Actions (84 px): a station: Select + Go to; a List: its member list; else the 3D view.
                 CLAY(CLAY_IDI("ConstActs", ci), {.layout = {.sizing = {CLAY_SIZING_FIXED(84), CLAY_SIZING_FIXED(18)},
@@ -4200,17 +4194,17 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
                     {
                         const int sat = (int)c.orbitStart;
                         const bool ok = !gone(sat);
-                        if (pill("ConstSel", ci, "SEL", Pal::btnIdle, Pal::btnHover, ok ? "Select it" : "Destroyed", 40, ok))
+                        if (pill("ConstSel", ci, tx(Txt::BtnSel), Pal::btnIdle, Pal::btnHover, ok ? tx(Txt::TipSelectIt) : tx(Txt::TipDestroyed), 40, ok))
                             actSel = sat;
-                        if (pill("ConstGo", ci, "GO", Pal::btnIdle, Pal::btnHover, ok ? "Go to it (fly there and follow it)" : "Destroyed",
+                        if (pill("ConstGo", ci, tx(Txt::BtnGo2), Pal::btnIdle, Pal::btnHover, ok ? tx(Txt::TipGoToItFlyThereAnd) : tx(Txt::TipDestroyed),
                                  40, ok))
                             actGo = sat;
                     }
                     else if (isList)
                     {
                         const bool lo = constListOpen_ == ci;
-                        if (pill("ConstListBtn", ci, lo ? "HIDE" : "LIST", lo ? Pal::btnAccent : Pal::btnIdle, Pal::btnHover,
-                                 "Its satellites by name: select one or go to it", 84))
+                        if (pill("ConstListBtn", ci, lo ? tx(Txt::BtnHide2) : tx(Txt::BtnList), lo ? Pal::btnAccent : Pal::btnIdle, Pal::btnHover,
+                                 tx(Txt::TipItsSatellitesByNameSelectOne), 84))
                         {
                             constListOpen_ = lo ? -1 : ci;
                             constListPage_ = 0;
@@ -4219,9 +4213,9 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
                     else
                     {
                         const bool hasMesh = meshRenderer.typeMesh((int)c.typeIdx) != nullptr && c.orbitCount > 0;
-                        if (pill("ConstViewBtn", ci, "VIEW", Pal::btnIdle, Pal::btnHover,
-                                 hasMesh ? "Select one of its satellites (the one highest in your sky) and view it in 3D where it is now"
-                                         : "No 3D model: this type uses the legacy two-surface model",
+                        if (pill("ConstViewBtn", ci, tx(Txt::BtnView), Pal::btnIdle, Pal::btnHover,
+                                 hasMesh ? tx(Txt::TipSelectOneOfItsSatellitesThe)
+                                         : tx(Txt::TipNo3dModelThisTypeUses),
                                  84, hasMesh))
                         {
                             // a real satellite of it, where it is now — and selected, so the viewer refers to the selection
@@ -4244,7 +4238,7 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
                                                                  .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                                  .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                 {
-                    CLAY_TEXT(CLAY_STRING("Find"), CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
+                    CLAY_TEXT(txc(Txt::NoteFind), CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
                     if (textField(inp, ui, CLAY_IDI("ConstListFind", ci), constListFilter_, (float)fs(11) * 14.0f, 11,
                                   "Name or operator (e.g. Intelsat, GOES, SES)", 48))
                         constListPage_ = 0;
@@ -4287,9 +4281,9 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
                                                      .backgroundColor = isSel ? Pal::rowHighlight : (r & 1) ? Pal::cardBg : Pal::rowStripe,
                                                      .cornerRadius = CLAY_CORNER_RADIUS(2)})
                     {
-                        if (pill("ConstMemSel", sat, "SEL", Pal::btnIdle, Pal::btnHover, ok ? "Select it" : "Destroyed", 34, ok))
+                        if (pill("ConstMemSel", sat, tx(Txt::BtnSel), Pal::btnIdle, Pal::btnHover, ok ? tx(Txt::TipSelectIt) : tx(Txt::TipDestroyed), 34, ok))
                             actSel = sat;
-                        if (pill("ConstMemGo", sat, "GO", Pal::btnIdle, Pal::btnHover, ok ? "Go to it (fly there and follow it)" : "Destroyed",
+                        if (pill("ConstMemGo", sat, tx(Txt::BtnGo2), Pal::btnIdle, Pal::btnHover, ok ? tx(Txt::TipGoToItFlyThereAnd) : tx(Txt::TipDestroyed),
                                  34, ok))
                             actGo = sat;
                         text(CLAY_IDI("ConstMemSlot", sat),
@@ -4305,15 +4299,15 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
                                                                .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                                .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                 {
-                    if (pill("ConstListPrev", ci, "<", Pal::btnIdle, Pal::btnHover, "Previous page", 26, constListPage_ > 0))
+                    if (pill("ConstListPrev", ci, "<", Pal::btnIdle, Pal::btnHover, tx(Txt::TipPreviousPage), 26, constListPage_ > 0))
                         --constListPage_;
                     text(CLAY_IDI("ConstListPg", ci),
                          keep(rows.empty() ? std::string("No match")
-                                           : std::string(uiKitStr("%d-%d of %d", constListPage_ * kPage + 1,
+                                           : std::string(uiKitStr(tx(Txt::FmtOf), constListPage_ * kPage + 1,
                                                                   std::min((int)rows.size(), (constListPage_ + 1) * kPage),
                                                                   (int)rows.size()))),
                          (float)fs(11) * 9.0f, Pal::textDim, 11);
-                    if (pill("ConstListNext", ci, ">", Pal::btnIdle, Pal::btnHover, "Next page", 26, constListPage_ + 1 < pages))
+                    if (pill("ConstListNext", ci, ">", Pal::btnIdle, Pal::btnHover, tx(Txt::TipNextPage), 26, constListPage_ + 1 < pages))
                         ++constListPage_;
                     text(CLAY_IDI("ConstListNote", ci), "Slots approximate (mid-2020s positions)", 0.0f, Pal::textHint, 10);
                 }
@@ -4328,14 +4322,6 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
     }
     else if (actSel >= 0)
         selectSatellite(actSel);
-    // Launches and the Sun's Fury: their own tab since 2026-10-21 (Launches); a pointer here.
-    uiSection("ConstSec", 8, "LAUNCHES AND THE SUN'S FURY");
-    uiKV("ConstMsKV", 0, "", "In the Launches tab; the schedule and the Kessler tracker: the Missions window (M).", 4.0f,
-         &Pal::textDim);
-    if (uiButton(inp, ui, "ConstLdOpen", 0, "Launches", "Launches, rockets and exhaust, the Sun's Fury"))
-        settingsActiveTab = 15;
-
-    // The planets: the Sky tab (2026-10-28).
 }
 
 // ─── buildSettingsSoundTab ──────────────────────────────────────────────────
@@ -4351,15 +4337,15 @@ void SatelliteSim::buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui)
         int bufIdx;
     };
     VolRow volRows[] = {
-        {"Master", audio_ ? audio_->getMasterVolume() : masterVol_, hovMasterVolMinus, hovMasterVolPlus, 0},
-        {"Music", audio_ ? audio_->getMusicVolume() : musicVol_, hovMusicVolMinus, hovMusicVolPlus, 1},
-        {"Effects", audio_ ? audio_->getSfxVolume() : sfxVol_, hovSfxVolMinus, hovSfxVolPlus, 2},
-        {"Ambience", audio_ ? audio_->getAmbienceVolume() : ambienceVol_, hovAmbVolMinus, hovAmbVolPlus, 3},
+        {tx(Txt::LblMaster), audio_ ? audio_->getMasterVolume() : masterVol_, hovMasterVolMinus, hovMasterVolPlus, 0},
+        {tx(Txt::LblMusic), audio_ ? audio_->getMusicVolume() : musicVol_, hovMusicVolMinus, hovMusicVolPlus, 1},
+        {tx(Txt::LblEffects), audio_ ? audio_->getSfxVolume() : sfxVol_, hovSfxVolMinus, hovSfxVolPlus, 2},
+        {tx(Txt::LblAmbience), audio_ ? audio_->getAmbienceVolume() : ambienceVol_, hovAmbVolMinus, hovAmbVolPlus, 3},
     };
-    uiSection("SoundSec", 0, "VOLUME");
+    uiSection("SoundSec", 0, tx(Txt::SecVolume));
     for (auto &vr : volRows)
     {
-        if (!searchRow(CLAY_IDI("VolRow", vr.bufIdx).id, uiKitStr("%s volume", vr.label)))
+        if (!searchRow(CLAY_IDI("VolRow", vr.bufIdx).id, uiKitStr(tx(Txt::FmtVolume), vr.label)))
             continue;
         snprintf(volBufs[vr.bufIdx], sizeof(volBufs[0]), "%3.0f%%", vr.vol * 100.0f);
         Clay_String volStr{false, (int32_t)strlen(volBufs[vr.bufIdx]), volBufs[vr.bufIdx]};
@@ -4444,7 +4430,7 @@ void SatelliteSim::buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui)
     // ── Music player ─────────────────────────────────────────────────────────
     static char trackLine[160];
     if (!audio_ || audio_->trackCount() == 0)
-        snprintf(trackLine, sizeof(trackLine), "No music");
+        snprintf(trackLine, sizeof(trackLine), tx(Txt::FmtNoMusic));
     else
     {
         const int ti = audio_->trackIndex();
@@ -4459,16 +4445,16 @@ void SatelliteSim::buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui)
         const std::string name = audio_->trackName(ti);
         const std::string next = audio_->trackName((ti + 1) % audio_->trackCount());
         if (audio_->gapRemaining() > 0.0f)
-            snprintf(trackLine, sizeof(trackLine), "%sNext: %s in %d s", audio_->musicPaused() ? "(paused) " : "",
+            snprintf(trackLine, sizeof(trackLine), tx(Txt::FmtNextInS), audio_->musicPaused() ? "(paused) " : "",
                      next.c_str(), (int)ceilf(audio_->gapRemaining()));
         else if (audio_->trackHasUpwell() && audio_->upwellGain() > 0.005f)
-            snprintf(trackLine, sizeof(trackLine), "%s%s  %s / %s  +upwell %d%%", audio_->musicPaused() ? "(paused) " : "",
+            snprintf(trackLine, sizeof(trackLine), tx(Txt::FmtUpwell), audio_->musicPaused() ? "(paused) " : "",
                      name.c_str(), pos, len, (int)lroundf(audio_->upwellGain() * 100.0f));
         else
             snprintf(trackLine, sizeof(trackLine), "%s%s  %s / %s", audio_->musicPaused() ? "(paused) " : "",
                      name.c_str(), pos, len);
     }
-    uiSection("SoundSec", 1, "MUSIC");
+    uiSection("SoundSec", 1, tx(Txt::SecMusic));
     if (searchRow(CLAY_ID("MusicRow").id, "Music player (track, pause, next)"))
     CLAY(CLAY_ID("MusicRow"), {.layout = {
                                    .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(30)},
@@ -4485,7 +4471,7 @@ void SatelliteSim::buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui)
         // "<<" / "||" or ">" / ">>": ASCII only (the font atlas has no media glyphs).
         const bool paused = audio_ && audio_->musicPaused();
         const char *labels[3] = {"<<", paused ? ">" : "||", ">>"};
-        const char *tips[3] = {"Previous track", paused ? "Resume music" : "Pause music", "Next track"};
+        const char *tips[3] = {tx(Txt::OptPreviousTrack), paused ? tx(Txt::OptResumeMusic) : tx(Txt::OptPauseMusic), tx(Txt::OptNextTrack)};
         for (int b = 0; b < 3; ++b)
         {
             CLAY(CLAY_IDI("MusicBtn", b), {.layout = {
@@ -4516,7 +4502,7 @@ void SatelliteSim::buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui)
 
     // What the ambience is playing here, loudest first — the quickest way to tell "wrong layer"
     // from "wrong mix" while flying around.
-    uiSection("SoundSec", 2, "AMBIENCE");
+    uiSection("SoundSec", 2, tx(Txt::SecAmbience));
     static char nowPlaying[256];
     snprintf(nowPlaying, sizeof(nowPlaying), "%s", ambienceNowPlaying().c_str());
     if (searchRow(CLAY_ID("AmbNowPlaying").id, "Ambience playing now"))
@@ -4527,7 +4513,7 @@ void SatelliteSim::buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui)
     {
         CLAY(CLAY_ID("AmbNowLbl"), {.layout = {.sizing = {CLAY_SIZING_FIXED((float)fs(11) * 8.0f), CLAY_SIZING_FIT(0)}}})
         {
-            CLAY_TEXT(CLAY_STRING("Playing"), CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
+            CLAY_TEXT(txc(Txt::NotePlaying), CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
         }
         CLAY(CLAY_ID("AmbNowVal"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}})
         {
@@ -4541,28 +4527,28 @@ void SatelliteSim::buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui)
         const std::string k = tonalityLine();
         snprintf(keyLine, sizeof(keyLine), "%s", k.rfind("Key: ", 0) == 0 ? k.c_str() + 5 : k.c_str());
     }
-    uiKV("AmbKeyKV", 0, "Key", keyLine);
+    uiKV("AmbKeyKV", 0, tx(Txt::LblKey), keyLine);
 
     // ── Advanced: the mix ────────────────────────────────────────────────────
     if (!showAdvancedSettings)
         return;
-    uiSection("SoundSec", 3, "AMBIENCE MIX");
+    uiSection("SoundSec", 3, tx(Txt::SecAmbienceMix));
     // The key: from the music (the playing track's tonic, gliding between tracks) or the slider below.
-    uiToggleRow(inp, ui, "RootFollowChk", 0, "Key follows the music", ambRootFollowMusic, "Off: the Tonal root slider sets the key");
+    uiToggleRow(inp, ui, "RootFollowChk", 0, tx(Txt::LblKeyFollowsTheMusic), ambRootFollowMusic, tx(Txt::TipOffTheTonalRootSliderSets));
     // Slot idx 99..109 (see buildCloudSliderRows' arrays). Fades are multipliers on each layer's own
     // fade times; the root is the key every pitched voice (drones, whines, status tones) shares —
     // the slider's value is used only while the key does not follow the music.
     CloudSlider amb[] = {
-        {"Music gap (s)", &musicGapS, 0.0f, 120.0f, 5.0f, "%.0f", 99},
-        {"Fade in x", &ambFadeInScale, 0.1f, 4.0f, 0.1f, "%.1f", 100},
-        {"Fade out x", &ambFadeOutScale, 0.1f, 4.0f, 0.1f, "%.1f", 101},
-        {"Tonal root (Hz)", &ambRootHz, 41.0f, 82.0f, 1.0f, "%.0f", 102},
-        {"Wind & air", &ambGroupGain[0], 0.0f, 2.0f, 0.05f, "%.2f", 103},
-        {"Water", &ambGroupGain[1], 0.0f, 2.0f, 0.05f, "%.2f", 104},
-        {"Nature", &ambGroupGain[2], 0.0f, 2.0f, 0.05f, "%.2f", 105},
-        {"City", &ambGroupGain[3], 0.0f, 2.0f, 0.05f, "%.2f", 106},
-        {"Space", &ambGroupGain[4], 0.0f, 2.0f, 0.05f, "%.2f", 107},
-        {"Machines", &ambGroupGain[5], 0.0f, 2.0f, 0.05f, "%.2f", 108},
+        {tx(Txt::SldMusicGapS), &musicGapS, 0.0f, 120.0f, 5.0f, "%.0f", 99},
+        {tx(Txt::SldFadeInX), &ambFadeInScale, 0.1f, 4.0f, 0.1f, "%.1f", 100},
+        {tx(Txt::SldFadeOutX), &ambFadeOutScale, 0.1f, 4.0f, 0.1f, "%.1f", 101},
+        {tx(Txt::SldTonalRootHz), &ambRootHz, 41.0f, 82.0f, 1.0f, "%.0f", 102},
+        {tx(Txt::SldWindAir), &ambGroupGain[0], 0.0f, 2.0f, 0.05f, "%.2f", 103},
+        {tx(Txt::SldWater), &ambGroupGain[1], 0.0f, 2.0f, 0.05f, "%.2f", 104},
+        {tx(Txt::SldNature), &ambGroupGain[2], 0.0f, 2.0f, 0.05f, "%.2f", 105},
+        {tx(Txt::SldCity), &ambGroupGain[3], 0.0f, 2.0f, 0.05f, "%.2f", 106},
+        {tx(Txt::SldSpace), &ambGroupGain[4], 0.0f, 2.0f, 0.05f, "%.2f", 107},
+        {tx(Txt::SldMachines), &ambGroupGain[5], 0.0f, 2.0f, 0.05f, "%.2f", 108},
     };
     buildCloudSliderRows(inp, ui, amb, (int)(sizeof(amb) / sizeof(amb[0])), false);
     if (audio_)
@@ -4574,17 +4560,17 @@ void SatelliteSim::buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui)
 {
     // ── MOVEMENT: WASD speed is this many times the height above the ground per second (review 6), up to the
     // orbital speed, so clouds and small things can be explored.
-    uiSection("CtrlSec", 0, "MOVEMENT");
+    uiSection("CtrlSec", 0, tx(Txt::SecMovement));
     {
         CloudSlider mv[] = {
-            {"Move speed (x height per s)", &moveSpeedPerHeight, 0.05f, 5.0f, 0.05f, "%.2f", 210},
+            {tx(Txt::SldMoveSpeedXHeightPerS), &moveSpeedPerHeight, 0.05f, 5.0f, 0.05f, "%.2f", 210},
         };
         buildCloudSliderRows(inp, ui, mv, 1, false);
     }
 
     // ── KEY BINDINGS: column widths and the row height scale with uiScale like the fonts in them (fixed pixels
     // wrapped "Lower Elevation" and ran "[D-Right]" into its button at 2.0 — the harness's `ui dump` overlap check).
-    uiSection("CtrlSec", 1, "BINDINGS");
+    uiSection("CtrlSec", 1, tx(Txt::SecBindings));
     const float cs = uiScale / 1.5f;
     auto colText = [&](Clay_ElementId id, float w, const char *s, Clay_Color c, uint16_t size)
     {
@@ -4644,7 +4630,7 @@ void SatelliteSim::buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui)
                     }
                     kb.listening = true;
                 }
-                CLAY_TEXT(kb.listening ? CLAY_STRING("Press a key") : CLAY_STRING("Rebind"),
+                CLAY_TEXT(kb.listening ? txc(Txt::NotePressAKey) : txc(Txt::NoteRebind),
                           CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(10)}));
             }
             colText(CLAY_IDI("KbPad", ki), 70 * cs, kbPadBuf[ki], kb.listeningPad ? Pal::listenKey : Pal::volValue, fs(12));
@@ -4668,30 +4654,30 @@ void SatelliteSim::buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui)
                     }
                     kb.listeningPad = true;
                 }
-                CLAY_TEXT(kb.listeningPad ? CLAY_STRING("Press a button") : CLAY_STRING("Bind"),
+                CLAY_TEXT(kb.listeningPad ? txc(Txt::NotePressAButton) : txc(Txt::NoteBind),
                           CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(10)}));
             }
         }
     }
 
     // ── MOUSE: the two inputs that are not bindings (the old Camera tab) ──────────────────────────────────
-    uiSection("CtrlSec", 2, "MOUSE");
-    uiKV("CtrlMouseKV", 0, "Look around", "Right-drag", 130 * cs);
-    uiKV("CtrlMouseKV", 1, "Zoom", "Scroll wheel", 130 * cs);
-    uiKV("CtrlMouseKV", 2, "Select", "Left-click", 130 * cs);
+    uiSection("CtrlSec", 2, tx(Txt::SecMouse));
+    uiKV("CtrlMouseKV", 0, tx(Txt::LblLookAround), tx(Txt::ValRightDrag), 130 * cs);
+    uiKV("CtrlMouseKV", 1, tx(Txt::LblZoom), tx(Txt::ValScrollWheel), 130 * cs);
+    uiKV("CtrlMouseKV", 2, tx(Txt::LblSelect), tx(Txt::ValLeftClick), 130 * cs);
 
     // ── INVERT LOOK: applied where the mouse and right-stick look deltas are consumed (buildUI's look block) ──
-    uiSection("CtrlSec", 3, "INVERT LOOK");
-    uiToggleRow(inp, ui, "InvertChk", 0, "Mouse horizontal", invertMouseX);
-    uiToggleRow(inp, ui, "InvertChk", 1, "Mouse vertical", invertMouseY);
-    uiToggleRow(inp, ui, "InvertChk", 2, "Controller horizontal", invertPadX);
-    uiToggleRow(inp, ui, "InvertChk", 3, "Controller vertical", invertPadY);
+    uiSection("CtrlSec", 3, tx(Txt::SecInvertLook));
+    uiToggleRow(inp, ui, "InvertChk", 0, tx(Txt::LblMouseHorizontal), invertMouseX);
+    uiToggleRow(inp, ui, "InvertChk", 1, tx(Txt::LblMouseVertical), invertMouseY);
+    uiToggleRow(inp, ui, "InvertChk", 2, tx(Txt::LblControllerHorizontal), invertPadX);
+    uiToggleRow(inp, ui, "InvertChk", 3, tx(Txt::LblControllerVertical), invertPadY);
 
     // ── HELP: the floating quick-reference window no longer opens on its own (demo footage was full of it). ──
-    uiSection("CtrlSec", 4, "HELP");
+    uiSection("CtrlSec", 4, tx(Txt::SecHelp));
     {
         bool open = viewControlsChrome.open;
-        if (uiToggleRow(inp, ui, "OpenControlsWindowBtn", 0, "Controls overlay", open, "A small floating window listing the controls"))
+        if (uiToggleRow(inp, ui, "OpenControlsWindowBtn", 0, tx(Txt::LblControlsOverlay), open, tx(Txt::TipASmallFloatingWindowListingThe)))
             viewControlsChrome.open = open;
     }
 }
@@ -4769,7 +4755,7 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
         bool adv = showAdvancedSettings;
         bool changed = false;
         if (searchActive())
-            changed = uiToggleRow(inp, ui, "AdvancedToggle", 0, "Show advanced settings", adv);
+            changed = uiToggleRow(inp, ui, "AdvancedToggle", 0, tx(Txt::BtnShowAdvancedSettings), adv);
         else
         {
             CLAY(CLAY_ID("DispAdvCard"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
@@ -4780,11 +4766,9 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
                                           .cornerRadius = CLAY_CORNER_RADIUS(4),
                                           .border = {.color = adv ? Pal::btnAccent : Pal::fieldBorder, .width = CLAY_BORDER_ALL(1)}})
             {
-                changed = uiToggleRow(inp, ui, "AdvancedToggle", 0, "Show advanced settings", adv,
-                                      "The rendering tabs: Clouds, Weather, Atmosphere, Terrain, Night lights, Ocean, Beams, "
-                                      "Performance");
-                CLAY_TEXT(CLAY_STRING("Every control of how the sim looks: the clouds, weather, atmosphere, terrain, night "
-                                      "lights, ocean and beams tabs. The search box above the tabs finds any setting."),
+                changed = uiToggleRow(inp, ui, "AdvancedToggle", 0, tx(Txt::BtnShowAdvancedSettings), adv,
+                                      tx(Txt::TipTheRenderingTabsCloudsWeatherAtmosphere));
+                CLAY_TEXT(txc(Txt::NoteEveryControlOfHowTheSim),
                           CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_WORDS}));
             }
         }
@@ -4798,11 +4782,11 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     }
 
     // ── GRAPHICS ───────────────────────────────────────────────────────────────────────────────────────────
-    uiSection("DispSec", 0, "GRAPHICS");
+    uiSection("DispSec", 0, tx(Txt::SecGraphics));
     {
         // Display order is cheapest -> most expensive, independent of the enum's numeric order (Potato is enum value
         // 6, appended after Custom). Custom has no button: it is a status ("an advanced slider was edited by hand").
-        static const char *kPresetLabels[6] = {"Potato", "Planetarium", "Low", "Medium", "High", "Ultra"};
+        static const char *kPresetLabels[6] = {tx(Txt::OptPotato), tx(Txt::OptPlanetarium), tx(Txt::OptLow), tx(Txt::OptMedium), tx(Txt::OptHigh), tx(Txt::OptUltra)};
         static const GraphicsPreset kPresetValues[6] = {
             GraphicsPreset::Potato, GraphicsPreset::Planetarium, GraphicsPreset::Low,
             GraphicsPreset::Medium, GraphicsPreset::High, GraphicsPreset::Ultra};
@@ -4810,15 +4794,15 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
         for (int i = 0; i < 6; ++i)
             if (graphicsPreset == kPresetValues[i])
                 cur = i;
-        if (int c = uiChoiceRow(inp, ui, "PresetBtn", 0, graphicsPreset == GraphicsPreset::Custom ? "Preset (custom)" : "Preset",
-                                kPresetLabels, 6, cur, "Sets every quality setting at once; editing an advanced slider makes it Custom");
+        if (int c = uiChoiceRow(inp, ui, "PresetBtn", 0, graphicsPreset == GraphicsPreset::Custom ? tx(Txt::LblPresetCustom) : tx(Txt::LblPreset),
+                                kPresetLabels, 6, cur, tx(Txt::TipSetsEveryQualitySettingAtOnce));
             c >= 0)
             applyGraphicsPreset(kPresetValues[c]);
     }
     // Below 100% the sky/terrain/ocean background renders at reduced resolution and is upscaled; satellites, stars
     // and the UI stay native.
-    if (stepper("RenderScale", "Render scale", renderScale, 0.5f, 1.0f, 0.05f, "%.0f%%", 100.0f,
-                "Background and cloud resolution (satellites, stars and the UI always render at full resolution)") &&
+    if (stepper("RenderScale", tx(Txt::LblRenderScale), renderScale, 0.5f, 1.0f, 0.05f, "%.0f%%", 100.0f,
+                tx(Txt::TipBackgroundAndCloudResolutionSatellitesSt)) &&
         ctx_)
     {
         renderScale = std::round(renderScale * 100.0f) / 100.0f;
@@ -4826,39 +4810,39 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
         destroySkyLowResResources(ctx_->device);
         createSkyLowResResources(*ctx_);
     }
-    uiToggleRow(inp, ui, "DynRes", 0, "Automatic render scale", dynResEnabled,
-                "Lowers the render scale (5% steps) when the GPU frame runs over the target frame rate, raises it when there is room");
+    uiToggleRow(inp, ui, "DynRes", 0, tx(Txt::LblAutomaticRenderScale), dynResEnabled,
+                tx(Txt::TipLowersTheRenderScale5Teps));
     if (dynResEnabled)
     {
-        stepper("DynResFps", "Target frame rate", dynResTargetFps, 30.0f, 144.0f, 5.0f, "%.0f fps", 1.0f,
-                "The automatic render scale keeps the GPU frame under 90% of this rate's frame time");
-        stepper("DynResMin", "Lowest render scale", dynResMinScale, 0.5f, 1.0f, 0.05f, "%.0f%%", 100.0f,
-                "The automatic render scale never goes below this");
+        stepper("DynResFps", tx(Txt::LblTargetFrameRate), dynResTargetFps, 30.0f, 144.0f, 5.0f, "%.0f fps", 1.0f,
+                tx(Txt::TipTheAutomaticRenderScaleKeepsThe));
+        stepper("DynResMin", tx(Txt::LblLowestRenderScale), dynResMinScale, 0.5f, 1.0f, 0.05f, "%.0f%%", 100.0f,
+                tx(Txt::TipTheAutomaticRenderScaleNeverGoes));
     }
-    if (uiToggleRow(inp, ui, "CloudsFollowScale", 0, "Clouds follow render scale", computeFollowsRenderScale,
-                    "Below 100% the clouds and the terrain depth pass also render at the reduced resolution"))
+    if (uiToggleRow(inp, ui, "CloudsFollowScale", 0, tx(Txt::LblCloudsFollowRenderScale), computeFollowsRenderScale,
+                    tx(Txt::TipBelow100HeCloudsAndThe)))
         graphicsPreset = GraphicsPreset::Custom; // in the preset table since 2026-10-20 (applyGraphicsPreset)
-    uiToggleRow(inp, ui, "SkyTaa", 0, "Temporal anti-aliasing", skyTaaEnabled,
-                "Terrain, sky and sea; below 100% render scale it also upscales (rebuilds full resolution over frames)");
+    uiToggleRow(inp, ui, "SkyTaa", 0, tx(Txt::LblTemporalAntiAliasing), skyTaaEnabled,
+                tx(Txt::TipTerrainSkyAndSeaBelow100));
     if (skyTaaEnabled && showAdvancedSettings)
     {
         // 2026-10-28: had no UI (display.sky_taa_weight / _moving): the new frame's share, still and in motion.
         CloudSlider taa[] = {
-            {"TAA new frame (still)", &skyTaaWeightStill, 0.02f, 1.0f, 0.01f, "%.2f", 426},
-            {"TAA new frame (moving)", &skyTaaWeightMoving, 0.02f, 1.0f, 0.01f, "%.2f", 427},
+            {tx(Txt::SldTaaNewFrameStill), &skyTaaWeightStill, 0.02f, 1.0f, 0.01f, "%.2f", 426},
+            {tx(Txt::SldTaaNewFrameMoving), &skyTaaWeightMoving, 0.02f, 1.0f, 0.01f, "%.2f", 427},
         };
         buildCloudSliderRows(inp, ui, taa, 2, false);
     }
     {
         // MAILBOX was the old unconditional default, which runs the GPU flat out on a laptop; V-Sync (FIFO) is.
-        static const char *kFpsCapLabels[5] = {"Off", "30", "60", "120", "V-Sync"};
+        static const char *kFpsCapLabels[5] = {tx(Txt::LblOff), "30", "60", "120", tx(Txt::OptVSync)};
         static const FpsCapMode kFpsCapValues[5] = {FpsCapMode::Off, FpsCapMode::Cap30, FpsCapMode::Cap60, FpsCapMode::Cap120,
                                                     FpsCapMode::VSync};
         int cur = 0;
         for (int i = 0; i < 5; ++i)
             if (fpsCapMode == kFpsCapValues[i])
                 cur = i;
-        if (int c = uiChoiceRow(inp, ui, "FpsCapBtn", 0, "Frame limiter", kFpsCapLabels, 5, cur); c >= 0)
+        if (int c = uiChoiceRow(inp, ui, "FpsCapBtn", 0, tx(Txt::LblFrameLimiter), kFpsCapLabels, 5, cur); c >= 0)
         {
             fpsCapMode = kFpsCapValues[c];
             applyFpsCapMode();
@@ -4866,14 +4850,14 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     }
     // The Beams tab owns the same toggle beside the beam diagnostics; here for a low preset + beams "planetarium
     // demo" in one tab.
-    uiToggleRow(inp, ui, "BeamRaysQuick", 0, "Beam pointing rays", showBeamDebugRays, "The Reflect Orbital mirrors' beams as lines");
+    uiToggleRow(inp, ui, "BeamRaysQuick", 0, tx(Txt::LblBeamPointingRays), showBeamDebugRays, tx(Txt::TipTheReflectOrbitalMirrorsBeamsAs2));
 
     // ── WINDOW ─────────────────────────────────────────────────────────────────────────────────────────────
-    uiSection("DispSec", 1, "WINDOW");
+    uiSection("DispSec", 1, tx(Txt::SecWindow));
     {
         const bool isFs = win && glfwGetWindowMonitor(win) != nullptr;
-        static const char *kWinModes[2] = {"Windowed", "Fullscreen"};
-        if (int c = uiChoiceRow(inp, ui, "WinMode", 0, "Window mode", kWinModes, 2, isFs ? 1 : 0); c >= 0 && win)
+        static const char *kWinModes[2] = {tx(Txt::OptWindowed), tx(Txt::OptFullscreen)};
+        if (int c = uiChoiceRow(inp, ui, "WinMode", 0, tx(Txt::LblWindowMode), kWinModes, 2, isFs ? 1 : 0); c >= 0 && win)
         {
             if (c == 1)
             {
@@ -4889,84 +4873,83 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     }
     {
         float s = uiScaleUser;
-        if (stepper("UiScale", "Text scale", s, 0.75f, 2.0f, 0.125f, "%.2fx", 1.0f, nullptr))
+        if (stepper("UiScale", tx(Txt::LblTextScale), s, 0.75f, 2.0f, 0.125f, "%.2fx", 1.0f, nullptr))
             uiScaleUser = s;
     }
     // (2026-10-21) The automatic part of the UI scale: smaller on a short window (1 at 1000 px and up, 0.77 at 768, 0.72 at 720),
     // times the Text scale above; text never shrinks below 12 px through it (16 px before the SDF font).
-    uiToggleRow(inp, ui, "UiAutoScale", 0, "Scale with window", uiScaleAuto,
-                "Shrink the interface on a short window (under 1000 px tall): 0.77x at 768 px, 0.72x at 720. Text stays at "
-                "least 12 px");
+    uiToggleRow(inp, ui, "UiAutoScale", 0, tx(Txt::LblScaleWithWindow), uiScaleAuto,
+                tx(Txt::TipShrinkTheInterfaceOnAShort));
     {
-        static const char *kUnits[2] = {"Metric", "Imperial"};
-        if (int c = uiChoiceRow(inp, ui, "Units", 0, "Units", kUnits, 2, unitSystem == UnitSystem::Metric ? 0 : 1); c >= 0)
+        static const char *kUnits[2] = {tx(Txt::OptMetric), tx(Txt::OptImperial)};
+        if (int c = uiChoiceRow(inp, ui, "Units", 0, tx(Txt::LblUnits), kUnits, 2, unitSystem == UnitSystem::Metric ? 0 : 1); c >= 0)
             unitSystem = c == 0 ? UnitSystem::Metric : UnitSystem::Imperial;
     }
-    if (int c = uiChoiceRow(inp, ui, "UiTheme", 0, "UI theme", kUiThemeNames, (int)UiTheme::Count, uiTheme,
-                            "Panel colours. Night red keeps the whole interface dim red, to save dark adaptation");
+    if (int c = uiChoiceRow(inp, ui, "UiTheme", 0, tx(Txt::LblUiTheme), kUiThemeNames, (int)UiTheme::Count, uiTheme,
+                            tx(Txt::TipPanelColoursNightRedKeepsThe));
         c >= 0)
         uiTheme = c; // applied next frame (syncUiTheme)
     {
         float o = windowOpacity;
-        if (stepper("WinOpacity", "Window opacity", o, 0.6f, 1.0f, 0.05f, "%.0f%%", 100.0f,
-                    "The windows' background. 100%: opaque (a window over another hides it)"))
+        if (stepper("WinOpacity", tx(Txt::LblWindowOpacity), o, 0.6f, 1.0f, 0.05f, "%.0f%%", 100.0f,
+                    tx(Txt::TipTheWindowsBackground100OpaqueA)))
             windowOpacity = std::clamp(o, 0.6f, 1.0f);
     }
 
     // ── SCREENSHOTS: keep the interface in the picture (requestScreenshot / reportTakeShot) ──────────────────
-    uiSection("DispSec", 6, "SCREENSHOTS");
+    uiSection("DispSec", 6, tx(Txt::SecScreenshots));
     {
         char k1[24], k2[24]; // keyDisplayName's letters rotate through a small pool: copy
         snprintf(k1, sizeof(k1), "%s", keyDisplayName(keybindings[KB_SCREENSHOT].key));
         snprintf(k2, sizeof(k2), "%s", keyDisplayName(keybindings[KB_SCREENSHOT_UI].key));
-        uiToggleRow(inp, ui, "ShotUi", 0, uiKitStr("Screenshots (%s) include the UI", k1), screenshotUiSetting,
-                    uiKitStr("Off: the scene alone. %s takes one with the UI either way", k2));
-        uiToggleRow(inp, ui, "ShotUi", 1, "Issue report shots include the UI", reportShotUiSetting,
-                    "The windows and panels you had open (the note bar and the Issue reports window are left out)");
+        uiToggleRow(inp, ui, "ShotUi", 0, uiKitStr(tx(Txt::FmtScreenshotsIncludeTheUi), k1), screenshotUiSetting,
+                    uiKitStr(tx(Txt::FmtOffTheSceneAloneTakesOne), k2));
+        uiToggleRow(inp, ui, "ShotUi", 1, tx(Txt::LblIssueReportShotsIncludeTheUi), reportShotUiSetting,
+                    tx(Txt::TipTheWindowsAndPanelsYouHad));
     }
 
     // ── VIDEO (SatelliteSimVideo.cpp): the key / the HUD's video button record to <user data>/videos/ ─────────────
-    uiSection("DispSec", 7, "VIDEO");
+    uiSection("DispSec", 7, tx(Txt::SecVideo));
     {
         char k1[24];
         snprintf(k1, sizeof(k1), "%s", keyDisplayName(keybindings[KB_VIDEO].key));
-        uiToggleRow(inp, ui, "VideoUi", 0, uiKitStr("Videos (%s) include the UI", k1), videoUiSetting,
-                    "Off: the scene alone (you still see the UI while recording)");
+        uiToggleRow(inp, ui, "VideoUi", 0, uiKitStr(tx(Txt::FmtVideosIncludeTheUi), k1), videoUiSetting,
+                    tx(Txt::TipOffTheSceneAloneYouStill));
         static const char *kFps[] = {"30", "60"};
-        const int fc = uiChoiceRow(inp, ui, "VideoFps", 0, "Frame rate", kFps, 2, videoFpsSetting > 45.0f ? 1 : 0,
-                                   "Frames per second of the video (a frame the app did not draw in time repeats the last one)");
+        const int fc = uiChoiceRow(inp, ui, "VideoFps", 0, tx(Txt::LblFrameRate), kFps, 2, videoFpsSetting > 45.0f ? 1 : 0,
+                                   tx(Txt::TipFramesPerSecondOfTheVideo));
         if (fc >= 0)
             videoFpsSetting = fc == 1 ? 60.0f : 30.0f;
         static const char *kScale[] = {"100%", "75%", "50%"};
         const int cur = videoScaleSetting > 0.87f ? 0 : (videoScaleSetting > 0.62f ? 1 : 2);
-        const int sc = uiChoiceRow(inp, ui, "VideoScale", 0, "Resolution (of the window)", kScale, 3, cur,
-                                   "Smaller files; the frame is scaled on the GPU");
+        const int sc = uiChoiceRow(inp, ui, "VideoScale", 0, tx(Txt::LblResolutionOfTheWindow), kScale, 3, cur,
+                                   tx(Txt::TipSmallerFilesTheFrameIsScaled));
         if (sc >= 0)
             videoScaleSetting = sc == 0 ? 1.0f : (sc == 1 ? 0.75f : 0.5f);
         if (!videoLastFile_.empty())
-            uiKV("VideoLast", 0, "Last video", uiKitStr("%s", videoLastFile_.c_str()));
+            uiKV("VideoLast", 0, tx(Txt::LblLastVideo), uiKitStr("%s", videoLastFile_.c_str()));
     }
 
     // ── HQ PHOTO (requestPhoto) ────────────────────────────────────────────────────────────────────────────
-    uiSection("DispSec", 2, "HQ PHOTO");
+    uiSection("DispSec", 2, tx(Txt::SecHqPhoto));
     {
         CloudSlider ph[] = {
-            {"Resolution (x window)", &photoScaleSetting, 1.0f, 4.0f, 1.0f, "%.0f", 227},
-            {"Settle frames", &photoSettleFrames, 4.0f, 240.0f, 4.0f, "%.0f", 228},
+            {tx(Txt::SldResolutionXWindow), &photoScaleSetting, 1.0f, 4.0f, 1.0f, "%.0f", 227},
+            {tx(Txt::SldSettleFrames), &photoSettleFrames, 4.0f, 240.0f, 4.0f, "%.0f", 228},
         };
         buildCloudSliderRows(inp, ui, ph, 2, false);
     }
 
     // ── STARTUP ────────────────────────────────────────────────────────────────────────────────────────────
     // Turning the intro off does not move the observer: the observer and camera are restored from settings.json.
-    uiSection("DispSec", 3, "STARTUP");
-    uiToggleRow(inp, ui, "PlayIntro", 0, "Play intro on startup", playIntroOnStartup);
+    uiSection("DispSec", 3, tx(Txt::SecStartup));
+    uiToggleRow(inp, ui, "PlayIntro", 0, tx(Txt::LblPlayIntroOnStartup), playIntroOnStartup);
     // The startup graphics chooser (SatelliteSimBootChooser.cpp): asked on the loading screen, before
     // anything heavy loads. A crashed last session shows it regardless.
-    uiToggleRow(inp, ui, "AskGfxMode", 0, "Ask for graphics mode on startup", askGraphicsModeOnStartup);
+    uiToggleRow(inp, ui, "AskGfxMode", 0, tx(Txt::LblAskForGraphicsModeOnStartup), askGraphicsModeOnStartup);
     settingsButtonRow(searchActive(), CLAY_ID("DispStartupBtns"), [&]()
     {
-        if (uiButton(inp, ui, "ReplayIntroBtn", 0, "Replay intro", nullptr, false, !showIntro))
+        if (uiButton(inp, ui, "ReplayIntroBtn", 0, tx(Txt::BtnReplayIntro), nullptr, false, !showIntro))
         {
             // introIsReplay suppresses the UC1 benchmark however this playthrough ends (see finishIntro).
             showIntro = true;
@@ -4982,7 +4965,7 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
                 audio_->playTrack(0);
             }
         }
-        if (uiButton(inp, ui, "ReplayTutorialBtn", 0, "Replay tutorial", nullptr, false, !showIntro))
+        if (uiButton(inp, ui, "ReplayTutorialBtn", 0, tx(Txt::BtnReplayTutorial), nullptr, false, !showIntro))
         {
             settingsChrome.open = false; // the tutorial starts with the view, not this window
             startTutorial();
@@ -4990,13 +4973,12 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     });
 
     // ── SETTINGS ───────────────────────────────────────────────────────────────────────────────────────────
-    uiSection("DispSec", 4, "SETTINGS");
+    uiSection("DispSec", 4, tx(Txt::SecSettings));
     {
         // "Show advanced settings" is the card at the top of this tab.
         if (showAdvancedSettings)
-            uiToggleRow(inp, ui, "DevUnboundedToggle", 0, "Dev mode: unbounded values", devUnboundedValues,
-                        "A number typed into a settings slider's value is taken as typed, outside the slider's range. "
-                        "Out-of-range values show in amber and can break rendering.");
+            uiToggleRow(inp, ui, "DevUnboundedToggle", 0, tx(Txt::LblDevModeUnboundedValues), devUnboundedValues,
+                        tx(Txt::TipANumberTypedIntoASettings));
     }
     // Deletes settings.json from the user data directory and asks for a restart (a live in-place reset would need
     // a third hand-kept copy of the settings field list).
@@ -5004,8 +4986,8 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
         resetDefaultsMsgTimer = std::max(0.0f, resetDefaultsMsgTimer - inp.dt);
     settingsButtonRow(searchActive(), CLAY_ID("DispResetRow"), [&]()
     {
-        if (uiButton(inp, ui, "ResetDefaultsBtn", 0, resetDefaultsMsgTimer > 0.0f ? "Restart to apply" : "Reset to defaults",
-                     "Delete saved settings and restore the defaults on the next launch", resetDefaultsMsgTimer > 0.0f))
+        if (uiButton(inp, ui, "ResetDefaultsBtn", 0, resetDefaultsMsgTimer > 0.0f ? tx(Txt::BtnRestartToApply) : tx(Txt::BtnResetToDefaults),
+                     tx(Txt::TipDeleteSavedSettingsAndRestoreThe), resetDefaultsMsgTimer > 0.0f))
         {
             std::error_code ec;
             std::filesystem::remove((std::filesystem::path(userDataDir_) / "settings.json"), ec);
@@ -5023,20 +5005,20 @@ void SatelliteSim::buildSettingsPerformanceTab(const UIInput &inp, UIRenderer &u
     // ── GPU frame breakdown: gpuMsSmoothed[] are EMA-smoothed timestamp results, one frame stale ──────────
     // Order must match gpuMsSmoothed[]'s slot semantics (VulkanContext::kTimestampCount; savePerfSnapshot's keys).
     // "Beam cloud block (retired)" always reads ~0: beam_self_march.comp's cost folds into "Orbit compute".
-    uiSection("PerfSec", 0, "GPU FRAME (ms)");
+    uiSection("PerfSec", 0, tx(Txt::SecGpuFrameMs));
     static const char *kPerfLabels[8] = {
-        "Scene depth", "Beam cloud block (retired)", "Orbit compute", "Cloud march", "Flare compute", "Sky background draw", "Satellite + star draw", "UI overlay"};
+        tx(Txt::OptSceneDepth), tx(Txt::OptBeamCloudBlockRetired), tx(Txt::OptOrbitCompute), tx(Txt::OptCloudMarch), tx(Txt::OptFlareCompute), tx(Txt::OptSkyBackgroundDraw), tx(Txt::OptSatelliteStarDraw), tx(Txt::OptUiOverlay)};
     for (int pi = 0; pi < 8; ++pi)
         uiKV("PerfGpuKV", pi, kPerfLabels[pi], uiKitStr("%.2f", gpuMsSmoothed[pi]), lw);
-    uiKV("PerfGpuKV", 8, "Total", uiKitStr("%.2f", gpuMsTotalSmoothed), lw, &Pal::textPrimary);
+    uiKV("PerfGpuKV", 8, tx(Txt::LblTotal), uiKitStr("%.2f", gpuMsTotalSmoothed), lw, &Pal::textPrimary);
 
     // ── CPU frame breakdown: "Other" is the wall clock minus everything measured — present/vsync wait, driver
     // submit, App-side work, and any CPU block without a bucket (a large "Other" is itself the finding).
-    uiSection("PerfSec", 1, "CPU FRAME (ms)");
+    uiSection("PerfSec", 1, tx(Txt::SecCpuFrameMs));
     {
         static const char *kCpuLabels[CPU_COUNT] = {
-            "Build UI (Clay)", "Update positions", "Beam readback + cluster",
-            "Update stars", "Light pollution dome", "Update planets", "Orbit rebake", "Debris cascade", "Launches"};
+            tx(Txt::OptBuildUiClay), tx(Txt::OptUpdatePositions), tx(Txt::OptBeamReadbackCluster),
+            tx(Txt::OptUpdateStars), tx(Txt::OptLightPollutionDome), tx(Txt::OptUpdatePlanets), tx(Txt::OptOrbitRebake), tx(Txt::OptDebrisCascade), tx(Txt::OptLaunches)};
         float measured = 0.0f;
         for (int ci = 0; ci < CPU_COUNT; ++ci)
         {
@@ -5045,25 +5027,24 @@ void SatelliteSim::buildSettingsPerformanceTab(const UIInput &inp, UIRenderer &u
         }
         // inp.dt is this frame's wall clock; the buckets are last frame's (the same at steady state).
         const float other = std::max(0.0f, inp.dt * 1000.0f - gpuMsTotalSmoothed - measured);
-        uiKV("PerfCpuKV", CPU_COUNT, "Other (present / submit / App)", uiKitStr("%.2f", other), lw, &Pal::textPrimary);
+        uiKV("PerfCpuKV", CPU_COUNT, tx(Txt::LblOtherPresentSubmitApp), uiKitStr("%.2f", other), lw, &Pal::textPrimary);
     }
 
     // ── Records: Save snapshot (perf_profiles/profile_log.jsonl) and the automated knockout sweep ──────────
-    uiSection("PerfSec", 2, "RECORD");
+    uiSection("PerfSec", 2, tx(Txt::SecRecord));
     if (snapshotMsgTimer > 0.0f)
         snapshotMsgTimer = std::max(0.0f, snapshotMsgTimer - inp.dt);
     settingsButtonRow(searchActive(), CLAY_ID("PerfRecordBtns"), [&]()
     {
-        if (uiButton(inp, ui, "SaveSnapshotBtn", 0, snapshotMsgTimer > 0.0f ? "Saved" : "Save snapshot",
-                     "Append the current view, settings and timings to perf_profiles/profile_log.jsonl", snapshotMsgTimer > 0.0f))
+        if (uiButton(inp, ui, "SaveSnapshotBtn", 0, snapshotMsgTimer > 0.0f ? tx(Txt::BtnSaved) : tx(Txt::BtnSaveSnapshot),
+                     tx(Txt::TipAppendTheCurrentViewSettingsAnd), snapshotMsgTimer > 0.0f))
             savePerfSnapshot(inp.dt);
         // +2 steps: the baseline, every measured bit, and the trailing baseline re-measure.
-        const char *sweepLabel = sweepActive              ? uiKitStr("Sweeping %d/%d", sweepStep + 1, sweepBitCount + 2)
-                                 : sweepDoneMsgTimer > 0.0f ? "Sweep saved"
-                                                            : "Run knockout sweep";
+        const char *sweepLabel = sweepActive              ? uiKitStr(tx(Txt::FmtSweeping), sweepStep + 1, sweepBitCount + 2)
+                                 : sweepDoneMsgTimer > 0.0f ? tx(Txt::ValSweepSaved)
+                                                            : tx(Txt::ValRunKnockoutSweep);
         if (uiButton(inp, ui, "RunSweepBtn", 0, sweepLabel,
-                     "Measures every knockout below in turn (~15 s, pauses time; hold the camera still) and writes one record "
-                     "with the whole cost table",
+                     tx(Txt::TipMeasuresEveryKnockoutBelowInTurn),
                      sweepActive || sweepDoneMsgTimer > 0.0f) &&
             !sweepActive)
             startKnockoutSweep();
@@ -5072,12 +5053,12 @@ void SatelliteSim::buildSettingsPerformanceTab(const UIInput &inp, UIRenderer &u
     // ── Knockouts: each disables one shader block or dispatch (rendering is wrong while on) to read its cost from
     // the breakdowns above. kDebugToggles drives these rows and the sweep. 1024 (the scene depth pass) reverts the
     // whole shared-depth architecture to pre-unification occlusion.
-    uiSection("PerfSec", 3, "KNOCKOUTS (skip a pass to measure it)");
+    uiSection("PerfSec", 3, tx(Txt::SecKnockoutsSkipAPassToMeasure));
     for (int ti = 0; ti < kDebugToggleCount; ++ti)
     {
         bool on = (debugDisableMask & kDebugToggles[ti].bit) != 0u;
         // "On" = skipped. A sweep owns the mask while it runs.
-        if (uiToggleRow(inp, ui, "DebugToggleChk", ti, kDebugToggles[ti].label, on, nullptr, "Skip", "On") && !sweepActive)
+        if (uiToggleRow(inp, ui, "DebugToggleChk", ti, kDebugToggles[ti].label, on, nullptr, tx(Txt::LblSkip), tx(Txt::LblOn)) && !sweepActive)
             debugDisableMask ^= kDebugToggles[ti].bit;
     }
 }
@@ -5128,99 +5109,99 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
     };
     static char photoBufs[56][12];
     PhotoParam photoParams[] = {
-        {"Brightness", &brightnessScale, 0.05f, 20.0f, 0.25f, "%.2f", 0},
-        {"Day suppress", &daySuppression, 5.0f, 5000.0f, 5.0f, "%.0f", 1},
-        {"Mirror boost", &mirrorBoost, 50.0f, 1000.0f, 25.0f, "%.0f", 2},
-        {"Vis threshold", &visThresh, 0.0001f, 0.1f, 0.0001f, "%.3f", 3},
-        {"Highlight flare", &highlightFlare, 0.01f, 1.0f, 0.01f, "%.2f", 4},
-        {"Moon suppress", &moonSuppression, 0.0f, 500.0f, 5.0f, "%.0f", 5},
+        {tx(Txt::SldBrightness), &brightnessScale, 0.05f, 20.0f, 0.25f, "%.2f", 0},
+        {tx(Txt::SldDaySuppress), &daySuppression, 5.0f, 5000.0f, 5.0f, "%.0f", 1},
+        {tx(Txt::SldMirrorBoost), &mirrorBoost, 50.0f, 1000.0f, 25.0f, "%.0f", 2},
+        {tx(Txt::SldVisThreshold), &visThresh, 0.0001f, 0.1f, 0.0001f, "%.3f", 3},
+        {tx(Txt::SldHighlightFlare), &highlightFlare, 0.01f, 1.0f, 0.01f, "%.2f", 4},
+        {tx(Txt::SldMoonSuppress), &moonSuppression, 0.0f, 500.0f, 5.0f, "%.0f", 5},
         // x the calibrated skyglow model (updateLightPollutionDome): 1 = the sky brightness measured at real sites.
-        {"Skyglow (x calibrated)", &skyglowGain, 0.0f, 10.0f, 0.05f, "%.2f", 6},
-        {"Extinction", &extinctionCoeff, 0.0f, 1.0f, 0.02f, "%.2f", 7},
-        {"Sunlit sky vis", &sunlitBgVisibility, 0.0f, 1.0f, 0.01f, "%.2f", 8},
+        {tx(Txt::SldSkyglowXCalibrated), &skyglowGain, 0.0f, 10.0f, 0.05f, "%.2f", 6},
+        {tx(Txt::SldExtinction), &extinctionCoeff, 0.0f, 1.0f, 0.02f, "%.2f", 7},
+        {tx(Txt::SldSunlitSkyVis), &sunlitBgVisibility, 0.0f, 1.0f, 0.01f, "%.2f", 8},
         // Flare architecture overhaul: replaces the deleted per-pixel flareEntries loop with a
         // render-to-texture + blur/streak pipeline (see FlareSourcePC's comment in SatelliteSim.h).
-        {"Flare glow gain", &flareGlowGain, 0.0f, 0.01f, 0.0005f, "%.2f", 9},
-        {"Flare streak", &flareStreakGain, 0.0f, 1.0f, 0.02f, "%.2f", 10},
+        {tx(Txt::SldFlareGlowGain), &flareGlowGain, 0.0f, 0.01f, 0.0005f, "%.2f", 9},
+        {tx(Txt::SldFlareStreak), &flareStreakGain, 0.0f, 1.0f, 0.02f, "%.2f", 10},
         // Dark-sky exposure gate (Milky Way / zodiacal / aurora): the twilight half (the city half is the skyglow
         // model above; slots 11-13 were its old log-ramp sliders, removed 2026-10-28).
         // Twilight half of the same gate. "Twilight end" is the one to reach for first: it is the
         // solar depression at which the sky is considered fully dark, so it directly sets how long
         // after sunset dark-sky features come out (18 deg = real astronomical twilight).
-        {"Twilight sky mag", &darkSkyTwilightMag0, 8.0f, 20.0f, 0.25f, "%.1f", 14},
-        {"Twilight end (deg)", &darkSkyTwilightEndDeg, 0.0f, 30.0f, 0.5f, "%.1f", 15},
-        {"Twilight aniso", &darkSkyTwilightAniso, 0.0f, 8.0f, 0.25f, "%.2f", 16},
-        {"MW fade in (s)", &mwFadeInTimeS, 0.0f, 120.0f, 1.0f, "%.1f", 17},
-        {"MW fade out (s)", &mwFadeOutTimeS, 0.0f, 60.0f, 0.5f, "%.1f", 18},
+        {tx(Txt::SldTwilightSkyMag), &darkSkyTwilightMag0, 8.0f, 20.0f, 0.25f, "%.1f", 14},
+        {tx(Txt::SldTwilightEndDeg), &darkSkyTwilightEndDeg, 0.0f, 30.0f, 0.5f, "%.1f", 15},
+        {tx(Txt::SldTwilightAniso), &darkSkyTwilightAniso, 0.0f, 8.0f, 0.25f, "%.2f", 16},
+        {tx(Txt::SldMwFadeInS), &mwFadeInTimeS, 0.0f, 120.0f, 1.0f, "%.1f", 17},
+        {tx(Txt::SldMwFadeOutS), &mwFadeOutTimeS, 0.0f, 60.0f, 0.5f, "%.1f", 18},
         // Long-exposure trail pipeline — "Long exposure trails" ON/OFF + "Clear Trail" live in the
         // Display tab (near "Render scale"); these two gains are siblings of flareGlowGain/
         // flareStreakGain just above, so they live in this same tab.
-        {"Trail decay (s)", &trailDecaySeconds, 0.2f, 30.0f, 0.2f, "%.1f", 19},
-        {"Trail gain", &trailCompositeGain, 0.0f, 5.0f, 0.05f, "%.2f", 20},
+        {tx(Txt::SldTrailDecayS), &trailDecaySeconds, 0.2f, 30.0f, 0.2f, "%.1f", 19},
+        {tx(Txt::SldTrailGain), &trailCompositeGain, 0.0f, 5.0f, 0.05f, "%.2f", 20},
         // Datacenter flare mitigation tilt — see AttitudeMode::SunTrackingTilted (SatelliteSim.h)
         // and formatSelectedSatInfo's "Power output" readout. 0-45 deg: past ~45 deg the specular
         // lobe is pitched further from nadir than from zenith, so mitigation gains diminish while
         // the cos(tilt) power cost keeps climbing — not a hard physical limit, just past the
         // useful range for a gimbal-limited real panel.
-        {"Flare mitigate tilt (deg)", &flareMitigationTiltDeg, 0.0f, 45.0f, 1.0f, "%.0f", 21},
+        {tx(Txt::SldFlareMitigateTiltDeg), &flareMitigationTiltDeg, 0.0f, 45.0f, 1.0f, "%.0f", 21},
         // Shared point-source model (point_style.glsl): satellites, stars and planets are all drawn
         // from their apparent magnitude through these, so equal magnitudes look equal.
-        {"Point peak mag", &pointRefMag, -4.0f, 6.0f, 0.1f, "%.1f", 22},
-        {"Point contrast", &pointGamma, 0.2f, 1.5f, 0.05f, "%.2f", 23},
-        {"Point limit mag", &pointLimitMag, 3.0f, 12.0f, 0.1f, "%.1f", 24},
-        {"Point size (px)", &pointSigmaPx, 0.2f, 2.0f, 0.05f, "%.2f", 25},
-        {"Point max size (px)", &pointSigmaMaxPx, 1.0f, 20.0f, 0.5f, "%.1f", 26},
+        {tx(Txt::SldPointPeakMag), &pointRefMag, -4.0f, 6.0f, 0.1f, "%.1f", 22},
+        {tx(Txt::SldPointContrast), &pointGamma, 0.2f, 1.5f, 0.05f, "%.2f", 23},
+        {tx(Txt::SldPointLimitMag), &pointLimitMag, 3.0f, 12.0f, 0.1f, "%.1f", 24},
+        {tx(Txt::SldPointSizePx), &pointSigmaPx, 0.2f, 2.0f, 0.05f, "%.2f", 25},
+        {tx(Txt::SldPointMaxSizePx), &pointSigmaMaxPx, 1.0f, 20.0f, 0.5f, "%.1f", 26},
         // Zoom optics (SatelliteSim.h, opticsGainMag): zooming in gathers light like a telescope
         // whose aperture grows with magnification up to this; 7 mm = naked eye (no gain).
-        {"Zoom aperture max (mm)", &zoomApertureMaxMm, 7.0f, 1000.0f, 1.0f, "%.0f", 27},
+        {tx(Txt::SldZoomApertureMaxMm), &zoomApertureMaxMm, 7.0f, 1000.0f, 1.0f, "%.0f", 27},
         // Per-satellite glare sprites (glare.vert/.frag): sharp rays + an anamorphic streak on the
         // brightest glints, over the broad "Flare" bloom above.
-        {"Glare gain", &glareGain, 0.0f, 4.0f, 0.05f, "%.2f", 28},
-        {"Glare size (px)", &glareSizePx, 4.0f, 200.0f, 2.0f, "%.0f", 29},
-        {"Glare threshold", &glareThreshold, 0.0f, 3.5f, 0.05f, "%.2f", 30},
-        {"Glare falloff", &glareFalloff, 0.5f, 8.0f, 0.1f, "%.1f", 31},
-        {"Glare spikes", &glareSpikes, 3.0f, 32.0f, 1.0f, "%.0f", 32},
+        {tx(Txt::SldGlareGain), &glareGain, 0.0f, 4.0f, 0.05f, "%.2f", 28},
+        {tx(Txt::SldGlareSizePx), &glareSizePx, 4.0f, 200.0f, 2.0f, "%.0f", 29},
+        {tx(Txt::SldGlareThreshold), &glareThreshold, 0.0f, 3.5f, 0.05f, "%.2f", 30},
+        {tx(Txt::SldGlareFalloff), &glareFalloff, 0.5f, 8.0f, 0.1f, "%.1f", 31},
+        {tx(Txt::SldGlareSpikes), &glareSpikes, 3.0f, 32.0f, 1.0f, "%.0f", 32},
         // Proximity (2026-09-26): the same satellite's glare widens as the camera nears it — 1.0 × the
         // size above at this range and beyond, up to the gain below at zero range. The viewer's model
         // and a mesh resolved in the main view are metres away and take the full gain; a satellite's
         // point sprite from the ground, hundreds of km off, keeps the look tuned on "Glare size (px)".
-        {"Glare near gain", &glareNearGain, 1.0f, 8.0f, 0.25f, "%.2f", 33},
-        {"Glare near range (km)", &glareNearRangeKm, 1.0f, 20000.0f, 10.0f, "%.0f", 34},
+        {tx(Txt::SldGlareNearGain), &glareNearGain, 1.0f, 8.0f, 0.25f, "%.2f", 33},
+        {tx(Txt::SldGlareNearRangeKm), &glareNearRangeKm, 1.0f, 20000.0f, 10.0f, "%.0f", 34},
         // Clusters (2026-10-20, include/glare.glsl): a glare among brighter / many glaring lights gives up its
         // spikes to a soft glow (a pad's floods, a train, the Reflect ring). 0 = every light its own star.
-        {"Glare cluster merge", &glareClusterMerge, 0.0f, 1.0f, 0.05f, "%.2f", 38},
+        {tx(Txt::SldGlareClusterMerge), &glareClusterMerge, 0.0f, 1.0f, 0.05f, "%.2f", 38},
         // Satellite display (2026-10-07, point_style.glsl / sat_flare.comp): a satellite whose model resolves takes
         // its model's surface brightness (0 = the old bright point to the hand-off); bright resolved satellites in view
         // hide faint points, as an eye adapts (0 = off); an unresolved formation is drawn as one point (0 = each member).
-        {"Resolved satellites", &satResolvedStrength, 0.0f, 1.0f, 0.05f, "%.2f", 35},
-        {"Satellite adaptation", &satAdaptationStrength, 0.0f, 2.0f, 0.05f, "%.2f", 36},
-        {"Merge formations", &formationMergeStrength, 0.0f, 1.0f, 0.05f, "%.2f", 37},
+        {tx(Txt::SldResolvedSatellites), &satResolvedStrength, 0.0f, 1.0f, 0.05f, "%.2f", 35},
+        {tx(Txt::SldSatelliteAdaptation), &satAdaptationStrength, 0.0f, 2.0f, 0.05f, "%.2f", 36},
+        {tx(Txt::SldMergeFormations), &formationMergeStrength, 0.0f, 1.0f, 0.05f, "%.2f", 37},
         // The Milky Way (2026-10-28, sat_sky.frag "Milky Way"): its gain under the air and above it, the contrast above it
         // (1 = the photograph's), the blue-grey of rod vision under the air, and the zoomed view's star clouds (the share of
         // the light in sub-texel points) and dust detail.
-        {"Milky Way gain (ground)", &mwGainGround, 0.0f, 4.0f, 0.05f, "%.2f", 39},
-        {"Milky Way gain (space)", &mwGainSpace, 0.0f, 8.0f, 0.05f, "%.2f", 40},
-        {"Milky Way contrast (space)", &mwContrastSpace, 0.5f, 2.0f, 0.05f, "%.2f", 41},
-        {"Milky Way night vision", &mwNightVision, 0.0f, 1.0f, 0.05f, "%.2f", 42},
-        {"Milky Way star clouds", &mwStarClouds, 0.0f, 1.0f, 0.05f, "%.2f", 43},
-        {"Milky Way zoom detail", &mwZoomDetail, 0.0f, 2.0f, 0.05f, "%.2f", 44},
+        {tx(Txt::SldMilkyWayGainGround), &mwGainGround, 0.0f, 4.0f, 0.05f, "%.2f", 39},
+        {tx(Txt::SldMilkyWayGainSpace), &mwGainSpace, 0.0f, 8.0f, 0.05f, "%.2f", 40},
+        {tx(Txt::SldMilkyWayContrastSpace), &mwContrastSpace, 0.5f, 2.0f, 0.05f, "%.2f", 41},
+        {tx(Txt::SldMilkyWayNightVision), &mwNightVision, 0.0f, 1.0f, 0.05f, "%.2f", 42},
+        {tx(Txt::SldMilkyWayStarClouds), &mwStarClouds, 0.0f, 1.0f, 0.05f, "%.2f", 43},
+        {tx(Txt::SldMilkyWayZoomDetail), &mwZoomDetail, 0.0f, 2.0f, 0.05f, "%.2f", 44},
         // The zoomed star clouds (2026-10-28, issue 20261028_191142): where the zoomed view starts / is complete (an input
         // pixel per panorama texel), the share of lattice cells holding a point, a point's size, the lattice cell (smaller
         // = denser, fainter points), the brightness spread (0 = all points equal), the glow below / above which the faint
         // sky has no / its full share of points, and how fully the emission nebulae stay a smooth glow.
-        {"MW star zoom from (px/texel)", &mwZoomFrom, 0.1f, 2.0f, 0.05f, "%.2f", 45},
-        {"MW star zoom full (px/texel)", &mwZoomFull, 0.05f, 1.5f, 0.05f, "%.2f", 46},
-        {"MW star fill", &mwStarFill, 0.05f, 1.0f, 0.05f, "%.2f", 47},
-        {"MW star size (px)", &mwStarSize, 0.3f, 3.0f, 0.05f, "%.2f", 48},
-        {"MW star spacing (px)", &mwStarCellPx, 1.0f, 16.0f, 0.25f, "%.2f", 49},
-        {"MW star brightness spread", &mwStarLumExp, 0.0f, 0.9f, 0.05f, "%.2f", 50},
-        {"MW star faint sky from", &mwStarFaintLo, 0.0f, 0.05f, 0.0005f, "%.4f", 51},
-        {"MW star faint sky full", &mwStarFaintHi, 0.001f, 0.2f, 0.001f, "%.3f", 52},
-        {"MW star nebula exclusion", &mwStarNebula, 0.0f, 1.0f, 0.05f, "%.2f", 53},
+        {tx(Txt::SldMwStarZoomFromPxTexel), &mwZoomFrom, 0.1f, 2.0f, 0.05f, "%.2f", 45},
+        {tx(Txt::SldMwStarZoomFullPxTexel), &mwZoomFull, 0.05f, 1.5f, 0.05f, "%.2f", 46},
+        {tx(Txt::SldMwStarFill), &mwStarFill, 0.05f, 1.0f, 0.05f, "%.2f", 47},
+        {tx(Txt::SldMwStarSizePx), &mwStarSize, 0.3f, 3.0f, 0.05f, "%.2f", 48},
+        {tx(Txt::SldMwStarSpacingPx), &mwStarCellPx, 1.0f, 16.0f, 0.25f, "%.2f", 49},
+        {tx(Txt::SldMwStarBrightnessSpread), &mwStarLumExp, 0.0f, 0.9f, 0.05f, "%.2f", 50},
+        {tx(Txt::SldMwStarFaintSkyFrom), &mwStarFaintLo, 0.0f, 0.05f, 0.0005f, "%.4f", 51},
+        {tx(Txt::SldMwStarFaintSkyFull), &mwStarFaintHi, 0.001f, 0.2f, 0.001f, "%.3f", 52},
+        {tx(Txt::SldMwStarNebulaExclusion), &mwStarNebula, 0.0f, 1.0f, 0.05f, "%.2f", 53},
         // Seeing (2026-10-28): the stars' twinkle on real time x this (1 = the old 3.7 / 7.1 / 11.3 Hz), and the turbulence
         // warp (turb_warp.frag): x the angle-of-arrival rms the whole picture is displaced by; 0 = off.
-        {"Star twinkle rate", &starTwinkleRate, 0.0f, 2.0f, 0.05f, "%.2f", 54},
-        {"Turbulence warp", &turbWarpGain, 0.0f, 20.0f, 0.1f, "%.2f", 55},
+        {tx(Txt::SldStarTwinkleRate), &starTwinkleRate, 0.0f, 2.0f, 0.05f, "%.2f", 54},
+        {tx(Txt::SldTurbulenceWarp), &turbWarpGain, 0.0f, 20.0f, 0.1f, "%.2f", 55},
     };
     auto photoRow = [&](PhotoParam &pp)
     {
@@ -5312,16 +5293,16 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
     // (CloudVal:158 etc.) and settings keys (clouds_v2.exposure_ev ..., clouds.moon_size).
     {
         CloudSlider secExposure[] = {
-            {"Exposure (EV)", &cv2ExposureEV, -3.0f, 3.0f, 0.05f, "%+.2f", 158},
-            {"Auto exposure (day)", &cv2AutoExposure, 0.0f, 1.0f, 0.05f, "%.2f", 163},
-            {"Highlight roll-off", &cv2HighlightRolloff, 0.0f, 1.0f, 0.05f, "%.2f", 159},
-            {"White balance", &cv2WhiteBalance, 0.0f, 1.0f, 0.05f, "%.2f", 160},
-            {"Tonemap (0 exponential / 1 AgX)", &cv2Tonemap, 0.0f, 1.0f, 1.0f, "%.0f", 349},
-            {"AgX saturation", &cv2ToneSat, 0.0f, 2.0f, 0.05f, "%.2f", 350},
-            {"AgX contrast", &cv2ToneContrast, 0.5f, 2.0f, 0.05f, "%.2f", 351},
+            {tx(Txt::SldExposureEv), &cv2ExposureEV, -3.0f, 3.0f, 0.05f, "%+.2f", 158},
+            {tx(Txt::SldAutoExposureDay), &cv2AutoExposure, 0.0f, 1.0f, 0.05f, "%.2f", 163},
+            {tx(Txt::SldHighlightRollOff), &cv2HighlightRolloff, 0.0f, 1.0f, 0.05f, "%.2f", 159},
+            {tx(Txt::SldWhiteBalance), &cv2WhiteBalance, 0.0f, 1.0f, 0.05f, "%.2f", 160},
+            {tx(Txt::SldTonemap0Exponential1Agx), &cv2Tonemap, 0.0f, 1.0f, 1.0f, "%.0f", 349},
+            {tx(Txt::SldAgxSaturation), &cv2ToneSat, 0.0f, 2.0f, 0.05f, "%.2f", 350},
+            {tx(Txt::SldAgxContrast), &cv2ToneContrast, 0.5f, 2.0f, 0.05f, "%.2f", 351},
             // The Moon's size, relief and shadows: the Sky tab (2026-10-28).
         };
-        uiSection("PhotoSec", 11, "EXPOSURE");
+        uiSection("PhotoSec", 11, tx(Txt::SecExposure));
         buildCloudSliderRows(inp, ui, secExposure, (int)(sizeof(secExposure) / sizeof(secExposure[0])));
     }
     // 2026-10-03: grouped by what they act on (each row keeps its idx: PhotoVal:<idx> etc.).
@@ -5332,19 +5313,19 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         int n;
     };
     static const PhotoGroup kGroups[] = {
-        {"BRIGHTNESS", {0, 2, 3, 4, 21}, 5},
-        {"SKY DIMMING", {1, 5, 6, 7, 8}, 5},
+        {tx(Txt::LblBrightness), {0, 2, 3, 4, 21}, 5},
+        {tx(Txt::LblSkyDimming), {1, 5, 6, 7, 8}, 5},
         // 35-38 (2026-10-21): in the table since 2026-10-07 / 10-20 but in no group, so never drawn (settings.json only).
-        {"POINT SOURCES", {22, 23, 24, 25, 26, 27, 35, 36, 37}, 9},
-        {"BLOOM AND GLARE", {9, 10, 28, 29, 30, 31, 32, 33, 34, 38}, 10},
-        {"DARK SKY (MILKY WAY, ZODIACAL LIGHT)", {11, 12, 13, 14, 15, 16, 17, 18}, 8},
+        {tx(Txt::LblPointSources), {22, 23, 24, 25, 26, 27, 35, 36, 37}, 9},
+        {tx(Txt::LblBloomAndGlare), {9, 10, 28, 29, 30, 31, 32, 33, 34, 38}, 10},
+        {tx(Txt::LblDarkSkyMilkyWayZodiacalLight), {11, 12, 13, 14, 15, 16, 17, 18}, 8},
         // 39-53 (2026-10-28): the Milky Way's look (in the table since the morning but in no group: settings.json only)
         // and its zoomed star clouds (issue 20261028_191142).
-        {"MILKY WAY", {39, 40, 41, 42, 44}, 5},
-        {"MILKY WAY STAR CLOUDS (ZOOMED IN)", {43, 45, 46, 47, 48, 49, 50, 51, 52, 53}, 10},
-        {"STAR TRAILS", {19, 20}, 2},
+        {tx(Txt::LblMilkyWay), {39, 40, 41, 42, 44}, 5},
+        {tx(Txt::LblMilkyWayStarCloudsZoomedIn), {43, 45, 46, 47, 48, 49, 50, 51, 52, 53}, 10},
+        {tx(Txt::LblStarTrails2), {19, 20}, 2},
         // 54-55 seeing (2026-10-28).
-        {"SEEING (TWINKLE, TURBULENCE)", {54, 55}, 2},
+        {tx(Txt::LblSeeingTwinkleTurbulence), {54, 55}, 2},
     };
     for (int g = 0; g < (int)(sizeof(kGroups) / sizeof(kGroups[0])); ++g)
     {
@@ -5354,7 +5335,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         if (strcmp(kGroups[g].title, "STAR TRAILS") == 0)
         {
             bool tr = trailEnabled;
-            if (uiToggleRow(inp, ui, "PhotoTrailsOn", 0, "Star trails", tr, "Long-exposure trails (the HUD's trails button)"))
+            if (uiToggleRow(inp, ui, "PhotoTrailsOn", 0, tx(Txt::LblStarTrails), tr, tx(Txt::TipLongExposureTrailsTheHudsTrails)))
             {
                 trailEnabled = tr;
                 if (trailEnabled)
@@ -5362,9 +5343,8 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
             }
         }
         if (strncmp(kGroups[g].title, "MILKY WAY STAR CLOUDS", 21) == 0)
-            uiToggleRow(inp, ui, "PhotoMwZoom", 0, "Milky Way zoomed detail", mwZoomOn,
-                        "Zoomed in: the denoised glow, dust structure and star clouds. Off: the photograph at every field of "
-                        "view (photometry.milky_way_zoom)");
+            uiToggleRow(inp, ui, "PhotoMwZoom", 0, tx(Txt::LblMilkyWayZoomedDetail), mwZoomOn,
+                        tx(Txt::TipZoomedInTheDenoisedGlowDust));
         for (int k = 0; k < kGroups[g].n; ++k)
             for (auto &pp : photoParams)
                 if (pp.idx == kGroups[g].ids[k])
@@ -5373,17 +5353,13 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
 
     // Occlusion between satellite parts (geometry-model types) — off by default, see
     // satPartOcclusion (SatelliteSim.h). Same labeled-row + toggle pattern as "Play intro on startup".
-    uiSection("PhotoSec", 10, "SATELLITE MODELS");
-    uiToggleRow(inp, ui, "SatOcclusionChk", 0, "Part occlusion", satPartOcclusion,
-                "Parts of a modelled satellite shadow and hide each other (costly at millions of satellites)");
-    uiToggleRow(inp, ui, "EnvReflChk", 0, "Full-renderer reflections", envReflections,
-                "Satellite models reflect, and are lit by, what the full sky renderer draws around them - "
-                "the Earth with its clouds, oceans and city lights, the aurora, the Moon and the Milky Way. "
-                "Off: a simpler analytic Earth (cheaper). The model viewer uses it for its background too");
-    uiToggleRow(inp, ui, "SharpReflChk", 0, "Sharp mirror reflections", sharpReflections,
-                "Mirrors (a Reflect Orbital membrane, quartz radiators) reflect the full sky renderer pixel by "
-                "pixel, sharp at any distance, instead of a reflection map. Costs a sky render of the mirror's "
-                "area on screen, for the four largest such satellites in view. Needs full-renderer reflections");
+    uiSection("PhotoSec", 10, tx(Txt::SecSatelliteModels));
+    uiToggleRow(inp, ui, "SatOcclusionChk", 0, tx(Txt::LblPartOcclusion), satPartOcclusion,
+                tx(Txt::TipPartsOfAModelledSatelliteShadow));
+    uiToggleRow(inp, ui, "EnvReflChk", 0, tx(Txt::LblFullRendererReflections), envReflections,
+                tx(Txt::TipSatelliteModelsReflectAndAreLit));
+    uiToggleRow(inp, ui, "SharpReflChk", 0, tx(Txt::LblSharpMirrorReflections), sharpReflections,
+                tx(Txt::TipMirrorsAReflectOrbitalMembraneQuartz));
     buildBulkExportRows(inp, ui);
 }
 
@@ -5402,14 +5378,14 @@ void SatelliteSim::buildBulkExportRows(const UIInput &inp, UIRenderer &ui)
     if (bulkSource >= (int)constellations.size())
         bulkSource = -1;
     if (bulkSource < 0)
-        snprintf(bulkSourceBuf, sizeof(bulkSourceBuf), "Selected satellite");
+        snprintf(bulkSourceBuf, sizeof(bulkSourceBuf), tx(Txt::FmtSelectedSatellite));
     else
         snprintf(bulkSourceBuf, sizeof(bulkSourceBuf), "%s", constellations[bulkSource].name.c_str());
-    snprintf(bulkWindowBuf, sizeof(bulkWindowBuf), bulkWindowIdx == 0 ? "Next 24 h" : "Next 7 days");
-    snprintf(bulkCadenceBuf, sizeof(bulkCadenceBuf), "Every %.0f s", kBulkCadenceS[bulkCadenceIdx]);
+    snprintf(bulkWindowBuf, sizeof(bulkWindowBuf), bulkWindowIdx == 0 ? tx(Txt::FmtNext24H) : tx(Txt::FmtNext7Days));
+    snprintf(bulkCadenceBuf, sizeof(bulkCadenceBuf), tx(Txt::FmtEveryS), kBulkCadenceS[bulkCadenceIdx]);
     const bool running = bulkRunning.load();
     if (running)
-        snprintf(bulkProgressBuf, sizeof(bulkProgressBuf), "Cancel (%.0f%%)", 100.0f * bulkProgress.load());
+        snprintf(bulkProgressBuf, sizeof(bulkProgressBuf), tx(Txt::FmtCancel), 100.0f * bulkProgress.load());
 
     auto label = [&](const char *s, Clay_Color c, float size)
     {
@@ -5420,7 +5396,7 @@ void SatelliteSim::buildBulkExportRows(const UIInput &inp, UIRenderer &ui)
     auto row = [&](int id, const char *name, const char *value, bool &hov, const char *tip)
     {
         bool clicked = false;
-        if (!searchRow(CLAY_IDI("BulkRow", id).id, uiKitStr("Bulk export: %s", name)))
+        if (!searchRow(CLAY_IDI("BulkRow", id).id, uiKitStr(tx(Txt::FmtBulkExport), name)))
             return false;
         SearchRowScope inRow(*this);
         CLAY(CLAY_IDI("BulkRow", id), {.layout = {
@@ -5453,7 +5429,7 @@ void SatelliteSim::buildBulkExportRows(const UIInput &inp, UIRenderer &ui)
         return clicked;
     };
 
-    uiSection("PhotoSec", 11, "BULK EXPORT (SAMPLES CSV)");
+    uiSection("PhotoSec", 11, tx(Txt::SecBulkExportSamplesCsv));
     if (row(0, "Source", bulkSourceBuf, hovBulkSource, "Click to cycle: the selected satellite, or a whole constellation") &&
         !running)
         bulkSource = bulkSource + 1 >= (int)constellations.size() ? -1 : bulkSource + 1;
@@ -5568,7 +5544,7 @@ bool SatelliteSim::searchRow(uint32_t id, const char *label, const char *tip)
             CLAY_TEXT((Clay_String{false, (int32_t)strlen(tn), tn}),
                       CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12), .wrapMode = CLAY_TEXT_WRAP_NONE}));
             CLAY(CLAY_IDI("SrchTabGap", S.tab), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-            CLAY_TEXT(CLAY_STRING("Open tab"), CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(10), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+            CLAY_TEXT(txc(Txt::NoteOpenTab), CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(10), .wrapMode = CLAY_TEXT_WRAP_NONE}));
             if (h && searchClickPending_ < 0 && uiInputLmbPressed_)
                 searchClickPending_ = S.tab;
         }
@@ -5604,8 +5580,8 @@ void SatelliteSim::buildSettingsSearchBody(const UIInput &inp, UIRenderer &ui)
         if (ti < 0 || (settingsTabIsAdvanced(ti) && !showAdvancedSettings) || !searchMatch(settingsTabName(ti)))
             continue;
         if (tabHits++ == 0)
-            uiKV("SrchTabsKV", 0, "", "Tabs", 4.0f, &Pal::textHint);
-        if (uiButton(inp, ui, "SrchTabBtn", ti, uiKitStr("Open %s", settingsTabName(ti)), nullptr))
+            uiKV("SrchTabsKV", 0, "", tx(Txt::ValTabs), 4.0f, &Pal::textHint);
+        if (uiButton(inp, ui, "SrchTabBtn", ti, uiKitStr(tx(Txt::FmtOpen), settingsTabName(ti)), nullptr))
             searchClickPending_ = ti;
     }
     S.on = true;
@@ -5626,13 +5602,13 @@ void SatelliteSim::buildSettingsSearchBody(const UIInput &inp, UIRenderer &ui)
     if (S.hiddenMatches > 0)
     {
         uiKV("SrchHiddenKV", 0, "",
-             uiKitStr("%d more in the advanced tabs (the rendering tabs)", S.hiddenMatches),
+             uiKitStr(tx(Txt::FmtMoreInTheAdvancedTabsThe), S.hiddenMatches),
              4.0f, &Pal::textDim);
-        if (uiButton(inp, ui, "SrchShowAdv", 0, "Show advanced settings", "Show the rendering tabs (Display > Show advanced settings)"))
+        if (uiButton(inp, ui, "SrchShowAdv", 0, tx(Txt::BtnShowAdvancedSettings), tx(Txt::TipShowTheRenderingTabsDisplayShow)))
             showAdvancedSettings = true;
     }
     if (S.matches == 0 && S.hiddenMatches == 0 && tabHits == 0)
-        uiKV("SrchNoneKV", 0, "", "No setting matches the search", 4.0f, &Pal::textDim);
+        uiKV("SrchNoneKV", 0, "", tx(Txt::ValNoSettingMatchesTheSearch), 4.0f, &Pal::textDim);
 }
 
 void SatelliteSim::uiSection(const char *key, int idx, const char *title)
@@ -6553,7 +6529,7 @@ bool SatelliteSim::numberFieldD(const UIInput &inp, UIRenderer &ui, Clay_Element
               .border = {.color = hovPrev ? Pal::fieldBorderHv : Clay_Color{0, 0, 0, 0}, .width = CLAY_BORDER_ALL(1)}})
     {
         const bool hov = Clay_Hovered();
-        ui.tooltip(inp, hov, unbound ? "Click to type a value (dev mode: any value)" : "Click to type a value", fs(11));
+        ui.tooltip(inp, hov, unbound ? tx(Txt::TipClickToTypeAValueDev) : tx(Txt::TipClickToTypeAValue), fs(11));
         const char *s = textFieldStr(shown);
         // Amber while the value sits outside its slider's range.
         const bool outside = unbound && (v < vmin || v > vmax);
@@ -6782,194 +6758,194 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
     // moved to the Weather tab; the scattering to Atmosphere; the city light on clouds to Night lights;
     // the beam light in clouds to Beams. Slot ids and settings keys unchanged.
     CloudSlider secCoverage[] = {
-        {"Map coverage gain", &cv2Coverage, 0.0f, 2.0f, 0.05f, "%.2f", 112},
-        {"Map clear below", &cv2CoverClear, 0.0f, 0.6f, 0.002f, "%.3f", 113},
-        {"Map overcast above", &cv2CoverFull, 0.1f, 1.0f, 0.01f, "%.2f", 114},
-        {"Density", &cv2Density, 0.1f, 4.0f, 0.05f, "%.2f", 115},
-        {"Weather warp (km)", &cv2WeatherWarpKm, 0.0f, 30.0f, 0.5f, "%.1f", 116},
-        {"Flow warp (curved systems)", &cv2FlowWarp, 0.0f, 0.1f, 0.005f, "%.3f", 50},
-        {"Flow scale (km)", &cv2FlowPeriodKm, 400.0f, 8000.0f, 100.0f, "%.0f", 61},
-        {"Layer spread (mid/high)", &cv2LayerSpread, 0.0f, 1.0f, 0.05f, "%.2f", 71},
-        {"Mid layer (Ac/As)", &cv2MidAmount, 0.0f, 2.0f, 0.05f, "%.2f", 146},
-        {"Mid layer density", &cv2MidDensity, 0.0f, 4.0f, 0.05f, "%.2f", 8},
+        {tx(Txt::SldMapCoverageGain), &cv2Coverage, 0.0f, 2.0f, 0.05f, "%.2f", 112},
+        {tx(Txt::SldMapClearBelow), &cv2CoverClear, 0.0f, 0.6f, 0.002f, "%.3f", 113},
+        {tx(Txt::SldMapOvercastAbove), &cv2CoverFull, 0.1f, 1.0f, 0.01f, "%.2f", 114},
+        {tx(Txt::SldDensity), &cv2Density, 0.1f, 4.0f, 0.05f, "%.2f", 115},
+        {tx(Txt::SldWeatherWarpKm), &cv2WeatherWarpKm, 0.0f, 30.0f, 0.5f, "%.1f", 116},
+        {tx(Txt::SldFlowWarpCurvedSystems), &cv2FlowWarp, 0.0f, 0.1f, 0.005f, "%.3f", 50},
+        {tx(Txt::SldFlowScaleKm), &cv2FlowPeriodKm, 400.0f, 8000.0f, 100.0f, "%.0f", 61},
+        {tx(Txt::SldLayerSpreadMidHigh), &cv2LayerSpread, 0.0f, 1.0f, 0.05f, "%.2f", 71},
+        {tx(Txt::SldMidLayerAcAs), &cv2MidAmount, 0.0f, 2.0f, 0.05f, "%.2f", 146},
+        {tx(Txt::SldMidLayerDensity), &cv2MidDensity, 0.0f, 4.0f, 0.05f, "%.2f", 8},
         // 2026-10-11: the altostratus sheets' own density, the layer's thickness, how large its sheets are, how much
         // of the sky they take, and how hard a shadow it casts on the clouds that rise through it.
-        {"Altostratus density (x)", &cv2AsDensity, 0.0f, 12.0f, 0.1f, "%.1f", 273},
-        {"Mid layer thickness (x)", &cv2MidThick, 0.25f, 3.0f, 0.05f, "%.2f", 274},
-        {"Mid layer field size (km, 0 = patches)", &cv2MidFieldKm, 0.0f, 3000.0f, 50.0f, "%.0f", 276},
-        {"Mid layer cover bias", &cv2MidCover, -2.0f, 4.0f, 0.1f, "%.1f", 277},
-        {"Mid layer shadow", &cv2MidShadow, 0.0f, 1.0f, 0.05f, "%.2f", 275},
+        {tx(Txt::SldAltostratusDensityX), &cv2AsDensity, 0.0f, 12.0f, 0.1f, "%.1f", 273},
+        {tx(Txt::SldMidLayerThicknessX), &cv2MidThick, 0.25f, 3.0f, 0.05f, "%.2f", 274},
+        {tx(Txt::SldMidLayerFieldSizeKm0), &cv2MidFieldKm, 0.0f, 3000.0f, 50.0f, "%.0f", 276},
+        {tx(Txt::SldMidLayerCoverBias), &cv2MidCover, -2.0f, 4.0f, 0.1f, "%.1f", 277},
+        {tx(Txt::SldMidLayerShadow), &cv2MidShadow, 0.0f, 1.0f, 0.05f, "%.2f", 275},
         // The near field's low puffs under the coverage threshold (what the view from orbit shows as scattered cloud).
-        {"Small cumulus", &cv2SmallCumulus, 0.0f, 0.3f, 0.01f, "%.2f", 270},
-        {"Map drift (1e-6)", &cloudDriftRate, 0.0f, 20e-6f, 0.5e-6f, "%.1e", 4},
-        {"Wind (m/s)", &cv2WindMps, 0.0f, 40.0f, 0.5f, "%.1f", 117},
+        {tx(Txt::SldSmallCumulus), &cv2SmallCumulus, 0.0f, 0.3f, 0.01f, "%.2f", 270},
+        {tx(Txt::SldMapDrift1e6), &cloudDriftRate, 0.0f, 20e-6f, 0.5e-6f, "%.1e", 4},
+        {tx(Txt::SldWindMS), &cv2WindMps, 0.0f, 40.0f, 0.5f, "%.1f", 117},
     };
 
     CloudSlider secShape[] = {
-        {"Erosion detail", &cv2Detail, 0.0f, 2.0f, 0.05f, "%.2f", 118},
-        {"Edge sharpness", &cv2EdgeSharpness, 1.0f, 8.0f, 0.1f, "%.1f", 119},
-        {"Lobes (3D)", &cv2Wobble, 0.0f, 1.0f, 0.01f, "%.2f", 120},
-        {"Tower lean", &cv2Lean, 0.0f, 1.0f, 0.01f, "%.2f", 121},
-        {"Surface hardness", &cv2ColumnEdge, 0.5f, 16.0f, 0.25f, "%.2f", 122},
-        {"Interior erosion", &cv2InteriorErosion, 0.0f, 1.0f, 0.05f, "%.2f", 123},
+        {tx(Txt::SldErosionDetail), &cv2Detail, 0.0f, 2.0f, 0.05f, "%.2f", 118},
+        {tx(Txt::SldEdgeSharpness), &cv2EdgeSharpness, 1.0f, 8.0f, 0.1f, "%.1f", 119},
+        {tx(Txt::SldLobes3d), &cv2Wobble, 0.0f, 1.0f, 0.01f, "%.2f", 120},
+        {tx(Txt::SldTowerLean), &cv2Lean, 0.0f, 1.0f, 0.01f, "%.2f", 121},
+        {tx(Txt::SldSurfaceHardness), &cv2ColumnEdge, 0.5f, 16.0f, 0.25f, "%.2f", 122},
+        {tx(Txt::SldInteriorErosion), &cv2InteriorErosion, 0.0f, 1.0f, 0.05f, "%.2f", 123},
         // The erosion's size (the detail volume's period: also under Noise scales) and its variation by region.
-        {"Erosion size (m)", &cv2DetailPeriodM, 200.0f, 8000.0f, 50.0f, "%.0f", 142},
-        {"Erosion variation", &cv2ErosionVar, 0.0f, 1.5f, 0.05f, "%.2f", 271},
-        {"Lobe size (m)", &cv2ShapePeriodM, 1000.0f, 30000.0f, 250.0f, "%.0f", 141},
-        {"Lobe variation", &cv2LobeVar, 0.0f, 1.0f, 0.05f, "%.2f", 272},
-        {"Base roughness", &cv2BaseRoughness, 0.0f, 3.0f, 0.05f, "%.2f", 150},
-        {"Top-heavy (cumulus)", &cv2TopHeavy, 0.0f, 2.0f, 0.05f, "%.2f", 72},
-        {"Tower top", &cv2TowerTop, 0.3f, 0.95f, 0.01f, "%.2f", 73},   // (0 = the pass-11 cones until 2026-10-13: removed)
-        {"Base flatness (cumulus)", &cv2BaseFlatness, 0.0f, 1.0f, 0.05f, "%.2f", 76},
-        {"Cumulus lobes (bottom)", &cv2CuLobesBottom, 0.0f, 1.0f, 0.01f, "%.2f", 244},
-        {"Cumulus lobes (top)", &cv2CuLobesTop, 0.0f, 1.0f, 0.01f, "%.2f", 245},
+        {tx(Txt::SldErosionSizeM), &cv2DetailPeriodM, 200.0f, 8000.0f, 50.0f, "%.0f", 142},
+        {tx(Txt::SldErosionVariation), &cv2ErosionVar, 0.0f, 1.5f, 0.05f, "%.2f", 271},
+        {tx(Txt::SldLobeSizeM), &cv2ShapePeriodM, 1000.0f, 30000.0f, 250.0f, "%.0f", 141},
+        {tx(Txt::SldLobeVariation), &cv2LobeVar, 0.0f, 1.0f, 0.05f, "%.2f", 272},
+        {tx(Txt::SldBaseRoughness), &cv2BaseRoughness, 0.0f, 3.0f, 0.05f, "%.2f", 150},
+        {tx(Txt::SldTopHeavyCumulus), &cv2TopHeavy, 0.0f, 2.0f, 0.05f, "%.2f", 72},
+        {tx(Txt::SldTowerTop), &cv2TowerTop, 0.3f, 0.95f, 0.01f, "%.2f", 73},   // (0 = the pass-11 cones until 2026-10-13: removed)
+        {tx(Txt::SldBaseFlatnessCumulus), &cv2BaseFlatness, 0.0f, 1.0f, 0.05f, "%.2f", 76},
+        {tx(Txt::SldCumulusLobesBottom), &cv2CuLobesBottom, 0.0f, 1.0f, 0.01f, "%.2f", 244},
+        {tx(Txt::SldCumulusLobesTop), &cv2CuLobesTop, 0.0f, 1.0f, 0.01f, "%.2f", 245},
         // 2026-10-13 (issue 20261012_235712): tops of different heights, sheets broken into puffs, no flat ceilings,
         // small lobes on the storm-scale ones, frayed edges.
-        {"Cumulus height variation", &cv2CuHeightVar, 0.0f, 1.0f, 0.05f, "%.2f", 289},
-        {"Cumulus break-up", &cv2CuBreakup, 0.0f, 1.0f, 0.05f, "%.2f", 290},
-        {"Cumulus top headroom", &cv2CuHeadroom, 0.0f, 2.0f, 0.05f, "%.2f", 291},
-        {"Storm cumulus fine lobes", &cv2CuFineLobes, 0.0f, 2.0f, 0.05f, "%.2f", 292},
-        {"Cb tower fine lobes", &cv2CbFineLobes, 0.0f, 2.0f, 0.05f, "%.2f", 293},
-        {"Cumulus wisps", &cv2CuWisps, 0.0f, 1.0f, 0.05f, "%.2f", 294},
+        {tx(Txt::SldCumulusHeightVariation), &cv2CuHeightVar, 0.0f, 1.0f, 0.05f, "%.2f", 289},
+        {tx(Txt::SldCumulusBreakUp), &cv2CuBreakup, 0.0f, 1.0f, 0.05f, "%.2f", 290},
+        {tx(Txt::SldCumulusTopHeadroom), &cv2CuHeadroom, 0.0f, 2.0f, 0.05f, "%.2f", 291},
+        {tx(Txt::SldStormCumulusFineLobes), &cv2CuFineLobes, 0.0f, 2.0f, 0.05f, "%.2f", 292},
+        {tx(Txt::SldCbTowerFineLobes), &cv2CbFineLobes, 0.0f, 2.0f, 0.05f, "%.2f", 293},
+        {tx(Txt::SldCumulusWisps), &cv2CuWisps, 0.0f, 1.0f, 0.05f, "%.2f", 294},
     };
 
     CloudSlider secLighting[] = {
         // Exposure, highlight roll-off, auto exposure and white balance (scene-wide: the sky's tonemap)
         // moved to the Photometry tab's EXPOSURE AND MOON section (2026-10-06); slots and keys unchanged.
-        {"Cloud sunlight Rayleigh", &cv2CloudSunRayleigh, 0.0f, 3.0f, 0.05f, "%.2f", 9},
-        {"Twilight sky light", &cv2TwilightSky, 0.0f, 8.0f, 0.1f, "%.1f", 16},
-        {"Sun gain", &cv2SunGain, 0.0f, 4.0f, 0.05f, "%.2f", 124},
-        {"Moon gain", &cv2MoonGain, 0.0f, 8.0f, 0.1f, "%.2f", 125},
-        {"Sky ambient", &cv2AmbientGain, 0.0f, 8.0f, 0.05f, "%.2f", 126},
-        {"Ground bounce", &cv2BounceGain, 0.0f, 4.0f, 0.05f, "%.2f", 127},
-        {"Powder", &cv2Powder, 0.0f, 1.0f, 0.05f, "%.2f", 128},
-        {"Multi-scatter reach", &cv2MsExtinction, 0.05f, 0.9f, 0.01f, "%.2f", 129},
-        {"Multi-scatter strength", &cv2MsStrength, 0.0f, 1.0f, 0.01f, "%.2f", 130},
-        {"Optics (halos, rainbows)", &cv2OpticsGain, 0.0f, 3.0f, 0.05f, "%.2f", 156},
-        {"Forward scatter g", &cv2PhaseG, 0.0f, 0.95f, 0.01f, "%.2f", 131},
-        {"Light march (m)", &cv2LightLenM, 250.0f, 16000.0f, 50.0f, "%.0f", 132},
-        {"Light steps", &cv2LightSteps, 1.0f, 12.0f, 1.0f, "%.0f", 133},
+        {tx(Txt::SldCloudSunlightRayleigh), &cv2CloudSunRayleigh, 0.0f, 3.0f, 0.05f, "%.2f", 9},
+        {tx(Txt::SldTwilightSkyLight), &cv2TwilightSky, 0.0f, 8.0f, 0.1f, "%.1f", 16},
+        {tx(Txt::SldSunGain), &cv2SunGain, 0.0f, 4.0f, 0.05f, "%.2f", 124},
+        {tx(Txt::SldMoonGain), &cv2MoonGain, 0.0f, 8.0f, 0.1f, "%.2f", 125},
+        {tx(Txt::SldSkyAmbient), &cv2AmbientGain, 0.0f, 8.0f, 0.05f, "%.2f", 126},
+        {tx(Txt::SldGroundBounce), &cv2BounceGain, 0.0f, 4.0f, 0.05f, "%.2f", 127},
+        {tx(Txt::SldPowder), &cv2Powder, 0.0f, 1.0f, 0.05f, "%.2f", 128},
+        {tx(Txt::SldMultiScatterReach), &cv2MsExtinction, 0.05f, 0.9f, 0.01f, "%.2f", 129},
+        {tx(Txt::SldMultiScatterStrength), &cv2MsStrength, 0.0f, 1.0f, 0.01f, "%.2f", 130},
+        {tx(Txt::SldOpticsHalosRainbows), &cv2OpticsGain, 0.0f, 3.0f, 0.05f, "%.2f", 156},
+        {tx(Txt::SldForwardScatterG), &cv2PhaseG, 0.0f, 0.95f, 0.01f, "%.2f", 131},
+        {tx(Txt::SldLightMarchM), &cv2LightLenM, 250.0f, 16000.0f, 50.0f, "%.0f", 132},
+        {tx(Txt::SldLightSteps), &cv2LightSteps, 1.0f, 12.0f, 1.0f, "%.0f", 133},
         // 0 = off (the default): the 2-step light march is noisy and brighter than the full one at a long light march.
-        {"Light LOD footprint (m)", &cv2LightLodFootprintM, 0.0f, 200.0f, 5.0f, "%.0f", 178},
-        {"Light march footprint (x length)", &cv2LightFootprint, 0.0f, 0.2f, 0.005f, "%.3f", 283},
-        {"Multi-scatter octaves", &cv2MsOctaves, 1.0f, 8.0f, 1.0f, "%.0f", 284},
-        {"Multi-scatter model (0 octaves / 1 delta-Eddington)", &cv2MsModel, 0.0f, 1.0f, 1.0f, "%.0f", 342},
-        {"Multi-scatter droplet g", &cv2MsDiffG, 0.0f, 0.95f, 0.01f, "%.2f", 343},
-        {"Multi-scatter diffuse strength", &cv2MsDiffGain, 0.0f, 4.0f, 0.05f, "%.2f", 344},
-        {"Multi-scatter reach away from light (m)", &cv2MsBackM, 50.0f, 4000.0f, 50.0f, "%.0f", 345},
-        {"Sky light model (0 zenith / 1 hemispheres + multi-scatter)", &cv2SkyLightModel, 0.0f, 1.0f, 1.0f, "%.0f", 346},
-        {"Sky light on clouds (x physical)", &cv2SkyLightGain, 0.0f, 4.0f, 0.05f, "%.2f", 347},
-        {"Ground albedo (sky light)", &cv2SkyGroundAlbedo, 0.0f, 1.0f, 0.01f, "%.2f", 348},
-        {"Sky model (0 single / 1 multi-scatter + ozone)", &cv2SkyMs, 0.0f, 1.0f, 1.0f, "%.0f", 352},
-        {"Ground light under cloud (0/1)", &cv2GroundOvercast, 0.0f, 1.0f, 1.0f, "%.0f", 353},
-        {"Lobe occlusion (sky light)", &cv2LobeOcclusion, 0.0f, 1.0f, 0.05f, "%.2f", 285},
-        {"Silver lining", &cv2SilverLining, 0.0f, 4.0f, 0.05f, "%.2f", 295},
+        {tx(Txt::SldLightLodFootprintM), &cv2LightLodFootprintM, 0.0f, 200.0f, 5.0f, "%.0f", 178},
+        {tx(Txt::SldLightMarchFootprintXLength), &cv2LightFootprint, 0.0f, 0.2f, 0.005f, "%.3f", 283},
+        {tx(Txt::SldMultiScatterOctaves), &cv2MsOctaves, 1.0f, 8.0f, 1.0f, "%.0f", 284},
+        {tx(Txt::SldMultiScatterModel0Octaves1), &cv2MsModel, 0.0f, 1.0f, 1.0f, "%.0f", 342},
+        {tx(Txt::SldMultiScatterDropletG), &cv2MsDiffG, 0.0f, 0.95f, 0.01f, "%.2f", 343},
+        {tx(Txt::SldMultiScatterDiffuseStrength), &cv2MsDiffGain, 0.0f, 4.0f, 0.05f, "%.2f", 344},
+        {tx(Txt::SldMultiScatterReachAwayFromLight), &cv2MsBackM, 50.0f, 4000.0f, 50.0f, "%.0f", 345},
+        {tx(Txt::SldSkyLightModel0Zenith1), &cv2SkyLightModel, 0.0f, 1.0f, 1.0f, "%.0f", 346},
+        {tx(Txt::SldSkyLightOnCloudsXPhysical), &cv2SkyLightGain, 0.0f, 4.0f, 0.05f, "%.2f", 347},
+        {tx(Txt::SldGroundAlbedoSkyLight), &cv2SkyGroundAlbedo, 0.0f, 1.0f, 0.01f, "%.2f", 348},
+        {tx(Txt::SldSkyModel0Single1Multi), &cv2SkyMs, 0.0f, 1.0f, 1.0f, "%.0f", 352},
+        {tx(Txt::SldGroundLightUnderCloud01), &cv2GroundOvercast, 0.0f, 1.0f, 1.0f, "%.0f", 353},
+        {tx(Txt::SldLobeOcclusionSkyLight), &cv2LobeOcclusion, 0.0f, 1.0f, 0.05f, "%.2f", 285},
+        {tx(Txt::SldSilverLining), &cv2SilverLining, 0.0f, 4.0f, 0.05f, "%.2f", 295},
     };
 
     CloudSlider secHigh[] = {
-        {"High layer amount (Ci/Cs/Cc)", &cv2HighAmount, 0.0f, 2.0f, 0.05f, "%.2f", 151},
-        {"High layer density", &cv2HighDensity, 0.0f, 4.0f, 0.05f, "%.2f", 152},
-        {"Cirrus field size (km)", &cv2CirrusFieldKm, 100.0f, 5000.0f, 50.0f, "%.0f", 74},
-        {"Cirrus flow (x low flow)", &cv2CirrusFlow, 0.0f, 4.0f, 0.05f, "%.2f", 75},
-        {"Cirrus stretch", &cv2CirrusStretch, 1.0f, 30.0f, 0.5f, "%.1f", 153},
-        {"Cirrus direction warp", &cv2CirrusDirWarp, 0.0f, 1.2f, 0.05f, "%.2f", 278},
-        {"Cirrus wind (m/s)", &cv2CirrusWindMps, 0.0f, 80.0f, 1.0f, "%.0f", 154},
-        {"Cirrus fibre period (m)", &cv2CirrusPeriodM, 1000.0f, 30000.0f, 250.0f, "%.0f", 2},
+        {tx(Txt::SldHighLayerAmountCiCsCc), &cv2HighAmount, 0.0f, 2.0f, 0.05f, "%.2f", 151},
+        {tx(Txt::SldHighLayerDensity), &cv2HighDensity, 0.0f, 4.0f, 0.05f, "%.2f", 152},
+        {tx(Txt::SldCirrusFieldSizeKm), &cv2CirrusFieldKm, 100.0f, 5000.0f, 50.0f, "%.0f", 74},
+        {tx(Txt::SldCirrusFlowXLowFlow), &cv2CirrusFlow, 0.0f, 4.0f, 0.05f, "%.2f", 75},
+        {tx(Txt::SldCirrusStretch), &cv2CirrusStretch, 1.0f, 30.0f, 0.5f, "%.1f", 153},
+        {tx(Txt::SldCirrusDirectionWarp), &cv2CirrusDirWarp, 0.0f, 1.2f, 0.05f, "%.2f", 278},
+        {tx(Txt::SldCirrusWindMS), &cv2CirrusWindMps, 0.0f, 80.0f, 1.0f, "%.0f", 154},
+        {tx(Txt::SldCirrusFibrePeriodM), &cv2CirrusPeriodM, 1000.0f, 30000.0f, 250.0f, "%.0f", 2},
     };
 
     CloudSlider secQuality[] = {
-        {"Step at eye (m)", &cv2StepBaseM, 10.0f, 400.0f, 5.0f, "%.0f", 134},
-        {"Step growth", &cv2StepGrowth, 0.002f, 0.05f, 0.001f, "%.3f", 135},
-        {"Step max (m)", &cv2StepMaxM, 200.0f, 4000.0f, 50.0f, "%.0f", 136},
-        {"March budget", &cv2MaxIters, 64.0f, 1024.0f, 16.0f, "%.0f", 137},
-        {"Max distance (km)", &cv2MaxDistKm, 50.0f, 1500.0f, 10.0f, "%.0f", 138},
-        {"Detail fade start (m)", &cv2DetailLodStartM, 2000.0f, 100000.0f, 1000.0f, "%.0f", 139},
+        {tx(Txt::SldStepAtEyeM), &cv2StepBaseM, 10.0f, 400.0f, 5.0f, "%.0f", 134},
+        {tx(Txt::SldStepGrowth), &cv2StepGrowth, 0.002f, 0.05f, 0.001f, "%.3f", 135},
+        {tx(Txt::SldStepMaxM), &cv2StepMaxM, 200.0f, 4000.0f, 50.0f, "%.0f", 136},
+        {tx(Txt::SldMarchBudget), &cv2MaxIters, 64.0f, 1024.0f, 16.0f, "%.0f", 137},
+        {tx(Txt::SldMaxDistanceKm), &cv2MaxDistKm, 50.0f, 1500.0f, 10.0f, "%.0f", 138},
+        {tx(Txt::SldDetailFadeStartM), &cv2DetailLodStartM, 2000.0f, 100000.0f, 1000.0f, "%.0f", 139},
         // Still view only, capped at 0.15: the sparse march refreshes a pixel every 4th frame, and a high
         // weight swaps it between its own ray and its neighbours' estimate each frame — a woven checker
         // over every cloud at 0.3 and up (user review 2, snapshots 4 and 6 at 1.0). Motion has its own.
-        {"History weight", &cv2HistoryWeight, 0.02f, 0.15f, 0.01f, "%.2f", 140},
+        {tx(Txt::SldHistoryWeight), &cv2HistoryWeight, 0.02f, 0.15f, 0.01f, "%.2f", 140},
         // The new-sample weight once the view moves (parallax): high, so small clouds don't ghost; the
         // still weight above stays low, so a still view has no checkerboard flicker.
-        {"History weight moving", &cv2HistoryWeightMoving, 0.05f, 0.5f, 0.01f, "%.2f", 203},
+        {tx(Txt::SldHistoryWeightMoving), &cv2HistoryWeightMoving, 0.05f, 0.5f, 0.01f, "%.2f", 203},
         // 2026-10-11, the resolve's sampler: each pixel counts the samples in its history and takes their running
         // mean until this many (0 = the fixed weights alone); a young pixel leans on its neighbours' estimate; and
         // how far (sd of the new samples around) a moving view's history may differ before it is clamped.
-        {"Accumulation (samples, 0 = off)", &cv2SampAccum, 0.0f, 128.0f, 1.0f, "%.0f", 279},
-        {"New pixel smoothing", &cv2SampNewSmooth, 0.0f, 1.0f, 0.05f, "%.2f", 280},
-        {"Motion clamp (sd)", &cv2SampClampSd, 0.5f, 4.0f, 0.05f, "%.2f", 281},
-        {"Full rate above (km)", &cv2FullRateAboveKm, 0.0f, 400.0f, 1.0f, "%.0f", 145},
-        {"Sparse when still (0/1)", &cv2SparseWhenStill, 0.0f, 1.0f, 1.0f, "%.0f", 176},
-        {"Half rate while moving (0/1)", &cv2HalfRateMoving, 0.0f, 1.0f, 1.0f, "%.0f", 186},
-        {"Fast-flight cloud LOD (0/1/2)", &cv2FastFlightLod, 0.0f, 2.0f, 1.0f, "%.0f", 246},
-        {"Foveated full rate (radius)", &cv2FoveaRadius, 0.0f, 2.0f, 0.05f, "%.2f", 247},
-        {"Adaptive rate while moving (0/1)", &cv2AdaptiveRate, 0.0f, 1.0f, 1.0f, "%.0f", 192},
-        {"Adaptive parallax (px)", &cv2AdaptiveParallaxPx, 0.1f, 8.0f, 0.1f, "%.1f", 193},
+        {tx(Txt::SldAccumulationSamples0Off), &cv2SampAccum, 0.0f, 128.0f, 1.0f, "%.0f", 279},
+        {tx(Txt::SldNewPixelSmoothing), &cv2SampNewSmooth, 0.0f, 1.0f, 0.05f, "%.2f", 280},
+        {tx(Txt::SldMotionClampSd), &cv2SampClampSd, 0.5f, 4.0f, 0.05f, "%.2f", 281},
+        {tx(Txt::SldFullRateAboveKm), &cv2FullRateAboveKm, 0.0f, 400.0f, 1.0f, "%.0f", 145},
+        {tx(Txt::SldSparseWhenStill01), &cv2SparseWhenStill, 0.0f, 1.0f, 1.0f, "%.0f", 176},
+        {tx(Txt::SldHalfRateWhileMoving01), &cv2HalfRateMoving, 0.0f, 1.0f, 1.0f, "%.0f", 186},
+        {tx(Txt::SldFastFlightCloudLod01), &cv2FastFlightLod, 0.0f, 2.0f, 1.0f, "%.0f", 246},
+        {tx(Txt::SldFoveatedFullRateRadius), &cv2FoveaRadius, 0.0f, 2.0f, 0.05f, "%.2f", 247},
+        {tx(Txt::SldAdaptiveRateWhileMoving01), &cv2AdaptiveRate, 0.0f, 1.0f, 1.0f, "%.0f", 192},
+        {tx(Txt::SldAdaptiveParallaxPx), &cv2AdaptiveParallaxPx, 0.1f, 8.0f, 0.1f, "%.1f", 193},
     };
 
     CloudSlider secNoise[] = {
         // (The low cloud's shape period and the detail period are in Shape: "Lobe size", "Erosion size".)
-        {"Mid layer period (m)", &cv2MidPeriodM, 1000.0f, 30000.0f, 250.0f, "%.0f", 7},
-        {"Cell period (m)", &cv2CellPeriodM, 4000.0f, 128000.0f, 1000.0f, "%.0f", 143},
-        {"Cluster period (m)", &cv2ClusterPeriodM, 32000.0f, 1024000.0f, 8000.0f, "%.0f", 144},
-        {"Morphology (orbit)", &cv2MorphOrbit, 0.0f, 1.0f, 0.05f, "%.2f", 234},
-        {"Imagery share", &cv2ImageryShare, 0.0f, 1.0f, 0.05f, "%.2f", 235},
-        {"Morphology period (km)", &cv2MorphPeriodKm, 80.0f, 1000.0f, 10.0f, "%.0f", 236},
-        {"Far-field sharpness", &cv2MorphBreakup, 0.0f, 3.0f, 0.1f, "%.1f", 238},
-        {"Far cloud layer from (km)", &cv2FarLayerFromKm, 50.0f, 100000.0f, 50.0f, "%.0f", 239},
-        {"Far cloud layer full at (km)", &cv2FarLayerFullKm, 100.0f, 100000.0f, 50.0f, "%.0f", 240},
-        {"Far cloud layer sunlight", &cv2FarKeyGain, 0.0f, 20.0f, 0.1f, "%.1f", 241},
-        {"Far cloud layer sky light", &cv2FarSkyGain, 0.0f, 4.0f, 0.05f, "%.2f", 242},
+        {tx(Txt::SldMidLayerPeriodM), &cv2MidPeriodM, 1000.0f, 30000.0f, 250.0f, "%.0f", 7},
+        {tx(Txt::SldCellPeriodM), &cv2CellPeriodM, 4000.0f, 128000.0f, 1000.0f, "%.0f", 143},
+        {tx(Txt::SldClusterPeriodM), &cv2ClusterPeriodM, 32000.0f, 1024000.0f, 8000.0f, "%.0f", 144},
+        {tx(Txt::SldMorphologyOrbit), &cv2MorphOrbit, 0.0f, 1.0f, 0.05f, "%.2f", 234},
+        {tx(Txt::SldImageryShare), &cv2ImageryShare, 0.0f, 1.0f, 0.05f, "%.2f", 235},
+        {tx(Txt::SldMorphologyPeriodKm), &cv2MorphPeriodKm, 80.0f, 1000.0f, 10.0f, "%.0f", 236},
+        {tx(Txt::SldFarFieldSharpness), &cv2MorphBreakup, 0.0f, 3.0f, 0.1f, "%.1f", 238},
+        {tx(Txt::SldFarCloudLayerFromKm), &cv2FarLayerFromKm, 50.0f, 100000.0f, 50.0f, "%.0f", 239},
+        {tx(Txt::SldFarCloudLayerFullAtKm), &cv2FarLayerFullKm, 100.0f, 100000.0f, 50.0f, "%.0f", 240},
+        {tx(Txt::SldFarCloudLayerSunlight), &cv2FarKeyGain, 0.0f, 20.0f, 0.1f, "%.1f", 241},
+        {tx(Txt::SldFarCloudLayerSkyLight), &cv2FarSkyGain, 0.0f, 4.0f, 0.05f, "%.2f", 242},
         // Review 24: the far layer's coverage and depth, to match the march across the hand-off (600-1500 km).
-        {"Far cloud layer slant coverage", &cv2FarSlant, 0.0f, 3.0f, 0.05f, "%.2f", 251},
-        {"Far cloud layer coverage bias", &cv2FarCoverBias, -0.3f, 0.3f, 0.01f, "%.2f", 252},
-        {"Far cloud layer density", &cv2FarDensity, 0.0f, 4.0f, 0.05f, "%.2f", 253},
-        {"Far cloud layer edge softness", &cv2FarSoftness, 0.2f, 4.0f, 0.05f, "%.2f", 254},
-        {"Far cloud layer low-Sun light", &cv2FarLowSun, 0.0f, 3.0f, 0.05f, "%.2f", 255},
+        {tx(Txt::SldFarCloudLayerSlantCoverage), &cv2FarSlant, 0.0f, 3.0f, 0.05f, "%.2f", 251},
+        {tx(Txt::SldFarCloudLayerCoverageBias), &cv2FarCoverBias, -0.3f, 0.3f, 0.01f, "%.2f", 252},
+        {tx(Txt::SldFarCloudLayerDensity), &cv2FarDensity, 0.0f, 4.0f, 0.05f, "%.2f", 253},
+        {tx(Txt::SldFarCloudLayerEdgeSoftness), &cv2FarSoftness, 0.2f, 4.0f, 0.05f, "%.2f", 254},
+        {tx(Txt::SldFarCloudLayerLowSunLight), &cv2FarLowSun, 0.0f, 3.0f, 0.05f, "%.2f", 255},
     };
 
     CloudSlider secFlat[] = {
-        {"Flat coverage scale", &flatCoverageScale, 0.1f, 2.0f, 0.01f, "%.2f", 51},
-        {"Flat sun gain scale", &flatSunGainScale, 0.1f, 10.0f, 0.05f, "%.2f", 52},
-        {"Flat density scale", &flatDensityScale, 0.1f, 8.0f, 0.1f, "%.2f", 78},
-        {"Flat sun elev band", &sunGainElevBand, 0.02f, 1.0f, 0.01f, "%.2f", 47},
-        {"Flat Rayleigh gain", &flatRayleighGain, 0.0f, 4.0f, 0.05f, "%.2f", 79},
-        {"Twilight ambient", &cloudTwilightAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 33},
-        {"Flat twilight ambient", &flatTwilightAmbientGain, 0.0f, 4.0f, 0.05f, "%.2f", 80},
-        {"Twilight band hi", &twilightBandHi, -0.1f, 0.8f, 0.01f, "%.2f", 48},
-        {"Twilight band lo", &twilightBandLo, -0.9f, 0.0f, 0.01f, "%.2f", 49},
+        {tx(Txt::SldFlatCoverageScale), &flatCoverageScale, 0.1f, 2.0f, 0.01f, "%.2f", 51},
+        {tx(Txt::SldFlatSunGainScale), &flatSunGainScale, 0.1f, 10.0f, 0.05f, "%.2f", 52},
+        {tx(Txt::SldFlatDensityScale), &flatDensityScale, 0.1f, 8.0f, 0.1f, "%.2f", 78},
+        {tx(Txt::SldFlatSunElevBand), &sunGainElevBand, 0.02f, 1.0f, 0.01f, "%.2f", 47},
+        {tx(Txt::SldFlatRayleighGain), &flatRayleighGain, 0.0f, 4.0f, 0.05f, "%.2f", 79},
+        {tx(Txt::SldTwilightAmbient), &cloudTwilightAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 33},
+        {tx(Txt::SldFlatTwilightAmbient), &flatTwilightAmbientGain, 0.0f, 4.0f, 0.05f, "%.2f", 80},
+        {tx(Txt::SldTwilightBandHi), &twilightBandHi, -0.1f, 0.8f, 0.01f, "%.2f", 48},
+        {tx(Txt::SldTwilightBandLo), &twilightBandLo, -0.9f, 0.0f, 0.01f, "%.2f", 49},
     };
 
     CloudSlider secCirrus[] = {
-        {"Cirrus coverage", &cloudCoverage, 0.0f, 1.0f, 0.05f, "%.2f", 0},
-        {"Cirrus density", &cloudDensity, 0.1f, 10.0f, 0.1f, "%.1f", 1},
-        {"Cirrus altitude (m)", &cloudTopAltM, 4000.0f, 15000.0f, 250.0f, "%.0f", 3},
-        {"Cirrus sun (horizon)", &cloudSunGain, 0.0f, 8.0f, 0.1f, "%.2f", 5},
-        {"Cirrus sun (zenith)", &cloudSunGainZenith, 0.0f, 8.0f, 0.1f, "%.2f", 37},
-        {"Cirrus wind (deg)", &cloudCirrusWindDeg, 0.0f, 360.0f, 5.0f, "%.0f", 10},
-        {"Cirrus stretch", &cloudCirrusStretch, 1.0f, 10.0f, 0.5f, "%.1f", 11},
-        {"Cirrus erosion (edge)", &cloudErosionEdge, 0.0f, 1.0f, 0.05f, "%.2f", 35},
-        {"Cirrus erosion (core)", &cloudErosionCore, 0.0f, 1.0f, 0.05f, "%.2f", 36},
-        {"Cirrus billow", &cloudErosionBillow, 0.0f, 1.0f, 0.05f, "%.2f", 68},
-        {"Cirrus billow height", &cloudErosionBillowH, 0.0f, 1.0f, 0.05f, "%.2f", 69},
-        {"Cirrus erosion freq", &cloudErosionFreq, 0.5f, 6.0f, 0.1f, "%.2f", 70},
-        {"Cirrus surface carve", &cloudSurfaceCarve, 0.0f, 1.0f, 0.05f, "%.2f", 67},
+        {tx(Txt::SldCirrusCoverage), &cloudCoverage, 0.0f, 1.0f, 0.05f, "%.2f", 0},
+        {tx(Txt::SldCirrusDensity), &cloudDensity, 0.1f, 10.0f, 0.1f, "%.1f", 1},
+        {tx(Txt::SldCirrusAltitudeM), &cloudTopAltM, 4000.0f, 15000.0f, 250.0f, "%.0f", 3},
+        {tx(Txt::SldCirrusSunHorizon), &cloudSunGain, 0.0f, 8.0f, 0.1f, "%.2f", 5},
+        {tx(Txt::SldCirrusSunZenith), &cloudSunGainZenith, 0.0f, 8.0f, 0.1f, "%.2f", 37},
+        {tx(Txt::SldCirrusWindDeg), &cloudCirrusWindDeg, 0.0f, 360.0f, 5.0f, "%.0f", 10},
+        {tx(Txt::SldCirrusStretch), &cloudCirrusStretch, 1.0f, 10.0f, 0.5f, "%.1f", 11},
+        {tx(Txt::SldCirrusErosionEdge), &cloudErosionEdge, 0.0f, 1.0f, 0.05f, "%.2f", 35},
+        {tx(Txt::SldCirrusErosionCore), &cloudErosionCore, 0.0f, 1.0f, 0.05f, "%.2f", 36},
+        {tx(Txt::SldCirrusBillow), &cloudErosionBillow, 0.0f, 1.0f, 0.05f, "%.2f", 68},
+        {tx(Txt::SldCirrusBillowHeight), &cloudErosionBillowH, 0.0f, 1.0f, 0.05f, "%.2f", 69},
+        {tx(Txt::SldCirrusErosionFreq), &cloudErosionFreq, 0.5f, 6.0f, 0.1f, "%.2f", 70},
+        {tx(Txt::SldCirrusSurfaceCarve), &cloudSurfaceCarve, 0.0f, 1.0f, 0.05f, "%.2f", 67},
         // Domain-warp shear. The noise field folds (pinched/banded/"wavy chip" clouds) once
         // strength * 2 * freq / 480 exceeds ~1 — see cloud_params.glsl.
-        {"Cirrus warp strength", &cloudWarpStrength, 0.0f, 64.0f, 1.0f, "%.0f", 65},
-        {"Cirrus warp frequency", &cloudWarpFreq, 0.5f, 12.0f, 0.25f, "%.2f", 66},
-        {"Cirrus 3D fade start (m)", &cloudDistFadeStartM, 5000.0f, 800000.0f, 5000.0f, "%.0f", 53},
-        {"Cirrus 3D fade end (m)", &cloudDistFadeEndM, 10000.0f, 2000000.0f, 10000.0f, "%.0f", 54},
+        {tx(Txt::SldCirrusWarpStrength), &cloudWarpStrength, 0.0f, 64.0f, 1.0f, "%.0f", 65},
+        {tx(Txt::SldCirrusWarpFrequency), &cloudWarpFreq, 0.5f, 12.0f, 0.25f, "%.2f", 66},
+        {tx(Txt::SldCirrus3dFadeStartM), &cloudDistFadeStartM, 5000.0f, 800000.0f, 5000.0f, "%.0f", 53},
+        {tx(Txt::SldCirrus3dFadeEndM), &cloudDistFadeEndM, 10000.0f, 2000000.0f, 10000.0f, "%.0f", 54},
     };
 #define CLOUD_SEC(title, arr) {title, arr, (int)(sizeof(arr) / sizeof((arr)[0]))}
     CloudSliderSection sections[] = {
-        CLOUD_SEC("Coverage & layers", secCoverage),
-        CLOUD_SEC("Shape", secShape),
-        CLOUD_SEC("Lighting", secLighting),
-        CLOUD_SEC("Cirrus (high layer)", secHigh),
-        CLOUD_SEC("Quality / performance", secQuality),
-        CLOUD_SEC("Noise scales", secNoise),
-        CLOUD_SEC("Flat layers", secFlat),
-        CLOUD_SEC("Legacy cirrus (march knocked out only)", secCirrus),
+        CLOUD_SEC(tx(Txt::SecCoverageLayers), secCoverage),
+        CLOUD_SEC(tx(Txt::SecShape), secShape),
+        CLOUD_SEC(tx(Txt::SecLighting), secLighting),
+        CLOUD_SEC(tx(Txt::SecCirrusHighLayer), secHigh),
+        CLOUD_SEC(tx(Txt::SecQualityPerformance), secQuality),
+        CLOUD_SEC(tx(Txt::SecNoiseScales), secNoise),
+        CLOUD_SEC(tx(Txt::SecFlatLayers), secFlat),
+        CLOUD_SEC(tx(Txt::SecLegacyCirrusMarchKnockedOutOnly), secCirrus),
     };
 #undef CLOUD_SEC
     buildCloudSliderSections(inp, ui, sections, (int)(sizeof(sections) / sizeof(sections[0])), 0);
@@ -6984,156 +6960,156 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
     // brings into the weather map round it (cloud_v2_weather.comp stormStamp). "Storm objects" (on / off) is the
     // settings key clouds_v2.storm_objects.
     CloudSlider secStormObjects[] = {
-        {"Storm frequency (x)", &stormFrequency, 0.0f, 10.0f, 0.05f, "%.2f", 321},
-        {"Storm lifetime (x)", &stormLifeScale, 0.1f, 5.0f, 0.05f, "%.2f", 322},
-        {"Storm cloud field", &stormCloudField, 0.0f, 3.0f, 0.05f, "%.2f", 323},
-        {"Storm clear moat", &stormMoat, 0.0f, 3.0f, 0.05f, "%.2f", 324},
-        {"Storm complexes (x)", &stormComplexes, 0.0f, 10.0f, 0.05f, "%.2f", 325},
-        {"Tropical cyclones (x)", &stormCyclones, 0.0f, 10.0f, 0.05f, "%.2f", 326},
+        {tx(Txt::SldStormFrequencyX), &stormFrequency, 0.0f, 10.0f, 0.05f, "%.2f", 321},
+        {tx(Txt::SldStormLifetimeX), &stormLifeScale, 0.1f, 5.0f, 0.05f, "%.2f", 322},
+        {tx(Txt::SldStormCloudField), &stormCloudField, 0.0f, 3.0f, 0.05f, "%.2f", 323},
+        {tx(Txt::SldStormClearMoat), &stormMoat, 0.0f, 3.0f, 0.05f, "%.2f", 324},
+        {tx(Txt::SldStormComplexesX), &stormComplexes, 0.0f, 10.0f, 0.05f, "%.2f", 325},
+        {tx(Txt::SldTropicalCyclonesX), &stormCyclones, 0.0f, 10.0f, 0.05f, "%.2f", 326},
         // 2026-10-28 (the settings round-up): until then only in the Weather window's Controls tab.
-        {"Hurricane arm cirrus", &stormArmCirrus, 0.0f, 3.0f, 0.05f, "%.2f", 414},
-        {"Storm surge (x)", &stormSurge, 0.0f, 2.0f, 0.05f, "%.2f", 415},
+        {tx(Txt::SldHurricaneArmCirrus), &stormArmCirrus, 0.0f, 3.0f, 0.05f, "%.2f", 414},
+        {tx(Txt::SldStormSurgeX), &stormSurge, 0.0f, 2.0f, 0.05f, "%.2f", 415},
     };
     // Wildfires and haboobs (the Weather window's Controls tab had them; settings keys clouds_v2.wildfire* / haboobs).
     CloudSlider secFire[] = {
-        {"Wildfires (x)", &wildfireRate, 0.0f, 10.0f, 0.05f, "%.2f", 416},
-        {"Wildfire smoke", &wildfireSmoke, 0.0f, 5.0f, 0.05f, "%.2f", 417},
-        {"Smoke brightness", &wildfireSmokeBright, 0.0f, 5.0f, 0.05f, "%.2f", 418},
-        {"Smoke tint (-1 blue .. +1 brown)", &wildfireSmokeTint, -1.0f, 1.0f, 0.05f, "%.2f", 419},
-        {"Smoke spread (x)", &wildfireSmokeSpread, 0.25f, 4.0f, 0.05f, "%.2f", 420},
-        {"Smoke spectral (x)", &wildfireSmokeSpectral, 0.0f, 2.0f, 0.05f, "%.2f", 421},
-        {"Wildfire light", &wildfireLight, 0.0f, 5.0f, 0.05f, "%.2f", 422},
-        {"Haboobs (x)", &haboobGain, 0.0f, 5.0f, 0.05f, "%.2f", 423},
+        {tx(Txt::SldWildfiresX), &wildfireRate, 0.0f, 10.0f, 0.05f, "%.2f", 416},
+        {tx(Txt::SldWildfireSmoke), &wildfireSmoke, 0.0f, 5.0f, 0.05f, "%.2f", 417},
+        {tx(Txt::SldSmokeBrightness), &wildfireSmokeBright, 0.0f, 5.0f, 0.05f, "%.2f", 418},
+        {tx(Txt::SldSmokeTint1Blue1Brown), &wildfireSmokeTint, -1.0f, 1.0f, 0.05f, "%.2f", 419},
+        {tx(Txt::SldSmokeSpreadX), &wildfireSmokeSpread, 0.25f, 4.0f, 0.05f, "%.2f", 420},
+        {tx(Txt::SldSmokeSpectralX), &wildfireSmokeSpectral, 0.0f, 2.0f, 0.05f, "%.2f", 421},
+        {tx(Txt::SldWildfireLight), &wildfireLight, 0.0f, 5.0f, 0.05f, "%.2f", 422},
+        {tx(Txt::SldHaboobsX), &haboobGain, 0.0f, 5.0f, 0.05f, "%.2f", 423},
     };
     CloudSlider secStorms[] = {
-        {"Cb fill (share of cells)", &cv2CbFill, 0.05f, 1.0f, 0.05f, "%.2f", 189},
-        {"Cb columns (0 = none)", &cv2CbColumns, 0.0f, 4.0f, 0.05f, "%.2f", 164},
-        {"Cb spacing (km)", &cv2CbSpacingKm, 8.0f, 120.0f, 1.0f, "%.0f", 165},
-        {"Cb tower radius (km)", &cv2CbRadiusKm, 1.0f, 20.0f, 0.25f, "%.2f", 166},
-        {"Cb waist (x radius)", &cv2CbWaist, 0.2f, 1.5f, 0.05f, "%.2f", 168},
-        {"Cb head flare (x radius)", &cv2CbFlare, 0.5f, 3.0f, 0.05f, "%.2f", 169},
-        {"Cb head drift (km)", &cv2CbHeadDriftKm, 0.0f, 30.0f, 0.5f, "%.1f", 170},
-        {"Cb lobes", &cv2CbLobes, 0.0f, 1.5f, 0.05f, "%.2f", 171},
-        {"Cb head lobes", &cv2CbHeadLobes, 0.0f, 1.5f, 0.02f, "%.2f", 207},
-        {"Anvil puffiness", &cv2AnvilPuff, 0.0f, 2.0f, 0.05f, "%.2f", 310},
-        {"Anvil top lift (m)", &cv2AnvilLiftM, 0.0f, 3000.0f, 50.0f, "%.0f", 311},
-        {"Cb sparsity", &cv2CbSparsity, 0.0f, 1.0f, 0.05f, "%.2f", 172},
-        {"Cb overshoot (km)", &cv2CbOvershootKm, 0.0f, 3.0f, 0.05f, "%.2f", 173},
-        {"Storm cumulus top (km)", &cv2CbCumulusTopKm, 2.0f, 12.0f, 0.25f, "%.2f", 167},
-        {"Storm cumulus variation", &cv2CbCumulusVar, 0.0f, 0.8f, 0.05f, "%.2f", 190},
-        {"Storm cumulus reach (km)", &cv2CbCumulusReachKm, 0.0f, 60.0f, 1.0f, "%.0f", 177},
-        {"Storm feature size", &cv2StormScale, 0.5f, 12.0f, 0.1f, "%.2f", 147},
-        {"Storm erosion", &cv2StormDetail, 0.0f, 1.5f, 0.05f, "%.2f", 148},
-        {"Anvils", &cv2Anvil, 0.0f, 2.0f, 0.05f, "%.2f", 149},
-        {"Anvil thickness (km)", &cv2AnvilThickKm, 0.3f, 6.0f, 0.1f, "%.1f", 174},
-        {"Anvil hang (km)", &cv2AnvilHangKm, 0.0f, 6.0f, 0.1f, "%.1f", 175},
+        {tx(Txt::SldCbFillShareOfCells), &cv2CbFill, 0.05f, 1.0f, 0.05f, "%.2f", 189},
+        {tx(Txt::SldCbColumns0None), &cv2CbColumns, 0.0f, 4.0f, 0.05f, "%.2f", 164},
+        {tx(Txt::SldCbSpacingKm), &cv2CbSpacingKm, 8.0f, 120.0f, 1.0f, "%.0f", 165},
+        {tx(Txt::SldCbTowerRadiusKm), &cv2CbRadiusKm, 1.0f, 20.0f, 0.25f, "%.2f", 166},
+        {tx(Txt::SldCbWaistXRadius), &cv2CbWaist, 0.2f, 1.5f, 0.05f, "%.2f", 168},
+        {tx(Txt::SldCbHeadFlareXRadius), &cv2CbFlare, 0.5f, 3.0f, 0.05f, "%.2f", 169},
+        {tx(Txt::SldCbHeadDriftKm), &cv2CbHeadDriftKm, 0.0f, 30.0f, 0.5f, "%.1f", 170},
+        {tx(Txt::SldCbLobes), &cv2CbLobes, 0.0f, 1.5f, 0.05f, "%.2f", 171},
+        {tx(Txt::SldCbHeadLobes), &cv2CbHeadLobes, 0.0f, 1.5f, 0.02f, "%.2f", 207},
+        {tx(Txt::SldAnvilPuffiness), &cv2AnvilPuff, 0.0f, 2.0f, 0.05f, "%.2f", 310},
+        {tx(Txt::SldAnvilTopLiftM), &cv2AnvilLiftM, 0.0f, 3000.0f, 50.0f, "%.0f", 311},
+        {tx(Txt::SldCbSparsity), &cv2CbSparsity, 0.0f, 1.0f, 0.05f, "%.2f", 172},
+        {tx(Txt::SldCbOvershootKm), &cv2CbOvershootKm, 0.0f, 3.0f, 0.05f, "%.2f", 173},
+        {tx(Txt::SldStormCumulusTopKm), &cv2CbCumulusTopKm, 2.0f, 12.0f, 0.25f, "%.2f", 167},
+        {tx(Txt::SldStormCumulusVariation), &cv2CbCumulusVar, 0.0f, 0.8f, 0.05f, "%.2f", 190},
+        {tx(Txt::SldStormCumulusReachKm), &cv2CbCumulusReachKm, 0.0f, 60.0f, 1.0f, "%.0f", 177},
+        {tx(Txt::SldStormFeatureSize), &cv2StormScale, 0.5f, 12.0f, 0.1f, "%.2f", 147},
+        {tx(Txt::SldStormErosion), &cv2StormDetail, 0.0f, 1.5f, 0.05f, "%.2f", 148},
+        {tx(Txt::SldAnvils), &cv2Anvil, 0.0f, 2.0f, 0.05f, "%.2f", 149},
+        {tx(Txt::SldAnvilThicknessKm), &cv2AnvilThickKm, 0.3f, 6.0f, 0.1f, "%.1f", 174},
+        {tx(Txt::SldAnvilHangKm), &cv2AnvilHangKm, 0.0f, 6.0f, 0.1f, "%.1f", 175},
     };
 
     CloudSlider secLightning[] = {
-        {"Lightning rate: storms (/min per 20 km)", &cv2LightningStormRate, 0.0f, 10.0f, 0.05f, "%.2f", 267},
-        {"Lightning rate: Cb towers (/min each)", &cv2LightningRate, 0.0f, 30.0f, 0.1f, "%.1f", 179},
-        {"Lightning glow", &cv2LightningGlow, 0.0f, 5.0f, 0.05f, "%.2f", 180},
-        {"Lightning bolts", &cv2LightningBolt, 0.0f, 5.0f, 0.05f, "%.2f", 181},
-        {"Lightning tendrils", &cv2LightningTendrils, 0.0f, 4.0f, 0.05f, "%.2f", 268},
-        {"Lightning sprites (chance)", &cv2LightningSprites, 0.0f, 1.0f, 0.02f, "%.2f", 191},
+        {tx(Txt::SldLightningRateStormsMinPer20), &cv2LightningStormRate, 0.0f, 10.0f, 0.05f, "%.2f", 267},
+        {tx(Txt::SldLightningRateCbTowersMinEach), &cv2LightningRate, 0.0f, 30.0f, 0.1f, "%.1f", 179},
+        {tx(Txt::SldLightningGlow), &cv2LightningGlow, 0.0f, 5.0f, 0.05f, "%.2f", 180},
+        {tx(Txt::SldLightningBolts), &cv2LightningBolt, 0.0f, 5.0f, 0.05f, "%.2f", 181},
+        {tx(Txt::SldLightningTendrils), &cv2LightningTendrils, 0.0f, 4.0f, 0.05f, "%.2f", 268},
+        {tx(Txt::SldLightningSpritesChance), &cv2LightningSprites, 0.0f, 1.0f, 0.02f, "%.2f", 191},
     };
 
     CloudSlider secRain[] = {
-        {"Rain", &cv2RainAmount, 0.0f, 3.0f, 0.05f, "%.2f", 155},
-        {"Drops at the eye (visibility)", &cv2RainStreaks, 0.0f, 10.0f, 0.05f, "%.2f", 157},
-        {"Drop reach (m)", &cv2DropDistM, 4.0f, 64.0f, 4.0f, "%.0f", 208},
-        {"Drop particles (x1000, nearest box)", &cv2RainParticlesK, 0.5f, 64.0f, 0.5f, "%.1f", 261},
-        {"Drop shutter (ms)", &cv2RainShutterMs, 1.0f, 100.0f, 1.0f, "%.0f", 262},
-        {"Drop fall speed (x physical)", &cv2RainFallSpeed, 0.3f, 5.0f, 0.05f, "%.2f", 330},
-        {"Drop persistence (ms, 0 = never redrawn)", &cv2DropPersistMs, 0.0f, 500.0f, 5.0f, "%.0f", 334},
-        {"Surface wind (x)", &cv2RainWindGain, 0.0f, 4.0f, 0.05f, "%.2f", 331},
-        {"Storm outflow (m/s)", &cv2RainStormWind, 0.0f, 40.0f, 0.5f, "%.1f", 332},
-        {"Gust fronts", &cv2GustFronts, 0.0f, 3.0f, 0.05f, "%.2f", 333},
-        {"Wind turbulence", &cv2RainGusts, 0.0f, 3.0f, 0.05f, "%.2f", 266},
-        {"Snow drift (x surface wind)", &cv2SnowWind, 0.0f, 4.0f, 0.05f, "%.2f", 209},
+        {tx(Txt::SldRain), &cv2RainAmount, 0.0f, 3.0f, 0.05f, "%.2f", 155},
+        {tx(Txt::SldDropsAtTheEyeVisibility), &cv2RainStreaks, 0.0f, 10.0f, 0.05f, "%.2f", 157},
+        {tx(Txt::SldDropReachM), &cv2DropDistM, 4.0f, 64.0f, 4.0f, "%.0f", 208},
+        {tx(Txt::SldDropParticlesX1000NearestBox), &cv2RainParticlesK, 0.5f, 64.0f, 0.5f, "%.1f", 261},
+        {tx(Txt::SldDropShutterMs), &cv2RainShutterMs, 1.0f, 100.0f, 1.0f, "%.0f", 262},
+        {tx(Txt::SldDropFallSpeedXPhysical), &cv2RainFallSpeed, 0.3f, 5.0f, 0.05f, "%.2f", 330},
+        {tx(Txt::SldDropPersistenceMs0NeverRedrawn), &cv2DropPersistMs, 0.0f, 500.0f, 5.0f, "%.0f", 334},
+        {tx(Txt::SldSurfaceWindX), &cv2RainWindGain, 0.0f, 4.0f, 0.05f, "%.2f", 331},
+        {tx(Txt::SldStormOutflowMS), &cv2RainStormWind, 0.0f, 40.0f, 0.5f, "%.1f", 332},
+        {tx(Txt::SldGustFronts), &cv2GustFronts, 0.0f, 3.0f, 0.05f, "%.2f", 333},
+        {tx(Txt::SldWindTurbulence), &cv2RainGusts, 0.0f, 3.0f, 0.05f, "%.2f", 266},
+        {tx(Txt::SldSnowDriftXSurfaceWind), &cv2SnowWind, 0.0f, 4.0f, 0.05f, "%.2f", 209},
     };
 
     CloudSlider secEvo[] = {
-        {"Weather evolution wind (m/s)", &cv2EvoWindMps, 0.0f, 40.0f, 0.5f, "%.1f", 182},
-        {"Weather growth / decay", &cv2EvoGrowth, 0.0f, 0.5f, 0.01f, "%.2f", 183},
-        {"Weather evolution window (h)", &cv2EvoWindowH, 0.1f, 24.0f, 0.05f, "%.2f", 184},
-        {"Afternoon land convection", &cv2EvoDiurnal, 0.0f, 1.5f, 0.05f, "%.2f", 185},
+        {tx(Txt::SldWeatherEvolutionWindMS), &cv2EvoWindMps, 0.0f, 40.0f, 0.5f, "%.1f", 182},
+        {tx(Txt::SldWeatherGrowthDecay), &cv2EvoGrowth, 0.0f, 0.5f, 0.01f, "%.2f", 183},
+        {tx(Txt::SldWeatherEvolutionWindowH), &cv2EvoWindowH, 0.1f, 24.0f, 0.05f, "%.2f", 184},
+        {tx(Txt::SldAfternoonLandConvection), &cv2EvoDiurnal, 0.0f, 1.5f, 0.05f, "%.2f", 185},
     };
 
     CloudSlider secFog[] = {
-        {"Fog amount", &cv2FogAmount, 0.0f, 2.0f, 0.05f, "%.2f", 194},
-        {"Fog depth (m)", &cv2FogDepthM, 20.0f, 1500.0f, 10.0f, "%.0f", 195},
-        {"Fog density (1/m)", &cv2FogDensity, 0.0f, 0.1f, 0.001f, "%.3f", 196},
-        {"Dust amount", &cv2DustAmount, 0.0f, 3.0f, 0.05f, "%.2f", 197},
-        {"Dust height (m)", &cv2DustHeightM, 100.0f, 6000.0f, 50.0f, "%.0f", 198},
-        {"Dust density (1/m)", &cv2DustDensity, 0.0f, 0.002f, 0.00001f, "%.5f", 199},
+        {tx(Txt::SldFogAmount), &cv2FogAmount, 0.0f, 2.0f, 0.05f, "%.2f", 194},
+        {tx(Txt::SldFogDepthM), &cv2FogDepthM, 20.0f, 1500.0f, 10.0f, "%.0f", 195},
+        {tx(Txt::SldFogDensity1M), &cv2FogDensity, 0.0f, 0.1f, 0.001f, "%.3f", 196},
+        {tx(Txt::SldDustAmount), &cv2DustAmount, 0.0f, 3.0f, 0.05f, "%.2f", 197},
+        {tx(Txt::SldDustHeightM), &cv2DustHeightM, 100.0f, 6000.0f, 50.0f, "%.0f", 198},
+        {tx(Txt::SldDustDensity1M), &cv2DustDensity, 0.0f, 0.002f, 0.00001f, "%.5f", 199},
         // Diamond dust over the ice sheets, with the ice optics (halos, sundogs, pillars).
-        {"Ice fog amount", &cv2IceFogAmount, 0.0f, 3.0f, 0.05f, "%.2f", 204},
-        {"Ice fog density (1/m)", &cv2IceFogDensity, 0.0f, 0.003f, 0.000005f, "%.6f", 205},
+        {tx(Txt::SldIceFogAmount), &cv2IceFogAmount, 0.0f, 3.0f, 0.05f, "%.2f", 204},
+        {tx(Txt::SldIceFogDensity1M), &cv2IceFogDensity, 0.0f, 0.003f, 0.000005f, "%.6f", 205},
     };
 
     CloudSlider secGod[] = {
         // The 250-m shadow lattice's two rings: a ring reaches 56 x its cell from the eye (14 km at 250 m).
-        {"Sun shadow cell (m)", &cv2ShadowRing1CellM, 100.0f, 1000.0f, 10.0f, "%.0f", 286},
+        {tx(Txt::SldSunShadowCellM), &cv2ShadowRing1CellM, 100.0f, 1000.0f, 10.0f, "%.0f", 286},
         // The mid / high layers' shadow on everything under them, at any distance (the layer shadow map, 2026-10-14).
-        {"God rays", &cv2Godrays, 0.0f, 1.0f, 0.05f, "%.2f", 187},
+        {tx(Txt::SldGodRays), &cv2Godrays, 0.0f, 1.0f, 0.05f, "%.2f", 187},
         // 2026-10-22: the terrain shadows the air and the fog too (the terrain Sun-horizon map, cloud_v2_terrsun.comp).
-        {"Terrain god rays (0/1)", &cv2TerrainGodrays, 0.0f, 1.0f, 1.0f, "%.0f", 297},
-        {"Haze near clouds", &cv2HazeAloft, 0.0f, 20.0f, 0.1f, "%.1f", 188},
+        {tx(Txt::SldTerrainGodRays01), &cv2TerrainGodrays, 0.0f, 1.0f, 1.0f, "%.0f", 297},
+        {tx(Txt::SldHazeNearClouds), &cv2HazeAloft, 0.0f, 20.0f, 0.1f, "%.1f", 188},
     };
     // The cloud rebuild's experiments (2026-10-22, .plans/CLOUD_REBUILD_PLAN.md): each off by default, for judging.
     CloudSlider secRebuild[] = {
-        {"Occupancy clipmap (0 off, 2 on)", &cv2CdcSkip, 0.0f, 2.0f, 1.0f, "%.0f", 302},
-        {"God-ray froxels (0/1)", &cv2GodrayFroxels, 0.0f, 1.0f, 1.0f, "%.0f", 303},
-        {"Mie phase (physical share)", &cv2MiePhase, 0.0f, 1.0f, 0.05f, "%.2f", 304},
-        {"Mie optics (bows, glory, corona)", &cv2MieOptics, 0.0f, 2.0f, 0.05f, "%.2f", 305},
-        {"Droplet radius (um)", &cv2DropletReffUm, 4.0f, 30.0f, 0.5f, "%.1f", 306},
-        {"Cap lobes (0/1)", &cv2ShapeCaps, 0.0f, 1.0f, 1.0f, "%.0f", 307},
-        {"Light march from clipmap (0/1)", &cv2CdcLight, 0.0f, 1.0f, 1.0f, "%.0f", 308},
+        {tx(Txt::SldOccupancyClipmap0Off2On), &cv2CdcSkip, 0.0f, 2.0f, 1.0f, "%.0f", 302},
+        {tx(Txt::SldGodRayFroxels01), &cv2GodrayFroxels, 0.0f, 1.0f, 1.0f, "%.0f", 303},
+        {tx(Txt::SldMiePhasePhysicalShare), &cv2MiePhase, 0.0f, 1.0f, 0.05f, "%.2f", 304},
+        {tx(Txt::SldMieOpticsBowsGloryCorona), &cv2MieOptics, 0.0f, 2.0f, 0.05f, "%.2f", 305},
+        {tx(Txt::SldDropletRadiusUm), &cv2DropletReffUm, 4.0f, 30.0f, 0.5f, "%.1f", 306},
+        {tx(Txt::SldCapLobes01), &cv2ShapeCaps, 0.0f, 1.0f, 1.0f, "%.0f", 307},
+        {tx(Txt::SldLightMarchFromClipmap01), &cv2CdcLight, 0.0f, 1.0f, 1.0f, "%.0f", 308},
         // The S9 probe: the whole "half-res" chain at full resolution. Pair it with a sparse march ("Full rate above
         // (km)" high) for the half-res full-rate cost.
-        {"Full-resolution clouds (0/1)", &cv2FullRes, 0.0f, 1.0f, 1.0f, "%.0f", 309},
+        {tx(Txt::SldFullResolutionClouds01), &cv2FullRes, 0.0f, 1.0f, 1.0f, "%.0f", 309},
         // 2026-10-24 (the perf pass): inside the high layer its near haze in strides of this many steps (1 = off).
-        {"Near cirrus stride (1 = off)", &cv2NearCirrusStride, 1.0f, 4.0f, 1.0f, "%.0f", 335},
+        {tx(Txt::SldNearCirrusStride1Off), &cv2NearCirrusStride, 1.0f, 4.0f, 1.0f, "%.0f", 335},
         // 2026-10-24 (perf pass 3): the sky pass's god-ray reads a step within 30 km (8 = as built; 4 is cheaper).
-        {"God ray reads (near, 8 = full)", &cv2GodrayReads, 2.0f, 8.0f, 1.0f, "%.0f", 336},
+        {tx(Txt::SldGodRayReadsNear8Full), &cv2GodrayReads, 2.0f, 8.0f, 1.0f, "%.0f", 336},
         // 2026-10-25: the sky's atmosphere once per screen tile (sky_ap.comp) instead of per pixel; 0 = per pixel (A/B).
-        {"Aerial perspective volume (0/1)", &cv2SkyAp, 0.0f, 1.0f, 1.0f, "%.0f", 337},
-        {"Aerial perspective horizon band (deg)", &cv2SkyApBandDeg, 0.0f, 10.0f, 0.25f, "%.2f", 338},
+        {tx(Txt::SldAerialPerspectiveVolume01), &cv2SkyAp, 0.0f, 1.0f, 1.0f, "%.0f", 337},
+        {tx(Txt::SldAerialPerspectiveHorizonBandDeg), &cv2SkyApBandDeg, 0.0f, 10.0f, 0.25f, "%.2f", 338},
         // 2026-10-25: with full-resolution clouds, smooth 32x32 tiles at half density (0 = every tile at full density).
-        {"Smooth tiles at half density (0/1)", &cv2SmoothTiles, 0.0f, 1.0f, 1.0f, "%.0f", 339},
-        {"Smooth tile threshold (levels)", &cv2SmoothTileThresh, 0.5f, 32.0f, 0.5f, "%.1f", 340},
+        {tx(Txt::SldSmoothTilesAtHalfDensity0), &cv2SmoothTiles, 0.0f, 1.0f, 1.0f, "%.0f", 339},
+        {tx(Txt::SldSmoothTileThresholdLevels), &cv2SmoothTileThresh, 0.5f, 32.0f, 0.5f, "%.1f", 340},
         // 2026-10-25: the terrain's sun shadow from the half-res depth pass (0 = marched per pixel).
-        {"Terrain shadows at half resolution (0/1)", &terrainShadowHalfRes, 0.0f, 1.0f, 1.0f, "%.0f", 341},
+        {tx(Txt::SldTerrainShadowsAtHalfResolution0), &terrainShadowHalfRes, 0.0f, 1.0f, 1.0f, "%.0f", 341},
     };
 #define CLOUD_SEC(title, arr) {title, arr, (int)(sizeof(arr) / sizeof((arr)[0]))}
     CloudSliderSection sections[] = {
-        CLOUD_SEC("Storm objects", secStormObjects),
-        CLOUD_SEC("Storms (cumulonimbus)", secStorms),
-        CLOUD_SEC("Wildfires & haboobs", secFire),
-        CLOUD_SEC("Lightning", secLightning),
-        CLOUD_SEC("Rain & snow", secRain),
-        CLOUD_SEC("Weather evolution", secEvo),
-        CLOUD_SEC("Fog, dust & ice fog", secFog),
-        CLOUD_SEC("Cloud shadows & god rays", secGod),
-        CLOUD_SEC("Rebuild experiments", secRebuild),
+        CLOUD_SEC(tx(Txt::LblStormObjects), secStormObjects),
+        CLOUD_SEC(tx(Txt::SecStormsCumulonimbus), secStorms),
+        CLOUD_SEC(tx(Txt::SecWildfiresHaboobs), secFire),
+        CLOUD_SEC(tx(Txt::SecLightning2), secLightning),
+        CLOUD_SEC(tx(Txt::SecRainSnow), secRain),
+        CLOUD_SEC(tx(Txt::SecWeatherEvolution), secEvo),
+        CLOUD_SEC(tx(Txt::SecFogDustIceFog), secFog),
+        CLOUD_SEC(tx(Txt::SecCloudShadowsGodRays), secGod),
+        CLOUD_SEC(tx(Txt::SecRebuildExperiments), secRebuild),
     };
 #undef CLOUD_SEC
     // The switches (2026-10-28: the Weather window's Controls tab had the first two; the scars had no UI).
     {
         bool v = stormObjects;
-        if (uiToggleRow(inp, ui, "WxSetOn", 0, "Storm objects", v,
-                        "Off: no storm towers, anvils, tornadoes or cyclones; only the cloud map (clouds_v2.storm_objects)"))
+        if (uiToggleRow(inp, ui, "WxSetOn", 0, tx(Txt::LblStormObjects), v,
+                        tx(Txt::TipOffNoStormTowersAnvilsTornadoes)))
         {
             stormObjects = v;
             graphicsPreset = GraphicsPreset::Custom;
             wxRowsWall = -1e300;
         }
     }
-    uiToggleRow(inp, ui, "WxSetOn", 1, "Haboobs as cloud", haboobField,
-                "On: the dust walls are drawn by the volumetric clouds; Off: plume Gaussians everywhere (clouds_v2.haboob_field)");
-    uiToggleRow(inp, ui, "WxSetOn", 2, "Wildfire burn scars", wildfireScars,
-                "The burnt ground under a fire: charcoal, ash and unburnt islands (clouds_v2.wildfire_scars)");
+    uiToggleRow(inp, ui, "WxSetOn", 1, tx(Txt::LblHaboobsAsCloud), haboobField,
+                tx(Txt::TipOnTheDustWallsAreDrawn));
+    uiToggleRow(inp, ui, "WxSetOn", 2, tx(Txt::LblWildfireBurnScars), wildfireScars,
+                tx(Txt::TipTheBurntGroundUnderAFire));
     buildCloudSliderSections(inp, ui, sections, (int)(sizeof(sections) / sizeof(sections[0])), 12);
 }
 
@@ -7141,9 +7117,9 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
 void SatelliteSim::buildSettingsOceanTab(const UIInput &inp, UIRenderer &ui)
 {
     CloudSlider sliders[] = {
-        {"Sea octaves", &oceanSeaOctaves, 1.0f, 3.0f, 1.0f, "%.0f", 21},
-        {"Detail octaves", &oceanDetailOctaves, 1.0f, 5.0f, 1.0f, "%.0f", 22},
-        {"Refl samples", &oceanReflSamples, 1.0f, 6.0f, 1.0f, "%.0f", 23},
+        {tx(Txt::SldSeaOctaves), &oceanSeaOctaves, 1.0f, 3.0f, 1.0f, "%.0f", 21},
+        {tx(Txt::SldDetailOctaves), &oceanDetailOctaves, 1.0f, 5.0f, 1.0f, "%.0f", 22},
+        {tx(Txt::SldReflSamples), &oceanReflSamples, 1.0f, 6.0f, 1.0f, "%.0f", 23},
         // Satellite mirror-flare glints on the water (sat_sky.frag's OceanGlintBuf loop — the entries
         // sat_flare.comp appends, composited onto sea-level hits only). Added 2026-09-26: the ocean
         // end of a flare was the one part of the photometry with no control at all, so a mild
@@ -7162,29 +7138,29 @@ void SatelliteSim::buildSettingsOceanTab(const UIInput &inp, UIRenderer &ui)
         // apart before. See [[feedback_cloud_slider_arrays]].
         // 2026-09-30: waves follow the weather (sat_sky.frag oceanSeaState: the weather cube's storms, a regional
         // wind with the westerly belts) and break into whitecaps as the sea rises. 0 = the old fixed sea.
-        {"Sea state from weather", &oceanSeaStateGain, 0.0f, 2.0f, 0.05f, "%.2f", 213},
-        {"Whitecaps", &oceanWhitecapGain, 0.0f, 3.0f, 0.05f, "%.2f", 214},
+        {tx(Txt::SldSeaStateFromWeather), &oceanSeaStateGain, 0.0f, 2.0f, 0.05f, "%.2f", 213},
+        {tx(Txt::SldWhitecaps), &oceanWhitecapGain, 0.0f, 3.0f, 0.05f, "%.2f", 214},
         // Review 21: the waves reached only 3-8 km (a fixed fade) and their octaves dropped out at 2 pixel footprints:
         // the sea went to a mirror close in. The range and the filter's sharpness (lower = finer octaves kept longer).
-        {"Sea wave range (km)", &oceanWaveRangeKm, 5.0f, 200.0f, 1.0f, "%.0f", 237},
+        {tx(Txt::SldSeaWaveRangeKm), &oceanWaveRangeKm, 5.0f, 200.0f, 1.0f, "%.0f", 237},
         // Review 28: how much of the range the waves fade out over (1 = from the observer out; 0.4 = the last 40%).
-        {"Sea wave range fade", &oceanWaveRangeFade, 0.05f, 1.0f, 0.05f, "%.2f", 257},
-        {"Sea wave sharpness", &oceanWaveSharpness, 0.1f, 1.0f, 0.05f, "%.2f", 243},
+        {tx(Txt::SldSeaWaveRangeFade), &oceanWaveRangeFade, 0.05f, 1.0f, 0.05f, "%.2f", 257},
+        {tx(Txt::SldSeaWaveSharpness), &oceanWaveSharpness, 0.1f, 1.0f, 0.05f, "%.2f", 243},
         // 2026-10-04: a stormy sea keeps the temporal AA's history unclipped, so its crests smear like spray (the
         // user liked the look when it was a bug). Needs Temporal AA; 0 = off.
-        {"Storm sea trails", &oceanStormTrails, 0.0f, 1.0f, 0.05f, "%.2f", 260},
+        {tx(Txt::SldStormSeaTrails), &oceanStormTrails, 0.0f, 1.0f, 0.05f, "%.2f", 260},
         // Review 24: the far sea's resolvable ripple (columns of light instead of a mirror past the waves) and the
         // wave field's warp (higher = the ridges meander more, and stretch in places).
-        {"Far sea ripple", &oceanFarRipple, 0.0f, 15.0f, 0.05f, "%.2f", 248},
-        {"Far sea ripple size (px)", &oceanFarRippleSize, 1.5f, 16.0f, 0.25f, "%.2f", 256},
-        {"Sea warp", &oceanWarp, 0.0f, 6.0f, 0.1f, "%.1f", 249},
-        {"Sea warp detail", &oceanWarpDetail, 0.0f, 3.0f, 0.05f, "%.2f", 250},
+        {tx(Txt::SldFarSeaRipple), &oceanFarRipple, 0.0f, 15.0f, 0.05f, "%.2f", 248},
+        {tx(Txt::SldFarSeaRippleSizePx), &oceanFarRippleSize, 1.5f, 16.0f, 0.25f, "%.2f", 256},
+        {tx(Txt::SldSeaWarp), &oceanWarp, 0.0f, 6.0f, 0.1f, "%.1f", 249},
+        {tx(Txt::SldSeaWarpDetail), &oceanWarpDetail, 0.0f, 3.0f, 0.05f, "%.2f", 250},
         // 2026-10-27 (issue 20261027_001448): x the Sun's glint on the waves, its path and its sparkles.
-        {"Sea glitter (Sun)", &oceanSunGlitter, 0.0f, 20.0f, 0.1f, "%.1f", 354},
-        {"Ocean flare refl", &oceanGlintGain, 0.0f, 4.0f, 0.05f, "%.2f", 110},
-        {"Flare refl floor", &oceanGlintMinFlux, 0.0f, 64.0f, 0.5f, "%.1f", 111},
+        {tx(Txt::SldSeaGlitterSun), &oceanSunGlitter, 0.0f, 20.0f, 0.1f, "%.1f", 354},
+        {tx(Txt::SldOceanFlareRefl), &oceanGlintGain, 0.0f, 4.0f, 0.05f, "%.2f", 110},
+        {tx(Txt::SldFlareReflFloor), &oceanGlintMinFlux, 0.0f, 64.0f, 0.5f, "%.1f", 111},
         // 2026-10-22: the wave octaves filtered at the pixel footprint while the eye moves (1 = on; 0 = shimmer kept).
-        {"Wave motion filter", &oceanMotionFilter, 0.0f, 1.0f, 0.05f, "%.2f", 424},
+        {tx(Txt::SldWaveMotionFilter), &oceanMotionFilter, 0.0f, 1.0f, 0.05f, "%.2f", 424},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 }
@@ -7198,43 +7174,43 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
     // (The city lights moved to the Night lights tab, the atmosphere samples to Atmosphere: review 4.)
     CloudSlider secRelief[] = {
         // Procedural terrain detail (terrain_detail.glsl, 2026-09-25). Strength 0 = the plain DEM.
-        {"Terrain detail", &terrainDetailStrength, 0.0f, 2.0f, 0.05f, "%.2f", 91},
-        {"Detail height (m)", &terrainDetailAmpM, 0.0f, 800.0f, 10.0f, "%.0f", 92},
-        {"Detail roughness", &terrainDetailGain, 0.3f, 0.7f, 0.01f, "%.2f", 93},
-        {"Detail erosion", &terrainDetailErode, 0.0f, 6.0f, 0.1f, "%.1f", 94},
+        {tx(Txt::SldTerrainDetail), &terrainDetailStrength, 0.0f, 2.0f, 0.05f, "%.2f", 91},
+        {tx(Txt::SldDetailHeightM), &terrainDetailAmpM, 0.0f, 800.0f, 10.0f, "%.0f", 92},
+        {tx(Txt::SldDetailRoughness), &terrainDetailGain, 0.3f, 0.7f, 0.01f, "%.2f", 93},
+        {tx(Txt::SldDetailErosion), &terrainDetailErode, 0.0f, 6.0f, 0.1f, "%.1f", 94},
         // Erosion octaves (tdErosion): gullies that run downhill and branch.
-        {"Erosion strength", &terrainErosionStrength, 0.0f, 1.5f, 0.05f, "%.2f", 97},
-        {"Erosion size (x, 0.5/1/2/4)", &terrainErosionSize, 0.5f, 4.0f, 0.5f, "%.1f", 211},
-        {"Erosion branching", &terrainErosionBranch, 0.0f, 3.0f, 0.1f, "%.1f", 98},
+        {tx(Txt::SldErosionStrength), &terrainErosionStrength, 0.0f, 1.5f, 0.05f, "%.2f", 97},
+        {tx(Txt::SldErosionSizeX051), &terrainErosionSize, 0.5f, 4.0f, 0.5f, "%.1f", 211},
+        {tx(Txt::SldErosionBranching), &terrainErosionBranch, 0.0f, 3.0f, 0.1f, "%.1f", 98},
         // S4 (RELEASE_v1_1_PLAN.md): terrain-relief march distance fade — see cloud_params.glsl.
-        {"Terrain fade start (m)", &terrainDistFadeStartM, 50000.0f, 1000000.0f, 10000.0f, "%.0f", 59},
-        {"Terrain fade end (m)", &terrainDistFadeEndM, 100000.0f, 4000000.0f, 25000.0f, "%.0f", 60},
+        {tx(Txt::SldTerrainFadeStartM), &terrainDistFadeStartM, 50000.0f, 1000000.0f, 10000.0f, "%.0f", 59},
+        {tx(Txt::SldTerrainFadeEndM), &terrainDistFadeEndM, 100000.0f, 4000000.0f, 25000.0f, "%.0f", 60},
         // Review 8: where the procedural fields stop (a pixel footprint): past it the plain day map.
-        {"Ground pattern range (m/px)", &groundPatternRangeM, 100.0f, 3000.0f, 25.0f, "%.0f", 212},
+        {tx(Txt::SldGroundPatternRangeMPx), &groundPatternRangeM, 100.0f, 3000.0f, 25.0f, "%.0f", 212},
     };
 
     CloudSlider secSurface[] = {
-        {"Terrain materials", &terrainMaterialStrength, 0.0f, 1.0f, 0.05f, "%.2f", 96},
+        {tx(Txt::SldTerrainMaterials), &terrainMaterialStrength, 0.0f, 1.0f, 0.05f, "%.2f", 96},
         // Terrain v2 P3: close-up material textures (grass, forest floor, rock, snow, sand, dirt) within
         // a few metres per pixel. 0 = the procedural mottle alone.
-        {"Close-up textures", &terrainTextureStrength, 0.0f, 1.0f, 0.05f, "%.2f", 57},
-        {"Terrain shadows", &terrainShadowStrength, 0.0f, 1.0f, 0.05f, "%.2f", 95},
+        {tx(Txt::SldCloseUpTextures), &terrainTextureStrength, 0.0f, 1.0f, 0.05f, "%.2f", 57},
+        {tx(Txt::SldTerrainShadows), &terrainShadowStrength, 0.0f, 1.0f, 0.05f, "%.2f", 95},
         // Terrain v2 P1 lighting: the sky dome's light on the ground (x the zenith integral's 0.4) and
         // the moonless night sky's (a fraction of the full Moon overhead) on the day albedo.
-        {"Terrain sky light", &terrainSkyLight, 0.0f, 20.0f, 0.25f, "%.2f", 55},
-        {"Moon gain", &moonGain, 0.0f, 0.2f, 0.005f, "%.3f", 24},
-        {"Cloud shadow range (m)", &cloudShadowRangeM, 5000.0f, 300000.0f, 5000.0f, "%.0f", 38},
+        {tx(Txt::SldTerrainSkyLight), &terrainSkyLight, 0.0f, 20.0f, 0.25f, "%.2f", 55},
+        {tx(Txt::SldMoonGain), &moonGain, 0.0f, 0.2f, 0.005f, "%.3f", 24},
+        {tx(Txt::SldCloudShadowRangeM), &cloudShadowRangeM, 5000.0f, 300000.0f, 5000.0f, "%.0f", 38},
     };
 #define CLOUD_SEC(title, arr) {title, arr, (int)(sizeof(arr) / sizeof((arr)[0]))}
     CloudSliderSection sections[] = {
-        CLOUD_SEC("Relief", secRelief),
-        CLOUD_SEC("Surface & lighting", secSurface),
+        CLOUD_SEC(tx(Txt::SecRelief), secRelief),
+        CLOUD_SEC(tx(Txt::SecSurfaceLighting), secSurface),
     };
 #undef CLOUD_SEC
     buildCloudSliderSections(inp, ui, sections, (int)(sizeof(sections) / sizeof(sections[0])), 30);
     // 2026-10-28: had no UI (terrain.solar_arrays).
-    uiToggleRow(inp, ui, "TerrSolarParks", 0, "Solar parks", solarArraysEnabled,
-                "The PV parks at the Reflect Orbital targets: rows of trackers, their glass glinting in the Sun and the beams");
+    uiToggleRow(inp, ui, "TerrSolarParks", 0, tx(Txt::LblSolarParks), solarArraysEnabled,
+                tx(Txt::TipThePvParksAtTheReflect));
 }
 
 // ─── buildSettingsNightLightsTab ─────────────────────────────────────────────
@@ -7245,27 +7221,27 @@ void SatelliteSim::buildSettingsNightLightsTab(const UIInput &inp, UIRenderer &u
     CloudSlider sliders[] = {
         // Procedural city lights (.plans/CITIES_PLAN.md): street grids generated where the night map
         // has lights, and the major roads. 0 = the old tiled night detail texture.
-        {"City street lights", &cityLightsStrength, 0.0f, 1.0f, 0.05f, "%.2f", 58},
-        {"Major road lights", &cityRoadsStrength, 0.0f, 2.0f, 0.05f, "%.2f", 77},
+        {tx(Txt::SldCityStreetLights), &cityLightsStrength, 0.0f, 1.0f, 0.05f, "%.2f", 58},
+        {tx(Txt::SldMajorRoadLights), &cityRoadsStrength, 0.0f, 2.0f, 0.05f, "%.2f", 77},
         // City lights as satellite point sprites (city_sprites.comp): twinkling, blooming points.
-        {"City light sprites", &citySpriteGain, 0.0f, 4.0f, 0.05f, "%.2f", 200},
+        {tx(Txt::SldCityLightSprites), &citySpriteGain, 0.0f, 4.0f, 0.05f, "%.2f", 200},
         // Sprites only past the range where a pixel spans this much ground: lower = nearer.
-        {"City sprites from (m/px)", &citySpriteStartFootM, 2.0f, 200.0f, 1.0f, "%.0f", 206},
+        {tx(Txt::SldCitySpritesFromMPx), &citySpriteStartFootM, 2.0f, 200.0f, 1.0f, "%.0f", 206},
         // Where the sprites carry the far lights, the share of the ground's own glitter kept under them.
-        {"Ground glitter under sprites", &citySpriteGround, 0.0f, 1.0f, 0.05f, "%.2f", 202},
-        {"City light twinkle rate", &cityTwinkleRate, 0.0f, 4.0f, 0.05f, "%.2f", 201},
+        {tx(Txt::SldGroundGlitterUnderSprites), &citySpriteGround, 0.0f, 1.0f, 0.05f, "%.2f", 202},
+        {tx(Txt::SldCityLightTwinkleRate), &cityTwinkleRate, 0.0f, 4.0f, 0.05f, "%.2f", 201},
         // LOD (review 13): where each layer of the procedural lights ends, as the ground a pixel spans
         // (m). Each fades in from ~0.4x its value; lower = they stop nearer the observer.
-        {"Lamp posts to (m/px)", &cityPostsFootM, 1.0f, 100.0f, 0.5f, "%.1f", 221},
-        {"Street grid to (m/px)", &cityGridFootM, 10.0f, 1000.0f, 5.0f, "%.0f", 222},
-        {"Major roads to (m/px)", &cityRoadsFootM, 10.0f, 2000.0f, 5.0f, "%.0f", 223},
-        {"Street layout to (m/px)", &cityLayoutFootM, 50.0f, 2000.0f, 10.0f, "%.0f", 224},
-        {"Street light share (near)", &cityStreetShareNear, 0.0f, 1.0f, 0.01f, "%.2f", 225},
-        {"Street light share (far)", &cityStreetShareFar, 0.0f, 1.0f, 0.01f, "%.2f", 226},
-        {"City light on clouds", &cloudAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 6},
+        {tx(Txt::SldLampPostsToMPx), &cityPostsFootM, 1.0f, 100.0f, 0.5f, "%.1f", 221},
+        {tx(Txt::SldStreetGridToMPx), &cityGridFootM, 10.0f, 1000.0f, 5.0f, "%.0f", 222},
+        {tx(Txt::SldMajorRoadsToMPx), &cityRoadsFootM, 10.0f, 2000.0f, 5.0f, "%.0f", 223},
+        {tx(Txt::SldStreetLayoutToMPx), &cityLayoutFootM, 50.0f, 2000.0f, 10.0f, "%.0f", 224},
+        {tx(Txt::SldStreetLightShareNear), &cityStreetShareNear, 0.0f, 1.0f, 0.01f, "%.2f", 225},
+        {tx(Txt::SldStreetLightShareFar), &cityStreetShareFar, 0.0f, 1.0f, 0.01f, "%.2f", 226},
+        {tx(Txt::SldCityLightOnClouds), &cloudAmbientGain, 0.0f, 20.0f, 0.05f, "%.2f", 6},
         // "City light blur LOD" (slot 62, clouds.city_light_blur_lod) was removed 2026-10-06: the blur under
         // cloud drew every city under thin cloud as a grey blob from orbit (sat_sky.frag). Slot 62 is free.
-        {"Night sky light", &terrainNightSkyLight, 0.0f, 0.5f, 0.005f, "%.3f", 56},
+        {tx(Txt::SldNightSkyLight), &terrainNightSkyLight, 0.0f, 0.5f, 0.005f, "%.3f", 56},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 }
@@ -7284,41 +7260,41 @@ void SatelliteSim::buildSettingsNightLightsTab(const UIInput &inp, UIRenderer &u
 void SatelliteSim::buildSettingsBeamsTab(const UIInput &inp, UIRenderer &ui)
 {
     CloudSlider sliders[] = {
-        {"Beam gain", &beamGain, 0.0f, 1.0f, 0.0001f, "%.3f", 39},
+        {tx(Txt::SldBeamGain), &beamGain, 0.0f, 1.0f, 0.0001f, "%.3f", 39},
         // 2026-08-06 same-day follow-up: reuses slot 40, freed by C12 follow-up #34's removed
         // "Beam footprint (m)" slider (see [[feedback_cloud_slider_arrays]] — no array resize
         // needed, this is filling an already-accounted-for index). Real angular-rate cap for the
         // TargetedReflector orientation ease — see sat_orbit.comp's TargetedReflector block.
-        {"Mirror max slew rate (deg/s)", &mirrorMaxRateDegPerSec, 0.001f, 1.0f, 0.001f, "%.3f", 40},
-        {"Beam max range (m)", &beamMaxRangeM, 50000.0f, 2000000.0f, 50000.0f, "%.0f", 41},
-        {"Beam sky glow gain", &beamSkyGlowGain, 0.0f, 0.05f, 0.001f, "%.3f", 42},
+        {tx(Txt::SldMirrorMaxSlewRateDegS), &mirrorMaxRateDegPerSec, 0.001f, 1.0f, 0.001f, "%.3f", 40},
+        {tx(Txt::SldBeamMaxRangeM), &beamMaxRangeM, 50000.0f, 2000000.0f, 50000.0f, "%.0f", 41},
+        {tx(Txt::SldBeamSkyGlowGain), &beamSkyGlowGain, 0.0f, 0.05f, 0.001f, "%.3f", 42},
         // 2026-08-06 reversibility rework: replaces the old rate-limited "Mirror slew rate
         // (deg/s)" slider — target lock is now a fixed sim-time window instead of a persisted
         // per-satellite lock, so the tunable is a duration, not a rate. Same slot (43).
-        {"Target lock window (s)", &reflectorLockWindowS, 10.0f, 300.0f, 5.0f, "%.0f", 43},
+        {tx(Txt::SldTargetLockWindowS), &reflectorLockWindowS, 10.0f, 300.0f, 5.0f, "%.0f", 43},
         // S1 follow-up (RELEASE_v1_1_PLAN.md): reuses slot 44, freed by C12 follow-up #44's
         // removed "Beam extinction" slider — see that removal's comment (still accurate re: why
         // the slot was empty; this is the first thing to reuse it).
-        {"Min beam elevation (deg)", &reflectorMinElevDeg, 0.0f, 60.0f, 1.0f, "%.0f", 44},
-        {"Beam glow bleed gain", &beamGlowBleedGain, 0.0f, 0.01f, 0.0001f, "%.2f", 45},
-        {"Beam near-field fade (m)", &beamNearFieldFadeM, 1000.0f, 500000.0f, 1000.0f, "%.0f", 46},
+        {tx(Txt::SldMinBeamElevationDeg), &reflectorMinElevDeg, 0.0f, 60.0f, 1.0f, "%.0f", 44},
+        {tx(Txt::SldBeamGlowBleedGain), &beamGlowBleedGain, 0.0f, 0.01f, 0.0001f, "%.2f", 45},
+        {tx(Txt::SldBeamNearFieldFadeM), &beamNearFieldFadeM, 1000.0f, 500000.0f, 1000.0f, "%.0f", 46},
         // 2026-08-09: new slot (83) — see [[feedback_cloud_slider_arrays]], hovCloudMinus/Plus/
         // draggingCloud/cloudBufs all resized to 84 for this one. 2026-08-12: the member's meaning
         // changed (it is now the angular SIZE of a fixed direction bucket rather than a
         // running-average merge tolerance) but the label, slot, range and direction of effect are
         // all unchanged, so nothing here needed touching — see the member's own comment.
-        {"Beam cluster direction threshold (deg)", &beamClusterDirThresholdDeg, 1.0f, 90.0f, 1.0f, "%.0f", 83},
+        {tx(Txt::SldBeamClusterDirectionThresholdDeg), &beamClusterDirThresholdDeg, 1.0f, 90.0f, 1.0f, "%.0f", 83},
         // 2026-08-12: new slots (86/87) — hovCloudMinus/Plus/draggingCloud/cloudBufs all resized
         // 86 -> 88 for these two, per [[feedback_cloud_slider_arrays]]. Cross-frame fade for the
         // cloud-light list, which only became possible once lights got stable identities; see
         // TrackedBeamLight in SatelliteSim.h.
-        {"Beam light fade in (s)", &beamClusterFadeInS, 0.0f, 3.0f, 0.05f, "%.2f", 86},
-        {"Beam light fade out (s)", &beamClusterFadeOutS, 0.0f, 6.0f, 0.05f, "%.2f", 87},
+        {tx(Txt::SldBeamLightFadeInS), &beamClusterFadeInS, 0.0f, 3.0f, 0.05f, "%.2f", 86},
+        {tx(Txt::SldBeamLightFadeOutS), &beamClusterFadeOutS, 0.0f, 6.0f, 0.05f, "%.2f", 87},
         // Beams in clouds (from the Clouds tab, review 4).
-        {"Beam shafts (0 = drawn line)", &cv2BeamShafts, 0.0f, 4.0f, 0.05f, "%.2f", 161},
-        {"Beam haze / dust", &cv2BeamHaze, 0.0f, 10.0f, 0.1f, "%.1f", 162},
-        {"Beam light on cloud", &cv2BeamLight, 0.0f, 300.0f, 1.0f, "%.0f", 17},
-        {"Beam lines (per beam)", &cv2BeamLines, 0.0f, 2.0f, 0.05f, "%.2f", 34},
+        {tx(Txt::SldBeamShafts0DrawnLine), &cv2BeamShafts, 0.0f, 4.0f, 0.05f, "%.2f", 161},
+        {tx(Txt::SldBeamHazeDust), &cv2BeamHaze, 0.0f, 10.0f, 0.1f, "%.1f", 162},
+        {tx(Txt::SldBeamLightOnCloud), &cv2BeamLight, 0.0f, 300.0f, 1.0f, "%.0f", 17},
+        {tx(Txt::SldBeamLinesPerBeam), &cv2BeamLines, 0.0f, 2.0f, 0.05f, "%.2f", 34},
     };
     buildCloudSliderRows(inp, ui, sliders, (int)(sizeof(sliders) / sizeof(sliders[0])));
 
@@ -7328,28 +7304,28 @@ void SatelliteSim::buildSettingsBeamsTab(const UIInput &inp, UIRenderer &ui)
     // (pinned at the cap = entries respawning instead of matching; see TrackedBeamLight). blockOpacity: raw min / max /
     // avg across every active beam (beam_self_march.comp; max stuck at 0 under visible cloud = the march finds none).
     // Beam sound: the ambience's beam_glare / beam_site_hum drivers.
-    uiSection("BeamSec", 0, "DIAGNOSTICS");
+    uiSection("BeamSec", 0, tx(Txt::SecDiagnostics));
     {
         const float lw = (float)fs(12) * 13.0f;
-        uiKV("BeamDiagKV", 0, "Active beams / nearest",
-             lastNearestBeamDistM >= 0.0f ? uiKitStr("%d / %.1f km", lastActiveBeamCount, lastNearestBeamDistM / 1000.0f)
-                                          : uiKitStr("%d / none", lastActiveBeamCount),
+        uiKV("BeamDiagKV", 0, tx(Txt::LblActiveBeamsNearest),
+             lastNearestBeamDistM >= 0.0f ? uiKitStr(tx(Txt::FmtKm), lastActiveBeamCount, lastNearestBeamDistM / 1000.0f)
+                                          : uiKitStr(tx(Txt::FmtNone), lastActiveBeamCount),
              lw);
-        uiKV("BeamDiagKV", 1, "Cloud lights",
-             uiKitStr("%d/%d clusters, %d/%d individual", lastClusterLightCount, kMaxClusterCloudLights, lastIndividualLightCount,
+        uiKV("BeamDiagKV", 1, tx(Txt::LblCloudLights),
+             uiKitStr(tx(Txt::FmtClustersIndividual), lastClusterLightCount, kMaxClusterCloudLights, lastIndividualLightCount,
                       kMaxIndividualCloudLights),
              lw);
-        uiKV("BeamDiagKV", 2, "Beam blockOpacity",
-             uiKitStr("min %.2f / max %.2f / avg %.2f / occluded %d/%d", dbgBeamOpacityMin, dbgBeamOpacityMax, dbgBeamOpacityAvg,
+        uiKV("BeamDiagKV", 2, tx(Txt::LblBeamBlockopacity),
+             uiKitStr(tx(Txt::FmtMinMaxAvgOccluded), dbgBeamOpacityMin, dbgBeamOpacityMax, dbgBeamOpacityAvg,
                       dbgBeamOccludedCount, dbgBeamSampleCount),
              lw);
-        uiKV("BeamDiagKV", 3, "Beam sound",
-             uiKitStr("glare %.1f / %.1f (%d)  site %.1f", ambGlareN, ambGlareSum, ambGlareCount, std::max(ambBeamSite, 0.0f)), lw);
+        uiKV("BeamDiagKV", 3, tx(Txt::LblBeamSound),
+             uiKitStr(tx(Txt::FmtGlareSite), ambGlareN, ambGlareSum, ambGlareCount, std::max(ambBeamSite, 0.0f)), lw);
     }
     // Each active beam's mirror's ACTUAL reflected-sunlight direction as a thin ray from the satellite (C12 follow-up
     // #12): not a knockout, so a toggle of its own (also on the Display tab).
-    uiToggleRow(inp, ui, "BeamDebugRayChk", 0, "Show beam pointing rays", showBeamDebugRays,
-                "The Reflect Orbital mirrors' beams as lines from the satellites");
+    uiToggleRow(inp, ui, "BeamDebugRayChk", 0, tx(Txt::LblShowBeamPointingRays), showBeamDebugRays,
+                tx(Txt::TipTheReflectOrbitalMirrorsBeamsAs));
 }
 
 // ─── buildSettingsAuroraTab ──────────────────────────────────────────────────
@@ -7359,90 +7335,90 @@ void SatelliteSim::buildSettingsAuroraTab(const UIInput &inp, UIRenderer &ui)
     // The "Atmosphere" tab (was "Aurora"; review 4): the scattering, the sky march's samples, airglow and
     // zodiacal light, and the aurora.
     CloudSlider secScatter[] = {
-        {"Rayleigh gain", &atmosRayleighGain, 0.0f, 3.0f, 0.05f, "%.2f", 63},
-        {"Mie/haze gain", &atmosMieGain, 0.0f, 3.0f, 0.05f, "%.2f", 64},
+        {tx(Txt::SldRayleighGain), &atmosRayleighGain, 0.0f, 3.0f, 0.05f, "%.2f", 63},
+        {tx(Txt::SldMieHazeGain), &atmosMieGain, 0.0f, 3.0f, 0.05f, "%.2f", 64},
         // Orbital terminator gate — artistic suppression of scattered sunlight past the
         // terminator, inert below 40 km observer altitude. See cloud_params.glsl.
-        {"Terminator cut", &atmosTermStrength, 0.0f, 1.0f, 0.05f, "%.2f", 81},
-        {"Terminator width", &atmosTermWidth, 0.01f, 0.40f, 0.005f, "%.3f", 82},
-        {"View samples (min)", &viewSamplesMin, 2.0f, 32.0f, 1.0f, "%.0f", 18},
-        {"View samples (max)", &viewSamplesMax, 32.0f, 256.0f, 4.0f, "%.0f", 19},
-        {"Light samples", &lightSamples, 2.0f, 12.0f, 1.0f, "%.0f", 20},
+        {tx(Txt::SldTerminatorCut), &atmosTermStrength, 0.0f, 1.0f, 0.05f, "%.2f", 81},
+        {tx(Txt::SldTerminatorWidth), &atmosTermWidth, 0.01f, 0.40f, 0.005f, "%.3f", 82},
+        {tx(Txt::SldViewSamplesMin), &viewSamplesMin, 2.0f, 32.0f, 1.0f, "%.0f", 18},
+        {tx(Txt::SldViewSamplesMax), &viewSamplesMax, 32.0f, 256.0f, 4.0f, "%.0f", 19},
+        {tx(Txt::SldLightSamples), &lightSamples, 2.0f, 12.0f, 1.0f, "%.0f", 20},
     };
 
     CloudSlider secGlow[] = {
-        {"Airglow gain", &airglowGain, 0.0f, 5.0f, 0.1f, "%.2f", 12},
-        {"Airglow green", &airglowGreenGain, 0.0f, 3.0f, 0.1f, "%.2f", 13},
-        {"Airglow red", &airglowRedGain, 0.0f, 3.0f, 0.1f, "%.2f", 14},
-        {"Airglow sodium", &airglowSodiumGain, 0.0f, 3.0f, 0.1f, "%.2f", 15},
-        {"Airglow coverage", &airglowCoverageGain, 0.0f, 1.0f, 0.05f, "%.2f", 84},
-        {"Airglow polar boost (red)", &airglowPolarGain, 0.0f, 6.0f, 0.1f, "%.2f", 85},
-        {"Zodiacal gain", &zodiacalGain, 0.0f, 0.1f, 0.001f, "%.3f", 88},
-        {"Zodiacal width (deg)", &zodiacalWidthDeg, 5.0f, 60.0f, 1.0f, "%.0f", 89},
+        {tx(Txt::SldAirglowGain), &airglowGain, 0.0f, 5.0f, 0.1f, "%.2f", 12},
+        {tx(Txt::SldAirglowGreen), &airglowGreenGain, 0.0f, 3.0f, 0.1f, "%.2f", 13},
+        {tx(Txt::SldAirglowRed), &airglowRedGain, 0.0f, 3.0f, 0.1f, "%.2f", 14},
+        {tx(Txt::SldAirglowSodium), &airglowSodiumGain, 0.0f, 3.0f, 0.1f, "%.2f", 15},
+        {tx(Txt::SldAirglowCoverage), &airglowCoverageGain, 0.0f, 1.0f, 0.05f, "%.2f", 84},
+        {tx(Txt::SldAirglowPolarBoostRed), &airglowPolarGain, 0.0f, 6.0f, 0.1f, "%.2f", 85},
+        {tx(Txt::SldZodiacalGain), &zodiacalGain, 0.0f, 0.1f, 0.001f, "%.3f", 88},
+        {tx(Txt::SldZodiacalWidthDeg), &zodiacalWidthDeg, 5.0f, 60.0f, 1.0f, "%.0f", 89},
         // Ocean Milky Way reflection (2026-09-08). Appended at the next free index rather than
         // slotted next to the other sky-feature gains: renumbering this table means renumbering
         // hovCloudMinus/hovCloudPlus/draggingCloud/cloudBufs in lockstep, and those four have
         // drifted apart before.
-        {"Ocean MW refl", &oceanMwReflGain, 0.0f, 8.0f, 0.1f, "%.2f", 90},
+        {tx(Txt::SldOceanMwRefl), &oceanMwReflGain, 0.0f, 8.0f, 0.1f, "%.2f", 90},
     };
 
     CloudSlider secAurora[] = {
         // 2026-10-03: activity from a deterministic space-weather history (SpaceWeather.cpp) or a fixed Kp.
-        {"Space weather (0 manual / 1 auto)", &auroraActivityAuto, 0.0f, 1.0f, 1.0f, "%.0f", 258},
-        {"Aurora Kp (manual)", &auroraKpManual, 0.0f, 11.0f, 0.1f, "%.1f", 25},
-        {"Storm frequency (x)", &auroraStormRate, 0.0f, 5.0f, 0.1f, "%.1f", 259},
-        {"Aurora gain", &auroraGain, 0.0f, 0.1f, 0.001f, "%.3f", 26},
-        {"Coverage freq", &auroraCoverageFreq, 0.05f, 2.0f, 0.05f, "%.2f", 29},
-        {"Coverage az freq", &auroraCoverageAzFreq, 0.0f, 6.0f, 0.1f, "%.1f", 30},
-        {"Coverage drift", &auroraCoverageDriftRate, 0.0f, 0.002f, 0.00002f, "%.1e", 31},
-        {"Fold shimmer rate", &auroraShimmerRate, 0.0f, 0.2f, 0.002f, "%.3f", 32},
+        {tx(Txt::SldSpaceWeather0Manual1Auto), &auroraActivityAuto, 0.0f, 1.0f, 1.0f, "%.0f", 258},
+        {tx(Txt::SldAuroraKpManual), &auroraKpManual, 0.0f, 11.0f, 0.1f, "%.1f", 25},
+        {tx(Txt::SldStormFrequencyX), &auroraStormRate, 0.0f, 5.0f, 0.1f, "%.1f", 259},
+        {tx(Txt::SldAuroraGain), &auroraGain, 0.0f, 0.1f, 0.001f, "%.3f", 26},
+        {tx(Txt::SldCoverageFreq), &auroraCoverageFreq, 0.05f, 2.0f, 0.05f, "%.2f", 29},
+        {tx(Txt::SldCoverageAzFreq), &auroraCoverageAzFreq, 0.0f, 6.0f, 0.1f, "%.1f", 30},
+        {tx(Txt::SldCoverageDrift), &auroraCoverageDriftRate, 0.0f, 0.002f, 0.00002f, "%.1e", 31},
+        {tx(Txt::SldFoldShimmerRate), &auroraShimmerRate, 0.0f, 0.2f, 0.002f, "%.3f", 32},
         // 2026-09-30: thin sheets over the diffuse volume (crisp folded curtains, edge-on ribbons).
-        {"Curtain sheets", &auroraSheetGain, 0.0f, 4.0f, 0.05f, "%.2f", 215},
-        {"Sheet spacing (deg)", &auroraSheetSpacingDeg, 0.05f, 1.5f, 0.01f, "%.2f", 216},
-        {"Crisp sheets (share)", &auroraSheetCrisp, 0.0f, 1.0f, 0.05f, "%.2f", 217},
-        {"Sheet folds", &auroraSheetFold, 0.0f, 2.0f, 0.05f, "%.2f", 218},
+        {tx(Txt::SldCurtainSheets), &auroraSheetGain, 0.0f, 4.0f, 0.05f, "%.2f", 215},
+        {tx(Txt::SldSheetSpacingDeg), &auroraSheetSpacingDeg, 0.05f, 1.5f, 0.01f, "%.2f", 216},
+        {tx(Txt::SldCrispSheetsShare), &auroraSheetCrisp, 0.0f, 1.0f, 0.05f, "%.2f", 217},
+        {tx(Txt::SldSheetFolds), &auroraSheetFold, 0.0f, 2.0f, 0.05f, "%.2f", 218},
         // 2026-10-14: the storm look (issue 20261014_193231): few bright arc systems, red tops, magenta borders,
         // the red glow equatorward of the oval, rare blue rays.
-        {"Arc systems", &auroraArcSystems, 0.0f, 1.0f, 0.05f, "%.2f", 300},
-        {"Storm features (red / magenta)", &auroraStormFeatures, 0.0f, 2.0f, 0.05f, "%.2f", 298},
-        {"Storm red glow", &auroraStormRedGain, 0.0f, 3.0f, 0.05f, "%.2f", 301},
-        {"Blue rays (chance)", &auroraBlueRayChance, 0.0f, 0.05f, 0.001f, "%.3f", 299},
+        {tx(Txt::SldArcSystems), &auroraArcSystems, 0.0f, 1.0f, 0.05f, "%.2f", 300},
+        {tx(Txt::SldStormFeaturesRedMagenta), &auroraStormFeatures, 0.0f, 2.0f, 0.05f, "%.2f", 298},
+        {tx(Txt::SldStormRedGlow), &auroraStormRedGain, 0.0f, 3.0f, 0.05f, "%.2f", 301},
+        {tx(Txt::SldBlueRaysChance), &auroraBlueRayChance, 0.0f, 0.05f, 0.001f, "%.3f", 299},
         // 2026-09-30: the look of the Earth from space, fitted to the Artemis II photographs.
-        {"Orbit colour grade", &orbitGrade, 0.0f, 1.0f, 0.05f, "%.2f", 219},
+        {tx(Txt::SldOrbitColourGrade), &orbitGrade, 0.0f, 1.0f, 0.05f, "%.2f", 219},
         // "Moon size (x real)" (slot 220) moved to the Photometry tab's EXPOSURE AND MOON section (2026-10-06).
     };
 #define CLOUD_SEC(title, arr) {title, arr, (int)(sizeof(arr) / sizeof((arr)[0]))}
     CloudSliderSection sections[] = {
-        CLOUD_SEC("Scattering", secScatter),
-        CLOUD_SEC("Airglow & zodiacal light", secGlow),
-        CLOUD_SEC("Aurora", secAurora),
+        CLOUD_SEC(tx(Txt::SecScattering), secScatter),
+        CLOUD_SEC(tx(Txt::SecAirglowZodiacalLight), secGlow),
+        CLOUD_SEC(tx(Txt::SecAurora), secAurora),
     };
 #undef CLOUD_SEC
     // The aurora's activity right now (SpaceWeather.cpp, this frame's), above the sliders.
     {
         const SpaceWeather &w = spaceWeather_;
         const float lw = (float)fs(11) * 11.0f;
-        static const char *kG[6] = {"quiet", "G1 minor storm", "G2 moderate storm", "G3 strong storm",
-                                    "G4 severe storm", "G5 extreme storm"};
+        static const char *kG[6] = {"quiet", tx(Txt::OptG1MinorStorm), tx(Txt::OptG2ModerateStorm), tx(Txt::OptG3StrongStorm),
+                                    tx(Txt::OptG4SevereStorm), tx(Txt::OptG5ExtremeStorm)};
         const int g = geomagStormScale(w.kp);
-        uiSection("AuroraNowSec", 0, "AURORA NOW");
-        uiKV("AuroraNowKV", 0, "Activity",
-             uiKitStr("Kp %.1f  %s%s", w.kp, g > 0 ? kG[g] : (w.kp >= 4.0 ? "active" : "quiet"),
+        uiSection("AuroraNowSec", 0, tx(Txt::SecAuroraNow));
+        uiKV("AuroraNowKV", 0, tx(Txt::LblActivity),
+             uiKitStr(tx(Txt::FmtKp), w.kp, g > 0 ? kG[g] : (w.kp >= 4.0 ? "active" : "quiet"),
                       auroraActivityAuto >= 0.5f ? "" : "  (manual)"), lw);
-        uiKV("AuroraNowKV", 1, "Driver",
-             auroraActivityAuto < 0.5f ? "fixed Kp"
+        uiKV("AuroraNowKV", 1, tx(Txt::LblDriver),
+             auroraActivityAuto < 0.5f ? tx(Txt::ValFixedKp)
              : w.cmePeakKp > 0.0 && w.cme >= w.hss && w.cme >= w.kpQuiet
-                 ? uiKitStr("CME storm, %.0f h since it arrived", w.cmeHoursSince)
-             : w.hss > w.kpQuiet ? "high-speed solar wind stream"
-                                 : uiKitStr("background (solar cycle %.0f%%)", w.cycle * 100.0), lw);
-        uiKV("AuroraNowKV", 2, "Substorm",
+                 ? uiKitStr(tx(Txt::FmtCmeStormHSinceItArrived), w.cmeHoursSince)
+             : w.hss > w.kpQuiet ? tx(Txt::ValHighSpeedSolarWindStream)
+                                 : uiKitStr(tx(Txt::FmtBackgroundSolarCycle), w.cycle * 100.0), lw);
+        uiKV("AuroraNowKV", 2, tx(Txt::LblSubstorm),
              w.subMinutes >= 0.0 && w.subI > 0.05
-                 ? uiKitStr("%s, %.0f min, near %.1f h MLT", w.subMinutes < 30.0 ? "expansion" : "recovery", w.subMinutes,
+                 ? uiKitStr(tx(Txt::FmtMinNearHMlt), w.subMinutes < 30.0 ? "expansion" : "recovery", w.subMinutes,
                             24.0 + w.subMltRad * 12.0 / 3.14159265)
                  : "none", lw);
         const AuroraOvalBounds b = auroraOvalBounds(w.kp);
-        uiKV("AuroraNowKV", 3, "Oval at midnight",
-             uiKitStr("%.0f - %.0f deg magnetic latitude", 90.0 - b.eqMid, 90.0 - b.polMid), lw);
+        uiKV("AuroraNowKV", 3, tx(Txt::LblOvalAtMidnight),
+             uiKitStr(tx(Txt::FmtDegMagneticLatitude), 90.0 - b.eqMid, 90.0 - b.polMid), lw);
     }
     buildCloudSliderSections(inp, ui, sections, (int)(sizeof(sections) / sizeof(sections[0])), 24);
 }
@@ -7484,17 +7460,16 @@ void SatelliteSim::buildSettingsAttributionsTab(const UIInput &inp, UIRenderer &
                                     .childGap = 4,
                                     .layoutDirection = CLAY_TOP_TO_BOTTOM}})
     {
-        CLAY_TEXT(CLAY_STRING("Sat Light Sim"),
+        CLAY_TEXT(txc(Txt::NoteSatLightSim2),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
         static char aboutBuf[64];
         if (!aboutBuf[0])
-            snprintf(aboutBuf, sizeof(aboutBuf), "v%s (%s), built %s", APP_VERSION, APP_GIT_COMMIT, APP_BUILD_DATE);
+            snprintf(aboutBuf, sizeof(aboutBuf), tx(Txt::FmtVBuilt), APP_VERSION, APP_GIT_COMMIT, APP_BUILD_DATE);
         Clay_String aboutStr{false, (int32_t)strlen(aboutBuf), aboutBuf};
         CLAY_TEXT(aboutStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
-        CLAY_TEXT(CLAY_STRING("Constellation parameters are drawn from public filings and are "
-                              "approximations for illustrative purposes."),
+        CLAY_TEXT(txc(Txt::NoteConstellationParametersAreDrawnFromPubli),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(11)}));
-        CLAY_TEXT(CLAY_STRING("This simulator uses AI generated code. There's an irony there."),
+        CLAY_TEXT(txc(Txt::NoteThisSimulatorUsesAiGeneratedCode),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(11)}));
     }
     divider(100);
@@ -7547,13 +7522,13 @@ void SatelliteSim::buildSettingsAttributionsTab(const UIInput &inp, UIRenderer &
                                    .childGap = 4,
                                    .layoutDirection = CLAY_TOP_TO_BOTTOM}})
     {
-        CLAY_TEXT(CLAY_STRING("Software libraries"),
+        CLAY_TEXT(txc(Txt::NoteSoftwareLibraries),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(12)}));
-        CLAY_TEXT(CLAY_STRING("GLFW (zlib), glm (MIT), Clay (zlib), stb (MIT), miniaudio (MIT-0),"),
+        CLAY_TEXT(txc(Txt::NoteGlfwZlibGlmMitClayZlib),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
-        CLAY_TEXT(CLAY_STRING("nlohmann/json (MIT) - full license texts in THIRD_PARTY_NOTICES.txt"),
+        CLAY_TEXT(txc(Txt::NoteNlohmannJsonMitFullLicenseTexts),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11)}));
-        CLAY_TEXT(CLAY_STRING("next to the executable"),
+        CLAY_TEXT(txc(Txt::NoteNextToTheExecutable),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(11)}));
     }
 }
@@ -7574,7 +7549,7 @@ void SatelliteSim::buildViewControlsWindow(const UIInput &inp, UIRenderer &ui)
         viewControlsChrome.w = winDefault(300.0f, 0.4f, inp.screenW);
         viewControlsChrome.h = winDefault(340.0f, 1.0f, inp.screenH - 12.0f - 110.0f, 220.0f);
     }
-    buildResizableWindow(inp, ui, viewControlsChrome, 1, "Controls", true, hovViewControlsClose,
+    buildResizableWindow(inp, ui, viewControlsChrome, 1, tx(Txt::TtlControls), true, hovViewControlsClose,
                          12.0f, 12.0f, 260.0f, 220.0f, 600.0f, 700.0f,
                          [&]()
                          { buildViewControlsBody(inp, ui); });
@@ -7633,12 +7608,12 @@ void SatelliteSim::buildViewControlsBody(const UIInput &inp, UIRenderer &ui)
         const char *padText; // nullptr = no gamepad equivalent
     };
     AnalogRow analogRows[] = {
-        {"Move", "WASD", "L stick"},
-        {"Look around", "Right-click drag", "R stick"},
-        {"Zoom (FOV)", "Scroll wheel", nullptr},
-        {"Raise/Lower elevation", nullptr, "RT / LT trigger"},
-        {"Selection: choose a button", nullptr, "D-pad Left/Right"},
-        {"Selection: press it / back", nullptr, "A / B"},
+        {tx(Txt::LblMove), "WASD", "L stick"},
+        {tx(Txt::LblLookAround), "Right-click drag", "R stick"},
+        {tx(Txt::LblZoomFov), "Scroll wheel", nullptr},
+        {tx(Txt::LblRaiseLowerElevation), nullptr, "RT / LT trigger"},
+        {tx(Txt::LblSelectionChooseAButton), nullptr, "D-pad Left/Right"},
+        {tx(Txt::LblSelectionPressItBack), nullptr, "A / B"},
     };
 
     auto ctrlRow = [&](int idx, const char *label, const char *keyText)
@@ -7686,7 +7661,7 @@ void SatelliteSim::buildViewControlsBody(const UIInput &inp, UIRenderer &ui)
         CLAY(CLAY_ID("AnalogDiv"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)},
                                                .padding = {0, 0, 4, 4}},
                                     .backgroundColor = Pal::divider}) {}
-        CLAY_TEXT(CLAY_STRING("ANALOG (not rebindable)"),
+        CLAY_TEXT(txc(Txt::NoteAnalogNotRebindable),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(10)}));
         for (auto &row : analogRows)
         {
@@ -7725,8 +7700,7 @@ void SatelliteSim::buildCrashRecoveryNotice(float dt, const UIInput &inp, UIRend
                                   .floating = {.offset = {0, 16}, .zIndex = 25, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_TOP, .parent = CLAY_ATTACH_POINT_CENTER_TOP}, .attachTo = CLAY_ATTACH_TO_ROOT}})
     {
         std::snprintf(crashNoticeBuf, sizeof(crashNoticeBuf),
-                      "Recovered from an unexpected exit last time - graphics stepped down to %s. "
-                      "Change it in Settings > Display.", kGraphicsPresetNames[(int)graphicsPreset]);
+                      tx(Txt::FmtRecoveredFromAnUnexpectedExitLast), kGraphicsPresetNames[(int)graphicsPreset]);
         CLAY_TEXT((Clay_String{false, (int32_t)std::strlen(crashNoticeBuf), crashNoticeBuf}),
                   CLAY_TEXT_CONFIG({.textColor = Pal::textBright, .fontSize = fs(13)}));
     }
@@ -7793,7 +7767,7 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
                 }
                 else if (isTitleBeat)
                 {
-                    CLAY_TEXT(CLAY_STRING("SAT LIGHT SIM"),
+                    CLAY_TEXT(txc(Txt::NoteSatLightSim),
                               CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, (float)textA}, .fontSize = fs(34)}));
                 }
                 else
@@ -7822,7 +7796,7 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
                                                                       .parent = CLAY_ATTACH_POINT_RIGHT_BOTTOM},
                                                      .attachTo = CLAY_ATTACH_TO_ROOT}})
         {
-            CLAY_TEXT(CLAY_STRING("Press SPACE to skip"),
+            CLAY_TEXT(txc(Txt::NotePressSpaceToSkip),
                       CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(12)}));
         }
     }
@@ -7992,7 +7966,7 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
     };
 
     static char titleBuf[96];
-    snprintf(titleBuf, sizeof(titleBuf), "Cinematics: %s", cine_.name.c_str());
+    snprintf(titleBuf, sizeof(titleBuf), tx(Txt::FmtCinematics), cine_.name.c_str());
     buildResizableWindow(
         inp, ui, cineChrome, 5, titleBuf, true, hovCineClose, 12.0f, 140.0f, 420.0f, 380.0f, 1200.0f, 1400.0f,
         [&]()
@@ -8006,7 +7980,7 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                 // ── The cinematic ───────────────────────────────────────────────────────────────────
                 row(10, [&]()
                     {
-                    text("Name", Pal::textDim, 11);
+                    text(tx(Txt::NoteName), Pal::textDim, 11);
                     std::string nm = cine_.name;
                     if (textField(inp, ui, CLAY_ID("CineNameField"), nm, (float)fs(210), 12,
                                   "The cinematic's name: Save writes it as <name>.json (a new name saves a copy)"))
@@ -8038,8 +8012,8 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                     } });
                 {
                     const std::string savedAs = cineFile_.empty() ? std::string("not saved yet")
-                                                                  : "file: " + std::filesystem::path(cineFile_).filename().string();
-                    snprintf(cineInfoBuf_, sizeof(cineInfoBuf_), "%s   |   %d shot%s, %.1f s", savedAs.c_str(),
+                                                                  : tx(Txt::ValFile) + std::filesystem::path(cineFile_).filename().string();
+                    snprintf(cineInfoBuf_, sizeof(cineInfoBuf_), tx(Txt::FmtShotS), savedAs.c_str(),
                              (int)cine_.shots.size(), cine_.shots.size() == 1 ? "" : "s", cine_.duration());
                     text(cineInfoBuf_, Pal::textDim, 11);
                 }
@@ -8063,7 +8037,7 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                     if (btn(2, "+", "Add a shot after this one, starting at the current view"))
                     {
                         CineShot ns;
-                        ns.name = "shot " + std::to_string(cine_.shots.size() + 1);
+                        ns.name = tx(Txt::ValShot) + std::to_string(cine_.shots.size() + 1);
                         ns.keys.push_back(cineCurrentPose());
                         ns.keys.back().t = 0.0;
                         ns.simStartValid = true;
@@ -8076,7 +8050,7 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                     } });
                 row(5, [&]()
                     {
-                    text("Shot name", Pal::textDim, 11);
+                    text(tx(Txt::NoteShotName), Pal::textDim, 11);
                     std::string sn = cine_.shots[cineShot_].name;
                     if (textField(inp, ui, CLAY_ID("CineShotNameField"), sn, (float)fs(150), 12, "This shot's name"))
                         cine_.shots[cineShot_].name = sn;
@@ -8130,10 +8104,10 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                             if (!followActive)
                             {
                                 S.followSat = -1;
-                                cineStatus_ = "That satellite has no geometry model: it cannot be followed";
+                                cineStatus_ = tx(Txt::ValThatSatelliteHasNoGeometryModel);
                             }
                             else if (!K.empty())
-                                cineStatus_ = "Follow on: the keys taken before are not follow keys — press Set on each once framed";
+                                cineStatus_ = tx(Txt::ValFollowOnTheKeysTakenBefore);
                         }
                     }
                     if (btn(6, "Sim time from now", "The shot's sim time starts at the current sim time"))
@@ -8145,12 +8119,12 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                 {
                     static char followBuf[160];
                     const bool on = followActive && followSatIndex == S.followSat;
-                    snprintf(followBuf, sizeof(followBuf), "Follows %s #%d%s", satTypes[satOrbits[S.followSat].typeIdx].name.c_str(),
+                    snprintf(followBuf, sizeof(followBuf), tx(Txt::FmtFollows), satTypes[satOrbits[S.followSat].typeIdx].name.c_str(),
                              S.followSat, on ? "" : "  -  not following it now: Go to it before taking keys");
                     text(followBuf, on ? Pal::textDim : Pal::textWarn, 11);
                 }
                 else if (followActive)
-                    text("You are following a satellite: switch Follow on to ride with it in this shot", {230, 190, 120, 255}, 11);
+                    text(tx(Txt::NoteYouAreFollowingASatelliteSwitch), {230, 190, 120, 255}, 11);
 
                 // ── Timeline ───────────────────────────────────────────────────────────────────────
                 section(1, "TIMELINE  (click / drag to scrub, drag a key to retime it)");
@@ -8237,7 +8211,7 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                         }
                     }
                     static char tlBuf[96];
-                    snprintf(tlBuf, sizeof(tlBuf), "playhead %.2f s  of  %.2f s   (%d keys)", (double)cineScrub_, dur, (int)K.size());
+                    snprintf(tlBuf, sizeof(tlBuf), tx(Txt::FmtPlayheadSOfSKeys), (double)cineScrub_, dur, (int)K.size());
                     text(tlBuf, Pal::textDim, 11);
                 }
 
@@ -8250,7 +8224,7 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                                            .cornerRadius = CLAY_CORNER_RADIUS(4)})
                 {
                     if (K.empty())
-                        text("No keys: frame a view and press + Key at view", Pal::textDim, 11);
+                        text(tx(Txt::NoteNoKeysFrameAViewAnd), Pal::textDim, 11);
                     int del = -1;
                     const bool mismatch = cineKeyFollowMismatch(why);
                     for (int i = 0; i < (int)K.size() && i < 24; ++i)
@@ -8322,7 +8296,7 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                         }
                     }
                     if ((int)K.size() > 24)
-                        text("(more keys than shown: the list shows the first 24)", Pal::textDim, 11);
+                        text(tx(Txt::NoteMoreKeysThanShownTheList), Pal::textDim, 11);
                     if (del >= 0)
                         K.erase(K.begin() + del);
                 }
@@ -8379,7 +8353,7 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                     const double est = cineEstimateHqS();
                     const double frames = std::floor(cine_.duration() * std::clamp((double)cineExportFps_, 1.0, 240.0) + 1e-6) + 1.0;
                     const double s = std::clamp(std::round((double)photoScaleSetting), 1.0, 4.0);
-                    snprintf(estBuf, sizeof(estBuf), "HQ: %.0f frames at %.0fx%.0f, about %.0f %s (estimated from the current frame rate)",
+                    snprintf(estBuf, sizeof(estBuf), tx(Txt::FmtHqFramesAtXAboutEstimated),
                              frames, s * inp.screenW, s * inp.screenH, est >= 120.0 ? est / 60.0 : est,
                              est >= 120.0 ? "min" : "s");
                     wrapText(estBuf, est > 600.0 ? Pal::textWarn : Pal::textDim, 11);
@@ -8405,7 +8379,7 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                 // ── Saved cinematics ───────────────────────────────────────────────────────────────
                 section(4, "SAVED  (user data/cinematics)");
                 if (cineFiles_.empty())
-                    text("None yet: name this one and press Save", Pal::textDim, 11);
+                    text(tx(Txt::NoteNoneYetNameThisOneAnd), Pal::textDim, 11);
                 static char fileLab[16][128];
                 bool deleted = false;
                 for (int f = 0; f < (int)cineFiles_.size() && f < 16; ++f)
@@ -8440,8 +8414,8 @@ void SatelliteSim::buildCinematicWindow(const UIInput &inp, UIRenderer &ui)
                             {
                                 std::error_code ec;
                                 std::filesystem::remove(cineFiles_[f], ec);
-                                cineStatus_ = ec ? "Could not delete: " + ec.message()
-                                                 : "Deleted " + std::filesystem::path(cineFiles_[f]).filename().string();
+                                cineStatus_ = ec ? tx(Txt::ValCouldNotDelete) + ec.message()
+                                                 : tx(Txt::ValDeleted) + std::filesystem::path(cineFiles_[f]).filename().string();
                                 if (!ec && current)
                                     cineFile_.clear();
                                 cineDeleteArmed_.clear();
@@ -8486,7 +8460,7 @@ void SatelliteSim::buildCineHud(const UIInput &inp, UIRenderer &ui)
         const double dur = cinePlayOneShot_ && !cine_.shots.empty() ? cine_.shots[std::clamp(cineShot_, 0, (int)cine_.shots.size() - 1)].duration()
                                                                      : cine_.duration();
         frac = dur > 0.0 ? (float)std::clamp(cineT_ / dur, 0.0, 1.0) : 0.0f;
-        snprintf(line, sizeof(line), "Playing %s%s   %.1f / %.1f s   (Esc stops)", cine_.name.c_str(), cinePlayOneShot_ ? " (shot)" : "",
+        snprintf(line, sizeof(line), tx(Txt::FmtPlayingSEscStops), cine_.name.c_str(), cinePlayOneShot_ ? " (shot)" : "",
                  cineT_, dur);
     }
     else
@@ -8497,13 +8471,13 @@ void SatelliteSim::buildCineHud(const UIInput &inp, UIRenderer &ui)
         {
             const double rem = el / cineFrame_ * (cineFrames_ - cineFrame_);
             if (rem >= 3600.0)
-                snprintf(left, sizeof(left), ", %.0f h %02.0f min left", std::floor(rem / 3600.0), std::fmod(rem / 60.0, 60.0));
+                snprintf(left, sizeof(left), tx(Txt::FmtHMinLeft), std::floor(rem / 3600.0), std::fmod(rem / 60.0, 60.0));
             else if (rem >= 60.0)
-                snprintf(left, sizeof(left), ", %.0f min %02.0f s left", std::floor(rem / 60.0), std::fmod(rem, 60.0));
+                snprintf(left, sizeof(left), tx(Txt::FmtMinSLeft), std::floor(rem / 60.0), std::fmod(rem, 60.0));
             else
-                snprintf(left, sizeof(left), ", %.0f s left", rem);
+                snprintf(left, sizeof(left), tx(Txt::FmtSLeft), rem);
         }
-        snprintf(line, sizeof(line), "Exporting %s %s   frame %d / %d  (%.0f%%%s)   Esc stops",
+        snprintf(line, sizeof(line), tx(Txt::FmtExportingFrameEscStops),
                  cineRun_ == CineRun::ExportHQ ? "HQ" : "preview", cine_.name.c_str(), cineFrame_, cineFrames_, 100.0f * frac, left);
     }
     const float w = std::min(560.0f, inp.screenW - 40.0f);
@@ -8538,7 +8512,7 @@ void SatelliteSim::buildCineHud(const UIInput &inp, UIRenderer &ui)
                 hovCineHudStop = n;
                 if (n && inp.lmbPressed)
                     cineStop("Stopped");
-                CLAY_TEXT(CLAY_STRING("Stop"), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11)}));
+                CLAY_TEXT(txc(Txt::NoteStop), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(11)}));
             }
         }
         CLAY(CLAY_ID("CineHudBar"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(6)}},
@@ -8717,7 +8691,7 @@ GraphicsPreset SatelliteSim::recommendedPresetForDevice(VkPhysicalDevice pd, std
     if (moltenVk && !apple)
     {
         p = GraphicsPreset::Potato;
-        reason = "MoltenVK on a non-Apple GPU (2015-era Mac: GCN 1.0 / Intel)";
+        reason = tx(Txt::ValMoltenvkOnANonAppleGpu);
     }
     else if (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
     {
@@ -8726,9 +8700,9 @@ GraphicsPreset SatelliteSim::recommendedPresetForDevice(VkPhysicalDevice pd, std
         // Medium's 67% scale, sparse cloud march and smaller budgets were what a fresh install showed).
         const bool bigVram = vramGiB >= 5.5;
         p = smallVram ? GraphicsPreset::Planetarium : bigVram ? GraphicsPreset::High : GraphicsPreset::Medium;
-        reason = smallVram ? "discrete GPU with <= 2 GB of VRAM"
-                 : bigVram ? "discrete GPU with >= 6 GB of VRAM"
-                           : "discrete GPU with < 6 GB of VRAM";
+        reason = smallVram ? tx(Txt::ValDiscreteGpuWith2GbOf)
+                 : bigVram ? tx(Txt::ValDiscreteGpuWith6GbOf2)
+                           : tx(Txt::ValDiscreteGpuWith6GbOf);
     }
     else
     {
@@ -8736,10 +8710,10 @@ GraphicsPreset SatelliteSim::recommendedPresetForDevice(VkPhysicalDevice pd, std
         // effects at a 50% render scale, too heavy to start an unknown laptop on. The tutorial's graphics card
         // says so and points at the preset (TutStep::Graphics).
         p = GraphicsPreset::Planetarium;
-        reason = "integrated / CPU / virtual GPU";
+        reason = tx(Txt::ValIntegratedCpuVirtualGpu);
     }
     char buf[320];
-    std::snprintf(buf, sizeof(buf), "%s (%s, vendor 0x%04X, type %d, %.2f GiB device-local%s)", reason,
+    std::snprintf(buf, sizeof(buf), tx(Txt::FmtVendor0xTypeGibDeviceLocal), reason,
                   props.deviceName, props.vendorID, (int)props.deviceType, vramGiB, moltenVk ? ", MoltenVK" : "");
     if (why)
         *why = buf;
@@ -10686,7 +10660,7 @@ nlohmann::json SatelliteSim::buildPerfSnapshotJson(float cpuDt)
     // is no such quantisation and the gap is real work. Also records the build config, since these
     // numbers were being read across Debug and Release captures and only the CPU side differs.
     {
-        static const char *kCapNames[] = {"Off", "Cap30", "Cap60", "Cap120", "VSync"};
+        static const char *kCapNames[] = {tx(Txt::LblOff), "Cap30", "Cap60", "Cap120", "VSync"};
         int capIdx = (int)fpsCapMode;
         j["frame_limiter"] = (capIdx >= 0 && capIdx < 5) ? kCapNames[capIdx] : "unknown";
     }

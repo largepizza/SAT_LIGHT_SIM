@@ -343,7 +343,7 @@ bool SatelliteSim::reportTakeShot(bool newIssue, bool openBar)
     const std::string title = rep.value("title", std::string());
     if (!writeReport(dir, rep))
     {
-        snprintf(screenshotToastText, sizeof(screenshotToastText), "Could not write the issue report (%s)", dir.string().c_str());
+        snprintf(screenshotToastText, sizeof(screenshotToastText), tx(Txt::ToastCouldNotWriteTheIssueReport), dir.string().c_str());
         screenshotToastTimer = 4.0f;
         screenshotToastWarn = true;
         return true;
@@ -363,7 +363,7 @@ bool SatelliteSim::reportTakeShot(bool newIssue, bool openBar)
         screenshotHideOverlays_ = reportShotUiSetting; // ...but never the note bar / reports window / toast
         screenshotRequested = true; // THIS frame, as it is (recordScreenshotCopy after the render pass)
     }
-    snprintf(screenshotToastText, sizeof(screenshotToastText), "%s: shot %d saved", title.c_str(), n);
+    snprintf(screenshotToastText, sizeof(screenshotToastText), tx(Txt::ToastShotSaved), title.c_str(), n);
     screenshotToastTimer = 2.5f;
     screenshotToastWarn = false;
     Log::line("report: " + reportActiveId_ + " shot " + std::to_string(n) + (isNew ? " (new issue)" : ""));
@@ -444,7 +444,7 @@ void SatelliteSim::reportSetField(const std::string &id, int shot, const char *k
             else if (k == "description") is->description = value;
             else if (k == "category") is->category = value;
             else if (k == "status") is->status = value;
-            snprintf(is->line, sizeof(is->line), "%d shot%s   %s   %s", (int)is->shots.size(), is->shots.size() == 1 ? "" : "s",
+            snprintf(is->line, sizeof(is->line), tx(Txt::FmtShot3), (int)is->shots.size(), is->shots.size() == 1 ? "" : "s",
                      is->category.empty() ? "uncategorised" : is->category.c_str(), is->status.c_str());
         }
         else
@@ -515,13 +515,13 @@ void SatelliteSim::buildReportBar(const UIInput &inp, UIRenderer &ui)
     const float w = std::min(640.0f * std::max(1.0f, uiScale), inp.screenW - 40.0f);
     const float labelW = (float)fs(11) * 3.2f, fieldW = w - 24.0f - labelW - 8.0f;
     static char shotBuf[32], hintBuf[224];
-    snprintf(shotBuf, sizeof(shotBuf), "shot %d", reportBarShot_);
+    snprintf(shotBuf, sizeof(shotBuf), tx(Txt::FmtShot4), reportBarShot_);
     {
         char k1[24], k2[24]; // keyDisplayName's letters rotate through a small pool: copy
         snprintf(k1, sizeof(k1), "%s", keyDisplayName(keybindings[KB_SAVE_SNAPSHOT].key));
         snprintf(k2, sizeof(k2), "%s", keyDisplayName(keybindings[KB_REPORT_NEW].key));
         const bool typing = textEdit_.id == noteId.id || textEdit_.id == titleId.id || reportBarFocusPending_;
-        snprintf(hintBuf, sizeof(hintBuf), "%s  %s: another shot of this issue.  %s: a new issue.",
+        snprintf(hintBuf, sizeof(hintBuf), tx(Txt::FmtAnotherShotOfThisIssueA),
                  typing ? "Enter saves, Shift+Enter adds a line, Esc closes, right-click to keep moving." : "Enter or click to type a note.", k1, k2);
     }
     CLAY(CLAY_ID("ReportBar"), {.layout = {.sizing = {CLAY_SIZING_FIXED(w), CLAY_SIZING_FIT(0)},
@@ -538,7 +538,7 @@ void SatelliteSim::buildReportBar(const UIInput &inp, UIRenderer &ui)
                                                    .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                    .layoutDirection = CLAY_LEFT_TO_RIGHT}})
         {
-            CLAY(CLAY_ID("ReportBarL1"), {.layout = {.sizing = {CLAY_SIZING_FIXED(labelW), CLAY_SIZING_FIT(0)}}}) { text("Issue", Pal::textDim, 11); }
+            CLAY(CLAY_ID("ReportBarL1"), {.layout = {.sizing = {CLAY_SIZING_FIXED(labelW), CLAY_SIZING_FIT(0)}}}) { text(tx(Txt::NoteIssue), Pal::textDim, 11); }
             if (textField(inp, ui, titleId, reportBarTitle_, fieldW - (float)fs(11) * 5.0f, 12, "The issue's title (shared by its shots)", kReportTitleMax))
                 reportSetField(reportActiveId_, 0, "title", reportBarTitle_);
             text(shotBuf, Pal::volValue, 11);
@@ -547,7 +547,7 @@ void SatelliteSim::buildReportBar(const UIInput &inp, UIRenderer &ui)
                                                    .childGap = 8,
                                                    .layoutDirection = CLAY_LEFT_TO_RIGHT}})
         {
-            CLAY(CLAY_ID("ReportBarL2"), {.layout = {.sizing = {CLAY_SIZING_FIXED(labelW), CLAY_SIZING_FIT(0)}, .padding = {0, 0, 5, 0}}}) { text("Note", Pal::textDim, 11); }
+            CLAY(CLAY_ID("ReportBarL2"), {.layout = {.sizing = {CLAY_SIZING_FIXED(labelW), CLAY_SIZING_FIT(0)}, .padding = {0, 0, 5, 0}}}) { text(tx(Txt::NoteNote), Pal::textDim, 11); }
             // Two lines that grow to six, then scroll; Enter saves (Shift+Enter: a new line).
             if (textArea(inp, ui, noteId, reportBarNote_, fieldW, 2, 12, "What this shot shows", kReportNoteMax, 6, true, nullptr, 44))
                 reportSetField(reportActiveId_, reportBarShot_, "note", reportBarNote_);
