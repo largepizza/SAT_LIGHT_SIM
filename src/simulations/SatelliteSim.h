@@ -635,12 +635,12 @@ static_assert(sizeof(GpuPlanetDiscUBO) == 96 + 192 * kPlanetCount, "GpuPlanetDis
 struct GpuTurbWarpUBO
 {
     glm::vec4 camR, camU, camF, screen, params, mScale;
-    glm::ivec4 anc[4];
-    glm::vec4 frac[4];
+    glm::ivec4 anc[6];   // [phase k x 2 + level o], three boiling phases x two cell sizes
+    glm::vec4 frac[6];
     glm::vec4 aniso;
     glm::vec4 tab[64];
 };
-static_assert(sizeof(GpuTurbWarpUBO) == 16 * (6 + 4 + 4 + 1 + 64), "GpuTurbWarpUBO layout");
+static_assert(sizeof(GpuTurbWarpUBO) == 16 * (6 + 6 + 6 + 1 + 64), "GpuTurbWarpUBO layout");
 
 // What the disc renderer and the selection panel know about each body this frame (SatelliteSimPlanets.cpp).
 struct PlanetView

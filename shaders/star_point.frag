@@ -66,8 +66,8 @@ void main() {
 
     // ── Point spread from the apparent magnitude (point_style.glsl) ──────────────
     vec2  psf       = pointPsf(relFluxToMag(fragIntensity));
-    float pixD      = d * fragAngSize;
-    float gaussian  = exp(-pixD * pixD / (2.0 * psf.y * psf.y));
+    // Averaged over the pixel (point_style.glsl): sampled at its centre the drawn light pulsed with the sub-pixel phase.
+    float gaussian  = pointPixelGauss(c * fragAngSize, psf.y);
     float coreScale = psf.x;
 
     // ── Colour desaturation for dim stars ─────────────────────────────────────

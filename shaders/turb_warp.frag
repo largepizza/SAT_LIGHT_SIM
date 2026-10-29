@@ -11,7 +11,7 @@
 //  - the field is vector value noise on the sky (ENU directions, anchored on the CPU in double so it neither swims
 //    when the camera turns nor loses precision), cells ~12" or 6 px, whichever is larger (power-of-two levels
 //    cross-faded, so a zoom does not rescale a field), twice as wide horizontally; it drifts with a wind and boils
-//    (two phases cross-faded, each re-drawn at its zero weight), in REAL time (frame seconds): seeing is a property
+//    (three phases cross-faded, each re-drawn at its zero weight: a constant rate of change), in REAL time (frame seconds): seeing is a property
 //    of the moment, not of the simulated clock.
 // The Sun's and the Moon's discs no longer jitter in sat_sky.frag while this pass is on (refrSun.z = 0): the warp moves
 // them like everything else.
@@ -23,8 +23,8 @@ layout(set = 0, binding = 0) uniform TurbWarp {
     vec4  screen;    // x W, y H (px), z tan(fov/2) x aspect, w tan(fov/2)
     vec4  params;    // x the pixel's angle (rad / px), y gain (x the altitude fade), z 1 / (the field's rms), w 1 / (table n - 1)
     vec4  mScale;    // xyz level 0's coordinate scale (cells / rad) on E, N, U; w unused
-    ivec4 anc[4];    // the lattice anchors: [phase 0 level 0, phase 0 level 1, phase 1 level 0, phase 1 level 1] (mod 4096)
-    vec4  frac[4];   // their fractions (xyz); w = the weight (phase x level, each normalised to unit rms)
+    ivec4 anc[6];    // the lattice anchors: [phase k level o] at k x 2 + o, three phases (mod 4096)
+    vec4  frac[6];   // their fractions (xyz); w = the weight (phase x level, each normalised to unit rms)
     vec4  aniso;     // x horizontal amplitude, y vertical amplitude, z table eLo (rad), w table span (rad)
     vec4  tab[64];   // x aoa rms (rad), y aoaS (m)
 } u;
@@ -136,10 +136,10 @@ void main()
     // The field: two boiling phases x two cell sizes (a power-of-two LOD of the cell, cross-faded as the field of view
     // changes, so zooming never rescales a field: it would scramble). frac[i].w = the phase's x the level's weight.
     vec3 q0 = dd * u.mScale.xyz;   // level 0's cells; level 1's are twice as large
-    vec2 n  = u.frac[0].w * vnoise2(u.anc[0].xyz, u.frac[0].xyz + q0, 0u)
-            + u.frac[1].w * vnoise2(u.anc[1].xyz, u.frac[1].xyz + 0.5 * q0, 0u)
-            + u.frac[2].w * vnoise2(u.anc[2].xyz, u.frac[2].xyz + q0, 0u)
-            + u.frac[3].w * vnoise2(u.anc[3].xyz, u.frac[3].xyz + 0.5 * q0, 0u);
+    // Three phases a third of a cycle apart (2026-10-28, issue 20261028_223915: with two the field paused twice a cycle).
+    vec2 n = vec2(0.0);
+    for (int i = 0; i < 6; ++i)
+        n += u.frac[i].w * vnoise2(u.anc[i].xyz, u.frac[i].xyz + ((i & 1) != 0 ? 0.5 : 1.0) * q0, 0u);
     // Near the horizon the jitter is mostly vertical (the long, layered path); the CPU blends aniso.xy by elevation.
     vec2 dispPx = n * u.params.z * ampPx * u.aniso.xy;
     // Screen axes: x right, y down.
