@@ -2883,6 +2883,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         else if (sub == "go")
         {
             const int i = idxArg();
+            if (const char *why = tierNeedReason(defaultBookmarkNeeds(bookmarks_[i].id)))
+                fail(std::string("bookmark go: ") + why); // as the window's disabled Go
             bookmarkGo(i);
             msg = "went to " + std::to_string(i + 1) + ": " + bookmarks_[i].name;
         }

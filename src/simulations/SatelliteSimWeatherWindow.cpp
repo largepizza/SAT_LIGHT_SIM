@@ -27,6 +27,7 @@
 #include "../Log.h"
 #include "clay.h"
 #include "UIPalette.h"
+#include "../UiTextClay.h"
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -1348,6 +1349,35 @@ void SatelliteSim::buildWeatherWindow(const UIInput &inp, UIRenderer &ui)
     {
         wxChrome.w = winDefault(600.0f, 0.42f, inp.screenW, 400.0f);
         wxChrome.h = winDefault(std::min(780.0f, inp.screenH - 160.0f), 0.74f, inp.screenH, 380.0f);
+    }
+    // Planetarium / Potato (knockout 32768): no volumetric clouds, so no storms, rain, fog or radar to show. The
+    // window says so and runs nothing (no radar, no storm search).
+    if (weatherUnavailable())
+    {
+        wxRadarWanted = false;
+        static char offTitle[] = "Weather";
+        buildResizableWindow(
+            inp, ui, wxChrome, 12, offTitle, true, hovWxClose, inp.screenW - wxChrome.w - 40.0f, 90.0f, 360.0f, 160.0f,
+            1400.0f, 1400.0f,
+            [&]()
+            {
+                CLAY(CLAY_ID("WxOffBody"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
+                                                       .padding = {14, 14, 12, 12},
+                                                       .childGap = 8,
+                                                       .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+                {
+                    CLAY_TEXT(txc(Txt::NoteWeatherOffTitle),
+                              CLAY_TEXT_CONFIG({.textColor = Pal::textBright, .fontSize = fs(13),
+                                                .wrapMode = CLAY_TEXT_WRAP_WORDS}));
+                    CLAY_TEXT(txc(Txt::NoteWeatherOffBody),
+                              CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12),
+                                                .wrapMode = CLAY_TEXT_WRAP_WORDS}));
+                }
+            });
+        wxPendingAct = 0;
+        wxFeatPendingSlot = -1;
+        wxCycPendingAct = 0;
+        return;
     }
     weatherRadarReadback();
     weatherRefreshRows(false);

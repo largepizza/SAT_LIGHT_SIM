@@ -1474,10 +1474,10 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
         // The left panel is the clock and the picture buttons; the windows open from here. Each button is lit
         // (accent) while its window is open, the Cinematics one amber while a cinematic plays or exports.
         auto menuBtn = [&](Clay_ElementId id, Clay_ElementId iconId, int icon, bool &hov, Clay_Color onBg, bool on,
-                           const char *tip, bool &toggled)
+                           const char *tip, bool &toggled, bool dim = false)
         {
             toggled = false;
-            const Clay_Color bg = on ? onBg : (hov ? Pal::btnHover : Pal::panelBgFade);
+            const Clay_Color bg = on ? onBg : (hov ? Pal::btnHover : (dim ? Pal::btnDisabled : Pal::panelBgFade));
             const float sz = (float)kGearSz;
             CLAY(id, {.layout = {.sizing = {CLAY_SIZING_FIXED(sz), CLAY_SIZING_FIXED(sz)},
                                  .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
@@ -1504,7 +1504,8 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
                 msNextWall = msPinWall = -1e300;
         }
         menuBtn(CLAY_ID("TimeWeatherBtn"), CLAY_ID("TimeWeatherIcon"), kIconWeather, hovTimeWeather, Pal::btnAccent,
-                wxChrome.open, "Weather", toggled);
+                wxChrome.open, weatherUnavailable() ? tx(Txt::TipWeatherOff) : tx(Txt::TabWeather), toggled,
+                weatherUnavailable());
         if (toggled)
         {
             wxChrome.open = !wxChrome.open;
@@ -3741,7 +3742,9 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
                 }
                 hovTab[ti] = n;
                 Clay_String tabStr{false, (int32_t)strlen(settingsTabName(ti)), settingsTabName(ti)};
-                CLAY_TEXT(tabStr, CLAY_TEXT_CONFIG({.textColor = active ? Pal::textPrimary : Pal::volLabel, .fontSize = fs(12)}));
+                const bool offTab = ti == 12 && weatherUnavailable(); // greyed: nothing in it draws on this tier
+                CLAY_TEXT(tabStr, CLAY_TEXT_CONFIG({.textColor = active ? Pal::textPrimary : offTab ? Pal::textHint : Pal::volLabel,
+                                                    .fontSize = fs(12)}));
             }
         }
     }
@@ -3809,6 +3812,18 @@ void SatelliteSim::buildSettingsTabBody(const UIInput &inp, UIRenderer &ui, int 
         buildSettingsAttributionsTab(inp, ui);
         break;
     case 12:
+        if (weatherUnavailable() && !searchActive())
+        {
+            // Planetarium / Potato: nothing here draws without the volumetric clouds (the rows still edit settings).
+            CLAY(CLAY_ID("WxTabOffNote"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                      .padding = {8, 8, 6, 6}},
+                                           .backgroundColor = Pal::rowHighlight,
+                                           .cornerRadius = CLAY_CORNER_RADIUS(4)})
+            {
+                CLAY_TEXT(txc(Txt::NoteWeatherTabOff),
+                          CLAY_TEXT_CONFIG({.textColor = Pal::textWarn, .fontSize = fs(12), .wrapMode = CLAY_TEXT_WRAP_WORDS}));
+            }
+        }
         buildSettingsWeatherTab(inp, ui);
         break;
     case 13:
@@ -9079,7 +9094,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
             skyTaaWeightStill = settingClamp(d.value("sky_taa_weight", skyTaaWeightStill), 0.02f, 1.0f);
             skyTaaWeightMoving = settingClamp(d.value("sky_taa_weight_moving", skyTaaWeightMoving), 0.02f, 1.0f);
             skyTaaParallaxFloorM = settingClamp(d.value("sky_taa_parallax_floor_m", skyTaaParallaxFloorM), 0.0f, 100000.0f);
-            skyTaaDebug = std::clamp(d.value("sky_taa_debug", skyTaaDebug), 0, 4);
+            skyTaaDebug = std::clamp(d.value("sky_taa_debug", skyTaaDebug), 0, 5);
             skyTaaEyeFromGpuGround = d.value("sky_taa_gpu_eye", skyTaaEyeFromGpuGround);
             int fpsCapVal = d.value("fps_cap_mode", (int)fpsCapMode);
             fpsCapMode = (fpsCapVal >= 0 && fpsCapVal <= 4) ? (FpsCapMode)fpsCapVal : FpsCapMode::VSync;

@@ -3455,6 +3455,14 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         }
         // The flash list is not refreshed: no bolts from a stale one (the rain keys on the lightning pass too).
         updateLightningBolts();
+        // The point sources the fill lists in kFireBuf (rockets, re-entry fireballs, meteor heads, comet heads, the
+        // supernova, Moon-base glints) are drawn by the point passes, which Potato keeps; the Gaussians it also lists
+        // (plumes, streaks, dust) are not drawn here. Without it every Watch of those landed on an empty sky and
+        // Betelgeuse went dark at its supernova (2026-10-29).
+        {
+            CpuTimer kesslerDustTimer(cpuAccumMs[CPU_KESSLER]);
+            kesslerFillDust(glm::radians(camera.fovYDeg) / (float)std::max<uint32_t>(computeHalfExtent(ctx).height, 1));
+        }
         // Potato's flat deck reads the weather cube: it keeps evolving (a dispatch only when a face is due).
         recordWeatherEvolution(cmd);
         stormsMainPathLast = false;
