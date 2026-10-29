@@ -8461,11 +8461,15 @@ runs through the exact same suppression chain stars already have (day/moon/pollu
 extinction), hand-duplicated into `updatePlanets()` per this codebase's established per-consumer-
 duplication convention for that formula (see "Subsystem: Light Pollution Dome" above). Its point
 is drawn by the shared point-source model (see "Point-source appearance" under Photometry), so a
-planet reads at the same visual weight as an equally bright star or satellite. Color (`kPlanetColor[kPlanetCount]`, same-day follow-up):
-hand-picked approximate true colors, not computed — planets have no B-V spectral index to derive
-one from the way stars do. Mars is the one that actually reads as visibly colored at naked-eye
-scale (rust/salmon); the others stay close to near-white/pale by design, matching their real subtle
-cloud-top/regolith colors. `star_point.frag`'s desaturation (bright = full tint, faint = fades
+planet reads at the same visual weight as an equally bright star or satellite. Color
+(`planetPointColor(i)`, SatelliteSimPlanets.cpp, 2026-10-28, issue 20261028_222744): ONE true mean colour per planet
+(`BodyConst::col`, linear) for the point AND its resolved disc — the disc's albedo is col / the map's own mean
+(`kMapMean`, measured from planet_maps.rgba8) x the map, so its mean is col, and the hand-off point the disc shader
+draws takes the same colour (`PlanetDisc.pad`). Mars: (1, 0.62, 0.32), butterscotch, from a full-disc reflectance
+spectrum under sunlight (B-V ~1.33-1.36); it was a hand-picked (1, 0.2, 0.2) to tell it from the stars, and its map
+(as baked) averages a far redder (1, 0.23, 0.11). Jupiter / Saturn: their maps' means, which agree with their
+spectra (B-V 0.87 / 1.04) within a few percent. Mercury, Venus, Uranus: the disc's flat colours (the old point colours
+were within a few percent of them). `star_point.frag`'s desaturation (bright = full tint, faint = fades
 toward white, keyed on the drawn peak) applies to planets unchanged.
 
 **Rendering**: a second tiny host-mapped `planetBuf` (`GpuSatVisible`-shaped, 6 entries) + a second
@@ -8603,8 +8607,23 @@ camera reaches, Jupiter is ~24 px across, Venus near inferior conjunction ~28, S
   (416 d and 2100 d, +-0.35; `stars.betelgeuse_variable`). Brighter than -1 it is a **kFireBuf point** (`supernovaFill`
   after `moonBasesFill`: point, bloom, glare, the Moon-base glints' path, range 9e8 m so the Moon hides it) and its star
   record is dark; by day it keeps 6.5 mag of contrast (visible in daylight near its peak). Its light dims the faint
-  stars like moonlight and adds to "Night sky light" (`cp.terrainErosion.z` += `snDiffuseMoonFrac`, x the full Moon
-  overhead): ground and cloud ambient. No shadows. Sky events kind `kSupernova` (`skySearchSupernova`: one record when
+  stars like moonlight, and **it lights the Earth as a second Moon: the NIGHT KEY light** (2026-10-28, issue
+  20261028_222111; `nightKeyLightENU()`, SatelliteSimStars.cpp): the Moon and the supernova folded into ONE directional
+  source — direction = their light-weighted mean (each weighted by its own horizon gate, so a set Moon does not tilt it
+  down; exact when one dominates), w = their summed light vs the full Moon (`snLightK` = 10^(-0.4 (V + 12.7)) above
+  the air: illuminance 2.54e-6 lux x 10^(-0.4 m), -11.2 = 0.077 lux against the full Moon's 0.31, i.e. 0.25 of it, a
+  gibbous Moon's light from a point). With no supernova up it IS moonDirENU (nothing changes). The cloud passes take
+  it as `CloudMarchPC::moonDirENU` (the v2 march's key light, phases, ice / rain optics; the far layer; the rain's key;
+  the aurora's sky dimming); sat_sky.frag reads `CloudParams.nightKeyENU` (the old unread `auroraSky` vec4, renamed
+  in place; w 0 = use the Moon) through `NK_DECL` / `NK` at every site the Moon LIGHTS: terrain direct and moonlit-sky
+  terms, sea foam and the moon glint, the flat clouds, the moonlit sky colour, the Milky Way's / zodiacal light's
+  moon dimming. The Moon's disc, corona and halo stay on moonDirENU. SKY_ENV (another ENU frame) and SKY_LITE (budget;
+  the macros fold to moonDirENU, so its SPIR-V shrank 40 B) keep the Moon alone. It used to add 0.25 sin(el) to
+  "Night sky light" (`snDiffuseMoonFrac`): an isotropic term on land and cloud ambient only, nothing on the sea or as a
+  key light, invisible at the report's mid-Atlantic view. Cost: sky TAA binary +0.9 KB (942.1 -> 943.0 KB), 168
+  registers both; the sky pass within noise (interleaved, a GPU shared with another app). Colour is the Moon's (the
+  supernova's B-V ~0 blue-white is not tinted). Harness `stars` -> `betelgeuse.sn_light_vs_full_moon`, `night_key`,
+  `moon_light_vs_full`. No shadows. Sky events kind `kSupernova` (`skySearchSupernova`: one record when
   its window meets the range; `skyWatchSupernova`: the peak, or now while under way, a dark site with Betelgeuse
   >= 20 deg up (Sun <= -15, -9, -4, else up), the camera on the Betelgeuse-Rigel midpoint at 42 deg, Betelgeuse
   selected). Kind appended after meteors and comets; icon `sky-supernova` (40).

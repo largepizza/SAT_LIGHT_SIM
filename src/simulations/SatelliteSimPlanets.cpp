@@ -40,16 +40,24 @@ struct BodyConst
     double W0, Wd;           // prime meridian (deg) and its rate (deg / day)
     int law;                 // 0 Lommel-Seeliger, 1 Minnaert
     float k;                 // Minnaert k
-    glm::vec3 tint;          // albedo colour (no map), luminance-normalised below
+    glm::vec3 col;           // its true mean colour (linear sRGB under sunlight), luminance-normalised below: the disc's
+                             // mean and the point's colour (planetPointColor), one value for both
     int layer;               // map layer, -1 = none
 };
+// The maps' own area-weighted mean colour (linear, luminance 1; measured from planet_maps.rgba8). A mapped disc's
+// albedo is (col / this) x the map, so its mean is col and the map gives only the detail. 2026-10-28 (issue
+// 20261028_222744): Mars's map (the Viking mosaic as baked) averages (1, 0.23, 0.11), far redder than the planet;
+// col is computed from Mars's full-disc reflectance spectrum (B-V 1.36) under sunlight: butterscotch (1, 0.62, 0.32).
+// Jupiter's and Saturn's maps agree with their spectra (B-V 0.87 / 1.04) within a few percent: col = the map mean.
+const glm::vec3 kMapMean[kPlanetCount] = {{1, 1, 1}, {1, 1, 1}, {2.6041f, 0.5948f, 0.2895f},
+                                          {1.0987f, 0.9844f, 0.8629f}, {1.2026f, 0.9759f, 0.6379f}, {1, 1, 1}};
 // IAU WGCCRE 2009 rotational elements; radii (equatorial / polar) from the same report. Venus: the cloud tops (~70 km up).
 const BodyConst kBody[kPlanetCount] = {
     {2440.53, 2438.26, 281.0103, -0.0328, 61.4155, -0.0049, 329.5988, 6.1385108, 0, 1.0f, {0.62f, 0.57f, 0.52f}, -1},
     {6120.0, 6120.0, 272.76, 0.0, 67.16, 0.0, 160.20, -1.4813688, 1, 0.80f, {1.00f, 0.95f, 0.82f}, -1},
-    {3396.19, 3376.20, 317.68143, -0.1061, 52.88650, -0.0609, 176.630, 350.89198226, 0, 1.0f, {1, 1, 1}, 0},
-    {71492.0, 66854.0, 268.056595, -0.006499, 64.495303, 0.002413, 284.95, 870.5360000, 1, 0.85f, {1, 1, 1}, 1},
-    {60268.0, 54364.0, 40.589, -0.036, 83.537, -0.004, 38.90, 810.7939024, 1, 0.90f, {1, 1, 1}, 2},
+    {3396.19, 3376.20, 317.68143, -0.1061, 52.88650, -0.0609, 176.630, 350.89198226, 0, 1.0f, {1.00f, 0.62f, 0.32f}, 0},
+    {71492.0, 66854.0, 268.056595, -0.006499, 64.495303, 0.002413, 284.95, 870.5360000, 1, 0.85f, {1.0987f, 0.9844f, 0.8629f}, 1},
+    {60268.0, 54364.0, 40.589, -0.036, 83.537, -0.004, 38.90, 810.7939024, 1, 0.90f, {1.2026f, 0.9759f, 0.6379f}, 2},
     {25559.0, 24973.0, 257.311, 0.0, -15.175, 0.0, 203.81, -501.1600928, 1, 0.80f, {0.68f, 0.88f, 0.93f}, -1},
 };
 const char *const kGalileanNames[kGalileanCount] = {"Io", "Europa", "Ganymede", "Callisto"};
@@ -133,6 +141,12 @@ void galileanMeeus(double d, double u[4], double r[4], double &omega2)
     u[3] = (u4 + c4) * kDeg;
 }
 } // namespace
+
+glm::vec3 planetPointColor(int i)
+{
+    const glm::vec3 c = kBody[glm::clamp(i, 0, kPlanetCount - 1)].col;
+    return c / std::max(c.r, std::max(c.g, c.b));
+}
 
 const char *planetBodyName(int body)
 {
@@ -360,9 +374,10 @@ void SatelliteSim::updatePlanetDiscs(GpuSatVisible *dst)
         D.pole = glm::vec4(glm::vec3(P), (float)q);
         D.x0 = glm::vec4(glm::vec3(X0), (b.layer >= 0 && (uint32_t)b.layer < planetMapLayers) ? (float)b.layer : -1.0f);
         D.sun = glm::vec4(glm::vec3(s), (float)b.law);
-        glm::vec3 tint = (D.x0.w >= 0.0f) ? glm::vec3(1.0f) : b.tint;
-        tint /= std::max(glm::dot(tint, glm::vec3(0.2126f, 0.7152f, 0.0722f)), 1e-4f);
+        glm::vec3 tint = b.col / std::max(glm::dot(b.col, glm::vec3(0.2126f, 0.7152f, 0.0722f)), 1e-4f);
+        if (D.x0.w >= 0.0f) tint /= kMapMean[i]; // the map's own mean colour divided out: the disc's mean is col
         D.tint = glm::vec4(tint, b.k);
+        D.pad = glm::vec4(planetPointColor(i), 0.0f); // the point it hands over from: the star pipeline's colour
         const glm::dvec3 lin = exposure * lAvg / meanLaw * tRgb * (double)pv.handScale;
         D.lin = glm::vec4(glm::vec3(lin), pv.share);
         D.pt = glm::vec4(psfS.x * (1.0f - pv.share), (float)ptSig, pv.supp, (float)uOff);

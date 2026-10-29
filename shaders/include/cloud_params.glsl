@@ -479,9 +479,10 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     // glow N2+ blue), z "Arc systems" (0 = every sheet alike, the old even rings; 1 = sheets grouped into a few
     // bright arc systems), w "Storm red glow" (the 630-nm red equatorward of the oval in storms).
     vec4  auroraStorm;
-    // -- Aurora sky (944 -> 960, 2026-10-14): x = 1 / "Pollution gain", which turns lightDome[] (gained) back into
-    // the raw city brightness the aurora's linear sky model reads (darksky.glsl darkSkySkyMagLinear); yzw unused.
-    vec4  auroraSky;
+    // -- The night key light (944 -> 960; was auroraSky, unread since 2026-10-28): the Moon and the 2037 supernova as one
+    // directional source (SatelliteSim::nightKeyLightENU): xyz = direction (ENU), w = its light vs the full Moon.
+    // w = 0: no supernova up, sat_sky.frag uses the Moon (moonDirENU) as before.
+    vec4  nightKeyENU;
     // -- Launch pads (960 -> 1552, 2026-10-19; SatelliteSimLaunches.cpp launchFillPadParams): the nearest PAD_MAX pads
     // in the observer's ENU frame from its sea-level point (terrain_detail.glsl's q). padInfo x count, y "Launch pad
     // graphics" (0 = off), z night (1 dark .. 0 day), w how many (the nearest first) flatten the terrain;

@@ -13,13 +13,13 @@ struct PlanetDisc {
     vec4 pole;  // xyz = the north pole (local), w = polar / equatorial radius
     vec4 x0;    // xyz = longitude 0 (local; Jupiter: System II), w = the map layer (-1 = none)
     vec4 sun;   // xyz = toward the Sun (local), w = the law (0 Lommel-Seeliger, 1 Minnaert)
-    vec4 tint;  // rgb = the albedo colour (x the map), w = Minnaert k
+    vec4 tint;  // rgb = the albedo colour (x the map: then the colour / the map's mean), w = Minnaert k
     vec4 lin;   // rgb = linear light at the tonemap's input per unit law / <law> (exposure, extinction, hand-off in it),
                 //  w = the disc's share (0 = all point, 1 = all disc)
     vec4 pt;    // x = the point's peak x (1 - share), y = its sigma (px), z = the suppression (day, Moon, light pollution), w = map u offset
     vec4 ring;  // x = the rings' outer radius (0 = none), y = linear light per unit I/F (rings, Venus's rim), z = the rim's I/F, w = unused
     vec4 misc;  // x = seeing blur (px), yz = the turbulence's jitter (equatorial radii), w = the body (PlanetId)
-    vec4 pad;
+    vec4 pad;   // rgb = the point's colour (planetPointColor, max 1), w = unused
 };
 
 layout(std140, set = 0, binding = 0) uniform PlanetDiscUBO {

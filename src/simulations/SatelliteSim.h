@@ -613,6 +613,7 @@ struct PlanetState
 static constexpr int kGalileanCount = 4;
 static constexpr int kPlanetBodyCount = kPlanetCount + kGalileanCount;
 const char *planetBodyName(int body);   // a planet's or a Galilean moon's name
+glm::vec3 planetPointColor(int planet); // its true mean colour (linear, max 1): the point and the disc's mean (SatelliteSimPlanets.cpp)
 float planetApparentMagnitude(PlanetId id, double rAU, double deltaAU, double alphaDeg, double sinRingB = 0.0);
 
 // Resolved planet discs (2026-10-27): mirror of shaders/include/planet_disc.glsl (std140, vec4s only).
@@ -1932,7 +1933,8 @@ struct GpuCloudParams
     glm::vec4 auroraSub;      // substorm: intensity, cos / sin MLT angle, 1 / half-width^2
     glm::vec4 auroraOval2;    // x brightness, y max lit colatitude, z ripple (deg), w substorm poleward push (deg)
     glm::vec4 auroraStorm;    // x storm features, y blue ray chance, z arc systems, w storm red glow (928 -> 944)
-    glm::vec4 auroraSky;      // x 1 / lightPollutionGain (the aurora's linear sky model), yzw unused (944 -> 960)
+    glm::vec4 nightKeyENU;    // the night key light (Moon + supernova; xyz dir ENU, w its light vs the full Moon; w 0 = none:
+                              // sat_sky.frag uses the Moon). Was auroraSky, unread since 2026-10-28 (944 -> 960)
     // Launch pads (960 -> 1552, 2026-10-19, SatelliteSim::launchFillPadParams): the nearest kMaxPadsGpu pads in the main
     // observer's ENU frame from its SEA-LEVEL point (terrain_detail.glsl's q). padInfo: x count, y "Launch pad graphics"
     // (0 = off), z night (1 dark .. 0 day), w how many of them (the nearest first) flatten the terrain.
@@ -4392,7 +4394,13 @@ private:
     glm::vec3 snEnu{0.0f, 0.0f, 1.0f};
     glm::vec3 snColor{1.0f};
     bool snAbove = false;                             // above the apparent horizon
-    float snDiffuseMoonFrac = 0.0f;                   // its light on the ground, x the full Moon overhead
+    float snLightK = 0.0f;                            // its light vs the full Moon's (above the air; 0 = not a supernova / set)
+    // The NIGHT KEY LIGHT (2026-10-28, issue 20261028_222111): the Moon and the supernova as ONE directional source for
+    // everything the Moon lights (terrain, sea glint and foam, clouds' key light, the moonlit sky): direction = their
+    // light-weighted mean (exact when one dominates), w = their summed light vs the full Moon. moonDirENU itself when no
+    // supernova is up. The cloud passes take it as their push constants' moonDirENU; sat_sky.frag reads it from
+    // CloudParams.nightKeyENU (w 0 = use the Moon). SatelliteSimStars.cpp.
+    glm::vec4 nightKeyLightENU() const;
     double snFlare = 0.0;
     void supernovaFill();                             // kesslerFillDust's finish: the supernova into kFireBuf
     harness::Status harnessStars(harness::Active &a);

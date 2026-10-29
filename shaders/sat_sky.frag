@@ -189,6 +189,18 @@ layout(set = 0, binding = 8) uniform sampler3D cloudNoiseTex;
 // hand-copied here; see cloud_params.glsl for why that was a standing hazard.
 #define CLOUD_PARAMS_BINDING 9
 #include "cloud_params.glsl"
+// The NIGHT KEY light (2026-10-28, issue 20261028_222111): the Moon, or the Moon + the 2037 supernova as one directional
+// source (CloudParams.nightKeyENU, w 0 = no supernova up). Everything the Moon LIGHTS reads it (terrain, the sea's glint
+// and foam, the flat clouds, the moonlit sky, the Milky Way's / zodiacal light's dimming); the Moon's disc, corona and
+// halo stay on moonDirENU. Not in SKY_ENV (another ENU frame) or SKY_LITE (its size budget): the Moon alone there.
+// NK_DECL(n) declares the local n, NK(n) reads it; in SKY_ENV / SKY_LITE both fold to moonDirENU (no new code there).
+#if defined(SKY_ENV) || defined(SKY_LITE)
+#define NK_DECL(n)
+#define NK(n) moonDirENU
+#else
+#define NK_DECL(n) vec4 n = (cloud.nightKeyENU.w > 0.0 ? cloud.nightKeyENU : moonDirENU);
+#define NK(n) n
+#endif
 #include "aurora_oval.glsl"
 
 // ── Perf knockout toggles (profiling-only) ──────────────────────────────────────
@@ -3045,10 +3057,11 @@ void evalCloudLayer(
     // cloudLit once the sun sets), unlike the volumetric shell's moonContrib (cloud_march.comp)
     // or terrain's own moonContribTerrain. Same geographic-dot gate as those, and reuses
     // cloud.moonGain so all three stay calibrated to the same brightness.
-    vec3  moonDir3     = normalize(moonDirENU.xyz);
+    NK_DECL(nkF)
+    vec3  moonDir3     = normalize(NK(nkF).xyz);
     vec3  moonDirECEF  = moonDir3.x * enuX + moonDir3.y * enuY + moonDir3.z * enuZ;
     float cloudMoonDot = dot(normalize(cECEF), moonDirECEF);
-    float moonLit      = max(0.0, cloudMoonDot) * moonDirENU.w;
+    float moonLit      = max(0.0, cloudMoonDot) * NK(nkF).w;
     vec3  moonContrib  = vec3(0.92, 0.95, 1.0) * moonLit * cloud.moonGain;
 
     // ── Twilight sky ambient (flat 2D path) ──────────────────────────────────────────────────
@@ -5859,11 +5872,12 @@ void main() {
         // terrain has no volumetric self-occlusion to model, so the sun scaffolding already
         // in this block is the closer fit. cloud.moonGain is shared with cloud_march.comp's
         // moonContrib so terrain and moonlit clouds stay calibrated to the same brightness.
-        vec3  moonDir3t        = normalize(moonDirENU.xyz);
+        NK_DECL(nkT)   // the Moon (+ the supernova)
+        vec3  moonDir3t        = normalize(NK(nkT).xyz);
         float moonDot          = dot(shadingN, moonDir3t);
         float geoMoonDot       = dot(normalize(hitPt), moonDir3t);
         float moonHorizonGate  = smoothstep(-0.03, 0.02, geoMoonDot);
-        float moonLitTerrain   = max(0.0, moonDot) * moonHorizonGate * moonDirENU.w;
+        float moonLitTerrain   = max(0.0, moonDot) * moonHorizonGate * NK(nkT).w;
         vec3  moonContribTerrain = dayColor * vec3(0.92, 0.95, 1.0) * moonLitTerrain * cloud.moonGain;
 
         // Aurora ground glow removed 2026-09-30 (the user: "looks green and bad"). A real aurora's light on the
@@ -6030,7 +6044,7 @@ void main() {
         // ~0.15 of the direct Moon on a flat face, like the Sun's diffuse share) and the moonless
         // night sky (starlight + airglow), "Night sky light" (cloud.terrainErosion.z) as a fraction of
         // the full Moon overhead. Slightly cool, never the old blue. Both are negligible by day.
-        float moonSkyK  = 0.15 * moonDirENU.w * smoothstep(-0.05, 0.3, geoMoonDot);
+        float moonSkyK  = 0.15 * NK(nkT).w * smoothstep(-0.05, 0.3, geoMoonDot);
         vec3 tNightSky  = dayColor * vec3(0.88, 0.93, 1.0) * (cloud.moonGain * (moonSkyK + cloud.terrainErosion.z) * skyView);
         vec3 surfColor  = (tDirectSun + tSkyAmb + tNightSky) * terrainAO  // terrainAO darkens only the map/sky-lit surface
                         + tNight
@@ -7005,11 +7019,12 @@ void main() {
                 // the sky's hemispherical irradiance (the terrain's zenith integral x "Terrain sky light") and the
                 // Moon. Review 22: it took 0.9 x reflColor as its sky light — the MIRRORED sky along the specular
                 // direction, clouds and all — so whitewater showed a sharp reflected image ("mercury").
-                vec3  moonDirF = normalize(moonDirENU.xyz);
+                NK_DECL(nkS)
+                vec3  moonDirF = normalize(NK(nkS).xyz);
                 vec3  foamL = 0.8 * (sunSpecTint * directSun * max(dot(waveN, sunDir), 0.0)
                                      + skyAmbientTerrain * (0.4 * cloud.terrainErosion.w) * skyAmbGate
                                      + vec3(0.92, 0.95, 1.0) * max(dot(waveN, moonDirF), 0.0)
-                                       * smoothstep(-0.03, 0.02, dot(surfUp, moonDirF)) * moonDirENU.w * cloud.moonGain);
+                                       * smoothstep(-0.03, 0.02, dot(surfUp, moonDirF)) * NK(nkS).w * cloud.moonGain);
                 surfColor = mix(surfColor, foamL, foam);
             }
 
@@ -7035,12 +7050,13 @@ void main() {
 #endif
 
             // Moon glint on ocean — nighttime only, dims with phase (new moon = brightest Earth).
-            if (moonDirENU.z > limbZ && moonDirENU.w > 0.01) {
-                vec3  moonDir3o = normalize(moonDirENU.xyz);
+            NK_DECL(nkG)
+            if (NK(nkG).z > limbZ && NK(nkG).w > 0.01) {
+                vec3  moonDir3o = normalize(NK(nkG).xyz);
                 float mSpecPow  = 120.0;
                 float mNrm      = (mSpecPow + 8.0) / (PI * 8.0);
                 surfColor += pow(max(0.0, dot(reflect(dir, waveN), moonDir3o)), mSpecPow)
-                           * mNrm * moonDirENU.w * clamp(moonDirENU.z, 0.0, 1.0)
+                           * mNrm * NK(nkG).w * clamp(NK(nkG).z, 0.0, 1.0)
                            * 0.006 * (1.0 - dayFrac);
             }
 
@@ -7378,8 +7394,9 @@ void main() {
         if (nightFactorEffSky > 0.0 && tSurface <= 0.0 && !moonDiscHit && cloudBlock > 0.0) {
 
         // Moonlight suppression — same shape as CPU's moonBrightStar.
-        float tm = clamp(moonDirENU.z / 0.5, 0.0, 1.0);
-        float moonBrightSky = tm * tm * moonDirENU.w;
+        NK_DECL(nkM)
+        float tm = clamp(NK(nkM).z / 0.5, 0.0, 1.0);
+        float moonBrightSky = tm * tm * NK(nkM).w;
         const float kMWMoonMaxDim = 0.95;
 
         // Directional dome geometry — sector lookup shared with beamDomeVal below and with the
@@ -7674,8 +7691,9 @@ void main() {
         float nightFactorEffZ = mix(cloud.skyGlareVisibility, nightFactorSkyZ, atmFracSkyZ);
 #endif
 
-        float tmZ = clamp(moonDirENU.z / 0.5, 0.0, 1.0);
-        float moonBrightZ = tmZ * tmZ * moonDirENU.w;
+        NK_DECL(nkZ)
+        float tmZ = clamp(NK(nkZ).z / 0.5, 0.0, 1.0);
+        float moonBrightZ = tmZ * tmZ * NK(nkZ).w;
         const float kZodMoonMaxDim = 0.9;
 
         // This ray's own line-of-sight extinction (atmosphere.glsl), as for the Milky Way above.
@@ -7721,11 +7739,13 @@ void main() {
 #endif
 
     // ── Moonlight ambient ──────────────────────────────────────────────────────
-    float moonEl    = clamp(moonDirENU.z, 0.0, 1.0);
     float moonIllum = moonDirENU.w;
     // Atmosphere weight: glow and ambient fade to zero above the atmosphere.
     float atmosWeight = 1.0 - exp(-odR_cam / 5000.0);
-    color += vec3(0.0025, 0.003, 0.004) * moonIllum * moonEl * nightAmt * atmosWeight;
+    {   // the moonlit sky: from the night key (the supernova's light scatters too); the Moon's glow below stays its own
+        NK_DECL(nkA)
+        color += vec3(0.0025, 0.003, 0.004) * NK(nkA).w * clamp(NK(nkA).z, 0.0, 1.0) * nightAmt * atmosWeight;
+    }
 
     // ── Moon glow: tight corona + wide diffuse halo (atmosphere-only) ─────────
     if (moonDirENU.z > limbZ - 0.05) {
