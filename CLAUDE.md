@@ -3490,6 +3490,10 @@ frame), `src/VideoEncoder.h/.cpp` (NV12 BT.709 limited range -> H.264 .mp4: Wind
   `video_fps`, `video_scale`). Harness: `video start|stop|state`, `path play video=` (docs/HARNESS.md).
 - The Cinematics window's "Export video" (`cineVideoExport_`, harness `cine export video`) is the preview export into
   one lossless .mp4 (cineTick requests each frame and holds the pose while no readback buffer is free); no motion blur.
+  Harness `cine preview <file> [shot=N] [scale=0.5] [fps=30]` (2026-10-29) is the quick framing check: it loads a saved
+  cinematic and records that export at `scale` of the window (`cineVideoScale_`, VideoRecordOptions::scale) into
+  `<name>[_shotN].mp4` (`cineVideoTag_`). Note: `report load` puts the report's camera trail into the CURRENT shot's
+  keys unless `trail=off` (it silently overwrote shots while building the v1.2 tour).
 - Measured (RTX 3070 Ti, 1920x1009, mf-hw): frame time / GPU within 0-0.5 ms of not recording; the worker's NV12
   conversion ~3.7 ms and encode ~0.8 ms a 1920x1008 frame (one thread: ~200 fps); ~105 MB a minute of motion, ~40-50
   of a still view; real time at ~40 fps into a 60-fps video: 0 drops, a third of the frames repeated.
