@@ -941,6 +941,11 @@ void SatelliteSim::onResize(VulkanContext &ctx)
     createStarPipeline(ctx);
     createPlanetDiscPipeline(ctx);
     createTurbWarpFrame(ctx); // the turbulence warp's frame copy follows the extent (its pipeline's viewport is dynamic)
+    if (cometSplatRenderPass) // the comet splat target follows the swapchain (descriptors: recreateComputeScaledTargets)
+    {
+        cometsDestroySplatTarget(ctx.device);
+        cometsCreateSplatTarget(ctx);
+    }
 
     if (rainPipeline)
     {
@@ -1729,6 +1734,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         followCheckTarget(); // its object ended: hand over to what continues it, or stay here as a free observer
     if (followActive)
         updateFollow(dt); // Phase 4e: ride along with the followed satellite at this sim time
+    inertialTick();       // the inertial camera lock: the view (and with hold the eye) fixed in ECI at this time
     {
         CpuTimer _t(cpuAccumMs[CPU_UPDATE_POSITIONS]);
         updatePositions((double)simDayJ2000 * 86400.0 + simSecInDay, simDt);
@@ -1780,6 +1786,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         bool sunOccludedByEarth = sunDirENU.w < limbZCpu;
 
         float glareTarget = (sunOnScreen && !sunOccludedByEarth) ? 0.0f : (sunlit ? sunlitBgVisibility : 1.0f);
+        if (inertialActive && inertialOcculter) glareTarget = 1.0f; // the occulter hides the Sun: no glare
 
         // Asymmetric hysteresis: glare hits fast (sensor/eyes overwhelmed almost immediately),
         // recovery is slow (night-vision-style readaptation) — avoids an instant on/off pop
@@ -2662,6 +2669,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                 std::memcpy(&v, (const char *)cv2FlashMapped + 12, 4);
                 if (std::isfinite(v)) target = std::clamp(v, 0.0f, 1.0f);
             }
+            if (inertialActive && inertialOcculter) target = 0.0f; // the inertial lock's occulter (a coronagraph)
             sunCloudTEased += (target - sunCloudTEased) * (1.0f - std::exp(-std::max(dt, 0.0f) / 0.15f));
         }
         cp.sunCloudT = sunCloudTEased;
@@ -4046,6 +4054,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         VkBufferCopy region{0, 0, sizeof(GpuGlintList)};
         vkCmdCopyBuffer(cmd, glintBuf, glintReadBuf, 1, &region);
     }
+    cometsRecordSplat(cmd, ctx); // the comet tails' particles into their half-res target (SatelliteSimComets.cpp)
     recordModelViewer(cmd, dt); // Phase 4 model viewer (offscreen; its own render pass)
     ctx.writeTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 5);
 }
@@ -4909,6 +4918,9 @@ float SatelliteSim::skyExposure() const
     // totality was black, its horizon glow invisible. Linear: about twilight's exposure at the umbra's few % of sky light.
     if (moonEclipseSolarPossible)
         dayness *= glm::clamp(moonEclipseSkyObs, 0.0f, 1.0f);
+    // The inertial lock's occulter from space: the Sun hidden, the camera adapts to the dark sky (the stars show).
+    if (inertialActive && inertialOcculter && glm::length(obsECI) > kEarthRadius + 100000.0f)
+        dayness = 0.0f;
     return glm::mix(10.0f, 1.8f, powf(dayness, 0.4f)) * exp2f(globalExposureEV());
 }
 
@@ -16207,8 +16219,10 @@ void SatelliteSim::updateStars()
     const float sunElDeg = glm::degrees(std::asin(std::clamp(sunDirENU.w, -1.0f, 1.0f)));
     const float twT = glm::clamp(-sunElDeg / std::max(darkSkyTwilightEndDeg, 0.1f), 0.0f, 1.0f);
     const float twBase = glm::mix(darkSkyTwilightMag0, 26.0f, twT);
-    const float twL0 = exp2f(-kPsfK * (twBase + 0.5f * darkSkyTwilightAniso)); // at prox = 0 (antisolar)
-    const float Lmoon = (moonBrightStar + snSkyBright) * exp2f(-kPsfK * 18.0f);
+    // (twilight and moonlight are the AIR's light: none above it. From orbit with the Sun up the twilight sky gated
+    // every star out — 2026-10-28, the inertial comet views from 80,000 km showed no stars)
+    const float twL0 = atmFrac * exp2f(-kPsfK * (twBase + 0.5f * darkSkyTwilightAniso)); // at prox = 0 (antisolar)
+    const float Lmoon = atmFrac * (moonBrightStar + snSkyBright) * exp2f(-kPsfK * 18.0f);
     const glm::vec3 sunEnu = glm::normalize(glm::vec3(sunDirENU));
     // Schaefer-style naked-eye limit (Garstang 1986 / Schaefer 1990, simplified): V_lim = 7.93 - 5 log10(1 + 10^(4.316
     // - B/5)), i.e. the limiting intensity 10^(-0.4 x 7.93) x (1 + c sqrt(L))^2 with c = 10^4.316. starLimitBoost (mag)

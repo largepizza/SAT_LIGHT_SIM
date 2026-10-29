@@ -47,7 +47,7 @@ Constellations* · *GPU Orbital Pipeline* (two-dispatch pattern, buffers, `Gpu*`
 constants) · *TargetedReflector / Mirror Ground Targets* · *Kessler syndrome — "The Sun's Fury"* (the
 scripted storm, dead satellites, debris pool, cascade engine, event log) · *Launches* (trains, retirements,
 rockets, plumes, crew rotations, the Missions window: the roster's slots refreshed on a schedule) · *Reflect-Orbital Beam Cloud Occlusion* ·
-*GpuSatInput* (a tombstone — the buffer was deleted 2026-09-22). · *Sky events window* (eclipses, conjunctions, occultations, Moon-base glints, meteor showers, comets: a table of event kinds, each a search + a Watch) · *Meteors* (the annual showers + sporadics as a pure function of sim time; heads, streaks, fireballs, trains) · *Moon-base glints* (the lunar bases' solar arrays mirroring the Sun to Earth near full Moon, LunarBases.h) · *Comets* (the Great Comet of 2037 and hashed minor comets: conic orbits, the magnitude law, tails as grids of sky directions in their own pass)
+*GpuSatInput* (a tombstone — the buffer was deleted 2026-09-22). · *Sky events window* (eclipses, conjunctions, occultations, Moon-base glints, meteor showers, comets: a table of event kinds, each a search + a Watch) · *Meteors* (the annual showers + sporadics as a pure function of sim time; heads, streaks, fireballs, trains) · *Moon-base glints* (the lunar bases' solar arrays mirroring the Sun to Earth near full Moon, LunarBases.h) · *Comets* (the Great Comet of 2037 and hashed minor comets: conic orbits, the magnitude law, tails as 3D particles — dust under mu (1 - beta), ions in the solar wind — splatted in their own pass) · *Inertial camera lock* (the view fixed on the stars, the Earth turning beneath; the Sun occulter)
 
 **Stars** — *Stars* (the HYG catalogue to V 8.5, faint stars only under dark skies, selectable stars, the scripted
 2037 Betelgeuse supernova).
@@ -3209,8 +3209,8 @@ SatelliteSimSkyEvents.cpp). Settings `meteors.enabled` (on), `meteors.rate` (1, 
 
 ## Subsystem: Comets (2026-10-27)
 
-`Comets.h/.cpp` (app-independent: orbits, magnitudes, the catalog, the dust grid), `SatelliteSimComets.cpp` (per frame,
-the tail pass, selection, the Watch, harness `comets`), `shaders/comet_tail.vert/.frag`, `tools/comet_design.py` (solves
+`Comets.h/.cpp` (app-independent: orbits, magnitudes, the catalog, the tail particles), `SatelliteSimComets.cpp` (per
+frame, the splat pass and composite, selection, the Watch, harness `comets`), `shaders/comet_splat.*`, `comet_composite.*`, `tools/comet_design.py` (solves
 the Great Comet's elements against the sim's own Earth). Sky-event kind `comet` (icon 38, `pixel--sky-comet.png`).
 - **Orbits**: a perihelion state (q, e, i, node, argument of perihelion, perihelion time; J2000 ECLIPTIC, AU and days, the
   planets' frame) carried by a universal-variable Kepler propagator (Stumpff functions, Laguerre-Conway iteration), so
@@ -3238,31 +3238,40 @@ the Great Comet's elements against the sim's own Earth). Sky-event kind `comet` 
   glare draw it; dimmed by day / Moon like a satellite (`dayBright x daySuppression`: the Great Comet shows near the Sun
   in daylight), by the light-pollution dome like a planet, extinction along its line of sight, refracted. **Not on
   Potato** (no kesslerFillDust there).
-- **The tail pass** (`cometsRecordDraw`, recordDraw after the sky background, before the satellite points): grids of sky
-  directions (ENU), one draw per grid (`gl_InstanceIndex` = patch; six vertices a cell from a storage buffer, no vertex
-  buffer; `gl_Position` with w = the camera depth, so cells reaching behind the eye clip correctly and the coma's
-  tangent-plane coordinates interpolate perspective-correctly), at kDepthFar (terrain, sea, the Moon and opaque cloud
-  hide it), additive, dynamic viewport (no resize handling). Patch kinds:
-  - **dust**: a syndyne/synchrone sheet. `comet::buildDustGrid` releases grains of beta 0.004-0.95 at emission ages
-    log-spaced to 45 days plus a dense run round the perihelion's emission (in one log row it drew a jagged band), each
-    propagated under mu (1 - beta). Per vertex the flux = production (r^-2, saturated, integrated over the row's share
-    of the ages) x size weight beta^0.5 e^-(beta/0.55)^2 x the dust phase at the particle / (r^2 Delta^2), over the
-    grid's solid angle per unit (ln beta, days) by central differences, floored by the sheet's thickness seen edge-on.
-    Striae in the fragment along the emission time (McNaught's fan), from ~1 day of age.
-  - **ion**: a ribbon along the solar wind as the comet sees it (400 km/s radial minus its velocity), ~0.06-0.15 AU,
-    Gaussian across with drifting streamers, blue.
-  - **coma**: 1/rho on the tangent plane, C2 green outward, white core.
-  Vertices carry the surface brightness in the Milky Way's anchor units (lum 0.05 = 21 mag/arcsec^2; `kLumPerFluxSr`
-  2.95e-4 per mag-0 flux per sr; physical slope, 2.5 mag a decade). Per vertex the sky's own surface brightness
-  (`cometSkyMag`: the aurora's physical city-glow form, twilight, daylight 11 -> 4 mag/arcsec^2 with a 1/theta^2 aureole
-  round the Sun, moonlight ~18, eye glare round a visible Sun from orbit) and the extinction; per pixel `darkSkyVis`
-  against it, the global exposure, cloud occlusion (`cloudPointVisibilityAt`, cubed) and a soft shoulder
-  0.9 x / (0.9 + x) (1 - e^-x made the coma a flat white disc). Up to 3 comets with mag < 9 get tails; by day on the
-  ground (Sun > ~6 deg up) none is built. Nothing new in sat_sky.frag / SKY_LITE / sat_sky_minimal.frag.
-- **The dust grid is rebuilt off the frame** (`std::async`) every 2-30 min of sim time by the comet's distance from the
-  Sun (on the frame after a jump of > 2 days, a few ms); between rebuilds it rides with the nucleus (positions relative
-  to it). Projection, Jacobians and the upload run every frame (~0.4 ms CPU with the Great Comet's tail up, ~0.02 ms
-  otherwise; booked in `CPU_UPDATE_PLANETS`).
+- **The tails are 3D PARTICLES** (2026-10-28, issue 20261028_192308 "Comet Graphics": the old sheet of sky directions drew
+  stair-step bands, a hard-edged fan and an oval coma at the closest approach). `comet::buildParticles` (Comets.cpp):
+  - **Dust**: an absolute grid of emission slots uniform in u = asinh((te - tPeri) / tau0) (`du` 0.01; tau0 0.05 day for
+    the Great Comet, 2 days for minor ones): fine round perihelion, coarse far from it, stable as time runs. A slot holds
+    8 x cosh(u)^0.33 grains (12-128 Great, 6-40 minor: wide slots get more; ~50,000 for the Great Comet). A grain (hashed
+    by slot and index): te jittered in its slot, beta stratified in ln beta over 0.002-0.95 (order shuffled per slot),
+    ejection ~80% into the sunward hemisphere at 0.5 km/s x sqrt(beta) x r^-0.5, flown by `propagate` under mu (1 - beta)
+    from the nucleus at te (Taylor from the slot's centre state). Weight = `dustFluxK` 0.025 x dust x Fhead0 x the dust
+    rate at te x the slot's days / n x the size weight, faded over the youngest 0.08 day (the coma), the oldest 45-100%
+    and beta 0.45-0.95 (the sampled ranges' ends drew hard lines); never at the large-grain end (the anti-tail). Spread
+    (the Gaussian a grain stands for) = 0.35 v_ej age (+ the slot's width x its speed relative to the nucleus).
+  - **Ions**: parcels every 0.01 day (12 a slot, 5 streamers, to 2.5 days), picked up at the nucleus, then the comet's
+    velocity decays over 0.03 day while the solar wind carries them radially, s = 250 km/s (a - 0.15 (1 - e^(-a/0.15)))
+    (a in days): the tail is anti-sunward aberrated by the comet's motion and reorients round perihelion; streamer
+    angles wander, kinks travel with the plasma. Total flux `ionFluxK` 0.3 x gas x Fhead0 x r_eff^-n, e-folding 1 day.
+  - **Builds** are a pure function of their time on a grid: `particleBuildStepS(r)` = 0.003 of the nucleus's dynamical
+    time, a power of two, 4 s .. 4 h (8192 s at 1 AU). A build (~15-20 ms on half the cores) runs on a worker
+    (`std::async`); on the frame (all cores but two) after a jump of > 3 steps, or always with `comets.particles_sync`.
+    Each particle (`comet::GpuGrain`, 48 B) stores its state at tBuild relative to an anchor (the nucleus then); the GPU
+    carries it to the frame by p + v dt + a dt^2 / 2 (a from its own heliocentric position x (1 - beta)): any warp
+    shows the same tail. At 1 d/s: ~6 builds a second, a frame build (~20 ms) only near perihelion / after jumps.
+  - **Drawn** in two passes: `cometsRecordSplat` (recordCompute's end, its own render pass) adds every particle as a
+    Gaussian quad into a HALF-RES RGBA16F target (`comet_splat.vert/.frag`; header `GpuCometFrame` 512 B at the buffer's
+    head, `include/comet_frame.glsl`; regions of 120k / 24k / 24k particles for the three tail slots): light = weight /
+    Delta^2, x the Halley-Marcus phase at the grain's own scattering angle / r^2 for dust (warm white; ions blue, no
+    phase); size = sqrt((spread / Delta)^2 + (0.7 px)^2), quads capped at 22 px radius — a wider particle keeps its TRUE
+    surface brightness and is faded out (squeezed into the cap, near grains at the closest approach were bright
+    out-of-focus discs); culled under lum 1e-6. `cometsRecordDraw` composites (`comet_composite.vert/.frag`, a full-screen
+    triangle at kDepthFar) the target + an analytic Haser coma per tail (Lc e^(-rho/rho_s) / sqrt(rho^2 + rho0^2),
+    rho_s = the visible coma / 2.5, rho0 the point's 1 arcmin: round on the sky, no edge; white inside, C2 green outward
+    by the gas share), then per pixel the extinction, `cometSkyMag` / `darkSkyVis`, exposure, cloud occlusion and the
+    0.9 x / (0.9 + x) shoulder on the luminance. The splat target is recreated in onResize.
+  - Framing for the Watch (`tailSpanDeg`, `tailAimEnu`): from each build, the angle from the head holding 92% of the dust
+    light and the light-weighted direction of the 55-100% band.
 - **Selection**: `pickCometAt` (before planets in both click paths), `selectedCometIndex` (dropped whenever a satellite
   or planet is selected), the planet-style panel from `cometInfoLine` (magnitude, distances, elongation, tail and coma,
   perihelion). Harness `state` -> `selection.comet`.
@@ -3273,13 +3282,32 @@ the Great Comet's elements against the sim's own Earth). Sky-event kind `comet` 
   the head is >= 8 deg up (less near the Sun) and the Sun <= -12 deg, clearer sky first, nearest the player, framing the
   head and the visible tail's far end (`tailAimEnu`, lum > 0.004) at 1x; `skyEventsTick` keeps the aim (sky bodies
   `kBodyComet0` / `kBodyCometTail0`).
-- Settings `comets.enabled` / `minor` / `tails` / `tail_gain` (x the tails' physical brightness) / `display_gain` (no UI).
-- Measured (RTX 3070 Ti, 1600x900, on / off interleaved at the closest approach and the +20 d display): the pass
-  +0.02 ms in the satellite/star bucket, GPU total within noise; CPU +0.4 ms with the tail up; with no comet bright
-  enough, no draw and ~0.02 ms CPU. Captures in `harness_runs/comets_live/` (untracked).
-- Open: the tail is not in reflections (sea, mirrors) nor env probes; no ion-tail disconnection events; the coma's size
-  is a fixed 2e5 km x r^-0.5 (no gas production model); Potato draws no head; minor comets have no return apparitions;
-  no Settings UI rows yet.
+- Measured (RTX 3070 Ti, 1600x900): the splat pass ~0.5 ms at the closest approach from the ground at a 120-deg field
+  (the report's view; 0.97 ms with a 40-px cap), 0.2 ms at +20 d; the composite < 0.1 ms; CPU ~0.02 ms a frame between
+  builds. Videos and captures in `harness_runs/comet/` (untracked): r8/videos (inertial Feb 1 - Apr 1 at 1 d/s, the
+  perihelion swing at 28 deg, the ground at the closest approach at 5 min/s).
+- Settings `comets.enabled` / `minor` / `tails` / `tail_gain` (x the tails' physical brightness) / `display_gain` /
+  `particles_sync` (no UI).
+- Open: the tail is not in reflections (sea, mirrors) nor env probes; no ion-tail disconnection events; no striae
+  (fragmentation); the coma's size is a fixed 2e5 km x r^-0.5; Potato draws no head; minor comets have no return
+  apparitions; no Settings UI rows yet; at the closest approach the Earth's own passage through the dust is not drawn
+  (grains within ~0.001 AU are faded out by the splat cap).
+
+## Inertial camera lock (2026-10-28)
+
+`SatelliteSimInertial.cpp`. The view held fixed relative to the stars (geocentric ECI): `inertialTick` runs in
+recordCompute right after the time advance (after updateFollow, before updatePositions), turns the stored ECI view into
+this moment's ENU and sets az / el (`aimCameraAzEl`). With `inertialHold` (the default above 100 km) the eye is held in
+ECI too, so the Earth turns beneath (the ENU frame at an ECI-fixed eye is itself ECI-fixed: no roll drift); on the
+ground only the direction tracks (field rotation). Mouse look and WASD are adopted (in the previous frame's ECI). Ended
+by follow, Track, a cinematic, any sky-event Watch or the comet Watch. **Occulter** (`inertialOcculter`, "Occult the
+Sun"): sunCloudT forced to 0 (the Sun's disc, glare, corona, lens flare, bloom seed), no sky glare (stars stay), the
+comet composite's Sun glare off, and from above 100 km the night exposure (`skyExposure` dayness 0). UI: the Sky events
+window's "Lock view to the stars" / "Occult the Sun" buttons. Harness `inertial [state] | on [hold=] | off | look
+ecl_lon= ecl_lat= [fov=] | place ecl_lon= ecl_lat= alt=` (`occult=0|1` on any). Validation views: eye at ecliptic
+(318, +40) 80,000 km, looking at (316, +3) FOV 70 or (325, +2) FOV 28, Feb 1 - Apr 1 2037 at 1 d/s.
+Also fixed with it: `updateStars` counted the twilight sky (and moonlight) from ABOVE the air (x atmFrac now), so from
+orbit with the Sun up every star was gated out.
 
 ## Subsystem: Automation harness (2026-09-25)
 
@@ -7921,7 +7949,7 @@ convention; natural = `kSkyMagPristine` 22.0 mag/arcsec^2), so the sky is 22 - 2
   the ratio toward the sector's horizon (half at ~19 mag/arcsec^2), read by sat_flare.comp, planets, comets' heads and
   meteors through their old `domeVal = clamp(domeAz x (0.4 + 0.6 elevFalloff))` x a max dim; [16,32) `lightDomeEasedAz`
   = D x gain; [32] `skyglowInfo.x` = Z x gain. Readers of the physical model declare `vec4 skyglowInfo` after the two
-  arrays (sat_sky.frag, cloud_march.comp, comet_tail.*); sat_flare.comp declares only the first array.
+  arrays (sat_sky.frag, cloud_march.comp, comet_composite.frag); sat_flare.comp declares only the first array.
 - **Consumers of the physical sky**: the Milky Way, zodiacal light and the ocean's Milky Way reflection (sat_sky.frag),
   the aurora (cloud_march.comp: `darkSkySkyMagLinear` is now the same function), comet tails (`darkSkyPollutionMagPhys`),
   the stars' naked-eye limit (updateStars: `Lp (1 + skyglowRatioAt(bearing, z))`; the old linear dome dim on stars is
