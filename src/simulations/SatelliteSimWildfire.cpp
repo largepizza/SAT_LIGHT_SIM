@@ -40,7 +40,7 @@ constexpr int kFireFineLevels = 14;         // the finest level of the front's p
 constexpr double kFirePointPx = 3.5;        // the points' spacing on screen (full-res px; 2 from afar)
 constexpr uint32_t kFirePointBudget = 3500; // points a frame (kFireBuf holds 8192 for everything)
 constexpr int kSmokeMaxPieces = 32;
-constexpr double kFlamePx = 9.0;            // the close-up flame band's tongues apart on screen (full-res px)         // pieces a smoke-trail segment may be cut into
+constexpr double kFlamePx = 12.0;           // the close-up flame band's tongues apart on screen (full-res px)         // pieces a smoke-trail segment may be cut into
 constexpr double kFlameLum = 2.0e4;         // cd/m^2: a wildfire flame's bright parts (soot at ~1300-1400 K)
 constexpr double kLuxMag0 = 2.54e-6;        // lux of magnitude 0
 constexpr double kSunLux = 1.27e5;
@@ -78,7 +78,7 @@ int fineLevelOf(uint32_t J)
 // too bright, overwhelming even from space".
 constexpr double kFireFlareMax = 0.9;
 // the close-up flames' largest tongues this frame (harness `fires` -> flame_band_top: range, ds, sA, sV, res, K, lv, rad)
-std::vector<std::array<double, 8>> gFlameDbg;
+std::vector<std::array<double, 10>> gFlameDbg;
 double fireShoulder(double x)
 {
     if (!(x > 0.0)) return 0.0;
@@ -93,6 +93,9 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
     firesNow.clear();
     firePointsLast = 0;
     fireFlamesLast = 0;
+    fireEmbersLast = 0;
+    flameOverflow = flameTight = false;
+    flameMaxSubLast = 4;
     fireLightsLast = 0;
     fireGlowDbg.clear();
     firePtCount = 0;
@@ -205,6 +208,63 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
     }
     std::sort(firesNow.begin(), firesNow.end(), [](const FireNow &a, const FireNow &b) { return a.rangeKm < b.rangeKm; });
 
+    // The ground under the front (2026-10-28, issue 20261028_191813 "panning disappearance"): the points and flames were
+    // placed over the full DEM at the IGNITION point + the 18-km copy's change across the fire. 47 km from its ignition
+    // that put the front by the eye ~130 m above the drawn ground: the GPU snap (wildfire_ground.comp) moved each one down
+    // onto it, but the CPU's view cull had already tested the raised position, so looking down at the front beside you
+    // every flame and point there was culled as "up in the sky". Now the 18-km copy at the point itself, shifted near the
+    // eye to the GPU's own ground under it (the drawn ground), and the culls allow for what the snap still moves.
+    const double eyeGroundGpu = (double)obsGroundM();
+    const double eyeCoarse = (double)cpuTerrainHeightM((float)eyeLat, (float)eyeLon);
+    auto groundAbsAt = [&](double latP, double lonP) {
+        const double c = (double)cpuTerrainHeightM((float)latP, (float)lonP);
+        const double dk = std::acos(std::clamp(glm::dot(llDir(latP, lonP), up), -1.0, 1.0)) * 6371.0;
+        return std::max(0.0, c + (eyeGroundGpu - eyeCoarse) * (1.0 - glm::smoothstep(3.0, 25.0, dk)));
+    };
+    // The front's ragged edge (2026-10-28): the fingers' point at edge angle a moved outward by the small-scale wiggle
+    // (wx::fireFrontWiggleM, by arc length from the back); nOut = the outward direction there; cxy the burnt ellipse's
+    // centre, Rm its mean radius (the perimeter / 2 pi).
+    auto edgeOf = [&](const wx::Fire &f, const wx::FireState &s, const glm::dvec2 &cxy, double Rm, double a, double *dsda,
+                      glm::dvec2 *nOut) {
+        glm::dvec2 q = wx::fireFrontAt(f, s, a, dsda);
+        const glm::dvec2 o = q - cxy;
+        const double l = glm::length(o);
+        const glm::dvec2 no = l > 1.0 ? o / l : glm::dvec2(std::sin(s.windAz), std::cos(s.windAz));
+        q += no * wx::fireFrontWiggleM(f, std::fmod(a + 3.0 * kPiF, 2.0 * kPiF) * Rm, t);
+        if (nOut) *nOut = no;
+        return q;
+    };
+    auto perimOf = [&](const wx::Fire &f, const wx::FireState &s) {
+        double perim = 0.0;
+        glm::dvec2 prev = wx::fireFrontAt(f, s, 0.0);
+        for (int k = 1; k <= 32; ++k)
+        {
+            const glm::dvec2 q = wx::fireFrontAt(f, s, 2.0 * kPiF * k / 32.0);
+            perim += glm::length(q - prev);
+            prev = q;
+        }
+        return perim;
+    };
+    // The nearest part of each fire's front (km; the near smoke's reserve and gate).
+    std::vector<double> nearKmOf(firesNow.size(), 1e9);
+    uint32_t nearReserve = 0;
+    for (size_t fi = 0; fi < firesNow.size(); ++fi)
+    {
+        const FireNow &fn = firesNow[fi];
+        if (fn.rangeKm > 300.0 || fn.s.activity <= 0.0) continue;
+        const glm::dvec3 G = llDir(fn.f.latDeg, fn.f.lonDeg);
+        const glm::dvec3 eE = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), G) + glm::dvec3(1e-12, 0, 0));
+        const glm::dvec3 nE = glm::cross(G, eE);
+        double nm = 1e30;
+        for (int k = 0; k < 64; ++k)
+        {
+            const glm::dvec2 qn = wx::fireFrontAt(fn.f, fn.s, 2.0 * kPiF * (k + 0.5) / 64.0);
+            nm = std::min(nm, glm::length(glm::normalize(G + (eE * qn.x + nE * qn.y) / kReF) * (kReF + fn.groundM) - eye));
+        }
+        nearKmOf[fi] = std::min(nm * 1e-3, fn.rangeKm);
+        if (nearKmOf[fi] < 8.0) nearReserve = 80;
+    }
+
     // The Sun (Earth-fixed).
     const glm::dvec3 si = sunDirEciAt(t);
     const double gr = earthRotationAngle(t);
@@ -231,8 +291,10 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
     const double kTwoPi15 = 15.749609945722419;
     const uint32_t first = n;
     // (640: the trail pieces below; at least 96 left for the flames after the smoke)
-    const uint32_t kFlameBudget = wildfireFlameBand != 0 ? 256u : 96u;
-    const uint32_t cap = std::max<uint32_t>(n, std::min<uint32_t>(kMaxDustClouds > kFlameBudget ? kMaxDustClouds - kFlameBudget : kMaxDustClouds, n + 640u));
+    const uint32_t kFlameBudget = wildfireFlameBand != 0 ? 512u : 96u;
+    const uint32_t capAll = std::max<uint32_t>(n, std::min<uint32_t>(kMaxDustClouds > kFlameBudget ? kMaxDustClouds - kFlameBudget : kMaxDustClouds, n + 576u));
+    // (the streaks leave room for the smoke at the flames, near the eye)
+    const uint32_t cap = std::max<uint32_t>(n, capAll > nearReserve ? capAll - nearReserve : n);
     // One Gaussian: centre C (ECEF), orthonormal axes a, b, c with sigmas, Sigma = cross-section, its light.
     auto emit = [&](const glm::dvec3 &C, const glm::dvec3 &a, const glm::dvec3 &b, const glm::dvec3 &c, double sA,
                     double sB, double sC, double Sigma, const glm::dvec3 &sunL, const glm::dvec3 &skyL, double albedo,
@@ -264,6 +326,36 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
         const double R = 5.5 * std::max(sA, std::max(sB, sC));
         d.cone = R >= 0.95 * range ? glm::vec4(0.0f, 0.0f, 0.0f, -2.0f)
                                    : glm::vec4(glm::vec3(re / range), (float)std::sqrt(1.0 - (R / range) * (R / range)));
+        return true;
+    };
+
+    // One smoke Gaussian from its COVARIANCE (ECEF, m^2): the shape follows the smoke's spread (a section of front is a
+    // curtain along it, the trail's length along the trail, its thickness), whatever the segment's direction (2026-10-28).
+    auto emitCov = [&](const glm::dvec3 &C, glm::dmat3 Cv, double Sigma, const glm::dvec3 &sunL, const glm::dvec3 &skyL,
+                       double albedo, uint64_t seed, uint32_t capN) -> bool {
+        if (n >= capN || Sigma < 1.0) return false;
+        const glm::dvec3 rel = C - eye;
+        const double range = std::max(glm::length(rel), 1.0);
+        const double sMin = 1.5 * range * pixFull;
+        // in the observer's ENU frame
+        const glm::dmat3 R = glm::transpose(glm::dmat3(E, N, up));   // rows E, N, up
+        glm::dmat3 Ce = R * Cv * glm::transpose(R);
+        for (int i = 0; i < 3; ++i) Ce[i][i] += sMin * sMin;
+        const double det = glm::determinant(Ce);
+        if (!(det > 0.0)) return false;
+        const glm::dmat3 M = glm::inverse(Ce);
+        GpuDustCloud &d = out[n++];
+        const glm::dvec3 re = toEnu(rel);
+        d.c = glm::vec4(glm::vec3(re), (float)Sigma);
+        d.ia = glm::vec4((float)M[0][0], (float)M[1][1], (float)M[2][2], (float)(1.0 / (kTwoPi15 * std::sqrt(det))));
+        const double lS = sunL.x + sunL.y + sunL.z, lI = skyL.x + skyL.y + skyL.z;
+        const double share = std::min(lI / std::max(lI + lS, 1e-9), 0.999);
+        const double seedK = 128.0 + (double)(fwMix(seed) & 127u);
+        d.ib = glm::vec4((float)M[1][0], (float)M[2][0], (float)M[2][1], (float)(4.0 * seedK + 2.0 + share));
+        d.col = glm::vec4(glm::vec3(sunL + skyL), (float)(2.0 + albedo));
+        const double Rr = 5.5 * std::sqrt(Ce[0][0] + Ce[1][1] + Ce[2][2]);
+        d.cone = Rr >= 0.95 * range ? glm::vec4(0.0f, 0.0f, 0.0f, -2.0f)
+                                    : glm::vec4(glm::vec3(re / range), (float)std::sqrt(1.0 - (Rr / range) * (Rr / range)));
         return true;
     };
 
@@ -349,7 +441,7 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                 if (hw[k] < best) { best = hw[k]; k0 = k; }
         }
         glm::dvec2 c[5]{};
-        double m[5]{}, ext[5]{};
+        double m[5]{}, ext[5]{}, cxx[5]{}, cxy[5]{}, cyy[5]{};
         em.nS = 0;
         if (hTot > 1e-6)
         {
@@ -370,7 +462,14 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
             for (int j = 0; j < kHs; ++j)
             {
                 const int k = (k0 + j) % kHs;
-                if (m[si] > 0.0) ext[si] += hw[k] * glm::dot(hq[k] - c[si], hq[k] - c[si]);
+                if (m[si] > 0.0)
+                {
+                    const glm::dvec2 dd = hq[k] - c[si];
+                    ext[si] += hw[k] * glm::dot(dd, dd);
+                    cxx[si] += hw[k] * dd.x * dd.x;
+                    cxy[si] += hw[k] * dd.x * dd.y;
+                    cyy[si] += hw[k] * dd.y * dd.y;
+                }
                 acc += hw[k];
                 if (acc >= hTot * (si + 1) / S - 1e-9 && si < S - 1) ++si;
             }
@@ -379,6 +478,16 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                 {
                     em.c[em.nS] = c[i];
                     em.ext[em.nS] = std::sqrt(ext[i] / m[i]);
+                    // (its principal axis and spreads along / across it: a section of front is a curtain along the
+                    // front, not a round source; 2026-10-28)
+                    const double a11 = cxx[i] / m[i], a12 = cxy[i] / m[i], a22 = cyy[i] / m[i];
+                    const double tr = 0.5 * (a11 + a22), dt = std::sqrt(std::max(0.25 * (a11 - a22) * (a11 - a22) + a12 * a12, 0.0));
+                    const double l1 = tr + dt, l2 = std::max(tr - dt, 0.0);
+                    glm::dvec2 ev = std::fabs(a12) > 1e-9 ? glm::dvec2(l1 - a22, a12) : (a11 >= a22 ? glm::dvec2(1, 0) : glm::dvec2(0, 1));
+                    ev = glm::length(ev) > 1e-12 ? glm::normalize(ev) : glm::dvec2(1, 0);
+                    em.ax[em.nS] = ev;
+                    em.extL[em.nS] = std::sqrt(l1);
+                    em.extW[em.nS] = std::sqrt(l2);
                     em.w[em.nS] = m[i] / hTot;
                     ++em.nS;
                 }
@@ -404,6 +513,9 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                 em.c[i] = o.c[ord[i]];
                 em.w[i] = o.w[ord[i]];
                 em.ext[i] = o.ext[ord[i]];
+                em.ax[i] = o.ax[ord[i]];
+                em.extL[i] = o.extL[ord[i]];
+                em.extW[i] = o.extW[ord[i]];
             }
         }
         if (em.nS == 0)
@@ -411,6 +523,9 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
             em.c[0] = wx::fireFrontAt(f, s, 0.0);
             em.w[0] = 1.0;
             em.ext[0] = 0.3 * s.halfWidthM;
+            em.ax[0] = glm::dvec2(std::cos(s.windAz), -std::sin(s.windAz));
+            em.extL[0] = em.ext[0];
+            em.extW[0] = 0.0;
             em.nS = 1;
         }
         em.mainSrc = 0;
@@ -515,6 +630,7 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
         if (s.ageS <= 0.0) continue;
         const double sz = (double)f.size;
         if (!((2.5 + 5.5 * sz) * (0.6 + 0.4 * f.fuel) * wildfireSmoke > 0.02) || fn.rangeKm >= 2500.0) continue;
+        if (wildfireDebug & 4) continue;
         pl.on = true;
         pl.S = fn.rangeKm < 150.0 ? 5 : fn.rangeKm < 500.0 ? 3 : fn.rangeKm < 1200.0 ? 2 : 1;
         // (fixed per fire: a length that followed the activity stretched every knot of the streak as the day went on)
@@ -714,6 +830,10 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                 {
                     glm::dvec3 q{0.0};
                     double sb = 0.0, sz = 0.0, thin = 0.0, rate = 0.0, age = 0.0;
+                    // (the curtain model, 2026-10-28) horizontal spread: iso round + sec along the section's axis ax;
+                    // its vertical thickness sv
+                    double iso = 0.0, sec = 0.0, sv = 0.0;
+                    glm::dvec2 ax{1.0, 0.0};
                 };
                 auto knotOf = [&](const SmokeEmit &em, int si, double age, const glm::dvec2 &xy, double Hb) {
                     KP k;
@@ -725,6 +845,12 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                     k.sb = spread * (sB0 + 0.25 * z + 1.1 * ap);
                     k.sz = std::min(k.sb, spread * (120.0 + 0.22 * Hb + 0.12 * ap));
                     k.thin = std::min(k.sb, spread * (200.0 + 0.15 * z + 0.6 * ap));
+                    k.iso = spread * (150.0 + 100.0 * sz + 0.25 * z + 1.1 * ap);
+                    // the section's own extent: the curtain is the section's length (a uniform stretch L ~ 3.5 x its
+                    // rms: sigma 0.5 L so neighbouring sections join); the low layer leaves from one place
+                    k.sec = low ? 0.0 : spread * 1.7 * em.extL[sc];
+                    k.ax = em.ax[sc];
+                    k.sv = std::min(k.iso, spread * (120.0 + 0.22 * Hb + 0.12 * ap));
                     const double wq = shareOf(em, si, pl.S);
                     const double massK = low ? 0.2 * wq : (si == pl.S / 2 && pl.lowLayer ? 0.8 * wq : wq);
                     k.rate = massK * em.Q * wildfireSmoke * std::max(em.act, 0.05);
@@ -767,6 +893,9 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                             k.sb = glm::mix(k.sb, 0.5 * (a.sb + b.sb), u);
                             k.sz = glm::mix(k.sz, 0.5 * (a.sz + b.sz), u);
                             k.thin = glm::mix(k.thin, 0.5 * (a.thin + b.thin), u);
+                            k.iso = glm::mix(k.iso, 0.5 * (a.iso + b.iso), u);
+                            k.sec = glm::mix(k.sec, 0.5 * (a.sec + b.sec), u);
+                            k.sv = glm::mix(k.sv, 0.5 * (a.sv + b.sv), u);
                         }
                         ++j;
                     }
@@ -802,6 +931,15 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                         q.vis = inView(toEnu(relC), rng, 0.5 * len + 4.0 * wSeg);
                         const double lenPx = len / (rng * pixFull);
                         q.want = k > 0 ? std::max(1, (int)std::ceil(std::min(len / (2.2 * wSeg), lenPx / 6.0))) : 1;
+                        if (wildfireSmokeCurtain != 0 && k > 0)
+                        {
+                            // nested node levels (below): a level s with a fade to s+1 takes 2^(s+1)+1 Gaussians
+                            const double wC = std::max(0.5 * (A.iso + B.iso), 1.0);
+                            const double wantF = std::clamp(std::min(len / (2.2 * wC), lenPx / 6.0), 1.0, 32.0);
+                            const double L = std::log2(wantF);
+                            const int sL = (int)std::floor(L);
+                            q.want = (L - sL > 0.02) ? (1 << (sL + 1)) + 1 : (sL > 0 ? (1 << sL) + 1 : 1);
+                        }
                         segPlans.push_back(q);
                         continue;
                     }
@@ -845,7 +983,85 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                         else smokePiecesLast += (uint32_t)m;
                         if (q.alive) ++smokeSegsLast;
                     }
-                    if (m == 1)
+                    if (wildfireSmokeCurtain != 0 && m >= 1)
+                    {
+                        // THE CURTAIN (2026-10-28, issue 20261028_192133 "Smoke effects still spawn oversized oval
+                        // particles": "odd stretching when initialised and when changing direction"). Each Gaussian's
+                        // covariance is the smoke's own spread: its share of the trail's length along the trail's tangent +
+                        // the section's extent along the section's axis (a curtain along the front: a flank's section lies
+                        // ALONG the wind, not across it) + the round spread + the thickness. It was a frame built on the
+                        // segment (width always across it): every turn of the trail swung the km-wide ovals with it, and the
+                        // head was a short, dense ellipse (the young column seen from above: a bright round dot leading
+                        // every streak).
+                        // The segment's Gaussians stand on NESTED NODES in u (fixed emission times between its two knots,
+                        // which age together: u does not slide): level s = the nodes j / 2^s (0 = the midpoint alone),
+                        // the next level's nodes fading in with the mass shared out, so a count that changes with the
+                        // segment's length is a cross-fade, not a jump (the pieces were len / m apart, re-cut at every m).
+                        const KP &Am = ks[k > 0 ? k - 1 : 0], &Bp = (k + 2 < ks.size()) ? ks[k + 2] : B;
+                        auto crq = [&](double u) {
+                            if (k == 0) return glm::mix(A.q, B.q, u);
+                            const double u2 = u * u, u3 = u2 * u;
+                            return 0.5 * ((2.0 * A.q) + (-Am.q + B.q) * u + (2.0 * Am.q - 5.0 * A.q + 4.0 * B.q - Bp.q) * u2 +
+                                          (-Am.q + 3.0 * A.q - 3.0 * B.q + Bp.q) * u3);
+                        };
+                        int sLev = 0;
+                        double frL = 0.0;
+                        if (k > 0)
+                        {
+                            const double wC = std::max(0.5 * (A.iso + B.iso), 1.0);
+                            const double rngC = std::max(glm::length(Cc - eye), 1.0);
+                            const double wantF = std::clamp(std::min(len / (2.2 * wC), len / (rngC * pixFull) / 6.0), 1.0, 32.0);
+                            const double L = std::log2(wantF);
+                            sLev = (int)std::floor(L);
+                            frL = L - sLev;
+                            auto cnt = [](int sl, double f) { return f > 0.02 ? (1 << (sl + 1)) + 1 : (sl > 0 ? (1 << sl) + 1 : 1); };
+                            if (cnt(sLev, frL) > m)
+                            {
+                                frL = 0.0;
+                                sLev = 0;
+                                while (sLev < 5 && (1 << (sLev + 1)) + 1 <= m) ++sLev;
+                            }
+                        }
+                        const int sTop = frL > 0.02 ? sLev + 1 : sLev;
+                        const int Nn = 1 << std::max(sTop, 1);   // nodes j / Nn, j = 0 .. Nn
+                        auto nodeMass = [&](int sl, int j) -> double {   // the mass share of node j / Nn at level sl
+                            if (sl == 0) return (2 * j == Nn) ? 1.0 : 0.0;
+                            const int stp = Nn >> sl;
+                            if (j % stp != 0) return 0.0;
+                            const double w = 1.0 / (1 << sl);
+                            return (j == 0 || j == Nn) ? 0.5 * w : w;
+                        };
+                        auto nodeAl = [&](int sl) { return sl == 0 ? 0.5 * len : 0.62 * len / (1 << sl); };
+                        for (int j = 0; j <= Nn; ++j)
+                        {
+                            const double m0 = nodeMass(sLev, j), m1 = sTop > sLev ? nodeMass(sTop, j) : m0;
+                            const double ms = (1.0 - frL) * m0 + frL * m1;
+                            if (ms <= 1e-6) continue;
+                            const double al = m0 > 0.0 ? (1.0 - frL) * nodeAl(sLev) + frL * nodeAl(sTop) : nodeAl(sTop);
+                            const double u = (double)j / Nn;
+                            const glm::dvec3 qc = crq(u);
+                            const double du = 0.5 / Nn;
+                            const glm::dvec3 qa = crq(std::max(u - du, 0.0)), qb = crq(std::min(u + du, 1.0));
+                            const glm::dvec3 Pc = at(qc.x, qc.y, qc.z);
+                            glm::dvec3 tgv = at(qb.x, qb.y, qb.z) - at(qa.x, qa.y, qa.z);
+                            const double lt = glm::length(tgv);
+                            const glm::dvec3 aj = lt > 1e-6 ? tgv / lt : glm::normalize(P1 - P0 + glm::dvec3(1e-9, 0, 0));
+                            const glm::dvec3 upc = glm::normalize(Pc);
+                            glm::dvec2 axm = (glm::dot(A.ax, B.ax) < 0.0) ? glm::mix(A.ax, -B.ax, u) : glm::mix(A.ax, B.ax, u);
+                            axm = glm::length(axm) > 1e-9 ? glm::normalize(axm) : A.ax;
+                            glm::dvec3 sx = eE * axm.x + nE * axm.y;
+                            sx = glm::normalize(sx - upc * glm::dot(sx, upc) + glm::dvec3(1e-9, 0, 0));
+                            const double iso = glm::mix(A.iso, B.iso, u), sec = glm::mix(A.sec, B.sec, u), sv = glm::mix(A.sv, B.sv, u);
+                            const double sAl = std::max(al, 0.3 * iso);
+                            const glm::dmat3 Cv = sAl * sAl * glm::outerProduct(aj, aj) + sec * sec * glm::outerProduct(sx, sx) +
+                                                  iso * iso * (glm::dmat3(1.0) - glm::outerProduct(upc, upc)) +
+                                                  sv * sv * glm::outerProduct(upc, upc);
+                            if (emitCov(Pc, Cv, Sigma * ms, sunL, skyL, alb,
+                                        f.id ^ (uint64_t)(k + 1 + 64 * sp.si) ^ ((uint64_t)(j + 1) << 40), cap))
+                                ++emitted;
+                        }
+                    }
+                    else if (m == 1)
                     {
                         if (emit(Cc, a, b, c, std::max((k == 0 ? 0.3 : 0.5) * len, (k == 0 ? 0.25 : 0.6) * sC), (k == 0 ? 0.6 : 1.0) * sb, sC,
                                  Sigma, sunL, skyL, alb, f.id ^ (uint64_t)(k + 1 + 64 * sp.si), cap, -1.0))
@@ -955,6 +1171,142 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
             fn.gauss = emitted;
         }
     }
+    // ── The smoke AT the flames (2026-10-28, issue 20261028_191813: the smoke should start dark and thick at the flames) ──
+    // The streaks start ~0.1 of the injection height up (the hot gas right over the flames is clear) from a few sources,
+    // each as wide as a stretch of front: close up nothing stood between the flames and that. Now columns of dark, sooty
+    // puffs stand over the active front near the eye (~40 px apart on screen, at least 6 flame heights), each a few puffs
+    // born just over the flames on a cycle of 10-25 s, rising at a few m/s, widening and thinning as they go, drifting
+    // downwind and fading out ~10-25 flame heights up, below the streaks. In the smoke's range (lit and shadowed as smoke,
+    // its own billows); a pure function of sim time.
+    nearSmokeLast = 0;
+    if (!(wildfireDebug & 12) && nearReserve > 0)
+    {
+        const uint32_t capN = std::min<uint32_t>(capAll, n + nearReserve);
+        const double tintK2 = (double)std::clamp(wildfireSmokeTint, -1.0f, 1.0f);
+        const glm::dvec3 tintM(1.0 + 0.10 * tintK2, 1.0 + 0.01 * tintK2, 1.0 - 0.14 * tintK2);
+        const double bright2 = std::max((double)wildfireSmokeBright, 0.0);
+        for (size_t fi = 0; fi < firesNow.size() && n < capN; ++fi)
+        {
+            const FireNow &fn = firesNow[fi];
+            if (nearKmOf[fi] > 8.0) continue;
+            const wx::Fire &f = fn.f;
+            const wx::FireState &s = fn.s;
+            const double hFl = wx::fireFlameHeightM(f, s), dFl = wx::fireFlameDepthM(f);
+            if (hFl <= 0.5) continue;
+            const glm::dvec3 G = llDir(f.latDeg, f.lonDeg);
+            const glm::dvec3 eE = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), G) + glm::dvec3(1e-12, 0, 0));
+            const glm::dvec3 nE = glm::cross(G, eE);
+            const double ground = fn.groundM;
+            auto at = [&](double x, double y, double z) { return glm::normalize(G + (eE * x + nE * y) / kReF) * (kReF + ground + z); };
+            auto dzOf = [&](const glm::dvec2 &q) {
+                double la, lo;
+                wx::fireOffsetLatLon(f, q, la, lo);
+                return groundAbsAt(la, lo) - (double)ground;
+            };
+            auto burnK = [&](const glm::dvec2 &q) {
+                double la, lo;
+                wx::fireOffsetLatLon(f, q, la, lo);
+                return glm::smoothstep(0.08, 0.3, (double)biomeMap.burnableAt(la, lo));
+            };
+            const double perim = perimOf(f, s);
+            const glm::dvec2 cxy(0.5 * (s.headM - s.backM) * std::sin(s.windAz), 0.5 * (s.headM - s.backM) * std::cos(s.windAz));
+            const double Rm = std::max(perim, 1.0) / (2.0 * kPiF);
+            const glm::dvec2 w60 = wx::windAt(G, 60.0, t);
+            const glm::dvec3 w3 = eE * w60.x + nE * w60.y;
+            const double fade8 = 1.0 - glm::smoothstep(5.0, 8.0, nearKmOf[fi]);
+            constexpr int kFL = 16, kBaseF = 6;
+            const double spPx = 55.0 * pixFull;
+            const double minSp = 8.0 * hFl;
+            uint32_t sgOrd[1u << kBaseF];
+            double sgR[1u << kBaseF];
+            for (uint32_t sg = 0; sg < (1u << kBaseF); ++sg)
+            {
+                const glm::dvec2 qa = wx::fireFrontAt(f, s, 2.0 * kPiF * sg / (1u << kBaseF));
+                const glm::dvec2 qb = wx::fireFrontAt(f, s, 2.0 * kPiF * (sg + 1) / (1u << kBaseF));
+                const glm::dvec3 Pa = at(qa.x, qa.y, 0.0), Pb = at(qb.x, qb.y, 0.0);
+                sgR[sg] = std::max(std::min(glm::length(Pa - eye), glm::length(Pb - eye)) - 0.6 * glm::length(Pb - Pa) -
+                                       250.0 * (0.6 + 0.8 * (double)f.size), 30.0);
+                sgOrd[sg] = sg;
+            }
+            std::sort(sgOrd, sgOrd + (1u << kBaseF), [&](uint32_t x, uint32_t y) { return sgR[x] < sgR[y]; });
+            for (uint32_t oi = 0; oi < (1u << kBaseF) && n < capN; ++oi)
+            {
+                const uint32_t sg = sgOrd[oi];
+                if (sgR[sg] > 9000.0) break;
+                const int Ks = std::clamp((int)std::ceil(std::log2(std::max(perim, 1.0) / std::max(spPx * sgR[sg], minSp))), 0, kFL);
+                const uint32_t stepJ = 1u << (kFL - Ks), segN = 1u << (kFL - kBaseF);
+                const uint32_t J0 = ((sg * segN + stepJ - 1u) / stepJ) * stepJ;
+                for (uint32_t J = J0; J < (sg + 1u) * segN && n < capN; J += stepJ)
+                {
+                    int lv = 0;
+                    if (J != 0)
+                    {
+                        int tz = 0;
+                        while (((J >> tz) & 1u) == 0u) ++tz;
+                        lv = kFL - tz;
+                    }
+                    const uint64_t h = fwMix(f.id ^ 0x5307E000ull ^ (uint64_t)J * 0x9E3779B97F4A7C15ull);
+                    const double a = 2.0 * kPiF * ((double)J + (fwU(h) - 0.5) * 0.5 * (double)(1u << (kFL - lv))) / (double)(1u << kFL);
+                    double dsda = 0.0;
+                    glm::dvec2 nOut;
+                    const glm::dvec2 qE = edgeOf(f, s, cxy, Rm, a, &dsda, &nOut);
+                    const double range0 = std::max(glm::length(at(qE.x, qE.y, dzOf(qE)) - eye), 1.0);
+                    if (range0 > 9000.0) continue;
+                    const double kHere = std::clamp(std::log2(std::max(perim, 1.0) / std::max(spPx * range0, minSp)), 0.0, (double)kFL);
+                    const int K = (int)std::floor(kHere);
+                    const double fr = K >= kFL ? 0.0 : kHere - K;
+                    double wa;
+                    if (lv <= K) wa = 1.0 - 0.5 * fr;
+                    else if (lv == K + 1) wa = 0.5 * fr;
+                    else continue;
+                    if (wa <= 0.01) continue;
+                    const double heat = wx::fireFrontHeat(f, s, a, t) * burnK(qE) * (0.4 + 1.2 * fwU(h ^ 9));
+                    if (heat < 0.15) continue;
+                    const double colSp = dsda * 2.0 * kPiF / std::ldexp(1.0, K);
+                    const glm::dvec2 q0 = qE - nOut * (0.5 * dFl);
+                    const double dz = dzOf(q0);
+                    const glm::dvec3 B0 = at(q0.x, q0.y, dz);
+                    const glm::dvec3 upP = glm::normalize(B0);
+                    const glm::dvec2 tg(-nOut.y, nOut.x);
+                    glm::dvec3 T = eE * tg.x + nE * tg.y;
+                    T = glm::normalize(T - upP * glm::dot(T, upP) + glm::dvec3(1e-9, 0, 0));
+                    const glm::dvec3 Nh = glm::cross(upP, T);
+                    const double vz = (1.5 + 2.5 * fwU(h ^ 3)) * std::sqrt(hFl) * (0.6 + 0.4 * std::sqrt(std::min(heat, 1.0)));
+                    for (int k = 0; k < 2 && n < capN; ++k)
+                    {
+                        const uint64_t hk = fwMix(h ^ (0x5E00ull + (uint64_t)k * 0x632BE59BD9B4E019ull));
+                        const double Ps = 10.0 + 15.0 * fwU(hk ^ 1);
+                        const double tt = t + Ps * (fwU(hk ^ 2) + 0.5 * k);
+                        const double cyc = std::floor(tt / Ps);
+                        const double age = tt - cyc * Ps, p = age / Ps;
+                        const uint64_t hc = fwMix(hk ^ (uint64_t)(int64_t)cyc);
+                        const double z = 0.8 * hFl + vz * age * (1.0 - 0.3 * p);
+                        const double sH = 0.45 * hFl + 0.22 * (z - 0.8 * hFl), sV = 0.35 * hFl + 0.18 * (z - 0.8 * hFl);
+                        const double sA = std::max(sH, 0.3 * colSp * (0.7 + 0.3 * p));
+                        const glm::dvec3 C = B0 + upP * z + T * ((fwU(hc ^ 3) - 0.5) * 0.5 * colSp) + w3 * (0.85 * age) +
+                                             Nh * ((fwU(hc ^ 4) - 0.5) * dFl);
+                        const glm::dvec3 rel = C - eye;
+                        const double rng = std::max(glm::length(rel), 1.0);
+                        if (!inView(toEnu(rel), rng, 3.0 * std::max(sA, sV) + 30.0)) continue;
+                        const double fade = glm::smoothstep(0.0, 0.12, p) * (1.0 - glm::smoothstep(0.5, 1.0, p));
+                        const double tau0 = 0.6 * std::sqrt(std::min(heat, 1.2)) * (0.4 + 0.6 * s.activity) * fade * wa * fade8 *
+                                            (double)wildfireSmoke;
+                        const double Sigma = tau0 * 2.0 * kPiF * sA * sV;
+                        if (Sigma < 1.0) continue;
+                        // dark, sooty (fresh black carbon); paler as it rises
+                        const double alb = 0.14 + 0.12 * p;
+                        const glm::dvec3 tint = tintM * glm::dvec3(0.5, 0.48, 0.46);
+                        glm::dvec3 sunC;
+                        double amb;
+                        sunLightAt(C, sunC, amb);
+                        if (emit(C, T, upP, Nh, sA, sV, sH, Sigma, bright2 * 4.0 * kPiF * alb * tint * sunC,
+                                 bright2 * 4.0 * kPiF * alb * tint * (0.18 * amb) * glm::dvec3(0.66, 0.82, 1.08), alb, hc, capN, -1.0))
+                            ++nearSmokeLast;
+                    }
+                }
+            }
+        }
+    }
     // (one range with the haboobs drawn just before: weatherFillHaboobs sets aerosolFirst)
     {
         const uint32_t f0 = std::min(first, aerosolFirst);
@@ -990,7 +1342,6 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
         const glm::dvec3 eE = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), G) + glm::dvec3(1e-12, 0, 0));
         const glm::dvec3 nE = glm::cross(G, eE);
         const double ground = fn.groundM;
-        const float coarse0 = cpuTerrainHeightM((float)f.latDeg, (float)f.lonDeg);
         auto at = [&](double x, double y, double z) {
             const glm::dvec3 d = glm::normalize(G + (eE * x + nE * y) / kReF);
             return d * (kReF + ground + z);
@@ -1000,6 +1351,12 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
             double la, lo;
             wx::fireOffsetLatLon(f, q, la, lo);
             return glm::smoothstep(0.08, 0.3, (double)biomeMap.burnableAt(la, lo));
+        };
+        // The ground at a point of the fire, relative to `ground` (at()'s z).
+        auto dzOf = [&](const glm::dvec2 &q) {
+            double la, lo;
+            wx::fireOffsetLatLon(f, q, la, lo);
+            return groundAbsAt(la, lo) - (double)ground;
         };
         // The flames, and how bright their light is per metre of front (cd/m) at heat 1, by the view's elevation (from
         // the side the flame's height shows, from above the flaming zone's depth).
@@ -1036,6 +1393,9 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
         const double nearKm = std::min(nearM * 1e-3, fn.rangeKm);
         const double radiusM = 0.5 * (s.headM + s.backM) * 1.3 + 500.0;
         const glm::dvec2 cxy(0.5 * (s.headM - s.backM) * std::sin(s.windAz), 0.5 * (s.headM - s.backM) * std::cos(s.windAz));
+        const double Rm = std::max(perim, 1.0) / (2.0 * kPiF);
+        const double wigMaxM = 250.0 * (0.6 + 0.8 * (double)f.size);
+        auto edgeAt = [&](double a, double *dsda, glm::dvec2 *nOut) { return edgeOf(f, s, cxy, Rm, a, dsda, nOut); };
         const glm::dvec3 Cf = at(cxy.x, cxy.y, 0.0);
         const glm::dvec3 relF = Cf - eye;
         const double rangeF = std::max(glm::length(relF), 1.0);
@@ -1048,7 +1408,7 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
         const double bandKeep = wildfireFlameBand != 0 && hFl > 0.5 ? 1.0 - 0.5 * (1.0 - glm::smoothstep(25.0, 40.0, nearKm)) : 1.0;
 
         // ── Points ──
-        if (fo && fireVisible && lightK > 0.0)
+        if (fo && fireVisible && lightK > 0.0 && !(wildfireDebug & 2))
         {
             // radians between points on screen: 3.5 px near, 2 px from afar (a front under ~100 m a pixel is a line of
             // light, not a string of beads; the light per point is in proportion: the total kept)
@@ -1059,7 +1419,6 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
             glm::dvec2 segP[kSeg + 1];
             for (uint32_t sg = 0; sg <= kSeg; ++sg)
                 segP[sg] = wx::fireFrontAt(f, s, 2.0 * kPiF * sg / kSeg);
-            const double coarseTerr = coarse0;
             // The segments in parallel (perf4-cpu 2026-10-24: ~1.7 ms a frame close to a big fire on the main thread),
             // each into its own list, appended in segment order and cut at the budget: the same points in the same order.
             if (firePtSeg.size() < kSeg) firePtSeg.resize(kSeg);
@@ -1070,12 +1429,7 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                 so.fl.clear();
                 // (per segment: the coarse DEM's slope from the ignition point at its ends, the air along the view; the
                 // GPU puts each point on the drawn ground, wildfire_ground.comp)
-                auto dzAt = [&](const glm::dvec2 &q) {
-                    double latP, lonP;
-                    wx::fireOffsetLatLon(f, q, latP, lonP);
-                    return (double)cpuTerrainHeightM((float)latP, (float)lonP) - coarseTerr;
-                };
-                const double dzA = dzAt(segP[sg]), dzB = dzAt(segP[sg + 1]);
+                const double dzA = dzOf(segP[sg]), dzB = dzOf(segP[sg + 1]);
                 const glm::dvec3 A = at(segP[sg].x, segP[sg].y, 15.0 + dzA), B = at(segP[sg + 1].x, segP[sg + 1].y, 15.0 + dzB);
                 const double segLen = glm::length(B - A);
                 const glm::dvec3 Cm = 0.5 * (A + B);
@@ -1096,7 +1450,7 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                     const double jit = (fwU(h) - 0.5) * 0.5 * (double)(1u << (kFireFineLevels - lv));
                     const double a = 2.0 * kPiF * ((double)J + jit) / (double)(1u << kFireFineLevels);
                     double dsda = 0.0;
-                    glm::dvec2 q = wx::fireFrontAt(f, s, a, &dsda);
+                    glm::dvec2 q = edgeAt(a, &dsda, nullptr);
                     const double dz = dzA + (dzB - dzA) * std::clamp(((double)J + jit) / kPerSeg - sg, 0.0, 1.0);
                     // Its level now: from the front point's range (continuous), the next level's points fading in.
                     const double range0 = std::max(glm::length(at(q.x, q.y, 15.0 + dz) - eye), 5.0);
@@ -1128,7 +1482,7 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                         if (so.pts.size() >= ptBudget) return;
                         const glm::dvec3 rp = Pp - eye;
                         const double rr = std::max(glm::length(rp), 5.0);
-                        if (glm::dot(toEnu(rp), fwd) / rr < cosView || overHorizon(Pp, rp, rr)) return;
+                        if (!inView(toEnu(rp), rr, 25.0) || overHorizon(Pp, rp, rr)) return;
                         const double E = I / (rr * rr);
                         if (!(E > 0.0)) return;
                         const double mag = -2.5 * std::log10(E / kLuxMag0) + ext;
@@ -1200,22 +1554,41 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
         }
 
         // ── Flames close up: emissive Gaussians standing on the front (by day too: the points are dimmed there) ──
-        if (wildfireFlameBand != 0 && fireVisible && nearKm < 40.0 && n < flameCap && hFl > 0.5)
+        if (wildfireDebug & 1) {}
+        else if (wildfireFlameBand != 0 && fireVisible && nearKm < 40.0 && n < flameCap && hFl > 0.5)
         {
-            // THE BAND (2026-10-27, issue 20261027_212337 "Flame particles": "the sprites seem to disappear when up close
-            // and are just dots"). The tongues stood >= 40 px apart, spaced by the range to the fire's CENTRE, each its
-            // true size: a few metres, i.e. under a pixel from a few km (missed by the half-res composite's rays), and on a
-            // big fire the front near the eye had one tongue every few hundred metres. Now they stand ~kFlamePx apart ON
-            // SCREEN, each at the level its own range asks (nested like the points': a level's new tongues fade in), so the
-            // whole active front is a band of flame at any distance. A tongue the eye resolves (>= ~6 px tall) keeps its
-            // shape and the flame's radiance; an unresolved one becomes its stretch of front (a ribbon segment along it,
-            // at least a pixel tall), carrying that stretch's flame light (its flames' area, ~60% of the front, at the
-            // flame's radiance): no brighter than the flames it stands for. The points keep half their flame light here
-            // (their glare / bloom), the band the other half.
+            // THE BAND (2026-10-27, issue 20261027_212337): tongues ~kFlamePx apart ON SCREEN, each at the level its own
+            // range asks (nested like the points': a level's new tongues fade in), so the whole active front is a band of
+            // flame at any distance. An unresolved tongue is its stretch of front (a ribbon segment along it, at least a
+            // pixel tall) carrying that stretch's flame light; the points keep half their flame light here (glare, bloom).
+            // REWORKED 2026-10-28 (issue 20261028_191813: "Fountains of Bellagio. Rhythmic pillars always spawning in
+            // pairs ... more fluttering shape, maybe embers ... the flame front needs to be less of a line"):
+            //  - the front is RAGGED (wx::fireFrontWiggleM, ~35 m .. 2 km) and a BAND: each tongue at a hashed depth into
+            //    the flaming zone, a third of them with a smaller flame burning out behind it, spot flames ahead of the head;
+            //  - a resolved tongue is a CLUSTER of 1-4 flames of their own heights and widths at hashed places along it
+            //    (no pairs, no symmetry), each a body + a tip leaning with the wind and swaying, its height pulsing with
+            //    smooth value noise at the puffing frequency of its width (~1.5 / sqrt(D) Hz: not a fixed sine), the bigger
+            //    ones shedding a puff of flame that rises and fades;
+            //  - EMBERS: kFireBuf sparks born at the flames, rising on the plume's updraft, drifting downwind, cooling;
+            //  - the smoke starts dark and thick over the flames (the near-smoke columns in the smoke's range, above).
+            // Positions are pure functions of sim time (hashes, value noise in t): deterministic, reversible.
             const double fadeR = 1.0 - glm::smoothstep(25.0, 40.0, nearKm);
-            // (the front's 64 base segments, each walked as finely as its nearest point asks: down to 2^16 round)
             constexpr int kFL = 16, kBaseF = 6;
             const double spPx = kFlamePx * pixFull * std::max((double)flameLodScale, 1.0);   // radians between tongues
+            const glm::dvec2 w10 = wx::windAt(G, 10.0, t);
+            const double wSp = glm::length(w10);
+            const glm::dvec2 wDir = wSp > 0.05 ? w10 / wSp : glm::dvec2(std::sin(s.windAz), std::cos(s.windAz));
+            const double leanK = wSp / (wSp + 3.0);
+            const glm::dvec3 wDir3 = eE * wDir.x + nE * wDir.y;
+            // smooth value noise in time (0..1): a flame's height, sway
+            auto tnoise = [](double x, uint64_t seed) {
+                const double fx = std::floor(x), u = x - fx, su = u * u * (3.0 - 2.0 * u);
+                const int64_t i = (int64_t)fx;
+                const double a0 = fwU(fwMix(seed ^ (uint64_t)i * 0x9E3779B97F4A7C15ull));
+                const double a1 = fwU(fwMix(seed ^ (uint64_t)(i + 1) * 0x9E3779B97F4A7C15ull));
+                return a0 + (a1 - a0) * su;
+            };
+            const uint32_t emberCap = std::min<uint32_t>(kFireballMax, ptStart + std::min<uint32_t>(ptBudget, kFirePointBudget) + 900u);
             // (nearest segments first: the budget, when it binds, drops the far ones)
             uint32_t sgOrd[1u << kBaseF];
             double sgR[1u << kBaseF];
@@ -1223,19 +1596,43 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
             {
                 const glm::dvec2 qa = wx::fireFrontAt(f, s, 2.0 * kPiF * sg / (1u << kBaseF));
                 const glm::dvec2 qb = wx::fireFrontAt(f, s, 2.0 * kPiF * (sg + 1) / (1u << kBaseF));
-                const glm::dvec3 Pa = at(qa.x, qa.y, 0.0), Pb = at(qb.x, qb.y, 0.0);
-                sgR[sg] = std::max(std::min(glm::length(Pa - eye), glm::length(Pb - eye)) - 0.6 * glm::length(Pb - Pa), 30.0);
+                const glm::dvec3 Pa = at(qa.x, qa.y, dzOf(qa)), Pb = at(qb.x, qb.y, dzOf(qb));
+                sgR[sg] = std::max(std::min(glm::length(Pa - eye), glm::length(Pb - eye)) - 0.6 * glm::length(Pb - Pa) - wigMaxM, 30.0);
                 sgOrd[sg] = sg;
             }
             std::sort(sgOrd, sgOrd + (1u << kBaseF), [&](uint32_t x, uint32_t y) { return sgR[x] < sgR[y]; });
-            for (uint32_t oi = 0; oi < (1u << kBaseF) && n < flameCap; ++oi)
+            // One emissive flame Gaussian (its height over the ground in ib.w: wildfire_ground.comp puts it on the drawn ground).
+            auto flameG = [&](const glm::dvec3 &P, const glm::dvec3 &T, const glm::dvec3 &U, const glm::dvec3 &Cx, double sA,
+                              double sV, double sC, const glm::dvec3 &col, double hAbove, uint64_t seed) {
+                if (n >= flameCap) return;
+                if (emit(P, T, U, Cx, sA, sV, sC, 2.0 * kPiF * sA * sV, col, glm::dvec3(0.0), 0.0, seed, flameCap, 1.0))
+                {
+                    out[n - 1].ib.w = (float)hAbove;
+                    ++fireFlamesLast;
+                }
+            };
+            // Pass 1: the tongues in view (nearest segments first), measured but not drawn.
+            struct FlameCand
+            {
+                glm::dvec3 P, T, Cx, Nout, upP, rel;
+                glm::dvec2 q, nOut;
+                double a, heat, hh0, ds, dep, range, px, res, overlap, kCommon, spread;
+                glm::vec3 colHot;
+                uint64_t h;
+                int K, lv;
+                bool back, spot;
+            };
+            std::vector<FlameCand> cands;
+            cands.clear();
+            for (uint32_t oi = 0; oi < (1u << kBaseF) && cands.size() < 1500; ++oi)
             {
             const uint32_t sg = sgOrd[oi];
             const double rMinS = sgR[sg];
-            const int Ks = std::clamp((int)std::ceil(std::log2(std::max(perim, 1.0) / std::max(spPx * rMinS, 1.2 * hFl))), 0, kFL);
+            const double minSp = 1.4 * hFl * std::max((double)flameNearScale, 1.0);
+            const int Ks = std::clamp((int)std::ceil(std::log2(std::max(perim, 1.0) / std::max(spPx * rMinS, minSp))), 0, kFL);
             const uint32_t stepJ = 1u << (kFL - Ks), segN = 1u << (kFL - kBaseF);
             const uint32_t J0 = ((sg * segN + stepJ - 1u) / stepJ) * stepJ;
-            for (uint32_t J = J0; J < (sg + 1u) * segN && n < flameCap; J += stepJ)
+            for (uint32_t J = J0; J < (sg + 1u) * segN && cands.size() < 1500; J += stepJ)
             {
                 int lv = 0;
                 if (J != 0)
@@ -1248,10 +1645,11 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                 const double jit = (fwU(h) - 0.5) * 0.5 * (double)(1u << (kFL - lv));
                 const double a = 2.0 * kPiF * ((double)J + jit) / (double)(1u << kFL);
                 double dsda = 0.0;
-                const glm::dvec2 q = wx::fireFrontAt(f, s, a, &dsda);
+                glm::dvec2 nOut;
+                const glm::dvec2 qE = edgeAt(a, &dsda, &nOut);
                 // its level from its own range (continuous: the next level's tongues fade in), before anything costly
-                const double range0 = std::max(glm::length(at(q.x, q.y, 0.0) - eye), 1.0);
-                const double kHere = std::clamp(std::log2(std::max(perim, 1.0) / std::max(spPx * range0, 1.2 * hFl)), 0.0, (double)kFL);
+                const double range0 = std::max(glm::length(at(qE.x, qE.y, dzOf(qE)) - eye), 1.0);
+                const double kHere = std::clamp(std::log2(std::max(perim, 1.0) / std::max(spPx * range0, minSp)), 0.0, (double)kFL);
                 const int K = (int)std::floor(kHere);
                 const double fr = K >= kFL ? 0.0 : kHere - K;
                 double wa;
@@ -1259,78 +1657,215 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                 else if (lv == K + 1) wa = 0.5 * fr;
                 else continue;
                 if (wa <= 0.01) continue;
-                const double heat = wx::fireFrontHeat(f, s, a, t) * burnK(q);
-                if (heat < 0.08) continue;
-                double latP, lonP;
-                wx::fireOffsetLatLon(f, q, latP, lonP);
-                const double dz = (double)cpuTerrainHeightM((float)latP, (float)lonP) - (double)coarse0;
-                const double hh = hFl * (0.6 + 0.6 * heat) * (0.8 + 0.4 * std::sin(t * (2.0 + 2.0 * fwU(h ^ 3)) + 6.28 * fwU(h ^ 4)));
-                const glm::dvec3 P = at(q.x, q.y, 0.45 * hh + dz);
-                const glm::dvec3 rel = P - eye;
-                const double range = std::max(glm::length(rel), 1.0);
-                const double ds = dsda * 2.0 * kPiF / std::ldexp(1.0, K);
-                if (!inView(toEnu(rel), range, ds + hh)) continue;
-                if (overHorizon(P, rel, range)) continue;
-                ++flamesWantedLast;
-                const glm::dvec3 upP = glm::normalize(P);
-                double dsda2 = 0.0;
-                const glm::dvec2 q2 = wx::fireFrontAt(f, s, a + 0.01, &dsda2);
-                glm::dvec3 T = at(q2.x, q2.y, 0.45 * hh + dz) - P;
-                T = glm::normalize(T - upP * glm::dot(T, upP) + glm::dvec3(1e-9, 0, 0));
-                const glm::dvec3 Cx = glm::cross(T, upP);
-                const double pix = range * pixFull;
-                // resolved: the tongue (as before); unresolved: its stretch of front, a ribbon segment
-                const double res = glm::smoothstep(2.0, 6.0, hh / pix);
-                const double sAt = 0.35 * hh + 0.05 * std::min(ds, 6.0 * hh), sVt = 0.33 * hh;
-                const double sAr = std::max(0.35 * ds, sAt), sVr = std::max(sVt, 0.9 * pix);
-                const double sA = glm::mix(sAr, sAt, res), sV = glm::mix(sVr, sVt, res);
-                const double sC = std::max(std::min(0.25 * dFl, 0.5 * hh + 1.0), std::max(1.0, 0.5 * pix * (1.0 - res)));
-                const double Sigma = 2.0 * kPiF * sA * sV;   // the side-on peak optical depth 1: the radiance is its colour
-                // the flame's radiance (pi L / the Sun's illuminance) over its tongue, or the stretch's flames' share of
-                // the ribbon's area; half the light (the points keep the other half); capped in displayed light at 0.6
-                const double radPhys = kPiF * kFlameLum / kSunLux * std::pow(std::min(heat, 1.2), 1.5);
-                const double fillR = std::min(0.6 * hh * ds / (2.0 * kPiF * sAr * sVr), 1.0);
-                const double fill = glm::mix(fillR, 1.0, res);
+                const double heat0 = wx::fireFrontHeat(f, s, a, t) * burnK(qE);
+                if (heat0 < 0.08) continue;
+                FlameCand c;
+                c.a = a;
+                c.h = h;
+                c.K = K;
+                c.lv = lv;
+                c.nOut = nOut;
+                c.ds = dsda * 2.0 * kPiF / std::ldexp(1.0, K);
+                // a band, not a line: its depth into the flaming zone (most near the leading edge), a little hotter there
+                c.dep = dFl * (1.25 * std::pow(fwU(h ^ 41), 1.6) - 0.12);
+                const glm::dvec2 tg(-nOut.y, nOut.x);
+                c.q = qE - nOut * c.dep + tg * ((fwU(h ^ 42) - 0.5) * 0.35 * std::min(c.ds, 4.0 * hFl));
+                c.heat = heat0 * (1.05 - 0.35 * std::clamp(c.dep / dFl, 0.0, 1.0));
+                // its size: the front's heat x a hashed spread (some tongues tall, most smaller)
+                c.hh0 = hFl * (0.55 + 0.6 * std::min(c.heat, 1.2)) * (0.55 + 0.9 * std::pow(fwU(h ^ 7), 1.4));
+                c.P = at(c.q.x, c.q.y, 0.45 * c.hh0 + dzOf(c.q));
+                c.rel = c.P - eye;
+                c.range = std::max(glm::length(c.rel), 1.0);
+                // (the GPU snap still moves it to the drawn ground: a margin for that)
+                if (!inView(toEnu(c.rel), c.range, c.ds + c.hh0 + 30.0)) continue;
+                if (overHorizon(c.P, c.rel, c.range)) continue;
+                c.upP = glm::normalize(c.P);
+                glm::dvec3 T = eE * tg.x + nE * tg.y;
+                c.T = glm::normalize(T - c.upP * glm::dot(T, c.upP) + glm::dvec3(1e-9, 0, 0));
+                c.Cx = glm::cross(c.T, c.upP);
+                c.Nout = glm::cross(c.upP, c.T);
+                c.px = c.hh0 / (c.range * pixFull);
+                c.res = glm::smoothstep(2.0, 6.0, c.px);
                 // Flames are near opaque: where the front runs along the line of sight its tongues overlap on screen, and
-                // an additive sum of them was a glowing tube many times one flame's radiance. Divided by the overlap
-                // (the tongue's width over its spacing as projected across the view).
-                const double sinV = glm::length(glm::cross(T, rel / range));
-                const double overlap = std::max(1.0, 2.5 * sA / std::max(ds * sinV, 0.25 * sA));
-                const double rad = std::min(radPhys * fill * 0.5, 0.6 / expo) * wa * fadeR * lightK / overlap;
-                const glm::vec3 col = glm::mix(glm::vec3(1.0f, 0.36f, 0.08f), glm::vec3(1.0f, 0.62f, 0.22f), (float)std::clamp(heat, 0.0, 1.0));
-                if (emit(P, T, upP, Cx, sA, sV, sC, Sigma, glm::dvec3(col) * rad, glm::dvec3(0.0), 0.0, h, flameCap, 1.0))
+                // an additive sum of them was a glowing tube many times one flame's radiance (divided by the overlap).
+                const double sinV = glm::length(glm::cross(c.T, c.rel / c.range));
+                const double sAt = 0.35 * c.hh0 + 0.05 * std::min(c.ds, 6.0 * c.hh0);
+                c.overlap = std::max(1.0, 2.5 * sAt / std::max(c.ds * sinV, 0.25 * sAt));
+                c.kCommon = wa * fadeR * lightK;
+                c.spread = std::min(c.ds, 3.0 * c.hh0);
+                c.colHot = glm::mix(glm::vec3(1.0f, 0.36f, 0.07f), glm::vec3(1.0f, 0.58f, 0.18f), (float)std::clamp(c.heat, 0.0, 1.0));
+                c.back = fwU(h ^ 51) < 0.33;
+                c.spot = std::cos(a) > 0.6 && fwU(h ^ 56) < 0.08;
+                cands.push_back(c);
+            }
+            }
+            flamesWantedLast += (uint32_t)cands.size();
+            // The budget: the most flames a resolved tongue may have (4 .. 1) such that all fit; past that the farthest
+            // tongues go (they are in nearest-first order) and the spacing on screen widens (flameLodScale), near the
+            // eye the spacing floor too (flameNearScale).
+            auto subsOf = [&](const FlameCand &c, int maxSub) {
+                return std::min(maxSub, (c.px < 12.0 ? 1 : c.px < 30.0 ? 2 : 3) + (fwU(c.h ^ 8) < 0.4 ? 1 : 0));
+            };
+            auto costOf = [&](const FlameCand &c, int maxSub) {
+                int k = c.res < 1.0 ? 1 : 0;
+                if (c.res > 0.0)
                 {
-                    out[n - 1].ib.w = (float)(0.45 * hh);   // (its height over the ground: wildfire_ground.comp)
-                    ++fireFlamesLast;
-                    gFlameDbg.push_back({range, ds, sA, sV, res, (double)K, (double)lv, rad});
+                    const int ns = subsOf(c, maxSub);
+                    k += (c.px > 10.0 ? 2 : 1) * ns + (c.px > 16.0 && maxSub > 1 ? std::min(ns, 2) : 0) + (c.back && maxSub > 1 ? 1 : 0) +
+                         (c.spot ? 1 : 0);
                 }
-                // A resolved tongue gets two LICKS (cheap flame particles): narrow, taller, each leaning and swaying on
-                // its own phase and flickering in height, reaching above the tongue's body; a smooth Gaussian alone
-                // read as a glowing ball close up.
-                if (res > 0.05)
+                return k;
+            };
+            // Greedy, nearest first (the candidates come in nearest-segment order): each tongue takes the most flames
+            // (4 .. 1) that still leave the rest room for one each.
+            const int64_t B = (int64_t)flameCap - (int64_t)n;
+            std::vector<int64_t> minSuffix(cands.size() + 1, 0);
+            for (size_t i = cands.size(); i-- > 0;) minSuffix[i] = minSuffix[i + 1] + costOf(cands[i], 1);
+            if (minSuffix[0] > B) flameOverflow = true;
+            std::vector<int> subAllow(cands.size(), 1);
+            {
+                int64_t used = 0;
+                for (size_t i = 0; i < cands.size(); ++i)
                 {
-                    for (int lk = 0; lk < 2 && n < flameCap; ++lk)
+                    int ms = 4;
+                    while (ms > 1 && used + costOf(cands[i], ms) + minSuffix[i + 1] > B) --ms;
+                    subAllow[i] = ms;
+                    used += costOf(cands[i], ms);
+                    if (ms < 3 && cands[i].res > 0.0) flameTight = true;
+                    flameMaxSubLast = std::min(flameMaxSubLast, cands[i].res > 0.0 ? ms : 4);
+                }
+            }
+            // Pass 2: draw them.
+            for (size_t ci = 0; ci < cands.size(); ++ci)
+            {
+                const FlameCand &c = cands[ci];
+                const int maxSub = subAllow[ci];
+                if (n >= flameCap) break;
+                const glm::dvec3 &P = c.P, &T = c.T, &Cx = c.Cx, &Nout = c.Nout, &upP = c.upP;
+                const double hh0 = c.hh0, range = c.range, ds = c.ds, px = c.px, res = c.res, pix = range * pixFull;
+                const uint64_t h = c.h;
+                const double radPhys = kPiF * kFlameLum / kSunLux * std::pow(std::min(c.heat, 1.2), 1.5);
+                const glm::vec3 colHot = c.colHot;
+                const double sAt = 0.35 * hh0 + 0.05 * std::min(ds, 6.0 * hh0);
+                if (gFlameDbg.size() < 4096)
+                {
+                    const glm::dvec3 re = toEnu(c.rel) / range;
+                    gFlameDbg.push_back({range, ds, sAt, hh0, res, (double)c.K, (double)c.lv, (double)subAllow[ci],
+                                         glm::degrees(std::atan2(re.x, re.y)), glm::degrees(std::asin(std::clamp(re.z, -1.0, 1.0)))});
+                }
+                if (res < 1.0)
+                {
+                    // unresolved: its stretch of front, a ribbon segment (overlapping its neighbours: a ragged band of
+                    // light, not a string of dashes), carrying that stretch's flames' light
+                    const double sAr = std::max(0.45 * ds, sAt), sVr = std::max(0.33 * hh0, 0.9 * pix);
+                    const double sC = std::max(std::min(0.3 * dFl, 0.5 * hh0 + 1.0), std::max(1.0, 0.5 * pix));
+                    const double fillR = std::min(0.6 * hh0 * ds / (2.0 * kPiF * sAr * sVr), 1.0);
+                    const double rad = std::min(radPhys * fillR * 0.5, 0.45 / expo) * c.kCommon * (1.0 - res) / c.overlap;
+                    flameG(P, T, upP, Cx, sAr, sVr, sC, glm::dvec3(colHot) * rad, 0.45 * hh0, h);
+                }
+                if (res <= 0.0) continue;
+                // ── resolved: a cluster of flames ──
+                const double radR = std::min(radPhys * 0.5, 0.3 / expo) * c.kCommon * res / std::sqrt(c.overlap);
+                const int nSub = subsOf(c, maxSub);
+                const double spread = c.spread;
+                for (int i = 0; i < nSub && n < flameCap; ++i)
+                {
+                    const uint64_t hs = fwMix(h ^ (0xC1A5ull + (uint64_t)i * 0x9E3779B97F4A7C15ull));
+                    const double along = (fwU(hs ^ 1) - 0.5) * 0.95 * spread;
+                    const double dep2 = (fwU(hs ^ 2) - 0.5) * 0.5 * dFl;
+                    const double hf = i == 0 ? 0.9 + 0.3 * fwU(hs ^ 3) : 0.45 + 0.7 * fwU(hs ^ 3);
+                    const double b = hh0 * hf * (0.11 + 0.1 * fwU(hs ^ 4));            // its base half width
+                    const double fP = 1.5 / std::sqrt(std::max(4.0 * b, 0.5)) * (0.75 + 0.5 * fwU(hs ^ 5));   // puffing (Hz)
+                    const double ph = 1000.0 * fwU(hs ^ 6);
+                    const double n1 = tnoise(t * fP + ph, hs ^ 0x11), n2 = tnoise(t * fP * 1.7 + 2.3 * ph, hs ^ 0x22);
+                    const double n3 = tnoise(t * fP * 0.6 + 0.7 * ph, hs ^ 0x33);
+                    const double hi = hh0 * hf * (0.5 + 0.9 * n1);
+                    const double sway = (n2 - 0.5) * 0.7 * hi, swayX = (n3 - 0.5) * 0.45 * hi;
+                    const double lean = leanK * 0.4 * hi;
+                    const glm::dvec3 Q0 = P - upP * (0.45 * hh0) + T * along - Nout * dep2;   // its base on the ground
+                    const double flk = 0.8 + 0.4 * tnoise(t * fP * 3.1 + ph, hs ^ 0x44);
+                    // body: the wide, bright, yellow lower part
+                    const glm::vec3 colBody = glm::mix(colHot, glm::vec3(1.0f, 0.66f, 0.26f), 0.4f);
+                    flameG(Q0 + upP * (0.26 * hi) + T * (0.12 * sway), T, upP, Cx, b, 0.24 * hi, std::min(b, 0.35 * dFl + 0.5),
+                           glm::dvec3(colBody) * (radR * flk), 0.26 * hi, hs ^ 0xB0);
+                    // tip: narrower, higher, swaying and leaning downwind, redder (a tongue a few pixels tall is its body alone)
+                    if (px <= 10.0) continue;
+                    const glm::dvec3 tipOff = T * sway + Nout * swayX + wDir3 * lean;
+                    const glm::dvec3 Tt = glm::normalize(upP * (0.75 * hi) + tipOff * 1.2);
+                    const glm::dvec3 Tside = glm::normalize(glm::cross(Tt, Cx) + glm::dvec3(1e-9, 0, 0));
+                    flameG(Q0 + upP * (0.66 * hi) + tipOff * 0.8, Tside, Tt, glm::normalize(glm::cross(Tside, Tt)), 0.4 * b, 0.24 * hi,
+                           std::max(0.4 * b, 0.3), glm::dvec3(glm::mix(colHot, glm::vec3(1.0f, 0.28f, 0.05f), 0.5f)) * (radR * 0.85 * flk),
+                           0.66 * hi, hs ^ 0xB1);
+                    // a puff of flame shed from the top of a bigger one, rising and fading (every puffing period)
+                    if (px > 16.0 && i < 2 && maxSub > 1)
                     {
-                        const uint64_t hl = h ^ (0xA11Cull + (uint64_t)lk * 0x51ull);
-                        const double ph = 6.2832 * fwU(hl ^ 1), w1 = 3.0 + 4.0 * fwU(hl ^ 2), w2 = 7.0 + 6.0 * fwU(hl ^ 3);
-                        const double flick = 0.75 + 0.25 * std::sin(t * w1 + ph) + 0.12 * std::sin(t * w2 + 2.0 * ph);
-                        const double side = (lk == 0 ? -1.0 : 1.0) * (0.35 + 0.25 * fwU(hl ^ 4)) * sAt +
-                                            0.25 * sAt * std::sin(t * (1.5 + fwU(hl ^ 5)) + ph);
-                        const double hL = hh * (0.7 + 0.5 * fwU(hl ^ 6)) * flick;
-                        const glm::dvec3 PL = at(q.x, q.y, 0.0 + dz) + T * side + upP * (0.35 * hh + 0.5 * hL);
-                        const double sAL = 0.3 * sAt, sVL = 0.4 * hL, sCL = std::max(0.6 * sAL, 0.5);
-                        const double SigL = 2.0 * kPiF * sAL * sVL;
-                        ++flamesWantedLast;
-                        const double radL = std::min(radPhys * 0.5, 0.6 / expo) * 0.8 * res * wa * fadeR * lightK / std::sqrt(overlap);
-                        const glm::vec3 colL = glm::mix(glm::vec3(1.0f, 0.42f, 0.10f), glm::vec3(1.0f, 0.72f, 0.32f), (float)std::clamp(heat, 0.0, 1.0));
-                        if (emit(PL, T, upP, Cx, sAL, sVL, sCL, SigL, glm::dvec3(colL) * radL, glm::dvec3(0.0), 0.0, hl, flameCap, 1.0))
+                        const double pz = (t * fP * 0.9 + ph) - std::floor(t * fP * 0.9 + ph);
+                        if (pz < 0.8)
                         {
-                            out[n - 1].ib.w = (float)(0.35 * hh + 0.5 * hL);
-                            ++fireFlamesLast;
+                            const double sp = 0.11 * hi * (1.0 - 0.45 * pz);
+                            flameG(Q0 + upP * (hi * (0.85 + 0.65 * pz)) + tipOff * (1.0 + pz), T, upP, Cx, sp, 1.4 * sp, sp,
+                                   glm::dvec3(1.0, 0.3, 0.06) * (radR * 0.7 * std::pow(1.0 - pz / 0.8, 1.5)), hi * (0.85 + 0.65 * pz),
+                                   hs ^ 0xB2);
                         }
                     }
                 }
-            }
+                // a smaller flame burning out behind the front (a third of the tongues), and spot flames ahead of the head
+                if (c.back && maxSub > 1 && n < flameCap)
+                {
+                    const double back = dFl * (0.8 + 2.5 * fwU(h ^ 52));
+                    const glm::dvec3 Pb = P - upP * (0.45 * hh0) - Nout * back + T * ((fwU(h ^ 53) - 0.5) * spread);
+                    const double hb = hh0 * (0.25 + 0.3 * fwU(h ^ 54)) * (0.6 + 0.8 * tnoise(t * 0.9 + 50.0 * fwU(h ^ 55), h ^ 0x55));
+                    flameG(Pb + upP * (0.4 * hb), T, upP, Cx, 0.22 * hb, 0.35 * hb, 0.22 * hb,
+                           glm::dvec3(1.0, 0.3, 0.05) * (radR * 0.7), 0.4 * hb, h ^ 0xB3);
+                }
+                if (c.spot && n < flameCap)
+                {
+                    const double ahead = 15.0 + 120.0 * fwU(h ^ 57) * fwU(h ^ 57);
+                    const glm::dvec2 qs = c.q + c.nOut * (c.dep + ahead);
+                    if (burnK(qs) > 0.0)
+                    {
+                        const glm::dvec3 Ps = P - upP * (0.45 * hh0) + Nout * (c.dep + ahead);
+                        const double hsF = hh0 * (0.2 + 0.35 * fwU(h ^ 58)) * (0.6 + 0.8 * tnoise(t * 1.1 + 30.0 * fwU(h ^ 59), h ^ 0x56));
+                        flameG(Ps + upP * (0.4 * hsF), T, upP, Cx, 0.22 * hsF, 0.35 * hsF, 0.22 * hsF,
+                               glm::dvec3(colHot) * (radR * 0.75), 0.4 * hsF, h ^ 0xB4);
+                    }
+                }
+                // ── embers: sparks born at the flames, rising on the plume's updraft, drifting downwind, cooling ──
+                if (fo && range < 2500.0 && res > 0.3 && kFireCount < emberCap && !(wildfireDebug & 16))
+                {
+                    const int nEm = 1 + (fwU(h ^ 61) < 0.6 ? 1 : 0) + (px > 25.0 ? 1 : 0) + (px > 60.0 ? 1 : 0);
+                    for (int e = 0; e < nEm && kFireCount < emberCap; ++e)
+                    {
+                        const uint64_t he = fwMix(h ^ (0xE3B0ull + (uint64_t)e * 0x2545F4914F6CDD1Dull));
+                        const double Pp = 2.5 + 4.5 * fwU(he ^ 1);
+                        const double tt = t + Pp * fwU(he ^ 2);
+                        const double cyc = std::floor(tt / Pp);
+                        const double age = tt - cyc * Pp;
+                        if (age > 0.92 * Pp) continue;
+                        const uint64_t hc = fwMix(he ^ (uint64_t)(int64_t)cyc);
+                        const double tau = 1.2 + 2.2 * fwU(hc ^ 3);
+                        const double vz0 = 3.0 + 7.0 * fwU(hc ^ 2) * std::sqrt(std::min(c.heat, 1.0));
+                        const double z = hh0 * (0.4 + 0.5 * fwU(hc ^ 5)) + vz0 * tau * (1.0 - std::exp(-age / tau));
+                        const double sw = 1.2 * std::sqrt(age) * std::sin(age * (2.0 + 3.0 * fwU(hc ^ 7)) + 6.28 * fwU(hc ^ 8));
+                        const glm::dvec3 Pe = P - upP * (0.45 * hh0) + T * ((fwU(hc ^ 1) - 0.5) * spread + sw) +
+                                              wDir3 * (wSp * age * (0.55 + 0.5 * fwU(hc ^ 4)) + 0.1 * leanK * hh0) + Nout * (0.6 * sw);
+                        const glm::dvec3 rp = Pe + upP * z - eye;
+                        const double rr = std::max(glm::length(rp), 2.0);
+                        if (!inView(toEnu(rp), rr, 25.0)) continue;
+                        const double cool = std::exp(-age / (1.0 + 1.6 * fwU(hc ^ 6)));
+                        const double I = 8.0 * (0.4 + 0.9 * fwU(hc ^ 9)) * cool *
+                                         (0.75 + 0.25 * std::sin(age * (13.0 + 9.0 * fwU(hc ^ 10)) + 6.28 * fwU(hc ^ 11)));
+                        const double E = I / (rr * rr);
+                        const double mag = -2.5 * std::log10(E / kLuxMag0);
+                        const double phys = 0.008 * std::pow(10.0, 0.4 * (6.0 - mag)) / daySupp * lightK * fadeR;
+                        const double fl = fireShoulder(phys);
+                        if (fl < 2e-4) continue;
+                        const glm::vec3 col = glm::mix(glm::vec3(1.0f, 0.22f, 0.04f), glm::vec3(1.0f, 0.62f, 0.2f), (float)cool);
+                        fo[kFireCount++] = {glm::vec4(glm::vec3(toEnu(rp) / rr * (1.0 + std::min(z, 199.0) / 1000.0)), (float)fl),
+                                            glm::vec4(col, (float)-rr)};
+                        ++fireEmbersLast;
+                    }
+                }
             }
         }
         else if (fireVisible && fn.rangeKm < 40.0 && n < flameCap && hFl > 0.5)
@@ -1357,7 +1892,7 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                 const double hh = hFl * (0.6 + 0.6 * heat) * (0.8 + 0.4 * std::sin(t * (2.0 + 2.0 * fwU(h ^ 3)) + 6.28 * fwU(h ^ 4)));
                 double latP, lonP;
                 wx::fireOffsetLatLon(f, q, latP, lonP);
-                const double dz = (double)cpuTerrainHeightM((float)latP, (float)lonP) - (double)coarse0;
+                const double dz = dzOf(q);
                 const glm::dvec3 P = at(q.x, q.y, 0.45 * hh + dz);
                 const glm::dvec3 rel = P - eye;
                 const double range = std::max(glm::length(rel), 1.0);
@@ -1453,10 +1988,25 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
     // The points' budget: when a crowd of fires asks for more, their spacing widens (continuously: the levels
     // cross-fade); it relaxes back slowly.
     // the band's spacing likewise (the tongues in view a frame asks for against its budget)
-    if (flamesWantedLast > (uint32_t)(0.95 * kFlameBudget))
+    // (2026-10-28: by the cluster budget: a frame whose tongues did not fit even as single flames widens the spacing on
+    // screen and near the eye; one that fitted with room relaxes them)
+    if (wildfireFlameBand == 0)
+    {
+        if (flamesWantedLast > (uint32_t)(0.95 * kFlameBudget))
+            flameLodScale = std::min(flameLodScale * 1.08f, 16.0f);
+        else if (flamesWantedLast < (uint32_t)(0.6 * kFlameBudget) && flameLodScale > 1.0f)
+            flameLodScale = std::max(flameLodScale / 1.03f, 1.0f);
+    }
+    else if (flameOverflow)
+    {
+        if (flameLodScale >= 15.9f) flameNearScale = std::min(flameNearScale * 1.06f, 4.0f);
         flameLodScale = std::min(flameLodScale * 1.08f, 16.0f);
-    else if (flamesWantedLast < (uint32_t)(0.6 * kFlameBudget) && flameLodScale > 1.0f)
+    }
+    else if (!flameTight)
+    {
         flameLodScale = std::max(flameLodScale / 1.03f, 1.0f);
+        flameNearScale = std::max(flameNearScale / 1.03f, 1.0f);
+    }
     if (firePointsLast >= (uint32_t)(0.95 * ptBudget))
         fireLodScale = std::min(fireLodScale * 1.12f, 64.0f);
     else if (firePointsLast < (uint32_t)(0.6 * ptBudget) && fireLodScale > 1.0f)
@@ -1468,7 +2018,7 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
 void SatelliteSim::weatherFillFireParams(GpuCloudParams &cp)
 {
     cp.fireInfo = glm::vec4(0.0f);
-    if (wildfireRate <= 0.0f || firesNow.empty())
+    if (wildfireRate <= 0.0f || firesNow.empty() || !wildfireScars)
         return;
     const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
     const glm::dvec3 ex = glm::normalize(glm::cross(glm::dvec3(0.0, 0.0, 1.0), up));
@@ -1532,15 +2082,37 @@ nlohmann::json SatelliteSim::wildfiresJson(bool world)
     o["smoke_range"] = {smokeHdrBits >> 8u & 1023u, smokeHdrBits >> 18u & 1023u};
     o["points"] = firePointsLast;
     o["flames"] = fireFlamesLast;
+    o["embers"] = fireEmbersLast;
+    o["near_smoke"] = nearSmokeLast;
+    o["flame_near_scale"] = flameNearScale;
+    o["flame_max_sub"] = flameMaxSubLast;
     o["flame_band"] = wildfireFlameBand;
     o["flames_wanted"] = flamesWantedLast;
     o["flame_lod_scale"] = flameLodScale;
     {
-        std::vector<std::array<double, 8>> v = gFlameDbg;
+        std::vector<std::array<double, 10>> v = gFlameDbg;
         std::sort(v.begin(), v.end(), [](const auto &a, const auto &b) { return a[2] > b[2]; });
         nlohmann::json fa = nlohmann::json::array();
         for (size_t i = 0; i < v.size() && i < 12; ++i) fa.push_back(std::vector<double>(v[i].begin(), v[i].end()));
         o["flame_band_top_range_ds_sA_sV_res_K_lv_rad"] = fa;
+        std::sort(v.begin(), v.end(), [](const auto &a, const auto &b) { return a[0] < b[0]; });
+        nlohmann::json fn = nlohmann::json::array();
+        for (size_t i = 0; i < v.size() && i < 6; ++i) fn.push_back(std::vector<double>(v[i].begin(), v[i].end()));
+        o["flame_band_nearest"] = fn;
+    }
+    {
+        // the wildfire points' nearest ranges (kFireBuf: before the ground snap the range is stored negative)
+        std::vector<double> rr;
+        if (kFireMapped)
+        {
+            const GpuFireball *fo = reinterpret_cast<const GpuFireball *>(static_cast<const char *>(kFireMapped) + 16);
+            for (uint32_t i = firePtFirst; i < firePtFirst + firePtCount && i < kFireballMax; ++i)
+                rr.push_back(std::fabs((double)fo[i].colRange.w));
+        }
+        std::sort(rr.begin(), rr.end());
+        nlohmann::json pr = nlohmann::json::array();
+        for (size_t i = 0; i < rr.size() && i < 6; ++i) pr.push_back(rr[i]);
+        o["points_nearest_m"] = pr;
     }
     o["lights"] = fireLightsLast;
     {

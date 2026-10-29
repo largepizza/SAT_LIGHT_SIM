@@ -5471,7 +5471,14 @@ private:
     float wildfireSmokeTint = 0.0f;     // clouds_v2.wildfire_smoke_tint: -1 blue-grey .. 0 neutral grey .. +1 brown
     int wildfireFlameBand = 1;           // clouds_v2.wildfire_flame_band (no UI): 1 = the close-up flames as a band of tongues on screen, 0 = the old sparse tongues (A/B)
     float flameLodScale = 1.0f;          // x the close-up flames' spacing on screen: widened when they overflow their budget
+    float flameNearScale = 1.0f;         // x the close-up flames' spacing floor near the eye (1.2 x the flame height): likewise
+    bool flameOverflow = false, flameTight = false;   // this frame: the tongues did not fit / fitted only with fewer flames each
+    int flameMaxSubLast = 4;             // this frame: the most flames a resolved tongue was given (harness `fires`)
     uint32_t flamesWantedLast = 0;
+    int wildfireDebug = 0;               // clouds_v2.wildfire_debug (no UI, harness): bits 1 no flames, 2 no points, 4 no smoke, 8 no smoke at the flames, 16 no embers
+    int wildfireSmokeCurtain = 1;        // clouds_v2.wildfire_smoke_curtain (no UI): 1 = smoke Gaussians from the smoke's own spread
+                                         // (curtains along the front, nested nodes along a segment, 2026-10-28), 0 = the old pieces (A/B)
+    bool wildfireScars = true;           // clouds_v2.wildfire_scars (no UI): the burn scars on the ground (off: isolate the smoke)
     int wildfireSmokeAlloc = 1;          // clouds_v2.wildfire_smoke_alloc (no UI): 1 = trail pieces shared by what is on screen, 0 = the old fair share (A/B)
     float wildfireSmokeSpread = 1.0f;   // clouds_v2.wildfire_smoke_spread: x the plumes' width (same mass: thinner)
     float wildfireSmokeSpectral = 0.6f; // clouds_v2.wildfire_smoke_spectral: x the Angstrom exponent (1 = ~1.6: the
@@ -5483,6 +5490,8 @@ private:
         int nS = 0, mainSrc = 0;
         glm::dvec2 c[5]{};
         double w[5]{}, ext[5]{};
+        glm::dvec2 ax[5]{};                    // each section's principal axis along the front (unit, xy)
+        double extL[5]{}, extW[5]{};           // its rms spread along / across that axis (m)
         double H = 0.0, act = 0.0, Q = 0.0;
         glm::dvec2 wDir{0.0, 1.0};
         bool ready = false;
@@ -5522,7 +5531,7 @@ private:
     std::unordered_map<uint64_t, float> fireGroundCache;   // fire id -> the full DEM's height there (a file read each)
     float fireLodScale = 1.0f;                 // x the front points' spacing: widened when a crowd of fires overflows
                                                // the frame's point budget, relaxed back slowly (the levels cross-fade)
-    uint32_t firePointsLast = 0, fireFlamesLast = 0, fireLightsLast = 0;   // this frame (harness `fires`)
+    uint32_t firePointsLast = 0, fireFlamesLast = 0, fireLightsLast = 0, fireEmbersLast = 0, nearSmokeLast = 0;   // this frame (harness `fires`)
     std::vector<glm::vec4> fireGlowDbg;   // this frame's glow lights: ENU from the eye (m) xyz, w = r0 (harness `fires`)
     double firePeakFlare = 0.0, fireFlareSum = 0.0, fireGlowSum = 0.0;     // this frame's points / glow (harness `fires`)
     uint32_t smokeSegsLast = 0, smokePiecesLast = 0, smokeSinglesLast = 0, smokeOffViewLast = 0, smokeLostLast = 0;   // (harness `fires`)
