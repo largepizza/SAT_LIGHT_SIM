@@ -171,6 +171,11 @@ layout(std430, set = 0, binding = 21) readonly buffer GroundBeamsBuf {
     vec4 refrSpotInfo;   // sunspot groups (GpuRefraction::spotInfo / spots, fillSunspots): x = count, y = cycle activity, z = the Moon centre's refraction (rad)
     vec4 refrSpots[2 * SUN_GROUP_MAX];
     vec4 refrE[REFR_N * 2];   // entry i: [2i] = (R, G, B refraction, aoa), [2i + 1] = (colR, colM, colO3, colH)
+    // The corona's structure (GpuRefraction::cor*, SatelliteSimCorona.cpp fillCorona; solarCoronaDyn).
+    vec4 corInfo;    // x activity 0..1, y fine-structure phase, z streamers, w 1 = the occulter (coronagraph)
+    vec4 corInfo2;   // x CMEs, y / z the neutral line's apparent latitude east / west (rad), w coronagraph display lift
+    vec4 corStr[2 * 12];
+    vec4 corCme[2 * 6];
 #endif
 };
 
@@ -3430,6 +3435,7 @@ const float kCoronaGain = 0.4;   // the corona's radiance per unit of solarCoron
 // The Sun's rotation axis is taken as the ecliptic pole (7 deg off), projected on the sky.
 const float kCoronaMaxR = 9.0;     // solar radii
 const float kCoronaRss  = 2.5;     // source surface: closed field below, radial above
+#ifndef SKY_SUN_SHADOW   // (the full variants draw solarCoronaDyn)
 vec3 solarCoronaAt(vec3 dir, vec3 sunD)
 {
     vec3  q  = dir - sunD * dot(dir, sunD);
@@ -3466,6 +3472,140 @@ vec3 solarCoronaAt(vec3 dir, vec3 sunD)
     col += vec3(1.0, 0.16, 0.38) * (4.0 * prom * smoothstep(0.55, 0.7, nP) + 2.0 * chrom);
     return col;
 }
+#endif
+
+#ifdef SKY_SUN_SHADOW
+// ── The dynamic corona (2026-10-28, issue 20261028_220320 "Sun corona work") ──────────────────────────────────────
+// solarCoronaAt's corona with its structure from the CPU (SatelliteSimCorona.cpp fillCorona, a pure function of sim time):
+//  - the field lines are a dipole about each limb's NEUTRAL LINE (the warped current sheet where it crosses that limb,
+//    corInfo2.yz), the warp fading toward the poles so the two limbs meet there without a seam; the fibres are read at
+//    each line's own footpoint, north and south of the sheet apart (the old corona mirrored them: a symmetric picture),
+//    cross-faded over a narrow band at the sheet where the stalk is drawn; near maximum the field is weaker (closer to
+//    radial, a lower source surface);
+//  - the shape follows the cycle (corInfo.x): near minimum the outer corona concentrates in a belt along the sheet
+//    (the flattened corona) and polar coronal holes are dark, full of fine plumes; near maximum it is round;
+//  - helmet streamers (corStr): a broad closed base narrowing to a cusp, then a narrow stalk bending toward the sheet;
+//  - CMEs (corCme): a limb CME is a bright loop (a circle on the cone of its width), its legs, a dark cavity and a bright
+//    core; an Earth-directed one is a halo ring growing round the Sun;
+//  - the fine structure flows outward over days (corInfo.y) and the prominences evolve.
+float corWrap(float a) { return a - 6.2831853 * floor((a + 3.14159265) / 6.2831853); }
+float corSq(float x) { return x * x; }
+// The noise at a footpoint (apparent latitude l0 on side s): x the fibres, y the coarse streamer bundles.
+vec2 corFib(float l0, float s, float lr, float ph)
+{
+    vec2  foot = vec2(s * cos(l0), sin(l0));
+    float nF = texture(cloudNoiseTex, vec3(foot * 2.6, 0.37 + lr * 0.12 - ph)).r;
+    float nE = texture(cloudNoiseTex, vec3(foot * 6.3, 0.11 + lr * 0.25 - 2.0 * ph)).g;
+    float nS = texture(cloudNoiseTex, vec3(foot * 0.42 + 0.5, 0.71 + lr * 0.02 - 0.25 * ph)).r;
+    return vec2(0.65 * nF + 0.35 * nE, nS);
+}
+vec3 solarCoronaDyn(vec3 dir, vec3 sunD)
+{
+    vec3  q  = dir - sunD * dot(dir, sunD);
+    float lq = length(q);
+    float rS = lq / kSunAngR;
+    if (rS < 1.0 || rS > kCoronaMaxR) return vec3(0.0);
+    vec3  pole = normalize(cloud.eclipticPoleENU.xyz - sunD * dot(cloud.eclipticPoleENU.xyz, sunD));
+    vec3  e2   = cross(sunD, pole);
+    float Y = dot(q, pole) / lq, X = dot(q, e2) / lq;          // X > 0: the west limb
+    float act  = corInfo.x, ph = corInfo.y;
+    float side = X >= 0.0 ? 1.0 : -1.0;
+    float ell  = atan(Y, abs(X));                               // apparent latitude on this limb
+    float psi  = atan(X, Y);                                    // position angle from north, west positive
+    float lr   = log(rS);
+    float beta = side > 0.0 ? corInfo2.z : corInfo2.y;
+    float cl   = cos(ell);
+    float m    = ell - beta * cl * cl;                          // latitude from the neutral line
+    float rss  = mix(2.5, 1.7, act);
+    float m0   = acos(clamp(cos(m) / sqrt(min(rS, rss)), 0.0, 1.0));
+    m0 = mix(m0, abs(m), 0.45 * act);
+    float wN   = smoothstep(-0.05, 0.05, m);
+    float cN   = cos(m0);
+    float lN   = m0 + beta * cN * cN, lS = -m0 + beta * cN * cN;
+    vec2  nz   = corFib(wN >= 0.5 ? lN : lS, side, lr, ph);
+    if (wN > 0.001 && wN < 0.999)                               // the band at the sheet: both footpoints
+        nz = mix(corFib(lS, side, lr, ph), corFib(lN, side, lr, ph), wN);
+    float fib  = smoothstep(0.2, 0.85, nz.x);
+    float strmN = smoothstep(0.42, 0.72, nz.y);
+
+    float inner = 1.425 * pow(rS, -7.0) + 2.565 * pow(rS, -17.0);
+    float outer = 0.0532 * pow(rS, -2.2);
+    // The shape: a belt along the sheet near minimum (the flattened corona), round near maximum.
+    float belt   = exp(-m * m / (2.0 * corSq(mix(0.32, 1.2, act))));
+    float innerK = mix(0.65 + 0.55 * belt, 1.0, act);
+    float outerK = mix(0.2 + 1.7 * belt, 1.0, act);
+    // Polar coronal holes (open field from high footpoints) near minimum: dark, with fine plumes.
+    float holeK = (1.0 - act) * smoothstep(0.9, 1.15, m0);
+    float plume = 0.0;
+    if (holeK > 0.001) {
+        float nPl = texture(cloudNoiseTex, vec3(vec2(side * cos(m0), sin(m0)) * 15.0, 0.53 + lr * 0.03 - 0.5 * ph)).r;
+        plume = holeK * smoothstep(0.5, 0.85, nPl);
+    }
+    // Helmet streamers.
+    float sIn = 0.0, sOut = 0.0;
+    int   nS  = int(corInfo.z);
+    for (int k = 0; k < nS; ++k) {
+        vec4  a = corStr[2 * k], b = corStr[2 * k + 1];
+        float bK  = b.w * (1.0 - exp(-(rS - 1.0) / 1.2));
+        float bS  = a.y > 0.0 ? corInfo2.z : corInfo2.y;
+        float eK  = mix(a.x, bS, bK);
+        float d   = corWrap(psi - atan(a.y * cos(eK), sin(eK)));
+        float hlm = smoothstep(b.z + 0.35, b.z - 0.5, rS);       // the closed helmet below its cusp
+        float w   = mix(b.y * (1.0 + 0.08 * rS), b.x * (0.65 + 0.5 * smoothstep(1.0, 1.6, rS)), hlm);
+        float pr  = a.w * exp(-0.5 * d * d / (w * w));
+        sIn  += pr * hlm;
+        sOut += pr * (0.25 + 0.75 * (1.0 - hlm));
+    }
+    // The current sheet's own stalk along the neutral line (strongest near minimum).
+    float sheet = exp(-(m * m) / (0.012 + 0.004 * rS)) * smoothstep(1.2, 2.2, rS) * (1.0 - 0.6 * act);
+    float B = inner * innerK * (1.0 - 0.5 * holeK) * (0.45 + 1.1 * fib) * (1.0 + 1.6 * sIn)
+            + outer * (outerK * (1.0 - 0.6 * holeK) * (0.4 + 4.5 * strmN + 3.0 * sheet) + 5.0 * sOut) * (0.35 + 1.3 * fib)
+            + (0.8 * inner + 1.6 * outer) * plume;
+    // CMEs.
+    float cmeB = 0.0, cav = 0.0;
+    int   nC   = int(corInfo2.x);
+    vec2  P    = rS * vec2(X, Y);
+    for (int c = 0; c < nC; ++c) {
+        vec4  a = corCme[2 * c], b = corCme[2 * c + 1];
+        float Rf = a.z;
+        if (b.x > 0.5) {
+            // a halo: the expanding front's edge, brighter on the side of its source, its edge textured
+            float nH = texture(cloudNoiseTex, vec3(vec2(X, Y) * 2.2 + b.y * 0.013, 0.61 + Rf * 0.04)).r;
+            float ring = exp(-corSq((rS - Rf * (0.92 + 0.16 * nH)) / (0.16 * Rf))) * (0.55 + 0.45 * b.z * cos(psi - a.x));
+            cmeB += a.w * 0.12 * pow(Rf, -1.8) * (ring * (0.5 + nH) + 0.25 * step(rS, Rf) * nH);
+        } else {
+            vec2  u  = vec2(sin(a.x), cos(a.x));
+            float sw = sin(a.y);
+            float rad = Rf * sw / (1.0 + sw);
+            vec2  C  = u * (Rf - rad);
+            vec2  dv = P - C;
+            float dist = length(dv);
+            vec2  dn = dv / max(dist, 1e-4);
+            float nL = texture(cloudNoiseTex, vec3(dn * 1.7 + b.y * 0.013, 0.27 + Rf * 0.05)).r;
+            float shell = exp(-corSq((dist - rad * (0.9 + 0.2 * nL)) / (0.2 * rad + 0.05))) * (0.55 + 0.45 * dot(dn, u))
+                        * (0.25 + 1.5 * nL * nL);
+            float ang  = acos(clamp(dot(P / rS, u), -1.0, 1.0));
+            float legs = exp(-corSq((ang - a.y) / 0.08)) * (1.0 - smoothstep(Rf - 1.4 * rad, Rf - rad, rS)) * smoothstep(1.0, 1.4, rS);
+            vec2  cc   = C - u * 0.3 * rad;
+            float core = b.z * exp(-dot(P - cc, P - cc) / corSq(0.3 * rad)) * (0.4 + 1.2 * nL);
+            cav = max(cav, (1.0 - smoothstep(0.55 * rad, 0.95 * rad, dist)) * smoothstep(1.4, 2.0, Rf) * a.w);
+            cmeB += a.w * 0.1 * pow(Rf, -1.7) * (shell + 0.4 * legs + 1.2 * core);
+        }
+    }
+    B = B * (1.0 - 0.55 * clamp(cav, 0.0, 1.0)) + cmeB;
+    B *= 1.0 - smoothstep(mix(0.55, 0.3, corInfo.w) * kCoronaMaxR, kCoronaMaxR, rS);   // (the coronagraph: no field-stop edge)
+    // The coronagraph's display (the occulter): a radial lift, as coronagraph images are shown.
+    B *= mix(1.0, pow(rS, corInfo2.w), corInfo.w);
+    vec3  col = B * mix(vec3(0.86, 0.92, 1.0), vec3(1.0, 0.95, 0.86), exp(-(rS - 1.0) * 6.0));
+    // Prominences (evolving with the phase) and the chromosphere.
+    float nP   = texture(cloudNoiseTex, vec3(vec2(Y, X) * 1.9 + 0.3, 0.83 + (rS - 1.0) * 0.9 - 3.0 * ph)).r;
+    float hP   = 0.14 * smoothstep(0.55, 0.8, nP);
+    float prom = smoothstep(0.0, 0.004, rS - 1.0) * (1.0 - smoothstep(0.6 * hP, hP + 1e-4, rS - 1.0));
+    float chrom = 1.0 - smoothstep(0.008, 0.02, rS - 1.0);
+    col += vec3(1.0, 0.16, 0.38) * (4.0 * prom * smoothstep(0.55, 0.7, nP) + 2.0 * chrom);
+    return col;
+}
+#endif
 
 #ifdef SKY_SUN_SHADOW
 // ── The refraction table (2026-10-26; GroundBeamsBuf's refr* block, SatelliteSimRefraction.cpp) ─────────────────────
@@ -7898,8 +8038,10 @@ void main() {
             }
             // The corona through the same bent rays as the disc (2026-10-27, issue 20261027_212202): it was drawn about the
             // TRUE (unrefracted) Sun while the disc and the Moon were refracted, a ring below the Sun near the horizon.
-            if (tot > 0.001 && ang3.g < kCoronaMaxR * kSunAngR && !moonDiscHit && onS.g > 0.5)
-                solarCorona = solarCoronaAt(dTg, sunDir) * (tot * sunGate * kCoronaGain);
+            // The inertial lock's occulter (a coronagraph, corInfo.w) shows it without an eclipse.
+            float totC = max(tot, corInfo.w);
+            if (totC > 0.001 && ang3.g < kCoronaMaxR * kSunAngR && !moonDiscHit && onS.g > 0.5)
+                solarCorona = solarCoronaDyn(dTg, sunDir) * (totC * sunGate * kCoronaGain);
             // The sea under a mirage: rays the drawn sea hides may climb back off the warm layer (the inverted image);
             // the table decides there. Terrain, meshes and opaque cloud still hide the disc.
             // Surfaces hide the disc outright; CLOUD by its transmittance (2026-10-27, issue 20261027_182140 "Sun occlusion
@@ -8039,7 +8181,7 @@ void main() {
             float veilT = min(dot(cloudAtSun, vec3(1.0 / 3.0)), cloud.sunCloudT);
             color += dLight
                    + (glareA * visS * gCol * obsSunF * gs + coronA * visS * gCol * 0.12 * obsSunF * gs) * veilT
-                   + solarCorona * geomFade * min(cloudBlock, cloud.sunCloudT);
+                   + solarCorona * geomFade * min(cloudBlock, corInfo.w > 0.5 ? 1.0 : cloud.sunCloudT);
         }
 #else
         color += (discVis * geomFade * sunCol

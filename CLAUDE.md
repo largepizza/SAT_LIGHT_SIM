@@ -8436,6 +8436,27 @@ EXPOSURE AND MOON section since 2026-10-06, key
   blurred visibility, exactly 1 outside the penumbra); the loop evaluated the pair twice a step. The report's view (the
   whole frame in the horizon band, the loop per pixel): GPU 63.5-63.9 -> 57.1 ms, the same view a day later (no eclipse)
   51.7-52.1 ms; sky pass 40.1-40.3 -> 34.3 (30.2-30.4 without). The rest is that zoomed limb view's own cost.
+- **The dynamic corona** (2026-10-28, issue 20261028_220320 "Sun corona work"; `solarCoronaDyn` in sat_sky.frag, full
+  variants only — SKY_LITE keeps `solarCoronaAt`; `SatelliteSimCorona.cpp` `fillCorona`, called after `fillSunspots`;
+  data in `GpuRefraction::corInfo / corInfo2 / corStr[24] / corCme[12]`, the refraction block's tail). A pure function
+  of sim time: activity = SpaceWeather's cycle envelope (`solarCycleEnvelope`, 0 minimum .. 1 maximum). The field
+  lines are a dipole about each LIMB'S NEUTRAL LINE (the current sheet `sheetLat(L)`: a ring tilted 5 -> 67 deg with
+  activity, warped near maximum, read where it crosses the east / west limb as the Sun turns, 27.2753 d), the warp
+  fading to the poles (no seam there); fibres and coarse bundles read at each line's own footpoint (north and south of
+  the sheet apart, cross-faded over +-0.05 rad at it: no mirror). Near minimum: an equatorial belt (Ludendorff
+  flattening, `outerK`) and dark polar holes with plumes (`holeK`); near maximum round, a lower source surface. Up to
+  12 helmet streamers (11 slots living 2-5 rotations, on the sheet or anywhere by activity, + the largest sunspot
+  groups near the limbs), projected from their heliographic place (rise at the east limb, fade toward the central
+  meridian). CMEs (<= 6): Earth-directed = `spaceWeatherCmeArrivals` (the storms' own hashes) as a halo ring leaving a
+  transit time before arrival (the Sun's Fury: 17.5 h, at its flare); limb CMEs per 3-h bin at 0.5 + 4 act + 3
+  smoothstep(Kp 4, 7) a day (loop, cavity, core). The fine structure flows outward (`corInfo.y` = fract(0.07 days)).
+  **Coronagraph**: with the inertial lock's occulter (`corInfo.w`) the corona draws without an eclipse (`totC`), not
+  dimmed by `sunCloudT` (the occulter forces it 0), lifted by r^`photometry.corona_display_lift` (1.2, no UI) and faded
+  from 2.7 R. Harness `corona` (state) / `corona cme [halo=1] [r=4] [days=60]` (jump to a CME's front at r solar radii).
+  Cost (RTX 3070 Ti, 1920x1009, old vs new sky SPVs interleaved, a GPU shared with other apps): sky pass within the
+  run-to-run noise at the report's totality (old 4.77 / 4.02 / 3.88, new 5.03 / 2.81 / 2.99 ms) and in a coronagraph
+  from 900 km (old, drawing no corona, 4.55 / 4.46; new 3.99 / 3.91); 168 registers both, TAA binary 942 -> 951 KB,
+  SKY_LITE unchanged (230272 B); CPU `corona` ~0.01 ms. Captures `harness_live/cor/` (untracked).
 - **The Moon writes its distance into the unified depth**, so stars and planets behind it are depth-occluded
   and satellites (nearer) draw in front; star_point.vert's cull takes the real radius from
   `PointDrawPC::moonDirENU.w`.

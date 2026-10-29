@@ -8729,6 +8729,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         mwStarClouds = p.value("milky_way_star_clouds", mwStarClouds);
         mwZoomDetail = p.value("milky_way_zoom_detail", mwZoomDetail);
         mwZoomOn = p.value("milky_way_zoom", mwZoomOn);
+        coronaDisplayLift = settingClamp(p.value("corona_display_lift", coronaDisplayLift), 0.0f, 4.0f);
         mwZoomFrom = p.value("milky_way_star_zoom_from", mwZoomFrom);
         mwZoomFull = p.value("milky_way_star_zoom_full", mwZoomFull);
         mwStarFill = p.value("milky_way_star_fill", mwStarFill);
@@ -9590,6 +9591,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"milky_way_star_clouds", mwStarClouds},
         {"milky_way_zoom_detail", mwZoomDetail},
         {"milky_way_zoom", mwZoomOn},
+        {"corona_display_lift", coronaDisplayLift},
         {"milky_way_star_zoom_from", mwZoomFrom},
         {"milky_way_star_zoom_full", mwZoomFull},
         {"milky_way_star_fill", mwStarFill},

@@ -71,5 +71,13 @@ float auroraOvalWeightCpu(const AuroraGpu &g, const glm::dvec3 &dirEcef);
 // The geomagnetic north pole (dipole axis), ECEF unit vector — kGeomagPoleECEF in the shaders.
 glm::dvec3 geomagPoleEcef();
 
+// The Earth-directed CMEs behind the storms above (2026-10-28, the corona): every procedural CME storm, and the scripted
+// one, ARRIVING in [t0, t1] (s since J2000), with its peak Kp-equivalent — the same hashes as the index, so a halo CME
+// drawn leaving the Sun is the storm that later arrives. Returns the count written (at most maxN), by arrival.
+struct CmeArrival { double arriveT; double peakKp; bool scripted; };
+int spaceWeatherCmeArrivals(double t0, double t1, double rateScale, CmeArrival *out, int maxN);
+// The cycle's envelope 0.15 (minimum) .. 1 (maximum) at sim time t, alone.
+double solarCycleEnvelope(double tJ2000s);
+
 // Geomagnetic storm scale for a Kp (NOAA G1..G5 from Kp 5..9), or 0.
 int geomagStormScale(double kp);

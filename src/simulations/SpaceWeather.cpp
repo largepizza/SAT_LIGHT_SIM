@@ -175,6 +175,29 @@ double combine(const Parts &P) {
 
 double spaceWeatherKp(double t, double rateScale) { return combine(activityParts(t, rateScale)); }
 
+double solarCycleEnvelope(double t) { return cycleEnvelope(t); }
+
+int spaceWeatherCmeArrivals(double t0, double t1, double rateScale, CmeArrival *out, int maxN) {
+    int n = 0;
+    rateScale = std::max(rateScale, 0.0);
+    const int64_t b0 = (int64_t)std::floor(t0 / kDay), b1 = (int64_t)std::floor(t1 / kDay);
+    for (int64_t b = b0; b <= b1 && n < maxN; ++b) {
+        // activityParts tests the bin with the cycle / equinox factors at the query time; the bin's middle here
+        // (they move over months: only a storm at the very edge of the odds can differ).
+        const double tb = ((double)b + 0.5) * kDay;
+        const double pDay = 0.15 * cycleEnvelope(tb) * equinoxFactor(tb) * rateScale;
+        const H3 h = hash3(b, 300);
+        if (h.x >= pDay) continue;
+        const double arrive = ((double)b + h.y) * kDay;
+        if (arrive < t0 || arrive > t1) continue;
+        out[n++] = {arrive, cmePeakKp(h.z), false};
+    }
+    if (gScriptedOn && gScriptedArrive >= t0 && gScriptedArrive <= t1 && n < maxN)
+        out[n++] = {gScriptedArrive, gScriptedPeak, true};
+    std::sort(out, out + n, [](const CmeArrival &a, const CmeArrival &b) { return a.arriveT < b.arriveT; });
+    return n;
+}
+
 void spaceWeatherSetScriptedStorm(bool enabled, double arriveT, double peakKp) {
     gScriptedOn = enabled;
     gScriptedArrive = arriveT;

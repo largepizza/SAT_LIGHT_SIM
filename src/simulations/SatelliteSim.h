@@ -1581,8 +1581,20 @@ struct GpuRefraction
     glm::vec4 spots[2 * 16];   // group g: [2g] = (latitude, longitude from the central meridian (rad, + west), half-length (sphere radii), seed),
                                // [2g + 1] = (Joy's-law tilt (rad), envelope 0..1, complexity (delta) 0..1, size 0..1)
     GpuRefrEntry e[refr::kTableN];
+    // The solar corona's structure now (2026-10-28, SatelliteSimCorona.cpp fillCorona; sat_sky.frag solarCoronaDyn): a
+    // pure function of sim time from the solar cycle, the Sun's rotation and the space weather's CMEs.
+    glm::vec4 corInfo;    // x = activity 0 (minimum) .. 1 (maximum), y = the fine structure's phase (fract), z = streamers,
+                          // w = 1 the inertial lock's occulter (a coronagraph: drawn without an eclipse)
+    glm::vec4 corInfo2;   // x = CMEs, y / z = the neutral line's apparent latitude on the east / west limb (rad),
+                          // w = the coronagraph's radial display lift (exponent of r)
+    glm::vec4 corStr[2 * 12];   // streamer k: [2k] = (apparent latitude of its base (rad), side +1 west / -1 east,
+                                // plane-of-sky factor, amplitude), [2k + 1] = (base half-width (rad), stalk half-width
+                                // (rad), cusp radius (solar radii), bend toward the neutral line 0..1)
+    glm::vec4 corCme[2 * 6];    // CME c: [2c] = (axis position angle from north, west + (rad), half-width (rad), front
+                                // radius on the sky (solar radii), amplitude), [2c + 1] = (1 halo, seed, core share, 0)
 };
-static_assert(sizeof(GpuRefraction) == 80 + 2 * 16 * 16 + refr::kTableN * 32, "GpuRefraction layout mismatch");
+static_assert(sizeof(GpuRefraction) == 80 + 2 * 16 * 16 + refr::kTableN * 32 + 32 + 24 * 16 + 12 * 16,
+              "GpuRefraction layout mismatch");
 struct GpuGroundBeams
 {
     uint32_t count;
@@ -7752,6 +7764,12 @@ private:
     refr::Profile refrProfileAt(double simT) const;
     void updateRefraction();
     void fillSunspots(double simT);
+    void fillCorona(double simT);          // SatelliteSimCorona.cpp: refrGpu.cor* (the corona's structure now)
+    nlohmann::json coronaJson() const;     // harness `corona`
+    int coronaStreamers = 0, coronaCmes = 0;
+    // The coronagraph's radial display lift (the inertial lock's occulter): x r^this, as coronagraph images are
+    // displayed (the K corona falls ~1000x from 2 to 9 radii). settings photometry.corona_display_lift (no UI).
+    float coronaDisplayLift = 1.2f;
     void refrDerive();                          // the inverse map and the Sun's quantities, from refrTable
     bool refractEnu(glm::vec3 &enu, float &aoa, float &scint) const;   // a source at infinity: false = below the apparent horizon
     nlohmann::json refractionJson() const;

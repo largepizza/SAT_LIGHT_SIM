@@ -163,6 +163,7 @@ void SatelliteSim::updateRefraction()
         ++refrSerial_; // a new table: updateStars rebuilds its per-elevation table
     refrDerive();
     fillSunspots(simT);
+    fillCorona(simT);
 }
 
 // Sunspots (2026-10-27, issue 20261027_000948 "Sunspot look": "only circular ... we need pinprick dotted dark spots,
