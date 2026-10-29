@@ -115,8 +115,8 @@ void main() {
     vec2  psf  = pointPsf(satFlareToMag(fragIntensity) + gainMag);
     // A resolved satellite's sprite is wider than its point (sat_flare.comp: the object's size): same drawn flux.
     float sig  = max(psf.y, pointSpriteSigmaPx(fragAngSize));
-    float pixD = d * fragAngSize;
-    float core = psf.x * (psf.y * psf.y) / (sig * sig) * exp(-pixD * pixD / (2.0 * sig * sig));
+    // Averaged over the pixel (point_style.glsl): sampled at its centre the drawn light pulsed with the sub-pixel phase.
+    float core = psf.x * (psf.y * psf.y) / (sig * sig) * pointPixelGauss((gl_PointCoord - 0.5) * fragAngSize, sig);
 
     float brightness = core * cloudVis * terrainVis;
     outColor = vec4(fragColor * brightness, brightness);

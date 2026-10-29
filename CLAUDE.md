@@ -8288,7 +8288,19 @@ whole picture, the Milky Way's star-cloud points and the Moon included). `Satell
 - **Real time, not sim time.** `buildUI` advances `twinkleClock_` (real frame seconds x "Star twinkle rate",
   `photometry.star_twinkle_rate` 0.3, mod 1000 s: every twinkle frequency is a whole number of cycles in it) and
   `turbClock_`. `PointDrawPC::waveTime` IS the twinkle clock now (only star_point.vert read it); the twinkle amplitude
-  is still the table's scintillation index. star_point.vert no longer dances each star by its aoa.
+  is still the table's scintillation index, x min(rate / 0.1, 1) (`PointDrawPC::noTwinkle` = 1 - that share; 1 on the
+  planet draws): rate 0 = no twinkle at all. star_point.vert no longer dances each star by its aoa.
+- **The per-star phase is hashed from the star's INDEX** (`gl_VertexIndex`, 2026-10-28, issue 20261028_220009). It was
+  fract(sin(dot(skyDir, k)) x 43758) of the star's ENU direction, which moves every frame while time runs: a new random
+  phase each frame, so every catalogue star flickered as white noise at the frame rate whatever the rate (0 included),
+  none while paused, none above the air (no scintillation). Report view at rate 0, time running, the catalogue stars
+  alone (Milky Way star clouds off), 3x3 sum frame to frame 57% -> 1.3% (paused 0%).
+- **Point sprites average their PSF over the pixel** (`pointPixelGauss`, point_style.glsl; star_point.frag and
+  sat_point.frag): sampled at the pixel centre a sigma-0.4 point drew 0.69 of its light (0.2 of its peak) centred on a
+  pixel corner, so a star drifting with the sky (0.15 px/s at a 30-deg field) pulsed. The box-filtered Gaussian keeps
+  the drawn light at every sub-pixel phase (its mean over phases, i.e. the look, is unchanged; the brightest pixel at
+  the best phase drops ~0.6x for the faintest points). The Milky Way's star-cloud points (sigma 0.9 px, sky pass under
+  the TAA) vary ~3% frame to frame with time running (1.4% paused): the sub-pixel drift through the TAA, not a twinkle.
 - **The warp** runs after the main pass, before the UI, inside the pre-UI hook (`recordPreUiCopy`, SatelliteSimVideo.cpp;
   App now calls it for the HQ photo's frames too, the sim takes no clean copy of the photo target): the swapchain image
   is copied to `turbFrameImg` (swap format, recreated in onResize, so the photo target's extent too), then a fullscreen
@@ -8305,12 +8317,15 @@ whole picture, the Milky Way's star-cloud points and the Moon included). `Satell
   power-of-two levels cross-faded and keyed by the absolute level (a zoom never rescales a field: q = m dir is ~1e4
   cells), 2x wide in E / N. **Never make the cell scale vary with elevation or the displacement exceed ~1/4 cell**: a
   per-elevation scale shears the field by m' x 1e4 cells, and a 5.7-px rms on 6-px cells folded a setting Sun's limb
-  into saw teeth. Boils: two phases of 0.8 s, sin^2 weights renormalised, each re-drawn (a hashed jump) at zero weight,
-  plus a drift of 0.6 minimum cells / s.
+  into saw teeth. Boils: THREE phases of 0.9 s a third apart, sin^2 weights renormalised, each re-drawn (a hashed jump)
+  at zero weight, plus a drift of 0.6 minimum cells / s. Three normalised sin^2 phases change at an exactly constant
+  rate; the first cut's two (0.8 s) stood still twice a cycle (each phase alone at its peak), which read as the warp
+  updating ~2.5 times a second (issue 20261028_223915: the frame-to-frame change's 8-frame mean swung 0.19-0.31 at
+  2.5 Hz, now flat 0.23-0.24).
 - **Runs only when it shows**: the largest 3-sigma displacement in view >= 0.3 px (`kMinRunPx`), so not at a normal
   field of view (physically 0.3-2" rms at the zenith or from a high site, ~10" at a sea-level horizon). Not on Potato.
   The Sun's and the Moon's disc jitter in sat_sky.frag is GONE (they boil through the warp; `refrSun.z` is unread).
-- Measured (RTX 3070 Ti, 1920x1009): copy + warp 0.24-0.26 ms when it runs (it lands in the `ui_overlay` timestamp
+- Measured (RTX 3070 Ti, 1920x1009): copy + warp 0.36-0.43 ms when it runs (six noise evaluations; four were 0.24-0.26) (it lands in the `ui_overlay` timestamp
   bucket), 0 otherwise; star peak-over-background -1.3% in a 0.6-deg Milky Way field (lap^2 -2.4%). Harness `state` ->
   `turbulence` {active, max_rms_px, max_px_3sigma, frames_run, clocks}; `refraction.samples[].aoa_mean_dist_km`.
   Scripts / captures `harness_runs/turb/` (untracked; r3: the sea-level Sun boiling, `videos/sun_boil.mp4`).

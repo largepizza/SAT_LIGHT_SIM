@@ -7652,7 +7652,9 @@ PointDrawPC SatelliteSim::buildPointDrawPC(VulkanContext &ctx)
     pc.fovYRad = glm::radians(camera.fovYDeg);
     pc.aspect = (float)ctx.swapExtent.width / (float)ctx.swapExtent.height;
     pc.waveTime = (float)twinkleClock_; // the twinkle clock: real seconds x starTwinkleRate (star_point.vert)
-    pc.noTwinkle = 0.0f;
+    // 1 - the stars' twinkle amplitude share: "Star twinkle rate" 0 = no twinkle at all, full amplitude from 0.1
+    // (2026-10-28, issue 20261028_220009; the planet draws set 1)
+    pc.noTwinkle = 1.0f - std::clamp(starTwinkleRate / 0.1f, 0.0f, 1.0f);
     {   // w: the Moon's angular radius (star cull); xyz the Moon AS SEEN (refracted like the stars, 2026-10-27)
         glm::vec3 mApp = glm::normalize(glm::vec3(moonDirENU));
         float ao, sc;

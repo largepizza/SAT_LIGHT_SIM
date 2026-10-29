@@ -13,7 +13,8 @@
 //
 // Time: the field evolves on REAL (frame) seconds, not sim time — seeing is a property of the moment; time warp must not
 // strobe it, and a paused sky still boils. Frozen flow (a drift with a wind) + boiling (two phases of the noise
-// cross-faded, each re-drawn at its zero weight, normalised to a constant rms).
+// cross-faded, each re-drawn at its zero weight, normalised to a constant rms: three phases, so the field changes at a
+// constant rate).
 #include "SatelliteSim.h"
 #include "Refraction.h"
 #include "FrameProfile.h"
@@ -24,7 +25,10 @@
 namespace
 {
 constexpr int kTabN = 64;
-constexpr double kCycleS = 0.8;          // a boiling phase's life (s): the field is re-drawn every 0.4 s, cross-faded
+constexpr double kCycleS = 0.9;          // a boiling phase's life (s): three phases a third of it apart, cross-faded
+constexpr int kPhases = 3;               // (2026-10-28, issue 20261028_223915) three sin^2 phases a third apart, normalised to
+                                         // unit rms, change at a CONSTANT rate; with two the field stood still every half
+                                         // cycle (each phase at its peak alone), read as updates ~2.5 times a second
 constexpr double kWindCellsPerS = 0.6;   // the frozen flow's drift (minimum cells / s), along the local east
 constexpr double kPhysCellRad = 6e-5;    // ~12": the field's cell (vertical) where the pixel is finer than it
 constexpr double kMinCellPx = 6.0;       // never finer than this on screen (no tearing of the point sprites)
@@ -280,14 +284,16 @@ void SatelliteSim::updateTurbWarp(VulkanContext &ctx)
     const double lvW[2] = {(1.0 - lw) / std::sqrt((1.0 - lw) * (1.0 - lw) + lw * lw),
                            lw / std::sqrt((1.0 - lw) * (1.0 - lw) + lw * lw)};
     const glm::dvec3 F(camF);
-    // Two phases: each drifts with the wind over its cycle and is re-drawn (a random jump) at its zero weight; weights
-    // sin^2, renormalised so the rms is constant. The wind is an angular speed (0.6 of the minimum cell a second).
+    // Three phases: each drifts with the wind over its cycle and is re-drawn (a random jump) at its zero weight;
+    // weights sin^2 a third of a cycle apart, renormalised so the rms is constant. With three the normalised weights'
+    // rate of change is exactly constant (with two it fell to zero twice a cycle: the field paused, then moved, ~2.5
+    // times a second at the 0.8-s cycle). The wind is an angular speed (0.6 of the minimum cell a second).
     const double tc = turbClock_ / kCycleS;
-    double w[2];
-    glm::dvec3 off[2][2];
-    for (int k = 0; k < 2; ++k)
+    double w[kPhases];
+    glm::dvec3 off[kPhases][2];
+    for (int k = 0; k < kPhases; ++k)
     {
-        const double ph = tc + 0.5 * k;
+        const double ph = tc + (double)k / kPhases;
         const double cyc = std::floor(ph);
         const double loc = ph - cyc;
         w[k] = std::sin(glm::pi<double>() * loc) * std::sin(glm::pi<double>() * loc);
@@ -295,15 +301,18 @@ void SatelliteSim::updateTurbWarp(VulkanContext &ctx)
         for (int o = 0; o < 2; ++o)
         {
             // keyed by the ABSOLUTE level (l0 + o): a level keeps its field when the LOD steps past it
-            const uint32_t sd = ci * 64u + (uint32_t)(k * 32) + ((uint32_t)((int)l0 + o) & 31u);
+            const uint32_t sd = ci * 128u + (uint32_t)(k * 32) + ((uint32_t)((int)l0 + o) & 31u);
             const glm::dvec3 jump(hash01(sd, 1u) * 4000.0, hash01(sd, 2u) * 4000.0, hash01(sd, 3u) * 4000.0);
             const double cellO = cell0 * (o ? 2.0 : 1.0);
             const double windCells = kWindCellsPerS * std::max(cellWant, kPhysCellRad) / cellO;
             off[k][o] = jump + glm::dvec3(windCells, 0.2 * windCells, 0.0) * (loc * kCycleS);
         }
     }
-    const double wn = std::sqrt(w[0] * w[0] + w[1] * w[1]);
-    for (int k = 0; k < 2; ++k)
+    double wn2 = 0.0;
+    for (int k = 0; k < kPhases; ++k)
+        wn2 += w[k] * w[k];
+    const double wn = std::sqrt(wn2);
+    for (int k = 0; k < kPhases; ++k)
         for (int o = 0; o < 2; ++o)
         {
             const glm::dvec3 q = m0 * F * (o ? 0.5 : 1.0) + off[k][o];

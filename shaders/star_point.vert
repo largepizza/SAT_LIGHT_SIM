@@ -25,7 +25,7 @@ layout(push_constant) uniform PC {
     float fovYRad;
     float aspect;
     float waveTime;   // offset 72 — the twinkle clock (real seconds x "Star twinkle rate", mod 1000)
-    float noTwinkle;  // offset 76 — 1 = skip scintillation (planet draw only)
+    float noTwinkle;  // offset 76 — 1 - the twinkle's amplitude share: 1 on the planet draw, 1 - min(rate / 0.1, 1) on the stars
     vec4  moonDirENU; // offset 80 — xyz=moon dir ENU, w=illuminated fraction (unused here)
     vec4  obsECEFDir; // offset 96 — xyz=obs ECEF, w=obsHeightOffset (m)
 } pc;
@@ -89,7 +89,11 @@ void main() {
     // resolved discs, not point sources, and don't scintillate the way stars do — reusing this
     // code unmodified for the planet draw call would make them flicker like stars, which reads as
     // wrong given the whole point of this feature is real orbital/photometric accuracy.
-    if (pc.noTwinkle >= 0.5) {
+    // noTwinkle is 1 - the amplitude's share (2026-10-28, issue 20261028_220009): 1 on the planet draw, and on the stars
+    // 1 - min("Star twinkle rate" / 0.1, 1), so a rate of 0 is no twinkle at all (a frozen clock still left every star
+    // at its own fixed dim / bright phase).
+    float twK = clamp(1.0 - pc.noTwinkle, 0.0, 1.0);
+    if (twK <= 0.0) {
         fragTwinkle = 1.0;
         return;
     }
@@ -99,9 +103,15 @@ void main() {
     // is seamless). It was simSecInDay: time warp sped the twinkle up with it, and at 1x 3.7-11.3 Hz was too fast.
     // fract() before the 2 pi keeps the sine's argument small.
 
-    // Per-star unique phase seeds (hash of ECI direction).
-    float h1 = fract(sin(dot(sat.skyDir, vec3(127.1, 311.7,  74.7))) * 43758.5453);
-    float h2 = fract(sin(dot(sat.skyDir, vec3(269.5, 183.3, 246.1))) * 65734.7831);
+    // Per-star phase seeds from the star's INDEX (2026-10-28, issue 20261028_220009). They were a hash of skyDir, its ENU
+    // direction, which moves every frame while time runs (the sky turns, the refraction table refreshes): fract(sin(x) x
+    // 43758) of a dot product changing by ~1e-5 is a new random number each frame, so every star twinkled as white noise
+    // at the frame rate whatever the rate (0 included), and not at all while paused. The catalogue index is stable (the
+    // prefix draw starts at 0, brightest first).
+    uint  hs = uint(gl_VertexIndex) * 0x9E3779B1u;
+    hs ^= hs >> 15; hs *= 0x2C1B3C6Du; hs ^= hs >> 12; hs *= 0x297A2D39u; hs ^= hs >> 15;
+    float h1 = float(hs & 0xFFFFu) / 65536.0;
+    float h2 = float(hs >> 16) / 65536.0;
 
     float t = pc.waveTime;
     const float PI2 = 6.28318530718;
@@ -119,7 +129,7 @@ void main() {
     // The turbulence model's scintillation index (the refraction table: Rytov's 2.25 k^(7/6) int Cn^2 s^(5/6) ds along the
     // star's line of sight, saturated): tw's rms is ~0.55, so the amplitude is sigma_I / 0.55.
     if (scintI >= 0.0) {
-        fragTwinkle = max(0.0, 1.0 + tw * min(scintI / 0.55, 1.6));
+        fragTwinkle = max(0.0, 1.0 + tw * twK * min(scintI / 0.55, 1.6));
         return;
     }
 
@@ -137,5 +147,5 @@ void main() {
     float twAmp = (0.25 + 0.75 * ((airMass - 1.0) / 11.0)) * atmFrac;
     twAmp = min(twAmp, 0.90);
 
-    fragTwinkle = max(0.0, 1.0 + tw * twAmp);
+    fragTwinkle = max(0.0, 1.0 + tw * twK * twAmp);
 }

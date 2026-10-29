@@ -48,6 +48,25 @@ vec2 pointPsf(float mag)
     return vec2(min(d * s0 * s0 / (s * s), 1.0), s);
 }
 
+// The PSF averaged over the pixel (2026-10-28, issue 20261028_220009): exp(-r^2 / 2 sigma^2) box-filtered over the unit
+// pixel whose centre is `off` px from the point. Sampled at pixel centres instead, a point of sigma ~0.4 px drew 0.69 of
+// its light (and 0.2 of its peak) with its centre on a pixel corner than on a pixel centre, so a star drifting with the
+// sky (0.1-0.3 px/s at a 30-deg field) or a slow pan pulsed in brightness: a twinkle no slider governed. Averaged, the
+// drawn light is the same at every sub-pixel phase (its mean over phases is unchanged: 2 pi sigma^2 x the peak).
+float pointErf(float x)
+{
+    float x2 = x * x;
+    float t = 1.0 - exp(-x2 * (1.2732395 + 0.147 * x2) / (1.0 + 0.147 * x2));
+    return sign(x) * sqrt(max(t, 0.0));
+}
+float pointPixelGauss(vec2 off, float sigma)
+{
+    float k = 0.70710678 / sigma;
+    float bx = pointErf((off.x + 0.5) * k) - pointErf((off.x - 0.5) * k);
+    float by = pointErf((off.y + 0.5) * k) - pointErf((off.y - 0.5) * k);
+    return 1.5707963 * sigma * sigma * bx * by; // 2 pi sigma^2 x (bx / 2) x (by / 2)
+}
+
 // The resolved-object factor (sat_flare.comp): the displayed effectFlare whose point, spread over a Gaussian of
 // sigma^2 = sigmaPx^2 + nPx / 2pi, has the peak a model of nPx pixels shows: 1 - exp(-satPhysK x rawFlux / nPx),
 // its mean pixel through the sky exposure and tonemap. In the frame of pointPsf with the shifted reference
