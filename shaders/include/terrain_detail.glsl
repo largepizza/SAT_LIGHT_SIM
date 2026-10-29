@@ -468,7 +468,10 @@ float tdAmp0(float h0, float hMip3) {
     // (deltas, coastal plains: h0 a few metres from the DEM's bilinear filter) every octave and the erosion ran at
     // centimetre amplitude for nothing — Shanghai from 3 km, sky pass 13.2 -> 9.6 ms, captures within the noise floor.
     float a = cloud.terrainDetailAmpM * cloud.terrainDetailStrength * tdRoughness(h0, hMip3) * smoothstep(0.0, 80.0, h0);
-    return a * smoothstep(0.02, 0.04, a);
+#ifndef SKY_LITE   // (no relief there; its SPIR-V budget)
+    a *= smoothstep(0.02, 0.04, a);
+#endif
+    return a;
 }
 
 // Upper bound on what octaves k.. can still add, given octave k's amplitude.
