@@ -6,6 +6,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstring>
+#include <vector>
 
 namespace meteors
 {
@@ -60,6 +61,7 @@ double gauss(uint64_t seed, uint64_t k)
 int poisson(double lam, double u)
 {
     if (!(lam > 1e-12)) return 0;
+    if (u < 1.0 - lam - 1e-12) return 0; // exact: exp(-lam) >= 1 - lam (the common case, no exp)
     double p = std::exp(-lam), F = p;
     int k = 0;
     while (u > F && k < 200)
@@ -222,17 +224,17 @@ int generate(const GenParams &p, const std::function<void(const Meteor &)> &cb)
             double frac = magFrac(Mhi, S.r, S.rb) - magFrac(Mlo, S.r, S.rb);
             if (Mhi <= -4.0 + 1e-9) frac *= p.fireballGain;
             const double F_lo = magFrac(Mlo, S.r, S.rb), F_hi = magFrac(Mhi, S.r, S.rb);
-            for (int64_t k = k0; k <= k1; ++k)
+            // The cells within reach (the same for every bin of the call: built once; 2026-10-28, time-lapse calls span
+            // many bins). Same cells, same order, same arithmetic as per bin.
+            struct Cell
             {
-                const double tm = ((double)k + 0.5) * T;
-                const glm::dvec3 sunE = sunDirEciAt(tm);
-                const double lam = solarLongitudeDeg(sunE);
-                const double zhr = zhrAt(s, lam);
-                if (zhr <= 0.0) continue;
-                const double Q = fluxPerKm2h(zhr, S.r) * p.rateGain;
-                glm::dvec3 radE(0.0);
-                if (s != kSporadic) radE = eciToEcef(radiantEci(s, lam), tm);
-                // The latitude bands (1 deg) within reach.
+                int j, i;
+                double la1, la2, lac, dLon, area;
+                glm::dvec3 cu;
+                uint64_t cellMix;
+            };
+            std::vector<Cell> cells;
+            {
                 const int j0 = std::max(0, (int)std::floor(eyeLat - deg(arcMax) + 90.0) - 1);
                 const int j1 = std::min(179, (int)std::floor(eyeLat + deg(arcMax) + 90.0) + 1);
                 for (int j = j0; j <= j1; ++j)
@@ -241,9 +243,6 @@ int generate(const GenParams &p, const std::function<void(const Meteor &)> &cb)
                     const int nLon = std::max(1, (int)std::lround(360.0 * std::cos(rad(lac))));
                     const double dLon = 360.0 / nLon;
                     const double area = kR * kR * rad(dLon) * (std::sin(rad(la2)) - std::sin(rad(la1))) * 1e-6; // km^2
-                    const double lam0 = Q * area * (T / 3600.0) * frac;
-                    if (lam0 <= 0.0) continue;
-                    // The longitudes within reach at this latitude.
                     const double cl = std::cos(rad(lac));
                     int i0 = 0, i1 = nLon - 1;
                     if (cl > 1e-3 && std::abs(lac) < 88.0)
@@ -266,6 +265,30 @@ int generate(const GenParams &p, const std::function<void(const Meteor &)> &cb)
                         const double loc = -180.0 + (i + 0.5) * dLon;
                         const glm::dvec3 cu(cl * std::cos(rad(loc)), cl * std::sin(rad(loc)), std::sin(rad(lac)));
                         if (glm::dot(cu, eyeU) < cosReach) continue;
+                        cells.push_back({j, i, la1, la2, lac, dLon, area, cu, mix64((uint64_t)j * 4096ull + (uint64_t)i)});
+                    }
+                }
+            }
+            const uint64_t sbMix = mix64((uint64_t)s * 0x1000193ull + (uint64_t)b);
+            for (int64_t k = k0; k <= k1; ++k)
+            {
+                const double tm = ((double)k + 0.5) * T;
+                const glm::dvec3 sunE = sunDirEciAt(tm);
+                const double lam = solarLongitudeDeg(sunE);
+                const double zhr = zhrAt(s, lam);
+                if (zhr <= 0.0) continue;
+                const double Q = fluxPerKm2h(zhr, S.r) * p.rateGain;
+                glm::dvec3 radE(0.0);
+                if (s != kSporadic) radE = eciToEcef(radiantEci(s, lam), tm);
+                const uint64_t kMix = mix64((uint64_t)k * 0x9E3779B97F4A7C15ull);
+                for (const Cell &cell : cells)
+                {
+                    const int j = cell.j, i = cell.i;
+                    const double la1 = cell.la1, la2 = cell.la2, dLon = cell.dLon;
+                    const glm::dvec3 &cu = cell.cu;
+                    const double lam0 = Q * cell.area * (T / 3600.0) * frac;
+                    if (lam0 <= 0.0) continue;
+                    {
                         double lamC;
                         if (s == kSporadic)
                             lamC = lam0 * 4.0; // accepted per meteor by its radiant's elevation (mean 1/4)
@@ -275,9 +298,8 @@ int generate(const GenParams &p, const std::function<void(const Meteor &)> &cb)
                             if (sh < -0.03) continue;
                             lamC = lam0 * std::max(sh + 0.01, 0.0);
                         }
-                        const uint64_t cellId = (uint64_t)j * 4096ull + (uint64_t)i;
-                        const uint64_t seed = mix64(mix64((uint64_t)s * 0x1000193ull + (uint64_t)b) ^ mix64(cellId) ^
-                                                    mix64((uint64_t)k * 0x9E3779B97F4A7C15ull));
+                        (void)j;
+                        const uint64_t seed = mix64(sbMix ^ cell.cellMix ^ kMix);
                         ++draws;
                         const int n = poisson(lamC, u01(seed, 0));
                         for (int q = 0; q < n; ++q)
@@ -288,6 +310,7 @@ int generate(const GenParams &p, const std::function<void(const Meteor &)> &cb)
                             m.band = b;
                             m.seed = ms;
                             m.tStart = ((double)k + u01(ms, 1)) * T;
+                            m.bin = k;
                             if (m.tStart < tA || m.tStart >= tB) continue;
                             const double sl = std::sin(rad(la1)) + u01(ms, 2) * (std::sin(rad(la2)) - std::sin(rad(la1)));
                             const double lo = rad(-180.0 + (i + u01(ms, 3)) * dLon);
@@ -300,7 +323,7 @@ int generate(const GenParams &p, const std::function<void(const Meteor &)> &cb)
                             {
                                 // The sporadic sources, in Sun-centred ecliptic longitude: the apex (270), helion (340)
                                 // and antihelion (200); fast from the apex, slow from the others.
-                                const double lamS = solarLongitudeDeg(sunDirEciAt(m.tStart));
+                                const double lamS = lam; // (the bin's: the Sun moves < 0.002 deg in a bin; per meteor it was most of the cost)
                                 const double w = u01(ms, 6);
                                 double dl = 270.0, sp = 18.0;
                                 v = 58.0 + 6.0 * gauss(ms, 7);
@@ -348,6 +371,26 @@ double lightCurve(const Meteor &m, double x)
         I += (3.0 + 3.0 * u01(m.seed, 50)) * std::exp(-0.5 * d * d);
     }
     return I;
+}
+
+double lightIntegral(const Meteor &m, double x0, double x1)
+{
+    x0 = std::clamp(x0, 0.0, 1.0);
+    x1 = std::clamp(x1, 0.0, 1.0);
+    if (x1 <= x0) return 0.0;
+    auto P = [](double x) { return 6.75 * (x * x * x / 3.0 - x * x * x * x / 4.0); };
+    double J = P(x1) - P(x0);
+    auto gaussInt = [&](double a, double xf, double w) {
+        const double k = 1.0 / (w * std::sqrt(2.0));
+        return a * w * std::sqrt(kPi / 2.0) * (std::erf((x1 - xf) * k) - std::erf((x0 - xf) * k));
+    };
+    int nf = 0; // (lightCurve's flares, same hashes)
+    if (m.M <= -1.0) nf = 1 + (int)(u01(m.seed, 20) * 3.0);
+    else if (m.M <= 1.5 && u01(m.seed, 21) < 0.3) nf = 1;
+    for (int f = 0; f < nf; ++f)
+        J += gaussInt(0.8 + 2.2 * u01(m.seed, 40 + f), 0.45 + 0.47 * u01(m.seed, 22 + f), 0.018 + 0.02 * u01(m.seed, 30 + f));
+    if (m.M <= -8.0) J += gaussInt(3.0 + 3.0 * u01(m.seed, 50), 0.93, 0.025);
+    return std::max(J, 0.0);
 }
 
 int fragmentCount(const Meteor &m) { return m.M <= -4.0 ? 2 + (int)(u01(m.seed, 60) * 4.0) : 0; }

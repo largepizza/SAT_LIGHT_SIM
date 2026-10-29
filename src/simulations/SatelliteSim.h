@@ -3606,6 +3606,14 @@ private:
     float meteorRateGain = 1.0f;          // meteors.rate (x the showers' flux)
     float meteorFireballGain = 1.0f;      // meteors.fireball_rate (x the rate of fireballs / bolides, M <= -4)
     float meteorTrainDuration = 0.3f;     // meteors.train_duration (x the persistent trains' decay time; 1 = the old)
+    // Time-lapse draw past 2x (2026-10-28, issue 20261028_220640): every meteor that burned during the frame's sim-time
+    // interval is drawn as its streak over that interval, its light integrated and divided by the exposure
+    // min(interval, timelapse_exposure_s) (>= the eye's persistence). meteors.timelapse false = the old cut-off.
+    bool meteorTimelapse = true;          // meteors.timelapse
+    float meteorTimelapseExposureS = 0.1f; // meteors.timelapse_exposure_s
+    double meteorPrevT_ = 0.0;            // last frame's sim time (the interval)
+    bool meteorLapse_ = false;            // this frame: time-lapse
+    double meteorLapseDt_ = 0.0, meteorLapseE_ = 0.0, meteorDrawsEst_ = 0.0, meteorGenMs_ = 0.0, meteorRankMs_ = 0.0;
     std::vector<meteors::Meteor> meteorForced_; // harness `meteors force`
     // The generated meteors per (shower, band, time bin), kept while the eye stays within 30 km of where they were
     // generated: each frame generates only the bins that have just begun (a bin is 2 s for the faint bands).
@@ -3625,7 +3633,7 @@ private:
     double meteorCpuMs = 0.0;             // the fill's time a frame (eased)
     int meteorDraws_ = 0, meteorGenerated_ = 0, meteorHeads_ = 0, meteorGauss_ = 0, meteorDustAt_ = 0;
     bool meteorWarpOff_ = false;          // this frame: not drawn (time warp)
-    int meteorBandMax_ = 5;               // this frame: the faintest band drawn (1 past 2x: fireballs and bolides only)
+    int meteorBandMax_ = 5;               // this frame: the faintest band drawn (time-lapse: as the draw budget allows)
     static constexpr double kMeteorCacheRadiusM = 30000.0; // the bin cache serves every eye within this of its eye
     void meteorsFill(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull); // kesslerFillDust's finish
     float meteorSkySuppress(const glm::vec3 &enu) const; // the stars' sky dimming (night, dome, Moon) in that direction

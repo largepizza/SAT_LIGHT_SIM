@@ -12,7 +12,8 @@
 //   fragments a fireball's (M <= -4) pieces after its first flare: heads + short streaks
 //   train     a bolide's persistent train: Gaussians along the 78-108 km part of its path, green then orange, fading
 //             over seconds to a minute and drifting with a hashed upper-atmosphere wind that turns with height
-// Not drawn in time warp (above 2x: at 10x a 0.5 s meteor would flash for 3 frames, ten times as often).
+// In time warp (above 2x) the TIME-LAPSE draw: every meteor that burned during the frame's sim-time interval as its
+// streak over that interval, its light integrated / an exposure (min(interval, meteors.timelapse_exposure_s)).
 // The dust list's share: at most 96 Gaussians, and never past kMaxDustClouds - 200 (the launches, tornadoes,
 // haboobs and wildfire smoke come after); the brightest meteors first.
 #include "../FrameProfile.h"
@@ -34,6 +35,7 @@ constexpr double kPi = 3.14159265358979323846;
 constexpr double kRe = 6371000.0;
 constexpr double kPersistS = 0.10;   // the eye's persistence: the streak's length in time
 constexpr uint32_t kMeteorGaussMax = 96;
+constexpr uint32_t kMeteorGaussMaxLapse = 192; // time-lapse: more streaks at once
 constexpr int kMeteorHeadMax = 600;
 double rad(double d) { return d * (kPi / 180.0); }
 double deg(double r) { return r * (180.0 / kPi); }
@@ -105,21 +107,67 @@ void SatelliteSim::meteorsFill(GpuDustCloud *out, uint32_t &n, double toSky, dou
                                            return t - m.tStart > m.dur + 6.0 * m.trainLife * tlK + 2.0 || t < m.tStart - 600.0;
                                        }),
                         meteorForced_.end());
-    // Time warp: past 2x the faint bands are not drawn (at 10x a 0.5-s meteor flashes for 3 frames and ten times as
-    // often), but fireballs and bolides (bands 0-1, M <= -4: a few an hour) are, up to 1 min/s, so a bolide and its
-    // train show whatever speed the sky is played at (2026-10-28, issue 20261028_191529: replayed at 10x it never
-    // appeared). Which meteors exist never depends on the warp.
+    // Time warp. TIME-LAPSE past 2x (2026-10-28, issue 20261028_220640: they stopped past 1 min/s): what a camera
+    // exposing each frame's sim-time interval would record. Every meteor that burned during [t - dt, t] is drawn as its
+    // streak over that part of its path, its light integrated over it and divided by the exposure E = min(dt, the
+    // time-lapse exposure), never less than the eye's persistence (0.1 s). The default exposure IS the persistence: a
+    // streak has the surface brightness the 1x streak (the path over the persistence) has, whatever the rate, so at 1 h/s a shower is a burst of whole streaks from the radiant each
+    // frame. The faintest bands are left out while their bins would cost more than the draw budget (in time-lapse
+    // every frame's bins are new). Which meteors exist never depends on the warp. meteors.timelapse false = the old
+    // rule (past 2x bands 0-1 only, none past 1 min/s).
     const float warpNow = timeScaleNow(timePaused, timeScaleIdx);
-    if (warpNow > 60.0f)
+    const bool lapse = meteorTimelapse && warpNow > 2.0f;
+    meteorLapse_ = lapse;
+    if (!lapse && warpNow > 60.0f)
     {
         meteorWarpOff_ = true;
+        meteorPrevT_ = t;
         return;
     }
-    meteorBandMax_ = warpNow > 2.0f ? 1 : meteors::kBands - 1;
+    double dtS = 0.0, expoS = kPersistS;
+    if (lapse)
+    {
+        const double dNom = (double)warpNow / 60.0;
+        dtS = std::abs(t - meteorPrevT_);
+        if (!(dtS > 1e-6) || dtS > 4.0 * dNom + 2.0) dtS = dNom; // the first frame, a jump
+        expoS = std::clamp(dtS, kPersistS, std::max((double)meteorTimelapseExposureS, kPersistS));
+    }
+    meteorPrevT_ = t;
+    meteorLapseDt_ = dtS;
+    meteorLapseE_ = expoS;
+    const double tLo = t - dtS;
     const glm::dvec3 eye(obsECI);
     const glm::dvec3 eyeEcef = eciToEcef(eye, t);
+    meteorBandMax_ = !lapse && warpNow > 2.0f ? 1 : meteors::kBands - 1;
+    const double lamNow = meteors::solarLongitudeDeg(sunDirEciAt(t));
+    int nShowersNow = 0;
+    for (int sIdx = 0; sIdx < meteors::showerCount(); ++sIdx)
+        nShowersNow += (sIdx == meteors::kSporadic || meteors::zhrAt(sIdx, lamNow) > 0.0) ? 1 : 0;
+    meteorDrawsEst_ = 0.0;
+    if (lapse)
+    {
+        // The Poisson draws a frame's new bins cost (meteors::generate's 1-degree cells within each band's reach), the
+        // faintest band dropped first until under budget (band 0, the bolides, always).
+        constexpr double kDrawBudget = 350000.0; // (~2-4 ms on the catalog pool; all bands at 1 h/s)
+        const double hEye = std::max(glm::length(eyeEcef) - kRe, 0.0) + kMeteorCacheRadiusM;
+        const double reachArc = std::acos(kRe / (kRe + hEye)) + std::acos(kRe / (kRe + 120000.0)) + kMeteorCacheRadiusM / kRe;
+        double sum = 0.0;
+        int bMax = 0;
+        for (int b = 0; b < meteors::kBands; ++b)
+        {
+            const double dMax = std::min(reachArc * kRe, 1.0e5 * std::pow(10.0, (10.0 + 1.0 - meteors::kBandEdge[b]) / 5.0) + kMeteorCacheRadiusM);
+            const double aDeg = deg(dMax / kRe) + 1.0;
+            const double draws = nShowersNow * kPi * aDeg * aDeg * std::ceil((dtS + 1e-6) / meteors::kBandBinS[b]);
+            if (b > 0 && sum + draws > kDrawBudget) break;
+            sum += draws;
+            bMax = b;
+        }
+        meteorBandMax_ = bMax;
+        meteorDrawsEst_ = sum;
+    }
     std::vector<meteors::Meteor> ms;
-    // The bins alive now, each generated once (meteorBinCache_) while the eye stays within 30 km and the gains hold.
+    // The bins alive in [tLo - the band's longest age, t], each generated once (meteorBinCache_) while the eye stays
+    // within 30 km and the gains hold.
     if (glm::length(eyeEcef - meteorCacheEye_) > kMeteorCacheRadiusM || meteorCacheGain_[0] != meteorRateGain || meteorCacheGain_[1] != meteorFireballGain)
     {
         meteorBinCache_.clear();
@@ -132,47 +180,99 @@ void SatelliteSim::meteorsFill(GpuDustCloud *out, uint32_t &n, double toSky, dou
         const int b = (int)((it->first >> 48) & 0xFF);
         const int64_t k = (int64_t)(it->first & 0xFFFFFFFFFFFFull) - (int64_t)0x800000000000ll;
         const double T = meteors::kBandBinS[b];
-        if ((double)(k + 1) * T < t - meteors::kBandMaxAgeS[b] - T || (double)k * T > t + T)
+        if ((double)(k + 1) * T < tLo - meteors::kBandMaxAgeS[b] - T || (double)k * T > t + T)
             it = meteorBinCache_.erase(it);
         else
             ++it;
     }
+    struct BinKey
+    {
+        uint64_t key;
+        int s, b;
+        int64_t k;
+    };
+    std::vector<BinKey> keys, missing;
     for (int sIdx = 0; sIdx < meteors::showerCount(); ++sIdx)
     {
-        if (sIdx != meteors::kSporadic && meteors::zhrAt(sIdx, meteors::solarLongitudeDeg(sunDirEciAt(t))) <= 0.0) continue;
+        if (sIdx != meteors::kSporadic && meteors::zhrAt(sIdx, lamNow) <= 0.0) continue;
         for (int b = 0; b <= meteorBandMax_; ++b)
         {
             const double T = meteors::kBandBinS[b];
-            const int64_t k0 = (int64_t)std::floor((t - meteors::kBandMaxAgeS[b]) / T), k1 = (int64_t)std::floor(t / T);
+            const int64_t k0 = (int64_t)std::floor((tLo - meteors::kBandMaxAgeS[b]) / T), k1 = (int64_t)std::floor(t / T);
             for (int64_t k = k0; k <= k1; ++k)
             {
                 const uint64_t key = ((uint64_t)sIdx << 56) | ((uint64_t)b << 48) | (uint64_t)((k + (int64_t)0x800000000000ll) & 0xFFFFFFFFFFFFll);
-                auto it = meteorBinCache_.find(key);
-                if (it == meteorBinCache_.end())
-                {
-                    std::vector<meteors::Meteor> v;
-                    meteors::GenParams gp;
-                    gp.tA = (double)k * T;
-                    gp.tB = (double)(k + 1) * T;
-                    gp.eyeEcef = meteorCacheEye_;
-                    gp.eyeMarginM = kMeteorCacheRadiusM; // valid for every eye the cache serves
-                    gp.cullMag = 10.0; // (fixed: the cache must not depend on the exposure; pointEffLimitMag ~8-9)
-                    gp.rateGain = meteorRateGain;
-                    gp.fireballGain = meteorFireballGain;
-                    gp.onlyShower = sIdx;
-                    gp.onlyBand = b;
-                    meteorDraws_ += meteors::generate(gp, [&](const meteors::Meteor &m) { v.push_back(m); });
-                    it = meteorBinCache_.emplace(key, std::move(v)).first;
-                }
-                for (const meteors::Meteor &m : it->second)
-                {
-                    const double age = t - m.tStart;
-                    if (age >= 0.0 && age <= m.dur + (m.trainLife > 0.0f ? kTrainCut * m.trainLife * tlK : 0.0)) ms.push_back(m);
-                }
+                keys.push_back({key, sIdx, b, k});
+                if (meteorBinCache_.find(key) == meteorBinCache_.end()) missing.push_back({key, sIdx, b, k});
             }
         }
     }
+    if (!missing.empty())
+    {
+        // generate() is a pure function: runs of consecutive missing bins of one (shower, band) go to one call (its cells
+        // are built once per call), up to 16 bins a call, the calls in parallel when several (time-lapse). The meteors
+        // are split back into their bins (Meteor::bin): the same meteors in the same bins as one bin at a time.
+        struct Run
+        {
+            size_t first, count;
+        };
+        std::vector<Run> runs;
+        for (size_t i = 0; i < missing.size(); ++i)
+        {
+            const BinKey &bk = missing[i];
+            if (!runs.empty())
+            {
+                Run &r = runs.back();
+                const BinKey &pk = missing[r.first + r.count - 1];
+                if (r.count < 16 && pk.s == bk.s && pk.b == bk.b && pk.k + 1 == bk.k)
+                {
+                    ++r.count;
+                    continue;
+                }
+            }
+            runs.push_back({i, 1});
+        }
+        std::vector<std::vector<meteors::Meteor>> gen(missing.size());
+        std::vector<int> draws(runs.size(), 0);
+        auto run = [&](size_t ri) {
+            const Run &r = runs[ri];
+            const BinKey &b0 = missing[r.first];
+            const double T = meteors::kBandBinS[b0.b];
+            meteors::GenParams gp;
+            gp.tA = (double)b0.k * T;
+            gp.tB = (double)(b0.k + (int64_t)r.count) * T;
+            gp.eyeEcef = meteorCacheEye_;
+            gp.eyeMarginM = kMeteorCacheRadiusM; // valid for every eye the cache serves
+            gp.cullMag = 10.0; // (fixed: the cache must not depend on the exposure; pointEffLimitMag ~8-9)
+            gp.rateGain = meteorRateGain;
+            gp.fireballGain = meteorFireballGain;
+            gp.onlyShower = b0.s;
+            gp.onlyBand = b0.b;
+            draws[ri] = meteors::generate(gp, [&](const meteors::Meteor &m) {
+                const int64_t off = m.bin - b0.k;
+                if (off >= 0 && off < (int64_t)r.count) gen[r.first + (size_t)off].push_back(m);
+            });
+        };
+        if (runs.size() >= 3 && stormCatalog)
+            stormCatalog->parallelFor(runs.size(), run);
+        else
+            for (size_t i = 0; i < runs.size(); ++i) run(i);
+        for (int d : draws) meteorDraws_ += d;
+        for (size_t i = 0; i < missing.size(); ++i) meteorBinCache_.emplace(missing[i].key, std::move(gen[i]));
+    }
+    for (const BinKey &bk : keys)
+    {
+        auto it = meteorBinCache_.find(bk.key);
+        if (it == meteorBinCache_.end()) continue;
+        for (const meteors::Meteor &m : it->second)
+        {
+            // alive at some moment of [tLo, t] (at 1x tLo = t: alive now)
+            const double tEnd = m.tStart + m.dur + (m.trainLife > 0.0f ? kTrainCut * m.trainLife * tlK : 0.0);
+            if (m.tStart <= t && tEnd >= tLo) ms.push_back(m);
+        }
+    }
     meteorGenerated_ = (int)ms.size();
+    meteorGenMs_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count();
     for (const meteors::Meteor &m : meteorForced_)
         if (t >= m.tStart) ms.push_back(m);
     if (ms.empty()) return;
@@ -209,7 +309,7 @@ void SatelliteSim::meteorsFill(GpuDustCloud *out, uint32_t &n, double toSky, dou
     const double flareVisible = 0.5 * 0.008 * std::pow(10.0, 0.4 * (6.0 - (double)pointEffLimitMag()));
     // An emissive Gaussian segment from A to Bp (ECI) carrying flareEq of on-screen energy.
     auto addSeg = [&](const glm::dvec3 &A, const glm::dvec3 &Bp, double width, double flareEq, double range, const glm::vec3 &col) {
-        if (n >= kMaxDustClouds - 200u || (uint32_t)meteorGauss_ >= kMeteorGaussMax || !(flareEq > flareVisible)) return false;
+        if (n >= kMaxDustClouds - 200u || (uint32_t)meteorGauss_ >= (lapse ? kMeteorGaussMaxLapse : kMeteorGaussMax) || !(flareEq > flareVisible)) return false;
         const glm::dvec3 ax = Bp - A;
         const double L = glm::length(ax);
         const glm::dvec3 a = L > 1e-3 ? toEnu(ax / L) : glm::dvec3(0, 0, 1);
@@ -246,21 +346,51 @@ void SatelliteSim::meteorsFill(GpuDustCloud *out, uint32_t &n, double toSky, dou
         size_t i;
         double flare;
     };
+    // (thousands of candidates a frame at 1 h/s: ranked in parallel chunks; see() reads only this frame's state)
+    std::vector<double> flv(ms.size(), 0.0);
+    auto rank1 = [&](size_t i) {
+        const meteors::Meteor &m = ms[i];
+        const double age = t - m.tStart;
+        Seen s;
+        double fl = 0.0;
+        if (lapse)
+        {
+            // its light over the part of its flight in [tLo, t], per the exposure
+            const double a0 = std::max(tLo - m.tStart, 0.0), a1 = std::min(age, m.dur);
+            // a cheap upper bound first (no extinction, no sky dimming, the light curve's largest value): most of a
+            // minute's meteors at 1 h/s are too faint or too far to show, and are dropped before the exact terms
+            const double Imax = m.M <= -8.0 ? 10.0 : m.M <= -1.0 ? 7.0 : 4.0;
+            const double rApprox = glm::length(meteors::pathAt(m, 0.5 * (a0 + a1) / m.dur) - eyeEcef);
+            if (a1 > a0 && (double)m.M + 5.0 * std::log10(std::max(rApprox, 1.0) / 1.0e5) - 2.5 * std::log10(Imax * (a1 - a0) / expoS) < 10.0)
+            {
+                const double J = meteors::lightIntegral(m, a0 / m.dur, a1 / m.dur) * m.dur;
+                if (J > 0.0 && see(ecefToEci(meteors::pathAt(m, 0.5 * (a0 + a1) / m.dur), t), (double)m.M, s)) fl = s.flare * J / expoS;
+            }
+        }
+        else
+        {
+            const double x = std::min(age / m.dur, 1.0);
+            const double I = age <= m.dur ? meteors::lightCurve(m, x) : 0.0;
+            if (see(ecefToEci(meteors::pathAt(m, x), t), (double)m.M - 2.5 * std::log10(std::max(I, 1e-6)), s)) fl = I > 0.0 ? s.flare : 0.0;
+        }
+        if (m.trainLife > 0.0f && tlK > 0.0) fl += 1e-3 + 0.01 * std::pow(10.0, -0.4 * (double)m.M); // a train ranks by its meteor
+        flv[i] = fl;
+    };
+    constexpr size_t kRankChunk = 1024;
+    const size_t nChunks = (ms.size() + kRankChunk - 1) / kRankChunk;
+    auto rankChunk = [&](size_t c) {
+        for (size_t i = c * kRankChunk; i < std::min(ms.size(), (c + 1) * kRankChunk); ++i) rank1(i);
+    };
+    if (nChunks >= 3 && stormCatalog)
+        stormCatalog->parallelFor(nChunks, rankChunk);
+    else
+        for (size_t c = 0; c < nChunks; ++c) rankChunk(c);
     std::vector<Cand> order;
     order.reserve(ms.size());
     for (size_t i = 0; i < ms.size(); ++i)
-    {
-        const meteors::Meteor &m = ms[i];
-        const double age = t - m.tStart;
-        const double x = std::min(age / m.dur, 1.0);
-        const double I = age <= m.dur ? meteors::lightCurve(m, x) : 0.0;
-        Seen s;
-        double fl = 0.0;
-        if (see(ecefToEci(meteors::pathAt(m, x), t), (double)m.M - 2.5 * std::log10(std::max(I, 1e-6)), s)) fl = I > 0.0 ? s.flare : 0.0;
-        if (m.trainLife > 0.0f && tlK > 0.0) fl += 1e-3 + 0.01 * std::pow(10.0, -0.4 * (double)m.M); // a train ranks by its meteor
-        order.push_back({i, fl});
-    }
+        if (!lapse || flv[i] > 0.0) order.push_back({i, flv[i]});
     std::sort(order.begin(), order.end(), [](const Cand &a, const Cand &b) { return a.flare > b.flare; });
+    meteorRankMs_ = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count() - meteorGenMs_;
     const double wPersist = std::max(kPersistS, 1.0 / 30.0);
     for (const Cand &cd : order)
     {
@@ -274,7 +404,74 @@ void SatelliteSim::meteorsFill(GpuDustCloud *out, uint32_t &n, double toSky, dou
         rec.vKms = (float)(m.vMs / 1000.0);
         rec.forced = m.forced != 0;
         const glm::dvec3 dirE = glm::normalize(m.E - m.B);
-        if (age <= m.dur)
+        if (lapse && cd.flare < 2e-4) break; // (sorted: nothing below would show; trains rank above this)
+        if (lapse)
+        {
+            // TIME-LAPSE: the streak it drew during [tLo, t], 1-4 pieces each with its share of the light (the light
+            // curve integrated over it), 0.7 of it in the streak and 0.3 in a point at the brightest piece (its bloom).
+            const double a0 = std::max(tLo - m.tStart, 0.0), a1 = std::min(age, m.dur);
+            if (a1 > a0)
+            {
+                const double x0 = a0 / m.dur, x1 = a1 / m.dur;
+                const double Jt = meteors::lightIntegral(m, x0, x1) * m.dur;
+                Seen s0;
+                const glm::dvec3 Pm = meteors::pathAt(m, 0.5 * (x0 + x1));
+                if (Jt > 0.0 && see(ecefToEci(Pm, t), (double)m.M, s0))
+                {
+                    const double L = glm::length(m.E - m.B) * (x1 - x0);
+                    const double pxLen = L / s0.range / std::max(2.0 * pixFull, 1e-9);
+                    int nP = pxLen < 3.0 ? 0 : pxLen < 25.0 ? 1 : pxLen < 80.0 ? 2 : pxLen < 200.0 ? 3 : 4;
+                    // a streak with no Gaussians left is not drawn at all (as a lone point it would read as a star)
+                    const int left = (int)kMeteorGaussMaxLapse - meteorGauss_;
+                    if (nP > 0 && (left <= 0 || n >= kMaxDustClouds - 200u)) continue;
+                    nP = std::min(nP, left);
+                    const double Itot = Jt / expoS; // peak-equivalent intensity of the whole streak
+                    const glm::vec3 colAll = meteors::color(m, std::min(Jt / std::max(m.dur * (x1 - x0), 1e-6), 1.0));
+                    double bestF = -1.0;
+                    Seen bestS = s0;
+                    glm::vec3 bestC = colAll;
+                    double flSum = 0.0, undrawn = 0.0;
+                    for (int q = 0; q < std::max(nP, 1); ++q)
+                    {
+                        const double xa = x0 + (x1 - x0) * q / std::max(nP, 1), xb = x0 + (x1 - x0) * (q + 1) / std::max(nP, 1);
+                        const double Jq = meteors::lightIntegral(m, xa, xb) * m.dur / expoS;
+                        Seen sq;
+                        if (!(Jq > 0.0) || !see(ecefToEci(meteors::pathAt(m, 0.5 * (xa + xb)), t), (double)m.M, sq)) continue;
+                        const double fq = sq.flare * Jq;
+                        flSum += fq;
+                        const glm::vec3 cq = meteors::color(m, std::min(Jq * expoS / std::max(m.dur * (xb - xa), 1e-6), 3.0));
+                        if (fq > bestF)
+                        {
+                            bestF = fq;
+                            bestS = sq;
+                            bestC = cq;
+                        }
+                        if (nP > 0 && addSeg(ecefToEci(meteors::pathAt(m, xa), t), ecefToEci(meteors::pathAt(m, xb), t), 6.0, 0.7 * fq, sq.range, cq))
+                            ++rec.gauss;
+                        else if (nP > 0)
+                            undrawn += 0.7 * fq; // (a piece under the limit or past the budget: its light goes to the point)
+                    }
+                    // The point: 0.3 of the brightest piece (+ what was not drawn), at least half the brightest moment's
+                    // flare as the 1x head would draw it, so each meteor of the frame reads as clearly as a real-time one
+                    // (the streak alone, its light spread along it, left most of a shower's meteors near the limit).
+                    double Ipk = 0.0;
+                    for (int q = 0; q <= 8; ++q) Ipk = std::max(Ipk, meteors::lightCurve(m, x0 + (x1 - x0) * (q + 0.5) / 9.0));
+                    const double headF = std::max(nP > 0 ? 0.3 * bestF + undrawn : flSum, 0.5 * Ipk * (nP > 0 ? bestS : s0).flare);
+                    addHead(nP > 0 ? bestS : s0, headF, nP > 0 ? bestC : colAll);
+                    rec.mag = (float)(s0.mag - 2.5 * std::log10(std::max(Itot, 1e-12)));
+                    rec.flare = (float)flSum;
+                    rec.azDeg = (float)deg(std::atan2(s0.dirEnu.x, s0.dirEnu.y));
+                    rec.elDeg = (float)deg(std::asin(std::clamp(s0.dirEnu.z, -1.0, 1.0)));
+                    rec.rangeKm = (float)(s0.range / 1000.0);
+                    rec.hKm = (float)((glm::length(Pm) - kRe) / 1000.0);
+                    const double Meq = (double)m.M - 2.5 * std::log10(std::max(Itot, 1e-12));
+                    if (Meq <= -4.0)
+                        engineLightAdd(ecefToEci(Pm, t), flameIntensitySunsM2(Meq) * (1.0 - glm::clamp(((double)sunDirENU.w + 0.1) / 0.3, 0.0, 1.0)),
+                                       colAll, 800.0, ecefToEci(dirE, t), 0.0, 0.0, false, 0.0);
+                }
+            }
+        }
+        else if (age <= m.dur)
         {
             const double x = age / m.dur;
             const double I = meteors::lightCurve(m, x);
@@ -353,8 +550,21 @@ void SatelliteSim::meteorsFill(GpuDustCloud *out, uint32_t &n, double toSky, dou
                 const double x0 = xa + (xb - xa) * q / kSeg, x1 = xa + (xb - xa) * (q + 1) / kSeg;
                 if (x1 > xNow) break;
                 const double xm = 0.5 * (x0 + x1);
-                const double ag = age - xm * m.dur;
-                if (ag > kTrainCut * tl) continue;
+                // its age at t; in time-lapse the part of its life inside [tLo, t] (its light integrated / the exposure,
+                // drawn at the middle of that part): a train lasts its own sim time, i.e. a fraction of a frame at 1 h/s
+                const double ag1 = age - xm * m.dur;
+                double ag = ag1, Iint = -1.0;
+                if (lapse)
+                {
+                    const double g0 = std::max(0.0, ag1 - dtS), g1 = std::min(ag1, kTrainCut * tl);
+                    if (g1 <= g0) continue;
+                    ag = 0.5 * (g0 + g1);
+                    const double tc = 1.0 / (1.0 / tl + 1.0 / 1.5);
+                    Iint = (tl * (std::exp(-g0 / tl) - std::exp(-g1 / tl)) + 9.0 * tc * (std::exp(-g0 / tc) - std::exp(-g1 / tc))) / (expoS * kSeg);
+                }
+                else if (ag > kTrainCut * tl)
+                    continue;
+                const double ageD = ag + xm * m.dur;
                 auto drift = [&](double x) {
                     const glm::dvec3 P = meteors::pathAt(m, x);
                     const glm::dvec3 up = glm::normalize(P);
@@ -362,12 +572,12 @@ void SatelliteSim::meteorsFill(GpuDustCloud *out, uint32_t &n, double toSky, dou
                     east = glm::length(east) > 1e-9 ? glm::normalize(east) : glm::dvec3(1, 0, 0);
                     const glm::dvec3 north = glm::cross(up, east);
                     const glm::dvec2 w = meteors::trainWind(m, glm::length(P) - kRe);
-                    const double a = std::max(0.0, age - x * m.dur);
+                    const double a = std::max(0.0, ageD - x * m.dur);
                     return P + (east * w.x + north * w.y) * a;
                 };
                 const glm::dvec3 A = drift(x0), Bq = drift(x1);
                 // Its light: ~3.5 mag under the meteor's peak in all, a wake +2.5 mag over the first ~1.5 s, fading.
-                const double Itr = std::exp(-ag / tl) * (1.0 + 9.0 * std::exp(-ag / 1.5)) / kSeg;
+                const double Itr = Iint >= 0.0 ? Iint : std::exp(-ag / tl) * (1.0 + 9.0 * std::exp(-ag / 1.5)) / kSeg;
                 Seen st;
                 if (!see(ecefToEci(0.5 * (A + Bq), t), (double)m.M + 3.5 - 2.5 * std::log10(std::max(Itr, 1e-9)), st)) continue;
                 const double g = std::exp(-ag / 2.0);
@@ -533,6 +743,12 @@ harness::Status SatelliteSim::harnessMeteors(harness::Active &a)
         r["point_limit_mag"] = pointEffLimitMag();
         r["warp_off"] = meteorWarpOff_;
         r["band_max"] = meteorBandMax_;
+        r["timelapse"] = meteorLapse_;
+        r["timelapse_interval_s"] = meteorLapseDt_;
+        r["timelapse_exposure_s"] = meteorLapseE_;
+        r["draws_estimate"] = meteorDrawsEst_;
+        r["gen_ms_last"] = meteorGenMs_;
+        r["rank_ms_last"] = meteorRankMs_;
         r["train_duration"] = meteorTrainDuration;
         r["poisson_draws"] = meteorDraws_;
         r["generated_alive"] = meteorGenerated_;
