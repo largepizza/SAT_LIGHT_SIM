@@ -458,6 +458,16 @@ function(sat_copy_runtime_files tgt)
                 COMMENT "Copying default bookmarks next to ${tgt}"
             )
         endif()
+        # The prebaked Sun's Fury (2026-10-28, data/kessler/suns_fury_<hash>.pak): the default history's engine
+        # events, read from <exe dir>/kessler_prebake when the world's hash matches (SatelliteSimKessler.cpp).
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data/kessler")
+            add_custom_command(TARGET ${tgt} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_directory
+                    "${CMAKE_CURRENT_SOURCE_DIR}/data/kessler"
+                    "$<TARGET_FILE_DIR:${tgt}>/kessler_prebake"
+                COMMENT "Copying the prebaked Sun's Fury next to ${tgt}"
+            )
+        endif()
     endif()
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets")
         add_custom_command(TARGET ${tgt} POST_BUILD
@@ -514,6 +524,14 @@ function(sat_sync_runtime_sources tgt)
             COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${CMAKE_CURRENT_SOURCE_DIR}/data/bookmarks"
                 "$<TARGET_FILE_DIR:${tgt}>/default_bookmarks")
+    endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/data/kessler")
+        file(GLOB_RECURSE _kessler CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/data/kessler/*")
+        list(APPEND sync_files ${_kessler})
+        list(APPEND sync_copies
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_CURRENT_SOURCE_DIR}/data/kessler"
+                "$<TARGET_FILE_DIR:${tgt}>/kessler_prebake")
     endif()
     foreach(f data/constellations.json data/constellations.schema.json data/reflector_targets.json data/launches.json
               data/launch_coasts.json data/geo_satellites.json data/lunar_bases.json

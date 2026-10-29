@@ -69,7 +69,7 @@ code).
 
 **Tools and gates** — `tools/harness/` (the automation harness: `run.py`, `live.py`,
 `imgtools.py`, `selftest.py`, `gc.py`, `tstab.py` (temporal stability), `ui_lowres.py` (every window at low resolutions), `reports.py` (issue reports: triage, agent briefs, resolutions), `mission_ops.py` (every launch vehicle traced phase by phase, PASS / FAIL), `launch_bench.py` (the launch system's CPU / GPU cost), `hitch_check.py` (frame-hitch regression check over the time-scale ladder) — docs/HARNESS.md) · `tools/sat_model_tool/` (SatModelTool: bake,
-validate, benchmark, trace replay, `--dump-json` for visualisation) · `tools/video/` (vidkit: technical videos) · `tools/check_cloud_params.py` · `tools/parse_bsc.py` · `tools/make_station_models.py` (the stations' models + ISS/Tiangong detail) · `tools/make_geo_belt.py` + `tools/make_geo_models.py` (the GEO belt's members and models) · `tools/make_pad_coasts.py` (the coasts around launch sites, `data/launch_coasts.json`) · `tools/make_icons.py` (regenerates the
+validate, benchmark, trace replay, `--dump-json` for visualisation) · `tools/video/` (vidkit: technical videos) · `tools/check_cloud_params.py` · `tools/parse_bsc.py` · `tools/make_station_models.py` (the stations' models + ISS/Tiangong detail) · `tools/make_geo_belt.py` + `tools/make_geo_models.py` (the GEO belt's members and models) · `tools/make_pad_coasts.py` (the coasts around launch sites, `data/launch_coasts.json`) · `tools/make_kessler_prebake.py` (the shipped Sun's Fury history, `data/kessler/*.pak`) · `tools/make_icons.py` (regenerates the
 UI icon PNGs from geometry declared in that file) · `tools/make_ambience.py` (the ambience samples,
 from CC0 sources declared in that file) · `tools/sound_tool/` (SoundTool: soundtrack analysis +
 offline synth renders) · `tools/benchmarks/` ·
@@ -5847,9 +5847,38 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
     `restart_queued` in `kessler state`.
   - **Time keeps running**: sim time may lead the frontier by ~2 s of the current warp (at most one step) before it
     holds (SatelliteSim.cpp; the banner only while actually held): events published a moment late appear then.
-- **Cache**: the engine's events + frontier in `<user data>/kessler/suns_fury_<hash>.bin` (the hash covers the
-  roster, types, settings, the kit and `kCacheVersion`), written longer only, never while the player has
-  breakups; a launch replays it (lazily) instead of re-sampling. Not shipped.
+- **Cache and the shipped prebake** (2026-10-28): the engine's events + frontier in `<user data>/kessler/suns_fury_<hash>.pak`
+  (the hash covers the roster, types, settings, the kit and `kCacheVersion`), written longer only, never while the player
+  has breakups; **the default history is SHIPPED**: `data/kessler/suns_fury_<hash>.pak` -> `<exe dir>/kessler_prebake/`
+  (CMakeLists POST_BUILD + sync, `PackageRelease.cmake`; its own folder so the user cache's "keep 3 newest" prune never
+  deletes it), 1102 days past the CME (to 2040-07-21), 31.3M engine events, 45 MB. `kesslerRestart` takes the longest
+  of user `.pak`, shipped `.pak`, old user `.bin` whose header hash matches (no player events; with them only up to the
+  first one's step; a pre-CME breakup: none); the worker opens it on its own thread (25 ms). **Rebuild it with
+  `python tools/make_kessler_prebake.py [--days 1100]` after anything that moves the hash** (~20 min; the log says
+  "no cache suns_fury_<hash>.pak" when it no longer matches).
+  - **Format** (`packEngineEvents` / `EngineEventReader`, Kessler.cpp; magic "KSF3"): per 6-h step the grid hits'
+    targets (sorted, Rice-coded gaps, ~1.36 B a hit) and the pairs (varint); time, seed and sampleDt are rebuilt by
+    `engineEventOf` (the sampling loop's own function), a grid hit's speed and mass at replay by `World::fillGridHits`
+    (the same grid draw, from the world after the step's scripted events and retirement — the replay loop now runs a
+    step as `simulate` does: seeds, `retireParticles(ts)`, engine events, the player's) with a per-step check of their
+    bits (a mismatch logs and samples live from that step). A step that does not rebuild exactly is stored whole.
+    98% of the events are grid hits; ~24.5k events a day from day ~150 on.
+  - **Replay is applies only, made parallel** (`World::applyBatch`, every engine step's events, sampling too): each
+    breakup's pure outputs (fragments, records, small-population plan: `ApplyPrep`, `prepInputs` / `prepOutputs`) are
+    prepared ahead on the engine threads and taken at the event's turn only if nothing it reads was touched since
+    (`touchPool` / `touchRoster` in `jPool` / `jSimple`; the record budget re-preps the rest when the pool's fill
+    moves it), else made again; the small samples' grid / bucket deposits are queued and summed in parallel
+    (`flushDeposits`: integer sums, order-free). `parallelChunks` uses a persistent pool (`ChunkPool`) and every core
+    but one while replaying or while the player waits (`setEngineThreadsWide`, `KesslerWorker::userWaiting`). Env A/Bs:
+    `SATLIGHTSIM_KESSLER_PARALLEL=0` / `_PREP=0` / `_DEFER=0`. The mirror takes 12 ms a frame instead of 3 while time is
+    held (`kSyncBudgetHeldMs`), and its history prune also runs when the frontier moves with time standing still.
+  - **Identical to live** (harness `kessler fingerprint` at paused dates 2 / 30 / 100 / 163 / 321 days: replay of the
+    prebake == live sampling, and the counts at 163 / 321 / 535 days == the pre-change exe's). Measured (RTX 3070 Ti
+    box, 16 threads, harness, default settings, a fresh launch): the supernova Watch (day 163) 416 s -> 41 s;
+    2038-06-01 652 -> 62 s; 2039-01-01 901 -> 93 s; 1 week/s from the CME: 95 days reached in 3 min (held all the way)
+    -> sim time never held to day ~1100 (frame mean 35 -> 27 ms). The Sun's Fury bookmark (day 0.15) was already
+    instant. Live sampling past the prebake: ~1.1 s a day. Open: the working set still reaches 10-35 GB late in a long
+    replay (the mirror and world; pre-existing).
 - **Roster rebuilds and determinism** (also needed by the cache): `buildOrbits()` draws from `SatRng` (MSVC's
   rand() LCG, one stream per constellation, recorded on the first build — the shipped layout is bit-identical on
   Windows and now the same everywhere), the cluster jitter is keyed by load order (`defIndex`), terminator planes

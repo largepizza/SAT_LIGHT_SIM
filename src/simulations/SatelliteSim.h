@@ -3861,6 +3861,7 @@ private:
     double kesslerEpoch() const;          // the scenario epoch (the CME's arrival), J2000 s
     void kesslerInit(VulkanContext &ctx); // after the roster's buffers exist: storm, world, cache, worker
     void kesslerShutdown();               // stop the worker, write the cache
+    double kesslerSaveCacheNow(const std::string &copyTo, std::string &where); // harness `kessler savecache`
     // syncUntil > 0: when the world starts within two steps of it (a breakup before the CME starts the world at its own
     // step), that step is computed before this returns (its debris is up the same frame).
     void kesslerRestart(VulkanContext &ctx, const std::vector<kessler::Event> &userEvents, double keepEngineBefore,
@@ -3875,8 +3876,10 @@ private:
     bool kForceRebuildOnce = false; // harness `kessler breakup ... rebuild=1`: the old full replay (for comparison)
     void kesslerSyncProcess(int32_t nowSec, double budgetMs); // works through the queue of the worker's output
     std::chrono::steady_clock::time_point kHistPruneWall{}; // the last history prune (wall time; kesslerSync)
+    double kHistPruneFrontier = 0.0; // the mirrored frontier when the last prune pass started (2026-10-28)
     size_t kPruneBucket = SIZE_MAX; // the prune pass's next kPoolHist bucket (SIZE_MAX: none running; 2026-10-21)
     double kSyncBudgetMs = 3.0; // its wall-time budget a frame (2026-10-20, the hitches at a fast warp)
+    double kSyncBudgetHeldMs = 12.0; // ... while time is held at the frontier (the player is waiting; 2026-10-28)
     void kesslerSync(VulkanContext &ctx);  // per frame: take the worker's new events / records / deaths
     void kesslerWant(double tJ2000);       // ask the (lazy) worker to simulate at least this far
     double kWantFloor = 0.0;               // the furthest explicit kesslerWant (harness waits); the warp's target may drop
