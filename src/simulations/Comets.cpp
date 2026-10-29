@@ -1,5 +1,6 @@
 // Comets.cpp — comet orbits, brightness, catalog and tail geometry (2026-10-27; CLAUDE.md "Comets"; Comets.h).
 #include "Comets.h"
+#include <glm/gtc/packing.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -387,6 +388,33 @@ void buildParticles(const Elements &el, double tBuild, const glm::dvec3 &obsHeli
             Slot &S = slots[si];
             S.s = stateAt(el, S.tc);
             const glm::dvec3 aC = accelAt(S.s.r, kMuSun);
+            // The local (emission time, size) field round the slot (the tail's zoom detail, comet_splat.frag): grains
+            // without ejection velocity of kNB sizes, emitted at the slot's centre and dTe later; each grain takes the
+            // field's derivatives at its own size, and the emission time / size of the field at its actual position
+            // (its ejection offset decomposed on them), so a pixel of its Gaussian maps to the dust there.
+            constexpr int kNB = 10;
+            glm::dvec3 R0[kNB], Gt[kNB], Bl[kNB];
+            bool fieldOk = o.detail;
+            const double ageC = (tBuild - S.tc) / kDayS;
+            const double dTe = std::max(0.25 * (S.w1 - S.w0) / kDayS, 0.001);
+            if (fieldOk)
+            {
+                const State n1{S.s.r + S.s.v * dTe + 0.5 * aC * dTe * dTe, S.s.v + aC * dTe};
+                for (int j = 0; j < kNB && fieldOk; ++j)
+                {
+                    const double bj = std::exp(lnLo + (lnHi - lnLo) * (double)j / (double)(kNB - 1));
+                    State a, b;
+                    fieldOk = propagate(S.s, ageC, kMuSun * (1.0 - bj), a) && propagate(n1, ageC - dTe, kMuSun * (1.0 - bj), b);
+                    R0[j] = a.r;
+                    Gt[j] = (b.r - a.r) / dTe;
+                }
+                const double dl = (lnHi - lnLo) / (double)(kNB - 1);
+                for (int j = 0; j < kNB; ++j)
+                {
+                    const int ja = std::max(j - 1, 0), jb = std::min(j + 1, kNB - 1);
+                    Bl[j] = (R0[jb] - R0[ja]) / ((double)(jb - ja) * dl);
+                }
+            }
             for (int i = 0; i < S.n; ++i)
             {
                 GpuGrain &G = dust[S.off + (size_t)i];
@@ -427,6 +455,38 @@ void buildParticles(const Elements &el, double tBuild, const glm::dvec3 &obsHeli
                 G.p = glm::vec4(glm::vec3(g.r - now.r), (float)w);
                 G.v = glm::vec4(glm::vec3(g.v), (float)sig);
                 G.q = glm::vec4((float)(1.0 - beta), (float)(0.35 * vej), (float)age, (float)slotTag);
+                if (fieldOk)
+                {
+                    const double lb = std::log(beta);
+                    const double x = std::clamp((lb - lnLo) / (lnHi - lnLo) * (double)(kNB - 1), 0.0, (double)(kNB - 1) - 1e-9);
+                    const int j = (int)x;
+                    const double f = x - (double)j;
+                    const glm::dvec3 Gv = Gt[j] + (Gt[j + 1] - Gt[j]) * f, Bv = Bl[j] + (Bl[j + 1] - Bl[j]) * f;
+                    const double teC = (te - S.tc) / kDayS;
+                    const glm::dvec3 Pf = R0[j] + (R0[j + 1] - R0[j]) * f + Gv * teC;
+                    // the grain's offset from the field = a G + b B + (out of the sheet): a, b from the 2x2 normal equations
+                    const glm::dvec3 e = g.r - Pf;
+                    const double gg = glm::dot(Gv, Gv), bb = glm::dot(Bv, Bv), gb = glm::dot(Gv, Bv);
+                    const double det = gg * bb - gb * gb;
+                    double da = 0.0;
+                    if (det > 1e-6 * gg * bb)
+                    {
+                        const double eg = glm::dot(e, Gv), eb = glm::dot(e, Bv);
+                        da = std::clamp((eg * bb - eb * gb) / det, -5.0, 5.0);
+                    }
+                    const float teF = (float)((te - el.tPeri) / kDayS + da);
+                    uint32_t teBits;
+                    std::memcpy(&teBits, &teF, 4);
+                    G.d = glm::uvec4(glm::packHalf2x16(glm::vec2((float)Gv.x, (float)Gv.y)),
+                                     glm::packHalf2x16(glm::vec2((float)Gv.z, (float)Bv.x)),
+                                     glm::packHalf2x16(glm::vec2((float)Bv.y, (float)Bv.z)), teBits);
+                    // its spread also covers the stretch of syndyne its size stratum stands for (ln beta / n of the
+                    // range): young dust's grains of one slot otherwise sat as separate dots along the syndyne (the
+                    // perihelion swing's speckle, issue 20261028_221813). Young dust only: older dust's ejection spread
+                    // covers it, and widening it there blurred the tail's streaks and cost fill.
+                    const double sB = 0.6 * glm::length(Bv) * (lnHi - lnLo) / (double)S.n * (1.0 - smoothstepD(2.0, 6.0, age));
+                    G.v.w = (float)std::sqrt((double)G.v.w * G.v.w + sB * sB);
+                }
             }
         }
     };
@@ -453,24 +513,64 @@ void buildParticles(const Elements &el, double tBuild, const glm::dvec3 &obsHeli
     // ── Ion parcels: an absolute grid of pick-up times, carried radially by the solar wind ─────────────────────
     if (o.ionPerSlot > 0 && el.gas > 0.0)
     {
-        const double dtS = o.ionDtDays * kDayS;
-        const int64_t j1 = (int64_t)std::floor(tBuild / dtS), j0 = (int64_t)std::ceil((tBuild - o.ionMaxAgeDays * kDayS) / dtS);
+        // The pick-up grid: every whole w = t / ionDtDays + nu / ionDnuRad (nu the true anomaly, unwrapped by the orbit
+        // count), so a parcel leaves at least every ionDtDays and every ionDnuRad of the radial direction's swing: the
+        // tail stays continuous through a sungrazer's perihelion (the radial turns ~0.5 rad in 0.01 day there, and on a
+        // time grid alone the streamers broke into separate puffs). A pure function of the comet's orbit and the indices.
+        const double dnu = o.ionDnuRad > 0.0 ? o.ionDnuRad : 1e30;
+        const double aOrb = el.e < 1.0 ? el.q / (1.0 - el.e) : 0.0;
+        const double Porb = el.e < 1.0 ? 2.0 * 3.14159265358979 * std::sqrt(aOrb * aOrb * aOrb / kMuSun) : 0.0; // days
+        auto wOf = [&](double t, State &st, double &dwdt) { // dwdt per day
+            st = stateAt(el, t);
+            double nu = std::atan2(glm::dot(st.r, el.tHat), glm::dot(st.r, el.pHat));
+            if (Porb > 0.0) nu += 2.0 * 3.14159265358979 * std::floor((t - el.tPeri) / kDayS / Porb + 0.5);
+            const double r2 = glm::dot(st.r, st.r);
+            const double om = glm::length(glm::cross(st.r, st.v)) / r2; // rad/day
+            dwdt = 1.0 / o.ionDtDays + om / dnu;
+            return (t / kDayS) / o.ionDtDays + nu / dnu;
+        };
+        const double tLo = tBuild - o.ionMaxAgeDays * kDayS;
+        State stLo, stHi;
+        double dwLo, dwHi;
+        const double wLo = wOf(tLo, stLo, dwLo), wHi = wOf(tBuild, stHi, dwHi);
+        const int64_t j0 = (int64_t)std::ceil(wLo), j1 = (int64_t)std::floor(wHi);
         const double vInf = 250.0 * kDayS / kAuKm, tauA = 0.15, tauC = 0.03, tauIon = 1.0;
         const int S = 5;
         const uint64_t iseed = mix64(seed ^ 0x10A5ull);
-        for (int64_t j = j0; j <= j1; ++j)
+        double tPrev = tLo, wPrev = wLo, dwPrev = dwLo;
+        for (int64_t j = j0; j <= j1 && j - j0 < 20000; ++j)
         {
-            const double te = (double)j * dtS;
+            // the time where w = j: Newton from the last slot's, kept inside [tPrev, tBuild]
+            double te = std::min(tPrev + ((double)j - wPrev) / dwPrev * kDayS, tBuild), dwdt = dwPrev;
+            double lo = tPrev, hi = tBuild;
+            State n;
+            for (int it = 0; it < 12; ++it)
+            {
+                const double wv = wOf(te, n, dwdt);
+                if (wv < (double)j) lo = te; else hi = te;
+                const double step = ((double)j - wv) / dwdt * kDayS;
+                double tn = te + step;
+                if (!(tn > lo && tn < hi)) tn = 0.5 * (lo + hi);
+                if (std::abs(tn - te) < 0.05) { te = tn; break; }
+                te = tn;
+            }
+            n = stateAt(el, te);
+            const double om = glm::length(glm::cross(n.r, n.v)) / glm::dot(n.r, n.r);
+            dwdt = 1.0 / o.ionDtDays + om / dnu;
+            tPrev = te; wPrev = (double)j; dwPrev = dwdt;
+            const double dtSlot = 1.0 / dwdt; // days this pick-up stands for
             const double a = (tBuild - te) / kDayS;
             if (a < 0.0) continue;
-            const State n = stateAt(el, te);
             const double rN = glm::length(n.r);
             const glm::dvec3 rh = n.r / rN;
             glm::dvec3 e1 = glm::cross(rh, n.v);
             e1 = glm::length(e1) > 1e-12 ? glm::normalize(e1) : glm::dvec3(0, 0, 1);
             const glm::dvec3 e2 = glm::cross(rh, e1);
+            // The ions picked up per day follow the gas production, which is the head's law less the 1/r^2 of sunlight
+            // (Q ~ r_eff^-(n - 2)); each fluoresces by the sunlight where it is now (comet_splat.vert, / r^2 saturated
+            // as the head's law), so at pick-up it is the head's r_eff^-n.
             const double rEff = std::sqrt(rN * rN + el.rSat * el.rSat);
-            const double Fion = o.ionFluxK * el.gas * Fhead0 * std::pow(rEff, -el.n);
+            const double Fion = o.ionFluxK * el.gas * Fhead0 * std::pow(rEff, -(el.n - 2.0)) / (1.0 + el.rSat * el.rSat);
             const double s = vInf * (a - tauA * (1.0 - std::exp(-a / tauA)));
             const double sd = vInf * (1.0 - std::exp(-a / tauA));
             const double tD = te / kDayS;
@@ -490,14 +590,19 @@ void buildParticles(const Elements &el, double tBuild, const glm::dvec3 &obsHeli
                 const glm::dvec3 P = n.r + n.v * tauC * (1.0 - std::exp(-a / tauC)) + dirI * s;
                 const glm::dvec3 V = n.v * std::exp(-a / tauC) + dirI * sd;
                 const double mid = 1.0 - 0.5 * std::abs((double)st - 0.5 * (S - 1)) / (0.5 * (S - 1) + 1e-9);
-                double w = Fion * (o.ionDtDays / tauIon) * std::exp(-a / tauIon) / (double)o.ionPerSlot * (0.6 + 0.8 * mid);
+                double w = Fion * (dtSlot / tauIon) * std::exp(-a / tauIon) / (double)o.ionPerSlot * (0.6 + 0.8 * mid);
                 w *= smoothstepD(0.0, 0.02, a) * (1.0 - smoothstepD(0.8 * o.ionMaxAgeDays, o.ionMaxAgeDays, a));
                 if (!(w > 0.0)) continue;
                 GpuGrain G;
-                const double sig = 2e-4 + 0.025 * s;
+                // its spread: the streamer's width + the stretch of tail one pick-up stands for (across: the radial's
+                // swing over it; along: the wind's speed over it), so neighbouring pick-ups overlap
+                const double omS = om * dtSlot;
+                const double sig = std::sqrt((2e-4 + 0.025 * s) * (2e-4 + 0.025 * s) + (0.45 * s * omS) * (0.45 * s * omS) +
+                                             (0.45 * sd * dtSlot) * (0.45 * sd * dtSlot));
                 G.p = glm::vec4(glm::vec3(P - now.r), (float)w);
                 G.v = glm::vec4(glm::vec3(V), (float)sig);
-                G.q = glm::vec4(0.0f, (float)(0.025 * sd), (float)a, (float)(slotTag + 1.0));
+                G.q = glm::vec4(0.0f, (float)(0.025 * sd + 0.45 * sd * omS), (float)a, (float)(slotTag + 1.0));
+                G.d = glm::uvec4(0u);
                 out.grains.push_back(G);
                 out.nIon++;
             }

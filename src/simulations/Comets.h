@@ -83,8 +83,15 @@ struct GpuGrain
     glm::vec4 v; // xyz: heliocentric velocity at tBuild (AU/day); w: spread (AU) at tBuild (the Gaussian it stands for)
     glm::vec4 q; // x: 1 - beta (dust; ions 0: no gravity), y: spread growth (AU/day), z: age at tBuild (days),
                  // w: kind (0 dust, 1 ion) + 4 x the comet's slot
+    // The local (emission time, size) field round a dust grain (2026-10-28, the tail's zoom detail): the splat maps each
+    // pixel of the grain's Gaussian to the emission time and ln beta of the dust there (a 2x2 screen Jacobian), so
+    // time-variable emission (synchronic bands), fragmentation striae and size filaments resolve as the view zooms in.
+    // d: x, y, z = half floats (dP/dte at fixed beta: AU per day of emission time; dP/d ln beta at fixed te: AU) packed
+    //    as (Gx, Gy), (Gz, Bx), (By, Bz); w = the float bits of the field's emission time at the grain's position (days
+    //    from perihelion, its own ejection offset taken out). Its ln beta is the grain's own (q.x). Ions: 0.
+    glm::uvec4 d;
 };
-static_assert(sizeof(GpuGrain) == 48, "GpuGrain is mirrored in comet_splat.vert");
+static_assert(sizeof(GpuGrain) == 64, "GpuGrain is mirrored in comet_frame.glsl");
 struct ParticleOpts
 {
     double tauMaxDays = 45.0;   // the oldest dust
@@ -92,12 +99,14 @@ struct ParticleOpts
     double du = 0.01;           // slot width in asinh units
     int grainsMin = 8, grainsMax = 96; // grains per slot: grainsMin x cosh(u)^0.33 within these (a wide slot gets more)
     double v0KmS = 0.5;         // ejection speed at beta 1, 1 AU
-    double ionDtDays = 0.01;    // ion parcel grid
+    double ionDtDays = 0.01;    // ion parcel grid: a pick-up at every whole w = t / ionDtDays + nu / ionDnuRad (nu the
+    double ionDnuRad = 0.02;    // true anomaly, unwrapped): finer where the radial direction swings (perihelion)
     double ionMaxAgeDays = 2.5;
     int ionPerSlot = 12;
     double dustFluxK = 0.025;   // the dust's flux per (dust rate x day of emission), x Fhead0 x dust
     double ionFluxK = 0.3;      // the ion tail's total flux, x Fhead0 x gas x r_eff^-n
     int maxGrains = 120000;
+    bool detail = true;         // the dust's (emission time, size) field for the splat's zoom detail (GpuGrain d / e)
     int threads = 4;
 };
 struct ParticleBuild
