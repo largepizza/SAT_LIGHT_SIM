@@ -349,8 +349,8 @@ float tdSurgeAt(sampler2D elevTex, vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, vec2
 // known (land, no map, a coast patch, a storm surge, a launch pad near). Every point within that distance is this water
 // body's flat surface, so the march may step that far (terrainMarchDetailed). Over the open sea a grazing ray from
 // near the surface took ~200 relaxation steps of a few % of t to reach the horizon.
-const float kTdWaterClearMarginM = 4500.0;
 #if !defined(SKY_LITE) && !defined(SKY_ENV)
+const float kTdWaterClearMarginM = 4500.0;
 float gTdWaterClearM = -1.0;
 #define TD_WATER_CLEAR gTdWaterClearM
 #define TD_STEP_FLOOR(a, f) max((a), (f))
@@ -955,7 +955,9 @@ float terrainMarchDetailed(sampler2D elevTex, sampler2D specTex, float hEye, vec
         float gap;
         float amp0 = detail ? tdAmp0(h0, hMip3) * TD_PAD_LAST : 0.0;
         float allBound = detail ? tdTailBound(amp0) + tdErosionBound(amp0) : 0.0;
+#if !defined(SKY_LITE) && !defined(SKY_ENV)
         float stepFloor = 0.0;   // over open water: the distance to any land (gTdWaterClearM), at most 12 km a step
+#endif
         if (rayH > h0 + allBound) {
             gap = rayH - h0 - allBound;
             armed = true;
