@@ -4206,7 +4206,12 @@ void main() {
     if (cv2.skyAp.x > 0.5 && !dbgSkipAtmosphere()) {
         float limbAtm = (obsR > R_ATMOS) ? -sqrt(max(0.0, 1.0 - (R_ATMOS / obsR) * (R_ATMOS / obsR))) : limbZ;
         float inner   = 2.5 * pc.fovYRad / float(kSkyApY);
-        float band    = max(cv2.skyAp.z, inner + 1e-4);
+        // The band exists because the integral changes too fast across a TILE near the horizon: it is at most
+        // kSkyApBandTiles tiles wide (2026-10-28, issue 20261028_192855: zoomed to a 0.58-deg field on the refracted
+        // Sun from 96 km, a tile is 0.003 deg and the fixed 2-deg band covered the whole screen, so every pixel ran
+        // the loop: sky pass 34 ms). 12 tiles are 2 deg at a 30-deg field: unchanged at 30 deg and wider.
+        const float kSkyApBandTiles = 12.0;
+        float band    = max(min(cv2.skyAp.z, kSkyApBandTiles * pc.fovYRad / float(kSkyApY)), inner + 1e-4);
         float outside = max(limbZ - dir.z, dir.z - max(limbZ, limbAtm));   // sin(elevation) past the grazing range
         apW = smoothstep(inner, band, outside);
         if (apW < 1.0) {

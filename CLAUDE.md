@@ -9120,7 +9120,7 @@ atmHalfAvg3, airglow noise, cityBrightness) moved unchanged into `include/sky_at
   min"); the god rays read the tile's own froxel column (the same ray and offset); the shadowed air's sky light is taken at
   the shadow's mean point UP TO each slice. **Keep its step in step with the N_VIEW loop** — the band below still runs the
   loop. ~0.3-0.7 ms (RTX 3070 Ti).
-- **The band**: within `clouds_v2.sky_ap_band_deg` (2 deg, at least 2.5 tiles) of the horizon / the Earth's limb (and the
+- **The band**: within `clouds_v2.sky_ap_band_deg` (2 deg, at most 12 tiles since 2026-10-28, at least 2.5 tiles) of the horizon / the Earth's limb (and the
   atmosphere's top seen from above it), where the integral changes too fast across a tile, the loop runs as before; over
   the band's outer part (2.5 tiles out to its edge) the pixel takes BOTH and cross-fades (`apW`). The volume is the MORE
   accurate (finer slices: against a 64-1024-sample loop 0.01-0.34 levels mean where the default loop is 0.6-0.8, ~5 levels
@@ -9130,6 +9130,12 @@ atmHalfAvg3, airglow noise, cityBrightness) moved unchanged into `include/sky_at
   than it saved), SKY_LITE / Potato / SKY_ENV / SKY_REFL (no volume), the HQ photo (`cv2SkyAp` saved / set 0), knockout bit 2.
   "Aerial perspective volume (0/1)" (`clouds_v2.sky_ap`, slot 337; 0 = the loop everywhere, the A/B), "... horizon band
   (deg)" (slot 338).
+- **The band is capped at 12 tiles** (2026-10-28, issue 20261028_192855: zoomed to a 0.58-deg field on the refracted Sun
+  from 96 km, a tile is 0.003 deg and the fixed 2-deg band covered the whole screen: every pixel ran the loop). Unchanged at
+  a 30-deg field and wider. That view (1920x1009, interleaved): sky pass 34.6 -> 9.3 ms (FOV 5: 23.8 -> 10.9, FOV 40 10.4 ->
+  10.2); against a 64-4096-sample loop the volume is within ~1 level everywhere, where the default loop read the ground just
+  under the limb ~15 levels dark. Its clouds (16-24 ms, run to run) cost about the same at a 40-deg field: content (march
+  ~10.5, composite 2.7, resolve 1.2, sky_ap 1.2); an LOD pixel floor at narrow fields saved ~2 ms and was not adopted.
 - **Measured** (RTX 3070 Ti, 1920x1009, `harness_runs/ap/`): sky pass summed over 17 scenes 191 -> 146 ms (-24%), the GPU
   frame 425 -> 385 ms; `frame_bench.py` wall clock (uncapped, one run a side) stills 834.5 -> 767.4 ms (-8.0%), motion
   paths 1408 -> 1293 ms (-8.2%; ground and air -7..-14%, the eclipse -20..-25%, orbit -1..-11%). Matrix suite on vs off:
