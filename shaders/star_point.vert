@@ -24,7 +24,7 @@ layout(push_constant) uniform PC {
     mat4  skyView;
     float fovYRad;
     float aspect;
-    float waveTime;   // offset 72 — simSecInDay, used for twinkling
+    float waveTime;   // offset 72 — the twinkle clock (real seconds x "Star twinkle rate", mod 1000)
     float noTwinkle;  // offset 76 — 1 = skip scintillation (planet draw only)
     vec4  moonDirENU; // offset 80 — xyz=moon dir ENU, w=illuminated fraction (unused here)
     vec4  obsECEFDir; // offset 96 — xyz=obs ECEF, w=obsHeightOffset (m)
@@ -66,22 +66,14 @@ void main() {
     // Turbulence (2026-10-26, SatelliteSimRefraction.cpp): the CPU packs this star's rms angle-of-arrival jitter and
     // scintillation index from the refraction table along its own (bent) line of sight into meshPx: 1 + floor(urad) +
     // 0.99 sigma_I. The image dances by the jitter (seen at long focal lengths) and twinkles by sigma_I below.
-    float aoaRad = 0.0, scintI = -1.0;
-    if (sat.meshPx >= 1.0) {
-        float q = sat.meshPx - 1.0;
-        aoaRad = floor(q) * 1e-6;
-        scintI = fract(q) / 0.99;
-    }
-    vec2 jit = vec2(0.0);
-    if (aoaRad > 0.0) {
-        float hj = fract(sin(dot(sat.skyDir, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
-        float tj = pc.waveTime;
-        const float P2 = 6.28318530718;
-        jit = aoaRad * vec2(sin(P2 * fract(fract(tj * 1.31) + hj)) + 0.5 * sin(P2 * fract(fract(tj * 3.70) + hj * 1.7)),
-                            sin(P2 * fract(fract(tj * 1.07) + hj * 2.3)) + 0.5 * sin(P2 * fract(fract(tj * 2.90) + hj * 0.6))) * 0.9;
-    }
-    gl_Position  = vec4( cam.x / (-cam.z) / (tanHalfFov * pc.aspect) + jit.x / (tanHalfFov * pc.aspect),
-                        -cam.y / (-cam.z) /  tanHalfFov + jit.y / tanHalfFov,
+    // The image's dance by the jitter is no longer drawn here (2026-10-28, issue 20261028_193115): the turbulence warp
+    // (turb_warp.frag, after the main pass) moves the whole picture — stars, the Milky Way's points, the Moon, the Sun —
+    // through one field, so neighbouring stars move together within a cell and apart beyond it.
+    float scintI = -1.0;
+    if (sat.meshPx >= 1.0)
+        scintI = fract(sat.meshPx - 1.0) / 0.99;
+    gl_Position  = vec4( cam.x / (-cam.z) / (tanHalfFov * pc.aspect),
+                        -cam.y / (-cam.z) /  tanHalfFov,
                          kDepthFar, 1.0); // at infinity: behind every surface (include/depth.glsl)
     gl_PointSize = sat.angularSize;
 
@@ -102,10 +94,10 @@ void main() {
         return;
     }
 
-    // Precision note: waveTime = simSecInDay (0–86400).  Calling sin() directly
-    // with a large argument (43200 × freq × 2π ≈ 1e6) loses all precision in
-    // float32 GPU trig.  Fix: reduce to fractional cycle [0,1] with fract()
-    // before multiplying by 2π, so the sin argument is always in [0, 2π].
+    // waveTime is the TWINKLE CLOCK (2026-10-28, issue 20261028_191408 "Star Twinkle"): real (frame) seconds x
+    // "Star twinkle rate", wrapped at 1000 s (every frequency below is a whole number of cycles in 1000 s, so the wrap
+    // is seamless). It was simSecInDay: time warp sped the twinkle up with it, and at 1x 3.7-11.3 Hz was too fast.
+    // fract() before the 2 pi keeps the sine's argument small.
 
     // Per-star unique phase seeds (hash of ECI direction).
     float h1 = fract(sin(dot(sat.skyDir, vec3(127.1, 311.7,  74.7))) * 43758.5453);

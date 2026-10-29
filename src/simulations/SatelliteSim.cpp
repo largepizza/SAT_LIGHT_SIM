@@ -637,6 +637,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     initPlanets(ctx); // must run after initStars() — reuses starDescLayout/starPipeline
     cometsInit(ctx);  // the comets' tail pass (SatelliteSimComets.cpp)
     createPlanetDiscs(ctx); // the resolved discs' maps, set and pipeline (SatelliteSimPlanets.cpp)
+    createTurbWarp(ctx);    // the turbulence warp (SatelliteSimTurbulence.cpp)
     // Long-exposure trail pipeline — needs drawPipeLayout/descSet (createDrawPipeline/
     // createDescriptors above) AND starPipeLayout/starDescSet/planetDescSet (initStars/initPlanets
     // just above) for its splat-stage pipelines, plus flareSampler (createFlareResources above)
@@ -855,6 +856,7 @@ void SatelliteSim::recreateComputeScaledTargets(VulkanContext &ctx)
     frameSafeUpdateDescriptorSets(ctx.device, 6, depthWrites, 0, nullptr);
     cometsWriteDescriptors(ctx); // the comet tail pass reads the cloud targets and the depth (SatelliteSimComets.cpp)
     writePlanetDiscTargets(ctx);
+    writeTurbWarpTargets(ctx);
 
     // Clouds v2: its screen-sized images, and every set that points at them (or at the scene depth
     // just recreated above).
@@ -938,6 +940,7 @@ void SatelliteSim::onResize(VulkanContext &ctx)
     starPipeline = VK_NULL_HANDLE;
     createStarPipeline(ctx);
     createPlanetDiscPipeline(ctx);
+    createTurbWarpFrame(ctx); // the turbulence warp's frame copy follows the extent (its pipeline's viewport is dynamic)
 
     if (rainPipeline)
     {
@@ -7636,7 +7639,7 @@ PointDrawPC SatelliteSim::buildPointDrawPC(VulkanContext &ctx)
     pc.skyView = camera.viewMatrix();
     pc.fovYRad = glm::radians(camera.fovYDeg);
     pc.aspect = (float)ctx.swapExtent.width / (float)ctx.swapExtent.height;
-    pc.waveTime = simSecInDay * 1.0f;
+    pc.waveTime = (float)twinkleClock_; // the twinkle clock: real seconds x starTwinkleRate (star_point.vert)
     pc.noTwinkle = 0.0f;
     {   // w: the Moon's angular radius (star cull); xyz the Moon AS SEEN (refracted like the stars, 2026-10-27)
         glm::vec3 mApp = glm::normalize(glm::vec3(moonDirENU));
@@ -7735,6 +7738,7 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float dt)
                 fprof::add(kNames[i], cpuAccumMs[i]);
         fprof::tag((double)simDayJ2000 * 86400.0 + simSecInDay, timePaused ? 0.0f : kTimeScales[timeScaleIdx] * timeDir);
     }
+    updateTurbWarp(ctx); // the turbulence warp's UBO + whether it runs after this pass (SatelliteSimTurbulence.cpp)
     SatDrawPC skyPc = buildSkyDrawPC(ctx);  // Pass 1 (sky background) — skyBgPipeLayout
     PointDrawPC pc = buildPointDrawPC(ctx); // Passes 2/3/3.5 (satellite/star/planet points)
 
@@ -8674,6 +8678,7 @@ void SatelliteSim::cleanup(VkDevice device)
     vkDestroyBuffer(device, planetBuf, nullptr);
     vkFreeMemory(device, planetMem, nullptr);
     destroyPlanetDiscs(device);
+    destroyTurbWarp(device);
 
     if (meterImg) { vkDestroyImage(device, meterImg, nullptr); vkFreeMemory(device, meterImgMem, nullptr); }
     if (meterBuf) ctx_->slottedDestroy(&meterBuf); // every slot's copy

@@ -630,6 +630,17 @@ struct GpuPlanetDiscUBO
 };
 static_assert(sizeof(GpuPlanetDiscUBO) == 96 + 192 * kPlanetCount, "GpuPlanetDiscUBO layout");
 
+// The turbulence warp's UBO (2026-10-28): mirror of shaders/turb_warp.frag's TurbWarp block (std140, 16-byte members).
+struct GpuTurbWarpUBO
+{
+    glm::vec4 camR, camU, camF, screen, params, mScale;
+    glm::ivec4 anc[4];
+    glm::vec4 frac[4];
+    glm::vec4 aniso;
+    glm::vec4 tab[64];
+};
+static_assert(sizeof(GpuTurbWarpUBO) == 16 * (6 + 4 + 4 + 1 + 64), "GpuTurbWarpUBO layout");
+
 // What the disc renderer and the selection panel know about each body this frame (SatelliteSimPlanets.cpp).
 struct PlanetView
 {
@@ -4371,6 +4382,28 @@ private:
     uint32_t planetMapLayers = 0;
     uint32_t planetDiscCount = 0;   // this frame's resolved discs (0 = the pass draws nothing)
 
+    // The turbulence warp (2026-10-28, SatelliteSimTurbulence.cpp): a copy of the composed frame (sampled), set 0 = the
+    // UBO, the copy, the cloud composite A / B, the scene depth.
+    VkImage turbFrameImg = VK_NULL_HANDLE;
+    VkDeviceMemory turbFrameMem = VK_NULL_HANDLE;
+    VkImageView turbFrameView = VK_NULL_HANDLE;
+    VkSampler turbFrameSampler = VK_NULL_HANDLE;
+    VkExtent2D turbFrameExtent{0, 0};
+    VkBuffer turbBuf = VK_NULL_HANDLE;
+    VkDeviceMemory turbMem = VK_NULL_HANDLE;
+    void *turbMapped = nullptr;
+    VkDescriptorSetLayout turbLayout = VK_NULL_HANDLE;
+    VkDescriptorPool turbPool = VK_NULL_HANDLE;
+    VkDescriptorSet turbSet = VK_NULL_HANDLE;
+    VkPipelineLayout turbPipeLayout = VK_NULL_HANDLE;
+    VkPipeline turbPipeline = VK_NULL_HANDLE;
+    bool turbWarpActive_ = false;   // this frame runs the pass (set in recordDraw, read by wantsPreUiCopy)
+    float turbMaxPx_ = 0.0f;        // the largest rms displacement in view this frame (px; harness state)
+    float turbAltFade_ = 1.0f;      // 1 under the air, 0 from orbit
+    double turbClock_ = 0.0;        // real (frame) seconds the field evolves on
+    double twinkleClock_ = 0.0;     // real seconds x starTwinkleRate, mod 1000 (PointDrawPC::waveTime)
+    uint64_t turbFrames_ = 0;       // frames the pass ran (harness state)
+
     // ── Simulation state ──────────────────────────────────────────────────────
     SkyCamera camera;
     // simTime is split into an integer day counter and a double-precision
@@ -6072,6 +6105,12 @@ private:
     float mwStarFaintLo = 0.003f;   // the band's glow below which the sky stays smooth (no points) ...
     float mwStarFaintHi = 0.02f;    // ... and above which it has its full share of points
     float mwStarNebula = 1.0f;      // how fully the magenta emission nebulae stay a smooth glow (0 = points there too)
+    // Seeing (2026-10-28, Photometry tab): "Star twinkle rate" x the twinkle's old frequencies, on REAL time
+    // (photometry.star_twinkle_rate, issue 20261028_191408); "Turbulence warp" x the angle-of-arrival rms the whole picture
+    // is displaced by (photometry.turbulence_warp, issue 20261028_193115; 0 = no image motion at all: sat_sky.frag's own
+    // Sun / Moon disc jitter stays off, refrSun.z = 0).
+    float starTwinkleRate = 0.3f;
+    float turbWarpGain = 1.0f;
     // ...and they stay exactly that for a source at `glareNearRangeKm` or beyond: proximity scales the
     // sprite's SIZE alone, so a satellite up in the sky is untouched while one resolved metres away (the
     // 3D viewer) or closing in on a zoomed 3D mesh spreads a much wider glare than a distant point
@@ -7904,10 +7943,10 @@ private:
     // [38] since 2026-10-07 (35-37: resolved satellites, satellite adaptation, formation merge; photoBufs too).
     // [39] since 2026-10-20 (38: glare cluster merge).
     // [45] since 2026-10-28 (39-44: the Milky Way's look; photoBufs too).
-    // [54] since 2026-10-28 (45-53: the Milky Way's zoomed star clouds; photoBufs too).
-    bool hovPhotoMinus[54] = {};
-    bool hovPhotoPlus[54] = {};
-    bool draggingPhoto[54] = {};
+    // [56] since 2026-10-28 (45-53: the Milky Way's zoomed star clouds; photoBufs too).
+    bool hovPhotoMinus[56] = {};
+    bool hovPhotoPlus[56] = {};
+    bool draggingPhoto[56] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
     static constexpr int kCloudSliderSlots = 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
@@ -8240,6 +8279,15 @@ private:
     void createPlanetDiscPipeline(VulkanContext &ctx);  // (viewport baked in: rebuilt on resize)
     void writePlanetDiscTargets(VulkanContext &ctx);    // the cloud composite / scene depth after they are recreated
     void destroyPlanetDiscs(VkDevice device);
+    // The turbulence warp (2026-10-28, SatelliteSimTurbulence.cpp, shaders/turb_warp.frag): the composed frame
+    // resampled through a seeing field before the UI.
+    void createTurbWarp(VulkanContext &ctx);           // UBO, set, pipeline (init)
+    void createTurbWarpFrame(VulkanContext &ctx);      // the frame copy at ctx.swapExtent (init, onResize)
+    void writeTurbWarpTargets(VulkanContext &ctx);     // the cloud composite / scene depth after they are recreated
+    void destroyTurbWarp(VkDevice device);
+    void updateTurbWarp(VulkanContext &ctx);           // recordDraw: the UBO + whether the pass runs this frame
+    void recordTurbWarp(VkCommandBuffer cmd, VulkanContext &ctx, VkImage image); // recordPreUiCopy
+    nlohmann::json turbWarpJson() const;               // harness state
     void updatePlanetDiscs(GpuSatVisible *dst);         // from updatePlanets: the discs, the moons, the hand-off
     void recordPlanetDiscs(VkCommandBuffer cmd, const PointDrawPC &pc);
     double planetSinRingB(int planet) const;             // Saturn's rings' tilt toward the Earth (sin B); 0 for the rest

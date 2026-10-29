@@ -474,7 +474,7 @@ nlohmann::json SatelliteSim::refractionJson() const
         double dRg;
         const bool hit = refr::lookup(t, glm::radians(eDeg), dRg, &e);
         return nlohmann::json{{"e_app_deg", eDeg}, {"hit", hit}, {"R_arcmin", {e.dR[0] * 3437.75, e.dR[1] * 3437.75, e.dR[2] * 3437.75}},
-                              {"aoa_arcsec", e.aoa * 206265.0}, {"scint", e.scint}, {"colR_km", e.colR * 1e-3}, {"colM_km", e.colM * 1e-3}};
+                              {"aoa_arcsec", e.aoa * 206265.0}, {"aoa_mean_dist_km", e.aoaS * 1e-3}, {"scint", e.scint}, {"colR_km", e.colR * 1e-3}, {"colM_km", e.colM * 1e-3}};
     };
     j["samples"] = {at(-0.2), at(-0.1), at(-0.05), at(0.0), at(0.05), at(0.1), at(0.2), at(0.5), at(1.0), at(3.0), at(10.0), at(45.0)};
     // the mapping app -> true near the horizon, every 8th entry from the bottom (for plots)

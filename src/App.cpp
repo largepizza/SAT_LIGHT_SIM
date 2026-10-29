@@ -970,7 +970,8 @@ void App::drawFrame()
 
     // 3b. A copy of the frame before the UI (a clean video recording, the harness's settle probe): end the pass,
     // copy, and draw the UI in the load variant of the pass (the copy leaves the image in its TRANSFER_DST layout).
-    if (!photo && sim->wantsPreUiCopy())
+    // (Also for the HQ photo's frames: the turbulence warp runs there; the sim takes no clean copy of the photo target.)
+    if (sim->wantsPreUiCopy())
     {
         vkCmdEndRenderPass(ctx.commandBuffer);
         {

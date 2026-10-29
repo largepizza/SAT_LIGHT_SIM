@@ -122,7 +122,7 @@ struct RayOut
 {
     bool hit = false;
     double eTrue = 0.0;
-    double colR = 0, colM = 0, colO3 = 0, colH = 0, I1 = 0, I2 = 0;
+    double colR = 0, colM = 0, colO3 = 0, colH = 0, I1 = 0, I2 = 0, I1s = 0;
 };
 
 // Traces one ray back from the observer (h0 above sea level) at apparent elevation e0, with (n - 1) x f.
@@ -198,6 +198,7 @@ RayOut trace(const Air &air, double h0, double e0, double f, bool columns)
                 const double c2 = air.cn2(zm);
                 const double sm = s + 0.5 * ds;
                 o.I1 += c2 * ds;
+                o.I1s += c2 * sm * ds;
                 o.I2 += c2 * std::pow(sm, 5.0 / 6.0) * ds;
             }
         }
@@ -242,6 +243,7 @@ void build(const Profile &p, double h0, Table &out, int threads)
                     en.colO3 = (float)ro.colO3;
                     en.colH = (float)ro.colH;
                     en.aoa = (float)std::sqrt(2.91 * std::pow(D, -1.0 / 3.0) * ro.I1);
+                    en.aoaS = ro.I1 > 0.0 ? (float)(ro.I1s / ro.I1) : 0.0f;
                     const double sr2 = 2.25 * k76 * ro.I2;
                     en.scint = (float)std::sqrt(1.0 - std::exp(-sr2));
                 }
@@ -259,6 +261,7 @@ void build(const Profile &p, double h0, Table &out, int threads)
         const RayOut z = trace(air, h0, 1.5707, 1.0, true);
         t.zenAoa2 = 2.91 * std::pow(D, -1.0 / 3.0) * z.I1;
         t.zenSr2 = 2.25 * k76 * z.I2;
+        t.zenAoaS = z.I1 > 0.0 ? z.I1s / z.I1 : 0.0;
     }
     // Continuation above the table: the refraction there x Saemundsson's shape (0 from orbit).
     const Entry &top = t.e[kTableN - 1];
@@ -292,6 +295,7 @@ bool lookup(const Table &t, double eApp, double &dRg, Entry *outI)
             const double se = std::max(std::sin(eApp), 1e-3);
             m.dR[0] = m.dR[1] = m.dR[2] = (float)dRg;
             m.aoa = (float)std::sqrt(t.zenAoa2 / se);
+            m.aoaS = (float)(t.zenAoaS / se);
             m.scint = (float)std::sqrt(1.0 - std::exp(-t.zenSr2 * std::pow(se, -11.0 / 6.0)));
             *outI = m;
         }
@@ -320,6 +324,7 @@ bool lookup(const Table &t, double eApp, double &dRg, Entry *outI)
         m.colO3 = (float)(a.colO3 + (b.colO3 - a.colO3) * w);
         m.colH = (float)(a.colH + (b.colH - a.colH) * w);
         m.scint = (float)(a.scint + (b.scint - a.scint) * w);
+        m.aoaS = (float)(a.aoaS + (b.aoaS - a.aoaS) * w);
         *outI = m;
     }
     return false;
