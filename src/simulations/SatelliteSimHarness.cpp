@@ -424,6 +424,13 @@ json SatelliteSim::harnessStateJson()
     }
     j["camera"] = {{"az_deg", camera.azDeg}, {"el_deg", camera.elDeg}, {"fov_y_deg", camera.fovYDeg},
                    {"tracking", trackActive}};
+    {
+        const float ls = camera.lookSens();
+        j["camera"]["cinematic"] = {{"latched", cinematicLatched}, {"alt_mode", cinematicMode},
+                                    {"yaw_deg_s", cinematicYawVel * ls}, {"pitch_deg_s", cinematicPitchVel * ls},
+                                    {"coast_deg_s", cineCoastDegS_}, {"held", camera.captured || harnessDragFrames_ > 0},
+                                    {"skip_frames", lookSkipFrames_}};
+    }
     const glm::vec3 sun(sunDirENU), moon(moonDirENU);
     j["sun"] = {{"az_deg", azDegOf(sun)}, {"el_deg", elDegOf(sun)}};
     // The global exposure (SatelliteSim.h): the user's EV, the metered auto offset and the meter's

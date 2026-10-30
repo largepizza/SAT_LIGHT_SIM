@@ -740,9 +740,10 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // Yaw  (dmx): rotate obsFacing around obsDir via Rodrigues — no ENU frame, no pole issue.
     // Pitch (dmy): handled by camera.update → camera.elDeg as usual.
     //
-    // Cinematic mode (RMB + ALT held): mouse input adds force to a velocity that
-    // drifts and decays, so the camera coasts smoothly after the mouse stops.
-    // Releasing ALT instantly zeroes the velocity and returns to direct control.
+    // Cinematic pan-drift (RMB + ALT held): mouse input adds force to a velocity that keeps
+    // turning the camera after the mouse stops; releasing RMB zeroes it. Latched cinematic mode
+    // (the Movement popup): while RMB is held the look rate follows the mouse rate, smoothed, and
+    // on release the camera coasts at that rate (capped); with RMB up the mouse does not steer.
     // UC3: skip during the intro cinematic — updateIntroCinematic() (recordCompute) drives
     // camera.elDeg/obsFacing directly, and letting RMB-look run concurrently would fight it (and
     // would leave the cursor captured/hidden partway through a cutscene the user hasn't consented
@@ -765,48 +766,113 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         if (invertMouseY)
             dmy = -dmy;
 
+        // Harness `inertial drag`: a held look button with dx / dy pixels a frame, then a release whose cursor jump
+        // (the restore GLFW does on a real release) arrives the frame after, as it does from a real mouse.
+        const bool hDrag = harnessDragFrames_ > 0;
+        if (hDrag)
+        {
+            dmx += harnessDragDx_;
+            dmy += harnessDragDy_;
+            if (--harnessDragFrames_ == 0)
+                harnessDragWarpPending_ = true;
+        }
+        else if (harnessDragWarpPending_)
+        {
+            dmx += harnessDragWarpX_;
+            dmy += harnessDragWarpY_;
+            harnessDragWarpPending_ = false;
+        }
+
+        // A capture change (RMB pressed / released, or the harness drag starting / ending) or a change of cinematic
+        // mode drops this frame's mouse delta and the next: GLFW moves the cursor at the capture change (on release it
+        // restores the press position: a delta of minus the whole drag), and in cinematic mode that jump was taken as
+        // a flick (issue 20261030_142354: the camera flung off at ~200 deg/s on releasing RMB or switching the mode on).
+        {
+            const bool heldNow = camera.captured || hDrag;
+            if (heldNow != lookHeldPrev_ || cinematicLatched != cineLatchedPrev_)
+                lookSkipFrames_ = kLookSkipFrames;
+            if (cinematicLatched != cineLatchedPrev_)
+            {
+                cinematicYawVel = cinematicPitchVel = 0.0f; // switching cinematic mode on or off never starts a turn
+                cineCoastDegS_ = 0.0f;
+            }
+            cineLatchedPrev_ = cinematicLatched;
+            if (lookSkipFrames_ > 0)
+            {
+                --lookSkipFrames_;
+                dmx = dmy = 0.0f;
+            }
+        }
+
         // Clear cinematic mode as soon as RMB is released — the toggle only lives
         // while a pan is active, so it resets automatically for the next drag.
-        if (!camera.captured && cinematicMode)
+        if (!camera.captured && !hDrag && cinematicMode)
         {
             cinematicMode = false;
             cinematicYawVel = 0.0f;
             cinematicPitchVel = 0.0f;
         }
 
-        // (Latched cinematic mode, Movement popup: the pan-drift is on without Alt / RMB, and the coasting look decays
-        // slowly (~4 s) so a glide settles on its own.)
-        bool cinematic = (camera.captured && cinematicMode) || cinematicLatched;
-        const UIInput &inp0 = ui.input();
+        bool cinematic = ((camera.captured || hDrag) && cinematicMode) || cinematicLatched;
+        const float dtL = std::clamp(dt, 1.0e-3f, 0.1f);
+        // Caps the look rate (mouse px/s) so it turns the view at most maxDegS; returns the rate in deg/s.
+        auto capRate = [&](float maxDegS) {
+            const float degS = sqrtf(cinematicYawVel * cinematicYawVel + cinematicPitchVel * cinematicPitchVel) * camera.lookSens();
+            if (degS > maxDegS)
+            {
+                const float k = maxDegS / degS;
+                cinematicYawVel *= k;
+                cinematicPitchVel *= k;
+            }
+            return std::min(degS, maxDegS);
+        };
 
         if (cinematic)
         {
             // Let camera.update handle RMB capture/release without applying any rotation.
             camera.update(win, 0.0f, 0.0f);
+            const bool held = camera.captured || hDrag;
 
-            // Latched mode (2026-10-29, issue 20261029_213225): no cursor capture, so mouse motion over the UI (or while
-            // typing / dragging a slider) must not swing the camera; and no drag, the look keeps its velocity.
-            if (cinematicLatched && !(camera.captured && cinematicMode) && (ui.mouseOverUI() || textEditing() || inp0.lmbDown))
+            if (held && cinematicMode)
             {
-                dmx = 0.0f;
-                dmy = 0.0f;
+                // Alt pan-drift (RMB + Alt): mouse motion is an impulse on a velocity that keeps turning the camera
+                // while RMB stays held (x 60: the original per-frame impulse at 60 fps, now a rate).
+                const float kForce = 0.06f * 60.0f;
+                cinematicYawVel += dmx * kForce;
+                cinematicPitchVel += dmy * kForce;
+                capRate(2.0f * kCineCoastMaxDegS);
             }
-
-            // Mouse input adds to velocity as an impulse (kForce fraction of raw delta).
-            // Velocity units: pixels-equivalent — same as dmx/dmy — so it slots straight
-            // into the Rodrigues and elDeg formulas below without any unit conversion.
-            const float kForce = 0.06f;
-            cinematicYawVel += dmx * kForce;
-            cinematicPitchVel += dmy * kForce;
-
-            // Apply velocity this frame (identical math to the direct-control path).
-            if (fabsf(cinematicYawVel) > 0.0001f)
+            else if (held)
             {
-                float angle = glm::radians(-cinematicYawVel * camera.lookSens());
+                // Latched cinematic mode, look button held: the look rate follows the mouse's own rate (pixels / s)
+                // smoothed over kCineLookTauS, so the view tracks the hand with a little inertia.
+                const float k = 1.0f - expf(-dtL / kCineLookTauS);
+                cinematicYawVel += (dmx / dtL - cinematicYawVel) * k;
+                cinematicPitchVel += (dmy / dtL - cinematicPitchVel) * k;
+                capRate(kCineHeldMaxDegS);
+            }
+            else if (lookHeldPrev_)
+            {
+                // Released: the camera coasts on at the smoothed rate it had (no drag: it keeps turning until the
+                // button is held again), capped; a release with the mouse at rest leaves the view still.
+                cineCoastDegS_ = capRate(kCineCoastMaxDegS);
+                if (cineCoastDegS_ < kCineCoastMinDegS)
+                {
+                    cinematicYawVel = cinematicPitchVel = 0.0f;
+                    cineCoastDegS_ = 0.0f;
+                }
+            }
+            // (Latched mode with the button up: mouse motion does not steer, it only moves the cursor.)
+
+            // Apply this frame's rotation (rate x dt; identical math to the direct-control path).
+            const float yawPx = cinematicYawVel * dtL, pitchPx = cinematicPitchVel * dtL;
+            if (fabsf(yawPx) > 1.0e-6f)
+            {
+                float angle = glm::radians(-yawPx * camera.lookSens());
                 glm::vec3 leftDir = glm::cross(obsDir, obsFacing);
                 obsFacing = glm::normalize(cosf(angle) * obsFacing + sinf(angle) * leftDir);
             }
-            camera.elDeg -= cinematicPitchVel * camera.lookSens();
+            camera.elDeg -= pitchPx * camera.lookSens();
             camera.elDeg = glm::clamp(camera.elDeg, -89.0f, 89.0f);
 
             cinematicActive = true;
@@ -830,8 +896,10 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
                 cinematicYawVel = 0.0f;
                 cinematicPitchVel = 0.0f;
                 cinematicActive = false;
+                cineCoastDegS_ = 0.0f;
             }
         }
+        lookHeldPrev_ = camera.captured || hDrag;
 
         // Gamepad look (right stick): applied unconditionally, independent of the mouse/RMB
         // capture logic above — a controller has no cursor to capture, so it always drives
