@@ -4798,38 +4798,6 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
         return changed;
     };
 
-    // ── Show advanced settings: on its own at the top (2026-10-28, issue 20261028_222345: the one switch that opens every
-    // tab that changes how the sim looks). Dev mode stays under SETTINGS below.
-    {
-        bool adv = showAdvancedSettings;
-        bool changed = false;
-        if (searchActive())
-            changed = uiToggleRow(inp, ui, "AdvancedToggle", 0, tx(Txt::BtnShowAdvancedSettings), adv);
-        else
-        {
-            CLAY(CLAY_ID("DispAdvCard"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                                     .padding = {10, 10, 6, 8},
-                                                     .childGap = 2,
-                                                     .layoutDirection = CLAY_TOP_TO_BOTTOM},
-                                          .backgroundColor = Pal::sectionHdr,
-                                          .cornerRadius = CLAY_CORNER_RADIUS(4),
-                                          .border = {.color = adv ? Pal::btnAccent : Pal::fieldBorder, .width = CLAY_BORDER_ALL(1)}})
-            {
-                changed = uiToggleRow(inp, ui, "AdvancedToggle", 0, tx(Txt::BtnShowAdvancedSettings), adv,
-                                      tx(Txt::TipTheRenderingTabsCloudsWeatherAtmosphere));
-                CLAY_TEXT(txc(Txt::NoteEveryControlOfHowTheSim),
-                          CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_WORDS}));
-            }
-        }
-        if (changed)
-        {
-            showAdvancedSettings = adv;
-            // A hidden tab can't be clicked back to: bounce off it now.
-            if (!showAdvancedSettings && settingsTabIsAdvanced(settingsActiveTab))
-                settingsActiveTab = 4; // Display
-        }
-    }
-
     // ── GRAPHICS ───────────────────────────────────────────────────────────────────────────────────────────
     uiSection("DispSec", 0, tx(Txt::SecGraphics));
     {
@@ -4847,6 +4815,19 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
                                 kPresetLabels, 6, cur, tx(Txt::TipSetsEveryQualitySettingAtOnce));
             c >= 0)
             applyGraphicsPreset(kPresetValues[c]);
+    }
+    // Show advanced settings: one plain row under the preset (2026-10-30, issue 20261029_205237: the highlighted card
+    // with a tagline was too much). Dev mode stays under SETTINGS below.
+    {
+        bool adv = showAdvancedSettings;
+        if (uiToggleRow(inp, ui, "AdvancedToggle", 0, tx(Txt::BtnShowAdvancedSettings), adv,
+                        tx(Txt::TipTheRenderingTabsCloudsWeatherAtmosphere)))
+        {
+            showAdvancedSettings = adv;
+            // A hidden tab can't be clicked back to: bounce off it now.
+            if (!showAdvancedSettings && settingsTabIsAdvanced(settingsActiveTab))
+                settingsActiveTab = 4; // Display
+        }
     }
     // Below 100% the sky/terrain/ocean background renders at reduced resolution and is upscaled; satellites, stars
     // and the UI stay native.
