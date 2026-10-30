@@ -11,7 +11,7 @@
 #include "comet_frame.glsl"
 layout(push_constant) uniform PC {
     vec4 a, b, c;
-    vec4 screen;   // w: 1 = the field pass (comet_field.frag), 0 = the colour pass
+    vec4 screen;   // w: 1 = the field pass (comet_field.frag), 0 = the colour pass; field pass: x the full-res width
 } pc;
 
 layout(location = 0) out vec2 vOff;       // the corner in units of the Gaussian's sigma
@@ -78,10 +78,11 @@ void main()
         flux *= dustPhase(c) / (rg * rg);
         col = vec3(1.05, 0.98, 0.86);    // sunlight off dust, a little reddened (luminance ~1)
     } else {
-        // CO+ fluorescence (the comet-tail bands at 400-430 nm, + a little H2O+): deep blue. Excited by sunlight at the
-        // ion's own distance from the Sun, saturated as the head's law (A4.w = rSat^2).
+        // CO+ fluorescence (the comet-tail bands at 400-430 nm, + a little H2O+): deep violet-blue (2026-10-30: it was
+        // (0.16, 0.42, 1.95), which the display drew as a pastel cornflower). Excited by sunlight at the ion's own
+        // distance from the Sun, saturated as the head's law (A4.w = rSat^2).
         flux *= (1.0 + A4.w) / (rg * rg + A4.w);
-        col = vec3(0.16, 0.42, 1.95);
+        col = vec3(0.05, 0.17, 2.1);
     }
     vec3 dirEcl = D / dist;
     vec3 enu = vec3(dot(F.eclX.xyz, dirEcl), dot(F.eclY.xyz, dirEcl), dot(F.eclZ.xyz, dirEcl));
@@ -123,7 +124,7 @@ void main()
                 vec2 rT = vec2(bs.y, -bs.x) / det;  // d te / d px
                 vec2 rB = vec2(-gs.y, gs.x) / det;  // d ln beta / d px
                 vTe = vec4(uintBitsToFloat(G.d.w) - F.coma[3u * cs + 2u].w, log(max(1.0 - G.q.x, 1e-6)), 0.0, on);
-                vGrad = vec4(rT, rB) * sPx;         // per sigma (vOff's unit)
+                vGrad = vec4(rT, rB);               // per splat pixel here; per sigma below
             }
         }
         if (on <= 0.0) { cull(); return; }
@@ -151,6 +152,14 @@ void main()
     const vec2 corner[6] = vec2[6](vec2(-1, -1), vec2(1, -1), vec2(1, 1), vec2(-1, -1), vec2(1, 1), vec2(-1, 1));
     vec2 k = corner[gl_VertexIndex % 6];
     float sL = min(sP * sc, capPx);                          // the Gaussian in the level's pixels
+    if (fieldPass) {
+        // The field is a smooth function of the screen: a grain much narrower than a field texel is widened (its
+        // linear field extrapolated), or a few grains under-sample the texel and the field steps between them.
+        sL = max(sL, F.pad[0].y);                            // comets.field_floor_px
+        float sSplat = sL / sc * (F.pad[1].x / geo.x);       // the Gaussian's sigma in splat pixels
+        vGrad *= sSplat;                                     // per sigma (vOff's unit)
+        vTe.z = F.proj.z / (max(pc.screen.x, 1.0) * sSplat); // per sigma -> per full-res pixel (the composite's)
+    }
     vec2 pcen = org + (ndc * 0.5 + 0.5) * wh + k * (kQuadSig * sL);
     gl_Position = vec4(pcen / AT * 2.0 - 1.0, 0.5, 1.0);
     vOff = k * kQuadSig;

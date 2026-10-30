@@ -3401,8 +3401,10 @@ the Great Comet's elements against the sim's own Earth). Sky-event kind `comet` 
 - **The head** is the inner coma within ~1 arcmin (a 1/rho coma: share = 1' / the coma's radius, 0.003..1) as a point:
   appended to kFireBuf by `cometsFillHeads` (kesslerFillDust's finish) at range 2e9 m (infinity), so point, bloom and
   glare draw it; dimmed by day / Moon like a satellite (`dayBright x daySuppression`: the Great Comet shows near the Sun
-  in daylight), by the light-pollution dome like a planet, extinction along its line of sight, refracted. **Not on
-  Potato** (no kesslerFillDust there).
+  in daylight), by the light-pollution dome like a planet, extinction along its line of sight, refracted. **Below the
+  horizon** = under the Earth's limb seen from the eye (z < -sqrt(1 - (R / r)^2)), then the refraction table: a fixed
+  z < -0.3 hid the head and the coma from orbit (23,000 km up the limb dips 77 deg) and they popped back as the view
+  turned (issue 20261030_140112). **Not on Potato** (no kesslerFillDust there).
 - **The tails are 3D PARTICLES** (2026-10-28, issue 20261028_192308 "Comet Graphics": the old sheet of sky directions drew
   stair-step bands, a hard-edged fan and an oval coma at the closest approach). `comet::buildParticles` (Comets.cpp):
   - **Dust**: an absolute grid of emission slots uniform in u = asinh((te - tPeri) / tau0) (`du` 0.01; tau0 0.05 day for
@@ -3423,9 +3425,12 @@ the Great Comet's elements against the sim's own Earth). Sky-event kind `comet` 
     a time grid alone the radial turned ~0.5 rad a slot at perihelion and the swing drew the streamers as separate blue
     puffs). 3000 parcels far from perihelion, ~6000 through the swing. **Brightness by the gas rate**: pick-ups follow
     the production Q ~ r_eff^-(n - 2) (`ionFluxK` 0.3 x gas x Fhead0), each ion fluoresces by the sunlight where it is
-    NOW (comet_splat.vert: / (r^2 + rSat^2), rSat^2 in `F.comet[2s+1].w`), e-folding 1 day. Colour CO+ deep blue
-    (0.16, 0.42, 1.95); it read pale sky blue because the composite's shoulder was on the luminance and the blue channel
-    (2.6x it) clipped at the display: the shoulder is on the brightest channel now (comet_composite.frag). Through the
+    NOW (comet_splat.vert: / (r^2 + rSat^2), rSat^2 in `F.comet[2s+1].w`), e-folding 1 day. Colour CO+ deep violet-blue
+    (0.05, 0.17, 2.1); (0.16, 0.42, 1.95) displayed as a pastel cornflower (issue 20261030_140112), and before that it
+    read pale sky blue because the composite's shoulder was on the luminance and the blue channel (2.6x it) clipped at
+    the display: the shoulder is on the brightest channel. **Streamers**: each 0.008 of its distance from the head wide
+    (0.025 merged the five, 0.032 rad apart, into one band), its brightness varying along it with the emission time
+    (knots and gaps ~0.3 day apart that ride out with the plasma) and between streamers, 0.25-1.75 x, mean 1. Through the
     swing the old perihelion parcels fade with their distance from the Sun, and after it the ion tail is faint: its
     production has fallen as r^-2 since perihelion and its ions last a day, while the dust tail is the perihelion's.
   - **Builds** are a pure function of their time on a grid: `particleBuildStepS(r)` = 0.003 of the nucleus's dynamical
@@ -3446,16 +3451,26 @@ the Great Comet's elements against the sim's own Earth). Sky-event kind `comet` 
     the composite adds the levels back (bilinear). Until 2026-10-28 every particle past 4x the cap was culled: zoomed to a
     20-deg field at the closest approach (a grain's spread is degrees there) the tail vanished. Culled under lum 1e-6. `cometsRecordDraw` composites (`comet_composite.vert/.frag`, a full-screen
     triangle at kDepthFar) the target + an analytic Haser coma per tail (Lc e^(-rho/rho_s) / sqrt(rho^2 + rho0^2),
-    rho_s = the visible coma / 2.5, rho0 the point's 1 arcmin: round on the sky, no edge; white inside, C2 green outward
-    by the gas share), then per pixel the extinction, `cometSkyMag` / `darkSkyVis`, exposure, cloud occlusion and the
-    0.9 x / (0.9 + x) shoulder on the brightest channel (hue kept). The splat target is recreated in onResize.
+    rho_s = the visible coma / 2.5, rho0 the point's 1 arcmin: round on the sky, faded out over x = rho / rho_s 5 -> 12
+    (a cut at 12 drew a hard circle round a bright head); white inside, a faint C2 green outward (0.3 x the gas share,
+    from x 0.3 -> 2)), then per pixel the extinction, `cometSkyMag` / `darkSkyVis`, exposure, cloud occlusion and the
+    shoulder K (1 - (1 + x / (K p))^-p), K 0.92, p 0.5, on the brightest channel (hue kept): slope 1 at 0, a decade of
+    brightness still a visible step near white (the x / (1 + x / K) it replaced drew the bright ion tail as a flat band).
+    The splat target is recreated in onResize.
   - **Zoom detail** (2026-10-28, issue 20261028_221703; `comets.tail_detail` 1, 0 = off, no UI; `comets.tail_debug` 1 / 2
     the field's te / its weight and spread): each dust grain carries its local (emission time te, ln beta) field
     (GpuGrain `d`: dP/dte and dP/dlnbeta as half floats, the field's te at the grain with its own ejection offset
     decomposed out, from 10 zero-ejection reference grains per slot at the slot's centre and dTe later: 20 extra
     propagations a slot, build ~15-20 ms as before). A FIELD PASS (same vertex shader, push constant `screen.w` 1,
     `comet_field.frag`) splats (L te, L lnb, L, L te^2) into an RGBA32F atlas at a quarter of the splat resolution
-    (`F.pad[2]`; the field is linear per Gaussian, and 32-bit blending at full splat size cost ~1 ms). The composite
+    (`F.pad[2]`; the field is linear per Gaussian, and 32-bit blending at full splat size cost ~1 ms), and into a second
+    target (RGBA16F, same layout, `gradTex` binding 8) the light-weighted magnitudes of the field's screen gradients per
+    full-res pixel (|d te|, |d lnb|, |d (te + 0.7 lnb)|, clamped at 10, the weight in alpha): the octaves' LOD. Each
+    grain's Gaussian in the field atlas is at least `comets.field_floor_px` (0.5) field pixels (its linear field
+    extrapolated). Until 2026-10-30 the LOD was dFdx / dFdy of the bilinear field, constant across each field texel (4-128
+    screen px by level), and small grains under-sampled it: blocky "pixel noise" and black notches along the dust trail
+    near the head (issue 20261030_140112); the detail now never takes away more than the light the colour atlas holds
+    there (min(field weight, luminance)), and the composite reads the field only where the tails hold light. The composite
     divides it back and multiplies the dust light by synchronic bands in te (periods 1.7, 0.42, 0.105, 0.026, 0.0065
     days: time-variable emission), oblique striae in te + 0.7 lnb (0.9, 0.22 days, dust older than 2-8 days:
     fragmentation) and filaments in lnb (0.4, 0.1), mean 1; an octave shows once its bands are 4-10 screen px apart and
@@ -3481,9 +3496,11 @@ the Great Comet's elements against the sim's own Earth). Sky-event kind `comet` 
   3.9 -> 5.8 MB + field atlas 1.5 MB; 1 d/s through perihelion: 145 -> 0 frames over 50 ms in 240. Earlier: the splat pass ~0.5 ms at the closest approach from the ground at a 120-deg field
   (the report's view; 0.97 ms with a 40-px cap), 0.2 ms at +20 d; the composite < 0.1 ms; CPU ~0.02 ms a frame between
   builds. Videos and captures in `harness_runs/comet/` (untracked): r8/videos (inertial Feb 1 - Apr 1 at 1 d/s, the
-  perihelion swing at 28 deg, the ground at the closest approach at 5 min/s).
+  perihelion swing at 28 deg, the ground at the closest approach at 5 min/s). 2026-10-30 (issue 20261030_140112's five
+  views from 23,575 km, 1920x1009, detail on - off in one app): the field pass with its gradient target 0.4-1.1 ms (it
+  was ~0.1-0.8 with one target; a second RGBA32F target cost twice that, a second instanced pass 2-3x).
 - Settings `comets.enabled` / `minor` / `tails` / `tail_gain` (x the tails' physical brightness) / `display_gain` /
-  `particles_sync` / `tail_detail` / `tail_debug` (no UI).
+  `particles_sync` / `tail_detail` / `tail_debug` / `field_floor_px` (no UI).
 - Open: the tail is not in reflections (sea, mirrors) nor env probes; no ion-tail disconnection events; the striae are a
   pattern in the (te, beta) field, not flown fragments; the coma's size is a fixed 2e5 km x r^-0.5; Potato draws no head; minor comets have no return
   apparitions; no Settings UI rows yet; at the closest approach the Earth's own passage through the dust is not drawn
