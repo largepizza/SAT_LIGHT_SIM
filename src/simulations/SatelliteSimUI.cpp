@@ -663,6 +663,8 @@ void SatelliteSim::loadUiIcons(UIRenderer &ui)
             "assets/icons/ui/pixel--movement.png",      // 41: kIconMovement (SatelliteSimHudPopups.cpp too)
             "assets/icons/ui/pixel--view.png",          // 42: kIconViewPanel
             "assets/icons/ui/pixel--pin.png",           // 43: kIconPin
+            "assets/icons/ui/pixel--sky-cometstorm.png", // 44: the Great Comet meteor storm (SatelliteSimSkyEvents.cpp)
+            "assets/icons/ui/pixel--sky-cme.png",       // 45: a CME / geomagnetic storm (SatelliteSimSkyEvents.cpp)
         };
         // The count comes from the list itself — the hand-maintained "bump this when you add an icon"
         // number used to be a silent way to drop the last icon of the array.

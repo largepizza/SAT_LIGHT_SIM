@@ -3659,6 +3659,62 @@ private:
     bool skyWatchSupernova(const sky::Event &e, std::string &msg);
     void skySearchCme(const sky::SearchCtx &c, std::vector<sky::Event> &out) const;
     bool skyWatchCme(const sky::Event &e, std::string &msg);
+    void skySearchCometStorm(const sky::SearchCtx &c, std::vector<sky::Event> &out) const;
+    bool skyWatchCometStorm(const sky::Event &e, std::string &msg);
+    // The window's tabs and sections (2026-10-30): 0 Events, 1 Space weather. Ongoing events (under way) get Start / End
+    // controls; the one-time scripted events (the Sun's Fury, the Great Comet, its meteor storm, the Betelgeuse supernova)
+    // are always listed on top with their own colours (skSpecial: built once, not from the 2-year search).
+    int skTab = 0;
+    bool skCompact = true;                   // one detail line a card (false: both)
+    sky::Event skSpecial[4];                 // by time: the comet, its storm, the Sun's Fury, the supernova
+    bool skSpecialHas[4] = {};
+    int skSpecialKey = -1;                   // the settings it was built for (kessler / supernova / minor comets)
+    int skPendingAct = 0, skPendingActRow = -1; // 1 start, 2 end of an ongoing row (acted on after the layout)
+    int skPendingSpecial = -1;               // a Watch on a special row
+    std::vector<sky::Event> skOngoing;       // under way now (the specials left out)
+    void skyEventsRefreshSpecial();
+    // One compact event row (icon, head + status, detail lines, buttons); returns the pressed buttons (1 Start, 2 End, 4 Watch).
+    struct SkRowSpec
+    {
+        const char *key = "SkRowBtn";   // the Watch button's id key (scripts click it as Key:idx)
+        int section = 0;                // 0 special, 1 ongoing, 2 next of each kind, 3 upcoming, 4 storms: with idx, the row's element ids
+        uint32_t idx = 0;
+        int icon = 32;
+        const Clay_Color *accent = nullptr;
+        bool special = false;           // a one-time scripted event: the accent also frames the row
+        const char *head = "";
+        const Clay_Color *headCol = nullptr;
+        const char *status = "";
+        const char *d1 = "";
+        const char *d2 = "";
+        int btnMask = 4;                // the buttons shown: 1 Start, 2 End, 4 Watch
+        bool watchOk = true;
+        const char *tip = "";
+    };
+    int skyEventRow(const UIInput &inp, UIRenderer &ui, const SkRowSpec &r);
+    void buildSkySpaceWeatherTab(const UIInput &inp, UIRenderer &ui, float bodyW);
+    // Space weather (SatelliteSimSpaceWeather.cpp): the auroral oval of both hemispheres as a CPU raster (the Kessler
+    // tracker's pattern), from the same functions the renderer uses (spaceWeatherAt, auroraGpuParams, auroraOvalWeightCpu).
+    bool spaceWeatherWatch(double t, std::string &msg); // the best dark place under the oval at t (a CME storm: its main phase)
+    static constexpr int kSwPanel = 200, kSwW = 400, kSwH = 200;
+    VkImage swImg = VK_NULL_HANDLE;
+    VkDeviceMemory swImgMem = VK_NULL_HANDLE;
+    VkImageView swView = VK_NULL_HANDLE;
+    VkSampler swSampler = VK_NULL_HANDLE;
+    void *swStageMapped = nullptr;
+    uint32_t swUiId = 0;
+    bool swUploadPending = false, swFailed = false;
+    double swRasterT = -1e300, swRasterWall = -1e300;
+    float swRasterMs = 0.0f;
+    bool spaceWeatherEnsureImage(UIRenderer &ui);
+    void spaceWeatherRaster(double t);
+    void spaceWeatherRecordUpload(VkCommandBuffer cmd);
+    void spaceWeatherDestroy(VkDevice device);
+    UIImage swEl;
+    std::vector<UITextQuad> swQuads;
+    std::vector<UITextRun> swRuns;
+    std::deque<std::string> swRunText;
+    UITextBlock swMarks;
 
     // ── Moon-base glints (2026-10-27, SatelliteSimMoonBases.cpp; CLAUDE.md "Moon-base glints") ──────────────────
     // The lunar south-pole bases' sun-tracking solar arrays (data/lunar_bases.json, lunar::Base) mirror the Sun to

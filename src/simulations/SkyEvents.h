@@ -25,7 +25,8 @@ enum Kind : int
     kMeteorShower,  // a meteor shower's peak (Meteors.h, 2026-10-27)
     kComet,         // a comet at its best (Comets.h, 2026-10-27): the Great Comet of 2037, the minor comets
     kSupernova,     // the scripted Betelgeuse supernova, 2037-12-25 (SatelliteSimStars.cpp, 2026-10-27)
-    kCme,           // the Sun's Fury: the scripted Carrington-class CME (2026-10-30; was a Missions card)
+    kCme,           // CMEs: the Sun's Fury (a == 1, scripted) and the procedural geomagnetic storms (G3+; 2026-10-30)
+    kCometStorm,    // the Great Comet of 2037's meteor storm: Earth crossing its debris (Meteors.h cometStorm, 2026-10-30)
     kKindCount
 };
 
@@ -68,6 +69,8 @@ struct SearchCtx
     bool cometsMinor = true;              // comets.minor: the minor comets as well as the Great Comet
     bool supernova = true;                // stars.supernova (the scripted 2037 Betelgeuse supernova)
     bool kessler = true;                  // kessler.enabled (the Sun's Fury scenario)
+    bool scriptedOnly = false;            // the Sun's Fury alone (the window's special rows), not the procedural storms
+    double stormRate = 1.0;               // clouds.aurora_storm_rate: x the CME storms' arrival rate (spaceWeatherAt)
     const std::atomic<bool> *cancel = nullptr;
     bool cancelled() const { return cancel && cancel->load(std::memory_order_relaxed); }
 };

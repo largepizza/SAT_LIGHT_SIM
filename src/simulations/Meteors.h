@@ -30,7 +30,10 @@ struct Shower
     double radiantSpreadDeg; // the radiant's spread (sporadic: its sources' widths)
 };
 
-constexpr int kSporadic = 12;   // the last entry: the sporadic background (its radiants drawn per meteor)
+constexpr int kGreatComet = 12; // the Great Comet of 2037's debris (2026-10-30): its activity is a function of TIME, not of the
+                                // Sun's longitude (a one-time event: see cometStorm())
+constexpr int kSporadic = 13;   // the last entry: the sporadic background (its radiants drawn per meteor). Its generator seed
+                                // is still the old row number 12 (Meteors.cpp), so no sporadic meteor moved when the comet row was added
 int showerCount();               // the showers + the sporadic entry
 const Shower &shower(int i);
 int showerByName(const char *idOrName); // -1 = none
@@ -41,6 +44,16 @@ double solarLongitudeDeg(const glm::dvec3 &sunDirEci);
 double zhrAt(int s, double lamDeg);
 // The radiant (ECI unit) at solar longitude lam.
 glm::dvec3 radiantEci(int s, double lamDeg);
+// The same as functions of sim time t (s since J2000): every shower but the Great Comet's reads the Sun's longitude at t.
+// Use these, not the lam versions, wherever a time is at hand.
+double zhrAtTime(int s, double t);
+glm::dvec3 radiantEciAtTime(int s, double t);
+double speedKmsAtTime(int s, double t);
+// The Great Comet of 2037's meteor storm (2026-10-30; CLAUDE.md "Meteors"): Earth crossing the debris the comet shed on
+// its way in and out of its sungrazing perihelion (2037-02-17), closest to the comet (560,000 km) on tPeak. The ZHR spikes
+// (half-width ~0.4 d) and a broad residual from older, more dispersed debris fades through 2037. [t0, t1]: ZHR >= ~10.
+struct CometStorm { double tPeak, t0, t1, zhrPeak; };
+const CometStorm &cometStorm();
 // Meteoroids per km^2 per hour brighter than absolute magnitude +6.5 for a ZHR and population index (Koschack &
 // Rendtel 1990; the IMO quotes it x 1000, per 1000 km^2).
 double fluxPerKm2h(double zhr, double r);

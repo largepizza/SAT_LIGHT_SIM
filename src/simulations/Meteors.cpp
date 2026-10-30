@@ -1,6 +1,7 @@
 // Meteors.cpp — meteor showers and the sporadic background (2026-10-27; Meteors.h, CLAUDE.md "Meteors").
 #include "Meteors.h"
 #include "SatPhotometry.h"
+#include "Comets.h"
 
 #include <algorithm>
 #include <cctype>
@@ -41,9 +42,14 @@ const Shower kShowers[] = {
     {"leonids", "Leonids", "LEO", 235.27, 15.0, 0.39, 0.39, 0.0, 0.0, 2.5, 1.8, 71.0, 152.0, 22.0, 0.7, -0.4, 0.8},
     {"geminids", "Geminids", "GEM", 262.2, 150.0, 0.39, 0.81, 0.0, 0.0, 2.6, 1.8, 35.0, 112.0, 33.0, 1.0, -0.15, 0.8},
     {"ursids", "Ursids", "URS", 270.7, 10.0, 0.6, 0.6, 0.0, 0.0, 3.0, 2.2, 33.0, 217.0, 76.0, 0.0, 0.0, 0.8},
+    // The Great Comet of 2037's debris (assumptions in cometStorm() below): a spike of 8000 + a 400 residual at the peak,
+    // fireball-rich (the comet is a large sungrazer shedding big grains), entry speed and radiant from the orbit geometry
+    // (speedKmsAtTime / radiantEciAtTime; the vKms, ra, dec here are nominal values only).
+    {"comet_2037", "C/2036 X1 meteors", "CX1", 0.0, 8000.0, 0.0, 0.0, 400.0, 0.0, 2.2, 1.5, 70.0, 0.0, 0.0, 0.0, 0.0, 1.0},
     {"sporadic", "Sporadic", "SPO", 0.0, 10.0, 0.0, 0.0, 0.0, 0.0, 3.0, 2.0, 40.0, 0.0, 0.0, 0.0, 0.0, 15.0},
 };
 static_assert(sizeof(kShowers) / sizeof(kShowers[0]) == kSporadic + 1, "kSporadic is the last row");
+static_assert(kGreatComet == kSporadic - 1, "the comet row sits just before the sporadic one");
 
 uint64_t mix64(uint64_t z)
 {
@@ -127,6 +133,7 @@ double zhrAt(int s, double lam)
 {
     const Shower &S = shower(s);
     if (s == kSporadic) return S.zhr;
+    if (s == kGreatComet) return 0.0; // (a function of time only: zhrAtTime)
     const double d = wrap180(lam - S.lam0);
     double z = S.zhr * std::pow(10.0, -(d < 0.0 ? S.bMinus : S.bPlus) * std::abs(d));
     if (S.zhr2 > 0.0) z += S.zhr2 * std::pow(10.0, -S.b2 * std::abs(d));
@@ -140,6 +147,55 @@ glm::dvec3 radiantEci(int s, double lam)
     const double ra = rad(S.ra + S.dRa * d), de = rad(std::clamp(S.dec + S.dDec * d, -89.0, 89.0));
     return {std::cos(de) * std::cos(ra), std::cos(de) * std::sin(ra), std::sin(de)};
 }
+
+namespace
+{
+constexpr double kDayS = 86400.0;
+constexpr double kAuKmS = 1.495978707e8 / 86400.0; // AU/day -> km/s
+glm::dvec3 eclVecToEci(const glm::dvec3 &v) { return {v.x, v.y * std::cos(kEps) - v.z * std::sin(kEps), v.y * std::sin(kEps) + v.z * std::cos(kEps)}; }
+// Earth's heliocentric velocity (km/s, ECI/J2000 equatorial axes) from the sim's own Sun: a central difference of -Sun x distance.
+glm::dvec3 earthVelKms(double t)
+{
+    auto pos = [](double tt) { return -glm::normalize(sunDirEciAt(tt)) * sunDistAuAt(tt) * 1.495978707e8; }; // km
+    const double h = 1800.0;
+    return (pos(t + h) - pos(t - h)) / (2.0 * h);
+}
+// The stream's heliocentric velocity where it crosses the Earth's path: the comet's at its closest approach (km/s, ECI axes).
+glm::dvec3 streamVelKms()
+{
+    static const glm::dvec3 v = eclVecToEci(comet::stateAt(comet::greatComet(), 1174145400.0).v * kAuKmS);
+    return v;
+}
+glm::dvec3 relVelKms(double t) { return streamVelKms() - earthVelKms(t); } // the meteoroids' velocity relative to the Earth
+} // namespace
+
+const CometStorm &cometStorm()
+{
+    // Assumptions (all of them ours; no real comet to measure): the peak is the Earth's closest approach to the comet,
+    // 2037-03-17 03:30 UTC (tools/comet_design.py). Earth crosses the thin ribbon of big grains the comet shed on its way
+    // in, which is why the spike is sharp (ZHR 8000, half-width ~0.4 d: a Leonid-1966-class storm; asymmetric, the in-bound
+    // side steeper). Under it a broad residual (ZHR 400 at the peak) of older, dispersed debris that decays with an e-folding
+    // of 75 d AFTER the peak (the sungrazer keeps fragmenting for months) and rises over ~2.5 d before it, so the
+    // shower "spikes up and then gradually slows through 2037". t0 / t1 = where the total passes 10 (the sporadic rate).
+    static const CometStorm s = {1174145400.0, 1174145400.0 - 9.0 * kDayS, 1174145400.0 + 280.0 * kDayS, 8400.0};
+    return s;
+}
+static double cometZhr(double t)
+{
+    const double d = (t - cometStorm().tPeak) / kDayS;
+    const double core = 8000.0 * std::pow(10.0, -(d < 0.0 ? 0.9 : 0.45) * std::abs(d));
+    const double res = d < 0.0 ? 400.0 * std::exp(d / 2.5) : 400.0 * std::exp(-d / 75.0);
+    const double z = core + res;
+    return z < 0.2 ? 0.0 : z;
+}
+double zhrAtTime(int s, double t) { return s == kGreatComet ? cometZhr(t) : zhrAt(s, solarLongitudeDeg(sunDirEciAt(t))); }
+glm::dvec3 radiantEciAtTime(int s, double t)
+{
+    // The radiant is where the meteoroids come FROM: opposite their velocity relative to the Earth (zenith attraction left out).
+    if (s == kGreatComet) return glm::normalize(-relVelKms(t));
+    return radiantEci(s, solarLongitudeDeg(sunDirEciAt(t)));
+}
+double speedKmsAtTime(int s, double t) { return s == kGreatComet ? glm::length(relVelKms(t)) : shower(s).vKms; }
 
 double fluxPerKm2h(double zhr, double r)
 {
@@ -164,6 +220,13 @@ double magInv(double F, double r, double rb)
 
 double peakAfter(int s, double t, double *t0, double *t1)
 {
+    if (s == kGreatComet)
+    {
+        const CometStorm &c = cometStorm();
+        if (t0) *t0 = c.t0;
+        if (t1) *t1 = c.t1;
+        return c.tPeak;
+    }
     const Shower &S = shower(s);
     const double rate = 0.98565 / 86400.0; // deg per s
     double tp = t + wrap360(S.lam0 - solarLongitudeDeg(sunDirEciAt(t))) / rate;
@@ -269,17 +332,23 @@ int generate(const GenParams &p, const std::function<void(const Meteor &)> &cb)
                     }
                 }
             }
-            const uint64_t sbMix = mix64((uint64_t)s * 0x1000193ull + (uint64_t)b);
+            const uint64_t sbMix = mix64((uint64_t)(s == kSporadic ? 12 : s) * 0x1000193ull + (uint64_t)b); // (the sporadic row's seed index stays 12)
             for (int64_t k = k0; k <= k1; ++k)
             {
                 const double tm = ((double)k + 0.5) * T;
                 const glm::dvec3 sunE = sunDirEciAt(tm);
                 const double lam = solarLongitudeDeg(sunE);
-                const double zhr = zhrAt(s, lam);
+                const double zhr = s == kGreatComet ? cometZhr(tm) : zhrAt(s, lam);
                 if (zhr <= 0.0) continue;
                 const double Q = fluxPerKm2h(zhr, S.r) * p.rateGain;
                 glm::dvec3 radE(0.0);
-                if (s != kSporadic) radE = eciToEcef(radiantEci(s, lam), tm);
+                double vMean = S.vKms;
+                if (s == kGreatComet)
+                {
+                    vMean = speedKmsAtTime(s, tm);
+                    radE = eciToEcef(radiantEciAtTime(s, tm), tm);
+                }
+                else if (s != kSporadic) radE = eciToEcef(radiantEci(s, lam), tm);
                 const uint64_t kMix = mix64((uint64_t)k * 0x9E3779B97F4A7C15ull);
                 for (const Cell &cell : cells)
                 {
@@ -317,7 +386,7 @@ int generate(const GenParams &p, const std::function<void(const Meteor &)> &cb)
                             const double cla = std::sqrt(std::max(0.0, 1.0 - sl * sl));
                             const glm::dvec3 up(cla * std::cos(lo), cla * std::sin(lo), sl);
                             const double M = magInv(F_lo + u01(ms, 4) * (F_hi - F_lo), S.r, S.rb);
-                            double v = S.vKms * (1.0 + 0.03 * gauss(ms, 5));
+                            double v = vMean * (1.0 + 0.03 * gauss(ms, 5));
                             glm::dvec3 rd;
                             if (s == kSporadic)
                             {

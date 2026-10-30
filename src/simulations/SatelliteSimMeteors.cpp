@@ -139,10 +139,9 @@ void SatelliteSim::meteorsFill(GpuDustCloud *out, uint32_t &n, double toSky, dou
     const glm::dvec3 eye(obsECI);
     const glm::dvec3 eyeEcef = eciToEcef(eye, t);
     meteorBandMax_ = !lapse && warpNow > 2.0f ? 1 : meteors::kBands - 1;
-    const double lamNow = meteors::solarLongitudeDeg(sunDirEciAt(t));
     int nShowersNow = 0;
     for (int sIdx = 0; sIdx < meteors::showerCount(); ++sIdx)
-        nShowersNow += (sIdx == meteors::kSporadic || meteors::zhrAt(sIdx, lamNow) > 0.0) ? 1 : 0;
+        nShowersNow += (sIdx == meteors::kSporadic || meteors::zhrAtTime(sIdx, t) > 0.0) ? 1 : 0;
     meteorDrawsEst_ = 0.0;
     if (lapse)
     {
@@ -194,7 +193,7 @@ void SatelliteSim::meteorsFill(GpuDustCloud *out, uint32_t &n, double toSky, dou
     std::vector<BinKey> keys, missing;
     for (int sIdx = 0; sIdx < meteors::showerCount(); ++sIdx)
     {
-        if (sIdx != meteors::kSporadic && meteors::zhrAt(sIdx, lamNow) <= 0.0) continue;
+        if (sIdx != meteors::kSporadic && meteors::zhrAtTime(sIdx, t) <= 0.0) continue;
         for (int b = 0; b <= meteorBandMax_; ++b)
         {
             const double T = meteors::kBandBinS[b];
@@ -622,8 +621,8 @@ bool SatelliteSim::meteorWatchShower(int s, double t0, double t1, double tPeak, 
             if (tc < t0 || tc >= t1) continue;
             const glm::dvec3 sunE = sunDirEciAt(tc);
             const double lam = meteors::solarLongitudeDeg(sunE);
-            const double prof = meteors::zhrAt(s, lam) / std::max(S.zhr + S.zhr2, 1e-6);
-            const glm::dvec3 se = eciToEcef(glm::normalize(sunE), tc), re = eciToEcef(meteors::radiantEci(s, lam), tc);
+            const double prof = meteors::zhrAtTime(s, tc) / std::max(S.zhr + S.zhr2, 1e-6);
+            const glm::dvec3 se = eciToEcef(glm::normalize(sunE), tc), re = eciToEcef(meteors::radiantEciAtTime(s, tc), tc);
             const glm::dvec3 md = glm::normalize(moonGeoEciAt(tc));
             const glm::dvec3 me = eciToEcef(md, tc);
             const double ph = std::acos(std::clamp(-glm::dot(md, glm::normalize(sunE)), -1.0, 1.0));
@@ -680,7 +679,7 @@ bool SatelliteSim::meteorWatchShower(int s, double t0, double t1, double tPeak, 
     skAimA = skAimB = -1;
     // The radiant in the local sky, and a direction ~45 deg from it, as high as is comfortable (~50 deg).
     const double lam = meteors::solarLongitudeDeg(sunDirEciAt(best.t));
-    const glm::dvec3 rEci = meteors::radiantEci(s, lam);
+    const glm::dvec3 rEci = meteors::radiantEciAtTime(s, best.t);
     const glm::vec3 rEnu = glm::normalize(glm::vec3((float)glm::dot(rEci, glm::dvec3(eci2enuX)), (float)glm::dot(rEci, glm::dvec3(eci2enuY)),
                                                     (float)glm::dot(rEci, glm::dvec3(eci2enuZ))));
     float bAz = 0.0f, bEl = 50.0f, bSc = -1e30f;
@@ -700,7 +699,7 @@ bool SatelliteSim::meteorWatchShower(int s, double t0, double t1, double tPeak, 
         }
     aimCameraAzEl(bAz, bEl);
     camera.fovYDeg = 75.0f;
-    const double zhrNow = meteors::zhrAt(s, lam);
+    const double zhrNow = meteors::zhrAtTime(s, best.t);
     char b[300];
     snprintf(b, sizeof(b), tx(Txt::FmtZhrNowFromRadiantDegUp),
              S.name, zhrNow, std::abs(obsLatDeg), obsLatDeg >= 0 ? "N" : "S", std::abs(obsLonDeg), obsLonDeg >= 0 ? "E" : "W",
@@ -723,13 +722,13 @@ harness::Status SatelliteSim::harnessMeteors(harness::Active &a)
         nlohmann::json arr = nlohmann::json::array();
         for (int s = 0; s < meteors::showerCount(); ++s)
         {
-            const double z = meteors::zhrAt(s, lam);
+            const double z = meteors::zhrAtTime(s, t);
             if (z <= 0.0) continue;
             const meteors::Shower &S = meteors::shower(s);
-            nlohmann::json o = {{"id", S.id}, {"name", S.name}, {"zhr", z}, {"v_kms", S.vKms}, {"r", S.r}};
+            nlohmann::json o = {{"id", S.id}, {"name", S.name}, {"zhr", z}, {"v_kms", meteors::speedKmsAtTime(s, t)}, {"r", S.r}};
             if (s != meteors::kSporadic)
             {
-                const glm::dvec3 re = meteors::radiantEci(s, lam);
+                const glm::dvec3 re = meteors::radiantEciAtTime(s, t);
                 const glm::dvec3 e(glm::dot(re, glm::dvec3(eci2enuX)), glm::dot(re, glm::dvec3(eci2enuY)), glm::dot(re, glm::dvec3(eci2enuZ)));
                 o["radiant_az_deg"] = deg(std::atan2(e.x, e.y));
                 o["radiant_el_deg"] = deg(std::asin(std::clamp(e.z, -1.0, 1.0)));
@@ -847,15 +846,15 @@ harness::Status SatelliteSim::harnessMeteors(harness::Active &a)
         {
             double bz = 0.0;
             for (int q = 0; q < meteors::kSporadic; ++q)
-                if (meteors::zhrAt(q, lam) > bz)
+                if (meteors::zhrAtTime(q, t) > bz)
                 {
-                    bz = meteors::zhrAt(q, lam);
+                    bz = meteors::zhrAtTime(q, t);
                     s = q;
                 }
             if (s < 0) s = meteors::kSporadic;
         }
         const double M = c.num("mag", kind == "bolide" ? -10.0 : kind == "meteor" ? 2.0 : -5.0);
-        const double v = c.num("v", s == meteors::kSporadic ? 40.0 : meteors::shower(s).vKms) * 1000.0;
+        const double v = c.num("v", s == meteors::kSporadic ? 40.0 : meteors::speedKmsAtTime(s, t)) * 1000.0;
         const double az = c.num("az", camera.azDeg), el = c.num("el", std::max(camera.elDeg, 15.0f));
         // The end point: along the view (az, el) at the height the meteor would end at.
         meteors::Meteor m;
@@ -868,7 +867,7 @@ harness::Status SatelliteSim::harnessMeteors(harness::Active &a)
         if (disc < 0.0) throw std::runtime_error("meteors force: that direction never reaches the meteor layer");
         const double L = -b + std::sqrt(disc);
         const glm::dvec3 endEcef = glm::normalize(eciToEcef(eye + dEci * L, t));
-        glm::dvec3 rdE = s == meteors::kSporadic ? glm::dvec3(0.0) : eciToEcef(meteors::radiantEci(s, lam), t);
+        glm::dvec3 rdE = s == meteors::kSporadic ? glm::dvec3(0.0) : eciToEcef(meteors::radiantEciAtTime(s, t), t);
         if (glm::dot(rdE, endEcef) < 0.2 || c.has("radiant_el"))
         {
             // a radiant behind the camera, raised `radiant_el` (35 deg): the meteor crosses the view away from it
@@ -903,6 +902,7 @@ harness::Status SatelliteSim::harnessMeteors(harness::Active &a)
         for (int q = 0; q < meteors::kSporadic; ++q)
         {
             if (s >= 0 && q != s) continue;
+            if (q == meteors::kGreatComet && s != q) continue; // (the comet's storm has its own sky event)
             double t0, t1;
             double tp = meteors::peakAfter(q, t - 2.0 * 86400.0, &t0, &t1);
             if (t1 < t) tp = meteors::peakAfter(q, tp + 300.0 * 86400.0, &t0, &t1); // this year's is over: next year's
