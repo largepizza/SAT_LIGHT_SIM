@@ -49,9 +49,10 @@ glm::dvec3 radiantEci(int s, double lamDeg);
 double zhrAtTime(int s, double t);
 glm::dvec3 radiantEciAtTime(int s, double t);
 double speedKmsAtTime(int s, double t);
-// The Great Comet of 2037's meteor storm (2026-10-30; CLAUDE.md "Meteors"): Earth crossing the debris the comet shed on
-// its way in and out of its sungrazing perihelion (2037-02-17), closest to the comet (560,000 km) on tPeak. The ZHR spikes
-// (half-width ~0.4 d) and a broad residual from older, more dispersed debris fades through 2037. [t0, t1]: ZHR >= ~10.
+// The Great Comet of 2037's meteor storm (2026-10-30; CLAUDE.md "Meteors"): Earth crossing the cloud of big grains the comet
+// shed round its sungrazing perihelion (2037-02-17), which it meets only round its closest approach to the comet (560,000 km,
+// tPeak). The ZHR spikes there (half-maximum ~1.4 h before, ~1.8 h after; nothing before ~14 h ahead of it) and a residual
+// fades through 2037. [t0, t1]: ZHR >= ~10.
 struct CometStorm { double tPeak, t0, t1, zhrPeak; };
 const CometStorm &cometStorm();
 // Meteoroids per km^2 per hour brighter than absolute magnitude +6.5 for a ZHR and population index (Koschack &

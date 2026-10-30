@@ -152,6 +152,10 @@ namespace
 {
 constexpr double kDayS = 86400.0;
 constexpr double kAuKmS = 1.495978707e8 / 86400.0; // AU/day -> km/s
+// The comet storm's log10 slopes per day before / after its peak (cometStorm()), and the days before the peak where the
+// total (spike + residual, 8400 at the peak) passes ZHR 10.
+constexpr double kStormRiseB = 5.0, kStormFallB = 4.0;
+const double kStormLeadD = std::log10(8400.0 / 10.0) / kStormRiseB;
 glm::dvec3 eclVecToEci(const glm::dvec3 &v) { return {v.x, v.y * std::cos(kEps) - v.z * std::sin(kEps), v.y * std::sin(kEps) + v.z * std::cos(kEps)}; }
 // Earth's heliocentric velocity (km/s, ECI/J2000 equatorial axes) from the sim's own Sun: a central difference of -Sun x distance.
 glm::dvec3 earthVelKms(double t)
@@ -171,20 +175,26 @@ glm::dvec3 relVelKms(double t) { return streamVelKms() - earthVelKms(t); } // th
 
 const CometStorm &cometStorm()
 {
-    // Assumptions (all of them ours; no real comet to measure): the peak is the Earth's closest approach to the comet,
-    // 2037-03-17 03:30 UTC (tools/comet_design.py). Earth crosses the thin ribbon of big grains the comet shed on its way
-    // in, which is why the spike is sharp (ZHR 8000, half-width ~0.4 d: a Leonid-1966-class storm; asymmetric, the in-bound
-    // side steeper). Under it a broad residual (ZHR 400 at the peak) of older, dispersed debris that decays with an e-folding
-    // of 75 d AFTER the peak (the sungrazer keeps fragmenting for months) and rises over ~2.5 d before it, so the
-    // shower "spikes up and then gradually slows through 2037". t0 / t1 = where the total passes 10 (the sporadic rate).
-    static const CometStorm s = {1174145400.0, 1174145400.0 - 9.0 * kDayS, 1174145400.0 + 280.0 * kDayS, 8400.0};
+    // Assumptions (all of them ours; no real comet to measure). The meteoroids are the big grains the comet shed round its
+    // sungrazing perihelion (2037-02-17). Flown from the comet's own orbit (a scratch Monte Carlo, 2026-10-30: grains emitted
+    // from 3 d before perihelion to the encounter, beta 1e-5..3e-3, the tails' ejection law, Kepler under mu (1 - beta)),
+    // they are still a compact cloud round the nucleus a month later, a few million km across, and the Earth's path meets it
+    // only round its closest approach to the comet (2037-03-17 03:30 UTC, 560,000 km; tools/comet_design.py): grains within
+    // 3e6 km of the Earth from 03-16 ~06:00 to 03-17 ~19:00, within 1e6 km from 03-16 ~21:00 to 03-17 ~08:00, the nearest
+    // (280,000 km) at 02:30. Before that the Earth is tens of millions of km from any of it (and from the comet's orbit:
+    // 23 million km on 03-08), so nothing comes earlier. The storm peaks at the closest approach: ZHR 8000 falling as
+    // 10^(-5 |d|) before it (half-maximum 1.4 h before, ZHR 10 ~14 h before) and 10^(-4 d) after (the trailing side is a
+    // little wider). Under it a residual (ZHR 400 at the peak) rising with the spike, then decaying with an e-folding of
+    // 75 d, so the shower "spikes up and then gradually slows through 2037" (an artistic choice kept from the first design:
+    // physically the Earth leaves the cloud at ~1.2 million km a day). t0 / t1 = where the total passes 10 (sporadic rate).
+    static const CometStorm s = {1174145400.0, 1174145400.0 - kStormLeadD * kDayS, 1174145400.0 + 280.0 * kDayS, 8400.0};
     return s;
 }
 static double cometZhr(double t)
 {
     const double d = (t - cometStorm().tPeak) / kDayS;
-    const double core = 8000.0 * std::pow(10.0, -(d < 0.0 ? 0.9 : 0.45) * std::abs(d));
-    const double res = d < 0.0 ? 400.0 * std::exp(d / 2.5) : 400.0 * std::exp(-d / 75.0);
+    const double core = 8000.0 * std::pow(10.0, d < 0.0 ? kStormRiseB * d : -kStormFallB * d);
+    const double res = d < 0.0 ? 400.0 * std::pow(10.0, kStormRiseB * d) : 400.0 * std::exp(-d / 75.0);
     const double z = core + res;
     return z < 0.2 ? 0.0 : z;
 }
