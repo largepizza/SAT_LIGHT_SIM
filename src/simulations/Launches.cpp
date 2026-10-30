@@ -202,6 +202,8 @@ bool Catalog::load(const std::string &path, std::string &err)
             vh.upperDeorbit = v.value("upper_stage_deorbit", vh.upperDeorbit);
             vh.upperMassKg = v.value("upper_stage_mass_kg", vh.upperMassKg);
             vh.soot = v.value("soot", vh.soot);
+            vh.upperEngines = std::max(v.value("upper_engines", vh.upperEngines), 1);
+            vh.hotStaging = v.value("hot_staging", vh.hotStaging);
             vh.ventChance = v.value("vent_chance", vh.ventChance);
             vh.mountM = std::max(v.value("mount_m", vh.mountM), 0.0);
             vh.catchM = std::max(v.value("catch_m", vh.catchM), 0.0);
@@ -873,7 +875,11 @@ Parcel makeParcel(double t0, const glm::dvec3 &p0, const glm::dvec3 &v0, double 
     // Condensation: the trail is not visible at the nozzle - the gas has to cool as it expands (soot and droplets low
     // down within a fraction of a second; the ice of the high exhaust over a couple of seconds). Without it the
     // newest exhaust, still metres wide, was an opaque white needle at the stage.
-    const double tauCond = glm::mix(0.25, 1.5, glm::smoothstep(20000.0, 90000.0, h0));
+    // (2026-10-30, issue 20261030_134020) Above ~120 km the gas expands freely and cools within a fraction of a second:
+    // its ice forms near the nozzle, so the youngest exhaust is the brightest part of the bell (the jellyfish's
+    // "nucleus"). By then it is already hundreds of metres wide: no needle.
+    const double tauCond = glm::mix(0.25, 1.5, glm::smoothstep(20000.0, 90000.0, h0)) *
+                           glm::mix(1.0, 0.3, glm::smoothstep(100000.0, 160000.0, h0));
     double age = 0.0, nextRec = 0.0;
     auto record = [&]() {
         pc.age.push_back((float)age);

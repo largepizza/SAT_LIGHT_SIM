@@ -6701,6 +6701,33 @@ launches follow per-program cadences (no real manifest).
   (by design). Cost: twilight bookmark at T+10 min cloud_march 7.9 -> 7.8 (dispersal 0) / 8.0 (0.5) / 8.3-9.2 ms (1);
   beside a pad after it 6.5-6.7 -> 7.3-7.7 (0) / 8.2-8.6 ms (1), the budget then admitting wider, fainter Gaussians;
   CPU within noise. Open: a cost-aware budget (coverage, not count).
+- **The second stage's jellyfish and hot staging (2026-10-30, issue 20261030_134020 "Second Stage Jellyfish").** The
+  upper stage's vacuum exhaust used to be invisible: every parcel expanded at 2 km/s in every direction (~300 km wide
+  3 min after leaving, optical depth ~2e-5), its young Gaussians lost the budget to the wide old bells, and the sim's
+  night exposure (not physical) left sunlit ice in a dark sky at ~1e-3 of display white. Now (SatelliteSimLaunches.cpp,
+  constants under `kPlumeAgeHigh`): (1) a stage-1 parcel above 60-120 km spreads at `kVacExpandK` (0.3) x the exhaust
+  speed, the plume's divergence (`buildParcels`' `vExpE`); above 100-160 km its ice condenses ~3x faster
+  (`makeParcel`'s `tauCond` x 0.3: the youngest exhaust is the brightest, the "nucleus"); (2) at night its sunlight is x
+  `kVacNightBoost` (5) above 70-130 km (`vacK` in addPlume); (3) above 90-140 km every exhaust Gaussian also gets the
+  limb-brightened rim (`freeShell` 0.5: a freely expanding parcel is a shell, not a ball) — not hot-staging lobes or
+  streaks (`curKind`); (4) **streaks**: the ascent's vacuum parcels (`isAscentVac`) give `kStreakShare` (0.4; 0.24 for a
+  single nozzle) of their cross-section, out to `kStreakAgeS` (240 s) and above 100-150 km (`streakShareAt`), to K
+  polylines (K = launches.json `upper_engines`, at most 8; 4 filaments for one nozzle): knots at fixed ages behind the
+  stage (0, 4, 12, 28, 55, 100, 160, 240 s; age 0 = the nozzle while burning), each offset from the plume's axis by
+  0.45-0.8 of the exhaust's radius there at a fixed angle round it, so they fan out of the stage at the plume's spread
+  angle (the interaction sheets between neighbouring nozzles' plumes); width 0.06 x the radius; (5) **the budget**: above
+  60-100 km a Gaussian's priority is x tau / (tau + 1e-3), and the young vacuum plume and the hot-staging lobes
+  (`Cand::jelly`) are kept like a reserved share and never skipped early. (6) **Hot staging** (`hot_staging` in
+  launches.json: Starship, Soyuz-2, Long March 2F): 18 lobes (`Parcel::turb`, puffs, never decimated or shelled) round
+  the interstage at t1 - 2 .. t1 + 0.6 s, sharing the upper stage's exhaust for 2.6 s, thrown sideways and back at
+  0.4-1.4 km/s, starting 250-550 m wide and growing by Richardson's law (richK 25) to a few km in half a minute, kappa
+  3x the trail's, albedo 0.85, tint (1, 0.78, 0.5); drawn with seeds 192-255, which cloud_march.comp reads as turbulent
+  (`turbP`: ~2x the billow contrast and a second octave; ordinary plume seeds are 0-191). Harness `launch state` ->
+  `plume_vacuum` (above 100 km and the lobes, youngest first: kind 0 exhaust / 1 lobe / 2 streak, tau, priority against
+  `plume_cut`). Measured (RTX 3070 Ti, 1920x1009, the report's view): cloud_march 13.5 -> 9.8-10.7 ms (the dropped faint
+  bells), the `turbP` shader change within noise and at 128 registers, launches CPU 2.24 -> 1.87 ms. Open: from the
+  ground 600 km away the staging cloud is a few pixels (physically sized); the streaks converge again where the trail
+  drops below ~110 km.
 - **What the Gaussian list costs, and the three culls (2026-10-21).** `dustCloudsCS` costs every texel the work of
   every Gaussian whose cone covers it; old, wide or Earth-shadowed exhaust (bells hundreds of km across, trails in the
   night) covers the whole sky while adding nothing: in the droneship bench view 160 of 390 Gaussians were in every
