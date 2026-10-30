@@ -8721,6 +8721,23 @@ EXPOSURE AND MOON section since 2026-10-06, key
   **Coronagraph**: with the inertial lock's occulter (`corInfo.w`) the corona draws without an eclipse (`totC`), not
   dimmed by `sunCloudT` (the occulter forces it 0), lifted by r^`photometry.corona_display_lift` (1.2, no UI) and faded
   from 2.7 R. Harness `corona` (state) / `corona cme [halo=1] [r=4] [days=60]` (jump to a CME's front at r solar radii).
+  **Continuity and shape (2026-10-30, issue 20261030_141422 "Corona graphics"):** the fibres are a hand-made mip chain
+  (`corFib`: 2.6 / 2^L and 2.6 / 2^(L+1) of the noise cross-faded, L from the texels per pixel; the 6.3x filaments only
+  where resolved and inside ~8 R): the volume has no mips, and at ~4 texels a pixel every sky-TAA jitter phase sampled
+  other fibres, which in time warp (moving TAA weight) read as rays jumping frame to frame. The phase is sent mod 4 (the
+  0.25x / 0.5x reads jumped every 14 days). Out to `kCoronaDynMaxR` 24 R, fading over its outer half; past ~3 R the smooth
+  background falls an extra r^-2 and the rays (coarse bundles, 4.5x) and streamers carry the outer corona: beams, not a
+  disc. Streamers are sent as position angles (base, stalk target; no trig in the loop), the stalk does not bend near the
+  central meridian (it switched limb sheets there), sunspot streamers fade in by size x envelope, and the 12-streamer and
+  6-CME lists are capped softly (`softCap`). CMEs: a limb CME's existence uses its own bin's Kp (the current Kp popped
+  CMEs in flight), it fades in over its first hour and out between 12 and 24 R, its texture is fixed on the bubble
+  (relative radius, angle) so it grows instead of boiling, and it PUSHES the corona (`corCme[2c+1].w`: the structure is
+  read at a warped place, swept to its flanks and stretched outward behind the front; a halo stretches it radially);
+  streamers a limb CME crosses are blown out to 25% and reform over ~a day (CPU). With the Sun hidden (occulter or
+  totality) the zodiacal light no longer stops at 5-10 deg: it brightens inward as the F-corona under the corona
+  (`zodHid`). Cost (RTX 3070 Ti, 1920x1009, interleaved): a coronagraph view filling the screen (FOV 6) sky pass 3.9 ->
+  6.1 ms (the corona now covers the whole frame; ~1.6 ms per megapixel of corona), the 2037 totality at FOV 12 2.4 ->
+  2.65, shot-2 view (FOV 35) equal; 168 registers, TAA binary 960 -> 966 KB, SKY_LITE unchanged.
   Cost (RTX 3070 Ti, 1920x1009, old vs new sky SPVs interleaved, a GPU shared with other apps): sky pass within the
   run-to-run noise at the report's totality (old 4.77 / 4.02 / 3.88, new 5.03 / 2.81 / 2.99 ms) and in a coronagraph
   from 900 km (old, drawing no corona, 4.55 / 4.46; new 3.99 / 3.91); 168 registers both, TAA binary 942 -> 951 KB,
