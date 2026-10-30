@@ -1037,11 +1037,20 @@ void UIRenderer::tooltip(const UIInput& inp, bool show, const char* text, uint16
     // bottom-right corner at the cursor, so the box grows up-and-left from it.
     float tx = inp.mouseX;
     float ty = inp.mouseY;
+    // (2026-10-29) Cap the box's width. A tip longer than this used to be drawn as ONE strip running most
+    // of the way across the screen under the cursor — the Settings search hint, the geo fields' "click to
+    // type / hold <key> for 5x" hint, the keybinding descriptions in Controls. Past the cap the words
+    // wrap, so a long tip is a compact block beside the cursor instead of a banner over the view.
+    const float kTipMaxW = std::max(160.0f, std::min(360.0f, inp.screenW * 0.6f));
+    const float textW = textAdvance(text, (int)strlen(text), (float)fontSize);
+    const bool wrapTip = textW > kTipMaxW;
+
     // (2026-10-21, low resolutions) A long tooltip ran off the LEFT edge from a cursor further in than the fixed
-    // 220-px estimate (a 550-px tip at x 360 started at -190). With the text's real width: anchor its left edge,
-    // placed where the box fits on screen.
+    // 220-px estimate (a 550-px tip at x 360 started at -190). With the text's real width (capped at the wrap
+    // width above, so a wrapped tip is placed as the block it actually is): anchor its left edge, placed where
+    // the box fits on screen.
     {
-        const float w = textAdvance(text, (int)strlen(text), (float)fontSize) + 16.0f;
+        const float w = std::min(textW, kTipMaxW) + 16.0f;
         if (!flipX && inp.mouseX - w < 0.0f)
         {
             elemAnchor = flipY ? CLAY_ATTACH_POINT_LEFT_TOP : CLAY_ATTACH_POINT_LEFT_BOTTOM;
@@ -1054,7 +1063,7 @@ void UIRenderer::tooltip(const UIInput& inp, bool show, const char* text, uint16
     Clay_String s{ false, (int32_t)strlen(text), text };
     CLAY(CLAY_IDI("UITooltip", tooltipSeq++), {
         .layout = {
-            .sizing  = { CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0) },
+            .sizing  = { wrapTip ? CLAY_SIZING_FIXED(kTipMaxW) : CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0) },
             .padding = { 7, 7, 5, 5 } },
         .backgroundColor = { 18, 18, 20, 235 },
         .cornerRadius = CLAY_CORNER_RADIUS(4),
@@ -1071,7 +1080,8 @@ void UIRenderer::tooltip(const UIInput& inp, bool show, const char* text, uint16
             .attachTo = CLAY_ATTACH_TO_ROOT },
         .border = { .color = {255, 255, 255, 40}, .width = CLAY_BORDER_ALL(1) } })
     {
-        CLAY_TEXT(s, CLAY_TEXT_CONFIG({ .textColor = {225, 225, 230, 255}, .fontSize = fontSize }));
+        CLAY_TEXT(s, CLAY_TEXT_CONFIG({ .textColor = {225, 225, 230, 255}, .fontSize = fontSize,
+                                        .wrapMode = wrapTip ? CLAY_TEXT_WRAP_WORDS : CLAY_TEXT_WRAP_NONE }));
     }
 }
 

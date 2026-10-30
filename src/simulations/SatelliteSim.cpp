@@ -1730,6 +1730,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     kesslerRecordUploads(cmd);
     kesslerTrackerRecordUpload(cmd); // the Kessler tracker's globe (SatelliteSimKesslerTracker.cpp), when re-rastered
     weatherRadarRecordUpload(cmd);   // the Weather window's radar image (SatelliteSimWeatherWindow.cpp), when re-rastered
+    auroraMapRecordUpload(cmd);      // the Settings > Atmosphere oval dial (SatelliteSimUI.cpp), when re-rastered
     fprof::mark("rc.seg2_kessler");
     // (2026-10-27, weather perf pass 2) In time warp the storms are updated here, as soon as this frame's sim time is
     // final (updateStorms reads only it and the settings), and the weather bake's envelope index starts on a worker, so
@@ -8258,6 +8259,7 @@ void SatelliteSim::cleanup(VkDevice device)
     bookmarksDestroy(device); // the bookmark thumbnails' atlas (SatelliteSimBookmarks.cpp)
     kesslerTrackerDestroy(device); // the Kessler tracker's globe image
     weatherRadarDestroy(device);   // the Weather window's radar (SatelliteSimWeatherWindow.cpp)
+    auroraMapDestroy(device);      // the Settings > Atmosphere oval dial (SatelliteSimUI.cpp)
     if (wxFireJob.valid())          // (its worker reads biomeMap, which is destroyed before the future)
         wxFireJob.wait();
     if (wxScanJob.valid())          // (the featured search's worker: the scout catalog, the maps)

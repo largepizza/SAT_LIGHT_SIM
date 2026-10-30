@@ -196,16 +196,29 @@ def build_track():
     return shapes
 
 
+def camera(body, hump, cx, cy, lens_r, *clear):
+    """A solid stills camera: `body` with `hump` (the finder) on its top edge, a hole punched out at
+    (cx, cy) with the lens itself drawn inside it. `*clear` are extra shapes punched out of the body —
+    the HQ glyph passes its sparkle's clearance here. Both capture buttons are built from this one
+    glyph so the two read as one family (2026-10-29)."""
+    hole = disc(cx, cy, lens_r)
+    return [cut(lambda px, py: body(px, py) or hump(px, py), hole, *clear), disc(cx, cy, lens_r * 0.55)]
+
+
+def build_camera():
+    """Screenshot: the stills camera — the UC6 capture button's subject, re-drawn in the pixel style of
+    record / film beside it. (The hand-drawn camera-solid.png this replaces was the only smooth-edged
+    glyph left in the strip, and read as another icon family at 16 px.)"""
+    return camera(rect(3.0, 17.0, 45.0, 42.0), rect(13.0, 11.0, 27.0, 17.0), 24.0, 29.5, 10.5)
+
+
 def build_photo():
-    """HQ photo: a solid camera (the screenshot icon's family: lens punched out, a dot inside) with a
-    sparkle at its top right — the "quality" mark that keeps it apart from camera-solid.png beside it."""
-    body = rect(4.0, 17.0, 36.0, 41.0)
-    hump = rect(10.0, 12.0, 22.0, 17.0)
-    lens_hole = disc(20.0, 29.0, 8.0)
-    return [
-        cut(lambda px, py: body(px, py) or hump(px, py), lens_hole),
-        disc(20.0, 29.0, 4.5),                 # the lens
-        sparkle(40.0, 9.5, 8.5, 0.8),         # the "HQ" sparkle (0.8: fat enough for the pixel grid)
+    """HQ photo: the same camera and the same stroke weight as `build_camera`, one step smaller and set
+    to the lower left so a four-point sparkle sits clear in its top right corner — the "quality" mark,
+    at the SAME overall size as the plain camera. The two glyphs share no pixels, so the sparkle keeps
+    its shape at 16 px instead of fusing into the body (2026-10-29)."""
+    return camera(rect(1.0, 21.0, 29.0, 46.0), rect(9.0, 15.0, 22.0, 21.0), 15.0, 33.5, 8.0) + [
+        star4(37.0, 10.5, 9.5, 4.5),           # the "HQ" sparkle
     ]
 
 
@@ -467,6 +480,18 @@ def build_sky_supernova():
     return [core] + spikes
 
 
+def build_sky_cme():
+    """A coronal mass ejection (2026-10-29): the Sun's disc on the left with two detached arcs of plasma leaving it
+    to the right — a shock front and its wake, opening away from the Sun. Deliberately not a full ring: the eclipse
+    icons own that shape, and at 16 px a ring around a disc reads as the corona."""
+    sun = disc(9.0, 24.0, 6.0)
+    arcs = []
+    for r in (12.0, 17.0):
+        # The right half of a ring, its left half cut away so the arcs start clear of the Sun.
+        arcs.append(cut(ring(9.0, 24.0, r, 2.1), rect(0.0, 0.0, 9.0, 48.0)))
+    return [sun] + arcs
+
+
 ICONS = {
     "storm-tornado": build_storm_tornado,
     "storm-hurricane": build_storm_hurricane,
@@ -484,6 +509,7 @@ ICONS = {
     "report": build_report,
     "bookmark": build_bookmark,
     "film": build_film,
+    "camera": build_camera,
     "photo": build_photo,
     "record": build_record,
     "maximize": build_maximize,
@@ -500,14 +526,15 @@ ICONS = {
     "sky-meteors": build_sky_meteors,
     "sky-comet": build_sky_comet,
     "sky-supernova": build_sky_supernova,
+    "sky-cme": build_sky_cme,
 }
 
 # Drawn in the HUD's "pixel" style: solid silhouettes with hard edges on a 24-px grid, doubled to 48 —
 # the look of the gear, the camera, play / pause, the crosshair and the eye. Soft-edged thin strokes
 # beside them read as another icon family (the user, 2026-10-03).
 PIXEL_STYLE = {"storm-tornado", "storm-hurricane", "storm-haboob", "storm-supercell", "storm-squall",
-               "storm-waterspout", "storm-fire", "storm-cell", "weather", "movement", "view", "pin", "missions", "report", "bookmark", "film", "photo", "record", "maximize", "observer", "spin", "studio",
-               "sky-events", "sky-solar", "sky-lunar", "sky-conjunction", "sky-occultation", "sky-moonglint", "sky-meteors", "sky-comet", "sky-supernova"}
+               "storm-waterspout", "storm-fire", "storm-cell", "weather", "movement", "view", "pin", "missions", "report", "bookmark", "film", "camera", "photo", "record", "maximize", "observer", "spin", "studio",
+               "sky-events", "sky-solar", "sky-lunar", "sky-conjunction", "sky-occultation", "sky-moonglint", "sky-meteors", "sky-comet", "sky-supernova", "sky-cme"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -603,6 +630,15 @@ def sparkle(cx, cy, r, exponent=0.55):
         return u ** exponent + v ** exponent <= 1.0
 
     return hit
+
+
+def star4(cx, cy, r, w):
+    """A four-point star with FAT arms: four triangles off a solid centre. The superellipse `sparkle`
+    below needs a solid field to be punched out of (the bookmark's ribbon); a star that has to read on
+    its own at 16 px uses this instead."""
+    arms = [tri((cx, cy - r), (cx - w, cy), (cx + w, cy)), tri((cx, cy + r), (cx - w, cy), (cx + w, cy)),
+            tri((cx - r, cy), (cx, cy - w), (cx, cy + w)), tri((cx + r, cy), (cx, cy - w), (cx, cy + w))]
+    return lambda px, py: any(a(px, py) for a in arms)
 
 
 def parabola(cx, y0, w, sag, half):

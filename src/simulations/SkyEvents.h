@@ -25,6 +25,7 @@ enum Kind : int
     kMeteorShower,  // a meteor shower's peak (Meteors.h, 2026-10-27)
     kComet,         // a comet at its best (Comets.h, 2026-10-27): the Great Comet of 2037, the minor comets
     kSupernova,     // the scripted Betelgeuse supernova, 2037-12-25 (SatelliteSimStars.cpp, 2026-10-27)
+    kCme,           // a geomagnetic storm: an Earth-directed CME arriving (SpaceWeather.h, 2026-10-29)
     kKindCount
 };
 

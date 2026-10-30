@@ -3625,8 +3625,11 @@ private:
     int skScanRestarts = 0;
     std::vector<sky::Event> skFound[sky::kKindCount]; // every event of each kind in the range, by time
     std::vector<sky::Event> skUpcoming;      // the next events of every kind (rebuilt when a kind comes in, or 2 s)
+    // Pinned above the list (2026-10-29): the events worth going to see even when the soonest-ten list is full of
+    // nearer minor ones — the scripted "Sun's Fury" storm and the next TOTAL solar eclipse.
+    std::vector<sky::Event> skPinned;
     double skUpcomingWall = -1e300, skUpcomingSim = -1e300;
-    int skPendingKind = -1, skPendingRow = -1; // a Watch pressed this frame (acted on after the layout)
+    int skPendingKind = -1, skPendingRow = -1, skPendingPin = -1; // a Watch pressed this frame (acted on after the layout)
     std::string skStatus, skStatusShown;
     double skStatusWall = 0.0;
     std::deque<std::string> skText_;
@@ -3657,6 +3660,10 @@ private:
     bool skyWatchMoonGlint(const sky::Event &e, std::string &msg);
     void skySearchSupernova(const sky::SearchCtx &c, std::vector<sky::Event> &out) const;
     bool skyWatchSupernova(const sky::Event &e, std::string &msg);
+    // Geomagnetic storms (2026-10-29): the Earth-directed CMEs of SpaceWeather.h arriving in the range. The event IS
+    // the arrival — t0 the arrival, t1 12 h later (the storm shape's span), t the crest — and magA its peak Kp.
+    void skySearchCme(const sky::SearchCtx &c, std::vector<sky::Event> &out) const;
+    bool skyWatchCme(const sky::Event &e, std::string &msg);
 
     // ── Moon-base glints (2026-10-27, SatelliteSimMoonBases.cpp; CLAUDE.md "Moon-base glints") ──────────────────
     // The lunar south-pole bases' sun-tracking solar arrays (data/lunar_bases.json, lunar::Base) mirror the Sun to
@@ -4008,6 +4015,24 @@ private:
     bool weatherRadarEnsureImage(UIRenderer &ui);
     void weatherRadarRecordUpload(VkCommandBuffer cmd);
     UIImage wxImgEl;
+    // The auroral-oval map in Settings > Atmosphere (2026-10-29): the same CPU raster into a texture as the radar
+    // above, 128x128, re-rastered only when the oval it draws has actually moved (auroraMapRefresh).
+    VkImage aoImg = VK_NULL_HANDLE;
+    VkDeviceMemory aoImgMem = VK_NULL_HANDLE;
+    VkImageView aoImgView = VK_NULL_HANDLE;
+    VkSampler aoImgSampler = VK_NULL_HANDLE;
+    std::vector<uint8_t> aoPixels;   // the raster's CPU copy, uploaded when aoUploadPending
+    uint32_t aoUiId = 0;
+    bool aoUploadPending = false, aoImageFailed = false;
+    double aoRasterT = -1e30;        // sim seconds the raster was made at
+    float aoRasterKp = -1.0f;
+    glm::dvec3 aoRasterSun{0.0, 0.0, 1.0};
+    bool auroraMapSouth_ = false;    // the dial is drawn around the observer's own magnetic pole
+    UIImage aoImgEl;
+    bool auroraMapEnsureImage(UIRenderer &ui);
+    void auroraMapRefresh();
+    void auroraMapRecordUpload(VkCommandBuffer cmd);
+    void auroraMapDestroy(VkDevice device);
     std::vector<UITextQuad> wxQuads;
     std::vector<UITextRun> wxRuns;
     std::deque<std::string> wxRunText;

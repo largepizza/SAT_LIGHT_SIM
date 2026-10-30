@@ -38,7 +38,7 @@ static constexpr int kIconAngleRight = 1; // pixel--angle-right.png → speed up
 static constexpr int kIconPause = 3;      // pixel--pause.png
 static constexpr int kIconPlay = 4;       // pixel--play.png
 static constexpr int kIconSettings = 5;   // pixel--settings.png
-static constexpr int kIconCamera = 6;     // camera-solid.png — UC6 screenshot button
+static constexpr int kIconCamera = 6;     // pixel--camera.png — UC6 screenshot button (tools/make_icons.py)
 static constexpr int kIconStarTrails = 7; // pixel--star-trails.png — long-exposure trail toggle
 static constexpr int kIconEye = 8;        // pixel--eye.png — follow mode (fly to the satellite)
 static constexpr int kIconSelect = 9;     // pixel--crosshair.png — view/select the satellite's model
@@ -173,12 +173,23 @@ bool debugToggleAt(int i, uint32_t &bit, const char *&label, const char *&jsonKe
 // 2026-10-28 (issue 20261028_222345, the settings round-up): "Sky" (16) under SKY: the stars, the planets (out of
 // Constellations), the Moon, comets, meteors, the Moon-base glints and the refraction / mirage settings, most of which
 // had no UI. The search box over the strip filters every tab (Settings search, below).
+// 2026-10-29 (issue 20261029_205641): the headings say what the group is FOR rather than where it came from —
+// CAMERA AND INPUT (the things you drive the view with), LOOK (what the picture shows: brightness, sky, constellations,
+// night lights), ATMOSPHERE (the fluid layers), EVENTS (weather and launches), SYSTEM (the performance tools), ABOUT.
 static constexpr int kSettingsTabCount = 17;
 static constexpr const char *kSettingsTabNames[kSettingsTabCount] = {
     "Constellations", "Sound", "Controls", "Camera",
     "Display", "Photometry", "Clouds", "Ocean", "Terrain", "Atmosphere", "Beams", "Attributions",
     "Weather", "Night lights", "Performance", "Launches", "Sky"};
-static constexpr int kSettingsStrip[] = {-1, 4, 2, 1, -2, 0, 16, 15, 5, -3, 6, 12, 9, 8, 13, 7, 10, 14, -4, 11};
+// A negative entry is a heading: -1 - its index in kSettingsStripHeadingText. Tab INDICES are persisted and index
+// hovTab[], so this only ever reorders the strip.
+static constexpr int kSettingsStrip[] = {
+    -1, 4, 2, 1,              // CAMERA AND INPUT: Display, Controls, Sound
+    -2, 5, 16, 0, 13,         // LOOK: Photometry, Sky, Constellations, Night lights
+    -3, 6, 9, 8, 7, 10,       // ATMOSPHERE: Clouds, Atmosphere, Terrain, Ocean, Beams
+    -4, 12, 15,               // EVENTS: Weather, Launches
+    -5, 14,                   // SYSTEM: Performance
+    -6, 11};                  // ABOUT: Attributions
 bool settingsTabIsAdvanced(int i) { return (i >= 6 && i <= 10) || i == 12 || i == 13 || i == 14; }
 int settingsTabIndexByName(const std::string &name)
 {
@@ -204,7 +215,8 @@ static const Txt kSettingsTabText[kSettingsTabCount] = {
     Txt::TabConstellations, Txt::TabSound, Txt::TabControls, Txt::TabCamera, Txt::TabDisplay, Txt::TabPhotometry,
     Txt::TabClouds, Txt::TabOcean, Txt::TabTerrain, Txt::TabAtmosphere, Txt::TabBeams, Txt::TabAttributions,
     Txt::TabWeather, Txt::TabNightLights, Txt::TabPerformance, Txt::TabLaunches, Txt::TabSky};
-static const Txt kSettingsStripHeadingText[] = {Txt::SecTabsGeneral, Txt::SecTabsSky, Txt::SecTabsRendering, Txt::SecTabsAbout};
+static const Txt kSettingsStripHeadingText[] = {Txt::SecTabsCameraInput, Txt::SecTabsLook, Txt::SecTabsAtmosphere,
+                                                Txt::SecTabsEvents, Txt::SecTabsSystem, Txt::SecTabsAbout};
 const char *settingsTabName(int i) { return (i >= 0 && i < kSettingsTabCount) ? tx(kSettingsTabText[i]) : ""; }
 
 // Helper: short display name for a GLFW key code (used in settings window + tooltips).
@@ -623,7 +635,7 @@ void SatelliteSim::loadUiIcons(UIRenderer &ui)
             "assets/icons/ui/pixel--pause.png",
             "assets/icons/ui/pixel--play.png",
             "assets/icons/ui/pixel--settings.png",
-            "assets/icons/ui/camera-solid.png",
+            "assets/icons/ui/pixel--camera.png", // 6: kIconCamera — the stills camera (make_icons.py)
             "assets/icons/ui/pixel--star-trails.png",
             "assets/icons/ui/pixel--eye.png",
             "assets/icons/ui/pixel--crosshair.png",
@@ -663,6 +675,7 @@ void SatelliteSim::loadUiIcons(UIRenderer &ui)
             "assets/icons/ui/pixel--movement.png",      // 41: kIconMovement (SatelliteSimHudPopups.cpp too)
             "assets/icons/ui/pixel--view.png",          // 42: kIconViewPanel
             "assets/icons/ui/pixel--pin.png",           // 43: kIconPin
+            "assets/icons/ui/pixel--sky-cme.png",       // 44: geomagnetic storms (SatelliteSimSkyEvents.cpp, 2026-10-29)
         };
         // The count comes from the list itself — the hand-maintained "bump this when you add an icon"
         // number used to be a silent way to drop the last icon of the array.
@@ -1030,6 +1043,18 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
 // resizes instead of a persisted free position (dragging/pinning was tried and
 // reverted per user feedback: a fixed-relative-to-window-edge panel is what's
 // actually wanted here, not a movable one).
+// ─── The bottom HUD panels' shared metrics (2026-10-29) ───────────────────────────────────────────
+// The two corner panels are one row of matched furniture: 10 px side padding, 8 px vertical, a 6 px
+// child gap and 28 px square buttons holding an 18 px glyph in a 4 px-rounded chip. The numbers were
+// typed out twice and had drifted — the right panel's buttons had no chip at rest and its rows used a
+// different padding, so the two panels read as two different toolbars. They live here once now.
+static constexpr int kHudBtnSz = 28;
+static constexpr int kHudIconSz = 18;
+static constexpr int kHudPadX = 10;
+static constexpr int kHudPadY = 8;
+static constexpr int kHudGap = 6;
+static constexpr float kHudBtnRadius = 4.0f;
+
 void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
 {
     static char timeBuf[32];
@@ -1050,8 +1075,8 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
     const float kMargin = 12.0f;
     CLAY(CLAY_ID("LeftPanel"), {.layout = {
                                     .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
-                                    .padding = {10, 10, 8, 8},
-                                    .childGap = 6,
+                                    .padding = {kHudPadX, kHudPadX, kHudPadY, kHudPadY},
+                                    .childGap = kHudGap,
                                     .layoutDirection = CLAY_TOP_TO_BOTTOM},
                                 .backgroundColor = Pal::panelBg,
                                 .cornerRadius = CLAY_CORNER_RADIUS(Style::panelCornerRadius),
@@ -1090,21 +1115,19 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
         }
 
         // Icon button row: [◀] [⏸/▶] [▶] [R]
-        const int kBtnSize = 28;
-        const int kIconSize = 18;
         CLAY(CLAY_ID("TimeBtnRow"), {.layout = {
                                          .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
-                                         .childGap = 5,
+                                         .childGap = kHudGap,
                                          .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                          .layoutDirection = CLAY_LEFT_TO_RIGHT}})
         {
             // ── Slow down ─────────────────────────────────────────────────────
             Clay_Color slowBg = hovTimeSlower ? Pal::btnHover : Pal::btnIdle;
             CLAY(CLAY_ID("TimeSlowerBtn"), {.layout = {
-                                                .sizing = {CLAY_SIZING_FIXED(kBtnSize), CLAY_SIZING_FIXED(kBtnSize)},
+                                                .sizing = {CLAY_SIZING_FIXED(kHudBtnSz), CLAY_SIZING_FIXED(kHudBtnSz)},
                                                 .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
                                             .backgroundColor = slowBg,
-                                            .cornerRadius = CLAY_CORNER_RADIUS(4)})
+                                            .cornerRadius = CLAY_CORNER_RADIUS(kHudBtnRadius)})
             {
                 bool n = Clay_Hovered();
                 sndRollover(n, hovTimeSlower);
@@ -1116,7 +1139,7 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
                 snprintf(tip, sizeof(tip), tx(Txt::FmtSlowDownTime), keyDisplayName(keybindings[KB_SLOWER].key));
                 ui.tooltip(inp, n, tip, fs(11));
                 CLAY(CLAY_ID("TimeSlowerIcon"), {.layout = {
-                                                     .sizing = {CLAY_SIZING_FIXED(kIconSize), CLAY_SIZING_FIXED(kIconSize)}},
+                                                     .sizing = {CLAY_SIZING_FIXED(kHudIconSz), CLAY_SIZING_FIXED(kHudIconSz)}},
                                                  .image = {.imageData = (void *)(intptr_t)(kIconAngleLeft + 1)}}) {}
             }
 
@@ -1125,10 +1148,10 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
                                      ? Pal::pauseActive
                                      : (hovTimePause ? Pal::btnHover : Pal::btnIdle);
             CLAY(CLAY_ID("TimePauseBtn"), {.layout = {
-                                               .sizing = {CLAY_SIZING_FIXED(kBtnSize), CLAY_SIZING_FIXED(kBtnSize)},
+                                               .sizing = {CLAY_SIZING_FIXED(kHudBtnSz), CLAY_SIZING_FIXED(kHudBtnSz)},
                                                .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
                                            .backgroundColor = pauseBg,
-                                           .cornerRadius = CLAY_CORNER_RADIUS(4)})
+                                           .cornerRadius = CLAY_CORNER_RADIUS(kHudBtnRadius)})
             {
                 bool n = Clay_Hovered();
                 sndRollover(n, hovTimePause);
@@ -1141,17 +1164,17 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
                 ui.tooltip(inp, n, tip, fs(11));
                 int pauseIcon = timePaused ? kIconPlay : kIconPause;
                 CLAY(CLAY_ID("TimePauseIcon"), {.layout = {
-                                                    .sizing = {CLAY_SIZING_FIXED(kIconSize), CLAY_SIZING_FIXED(kIconSize)}},
+                                                    .sizing = {CLAY_SIZING_FIXED(kHudIconSz), CLAY_SIZING_FIXED(kHudIconSz)}},
                                                 .image = {.imageData = (void *)(intptr_t)(pauseIcon + 1)}}) {}
             }
 
             // ── Speed up ──────────────────────────────────────────────────────
             Clay_Color fastBg = hovTimeFaster ? Pal::btnHover : Pal::btnIdle;
             CLAY(CLAY_ID("TimeFasterBtn"), {.layout = {
-                                                .sizing = {CLAY_SIZING_FIXED(kBtnSize), CLAY_SIZING_FIXED(kBtnSize)},
+                                                .sizing = {CLAY_SIZING_FIXED(kHudBtnSz), CLAY_SIZING_FIXED(kHudBtnSz)},
                                                 .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
                                             .backgroundColor = fastBg,
-                                            .cornerRadius = CLAY_CORNER_RADIUS(4)})
+                                            .cornerRadius = CLAY_CORNER_RADIUS(kHudBtnRadius)})
             {
                 bool n = Clay_Hovered();
                 sndRollover(n, hovTimeFaster);
@@ -1163,7 +1186,7 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
                 snprintf(tip, sizeof(tip), tx(Txt::FmtSpeedUpTime), keyDisplayName(keybindings[KB_FASTER].key));
                 ui.tooltip(inp, n, tip, fs(11));
                 CLAY(CLAY_ID("TimeFasterIcon"), {.layout = {
-                                                     .sizing = {CLAY_SIZING_FIXED(kIconSize), CLAY_SIZING_FIXED(kIconSize)}},
+                                                     .sizing = {CLAY_SIZING_FIXED(kHudIconSz), CLAY_SIZING_FIXED(kHudIconSz)}},
                                                  .image = {.imageData = (void *)(intptr_t)(kIconAngleRight + 1)}}) {}
             }
 
@@ -1173,10 +1196,10 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
                                    ? Pal::pauseActive
                                    : (hovTimeReverse ? Pal::btnHover : Pal::btnIdle);
             CLAY(CLAY_ID("TimeReverseBtn"), {.layout = {
-                                                 .sizing = {CLAY_SIZING_FIXED(kBtnSize), CLAY_SIZING_FIXED(kBtnSize)},
+                                                 .sizing = {CLAY_SIZING_FIXED(kHudBtnSz), CLAY_SIZING_FIXED(kHudBtnSz)},
                                                  .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
                                              .backgroundColor = revBg,
-                                             .cornerRadius = CLAY_CORNER_RADIUS(4)})
+                                             .cornerRadius = CLAY_CORNER_RADIUS(kHudBtnRadius)})
             {
                 bool n = Clay_Hovered();
                 sndRollover(n, hovTimeReverse);
@@ -1194,10 +1217,10 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
             bool shotBusy = screenshotEncoding.load() || screenshotCopyPending || screenshotRequested;
             Clay_Color shotBg = shotBusy ? Pal::pauseActive : (hovScreenshot ? Pal::btnHover : Pal::btnIdle);
             CLAY(CLAY_ID("TimeScreenshotBtn"), {.layout = {
-                                                    .sizing = {CLAY_SIZING_FIXED(kBtnSize), CLAY_SIZING_FIXED(kBtnSize)},
+                                                    .sizing = {CLAY_SIZING_FIXED(kHudBtnSz), CLAY_SIZING_FIXED(kHudBtnSz)},
                                                     .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
                                                 .backgroundColor = shotBg,
-                                                .cornerRadius = CLAY_CORNER_RADIUS(4)})
+                                                .cornerRadius = CLAY_CORNER_RADIUS(kHudBtnRadius)})
             {
                 bool n = Clay_Hovered();
                 sndRollover(n, hovScreenshot);
@@ -1209,17 +1232,17 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
                 snprintf(tip, sizeof(tip), tx(Txt::FmtScreenshot), keyDisplayName(keybindings[KB_SCREENSHOT].key));
                 ui.tooltip(inp, n, tip, fs(11));
                 CLAY(CLAY_ID("TimeScreenshotIcon"), {.layout = {
-                                                         .sizing = {CLAY_SIZING_FIXED(kIconSize), CLAY_SIZING_FIXED(kIconSize)}},
+                                                         .sizing = {CLAY_SIZING_FIXED(kHudIconSz), CLAY_SIZING_FIXED(kHudIconSz)}},
                                                      .image = {.imageData = (void *)(intptr_t)(kIconCamera + 1)}}) {}
             }
 
             // ── HQ photo (review 13) ─────────────────────────────────────────────
             Clay_Color photoBg = photoState != 0 ? Pal::pauseActive : (hovPhoto ? Pal::btnHover : Pal::btnIdle);
             CLAY(CLAY_ID("TimePhotoBtn"), {.layout = {
-                                               .sizing = {CLAY_SIZING_FIXED(kBtnSize), CLAY_SIZING_FIXED(kBtnSize)},
+                                               .sizing = {CLAY_SIZING_FIXED(kHudBtnSz), CLAY_SIZING_FIXED(kHudBtnSz)},
                                                .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
                                            .backgroundColor = photoBg,
-                                           .cornerRadius = CLAY_CORNER_RADIUS(4)})
+                                           .cornerRadius = CLAY_CORNER_RADIUS(kHudBtnRadius)})
             {
                 bool n = Clay_Hovered();
                 sndRollover(n, hovPhoto);
@@ -1231,7 +1254,7 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
                 snprintf(tip, sizeof(tip), tx(Txt::FmtHqPhoto), keyDisplayName(keybindings[KB_PHOTO].key));
                 ui.tooltip(inp, n, tip, fs(11));
                 CLAY(CLAY_ID("TimePhotoIcon"), {.layout = {
-                                                    .sizing = {CLAY_SIZING_FIXED(kIconSize), CLAY_SIZING_FIXED(kIconSize)}},
+                                                    .sizing = {CLAY_SIZING_FIXED(kHudIconSz), CLAY_SIZING_FIXED(kHudIconSz)}},
                                                 .image = {.imageData = (void *)(intptr_t)(kIconPhoto + 1)}}) {}
             }
 
@@ -1241,10 +1264,10 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
             // buffer (trailClearPending) — there is no separate "clear" affordance anywhere else.
             Clay_Color trailsBg = trailEnabled ? Pal::pauseActive : (hovTrailsBtn ? Pal::btnHover : Pal::btnIdle);
             CLAY(CLAY_ID("TrailsBtn"), {.layout = {
-                                            .sizing = {CLAY_SIZING_FIXED(kBtnSize), CLAY_SIZING_FIXED(kBtnSize)},
+                                            .sizing = {CLAY_SIZING_FIXED(kHudBtnSz), CLAY_SIZING_FIXED(kHudBtnSz)},
                                             .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
                                         .backgroundColor = trailsBg,
-                                        .cornerRadius = CLAY_CORNER_RADIUS(4)})
+                                        .cornerRadius = CLAY_CORNER_RADIUS(kHudBtnRadius)})
             {
                 bool n = Clay_Hovered();
                 sndRollover(n, hovTrailsBtn);
@@ -1260,7 +1283,7 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
                 snprintf(tip, sizeof(tip), tx(Txt::FmtStarTrails), keyDisplayName(keybindings[KB_TOGGLE_TRAILS].key));
                 ui.tooltip(inp, n, tip, fs(11));
                 CLAY(CLAY_ID("TrailsIcon"), {.layout = {
-                                                 .sizing = {CLAY_SIZING_FIXED(kIconSize), CLAY_SIZING_FIXED(kIconSize)}},
+                                                 .sizing = {CLAY_SIZING_FIXED(kHudIconSz), CLAY_SIZING_FIXED(kHudIconSz)}},
                                              .image = {.imageData = (void *)(intptr_t)(kIconStarTrails + 1)}}) {}
             }
 
@@ -1268,10 +1291,10 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
             const bool vidOn = video_.busy() && !videoByHarness_;
             Clay_Color vidBg = vidOn ? Pal::recActive : (hovVideoBtn ? Pal::btnHover : Pal::btnIdle);
             CLAY(CLAY_ID("TimeVideoBtn"), {.layout = {
-                                               .sizing = {CLAY_SIZING_FIXED(kBtnSize), CLAY_SIZING_FIXED(kBtnSize)},
+                                               .sizing = {CLAY_SIZING_FIXED(kHudBtnSz), CLAY_SIZING_FIXED(kHudBtnSz)},
                                                .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
                                            .backgroundColor = vidBg,
-                                           .cornerRadius = CLAY_CORNER_RADIUS(4)})
+                                           .cornerRadius = CLAY_CORNER_RADIUS(kHudBtnRadius)})
             {
                 bool n = Clay_Hovered();
                 sndRollover(n, hovVideoBtn);
@@ -1284,7 +1307,7 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
                          keyDisplayName(keybindings[KB_VIDEO].key));
                 ui.tooltip(inp, n, tip, fs(11));
                 CLAY(CLAY_ID("TimeVideoIcon"), {.layout = {
-                                                    .sizing = {CLAY_SIZING_FIXED(kIconSize), CLAY_SIZING_FIXED(kIconSize)}},
+                                                    .sizing = {CLAY_SIZING_FIXED(kHudIconSz), CLAY_SIZING_FIXED(kHudIconSz)}},
                                                 .image = {.imageData = (void *)(intptr_t)(kIconRecord + 1)}}) {}
             }
         }
@@ -1336,8 +1359,6 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
     snprintf(geoTip, sizeof(geoTip), tx(Txt::FmtClickToTypeScrollToAdjust),
              keyDisplayName(keybindings[KB_MOVE_BOOST].key), keyDisplayName(keybindings[KB_MOVE_FINE].key));
 
-    const int kGearSz = 28;
-
     // Compact (2026-10-21, low resolutions): when the full right panel would reach the left one (1024 px wide), it
     // drops the FPS readout and the version label. Decided from last frame's boxes, re-checked whenever the screen
     // or the UI scale changes (a couple of full-width frames then).
@@ -1361,9 +1382,9 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
     }
 
     CLAY(CLAY_ID("RightPanel"), {.layout = {
-                                     .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIXED(38)},
-                                     .padding = {10, 10, 6, 6},
-                                     .childGap = 7,
+                                     .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
+                                     .padding = {kHudPadX, kHudPadX, kHudPadY, kHudPadY},
+                                     .childGap = kHudGap,
                                      .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                      .layoutDirection = CLAY_LEFT_TO_RIGHT},
                                  .backgroundColor = Pal::panelBg,
@@ -1442,12 +1463,12 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
         // pin it to keep it); the altitude gauge moved into the Movement popup. ──
         auto hudBtn = [&](Clay_ElementId id, Clay_ElementId iconId, int icon, bool &hov, HudPopup &hp, const char *tip)
         {
-            const Clay_Color bg = hp.open ? Pal::btnAccent : (hov ? Pal::btnHover : Pal::panelBgFade);
-            const float sz = (float)kGearSz;
+            const Clay_Color bg = hp.open ? Pal::btnAccent : (hov ? Pal::btnHover : Pal::btnIdle);
+            const float sz = (float)kHudBtnSz;
             CLAY(id, {.layout = {.sizing = {CLAY_SIZING_FIXED(sz), CLAY_SIZING_FIXED(sz)},
                                  .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
                       .backgroundColor = bg,
-                      .cornerRadius = CLAY_CORNER_RADIUS(4)})
+                      .cornerRadius = CLAY_CORNER_RADIUS(kHudBtnRadius)})
             {
                 const bool n = Clay_Hovered();
                 sndRollover(n, hov);
@@ -1461,7 +1482,7 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
                 }
                 hov = n;
                 ui.tooltip(inp, n, tip, fs(11));
-                CLAY(iconId, {.layout = {.sizing = {CLAY_SIZING_FIXED(18), CLAY_SIZING_FIXED(18)}},
+                CLAY(iconId, {.layout = {.sizing = {CLAY_SIZING_FIXED(kHudIconSz), CLAY_SIZING_FIXED(kHudIconSz)}},
                               .image = {.imageData = (void *)(intptr_t)(icon + 1)}}) {}
             }
         };
@@ -1475,7 +1496,7 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
 
             // ── FPS ───────────────────────────────────────────────────────────
             CLAY(CLAY_ID("SBFps"), {.layout = {
-                                        .sizing = {CLAY_SIZING_FIXED(50), CLAY_SIZING_FIT(0)},
+                                        .sizing = {CLAY_SIZING_FIT(50.0f), CLAY_SIZING_FIT(0)},
                                         .childAlignment = {.x = CLAY_ALIGN_X_CENTER}}})
             {
                 CLAY_TEXT(fpsStr, CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(12)}));
@@ -1507,12 +1528,12 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
                            const char *tip, bool &toggled, bool dim = false)
         {
             toggled = false;
-            const Clay_Color bg = on ? onBg : (hov ? Pal::btnHover : (dim ? Pal::btnDisabled : Pal::panelBgFade));
-            const float sz = (float)kGearSz;
+            const Clay_Color bg = on ? onBg : (hov ? Pal::btnHover : (dim ? Pal::btnDisabled : Pal::btnIdle));
+            const float sz = (float)kHudBtnSz;
             CLAY(id, {.layout = {.sizing = {CLAY_SIZING_FIXED(sz), CLAY_SIZING_FIXED(sz)},
                                  .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
                       .backgroundColor = bg,
-                      .cornerRadius = CLAY_CORNER_RADIUS(4)})
+                      .cornerRadius = CLAY_CORNER_RADIUS(kHudBtnRadius)})
             {
                 bool n = Clay_Hovered();
                 sndRollover(n, hov);
@@ -1520,7 +1541,7 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
                 toggled = n && inp.lmbPressed;
                 hov = n;
                 ui.tooltip(inp, n, tip, fs(11));
-                CLAY(iconId, {.layout = {.sizing = {CLAY_SIZING_FIXED(18), CLAY_SIZING_FIXED(18)}},
+                CLAY(iconId, {.layout = {.sizing = {CLAY_SIZING_FIXED(kHudIconSz), CLAY_SIZING_FIXED(kHudIconSz)}},
                               .image = {.imageData = (void *)(intptr_t)(icon + 1)}}) {}
             }
         };
@@ -3737,9 +3758,17 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
             const int ti = kSettingsStrip[oi];
             if (ti < 0)
             {
-                // A heading, shown when the next tab under it is (RENDERING is all advanced tabs).
-                const int next = oi + 1 < (int)(sizeof(kSettingsStrip) / sizeof(kSettingsStrip[0])) ? kSettingsStrip[oi + 1] : -1;
-                if (next < 0 || (settingsTabIsAdvanced(next) && !showAdvancedSettings))
+                // A heading, shown when ANY tab under it is: scan to the next heading, not just the next entry —
+                // in a group whose first tab is advanced (ATMOSPHERE's Clouds, SYSTEM's Performance) looking one
+                // entry ahead hid the heading while its later tabs were still on screen (2026-10-29).
+                bool anyShown = false;
+                for (int k = oi + 1; k < (int)(sizeof(kSettingsStrip) / sizeof(kSettingsStrip[0])) && kSettingsStrip[k] >= 0; ++k)
+                    if (!settingsTabIsAdvanced(kSettingsStrip[k]) || showAdvancedSettings)
+                    {
+                        anyShown = true;
+                        break;
+                    }
+                if (!anyShown)
                     continue;
                 const char *h = tx(kSettingsStripHeadingText[-ti - 1]);
                 CLAY(CLAY_IDI("SettingsTabHeading", -ti), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
@@ -5126,33 +5155,43 @@ void SatelliteSim::buildSettingsPerformanceTab(const UIInput &inp, UIRenderer &u
 // instead of the old fixed 228px (which could extend past a narrow window).
 // Label column width. Was 110, which the longest labels in use ("Mirror slew rate (deg/s)",
 // "Beam near-field fade (m)" — 24 chars) overflowed at fs(12) even at uiScale 1.0, and which
-// most of the two-word labels overflowed once uiScale went up (fs() scales the FONT; none of
-// these layout constants scale with it). 150 fits every current label on one line at uiScale 1.0.
-// Raising this costs slider width 1:1 via kSliderFixedLeft, but the slider is clamped to
-// kSliderMaxW long before that matters: at the window's 680px minimum the slider still gets
-// 680-315-138 = 227 of its 228 max.
-static constexpr float kSliderLabelW = 150.0f;
+// most of the two-word labels overflowed once uiScale went up. 150 fits every current label on
+// one line at uiScale 1.0; settingsSliderLabelW() scales it with the font from there.
 // Minimum slider-row height. The row is FIT, not FIXED, at this value — a label that still wraps
 // (long label + high uiScale) grows its row instead of spilling over the next one. It was FIXED,
 // which is what made wrapped label text overlap the row below it and run past the bottom of the
 // scroll content.
 static constexpr float kSliderRowMinH = 28.0f;
-static constexpr float kSliderFixedLeft = 140.0f + 1.0f + 14.0f + 4.0f + kSliderLabelW + 6.0f;        // tab strip+divider+pad+label+gap = 315
+// The label column and the tab strip / divider / padding to its left, at uiScale 1.0.
+static constexpr float kSliderLabelW1x = 150.0f;
+static constexpr float kSliderLeft1x = 140.0f + 1.0f + 14.0f + 4.0f; // tab strip + divider + body padding
 static constexpr float kSliderFixedRight = 6.0f + 58.0f + 6.0f + 22.0f + 6.0f + 22.0f + 4.0f + 20.0f; // gap+value+gap+minus+gap+plus+pad = 144
 static constexpr float kSliderMinW = 80.0f;
 static constexpr float kSliderMaxW = 228.0f;
-static float settingsSliderWidth(float chromeW)
+// The label column, scaled with the FONT rather than fixed at 150: fs(12) is 12 px at uiScale 1.0 and 16 at 1.35, so a
+// fixed 150 fitted every label at 1.0 and the 24-character ones ("Mirror slew rate (deg/s)") at no higher scale — the
+// label then ran over the slider track and the value readout, which is the cut/overlapping text this round fixes
+// (2026-10-29). Capped so a narrow window still leaves the slider kSliderMinW.
+static float settingsSliderLabelW(float chromeW, float fontPx12)
 {
-    return glm::clamp(chromeW - kSliderFixedLeft - kSliderFixedRight, kSliderMinW, kSliderMaxW);
+    const float want = kSliderLabelW1x * (fontPx12 / 12.0f);
+    const float room = chromeW - kSliderLeft1x - 6.0f - kSliderFixedRight - kSliderMinW;
+    return std::max(60.0f, std::min(want, room));
+}
+static float settingsSliderLeft(float labelW) { return kSliderLeft1x + labelW + 6.0f; }
+static float settingsSliderWidth(float chromeW, float labelW)
+{
+    return glm::clamp(chromeW - settingsSliderLeft(labelW) - kSliderFixedRight, kSliderMinW, kSliderMaxW);
 }
 
 // ─── buildSettingsPhotometryTab ─────────────────────────────────────────────
 void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui)
 {
     // Layout constants — must match Clay sizing declarations exactly for slider hit-test.
-    // Row: [Label(110)] [Slider(responsive)] [Value(58)] [-(22)] [+(22)]  childGap=6
-    const float kSliderAbsX = settingsChrome.x + kSliderFixedLeft;
-    const float kSliderW = settingsSliderWidth(settingsChrome.w);
+    // Row: [Label(settingsSliderLabelW)] [Slider(responsive)] [Value(58)] [-(22)] [+(22)]  childGap=6
+    const float kLabelW = settingsSliderLabelW(settingsChrome.w, (float)fs(12));
+    const float kSliderAbsX = settingsChrome.x + settingsSliderLeft(kLabelW);
+    const float kSliderW = settingsSliderWidth(settingsChrome.w, kLabelW);
 
     struct PhotoParam
     {
@@ -5275,7 +5314,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
                                             .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                             .layoutDirection = CLAY_LEFT_TO_RIGHT}})
         {
-            CLAY(CLAY_IDI("PhotoLbl", pi), {.layout = {.sizing = {CLAY_SIZING_FIXED(kSliderLabelW), CLAY_SIZING_FIT(0)}}})
+            CLAY(CLAY_IDI("PhotoLbl", pi), {.layout = {.sizing = {CLAY_SIZING_FIXED(kLabelW), CLAY_SIZING_FIT(0)}}})
             {
                 Clay_String lblStr{false, (int32_t)strlen(pp.label), pp.label};
                 CLAY_TEXT(lblStr, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
@@ -5442,6 +5481,8 @@ void SatelliteSim::buildBulkExportRows(const UIInput &inp, UIRenderer &ui)
     const bool running = bulkRunning.load();
     if (running)
         snprintf(bulkProgressBuf, sizeof(bulkProgressBuf), tx(Txt::FmtCancel), 100.0f * bulkProgress.load());
+    // The slider rows' label column, so these rows line up with the tab's sliders (settingsSliderLabelW).
+    const float kLabelW = settingsSliderLabelW(settingsChrome.w, (float)fs(12));
 
     auto label = [&](const char *s, Clay_Color c, float size)
     {
@@ -5462,7 +5503,7 @@ void SatelliteSim::buildBulkExportRows(const UIInput &inp, UIRenderer &ui)
                                            .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                            .layoutDirection = CLAY_LEFT_TO_RIGHT}})
         {
-            CLAY(CLAY_IDI("BulkRowLbl", id), {.layout = {.sizing = {CLAY_SIZING_FIXED(kSliderLabelW), CLAY_SIZING_FIT(0)}}})
+            CLAY(CLAY_IDI("BulkRowLbl", id), {.layout = {.sizing = {CLAY_SIZING_FIXED(kLabelW), CLAY_SIZING_FIT(0)}}})
             {
                 label(name, Pal::volLabel, 12);
             }
@@ -6623,8 +6664,9 @@ bool SatelliteSim::numberField(const UIInput &inp, UIRenderer &ui, Clay_ElementI
 void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, CloudSlider *sliders, int count,
                                         bool marksPreset)
 {
-    const float kSliderAbsX = settingsChrome.x + kSliderFixedLeft;
-    const float kSliderW = settingsSliderWidth(settingsChrome.w);
+    const float kLabelW = settingsSliderLabelW(settingsChrome.w, (float)fs(12));
+    const float kSliderAbsX = settingsChrome.x + settingsSliderLeft(kLabelW);
+    const float kSliderW = settingsSliderWidth(settingsChrome.w, kLabelW);
     // Was [46] — undersized again relative to the live idx range (idx 61/62, "Opacity scale" and
     // "City light blur LOD"), same class of bug as the [33]->[46] fix documented in
     // feedback_cloud_slider_arrays memory: an OOB static-array write that doesn't crash, it just
@@ -6653,7 +6695,7 @@ void SatelliteSim::buildCloudSliderRows(const UIInput &inp, UIRenderer &ui, Clou
                                             .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                             .layoutDirection = CLAY_LEFT_TO_RIGHT}})
         {
-            CLAY(CLAY_IDI("CloudLbl", ci), {.layout = {.sizing = {CLAY_SIZING_FIXED(kSliderLabelW), CLAY_SIZING_FIT(0)}}})
+            CLAY(CLAY_IDI("CloudLbl", ci), {.layout = {.sizing = {CLAY_SIZING_FIXED(kLabelW), CLAY_SIZING_FIT(0)}}})
             {
                 Clay_String lblStr{false, (int32_t)strlen(cs.label), cs.label};
                 CLAY_TEXT(lblStr, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
@@ -7385,6 +7427,160 @@ void SatelliteSim::buildSettingsBeamsTab(const UIInput &inp, UIRenderer &ui)
                 tx(Txt::TipTheReflectOrbitalMirrorsBeamsAs));
 }
 
+// ─── The auroral-oval map ────────────────────────────────────────────────────
+// Settings > Atmosphere draws the oval the sky is actually showing, as a polar dial: magnetic north through the
+// middle, magnetic midnight at the bottom (the equatorward-shifted, bright side), the daylit half shaded, the
+// observer a dot. The band comes from auroraOvalWeightCpu on auroraGpu_ — the CPU mirror of the shader's own band —
+// so the ring on the map and the arc overhead cannot disagree. Rastered on the CPU into a texture the way the
+// Weather window's radar is (weatherRadarEnsureImage), and only when the sky the map draws has moved.
+static constexpr int kAoN = 128;
+static constexpr double kAoMaxColatDeg = 80.0; // the rim: 10 deg magnetic latitude, so the whole oval fits
+
+bool SatelliteSim::auroraMapEnsureImage(UIRenderer &ui)
+{
+    if (aoImg != VK_NULL_HANDLE)
+        return aoUiId != 0;
+    if (!ctx_ || aoImageFailed)
+        return false;
+    VulkanContext &ctx = *ctx_;
+    ctx.createImage(kAoN, kAoN, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, aoImg,
+                    aoImgMem);
+    VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vi.image = aoImg;
+    vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format = VK_FORMAT_R8G8B8A8_SRGB;
+    vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCreateImageView(ctx.device, &vi, nullptr, &aoImgView);
+    VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    si.magFilter = si.minFilter = VK_FILTER_LINEAR; // a smooth band, not the radar's cells
+    si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    vkCreateSampler(ctx.device, &si, nullptr, &aoImgSampler);
+    aoPixels.assign((size_t)kAoN * kAoN * 4, 0);
+    VkCommandBuffer cmd = ctx.beginOneTimeCommands();
+    ctx.imageBarrier(cmd, aoImg, 0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    const VkClearColorValue clear{{0.02f, 0.03f, 0.05f, 1.0f}};
+    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdClearColorImage(cmd, aoImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear, 1, &range);
+    ctx.imageBarrier(cmd, aoImg, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    ctx.endOneTimeCommands(cmd);
+    aoUiId = ui.registerImage(ctx.device, aoImgView, aoImgSampler);
+    if (aoUiId == 0)
+    {
+        aoImageFailed = true;
+        Log::line("auroral oval map: no free UI image slot");
+    }
+    return aoUiId != 0;
+}
+
+void SatelliteSim::auroraMapRefresh()
+{
+    if (aoPixels.empty())
+        return;
+    const double tSw = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const glm::dvec3 se = glm::normalize(glm::dvec3(sunDirECI));
+    const double th = earthRotationAngle(tSw), c = std::cos(th), s = std::sin(th);
+    const glm::dvec3 sunEcef = glm::normalize(glm::dvec3(c * se.x + s * se.y, -s * se.x + c * se.y, se.z));
+    // Only when the dial's own contents moved: the sky turns 0.25 deg a minute and the oval answers Kp, so a still
+    // frame (or a paused sim) re-rastering every frame would be pure waste for a 64 KB upload.
+    if (std::abs(tSw - aoRasterT) < 10.0 && std::abs((double)spaceWeather_.kp - aoRasterKp) < 0.02 &&
+        glm::dot(sunEcef, aoRasterSun) > 0.99999)
+        return;
+    aoRasterT = tSw;
+    aoRasterKp = spaceWeather_.kp;
+    aoRasterSun = sunEcef;
+    const glm::dvec3 ax = glm::normalize(geomagPoleEcef());
+    const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
+    // The observer's own pole: a dot on a northern-only dial would fall off the map for half the planet.
+    const bool south = glm::dot(up, ax) < 0.0;
+    auroraMapSouth_ = south;
+    const glm::dvec3 pole = south ? -ax : ax;
+    const glm::dvec3 mid = glm::normalize(glm::dvec3(auroraGpu_.midnight)); // toward magnetic midnight
+    const glm::dvec3 east = glm::cross(ax, mid);                           // toward magnetic dawn (06 MLT)
+    const double colatRim = glm::radians(kAoMaxColatDeg);
+    // The observer: its magnetic colatitude and MLT place the dot, with the same convention the pixels use.
+    const double obsColat = std::acos(std::clamp(glm::dot(up, pole), -1.0, 1.0));
+    const double obsPsi = std::atan2(glm::dot(up, east), glm::dot(up, mid));
+    const double obsR = obsColat / colatRim * 0.5 * kAoN;
+    const double obsX = 0.5 * kAoN + obsR * std::sin(obsPsi), obsY = 0.5 * kAoN + obsR * std::cos(obsPsi);
+    uint8_t *px = aoPixels.data();
+    for (int j = 0; j < kAoN; ++j)
+        for (int i = 0; i < kAoN; ++i)
+        {
+            const double dx = ((i + 0.5) / kAoN) * 2.0 - 1.0, dy = ((j + 0.5) / kAoN) * 2.0 - 1.0;
+            const double r = std::hypot(dx, dy);
+            glm::vec3 col(8.0f, 11.0f, 16.0f); // outside the dial: the panel's own background
+            if (r <= 1.0)
+            {
+                // Midnight at the bottom (dx 0, dy 1 -> psi 0), dawn to the right, noon at the top.
+                const double colat = r * colatRim, psi = std::atan2(dx, dy);
+                const glm::dvec3 d =
+                    glm::normalize(pole * std::cos(colat) + (mid * std::cos(psi) + east * std::sin(psi)) * std::sin(colat));
+                col = glm::vec3(14.0f, 19.0f, 28.0f);
+                // The daylit half, so the night side (the only side the oval is visible from) reads as night.
+                const double sunAlt = glm::degrees(std::asin(std::clamp(glm::dot(d, sunEcef), -1.0, 1.0)));
+                if (sunAlt > 0.0)
+                    col = glm::mix(col, glm::vec3(96.0f, 116.0f, 132.0f), (float)std::clamp(sunAlt / 45.0, 0.0, 1.0) * 0.7f);
+                // Magnetic-latitude rings every 20 deg of colatitude (70 / 50 / 30 deg MLAT).
+                const double colatDeg = glm::degrees(colat);
+                if (colatDeg > 2.0 && std::abs(colatDeg - std::round(colatDeg / 20.0) * 20.0) < 0.5)
+                    col = glm::mix(col, glm::vec3(120.0f, 135.0f, 150.0f), 0.18f);
+                // The band, in the shader's own units (auroraOvalWeightCpu: 0 quiet .. ~2 storm overhead).
+                const float w = auroraOvalWeightCpu(auroraGpu_, d);
+                if (w > 0.004f)
+                {
+                    col = glm::mix(col, glm::vec3(46.0f, 255.0f, 148.0f), std::clamp(w / 1.2f, 0.0f, 1.0f));
+                    if (w > 0.75f)
+                        col = glm::mix(col, glm::vec3(224.0f, 255.0f, 236.0f), std::clamp((w - 0.75f) / 1.2f, 0.0f, 0.55f));
+                }
+                if (std::hypot(i + 0.5 - obsX, j + 0.5 - obsY) < 2.2)
+                    col = glm::vec3(255.0f, 212.0f, 120.0f); // the observer
+                if (r > 0.985)
+                    col = glm::mix(col, glm::vec3(150.0f, 165.0f, 180.0f), 0.5f); // the dial's rim
+            }
+            uint8_t *o = &px[((size_t)j * kAoN + i) * 4];
+            o[0] = (uint8_t)std::clamp((int)std::lround(col.r), 0, 255);
+            o[1] = (uint8_t)std::clamp((int)std::lround(col.g), 0, 255);
+            o[2] = (uint8_t)std::clamp((int)std::lround(col.b), 0, 255);
+            o[3] = 255;
+        }
+    aoUploadPending = true;
+}
+
+void SatelliteSim::auroraMapRecordUpload(VkCommandBuffer cmd)
+{
+    if (!aoUploadPending || aoImg == VK_NULL_HANDLE || !ctx_ || aoPixels.empty())
+        return;
+    aoUploadPending = false;
+    VulkanContext &ctx = *ctx_;
+    ctx.imageBarrier(cmd, aoImg, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    const VkDeviceSize bytes = (VkDeviceSize)kAoN * kAoN * 4;
+    const VulkanContext::StagingAlloc st = ctx.stagingAlloc(bytes);
+    std::memcpy(st.ptr, aoPixels.data(), (size_t)bytes);
+    VkBufferImageCopy region{};
+    region.bufferOffset = st.off;
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {(uint32_t)kAoN, (uint32_t)kAoN, 1};
+    vkCmdCopyBufferToImage(cmd, st.buf, aoImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    ctx.imageBarrier(cmd, aoImg, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+}
+
+void SatelliteSim::auroraMapDestroy(VkDevice device)
+{
+    if (aoImgSampler) vkDestroySampler(device, aoImgSampler, nullptr);
+    if (aoImgView) vkDestroyImageView(device, aoImgView, nullptr);
+    if (aoImg) vkDestroyImage(device, aoImg, nullptr);
+    if (aoImgMem) vkFreeMemory(device, aoImgMem, nullptr);
+    aoImgSampler = VK_NULL_HANDLE;
+    aoImgView = VK_NULL_HANDLE;
+    aoImg = VK_NULL_HANDLE;
+    aoImgMem = VK_NULL_HANDLE;
+    std::vector<uint8_t>().swap(aoPixels);
+}
+
 // ─── buildSettingsAuroraTab ──────────────────────────────────────────────────
 // Airglow + aurora share this tab — both are emissive nightglow phenomena tuned together.
 void SatelliteSim::buildSettingsAuroraTab(const UIInput &inp, UIRenderer &ui)
@@ -7476,6 +7672,35 @@ void SatelliteSim::buildSettingsAuroraTab(const UIInput &inp, UIRenderer &ui)
         const AuroraOvalBounds b = auroraOvalBounds(w.kp);
         uiKV("AuroraNowKV", 3, tx(Txt::LblOvalAtMidnight),
              uiKitStr(tx(Txt::FmtDegMagneticLatitude), 90.0 - b.eqMid, 90.0 - b.polMid), lw);
+        // The oval as a map (2026-10-29): the band the sky is drawing, midnight at the bottom. Its own row, centred,
+        // so it reads as a picture beside the numbers rather than as another labelled row.
+        if (auroraMapEnsureImage(ui))
+        {
+            auroraMapRefresh();
+            aoImgEl.imageId = aoUiId;
+            const float dial = std::clamp(settingsChrome.w - 230.0f, 150.0f, 280.0f);
+            CLAY(CLAY_ID("AoMapRow"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                 .childAlignment = {.x = CLAY_ALIGN_X_CENTER},
+                                                 .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+            {
+                CLAY(CLAY_ID("AoMapBack"), {.layout = {.sizing = {CLAY_SIZING_FIXED(dial), CLAY_SIZING_FIXED(dial)}},
+                                            .backgroundColor = Pal::insetBg,
+                                            .cornerRadius = CLAY_CORNER_RADIUS(4)})
+                {
+                    const Clay_ElementId mid = CLAY_ID("AoMapImg");
+                    const bool hovMap = Clay_PointerOver(mid);
+                    CLAY(mid, {.layout = {.sizing = {CLAY_SIZING_FIXED(dial), CLAY_SIZING_FIXED(dial)}},
+                               .custom = {.customData = &aoImgEl}}) {}
+                    ui.tooltip(inp, hovMap, tx(Txt::TipAuroraMap), fs(11));
+                }
+            }
+            CLAY(CLAY_ID("AoMapCaption"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                      .childAlignment = {.x = CLAY_ALIGN_X_CENTER}}})
+            {
+                CLAY_TEXT(kitStr(tx(auroraMapSouth_ ? Txt::NoteAuroraMapCaptionSouth : Txt::NoteAuroraMapCaption)),
+                          CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_WORDS}));
+            }
+        }
     }
     buildCloudSliderSections(inp, ui, sections, (int)(sizeof(sections) / sizeof(sections[0])), 24);
 }

@@ -590,6 +590,17 @@ void SatelliteSim::bookmarksDestroy(VkDevice device)
 // ─── The window ──────────────────────────────────────────────────────────────
 // A name field and Add at the top, then the bookmarks as a grid of cards: the thumbnail (click: go there), the
 // name (click to rename), when and where, and Go / Update / Delete (Delete asks once more).
+// The Bookmarks window's inner widths, worked out from the chrome instead of from last frame's laid-out box
+// (2026-10-29). The column count has to be known while a row is being declared — Clay has no wrapping rows —
+// and a box read one frame behind is what made a drag-resize lay out more columns than fit on the way in (and
+// one fewer on the way out), so the grid jumped. Same shape as settingsSliderWidth(): the body's 12 px padding
+// each side, the window's 1 px border, then BmList's 8 px scrollbar gutter.
+static constexpr float kBmCardMinW = 176.0f; // narrowest card that still shows a 16:9 thumb and its buttons
+static constexpr float kBmCardGap = 8.0f;
+static constexpr int kBmMaxCols = 4;        // past four the cards get small enough to be unreadable
+static float bookmarksBodyWidth(float chromeW) { return std::max(200.0f, chromeW - 26.0f); }
+static float bookmarksListWidth(float chromeW) { return std::max(160.0f, bookmarksBodyWidth(chromeW) - 8.0f); }
+
 void SatelliteSim::buildBookmarksWindow(const UIInput &inp, UIRenderer &ui)
 {
     if (!bmChrome.open)
@@ -620,16 +631,25 @@ void SatelliteSim::buildBookmarksWindow(const UIInput &inp, UIRenderer &ui)
                                                 .layoutDirection = CLAY_TOP_TO_BOTTOM}})
             {
                 // ── Add the current view ───────────────────────────────────────────────────────────────
-                CLAY(CLAY_ID("BmAddRow"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                                      .childGap = 6,
-                                                      .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                                      .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                // One row where the window is wide enough, two where it is not (2026-10-29): the name field, Add
+                // and Restore defaults need ~500 px between them and this Clay build has no flex wrap, so a narrow
+                // window simply ran the last button past the body's edge. The widths come from the chrome
+                // (bookmarksBodyWidth), so the choice is right on the first frame and while dragging.
+                const float addBodyW = bookmarksBodyWidth(bmChrome.w);
+                const bool addTwoRows = addBodyW < 520.0f;
+                auto nameField = [&]()
                 {
                     text(tx(Txt::NoteName), Pal::textDim, 11);
                     const std::string placeholder = tx(Txt::ValBookmark) + std::to_string(bookmarks_.size() + 1);
                     std::string nm = bmNewName_.empty() ? placeholder : bmNewName_;
-                    if (textField(inp, ui, CLAY_ID("BmNewName"), nm, (float)fs(11) * 14.0f, 12, tx(Txt::TxtTheNewBookmarksName)))
+                    // Two rows: the field takes what the label leaves (a fixed 154 px field plus a full-width
+                    // button row is what overflowed). One row: the field keeps its room and the buttons follow.
+                    const float nmW = addTwoRows ? std::max(90.0f, addBodyW - 44.0f) : (float)fs(11) * 14.0f;
+                    if (textField(inp, ui, CLAY_ID("BmNewName"), nm, nmW, 12, tx(Txt::TxtTheNewBookmarksName)))
                         bmNewName_ = nm == placeholder ? std::string() : nm;
+                };
+                auto addButtons = [&]()
+                {
                     if (uiButton(inp, ui, "BmAdd", 0, tx(Txt::BtnAddCurrentView), tx(Txt::TipSaveThisPlaceCameraAndMoment),
                                  false, (int)bookmarks_.size() < kBmMax))
                         add = true;
@@ -637,6 +657,30 @@ void SatelliteSim::buildBookmarksWindow(const UIInput &inp, UIRenderer &ui)
                                  tx(Txt::TipAddBackAnyOfTheBookmarks), false,
                                  (int)bookmarks_.size() < kBmMax))
                         restore = true;
+                };
+                CLAY(CLAY_ID("BmAddRow"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                      .childGap = 6,
+                                                      .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+                {
+                    CLAY(CLAY_ID("BmAddNameRow"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                              .childGap = 6,
+                                                              .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                              .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                    {
+                        nameField();
+                        if (!addTwoRows)
+                            addButtons();
+                    }
+                    if (addTwoRows)
+                    {
+                        CLAY(CLAY_ID("BmAddBtnRow"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                                 .childGap = 6,
+                                                                 .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                                 .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                        {
+                            addButtons();
+                        }
+                    }
                 }
                 if (!bmStatus_.empty())
                     text(bmStatus_.c_str(), {230, 190, 120, 255}, 11);
@@ -651,17 +695,16 @@ void SatelliteSim::buildBookmarksWindow(const UIInput &inp, UIRenderer &ui)
                     if (bookmarks_.empty())
                         text(tx(Txt::NoteNoBookmarksYet), Pal::textDim, 12);
                     // Columns from the list's width in the last layout (Clay has no wrapping rows).
-                    const Clay_ElementData ld = Clay_GetElementData(CLAY_ID("BmList"));
-                    const float listW = std::max(200.0f, (ld.found ? ld.boundingBox.width : bmChrome.w - 24.0f) - 8.0f);
-                    const float gap = 8.0f, want = (float)fs(11) * 16.0f;
-                    const int cols = std::max(1, (int)((listW + gap) / (want + gap)));
-                    const float cardW = std::floor((listW - gap * (cols - 1)) / cols);
+                    // Columns from the window's chrome (bookmarksListWidth), not from last frame's box.
+                    const float listW = bookmarksListWidth(bmChrome.w);
+                    const int cols = std::clamp((int)((listW + kBmCardGap) / (kBmCardMinW + kBmCardGap)), 1, kBmMaxCols);
+                    const float cardW = std::floor((listW - kBmCardGap * (cols - 1)) / cols);
                     const float imgW = cardW - 12.0f, imgH = std::floor(imgW * kBmThumbH / (float)kBmThumbW);
                     const bool thumbs = bmAtlasUiId != 0;
                     for (int r0 = 0; r0 < (int)bookmarks_.size(); r0 += cols)
                     {
                         CLAY(CLAY_IDI("BmRow", r0), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                                                .childGap = (uint16_t)gap,
+                                                                .childGap = (uint16_t)kBmCardGap,
                                                                 .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                         {
                             for (int i = r0; i < r0 + cols && i < (int)bookmarks_.size(); ++i)
@@ -701,18 +744,26 @@ void SatelliteSim::buildBookmarksWindow(const UIInput &inp, UIRenderer &ui)
                                         renamed = i;
                                     text(b.meta[0], Pal::volValue, 11);
                                     text(b.meta[1], Pal::textDim, 11);
-                                    CLAY(CLAY_IDI("BmBtns", i), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                                                            .childGap = 4,
-                                                                            .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                                    // Go / Update / Delete share one row while the card is wide enough for three
+                                    // grown buttons; below that they take two rows (Go + Update, then Delete across
+                                    // the card) — three in a 176 px card clipped the labels (2026-10-29).
+                                    const bool footStack = cardW < 210.0f;
+                                    const char *goWhy = tierNeedReason(defaultBookmarkNeeds(b.id));
+                                    auto goBtn = [&]()
                                     {
-                                        const char *goWhy = tierNeedReason(defaultBookmarkNeeds(b.id));
                                         if (uiButton(inp, ui, "BmGo", i, tx(Txt::BtnGo), goWhy ? goWhy : tx(Txt::TipGoToThisPlaceAndMoment), false,
                                                      goWhy == nullptr, true))
                                             goIdx = i;
+                                    };
+                                    auto updBtn = [&]()
+                                    {
                                         if (uiButton(inp, ui, "BmUpdate", i, tx(Txt::BtnUpdate), tx(Txt::TipReplaceItWithTheCurrentView),
                                                      false, true, true))
                                             updIdx = i;
-                                        const bool armed = bmDeleteArmed_ == b.id;
+                                    };
+                                    const bool armed = bmDeleteArmed_ == b.id;
+                                    auto delBtn = [&]()
+                                    {
                                         if (uiButton(inp, ui, "BmDelete", i, armed ? tx(Txt::BtnConfirm) : tx(Txt::BtnDelete),
                                                      armed ? tx(Txt::TipClickAgainToDeleteIt) : tx(Txt::TipDeleteAsksOnceMore), armed, true, true))
                                         {
@@ -720,6 +771,28 @@ void SatelliteSim::buildBookmarksWindow(const UIInput &inp, UIRenderer &ui)
                                                 delIdx = i;
                                             else
                                                 bmDeleteArmed_ = b.id;
+                                        }
+                                    };
+                                    CLAY(CLAY_IDI("BmBtns", i), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                                            .childGap = 4,
+                                                                            .layoutDirection = footStack ? CLAY_TOP_TO_BOTTOM : CLAY_LEFT_TO_RIGHT}})
+                                    {
+                                        if (footStack)
+                                        {
+                                            CLAY(CLAY_IDI("BmBtnsPair", i), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                                                       .childGap = 4,
+                                                                                       .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                                            {
+                                                goBtn();
+                                                updBtn();
+                                            }
+                                            delBtn();
+                                        }
+                                        else
+                                        {
+                                            goBtn();
+                                            updBtn();
+                                            delBtn();
                                         }
                                     }
                                 }
