@@ -1,0 +1,79 @@
+# Settings reorganisation check (2026-10-30, issue 20261029_205641): every tab, the folds the move created, the search.
+window 1920x1009
+ui reset all
+ui open settings tab=Sky
+wait 5
+capture sky_closed ui=on
+ui click SkySec:327686
+ui click SkySec:327687
+ui click SkySec:327688
+wait 3
+ui dump sky_a
+capture sky_open ui=on
+ui open settings tab=Photometry
+wait 3
+capture photo_closed ui=on
+ui click PhotoSec:327710
+ui click PhotoSec:327690
+wait 3
+capture photo_open ui=on
+ui open settings tab=Terrain
+wait 3
+ui click TerrSec:327680
+ui click TerrSec:327681
+wait 3
+capture terrain_open ui=on
+ui open settings tab=Ocean
+wait 3
+capture ocean_alias ui=on
+ui open settings tab=Weather
+wait 3
+capture weather ui=on
+ui open settings tab=Clouds
+wait 3
+capture clouds ui=on
+ui open settings tab=Atmosphere
+wait 3
+capture atmosphere_alias ui=on
+ui open settings tab=Display
+wait 3
+capture display ui=on
+ui open settings tab=Constellations
+wait 3
+capture constellations ui=on
+ui open settings tab=Launches
+wait 3
+capture launches ui=on
+ui open settings tab=Sound
+wait 3
+capture sound ui=on
+ui open settings tab=Controls
+wait 3
+capture controls ui=on
+ui open settings tab=Performance
+wait 3
+capture performance ui=on
+ui click SettingsSearch
+ui type milky
+wait 3
+capture search_milky ui=on
+ui click SettingsSearchClear:0
+ui click SettingsSearch
+ui type night lights
+wait 3
+capture search_night ui=on
+ui click SettingsSearchClear:0
+ui click SettingsSearch
+ui type froxel
+wait 3
+capture search_froxel ui=on
+ui click SettingsSearchClear:0
+ui click SettingsSearch
+ui type beam
+wait 3
+capture search_beam ui=on
+ui click SettingsSearchClear:0
+ui click SettingsSearch
+ui type aurora
+wait 3
+capture search_aurora ui=on

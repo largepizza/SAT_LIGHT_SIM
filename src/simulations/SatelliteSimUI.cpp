@@ -5075,8 +5075,9 @@ void SatelliteSim::buildSettingsPerformanceTab(const UIInput &inp, UIRenderer &u
     // "Beam cloud block (retired)" always reads ~0: beam_self_march.comp's cost folds into "Orbit compute".
     uiSection("PerfSec", 0, tx(Txt::SecGpuFrameMs));
     static const char *kPerfLabels[8] = {
-        tx(Txt::OptSceneDepth), tx(Txt::OptBeamCloudBlockRetired), tx(Txt::OptOrbitCompute), tx(Txt::OptCloudMarch), tx(Txt::OptFlareCompute), tx(Txt::OptSkyBackgroundDraw), tx(Txt::OptSatelliteStarDraw), tx(Txt::OptUiOverlay)};
+        tx(Txt::OptSceneDepth), "", tx(Txt::OptOrbitCompute), tx(Txt::OptCloudMarch), tx(Txt::OptFlareCompute), tx(Txt::OptSkyBackgroundDraw), tx(Txt::OptSatelliteStarDraw), tx(Txt::OptUiOverlay)};
     for (int pi = 0; pi < 8; ++pi)
+        if (pi != 1) // slot 1 (the retired beam cloud block) always reads 0: no row
         uiKV("PerfGpuKV", pi, kPerfLabels[pi], uiKitStr("%.2f", gpuMsSmoothed[pi]), lw);
     uiKV("PerfGpuKV", 8, tx(Txt::LblTotal), uiKitStr("%.2f", gpuMsTotalSmoothed), lw, &Pal::textPrimary);
 
