@@ -3487,6 +3487,7 @@ clamped on screen each frame. Persisted: `hud.movement_panel` / `hud.view_panel`
   against `inertialLastObsDir` / `inertialLastHeight`), and with the hold on WASD fly in the camera's own frame
   (`inertialFly`: forward = the view direction, sideways = the screen's right, the usual height-scaled speed, radius
   clamped to the ground).
+- **Cinematic mode tweaks (2026-10-29, issue 20261029_213225):** latched mode drops mouse motion while the cursor is over the UI, a text field is focused or LMB is down (it swung the camera while navigating windows); the look no longer decays (no drag); the wheel zoom is a pending log-FOV (`cineScrollZoom`) eased out over ~0.35 s.
 - Harness: `inertial move [fwd= right= up=]` holds movement input through the real WASD / Q-E code (until the next
   `inertial move`); `tools/harness/scripts/hud_popups.satcmd` (the report's view, Q/E and WASD in the Stars frame, then every
   popup row through `ui click`: `HudFrame:<327680|327681>`, `HudCinematic:0`, `HudGauge:<327680|327681>`,
@@ -5949,6 +5950,7 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   recorded. A catastrophic breakup of a formation member damages each cluster neighbour (p 0.6, `damageCluster`:
   the cloud sweeps the ring within minutes, slowly, so they die and tumble). A cratering hit kills a satellite
   with p 1/2.
+- **Collisions keep momentum (2026-10-29, kCacheVersion 18, prebake rebuilt):** a catastrophic pair collision's fragments move 0.8 of the way from their parent's velocity to the pair's centre-of-mass velocity (`planFragments`), plus the ejecta kick.
 - **Pool records** (`kessler::PoolRec`, 64-B `GpuKepOrbit` in kesslerBuf from `poolWord0`, satellite indices
   from `activeSatCount` on; appended to the CPU's `satOrbits` with `poolSlot`, so every index-based path works).
   Keplerian with **relative J2**: a child keeps its parent's rates plus the J2 DIFFERENCE between them
