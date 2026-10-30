@@ -60,8 +60,34 @@ void SatelliteSim::inertialStart(bool hold)
     inertialViewEci = ecefToEci(inertialCamDirEcef(), th);
     inertialLastTheta = th;
     inertialLastObsDir = obsDir;
+    inertialLastHeight = obsHeightOffset;
     inertialLastAz = camera.azDeg;
     inertialLastEl = camera.elDeg;
+}
+
+// WASD while the eye is HELD in ECI (an orbit-height eye in the Stars frame). The ground-style move (a step along the
+// facing tangent, `obsFacing`, on the Earth-fixed sphere) is the wrong motion there, and was the issue 20261029_180413
+// "singularity": the facing is the view's azimuth, which at a nadir view (el -88.8 in the report) is degenerate and
+// swings with every degree of look, and a step along it at constant radius is an orbit about the Earth's centre while
+// the view stays on the stars. Here the eye flies in the camera's own frame: forward along the view direction (toward
+// what you see: the Earth if you look down), sideways along the screen's right, at the usual height-scaled speed.
+void SatelliteSim::inertialFly(float fwd, float right, float speedRadPerS, float dt)
+{
+    const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
+    glm::dvec3 E, N;
+    enuBasis(up, E, N);
+    const double az = glm::radians((double)camera.azDeg);
+    const glm::dvec3 f = inertialCamDirEcef();
+    const glm::dvec3 r = std::cos(az) * E - std::sin(az) * N; // the screen's right (horizontal), defined at any elevation
+    const double R = satphot::kEarthRadiusM + (double)obsHeightOffset;
+    const glm::dvec3 np = up * R + (f * (double)fwd + r * (double)right) * ((double)speedRadPerS * R * (double)dt);
+    const double nr = std::clamp(glm::length(np), satphot::kEarthRadiusM + std::max(0.0, (double)obsTerrainH) + 2.0,
+                                 satphot::kEarthRadiusM + (double)kMaxObsHeightM);
+    const glm::dvec3 nu = glm::normalize(np);
+    obsDir = glm::vec3(nu);
+    obsHeightOffset = (float)(nr - satphot::kEarthRadiusM);
+    obsLatDeg = glm::degrees(std::asin(glm::clamp(obsDir.z, -1.0f, 1.0f)));
+    obsLonDeg = glm::degrees(std::atan2(obsDir.y, obsDir.x));
 }
 
 void SatelliteSim::inertialStop() { inertialActive = false; }
@@ -77,7 +103,10 @@ void SatelliteSim::inertialTick()
     }
     const double th0 = inertialLastTheta;
     // what the player changed since the last frame (in the previous frame's ECI)
-    if (glm::length(obsDir - inertialLastObsDir) > 1e-7f)
+    // Both the direction AND the height: Q / E, the altitude field and its scroll change only obsHeightOffset, and a hold
+    // that adopted only obsDir overwrote it with the held eye every frame (issue 20261029_180413: "can't change altitude").
+    // Nothing else writes either between ticks, so an exact compare is safe (and keeps moves under 1e-7).
+    if (obsDir != inertialLastObsDir || obsHeightOffset != inertialLastHeight)
         inertialEyeEci = ecefToEci(glm::normalize(glm::dvec3(obsDir)) * (satphot::kEarthRadiusM + (double)obsHeightOffset), th0);
     if (std::abs(std::remainder(camera.azDeg - inertialLastAz, 360.0f)) > 0.01f || std::abs(camera.elDeg - inertialLastEl) > 0.01f)
         inertialViewEci = ecefToEci(inertialCamDirEcef(), th0);
@@ -101,6 +130,7 @@ void SatelliteSim::inertialTick()
     aimCameraAzEl(az, el);
     inertialLastTheta = th;
     inertialLastObsDir = obsDir;
+    inertialLastHeight = obsHeightOffset;
     inertialLastAz = camera.azDeg;
     inertialLastEl = camera.elDeg;
 }
@@ -153,6 +183,7 @@ harness::Status SatelliteSim::harnessInertial(harness::Active &a)
         // apply at once (the script's next capture sees it): set the camera from the stored ECI state
         inertialTickApplyNow_ = false;
         inertialLastObsDir = obsDir;
+        inertialLastHeight = obsHeightOffset;
         inertialLastAz = camera.azDeg;
         inertialLastEl = camera.elDeg;
         inertialLastTheta = earthRotationAngle(t);

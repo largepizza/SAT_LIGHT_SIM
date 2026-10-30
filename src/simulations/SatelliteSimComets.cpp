@@ -802,7 +802,7 @@ void SatelliteSim::cometsRecordDraw(VkCommandBuffer cmd, VulkanContext &ctx, con
     const float limbZ = obsR > (float)satphot::kEarthRadiusM + 1.0f
                             ? -std::sqrt(std::max(0.0f, 1.0f - ((float)satphot::kEarthRadiusM / obsR) * ((float)satphot::kEarthRadiusM / obsR)))
                             : 0.0f;
-    const bool occ = inertialActive && inertialOcculter; // (the inertial lock's occulter: no Sun, no glare)
+    const bool occ = inertialOcculter; // (the inertial lock's occulter: no Sun, no glare)
     pc.misc = glm::vec4(cometTailGainDisplay, ppc.manualTerrainTest, (sunDirENU.w > limbZ && !occ) ? 1.0f : 0.0f,
                         occ ? 1.0f : glm::mix(skyGlareEased, 1.0f, cometAtmFrac));
     pc.screen = glm::vec4((float)ctx.swapExtent.width, (float)ctx.swapExtent.height, 1.0f, 0.0f);

@@ -1782,7 +1782,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         bool sunOccludedByEarth = sunDirENU.w < limbZCpu;
 
         float glareTarget = (sunOnScreen && !sunOccludedByEarth) ? 0.0f : (sunlit ? sunlitBgVisibility : 1.0f);
-        if (inertialActive && inertialOcculter) glareTarget = 1.0f; // the occulter hides the Sun: no glare
+        if (inertialOcculter) glareTarget = 1.0f; // the occulter hides the Sun: no glare
 
         // Asymmetric hysteresis: glare hits fast (sensor/eyes overwhelmed almost immediately),
         // recovery is slow (night-vision-style readaptation) — avoids an instant on/off pop
@@ -2665,7 +2665,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                 std::memcpy(&v, (const char *)cv2FlashMapped + 12, 4);
                 if (std::isfinite(v)) target = std::clamp(v, 0.0f, 1.0f);
             }
-            if (inertialActive && inertialOcculter) target = 0.0f; // the inertial lock's occulter (a coronagraph)
+            if (inertialOcculter) target = 0.0f; // the inertial lock's occulter (a coronagraph)
             sunCloudTEased += (target - sunCloudTEased) * (1.0f - std::exp(-std::max(dt, 0.0f) / 0.15f));
         }
         cp.sunCloudT = sunCloudTEased;
@@ -4924,7 +4924,7 @@ float SatelliteSim::skyExposure() const
     if (moonEclipseSolarPossible)
         dayness *= glm::clamp(moonEclipseSkyObs, 0.0f, 1.0f);
     // The inertial lock's occulter from space: the Sun hidden, the camera adapts to the dark sky (the stars show).
-    if (inertialActive && inertialOcculter && glm::length(obsECI) > kEarthRadius + 100000.0f)
+    if (inertialOcculter && glm::length(obsECI) > kEarthRadius + 100000.0f)
         dayness = 0.0f;
     return glm::mix(10.0f, 1.8f, powf(dayness, 0.4f)) * exp2f(globalExposureEV());
 }

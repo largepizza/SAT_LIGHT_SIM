@@ -8297,6 +8297,31 @@ private:
     bool altModeSeaLevel = true;                // true = MSL (sea level), false = AGL (above terrain)
     UnitSystem unitSystem = UnitSystem::Metric; // Display tab setting; affects altitude readout
 
+    // ── Right HUD: the Movement and View popups (2026-10-29, SatelliteSimHudPopups.cpp; CLAUDE.md "HUD popups") ──
+    // Two small rounded panels opened from buttons where the MSL / AGL toggle was. Unpinned: anchored over the button,
+    // closed by any click in the sim; pinned: stays, draggable by its title, shown with a pin button top right.
+    struct HudPopup
+    {
+        bool open = false, pinned = false;
+        float x = -1.0f, y = -1.0f;   // pinned: top-left in px (-1 = place it at the button when pinned)
+        bool dragging = false;
+        float grabX = 0.0f, grabY = 0.0f;
+    };
+    HudPopup hudMove, hudView;
+    bool hovHudMoveBtn = false, hovHudViewBtn = false, hovHudPin[2] = {false, false};
+    bool hudSliderDrag_ = false;
+    void buildHudPopup(const UIInput &inp, UIRenderer &ui, int which); // 0 Movement, 1 View
+    void hudPopupsTick(const UIInput &inp, UIRenderer &ui);            // buildUI: unpinned ones close on a click in the sim
+    bool precipParticles = true;       // clouds_v2.precipitation: draw the rain / snow particles round the eye
+    // Cinematic mode, latched (Movement popup / Settings > Controls): the Alt pan-drift on for good, plus gradual
+    // acceleration of movement and zoom (settings controls.cinematic_mode).
+    bool cinematicLatched = false;
+    float cineSmFwd = 0.0f, cineSmRight = 0.0f, cineSmVert = 0.0f, cineSmZoom = 0.0f; // eased input, -1..1
+    // The inertial lock's occulter ("Coronagraph"): the Sun's disc / glare / bloom hidden, locked or not
+    // (view.coronagraph; = inertialOcculter below).
+    void inertialFly(float fwd, float right, float speedRadPerS, float dt); // WASD with the eye held in ECI
+    float inertialLastHeight = 0.0f;
+
     // ── NEW-7: frame limiter ────────────────────────────────────────────────
     FpsCapMode fpsCapMode = FpsCapMode::VSync;  // Display tab setting; see FpsCapMode comment
     bool fpsCapSwapchainRebuildPending = false; // set true when fpsCapMode changes; see

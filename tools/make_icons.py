@@ -264,6 +264,27 @@ def build_missions():
     return [cut(lambda px, py: body(px, py) or nose(px, py), window), fin_l, fin_r, flame]
 
 
+def build_movement():
+    """Movement: four solid arrowheads (up, right, down, left) round a centre dot - the right HUD panel's
+    Movement popup: reference frame, cinematic mode, altitude gauge (2026-10-29)."""
+    c = 24.0
+    return [tri((c - 6.0, 13.0), (c + 6.0, 13.0), (c, 3.0)), tri((c - 6.0, 35.0), (c + 6.0, 35.0), (c, 45.0)),
+            tri((13.0, c - 6.0), (13.0, c + 6.0), (3.0, c)), tri((35.0, c - 6.0), (35.0, c + 6.0), (45.0, c)),
+            disc(c, c, 4.5)]
+
+
+def build_view():
+    """View: a viewfinder - four corner brackets round a solid lens - the right HUD panel's View popup:
+    exposure, coronagraph, precipitation (2026-10-29)."""
+    b = []
+    for (sx, sy) in ((1, 1), (-1, 1), (1, -1), (-1, -1)):
+        x0 = 4.0 if sx > 0 else 44.0
+        y0 = 6.0 if sy > 0 else 42.0
+        b.append(rect(min(x0, x0 + sx * 12.0), min(y0, y0 + sy * 4.0), max(x0, x0 + sx * 12.0), max(y0, y0 + sy * 4.0)))
+        b.append(rect(min(x0, x0 + sx * 4.0), min(y0, y0 + sy * 12.0), max(x0, x0 + sx * 4.0), max(y0, y0 + sy * 12.0)))
+    return b + [cut(disc(24.0, 24.0, 9.0), disc(24.0, 24.0, 3.5))]
+
+
 def build_weather():
     """Weather: a solid storm cloud (three puffs on a flat base), a lightning bolt under it and two rain streaks
     beside the bolt — the Weather window: the radar, the storms (2026-10-23)."""
@@ -451,6 +472,8 @@ ICONS = {
     "storm-fire": build_storm_fire,
     "storm-cell": build_storm_cell,
     "weather": build_weather,
+    "movement": build_movement,
+    "view": build_view,
     "missions": build_missions,
     "report": build_report,
     "bookmark": build_bookmark,
@@ -477,7 +500,7 @@ ICONS = {
 # the look of the gear, the camera, play / pause, the crosshair and the eye. Soft-edged thin strokes
 # beside them read as another icon family (the user, 2026-10-03).
 PIXEL_STYLE = {"storm-tornado", "storm-hurricane", "storm-haboob", "storm-supercell", "storm-squall",
-               "storm-waterspout", "storm-fire", "storm-cell", "weather", "missions", "report", "bookmark", "film", "photo", "record", "maximize", "observer", "spin", "studio",
+               "storm-waterspout", "storm-fire", "storm-cell", "weather", "movement", "view", "missions", "report", "bookmark", "film", "photo", "record", "maximize", "observer", "spin", "studio",
                "sky-events", "sky-solar", "sky-lunar", "sky-conjunction", "sky-occultation", "sky-moonglint", "sky-meteors", "sky-comet", "sky-supernova"}
 
 
