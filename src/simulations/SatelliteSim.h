@@ -8224,9 +8224,27 @@ private:
     // Mouse adds force to velocity instead of directly rotating; velocity coasts and decays.
     // Mode is cleared automatically when RMB is released.
     bool cinematicMode = false;     // toggle state
-    float cinematicYawVel = 0.0f;   // pixels-equivalent/s driving Rodrigues yaw
-    float cinematicPitchVel = 0.0f; // pixels-equivalent/s driving elDeg pitch
+    float cinematicYawVel = 0.0f;   // mouse pixels per second driving Rodrigues yaw (x lookSens() = deg/s)
+    float cinematicPitchVel = 0.0f; // mouse pixels per second driving elDeg pitch
     bool cinematicActive = false;   // true last frame — used to detect transition-out
+    // Look input around a capture change (2026-10-30, issue 20261030_142354): GLFW moves the cursor when RMB capture
+    // starts / ends (on release it restores the press position, i.e. a delta of minus the whole drag), and that
+    // delta lands in the next frame's dmx. It is discarded for kLookSkipFrames frames after the look button's state
+    // or cinematic mode changes.
+    static constexpr int kLookSkipFrames = 2;
+    static constexpr float kCineLookTauS = 0.12f;      // latched mode: the smoothed look rate follows the mouse rate
+    static constexpr float kCineHeldMaxDegS = 360.0f;  // the look's rate while RMB is held, at most
+    static constexpr float kCineCoastMaxDegS = 45.0f;  // the coast's rate after RMB is released, at most
+    static constexpr float kCineCoastMinDegS = 0.5f;   // a release slower than this does not coast
+    int lookSkipFrames_ = 0;
+    bool lookHeldPrev_ = false;
+    bool cineLatchedPrev_ = false;
+    float cineCoastDegS_ = 0.0f; // the coast's rate as released (harness `state` -> camera.cinematic)
+    // harness `inertial drag dx= dy= frames= [warp_x= warp_y=]`: a held look (RMB) through the real cinematic look
+    // code, dx / dy pixels a frame for `frames` frames, then a release whose cursor jump (warp) is injected next frame
+    int harnessDragFrames_ = 0;
+    float harnessDragDx_ = 0.0f, harnessDragDy_ = 0.0f, harnessDragWarpX_ = 0.0f, harnessDragWarpY_ = 0.0f;
+    bool harnessDragWarpPending_ = false;
 
     // Fine (slow) movement mode — flipped by KB_MOVE_FINE (dispatchKeyAction). A toggle rather
     // than a held modifier (unlike KB_MOVE_BOOST): holding a stick-click down while also using

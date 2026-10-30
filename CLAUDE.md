@@ -3533,7 +3533,23 @@ clamped on screen each frame. Persisted: `hud.movement_panel` / `hud.view_panel`
   against `inertialLastObsDir` / `inertialLastHeight`), and with the hold on WASD fly in the camera's own frame
   (`inertialFly`: forward = the view direction, sideways = the screen's right, the usual height-scaled speed, radius
   clamped to the ground).
-- **Cinematic mode tweaks (2026-10-29, issue 20261029_213225):** latched mode drops mouse motion while the cursor is over the UI, a text field is focused or LMB is down (it swung the camera while navigating windows); the look no longer decays (no drag); the wheel zoom is a pending log-FOV (`cineScrollZoom`) eased out over ~0.35 s.
+- **Cinematic mode tweaks (2026-10-29, issue 20261029_213225):** the look has no drag (a coast keeps turning until the look button is held again); the wheel zoom is a pending log-FOV (`cineScrollZoom`) eased out over ~0.35 s.
+- **The cinematic look (2026-10-30, issue 20261030_142354, "releasing right click or entering cinematic mode launches the
+  camera at ~200 deg/s"; the look block at the top of `buildUI`).** Two causes: (1) with RMB up, latched mode turned EVERY
+  cursor movement over the scene into an impulse on a velocity with no drag, so moving the mouse off the popup after
+  switching the mode on spun the camera for good; (2) GLFW moves the cursor at a capture change (on release it restores
+  the press position: a delta of minus the whole drag, in the NEXT frame's `dmx`), and latched mode took that as a flick.
+  Now: the look rates are mouse pixels per SECOND (x `lookSens()` = deg/s; they were pixels per frame); a capture
+  change (RMB, or the harness drag) or a change of `cinematicLatched` discards `dmx` / `dmy` for `kLookSkipFrames` (2)
+  frames, and switching the mode zeroes the rates; latched mode with RMB up does not steer (the cursor only moves);
+  with RMB held the rate follows the mouse's own rate smoothed over `kCineLookTauS` (0.12 s, capped at
+  `kCineHeldMaxDegS` 360); on release it coasts at that smoothed rate capped at `kCineCoastMaxDegS` (45 deg/s), none
+  under 0.5 deg/s; holding RMB with the mouse at rest brings a coast to a stop in ~0.3 s. The Alt pan-drift (RMB + Alt)
+  keeps its impulse model (the same per-frame impulse at 60 fps, now a rate, capped at 90 deg/s, zeroed on release).
+  Harness `inertial drag dx= dy= frames= [warp_x= warp_y=]` holds the look button through this code and injects a
+  release jump; `state` -> `camera.cinematic` {latched, alt_mode, held, yaw_deg_s, pitch_deg_s, coast_deg_s,
+  skip_frames}; `tools/harness/scripts/cinematic_look.satcmd` (a 1200 px/s drag: 132 deg/s held, 45 coasting, the
+  -4000 / +1500 px release jump ignored, stopped by a held button at rest).
 - Harness: `inertial move [fwd= right= up=]` holds movement input through the real WASD / Q-E code (until the next
   `inertial move`); `tools/harness/scripts/hud_popups.satcmd` (the report's view, Q/E and WASD in the Stars frame, then every
   popup row through `ui click`: `HudFrame:<327680|327681>`, `HudCinematic:0`, `HudGauge:<327680|327681>`,

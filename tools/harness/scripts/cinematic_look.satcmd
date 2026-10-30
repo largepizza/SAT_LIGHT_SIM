@@ -1,0 +1,26 @@
+# Cinematic mode's look (issue 20261030_142354: releasing RMB or switching the mode on flung the camera at ~200 deg/s).
+# Run: python tools/harness/run.py tools/harness/scripts/cinematic_look.satcmd
+# `inertial drag` holds the look button through the real look code (dx / dy px a frame, then a release whose cursor
+# jump, warp_x / warp_y, arrives the frame after as GLFW's restore does); `state` -> camera.cinematic shows the rates.
+#   1  switching cinematic mode on: no turn
+#   2  a drag at 20 px/frame, released: coasts at the smoothed rate, capped (coast_deg_s <= 45), the warp ignored
+#   3  holding the button with the mouse at rest stops the coast; a release at rest does not coast
+time pause
+set hud.right_panel.cinematic_mode true
+wait 5
+state
+expect state.camera.cinematic.yaw_deg_s 0 tol=1e-6
+inertial drag dx=20 frames=40 warp_x=-4000 warp_y=1500
+wait 20
+state
+wait 25
+state
+wait 30
+state
+inertial drag dx=0 frames=40
+wait 45
+state
+expect state.camera.cinematic.yaw_deg_s 0 tol=1e-6
+set hud.right_panel.cinematic_mode false
+wait 3
+state

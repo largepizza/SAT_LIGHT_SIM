@@ -157,6 +157,20 @@ harness::Status SatelliteSim::harnessInertial(harness::Active &a)
         r["observer"] = {{"lat_deg", obsLatDeg}, {"lon_deg", obsLonDeg}, {"alt_m", obsHeightOffset}};
         return harness::Status::Done;
     }
+    if (sub == "drag")
+    {
+        // a held look button (RMB) through the real look code: dx / dy pixels a frame for `frames` frames, then a
+        // release whose cursor jump (warp_x / warp_y, the restore GLFW does on a real release) arrives the frame after
+        harnessDragDx_ = (float)c.num("dx", 0.0);
+        harnessDragDy_ = (float)c.num("dy", 0.0);
+        harnessDragFrames_ = std::max(0, (int)c.num("frames", 30.0));
+        harnessDragWarpX_ = (float)c.num("warp_x", 0.0);
+        harnessDragWarpY_ = (float)c.num("warp_y", 0.0);
+        harnessDragWarpPending_ = false;
+        r["drag"] = {{"dx", harnessDragDx_}, {"dy", harnessDragDy_}, {"frames", harnessDragFrames_},
+                     {"warp_x", harnessDragWarpX_}, {"warp_y", harnessDragWarpY_}};
+        return harness::Status::Done;
+    }
     if (sub == "on")
     {
         inertialStart(c.num("hold", 1.0) > 0.5);
