@@ -3878,11 +3878,6 @@ void SatelliteSim::buildSettingsTabBody(const UIInput &inp, UIRenderer &ui, int 
 // settings.json keys unchanged (launches.*, kessler.*).
 void SatelliteSim::buildSettingsLaunchesTab(const UIInput &inp, UIRenderer &ui)
 {
-    if (uiButton(inp, ui, "LdOpenMs", 0, tx(Txt::BtnOpenTheMissionsWindow), tx(Txt::TipUpcomingLaunchesWhatIsFlyingNow)))
-    {
-        msChrome.open = true;
-        msNextWall = msPinWall = -1e300;
-    }
     // The graphics first (the issue: "primarily the graphics related settings"; the exhaust sliders are what gets
     // tuned), then what happens.
     buildLaunchGraphicsSection(inp, ui);
@@ -3898,8 +3893,6 @@ void SatelliteSim::buildSettingsLaunchesTab(const UIInput &inp, UIRenderer &ui)
 // photometry (the Photometry tab). Slots 400-413 of the shared slider arrays.
 void SatelliteSim::buildSettingsSkyTab(const UIInput &inp, UIRenderer &ui)
 {
-    uiKV("SkyKV", 0, "", tx(Txt::ValTheMilkyWayTheStarsTwinkle), 4.0f, &Pal::textDim);
-
     uiSection("SkySec", 0, tx(Txt::SecStars));
     uiToggleRow(inp, ui, "SkyStarLimit", 0, tx(Txt::LblFaintStarsOnlyUnderDarkSkies), starSkyLimit,
                 tx(Txt::TipEachStarIsDrawnOnlyIf));
@@ -4082,8 +4075,6 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
     int actSel = -1, actGo = -1; // applied after the layout below
 
     uiSection("ConstSec", 0, tx(Txt::SecConstellations));
-    uiKV("ConstHintKV", 0, "", tx(Txt::ValGroupedByKindClickAGroups), 4.0f,
-         &Pal::textDim);
     // Column header over the buttons: Show / Highlight / actions, the name, the satellite count.
     if (!searchActive())
     CLAY(CLAY_ID("ConstHeader"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
@@ -4817,8 +4808,6 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
             {
                 changed = uiToggleRow(inp, ui, "AdvancedToggle", 0, tx(Txt::BtnShowAdvancedSettings), adv,
                                       tx(Txt::TipTheRenderingTabsCloudsWeatherAtmosphere));
-                CLAY_TEXT(txc(Txt::NoteEveryControlOfHowTheSim),
-                          CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_WORDS}));
             }
         }
         if (changed)

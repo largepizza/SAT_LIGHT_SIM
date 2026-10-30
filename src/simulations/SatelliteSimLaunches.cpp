@@ -9513,9 +9513,6 @@ void SatelliteSim::buildLaunchGraphicsSection(const UIInput &inp, UIRenderer &ui
     if (uiToggleRow(inp, ui, "LaunchPads", 0, tx(Txt::LblLaunchSiteGraphics), padOn,
                     tx(Txt::TipThePadsOnTheGroundGraded)))
         launchPadGraphics = padOn;
-    uiKV("LdGfxKV", 0, "",
-         tx(Txt::ValExhaust1EverywhereIsTheTuned),
-         4.0f, &Pal::textDim);
     CloudSlider rows[] = {
         {tx(Txt::SldPlumeOpacityX), &launchPlumeGain, 0.0f, 5.0f, 0.05f, "%.2f", 313},
         {tx(Txt::SldPlumeBrightnessX), &launchPlumeBright, 0.0f, 5.0f, 0.05f, "%.2f", 314},
