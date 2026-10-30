@@ -9523,6 +9523,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         kesslerAvoidance = settingClamp(kj.value("avoidance", kesslerAvoidance), 0.0f, 1.0f);
         kesslerHorizonYears = settingClamp(kj.value("horizon_years", kesslerHorizonYears), 1.0f, 200.0f);
         kesslerDustGain = settingClamp(kj.value("dust_gain", kesslerDustGain), 0.0f, 100000.0f);
+        kesslerCollisionCloseup = kj.value("collision_closeup", kesslerCollisionCloseup);
         kesslerSmallReGain = settingClamp(kj.value("small_reentry_gain", kesslerSmallReGain), 0.0f, 10000.0f);
         kesslerFireColor = settingClamp(kj.value("fireball_colors", kesslerFireColor), 0.0f, 1.0f);
         kesslerSnapshots = kj.value("snapshots", kesslerSnapshots); // (2026-10-29: world snapshots in the user cache)
@@ -10638,6 +10639,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
                     {"avoidance", kesslerAvoidance},
                     {"horizon_years", kesslerHorizonYears},
                     {"dust_gain", kesslerDustGain},
+                    {"collision_closeup", kesslerCollisionCloseup},
                     {"small_reentry_gain", kesslerSmallReGain},
                     {"fireball_colors", kesslerFireColor},
                     {"snapshots", kesslerSnapshots}};

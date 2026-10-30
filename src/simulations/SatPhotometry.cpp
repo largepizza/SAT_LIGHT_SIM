@@ -113,6 +113,7 @@ SatOrbitState satOrbitStateAt(const SatOrbitElems &e, double tJ2000)
         st.velocity = vl > 1e-6 ? st.velEci / vl : glm::dvec3(1.0, 0.0, 0.0);
         if (glm::length(e.fixAxis) > 0.5)
             st.velocity = glm::normalize(e.fixAxis);
+        st.tumbleAngle = e.tumblePhase + e.tumbleRate * tJ2000; // (0 for a transient: no tumble)
         return st;
     }
     const double twoPi = 2.0 * kPi;

@@ -6029,7 +6029,33 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   recorded. A catastrophic breakup of a formation member damages each cluster neighbour (p 0.6, `damageCluster`:
   the cloud sweeps the ring within minutes, slowly, so they die and tumble). A cratering hit kills a satellite
   with p 1/2.
-- **Collisions keep momentum (2026-10-29, kCacheVersion 18, prebake rebuilt):** a catastrophic pair collision's fragments move 0.8 of the way from their parent's velocity to the pair's centre-of-mass velocity (`planFragments`), plus the ejecta kick.
+- **Collisions keep momentum, as two streams (2026-10-30, issue 20261029_213225, kCacheVersion 19; the shipped prebake is
+  still version 18 until it is rebuilt, so the cascade is sampled live meanwhile):** a catastrophic pair collision's
+  fragment keeps a share beta = 1 - 0.8 u^1.5 (u hashed per piece: 0.2 .. 1, mean 0.68) of its parent's velocity relative
+  to the pair's centre of mass, plus the ejecta kick (`planFragments`). Momentum is kept (both sides draw beta from one
+  distribution), about half the centre-of-mass kinetic energy goes into the breakup, and the debris spreads ALONG the
+  relative velocity: each parent's pieces run on its own way, the contact zone's slower in the middle (hypervelocity
+  impacts: most material never meets the other body, and a projectile's debris cloud runs on through the target). The
+  2026-10-29 first cut moved every piece 0.8 of the way to the centre of mass: one cloud, the parents indistinguishable.
+- **A pair collision seen up close (2026-10-30, `kesslerFillCollisions` / `kesslerCollisionJobs`, render only):** the
+  engine finds a pair together at its step's sample time and spreads the event through the 6-h step, so at the impact
+  the projectile's own record is thousands of km away (apply carries the encounter onto the target). For the pair
+  collisions within 3000 km, the projectile is drawn on that approach line (`kesslerCollStandIn`: the target's state +
+  the relative velocity in its radial / along / normal frame x (t - te)) for the last `kCollApproachS` (45 s): its mesh
+  in its own reserved launch chunk (`kCollMeshSlots` 8, below the arm's; not selectable), a sunlit point while
+  unresolved (evaluator photometry, kFireBuf). At the impact a flash (kinetic energy of the smaller body x 1e-3 over
+  ~0.2 s: a Starmind pair at 2.3 km/s ~-12 mag at 1000 km; capped at flare 400, decaying 0.12 s / 0.7 s) and an emissive
+  fireball expanding at 0.15 of the closing speed for 3 s, its resolved peak capped at ~1.2 of displayed white. The real
+  projectile record is untouched (it vanishes far away at the same second). The candidate list is cached over half an
+  hour and rebuilt when the log changes. Harness `kessler state` -> `collisions_near` (in_s, vrel, standin,
+  `standin_to_target_m`, target_range_m), `collision_flash`.
+- **The dust up close:** a cloud starts at 0.2 s of spread (was 1 s: ~sv wide at once), and a resolved piece's light is
+  its surface brightness (pi x radiance per unit solar irradiance x "Dust cloud brightness"), blended geometrically from
+  the point units (toSky, ~10 mag over a surface's physical brightness) as its smallest sigma goes 1.5 -> 8 half-res px:
+  from 790 m a young cloud at x30 was a grey-white screen. Distant clouds are unchanged. Setting
+  `kessler.collision_closeup` (no UI, default on) switches the stand-in and the flash off (the A/B). QA script:
+  `tools/harness/scripts/kessler_collision_closeup.satcmd`. Open: in that view the target ring's own sprites bloom into
+  large white ellipses around the impact whether the stand-in is drawn or not (present in the report's shot 1), hiding it.
 - **Pool records** (`kessler::PoolRec`, 64-B `GpuKepOrbit` in kesslerBuf from `poolWord0`, satellite indices
   from `activeSatCount` on; appended to the CPU's `satOrbits` with `poolSlot`, so every index-based path works).
   Keplerian with **relative J2**: a child keeps its parent's rates plus the J2 DIFFERENCE between them

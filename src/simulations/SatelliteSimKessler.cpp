@@ -36,7 +36,7 @@ constexpr double kFuryArriveT = 1184511600.0;
 constexpr double kFuryPeakKp = 11.0;
 constexpr uint64_t kStormSeed = 0x5EEDF0221ull;
 constexpr uint32_t kCacheMagic = 0x4B534C52u; // "RLSK"
-constexpr uint32_t kCacheVersion = 18; // (18: a catastrophic pair collision's fragments move toward the centre-of-mass velocity, 2026-10-29; 17: an engine pair collision's projectile placed on the target at the spread event time, 2026-10-24; 16: the 2020 benchmark shells left out of the deployment era by default, 2026-10-21; 15: the deployment era: roster born / gone seconds, 2026-10-20; 14: the GEO belt joins the roster, 2026-10-20; 13: an explosion's fragment count scales with a parent over 2 t) bump whenever the world's logic changes (4: round 2, large pieces + grid;
+constexpr uint32_t kCacheVersion = 19; // (19: a catastrophic pair collision's fragments keep a share of their parent's velocity relative to the centre of mass (beta = 1 - 0.8 u^1.5), 2026-10-30; 18: a catastrophic pair collision's fragments move toward the centre-of-mass velocity, 2026-10-29; 17: an engine pair collision's projectile placed on the target at the spread event time, 2026-10-24; 16: the 2020 benchmark shells left out of the deployment era by default, 2026-10-21; 15: the deployment era: roster born / gone seconds, 2026-10-20; 14: the GEO belt joins the roster, 2026-10-20; 13: an explosion's fragment count scales with a parent over 2 t) bump whenever the world's logic changes (4: round 2, large pieces + grid;
                                        // 12: steps on a fixed grid, seeded by their index; a step's events ordered)
 
 uint64_t fnv(uint64_t h, const void *p, size_t n)
@@ -2774,6 +2774,7 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
         {
             s->selTransients.clear();
             s->kesslerFillFireballs(out, n, toSky, pixFull);
+            s->kesslerFillCollisions(out, n, toSky, pixFull); // pair collisions up close: the approach, the flash
             s->meteorsFill(out, n, toSky, pixFull); // meteor showers (SatelliteSimMeteors.cpp): heads, streaks, trains
             {
                 // Booked as launches, not as the cascade (this runs inside the dust fill's kessler timer).
@@ -2906,7 +2907,7 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
         const double nm = std::sqrt(kessler::kGM / (rm * rm * rm));
         const double sv = std::clamp((double)e.dvSmall, 80.0, 500.0);
         double a, b;
-        cwParams(nm, std::max(c.age, 1.0), a, b);
+        cwParams(nm, std::max(c.age, 0.2), a, b);
         p.sy = sv * std::sqrt(a * a + b * b) + 30.0;
         // The tube's typical half-width: sv |sin| / n, at most the ballistic sv t.
         const double w = std::max(sv * std::min(c.age, 0.7 / nm), 500.0);
@@ -2960,7 +2961,7 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
         const double rm = glm::length(c.r);
         const double nM = std::sqrt(kessler::kGM / (rm * rm * rm));
         const double sv = std::clamp((double)e.dvSmall, 80.0, 500.0);
-        const double tA = std::max(c.age, 1.0);
+        const double tA = std::max(c.age, 0.2); // (was 1 s: a breakup's cloud appeared ~sv wide at once)
         double ca, cb;
         cwParams(nM, tA, ca, cb);
         const double ab2 = ca * ca + cb * cb;
@@ -3026,7 +3027,21 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
             d.cone = dist > 1.05 * rad
                          ? glm::vec4(glm::vec3(rel / dist), (float)std::sqrt(1.0 - (rad / dist) * (rad / dist)))
                          : glm::vec4(0.0f);
-            d.c = glm::vec4(glm::vec3(rel), (float)(ampC * w * toSky));
+            // Resolved, its light is its SURFACE brightness (2026-10-30, issue 20261029_213225 shot 2: from 790 m a
+            // breakup's young cloud filled the view in flat grey-white). The light is in the point sources' units
+            // (toSky, ~10 mag over a surface's physical brightness: a cloud of magnitude m carries what a star of m
+            // shows), right for a piece a few pixels across and far too bright once it covers the screen; resolved it
+            // is pi x the radiance per unit solar irradiance (the sky's units: a sunlit white face is 1) x "Dust cloud
+            // brightness", geometric blend as the flames do (its smallest sigma 1.5 -> 8 half-res pixels). Distant
+            // pieces (a pixel or two) are unchanged.
+            double cwD = ampC * w * toSky;
+            {
+                const double sMinPx = std::min({sR, sS, sW}) / std::max(rng * (double)pixelAngle, 1e-9);
+                const double resK = glm::smoothstep(1.5, 8.0, sMinPx);
+                if (resK > 0.0)
+                    cwD = ampC * w * std::exp(glm::mix(std::log(std::max(toSky, 1e-30)), std::log(glm::pi<double>()), resK));
+            }
+            d.c = glm::vec4(glm::vec3(rel), (float)cwD);
             // The music's upwell: this piece's light at the eye as a magnitude (effectFlare = K amp / r^2: the
             // Gaussian's density integrates to 1), lit only where its centre is out of the Earth's shadow.
             const glm::dvec3 toC = ctr - eye;
@@ -4003,6 +4018,30 @@ nlohmann::json SatelliteSim::kesslerStateJsonImpl(bool full) const
     j["done"] = kWorkerDone;
     j["events"] = kEvents.size();
     j["user_events"] = kUserEvents.size();
+    {
+        // (2026-10-30) the pair collisions drawn up close this frame (kesslerFillCollisions): the projectile's stand-in
+        // before the impact, the flash after it
+        nlohmann::json cl = nlohmann::json::array();
+        for (const KCollVis &c : kCollVis)
+        {
+            glm::dvec3 P, V;
+            const bool si = kesslerCollStandIn(c, t, P, V);
+            const SatOrbitState a = satOrbitStateAt(orbitElemsOf(satOrbits[c.tgt]), t);
+            nlohmann::json o;
+            o["in_s"] = c.te - t;
+            o["target"] = c.tgt;
+            o["projectile"] = c.prj;
+            o["vrel_mps"] = c.vrel;
+            o["vrel_rtn"] = {c.vrelL.x, c.vrelL.y, c.vrelL.z};
+            o["mass_kg"] = c.massKg;
+            o["standin"] = si;
+            o["standin_to_target_m"] = si ? glm::length(P - a.posEci) : -1.0;
+            o["target_range_m"] = glm::length(a.posEci - glm::dvec3(obsECI));
+            cl.push_back(o);
+        }
+        j["collisions_near"] = cl;
+        j["collision_flash"] = kCollFlashDbg;
+    }
     j["world_start_days"] = (kWorldStart - kFuryArriveT) / 86400.0;
     j["last_breakup_ms"] = kLastBreakupMs;
     j["last_breakup_in_place"] = kLastBreakupFast;
@@ -4498,4 +4537,212 @@ void SatelliteSim::kesslerBreakupFromUi(int sat, uint8_t kind)
 {
     const ExplodeResult r = explodeSatellite(sat, kind == kessler::EV_ASAT ? BreakupKind::Asat : BreakupKind::Explosion);
     snprintf(kUiMsg, sizeof(kUiMsg), "%s%s", r.ok ? "" : "Not now: ", r.reason.c_str());
+}
+
+// ── Pair collisions seen up close (2026-10-30, issue 20261029_213225) ─────────────────────────────────────────
+// The world places the projectile on the target at the collision's time with the relative velocity the engine found
+// (apply's sampleDt carry), so the debris leaves from one point; but the projectile's own record is elsewhere on its
+// orbit then, and the two never met on screen: "they just explode and pretend to collide". Here, for the pair
+// collisions about to happen near the eye, the projectile is drawn on that same approach line for the last
+// kCollApproachS (its mesh in the reserved chunk, kesslerCollisionJobs; a point while unresolved), and the impact is a
+// flash and a brief expanding fireball. The real record is left as it is (thousands of km away, it vanishes at the same
+// moment): nothing in the world changes.
+bool SatelliteSim::kesslerCollStandIn(const KCollVis &c, double t, glm::dvec3 &pos, glm::dvec3 &vel) const
+{
+    if (t > c.te || t < c.te - kCollApproachS || c.tgt >= satOrbits.size())
+        return false;
+    const SatOrbitState a = satOrbitStateAt(orbitElemsOf(satOrbits[c.tgt]), t);
+    const glm::dvec3 R = glm::normalize(a.posEci);
+    glm::dvec3 N = glm::cross(a.posEci, a.velEci);
+    N = glm::length(N) > 1e-9 ? glm::normalize(N) : glm::dvec3(0, 0, 1);
+    const glm::dvec3 A = glm::cross(N, R);
+    const glm::dvec3 vr = R * c.vrelL.x + A * c.vrelL.y + N * c.vrelL.z;
+    pos = a.posEci + vr * (t - c.te);
+    vel = a.velEci + vr;
+    return true;
+}
+
+// The stand-in's elements: the projectile's own (its attitude law, a dead one's tumble flag, its build and unfolding
+// state), placed on the approach line (fixedState). With the law's attitude alone the stand-in of a dead, tumbling
+// Starmind flew in with its arrays square to the Sun's mirror direction: a wall of glare.
+SatOrbitElems SatelliteSim::kesslerCollStandInElems(const KCollVis &c, double t, const glm::dvec3 &P,
+                                                    const glm::dvec3 &V) const
+{
+    SatOrbitElems e = c.prj < satOrbits.size() ? orbitElemsOf(satOrbits[c.prj]) : SatOrbitElems{};
+    e.kepler = false;
+    e.fixedState = true;
+    e.fixPos = P;
+    e.fixVel = V;
+    e.fixAcc = -kessler::kGM * P / std::pow(glm::length(P), 3.0);
+    e.fixAxis = glm::dvec3(0.0);
+    e.fixT0 = t;
+    return e;
+}
+
+void SatelliteSim::kesslerFillCollisions(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull)
+{
+    FPROF_SCOPE("kesslerFillCollisions");
+    kCollVis.clear();
+    kCollFlashDbg = 0.0;
+    if (!kesslerEnabled || kEvents.empty() || !kFireMapped || !kesslerCollisionCloseup)
+        return;
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    if (t < kWorldStart)
+        return;
+    constexpr double kFlashS = 3.0;
+    // The pair collisions within [t - kFlashS, t + kCollApproachS], from a cached list of the next ~half hour's
+    // (events are in time order only to within one 6-h step: a scan covers 12 h of the log, so it is not done every
+    // frame). Rebuilt when the time leaves the cached window or the log changes.
+    constexpr double kWin = 1800.0;
+    if (t - kFlashS < kCollCacheT0 || t + kCollApproachS > kCollCacheT1 || kCollCacheN != kEvents.size() ||
+        kCollCacheSrc != (const void *)kEvents.src)
+    {
+        kCollCacheT0 = t - kFlashS - 60.0;
+        kCollCacheT1 = t + kWin;
+        kCollCacheN = kEvents.size();
+        kCollCacheSrc = (const void *)kEvents.src;
+        kCollCacheIdx.clear();
+        const size_t i0 = kEvents.lowerBound(kCollCacheT0 - 6.0 * 3600.0,
+                                             [](const kessler::Event &e, double x) { return e.t < x; });
+        for (size_t k = i0; k < kEvents.size(); ++k)
+        {
+            const kessler::Event e = kEvents[k];
+            if (e.t > kCollCacheT1 + 6.0 * 3600.0)
+                break;
+            if (e.t < kCollCacheT0 || e.t > kCollCacheT1 || e.kind != kessler::EV_COLLISION ||
+                e.b == kessler::kSmallRef || e.b == kessler::kNoRef || e.a == kessler::kNoRef)
+                continue;
+            kCollCacheIdx.push_back(k);
+        }
+    }
+    const glm::dvec3 eye = glm::dvec3(obsECI);
+    const glm::dvec3 ex(eci2enuX), ey(eci2enuY), ez(eci2enuZ);
+    auto toEnu = [&](const glm::dvec3 &v) { return glm::dvec3(glm::dot(v, ex), glm::dot(v, ey), glm::dot(v, ez)); };
+    auto satOf = [&](uint32_t ref) -> uint32_t {
+        if (ref & kessler::kPoolBit)
+        {
+            const uint32_t j = ref & ~kessler::kPoolBit;
+            return j < kPool.size() ? poolIdx0() + j : UINT32_MAX;
+        }
+        return ref < activeSatCount ? ref : UINT32_MAX;
+    };
+    GpuFireball *fo = reinterpret_cast<GpuFireball *>(static_cast<char *>(kFireMapped) + 16);
+    const double expo = std::max((double)skyExposure(), 1e-6);
+    const glm::dvec3 sunD = glm::normalize(glm::dvec3(sunDirECI));
+    for (size_t k : kCollCacheIdx)
+    {
+        const kessler::Event e = kEvents[k];
+        if (e.t < t - kFlashS || e.t > t + kCollApproachS)
+            continue;
+        const glm::dvec3 ep(e.pos[0], e.pos[1], e.pos[2]);
+        if (glm::length(ep) < 1.0 || glm::length(ep - eye) > 3.0e6)
+            continue;
+        const uint32_t sa = satOf(e.a), sb = satOf(e.b);
+        if (sa == UINT32_MAX || sb == UINT32_MAX || sa >= satOrbits.size() || sb >= satOrbits.size())
+            continue;
+        // The target is the one the world built the breakup on (its position is the event's).
+        const SatOrbitState A0 = satOrbitStateAt(orbitElemsOf(satOrbits[sa]), e.t);
+        const SatOrbitState B0 = satOrbitStateAt(orbitElemsOf(satOrbits[sb]), e.t);
+        const bool aIsT = glm::length(A0.posEci - ep) <= glm::length(B0.posEci - ep);
+        KCollVis c;
+        c.te = e.t;
+        c.tgt = aIsT ? sa : sb;
+        c.prj = aIsT ? sb : sa;
+        c.prjType = (int)satOrbits[c.prj].typeIdx;
+        c.seed = e.seed;
+        c.key = 0x6C0000000000ull ^ ((uint64_t)k * 0x9E3779B97F4A7C15ull);
+        // The relative velocity as the world carries it (Kessler.cpp, apply): at the sample time ts in the target's
+        // (radial, along, normal) frame, kept in that frame at the impact.
+        const double ts = e.t - (double)e.sampleDt;
+        const SatOrbitState at = satOrbitStateAt(orbitElemsOf(satOrbits[c.tgt]), ts);
+        const SatOrbitState pt = satOrbitStateAt(orbitElemsOf(satOrbits[c.prj]), ts);
+        const glm::dvec3 R = glm::normalize(at.posEci);
+        glm::dvec3 Nn = glm::cross(at.posEci, at.velEci);
+        Nn = glm::length(Nn) > 1e-9 ? glm::normalize(Nn) : glm::dvec3(0, 0, 1);
+        const glm::dvec3 Al = glm::cross(Nn, R);
+        const glm::dvec3 vr = pt.velEci - at.velEci;
+        c.vrelL = glm::dvec3(glm::dot(vr, R), glm::dot(vr, Al), glm::dot(vr, Nn));
+        c.vrel = glm::length(vr);
+        auto massOfSat = [&](uint32_t s) {
+            const uint32_t ti = satOrbits[s].typeIdx;
+            const double m = ti < satTypes.size() ? (double)satTypes[ti].massKg : 0.0;
+            return m > 0.0 ? m : 500.0;
+        };
+        c.massKg = std::min(massOfSat(c.tgt), massOfSat(c.prj));
+        if (c.vrel < 10.0)
+            continue;
+        kCollVis.push_back(c);
+
+        const double spE = glm::dot(ep, sunD);
+        const bool lit = spE > 0.0 || glm::length(ep - spE * sunD) > satphot::kEarthRadiusM;
+        // (1) Before the impact: the projectile's point while its mesh is unresolved (the mesh takes over past ~2 px).
+        glm::dvec3 P, V;
+        if (t < e.t && lit && kesslerCollStandIn(c, t, P, V) && c.prjType >= 0 && (size_t)c.prjType < satTypes.size() &&
+            satTypes[c.prjType].isModel() && kFireCount < kFireballMax)
+        {
+            const SatelliteType &ty = satTypes[c.prjType];
+            const SatOrbitElems el = kesslerCollStandInElems(c, t, P, V);
+            SatPhotInputs in;
+            in.sunDirEci = sunD;
+            in.obsEci = eye;
+            in.flareTiltRad = glm::radians((double)flareMitigationTiltDeg);
+            const SatPhotResult r = evalSatPhotometry(ty.groups, ty.lobes, el, t, in);
+            const double rng = std::max(glm::length(P - eye), 1.0);
+            const SatMeshRenderer::TypeMesh *tm = meshRenderer.typeMesh(c.prjType);
+            const double px =
+                2.0 * (tm ? std::max(1.0, (double)tm->boundsRadius) : 5.0) / rng / std::max(2.0 * pixFull, 1e-9);
+            const double keep = 1.0 - glm::smoothstep(1.5, 3.0, px);
+            const double fadeIn = glm::smoothstep(e.t - kCollApproachS, e.t - kCollApproachS + 5.0, t);
+            if (std::isfinite(r.magnitude) && keep * fadeIn > 0.0)
+            {
+                const double fl = std::min(0.008 * std::pow(10.0, 0.4 * (6.0 - r.magnitude)), 60.0) * keep * fadeIn;
+                if (fl > 2e-4)
+                    fo[kFireCount++] = {glm::vec4(glm::vec3(toEnu((P - eye) / rng)), (float)fl),
+                                        glm::vec4(1.0f, 1.0f, 1.0f, (float)rng)};
+            }
+        }
+        // (2) The impact: a flash (the contact's vaporised material, seen for a fraction of a second) and a fireball
+        // expanding at ~0.15 of the closing speed and fading in ~1 s, carried with the pair's centre of mass. Light: the
+        // kinetic energy of the smaller body at the closing speed x a luminous efficiency of 1e-3 over ~0.2 s (a
+        // Starmind pair at 2.3 km/s: ~-12 mag at 1000 km); shown capped (glare, not a white screen).
+        const double age = t - e.t;
+        if (age < 0.0 || age > kFlashS)
+            continue;
+        const SatOrbitState An = satOrbitStateAt(orbitElemsOf(satOrbits[c.tgt]), t);
+        const glm::dvec3 Pf = An.posEci + 0.5 * vr * age; // ~ the pair's centre of mass (equal masses)
+        const double rng = std::max(glm::length(Pf - eye), 1.0);
+        const double Ek = 0.5 * c.massKg * c.vrel * c.vrel;
+        const double Iwsr = 1e-3 * Ek / 0.2 / (4.0 * glm::pi<double>()); // W/sr at the peak
+        const double J = Iwsr / 1361.0;                                      // m^2 sr^-1 per unit solar irradiance
+        const double curve = 0.75 * std::exp(-age / 0.12) + 0.25 * std::exp(-age / 0.7);
+        const double magPk = -26.74 - 2.5 * std::log10(std::max(J / (rng * rng), 1e-300));
+        const double fl = std::min(0.008 * std::pow(10.0, 0.4 * (6.0 - magPk)), 400.0) * curve;
+        kCollFlashDbg = fl;
+        const glm::vec3 hot =
+            glm::mix(glm::vec3(1.0f, 0.62f, 0.32f), glm::vec3(1.0f, 0.95f, 0.9f), (float)std::exp(-age / 0.35));
+        if (kFireCount < kFireballMax && fl > 2e-4)
+            fo[kFireCount++] = {glm::vec4(glm::vec3(toEnu((Pf - eye) / rng)), (float)fl), glm::vec4(hot, (float)rng)};
+        if (n < kMaxDustClouds)
+        {
+            const double sg = 2.0 + 0.15 * c.vrel * age;
+            const double sMin = 0.6 * 2.0 * pixFull * rng;
+            const double s = std::max(sg, sMin);
+            // unresolved: the point's on-screen energy (toSky); resolved: its peak capped at ~1.2 of displayed white
+            const double cw =
+                std::min(0.4 * J * toSky, 1.2 * 2.0 * glm::pi<double>() * s * s / expo) * curve;
+            const glm::dvec3 rel = toEnu(Pf - eye);
+            GpuDustCloud &d = out[n++];
+            const double rad = 4.0 * s, dist = glm::length(rel);
+            d.cone = dist > 1.05 * rad
+                         ? glm::vec4(glm::vec3(rel / dist), (float)std::sqrt(1.0 - (rad / dist) * (rad / dist)))
+                         : glm::vec4(0.0f);
+            d.c = glm::vec4(glm::vec3(rel), (float)cw);
+            const double is = 1.0 / (s * s);
+            d.ia = glm::vec4((float)is, (float)is, (float)is,
+                             (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * s * s * s)));
+            d.ib = glm::vec4(0.0f);
+            d.col = glm::vec4(hot, 1.0f); // emissive
+        }
+    }
+    static_cast<uint32_t *>(kFireMapped)[0] = kFireCount;
 }
