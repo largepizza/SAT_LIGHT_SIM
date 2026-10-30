@@ -8321,6 +8321,7 @@ private:
     // (view.coronagraph; = inertialOcculter below).
     void inertialFly(float fwd, float right, float speedRadPerS, float dt); // WASD with the eye held in ECI
     float inertialLastHeight = 0.0f;
+    glm::vec3 harnessMove_{0.0f};       // harness `inertial move fwd= right= up=`: held movement input (forward, right, up), -1..1
 
     // ── NEW-7: frame limiter ────────────────────────────────────────────────
     FpsCapMode fpsCapMode = FpsCapMode::VSync;  // Display tab setting; see FpsCapMode comment

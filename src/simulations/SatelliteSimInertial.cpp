@@ -149,6 +149,14 @@ harness::Status SatelliteSim::harnessInertial(harness::Active &a)
         return glm::dvec3(e.x, e.y * std::cos(eps) - e.z * std::sin(eps), e.y * std::sin(eps) + e.z * std::cos(eps)); // -> ECI
     };
     if (c.has("occult")) inertialOcculter = c.num("occult", 0.0) > 0.5;
+    if (sub == "move")
+    {
+        // held movement input through the real WASD / Q-E code (sticks until the next `inertial move`; no args = stop)
+        harnessMove_ = glm::vec3((float)c.num("fwd", 0.0), (float)c.num("right", 0.0), (float)c.num("up", 0.0));
+        r["move"] = {harnessMove_.x, harnessMove_.y, harnessMove_.z};
+        r["observer"] = {{"lat_deg", obsLatDeg}, {"lon_deg", obsLonDeg}, {"alt_m", obsHeightOffset}};
+        return harness::Status::Done;
+    }
     if (sub == "on")
     {
         inertialStart(c.num("hold", 1.0) > 0.5);
@@ -175,7 +183,7 @@ harness::Status SatelliteSim::harnessInertial(harness::Active &a)
     }
     else if (sub != "state")
     {
-        a.error = "inertial [state] | on [hold=1] | off | look ecl_lon= ecl_lat= [fov=] | place ecl_lon= ecl_lat= alt= (any: occult=0|1)";
+        a.error = "inertial [state] | move [fwd= right= up=] | on [hold=1] | off | look ecl_lon= ecl_lat= [fov=] | place ecl_lon= ecl_lat= alt= (any: occult=0|1)";
         return harness::Status::Error;
     }
     if (inertialTickApplyNow_)

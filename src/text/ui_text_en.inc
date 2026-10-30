@@ -74,7 +74,6 @@ UI_TEXT(FmtClickToTypeScrollToAdjust, "Click to type, scroll to adjust (%s = fas
 UI_TEXT(ToastLatitudeNotUnderstood, "Latitude not understood: %.40s")
 UI_TEXT(ToastLongitudeNotUnderstood, "Longitude not understood: %.40s")
 UI_TEXT(ToastAltitudeNotUnderstood, "Altitude not understood: %.40s")
-UI_TEXT(TipToggleSeaLevelAboveTerrainAltitude, "Toggle sea-level / above-terrain altitude")
 UI_TEXT(NoteMsl, "MSL")
 UI_TEXT(NoteAgl, "AGL")
 UI_TEXT(FmtSatLightSimV, "SAT LIGHT SIM v%s")

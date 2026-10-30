@@ -3458,6 +3458,41 @@ ecl_lon= ecl_lat= [fov=] | place ecl_lon= ecl_lat= alt=` (`occult=0|1` on any). 
 Also fixed with it: `updateStars` counted the twilight sky (and moonlight) from ABOVE the air (x atmFrac now), so from
 orbit with the Sun up every star was gated out.
 
+## HUD popups: Movement and View (2026-10-29, issue 20261029_180413)
+
+`SatelliteSimHudPopups.cpp` (`buildHudPopup`, `hudPopupsTick`), the buttons in `buildRightHudPanel` where the MSL / AGL
+toggle was (`HudMoveBtn`, `HudViewBtn`; icons 41 `movement`, 42 `view`, 43 `pin` from `tools/make_icons.py`). Each opens a
+small rounded panel in the selected-satellite panel's style (`Pal::panelBg`, UI-kit rows, ids `HudPopupPanel:<0|1>`,
+`HudPopupTitle`, `HudPopupPin`). **Unpinned** it sits over its button and closes on any click in the sim
+(`hudPopupsTick`, after the scene pick: a click on UI, the popup included, is not "in the sim"; opening one closes the other
+unpinned one). **Pinned** (the small round pin button, top right) it stays at `HudPopup::x/y`, dragged by its title bar and
+clamped on screen each frame. Persisted: `hud.movement_panel` / `hud.view_panel` {open (only while pinned), pinned, x, y}.
+- **Movement**: Reference frame Earth / Stars (= `inertialStart` / `inertialStop`; "Sun" was considered and not offered: a
+  Sun-fixed frame is the Earth-fixed one turned once a year, and a view on the Sun is Track / the sky-event Watches);
+  Cinematic mode (`cinematicLatched`, settings `hud.right_panel.cinematic_mode`, Settings > Controls > MOVEMENT): the Alt
+  pan-drift on without Alt / RMB (coasting look decays over ~4 s) plus eased WASD, Q/E and zoom (`cineEase`, ~0.9 s up /
+  0.6 s down, `cineSm*`) in the movement block of recordCompute; Altitude gauge MSL / AGL (`altModeSeaLevel`, also Settings >
+  Display).
+- **View**: Exposure slider (-3..+3 EV, detent at 0, Reset) = `cv2ExposureEV`, the Photometry slider ("clouds_v2.exposure_ev");
+  Coronagraph = `inertialOcculter`, no longer gated on the inertial lock (every `inertialActive && inertialOcculter` test
+  is `inertialOcculter`; `hud.right_panel.coronagraph`, Settings > Photometry > EXPOSURE; the Sky events window's "Occult the
+  Sun" is the same switch); Precipitation = `precipParticles` (`clouds_v2.precipitation`, Settings > Weather): only the
+  rain / snow PARTICLES (`recordRainParticles`), the clouds' rain shafts and the rain ambience are unchanged.
+- **The sidereal-mode movement bug (shot 1: "rotate around a singularity", "cannot change altitude")**: with the eye held
+  in ECI (`inertialHold`) `inertialTick` rewrote `obsDir` and `obsHeightOffset` from the held eye every frame and adopted a
+  player change only when `obsDir` moved: Q/E (and the altitude field / scroll) change only `obsHeightOffset`, so they were
+  overwritten at once. The WASD step is a move along `obsFacing` (the view's azimuth) at constant radius: at an orbit-height
+  nadir view (el -88.8 in the report) that azimuth is degenerate and swings with every degree of look, and the step is an
+  orbit about the Earth's centre while the view stays on the stars. Now the tick adopts a height change too (exact compares
+  against `inertialLastObsDir` / `inertialLastHeight`), and with the hold on WASD fly in the camera's own frame
+  (`inertialFly`: forward = the view direction, sideways = the screen's right, the usual height-scaled speed, radius
+  clamped to the ground).
+- Harness: `inertial move [fwd= right= up=]` holds movement input through the real WASD / Q-E code (until the next
+  `inertial move`); `tools/harness/scripts/hud_popups.satcmd` (the report's view, Q/E and WASD in the Stars frame, then every
+  popup row through `ui click`: `HudFrame:<327680|327681>`, `HudCinematic:0`, `HudGauge:<327680|327681>`,
+  `HudExposureTrack`, `HudExposureReset:0`, `HudCoronagraph:0`, `HudPrecip:0`); `ui_lowres.py` has `hud_movepop` /
+  `hud_viewpop` views (passes at all five sizes).
+
 ## Subsystem: Automation harness (2026-09-25)
 
 User guide and command reference: **docs/HARNESS.md** (keep its table in step with

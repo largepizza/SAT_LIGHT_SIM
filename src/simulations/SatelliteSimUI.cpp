@@ -56,6 +56,9 @@ static constexpr int kIconBookmark = 19; // pixel--bookmark.png — the Bookmark
 static constexpr int kIconMissions = 21; // pixel--missions.png — the Missions window (2026-10-19)
 static constexpr int kIconWeather = 22;  // pixel--weather.png — the Weather window (2026-10-23)
 static constexpr int kIconRecord = 31;   // pixel--record.png — record a video (2026-10-25)
+static constexpr int kIconMovement = 41;  // pixel--movement.png - the right HUD's Movement popup (2026-10-29)
+static constexpr int kIconViewPanel = 42; // pixel--view.png - the View popup
+static constexpr int kIconPin = 43;       // pixel--pin.png - pin a popup
 static constexpr int kIconSkyEvents = 32; // pixel--sky-events.png — the Sky events window (2026-10-27); 33-36 its kinds
 
 // The satellite action buttons (the selection panel's, the out-of-view chip's and the info window's)
@@ -657,6 +660,9 @@ void SatelliteSim::loadUiIcons(UIRenderer &ui)
             "assets/icons/ui/pixel--sky-meteors.png",   // 38: meteor showers (SatelliteSimSkyEvents.cpp)
             "assets/icons/ui/pixel--sky-comet.png",     // 39: comets (SatelliteSimSkyEvents.cpp)
             "assets/icons/ui/pixel--sky-supernova.png", // 40: the 2037 Betelgeuse supernova (SatelliteSimStars.cpp)
+            "assets/icons/ui/pixel--movement.png",      // 41: kIconMovement (SatelliteSimHudPopups.cpp too)
+            "assets/icons/ui/pixel--view.png",          // 42: kIconViewPanel
+            "assets/icons/ui/pixel--pin.png",           // 43: kIconPin
         };
         // The count comes from the list itself — the hand-maintained "bump this when you add an icon"
         // number used to be a silent way to drop the last icon of the array.
@@ -751,12 +757,21 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
             cinematicPitchVel = 0.0f;
         }
 
-        bool cinematic = camera.captured && cinematicMode;
+        // (Latched cinematic mode, Movement popup: the pan-drift is on without Alt / RMB, and the coasting look decays
+        // slowly (~4 s) so a glide settles on its own.)
+        bool cinematic = (camera.captured && cinematicMode) || cinematicLatched;
 
         if (cinematic)
         {
             // Let camera.update handle RMB capture/release without applying any rotation.
             camera.update(win, 0.0f, 0.0f);
+
+            if (cinematicLatched)
+            {
+                const float k = expf(-std::min(dt, 0.25f) / 4.0f);
+                cinematicYawVel *= k;
+                cinematicPitchVel *= k;
+            }
 
             // Mouse input adds to velocity as an impulse (kForce fraction of raw delta).
             // Velocity units: pixels-equivalent — same as dmx/dmy — so it slots straight
@@ -885,6 +900,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // they're rare and the more interesting selection; mutually exclusive with satellite selection.
     if (inp.lmbPressed && !ui.mouseOverUI())
         pickAndSelectAt(inp.mouseX, inp.mouseY, inp.screenW, inp.screenH);
+    hudPopupsTick(inp, ui); // an unpinned Movement / View popup closes on a click in the sim
 
     fprof::mark("ui.seg3c_icons_pick");
     buildHarnessConsole(inp, ui);  // the ~ console draws even with the HUD hidden
@@ -907,6 +923,8 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     fprof::mark("ui.seg3_look_pick");
     buildLeftHudPanel(inp, ui);
     buildRightHudPanel(inp, ui);
+    buildHudPopup(inp, ui, 0); // the Movement and View popups (SatelliteSimHudPopups.cpp)
+    buildHudPopup(inp, ui, 1);
     buildSettingsWindow(inp, ui);
     buildViewControlsWindow(inp, ui);
     buildTraceWindow(inp, ui);
@@ -1420,23 +1438,35 @@ void SatelliteSim::buildRightHudPanel(const UIInput &inp, UIRenderer &ui)
                 screenshotToastWarn = true;
             }
         }
-        Clay_Color altBtnBg = hovAltModeToggle ? Pal::btnHover : Pal::btnIdle;
-        CLAY(CLAY_ID("SBAltModeBtn"), {.layout = {
-                                           .sizing = {CLAY_SIZING_FIXED(34), CLAY_SIZING_FIXED(20)},
-                                           .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                       .backgroundColor = altBtnBg,
-                                       .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        // ── Movement and View (2026-10-29): where the MSL / AGL toggle was. Each opens a small popup (buildHudPopup:
+        // pin it to keep it); the altitude gauge moved into the Movement popup. ──
+        auto hudBtn = [&](Clay_ElementId id, Clay_ElementId iconId, int icon, bool &hov, HudPopup &hp, const char *tip)
         {
-            bool n = Clay_Hovered();
-            sndRollover(n, hovAltModeToggle);
-            sndClick(n, inp.lmbPressed);
-            if (n && inp.lmbPressed)
-                altModeSeaLevel = !altModeSeaLevel;
-            hovAltModeToggle = n;
-            ui.tooltip(inp, n, tx(Txt::TipToggleSeaLevelAboveTerrainAltitude), fs(11));
-            CLAY_TEXT(altModeSeaLevel ? txc(Txt::NoteMsl) : txc(Txt::NoteAgl),
-                      CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fs(10)}));
-        }
+            const Clay_Color bg = hp.open ? Pal::btnAccent : (hov ? Pal::btnHover : Pal::panelBgFade);
+            const float sz = (float)kGearSz;
+            CLAY(id, {.layout = {.sizing = {CLAY_SIZING_FIXED(sz), CLAY_SIZING_FIXED(sz)},
+                                 .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                      .backgroundColor = bg,
+                      .cornerRadius = CLAY_CORNER_RADIUS(4)})
+            {
+                const bool n = Clay_Hovered();
+                sndRollover(n, hov);
+                sndClick(n, inp.lmbPressed);
+                if (n && inp.lmbPressed)
+                {
+                    hp.open = !hp.open;
+                    HudPopup &other = (&hp == &hudMove) ? hudView : hudMove;
+                    if (hp.open && !other.pinned)
+                        other.open = false; // one unpinned popup at a time (they share the spot over the buttons)
+                }
+                hov = n;
+                ui.tooltip(inp, n, tip, fs(11));
+                CLAY(iconId, {.layout = {.sizing = {CLAY_SIZING_FIXED(18), CLAY_SIZING_FIXED(18)}},
+                              .image = {.imageData = (void *)(intptr_t)(icon + 1)}}) {}
+            }
+        };
+        hudBtn(CLAY_ID("HudMoveBtn"), CLAY_ID("HudMoveIcon"), kIconMovement, hovHudMoveBtn, hudMove, tx(Txt::TipMovementPanel));
+        hudBtn(CLAY_ID("HudViewBtn"), CLAY_ID("HudViewIcon"), kIconViewPanel, hovHudViewBtn, hudView, tx(Txt::TipViewPanel));
 
         if (!hudCompact_) // (no `return`/`break` in a CLAY block: a plain if)
         {
@@ -4688,6 +4718,10 @@ void SatelliteSim::buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui)
     uiToggleRow(inp, ui, "InvertChk", 2, tx(Txt::LblControllerHorizontal), invertPadX);
     uiToggleRow(inp, ui, "InvertChk", 3, tx(Txt::LblControllerVertical), invertPadY);
 
+    // ── MOVEMENT: the Movement popup's cinematic mode (latched), the same switch ──
+    uiSection("CtrlSec", 5, tx(Txt::SecMovement));
+    uiToggleRow(inp, ui, "CinematicChk", 0, tx(Txt::LblCinematicMovement), cinematicLatched, tx(Txt::TipCinematicMovement));
+
     // ── HELP: the floating quick-reference window no longer opens on its own (demo footage was full of it). ──
     uiSection("CtrlSec", 4, tx(Txt::SecHelp));
     {
@@ -4899,6 +4933,12 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
         static const char *kUnits[2] = {tx(Txt::OptMetric), tx(Txt::OptImperial)};
         if (int c = uiChoiceRow(inp, ui, "Units", 0, tx(Txt::LblUnits), kUnits, 2, unitSystem == UnitSystem::Metric ? 0 : 1); c >= 0)
             unitSystem = c == 0 ? UnitSystem::Metric : UnitSystem::Imperial;
+    }
+    {
+        // The right HUD's altitude readout (also the Movement popup's "Altitude gauge").
+        static const char *kGauge[2] = {tx(Txt::NoteMsl), tx(Txt::NoteAgl)};
+        if (int c = uiChoiceRow(inp, ui, "AltGauge", 0, tx(Txt::LblAltitudeGauge), kGauge, 2, altModeSeaLevel ? 0 : 1); c >= 0)
+            altModeSeaLevel = c == 0;
     }
     if (int c = uiChoiceRow(inp, ui, "UiTheme", 0, tx(Txt::LblUiTheme), kUiThemeNames, (int)UiTheme::Count, uiTheme,
                             tx(Txt::TipPanelColoursNightRedKeepsThe));
@@ -5319,6 +5359,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         };
         uiSection("PhotoSec", 11, tx(Txt::SecExposure));
         buildCloudSliderRows(inp, ui, secExposure, (int)(sizeof(secExposure) / sizeof(secExposure[0])));
+        uiToggleRow(inp, ui, "PhotoCoronagraph", 0, tx(Txt::LblCoronagraph), inertialOcculter, tx(Txt::TipCoronagraph));
     }
     // 2026-10-03: grouped by what they act on (each row keeps its idx: PhotoVal:<idx> etc.).
     struct PhotoGroup
@@ -7125,6 +7166,7 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
                 tx(Txt::TipOnTheDustWallsAreDrawn));
     uiToggleRow(inp, ui, "WxSetOn", 2, tx(Txt::LblWildfireBurnScars), wildfireScars,
                 tx(Txt::TipTheBurntGroundUnderAFire));
+    uiToggleRow(inp, ui, "WxSetOn", 3, tx(Txt::LblPrecipitationParticles), precipParticles, tx(Txt::TipPrecipitationParticles));
     buildCloudSliderSections(inp, ui, sections, (int)(sizeof(sections) / sizeof(sections[0])), 12);
 }
 
@@ -9154,7 +9196,24 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
     // Left/right HUD panels are corner-anchored, not persisted (see buildLeftHudPanel/
     // buildRightHudPanel) — only the right panel's altitude display mode survives.
     if (j.contains("hud") && j["hud"].contains("right_panel"))
-        altModeSeaLevel = j["hud"]["right_panel"].value("alt_mode_sea_level", altModeSeaLevel);
+    {
+        const auto &rp = j["hud"]["right_panel"];
+        altModeSeaLevel = rp.value("alt_mode_sea_level", altModeSeaLevel);
+        cinematicLatched = rp.value("cinematic_mode", cinematicLatched); // the Movement popup's cinematic mode (latched)
+        inertialOcculter = rp.value("coronagraph", inertialOcculter);    // the View popup's coronagraph
+    }
+    if (j.contains("hud") && j["hud"].is_object())
+        for (int w = 0; w < 2; ++w)
+        {
+            const char *k = w ? "view_panel" : "movement_panel";
+            if (!j["hud"].contains(k) || !j["hud"][k].is_object())
+                continue;
+            HudPopup &hp = w ? hudView : hudMove;
+            hp.pinned = j["hud"][k].value("pinned", hp.pinned);
+            hp.open = hp.pinned && j["hud"][k].value("open", hp.open); // only a pinned panel outlives the session
+            hp.x = j["hud"][k].value("x", hp.x);
+            hp.y = j["hud"][k].value("y", hp.y);
+        }
 
     if (j.contains("audio"))
     {
@@ -9616,6 +9675,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2RainAmount = c.value("rain_amount", cv2RainAmount);
         cv2OpticsGain = c.value("optics_gain", cv2OpticsGain);
         cv2RainStreaks = c.value("rain_streaks", cv2RainStreaks);
+        precipParticles = c.value("precipitation", precipParticles);
         // "drop_reach_m": the rain particles' reach (2026-10-04). The old "drop_distance_m" was the per-pixel lattice's
         // last layer (to 512 m, default 128) and is not read: it would have put every saved setting at the 64-m maximum.
         cv2DropDistM = settingClamp(c.value("drop_reach_m", cv2DropDistM), 4.0f, 64.0f);
@@ -9988,7 +10048,9 @@ nlohmann::json SatelliteSim::buildSettingsJson()
 
     // Left/right HUD panels are corner-anchored, not persisted — only the right
     // panel's altitude display mode survives.
-    j["hud"]["right_panel"] = {{"alt_mode_sea_level", altModeSeaLevel}};
+    j["hud"]["right_panel"] = {{"alt_mode_sea_level", altModeSeaLevel}, {"cinematic_mode", cinematicLatched}, {"coronagraph", inertialOcculter}};
+    j["hud"]["movement_panel"] = {{"open", hudMove.open && hudMove.pinned}, {"pinned", hudMove.pinned}, {"x", hudMove.x}, {"y", hudMove.y}};
+    j["hud"]["view_panel"] = {{"open", hudView.open && hudView.pinned}, {"pinned", hudView.pinned}, {"x", hudView.x}, {"y", hudView.y}};
 
     j["audio"] = {
         {"master_vol", audio_ ? audio_->getMasterVolume() : masterVol_},
@@ -10323,6 +10385,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"rain_amount", cv2RainAmount},
         {"optics_gain", cv2OpticsGain},
         {"rain_streaks", cv2RainStreaks},
+        {"precipitation", precipParticles},
         {"drop_reach_m", cv2DropDistM},
         {"rain_particles_k", cv2RainParticlesK},
         {"rain_shutter_ms", cv2RainShutterMs},

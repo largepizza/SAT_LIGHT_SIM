@@ -1589,8 +1589,29 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // clamp keeps combined input from exceeding the analog range WASD alone already implied.
         fwd = glm::clamp(fwd + gpMoveFwd, -1.0f, 1.0f);
         right = glm::clamp(right + gpMoveRight, -1.0f, 1.0f);
+        fwd = glm::clamp(fwd + harnessMove_.x, -1.0f, 1.0f); // (harness: held input through the real movement code)
+        right = glm::clamp(right + harnessMove_.y, -1.0f, 1.0f);
+        // Cinematic mode (latched): the input is EASED, so movement starts and stops gradually (a camera operator's
+        // dolly, not a switch). Time constants: ~0.9 s up to speed, ~0.6 s to rest. Off: the raw input, as always.
+        auto cineEase = [&](float &sm, float target)
+        {
+            if (!cinematicLatched)
+            {
+                sm = target;
+                return target;
+            }
+            const float tau = std::abs(target) > std::abs(sm) ? 0.9f : 0.6f;
+            sm += (target - sm) * (1.0f - expf(-std::min(dt, 0.25f) / tau));
+            if (std::abs(sm) < 1e-3f && target == 0.0f)
+                sm = 0.0f;
+            return sm;
+        };
+        fwd = cineEase(cineSmFwd, fwd);
+        right = cineEase(cineSmRight, right);
 
-        if (!followActive && (fwd != 0.0f || right != 0.0f)) // follow mode moves in updateFollow()
+        if (!followActive && (fwd != 0.0f || right != 0.0f) && inertialActive && inertialHold)
+            inertialFly(fwd, right, speed, dt); // the eye held in ECI: fly in the camera's frame (SatelliteSimInertial.cpp)
+        else if (!followActive && (fwd != 0.0f || right != 0.0f)) // follow mode moves in updateFollow()
         {
             // right tangent = cross(obsFacing, obsDir)  (right-hand rule: forward × up = right)
             glm::vec3 rightDir = glm::normalize(glm::cross(obsFacing, obsDir));
@@ -1613,6 +1634,13 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // max() so pressure directly scales vertical speed without needing its own rate curve.
         float raiseAmt = std::max((glfwGetKey(win, keybindings[KB_RAISE_ELEV].key) == GLFW_PRESS || gpHeld(KB_RAISE_ELEV)) ? 1.0f : 0.0f, gpElevRaise);
         float lowerAmt = std::max((glfwGetKey(win, keybindings[KB_LOWER_ELEV].key) == GLFW_PRESS || gpHeld(KB_LOWER_ELEV)) ? 1.0f : 0.0f, gpElevLower);
+        raiseAmt = std::max(raiseAmt, std::max(harnessMove_.z, 0.0f));
+        lowerAmt = std::max(lowerAmt, std::max(-harnessMove_.z, 0.0f));
+        {
+            const float vert = cineEase(cineSmVert, raiseAmt - lowerAmt); // (cinematic mode: eased like WASD)
+            raiseAmt = std::max(vert, 0.0f);
+            lowerAmt = std::max(-vert, 0.0f);
+        }
         if (!followActive && (raiseAmt > 0.0f || lowerAmt > 0.0f))
         {
             // Additive, NOT max(): a purely proportional rate makes descent an exponential
@@ -1642,11 +1670,14 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // those are movement-speed modifiers, not a zoom concept.
         bool zoomIn = (glfwGetKey(win, keybindings[KB_ZOOM_IN].key) == GLFW_PRESS) || gpHeld(KB_ZOOM_IN);
         bool zoomOut = (glfwGetKey(win, keybindings[KB_ZOOM_OUT].key) == GLFW_PRESS) || gpHeld(KB_ZOOM_OUT);
-        if (zoomIn || zoomOut)
+        if (zoomIn || zoomOut || (cinematicLatched && cineSmZoom != 0.0f))
         {
             constexpr float kZoomRatePerSec = 0.6f; // e-folds/s: ~40 deg/s at 70 deg, as before
-            camera.zoomBy(expf((zoomOut ? 1.0f : -1.0f) * kZoomRatePerSec * dt));
+            const float zt = (zoomOut ? 1.0f : 0.0f) - (zoomIn ? 1.0f : 0.0f);
+            camera.zoomBy(expf(cineEase(cineSmZoom, zt) * kZoomRatePerSec * dt)); // cinematic mode: the zoom eases in and out
         }
+        else
+            cineSmZoom = 0.0f;
     }
 
     float simDt = timePaused ? 0.0f : fabsf(dt * kTimeScales[timeScaleIdx]);

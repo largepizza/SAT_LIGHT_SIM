@@ -192,7 +192,7 @@ void SatelliteSim::recordRainParticles(VkCommandBuffer cmd, VulkanContext &ctx, 
 
     const bool lightRan = cv2LightningRanThisFrame;
     cv2LightningRanThisFrame = false;
-    if (!rainPipeline || !rainDescSet || !lightRan || !cv2FlashMapped || cv2RainStreaks <= 0.0f || eyeAsl > 6000.0)
+    if (!rainPipeline || !rainDescSet || !lightRan || !cv2FlashMapped || cv2RainStreaks <= 0.0f || eyeAsl > 6000.0 || !precipParticles)
         return;
     // Is there anything to draw: rain anywhere in the map around the eye, or diamond dust in sunshine (the
     // previous frame's values, read on the host; the shader uses this frame's).

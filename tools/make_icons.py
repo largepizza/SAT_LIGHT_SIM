@@ -285,6 +285,11 @@ def build_view():
     return b + [cut(disc(24.0, 24.0, 9.0), disc(24.0, 24.0, 3.5))]
 
 
+def build_pin():
+    """Pin: a solid drawing pin (head, body, flange, needle) - keeps a HUD popup on screen (2026-10-29)."""
+    return [rect(15.0, 5.0, 33.0, 11.0), rect(19.0, 11.0, 29.0, 25.0), rect(11.0, 25.0, 37.0, 31.0), rect(22.0, 31.0, 26.0, 45.0)]
+
+
 def build_weather():
     """Weather: a solid storm cloud (three puffs on a flat base), a lightning bolt under it and two rain streaks
     beside the bolt — the Weather window: the radar, the storms (2026-10-23)."""
@@ -473,6 +478,7 @@ ICONS = {
     "storm-cell": build_storm_cell,
     "weather": build_weather,
     "movement": build_movement,
+    "pin": build_pin,
     "view": build_view,
     "missions": build_missions,
     "report": build_report,
@@ -500,7 +506,7 @@ ICONS = {
 # the look of the gear, the camera, play / pause, the crosshair and the eye. Soft-edged thin strokes
 # beside them read as another icon family (the user, 2026-10-03).
 PIXEL_STYLE = {"storm-tornado", "storm-hurricane", "storm-haboob", "storm-supercell", "storm-squall",
-               "storm-waterspout", "storm-fire", "storm-cell", "weather", "movement", "view", "missions", "report", "bookmark", "film", "photo", "record", "maximize", "observer", "spin", "studio",
+               "storm-waterspout", "storm-fire", "storm-cell", "weather", "movement", "view", "pin", "missions", "report", "bookmark", "film", "photo", "record", "maximize", "observer", "spin", "studio",
                "sky-events", "sky-solar", "sky-lunar", "sky-conjunction", "sky-occultation", "sky-moonglint", "sky-meteors", "sky-comet", "sky-supernova"}
 
 

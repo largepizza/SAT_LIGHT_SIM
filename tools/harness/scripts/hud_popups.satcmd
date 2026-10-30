@@ -1,0 +1,81 @@
+# The right HUD's Movement / View popups (SatelliteSimHudPopups.cpp, 2026-10-29, issue 20261029_180413) and the
+# sidereal-mode movement fix. Run: python tools/harness/run.py tools/harness/scripts/hud_popups.satcmd
+#   a*  issue shot 1 (2505 km, looking at the Earth): in the Stars frame (inertial lock, eye held in ECI) the held
+#       movement input goes through the real WASD / Q-E code (`inertial move`): Q/E change the altitude, WASD fly in
+#       the camera's frame, the eye stays inertial (eye_ecl_lon constant while the Earth turns at 5 min/s)
+#   p*  the popups through the real click path: open, dump, pin, drag, set every row, close by a click in the sim
+report load "C:/Code/Shader_Fun/user_data/reports/issue_20261029_180413" shot=1
+wait settle 20
+ui scale 1.5
+inertial on hold=1
+wait 10
+inertial state
+time play
+time scale 5m
+wait 30
+inertial state
+# Q: up for 60 frames
+inertial move up=1
+wait 60
+inertial move
+inertial state
+# E / Q the other way
+inertial move up=-1
+wait 60
+inertial move
+inertial state
+# sideways and forward
+inertial move right=1
+wait 60
+inertial move
+inertial state
+inertial move fwd=1
+wait 60
+inertial move
+inertial state
+capture a_after_move
+time pause
+# ── popups ──
+ui click HudMoveBtn
+wait 5
+ui dump p1_movement
+capture p1_movement ui=on
+ui click HudViewBtn
+wait 5
+ui dump p2_view_replaced_movement
+capture p2_view ui=on
+# the View popup is the open one (opening one closes the other unpinned popup): pin it
+ui click HudPopupPin:1
+wait 3
+ui dump p3_view_pinned
+capture p3_view_pinned ui=on
+ui click HudPopupTitle:1 to_fx=0.1 to_fy=-6 hold=3
+wait 3
+ui dump p4_view_dragged
+capture p4_view_dragged ui=on
+# rows
+ui click HudCoronagraph:0
+ui click HudPrecip:0
+wait 3
+expect hud.right_panel.coronagraph true
+expect clouds_v2.precipitation false
+ui click HudExposureTrack fx=0.75
+wait 3
+get clouds_v2.exposure_ev
+ui click HudExposureReset:0
+wait 3
+expect clouds_v2.exposure_ev 0
+ui click HudMoveBtn
+wait 3
+ui click HudCinematic:0
+ui click HudGauge:327681
+ui click HudFrame:327681
+wait 5
+inertial state
+ui click HudFrame:327680
+wait 3
+expect hud.right_panel.cinematic_mode true
+expect hud.right_panel.alt_mode_sea_level false
+ui dump p5_both
+capture p5_both ui=on
+inertial state
