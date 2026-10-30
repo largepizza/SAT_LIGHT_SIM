@@ -1606,8 +1606,20 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                 sm = 0.0f;
             return sm;
         };
-        fwd = cineEase(cineSmFwd, fwd);
-        right = cineEase(cineSmRight, right);
+        // Cinematic mode: WASD and Q/E are MOMENTUM, not eased targets. Input accelerates the velocity (full speed in
+        // ~0.9 s) and releasing it does NOT slow it down (no drag); the opposite key brakes it. Off: the raw input.
+        auto cineMomentum = [&](float &sm, float target)
+        {
+            if (!cinematicLatched)
+            {
+                sm = target;
+                return target;
+            }
+            sm = glm::clamp(sm + target * std::min(dt, 0.25f) / 0.9f, -1.0f, 1.0f);
+            return sm;
+        };
+        fwd = cineMomentum(cineSmFwd, fwd);
+        right = cineMomentum(cineSmRight, right);
 
         if (!followActive && (fwd != 0.0f || right != 0.0f) && inertialActive && inertialHold)
             inertialFly(fwd, right, speed, dt); // the eye held in ECI: fly in the camera's frame (SatelliteSimInertial.cpp)
@@ -1637,7 +1649,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         raiseAmt = std::max(raiseAmt, std::max(harnessMove_.z, 0.0f));
         lowerAmt = std::max(lowerAmt, std::max(-harnessMove_.z, 0.0f));
         {
-            const float vert = cineEase(cineSmVert, raiseAmt - lowerAmt); // (cinematic mode: eased like WASD)
+            const float vert = cineMomentum(cineSmVert, raiseAmt - lowerAmt); // (cinematic mode: momentum like WASD)
             raiseAmt = std::max(vert, 0.0f);
             lowerAmt = std::max(-vert, 0.0f);
         }

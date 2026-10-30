@@ -3470,8 +3470,7 @@ clamped on screen each frame. Persisted: `hud.movement_panel` / `hud.view_panel`
 - **Movement**: Reference frame Earth / Stars (= `inertialStart` / `inertialStop`; "Sun" was considered and not offered: a
   Sun-fixed frame is the Earth-fixed one turned once a year, and a view on the Sun is Track / the sky-event Watches);
   Cinematic mode (`cinematicLatched`, settings `hud.right_panel.cinematic_mode`, Settings > Controls > MOVEMENT): the Alt
-  pan-drift on without Alt / RMB (the coasting look has no drag since 2026-10-29; the mouse steers only while the look button is held) plus eased WASD, Q/E and zoom (`cineEase`, ~0.9 s up /
-  0.6 s down, `cineSm*`) in the movement block of recordCompute; Altitude gauge MSL / AGL (`altModeSeaLevel`, also Settings >
+  pan-drift on without Alt / RMB (the coasting look has no drag since 2026-10-29; the mouse steers only while the look button is held) plus momentum WASD / Q/E (`cineMomentum`: input accelerates to full speed in ~0.9 s, releasing does not slow it, the opposite key brakes; 2026-10-30) and eased zoom (`cineEase`, `cineSm*`) in the movement block of recordCompute; Altitude gauge MSL / AGL (`altModeSeaLevel`, also Settings >
   Display).
 - **View**: Exposure slider (-3..+3 EV, detent at 0, Reset) = `cv2ExposureEV`, the Photometry slider ("clouds_v2.exposure_ev");
   Coronagraph = `inertialOcculter`, no longer gated on the inertial lock (every `inertialActive && inertialOcculter` test
