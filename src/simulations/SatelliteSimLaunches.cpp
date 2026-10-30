@@ -648,6 +648,11 @@ struct SatelliteSim::LaunchState
     bool deployOn = false;
     std::vector<Track> booster; // per vehicle (its own recovery)
     std::vector<Track> boosterRtls; // per vehicle: back to the pad (a droneship vehicle with rtls_max_kg; else empty)
+    // Staging geometry (2026-10-30, issue 20261030_134600), from the rocket models (tools/make_rocket_models.py):
+    // per model id the top of the model above its origin (the aft end); per vehicle the upper stage's origin above the
+    // booster's in the stack (the stack's top less the upper model's: Starship 72.32 m) and the booster's length.
+    std::map<std::string, double> rocketZTop;
+    std::vector<double> sepM, boostLenM;
     std::map<std::pair<int, int>, Track> upper; // (vehicle, park km)
     std::unordered_map<uint64_t, LBatch> batches;
     // A batch's launch before pad deconfliction (vehicle, site, the plane's next pass over it), cached by batch key.
@@ -887,7 +892,24 @@ void SatelliteSim::launchInitBlock(bool keepPlanes)
         }
     }
     if (!launchState)
+    {
         launchState.reset(new LaunchState());
+        // The rocket models' tops (staging geometry: the catalog reads them when it loads, ensureCatalog).
+        for (const auto &kv : rocketTypes)
+            if (kv.first.rfind("rocket_", 0) == 0 && kv.second >= 0 && (size_t)kv.second < satTypes.size() &&
+                satTypes[(size_t)kv.second].model)
+            {
+                double zMax = -1e30;
+                for (const SatComponent &c : satTypes[(size_t)kv.second].model->components)
+                {
+                    const bool revolved = c.prim == PrimitiveKind::Cone || c.prim == PrimitiveKind::Cylinder ||
+                                          c.prim == PrimitiveKind::Profile;
+                    zMax = std::max(zMax, (double)c.position.z + (revolved ? 0.5 * c.height : 0.0));
+                }
+                if (zMax > 0.0)
+                    launchState->rocketZTop[kv.first] = zMax;
+            }
+    }
     LaunchState &L = *launchState;
     {
         FPROF_SCOPE("launch.initBlock.joinBuildJob");
@@ -989,6 +1011,13 @@ static void ensureCatalog(SatelliteSim::LaunchState &L)
         {
             L.booster.push_back(launch::boosterTrack(v));
             L.boosterRtls.push_back(v.recovery == 2 && v.rtlsMaxKg > 0.0 ? launch::boosterTrack(v, 1, 0.0) : Track{});
+            auto top = [&](const char *part) {
+                auto it = L.rocketZTop.find("rocket_" + v.id + part);
+                return it == L.rocketZTop.end() ? -1.0 : it->second;
+            };
+            const double zs = top("_stack"), zu = top("_upper"), zb = top("_booster");
+            L.sepM.push_back(zs > 0.0 && zu > 0.0 ? std::max(zs - zu, 0.0) : 0.0);
+            L.boostLenM.push_back(zb > 0.0 ? zb : 40.0);
         }
     loadCoasts(L);
     buildPads(L);
@@ -3133,6 +3162,7 @@ static bool rocketPos(const SatelliteSim::LaunchState &L, const LBatch &B, int s
             else if (B.landKind == kLandShip && tau > tr.tEnd - 6.0)
                 E += glm::smoothstep(tr.tEnd - 6.0, tr.tEnd, tau) *
                      (shipDeckEcef(B, t, 0.0, 0.0, B.deckM + vh.legM) - (kR + B.deckM + vh.legM) / kR * shipEcef(B, t));
+            E += boosterPivotShiftEcef(L, B, tau); // the flip about its centre of mass
         }
         P = ecefToEci(E, t);
         return true;
@@ -3165,7 +3195,7 @@ static bool rocketPos(const SatelliteSim::LaunchState &L, const LBatch &B, int s
         {
             const glm::dvec2 pb = bt.at(vh.t1), pu = up.at(vh.t1);
             const glm::dvec3 d = trackEcef(B, pb.x, pb.y) - trackEcef(B, pu.x, pu.y);
-            Pg += ecefToEci(d, t) * (1.0 - sm);
+            Pg += ecefToEci(d + stageSepEcef(L, B, tau, p.x), t) * (1.0 - sm);
         }
         P = glm::mix(Pg, Pi, sm);
         if (burn && tau > vh.t1 + 4.0)
@@ -3195,6 +3225,33 @@ static bool rocketPos(const SatelliteSim::LaunchState &L, const LBatch &B, int s
         *burn = launch::BURN_UPPER;
     (void)vh;
     return true;
+}
+
+// The upper stage where it sits on the stack and its separation (2026-10-30, issue 20261030_134600: both stages' track
+// points are their aft ends and coincided at staging, so the ship appeared inside the booster). Earth-fixed metres from
+// the upper track's point (x = its downrange arc): along the stack's axis (the booster's smoothed pitch at tau, held
+// at MECO's after it, in the local frame at x) by the upper stage's height on the stack (sepM: its aft end on the
+// booster's top, Starship's hot-staging ring) plus the separation: the stages part at kSepV relative speed reached over
+// kSepRampS (a smooth push, peak 1.5 kSepV / kSepRampS = 12 m/s^2, the upper stage's ignition / hot staging). The
+// caller fades the whole term out with the blend into the inertial plane (rocketPos), which carries it to zero at SECO.
+static constexpr double kSepV = 40.0, kSepRampS = 5.0;
+static glm::dvec3 stageSepEcef(const SatelliteSim::LaunchState &L, const LBatch &B, double tau, double xUpper)
+{
+    if ((size_t)B.veh >= L.sepM.size() || L.sepM[B.veh] <= 0.0)
+        return glm::dvec3(0.0);
+    const launch::Vehicle &vh = L.cat.vehicles[B.veh];
+    const double dt = tau - vh.t1;
+    double r = L.sepM[B.veh];
+    if (dt > 0.0)
+    {
+        const double s = dt / kSepRampS;
+        r += s < 1.0 ? kSepV * kSepRampS * (s * s * s - 0.5 * s * s * s * s) : kSepV * (dt - 0.5 * kSepRampS);
+    }
+    const double psi = boosterPsi(L, B, std::min(tau, vh.t1));
+    const double a = xUpper / kR;
+    const glm::dvec3 up = std::cos(a) * B.G0 + std::sin(a) * B.Eaz;
+    const glm::dvec3 dr = -std::sin(a) * B.G0 + std::cos(a) * B.Eaz;
+    return r * (std::cos(psi) * dr + std::sin(psi) * up);
 }
 
 // The deorbit ellipse's apoapsis: the impulsive equivalent of the finite burn, at its middle (the thrust profile below
@@ -3338,7 +3395,61 @@ static glm::dvec3 upperNoseRaw(const SatelliteSim::LaunchState &L, const LBatch 
     return std::cos(ph) * vh1 + std::sin(ph) * upp;
 }
 
-// The nose (ECI, unit), smoothed (the booster over 10 s, the upper stage 6 s): no snap at staging, at a burn's start or end, or into orbit.
+// The booster's pitch (boosterPitchRaw's branch), smoothed: a causal Hann window kBoosterTurnS long over the raw pitch
+// sampled on a FIXED 0.5-s grid of tau (the track's own samples). A step in the raw pitch (the 180-degree flip after
+// MECO, a burn's start) becomes a slew whose angular rate is the window's bell (peak 2 x step / kBoosterTurnS: 22.5
+// deg/s for the flip) and whose angular acceleration starts and ends at zero; and as tau moves the weights slide
+// continuously over the fixed samples, so nothing steps between frames. (2026-10-30, issue 20261030_134600: a 10-s box
+// average over 21 samples taken at tau - 0.5 k moved each sample past the step as tau crossed it: the flip came out as
+// 9-degree jumps every 0.5 s, "extremely choppy".)
+static constexpr double kBoosterTurnS = 16.0;
+static double boosterPsi(const SatelliteSim::LaunchState &L, const LBatch &B, double tau)
+{
+    const double h = 0.5;
+    const int k1 = (int)std::floor(tau / h), k0 = (int)std::floor((tau - kBoosterTurnS) / h) + 1;
+    double sum = 0.0, wsum = 0.0;
+    for (int k = k0; k <= k1; ++k)
+    {
+        const double s = std::sin(glm::pi<double>() * (tau - h * (double)k) / kBoosterTurnS);
+        const double w = s * s;
+        if (w <= 0.0)
+            continue;
+        sum += w * boosterPitchRaw(L, B, h * (double)k);
+        wsum += w;
+    }
+    return wsum > 0.0 ? sum / wsum : boosterPitchRaw(L, B, tau);
+}
+// The booster's axis (Earth-fixed, unit) at pitch psi in its trajectory's vertical plane where it is at tau.
+static glm::dvec3 boosterAxisEcef(const SatelliteSim::LaunchState &L, const LBatch &B, double tau, double psi)
+{
+    const Track &tr = boosterTr(L, B);
+    const glm::dvec2 p = tr.at(glm::clamp(tau, 0.0, tr.tEnd));
+    const double a = p.x / kR;
+    const glm::dvec3 up = std::cos(a) * B.G0 + std::sin(a) * B.Eaz;  // Earth-fixed, at the booster
+    const glm::dvec3 dr = -std::sin(a) * B.G0 + std::cos(a) * B.Eaz; // downrange there
+    return std::cos(psi) * dr + std::sin(psi) * up;
+}
+// The booster turns about its centre of mass, not its aft end (the track point; 2026-10-30): an empty booster's CoM
+// stands ~0.3 of its length up (the engines). From staging the aft end is moved by zc (n_stack - n) (n_stack = the axis
+// at the stack's pitch at MECO), so the CoM stays on the track through the flip; the shift fades out over 40 s after the
+// flip (<= 2 zc, ~45 m for Super Heavy, at a few m/s) so the track's own point is the aft end again for the burns and
+// the landing. Earth-fixed metres to add to the track's point; 0 outside [t1, t1 + 1 + kBoosterTurnS + 40].
+static glm::dvec3 boosterPivotShiftEcef(const SatelliteSim::LaunchState &L, const LBatch &B, double tau)
+{
+    const launch::Vehicle &vh = L.cat.vehicles[B.veh];
+    const double tA = vh.t1, tB = vh.t1 + 1.0 + kBoosterTurnS, tC = tB + 40.0;
+    if (tau <= tA || tau >= tC || (size_t)B.veh >= L.boostLenM.size())
+        return glm::dvec3(0.0);
+    const Track &tr = boosterTr(L, B);
+    if (vh.t1 > tr.tEnd || tau >= tr.tEnd)
+        return glm::dvec3(0.0);
+    const double zc = 0.3 * L.boostLenM[B.veh];
+    const double w = 1.0 - glm::smoothstep(tB, tC, tau);
+    const double psi1 = boosterPsi(L, B, vh.t1), psi = boosterPsi(L, B, tau);
+    return zc * w * (boosterAxisEcef(L, B, tau, psi1) - boosterAxisEcef(L, B, tau, psi));
+}
+
+// The nose (ECI, unit), smoothed (the booster: boosterPsi; the upper stage 6 s): no snap at staging, at a burn's start or end, or into orbit.
 // Zero when the stage is not flying.
 static glm::dvec3 stageNose(const SatelliteSim::LaunchState &L, const LBatch &B, int stage, double tau)
 {
@@ -3347,23 +3458,12 @@ static glm::dvec3 stageNose(const SatelliteSim::LaunchState &L, const LBatch &B,
         glm::dvec3 Pe;
         if (!rocketPos(L, B, 0, tau, Pe))
             return glm::dvec3(0.0);
-        double sum = 0.0, wsum = 0.0;
-        for (int k = 0; k <= 20; ++k)
-        {
-            const double w = (k == 0 || k == 20) ? 0.5 : 1.0;
-            sum += w * boosterPitchRaw(L, B, tau - 0.5 * (double)k);
-            wsum += w;
-        }
-        const double psi = sum / wsum;
         const Track &tr = boosterTr(L, B);
         // Landed (in the tower, on its zone, on a ship's deck riding home): upright where it stands.
         if (tau >= tr.tEnd && tr.landed)
             return glm::normalize(Pe);
-        const glm::dvec2 p = tr.at(glm::clamp(tau, 0.0, tr.tEnd));
-        const double a = p.x / kR;
-        const glm::dvec3 up = std::cos(a) * B.G0 + std::sin(a) * B.Eaz;  // Earth-fixed, at the booster
-        const glm::dvec3 dr = -std::sin(a) * B.G0 + std::cos(a) * B.Eaz; // downrange there
-        return ecefToEci(std::cos(psi) * dr + std::sin(psi) * up, B.tL + std::max(tau, 0.0));
+        const double psi = boosterPsi(L, B, tau);
+        return ecefToEci(boosterAxisEcef(L, B, tau, psi), B.tL + std::max(tau, 0.0));
     }
     glm::dvec3 sum(0.0);
     for (int k = 0; k < 7; ++k)
@@ -14848,7 +14948,70 @@ nlohmann::json SatelliteSim::launchTraceBatchJson(uint64_t key)
         const glm::dvec2 bp = btr.at(vh.t1);
         p["downrange_km"] = bp.x / 1000.0;
         p["downrange_spec_km"] = vh.x1 / 1000.0;
-        p["stage_gap_m"] = glm::length(Pb - Pu);
+        // (2026-10-30) The upper stage starts ON the stack: its aft end sepM along the stack's axis from the booster's.
+        // stage_gap_m is its distance from that place; stack_offset_m the offset itself.
+        const double sepM = (size_t)B.veh < L.sepM.size() ? L.sepM[B.veh] : 0.0;
+        const glm::dvec3 nS = LaunchImpl::stageNose(L, B, 0, vh.t1);
+        p["stack_offset_m"] = sepM;
+        p["stage_gap_m"] = glm::length(Pb + sepM * nS - Pu);
+        p["upper_along_axis_m"] = glm::dot(Pu - Pb, nS);
+        // Clearance after separation: the distance between the two bodies' axes (booster: aft end + its length along
+        // its nose; upper: aft end + 20 m) over the first 40 s (min after the first second), and the gap at +5 s.
+        {
+            const double lb = (size_t)B.veh < L.boostLenM.size() ? L.boostLenM[B.veh] : 40.0;
+            auto segDist = [](glm::dvec3 p0, glm::dvec3 p1, glm::dvec3 q0, glm::dvec3 q1) {
+                double best = 1e30;
+                for (int i = 0; i <= 40; ++i)
+                {
+                    const glm::dvec3 a = glm::mix(p0, p1, i / 40.0);
+                    const glm::dvec3 u = q1 - q0;
+                    const double s = glm::clamp(glm::dot(a - q0, u) / std::max(glm::dot(u, u), 1e-9), 0.0, 1.0);
+                    best = std::min(best, glm::length(a - (q0 + s * u)));
+                }
+                return best;
+            };
+            double minC = 1e30, minAt = 0.0;
+            for (double dt = 1.0; dt <= 40.0; dt += 0.1)
+            {
+                glm::dvec3 xb, xu;
+                if (!LaunchImpl::rocketPos(L, B, 0, vh.t1 + dt, xb) || !LaunchImpl::rocketPos(L, B, 1, vh.t1 + dt, xu))
+                    continue;
+                const glm::dvec3 nb = LaunchImpl::stageNose(L, B, 0, vh.t1 + dt), nu = LaunchImpl::stageNose(L, B, 1, vh.t1 + dt);
+                const double c = segDist(xb, xb + lb * nb, xu, xu + 20.0 * nu);
+                if (c < minC)
+                {
+                    minC = c;
+                    minAt = dt;
+                }
+            }
+            p["sep_axis_clearance_min_m"] = minC;
+            p["sep_axis_clearance_min_at_s"] = minAt;
+            glm::dvec3 xb5, xu5;
+            LaunchImpl::rocketPos(L, B, 0, vh.t1 + 5.0, xb5);
+            LaunchImpl::rocketPos(L, B, 1, vh.t1 + 5.0, xu5);
+            p["sep_gap_5s_m"] = glm::length(xu5 - xb5) - sepM;
+        }
+        // The booster's flip at the frame rate: the fastest turn of its nose and the largest change of that rate
+        // (angular acceleration), sampled every 1/60 s over the first 80 s after staging.
+        {
+            double rMax = 0.0, aMax = 0.0, prevRate = -1.0;
+            glm::dvec3 prev = LaunchImpl::stageNose(L, B, 0, vh.t1);
+            const double h = 1.0 / 60.0;
+            for (double tt = vh.t1 + h; tt < vh.t1 + 80.0; tt += h)
+            {
+                const glm::dvec3 n = LaunchImpl::stageNose(L, B, 0, tt);
+                if (glm::length(n) < 0.5 || glm::length(prev) < 0.5)
+                    break;
+                const double rate = glm::degrees(std::acos(glm::clamp(glm::dot(n, prev), -1.0, 1.0))) / h;
+                rMax = std::max(rMax, rate);
+                if (prevRate >= 0.0)
+                    aMax = std::max(aMax, std::abs(rate - prevRate) / h);
+                prevRate = rate;
+                prev = n;
+            }
+            p["booster_flip_rate_max_deg_s"] = rMax;
+            p["booster_flip_accel_max_deg_s2"] = aMax;
+        }
         glm::dvec3 a0, a1, b0, b1;
         LaunchImpl::rocketPos(L, B, 0, vh.t1 - 1.0, a0);
         LaunchImpl::rocketPos(L, B, 0, vh.t1, a1);

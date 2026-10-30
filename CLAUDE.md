@@ -6531,7 +6531,14 @@ launches follow per-program cadences (no real manifest).
 - **Rockets** (`rocketPos`): the booster's whole flight is a 2D track (downrange along the ground azimuth, altitude:
   the ascent's closed form to MECO, then gravity + drag + boostback (secant-solved to land on the pad for
   `booster: return`), entry and landing burns); the upper stage blends from that ground track into the inertial plane
-  by SECO and then flies the parking orbit (`thIns`). Drawn as point sprites in kFireBuf (the flame's magnitude at
+  by SECO and then flies the parking orbit (`thIns`). **Staging** (2026-10-30, issue 20261030_134600): both tracks'
+  points are their stages' AFT ends, so the upper stage starts where it sat on the stack (`stageSepEcef`): its aft end
+  `LaunchState::sepM` along the stack's axis from the booster's (the stack model's top less the upper model's, read
+  from the rocket models when the launch state is made: Starship 72.32 m, on the hot-staging ring), and the stages part
+  at 40 m/s reached over 5 s (a smooth push, peak 12 m/s^2); the term fades out with the blend into the inertial plane,
+  zero at SECO. Until then the ship appeared inside the booster. `launch trace` -> meco_staging `stack_offset_m`,
+  `stage_gap_m` (from where it sat), `sep_axis_clearance_min_m`, `sep_gap_5s_m`, `booster_flip_rate_max_deg_s` and
+  `booster_flip_accel_max_deg_s2` (sampled at 1/60 s). Drawn as point sprites in kFireBuf (the flame's magnitude at
   100 km per stage; a coasting stage sunlit), an emissive Gaussian flame and a dim orange glow of the exhaust it lights.
   **Every upper stage deorbits** (2026-10-19, issue 20261019_180502): 30-90 min after deploying it pitches over to
   retrograde (120 s, through the vertical), burns for `burnDur` (dv to a perigee of 20 km, 45 km for a returning ship,
@@ -6577,8 +6584,14 @@ launches follow per-program cadences (no real manifest).
   after their deorbit burn (the real Falcon 9 dump spirals).
 - **Attitude** (`stageNose`, 2026-10-19): the booster's nose is a pitch angle in its trajectory's vertical plane
   (`boosterPitchRaw`: along the velocity on the way up, engines first after staging, along the thrust in its burns,
-  upright for landing; branch [-90, 270) deg so nothing wraps), averaged over 10 s: the flip after MECO and the flip
-  back after an RTLS boostback both pass through the vertical at <= ~18 deg/s. The upper stage (`upperNoseRaw`):
+  upright for landing; branch [-90, 270) deg so nothing wraps), smoothed by `boosterPsi`: a causal Hann window
+  (`kBoosterTurnS` 16 s) over the raw pitch sampled on a FIXED 0.5-s grid of tau, so a step (the flip after MECO, a
+  burn's start) is a slew whose turn rate is the window's bell (the 180-deg flip peaks at 22.5 deg/s) and whose angular
+  acceleration starts and ends at zero, and nothing steps between frames (2026-10-30, issue 20261030_134600: the
+  10-s box over samples at tau - 0.5 k moved each sample past the step as tau crossed it, so the flip came in
+  9-degree jumps every 0.5 s). The booster turns about its centre of mass (0.3 of its length up), not its aft end:
+  `boosterPivotShiftEcef` moves the track point by zc (n_stack - n) from MECO, fading out over the 40 s after the flip.
+  The upper stage (`upperNoseRaw`):
   its velocity to orbit and in orbit, the deorbit pitch schedule above, averaged over 6 s. Averaging nose VECTORS (the
   first cut) spun the booster ~340 deg/s after an RTLS boostback, where engines-first and the thrust point opposite
   ways; before that the axis switched instantly at staging and for the deorbit burn.
@@ -7007,7 +7020,8 @@ launches follow per-program cadences (no real manifest).
   between the list's time and the frame's), the free aim turns with the eased jump so the object stays where it was
   on screen (`followHandViewA/B` in `updateFollow`), and the upper stage's blend from the ground track into its
   inertial plane starts AT staging from the booster track's point (`rocketPos`; it began 60 s early on its own track:
-  a ~4-km jump at separation, the rocket left the frame). Staging is now a 0-m handover; the ship's entry still
+  a ~4-km jump at separation, the rocket left the frame). Staging hands over across the stack's upper part (the
+  upper stage starts where it sat on the stack: Starship 72 m above the stack's aft end), eased; the ship's entry still
   jumps ~0.5 km (its own entry model) and an expendable stage's fireball ~2.7 km (the Kessler fireball placement),
   eased with the object held on screen. Harness `state` -> `selection.panel_lines` / `viewer_sat`.
   Verified (harness_runs/gk/mission.satcmd): a Starship
