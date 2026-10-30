@@ -37,7 +37,7 @@ WIN_NAMES = {0: "settings", 1: "controls", 2: "trace", 3: "viewer", 4: "info", 5
 
 # HUD elements that must not overlap each other (the bottom panels, the out-of-view selection chip, follow mode's bar,
 # the "Go to ... again" chip, the cinematic bar)
-HUD_IDS = ("LeftPanel", "RightPanel", "SelSatChip", "FollowAgainBtn", "FollowHud", "CineHud")
+HUD_IDS = ("LeftPanel", "RightPanel", "HudPopupPanel", "SelSatChip", "FollowAgainBtn", "FollowHud", "CineHud")
 
 SETTINGS_TABS = ["Display", "Controls", "Sound", "Constellations", "Photometry", "Clouds", "Weather",
                  "Atmosphere", "Terrain", "Night lights", "Ocean", "Beams", "Performance", "Attributions", "Launches", "Sky"]
@@ -47,6 +47,9 @@ ISS = 'select const "International Space Station"'
 def views():
     """(name, commands before the dump, commands after) for each view, in order."""
     v = [("hud", [], []), ("hud_sel", [ISS, "wait 5"], [])]
+    # The right HUD's Movement / View popups (2026-10-29): open over their buttons, closed again by the same button.
+    v.append(("hud_movepop", ["ui click HudMoveBtn", "wait 5"], ["ui click HudMoveBtn", "wait 2"]))
+    v.append(("hud_viewpop", ["ui click HudViewBtn", "wait 5"], ["ui click HudViewBtn", "wait 2"]))
     for t in SETTINGS_TABS:
         v.append(("set_" + t.lower().replace(" ", "").replace("&", "and"), [f'ui open settings tab="{t}"', "wait 4"], ["ui close settings"]))
     # Settings search (2026-10-28): a query listing rows from many tabs.

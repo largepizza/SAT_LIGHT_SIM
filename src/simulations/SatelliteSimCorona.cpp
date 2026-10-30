@@ -222,7 +222,7 @@ void SatelliteSim::fillCorona(double simT)
     }
     coronaCmes = m;
 
-    const bool occ = inertialActive && inertialOcculter;
+    const bool occ = inertialOcculter;
     g.corInfo = glm::vec4((float)act, (float)(days * 0.07 - std::floor(days * 0.07)), (float)n, occ ? 1.0f : 0.0f);
     g.corInfo2 = glm::vec4((float)m, (float)betaE, (float)betaW, coronaDisplayLift);
 }
