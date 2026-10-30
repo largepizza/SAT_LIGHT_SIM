@@ -3086,6 +3086,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   sections: `buildCloudSliderSections(..., base)` — each tab owns a range of `cloudSectionOpen` slots
   (Clouds 0-11, Weather 12-23, Atmosphere 24-29, Terrain 30-35; `kCloudSectionSlots` 48). Moving a slider
   between tabs changes nothing else: its slot and settings key stay.
+- **2026-10-30 (issue 20261029_205641, UI cleanup):** `uiFold` (SatelliteSimUI.cpp) = a foldable `uiSection` for hand-built rows (Sky and Photometry tabs; folded on open, a search shows all). Sun's Fury is sky-event kind `cme` (the Missions card is gone; Watch = `missionsGoToFury(1)`). Sky events lost the lock-view button. Screenshot / HQ icons are `pixel--camera` / `pixel--photo` from make_icons.py (same camera; the HQ adds a star). Not done: Photometry's Milky Way / scattering rows have not moved to Sky; the Weather / Atmosphere / Night lights / Ocean / Beams reorganisation, the space-weather tab and the Great Comet meteor storm are open.
 - **Settings round-up + search (2026-10-28, issues 20261028_222345 / _222628).** Rule: **every control that changes the
   look has a Settings row** (windows may keep convenience copies: the Weather window's Controls tab). **Sky (16)**: stars
   (`stars.*`), planets (moved from Constellations, + `planets.disc_gain`), the Moon (size / relief / shadows, moved from

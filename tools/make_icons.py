@@ -196,17 +196,46 @@ def build_track():
     return shapes
 
 
+def _camera_shapes():
+    """The solid camera both picture buttons share (same body, same size: they sit side by side): lens punched
+    out of the body, a dot inside, the viewfinder hump on top."""
+    body = rect(4.0, 19.0, 44.0, 43.0)
+    hump = rect(13.0, 14.0, 27.0, 19.0)
+    lens_hole = disc(24.0, 31.0, 9.0)
+    return [cut(lambda px, py: body(px, py) or hump(px, py), lens_hole),
+            disc(24.0, 31.0, 5.0)]
+
+
+def build_camera():
+    """Screenshot: the solid camera (2026-10-30: replaces camera-solid.png, a different size from the HQ one)."""
+    return _camera_shapes()
+
+
+def star5(cx, cy, r_out, r_in):
+    """A solid 5-point star (point up), for a pixel grid: the HQ mark."""
+    pts = []
+    for i in range(10):
+        a = -math.pi / 2 + i * math.pi / 5
+        rr = r_out if i % 2 == 0 else r_in
+        pts.append((cx + rr * math.cos(a), cy + rr * math.sin(a)))
+
+    def hit(px, py):
+        inside = False
+        j = len(pts) - 1
+        for i in range(len(pts)):
+            xi, yi = pts[i]
+            xj, yj = pts[j]
+            if (yi > py) != (yj > py) and px < (xj - xi) * (py - yi) / (yj - yi) + xi:
+                inside = not inside
+            j = i
+        return inside
+    return hit
+
+
 def build_photo():
-    """HQ photo: a solid camera (the screenshot icon's family: lens punched out, a dot inside) with a
-    sparkle at its top right — the "quality" mark that keeps it apart from camera-solid.png beside it."""
-    body = rect(4.0, 17.0, 36.0, 41.0)
-    hump = rect(10.0, 12.0, 22.0, 17.0)
-    lens_hole = disc(20.0, 29.0, 8.0)
-    return [
-        cut(lambda px, py: body(px, py) or hump(px, py), lens_hole),
-        disc(20.0, 29.0, 4.5),                 # the lens
-        sparkle(40.0, 9.5, 8.5, 0.8),         # the "HQ" sparkle (0.8: fat enough for the pixel grid)
-    ]
+    """HQ photo: the same camera as the screenshot button with a star at its top right (2026-10-30: a 5-point
+    star, bigger, instead of the sparkle that read as a smudge at 16 px)."""
+    return _camera_shapes() + [star5(40.0, 9.0, 9.0, 4.0)]
 
 
 def build_film():
@@ -485,6 +514,7 @@ ICONS = {
     "bookmark": build_bookmark,
     "film": build_film,
     "photo": build_photo,
+    "camera": build_camera,
     "record": build_record,
     "maximize": build_maximize,
     "observer": build_observer,
@@ -506,7 +536,7 @@ ICONS = {
 # the look of the gear, the camera, play / pause, the crosshair and the eye. Soft-edged thin strokes
 # beside them read as another icon family (the user, 2026-10-03).
 PIXEL_STYLE = {"storm-tornado", "storm-hurricane", "storm-haboob", "storm-supercell", "storm-squall",
-               "storm-waterspout", "storm-fire", "storm-cell", "weather", "movement", "view", "pin", "missions", "report", "bookmark", "film", "photo", "record", "maximize", "observer", "spin", "studio",
+               "storm-waterspout", "storm-fire", "storm-cell", "weather", "movement", "view", "pin", "missions", "report", "bookmark", "film", "photo", "camera", "record", "maximize", "observer", "spin", "studio",
                "sky-events", "sky-solar", "sky-lunar", "sky-conjunction", "sky-occultation", "sky-moonglint", "sky-meteors", "sky-comet", "sky-supernova"}
 
 

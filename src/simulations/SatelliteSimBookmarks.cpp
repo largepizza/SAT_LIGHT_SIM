@@ -646,13 +646,13 @@ void SatelliteSim::buildBookmarksWindow(const UIInput &inp, UIRenderer &ui)
                                                     .padding = {0, 8, 4, 4},
                                                     .childGap = 8,
                                                     .layoutDirection = CLAY_TOP_TO_BOTTOM},
-                                         .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}})
+                                         .clip = {.horizontal = true, .vertical = true, .childOffset = Clay_GetScrollOffset()}})
                 {
                     if (bookmarks_.empty())
                         text(tx(Txt::NoteNoBookmarksYet), Pal::textDim, 12);
                     // Columns from the list's width in the last layout (Clay has no wrapping rows).
                     const Clay_ElementData ld = Clay_GetElementData(CLAY_ID("BmList"));
-                    const float listW = std::max(200.0f, (ld.found ? ld.boundingBox.width : bmChrome.w - 24.0f) - 8.0f);
+                    const float listW = std::max(200.0f, std::min(ld.found ? ld.boundingBox.width : 1e9f, bmChrome.w - 24.0f) - 8.0f); // (2026-10-30: never wider than the window, or the columns fed their own width back)
                     const float gap = 8.0f, want = (float)fs(11) * 16.0f;
                     const int cols = std::max(1, (int)((listW + gap) / (want + gap)));
                     const float cardW = std::floor((listW - gap * (cols - 1)) / cols);

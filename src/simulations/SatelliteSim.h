@@ -7682,6 +7682,9 @@ private:
     // (`key`, index), so a helper needs no hover member of its own: the previous frame's hover (for the rollover
     // sound) lives in uiHov_.
     void uiSection(const char *key, int idx, const char *title);
+    // A foldable uiSection (2026-10-30: the Clouds tab's "+ / -" headers for hand-built rows): returns whether its rows
+    // are shown. Starts folded; with a search it is a plain heading and always "open".
+    bool uiFold(const UIInput &inp, const char *key, int idx, const char *title);
     void uiKV(const char *key, int idx, const char *label, const char *value, float labelW = 0.0f,
               const Clay_Color *valueColor = nullptr); // nullptr = Pal::volValue
     void uiStatTile(const char *key, int idx, const char *label, const char *value, Clay_Color valueColor);
@@ -7696,6 +7699,7 @@ private:
                      const char *const *options, int count, int current, const char *tip = nullptr);
     bool uiHovRoll(uint32_t id, bool nowHov);   // rollover sound + the hover memory; returns nowHov
     std::unordered_map<uint32_t, bool> uiHov_;
+    std::unordered_map<uint32_t, bool> uiFoldOpen_; // uiFold: open sections (view state, not persisted)
 
     // ── Settings search (2026-10-28, issue 20261028_222345; SatelliteSimUI.cpp "Settings search") ─────────────
     // The search box over the Settings window's tab strip: with a query, the body builds every tab in turn and
