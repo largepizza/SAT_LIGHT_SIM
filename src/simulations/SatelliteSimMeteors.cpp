@@ -456,7 +456,14 @@ void SatelliteSim::meteorsFill(GpuDustCloud *out, uint32_t &n, double toSky, dou
                     // (the streak alone, its light spread along it, left most of a shower's meteors near the limit).
                     double Ipk = 0.0;
                     for (int q = 0; q <= 8; ++q) Ipk = std::max(Ipk, meteors::lightCurve(m, x0 + (x1 - x0) * (q + 0.5) / 9.0));
-                    const double headF = std::max(nP > 0 ? 0.3 * bestF + undrawn : flSum, 0.5 * Ipk * (nP > 0 ? bestS : s0).flare);
+                    // ... and never more than the 1x head at the meteor's peak (2026-10-29, issue 20261029_175625: the integrated light
+                    // over the whole interval / the 0.1-s exposure is up to ~30x a bolide's peak, a blinding star over the Earth
+                    // from orbit where the same meteor at 1x is a modest point).
+                    const double head1x = Ipk * (nP > 0 ? bestS : s0).flare;
+                    const double headF0 = std::max(nP > 0 ? 0.3 * bestF + undrawn : flSum, 0.5 * head1x);
+                    const double headF = meteorTimelapseHeadCap ? std::min(headF0, head1x) : headF0;
+                    rec.headFlare = (float)headF0;
+                    rec.head1x = (float)head1x;
                     addHead(nP > 0 ? bestS : s0, headF, nP > 0 ? bestC : colAll);
                     rec.mag = (float)(s0.mag - 2.5 * std::log10(std::max(Itot, 1e-12)));
                     rec.flare = (float)flSum;
@@ -464,7 +471,7 @@ void SatelliteSim::meteorsFill(GpuDustCloud *out, uint32_t &n, double toSky, dou
                     rec.elDeg = (float)deg(std::asin(std::clamp(s0.dirEnu.z, -1.0, 1.0)));
                     rec.rangeKm = (float)(s0.range / 1000.0);
                     rec.hKm = (float)((glm::length(Pm) - kRe) / 1000.0);
-                    const double Meq = (double)m.M - 2.5 * std::log10(std::max(Itot, 1e-12));
+                    const double Meq = (double)m.M - 2.5 * std::log10(std::max((meteorTimelapseHeadCap ? std::min(Itot, Ipk) : Itot), 1e-12)); // (its 1x peak at most)
                     if (Meq <= -4.0)
                         engineLightAdd(ecefToEci(Pm, t), flameIntensitySunsM2(Meq) * (1.0 - glm::clamp(((double)sunDirENU.w + 0.1) / 0.3, 0.0, 1.0)),
                                        colAll, 800.0, ecefToEci(dirE, t), 0.0, 0.0, false, 0.0);
@@ -760,7 +767,7 @@ harness::Status SatelliteSim::harnessMeteors(harness::Active &a)
         r["cpu_ms"] = meteorCpuMs;
         nlohmann::json arr = nlohmann::json::array();
         for (const MeteorNow &m : meteorNow_)
-            arr.push_back({{"shower", meteors::shower(m.shower).id}, {"abs_mag", m.M}, {"mag", m.mag}, {"flare", m.flare},
+            arr.push_back({{"shower", meteors::shower(m.shower).id}, {"abs_mag", m.M}, {"mag", m.mag}, {"flare", m.flare}, {"head_flare_uncapped", m.headFlare}, {"head_flare_1x_peak", m.head1x},
                            {"az_deg", m.azDeg}, {"el_deg", m.elDeg}, {"age_s", m.age}, {"dur_s", m.dur}, {"v_kms", m.vKms},
                            {"range_km", m.rangeKm}, {"h_km", m.hKm}, {"fragments", m.fragments}, {"train_segs", m.trainSegs},
                            {"gaussians", m.gauss}, {"forced", m.forced}});

@@ -9356,6 +9356,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         meteorTrainDuration = settingClamp(mj.value("train_duration", meteorTrainDuration), 0.0f, 10.0f);
         meteorTimelapse = mj.value("timelapse", meteorTimelapse);
         meteorTimelapseExposureS = settingClamp(mj.value("timelapse_exposure_s", meteorTimelapseExposureS), 0.1f, 600.0f);
+        meteorTimelapseHeadCap = mj.value("timelapse_head_cap", meteorTimelapseHeadCap);
     }
 
     if (j.contains("comets") && j["comets"].is_object())
@@ -10437,7 +10438,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
     j["moon_bases"] = {{"enabled", moonBaseGlints}, {"tilt_jitter_scale", moonBaseJitter}, {"event_mag_limit", moonBaseMagLimit}};
     j["meteors"] = {{"enabled", meteorsEnabled}, {"rate", meteorRateGain}, {"fireball_rate", meteorFireballGain},
                        {"train_duration", meteorTrainDuration}, {"timelapse", meteorTimelapse},
-                       {"timelapse_exposure_s", meteorTimelapseExposureS}};
+                       {"timelapse_exposure_s", meteorTimelapseExposureS}, {"timelapse_head_cap", meteorTimelapseHeadCap}};
     j["stars"] = {{"sky_limit", starSkyLimit}, {"limit_boost", starLimitBoost}, {"dark_sky_extra", starDarkExtraMag}, {"supernova", supernovaEnabled},
                   {"betelgeuse_variable", betelgeuseVariable}};
     // Launches (SatelliteSimLaunches.cpp).
