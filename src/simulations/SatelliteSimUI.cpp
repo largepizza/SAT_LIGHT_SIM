@@ -760,17 +760,19 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         // (Latched cinematic mode, Movement popup: the pan-drift is on without Alt / RMB, and the coasting look decays
         // slowly (~4 s) so a glide settles on its own.)
         bool cinematic = (camera.captured && cinematicMode) || cinematicLatched;
+        const UIInput &inp0 = ui.input();
 
         if (cinematic)
         {
             // Let camera.update handle RMB capture/release without applying any rotation.
             camera.update(win, 0.0f, 0.0f);
 
-            if (cinematicLatched)
+            // Latched mode (2026-10-29, issue 20261029_213225): no cursor capture, so mouse motion over the UI (or while
+            // typing / dragging a slider) must not swing the camera; and no drag, the look keeps its velocity.
+            if (cinematicLatched && !(camera.captured && cinematicMode) && (ui.mouseOverUI() || textEditing() || inp0.lmbDown))
             {
-                const float k = expf(-std::min(dt, 0.25f) / 4.0f);
-                cinematicYawVel *= k;
-                cinematicPitchVel *= k;
+                dmx = 0.0f;
+                dmy = 0.0f;
             }
 
             // Mouse input adds to velocity as an impulse (kForce fraction of raw delta).
@@ -890,7 +892,12 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // ── Scroll wheel → FOV zoom (when not hovering over UI panels) ───────────
     if (inp.scrollY != 0.0f && !ui.mouseOverUI())
     {
-        camera.zoomBy(powf(0.93f, inp.scrollY)); // ~5 deg per notch at 70 deg, ~0.04 deg at 0.5 deg
+    {
+        if (cinematicLatched)
+            cineScrollZoom += inp.scrollY * logf(0.93f); // cinematic mode: the wheel adds to a pending zoom that eases in (recordCompute)
+        else
+            camera.zoomBy(powf(0.93f, inp.scrollY)); // ~5 deg per notch at 70 deg, ~0.04 deg at 0.5 deg
+    }
     }
 
     // ── Left-click → satellite/planet pick/select ─────────────────────────────
