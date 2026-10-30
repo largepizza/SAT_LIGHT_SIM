@@ -3657,6 +3657,8 @@ private:
     bool skyWatchMoonGlint(const sky::Event &e, std::string &msg);
     void skySearchSupernova(const sky::SearchCtx &c, std::vector<sky::Event> &out) const;
     bool skyWatchSupernova(const sky::Event &e, std::string &msg);
+    void skySearchCme(const sky::SearchCtx &c, std::vector<sky::Event> &out) const;
+    bool skyWatchCme(const sky::Event &e, std::string &msg);
 
     // ── Moon-base glints (2026-10-27, SatelliteSimMoonBases.cpp; CLAUDE.md "Moon-base glints") ──────────────────
     // The lunar south-pole bases' sun-tracking solar arrays (data/lunar_bases.json, lunar::Base) mirror the Sun to
