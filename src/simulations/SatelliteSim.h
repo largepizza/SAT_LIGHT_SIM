@@ -3707,6 +3707,7 @@ private:
     // min(interval, timelapse_exposure_s) (>= the eye's persistence). meteors.timelapse false = the old cut-off.
     bool meteorTimelapse = true;          // meteors.timelapse
     float meteorTimelapseExposureS = 0.1f; // meteors.timelapse_exposure_s
+    bool meteorTimelapseHeadCap = true;    // meteors.timelapse_head_cap: a time-lapse head is never brighter than the 1x head at the meteor's peak
     double meteorPrevT_ = 0.0;            // last frame's sim time (the interval)
     bool meteorLapse_ = false;            // this frame: time-lapse
     double meteorLapseDt_ = 0.0, meteorLapseE_ = 0.0, meteorDrawsEst_ = 0.0, meteorGenMs_ = 0.0, meteorRankMs_ = 0.0;
@@ -3720,7 +3721,7 @@ private:
     struct MeteorNow                      // drawn this frame (harness `meteors`)
     {
         int shower = 0;
-        float M = 0.0f, mag = 99.0f, flare = 0.0f, azDeg = 0.0f, elDeg = 0.0f, age = 0.0f, dur = 0.0f, vKms = 0.0f;
+        float M = 0.0f, mag = 99.0f, flare = 0.0f, headFlare = 0.0f, head1x = 0.0f, azDeg = 0.0f, elDeg = 0.0f, age = 0.0f, dur = 0.0f, vKms = 0.0f;
         float rangeKm = 0.0f, hKm = 0.0f;
         int fragments = 0, trainSegs = 0, gauss = 0;
         bool forced = false;
