@@ -3348,13 +3348,20 @@ SatelliteSimSkyEvents.cpp). Settings `meteors.enabled` (on), `meteors.rate` (1, 
   grains, fireball-rich); **`kSporadic` moved 12 -> 13** and stays last, but its generator seed index is pinned at 12 so no
   sporadic meteor changed (the shower rows before it keep their seeds). Activity is a function of TIME, not solar longitude (a
   one-time event): wherever a time is at hand callers use the `...AtTime` forms (the lam forms return 0 for this row). ASSUMPTIONS
-  (ours; there is no real comet): the peak is the Earth's closest approach to the comet, 2037-03-17 03:30 UTC (560,000 km); the
-  Earth crosses a thin ribbon of big grains shed on the way in: ZHR 8000 with B 0.9 / d before and 0.45 / d after (half-width
-  ~0.4 d), over a broad residual of older, dispersed debris — ZHR 400 at the peak, rising with an e-fold of 2.5 d before and
-  decaying with 75 d after: total 8400 at the peak, ~265 on 2037-04-17, ~52 on 08-17, passing 10 on 2037-12-22 (`t1`; window t0 = 9
-  days before the peak). The radiant is where the stream comes FROM in the Earth's frame: -(v_comet(at its closest approach, the
+  (ours; there is no real comet): the meteoroids are the big grains shed round the sungrazing perihelion. Flown from the comet's
+  own orbit (a Monte Carlo of grains emitted from 3 d before perihelion to the encounter, beta 1e-5..3e-3, the tails' ejection law,
+  Kepler under mu (1 - beta)), they are still a compact cloud a few million km round the nucleus a month later, and the Earth meets
+  it only round its closest approach to the comet (2037-03-17 03:30 UTC, 560,000 km, which is also the least distance between the
+  Earth and the comet's orbit): grains within 3e6 km from 03-16 ~06:00 to 03-17 ~19:00, within 1e6 km from 03-16 ~21:00 to 03-17
+  ~08:00. Before that the Earth is tens of millions of km from any of it (23 million km from the orbit on 03-08). So the peak is
+  the closest approach: ZHR 8000 with 10^(-5 |d|) before (half-maximum 1.4 h before) and 10^(-4 d) after, over a residual of 400
+  at the peak rising with the spike and decaying with an e-fold of 75 d after (artistic, kept from the first design's "spikes up
+  then gradually slows through 2037": physically the Earth leaves the cloud at ~1.2 million km a day): total 8400 at the peak,
+  ~1870 at 00:21 (3 h before; 6500 before the change), ~10 at 13:27 the day before (`t0`, 14 h before; it was 9 days before until 2026-10-30, issue
+  20261030_141206: the storm ran while the Earth was still far from the dust), ~265 on 2037-04-17, ~52 on 08-17, passing 10 on
+  2037-12-22 (`t1`). The radiant is where the stream comes FROM in the Earth's frame: -(v_comet(at its closest approach, the
   stream's velocity where it crosses the Earth's path) - v_Earth(t)), Earth's velocity from the sim's own Sun; no zenith
-  attraction. Result: RA 322 Dec -17.5 at the peak (38 deg from the Sun: a morning radiant), entry 53 km/s (50 on 03-10, 64 on
+  attraction. Result: RA 322 Dec -17.5 at the peak (38 deg from the Sun: a morning radiant), entry 53 km/s (64 on
   04-17, 62 on 08-17), drifting ~1 deg a day. Measured (`meteors count`, 31 S 24 E at the peak): 21,000 meteors/h in view, 180 <=
   -4 in 10 min, 20 <= -8 (bolides). The sky event `cometstorm` (a Watch via `meteorWatchShower`, which for this row accepts a radiant
   10 deg up and a Sun 12 deg down: it is never high in a dark sky) lists it as a one-time event; it is also the way to test the
