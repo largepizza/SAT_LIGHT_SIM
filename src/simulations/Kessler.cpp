@@ -1252,12 +1252,24 @@ void World::planFragments(const BreakupResult &br, uint32_t refA, uint32_t refB,
     const bool haveB = refB != kNoRef && refB != kSmallRef;
     p.recs.clear();
     p.recs.reserve(br.fragments.size());
+    // Momentum (2026-10-29, issue 20261029_213225 "debris do not take the relative velocity of the impact"): in a
+    // catastrophic collision of two objects the pieces fly off with the pair's centre-of-mass velocity plus the
+    // ejecta kick, not each with its own parent's pre-impact velocity (which sent the two halves on through each
+    // other). Each fragment's velocity moves kMomentumShare of the way from its parent's to the centre of mass.
+    constexpr double kMomentumShare = 0.8;
+    glm::dvec3 vCom{0.0};
+    const bool momentum = br.catastrophic && haveB && p.kind == EV_COLLISION && (p.mT + p.mP) > 0.0;
+    if (momentum)
+        vCom = (p.mT * sa.v + p.mP * sb.v) / (p.mT + p.mP);
     for (size_t k = 0; k < br.fragments.size(); ++k)
     {
         const Fragment &f = br.fragments[k];
         const bool sideB = f.side == 1 && haveB;
         const uint32_t parent = sideB ? refB : refA;
-        PoolRec r = recordFromState(sideB ? sb : sa, t, parent, f.dv);
+        glm::dvec3 dv = f.dv;
+        if (momentum)
+            dv += kMomentumShare * (vCom - (sideB ? sb.v : sa.v));
+        PoolRec r = recordFromState(sideB ? sb : sa, t, parent, dv);
         double area = f.areaM2, mass = f.massKg;
         r.type = (uint16_t)s.debrisType;
         r.flux = (float)std::clamp(area / std::max(s.debrisModelArea, 1e-6), 1e-4, 1e3);

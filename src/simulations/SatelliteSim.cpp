@@ -1678,6 +1678,19 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         }
         else
             cineSmZoom = 0.0f;
+        if (cineScrollZoom != 0.0f)
+        {
+            if (!cinematicLatched)
+                cineScrollZoom = 0.0f;
+            else
+            {
+                const float take = cineScrollZoom * (1.0f - expf(-std::min(dt, 0.25f) / 0.35f));
+                cineScrollZoom -= take;
+                if (std::abs(cineScrollZoom) < 1e-4f)
+                    cineScrollZoom = 0.0f;
+                camera.zoomBy(expf(take));
+            }
+        }
     }
 
     float simDt = timePaused ? 0.0f : fabsf(dt * kTimeScales[timeScaleIdx]);
