@@ -5443,6 +5443,32 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
             effectFlare = (float)(r.flareUnits * brightnessScale) * powf(10.0f, 0.4f * gainMag); // above the air
             angSize = pointSpriteSizePx(pointPsf(6.0f - 2.5f * log10f(std::max(effectFlare, 1e-30f) / 0.008f) + gainMag).y);
             kept = 1.0f;
+            // A colliding projectile's stand-in (2026-10-30, kesslerCollisionJobs) takes the resolved-satellite factor
+            // as a listed satellite does in sat_flare.comp (resolvedSatFlare, mirrored here): without it a sunlit
+            // Starmind 700 m away bloomed and glared as the unresolved point of magnitude -10 it would be.
+            const uint32_t collBase = activeSatCount + kLaunchCap - 2 - kRocketMeshSlots - kPadMeshSlots -
+                                      kStackMeshSlots - kShipMeshSlots - kArmMeshSlots - kCollMeshSlots;
+            if (satResolvedStrength > 0.0f && sat >= (int)collBase && sat < (int)(collBase + kCollMeshSlots))
+            {
+                const double dEff = px * std::sqrt(std::max((double)type.meshFill, 0.01));
+                const double resK = glm::smoothstep(0.8, 2.5, dEff) * glm::clamp((double)satResolvedStrength, 0.0, 1.0);
+                if (resK > 0.0)
+                {
+                    const double kL = 1.3287712, s0 = pointSigmaPx, nPx = 0.7854 * dEff * dEff;
+                    const double physK = glm::pi<double>() * (double)skyExposure() /
+                                         (satphot::kFluxToFlare * std::max((double)brightnessScale, 1e-6) * pixAngle * pixAngle);
+                    const double sig2 = s0 * s0 + nPx / 6.2831853;
+                    const double peak = 1.0 - std::exp(-physK * r.flareUnits * brightnessScale / std::max(nPx, 1e-3));
+                    const double d = peak * sig2 / (s0 * s0);
+                    const double dl = std::exp2(-kL * pointGamma * (pointEffLimitMag() - pointEffRefMag()));
+                    const double m = (pointEffRefMag() - gainMag) - std::log2(std::max(d + dl, 1e-30)) / (kL * pointGamma);
+                    const double target = std::min(0.008 * std::exp2(kL * (6.0 - m)), (double)effectFlare);
+                    const double full = (double)effectFlare;
+                    effectFlare = (float)std::exp(glm::mix(std::log(std::max(full, 1e-30)), std::log(std::max(target, 1e-30)), resK));
+                    kept = (float)std::max((double)effectFlare / std::max(full, 1e-30), 1e-9);
+                    angSize = pointSpriteSizePx(pointPsf(6.0f - 2.5f * log10f(std::max(effectFlare, 1e-30f) / 0.008f) + gainMag).y);
+                }
+            }
         }
         // The resolved-satellite adaptation (satAdaptLum): its light in the sky exposure's units, x its fade.
         out.adaptLight = (float)(r.flareUnits * brightnessScale) * fade;
@@ -5470,6 +5496,18 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         // Glare on its glints (mesh_bloom.frag -> glare_find.comp): the unresolved sprite's effectFlare per unit of its
         // seed, so a glint carrying all the mesh's light glares as the unresolved sprite did.
         inst.glareNorm = seedU > 0.0 ? (float)(flareU / seedU / q) : 0.0f;
+        {
+            // A colliding projectile's stand-in (kesslerCollisionJobs): its glints glare at the RESOLVED brightness. It
+            // flies past the eye at km/s in a few frames, and normalised on the unresolved point (mag ~-10 at 1 km) its
+            // arrays' glints drew a wall of starbursts over the frame.
+            const uint32_t collBase = activeSatCount + kLaunchCap - 2 - kRocketMeshSlots - kPadMeshSlots -
+                                      kStackMeshSlots - kShipMeshSlots - kArmMeshSlots - kCollMeshSlots;
+            if (sat >= (int)collBase && sat < (int)(collBase + kCollMeshSlots))
+            {
+                inst.glareNorm *= (float)kept;
+                inst.bloomScale *= (float)kept;
+            }
+        }
         // While the mesh is still point-like its glare is the SPRITE's, at its centre (the glare keep, to
         // sat_flare.comp / glare.vert); resolved, only sun-like reflections glare (mesh_bloom.frag), or
         // every edge and vertex of a close-up satellite, holding a sliver of a very bright satellite's

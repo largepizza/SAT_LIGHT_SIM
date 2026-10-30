@@ -2967,6 +2967,7 @@ private:
     float kesslerRateMult = 1.0f;     // kessler.rate_multiplier: collision probability x (1 = physical)
     float kesslerAvoidance = 0.9f;    // kessler.avoidance: share of active-vs-debris encounters dodged
     float kesslerHorizonYears = 20.0f; // kessler.horizon_years: how far the cascade is simulated
+    bool kesslerCollisionCloseup = true; // kessler.collision_closeup (no UI): pair collisions up close (stand-in, flash)
     float kesslerDustGain = 100.0f;    // kessler.dust_gain: the drawn dust clouds' brightness (x the physical estimate)
     float kesslerFireColor = 0.8f;     // kessler.fireball_colors: fragments tinted by material (0 = temperature only)
     float kesslerSmallReGain = 30.0f;  // kessler.small_reentry_gain: small fragments' fireballs (x physical: meteor-faint)
@@ -3151,6 +3152,34 @@ private:
     void kesslerFillDust(float pixelAngle);
     // Fills the fireballs for the current time into kFireBuf and appends their trails to the dust list (out, n).
     void kesslerFillFireballs(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull);
+    // Pair collisions seen up close (2026-10-30, issue 20261029_213225 "Satellite collisions from up close"). The engine
+    // finds a pair together at its 6-h step's sample time and spreads the collision's time through the step, so at
+    // that time the projectile is somewhere else on its orbit (the world carries the encounter onto the target: its
+    // relative velocity in the target's local frame). Drawn here: a stand-in of the projectile on that approach line
+    // for the last kCollApproachS before the impact (a mesh in its own reserved chunk, kCollMeshSlots, and a point while
+    // unresolved), a flash and a brief fireball at the impact. Refreshed each frame by kesslerFillCollisions.
+    struct KCollVis
+    {
+        double te = 0.0;          // the impact (s since J2000)
+        uint32_t tgt = 0, prj = 0; // satellite indices (roster or pool)
+        int prjType = -1;
+        glm::dvec3 vrelL{0.0};    // the projectile's velocity relative to the target, in the target's (radial, along,
+                                  // normal) frame at the impact
+        double vrel = 0.0, massKg = 0.0;
+        uint32_t seed = 0;
+        uint64_t key = 0;
+    };
+    std::vector<KCollVis> kCollVis;
+    static constexpr double kCollApproachS = 45.0;
+    bool kesslerCollStandIn(const KCollVis &c, double t, glm::dvec3 &pos, glm::dvec3 &vel) const;
+    SatOrbitElems kesslerCollStandInElems(const KCollVis &c, double t, const glm::dvec3 &P, const glm::dvec3 &V) const;
+    void kesslerFillCollisions(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull);
+    void kesslerCollisionJobs(double pixAngle, const glm::dvec3 &obsEci, std::vector<int> &jobs);
+    uint64_t kCollMeshKey[8] = {};
+    double kCollCacheT0 = -1e300, kCollCacheT1 = -1e300, kCollFlashDbg = 0.0;
+    size_t kCollCacheN = 0;
+    const void *kCollCacheSrc = nullptr;
+    std::vector<size_t> kCollCacheIdx;
     // tagKind / tagA: what the fireball is, for picking (SelTransient: 3 a launch retiree, 4 an upper stage, 5 a Kessler
     // re-entry, 6 a small fragment).
     void fbDrawReentry(const glm::dvec3 &U0, const glm::dvec3 &A, double m0, int N, uint64_t seed, double tau,
@@ -3381,6 +3410,8 @@ private:
     static constexpr int kShipMeshSlots = 8;
     // A station arm (2026-10-21, Canadarm2: two booms + the wrist): one reserved chunk below the ships'. Not selectable.
     static constexpr int kArmMeshSlots = 8;
+    // The colliding projectiles' stand-ins (2026-10-30, kesslerCollisionJobs): one reserved chunk below the arm's.
+    static constexpr int kCollMeshSlots = 8;
     nlohmann::json launchShipsJson() const; // harness `launch ships`: the ships on station / heading home
     void launchShipJobs(double pixAngle, const glm::dvec3 &obsEci, std::vector<int> &jobs); // their meshes
     void launchArmJobs(double pixAngle, const glm::dvec3 &obsEci, std::vector<int> &jobs);

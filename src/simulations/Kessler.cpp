@@ -1252,11 +1252,17 @@ void World::planFragments(const BreakupResult &br, uint32_t refA, uint32_t refB,
     const bool haveB = refB != kNoRef && refB != kSmallRef;
     p.recs.clear();
     p.recs.reserve(br.fragments.size());
-    // Momentum (2026-10-29, issue 20261029_213225 "debris do not take the relative velocity of the impact"): in a
-    // catastrophic collision of two objects the pieces fly off with the pair's centre-of-mass velocity plus the
-    // ejecta kick, not each with its own parent's pre-impact velocity (which sent the two halves on through each
-    // other). Each fragment's velocity moves kMomentumShare of the way from its parent's to the centre of mass.
-    constexpr double kMomentumShare = 0.8;
+    // Momentum (issue 20261029_213225 "debris do not take the relative velocity of the impact"). A hypervelocity
+    // collision does not stop the two bodies at their centre of mass: most of each one's material never meets the
+    // other (the overlap is partial, and even head-on the projectile's debris cloud runs on through the target, as
+    // in Whipple-shield tests), so each body's pieces keep much of their own velocity, and the material in the contact
+    // zone is driven toward the pair's centre-of-mass velocity. Each fragment of a catastrophic pair collision keeps a
+    // share beta of its parent's velocity relative to the centre of mass, beta = 1 - 0.8 u^1.5 (u uniform per piece:
+    // mean 0.68, from 0.2 to 1), plus the ejecta kick: the debris spreads ALONG the relative velocity between the two
+    // parents' directions, two streams continuing each parent's way and a slower middle. Momentum is kept (both sides
+    // draw beta from one distribution: the mass-weighted means match), kinetic energy is not (~half of it in the
+    // centre-of-mass frame goes into the fragmentation). (2026-10-29 first cut: every piece 0.8 of the way to the
+    // centre of mass: one cloud leaving at about half the closing speed, the two parents' debris indistinguishable.)
     glm::dvec3 vCom{0.0};
     const bool momentum = br.catastrophic && haveB && p.kind == EV_COLLISION && (p.mT + p.mP) > 0.0;
     if (momentum)
@@ -1268,7 +1274,10 @@ void World::planFragments(const BreakupResult &br, uint32_t refA, uint32_t refB,
         const uint32_t parent = sideB ? refB : refA;
         glm::dvec3 dv = f.dv;
         if (momentum)
-            dv += kMomentumShare * (vCom - (sideB ? sb.v : sa.v));
+        {
+            const double beta = 1.0 - 0.8 * std::pow(hash01(seed, k, 36), 1.5);
+            dv += (1.0 - beta) * (vCom - (sideB ? sb.v : sa.v));
+        }
         PoolRec r = recordFromState(sideB ? sb : sa, t, parent, dv);
         double area = f.areaM2, mass = f.massKg;
         r.type = (uint16_t)s.debrisType;

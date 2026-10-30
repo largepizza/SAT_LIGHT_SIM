@@ -1,0 +1,62 @@
+# A Starmind x Starmind collision seen from ~800 m (issue 20261029_213225, 2037-07-15 06:19:50.6 UTC):
+# the projectile's stand-in approaching on its real relative velocity, the flash, the fireball, the debris and dust.
+#   python tools/harness/run.py tools/harness/scripts/kessler_collision_closeup.satcmd
+# The issue folder is the user's (user_data/reports); the camera rides the ring neighbour #192977 (sat 264583) and
+# tracks the target #192980 (sat 264586) until it breaks up. `kessler state` -> collisions_near lists the pair.
+report load "C:/Code/Shader_Fun/user_data/reports/issue_20261029_213225" shot=1 trail=off
+follow sat=264583 offset=-600,-500,200
+select sat 264586
+camera track sel
+kessler wait days=0.2
+time set 2037-07-15T06:19:40.611Z
+wait 30
+kessler state
+capture coll_m10
+time add 9
+wait 8
+capture coll_m1
+time add 0.7
+wait 8
+capture coll_m0.3
+time add 0.2
+wait 8
+capture coll_m0.1
+time add 0.08
+wait 8
+capture coll_m0.02
+camera track off
+time add 0.07
+wait 8
+kessler state
+capture coll_p0.05
+time add 0.15
+wait 8
+capture coll_p0.2
+time add 0.3
+wait 8
+capture coll_p0.5
+time add 0.5
+wait 8
+capture coll_p1
+time add 1
+wait 8
+capture coll_p2
+time add 3
+wait 8
+capture coll_p5
+time add 10
+wait 8
+capture coll_p15
+time add 45
+wait 8
+capture coll_p60
+# The same 25 s at 1x as a video (fixed step: the video's clock is sim time).
+time set 2037-07-15T06:19:38.611Z
+select sat 264586
+camera track sel
+wait 30
+video start collision_closeup
+time play
+wait 1500
+video stop
+time pause

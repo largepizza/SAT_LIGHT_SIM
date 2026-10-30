@@ -940,11 +940,13 @@ void SatelliteSim::launchInitBlock(bool keepPlanes)
     // The last chunk holds the rocket meshes and the transient selection's slots, the two before it the pads' meshes,
     // the six before those the payload stacks' (2026-10-20).
     // The landing ships' (2026-10-20) one more below the stacks'.
-    for (uint32_t c = kNumChunks - 3 - kStackMeshSlots / kChunk - kShipMeshSlots / kChunk - kArmMeshSlots / kChunk; c-- > 0;)
+    for (uint32_t c = kNumChunks - 3 - kStackMeshSlots / kChunk - kShipMeshSlots / kChunk - kArmMeshSlots / kChunk -
+                        kCollMeshSlots / kChunk; c-- > 0;)
         L.freeChunks.push_back(c);
     static_assert(kPadMeshSlots == 2 * kChunk, "the pads' mesh slots: two chunks");
     static_assert(kStackMeshSlots % kChunk == 0, "the stacks' mesh slots: whole chunks");
     static_assert(kShipMeshSlots == kChunk, "the ships' mesh slots: one chunk");
+    static_assert(kCollMeshSlots == kChunk, "the collisions' stand-ins: one chunk");
     std::fill(std::begin(L.shipMeshKey), std::end(L.shipMeshKey), 0ull);
     std::fill(std::begin(L.stackMeshKey), std::end(L.stackMeshKey), 0ull);
     if (activeSatCount + kLaunchCap - 1 < satOrbits.size())
@@ -10554,7 +10556,8 @@ int SatelliteSim::rocketMeshSlotToTransient(int satIndex)
     const uint32_t base = activeSatCount + kLaunchCap - 2 - kRocketMeshSlots;
     // A pad's mesh (its tower, mount, tanks) is scenery, a payload stack's (2026-10-20) part of its stage: not
     // selectable.
-    if (satIndex >= (int)(base - kPadMeshSlots - kStackMeshSlots - kShipMeshSlots - kArmMeshSlots) && satIndex < (int)base)
+    if (satIndex >= (int)(base - kPadMeshSlots - kStackMeshSlots - kShipMeshSlots - kArmMeshSlots - kCollMeshSlots) &&
+        satIndex < (int)base)
         return -1;
     if (satIndex < (int)base || satIndex >= (int)(base + kRocketMeshSlots))
         return satIndex;
@@ -10711,6 +10714,7 @@ std::vector<int> SatelliteSim::launchMeshJobs(double pixAngle, const glm::dvec3 
             jobs.push_back((int)idx);
         }
     }
+    kesslerCollisionJobs(pixAngle, obsEci, jobs); // colliding projectiles' stand-ins (SatelliteSimKessler.cpp)
     if (!launchesEnabled)
         return jobs;
     struct C
@@ -15886,4 +15890,80 @@ void SatelliteSim::launchMemReport(std::vector<std::pair<std::string, double>> &
             riv += vb(*kv.second);
     out.push_back({"launch.cands_rivals", riv});
     out.push_back({"launch.slots_elems", vb(L.slots) + vb(L.elems)});
+}
+
+// The colliding projectiles' stand-ins (2026-10-30, issue 20261029_213225; SatelliteSimKessler.cpp
+// kesslerFillCollisions): the projectile's mesh on its approach line in the last kCollApproachS before a pair collision,
+// in the reserved chunk below the arm's, nearest first. Uses the list the last frame's fill made (this pass runs first);
+// the state is this frame's (kesslerCollStandIn). Not selectable.
+void SatelliteSim::kesslerCollisionJobs(double pixAngle, const glm::dvec3 &obsEci, std::vector<int> &jobs)
+{
+    FPROF_SCOPE("kesslerCollisionJobs");
+    if (!launchState || kCollVis.empty())
+    {
+        std::fill(std::begin(kCollMeshKey), std::end(kCollMeshKey), 0ull);
+        return;
+    }
+    LaunchState &L = *launchState;
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    struct W
+    {
+        double px;
+        size_t i;
+        glm::dvec3 P, V;
+    };
+    std::vector<W> want;
+    for (size_t i = 0; i < kCollVis.size(); ++i)
+    {
+        const KCollVis &c = kCollVis[i];
+        glm::dvec3 P, V;
+        if (c.prjType < 0 || !kesslerCollStandIn(c, t, P, V))
+            continue;
+        const SatMeshRenderer::TypeMesh *tm = meshRenderer.typeMesh(c.prjType);
+        if (!tm)
+            continue;
+        const double px = 2.0 * std::max(1.0, (double)tm->boundsRadius) / std::max(glm::length(P - obsEci), 1.0) /
+                          std::max(pixAngle, 1e-9);
+        if (px > 1.4)
+            want.push_back({px, i, P, V});
+    }
+    std::sort(want.begin(), want.end(), [](const W &a, const W &b) { return a.px > b.px; });
+    if (want.size() > (size_t)kCollMeshSlots)
+        want.resize(kCollMeshSlots);
+    bool used[kCollMeshSlots] = {};
+    std::vector<int> slotOf(want.size(), -1);
+    for (size_t w = 0; w < want.size(); ++w)
+        for (int k = 0; k < kCollMeshSlots; ++k)
+            if (!used[k] && kCollMeshKey[k] == kCollVis[want[w].i].key)
+            {
+                used[k] = true;
+                slotOf[w] = k;
+                break;
+            }
+    for (size_t w = 0; w < want.size(); ++w)
+        if (slotOf[w] < 0)
+            for (int k = 0; k < kCollMeshSlots; ++k)
+                if (!used[k])
+                {
+                    used[k] = true;
+                    slotOf[w] = k;
+                    break;
+                }
+    for (int k = 0; k < kCollMeshSlots; ++k)
+        if (!used[k])
+            kCollMeshKey[k] = 0;
+    const uint32_t cbase =
+        kLaunchCap - 2 - kRocketMeshSlots - kPadMeshSlots - kStackMeshSlots - kShipMeshSlots - kArmMeshSlots - kCollMeshSlots;
+    for (size_t w = 0; w < want.size(); ++w)
+    {
+        const KCollVis &c = kCollVis[want[w].i];
+        const int k = slotOf[w];
+        kCollMeshKey[k] = c.key;
+        const uint32_t slot = cbase + (uint32_t)k, idx = activeSatCount + slot;
+        if (idx >= satOrbits.size() || slot >= L.elems.size())
+            continue;
+        L.elems[slot] = kesslerCollStandInElems(c, t, want[w].P, want[w].V);
+        satOrbits[idx].typeIdx = (uint32_t)c.prjType;
+        jobs.push_back((int)idx);
+    }
 }
