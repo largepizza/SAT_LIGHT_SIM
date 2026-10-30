@@ -55,6 +55,20 @@ constexpr double kEndAltM = 200000.0;   // a retiree is lowered to here, then re
 // launch::makeParcel; it used to end here with a third to a half of its optical depth left).
 constexpr double kPlumeAgeLow = 2400.0;
 constexpr double kPlumeAgeHigh = 3600.0;
+// The upper stage's exhaust in vacuum (2026-10-30, issue 20261030_134020 "Second Stage Jellyfish"; buildParcels,
+// launchFillVisuals): its sunlight at night x this above ~100 km (the bell is the one sunlit thing in a dark sky);
+// a parcel's free expansion speed = this x the exhaust speed (the plume's lateral spread, its divergence half-angle
+// ~15-20 deg; it was 2 km/s in every direction, so the bell was ~300 km wide 3 min after the exhaust left and
+// invisible near the stage); the streaks (interaction sheets between neighbouring nozzles' plumes) carry this share
+// of the young exhaust, out to kStreakAgeS.
+constexpr double kVacNightBoost = 5.0;
+constexpr double kVacExpandK = 0.3;
+constexpr double kStreakShare = 0.4;
+constexpr double kStreakAgeS = 240.0;
+// each streak's offset from the plume's axis (x the exhaust's radius there, hashed per streak) and its width (x it):
+// the streaks' opening angle as they leave the stage and their widening along their length
+constexpr double kStreakOffMin = 1.0, kStreakOffMax = 1.8;
+constexpr double kStreakWidth = 0.1;
 
 glm::dvec3 rotZ(const glm::dvec3 &v, double th)
 {
@@ -776,6 +790,8 @@ struct SatelliteSim::LaunchState
         int ground = 0;          // 0 exhaust, 1 lift-off cloud, 2 landing cloud
         glm::dvec3 drawn{0.0};   // the colour handed to the shader (Sun + sky)
         double isoShare = -1.0;  // the share of it lit isotropically (the sky); < 0: none
+        int kind = 0;            // (2026-10-30) 0 exhaust, 1 a hot-staging lobe, 2 a vacuum streak
+        double pri = 0.0;        // its priority in the budget (launch state -> plume_vacuum, against plume_cut)
     };
     std::vector<PlumeDbg> plumeDbg;
     // (2026-10-26, issue 20261026_210053) per launch drawing plumes this frame: its candidates, how many were drawn,
@@ -3880,9 +3896,13 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
         O.richK = vent ? 0.0
                        : 0.18 * (double)(B.plumeGrow * B.plumeDisp) * glm::mix(1.0, 0.5, glm::smoothstep(12000.0, 20000.0, h)) *
                              (1.0 - glm::smoothstep(60000.0, 90000.0, h));
+        // (2026-10-30, issue 20261030_134020) The upper stage's exhaust above ~60-120 km spreads at the plume's lateral
+        // speed (kVacExpandK x the exhaust speed: its divergence), not at 2 km/s in every direction.
+        const double vExpE = stage == 1 ? glm::mix(2000.0, std::max(kVacExpandK * vex, 600.0), glm::smoothstep(60000.0, 120000.0, h))
+                                        : 2000.0;
         B.parcels.push_back(launch::makeParcel(tau, p, vel + vex * ex, m, vent ? 2000.0 : kappaAt(h) * kappaMul, albedoAt(h),
                                                vent ? ex : (spd > 5.0 ? vel / spd : up), vent ? vex * dtE : len,
-                                               maxAge, windDir, windGain, vent ? 30.0 : 2000.0, windPhase, &O));
+                                               maxAge, windDir, windGain, vent ? 30.0 : vExpE, windPhase, &O));
         B.parcels.back().thin = vent;
         if (!vent)
         {
@@ -4075,6 +4095,53 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
                 landingCloud(0, l0, std::min(l1 + 0.5, bt.tEnd), vh.flow1 * 0.12, -1, 1, gL);
             else if (lk != kLandNone)
                 landingCloud(0, l0, std::min(l1 + 0.5, bt.tEnd), vh.flow1 * 0.12, padI);
+        }
+    }
+    // (2026-10-30, issue 20261030_134020) Hot staging: the upper stage lights its engines while still on the booster,
+    // and for the ~2-3 s before they part its exhaust hits the booster's dome and bursts out of the vented interstage
+    // ring: a turbulent cloud of lobes thrown out sideways and back at ~0.4-1.4 km/s, sooty and lit orange by the
+    // flame (the "chaotic step" of every Starship flight). Lobes = puffs (no stream) sharing all of that exhaust, spreading slowly (the deflected gas lost its speed on the dome) and drawn with strong
+    // billows (Parcel::turb: cloud_march.comp's turbulent seed range).
+    if (vh.hotStaging)
+    {
+        bool okA, okB;
+        const double tS = vh.t1;
+        const glm::dvec3 pS = rocketEcef(L, B, 0, tS - 0.05, okA);
+        const glm::dvec3 pS0 = rocketEcef(L, B, 0, tS - 1.05, okB);
+        if (okA && okB)
+        {
+            const glm::dvec3 vS = pS - pS0;
+            const double spS = glm::length(vS);
+            const glm::dvec3 f = spS > 1.0 ? vS / spS : glm::normalize(pS);
+            const glm::dvec3 upS = glm::normalize(pS);
+            glm::dvec3 s1 = glm::cross(f, upS);
+            s1 = glm::length(s1) > 1e-6 ? glm::normalize(s1) : glm::dvec3(1, 0, 0);
+            const glm::dvec3 s2 = glm::cross(f, s1);
+            const double hS = glm::length(pS) - kR;
+            const int N = 18;
+            for (int k = 0; k < N; ++k)
+            {
+                const double ang = glm::two_pi<double>() * ((double)k + 0.6 * h01(B.seed, 280 + k, 0)) / N;
+                const glm::dvec3 rad = std::cos(ang) * s1 + std::sin(ang) * s2;
+                // out of the ring, mostly sideways, some swept back past the booster, a few forward round the ship
+                const glm::dvec3 dir = glm::normalize(rad + f * (-0.9 + 1.3 * h01(B.seed, 281 + k, 1)));
+                const double spd = 400.0 + 1000.0 * h01(B.seed, 282 + k, 2);
+                const double t0 = tS - 2.0 + 2.6 * h01(B.seed, 283 + k, 3);
+                const double m = vh.flow2 * 2.6 / N * (0.4 + 1.2 * h01(B.seed, 284 + k, 4));
+                launch::ParcelOpts O;
+                O.sig0 = 250.0 + 300.0 * h01(B.seed, 285 + k, 5); // (the burst out of the vents is already that big)
+                O.evapS = 300.0;
+                // (it billows out to a few km over the next minute: turbulence, as Richardson's law, and its own motion)
+                O.growK = 1.5 * (double)B.plumeGrow;
+                O.richK = 25.0 * (double)B.plumeGrow;
+                const glm::dvec3 p0 = pS + vS * (t0 - tS) + rad * 6.0;
+                B.parcels.push_back(launch::makeParcel(t0, p0, vS + spd * dir, m, kappaAt(hS) * 3.0, 0.85, dir, 0.6 * O.sig0,
+                                                       kPlumeAgeLow, windDir, windGain, 300.0 + 300.0 * h01(B.seed, 286 + k, 6),
+                                                       windPhase, &O));
+                B.parcels.back().turb = true;
+                B.parcels.back().stage = 1;
+                B.parcels.back().tint = glm::vec3(1.0f, 0.78f, 0.5f);
+            }
         }
     }
     // The upper stage to orbit: every 1 s. In near vacuum consecutive parcels separate at the exhaust speed (~3.4 km
@@ -6584,6 +6651,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         int grp = -1;      // the launch (visList index) it belongs to
         double key = 0.0;  // what the budget sorts by: pri, boosted for each launch's reserved share (below)
         double res = 0.0;  // its weight as part of that share (0 .. 1: the share's last ranks fade)
+        bool jelly = false; // (2026-10-30) the upper stage's young vacuum exhaust: kept whatever the cut (below)
     };
     // (2026-10-26, issue 20261026_193912) each launch's count of candidates this frame, for the reserved share
     static std::vector<int> grpCount;
@@ -7523,6 +7591,10 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         const double cEra = std::cos(era), sEra = std::sin(era); // (rotZ, once a batch rather than twice a Gaussian)
         auto rotE = [&](const glm::dvec3 &v) { return glm::dvec3(v.x * cEra - v.y * sEra, v.x * sEra + v.y * cEra, v.z); };
         int curGround = 0; // (the parcel being drawn: for the readout)
+        // (2026-10-30, issue 20261030_134020) what the Gaussian is: 0 exhaust, 1 a hot-staging lobe (strong billows,
+        // the shader's turbulent seed range, never a shell), 2 a streak of the vacuum plume (never a shell)
+        int curKind = 0;
+        bool curJelly = false; // (2026-10-30) a Gaussian of the young vacuum plume (the jellyfish's head and streaks)
         // One Gaussian of exhaust: centre C and trail direction axE (Earth-fixed), the half-length it stands for along
         // the trail (hl: its 1-sigma extent beyond its own radius), radius sig, cross-section Sigma (m^2).
         auto addPlume = [&](const glm::dvec3 &CE, const glm::dvec3 &axE, double hl, double sig, double Sigma,
@@ -7547,14 +7619,21 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             const double sP = std::max(sig, sMin);
             const double sA = std::max(std::sqrt(sig * sig + hl * hl), sMin);
             const double tauPeak = Sigma / (2.0 * glm::pi<double>() * sP * sA);
-            const double pri = Sigma / (range * range) * (1.0 + std::min(tauPeak, 4.0));
+            // (2026-10-30, issue 20261030_134020) In vacuum by what shows: a bell's oldest Gaussians are hundreds of km
+            // wide at optical depths ~1e-4, faint against any sky, yet with all that cross-section they outranked the
+            // stage's young exhaust and streaks (~1e-2) and took the budget: the jellyfish had no head. Above ~60-100 km
+            // the priority is weighted by tau / (tau + 1e-3).
+            const double hPri = glm::length(C) - kR;
+            const double visW = glm::mix(1.0, tauPeak / (tauPeak + 1e-3), glm::smoothstep(60000.0, 100000.0, hPri));
+            const double pri = Sigma / (range * range) * (1.0 + std::min(tauPeak, 4.0)) * visW;
             // (2026-10-21b, CPU) Far below last frame's cut it cannot be drawn (it would fade to nothing there): its
             // colour and rim are not worked out. Self-correcting: a frame whose cut fell past the margin turns it off.
             // (not before this launch has its reserved share of candidates: those are drawn whatever the cut)
             // (2026-10-26, issue 20261026_210053) and not one its launch's reserved share could hold: those are drawn
             // whatever the cut (the share is the launch's strongest by priority, not the first emitted: skipping by
             // emission count dropped some of them for a frame and not the next).
-            if (pri < 0.25 * L.plumeCutPrev && curGrp >= 0 && pri < 0.25 * L.visList[(size_t)curGrp].second->plumeResPri)
+            if (!curJelly && pri < 0.25 * L.plumeCutPrev && curGrp >= 0 &&
+                pri < 0.25 * L.visList[(size_t)curGrp].second->plumeResPri)
             {
                 ++L.plumeSkipped;
                 return;
@@ -7562,6 +7641,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             Cand c;
             c.pri = pri;
             c.grp = curGrp;
+            c.jelly = curJelly;
             if (curGrp >= 0 && (size_t)curGrp < L.plumeGrpDbg.size())
             {
                 L.plumeGrpDbg[(size_t)curGrp].cand++;
@@ -7615,10 +7695,18 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             // The sky's light on it, relative (1 = a clear daytime sky), fading with the air above it.
             const double amb = glm::smoothstep(-0.1, 0.25, sinE) * std::exp(-std::max(h, 0.0) / 15000.0);
             // w = 4 x a per-parcel seed (cloud_march.comp's billows) + the sky light on it (unread there).
-            const double seedK = (double)(launch::hash01(rimSeed, 7, 3) * 255.0);
+            // (seeds 0-191 the ordinary billows; 192-255 a hot-staging lobe's: cloud_march.comp draws those with ~3x
+            // the contrast and a second octave)
+            const double seedK = curKind == 1 ? 192.0 + launch::hash01(rimSeed, 7, 3) * 63.99
+                                              : (double)(launch::hash01(rimSeed, 7, 3) * 191.99);
             // At night the sky's exposure is not physical (only ~5.5x the day's: see the Kessler dust), so a sunlit
             // plume against the dark sky reads far dimmer than it is; its sunlight is raised as the eye's sky darkens.
-            const glm::dvec3 sunC = tr * albedo * nightBoost * glm::dvec3(tint);
+            // (2026-10-30, issue 20261030_134020 "Second Stage Jellyfish") ...and further for the exhaust in vacuum:
+            // above ~100 km it is the one sunlit thing in a dark twilight sky, which an eye adapted to that sky sees
+            // ~100x brighter than the sky round it (a 1e-3 optical depth of sunlit ice against a ~20 mag/arcsec^2 sky);
+            // at the sim's night exposure the bell read as nothing. kVacNightBoost x, by night only.
+            const double vacK = (1.0 - dayness) * glm::smoothstep(70000.0, 130000.0, h);
+            const glm::dvec3 sunC = tr * albedo * nightBoost * (1.0 + (kVacNightBoost - 1.0) * vacK) * glm::dvec3(tint);
             // The blue sky's light on it, low down (2026-10-20: a steam cloud's shaded side is bluish grey, not black;
             // the engines' and pads' lights are the shader's engine lights, SatelliteSim::engineLightAdd). The CPU
             // then shadows the Sun's part itself and tells the shader the sky light's share of the colour (ib.w's
@@ -7654,7 +7742,14 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             // beside the trail (2 Gaussians as long as the segment, so neighbours join); only a lone parcel, or a
             // trail seen end-on, shows a ring (7 Gaussians round the line of sight). Rings on every parcel drew the
             // trail as a string of circles, and the young vacuum trail as puffs.
-            const double shellK = (h > 60000.0 && sig > 2000.0) ? 0.45 * glm::smoothstep(0.3, 2.0, sweep) : 0.0;
+            // (2026-10-30, issue 20261030_134020) In vacuum the same rim from the other end: an exhaust parcel that has
+            // swept up no air expands FREELY, every molecule moving outward at about the same speed, so it is a thin
+            // shell too (not a Gaussian ball): the sharp, limb-brightened edges of the jellyfish's bell and the V of
+            // the young plume behind the stage. Not a hot-staging lobe's or a streak's (their own shapes).
+            const double freeShell = 0.5 * glm::smoothstep(90000.0, 140000.0, h);
+            const double shellK = (h > 60000.0 && sig > 2000.0 && curKind == 0)
+                                      ? std::max(0.45 * glm::smoothstep(0.3, 2.0, sweep), freeShell)
+                                      : 0.0;
             if (shellK > 0.02)
             {
                 const double coreShare = 1.0 - shellK;
@@ -7715,7 +7810,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             }
             if (L.plumeDbg.size() < 4000)
                 L.plumeDbg.push_back({range / 1000.0, h / 1000.0, sig / 1000.0, Sigma, tauPeak, age, tr * albedo, amb,
-                                      curGround, colOut, flameShare});
+                                      curGround, colOut, flameShare, curKind, pri});
         };
         // Each parcel's state now (age >= 0: emitted; ok: still drawn).
         struct PState
@@ -7735,6 +7830,21 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             }
         }
         FPROF_SCOPE("launch.plumeEmit");
+        // (2026-10-30, issue 20261030_134020 "Second Stage Jellyfish") The upper stage's ascent exhaust in vacuum: the
+        // share of a parcel (as it is now) drawn as streaks instead of in its chord (the same cross-section in all;
+        // a single nozzle's filaments take less).
+        auto isAscentVac = [&](const launch::Parcel &pc) {
+            return pc.stage == 1 && pc.stream >= 0 && !pc.turb && !pc.thin && pc.ground == 0 && pc.t0 < B.t2;
+        };
+        const double streakShare = kStreakShare * (vh.upperEngines > 1 ? 1.0 : 0.6);
+        auto streakShareAt = [&](const launch::Parcel &pc, const PState &q) {
+            if (!q.ok || !isAscentVac(pc))
+                return 0.0;
+            const double age = tau - pc.t0;
+            // (only where it expands freely: below ~100-150 km the air confines it into the narrow trail)
+            return streakShare * glm::smoothstep(100000.0, 150000.0, glm::length(q.cE) - kR) *
+                   (1.0 - glm::smoothstep(0.6 * kStreakAgeS, kStreakAgeS, age));
+        };
         const double gain = (double)launchPlumeGain;
         {
             LaunchState::PlumeGrpDbg &gd = L.plumeGrpDbg[li];
@@ -7769,7 +7879,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         for (size_t pi = 0; pi < B.parcels.size(); ++pi)
         {
             const launch::Parcel &pc = B.parcels[pi];
-            if (!ps[pi].ok || pc.thin)
+            if (!ps[pi].ok || pc.thin || pc.turb)
                 continue;
             const bool puff = pc.stream < 0;
             const double age = tau - pc.t0;
@@ -7819,10 +7929,14 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 continue;
             const uint64_t rimSeed = B.seed ^ (uint64_t)(pc.t0 * 10.0);
             curGround = pc.ground;
+            curKind = pc.turb ? 1 : 0;
+            // (2026-10-30) the upper stage's young vacuum exhaust: the streaks (below) carry kStreakShare of it
+            const double strK = streakShareAt(pc, s);
+            curJelly = strK > 0.0 || pc.turb;
             if (pc.stream < 0 || prev < 0)
             {
                 // A vent's jet stretch, the pad's ground cloud, or the first knot of a burn: as emitted.
-                const double Sigma = pc.kappa * pc.m * s.cond * gain * (double)wOf[pi];
+                const double Sigma = pc.kappa * pc.m * s.cond * gain * (double)wOf[pi] * (1.0 - strK);
                 addPlume(s.cE, pc.axis, 0.5 * pc.len, s.sig, Sigma, s.sweep, pc.albedo, age, rimSeed, pc.stream >= 0,
                          pc.tint);
             }
@@ -7837,7 +7951,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     Sigma += B.parcels[(size_t)k].kappa * B.parcels[(size_t)k].m;
                 // The chord's condensed share: the mean of its two ends (the younger end alone made a new segment,
                 // born with nothing condensed, dimmer than the head it replaced: the trail pulsed once a knot).
-                Sigma *= 0.5 * (s.cond + q.cond) * gain;
+                Sigma *= 0.5 * (s.cond + q.cond) * gain * (1.0 - strK);
                 // Half the chord as the along-trail sigma joins neighbours smoothly; a young segment is tighter, so
                 // the head does not reach ahead of the stage.
                 const double cA = glm::mix(0.35, 0.5, glm::smoothstep(0.0, 3.0 * std::max(pc.dt, 0.5), age));
@@ -7867,6 +7981,137 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 }
             }
         }
+        // ── The jellyfish's streaks (2026-10-30, issue 20261030_134020: "the multiple thrusters create multiple defined
+        // streaks that expand outwards, forming the tentacles", the ship the "nucleus"). Where neighbouring nozzles'
+        // plumes meet, the gas is compressed into a thin interaction sheet that keeps its density as both expand: a
+        // cluster of N engines leaves N such sheets radiating from the plume's axis, seen as N streaks fanning out of
+        // the stage (a single nozzle's plume shows condensation filaments instead: 4, weaker). Each streak is a
+        // polyline of narrow Gaussians through the young exhaust at fixed ages behind the stage (log-spaced to
+        // kStreakAgeS), offset from the plume's axis by a fixed fraction of the exhaust's radius there, so it diverges
+        // from the nucleus at the plume's own spread angle and widens with it. Its cross-section is the share the
+        // chords gave up (streakShareAt), summed over the parcels between its knots.
+        curKind = 2;
+        curJelly = true;
+        {
+            int i0 = -1, i1 = -1;
+            for (size_t pi = 0; pi < B.parcels.size(); ++pi)
+                if (isAscentVac(B.parcels[pi]))
+                {
+                    if (i0 < 0)
+                        i0 = (int)pi;
+                    i1 = (int)pi;
+                }
+            int iy = -1; // the youngest emitted
+            for (int pi = i1; pi >= i0 && i0 >= 0; --pi)
+                if (ps[(size_t)pi].ok)
+                {
+                    iy = pi;
+                    break;
+                }
+            if (iy >= 0)
+            {
+                const int K = vh.upperEngines > 1 ? std::min(vh.upperEngines, 8) : 4;
+                const bool filaments = vh.upperEngines <= 1;
+                static const double kAges[] = {0.0, 4.0, 12.0, 28.0, 55.0, 100.0, 160.0, kStreakAgeS};
+                constexpr int nA = (int)(sizeof(kAges) / sizeof(kAges[0]));
+                struct SP
+                {
+                    glm::dvec3 c{0.0};
+                    double sig = 0.0;
+                    bool ok = false;
+                };
+                SP pt[nA];
+                // A knot at age a: the parcels' centre and radius interpolated in emission time; at age 0 the nozzle
+                // while the burn goes on (radius 0: every streak leaves the stage).
+                const bool burning = tau < B.t2;
+                for (int j = 0; j < nA; ++j)
+                {
+                    const double t0 = tau - kAges[j];
+                    if (j == 0 && burning)
+                    {
+                        bool okN = false;
+                        pt[0].c = LaunchImpl::rocketEcef(L, B, 1, tau, okN);
+                        pt[0].ok = okN;
+                        continue;
+                    }
+                    if (t0 > B.parcels[(size_t)iy].t0 || t0 < B.parcels[(size_t)i0].t0)
+                        continue;
+                    int lo = i0, hi = iy;
+                    while (hi - lo > 1)
+                    {
+                        const int mid = (lo + hi) / 2;
+                        if (B.parcels[(size_t)mid].t0 <= t0)
+                            lo = mid;
+                        else
+                            hi = mid;
+                    }
+                    const PState &a = ps[(size_t)lo], &b = ps[(size_t)hi];
+                    if (!a.ok || !b.ok)
+                        continue;
+                    const double ta = B.parcels[(size_t)lo].t0, tb = B.parcels[(size_t)hi].t0;
+                    const double f = tb > ta ? glm::clamp((t0 - ta) / (tb - ta), 0.0, 1.0) : 0.0;
+                    pt[j].c = glm::mix(a.cE, b.cE, f);
+                    pt[j].sig = glm::mix(a.sig, b.sig, f);
+                    pt[j].ok = true;
+                }
+                // (the streaks never narrow again with age: where the older trail sits lower the air held its parcels
+                // smaller, and offsets following that radius drew a spindle back into the trail)
+                for (int j = 1; j < nA; ++j)
+                    if (pt[j].ok && pt[j - 1].ok)
+                        pt[j].sig = std::max(pt[j].sig, pt[j - 1].sig);
+                // The cross-section between consecutive knots (the share every parcel there gave up).
+                double segS[nA] = {};
+                for (int pi = i0; pi <= iy; ++pi)
+                {
+                    const launch::Parcel &pc = B.parcels[(size_t)pi];
+                    const double sh = streakShareAt(pc, ps[(size_t)pi]);
+                    if (sh <= 0.0)
+                        continue;
+                    const double age = tau - pc.t0;
+                    int j = 0;
+                    while (j + 2 < nA && age >= kAges[j + 1])
+                        ++j;
+                    segS[j] += pc.kappa * pc.m * ps[(size_t)pi].cond * gain * sh;
+                }
+                const double ph = glm::two_pi<double>() * h01(B.seed, 41, 2);
+                const launch::Parcel &py = B.parcels[(size_t)iy];
+                for (int j = 0; j + 1 < nA; ++j)
+                {
+                    if (!pt[j].ok || !pt[j + 1].ok || segS[j] <= 0.0)
+                        continue;
+                    glm::dvec3 axC = pt[j + 1].c - pt[j].c;
+                    const double lC = glm::length(axC);
+                    if (lC < 1.0)
+                        continue;
+                    axC /= lC;
+                    const glm::dvec3 upM = glm::normalize(pt[j].c + pt[j + 1].c);
+                    glm::dvec3 r1 = glm::cross(axC, upM);
+                    r1 = glm::length(r1) > 1e-9 ? glm::normalize(r1) : glm::dvec3(1, 0, 0);
+                    const glm::dvec3 r2 = glm::cross(axC, r1);
+                    const double sigM = 0.5 * (pt[j].sig + pt[j + 1].sig);
+                    for (int k = 0; k < K; ++k)
+                    {
+                        const double ang = ph + glm::two_pi<double>() * ((double)k + 0.5) / K;
+                        // (2026-10-30, the user: "more expansion and divergence on the nozzle plumes ... the jellyfish is too narrow")
+                        // out past the core's 1-sigma radius: the interaction sheets ride the expanding gas's edge
+                        const double fk = kStreakOffMin + (kStreakOffMax - kStreakOffMin) * h01(B.seed, 42 + (uint64_t)k, 3);
+                        const glm::dvec3 off = std::cos(ang) * r1 + std::sin(ang) * r2;
+                        const glm::dvec3 Ea = pt[j].c + fk * pt[j].sig * off, Eb = pt[j + 1].c + fk * pt[j + 1].sig * off;
+                        glm::dvec3 ax = Eb - Ea;
+                        const double lE = glm::length(ax);
+                        ax = lE > 1e-3 ? ax / lE : axC;
+                        // a sheet seen edge-on: ~1/16 of the plume's radius across (a little more for filaments)
+                        const double sw = std::max((filaments ? 1.5 : 1.0) * kStreakWidth * sigM, 60.0);
+                        // (the first segment leaves the nozzle: tighter along, so it does not reach ahead of the stage)
+                        addPlume(0.5 * (Ea + Eb), ax, (j == 0 ? 0.28 : 0.45) * lE, sw, segS[j] / K, 0.0,
+                                 py.albedo, 0.5 * (kAges[j] + kAges[j + 1]),
+                                 B.seed ^ (0x9E37ull * (uint64_t)(k + 1) + (uint64_t)j), true, py.tint);
+                    }
+                }
+            }
+        }
+        curKind = 0;
+        curJelly = false;
     }
     L.prof[7] += (plumeMs - L.prof[7]) / 30.0;
     L.prof[9] += (reMs - L.prof[9]) / 30.0;
@@ -7913,6 +8158,12 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 rank = c.grp == prevG ? rank + 1 : 0;
                 prevG = c.grp;
                 c.res = c.grp >= 0 ? glm::clamp((Re - (double)rank) / 8.0, 0.0, 1.0) : 0.0;
+                // (2026-10-30, issue 20261030_134020) the young vacuum plume (the stage's head and the streaks: a few
+                // dozen Gaussians, only while an upper stage burns above ~100 km and for 4 min after) is the
+                // jellyfish's defining part, yet little cross-section: by priority alone the wide old bells took the
+                // budget and it was never drawn. It is kept like a reserved share.
+                if (c.jelly)
+                    c.res = 1.0;
                 c.key = c.res > 0.0 ? c.pri * 1e12 + 1e-30 : c.pri;
                 // (the weakest of the share, for next frame's skip test; 0 = the launch has fewer than the share)
                 if (c.grp >= 0)
@@ -8258,6 +8509,21 @@ nlohmann::json SatelliteSim::launchStateJson() const
                       {"cross_section_m2", pd[i].Sigma}, {"tau_peak", pd[i].tauPeak}, {"age_s", pd[i].age},
                       {"sun_col", {pd[i].col.x, pd[i].col.y, pd[i].col.z}}});
     j["plume_high"] = hi;
+    // (2026-10-30, issue 20261030_134020) the vacuum exhaust (above 100 km) and the hot-staging lobes, youngest first:
+    // kind 0 exhaust, 1 lobe, 2 streak; pri against plume_cut (under it: not drawn, near it: faded)
+    {
+        std::vector<LaunchState::PlumeDbg> pv;
+        for (const auto &e : L.plumeDbg)
+            if (e.altKm > 100.0 || e.kind != 0)
+                pv.push_back(e);
+        std::sort(pv.begin(), pv.end(), [](const auto &a, const auto &b) { return a.age < b.age; });
+        nlohmann::json va = nlohmann::json::array();
+        for (size_t i = 0; i < pv.size() && i < 60; ++i)
+            va.push_back({{"kind", pv[i].kind}, {"age_s", pv[i].age}, {"alt_km", pv[i].altKm}, {"range_km", pv[i].rangeKm},
+                          {"sigma_km", pv[i].sigKm}, {"cross_section_m2", pv[i].Sigma}, {"tau_peak", pv[i].tauPeak},
+                          {"pri", pv[i].pri}, {"drawn_col", {pv[i].drawn.x, pv[i].drawn.y, pv[i].drawn.z}}});
+        j["plume_vacuum"] = va;
+    }
     j["plume_parcels"] = pd.size();
     {
         nlohmann::json g = nlohmann::json::array();

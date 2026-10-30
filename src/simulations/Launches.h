@@ -70,6 +70,13 @@ struct Vehicle
     bool upperDeorbit = true;        // the upper stage burns to re-enter after deployment (else it returns: no fireball)
     double upperMassKg = 4000.0;
     double soot = 0.5;               // 0 clean (methane, hydrogen) .. 1 sooty (kerosene, solids): the low trail's albedo
+    // The upper stage's exhaust in vacuum (2026-10-30, issue 20261030_134020 "Second Stage Jellyfish"): its engine
+    // count (each pair of neighbouring nozzles' plumes meets in a dense interaction sheet: the streaks, "tentacles",
+    // radiating from the stage; a single nozzle's plume still shows condensation filaments, drawn as 4) and whether
+    // it stages HOT (the upper stage lights while still attached: its exhaust bursts out of the vented interstage as a
+    // turbulent cloud at separation).
+    int upperEngines = 1;
+    bool hotStaging = false;
     double ventChance = 0.35;        // the upper stage vents spinning after its deorbit burn (a spiral)
     double mountM = 0.0;             // the launch mount's height: the vehicle stands on it (Starship: ~20 m)
     double catchM = 0.0;             // a tower-caught booster stops this far above the mount (its aft end)
@@ -321,6 +328,7 @@ struct Parcel
     double kappa = 1.0;          // scattering cross-section per kg (m^2/kg)
     double albedo = 0.9;
     glm::vec3 tint{1.0f};        // the material's colour (the land's dust is tan; exhaust, steam and spray white)
+    bool turb = false;           // a hot-staging burst: drawn with strong billows (lobes) and never as a shell
     int ground = 0;              // 0 exhaust aloft; 1 the pad's lift-off cloud (steam, exhaust); 2 a landing's
                                  // dust / steam (land) or spray (sea): drawn as lumpy round puffs, lit by the flame
     glm::dvec3 axis{0.0};        // the trail's direction at emission (unit, Earth-fixed): the parcel is a segment

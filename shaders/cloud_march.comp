@@ -600,16 +600,19 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
                     // the contrast (one cell ~1.5 of the Gaussian's smallest sigma; seen across its thickness, unchanged).
                     if (isSm && !isWall) aa1 *= inversesqrt(max(1.0, inversesqrt(q) / (1.5 * sW)));
                     // R = the baked Perlin-Worley (three octaves: billows of ~1 sigma down to a quarter of it).
+                    // (2026-10-30, issue 20261030_134020) a hot-staging lobe (seeds 192-255, launchFillVisuals): the
+                    // turbulent burst out of the interstage, ~2x the contrast and a second octave, as smoke's
+                    bool turbP = !isSm && sk >= 192.0 && sk < 256.0;
                     if (aa1 > 0.0) {
                         float nz = textureLod(cloudNoiseTex, rl * 0.25 + sd, 0.0).r;
-                        mN += aa1 * (1.0 - lowK) * 1.3 * (nz - kPlumeNoiseMean);
+                        mN += aa1 * (1.0 - lowK) * (turbP ? 2.4 : 1.3) * (nz - kPlumeNoiseMean);
                     }
                     // (wildfire smoke, 2026-10-23 b: a second octave at ~4x, its Gaussians being km wide: billows
                     // within billows, not one smooth lump)
                     float aa2 = (1.0 - smoothstep(0.5, 2.0, fpT * 4.2)) *
                                 inversesqrt(max(1.0, 4.2 * inversesqrt(q) / (1.5 * sW)));   // (its cells 4.2x finer: more per path)
-                    if (isSm && !isWall && aa2 > 0.0)
-                        mN += aa2 * 0.8 * (textureLod(cloudNoiseTex, rl * 1.05 + sd.yzx, 0.0).r - kPlumeNoiseMean);
+                    if (((isSm && !isWall) || turbP) && aa2 > 0.0)
+                        mN += aa2 * (turbP ? 1.2 : 0.8) * (textureLod(cloudNoiseTex, rl * 1.05 + sd.yzx, 0.0).r - kPlumeNoiseMean);
                 }
                 if (lowK > 0.0 && sk >= 256.0) {
                     // A TORNADO's Gaussian (2026-10-23, SatelliteSim::weatherFillTornadoes: seedK = 256 + its spin phase
