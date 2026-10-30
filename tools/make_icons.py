@@ -496,7 +496,29 @@ def build_sky_supernova():
     return [core] + spikes
 
 
+def build_sky_cometstorm():
+    """A comet meteor storm (2026-10-30): the comet's head in the upper right and a fan of five meteor streaks
+    raining toward the lower left."""
+    shapes = [disc(38.0, 10.0, 6.0)]
+    for (x0, y0, x1, y1, w) in [(30.0, 8.0, 3.0, 22.0, 2.0), (36.0, 18.0, 8.0, 36.0, 2.4), (41.0, 24.0, 20.0, 45.0, 2.4),
+                                (22.0, 4.0, 3.0, 12.0, 1.8), (45.0, 32.0, 36.0, 46.0, 2.0)]:
+        shapes.append(seg(x0, y0, x1, y1, w))
+    return shapes
+
+
+def build_sky_cme():
+    """A coronal mass ejection (2026-10-30): the Sun's disc at the lower left with two arcs of ejecta leaving it
+    toward the upper right."""
+    sun = disc(15.0, 33.0, 10.0)
+    gap = disc(15.0, 33.0, 14.0)
+    a1 = cut(arc(15.0, 33.0, 20.0, 3.0, 270.0, 360.0), gap)
+    a2 = cut(arc(15.0, 33.0, 30.0, 3.0, 270.0, 360.0), gap)
+    return [sun, a1, a2]
+
+
 ICONS = {
+    "sky-cometstorm": build_sky_cometstorm,
+    "sky-cme": build_sky_cme,
     "storm-tornado": build_storm_tornado,
     "storm-hurricane": build_storm_hurricane,
     "storm-haboob": build_storm_haboob,
@@ -537,7 +559,7 @@ ICONS = {
 # beside them read as another icon family (the user, 2026-10-03).
 PIXEL_STYLE = {"storm-tornado", "storm-hurricane", "storm-haboob", "storm-supercell", "storm-squall",
                "storm-waterspout", "storm-fire", "storm-cell", "weather", "movement", "view", "pin", "missions", "report", "bookmark", "film", "photo", "camera", "record", "maximize", "observer", "spin", "studio",
-               "sky-events", "sky-solar", "sky-lunar", "sky-conjunction", "sky-occultation", "sky-moonglint", "sky-meteors", "sky-comet", "sky-supernova"}
+               "sky-events", "sky-solar", "sky-lunar", "sky-conjunction", "sky-occultation", "sky-moonglint", "sky-meteors", "sky-comet", "sky-supernova", "sky-cometstorm", "sky-cme"}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

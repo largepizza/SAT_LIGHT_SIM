@@ -109,6 +109,10 @@ inline constexpr const char *kUiThemeKeys[] = {"classic", "navy", "night", "midn
     X(trkMarkerUser, UIC(235, 110, 255, 255), UIC(235, 110, 255, 255), UIC(170, 0, 0, 255), UIC(235, 110, 255, 255))                 \
     X(trkYou, UIC(90, 220, 255, 255), UIC(90, 220, 255, 255), UIC(140, 0, 0, 255), UIC(90, 220, 255, 255))                           \
     X(trkWork, UIC(64, 128, 230, 255), UIC(64, 128, 230, 255), UIC(70, 0, 0, 255), UIC(64, 128, 230, 255))                           \
+    /* The Sky events window's one-time scripted events (2026-10-30): each its own colour */ \
+    X(spNova, UIC(236, 168, 36, 255), UIC(236, 168, 36, 255), UIC(205, 0, 0, 255), UIC(236, 168, 36, 255))                           \
+    X(spComet, UIC(66, 176, 222, 255), UIC(66, 176, 222, 255), UIC(205, 0, 0, 255), UIC(66, 176, 222, 255))                          \
+    X(spStorm, UIC(184, 90, 220, 255), UIC(184, 90, 220, 255), UIC(205, 0, 0, 255), UIC(184, 90, 220, 255))                          \
     X(trkHot, UIC(255, 120, 20, 255), UIC(255, 120, 20, 255), UIC(220, 0, 0, 255), UIC(255, 120, 20, 255))                           \
     /* Speed indicator */                                                                                      \
     X(speedFwd, UIC(200, 55, 55, 220), UIC(50, 120, 230, 220), UIC(200, 0, 0, 220), UIC(200, 55, 55, 220))                          \

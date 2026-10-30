@@ -1,0 +1,42 @@
+# The Sky events window overhaul (2026-10-30): one-time events, Ongoing with Start / End, the Space weather tab, and the
+# Great Comet's meteor storm. run.py tools/harness/scripts/sky_space_weather.satcmd
+set clouds_v2.auto_exposure 0
+time set 2036-11-22T02:06:22Z
+ui open skyevents
+skyevents events
+wait settle 30
+ui dump sky_idle
+capture sky_idle ui=on
+# the storm under way: Watch = the one button; the Ongoing section then lists nothing special (the storm is a one-time row)
+skyevents special 1
+skyevents watch cometstorm
+meteors state
+meteors count minutes=10
+wait settle 30
+ui dump sky_storm
+capture sky_storm ui=on
+# the events window while the storm is under way: End / Start jump along it
+skyevents state
+# Start / End on the storm's one-time row (section 0, index 1): the clock goes to its end, then to its start
+ui click SkRowEnd:1
+wait 3
+state time_probe
+ui click SkRowStart:1
+wait 3
+state time_probe
+# a month on, the residual
+time set 2037-04-17T04:00:00Z
+wait 5
+meteors state
+meteors count minutes=10
+# the space-weather tab
+ui open skyevents tab=spaceweather
+aurora kp 7
+wait settle 30
+ui dump sky_sw
+capture sky_sw ui=on
+skyevents aurora
+wait settle 30
+capture sky_aurora_watch
+aurora auto
+skyevents state

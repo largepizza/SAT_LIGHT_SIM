@@ -56,6 +56,7 @@ struct SkyEventsFriend
     static void cardComet(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2);
     static void cardSupernova(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2);
     static void cardCme(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2);
+    static void cardCometStorm(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2);
     static const SkyKindDef kinds[sky::kKindCount];
 };
 
@@ -327,7 +328,11 @@ std::string eventTitle(const sky::Event &e)
         snprintf(b, sizeof(b), tx(Txt::FmtBetelgeuseGoesSupernovaPeakMag), e.magA);
         break;
     case sky::kCme:
-        snprintf(b, sizeof(b), "%s", tx(Txt::TxtTheSunsFuryCme));
+        if (e.a == 1) snprintf(b, sizeof(b), "%s", tx(Txt::TxtTheSunsFuryCme));
+        else snprintf(b, sizeof(b), tx(Txt::FmtGeoStorm), geomagStormScale(e.sepDeg), e.sepDeg);
+        break;
+    case sky::kCometStorm:
+        snprintf(b, sizeof(b), tx(Txt::FmtMeteorStormPeakZhr), e.magA);
         break;
     default:
         snprintf(b, sizeof(b), "Event");
@@ -415,11 +420,29 @@ void SkyEventsFriend::cardSupernova(SatelliteSim &S, const sky::Event &e, double
 // The Sun's Fury: the flare's countdown, the CME's arrival, then the cascade's day.
 void SkyEventsFriend::cardCme(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2)
 {
+    if (e.a != 1)
+    {
+        // a procedural geomagnetic storm: its arrival, then how far the aurora reaches at the peak
+        l1 = S.skStr("%s", utcShort(e.t).c_str());
+        l2 = S.skStr(tx(Txt::FmtAuroraReachesDeg), 90.0 - auroraOvalBounds(e.sepDeg).eqMid);
+        return;
+    }
     if (now >= e.t)
         l1 = S.skStr(tx(Txt::FmtDay), (now - e.t) / kDay);
     else
-        l1 = S.skStr(tx(Txt::FmtCmeFlareArrives), utcShort(e.t0).c_str(), utcShort(e.t).c_str());
+        l1 = S.skStr(tx(Txt::FmtCmeFlareArrives), utcShort(e.t).c_str());
     l2 = tx(Txt::TxtKesslerCascadeFollows);
+}
+
+// The Great Comet's meteor storm: the ZHR now (or the peak's), then its window.
+void SkyEventsFriend::cardCometStorm(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2)
+{
+    const double zNow = meteors::zhrAtTime(meteors::kGreatComet, now);
+    if (now >= e.t0 && now < e.t1)
+        l1 = S.skStr(tx(Txt::FmtZhrNowPeakOn), zNow, e.magA, utcShort(e.t).substr(0, 10).c_str());
+    else
+        l1 = S.skStr(tx(Txt::FmtPeakZhrOn), e.magA, utcShort(e.t).c_str());
+    l2 = S.skStr(tx(Txt::FmtStormWindow), utcShort(e.t0).substr(0, 10).c_str(), utcShort(e.t1).substr(0, 10).c_str());
 }
 
 const SkyKindDef SkyEventsFriend::kinds[sky::kKindCount] = {
@@ -441,8 +464,10 @@ const SkyKindDef SkyEventsFriend::kinds[sky::kKindCount] = {
      &SkyEventsFriend::cardComet, tx(Txt::TxtNoBrightCometInTheNext), tx(Txt::TxtTheCometAndItsTailFrom)},
     {"supernova", tx(Txt::TxtSupernova), 40, &Pal::btnDanger, &SatelliteSim::skySearchSupernova, &SatelliteSim::skyWatchSupernova,
      &SkyEventsFriend::cardSupernova, tx(Txt::TxtNoneInTheNext2Years), tx(Txt::TxtBetelgeuseBlazingInOrionFromA)},
-    {"cme", tx(Txt::TxtCme), 40, &Pal::furyBorder, &SatelliteSim::skySearchCme, &SatelliteSim::skyWatchCme,
+    {"cme", tx(Txt::TxtCmeKind), 45, &Pal::tagTwilight, &SatelliteSim::skySearchCme, &SatelliteSim::skyWatchCme,
      &SkyEventsFriend::cardCme, tx(Txt::TxtNoneInTheNext2Years), tx(Txt::TipTheStormNightTheAuroraOver)},
+    {"cometstorm", tx(Txt::TxtCometStorm), 44, &Pal::spStorm, &SatelliteSim::skySearchCometStorm, &SatelliteSim::skyWatchCometStorm,
+     &SkyEventsFriend::cardCometStorm, tx(Txt::TxtNoneInTheNext2Years), tx(Txt::TipTheGreatCometsMeteorStorm)},
 };
 static_assert(sizeof(SkyEventsFriend::kinds) / sizeof(SkyEventsFriend::kinds[0]) == sky::kKindCount, "one row per sky::Kind");
 namespace
@@ -1013,7 +1038,7 @@ bool SatelliteSim::skyWatchMoonGlint(const sky::Event &e, std::string &msg)
 // ZHR is at least half the peak's, the Moon's lit fraction at the peak. Pure functions of time (a worker).
 void SatelliteSim::skySearchMeteorShowers(const sky::SearchCtx &c, std::vector<sky::Event> &out) const
 {
-    for (int s = 0; s < meteors::kSporadic && !c.cancelled(); ++s)
+    for (int s = 0; s < meteors::kGreatComet && !c.cancelled(); ++s) // (the comet's storm is its own kind)
     {
         const meteors::Shower &S = meteors::shower(s);
         double t = c.t0 - 20.0 * kDay;
@@ -1129,22 +1154,77 @@ bool SatelliteSim::skyWatchSupernova(const sky::Event &e, std::string &msg)
 // flare .. the first days of the cascade meet the range. Watch = the storm night (Monument Valley, the aurora).
 void SatelliteSim::skySearchCme(const sky::SearchCtx &c, std::vector<sky::Event> &out) const
 {
-    if (!c.kessler) return;
-    const double arr = kesslerEpoch(), t0 = arr - 17.5 * 3600.0, t1 = arr + 3.0 * kDay;
-    if (t1 < c.t0 || t0 > c.t1) return;
+    if (c.kessler)
+    {
+        const double arr = kesslerEpoch(), t0 = arr - 17.5 * 3600.0, t1 = arr + 3.0 * kDay;
+        if (!(t1 < c.t0 || t0 > c.t1))
+        {
+            sky::Event e;
+            e.kind = sky::kCme;
+            e.a = 1; // the scripted one (the Sun's Fury): a special event
+            e.t0 = t0;
+            e.t1 = t1;
+            e.t = arr;
+            e.watchT = arr;
+            e.score = 1e9;
+            out.push_back(e);
+        }
+    }
+    // The procedural storms (2026-10-30): every Earth-directed CME of space weather arriving in the range with a peak of
+    // G3 (Kp 7) or more — the same hashes as the aurora's Kp, so the aurora in the sky is this storm. A storm lasts about
+    // a day from its arrival (a main phase of hours, then the recovery); the Watch lands in its main phase.
+    if (!c.scriptedOnly)
+    {
+        std::vector<CmeArrival> arr(1024);
+        const int n = spaceWeatherCmeArrivals(c.t0, c.t1, c.stormRate, arr.data(), (int)arr.size());
+        for (int i = 0; i < n && !c.cancelled(); ++i)
+        {
+            if (arr[(size_t)i].scripted || arr[(size_t)i].peakKp < 7.0) continue;
+            sky::Event e;
+            e.kind = sky::kCme;
+            e.a = 0;
+            e.t = arr[(size_t)i].arriveT;
+            e.t0 = e.t;
+            e.t1 = e.t + 1.0 * kDay;
+            e.watchT = e.t + 4.0 * 3600.0;
+            e.sepDeg = arr[(size_t)i].peakKp;
+            e.score = arr[(size_t)i].peakKp;
+            out.push_back(e);
+        }
+    }
+    std::sort(out.begin(), out.end(), [](const sky::Event &x, const sky::Event &y) { return x.t < y.t; });
+}
+
+bool SatelliteSim::skyWatchCme(const sky::Event &e, std::string &msg)
+{
+    if (e.a == 1) return missionsGoToFury(1, msg);
+    return spaceWeatherWatch(e.watchT, msg);
+}
+
+// ── The Great Comet's meteor storm (2026-10-30; Meteors.h cometStorm): a fixed scripted event, one record when its window
+// [ZHR passes 10 before the peak .. falls back under 10 in December 2037] meets the range. Watch = a dark site with the
+// radiant up, near the peak (or now, when it is under way): meteorWatchShower.
+void SatelliteSim::skySearchCometStorm(const sky::SearchCtx &c, std::vector<sky::Event> &out) const
+{
+    const meteors::CometStorm &cs = meteors::cometStorm();
+    if (cs.t1 < c.t0 || cs.t0 > c.t1) return;
     sky::Event e;
-    e.kind = sky::kCme;
-    e.t0 = t0;
-    e.t1 = t1;
-    e.t = arr;
-    e.watchT = arr;
-    e.score = 1e9;
+    e.kind = sky::kCometStorm;
+    e.t = cs.tPeak;
+    e.t0 = cs.t0;
+    e.t1 = cs.t1;
+    e.watchT = cs.tPeak;
+    e.magA = (float)cs.zhrPeak;
+    const glm::dvec3 md = glm::normalize(moonGeoEciAt(cs.tPeak)), sd = glm::normalize(sunDirEciAt(cs.tPeak));
+    e.tAux = 0.5 * (1.0 + std::cos(std::acos(std::clamp(-glm::dot(md, sd), -1.0, 1.0))));
+    e.score = 1e8;
+    snprintf(e.label, sizeof(e.label), "%s", meteors::shower(meteors::kGreatComet).name);
     out.push_back(e);
 }
 
-bool SatelliteSim::skyWatchCme(const sky::Event &, std::string &msg)
+bool SatelliteSim::skyWatchCometStorm(const sky::Event &e, std::string &msg)
 {
-    return missionsGoToFury(1, msg);
+    return meteorWatchShower(meteors::kGreatComet, e.t0, e.t1, e.t, msg);
 }
 
 // What a kind's Watch needs drawn (2026-10-29): Potato's sky draws no eclipse (sat_sky_minimal.frag has no Moon over
@@ -1217,6 +1297,7 @@ void SatelliteSim::skyEventsUpdate()
         ctx.cometsMinor = cometsMinor;
         ctx.supernova = supernovaEnabled && starBetelgeuse >= 0;
         ctx.kessler = kesslerEnabled;
+        ctx.stormRate = auroraStormRate;
         ctx.cancel = &skScanCancel;
         skScanCancel = false;
         const int k = skScanKind;
@@ -1287,6 +1368,135 @@ const char *SatelliteSim::skStr(const char *fmt, ...)
     return skText_.back().c_str();
 }
 
+// ── The special (one-time, scripted) events (2026-10-30) ───────────────────────────────────────────────────────────────
+// The Sun's Fury, the Great Comet of 2037, its meteor storm and the Betelgeuse supernova are always listed on top, whatever
+// the date: built once here from their own searches over a window round each (not from the 2-year search), in time order.
+void SatelliteSim::skyEventsRefreshSpecial()
+{
+    const int key = (kesslerEnabled ? 1 : 0) | ((supernovaEnabled && starBetelgeuse >= 0) ? 2 : 0);
+    if (key == skSpecialKey) return;
+    FPROF_SCOPE("skyEventsRefreshSpecial");
+    skSpecialKey = key;
+    std::vector<sky::Event> v;
+    sky::SearchCtx c;
+    c.supernova = (key & 2) != 0;
+    c.kessler = (key & 1) != 0;
+    c.stormRate = auroraStormRate;
+    c.scriptedOnly = true;
+    c.cometsMinor = false;
+    {
+        const comet::Elements &g = comet::greatComet();
+        c.t0 = g.tPeri - 200.0 * kDay;
+        c.t1 = g.tPeri + 200.0 * kDay;
+        std::vector<sky::Event> t;
+        skySearchComets(c, t);
+        for (const sky::Event &e : t)
+            if (std::strncmp(e.label, "C/2036 X1", 9) == 0) v.push_back(e);
+    }
+    {
+        const meteors::CometStorm &cs = meteors::cometStorm();
+        c.t0 = cs.t0 - kDay;
+        c.t1 = cs.t1 + kDay;
+        skySearchCometStorm(c, v);
+    }
+    {
+        const double arr = kesslerEpoch();
+        c.t0 = arr - kDay;
+        c.t1 = arr + 4.0 * kDay;
+        skySearchCme(c, v);
+    }
+    {
+        c.t0 = kSupernovaT0 - kDay;
+        c.t1 = kSupernovaT0 + 365.0 * kDay;
+        skySearchSupernova(c, v);
+    }
+    std::sort(v.begin(), v.end(), [](const sky::Event &x, const sky::Event &y) { return x.t < y.t; });
+    for (int i = 0; i < 4; ++i)
+    {
+        skSpecialHas[i] = i < (int)v.size();
+        if (skSpecialHas[i]) skSpecial[i] = v[(size_t)i];
+    }
+}
+
+// ── One compact event row ──────────────────────────────────────────────────────────────────────────────────────────
+int SatelliteSim::skyEventRow(const UIInput &inp, UIRenderer &ui, const SkRowSpec &r)
+{
+    int act = 0;
+    const float lineH = (float)fs(12) * 1.3f;
+    const bool hasD1 = r.d1 && r.d1[0], hasD2 = (!skCompact || r.keepD2) && r.d2 && r.d2[0];
+    const int lines = 1 + (hasD1 ? 1 : 0) + (hasD2 ? 1 : 0);
+    int nb0 = 0;
+    for (int b = 1; b <= 4; b <<= 1) nb0 += (r.btnMask & b) ? 1 : 0;
+    const float rowH = std::max((float)lines * lineH + 10.0f, nb0 >= 2 ? 58.0f : 32.0f); // (Start / End sit under Watch)
+    const uint32_t eid = (uint32_t)r.section * 256u + r.idx;
+    int nb = 0;
+    for (int b = 1; b <= 4; b <<= 1) nb += (r.btnMask & b) ? 1 : 0;
+    const float bw = (float)fs(11) * 6.4f;
+    CLAY(CLAY_SIDI(cs("SkRowBox"), eid), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(rowH)},
+                                                           .padding = {6, 6, 3, 3},
+                                                           .childGap = 7,
+                                                           .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                           .layoutDirection = CLAY_LEFT_TO_RIGHT},
+                                                .backgroundColor = Pal::cardBg,
+                                                .cornerRadius = CLAY_CORNER_RADIUS(4),
+                                                .border = {.color = r.special ? *r.accent : Pal::cardBorder,
+                                                           .width = CLAY_BORDER_ALL((uint16_t)(r.special ? 2 : 1))}})
+    {
+        CLAY(CLAY_SIDI(cs("SkRowIcBg"), eid), {.layout = {.sizing = {CLAY_SIZING_FIXED(26), CLAY_SIZING_FIXED(26)},
+                                                                .childAlignment = {CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER}},
+                                                     .backgroundColor = *r.accent,
+                                                     .cornerRadius = CLAY_CORNER_RADIUS(5)})
+        {
+            CLAY(CLAY_SIDI(cs("SkRowIc"), eid), {.layout = {.sizing = {CLAY_SIZING_FIXED(20), CLAY_SIZING_FIXED(20)}},
+                                                       .image = {.imageData = (void *)(intptr_t)(r.icon + 1)}}) {}
+        }
+        CLAY(CLAY_SIDI(cs("SkRowTx"), eid), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
+                                                              .childGap = 1,
+                                                              .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                              .layoutDirection = CLAY_TOP_TO_BOTTOM},
+                                                   .clip = {.horizontal = true}})
+        {
+            CLAY(CLAY_SIDI(cs("SkRowHd"), eid), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                                  .childGap = 6,
+                                                                  .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                                  .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+            {
+                CLAY_TEXT(cs(r.head),
+                          CLAY_TEXT_CONFIG({.textColor = *r.headCol, .fontSize = fs(12), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+                CLAY_TEXT(cs(r.status),
+                          CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+            }
+            if (hasD1)
+                CLAY_TEXT(cs(r.d1),
+                          CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+            if (hasD2)
+                CLAY_TEXT(cs(r.d2),
+                          CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+        }
+        CLAY(CLAY_SIDI(cs("SkRowBt"), eid), {.layout = {.sizing = {CLAY_SIZING_FIXED(bw), CLAY_SIZING_FIT(0)},
+                                                              .childGap = 3,
+                                                              .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                              .layoutDirection = CLAY_TOP_TO_BOTTOM}})
+        {
+            if ((r.btnMask & 4) && uiButton(inp, ui, r.key, (int)r.idx, tx(Txt::BtnWatch), r.tip, false, r.watchOk, true))
+                act |= 4;
+            if (r.btnMask & 3)
+            {
+                CLAY(CLAY_SIDI(cs("SkRowBt2"), eid), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                                   .childGap = 3,
+                                                                   .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                {
+                    if ((r.btnMask & 1) && uiButton(inp, ui, "SkRowStart", (int)eid, tx(Txt::BtnStart), tx(Txt::TipEventStart), false, true, true))
+                        act |= 1;
+                    if ((r.btnMask & 2) && uiButton(inp, ui, "SkRowEnd", (int)eid, tx(Txt::BtnEnd), tx(Txt::TipEventEnd), false, true, true))
+                        act |= 2;
+                }
+            }
+        }
+    }
+    return act;
+}
+
 // ── The window ─────────────────────────────────────────────────────────────────────────────────────────────────────
 void SatelliteSim::buildSkyEventsWindow(const UIInput &inp, UIRenderer &ui)
 {
@@ -1301,6 +1511,7 @@ void SatelliteSim::buildSkyEventsWindow(const UIInput &inp, UIRenderer &ui)
     }
     skyEventsUpdate();
     skyEventsRefreshUpcoming(false);
+    skyEventsRefreshSpecial();
     const double now = (double)simDayJ2000 * kDay + simSecInDay;
     auto text = [&](const char *s, Clay_Color c, int size) {
         CLAY_TEXT(cs(s), CLAY_TEXT_CONFIG({.textColor = c, .fontSize = fs(size), .wrapMode = CLAY_TEXT_WRAP_NONE}));
@@ -1311,6 +1522,29 @@ void SatelliteSim::buildSkyEventsWindow(const UIInput &inp, UIRenderer &ui)
         if (m >= 2 * 1440) return skStr(tx(Txt::FmtInDH2), m / 1440, (m % 1440) / 60);
         if (m >= 60) return skStr(tx(Txt::FmtInHMin), m / 60, m % 60);
         return skStr(tx(Txt::FmtInMin), m);
+    };
+    // Ongoing: under way now, the special rows (their own section, with the same controls) left out.
+    auto isSpecial = [&](const sky::Event &e) {
+        return (e.kind == sky::kCme && e.a == 1) || e.kind == sky::kSupernova || e.kind == sky::kCometStorm ||
+               (e.kind == sky::kComet && std::strncmp(e.label, "C/2036 X1", 9) == 0);
+    };
+    skOngoing.clear();
+    for (int k = 0; k < sky::kKindCount; ++k)
+        for (const sky::Event &e : skFound[k])
+            if (e.t0 <= now && now < e.t1 && !isSpecial(e)) skOngoing.push_back(e);
+    std::sort(skOngoing.begin(), skOngoing.end(), [](const sky::Event &a, const sky::Event &b) { return a.t1 < b.t1; });
+    if (skOngoing.size() > 6) skOngoing.resize(6);
+    auto titleOf = [&](const sky::Event &e) -> const char * {
+        return e.kind == sky::kComet ? skStr("%s", e.label) : skStr("%s", eventTitle(e).c_str());
+    };
+    auto specialAccent = [&](const sky::Event &e) -> const Clay_Color * {
+        switch (e.kind)
+        {
+        case sky::kComet: return &Pal::spComet;
+        case sky::kCometStorm: return &Pal::spStorm;
+        case sky::kSupernova: return &Pal::spNova;
+        default: return &Pal::furyBorder;
+        }
     };
     static char titleBuf[32];
     snprintf(titleBuf, sizeof(titleBuf), tx(Txt::FmtSkyEvents));
@@ -1333,135 +1567,208 @@ void SatelliteSim::buildSkyEventsWindow(const UIInput &inp, UIRenderer &ui)
                     skStatus.clear();
                 // (one fixed line: empty when there is no message, so nothing below moves)
                 text(skStatus.empty() ? " " : skStr("%s", skStatus.c_str()), Pal::textWarn, 11);
+                CLAY(CLAY_ID("SkTabs"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                    .childGap = 4,
+                                                    .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                    .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                {
+                    if (uiButton(inp, ui, "SkTab", 0, tx(Txt::BtnTabEvents), tx(Txt::TipTabEvents), skTab == 0)) skTab = 0;
+                    if (uiButton(inp, ui, "SkTab", 1, tx(Txt::BtnTabSpaceWeather), tx(Txt::TipTabSpaceWeather), skTab == 1)) skTab = 1;
+                    CLAY(CLAY_ID("SkTabsGap"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}}) {}
+                    if (skTab == 0 &&
+                        uiButton(inp, ui, "SkCompact", 0, skCompact ? tx(Txt::BtnDetails) : tx(Txt::BtnCompact), tx(Txt::TipSkyDetails)))
+                        skCompact = !skCompact;
+                }
                 CLAY(CLAY_ID("SkList"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
                                                     .padding = {0, 8, 2, 4},
-                                                    .childGap = 5,
+                                                    .childGap = 4,
                                                     .layoutDirection = CLAY_TOP_TO_BOTTOM},
                                          .clip = {.vertical = true, .childOffset = Clay_GetScrollOffset()}})
                 {
-                    uiSection("SkSecNext", 0, tx(Txt::SecNextOfEachKind));
-                    const float lineH = (float)fs(12) * 1.35f;
-                    for (int k = 0; k < sky::kKindCount; ++k)
+                    if (skTab == 1)
                     {
-                        const SkyKindDef &K = kSkyKinds[k];
-                        const sky::Event *e = skyEventNext(k);
-                        const char *st, *l1 = "", *l2 = "";
-                        if (k >= skScanKind)
-                            st = tx(Txt::ValSearchingTheNext2Years);
-                        else if (!e)
-                            st = K.none;
-                        else
-                        {
-                            st = now >= e->t0 ? skStr(tx(Txt::FmtHappeningNowLeft), inText(e->t1 - now) + 3)
-                                              : inText(e->t0 - now);
-                            K.text(*this, *e, now, l1, l2);
-                        }
-                        CLAY(CLAY_IDI("SkCard", (uint32_t)k), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(std::max(3.0f * lineH + 18.0f, 64.0f))},
-                                                                          .padding = {8, 8, 6, 6},
-                                                                          .childGap = 8,
-                                                                          .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                                                          .layoutDirection = CLAY_LEFT_TO_RIGHT},
-                                                               .backgroundColor = Pal::cardBg,
-                                                               .cornerRadius = CLAY_CORNER_RADIUS(4),
-                                                               .border = {.color = Pal::cardBorder, .width = CLAY_BORDER_ALL(1)}})
-                        {
-                            CLAY(CLAY_IDI("SkIconBg", (uint32_t)k), {.layout = {.sizing = {CLAY_SIZING_FIXED(40), CLAY_SIZING_FIXED(40)},
-                                                                                .childAlignment = {CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER}},
-                                                                     .backgroundColor = *K.accent,
-                                                                     .cornerRadius = CLAY_CORNER_RADIUS(6)})
-                            {
-                                CLAY(CLAY_IDI("SkIcon", (uint32_t)k), {.layout = {.sizing = {CLAY_SIZING_FIXED(30), CLAY_SIZING_FIXED(30)}},
-                                                                       .image = {.imageData = (void *)(intptr_t)(K.icon + 1)}}) {}
-                            }
-                            CLAY(CLAY_IDI("SkText", (uint32_t)k), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
-                                                                              .childGap = 2,
-                                                                              .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                                                              .layoutDirection = CLAY_TOP_TO_BOTTOM},
-                                                                   .clip = {.horizontal = true}})
-                            {
-                                CLAY(CLAY_IDI("SkHead", (uint32_t)k), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
-                                                                                  .childGap = 6,
-                                                                                  .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                                                                  .layoutDirection = CLAY_LEFT_TO_RIGHT}})
-                                {
-                                    text(K.card, Pal::textBright, 12);
-                                    text(st, Pal::textPrimary, 11);
-                                }
-                                text(l1, Pal::textDim, 11);
-                                text(l2, Pal::textDim, 11);
-                            }
-                            const float bw = (float)fs(11) * 6.0f;
-                            CLAY(CLAY_IDI("SkBtns", (uint32_t)k), {.layout = {.sizing = {CLAY_SIZING_FIXED(bw), CLAY_SIZING_FIT(0)},
-                                                                              .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                                                              .layoutDirection = CLAY_TOP_TO_BOTTOM}})
-                            {
-                                const char *why = tierNeedReason(skyKindNeeds(k));
-                                if (uiButton(inp, ui, "SkCardBtn", k, tx(Txt::BtnWatch), why ? why : K.tip, false, e != nullptr && !why, true) && e)
-                                    skPendingKind = k;
-                            }
-                        }
+                        buildSkySpaceWeatherTab(inp, ui, skChrome.w - 48.0f);
                     }
-                    uiSection("SkSecUp", 1, tx(Txt::SecUpcomingNext2Years));
-                    // Always kUpcomingRows rows of one height: a row waiting for the search, or past the list's end, is
-                    // a blank line, so nothing moves as the kinds come in.
-                    const float rowH = std::max((float)fs(11) * 1.35f * 2.0f + 10.0f, 34.0f);
-                    for (int i = 0; i < kUpcomingRows; ++i)
+                    else
                     {
-                        const sky::Event *e = i < (int)skUpcoming.size() ? &skUpcoming[(size_t)i] : nullptr;
-                        CLAY(CLAY_IDI("SkRow", (uint32_t)i), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(rowH)},
-                                                                         .padding = {6, 6, 3, 3},
-                                                                         .childGap = 8,
-                                                                         .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                                                         .layoutDirection = CLAY_LEFT_TO_RIGHT},
-                                                              .backgroundColor = e && now >= e->t0 ? Pal::rowHighlight : Pal::cardBg,
-                                                              .cornerRadius = CLAY_CORNER_RADIUS(3)})
+                        // ── The one-time events, always (their own colours) ──
+                        uiSection("SkSecSpecial", 0, tx(Txt::SecSpecialEvents));
+                        for (int i = 0; i < 4; ++i)
                         {
-                            CLAY(CLAY_IDI("SkRowIcon", (uint32_t)i), {.layout = {.sizing = {CLAY_SIZING_FIXED(20), CLAY_SIZING_FIXED(20)}},
-                                                                      .image = {.imageData = (void *)(intptr_t)((e ? kSkyKinds[e->kind].icon : kIconSkyEvents) + 1)}}) {}
-                            CLAY(CLAY_IDI("SkRowText", (uint32_t)i), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
-                                                                                 .childGap = 1,
-                                                                                 .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                                                                 .layoutDirection = CLAY_TOP_TO_BOTTOM},
-                                                                      .clip = {.horizontal = true}})
+                            if (!skSpecialHas[i]) continue;
+                            const sky::Event &e = skSpecial[i];
+                            const SkyKindDef &K = kSkyKinds[e.kind];
+                            const char *l1 = "", *l2 = "";
+                            K.text(*this, e, now, l1, l2);
+                            const bool under = now >= e.t0 && now < e.t1, over = now >= e.t1;
+                            SkRowSpec rs;
+                            rs.key = "SkSpBtn";
+                            rs.section = 0;
+                            rs.idx = (uint32_t)i;
+                            rs.icon = K.icon;
+                            rs.accent = specialAccent(e);
+                            rs.special = true;
+                            rs.head = titleOf(e);
+                            rs.headCol = rs.accent;
+                            rs.status = over ? tx(Txt::TxtPast) : under ? "" : inText(e.t0 - now);
+                            // (the card's first line repeats the head for the comet, the supernova and the storm: they lead with the second)
+                            const bool dupHead = !(e.kind == sky::kCme);
+                            rs.d1 = dupHead ? l2 : l1;
+                            rs.d2 = dupHead ? l1 : l2;
+                            if (under) // (three buttons leave no room for the status beside the head: its own line)
                             {
-                                if (e)
-                                {
-                                    text(skStr("%s", eventTitle(*e).c_str()), Pal::textPrimary, 11);
-                                    text(skStr("%s  -  %s", fmtUtcReadable(e->t).c_str(),
-                                               now >= e->t0 ? tx(Txt::TxtHappeningNow) : inText(e->t0 - now)),
-                                         Pal::textDim, 11);
-                                }
+                                rs.d2 = rs.d1;
+                                rs.d1 = skStr(tx(Txt::FmtHappeningNowLeft), inText(e.t1 - now) + 3);
+                                rs.keepD2 = true;
+                            }
+                            rs.btnMask = under ? 7 : 4;
+                            const char *why = tierNeedReason(skyKindNeeds(e.kind));
+                            rs.watchOk = !over && !why;
+                            rs.tip = why ? why : K.tip;
+                            const int a = skyEventRow(inp, ui, rs);
+                            if (a & 4) skPendingSpecial = i;
+                            if (a & 3) { skPendingAct = a & 3; skPendingActRow = 100 + i; }
+                        }
+                        // ── Under way now ──
+                        uiSection("SkSecOngoing", 1, skStr(tx(Txt::FmtOngoingN), (int)skOngoing.size()));
+                        if (skOngoing.empty())
+                            text(tx(Txt::TxtNothingUnderWay), Pal::textDim, 11);
+                        for (int i = 0; i < (int)skOngoing.size(); ++i)
+                        {
+                            const sky::Event &e = skOngoing[(size_t)i];
+                            const SkyKindDef &K = kSkyKinds[e.kind];
+                            const char *l1 = "", *l2 = "";
+                            K.text(*this, e, now, l1, l2);
+                            SkRowSpec rs;
+                            rs.key = "SkOnBtn";
+                            rs.section = 1;
+                            rs.idx = (uint32_t)i;
+                            rs.icon = K.icon;
+                            rs.accent = K.accent;
+                            rs.head = titleOf(e);
+                            rs.headCol = &Pal::textBright;
+                            rs.status = "";
+                            rs.d1 = skStr(tx(Txt::FmtLeftIn), inText(e.t1 - now) + 3);
+                            rs.d2 = l2;
+                            rs.btnMask = 7;
+                            const char *why = tierNeedReason(skyKindNeeds(e.kind));
+                            rs.watchOk = !why;
+                            rs.tip = why ? why : K.tip;
+                            const int a = skyEventRow(inp, ui, rs);
+                            if (a & 4) skPendingRow = 1000 + i;
+                            if (a & 3) { skPendingAct = a & 3; skPendingActRow = i; }
+                        }
+                        // ── The next of each kind (folded: the list below holds the next ten of any kind) ──
+                        if (uiFold(inp, "SkFoldNext", 0, tx(Txt::SecNextOfEachKind)))
+                        {
+                            for (int k = 0; k < sky::kKindCount; ++k)
+                            {
+                                const SkyKindDef &K = kSkyKinds[k];
+                                const sky::Event *e = skyEventNext(k);
+                                const char *st, *l1 = "", *l2 = "";
+                                if (k >= skScanKind)
+                                    st = tx(Txt::ValSearchingTheNext2Years);
+                                else if (!e)
+                                    st = K.none;
                                 else
-                                    text(skScanKind < sky::kKindCount ? tx(Txt::ValSearching) : " ", Pal::textDim, 11);
+                                {
+                                    st = now >= e->t0 ? skStr(tx(Txt::FmtHappeningNowLeft), inText(e->t1 - now) + 3) : inText(e->t0 - now);
+                                    K.text(*this, *e, now, l1, l2);
+                                }
+                                SkRowSpec rs;
+                                rs.key = "SkCardBtn";
+                                rs.section = 2;
+                                rs.idx = (uint32_t)k;
+                                rs.icon = K.icon;
+                                rs.accent = K.accent;
+                                rs.head = K.card;
+                                rs.headCol = &Pal::textBright;
+                                rs.status = st;
+                                rs.d1 = l1;
+                                rs.d2 = l2;
+                                const char *why = tierNeedReason(skyKindNeeds(k));
+                                rs.watchOk = e != nullptr && !why;
+                                rs.tip = why ? why : K.tip;
+                                if (skyEventRow(inp, ui, rs) & 4) skPendingKind = k;
                             }
-                            const float bw = (float)fs(11) * 6.0f;
-                            CLAY(CLAY_IDI("SkRowBtns", (uint32_t)i), {.layout = {.sizing = {CLAY_SIZING_FIXED(bw), CLAY_SIZING_FIT(0)},
-                                                                                 .childAlignment = {.y = CLAY_ALIGN_Y_CENTER}}})
-                            {
-                                const char *why = e ? tierNeedReason(skyKindNeeds(e->kind)) : nullptr;
-                                if (uiButton(inp, ui, "SkRowBtn", i, tx(Txt::BtnWatch), why ? why : e ? kSkyKinds[e->kind].tip : "", false,
-                                             e != nullptr && !why, true) && e)
-                                    skPendingRow = i;
-                            }
+                        }
+                        // ── Upcoming ──
+                        uiSection("SkSecUp", 1, tx(Txt::SecUpcomingNext2Years));
+                        // Always kUpcomingRows rows of one height: a row waiting for the search, or past the list's end, is
+                        // a blank line, so nothing moves as the kinds come in.
+                        for (int i = 0; i < kUpcomingRows; ++i)
+                        {
+                            const sky::Event *e = i < (int)skUpcoming.size() ? &skUpcoming[(size_t)i] : nullptr;
+                            SkRowSpec rs;
+                            rs.key = "SkRowBtn";
+                            rs.section = 3;
+                            rs.idx = (uint32_t)i;
+                            rs.icon = e ? kSkyKinds[e->kind].icon : kIconSkyEvents;
+                            rs.accent = e ? kSkyKinds[e->kind].accent : &Pal::cardBorder;
+                            rs.head = e ? titleOf(*e) : (skScanKind < sky::kKindCount ? tx(Txt::ValSearching) : " ");
+                            rs.headCol = &Pal::textPrimary;
+                            rs.status = e ? (now >= e->t0 ? tx(Txt::TxtNowShort) : inText(e->t0 - now)) : "";
+                            rs.d2 = e ? skStr("%s", fmtUtcReadable(e->t).c_str()) : "";
+                            rs.btnMask = 4;
+                            const char *why = e ? tierNeedReason(skyKindNeeds(e->kind)) : nullptr;
+                            rs.watchOk = e != nullptr && !why;
+                            rs.tip = why ? why : e ? kSkyKinds[e->kind].tip : "";
+                            if (skyEventRow(inp, ui, rs) & 4) skPendingRow = i;
                         }
                     }
                 }
                 ui.scrollbar(CLAY_ID("SkList"));
             }
         });
-    // After the layout: a Watch (it moves time and the observer; the lists are rebuilt next frame).
-    if (skPendingKind >= 0 || skPendingRow >= 0)
+    // After the layout: a Watch or a time control (it moves time and the observer; the lists are rebuilt next frame).
+    if (skPendingKind >= 0 || skPendingRow >= 0 || skPendingSpecial >= 0 || skPendingAct)
     {
         const sky::Event *e = nullptr;
-        if (skPendingKind >= 0) e = skyEventNext(skPendingKind);
-        else if (skPendingRow < (int)skUpcoming.size()) e = &skUpcoming[(size_t)skPendingRow];
-        if (e)
+        std::string msg;
+        bool watch = true;
+        if (skPendingAct)
         {
-            std::string msg;
+            const int row = skPendingActRow;
+            const sky::Event *ev = row >= 100 ? (row - 100 < 4 && skSpecialHas[row - 100] ? &skSpecial[row - 100] : nullptr)
+                                              : (row >= 0 && row < (int)skOngoing.size() ? &skOngoing[(size_t)row] : nullptr);
+            if (ev)
+            {
+                const sky::Event copy = *ev;
+                skyJumpTo(skPendingAct == 1 ? copy.t0 : std::max(copy.t0, copy.t1 - 120.0));
+                skStatus = std::string(skPendingAct == 1 ? tx(Txt::ToastEventStart) : tx(Txt::ToastEventEnd)) + eventTitle(copy);
+                skUpcomingWall = -1e300;
+            }
+            watch = false;
+        }
+        else if (skPendingSpecial >= 100)
+        {
+            // the space-weather tab: 100 = the aurora now, 200 + i = the i-th CME storm of skFound[kCme]
+            if (skPendingSpecial == 100)
+            {
+                if (spaceWeatherWatch(now, msg)) { skStatus = msg; skUpcomingWall = -1e300; }
+                else skStatus = msg;
+            }
+            else
+            {
+                const size_t i = (size_t)(skPendingSpecial - 200);
+                if (i < skFound[sky::kCme].size()) e = &skFound[sky::kCme][i];
+            }
+        }
+        else if (skPendingSpecial >= 0 && skPendingSpecial < 4 && skSpecialHas[skPendingSpecial]) e = &skSpecial[skPendingSpecial];
+        else if (skPendingKind >= 0) e = skyEventNext(skPendingKind);
+        else if (skPendingRow >= 1000)
+        {
+            if (skPendingRow - 1000 < (int)skOngoing.size()) e = &skOngoing[(size_t)(skPendingRow - 1000)];
+        }
+        else if (skPendingRow >= 0 && skPendingRow < (int)skUpcoming.size()) e = &skUpcoming[(size_t)skPendingRow];
+        if (watch && e)
+        {
             skyEventWatch(*e, msg);
             skStatus = msg;
         }
-        skPendingKind = skPendingRow = -1;
+        skPendingKind = skPendingRow = skPendingSpecial = -1;
+        skPendingAct = 0;
+        skPendingActRow = -1;
     }
 }
 
@@ -1485,6 +1792,19 @@ nlohmann::json SatelliteSim::skyEventsJson()
     for (const sky::Event &e : skUpcoming) up.push_back(eventJson(e, now));
     j["upcoming"] = up;
     j["aim_kept"] = skAimA >= 0;
+    j["tab"] = skTab;
+    j["compact"] = skCompact;
+    nlohmann::json sp = nlohmann::json::array();
+    for (int i = 0; i < 4; ++i)
+        if (skSpecialHas[i]) sp.push_back(eventJson(skSpecial[i], now));
+    j["special"] = sp;
+    nlohmann::json on = nlohmann::json::array();
+    for (const sky::Event &e : skOngoing) on.push_back(eventJson(e, now));
+    j["ongoing"] = on;
+    const SpaceWeather &sw = spaceWeather_;
+    j["space_weather"] = {{"kp", sw.kp}, {"scale", geomagStormScale(sw.kp)}, {"cycle", sw.cycle}, {"cme_peak_kp", sw.cmePeakKp},
+                          {"cme_hours_since", sw.cmeHoursSince}, {"substorm_min", sw.subMinutes},
+                          {"oval_edge_mlat_midnight_deg", 90.0 - auroraOvalBounds(sw.kp).eqMid}, {"raster_ms", swRasterMs}};
     return j;
 }
 
@@ -1523,6 +1843,35 @@ harness::Status SatelliteSim::harnessSkyEvents(harness::Active &a)
         for (const sky::Event &e : skFound[k]) arr.push_back(eventJson(e, now));
         r["events"] = arr;
         r["message"] = std::to_string(arr.size()) + " " + kSkyKinds[k].id + tx(Txt::ValEvents);
+        return harness::Status::Done;
+    }
+    if (sub == "aurora")
+    {
+        // The space-weather tab's Watch: the best dark place under the oval at t (default now).
+        std::string msg;
+        if (!spaceWeatherWatch(c.has("t") ? c.num("t", now) : now, msg)) throw std::runtime_error("skyevents aurora: " + msg);
+        r["lat_deg"] = obsLatDeg;
+        r["lon_deg"] = obsLonDeg;
+        r["az_deg"] = camera.azDeg;
+        r["el_deg"] = camera.elDeg;
+        r["kp"] = spaceWeather_.kp;
+        r["message"] = msg;
+        return harness::Status::Done;
+    }
+    if (sub == "special")
+    {
+        // skyevents special <0-3> [watch=1]: the i-th special row (comet, its storm, the Sun's Fury, the supernova by time).
+        const int i = std::atoi(pos(1).c_str());
+        if (i < 0 || i > 3 || !skSpecialHas[i]) throw std::runtime_error("skyevents special: 0-3 (see `skyevents state` -> special)");
+        r["event"] = eventJson(skSpecial[i], now);
+        if (c.num("watch", 0.0) > 0.5)
+        {
+            std::string msg;
+            if (!skyEventWatch(skSpecial[i], msg)) throw std::runtime_error("skyevents special: " + msg);
+            r["message"] = msg;
+            r["lat_deg"] = obsLatDeg;
+            r["lon_deg"] = obsLonDeg;
+        }
         return harness::Status::Done;
     }
     if (sub == "watch")
