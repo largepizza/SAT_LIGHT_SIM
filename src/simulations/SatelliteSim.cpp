@@ -1593,21 +1593,33 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         right = glm::clamp(right + harnessMove_.y, -1.0f, 1.0f);
         // Cinematic mode (latched): the input is EASED, so movement starts and stops gradually (a camera operator's
         // dolly, not a switch). Time constants: ~0.9 s up to speed, ~0.6 s to rest. Off: the raw input, as always.
-        auto cineEase = [&](float &sm, float target)
+        auto cineEase = [&](float &sm, float target, float tauUp = 0.9f, float tauDown = 0.6f)
         {
             if (!cinematicLatched)
             {
                 sm = target;
                 return target;
             }
-            const float tau = std::abs(target) > std::abs(sm) ? 0.9f : 0.6f;
+            const float tau = std::abs(target) > std::abs(sm) ? tauUp : tauDown;
             sm += (target - sm) * (1.0f - expf(-std::min(dt, 0.25f) / tau));
             if (std::abs(sm) < 1e-3f && target == 0.0f)
                 sm = 0.0f;
             return sm;
         };
-        fwd = cineEase(cineSmFwd, fwd);
-        right = cineEase(cineSmRight, right);
+        // Cinematic mode: WASD and Q/E are MOMENTUM, not eased targets. Input accelerates the velocity (full speed in
+        // ~0.9 s) and releasing it does NOT slow it down (no drag); the opposite key brakes it. Off: the raw input.
+        auto cineMomentum = [&](float &sm, float target)
+        {
+            if (!cinematicLatched)
+            {
+                sm = target;
+                return target;
+            }
+            sm = glm::clamp(sm + target * std::min(dt, 0.25f) / 0.9f, -1.0f, 1.0f);
+            return sm;
+        };
+        fwd = cineMomentum(cineSmFwd, fwd);
+        right = cineMomentum(cineSmRight, right);
 
         if (!followActive && (fwd != 0.0f || right != 0.0f) && inertialActive && inertialHold)
             inertialFly(fwd, right, speed, dt); // the eye held in ECI: fly in the camera's frame (SatelliteSimInertial.cpp)
@@ -1637,7 +1649,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         raiseAmt = std::max(raiseAmt, std::max(harnessMove_.z, 0.0f));
         lowerAmt = std::max(lowerAmt, std::max(-harnessMove_.z, 0.0f));
         {
-            const float vert = cineEase(cineSmVert, raiseAmt - lowerAmt); // (cinematic mode: eased like WASD)
+            const float vert = cineMomentum(cineSmVert, raiseAmt - lowerAmt); // (cinematic mode: momentum like WASD)
             raiseAmt = std::max(vert, 0.0f);
             lowerAmt = std::max(-vert, 0.0f);
         }
@@ -1674,7 +1686,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         {
             constexpr float kZoomRatePerSec = 0.6f; // e-folds/s: ~40 deg/s at 70 deg, as before
             const float zt = (zoomOut ? 1.0f : 0.0f) - (zoomIn ? 1.0f : 0.0f);
-            camera.zoomBy(expf(cineEase(cineSmZoom, zt) * kZoomRatePerSec * dt)); // cinematic mode: the zoom eases in and out
+            camera.zoomBy(expf(cineEase(cineSmZoom, zt, 1.5f, 1.2f) * kZoomRatePerSec * dt)); // cinematic mode: the zoom eases in and out
         }
         else
             cineSmZoom = 0.0f;
