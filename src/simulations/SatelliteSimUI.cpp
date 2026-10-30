@@ -766,11 +766,12 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
             // Let camera.update handle RMB capture/release without applying any rotation.
             camera.update(win, 0.0f, 0.0f);
 
-            if (cinematicLatched)
+            // (2026-10-29, issue 20261029_213827: no drag: the drift keeps going until the player counters it, and the
+            // mouse only steers while the look button is held, so moving it over the UI does not swing the camera.)
+            if (cinematicLatched && !camera.captured)
             {
-                const float k = expf(-std::min(dt, 0.25f) / 4.0f);
-                cinematicYawVel *= k;
-                cinematicPitchVel *= k;
+                dmx = 0.0f;
+                dmy = 0.0f;
             }
 
             // Mouse input adds to velocity as an impulse (kForce fraction of raw delta).
@@ -890,7 +891,19 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // ── Scroll wheel → FOV zoom (when not hovering over UI panels) ───────────
     if (inp.scrollY != 0.0f && !ui.mouseOverUI())
     {
-        camera.zoomBy(powf(0.93f, inp.scrollY)); // ~5 deg per notch at 70 deg, ~0.04 deg at 0.5 deg
+        if (cinematicLatched)
+            cineZoomPendingLog += inp.scrollY * logf(0.93f); // cinematic mode: the wheel's zoom is eased in below
+        else
+            camera.zoomBy(powf(0.93f, inp.scrollY)); // ~5 deg per notch at 70 deg, ~0.04 deg at 0.5 deg
+    }
+    if (cineZoomPendingLog != 0.0f)
+    {
+        const float f = 1.0f - expf(-std::min(dt, 0.25f) / 0.45f);
+        const float step = cineZoomPendingLog * f;
+        cineZoomPendingLog -= step;
+        if (std::abs(cineZoomPendingLog) < 1e-4f || !cinematicLatched)
+            cineZoomPendingLog = 0.0f;
+        camera.zoomBy(expf(step));
     }
 
     // ── Left-click → satellite/planet pick/select ─────────────────────────────

@@ -8317,6 +8317,7 @@ private:
     // Cinematic mode, latched (Movement popup / Settings > Controls): the Alt pan-drift on for good, plus gradual
     // acceleration of movement and zoom (settings controls.cinematic_mode).
     bool cinematicLatched = false;
+    float cineZoomPendingLog = 0.0f; // cinematic mode: wheel zoom still to apply (log of the FOV factor), eased
     float cineSmFwd = 0.0f, cineSmRight = 0.0f, cineSmVert = 0.0f, cineSmZoom = 0.0f; // eased input, -1..1
     // The inertial lock's occulter ("Coronagraph"): the Sun's disc / glare / bloom hidden, locked or not
     // (view.coronagraph; = inertialOcculter below).
