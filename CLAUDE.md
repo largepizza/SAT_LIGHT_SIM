@@ -1151,6 +1151,42 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     `clouds_v2.wildfire_smoke_curtain` 0 (no UI) = the old pieces (A/B). Videos at 1 min/s and 1 h/s from the report:
     harness_runs/fs/sm2 (worktree, untracked). Isolate the smoke from the ground with `clouds_v2.wildfire_scars false`
     (no UI): the report's "blue speckled oval" is the burn scar under the haze.
+  - **No smoke Gaussian larger than the curvature of what it stands for** (2026-10-29, issue 20261029_084627 "Haze during
+    eclipse": from 11.7 km at the 2037 totality the whole sky was bright white haze streaked toward a vanishing point; from
+    79 km a 22-day fire's front was a white arc with straight tangent tails). Three earlier rounds patched sizes; the root
+    was single Gaussians far larger than the curve of the shape they represent. Measured with harness `fires` ->
+    `smoke_gaussians` (every smoke Gaussian as the GPU gets it: principal sigmas, range, height, the eye's Mahalanobis
+    distance, the optical depth through the centre).
+    - **Curved Earth** (cloud_march.comp `smokeCurvedInt`): a pall is one flat tangent-plane Gaussian up to 400 x 290 km;
+      500 km from its centre that plane is ~20 km above the ground, so near an aircraft the "pall" hung over the eye
+      (tau 11 along the view). The density is now evaluated in CURVED coordinates (height above the sphere through the
+      centre, tangent-plane offset) by 8-point Gauss-Legendre over the exact intervals where the ray is inside both the
+      shell (4.5 marginal vertical sigma; two intervals for a ray that dips through it) and the horizontal footprint (the
+      exact horizontal marginal), then carried on as a Gaussian along the ray at the integral's mean. Only where the flat
+      form is wrong: Gaussians whose drop over 3 horizontal sigma passes 0.15 of their thickness, and then rays within
+      1-2x the sheet's tilt across its footprint (3 sigma_h / R) of grazing, or an eye between the flat and the curved
+      sheet; blended (no seam). The per-Gaussian part (marginal vertical sigma, tilt, the eye's weight) is computed on the
+      CPU in double (`writeSmokeSide`, dust buffer after the engine lights, `kDustSideSlots`, five vec4 to a slot) and
+      packed into shared memory per tile by `cullDustForTile` (`sSmSide`): read per pixel it cost ~0.6 ms. It replaced the
+      per-ray "move the flat Gaussian down by the drop" patch (faded out with the eye near the sheet, one crossing only).
+      **Register cliff:** the curved branch must leave q, sq and o as the FLAT values and accumulate no second moment:
+      any of those held live took the composite from 128 to 249 registers (probes in harness_runs/ecl).
+    - **Billows along the path**: their contrast falls as 1 / sqrt(path through the Gaussian / 1.5 x its smallest
+      sigma) (the noise read at the closest approach slid tens of km per pixel along a grazing path: the streaks).
+    - **Front sections are chains**: `sources` samples the front at 192 points (was 48), each counting its own stretch of
+      front (ds^2 / 12 along the tangent), and keeps each section as 4 sub-pieces of equal heat (`SmokeEmit::subOff /
+      subW / subC`). The curtain draws a section as 1, 2 or 4 groups along the real front (level from its length over 3 x
+      the smoke's round spread and over 12 px, cross-faded), each with 1.7 x its own rms along the front from its 2x2
+      COVARIANCE, interpolated between knots as a matrix (no axis to flip or spin). It was one straight Gaussian of 1.7 x
+      the section's rms: 50-60 km bars tangent to a curved front. The groups SHARE a segment's pieces with its nodes
+      (`want = max(nodes, groups)`): as nodes x groups the plan filled the budget (+25% Gaussians, ~3 ms over a big fire).
+    - **Pixel floors at the NEAREST range** (emit / emitCov / the pall's thickness): a pall centred 528 km off but reaching
+      the eye was thickened 0.9 -> 3.3 km for its centre's pixels.
+    - **Eclipse**: plumes and smoke take the Moon's shadow on their sunlight and its sky light on their sky share, per
+      pixel (eclipse.glsl, uniform gate): at totality the smoke stood full-sunlit white.
+    - Measured (RTX 3070 Ti, 1920x1009, HEAD vs fix in alternating runs): the report's shots 3.5 / 5.4 -> 3.7 / 5.5 ms,
+      over a big fire from 26 km (issue 20261028_192133) 21.9 -> 22.3, beside a fire on the ground 6.0 -> 6.4-6.9 (the
+      curved pall where it is needed). Composite 128 registers, no validation messages.
   - **Smoke light**: GREY (2026-10-26, issues 20261026_204045 / _204239 "it appears so beige") — fresh (0.62 grey)
     albedo 0.45 (black carbon) to aged / pall (0.75, 0.76, 0.78) 0.6, the sky's light on it BLUE (0.66, 0.82, 1.08: it
     was a brown-grey (0.80, 0.79, 0.76)), x "Smoke tint" (-1 blue-grey .. +1 brown) and "Smoke brightness"; its scattered
@@ -1229,7 +1265,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
       flames + near smoke off (`clouds_v2.wildfire_debug` 9), CPU (the fill, `launches` bucket) 2.04 vs 1.17 ms.
       Harness `fires` -> `embers`, `near_smoke`, `flame_near_scale`, `flame_max_sub`, `flame_band_nearest`,
       `points_nearest_m`; `clouds_v2.wildfire_debug` bits 1 no flames, 2 no points, 4 no smoke, 8 no near smoke, 16 no
-      embers (no UI). Captures harness_runs/fs/fn1 (worktree).
+      embers, 32 no pall, 64 no front sections across the curtain (one piece at each section's centre) (no UI). Captures
+      harness_runs/fs/fn1 (worktree).
   - **Flames close up** (the old tongues, `wildfire_flame_band` 0; within 40 km, faded 25-40 km): emissive Gaussians (dust list `col.w` 1, AFTER the smoke's range
     so `smokeSunTransmit` does not take them for smoke) standing on the active arc, tongues 0.66 x the flame height tall
     and 0.35 x it + 0.05 x their spacing wide (were 0.3 x the spacing: neighbours merged into one band), spaced >= 40 px,

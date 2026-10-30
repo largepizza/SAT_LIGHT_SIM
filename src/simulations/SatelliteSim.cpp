@@ -11349,7 +11349,7 @@ void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
     vkCreateDescriptorPool(ctx.device, &pi, nullptr, &cloudMarchDescPool);
     if (kDustBuf == VK_NULL_HANDLE)
     {
-        kDustMapped = createMirrored(ctx, 16 + sizeof(GpuDustCloud) * (kMaxDustClouds + kMaxEngineLights),
+        kDustMapped = createMirrored(ctx, 16 + sizeof(GpuDustCloud) * (kMaxDustClouds + kMaxEngineLights + kDustSideSlots),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, kDustBuf, kDustMem, true, "dustList");
     }
 

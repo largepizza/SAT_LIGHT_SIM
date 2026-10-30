@@ -117,6 +117,7 @@ layout(set = 0, binding = 13) uniform sampler2D sceneDepthTex;
 #include "terrain.glsl"
 #include "terrain_detail.glsl" // observerEffHeightDetailed: the same ground as sat_sky/scene_depth
 #include "atmosphere.glsl" // line-of-sight extinction (atmExtinctionMag)
+#include "eclipse.glsl"    // the Moon's shadow on the plumes and smoke (2026-10-29)
 #include "cloud_occlusion.glsl" // the alpha encoding (cloudAlphaFlag)
 #include "darksky.glsl"   // dark-sky exposure gate (aurora)
 
@@ -168,6 +169,10 @@ float cv2ProfileDepth(uint code) { return exp2(float(code) * (27.0 / 65534.0)); 
 // all of them. Knockout bit 16777216 forces the full list (the A/B).
 shared uint sDustMask[32];
 shared uint sDustLM[1024];   // per Gaussian: the engine lights (dust[1024 + k]) whose reach touches it
+// per smoke Gaussian: its curved-sheet data (SatelliteSim::kDustSideSlots, after the engine lights: marginal vertical sigma,
+// tilt, the eye's weight), read once per tile and packed: sigma as half float, sqrt(tilt / 0.5) and the weight 8 bits each;
+// 0 = flat (smokeCurvedInt). Read per pixel it was ~0.6 ms of the composite from 79 km over a big fire.
+shared uint sSmSide[1024];
 void cullDustForTile(vec3 cAxis, float tileHalfAngle)
 {
     uint lid = gl_LocalInvocationIndex;
@@ -190,6 +195,20 @@ void cullDustForTile(vec3 cAxis, float tileHalfAngle)
         }
         if (hit) {
             atomicOr(sDustMask[i >> 5u], 1u << (i & 31u));
+            {
+                uint sF = (dustPad0 >> 8u) & 1023u, sN = (dustPad0 >> 18u) & 1023u;   // (smoke.glsl smokeFirst / Count)
+                uint pk = 0u;
+                if ((i - sF) < sN) {
+                    DustCloud sS = dust[1056u + i / 5u];
+                    uint sK = i % 5u;
+                    vec4 sd = sK == 0u ? sS.c : sK == 1u ? sS.ia : sK == 2u ? sS.ib : sK == 3u ? sS.col : sS.cone;
+                    if (sd.x > 0.0)
+                        pk = (packHalf2x16(vec2(max(sd.x, 1e-3), 0.0)) & 0xFFFFu) |
+                             (uint(round(sqrt(clamp(sd.y / 0.5, 0.0, 1.0)) * 255.0)) << 16u) |
+                             (uint(round(clamp(sd.z, 0.0, 1.0) * 255.0)) << 24u);
+                }
+                sSmSide[i] = pk;
+            }
             // The lights that can reach any point dustCloudsCS lights it at (the ray's closest approach to its centre,
             // within Mahalanobis 8 where anything at all is drawn: within 8 sigma_max, sigma_max^2 <= trace of the
             // covariance; the inverse of a matrix scaled to O(1): the entries go to 1e-12 for a bell 1000 km wide).
@@ -250,6 +269,101 @@ vec3 dustMul(DustCloud d, vec3 v)
     return vec3(d.ia.x * v.x + d.ib.x * v.y + d.ib.y * v.z,
                 d.ib.x * v.x + d.ia.y * v.y + d.ib.z * v.z,
                 d.ib.y * v.x + d.ib.z * v.y + d.ia.z * v.z);
+}
+
+// A smoke Gaussian on the CURVED Earth (2026-10-29, issue 20261029_084627 "Haze during eclipse"). A pall is hundreds of km
+// across and 1-3 km thick, a trail piece tens of km long: as a flat Gaussian tangent at its centre, 500 km out it stands
+// ~20 km above the ground (the drop d^2 / 2R), so from an aircraft near a pall the sheet hung over the eye and the whole sky
+// was haze, and from orbit its far half rose off the limb. The per-ray patch before this (the flat Gaussian moved down by
+// the drop at its flat closest approach, one step) was faded out with the eye near the sheet (exactly when it mattered)
+// and kept only one crossing of a ray that dips through the sheet and climbs out of it.
+// The density in CURVED coordinates: y = x + U delta, x the offset from its centre, U the centre's up, delta = |W| - W.U (W
+// the point, Earth-centred), so y's vertical part is the height above the sphere through the centre and its horizontal part
+// the tangent-plane offset. Along a straight ray that is not closed form: it is integrated by 8-point Gauss-Legendre over
+// each interval where the ray is BOTH within 4.5 marginal sigma of the centre's height (a spherical shell: one interval, or
+// two for a ray that dips below it and climbs out) and within the horizontal footprint (the exact horizontal marginal,
+// quadratic in t), clipped to [0, T].
+// sd: the per-Gaussian part, from the CPU (marginal vertical sigma, 0 = flat; tilt; the eye's weight).
+// Returns the weight of that curved integral against the flat closed form: < 0 = the ray misses the horizontal footprint
+// (both are ~0: skip the Gaussian), 0 = the flat form is right here, 1 = the curved one, between = a blend (no seam). The
+// flat form is right for a Gaussian whose drop over 3 horizontal sigma is under 0.15 of its thickness (or a strongly tilted
+// one: a rising column), and, for a wider one, for a ray steep against the sheet's own tilt across its footprint (from
+// above, the flat sheet gives the same column a little displaced) unless the eye stands where the flat and curved sheets
+// disagree about its height (an aircraft near a pall). Out (weight > 0): the integral of the density along [0, T]
+// (unnormalised, as the flat I) and its density-weighted mean t. (Not its variance: a second moment accumulated in the
+// loop took the composite from 128 to 249 registers; the flat along-ray width stands in.)
+const float kSmokeGL8x[4] = float[4](0.1834346425, 0.5255324099, 0.7966664774, 0.9602898565);
+const float kSmokeGL8w[4] = float[4](0.3626837834, 0.3137066459, 0.2223810345, 0.1012285363);
+float smokeCurvedInt(DustCloud d, vec4 sd, vec3 obsPos, vec3 dir, float T, out float In, out float tm)
+{
+    In = 0.0; tm = 0.0;
+    if (!(sd.x > 0.0)) return 0.0;   // (uniform across the pixels: the flat form for this Gaussian)
+    vec3  c   = d.c.xyz;
+    vec3  Cw  = obsPos + c;
+    float rC  = length(Cw);
+    vec3  U   = Cw / rC;
+    // the per-Gaussian part (the CPU, in double: SatelliteSimWildfire.cpp writeSmokeSide): its marginal vertical sigma (0
+    // = flat), its tilt across its footprint and the eye's weight
+    float sr = sd.x, tilt = sd.y;
+    // the weight: rays grazing the sheet against its tilt across the footprint, or an eye between the flat and the curved sheet
+    // (a ray at angle g to the flat plane crosses the curved sheet, tilted by up to tilt at 3 sigma, at g +- tilt / 3 within
+    // 1 sigma: past 2 x tilt the flat path length is within ~17% there, and the flat form only displaces the column)
+    float wC = max(1.0 - smoothstep(tilt, 2.0 * tilt, abs(dot(dir, U))), sd.z);
+    if (wC <= 0.0) return 0.0;
+    vec3  MU  = dustMul(d, U);
+    float kU  = max(dot(U, MU), 1e-30);                    // 1 / the conditional vertical variance
+    const float K = 4.5;
+    // the horizontal footprint: the horizontal marginal of hv(t) = t a - b0 within K (a bound on flat and curved alike)
+    vec3  a   = dir - U * dot(dir, U);
+    vec3  b0  = c - U * dot(c, U);
+    vec3  Ma  = dustMul(d, a), Mb = dustMul(d, b0);
+    float aU  = dot(a, MU), bU = dot(b0, MU);
+    float A2  = dot(a, Ma) - aU * aU / kU;
+    float A1  = dot(a, Mb) - aU * bU / kU;
+    float A0  = dot(b0, Mb) - bU * bU / kU;
+    float h0 = -1e30, h1 = 1e30;
+    if (A2 > 1e-30) {
+        float tq = A1 / A2;
+        float qm = A0 - A1 * tq;
+        if (qm > K * K) return -1.0;
+        float hw = sqrt((K * K - qm) / A2);
+        h0 = tq - hw; h1 = tq + hw;
+    } else if (A0 > K * K) return -1.0;
+    // the shell |W| in [rC - K sr, rC + K sr] along the ray: |W|^2 = hP^2 + (t - tE)^2
+    float bE = dot(obsPos, dir);
+    float tE = -bE;
+    float hP = length(obsPos - dir * bE);
+    float r2 = rC + K * sr, r1 = rC - K * sr;
+    if (hP >= r2) return wC;
+    float so = sqrt((r2 - hP) * (r2 + hP));
+    float si = hP < r1 ? sqrt((r1 - hP) * (r1 + hP)) : 0.0;
+    float lo = max(max(h0, 0.0), tE - so), hi = min(min(h1, T), tE + so);
+    if (hi <= lo) return wC;
+    float s0 = 0.0, s1 = 0.0;
+    [[dont_unroll]] for (int iv = 0; iv < 2; ++iv) {
+        // the near and far half of the shell's chord ([tE - so, tE - si] and [tE + si, tE + so])
+        float ia0 = iv == 0 ? max(lo, tE - so) : max(lo, tE + si);
+        float ia1 = iv == 0 ? min(hi, tE - si) : min(hi, tE + so);
+        if (ia1 <= ia0) continue;
+        float hm = 0.5 * (ia1 - ia0), cm = 0.5 * (ia1 + ia0);
+        [[dont_unroll]] for (int k = 0; k < 8; ++k) {
+            float gx = (k < 4 ? -1.0 : 1.0) * kSmokeGL8x[k & 3];
+            float t  = cm + hm * gx;
+            vec3  x  = t * dir - c;
+            vec3  hv = x - U * dot(x, U);
+            vec3  W  = obsPos + t * dir;
+            float dl = dot(hv, hv) / max(length(W) + dot(W, U), 1.0);
+            vec3  y  = x + U * dl;
+            float w  = kSmokeGL8w[k & 3] * hm * exp(-0.5 * dot(y, dustMul(d, y)));
+            s0 += w;
+            s1 += w * t;
+        }
+    }
+    if (s0 > 0.0) {
+        In = s0;
+        tm = s1 / s0;
+    }
+    return wC;
 }
 
 // A tornado's billow coordinates (dustCloudsCS): r0 from its Gaussian's centre, LOG-POLAR about up (6 cells round, the
@@ -339,60 +453,48 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
         float q = dot(dir, dustMul(d, dir));
         if (q <= 0.0)
             continue;
-        float tc = -dot(dir, dustMul(d, o)) / q;   // closest approach (Mahalanobis) along the ray
-        vec3  r  = o + tc * dir;
-        float e  = dot(r, dustMul(d, r));
-        if (e > 60.0)
-            continue;
-        float sq = sqrt(0.5 * q);
-        float E0 = dustErf(-sq * tc), ET = dustErf(sq * (T - tc));
-        float I  = exp(-0.5 * e) * sqrt(PI / (2.0 * q)) * (ET - E0);
-        float tau = d.ia.w * d.c.w * max(I, 0.0);
-        // Smoke / dust sheets follow the Earth's curve (2026-10-25, issue 20261025_185309 "Odd line from space"): a
-        // wildfire's pall is a FLAT Gaussian up to ~500 km by 350 km sigma and ~1-2 km thick, tangent at its centre, and
-        // ~1000 km out a plane stands ~80 km above the ground: from orbit the far half of every big pall rose off the limb
-        // into space as a dark grey band. The density at the ray's closest approach is taken at its height above the
-        // GROUND relative to the centre's (hS) instead of above the centre's tangent plane (hP): the vertical term of the
-        // Mahalanobis distance swapped (upC.M.upC = the conditional vertical inverse variance). It only THINS: where the
-        // curved sheet would be denser than the flat one (a ray low down far from the centre) the flat column runs along
-        // hundreds of km of the plane, and raising it to the sheet's peak density drew a solid column of smoke (tried).
-        // A few flops for the aerosol range only.
-        // 2026-10-27 (issue 20261027_002826 "Yellow circles around storms"): the thinning cut every big pall off at a hard
-        // circle ~150-200 km from its centre when seen from ABOVE: a near-vertical ray meets the flat sheet where the
-        // ground has dropped d^2 / 2R below it (3 km at 200 km), so hS - hP was the whole drop and the factor e^-2.5 at a
-        // 1.4-km sigma, though the curved sheet there gives that ray the same column as at the centre. The Gaussian is now
-        // MOVED DOWN by the ground's drop below its tangent plane at the flat closest approach (one step; the sheet as the
-        // locally translated plane), and evaluated again: from above the full column at any distance, at the limb the far
-        // part of the plane lowered onto the ground instead of standing in space.
-        if ((i - smF) < smN && tau > 0.0) {
-            vec3  Cw  = obsPos + d.c.xyz;
-            float rC  = length(Cw);
-            vec3  upC = Cw / rC;
-            vec3  dP  = tc * dir - d.c.xyz;                       // closest approach - centre (no large cancellation)
-            vec3  hv  = dP - upC * dot(dP, upC);
-            float dr  = dot(hv, hv) * (0.5 / rC);                 // the ground's drop below the centre's tangent plane
-            // ...but not with the EYE in or near the sheet (2026-10-27, issue 20261027_182936 shot 3, "white ring artifacts
-            // that trace around the horizon"): from 1.1 km, inside a pall ~1 km thick, a ray along the horizon has its flat
-            // closest approach ~200 km out, and lowering the sheet by the drop there put the ray's smoke at that depth,
-            // behind the horizon's clouds (dustSegW): the bright far cloud band shown through the smoke as a white line along
-            // the horizon. The move is faded out as the eye comes within 4 -> 2 vertical sigma of the curved sheet (the
-            // flat sheet, as before the move, is right where such a ray's smoke is: near the eye).
-            {
-                vec3  hvE = o - upC * dot(o, upC);                 // the eye's horizontal offset from the centre
-                float drE = dot(hvE, hvE) * (0.5 / rC);
-                float zE  = abs(dot(o, upC) + drE) * sqrt(max(dot(upC, dustMul(d, upC)), 1e-30));
-                dr *= smoothstep(2.0, 4.0, zE);
-            }
-            if (dr > 1.0) {
-                o  += upC * dr;
-                tc  = -dot(dir, dustMul(d, o)) / q;
-                r   = o + tc * dir;
-                e   = dot(r, dustMul(d, r));
-                E0  = dustErf(-sq * tc);
-                ET  = dustErf(sq * (T - tc));
-                tau = d.ia.w * d.c.w * max(exp(-0.5 * e) * sqrt(PI / (2.0 * q)) * (ET - E0), 0.0);
+        float tc, e, sq, E0, ET, tau;
+        // Smoke / dust wide enough for the Earth's curve to matter: integrated on the curved sheet where the flat form is
+        // wrong (smokeCurvedInt, above, blended by its weight), then carried below as a Gaussian ALONG THE RAY at the
+        // optical-depth-weighted mean, so the depth segments and the air split see where its smoke really is. q, sq and o
+        // stay the FLAT values (the along-ray width for the depth segments, the self-shadow's lit point, the billows, the
+        // engine lights): they can be recomputed from the Gaussian instead of held live (anything more held across this
+        // took the composite from 128 to 249 registers). The flat width is a fair stand-in (a grazing chord through a 1-km
+        // curved sheet is ~320 km, a pall's horizontal sigma ~300), and the billows read another point of the same field.
+        float cIn, cTm;
+        float wC = 0.0;
+        if ((i - smF) < smN) {
+            // its curved-sheet data (cullDustForTile: once per tile, packed)
+            uint pk = sSmSide[i];
+            if (pk != 0u) {
+                float tq = float((pk >> 16u) & 255u) * (1.0 / 255.0);
+                vec4 sd = vec4(unpackHalf2x16(pk).x, 0.5 * tq * tq, float(pk >> 24u) * (1.0 / 255.0), 0.0);
+                wC = smokeCurvedInt(d, sd, obsPos, dir, T, cIn, cTm);
             }
         }
+        if (wC < 0.0)
+            continue;
+        tc = -dot(dir, dustMul(d, o)) / q;   // closest approach (Mahalanobis) along the ray
+        {
+            vec3 r = o + tc * dir;
+            e  = dot(r, dustMul(d, r));
+        }
+        if (e > 60.0 && wC <= 0.0)
+            continue;
+        sq = sqrt(0.5 * q);
+        E0 = dustErf(-sq * tc);
+        ET = dustErf(sq * (T - tc));
+        tau = d.ia.w * d.c.w * max(exp(-0.5 * min(e, 80.0)) * sqrt(PI / (2.0 * q)) * (ET - E0), 0.0);
+        if (wC > 0.0) {
+            float tauC = d.ia.w * d.c.w * cIn;
+            float tF = tau * (1.0 - wC), tCv = tauC * wC;
+            tau = tF + tCv;
+            if (!(tau > 0.0)) continue;
+            tc  = (tF * tc + tCv * cTm) / tau;
+            E0  = dustErf(-sq * tc);
+            ET  = dustErf(sq * (T - tc));
+        }
+        vec4 wSeg = (d.col.w > 0.5) ? dustSegW(tc, sq, T, pK, E0, ET) : vec4(0.0);
         // A plume that adds nothing to THIS texel is skipped before its lighting (2026-10-21): its optical depth here
         // under 1e-5 of dimming, and its light (the Sun / sky colour at the phase's peak with multiple scattering, x the
         // billows' and self-shadow's largest gains: 2.6 per unit optical depth, + the engine lights) under 2e-7 of
@@ -417,7 +519,6 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
             }
             if (tau * lb * expo < 2e-7) continue;
         }
-        vec4 wSeg = (d.col.w > 0.5) ? dustSegW(tc, sq, T, pK, E0, ET) : vec4(0.0);
         if (d.col.w > 0.5 && d.col.w < 1.5) {   // emissive (a re-entry fireball's trail): no phase, no shadow
             float xmE = dot(wSeg, kSegXm);     // its mean share of the cloud's opacity in front of it
             Le  += d.col.rgb * tau * (1.0 - oR * xmE);
@@ -492,6 +593,12 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
                     // mean as its texels per pixel pass 0.5 -> 2 (exact in the mean: the billows are mean ~1).
                     float fpT = pixAngC * clamp(tc, 0.0, T) / sW * (0.25 * 192.0);   // octave 1's texels per pixel
                     float aa1 = 1.0 - smoothstep(0.5, 2.0, fpT);
+                    // ...and averaged over the ray's PATH through it (2026-10-29, issue 20261029_084627): the noise is read
+                    // at one point, the closest approach, and along a grazing path through a sheet that point slides tens of
+                    // km per pixel as the view turns: the billows were drawn as streaks fanning out of a vanishing point. The
+                    // optical depth integrates the noise over ~1 / sqrt(q) of path: N cells of it average to 1 / sqrt(N) of
+                    // the contrast (one cell ~1.5 of the Gaussian's smallest sigma; seen across its thickness, unchanged).
+                    if (isSm && !isWall) aa1 *= inversesqrt(max(1.0, inversesqrt(q) / (1.5 * sW)));
                     // R = the baked Perlin-Worley (three octaves: billows of ~1 sigma down to a quarter of it).
                     if (aa1 > 0.0) {
                         float nz = textureLod(cloudNoiseTex, rl * 0.25 + sd, 0.0).r;
@@ -499,7 +606,8 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
                     }
                     // (wildfire smoke, 2026-10-23 b: a second octave at ~4x, its Gaussians being km wide: billows
                     // within billows, not one smooth lump)
-                    float aa2 = 1.0 - smoothstep(0.5, 2.0, fpT * 4.2);
+                    float aa2 = (1.0 - smoothstep(0.5, 2.0, fpT * 4.2)) *
+                                inversesqrt(max(1.0, 4.2 * inversesqrt(q) / (1.5 * sW)));   // (its cells 4.2x finer: more per path)
                     if (isSm && !isWall && aa2 > 0.0)
                         mN += aa2 * 0.8 * (textureLod(cloudNoiseTex, rl * 1.05 + sd.yzx, 0.0).r - kPlumeNoiseMean);
                 }
@@ -615,10 +723,20 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
                 if (cv2.stvH.z > 0.5) stvP = cv2StvT((tLit >= 0.0 ? tLit : clamp(tc, 0.0, T)) * dir, hPl);
                 if (cv2.gnd.x > 0.5) tdP = cv2VtUpH(cv2VtUpCell(plEnuX * P.x + plEnuY * P.y + plEnuZ * P.z), hPl);
             }
+            // In a solar eclipse (2026-10-29, issue 20261029_084627 "Haze during eclipse"): the CPU lights a Gaussian by the
+            // full Sun at its centre, and at totality the smoke stood bright white in a dark sky. Its sunlight takes the
+            // Sun's visible share at its lit point, its sky light the shadow's sky light there (eclipse.glsl, as the
+            // clouds, ground and air take them). Uniform gate: outside an eclipse a branch.
+            vec3 eSkyP = vec3(1.0);
+            if (cloud.moonMisc.y > 0.5) {
+                vec3 pKm = P * 1e-3;
+                litP *= eclipseSunVis(pKm, sunDir, 0.0);
+                eSkyP = eclipseSkyLight(pKm, sunDir, hPl);
+            }
             float muP = max(dot(P, sunDir) / max(length(P), 1.0), 0.0);
             float dnP = 2.0 * muP * max(min((0.5 + 0.75 * muP) * tdP, 1.0) - stvP, 0.0);
             vec3  lpI = tau * d.col.rgb * redd * (litP * shade * stvP * (1.0 - flS));   // the sunlight it scatters (phase below)
-            vec3  lfI = tau * d.col.rgb * redd * mix(shade, 1.0, 0.5) * (flS * tdP + litP * (1.0 - flS) * dnP);   // diffuse
+            vec3  lfI = tau * d.col.rgb * redd * mix(shade, 1.0, 0.5) * (flS * tdP * eSkyP + litP * (1.0 - flS) * dnP);   // diffuse
             // (2026-10-20, QA: a burning stage seen from 300 m sat in a white ball hundreds of metres across: its
             // newest exhaust Gaussians are wide, and each was lit as if all its mass sat at the ray's closest
             // approach, next to the flame. The mass along the ray spreads over ~1 / sqrt(q): the mean inverse square

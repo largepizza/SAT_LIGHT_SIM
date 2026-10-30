@@ -3280,6 +3280,11 @@ private:
     // cloud_march.comp's plumes (dustCloudsCS).
     float engineLightGain = 1.0f;
     static constexpr uint32_t kMaxEngineLights = 32;
+    // (2026-10-29) After the engine lights: per smoke Gaussian of the dust list a vec4 (its marginal vertical sigma, m, 0 =
+    // the flat closed form is right for it; its tilt across its footprint, 3 sigma_h / R; the weight of the curved form for
+    // the eye's place; 0), five to a GpuDustCloud slot. Computed on the CPU in double (view-independent); cloud_march.comp's
+    // smokeCurvedInt reads it (dust[kMaxDustClouds + kMaxEngineLights + j / 5]).
+    static constexpr uint32_t kDustSideSlots = (kMaxDustClouds + 4) / 5;
     std::vector<GpuDustCloud> engineLights_;  // this frame's (kMaxEngineLights at most, brightest kept)
     float engineAdaptEased = 1.0f;            // the eye's adaptation to the lights at night (engineLightsFlush)
     glm::dvec3 engineAdaptPrevEye{0.0};       // last frame's eye (ECI) and sim time: a cut snaps the adaptation
@@ -5756,6 +5761,13 @@ private:
         double w[5]{}, ext[5]{};
         glm::dvec2 ax[5]{};                    // each section's principal axis along the front (unit, xy)
         double extL[5]{}, extW[5]{};           // its rms spread along / across that axis (m)
+        // Each section as 4 SUB-PIECES of equal heat along the front (2026-10-29): offset of the sub-piece's centre from
+        // the section's centre (m), its share of the section's heat, and its 2x2 covariance (xx, xy, yy, m^2) about its
+        // own centre. The curtain is drawn as a chain of these (merged 4 -> 2 -> 1 as it spreads), never as one straight
+        // Gaussian across a curved front.
+        glm::dvec2 subOff[5][4]{};
+        double subW[5][4]{};
+        glm::dvec3 subC[5][4]{};
         double H = 0.0, act = 0.0, Q = 0.0;
         glm::dvec2 wDir{0.0, 1.0};
         bool ready = false;

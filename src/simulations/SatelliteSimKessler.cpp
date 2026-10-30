@@ -2738,6 +2738,9 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
     uint32_t *hdr = static_cast<uint32_t *>(kDustMapped);
     hdr[0] = 0;
     hdr[1] = 0; // the engine lights (engineLightsFlush)
+    // the smoke Gaussians' curved-sheet data (weatherFillWildfires): 0 = flat, for whatever else lands in the smoke range
+    std::memset(static_cast<char *>(kDustMapped) + 16 + sizeof(GpuDustCloud) * (kMaxDustClouds + kMaxEngineLights), 0,
+                sizeof(GpuDustCloud) * kDustSideSlots);
     {
         // the frame's sky exposure (cloud_march.comp: the faint plumes' skip is in display units)
         const float ex = skyExposure();

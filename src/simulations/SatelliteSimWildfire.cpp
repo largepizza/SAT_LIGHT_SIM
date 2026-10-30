@@ -39,7 +39,7 @@ constexpr double kPiF = 3.14159265358979323846;
 constexpr int kFireFineLevels = 14;         // the finest level of the front's points: 2^14 round
 constexpr double kFirePointPx = 3.5;        // the points' spacing on screen (full-res px; 2 from afar)
 constexpr uint32_t kFirePointBudget = 3500; // points a frame (kFireBuf holds 8192 for everything)
-constexpr int kSmokeMaxPieces = 32;
+constexpr int kSmokeMaxPieces = 64;
 constexpr double kFlamePx = 12.0;           // the close-up flame band's tongues apart on screen (full-res px)         // pieces a smoke-trail segment may be cut into
 constexpr double kFlameLum = 2.0e4;         // cd/m^2: a wildfire flame's bright parts (soot at ~1300-1400 K)
 constexpr double kLuxMag0 = 2.54e-6;        // lux of magnitude 0
@@ -295,6 +295,32 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
     const uint32_t capAll = std::max<uint32_t>(n, std::min<uint32_t>(kMaxDustClouds > kFlameBudget ? kMaxDustClouds - kFlameBudget : kMaxDustClouds, n + 576u));
     // (the streaks leave room for the smoke at the flames, near the eye)
     const uint32_t cap = std::max<uint32_t>(n, capAll > nearReserve ? capAll - nearReserve : n);
+    // A smoke Gaussian's curved-sheet data (2026-10-29, issue 20261029_084627; cloud_march.comp smokeCurvedInt), from its
+    // covariance in the eye's ENU frame Ce and its centre re (relative to the eye, ENU): the shader integrates it on the
+    // curved Earth where its flat tangent-plane form is wrong. All of it depends on the Gaussian and the eye only, so it is
+    // done here once, in double; the shader's flat case is then one load and a branch uniform across every pixel.
+    glm::vec4 *smokeSide = reinterpret_cast<glm::vec4 *>(reinterpret_cast<char *>(out) +
+                                                         sizeof(GpuDustCloud) * (kMaxDustClouds + kMaxEngineLights));
+    const double eyeRad = glm::length(eye);
+    auto writeSmokeSide = [&](uint32_t idx, const glm::dmat3 &Ce, const glm::dvec3 &re) {
+        const glm::dvec3 Ec = glm::dvec3(0.0, 0.0, eyeRad) + re;   // the centre, Earth-centred in the eye's ENU
+        const double rC = glm::length(Ec);
+        const glm::dvec3 U = Ec / rC;
+        const glm::dmat3 M = glm::inverse(Ce);
+        const double kU = glm::dot(U, M * U);
+        if (!(kU > 0.0)) return;
+        const double sc1 = 1.0 / std::sqrt(kU);                       // conditional vertical sigma
+        const double sr2 = std::max(glm::dot(U, Ce * U), 0.0);        // marginal vertical variance
+        const double hExt2 = 9.0 * std::max(Ce[0][0] + Ce[1][1] + Ce[2][2] - sr2, 0.0);
+        // flat where the drop over 3 horizontal sigma is under 0.15 of the thickness, or for a strongly tilted Gaussian
+        if (hExt2 * (0.5 / rC) < 0.15 * sc1 || sr2 > 9.0 * sc1 * sc1) return;
+        const double sr = std::sqrt(sr2);
+        const glm::dvec3 b0 = re - U * glm::dot(re, U);
+        const double drE = glm::dot(b0, b0) * (0.5 / rC);             // the flat plane above the curved sheet at the eye
+        const double zE = std::fabs(eyeRad - rC);                     // the eye's height off the curved sheet's centre
+        const double wE = glm::smoothstep(0.15 * sc1, 0.3 * sc1, drE) * (1.0 - glm::smoothstep(1.0, 2.0, zE / (4.5 * sr + drE)));
+        smokeSide[idx] = glm::vec4((float)sr, (float)(std::sqrt(hExt2) / rC), (float)wE, 0.0f);
+    };
     // One Gaussian: centre C (ECEF), orthonormal axes a, b, c with sigmas, Sigma = cross-section, its light.
     auto emit = [&](const glm::dvec3 &C, const glm::dvec3 &a, const glm::dvec3 &b, const glm::dvec3 &c, double sA,
                     double sB, double sC, double Sigma, const glm::dvec3 &sunL, const glm::dvec3 &skyL, double albedo,
@@ -306,7 +332,10 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
         {
             // smoke: no sigma under ~1.5 full-res pixels as seen (the column kept): thinner, the half-res composite
             // draws its edges as stairs (2026-10-27, issue 20261027_003452)
-            const double sMin = 1.5 * range * pixFull;
+            // (at the Gaussian's NEAREST range, not its centre's, 2026-10-29: a pall centred 528 km off but reaching the eye
+            // was thickened 0.9 -> 3.3 km for the pixels at its centre, and the eye 11.7 km up stood inside its tail)
+            const double rNear = std::max(range - 2.5 * std::max(sA, std::max(sB, sC)), 0.0);
+            const double sMin = 1.5 * rNear * pixFull;
             sA = std::max(sA, sMin);
             sB = std::max(sB, sMin);
             sC = std::max(sC, sMin);
@@ -314,8 +343,11 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
         const glm::dvec3 ae = toEnu(a), be = toEnu(b), ce = toEnu(c);
         const double iA = 1.0 / (sA * sA), iB = 1.0 / (sB * sB), iC = 1.0 / (sC * sC);
         auto Mx = [&](int p, int q) { return iA * ae[p] * ae[q] + iB * be[p] * be[q] + iC * ce[p] * ce[q]; };
-        GpuDustCloud &d = out[n++];
         const glm::dvec3 re = toEnu(rel);
+        if (colW < 0.0)
+            writeSmokeSide(n, sA * sA * glm::outerProduct(ae, ae) + sB * sB * glm::outerProduct(be, be) +
+                                  sC * sC * glm::outerProduct(ce, ce), re);
+        GpuDustCloud &d = out[n++];
         d.c = glm::vec4(glm::vec3(re), (float)Sigma);
         d.ia = glm::vec4((float)Mx(0, 0), (float)Mx(1, 1), (float)Mx(2, 2), (float)(1.0 / (kTwoPi15 * sA * sB * sC)));
         const double lS = sunL.x + sunL.y + sunL.z, lI = skyL.x + skyL.y + skyL.z;
@@ -336,7 +368,8 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
         if (n >= capN || Sigma < 1.0) return false;
         const glm::dvec3 rel = C - eye;
         const double range = std::max(glm::length(rel), 1.0);
-        const double sMin = 1.5 * range * pixFull;
+        // (at the Gaussian's nearest range, as in emit)
+        const double sMin = 1.5 * std::max(range - 2.5 * std::sqrt(std::max(Cv[0][0] + Cv[1][1] + Cv[2][2], 0.0)), 0.0) * pixFull;
         // in the observer's ENU frame
         const glm::dmat3 R = glm::transpose(glm::dmat3(E, N, up));   // rows E, N, up
         glm::dmat3 Ce = R * Cv * glm::transpose(R);
@@ -344,8 +377,9 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
         const double det = glm::determinant(Ce);
         if (!(det > 0.0)) return false;
         const glm::dmat3 M = glm::inverse(Ce);
-        GpuDustCloud &d = out[n++];
         const glm::dvec3 re = toEnu(rel);
+        writeSmokeSide(n, Ce, re);
+        GpuDustCloud &d = out[n++];
         d.c = glm::vec4(glm::vec3(re), (float)Sigma);
         d.ia = glm::vec4((float)M[0][0], (float)M[1][1], (float)M[2][2], (float)(1.0 / (kTwoPi15 * std::sqrt(det))));
         const double lS = sunL.x + sunL.y + sunL.z, lI = skyL.x + skyL.y + skyL.z;
@@ -416,14 +450,18 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
         em.Q = tau0 * std::sqrt(2.0 * kPiF) * wSrc * 5.0;
         em.H = wx::fireInjectionHeightM(f, s, tq);
         em.act = s.activity;
-        constexpr int kHs = 48;
+        // 192 samples (was 48): a section is drawn as 4 sub-pieces along the front (2026-10-29), each needs several. Each
+        // sample stands for its own stretch of front (ds along the local tangent): its variance ds^2 / 12 there is counted
+        // in the moments, so a sub-piece of one or two samples still has the length of the front it covers.
+        constexpr int kHs = 192;
         glm::dvec2 hq[kHs];
-        double hw[kHs], hTot = 0.0, hRaw = 0.0;
+        double hw[kHs], hds[kHs], hTot = 0.0, hRaw = 0.0;
         for (int k = 0; k < kHs; ++k)
         {
             const double a = 2.0 * kPiF * (k + 0.5) / kHs;
             double dsda = 0.0;
             hq[k] = wx::fireFrontAt(f, s, a, &dsda);
+            hds[k] = std::fabs(dsda) * 2.0 * kPiF / kHs;
             double la, lo;
             wx::fireOffsetLatLon(f, hq[k], la, lo);
             const double h0 = wx::fireFrontHeat(f, s, a, tq) * dsda;
@@ -431,6 +469,14 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
             hTot += hw[k];
             hRaw += h0;
         }
+        // a sample's own covariance: its stretch of front along the local tangent
+        auto selfCov = [&](int k) {
+            glm::dvec2 tg = hq[(k + 1) % kHs] - hq[(k + kHs - 1) % kHs];
+            const double lt = glm::length(tg);
+            tg = lt > 1e-9 ? tg / lt : glm::dvec2(1.0, 0.0);
+            const double v = hds[k] * hds[k] / 12.0;
+            return glm::dvec3(v * tg.x * tg.x, v * tg.x * tg.y, v * tg.y * tg.y);
+        };
         // The smoke made is the share of the front still on burnable ground (2026-10-27, issue 20261027_000126: a fire
         // whose front had all run into the sea or onto bare rock kept its full smoke, from a stand-in source at the head).
         em.Q *= hRaw > 1e-9 ? std::clamp(hTot / hRaw, 0.0, 1.0) : 0.0;
@@ -442,6 +488,7 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
         }
         glm::dvec2 c[5]{};
         double m[5]{}, ext[5]{}, cxx[5]{}, cxy[5]{}, cyy[5]{};
+        int secOfSample[kHs];
         em.nS = 0;
         if (hTot > 1e-6)
         {
@@ -450,6 +497,7 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
             for (int j = 0; j < kHs; ++j)
             {
                 const int k = (k0 + j) % kHs;
+                secOfSample[j] = si;
                 c[si] += hw[k] * hq[k];
                 m[si] += hw[k];
                 acc += hw[k];
@@ -457,27 +505,23 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
             }
             for (int i = 0; i < S; ++i)
                 if (m[i] > 0.0) c[i] /= m[i];
-            acc = 0.0;
-            si = 0;
             for (int j = 0; j < kHs; ++j)
             {
-                const int k = (k0 + j) % kHs;
-                if (m[si] > 0.0)
-                {
-                    const glm::dvec2 dd = hq[k] - c[si];
-                    ext[si] += hw[k] * glm::dot(dd, dd);
-                    cxx[si] += hw[k] * dd.x * dd.x;
-                    cxy[si] += hw[k] * dd.x * dd.y;
-                    cyy[si] += hw[k] * dd.y * dd.y;
-                }
-                acc += hw[k];
-                if (acc >= hTot * (si + 1) / S - 1e-9 && si < S - 1) ++si;
+                const int k = (k0 + j) % kHs, i = secOfSample[j];
+                if (m[i] <= 0.0) continue;
+                const glm::dvec2 dd = hq[k] - c[i];
+                const glm::dvec3 sc = selfCov(k);
+                ext[i] += hw[k] * (glm::dot(dd, dd) + sc.x + sc.z);
+                cxx[i] += hw[k] * (dd.x * dd.x + sc.x);
+                cxy[i] += hw[k] * (dd.x * dd.y + sc.y);
+                cyy[i] += hw[k] * (dd.y * dd.y + sc.z);
             }
             for (int i = 0; i < S; ++i)
                 if (m[i] > 0.0)
                 {
-                    em.c[em.nS] = c[i];
-                    em.ext[em.nS] = std::sqrt(ext[i] / m[i]);
+                    const int o = em.nS;
+                    em.c[o] = c[i];
+                    em.ext[o] = std::sqrt(ext[i] / m[i]);
                     // (its principal axis and spreads along / across it: a section of front is a curtain along the
                     // front, not a round source; 2026-10-28)
                     const double a11 = cxx[i] / m[i], a12 = cxy[i] / m[i], a22 = cyy[i] / m[i];
@@ -485,10 +529,55 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                     const double l1 = tr + dt, l2 = std::max(tr - dt, 0.0);
                     glm::dvec2 ev = std::fabs(a12) > 1e-9 ? glm::dvec2(l1 - a22, a12) : (a11 >= a22 ? glm::dvec2(1, 0) : glm::dvec2(0, 1));
                     ev = glm::length(ev) > 1e-12 ? glm::normalize(ev) : glm::dvec2(1, 0);
-                    em.ax[em.nS] = ev;
-                    em.extL[em.nS] = std::sqrt(l1);
-                    em.extW[em.nS] = std::sqrt(l2);
-                    em.w[em.nS] = m[i] / hTot;
+                    em.ax[o] = ev;
+                    em.extL[o] = std::sqrt(l1);
+                    em.extW[o] = std::sqrt(l2);
+                    em.w[o] = m[i] / hTot;
+                    // its 4 sub-pieces: the section's samples in order along the front, cut at equal heat
+                    double sm[4]{};
+                    glm::dvec2 scn[4]{};
+                    glm::dvec3 scv[4]{};
+                    double accS = 0.0;
+                    int sub = 0;
+                    int sj[kHs], ns = 0;
+                    for (int j = 0; j < kHs; ++j)
+                        if (secOfSample[j] == i) sj[ns++] = j;
+                    int subOf[kHs];
+                    for (int q = 0; q < ns; ++q)
+                    {
+                        const int k = (k0 + sj[q]) % kHs;
+                        // (the sample's heat centred in the section's cumulative heat decides its sub-piece)
+                        const double mid = accS + 0.5 * hw[k];
+                        sub = std::clamp((int)std::floor(4.0 * mid / m[i]), 0, 3);
+                        subOf[q] = sub;
+                        sm[sub] += hw[k];
+                        scn[sub] += hw[k] * hq[k];
+                        accS += hw[k];
+                    }
+                    for (int g = 0; g < 4; ++g)
+                        if (sm[g] > 0.0) scn[g] /= sm[g];
+                    for (int q = 0; q < ns; ++q)
+                    {
+                        const int k = (k0 + sj[q]) % kHs, g = subOf[q];
+                        const glm::dvec2 dd = hq[k] - scn[g];
+                        const glm::dvec3 sc = selfCov(k);
+                        scv[g] += hw[k] * glm::dvec3(dd.x * dd.x + sc.x, dd.x * dd.y + sc.y, dd.y * dd.y + sc.z);
+                    }
+                    for (int g = 0; g < 4; ++g)
+                    {
+                        if (sm[g] > 0.0)
+                        {
+                            em.subOff[o][g] = scn[g] - c[i];
+                            em.subW[o][g] = sm[g] / m[i];
+                            em.subC[o][g] = scv[g] / sm[g];
+                        }
+                        else
+                        {
+                            em.subOff[o][g] = glm::dvec2(0.0);
+                            em.subW[o][g] = 0.0;
+                            em.subC[o][g] = glm::dvec3(0.0);
+                        }
+                    }
                     ++em.nS;
                 }
         }
@@ -516,6 +605,12 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                 em.ax[i] = o.ax[ord[i]];
                 em.extL[i] = o.extL[ord[i]];
                 em.extW[i] = o.extW[ord[i]];
+                for (int g = 0; g < 4; ++g)
+                {
+                    em.subOff[i][g] = o.subOff[ord[i]][g];
+                    em.subW[i][g] = o.subW[ord[i]][g];
+                    em.subC[i][g] = o.subC[ord[i]][g];
+                }
             }
         }
         if (em.nS == 0)
@@ -526,6 +621,12 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
             em.ax[0] = glm::dvec2(std::cos(s.windAz), -std::sin(s.windAz));
             em.extL[0] = em.ext[0];
             em.extW[0] = 0.0;
+            for (int g = 0; g < 4; ++g)
+            {
+                em.subOff[0][g] = glm::dvec2(0.0);
+                em.subW[0][g] = 0.25;
+                em.subC[0][g] = glm::dvec3(em.ext[0] * em.ext[0] * 0.5, 0.0, em.ext[0] * em.ext[0] * 0.5);
+            }
             em.nS = 1;
         }
         em.mainSrc = 0;
@@ -834,6 +935,12 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                     // its vertical thickness sv
                     double iso = 0.0, sec = 0.0, sv = 0.0;
                     glm::dvec2 ax{1.0, 0.0};
+                    // (2026-10-29) the section as 4 sub-pieces along the front: offsets from the section's centre, heat
+                    // shares and 2x2 covariances (m, m^2, x spread); hasSub false = one piece at the centre (the low layer)
+                    glm::dvec2 so[4]{};
+                    double sw[4]{};
+                    glm::dvec3 sc[4]{};
+                    bool hasSub = false;
                 };
                 auto knotOf = [&](const SmokeEmit &em, int si, double age, const glm::dvec2 &xy, double Hb) {
                     KP k;
@@ -848,8 +955,18 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                     k.iso = spread * (150.0 + 100.0 * sz + 0.25 * z + 1.1 * ap);
                     // the section's own extent: the curtain is the section's length (a uniform stretch L ~ 3.5 x its
                     // rms: sigma 0.5 L so neighbouring sections join); the low layer leaves from one place
-                    k.sec = low ? 0.0 : spread * 1.7 * em.extL[sc];
+                    k.sec = (low || (wildfireDebug & 64)) ? 0.0 : spread * 1.7 * em.extL[sc];
                     k.ax = em.ax[sc];
+                    if (!low && !(wildfireDebug & 64))
+                    {
+                        k.hasSub = true;
+                        for (int g = 0; g < 4; ++g)
+                        {
+                            k.so[g] = (double)spread * em.subOff[sc][g];
+                            k.sw[g] = em.subW[sc][g];
+                            k.sc[g] = (double)spread * spread * em.subC[sc][g];
+                        }
+                    }
                     k.sv = std::min(k.iso, spread * (120.0 + 0.22 * Hb + 0.12 * ap));
                     const double wq = shareOf(em, si, pl.S);
                     const double massK = low ? 0.2 * wq : (si == pl.S / 2 && pl.lowLayer ? 0.8 * wq : wq);
@@ -896,10 +1013,74 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                             k.iso = glm::mix(k.iso, 0.5 * (a.iso + b.iso), u);
                             k.sec = glm::mix(k.sec, 0.5 * (a.sec + b.sec), u);
                             k.sv = glm::mix(k.sv, 0.5 * (a.sv + b.sv), u);
+                            if (k.hasSub && a.hasSub && b.hasSub)
+                                for (int g = 0; g < 4; ++g)
+                                {
+                                    k.so[g] = glm::mix(k.so[g], 0.5 * (a.so[g] + b.so[g]), u);
+                                    k.sw[g] = glm::mix(k.sw[g], 0.5 * (a.sw[g] + b.sw[g]), u);
+                                    k.sc[g] = glm::mix(k.sc[g], 0.5 * (a.sc[g] + b.sc[g]), u);
+                                }
                         }
                         ++j;
                     }
                 }
+                // (2026-10-29) The front section across the curtain as GROUPS of its 4 sub-pieces: level 0 = the whole section
+                // (one group), 1 = two halves, 2 = the four quarters. A section of a long curved front is a chain along it,
+                // never one straight Gaussian whose tails run past the front's ends (issue 20261029_084627: from 79 km a
+                // 22-day fire's front was five straight 50-60 km bars, a white arc with tangent tails). The level follows
+                // how long the section is against the smoke's own spread and on screen; cross-faded, the mass shared.
+                struct SubSet
+                {
+                    glm::dvec2 so[4]{};
+                    double sw[4]{};
+                    glm::dvec3 sc[4]{};
+                };
+                auto subAt = [](const KP &A, const KP &B, double u) {
+                    SubSet r;
+                    for (int g = 0; g < 4; ++g)
+                    {
+                        r.so[g] = glm::mix(A.so[g], B.so[g], u);
+                        r.sw[g] = glm::mix(A.sw[g], B.sw[g], u);
+                        r.sc[g] = glm::mix(A.sc[g], B.sc[g], u);
+                    }
+                    return r;
+                };
+                // the merged moments of sub-pieces [g0, g1): weight, centre offset, covariance
+                auto subGroup = [](const SubSet &ss, int g0, int g1, double &w, glm::dvec2 &off, glm::dvec3 &cv) {
+                    w = 0.0;
+                    off = glm::dvec2(0.0);
+                    for (int g = g0; g < g1; ++g) { w += ss.sw[g]; off += ss.sw[g] * ss.so[g]; }
+                    if (w <= 1e-12) { cv = glm::dvec3(0.0); return; }
+                    off /= w;
+                    cv = glm::dvec3(0.0);
+                    for (int g = g0; g < g1; ++g)
+                    {
+                        const glm::dvec2 d = ss.so[g] - off;
+                        cv += ss.sw[g] * (ss.sc[g] + glm::dvec3(d.x * d.x, d.x * d.y, d.y * d.y));
+                    }
+                    cv /= w;
+                };
+                // the group level (continuous, 0..2) of a segment: the section's length (1.7 x its rms along, as a
+                // section's Gaussian was) over 3 x the smoke's round spread (each group's own spread joins them up to there), and over
+                // 12 px on screen
+                auto groupLevel = [&](const KP &A, const KP &B, double rngC) {
+                    if (!A.hasSub || !B.hasSub) return 0.0;
+                    const SubSet ss = subAt(A, B, 0.5);
+                    double w;
+                    glm::dvec2 off;
+                    glm::dvec3 cv;
+                    subGroup(ss, 0, 4, w, off, cv);
+                    const double tr = 0.5 * (cv.x + cv.z), dt = std::sqrt(std::max(0.25 * (cv.x - cv.z) * (cv.x - cv.z) + cv.y * cv.y, 0.0));
+                    const double secL = 1.7 * std::sqrt(std::max(tr + dt, 0.0));
+                    const double iso = std::max(0.5 * (A.iso + B.iso), 1.0);
+                    const double r = std::min(secL / (3.0 * iso), secL / (std::max(rngC, 1.0) * pixFull) / 12.0);
+                    return r > 1.0 ? std::min(std::log2(r), 2.0) : 0.0;
+                };
+                auto groupCount = [](double gl) {
+                    const int l = (int)std::floor(gl);
+                    const double fr = gl - l;
+                    return (fr > 0.02 && l < 2) ? (1 << l) + (1 << (l + 1)) : (1 << l);
+                };
                 for (size_t k = 0; k + 1 < ks.size(); ++k)
                 {
                     const KP &A = ks[k], &B = ks[k + 1];
@@ -931,14 +1112,23 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                         q.vis = inView(toEnu(relC), rng, 0.5 * len + 4.0 * wSeg);
                         const double lenPx = len / (rng * pixFull);
                         q.want = k > 0 ? std::max(1, (int)std::ceil(std::min(len / (2.2 * wSeg), lenPx / 6.0))) : 1;
-                        if (wildfireSmokeCurtain != 0 && k > 0)
+                        if (wildfireSmokeCurtain != 0)
                         {
-                            // nested node levels (below): a level s with a fade to s+1 takes 2^(s+1)+1 Gaussians
-                            const double wC = std::max(0.5 * (A.iso + B.iso), 1.0);
-                            const double wantF = std::clamp(std::min(len / (2.2 * wC), lenPx / 6.0), 1.0, 32.0);
-                            const double L = std::log2(wantF);
-                            const int sL = (int)std::floor(L);
-                            q.want = (L - sL > 0.02) ? (1 << (sL + 1)) + 1 : (sL > 0 ? (1 << sL) + 1 : 1);
+                            // nested node levels (below): a level s with a fade to s+1 takes 2^(s+1)+1 nodes, each a
+                            // chain of the section's groups
+                            int nodes = 1;
+                            if (k > 0)
+                            {
+                                const double wC = std::max(0.5 * (A.iso + B.iso), 1.0);
+                                const double wantF = std::clamp(std::min(len / (2.2 * wC), lenPx / 6.0), 1.0, 32.0);
+                                const double L = std::log2(wantF);
+                                const int sL = (int)std::floor(L);
+                                nodes = (L - sL > 0.02) ? (1 << (sL + 1)) + 1 : (sL > 0 ? (1 << sL) + 1 : 1);
+                            }
+                            // (the groups SHARE the segment's pieces with the nodes: a section split across the front takes
+                            // fewer nodes along the trail. Wanted as nodes x groups the plan filled the budget: +25%
+                            // Gaussians and ~3 ms over a big fire from 26 km)
+                            q.want = std::max(nodes, groupCount(groupLevel(A, B, rng)));
                         }
                         segPlans.push_back(q);
                         continue;
@@ -1006,6 +1196,11 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                         };
                         int sLev = 0;
                         double frL = 0.0;
+                        // the section's groups first (they fit the budget), then the nodes along the trail with what is left
+                        double gLev = groupLevel(A, B, std::max(glm::length(Cc - eye), 1.0));
+                        if (groupCount(gLev) > m) gLev = m >= 4 ? 2.0 : (m >= 2 ? 1.0 : 0.0);
+                        const int gCnt = groupCount(gLev);
+                        const int mNodes = std::max(1, m / gCnt);
                         if (k > 0)
                         {
                             const double wC = std::max(0.5 * (A.iso + B.iso), 1.0);
@@ -1015,11 +1210,11 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                             sLev = (int)std::floor(L);
                             frL = L - sLev;
                             auto cnt = [](int sl, double f) { return f > 0.02 ? (1 << (sl + 1)) + 1 : (sl > 0 ? (1 << sl) + 1 : 1); };
-                            if (cnt(sLev, frL) > m)
+                            if (cnt(sLev, frL) > mNodes)
                             {
                                 frL = 0.0;
                                 sLev = 0;
-                                while (sLev < 5 && (1 << (sLev + 1)) + 1 <= m) ++sLev;
+                                while (sLev < 5 && (1 << (sLev + 1)) + 1 <= mNodes) ++sLev;
                             }
                         }
                         const int sTop = frL > 0.02 ? sLev + 1 : sLev;
@@ -1047,18 +1242,49 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                             const double lt = glm::length(tgv);
                             const glm::dvec3 aj = lt > 1e-6 ? tgv / lt : glm::normalize(P1 - P0 + glm::dvec3(1e-9, 0, 0));
                             const glm::dvec3 upc = glm::normalize(Pc);
-                            glm::dvec2 axm = (glm::dot(A.ax, B.ax) < 0.0) ? glm::mix(A.ax, -B.ax, u) : glm::mix(A.ax, B.ax, u);
-                            axm = glm::length(axm) > 1e-9 ? glm::normalize(axm) : A.ax;
-                            glm::dvec3 sx = eE * axm.x + nE * axm.y;
-                            sx = glm::normalize(sx - upc * glm::dot(sx, upc) + glm::dvec3(1e-9, 0, 0));
-                            const double iso = glm::mix(A.iso, B.iso, u), sec = glm::mix(A.sec, B.sec, u), sv = glm::mix(A.sv, B.sv, u);
+                            const double iso = glm::mix(A.iso, B.iso, u), sv = glm::mix(A.sv, B.sv, u);
                             const double sAl = std::max(al, 0.3 * iso);
-                            const glm::dmat3 Cv = sAl * sAl * glm::outerProduct(aj, aj) + sec * sec * glm::outerProduct(sx, sx) +
-                                                  iso * iso * (glm::dmat3(1.0) - glm::outerProduct(upc, upc)) +
-                                                  sv * sv * glm::outerProduct(upc, upc);
-                            if (emitCov(Pc, Cv, Sigma * ms, sunL, skyL, alb,
-                                        f.id ^ (uint64_t)(k + 1 + 64 * sp.si) ^ ((uint64_t)(j + 1) << 40), cap))
-                                ++emitted;
+                            const glm::dmat3 Cv0 = sAl * sAl * glm::outerProduct(aj, aj) +
+                                                   iso * iso * (glm::dmat3(1.0) - glm::outerProduct(upc, upc)) +
+                                                   sv * sv * glm::outerProduct(upc, upc);
+                            if (!A.hasSub || !B.hasSub)
+                            {
+                                if (emitCov(Pc, Cv0, Sigma * ms, sunL, skyL, alb,
+                                            f.id ^ (uint64_t)(k + 1 + 64 * sp.si) ^ ((uint64_t)(j + 1) << 40), cap))
+                                    ++emitted;
+                                continue;
+                            }
+                            // the section across the curtain: each group at its own place along the front (the shape
+                            // carried with the parcel), its spread along the front from its covariance (2x2, interpolated
+                            // between the knots as a matrix: no axis to flip or spin), 1.7 x its rms as a section's was
+                            const SubSet ss = subAt(A, B, u);
+                            const int gl0 = (int)std::floor(gLev);
+                            const double gfr = gLev - gl0;
+                            for (int lv = gl0; lv <= std::min(gl0 + 1, 2); ++lv)
+                            {
+                                const double lw = lv == gl0 ? (gfr > 0.02 && gl0 < 2 ? 1.0 - gfr : 1.0) : (gfr > 0.02 ? gfr : 0.0);
+                                if (lw <= 1e-6) continue;
+                                const int ng = 1 << lv;
+                                for (int g = 0; g < ng; ++g)
+                                {
+                                    double wg;
+                                    glm::dvec2 og;
+                                    glm::dvec3 cg;
+                                    subGroup(ss, g * 4 / ng, (g + 1) * 4 / ng, wg, og, cg);
+                                    if (wg <= 1e-6) continue;
+                                    const glm::dvec3 Pg = at(qc.x + og.x, qc.y + og.y, qc.z);
+                                    const glm::dvec3 upg = glm::normalize(Pg);
+                                    const glm::dmat3 Pgh = glm::dmat3(1.0) - glm::outerProduct(upg, upg);
+                                    const glm::dmat3 H2 = 1.7 * 1.7 * (cg.x * glm::outerProduct(eE, eE) + cg.z * glm::outerProduct(nE, nE) +
+                                                                      cg.y * (glm::outerProduct(eE, nE) + glm::outerProduct(nE, eE)));
+                                    const glm::dmat3 Cv = Cv0 + Pgh * H2 * Pgh;
+                                    if (emitCov(Pg, Cv, Sigma * ms * wg * lw, sunL, skyL, alb,
+                                                f.id ^ (uint64_t)(k + 1 + 64 * sp.si) ^ ((uint64_t)(j + 1) << 40) ^
+                                                    ((uint64_t)(lv * 4 + g + 1) << 52),
+                                                cap))
+                                        ++emitted;
+                                }
+                            }
                         }
                     }
                     else if (m == 1)
@@ -1147,7 +1373,8 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                 // Its thickness at least ~3 full-res pixels as seen (the column kept: Sigma is unchanged): a pall ~1 km thick
                 // seen edge-on from orbit, ~1000 km off, is under a pixel thick, and the half-res composite drew its top edge
                 // along the limb as a hard 2-px staircase (2026-10-27, issue 20261027_003452).
-                const double sPz = std::max(0.35 * pl.cur.H + 400.0, 3.0 * glm::length(Cp - eye) * pixFull);
+                const double sPz = std::max(0.35 * pl.cur.H + 400.0,
+                                            3.0 * std::max(glm::length(Cp - eye) - 2.5 * sAlong, 0.0) * pixFull);
                 const glm::dvec3 upP = glm::normalize(Cp);
                 glm::dvec2 dv = lastXY - m;
                 glm::dvec3 wv = eE * dv.x + nE * dv.y;
@@ -1162,7 +1389,7 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                 if (smokeSegDbg.size() < 256)
                     smokeSegDbg.push_back({(float)(fi * 10 + 9), (float)older, (float)ps.size(), (float)sAlong, (float)sh,
                                            (float)sPz, (float)Sigma, (float)tauTop, (float)zP});
-                if (tauTop > 0.002 && emit(Cp, ap, bp, upP, sAlong, sh, sPz, Sigma,
+                if (tauTop > 0.002 && !(wildfireDebug & 32) && emit(Cp, ap, bp, upP, sAlong, sh, sPz, Sigma,
                                           bright * 4.0 * kPiF * albP * tintP * sunC,
                                           bright * 4.0 * kPiF * albP * tintP * (0.18 * amb) * kSkyBlue, albP,
                                           f.id ^ 0xFA11ull, cap, -1.0))
@@ -2077,6 +2304,52 @@ nlohmann::json SatelliteSim::wildfiresJson(bool world)
         nlohmann::json sg = nlohmann::json::array();
         for (const auto &a : smokeSegDbg) sg.push_back(std::vector<float>(a.begin(), a.end()));
         o["smoke_segments_si_a0_a1_len_sb_sc_sigma_tau_z"] = sg;
+    }
+    // Every smoke Gaussian as the GPU gets it (the dust list's smoke range): principal sigmas (largest first, km), the
+    // largest axis's elevation in the eye's ENU (deg), the centre's range (km) and height (km), the eye's Mahalanobis
+    // distance (sigma) and the optical depth through the centre along the view.
+    if (kDustMapped)
+    {
+        const uint32_t cnt = std::min<uint32_t>(*static_cast<const uint32_t *>(kDustMapped), kMaxDustClouds);
+        const GpuDustCloud *dl = reinterpret_cast<const GpuDustCloud *>(static_cast<const char *>(kDustMapped) + 16);
+        const uint32_t s0 = smokeHdrBits >> 8u & 1023u, sn = smokeHdrBits >> 18u & 1023u;
+        nlohmann::json ga = nlohmann::json::array();
+        const double eyeR = glm::length(glm::dvec3(obsECI));
+        for (uint32_t i = s0; i < std::min(cnt, s0 + sn); ++i)
+        {
+            const GpuDustCloud &g = dl[i];
+            glm::dmat3 M(g.ia.x, g.ib.x, g.ib.y, g.ib.x, g.ia.y, g.ib.z, g.ib.y, g.ib.z, g.ia.z);
+            if (!(glm::determinant(M) > 0.0)) { ga.push_back({{"bad", true}}); continue; }
+            glm::dmat3 C = glm::inverse(M), V(1.0);
+            for (int sweep = 0; sweep < 30; ++sweep)   // Jacobi
+                for (int p = 0; p < 3; ++p)
+                    for (int qq = p + 1; qq < 3; ++qq)
+                    {
+                        if (std::fabs(C[qq][p]) < 1e-12 * (std::fabs(C[p][p]) + std::fabs(C[qq][qq]))) continue;
+                        const double th = 0.5 * std::atan2(2.0 * C[qq][p], C[qq][qq] - C[p][p]);
+                        const double c = std::cos(th), s = std::sin(th);
+                        glm::dmat3 J(1.0);
+                        J[p][p] = c; J[qq][qq] = c; J[qq][p] = s; J[p][qq] = -s;
+                        C = glm::transpose(J) * C * J;
+                        V = V * J;
+                    }
+            int o3[3] = {0, 1, 2};
+            std::sort(o3, o3 + 3, [&](int a, int b) { return C[a][a] > C[b][b]; });
+            const glm::dvec3 ax = V[o3[0]];
+            const glm::dvec3 c(g.c);
+            const double rng = glm::length(c);
+            const glm::dvec3 v = c / std::max(rng, 1.0);
+            const double qv = glm::dot(v, M * v);
+            ga.push_back({{"sig_km", {std::sqrt(std::max(C[o3[0]][o3[0]], 0.0)) / 1e3, std::sqrt(std::max(C[o3[1]][o3[1]], 0.0)) / 1e3,
+                                      std::sqrt(std::max(C[o3[2]][o3[2]], 0.0)) / 1e3}},
+                          {"ax_el_deg", glm::degrees(std::asin(std::clamp(std::fabs(ax.z), 0.0, 1.0)))},
+                          {"range_km", rng / 1e3},
+                          {"h_km", (glm::length(glm::dvec3(0, 0, eyeR) + c) - kReF) / 1e3},
+                          {"eye_sigma", std::sqrt(glm::dot(c, M * c))},
+                          {"tau_c", (double)g.c.w * g.ia.w * std::sqrt(2.0 * glm::pi<double>() / std::max(qv, 1e-30))},
+                          {"col", {g.col.x, g.col.y, g.col.z}}});
+        }
+        o["smoke_gaussians"] = ga;
     }
     o["near_count"] = firesNow.size();
     o["smoke_range"] = {smokeHdrBits >> 8u & 1023u, smokeHdrBits >> 18u & 1023u};
