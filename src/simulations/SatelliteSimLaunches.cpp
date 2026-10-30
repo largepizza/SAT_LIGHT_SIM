@@ -7597,6 +7597,24 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         // the shader's turbulent seed range, never a shell), 2 a streak of the vacuum plume (never a shell)
         int curKind = 0;
         bool curJelly = false; // (2026-10-30) a Gaussian of the young vacuum plume (the jellyfish's head and streaks)
+        // (2026-10-30, the user: "from ~100 m the long plume Gaussians poke out of the FRONT of the ship") The burning
+        // stage's nozzle and its direction of flight (Earth-fixed): no trail Gaussian may reach ahead of the nozzle.
+        bool nozOn = false;
+        glm::dvec3 nozP(0.0), nozF(0.0);
+        {
+            const int sb = tau < vh.t1 ? 0 : (tau < B.t2 ? 1 : -1);
+            bool o0 = false, o1 = false, o2 = false;
+            if (sb >= 0 && tau >= 0.0)
+            {
+                nozP = LaunchImpl::rocketEcef(L, B, sb, tau, o0);
+                const glm::dvec3 pa = LaunchImpl::rocketEcef(L, B, sb, tau - 0.5, o1), pf = LaunchImpl::rocketEcef(L, B, sb, tau + 0.5, o2);
+                if (o0 && o1 && o2 && glm::length(pf - pa) > 1.0)
+                {
+                    nozF = glm::normalize(pf - pa);
+                    nozOn = true;
+                }
+            }
+        }
         // One Gaussian of exhaust: centre C and trail direction axE (Earth-fixed), the half-length it stands for along
         // the trail (hl: its 1-sigma extent beyond its own radius), radius sig, cross-section Sigma (m^2).
         auto addPlume = [&](const glm::dvec3 &CE, const glm::dvec3 &axE, double hl, double sig, double Sigma,
@@ -7607,6 +7625,23 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             if (curGround != 0)
                 Sigma *= (double)launchGroundCloudGain;
             sig *= (double)launchPlumeWidth;
+            // Nothing ahead of the nozzle: the Gaussian's 2.5-sigma extent along the flight direction must stay behind
+            // it, else it is shrunk about its centre (same cross-section: the head gets denser, not longer).
+            if (nozOn && curGround == 0 && curKind != 1)
+            {
+                const double sBehind = glm::dot(nozP - CE, nozF);
+                const double af = glm::dot(axE, nozF);
+                const double sAx = std::sqrt(sig * sig + hl * hl);
+                const double ext = std::sqrt(sAx * sAx * af * af + sig * sig * std::max(0.0, 1.0 - af * af));
+                if (2.5 * ext > sBehind)
+                {
+                    const double k = std::max(sBehind, 0.0) / (2.5 * ext);
+                    if (k < 0.02)
+                        return;
+                    sig *= k;
+                    hl *= k;
+                }
+            }
             if (Sigma < 1.0)
                 return;
             const glm::dvec3 C = rotE(CE);
@@ -7736,6 +7771,9 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             d.ib = glm::vec4((float)Mx(0, 1), (float)Mx(0, 2), (float)Mx(1, 2),
                              (float)(4.0 * std::floor(seedK) + (flameShare >= 0.0 ? 2.0 + flameShare : amb)));
             colOut *= (double)launchPlumeBright; // "Plume brightness" (the iso share in ib.w is a ratio: unchanged)
+            // "Jellyfish nucleus brightness": the young vacuum exhaust at the ship (its first ~5 s of age)
+            if (curJelly && curKind == 0)
+                colOut *= 1.0 + ((double)launchNucleusBright - 1.0) * std::exp(-std::max(age, 0.0) / 5.0);
             d.col = glm::vec4(glm::vec3(colOut), (float)(2.0 + albedo));
             d.cone = coneOf(toEnu(rel), 5.5 * std::max(sA, sP));
             plumes.push_back(c);
@@ -7838,14 +7876,20 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         auto isAscentVac = [&](const launch::Parcel &pc) {
             return pc.stage == 1 && pc.stream >= 0 && !pc.turb && !pc.thin && pc.ground == 0 && pc.t0 < B.t2;
         };
-        const double streakShare = kStreakShare * (vh.upperEngines > 1 ? 1.0 : 0.6);
+        const double streakShare = std::min(kStreakShare * (vh.upperEngines > 1 ? 1.0 : 0.6) * (double)launchStreakBright, 0.9);
+        // (2026-10-30, the user: "the jellyfish is sharp only near the ship and fades into a diffuse glow relatively
+        // quickly downstream") The streaks are sharp over "Jellyfish streak length" (s of exhaust age), then widen
+        // ("diffusion") and hand their share back to the diffuse core by streakEndS.
+        const double streakLenS = std::max((double)launchStreakLengthS, 2.0);
+        const double streakDiff = std::max((double)launchStreakDiffusion, 0.05);
+        const double streakEndS = std::min(streakLenS * (1.0 + 1.0 / streakDiff), kStreakAgeS);
         auto streakShareAt = [&](const launch::Parcel &pc, const PState &q) {
-            if (!q.ok || !isAscentVac(pc))
+            if (!q.ok || !isAscentVac(pc) || streakShare <= 0.0)
                 return 0.0;
             const double age = tau - pc.t0;
             // (only where it expands freely: below ~100-150 km the air confines it into the narrow trail)
             return streakShare * glm::smoothstep(100000.0, 150000.0, glm::length(q.cE) - kR) *
-                   (1.0 - glm::smoothstep(0.6 * kStreakAgeS, kStreakAgeS, age));
+                   (1.0 - glm::smoothstep(0.35 * streakLenS, streakEndS, age));
         };
         const double gain = (double)launchPlumeGain;
         {
@@ -7938,7 +7982,8 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             if (pc.stream < 0 || prev < 0)
             {
                 // A vent's jet stretch, the pad's ground cloud, or the first knot of a burn: as emitted.
-                const double Sigma = pc.kappa * pc.m * s.cond * gain * (double)wOf[pi] * (1.0 - strK);
+                const double Sigma = pc.kappa * pc.m * s.cond * gain * (double)wOf[pi] * (1.0 - strK) *
+                                     (pc.turb ? (double)launchStagingCloud : 1.0);
                 addPlume(s.cE, pc.axis, 0.5 * pc.len, s.sig, Sigma, s.sweep, pc.albedo, age, rimSeed, pc.stream >= 0,
                          pc.tint);
             }
@@ -8010,12 +8055,17 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     iy = pi;
                     break;
                 }
-            if (iy >= 0)
+            if (iy >= 0 && streakShare > 0.0)
             {
-                const int K = vh.upperEngines > 1 ? std::min(vh.upperEngines, 8) : 4;
-                const bool filaments = vh.upperEngines <= 1;
-                static const double kAges[] = {0.0, 4.0, 12.0, 28.0, 55.0, 100.0, 160.0, kStreakAgeS};
-                constexpr int nA = (int)(sizeof(kAges) / sizeof(kAges[0]));
+                const int K = launchStreakCount >= 0.5f ? std::min((int)std::lround(launchStreakCount), 12)
+                                                        : (vh.upperEngines > 1 ? std::min(vh.upperEngines, 8) : 4);
+                const bool filaments = vh.upperEngines <= 1 && launchStreakCount < 0.5f;
+                // Knots at ages streakEndS x (j / N)^2: dense at the ship, where the streaks are sharp and curve with
+                // the stage's path; sparse where they have diffused into the glow.
+                constexpr int nA = 13;
+                double kA[nA];
+                for (int j = 0; j < nA; ++j)
+                    kA[j] = streakEndS * ((double)j / (nA - 1)) * ((double)j / (nA - 1));
                 struct SP
                 {
                     glm::dvec3 c{0.0};
@@ -8028,7 +8078,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 const bool burning = tau < B.t2;
                 for (int j = 0; j < nA; ++j)
                 {
-                    const double t0 = tau - kAges[j];
+                    const double t0 = tau - kA[j];
                     if (j == 0 && burning)
                     {
                         bool okN = false;
@@ -8071,43 +8121,84 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                         continue;
                     const double age = tau - pc.t0;
                     int j = 0;
-                    while (j + 2 < nA && age >= kAges[j + 1])
+                    while (j + 2 < nA && age >= kA[j + 1])
                         ++j;
                     segS[j] += pc.kappa * pc.m * ps[(size_t)pi].cond * gain * sh;
                 }
+                // Each knot's frame round the plume's local axis (the chord through its neighbours: continuous along
+                // the curve), and each streak's point there: offset by fk x the spread x the radius.
                 const double ph = glm::two_pi<double>() * h01(B.seed, 41, 2);
                 const launch::Parcel &py = B.parcels[(size_t)iy];
+                static std::vector<glm::dvec3> E;
+                E.assign((size_t)(K * nA), glm::dvec3(0.0));
+                for (int j = 0; j < nA; ++j)
+                {
+                    if (!pt[j].ok)
+                        continue;
+                    const int ja = (j > 0 && pt[j - 1].ok) ? j - 1 : j, jb = (j + 1 < nA && pt[j + 1].ok) ? j + 1 : j;
+                    glm::dvec3 axK = pt[jb].c - pt[ja].c;
+                    if (glm::length(axK) < 1.0)
+                        continue;
+                    axK = glm::normalize(axK);
+                    glm::dvec3 r1 = glm::cross(axK, glm::normalize(pt[j].c));
+                    r1 = glm::length(r1) > 1e-9 ? glm::normalize(r1) : glm::dvec3(1, 0, 0);
+                    const glm::dvec3 r2 = glm::cross(axK, r1);
+                    for (int k = 0; k < K; ++k)
+                    {
+                        const double ang = ph + glm::two_pi<double>() * ((double)k + 0.5) / K;
+                        const double fk = (kStreakOffMin + (kStreakOffMax - kStreakOffMin) * h01(B.seed, 42 + (uint64_t)k, 3)) *
+                                          (double)launchStreakSpread;
+                        E[(size_t)(k * nA + j)] = pt[j].c + fk * pt[j].sig * (std::cos(ang) * r1 + std::sin(ang) * r2);
+                    }
+                }
+                // (2026-10-30, the user: "particles don't follow the trajectory's curve ... too angular") Each segment
+                // is cut into pieces along a Catmull-Rom curve through the streak's points, as many as keep a piece no
+                // longer than ~4 x the streak's width (the wildfire curtain's rule: no Gaussian larger than the curve it
+                // stands for), at most ~140 a launch; a piece's along-sigma 0.6 x its length joins it to its neighbours.
+                auto cr = [](const glm::dvec3 &p0, const glm::dvec3 &p1, const glm::dvec3 &p2, const glm::dvec3 &p3, double t) {
+                    const double t2 = t * t, t3 = t2 * t;
+                    return 0.5 * ((2.0 * p1) + (-p0 + p2) * t + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2 +
+                                  (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3);
+                };
+                int M[nA] = {};
+                double swS[nA] = {};
+                int total = 0;
                 for (int j = 0; j + 1 < nA; ++j)
                 {
                     if (!pt[j].ok || !pt[j + 1].ok || segS[j] <= 0.0)
                         continue;
-                    glm::dvec3 axC = pt[j + 1].c - pt[j].c;
-                    const double lC = glm::length(axC);
-                    if (lC < 1.0)
+                    const double aMid = 0.5 * (kA[j] + kA[j + 1]);
+                    // sharp near the ship, then widening ("diffusion") into the glow
+                    swS[j] = std::max((filaments ? 1.5 : 1.0) * kStreakWidth * 0.5 * (pt[j].sig + pt[j + 1].sig) *
+                                          (1.0 + 3.0 * streakDiff * aMid / streakLenS),
+                                      60.0);
+                    const double lC = glm::length(pt[j + 1].c - pt[j].c);
+                    M[j] = std::clamp((int)std::ceil(lC / (4.0 * swS[j])), 1, 4);
+                    total += M[j] * K;
+                }
+                const double mScale = total > 140 ? 140.0 / total : 1.0;
+                for (int j = 0; j + 1 < nA; ++j)
+                {
+                    if (M[j] <= 0)
                         continue;
-                    axC /= lC;
-                    const glm::dvec3 upM = glm::normalize(pt[j].c + pt[j + 1].c);
-                    glm::dvec3 r1 = glm::cross(axC, upM);
-                    r1 = glm::length(r1) > 1e-9 ? glm::normalize(r1) : glm::dvec3(1, 0, 0);
-                    const glm::dvec3 r2 = glm::cross(axC, r1);
-                    const double sigM = 0.5 * (pt[j].sig + pt[j + 1].sig);
+                    const int Mj = std::max(1, (int)std::floor(M[j] * mScale + 0.5));
+                    const int j0 = (j > 0 && pt[j - 1].ok) ? j - 1 : j, j3 = (j + 2 < nA && pt[j + 2].ok) ? j + 2 : j + 1;
                     for (int k = 0; k < K; ++k)
                     {
-                        const double ang = ph + glm::two_pi<double>() * ((double)k + 0.5) / K;
-                        // (2026-10-30, the user: "more expansion and divergence on the nozzle plumes ... the jellyfish is too narrow")
-                        // out past the core's 1-sigma radius: the interaction sheets ride the expanding gas's edge
-                        const double fk = kStreakOffMin + (kStreakOffMax - kStreakOffMin) * h01(B.seed, 42 + (uint64_t)k, 3);
-                        const glm::dvec3 off = std::cos(ang) * r1 + std::sin(ang) * r2;
-                        const glm::dvec3 Ea = pt[j].c + fk * pt[j].sig * off, Eb = pt[j + 1].c + fk * pt[j + 1].sig * off;
-                        glm::dvec3 ax = Eb - Ea;
-                        const double lE = glm::length(ax);
-                        ax = lE > 1e-3 ? ax / lE : axC;
-                        // a sheet seen edge-on: ~1/16 of the plume's radius across (a little more for filaments)
-                        const double sw = std::max((filaments ? 1.5 : 1.0) * kStreakWidth * sigM, 60.0);
-                        // (the first segment leaves the nozzle: tighter along, so it does not reach ahead of the stage)
-                        addPlume(0.5 * (Ea + Eb), ax, (j == 0 ? 0.28 : 0.45) * lE, sw, segS[j] / K, 0.0,
-                                 py.albedo, 0.5 * (kAges[j] + kAges[j + 1]),
-                                 B.seed ^ (0x9E37ull * (uint64_t)(k + 1) + (uint64_t)j), true, py.tint);
+                        const glm::dvec3 &P0 = E[(size_t)(k * nA + j0)], &P1 = E[(size_t)(k * nA + j)],
+                                         &P2 = E[(size_t)(k * nA + j + 1)], &P3 = E[(size_t)(k * nA + j3)];
+                        for (int m = 0; m < Mj; ++m)
+                        {
+                            const glm::dvec3 Qa = cr(P0, P1, P2, P3, (double)m / Mj), Qb = cr(P0, P1, P2, P3, (double)(m + 1) / Mj);
+                            glm::dvec3 ax = Qb - Qa;
+                            const double lE = glm::length(ax);
+                            if (lE < 1e-3)
+                                continue;
+                            ax /= lE;
+                            addPlume(0.5 * (Qa + Qb), ax, 0.6 * lE, swS[j], segS[j] / (K * Mj), 0.0, py.albedo,
+                                     kA[j] + (kA[j + 1] - kA[j]) * (m + 0.5) / Mj,
+                                     B.seed ^ (0x9E37ull * (uint64_t)(k + 1) + (uint64_t)(j * 8 + m)), true, py.tint);
+                        }
                     }
                 }
             }
@@ -9892,12 +9983,23 @@ void SatelliteSim::buildLaunchGraphicsSection(const UIInput &inp, UIRenderer &ui
         {tx(Txt::SldRocketLightOnCloudsX), &engineLightGain, 0.0f, 10.0f, 0.1f, "%.1f", 320},
         // 2026-10-28 (the settings round-up): had no UI. Old exhaust's widening with age (launches.plume_dispersal).
         {tx(Txt::SldPlumeDispersalX), &launchPlumeDispersal, 0.0f, 5.0f, 0.05f, "%.2f", 425},
+        // 2026-10-30 (issue 20261030_134020): the second stage's jellyfish and the hot-staging cloud
+        {tx(Txt::SldJellyStreakCount), &launchStreakCount, 0.0f, 12.0f, 1.0f, "%.0f", 428},
+        {tx(Txt::SldJellyStreakBrightX), &launchStreakBright, 0.0f, 3.0f, 0.05f, "%.2f", 429},
+        {tx(Txt::SldJellyStreakSpreadX), &launchStreakSpread, 0.0f, 3.0f, 0.05f, "%.2f", 430},
+        {tx(Txt::SldJellyStreakLengthS), &launchStreakLengthS, 2.0f, 240.0f, 1.0f, "%.0f", 431},
+        {tx(Txt::SldJellyStreakDiffusionX), &launchStreakDiffusion, 0.0f, 5.0f, 0.05f, "%.2f", 432},
+        {tx(Txt::SldJellyNucleusBrightX), &launchNucleusBright, 0.0f, 5.0f, 0.05f, "%.2f", 433},
+        {tx(Txt::SldStagingCloudX), &launchStagingCloud, 0.0f, 3.0f, 0.05f, "%.2f", 434},
     };
     buildCloudSliderRows(inp, ui, rows, (int)(sizeof(rows) / sizeof(rows[0])), false);
     if (uiButton(inp, ui, "LdGfxReset", 0, tx(Txt::BtnResetExhaustToDefaults), tx(Txt::TipEverySliderAboveBackTo1)))
     {
         launchPlumeGain = launchPlumeBright = launchPlumeWidth = launchPlumeBillows = 1.0f;
         launchPlumeGrowth = launchGroundCloudGain = launchRocketGain = engineLightGain = launchPlumeDispersal = 1.0f;
+        launchStreakCount = 0.0f;
+        launchStreakLengthS = 30.0f;
+        launchStreakBright = launchStreakSpread = launchStreakDiffusion = launchNucleusBright = launchStagingCloud = 1.0f;
     }
 }
 

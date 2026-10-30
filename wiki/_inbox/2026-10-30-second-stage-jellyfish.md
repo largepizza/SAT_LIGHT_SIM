@@ -14,6 +14,11 @@ tau / (tau + 1e-3) and the young vacuum plume is always kept. Hot staging (`hot_
 March 2F): 18 turbulent lobes round the interstage at separation, 0.4-1.4 km/s outward, 250-550 m wide growing to a few
 km in ~30 s, orange-tinted (1, 0.78, 0.5), drawn with ~2x the billow contrast and a second octave (plume seeds 192-255).
 
+Round 3: the streaks are sharp only near the ship (fading and widening after "Jellyfish streak length", 30 s), follow
+the trajectory's curve as short Catmull-Rom pieces, and no plume Gaussian reaches ahead of the burning stage's nozzle.
+Settings > Launches: Jellyfish streaks (0 = one per engine), streak brightness / spread / length (s) / diffusion,
+nucleus brightness, Hot-staging cloud (keys launches.jelly_*).
+
 ## History
 Issue 20261030_134020: parcels expanded isotropically at 2 km/s (~300 km wide after 3 min, optical depth ~2e-5) and the
 young ones lost the 384-Gaussian budget to wide old bells, so the stage had no visible plume; there was no staging

@@ -9620,6 +9620,13 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         launchPlumeBillows = settingClamp(lj.value("plume_billows", launchPlumeBillows), 0.0f, 10.0f);
         launchPlumeGrowth = settingClamp(lj.value("plume_growth", launchPlumeGrowth), 0.0f, 20.0f);
         launchPlumeDispersal = settingClamp(lj.value("plume_dispersal", launchPlumeDispersal), 0.0f, 20.0f);
+        launchStreakCount = settingClamp(lj.value("jelly_streak_count", launchStreakCount), 0.0f, 12.0f);
+        launchStreakBright = settingClamp(lj.value("jelly_streak_brightness", launchStreakBright), 0.0f, 5.0f);
+        launchStreakSpread = settingClamp(lj.value("jelly_streak_spread", launchStreakSpread), 0.0f, 5.0f);
+        launchStreakLengthS = settingClamp(lj.value("jelly_streak_length_s", launchStreakLengthS), 2.0f, 240.0f);
+        launchStreakDiffusion = settingClamp(lj.value("jelly_streak_diffusion", launchStreakDiffusion), 0.0f, 10.0f);
+        launchNucleusBright = settingClamp(lj.value("jelly_nucleus_brightness", launchNucleusBright), 0.0f, 10.0f);
+        launchStagingCloud = settingClamp(lj.value("jelly_staging_cloud", launchStagingCloud), 0.0f, 5.0f);
         launchGroundCloudGain = settingClamp(lj.value("ground_cloud_gain", launchGroundCloudGain), 0.0f, 100.0f);
         launchAfterStorm = settingClamp(lj.value("after_storm", launchAfterStorm), 0, 1);
         launchPadGraphics = lj.value("pad_graphics", launchPadGraphics);
@@ -10672,6 +10679,13 @@ nlohmann::json SatelliteSim::buildSettingsJson()
                      {"plume_billows", launchPlumeBillows},
                      {"plume_growth", launchPlumeGrowth},
                      {"plume_dispersal", launchPlumeDispersal},
+                     {"jelly_streak_count", launchStreakCount},
+                     {"jelly_streak_brightness", launchStreakBright},
+                     {"jelly_streak_spread", launchStreakSpread},
+                     {"jelly_streak_length_s", launchStreakLengthS},
+                     {"jelly_streak_diffusion", launchStreakDiffusion},
+                     {"jelly_nucleus_brightness", launchNucleusBright},
+                     {"jelly_staging_cloud", launchStagingCloud},
                      {"ground_cloud_gain", launchGroundCloudGain},
                      {"after_storm", launchAfterStorm},
                      {"pad_graphics", launchPadGraphics},

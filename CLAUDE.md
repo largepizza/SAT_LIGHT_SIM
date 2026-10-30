@@ -6809,6 +6809,17 @@ launches follow per-program cadences (no real manifest).
   `plume_cut`). Measured (RTX 3070 Ti, 1920x1009, the report's view): cloud_march 13.5 -> 9.8-10.7 ms (the dropped faint
   bells), the `turbP` shader change within noise and at 128 registers, launches CPU 2.24 -> 1.87 ms. Open: from the
   ground 600 km away the staging cloud is a few pixels (physically sized).
+- **Jellyfish round 3 (2026-10-30, the user: "60% there").** The streaks are sharp only near the ship: their share
+  fades from 0.35 x "Jellyfish streak length" (`launches.jelly_streak_length_s`, 30 s) to length x (1 + 1 / diffusion)
+  and their width grows x (1 + 3 diffusion age / length) (`jelly_streak_diffusion` 1): downstream they hand back to the
+  diffuse core. They follow the trajectory's curve: 13 knots at ages end x (j/12)^2, each knot's frame from its
+  neighbours, each segment cut into pieces along a Catmull-Rom curve, no piece longer than ~4 x the streak's width (at
+  most ~140 a launch; along-sigma 0.6 x the piece). Nothing reaches ahead of the nozzle: while a stage burns, every
+  trail Gaussian of its launch whose 2.5-sigma extent along the flight direction passes the nozzle is shrunk about its
+  centre (same cross-section; dropped below 2%). Settings > Launches > ROCKETS AND EXHAUST, slots 428-434, keys
+  `launches.jelly_streak_count` (0 = one per engine), `jelly_streak_brightness`, `jelly_streak_spread`,
+  `jelly_streak_length_s`, `jelly_streak_diffusion`, `jelly_nucleus_brightness` (x the light of the young core, e-fold
+  5 s of age), `jelly_staging_cloud` (x the hot-staging lobes' cross-section); "Reset exhaust to defaults" covers them.
 - **What the Gaussian list costs, and the three culls (2026-10-21).** `dustCloudsCS` costs every texel the work of
   every Gaussian whose cone covers it; old, wide or Earth-shadowed exhaust (bells hundreds of km across, trails in the
   night) covers the whole sky while adding nothing: in the droneship bench view 160 of 390 Gaussians were in every

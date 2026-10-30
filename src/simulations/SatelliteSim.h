@@ -3299,6 +3299,12 @@ private:
     float launchPlumeWidth = 1.0f;   // launches.plume_width: every plume Gaussian's radius x (same mass: thinner wide)
     float launchPlumeBillows = 1.0f; // launches.plume_billows: the billows' contrast x (cloud_march.comp)
     float launchPlumeGrowth = 1.0f;  // launches.plume_growth: the low trail's / ground clouds' turbulent growth x
+    // The second stage's jellyfish (2026-10-30, issue 20261030_134020; Settings > Launches > ROCKETS AND EXHAUST,
+    // slots 428-434, keys launches.jelly_*): streak count (0 = one per upper-stage engine), the streaks' brightness x,
+    // spread x (their opening angle), sharp length (s of exhaust age before they diffuse), diffusion x (how fast they
+    // widen and fade into the glow), the nucleus's brightness x, the hot-staging cloud x.
+    float launchStreakCount = 0.0f, launchStreakBright = 1.0f, launchStreakSpread = 1.0f, launchStreakLengthS = 30.0f;
+    float launchStreakDiffusion = 1.0f, launchNucleusBright = 1.0f, launchStagingCloud = 1.0f;
     float launchPlumeDispersal = 1.0f; // launches.plume_dispersal (2026-10-26): old exhaust's widening with age x (no UI)
     float launchGroundCloudGain = 1.0f; // launches.ground_cloud_gain: lift-off steam / landing dust & spray density x
     // Rocket light on clouds, haze, plumes and the ground (2026-10-20, launches.engine_light_gain): the burning
@@ -8373,7 +8379,7 @@ private:
     bool draggingPhoto[56] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
+    static constexpr int kCloudSliderSlots = 435;   // 428-434 (2026-10-30): the second stage's jellyfish (streaks, nucleus, staging cloud); was 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
     // gust fronts, drop persistence); 326: "Tropical cyclones (x)"; 325: "Storm complexes"; 321-324 (2026-10-23): storm
     // objects (frequency, life, cloud field, moat);
     // was 321: 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);
