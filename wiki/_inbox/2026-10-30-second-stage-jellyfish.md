@@ -8,7 +8,7 @@ out of it. Its parcels spread at 0.3 x the exhaust speed (the plume's divergence
 100-160 km; at night their sunlight is x5 above 70-130 km (the sim's night exposure is not physical); above 90-140 km
 every exhaust Gaussian has a limb-brightened rim (a freely expanding parcel is a shell). Streaks: K polylines
 (launches.json `upper_engines`, Starship 6; 4 filaments for a single nozzle) carrying 40% of the young vacuum exhaust
-(to 240 s of age), knots at fixed ages behind the stage, offset by 0.45-0.8 of the plume's radius, 0.06 of it wide:
+(to 240 s of age), knots at fixed ages behind the stage, offset by 1.0-1.8 of the plume's radius (never shrinking with age), 0.1 of it wide:
 the interaction sheets between neighbouring nozzles' plumes. In the Gaussian budget vacuum Gaussians are weighted by
 tau / (tau + 1e-3) and the young vacuum plume is always kept. Hot staging (`hot_staging`: Starship, Soyuz-2, Long
 March 2F): 18 turbulent lobes round the interstage at separation, 0.4-1.4 km/s outward, 250-550 m wide growing to a few

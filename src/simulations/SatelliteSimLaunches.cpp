@@ -65,6 +65,10 @@ constexpr double kVacNightBoost = 5.0;
 constexpr double kVacExpandK = 0.3;
 constexpr double kStreakShare = 0.4;
 constexpr double kStreakAgeS = 240.0;
+// each streak's offset from the plume's axis (x the exhaust's radius there, hashed per streak) and its width (x it):
+// the streaks' opening angle as they leave the stage and their widening along their length
+constexpr double kStreakOffMin = 1.0, kStreakOffMax = 1.8;
+constexpr double kStreakWidth = 0.1;
 
 glm::dvec3 rotZ(const glm::dvec3 &v, double th)
 {
@@ -7950,6 +7954,11 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     pt[j].sig = glm::mix(a.sig, b.sig, f);
                     pt[j].ok = true;
                 }
+                // (the streaks never narrow again with age: where the older trail sits lower the air held its parcels
+                // smaller, and offsets following that radius drew a spindle back into the trail)
+                for (int j = 1; j < nA; ++j)
+                    if (pt[j].ok && pt[j - 1].ok)
+                        pt[j].sig = std::max(pt[j].sig, pt[j - 1].sig);
                 // The cross-section between consecutive knots (the share every parcel there gave up).
                 double segS[nA] = {};
                 for (int pi = i0; pi <= iy; ++pi)
@@ -7983,14 +7992,16 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     for (int k = 0; k < K; ++k)
                     {
                         const double ang = ph + glm::two_pi<double>() * ((double)k + 0.5) / K;
-                        const double fk = 0.45 + 0.35 * h01(B.seed, 42 + (uint64_t)k, 3);
+                        // (2026-10-30, the user: "more expansion and divergence on the nozzle plumes ... the jellyfish is too narrow")
+                        // out past the core's 1-sigma radius: the interaction sheets ride the expanding gas's edge
+                        const double fk = kStreakOffMin + (kStreakOffMax - kStreakOffMin) * h01(B.seed, 42 + (uint64_t)k, 3);
                         const glm::dvec3 off = std::cos(ang) * r1 + std::sin(ang) * r2;
                         const glm::dvec3 Ea = pt[j].c + fk * pt[j].sig * off, Eb = pt[j + 1].c + fk * pt[j + 1].sig * off;
                         glm::dvec3 ax = Eb - Ea;
                         const double lE = glm::length(ax);
                         ax = lE > 1e-3 ? ax / lE : axC;
                         // a sheet seen edge-on: ~1/16 of the plume's radius across (a little more for filaments)
-                        const double sw = std::max((filaments ? 0.09 : 0.06) * sigM, 60.0);
+                        const double sw = std::max((filaments ? 1.5 : 1.0) * kStreakWidth * sigM, 60.0);
                         // (the first segment leaves the nozzle: tighter along, so it does not reach ahead of the stage)
                         addPlume(0.5 * (Ea + Eb), ax, (j == 0 ? 0.28 : 0.45) * lE, sw, segS[j] / K, 0.0,
                                  py.albedo, 0.5 * (kAges[j] + kAges[j + 1]),

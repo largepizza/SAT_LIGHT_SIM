@@ -6714,8 +6714,11 @@ launches follow per-program cadences (no real manifest).
   single nozzle) of their cross-section, out to `kStreakAgeS` (240 s) and above 100-150 km (`streakShareAt`), to K
   polylines (K = launches.json `upper_engines`, at most 8; 4 filaments for one nozzle): knots at fixed ages behind the
   stage (0, 4, 12, 28, 55, 100, 160, 240 s; age 0 = the nozzle while burning), each offset from the plume's axis by
-  0.45-0.8 of the exhaust's radius there at a fixed angle round it, so they fan out of the stage at the plume's spread
-  angle (the interaction sheets between neighbouring nozzles' plumes); width 0.06 x the radius; (5) **the budget**: above
+  `kStreakOffMin`-`kStreakOffMax` (1.0-1.8) of the exhaust's radius there at a fixed angle round it, so they fan out of
+  the stage wider than the core (the interaction sheets between neighbouring nozzles' plumes, riding the gas's edge);
+  width `kStreakWidth` (0.1, 0.15 for filaments) x the radius; the radius used never shrinks with age (a running max
+  over the knots: the older, lower trail's air-confined parcels drew the streaks back into a spindle). (The first cut,
+  0.45-0.8 and 0.06, was too narrow for the user.) (5) **the budget**: above
   60-100 km a Gaussian's priority is x tau / (tau + 1e-3), and the young vacuum plume and the hot-staging lobes
   (`Cand::jelly`) are kept like a reserved share and never skipped early. (6) **Hot staging** (`hot_staging` in
   launches.json: Starship, Soyuz-2, Long March 2F): 18 lobes (`Parcel::turb`, puffs, never decimated or shelled) round
@@ -6726,8 +6729,7 @@ launches follow per-program cadences (no real manifest).
   `plume_vacuum` (above 100 km and the lobes, youngest first: kind 0 exhaust / 1 lobe / 2 streak, tau, priority against
   `plume_cut`). Measured (RTX 3070 Ti, 1920x1009, the report's view): cloud_march 13.5 -> 9.8-10.7 ms (the dropped faint
   bells), the `turbP` shader change within noise and at 128 registers, launches CPU 2.24 -> 1.87 ms. Open: from the
-  ground 600 km away the staging cloud is a few pixels (physically sized); the streaks converge again where the trail
-  drops below ~110 km.
+  ground 600 km away the staging cloud is a few pixels (physically sized).
 - **What the Gaussian list costs, and the three culls (2026-10-21).** `dustCloudsCS` costs every texel the work of
   every Gaussian whose cone covers it; old, wide or Earth-shadowed exhaust (bells hundreds of km across, trails in the
   night) covers the whole sky while adding nothing: in the droneship bench view 160 of 390 Gaussians were in every
