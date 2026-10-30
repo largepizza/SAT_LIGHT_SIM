@@ -38,7 +38,7 @@ static constexpr int kIconAngleRight = 1; // pixel--angle-right.png → speed up
 static constexpr int kIconPause = 3;      // pixel--pause.png
 static constexpr int kIconPlay = 4;       // pixel--play.png
 static constexpr int kIconSettings = 5;   // pixel--settings.png
-static constexpr int kIconCamera = 6;     // camera-solid.png — UC6 screenshot button
+static constexpr int kIconCamera = 6;     // pixel--camera.png — UC6 screenshot button
 static constexpr int kIconStarTrails = 7; // pixel--star-trails.png — long-exposure trail toggle
 static constexpr int kIconEye = 8;        // pixel--eye.png — follow mode (fly to the satellite)
 static constexpr int kIconSelect = 9;     // pixel--crosshair.png — view/select the satellite's model
@@ -623,7 +623,7 @@ void SatelliteSim::loadUiIcons(UIRenderer &ui)
             "assets/icons/ui/pixel--pause.png",
             "assets/icons/ui/pixel--play.png",
             "assets/icons/ui/pixel--settings.png",
-            "assets/icons/ui/camera-solid.png",
+            "assets/icons/ui/pixel--camera.png",
             "assets/icons/ui/pixel--star-trails.png",
             "assets/icons/ui/pixel--eye.png",
             "assets/icons/ui/pixel--crosshair.png",
@@ -1099,7 +1099,7 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
                                          .layoutDirection = CLAY_LEFT_TO_RIGHT}})
         {
             // ── Slow down ─────────────────────────────────────────────────────
-            Clay_Color slowBg = hovTimeSlower ? Pal::btnHover : Pal::btnIdle;
+            Clay_Color slowBg = hovTimeSlower ? Pal::btnHover : Pal::panelBgFade;
             CLAY(CLAY_ID("TimeSlowerBtn"), {.layout = {
                                                 .sizing = {CLAY_SIZING_FIXED(kBtnSize), CLAY_SIZING_FIXED(kBtnSize)},
                                                 .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
@@ -1123,7 +1123,7 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
             // ── Pause / Play ──────────────────────────────────────────────────
             Clay_Color pauseBg = timePaused
                                      ? Pal::pauseActive
-                                     : (hovTimePause ? Pal::btnHover : Pal::btnIdle);
+                                     : (hovTimePause ? Pal::btnHover : Pal::panelBgFade);
             CLAY(CLAY_ID("TimePauseBtn"), {.layout = {
                                                .sizing = {CLAY_SIZING_FIXED(kBtnSize), CLAY_SIZING_FIXED(kBtnSize)},
                                                .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
@@ -1146,7 +1146,7 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
             }
 
             // ── Speed up ──────────────────────────────────────────────────────
-            Clay_Color fastBg = hovTimeFaster ? Pal::btnHover : Pal::btnIdle;
+            Clay_Color fastBg = hovTimeFaster ? Pal::btnHover : Pal::panelBgFade;
             CLAY(CLAY_ID("TimeFasterBtn"), {.layout = {
                                                 .sizing = {CLAY_SIZING_FIXED(kBtnSize), CLAY_SIZING_FIXED(kBtnSize)},
                                                 .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
@@ -1171,7 +1171,7 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
             // No dedicated icon asset — plain "R" text glyph, styled like the other buttons.
             Clay_Color revBg = timeDir < 0.0f
                                    ? Pal::pauseActive
-                                   : (hovTimeReverse ? Pal::btnHover : Pal::btnIdle);
+                                   : (hovTimeReverse ? Pal::btnHover : Pal::panelBgFade);
             CLAY(CLAY_ID("TimeReverseBtn"), {.layout = {
                                                  .sizing = {CLAY_SIZING_FIXED(kBtnSize), CLAY_SIZING_FIXED(kBtnSize)},
                                                  .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
@@ -1192,7 +1192,7 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
 
             // ── Screenshot (UC6) ─────────────────────────────────────────────────
             bool shotBusy = screenshotEncoding.load() || screenshotCopyPending || screenshotRequested;
-            Clay_Color shotBg = shotBusy ? Pal::pauseActive : (hovScreenshot ? Pal::btnHover : Pal::btnIdle);
+            Clay_Color shotBg = shotBusy ? Pal::pauseActive : (hovScreenshot ? Pal::btnHover : Pal::panelBgFade);
             CLAY(CLAY_ID("TimeScreenshotBtn"), {.layout = {
                                                     .sizing = {CLAY_SIZING_FIXED(kBtnSize), CLAY_SIZING_FIXED(kBtnSize)},
                                                     .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
@@ -1214,7 +1214,7 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
             }
 
             // ── HQ photo (review 13) ─────────────────────────────────────────────
-            Clay_Color photoBg = photoState != 0 ? Pal::pauseActive : (hovPhoto ? Pal::btnHover : Pal::btnIdle);
+            Clay_Color photoBg = photoState != 0 ? Pal::pauseActive : (hovPhoto ? Pal::btnHover : Pal::panelBgFade);
             CLAY(CLAY_ID("TimePhotoBtn"), {.layout = {
                                                .sizing = {CLAY_SIZING_FIXED(kBtnSize), CLAY_SIZING_FIXED(kBtnSize)},
                                                .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
@@ -1239,7 +1239,7 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
             // Single consolidated control: OFF hides the trail immediately (recordDraw()'s
             // composite draw is itself gated on trailEnabled) and ON always starts from a blank
             // buffer (trailClearPending) — there is no separate "clear" affordance anywhere else.
-            Clay_Color trailsBg = trailEnabled ? Pal::pauseActive : (hovTrailsBtn ? Pal::btnHover : Pal::btnIdle);
+            Clay_Color trailsBg = trailEnabled ? Pal::pauseActive : (hovTrailsBtn ? Pal::btnHover : Pal::panelBgFade);
             CLAY(CLAY_ID("TrailsBtn"), {.layout = {
                                             .sizing = {CLAY_SIZING_FIXED(kBtnSize), CLAY_SIZING_FIXED(kBtnSize)},
                                             .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
@@ -1266,7 +1266,7 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
 
             // ── Record video (SatelliteSimVideo.cpp) ───────────────────────────────────────────────────
             const bool vidOn = video_.busy() && !videoByHarness_;
-            Clay_Color vidBg = vidOn ? Pal::recActive : (hovVideoBtn ? Pal::btnHover : Pal::btnIdle);
+            Clay_Color vidBg = vidOn ? Pal::recActive : (hovVideoBtn ? Pal::btnHover : Pal::panelBgFade);
             CLAY(CLAY_ID("TimeVideoBtn"), {.layout = {
                                                .sizing = {CLAY_SIZING_FIXED(kBtnSize), CLAY_SIZING_FIXED(kBtnSize)},
                                                .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
@@ -3878,11 +3878,6 @@ void SatelliteSim::buildSettingsTabBody(const UIInput &inp, UIRenderer &ui, int 
 // settings.json keys unchanged (launches.*, kessler.*).
 void SatelliteSim::buildSettingsLaunchesTab(const UIInput &inp, UIRenderer &ui)
 {
-    if (uiButton(inp, ui, "LdOpenMs", 0, tx(Txt::BtnOpenTheMissionsWindow), tx(Txt::TipUpcomingLaunchesWhatIsFlyingNow)))
-    {
-        msChrome.open = true;
-        msNextWall = msPinWall = -1e300;
-    }
     // The graphics first (the issue: "primarily the graphics related settings"; the exhaust sliders are what gets
     // tuned), then what happens.
     buildLaunchGraphicsSection(inp, ui);
@@ -3898,135 +3893,146 @@ void SatelliteSim::buildSettingsLaunchesTab(const UIInput &inp, UIRenderer &ui)
 // photometry (the Photometry tab). Slots 400-413 of the shared slider arrays.
 void SatelliteSim::buildSettingsSkyTab(const UIInput &inp, UIRenderer &ui)
 {
-    uiKV("SkyKV", 0, "", tx(Txt::ValTheMilkyWayTheStarsTwinkle), 4.0f, &Pal::textDim);
-
-    uiSection("SkySec", 0, tx(Txt::SecStars));
-    uiToggleRow(inp, ui, "SkyStarLimit", 0, tx(Txt::LblFaintStarsOnlyUnderDarkSkies), starSkyLimit,
-                tx(Txt::TipEachStarIsDrawnOnlyIf));
+    if (uiFold(inp, "SkySec", 0, tx(Txt::SecStars)))
     {
-        CloudSlider st[] = {
-            {tx(Txt::SldNakedEyeLimitBoostMag), &starLimitBoost, -2.0f, 3.0f, 0.1f, "%.1f", 400},
-            {tx(Txt::SldDarkSkyExtraStarsMag), &starDarkExtraMag, 0.0f, 3.0f, 0.1f, "%.1f", 401},
-        };
-        buildCloudSliderRows(inp, ui, st, 2, false);
-    }
-    uiToggleRow(inp, ui, "SkySupernova", 0, tx(Txt::LblBetelgeuseSupernova20371225), supernovaEnabled,
-                tx(Txt::TipTheScriptedSupernovaBrighterThanThe));
-    uiToggleRow(inp, ui, "SkyBetelVar", 0, tx(Txt::LblBetelgeuseVaries), betelgeuseVariable,
-                tx(Txt::TipBeforeTheSupernovaIts416Day));
-
-    // ── Planets ────────────────────────────────────────────────────────────
-    // Same ON/OFF toggle-row pattern as the constellation list above — no new UI pattern
-    // invented (RELEASE_v1_1_PLAN.md follow-up, session 30). A global "Show planets" toggle
-    // sits above the per-planet rows; per-planet rows still work when the global is off (so
-    // preferences survive), they're just moot until it's back on.
-    uiSection("SkySec", 1, tx(Txt::SecPlanets));
-    uiToggleRow(inp, ui, "ShowPlanetsBtn", 0, tx(Txt::LblShowPlanets), showPlanets, tx(Txt::TipEachPlanetBelowKeepsItsOwn));
-    uiToggleRow(inp, ui, "PlanetDiscsBtn", 0, tx(Txt::LblResolvedPlanetDiscs), planetDiscs,
-                tx(Txt::TipZoomedInAPlanetBecomesIts));
-    {
-        CloudSlider pg[] = {{"Planet disc brightness (x)", &planetDiscGain, 0.1f, 5.0f, 0.05f, "%.2f", 402}};
-        buildCloudSliderRows(inp, ui, pg, 1, false);
-    }
-    for (int pi = 0; pi < kPlanetCount; ++pi)
-    {
-        if (!searchRow(CLAY_IDI("PlanetRow", pi).id, kPlanetNames[pi]))
-            continue;
-        bool hov = hovPlanetBtn[pi];
-        Clay_Color rowBg = planetEnabled[pi] ? Pal::rowEnabled : Pal::rowDisabled;
-        CLAY(CLAY_IDI("PlanetRow", pi), {.layout = {
-                                             .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(24)},
-                                             .padding = {4, 4, 3, 3},
-                                             .childGap = 6,
-                                             .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                             .layoutDirection = CLAY_LEFT_TO_RIGHT},
-                                         .backgroundColor = rowBg,
-                                         .cornerRadius = CLAY_CORNER_RADIUS(3)})
+        uiToggleRow(inp, ui, "SkyStarLimit", 0, tx(Txt::LblFaintStarsOnlyUnderDarkSkies), starSkyLimit,
+                    tx(Txt::TipEachStarIsDrawnOnlyIf));
         {
-            Clay_Color btnBg = planetEnabled[pi] ? Pal::btnAccent : (hov ? Pal::btnAccentHv : Pal::btnIdle);
-            CLAY(CLAY_IDI("PlanetBtn", pi), {.layout = {
-                                                 .sizing = {CLAY_SIZING_FIXED(30), CLAY_SIZING_FIXED(18)},
-                                                 .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-                                             .backgroundColor = btnBg,
+            CloudSlider st[] = {
+                {tx(Txt::SldNakedEyeLimitBoostMag), &starLimitBoost, -2.0f, 3.0f, 0.1f, "%.1f", 400},
+                {tx(Txt::SldDarkSkyExtraStarsMag), &starDarkExtraMag, 0.0f, 3.0f, 0.1f, "%.1f", 401},
+            };
+            buildCloudSliderRows(inp, ui, st, 2, false);
+        }
+        uiToggleRow(inp, ui, "SkySupernova", 0, tx(Txt::LblBetelgeuseSupernova20371225), supernovaEnabled,
+                    tx(Txt::TipTheScriptedSupernovaBrighterThanThe));
+        uiToggleRow(inp, ui, "SkyBetelVar", 0, tx(Txt::LblBetelgeuseVaries), betelgeuseVariable,
+                    tx(Txt::TipBeforeTheSupernovaIts416Day));
+
+        // ── Planets ────────────────────────────────────────────────────────────
+        // Same ON/OFF toggle-row pattern as the constellation list above — no new UI pattern
+        // invented (RELEASE_v1_1_PLAN.md follow-up, session 30). A global "Show planets" toggle
+        // sits above the per-planet rows; per-planet rows still work when the global is off (so
+        // preferences survive), they're just moot until it's back on.
+    }
+
+    if (uiFold(inp, "SkySec", 1, tx(Txt::SecPlanets)))
+    {
+        uiToggleRow(inp, ui, "ShowPlanetsBtn", 0, tx(Txt::LblShowPlanets), showPlanets, tx(Txt::TipEachPlanetBelowKeepsItsOwn));
+        uiToggleRow(inp, ui, "PlanetDiscsBtn", 0, tx(Txt::LblResolvedPlanetDiscs), planetDiscs,
+                    tx(Txt::TipZoomedInAPlanetBecomesIts));
+        {
+            CloudSlider pg[] = {{"Planet disc brightness (x)", &planetDiscGain, 0.1f, 5.0f, 0.05f, "%.2f", 402}};
+            buildCloudSliderRows(inp, ui, pg, 1, false);
+        }
+        for (int pi = 0; pi < kPlanetCount; ++pi)
+        {
+            if (!searchRow(CLAY_IDI("PlanetRow", pi).id, kPlanetNames[pi]))
+                continue;
+            bool hov = hovPlanetBtn[pi];
+            Clay_Color rowBg = planetEnabled[pi] ? Pal::rowEnabled : Pal::rowDisabled;
+            CLAY(CLAY_IDI("PlanetRow", pi), {.layout = {
+                                                 .sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(24)},
+                                                 .padding = {4, 4, 3, 3},
+                                                 .childGap = 6,
+                                                 .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                 .layoutDirection = CLAY_LEFT_TO_RIGHT},
+                                             .backgroundColor = rowBg,
                                              .cornerRadius = CLAY_CORNER_RADIUS(3)})
             {
-                bool n = Clay_Hovered();
-                sndRollover(n, hov);
-                sndClick(n, inp.lmbPressed);
-                hovPlanetBtn[pi] = n;
-                if (hov && inp.lmbPressed)
-                    planetEnabled[pi] = !planetEnabled[pi];
-                CLAY_TEXT(planetEnabled[pi] ? txc(Txt::NoteOn) : txc(Txt::NoteOff),
-                          CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(10)}));
-            }
-            CLAY(CLAY_IDI("PlanetName", pi), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}})
-            {
-                Clay_String nameStr{false, (int32_t)strlen(kPlanetNames[pi]), kPlanetNames[pi]};
-                CLAY_TEXT(nameStr, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+                Clay_Color btnBg = planetEnabled[pi] ? Pal::btnAccent : (hov ? Pal::btnAccentHv : Pal::btnIdle);
+                CLAY(CLAY_IDI("PlanetBtn", pi), {.layout = {
+                                                     .sizing = {CLAY_SIZING_FIXED(30), CLAY_SIZING_FIXED(18)},
+                                                     .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
+                                                 .backgroundColor = btnBg,
+                                                 .cornerRadius = CLAY_CORNER_RADIUS(3)})
+                {
+                    bool n = Clay_Hovered();
+                    sndRollover(n, hov);
+                    sndClick(n, inp.lmbPressed);
+                    hovPlanetBtn[pi] = n;
+                    if (hov && inp.lmbPressed)
+                        planetEnabled[pi] = !planetEnabled[pi];
+                    CLAY_TEXT(planetEnabled[pi] ? txc(Txt::NoteOn) : txc(Txt::NoteOff),
+                              CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(10)}));
+                }
+                CLAY(CLAY_IDI("PlanetName", pi), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}})
+                {
+                    Clay_String nameStr{false, (int32_t)strlen(kPlanetNames[pi]), kPlanetNames[pi]};
+                    CLAY_TEXT(nameStr, CLAY_TEXT_CONFIG({.textColor = Pal::volLabel, .fontSize = fs(12)}));
+                }
             }
         }
     }
 
-    uiSection("SkySec", 2, tx(Txt::SecTheMoon));
+    if (uiFold(inp, "SkySec", 2, tx(Txt::SecTheMoon)))
     {
-        // Moved from Photometry's EXPOSURE AND MOON (2026-10-28); slots and keys unchanged (clouds.moon_size ...).
-        CloudSlider mn[] = {
-            // The Moon is a body at its true distance; 1 = its real size (within a few degrees of the Sun it is always
-            // drawn at its true size, so eclipses are right).
-            {tx(Txt::SldMoonSizeXReal), &moonSizeScale, 0.25f, 4.0f, 0.05f, "%.2f", 220},
-            // The disc's relief (2026-10-27): x the LOLA heights (0 = the smooth sphere), and the heightfield's cast
-            // shadows near the terminator (crater floors, mountain shadows).
-            {tx(Txt::SldMoonReliefXLolaHeights), &moonRelief, 0.0f, 4.0f, 0.05f, "%.2f", 355},
-            {tx(Txt::SldMoonShadows01), &moonShadows, 0.0f, 1.0f, 1.0f, "%.0f", 356},
-        };
-        buildCloudSliderRows(inp, ui, mn, (int)(sizeof(mn) / sizeof(mn[0])));
-    }
-    uiToggleRow(inp, ui, "SkyMoonBases", 0, tx(Txt::LblMoonBaseGlints), moonBaseGlints,
-                tx(Txt::TipTheLunarBasesSolarArraysMirroring));
-    {
-        CloudSlider mb[] = {
-            {tx(Txt::SldMoonBaseArrayErrorsX), &moonBaseJitter, 0.0f, 5.0f, 0.05f, "%.2f", 408},
-            {tx(Txt::SldMoonBaseEventLimitMag), &moonBaseMagLimit, -5.0f, 8.0f, 0.25f, "%.2f", 409},
-        };
-        buildCloudSliderRows(inp, ui, mb, 2, false);
-    }
-
-    uiSection("SkySec", 3, tx(Txt::SecComets));
-    uiToggleRow(inp, ui, "SkyComets", 0, tx(Txt::LblComets), cometsEnabled, tx(Txt::TipTheGreatCometOf2037And));
-    if (uiToggleRow(inp, ui, "SkyCometsMinor", 0, tx(Txt::LblMinorComets), cometsMinor,
-                    tx(Txt::TipAFewFaintCometsAYear)))
-        cometsRefreshCatalog((double)simDayJ2000 * 86400.0 + simSecInDay, true);
-    uiToggleRow(inp, ui, "SkyCometTails", 0, tx(Txt::LblCometTails), cometTailsEnabled, tx(Txt::TipTheDustAndIonTailsComets));
-    {
-        CloudSlider cm[] = {
-            {tx(Txt::SldCometTailBrightnessXPhysical), &cometTailGain, 0.0f, 10.0f, 0.05f, "%.2f", 403},
-            {tx(Txt::SldCometTailDisplayX), &cometTailGainDisplay, 0.0f, 10.0f, 0.05f, "%.2f", 404},
-        };
-        buildCloudSliderRows(inp, ui, cm, 2, false);
+        {
+            // Moved from Photometry's EXPOSURE AND MOON (2026-10-28); slots and keys unchanged (clouds.moon_size ...).
+            CloudSlider mn[] = {
+                // The Moon is a body at its true distance; 1 = its real size (within a few degrees of the Sun it is always
+                // drawn at its true size, so eclipses are right).
+                {tx(Txt::SldMoonSizeXReal), &moonSizeScale, 0.25f, 4.0f, 0.05f, "%.2f", 220},
+                // The disc's relief (2026-10-27): x the LOLA heights (0 = the smooth sphere), and the heightfield's cast
+                // shadows near the terminator (crater floors, mountain shadows).
+                {tx(Txt::SldMoonReliefXLolaHeights), &moonRelief, 0.0f, 4.0f, 0.05f, "%.2f", 355},
+                {tx(Txt::SldMoonShadows01), &moonShadows, 0.0f, 1.0f, 1.0f, "%.0f", 356},
+            };
+            buildCloudSliderRows(inp, ui, mn, (int)(sizeof(mn) / sizeof(mn[0])));
+        }
+        uiToggleRow(inp, ui, "SkyMoonBases", 0, tx(Txt::LblMoonBaseGlints), moonBaseGlints,
+                    tx(Txt::TipTheLunarBasesSolarArraysMirroring));
+        {
+            CloudSlider mb[] = {
+                {tx(Txt::SldMoonBaseArrayErrorsX), &moonBaseJitter, 0.0f, 5.0f, 0.05f, "%.2f", 408},
+                {tx(Txt::SldMoonBaseEventLimitMag), &moonBaseMagLimit, -5.0f, 8.0f, 0.25f, "%.2f", 409},
+            };
+            buildCloudSliderRows(inp, ui, mb, 2, false);
+        }
     }
 
-    uiSection("SkySec", 4, tx(Txt::SecMeteors));
-    uiToggleRow(inp, ui, "SkyMeteors", 0, tx(Txt::LblMeteors), meteorsEnabled, tx(Txt::TipTheAnnualShowersAndTheSporadic));
+    if (uiFold(inp, "SkySec", 3, tx(Txt::SecComets)))
     {
-        CloudSlider me[] = {
-            {tx(Txt::SldMeteorRateX), &meteorRateGain, 0.0f, 20.0f, 0.1f, "%.1f", 405},
-            {tx(Txt::SldFireballRateX), &meteorFireballGain, 0.0f, 20.0f, 0.1f, "%.1f", 406},
-            {tx(Txt::SldMeteorTrainDurationX), &meteorTrainDuration, 0.0f, 2.0f, 0.05f, "%.2f", 407},
-        };
-        buildCloudSliderRows(inp, ui, me, 3, false);
+        uiToggleRow(inp, ui, "SkyComets", 0, tx(Txt::LblComets), cometsEnabled, tx(Txt::TipTheGreatCometOf2037And));
+        if (uiToggleRow(inp, ui, "SkyCometsMinor", 0, tx(Txt::LblMinorComets), cometsMinor,
+                        tx(Txt::TipAFewFaintCometsAYear)))
+            cometsRefreshCatalog((double)simDayJ2000 * 86400.0 + simSecInDay, true);
+        uiToggleRow(inp, ui, "SkyCometTails", 0, tx(Txt::LblCometTails), cometTailsEnabled, tx(Txt::TipTheDustAndIonTailsComets));
+        {
+            CloudSlider cm[] = {
+                {tx(Txt::SldCometTailBrightnessXPhysical), &cometTailGain, 0.0f, 10.0f, 0.05f, "%.2f", 403},
+                {tx(Txt::SldCometTailDisplayX), &cometTailGainDisplay, 0.0f, 10.0f, 0.05f, "%.2f", 404},
+            };
+            buildCloudSliderRows(inp, ui, cm, 2, false);
+        }
     }
 
-    uiSection("SkySec", 5, tx(Txt::SecRefractionAndMirages));
-    uiToggleRow(inp, ui, "SkyRefraction", 0, tx(Txt::LblRefraction), refrEnabled,
-                tx(Txt::TipTheAirBendsTheSunThe));
+    if (uiFold(inp, "SkySec", 4, tx(Txt::SecMeteors)))
     {
-        CloudSlider rf[] = {
-            {tx(Txt::SldMirageStrengthX), &refrMirage, 0.0f, 5.0f, 0.05f, "%.2f", 410},
-            {tx(Txt::SldAirTurbulenceX), &refrTurbulence, 0.0f, 20.0f, 0.1f, "%.1f", 411},
-            {tx(Txt::SldDispersionGreenRimX), &refrDispersion, 0.0f, 10.0f, 0.1f, "%.1f", 412},
-            {tx(Txt::SldSunDiscBrightnessX), &sunDiscGain, 0.0f, 10.0f, 0.05f, "%.2f", 413},
-        };
-        buildCloudSliderRows(inp, ui, rf, 4, false);
+        uiToggleRow(inp, ui, "SkyMeteors", 0, tx(Txt::LblMeteors), meteorsEnabled, tx(Txt::TipTheAnnualShowersAndTheSporadic));
+        {
+            CloudSlider me[] = {
+                {tx(Txt::SldMeteorRateX), &meteorRateGain, 0.0f, 20.0f, 0.1f, "%.1f", 405},
+                {tx(Txt::SldFireballRateX), &meteorFireballGain, 0.0f, 20.0f, 0.1f, "%.1f", 406},
+                {tx(Txt::SldMeteorTrainDurationX), &meteorTrainDuration, 0.0f, 2.0f, 0.05f, "%.2f", 407},
+            };
+            buildCloudSliderRows(inp, ui, me, 3, false);
+        }
+    }
+
+    if (uiFold(inp, "SkySec", 5, tx(Txt::SecRefractionAndMirages)))
+    {
+        uiToggleRow(inp, ui, "SkyRefraction", 0, tx(Txt::LblRefraction), refrEnabled,
+                    tx(Txt::TipTheAirBendsTheSunThe));
+        {
+            CloudSlider rf[] = {
+                {tx(Txt::SldMirageStrengthX), &refrMirage, 0.0f, 5.0f, 0.05f, "%.2f", 410},
+                {tx(Txt::SldAirTurbulenceX), &refrTurbulence, 0.0f, 20.0f, 0.1f, "%.1f", 411},
+                {tx(Txt::SldDispersionGreenRimX), &refrDispersion, 0.0f, 10.0f, 0.1f, "%.1f", 412},
+                {tx(Txt::SldSunDiscBrightnessX), &sunDiscGain, 0.0f, 10.0f, 0.05f, "%.2f", 413},
+            };
+            buildCloudSliderRows(inp, ui, rf, 4, false);
+        }
     }
 }
 
@@ -4082,8 +4088,6 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
     int actSel = -1, actGo = -1; // applied after the layout below
 
     uiSection("ConstSec", 0, tx(Txt::SecConstellations));
-    uiKV("ConstHintKV", 0, "", tx(Txt::ValGroupedByKindClickAGroups), 4.0f,
-         &Pal::textDim);
     // Column header over the buttons: Show / Highlight / actions, the name, the satellite count.
     if (!searchActive())
     CLAY(CLAY_ID("ConstHeader"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
@@ -5338,9 +5342,11 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
             {tx(Txt::SldAgxContrast), &cv2ToneContrast, 0.5f, 2.0f, 0.05f, "%.2f", 351},
             // The Moon's size, relief and shadows: the Sky tab (2026-10-28).
         };
-        uiSection("PhotoSec", 11, tx(Txt::SecExposure));
-        buildCloudSliderRows(inp, ui, secExposure, (int)(sizeof(secExposure) / sizeof(secExposure[0])));
-        uiToggleRow(inp, ui, "PhotoCoronagraph", 0, tx(Txt::LblCoronagraph), inertialOcculter, tx(Txt::TipCoronagraph));
+        if (uiFold(inp, "PhotoSec", 20, tx(Txt::SecExposure))) // (folds like the Clouds tab's sections, 2026-10-30)
+        {
+            buildCloudSliderRows(inp, ui, secExposure, (int)(sizeof(secExposure) / sizeof(secExposure[0])));
+            uiToggleRow(inp, ui, "PhotoCoronagraph", 0, tx(Txt::LblCoronagraph), inertialOcculter, tx(Txt::TipCoronagraph));
+        }
     }
     // 2026-10-03: grouped by what they act on (each row keeps its idx: PhotoVal:<idx> etc.).
     struct PhotoGroup
@@ -5366,7 +5372,8 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
     };
     for (int g = 0; g < (int)(sizeof(kGroups) / sizeof(kGroups[0])); ++g)
     {
-        uiSection("PhotoSec", g, kGroups[g].title);
+        if (!uiFold(inp, "PhotoSec", g, kGroups[g].title))
+            continue;
         // 2026-10-28 (the settings round-up): the switches beside their sliders (the HUD's star trails button; the zoomed
         // Milky Way had no UI).
         if (strcmp(kGroups[g].title, "STAR TRAILS") == 0)
@@ -5390,13 +5397,15 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
 
     // Occlusion between satellite parts (geometry-model types) — off by default, see
     // satPartOcclusion (SatelliteSim.h). Same labeled-row + toggle pattern as "Play intro on startup".
-    uiSection("PhotoSec", 10, tx(Txt::SecSatelliteModels));
-    uiToggleRow(inp, ui, "SatOcclusionChk", 0, tx(Txt::LblPartOcclusion), satPartOcclusion,
-                tx(Txt::TipPartsOfAModelledSatelliteShadow));
-    uiToggleRow(inp, ui, "EnvReflChk", 0, tx(Txt::LblFullRendererReflections), envReflections,
-                tx(Txt::TipSatelliteModelsReflectAndAreLit));
-    uiToggleRow(inp, ui, "SharpReflChk", 0, tx(Txt::LblSharpMirrorReflections), sharpReflections,
-                tx(Txt::TipMirrorsAReflectOrbitalMembraneQuartz));
+    if (uiFold(inp, "PhotoSec", 10, tx(Txt::SecSatelliteModels)))
+    {
+        uiToggleRow(inp, ui, "SatOcclusionChk", 0, tx(Txt::LblPartOcclusion), satPartOcclusion,
+                    tx(Txt::TipPartsOfAModelledSatelliteShadow));
+        uiToggleRow(inp, ui, "EnvReflChk", 0, tx(Txt::LblFullRendererReflections), envReflections,
+                    tx(Txt::TipSatelliteModelsReflectAndAreLit));
+        uiToggleRow(inp, ui, "SharpReflChk", 0, tx(Txt::LblSharpMirrorReflections), sharpReflections,
+                    tx(Txt::TipMirrorsAReflectOrbitalMembraneQuartz));
+    }
     buildBulkExportRows(inp, ui);
 }
 
@@ -5662,6 +5671,38 @@ void SatelliteSim::uiSection(const char *key, int idx, const char *title)
     }
     CLAY(CLAY_SIDI(kitStr(key), (uint32_t)idx * 2u + 1u), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}},
                                                            .backgroundColor = Pal::divider}) {}
+}
+
+bool SatelliteSim::uiFold(const UIInput &inp, const char *key, int idx, const char *title)
+{
+    if (search_.on)
+    {
+        searchSection(title);
+        return true;
+    }
+    const Clay_ElementId id = CLAY_SIDI(kitStr(key), (uint32_t)idx + 0x50000u);
+    bool &open = uiFoldOpen_[id.id];
+    CLAY(id, {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(24)},
+                         .padding = {8, 10, 0, 0},
+                         .childGap = 8,
+                         .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                         .layoutDirection = CLAY_LEFT_TO_RIGHT},
+              .backgroundColor = uiHov_[id.id] ? Pal::btnHover : Pal::sectionHdr,
+              .cornerRadius = CLAY_CORNER_RADIUS(3)})
+    {
+        const bool n = Clay_Hovered();
+        uiHovRoll(id.id, n);
+        if (n && inp.lmbPressed)
+            open = !open;
+        CLAY(CLAY_SIDI(kitStr(key), (uint32_t)idx + 0x60000u), {.layout = {.sizing = {CLAY_SIZING_FIXED(10), CLAY_SIZING_FIT(0)},
+                                                                              .childAlignment = {.x = CLAY_ALIGN_X_CENTER}}})
+        {
+            CLAY_TEXT(open ? CLAY_STRING("-") : CLAY_STRING("+"),
+                      CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(12)}));
+        }
+        CLAY_TEXT(kitStr(title), CLAY_TEXT_CONFIG({.textColor = Pal::textSection, .fontSize = fs(12), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+    }
+    return open;
 }
 
 void SatelliteSim::uiKV(const char *key, int idx, const char *label, const char *value, float labelW, const Clay_Color *valueColor)

@@ -632,12 +632,10 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
             addBox(0, CLAY_SIDI(CLAY_STRING("MsTab"), 0));
         else
         {
-            // The first launch row's Watch (the next launch, else the pinned twilight / crewed one), and the Sun's
-            // Fury card's.
+            // The first launch row's Watch (the next launch, else the pinned twilight / crewed one).
             const int row = !msNext.empty() ? 0 : msHasTwilight ? 100 : !msCrewList.empty() ? 101 : -1;
             if (row >= 0)
                 addBox(0, CLAY_SIDI(CLAY_STRING("MsLBtns"), row));
-            addBox(1, CLAY_ID("MsFuryBtns"));
         }
         break;
     case TUT_ONGOING:

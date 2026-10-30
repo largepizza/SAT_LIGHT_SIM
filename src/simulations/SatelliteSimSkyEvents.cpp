@@ -55,6 +55,7 @@ struct SkyEventsFriend
     static void cardMeteor(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2);
     static void cardComet(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2);
     static void cardSupernova(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2);
+    static void cardCme(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2);
     static const SkyKindDef kinds[sky::kKindCount];
 };
 
@@ -325,6 +326,9 @@ std::string eventTitle(const sky::Event &e)
     case sky::kSupernova:
         snprintf(b, sizeof(b), tx(Txt::FmtBetelgeuseGoesSupernovaPeakMag), e.magA);
         break;
+    case sky::kCme:
+        snprintf(b, sizeof(b), "%s", tx(Txt::TxtTheSunsFuryCme));
+        break;
     default:
         snprintf(b, sizeof(b), "Event");
     }
@@ -408,6 +412,16 @@ void SkyEventsFriend::cardSupernova(SatelliteSim &S, const sky::Event &e, double
     }
 }
 
+// The Sun's Fury: the flare's countdown, the CME's arrival, then the cascade's day.
+void SkyEventsFriend::cardCme(SatelliteSim &S, const sky::Event &e, double now, const char *&l1, const char *&l2)
+{
+    if (now >= e.t)
+        l1 = S.skStr(tx(Txt::FmtDay), (now - e.t) / kDay);
+    else
+        l1 = S.skStr(tx(Txt::FmtCmeFlareArrives), utcShort(e.t0).c_str(), utcShort(e.t).c_str());
+    l2 = tx(Txt::TxtKesslerCascadeFollows);
+}
+
 const SkyKindDef SkyEventsFriend::kinds[sky::kKindCount] = {
     {"solar", tx(Txt::TxtSolarEclipse), 33, &Pal::progressFill, &SatelliteSim::skySearchSolar, &SatelliteSim::skyWatchSolar, &SkyEventsFriend::cardSolar,
      tx(Txt::TxtNoneInTheNext2Years), tx(Txt::TxtTheMoonCoveringTheSunFrom)},
@@ -427,6 +441,8 @@ const SkyKindDef SkyEventsFriend::kinds[sky::kKindCount] = {
      &SkyEventsFriend::cardComet, tx(Txt::TxtNoBrightCometInTheNext), tx(Txt::TxtTheCometAndItsTailFrom)},
     {"supernova", tx(Txt::TxtSupernova), 40, &Pal::btnDanger, &SatelliteSim::skySearchSupernova, &SatelliteSim::skyWatchSupernova,
      &SkyEventsFriend::cardSupernova, tx(Txt::TxtNoneInTheNext2Years), tx(Txt::TxtBetelgeuseBlazingInOrionFromA)},
+    {"cme", tx(Txt::TxtCme), 40, &Pal::furyBorder, &SatelliteSim::skySearchCme, &SatelliteSim::skyWatchCme,
+     &SkyEventsFriend::cardCme, tx(Txt::TxtNoneInTheNext2Years), tx(Txt::TipTheStormNightTheAuroraOver)},
 };
 static_assert(sizeof(SkyEventsFriend::kinds) / sizeof(SkyEventsFriend::kinds[0]) == sky::kKindCount, "one row per sky::Kind");
 namespace
@@ -1109,10 +1125,33 @@ bool SatelliteSim::skyWatchSupernova(const sky::Event &e, std::string &msg)
     return true;
 }
 
+// ── The Sun's Fury CME (2026-10-30; the Missions card moved here). A fixed scripted event: one record when the
+// flare .. the first days of the cascade meet the range. Watch = the storm night (Monument Valley, the aurora).
+void SatelliteSim::skySearchCme(const sky::SearchCtx &c, std::vector<sky::Event> &out) const
+{
+    if (!c.kessler) return;
+    const double arr = kesslerEpoch(), t0 = arr - 17.5 * 3600.0, t1 = arr + 3.0 * kDay;
+    if (t1 < c.t0 || t0 > c.t1) return;
+    sky::Event e;
+    e.kind = sky::kCme;
+    e.t0 = t0;
+    e.t1 = t1;
+    e.t = arr;
+    e.watchT = arr;
+    e.score = 1e9;
+    out.push_back(e);
+}
+
+bool SatelliteSim::skyWatchCme(const sky::Event &, std::string &msg)
+{
+    return missionsGoToFury(1, msg);
+}
+
 // What a kind's Watch needs drawn (2026-10-29): Potato's sky draws no eclipse (sat_sky_minimal.frag has no Moon over
 // the Sun nor the Earth's shadow on the Moon), so those two Watches are disabled there with the reason.
 static uint32_t skyKindNeeds(int kind)
 {
+    if (kind == sky::kCme) return 2u; // kNeedAurora: the storm night is the aurora
     return (kind == sky::kSolarEclipse || kind == sky::kLunarEclipse) ? 4u : 0u; // SatelliteSim::kNeedEclipse (private: the members below pass it to tierNeedReason)
 }
 
@@ -1177,6 +1216,7 @@ void SatelliteSim::skyEventsUpdate()
         ctx.moonBaseMagLimit = moonBaseMagLimit;
         ctx.cometsMinor = cometsMinor;
         ctx.supernova = supernovaEnabled && starBetelgeuse >= 0;
+        ctx.kessler = kesslerEnabled;
         ctx.cancel = &skScanCancel;
         skScanCancel = false;
         const int k = skScanKind;
@@ -1293,22 +1333,6 @@ void SatelliteSim::buildSkyEventsWindow(const UIInput &inp, UIRenderer &ui)
                     skStatus.clear();
                 // (one fixed line: empty when there is no message, so nothing below moves)
                 text(skStatus.empty() ? " " : skStr("%s", skStatus.c_str()), Pal::textWarn, 11);
-                // The inertial camera lock: the view fixed on the stars (from orbit the Earth turns beneath): with time
-                // warp, a comet's or the planets' motion across the star field.
-                if (uiButton(inp, ui, "SkInertial", 0, inertialActive ? tx(Txt::BtnLockedToTheStars) : tx(Txt::BtnLockViewToTheStars),
-                             tx(Txt::TipHoldTheViewFixedRelativeTo),
-                             inertialActive))
-                {
-                    if (inertialActive)
-                        inertialStop();
-                    else
-                        inertialStart(obsHeightOffset > 100000.0f);
-                }
-                if (inertialActive &&
-                    uiButton(inp, ui, "SkOcculter", 0, tx(Txt::BtnOccultTheSun),
-                             tx(Txt::TipACoronagraphHideTheSunsDisc),
-                             inertialOcculter))
-                    inertialOcculter = !inertialOcculter;
                 CLAY(CLAY_ID("SkList"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)},
                                                     .padding = {0, 8, 2, 4},
                                                     .childGap = 5,

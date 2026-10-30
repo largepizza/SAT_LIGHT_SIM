@@ -25,6 +25,7 @@ enum Kind : int
     kMeteorShower,  // a meteor shower's peak (Meteors.h, 2026-10-27)
     kComet,         // a comet at its best (Comets.h, 2026-10-27): the Great Comet of 2037, the minor comets
     kSupernova,     // the scripted Betelgeuse supernova, 2037-12-25 (SatelliteSimStars.cpp, 2026-10-27)
+    kCme,           // the Sun's Fury: the scripted Carrington-class CME (2026-10-30; was a Missions card)
     kKindCount
 };
 
@@ -66,6 +67,7 @@ struct SearchCtx
     float moonBaseMagLimit = 3.0f;        // a Moon-base glint is an event when brighter than this (moon_bases.event_mag_limit)
     bool cometsMinor = true;              // comets.minor: the minor comets as well as the Great Comet
     bool supernova = true;                // stars.supernova (the scripted 2037 Betelgeuse supernova)
+    bool kessler = true;                  // kessler.enabled (the Sun's Fury scenario)
     const std::atomic<bool> *cancel = nullptr;
     bool cancelled() const { return cancel && cancel->load(std::memory_order_relaxed); }
 };
