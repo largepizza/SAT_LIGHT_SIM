@@ -612,6 +612,10 @@ bool SatelliteSim::meteorWatchShower(int s, double t0, double t1, double tPeak, 
         double score = -1e30, t = 0.0;
         glm::dvec3 site{0.0, 0.0, 1.0};
     };
+    // The Great Comet's radiant stays 35-60 deg from the Sun (a morning radiant, from its orbit geometry), so it is never high
+    // in a dark sky: 10 deg up and a Sun 12 deg down are enough there (the usual showers: 25 and 15).
+    const bool lowRad = s == meteors::kGreatComet;
+    const double minRadEl = lowRad ? 10.0 : 25.0, sunMax = lowRad ? -12.0 : -15.0;
     Pick best;
     std::vector<Pick> top; // the best sites at the chosen time (cloud re-ranking)
     for (int pass = 0; pass < 2; ++pass)
@@ -635,7 +639,7 @@ bool SatelliteSim::meteorWatchShower(int s, double t0, double t1, double tPeak, 
                     const glm::dvec3 u(cl * std::cos(rad(lo)), cl * std::sin(rad(lo)), sl);
                     const double sunAlt = deg(std::asin(std::clamp(glm::dot(se, u), -1.0, 1.0)));
                     const double sh = glm::dot(re, u);
-                    if (sunAlt > -15.0 || sh < std::sin(rad(25.0))) continue;
+                    if (sunAlt > sunMax || sh < std::sin(rad(minRadEl))) continue;
                     const double moonUp = glm::smoothstep(-0.05, 0.3, glm::dot(me, u));
                     const float city = nightLumCpu((float)la, (float)lo);
                     double sc = sh * prof * (1.0 - 0.75 * moonUp * lit) - 0.03 * std::max(0.0f, city - 16.0f) +
@@ -730,6 +734,9 @@ harness::Status SatelliteSim::harnessMeteors(harness::Active &a)
             {
                 const glm::dvec3 re = meteors::radiantEciAtTime(s, t);
                 const glm::dvec3 e(glm::dot(re, glm::dvec3(eci2enuX)), glm::dot(re, glm::dvec3(eci2enuY)), glm::dot(re, glm::dvec3(eci2enuZ)));
+                o["radiant_ra_deg"] = std::fmod(deg(std::atan2(re.y, re.x)) + 360.0, 360.0);
+                o["radiant_dec_deg"] = deg(std::asin(std::clamp(re.z, -1.0, 1.0)));
+                o["radiant_sun_elongation_deg"] = deg(std::acos(std::clamp(glm::dot(re, glm::normalize(glm::dvec3(sunDirECI))), -1.0, 1.0)));
                 o["radiant_az_deg"] = deg(std::atan2(e.x, e.y));
                 o["radiant_el_deg"] = deg(std::asin(std::clamp(e.z, -1.0, 1.0)));
                 o["hourly_rate_est"] = z * std::max(e.z, 0.0);

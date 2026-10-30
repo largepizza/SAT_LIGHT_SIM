@@ -3173,6 +3173,28 @@ The crescent-Moon button `TimeSkyBtn` beside Weather on the right HUD panel (`pi
   suppression); a Watch after the CME (2037-07-15) holds at the Kessler frontier while the cascade computes; clouds can
   still hide an event (solar eclipses take the central line whatever the weather).
 
+- **Round 2 (2026-10-30, issue 20261029_205641): tabs, one-time events, Ongoing, space weather.** The window has two tabs
+  (`skTab`: Events, Space weather; harness `ui open skyevents tab=spaceweather`). **Events**: ONE-TIME EVENTS on top, always
+  (`skyEventsRefreshSpecial`, `skSpecial[4]` by time: the Great Comet, its meteor storm, the Sun's Fury, the Betelgeuse
+  supernova — built once from each one's own search over a window round it, not from the 2-year search, so they show at any
+  date), each with its own colour (`Pal::spComet / spStorm / furyBorder / spNova`: a 2-px frame and the title); ONGOING (events
+  under way, the one-time ones left out, <= 6); NEXT OF EACH KIND (folded, `uiFold`); UPCOMING (10 rows, one line each). An
+  event under way has **Start / End** under its Watch (the clock to its start / to 2 min before its end, 1x: `skyJumpTo`);
+  Watch stays the one place-and-aim button. Rows are one helper (`skyEventRow`, `SkRowSpec`), compact by default ("Details"
+  adds each row's second line). **Kind `cme`** is now both the Sun's Fury (`Event::a == 1`) and every procedural Earth-directed
+  CME storm of G3+ (Kp >= 7: `spaceWeatherCmeArrivals`, the same hashes as the aurora's Kp; window = arrival + 1 day, Watch =
+  arrival + 4 h); **kind `cometstorm`** is the Great Comet's meteor storm (below). New icons 44 `sky-cometstorm`, 45 `sky-cme`.
+  **Space weather tab** (`SatelliteSimSpaceWeather.cpp`): a 400 x 200 CPU raster in a UI external image slot (the 7th; the
+  Kessler tracker's pattern: `spaceWeatherEnsureImage / Raster / RecordUpload`, re-made when time moved 60 s, at most twice a
+  second) of both hemispheres' auroral oval as polar plots from above each magnetic pole (colatitude 0-55 deg, magnetic noon at
+  the top, midnight at the bottom, rings every 10 deg), land / sea shaded by the Sun (the night side dark), the oval =
+  `auroraOvalWeightCpu(auroraGpu_, dir)` — the shader's band without the noise, from this frame's `spaceWeather_` (Kp, the
+  substorm); your place as a cyan dot. Below: Kp / storm scale / oval edge / solar cycle tiles, the drivers (quiet, streams,
+  CME), the CME storm and substorm in progress, "Watch the aurora" (`spaceWeatherWatch(t)`: a grid of places with the Sun <= -12
+  deg (then -6, then any), score = the oval's weight - city light - cloud + land, the camera toward the magnetic pole, 28 deg
+  up, FOV 90) and NEXT STORMS (the next five `cme` events, each one Watch). Harness `skyevents aurora [t=]`, `skyevents special
+  <0-3> [watch=1]`; `skyevents state` -> `special`, `ongoing`, `space_weather`. Script `scripts/sky_space_weather.satcmd`.
+
 ## Subsystem: Moon-base glints (2026-10-27)
 
 `LunarBases.h/.cpp` (app-independent: the bases, the Moon's IAU body frame as a pure function of t, the array's
@@ -3320,6 +3342,22 @@ SatelliteSimSkyEvents.cpp). Settings `meteors.enabled` (on), `meteors.rate` (1, 
   Quadrantid Watch 2776 / h. Cost: the fill 0.06-0.07 ms a frame on the main thread (`kessler` bucket 0.26 -> 0.33 ms),
   0.34 ms on the frame a new 2-s bin is generated (the cache: each (shower, band, bin) once while the eye stays within
   30 km); GPU within noise (8.81 vs 8.80 ms, a few Gaussians); 15 s at 1x: no frame over 50 ms.
+- **The Great Comet's meteor storm (2026-10-30, `Meteors.h` `kGreatComet`, `cometStorm()`, `zhrAtTime` / `radiantEciAtTime` /
+  `speedKmsAtTime`).** Row 12 of the shower table (id `comet_2037`, "C/2036 X1 meteors", r 2.2, rb 1.5: a large sungrazer's big
+  grains, fireball-rich); **`kSporadic` moved 12 -> 13** and stays last, but its generator seed index is pinned at 12 so no
+  sporadic meteor changed (the shower rows before it keep their seeds). Activity is a function of TIME, not solar longitude (a
+  one-time event): wherever a time is at hand callers use the `...AtTime` forms (the lam forms return 0 for this row). ASSUMPTIONS
+  (ours; there is no real comet): the peak is the Earth's closest approach to the comet, 2037-03-17 03:30 UTC (560,000 km); the
+  Earth crosses a thin ribbon of big grains shed on the way in: ZHR 8000 with B 0.9 / d before and 0.45 / d after (half-width
+  ~0.4 d), over a broad residual of older, dispersed debris — ZHR 400 at the peak, rising with an e-fold of 2.5 d before and
+  decaying with 75 d after: total 8400 at the peak, ~265 on 2037-04-17, ~52 on 08-17, passing 10 on 2037-12-22 (`t1`; window t0 = 9
+  days before the peak). The radiant is where the stream comes FROM in the Earth's frame: -(v_comet(at its closest approach, the
+  stream's velocity where it crosses the Earth's path) - v_Earth(t)), Earth's velocity from the sim's own Sun; no zenith
+  attraction. Result: RA 322 Dec -17.5 at the peak (38 deg from the Sun: a morning radiant), entry 53 km/s (50 on 03-10, 64 on
+  04-17, 62 on 08-17), drifting ~1 deg a day. Measured (`meteors count`, 31 S 24 E at the peak): 21,000 meteors/h in view, 180 <=
+  -4 in 10 min, 20 <= -8 (bolides). The sky event `cometstorm` (a Watch via `meteorWatchShower`, which for this row accepts a radiant
+  10 deg up and a Sun 12 deg down: it is never high in a dark sky) lists it as a one-time event; it is also the way to test the
+  Ongoing section (under way for 280 days). `meteors state` gives `radiant_ra_deg / dec / sun_elongation`.
 - **Open**: the sporadic rate is probably low in the evening (r 3.0 and the apex below the horizon: 13 / h all sky at
   23:00 local); the train is ten straight segments (kinks show when it twists); no sonic boom; a bolide's light
   (`engineLightAdd`) follows "Rocket light on clouds"; satellites are not refracted and neither are meteors; the

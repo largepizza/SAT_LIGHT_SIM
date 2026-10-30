@@ -203,8 +203,8 @@ void SatelliteSim::buildSkySpaceWeatherTab(const UIInput &inp, UIRenderer &ui, f
             const float cx = (p * kSwPanel + 0.5f * kSwPanel) * k, cy = 0.5f * kSwH * k, Rk = 94.0f * k;
             label(cx - fsz * 0.55f, cy - Rk - fsz * 1.1f + fsz * 0.3f, "12");
             label(cx - fsz * 0.55f, cy + Rk - fsz * 0.6f, "00");
-            label(cx - Rk - fsz * 1.5f + (p == 0 ? 0.0f : 0.0f), cy - fsz * 0.5f, p == 0 ? "18" : "06");
-            label(cx + Rk + fsz * 0.25f, cy - fsz * 0.5f, p == 0 ? "06" : "18");
+            label(cx - Rk + fsz * 0.3f, cy - fsz * 0.5f, p == 0 ? "18" : "06"); // (inside the rim: the panels are side by side)
+            label(cx + Rk - fsz * 1.4f, cy - fsz * 0.5f, p == 0 ? "06" : "18");
             label(p * kSwPanel * k + 3.0f, 2.0f, p == 0 ? tx(Txt::ValNorth) : tx(Txt::ValSouth));
         }
         // You: the observer's place on its hemisphere's plot (cyan dot).
@@ -299,8 +299,10 @@ void SatelliteSim::buildSkySpaceWeatherTab(const UIInput &inp, UIRenderer &ui, f
         rs.special = fury;
         rs.head = skStr("%s", fury ? tx(Txt::TxtTheSunsFuryCme) : skStr(tx(Txt::FmtGeoStorm), geomagStormScale(e.sepDeg), e.sepDeg));
         rs.headCol = fury ? &Pal::furyText : &Pal::textPrimary;
-        rs.status = skStr("%s", fmtUtcReadable(e.t).c_str());
-        rs.d1 = when;
+        std::string u = fmtUtcReadable(e.t);
+        if (u.size() > 19) u.erase(16, 3);
+        rs.status = "";
+        rs.d1 = skStr("%s  -  %s", u.c_str(), when);
         rs.btnMask = 4;
         rs.watchOk = tierNeedReason(2u) == nullptr;
         rs.tip = tx(Txt::TipWatchAuroraStorm);

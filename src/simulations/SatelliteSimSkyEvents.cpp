@@ -430,7 +430,7 @@ void SkyEventsFriend::cardCme(SatelliteSim &S, const sky::Event &e, double now, 
     if (now >= e.t)
         l1 = S.skStr(tx(Txt::FmtDay), (now - e.t) / kDay);
     else
-        l1 = S.skStr(tx(Txt::FmtCmeFlareArrives), utcShort(e.t0).c_str(), utcShort(e.t).c_str());
+        l1 = S.skStr(tx(Txt::FmtCmeFlareArrives), utcShort(e.t).c_str());
     l2 = tx(Txt::TxtKesslerCascadeFollows);
 }
 
@@ -1423,13 +1423,15 @@ int SatelliteSim::skyEventRow(const UIInput &inp, UIRenderer &ui, const SkRowSpe
 {
     int act = 0;
     const float lineH = (float)fs(12) * 1.3f;
-    const bool hasD1 = r.d1 && r.d1[0], hasD2 = !skCompact && r.d2 && r.d2[0];
+    const bool hasD1 = r.d1 && r.d1[0], hasD2 = (!skCompact || r.keepD2) && r.d2 && r.d2[0];
     const int lines = 1 + (hasD1 ? 1 : 0) + (hasD2 ? 1 : 0);
-    const float rowH = std::max((float)lines * lineH + 10.0f, 32.0f);
+    int nb0 = 0;
+    for (int b = 1; b <= 4; b <<= 1) nb0 += (r.btnMask & b) ? 1 : 0;
+    const float rowH = std::max((float)lines * lineH + 10.0f, nb0 >= 2 ? 58.0f : 32.0f); // (Start / End sit under Watch)
     const uint32_t eid = (uint32_t)r.section * 256u + r.idx;
     int nb = 0;
     for (int b = 1; b <= 4; b <<= 1) nb += (r.btnMask & b) ? 1 : 0;
-    const float bw = (float)fs(11) * (nb >= 2 ? 5.6f * (float)nb - 1.0f : 6.0f);
+    const float bw = (float)fs(11) * 6.4f;
     CLAY(CLAY_SIDI(cs("SkRowBox"), eid), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(rowH)},
                                                            .padding = {6, 6, 3, 3},
                                                            .childGap = 7,
@@ -1474,14 +1476,22 @@ int SatelliteSim::skyEventRow(const UIInput &inp, UIRenderer &ui, const SkRowSpe
         CLAY(CLAY_SIDI(cs("SkRowBt"), eid), {.layout = {.sizing = {CLAY_SIZING_FIXED(bw), CLAY_SIZING_FIT(0)},
                                                               .childGap = 3,
                                                               .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
-                                                              .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                                                              .layoutDirection = CLAY_TOP_TO_BOTTOM}})
         {
-            if ((r.btnMask & 1) && uiButton(inp, ui, "SkRowStart", (int)eid, tx(Txt::BtnStart), tx(Txt::TipEventStart), false, true, true))
-                act |= 1;
-            if ((r.btnMask & 2) && uiButton(inp, ui, "SkRowEnd", (int)eid, tx(Txt::BtnEnd), tx(Txt::TipEventEnd), false, true, true))
-                act |= 2;
             if ((r.btnMask & 4) && uiButton(inp, ui, r.key, (int)r.idx, tx(Txt::BtnWatch), r.tip, false, r.watchOk, true))
                 act |= 4;
+            if (r.btnMask & 3)
+            {
+                CLAY(CLAY_SIDI(cs("SkRowBt2"), eid), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                                   .childGap = 3,
+                                                                   .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                {
+                    if ((r.btnMask & 1) && uiButton(inp, ui, "SkRowStart", (int)eid, tx(Txt::BtnStart), tx(Txt::TipEventStart), false, true, true))
+                        act |= 1;
+                    if ((r.btnMask & 2) && uiButton(inp, ui, "SkRowEnd", (int)eid, tx(Txt::BtnEnd), tx(Txt::TipEventEnd), false, true, true))
+                        act |= 2;
+                }
+            }
         }
     }
     return act;
@@ -1600,9 +1610,17 @@ void SatelliteSim::buildSkyEventsWindow(const UIInput &inp, UIRenderer &ui)
                             rs.special = true;
                             rs.head = titleOf(e);
                             rs.headCol = rs.accent;
-                            rs.status = over ? tx(Txt::TxtPast) : under ? skStr(tx(Txt::FmtHappeningNowLeft), inText(e.t1 - now) + 3) : inText(e.t0 - now);
-                            rs.d1 = l1;
-                            rs.d2 = l2;
+                            rs.status = over ? tx(Txt::TxtPast) : under ? "" : inText(e.t0 - now);
+                            // (the card's first line repeats the head for the comet, the supernova and the storm: they lead with the second)
+                            const bool dupHead = !(e.kind == sky::kCme);
+                            rs.d1 = dupHead ? l2 : l1;
+                            rs.d2 = dupHead ? l1 : l2;
+                            if (under) // (three buttons leave no room for the status beside the head: its own line)
+                            {
+                                rs.d2 = rs.d1;
+                                rs.d1 = skStr(tx(Txt::FmtHappeningNowLeft), inText(e.t1 - now) + 3);
+                                rs.keepD2 = true;
+                            }
                             rs.btnMask = under ? 7 : 4;
                             const char *why = tierNeedReason(skyKindNeeds(e.kind));
                             rs.watchOk = !over && !why;
@@ -1629,8 +1647,8 @@ void SatelliteSim::buildSkyEventsWindow(const UIInput &inp, UIRenderer &ui)
                             rs.accent = K.accent;
                             rs.head = titleOf(e);
                             rs.headCol = &Pal::textBright;
-                            rs.status = skStr(tx(Txt::FmtLeftIn), inText(e.t1 - now) + 3);
-                            rs.d1 = l1;
+                            rs.status = "";
+                            rs.d1 = skStr(tx(Txt::FmtLeftIn), inText(e.t1 - now) + 3);
                             rs.d2 = l2;
                             rs.btnMask = 7;
                             const char *why = tierNeedReason(skyKindNeeds(e.kind));
@@ -1689,7 +1707,7 @@ void SatelliteSim::buildSkyEventsWindow(const UIInput &inp, UIRenderer &ui)
                             rs.accent = e ? kSkyKinds[e->kind].accent : &Pal::cardBorder;
                             rs.head = e ? titleOf(*e) : (skScanKind < sky::kKindCount ? tx(Txt::ValSearching) : " ");
                             rs.headCol = &Pal::textPrimary;
-                            rs.status = e ? (now >= e->t0 ? tx(Txt::TxtHappeningNow) : inText(e->t0 - now)) : "";
+                            rs.status = e ? (now >= e->t0 ? tx(Txt::TxtNowShort) : inText(e->t0 - now)) : "";
                             rs.d2 = e ? skStr("%s", fmtUtcReadable(e->t).c_str()) : "";
                             rs.btnMask = 4;
                             const char *why = e ? tierNeedReason(skyKindNeeds(e->kind)) : nullptr;

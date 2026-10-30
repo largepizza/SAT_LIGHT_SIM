@@ -3687,6 +3687,7 @@ private:
         const char *status = "";
         const char *d1 = "";
         const char *d2 = "";
+        bool keepD2 = false;            // show d2 in the compact layout too
         int btnMask = 4;                // the buttons shown: 1 Start, 2 End, 4 Watch
         bool watchOk = true;
         const char *tip = "";
