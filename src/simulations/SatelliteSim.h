@@ -1585,15 +1585,16 @@ struct GpuRefraction
     GpuRefrEntry e[refr::kTableN];
     // The solar corona's structure now (2026-10-28, SatelliteSimCorona.cpp fillCorona; sat_sky.frag solarCoronaDyn): a
     // pure function of sim time from the solar cycle, the Sun's rotation and the space weather's CMEs.
-    glm::vec4 corInfo;    // x = activity 0 (minimum) .. 1 (maximum), y = the fine structure's phase (fract), z = streamers,
+    glm::vec4 corInfo;    // x = activity 0 (minimum) .. 1 (maximum), y = the fine structure's phase (mod 4), z = streamers,
                           // w = 1 the inertial lock's occulter (a coronagraph: drawn without an eclipse)
     glm::vec4 corInfo2;   // x = CMEs, y / z = the neutral line's apparent latitude on the east / west limb (rad),
                           // w = the coronagraph's radial display lift (exponent of r)
-    glm::vec4 corStr[2 * 12];   // streamer k: [2k] = (apparent latitude of its base (rad), side +1 west / -1 east,
-                                // plane-of-sky factor, amplitude), [2k + 1] = (base half-width (rad), stalk half-width
+    glm::vec4 corStr[2 * 12];   // streamer k: [2k] = (position angle of its base (rad, west +), side +1 west / -1 east,
+                                // position angle its stalk bends toward (its sheet), amplitude), [2k + 1] = (base half-width (rad), stalk half-width
                                 // (rad), cusp radius (solar radii), bend toward the neutral line 0..1)
     glm::vec4 corCme[2 * 6];    // CME c: [2c] = (axis position angle from north, west + (rad), half-width (rad), front
-                                // radius on the sky (solar radii), amplitude), [2c + 1] = (1 halo, seed, core share, 0)
+                                // radius on the sky (solar radii), amplitude), [2c + 1] = (1 halo, seed, core share, push 0..1: how hard
+                                // it sweeps the corona aside, its fades without the brightness)
 };
 static_assert(sizeof(GpuRefraction) == 80 + 2 * 16 * 16 + refr::kTableN * 32 + 32 + 24 * 16 + 12 * 16,
               "GpuRefraction layout mismatch");
