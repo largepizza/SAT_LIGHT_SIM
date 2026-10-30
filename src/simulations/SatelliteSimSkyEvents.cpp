@@ -1566,7 +1566,8 @@ void SatelliteSim::buildSkyEventsWindow(const UIInput &inp, UIRenderer &ui)
                 if (!skStatus.empty() && glfwGetTime() - skStatusWall > 12.0)
                     skStatus.clear();
                 // (one fixed line: empty when there is no message, so nothing below moves)
-                text(skStatus.empty() ? " " : skStr("%s", skStatus.c_str()), Pal::textWarn, 11);
+                CLAY_TEXT(cs(skStatus.empty() ? " " : skStr("%s", skStatus.c_str())),
+                          CLAY_TEXT_CONFIG({.textColor = Pal::textWarn, .fontSize = fs(11), .wrapMode = CLAY_TEXT_WRAP_WORDS})); // wraps inside the window
                 CLAY(CLAY_ID("SkTabs"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
                                                     .childGap = 4,
                                                     .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
@@ -1658,8 +1659,8 @@ void SatelliteSim::buildSkyEventsWindow(const UIInput &inp, UIRenderer &ui)
                             if (a & 4) skPendingRow = 1000 + i;
                             if (a & 3) { skPendingAct = a & 3; skPendingActRow = i; }
                         }
-                        // ── The next of each kind (folded: the list below holds the next ten of any kind) ──
-                        if (uiFold(inp, "SkFoldNext", 0, tx(Txt::SecNextOfEachKind)))
+                        // ── The next of each kind (always shown, like Upcoming below it) ──
+                        uiSection("SkSecNext", 1, tx(Txt::SecNextOfEachKind));
                         {
                             for (int k = 0; k < sky::kKindCount; ++k)
                             {

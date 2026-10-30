@@ -5396,7 +5396,7 @@ void SatelliteSim::buildSettingsPhotometryRows(const UIInput &inp, UIRenderer &u
         int n;
     };
     static const PhotoGroup kGroups[] = {
-        {tx(Txt::LblBrightness), {0, 2, 3, 4, 21}, 5},
+        {tx(Txt::SecBrightness), {0, 2, 3, 4, 21}, 5},
         {tx(Txt::LblSkyDimming), {1, 5, 6, 7, 8}, 5},
         // 35-38 (2026-10-21): in the table since 2026-10-07 / 10-20 but in no group, so never drawn (settings.json only).
         {tx(Txt::LblPointSources), {22, 23, 24, 25, 26, 27, 35, 36, 37}, 9},
@@ -5420,7 +5420,7 @@ void SatelliteSim::buildSettingsPhotometryRows(const UIInput &inp, UIRenderer &u
             continue;
         // 2026-10-28 (the settings round-up): the switches beside their sliders (the HUD's star trails button; the zoomed
         // Milky Way had no UI).
-        if (strcmp(kGroups[g].title, "STAR TRAILS") == 0)
+        if (strcmp(kGroups[g].title, tx(Txt::LblStarTrails2)) == 0)
         {
             bool tr = trailEnabled;
             if (uiToggleRow(inp, ui, "PhotoTrailsOn", 0, tx(Txt::LblStarTrails), tr, tx(Txt::TipLongExposureTrailsTheHudsTrails)))
@@ -7333,10 +7333,13 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
         CLOUD_SEC(tx(Txt::SecSurfaceLighting), secSurface),
     };
 #undef CLOUD_SEC
+    // 2026-10-28: had no UI (terrain.solar_arrays). 2026-10-30: inside Surface & lighting, not loose between sections.
+    sections[1].extra = [&]()
+    {
+        uiToggleRow(inp, ui, "TerrSolarParks", 0, tx(Txt::LblSolarParks), solarArraysEnabled,
+                    tx(Txt::TipThePvParksAtTheReflect));
+    };
     buildCloudSliderSections(inp, ui, sections, (int)(sizeof(sections) / sizeof(sections[0])), 30);
-    // 2026-10-28: had no UI (terrain.solar_arrays).
-    uiToggleRow(inp, ui, "TerrSolarParks", 0, tx(Txt::LblSolarParks), solarArraysEnabled,
-                tx(Txt::TipThePvParksAtTheReflect));
     // 2026-10-30 (issue 20261029_205641): the night lights and the sea are parts of the ground, so they fold in here.
     if (uiFold(inp, "TerrSec", 0, tx(Txt::SecNightLights)))
         buildSettingsNightLightsTab(inp, ui);
