@@ -151,8 +151,12 @@ void main()
         vec2  cc   = vec2(cAbs) + 0.5;     // the cell's centre on the anchor plane, in cells
         vec4  acc  = vec4(0.0), accU = vec4(0.0);
         const vec4 kKn = vec4(1000.0, 2500.0, 5000.0, 9000.0);   // cv2VtUp's knots
-        [[dont_unroll]] for (int sc = 0; sc < 2; ++sc) {
-            float n  = float(2u * (uint(cv2.frame.x) / uint(kCv2VtL)) + uint(sc));
+        // Columns a visit: 2 on the fine levels, 4 on the coarse (2026-10-29, issue 20261029_174506): a 16-256 km cell holds
+        // far more cloud variance than 2 points, and the mean of those few was the "dark splotches" from orbit.
+        const float kVtFootCapM = 500.0;   // the field's footprint is the same for every level beyond 4 km cells (below)
+        const int nCol = (lv >= 2) ? 4 : 2;
+        [[dont_unroll]] for (int sc = 0; sc < nCol; ++sc) {
+            float n  = float(uint(nCol) * (uint(cv2.frame.x) / uint(kCv2VtL)) + uint(sc));
             vec2  jt = fract(vec2(0.7548777, 0.5698403) * n + vec2(0.5)) - 0.5;   // R2 over the visits
             vec3  d  = AE * normalize(vec3((cc + jt) * cellM, R_EARTH));
             float mu = max(dot(d, sunL), 0.0);
@@ -163,16 +167,16 @@ void main()
                 float h1 = 14000.0 * pow(float(k) / float(kVt), 1.6);
                 float hm = 0.5 * (hP + h1), dz = h1 - hP;
                 vec3  sp = d * (R_EARTH + hm);
-                CV2Field f = cv2Field(cv2Pos(vec3(sp.xy, sp.z - R_EARTH - eyeH), eyeH, E), -1.0, max(0.125 * cellM, 100.0));
+                CV2Field f = cv2Field(cv2Pos(vec3(sp.xy, sp.z - R_EARTH - eyeH), eyeH, E), -1.0, clamp(0.125 * cellM, 100.0, kVtFootCapM));
                 float dT = f.sigma * (1.0 - 0.8 * f.thin) * dz;
                 tB += dT * clamp((kKn - hP) / dz, 0.0, 1.0);
                 tau += dT;
                 hP = h1;
             }
-            accU += 0.5 / (1.0 + 0.11 * max(tau - tB, vec4(0.0)));
+            accU += (1.0 / float(nCol)) / (1.0 + 0.11 * max(tau - tB, vec4(0.0)));
             float td = 1.0 / (1.0 + 0.11 * tau);
             float tdir = exp(-tau / max(mu, 0.05));
-            acc += 0.5 * vec4(td, max(min((0.5 + 0.75 * mu) * td, 1.0) - tdir, 0.0), tau, tdir);
+            acc += (1.0 / float(nCol)) * vec4(td, max(min((0.5 + 0.75 * mu) * td, 1.0) - tdir, 0.0), tau, tdir);
         }
         cv2VtStamp[ci] = stamp | cnt;
         cv2Vt[ci] = fresh ? acc : mix(cv2Vt[ci], acc, wNew);
