@@ -3749,6 +3749,17 @@ float sunspotFactor(vec3 p, float mu, vec3 sunD, float pxS)
 }
 #endif
 
+// Moonlight as SKY BRIGHTNESS (2026-10-29, issue 20261029_182916 "High moon phases should attenuate the Milky Way a lot
+// more"): the Moon's scattered light is an additive sky of ~18 mag/arcsec^2 at the full Moon high up (the model the
+// stars' naked-eye limit already uses, SatelliteSim::updateStars' Lmoon), ~40x the natural 22. Added to the dark-sky
+// gate's background in linear light, so the faint arms go first and only the core survives a bright Moon. `moonK` =
+// tm^2 x the Moon's light vs full x the air's share. It replaced a flat (1 - 0.95 moonK) scalar, which left a 38%-lit
+// Moon's sky (16x the natural one) dimming the band by a third.
+float moonSkyBgMag(float bgMag, float moonK) {
+    const float kM = 0.4 * 2.302585093;
+    return -(1.0 / kM) * log(exp(-kM * bgMag) + moonK * exp(-kM * 18.0));
+}
+
 void main() {
     // Runtime-tunable scattering strength — shadows the physical base constants (common.glsl)
     // with the user-facing "Rayleigh gain"/"Mie/haze gain" sliders, visible to every use of
@@ -6888,6 +6899,11 @@ void main() {
                     // brightness from the patch the camera is looking at directly (the twilight
                     // anisotropy alone spans ~3 magnitudes across the sky).
                     float rMwSkyBgMag = darkSkySkyMag(reflDir, sunDirENU);
+                    {   // moonlight as sky brightness, as the direct view (moonSkyBgMag)
+                        NK_DECL(nkR)
+                        float tmR = clamp(NK(nkR).z / 0.5, 0.0, 1.0);
+                        rMwSkyBgMag = moonSkyBgMag(rMwSkyBgMag, tmR * tmR * NK(nkR).w);
+                    }
                     float rMwLum      = dot(rMwColor, vec3(0.2126, 0.7152, 0.0722));
                     float rMwObjMag   = darkSkySurfMag(rMwLum, kMwRefLum, kMwRefMag,
                                                        kMwMagSpread);
@@ -7575,6 +7591,7 @@ void main() {
 #else
         float mwSkyBgMag = darkSkySkyMag(dir, sunDirENU);
 #endif
+        mwSkyBgMag = moonSkyBgMag(mwSkyBgMag, moonBrightSky * atmFracSky);
 
         // C12 follow-up #31: same suppression shape, second independent source — a nearby
         // Reflect-Orbital beam should wash out the Milky Way the same way real light pollution
@@ -7711,7 +7728,6 @@ void main() {
         float visibility = nightFactorEffSky
                           * darkSkyVis(mwObjMag, mwSkyBgMag)
                           * (1.0 - beamDomeVal * kMWBeamPollutionMaxDim)
-                          * (1.0 - moonBrightSky * kMWMoonMaxDim)
                           * extinctionMW
                           * sunGlareSuppress
                           * (tSurface > 0.0 ? 0.0 : 1.0) // blocked by terrain/ocean
@@ -7871,6 +7887,7 @@ void main() {
 #else
         float zodSkyBgMag = darkSkySkyMag(dir, sunDirENU);
 #endif
+        zodSkyBgMag = moonSkyBgMag(zodSkyBgMag, moonBrightZ * atmFracSkyZ);
 
         const float kZodRefLum    = 0.01;
         const float kZodRefMag    = 21.6;
@@ -7880,7 +7897,6 @@ void main() {
 
         const float kZodCloudSuppressPower = 2.0;
         float visibilityZod = nightFactorEffZ
-                             * (1.0 - moonBrightZ * kZodMoonMaxDim)
                              * extinctionZ
                              * (tSurface > 0.0 ? 0.0 : 1.0) // blocked by terrain/ocean
                              * (moonDiscHit ? 0.0 : 1.0)    // blocked by the Moon's own opaque disc
