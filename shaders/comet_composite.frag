@@ -26,6 +26,7 @@ layout(set = 0, binding = 2) uniform sampler2D cloudTargetB;
 layout(set = 0, binding = 3) uniform sampler2D sceneDepthTex;
 layout(set = 0, binding = 6) uniform sampler2D splatTex;   // the splat atlas: the particles' light (6 levels)
 layout(set = 0, binding = 7) uniform sampler2D fieldTex;   // the dust's light-weighted (te, ln beta) field, same atlas
+layout(set = 0, binding = 8) uniform sampler2D gradTex;    // its light-weighted screen gradients (comet_field.frag)
 
 layout(push_constant) uniform PC {
     vec4 sunDirENU;   // xyz, w = sin(elevation)
@@ -90,9 +91,8 @@ float octave(float x, float g, float sd, float P, float c, uint seed)
 // fragmentation events release all sizes at once from fragments that drift off — STRIAE, bands of te + 0.7 ln beta,
 // oblique to the synchrones, in old dust; size sorting — FILAMENTS along the syndynes, bands in ln beta. Each octave
 // fades in as its bands become a few pixels apart, so zooming in resolves finer ones.
-float tailDetail(float te, float lb, float sd, vec2 gT, vec2 gB)
+float tailDetail(float te, float lb, float sd, float nT, float nB, float nS)
 {
-    float nT = length(gT), nB = length(gB), nS = length(gT + 0.7 * gB);
     // te is days from now (-age): striae only in dust older than a few days (fragments need time to drift off)
     float st = smoothstep(2.0, 8.0, -te);
     float m = octave(te, nT, sd, 1.7, 0.45, 0x1234u);
@@ -111,30 +111,40 @@ float tailDetail(float te, float lb, float sd, vec2 gT, vec2 gB)
 void main()
 {
     vec2 uv = gl_FragCoord.xy / pc.screen.xy;
-    // the splat atlas's levels added back (bilinear: a coarse level holds only particles wider than its pixels)
+    // the splat atlas's levels added back (bilinear: a coarse level holds only particles wider than its pixels); the
+    // field atlas (a quarter of the splat's size) only where the tails hold light: plane 0 the light-weighted (te,
+    // ln beta) moments and (a second image, same layout) the light-weighted magnitudes of their screen gradients
     vec3 rgb = vec3(0.0);
-    vec4 fld = vec4(0.0);
-    [[dont_unroll]] for (int pass = 0; pass < 2; ++pass) {
-        vec4 geo = pass == 0 ? F.pad[1] : F.pad[2]; // the colour atlas, the field atlas (half its size)
+    vec4 fld = vec4(0.0), fg = vec4(0.0);
+    [[dont_unroll]] for (int pass = 0; pass < 3; ++pass) {
+        if (pass == 1 && dot(rgb, vec3(0.2126, 0.7152, 0.0722)) < 1e-9) break;
+        vec4 geo = pass == 0 ? F.pad[1] : F.pad[2]; // the colour atlas, the field atlas
         vec2 W0 = geo.xy, AT = geo.zw;
         vec2 org = vec2(0.0);
         for (int k = 0; k < 6; ++k) {
             vec2 wh = max(floor(W0 * exp2(-float(k))), vec2(1.0));
-            if (k == 1) org = vec2(W0.x, 0.0);
+            if (k == 1) org.x = W0.x;
             vec2 auv = clamp(org + uv * wh, org + 0.5, org + wh - 0.5) / AT;
-            if (pass == 0) rgb += texture(splatTex, auv).rgb; else fld += texture(fieldTex, auv);
+            if (pass == 0) rgb += texture(splatTex, auv).rgb;
+            else if (pass == 1) fld += texture(fieldTex, auv);
+            else fg += texture(gradTex, auv);
             if (k >= 1) org.y += wh.y;
         }
     }
-    // the dust's zoom detail where the field holds light (its derivatives need every pixel of the quad: no branch on it)
+    // the dust's zoom detail where the field holds light
     float wF = fld.z;
-    float te = fld.x / max(wF, 1e-30), lb = fld.y / max(wF, 1e-30);
-    float sd = sqrt(max(fld.w / max(wF, 1e-30) - te * te, 0.0)); // the field's spread here (days)
-    vec2 gT = vec2(dFdx(te), dFdy(te)), gB = vec2(dFdx(lb), dFdy(lb)); // (in uniform control flow)
+    float iw = 1.0 / max(wF, 1e-30);
+    float te = fld.x * iw, lb = fld.y * iw;
+    float sd = sqrt(max(fld.w * iw - te * te, 0.0)); // the field's spread here (days)
     float mDet = 1.0;
     if (wF > 1e-12) {
-        mDet = tailDetail(te, lb, sd, gT, gB);
-        rgb = max(rgb + (mDet - 1.0) * wF * vec3(1.05, 0.98, 0.86), vec3(0.0));
+        vec3 g = fg.xyz / max(fg.w, 1e-30);
+        if (any(isinf(fg)) || any(isnan(g))) g = vec3(10.0); // (a half-float overflow: no octave)
+        mDet = tailDetail(te, lb, sd, g.x, g.y, g.z);
+        // never more than the light here (the field atlas is coarser than the colour one: at an edge its weight can
+        // exceed the light the colour atlas holds, and a dark band took the pixel to black)
+        float lumC = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
+        rgb = max(rgb + (mDet - 1.0) * min(wF, lumC) * vec3(1.05, 0.98, 0.86), vec3(0.0));
     }
     if (F.pad[0].w > 0.5) { // debug views (comets.tail_debug): 1 the emission time (fract per day), 2 the detail's share
         float lumT = max(dot(rgb, vec3(0.2126, 0.7152, 0.0722)), 1e-30);
@@ -155,10 +165,11 @@ void main()
         float rho = 2.0 * asin(clamp(0.5 * length(d - c0.xyz), 0.0, 1.0));
         float x = rho / c0.w;
         if (x > 12.0) continue;
-        float L = c1.x * exp(-x) / sqrt(rho * rho + c1.y * c1.y);
+        // (faded out to x = 12: a cut there drew a hard circle round a bright head, issue 20261030_140112)
+        float L = c1.x * exp(-x) / sqrt(rho * rho + c1.y * c1.y) * (1.0 - smoothstep(5.0, 12.0, x));
         // white in the inner (dust) coma, toward C2 green outward where the gas dominates
         vec3 green = vec3(0.62, 1.12, 0.70);
-        vec3 col = mix(F.coma[3 * s + 2].rgb, mix(vec3(1.0), green, 0.7 * c1.z), smoothstep(0.15, 1.5, x));
+        vec3 col = mix(F.coma[3 * s + 2].rgb, mix(vec3(1.0), green, 0.3 * c1.z), smoothstep(0.3, 2.0, x));
         rgb += col * L;
     }
     float lum = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
@@ -171,12 +182,14 @@ void main()
     float cloudVis = cloudPointVisibilityAt(cloudTargetA, cloudTargetB, uv, 1.0e12, 3.0);
     if (pc.misc.y >= 0.5 && texture(sceneDepthTex, uv).r < 5.0e29) cloudVis = 0.0;
     float x = lumObs * vis * cloud.exposureScale * pc.misc.x;
-    // A soft shoulder (x / (1 + x)) on the BRIGHTEST channel, the hue kept: the head end rolls off instead of
-    // saturating, and a bright ion tail stays its deep CO+ blue. (On the luminance, a blue whose blue channel is 2.6x
-    // its luminance clipped at the display and read as a pale sky blue: issue 20261028_221813.)
+    // A soft shoulder on the BRIGHTEST channel, the hue kept: the head end rolls off instead of saturating, and a bright
+    // ion tail stays its deep CO+ blue. (On the luminance, a blue whose blue channel is 2.6x its luminance clipped at
+    // the display and read as a pale sky blue: issue 20261028_221813.) K (1 - (1 + x / (K p))^-p): slope 1 at 0 like the
+    // x / (1 + x / K) it replaced (p = 1), but a decade of brightness still reads as one (p 0.5): the bright ion tail
+    // and the head were a flat band at the shoulder (issue 20261030_140112).
     float mx = max(rgb.r, max(rgb.g, rgb.b));
     float xm = x * mx / lum;
-    const float kShoulder = 0.9;
-    float disp = kShoulder * xm / (kShoulder + xm);
+    const float kShoulder = 0.92, kP = 0.5;
+    float disp = kShoulder * (1.0 - pow(1.0 + xm / (kShoulder * kP), -kP));
     outColor = vec4((rgb / mx) * disp * cloudVis, 0.0);
 }

@@ -9517,6 +9517,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cometParticlesSync = cj.value("particles_sync", cometParticlesSync);
         cometTailDetail = settingClamp(cj.value("tail_detail", cometTailDetail), 0.0f, 4.0f);
         cometTailDebug = cj.value("tail_debug", cometTailDebug);
+        cometFieldFloorPx = settingClamp(cj.value("field_floor_px", cometFieldFloorPx), 0.0f, 2.0f);
         if (m0 != cometsMinor)
         {
             cometsCatalogT = -1e300;
@@ -10583,7 +10584,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
                        {"force_inversion_dz", refrForceInvDz}};
     j["comets"] = {{"enabled", cometsEnabled}, {"minor", cometsMinor}, {"tails", cometTailsEnabled}, {"tail_gain", cometTailGain},
                    {"display_gain", cometTailGainDisplay}, {"particles_sync", cometParticlesSync},
-                   {"tail_detail", cometTailDetail}, {"tail_debug", cometTailDebug}};
+                   {"tail_detail", cometTailDetail}, {"tail_debug", cometTailDebug}, {"field_floor_px", cometFieldFloorPx}};
     j["moon_bases"] = {{"enabled", moonBaseGlints}, {"tilt_jitter_scale", moonBaseJitter}, {"event_mag_limit", moonBaseMagLimit}};
     j["meteors"] = {{"enabled", meteorsEnabled}, {"rate", meteorRateGain}, {"fireball_rate", meteorFireballGain},
                        {"train_duration", meteorTrainDuration}, {"timelapse", meteorTimelapse},

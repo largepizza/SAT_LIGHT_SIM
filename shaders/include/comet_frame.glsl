@@ -11,7 +11,7 @@ struct CometFrame
                     //                  [2s+1] xyz the anchor (heliocentric ecliptic AU), w the comet's rSat^2 (AU^2)
     vec4 coma[9];   // per slot: [3s] head ENU, w rho_s (rad); [3s+1] x L (kLum flux / (2 pi rho_s)), y rho0, z gas share,
                     // w on; [3s+2] rgb dust colour
-    vec4 pad[8];    // [0].x the tail zoom detail (comets.tail_detail; 0 = off), w its debug view; [2] the field atlas (as [1]); [1] the splat atlas: xy level 0 (px), zw the atlas
+    vec4 pad[8];    // [0].x the tail zoom detail (comets.tail_detail; 0 = off), y the field's smallest Gaussian (field px), w its debug view; [2] the field atlas (as [1]); [1] the splat atlas: xy level 0 (px), zw the atlas
 };
 struct Grain
 {

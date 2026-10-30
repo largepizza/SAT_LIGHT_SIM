@@ -3841,6 +3841,7 @@ private:
     float cometTailGainDisplay = 1.0f;       // comets.display_gain: x what the tail pass shows (exposure-like)
     int cometTailDebug = 0;                  // comets.tail_debug: 1 the detail field's emission time, 2 its weight (no UI)
     float cometTailDetail = 1.0f;            // comets.tail_detail: the dust tail's zoom detail (bands, striae; 0 = off)
+    float cometFieldFloorPx = 0.5f;          // comets.field_floor_px: the detail field's smallest Gaussian (field-atlas px)
     std::vector<comet::Elements> comets_;    // the catalog near now
     double cometsCatalogT = -1e300;
     std::vector<CometNow> cometNow_;         // this frame
@@ -3867,6 +3868,9 @@ private:
     VkExtent2D cometSplatAtlas{0, 0};        // the atlas: level 0 + levels 1-5 (each half the last) to its right
     VkImage cometFieldImg = VK_NULL_HANDLE;  // the dust's (emission time, ln beta) field, light-weighted (RGBA32F)
     VkDeviceMemory cometFieldMem = VK_NULL_HANDLE;
+    VkImage cometFieldGImg = VK_NULL_HANDLE; // its light-weighted screen gradients (the composite's LOD, RGBA16F)
+    VkDeviceMemory cometFieldGMem = VK_NULL_HANDLE;
+    VkImageView cometFieldGView = VK_NULL_HANDLE;
     VkImageView cometFieldView = VK_NULL_HANDLE;
     VkExtent2D cometFieldExtent{0, 0}, cometFieldAtlas{0, 0}; // the field atlas: half the splat atlas
     VkRenderPass cometFieldRenderPass = VK_NULL_HANDLE;

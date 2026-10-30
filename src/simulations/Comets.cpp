@@ -590,18 +590,24 @@ void buildParticles(const Elements &el, double tBuild, const glm::dvec3 &obsHeli
                 const glm::dvec3 P = n.r + n.v * tauC * (1.0 - std::exp(-a / tauC)) + dirI * s;
                 const glm::dvec3 V = n.v * std::exp(-a / tauC) + dirI * sd;
                 const double mid = 1.0 - 0.5 * std::abs((double)st - 0.5 * (S - 1)) / (0.5 * (S - 1) + 1e-9);
-                double w = Fion * (dtSlot / tauIon) * std::exp(-a / tauIon) / (double)o.ionPerSlot * (0.6 + 0.8 * mid);
+                // each streamer's brightness varies along it (with the emission time: knots and gaps that ride out with
+                // the plasma, ~0.3 day apart) and from streamer to streamer: a tail of distinct rays, not a wash
+                // (issue 20261030_140112); mean ~1
+                const double knot = 0.25 + 1.5 * vnoise1(tD / 0.3 + 17.0 * st, iseed ^ 0x2B7ull);
+                double w = Fion * (dtSlot / tauIon) * std::exp(-a / tauIon) / (double)o.ionPerSlot * (0.6 + 0.8 * mid) * knot;
                 w *= smoothstepD(0.0, 0.02, a) * (1.0 - smoothstepD(0.8 * o.ionMaxAgeDays, o.ionMaxAgeDays, a));
                 if (!(w > 0.0)) continue;
                 GpuGrain G;
                 // its spread: the streamer's width + the stretch of tail one pick-up stands for (across: the radial's
                 // swing over it; along: the wind's speed over it), so neighbouring pick-ups overlap
                 const double omS = om * dtSlot;
-                const double sig = std::sqrt((2e-4 + 0.025 * s) * (2e-4 + 0.025 * s) + (0.45 * s * omS) * (0.45 * s * omS) +
+                // (a streamer's width 0.008 of its length from the head: 0.025 merged the five streamers, 0.032 rad apart,
+                // into one flat band)
+                const double sig = std::sqrt((2e-4 + 0.008 * s) * (2e-4 + 0.008 * s) + (0.45 * s * omS) * (0.45 * s * omS) +
                                              (0.45 * sd * dtSlot) * (0.45 * sd * dtSlot));
                 G.p = glm::vec4(glm::vec3(P - now.r), (float)w);
                 G.v = glm::vec4(glm::vec3(V), (float)sig);
-                G.q = glm::vec4(0.0f, (float)(0.025 * sd + 0.45 * sd * omS), (float)a, (float)(slotTag + 1.0));
+                G.q = glm::vec4(0.0f, (float)(0.008 * sd + 0.45 * sd * omS), (float)a, (float)(slotTag + 1.0));
                 G.d = glm::uvec4(0u);
                 out.grains.push_back(G);
                 out.nIon++;
