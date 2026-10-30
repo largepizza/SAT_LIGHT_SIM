@@ -8766,6 +8766,8 @@ private:
     void buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui);
     void buildSettingsPerformanceTab(const UIInput &inp, UIRenderer &ui);
     void buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui);
+    // part 0 = the Photometry tab's folds, 1 = the dark-sky / Milky Way / seeing folds the Sky tab shows (2026-10-30).
+    void buildSettingsPhotometryRows(const UIInput &inp, UIRenderer &ui, int part);
     void buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui);
     void buildSettingsOceanTab(const UIInput &inp, UIRenderer &ui);
     void buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui);
@@ -8801,6 +8803,7 @@ private:
         const char *title;
         CloudSlider *sliders;
         int count;
+        std::function<void()> extra = nullptr; // rows drawn under the sliders while open (switches that belong to it)
     };
     // base: this tab's first section slot (each tab owns its own range of open/hover states).
     void buildCloudSliderSections(const UIInput &inp, UIRenderer &ui, CloudSliderSection *sections, int count,

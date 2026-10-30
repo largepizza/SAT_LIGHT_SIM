@@ -178,12 +178,27 @@ static constexpr const char *kSettingsTabNames[kSettingsTabCount] = {
     "Constellations", "Sound", "Controls", "Camera",
     "Display", "Photometry", "Clouds", "Ocean", "Terrain", "Atmosphere", "Beams", "Attributions",
     "Weather", "Night lights", "Performance", "Launches", "Sky"};
-static constexpr int kSettingsStrip[] = {-1, 4, 2, 1, -2, 0, 16, 15, 5, -3, 6, 12, 9, 8, 13, 7, 10, 14, -4, 11};
-bool settingsTabIsAdvanced(int i) { return (i >= 6 && i <= 10) || i == 12 || i == 13 || i == 14; }
+// 2026-10-30 (issue 20261029_205641, the categories redefined): Photometry = how satellites and point sources are
+// drawn (+ the Reflect beams, which were the Beams tab); Sky = the natural sky (+ the Milky Way, seeing, scattering,
+// airglow and the aurora, which were Photometry's and the Atmosphere tab's); Terrain = the ground (+ the Night lights
+// and Ocean tabs as folds). Atmosphere (9), Beams (10), Ocean (7) and Night lights (13) have no button any more and
+// their indices still resolve (settingsTabCanonical), so a saved active_tab and harness `tab=` names keep working.
+static constexpr int kSettingsStrip[] = {-1, 4, 2, 1, -2, 0, 16, 15, 5, -3, 6, 12, 8, 14, -4, 11};
+bool settingsTabIsAdvanced(int i) { return i == 6 || i == 8 || i == 12 || i == 14; }
+int settingsTabCanonical(int i)
+{
+    switch (i)
+    {
+    case 7: case 13: return 8; // Ocean, Night lights -> Terrain
+    case 9: return 16;         // Atmosphere -> Sky
+    case 10: return 5;         // Beams -> Photometry
+    default: return i;
+    }
+}
 int settingsTabIndexByName(const std::string &name)
 {
     if (name.size() == 6 && tolower((unsigned char)name[0]) == 'a' && tolower((unsigned char)name[1]) == 'u')
-        return 9; // "Aurora": the tab's old name
+        return 16; // "Aurora": the tab's old name (now a fold of Sky)
     for (int i = 0; i < kSettingsTabCount; ++i)
     {
         const char *t = kSettingsTabNames[i];
@@ -194,7 +209,7 @@ int settingsTabIndexByName(const std::string &name)
         for (size_t k = 0; k < n && eq; ++k)
             eq = tolower((unsigned char)t[k]) == tolower((unsigned char)name[k]);
         if (eq)
-            return i;
+            return settingsTabCanonical(i);
     }
     return -1;
 }
@@ -3672,6 +3687,7 @@ void SatelliteSim::buildSettingsWindow(const UIInput &inp, UIRenderer &ui)
 void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
 {
     static_assert(sizeof(hovTab) / sizeof(hovTab[0]) == kSettingsTabCount, "hovTab[] is indexed by tab");
+    settingsActiveTab = settingsTabCanonical(settingsActiveTab); // tabs folded into others (Ocean, Night lights, Atmosphere, Beams)
     // A scroll view of its own (2026-10-03): with the headings and the advanced tabs the strip is taller than a short
     // window, and an unclipped strip stretched the window's body — the tabs and the content spilled below its edge.
     CLAY(CLAY_ID("SettingsTabStrip"), {.layout = {
@@ -3896,8 +3912,8 @@ void SatelliteSim::buildSettingsLaunchesTab(const UIInput &inp, UIRenderer &ui)
 // ─── buildSettingsSkyTab (2026-10-28, issue 20261028_222345) ──────────────────
 // What is in the sky besides the satellites: the stars (the naked-eye limit, Betelgeuse), the planets (out of the
 // Constellations tab), the Moon (out of Photometry), comets, meteors, the Moon-base glints and the refraction and
-// mirages. Most of these had settings.json keys and no UI. The Milky Way, the twinkle and the turbulence warp are
-// photometry (the Photometry tab). Slots 400-413 of the shared slider arrays.
+// mirages; since 2026-10-30 also the Milky Way, seeing, the scattering, airglow and the aurora. Slots 400-413 of
+// the shared slider arrays.
 void SatelliteSim::buildSettingsSkyTab(const UIInput &inp, UIRenderer &ui)
 {
     if (uiFold(inp, "SkySec", 0, tx(Txt::SecStars)))
@@ -4041,6 +4057,12 @@ void SatelliteSim::buildSettingsSkyTab(const UIInput &inp, UIRenderer &ui)
             buildCloudSliderRows(inp, ui, rf, 4, false);
         }
     }
+
+    // 2026-10-30 (issue 20261029_205641): the rest of the natural sky, folded like the Clouds tab's sections: the
+    // dark-sky gate, the Milky Way and its zoomed star clouds, seeing (these were Photometry's), the scattering,
+    // airglow / zodiacal light and the aurora (these were the Atmosphere tab's).
+    buildSettingsPhotometryRows(inp, ui, 1);
+    buildSettingsAuroraTab(inp, ui);
 }
 
 // ─── buildSettingsConstellationsTab ─────────────────────────────────────────
@@ -4365,7 +4387,6 @@ void SatelliteSim::buildSettingsConstellationsTab(const UIInput &inp, UIRenderer
                          (float)fs(11) * 9.0f, Pal::textDim, 11);
                     if (pill("ConstListNext", ci, ">", Pal::btnIdle, Pal::btnHover, tx(Txt::TipNextPage), 26, constListPage_ + 1 < pages))
                         ++constListPage_;
-                    text(CLAY_IDI("ConstListNote", ci), "Slots approximate (mid-2020s positions)", 0.0f, Pal::textHint, 10);
                 }
             }
         }
@@ -5141,6 +5162,15 @@ static float settingsSliderWidth(float chromeW)
 // ─── buildSettingsPhotometryTab ─────────────────────────────────────────────
 void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui)
 {
+    buildSettingsPhotometryRows(inp, ui, 0);
+}
+
+// 2026-10-30 (issue 20261029_205641): the photometry slider table serves two tabs. Part 0 is the Photometry tab (how
+// satellites and point sources are drawn: exposure, brightness, sky dimming, points, bloom and glare, trails, models,
+// the Reflect beams, the bulk export); part 1 is the natural sky the Sky tab shows (the dark-sky gate, the Milky Way
+// and its zoomed star clouds, seeing). Slot ids, fold ids and settings keys are unchanged.
+void SatelliteSim::buildSettingsPhotometryRows(const UIInput &inp, UIRenderer &ui, int part)
+{
     // Layout constants — must match Clay sizing declarations exactly for slider hit-test.
     // Row: [Label(110)] [Slider(responsive)] [Value(58)] [-(22)] [+(22)]  childGap=6
     const float kSliderAbsX = settingsChrome.x + kSliderFixedLeft;
@@ -5349,7 +5379,7 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
             {tx(Txt::SldAgxContrast), &cv2ToneContrast, 0.5f, 2.0f, 0.05f, "%.2f", 351},
             // The Moon's size, relief and shadows: the Sky tab (2026-10-28).
         };
-        if (uiFold(inp, "PhotoSec", 20, tx(Txt::SecExposure))) // (folds like the Clouds tab's sections, 2026-10-30)
+        if (part == 0 && uiFold(inp, "PhotoSec", 20, tx(Txt::SecExposure))) // (folds like the Clouds tab's sections, 2026-10-30)
         {
             buildCloudSliderRows(inp, ui, secExposure, (int)(sizeof(secExposure) / sizeof(secExposure[0])));
             uiToggleRow(inp, ui, "PhotoCoronagraph", 0, tx(Txt::LblCoronagraph), inertialOcculter, tx(Txt::TipCoronagraph));
@@ -5379,6 +5409,10 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
     };
     for (int g = 0; g < (int)(sizeof(kGroups) / sizeof(kGroups[0])); ++g)
     {
+        // Groups 4, 5, 6 and 8 (dark sky, Milky Way, its star clouds, seeing) are the Sky tab's.
+        const bool skyGroup = g == 4 || g == 5 || g == 6 || g == 8;
+        if (skyGroup != (part == 1))
+            continue;
         if (!uiFold(inp, "PhotoSec", g, kGroups[g].title))
             continue;
         // 2026-10-28 (the settings round-up): the switches beside their sliders (the HUD's star trails button; the zoomed
@@ -5402,6 +5436,8 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
                     photoRow(pp);
     }
 
+    if (part == 1)
+        return;
     // Occlusion between satellite parts (geometry-model types) — off by default, see
     // satPartOcclusion (SatelliteSim.h). Same labeled-row + toggle pattern as "Play intro on startup".
     if (uiFold(inp, "PhotoSec", 10, tx(Txt::SecSatelliteModels)))
@@ -5413,6 +5449,9 @@ void SatelliteSim::buildSettingsPhotometryTab(const UIInput &inp, UIRenderer &ui
         uiToggleRow(inp, ui, "SharpReflChk", 0, tx(Txt::LblSharpMirrorReflections), sharpReflections,
                     tx(Txt::TipMirrorsAReflectOrbitalMembraneQuartz));
     }
+    // The Reflect-Orbital beams were their own tab (Beams); they are satellite lighting, so they fold in here.
+    if (uiFold(inp, "PhotoSec", 30, tx(Txt::SecReflectOrbitalBeams)))
+        buildSettingsBeamsTab(inp, ui);
     buildBulkExportRows(inp, ui);
 }
 
@@ -5499,7 +5538,6 @@ void SatelliteSim::buildBulkExportRows(const UIInput &inp, UIRenderer &ui)
                                            .childGap = 2,
                                            .layoutDirection = CLAY_TOP_TO_BOTTOM}})
     {
-        label("Sun -18..-6 deg, elevation >= 20 deg, fully sunlit (SatBench's defaults)", Pal::textHint, 11);
         if (bulkStatus[0])
             label(bulkStatus, Pal::textDim, 11);
     }
@@ -6787,6 +6825,8 @@ void SatelliteSim::buildCloudSliderSections(const UIInput &inp, UIRenderer &ui,
         {
             // Searching: no fold; the title is a heading above the section's first match (all of it if it matches).
             searchSection(sec.title);
+            if (sec.extra)
+                sec.extra();
             buildCloudSliderRows(inp, ui, sec.sliders, sec.count);
             continue;
         }
@@ -6829,7 +6869,11 @@ void SatelliteSim::buildCloudSliderSections(const UIInput &inp, UIRenderer &ui,
         }
 
         if (cloudSectionOpen[si])
+        {
+            if (sec.extra)
+                sec.extra();
             buildCloudSliderRows(inp, ui, sec.sliders, sec.count);
+        }
     }
 }
 
@@ -6892,6 +6936,7 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SldStormCumulusFineLobes), &cv2CuFineLobes, 0.0f, 2.0f, 0.05f, "%.2f", 292},
         {tx(Txt::SldCbTowerFineLobes), &cv2CbFineLobes, 0.0f, 2.0f, 0.05f, "%.2f", 293},
         {tx(Txt::SldCumulusWisps), &cv2CuWisps, 0.0f, 1.0f, 0.05f, "%.2f", 294},
+        {tx(Txt::SldCapLobes01), &cv2ShapeCaps, 0.0f, 1.0f, 1.0f, "%.0f", 307},
     };
 
     CloudSlider secLighting[] = {
@@ -6925,6 +6970,9 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SldGroundLightUnderCloud01), &cv2GroundOvercast, 0.0f, 1.0f, 1.0f, "%.0f", 353},
         {tx(Txt::SldLobeOcclusionSkyLight), &cv2LobeOcclusion, 0.0f, 1.0f, 0.05f, "%.2f", 285},
         {tx(Txt::SldSilverLining), &cv2SilverLining, 0.0f, 4.0f, 0.05f, "%.2f", 295},
+        {tx(Txt::SldMiePhasePhysicalShare), &cv2MiePhase, 0.0f, 1.0f, 0.05f, "%.2f", 304},
+        {tx(Txt::SldMieOpticsBowsGloryCorona), &cv2MieOptics, 0.0f, 2.0f, 0.05f, "%.2f", 305},
+        {tx(Txt::SldDropletRadiusUm), &cv2DropletReffUm, 4.0f, 30.0f, 0.5f, "%.1f", 306},
     };
 
     CloudSlider secHigh[] = {
@@ -6965,6 +7013,16 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SldFoveatedFullRateRadius), &cv2FoveaRadius, 0.0f, 2.0f, 0.05f, "%.2f", 247},
         {tx(Txt::SldAdaptiveRateWhileMoving01), &cv2AdaptiveRate, 0.0f, 1.0f, 1.0f, "%.0f", 192},
         {tx(Txt::SldAdaptiveParallaxPx), &cv2AdaptiveParallaxPx, 0.1f, 8.0f, 0.1f, "%.1f", 193},
+        {tx(Txt::SldOccupancyClipmap0Off2On), &cv2CdcSkip, 0.0f, 2.0f, 1.0f, "%.0f", 302},
+        {tx(Txt::SldLightMarchFromClipmap01), &cv2CdcLight, 0.0f, 1.0f, 1.0f, "%.0f", 308},
+        // The whole "half-res" chain at full resolution. Pair it with a sparse march ("Full rate above (km)" high)
+        // for the half-res full-rate cost.
+        {tx(Txt::SldFullResolutionClouds01), &cv2FullRes, 0.0f, 1.0f, 1.0f, "%.0f", 309},
+        // Inside the high layer its near haze in strides of this many steps (1 = off).
+        {tx(Txt::SldNearCirrusStride1Off), &cv2NearCirrusStride, 1.0f, 4.0f, 1.0f, "%.0f", 335},
+        // With full-resolution clouds, smooth 32x32 tiles at half density (0 = every tile at full density).
+        {tx(Txt::SldSmoothTilesAtHalfDensity0), &cv2SmoothTiles, 0.0f, 1.0f, 1.0f, "%.0f", 339},
+        {tx(Txt::SldSmoothTileThresholdLevels), &cv2SmoothTileThresh, 0.5f, 32.0f, 0.5f, "%.1f", 340},
     };
 
     CloudSlider secNoise[] = {
@@ -7141,61 +7199,38 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         // 2026-10-22: the terrain shadows the air and the fog too (the terrain Sun-horizon map, cloud_v2_terrsun.comp).
         {tx(Txt::SldTerrainGodRays01), &cv2TerrainGodrays, 0.0f, 1.0f, 1.0f, "%.0f", 297},
         {tx(Txt::SldHazeNearClouds), &cv2HazeAloft, 0.0f, 20.0f, 0.1f, "%.1f", 188},
-    };
-    // The cloud rebuild's experiments (2026-10-22, .plans/CLOUD_REBUILD_PLAN.md): each off by default, for judging.
-    CloudSlider secRebuild[] = {
-        {tx(Txt::SldOccupancyClipmap0Off2On), &cv2CdcSkip, 0.0f, 2.0f, 1.0f, "%.0f", 302},
         {tx(Txt::SldGodRayFroxels01), &cv2GodrayFroxels, 0.0f, 1.0f, 1.0f, "%.0f", 303},
-        {tx(Txt::SldMiePhasePhysicalShare), &cv2MiePhase, 0.0f, 1.0f, 0.05f, "%.2f", 304},
-        {tx(Txt::SldMieOpticsBowsGloryCorona), &cv2MieOptics, 0.0f, 2.0f, 0.05f, "%.2f", 305},
-        {tx(Txt::SldDropletRadiusUm), &cv2DropletReffUm, 4.0f, 30.0f, 0.5f, "%.1f", 306},
-        {tx(Txt::SldCapLobes01), &cv2ShapeCaps, 0.0f, 1.0f, 1.0f, "%.0f", 307},
-        {tx(Txt::SldLightMarchFromClipmap01), &cv2CdcLight, 0.0f, 1.0f, 1.0f, "%.0f", 308},
-        // The S9 probe: the whole "half-res" chain at full resolution. Pair it with a sparse march ("Full rate above
-        // (km)" high) for the half-res full-rate cost.
-        {tx(Txt::SldFullResolutionClouds01), &cv2FullRes, 0.0f, 1.0f, 1.0f, "%.0f", 309},
-        // 2026-10-24 (the perf pass): inside the high layer its near haze in strides of this many steps (1 = off).
-        {tx(Txt::SldNearCirrusStride1Off), &cv2NearCirrusStride, 1.0f, 4.0f, 1.0f, "%.0f", 335},
         // 2026-10-24 (perf pass 3): the sky pass's god-ray reads a step within 30 km (8 = as built; 4 is cheaper).
         {tx(Txt::SldGodRayReadsNear8Full), &cv2GodrayReads, 2.0f, 8.0f, 1.0f, "%.0f", 336},
-        // 2026-10-25: the sky's atmosphere once per screen tile (sky_ap.comp) instead of per pixel; 0 = per pixel (A/B).
-        {tx(Txt::SldAerialPerspectiveVolume01), &cv2SkyAp, 0.0f, 1.0f, 1.0f, "%.0f", 337},
-        {tx(Txt::SldAerialPerspectiveHorizonBandDeg), &cv2SkyApBandDeg, 0.0f, 10.0f, 0.25f, "%.2f", 338},
-        // 2026-10-25: with full-resolution clouds, smooth 32x32 tiles at half density (0 = every tile at full density).
-        {tx(Txt::SldSmoothTilesAtHalfDensity0), &cv2SmoothTiles, 0.0f, 1.0f, 1.0f, "%.0f", 339},
-        {tx(Txt::SldSmoothTileThresholdLevels), &cv2SmoothTileThresh, 0.5f, 32.0f, 0.5f, "%.1f", 340},
-        // 2026-10-25: the terrain's sun shadow from the half-res depth pass (0 = marched per pixel).
-        {tx(Txt::SldTerrainShadowsAtHalfResolution0), &terrainShadowHalfRes, 0.0f, 1.0f, 1.0f, "%.0f", 341},
     };
 #define CLOUD_SEC(title, arr) {title, arr, (int)(sizeof(arr) / sizeof((arr)[0]))}
     CloudSliderSection sections[] = {
-        CLOUD_SEC(tx(Txt::LblStormObjects), secStormObjects),
+        {tx(Txt::LblStormObjects), secStormObjects, (int)(sizeof(secStormObjects) / sizeof(secStormObjects[0])),
+         [&]()
+         {
+             bool v = stormObjects;
+             if (uiToggleRow(inp, ui, "WxSetOn", 0, tx(Txt::LblStormObjects), v, tx(Txt::TipOffNoStormTowersAnvilsTornadoes)))
+             {
+                 stormObjects = v;
+                 graphicsPreset = GraphicsPreset::Custom;
+                 wxRowsWall = -1e300;
+             }
+         }},
         CLOUD_SEC(tx(Txt::SecStormsCumulonimbus), secStorms),
-        CLOUD_SEC(tx(Txt::SecWildfiresHaboobs), secFire),
+        {tx(Txt::SecWildfiresHaboobs), secFire, (int)(sizeof(secFire) / sizeof(secFire[0])),
+         [&]()
+         {
+             uiToggleRow(inp, ui, "WxSetOn", 1, tx(Txt::LblHaboobsAsCloud), haboobField, tx(Txt::TipOnTheDustWallsAreDrawn));
+             uiToggleRow(inp, ui, "WxSetOn", 2, tx(Txt::LblWildfireBurnScars), wildfireScars, tx(Txt::TipTheBurntGroundUnderAFire));
+         }},
         CLOUD_SEC(tx(Txt::SecLightning2), secLightning),
-        CLOUD_SEC(tx(Txt::SecRainSnow), secRain),
+        {tx(Txt::SecRainSnow), secRain, (int)(sizeof(secRain) / sizeof(secRain[0])),
+         [&]() { uiToggleRow(inp, ui, "WxSetOn", 3, tx(Txt::LblPrecipitationParticles), precipParticles, tx(Txt::TipPrecipitationParticles)); }},
         CLOUD_SEC(tx(Txt::SecWeatherEvolution), secEvo),
         CLOUD_SEC(tx(Txt::SecFogDustIceFog), secFog),
         CLOUD_SEC(tx(Txt::SecCloudShadowsGodRays), secGod),
-        CLOUD_SEC(tx(Txt::SecRebuildExperiments), secRebuild),
     };
 #undef CLOUD_SEC
-    // The switches (2026-10-28: the Weather window's Controls tab had the first two; the scars had no UI).
-    {
-        bool v = stormObjects;
-        if (uiToggleRow(inp, ui, "WxSetOn", 0, tx(Txt::LblStormObjects), v,
-                        tx(Txt::TipOffNoStormTowersAnvilsTornadoes)))
-        {
-            stormObjects = v;
-            graphicsPreset = GraphicsPreset::Custom;
-            wxRowsWall = -1e300;
-        }
-    }
-    uiToggleRow(inp, ui, "WxSetOn", 1, tx(Txt::LblHaboobsAsCloud), haboobField,
-                tx(Txt::TipOnTheDustWallsAreDrawn));
-    uiToggleRow(inp, ui, "WxSetOn", 2, tx(Txt::LblWildfireBurnScars), wildfireScars,
-                tx(Txt::TipTheBurntGroundUnderAFire));
-    uiToggleRow(inp, ui, "WxSetOn", 3, tx(Txt::LblPrecipitationParticles), precipParticles, tx(Txt::TipPrecipitationParticles));
     buildCloudSliderSections(inp, ui, sections, (int)(sizeof(sections) / sizeof(sections[0])), 12);
 }
 
@@ -7286,6 +7321,8 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SldTerrainSkyLight), &terrainSkyLight, 0.0f, 20.0f, 0.25f, "%.2f", 55},
         {tx(Txt::SldMoonGain), &moonGain, 0.0f, 0.2f, 0.005f, "%.3f", 24},
         {tx(Txt::SldCloudShadowRangeM), &cloudShadowRangeM, 5000.0f, 300000.0f, 5000.0f, "%.0f", 38},
+        // 2026-10-25: the terrain's sun shadow from the half-res depth pass (0 = marched per pixel).
+        {tx(Txt::SldTerrainShadowsAtHalfResolution0), &terrainShadowHalfRes, 0.0f, 1.0f, 1.0f, "%.0f", 341},
     };
 #define CLOUD_SEC(title, arr) {title, arr, (int)(sizeof(arr) / sizeof((arr)[0]))}
     CloudSliderSection sections[] = {
@@ -7297,6 +7334,11 @@ void SatelliteSim::buildSettingsTerrainTab(const UIInput &inp, UIRenderer &ui)
     // 2026-10-28: had no UI (terrain.solar_arrays).
     uiToggleRow(inp, ui, "TerrSolarParks", 0, tx(Txt::LblSolarParks), solarArraysEnabled,
                 tx(Txt::TipThePvParksAtTheReflect));
+    // 2026-10-30 (issue 20261029_205641): the night lights and the sea are parts of the ground, so they fold in here.
+    if (uiFold(inp, "TerrSec", 0, tx(Txt::SecNightLights)))
+        buildSettingsNightLightsTab(inp, ui);
+    if (uiFold(inp, "TerrSec", 1, tx(Txt::SecOcean)))
+        buildSettingsOceanTab(inp, ui);
 }
 
 // ─── buildSettingsNightLightsTab ─────────────────────────────────────────────
@@ -7415,7 +7457,7 @@ void SatelliteSim::buildSettingsBeamsTab(const UIInput &inp, UIRenderer &ui)
 }
 
 // ─── buildSettingsAuroraTab ──────────────────────────────────────────────────
-// Airglow + aurora share this tab — both are emissive nightglow phenomena tuned together.
+// The scattering, airglow / zodiacal light and the aurora: folds of the Sky tab since 2026-10-30 (was the Atmosphere tab).
 void SatelliteSim::buildSettingsAuroraTab(const UIInput &inp, UIRenderer &ui)
 {
     // The "Atmosphere" tab (was "Aurora"; review 4): the scattering, the sky march's samples, airglow and
@@ -7469,17 +7511,25 @@ void SatelliteSim::buildSettingsAuroraTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SldStormFeaturesRedMagenta), &auroraStormFeatures, 0.0f, 2.0f, 0.05f, "%.2f", 298},
         {tx(Txt::SldStormRedGlow), &auroraStormRedGain, 0.0f, 3.0f, 0.05f, "%.2f", 301},
         {tx(Txt::SldBlueRaysChance), &auroraBlueRayChance, 0.0f, 0.05f, 0.001f, "%.3f", 299},
-        // 2026-09-30: the look of the Earth from space, fitted to the Artemis II photographs.
-        {tx(Txt::SldOrbitColourGrade), &orbitGrade, 0.0f, 1.0f, 0.05f, "%.2f", 219},
         // "Moon size (x real)" (slot 220) moved to the Photometry tab's EXPOSURE AND MOON section (2026-10-06).
     };
-#define CLOUD_SEC(title, arr) {title, arr, (int)(sizeof(arr) / sizeof((arr)[0]))}
-    CloudSliderSection sections[] = {
-        CLOUD_SEC(tx(Txt::SecScattering), secScatter),
-        CLOUD_SEC(tx(Txt::SecAirglowZodiacalLight), secGlow),
-        CLOUD_SEC(tx(Txt::SecAurora), secAurora),
-    };
-#undef CLOUD_SEC
+    // The Sky tab's folds (2026-10-30; this was the Atmosphere tab).
+    if (uiFold(inp, "SkySec", 6, tx(Txt::SecScattering)))
+    {
+        buildCloudSliderRows(inp, ui, secScatter, (int)(sizeof(secScatter) / sizeof(secScatter[0])));
+        // The look of the Earth from space, and the sky pass's aerial-perspective volume (both were elsewhere).
+        CloudSlider skyRender[] = {
+            // 2026-09-30: the look of the Earth from space, fitted to the Artemis II photographs.
+            {tx(Txt::SldOrbitColourGrade), &orbitGrade, 0.0f, 1.0f, 0.05f, "%.2f", 219},
+            {tx(Txt::SldAerialPerspectiveVolume01), &cv2SkyAp, 0.0f, 1.0f, 1.0f, "%.0f", 337},
+            {tx(Txt::SldAerialPerspectiveHorizonBandDeg), &cv2SkyApBandDeg, 0.0f, 10.0f, 0.25f, "%.2f", 338},
+        };
+        buildCloudSliderRows(inp, ui, skyRender, 3, false);
+    }
+    if (uiFold(inp, "SkySec", 7, tx(Txt::SecAirglowZodiacalLight)))
+        buildCloudSliderRows(inp, ui, secGlow, (int)(sizeof(secGlow) / sizeof(secGlow[0])));
+    if (uiFold(inp, "SkySec", 8, tx(Txt::SecAurora)))
+    {
     // The aurora's activity right now (SpaceWeather.cpp, this frame's), above the sliders.
     {
         const SpaceWeather &w = spaceWeather_;
@@ -7506,7 +7556,8 @@ void SatelliteSim::buildSettingsAuroraTab(const UIInput &inp, UIRenderer &ui)
         uiKV("AuroraNowKV", 3, tx(Txt::LblOvalAtMidnight),
              uiKitStr(tx(Txt::FmtDegMagneticLatitude), 90.0 - b.eqMid, 90.0 - b.polMid), lw);
     }
-    buildCloudSliderSections(inp, ui, sections, (int)(sizeof(sections) / sizeof(sections[0])), 24);
+    buildCloudSliderRows(inp, ui, secAurora, (int)(sizeof(secAurora) / sizeof(secAurora[0])));
+    }
 }
 
 // ─── buildSettingsAttributionsTab ───────────────────────────────────────────
