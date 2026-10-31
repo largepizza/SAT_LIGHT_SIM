@@ -229,13 +229,12 @@ void main() {
             // 0.1-0.5 px a frame and the 1-px city lights smeared into blotches (user snapshot, Glasgow; tstab rise 5.4).
             // Rotation alone keeps the old ramp (0.5 -> 4 px): it reprojects exactly, and the far ground in a slow
             // drift (the release cinematic's LA shot) would otherwise trade the history for jittered sub-pixel lights.
-            float par = 0.0, rotPx = 0.0;
+            float par = 0.0;
             {
                 vec3 pI = vec3(dot(pc.e2p0.xyz, dir), dot(pc.e2p1.xyz, dir), dot(pc.e2p2.xyz, dir));
                 if (pI.z < -1e-6) {
                     vec2 uvI = vec2(pI.x / (-pI.z * pc.cam.x * pc.cam.y), -pI.y / (-pI.z * pc.cam.x)) * 0.5 + 0.5;
-                    par   = length((uvP - uvI) * size);
-                    rotPx = length((uvI - (vec2(p) + 0.5) / size) * size);   // the rotation's own displacement (mv without par)
+                    par = length((uvP - uvI) * size);
                 }
             }
             // The trails are for a view that moves little: flying (parallax past ~1-4 px a frame) the unclipped history
@@ -278,30 +277,7 @@ void main() {
             // The floor's clip is tighter (1.25 -> 0.75 sd as it ramps): a ghost on a smooth gradient sits inside 1.25.
             const float mxF = mx / mix(1.0, 0.6, floorK);
             if (mxF > 1.0 && !noClip && dbg != 3 && dbg != 4) h = mix(c + v / mxF, h, trail);
-            // The still weight, where holding ten samples is sound (2026-10-30, c27, issue 20261021_173131). The
-            // moving weight exists because a moving view must take its new frame; but where the reprojection is
-            // exact, the OPPOSITE is wanted: the sparse cloud march gives a pixel one jittered sample per visit,
-            // and the still weight averages ten of them instead of letting each through. Three things must hold:
-            //  - the misregistration the history carries, the eye's parallax x the 3x3 depth spread (the reprojection
-            //    scales the depth, so its error is relative; dHi3-dLo3 is in the log-depth's own units, 1.0 = the
-            //    whole 36.5-doubling range), is a fraction of a pixel. c23's term, same 0.10-0.30 bound: it excludes
-            //    only a wide discontinuity (the 3x3 spanning sky and ground), and it is TRUE of the open sea at every
-            //    altitude - which is why on its own it also gated the orbit view and cost it +27% (see below);
-            //  - the eye's parallax per frame is under ~1 px, so what the ten samples average is one place on the
-            //    image. Measured on c23's protocol (0.1 x AGL/s): 0.45-0.6 px/frame at 5 158 m, 1.3 at 47 500 m,
-            //    3.2 at 1 320 km - the streak ten samples of a 3.2 px/frame move lays over the sparse march's
-            //    per-visit noise is what raised the orbit view 1.44 -> 1.83 for a 16% flicker gain;
-            //  - the rotation alone is under 0.5 px/frame, below where this pass's rotation ramp starts on
-            //    purpose (a 0.1-0.5 px/frame pan smeared the far ground's city lights into blotches, Glasgow).
-            // A slowly drifting view at a distance (a hover, a cinematic, a far orbit) is where all three hold. A
-            // walk at the player's 1 x AGL/s is 4-15 px a frame on the ground and takes the moving weight as
-            // before, and the sun glints / flashes / sea trails below override this weight as they always did.
-            const float depthErrPx = par * (dHi3 - dLo3);                        // px of misregistration this history carries
-            const float stillSafe  = (1.0 - smoothstep(1.0, 2.0, par)) * (1.0 - smoothstep(0.5, 1.0, rotPx))
-                                   * (1.0 - smoothstep(0.10, 0.30, depthErrPx));
-            const float ramp = max(max(smoothstep(0.5, 4.0, mv), smoothstep(0.1, 1.0, par)), smoothstep(0.1, 1.0, parF))
-                             * (1.0 - stillSafe);
-
+            const float ramp = max(max(smoothstep(0.5, 4.0, mv), smoothstep(0.1, 1.0, par)), smoothstep(0.1, 1.0, parF));
             float w  = mix(pc.cam.z, pc.cam.w, ramp * (1.0 - trail));
             w = mix(w, max(w, 0.8), floorK * (1.0 - trail));
             dW = w; dClip = floorK;
