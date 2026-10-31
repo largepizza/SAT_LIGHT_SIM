@@ -139,15 +139,6 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   and the rain hanging below the deck's mass. The deck's forced overcast now keeps the weather map's own brightness
   instead of erasing it: at a reported view the area you can see more than 4 km through drops 70% and the deck's
   local contrast rises 46%, with the eyewall's brightness unchanged (issue_20261027_213254).
-- **Stormy air carries mid-level cloud.** A storm used to stand in air *clearer* at mid levels than the calm sky
-  beside it: the altocumulus / altostratus layer was erased wherever a tower could stand (it was suppressed to keep
-  a thin lens from slicing each tower with a flat plate at about 6 km), and the storm's own cloud field adds only
-  low-level coverage, so a storm could lose mid cloud and never gain any. The layer now gives way only over the
-  towers' own footprint and is lifted to the settings' own mid-level maximum in the storm's air. At a storm view
-  the mid layer's own alpha in the band beside the tower goes 0.005 -> 0.36 and the share of that band carrying any
-  mid cloud 6% -> 45%, while the tower's silhouette contrast holds (26.7 -> 25.1 levels, 17.3% -> 21.3% relative),
-  the calm air outside a storm's reach is unchanged to 0.07 levels, and it costs +1.4 ms of GPU at 1920x1009
-  (issue_20261022_180823).
 - **Tornadoes and waterspouts** under supercells and strong storms at sea, hanging from the storm's real base,
   spinning, with a wall cloud, debris cloud and roar.
 - **Haboobs.** A storm's gust front over dry land raises a towering wall of dust, drawn as beige billowing cloud.

@@ -1228,13 +1228,7 @@ CV2Far cv2FarColumn(CV2Pos q, float fpM)
 // Worley octaves (220-875 m) in a thin lens-shaped sheet — where the low cloud is broken;
 // altostratus — a smooth translucent sheet the sun shows through — where it is stratiform.
 const float kCv2MidWanderM = 450.0;
-// stormK (2026-10-22, issue_20261022_180823): 0..1, the regional storm strength (cv2ColumnSigma's CV2Col.storm).
-// Storms are wrapped in mid-level cloud (outflow, and the stratiform region's altostratus / altocumulus): the
-// regime is lifted there and the "thins over a low overcast" factor does not apply. cv2Field keeps it out of the
-// towers themselves. (This was written for that issue and lost one commit later, in 1f25e9b "Clouds flicker fix",
-// which reverted the whole mid-layer hunk while making the sky-TAA change; without it a storm stands in air with
-// LESS mid cloud than the calm sky beside it.)
-float cv2MidSigmaS(CV2Pos q, float fpM, float stormK, out float hfMid, out float topMid, out float deckMid)
+float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out float deckMid)
 {
     hfMid = 0.0; topMid = 0.0; deckMid = 0.0;
     if (q.h < 2800.0 || q.h > 12000.0) return 0.0;
@@ -1256,7 +1250,7 @@ float cv2MidSigmaS(CV2Pos q, float fpM, float stormK, out float hfMid, out float
     // the low coverage was high: every layer stacked on the same spot.
     float covW   = clamp((textureLod(cv2WeatherTex, wF, CV2_WX_LOD(4.0)).r * cv2.look.x - cv2.cover.x)
                          / max(cv2.cover.y - cv2.cover.x, 1e-3), 0.0, 1.0);
-    float covM   = max(mix(cov, max(cov, covW * 0.85), cv2.flow.y), 0.6 * stormK);
+    float covM   = mix(cov, max(cov, covW * 0.85), cv2.flow.y);
     float clA    = cl.a, uMid = -1.0;
 #ifdef CV2_MORPH_BINDING
     // Review 17: altocumulus organises in cells too — the closed-cell morphology (one read, the cube face the
@@ -1280,18 +1274,8 @@ float cv2MidSigmaS(CV2Pos q, float fpM, float stormK, out float hfMid, out float
         clA = 0.5 + (textureLod(cv2MesoTex, rgm + vec3(0.47, 0.19, 0.83), cv2Lod(fpM, cv2.mid3.x)).a - 0.5) * 0.85
             + (clA - 0.5) * 0.4;
     }
-    float regimeMap = smoothstep(0.5 - cv2.mid2.w, 0.68 - cv2.mid2.w, clA + 0.15 * (covM - 0.5) + 0.07 * stormK) * cv2.misc.w * smoothstep(0.0, 0.35, covM)
-                    * mix(1.0, 0.55, cv2.flow.y * smoothstep(0.75, 1.0, cov) * (1.0 - 0.5 * stormK));
-    // The storm's outflow SATURATES the mid-level moisture regime (2026-10-22, issue_20261022_180823 "Storm
-    // coverage": stormy areas should have higher densities of mid layer clouds): the mid levels round a Cb are moist
-    // whatever the map's coverage and the cluster noise say, so the storm's air carries the mid cloud its own settings
-    // allow instead of less than the calm sky beside it. A lighter lift (0.35 of this) was measured too: it draws a
-    // natural translucent veil, and costs +6.2 ms against this one's +1.1 ms at a 40-km storm view, because a veil
-    // lets the march go on and light the whole low column behind it while a deck ends it (T < 0.01). So the deck is
-    // both the answer to the report and the cheap end of it. (The fix this issue first got, 9b070ca, shifted the
-    // regime by +0.07*stormK; at the report's settings that moved it by ~0.06, invisible -- and it was reverted a
-    // commit later, in 1f25e9b.)
-    float regime = max(regimeMap, stormK * cv2.misc.w * smoothstep(0.0, 0.35, covM));
+    float regime = smoothstep(0.5 - cv2.mid2.w, 0.68 - cv2.mid2.w, clA + 0.15 * (covM - 0.5)) * cv2.misc.w * smoothstep(0.0, 0.35, covM)
+                 * mix(1.0, 0.55, cv2.flow.y * smoothstep(0.75, 1.0, cov));
     if (regime <= 0.0) return 0.0;
     // The baked Perlin is 0.50 +- 0.057: read raw, the base spanned ~300 m, and the layer was one flat
     // sheet at ~4.5 km around the planet — seen edge-on from near its height, a dead-straight line
@@ -1305,7 +1289,7 @@ float cv2MidSigmaS(CV2Pos q, float fpM, float stormK, out float hfMid, out float
     // height (8-64 km) it was flat over the tens of km a view along it crosses, and seen edge-on from near its height
     // its top and base lined up into a straight translucent strip across a storm.
     if (q.h <= base - kCv2MidWanderM || q.h >= base + thick + kCv2MidWanderM) return 0.0;
-    float strat = max(1.0 - smoothstep(0.3, 0.55, w.g), 0.25 * stormK);   // stratiform below -> As (around storms: As + Ac)
+    float strat = 1.0 - smoothstep(0.3, 0.55, w.g);                 // stratiform below -> As
     // Its own period (anchorMid): on the cumulus shape period, enlarging the cumulus lobes made the
     // altocumulus cloudlets huge too.
     vec4  sh    = textureLod(cv2ShapeTex, cv2.anchorMid.xyz + cv2Drift(q.rSeaE) * cv2.anchorMid.w,
@@ -1330,11 +1314,6 @@ float cv2MidSigmaS(CV2Pos q, float fpM, float stormK, out float hfMid, out float
     topMid      = tW;
     deckMid     = strat;
     return lens * mix(ac * 0.035, as_ * 0.004 * cv2.mid2.x, strat) * cv2.atmo.z;
-}
-
-float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out float deckMid)
-{
-    return cv2MidSigmaS(q, fpM, 0.0, hfMid, topMid, deckMid);
 }
 
 // ── The high layer: cirrus / cirrostratus / cirrocumulus (0.7-0.9 of the tropopause) ─────────────
@@ -2087,23 +2066,12 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
         f.rain *= s0 / f.sigma;
     }
     float hfX, topX, deckX;
-    // The mid layer (a thin Ac/As lens) gives way at the TOWERS: drawn through them, it sliced every tower with a flat
-    // plate at ~6 km, seen edge-on as a hard line across the storm (user snap 1, pass 17), weak storm-edge towers
-    // included (pass 20). Over the storm's air it is not suppressed but LIFTED (issue_20261022_180823, "Storm
-    // coverage: stormy areas should have higher densities of mid layer clouds"): the regime is driven to the settings'
-    // own mid-level maximum there (cv2MidSigmaS), and only the towers' footprint clears it -- col.prox is 1 within 1.1
-    // tower radii and falls off over "Storm cumulus reach", so dividing out its storm-strength factor counts weak
-    // towers in full. Two things change from what this line did until now (which ERASED the mid layer wherever towers
-    // can stand): it is not erased, and where it is lifted is the storm's INNER region -- col.storm is 1 out to 0.6 of
-    // the tower's reach and decays to 0 at the reach, and that decaying tail is what a ray at a grazing angle runs
-    // along for a hundred km: at full strength it turned a whole 40-km storm view into an opaque mid deck (+6.3 ms of
-    // a 16.7 ms GPU budget) -- so the tail is cut (smoothstep(0.35, 0.85) of it, ~the inner 0.75 of the reach).
-    float stK  = (cv2.column.x > 0.0) ? smoothstep(0.35, 0.85, col.storm) : 0.0;
-    float sm = cv2MidSigmaS(q, fpM, stK, hfX, topX, deckX);
-    if (cv2.column.x > 0.0) {
-        float foot = clamp(col.prox / max(smoothstep(0.05, 0.3, col.storm), 0.05), 0.0, 1.0);
-        sm *= 1.0 - smoothstep(0.3, 0.9, foot);
-    }
+    float sm = cv2MidSigma(q, fpM, hfX, topX, deckX);
+    // The mid layer (a thin Ac/As lens) gives way over a storm: drawn through it, it sliced every
+    // tower with a flat plate at ~6 km, seen edge-on as a hard line across the storm (user snap 1,
+    // pass 17). Only where the towers are drawn (the storm's strength is read for them).
+    // Wherever towers can stand (a weak storm-edge tower cut by a mid-layer belt, pass 20).
+    if (cv2.column.x > 0.0) sm *= 1.0 - smoothstep(0.0, 0.15, col.storm);
     if (sm > 0.0) cv2Add(f, sm, hfX, topX, deckX);
     float hfH, topHh;
     float sh = cv2HighSigma(q, fpM, hfH, topHh);
