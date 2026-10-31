@@ -312,6 +312,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - Ice fog is no longer one uniform white film over the ice sheets and the Southern Ocean: it now comes in regions
   of ~600-1000 km (one stretch hazes, the next is nearly clear), and it no longer whitens the open ocean south of
   the Antarctic coast at high amounts.
+- Flat, hard-edged teal planes no longer lie across mountainsides on coasts finer than the water map's texels
+  (the Chilean fjords, the worst case): the map's shore ramp could take a kilometre-wide, 300-900 m deep bite
+  out of a slope, and now only smooths the land it was meant to smooth.
 - Many fixes from QA of launches and missions: no plume pulsing, no train jitter in time warp, smooth handovers
   in the Info window, no "?" under a selection, the camera never goes underground following a rocket.
 - The Attributions tab lists every bundled asset.
