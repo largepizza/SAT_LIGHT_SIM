@@ -450,9 +450,9 @@ void SatelliteSim::meteorsFill(GpuDustCloud *out, uint32_t &n, double toSky, dou
                         else if (nP > 0)
                             undrawn += 0.7 * fq; // (a piece under the limit or past the budget: its light goes to the point)
                     }
-                    // The point: 0.3 of the brightest piece (+ what was not drawn), floored at half the brightest
-                    // moment's flare as the 1x head would draw it (the streak alone, its light spread along it,
-                    // leaves most of a shower's meteors near the limit) — then, below, the interval's mean.
+                    // The point: 0.3 of the brightest piece (+ what was not drawn), at least half the brightest moment's
+                    // flare as the 1x head would draw it, so each meteor of the frame reads as clearly as a real-time one
+                    // (the streak alone, its light spread along it, left most of a shower's meteors near the limit).
                     double Ipk = 0.0;
                     for (int q = 0; q <= 8; ++q) Ipk = std::max(Ipk, meteors::lightCurve(m, x0 + (x1 - x0) * (q + 0.5) / 9.0));
                     // ... and never more than the 1x head at the meteor's peak (2026-10-29, issue 20261029_175625: the integrated light
@@ -460,18 +460,9 @@ void SatelliteSim::meteorsFill(GpuDustCloud *out, uint32_t &n, double toSky, dou
                     // from orbit where the same meteor at 1x is a modest point).
                     const double head1x = Ipk * (nP > 0 ? bestS : s0).flare;
                     const double headF0 = std::max(nP > 0 ? 0.3 * bestF + undrawn : flSum, 0.5 * head1x);
-                    const double headFcap = meteorTimelapseHeadCap ? std::min(headF0, head1x) : headF0;
-                    // Its light is the integral over the frame's whole sim-time interval divided by the 0.1-s
-                    // persistence, so whatever the step every meteor that burned in the interval still arrived at
-                    // its PEAK (or half of it): at 1 day/s a frame held 27-48 heads, 7-9 of them past the glare
-                    // threshold, each a spiked flare over the Earth's nightside (2026-10-31, issue
-                    // 20261030_175604). A point is not a streak: what it carries is the meteor's MEAN intensity
-                    // over the interval (its light / the interval), which is what a frame spanning the interval
-                    // records. The streaks keep their light (one exposure's surface brightness at every rate).
-                    const double headF = headFcap * (expoS / std::max(dtS, expoS));
+                    const double headF = meteorTimelapseHeadCap ? std::min(headF0, head1x) : headF0;
                     rec.headFlare = (float)headF0;
                     rec.head1x = (float)head1x;
-                    rec.headDrawn = (float)headF;
                     addHead(nP > 0 ? bestS : s0, headF, nP > 0 ? bestC : colAll);
                     rec.mag = (float)(s0.mag - 2.5 * std::log10(std::max(Itot, 1e-12)));
                     rec.flare = (float)flSum;
@@ -783,7 +774,6 @@ harness::Status SatelliteSim::harnessMeteors(harness::Active &a)
         nlohmann::json arr = nlohmann::json::array();
         for (const MeteorNow &m : meteorNow_)
             arr.push_back({{"shower", meteors::shower(m.shower).id}, {"abs_mag", m.M}, {"mag", m.mag}, {"flare", m.flare}, {"head_flare_uncapped", m.headFlare}, {"head_flare_1x_peak", m.head1x},
-                           {"head_flare", m.headDrawn},
                            {"az_deg", m.azDeg}, {"el_deg", m.elDeg}, {"age_s", m.age}, {"dur_s", m.dur}, {"v_kms", m.vKms},
                            {"range_km", m.rangeKm}, {"h_km", m.hKm}, {"fragments", m.fragments}, {"train_segs", m.trainSegs},
                            {"gaussians", m.gauss}, {"forced", m.forced}});

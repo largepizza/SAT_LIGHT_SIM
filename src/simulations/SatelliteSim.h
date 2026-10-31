@@ -3848,7 +3848,7 @@ private:
     struct MeteorNow                      // drawn this frame (harness `meteors`)
     {
         int shower = 0;
-        float M = 0.0f, mag = 99.0f, flare = 0.0f, headFlare = 0.0f, head1x = 0.0f, headDrawn = 0.0f, azDeg = 0.0f, elDeg = 0.0f, age = 0.0f, dur = 0.0f, vKms = 0.0f;
+        float M = 0.0f, mag = 99.0f, flare = 0.0f, headFlare = 0.0f, head1x = 0.0f, azDeg = 0.0f, elDeg = 0.0f, age = 0.0f, dur = 0.0f, vKms = 0.0f;
         float rangeKm = 0.0f, hKm = 0.0f;
         int fragments = 0, trainSegs = 0, gauss = 0;
         bool forced = false;
