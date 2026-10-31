@@ -3032,11 +3032,28 @@ private:
     };
     std::unordered_map<uint32_t, std::vector<KGen>> kPoolHist;
     std::multimap<int32_t, uint32_t> kGenBounds;
+    // A generation is drawn only once its own event's time arrives. The GPU's gate is the whole second (bornSec), so a
+    // fragment born at te = 142.31 s would be drawn from 142.0 s, its pieces converging on the impact point for up to
+    // a second ("they turn into debris and implode before the collision", issue_20261030_180204). kFirstBounds indexes
+    // the first record of a slot (no history, so kGenBounds cannot) by its birth second; kPoolUnborn holds the slots
+    // whose birth is still ahead and kPoolHidden marks them (the GPU record is sent not-yet-born).
+    std::multimap<int32_t, uint32_t> kFirstBounds;
+    struct KUnborn
+    {
+        uint32_t slot, gen;
+        double bornT; // J2000 seconds of the generation's event
+    };
+    std::vector<KUnborn> kPoolUnborn;
+    std::vector<uint8_t> kPoolHidden; // per slot: its GPU record is sent hidden until its birth
     static constexpr int32_t kHistKeepS = 7 * 86400;
     int32_t kShownSec = INT32_MIN, kHistPrunedUntil = INT32_MIN, kHistPrunedAt = INT32_MIN;
     bool kReplayPending = false;
     void kesslerSetPoolOrbit(uint32_t j);
-    void kesslerShowGen(uint32_t j, int32_t sec);
+    double kesslerBornT(const kessler::PoolRec &r, size_t evSeen) const;
+    void kesslerSetShown(uint32_t j, uint32_t gen, const kessler::PoolRec &rec);
+    void kesslerHideUnborn(uint32_t j, uint32_t gen, double bornT);
+    void kesslerShowUnborn(double tNow);
+    void kesslerShowGen(uint32_t j, int32_t sec, double tNow, size_t evSeen);
     const kessler::PoolRec *kesslerPoolGenWithDecay(uint32_t j, int32_t decaySec) const;
     void kesslerIndexReentry(uint32_t sat, int32_t sec);
     void kesslerPruneOldIndexes(); // (2026-10-28) streams / re-entry index older than 30 days before now
@@ -4211,7 +4228,7 @@ private:
     double kLastBreakupMs = 0.0; // how long the last player breakup took on the main thread (harness state)
     bool kLastBreakupFast = false;
     bool kForceRebuildOnce = false; // harness `kessler breakup ... rebuild=1`: the old full replay (for comparison)
-    void kesslerSyncProcess(int32_t nowSec, double budgetMs); // works through the queue of the worker's output
+    void kesslerSyncProcess(int32_t nowSec, double tNow, double budgetMs); // works through the queue of the worker's output
     std::chrono::steady_clock::time_point kHistPruneWall{}; // the last history prune (wall time; kesslerSync)
     double kHistPruneFrontier = 0.0; // the mirrored frontier when the last prune pass started (2026-10-28)
     size_t kPruneBucket = SIZE_MAX; // the prune pass's next kPoolHist bucket (SIZE_MAX: none running; 2026-10-21)
