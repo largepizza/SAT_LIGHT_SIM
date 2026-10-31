@@ -939,6 +939,12 @@ BAY_RADIUS, BAY_LENGTH = 4.1, 17.24  # Starship: SpaceX's payload user's guide (
 BAY_TAPER = 4.8                      # + the usable part of the nose (to the guide's 22 m)
 FAIRING_WALL = 0.15                  # a fairing's skin, acoustic blankets and the dynamic envelope: inner = outer - this
 STACK_GAP = 0.06                     # between neighbours in a stack
+# The Pez column (2026-10-31, c40 / issue_20261019_223922): a Starship's bay has no fairing to drop, so the stack is
+# drawn standing clear of the hull at the payload door -- the plates' inboard face PEZ_CLEAR_M above the barrel's crown
+# (SHIP_HULL_R, starship_ship's r) -- and the member centre sits half its stowed height (its X) further out. That
+# offset_m is what SatelliteSimLaunches.cpp's stackSlot places the column at.
+SHIP_HULL_R = 4.5                    # Starship's barrel radius (starship_ship)
+PEZ_CLEAR_M = 0.9                    # the plates clear the hull (and the dorsal raceway, ~0.3 m proud) by this
 
 
 def quat_rot(q, v):
@@ -1080,6 +1086,8 @@ def plan_stacks(infos):
             pitch = ext[2] + STACK_GAP
             corner = corner_pez  # (each model about its own centre)
             P["pitch_m"] = r3(pitch)
+            # The column's centre out from the ship's axis: the plates' inboard face clears the hull by PEZ_CLEAR_M.
+            P["offset_m"] = r3(SHIP_HULL_R + PEZ_CLEAR_M + 0.5 * ext[0])
             cap = int((BAY_LENGTH + BAY_TAPER) // pitch)
             P["fits"]["starship"] = {"corner_radius_m": r3(corner), "bay_radius_m": BAY_RADIUS,
                                      "stack_length_m": r3(n * pitch), "bay_length_m": BAY_LENGTH + BAY_TAPER,

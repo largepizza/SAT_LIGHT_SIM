@@ -424,6 +424,10 @@ constexpr double kCaughtHoldS = 1800.0;
 constexpr double kFreeFlightS = 6.0 * 3600.0;
 // The least distance two members of a train come to in free flight (from a minute after the later one leaves).
 constexpr double kReleaseGapM = 30.0;
+// Starship's payload door (2026-10-21; the Pez stack's own visibility, 2026-10-31): open from kPayloadDoorLeadS before
+// the first release to kPayloadDoorLagS after the last, over kPayloadDoorMoveS each way (transientLegs drives the
+// "payload_door" panel's stow progress from these; a stage with no fairing shows its stack in the same window).
+constexpr double kPayloadDoorLeadS = 90.0, kPayloadDoorLagS = 60.0, kPayloadDoorMoveS = 20.0;
 // A train's separation velocity in the parking circle's plane (radial, along; m/s): the SAME for every member, so
 // their relative motion is one Clohessy-Wiltshire trajectory shifted in time and never closes below the chord it
 // leaves with (members differ only across the plane, which never brings two together). Mostly up out of the stack,
@@ -3531,10 +3535,11 @@ static glm::dmat3 upperFrame(const SatelliteSim::LaunchState &L, const LBatch &B
 // Member i of n's place in its program's stack (2026-10-20; tools/make_rocket_models.py lays the stacks out and checks
 // them against every fairing): in the upper stage's body frame (+Z the nose, the payload adapter's top at
 // vh.payloadBaseM), the satellite's origin o, its body axes R (columns: its X, Y, Z in the stage's frame) and the
-// direction it leaves in. Released top tier first. Pez (Starship): every satellite from the door's slot, flat across
-// the ship (its nadir face aft, its X out of the door), leaving through the door (+Y, the leeward side: zenith while
-// the ship flies belly down). Flat: nadir face down, one or two a tier, leaving forward along the stage. Column:
-// around the dispenser column, nadir face out, the long axis (X) along the stage, leaving radially.
+// direction it leaves in. Released top tier first. Pez (Starship): a column of plates across the ship (its nadir face
+// aft, its X out of the door), member 0 at the door and the rest aft of it one pitch apart, standing clear of the hull,
+// leaving through the door (+Y, the leeward side: zenith while the ship flies belly down). Flat: nadir face down, one
+// or two a tier, leaving forward along the stage. Column: around the dispenser column, nadir face out, the long axis
+// (X) along the stage, leaving radially.
 static bool stackSlot(const launch::Vehicle &vh, const launch::Stack &st, size_t i, size_t n, glm::dvec3 &o,
                       glm::dmat3 &R, glm::dvec3 &exitDir)
 {
@@ -3558,7 +3563,17 @@ static bool stackSlot(const launch::Vehicle &vh, const launch::Stack &st, size_t
         R = glm::dmat3(glm::dvec3(0, 1, 0), glm::dvec3(1, 0, 0), glm::dvec3(0, 0, -1));
         if (st.layout == launch::Stack::Pez)
         {
-            slot = glm::dvec3(0.0, 0.0, vh.doorM);
+            // The Pez stack (2026-10-31, c40 / issue_20261019_223922): the column of plates the dispenser holds, which
+            // every member leaves from in turn. Member 0 (the first out) sits in the door, the rest aft of it one pitch
+            // apart (launches.json stack.pitch_m = the stowed thickness + the gap: the plates stacked flat on each
+            // other going down the body); the column's centre stands stack.offset_m out from the ship's axis, so the
+            // plates clear the hull instead of sitting inside it (tools/make_rocket_models.py derives the offset from
+            // the stowed extents' half height; before 2026-10-31 every member was placed at one point ON the axis,
+            // inside the hull, and stack.pitch_m was never used). R is the perpendicular stow attitude: the plate's X
+            // (the bus's long axis, 6.2 m stowed) out of the door, its Z (the nadir face's normal, the stack's own
+            // axis) along the stage's -Z, so its face lies across the ship's facing.
+            const double pitch = st.pitchM > 0.0 ? st.pitchM : 0.5;
+            slot = glm::dvec3(0.0, st.offsetM, vh.doorM - (double)i * pitch);
             exitDir = glm::dvec3(0.0, 1.0, 0.0);
         }
         else
@@ -3720,12 +3735,12 @@ static void transientLegs(const SatelliteSim::LaunchState &L, SatOrbitElems &e, 
         if (it == L.batches.end() || it->second.mem.empty())
             return;
         const LBatch &B = it->second;
-        constexpr double kDoorLeadS = 90.0, kDoorLagS = 60.0, kDoorMoveS = 20.0, kHold = 1.0e9;
+        constexpr double kHold = 1.0e9;
         const double t = B.tL + s.tau;
-        const double tOpen = B.tD - kDoorLeadS;
-        const double tShut = B.tD + B.deployInterval * (double)(B.mem.size() - 1) + kDoorLagS;
-        const double open = std::min(glm::clamp((t - tOpen) / kDoorMoveS, 0.0, 1.0),
-                                     glm::clamp((tShut + kDoorMoveS - t) / kDoorMoveS, 0.0, 1.0));
+        const double tOpen = B.tD - kPayloadDoorLeadS;
+        const double tShut = B.tD + B.deployInterval * (double)(B.mem.size() - 1) + kPayloadDoorLagS;
+        const double open = std::min(glm::clamp((t - tOpen) / kPayloadDoorMoveS, 0.0, 1.0),
+                                     glm::clamp((tShut + kPayloadDoorMoveS - t) / kPayloadDoorMoveS, 0.0, 1.0));
         const double P = 1.0 - open * open * (3.0 - 2.0 * open);
         e.unfoldT0 = t - P * kHold;
         e.unfoldDur = kHold;
@@ -7271,9 +7286,21 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 trIdx = selTransients.size();
                 addSelTransient(st);
                 // Its payload stack, visible once the fairing is gone (2026-10-20): drawn by launchMeshJobs.
+                // (2026-10-31, c40 / issue_20261019_223922) A stage with no fairing at all (Starship's ship: tFair
+                // stays -1) had no such moment, so its Pez stack was never drawn; it shows while the payload door is
+                // open instead (transientLegs' window), and pez layouts count now that their column stands clear of
+                // the hull at the door.
                 const launch::Stack &stk = L.cat.programs[B.prog].stack;
-                if (stage == 1 && B.tFair > 0.0 && t >= B.tFair && t < B.tStageGone &&
-                    (stk.layout == launch::Stack::Flat || stk.layout == launch::Stack::Column))
+                bool stackShown = false;
+                if (stage == 1 && t < B.tStageGone && !B.mem.empty() && stk.layout != launch::Stack::None)
+                {
+                    if (B.tFair > 0.0)
+                        stackShown = t >= B.tFair;
+                    else
+                        stackShown = t >= B.tD - kPayloadDoorLeadS &&
+                                     t <= B.tD + B.deployInterval * (double)(B.mem.size() - 1) + kPayloadDoorLagS;
+                }
+                if (stackShown)
                 {
                     LaunchState::StackDraw sd;
                     sd.key = key;

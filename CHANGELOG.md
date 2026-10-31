@@ -25,6 +25,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **Full flights.** Staging, max-Q, fairing halves that tumble away, payload stacks released one by one (Starship
   releases its satellites through its payload door), satellites that unfold their arrays and radiators after
   release, and raising trains flying "open book" (bright, as real fresh trains are). Every upper stage deorbits.
+- **Starship's Pez stack is drawn.** A Starship's satellites ride as a column of plates stacked flat on each other
+  along the cargo section, each plate across the ship's facing; the stack shows on the ship while the payload door
+  is open and its members leave the door one at a time (Starmind, Starlink, Starlink direct-to-cell).
 - **Recovery.** Boosters fly back to their pad or landing zone, land on droneships (A Shortfall of Gravitas, Just
   Read the Instructions, Of Course I Still Love You, Jacklyn) that then steam home, or are caught by the tower.
   Starship's ship re-enters as an eight-minute plasma glow, belly-flops, flips and is caught by a tower.
