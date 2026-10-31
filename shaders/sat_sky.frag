@@ -6818,7 +6818,19 @@ void main() {
                     // the screen's vertical, spread by distance and roughness; they read as a mirror finish out to the
                     // horizon (user).
                     {
-                        float spr = (0.006 + 0.04 * seaRough) * smoothstep(1500.0, 25000.0, dist);
+                        // 2026-10-31 (issue_20261022_172435, the sea seen from just above it): this smear was gated
+                        // on `smoothstep(1500, 25000, dist)` — a far-sea softening only. With the eye 2 m over the
+                        // water the whole sea is 2-40 m out, so it never ran, and the cloud deck's mirror image came
+                        // out as a hard-edged contour map on the water: white rims round flat patches, each
+                        // reflected cloud outlined. What blurs the reflection is the slope a PIXEL cannot resolve
+                        // (Cox & Munk's ripple slope — the same variance the Sun glint below takes), and that is an
+                        // ANGLE: the same number of screen pixels at 6 m as at 6 km, so it belongs at every range,
+                        // not past 1.5 km. The width keeps its old form (it grows with the footprint filter's lost
+                        // slope, seaRough) and adds that unresolved share, so the near sea gets the smear the far
+                        // sea always had.
+                        float spr = 0.006 + 0.04 * seaRough
+                                  + 0.15 * sqrt(max(0.003 + 0.00512 * (7.0 * clamp(seaState, 0.2, 2.5))
+                                                    + 0.06 * seaRoughFoot, 0.0));
                         if (spr > 1e-4) {
                             vec3 sA = rCA.rgb, sT = reflCloudT;
                             for (int k = -2; k <= 2; ++k) {

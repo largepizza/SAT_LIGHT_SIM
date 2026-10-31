@@ -345,6 +345,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - A ridge silhouetted against cloud no longer draws a one-to-three-pixel bright line along its crest: the cut
   deck was letting the whole open-sky airlight through, and the share it lets through now shows the air at the
   ridge instead.
+- The sea seen from just above it (an eye 2 m over the water) no longer mirrors the cloud deck as a hard-edged
+  contour map: the reflected clouds are smeared by the ripple slopes a pixel cannot resolve, at every range, the
+  way the far sea already was (issue_20261022_172435).
 - Many fixes from QA of launches and missions: no plume pulsing, no train jitter in time warp, smooth handovers
   in the Info window, no "?" under a selection, the camera never goes underground following a rocket.
 - The Attributions tab lists every bundled asset.
