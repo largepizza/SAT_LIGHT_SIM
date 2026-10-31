@@ -81,6 +81,24 @@ qa/
 `state` is one of `planned → claimed → fixed → verified → merged → resolved`, or `rejected` (with a reason —
 "not reproducible", "not a bug", "wontfix", "duplicate of cN" — recorded, never silently dropped).
 
+## A brief is a hypothesis, not an order
+
+In the 2026-10-30 pass, five of seven fix briefs had a wrong premise, and each time the agent was right to
+refuse the spec:
+
+| Brief said | Reality |
+|---|---|
+| "anvil seam: `cv2Add` takes `hf` from the first writer" | duplicate of an already-fixed issue; the hypothesis was a sub-1% effect and structurally inactive (`anvil = 0`) |
+| "the tornado is no longer drawn (regression)" | it was drawn; the premise was another issue's resolution text, and the scene had changed |
+| "wildfire smoke is one unbounded Gaussian" | the oval was the **burn scar**, a ground albedo, not a particle |
+| "Kessler dust has no along-orbit spread" | the tube followed the orbit; surface-brightness ranking meant only minutes-old clouds drew |
+| "glare spikes stack" | already fixed; the live bug was one clamp constant in a different pass |
+
+So: **the agent must establish the cause before editing**, and a no-code verdict (`duplicate`, `already fixed`,
+`not a bug`, `view changed`) is a first-class result — cheaper and more valuable than a speculative patch. Write
+the misdiagnosis into the resolution text: the next round reads it, and the reporter learns what their frame
+actually showed.
+
 ## Replay reality (learned the hard way, 2026-10-30)
 
 - **`report load` restores pose, time and settings — not the session's weather, fire or tornado phase.** Storm,
