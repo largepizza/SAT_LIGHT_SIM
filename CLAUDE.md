@@ -2234,6 +2234,12 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   0.0002, slot 205, `sunE.w`): over Antarctica, Greenland's high interior and the high Arctic's land
   under a clear sky, scale height 250 m, patchy; lit with the ice optics at a halo-rich habit (22/46
   degree halos, sundogs, parhelic circle, CZA) plus a sun pillar (`cv2PillarOptics`), Sun or Moon.
+  Since 2026-10-30 (issue_20261030_204305) the ice mask is also multiplied by its own large-scale regions
+  (`cv2DirNoise` at 6.64 and 10.86, x0.12..1, ~590-960 km): the ice fog is no longer one uniform film
+  from orbit (the dust path has had regions since 2026-09-29; the ice branch did not). No eye-altitude
+  fade, unlike the dust's x0.08 by 60 km: the effect is wanted at altitude; an open-ocean exclusion would
+  need a sea-ice / shelf mask (the `1 - smoothstep(-80, -72, lat)` fallback exists because shelves read
+  the sea's 0 m in the DEM).
   Knockout 2048 switches it off with the fog. Harness: observer lat=-78, `camera look sun`.
 - **History weight moving** ("History weight moving" `history_weight_moving` 0.7, slot 203,
   `motion.y`): the resolve's new-sample weight once the view has parallax (from a quarter half-res

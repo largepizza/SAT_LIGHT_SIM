@@ -1955,8 +1955,15 @@ float cv2FogDust(CV2Pos q, float fpM, out float dustS, out float fogTopH, out fl
             vec4  clI   = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + cv2Drift(q.seaProjE) * cv2.anchorCluster.w,
                                      cv2Lod(fpM, cv2.anchorCluster.w) + 1.0);
             float patchI = smoothstep(0.40, 0.64, clI.a);
+            // REGIONS of its own (~960 km and ~590 km; the dust's frequencies are not reused): one stretch of
+            // the ice sheet hazes, the next one barely does. patchI alone (the cluster field at ~30 km) left the
+            // ice fog one uniform white film over the whole continent and the ocean south of it, at every amount
+            // (issue 20261030_204305: "encroaches too much ... uniformly"; "more variation than the noise scale
+            // that's there"). 0.12..1: the thinnest regions keep a trace, none is erased.
+            float regI    = 0.78 * cv2DirNoise(q.dirE * 6.64 - 8.47) + 0.22 * cv2DirNoise(q.dirE * 10.86 - 6.04);
+            float regionI = 0.12 + 0.88 * smoothstep(0.32, 0.57, regI);
             dustAgl = max(agl, 0.0);
-            iceS = cv2.sunE.w * cv2.fog2.w * ice * clear * (0.2 + 0.8 * patchI) * exp(-dustAgl / kIceFogH);
+            iceS = cv2.sunE.w * cv2.fog2.w * ice * clear * (0.2 + 0.8 * patchI) * regionI * exp(-dustAgl / kIceFogH);
         }
     }
     return sig;
