@@ -61,6 +61,13 @@ A citation makes it a **verification** job (replay the shot, decide gone / still
 cheap verdict, not a fix job. Resolving a `gone` against the citing commit closes the loop for the price of one
 launch. Only uncited issues, and issues whose verdict is `still present`, get a fix agent.
 
+**A citing commit is not proof the fix survives.** A later commit can revert the hunk as collateral.
+`issue_20261022_180823` was fixed on 2026-10-22 (`9b070ca`) and silently reverted by the very next commit
+(`1f25e9b`, a flicker fix) whose message never mentioned the mid layer. Before calling an issue fixed, check the
+code still contains the change: `git log --oneline <commit>..HEAD -- <file>` and read the hunks, or
+`git log -S'<the added line>' -- <file>`. The replay verdict is what proves it; the commit only tells you where to
+look.
+
 ## 3. Consolidate
 
 Reduce the rows to clusters (rules in `docs/QA_LOOP.md`). One cluster = one root cause one agent can fix;
