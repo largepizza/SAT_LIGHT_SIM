@@ -6114,6 +6114,29 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   at 3 h still bright): a cloud fades over the last 40% of its 3 h, and clouds near the budget's cut fade by
   priority between the cut and 3x it — never the first 60% of those kept. Harness `kessler state` -> `dust.clouds`
   (each drawn cloud's event, kind, dust kg, age, rank size, amp, cut fade).
+- **The dust BANDS (2026-10-31, issue_20261030_175418 "Dust Clouds from kessler"; kesslerFillDust's ring pass):**
+  past half an hour a breakup's dust has spread along its parent's orbit far past the point-like cloud the tube
+  draws (the along-track sigma is `sv |4 sin(nt)/n - 3t|`: 2 900 km after 30 min for a 500 m/s kick, a whole orbit
+  by ~2 h), so its tube pieces are long, thin, ~a millionth of a fresh blob's brightness, its surface-brightness
+  rank falls away, and in a late cascade the next breakups — hundreds an hour by day 60 — outrank it: every drawn
+  cloud was seconds to minutes old and the debris read as dense glints plus a few round blobs, no dispersed band
+  (the report). Each event from 0.5 h to 4 h old is now drawn as a band instead: a chain of clumps (along-track
+  sigma `kClump` 400 km, spacing 1.5 sigma, `kClumpsMax` 26) spanning the fragments' along-track 3 sigma, wrapped
+  into a full ring once that passes the orbit, each clump with the fragments' radial (marginal) and cross-track
+  sigma (20 km floor, `kWidMax` 250 km cap); the event's light (the tube's `Amp` with its age fade) is spread over
+  the clumps x `kRingGain` 1.0 in the POINT sources' units — the same display layer as "Dust cloud brightness",
+  because a resolved band at a physical surface brightness is ~6 orders of magnitude below the night sky. The
+  bands have their own share of the list (`kRingBudget` 144 of `kDustMax` 384; the tube keeps the rest, so the
+  cloud march's cost is unchanged: +0.3 ms at the report's view, the CPU kessler block +2.9 ms at day 60, where
+  the frame is GPU-bound). The rank is cheap (from the event's own radius, mass and kick; only the drawn bands get
+  their orbit propagated) and the bands' rank does not depend on the view, so camera motion never reorders them;
+  the one at the budget's cut fades by priority (smoothstep from the cut to 2x it) so time does not pop it. The
+  young cloud and its blobs, the fireballs and the point debris (`kFireBuf`) are untouched. At the reporter's view:
+  the widest band covers 135 deg of its orbit (37.5 % of an annulus), five bands 544 deg, 115 clumps, 40 km (2
+  sigma) thick; the dust's own light lights 63 428 px over 2 display levels vs 8 410 before (+7.5x), the faint band
+  0.29 % -> 3.13 % of the frame, bright specks -1.5 %, no new white. One event from 30 000 km: 14.9 deg at 31 min,
+  74.3 deg at 2 h. Harness `kessler state` -> `dust.rings` {pieces, arc_deg_max, arc_deg_sum, width_km_max,
+  bands[{ev, age_s, arc_deg, width_km, pieces, amp}]}.
 - **The engine** (`engineSample`, cube method, Liou 2006): every 6 h of sim time one sample at the step's middle,
   20-km cubes among the roster and the large pieces (sorted in parallel: keys are unique, so the order is the
   same), P = vRel x pi (rA + rB)^2 x dt / V x weights x rate multiplier, x (1 - avoidance) when one is a working

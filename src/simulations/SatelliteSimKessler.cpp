@@ -2758,6 +2758,9 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
     FPROF_SCOPE("kesslerFillDust");
     kDustCount = 0;
     kDustDbg.clear();
+    kRingPieces = 0;
+    kRingArcDegMax = kRingArcDegSum = kRingWidthKm = 0.0;
+    kRingDbg.clear();
     ambUpSrc_.clear(); // refilled by everything drawn below (dust, fireballs, rockets); read by the next ambience update
     kesslerDropGoneSelection(); // (every frame; cheap)
     if (!kDustMapped)
@@ -2827,6 +2830,11 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
         return;
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     constexpr double kLife = 3.0 * 3600.0;
+    // A big parent's cloud (a station: tens of tonnes of dust) is brighter, but not in proportion: the display gain
+    // exists to lift the faint clouds of ordinary satellites, and at x100 a 420-t station's cloud blew out the whole
+    // view (issue_20261019_231126). Linear up to ~5 t of dust at the default gain (a 100-t parent), then as its
+    // square root. (The tube and the bands below share it.)
+    constexpr double kAmpKnee = 7.0e5;
     if (t < kWorldStart)
         return;
     // Events are in time order to within one engine step (6 h): start the scan that far before the window.
@@ -2854,12 +2862,7 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
             continue;
         // Fades out over the last 40% of its life (it vanished at 3 h, still bright at a high gain).
         const double ageK = 1.0 - glm::smoothstep(0.6 * kLife, kLife, age);
-        // A big parent's cloud (a station: tens of tonnes of dust) is brighter, but not in proportion: the display gain
-        // exists to lift the faint clouds of ordinary satellites, and at x100 a 420-t station's cloud blew out the
-        // whole view (issue 20261019_231126). Linear up to ~5 t of dust at the default gain (a 100-t parent), then as
-        // its square root.
         const double ampLin = 0.25 * (5.6 * (double)e.dustKg + 0.02 * (double)e.nSmall) * (double)kesslerDustGain;
-        constexpr double kAmpKnee = 7.0e5;
         const double amp = ampLin / std::sqrt(1.0 + ampLin / kAmpKnee) * ageK;
         kessler::State s0{{e.pos[0], e.pos[1], e.pos[2]}, {e.vel[0], e.vel[1], e.vel[2]}};
         if (glm::length(s0.r) < 1.0)
@@ -2890,13 +2893,15 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
         const double pri = amp / areaEff * (1.0 + 1e-6 * kessler::hash01(e.seed, k, 97));
         cands.push_back({pri, k, sc.r, sc.v, amp, age, rNear});
     }
-    if (cands.empty())
-        return;
+    // (no early return on an empty tube list: the bands below are drawn for older dust that has no tube left)
     std::sort(cands.begin(), cands.end(), [](const Cand &a, const Cand &b) { return a.pri > b.pri; });
     const glm::dvec3 ex(eci2enuX), ey(eci2enuY), ez(eci2enuZ);
     auto toEnu = [&](const glm::dvec3 &v) { return glm::dvec3(glm::dot(v, ex), glm::dot(v, ey), glm::dot(v, ez)); };
     const glm::dvec3 sunDU = glm::normalize(glm::dvec3(sunDirECI));
-    const uint32_t dustMax = kDustMax;
+    // The dispersed bands' share of the dust list (the ring pass at the end of this function): the tube's ranking is
+    // surface brightness, so it would never keep a faint band over a fresh blob.
+    constexpr uint32_t kRingBudget = 144;
+    const uint32_t dustMax = kDustMax - kRingBudget;
     // The cloud as a TUBE along its orbit (2026-10-20, issue 20261019_231126: a station's cloud was drawn as up to 12
     // straight Gaussians ~2000 km long, "beams" crossing the sky, and the count of them stepped with age (a ceil() of
     // the cloud's length), so its width jumped, and a hash per piece index reshuffled its lumps: "it stretches oddly
@@ -3087,6 +3092,163 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
                              (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sR * sS * sW)));
             d.ib = glm::vec4((float)M(0, 1), (float)M(0, 2), (float)M(1, 2), 0.0f);
             d.col = glm::vec4(0.96f, 0.92f, 0.86f, 0.0f);
+        }
+    }
+
+    // ── The dust BANDS (2026-10-31, issue_20261030_175418 "Dust Clouds from kessler") ─────────────────
+    // A breakup's dust keeps spreading along its parent's orbit: the along-track sigma is sv x the Clohessy-Wiltshire
+    // term |4 sin(nt)/n - 3t| (2 900 km after half an hour for a 500 m/s kick, a whole orbit by ~2 h). The tube above
+    // draws the young cloud; past half an hour its pieces are long, thin and faint, its rank (surface brightness) falls
+    // away, and in a late cascade the next breakups - hundreds an hour by day 60 - outrank it: every drawn cloud was
+    // seconds to minutes old, so the debris read as glints and round blobs with no dispersed band (the report).
+    // Each event from half an hour to four hours old is drawn as a BAND along its parent's orbit instead: a chain of
+    // clumps spanning the fragments' along-track 3 sigma (wrapped into a full ring once that passes the orbit), each
+    // with the fragments' radial / cross-track spread (capped: a band, not a fog). The event's own light is spread over
+    // the clumps (the tube's Amp) x kRingGain: the clumps are resolved (hundreds of km across, so thousands of pixels
+    // from orbit) and at a physical surface brightness the band would be ~6 orders of magnitude below the night sky -
+    // the same reason "Dust cloud brightness" exists. The young cloud and its blobs, the fireballs and the point
+    // debris (kFireBuf) are untouched. Its own budget (kRingBudget) so a faint band is drawn beside the fresh blobs.
+    {
+        constexpr double kRingAgeMin = 0.5 * 3600.0;  // younger: the tube's cloud above
+        constexpr double kRingAgeMax = 4.0 * 3600.0;  // older: faded out (as the tube's 3 h)
+        constexpr double kRingFadeIn = 900.0;         // s, a band fades in over this after kRingAgeMin (no pop)
+        constexpr double kClump = 400.0e3;            // a clump's along-track sigma (m)
+        constexpr double kClumpStep = 1.5;            // clump spacing in clump sigmas (the band is continuous)
+        constexpr double kWidMax = 250.0e3;           // the band's radial / cross-track sigma, at most (m)
+        constexpr int kClumpsMax = 26;                // per band
+        constexpr double kRingGain = 2.0;             // the band's brightness in the point sources' units
+        struct Band
+        {
+            double pri = 0.0, age = 0.0, amp = 0.0, half = 0.0, wR = 0.0, wW = 0.0;
+            size_t ev = 0;
+        };
+        std::vector<Band> bands;
+        const uint32_t nTube = n; // the tube's pieces (the ring's summary counts what follows)
+        // The window's bands, ranked from what the event itself carries (its radius, so the mean motion; the dust mass;
+        // its kick): the whole window - hundreds of breakups a minute by day 60 - is ranked at ~50 flops an event, and
+        // only the few that can be drawn get the orbit propagated below.
+        const size_t i0R = kEvents.lowerBound(t - kRingAgeMax - 2.0 * 3600.0,
+                                              [](const kessler::Event &e, double x) { return e.t < x; });
+        for (size_t k = i0R; k < kEvents.size(); ++k)
+        {
+            const kessler::Event &e = kEvents[k];
+            if (e.t > t - kRingAgeMin)
+                break;
+            const double age = t - e.t;
+            if (age > kRingAgeMax)
+                continue;
+            kessler::State s0{{e.pos[0], e.pos[1], e.pos[2]}, {e.vel[0], e.vel[1], e.vel[2]}};
+            const double rm = glm::length(s0.r);
+            if (rm < 1.0)
+                continue;
+            const double nb = std::sqrt(kessler::kGM / (rm * rm * rm));
+            const double sv = std::clamp((double)e.dvSmall, 80.0, 500.0);
+            const double nt = nb * age, ct = std::cos(nt), st = std::sin(nt);
+            const double aa = 2.0 * (ct - 1.0) / nb, bb = 4.0 * st / nb - 3.0 * age;
+            const double pp = st / nb, qq = 2.0 * (1.0 - ct) / nb;
+            const double aS = sv * std::sqrt(aa * aa + bb * bb) + 30.0;
+            // The arc it covers (3 sigma along the track; wrapped into a full ring).
+            const double half = std::min(3.0 * aS, glm::pi<double>() * rm);
+            // The fragments' spread across the band: the radial (marginal) and cross-track sigmas, capped.
+            const double wR = std::clamp(sv * std::sqrt(pp * pp + qq * qq), 20.0e3, kWidMax);
+            const double wW = std::clamp(sv * std::abs(pp), 20.0e3, kWidMax);
+            const double ageK = glm::smoothstep(kRingAgeMin, kRingAgeMin + kRingFadeIn, age) *
+                                (1.0 - glm::smoothstep(0.75 * kRingAgeMax, kRingAgeMax, age));
+            const double mass = 5.6 * (double)e.dustKg + 0.02 * (double)e.nSmall;
+            if (mass < 1.0 || ageK <= 0.0)
+                continue;
+            const double ampLin = 0.25 * mass * (double)kesslerDustGain;
+            const double amp = ampLin / std::sqrt(1.0 + ampLin / kAmpKnee) * ageK;
+            // The rank: the band's surface brightness (light over its arc x width), a hash breaking exact ties.
+            const double pri = amp / (2.0 * half * wR + 1.0e6) * (1.0 + 1e-6 * kessler::hash01(e.seed, k, 53));
+            bands.push_back({pri, age, amp, half, wR, wW, k});
+        }
+        if (!bands.empty() && n < kDustMax)
+        {
+            std::sort(bands.begin(), bands.end(), [](const Band &a, const Band &b) { return a.pri > b.pri; });
+            // Pieces per band (from its arc), and the budget: the best bands take the ring share, the ones near the
+            // cut fade by priority (as the tube's clouds do) so a view change does not pop them.
+            auto piecesOf = [&](const Band &b) {
+                const double D = kClumpStep * kClump;
+                return (int)std::clamp((int)std::ceil(2.0 * b.half / D) + 1, 2, kClumpsMax);
+            };
+            uint32_t used = 0;
+            double priCut = 0.0;
+            for (size_t q = 0; q < bands.size(); ++q)
+            {
+                const int nP = piecesOf(bands[q]);
+                if (used + (uint32_t)nP > kRingBudget)
+                {
+                    priCut = bands[q].pri;
+                    break;
+                }
+                used += (uint32_t)nP;
+            }
+            used = 0;
+            for (size_t q = 0; q < bands.size() && n < kDustMax; ++q)
+            {
+                const Band &b = bands[q];
+                const int nP = piecesOf(b);
+                if (used + (uint32_t)nP > kRingBudget || n + (uint32_t)nP > kDustMax)
+                    break;
+                // The band at the budget's cut fades to nothing by priority, so a band crossing the cut as time runs does
+                // not pop (the rank does not depend on the view: camera motion never reorders them).
+                const double cutK = priCut <= 0.0 ? 1.0 : glm::smoothstep(priCut, 2.0 * priCut, b.pri);
+                if (cutK <= 1e-3)
+                    continue;
+                // The orbit propagated to now (only the bands that are drawn pay for it).
+                const kessler::Event &e = kEvents[b.ev];
+                kessler::State s0{{e.pos[0], e.pos[1], e.pos[2]}, {e.vel[0], e.vel[1], e.vel[2]}};
+                kessler::Elems el = kessler::elemsFromState(s0);
+                if (el.a <= 0.0 || el.e >= 0.99)
+                    continue;
+                el.M += std::sqrt(kessler::kGM / (el.a * el.a * el.a)) * b.age;
+                const kessler::State sc = kessler::stateFromElems(el);
+                const double rm = glm::length(sc.r);
+                const glm::dvec3 R = sc.r / rm;
+                const glm::dvec3 W = glm::normalize(glm::cross(sc.r, sc.v));
+                const glm::dvec3 S0 = glm::cross(W, R);
+                const double D = 2.0 * b.half / std::max(nP - 1, 1);
+                const double sS = std::min(kClump, b.half);
+                const double light = b.amp * cutK * kRingGain / (double)nP;
+                const double arcDeg = 360.0 * std::min(1.0, b.half / (glm::pi<double>() * rm));
+                kRingArcDegMax = std::max(kRingArcDegMax, arcDeg);
+                kRingArcDegSum += arcDeg;
+                kRingWidthKm = std::max(kRingWidthKm, 2.0 * b.wR / 1000.0);
+                kRingDbg.push_back({(double)b.ev, b.age, arcDeg, 2.0 * b.wR / 1000.0, (double)nP, b.amp * cutK});
+                for (int j = 0; j < nP && n < kDustMax; ++j)
+                {
+                    const double th = (-b.half + j * D) / rm;
+                    const glm::dvec3 Rj = std::cos(th) * R + std::sin(th) * S0;
+                    const glm::dvec3 Sj = glm::cross(W, Rj);
+                    const glm::dvec3 ctr = rm * Rj;
+                    const glm::dvec3 rel = toEnu(ctr - eye);
+                    const double rng = std::max(glm::length(rel), 1.0);
+                    const double sMin = 2.5 * (double)pixelAngle * rng; // never under ~2.5 full-res pixels
+                    const double sR = std::max(b.wR, sMin);
+                    const double sW = std::max(b.wW, sMin);
+                    const double sSu = std::max(sS, sMin);
+                    // The clump's light in the point sources' units: the band's share of the event's light spread over
+                    // the clump's volume (the same toSky the tube's point-like pieces use).
+                    const double cwD = light * toSky;
+                    const glm::dvec3 a = toEnu(Rj), bq = toEnu(Sj), cw = toEnu(W);
+                    const double iR = 1.0 / (sR * sR), iS = 1.0 / (sSu * sSu), iW = 1.0 / (sW * sW);
+                    auto M = [&](int i, int jj) { return iR * a[i] * a[jj] + iS * bq[i] * bq[jj] + iW * cw[i] * cw[jj]; };
+                    GpuDustCloud &d = out[n++];
+                    const double rad = 4.0 * std::max({sR, sSu, sW});
+                    const double dist = glm::length(rel);
+                    d.cone = dist > 1.05 * rad
+                                 ? glm::vec4(glm::vec3(rel / dist), (float)std::sqrt(1.0 - (rad / dist) * (rad / dist)))
+                                 : glm::vec4(0.0f);
+                    d.c = glm::vec4(glm::vec3(rel), (float)cwD);
+                    d.ia = glm::vec4((float)M(0, 0), (float)M(1, 1), (float)M(2, 2),
+                                     (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sR * sSu * sW)));
+                    d.ib = glm::vec4((float)M(0, 1), (float)M(0, 2), (float)M(1, 2), 0.0f);
+                    d.col = glm::vec4(0.96f, 0.92f, 0.86f, 0.0f);
+                }
+                used += (uint32_t)nP;
+            }
+            kRingPieces = n - nTube;
         }
     }
 }
@@ -4213,6 +4375,23 @@ nlohmann::json SatelliteSim::kesslerStateJsonImpl(bool full) const
             }
             j["dust"]["clouds"] = cl;
             j["dust"]["clouds_drawn"] = kDustDbg.size();
+        }
+        // The dispersed bands (2026-10-31, issue_20261030_175418): their clumps, the widest band's arc (360 = a full
+        // ring) and width, every drawn band's arc summed, and each band (event, age, arc, width, clumps, light).
+        if (kRingPieces > 0)
+        {
+            j["dust"]["rings"] = {{"pieces", kRingPieces},
+                                  {"arc_deg_max", kRingArcDegMax},
+                                  {"arc_deg_sum", kRingArcDegSum},
+                                  {"width_km_max", kRingWidthKm}};
+            nlohmann::json rb = nlohmann::json::array();
+            for (size_t q = 0; q < kRingDbg.size() && q < 12; ++q)
+            {
+                const auto &a = kRingDbg[q];
+                rb.push_back({{"ev", (uint64_t)a[0]}, {"age_s", a[1]}, {"arc_deg", a[2]}, {"width_km", a[3]},
+                              {"pieces", a[4]}, {"amp", a[5]}});
+            }
+            j["dust"]["rings"]["bands"] = rb;
         }
     }
     j["reentries_now"] = kReentriesNow;
