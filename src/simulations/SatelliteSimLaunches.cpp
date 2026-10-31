@@ -9963,8 +9963,9 @@ void SatelliteSim::buildLaunchSettingsSection(const UIInput &inp, UIRenderer &ui
 }
 
 // ── Settings > Launches: GRAPHICS (rockets, exhaust, launch sites) ─────────────────────────────────────
-// The exhaust sliders (2026-10-21, issue 20261021_175638: "sliders for exhaust plumes, I wanna test ranges"): every one
-// at 1 is the look before them. Slots 313-320 of the shared slider arrays (kCloudSliderSlots).
+// The exhaust sliders (2026-10-21, issue 20261021_175638: "sliders for exhaust plumes, I wanna test ranges"): their
+// defaults are the tuned 2026-10-30 values (SatelliteSim.h), the reset below restoring exactly those. Slots 313-320 of
+// the shared slider arrays (kCloudSliderSlots), then 425 and the jellyfish's 428-434.
 void SatelliteSim::buildLaunchGraphicsSection(const UIInput &inp, UIRenderer &ui)
 {
     uiSection("LdSec", 2, tx(Txt::SecGraphicsRocketsAndExhaust));
@@ -9993,13 +9994,24 @@ void SatelliteSim::buildLaunchGraphicsSection(const UIInput &inp, UIRenderer &ui
         {tx(Txt::SldStagingCloudX), &launchStagingCloud, 0.0f, 3.0f, 0.05f, "%.2f", 434},
     };
     buildCloudSliderRows(inp, ui, rows, (int)(sizeof(rows) / sizeof(rows[0])), false);
-    if (uiButton(inp, ui, "LdGfxReset", 0, tx(Txt::BtnResetExhaustToDefaults), tx(Txt::TipEverySliderAboveBackTo1)))
+    if (uiButton(inp, ui, "LdGfxReset", 0, tx(Txt::BtnResetExhaustToDefaults), tx(Txt::TipEverySliderAboveBackToDefault)))
     {
-        launchPlumeGain = launchPlumeBright = launchPlumeWidth = launchPlumeBillows = 1.0f;
-        launchPlumeGrowth = launchGroundCloudGain = launchRocketGain = engineLightGain = launchPlumeDispersal = 1.0f;
+        // The compiled-in defaults (SatelliteSim.h, the 2026-10-30 tuned look). Keep the two in step.
+        launchPlumeGain = 0.3f;
+        launchPlumeBright = 1.06334841f;
+        launchPlumeWidth = 0.877828062f;
+        launchPlumeBillows = 0.9909502f;
+        launchPlumeGrowth = 1.0f;
+        launchGroundCloudGain = launchRocketGain = 1.0f;
+        engineLightGain = 0.9049774f;
+        launchPlumeDispersal = 3.93665171f;
         launchStreakCount = 0.0f;
-        launchStreakLengthS = 30.0f;
-        launchStreakBright = launchStreakSpread = launchStreakDiffusion = launchNucleusBright = launchStagingCloud = 1.0f;
+        launchStreakBright = 1.0f;
+        launchStreakSpread = 0.909502268f;
+        launchStreakLengthS = 54.76923f;
+        launchStreakDiffusion = 0.5882353f;
+        launchNucleusBright = 1.040724f;
+        launchStagingCloud = 1.90045261f;
     }
 }
 

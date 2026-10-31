@@ -3290,22 +3290,24 @@ private:
     std::unique_ptr<LaunchState, LaunchStateDelete> launchState;
     bool launchesEnabled = true;     // launches.enabled
     float launchLifeScale = 1.0f;    // launches.life_scale: x every program's design life (fewer launches above 1)
-    float launchPlumeGain = 1.0f;    // launches.plume_gain: the plumes' optical depth x
+    float launchPlumeGain = 0.3f;    // launches.plume_gain: the plumes' optical depth x
     float launchRocketGain = 1.0f;   // launches.rocket_gain: the flames' brightness x
     // Exhaust tuning (2026-10-21, issue 20261021_175638: "sliders for exhaust plumes, I wanna test ranges"; Settings >
-    // Launches). 1 = the look before them, exactly. Drawn per frame (launchFillVisuals' addPlume, cloud_march
-    // dustPad2) except the growth, which the parcels are built with (a change rebuilds every plume: B.plumeGrowJob).
-    float launchPlumeBright = 1.0f;  // launches.plume_brightness: the light the exhaust scatters x
-    float launchPlumeWidth = 1.0f;   // launches.plume_width: every plume Gaussian's radius x (same mass: thinner wide)
-    float launchPlumeBillows = 1.0f; // launches.plume_billows: the billows' contrast x (cloud_march.comp)
-    float launchPlumeGrowth = 1.0f;  // launches.plume_growth: the low trail's / ground clouds' turbulent growth x
+    // Launches). Defaults since 2026-10-30 are the tuned values in the user's settings.json (1 = the 2026-10-21 look).
+    // Drawn per frame (launchFillVisuals' addPlume, cloud_march dustPad2) except the growth, which the parcels are built
+    // with (a change rebuilds every plume: B.plumeGrowJob).
+    float launchPlumeBright = 1.06334841f;  // launches.plume_brightness: the light the exhaust scatters x
+    float launchPlumeWidth = 0.877828062f;  // launches.plume_width: every plume Gaussian's radius x (same mass: thinner wide)
+    float launchPlumeBillows = 0.9909502f;  // launches.plume_billows: the billows' contrast x (cloud_march.comp)
+    float launchPlumeGrowth = 1.0f;         // launches.plume_growth: the low trail's / ground clouds' turbulent growth x
     // The second stage's jellyfish (2026-10-30, issue 20261030_134020; Settings > Launches > ROCKETS AND EXHAUST,
     // slots 428-434, keys launches.jelly_*): streak count (0 = one per upper-stage engine), the streaks' brightness x,
     // spread x (their opening angle), sharp length (s of exhaust age before they diffuse), diffusion x (how fast they
-    // widen and fade into the glow), the nucleus's brightness x, the hot-staging cloud x.
-    float launchStreakCount = 0.0f, launchStreakBright = 1.0f, launchStreakSpread = 1.0f, launchStreakLengthS = 30.0f;
-    float launchStreakDiffusion = 1.0f, launchNucleusBright = 1.0f, launchStagingCloud = 1.0f;
-    float launchPlumeDispersal = 1.0f; // launches.plume_dispersal (2026-10-26): old exhaust's widening with age x (no UI)
+    // widen and fade into the glow), the nucleus's brightness x, the hot-staging cloud x. Defaults since 2026-10-30 are
+    // the tuned values in the user's settings.json: a long, wide jellyfish (55 s, 0.59 diffusion) under a 1.9 cloud.
+    float launchStreakCount = 0.0f, launchStreakBright = 1.0f, launchStreakSpread = 0.909502268f, launchStreakLengthS = 54.76923f;
+    float launchStreakDiffusion = 0.5882353f, launchNucleusBright = 1.040724f, launchStagingCloud = 1.90045261f;
+    float launchPlumeDispersal = 3.93665171f; // launches.plume_dispersal (2026-10-26): old exhaust's widening with age x (no UI)
     float launchGroundCloudGain = 1.0f; // launches.ground_cloud_gain: lift-off steam / landing dust & spray density x
     // Rocket light on clouds, haze, plumes and the ground (2026-10-20, launches.engine_light_gain): the burning
     // engines (ascent, boostback, entry and landing burns), a ship's entry glow and the pads' floodlights as point
@@ -3313,8 +3315,8 @@ private:
     // the full Moon's physical irradiance), x this gain. Listed by launchFillVisuals / launchFillPadLights into
     // engineLights_, written after the dust list's 1024 entries (kDustBuf tail, header word 1) and drawn by the
     // lightning pass's mode 2 (lightning.frag: clouds and fog, the haze along the ray, the ground) and by
-    // cloud_march.comp's plumes (dustCloudsCS).
-    float engineLightGain = 1.0f;
+    // cloud_march.comp's plumes (dustCloudsCS). Default 0.905 since 2026-10-30 (the tuned settings.json value).
+    float engineLightGain = 0.9049774f;
     static constexpr uint32_t kMaxEngineLights = 32;
     // (2026-10-29) After the engine lights: per smoke Gaussian of the dust list a vec4 (its marginal vertical sigma, m, 0 =
     // the flat closed form is right for it; its tilt across its footprint, 3 sigma_h / R; the weight of the curved form for
@@ -3795,15 +3797,17 @@ private:
     // The major annual showers + the sporadic background, generated as a pure function of sim time near the observer
     // (meteors::generate), drawn each frame in kesslerFillDust's finish: heads as points in kFireBuf (bloom, glare),
     // their streaks over the eye's persistence as emissive Gaussians in the dust list, fragments, persistent trains.
-    bool meteorsEnabled = true;           // meteors.enabled
-    float meteorRateGain = 1.0f;          // meteors.rate (x the showers' flux)
-    float meteorFireballGain = 1.0f;      // meteors.fireball_rate (x the rate of fireballs / bolides, M <= -4)
-    float meteorTrainDuration = 0.3f;     // meteors.train_duration (x the persistent trains' decay time; 1 = the old)
+    bool meteorsEnabled = true;               // meteors.enabled
+    float meteorRateGain = 1.0f;              // meteors.rate (x the showers' flux)
+    // The two tuned defaults of 2026-10-30 (the user's settings.json): fireballs at a tenth of their 2026-10-27 rate and
+    // persistent trains at 7% of their decay time (1 = the 2026-10-27 look: a -10 bolide's train drawn for ~200 s).
+    float meteorFireballGain = 0.1f;          // meteors.fireball_rate (x the rate of fireballs / bolides, M <= -4)
+    float meteorTrainDuration = 0.07239819f;  // meteors.train_duration (x the persistent trains' decay time)
     // Time-lapse draw past 2x (2026-10-28, issue 20261028_220640): every meteor that burned during the frame's sim-time
     // interval is drawn as its streak over that interval, its light integrated and divided by the exposure
     // min(interval, timelapse_exposure_s) (>= the eye's persistence). meteors.timelapse false = the old cut-off.
-    bool meteorTimelapse = true;          // meteors.timelapse
-    float meteorTimelapseExposureS = 0.1f; // meteors.timelapse_exposure_s
+    bool meteorTimelapse = true;              // meteors.timelapse
+    float meteorTimelapseExposureS = 0.1f;    // meteors.timelapse_exposure_s
     bool meteorTimelapseHeadCap = true;    // meteors.timelapse_head_cap: a time-lapse head is never brighter than the 1x head at the meteor's peak
     double meteorPrevT_ = 0.0;            // last frame's sim time (the interval)
     bool meteorLapse_ = false;            // this frame: time-lapse
@@ -6445,25 +6449,29 @@ private:
     // Glare clusters (2026-10-20, issue 20261019_222938): how strongly a glare in a crowd gives up its spikes to
     // the brighter / summed light around it (include/glare.glsl). 0 = every source draws its own star (as before).
     float glareClusterMerge = 1.0f;
-    // The Milky Way's look (2026-10-28, GpuCloudParams::mwLook; Photometry tab, photometry.milky_way_*).
-    float mwGainGround = 1.0f;
-    float mwGainSpace = 2.5f;
+    // The Milky Way's look (2026-10-28, GpuCloudParams::mwLook; Photometry tab, photometry.milky_way_*). Defaults since
+    // 2026-10-30 are the tuned look in the user's settings.json: a dimmer, bluer band under the air than the photograph,
+    // star clouds 1.0 and zoom detail 0.99 (they started as 1.0 / 2.5 / 0.5 / 0.7 / 0.6).
+    float mwGainGround = 0.470588237f;
+    float mwGainSpace = 0.7963801f;
     float mwContrastSpace = 1.25f;
-    float mwNightVision = 0.5f;
-    float mwStarClouds = 0.7f;
-    float mwZoomDetail = 0.6f;
+    float mwNightVision = 0.5022625f;
+    float mwStarClouds = 1.0f;
+    float mwZoomDetail = 0.98642534f;
     bool mwZoomOn = true;   // photometry.milky_way_zoom (no UI): false = the old single fetch at every field of view (A/B)
     // The zoomed star clouds' tunables (2026-10-28, issue 20261028_191142; GpuCloudParams::mwStar0-2, Photometry tab,
-    // photometry.milky_way_star_*). Defaults = the look they replaced (constants in sat_sky.frag's mwZoomDetail).
-    float mwZoomFrom = 0.6f;        // the zoomed view starts at this input pixel / panorama texel ...
-    float mwZoomFull = 0.3f;        // ... and is complete at this one
-    float mwStarFill = 0.9f;        // share of lattice cells holding a point
+    // photometry.milky_way_star_*). Defaults since 2026-10-30 are the tuned settings.json values: the zoomed view is in
+    // from 8 px/texel and complete at 1.03, a dense near-equal-point lattice, the faint sky all points, nebulae 0.93 (the
+    // 2026-10-28 constants, 0.6 / 0.3 / 0.9 / 0.65 / 0.003 / 0.02 / 1.0, are what these replaced).
+    float mwZoomFrom = 8.0f;        // the zoomed view starts at this input pixel / panorama texel ...
+    float mwZoomFull = 1.02760184f; // ... and is complete at this one
+    float mwStarFill = 0.892533958f; // share of lattice cells holding a point
     float mwStarSize = 0.9f;        // a point's sigma (input px)
     float mwStarCellPx = 4.0f;      // lattice cell (input px): smaller = denser, fainter points
-    float mwStarLumExp = 0.65f;     // the points' brightness distribution: w = (1 - a) u^-a (0 = all equal)
-    float mwStarFaintLo = 0.003f;   // the band's glow below which the sky stays smooth (no points) ...
-    float mwStarFaintHi = 0.02f;    // ... and above which it has its full share of points
-    float mwStarNebula = 1.0f;      // how fully the magenta emission nebulae stay a smooth glow (0 = points there too)
+    float mwStarLumExp = 0.561991f; // the points' brightness distribution: w = (1 - a) u^-a (0 = all equal)
+    float mwStarFaintLo = 0.0f;     // the band's glow below which the sky stays smooth (no points) ...
+    float mwStarFaintHi = 0.002f;   // ... and above which it has its full share of points
+    float mwStarNebula = 0.9276018f; // how fully the magenta emission nebulae stay a smooth glow (0 = points there too)
     // Seeing (2026-10-28, Photometry tab): "Star twinkle rate" x the twinkle's old frequencies, on REAL time
     // (photometry.star_twinkle_rate, issue 20261028_191408); "Turbulence warp" x the angle-of-arrival rms the whole picture
     // is displaced by (photometry.turbulence_warp, issue 20261028_193115; 0 = no image motion at all: sat_sky.frag's own

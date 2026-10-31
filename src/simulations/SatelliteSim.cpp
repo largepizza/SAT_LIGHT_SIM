@@ -2827,7 +2827,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.mwLook2 = glm::vec4(std::clamp(mwStarClouds, 0.0f, 1.0f), std::clamp(mwNightVision, 0.0f, 1.0f), mwZoomDetail,
                                2.0f * std::tan(glm::radians(camera.fovYDeg) * 0.5f) / std::max(cp.skyScreenH, 1.0f));
         {
-            const float zFrom = std::clamp(mwZoomFrom, 0.05f, 4.0f);
+            // The zoom-from bound is the slider's high end (8 since 2026-10-30, the tuned default: the star-cloud lattice in
+            // at nearly every field of view). zFull must stay under zFrom.
+            const float zFrom = std::clamp(mwZoomFrom, 0.05f, 8.0f);
             const float zFull = std::clamp(mwZoomFull, 0.01f, zFrom - 0.01f);
             const float fLo = std::clamp(mwStarFaintLo, 0.0f, 0.5f);
             cp.mwStar0 = glm::vec4(zFrom, zFull, std::clamp(mwStarFill, 0.05f, 1.0f), std::clamp(mwStarSize, 0.3f, 4.0f));

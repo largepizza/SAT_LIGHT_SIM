@@ -5337,7 +5337,7 @@ void SatelliteSim::buildSettingsPhotometryRows(const UIInput &inp, UIRenderer &u
         // pixel per panorama texel), the share of lattice cells holding a point, a point's size, the lattice cell (smaller
         // = denser, fainter points), the brightness spread (0 = all points equal), the glow below / above which the faint
         // sky has no / its full share of points, and how fully the emission nebulae stay a smooth glow.
-        {tx(Txt::SldMwStarZoomFromPxTexel), &mwZoomFrom, 0.1f, 2.0f, 0.05f, "%.2f", 45},
+        {tx(Txt::SldMwStarZoomFromPxTexel), &mwZoomFrom, 0.1f, 8.0f, 0.05f, "%.2f", 45},
         {tx(Txt::SldMwStarZoomFullPxTexel), &mwZoomFull, 0.05f, 1.5f, 0.05f, "%.2f", 46},
         {tx(Txt::SldMwStarFill), &mwStarFill, 0.05f, 1.0f, 0.05f, "%.2f", 47},
         {tx(Txt::SldMwStarSizePx), &mwStarSize, 0.3f, 3.0f, 0.05f, "%.2f", 48},
