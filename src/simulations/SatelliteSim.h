@@ -3167,6 +3167,15 @@ private:
     // The clouds drawn this frame (harness `kessler state` -> dust.clouds): event index, kind, dust kg, small
     // fragments, age (s), the rank's effective size sqrt(amp / priority) (km), its light (amp, before the sky units), cut fade.
     std::vector<std::array<double, 8>> kDustDbg;
+    // The dispersed dust BANDS drawn this frame (2026-10-31, issue_20261030_175418): their clumps, the widest band's
+    // arc (deg of its orbit: 360 = a full ring) and width (km, its radial 2 sigma), and every drawn band's arc summed.
+    uint32_t kRingPieces = 0;
+    double kRingArcDegMax = 0.0;
+    double kRingArcDegSum = 0.0;
+    double kRingWidthKm = 0.0;
+    // Each drawn band (harness `kessler state` -> dust.rings.bands): event index, age (s), arc (deg of its orbit),
+    // width (km, 2 sigma), clumps, the band's light (amp, before the sky units).
+    std::vector<std::array<double, 6>> kRingDbg;
     void kesslerFillDust(float pixelAngle);
     // Fills the fireballs for the current time into kFireBuf and appends their trails to the dust list (out, n).
     void kesslerFillFireballs(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull);
