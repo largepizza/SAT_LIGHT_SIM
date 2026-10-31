@@ -45,6 +45,22 @@ Rules: read the images (`read_image`) for a shot with a pin or an area — `crop
 read the pin as "the problem is HERE". If a title is empty, derive a 5-word label from the description and say
 so. `area` is your guess, not the app's `category` field.
 
+## 2b. Check history before anyone writes a fix
+
+`sent` does not mean broken. In the 2026-10-30 pass, 91 of 102 `sent` issues were already cited by a commit,
+a source comment, `CLAUDE.md`, `CHANGELOG` or the docs — fixed after the report was filed and never resolved.
+
+For every issue, before it can become a fix brief:
+
+```bash
+git log --all --grep=<YYYYMMDD_HHMMSS>          # commits that name it
+grep -rn "<YYYYMMDD_HHMMSS>" src shaders CLAUDE.md CHANGELOG.md docs   # comments that name it
+```
+
+A citation makes it a **verification** job (replay the shot, decide gone / still present / view changed) with a
+cheap verdict, not a fix job. Resolving a `gone` against the citing commit closes the loop for the price of one
+launch. Only uncited issues, and issues whose verdict is `still present`, get a fix agent.
+
 ## 3. Consolidate
 
 Reduce the rows to clusters (rules in `docs/QA_LOOP.md`). One cluster = one root cause one agent can fix;

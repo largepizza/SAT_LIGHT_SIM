@@ -81,6 +81,20 @@ qa/
 `state` is one of `planned → claimed → fixed → verified → merged → resolved`, or `rejected` (with a reason —
 "not reproducible", "not a bug", "wontfix", "duplicate of cN" — recorded, never silently dropped).
 
+## Replay reality (learned the hard way, 2026-10-30)
+
+- **`report load` restores pose, time and settings — not the session's weather, fire or tornado phase.** Storm,
+  haboob, tornado, wildfire and smoke frames usually do not reproduce: the scene arrives in a different phase or
+  with no event at all. Those verdicts are `view changed`, and they need a **Watch**-based re-test (spawn the
+  event, then compare), never a resolve on the strength of a mismatched frame. This explained six of eight
+  "view changed" verdicts in one 30-issue slice.
+- **`sent` does not mean broken.** A large share of any old backlog was fixed after filing and never resolved.
+  Index the pass against history first (see `qa-triage` §2b); verification is one launch per six issues,
+  fixing is a worktree and a build per issue.
+- A report can be **fixed but ugly**: the artifact is gone and a new one replaced it (e.g. a flat sun cut
+  replaced by a broad veiling glare). That is a new judgement for the user, not a silent close — say what
+  changed and let them file it.
+
 ## Clustering rules
 
 - **One cluster = one root cause one agent can fix.** Same subsystem, same mechanism. If the fix for A cannot
