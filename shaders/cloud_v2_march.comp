@@ -160,14 +160,6 @@ float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00
 const float kLightRatio = 1.0;
 const vec3  kMoonColor  = vec3(0.92, 0.95, 1.0);
 const float kCv2MoonMieCap = 40.0;   // the Mie table's 8 P past ~3 deg; see the key light's single scattering
-// "Mie optics" (mie.z) blends from the structure MULTIPLIER to the table's own amplitude at the antisolar point (see
-// the key light's single scattering): the structure p / p_smoothed is a ratio, and a ratio is an amplitude only where
-// the tuned phase's level is the table's. Toward the glory the table's 4 pi p (0.72 at 10 um) is BELOW the tuned back
-// lobe (1.43), so the multiplier's 3.7x there was invented light (issue_20261022_175746). The blend, on the cosine of
-// the angle to the antisolar point = -cosK, runs 0.90 (154 deg) .. 0.94 (160 deg): over that band the two forms differ
-// by under 3%, so no seam is drawn.
-const float kCv2MieGloryCos0 = 0.90;
-const float kCv2MieGloryCos1 = 0.94;
 
 // Optical depth from a cloud sample toward a light: the light march (the first two samples with
 // detail — the lumps that make cauliflower) plus one long coarse sample, the far side of a tower;
@@ -1084,36 +1076,20 @@ void main()
                 // ("Powder" darkened thin, sun-facing samples, a stand-in for the diffuse field's build-up: the old model's only.)
                 float powder = (cv2.ms.x > 0.5) ? 1.0 : 1.0 - cv2.look2.z * exp(-f.sigma * 300.0) * (0.5 - 0.5 * cosK);
                 vec3 pSSv = vec3(pSS);
-                // The table's own phase (4 pi p): one fetch serves the "Mie optics" amplitude and the "Mie phase" share.
-                vec3 pTab = vec3(0.0);
-                if (cv2.mie.x > 0.0 || cv2.mie.z > 0.0)
-                    pTab = cv2MiePhaseAt(cosK);
-                // "Mie optics" (mie.z): the table's structure, p / exp(log p smoothed over 8 deg) (tools/make_mie_lut.py),
-                // as a relative modulation of the tuned phase -- its corona rings, cloudbow and glory at the tuned
-                // energy. Applied to the TUNED share only (issue round 2026-10-22): it multiplied the mix below, so the
-                // physical share's corona / bow / glory took the structure a second time (x3.3 on the forward peak at
-                // 0.33).
-                // A RATIO IS AN AMPLITUDE only where the tuned phase's own level is the table's. At the cloudbow and the
-                // corona it is (and the forward peak is "Mie phase"'s: the table is ~1000x the tuned phase there), so the
-                // multiplier stays. At the ANTISOLAR point it is not: the table's glory (4 pi p 0.72 at 10 um) sits
-                // BELOW the tuned back lobe (1.43), and the multiplier's 3.7x there was invented light -- a broad, smooth
-                // disc over +-5 deg at ~3.5x the table's phase, which read as a painted spot on the deck
-                // (issue_20261022_175746). Past kCv2MieGloryCos the table's own sharp deviation from its smoothed level
-                // (p - p / structure, its rings) is added at the TABLE's amplitude instead: the glory rides the tuned
-                // back lobe as a faint ringed feature.
-                if (cv2.mie.z > 0.0) {
-                    vec3 sRow = textureLod(cv2MieTex, vec2(acos(clamp(cosK, -1.0, 1.0)) * (1.0 / PI), cv2.mie.w), 0.0).rgb;
-                    vec3 dev  = max(pTab - pTab / max(sRow, vec3(1e-3)), vec3(0.0));
-                    pSSv = mix(pSSv * mix(vec3(1.0), sRow, cv2.mie.z), pSSv + cv2.mie.z * dev,
-                               smoothstep(kCv2MieGloryCos0, kCv2MieGloryCos1, -cosK));
-                }
+                // "Mie optics" (mie.z): the tuned phase x the table's structure (its corona rings, cloudbow and glory
+                // relative to its own smoothed shape), keeping the tuned energy. Applied to the TUNED share only
+                // (issue round 2026-10-22): it multiplied the mix below, so the physical share's corona / bow / glory took
+                // the structure a second time (x3.3 on the forward peak at 0.33).
+                if (cv2.mie.z > 0.0)
+                    pSSv *= mix(vec3(1.0), textureLod(cv2MieTex, vec2(acos(clamp(cosK, -1.0, 1.0)) * (1.0 / PI), cv2.mie.w), 0.0).rgb,
+                                cv2.mie.z);
                 // The droplets' Mie phase ("Mie phase", 2026-10-22): water cloud's single scattering from the Lorenz-Mie
                 // table (forward diffraction peak, cloudbow, glory) in place of the two Henyey-Greenstein lobes.
                 // For the MOON its diffraction peak is capped (kCv2MoonMieCap, the table's value ~3 deg out): moonlit cloud
                 // carries the night view's ~2600x lift and the drawn Moon disc does not, so the aureole (physically a few %
                 // of the disc's surface brightness) drew a bright blue disc over a crescent (issue 20261022_180130).
                 if (cv2.mie.x > 0.0)
-                    pSSv = mix(pSSv, min(pTab, vec3(moonIsKey ? kCv2MoonMieCap : 1e9)), cv2.mie.x);
+                    pSSv = mix(pSSv, min(cv2MiePhaseAt(cosK), vec3(moonIsKey ? kCv2MoonMieCap : 1e9)), cv2.mie.x);
                 if (f.thin > 0.0 || f.rain > 0.0) {
                     pSSv = mix(pSSv, moonIsKey ? phIceMoon : phIceSun, f.thin);
                     pSSv = mix(pSSv, moonIsKey ? phRainMoon : phRainSun, f.rain);
