@@ -119,8 +119,7 @@ struct Stack
     int perTier = 1;            // flat: 1 or 2 side by side; column: around the column
     bool sideX = false;         // flat, 2 a tier: side by side along the satellite's X (else its Y)
     double pitchM = 1.0;        // tier to tier along the stage
-    double offsetM = 0.0;       // flat: each centre's offset from the axis; column: the centres' radius; pez: the
-                                // column's centre out from the ship's axis (the plates clear of the hull at the door)
+    double offsetM = 0.0;       // flat: each centre's offset from the axis; column: the centres' radius
     double baseM = 0.3;         // the lowest tier's bottom above the payload adapter
     double columnRadiusM = 0.0; // column: the dispenser's
     glm::dvec3 center{0.0};     // the stowed satellite's centre (body frame): placed at the slot
