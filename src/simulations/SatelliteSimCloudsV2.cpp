@@ -1918,16 +1918,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         // marched at a quarter of the density from a history without their detail: 64-px squares of the quarter lattice's
         // dots, greyer than their neighbours and missing the cirrus streaks, for ~1.5 s after the eye stopped. At the still
         // history weight (~0.05) 64 frames leave ~4% of the old history.
-        // 16, not 64 (c34, 2026-10-31): 64 was set from that residual alone. Measured through the wait at that report's own
-        // view with its own trail captured as the flight ends, the blocks appear at a wait of 2 and of 8 frames (path
-        // frames 215/220 of the 234-pose trail: 0.35 mean |luma| over the frame, 2.8% of the block's patch past 8 levels)
-        // and are gone at 16 - where the classification still reads 53% of the detail (0.954^16 = 47% of the tent), well
-        // over its 30-level threshold. The refill window is then 64 frames (3.2 s at 20 fps) -> 16 (0.8 s) after motion, a
-        // zoom or a history loss; the steady state is untouched (the same classifier, measured image 0.005 levels, the
-        // same-run pass F saving within the pairs' spread). Moving the test into the classifier instead - the sparse
-        // grid's own samples a frame behind - holds the artifact at 8 frames but costs half of pass F's steady-state
-        // saving at this view (14.7 -> 16.4 ms), so it was not kept. qa/waves/20261030b/evidence/c34/numbers.md.
-        constexpr int kSmoothSettleFrames = 16;
+        constexpr int kSmoothSettleFrames = 64;
         const uint32_t qTiles = ((cv2QuarterW + 15) / 16) * ((cv2QuarterH + 15) / 16);
         cv2SmoothNow = cv2SmoothTiles > 0.5f && cv2FullResActive() && !cv2FullRateNow && !cv2AdaptiveNow && !cv2HalfRateNow &&
                        cv2EyeStillFrames >= kSmoothSettleFrames &&
