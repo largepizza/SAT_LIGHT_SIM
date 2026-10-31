@@ -369,6 +369,13 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   came out at about 3.5x the physical phase. It now rides the lobe at the table's own amplitude, with its rings (the
   spot's peak-to-neighbourhood luminance 1.10 -> 1.05 at the report's view, its bright core gone; the cloudbow, the
   corona and every other view unchanged) (issue_20261022_175746).
+- A rocket climbing away at night is a flame again, not a camera star: inside 12 km of the eye its point no longer
+  glares with the full distance-tuned star on top of the flame the launch already draws (the two copies of one
+  light - a glare sprite 1024 px across, 1480 px before the point-size clamp, of 10 rays over a 69 px flame, the
+  vehicle's 9 visible pixels), and the flare hands back smoothly by 28 km, so the flame at 100+ km and beyond is
+  unchanged. At the reported view the clipped-white area drops 3820 -> 613 px, the saturated radius 34 -> 16 px,
+  the ray light in the 85-170 px annulus 0.173 -> 0.101 (the same frame's glare-off value), and the vehicle's
+  silhouette 9 -> 118 px (issue_20261019_222829).
 
 ### Technical and modding
 
