@@ -3059,45 +3059,19 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
             d.cone = dist > 1.05 * rad
                          ? glm::vec4(glm::vec3(rel / dist), (float)std::sqrt(1.0 - (rad / dist) * (rad / dist)))
                          : glm::vec4(0.0f);
-            // A piece's light: in the point sources' units (toSky, ~10 mag over a surface's physical brightness: a
-            // cloud of magnitude m carries what a star of m shows) while it is a few pixels across, and its SURFACE
-            // brightness once it is resolved - the same light spread over the piece's own footprint, which the
-            // Gaussian's 1 / ((2 pi)^1.5 sR sS sW) in the shader already does, so a piece dims as it grows. What the
-            // point units over-state for a big piece is the LEVEL: a fresh cloud seen from inside would go past a
-            // sunlit white face (2026-10-30, issue_20261029_213225 shot 2: from 790 m a breakup's cloud filled the
-            // view in flat grey-white), so the light is capped at the total that renders a dust cloud's brightest
-            // possible face - a semi-infinite layer of its own albedo (0.25: see the brightness estimate above), a
-            // quarter of a sunlit white face - a cap on the DISPLAY, not on the light (2026-10-31,
-            // issue_20261019_231126's follow-up: capping the light at a constant pi made a resolved cloud vanish,
-            // ~1e-5 of white at the reporter's view at 20 min, 3 decades under the same cloud 45 min later when it
-            // had moved far enough to be a point again). The cap fades in by apparent size (resK) and never lifts
-            // the light above the point total, so a piece a few pixels across is unchanged.
+            // Resolved, its light is its SURFACE brightness (2026-10-30, issue 20261029_213225 shot 2: from 790 m a
+            // breakup's young cloud filled the view in flat grey-white). The light is in the point sources' units
+            // (toSky, ~10 mag over a surface's physical brightness: a cloud of magnitude m carries what a star of m
+            // shows), right for a piece a few pixels across and far too bright once it covers the screen; resolved it
+            // is pi x the radiance per unit solar irradiance (the sky's units: a sunlit white face is 1) x "Dust cloud
+            // brightness", geometric blend as the flames do (its smallest sigma 1.5 -> 8 half-res pixels). Distant
+            // pieces (a pixel or two) are unchanged.
             double cwD = ampC * w * toSky;
             {
                 const double sMinPx = std::min({sR, sS, sW}) / std::max(rng * (double)pixelAngle, 1e-9);
                 const double resK = glm::smoothstep(1.5, 8.0, sMinPx);
                 if (resK > 0.0)
-                {
-                    // The light that renders that face here (cap / the display per unit light): cloud_march.comp's
-                    // dustCloudsCS puts L += col * tau * lit, x phase, and the caller x expo (display per unit of
-                    // the sky's radiance); tau is the Gaussian's along-ray integral sqrt(pi / 2q) /
-                    // ((2 pi)^1.5 sR sS sW) x the light, q = dir' M dir (the shader's q).
-                    constexpr double cap = 0.25; // the dust's albedo: no cloud is brighter than its own slab
-                    const glm::dvec3 dir = rel / std::max(dist, 1e-9);
-                    const double dR = glm::dot(dir, a), dS = glm::dot(dir, bq), dW = glm::dot(dir, cw);
-                    const double q = iR * dR * dR + iS * dS * dS + iW * dW * dW;
-                    const double ray = std::sqrt(glm::pi<double>() / (2.0 * std::max(q, 1e-300)));
-                    const double vol = std::pow(2.0 * glm::pi<double>(), 1.5) * sR * sS * sW;
-                    const double cosT = glm::dot(dir, glm::normalize(sunDU));
-                    constexpr double g = 0.7; // (the shader's dust phase: forward-peaked, mean 1 over the sphere)
-                    const double hg = (1.0 - g * g) /
-                                      std::pow(std::max(1.0 + g * g - 2.0 * g * cosT, 1e-4), 1.5);
-                    const double phase = (0.6 * hg + 0.4) * (1.0 / (4.0 * glm::pi<double>()));
-                    const double cwCap = cap / std::max(std::max((double)skyExposure(), 1e-6) * phase * 0.92 *
-                                                            ray / vol, 1e-300);
-                    const double capK = std::min(1.0, cwCap / std::max(ampC * w * toSky, 1e-300));
-                    cwD = ampC * w * toSky * std::pow(capK, resK);
-                }
+                    cwD = ampC * w * std::exp(glm::mix(std::log(std::max(toSky, 1e-30)), std::log(glm::pi<double>()), resK));
             }
             d.c = glm::vec4(glm::vec3(rel), (float)cwD);
             // The music's upwell: this piece's light at the eye as a magnitude (effectFlare = K amp / r^2: the
