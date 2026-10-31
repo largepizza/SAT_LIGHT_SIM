@@ -346,6 +346,11 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   (about a hundred-thousandth of white for a 20-minute-old station cloud), so the debris disappeared within minutes
   of the breakup and came back only once it had drifted far enough away to be a point again. A piece now dims only as
   it grows, capped at a quarter of a sunlit white face when the camera is inside a fresh cloud.
+- The cloud droplets' Mie glory no longer paints a broad, smooth bright disc round the anti-solar point: the table's
+  structure multiplied the tuned backscatter lobe, which is already above the table's own phase there, so the spot
+  came out at about 3.5x the physical phase. It now rides the lobe at the table's own amplitude, with its rings (the
+  spot's peak-to-neighbourhood luminance 1.10 -> 1.05 at the report's view, its bright core gone; the cloudbow, the
+  corona and every other view unchanged) (issue_20261022_175746).
 
 ### Technical and modding
 
