@@ -69,16 +69,6 @@ constexpr double kStreakAgeS = 240.0;
 // the streaks' opening angle as they leave the stage and their widening along their length
 constexpr double kStreakOffMin = 1.0, kStreakOffMax = 1.8;
 constexpr double kStreakWidth = 0.1;
-// The range band (m) over which a burning stack's POINT hands its light to the launch's own emissive Gaussians
-// (2026-10-31, issue_20261019_222829 "Plumes Again"): inside kFlameGlareHandoverM the flame's own image - the plume
-// parcels, the lit exhaust, the flame's three Gaussians - already covers the flame in saturated white (measured
-// 2026-10-31: 625 clipped white px at 2.3 km, with no glare sprite at all), so the point there is a second copy of
-// the same light. Its glare was the defect: 3820 px of white, a 1024 px sprite (a radius of 1480 px before the point
-// size clamps it) of 10 rays over a 69 px flame, and the vehicle down from 118 to 9 visible px. At/after
-// kFlameGlareHandoverFullM the term is exactly 0 and the flame is a point again. See the fP block in
-// launchFillVisuals.
-constexpr double kFlameGlareHandoverM = 12000.0;
-constexpr double kFlameGlareHandoverFullM = 28000.0;
 
 glm::dvec3 rotZ(const glm::dvec3 &v, double th)
 {
@@ -7455,20 +7445,6 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     const double capK = glm::smoothstep(4.0, 30.0, Lpx);
                     if (fP > 14.0 && capK > 0.0)
                         fP = std::exp(glm::mix(std::log(fP), std::log(14.0), capK));
-                }
-                // The same hand-over by RANGE (2026-10-31, issue_20261019_222829): the Lpx blend above starts at a
-                // flame 4 px long, which at fov 120 is ~700 m, so from 1 to 28 km - the whole near field, where the
-                // glare's own proximity term (glareNearScale, up to 8x below 21.86 km) widens the sprite - the point
-                // still glares at the response's ceiling (b = 8, s = 6.24: a Starship's flare at 2.3 km is mag -14.2,
-                // 9e5, against a threshold of 11.5) while the flame's own Gaussians already cover its image in white.
-                // There the point is a second copy of one light: a 1024 px sprite (radius 1480 px before the point
-                // size clamps it) of 10 rays over a 69 px flame, the vehicle's 118 visible px down to 9. Capped to
-                // the same 14 (just past the glare threshold) inside kFlameGlareHandoverM, released by
-                // kFlameGlareHandoverFullM; at/after that the term is exactly 0.
-                {
-                    const double handK = 1.0 - glm::smoothstep(kFlameGlareHandoverM, kFlameGlareHandoverFullM, range);
-                    if (fP > 14.0 && handK > 0.0)
-                        fP = std::exp(glm::mix(std::log(fP), std::log(14.0), handK));
                 }
                 if (fP > 2e-4 && kFireCount < kFireballMax)
                     fo[kFireCount++] = {glm::vec4(glm::vec3(toEnu(relC) / rC), (float)fP), glm::vec4(col, (float)rC)};
