@@ -78,11 +78,15 @@ void main()
         flux *= dustPhase(c) / (rg * rg);
         col = vec3(1.05, 0.98, 0.86);    // sunlight off dust, a little reddened (luminance ~1)
     } else {
-        // CO+ fluorescence (the comet-tail bands at 400-430 nm, + a little H2O+): deep violet-blue (2026-10-30: it was
-        // (0.16, 0.42, 1.95), which the display drew as a pastel cornflower). Excited by sunlight at the ion's own
-        // distance from the Sun, saturated as the head's law (A4.w = rSat^2).
+        // CO+ fluorescence (the comet-tail bands at 400-430 nm, + a little H2O+): a deep indigo, darker and greyer than
+        // the electric (0.05, 0.17, 2.1) it replaces ((0.16, 0.42, 1.95) before that drew a pastel cornflower, issue
+        // 20261030_140112). The composite divides by the brightest channel and its shoulder keeps the hue, so these
+        // RATIOS are what the eye gets; the colour's luminance (0.96 of the old) is what the photometry reads (objMag,
+        // the dark-sky gate), and the brightest channel OVER that luminance (2.65, was 7.4) is how far the shoulder
+        // lifts it: the smaller ratio is most of the darkening. Excited by sunlight at the ion's own distance from the
+        // Sun, saturated as the head's law (A4.w = rSat^2).
         flux *= (1.0 + A4.w) / (rg * rg + A4.w);
-        col = vec3(0.05, 0.17, 2.1);
+        col = vec3(0.16, 0.26, 0.72);
     }
     vec3 dirEcl = D / dist;
     vec3 enu = vec3(dot(F.eclX.xyz, dirEcl), dot(F.eclY.xyz, dirEcl), dot(F.eclZ.xyz, dirEcl));

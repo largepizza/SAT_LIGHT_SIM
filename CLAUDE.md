@@ -3425,10 +3425,13 @@ the Great Comet's elements against the sim's own Earth). Sky-event kind `comet` 
     a time grid alone the radial turned ~0.5 rad a slot at perihelion and the swing drew the streamers as separate blue
     puffs). 3000 parcels far from perihelion, ~6000 through the swing. **Brightness by the gas rate**: pick-ups follow
     the production Q ~ r_eff^-(n - 2) (`ionFluxK` 0.3 x gas x Fhead0), each ion fluoresces by the sunlight where it is
-    NOW (comet_splat.vert: / (r^2 + rSat^2), rSat^2 in `F.comet[2s+1].w`), e-folding 1 day. Colour CO+ deep violet-blue
-    (0.05, 0.17, 2.1); (0.16, 0.42, 1.95) displayed as a pastel cornflower (issue 20261030_140112), and before that it
-    read pale sky blue because the composite's shoulder was on the luminance and the blue channel (2.6x it) clipped at
-    the display: the shoulder is on the brightest channel. **Streamers**: each 0.008 of its distance from the head wide
+    NOW (comet_splat.vert: / (r^2 + rSat^2), rSat^2 in `F.comet[2s+1].w`), e-folding 1 day. Colour CO+ deep indigo
+    (0.16, 0.26, 0.72), darker and greyer than the electric (0.05, 0.17, 2.1) of 2026-10-30 and the pastel cornflower
+    (0.16, 0.42, 1.95) before it (issues 20261030_140112, 20261028_221813: the composite times the colour by the
+    brightest channel, so a blue far above its luminance was lifted to a pale one). The composite divides by that
+    channel and keeps the hue: the ratios are the hue on screen, its luminance (0.96 of the old) the photometry, and
+    the brightest channel over it (2.65, was 7.4; the dust's 1.06) how hard the shoulder lifts the tail: that ratio is
+    its display brightness. **Streamers**: each 0.008 of its distance from the head wide
     (0.025 merged the five, 0.032 rad apart, into one band), its brightness varying along it with the emission time
     (knots and gaps ~0.3 day apart that ride out with the plasma) and between streamers, 0.25-1.75 x, mean 1. Through the
     swing the old perihelion parcels fade with their distance from the Sun, and after it the ion tail is faint: its

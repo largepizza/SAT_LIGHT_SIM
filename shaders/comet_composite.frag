@@ -5,7 +5,9 @@
 // exp(-rho / rho_s), softened inside the point's ~1 arcmin, round on the sky, no edge), then as the Milky Way: the line
 // of sight's extinction, the dark-sky gate against the sky's own surface brightness in this direction (darksky.glsl:
 // city glow, twilight, daylight with its aureole round the Sun, moonlight), the global exposure, cloud occlusion and a
-// soft shoulder on the luminance (hue kept) so a bright head region is never a white blob. Added post-tonemap.
+// soft shoulder on the luminance (hue kept) so a bright head region is never a white blob. Added post-tonemap. The
+// colours are the particles' own (comet_splat.vert: dust a warm white, ions a deep CO+ indigo): this shader scales them
+// and never tints them — except the analytic coma, which turns faintly C2 green outward (the one hue chosen here).
 
 #extension GL_EXT_control_flow_attributes : require
 #include "common.glsl"
