@@ -290,7 +290,16 @@ vec2 cv2StvLevelT(vec3 rl, float h, int lv)
     // The window's centre: the eye, or from above mid-shell the point under it at mid-shell (cv2.stvH.w / stvV.w, m), as
     // the cascade's: centred on the eye in orbit, the clouds below sat hundreds of km off across a low Sun.
     vec2  cc = ce - vec2(cv2.stvH.w, cv2.stvV.w) / la.z;
-    float w  = (1.0 - smoothstep(48.0, 56.0, max(abs(cc.x), abs(cc.y)))) * la.w;
+    // The edges fade on a RADIAL norm, not the Chebyshev one (2026-10-31, issue 20261025_190008). max(|cc.x|, |cc.y|)
+    // ended each level's reach on a SQUARE in the lattice plane, and the square is anchored to the eye: from the air the
+    // shadow's resolution stepped across two straight lines at 12-14 km from the nadir (2026-10-31 measurement at the
+    // report's 30 km view: level 0 inside the square, level 1 outside, its sides within a few degrees of the screen's
+    // axes, because the lattice's a axis is horizontal and its b axis lies along the Sun), so an observer flying saw a
+    // box of shading travel with them. A circle has no straight edge to catch the eye.
+    // The radii keep the reach's AREA: pi 62^2 = 12076 cells^2 against the square's (2 x 56)^2 = 12544 (3.7% less),
+    // and 62 + the corner read stays inside the 64-cell window, so no slot is read past its wrap.
+    float rr = length(cc);
+    float w  = (1.0 - smoothstep(52.0, 62.0, rr)) * la.w;
     if (w <= 0.0) return vec2(1.0, 0.0);
     vec2  gg = ce + la.xy + 4096.0;
     ivec2 g0 = ivec2(gg);
