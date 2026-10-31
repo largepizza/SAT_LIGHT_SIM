@@ -1730,7 +1730,8 @@ float padValueNoise(vec2 x) {
 // q is (0..1) and its share of pale ash, over the nearest FIRE_MAX fires' burnt ellipses with their fingers (the same
 // radial factor the front's points stand on, 64 angles, Wildfire.cpp fireFrontRadiusK). The active arc burns at the
 // scar's edge; behind it the ground is black with grey-white ash and a few unburnt islands. footM: the pixel's
-// footprint (the edge never sharper than it, the islands averaged away past it).
+// footprint (the edge never sharper than it, the islands averaged away past it). The perimeter is ragged and the fringe
+// a mosaic, not a smooth ellipse (2026-10-31, issue_20261028_192133: see in0).
 float fireScarAt(vec3 q, float footM, out float ash) {
     ash = 0.0;
     float scar = 0.0;
@@ -1739,7 +1740,7 @@ float fireScarAt(vec3 q, float footM, out float ash) {
         vec3  d  = q - cloud.fireC[i].xyz;
         float sm = cloud.fireC[i].w, hw = cloud.fireU[i].w;
         float u  = dot(d, cloud.fireU[i].xyz), v = dot(d, cloud.fireV[i].xyz);
-        if (abs(u) > 1.5 * sm + footM || abs(v) > 1.5 * hw + footM) continue;
+        if (abs(u) > 1.8 * sm + footM || abs(v) > 1.8 * hw + footM) continue;
         vec2  e  = vec2(u / sm, v / hw);
         float r  = length(e);
         float a  = atan(e.y, e.x);
@@ -1749,16 +1750,25 @@ float fireScarAt(vec3 q, float footM, out float ash) {
         float k1 = float((cloud.fireK[i * 4 + (j1 >> 4)][(j1 >> 2) & 3] >> uint(8 * (j1 & 3))) & 255u);
         float k  = 0.6 + mix(k0, k1, fract(x)) * (0.8 / 255.0);
         float rM = length(vec2(u, v)) / max(r, 1e-4);              // the ellipse's radius at this angle (m)
-        float wR = (1.0 / cloud.fireAux[i].y + footM) / max(rM, 1.0);
-        float in0 = 1.0 - smoothstep(k - wR, k + wR, r);
-        if (in0 <= 0.0) continue;
         float sd = cloud.fireV[i].w;
         float fine = 1.0 - smoothstep(60.0, 400.0, footM);
-        float isl  = mix(0.08, smoothstep(0.7, 0.8, padValueNoise(vec2(u, v) / 300.0 + sd)), fine);
+        // (2026-10-31, issue_20261028_192133) A burnt area does not stop on a line. One smooth 64-angle ellipse with a
+        // 0.2-km edge read from 26 km as a single hard-edged black oval (634 x 355 px) - a smoke "puff" - not as burnt
+        // landscape. The perimeter now wanders with the fire's own unburnt fingers (2.6 km and 0.8 km cells), the last
+        // ~1 km inside it is a mosaic of burnt ground, and the interior carries km-scale unburnt patches, so the scar
+        // reads as a scar from any altitude instead of a disc. The centre, the covered area and the char colour are
+        // unchanged; the smoke path is not touched.
+        float nA = padValueNoise(vec2(u, v) / 2600.0 + 4.7 * sd);
+        float nB = padValueNoise(vec2(u, v) / 820.0 + 2.3 * sd);
+        float perM  = (0.24 * (nA - 0.5) + 0.06 * (nB - 0.5)) * rM;   // the perimeter's wander (m)
+        float edgeM = 1.0 / cloud.fireAux[i].y + footM + 0.05 * rM;   // the partially burnt fringe (m)
+        float in0 = 1.0 - smoothstep(-edgeM, edgeM, (r - k) * max(rM, 1.0) - perM);
+        if (in0 <= 0.0) continue;
+        float isl  = 0.06 + 0.9 * smoothstep(0.60, 0.82, 0.62 * nA + 0.38 * mix(0.5, nB, fine));
         float s    = in0 * cloud.fireAux[i].x * (1.0 - isl);
         if (s > scar) {
             scar = s;
-            ash  = mix(0.3, smoothstep(0.5, 0.8, padValueNoise(vec2(u, v) / 110.0 + 1.7 * sd)), fine);
+            ash  = mix(0.3, smoothstep(0.5, 0.8, 0.55 * nB + 0.45 * padValueNoise(vec2(u, v) / 260.0 + 1.7 * sd)), fine);
         }
     }
     return scar;

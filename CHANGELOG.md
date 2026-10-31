@@ -144,6 +144,11 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **Haboobs.** A storm's gust front over dry land raises a towering wall of dust, drawn as beige billowing cloud.
 - **Wildfires.** Fires start by biome, season and dryness and spread with a coherent wind: a ragged flaming front
   with embers, smoke that follows real trajectories into a regional pall, burn scars, and their glow at night.
+- **A burn scar looks like burnt ground, not a black oval.** From 26 km a large fire's scar was one smooth ellipse
+  with a clean 0.2-km rim - the reporter read it as an oversized smoke particle. Its perimeter now wanders with the
+  fire's own unburnt fingers, its fringe is a mosaic, and its interior carries km-scale unburnt patches: at the
+  reported view the rim's luminance step falls 50% on average (the share of the rim over 10 levels: 17% -> 2.6%),
+  the scar's structure at the 2-km scale doubles, and the smoke itself is untouched (issue_20261028_192133).
 - **The Weather window** (the cloud button, or N): featured events (the next tornado, the strongest hurricane, a
   haboob, a supercell, a squall line, a waterspout, the biggest wildfire), storms near you, a local precipitation
   radar with a loop, and the named storms with track maps and milestones. One **Watch** button per event lands on
