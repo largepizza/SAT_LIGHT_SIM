@@ -342,6 +342,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   since"); the Ongoing tab lists build-out last; long window titles are ellipsized instead of clipped;
   Planetarium shows the green airglow only at the limb; engine light reaches the hull above it; the Beam-lit Snow
   bookmark frames its snow shower again.
+- A breakup's dust cloud no longer vanishes as it spreads: a resolved piece was drawn thousands of times too faint
+  (about a hundred-thousandth of white for a 20-minute-old station cloud), so the debris disappeared within minutes
+  of the breakup and came back only once it had drifted far enough away to be a point again. A piece now dims only as
+  it grows, capped at a quarter of a sunlit white face when the camera is inside a fresh cloud.
 
 ### Technical and modding
 
