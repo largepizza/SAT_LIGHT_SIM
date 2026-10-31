@@ -4244,18 +4244,6 @@ void main() {
     // composite (`color = color * cloudB.rgb + cloudA.rgb`) still applies later, after the
     // 2D flat cloud-layer overlay and satellite glow so those get attenuated too; this early
     // sample only reads the alpha channels needed for occlusion tests.
-    // (2026-10-31, issue_20261022_180225) This pixel's own ray reached space, but the shared
-    // half-res depth found a surface a texel to the side of it (the depth pass marches coarser
-    // octaves than this pixel, so its silhouette stands several texels proud). The volumetric march
-    // clamped the cloud to that nearer surface, so the deck behind a ridge is CUT here, and the
-    // composite below must not let the whole open-sky column show through the cut share — that leak
-    // is the one-to-three-pixel bright line along the terrain silhouette. Set by the depth-texel
-    // block below, read at the composite: the sky behind the cut share is the air AT the surface.
-    // (Not in SKY_LITE — no volumetric clouds there — nor in an SKY_ENV probe, whose composite is
-    // neutral; both are at their size budgets.)
-#if !defined(SKY_ENV) && !defined(SKY_LITE)
-    bool silDepthNear = false;
-#endif
 #ifdef SKY_ENV
     // No half-res cloud targets for another viewpoint: neutral composite (A adds nothing, B passes
     // everything, no opaque-cloud distance, no ground shadow). The flat layers carry the clouds.
@@ -4316,24 +4304,9 @@ void main() {
         vec2  fr = hp - vec2(i0);
         float lF = log(max(tSurface > 0.0 ? tSurface : kNoSurfaceT, 1.0));
         float dMin = 1e9, dMax = -1e9;
-        float dNear = kNoSurfaceT;
         for (int k = 0; k < 4; ++k) {
-            float dk  = texelFetch(sceneDepthTex, clamp(i0 + ivec2(k & 1, k >> 1), ivec2(0), ds - 1), 0).r;
-            float lDk = log(max(dk, 1.0));
+            float lDk = log(max(texelFetch(sceneDepthTex, clamp(i0 + ivec2(k & 1, k >> 1), ivec2(0), ds - 1), 0).r, 1.0));
             dMin = min(dMin, lDk); dMax = max(dMax, lDk);
-            dNear = min(dNear, dk);
-        }
-        // (2026-10-31, issue_20261022_180225) The depth pass's silhouette stands proud of this pixel's:
-        // the half-res grid marches coarser octaves, so the crest covers several texels of sky above the
-        // full-res silhouette, and the resolve's 3x3 spreads the cloud's cut transmittance a texel further
-        // up. A sky pixel within reach of a crest is what the seam is made of, so take the nearest surface
-        // in this pixel's own 2x2 AND in the row of texels below it (the terrain side of a silhouette).
-        // Flagged where this pixel's own ray reached space: the composite below then takes the air at that
-        // surface for the share the cut cloud lets through, instead of the whole open-sky column.
-        if (tSurface <= 0.0) {
-            dNear = min(dNear, texelFetch(sceneDepthTex, clamp(i0 + ivec2(0, 2), ivec2(0), ds - 1), 0).r);
-            dNear = min(dNear, texelFetch(sceneDepthTex, clamp(i0 + ivec2(1, 2), ivec2(0), ds - 1), 0).r);
-            silDepthNear = dNear > 0.0 && dNear < 0.5 * kNoSurfaceT;
         }
         // A mesh pixel always takes this path, and tests each texel's composite against the mesh on its own
         // (2026-10-21, issue 20261021_174219: "artifacting on trusses"). The test used to be ONE filtered alpha after
@@ -7547,17 +7520,7 @@ void main() {
         cloudA.rgb *= kM;
     }
 #endif
-    // (2026-10-31, issue_20261022_180225) At a sub-pixel silhouette the march cut the cloud against a
-    // crest this pixel's ray missed (silDepthNear), so the share cloudB lets through is that crest: the
-    // air in front of the cloud (airFront — the loop's sums to its split) is what belongs there, not the
-    // whole open-sky column, whose leak was the one-to-three-pixel bright line along the ridge. Gated on
-    // a cloud actually being there (cloudBlock 1 = clear sky, where a bright rim is real and must stay).
-#if !defined(SKY_ENV) && !defined(SKY_LITE)
-    vec3 cloudBack = (silDepthNear && cloudBlock < 0.98) ? airFront : color;
-    color = cloudBack * cloudB.rgb + cloudA.rgb + (cityGlowFront + airFront) * (vec3(1.0) - cloudB.rgb);
-#else
     color = color * cloudB.rgb + cloudA.rgb + (cityGlowFront + airFront) * (vec3(1.0) - cloudB.rgb);
-#endif
 #ifdef SKY_ENV
     // From orbit the curtains are in front of every cloud deck: added on top.
     color += envAurora(obsPos, dir, tSurface, enuX, enuY, enuZ, sunDirECEF);
