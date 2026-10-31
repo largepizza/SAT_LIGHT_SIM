@@ -427,12 +427,7 @@ void main()
     // whatever the map had there (2026-10-27, issue 20261027_003307): an additive brightness left a clear map broken,
     // so the deck under the CDO was scattered cloud and no rain fell from it. A floor at the full threshold, in
     // brightness units; it fades out with the CDO's edge (stormStampFinish's inner).
-    // (2026-10-30, issue 20261027_213254 shot 1: a floor at the FULL threshold where the map was dark left that deck
-    // one slowly varying slab - flown through at 1.8 km the low cloud read as a smooth-walled "carved cavity", the rain
-    // hanging a kilometre below it, with nothing for the cells or the detail field to break. The floor now keeps the
-    // map's own brightness in a band just under full, so the deck's coverage carries the imagery's structure (5-10 km)
-    // and the storm's (the arm bands, tens of km) instead of erasing it; its mean stays near overcast.)
-    float deckFloor = gCycDeck * (0.80 + 0.20 * clamp(cov, 0.0, 1.0)) * pc.remap.z / max(pc.remap.x, 1e-3);
+    float deckFloor = gCycDeck * pc.remap.z / max(pc.remap.x, 1e-3);
     cov = clamp(max(cov + stormAdd, deckFloor), 0.0, 1.0);
     m1  = clamp(max(m1 + stormAdd, deckFloor), 0.0, 1.0);
     // Systems strengthen and weaken: clear air clouds over where the field rises, overcast thins where it

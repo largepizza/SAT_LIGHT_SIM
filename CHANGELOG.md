@@ -134,11 +134,6 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **Tropical cyclones.** About 80 a year across six basins, named from the WMO lists, following climatological
   tracks with landfalls and recurvature: an eyewall, a clear eye, spiral rain bands, outflow cirrus, a whipped-up
   sea, wind that drives the rain and the ambience, and a storm surge that floods low coasts.
-- **The deck inside a hurricane keeps its structure.** Flying through a cyclone's central dense overcast at 1-3 km,
-  the cloud under it was one smooth, slowly varying slab - a smooth-walled "carved cavity" with no cell structure
-  and the rain hanging below the deck's mass. The deck's forced overcast now keeps the weather map's own brightness
-  instead of erasing it: at a reported view the area you can see more than 4 km through drops 70% and the deck's
-  local contrast rises 46%, with the eyewall's brightness unchanged (issue_20261027_213254).
 - **Tornadoes and waterspouts** under supercells and strong storms at sea, hanging from the storm's real base,
   spinning, with a wall cloud, debris cloud and roar.
 - **Haboobs.** A storm's gust front over dry land raises a towering wall of dust, drawn as beige billowing cloud.
