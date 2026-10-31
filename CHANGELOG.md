@@ -72,7 +72,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   Kessler cascade computed at physical rates with the NASA Standard Breakup Model, up to 50 years ahead, in the
   background and cached. Before the storm nothing differs from the plain sky.
 - **What you see:** dead satellites tumbling and glinting; debris pieces drawn close up as torn solar arrays,
-  radiator sections and pieces of bus; a glowing dust cloud along each breakup's orbit; re-entry fireballs with a
+  radiator sections and pieces of bus, appearing at the impact's own instant (not a fraction of a second early,
+  converging on the impact point); a glowing dust cloud along each breakup's orbit; re-entry fireballs with a
   breakup flash, fragment trains and material colours (aluminium white, copper green, sodium yellow, lithium
   crimson); and once the cascade runs, many small meteor-like streaks.
 - **Explode** (Info window) breaks any satellite or debris piece up with one click, at any date; the debris is

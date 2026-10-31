@@ -1138,6 +1138,9 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
     kPoolGen.clear();
     kPoolHist.clear();
     kGenBounds.clear();
+    kFirstBounds.clear();
+    kPoolUnborn.clear();
+    kPoolHidden.clear();
     kShownSec = kHistPrunedUntil = kHistPrunedAt = INT32_MIN;
     kHistPruneFrontier = 0.0;
     kReplayPending = false;
@@ -1439,6 +1442,9 @@ void SatelliteSim::kesslerRestartInstall(RestartOut &out)
         std::vector<uint32_t>().swap(out.snapGen);
         kPoolHist.clear();
         kGenBounds.clear();
+        kFirstBounds.clear();
+        kPoolUnborn.clear();
+        kPoolHidden.clear();
         kReentries.swap(out.snapReentries);
         for (uint32_t i = 0; i < activeSatCount && i < w.rosterDead.size(); ++i)
         {
@@ -1640,7 +1646,7 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
         const double leadH = std::clamp(2.0 * (double)kTimeScales[timeScaleIdx], 2.0, 6.0 * 3600.0);
         const bool held = tNow >= kWorldStart && tNow + 1.0 >= kFrontier + leadH;
         kWorker->userWaiting = held;
-        kesslerSyncProcess(nowSec, held ? kSyncBudgetHeldMs : kSyncBudgetMs);
+        kesslerSyncProcess(nowSec, tNow, held ? kSyncBudgetHeldMs : kSyncBudgetMs);
         size_t backlog = 0;
         for (const auto &b : kWorker->syncQ)
             backlog += b.pool.size() - b.next;
@@ -1657,14 +1663,20 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
     // Sim time moved: slots whose hands changed between the shown second and now show the other generation.
     if (nowSec != kShownSec)
     {
+        const int32_t lo = std::min(kShownSec, nowSec), hi = std::max(kShownSec, nowSec);
         if (kShownSec != INT32_MIN)
         {
             FPROF_SCOPE("kessler.showGens");
-            const int32_t lo = std::min(kShownSec, nowSec), hi = std::max(kShownSec, nowSec);
             for (auto it = kGenBounds.upper_bound(lo); it != kGenBounds.end() && it->first <= hi; ++it)
-                kesslerShowGen(it->second, nowSec);
+                kesslerShowGen(it->second, nowSec, tNow, kEvents.n);
+            // A slot's first record has no history, so kGenBounds does not hold it: kFirstBounds does.
+            for (auto it = kFirstBounds.upper_bound(lo); it != kFirstBounds.end() && it->first <= hi; ++it)
+                kesslerShowGen(it->second, nowSec, tNow, kEvents.n);
         }
         kShownSec = nowSec;
+        // That second is entered: its first-record births have been gated (a record arriving later this second is
+        // gated by kesslerSyncProcess), so drop them.
+        kFirstBounds.erase(kFirstBounds.begin(), kFirstBounds.upper_bound(nowSec));
         if (nowSec < kHistPrunedUntil)
             kReplayPending = true;
         // Once a simulated day: drop generations that ended more than kHistKeepS ago (a reversal beyond replays).
@@ -1680,6 +1692,8 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
             kesslerPruneOldIndexes();
         }
     }
+    // A generation born inside the shown second is shown once its own event's time (not the second's) arrives.
+    kesslerShowUnborn(tNow);
     // (2026-10-28) ... and while sim time stands still (held at the frontier after a jump, paused) whenever the mirrored
     // frontier has moved a day since the last pass: generations keep arriving and all of them are older than "now". With
     // the shown second fixed the prune never ran, and a jump to day 600 held the mirror at ~33 GB.
@@ -1747,7 +1761,7 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
 }
 
 // Works through the queue of the worker's output, in order, for up to budgetMs of wall time (1e30: all of it).
-void SatelliteSim::kesslerSyncProcess(int32_t nowSec, double budgetMs)
+void SatelliteSim::kesslerSyncProcess(int32_t nowSec, double tNow, double budgetMs)
 {
     if (!kWorker)
         return;
@@ -1762,6 +1776,8 @@ void SatelliteSim::kesslerSyncProcess(int32_t nowSec, double budgetMs)
     while (!W.syncQ.empty() && !stopped)
     {
         KesslerWorker::SyncBatch &sb = W.syncQ.front();
+        // The batch's events are in the log before its records are published: a record's event time is readable now.
+        const size_t evSeen = std::max(kEvents.n, sb.evEnd);
         while (sb.next < sb.pool.size())
         {
             const KesslerWorker::OutPoolChange &c = sb.pool[sb.next];
@@ -1815,6 +1831,12 @@ void SatelliteSim::kesslerSyncProcess(int32_t nowSec, double budgetMs)
                     kesslerSetPoolOrbit(j);
                     if (j < kPoolGpu)
                         kDirtyPool.push_back(j);
+                    // The first record of a slot has no history: index its birth second (kGenBounds cannot), and gate
+                    // it now if that second is the shown one (the shader's born gate is the whole second).
+                    if (c.rec.bornSec >= nowSec)
+                        kFirstBounds.insert({c.rec.bornSec, j});
+                    if (c.rec.bornSec == nowSec)
+                        kesslerShowGen(j, nowSec, tNow, evSeen);
                     grew = true;
                 }
                 else
@@ -1827,7 +1849,7 @@ void SatelliteSim::kesslerSyncProcess(int32_t nowSec, double budgetMs)
                     kGenBounds.insert({c.rec.bornSec, j});
                     if (selectedSatIndex == (int)(poolIdx0() + j) && c.rec.bornSec <= nowSec)
                         selectedSatIndex = -1; // that piece is gone; its slot holds another now
-                    kesslerShowGen(j, nowSec);
+                    kesslerShowGen(j, nowSec, tNow, evSeen);
                 }
                 if (c.rec.decaySec != kessler::kNever)
                     kesslerIndexReentry(poolIdx0() + j, c.rec.decaySec);
@@ -2357,7 +2379,9 @@ void SatelliteSim::kesslerRecordUploads(VkCommandBuffer cmd)
         g.tumbleRate = r.tumbleRate;
         g.tumblePhase = ph(r.tumble0, r.tumbleRate);
         g.flux = r.flux;
-        g.bornSec = r.bornSec;
+        // Not yet at its event's time (kesslerHideUnborn): a birth that never arrives keeps the shader's whole-second
+        // born gate closed, so the fragments are not drawn at t < te.
+        g.bornSec = j < kPoolHidden.size() && kPoolHidden[j] ? kessler::kNever : r.bornSec;
         g.deathSec = r.deathSec;
         g.typeConst = (uint32_t)r.type | ((uint32_t)r.constIdx << 16) | ((uint32_t)(r.flags & kessler::kRecDead) << 24);
         return g;
@@ -2552,9 +2576,9 @@ bool SatelliteSim::kesslerBreakupInPlace(const kessler::Event &ev)
         return false;
     W.stopThread();
     // The mirror must hold everything taken from the outbox before it is rewound (the queue, all of it, now).
-    kesslerSyncProcess((int32_t)std::clamp(std::floor((double)simDayJ2000 * 86400.0 + simSecInDay - kFuryArriveT),
-                                           -2147483000.0, 2147483000.0),
-                       1e30);
+    const double tNowSync = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    kesslerSyncProcess((int32_t)std::clamp(std::floor(tNowSync - kFuryArriveT), -2147483000.0, 2147483000.0),
+                       tNowSync, 1e30);
     kessler::World &w = W.w;
     const double t = ev.t;
     const double stepEnd = w.stepStart(t) + w.s.stepS;
@@ -2682,6 +2706,9 @@ void SatelliteSim::kesslerMirrorRewind(double tCk)
     }
     kPoolGpu = std::min<uint32_t>(kPoolGpu, (uint32_t)n);
     kGenBounds.clear();
+    kFirstBounds.clear();
+    kPoolUnborn.clear();
+    kPoolHidden.clear();
     for (const auto &kv : kPoolHist)
         for (size_t q = 1; q < kv.second.size(); ++q)
             kGenBounds.insert({kv.second[q].rec.bornSec, kv.first});
@@ -3230,23 +3257,118 @@ void SatelliteSim::kesslerSetPoolOrbit(uint32_t j)
     (void)j; // (2026-10-29) satOrbits makes a pool slot's entry from kPool[j] when it is read (SatOrbitTable::poolOrbit)
 }
 
-// Shows slot j's generation for second sec: the latest born by then (else its earliest, not yet born: hidden).
-void SatelliteSim::kesslerShowGen(uint32_t j, int32_t sec)
+// A generation's exact birth time: its event's time (a record keeps only the whole second). kEvents is the worker's own
+// log, so the event is in it before the batch's records are published (evSeen: the batch's end). While the log does not
+// reach it, the record is treated as born at the END of its second: late, never early.
+double SatelliteSim::kesslerBornT(const kessler::PoolRec &r, size_t evSeen) const
+{
+    if (kEvents.src && r.event != UINT32_MAX && (size_t)r.event < evSeen && (size_t)r.event < kEvents.src->size())
+        return kEvents.src->tOf(r.event);
+    return (double)r.bornSec + kFuryArriveT + 1.0;
+}
+
+// Shows slot j's record: the slot's latest generation born by the continuous time tNow (sec = floor(tNow - epoch)).
+// A generation whose own event is still ahead is NOT drawn, even inside its birth second (the GPU's born gate is the
+// whole second): the slot stays empty, or keeps the earlier generation, until its time (kesslerShowUnborn).
+void SatelliteSim::kesslerShowGen(uint32_t j, int32_t sec, double tNow, size_t evSeen)
 {
     auto it = kPoolHist.find(j);
     if (it == kPoolHist.end() || it->second.empty())
+    {
+        // The slot's first record (kesslerSyncProcess sets kPool[j] directly, no history yet).
+        if (j >= kPool.size() || j >= kPoolGen.size() || kPoolGen[j] == UINT32_MAX)
+            return;
+        const kessler::PoolRec &r = kPool[j];
+        if (r.bornSec > sec)
+            return; // a later second: the shader's own born gate hides it, and kFirstBounds revisits it then
+        if (r.bornSec == sec)
+        {
+            const double bornT = kesslerBornT(r, evSeen);
+            if (bornT > tNow)
+            {
+                kesslerHideUnborn(j, kPoolGen[j], bornT);
+                return;
+            }
+        }
+        kesslerSetShown(j, kPoolGen[j], r);
         return;
-    const KGen *pick = &it->second.front();
+    }
+    const KGen *pick = nullptr, *unborn = nullptr;
     for (const KGen &g : it->second)
-        if (g.rec.bornSec <= sec)
+    {
+        if (g.rec.bornSec > sec)
+            break; // (oldest first: everything later is later still)
+        if (g.rec.bornSec < sec)
             pick = &g;
-    if (pick->gen == kPoolGen[j])
-        return;
-    kPool[j] = pick->rec;
-    kPoolGen[j] = pick->gen;
+        else
+        {
+            const double bornT = kesslerBornT(g.rec, evSeen);
+            if (bornT <= tNow)
+                pick = &g;
+            else
+                unborn = &g; // (the latest one: history is oldest first)
+        }
+    }
+    if (pick)
+        kesslerSetShown(j, pick->gen, pick->rec);
+    if (unborn)
+    {
+        // Its record arrived ahead of its event: switch to it (or, with no earlier generation, unhide the slot) only
+        // when its own time comes.
+        if (!pick)
+            kesslerHideUnborn(j, unborn->gen, kesslerBornT(unborn->rec, evSeen));
+        else
+            kPoolUnborn.push_back({j, unborn->gen, kesslerBornT(unborn->rec, evSeen)});
+    }
+}
+
+void SatelliteSim::kesslerSetShown(uint32_t j, uint32_t gen, const kessler::PoolRec &rec)
+{
+    const bool hidden = j < kPoolHidden.size() && kPoolHidden[j] != 0;
+    if (kPoolGen[j] == gen && !hidden)
+        return; // already that generation (its death updates kPool[j] in place; nothing to send)
+    kPool[j] = rec;
+    kPoolGen[j] = gen;
+    if (hidden)
+        kPoolHidden[j] = 0;
     kesslerSetPoolOrbit(j);
     if (j < kPoolGpu)
         kDirtyPool.push_back(j);
+}
+
+// Hides slot j until bornT: the GPU record is sent with a birth that never arrives (gpuRec), so the fragments are not
+// evaluated at t < te (they would converge on the impact point).
+void SatelliteSim::kesslerHideUnborn(uint32_t j, uint32_t gen, double bornT)
+{
+    if (j >= kPoolHidden.size())
+        kPoolHidden.resize(j + 1, 0);
+    if (kPoolGen[j] != gen || kPoolHidden[j])
+        return;
+    kPoolHidden[j] = 1;
+    kPoolUnborn.push_back({j, gen, bornT});
+    if (j < kPoolGpu)
+        kDirtyPool.push_back(j);
+}
+
+// Per frame: a generation whose event time has arrived is shown (kesslerShowGen hid it, or kept the earlier one).
+void SatelliteSim::kesslerShowUnborn(double tNow)
+{
+    if (kPoolUnborn.empty())
+        return;
+    const int32_t sec = (int32_t)std::clamp(std::floor(tNow - kFuryArriveT), -2147483000.0, 2147483000.0);
+    size_t w = 0;
+    for (size_t i = 0; i < kPoolUnborn.size(); ++i)
+    {
+        const KUnborn u = kPoolUnborn[i];
+        if (tNow < u.bornT)
+        {
+            kPoolUnborn[w++] = u;
+            continue;
+        }
+        if (u.slot < kPoolGen.size())
+            kesslerShowGen(u.slot, sec, tNow, kEvents.n);
+    }
+    kPoolUnborn.resize(w);
 }
 
 // Slot j's generation that re-enters at decaySec (shown or kept), or null.
