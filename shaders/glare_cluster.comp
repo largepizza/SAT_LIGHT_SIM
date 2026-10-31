@@ -58,14 +58,8 @@ void main()
     float tanHalfFov = tan(gpc.fovYRad * 0.5);
     for (uint k = gl_GlobalInvocationID.x; k < n; k += stride) {
         SatVisible sat = satellites[k];
-        // glare.vert's response, threshold and projection. The b clamp MUST match glare.vert's (8, not 4: a flare
-        // brighter than 65536 is not rare — a sun glint, a burn, a re-entry). It did not, and the cost was silent:
-        // for a source brighter than effectFlare ~740 this pass weighed it at up to 8.3x less than glare.vert weighs
-        // itself (glareClusterU's s cap at 3, reached at b = 4.765), so its own q in the grid was smaller than the q
-        // it read back — `others = sum - q_self` went negative, clamped to 0, and **the brightest flares kept every
-        // spike in every crowd**, which is exactly the "several bright flares clustered together" this grid exists to
-        // merge (issue_20261019_222938). c21, 2026-10-30.
-        float b = clamp(log2(max(max(sat.flareIntensity, sat.glareFlare), 1.0)) * 0.5, 0.0, 8.0);
+        // glare.vert's response, threshold and projection.
+        float b = clamp(log2(max(max(sat.flareIntensity, sat.glareFlare), 1.0)) * 0.5, 0.0, 4.0);
         float s = b - gpc.threshold;
         if (s <= 0.0) continue;
         vec3 cam = (gpc.skyView * vec4(sat.skyDir, 0.0)).xyz;
