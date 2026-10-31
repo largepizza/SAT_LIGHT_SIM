@@ -113,7 +113,7 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **Rainbows, halos and ice optics** for the Sun or the Moon: rainbows at storms, 22-degree halos, sundogs, the
   circumzenithal arc, sun pillars.
 - **Fog, dust and ice fog.** Radiation fog in valleys at night, sea fog on coasts, dust plumes over dry land,
-  diamond-dust ice fog over Antarctica and Greenland.
+  diamond-dust ice fog over Antarctica and Greenland, patchy by region the way the dust is.
 - **Physical light.** Multiple scattering in the clouds (dark wisps, bright cores), the sky's light on clouds and
   ground from the whole dome, multiple scattering and ozone in the sky (blue-violet twilight), the ground under an
   overcast lit by what the clouds let through, and an AgX tone map that keeps the hue of bright highlights.
@@ -306,6 +306,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   Earth's shadow no longer beams.
 - The weather bookmarks (Venezuela rainbow, Antarctic snow) frame their storms again with the new cloud defaults.
 - The sky glow around satellites sums bright flares, so one tumbling piece of debris no longer lights half the sky.
+- Ice fog is no longer one uniform white film over the ice sheets and the Southern Ocean: it now comes in regions
+  of ~600-1000 km (one stretch hazes, the next is nearly clear), and it no longer whitens the open ocean south of
+  the Antarctic coast at high amounts.
 - Many fixes from QA of launches and missions: no plume pulsing, no train jitter in time warp, smooth handovers
   in the Info window, no "?" under a selection, the camera never goes underground following a rocket.
 - The Attributions tab lists every bundled asset.
