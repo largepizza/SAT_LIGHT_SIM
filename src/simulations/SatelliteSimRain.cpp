@@ -19,21 +19,23 @@
 void SatelliteSim::createRainParticles(VulkanContext &ctx)
 {
     const VkShaderStageFlags st = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    VkDescriptorSetLayoutBinding b[4] = {
+    VkDescriptorSetLayoutBinding b[6] = {
         {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, st, nullptr},          // CloudParams
         {1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, st, nullptr},          // CloudV2Params
         {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, st, nullptr},          // the flash buffer (rain map, light at the eye)
         {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},  // the half-res scene depth
+        {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},  // sky TAA history 0: the frame behind (floor)
+        {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},  // sky TAA history 1
     };
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 4;
+    li.bindingCount = 6;
     li.pBindings = b;
     if (vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &rainDescLayout) != VK_SUCCESS)
         throw std::runtime_error("SatelliteSim: rain particle descriptor layout");
 
     VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
                                   {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
-                                  {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1}};
+                                  {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.maxSets = 1;
     pi.poolSizeCount = 3;
@@ -125,7 +127,8 @@ void SatelliteSim::createRainPipeline(VulkanContext &ctx)
     vkDestroyShaderModule(ctx.device, frag, nullptr);
 }
 
-// After any recreation of the scene depth image (recreateComputeScaledTargets).
+// After any recreation of the scene depth image (recreateComputeScaledTargets) and of the sky TAA images
+// (createSkyTaaResources: the resolved frame the particles take their background floor from).
 void SatelliteSim::writeRainDescriptors(VulkanContext &ctx)
 {
     if (!rainDescSet || !cloudParamsBuf || !cv2ParamsBuf || !cv2FlashBuf || !sceneDepthView)
@@ -134,8 +137,15 @@ void SatelliteSim::writeRainDescriptors(VulkanContext &ctx)
     VkDescriptorBufferInfo v2{cv2ParamsBuf, 0, sizeof(GpuCloudV2Params)};
     VkDescriptorBufferInfo fl{cv2FlashBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorImageInfo dp{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet w[4] = {};
-    for (int i = 0; i < 4; ++i)
+    // The sky TAA's two history colour images (GENERAL: the resolve's storage writes, sampled reads, blit
+    // source). They do not exist yet at startup (createSkyTaaResources runs after createRainParticles), so the
+    // first write covers 4 bindings and the call after it fills these two in.
+    const bool bgReady = skyTaaLinearSampler && skyTaaHistColorView[0] && skyTaaHistColorView[1];
+    VkDescriptorImageInfo bg[2] = {{skyTaaLinearSampler, skyTaaHistColorView[0], VK_IMAGE_LAYOUT_GENERAL},
+                                   {skyTaaLinearSampler, skyTaaHistColorView[1], VK_IMAGE_LAYOUT_GENERAL}};
+    VkWriteDescriptorSet w[6] = {};
+    const int n = bgReady ? 6 : 4;
+    for (int i = 0; i < n; ++i)
     {
         w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         w[i].dstSet = rainDescSet;
@@ -150,7 +160,12 @@ void SatelliteSim::writeRainDescriptors(VulkanContext &ctx)
     w[2].pBufferInfo = &fl;
     w[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     w[3].pImageInfo = &dp;
-    frameSafeUpdateDescriptorSets(ctx.device, 4, w, 0, nullptr);
+    for (int i = 4; i < n; ++i)
+    {
+        w[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        w[i].pImageInfo = &bg[i - 4];
+    }
+    frameSafeUpdateDescriptorSets(ctx.device, n, w, 0, nullptr);
 }
 
 void SatelliteSim::destroyRainParticles(VkDevice device)
@@ -239,7 +254,13 @@ void SatelliteSim::recordRainParticles(VkCommandBuffer cmd, VulkanContext &ctx, 
     }
     pc.params = glm::vec4((float)n0, (float)levels, cv2RainStreaks, skyExposure());
     const bool manualDepth = renderScale < 0.999f && (debugDisableMask & 1024u) == 0u && !skyTaaUsedThisFrame;
-    pc.obsECEFDir = glm::vec4(obsDir, (float)((mode == 2 ? 1u : 0u) | (manualDepth ? 2u : 0u)));
+    // Mode bits (rain_particles.frag): 1 diamond dust, 2 the manual depth test, 4 the background floor is
+    // available — the sky TAA resolved this frame, so the frame the particles are drawn over is in
+    // skyTaaHistColor[skyTaaHist] — and 8 which of the two history images that is.
+    uint32_t bits = (mode == 2 ? 1u : 0u) | (manualDepth ? 2u : 0u);
+    if (skyTaaUsedThisFrame && skyTaaHistColorView[0] && skyTaaHistColorView[1])
+        bits |= 4u | (skyTaaHist ? 8u : 0u);
+    pc.obsECEFDir = glm::vec4(obsDir, (float)bits);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, rainPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, rainPipeLayout, 0, 1, &rainDescSet, 0, nullptr);

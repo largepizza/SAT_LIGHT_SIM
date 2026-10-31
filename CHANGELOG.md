@@ -106,7 +106,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   over hours; over land, afternoon convection builds storms that die back after dark.
 - **Rain, snow, sleet and diamond dust** drawn as real particles at your eye: drops sized and falling like real
   rain, flakes that flutter, blown by the wind, gusts and a storm's outflow, lit by the sky, by lightning and by
-  the Reflect Orbital beams. The precipitation type follows the air temperature.
+  the Reflect Orbital beams. The precipitation type follows the air temperature. Each particle takes its light
+  from the scene it is in front of: it can no longer be darker than the sky or cloud behind it (snow under a
+  thick deck used to read as near-black dashes over sunlit cloud), and it keeps its own brighter-than-the-scene
+  look where it has one - rain against dark cloud or sea renders exactly as before.
 - **Lightning and thunder.** Whole storms flash: cloud-to-ground strokes with branches and tendrils, in-cloud
   flashes, spider lightning and rare red sprites. Clouds glow around each flash; thunder rolls in from the
   channel's shape, delayed by distance.

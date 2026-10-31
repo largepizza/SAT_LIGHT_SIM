@@ -591,6 +591,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     createSkyBgPipeline(ctx);
     createSkyLowResResources(ctx); // resolution scaling — needs skyBgPipeLayout from just above
     createSkyTaaResources(ctx);    // the background's TAA (same layout)
+    writeRainDescriptors(ctx);     // the rain particles' background floor reads the TAA's resolved frame
     createDrawPipeline(ctx);
     // Flare/corona render-to-texture pipeline (flare architecture overhaul) — needs descLayout
     // (createDescriptors above, for flareSourcePipeLayout's reused descriptor set) and
