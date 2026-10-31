@@ -330,6 +330,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - Flat, hard-edged teal planes no longer lie across mountainsides on coasts finer than the water map's texels
   (the Chilean fjords, the worst case): the map's shore ramp could take a kilometre-wide, 300-900 m deep bite
   out of a slope, and now only smooths the land it was meant to smooth.
+- A ridge silhouetted against cloud no longer draws a one-to-three-pixel bright line along its crest: the cut
+  deck was letting the whole open-sky airlight through, and the share it lets through now shows the air at the
+  ridge instead.
 - Many fixes from QA of launches and missions: no plume pulsing, no train jitter in time warp, smooth handovers
   in the Info window, no "?" under a selection, the camera never goes underground following a rocket.
 - The Attributions tab lists every bundled asset.
