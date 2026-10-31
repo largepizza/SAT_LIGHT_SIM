@@ -80,7 +80,6 @@ const float kShoreSdfMaxM  = 4.0 * PI * R_EARTH / 4096.0;  // 4 mask texels (~19
 const float kShoreSlope    = 0.25;                          // m of land per m from the shore
 const float kShoreBankM    = 3000.0;
 const float kShoreRampM    = 1500.0;
-const float kShoreCapMaxM  = kShoreSlope * kShoreRampM;     // the most the ramp can ask the land to rise
 const float kTdWaterMark   = -1.0e4;                        // hMip3 on water (terrain_detail.glsl)
 
 // Height of the ground (or water surface) given the DEM height and the water map texel(s) wm.
@@ -113,13 +112,6 @@ float waterAdjustHeight(float hDem, vec2 wm, float dOff, out bool water) {
 #endif
     water = d > 0.0;
     if (water) return level;
-    // (2026-10-31, issue_20261030_204632) The d above is measured from a ~5 km mask curve, and a fjord
-    // coast is finer than one texel. Where the DEM is a mountainside — higher than the ramp can ever ask
-    // the land to be (kShoreCapMaxM above the level) — that curve is not this pixel's shore, and the cap
-    // only shaved the slope into a flat, hard-edged shelf lying on it (the southern Andes: a plane at
-    // ~300 m over a valley, teal and texel-edged in the still). The ground keeps its own height there:
-    // no bank (max(hDem, level) is below it anyway) and no cap.
-    if (hDem >= level + kShoreCapMaxM) return hDem;
     float land = mix(max(hDem, level), hDem, smoothstep(0.0, kShoreBankM, -d));
     return min(land, level - kShoreSlope * d + 1.0e4 * smoothstep(kShoreRampM, 2.0 * kShoreRampM, -d));
 }
