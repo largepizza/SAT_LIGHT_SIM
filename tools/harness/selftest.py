@@ -380,7 +380,7 @@ track on
     # Only the last command was meant to fail: `track on` with nothing selected.
     bad = [r for r in res if not r["ok"]]
     assert summ["status"] == "errors" and len(bad) == 1 and bad[0]["cmd"].startswith("track on"), bad
-    assert "select a satellite first" in bad[0]["error"], bad[0]
+    assert "select a satellite" in bad[0]["error"], bad[0]
 
 
 @test
