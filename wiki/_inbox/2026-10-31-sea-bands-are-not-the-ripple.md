@@ -7,7 +7,9 @@ The concentric bands that a 30 km eye sees over the Coral Sea (issue_20261025_19
 sea: they are the known open "concentric rings looking down from inside the anvil" (pass 16, 2026-09-28), the
 march-step contour rings a thin flat high deck draws when it is crossed at a grazing angle. Measured at that view
 (1920x1009, exposure pinned at EV -0.88888): turning the far-sea ripple off (`clouds.ocean_far_ripple 0`) moves the
-frame 0.425 display levels mean and leaves the band energy at 28.23 against 28.24 milli-levels, and at that view the
+frame 1.563 display levels mean, against **1.592** for the same view captured twice with the ripple on — the ripple's
+whole contribution is inside the view's own repetition noise — and the band energy goes 24.61 (on) -> 25.08 (off) ->
+25.10 (on again) milli-levels, i.e. no fall at all. At that view the
 ripple's own weight is 0.13 with a 64 m cell (a sub-2-pixel grain, and its octave index spans 1.85..3.3 across the
 whole frame, so it can cross two boundaries, not the ten arcs on screen). A probe of the cloud composite put the
 bands in `cloudA`, the march's additive radiance (band energy 36.8 against the beauty frame's 24.6; `airFront` 5.1;
