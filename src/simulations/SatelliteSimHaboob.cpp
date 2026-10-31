@@ -432,11 +432,8 @@ bool SatelliteSim::haboobStrongestPoint(const wx::Storm &S, double t, HaboobPoin
 // The dust walls as CLOUD (2026-10-24): the storms' gust fronts rasterised into the storm buffer's dust grid round the
 // observer, which the clouds v2 field reads (cv2_storms.glsl cv2DustWallAt, clouds_v2.glsl cv2DustWallSigma). Per cell:
 // the wall's strength e (0..1: the dust raised x a profile across the front: nothing 2 km ahead of it, full 1.5 km behind,
-// then the settling pall: e down to ~0.1 of the wall's by 6 km back, nothing 26 km back) and its top (m above the ground:
-// the head's height, falling to ~0.35 of it over the pall). 2026-10-30, issue 20261026_192211: at 0.9 e and near the wall's
-// own top the pall was a second wall, 26 km deep, and the reported view (5 km behind the front) stood inside it -- a
-// featureless tan sheet with no sky over it. Each front point stamps a strip along the front (+-1.2 of its spacing, the
-// strips overlapping: max),
+// the pall behind it at half, gone 26 km back) and its top (m above the ground: the head's height, falling to 0.4 of it
+// over the pall). Each front point stamps a strip along the front (+-1.2 of its spacing, the strips overlapping: max),
 // the strongest wins a cell. Grid: kDustGridN^2 cells on the tangent plane at the observer's sea-level point, 400 m near
 // the ground growing with altitude (6 km from far orbit). Rebuilt when sim time moves or the observer moves a quarter cell.
 void SatelliteSim::weatherFillDustGrid()
@@ -665,14 +662,7 @@ void SatelliteSim::weatherFillDustGrid()
                         if (cq > (dst >> 28)) dst = (dst & 0x0FFFFFFFu) | (cq << 28);
                         if (ac > cHi) continue;
                         const double core = glm::smoothstep(cHi, -1000.0, ac);
-                        // The dust BEHIND the front is the settling pall, not a second wall (2026-10-30, issue
-                        // 20261026_192211). At (1 - 0.5 x smoothstep(-3 .. -12 km)) it kept ~0.9 of the wall's e out to
-                        // 6 km back and its top was still ~0.9 of the wall's, so the outflow was a continuous opaque slab
-                        // 26 km deep: the reported view, 5 km behind the front, stood INSIDE it and was a featureless tan
-                        // sheet up to 60 deg elevation with no sky over it. The Gaussian path it replaced drew the pall at
-                        // sigma 1.5 against the wall's 25 (~6%): now e falls to ~0.1 and the top to ~0.35 of the wall's by
-                        // 6 km back -- a kilometre-scale visibility behind the front, the wall's back still a wall.
-                        const double pall = (1.0 - 0.9 * glm::smoothstep(-1500.0, -6000.0, ac)) *
+                        const double pall = (1.0 - 0.5 * glm::smoothstep(-3000.0, -12000.0, ac)) *
                                             (1.0 - glm::smoothstep(-16000.0, cLo, ac));
                         // HEADS along the front: a smooth noise of the distance along it (3.5-km knots, per storm) sets each
                         // stretch's strength and height, so the wall is a row of rounded heads of different sizes, not a slab.
@@ -684,9 +674,7 @@ void SatelliteSim::weatherFillDustGrid()
                         if (e <= 0.004) continue;
                         const uint32_t eq = (uint32_t)std::min(65535.0, e * 65535.0);
                         if (eq <= (dst & 0xFFFFu)) continue;
-                        const double top = m.H0 * (0.65 + 0.55 * hn) *
-                                           (1.0 - 0.65 * glm::smoothstep(-1500.0, -6000.0, ac) -
-                                            0.15 * glm::smoothstep(-6000.0, -16000.0, ac));
+                        const double top = m.H0 * (0.65 + 0.55 * hn) * (1.0 - 0.6 * glm::smoothstep(-2500.0, -12000.0, ac));
                         dst = (dst & 0xF0000000u) | eq | ((uint32_t)std::min(4095.0, top * 0.5) << 16);
                     }
                 }

@@ -157,10 +157,6 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **Tornadoes and waterspouts** under supercells and strong storms at sea, hanging from the storm's real base,
   spinning, with a wall cloud, debris cloud and roar.
 - **Haboobs.** A storm's gust front over dry land raises a towering wall of dust, drawn as beige billowing cloud.
-  The dust behind the front settles instead of stacking up as a second wall: by 6 km back it is ~0.1 of the wall's
-  strength and ~0.35 of its height, so the outflow reads as a wall with a receding pall rather than a 26-km slab of
-  opaque dust (a viewer standing in the outflow saw a featureless tan sheet with no sky over it;
-  issue_20261026_192211).
 - **Wildfires.** Fires start by biome, season and dryness and spread with a coherent wind: a ragged flaming front
   with embers, smoke that follows real trajectories into a regional pall, burn scars, and their glow at night.
 - **A burn scar looks like burnt ground, not a black oval.** From 26 km a large fire's scar was one smooth ellipse
