@@ -1221,6 +1221,7 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
             ctx_->uploadPatch(cv2FlashBuf, kCv2RainMapOffset - 80 + 8 * 4, req, sizeof req); // (frame start)
     }
     const double kTwoPi15 = 15.749609945722419;
+    if (harnessTornadoHidden_) return;   // (harness A/B: listed and probed, not drawn)
     if (tornadoGround.size() > 64) tornadoGround.clear();
     for (TornadoNow &T : tornadoesNow)
     {
@@ -1280,10 +1281,6 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
         T.baseAglM = (float)Hb;
         T.tauAbove = (float)tauAbove;
         T.lightK = (float)lightK;
-        // (harness A/B `storms tornado draw=0`): hide the DRAW, not the STATE. The block above must run while
-        // hidden: it is what `weather.tornado_list` reports, and a dump taken in an A/B has to describe the
-        // tornado that is there, not zeros. Stop here, before anything is emitted.
-        if (harnessTornadoHidden_) continue;
         const glm::dvec3 base = T.earthDir * (kReW + ground);
         const glm::dvec3 rel0 = base - eye;
         if (glm::length(rel0) > 250000.0) continue;
