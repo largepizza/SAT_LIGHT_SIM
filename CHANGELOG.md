@@ -125,6 +125,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **Clouds from orbit.** Satellite-imagery morphology (closed and open cells, cloud streets, popcorn cumulus from
   MODIS scenes) shapes clouds seen from space; from high orbit a full-resolution far layer takes over. The clouds
   stay the same clouds as you climb.
+- **The frame rate recovers four times sooner after you stop moving.** The cheap smooth-tile cloud march used to
+  wait 64 still frames after a flight, a zoom or a render-scale change (about 3 s at 20 fps); it now starts after
+  16, with the same image and without the blocky "smooth tile" artifact of a fast flight (issue_20261027_004019).
 
 ### Storms, hurricanes and wildfires
 
