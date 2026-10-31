@@ -314,6 +314,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   Earth's shadow no longer beams.
 - The weather bookmarks (Venezuela rainbow, Antarctic snow) frame their storms again with the new cloud defaults.
 - The sky glow around satellites sums bright flares, so one tumbling piece of debris no longer lights half the sky.
+- Very bright glares (a sun glint, a burn, a re-entry) share a cluster's spikes like every other light: the
+  cluster grid weighed them up to 8x lighter than the sprite did, so the brightest flares kept every spike in
+  a crowd (issue_20261019_222938).
 - Ice fog is no longer one uniform white film over the ice sheets and the Southern Ocean: it now comes in regions
   of ~600-1000 km (one stretch hazes, the next is nearly clear), and it no longer whitens the open ocean south of
   the Antarctic coast at high amounts.
