@@ -86,3 +86,13 @@ satellite_models_debug/
 /tools/video/**/*.mp4
 /tools/video/**/*.mov
 /tools/video/**/*.wav
+
+# ---- Agent harness (AGENTS.md, docs/QA_LOOP.md) ------------------------------------------
+# Skills and workflow templates are committed, like .claude/skills; per-session state is not.
+.dsh/*
+!.dsh/skills/
+!.dsh/workflows/
+# QA waves: triage rows, plan.json, briefs, evidence, pitches (docs/QA_LOOP.md)
+/qa/
+# QA worktrees (git worktree add .worktrees/<slug>)
+/.worktrees/
