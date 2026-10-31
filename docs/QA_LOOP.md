@@ -101,11 +101,17 @@ actually showed.
 
 ## Replay reality (learned the hard way, 2026-10-30)
 
-- **`report load` restores pose, time and settings — not the session's weather, fire or tornado phase.** Storm,
-  haboob, tornado, wildfire and smoke frames usually do not reproduce: the scene arrives in a different phase or
-  with no event at all. Those verdicts are `view changed`, and they need a **Watch**-based re-test (spawn the
-  event, then compare), never a resolve on the strength of a mismatched frame. This explained six of eight
-  "view changed" verdicts in one 30-issue slice.
+- **Hold the clock; do not `time play` at the record's own time scale.** This was the real trap behind most
+  "view changed" verdicts in the 2026-10-30 pass, and the earlier claim that `report load` "does not restore the
+  weather phase" was wrong: it restores the pose, time and settings **and** the recorded cloud-drift phase, and
+  the storm catalogue is deterministic (storm id, tower positions and strengths matched a reporter's state to
+  6 dp). What breaks the frame is a replay script that plays time at the record's scale: at 1 m or 5 m per second
+  a weak storm tower decays 0.224 → 0.08 in two minutes and the frame becomes a flat cloud sea. `report load`,
+  then `time pause` and settle — the frame reproduces.
+- **Spawn only when the scene genuinely no longer exists.** Fires and some weather are reworked between builds
+  (a fire catalogue can hold zero fires at the reported place and time). Then the honest verdict is
+  `not reproducible` with the reason, and the reporter is asked for a fresh shot — not a resolve on a scene that
+  never reproduced.
 - **`sent` does not mean broken.** A large share of any old backlog was fixed after filing and never resolved.
   Index the pass against history first (see `qa-triage` §2b); verification is one launch per six issues,
   fixing is a worktree and a build per issue.
