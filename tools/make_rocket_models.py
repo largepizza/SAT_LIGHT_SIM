@@ -999,6 +999,8 @@ def stowed_points(path):
             r = c["radius"]
             loc = [[r * a, r * b, r * d] for (a, b, d) in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1),
                                                          (0, 0, -1))]
+        elif t == "polygon":
+            loc = [[v[0], v[1], 0.0] for v in c["vertices"]]  # (Reflect Orbital's film quadrants, 2026-11-04)
         else:
             continue
         q = c.get("rotation_quat") or (euler_quat(c["rotation_deg"]) if "rotation_deg" in c else [1, 0, 0, 0])
@@ -1013,9 +1015,14 @@ def stowed_points(path):
                 ax = st["axis"]
                 n = math.sqrt(sum(a * a for a in ax))
                 ax = [a / n for a in ax]
-                d = sum(ax[i] * v[i] for i in range(3)) - st.get("root", 0.0)
-                if d > 0:
-                    v = [v[i] - ax[i] * (1 - st.get("scale", 0.05)) * d for i in range(3)]
+                if st.get("mode") == "radial":
+                    # The extent across the axis (from the line through the body origin along it) scales.
+                    a_ = sum(ax[i] * v[i] for i in range(3))
+                    v = [ax[i] * a_ + st.get("scale", 0.05) * (v[i] - ax[i] * a_) for i in range(3)]
+                else:
+                    d = sum(ax[i] * v[i] for i in range(3)) - st.get("root", 0.0)
+                    if d > 0:
+                        v = [v[i] - ax[i] * (1 - st.get("scale", 0.05)) * d for i in range(3)]
             if fo:
                 ax = fo["axis"]
                 n = math.sqrt(sum(a * a for a in ax))

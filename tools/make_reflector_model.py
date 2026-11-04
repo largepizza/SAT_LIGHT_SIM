@@ -10,7 +10,8 @@ Body frame (unchanged from the old 55 m plate): +Z = the mirror normal (aimed by
 velocity. The booms lie along body X and Y, so the square's sides run at 45 deg.
 
 Parameters (all have defaults matching the diagram; --cant-deg is the knob the lighting analysis varies):
-  --side M          square side, corner to corner along an edge (18.0)
+  --side M          square side, corner to corner along an edge (55.0: the 2036-era sail; 18 = the prototype in the
+                    published diagram, not modelled)
   --cant-deg DEG    each quadrant tilted about its hub edge, outer corners raised toward +Z (a shallow concave
                     "dish": the four normals lean toward the centre axis by DEG). 0 = coplanar (default).
   --outer-sag M     the outer (scalloped) edge's sag toward the centre at its midpoint (0.9)
@@ -29,6 +30,9 @@ import os
 HUB_R = 0.40      # deployer hub radius: booms start here
 INNER_R = 1.30    # the film's inner (hub) edge, along each boom
 EDGE_SEGS = 10    # segments per curved edge
+# Stowed / deployed length of the booms and the film (2026-11-04): a 55 m sail's 38.7 m half-booms telescope into
+# ~2.3 m (nested sections), so the stowed reflector is a 5.4 m cross 0.81 m thick: one a layer in Starship's bay.
+STOW_SCALE = 0.06
 
 
 def quadrant_outline(side=18.0, outer_sag=0.9, boom_sag=0.25, gap=0.15):
@@ -90,7 +94,7 @@ def r6(x):
     return round(x, 6)
 
 
-def build(side=18.0, cant_deg=0.0, outer_sag=0.9, boom_sag=0.25, gap=0.15):
+def build(side=55.0, cant_deg=0.0, outer_sag=0.9, boom_sag=0.25, gap=0.15):
     base = quadrant_outline(side, outer_sag, boom_sag, gap)
     d = side / math.sqrt(2.0)
     boom_tip = d + 0.25
@@ -109,9 +113,10 @@ def build(side=18.0, cant_deg=0.0, outer_sag=0.9, boom_sag=0.25, gap=0.15):
             "position": [r6(hub[0]), r6(hub[1]), 0.0],
             "material": "mirror_film",
             "back_material": "film_back",
-            # Pulled out by the booms: the film grows from a bundle at the hub (radial stow, same window as the
-            # booms so the corners ride the boom tips).
-            "stow": {"mode": "radial", "axis": [0, 0, 1], "scale": 0.08, "phase": [0.0, 1.0]},
+            # Pulled out by the booms: the film grows from a bundle at the hub (radial stow, the booms' scale and
+            # window so the corners ride the boom tips; stowed it stays inside the telescoped booms' cross, which
+            # is what the Starship bay fit in tools/make_rocket_models.py measures).
+            "stow": {"mode": "radial", "axis": [0, 0, 1], "scale": STOW_SCALE, "phase": [0.0, 1.0]},
         }
         if cant_deg != 0.0:
             comp["rotation_quat"] = [r6(v) for v in quat_axis_angle(t, -math.radians(cant_deg))]
@@ -133,7 +138,7 @@ def build(side=18.0, cant_deg=0.0, outer_sag=0.9, boom_sag=0.25, gap=0.15):
                 "rotation_deg": [0, 90, 0] if k % 2 == 0 else [-90, 0, 0],
                 "material": "boom",
                 "caps": si == 2,
-                "stow": {"axis": [ax[0], ax[1], 0], "root": HUB_R, "scale": 0.06, "phase": [0.0, 1.0]},
+                "stow": {"axis": [ax[0], ax[1], 0], "root": HUB_R, "scale": STOW_SCALE, "phase": [0.0, 1.0]},
             })
     comps.append({
         "name": "hub", "type": "cylinder", "group": "mirror", "radius": HUB_R, "height": 0.30,
@@ -216,7 +221,7 @@ def build(side=18.0, cant_deg=0.0, outer_sag=0.9, boom_sag=0.25, gap=0.15):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--side", type=float, default=18.0)
+    ap.add_argument("--side", type=float, default=55.0)
     ap.add_argument("--cant-deg", type=float, default=0.0)
     ap.add_argument("--outer-sag", type=float, default=0.9)
     ap.add_argument("--boom-sag", type=float, default=0.25)

@@ -38,7 +38,7 @@ follow toward=observer dist=400 side=1.5 lift=1
 wait settle
 capture model_inbeam
 follow off
-# ── Unfolding after release (the deployment era): a Falcon 9's Reflect train, its first members out ───────────
+# ── Unfolding after release (the deployment era): a Starship's Reflect train, its first members out ───────────
 launch deploy filter=Reflect
 wait 5
 launch select kind=upper
