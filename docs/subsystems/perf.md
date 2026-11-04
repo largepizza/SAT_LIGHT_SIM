@@ -525,6 +525,13 @@ depth pass, so its variants interleave like the sky's and the clouds'.
   at 4.85 km the clipmap was off the whole way (cloud march ~50 ms with the old shader, the reporter's 47.5); kept on:
   ~38 -> ~28 ms. The bake brackets its footprint over the level's ring; refused cells are marked unknown. At 12 km over
   storm tops (the trail above) keeping it on changed 12-19% of the pixels (mostly S2 light, 4-5% without): not there.
+- **Layer mask in the occupancy clipmap** (2026-11-04, clouds.md occupancy clipmap > "Layer mask"; proposal 1 of the
+  storm-perf write-up): `cv2Field` calls only the layer functions the point's clipmap cell can need. Cloud march
+  (RTX 3070 Ti, 1600x900, storm report's settings, perf-frames 4f97691 -> this, interleaved x3): storm shot 1 still 14.2
+  -> 12.6 ms, flying east from it at 4.9 km/s 21.4 -> 19.1, shot 2 7.5 -> 7.2, cumulus from 3 km 9.3 -> 8.4; orbit 6.6
+  -> 6.8 and the report's two fast trails +0.4 / +0.1 (code size; gating the lookups by altitude changed nothing).
+  128 registers, images at the floor. Estimated -2..-4 at shot 1: the towers' strength keeps their walk on in an As
+  sheet within their reach. Next: the Sun-aligned light volume (proposal 2).
 - **Dead ends:** skipping the sky pass's terrain march where the four cloud texels are opaque (-0.1..-0.3 ms, changes the
   depth the sky TAA reprojects with); the history copies (~0.1 ms); FIFO quantisation as the cause of "30 / 20 / 15 FPS"
   (the reports' frame times are not quantised: 27 ms median at a 28 ms GPU).

@@ -522,6 +522,32 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     cause not found). Hence the height limit (verified at 0.6 and 4.85 km only). Above it nothing changes.
   - **S2** (`cdc_light`, `cdc_light_levels` 3): light steps 3+ read the cell's mean + variance of the light extinction
     through the gamma model E[exp(-L e)] (a cell MEAN alone darkened broken cloud by up to 18 levels: Jensen). Modest.
+  - **Layer mask** (2026-11-04, follow-up to "Storms between decks"; `cv2Field`'s `gCv2LayMask`, `kCv2Lay*` bits): each
+    cell's low 16 bits (which held half(max coarse sigma), only ever tested for zero) are a mask of the layer functions
+    that matter there -- towers (`cv2ColumnSigma`), low, mid, high, anvils/shields (+ dust, never skipped) -- with bit 64
+    = cloud at some bake point (clear = empty, the skip as before). The bake (`CV2_LAYER_HITS`, `gCv2LayHit`) sets a
+    layer's bit where its function was non-zero OR changed another layer at any point: the towers' strength where it cut
+    a mid sheet, their proximity / rain core where the low field reads differently without them (re-run with both 0),
+    their heads where the shields do (re-run without the hang), the anvil's presence where it cut the cirrus. Every lane
+    ORs its bits (`atomicOr`; the check pass wrote the stamp). The march sets the mask from the point's own cell before
+    each view read (the coarse step's lookup, shared with the skip) and each light-march field read; `cv2Field` calls
+    only those functions; unknown / outside cells (and every other shader) call all. The lookup returns "unknown" past
+    the last level's reach x 1.5 before any plane maths (orbit: +0.1 ms without that test). Conservative only as the
+    skip is (the bake's 36 points at the march's footprint; the light reads' coarser footprint is not bracketed).
+    Measured (RTX 3070 Ti, 1600x900, the storm report's settings, old = perf-frames 4f97691 march + bake, interleaved
+    x3, `harness_runs/lm/` in the worktree): storm shot 1 still 14.2 -> 12.6 ms (march pass 9.5 -> 8.1), flying east
+    from it at 4.9 km/s 21.4 -> 19.1, shot 2 still 7.5 -> 7.2, cumulus from 3 km 9.3 -> 8.4, orbit 6.6 -> 6.8, the
+    report's trail 1 (climb to 326 km) 21.6 -> 22.0, trail 2 (600 m, 20 km/s) 11.6 -> 11.75; 128 registers; images at
+    the noise floor (shot 1 0.95 vs 0.84 levels between same-shader passes, 0.57 vs 0.52 within one pass; cumulus,
+    shot 2, orbit at the floor). The mask on the view reads alone gives about half (shot 1 -0.7, cumulus -0.4). Light
+    lookups only where S2 does not serve the step: -0.9 at shot 1 instead of -1.4, nothing gained in motion.
+    Per ray at shot 1 (CV2_EVAL_COUNT, the light march's field reads): the mask skipped the towers in 6.0, the low
+    field in 16.9, the mid layer in 7.5, the high in 18.6, the anvils in 12.9; 0.01 found the cell unknown (cumulus:
+    3.7 / 2.9 / 3.2 / 3.5 / 3.1 of ~4.5). Smaller than the -2..-4 estimated: in an As sheet within a tower's reach the towers' strength (`col.storm`, which
+    cuts the sheet) keeps the tower walk on, and outside the reach the walk is already cheap (the bin's distance tests).
+    FAST (camera moving) the mask costs a little: the motion bake brackets footprints and cells turn over, so lookups
+    find no more to skip while the code is larger (trail 1 +0.3-0.4 ms; not the lookups: gating them off above 30 km
+    changed neither orbit nor trail 1).
   - **God-ray froxels** (`godray_froxels`, `cloud_v2_froxel.comp`, `cv2GodFrox` in the flash buffer: 320 x 180 x 64,
     log depths 50 m - 400 km): the sky pass reads it instead of 3 cascade + 24 shaft lookups a step; sky -0.2..-2.9 ms,
     images at the floor (the shafts only within their reach along the view, as the old path). **Sampling (2026-10-23,
