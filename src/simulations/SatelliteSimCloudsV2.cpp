@@ -1734,9 +1734,13 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             if (cdcDustKey != cv2CdcDustKeyUsed)
                 ++cv2CdcEpoch;
             cv2CdcDustKeyUsed = cdcDustKey;
+            // The bake's footprint bracket (cloud_v2_cdc.comp, cdcC.w) goes with the looser motion guard inside the shell.
+            const float cdcBracket = (cv2CdcMotionGuard > 0.5f && cv2CdcMotionLowFrac > 0.0f && cv2CdcFp < 0.0f) ? 1.0f : 0.0f;
             if (!lightValid || cdcNewAnchor || cv2CdcFpUsed != cv2CdcFp || cv2CdcSkipUsed != cv2CdcSkip
-                || cv2CdcLightUsed != cv2CdcLight || cv2CdcLightLevelsUsed != cv2CdcLightLevels || cv2CdcMaxLevelUsed != cv2CdcMaxLevel)
+                || cv2CdcLightUsed != cv2CdcLight || cv2CdcLightLevelsUsed != cv2CdcLightLevels || cv2CdcMaxLevelUsed != cv2CdcMaxLevel
+                || cv2CdcBracketUsed != cdcBracket)
                 ++cv2CdcEpoch;
+            cv2CdcBracketUsed = cdcBracket;
             cv2CdcFpUsed = cv2CdcFp;
             cv2CdcLightUsed = cv2CdcLight;
             cv2CdcLightLevelsUsed = cv2CdcLightLevels;
@@ -1758,14 +1762,26 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             {
                 const double cdcS = std::max(eyeH - (double)hi, 0.0) + 20000.0;
                 const double cdcStep = glm::length(eye - cv2PrevEye);
+                // Inside the cloud shell (cv2CdcMotionLowFrac, 2026-11-04): a looser step limit and a long epoch. There a
+                // cell is read only from eyes within its level's ring of it at about this height, and the bake reads the
+                // field at that ring's nearest AND farthest footprints (the bracket, cloud_v2_cdc.comp), so it stays
+                // conservative while the eye flies over it (on the report's own low trail the images went from 0.4% of the
+                // pixels > 16 levels off the march without the clipmap to the floor). The limit stays at 400 m a frame:
+                // see SatelliteSim.h cv2CdcMotionLowFrac for the 12-km, 40-km/s case.
+                const bool   cdcLow   = cdcBracket > 0.5f && eyeH < (double)hi + 2000.0;
+                const double cdcFrac  = cdcLow ? std::max((double)cv2CdcMotionLowFrac, 0.004) : 0.004;
+                const double cdcEpoch = cdcLow ? std::max((double)cv2CdcMotionLowEpoch, 0.25) : 0.25;
                 // Any step counts, history or not (2026-10-22, issue 20261022_210358): past 20 km a frame the cloud history
                 // is invalid (nearPrev), and gated on it the fastest flight counted as SLOW: after 60 such frames the
                 // clipmap came back on mid-flight with cells baked from far behind, and skipped the distant cloud masses
                 // (far band -30% of cloud while moving at ~700 km/s from 1278 km, harness_runs/fl1022c).
-                cv2CdcSlowFrames = (cdcStep > 0.004 * cdcS) ? 0 : std::min(cv2CdcSlowFrames + 1, 1000);
+                cv2CdcSlowFrames = (cdcStep > cdcFrac * cdcS) ? 0 : std::min(cv2CdcSlowFrames + 1, 1000);
                 if (cv2CdcSlowFrames < 60)
                     cv2CdcActive = false;
-                if (cv2CdcActive && (!cv2CdcWasActive || glm::length(eye - cv2CdcRefEye) > 0.25 * cv2CdcRefS))
+                // (Inside the shell also when the eye's HEIGHT has changed by a quarter of the scale: the bracket's
+                // distances are measured from the bake's eye height.)
+                if (cv2CdcActive && (!cv2CdcWasActive || glm::length(eye - cv2CdcRefEye) > cdcEpoch * cv2CdcRefS
+                                     || (cdcLow && std::abs(glm::length(eye) - glm::length(cv2CdcRefEye)) > 0.25 * cv2CdcRefS)))
                     ++cv2CdcEpoch;
                 if (cv2CdcEpoch != cdcEpoch0 || !cv2CdcActive)
                 {
@@ -1782,7 +1798,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                 ph[k] = (float)std::fmod(simT / (0.5 * cdcCell0 * std::ldexp(1.0, k) / cdcWind), 4096.0);
             p.cdcP0 = glm::vec4(ph[0], ph[1], ph[2], ph[3]);
             p.cdcC = glm::vec4(cv2CdcActive && cv2CdcLight > 0.5f ? 1.0f : 0.0f, std::clamp(cv2CdcLightLevels, 0.0f, 8.0f),
-                               std::max(cv2CdcNearM, 0.0f), 0.0f);
+                               std::max(cv2CdcNearM, 0.0f), cdcBracket);
             // The god rays' froxel volume: 64 slices from 50 m to 400 km.
             // w: the frame's index in the froxels' sample sequence (cv2FroxJitter), -1 = fixed at the cells' centres when nothing
             // averages frames (no sky TAA: it would flicker).

@@ -5452,6 +5452,7 @@ private:
     float cv2CdcFp = -1.0f;               // ... the bake's read footprint: > 0 x the cell, < 0 x the march's own footprint there
     float cv2CdcMaxLevel = 6.0f;          // ... levels the march may use (0-8)
     float cv2CdcFpUsed = -1.0f, cv2CdcMaxLevelUsed = -1.0f, cv2CdcSkipUsed = -1.0f;
+    float cv2CdcBracketUsed = -1.0f;       // the bake's footprint bracket (cdcC.w) the cells were baked with
     float cv2CdcDustKeyUsed = -1.0f;   // the haboob field the clipmap's cells were baked with (dust on, gain, cloud form)
     float cv2CdcMaxRate = 4.0f;           // ... used only up to this time rate (x real time)
     float cv2CdcLight = 1.0f;             // S2 (2026-10-22): the light march reads the clipmap's mean beyond its first 2 steps
@@ -5467,6 +5468,17 @@ private:
     // skipped whole cloud masses. The guard drops the clipmap while the eye moves fast for its height and starts a new epoch
     // when it comes back or after the eye has moved a quarter of its distance scale. 0 = the old behaviour.
     float cv2CdcMotionGuard = 1.0f;
+    // 2026-11-04 (issue 20261104_020257 "Performance in storms"): with the eye INSIDE the cloud shell (below its top + 2 km)
+    // the guard tolerates steps up to this fraction of its distance scale a frame (20 km there: 0.02 = 400 m a frame, 12 km/s
+    // at 30 fps) instead of 0.4%, starts a new epoch only after cdc_motion_low_epoch x the scale of travel (or a quarter of
+    // it in HEIGHT), and the bake brackets the footprint (cloud_v2_cdc.comp, cdcC.w). Flying at 4.9 km/s between a storm's
+    // decks the clipmap was off the whole time (cloud march ~38 -> ~28 ms), images within ~1 level of the march without the
+    // clipmap. At 40 km/s / 60 fps (670 m a frame) at 12 km over storm tops (issue 20261027_183909's trail) the clipmap on
+    // drew the tops with its cells' light moments (S2), as a still view does, and ~4% of the pixels still differed by > 16
+    // levels with S2 off (unexplained): hence 400 m, not 1 km. 0 = the old guard everywhere (and no bracket). Above the
+    // shell (the orbit climbs the guard was made for) nothing changes.
+    float cv2CdcMotionLowFrac = 0.02f;
+    float cv2CdcMotionLowEpoch = 4.0f;
     float cv2SunVolumeOn = 1.0f;           // diagnostic (r1022): 0 = no Sun transmittance volume (clouds lit by the light march alone)
     float cv2EyeHeightNow = 1.0f;          // the v2 eye from this frame's height offset, not last frame's GPU readback (0 = old)
     glm::dvec3 cv2CdcRefEye{0.0};          // the eye when the clipmap's current epoch began
