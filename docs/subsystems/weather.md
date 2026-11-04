@@ -154,6 +154,16 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   in brightness): one disc per cyclone (max(r1 / 1.1, outflow reach), its eye hole r0 / 1.6) on which `cv2CycSpiral`
   mode 1 draws the arms' cirrus on the low arms' own spirals, the minor swirls, and between them the outflow cirrus
   ("outflow cirrus" x strength and reach) in 3n + 2 thin streaks curving ANTICYCLONICALLY ("outflow streaks", contrast).
+  REVIEW (2026-11-03, the wave verifier): (1) the deck's outflow streaks were gathered to 2x on their crests and the
+  disc, ~700 km, was frayed like an anvil's edge (6-7.5 x the cluster noise): its thin sheet drew the noise's contours
+  as flat grey patches with hard edges between the arms. The streaks now only thin the sheet (o x mix(1, st, m)), and
+  the deck takes the shield's radial fade inside `cv2CycSpiral` while `cv2ShieldAt` hands the caller u / 10 for it
+  (no fray). (2) The CDO read as a featureless disc inside ~0.8 of its radius (2-arm share 0.002-0.03): the moat
+  between an arm and the CDO is NARROW and runs in to about half its radius, as feeder bands wrap in on GOES / Himawari
+  visible imagery (the core stays uniform): the low deck's radius x (1 + 0.7 k) over bA < 0.35 and x (1 - 0.25 k) over
+  bA > 0.5 (mean area 1.00 at k 0.8), the CDO shield thinned to 1 - min(1.15 k, 0.95) from u 0.3-0.6 over arm < 0.45.
+  Shot 2, 2-arm share at 90 / 110 / 140 px: 0.004 / 0.011 / 0.030 -> 0.034 / 0.040 / 0.068, phase +111 -> +176 ->
+  -167 -> -94 (170 px) deg; 50-70 px (the core) unchanged at 0.003.
   The spiral rides in the shield (`Shield::spiral`): c.w < 0 a packed code -(1 + mode + 2k + 32o + 512m + 8192a +
   131072 ro), d.xyz
   hemi x arms / 1 / tan pitch / phase; `cv2ShieldAt` applies it once a sample, to the strongest shield only (x <= 1: the

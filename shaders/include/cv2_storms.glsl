@@ -223,16 +223,22 @@ float cv2CycSpiral(vec3 wd, CV2Shield s, float u, float rM)
     float lr   = log(max(rM, 1000.0)) * s.d.y;
     float arm  = 0.5 + 0.5 * cos(nA * (th + lr + s.d.z));
     if (mode < 0.5)
-        return 1.0 - k * smoothstep(0.2, 0.85, u) * (1.0 - smoothstep(0.1, 0.65, arm));
+        // (The same narrow moat as the low deck under it (cloud_v2_weather.comp dkS): thin over bA < 0.35 from half the
+        // radius out, untouched over the core and along the arms.)
+        return 1.0 - min(1.15 * k, 0.95) * smoothstep(0.3, 0.6, u) * (1.0 - smoothstep(0.0, 0.45, arm));
     float armB = smoothstep(0.6, 0.92, arm) * (1.0 - 0.5 * smoothstep(0.3, 1.0, u));
     float mi   = smoothstep(0.7, 0.95, 0.5 + 0.5 * cos(3.0 * nA * (th + 1.4 * lr + s.d.z) + 1.7)) * (1.0 - smoothstep(0.4, 1.1, u));
     float st   = smoothstep(0.35, 0.9, 0.5 + 0.5 * cos((3.0 * nA + 2.0) * (th - 0.5 * lr) + 0.9 * s.d.z));
     // (The outflow ends where the old outflow disc's frayed edge did, ~1.25 of its reach: past it the deck is exactly 0
     // between the arms, so cv2AnvilSigmaP's early out skips its texture reads there (shot 1: +3 ms of march without).)
-    // (The streaks gather the sheet's ice: at m = 1 none between them and 2x on their crests, so they show; a sheet as
-    // thin as the outflow's (0.25) only just renders, and modulated down alone its streaks did not change the frame.)
-    return max(aK * max(armB, 1.2 * k * mi),
-               min(o * mix(1.0, 2.0 * st, m), 1.0) * (1.0 - smoothstep(0.9 * ro, 1.3 * ro, u)));
+    // (The streaks only thin the sheet, never thicken it past the outflow's own strength: gathered to 2x on their
+    // crests they crossed the shield fray's presence threshold and drew flat grey patches with hard edges between the
+    // arms — the old outflow at 0.4 did the same.)
+    // (x the shield's own radial fade, without its noise fray: cv2ShieldAt hands the caller u / 10 for this disc, whose
+    // edge is not a cloud's edge. Frayed at 6-7.5 x the cluster noise over ~700 km, its thin sheet showed the noise's
+    // contours as flat grey patches with hard edges between the arms.)
+    return max(aK * max(armB, 1.2 * k * mi), o * mix(1.0, st, m) * (1.0 - smoothstep(0.9 * ro, 1.3 * ro, u)))
+         * (1.0 - smoothstep(0.25, 1.25, u));
 }
 
 // The anvil shields over a map-frame direction: the strongest one's strength (x its taper toward the far end), its
@@ -273,7 +279,10 @@ float cv2ShieldAt(vec3 wd, out float thickK, out float ageK, out float uOut)
     // strongest-first early out above stays exact).
     if (bestI != 0xFFFFFFFFu) {
         CV2Shield s = cv2Shields[bestI];
-        if (s.c.w < 0.0 && s.d.w < 0.0) bestS *= cv2CycSpiral(wd, s, uOut, uOut * s.c.x);
+        if (s.c.w < 0.0 && s.d.w < 0.0) {
+            bestS *= cv2CycSpiral(wd, s, uOut, uOut * s.c.x);
+            if (mod(-s.c.w - 1.0, 2.0) > 0.5) uOut *= 0.1;   // (the cirrus deck: faded inside, not frayed)
+        }
     }
 #endif
     return bestS;
