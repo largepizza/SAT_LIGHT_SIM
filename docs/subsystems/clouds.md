@@ -505,6 +505,21 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     Two passes (check + list, then a 4-lane bake: a one-pass bake serialised one lane per warp, 5-12 ms). 6 levels used;
     off above 4x time. -4..-9 ms below orbit at full rate, ~0 from orbit, images at the noise floor, motion (tstab) equal.
     Coarse-footprint bakes are NOT conservative (more misses); jumping to cell exits gained nothing.
+    **Low in the shell** (2026-11-04, issue 20261104_020257; `cdc_motion_low_frac` 0.05, `cdc_motion_low_epoch` 4,
+    `cdc_motion_low_max_m` 6000, no UI; frac 0 = the old guard): with the eye below 6 km (and the shell top + 2 km) the motion
+    guard tolerates 5% of its 20-km scale a frame (1 km: 30 km/s at 30 fps) instead of 0.4%, takes a new epoch after 4x the
+    scale of travel or a quarter of it in height, and the bake BRACKETS its footprint (`cdcC.w`, whenever frac > 0): the
+    field at the level ring's nearest (0 / half the reach, at the cell's height from the eye) and farthest (sqrt 2 x the
+    reach) distances, max of the two, so a cell is conservative for every eye that can read it. Cells the check pass
+    refuses for budget are marked unknown (stamp 0, always) instead of keeping another place's data (the wrap bits repeat
+    every 2048 cells, 205 km on level 0; at 40 km/s the check refused ~620k cells a frame against the 65k budget).
+    Measured: flying at 4.9 km/s from the storm report's pose (4.85 km), cloud march ~38 -> ~28 ms, misses 0.004% of the
+    skipped steps (still 0.0013%), frames within ~1 level of the march without the clipmap; the report's 20 km/s trail at
+    600 m at the floor with the bracket (0.4% of pixels > 16 levels without it). NOT at 12 km over storm tops (issue
+    20261027_183909's trail, 60 fps): there the clipmap kept on put 12-19% of the pixels > 16 levels from the guard's frames
+    at any step limit down to 400 m a frame -- mostly the cells' S2 light moments replacing the field's light (as a still
+    view is lit), with S2 off still 4-5% (local shading patches; not the epoch frequency: 1x / 4x / 0.25x the scale alike;
+    cause not found). Hence the height limit (verified at 0.6 and 4.85 km only). Above it nothing changes.
   - **S2** (`cdc_light`, `cdc_light_levels` 3): light steps 3+ read the cell's mean + variance of the light extinction
     through the gamma model E[exp(-L e)] (a cell MEAN alone darkened broken cloud by up to 18 levels: Jensen). Modest.
   - **God-ray froxels** (`godray_froxels`, `cloud_v2_froxel.comp`, `cv2GodFrox` in the flash buffer: 320 x 180 x 64,
@@ -1018,6 +1033,25 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   base-vs-base floor at every view up to 1.0; 0.5 changed cumulus lobe rims seen from 3 km): from 6 km INSIDE the mid layer
   (Brisbane, -27.5 153.0 at 02:06 UTC, az 60 el -4; its haze was 25 of 34 ms) 33 -> 25.5 ms; matrix suite total -4.2 ms,
   every quality metric unchanged (harness_runs/mxc/on vs fo02).
+- **Storms between decks (2026-11-04, issue 20261104_020257 "Performance in storms": 4.85 km over KwaZulu-Natal at sunrise,
+  the reporter's High settings, FOV 120, 1920x1009, RTX 3070 Ti; worktree storm-perf, `harness_runs/storm/`).** A storm view
+  costs 2-3x an ordinary cloud view because its layers are TRANSLUCENT and STACKED, not because they are layers: the march is
+  already one walk through the whole shell and `cv2Field` sums every layer at each sample. Lit samples a ray (CV2_EVAL_COUNT
+  build, spare counters by the sample's class): 6.9 at the storm view against 1.0 at cumulus from 3 km; 57% of the shaded
+  samples were the mid layer's altostratus sheet (`soft`), crossed nearly edge-on from near its height without its
+  transmittance falling, 27% cirrus, 16% the storm cloud. Knockouts there: mid layer -8.4 ms, Cb towers -6.0, anvils -4.4,
+  low layer -3.6 (of ~20; the lighting as a whole ~-7.5 at 238 registers). **The As sheet is shaded at coarse steps**
+  (`coarseThin` takes `soft > 0.9 && deck > 0.5`, a sample of two steps, as thin ice and rain): `cv2MidSigma` has no erosion,
+  so its coarse read is its fine one; lit samples 6.9 -> 4.4 a ray, still view cloud march 22.5 -> 17.0 ms, the image at the
+  noise floor (0.80 vs a same-shader floor of 0.86 levels), 128 registers; altocumulus keeps fine steps. Tried: lighting every
+  other As sample from its neighbour (-2.6 ms alone, nothing on top), the sky probe from the clipmap's cell means (0 ms).
+  The image near the eye changes slightly where a thin As haze lies in front of cumulus (looking down from 3 km: a patch ~3.5
+  levels darker, the sheet's entry stride is no longer re-sampled as the fine lattice did; same for cirrus and rain).
+  **The reporter's 47.5 ms was a MOVING frame** (both trails are fast flight): the clipmap's motion guard switched the
+  occupancy skip off (26 M coarse field evaluations a frame instead of 5 M + 21 M skipped). See "Cloud rebuild experiments"
+  > occupancy clipmap > "Low in the shell". Shot 1, 1920x1009, interleaved: still 22.2 -> 16.5 ms; flying east at 4.9 km/s
+  ~50 -> ~28 ms (old shader 49.8, new shader 38.9, + the clipmap kept on 27.7-29.0); the reporter's trail 1 33.2 -> ~28;
+  shot 2 still 8.5 -> 8.5; cumulus from 3 km 11.3 -> 11.0 (non-storm, no regression); 128 registers.
 - **The unified volumetric composite (2026-10-26, branch perf-frames; the user: the plumes, smoke and tornadoes "feel entirely
   distinct in quality" and clip against rain, dust, smoke and clouds).** The dust list's Gaussians (launch plumes, flames,
   wildfire smoke, tornado funnels, haboob far field, Kessler dust and fireball trails) are still composited in cloud_march.comp

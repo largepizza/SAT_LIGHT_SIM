@@ -9785,6 +9785,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CdcMaxLevel = c.value("cdc_max_level", cv2CdcMaxLevel);
         cv2CdcMaxRate = c.value("cdc_max_rate", cv2CdcMaxRate);
         cv2CdcMotionGuard = c.value("cdc_motion_guard", cv2CdcMotionGuard);
+        cv2CdcMotionLowFrac = c.value("cdc_motion_low_frac", cv2CdcMotionLowFrac);
+        cv2CdcMotionLowEpoch = c.value("cdc_motion_low_epoch", cv2CdcMotionLowEpoch);
+        cv2CdcMotionLowMaxM = c.value("cdc_motion_low_max_m", cv2CdcMotionLowMaxM);
         cv2EyeHeightNow = c.value("eye_height_now", cv2EyeHeightNow);
         cv2SunVolumeOn = c.value("sun_volume", cv2SunVolumeOn);
         cv2CdcLight = c.value("cdc_light", cv2CdcLight);
@@ -10507,6 +10510,9 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cdc_max_level", cv2CdcMaxLevel},
         {"cdc_max_rate", cv2CdcMaxRate},
         {"cdc_motion_guard", cv2CdcMotionGuard},
+        {"cdc_motion_low_frac", cv2CdcMotionLowFrac},
+        {"cdc_motion_low_epoch", cv2CdcMotionLowEpoch},
+        {"cdc_motion_low_max_m", cv2CdcMotionLowMaxM},
         {"eye_height_now", cv2EyeHeightNow},
         {"sun_volume", cv2SunVolumeOn},
         {"cdc_light", cv2CdcLight},

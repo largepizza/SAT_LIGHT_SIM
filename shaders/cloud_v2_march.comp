@@ -857,7 +857,12 @@ void main()
             // sprint 2026-09-29). Its density has no erosion, so the coarse read is its fine one.
             // Review 22: rain alone (the shafts below a base) likewise: a near-uniform medium with weak structure.
             // Its fine steps were ~70% of the march standing under a storm (record 10: 22 -> 6.5 ms without rain).
-            bool coarseThin = !fine && f.sigma > 0.0 && (f.thin > 0.9 || f.rain > 0.9);
+            // 2026-11-04 (issue 20261104_020257 "Performance in storms"): the mid layer's ALTOSTRATUS sheet alone (soft, a
+            // deck) likewise: cv2MidSigma has no erosion (its coarse read is its fine one) and the sheet is smooth over km.
+            // From 4.8 km between a storm's decks it was 57% of the lit samples (7.7 a ray, each a light march) and every
+            // ray crossed it nearly edge-on for tens of km without its transmittance falling: s1 cloud march 22.5 -> 16.7 ms
+            // (1920x1009), the image within the noise floor (harness_runs/storm). Altocumulus (deck < 0.5) keeps fine steps.
+            bool coarseThin = !fine && f.sigma > 0.0 && (f.thin > 0.9 || f.rain > 0.9 || (f.soft > 0.9 && f.deck > 0.5));
             if (!fine && !coarseThin) {
                 // Back two steps and on to a JITTERED fine lattice: the start jitter covers only the
                 // first (shortest) step, so without this every fine sample sat on the coarse grid and
@@ -941,7 +946,7 @@ void main()
             // perf win is from altitude). Near the eye, inside or just above the layer (review 9: 9 km at
             // 62 N), two-step samples caught its fibres on some frames and missed them on others: crisp
             // flickering specks over the low clouds' edges.
-            float stepW = ((f.thin > 0.9 && fp > 60.0) || (f.rain > 0.9 && !fine)) ? rK * stepF : stepF;
+            float stepW = ((f.thin > 0.9 && fp > 60.0) || (f.rain > 0.9 && !fine) || (coarseThin && f.soft > 0.9)) ? rK * stepF : stepF;
             // "Near cirrus stride" (perf.x, 2026-10-24; 1 = off): with the eye inside the high layer every ray runs through
             // its soft haze (cv2HighSigma's nearK) in ~60-120 m steps, each a field evaluation and a lit sample: two thirds
             // of the cloud march under an anvil at 12.4 km (issue 20261023_230322). There a pure thin-ice sample stands for

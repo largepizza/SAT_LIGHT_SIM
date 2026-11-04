@@ -520,6 +520,11 @@ depth pass, so its variants interleave like the sky's and the clouds'.
   past ~5 s lose cloud masses (11% of pixels > 16 levels from the settled reference, content lost). Clearing every stamp at
   each new epoch (so the 3-bit epoch cannot wrap onto old cells) changed nothing: the loss is the bake's footprint seen
   from another eye position, as the guard's comment says. Open: a bake that stays conservative while the eye moves.
+  **Below 6 km the guard is looser** (2026-11-04, issue 20261104_020257, `cdc_motion_low_frac` / `_epoch` / `_max_m`;
+  clouds.md "Storms between decks" and occupancy clipmap > "Low in the shell"): flying at 4.9 km/s between a storm's decks
+  at 4.85 km the clipmap was off the whole way (cloud march ~50 ms with the old shader, the reporter's 47.5); kept on:
+  ~38 -> ~28 ms. The bake brackets its footprint over the level's ring; refused cells are marked unknown. At 12 km over
+  storm tops (the trail above) keeping it on changed 12-19% of the pixels (mostly S2 light, 4-5% without): not there.
 - **Dead ends:** skipping the sky pass's terrain march where the four cloud texels are opaque (-0.1..-0.3 ms, changes the
   depth the sky TAA reprojects with); the history copies (~0.1 ms); FIFO quantisation as the cause of "30 / 20 / 15 FPS"
   (the reports' frame times are not quantised: 27 ms median at a 28 ms GPU).

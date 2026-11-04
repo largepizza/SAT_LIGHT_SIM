@@ -74,6 +74,12 @@ void checkPass(uint gi)
     uint slot = atomicAdd(cv2CdcListCount, 1u);
     if (slot >= uint(cv2.cdcB.z) || slot >= uint(kCv2CdcListCap)) {
         atomicAdd(cv2EvalCount[17], 1u);
+        // Refused by the budget: mark the slot UNKNOWN (stamp 0 never matches, 0x8000 is always set) instead of leaving the
+        // cell it held. That cell's stamp comes round again: the wrap bits repeat every 16 window wraps (2048 cells, 205 km
+        // on level 0) and the epoch / time bits can coincide, and a slot the budget never got to would then read ANOTHER
+        // place's occupancy and light moments as this one's. Reachable only while the eye moves fast with the clipmap on
+        // (2026-11-04: at 40 km/s and 12 km the check refused ~620k cells a frame against the 65k budget).
+        if ((cv2CdcData[gi] >> 16u) != 0u) cv2CdcData[gi] = 0u;
         return;
     }
     cv2CdcData[gi] = st << 16u;   // the bake pass (later this frame, before the march) raises it
@@ -108,6 +114,19 @@ void bakePass(uint ti)
     // centre inside its own height range, pattern 1 missed flat bases and thin decks ~10x as often (run 11).
     int   nS = cv2.cdcA.w > 1.5 ? 36 : 9;
     float mx = 0.0;
+    // The footprint BRACKET (cdcC.w, 2026-11-04, issue 20261104_020257): the march reads this cell only while the eye is
+    // within its level's ring of it (horizontally 0 / half .. sqrt 2 x the level's reach, the max norm), so from ANY eye
+    // position at this height its footprint lies between the ring's nearest and farthest distances. The bake reads the
+    // field at both and keeps the larger: the cell stays conservative while the eye flies over it, and the clipmap need
+    // not drop out while the eye moves (cv2CdcMotionLowFrac). At one footprint (the bake's eye's) a cell baked from
+    // overhead at the fine one can read "empty" between puffs that the ring's coarser footprint merges (on the report's
+    // low trail, 20 km/s at 600 m: 0.4% of the pixels > 16 levels off without the bracket, the floor with it).
+    // Off (cdcC.w 0): one read at the eye's footprint.
+    bool  brk = cv2.cdcC.w > 0.5 && cv2.cdcB.y < 0.0;
+    float r0  = cv2.cdcA.z * float(kCv2CdcN / 2 - 2) * float(1 << lv);
+    float dzE = abs(zc - eyeH);
+    float fpLo = -cv2.cdcB.y * length(vec2(lv == 0 ? 0.0 : 0.5 * r0, dzE)) * pixA;
+    float fpHi = -cv2.cdcB.y * length(vec2(1.4142136 * r0, dzE + kCv2CdcDZ)) * pixA;
     [[dont_unroll]] for (int k = int(lane); k < nS; k += int(kCdcLanes)) {
         int   kk = k - 1;
         vec3  o  = (nS == 36) ? vec3(float(k % 3) - 1.0, float((k / 3) % 3) - 1.0, (float(k / 9) - 1.5) * 0.5)
@@ -120,8 +139,11 @@ void bakePass(uint ti)
         // run 10; kept so the bake reads exactly what the march would).
         gCv2Stretch = 1.0 / max(abs(dot(normalize(rel), normalize(rel + eyeP))), 0.25);
         float fpS = cv2.cdcB.y < 0.0 ? -cv2.cdcB.y * length(rel) * pixA : cv2.cdcB.y * cell;
-        CV2Field f = cv2Field(cv2Pos(rel, eyeH, enuToEcef), -1.0, fpS);
-        mx = max(mx, f.sigma);
+        // (One call site in a loop: the field is inlined at every call.)
+        [[dont_unroll]] for (int b = 0; b < (brk ? 2 : 1); ++b) {
+            CV2Field f = cv2Field(cv2Pos(rel, eyeH, enuToEcef), -1.0, brk ? ((b == 0) ? fpLo : fpHi) : fpS);
+            mx = max(mx, f.sigma);
+        }
         // S2 ("cdc_light"): the light march's own read (mean erosion), its effective extinction summed in fixed point,
         // at the pattern's points pulled in to the cell itself (+-0.5 cell): a mean over the dilated 2-cell box blurred
         // gaps into cloud, and exp(-mean od) of a broken field is darker than the mean of exp(-od) (s2 run: -18 levels).
