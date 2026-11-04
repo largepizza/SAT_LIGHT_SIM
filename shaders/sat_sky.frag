@@ -1375,6 +1375,25 @@ void cityDayGrid(CityGrid g, CityLayout L, float foot, float warm, out vec3 albO
 
 // The day albedo at the layout as a RATIO to the pattern's own mean (so it multiplies the day map and
 // converges to exactly it as the footprint grows: a seamless hand-off, orbit unchanged).
+// The day map's sea blue (2026-11-03, issue_20261030_204632): blue over luminance (linear), 0 on green or grey land
+// and snow, 1 on open sea (0.5-1.7 there). Its 5-km texels paint narrow fjords and the slopes round them sea blue.
+float daySeaBlue(vec3 c) {
+    float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
+    return smoothstep(0.12, 0.30, (c.b - 0.5 * (c.r + c.g)) / max(lum, 0.02));
+}
+
+// Ground at the sea's level (h0, the march's own height) that the coastline calls land but the day map paints as
+// sea: the DEM's sea and the photo agree against the coastline (the sub-texel fringe of narrow fjords the water map's
+// bake cannot dunk). The user: "dunk the blue terrain". It is already flat at the sea's level: drawn as the sea.
+// Green deltas and polders at 0 m stay land, and so does any flat coast (hM3 below).
+bool seaLevelDayDunk(float h0, float hM3, vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ) {
+    // Only amid relief (hM3, the DEM ~20 km mean, above 150 m: a fjord, a sound between mountains). A flat coast
+    // at the sea byte (Zandvoort, the polders, deltas) has a sea-blue day map along its shore too: it stays land.
+    if (h0 > 0.5 || hM3 < 150.0) return false;
+    vec3 pE = q.x * enuX + q.y * enuY + (R_EARTH + q.z) * enuZ;
+    return daySeaBlue(textureLod(earthDayTex, posToUV(pE), 0.0).rgb) > 0.5;
+}
+
 vec3 cityDayAlbedo(CityLayout L, float foot, float grey) {
     // Terracotta varies by a 4-km value noise around the style's share (continuous across region borders).
     float warm = smoothstep(-0.6, 0.6, cityValue2(L.p2, L.dAnc, 4096.0, 8123 + L.f));
@@ -4011,8 +4030,16 @@ void main() {
             // land path on others: rings about the nadir and a z-fighting boundary (user snapshot).
             if (tHit < 0.0 && tSeaLvl > 0.0 && tSeaLvl <= tExit + 1.0) {
                 float hs0, hs3;
-                tdDemAt(earthElevTex, earthSpecTex, vec3(0.0, 0.0, hEye) + tSeaLvl * dir, enuX, enuY, enuZ, hs0, hs3);
-                if (hs3 > kTdWaterMark) tHit = tSeaLvl;
+                vec3 qs0 = vec3(0.0, 0.0, hEye) + tSeaLvl * dir;
+                tdDemAt(earthElevTex, earthSpecTex, qs0, enuX, enuY, enuZ, hs0, hs3);
+                if (hs3 > kTdWaterMark) {
+#ifndef SKY_ENV
+                    // Unless the photo paints it sea (seaLevelDayDunk): then it is the sea, at the sea's level.
+                    if (seaLevelDayDunk(hs0, hs3, qs0, enuX, enuY, enuZ)) waterPx = 1;
+                    else
+#endif
+                    tHit = tSeaLvl;
+                }
             }
             if (tHit > 0.0) {
                 terrainQ = vec3(0.0, 0.0, hEye) + tHit * dir;
@@ -4040,6 +4067,10 @@ void main() {
                 // above the sea baseline, and the water mask only forces a sea height below
                 // kWaterMaskMaxM (tdDemAt, terrain.glsl).
                 bool hitWater = hMip3 <= kTdWaterMark;   // tdDemAt's water mark
+#ifndef SKY_ENV
+                // Sea-level ground the photo paints as sea (seaLevelDayDunk) is the sea, at the sea's level.
+                if (!hitWater && seaLevelDayDunk(terrainH0, hMip3, terrainQ, enuX, enuY, enuZ)) { hitWater = true; terrainH0 = 0.0; }
+#endif
                 waterPx = hitWater ? 1 : 0;
                 if (hitWater && terrainH0 > 0.0) {
                     // A lake: its surface is the flat level the march hit. Water, not terrain.
@@ -4169,6 +4200,9 @@ void main() {
                 float hs0, hs3;
                 tdDemAt(earthElevTex, earthSpecTex, qs, enuX, enuY, enuZ, hs0, hs3);
                 waterPx = (hs3 <= kTdWaterMark) ? 1 : 0;
+#ifndef SKY_ENV
+                if (waterPx == 0 && seaLevelDayDunk(hs0, hs3, qs, enuX, enuY, enuZ)) waterPx = 1;
+#endif
 #ifndef SKY_ENV
                 // Storm surge (tdSurgeAt): the sea here stands hs0 above the sea sphere, which the march stepped over
                 // (a few metres; the level varies over tens of km): the sphere at that level, one fixed-point step.
@@ -5533,6 +5567,33 @@ void main() {
         if (uvd_dy.x < -0.5) uvd_dy.x += 1.0;
         vec3 dayColor   = textureGrad(earthDayTex,   uvSurf, uvd_dx, uvd_dy).rgb;
         vec3 nightColor = textureGrad(earthNightTex, uvTaa0, uvd_dx, uvd_dy).rgb;
+#if !defined(SKY_ENV) && !defined(SKY_LITE)
+        // Ground above the sea painted sea blue (2026-11-03, issue_20261030_204632, the user: "colour it as land"): a
+        // 5-km day-map texel that mixes a fjord into its land paints the slopes round it sea blue. Recoloured from the
+        // least-blue of eight texels around (two and four texels away), so a fjord wall takes the forest or rock beside
+        // it; fading in from 1 to 15 m above the level (the sea-level fringe is dunked instead, seaLevelDayDunk).
+        if (tHit > 0.0 && terrainH0 > 1.0) {
+            float wet = daySeaBlue(dayColor) * smoothstep(1.0, 15.0, terrainH0);
+            // Amid relief only (the DEM's ~20 km mean above 100-200 m), like the dunk: a flat coast keeps its map.
+            if (wet > 0.0)
+                wet *= smoothstep(100.0, 200.0, textureLod(earthElevTex, uvSurf, 3.0).r * kElevRange - kElevOffset);
+            if (wet > 0.0) {
+                vec2  o = 1.0 / vec2(textureSize(earthDayTex, 0));
+                vec3  best = dayColor;
+                float bw = 1.0;
+                for (int k = 0; k < 8; ++k) {
+                    float r  = (k < 4) ? 2.0 : 4.0;
+                    vec2  dk = (k == 0) ? vec2(1, 0) : (k == 1) ? vec2(-1, 0) : (k == 2) ? vec2(0, 1) : (k == 3) ? vec2(0, -1)
+                             : (k == 4) ? vec2(0.7071, 0.7071) : (k == 5) ? vec2(-0.7071, 0.7071)
+                             : (k == 6) ? vec2(0.7071, -0.7071) : vec2(-0.7071, -0.7071);
+                    vec3  c  = textureGrad(earthDayTex, uvSurf + dk * r * o, uvd_dx, uvd_dy).rgb;
+                    float w  = daySeaBlue(c);
+                    if (w < bw) { bw = w; best = c; }
+                }
+                dayColor = mix(dayColor, best, wet * (1.0 - bw));
+            }
+        }
+#endif
         // Launch pads (2026-10-19, padGroundAt): the flat parts of the sites near the observer. Inside a pad's exclusion
         // radius the night map is cut to its base, so no city grid, glitter, detail texture or farm is drawn there; the
         // pad's own lamps and floodlit concrete stand in for its light.
