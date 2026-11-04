@@ -1097,7 +1097,10 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         c.wispE   = mix(c.wispE, 0.0, wS);
         c.rV      = mix(c.rV, 0.0, wS);
         c.fpFade  = mix(c.fpFade, mix(1.0, 0.3, smoothstep(300.0, 2000.0, fpM)), wS);
-        c.lobeB   = mix(c.lobeB, lobeS * 2.0 * (2.5 * 0.55 + 0.6 * cv2.cu.w), wS);
+        // (The storm lobes' largest addition in practice: 2 x lobeS x ~0.7 (the billow channels' spread is ~0.12, the
+        // storm-scale lobes x 2.5 plus the fine ones on their crowns). The cumulus' formula, 3.35 lobeS, kept every point
+        // within ~6 km of a storm's surface fetching: coarse view reads x1.8 looking down on an anvil plate.)
+        c.lobeB   = mix(c.lobeB, lobeS * 1.4, wS);
         f.hf       = mix(f.hf, sg.hf, wS);
         f.topH     = mix(f.topH, sg.top, wS);
         f.msBright = mix(cu ? f.msBright : 1.0, cv2.types[4].look.x, wS);
@@ -1965,7 +1968,7 @@ float cv2AnvilSigmaP(CV2Pos q, float fpM, float colNear, bool wantPres, out floa
     // (From 0 at the cutoff: from 0.0, the outline at a = 0.05 kept ~2% of the density, and at "Anvils" 8 a view along
     // the shield's edge crossed tens of km of it: a hard arc, issue 20261023_002905 shot 1.)
     presA = smoothstep(0.05, 0.6, a);
-    if (a <= 0.05 || !inBand || (gCv2AnvVeil && gCv2PlateA >= 0.45)) return 0.0;
+    if (a <= 0.05 || !inBand || (gCv2AnvVeil && gCv2PlateA >= 0.6)) return 0.0;
     float thick  = cv2.anvil2.x * clamp(a, 0.0, 1.0) * shThick + hang; // thickest over the storm, thin at its edge
     float za     = (q.h - (top - thick)) / thick;
     if (za <= -0.2) return 0.0;
@@ -1978,7 +1981,7 @@ float cv2AnvilSigmaP(CV2Pos q, float fpM, float colNear, bool wantPres, out floa
     topA = top;
     // An aged (orphan) shield is thinner ice.
     return edge * edge * under * lid * mix(0.85, 1.0, sh.r) * 0.01 * cv2.storm.z * mix(1.0, 0.5, shAge)   // "Anvils" is its density
-         * (gCv2AnvVeil ? 1.0 - smoothstep(0.3, 0.45, gCv2PlateA) : 1.0);
+         * (gCv2AnvVeil ? 1.0 - smoothstep(0.45, 0.6, gCv2PlateA) : 1.0);
 }
 
 float cv2AnvilSigma(CV2Pos q, float fpM, float colNear, out float hfA, out float topA)
@@ -2274,11 +2277,12 @@ CV2Storm cv2StormGeom(CV2Pos q)
             float ext   = 0.25 + 0.85 * sqrt(shS);                      // its radius grows as it forms (radii)
             float a     = shS * (1.0 - smoothstep(0.25, 1.25, shU / ext));
             gCv2PlateA  = a;
-            // The plate is where the old shield's presence passed ~0.5 (its density x presence^2 was a thin haze below
-            // that: tens of km of translucent ice that every ray crossed in fine steps, issue 111947), thinning toward it.
-            float thick = cv2.anvil2.x * clamp((a - 0.35) / 0.65, 0.0, 1.0) * shThick * mix(1.0, 0.5, shAge)
+            // The plate is where the old shield's presence passes 0.5, thinning toward it (below that its density x
+            // presence^2 is a haze tens of km wide that every ray crossed in fine steps, issue 111947: there it is the veil,
+            // thin ice at coarse steps; with the outline at 0.35 the eye at 11 km stood inside a plate of fog, -10% only).
+            float thick = cv2.anvil2.x * clamp((a - 0.5) / 0.5, 0.0, 1.0) * shThick * mix(1.0, 0.5, shAge)
                         + cv2.anvil2.y * near + 150.0;
-            float mH    = (a - 0.35) * shR / max(1.2 * shS, 0.1) * ext; // to the outline (m): a's slope is ~1.2 shS a radius
+            float mH    = (a - 0.5) * shR / max(1.2 * shS, 0.1) * ext; // to the outline (m): a's slope is ~1.2 shS a radius
             float mV    = min(q.h - (topS - thick), topS - q.h);        // to the underside / the lid (m)
             mSh  = min(mH, mV);
             hfS  = clamp((q.h - (topS - thick)) / thick, 0.0, 1.0);
