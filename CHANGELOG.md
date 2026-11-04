@@ -244,8 +244,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   55 m size: four triangular film quadrants (2,819 m^2) with scalloped edges on two crossed telescoping booms and a
   central bus, replacing the single plate. After release the booms telescope out and the sails unfurl over 15
   minutes. Reflect Orbital launches on Starship only, 25 mirrors a ship (a stowed mirror is a 5.4 m cross of
-  telescoped booms 0.8 m thick: 25 fill the payload bay), released through the payload door 3 minutes apart so
-  the 78 m sails never unfold near each other.
+  telescoped booms 0.8 m thick: 25 fill the payload bay), released through the payload door 2.5 minutes apart so
+  the 78 m sails never unfold near each other, about 40 launches a year once the constellation is up.
 - **SpaceX Starmind orbital data centers** per SpaceX's May 2026 FCC filing: about 990,000 satellites in
   sun-synchronous and 30-degree shells, flying in passive formation rings of eight that turn once per orbit.
 
