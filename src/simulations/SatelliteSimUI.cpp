@@ -715,6 +715,13 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // camera/observer/settings they change. A no-op outside a harness run.
     harnessUi_ = &ui;
     harnessTick();
+    // clouds_v2.storm_unified is a specialization constant of the cloud pipelines: rebuild them when it changes.
+    if (ctx_ && cv2MarchPipeline && (cv2StormUnified > 0.5f ? 1u : 0u) != cv2StormSpecBuilt)
+    {
+        std::string st;
+        const std::string err = reloadCloudsV2Shaders(*ctx_, cv2LastSpv[0], st, 0, 0, cv2LastSpv[1], cv2LastSpv[2], cv2LastSpv[3]);
+        if (!err.empty()) Log::line("clouds v2: storm_unified rebuild: " + err);
+    }
     fprof::markReset(); // (buildUI's own splits: ui.seg*; recordCompute resets the mark for its rc.seg*)
     cineTick(dt); // review 17: a playing / exporting cinematic owns the camera and the clock
     {
@@ -9788,6 +9795,10 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CdcMotionLowFrac = c.value("cdc_motion_low_frac", cv2CdcMotionLowFrac);
         cv2CdcMotionLowEpoch = c.value("cdc_motion_low_epoch", cv2CdcMotionLowEpoch);
         cv2CdcMotionLowMaxM = c.value("cdc_motion_low_max_m", cv2CdcMotionLowMaxM);
+        cv2StormUnified = c.value("storm_unified", cv2StormUnified);
+        cv2StormUnifiedScaleM = settingClamp(c.value("storm_unified_scale_m", cv2StormUnifiedScaleM), 200.0f, 50000.0f);
+        cv2StormUnifiedRampM = settingClamp(c.value("storm_unified_ramp_m", cv2StormUnifiedRampM), 20.0f, 5000.0f);
+        cv2StormUnifiedLobes = settingClamp(c.value("storm_unified_lobes", cv2StormUnifiedLobes), 0.0f, 4.0f);
         cv2EyeHeightNow = c.value("eye_height_now", cv2EyeHeightNow);
         cv2SunVolumeOn = c.value("sun_volume", cv2SunVolumeOn);
         cv2CdcLight = c.value("cdc_light", cv2CdcLight);
@@ -10513,6 +10524,10 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cdc_motion_low_frac", cv2CdcMotionLowFrac},
         {"cdc_motion_low_epoch", cv2CdcMotionLowEpoch},
         {"cdc_motion_low_max_m", cv2CdcMotionLowMaxM},
+        {"storm_unified", cv2StormUnified},
+        {"storm_unified_scale_m", cv2StormUnifiedScaleM},
+        {"storm_unified_ramp_m", cv2StormUnifiedRampM},
+        {"storm_unified_lobes", cv2StormUnifiedLobes},
         {"eye_height_now", cv2EyeHeightNow},
         {"sun_volume", cv2SunVolumeOn},
         {"cdc_light", cv2CdcLight},
