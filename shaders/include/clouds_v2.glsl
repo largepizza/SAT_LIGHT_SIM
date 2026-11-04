@@ -1171,8 +1171,9 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
 #ifdef CV2_DETAIL_BINDING
         if (detailAmt > 0.0) {
             vec3  dist = (vec3(s.a, s.g, s.b) - vec3(0.5, 0.45, 0.45)) * 0.35;
-            vec4  dn   = textureLod(cv2DetailTex, cv2.anchorDetail.xyz + rS * cv2.anchorDetail.w + dist,
-                                    cv2Lod(fpM, cv2.anchorDetail.w));
+            // (Not at deep ~ 1, a storm's own surface: only the storm-scale detail is used there.)
+            vec4  dn   = (deep < 0.99) ? textureLod(cv2DetailTex, cv2.anchorDetail.xyz + rS * cv2.anchorDetail.w + dist,
+                                                    cv2Lod(fpM, cv2.anchorDetail.w)) : vec4(0.45);
             if (deep > 0.02) {
                 vec4 dn2 = textureLod(cv2DetailTex,
                                       cv2.anchorStormDetail.xyz + rS * cv2.anchorStormDetail.w + dist,
@@ -1891,6 +1892,9 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
 // only its thin VEIL beyond the plate (gCv2AnvVeil: the frayed outline, a cyclone's outflow cirrus), as thin ice.
 bool  gCv2AnvVeil = false;
 float gCv2PlateA  = 0.0;   // the plate's presence here (cv2StormGeom): the veil gives way to it
+// cv2StormGeom's shield walk, reused by the veil (one walk a field read): x strength, y thickness, z age, w u (radii)
+bool  gCv2ShSet = false;
+vec4  gCv2Sh    = vec4(0.0);
 float cv2AnvilSigmaP(CV2Pos q, float fpM, float colNear, bool wantPres, out float hfA, out float topA, out float presA)
 {
     hfA = 0.0; topA = 0.0; presA = 0.0;
@@ -1913,8 +1917,11 @@ float cv2AnvilSigmaP(CV2Pos q, float fpM, float colNear, bool wantPres, out floa
     // stood over map regions with no tower under them (issue 20261023_002905 shot 3: "stranded anvils").
     float stormA = 0.0, shThick = 1.0, shAge = 0.0, shU = 9.0, shS = 0.0;
     bool  shOn   = cv2ShieldsOn();
+    // (The veil inside the plate: nothing to draw, the cirrus gives way. Before the walk and the fetches.)
+    if (gCv2AnvVeil && gCv2PlateA >= 0.45) { presA = 1.0; return 0.0; }
     if (shOn) {
-        shS = cv2ShieldAt(wd, shThick, shAge, shU);
+        if (gCv2ShSet) { shS = gCv2Sh.x; shThick = gCv2Sh.y; shAge = gCv2Sh.z; shU = gCv2Sh.w; }
+        else shS = cv2ShieldAt(wd, shThick, shAge, shU);
         stormA = shS;                                   // (for the early out: the outline is drawn below)
     } else {
         vec3  eastW  = vec3(-wd.y, wd.x, 0.0) * inversesqrt(max(dot(wd.xy, wd.xy), 1e-6));
@@ -2163,6 +2170,7 @@ CV2Storm cv2StormGeom(CV2Pos q)
     CV2Storm g = cv2StormNone();
     gCv2RainCore = 0.0;
     gCv2PlateA   = 0.0;
+    gCv2ShSet    = false;
     if (cv2.column.x <= 0.0 || q.h < (cv2.rain.x > 0.0 ? -100.0 : 400.0)) return g;
     vec3  wd    = cv2Drift(q.dirE);
     float tropo = cv2Tropo(wd);
@@ -2261,6 +2269,7 @@ CV2Storm cv2StormGeom(CV2Pos q)
     if (cv2.storm.z > 0.0 && cv2ShieldsOn() && q.h > max(5000.0, 0.66 * top)) {   // (down through the cirrus band: its presence)
         float shThick, shAge, shU, shR;
         float shS = cv2ShieldAtR(wd, shThick, shAge, shU, shR);
+        gCv2ShSet = true; gCv2Sh = vec4(shS, shThick, shAge, shU);
         if (shS > 0.0) {
             float ext   = 0.25 + 0.85 * sqrt(shS);                      // its radius grows as it forms (radii)
             float a     = shS * (1.0 - smoothstep(0.25, 1.25, shU / ext));
@@ -2414,6 +2423,7 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     gCv2AnvVeil = veil;
     if ((lm & kCv2LayAnv) != 0u) sa = cv2AnvilSigmaP(q, fpM, col.near, sh > 0.0 && cv2ShieldsOn(), hfX, topX, presA);
     gCv2AnvVeil = false;
+    gCv2ShSet   = false;
     if (col.sigma > 0.0) cv2Add(f, col.sigma, col.hf, col.topH, 0.0);
     if (sh > 0.0 && cv2.storm.z > 0.0 && !cv2ShieldsOn() && (lm & kCv2LayAnv) != 0u) {
         // Where the storms that feed anvils are (the anvil's own test, one ~20 km read): running the
