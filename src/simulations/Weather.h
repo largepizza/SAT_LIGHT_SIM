@@ -191,8 +191,15 @@ struct Tower {
     // 'full' starts there); negative before, -1e9 if it never does (2026-11-03: the head spreads over the "Anvil
     // formation time" from then, SatelliteSim::updateStorms).
     float      flareAge = -1e9f;
+    // The height it is DRAWN to, as a share of its full-strength height (2026-11-03, issue 20261030_210137): its top
+    // climbs to the anvil over the "Tower growth time" (Settings::towerRiseS) on an ease-out, 1 - (1 - age / T)^3 (the
+    // part that shows over the storm cumulus, 0.8..1, takes the last 58% of T: the updraft slows under the tropopause).
+    // Its strength rose over growS through smoothstep(0.02, 0.6, strength) (cv2ColumnSigma's height), so the top went
+    // from the storm cumulus to the anvil in ~3 sim min. 1 = as tall as its strength (cyclones, line cells, T 0).
+    float      heightCap = 1.0f;
 };
-constexpr float kFlareOn = 0.42f;   // = cv2ColumnSigma's full = smoothstep(0.8, 1.0, smoothstep(0.02, 0.6, str)) > 0
+constexpr float kFlareOn = 0.42f;
+constexpr double kFullAt = 0.4151964523;   // 1 - 0.2^(1/3): where Tower::heightCap's climb passes 0.8 ('full' starts)   // = cv2ColumnSigma's full = smoothstep(0.8, 1.0, smoothstep(0.02, 0.6, str)) > 0
 
 struct Env {
     // The map's cloud cover (0..1, after the Coverage / clear / full remap) averaged over ~100 km around a
@@ -224,6 +231,7 @@ struct Settings {
     // fixed 35 min). Both are ramps, not smoothsteps (Catalog::shieldsAt). Line systems keep their own hours-long
     // ramps.
     float anvilFormS = 60.0f * 60.0f;
+    float towerRiseS = 30.0f * 60.0f;   // Tower::heightCap's T (0 = off: the top follows the strength, as before)
     float anvilLingerS = 70.0f * 60.0f;
     // Storms per flash over the sea vs land: a maritime storm makes ~an order of magnitude fewer flashes than a
     // continental one of the same size (weaker updrafts), so lightning density alone under-counts ocean storms.

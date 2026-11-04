@@ -1558,10 +1558,16 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
         // Downwind: the storm's shear (the anvil blows that way), as a bearing from the local east.
         vec3  eastW = cos(tw.b.w) * eastW0 + sin(tw.b.w) * northW0;
         // The storm here (the mid layer gives way to its towers and rises over the storm, cv2Field).
-        storm = max(storm, str * (1.0 - smoothstep(0.6 * limM, limM, dhL)));
+        // (Capped by the drawn climb squared like the storm cumulus below: on the strength alone the mid layer's deck rose
+        // over a young storm in ~2 sim min, a flat plate standing in one frame at 5 min/s once the mound no longer hid it.)
+        float capH = cv2TowerHeightCap(tw.c);
+        storm = max(storm, min(str, capH * capH) * (1.0 - smoothstep(0.6 * limM, limM, dhL)));
         float Rc   = Rb * mix(0.7, 1.3, hS) * mix(0.8, 1.0, smoothstep(0.1, 0.6, str)) * mix(0.75, 1.0, role);
-        // The storm cumulus around it (review 5), tapered to zero before the tower's reach.
-        prox = max(prox, smoothstep(0.05, 0.3, str) * (1.0 - smoothstep(1.1 * Rc, 1.1 * Rc + cuReach, dhL))
+        // The storm cumulus around it (review 5), tapered to zero before the tower's reach. Both it and the tower's
+        // height are capped by the drawn climb (cv2TowerHeightCap, 2026-11-03; the mound by its square, ~linear early
+        // on the cubic ease-out): on the strength alone the mound rose
+        // to the storm-cumulus top in ~2 sim min and the column to the anvil in ~3 (issue 20261030_210137).
+        prox = max(prox, min(smoothstep(0.05, 0.3, str), capH * capH) * (1.0 - smoothstep(1.1 * Rc, 1.1 * Rc + cuReach, dhL))
                          * (1.0 - smoothstep(0.7 * limM, limM, dhL)));
         // The rain core (review 22): under the dominant tower's BODY, a little longer downwind (it leans that way).
         // It was an ellipse 2.5x longer downwind, out under the anvil where no cloud stood below it: a sheet of rain
@@ -1580,7 +1586,7 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
         // flat crescent wall, pass 18); shrunk in radius instead it stood as a thin straw (user, pass 19).
         // Only the ones reaching the anvil get the waist, the flared head and the dome. With storm objects a
         // tower's strength is its LIFECYCLE: it rises from the cumulus, reaches the anvil, and sinks back.
-        float hK   = smoothstep(0.02, 0.6, str) * role;     // the flanking line steps down, below the anvil
+        float hK   = min(smoothstep(0.02, 0.6, str), capH) * role;   // the flanking line steps down, below the anvil
         float topC = base + (lid - 300.0 - base) * hK;   // this tower's top
         float full = smoothstep(0.8, 1.0, hK);
         if (q.h > ((full > 0.0) ? lid + osM + 200.0 : topC + 200.0)) continue;
@@ -1589,7 +1595,7 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
         // Lean downwind with height, and the head blown further downwind under the lid.
         // (Head drift for anvil-reaching towers only: a short tower's zeta passes 0.55 below the
         // search's mid-height switch, and its drifted top was cut along a horizontal seam, pass 20.)
-        vec3  dhz  = dh - eastW * (0.25 * max(hb, 0.0) * cv2.form.y + cv2.column2.z * tw.c.w * smoothstep(0.55, 1.0, zeta) * full);
+        vec3  dhz  = dh - eastW * (0.25 * max(hb, 0.0) * cv2.form.y + cv2.column2.z * cv2TowerDriftK(tw.c) * smoothstep(0.55, 1.0, zeta) * full);
         float d    = length(dhz);
         // The profile: a wide flat base (the inflow), a waist through the middle, a head flaring under
         // the lid that closes over INSIDE the anvil (by hc + 500 m), and a small overshooting dome over
@@ -1643,13 +1649,13 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
         // Under the head: the anvil thickens toward the column (a wide, downwind-stretched footprint),
         // tapered to zero before the search's limit (or it too would be cut along the lattice).
         if (inAnvil) {
-            vec3  dn2  = dh - eastW * (cv2.column2.z * tw.c.w + 4000.0);
+            vec3  dn2  = dh - eastW * (cv2.column2.z * cv2TowerDriftK(tw.c) + 4000.0);
             float al   = dot(dn2, eastW);
             float ac   = length(dn2 - eastW * al);
             // Sized to fall to ~1% by the search's limit: at 4 radii along the wind it was ~48 km for
             // a 12 km tower, and a 3.6 km hang dropped to nothing over the last few km before limM —
             // a cliff in the anvil's underside (user snap 1, pass 17).
-            float sa2  = cv2SqC(min(4.0 * Rc, max(limM - cv2.column2.z * tw.c.w - 4000.0, 0.3 * limM) / 2.2));
+            float sa2  = cv2SqC(min(4.0 * Rc, max(limM - cv2.column2.z * cv2TowerDriftK(tw.c) - 4000.0, 0.3 * limM) / 2.2));
             float sc2  = cv2SqC(min(2.0 * Rc, limM / 2.2));
             near = max(near, fl * cv2TowerSpread(tw.c) * str * exp(-(al * al) / sa2 - (ac * ac) / sc2)
                              * (1.0 - smoothstep(0.7 * limM, limM, dhL)));

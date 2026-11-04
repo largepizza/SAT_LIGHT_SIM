@@ -179,14 +179,17 @@ vec4 stormStampTowers(vec3 d)
         if (dhL > E) continue;
         vec3  eastW = cos(tw.b.w) * eastW0 + sin(tw.b.w) * northW0;   // downwind (the anvil's way)
         float Rc  = Rb * mix(0.7, 1.3, tw.b.y) * mix(0.8, 1.0, smoothstep(0.1, 0.6, str)) * mix(0.75, 1.0, role);
-        float s1  = smoothstep(0.05, 0.4, str) * mix(0.5, 1.0, role);
+        // (x the drawn climb squared, cv2TowerHeightCap, 2026-11-03: the cloud field round a young tower thickened from
+        // scattered cumulus to a mass in ~2 sim min on the strength alone; issue 20261030_210137.)
+        float capH = cv2TowerHeightCap(tw.c);
+        float s1  = min(smoothstep(0.05, 0.4, str), capH * capH) * mix(0.5, 1.0, role);
         float Rf  = 1.15 * Rc + max(cuR, 0.5 * Rc);
         o.x = max(o.x, (0.5 * (1.0 - smoothstep(0.3 * E, 0.8 * E, dhL)) + 0.5 * (1.0 - smoothstep(0.6 * Rf, Rf, dhL)))
                        * s1);
         // The forward flank: under the anvil (half-width aw, blown L downwind), from the tower out to ~the anvil's end.
         float dom = smoothstep(0.35, 0.7, str) * smoothstep(0.9, 1.0, role);
         float aw  = Rc * flare * max(cv2TowerAnvilK(tw.c), 0.5);
-        float L   = aw + drift * tw.c.w;
+        float L   = aw + drift * cv2TowerDriftK(tw.c);
         float al  = dot(dh, eastW);
         float cr  = length(dh - eastW * al);
         float qe  = length(vec2((al - 0.45 * L) / (0.6 * L), cr / (0.75 * aw)));

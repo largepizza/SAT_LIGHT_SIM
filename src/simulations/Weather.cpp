@@ -804,6 +804,7 @@ void Catalog::configure(const Env &env, const Settings &s, const StormClimatolog
     const bool same = sameSet && envKey == I.envKey;
     I.env = env;
     I.set.anvilFormS = s.anvilFormS;   // (read by shieldsAt at any t: no cached storm depends on it)
+    I.set.towerRiseS = s.towerRiseS;   // (read by towersAt / shieldsAt likewise)
     if (same) return;
     I.set = s;
     I.clim = clim;
@@ -1005,8 +1006,17 @@ void Catalog::towersAt(double t, const std::vector<const Storm *> &storms, std::
             T.life = cLife;
             // When it passed kFlareOn growing (strength = peak x smooth01(0, growS, age) then; a tower whose decay
             // starts before it has grown only flares if it still gets there, and is then treated alike).
+            // The drawn top climbs over towerRiseS (ease-out); the head flares once the drawn height passes 0.8 too
+            // (cv2ColumnSigma's 'full': kFullAt of the climb), so the spread starts at the later of the two.
+            const double riseS = (double)impl_->set.towerRiseS;
+            double drawnOn = 0.0;
+            if (riseS > 0.0 && ts.growS > 0.0f) {
+                const double x = std::clamp((double)cAge / riseS, 0.0, 1.0);
+                T.heightCap = (float)(1.0 - (1.0 - x) * (1.0 - x) * (1.0 - x));
+                drawnOn = kFullAt * riseS;
+            }
             if (pk > kFlareOn && ts.growS > 0.0f)
-                T.flareAge = (float)((double)cAge - (double)ts.growS * invSmooth((double)kFlareOn / (double)pk));
+                T.flareAge = (float)((double)cAge - std::max((double)ts.growS * invSmooth((double)kFlareOn / (double)pk), drawnOn));
             out.push_back(T);
         }
     }
@@ -1092,7 +1102,9 @@ void Catalog::shieldsAt(double t, const std::vector<const Storm *> &storms, cons
         for (int i = 0; i < S->towerCount; ++i) {
             const TowerSpec &ts = S->towers[i];
             if (ts.role < 0.99f || ts.peak < kOn + 0.02f || ts.period > 0.0f) continue;
-            const double on = (double)ts.anvOn, off = (double)ts.anvOff;
+            // (Not before the drawn top reaches the anvil: Tower::heightCap's climb passes 0.8 at kFullAt of it.)
+            const double on = std::max((double)ts.anvOn, (double)ts.t0 + kFullAt * (double)impl_->set.towerRiseS),
+                         off = (double)ts.anvOff;
             if (off <= on) continue;
             firstOn = std::min(firstOn, on);
             lastOff = std::max(lastOff, off);

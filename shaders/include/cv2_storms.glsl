@@ -53,6 +53,11 @@ struct CV2Tower {
 // strength takes from 0.42 to 0.6 ('full').
 float cv2TowerAnvilK(vec4 c) { return c.z - 8.0 * floor(c.z * 0.125); }
 float cv2TowerSpread(vec4 c) { return 1.0 - floor(c.z * 0.125) * 0.001; }
+// c.w = the head's downwind drift factor (< 4) + 4 x round((1 - cap) x 1000) (2026-11-03): the cap 0..1 is the height
+// the tower is DRAWN to as a share of its strength's (wx::Tower::heightCap: its top climbs over the "Tower growth
+// time"; a grown tower's c.w is its plain drift factor).
+float cv2TowerDriftK(vec4 c)    { return c.w - 4.0 * floor(c.w * 0.25); }
+float cv2TowerHeightCap(vec4 c) { return 1.0 - floor(c.w * 0.25) * 0.001; }
 
 // A storm's anvil shield (wx::Shield): a capsule along the great-circle chord a -> b, radius c.x at a growing to b.w
 // at b. It outlives its towers (it drifts downwind and thins: c.y, c.z). Line systems: a long capsule along the

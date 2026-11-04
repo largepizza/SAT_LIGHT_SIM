@@ -75,6 +75,25 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   spread it is 4% -> 11% (the flat top) and the anvil spreads after it. At 2x (120 / 140): strength 10 -> 90% 41.7 -> 80.1 min,
   90 -> 10% 79.9 -> 141.5 min; presence 58.4 / 94.8 min (the longer rise overlaps the decay's start more). The march: 128
   registers both, +256 B binary, GPU 18.58 vs 19.08 ms (4 reps, within noise).
+  **Tower growth time (2026-11-03, same issue, after a verifier's check):** with the anvil eased, the column itself
+  still popped at the report's moment: the drawn height is smoothstep(0.02, 0.6, strength) (`cv2ColumnSigma` hK) and the
+  storm cumulus round it smoothstep(0.05, 0.3, strength), and a tower's strength crosses those bands in ~3 / ~2 sim min
+  of its 15-25-min growth, so at 5 min/s the mound, the column and its cliff-sided flat top stood in one or two frames.
+  `wx::Tower::heightCap` = 1 - (1 - age / T)^3 over the "Tower growth time (min)" T (`clouds_v2.storm_tower_rise_min` 30,
+  slot 452, 0 = off; `Settings::towerRiseS`; cyclone towers 1), packed into the GPU tower's c.w with driftK (driftK + 4 x
+  round((1 - cap) x 1000), `cv2TowerDriftK` / `cv2TowerHeightCap`), caps hK (the column and `full`), the storm cumulus
+  (`prox`, by cap^2: the cubic rises fast early), the mid layer's rise over the storm (`storm`, cap^2) and the weather
+  stamp's cloud field round it (`s1`, cap^2). The head
+  flares when the capped height passes 0.8 (`kFullAt` = 1 - 0.2^(1/3) of T): `flareAge` and the shield's `anvOn` start
+  at the later of that and the strength's 0.42. Strength itself, the rain core, lightning (CPU and the GPU pass's
+  `a.w`) and `mature_in_min` are unchanged (576 near-row pairs, rise 0 vs 30: identical). Measured at the report's view
+  (03:14-04:00 UTC, 1-min paused steps, the column-top height over the cumulus in the frame, `top.py`): 10 -> 90% under
+  1 min (T 0, the old behaviour) -> ~5 min (T 30; the visible part is the column's last climb over the 12-km storm
+  cumulus) -> ~12+ min (T 60); the storm cumulus plateau first shows over the horizon at ~03:29 at ~7 km and climbs to the column's flat top at the
+  lid by ~03:38-03:41, instead of nothing at 03:30 and a cliff-sided flat top at 03:32. March: 128 registers both, +256 B
+  binary; GPU at the shot within noise (interleaved, 3 clean reps: new - old -1.9, -1.8, -0.1 ms on a shared GPU). Not changed: a tower that grows round a 10-km eye (06:45-06:50 in that sweep) can
+  leave the eye inside cloud; at 06:49:58 with T 0 boxy, texel-stepped walls persist after a 340-frame settle (real,
+  only with the eye at a tower's wall; not seen at 06:36-07:00 every 4 min with T 30 or 0).
   **Squall lines and MCSs (2026-10-23):** `StormKind::SquallLine` / `Mcs`, spawned by their own pass (`buildLineBin`: 3-h
   bins looking back `kLineMaxLifeS` 22 h, 6-degree cells, the flash climatology's monthly mean x `lineSystemFactor`
   (warm-season mid-latitude continents, the Sahel / monsoon band, tropical oceans) x an evening peak over land; mean

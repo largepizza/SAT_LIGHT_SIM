@@ -460,7 +460,7 @@ uint64_t SatelliteSim::stormEnvHash() const
     auto mixD = [&](double v) { uint64_t b; std::memcpy(&b, &v, 8); h = (h ^ b) * 1099511628211ull; };
     for (double v : {(double)cloudDriftRate, cloudDriftPhaseOffset, (double)cv2Coverage, (double)cv2CoverClear,
                      (double)cv2CoverFull, (double)stormFrequency, (double)cv2CbRadiusKm, (double)stormLifeScale,
-                     (double)stormAnvilFormMin, (double)stormAnvilDecayMin,
+                     (double)stormAnvilFormMin, (double)stormAnvilDecayMin, (double)stormTowerRiseMin,
                      (double)stormComplexes, (double)stormCyclones})
         mixD(v);
     return h;
@@ -545,6 +545,7 @@ void SatelliteSim::updateStorms()
         s.lifeScale = std::max(stormLifeScale, 0.05f);
         s.anvilFormS = std::clamp(stormAnvilFormMin, 1.0f, 240.0f) * 60.0f;
         s.anvilLingerS = std::clamp(stormAnvilDecayMin, 1.0f, 240.0f) * 60.0f;
+        s.towerRiseS = std::clamp(stormTowerRiseMin, 0.0f, 120.0f) * 60.0f;
         s.lineFrequency = std::max(stormComplexes, 0.0f);
         s.cycloneFrequency = stormObjects ? std::max(stormCyclones, 0.0f) : 0.0f;
         stormCatalog->configure(env, s, stormClim.get(), key);
@@ -703,7 +704,12 @@ void SatelliteSim::updateStorms()
         uint32_t seedBits = tw.seed;
         float seedF;
         std::memcpy(&seedF, &seedBits, 4);
-        g.c = glm::vec4((float)reach, seedF, (float)(std::min(anvilK, 7.99) + 8.0 * std::round((1.0 - spread) * 1000.0)), (float)driftK);
+        // c.w packs the drawn height cap with driftK (< 4) likewise: driftK + 4 x round((1 - cap) x 1000) (cv2TowerDriftK /
+        // cv2TowerHeightCap; a grown tower's c.w is its plain driftK). wx::Tower::heightCap: the top climbs over the
+        // "Tower growth time" instead of the ~3 sim min its strength took through the height's smoothstep.
+        const double cap = (tw.kind == wx::StormKind::Tropical) ? 1.0 : std::clamp((double)tw.heightCap, 0.0, 1.0);
+        g.c = glm::vec4((float)reach, seedF, (float)(std::min(anvilK, 7.99) + 8.0 * std::round((1.0 - spread) * 1000.0)),
+                        (float)(std::min(driftK, 3.99) + 4.0 * std::round((1.0 - cap) * 1000.0)));
         dst[i] = g;
         stormGpuTowers[i] = g;   // the envelope index's copy is made from these (buildStormEnvIndex)
         if (tight)
