@@ -31,10 +31,19 @@ void main()
     // (positions scaled by sc beyond the root plane; normals by the inverse transpose).
     vec3 pos = inPos, nrm = inNormal, sa;
     float sroot;
-    float sc = instStowScale(inst, comp, sa, sroot);
+    bool sradial;
+    float sc = instStowScale(inst, comp, sa, sroot, sradial);
     if (sc < 1.0) {
-        pos -= sa * ((1.0 - sc) * max(dot(sa, pos) - sroot, 0.0));
-        nrm = normalize(nrm + sa * (dot(sa, nrm) * (1.0 / max(sc, 1e-3) - 1.0)));
+        if (sradial) {
+            // A sail (2026-11-04): the extent across the axis shrinks toward it (normals: inverse transpose).
+            vec3 along = sa * dot(sa, pos);
+            pos = along + (pos - along) * sc;
+            vec3 nAlong = sa * dot(sa, nrm);
+            nrm = normalize(nAlong + (nrm - nAlong) * (1.0 / max(sc, 1e-3)));
+        } else {
+            pos -= sa * ((1.0 - sc) * max(dot(sa, pos) - sroot, 0.0));
+            nrm = normalize(nrm + sa * (dot(sa, nrm) * (1.0 / max(sc, 1e-3) - 1.0)));
+        }
     }
     // Folded (launches, 2026-10-20): then turned about its hinge line.
     vec3 fpnt, fax;

@@ -305,6 +305,31 @@ SatRenderMesh buildSatRenderMesh(const SatModel &m, int segments)
         case PrimitiveKind::Fin:
             meshFin(s, c.fin, c.material, c.backMaterial >= 0 ? c.backMaterial : c.material);
             break;
+        case PrimitiveKind::Polygon:
+        {
+            // A fan from the vertex mean (as the photometry's), front +Z, back -Z; uv = local XY.
+            glm::dvec2 mid(0.0);
+            for (const glm::vec2 &v : c.polygon)
+                mid += glm::dvec2(v) / (double)c.polygon.size();
+            for (int side = 0; side < (c.singleSided ? 1 : 2); ++side)
+            {
+                const glm::dvec3 n(0.0, 0.0, side == 0 ? 1.0 : -1.0);
+                const int mat = side == 0 || c.backMaterial < 0 ? c.material : c.backMaterial;
+                const uint32_t im = s.vert(glm::dvec3(mid, 0.0), n, mid, mat);
+                const uint32_t first = s.vert(glm::dvec3(glm::dvec2(c.polygon[0]), 0.0), n, glm::dvec2(c.polygon[0]), mat);
+                uint32_t prev = first;
+                for (size_t i = 1; i <= c.polygon.size(); ++i)
+                {
+                    const uint32_t cur = i < c.polygon.size()
+                                             ? s.vert(glm::dvec3(glm::dvec2(c.polygon[i]), 0.0), n,
+                                                      glm::dvec2(c.polygon[i]), mat)
+                                             : first;
+                    s.tri(im, prev, cur, n);
+                    prev = cur;
+                }
+            }
+            break;
+        }
         }
         // An open lattice (SatMaterial::coverage < 1) of a closed primitive: its far side shows
         // through the near side's gaps, so every face is drawn from the inside too (same positions,

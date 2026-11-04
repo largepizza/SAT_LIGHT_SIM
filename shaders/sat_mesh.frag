@@ -250,7 +250,8 @@ bool rayBlocked(MeshInstance inst, vec3 p, vec3 dir)
         if (O.kind > 5u) continue; // 0xFF: an open lattice (truss) — light passes between its members
         vec3 sa;
         float sroot;
-        if (instStowScale(inst, i, sa, sroot) < 1.0) continue; // stowed: not where its occluder says (launches)
+        bool sradial;
+        if (instStowScale(inst, i, sa, sroot, sradial) < 1.0) continue; // stowed: not where its occluder says (launches)
         vec3 fpnt, fax;
         if (instFoldAngle(inst, i, fpnt, fax) != 0.0) continue; // folded: likewise
         if (instCompAbsent(inst, i)) continue; // a station module not launched yet
