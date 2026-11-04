@@ -1762,13 +1762,13 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             {
                 const double cdcS = std::max(eyeH - (double)hi, 0.0) + 20000.0;
                 const double cdcStep = glm::length(eye - cv2PrevEye);
-                // Inside the cloud shell (cv2CdcMotionLowFrac, 2026-11-04): a looser step limit and a long epoch. There a
+                // Low in the cloud shell (cv2CdcMotionLowFrac / LowMaxM, 2026-11-04): a looser step limit and a long epoch. There a
                 // cell is read only from eyes within its level's ring of it at about this height, and the bake reads the
                 // field at that ring's nearest AND farthest footprints (the bracket, cloud_v2_cdc.comp), so it stays
                 // conservative while the eye flies over it (on the report's own low trail the images went from 0.4% of the
-                // pixels > 16 levels off the march without the clipmap to the floor). The limit stays at 400 m a frame:
-                // see SatelliteSim.h cv2CdcMotionLowFrac for the 12-km, 40-km/s case.
-                const bool   cdcLow   = cdcBracket > 0.5f && eyeH < (double)hi + 2000.0;
+                // pixels > 16 levels off the march without the clipmap to the floor). Not above cv2CdcMotionLowMaxM:
+                // see SatelliteSim.h for the 12-km storm-tops case.
+                const bool   cdcLow   = cdcBracket > 0.5f && eyeH < std::min((double)hi + 2000.0, (double)cv2CdcMotionLowMaxM);
                 const double cdcFrac  = cdcLow ? std::max((double)cv2CdcMotionLowFrac, 0.004) : 0.004;
                 const double cdcEpoch = cdcLow ? std::max((double)cv2CdcMotionLowEpoch, 0.25) : 0.25;
                 // Any step counts, history or not (2026-10-22, issue 20261022_210358): past 20 km a frame the cloud history
