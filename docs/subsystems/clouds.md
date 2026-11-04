@@ -526,8 +526,32 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   - **Mie** (`tools/make_mie_lut.py` -> `assets/textures/cloud_mie.rgba16f`, march binding 24): `mie_phase` = the physical
     droplet phase (flatter clouds: ~20x less side scattering than the tuned HG pair, the MS term was tuned with the HG),
     `mie_optics` = the tuned phase x the table's structure (corona, cloudbow, glory), `droplet_reff_um`.
-  - **Cap lobes** (`shape_caps`, noise mode 3): the shape volume's lobe channels as rounded caps, remapped to 1 - F1's
+  - **Cap lobes** (noise mode 3, `shape_lobes` 1): the shape volume's lobe channels as rounded caps, remapped to 1 - F1's
     mean / spread; a second volume, descriptors swapped at the top of recordCompute.
+  - **Billow lobes** (2026-11-04, noise mode 4, `shape_lobes` 2 = the default; "Lobe noise (0 cones, 1 caps, 2 billows)",
+    slot 307, which was "Cap lobes (0/1)" / `shape_caps` — a NEW key, so settings saved with caps on get the billows;
+    the old key is not read). A third shape bake (`cv2ShapeBillowImg`, same seed, +9 MB), selected by the same descriptor
+    swap: no per-sample code, the march is unchanged. Each octave is a union of flattened hemispheres,
+    max_i (R_i^2 - d_i^2)^0.3, R 0.7-1.0 cells; G = 4/8/16/32 cells, B = 8/16/32, amplitude x0.6 per octave; each channel
+    remapped to the cap channels' mean / spread (G 0.475 / 0.120, B 0.479 / 0.119; `BILLOW_*` in cloud_v2_noise.comp).
+    **Why — matched against the Disney WDAS cumulus** (`.refs/wdas_cloud/`, CC BY-SA 3.0: a reference only, nothing
+    of it ships). Its VDB (read through Blender 4.3's bundled `pyopenvdb`; scripts outside the repo) at 1/8 res, taken
+    as 1 km tall: the interior is a flat 0.5 under a ~0.07 H shell of 0.5-0.95; the edge reaches 0.57 within 2 voxels
+    (~0.006 H: a surface, not a ramp); the base is flat (widest at 0.1-0.2 H). The comparison put each noise on the
+    SAME envelope (the WDAS shape blurred by 0.12 H, as a signed distance) at the amplitude that gives the WDAS rms
+    surface displacement (81 m), then measured the surface. WDAS / caps (the old default) / cones / billows:
+    mean-curvature skew on the surface (sigma 4 vox) -0.32 / +0.78 / +1.53 / -0.48 (cauliflower = broad convex lobes
+    with narrow sharp creases; Worley cones are pointed tips over broad valleys); convex share 0.60 / 0.62 / 0.65 /
+    0.58; median lobe radius at the surface (morphological opening) 0.018 H / 0.061 / 0.067 / 0.036; surface per
+    volume 0.096 / 0.062 / 0.058 / 0.073; volume in lobes of radius 0.024-0.048 H 0.14 / 0.035 / 0.024 / 0.107.
+    The WDAS lobe sizes hold about equal volume per octave of radius (an r^-3 count), down to ~0.006 H.
+    Below ~0.06 H (60 m at 1 km) every shape-volume noise is flat out (indicator spectrum slope -3.9..-4.0 against
+    WDAS's -3.36 at 0.1-0.03 H wavelengths): the 128^3 volume's texel is 14.8 m at the 1.9 km period, so the finest
+    lobes are the detail volume's (erosion) business. Tried: hemispheres with R 0.9-1.25 (overlapping, few creases:
+    skew +1.78), a multiplicative cascade (finer caps on parent crowns: +0.57..+1.36), x0.5 per octave (+0.57); the
+    flattened profile (exponent 0.6 on the hemisphere) is what turned the skew negative.
+    Measured: cloud_march A/B in one live app (RTX 3070 Ti, 1600x900, the user's settings, 3 interleaved reps, two other agents' apps on the GPU, two contended reps dropped): caps -> billows 8.30 -> 8.42 ms (level flight at 1.5 km), 9.24 -> 9.35 (3 km looking down), 10.63 -> 10.89 (ground), 8.67 -> 8.66 (6 km over Darwin); caps-vs-caps spread 0.3-0.8 ms: neutral within the noise, the march SPV is unchanged. In the app (`harness_runs/cloudnoise/` in the worktree, not committed) the billows put
+    more, smaller lobes on cumulus outlines and fewer detached round puffs beside them.
   - **Full-resolution clouds** (`full_res`, "Full-resolution clouds", S9, `cloud_v2_combine.comp`): the CLOUD grid
     (`computeCloudExtent()`: the v2 march / resolve images and the final cloud targets A/B) is twice the half extent;
     `computeHalfExtent()` stays half (scene depth, `cloud_march.comp`'s dispatch). The march always runs sparse there

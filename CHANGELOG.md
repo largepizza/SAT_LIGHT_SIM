@@ -111,6 +111,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   altocumulus and altostratus, cirrus streaks, veils and cirrocumulus, all lit by the Sun or the Moon through
   the clouds above them, with sunset colours, silver linings and soft cloud shadows on the ground (long streaks
   at sunset), far cloud shadows and god rays, and mid / high layer shadows at any distance.
+- **Billowier cumulus.** The cauliflower lobes on cumulus sides and tops come from a new "billow" noise matched
+  against a production cumulus model (the Disney WDAS cloud): round lobes of many sizes meeting in sharp creases,
+  instead of pointed bumps over broad valleys. Settings > Weather, "Lobe noise (0 cones, 1 caps, 2 billows)";
+  billows are the default. Same cost per frame.
 - **Storms.** Cumulonimbus towers grouped into storm cells (a dominant tower and a flanking line), flared anvil
   heads under the tropopause, overshooting domes, rain shafts under the towers, cumulus that rises around storms.
 - **The weather moves and evolves.** The cloud map drifts, is advected by a slow wind, and storms grow and decay

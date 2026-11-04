@@ -7022,7 +7022,7 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SldStormCumulusFineLobes), &cv2CuFineLobes, 0.0f, 2.0f, 0.05f, "%.2f", 292},
         {tx(Txt::SldCbTowerFineLobes), &cv2CbFineLobes, 0.0f, 2.0f, 0.05f, "%.2f", 293},
         {tx(Txt::SldCumulusWisps), &cv2CuWisps, 0.0f, 1.0f, 0.05f, "%.2f", 294},
-        {tx(Txt::SldCapLobes01), &cv2ShapeCaps, 0.0f, 1.0f, 1.0f, "%.0f", 307},
+        {tx(Txt::SldLobeNoise012), &cv2ShapeCaps, 0.0f, 2.0f, 1.0f, "%.0f", 307},
     };
 
     CloudSlider secLighting[] = {
@@ -9772,7 +9772,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2SmoothTileThresh = settingClamp(c.value("smooth_tile_threshold", cv2SmoothTileThresh), 0.5f, 32.0f);
         cv2TerrainGodrays = settingClamp(c.value("terrain_godrays", cv2TerrainGodrays), 0.0f, 1.0f);
         cv2MieOptics = c.value("mie_optics", cv2MieOptics);
-        cv2ShapeCaps = c.value("shape_caps", cv2ShapeCaps);
+        // "shape_lobes" (2026-11-04) replaced the 0/1 "shape_caps": a new key, so the billows (2) are on for settings saved
+        // with caps on. The old key is not read.
+        cv2ShapeCaps = settingClamp(c.value("shape_lobes", cv2ShapeCaps), 0.0f, 2.0f);
         cv2DropletReffUm = c.value("droplet_reff_um", cv2DropletReffUm);
         cv2CdcSkip = c.value("cdc_skip", cv2CdcSkip);
         cv2CdcBudget = c.value("cdc_budget", cv2CdcBudget);
@@ -10491,7 +10493,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"smooth_tile_threshold", cv2SmoothTileThresh},
         {"terrain_godrays", cv2TerrainGodrays},
         {"mie_optics", cv2MieOptics},
-        {"shape_caps", cv2ShapeCaps},
+        {"shape_lobes", cv2ShapeCaps},
         {"droplet_reff_um", cv2DropletReffUm},
         {"cdc_skip", cv2CdcSkip},
         {"cdc_budget", cv2CdcBudget},

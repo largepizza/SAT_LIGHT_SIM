@@ -280,11 +280,13 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
 
     // ── Noise bakes (cloud_v2_noise.comp, modes 0/1/2) ──
     {
-        // 0 shape, 1 detail, 2 meso, 3 the shape with cap-profile lobes (2026-10-22: same seed as 0)
-        VkImage *imgs[4] = {&cv2ShapeImg, &cv2DetailImg, &cv2MesoImg, &cv2ShapeCapsImg};
-        VkDeviceMemory *mems[4] = {&cv2ShapeMem, &cv2DetailMem, &cv2MesoMem, &cv2ShapeCapsMem};
-        VkImageView *views[4] = {&cv2ShapeView, &cv2DetailView, &cv2MesoView, &cv2ShapeCapsView};
-        for (int i = 0; i < 4; ++i)
+        // 0 shape, 1 detail, 2 meso, 3 the shape with cap-profile lobes (2026-10-22: same seed as 0), 4 the shape with
+        // billow lobes (2026-11-04, same seed)
+        constexpr int kBakes = 5;
+        VkImage *imgs[kBakes] = {&cv2ShapeImg, &cv2DetailImg, &cv2MesoImg, &cv2ShapeCapsImg, &cv2ShapeBillowImg};
+        VkDeviceMemory *mems[kBakes] = {&cv2ShapeMem, &cv2DetailMem, &cv2MesoMem, &cv2ShapeCapsMem, &cv2ShapeBillowMem};
+        VkImageView *views[kBakes] = {&cv2ShapeView, &cv2DetailView, &cv2MesoView, &cv2ShapeCapsView, &cv2ShapeBillowView};
+        for (int i = 0; i < kBakes; ++i)
         {
             ctx.createImage(kCv2NoiseRes, kCv2NoiseRes, VK_FORMAT_R8G8B8A8_UNORM,
                             VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
@@ -304,25 +306,25 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         vkCreatePipelineLayout(dev, &pli, nullptr, &pl);
         VkPipeline pipe = makeComputePipeline(ctx, "shaders/cloud_v2_noise.comp.spv", pl);
 
-        VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4};
+        VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kBakes};
         VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        pi.maxSets = 4;
+        pi.maxSets = kBakes;
         pi.poolSizeCount = 1;
         pi.pPoolSizes = &ps;
         VkDescriptorPool pool = VK_NULL_HANDLE;
         vkCreateDescriptorPool(dev, &pi, nullptr, &pool);
-        VkDescriptorSet sets[4];
-        VkDescriptorSetLayout lays[4] = {bl, bl, bl, bl};
+        VkDescriptorSet sets[kBakes];
+        VkDescriptorSetLayout lays[kBakes] = {bl, bl, bl, bl, bl};
         VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         ai.descriptorPool = pool;
-        ai.descriptorSetCount = 4;
+        ai.descriptorSetCount = kBakes;
         ai.pSetLayouts = lays;
         vkAllocateDescriptorSets(dev, &ai, sets);
 
-        VkImageView bakeViews[4] = {};   // mip 0 only: a storage view must name one level
+        VkImageView bakeViews[kBakes] = {};   // mip 0 only: a storage view must name one level
         VkCommandBuffer cmd = ctx.beginOneTimeCommands();
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
-        for (int i = 0; i < 4; ++i)
+        for (int i = 0; i < kBakes; ++i)
         {
             ctx.imageBarrier(cmd, *imgs[i], 0, VK_ACCESS_SHADER_WRITE_BIT,
                              VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
@@ -332,7 +334,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
             VkWriteDescriptorSet w = imageWrite(sets[i], 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &ii);
             frameSafeUpdateDescriptorSets(dev, 1, &w, 0, nullptr);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pl, 0, 1, &sets[i], 0, nullptr);
-            int32_t pcv[2] = {i, i == 3 ? 17 : 17 + i * 31};   // the cap shape: the shape's seed (lobes in the same places)
+            int32_t pcv[2] = {i, i >= 3 ? 17 : 17 + i * 31};   // the cap / billow shapes: the shape's seed
             vkCmdPushConstants(cmd, pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, 8, pcv);
             vkCmdDispatch(cmd, kCv2NoiseRes / 8, kCv2NoiseRes / 8, kCv2NoiseRes / 8);
             genMips3D(cmd, *imgs[i], kCv2NoiseRes, kCv2NoiseMips);
@@ -1117,10 +1119,11 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     cv2ParamsMem = VK_NULL_HANDLE;
     cv2ParamsMapped = nullptr;
     VkImageView *views[] = {&cv2WeatherView, &cv2ShapeView, &cv2DetailView, &cv2MesoView, &cv2MorphView, &cv2MieView,
-                            &cv2ShapeCapsView};
-    VkImage *imgs[] = {&cv2WeatherImg, &cv2ShapeImg, &cv2DetailImg, &cv2MesoImg, &cv2MorphImg, &cv2MieImg, &cv2ShapeCapsImg};
+                            &cv2ShapeCapsView, &cv2ShapeBillowView};
+    VkImage *imgs[] = {&cv2WeatherImg, &cv2ShapeImg, &cv2DetailImg, &cv2MesoImg, &cv2MorphImg, &cv2MieImg, &cv2ShapeCapsImg,
+                       &cv2ShapeBillowImg};
     VkDeviceMemory *mems[] = {&cv2WeatherMem, &cv2ShapeMem, &cv2DetailMem, &cv2MesoMem, &cv2MorphMem, &cv2MieMem,
-                              &cv2ShapeCapsMem};
+                              &cv2ShapeCapsMem, &cv2ShapeBillowMem};
     for (int i = 0; i < (int)(sizeof(views) / sizeof(views[0])); ++i)
     {
         if (*views[i]) vkDestroyImageView(device, *views[i], nullptr);
@@ -1156,7 +1159,7 @@ void SatelliteSim::cv2EnsureCdcBuffer(VulkanContext &ctx)
     Log::line("clouds v2: cloud density clipmap allocated (" + std::to_string(kCv2CdcBufBytes >> 20) + " MB)");
 }
 
-// "shape_caps" (2026-10-22): when it changes, point every set that reads the shape volume at the other bake. Called at
+// "shape_lobes" (was "shape_caps", 2026-10-22): when it changes, point every set that reads the shape volume at that bake. Called at
 // the top of recordCompute, before this frame records anything that binds these sets.
 void SatelliteSim::cv2SyncShapeVolume(VulkanContext &ctx)
 {

@@ -122,6 +122,48 @@ float worleyCapFbm(vec3 uvw, int n0)
     return worleyCap(uvw, n0) * 0.625 + worleyCap(uvw, n0 * 2) * 0.25 + worleyCap(uvw, n0 * 4) * 0.125;
 }
 
+// BILLOW lobes (2026-11-04, mode 4, "shape_lobes" 2; matched against the Disney WDAS cumulus, docs/subsystems/clouds.md
+// "Billow lobes"): each octave is a union of flattened HEMISPHERES, max_i (R_i^2 - d_i^2)^(BILLOW_P / 2), R 0.7-1.0 cells:
+// every level set is round-topped lobes meeting in sharp V creases, a cauliflower's curvature (broad convex, narrow
+// concave; mean-curvature skew -0.48 against the WDAS cloud's -0.32, where the caps were +0.78 and the cones +1.5:
+// pointed tips and broad valleys). Four octaves in G (one finer than the cones), amplitude x0.6 per octave, flatter
+// than the cones' x0.4-0.5: the WDAS lobe sizes hold about equal volume per octave of radius.
+#define BILLOW_R0   0.7
+#define BILLOW_R1   1.0
+#define BILLOW_GAIN 0.6
+#define BILLOW_P    0.6
+// Each channel remapped (a x + b) to the cap channels' mean and spread (G 0.475 / 0.120, B 0.479 / 0.119 over the
+// volume), measured in numpy over this exact lattice (0.3-0.5 % clips), so the field's calibration holds.
+#define BILLOW_G_SCALE 1.2140
+#define BILLOW_G_BIAS  -0.4400
+#define BILLOW_B_SCALE 1.1300
+#define BILLOW_B_BIAS  -0.3828
+float worleyHemi(vec3 uvw, int n)
+{
+    vec3  p = uvw * float(n);
+    ivec3 i = ivec3(floor(p));
+    float v = 0.0;
+    for (int dz = -1; dz <= 1; ++dz)
+    for (int dy = -1; dy <= 1; ++dy)
+    for (int dx = -1; dx <= 1; ++dx) {
+        ivec3 c  = i + ivec3(dx, dy, dz);
+        float R  = mix(BILLOW_R0, BILLOW_R1, hash3(c + ivec3(71, 13, 37), n).y);
+        vec3  dv = p - (vec3(c) + hash3(c, n));
+        v = max(v, R * R - dot(dv, dv));
+    }
+    return pow(v * (1.0 / (BILLOW_R1 * BILLOW_R1)), 0.5 * BILLOW_P);
+}
+float billowFbm(vec3 uvw, int n0, int octaves)
+{
+    float s = 0.0, a = 1.0, norm = 0.0;
+    int   n = n0;
+    for (int o = 0; o < octaves; ++o) {
+        s += a * worleyHemi(uvw, n);
+        norm += a; a *= BILLOW_GAIN; n *= 2;
+    }
+    return s / norm;
+}
+
 // Inverted Worley fBm: high AT the feature points (blobs), weights 0.625/0.25/0.125.
 float worleyFbm(vec3 uvw, int n0)
 {
@@ -168,14 +210,19 @@ void main()
     vec3 uvw = (vec3(coord) + 0.5) / vec3(size);
 
     vec4 o;
-    if (pc.mode == 0 || pc.mode == 3) {
+    if (pc.mode == 0 || pc.mode == 3 || pc.mode == 4) {
         float pln = perlinFbm(uvw, 4, 4);
         float wlo = worleyFbm(uvw, 4);
         // Perlin lifted by Worley: the Nubis Perlin-Worley. Output spans [wlo, 1] (billowy floor).
         float pw  = mix(wlo, 1.0, pln);
         // Mode 3: the same presence (R, so the clouds stand where they did) with cap-profile lobes in G / B.
-        o = vec4(pw, pc.mode == 3 ? worleyCapFbm(uvw, 4) : wlo, pc.mode == 3 ? worleyCapFbm(uvw, 8) : worleyFbm(uvw, 8),
-                 perlinFbm(uvw + vec3(0.37, 0.11, 0.73), 4, 4));
+        // Mode 4: billow lobes, 4/8/16/32 cells in G and 8/16/32 in B, each remapped (measured over the whole volume
+        // in numpy) to the cap channels' mean and spread, so the field's calibration holds.
+        vec2 lob = pc.mode == 4 ? vec2(clamp(BILLOW_G_SCALE * billowFbm(uvw, 4, 4) + BILLOW_G_BIAS, 0.0, 1.0),
+                                       clamp(BILLOW_B_SCALE * billowFbm(uvw, 8, 3) + BILLOW_B_BIAS, 0.0, 1.0))
+                 : pc.mode == 3 ? vec2(worleyCapFbm(uvw, 4), worleyCapFbm(uvw, 8))
+                                : vec2(wlo, worleyFbm(uvw, 8));
+        o = vec4(pw, lob, perlinFbm(uvw + vec3(0.37, 0.11, 0.73), 4, 4));
     } else if (pc.mode == 1) {
         // The erosion detail: smooth F1 (the cracks it carves are rounded, not creased).
         o = vec4(worleyFbmSmooth(uvw, 4), worleyFbmSmooth(uvw, 16),
