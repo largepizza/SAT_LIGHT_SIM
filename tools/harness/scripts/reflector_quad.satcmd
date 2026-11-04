@@ -1,0 +1,85 @@
+# Reflect Orbital's quad sail (2026-11-04): the deployed model up close, a ground view of the beams and their spot
+# (run once with the old model and once with the new for a before/after), and a mirror unfolding after release.
+#   python tools/harness/run.py tools/harness/scripts/reflector_quad.satcmd --window 1600x900
+preset High
+set display.render_scale 1
+set clouds_v2.auto_exposure 0
+set clouds_v2.exposure_ev 0
+set clouds_v2.coverage 0
+time pause
+follow off
+# ── Ground: Topaz at 02:30 (the release cinematic's site), up the beams and the spot from 12 km ─────────────────
+time set 2036-11-22T02:30:00Z
+observer lat=35.38 lon=-120.05 agl=2
+wait settle 10
+beams list
+beams go dist_km=0 agl=2 look=up
+wait settle
+capture ground_up
+beams go dist_km=12 bearing=200 agl=300 look=site
+wait settle
+capture ground_spot
+beams go dist_km=0 agl=2 look=up
+wait settle
+select const "Reflect Orbital"
+wait 3
+state sel_ground
+# ── The deployed model up close: from the Sun's side (the film lit) and from the observer (inside its beam) ────
+follow toward=sun dist=45 side=35 lift=25
+wait settle
+capture model_sunside
+follow toward=sun dist=45 side=150 lift=30
+wait settle
+capture model_back
+follow toward=observer dist=70 side=8 lift=6
+wait settle
+capture model_observer
+follow toward=observer dist=400 side=1.5 lift=1
+wait settle
+capture model_inbeam
+follow off
+# ── Unfolding after release (the deployment era): a Falcon 9's Reflect train, its first members out ───────────
+launch deploy filter=Reflect
+wait 5
+launch select kind=upper
+follow offset=-60,90,40
+follow aim=sat
+wait settle
+capture deploy_release
+# 200 s on, a few members are out; select one AFTER following the stage (nearest to the camera)
+time add 200
+wait 5
+launch select kind=train nearest=1
+follow offset=-15,30,12
+follow aim=sat
+wait settle
+capture unf_0000
+time add 550
+wait 3
+wait 60
+follow offset=-15,30,12
+follow aim=sat
+wait settle
+capture unf_0550
+time add 250
+wait 3
+wait 60
+follow offset=-20,35,15
+follow aim=sat
+wait settle
+capture unf_0800
+state unf_0800
+time add 250
+wait 3
+wait 60
+follow offset=-25,40,20
+follow aim=sat
+wait settle
+capture unf_1050
+time add 250
+wait 3
+wait 60
+follow offset=-30,45,25
+follow aim=sat
+wait settle
+capture unf_1300

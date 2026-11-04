@@ -292,6 +292,7 @@ One component is one primitive with one material, mounted on one group.
 | `cylinder` | `radius`, `height` | Axis along `Z`. `caps` (default `true`) adds the end discs. |
 | `cone` | `radius_bottom`, `height` | `radius_top` defaults to 0 (a true cone). `caps` as above. |
 | `sphere` | `radius` | |
+| `polygon` | `vertices` `[[x, y], ...]` | A flat outline in local `XY`, normal `+Z`, listed counter-clockwise seen from `+Z` and star-shaped about the vertices' mean (checked at load). `back_material` / `single_sided` as a plane. A thin membrane: it never shadows other parts. Example: `reflect_orbital.json`'s sail quadrants (`tools/make_reflector_model.py`). |
 
 | Placement field | Meaning |
 |---|---|

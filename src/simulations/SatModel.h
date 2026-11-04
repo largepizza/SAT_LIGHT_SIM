@@ -278,6 +278,11 @@ enum class PrimitiveKind : uint32_t
     // `sweep` m aft of the root's; thickness along local Y, tapering root to tip, with bevelled leading and
     // trailing edges. Occluder: its bounding box.
     Fin,
+    // 2026-11-04 (Reflect Orbital's quadrant sails): a flat polygon in local XY, front normal +Z, JSON
+    // "vertices": [[x, y], ...] counter-clockwise seen from +Z and star-shaped about their mean (fanned from it);
+    // optional "back_material" / "single_sided" as a plane. A thin membrane: never an occluder (its occluder entry is
+    // a non-blocking plane over its bounding box, satComponentOccludes() false), so the reference and the GPU agree.
+    Polygon,
 };
 // The occluder kind of an exact cone frustum (a Profile's): half = (r at -hz, r at +hz, hz). Not a
 // PrimitiveKind a component can have; sat_orbit.comp / sat_mesh.frag kind 5.
@@ -334,6 +339,7 @@ struct SatComponent
     // model of its own, where nothing else is shadowed).
     glm::vec2 sweepDeg{0.0f, 360.0f};
     SatFinShape fin; // PrimitiveKind::Fin
+    std::vector<glm::vec2> polygon; // PrimitiveKind::Polygon: the outline in local XY (counter-clockwise from +Z)
     // Stowed for launch (JSON "stow", 2026-10-19): an accordion-folded array or radiator packs toward its root. With
     // the unfolding progress P (SatOrbitElems::unfoldT0/Dur; 1 = deployed) its extent along stowAxis beyond the plane
     // dot(stowAxis, x) = stowRoot (rest BODY frame) is scaled by s = mix(stowScale, 1, smoothstep(stowP0, stowP1, P)).
@@ -342,6 +348,11 @@ struct SatComponent
     float stowRoot = 0.0f;
     float stowScale = 1.0f;
     float stowP0 = 0.0f, stowP1 = 1.0f;
+    // JSON "stow": {"mode": "radial"} (2026-11-04, a sail pulled out by its booms): the part's extent PERPENDICULAR to
+    // stowAxis, measured from the line through the body origin along it, is scaled by s instead (stowRoot unused):
+    // a sail in the XY plane with axis Z shrinks toward the bus. Its area goes as s^2 (GpuSatLobe::stowPack's k).
+    // Packed for the mesh as a stow vector of length 2 - stowScale (> 1; the plane mode's is 1 - stowScale < 1).
+    bool stowRadial = false;
     // Folded for launch (JSON "fold", 2026-10-20): after the stow scaling, the part is turned about the line through
     // foldPoint along foldAxis (rest BODY frame) by foldAngle x (1 - smoothstep(foldP0, foldP1, P)) radians: an array
     // folded flat onto the bus, half of a bus folded over the other (Starmind). Mesh only (sat_mesh.vert); the

@@ -94,6 +94,11 @@ launches follow per-program cadences (no real manifest).
   **Mesh**: the component buffer is THREE vec4s per component (pivot / parent, stow axis x (1 - scale) / root, window);
   `GpuMeshInstance::earthShC.z` = 1 - P; `sat_mesh.vert` scales positions (and normals by the inverse transpose)
   (`instStowScale`), and `sat_mesh.frag`'s shadows skip a stowed part's occluder (it is not where its box says).
+  **Radial stow** (2026-11-04, Reflect Orbital's sails: `"stow": {"mode": "radial", "axis", "scale", "phase"}`): the
+  part's extent PERPENDICULAR to `axis`, from the line through the body origin along it, scales instead (the film grows
+  out of a bundle at the hub as the booms push its corners out); its area goes as s^2 (`bakeSatLobes`' k = share x
+  (1 - scale^2); the lobe's area still eases linearly in the smoothstep, so mid-unfold flux is approximate). Packed for
+  the mesh as the stow axis x (2 - scale), a length > 1 (`instStowScale`'s `radial` out; `sat_mesh.vert`).
   Joints stay at rest throughout (bit 25). P = 1 (every roster satellite) changes nothing. A paused BACKWARD time jump
   leaves the sky TAA's frozen history (meshes are composited in the sky pass) showing the later pose for a few dozen
   frames: `wait 60` after one in a script.

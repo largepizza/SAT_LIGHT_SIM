@@ -426,7 +426,8 @@ bool satComponentOccludes(const SatModel &m, int ci)
     if (ci < 0 || ci >= (int)m.components.size())
         return false;
     const SatComponent &c = m.components[ci];
-    return !c.renderOnly && m.materials[c.material].coverage >= 1.0f;
+    // A polygon is a thin membrane sail (2026-11-04): never an occluder (PrimitiveKind::Polygon).
+    return !c.renderOnly && c.prim != PrimitiveKind::Polygon && m.materials[c.material].coverage >= 1.0f;
 }
 
 const std::vector<SatMaterial> &satMaterialPresetsBase()
@@ -842,6 +843,28 @@ bool loadSatModel(const std::string &path, const std::string &id, SatModel &out,
                 if (!(f.rootChord > 0.0f && f.tipChord >= 0.0f && f.span > 0.0f && f.thickness > 0.0f))
                     throw std::runtime_error("component '" + c.name + "': a fin needs root_chord, span, thickness > 0");
             }
+            else if (type == "polygon")
+            {
+                // A flat membrane outline (2026-11-04): fanned from the vertex mean, so it must be star-shaped about
+                // it and counter-clockwise seen from +Z (every fan triangle then has positive area).
+                c.prim = PrimitiveKind::Polygon;
+                for (const auto &jp : jc.at("vertices"))
+                    c.polygon.push_back({jp.at(0).get<float>(), jp.at(1).get<float>()});
+                c.singleSided = jc.value("single_sided", false);
+                if (c.polygon.size() < 3)
+                    throw std::runtime_error("component '" + c.name + "': a polygon needs three or more vertices");
+                glm::vec2 mid(0.0f);
+                for (const glm::vec2 &v : c.polygon)
+                    mid += v / (float)c.polygon.size();
+                for (size_t i = 0; i < c.polygon.size(); ++i)
+                {
+                    const glm::vec2 a = c.polygon[i] - mid, b = c.polygon[(i + 1) % c.polygon.size()] - mid;
+                    if (a.x * b.y - a.y * b.x <= 0.0f)
+                        throw std::runtime_error("component '" + c.name +
+                                                 "': polygon vertices must run counter-clockwise (seen from +Z) and "
+                                                 "be star-shaped about their mean");
+                }
+            }
             else
                 throw std::runtime_error("component '" + c.name + "': unknown type '" + type + "'");
 
@@ -905,6 +928,14 @@ bool loadSatModel(const std::string &path, const std::string &id, SatModel &out,
                 c.stowAxis = glm::normalize(ax);
                 c.stowRoot = js.value("root", 0.0f);
                 c.stowScale = std::clamp(js.value("scale", 0.05f), 0.0f, 1.0f);
+                const std::string mode = js.value("mode", std::string("plane"));
+                if (mode == "radial")
+                {
+                    c.stowRadial = true;
+                    c.stowScale = std::clamp(c.stowScale, 0.01f, 1.0f); // the mesh packs 2 - s: keep it > 1
+                }
+                else if (mode != "plane")
+                    throw std::runtime_error("component '" + c.name + "': stow mode is \"plane\" or \"radial\"");
                 if (js.contains("phase"))
                 {
                     c.stowP0 = std::clamp(js["phase"].at(0).get<float>(), 0.0f, 1.0f);
@@ -1224,11 +1255,28 @@ std::vector<SatTri> tessellateSatModel(const SatModel &m)
         case PrimitiveKind::Fin:
             tessFin(s, c.fin, c.material, c.backMaterial >= 0 ? c.backMaterial : c.material);
             break;
+        case PrimitiveKind::Polygon:
+        {
+            // Fanned from the vertex mean (validated star-shaped at load); front +Z, back -Z.
+            glm::dvec3 mid(0.0);
+            for (const glm::vec2 &v : c.polygon)
+                mid += glm::dvec3(v.x, v.y, 0.0) / (double)c.polygon.size();
+            const int back = c.backMaterial >= 0 ? c.backMaterial : c.material;
+            for (size_t i = 0; i < c.polygon.size(); ++i)
+            {
+                const glm::vec2 a = c.polygon[i], b = c.polygon[(i + 1) % c.polygon.size()];
+                const glm::dvec3 pa(a.x, a.y, 0.0), pb(b.x, b.y, 0.0);
+                s.tri(mid, pa, pb, glm::dvec3(0, 0, 1), c.material);
+                if (!c.singleSided)
+                    s.tri(mid, pb, pa, glm::dvec3(0, 0, -1), back);
+            }
+            break;
+        }
         }
         // Open lattice (SatMaterial::coverage < 1): each facet counts `coverage` of its area; a closed
         // primitive's far side shows through the near side's gaps, as inner faces at
         // coverage·(1 − coverage).
-        const bool closed = c.prim != PrimitiveKind::Plane;
+        const bool closed = c.prim != PrimitiveKind::Plane && c.prim != PrimitiveKind::Polygon;
         const size_t endTri = tris.size();
         for (size_t i = firstTri; i < endTri; ++i)
         {
@@ -1531,7 +1579,8 @@ std::vector<GpuSatLobe> bakeSatLobes(const SatModel &m, const std::vector<SatTri
                 const SatComponent &c = m.components[kv.first];
                 if (c.stowScale >= 1.0f)
                     continue;
-                lost += kv.second * (1.0 - c.stowScale);
+                // A radial stow (a sail) shrinks both in-plane extents: its area goes as s^2.
+                lost += kv.second * (1.0 - (c.stowRadial ? (double)c.stowScale * c.stowScale : (double)c.stowScale));
                 if (kv.second > bestA)
                 {
                     bestA = kv.second;
@@ -1880,6 +1929,7 @@ bool rayHitsOccluder(const SatOccluder &o, glm::dvec3 org, glm::dvec3 dir)
         return false;
     }
     case PrimitiveKind::Fin: // never an occluder kind (its occluder is a Box)
+    case PrimitiveKind::Polygon: // never an occluder kind (a non-blocking Plane)
         return false;
     case PrimitiveKind::Sphere:
     {
@@ -1975,6 +2025,20 @@ SatOcclusion buildSatOcclusion(const SatModel &m, const std::vector<SatTri> &tri
             o.kind = PrimitiveKind::Box;
             o.half = 0.5 * (hi - lo);
             o.center += o.axes * (0.5 * (hi + lo));
+            break;
+        }
+        case PrimitiveKind::Polygon: // a membrane: a NON-blocking plane over its bounding box (keeps occluder i = comp i)
+        {
+            glm::dvec2 lo(1e30), hi(-1e30);
+            for (const glm::vec2 &v : c.polygon)
+            {
+                lo = glm::min(lo, glm::dvec2(v));
+                hi = glm::max(hi, glm::dvec2(v));
+            }
+            o.kind = PrimitiveKind::Plane;
+            o.blocks = false;
+            o.half = {0.5 * (hi.x - lo.x), 0.5 * (hi.y - lo.y), 0.0};
+            o.center += o.axes * glm::dvec3(0.5 * (hi.x + lo.x), 0.5 * (hi.y + lo.y), 0.0);
             break;
         }
         }

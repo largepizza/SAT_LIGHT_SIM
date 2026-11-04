@@ -240,6 +240,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **Info window and 3D view** (live or studio light, pops out into its own window), **Trace pass** with CSV
   export, **Go to** (with Stay here, Return and follow again), **Track**, and **bulk export** of simulated
   observations.
+- **Reflect Orbital's quad-sail mirror** per its published deployed configuration: an 18 m square of four
+  triangular film quadrants with scalloped edges on two crossed telescoping booms and a central bus (replacing the
+  55 m single plate: the mirrors and their beams are 2.7 magnitudes fainter). After release the booms telescope out
+  and the sails unfurl over 15 minutes.
 - **SpaceX Starmind orbital data centers** per SpaceX's May 2026 FCC filing: about 990,000 satellites in
   sun-synchronous and 30-degree shells, flying in passive formation rings of eight that turn once per orbit.
 
@@ -372,8 +376,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 ### Technical and modding
 
 - **Satellite types as data.** Rigid attitude groups (`attitude_groups`) replace the attitude enum; geometry
-  models (`satellite_models/<id>.json`) with primitives (including profiles and fins), materials, kinematic trees,
-  stowed and folding parts, docking ports, render-only parts, open lattices and provenance blocks. See
+  models (`satellite_models/<id>.json`) with primitives (including profiles, fins and flat polygons), materials,
+  kinematic trees, stowed (along an axis or radially) and folding parts, docking ports, render-only parts, open lattices and provenance blocks. See
   `docs/CONSTELLATION_MODDING.md`.
 - **New roster features.** `"distribution": "Shells"` with a `groups` table, `List` constellations of named
   satellites, formation clusters (line or ring, `cluster_relative_orbit`), per-cluster scatter and per-plane node

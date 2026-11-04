@@ -94,7 +94,8 @@ layout(set = 0, binding = 3, std430) readonly buffer MeshOccluders { MeshOcclude
 
 // Per component, FIVE vec4s (2026-10-20; firstComponent counts vec4s): [5c] xyz = joint pivot (rest frame, relative
 // to its group's hinge; 0 = the hinge), w = its group's parent (−1: root — never pivoted). SatComponent::pivot,
-// satPivotOffset(). [5c + 1] xyz = the stow axis x (1 - stowScale) (0 = never stowed), w = the stow root;
+// satPivotOffset(). [5c + 1] xyz = the stow axis x (1 - stowScale) (0 = never stowed), w = the stow root (a RADIAL
+// stow, 2026-11-04: the axis x (2 - stowScale), length > 1 — the extent perpendicular to the axis is scaled instead);
 // [5c + 2] xy = the stow window, zw = the fold window (SatComponent::stow* / fold*; the instance's earthShC.z =
 // 1 - unfolding progress); [5c + 3] xyz = the fold hinge point, w = the fold angle (radians, 0 = never folded);
 // [5c + 4] xyz = the fold axis, w = the part's build-date code (stations module by module, 2026-10-21: satSinceCode,
@@ -133,10 +134,13 @@ bool instCompRenderOnly(MeshInstance inst, uint comp)
 // A stowed part (launches, 2026-10-19: an accordion-folded array or radiator while the satellite unfolds): its scale
 // along the stow axis at the instance's unfolding progress (1 = deployed; satComponentStowScale, SatModel.cpp), and
 // that axis. Returns 1 for a part that is never stowed or a deployed satellite.
-float instStowScale(MeshInstance inst, uint comp, out vec3 axis, out float root)
+// radial = true: a RADIAL stow (a sail pulled out by its booms, 2026-11-04) — the extent perpendicular to `axis`, from
+// the line through the body origin along it, is what scales.
+float instStowScale(MeshInstance inst, uint comp, out vec3 axis, out float root, out bool radial)
 {
     axis = vec3(0.0);
     root = 0.0;
+    radial = false;
     if (inst.earthShC.z <= 0.0) return 1.0;
     vec4 st = components[inst.firstComponent + 5u * comp + 1u];
     float ls = length(st.xyz);
@@ -144,7 +148,9 @@ float instStowScale(MeshInstance inst, uint comp, out vec3 axis, out float root)
     vec4 ph = components[inst.firstComponent + 5u * comp + 2u];
     axis = st.xyz / ls;
     root = st.w;
-    return mix(1.0 - ls, 1.0, smoothstep(ph.x, ph.y, 1.0 - inst.earthShC.z));
+    radial = ls > 1.0 + 1e-4;
+    float s0 = radial ? 2.0 - ls : 1.0 - ls;
+    return mix(s0, 1.0, smoothstep(ph.x, ph.y, 1.0 - inst.earthShC.z));
 }
 
 // A folded part (launches, 2026-10-20: an array folded flat onto the bus, half a bus folded over the other): its fold
