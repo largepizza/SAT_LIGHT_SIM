@@ -197,7 +197,11 @@ SatelliteSimSkyEvents.cpp). Settings `meteors.enabled` (on), `meteors.rate` (1, 
   (2026-10-28, issue 20261028_220640: they stopped past 1 min/s; `meteors.timelapse`, default on, false = the old rule:
   bands 0-1 only past 2x, none past 1 min/s): past 2x every meteor that burned during the frame's sim-time interval
   [t - dt, t] (dt = this frame's sim step; the first frame or a jump: warp / 60) is drawn as the streak it drew in that
-  interval — 1-4 Gaussians by its length on screen, each carrying its piece's light (`meteors::lightIntegral`: the light
+  interval — **up to 1 h/s only: past it (1 d/s and up) none are drawn** (`warp_off`; 2026-11-03, issue 20261030_175604: at 1 d/s
+  the slice is 24 min, only bands 0-1 fit the budget and each bolide arrived as a head floored at half its 1x peak, ~4
+  spiked one-frame flashes a frame over the nightside from 10,700 km — 15.3 meteor blobs a frame vs a 3.6 run-to-run
+  floor; after: 3.0, none >= 30 px; a ~1-s meteor is ~1/1440 of a 1 d/s frame. 1 h/s is the rate showers are meant to
+  be caught at, issue 20261028_220640; the ladder has nothing between) — 1-4 Gaussians by its length on screen, each carrying its piece's light (`meteors::lightIntegral`: the light
   curve integrated in closed form, flares and terminal burst included) / the exposure E = clamp(dt, 0.1 s,
   `meteors.timelapse_exposure_s` 0.1 s = the 1x streak's persistence, so a streak keeps the 1x streak's surface brightness at any rate; 0.5 s and 1 s read too faint: a 4-h run at 1 h/s showed ~6 streaks); 0.7 of it in the streak, 0.3 a point at its brightest piece (bloom, glare; a piece not drawn gives its light to the point; at least half the brightest moment's flare, as the 1x head, so each meteor reads as a real-time one — the streak alone left a Perseid peak at ~1 visible meteor a frame). At 1 h/s each frame shows the minute's meteors as whole
   streaks from the radiant. Trains: each segment's light integrated over the part of its life inside the interval / E,
