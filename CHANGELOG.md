@@ -78,6 +78,12 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   orbit, a whole ring once it has wrapped) instead of staying a round cloud; re-entry fireballs with a
   breakup flash, fragment trains and material colours (aluminium white, copper green, sodium yellow, lithium
   crimson); and once the cascade runs, many small meteor-like streaks.
+- **Collisions up close:** the projectile flies in on its real approach line and can be selected; the satellites a
+  collision kills stay whole in their own attitude until the instant of impact; the impact is a flash at its peak in
+  the frame that holds it at any time warp, with a sound (energy, mass and distance shape it: a fast crack and a short
+  reverb up close, a low-passed boom from the ground); and the debris, its dust and its small fragments carry the
+  pair's momentum (a head-on hit sends the cloud along the impactor's path instead of leaving it with the
+  formation).
 - **Explode** (Info window) breaks any satellite or debris piece up with one click, at any date; the debris is
   there the same frame. A breakup before the storm starts the cascade then (computed in the background while the
   clock holds briefly); going back in time undoes it. A second click while that runs is queued, not waited for.

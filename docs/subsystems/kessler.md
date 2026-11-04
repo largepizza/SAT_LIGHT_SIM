@@ -66,14 +66,23 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   recorded. A catastrophic breakup of a formation member damages each cluster neighbour (p 0.6, `damageCluster`:
   the cloud sweeps the ring within minutes, slowly, so they die and tumble). A cratering hit kills a satellite
   with p 1/2.
-- **Collisions keep momentum, as two streams (2026-10-30, issue 20261029_213225, kCacheVersion 19; the shipped prebake is
-  still version 18 until it is rebuilt, so the cascade is sampled live meanwhile):** a catastrophic pair collision's
-  fragment keeps a share beta = 1 - 0.8 u^1.5 (u hashed per piece: 0.2 .. 1, mean 0.68) of its parent's velocity relative
-  to the pair's centre of mass, plus the ejecta kick (`planFragments`). Momentum is kept (both sides draw beta from one
-  distribution), about half the centre-of-mass kinetic energy goes into the breakup, and the debris spreads ALONG the
-  relative velocity: each parent's pieces run on its own way, the contact zone's slower in the middle (hypervelocity
-  impacts: most material never meets the other body, and a projectile's debris cloud runs on through the target). The
-  2026-10-29 first cut moved every piece 0.8 of the way to the centre of mass: one cloud, the parents indistinguishable.
+- **Collisions keep momentum, as two streams, exactly (2026-10-30, issue 20261029_213225; 2026-11-03,
+  issue_20261030_180204, kCacheVersion 20; the shipped prebake is still version 18 until it is rebuilt, so the cascade is
+  sampled live meanwhile):** a catastrophic pair collision's fragment keeps a share beta = 1 - 0.8 u^1.5 (u hashed per
+  piece: 0.2 .. 1, mean 0.68) of its parent's velocity relative to the pair's centre of mass, plus the ejecta kick
+  (`planFragments`); then all the records are shifted together so their mass-weighted mean velocity IS the centre of
+  mass's (the shares keep momentum only on average: over a breakup's few dozen records drawn at random sides and masses
+  the centroid was tens of percent off). The small population does the same (`planSmall`: each sample on its side's
+  velocity drawn toward the centre of mass, then the samples shifted to it), and the event's `vel` (the dust cloud's
+  orbit, the tracker's Watch, the bands) is the centre of mass's. Until 2026-11-03 both the small population and the
+  dust kept the TARGET's velocity: after a head-on hit half the broken-up mass and the glowing dust stayed with the
+  target's formation (the report's "debris hangs out with the satellites in formation"). The debris spreads ALONG the
+  relative velocity: each parent's pieces run on its own way, the contact zone's slower in the middle. Measured
+  (harness `kessler poscheck ev=` -> `momentum`, the report's Starmind pair, 2500 kg each, 15.0 km/s head-on, 66
+  records): the centroid relative to the target's own orbit 7502 m/s against 7502 predicted at +10 s (ratio 1.000,
+  58 m/s across), 0.997 at +60 s (orbital divergence); the target's pieces 2.5 km/s and the projectile's 14.0 km/s along
+  the impactor's travel. The 2026-10-29 first cut moved every piece 0.8 of the way to the centre of mass: one cloud,
+  the parents indistinguishable.
 - **A pair collision seen up close (2026-10-30, `kesslerFillCollisions` / `kesslerCollisionJobs`, render only):** the
   engine finds a pair together at its step's sample time and spreads the event through the 6-h step, so at the impact
   the projectile's own record is thousands of km away (apply carries the encounter onto the target). For the pair
@@ -86,6 +95,27 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   projectile record is untouched (it vanishes far away at the same second). The candidate list is cached over half an
   hour and rebuilt when the log changes. Harness `kessler state` -> `collisions_near` (in_s, vrel, standin,
   `standin_to_target_m`, target_range_m), `collision_flash`.
+  - **Impact timing (2026-11-03, issue_20261030_180204):** the roster's dead / end words are whole seconds, so a target
+    hit at te = 2702.14 s was drawn dead (its tumble swung the arrays into the Sun: a white "torn" shape) from 2702.0 s,
+    then gone, and so were the ring neighbours the breakup kills: "they turn into debris before the collision".
+    `kesslerRosterHold` keeps every roster satellite a collision drawn up close kills (its two bodies, and any satellite
+    whose dead or end word is that second within 200 km of the impact) at the words it had until the continuous time
+    reaches te, then puts the real words back (never over a word the worker rewrote). Pool pieces are gated by their
+    event's time since 2026-10-30 (`kesslerShowGen`). Frame by frame on the report: the target drawn whole at te-0.141
+    / -0.050 / -0.010 s (it was dead from te-0.142 s), 4 satellites held, the 11 new records appear at te.
+  - **Impact frames:** the frame whose sim interval (last fill's time, now] holds te, and the next one, show the flash at
+    its peak whatever the time scale (at x1000 a frame is ~16 s: the 3-s flash fell between frames). Harness `kessler
+    state` -> `impact_frames` (frames_shown, age_at_cross_s, frame_dt_at_cross_s), `impact_frame`, `roster_holds`.
+  - **The impactor is selectable:** the stand-in is listed as a transient (`SelTransient` kind 10, a = the projectile's
+    satellite) by `kesslerFillCollisions`; a click on its point or its mesh (`rocketMeshSlotToTransient` maps the
+    collision chunk) selects it, and the selection's slot takes its state and own attitude (`kesslerCollTransientElems`).
+    The panel reads "<name> - on a collision course, impact in x s (v km/s closing)"; it lapses 2 s after the impact.
+    `collisions_near` -> `standin_screen_px` is where to `select at`.
+  - **Masses:** the pair's masses are the world's (`kesslerTypeMassKg`: the type's, else `defaultMassKg`; a Starmind is
+    2500 kg — the first cut read 500 for types without a mass), and the flash's fireball rides the mass-weighted
+    centre of mass along the relative velocity turned into the frame at te (it used the sample time's ECI vector, up to
+    6 h of orbit off).
+  - **The sound:** one hit per collision on the `impact` layer (sound.md "Collision sounds").
 - **The dust up close:** a cloud starts at 0.2 s of spread (was 1 s: ~sv wide at once), and a resolved piece's light is
   its surface brightness (pi x radiance per unit solar irradiance x "Dust cloud brightness"), blended geometrically from
   the point units (toSky, ~10 mag over a surface's physical brightness) as its smallest sigma goes 1.5 -> 8 half-res px:
