@@ -2969,6 +2969,10 @@ private:
     float kesslerAvoidance = 0.9f;    // kessler.avoidance: share of active-vs-debris encounters dodged
     float kesslerHorizonYears = 20.0f; // kessler.horizon_years: how far the cascade is simulated
     bool kesslerCollisionCloseup = true; // kessler.collision_closeup (no UI): pair collisions up close (stand-in, flash)
+    // kessler.dust_rings (no UI, the A/B): the dust rings (kesslerDustRings) and the bands' hand-over to them; off = the
+    // bands of 2026-10-31 alone (0.5-4 h)
+    bool kesslerDustRingsOn = true;
+    float kesslerDustRingGain = 1.0f; // kessler.dust_ring_gain (no UI): the rings' brightness x this
     float kesslerDustGain = 100.0f;    // kessler.dust_gain: the drawn dust clouds' brightness (x the physical estimate)
     float kesslerFireColor = 0.8f;     // kessler.fireball_colors: fragments tinted by material (0 = temperature only)
     float kesslerSmallReGain = 30.0f;  // kessler.small_reentry_gain: small fragments' fireballs (x physical: meteor-faint)
@@ -3166,7 +3170,7 @@ private:
     // 1024 since the launches (2026-10-18): the Kessler dust takes at most kDustMax, the fireball trails run up to
     // kFireTrailMax, the rocket plumes and flames take the rest (SatelliteSimLaunches.cpp).
     static constexpr uint32_t kMaxDustClouds = 1024;
-    static constexpr uint32_t kDustMax = 384;
+    static constexpr uint32_t kDustMax = 640; // tube 240 + bands 144 + rings 256 (2026-11-03: was 384)
     static constexpr uint32_t kFireTrailMax = 704;
     struct GpuDustCloud
     {
@@ -3193,6 +3197,44 @@ private:
     // Each drawn band (harness `kessler state` -> dust.rings.bands): event index, age (s), arc (deg of its orbit),
     // width (km, 2 sigma), clumps, the band's light (amp, before the sky units).
     std::vector<std::array<double, 6>> kRingDbg;
+    // The dust RINGS (2026-11-03, issue_20261030_175418 round 2): every breakup's dust from ~12 h to 30 days old, merged
+    // by orbit plane into full rings around the Earth (kesslerDustRings). Sums per plane bin, light-weighted, the weight
+    // referenced to t0 (amp x exp((te - t0) / tau)) so whole hours of events are added / removed as sim time moves.
+    struct DustRingAcc
+    {
+        double W = 0.0, Nx = 0.0, Ny = 0.0, Nz = 0.0, A = 0.0, A2 = 0.0, wR2 = 0.0, wW2 = 0.0, K2 = 0.0, K2d = 0.0,
+               K2d2 = 0.0, Wd = 0.0, cnt = 0.0;
+        void add(const DustRingAcc &h, double s); // += s x h (s = -1 removes exactly what +1 added)
+    };
+    struct DustRingCache
+    {
+        const void *src = nullptr;
+        uint32_t rev = UINT32_MAX;
+        float gain = -1.0f;
+        double t0 = 0.0;                 // the weights' reference time (J2000 s)
+        int64_t hLo = 0, hHi = -1;       // the hours (J2000 s / 3600) summed into tot: [hLo, hHi]
+        std::unordered_map<uint64_t, DustRingAcc> tot;
+        // the hours fading in (centre age 11 -> 14 h), each hour's events merged by bin: drawn x the hour's ramp
+        std::unordered_map<int64_t, std::vector<std::pair<uint64_t, DustRingAcc>>> ramp;
+        // the ranking (kesslerDustRings: the full one is throttled; the kept top 64 are re-ranked each frame)
+        std::vector<uint64_t> topKeys;
+        uint32_t binsRanked = 0;
+        uint64_t rankedRebuilds = UINT64_MAX, ranks = 0;
+        int64_t rankedLo = 0, rankedHi = -1;
+        size_t rankedRamp = 0;
+        double tRank = 0.0;
+        std::chrono::steady_clock::time_point wallRank{};
+        uint64_t hoursScanned = 0;       // since the app started (harness)
+        uint64_t eventsScanned = 0;
+        uint64_t rebuilds = 0;
+    } kDustRings;
+    uint32_t kEventsRev = 0; // bumped whenever kEvents is cleared or rolled back (the ring cache rebuilds)
+    // This frame's rings (harness `kessler state` -> dust.shells): plane bins live, drawn, their clumps, CPU ms, and the
+    // drawn ones {a km, incl deg, light, radial / cross-track sigma km, clumps, mean age d, events, cut}.
+    uint32_t kShellBins = 0, kShellDrawn = 0, kShellPieces = 0;
+    double kShellMs = 0.0, kShellLight = 0.0;
+    std::vector<std::array<double, 10>> kShellDbg;
+    void kesslerDustRings(GpuDustCloud *out, uint32_t &n, uint32_t nMax, double t, double toSky, float pixelAngle);
     void kesslerFillDust(float pixelAngle);
     // Fills the fireballs for the current time into kFireBuf and appends their trails to the dust list (out, n).
     void kesslerFillFireballs(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull);

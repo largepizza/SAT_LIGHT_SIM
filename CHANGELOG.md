@@ -74,8 +74,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **What you see:** dead satellites tumbling and glinting; debris pieces drawn close up as torn solar arrays,
   radiator sections and pieces of bus, appearing at the impact's own instant (not a fraction of a second early,
   converging on the impact point); a glowing dust cloud along each breakup's orbit, which from half an hour to
-  four hours old disperses into a dust band around the parent's orbit (a chain of clumps covering part of the
-  orbit, a whole ring once it has wrapped) instead of staying a round cloud; re-entry fireballs with a
+  half a day old disperses into a dust band around the parent's orbit (a chain of clumps covering part of the
+  orbit, a whole ring once it has wrapped) instead of staying a round cloud, and then stays a dust RING around
+  the Earth for days to weeks, fading and widening across its orbit as the fragments' planes drift apart (in a
+  late cascade the rings of a shell overlap into a faint band of dust across the sky); re-entry fireballs with a
   breakup flash, fragment trains and material colours (aluminium white, copper green, sodium yellow, lithium
   crimson); and once the cascade runs, many small meteor-like streaks.
 - **Collisions up close:** the projectile flies in on its real approach line and can be selected; the satellites a

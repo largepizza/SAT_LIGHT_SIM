@@ -1032,6 +1032,7 @@ void SatelliteSim::kesslerShutdown()
         writeCache(std::filesystem::path(Paths::userDataDir()) / "kessler" / cacheName(kHash), kHash, kWorker->w,
                    kWorker->w.frontier);
     kEvents.clear();
+    ++kEventsRev; // (the dust rings' cache rebuilds)
     kEvents.src = nullptr; // (the view reads the world's log)
     kWorker.reset();
 }
@@ -1128,6 +1129,7 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
     // The main thread's mirror starts empty; the pool tail of satOrbits goes with it.
     kPool.clear();
     kEvents.clear();
+    ++kEventsRev; // (the dust rings' cache rebuilds)
     kEvents.src = nullptr; // (the old world's log goes with it)
     kRosterWords.assign(2ull * activeSatCount, kessler::kNever);
     kRosterDecay.assign(activeSatCount, kessler::kNever);
@@ -1462,6 +1464,7 @@ void SatelliteSim::kesslerRestartInstall(RestartOut &out)
         kSmallReHours.clear();
         kSmallStreamCount = out.snapStreamCount;
         kEvents.n = w.events.size();
+        ++kEventsRev; // (the dust rings' cache rebuilds)
         kWorker->pubEvents = kWorker->outEventsEnd = kWorker->syncQEvEnd = kEvents.n;
         kFrontier = w.frontier;
         kWorker->syncQFrontier = kFrontier;
@@ -2498,6 +2501,7 @@ bool SatelliteSim::kesslerUserEvent(uint8_t kind, uint32_t satA, uint32_t satB, 
         kesslerEnabled = true;
         spaceWeatherSetScriptedStorm(true, kFuryArriveT, kFuryPeakKp);
         kEvents.clear();
+        ++kEventsRev; // (the dust rings' cache rebuilds)
         kEvents.src = nullptr;
         kWorker.reset(); // a fresh world below (it cannot be running while disabled)
     }
@@ -2638,6 +2642,7 @@ bool SatelliteSim::kesslerBreakupInPlace(const kessler::Event &ev)
         W.pubEvents = w.events.size();
         kEvents.src = &w.events;
         kEvents.n = w.events.size();
+        ++kEventsRev; // (the dust rings' cache rebuilds)
         W.outEventsEnd = W.syncQEvEnd = kEvents.n;
         kesslerMirrorRewind(ck.t);
     }
@@ -2749,6 +2754,407 @@ void SatelliteSim::kesslerMirrorRewind(double tCk)
 }
 
 
+// Shared by the dust's bands and rings (kesslerFillDust, kesslerDustRings).
+namespace
+{
+// A big parent's cloud is brighter, but not in proportion (kesslerFillDust's kAmpKnee).
+constexpr double kDustAmpKnee = 7.0e5;
+// An event's dust is a band until its HOUR's centre is 11 h old, a ring from 14 h (shellRamp between), and gone at 30 d.
+constexpr double kShellT0 = 11.0 * 3600.0, kShellT1 = 14.0 * 3600.0;
+constexpr double kShellTau = 3.0 * 86400.0; // the dust's light: exp(-age / tau)
+constexpr double kShellLife = 30.0 * 86400.0;
+// The ring's share of an event of time te at time t (the band takes the rest): by the age of its hour's centre, so
+// whole hours of events move between the two.
+double shellRamp(double t, double te)
+{
+    const double hc = (std::floor(te / 3600.0) + 0.5) * 3600.0;
+    return glm::smoothstep(kShellT0, kShellT1, t - hc);
+}
+} // namespace
+
+// ── The dust RINGS (2026-11-03, issue_20261030_175418 round 2: "dust clouds disperse as rings around the Earth") ──
+// A breakup's dust spreads along its orbit within hours (the bands, kesslerFillDust: a full ring by ~2 h at a 500 m/s
+// kick, ~8 h at 80 m/s); then the DIFFERENCE of the J2 node rates between the fragments (their kicks change a and i;
+// the pool's records carry exactly this relative J2) spreads the ring's plane, so it widens across the track over
+// weeks into a broad band (a shell where many planes overlap). Drawn here from ~12 h to 30 days old as full rings,
+// every breakup's dust merged by its orbit's plane (bins of 25 km in a, 1 deg in i, 4 deg in the node): a late cascade
+// has hundreds of breakups an hour, tens of thousands in the window, in far fewer planes.
+// Light: the event's own (the tube's amp) x exp(-age / 3 d) (fine dust is lost to drag and the Sun's pressure; the
+// time-lapse visual keeps it ~a week), knee'd per ring (kShellKnee); spread over the ring's clumps in the point
+// sources' units (as the bands). Widths: the fragments' orbit-averaged radial (2.55 sv / n) and cross-track (sv / (n sqrt 2))
+// sigmas, plus the spread of a and of the planes within the bin, plus the node spread k x age (k = a sin i x the rms
+// difference of the node rates / sqrt 2: ~60 km a day at 53 deg and 200 m/s), capped at 1 500 km.
+// Cost: sums per bin over whole HOURS of events, the weights referenced to t0 (amp x exp((te - t0) / tau)), so as sim
+// time runs only the hour coming in (centre age 11 -> 14 h, faded in by exactly what the bands fade out) and the hour
+// leaving (30 d) are scanned; all is rebuilt when the log is rolled back or cleared, the gain changes, time jumps or t0
+// is 5 days old. Drawing: the brightest rings by surface brightness, 24-64 clumps each (a straight clump's bow under
+// half the ring's radial width), kShellBudget Gaussians in all, the ring at the budget's cut fading by priority.
+namespace
+{
+constexpr double kShellWidMax = 1500.0e3; // the cross-track sigma at most (m): a broad band, not a fog
+constexpr double kShellGain = 120.0;      // in the point sources' units (the bands' kRingGain is 2; see kessler.md)
+// A ring's light is knee'd harder than a cloud's (kDustAmpKnee 7e5): a late cascade's plane bin holds hundreds of
+// breakups (raw ~6e6 at x1000) and a lone satellite's ring ~1e4, so above the knee it grows as the square root.
+constexpr double kShellKnee = 2.0e4;
+constexpr uint32_t kShellBudget = 256;    // Gaussians
+constexpr double kShellAeqBin = 25.0e3, kShellIncBin = 1.0, kShellNodeBin = 4.0;
+} // namespace
+
+namespace
+{
+glm::dvec3 gShellTopN{0.0, 0.0, 1.0}; // the brightest drawn ring's normal (ECI), harness `kessler state`
+}
+
+void SatelliteSim::DustRingAcc::add(const DustRingAcc &h, double s)
+{
+    W += s * h.W;
+    Nx += s * h.Nx;
+    Ny += s * h.Ny;
+    Nz += s * h.Nz;
+    A += s * h.A;
+    A2 += s * h.A2;
+    wR2 += s * h.wR2;
+    wW2 += s * h.wW2;
+    K2 += s * h.K2;
+    K2d += s * h.K2d;
+    K2d2 += s * h.K2d2;
+    Wd += s * h.Wd;
+    cnt += s * h.cnt;
+}
+
+void SatelliteSim::kesslerDustRings(GpuDustCloud *out, uint32_t &n, uint32_t nMax, double t, double toSky,
+                                    float pixelAngle)
+{
+    struct Timer
+    {
+        SatelliteSim *s;
+        std::chrono::steady_clock::time_point c0 = std::chrono::steady_clock::now();
+        ~Timer() { s->kShellMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - c0).count(); }
+    } timer{this};
+    kShellBins = kShellDrawn = kShellPieces = 0;
+    kShellLight = 0.0;
+    kShellDbg.clear();
+    DustRingCache &C = kDustRings;
+    if (kEvents.empty() || !kEvents.src)
+    {
+        C.tot.clear();
+        C.ramp.clear();
+        C.src = nullptr;
+        return;
+    }
+    const double gain = (double)kesslerDustGain;
+    // One event's contribution (weights referenced to C.t0): false = no dust to draw.
+    auto contrib = [&](const kessler::Event &e, uint64_t &key, DustRingAcc &c) -> bool {
+        if (e.dustKg <= 0.5f && e.nSmall < 50.0f)
+            return false;
+        const double mass = 5.6 * (double)e.dustKg + 0.02 * (double)e.nSmall;
+        if (mass < 1.0)
+            return false;
+        const double ampLin = 0.25 * mass * gain;
+        const double amp = ampLin / std::sqrt(1.0 + ampLin / kDustAmpKnee);
+        const kessler::State s0{{e.pos[0], e.pos[1], e.pos[2]}, {e.vel[0], e.vel[1], e.vel[2]}};
+        if (glm::length(s0.r) < 1.0)
+            return false;
+        const kessler::Elems el = kessler::elemsFromState(s0);
+        // a ring is drawn as a circle of radius a: only near-circular orbits whose perigee is above the air (a breakup
+        // on a re-entering or sub-orbital path had a ~3 600-km "ring" inside the Earth, and as the narrowest it ranked
+        // first and took the budget)
+        if (!(el.a > 0.0) || el.e > 0.1 || el.a * (1.0 - el.e) < kessler::kReq + 150.0e3)
+            return false;
+        const glm::dvec3 N = glm::normalize(glm::cross(s0.r, s0.v));
+        const double a = el.a, nb = std::sqrt(kessler::kGM / (a * a * a)), vC = nb * a;
+        const double sv = std::clamp((double)e.dvSmall, 80.0, 500.0);
+        const double wR = std::clamp(2.55 * sv / nb, 20.0e3, 250.0e3);
+        const double wW = std::clamp(0.7071 * sv / nb, 20.0e3, 250.0e3);
+        const double cJ = 1.5 * nb * kessler::kJ2 * (kessler::kReq / a) * (kessler::kReq / a);
+        const double ci = std::cos(el.i), si = std::sin(el.i);
+        // the rms node-rate difference: d(raanDot)/da x sigma_a (sigma_a / a = 2 sv / v) and d(raanDot)/di x sigma_i
+        // (sv / (v sqrt 2)), raanDot = -cJ cos i
+        const double sigOm = cJ * sv / vC * std::sqrt(49.0 * ci * ci + 0.5 * si * si);
+        const double k = a * std::abs(si) * sigOm * 0.7071;
+        const double d = e.t - C.t0;
+        const double W = amp * std::exp(d / kShellTau);
+        c.W = W;
+        c.Nx = W * N.x;
+        c.Ny = W * N.y;
+        c.Nz = W * N.z;
+        c.A = W * a;
+        c.A2 = W * a * a;
+        c.wR2 = W * wR * wR;
+        c.wW2 = W * wW * wW;
+        c.K2 = W * k * k;
+        c.K2d = c.K2 * d;
+        c.K2d2 = c.K2d * d;
+        c.Wd = W * d;
+        c.cnt = 1.0;
+        double node = std::fmod(el.raan * 180.0 / glm::pi<double>(), 360.0);
+        if (node < 0.0)
+            node += 360.0;
+        const uint64_t nNode = (uint64_t)std::llround(360.0 / kShellNodeBin);
+        const uint64_t ia = (uint64_t)std::llround(a / kShellAeqBin) & 0xFFFFFu;
+        const uint64_t ii = (uint64_t)std::llround(el.i * 180.0 / glm::pi<double>() / kShellIncBin) & 0x3FFu;
+        const uint64_t io = (uint64_t)std::llround(node / kShellNodeBin) % nNode;
+        key = (ia << 20) | (ii << 10) | io;
+        return true;
+    };
+    // Every event of hours [hA, hB] (J2000 s / 3600) as f(key, acc). Events are in time order to within one engine
+    // step (6 h).
+    auto scanHours = [&](int64_t hA, int64_t hB, auto &&f) {
+        if (hB < hA)
+            return;
+        const double tA = (double)hA * 3600.0, tB = (double)(hB + 1) * 3600.0;
+        size_t k = kEvents.lowerBound(tA - 6.0 * 3600.0, [](const kessler::Event &e, double x) { return e.t < x; });
+        C.hoursScanned += (uint64_t)(hB - hA + 1);
+        for (; k < kEvents.size(); ++k)
+        {
+            const double te = kEvents.tOf(k);
+            if (te > tB + 6.0 * 3600.0)
+                break;
+            if (te < tA || te >= tB)
+                continue;
+            const kessler::Event e = kEvents[k];
+            ++C.eventsScanned;
+            uint64_t key;
+            DustRingAcc c;
+            if (contrib(e, key, c))
+                f(key, c);
+        }
+    };
+    // The hours summed whole (centre age kShellT1 .. kShellLife) and the ones fading in (kShellT0 .. kShellT1); an hour
+    // is used only once the mirror's frontier is a step past it (all its events are in).
+    const int64_t hFront = (int64_t)std::floor((kFrontier - 6.0 * 3600.0) / 3600.0) - 1;
+    const int64_t nHi = std::min((int64_t)std::floor((t - kShellT1) / 3600.0 - 0.5), hFront);
+    const int64_t nLo = (int64_t)std::ceil((t - kShellLife) / 3600.0 - 0.5);
+    const int64_t rTop = std::min((int64_t)std::ceil((t - kShellT0) / 3600.0 - 0.5) - 1, hFront);
+    auto addRange = [&](int64_t hA, int64_t hB, double s) {
+        scanHours(hA, hB, [&](uint64_t key, const DustRingAcc &c) { C.tot[key].add(c, s); });
+    };
+    const bool stale = C.src != (const void *)kEvents.src || C.rev != kEventsRev || C.gain != kesslerDustGain ||
+                       std::abs(t - C.t0) > 5.0 * 86400.0;
+    const bool overlap = C.hHi >= C.hLo && !(nHi < C.hLo || nLo > C.hHi);
+    if (stale || !overlap)
+    {
+        C.src = kEvents.src;
+        C.rev = kEventsRev;
+        C.gain = kesslerDustGain;
+        C.t0 = t;
+        C.tot.clear();
+        C.ramp.clear();
+        ++C.rebuilds;
+        addRange(nLo, nHi, 1.0);
+        C.hLo = nLo;
+        C.hHi = nHi;
+    }
+    else if (nLo != C.hLo || nHi != C.hHi)
+    {
+        // old \ new taken away, new \ old added (whole hours: exactly what was added is taken away)
+        addRange(C.hLo, std::min(C.hHi, nLo - 1), -1.0);
+        addRange(std::max(C.hLo, nHi + 1), C.hHi, -1.0);
+        addRange(nLo, std::min(nHi, C.hLo - 1), 1.0);
+        addRange(std::max(nLo, C.hHi + 1), nHi, 1.0);
+        C.hLo = nLo;
+        C.hHi = nHi;
+        for (auto it = C.tot.begin(); it != C.tot.end();)
+            it = (it->second.cnt < 0.5) ? C.tot.erase(it) : std::next(it); // bins emptied by the removals
+    }
+    // The fading-in hours (cached per hour; dropped once out of the ramp).
+    for (auto it = C.ramp.begin(); it != C.ramp.end();)
+        it = (it->first <= nHi || it->first > rTop) ? C.ramp.erase(it) : std::next(it);
+    for (int64_t h = std::max(nHi + 1, nLo); h <= rTop; ++h)
+        if (!C.ramp.count(h))
+        {
+            std::unordered_map<uint64_t, DustRingAcc> m;
+            scanHours(h, h, [&](uint64_t key, const DustRingAcc &c) { m[key].add(c, 1.0); });
+            C.ramp[h].assign(m.begin(), m.end());
+        }
+
+    // The fading-in hours' sums, x each hour's ramp (a few hundred bins).
+    std::unordered_map<uint64_t, DustRingAcc> rampSum;
+    for (const auto &hv : C.ramp)
+    {
+        const double w = shellRamp(t, (double)hv.first * 3600.0);
+        if (w > 0.0)
+            for (const auto &kv : hv.second)
+                rampSum[kv.first].add(kv.second, w);
+    }
+    const double tau = t - C.t0;
+    const double decay = std::exp(-tau / kShellTau);
+    struct Geo
+    {
+        double a = 0.0, wR = 0.0, wW = 0.0, ageD = 0.0;
+        glm::dvec3 N{0.0, 0.0, 1.0};
+        int nP = 16;
+    };
+    auto geoOf = [&](const DustRingAcc &s) {
+        Geo g;
+        g.a = s.A / s.W;
+        g.wR = std::min(std::sqrt(std::max(s.wR2 / s.W + std::max(s.A2 / s.W - g.a * g.a, 0.0), 0.0)), 400.0e3);
+        const glm::dvec3 Ns(s.Nx, s.Ny, s.Nz);
+        const double m = std::min(glm::length(Ns) / s.W, 1.0);
+        const double node = std::max((s.K2 * tau * tau - 2.0 * tau * s.K2d + s.K2d2) / s.W, 0.0);
+        g.wW = std::min(std::sqrt(s.wW2 / s.W + node + g.a * g.a * (1.0 - m)), kShellWidMax);
+        g.N = glm::length(Ns) > 0.0 ? Ns / glm::length(Ns) : glm::dvec3(0.0, 0.0, 1.0);
+        g.ageD = (tau - s.Wd / s.W) / 86400.0;
+        // clumps: spacing D, along-track sigma 0.6 D, so a straight clump's bow at 2 sigma ((1.2 D)^2 / 2a, in the
+        // ring's plane: radial) is under half the radial width: D = 0.8 sqrt(a wR) (with 0.8 D sigmas and
+        // D = sqrt(4 a w) the ring's edge was a zig-zag of straight segments, a star around the Earth)
+        const double D = 0.8 * std::sqrt(g.a * g.wR);
+        g.nP = std::clamp((int)std::ceil(2.0 * glm::pi<double>() * g.a / D), 24, 64);
+        return g;
+    };
+    struct Ring
+    {
+        uint64_t key = 0;
+        DustRingAcc s;
+        double pri = 0.0, L = 0.0;
+    };
+    // A ring's light (knee'd) and rank: surface brightness, a hash of the bin breaking exact ties.
+    auto rank = [&](Ring &r) {
+        r.pri = 0.0;
+        if (!(r.s.W > 0.0) || !(r.s.cnt > 0.0))
+            return;
+        const double L = r.s.W * decay;
+        r.L = L / std::sqrt(1.0 + L / kShellKnee);
+        const Geo g = geoOf(r.s);
+        r.pri = r.L / (2.0 * glm::pi<double>() * g.a * std::sqrt(g.wR * g.wW)) * (1.0 + 1e-9 * (double)(r.key % 997u));
+    };
+    // The full ranking (thousands of bins in a late cascade: ~1-2 ms) only when the sums changed or sim time moved
+    // 10 min, at most every 0.25 s of wall time (a rebuild re-ranks at once); in between the kept top 64 are re-ranked
+    // each frame. The rank moves slowly (the decay is common to all; the node spread grows over days), and the rings
+    // near the budget's cut fade by priority, so the gap does not pop.
+    const auto wallNow = std::chrono::steady_clock::now();
+    const bool changed = C.rebuilds != C.rankedRebuilds || C.hLo != C.rankedLo || C.hHi != C.rankedHi ||
+                         C.ramp.size() != C.rankedRamp || std::abs(t - C.tRank) > 600.0;
+    if (C.rebuilds != C.rankedRebuilds || (changed && wallNow - C.wallRank > std::chrono::milliseconds(250)))
+    {
+        std::vector<std::pair<double, uint64_t>> pr;
+        pr.reserve(C.tot.size() + rampSum.size());
+        Ring r;
+        for (const auto &kv : C.tot)
+        {
+            r.key = kv.first;
+            r.s = kv.second;
+            auto it = rampSum.find(kv.first);
+            if (it != rampSum.end())
+                r.s.add(it->second, 1.0);
+            rank(r);
+            if (r.pri > 0.0)
+                pr.push_back({r.pri, r.key});
+        }
+        for (const auto &kv : rampSum)
+            if (!C.tot.count(kv.first))
+            {
+                r.key = kv.first;
+                r.s = kv.second;
+                rank(r);
+                if (r.pri > 0.0)
+                    pr.push_back({r.pri, r.key});
+            }
+        const size_t nTop = std::min<size_t>(pr.size(), 64);
+        std::partial_sort(pr.begin(), pr.begin() + (ptrdiff_t)nTop, pr.end(),
+                          [](const auto &x, const auto &y) { return x.first > y.first; });
+        C.topKeys.clear();
+        for (size_t q = 0; q < nTop; ++q)
+            C.topKeys.push_back(pr[q].second);
+        C.binsRanked = (uint32_t)pr.size();
+        C.rankedRebuilds = C.rebuilds;
+        C.rankedLo = C.hLo;
+        C.rankedHi = C.hHi;
+        C.rankedRamp = C.ramp.size();
+        C.tRank = t;
+        C.wallRank = wallNow;
+        ++C.ranks;
+    }
+    kShellBins = C.binsRanked;
+    std::vector<Ring> rings;
+    rings.reserve(C.topKeys.size());
+    for (uint64_t key : C.topKeys)
+    {
+        Ring r;
+        r.key = key;
+        auto it = C.tot.find(key);
+        if (it != C.tot.end())
+            r.s = it->second;
+        auto jt = rampSum.find(key);
+        if (jt != rampSum.end())
+            r.s.add(jt->second, 1.0);
+        rank(r);
+        if (r.pri > 0.0)
+            rings.push_back(r);
+    }
+    if (rings.empty() || n >= nMax)
+        return;
+    const size_t top = rings.size();
+    std::sort(rings.begin(), rings.end(), [](const Ring &x, const Ring &y) { return x.pri > y.pri; });
+    uint32_t used = 0;
+    double priCut = 0.0;
+    for (size_t q = 0; q < top; ++q)
+    {
+        const int nP = geoOf(rings[q].s).nP;
+        if (used + (uint32_t)nP > kShellBudget)
+        {
+            priCut = rings[q].pri;
+            break;
+        }
+        used += (uint32_t)nP;
+    }
+    const glm::dvec3 ex(eci2enuX), ey(eci2enuY), ez(eci2enuZ);
+    auto toEnu = [&](const glm::dvec3 &v) { return glm::dvec3(glm::dot(v, ex), glm::dot(v, ey), glm::dot(v, ez)); };
+    const glm::dvec3 eye = glm::dvec3(obsECI);
+    used = 0;
+    const uint32_t n0 = n;
+    for (size_t q = 0; q < top && n < nMax; ++q)
+    {
+        const Ring &r = rings[q];
+        const Geo g = geoOf(r.s);
+        if (used + (uint32_t)g.nP > kShellBudget || n + (uint32_t)g.nP > nMax)
+            break;
+        used += (uint32_t)g.nP;
+        // (from the cut to 1.5x it: a late cascade's bins rank within a few tens of % of each other, and a 2x fade drew
+        // three rings of a 256-Gaussian budget)
+        const double cutK = priCut <= 0.0 ? 1.0 : glm::smoothstep(priCut, 1.5 * priCut, r.pri);
+        if (cutK <= 1e-3)
+            continue;
+        glm::dvec3 R0 = glm::cross(g.N, glm::dvec3(0.0, 0.0, 1.0));
+        R0 = glm::length(R0) < 1e-6 ? glm::dvec3(1.0, 0.0, 0.0) : glm::normalize(R0);
+        const glm::dvec3 S0 = glm::cross(g.N, R0);
+        const double D = 2.0 * glm::pi<double>() * g.a / g.nP;
+        const double sS = 0.6 * D;
+        const double light = r.L * kShellGain * (double)kesslerDustRingGain * cutK / (double)g.nP;
+        kShellLight += r.L * cutK;
+        ++kShellDrawn;
+        if (kShellDbg.empty())
+            gShellTopN = g.N; // (harness: the brightest ring's plane, to frame it face-on)
+        if (kShellDbg.size() < 16)
+            kShellDbg.push_back({g.a / 1000.0, std::acos(std::clamp(g.N.z, -1.0, 1.0)) * 180.0 / glm::pi<double>(), r.L,
+                                 g.wR / 1000.0, g.wW / 1000.0, (double)g.nP, g.ageD, r.s.cnt, cutK, r.pri});
+        for (int j = 0; j < g.nP && n < nMax; ++j)
+        {
+            const double th = 2.0 * glm::pi<double>() * (double)j / (double)g.nP;
+            const glm::dvec3 Rj = std::cos(th) * R0 + std::sin(th) * S0;
+            const glm::dvec3 Sj = glm::cross(g.N, Rj);
+            const glm::dvec3 rel = toEnu(g.a * Rj - eye);
+            const double rng = std::max(glm::length(rel), 1.0);
+            const double sMin = 2.5 * (double)pixelAngle * rng; // never under ~2.5 full-res pixels (as the bands)
+            const double sR = std::max(g.wR, sMin), sW = std::max(g.wW, sMin), sSu = std::max(sS, sMin);
+            const glm::dvec3 ea = toEnu(Rj), eb = toEnu(Sj), ec = toEnu(g.N);
+            const double iR = 1.0 / (sR * sR), iS = 1.0 / (sSu * sSu), iW = 1.0 / (sW * sW);
+            auto M = [&](int i, int jj) { return iR * ea[i] * ea[jj] + iS * eb[i] * eb[jj] + iW * ec[i] * ec[jj]; };
+            GpuDustCloud &d = out[n++];
+            const double rad = 4.0 * std::max({sR, sSu, sW});
+            d.cone = rng > 1.05 * rad ? glm::vec4(glm::vec3(rel / rng), (float)std::sqrt(1.0 - (rad / rng) * (rad / rng)))
+                                      : glm::vec4(0.0f);
+            d.c = glm::vec4(glm::vec3(rel), (float)(light * toSky));
+            d.ia = glm::vec4((float)M(0, 0), (float)M(1, 1), (float)M(2, 2),
+                             (float)(1.0 / (std::pow(2.0 * glm::pi<double>(), 1.5) * sR * sSu * sW)));
+            d.ib = glm::vec4((float)M(0, 1), (float)M(0, 2), (float)M(1, 2), 0.0f);
+            d.col = glm::vec4(0.96f, 0.92f, 0.86f, 0.0f);
+        }
+    }
+    kShellPieces = n - n0;
+}
+
+
 // ── The dust clouds (round 2) ───────────────────────────────────────────────────────────────────
 // Each breakup of the last few hours leaves a cloud of fine dust and small fragments that follows its parent's
 // orbit, expands at the fragments' spread speed and shears along-track (a fragment thrown forward climbs and falls
@@ -2766,6 +3172,9 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
     kRingPieces = 0;
     kRingArcDegMax = kRingArcDegSum = kRingWidthKm = 0.0;
     kRingDbg.clear();
+    kShellBins = kShellDrawn = kShellPieces = 0;
+    kShellLight = 0.0;
+    kShellDbg.clear();
     ambUpSrc_.clear(); // refilled by everything drawn below (dust, fireballs, rockets); read by the next ambience update
     kesslerDropGoneSelection(); // (every frame; cheap)
     if (!kDustMapped)
@@ -2839,7 +3248,7 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
     // exists to lift the faint clouds of ordinary satellites, and at x100 a 420-t station's cloud blew out the whole
     // view (issue_20261019_231126). Linear up to ~5 t of dust at the default gain (a 100-t parent), then as its
     // square root. (The tube and the bands below share it.)
-    constexpr double kAmpKnee = 7.0e5;
+    constexpr double kAmpKnee = kDustAmpKnee;
     if (t < kWorldStart)
         return;
     // Events are in time order to within one engine step (6 h): start the scan that far before the window.
@@ -2906,7 +3315,7 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
     // The dispersed bands' share of the dust list (the ring pass at the end of this function): the tube's ranking is
     // surface brightness, so it would never keep a faint band over a fresh blob.
     constexpr uint32_t kRingBudget = 144;
-    const uint32_t dustMax = kDustMax - kRingBudget;
+    const uint32_t dustMax = kDustMax - kRingBudget - kShellBudget; // (and the rings' share: kesslerDustRings)
     // The cloud as a TUBE along its orbit (2026-10-20, issue 20261019_231126: a station's cloud was drawn as up to 12
     // straight Gaussians ~2000 km long, "beams" crossing the sky, and the count of them stepped with age (a ceil() of
     // the cloud's length), so its width jumped, and a hash per piece index reshuffled its lumps: "it stretches oddly
@@ -3115,12 +3524,15 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
     // debris (kFireBuf) are untouched. Its own budget (kRingBudget) so a faint band is drawn beside the fresh blobs.
     {
         constexpr double kRingAgeMin = 0.5 * 3600.0;  // younger: the tube's cloud above
-        constexpr double kRingAgeMax = 4.0 * 3600.0;  // older: faded out (as the tube's 3 h)
+        // older: handed to the rings (kesslerDustRings) by the event's HOUR (its centre's age through 11 -> 14 h), the
+        // band fading by exactly the share the ring takes, so the light is the same through the hand-over
+        const bool toRings = kesslerDustRingsOn; // (off: the bands of 2026-10-31 alone, faded out by 4 h)
+        const double kRingAgeMax = toRings ? kShellT1 + 1800.0 : 4.0 * 3600.0;
         constexpr double kRingFadeIn = 900.0;         // s, a band fades in over this after kRingAgeMin (no pop)
         constexpr double kClump = 400.0e3;            // a clump's along-track sigma (m)
         constexpr double kClumpStep = 1.5;            // clump spacing in clump sigmas (the band is continuous)
         constexpr double kWidMax = 250.0e3;           // the band's radial / cross-track sigma, at most (m)
-        constexpr int kClumpsMax = 26;                // per band
+        constexpr int kClumpsMax = 36;                // per band (26 until 2026-11-03: a wrapped band zig-zagged)
         constexpr double kRingGain = 2.0;             // the band's brightness in the point sources' units
         struct Band
         {
@@ -3132,13 +3544,18 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
         // The window's bands, ranked from what the event itself carries (its radius, so the mean motion; the dust mass;
         // its kick): the whole window - hundreds of breakups a minute by day 60 - is ranked at ~50 flops an event, and
         // only the few that can be drawn get the orbit propagated below.
-        const size_t i0R = kEvents.lowerBound(t - kRingAgeMax - 2.0 * 3600.0,
+        const size_t i0R = kEvents.lowerBound(t - kRingAgeMax - 6.0 * 3600.0,
                                               [](const kessler::Event &e, double x) { return e.t < x; });
         for (size_t k = i0R; k < kEvents.size(); ++k)
         {
-            const kessler::Event &e = kEvents[k];
-            if (e.t > t - kRingAgeMin)
+            // the time first (exact and cheap: no rebuild of the event), so the window's 6-h slack and the events the
+            // rings have taken whole are skipped without reading them
+            const double tk = kEvents.tOf(k);
+            if (tk > t - kRingAgeMin)
                 break;
+            if (t - tk > kRingAgeMax || (toRings && shellRamp(t, tk) >= 1.0))
+                continue;
+            const kessler::Event &e = kEvents[k];
             const double age = t - e.t;
             if (age > kRingAgeMax)
                 continue;
@@ -3158,7 +3575,8 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
             const double wR = std::clamp(sv * std::sqrt(pp * pp + qq * qq), 20.0e3, kWidMax);
             const double wW = std::clamp(sv * std::abs(pp), 20.0e3, kWidMax);
             const double ageK = glm::smoothstep(kRingAgeMin, kRingAgeMin + kRingFadeIn, age) *
-                                (1.0 - glm::smoothstep(0.75 * kRingAgeMax, kRingAgeMax, age));
+                                (toRings ? (1.0 - shellRamp(t, e.t)) * std::exp(-age / kShellTau)
+                                         : 1.0 - glm::smoothstep(0.75 * kRingAgeMax, kRingAgeMax, age));
             const double mass = 5.6 * (double)e.dustKg + 0.02 * (double)e.nSmall;
             if (mass < 1.0 || ageK <= 0.0)
                 continue;
@@ -3214,7 +3632,10 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
                 const glm::dvec3 W = glm::normalize(glm::cross(sc.r, sc.v));
                 const glm::dvec3 S0 = glm::cross(W, R);
                 const double D = 2.0 * b.half / std::max(nP - 1, 1);
-                const double sS = std::min(kClump, b.half);
+                // (2026-11-03) at least 0.8 of the spacing, so a long band is continuous: a wrapped band's 26 clumps sat
+                // 1 660 km apart with a 400-km sigma, a string of beads around the orbit, not a ring
+                const double sS = toRings ? std::max(std::min(kClump, b.half), std::min(0.8 * D, b.half))
+                                          : std::min(kClump, b.half);
                 const double light = b.amp * cutK * kRingGain / (double)nP;
                 const double arcDeg = 360.0 * std::min(1.0, b.half / (glm::pi<double>() * rm));
                 kRingArcDegMax = std::max(kRingArcDegMax, arcDeg);
@@ -3256,6 +3677,9 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
             kRingPieces = n - nTube;
         }
     }
+    // The rings: every breakup's dust from ~12 h to 30 days old, merged by plane (kesslerDustRings).
+    if (kesslerDustRingsOn)
+        kesslerDustRings(out, n, kDustMax, t, toSky, pixelAngle);
 }
 
 
@@ -4441,6 +4865,32 @@ nlohmann::json SatelliteSim::kesslerStateJsonImpl(bool full) const
             }
             j["dust"]["rings"]["bands"] = rb;
         }
+    }
+    // The dust RINGS (2026-11-03, issue_20261030_175418 round 2; kesslerDustRings): plane bins live, drawn, their
+    // clumps and light, the CPU ms this frame, the cache's work, and each drawn ring.
+    {
+        nlohmann::json sh = {{"bins", kShellBins},
+                             {"drawn", kShellDrawn},
+                             {"pieces", kShellPieces},
+                             {"light", kShellLight},
+                             {"cpu_ms", kShellMs},
+                             {"cache_bins", kDustRings.tot.size()},
+                             {"cache_ramp_hours", kDustRings.ramp.size()},
+                             {"cache_hours", kDustRings.hHi - kDustRings.hLo + 1},
+                             {"hours_scanned", kDustRings.hoursScanned},
+                             {"events_scanned", kDustRings.eventsScanned},
+                             {"rebuilds", kDustRings.rebuilds},
+                             {"ranks", kDustRings.ranks},
+                             {"ring_gain", kesslerDustRingGain},
+                             {"cache_bytes", kDustRings.tot.size() * (sizeof(DustRingAcc) + 32)}};
+        nlohmann::json rr = nlohmann::json::array();
+        for (const auto &a : kShellDbg)
+            rr.push_back({{"a_km", a[0]}, {"incl_deg", a[1]}, {"light", a[2]}, {"sigma_radial_km", a[3]},
+                          {"sigma_cross_km", a[4]}, {"clumps", a[5]}, {"mean_age_d", a[6]}, {"events", a[7]},
+                          {"cut", a[8]}, {"pri", a[9]}});
+        sh["rings"] = rr;
+        sh["top_normal_eci"] = {gShellTopN.x, gShellTopN.y, gShellTopN.z};
+        j["dust"]["shells"] = sh;
     }
     j["reentries_now"] = kReentriesNow;
     j["small_reentries"] = {{"now", kSmallReNow}, {"this_hour", kSmallReHourCount}, {"streams", kSmallStreamCount},
