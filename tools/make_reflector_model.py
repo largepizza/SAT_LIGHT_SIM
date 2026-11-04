@@ -49,7 +49,7 @@ def quadrant_outline(side=18.0, outer_sag=0.9, boom_sag=0.25, gap=0.15):
     out = []
     out += edge(p1, p2, (0.0, 1.0), boom_sag)        # along the +X boom, bowing away from it
     out += edge(p2, p3, (-r2, -r2), outer_sag)       # the scalloped outer edge, bowing toward the centre
-    out += edge(p3, p4, (1.0, 0.0), boom_sag)        # back in along the +Y boom
+    out += edge(p3, p4, (1.0, 0.0), boom_sag, True)  # back in along the +Y boom, to p4
     return out                                       # the hub edge p4 -> p1 closes it (straight)
 
 

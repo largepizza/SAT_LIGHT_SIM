@@ -858,11 +858,11 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   "polygon"`, below) on two crossed telescoping booms along the diagonals (body X and Y, 26 m tip to tip, three
   sections of 60 / 48 / 36 mm radius each side, 0.12 m behind the film), a 0.4 m deployer hub and a 2.44 m bus behind
   it. Each quadrant has a scalloped outer edge (0.9 m sag) and boom edges (0.25 m), 0.15 m clear of the booms and cut
-  back to 1.3 m from the centre: 253.6 m2 of film (the 55 m plate it replaced: 3025 m2, so the satellite and its beams
-  are 2.69 mag fainter). **The quadrants are coplanar by default** (`--cant-deg 0`): the scallops are the edge-tension
+  back to 1.3 m from the centre: 256.4 m2 of film (the 55 m plate it replaced: 3025 m2, so the satellite and its beams
+  are 2.68 mag fainter). **The quadrants are coplanar by default** (`--cant-deg 0`): the scallops are the edge-tension
   design that keeps each quadrant flat, and the analysis below shows any cant past ~0.13 deg darkens the aim point.
   Coplanar quadrants share one exact lobe (identical group / material / normal), so the photometry is a single
-  253.6 m2 mirror lobe; the beam code's `crossSectionM2` is that lobe's area. Generator knobs: `--side`,
+  256.4 m2 mirror lobe; the beam code's `crossSectionM2` is that lobe's area. Generator knobs: `--side`,
   `--cant-deg` (each quadrant turned about its hub edge, outer corners toward +Z: a shallow concave dish whose four
   normals lean toward the centre axis), `--outer-sag`, `--boom-sag`, `--gap`.
   **How the quad sail shapes the beam** (`tools/reflector_quad_analysis.py`: each film patch reflects the
@@ -871,27 +871,27 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   | case | film m2 | peak mW/m2 (lx, x full Moon) | mag at peak | mag at the aim point | half-peak diameter |
   |---|---|---|---|---|---|
   | flat 18 m square | 324 | 28.4 (2.65 lx, 10.6x) | -15.04 | -15.04 | 4.2 km |
-  | 4 coplanar quadrants (the model) | 253.6 | 22.3 (2.08 lx, 8.3x) | -14.77 | -14.77 | 4.2 km |
-  | cant 0.10 deg | 253.6 | 15.9 | -14.41 | -14.41 | 4.3 km |
-  | cant 0.25 deg | 253.6 | 5.6 | -13.27 | -9.14 | 4 spots |
-  | cant 0.50 deg | 253.6 | 5.6 | -13.27 | -5.67 | 4 spots |
-  | cant 1.00 deg | 253.6 | 5.6 | -13.27 | -2.56 | 4 spots |
-  | billow 2 cm (each quadrant a concave paraboloid) | 253.6 | 4.8 | -13.12 | -13.12 | 8.3 km |
-  | billow 5 cm | 253.6 | 0.84 | -11.22 | -11.21 | 21.7 km |
+  | 4 coplanar quadrants (the model) | 256.4 | 22.5 (2.10 lx, 8.4x) | -14.79 | -14.79 | 4.2 km |
+  | cant 0.10 deg | 256.4 | 16.1 | -14.42 | -14.42 | 4.3 km |
+  | cant 0.25 deg | 256.4 | 5.6 | -13.28 | -9.16 | 4 spots |
+  | cant 0.50 deg | 256.4 | 5.6 | -13.28 | -5.69 | 4 spots |
+  | cant 1.00 deg | 256.4 | 5.6 | -13.28 | -2.57 | 4 spots |
+  | billow 2 cm (each quadrant a concave paraboloid) | 256.4 | 5.0 | -13.15 | -13.15 | 8.1 km |
+  | billow 5 cm | 256.4 | 0.85 | -11.23 | -11.23 | 21.4 km |
 
   The Sun's disc sets the spot: 9.3 mrad, 4.65 km across at 500 km; diffraction (lambda / D = 3e-8 rad, 1.5 cm) and
-  the outline (18 m) are invisible in it, so the scalloped edges matter only through the area they remove (-0.27 mag
+  the outline (18 m) are invisible in it, so the scalloped edges matter only through the area they remove (-0.25 mag
   against a full square). Coplanar quadrants are therefore exactly one mirror of their summed area: one lobe, one
-  spot, the same pass curve 0.27 mag fainter than a full 18 m square. A cant of theta turns each quadrant's beam by
+  spot, the same pass curve 0.25 mag fainter than a full 18 m square. A cant of theta turns each quadrant's beam by
   2 theta, so the spot splits into four sub-spots 2 theta R from the aim point along the diagonals (quadrant
   bisectors), each with a quarter of the light: their limb-darkened discs still overlap the aim point below
-  2 theta = 4.65 mrad (theta < 0.13 deg; at 0.10 deg the aim point loses 0.36 mag and the spot widens to 4.3 km),
-  separate from each other past theta = 0.19 deg, and leave the aim point dark beyond (0.25 deg: -9.1 at the aim
+  2 theta = 4.65 mrad (theta < 0.13 deg; at 0.10 deg the aim point loses 0.37 mag and the spot widens to 4.3 km),
+  separate from each other past theta = 0.19 deg, and leave the aim point dark beyond (0.25 deg: -9.2 at the aim
   point, four -13.3 spots 4.4 km out; 0.5 deg: 8.7 km; 1 deg: 17.5 km). The sub-spot offset and the spot size both
   scale with range, so the split (and the aim point's loss) is the same at every elevation of a pass; only
   A cos(i) / R^2 changes: a pass over the aim point (Sun 15 deg down) runs -14.5 overhead to -12.5 at 15 deg
   elevation for the coplanar sail. Billow is worse than cant for the same film slope: a 2 cm sag over a quadrant
-  spreads slopes over ~7 mrad and the light over an 8 km spot (-1.65 mag at the centre). **The app cannot show a
+  spreads slopes over ~7 mrad and the light over an 8 km spot (-1.64 mag at the centre). **The app cannot show a
   cant today**: the exact bake makes four quadrant lobes, but they are the closest normals in the model, so the 48-lobe
   budget merges them first into ONE lobe with the spread folded into alpha (0.5 deg: alpha 0.0087 — one broadened
   lobe, ~3 mag fainter at the centre, where the physics gives a dark centre and four -13.3 spots), and the beam's
