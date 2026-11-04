@@ -1066,9 +1066,42 @@ uint32_t World::addRecord(const PoolRec &r)
     return slot;
 }
 
+// (issue_20261104_015233 "Odd mirrored debris?") A piece whose perigee is at or below the decay floor (120 km) is
+// BALLISTIC: it falls in on its own arc (a head-on pair collision's slower pieces keep only a share of their parent's
+// velocity relative to the near-zero centre of mass: perigees thousands of km inside the Earth). It re-enters where
+// that arc reaches 100 km (where the fireball's glow starts, SatelliteSimKessler.cpp kFbH0), minutes later and
+// hundreds of km downrange, each piece at its own place. Until then decayTime returned 0 for these, so every such
+// piece died AT the breakup second and its fireball was drawn at 100 km straight under the breakup point along its
+// own heading: a head-on collision's two sides burst out of one point in opposite directions (the report's "two
+// mirrored fireballs").
+static double ballisticEntryDelay(const PoolRec &r, double t)
+{
+    const double a = r.a, e = r.e;
+    const double rp = a * (1.0 - e);
+    const double rT = std::max(kRMean + 100000.0, rp); // a perigee between 100 and 120 km: at perigee
+    const double n = r.n > 0.0f ? (double)r.n : std::sqrt(kGM / (a * a * a));
+    // Its radius now (M = M0 + n t, recordFromState's convention).
+    const double Mnow = wrap2Pi((double)r.M0 + n * t);
+    double E = Mnow + e * std::sin(Mnow);
+    for (int k = 0; k < 30; ++k)
+        E -= (E - e * std::sin(E) - Mnow) / std::max(1.0 - e * std::cos(E), 1e-6);
+    if (a * (1.0 - e * std::cos(E)) <= rT + 1.0 || e < 1e-9)
+        return 0.0;
+    // The descending crossing of rT (true anomaly in (pi, 2 pi)), then its mean anomaly.
+    const double cosNu = std::clamp((a * (1.0 - e * e) / rT - 1.0) / e, -1.0, 1.0);
+    const double nu = kTwoPi - std::acos(cosNu);
+    const double Ei = 2.0 * std::atan2(std::sqrt(1.0 - e) * std::sin(0.5 * nu), std::sqrt(1.0 + e) * std::cos(0.5 * nu));
+    const double Mi = wrap2Pi(Ei - e * std::sin(Ei));
+    return wrap2Pi(Mi - Mnow) / n;
+}
+
 double World::deathTime(const PoolRec &r, double t) const
 {
-    if (r.e >= 0.99 || r.a <= 0.0)
+    if (r.a <= 0.0 || r.e >= 1.0)
+        return t;
+    if (r.a * (1.0 - r.e) <= kRMean + 120000.0)
+        return t + ballisticEntryDelay(r, t);
+    if (r.e >= 0.99)
         return t;
     return t + lifetime(t, r.a, r.e, r.cdAm);
 }

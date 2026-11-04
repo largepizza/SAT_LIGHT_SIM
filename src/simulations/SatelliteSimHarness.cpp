@@ -3073,12 +3073,16 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                     o["parent_b_km_at_t"] = glm::length(P - B) / 1000.0;
                 }
                 const glm::dvec3 Dn = two(e, tNow);
-                std::vector<double> dT, dN, dDust;
+                std::vector<double> dT, dN, dDust, ballDeath;
                 int found = 0;
                 for (size_t j = 0; j < kPool.size(); ++j)
                 {
                     if (kPool[j].event != ev) continue;
                     ++found;
+                    // (2026-11-04, issue_20261104_015233) Ballistic pieces (perigee <= 120 km): s from the event to
+                    // their death (the re-entry where their arc reaches 100 km), from their birth second.
+                    if (kPool[j].a * (1.0 - kPool[j].e) - 6371000.0 <= 120000.0 && kPool[j].deathSec != kessler::kNever)
+                        ballDeath.push_back((double)kPool[j].deathSec - (double)kPool[j].bornSec);
                     const SatOrbitElems pe = kessler::poolOrbitElems(kPool[j], (uint32_t)j);
                     dT.push_back(glm::length(satOrbitStateAt(pe, e.t).posEci - B) / 1000.0);
                     const glm::dvec3 Pn = satOrbitStateAt(pe, tNow).posEci;
@@ -3092,6 +3096,9 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 };
                 auto mn = [](const std::vector<double> &v) { return v.empty() ? -1.0 : *std::min_element(v.begin(), v.end()); };
                 o["pieces_found"] = found;
+                std::sort(ballDeath.begin(), ballDeath.end());
+                o["ballistic_pieces"] = (int)ballDeath.size();
+                o["ballistic_death_after_s"] = ballDeath;
                 o["piece_km_at_t_median"] = med(dT);
                 o["piece_km_at_t_min"] = mn(dT);
                 o["piece_vs_dust_now_km_median"] = med(dN);

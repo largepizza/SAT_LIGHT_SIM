@@ -507,6 +507,16 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   25 s before breakup, 1x, from 120 km
   beside the track and 80 km back. State: `reentries_now`, `fireball_heads`, `fireball_trails`,
   `fireballs_az_el_mag_km`, `reentries_next_24h`, `piece_lifetimes`.
+  **Ballistic pieces re-enter on their own arc** (2026-11-04, issue_20261104_015233 "Odd mirrored debris?",
+  kCacheVersion 21): a record whose perigee is at or below the decay floor (120 km) dies, and its fireball starts,
+  where its Kepler arc next crosses 100 km descending (`World::deathTime` -> `ballisticEntryDelay`: closed form,
+  matches a numerical integration to 0.1 s), not at the breakup second (`decayTime` returns 0 for such orbits). A
+  head-on pair collision leaves dozens of these (the pieces keep only a share of their parent's velocity relative to a
+  near-zero centre of mass: perigees thousands of km inside the Earth). Until then all of them died at the breakup
+  and their fireballs were drawn at 100 km straight under it, each along its own heading: the two sides burst out of
+  one point in opposite directions (measured, ev 55997 at 980 km, day 7.9: 58 re-entries at the breakup second, heads
+  6-8 km apart; after, 6 unrelated ones). From 980 km a piece with 0.5 / 2 / 4 / 6.9 km/s of horizontal speed now enters
+  8.0 / 8.3 / 9.5 / 25 min later, 230 / 940 / 2160 / 9900 km downrange, and stays visible on its way down.
 - **Small-fragment re-entries** (round 4, 2026-10-16). Each breakup's small statistical orbits that re-enter inside
   the horizon become at most 4 `kessler::SmallStream`s (merged by decay time; 24 bytes: decay and breakup seconds, a
   window of 15% of the lifetime + the merged spread, 1 h .. 5 days, plane, J2 RAAN rate, count, log mass), published
