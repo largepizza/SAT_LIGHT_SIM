@@ -304,6 +304,12 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   off above ~2.4 km/s, so every step through a storm's layers paid for the full cloud), and a storm's smooth
   altostratus sheet is shaded at half the samples. Between a storm's decks at 4.8 km: about 22 -> 17 ms of cloud
   standing still and about 50 -> 28 ms flying at 5 km/s (RTX 3070 Ti, 1080p, High).
+- **Storms are made of the same cloud as the cumulus.** Thunderstorm towers, their anvil heads and the anvil
+  plate (and a hurricane's eyewall and dense overcast) are now shaped by the cumulus layer's own billowing lobes and
+  erosion instead of a separate noise of their own, and an anvil's thin outer veil is drawn as ice at half the
+  samples. Inside an anvil at 11 km the cloud time drops by about 40% (49 -> 29 ms standing still, 58 -> 37 ms
+  flying; RTX 3070 Ti, 1080p, High); storms seen from above cost about the same as before. Setting (no UI):
+  `clouds_v2.storm_unified` (1; 0 = the previous storm drawing).
 - **Clouds skip absent layers.** The empty-space map also records which cloud layers (storm towers, low, mid,
   high, anvils) each cell can hold, and the cloud march computes only those there: about 10% less cloud time in
   storms and over cumulus (storm at 4.8 km 14.2 -> 12.6 ms, flying through it 21.4 -> 19.1, cumulus 9.3 -> 8.4;

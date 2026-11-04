@@ -532,6 +532,13 @@ depth pass, so its variants interleave like the sky's and the clouds'.
   -> 6.8 and the report's two fast trails +0.4 / +0.1 (code size; gating the lookups by altitude changed nothing).
   128 registers, images at the floor. Estimated -2..-4 at shot 1: the towers' strength keeps their walk on in an As
   sheet within their reach. Next: the Sun-aligned light volume (proposal 2).
+- **Storms through the cumulus field** (2026-11-04, issue 20261104_111947 "Anvil performance", clouds.md "Storms through
+  the cumulus field"): at 11 km inside an anvil band 36 of ~38 shaded samples a ray were the shield's translucent haze,
+  each a fine step and a full field read (shields knocked out: 74 -> 31 ms of cloud march). The shield's plate (presence >
+  0.5) and the towers are now the low field's margin, one set of fetches; the haze beyond is thin ice at coarse steps.
+  Cloud march (RTX 3070 Ti, 1920x1009, user settings, interleaved x3): 49.0 -> 28.9 ms still, 57.8 -> 36.7 on the report's
+  trail; a plate seen from 19 km above +3 ms (a dense billowed lid where the old one was haze). The switch is a
+  specialization constant: behind a uniform both paths cost ~0.6 ms of code size in every view.
 - **Dead ends:** skipping the sky pass's terrain march where the four cloud texels are opaque (-0.1..-0.3 ms, changes the
   depth the sky TAA reprojects with); the history copies (~0.1 ms); FIFO quantisation as the cause of "30 / 20 / 15 FPS"
   (the reports' frame times are not quantised: 27 ms median at a 28 ms GPU).

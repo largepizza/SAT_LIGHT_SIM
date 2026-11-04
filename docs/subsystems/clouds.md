@@ -1093,6 +1093,45 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   > occupancy clipmap > "Low in the shell". Shot 1, 1920x1009, interleaved: still 22.2 -> 16.5 ms; flying east at 4.9 km/s
   ~50 -> ~28 ms (old shader 49.8, new shader 38.9, + the clipmap kept on 27.7-29.0); the reporter's trail 1 33.2 -> ~28;
   shot 2 still 8.5 -> 8.5; cumulus from 3 km 11.3 -> 11.0 (non-storm, no regression); 128 registers.
+- **Storms through the cumulus field (2026-11-04, issue 20261104_111947 "Anvil performance"; `clouds_v2.storm_unified` 1,
+  no UI, `storm_unified_scale_m` 4000 / `_ramp_m` 250 / `_lobes` 1; worktree storm-rework, `harness_runs/att/` and `look/`;
+  design + tables: `qa/waves/20261104/resolutions/storm-rework.md`).** A storm object's towers and anvil shield are a
+  MARGIN the low field carves, not density functions with noise of their own. `cv2StormGeom` walks the point's tower bin
+  (cv2ColumnSigma's radius profile: base, waist, flared head under the lid, overshoot dome, lean, head drift, turrets;
+  plus near / storm / prox / the rain core, unchanged) and the strongest shield (`cv2ShieldAtR`: a lens under the lid,
+  its outline where the shield's unfrayed presence passes 0.5, thickness "Anvil thickness" x (presence - 0.5) / 0.5 +
+  "Anvil hang" under a head + 150 m) for a margin in metres, no fetches. `cv2FieldLow` = `cv2LowA` (the cumulus' carve
+  scalars, struct CV2Carve, computed exactly as before) + the carve: the storm margin / scale joins the cumulus m0 as a
+  smooth max (0.2 e units) and every carve scalar blends toward the storm's where it dominates (Cb type density x "Cb
+  columns", or the shield's 0.01 x "Anvils" x 0.35..1 toward its edge; Cb erosion x "Storm erosion"; storm-scale lobes on
+  (bigL = deep = 1) at column2.w x the base radius x 0.35 per noise unit ~2 km, 40% of it on the plate's lid; the density
+  ramp over 250 m or 1.5 footprints), then ONE shape + storm-shape fetch and one storm detail fetch (the cumulus-scale
+  detail is skipped at deep ~ 1) carve cumulus, towers, heads and plate alike: the billow lobes and billow erosion are
+  the storms' too. The shield's VEIL beyond the plate (presence below 0.45-0.6, a cyclone's outflow cirrus) is still
+  `cv2AnvilSigmaP`'s (`gCv2AnvVeil`; it returns before its walk and fetches inside the plate, `gCv2PlateA`, and reuses
+  the geometry's shield walk, `gCv2Sh`), added to the thin-ice share: coarse steps, no light march. The storm lobes'
+  pre-fetch bound is 1.4 lobeS (the cumulus' 3.35 lobeK formula kept every point within ~6 km of a storm surface
+  fetching: coarse view reads x1.8 looking down on a plate). The switch is the march's SPECIALIZATION CONSTANT 4
+  (`kCv2StormSpec`, every pipeline gets the entry; a change rebuilds the cloud pipelines with the last `shaders reload`
+  overrides): both paths behind the uniform cost ~0.6 ms of code size in views without storms (cumulus from 3 km 9.5 ->
+  10.1 ms; binary 401 KB perf-frames, 410 KB spec off, 432 KB spec on, 478 KB both). Other shaders (the clipmap bake, the
+  Sun volume, lightning, radar) read the uniform `cv2.stormU.x`; the clipmap re-bakes when any storm_unified key changes.
+  ATTRIBUTION at the report (11.03 km, inside the anvil band, sunset; CV2_EVAL_COUNT, a layer bit per kept sample): ~38
+  kept samples a ray, 36.3 of them the old shield's translucent haze (density x presence^2 at "Anvils" 0.16), 46.5 fine
+  field reads, 4.4 lit; towers 0.44, cumulus 0.40, tower AND cumulus 0.007 (the "double dip" of overlapping layers is
+  not the cost: the march is one walk, the layers barely overlap in content; what IS per layer is each field read
+  calling every layer's walk). Run-time knockouts (`&& cv2.gnd.w > 0.5`, 128 registers): of 74 ms, shields -42.7,
+  low -16.2, cirrus -12.3, mid -10.4, towers -7.1. MEASURED (RTX 3070 Ti, 1920x1009, the user's settings, kessler off,
+  another agent's app on the GPU; interleaved x3; cloud march ms old -> new): the report still 49.0 -> 28.9, its trail
+  moving 57.8 -> 36.7, above the plate at 14.5 km 28.9 -> 26.1, a supercell from 200 km 37.2 -> 34.6, a supercell's
+  plate from 19 km 23.6 -> 26.7 (dense billowed lid vs a smooth haze: the one view that costs more), hurricane from orbit
+  31.9 -> 31.9, the 020257 storm 13.6 -> 13.0; 128 registers. Rejected on the way: the plate's outline at presence 0.35
+  (the eye at 11 km stood in a plate of fog, lit samples 4.8 -> 22 a ray, only -10%).
+  LOOK (sheets `qa/waves/20261104/evidence/storm-rework/`): the towers' heads and walls are billowed cumulus, the same
+  material as the field round them (their own flowing storm lobes are gone); the anvil plate is a cloud with a billowed
+  edge and underside and a smoother lid, the thin veil beyond it reads as ice (whiter than the old lit haze, e.g. the
+  020257 sky); from orbit the plates are smoother and the overshoot domes' dark dots weaker. Not done: deleting
+  cv2ColumnSigma and the shield's plate code (kept for the switch until the user judges the look).
 - **The unified volumetric composite (2026-10-26, branch perf-frames; the user: the plumes, smoke and tornadoes "feel entirely
   distinct in quality" and clip against rain, dust, smoke and clouds).** The dust list's Gaussians (launch plumes, flames,
   wildfire smoke, tornado funnels, haboob far field, Kessler dust and fireball trails) are still composited in cloud_march.comp

@@ -34,6 +34,10 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   storm. (3) The cube re-bakes a face at most 45 s behind with storms stamped, and every face after a jump of > 15 min.
   The rain core under a dominant tower is its body (it was an ellipse 2.5x longer downwind, under the anvil, where
   there is no cloud below). Cost: within noise at 1 h/s (bake), 128 registers.
+  **Drawn through the cumulus field (2026-11-04, `clouds_v2.storm_unified` 1; clouds.md "Storms through the cumulus
+  field"):** the towers and the shield's plate are a margin `cv2StormGeom` hands the low layer, carved by its billow lobes
+  and erosion; everything below (catalog, strengths, heightCap, spread, shield age, rain core, lightning, the weather
+  stamp) feeds that geometry unchanged. The shield's thin outer veil stays cv2AnvilSigmaP's, as thin ice.
   **Anvil SHIELDS (2026-10-23, issues 20261023_002905 / _001522):** every storm has one (`wx::Shield`, `Catalog::shieldsAt`;
   `CV2Shield` 64 B + its own index of 128-per-face bins (64 until 2026-10-27; the count is `cv2ShieldHead.y`; the bake's
   envelope copy keeps 64), `cv2ShieldAt`, between the tower list and the env block of
