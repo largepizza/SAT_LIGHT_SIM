@@ -50,7 +50,8 @@ const ROW_SCHEMA = {
 const results = await parallel(batches.map((batch) => async () => {
   const r = await agent(
     `You are triaging reported issues in a Vulkan satellite simulator at C:\\Code\\Shader_Fun.\n` +
-    `Read AGENTS.md first (it is short). Do NOT read CLAUDE.md whole — grep it for the section you need.\n\n` +
+    `Read AGENTS.md first (it is short). The subsystem notes are docs/subsystems/ (map in AGENTS.md §4): never read one whole — ` +
+    `\`python tools/outline.py <file> -g <topic>\` gives line ranges; read those.\n\n` +
     `For each issue id below run:\n  python tools/harness/reports.py --dir ${reportsDir} brief <id>\n` +
     `The brief holds the reporter's text, each shot's image path, any pin/area, the capture state and the\n` +
     `replay line. Look at the image of any shot with a pin or an area (read_image); a crop image comes before\n` +

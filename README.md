@@ -251,8 +251,8 @@ wiki/ + mkdocs.yml                ← the project wiki (using, modding, simulati
 ```
 
 AI Code was used in this project.
-See the wiki (`wiki/`) and `CLAUDE.md` for the full architecture writeup (frame loop order, GPU buffer layouts, subsystem
-design notes) and `THIRD_PARTY_NOTICES.txt` for third-party licenses.
+See the wiki (`wiki/`) and `docs/subsystems/` (index in `AGENTS.md`) for the full architecture writeup (frame loop
+order, GPU buffer layouts, subsystem design notes) and `THIRD_PARTY_NOTICES.txt` for third-party licenses.
 
 ---
 
