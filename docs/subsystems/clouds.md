@@ -658,6 +658,47 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     0.063 / 0.065%. No validation errors. Not done: the lightning pass's engine-light ground term gathers the half-res
     depth with the cloud grid's weights. A user settings.json saved with `full_res` 0 (the key existed off since
     2026-10-21) keeps it off.
+  - **Amortization: what the full-res grid already does, and larger blocks** (2026-11-04, branch qa/20261104/cloud-upscale,
+    `harness_runs/cu/`; the user's reference: EVE's volumetrics, which march 1 pixel in 9-16+ a frame and reproject).
+    With `full_res` 1 (the user's) the march ALREADY runs 1 ray per 2x2 block a frame below `full_rate_above_km`: the keys
+    `adaptive_rate` / `sparse_when_still` / `half_rate_moving` act only on the half-res grid (and above 30 km), so "full
+    rate" in the user's settings is the sparse 1/4. **`sparse_block`** (2, 3 or 4; default 2; no slider) sets the block on
+    the full-res grid's sparse march (`cv2SparseBlockNow`, `cv2.gnd.z`): one ray per K x K block, the offsets over K*K
+    frames (3x3 a Latin-square order, 4x4 Bayer's), the per-visit jitter steps per K*K frames; the resolve's quarter-grid
+    maths take K (`b = c / K`, `isNew`, the bilinear / tent positions), its shared ring (laid out for 2x2) gives way to the
+    per-pixel loop, and smooth tiles stay 2x2-only (off for K > 2). The opacity profile (`cv2Profile`, per 2x2 block) is
+    written only by the blocks marched this frame: older entries persist up to K*K frames.
+    **Cost** (RTX 3070 Ti, render 0.8 of 1920x1009, interleaved x2 in one app, `harness_runs/cu/b7.satcmd`; `march_a` /
+    the cloud bucket, ms): anvil issue 20261104_111947 still 2x2 43 / 49, 3x3 29 / 36, 4x4 21-24 / 28-31; walking (the
+    player's 1 x AGL / s = 9 km/s at 11 km, `path play fps=60`, bucket) 121 / 68 / 47. Storm 20261104_020257 shot 1 still
+    10.7 / 16.5, 9.8 / 16.2, 6.5 / 12.6; walking 26 / 16.5 / 13.5. Cumulus (profile_log_1004j 37, noisier run) 3.0 / 5.3,
+    2.0 / 4.4, 1.6 / 4.0. The resolve costs +0.5 ms at 3x3 / 4x4 (per-pixel ring). The half-res grid at 1/16 of the render
+    pixels (`full_res` 0, sparse) is 21 / 26 still at the anvil: there the march's cost is proportional to its rays.
+    **Moving, the anvil's march costs 2.5x its still cost** at 2x2: the occupancy clipmap's motion guard switches the
+    skip off (`cdc_motion_guard`, perf.md "Moving costs the clipmap"; guard 0: ~75 ms instead of 120-180).
+    **Quality in motion** (tstab-style, shared settled references, `harness_runs/cu/gents.py` + `scorets.py`: mean |diff|
+    vs settled; `edge` = on the reference's strongest 5% gradients): every full-res pixel marched every frame (`full_res_moving_mode`
+    2) is within ~5% of the 2x2 rotation (anvil walk 2.93 vs 3.06, storm walk 1.26 vs 1.36): **the moving image's grain and
+    stair-stepped edges are not the amortization** but the resolve's fast-motion path (past 6-24 px of parallax a frame it
+    takes 0.7 of a tent of this frame's single rays) and, at the anvil, the Sun shadow volume's bake following the eye
+    (dark diagonal bands that the settled frame does not have). 3x3 vs 2x2: anvil walk 3.20 / 3.07, pan90 2.25 / 2.08;
+    storm walk 1.27-1.51 / 1.36-1.53, pan90 0.84 / 0.85; cumulus walk 1.05 / 1.17, pan90 0.68 / 0.61. 4x4: anvil walk
+    3.35-3.52, pan90 2.37-2.42; storm walk 1.47-1.74, pan90 0.71-0.95; edges +25-50% in pans (storm 1.42 -> 2.13).
+    Run-to-run spread of one variant ~0.1-0.2. Still views converge to the same image (diff 0.3-0.4 levels).
+    **At the user's frame rate it is different** (the same walks played at 10 fps, the anvil report's 10 FPS: six times the
+    motion a frame): every pixel marched vs 2x2: storm walk 1.37 vs 1.76 with the high-pass error (grain, 2-px blocks,
+    stair-steps) 0.41 vs 0.92; anvil walk 2.54 vs 2.76, edges 8.2 vs 9.0; 4x4 1.88 / 3.44. There the history is lost every
+    frame and the resolve draws the sparse grid's tent: the "pixelation on cloud edges while moving" is the 2x2
+    amortization at a low frame rate, and the cure is frame rate (or every pixel in motion, ~4x the march).
+    **Not adopted** (A/B variants, `harness_runs/cu/v/*.txt` for `shader_variant.py resolve`): a GUIDED estimate for the
+    pixels without a ray (the four samples weighted by their likeness to the clamped history): storm pan edges 1.42 ->
+    1.06 but anvil pan 3.62 -> 4.21 (it made the history sticky); scaling those pixels' weight by 4 / K^2: slightly worse
+    in walks. **Kept as an A/B, default OFF** (`history_depth_test`, `cv2.gnd.w`): the depth-consistent history (resolve
+    comment "DEPTH-CONSISTENT HISTORY"; the resolved distance rides in the age image's y, RG32F, always written): storm
+    walk 4x4 1.74 -> 1.54-1.63, but 2x2 1.36 -> 1.57 and anvil neutral — taking 0.3 instead of 0.7 of the new frame in
+    fast motion trades grain for lag, and the settled-reference error counts the lag. **No block size reached parity
+    with 2x2 in motion, so `sparse_block` stays 2 (the user's settings unchanged)**; 3 is the closest (~5-10% more error
+    for ~20% less march at the anvil).
   - **Defaults (2026-10-22, the user: "continue forward"):** the occupancy clipmap (`cdc_skip` 2) and the god-ray froxels
     (`godray_froxels` 1) are ON; S2, Mie and cap lobes stay off. Default-settings totals at 1920x1009 (`harness_runs/s0/defs`,
     no validation errors): 58 km 26.3 ms (old defaults 34.0), anvils 29.0 (24.4), cumulus 32.0 (27.2), Pacific 27.7 (25.4):

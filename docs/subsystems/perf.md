@@ -525,6 +525,14 @@ depth pass, so its variants interleave like the sky's and the clouds'.
   at 4.85 km the clipmap was off the whole way (cloud march ~50 ms with the old shader, the reporter's 47.5); kept on:
   ~38 -> ~28 ms. The bake brackets its footprint over the level's ring; refused cells are marked unknown. At 12 km over
   storm tops (the trail above) keeping it on changed 12-19% of the pixels (mostly S2 light, 4-5% without): not there.
+  **At the anvil (issue 20261104_111947, 11 km, the player's walk = 9 km/s) the march costs 2-2.5x its still cost**
+  (cloud bucket ~49 ms still, ~121 ms walking, `harness_runs/cu`): the cause the user reads as "anvils halve the
+  frame rate when I move". Fewer rays (clouds.md "Amortization", `sparse_block` 3 / 4) take it to ~68 / ~47 ms. Same walk, 2x2, interleaved x2: `cdc_motion_guard` 1 cloud
+  bucket 179 / 120 ms, 0 76 / 75 ms (its image cost there not measured; at 12 km over storm tops it lost cloud masses).
+- **Rays per frame** (2026-11-04, clouds.md "Amortization"): the full-res grid marches 1 pixel in 4 a frame; at the
+  anvil the march is proportional to its rays (`sparse_block` 2 / 3 / 4: 43 / 29 / 21-24 ms still, bucket 121 / 68 / 47
+  walking), storm 10.7 / 9.8 / 6.5 (walking 26 / 16.5 / 13.5), cumulus 3.0 / 2.0 / 1.6. 3 / 4 cost ~5-10% / 15-25% more
+  motion error (tstab-style vs settled) at 60 fps: not adopted as the default.
 - **Layer mask in the occupancy clipmap** (2026-11-04, clouds.md occupancy clipmap > "Layer mask"; proposal 1 of the
   storm-perf write-up): `cv2Field` calls only the layer functions the point's clipmap cell can need. Cloud march
   (RTX 3070 Ti, 1600x900, storm report's settings, perf-frames 4f97691 -> this, interleaved x3): storm shot 1 still 14.2

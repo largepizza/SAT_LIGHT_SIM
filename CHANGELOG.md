@@ -312,6 +312,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   samples. Inside an anvil at 11 km the cloud time drops by about 40% (49 -> 29 ms standing still, 58 -> 37 ms
   flying; RTX 3070 Ti, 1080p, High); storms seen from above cost about the same as before. Setting (no UI):
   `clouds_v2.storm_unified` (1; 0 = the previous storm drawing).
+- **Cloud ray budget.** The full-resolution clouds march one pixel in four each frame and rebuild the rest from
+  history; a settings key (`clouds_v2.sparse_block`: 2, the default, or 3 / 4 for one pixel in 9 / 16) trades
+  sharpness in motion for speed in dense storms and anvils (an anvil top at 11 km, flying: about 121 -> 68 ms of
+  cloud at 3, 47 at 4; standing still 49 -> 36 / 29).
 - **Clouds skip absent layers.** The empty-space map also records which cloud layers (storm towers, low, mid,
   high, anvils) each cell can hold, and the cloud march computes only those there: about 10% less cloud time in
   storms and over cumulus (storm at 4.8 km 14.2 -> 12.6 ms, flying through it 21.4 -> 19.1, cumulus 9.3 -> 8.4;

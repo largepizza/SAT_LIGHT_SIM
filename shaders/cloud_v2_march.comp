@@ -551,7 +551,10 @@ void main()
     bool  full     = rate == 1 || passB;
     bool  halfR    = rate == 2 && !passB;
     ivec2 halfSize = ivec2(cv2.grid.xy);   // the cloud grid (S9: may be twice the scene depth's)
-    ivec2 qSize    = full ? halfSize : halfR ? ivec2((halfSize.x + 1) / 2, halfSize.y) : (halfSize + 1) / 2;
+    // The sparse grid's block (2026-11-04, cv2.gnd.z): one ray per K x K block a frame (K 2, 3 or 4; the host sends 2
+    // unless the full-res grid runs sparse), the K*K offsets rotating per frame (cv2.frame.zw).
+    int   kB       = (full || halfR) ? 2 : max(int(cv2.gnd.z + 0.5), 2);
+    ivec2 qSize    = full ? halfSize : halfR ? ivec2((halfSize.x + 1) / 2, halfSize.y) : (halfSize + kB - 1) / kB;
     ivec2 q        = ivec2(gl_GlobalInvocationID.xy);
     ivec2 tileO    = ivec2(0);
     if (passB) {
@@ -573,7 +576,7 @@ void main()
     }
     ivec2 pix      = full ? min(q, halfSize - 1)
                    : halfR ? min(ivec2(q.x * 2 + ((q.y + int(cv2.frame.x)) & 1), q.y), halfSize - 1)
-                           : min(q * 2 + ivec2(cv2.frame.zw), halfSize - 1);
+                           : min(q * kB + ivec2(cv2.frame.zw), halfSize - 1);
     ivec2 outPix   = halfR ? pix : q;
 
     float tanHalfFov = tan(pc.fovYRad * 0.5);
@@ -594,7 +597,7 @@ void main()
     // Beam-light tile cull. This workgroup owns half-res pixels [wg*32, wg*32+32) (16 at full
     // rate); its cone is computed from those corners (the cull only needs an axis and a half-angle).
     {
-        vec2 tile = vec2(gl_WorkGroupSize.xy) * (full ? vec2(1.0) : halfR ? vec2(2.0, 1.0) : vec2(2.0));
+        vec2 tile = vec2(gl_WorkGroupSize.xy) * (full ? vec2(1.0) : halfR ? vec2(2.0, 1.0) : vec2(float(kB)));
         vec2 tMin = passB ? vec2(tileO) : vec2(gl_WorkGroupID.xy) * tile, tMax = tMin + tile;
         if (passF) { tMin = vec2(0.0); tMax = vec2(halfSize); }   // (four tiles anywhere on screen: the whole view's cone)
         vec3 d00 = rayDirAt(tMin, halfSize, tanHalfFov, camToENU);
@@ -618,7 +621,7 @@ void main()
     // Fast flight (no history) keeps the centre.
     vec2  subPx = vec2(0.5);
     if (cv2.misc2.z <= 0.5) {
-        float vj = full ? cv2.frame.x : floor(cv2.frame.x * (halfR ? 0.5 : 0.25));
+        float vj = full ? cv2.frame.x : floor((cv2.frame.x + 0.25) * (halfR ? 0.5 : 1.0 / float(kB * kB)));
         vec2  h  = fract(vec2(ign(vec2(pix)), ign(vec2(pix) + vec2(47.0, 17.0))) + vj * vec2(0.8566749, 0.7338919));   // R4 with the two march jitters below
         subPx = h;
     }
@@ -718,7 +721,7 @@ void main()
     // fourth frame, and 4 x 0.618 stepped the offset by ~0.47 per visit, so each pixel of a 2x2
     // block sat on its own two clusters of offsets for hundreds of frames. Each slot kept its own
     // sampling bias, and far clouds (long steps) broke into 2x2 squares.
-    float visit  = full ? cv2.frame.x : floor(cv2.frame.x * (halfR ? 0.5 : 0.25));
+    float visit  = full ? cv2.frame.x : floor((cv2.frame.x + 0.25) * (halfR ? 0.5 : 1.0 / float(kB * kB)));
     float jitter = fract(ign(vec2(pix)) + 0.6287067 * visit);
     // Any eye motion (> 1 m a frame; > 150 m until review 7, when a slow strafe's moving history weight
     // showed IGN as a dotted honeycomb on lit tops). Fast flight: no history to average IGN's
@@ -1119,7 +1122,7 @@ void main()
             float jL;
             {
                 uint  bj = uint((pix.x + 32) & 63) + 64u * uint((pix.y + 21) & 63);
-                float vL = full ? cv2.frame.x : floor(cv2.frame.x * (halfR ? 0.5 : 0.25));
+                float vL = visit;
                 jL = fract((float((cv2BlueNoise[bj >> 2u] >> (8u * (bj & 3u))) & 0xFFu) + 0.5) / 256.0
                            + 0.5385973 * (cv2.misc2.z > 0.5 ? cv2.frame.x : vL));
             }
