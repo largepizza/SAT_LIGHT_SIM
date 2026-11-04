@@ -108,10 +108,14 @@ float shoreDemAbove(sampler2D elevTex, sampler2D specTex, vec2 uv, float r0, flo
     vec2  gm = vec2(gx / (ts.x * 2.0 * PI * cl), gy / (ts.y * PI));   // per metre east / south (common scale)
     float gl = length(gm);
     if (gl < 1e-9) return 0.0;
+    // Near the field's ridge (land between two shores) the gradient fades and flips: the shore found jumps from one
+    // side to the other. hS fades with the gradient's size (1 m/m on a clean slope, ~0 on the ridge), so it is
+    // continuous there and the plain ramp takes over on narrow spits.
+    float gn = gl * 2.0 * kShoreSdfMaxM / R_EARTH;
     vec2  sh = (gm / gl) * (-d);                                      // metres to the shore, toward the water
     vec2  su = uv + vec2(sh.x / (2.0 * PI * R_EARTH * cl), sh.y / (PI * R_EARTH));
     // Mip 0: a coarser mip averages a fjord's walls into its floor (Puyuhuapi: hS +300 m at mip 1).
-    return max(0.0, textureLod(elevTex, su, 0.0).r * kElevRange - kElevOffset - level);
+    return max(0.0, textureLod(elevTex, su, 0.0).r * kElevRange - kElevOffset - level) * smoothstep(0.25, 0.6, gn);
 }
 float smaxShore(float a, float b, float k) {
     float h = clamp(0.5 + 0.5 * (a - b) / k, 0.0, 1.0);

@@ -770,10 +770,18 @@ the fix — see `docs/HARNESS.md`, *Gotchas* → `time sun`.
   blue terrain"): texels the coastline calls land where the DEM byte is the sea's, the nearest body is the sea
   (within 3 texels) and the 8K day map is sea blue ((b - (r+g)/2) / luminance > 0.22) get the same Gaussian bump
   (K_DUNK 0.25): 39,035 texels, 32,866 of them water after it. Green polders and deltas at DEM 0 are not blue and
-  stay land (Zandvoort: 0 texels changed). At the report's shot, sea-blue TERRAIN (albedo view, terrain mask from a
-  red-albedo variant) 67.4% of the frame -> 1.4%: the rest of the blue is now the sea. A shader-side dunk of the
-  sub-texel fringe and a recolour of blue slopes from the least-blue neighbour texel were built and measured: no
-  pixel changed at the shot once the bake was in (removed).
+  stay land (Zandvoort: 0 texels changed). The bake works on whole 8K texels; the rest is in `sat_sky.frag`:
+  - `seaLevelDayDunk`: ground at the sea's level (h0 <= 0.5 m) that the day map paints sea blue (`daySeaBlue`) is
+    drawn as the sea, but only amid relief (the DEM's mip 3, ~20 km mean, >= 150 m): the sub-texel fringe of a fjord.
+    Without the relief test it flooded Zandvoort's dunes in day-map-texel stairs (its shore texels are blue too).
+  - Land 1-15 m and more above the level whose day-map texel is sea blue takes the least-blue of eight texels 2 and
+    4 texels away (the forest or rock beside the fjord), again only amid relief (mip 3 100-200 m).
+  Report shot (masks from a variant that paints h0 <= 0.5 m red and higher land green; sea blue = (b - (r+g)/2) /
+  luminance > 0.35 in the frame): sea-level ground drawn as land 18.1% of the terrain (a669a8c) / 16.1% (bake only)
+  -> 0.0%; sea-blue land above the sea 82% of it -> 0.2%. Zandvoort with these shaders vs without, same app: 0.004%
+  of pixels (floor 0.001%). Measuring it: `shaders reload depth=` rebuilds the sky pipelines from the SHIPPED SPVs,
+  so reload depth first and sky / sky_taa after it, or a sky variant silently is not drawn (two rounds of this
+  fix's A/Bs were void for that).
 - **The shore cap keeps steep shores** (2026-11-03, same issue, terrain.glsl `shoreDemAbove`): the 0.25 m/m ramp
   exists for the coastal artifact (the DEM's value where the map draws the shore), but as a plain cap it flattened
   every steep shore the DEM gets right (a restored fjord's wall: 937 m drawn at 338 m, 1.35 km from the water). Now
@@ -784,7 +792,12 @@ the fix — see `docs/HARNESS.md`, *Gotchas* → `time sun`.
   samples > 100 m below the DEM 43.5% (before any fix) / 57.5% (channel restored, old cap) -> 1.7%; every sample
   with DEM >= 700 m within 19 m. Cost: the fetches are free (a variant with hS = 0 cost the same; Alps / NL
   0.0 +- 0.1 ms); drawing the restored relief costs +2.8 ms at the shot on a contended GPU (+6%, A-A spread 2 ms).
-  A mip-1 hS (first cut) averaged a fjord's walls into its floor and changed almost nothing.
+  A mip-1 hS (first cut) averaged a fjord's walls into its floor and changed almost nothing. hS fades with the
+  field's gradient size (smoothstep 0.25-0.6 m/m): on the ridge between two shores the gradient flips and the
+  found shore would jump sides. With the walls standing, the DEM's own 2.7-km bilinear facets show on them
+  (straight-edged planes on Sognefjord's walls): that is the DEM's resolution, not the cap.
+  Final shader set vs the a669a8c shaders, same app, report shot, new map: GPU 17.6 vs 15.4 ms (+2.2 ms, A-A
+  spread 0.6); Zandvoort / Alps 0.0 +- 0.1 ms.
 - **Review 16:** waves at `kSeaSpeed` 0.75 (the ~107-m ridges ran at ~27 m/s; a real 107-m wave at ~13), and a base
   ROUGHNESS from the sea state that grows toward grazing views (the unmodelled wind ripples, Cox & Munk), whatever the
   footprint: within ~8 km a calm sea mirrored clouds and the Milky Way crisply up to the horizon. It drives the same
