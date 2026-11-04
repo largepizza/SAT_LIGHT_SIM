@@ -81,6 +81,10 @@ void memoryBarrier(VkCommandBuffer cmd, VkAccessFlags srcA, VkAccessFlags dstA,
 
 // wg: the workgroup size as specialization constants 0/1 (a shader declaring local_size_x_id /
 // local_size_y_id); null = the shader's own.
+// Specialization constant 4 on every pipeline (shaders without it ignore the entry): storms through the cumulus field
+// (clouds_v2.storm_unified; the march's kCv2StormSpec), so the march carries only the storm path in use: both behind a
+// uniform cost the march ~0.6 ms in views without storms (code size). Set before the pipelines are (re)built.
+static uint32_t gCv2StormSpec = 1u;
 VkPipeline makeComputePipeline(VulkanContext &ctx, const char *spv, VkPipelineLayout layout,
                                const uint32_t *wg = nullptr, uint32_t nSpec = 2)
 {
@@ -89,10 +93,16 @@ VkPipeline makeComputePipeline(VulkanContext &ctx, const char *spv, VkPipelineLa
     stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     stage.module = mod;
     stage.pName = "main";
-    VkSpecializationMapEntry wgMap[4] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}, {3, 12, 4}};
-    VkSpecializationInfo wgSpec{nSpec, wgMap, nSpec * 4u, wg};
-    if (wg)
-        stage.pSpecializationInfo = &wgSpec;
+    if (!wg) nSpec = 0;
+    VkSpecializationMapEntry wgMap[5] = {{0, 0, 4}, {1, 4, 4}, {2, 8, 4}, {3, 12, 4}, {4, 16, 4}};
+    uint32_t specData[5] = {0u, 0u, 0u, 0u, 0u};
+    for (uint32_t i = 0; i < nSpec && i < 4; ++i) specData[i] = wg[i];
+    specData[4] = gCv2StormSpec;
+    VkSpecializationMapEntry entries[5];
+    for (uint32_t i = 0; i < nSpec && i < 4; ++i) entries[i] = wgMap[i];
+    entries[std::min(nSpec, 4u)] = wgMap[4];
+    VkSpecializationInfo wgSpec{std::min(nSpec, 4u) + 1u, entries, sizeof(specData), specData};
+    stage.pSpecializationInfo = &wgSpec;
     VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
     ci.stage = stage;
     ci.layout = layout;
@@ -627,6 +637,8 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         pli.pPushConstantRanges = &pcr;
         vkCreatePipelineLayout(dev, &pli, nullptr, i == 0 ? &cv2MarchPipeLayout : &cv2ResolvePipeLayout);
     }
+    gCv2StormSpec = cv2StormUnified > 0.5f ? 1u : 0u;
+    cv2StormSpecBuilt = gCv2StormSpec;
     cv2MarchPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_march.comp.spv", cv2MarchPipeLayout, cv2MarchWg);
     {
         const uint32_t specB[3] = {cv2MarchWg[0], cv2MarchWg[1], 1u};
@@ -912,6 +924,9 @@ std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::s
     // experiments can share one live app without overwriting the shipped SPVs; an empty one loads the shipped file.
     auto pick = [](const std::string &o, const char *def) { return o.empty() ? def : o.c_str(); };
     if (wgX && wgY) { cv2MarchWg[0] = wgX; cv2MarchWg[1] = wgY; }
+    gCv2StormSpec = cv2StormUnified > 0.5f ? 1u : 0u;
+    cv2StormSpecBuilt = gCv2StormSpec;
+    cv2LastSpv[0] = marchSpv; cv2LastSpv[1] = resolveSpv; cv2LastSpv[2] = lightningSpv; cv2LastSpv[3] = compositeSpv;
     vkDeviceWaitIdle(ctx.device);
     std::string err;
     auto swap = [&](VkPipeline &p, const char *spv, VkPipelineLayout layout, const uint32_t *wg) {

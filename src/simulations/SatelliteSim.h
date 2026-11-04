@@ -8810,6 +8810,8 @@ private:
     // The march's workgroup size (specialization constants): it bounds the driver's registers per
     // thread (65536 / the group's threads), i.e. the march's occupancy. Harness `shaders reload wg=`.
     uint32_t cv2MarchWg[2] = {16, 16};
+    uint32_t cv2StormSpecBuilt = 1u;    // the march pipelines' storm_unified specialization (rebuilt when the setting changes)
+    std::string cv2LastSpv[4];          // the last `shaders reload` overrides (march, resolve, lightning, composite)
     void writeCloudsV2ConsumerDescriptors(VulkanContext &ctx); // cloud_march / beam_self_march bindings
     void recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const CloudMarchPC &cpc);
     void fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cpc);

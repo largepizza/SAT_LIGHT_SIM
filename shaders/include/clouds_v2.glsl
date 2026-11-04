@@ -2308,6 +2308,15 @@ layout(constant_id = 3) const int kCv2DustOn = 1;
 #else
 const int kCv2DustOn = 1;
 #endif
+// Storms through the cumulus field (clouds_v2.storm_unified): the march's is specialization constant 4, so its pipeline
+// holds only the path in use (both behind the uniform: +0.6 ms of code size in views with no storm); the other shaders
+// read the uniform.
+#ifdef CV2_DUST_SPEC
+layout(constant_id = 4) const int kCv2StormSpec = 1;
+#define CV2_STORM_U (kCv2StormSpec != 0)
+#else
+#define CV2_STORM_U (cv2.stormU.x > 0.5)
+#endif
 // The LAYER MASK (2026-11-04, the occupancy clipmap's cells, cv2_cdc.glsl): which layer functions cv2Field calls. The march
 // sets it per field read from the clipmap cell the point lies in (every bit where the cell is unknown); every other caller
 // keeps all of them. A bit is clear only where the bake found that layer's function zero, and without effect on the
@@ -2339,7 +2348,7 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     gCv2RainCore = 0.0;
     // Storms through the cumulus field (cv2.stormU.x): the towers and shields are the low field's margin (cv2StormGeom),
     // carved by its lobes and erosion; their own density functions are not called.
-    bool stU = cv2.stormU.x > 0.5;
+    bool stU = CV2_STORM_U;
     CV2Storm sg = cv2StormNone();
     if (stU) {
         if ((lm & (kCv2LayCol | kCv2LayLow)) != 0u) sg = cv2StormGeom(q);
