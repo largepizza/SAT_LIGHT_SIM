@@ -5463,6 +5463,8 @@ private:
     float cv2CdcLightLevels = 3.0f, cv2CdcLightLevelsUsed = -1.0f;   // ... on levels below this (cells to 400 m)
     float cv2CdcNearM = 0.0f;             // coarse steps skip only beyond this distance (m)
     float cv2FullRes = 1.0f;              // S9: full-resolution clouds (computeCloudExtent; on for High / Ultra, the compiled defaults)
+    float cv2HistDepthTest = 1.0f;        // the resolve keeps a history whose reprojected distance matches (2026-11-04; 0 = off, A/B)
+    float cv2SparseBlock = 2.0f;          // full-res clouds' sparse march: one ray per K x K block a frame (2, 3 or 4; 2026-11-04)
     float cv2FullResMovingMode = 0.0f;    // full-res clouds while the eye moves from altitude (issues 20261022_210358 / _220214): 0 sparse, rotating (default); 1 sparse, held pixel; 2 full rate (every pixel, +1-6 ms; an A/B since the march's depth fix)
     bool  cv2CdcActive = false;           // this frame (fillCloudsV2Params)
     // 2026-10-22 (r1022 orbit, the matrix's "clouds thin out climbing from orbit"): the clipmap's bake reads the field at the
@@ -5699,6 +5701,7 @@ private:
     // Frame-to-frame state for the temporal resolve.
     uint32_t cv2Frame = 0;
     bool cv2FullRateNow = false;       // this frame's march covers every half-res pixel
+    uint32_t cv2SparseBlockNow = 2;    // this frame's sparse block (K x K pixels a ray; "sparse_block" on the full-res grid's sparse march)
     bool cv2FullResHeldNow = false;    // this frame's full-res sparse sample is held at one pixel of each block (cv2FullResMovingMode 1)
     bool cv2HalfRateNow = false;       // ... or, "Half rate while moving", half of them (a checkerboard)
     bool cv2AdaptiveNow = false;       // ... or the adaptive rate: sparse, with full-rate tiles where the parallax is large

@@ -46,7 +46,8 @@ layout(set = 0, binding = 7) uniform sampler2D fullDepthTex;
 // the fixed history weight, and its first samples are the smooth estimate of its neighbourhood, not single rays:
 // at the still weight (0.04-0.05, one visit in four frames on the sparse grid) a newly shown cloud kept its first
 // noisy, mostly self-shadowed rays for seconds (the user: "dark pixelation on newly exposed clouds before they settle").
-layout(set = 0, binding = 9, r32f) uniform writeonly image2D outAge;
+// (2026-11-04) y: the pixel's resolved mean distance (m, 0 = none), reprojected with the age: the depth test below.
+layout(set = 0, binding = 9, rg32f) uniform writeonly image2D outAge;
 layout(set = 0, binding = 10) uniform sampler2D histAgeTex;
 layout(std430, set = 0, binding = 8) readonly buffer TileBuf { uint tPad, tDispX, tDispY, tDispZ; uint tList[4096]; uint tFlag[4096]; };
 
@@ -128,7 +129,10 @@ void main()
     ivec2 c = ivec2(gl_GlobalInvocationID.xy);
     // The ring's boxes per block (see sRing): before the out-of-image return, so that every thread of the workgroup takes
     // part and reaches the barriers (the rate is uniform).
-    bool sharedRing = int(cv2.misc.z + 0.5) == 0;
+    // The sparse grid's block (cv2.gnd.z, 2026-11-04): K x K half-res pixels per new sample (2, or 3 / 4 on the full-res
+    // grid). The shared ring below is laid out for 2x2 blocks (8x8 of them a workgroup): other blocks take the per-pixel loop.
+    int  kB = max(int(cv2.gnd.z + 0.5), 2);
+    bool sharedRing = int(cv2.misc.z + 0.5) == 0 && kB == 2;
     if (sharedRing) {
         ivec2 qsS  = (halfSize + 1) / 2;
         uint  lid  = gl_LocalInvocationIndex;
@@ -220,11 +224,12 @@ void main()
     int   rate  = int(cv2.misc.z + 0.5);
     bool  full  = rate == 1;
     bool  halfR = rate == 2;
-    ivec2 qs    = (full || halfR) ? halfSize : (halfSize + 1) / 2;
+    if (rate != 0) kB = 2;
+    ivec2 qs    = (full || halfR) ? halfSize : (halfSize + kB - 1) / kB;
     ivec2 off   = (rate == 0 || rate == 3) ? ivec2(cv2.frame.zw) : ivec2(0);
-    ivec2 b     = (full || halfR) ? c : min(c >> 1, qs - 1);
+    ivec2 b     = (full || halfR) ? c : min(c / kB, qs - 1);
     int   par   = int(cv2.frame.x) & 1;
-    bool  isNew = full || (halfR ? ((c.x + c.y + par) & 1) == 0 : all(equal(c & 1, off)));
+    bool  isNew = full || (halfR ? ((c.x + c.y + par) & 1) == 0 : all(equal(c % kB, off)));
     gHalf = halfSize; gQs = qs; gAdaptive = rate == 3;
     bool  tFull = tileFull(c);             // adaptive: this pixel was marched at full rate
 
@@ -328,7 +333,7 @@ void main()
         // checkerboard once "History weight moving" let this frame through.
         spatial = mix(nc, 0.25 * ax, 0.5);
     } else {
-        vec2 posQ = clamp((vec2(c) - vec2(off)) * 0.5 + 0.5, vec2(0.5), vec2(qs) - 0.5);
+        vec2 posQ = clamp((vec2(c) - vec2(off)) / float(kB) + 0.5, vec2(0.5), vec2(qs) - 0.5);
         spatial = textureLod(newColorTex, posQ / vec2(textureSize(newColorTex, 0)), 0.0);
     }
     // On the sparse grid what fast motion leans on is the smooth estimate, not the block's one sample: blur
@@ -340,7 +345,7 @@ void main()
     // bilinear estimate alone carried single rays to the screen: inside cloud in fast flight, the blue-noise tile's
     // all-or-nothing samples as a speckle repeating every 64 samples (tstab "chaos" 8.3 vs 2.1).
     const bool tentQ = !(full || tFull || halfR);   // every sparse grid (half-res too since 2026-10-22: chaos 7.9 there)
-    vec2 tqPos = clamp((vec2(c) - vec2(off)) * 0.5 + 0.5, vec2(1.0), vec2(qs) - 1.0);
+    vec2 tqPos = clamp((vec2(c) - vec2(off)) / float(kB) + 0.5, vec2(1.0), vec2(qs) - 1.0);
     vec2 tqIq  = 1.0 / vec2(textureSize(newColorTex, 0));
     if (tentQ) {
         blur = 0.25 * (textureLod(newColorTex, (tqPos + vec2(-0.5, -0.5)) * tqIq, 0.0) + textureLod(newColorTex, (tqPos + vec2(0.5, -0.5)) * tqIq, 0.0) +
@@ -503,7 +508,23 @@ void main()
         slack = max(slack, (mx - mn) * stillW);
         // In motion the box is the neighbourhood's mean +- 1.25 sd (variance clipping), inside min/max:
         // a small cloud next to clear sky made a min/max box spanning both, so its ghost passed.
-        float mv  = smoothstep(0.1, 1.5, mNb);
+        // DEPTH-CONSISTENT HISTORY (2026-11-04, the cloud upscaler): the point this pixel shows now, at its own sample's
+        // distance, was last frame length(cam) from the eye; if the history texels it reprojects onto held cloud at that
+        // distance (the resolved distance travels with the age, outAge.y), the history IS this cloud seen from the last
+        // eye, however large the parallax: motion is then a reprojection, not a rejection. Such a pixel keeps its history
+        // (no lean on the wide tent past 6 px of parallax, the colour box at its 5x5 width, a softer variance clip), so a
+        // flight under a deck keeps the deck's full-resolution detail instead of the sparse grid's tent. A disoccluded
+        // pixel (history at another distance: an edge sweeping over the sky or a farther cloud) fails the test and keeps
+        // the fast path. Mean distances of translucent cloud are noisy per ray: the tolerance is 6-20% of the distance.
+        float hConf = 0.0;
+        if (ndR > 0.0 && nd.x > 0.0 && cv2.samp.x > 0.0) {
+            vec4  hd4 = textureGather(histAgeTex, uvPrev, 1);
+            float dP  = length(cam);
+            float e   = 1e9;
+            for (int k = 0; k < 4; ++k) if (hd4[k] > 0.0) e = min(e, abs(hd4[k] - dP));
+            hConf = (1.0 - smoothstep(0.06, 0.2, e / dP)) * cv2.gnd.w;
+        }
+        float mv  = smoothstep(0.1, 1.5, mNb) * (1.0 - 0.6 * hConf);
         vec4  bLo = mix(mn - slack, max(mn, m1 - cv2.samp.z * sdBox), mv);
         vec4  bHi = mix(mx + slack, min(mx, m1 + cv2.samp.z * sdBox + vec4(1e-4)), mv);
         // Issue 20261013_214939 ("noise on moving clouds"): in motion the box above is the 3x3 of new samples, and a new
@@ -520,6 +541,7 @@ void main()
         // 7.6 -> 2.5 levels, pixels past 16 levels 13.7% -> 0.2%; the still view is unchanged.
         float wideK = 1.0 - smoothstep(kWideColorPx0, kWideColorPx1,
                                        max(motionPx, eyePx / min(min(dNear, dWide), capD)));
+        wideK = max(wideK, hConf);
         bLo.rgb = mix(bLo.rgb, min(bLo.rgb, cMn), wideK); bHi.rgb = mix(bHi.rgb, max(bHi.rgb, cMx), wideK);
         // A view that is STILL in fact (the reprojection's own parallax, the volumes' slide and the eye's move at the
         // nearest cloud all under ~0.05 px a frame: no x lagK) takes its history unclamped (2026-10-14, issue
@@ -568,7 +590,7 @@ void main()
             w      = max(w, 1.0 / (hAge + 1.0));
             ageOut = min(hAge + (isNew ? 1.0 : 0.5), cv2.samp.x);
         }
-        float mf = smoothstep(6.0, 24.0, motionPx);
+        float mf = smoothstep(6.0, 24.0, motionPx) * (1.0 - hConf);
         // S9: with no usable history the quarter grid's [1 2 1] tent still let the blue-noise tile's all-or-nothing rays
         // through as blotches (fast flight inside cloud): there the estimate widens to ~4x4 samples.
         if (tentQ && mf > 0.0) {
@@ -590,7 +612,6 @@ void main()
     // reads into a growing block (black squares at the Earth's limb, user snapshot 2026-10-04): no cloud.
     if (any(isnan(outC)) || any(isinf(outC))) outC = vec4(0.0, 0.0, 0.0, 1.0);
     imageStore(outColor, c, outC);
-    imageStore(outAge, c, vec4(ageOut, 0.0, 0.0, 0.0));
     // Review 12: the DISTANCE gets a history too, in a still view: it was this frame's sample's (a sparse
     // block takes its one sample's distance, and the sample moves through the block every frame), and the sky
     // pass splits the air in front of the cloud at it — from orbit, where that air is a large share near the
@@ -614,4 +635,5 @@ void main()
         if (hd.y > 0.0 && nd.y > 0.0) nd.y = mix(hd.y, nd.y, wD);
     }
     imageStore(outDepth, c, vec4(nd, 0.0, 0.0));
+    imageStore(outAge, c, vec4(ageOut, max(nd.x, 0.0), 0.0, 0.0));
 }

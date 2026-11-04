@@ -745,9 +745,10 @@ void SatelliteSim::createCloudsV2Targets(VulkanContext &ctx)
     make(fbW, fbH, VK_FORMAT_R16G16B16A16_SFLOAT, 0, cv2FullImg, cv2FullMem, cv2FullView);
     make(fbW, fbH, VK_FORMAT_R32G32_SFLOAT, 0, cv2FullDepthImg, cv2FullDepthMem, cv2FullDepthView);
     make(ctx.swapExtent.width, ctx.swapExtent.height, VK_FORMAT_R16G16B16A16_SFLOAT, 0, cv2FarImg, cv2FarMem, cv2FarView);
-    make(cv2HalfW, cv2HalfH, VK_FORMAT_R32_SFLOAT, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+    // The ages, and (y, 2026-11-04) each pixel's resolved mean distance, reprojected with them (the resolve's depth test).
+    make(cv2HalfW, cv2HalfH, VK_FORMAT_R32G32_SFLOAT, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
          cv2AgeImg, cv2AgeMem, cv2AgeView);
-    make(cv2HalfW, cv2HalfH, VK_FORMAT_R32_SFLOAT, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+    make(cv2HalfW, cv2HalfH, VK_FORMAT_R32G32_SFLOAT, VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
          cv2AgeHistImg, cv2AgeHistMem, cv2AgeHistView);
     // The opacity profile: one uvec2 per 2x2 block of the cloud grid (every block takes one ray a frame on the sparse grid).
     ctx.createBuffer((VkDeviceSize)cv2QuarterW * cv2QuarterH * 8u + 16u,
@@ -1934,6 +1935,11 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         if (cv2AdaptiveNow)
             cv2FullRateNow = false;
     }
+    // The sparse grid's block (2026-11-04, "sparse_block"): the full-res grid's sparse march takes one ray per K x K block a
+    // frame (K 3: 1/9 of the pixels, 4: 1/16), the offsets rotating over K*K frames; the resolve rebuilds the rest from the
+    // reprojected history. Every other rate, and the half-res grid, keep 2x2 (their tile passes are laid out for it).
+    cv2SparseBlockNow = (cv2FullResActive() && !cv2FullRateNow && !cv2HalfRateNow && !cv2AdaptiveNow)
+                        ? (uint32_t)std::clamp((int)std::lround(cv2SparseBlock), 2, 4) : 2u;
     // Smooth tiles (2026-10-25): with full-res clouds on the sparse grid, the tiles whose last resolved frame is smooth are
     // marched at a quarter of its density (cloud_v2_tiles.comp). Needs a history (it is classified from it), the 16x16
     // workgroups (a tile is one), and the tile list's capacity (4096 tiles: 2048x2048 of cloud grid).
@@ -1945,7 +1951,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         // history weight (~0.05) 64 frames leave ~4% of the old history.
         constexpr int kSmoothSettleFrames = 64;
         const uint32_t qTiles = ((cv2QuarterW + 15) / 16) * ((cv2QuarterH + 15) / 16);
-        cv2SmoothNow = cv2SmoothTiles > 0.5f && cv2FullResActive() && !cv2FullRateNow && !cv2AdaptiveNow && !cv2HalfRateNow &&
+        cv2SmoothNow = cv2SmoothTiles > 0.5f && cv2SparseBlockNow == 2 && cv2FullResActive() && !cv2FullRateNow && !cv2AdaptiveNow && !cv2HalfRateNow &&
                        cv2EyeStillFrames >= kSmoothSettleFrames &&
                        valid && cv2HistoryValid && glm::length(eye - cv2PrevEye) <= 150.0 && cv2MarchWg[0] == 16 &&
                        cv2MarchWg[1] == 16 && qTiles <= kCv2MaxTiles && cv2MarchPassFPipeline != VK_NULL_HANDLE &&
@@ -2027,6 +2033,17 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // (flicker 0.79 vs 0.93%, far band within ~1 level of settled) at 1-6 ms less (harness_runs/rc1022g). Kept for A/B.
     cv2FullResHeldNow = cv2FullResActive() && cv2FullResMovingMode > 0.5f && cv2FullResMovingMode < 1.5f && !cv2FullRateNow && eyeH > (double)cv2FullRateAboveKm * 1000.0 &&
                         cv2StillFrames < 8;
+    {
+        // The block's offsets, one per frame over K*K frames: for 2x2 the ordered (diagonal first) cycle of before; for 3x3 a
+        // Latin-square order (each run of three covers every row and column); for 4x4 the Bayer matrix's order.
+        static const int kOff3[9][2] = {{0, 0}, {1, 2}, {2, 1}, {0, 1}, {1, 0}, {2, 2}, {0, 2}, {1, 1}, {2, 0}};
+        static const int kOff4[16][2] = {{0, 0}, {2, 2}, {2, 0}, {0, 2}, {1, 1}, {3, 3}, {3, 1}, {1, 3},
+                                         {1, 0}, {3, 2}, {3, 0}, {1, 2}, {0, 1}, {2, 3}, {2, 1}, {0, 3}};
+        if (cv2SparseBlockNow == 3) { const int *o3 = kOff3[cv2Frame % 9u]; p.frame.z = (float)o3[0]; p.frame.w = (float)o3[1]; }
+        if (cv2SparseBlockNow == 4) { const int *o4 = kOff4[cv2Frame % 16u]; p.frame.z = (float)o4[0]; p.frame.w = (float)o4[1]; }
+        p.gnd.z = (float)cv2SparseBlockNow;
+        p.gnd.w = std::clamp(cv2HistDepthTest, 0.0f, 1.0f);   // the resolve's depth-consistent history (0 = off)
+    }
     if (cv2FullResHeldNow)
         p.frame.z = p.frame.w = 0.0f;
     std::memcpy(cv2ParamsMapped, &p, sizeof(p));
@@ -2766,8 +2783,9 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     // (perf pass 4) the march without the haboob code while no dust wall is in the grid: its code alone cost 0.5-1 ms
     const bool marchND = !dustGpuOn && cv2MarchNoDustPipeline != VK_NULL_HANDLE && cv2MarchPassBNoDustPipeline != VK_NULL_HANDLE;
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, marchND ? cv2MarchNoDustPipeline : cv2MarchPipeline);
-    const uint32_t gw = cv2HalfRateNow ? (cv2HalfW + 1) / 2 : cv2FullRateNow ? cv2HalfW : cv2QuarterW;
-    const uint32_t gh = cv2FullRateNow ? cv2HalfH : cv2QuarterH;
+    const uint32_t kBk = std::max(cv2SparseBlockNow, 2u);
+    const uint32_t gw = cv2HalfRateNow ? (cv2HalfW + 1) / 2 : cv2FullRateNow ? cv2HalfW : (cv2HalfW + kBk - 1) / kBk;
+    const uint32_t gh = cv2FullRateNow ? cv2HalfH : (cv2HalfH + kBk - 1) / kBk;
     vkCmdDispatch(cmd, (gw + cv2MarchWg[0] - 1) / cv2MarchWg[0], (gh + cv2MarchWg[1] - 1) / cv2MarchWg[1], 1);
     if (cv2SmoothNow)
     {

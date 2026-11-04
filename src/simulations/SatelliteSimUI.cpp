@@ -9795,6 +9795,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CdcNearM = c.value("cdc_near_m", cv2CdcNearM);
         cv2FullRes = c.value("full_res", cv2FullRes);
         cv2FullResMovingMode = std::clamp(c.value("full_res_moving_mode", cv2FullResMovingMode), 0.0f, 2.0f);
+        cv2SparseBlock = std::clamp(c.value("sparse_block", cv2SparseBlock), 2.0f, 4.0f);
+        cv2HistDepthTest = std::clamp(c.value("history_depth_test", cv2HistDepthTest), 0.0f, 1.0f);
         cv2ShadowRing1CellM = c.value("shadow_ring1_cell_m", cv2ShadowRing1CellM);
         cv2SmallCumulus = c.value("small_cumulus", cv2SmallCumulus);
         cv2ErosionVar = c.value("erosion_variation", cv2ErosionVar);
@@ -10520,6 +10522,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cdc_near_m", cv2CdcNearM},
         {"full_res", cv2FullRes},
         {"full_res_moving_mode", cv2FullResMovingMode},
+        {"sparse_block", cv2SparseBlock},
+        {"history_depth_test", cv2HistDepthTest},
         {"shadow_ring1_cell_m", cv2ShadowRing1CellM},
         {"small_cumulus", cv2SmallCumulus},
         {"erosion_variation", cv2ErosionVar},
