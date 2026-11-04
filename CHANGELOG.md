@@ -363,6 +363,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   since"); the Ongoing tab lists build-out last; long window titles are ellipsized instead of clipped;
   Planetarium shows the green airglow only at the limb; engine light reaches the hull above it; the Beam-lit Snow
   bookmark frames its snow shower again.
+- A head-on collision's slow debris no longer bursts out of one point under the breakup as two mirrored
+  fireball clusters: pieces knocked onto falling arcs now fly on and re-enter where their own arcs reach the
+  atmosphere, minutes later and hundreds to thousands of km downrange (issue_20261104_015233).
 
 ### Technical and modding
 
