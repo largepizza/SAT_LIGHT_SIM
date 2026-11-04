@@ -353,6 +353,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - The weather bookmarks (Venezuela rainbow, Antarctic snow) frame their storms again with the new cloud defaults.
 - HQ photos (F8) no longer veil the clouds in a light blue-grey haze at sunset and under storms: the photo now
   lights the air in front of the clouds the way the window does (issue_20261104_020521).
+- The sky's per-pixel atmosphere (the band along the horizon, and "Aerial perspective volume" off) no longer lays a
+  light blue-grey haze over clouds at sunset: it over-lit the air in front of them toward a low Sun. It now matches a
+  512-step reference within ~2 levels at the reported storm (it was up to ~27 too blue).
 - The sky glow around satellites sums bright flares, so one tumbling piece of debris no longer lights half the sky.
 - The rain no longer keeps pointing at the sky's freed anti-aliasing images after they are rebuilt (switching from
   Planetarium or Potato to a full graphics tier; the harness's `shaders reload sky=`, where it killed the app in a

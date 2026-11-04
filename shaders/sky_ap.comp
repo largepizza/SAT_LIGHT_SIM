@@ -225,20 +225,34 @@ void main()
                 shD += densR * shF;
                 if (litF <= 0.0) continue;
             }
-            vec3 spL = sp;
+            vec3  spL = sp;
+            float tLa = tSe0, tLb = tSe1;
             if (litF < 1.0) {
-                float tL = (tShA <= tSe0) ? 0.5 * (tShB + tSe1) : 0.5 * (tSe0 + tShA);
-                spL = obsPos + dir * tL;
+                if (tShA <= tSe0) tLa = tShB; else tLb = tShA;
+                spL = obsPos + dir * (0.5 * (tLa + tLb));
                 float lenL = length(spL);
                 if (lenL < R_EARTH) spL *= R_EARTH / lenL;
             }
             densR *= litF;
             densM *= litF;
-            vec2 tSun  = raySphere(spL, sunDir, R_ATMOS);
-            vec2 sunOD = (tSun.y > 0.0 && !skyMsOn) ? optDepth(spL, sunDir, tSun.y) : vec2(0.0);
-            vec3 tau  = BETA_R       * (odR_cam - 0.5 * densR0) + BETA_M * 1.1 * (odM_cam - 0.5 * densM0)
-                      + (skyMsOn ? sunPathTauExact(spL, sunDir, BETA_R, BETA_M) : BETA_R * sunOD.x + BETA_M * 1.1 * sunOD.y);
-            vec3 attn = exp(-tau);
+            // The transmittance Sun -> air -> eye averaged over the lit part (sky_atmos.glsl atmStepAttn, 2026-11-04;
+            // sat_sky.frag's loop does the same: keep them in step).
+            vec2 sunC  = vec2(0.0);
+            vec3 sunOz = vec3(0.0);
+            if (skyMsOn) {
+                sunC  = sunPathCols(spL, sunDir);
+                sunOz = atmOzoneTau(spL, sunDir);
+            } else {
+                vec2 tSun = raySphere(spL, sunDir, R_ATMOS);
+                if (tSun.y > 0.0) sunC = optDepth(spL, sunDir, tSun.y);
+            }
+            vec4  aSt  = atmStepAttn(atmOO, atmB2, tSe0, hA, eA.xy, vec2(odR_cam - densR0, odM_cam - densM0),
+                                     vec2(odR_cam - 0.5 * densR0, odM_cam - 0.5 * densM0),
+                                     densM0 / max(stepAvg.y * segLen, 1e-30), tLa, tLb, max(0.0, length(spL) - R_EARTH),
+                                     sunC, sunOz, BETA_R, BETA_M,
+                                     length(obsPos) < R_ATMOS ? kStepNodes : 0);
+            vec3  attn = aSt.xyz;
+            float mieK = aSt.w / max(dot(aSt.xyz, vec3(1.0 / 3.0)), 1e-30);
             float atmTermW8 = mix(1.0, smoothstep(-atmTermW, atmTermW, sampleSunDotGeo), atmTermSpace);
             if (sunShK < 1.0 && cloud.sunCloudT < 1.0) {
                 float dPerp = cosA < 0.0 ? tMid : tMid * sqrt(max(1.0 - cosA * cosA, 0.0));
@@ -277,7 +291,7 @@ void main()
             }
             attn *= eclK; attnPre *= eclK;
             accumR += attn * densR * atmTermW8;
-            accumM += dot(attnPre, vec3(1.0 / 3.0)) * (1.0 - shKMie) * densM * atmTermW8;
+            accumM += dot(attnPre, vec3(1.0 / 3.0)) * mieK * (1.0 - shKMie) * densM * atmTermW8;
         }
         tPrev = tSl;
 

@@ -4826,12 +4826,14 @@ void main() {
         // ~24 km above it, the air in front of a near wall or funnel was dimmed by 8-12 km of low hazy air it does not
         // have, more the flatter the ray (darkening toward the horizon) and less just below it (a step there).
         vec3  aFK = vec3(1.0);
+        float hPF = h;   // the piece's middle height (its multiple scattering's Psi)
         if (fPart) {
             // The piece's own density per metre over the step's (both integrated as the step's, atmStepAvg).
             float hF  = max(0.0, length(obsPos + dir * (tS0 + 0.5 * lenF)) - R_EARTH);
             float hFe = max(0.0, length(obsPos + dir * (tS0 + lenF)) - R_EARTH);
             vec3  eF  = exp(-hF * kAtmInvH), eFe = exp(-hFe * kAtmInvH);
             vec3  avF = 0.5 * (atmHalfAvg3(eA, eF, hF - hA) + atmHalfAvg3(eF, eFe, hFe - hF));
+            hPF = hF;
             fRK = min(avF.x / max(stepAvg.x, 1e-30), 50.0);
             fMK = min(avF.y / max(stepAvg.y, 1e-30), 50.0);
             litFF = clamp(1.0 - max(0.0, min(tS0 + lenF, tShB) - max(tS0, tShA)) / lenF, 0.0, 1.0);
@@ -4849,7 +4851,10 @@ void main() {
             vec3 aM = exp(-(BETA_R * (odR_cam - 0.5 * densR0) + BETA_M * 1.1 * (odM_cam - 0.5 * densM0)));
             vec3 ps = cv2SkyPsiAt(dot(normalize(sp), sunDir), h) * eclK;
             msS  += aM * (BETA_R * densR0 + BETA_M * densM0) * ps;
-            msSF += aM * aFK * (BETA_R * (densR0 * fRK) + BETA_M * (densM0 * fMK)) * (fwC * ps);
+            // (the piece's own height for Psi: it took the step's middle, up to ~10 km above a near cloud's air at a
+            //  steep view, where the multiple scattering of a low Sun is bluer and brighter: 2026-11-04)
+            vec3 psF = fPart ? cv2SkyPsiAt(dot(normalize(sp), sunDir), hPF) * eclK : ps;
+            msSF += aM * aFK * (BETA_R * (densR0 * fRK) + BETA_M * (densM0 * fMK)) * (fwC * psF);
         }
 #endif
         if (litF < 1.0) {
@@ -4864,31 +4869,64 @@ void main() {
         }
         // The lit part's own middle for the Sun path (the midpoint may be in the shadow); the step's in-scatter below
         // takes its lit share (densR / densM; the camera-side depths above keep the whole step).
-        vec3 spL = sp;
+        // The step's lit part [tLa, tLb] and its middle (the Earth's shadow covers one end at most).
+        vec3  spL = sp;
+        float tLa = tS0, tLb = tS0 + segLen;
         if (litF < 1.0) {
-            float tL = (tShA <= tS0) ? 0.5 * (tShB + tS0 + segLen) : 0.5 * (tS0 + tShA);
-            spL = obsPos + dir * tL;
+            if (tShA <= tS0) tLa = tShB; else tLb = tShA;
+            spL = obsPos + dir * (0.5 * (tLa + tLb));
             float lenL = length(spL);
             if (lenL < R_EARTH) spL *= R_EARTH / lenL;
         }
         densR *= litF;
         densM *= litF;
 
-        // Compute sun-side optical depth from this sample to the atmosphere boundary.
+#ifdef SKY_LITE
+        // (SKY_LITE, at its SPIR-V budget and without volumetric clouds: the step's lit middle alone, as before.)
         vec2 tSun  = raySphere(spL, sunDir, R_ATMOS);
-        vec2 sunOD = (tSun.y > 0.0 && !skyMsOn) ? optDepth(spL, sunDir, tSun.y) : vec2(0.0);
-
-        // Combined transmittance τ = BETA × (cam_depth + sun_depth):
-        //   cam_depth: how much atmosphere light must traverse from here to the camera.
-        //   sun_depth: how much atmosphere sunlight must traverse from the sun to here.
-        // Mie multiplied by 1.1 to account for aerosol absorption (σ_ext > σ_scat).
-        // (To the step's MIDDLE: odR_cam / odM_cam already hold the whole step. Its light attenuated by all of it, the
-        // first ~15-km step looking up lost ~13% of its blue to its own Rayleigh column, a share that changed with the
-        // step count: the residual of the rings round the zenith, 2026-10-24.)
-        // (With the sky's multiple scattering, the Sun's path is exact and has its ozone: sunPathTauExact.)
-        vec3 tau  = BETA_R       * (odR_cam - 0.5 * densR0) + BETA_M * 1.1 * (odM_cam - 0.5 * densM0)
-                  + (skyMsOn ? sunPathTauExact(spL, sunDir, BETA_R, BETA_M) : BETA_R * sunOD.x + BETA_M * 1.1 * sunOD.y);
-        vec3 attn = exp(-tau);  // total transmittance: sun → this sample → camera
+        vec2 sunOD = (tSun.y > 0.0) ? optDepth(spL, sunDir, tSun.y) : vec2(0.0);
+        vec3 attn  = exp(-(BETA_R * (odR_cam - 0.5 * densR0 + sunOD.x) + BETA_M * 1.1 * (odM_cam - 0.5 * densM0 + sunOD.y)));
+        const float mieK = 1.0, mieKF = 1.0;
+        vec3  pieceK = aFK;
+#else
+        // The Sun's Rayleigh / Mie columns from the lit part's middle (with the sky's multiple scattering exact, with
+        // its ozone: sunPathCols; else optDepth's midpoints to the atmosphere's top).
+        vec2 sunC  = vec2(0.0);
+        vec3 sunOz = vec3(0.0);
+        if (skyMsOn) {
+            sunC  = sunPathCols(spL, sunDir);
+            sunOz = atmOzoneTau(spL, sunDir);
+        } else {
+            vec2 tSun = raySphere(spL, sunDir, R_ATMOS);
+            if (tSun.y > 0.0) sunC = optDepth(spL, sunDir, tSun.y);
+        }
+        // The transmittance Sun -> air -> eye (Mie x 1.1: aerosol absorption), averaged over the lit part with each
+        // species' density (sky_atmos.glsl atmStepAttn, 2026-11-04). It took the lit middle's alone: the step's air
+        // sits at its low end, and toward a low Sun that end is the most extinguished, so a ~15-km step was over-lit,
+        // most in the Mie and the blue (the air in front of a sunset storm ~2x a 512-step loop, issue_20261104_020521).
+        float hL   = max(0.0, length(spL) - R_EARTH);
+        float stMK = densM0 / max(stepAvg.y * segLen, 1e-30);   // the haze near clouds rides the Mie column
+        vec2  odS  = vec2(odR_cam - densR0, odM_cam - densM0);  // the eye's columns to the step's start
+        // The step's middle (the eye's columns to it, the Sun's at the lit middle): the form before, kept where the Sun's
+        // transmittance hardly changes over the step (atmStepAttn's test).
+        vec2  odMid = odS + 0.5 * vec2(densR0, densM0);
+        vec3  attn  = exp(-(BETA_R * (odMid.x + sunC.x) + BETA_M * 1.1 * (odMid.y + sunC.y) + sunOz));
+        float mieK  = 1.0;   // the Mie weighting's transmittance over the Rayleigh's
+        if (kStepNodes == 1 && obsR < R_ATMOS) {
+            vec4 a = atmStepAttn(atmOO, atmB2, tS0, hA, eA.xy, odS, odMid, stMK, tLa, tLb, hL, sunC, sunOz, BETA_R, BETA_M, 1);
+            attn = a.xyz;
+            mieK = a.w / max(dot(a.xyz, vec3(1.0 / 3.0)), 1e-30);
+        }
+        // The piece in front of the clouds (fPart): its own lit stretch, always integrated, as a factor on the step's.
+        vec3  pieceK = vec3(1.0);
+        float mieKF  = mieK;
+        if (fPart) {
+            float tPb = max(tLa, min(tLb, tS0 + lenF));
+            vec4  aP  = atmStepAttn(atmOO, atmB2, tS0, hA, eA.xy, odS, odMid, stMK, tLa, tPb, hL, sunC, sunOz, BETA_R, BETA_M, 2);
+            pieceK = min(aP.xyz / max(attn, vec3(1e-30)), vec3(1e6));
+            mieKF  = aP.w / max(dot(aP.xyz, vec3(1.0 / 3.0)), 1e-30);
+        }
+#endif
 
         // Orbital terminator gate. Deliberately NOT physical: the scattering integral itself was
         // measured (against a clean-room reimplementation of this exact loop) to fall about one
@@ -5011,11 +5049,12 @@ void main() {
         // emissive sources, not scattered sunlight, and suppressing them past the terminator is
         // the exact opposite of what they exist to do.
         accumR += attn * densR * atmTermW8;                  // Rayleigh: wavelength-dependent (blue sky)
-        accumM += dot(attnPre, vec3(1.0 / 3.0)) * (1.0 - shKMie) * densM * atmTermW8; // Mie: wavelength-neutral (white haze/corona)
-        // The piece in front (fwC, above): its own density, Earth shadow and clouds' shadow; the step's own when whole.
-        vec3 attnF = attnPre * aFK * (1.0 - shKF);
+        accumM += dot(attnPre, vec3(1.0 / 3.0)) * mieK * (1.0 - shKMie) * densM * atmTermW8; // Mie: wavelength-neutral (white haze/corona)
+        // The piece in front (fwC, above): its own density, Earth shadow, transmittance (pieceK: its own stretch's, the
+        // eye's column to it included) and clouds' shadow; the step's own when whole.
+        vec3 attnF = attnPre * pieceK * (1.0 - shKF);
         accumRF += attnF * densR0 * fRK * litFF * atmTermW8 * fwC;
-        accumMF += dot(attnF, vec3(1.0 / 3.0)) * densM0 * fMK * litFF * atmTermW8 * fwC;
+        accumMF += dot(attnF, vec3(1.0 / 3.0)) * mieKF * densM0 * fMK * litFF * atmTermW8 * fwC;
     }
 
     // The volume's sums at the pixel's distance, at the air split in front of the clouds, and (the city glow's split) at

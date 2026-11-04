@@ -75,8 +75,35 @@ atmHalfAvg3, airglow noise, cityBrightness) moved unchanged into `include/sky_at
   the two. Under the report's sunset storm (822 m) it lit the haze in front of the clouds ~2x as much as a 512-step loop,
   a light blue-grey veil on every cloud of the photo: cloud mean (128,77,65) against the volume's (121,58,41) and the
   512-step loop's (120,56,38) (`harness_runs/hq-ambient-fixq`, debug-view decomposition of `airFront`).
+  (The loop's step integral was the cause and is fixed since: see the next bullet.)
   "Aerial perspective volume (0/1)" (`clouds_v2.sky_ap`, slot 337; 0 = the loop everywhere, the A/B), "... horizon band
   (deg)" (slot 338).
+- **A step's transmittance is integrated over the step** (2026-11-04, `sky_atmos.glsl` `atmStepAttn`, both the N_VIEW
+  loop and `sky_ap.comp`). The loop took the Sun's path and the eye's column at ONE point of a step (its lit middle) for
+  the whole step. With the default ~15-km steps the air sits at a step's low end, and toward a low Sun that end is the
+  most extinguished, so the step was over-lit, most in the Mie and the blue; the air in front of the clouds (`fPart`, the
+  piece of the first step before the split) took the WHOLE step's middle, up to ~10 km above the piece. That, not the
+  step count, was the HQ photo's veil (issue_20261104_020521). Now: the Sun's Rayleigh / Mie columns are still taken once
+  a step (`sunPathCols` + `atmOzoneTau`, or `optDepth`) and carried to any point by height, column x exp(-(h - hRef)/H);
+  the eye's column to a point is the step start's + the exact mean of exp(-h/H); Rayleigh is averaged at 2
+  Gauss-Legendre nodes weighted by its density, Mie at the median of its own column (3 nodes). The piece in front of the
+  clouds is always integrated (and its multiple scattering takes Psi at the piece's height, not the step's: it was the
+  last ~5 levels of blue). A whole step keeps the one-point form where the Sun's exponent changes by < 0.5 over its
+  climb (day, high air, the volume's near slices), where the eye's red transmittance to it is < e^-8, and with the eye
+  above the atmosphere (`kStepNodes`; from orbit the one-point loop was within ~0.1 level of a 512-step one and the
+  nodes cost +0.3-0.5 ms on the limb ring). SKY_LITE keeps the one-point form (its SPIR-V budget: the nodes were +7-12 KB,
+  it had ~0.5 KB left).
+  Measured (RTX 3070 Ti, 1600x900, the report's replay, `harness_runs/horizon-ap/`, live run
+  `harness_live/run_20261104_043848`): loop everywhere (sky_ap 0) cloud mean RGB 154,100,84 -> 146,80,59 against the
+  512-step reference 146,80,57 (pixels > 8 levels off the reference 37% -> 0.1%); the default frame (volume + band) moves
+  0.27 levels mean (the reference itself 0.31 run to run); from 400 km at dusk 0.08-0.19 levels either way; SKY_LITE
+  identical. A Python model of the loop (low Sun, 4-15-km stretches climbing 0-13 km) put the one-point form at
+  +10..+87% for a near piece and +14% for a whole climbing step; the nodes are within ~1-4%. Cost (interleaved, 3 reps):
+  sky pass +0.1-0.15 ms on the ground (storm at sunset, day; GPU frame +0.05-0.2, inside the rep spread), +0 from
+  orbit; `sky_ap` +0.01-0.03 ms; with the loop everywhere (sky_ap 0) the storm's sky pass +0.76 ms (13.35 -> 14.11). The gate at 0.15 instead of 0.5: same image, day sky pass +0.25. Dead ends: 4 nodes
+  (Rayleigh GL2 + Mie quartiles) no more accurate in-app and dearer; one loop over (step, piece) to share one copy of
+  the call — no faster; the cost is not the node count (a variant with nodes only on the piece still cost ~+0.15 ms
+  from orbit: the per-step bookkeeping).
 - **The band is capped at 12 tiles** (2026-10-28, issue 20261028_192855: zoomed to a 0.58-deg field on the refracted Sun
   from 96 km, a tile is 0.003 deg and the fixed 2-deg band covered the whole screen: every pixel ran the loop). Unchanged at
   a 30-deg field and wider. That view (1920x1009, interleaved): sky pass 34.6 -> 9.3 ms (FOV 5: 23.8 -> 10.9, FOV 40 10.4 ->

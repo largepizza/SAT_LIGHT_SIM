@@ -114,7 +114,84 @@ vec3 sunPathTauExact(vec3 p, vec3 d, vec3 BR, float BM)
     float odR = atmColumnInf(r, cz, H_R) * H_R, odM = atmColumnInf(r, cz, H_M) * H_M;
     return BR * odR + BM * 1.1 * odM + atmOzoneTau(p, d);
 }
+// Its Rayleigh and Mie columns alone (atmStepAttn carries them along a step by height).
+vec2 sunPathCols(vec3 p, vec3 d)
+{
+    float r = length(p), cz = dot(p, d) / r;
+    return vec2(atmColumnInf(r, cz, H_R) * H_R, atmColumnInf(r, cz, H_M) * H_M);
+}
 #endif
+
+// ── A step's sunlight to the eye, integrated over the step (2026-11-04) ──────────────────────────────────────────────
+// The single-scattering loops (sat_sky.frag's N_VIEW loop, sky_ap.comp) took the Sun's path and the eye's column at ONE
+// point of a step (the middle of its lit part) and applied that transmittance to the whole step's air. With the default
+// ~15-km steps that is the coarse part of the integral: the air is concentrated at the step's low end (Mie 1.2-km scale
+// height), and toward a low Sun the low end is also the most extinguished, so the middle's transmittance over-lit the
+// step, most for the Mie and the blue. Under a sunset storm the air in front of the clouds (a piece of the first step,
+// which took the WHOLE step's middle) read ~2x a 512-step reference: the blue-grey veil of issue_20261104_020521.
+// Here the transmittance is averaged over the stretch [t0, t1] of a step, weighted by each species' own density:
+//  - the Sun's columns are taken once (cS at height hRef: the call the loop already made) and carried to any point of
+//    the step by height, cS x exp(-(h - hRef) / H) (the Chapman column of a fixed Sun direction scales so; ozone as is);
+//  - the eye's columns to a point are the step start's plus the exact mean of exp(-h / H) for a height linear from hS;
+//  - Rayleigh: two Gauss-Legendre nodes, density-weighted; Mie: the median of its own column along the stretch
+//    (where its mass is: a step climbing 5 km holds most of its Mie in its first fifth).
+// Against a fine reference (a Python model of the loop, low Sun, 4-15 km stretches climbing 0-13 km): Rayleigh within
+// ~1%, Mie within ~4%, where the one-point form was +10..+87% for a piece and +14% for a whole 15-km step. In the app,
+// the report's storm with the loop everywhere: cloud mean RGB 154,100,84 -> 146,80,59 (512-step loop 146,80,57).
+// xyz: the Rayleigh-weighted transmittance (Sun -> air -> eye) over [t0, t1]; w: the Mie-weighted mean of its channels.
+// oo / b2: the ray's closed form r^2 = oo + t (b2 + t); tS / hS / eS (exp(-hS / H_R, H_M)) / odS: the step's start and
+// the eye's columns there; odMid: the eye's columns to the step's middle; mK: the step's Mie column over the pure Mie
+// one (the haze near clouds rides it). One loop over the nodes, not unrolled (the sky pass's speed follows its code
+// size). Not in SKY_LITE (its SPIR-V budget): it keeps the one-point form.
+// Whole steps: 1 = 3 nodes where the Sun's transmittance changes over them, 0 = the middle alone. The callers use 1 only
+// with the eye inside the atmosphere: from orbit the one-point loop is already within ~0.1 level of a 512-step one, and
+// the band there (the whole limb ring) paid +0.3-0.5 ms for the nodes. The piece in front of the clouds always takes them.
+const int kStepNodes = 1;
+vec4 atmStepAttn(float oo, float b2, float tS, float hS, vec2 eS, vec2 odS, vec2 odMid, float mK, float t0, float t1,
+                 float hRef, vec2 cS, vec3 oz, vec3 BR, float BM, int nodes)
+{
+    // One node, the loop's form before 2026-11-04 (the eye's columns to the step's middle, odMid, and the Sun's at hRef),
+    // where the Sun's transmittance hardly changes over the stretch: the spread of its exponent over the stretch's climb
+    // (the Sun's columns carried by height) under 0.5 (day, high air, the volume's short near slices); or where the eye
+    // sees nothing of it (red transmittance from the eye under e^-8: the far side of the limb); or when not asked (nodes
+    // 0). The eye's own column over a step changes near-linearly and the middle gets it right to ~1%. Toward a low Sun
+    // near the ground or along the limb: 3 nodes; always for nodes 2 (a stretch hRef is not the middle of).
+    float r0 = 0.0, r1 = 0.0, spread = 0.0;
+    if (nodes == 1) {
+        r0 = sqrt(max(oo + t0 * (b2 + t0), 0.0));
+        r1 = sqrt(max(oo + t1 * (b2 + t1), 0.0));
+        vec2 gH = exp(min(abs(r1 - r0) * kAtmInvH.xy, vec2(30.0))) - 1.0;
+        spread = BR.z * cS.x * gH.x + BM * 1.1 * cS.y * gH.y;
+    }
+    if (nodes == 0 || (nodes == 1 && (spread < 0.5 || BR.x * odS.x + BM * 1.1 * odS.y > 8.0))) {
+        vec3 a = exp(-(BR * (odMid.x + cS.x) + BM * 1.1 * (odMid.y + cS.y) + oz));
+        return vec4(a, dot(a, vec3(1.0 / 3.0)));
+    }
+    float L  = t1 - t0;
+    if (nodes == 2) {
+        r0 = sqrt(max(oo + t0 * (b2 + t0), 0.0));
+        r1 = sqrt(max(oo + t1 * (b2 + t1), 0.0));
+    }
+    // the Mie column's median along the stretch: x = -ln(1 - (1 - e^-k) / 2) / k, k = its climb in Mie scale heights
+    float k  = clamp((r1 - r0) * kAtmInvH.y, -30.0, 30.0);
+    float xM = abs(k) < 1e-3 ? 0.5 : -log(1.0 - 0.5 * (1.0 - exp(-k))) / k;
+    vec3  xs = vec3(0.2113249, 0.7886751, xM);
+    vec2  eRefInv = exp(min(hRef * kAtmInvH.xy, vec2(80.0)));   // (where 3 nodes run the air is low: no overflow)
+    vec3  sR = vec3(0.0), aM = vec3(0.0);
+    float wR = 0.0;
+    [[dont_unroll]] for (int j = 0; j < 3; ++j) {
+        float t   = t0 + xs[j] * L;
+        float h   = max(0.0, sqrt(max(oo + t * (b2 + t), 0.0)) - R_EARTH);
+        vec2  e   = exp(-h * kAtmInvH.xy);
+        float dh  = h - hS;
+        vec2  cam = odS + (abs(dh) > 8.0 ? (eS - e) * (kAtmH.xy / dh) : 0.5 * (eS + e)) * ((t - tS) * vec2(1.0, mK));
+        vec2  sun = cS * (e * eRefInv);   // (exp(-(h - hRef) / H), from the node's own exponentials)
+        vec3  a   = exp(-(BR * (cam.x + sun.x) + BM * 1.1 * (cam.y + sun.y) + oz));
+        if (j < 2) { sR += e.x * a; wR += e.x; }
+        if (j == 2) aM = a;
+    }
+    return vec4(sR / max(wR, 1e-30), dot(aM, vec3(1.0 / 3.0)));
+}
 
 // The Earth's shadow along a ray, EXACTLY (2026-10-13): the shadow of a sphere lit from infinity is the cylinder
 // |p - (p.s) s| < R_EARTH on the anti-Sun side (p.s < 0), so the ray ro + t rd is in it over one interval
