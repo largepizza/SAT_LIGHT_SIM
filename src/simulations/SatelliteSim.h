@@ -2970,6 +2970,10 @@ private:
     float kesslerAvoidance = 0.9f;    // kessler.avoidance: share of active-vs-debris encounters dodged
     float kesslerHorizonYears = 20.0f; // kessler.horizon_years: how far the cascade is simulated
     bool kesslerCollisionCloseup = true; // kessler.collision_closeup (no UI): pair collisions up close (stand-in, flash)
+    // kessler.dust_rings (no UI, the A/B): the dust rings (kesslerDustRings) and the bands' hand-over to them; off = the
+    // bands of 2026-10-31 alone (0.5-4 h)
+    bool kesslerDustRingsOn = true;
+    float kesslerDustRingGain = 1.0f; // kessler.dust_ring_gain (no UI): the rings' brightness x this
     float kesslerDustGain = 100.0f;    // kessler.dust_gain: the drawn dust clouds' brightness (x the physical estimate)
     float kesslerFireColor = 0.8f;     // kessler.fireball_colors: fragments tinted by material (0 = temperature only)
     float kesslerSmallReGain = 30.0f;  // kessler.small_reentry_gain: small fragments' fireballs (x physical: meteor-faint)
@@ -3048,12 +3052,31 @@ private:
     std::vector<uint8_t> kPoolHidden; // per slot: its GPU record is sent hidden until its birth
     static constexpr int32_t kHistKeepS = 7 * 86400;
     int32_t kShownSec = INT32_MIN, kHistPrunedUntil = INT32_MIN, kHistPrunedAt = INT32_MIN;
+    double kShownT = -1e300; // (2026-11-04) the continuous time the generations were last picked for (a step back re-gates)
     bool kReplayPending = false;
     void kesslerSetPoolOrbit(uint32_t j);
     double kesslerBornT(const kessler::PoolRec &r, size_t evSeen) const;
     void kesslerSetShown(uint32_t j, uint32_t gen, const kessler::PoolRec &rec);
     void kesslerHideUnborn(uint32_t j, uint32_t gen, double bornT);
     void kesslerShowUnborn(double tNow);
+    // (2026-11-03) Roster satellites a collision kills, held whole until its exact time (kesslerRosterHold).
+    struct KRosterHold
+    {
+        uint32_t sat = 0;
+        int32_t dead = 0, end = 0;         // the real words
+        int32_t heldDead = 0, heldEnd = 0; // the words sent meanwhile
+        double te = 0.0;
+    };
+    std::vector<KRosterHold> kRosterHolds;
+    struct KHoldScan
+    {
+        uint64_t key = 0;
+        int32_t sec = 0;
+        size_t evN = 0;
+    };
+    std::vector<KHoldScan> kHoldScans;
+    double kHoldLastT = -1e300; // the last frame's time: a step back forgets the scans (the holds re-arm)
+    void kesslerRosterHold(int32_t nowSec, double tNow);
     void kesslerShowGen(uint32_t j, int32_t sec, double tNow, size_t evSeen);
     const kessler::PoolRec *kesslerPoolGenWithDecay(uint32_t j, int32_t decaySec) const;
     void kesslerIndexReentry(uint32_t sat, int32_t sec);
@@ -3150,7 +3173,7 @@ private:
     // 1024 since the launches (2026-10-18): the Kessler dust takes at most kDustMax, the fireball trails run up to
     // kFireTrailMax, the rocket plumes and flames take the rest (SatelliteSimLaunches.cpp).
     static constexpr uint32_t kMaxDustClouds = 1024;
-    static constexpr uint32_t kDustMax = 384;
+    static constexpr uint32_t kDustMax = 640; // tube 240 + bands 144 + rings 256 (2026-11-03: was 384)
     static constexpr uint32_t kFireTrailMax = 704;
     struct GpuDustCloud
     {
@@ -3177,6 +3200,44 @@ private:
     // Each drawn band (harness `kessler state` -> dust.rings.bands): event index, age (s), arc (deg of its orbit),
     // width (km, 2 sigma), clumps, the band's light (amp, before the sky units).
     std::vector<std::array<double, 6>> kRingDbg;
+    // The dust RINGS (2026-11-03, issue_20261030_175418 round 2): every breakup's dust from ~12 h to 30 days old, merged
+    // by orbit plane into full rings around the Earth (kesslerDustRings). Sums per plane bin, light-weighted, the weight
+    // referenced to t0 (amp x exp((te - t0) / tau)) so whole hours of events are added / removed as sim time moves.
+    struct DustRingAcc
+    {
+        double W = 0.0, Nx = 0.0, Ny = 0.0, Nz = 0.0, A = 0.0, A2 = 0.0, wR2 = 0.0, wW2 = 0.0, K2 = 0.0, K2d = 0.0,
+               K2d2 = 0.0, Wd = 0.0, cnt = 0.0;
+        void add(const DustRingAcc &h, double s); // += s x h (s = -1 removes exactly what +1 added)
+    };
+    struct DustRingCache
+    {
+        const void *src = nullptr;
+        uint32_t rev = UINT32_MAX;
+        float gain = -1.0f;
+        double t0 = 0.0;                 // the weights' reference time (J2000 s)
+        int64_t hLo = 0, hHi = -1;       // the hours (J2000 s / 3600) summed into tot: [hLo, hHi]
+        std::unordered_map<uint64_t, DustRingAcc> tot;
+        // the hours fading in (centre age 11 -> 14 h), each hour's events merged by bin: drawn x the hour's ramp
+        std::unordered_map<int64_t, std::vector<std::pair<uint64_t, DustRingAcc>>> ramp;
+        // the ranking (kesslerDustRings: the full one is throttled; the kept top 64 are re-ranked each frame)
+        std::vector<uint64_t> topKeys;
+        uint32_t binsRanked = 0;
+        uint64_t rankedRebuilds = UINT64_MAX, ranks = 0;
+        int64_t rankedLo = 0, rankedHi = -1;
+        size_t rankedRamp = 0;
+        double tRank = 0.0;
+        std::chrono::steady_clock::time_point wallRank{};
+        uint64_t hoursScanned = 0;       // since the app started (harness)
+        uint64_t eventsScanned = 0;
+        uint64_t rebuilds = 0;
+    } kDustRings;
+    uint32_t kEventsRev = 0; // bumped whenever kEvents is cleared or rolled back (the ring cache rebuilds)
+    // This frame's rings (harness `kessler state` -> dust.shells): plane bins live, drawn, their clumps, CPU ms, and the
+    // drawn ones {a km, incl deg, light, radial / cross-track sigma km, clumps, mean age d, events, cut}.
+    uint32_t kShellBins = 0, kShellDrawn = 0, kShellPieces = 0;
+    double kShellMs = 0.0, kShellLight = 0.0;
+    std::vector<std::array<double, 10>> kShellDbg;
+    void kesslerDustRings(GpuDustCloud *out, uint32_t &n, uint32_t nMax, double t, double toSky, float pixelAngle);
     void kesslerFillDust(float pixelAngle);
     // Fills the fireballs for the current time into kFireBuf and appends their trails to the dust list (out, n).
     void kesslerFillFireballs(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull);
@@ -3194,10 +3255,19 @@ private:
         glm::dvec3 vrelL{0.0};    // the projectile's velocity relative to the target, in the target's (radial, along,
                                   // normal) frame at the impact
         double vrel = 0.0, massKg = 0.0;
+        double mT = 0.0, mP = 0.0; // the target's and the projectile's masses (kg, the world's: kesslerTypeMassKg)
+        glm::dvec3 pos{0.0};       // the impact (ECI, the event's place)
         uint32_t seed = 0;
         uint64_t key = 0;
+        size_t ev = 0;             // index in kEvents
     };
     std::vector<KCollVis> kCollVis;
+    // (2026-11-03) A pair collision's two bodies as the world builds the breakup (the target is the one at the event's
+    // place), their masses and the relative velocity the world carries onto the target (Kessler.cpp prepInputs).
+    bool kesslerCollPair(size_t evIdx, const kessler::Event &e, KCollVis &c) const;
+    double kesslerTypeMassKg(uint32_t typeIdx) const; // the world's TypeInfo::massKg for a satellite type
+    struct SelTransient;
+    bool kesslerCollTransientElems(const SelTransient &s, double t0, SatOrbitElems &e) const;
     static constexpr double kCollApproachS = 45.0;
     bool kesslerCollStandIn(const KCollVis &c, double t, glm::dvec3 &pos, glm::dvec3 &vel) const;
     SatOrbitElems kesslerCollStandInElems(const KCollVis &c, double t, const glm::dvec3 &P, const glm::dvec3 &V) const;
@@ -3205,6 +3275,18 @@ private:
     void kesslerCollisionJobs(double pixAngle, const glm::dvec3 &obsEci, std::vector<int> &jobs);
     uint64_t kCollMeshKey[8] = {};
     double kCollCacheT0 = -1e300, kCollCacheT1 = -1e300, kCollFlashDbg = 0.0;
+    // (2026-11-03) The impact frames: the frame whose sim interval holds a collision, and the one after it, show its
+    // flash at the peak at any time scale (kesslerFillCollisions). kCollPrevT: the last fill's sim time.
+    struct KImpactFr
+    {
+        uint64_t key = 0;
+        int frames = 0; // impact frames shown
+        double te = 0.0;
+        double ageAtCross = 0.0, frameDtAtCross = 0.0; // the crossing frame's sim age of the impact, its sim interval
+        double flashAtCross = 0.0; // the impact frames' point flash (the brightest of them; harness)
+    };
+    std::vector<KImpactFr> kCollImpactFr;
+    double kCollPrevT = -1e300, kCollImpactDbg = 0.0;
     size_t kCollCacheN = 0;
     const void *kCollCacheSrc = nullptr;
     std::vector<size_t> kCollCacheIdx;
@@ -6750,8 +6832,23 @@ private:
             urban = -1, beam = -1, aurora = -1, wind = -1, cloud = -1, timeScale = -1, following = -1, intro = -1, veg = -1,
             forest = -1, desert = -1, ice = -1, speed = -1, eas = -1, glareN = -1, glareSum = -1, beamSite = -1, musicGap = -1, rain = -1,
             thunder = -1, rocketMag = -1, stageMag = -1, fireballMag = -1, dustMag = -1, gust = -1, surfaceWind = -1,
-            rainDriven = -1, tornado = -1;
+            rainDriven = -1, tornado = -1, impact = -1;
     } ambD_;
+    // Collision sounds (2026-11-03, issue_20261030_180204; SatelliteSimAmbience.cpp impactStep): one hit on the "impact"
+    // layer's synth per pair collision drawn up close (kCollVis) whose impact falls in the step's sim interval. The
+    // parameters it was sent are kept for the harness (`kessler state` -> collision_sounds).
+    struct ImpactSound
+    {
+        size_t ev = 0;
+        double te = 0.0, distKm = 0.0, energyJ = 0.0, massKg = 0.0;
+        float gain = 0.0f, bass = 0.0f, cutoffHz = 0.0f, reverb = 0.0f, attackS = 0.0f, decayS = 0.0f, pan = 0.0f,
+              thumpHz = 0.0f, crack = 0.0f;
+        bool ground = false, sent = false;
+    };
+    std::vector<ImpactSound> impactSounds_; // the latest (at most 8)
+    float impactHoldS_ = 0.0f;              // the `impact` driver: a collision about to happen near the eye, or just done
+    void impactStep(double nowP, double now, float realDt);
+    bool impactParams(const KCollVis &c, const glm::dvec3 &eye, ImpactSound &s) const;
     // The upwell's other sources (2026-10-21, issue 20261021_002542 "Upwells": the stem should rise during launches,
     // near firing engines, by collision dust and re-entries). The code that DRAWS each source lists it here every frame
     // (ambUpwellSource: its direction from the eye in ENU, range, and apparent magnitude as seen from the camera, with

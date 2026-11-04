@@ -1263,25 +1263,42 @@ void World::planFragments(const BreakupResult &br, uint32_t refA, uint32_t refB,
     // draw beta from one distribution: the mass-weighted means match), kinetic energy is not (~half of it in the
     // centre-of-mass frame goes into the fragmentation). (2026-10-29 first cut: every piece 0.8 of the way to the
     // centre of mass: one cloud leaving at about half the closing speed, the two parents' debris indistinguishable.)
+    //
+    // (2026-11-03, issue_20261030_180204 "momentum doesn't appear to be conserved") The shares above keep momentum only
+    // on average, over a handful of large pieces drawn at random sides and masses (a Starmind pair's 66 records: the
+    // centroid off by tens of percent), so the records are then shifted together to make their mass-weighted mean
+    // velocity exactly the centre of mass's; the small population and the dust do the same (planSmall, apply's
+    // setWhere): until then both kept the TARGET's velocity, so the glowing dust and the grid's statistical orbits stayed
+    // with the target's formation however hard it was hit.
     glm::dvec3 vCom{0.0};
     const bool momentum = br.catastrophic && haveB && p.kind == EV_COLLISION && (p.mT + p.mP) > 0.0;
     if (momentum)
         vCom = (p.mT * sa.v + p.mP * sb.v) / (p.mT + p.mP);
+    struct Plan
+    {
+        glm::dvec3 dv;
+        double area, mass;
+        int kit;
+        bool sideB;
+    };
+    std::vector<Plan> plan(br.fragments.size());
+    glm::dvec3 sumMV(0.0);
+    double sumM = 0.0;
     for (size_t k = 0; k < br.fragments.size(); ++k)
     {
         const Fragment &f = br.fragments[k];
-        const bool sideB = f.side == 1 && haveB;
-        const uint32_t parent = sideB ? refB : refA;
-        glm::dvec3 dv = f.dv;
+        Plan &q = plan[k];
+        q.sideB = f.side == 1 && haveB;
+        const uint32_t parent = q.sideB ? refB : refA;
+        q.dv = f.dv;
         if (momentum)
         {
             const double beta = 1.0 - 0.8 * std::pow(hash01(seed, k, 36), 1.5);
-            dv += (1.0 - beta) * (vCom - (sideB ? sb.v : sa.v));
+            q.dv += (1.0 - beta) * (vCom - (q.sideB ? sb.v : sa.v));
         }
-        PoolRec r = recordFromState(sideB ? sb : sa, t, parent, dv);
-        double area = f.areaM2, mass = f.massKg;
-        r.type = (uint16_t)s.debrisType;
-        r.flux = (float)std::clamp(area / std::max(s.debrisModelArea, 1e-6), 1e-4, 1e3);
+        q.area = f.areaM2;
+        q.mass = f.massKg;
+        q.kit = -1;
         // A kit piece of the parent's kind, its area snapped to the nearest size class (flux 1: it can be drawn
         // as a mesh; the A/m, and so the drag, is the fragment's).
         const int kind = f.kind >= 0 ? f.kind : kindOf(parent, hash01(seed, k, 35));
@@ -1290,7 +1307,7 @@ void World::planFragments(const BreakupResult &br, uint32_t refA, uint32_t refB,
         for (int c = 0; c < 3; ++c)
             if (s.kitType[kind][c] >= 0 && s.kitArea[kind][c] > 0.0)
             {
-                const double d = std::abs(std::log(area / s.kitArea[kind][c]));
+                const double d = std::abs(std::log(q.area / s.kitArea[kind][c]));
                 if (d < bestD)
                 {
                     bestD = d;
@@ -1299,9 +1316,27 @@ void World::planFragments(const BreakupResult &br, uint32_t refA, uint32_t refB,
             }
         if (best >= 0)
         {
-            mass *= s.kitArea[kind][best] / area;
-            area = s.kitArea[kind][best];
-            r.type = (uint16_t)s.kitType[kind][best];
+            q.mass *= s.kitArea[kind][best] / q.area;
+            q.area = s.kitArea[kind][best];
+            q.kit = (int)s.kitType[kind][best];
+        }
+        const double m = q.mass * std::max(f.weight, 0.0);
+        sumMV += m * ((q.sideB ? sb.v : sa.v) + q.dv);
+        sumM += m;
+    }
+    const glm::dvec3 shift = (momentum && sumM > 0.0) ? vCom - sumMV / sumM : glm::dvec3(0.0);
+    for (size_t k = 0; k < br.fragments.size(); ++k)
+    {
+        const Fragment &f = br.fragments[k];
+        const Plan &q = plan[k];
+        const uint32_t parent = q.sideB ? refB : refA;
+        PoolRec r = recordFromState(q.sideB ? sb : sa, t, parent, q.dv + shift);
+        const double area = q.area, mass = q.mass;
+        r.type = (uint16_t)s.debrisType;
+        r.flux = (float)std::clamp(area / std::max(s.debrisModelArea, 1e-6), 1e-4, 1e3);
+        if (q.kit >= 0)
+        {
+            r.type = (uint16_t)q.kit;
             r.flux = 1.0f;
         }
         r.constIdx = s.debrisConst;
@@ -1370,9 +1405,37 @@ void World::addStructuralPieces(BreakupResult &br, uint32_t ref, int side, uint3
 
 // The small fragments: each statistical sample's orbit joins the density grid until drag brings it down. The plan (pure:
 // orbits, lifetimes, the re-entry streams) and its commit (the deposits, seeded by the event's index, and the streams).
-void World::planSmall(const BreakupResult &br, const State &st, double t, ApplyPrep &p) const
+void World::planSmall(const BreakupResult &br, const State &st, double t, uint32_t seed, ApplyPrep &p) const
 {
     double n = 0.0, dv2 = 0.0;
+    // (2026-11-03) A catastrophic pair collision's small population keeps momentum as the large pieces do
+    // (planFragments): each sample leaves on its side's velocity drawn a share toward the centre of mass, and the
+    // samples are shifted together so their mass-weighted mean is the centre of mass's velocity. (It took the target's
+    // velocity before: half or more of the broken-up mass stayed on the target's orbit.)
+    const bool momentum = br.catastrophic && !p.fromGrid && p.kind == EV_COLLISION && (p.mT + p.mP) > 0.0;
+    const glm::dvec3 vCom = momentum ? (p.mT * p.st.v + p.mP * p.sp.v) / (p.mT + p.mP) : st.v;
+    std::vector<glm::dvec3> vSmall(br.small.size(), st.v);
+    if (momentum)
+    {
+        glm::dvec3 sumMV(0.0);
+        double sumM = 0.0;
+        for (size_t k = 0; k < br.small.size(); ++k)
+        {
+            const Fragment &f = br.small[k];
+            const glm::dvec3 vSide = f.side == 1 ? p.sp.v : p.st.v;
+            const double beta = 1.0 - 0.8 * std::pow(hash01(seed, k + 1000, 36), 1.5);
+            vSmall[k] = vSide + (1.0 - beta) * (vCom - vSide) + f.dv;
+            const double m = f.massKg * std::max(f.weight, 0.0);
+            sumMV += m * vSmall[k];
+            sumM += m;
+        }
+        const glm::dvec3 shift = sumM > 0.0 ? vCom - sumMV / sumM : glm::dvec3(0.0);
+        for (glm::dvec3 &v : vSmall)
+            v += shift;
+    }
+    else
+        for (size_t k = 0; k < br.small.size(); ++k)
+            vSmall[k] = st.v + br.small[k].dv;
     struct Cand
     {
         double deathT, half, w, m;
@@ -1386,7 +1449,7 @@ void World::planSmall(const BreakupResult &br, const State &st, double t, ApplyP
         const Fragment &f = br.small[k];
         n += f.weight;
         dv2 += f.weight * glm::dot(f.dv, f.dv);
-        const Elems el = elemsFromState({st.r, st.v + f.dv});
+        const Elems el = elemsFromState({st.r, vSmall[k]});
         if (el.e >= 0.99 || el.a <= 0.0 || el.a * (1.0 - el.e) <= kRMean + 120000.0)
             continue;
         const double cdAm = std::clamp(2.2 * f.areaM2 / std::max(f.massKg, 1e-6), 1e-4, 10.0);
@@ -1772,7 +1835,7 @@ void World::prepOutputs(const Event &ev, ApplyPrep &p) const
             addStructuralPieces(p.br, p.tgt, 0, ev.seed);
         planFragments(p.br, p.tgt, kNoRef, p.st, p.st, ev.t, ev.seed, p);
     }
-    planSmall(p.br, p.st, ev.t, p);
+    planSmall(p.br, p.st, ev.t, ev.seed, p);
     p.outs = true;
 }
 
@@ -1866,7 +1929,13 @@ bool World::apply(Event ev)
         ev.nReal = (float)br.nReal;
         ev.catastrophic = br.catastrophic ? 1 : 0;
         ev.dustKg = (float)(s.dustShare * br.massKg * (br.catastrophic ? 1.0 : 0.3));
-        setWhere(p.st);
+        // (2026-11-03) The breakup's place, and the velocity its dust cloud (and the tracker's Watch, the bands) carries:
+        // the pair's centre of mass for a catastrophic pair collision (the debris' mean, planFragments / planSmall); it
+        // was the target's, so the cloud stayed with the target's formation after a head-on hit.
+        if (br.catastrophic && !fromGrid && (p.mT + p.mP) > 0.0)
+            setWhere({p.st.r, (p.mT * p.st.v + p.mP * p.sp.v) / (p.mT + p.mP)});
+        else
+            setWhere(p.st);
         {
             const double q1 = profClock();
             commitFragments(p, idx);

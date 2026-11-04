@@ -167,6 +167,7 @@ void SatelliteSim::initAmbience()
     ambD_.surfaceWind = a.registerDriver("surface_wind");
     ambD_.rainDriven = a.registerDriver("rain_driven");
     ambD_.tornado = a.registerDriver("tornado");
+    ambD_.impact = a.registerDriver("impact");
 
     std::string err;
     if (!a.load(kAmbiencePath, err))
@@ -863,6 +864,7 @@ void SatelliteSim::thunderStep(double now, const glm::dvec3 &eye, float realDt)
     thunderPrevValid_ = true;
     const double dS = now - nowP;
     const double move = glm::length(eye - eyeP);
+    impactStep(nowP, now, realDt); // satellite collisions (their own layer: heard in orbit too)
 
     // A source is done once its shell is ~50 km out (thunder is not heard that far), or time went back past it.
     for (size_t i = 0; i < thunderSources_.size();)
@@ -1038,6 +1040,93 @@ void SatelliteSim::thunderStep(double now, const glm::dvec3 &eye, float realDt)
     thunderHoldS_ = any ? 4.0f : std::max(thunderHoldS_ - std::max(realDt, 0.0f), 0.0f);
     if (ambience_)
         ambience_->set(ambD_.thunder, thunderHoldS_ > 0.0f ? 1.0f : 0.0f);
+}
+
+// ── Collision sounds (2026-11-03, issue_20261030_180204) ───────────────────────────────────────────────
+// Space carries no sound; the hit is the film's convention, timed with the flash (the "impact frame": the step whose
+// sim interval holds the impact, at any time scale; no hit across a jump, see thunderStep's resync) and shaped by what
+// hit what and how far off:
+//   energy E = the pair's kinetic energy in its centre-of-mass frame (0.5 mT mP / (mT + mP) vrel^2: what the breakup
+//   takes; a Starmind pair head-on at 15 km/s ~1.4e11 J, a 1-kg piece at 10 km/s 5e7 J), e01 = (log10 E - 6) / 6;
+//   closeness c = (1 + d / 2 km)^-0.75 in orbit (1 km 0.74, 10 km 0.26, 250 km 0.027); from the ground (the eye under
+//   100 km) the hit is a distant, low-passed boom instead: c = (1 + d / 300 km)^-0.75, cutoff ~220 Hz, a slow
+//   attack, a long dark tail.
+//   gain = (0.35 + e01) x c; bass = 0.6 e01 + 0.4 x mass term (log10 of the pair's mass, 10 kg .. 30 t);
+//   in orbit: cutoff 1.5 .. 9 kHz with c, attack 2 ms close .. 30 ms far, a crack up close, reverb send 0.6 c (+ e01).
+bool SatelliteSim::impactParams(const KCollVis &c, const glm::dvec3 &eye, ImpactSound &s) const
+{
+    s = ImpactSound{};
+    s.ev = c.ev;
+    s.te = c.te;
+    const double d = std::max(glm::length(c.pos - eye), 1.0);
+    s.distKm = d / 1000.0;
+    const double mu = c.mT * c.mP / std::max(c.mT + c.mP, 1e-6);
+    s.energyJ = 0.5 * mu * c.vrel * c.vrel;
+    s.massKg = c.mT + c.mP;
+    s.ground = glm::length(eye) - 6371000.0 < 100000.0;
+    const double e01 = std::clamp((std::log10(std::max(s.energyJ, 1.0)) - 6.0) / 6.0, 0.0, 1.0);
+    const double m01 = std::clamp((std::log10(std::max(s.massKg, 1.0)) - 1.0) / 3.5, 0.0, 1.0);
+    const double close = std::pow(1.0 + d / (s.ground ? 300000.0 : 2000.0), -0.75);
+    s.gain = (float)((0.35 + 1.0 * e01) * close);
+    s.bass = (float)std::clamp(0.6 * e01 + 0.4 * m01, 0.0, 1.0);
+    s.thumpHz = (float)(80.0 - 50.0 * s.bass);
+    if (s.ground)
+    {
+        s.cutoffHz = (float)(180.0 + 80.0 * e01);
+        s.attackS = 0.08f;
+        s.decayS = (float)(1.0 + 1.0 * s.bass);
+        s.reverb = 0.45f;
+        s.crack = 0.0f;
+    }
+    else
+    {
+        s.cutoffHz = (float)(1500.0 + 7500.0 * close);
+        s.attackS = (float)(0.002 + 0.028 * (1.0 - close));
+        s.decayS = (float)(0.2 + 0.6 * s.bass);
+        s.reverb = (float)std::clamp(0.6 * close * (0.6 + 0.4 * e01), 0.0, 1.0);
+        s.crack = (float)std::clamp(close * (0.4 + 0.6 * e01), 0.0, 1.0);
+    }
+    // Left / right: the impact's bearing against the camera's heading (as thunder's).
+    const glm::dvec3 ex(eci2enuX), ey(eci2enuY), ez(eci2enuZ);
+    const glm::dvec3 rel = c.pos - eye;
+    const double hE = glm::dot(rel, ex), hN = glm::dot(rel, ey);
+    const double hh = std::sqrt(hE * hE + hN * hN), ll = std::max(glm::length(rel), 1e-9);
+    s.pan = (float)(std::sin(std::atan2(hE, hN) - (double)glm::radians(camera.azDeg)) * hh / ll);
+    return s.gain > 0.004f;
+}
+
+void SatelliteSim::impactStep(double nowP, double now, float realDt)
+{
+    FPROF_SCOPE("impactStep");
+    if (!ambience_)
+        return;
+    const glm::dvec3 eye = glm::dvec3(obsECI);
+    const int li = ambience_->layerIndex("impact");
+    const int vi = (li >= 0) ? ambience_->layerVoice(li) : -1;
+    AmbientSynth *syn = (audio_ && vi >= 0) ? audio_->voiceSynth(vi) : nullptr;
+    bool near = false;
+    for (const KCollVis &c : kCollVis)
+    {
+        ImpactSound s;
+        if (!impactParams(c, eye, s))
+            continue;
+        // The layer is up through the approach (the voice is made the first time its layer is audible) and the tail.
+        if (now > c.te - kCollApproachS && now < c.te + 6.0)
+            near = true;
+        // Once per crossing: time run back over it and forward again plays it again, as the flash does.
+        if (!(c.te > nowP && c.te <= now))
+            continue;
+        if (syn)
+        {
+            const float ev[9] = {s.gain, s.bass, s.cutoffHz, s.reverb, s.attackS, s.decayS, s.pan, s.thumpHz, s.crack};
+            s.sent = syn->pushEvent(ev, 9);
+        }
+        impactSounds_.push_back(s);
+        if (impactSounds_.size() > 8)
+            impactSounds_.erase(impactSounds_.begin());
+    }
+    impactHoldS_ = near ? 6.0f : std::max(impactHoldS_ - std::max(realDt, 0.0f), 0.0f);
+    ambience_->set(ambD_.impact, impactHoldS_ > 0.0f ? 1.0f : 0.0f);
 }
 
 // ── Tonality ──────────────────────────────────────────────────────────────────────────────────────

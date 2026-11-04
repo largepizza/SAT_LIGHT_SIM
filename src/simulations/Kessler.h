@@ -611,7 +611,7 @@ private:
     void planFragments(const BreakupResult &br, uint32_t refA, uint32_t refB, const State &sa, const State &sb, double t,
                        uint32_t seed, ApplyPrep &p) const;
     void commitFragments(ApplyPrep &p, uint32_t eventIdx);
-    void planSmall(const BreakupResult &br, const State &st, double t, ApplyPrep &p) const;
+    void planSmall(const BreakupResult &br, const State &st, double t, uint32_t seed, ApplyPrep &p) const;
     void commitSmall(const ApplyPrep &p, uint32_t seed, Event &ev);
     void depositSmall(int32_t key, const ApplyPrep::Small &sm, uint64_t pseed);
     void flushDeposits();

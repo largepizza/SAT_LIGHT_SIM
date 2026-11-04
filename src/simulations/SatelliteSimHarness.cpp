@@ -3096,6 +3096,66 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 o["piece_km_at_t_min"] = mn(dT);
                 o["piece_vs_dust_now_km_median"] = med(dN);
                 o["piece_vs_dust_now_km_min"] = mn(dN);
+                // (2026-11-03, issue_20261030_180204) Momentum: the pieces' velocity now relative to the target's own
+                // orbit (where it would be had it not been hit), mass-weighted and by count, against the pair's
+                // centre-of-mass velocity relative to it (mP / (mT + mP) x the carried relative velocity), in the
+                // target's (radial, along, normal) frame now; by side (a piece's parent).
+                KCollVis cv;
+                if (e.kind == kessler::EV_COLLISION && kesslerCollPair(ev, e, cv))
+                {
+                    const SatOrbitState aN = satOrbitStateAt(orbitElemsOf(satOrbits[cv.tgt]), tNow);
+                    const glm::dvec3 R = glm::normalize(aN.posEci);
+                    glm::dvec3 Nn = glm::cross(aN.posEci, aN.velEci);
+                    Nn = glm::normalize(Nn);
+                    const glm::dvec3 Al = glm::cross(Nn, R);
+                    auto rtn = [&](const glm::dvec3 &v) { return glm::dvec3(glm::dot(v, R), glm::dot(v, Al), glm::dot(v, Nn)); };
+                    const glm::dvec3 pred = (cv.mP / (cv.mT + cv.mP)) * cv.vrelL;
+                    glm::dvec3 sumMV(0.0), sumV(0.0), sumMVs[2] = {glm::dvec3(0.0), glm::dvec3(0.0)};
+                    double sumM = 0.0, sumMs[2] = {0.0, 0.0};
+                    int cnt = 0, cntS[2] = {0, 0};
+                    const uint32_t refT = cv.tgt >= poolIdx0() ? ((cv.tgt - poolIdx0()) | kessler::kPoolBit) : cv.tgt;
+                    for (size_t j = 0; j < kPool.size(); ++j)
+                    {
+                        if (kPool[j].event != ev) continue;
+                        const SatOrbitElems pe = kessler::poolOrbitElems(kPool[j], (uint32_t)j);
+                        const glm::dvec3 dv = rtn(satOrbitStateAt(pe, tNow).velEci - aN.velEci);
+                        const double m = std::max((double)kPool[j].massKg * (double)kPool[j].weight, 1e-6);
+                        const int side = kPool[j].parent == refT ? 0 : 1;
+                        sumMV += m * dv;
+                        sumM += m;
+                        sumV += dv;
+                        ++cnt;
+                        sumMVs[side] += m * dv;
+                        sumMs[side] += m;
+                        ++cntS[side];
+                    }
+                    auto v3 = [](const glm::dvec3 &v) { return nlohmann::json{v.x, v.y, v.z}; };
+                    nlohmann::json mo;
+                    mo["target_kg"] = cv.mT;
+                    mo["projectile_kg"] = cv.mP;
+                    mo["vrel_mps"] = cv.vrel;
+                    mo["vrel_rtn"] = v3(cv.vrelL);
+                    mo["pred_com_dv_rtn"] = v3(pred);
+                    mo["pred_com_dv_mps"] = glm::length(pred);
+                    if (cnt > 0 && sumM > 0.0)
+                    {
+                        const glm::dvec3 mw = sumMV / sumM, cw = sumV / (double)cnt;
+                        const glm::dvec3 ph = glm::length(pred) > 1e-6 ? pred / glm::length(pred) : glm::dvec3(0.0);
+                        mo["pieces"] = cnt;
+                        mo["pieces_by_side"] = {cntS[0], cntS[1]};
+                        mo["mass_kg_by_side"] = {sumMs[0], sumMs[1]};
+                        mo["centroid_dv_rtn_massw"] = v3(mw);
+                        mo["centroid_dv_rtn_count"] = v3(cw);
+                        mo["centroid_dv_mps_massw"] = glm::length(mw);
+                        mo["ratio_along_pred_massw"] = glm::length(pred) > 1e-6 ? glm::dot(mw, ph) / glm::length(pred) : 0.0;
+                        mo["ratio_along_pred_count"] = glm::length(pred) > 1e-6 ? glm::dot(cw, ph) / glm::length(pred) : 0.0;
+                        mo["perp_mps_massw"] = glm::length(mw - glm::dot(mw, ph) * ph);
+                        for (int s = 0; s < 2; ++s)
+                            if (sumMs[s] > 0.0)
+                                mo[s == 0 ? "side_target_dv_rtn" : "side_projectile_dv_rtn"] = v3(sumMVs[s] / sumMs[s]);
+                    }
+                    o["momentum"] = mo;
+                }
                 arr.push_back(o);
             }
             r["events"] = arr;

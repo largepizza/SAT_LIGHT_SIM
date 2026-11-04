@@ -178,6 +178,20 @@ Location- and context-aware ambience on its own bus under the music (Settings �
   (`ambience_solos.satcmd`); samples are normalised to −24 LUFS. The table's gains then set the mix
   so each tour stop totals ≈ 10 dB under the music (≈ −35 against its ≈ −25 LUFS). No tonal
   "melody" content: hums are noise through resonances, beeps are data bursts.
+- **Collision sounds (2026-11-03, issue_20261030_180204; `impactStep` in SatelliteSimAmbience.cpp, `ImpactSynth`
+  "impact", layer `impact` in group space, driver `impact`).** Space carries no sound: the hit is the film's
+  convention, one per pair collision drawn up close (kCollVis), sent when the step's sim interval (thunderStep's
+  nowP, now] holds the impact (with the flash's impact frame; none across a > 20 s jump, so none at 1 h/s). The
+  driver is up from the projectile's approach (45 s) to 6 s after, so the voice exists before the hit. Parameters:
+  energy E = 0.5 mT mP / (mT + mP) vrel^2, e01 = (log10 E - 6) / 6; closeness (1 + d / 2 km)^-0.75 in orbit,
+  (1 + d / 300 km)^-0.75 with the eye under 100 km; gain (0.35 + e01) x closeness; bass 0.6 e01 + 0.4 (log10 mass - 1)
+  / 3.5 (a sine falling an octave onto 80 - 50 bass Hz); orbit: cutoff 1.5-9 kHz, attack 2-30 ms, a 15-ms crack and a
+  reverb send 0.6 x closeness, t60 0.4 + 0.8 bass; ground: cutoff ~250 Hz, attack 80 ms, decay 1 + bass s, no crack,
+  t60 1.4 + bass. The impact synth is NOT high-passed (its thump is the point). Measured (`audio record ... solo=impact`,
+  the report's Starmind pair, 1.4e11 J, mass 5000 kg): 0.3 km gain 1.09, crack 0.82, cutoff 8.3 kHz, reverb 0.51, LUFS
+  -29.5; 256 km gain 0.032, cutoff 1.7 kHz, LUFS -56.6; ground 579 km gain 0.54, cutoff 249 Hz, centroid 52 Hz,
+  LUFS -33.8. Harness `kessler state` -> `collision_sounds`, `collision_sound_preview`. Offline (muted harness), a hit
+  pushed between recordings waits in the synth's queue and plays at the start of the next `audio record`.
 - **Every synth output is high-passed** (wind 45 Hz, surf 55 Hz, disk 60 Hz, hum 32 Hz, saw 40 Hz, pad
   110 Hz, bass 28 Hz) and the
   sample beds per source in `make_ambience.py`: the first wind was a sub-bass wall (brown noise

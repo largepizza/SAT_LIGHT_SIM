@@ -66,14 +66,23 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   recorded. A catastrophic breakup of a formation member damages each cluster neighbour (p 0.6, `damageCluster`:
   the cloud sweeps the ring within minutes, slowly, so they die and tumble). A cratering hit kills a satellite
   with p 1/2.
-- **Collisions keep momentum, as two streams (2026-10-30, issue 20261029_213225, kCacheVersion 19; the shipped prebake is
-  still version 18 until it is rebuilt, so the cascade is sampled live meanwhile):** a catastrophic pair collision's
-  fragment keeps a share beta = 1 - 0.8 u^1.5 (u hashed per piece: 0.2 .. 1, mean 0.68) of its parent's velocity relative
-  to the pair's centre of mass, plus the ejecta kick (`planFragments`). Momentum is kept (both sides draw beta from one
-  distribution), about half the centre-of-mass kinetic energy goes into the breakup, and the debris spreads ALONG the
-  relative velocity: each parent's pieces run on its own way, the contact zone's slower in the middle (hypervelocity
-  impacts: most material never meets the other body, and a projectile's debris cloud runs on through the target). The
-  2026-10-29 first cut moved every piece 0.8 of the way to the centre of mass: one cloud, the parents indistinguishable.
+- **Collisions keep momentum, as two streams, exactly (2026-10-30, issue 20261029_213225; 2026-11-03,
+  issue_20261030_180204, kCacheVersion 20; the shipped prebake is still version 18 until it is rebuilt, so the cascade is
+  sampled live meanwhile):** a catastrophic pair collision's fragment keeps a share beta = 1 - 0.8 u^1.5 (u hashed per
+  piece: 0.2 .. 1, mean 0.68) of its parent's velocity relative to the pair's centre of mass, plus the ejecta kick
+  (`planFragments`); then all the records are shifted together so their mass-weighted mean velocity IS the centre of
+  mass's (the shares keep momentum only on average: over a breakup's few dozen records drawn at random sides and masses
+  the centroid was tens of percent off). The small population does the same (`planSmall`: each sample on its side's
+  velocity drawn toward the centre of mass, then the samples shifted to it), and the event's `vel` (the dust cloud's
+  orbit, the tracker's Watch, the bands) is the centre of mass's. Until 2026-11-03 both the small population and the
+  dust kept the TARGET's velocity: after a head-on hit half the broken-up mass and the glowing dust stayed with the
+  target's formation (the report's "debris hangs out with the satellites in formation"). The debris spreads ALONG the
+  relative velocity: each parent's pieces run on its own way, the contact zone's slower in the middle. Measured
+  (harness `kessler poscheck ev=` -> `momentum`, the report's Starmind pair, 2500 kg each, 15.0 km/s head-on, 66
+  records): the centroid relative to the target's own orbit 7502 m/s against 7502 predicted at +10 s (ratio 1.000,
+  58 m/s across), 0.997 at +60 s (orbital divergence); the target's pieces 2.5 km/s and the projectile's 14.0 km/s along
+  the impactor's travel. The 2026-10-29 first cut moved every piece 0.8 of the way to the centre of mass: one cloud,
+  the parents indistinguishable.
 - **A pair collision seen up close (2026-10-30, `kesslerFillCollisions` / `kesslerCollisionJobs`, render only):** the
   engine finds a pair together at its step's sample time and spreads the event through the 6-h step, so at the impact
   the projectile's own record is thousands of km away (apply carries the encounter onto the target). For the pair
@@ -81,11 +90,49 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   the relative velocity in its radial / along / normal frame x (t - te)) for the last `kCollApproachS` (45 s): its mesh
   in its own reserved launch chunk (`kCollMeshSlots` 8, below the arm's; not selectable), a sunlit point while
   unresolved (evaluator photometry, kFireBuf). At the impact a flash (kinetic energy of the smaller body x 1e-3 over
-  ~0.2 s: a Starmind pair at 2.3 km/s ~-12 mag at 1000 km; capped at flare 400, decaying 0.12 s / 0.7 s) and an emissive
-  fireball expanding at 0.15 of the closing speed for 3 s, its resolved peak capped at ~1.2 of displayed white. The real
+  ~0.2 s: a Starmind pair at 2.3 km/s ~-12 mag at 1000 km; capped at flare 400, light curve 0.8 e^(-t/0.08 s) +
+  0.2 e^(-t/0.3 s)) and an emissive fireball expanding at 0.15 of the closing speed for 3 s, white cooling to orange
+  (e^(-t/0.2 s)). Its resolved peak is capped at ~1.2 of displayed white at its hot size (its size at 30 ms, sHot),
+  and its surface brightness then falls as (sHot / s)^2 as the vapour grows. The real
   projectile record is untouched (it vanishes far away at the same second). The candidate list is cached over half an
   hour and rebuilt when the log changes. Harness `kessler state` -> `collisions_near` (in_s, vrel, standin,
   `standin_to_target_m`, target_range_m), `collision_flash`.
+  - **Impact timing (2026-11-03, issue_20261030_180204):** the roster's dead / end words are whole seconds, so a target
+    hit at te = 2702.14 s was drawn dead (its tumble swung the arrays into the Sun: a white "torn" shape) from 2702.0 s,
+    then gone, and so were the ring neighbours the breakup kills: "they turn into debris before the collision".
+    `kesslerRosterHold` keeps every roster satellite a collision drawn up close kills (its two bodies, and any satellite
+    whose dead or end word is that second within 200 km of the impact) at the words it had until the continuous time
+    reaches te, then puts the real words back (never over a word the worker rewrote). Pool pieces are gated by their
+    event's time since 2026-10-30 (`kesslerShowGen`). Frame by frame on the report: the target drawn whole at te-0.141
+    / -0.050 / -0.010 s (it was dead from te-0.142 s), 4 satellites held, the 11 new records appear at te.
+  - **Scrubbing back re-arms both gates (2026-11-04):** a step back in time (`tNow < kShownT`) revisits the generations
+    born in the second it lands in (`[lo, hi]` instead of `(lo, hi]`), and `kFirstBounds` is kept (pruned with the
+    indexes after 30 days) instead of dropped once its second was entered; `kesslerRosterHold` forgets its scans on a
+    step back (`kHoldLastT`). Before, after watching an impact once, a jump from te + 1 ms / 0.2 / 0.5 / 1 s back to
+    te - 0.05 s showed the breakup's pieces (a white starburst of its own debris) and no held satellites, and so did a
+    1 h 45 min rewind and stepping forward. Measured on the report: `collisions_near` -> `pieces_shown` 0 and 4 roster
+    holds at te - 0.05 / - 0.01 s on the first pass, after each of those rewinds and after a 6300-s rewind; 66 pieces at
+    te + 1 ms every time; the rewound frames match the first pass (mean abs diff <= 0.28, the -0.05 vs -0.01 s floor 0.50).
+  - **Impact frames:** the frame whose sim interval (last fill's time, now] holds te, and the next one, show the flash at
+    its peak whatever the time scale (at x1000 a frame is ~16 s: the 3-s flash fell between frames). Harness `kessler
+    state` -> `impact_frames` (frames_shown, age_at_cross_s, frame_dt_at_cross_s, flash_at_cross), `impact_frame`,
+    `roster_holds`.
+  - **The fireball does not engulf a nearby camera (2026-11-03, issue_20261030_180204 follow-up):** the cap used to
+    grow with s^2, so the vapour at +0.5 s (sigma ~1.1 km at 15 km/s) was as bright per pixel as the young fireball,
+    and its 0.25 / 0.7-s tail kept it at 0.13 of the peak: from the reporter's shot 4 (~1 km off) 98% of the frame was
+    tinted brown at +0.5 s. With the hot-size cap and the 0.3-s tail: 7.7% (the mask's floor, moving points), the
+    point flash at the crossing 375 -> 361, still flare 360 in the impact frame at 16 s and 60 s frame steps. Mask: luma
+    over the te-0.24 s frame by > 8/255.
+  - **The impactor is selectable:** the stand-in is listed as a transient (`SelTransient` kind 10, a = the projectile's
+    satellite) by `kesslerFillCollisions`; a click on its point or its mesh (`rocketMeshSlotToTransient` maps the
+    collision chunk) selects it, and the selection's slot takes its state and own attitude (`kesslerCollTransientElems`).
+    The panel reads "<name> - on a collision course, impact in x s (v km/s closing)"; it lapses 2 s after the impact.
+    `collisions_near` -> `standin_screen_px` is where to `select at`.
+  - **Masses:** the pair's masses are the world's (`kesslerTypeMassKg`: the type's, else `defaultMassKg`; a Starmind is
+    2500 kg — the first cut read 500 for types without a mass), and the flash's fireball rides the mass-weighted
+    centre of mass along the relative velocity turned into the frame at te (it used the sample time's ECI vector, up to
+    6 h of orbit off).
+  - **The sound:** one hit per collision on the `impact` layer (sound.md "Collision sounds").
 - **The dust up close:** a cloud starts at 0.2 s of spread (was 1 s: ~sv wide at once), and a resolved piece's light is
   its surface brightness (pi x radiance per unit solar irradiance x "Dust cloud brightness"), blended geometrically from
   the point units (toSky, ~10 mag over a surface's physical brightness) as its smallest sigma goes 1.5 -> 8 half-res px:
@@ -165,6 +212,45 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   0.29 % -> 3.13 % of the frame, bright specks -1.5 %, no new white. One event from 30 000 km: 14.9 deg at 31 min,
   74.3 deg at 2 h. Harness `kessler state` -> `dust.rings` {pieces, arc_deg_max, arc_deg_sum, width_km_max,
   bands[{ev, age_s, arc_deg, width_km, pieces, amp}]}.
+  Since 2026-11-03 the bands run from 0.5 h until the event's HOUR is 11-14 h old (they fade by exactly the share the
+  rings take: `shellRamp`, by the hour's centre age), each band's light also x exp(-age / 3 d), and a long band's
+  clumps are at least 0.8 of their spacing along the track (`kClumpsMax` 36): a wrapped band's 26 clumps sat 1 660 km
+  apart with a 400-km sigma, a string of beads.
+- **The dust RINGS (2026-11-03, issue_20261030_175418 round 2: "dust clouds disperse as rings around the Earth";
+  `kesslerDustRings`).** Every breakup's dust from ~12 h to 30 days old is a full ring around the Earth, merged by
+  orbit plane: bins of 25 km in a, 1 deg in i, 4 deg in the node (a late cascade has hundreds of breakups an hour,
+  ~150 000 events in the window, 2 224 plane bins at day 61). A bin keeps light-weighted sums (light, normal, a, a^2,
+  the fragments' widths, the node-spread terms, mean age) with the weight amp x exp((te - t0) / 3 d), so as sim time
+  runs only the HOUR entering (centre age 11 -> 14 h, faded in) and the hour leaving (30 d) are scanned, whole hours
+  added and removed exactly; a rollback / clear (`kEventsRev`), a gain change, a time jump or a 5-day-old t0 rebuilds
+  it (one scan of the window). Only near-circular orbits with the perigee above 150 km count (a sub-orbital breakup
+  was a 3 600-km "ring" inside the Earth and, as the narrowest, took the budget). Widths: the fragments' orbit-averaged
+  radial 2.55 sv / n and cross-track sv / (n sqrt 2) sigmas (20-250 km), + the spread of a and of the planes in the bin,
+  + the node spread k x age (k = a sin i x the rms difference of the J2 node rates from the kicks' da and di, / sqrt 2:
+  the pool's records carry exactly this relative J2, so the ring widens where its pieces do; a 51.6-deg ISS ring 95 ->
+  151 -> 302 km at 1 / 3 / 7 days), capped at 1 500 km. Light: the bin's sum x exp(-age / 3 d), knee'd at 2e4
+  (above it as the square root: a lone satellite's ring is ~1e4, a cascade bin's raw sum ~6e6 at x1000) x 120
+  (`kShellGain`) x `kessler.dust_ring_gain` (no UI, default 1), in the point sources' units. Drawn: the brightest bins
+  by surface brightness, 24-64 clumps each (spacing D = 0.8 sqrt(a wR), along-track sigma 0.6 D, so a straight clump's
+  bow at 2 sigma stays under half the radial width: with 0.8 D sigmas and D = sqrt(4 a w) the ring's edge was a
+  zig-zag, a star around the Earth), `kShellBudget` 256 Gaussians (kDustMax 384 -> 640), the ring at the cut fading by
+  priority over 1x -> 1.5x the cut (2x drew 3 rings of the budget in a cascade). The full ranking (~1-2 ms for 8 000
+  bins) runs when the sums change or sim time moves 10 min, at most every 0.25 s of wall time; the kept top 64 are
+  re-ranked each frame. **Cost** (interleaved A/B in one app, 3 reps, `kessler.dust_rings` false = the bands of
+  2026-10-31 alone): the report's view at day 61 (170 km, cascade, x1000) GPU 16.45 vs 16.41 ms (cloud_march +0.18),
+  a second set +0.74 (cloud +0.60); the cascade from 12 000 km +0.11 (+0.10); one ring +0.00 (+0.05); CPU frame
+  +0.26 / +0.38 / -0.1 ms (the rings' own pass 0.05-0.12 ms; the rest is the bands' longer window); memory: the bin
+  table 301 KB at day 61 (1.1 MB before the perigee filter), the dust buffer +20 KB. **Look:** at the report's view
+  (x1000) the rings add a haze over 46 % of the frame (+10 display levels, 100 % of directions), from 12 000 km on
+  the night side a halo around the Earth over 100 % of the angles (5 % of the frame, +15 levels); point debris
+  unchanged (bright specks 754 vs 775), no new white. A LONE satellite's ring (a Starmind breakup, 9.8e3, cross-track
+  57 -> 61 -> 79 km at 1 / 3 / 7 d) is drawn but below visibility at x100: the dust's optical depth is its light (the
+  Gaussian's w), so a large `dust_ring_gain` makes a thin ring opaque and self-shadowed, not brighter (from 25 000 km:
+  44 % of the angles at x10, 29 % at x100, 1 % at x300). Seen from inside Earth's umbra (an observer on the antisolar
+  line far out) nothing sunlit is drawn at all, the rings included (an existing renderer limit). Harness `kessler
+  state` -> `dust.shells` {bins, drawn, pieces, light, cpu_ms, cache_bins, cache_ramp_hours, cache_hours,
+  hours_scanned, events_scanned, rebuilds, ranks, ring_gain, cache_bytes, top_normal_eci, rings[{a_km, incl_deg,
+  light, sigma_radial_km, sigma_cross_km, clumps, mean_age_d, events, cut, pri}]}.
 - **The engine** (`engineSample`, cube method, Liou 2006): every 6 h of sim time one sample at the step's middle,
   20-km cubes among the roster and the large pieces (sorted in parallel: keys are unique, so the order is the
   same), P = vRel x pi (rA + rB)^2 x dt / V x weights x rate multiplier, x (1 - avoidance) when one is a working

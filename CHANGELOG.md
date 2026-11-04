@@ -74,10 +74,19 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **What you see:** dead satellites tumbling and glinting; debris pieces drawn close up as torn solar arrays,
   radiator sections and pieces of bus, appearing at the impact's own instant (not a fraction of a second early,
   converging on the impact point); a glowing dust cloud along each breakup's orbit, which from half an hour to
-  four hours old disperses into a dust band around the parent's orbit (a chain of clumps covering part of the
-  orbit, a whole ring once it has wrapped) instead of staying a round cloud; re-entry fireballs with a
+  half a day old disperses into a dust band around the parent's orbit (a chain of clumps covering part of the
+  orbit, a whole ring once it has wrapped) instead of staying a round cloud, and then stays a dust RING around
+  the Earth for days to weeks, fading and widening across its orbit as the fragments' planes drift apart (in a
+  late cascade the rings of a shell overlap into a faint band of dust across the sky); re-entry fireballs with a
   breakup flash, fragment trains and material colours (aluminium white, copper green, sodium yellow, lithium
   crimson); and once the cascade runs, many small meteor-like streaks.
+- **Collisions up close:** the projectile flies in on its real approach line and can be selected; the satellites a
+  collision kills stay whole in their own attitude until the instant of impact; the impact is a flash at its peak in
+  the frame that holds it at any time warp (white-hot and brief: it no longer lingers as a brown glow over a nearby
+  camera), with a sound (energy, mass and distance shape it: a fast crack and a short
+  reverb up close, a low-passed boom from the ground); and the debris, its dust and its small fragments carry the
+  pair's momentum (a head-on hit sends the cloud along the impactor's path instead of leaving it with the
+  formation).
 - **Explode** (Info window) breaks any satellite or debris piece up with one click, at any date; the debris is
   there the same frame. A breakup before the storm starts the cascade then (computed in the background while the
   clock holds briefly); going back in time undoes it. A second click while that runs is queued, not waited for.
