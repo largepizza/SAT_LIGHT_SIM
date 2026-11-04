@@ -52,5 +52,12 @@ User guide and command reference: **docs/HARNESS.md** (keep its table in step wi
   the leading suspect for the machine freezes (docs/FREEZES.md, still unresolved; BIOS Gen3 did not
   fix them). For many batches use one `live.py` app, not a `run.py` loop. Freeze forensics
   (`blackbox.py`, `crashes.py`, `overnight.py`) are opt-in: `run.py --forensics`.
+- **`shaders reload sky=` recreates the sky TAA images, and whatever samples them must be rewritten**
+  (2026-11-04): the rain particles' descriptor set reads the two TAA history colour images (their background floor).
+  `createSkyTaaResources` now ends with `writeRainDescriptors`; before, only the resize path rewrote the set (through
+  `recreateComputeScaledTargets`), so after a sky reload the next rain draw read freed image views. In a storm the
+  second reload of a run killed the app with no message (`.worktrees/hq-ambient/harness_runs/hq-ambient-diag`, crash
+  witness; the first survived, likely by the driver reusing the freed allocations). The boot chooser's on-demand full
+  sky (`ensureFullSkyPipelines`) had the same hole. A new consumer of the sky TAA images goes in that function's tail.
 - **The loading screen runs in harness launches too** (its frames precede the script).
   `run.py --boot-capture` writes them to `captures/boot_NN.png`; see *Loading screen* below.
