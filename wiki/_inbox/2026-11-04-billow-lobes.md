@@ -18,6 +18,12 @@ on one envelope at matched amplitude, the surface's mean-curvature skew is -0.48
 interior density within ~0.006 H, a flat base, lobe sizes with about equal volume per octave of radius. Lobes finer
 than ~60 m (on a 1 km cloud) are below the 128^3 shape volume's 14.8 m texel: the detail volume's erosion has them.
 
+The same setting swaps the DETAIL (erosion) volume to billows too (noise mode 5): R 4/8/16/32 and G 16/32/64 cells
+at the 1.8 km `detail_period_m`, x0.6 per octave, flattened hemispheres smooth-unioned (log-sum-exp, k 8, so the
+carved creases stay soft) and remapped to the smooth-F1 channels' mean / spread. With the erosion included in the
+WDAS comparison: curvature skew +0.27 (smooth-F1 erosion +1.04, the old caps + smooth F1 +1.80, WDAS -0.32), surface
+per volume 0.089 (0.082 / 0.076 / WDAS 0.096). Radii under ~14 m (the detail texel) remain out of reach.
+
 ## History
 Replaces "Cap lobes (0/1)" (`shape_caps`, 2026-10-22) as the default; the key changed so saved settings with caps on
 move to billows. Tried and dropped: overlapping hemispheres R 0.9-1.25 (few creases, skew +1.78), a cascade putting

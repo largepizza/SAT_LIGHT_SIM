@@ -113,7 +113,7 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   at sunset), far cloud shadows and god rays, and mid / high layer shadows at any distance.
 - **Billowier cumulus.** The cauliflower lobes on cumulus sides and tops come from a new "billow" noise matched
   against a production cumulus model (the Disney WDAS cloud): round lobes of many sizes meeting in sharp creases,
-  instead of pointed bumps over broad valleys. Settings > Weather, "Lobe noise (0 cones, 1 caps, 2 billows)";
+  instead of pointed bumps over broad valleys, down to the fine erosion detail. Settings > Weather, "Lobe noise (0 cones, 1 caps, 2 billows)";
   billows are the default. Same cost per frame.
 - **Storms.** Cumulonimbus towers grouped into storm cells (a dominant tower and a flanking line), flared anvil
   heads under the tropopause, overshooting domes, rain shafts under the towers, cumulus that rises around storms.

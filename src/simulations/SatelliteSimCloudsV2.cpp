@@ -281,11 +281,14 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     // ── Noise bakes (cloud_v2_noise.comp, modes 0/1/2) ──
     {
         // 0 shape, 1 detail, 2 meso, 3 the shape with cap-profile lobes (2026-10-22: same seed as 0), 4 the shape with
-        // billow lobes (2026-11-04, same seed)
-        constexpr int kBakes = 5;
-        VkImage *imgs[kBakes] = {&cv2ShapeImg, &cv2DetailImg, &cv2MesoImg, &cv2ShapeCapsImg, &cv2ShapeBillowImg};
-        VkDeviceMemory *mems[kBakes] = {&cv2ShapeMem, &cv2DetailMem, &cv2MesoMem, &cv2ShapeCapsMem, &cv2ShapeBillowMem};
-        VkImageView *views[kBakes] = {&cv2ShapeView, &cv2DetailView, &cv2MesoView, &cv2ShapeCapsView, &cv2ShapeBillowView};
+        // billow lobes (2026-11-04, same seed), 5 the detail with billow lobes (the detail's seed)
+        constexpr int kBakes = 6;
+        VkImage *imgs[kBakes] = {&cv2ShapeImg, &cv2DetailImg, &cv2MesoImg, &cv2ShapeCapsImg, &cv2ShapeBillowImg,
+                                 &cv2DetailBillowImg};
+        VkDeviceMemory *mems[kBakes] = {&cv2ShapeMem, &cv2DetailMem, &cv2MesoMem, &cv2ShapeCapsMem, &cv2ShapeBillowMem,
+                                        &cv2DetailBillowMem};
+        VkImageView *views[kBakes] = {&cv2ShapeView, &cv2DetailView, &cv2MesoView, &cv2ShapeCapsView, &cv2ShapeBillowView,
+                                      &cv2DetailBillowView};
         for (int i = 0; i < kBakes; ++i)
         {
             ctx.createImage(kCv2NoiseRes, kCv2NoiseRes, VK_FORMAT_R8G8B8A8_UNORM,
@@ -314,7 +317,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         VkDescriptorPool pool = VK_NULL_HANDLE;
         vkCreateDescriptorPool(dev, &pi, nullptr, &pool);
         VkDescriptorSet sets[kBakes];
-        VkDescriptorSetLayout lays[kBakes] = {bl, bl, bl, bl, bl};
+        VkDescriptorSetLayout lays[kBakes] = {bl, bl, bl, bl, bl, bl};
         VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         ai.descriptorPool = pool;
         ai.descriptorSetCount = kBakes;
@@ -334,7 +337,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
             VkWriteDescriptorSet w = imageWrite(sets[i], 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &ii);
             frameSafeUpdateDescriptorSets(dev, 1, &w, 0, nullptr);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pl, 0, 1, &sets[i], 0, nullptr);
-            int32_t pcv[2] = {i, i >= 3 ? 17 : 17 + i * 31};   // the cap / billow shapes: the shape's seed
+            int32_t pcv[2] = {i, i == 5 ? 17 + 31 : i >= 3 ? 17 : 17 + i * 31};   // cap / billow shapes: the shape's seed; 5: the detail's
             vkCmdPushConstants(cmd, pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, 8, pcv);
             vkCmdDispatch(cmd, kCv2NoiseRes / 8, kCv2NoiseRes / 8, kCv2NoiseRes / 8);
             genMips3D(cmd, *imgs[i], kCv2NoiseRes, kCv2NoiseMips);
@@ -663,7 +666,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         VkDescriptorBufferInfo v2Info{cv2ParamsBuf, 0, sizeof(GpuCloudV2Params)};
         VkDescriptorImageInfo weather{cv2RepeatSampler, cv2WeatherView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo shape{cv2RepeatSampler, cv2ShapeActiveView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        VkDescriptorImageInfo detail{cv2RepeatSampler, cv2DetailView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkDescriptorImageInfo detail{cv2RepeatSampler, cv2DetailActiveView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo meso{cv2RepeatSampler, cv2MesoView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo morph{cv2RepeatSampler, cv2MorphView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo night{earthNightSampler ? earthNightSampler : noiseSampler,
@@ -1119,11 +1122,11 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     cv2ParamsMem = VK_NULL_HANDLE;
     cv2ParamsMapped = nullptr;
     VkImageView *views[] = {&cv2WeatherView, &cv2ShapeView, &cv2DetailView, &cv2MesoView, &cv2MorphView, &cv2MieView,
-                            &cv2ShapeCapsView, &cv2ShapeBillowView};
+                            &cv2ShapeCapsView, &cv2ShapeBillowView, &cv2DetailBillowView};
     VkImage *imgs[] = {&cv2WeatherImg, &cv2ShapeImg, &cv2DetailImg, &cv2MesoImg, &cv2MorphImg, &cv2MieImg, &cv2ShapeCapsImg,
-                       &cv2ShapeBillowImg};
+                       &cv2ShapeBillowImg, &cv2DetailBillowImg};
     VkDeviceMemory *mems[] = {&cv2WeatherMem, &cv2ShapeMem, &cv2DetailMem, &cv2MesoMem, &cv2MorphMem, &cv2MieMem,
-                              &cv2ShapeCapsMem, &cv2ShapeBillowMem};
+                              &cv2ShapeCapsMem, &cv2ShapeBillowMem, &cv2DetailBillowMem};
     for (int i = 0; i < (int)(sizeof(views) / sizeof(views[0])); ++i)
     {
         if (*views[i]) vkDestroyImageView(device, *views[i], nullptr);
@@ -1167,8 +1170,10 @@ void SatelliteSim::cv2SyncShapeVolume(VulkanContext &ctx)
         return;
     cv2ShapeCapsUsed = cv2ShapeCaps;
     VkDescriptorImageInfo shape{cv2RepeatSampler, cv2ShapeActiveView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    VkWriteDescriptorSet w = imageWrite(cv2MarchDescSet, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &shape);
-    frameSafeUpdateDescriptorSets(ctx.device, 1, &w, 0, nullptr);
+    VkDescriptorImageInfo detail{cv2RepeatSampler, cv2DetailActiveView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet w[2] = {imageWrite(cv2MarchDescSet, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &shape),
+                                 imageWrite(cv2MarchDescSet, 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &detail)};
+    frameSafeUpdateDescriptorSets(ctx.device, 2, w, 0, nullptr);
     writeCloudsV2ConsumerDescriptors(ctx);
     cv2HistoryValid = false;
 }

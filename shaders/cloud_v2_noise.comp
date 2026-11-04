@@ -164,6 +164,44 @@ float billowFbm(vec3 uvw, int n0, int octaves)
     return s / norm;
 }
 
+// The DETAIL volume's billows (2026-11-04, mode 5, "shape_lobes" 2): the erosion's lobes below the shape volume's
+// ~60 m, the same flattened hemispheres but SMOOTH-unioned (log-sum-exp over the 27 cells, width 1/DBILLOW_K in
+// R^2 - d^2): the detail's hard creases drew dark veins over storm tops (the reason it is smooth F1, 2026-09-28).
+// R = 4/8/16/32 cells, G = 16/32/64 (28 m cells at the 1.8 km period), x0.6 per octave; each remapped to the smooth-F1
+// channel's mean / spread, so the erosion's calibration holds.
+#define DBILLOW_K 8.0
+// (to R 0.523 / 0.099, G 0.517 / 0.104, measured in numpy over this exact lattice and seed; 0.1-0.3 % clip)
+#define DBILLOW_R_SCALE 1.5279
+#define DBILLOW_R_BIAS  -0.6935
+#define DBILLOW_G_SCALE 1.2348
+#define DBILLOW_G_BIAS  -0.4617
+float worleyHemiSmooth(vec3 uvw, int n)
+{
+    vec3  p = uvw * float(n);
+    ivec3 i = ivec3(floor(p));
+    float s = 0.0;
+    for (int dz = -1; dz <= 1; ++dz)
+    for (int dy = -1; dy <= 1; ++dy)
+    for (int dx = -1; dx <= 1; ++dx) {
+        ivec3 c  = i + ivec3(dx, dy, dz);
+        float R  = mix(BILLOW_R0, BILLOW_R1, hash3(c + ivec3(71, 13, 37), n).y);
+        vec3  dv = p - (vec3(c) + hash3(c, n));
+        s += exp(DBILLOW_K * (R * R - dot(dv, dv)));
+    }
+    float v = max(log(max(s, 1e-30)) / DBILLOW_K, 0.0);
+    return pow(v * (1.0 / (BILLOW_R1 * BILLOW_R1)), 0.5 * BILLOW_P);
+}
+float billowSmoothFbm(vec3 uvw, int n0, int octaves)
+{
+    float s = 0.0, a = 1.0, norm = 0.0;
+    int   n = n0;
+    for (int o = 0; o < octaves; ++o) {
+        s += a * worleyHemiSmooth(uvw, n);
+        norm += a; a *= BILLOW_GAIN; n *= 2;
+    }
+    return s / norm;
+}
+
 // Inverted Worley fBm: high AT the feature points (blobs), weights 0.625/0.25/0.125.
 float worleyFbm(vec3 uvw, int n0)
 {
@@ -223,10 +261,12 @@ void main()
                  : pc.mode == 3 ? vec2(worleyCapFbm(uvw, 4), worleyCapFbm(uvw, 8))
                                 : vec2(wlo, worleyFbm(uvw, 8));
         o = vec4(pw, lob, perlinFbm(uvw + vec3(0.37, 0.11, 0.73), 4, 4));
-    } else if (pc.mode == 1) {
-        // The erosion detail: smooth F1 (the cracks it carves are rounded, not creased).
-        o = vec4(worleyFbmSmooth(uvw, 4), worleyFbmSmooth(uvw, 16),
-                 perlinFbm(uvw, 4, 3), perlinFbm(uvw + vec3(0.53, 0.29, 0.07), 4, 3));
+    } else if (pc.mode == 1 || pc.mode == 5) {
+        // The erosion detail: smooth F1 (the cracks it carves are rounded, not creased); mode 5 the smooth billows.
+        vec2 ero = pc.mode == 5 ? vec2(clamp(DBILLOW_R_SCALE * billowSmoothFbm(uvw, 4, 4) + DBILLOW_R_BIAS, 0.0, 1.0),
+                                       clamp(DBILLOW_G_SCALE * billowSmoothFbm(uvw, 16, 3) + DBILLOW_G_BIAS, 0.0, 1.0))
+                                : vec2(worleyFbmSmooth(uvw, 4), worleyFbmSmooth(uvw, 16));
+        o = vec4(ero, perlinFbm(uvw, 4, 3), perlinFbm(uvw + vec3(0.53, 0.29, 0.07), 4, 3));
     } else {
         float cluster = mix(worleyFbm(uvw, 4), 1.0, perlinFbm(uvw, 4, 3));
         // Warp (by a periodic Perlin field, so it still tiles): unwarped Voronoi rims are straight
