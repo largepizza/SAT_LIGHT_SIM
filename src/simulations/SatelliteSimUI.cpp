@@ -7049,6 +7049,9 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SldMultiScatterDropletG), &cv2MsDiffG, 0.0f, 0.95f, 0.01f, "%.2f", 343},
         {tx(Txt::SldMultiScatterDiffuseStrength), &cv2MsDiffGain, 0.0f, 4.0f, 0.05f, "%.2f", 344},
         {tx(Txt::SldMultiScatterReachAwayFromLight), &cv2MsBackM, 50.0f, 4000.0f, 50.0f, "%.0f", 345},
+        {tx(Txt::SldDropletPhase01), &cv2DropletPhase, 0.0f, 1.0f, 1.0f, "%.0f", 486},
+        {tx(Txt::SldDropletSize), &cv2DropletSize, 0.5f, 2.0f, 0.05f, "%.2f", 487},
+        {tx(Txt::SldDropletMultiScatterGain), &cv2DropletMsGain, 0.0f, 4.0f, 0.05f, "%.2f", 488},
         {tx(Txt::SldSkyLightModel0Zenith1), &cv2SkyLightModel, 0.0f, 1.0f, 1.0f, "%.0f", 346},
         {tx(Txt::SldSkyLightOnCloudsXPhysical), &cv2SkyLightGain, 0.0f, 4.0f, 0.05f, "%.2f", 347},
         {tx(Txt::SldGroundAlbedoSkyLight), &cv2SkyGroundAlbedo, 0.0f, 1.0f, 0.01f, "%.2f", 348},
@@ -9811,6 +9814,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2MsDiffG    = settingClamp(c.value("ms_diffusion_g", cv2MsDiffG), 0.0f, 0.95f);
         cv2MsDiffGain = settingClamp(c.value("ms_diffuse_gain", cv2MsDiffGain), 0.0f, 4.0f);
         cv2MsBackM    = settingClamp(c.value("ms_back_m", cv2MsBackM), 50.0f, 4000.0f);
+        cv2DropletPhase  = settingClamp(c.value("droplet_phase", cv2DropletPhase), 0.0f, 1.0f);
+        cv2DropletSize   = settingClamp(c.value("droplet_size", cv2DropletSize), 0.5f, 2.0f);
+        cv2DropletMsGain = settingClamp(c.value("droplet_ms_gain", cv2DropletMsGain), 0.0f, 4.0f);
         cv2SkyLightModel   = settingClamp(c.value("sky_light_model", cv2SkyLightModel), 0.0f, 1.0f);
         cv2SkyLightGain    = settingClamp(c.value("sky_light_gain", cv2SkyLightGain), 0.0f, 4.0f);
         cv2SkyGroundAlbedo = settingClamp(c.value("sky_ground_albedo", cv2SkyGroundAlbedo), 0.0f, 1.0f);
@@ -10530,6 +10536,9 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"ms_diffusion_g", cv2MsDiffG},
         {"ms_diffuse_gain", cv2MsDiffGain},
         {"ms_back_m", cv2MsBackM},
+        {"droplet_phase", cv2DropletPhase},
+        {"droplet_size", cv2DropletSize},
+        {"droplet_ms_gain", cv2DropletMsGain},
         {"sky_light_model", cv2SkyLightModel},
         {"sky_light_gain", cv2SkyLightGain},
         {"sky_ground_albedo", cv2SkyGroundAlbedo},

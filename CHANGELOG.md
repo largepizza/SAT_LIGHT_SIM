@@ -131,6 +131,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **Physical light.** Multiple scattering in the clouds (dark wisps, bright cores), the sky's light on clouds and
   ground from the whole dome, multiple scattering and ozone in the sky (blue-violet twilight), the ground under an
   overcast lit by what the clouds let through, and an AgX tone map that keeps the hue of bright highlights.
+- **Droplet phase.** Clouds scatter light by their droplets' size: small droplets at a cumulus base, larger ones high in
+  a storm tower, ice in anvils and Cb heads. Thin wisps keep the droplets' peaky forward phase (dark outlines from the
+  side, a bright silver lining toward the Sun) while light that scatters deeper turns isotropic, so thick cores are
+  bright. Settings: "Droplet phase", "Droplet size", "Droplet multi-scatter gain" (Clouds tab).
 - **Clouds from orbit.** Satellite-imagery morphology (closed and open cells, cloud streets, popcorn cumulus from
   MODIS scenes) shapes clouds seen from space; from high orbit a full-resolution far layer takes over. The clouds
   stay the same clouds as you climb.

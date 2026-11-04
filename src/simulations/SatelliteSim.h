@@ -944,6 +944,7 @@ struct GpuCloudV2Params
     glm::vec4 amb;                      // 2026-10-26: the sky's light on the clouds: x model, y gain, z ground albedo, w the sky pass's multiple scattering
     glm::vec4 tone;                     // 2026-10-26: the sky pass's tonemap: x AgX on, y saturation, z contrast
     glm::vec4 gnd;                      // 2026-10-26: x the ground's light under cloud (the cv2Vt map) on
+    glm::vec4 micro;                    // 2026-11-04: the droplet phase: x droplet size (0 off), y sea-level temp (C), z 1 / Mie rows, w diffuse gain
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -975,7 +976,8 @@ static_assert(offsetof(GpuCloudV2Params, ms) == 288 + 48 * kCloudV2Types + 1216,
 static_assert(offsetof(GpuCloudV2Params, amb) == 288 + 48 * kCloudV2Types + 1232, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, tone) == 288 + 48 * kCloudV2Types + 1248, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, gnd) == 288 + 48 * kCloudV2Types + 1264, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1280, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, micro) == 288 + 48 * kCloudV2Types + 1280, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1296, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -5424,6 +5426,7 @@ private:
     float cv2LightLodFootprintM = 0.0f;   // past this pixel footprint (m) a 2-step light march; 0 = off (the default since 2026-10-11:
                                           // at a long light march its second step is one sample for kilometres - the main source of grain)
     float cv2ShaftTempC = 15.0f;          // the air 500 m over the ground under the eye (deg C): the shafts' rain / snow
+    float cv2SeaTempC = 15.0f;            // the sea-level air temperature under the eye (deg C; the droplet phase's glaciation)
     float cv2EyeTempC = 15.0f;            // the air temperature at the eye (deg C; rain / sleet / snow), per frame
     float cv2LightningRate = 1.1f;       // flashes per minute of a full-strength (anvil-reaching) tower; 0 = off
     float cv2LightningGlow = 0.088f;      // the flash's light in the cloud
@@ -5503,6 +5506,12 @@ private:
     float cv2MsDiffG = 0.85f;             // the droplets' asymmetry g (delta-scaled: f = g^2)
     float cv2MsDiffGain = 1.0f;           // x the diffuse field (1 ~ the octaves' energy in a thick cloud; ~1.6 = path traced)
     float cv2MsBackM = 1200.0f;           // how far the march away from the light reaches (m)
+    // The droplet phase (2026-11-04, cloud_v2_march.comp cv2Micro*): each sample's droplet size from its height above its
+    // cloud's base (adiabatic growth), ice above the glaciation height; the single scattering from the Mie table at that
+    // size, the low orders at the composed droplet phase, the diffuse field at the droplets' own g and its fitted gain.
+    float cv2DropletPhase = 1.0f;         // 0 = the tuned phase (the Mie share, the silver lining, "droplet g") as before
+    float cv2DropletSize = 1.0f;          // x the adiabatic effective radius (fewer, larger droplets: maritime ~1.3)
+    float cv2DropletMsGain = 1.8f;        // the diffuse field's gain in this model (x "Multi-scatter diffuse strength"; fitted, tools/cloud_micro_reference.py)
     // The sky's light on the clouds (2026-10-26): the hemispheres' mean radiance with multiple scattering
     // (cloud_v2_sunlut.comp layers 2-3); 0 = the zenith x "Sky ambient" with the twilight terms.
     float cv2SkyLightModel = 1.0f;        // 0 zenith, 1 hemispheres + multiple scattering

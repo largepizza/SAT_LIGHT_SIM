@@ -204,6 +204,10 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // adds the sunlight it scatters down (sat_sky.frag); y (2026-10-26) x the wildfire smoke's Angstrom exponent
     // (smoke.glsl smokeSpecK; "Smoke spectral", 1 = physical); zw spare
     vec4  gnd;
+    // 2026-11-04, the droplet phase (cloud_v2_march.comp cv2Micro*, "Droplet phase"): x "Droplet size" (x the adiabatic
+    // effective radius; 0 = off: the tuned phase as before), y the sea-level air temperature under the eye (C: the
+    // glaciation by height), z 1 / the Mie table's row count (both halves), w the diffuse field's gain in this model
+    vec4  micro;
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO

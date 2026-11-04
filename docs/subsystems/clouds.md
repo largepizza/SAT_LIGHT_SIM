@@ -871,6 +871,50 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   `sky_ground_albedo` 0.25 (slots 346-348, UBO `cv2.amb`). At physical gain the daytime look matches the user's
   zenith x 2 within a few %; twilight clouds a little darker (the old boost over-lit them); anvil undersides lighter
   (the lower sky). 128 registers, +2 texture reads per lit sample.
+- **The droplet phase (2026-11-04, branch qa/20261104/cloud-phase; `cv2Micro*` + `cv2DiffuseField`, cloud_v2_march.comp;
+  `cv2.micro`; the user: "water droplets have a very peaky phase ... it changes with droplet size ... the phase isotropizes
+  the deeper light travels ... clouds are really bright in their cores").** Water and ice cloud with a light march (not the
+  thin high layer, not rain: those keep their own phases) take a per-sample microphysics instead of the tuned lobes:
+  - **Size**: the effective radius grows with the height above the cloud's base (adiabatic liquid water ~2 g/m^3/km, half
+    of it realised, ~200 droplets/cm^3): r_eff = 1.15 um x (dz + 40 m)^(1/3) x "Droplet size", clamped to the Mie table's
+    4-30 um; dz from the sample's height fraction and its column's top (hf (top - h) / (1 - hf)). ~5 um at a cumulus base,
+    ~12 um 1 km up, ~20 um 5 km up a tower. **Ice**: the air (sea level under the eye less 6.5 C/km; `cv2SeaTempC`) glaciates
+    from -10 to -35 C, so Cb heads and anvils take an ice phase (a 0.45 peak at g 0.995 on HG(0.55): mean cosine 0.75, no
+    bow or glory). One temperature for the view (the eye's sub-point): from orbit far clouds take the eye's climate.
+  - **Single scattering** = the Mie table (`cloud_mie.rgba16f`) at the sample's radius, its full share (row by a quadratic
+    fit in log r to the table's radii, `cv2MicroRowV`, to 0.2 of a row; the load logs a warning if a regenerated table no
+    longer matches). The "Mie phase" share, "Mie optics", the tuned lobes and "Silver lining" stand aside in this model.
+  - **Low orders** (`cv2MicroOrders`): light scattered k = 1..3 times on the way in (Poisson in the optical depth toward the
+    light) then once toward the eye, at the droplet phase composed k + 1 times. Composition multiplies Legendre moments
+    (HG(g) * HG(g) = HG(g^2) exactly), so the peak goes as share^n, HG(g^n) and the rest is an HG keeping the composed
+    mean cosine gtot^n; the peak shape per size is Jendersie & d'Eon 2023's HG + Draine fit (d = 2 r_eff). This IS the
+    silver lining and the backlit glow, and the order-by-order isotropization: a thin wisp is lit by orders 1-2 (peaky:
+    dark from the side, bright toward the Sun), a thick core by the diffuse field.
+  - **Diffuse field** (orders past 3) = `cv2DiffuseField` at the droplets' own mean cosine (0.86-0.88 water, 0.75 ice),
+    without its Eddington-phase forward-beam term (the low orders carry it), x T / (T + 2) (T = od + odBk, the chord along
+    the light: a small cloud loses diffuse light out of its sides) x "Droplet multi-scatter gain" 1.8 (x "Multi-scatter
+    diffuse strength").
+  - **Fit** (`tools/cloud_micro_reference.py`: the ms reference's blobs path-traced with the JdE phase at d = 20 um, its
+    peak capped at g 0.97 to keep next-event estimation from spiking; levels = model / reference, 14 blobs x lights):
+    the shipped HG model (+ silver) against droplet cloud: geo-mean 0.69, backlit 0.38-0.42, thick tops 0.66-0.72; this
+    model: geo-mean 1.01, thick 0.99-1.08, backlit 0.68-0.78, thin soft blobs 0.9-2.4 (they were 0.9-2.0). Without the low
+    orders backlit drops back to ~0.3-0.5; the T / (T + 2) term cut the level spread 1.46 -> 1.36.
+    At the centre of a FRONT-lit blob (Sun behind the eye; ms + single scattering vs reference ms + exact single):
+    thin (tau 2) old 0.61 / new 0.22 / ref 0.19; tau 5 0.84 / 0.53 / 0.46; tau 30 1.38 / 1.48 / 1.46; lumpy 60
+    1.50 / 1.69 / 2.20; cauliflower 80 1.54 / 1.84 / 2.39. The tuned pair's backward lobe (0.4 HG(-0.25): ~7x the droplets'
+    side-to-back scattering) lit thin front-lit cloud 3x too bright and left thick cores dark; the droplet model brightens
+    the cores and dims the thin cloud (the thickest still ~0.77 of the reference: e^(-0.05 t) and T/(T+2) saturate).
+    The fit holds at d = 10 um (geo-mean 1.04, spread 1.37).
+  - In the app (user settings, 1600x900, `harness_runs/cloudphase/`, luminance levels on changed pixels, new - old):
+    shaded deck under a low Sun +5 (cores and bases lighter), Pacific towers +2.8 (their darker parts +2.6), front-lit
+    trade cumulus -4 (its bright tops -6), the fair-weather field from 400 km -9, from 30 km -4, backlit ~0 (the low orders
+    replace the silver lining at about its level), cumulus from below -2.5 with less lobe relief (the Mie single
+    scattering is flatter at the side than the tuned pair, so the relief is the diffuse field's, which is smooth).
+  - Cost (RTX 3070 Ti, 1600x900, two other agents' apps on the GPU, interleaved x3 against the branch compiled out, A-vs-A spread 0.1-0.2 ms): towers
+    / cumulus from 3 km / towers from 6 km / orbit all within the A-vs-A spread (<= +0.2 ms GPU); 128 registers both;
+    binary 389,760 -> 394,752 B.
+  - Settings (Clouds tab, slots 486-488): `clouds_v2.droplet_phase` 1 (0 = the tuned phase, the A/B), `droplet_size` 1,
+    `droplet_ms_gain` 1.8. Needs "Multi-scatter model" 1 and the Mie table. UBO `cv2.micro` appended (+16 B).
 - **The sky pass's multiple scattering + ozone (2026-10-26, branch cloud-ms).** The sky (sat_sky.frag's atmosphere loop,
   sky_ap.comp's volume, the sea's reflected-sky march) was single scattering: the air in the Earth's shadow was lit by a
   hand-made "sky-lit shadowed air" term (review 7), and the Sun's path had no ozone, so the twilight sky read olive /
