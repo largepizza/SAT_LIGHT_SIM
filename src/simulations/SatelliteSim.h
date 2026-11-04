@@ -3051,6 +3051,7 @@ private:
     std::vector<uint8_t> kPoolHidden; // per slot: its GPU record is sent hidden until its birth
     static constexpr int32_t kHistKeepS = 7 * 86400;
     int32_t kShownSec = INT32_MIN, kHistPrunedUntil = INT32_MIN, kHistPrunedAt = INT32_MIN;
+    double kShownT = -1e300; // (2026-11-04) the continuous time the generations were last picked for (a step back re-gates)
     bool kReplayPending = false;
     void kesslerSetPoolOrbit(uint32_t j);
     double kesslerBornT(const kessler::PoolRec &r, size_t evSeen) const;
@@ -3073,6 +3074,7 @@ private:
         size_t evN = 0;
     };
     std::vector<KHoldScan> kHoldScans;
+    double kHoldLastT = -1e300; // the last frame's time: a step back forgets the scans (the holds re-arm)
     void kesslerRosterHold(int32_t nowSec, double tNow);
     void kesslerShowGen(uint32_t j, int32_t sec, double tNow, size_t evSeen);
     const kessler::PoolRec *kesslerPoolGenWithDecay(uint32_t j, int32_t decaySec) const;

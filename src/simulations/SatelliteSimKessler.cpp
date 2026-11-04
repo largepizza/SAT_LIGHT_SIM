@@ -1666,22 +1666,32 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
                        kWorker->w.frontier);
     }
     // Sim time moved: slots whose hands changed between the shown second and now show the other generation.
-    if (nowSec != kShownSec)
+    // (2026-11-04, issue_20261030_180204 re-check: scrubbing back) A step BACK also revisits the generations born in the
+    // second it lands in, whose event may be ahead of the new time again: with the old (lo, hi] range a jump from
+    // te + 0.5 s (or the next second) back to te - 0.05 s left the breakup's pieces shown 50 ms early, a white starburst
+    // of the collision's own debris before the impact. kFirstBounds is kept (pruned with the indexes after 30 days),
+    // not dropped once its second was entered, so a rewind and a step forward gate the first records again too.
+    const bool stepBack = tNow < kShownT;
+    if (nowSec != kShownSec || stepBack)
     {
         const int32_t lo = std::min(kShownSec, nowSec), hi = std::max(kShownSec, nowSec);
         if (kShownSec != INT32_MIN)
         {
             FPROF_SCOPE("kessler.showGens");
-            for (auto it = kGenBounds.upper_bound(lo); it != kGenBounds.end() && it->first <= hi; ++it)
+            auto from = [&](const std::multimap<int32_t, uint32_t> &m) {
+                return stepBack ? m.lower_bound(lo) : m.upper_bound(lo);
+            };
+            for (auto it = from(kGenBounds); it != kGenBounds.end() && it->first <= hi; ++it)
                 kesslerShowGen(it->second, nowSec, tNow, kEvents.n);
             // A slot's first record has no history, so kGenBounds does not hold it: kFirstBounds does.
-            for (auto it = kFirstBounds.upper_bound(lo); it != kFirstBounds.end() && it->first <= hi; ++it)
+            for (auto it = from(kFirstBounds); it != kFirstBounds.end() && it->first <= hi; ++it)
                 kesslerShowGen(it->second, nowSec, tNow, kEvents.n);
         }
+    }
+    kShownT = tNow;
+    if (nowSec != kShownSec)
+    {
         kShownSec = nowSec;
-        // That second is entered: its first-record births have been gated (a record arriving later this second is
-        // gated by kesslerSyncProcess), so drop them.
-        kFirstBounds.erase(kFirstBounds.begin(), kFirstBounds.upper_bound(nowSec));
         if (nowSec < kHistPrunedUntil)
             kReplayPending = true;
         // Once a simulated day: drop generations that ended more than kHistKeepS ago (a reversal beyond replays).
@@ -1840,8 +1850,7 @@ void SatelliteSim::kesslerSyncProcess(int32_t nowSec, double tNow, double budget
                         kDirtyPool.push_back(j);
                     // The first record of a slot has no history: index its birth second (kGenBounds cannot), and gate
                     // it now if that second is the shown one (the shader's born gate is the whole second).
-                    if (c.rec.bornSec >= nowSec)
-                        kFirstBounds.insert({c.rec.bornSec, j});
+                    kFirstBounds.insert({c.rec.bornSec, j}); // (kept: a step back revisits it)
                     if (c.rec.bornSec == nowSec)
                         kesslerShowGen(j, nowSec, tNow, evSeen);
                     grew = true;
@@ -3818,6 +3827,8 @@ void SatelliteSim::kesslerPruneOldIndexes()
         erased = true;
     }
     const int32_t hrCut = (int32_t)std::floor(cut / 3600.0);
+    // First records born over 30 days before now: a step back that far replays anyway (kHistKeepS is 7 days).
+    kFirstBounds.erase(kFirstBounds.begin(), kFirstBounds.lower_bound(cut));
     for (auto it = kSmallReHours.begin(); it != kSmallReHours.end() && it->first < hrCut;)
         it = kSmallReHours.erase(it);
     for (auto it = kReentries.begin(); it != kReentries.end();)
@@ -4748,6 +4759,22 @@ nlohmann::json SatelliteSim::kesslerStateJsonImpl(bool full) const
             o["vrel_rtn"] = {c.vrelL.x, c.vrelL.y, c.vrelL.z};
             o["mass_kg"] = c.massKg;
             o["target_kg"] = c.mT;
+            {
+                // (2026-11-04) this collision's pieces the GPU is sent as born now (shown), and those held unborn
+                int shown = 0, held = 0;
+                for (size_t q = 0; q < kPool.size(); ++q)
+                    if (kPool[q].event == c.ev && kPoolGen[q] != UINT32_MAX)
+                    {
+                        const bool hid = q < kPoolHidden.size() && kPoolHidden[q];
+                        const int32_t nowS = (int32_t)std::floor(t - kFuryArriveT);
+                        if (hid)
+                            ++held;
+                        else if (kPool[q].bornSec <= nowS)
+                            ++shown;
+                    }
+                o["pieces_shown"] = shown;
+                o["pieces_held_unborn"] = held;
+            }
             o["projectile_kg"] = c.mP;
             o["ev"] = c.ev;
             o["standin"] = si;
@@ -5443,6 +5470,10 @@ void SatelliteSim::kesslerRosterHold(int32_t nowSec, double tNow)
         }
         kRosterHolds.erase(kRosterHolds.begin() + (ptrdiff_t)i);
     }
+    // A step back (scrubbing, a rewind): the impacts ahead again must be held again, so the scans are forgotten.
+    if (tNow < kHoldLastT)
+        kHoldScans.clear();
+    kHoldLastT = tNow;
     for (const KCollVis &c : kCollVis)
     {
         if (c.te <= tNow || c.te > tNow + 2.0)

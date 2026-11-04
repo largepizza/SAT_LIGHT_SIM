@@ -105,6 +105,14 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
     reaches te, then puts the real words back (never over a word the worker rewrote). Pool pieces are gated by their
     event's time since 2026-10-30 (`kesslerShowGen`). Frame by frame on the report: the target drawn whole at te-0.141
     / -0.050 / -0.010 s (it was dead from te-0.142 s), 4 satellites held, the 11 new records appear at te.
+  - **Scrubbing back re-arms both gates (2026-11-04):** a step back in time (`tNow < kShownT`) revisits the generations
+    born in the second it lands in (`[lo, hi]` instead of `(lo, hi]`), and `kFirstBounds` is kept (pruned with the
+    indexes after 30 days) instead of dropped once its second was entered; `kesslerRosterHold` forgets its scans on a
+    step back (`kHoldLastT`). Before, after watching an impact once, a jump from te + 1 ms / 0.2 / 0.5 / 1 s back to
+    te - 0.05 s showed the breakup's pieces (a white starburst of its own debris) and no held satellites, and so did a
+    1 h 45 min rewind and stepping forward. Measured on the report: `collisions_near` -> `pieces_shown` 0 and 4 roster
+    holds at te - 0.05 / - 0.01 s on the first pass, after each of those rewinds and after a 6300-s rewind; 66 pieces at
+    te + 1 ms every time; the rewound frames match the first pass (mean abs diff <= 0.28, the -0.05 vs -0.01 s floor 0.50).
   - **Impact frames:** the frame whose sim interval (last fill's time, now] holds te, and the next one, show the flash at
     its peak whatever the time scale (at x1000 a frame is ~16 s: the 3-s flash fell between frames). Harness `kessler
     state` -> `impact_frames` (frames_shown, age_at_cross_s, frame_dt_at_cross_s, flash_at_cross), `impact_frame`,
