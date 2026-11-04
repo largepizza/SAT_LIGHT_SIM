@@ -552,6 +552,22 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     flattened profile (exponent 0.6 on the hemisphere) is what turned the skew negative.
     Measured: cloud_march A/B in one live app (RTX 3070 Ti, 1600x900, the user's settings, 3 interleaved reps, two other agents' apps on the GPU, two contended reps dropped): caps -> billows 8.30 -> 8.42 ms (level flight at 1.5 km), 9.24 -> 9.35 (3 km looking down), 10.63 -> 10.89 (ground), 8.67 -> 8.66 (6 km over Darwin); caps-vs-caps spread 0.3-0.8 ms: neutral within the noise, the march SPV is unchanged. In the app (`harness_runs/cloudnoise/` in the worktree, not committed) the billows put
     more, smaller lobes on cumulus outlines and fewer detached round puffs beside them.
+  - **Billow erosion** (2026-11-04, noise mode 5, the same `shape_lobes` 2): the detail volume's R / G (the erosion,
+    4/8/16 and 16/32/64 cells of smooth F1 at the 1.8 km `detail_period_m`) as billows too — R 4/8/16/32, G 16/32/64,
+    x0.6 per octave, flattened hemispheres SMOOTH-unioned (log-sum-exp of R^2 - d^2 over the 27 cells, k 8; the detail
+    is smooth because hard creases drew dark veins over storm tops), remapped to the smooth-F1 channels' mean / spread
+    (R 0.523 / 0.099, G 0.517 / 0.104; `DBILLOW_*`). A sixth bake (`cv2DetailBillowImg`, the detail's seed),
+    `cv2DetailActiveView()` swapped into march binding 4 with the shape; the march SPV is unchanged.
+    Erosion in the billow regions is mix(df, 1 - df, billow): 1 - df carves the creases and leaves the lobes, so the
+    detail acts as a second, finer lobe field. Measured as above with the erosion added to the margin (0.6 x the
+    lobes' spread, the detail at its own period), WDAS / caps + smooth F1 (before) / billows + smooth F1 / billows +
+    billow erosion: curvature skew -0.32 / +1.80 / +1.04 / +0.27; convex share 0.60 / 0.63 / 0.60 / 0.58; median
+    surface lobe radius 0.018 H / 0.042 / 0.030 / 0.030 (p25 0.018 H for the last); surface per volume 0.096 / 0.076 /
+    0.082 / 0.089; volume in lobes of radius 0.006-0.024 H 0.097 / 0.022 / 0.029 / 0.040. The smooth-F1 erosion is an
+    inverted cone with a rounded tip: it pushed the skew positive by +0.3..+1.0 on any shape noise. The spectrum
+    slope at 0.1-0.03 H stays -3.9 (WDAS -3.36): the detail texel is 14 m, so radii of 6-14 m (WDAS's finest) are
+    below what either 128^3 volume holds; matching them needs a finer volume or a third fetch.
+    Measured: cloud_march caps -> billows (shape + erosion), same A/B as above: 8.42 -> 8.35 ms (1.5 km level), 9.03 -> 8.90 (3 km down), 10.24 -> 10.45 (ground), 8.35 -> 7.95 (6 km; +-0.9 rep spread): neutral. In the app the erosion's change is confined to cloud outlines (image diff vs the shape-only billows 0.37-0.70 levels mean against a 0.26-0.67 same-setting floor; telephoto on a cumulus 3-5 km away 0.49 vs 0.26, crisper small lobes on the top edges): at these distances the 28-112 m erosion lobes sit within a few pixels of the silhouette.
   - **Full-resolution clouds** (`full_res`, "Full-resolution clouds", S9, `cloud_v2_combine.comp`): the CLOUD grid
     (`computeCloudExtent()`: the v2 march / resolve images and the final cloud targets A/B) is twice the half extent;
     `computeHalfExtent()` stays half (scene depth, `cloud_march.comp`'s dispatch). The march always runs sparse there
