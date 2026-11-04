@@ -304,6 +304,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   off above ~2.4 km/s, so every step through a storm's layers paid for the full cloud), and a storm's smooth
   altostratus sheet is shaded at half the samples. Between a storm's decks at 4.8 km: about 22 -> 17 ms of cloud
   standing still and about 50 -> 28 ms flying at 5 km/s (RTX 3070 Ti, 1080p, High).
+- **Clouds skip absent layers.** The empty-space map also records which cloud layers (storm towers, low, mid,
+  high, anvils) each cell can hold, and the cloud march computes only those there: about 10% less cloud time in
+  storms and over cumulus (storm at 4.8 km 14.2 -> 12.6 ms, flying through it 21.4 -> 19.1, cumulus 9.3 -> 8.4;
+  RTX 3070 Ti, 1600x900, High), the image unchanged.
 
 ### Tools
 
