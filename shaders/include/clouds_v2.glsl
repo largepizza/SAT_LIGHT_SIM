@@ -202,7 +202,8 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     vec4  tone;
     // 2026-10-26: the ground's light under cloud: x 1 = the cloud over the ground (cv2Vt) dims and greys the sky light and
     // adds the sunlight it scatters down (sat_sky.frag); y (2026-10-26) x the wildfire smoke's Angstrom exponent
-    // (smoke.glsl smokeSpecK; "Smoke spectral", 1 = physical); zw spare
+    // (smoke.glsl smokeSpecK; "Smoke spectral", 1 = physical); z (2026-11-04) the full-res grid's sparse block K (one ray per
+    // K x K a frame, "sparse_block"; 2 elsewhere), w the resolve's depth-consistent history (0 = off, "history_depth_test")
     vec4  gnd;
     // 2026-11-04, the droplet phase (cloud_v2_march.comp cv2Micro*, "Droplet phase"): x "Droplet size" (x the adiabatic
     // effective radius; 0 = off: the tuned phase as before), y the sea-level air temperature under the eye (C: the

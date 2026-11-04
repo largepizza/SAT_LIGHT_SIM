@@ -508,14 +508,15 @@ void main()
         slack = max(slack, (mx - mn) * stillW);
         // In motion the box is the neighbourhood's mean +- 1.25 sd (variance clipping), inside min/max:
         // a small cloud next to clear sky made a min/max box spanning both, so its ghost passed.
-        // DEPTH-CONSISTENT HISTORY (2026-11-04, the cloud upscaler): the point this pixel shows now, at its own sample's
+        // DEPTH-CONSISTENT HISTORY (2026-11-04, "history_depth_test"): the point this pixel shows now, at its own sample's
         // distance, was last frame length(cam) from the eye; if the history texels it reprojects onto held cloud at that
-        // distance (the resolved distance travels with the age, outAge.y), the history IS this cloud seen from the last
-        // eye, however large the parallax: motion is then a reprojection, not a rejection. Such a pixel keeps its history
-        // (no lean on the wide tent past 6 px of parallax, the colour box at its 5x5 width, a softer variance clip), so a
-        // flight under a deck keeps the deck's full-resolution detail instead of the sparse grid's tent. A disoccluded
-        // pixel (history at another distance: an edge sweeping over the sky or a farther cloud) fails the test and keeps
-        // the fast path. Mean distances of translucent cloud are noisy per ray: the tolerance is 6-20% of the distance.
+        // distance (the resolved distance travels with the age, outAge.y), the history is this cloud seen from the last eye
+        // and motion is a reprojection, not a loss. Past 6-24 px of parallax a frame such a pixel takes 0.3 of this frame
+        // (not 0.7) and the plain [1 2 1] tent (not the widened one): fast flight near an anvil or under a deck keeps
+        // more of its history's detail. A disoccluded pixel (history at another distance) keeps the fast path. The clamp
+        // is NOT loosened: a first cut that also widened the colour box and softened the variance clip let the translucent
+        // deck's history lag (tstab storm walk 1.41 -> 1.95, anvil walk 3.0 -> 4.5). Tolerance 6-20% of the distance (a
+        // translucent cloud's mean distance is a noisy per-ray estimate).
         float hConf = 0.0;
         if (ndR > 0.0 && nd.x > 0.0 && cv2.samp.x > 0.0) {
             vec4  hd4 = textureGather(histAgeTex, uvPrev, 1);
@@ -524,7 +525,7 @@ void main()
             for (int k = 0; k < 4; ++k) if (hd4[k] > 0.0) e = min(e, abs(hd4[k] - dP));
             hConf = (1.0 - smoothstep(0.06, 0.2, e / dP)) * cv2.gnd.w;
         }
-        float mv  = smoothstep(0.1, 1.5, mNb) * (1.0 - 0.6 * hConf);
+        float mv  = smoothstep(0.1, 1.5, mNb);
         vec4  bLo = mix(mn - slack, max(mn, m1 - cv2.samp.z * sdBox), mv);
         vec4  bHi = mix(mx + slack, min(mx, m1 + cv2.samp.z * sdBox + vec4(1e-4)), mv);
         // Issue 20261013_214939 ("noise on moving clouds"): in motion the box above is the 3x3 of new samples, and a new
@@ -541,7 +542,6 @@ void main()
         // 7.6 -> 2.5 levels, pixels past 16 levels 13.7% -> 0.2%; the still view is unchanged.
         float wideK = 1.0 - smoothstep(kWideColorPx0, kWideColorPx1,
                                        max(motionPx, eyePx / min(min(dNear, dWide), capD)));
-        wideK = max(wideK, hConf);
         bLo.rgb = mix(bLo.rgb, min(bLo.rgb, cMn), wideK); bHi.rgb = mix(bHi.rgb, max(bHi.rgb, cMx), wideK);
         // A view that is STILL in fact (the reprojection's own parallax, the volumes' slide and the eye's move at the
         // nearest cloud all under ~0.05 px a frame: no x lagK) takes its history unclamped (2026-10-14, issue
@@ -590,7 +590,7 @@ void main()
             w      = max(w, 1.0 / (hAge + 1.0));
             ageOut = min(hAge + (isNew ? 1.0 : 0.5), cv2.samp.x);
         }
-        float mf = smoothstep(6.0, 24.0, motionPx) * (1.0 - hConf);
+        float mf0 = smoothstep(6.0, 24.0, motionPx); float mf = mf0 * (1.0 - hConf);
         // S9: with no usable history the quarter grid's [1 2 1] tent still let the blue-noise tile's all-or-nothing rays
         // through as blotches (fast flight inside cloud): there the estimate widens to ~4x4 samples.
         if (tentQ && mf > 0.0) {
@@ -601,7 +601,7 @@ void main()
         // Review 7: a full-rate pixel in motion leans on the tent by how much of this frame it takes (the
         // single ray's jitter grain; blur is the pixel itself on the sparse grid, where the axial mix does it).
         fresh = mix(fresh, blur, max(0.8 * mf, (full || tFull) ? 0.4 * mk * w : 0.0));
-        w     = mix(w, 0.7, mf);
+        w     = mix(w, mix(0.7, 0.3, hConf), mf0);
         outC = mix(hc, fresh, w);
     } else {
         outC = isNew ? mix(nc, blur, 0.8) : (tentQ ? blur : spatial);
