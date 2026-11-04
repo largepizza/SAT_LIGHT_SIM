@@ -897,6 +897,11 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   lobe, ~3 mag fainter at the centre, where the physics gives a dark centre and four -13.3 spots), and the beam's
   ground spot (`crossSectionM2`, one spot at the aim) has no sub-spots either. A canted default would need both to
   learn sub-lobes first; the coplanar default needs neither.
+  In the app (`tools/harness/scripts/reflector_quad.satcmd`, Topaz 2036-11-22 02:30, the observer on the site): a
+  mirror serving it reads -10.97 at 1602 km and cos i 0.291 (`state` selection.photometry, one 256.4 m2 lobe, alpha
+  0.0005); the analysis's spot centre at that range and incidence gives -10.92. The same mirror as the old 55 m plate
+  read -13.64 (2.67 mag brighter, the area ratio's 2.68): from the site the lit ground and sky are ~2.5x darker in the
+  capture (mean luminance 131 -> 52 at 0 EV, auto exposure off) and the spot seen from 12 km away is barely visible.
   **The polygon primitive** (`PrimitiveKind::Polygon`, JSON `"vertices": [[x, y], ...]` in local XY, front +Z,
   counter-clockwise from +Z and star-shaped about the vertex mean — checked at load; `back_material`,
   `single_sided`): fanned from the vertex mean in both the photometry (`tessellateSatModel`) and the render mesh
