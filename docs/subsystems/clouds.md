@@ -968,6 +968,21 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   - Cost (RTX 3070 Ti, 1600x900, two other agents' apps on the GPU, interleaved x3 against the branch compiled out, A-vs-A spread 0.1-0.2 ms): towers
     / cumulus from 3 km / towers from 6 km / orbit all within the A-vs-A spread (<= +0.2 ms GPU); 128 registers both;
     binary 389,760 -> 394,752 B.
+    **In a storm** (issue_20261104_020257 shot 1, 4.8 km between the decks, ~6.9 lit samples a ray, 57% the As sheet;
+    user settings, 1600x900, one live app, three interleaved reps, A-vs-A 0.1-0.2 ms; `harness_runs/dc/` in the
+    droplet-cost worktree): cloud march droplet_phase 1 / 0 = 14.46 / 13.73 ms still, 13.85 / 13.39 ms with the report's
+    trail playing; the branch compiled out (`if (false)`) 13.82 vs 14.21-14.36 in one batch, 13.81 vs 13.64-13.81 in
+    another. So the phase costs **0.3-0.7 ms (2-5%)** there, 128 registers both, ~5 KB of binary; the cumulus from 3 km
+    view is within the spread (9.25 off / 9.33 on). Knocking out its pieces one at a time (the Mie row fetch, the low
+    orders, the HG + Draine shape, its diffuse-field call) each moves it <= 0.15 ms: no single piece dominates, so
+    nothing is tabulated. Neither does skipping the tuned path's two Mie fetches the droplet branch overwrites,
+    `cv2HG` as `rsqrt^3` instead of `pow(x, 1.5)` (the driver already emits that: identical binary size), or evaluating
+    the ice lobe only where ice > 0 (all within the spread). The droplet path does not touch the march's stepping: the
+    As sheet's coarse steps (`coarseThin`, storm-perf) are decided before the batch's lighting and hold with it on.
+    **A measurement trap**: a `perf` 5 frames after a `shaders reload` or a cloud-field setting (`shape_lobes`) reads
+    24 ms here (the dropped history and the clipmap refill), against 13.7 after a lighting-only toggle such as
+    `droplet_phase`; an A/B that alternates the two ordering reads ~10 ms of "droplet cost" that is not there.
+    `wait 160` after either before timing (the perf-ab skill).
   - Settings (Clouds tab, slots 486-488): `clouds_v2.droplet_phase` 1 (0 = the tuned phase, the A/B), `droplet_size` 1,
     `droplet_ms_gain` 1.8. Needs "Multi-scatter model" 1 and the Mie table. UBO `cv2.micro` appended (+16 B).
 - **The sky pass's multiple scattering + ozone (2026-10-26, branch cloud-ms).** The sky (sat_sky.frag's atmosphere loop,
