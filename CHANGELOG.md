@@ -288,6 +288,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   even at 1 year/s; launch batches build within a per-frame budget, and after a time jump (a bookmark, a typed time,
   a Missions Go to) or at fast warps the bulk builds on a background thread, so a jump to a busy year fills in about
   a second. Pad-deconfliction lists are built in parallel. `hitch_check.py` gates frame hitches.
+- **Flying through storms.** Below 6 km the clouds' empty-space map now stays on while you fly (it used to switch
+  off above ~2.4 km/s, so every step through a storm's layers paid for the full cloud), and a storm's smooth
+  altostratus sheet is shaded at half the samples. Between a storm's decks at 4.8 km: about 22 -> 17 ms of cloud
+  standing still and about 50 -> 28 ms flying at 5 km/s (RTX 3070 Ti, 1080p, High).
 
 ### Tools
 
