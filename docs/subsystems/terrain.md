@@ -757,6 +757,34 @@ the fix — see `docs/HARNESS.md`, *Gotchas* → `time sun`.
 - **Water map from Natural Earth 10 m** (`tools/make_water_map.py`, 2026-09-30): land + lakes rasterised at 16K
   between 60 S and 72 N, the distance field averaged down to the 8K texels (sub-texel zero crossing; ~1 km vs
   the 5-km mask's ~2.5 km). Outside the band the 8K mask (ice shelves). Reads the .r8 copies, never the PNGs.
+- **Thin sea channels survive the 16K->8K mean** (2026-11-03, issue_20261030_204632): a channel 1-2 px wide at 16K
+  (Puyuhuapi, Sognefjord, the Zeeland estuaries) averaged to land, so the fjord was drawn as flat 0-m land in
+  the day map's sea blue, and the field's shallow negative ridge along it (~-0.3 texel) read as a shore ~1 km
+  away: the shore cap shaved the wall beside it (probe at the report's slab: DEM 835 m drawn at 280 m, texel-
+  stepped). The bake now finds the water a 3x3 opening removes at 16K and, where the DEM footprint reaches the
+  sea byte and the nearest body is the sea, raises the 8K field by a Gaussian bump (K_CHANNEL 0.12, sigma 0.8,
+  gain 2; a hard-set texel value creased the shore ramp along texel edges). 25,740 texels raised, 21,420 flip
+  land->water, none the other way; lakes (level > sea) untouched. Report view: ground samples on mapped water
+  2.2% -> 7.7%, fjord drawn as 0-m land 18.5% -> 13.2% (the rest is DEM sea that Natural Earth calls land).
+- **Sea-level land the day map paints as sea is dunked by the bake** (2026-11-03, same issue; the user: "dunk the
+  blue terrain"): texels the coastline calls land where the DEM byte is the sea's, the nearest body is the sea
+  (within 3 texels) and the 8K day map is sea blue ((b - (r+g)/2) / luminance > 0.22) get the same Gaussian bump
+  (K_DUNK 0.25): 39,035 texels, 32,866 of them water after it. Green polders and deltas at DEM 0 are not blue and
+  stay land (Zandvoort: 0 texels changed). At the report's shot, sea-blue TERRAIN (albedo view, terrain mask from a
+  red-albedo variant) 67.4% of the frame -> 1.4%: the rest of the blue is now the sea. A shader-side dunk of the
+  sub-texel fringe and a recolour of blue slopes from the least-blue neighbour texel were built and measured: no
+  pixel changed at the shot once the bake was in (removed).
+- **The shore cap keeps steep shores** (2026-11-03, same issue, terrain.glsl `shoreDemAbove`): the 0.25 m/m ramp
+  exists for the coastal artifact (the DEM's value where the map draws the shore), but as a plain cap it flattened
+  every steep shore the DEM gets right (a restored fjord's wall: 937 m drawn at 338 m, 1.35 km from the water). Now
+  the land is never pushed lower than DEM - hS x (1 - smoothstep(0, 800 m, x)), hS = the DEM (mip 0) at this
+  point's shore above the level, found down the distance field's forward-difference gradient; joined to the ramp
+  by a smooth max (k 20 m), and past 800 m the DEM stands. Flat coasts never reach it (offline over 0.5-0.7 deg
+  boxes: Zandvoort and Zeeland 0.00% of samples changed; Sognefjord 4.8% >5 m). Report shot, 416-probe grid:
+  samples > 100 m below the DEM 43.5% (before any fix) / 57.5% (channel restored, old cap) -> 1.7%; every sample
+  with DEM >= 700 m within 19 m. Cost: the fetches are free (a variant with hS = 0 cost the same; Alps / NL
+  0.0 +- 0.1 ms); drawing the restored relief costs +2.8 ms at the shot on a contended GPU (+6%, A-A spread 2 ms).
+  A mip-1 hS (first cut) averaged a fjord's walls into its floor and changed almost nothing.
 - **Review 16:** waves at `kSeaSpeed` 0.75 (the ~107-m ridges ran at ~27 m/s; a real 107-m wave at ~13), and a base
   ROUGHNESS from the sea state that grows toward grazing views (the unmodelled wind ripples, Cox & Munk), whatever the
   footprint: within ~8 km a calm sea mirrored clouds and the Milky Way crisply up to the horizon. It drives the same

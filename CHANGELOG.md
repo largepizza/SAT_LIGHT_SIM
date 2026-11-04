@@ -319,6 +319,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - Many fixes from QA of launches and missions: no plume pulsing, no train jitter in time warp, smooth handovers
   in the Info window, no "?" under a selection, the camera never goes underground following a rocket.
 - The Attributions tab lists every bundled asset.
+- Narrow fjords and sea channels (southern Chile, Norway's Sognefjord, the Zeeland estuaries) are water again
+  instead of flat blue sea-level land, sea-level ground the satellite map shows as sea is water, and steep shores
+  (fjord walls, cliffs) keep their height instead of being shaved into flat shelves.
 - QA fixes: the Sun's lens-flare ghosts no longer wash out a backlit satellite's earthlit side; the selection
   panel's magnitude follows the Info window's rule; the Info window's 3D view shows a burning stage's flame and
   destroyed objects; long durations read in days / hours / minutes and visiting spacecraft by phase ("Docked
