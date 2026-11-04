@@ -1443,6 +1443,15 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     anvil-reaching tower's base, 2.5x longer downwind; the shafts take max(map rate, core) at up to 2x density.
     The tower search now runs down to the ground while it rains (it stopped at 400 m). The curtains read 1.5 mips
     coarser with a softer threshold (the striped on/off pattern).
+  - **Rain falls only from cloud drawn over its column** (2026-11-04, issue 20261104_020642 "Precipitation does not
+    map to clouds"): the map's rain (not the tower cores) is x `under` = smoothstep(0, 0.08, mBase), mBase the body's
+    margin at the base before the lobes (cv2FieldLow: the convective profile's req0 against the cell-capped strength
+    min(e, 0.3 + 0.7 cells), a deck's raw e; recomputed in the rain branch from values already read, ALU only),
+    faded to 1 for sub-pixel footprints (300-2000 m, as the shaft's own mean). It keyed on the 2D strength e alone, so
+    in a dense storm field it hung in the gaps between cells, where the profile leaves no cloud: a grey curtain with a
+    flat top (the type's base + kCv2RainIntoM) under open sky, and drops at the eye there (at the shot, 2100 m: rain
+    0.21 with tau_up 0.017 -> 0). The particles need no change of their own: the rain map they read IS this field at
+    the eye's height (cloud_v2_lightning.comp workgroups 1-4), so particles and curtain are one system; the radar too.
   - **The Sun behind the clouds toward it** (`CloudParams::sunCloudT`, was the unread `cloudsV2`): the lightning
     pass's thread 1 marches 400 km toward the Sun from the eye (below the shell top; 1 above it) into
     `cv2FlashPad2`; the host eases it (0.15 s, `sunCloudTEased`) into the UBO. It multiplies the Sun disc, glare,

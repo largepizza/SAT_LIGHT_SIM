@@ -783,7 +783,22 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx)
         // Review 22: the map's rain is the light, intermittent background; the heavy rain is under the dominant
         // towers' cores (gCv2RainCore), denser (to ~2x) and more uniform there.
         float core = gCv2RainCore * cv2.rain.x;
-        float rate = max(rainAmt * smoothstep(0.3, 0.8, e) * mix(0.4, 1.0, ty.look.z), core);
+        // The rain falls FROM the cloud drawn over this column (2026-11-04, issue 20261104_020642): the body's margin
+        // at its base (below, before the lobes: m0 at zeta = 0, the convective profile's req0 against the cell-capped
+        // strength eS; a deck's raw strength). The map's rain keyed on the 2D strength e alone, so it hung under the
+        // gaps between a storm's cells, where the profile leaves no cloud at the base: a curtain, and the drops at
+        // the eye, in clear air under open sky. Sub-pixel cells keep their mean (the shaft's own fade below).
+        float hVarR  = 1.0 + cv2.cu.x * (0.5 * clamp((cl16.a - 0.5) * 9.0, -1.0, 1.0) + 0.9 * (cells - 0.55) * (1.0 - deep));
+        float flatR  = ty.alt.z * (1.0 - (1.0 - smoothstep(0.25, 0.65, covT)) * cv2.cu.y * smoothstep(0.1, 0.5, ty.look.z));
+        float TR     = max(cv2.flow.w, 0.05) * clamp(max(pow(eB, 0.83), 0.6 * pow(e, 0.83)) * max(hVarR, 0.3),
+                                                     mix(0.25, 0.12, cv2.cu.x), 1.0);
+        float capR   = 0.3 + 0.7 * cells;
+        float hSR    = max(0.2 - abs(e - capR), 0.0) / 0.2;
+        float req0R  = 0.2 * smoothstep(0.1, 0.6, eB) + cv2.flow.z * mix(0.15, 0.3, deep) * smoothstep(0.05, 0.4, eB)
+                     * smoothstep(0.4, 0.8, TR / max(cv2.flow.w, 0.3));
+        float mBase  = mix(min(e, capR) - hSR * hSR * 0.05 - req0R, e, flatR);
+        float under  = mix(smoothstep(0.0, 0.08, mBase), 1.0, smoothstep(300.0, 2000.0, fpM));
+        float rate = max(rainAmt * smoothstep(0.3, 0.8, e) * mix(0.4, 1.0, ty.look.z) * under, core);
         if (rate <= 0.0 && below) return f;
         if (rate > 0.0) {
         vec3  rr = rS + eastW * ((base - q.h) * 0.25);

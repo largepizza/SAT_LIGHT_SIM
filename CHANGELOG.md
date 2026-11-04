@@ -325,6 +325,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- Rain falls only from clouds: rain curtains and the drops at the eye no longer hang under the clear gaps between a
+  storm's clouds (issue_20261104_020642).
 - Meteors are no longer drawn past 1 hour/s: at 1 day/s and faster the Earth's nightside no longer sparkles with
   one-frame spiked flashes. 1 hour/s and slower are unchanged (issue_20261030_175604).
 - Far city lights no longer blink at low angles under temporal AA; the sea no longer shows a fine white static
