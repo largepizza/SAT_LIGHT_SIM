@@ -169,6 +169,12 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **Refraction, mirages and seeing.** A ray-traced atmosphere flattens and lifts the setting Sun and Moon, draws
   inferior mirages and green rims, and makes the image boil near the horizon. The Sun has sunspots and, at totality
   or behind the new occulter, a dynamic corona with streamers and CMEs.
+- **Seeing that follows the air.** Zoomed in, the turbulence moves the picture by its physical amount at the
+  right scale: fine shimmer and a slight softening (a sea horizon at sunset moves ~3 arcsec rms) instead of big
+  chunky wobbles. It is tied to the sim clock (pausing freezes it, time warp speeds it up) and to the air in front of
+  you (it stays on the scene as you turn, and changes when you move). Stars twinkle in brightness, more toward the
+  horizon. Three sliders under Sky > Seeing: Turbulence strength, cell size and speed (they replace "Star twinkle
+  rate" and "Turbulence warp").
 - **Inertial camera lock:** keep the view fixed on the stars while the Earth turns beneath, with a Sun occulter.
 
 ### Sky, sea, terrain and cities

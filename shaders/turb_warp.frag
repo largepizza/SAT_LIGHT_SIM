@@ -1,31 +1,33 @@
 #version 450
 // The turbulence warp (2026-10-28, issues 20261028_193115 "Detail Stars should flicker with turbulence" and
-// 20261028_191408): atmospheric seeing as a distortion of the WHOLE picture, after the main pass (sky, Milky Way and its
-// star-cloud points, the Moon, the Sun, stars, planets, satellites) and before the UI. The frame is copied
-// (SatelliteSimTurbulence.cpp) and resampled through a smooth displacement field:
-//  - its rms per axis at each pixel is the refraction table's angle-of-arrival rms at that pixel's APPARENT elevation
+// 20261028_191408; the eddy band, sim time and the field in the air 2026-11-03, issue 20261103_191106 "Turbulence"):
+// atmospheric seeing as a distortion of the WHOLE picture, after the main pass (sky, Milky Way and its star-cloud points,
+// the Moon, the Sun, stars, planets, satellites) and before the UI. The frame is copied (SatelliteSimTurbulence.cpp)
+// and resampled through a smooth displacement field plus a blur:
+//  - the rms per axis at each pixel is the refraction table's angle-of-arrival rms at that pixel's APPARENT elevation
 //    (Refraction.cpp: 2.91 D^-1/3 int Cn^2 ds), x the share of the turbulent column in front of the first surface the
 //    pixel shows (terrain / sea / mesh from the scene depth, cloud from the composite: 1 - exp(-d / aoaS), aoaS the
-//    Cn^2-weighted mean distance along that ray), x "Turbulence warp", faded out above the air;
-//  - in pixels it is that angle / the pixel's angle, so it is invisible at a wide field and boils when zoomed;
-//  - the field is vector value noise on the sky (ENU directions, anchored on the CPU in double so it neither swims
-//    when the camera turns nor loses precision), cells ~12" or 6 px, whichever is larger (power-of-two levels
-//    cross-faded, so a zoom does not rescale a field), twice as wide horizontally; it drifts with a wind and boils
-//    (three phases cross-faded, each re-drawn at its zero weight: a constant rate of change), in REAL time (frame seconds): seeing is a property
-//    of the moment, not of the simulated clock.
-// The Sun's and the Moon's discs no longer jitter in sat_sky.frag while this pass is on (refrSun.z = 0): the warp moves
-// them like everything else.
+//    Cn^2-weighted mean distance along that ray), faded out above the air;
+//  - that variance is spread evenly over the octaves of the eddy band D / aoaS .. L0 / aoaS (aperture 1 cm .. outer
+//    scale 0.4 x the air's height there, 1-50 m, x "Turbulence cell size"); six octaves of vector value noise on fixed angular cells carry the part
+//    from ~2 px up as displacement (each at most 1/8 of its cell: it never folds), the finer part is a blur;
+//  - each octave is a frozen 3D lattice in the air (ECEF metres, anchored on the CPU in double): fixed on the scene
+//    when the camera turns, re-drawn when the eye moves, drifting with sim time.
+// The Sun's and the Moon's discs do not jitter in sat_sky.frag: the warp moves them like everything else.
 
 layout(set = 0, binding = 0) uniform TurbWarp {
-    vec4  camR;      // camera right / up / forward in ENU (xyz)
+    vec4  camR;      // camera right / up / forward in ECEF (xyz)
     vec4  camU;
     vec4  camF;
+    vec4  up;        // the eye's up in ECEF
     vec4  screen;    // x W, y H (px), z tan(fov/2) x aspect, w tan(fov/2)
-    vec4  params;    // x the pixel's angle (rad / px), y gain (x the altitude fade), z 1 / (the field's rms), w 1 / (table n - 1)
-    vec4  mScale;    // xyz level 0's coordinate scale (cells / rad) on E, N, U; w unused
-    ivec4 anc[6];    // the lattice anchors: [phase k level o] at k x 2 + o, three phases (mod 4096)
-    vec4  frac[6];   // their fractions (xyz); w = the weight (phase x level, each normalised to unit rms)
+    vec4  params;    // x the pixel's angle (rad / px), y gain (the altitude fade), z 1 / (the field's rms), w 1 / (table n - 1)
     vec4  aniso;     // x horizontal amplitude, y vertical amplitude, z table eLo (rad), w table span (rad)
+    vec4  band;      // x log2(aperture m x cell size), y log2(cell size), z log2(rad) where the octaves take over, w eye height (m)
+    vec4  outer;     // the outer scale: x per metre of height, y min (m), z max (m)
+    ivec4 anc[6];    // per octave: lattice anchor (mod 4096) xyz, seed w
+    vec4  frac[6];   // xyz the anchor's fraction, w cells / rad
+    vec4  oct[6];    // x log2(cell rad), y on-screen fade, z cell (px)
     vec4  tab[64];   // x aoa rms (rad), y aoaS (m)
 } u;
 
@@ -97,6 +99,9 @@ vec2 tableAt(float e)
 // The share of the jitter in front of a surface d metres away.
 float shareAt(float d, float s) { return s > 1.0 ? 1.0 - exp(-d / s) : 1.0; }
 
+// The length of [a0, a1] inside [b0, b1].
+float overlap(float a0, float a1, float b0, float b1) { return max(min(a1, b1) - max(a0, b0), 0.0); }
+
 void main()
 {
     ivec2 ip = ivec2(gl_FragCoord.xy);
@@ -109,7 +114,7 @@ void main()
     vec3  dir = (u.camF.xyz + v) / L;
     vec3  dd  = (v - u.camF.xyz * (v2 / (L + 1.0))) / L;   // dir - fwd
 
-    vec2  ts  = tableAt(asin(clamp(dir.z, -1.0, 1.0)));
+    vec2  ts  = tableAt(asin(clamp(dot(dir, u.up.xyz), -1.0, 1.0)));
     if (ts.x <= 0.0) { outColor = vec4(texelFetch(frameTex, ip, 0).rgb, 1.0); return; }
 
     // The turbulent column in front of what the pixel shows.
@@ -129,20 +134,57 @@ void main()
         float shC = shareAt(min(dc / wc, dS), ts.y);
         var = mix(shS, shC, opa);
     }
-    float amp = ts.x * sqrt(var) * u.params.y;   // rms (rad) per axis
-    float ampPx = amp / u.params.x;
-    if (ampPx < 0.004) { outColor = vec4(texelFetch(frameTex, ip, 0).rgb, 1.0); return; }
+    float sigPx = ts.x * sqrt(var) * u.params.y / u.params.x;   // total rms per axis (px)
+    if (sigPx < 0.004) { outColor = vec4(texelFetch(frameTex, ip, 0).rgb, 1.0); return; }
+    float sig2 = sigPx * sigPx;
 
-    // The field: two boiling phases x two cell sizes (a power-of-two LOD of the cell, cross-faded as the field of view
-    // changes, so zooming never rescales a field: it would scramble). frac[i].w = the phase's x the level's weight.
-    vec3 q0 = dd * u.mScale.xyz;   // level 0's cells; level 1's are twice as large
-    // Three phases a third of a cycle apart (2026-10-28, issue 20261028_223915: with two the field paused twice a cycle).
-    vec2 n = vec2(0.0);
-    for (int i = 0; i < 6; ++i)
-        n += u.frac[i].w * vnoise2(u.anc[i].xyz, u.frac[i].xyz + ((i & 1) != 0 ? 0.5 : 1.0) * q0, 0u);
+    // The eddy band in log2(rad) at this pixel: aperture / aoaS .. outer scale / aoaS. Equal variance per octave; the
+    // share above band.z is displacement, spread over the displayed octaves by their overlap with the band (x their
+    // on-screen fade); the rest is blur.
+    // the outer scale from the height of the air aoaS out along the ray (the eye's height + the climb + the Earth's drop)
+    float sEl = dot(dir, u.up.xyz);
+    float zT  = max(u.band.w + ts.y * sEl + ts.y * ts.y * 7.85e-8, 0.0);   // 7.85e-8 = 1 / (2 x 6371 km)
+    float L0  = clamp(u.outer.x * zT, u.outer.y, u.outer.z);
+    float la  = log2(max(ts.y, 1.0));
+    float bLo = u.band.x - la, bHi = u.band.y + log2(L0) - la;
+    float nB  = max(bHi - bLo, 1.0);
+    float vShown = sig2 * overlap(u.band.z, 1e9, bLo, bHi) / nB;
+    float wk[6];
+    float wSum = 0.0;
+    for (int i = 0; i < 6; ++i) {
+        float lc = u.oct[i].x;
+        // the coarsest displayed octave also stands for the band above it
+        float w = overlap(lc - 0.5, i == 5 ? 1e9 : lc + 0.5, bLo, bHi) * u.oct[i].y;
+        wk[i] = w;
+        wSum += w;
+    }
+    vec2  n = vec2(0.0);
+    float shown2 = 0.0;
+    if (wSum > 1e-4 && vShown > 0.0) {
+        for (int i = 0; i < 6; ++i) {
+            if (wk[i] <= 0.0) continue;
+            // rms (px) of this octave, capped at 1/8 of its cell (a field displaced by more than that folds)
+            float a = min(sqrt(vShown * wk[i] / wSum), 0.125 * u.oct[i].z);
+            shown2 += a * a;
+            n += a * vnoise2(u.anc[i].xyz, u.frac[i].xyz + dd * u.frac[i].w, uint(u.anc[i].w));
+        }
+    }
     // Near the horizon the jitter is mostly vertical (the long, layered path); the CPU blends aniso.xy by elevation.
-    vec2 dispPx = n * u.params.z * ampPx * u.aniso.xy;
+    vec2 dispPx = n * u.params.z * u.aniso.xy;
     // Screen axes: x right, y down.
     vec2 src = gl_FragCoord.xy + vec2(dispPx.x, -dispPx.y);
-    outColor = vec4(sampleCR(src), 1.0);
+    vec3 col = sampleCR(src);
+    // The rest of the variance (the sub-pixel eddies: the seeing disc) blurs: a ring of six bilinear taps at r around
+    // the centre, equal weights (per-axis variance 3/7 r^2), at most 1.5 px (wider rings would show as copies).
+    float blur = sqrt(max(sig2 - shown2, 0.0));
+    if (blur > 0.3) {
+        float r = 1.528 * min(blur, 1.5);
+        vec3 acc = col;
+        for (int k = 0; k < 6; ++k) {
+            float an = 1.0471976 * float(k) + 0.2617994;
+            acc += texture(frameTex, (src + r * vec2(cos(an), sin(an))) / u.screen.xy).rgb;
+        }
+        col = acc / 7.0;
+    }
+    outColor = vec4(col, 1.0);
 }
