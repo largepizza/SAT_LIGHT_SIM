@@ -150,8 +150,23 @@ launches follow per-program cadences (no real manifest).
     8 a ship (was 40: the 10 m bus did not fit across the bay at all), Starlink (Gen2 + V3) 30 (was 60), DTC 36 (was 50),
     Starlink Gen1 on Falcon 9 (its own program, 31: a plane's 61 in two launches), Guowang 10 on two tiers of five
     (5.2 m fairings: LM-5B, LM-8A, Zhuque-3; LM-8A's fairing lengthened to 8.5 + 5.5 m), Qianfan 18 (2 x 9; its bus
-    2.6 x 1.3 m). NOT stacked (no fit as modelled): Amazon Leo (45 of a 2 x 2 x 1.2 m bus with a 3 m panel), OneWeb (36
-    on a column ~12 m tall), Reflect Orbital (no stowed mirror): they still appear at the dispenser point (stowed).
+    2.6 x 1.3 m), Reflect Orbital 25 (pez, below). NOT stacked (no fit as modelled): Amazon Leo (45 of a 2 x 2 x 1.2 m
+    bus with a 3 m panel), OneWeb (36 on a column ~12 m tall): they still appear at the dispenser point (stowed).
+  - **Reflect Orbital flies Starship only, 25 a ship** (2026-11-04, the user: "the Falcon 9 launching is a bit goofy
+    and there is a clown car of satellites from one launch"; was 40 a Falcon 9, 170 kg each). The 55 m quad sail
+    (2,819 m^2 of film, 38.7 m half-booms) stows as the booms telescoped to 6% (STOW_SCALE in
+    tools/make_reflector_model.py, ~2.3 m nested sections; the film's radial stow uses the same scale so its corners
+    ride the boom tips): a 5.45 x 5.45 x 0.81 m cross (stowed_points now reads polygons and radial stows), one a layer
+    across the 8.2 m bay, pitch 0.87 m -> capacity int(22.04 / 0.87) = 25 = the payload. Mass is not the limit: film
+    ~10 g/m^2 (2.5-5 um aluminised polyimide / PEN is 3.5-7, doubled for seams, ripstop and edge cords) ~28 kg, four
+    booms at ~0.4 kg/m ~62 kg, deployer ~30 kg, bus (attitude control for a 2,800 m^2 sail, electric propulsion for
+    the 360 -> 500 km raise and drag make-up, power) ~180 kg: ~300 kg (`sat_mass_kg`), 25 = 7.5 t + rack against
+    Starship's ~100 t (less to SSO): volume-bound like Starmind. Released 180 s apart (`stack.deploy_interval_s`; the
+    vehicle's 45 s gave ~31 m between members, under half a 78 m sail's span): releaseMinRate at 0.7 m/s is 0.70 m/s,
+    so >= 126 m between neighbours, and the 25 leave in 75 min (under an orbit; the door stays open throughout). The
+    cadence balances by construction (each batch retires the slots it fills): 5,000 mirrors / 25 a launch / 5 years
+    = 40 launches a year at steady state (25 before); the 3 rings of ~1,667 take 67 batches each (`batch_gap_days`
+    3 unchanged).
     **Checked again 2026-10-21 (no change made):** the column fit over 3-8 to a tier, with the models as they are and
     with OneWeb's dishes stowed and wings folded tight (1.3 x 1.32 x 1.06 m) or Amazon's antenna-panel overhang folded
     (2.0 x 2.0 x 1.35 m): no layout fits — OneWeb 36 misses Falcon 9's fairing by 0.08 m at best (6 a tier, 6 tiers),
