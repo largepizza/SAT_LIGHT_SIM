@@ -7,8 +7,8 @@
 //      entirely outside the cloud shell is written empty without a field read; any other stale cell is set to
 //      "empty, this stamp" and appended to the bake list while it has room (cdcB.z cells; the rest stay unknown and the
 //      march evaluates the field there, as before).
-//   1  BAKE: kCdcLanes threads per listed cell, each a share of its sample points; the cell takes their max by
-//      atomicMax (the stamp is in the high bits and the same for all; a positive half float orders as its bits).
+//   1  BAKE: kCdcLanes threads per listed cell, each a share of its sample points; the cell takes the OR of their layer
+//      masks by atomicOr (the stamp is in the high bits, written by the check pass and the same for all lanes).
 // The bake was one pass at first: a stale cell's thread baked alone in a warp of returning ones, and with time running
 // (~21k cells a frame) that serialisation cost 5-12 ms (harness_runs/s0/run12).
 layout(local_size_x = 256) in;
@@ -36,6 +36,7 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_v2_march.com
 #define CV2_DETAIL_BINDING  4
 #define CV2_MESO_BINDING    5
 #define CV2_STORM_BINDING   26   // the storm objects' towers (cv2_storms.glsl)
+#define CV2_LAYER_HITS            // cv2Field reports the layers each read needed (gCv2LayHit): the cells' layer masks
 #include "clouds_v2.glsl"
 layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
 layout(set = 0, binding = 6) uniform sampler2D sceneDepthTex;   // (its size: the march's pixel)
@@ -113,7 +114,7 @@ void bakePass(uint ti)
     // one cell apart x 4 heights a quarter-cell apart over the cell's own height +- a quarter (36 points): with only the
     // centre inside its own height range, pattern 1 missed flat bases and thin decks ~10x as often (run 11).
     int   nS = cv2.cdcA.w > 1.5 ? 36 : 9;
-    float mx = 0.0;
+    uint  lm = 0u;   // the layers any point needed (cv2Field's kCv2Lay* bits)
     // The footprint BRACKET (cdcC.w, 2026-11-04, issue 20261104_020257): the march reads this cell only while the eye is
     // within its level's ring of it (horizontally 0 / half .. sqrt 2 x the level's reach, the max norm), so from ANY eye
     // position at this height its footprint lies between the ring's nearest and farthest distances. The bake reads the
@@ -142,7 +143,9 @@ void bakePass(uint ti)
         // (One call site in a loop: the field is inlined at every call.)
         [[dont_unroll]] for (int b = 0; b < (brk ? 2 : 1); ++b) {
             CV2Field f = cv2Field(cv2Pos(rel, eyeH, enuToEcef), -1.0, brk ? ((b == 0) ? fpLo : fpHi) : fpS);
-            mx = max(mx, f.sigma);
+            // Every point's bits, cloud or not (a tower's strength that cut a mid sheet to nothing is needed there: skipped,
+            // the sheet would appear); bit 64 = a trace of cloud at some point (the cell is not empty).
+            lm |= gCv2LayHit | (f.sigma > 0.0 ? 64u : 0u);
         }
         // S2 ("cdc_light"): the light march's own read (mean erosion), its effective extinction summed in fixed point,
         // at the pattern's points pulled in to the cell itself (+-0.5 cell): a mean over the dilated 2-cell box blurred
@@ -158,9 +161,10 @@ void bakePass(uint ti)
             atomicAdd(cv2CdcData[2 * kCv2CdcTotal + gi], uint(e * e * kCv2CdcMeanQ + 0.5));
         }
     }
-    uint hb = packHalf2x16(vec2(mx, 0.0)) & 0xFFFFu;
-    if (mx > 0.0 && hb == 0u) hb = 1u;   // a trace of cloud must not round to "empty"
-    if (hb != 0u) atomicMax(cv2CdcData[gi], (st << 16u) | hb);
+    // The low 16 bits: the layer mask (2026-11-04), bit 64 = not empty (some coarse sigma at a point; the half-float max
+    // it replaced was tested for zero only). Every lane ORs its own bits (a lane without cloud can hold a needed one);
+    // an empty cell's march reads skip every layer (cv2CdcMask): the same claim as its coarse skip.
+    if (lm != 0u) atomicOr(cv2CdcData[gi], (st << 16u) | lm);
 }
 
 void main()

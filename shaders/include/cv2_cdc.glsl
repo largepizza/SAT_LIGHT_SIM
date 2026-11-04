@@ -32,7 +32,7 @@ buffer CV2CdcBuf {
     uint cv2CdcPad[3];
     uint cv2CdcList[kCv2CdcListCap];   // the cells the bake pass bakes this frame
     // Then three arrays of kCv2CdcTotal (runtime-sized, so a small placeholder can be bound while the clipmap is off):
-    // [cell] low 16 bits half(max coarse sigma), high 16 the stamp; [kCv2CdcTotal + cell] / [2 kCv2CdcTotal + cell] S2's
+    // [cell] low 16 bits the layer mask (bit 64 clear = empty: no coarse sigma at any bake point), high 16 the stamp; [kCv2CdcTotal + cell] / [2 kCv2CdcTotal + cell] S2's
     // fixed-point sums (x kCv2CdcMeanQ) of the light march's effective extinction and its square over the bake's points
     // (zeroed when the cell is listed; valid with the cell's stamp).
     uint cv2CdcData[];
@@ -132,22 +132,26 @@ bool cv2CdcMeanAt(vec3 rel, float eyeR, float L, float u, out float m)
     m = (va <= 1e-6 * mu * mu) ? mu : (mu * mu / va) * log(1.0 + Lc * va / mu) / Lc;
     return true;
 }
-bool cv2CdcEmpty(vec3 rel, float eyeR)
+// The cell's LAYER MASK (kCv2Lay* bits, cv2Field: the layers whose functions can be non-zero in the cell's dilated box at
+// the bake's footprint; 0 = known empty), 0xFFFFu (every layer) where the cell is unknown or outside the clipmap.
+uint cv2CdcMask(vec3 rel, float eyeR)
 {
     vec3  d  = vec3(rel.xy, rel.z + eyeR);
     float dA = dot(d, cv2.layA.xyz);
-    if (dA <= 0.0) return false;
+    if (dA <= 0.0) return 0xFFFFu;
     float h  = length(d) - kCv2CdcR;
     int   iz = int(floor(h / kCv2CdcDZ));
-    if (h < 0.0 || iz >= kCv2CdcNZ) return false;
+    if (h < 0.0 || iz >= kCv2CdcNZ) return 0xFFFFu;
     vec2  uv = vec2(dot(d, cv2.layE.xyz), dot(d, cv2.layN.xyz)) * (kCv2CdcR / dA);   // m on the plane
     vec2  du = abs(uv - cv2.cdcA.xy);
     float reach = cv2.cdcA.z * float(kCv2CdcN / 2 - 2);
     int   lv = int(ceil(log2(max(max(du.x, du.y) / reach, 1.0))));
-    if (lv >= min(kCv2CdcL, int(cv2.cdcB.w))) return false;
+    if (lv >= min(kCv2CdcL, int(cv2.cdcB.w))) return 0xFFFFu;
     ivec3 c  = ivec3(ivec2(floor(uv / cv2CdcCell(lv))), iz);
     uint  v  = cv2CdcData[cv2CdcIndex(c, lv)];
-    return (v >> 16u) == cv2CdcStamp(c, lv) && (v & 0xFFFFu) == 0u;
+    // (Bit 64: cloud at some point of the cell. Without it the cell is empty whatever other bits the bake found.)
+    return (v >> 16u) != cv2CdcStamp(c, lv) ? 0xFFFFu : ((v & 64u) != 0u ? (v & 0xFFFFu) : 0u);
 }
+bool cv2CdcEmpty(vec3 rel, float eyeR) { return cv2CdcMask(rel, eyeR) == 0u; }
 #endif
 #endif

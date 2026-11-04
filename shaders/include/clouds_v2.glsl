@@ -2040,17 +2040,53 @@ layout(constant_id = 3) const int kCv2DustOn = 1;
 #else
 const int kCv2DustOn = 1;
 #endif
+// The LAYER MASK (2026-11-04, the occupancy clipmap's cells, cv2_cdc.glsl): which layer functions cv2Field calls. The march
+// sets it per field read from the clipmap cell the point lies in (every bit where the cell is unknown); every other caller
+// keeps all of them. A bit is clear only where the bake found that layer's function zero, and without effect on the
+// others, at every one of the cell's points: a storm's tower walk, the low field's weather reads, the shields, the mid and
+// high layers' reads ran in every field read of the light march through an altostratus sheet, nothing to add there.
+// The bake (CV2_LAYER_HITS) collects the bits a read needed in gCv2LayHit.
+const uint kCv2LayCol  = 1u;    // the storm objects' towers (cv2ColumnSigma): their sigma, or a proximity / strength /
+                                // rain core another layer reads
+const uint kCv2LayLow  = 2u;    // cv2FieldLow (the low layer, rain)
+const uint kCv2LayMid  = 4u;    // cv2MidSigma
+const uint kCv2LayHigh = 8u;    // cv2HighSigma
+const uint kCv2LayAnv  = 16u;   // cv2AnvilSigmaP, its presence (the cirrus gives way) and the shield-less presence read
+const uint kCv2LayDust = 32u;   // the haboob's dust (never skipped: its own specialization)
+uint gCv2LayMask = 0xFFFFu;
+#ifdef CV2_LAYER_HITS
+uint gCv2LayHit = 0u;
+#endif
 CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
 {
+    uint lm = gCv2LayMask;
     gCv2FlowSet = false;
     gCv2FlowD   = cv2FlowDisp(cv2Drift(q.dirE), vec3(0.0));
     gCv2FlowSet = true;
     gCv2GroundSet = false;
     gCv2Ground    = cv2Ground(q.dirE);
     gCv2GroundSet = true;
-    CV2Col col = cv2ColumnSigma(q, detailAmt, fpM);
-    CV2Field f = cv2FieldLow(q, detailAmt, fpM, col.prox);
+    CV2Col col;
+    col.sigma = 0.0; col.hf = 0.0; col.topH = 0.0; col.near = 0.0; col.storm = 0.0; col.prox = 0.0;
+    gCv2RainCore = 0.0;
+    if ((lm & kCv2LayCol) != 0u) col = cv2ColumnSigma(q, detailAmt, fpM);
+#ifdef CV2_LAYER_HITS
+    float rcHit = gCv2RainCore;
+#endif
+    CV2Field f;
+    f.sigma = 0.0; f.hf = 0.0; f.msBright = 1.0; f.ambient = 1.0; f.deck = 0.0; f.topH = 0.0; f.thin = 0.0;
+    f.rain = 0.0; f.soft = 0.0;
+    if ((lm & kCv2LayLow) != 0u) f = cv2FieldLow(q, detailAmt, fpM, col.prox);
     float dbgLow = f.sigma;
+#ifdef CV2_LAYER_HITS
+    // The towers' proximity and rain core change the low field (the storm cumulus' top moves toward its own, either way;
+    // the rain core adds rain): needed where the low field reads differently without them, which is what a skip reads.
+    bool colLow = false;
+    if (col.prox > 0.0 || rcHit > 0.0) {
+        if (dbgLow > 0.0) colLow = true;
+        else { gCv2RainCore = 0.0; colLow = cv2FieldLow(q, detailAmt, fpM, 0.0).sigma > 0.0; gCv2RainCore = rcHit; }
+    }
+#endif
     float hfD, topD, sd = 0.0;
 #ifdef CV2_STORM_BINDING
     vec3 dw = vec3(0.0);
@@ -2090,21 +2126,30 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
         cv2Add(f, sd, hfD, topD, 0.0);
         f.rain *= s0 / f.sigma;
     }
-    float hfX, topX, deckX;
-    float sm = cv2MidSigma(q, fpM, hfX, topX, deckX);
+    float hfX = 0.0, topX = 0.0, deckX = 0.0;
+    float sm = 0.0;
+    if ((lm & kCv2LayMid) != 0u) sm = cv2MidSigma(q, fpM, hfX, topX, deckX);
+#ifdef CV2_LAYER_HITS
+    float smRaw = sm;
+#endif
     // The mid layer (a thin Ac/As lens) gives way over a storm: drawn through it, it sliced every
     // tower with a flat plate at ~6 km, seen edge-on as a hard line across the storm (user snap 1,
     // pass 17). Only where the towers are drawn (the storm's strength is read for them).
     // Wherever towers can stand (a weak storm-edge tower cut by a mid-layer belt, pass 20).
     if (cv2.column.x > 0.0) sm *= 1.0 - smoothstep(0.0, 0.15, col.storm);
     if (sm > 0.0) cv2Add(f, sm, hfX, topX, deckX);
-    float hfH, topHh;
-    float sh = cv2HighSigma(q, fpM, hfH, topHh);
-    float presA;
+    float hfH = 0.0, topHh = 0.0;
+    float sh = 0.0;
+    if ((lm & kCv2LayHigh) != 0u) sh = cv2HighSigma(q, fpM, hfH, topHh);
+#ifdef CV2_LAYER_HITS
+    float shPre = sh;
+#endif
+    float presA = 0.0;
     // (With the storms' shields its presence below the band comes from the same lookup: wantPres.)
-    float sa = cv2AnvilSigmaP(q, fpM, col.near, sh > 0.0 && cv2ShieldsOn(), hfX, topX, presA);
+    float sa = 0.0;
+    if ((lm & kCv2LayAnv) != 0u) sa = cv2AnvilSigmaP(q, fpM, col.near, sh > 0.0 && cv2ShieldsOn(), hfX, topX, presA);
     if (col.sigma > 0.0) cv2Add(f, col.sigma, col.hf, col.topH, 0.0);
-    if (sh > 0.0 && cv2.storm.z > 0.0 && !cv2ShieldsOn()) {
+    if (sh > 0.0 && cv2.storm.z > 0.0 && !cv2ShieldsOn() && (lm & kCv2LayAnv) != 0u) {
         // Where the storms that feed anvils are (the anvil's own test, one ~20 km read): running the
         // anvil's evaluation through the whole cirrus band cost ~10 ms from orbit.
         vec4  wa = textureLod(cv2WeatherTex, cv2FlowWeatherDirAt(q), CV2_WX_LOD(2.0));
@@ -2125,6 +2170,23 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     else if (sd > 0.0) f.soft = -sd / f.sigma;   // the dust's share, negative (cv2DustWallSigma)
     if (gCv2DbgWant)
         gCv2Dbg = vec4(dbgLow + max(sd, 0.0), max(sm, 0.0), max(sa, 0.0) + max(col.sigma, 0.0), max(sh, 0.0));
+#ifdef CV2_LAYER_HITS
+    // The layers this read needed: a function whose result was zero AND changed nothing else. The towers' strength
+    // (col.storm, ~40 km smooth) matters only where it cut a mid sheet; their proximity and rain core where the low field
+    // reads differently without them, their heads (near) where the shields do. The anvil's presence cut the cirrus (computed only where the cirrus is: sh > 0).
+    // (A shield without the head's hang: the same reruns as the low field's.)
+    bool colAnv = false;
+    if (col.near > 0.0) {
+        if (sa > 0.0 || presA > 0.0) colAnv = true;
+        else {
+            float hA, tA, pA;
+            colAnv = cv2AnvilSigmaP(q, fpM, 0.0, shPre > 0.0 && cv2ShieldsOn(), hA, tA, pA) > 0.0 || pA > 0.0;
+        }
+    }
+    gCv2LayHit = ((col.sigma > 0.0 || colLow || colAnv || (col.storm > 0.0 && smRaw > 0.0)) ? kCv2LayCol : 0u)
+               | (dbgLow > 0.0 ? kCv2LayLow : 0u) | (sm > 0.0 ? kCv2LayMid : 0u) | (sh > 0.0 ? kCv2LayHigh : 0u)
+               | ((sa > 0.0 || presA > 0.0) ? kCv2LayAnv : 0u) | (sd > 0.0 ? kCv2LayDust : 0u);
+#endif
     gCv2FlowSet = false;
     gCv2GroundSet = false;
     return f;
