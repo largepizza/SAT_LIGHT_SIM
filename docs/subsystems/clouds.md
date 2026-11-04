@@ -567,6 +567,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     inverted cone with a rounded tip: it pushed the skew positive by +0.3..+1.0 on any shape noise. The spectrum
     slope at 0.1-0.03 H stays -3.9 (WDAS -3.36): the detail texel is 14 m, so radii of 6-14 m (WDAS's finest) are
     below what either 128^3 volume holds; matching them needs a finer volume or a third fetch.
+    Measured: cloud_march caps -> billows (shape + erosion), same A/B as above: 8.42 -> 8.35 ms (1.5 km level), 9.03 -> 8.90 (3 km down), 10.24 -> 10.45 (ground), 8.35 -> 7.95 (6 km; +-0.9 rep spread): neutral. In the app the erosion's change is confined to cloud outlines (image diff vs the shape-only billows 0.37-0.70 levels mean against a 0.26-0.67 same-setting floor; telephoto on a cumulus 3-5 km away 0.49 vs 0.26, crisper small lobes on the top edges): at these distances the 28-112 m erosion lobes sit within a few pixels of the silhouette.
   - **Full-resolution clouds** (`full_res`, "Full-resolution clouds", S9, `cloud_v2_combine.comp`): the CLOUD grid
     (`computeCloudExtent()`: the v2 march / resolve images and the final cloud targets A/B) is twice the half extent;
     `computeHalfExtent()` stays half (scene depth, `cloud_march.comp`'s dispatch). The march always runs sparse there

@@ -23,6 +23,7 @@ at the 1.8 km `detail_period_m`, x0.6 per octave, flattened hemispheres smooth-u
 carved creases stay soft) and remapped to the smooth-F1 channels' mean / spread. With the erosion included in the
 WDAS comparison: curvature skew +0.27 (smooth-F1 erosion +1.04, the old caps + smooth F1 +1.80, WDAS -0.32), surface
 per volume 0.089 (0.082 / 0.076 / WDAS 0.096). Radii under ~14 m (the detail texel) remain out of reach.
+Erosion billows: cloud_march caps -> billows (shape + erosion), same A/B as above: 8.42 -> 8.35 ms (1.5 km level), 9.03 -> 8.90 (3 km down), 10.24 -> 10.45 (ground), 8.35 -> 7.95 (6 km; +-0.9 rep spread): neutral. In the app the erosion's change is confined to cloud outlines (image diff vs the shape-only billows 0.37-0.70 levels mean against a 0.26-0.67 same-setting floor; telephoto on a cumulus 3-5 km away 0.49 vs 0.26, crisper small lobes on the top edges): at these distances the 28-112 m erosion lobes sit within a few pixels of the silhouette.
 
 ## History
 Replaces "Cap lobes (0/1)" (`shape_caps`, 2026-10-22) as the default; the key changed so saved settings with caps on
