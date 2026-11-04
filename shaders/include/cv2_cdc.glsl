@@ -136,6 +136,10 @@ bool cv2CdcMeanAt(vec3 rel, float eyeR, float L, float u, out float m)
 // the bake's footprint; 0 = known empty), 0xFFFFu (every layer) where the cell is unknown or outside the clipmap.
 uint cv2CdcMask(vec3 rel, float eyeR)
 {
+    // Past the last level's reach (x 1.5: the plane's max norm vs this horizontal distance) without the plane's maths:
+    // from orbit nearly every light read lies there (the lookups cost +0.1 ms a frame before this test, 0 after it).
+    float rMx = cv2CdcCell(min(kCv2CdcL, int(cv2.cdcB.w)) - 1) * float(kCv2CdcN / 2 - 2);
+    if (dot(rel.xy, rel.xy) > 2.25 * rMx * rMx) return 0xFFFFu;
     vec3  d  = vec3(rel.xy, rel.z + eyeR);
     float dA = dot(d, cv2.layA.xyz);
     if (dA <= 0.0) return 0xFFFFu;
