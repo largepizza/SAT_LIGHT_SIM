@@ -9518,7 +9518,6 @@ void SatelliteSim::requestPhoto()
     photoSavedPointMax = pointSigmaMaxPx;
     photoSavedGlareSize = glareSizePx;
     photoSavedGodrayFroxels = cv2GodrayFroxels;
-    photoSavedSkyAp = cv2SkyAp;
     timePaused = true;              // one instant, so the clouds' history and the sky TAA converge on it
     cv2FullRateAboveKm = 0.0f;      // every half-res cloud pixel marched every frame
     cv2SparseWhenStill = 0.0f;
@@ -9528,7 +9527,11 @@ void SatelliteSim::requestPhoto()
     // The god rays' exact path for the photo: each pixel reads the Sun transmittance volume itself instead of the
     // froxels' screen tiles (sharper shafts; ~25 ms more a frame at 1920x1009, paid only while the photo settles).
     cv2GodrayFroxels = 0.0f;
-    cv2SkyAp = 0.0f;                // and the exact atmosphere loop in every pixel (no aerial-perspective volume)
+    // The aerial-perspective volume stays on (cv2SkyAp). The photo used to switch it off for "the exact loop in every
+    // pixel", but at the default step count (view samples 6.5) that loop is the COARSER of the two: under a sunset storm
+    // it lit the haze in front of the clouds about twice as much as a 512-step loop does, and every cloud took a light
+    // blue-grey veil in the photo that the window does not have (issue_20261104_020521). The volume matches the 512-step
+    // loop to 1-3 levels there; the default loop was 7-24 levels off (blue the most).
     photoScaleActive = (uint32_t)s;
     photoState = 1;
     photoFrame = 0;
@@ -9569,7 +9572,6 @@ void SatelliteSim::endPhoto()
     pointSigmaMaxPx = photoSavedPointMax;
     glareSizePx = photoSavedGlareSize;
     cv2GodrayFroxels = photoSavedGodrayFroxels;
-    cv2SkyAp = photoSavedSkyAp;
     photoScaleActive = 0;
     photoState = 0;
 }

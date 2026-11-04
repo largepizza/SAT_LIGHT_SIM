@@ -70,7 +70,11 @@ atmHalfAvg3, airglow noise, cityBrightness) moved unchanged into `include/sky_at
   at dusk near the horizon), so a hard edge was a step of ~1-4 levels. `sky_ap_band_steps` (no UI, 1) multiplies the loop's
   steps in the band: 4 matches the volume but doubled the sky pass from orbit (the band is the whole limb).
 - **Off**: above 1000 km of eye altitude (the loop starts at the atmosphere's top and is cheap there; the pass cost more
-  than it saved), SKY_LITE / Potato / SKY_ENV / SKY_REFL (no volume), the HQ photo (`cv2SkyAp` saved / set 0), knockout bit 2.
+  than it saved), SKY_LITE / Potato / SKY_ENV / SKY_REFL (no volume), knockout bit 2. **The HQ photo keeps it** (issue_20261104_020521):
+  it set `cv2SkyAp` 0 for "the exact loop in every pixel", but the loop at the default 6.5 view samples is the coarser of
+  the two. Under the report's sunset storm (822 m) it lit the haze in front of the clouds ~2x as much as a 512-step loop,
+  a light blue-grey veil on every cloud of the photo: cloud mean (128,77,65) against the volume's (121,58,41) and the
+  512-step loop's (120,56,38) (`harness_runs/hq-ambient-fixq`, debug-view decomposition of `airFront`).
   "Aerial perspective volume (0/1)" (`clouds_v2.sky_ap`, slot 337; 0 = the loop everywhere, the A/B), "... horizon band
   (deg)" (slot 338).
 - **The band is capped at 12 tiles** (2026-10-28, issue 20261028_192855: zoomed to a 0.58-deg field on the refracted Sun

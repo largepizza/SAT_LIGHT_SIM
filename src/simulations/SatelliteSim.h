@@ -6337,7 +6337,6 @@ private:
     float cv2SkyApBandDeg = 2.0f;
     // The loop's step factor inside the band (clouds_v2.sky_ap_band_steps, no UI): it matches the volume's accuracy there.
     float cv2SkyApBandSteps = 1.0f;
-    float photoSavedSkyAp = 1.0f;                  // the HQ photo takes the exact loop everywhere
     bool  skyApRanThisFrame = false;
     bool  ensureSkyAp(VulkanContext &ctx);         // makes the buffer + set the first time; false = not available
     VkPipeline cv2TshPipeline = VK_NULL_HANDLE;    // the terrain Sun-horizon map (2026-10-22, cloud_v2_terrsun.comp)
