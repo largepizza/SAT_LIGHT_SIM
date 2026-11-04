@@ -757,6 +757,17 @@ the fix — see `docs/HARNESS.md`, *Gotchas* → `time sun`.
 - **Water map from Natural Earth 10 m** (`tools/make_water_map.py`, 2026-09-30): land + lakes rasterised at 16K
   between 60 S and 72 N, the distance field averaged down to the 8K texels (sub-texel zero crossing; ~1 km vs
   the 5-km mask's ~2.5 km). Outside the band the 8K mask (ice shelves). Reads the .r8 copies, never the PNGs.
+- **Thin sea channels survive the 16K->8K mean** (2026-11-03, issue_20261030_204632): a channel 1-2 px wide at 16K
+  (Puyuhuapi, Sognefjord, the Zeeland estuaries) averaged to land, so the fjord was drawn as flat 0-m land in
+  the day map's sea blue, and the field's shallow negative ridge along it (~-0.3 texel) read as a shore ~1 km
+  away: the shore cap shaved the wall beside it (probe at the report's slab: DEM 835 m drawn at 280 m, texel-
+  stepped). The bake now finds the water a 3x3 opening removes at 16K and, where the DEM footprint reaches the
+  sea byte and the nearest body is the sea, raises the 8K field by a Gaussian bump (K_CHANNEL 0.12, sigma 0.8,
+  gain 2; a hard-set texel value creased the shore ramp along texel edges). 25,740 texels raised, 21,420 flip
+  land->water, none the other way; lakes (level > sea) untouched. Report view: ground samples on mapped water
+  2.2% -> 7.7%, fjord drawn as 0-m land 18.5% -> 13.2% (the rest is DEM sea that Natural Earth calls land).
+  Still true: the cap flattens a steep wall to 0.25 m/m within ~1.5 km of a CORRECT shore (the fjord walls here
+  and in Norway), and the 8K day map paints mixed shore texels sea blue on the slopes.
 - **Review 16:** waves at `kSeaSpeed` 0.75 (the ~107-m ridges ran at ~27 m/s; a real 107-m wave at ~13), and a base
   ROUGHNESS from the sea state that grows toward grazing views (the unmodelled wind ripples, Cox & Munk), whatever the
   footprint: within ~8 km a calm sea mirrored clouds and the Milky Way crisply up to the horizon. It drives the same

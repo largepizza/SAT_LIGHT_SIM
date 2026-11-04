@@ -49,6 +49,9 @@ K_SMOOTH = 0.5        # Gaussian sigma (texels) on the distance field: rounds th
                       # lakes 2-3 texels wide (Geneva) — 0.5 keeps every masked texel (measured)
 K_PAD = 256           # columns of wrap-around padding (the antimeridian)
 K_SEA = 15            # DEM byte of sea level
+K_CHANNEL = 0.12      # sdf (8K texels) given to a sea channel the 16K->8K mean dropped: a lens ~1/2 texel wide
+K_CHANNEL_SIGMA = 0.8 # ... applied as a Gaussian bump (texels): no creases in the shore ramp
+K_CHANNEL_GAIN = 2.0  # the bump's peak over a 1-texel line (a 1-D Gaussian of sigma 0.8 keeps ~0.45 of it)
 
 
 def write_slr8(path, data):
@@ -135,6 +138,9 @@ def main():
     ys = np.clip(((np.arange(h) + 0.5) / h * dh).astype(np.int64), 0, dh - 1)
     xs = np.clip(((np.arange(w) + 0.5) / w * dw).astype(np.int64), 0, dw - 1)
     dem = dem_full[ys][:, xs]
+    # The lowest DEM byte over each mask texel's footprint (~1.8 DEM texels): a 1-texel DEM channel can fall
+    # between two mask texel centres.
+    dem_min = ndimage.minimum_filter(dem_full, size=3, mode="nearest")[ys][:, xs]
     del dem_full
     print(f"mask {w}x{h}, water {mask.mean() * 100:.1f}%")
 
@@ -202,11 +208,34 @@ def main():
         d_in2 = ndimage.distance_transform_edt(mp2).astype(np.float32)
         d_out2 = ndimage.distance_transform_edt(~mp2).astype(np.float32)
         s2 = np.where(mp2, d_in2 - 0.5, -(d_out2 - 0.5))
-        del d_in2, d_out2, mp2
+        del d_in2, d_out2
+        # Water narrower than ~1.5 8K texels at 16K (fjords, sounds, straits): what an opening by a 3x3 square
+        # removes. A straight coast survives the opening (a half-plane is a union of squares); a 1-2 px channel
+        # does not.
+        thin2 = (mp2 & ~ndimage.binary_opening(mp2, structure=np.ones((3, 3), bool)))[:, P2:P2 + W2]
+        del mp2
         s2 = ndimage.gaussian_filter(s2, 0.7, mode="nearest")[:, P2:P2 + W2]
         # Down to the 8K texels (2x2 mean), in 8K texel units; blended into the band only (a 2-deg ramp).
         s8 = s2.reshape(h, NE_SCALE, w, NE_SCALE).mean(axis=(1, 3)) / NE_SCALE
         del s2
+        # (2026-11-03, issue_20261030_204632) The mean drops those channels: one water pixel in a 2x2 block of
+        # land averages to land. Southern Chile's fjords (Puyuhuapi, ~2-3 km wide, in Natural Earth) became
+        # flat sea-level LAND painted the day map's sea blue, and the field's shallow negative ridge along the
+        # lost channel (~-0.3 texel, ~1 km) read as a shore 1-1.5 km away, so the shore ramp shaved the fjord
+        # walls into hundreds-of-metres shelves. Where the DEM agrees the channel is sea (its footprint
+        # reaches the sea byte, the nearest body is the sea), the texel keeps it: a lens ~1/2 texel wide.
+        thin8 = thin2.reshape(h, NE_SCALE, w, NE_SCALE).any(axis=(1, 3))
+        del thin2
+        lost = thin8 & (s8 <= 0.0) & (dem_min <= K_SEA) & (level == K_SEA)
+        # Raised by a smoothed bump, not a hard texel value: the shore ramp is 0.25 x this field, and a lone
+        # raised texel bends its bilinear gradient at the texel edges into straight creases on the land.
+        bump = ndimage.gaussian_filter(np.where(lost, K_CHANNEL - s8, 0.0).astype(np.float32), K_CHANNEL_SIGMA,
+                                       mode="nearest") * K_CHANNEL_GAIN
+        s8 = (s8 + bump).astype(np.float32)
+        held = lost & (s8 > 0.0)
+        print(f"thin channels restored: {int(lost.sum())} texels, {int(held.sum())} water after the bump "
+              f"(min {float(s8[lost].min()):.3f}, mean {float(s8[lost].mean()):.3f} texels)")
+        del thin8, lost
         lat8 = 90.0 - (np.arange(h) + 0.5) / h * 180.0
         wgt = np.clip(np.minimum(lat8 - NE_LAT[0], NE_LAT[1] - lat8) / 2.0, 0.0, 1.0)[:, None]
         sdf = (sdf * (1.0 - wgt) + s8 * wgt).astype(np.float32)
