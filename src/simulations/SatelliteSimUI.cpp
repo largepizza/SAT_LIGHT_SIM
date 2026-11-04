@@ -9788,6 +9788,10 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CdcMotionLowFrac = c.value("cdc_motion_low_frac", cv2CdcMotionLowFrac);
         cv2CdcMotionLowEpoch = c.value("cdc_motion_low_epoch", cv2CdcMotionLowEpoch);
         cv2CdcMotionLowMaxM = c.value("cdc_motion_low_max_m", cv2CdcMotionLowMaxM);
+        cv2StormUnified = c.value("storm_unified", cv2StormUnified);
+        cv2StormUnifiedScaleM = settingClamp(c.value("storm_unified_scale_m", cv2StormUnifiedScaleM), 200.0f, 50000.0f);
+        cv2StormUnifiedRampM = settingClamp(c.value("storm_unified_ramp_m", cv2StormUnifiedRampM), 20.0f, 5000.0f);
+        cv2StormUnifiedLobes = settingClamp(c.value("storm_unified_lobes", cv2StormUnifiedLobes), 0.0f, 4.0f);
         cv2EyeHeightNow = c.value("eye_height_now", cv2EyeHeightNow);
         cv2SunVolumeOn = c.value("sun_volume", cv2SunVolumeOn);
         cv2CdcLight = c.value("cdc_light", cv2CdcLight);
@@ -10513,6 +10517,10 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cdc_motion_low_frac", cv2CdcMotionLowFrac},
         {"cdc_motion_low_epoch", cv2CdcMotionLowEpoch},
         {"cdc_motion_low_max_m", cv2CdcMotionLowMaxM},
+        {"storm_unified", cv2StormUnified},
+        {"storm_unified_scale_m", cv2StormUnifiedScaleM},
+        {"storm_unified_ramp_m", cv2StormUnifiedRampM},
+        {"storm_unified_lobes", cv2StormUnifiedLobes},
         {"eye_height_now", cv2EyeHeightNow},
         {"sun_volume", cv2SunVolumeOn},
         {"cdc_light", cv2CdcLight},

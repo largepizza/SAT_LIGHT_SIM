@@ -249,9 +249,9 @@ float cv2CycSpiral(vec3 wd, CV2Shield s, float u, float rM)
 // The anvil shields over a map-frame direction: the strongest one's strength (x its taper toward the far end), its
 // distance from the spine in radii (uOut; the caller frays the outline with noise, so a shield reaches 1.6 radii), and
 // its thickness factor and age.
-float cv2ShieldAt(vec3 wd, out float thickK, out float ageK, out float uOut)
+float cv2ShieldAtR(vec3 wd, out float thickK, out float ageK, out float uOut, out float rOut)
 {
-    thickK = 1.0; ageK = 0.0; uOut = 9.0;
+    thickK = 1.0; ageK = 0.0; uOut = 9.0; rOut = 1.0;
     float best = 0.0, bestS = 0.0;
 #ifdef CV2_STORM_BINDING
     uint  bestI = 0xFFFFFFFFu;
@@ -278,7 +278,7 @@ float cv2ShieldAt(vec3 wd, out float thickK, out float ageK, out float uOut)
         float sT = s.a.w * mix(1.0, 0.3, smoothstep(0.35, 1.0, t));   // thinning out toward its far (downwind) end
         if (s.d.w < 0.0) sT *= smoothstep(0.9, 1.6, u * r / -s.d.w);   // a cyclone's eye, open to the sea
         float p  = sT * (1.0 - smoothstep(0.3, 1.6, u));
-        if (p > best) { best = p; bestS = sT; uOut = u; thickK = s.c.y * mix(1.0, 0.65, t); ageK = s.c.z; bestI = si; }
+        if (p > best) { best = p; bestS = sT; uOut = u; rOut = r; thickK = s.c.y * mix(1.0, 0.65, t); ageK = s.c.z; bestI = si; }
     }
     // A cyclone's deck (c.w < 0, a disc: t = 0, r = c.x): its spiral, for the strongest shield only (<= 1: the bins'
     // strongest-first early out above stays exact).
@@ -286,11 +286,16 @@ float cv2ShieldAt(vec3 wd, out float thickK, out float ageK, out float uOut)
         CV2Shield s = cv2Shields[bestI];
         if (s.c.w < 0.0 && s.d.w < 0.0) {
             bestS *= cv2CycSpiral(wd, s, uOut, uOut * s.c.x);
-            if (mod(-s.c.w - 1.0, 2.0) > 0.5) uOut *= 0.1;   // (the cirrus deck: faded inside, not frayed)
+            if (mod(-s.c.w - 1.0, 2.0) > 0.5) { uOut *= 0.1; rOut *= 10.0; }   // (the cirrus deck: faded inside, not frayed)
         }
     }
 #endif
     return bestS;
+}
+float cv2ShieldAt(vec3 wd, out float thickK, out float ageK, out float uOut)
+{
+    float r;
+    return cv2ShieldAtR(wd, thickK, ageK, uOut, r);
 }
 
 #if defined(CV2_STORM_BINDING) && defined(CV2_STORM_ENV)

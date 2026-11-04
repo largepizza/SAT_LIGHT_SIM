@@ -945,6 +945,7 @@ struct GpuCloudV2Params
     glm::vec4 tone;                     // 2026-10-26: the sky pass's tonemap: x AgX on, y saturation, z contrast
     glm::vec4 gnd;                      // 2026-10-26: x the ground's light under cloud (the cv2Vt map) on
     glm::vec4 micro;                    // 2026-11-04: the droplet phase: x droplet size (0 off), y sea-level temp (C), z 1 / Mie rows, w diffuse gain
+    glm::vec4 stormU;                   // 2026-11-04: storms through the cumulus field: x on, y metres per margin unit, z the surface ramp (m), w lobe gain
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -977,7 +978,7 @@ static_assert(offsetof(GpuCloudV2Params, amb) == 288 + 48 * kCloudV2Types + 1232
 static_assert(offsetof(GpuCloudV2Params, tone) == 288 + 48 * kCloudV2Types + 1248, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, gnd) == 288 + 48 * kCloudV2Types + 1264, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, micro) == 288 + 48 * kCloudV2Types + 1280, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1296, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1312, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -5483,6 +5484,13 @@ private:
     float cv2CdcMotionLowFrac = 0.05f;
     float cv2CdcMotionLowEpoch = 4.0f;
     float cv2CdcMotionLowMaxM = 6000.0f;
+    // Storms through the cumulus field (2026-11-04, issue 20261104_111947 "Anvil performance";
+    // qa/waves/20261104/resolutions/storm-rework.md): the storm objects' towers and shields are a MARGIN the low field's
+    // own lobes and erosion carve (cv2StormGeom + cv2FieldLow), not separate density functions with noise of their own.
+    float cv2StormUnified = 1.0f;          // clouds_v2.storm_unified (0 = the old towers + shields)
+    float cv2StormUnifiedScaleM = 4000.0f; // clouds_v2.storm_unified_scale_m: metres of storm surface per margin unit
+    float cv2StormUnifiedRampM = 250.0f;   // clouds_v2.storm_unified_ramp_m: the storm surface's density ramp (m)
+    float cv2StormUnifiedLobes = 1.0f;     // clouds_v2.storm_unified_lobes: x the storm lobes' strength
     float cv2SunVolumeOn = 1.0f;           // diagnostic (r1022): 0 = no Sun transmittance volume (clouds lit by the light march alone)
     float cv2EyeHeightNow = 1.0f;          // the v2 eye from this frame's height offset, not last frame's GPU readback (0 = old)
     glm::dvec3 cv2CdcRefEye{0.0};          // the eye when the clipmap's current epoch began

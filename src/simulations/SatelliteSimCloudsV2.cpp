@@ -1742,6 +1742,14 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             if (cdcDustKey != cv2CdcDustKeyUsed)
                 ++cv2CdcEpoch;
             cv2CdcDustKeyUsed = cdcDustKey;
+            // Storms through the cumulus field (clouds_v2.storm_unified and its shape) change the field the cells hold.
+            {
+                static float stormUKeyUsed = -1.0f;
+                const float stormUKey = (cv2StormUnified > 0.5f ? 1.0f : 0.0f) + cv2StormUnifiedScaleM * 3.1f
+                                      + cv2StormUnifiedRampM * 17.3f + cv2StormUnifiedLobes * 1013.0f;
+                if (stormUKey != stormUKeyUsed) ++cv2CdcEpoch;
+                stormUKeyUsed = stormUKey;
+            }
             // The bake's footprint bracket (cloud_v2_cdc.comp, cdcC.w) goes with the looser motion guard inside the shell.
             const float cdcBracket = (cv2CdcMotionGuard > 0.5f && cv2CdcMotionLowFrac > 0.0f && cv2CdcFp < 0.0f) ? 1.0f : 0.0f;
             if (!lightValid || cdcNewAnchor || cv2CdcFpUsed != cv2CdcFp || cv2CdcSkipUsed != cv2CdcSkip
@@ -2018,6 +2026,9 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.micro = glm::vec4((cv2DropletPhase > 0.5f && cv2MsModel > 0.5f && cv2MieReff.size() > 1) ? std::clamp(cv2DropletSize, 0.5f, 2.0f) : 0.0f,
                         cv2SeaTempC, 0.5f / (float)std::max<size_t>(cv2MieReff.size(), 1),
                         std::clamp(cv2DropletMsGain, 0.0f, 4.0f) * std::clamp(cv2MsDiffGain, 0.0f, 4.0f));
+    // Storms through the cumulus field (cv2StormGeom / cv2FieldLow, clouds_v2.glsl).
+    p.stormU = glm::vec4(cv2StormUnified > 0.5f ? 1.0f : 0.0f, std::max(cv2StormUnifiedScaleM, 200.0f),
+                         std::max(cv2StormUnifiedRampM, 20.0f), std::max(cv2StormUnifiedLobes, 0.0f));
     skyApRanThisFrame = false;
     p.grid = glm::vec4((float)cv2HalfW, (float)cv2HalfH, cv2FullResActive() ? 1.0f : 0.0f, cv2FullResActive() ? 1.0f : 0.0f);
     // Full-res clouds in motion from altitude (full_res_moving_mode; 2026-10-22, issues 20261022_210358 / _220214): 0 the
