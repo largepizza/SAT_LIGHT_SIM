@@ -42,8 +42,17 @@ struct CV2Tower {
     vec4 b;   // x role (1 dominant, 0.7 / 0.5 flanking), y size 0..1, z overshoot 0..1, w the shear's bearing
               //   (rad from the local east toward north: the anvil's downwind direction)
     vec4 c;   // x reach (m: nothing of the tower or its anvil hang beyond), y seed (uint bits),
-              // z the anvil's width factor (x "Cb flare"), w its downwind drift factor (x "Cb head drift")
+              // z the anvil's width factor (x "Cb flare") PACKED with the head's spread (cv2TowerAnvilK / Spread),
+              // w its downwind drift factor (x "Cb head drift")
 };
+
+// c.z = the anvil width factor (< 8) + 8 x round((1 - spread) x 1000) (2026-11-03, issue 20261030_210137; a fully spread
+// head's c.z is its plain width factor, as before): the spread 0..1 is
+// how far the flared head and the anvil plate under it have grown since the tower reached the anvil, on the "Anvil
+// formation time" ramp (SatelliteSim::updateStorms). Without it the plate popped in over the ~3 sim min the tower's
+// strength takes from 0.42 to 0.6 ('full').
+float cv2TowerAnvilK(vec4 c) { return c.z - 8.0 * floor(c.z * 0.125); }
+float cv2TowerSpread(vec4 c) { return 1.0 - floor(c.z * 0.125) * 0.001; }
 
 // A storm's anvil shield (wx::Shield): a capsule along the great-circle chord a -> b, radius c.x at a growing to b.w
 // at b. It outlives its towers (it drifts downwind and thins: c.y, c.z). Line systems: a long capsule along the

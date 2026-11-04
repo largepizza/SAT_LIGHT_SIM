@@ -185,7 +185,7 @@ vec4 stormStampTowers(vec3 d)
                        * s1);
         // The forward flank: under the anvil (half-width aw, blown L downwind), from the tower out to ~the anvil's end.
         float dom = smoothstep(0.35, 0.7, str) * smoothstep(0.9, 1.0, role);
-        float aw  = Rc * flare * max(tw.c.z, 0.5);
+        float aw  = Rc * flare * max(cv2TowerAnvilK(tw.c), 0.5);
         float L   = aw + drift * tw.c.w;
         float al  = dot(dh, eastW);
         float cr  = length(dh - eastW * al);
@@ -197,7 +197,7 @@ vec4 stormStampTowers(vec3 d)
         // the right of the motion (left in the south), at SatelliteSim::tornadoOf's place for a tornado (-0.65 x the
         // shear + 0.7 x across it, x 1.1 the mature tower's radius: just past its rain core). Not under a cyclone's
         // towers (their anvil factor is exactly 1 / flare: they do not flare). The map's own rain there hid tornadoes.
-        if (dom > 0.0 && tw.c.z * flare > 1.05) {
+        if (dom > 0.0 && cv2TowerAnvilK(tw.c) * flare > 1.05) {
             vec3  perp = cross(d, eastW) * (d.z >= 0.0 ? -1.0 : 1.0);
             float RcM  = Rb * mix(0.7, 1.3, tw.b.y);
             vec3  rf   = dh - (-0.65 * eastW + 0.7 * perp) * (1.1 * RcM);

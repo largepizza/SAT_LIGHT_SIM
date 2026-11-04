@@ -7176,6 +7176,9 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
     CloudSlider secStormObjects[] = {
         {tx(Txt::SldStormFrequencyX), &stormFrequency, 0.0f, 10.0f, 0.05f, "%.2f", 321},
         {tx(Txt::SldStormLifetimeX), &stormLifeScale, 0.1f, 5.0f, 0.05f, "%.2f", 322},
+        // 2026-11-03 (issue 20261030_210137): the anvil shield's spread and linger (were a fixed 15 / 35 min).
+        {tx(Txt::SldAnvilFormationTimeMin), &stormAnvilFormMin, 1.0f, 240.0f, 1.0f, "%.0f", 450},
+        {tx(Txt::SldAnvilDecayTimeMin), &stormAnvilDecayMin, 1.0f, 240.0f, 1.0f, "%.0f", 451},
         {tx(Txt::SldStormCloudField), &stormCloudField, 0.0f, 3.0f, 0.05f, "%.2f", 323},
         {tx(Txt::SldStormClearMoat), &stormMoat, 0.0f, 3.0f, 0.05f, "%.2f", 324},
         {tx(Txt::SldStormComplexesX), &stormComplexes, 0.0f, 10.0f, 0.05f, "%.2f", 325},
@@ -9684,6 +9687,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         stormObjects = c.value("storm_objects", stormObjects);
         stormFrequency = settingClamp(c.value("storm_frequency", stormFrequency), 0.0f, 10.0f);
         stormLifeScale = settingClamp(c.value("storm_life", stormLifeScale), 0.1f, 5.0f);
+        stormAnvilFormMin = settingClamp(c.value("storm_anvil_form_min", stormAnvilFormMin), 1.0f, 240.0f);
+        stormAnvilDecayMin = settingClamp(c.value("storm_anvil_decay_min", stormAnvilDecayMin), 1.0f, 240.0f);
         stormCloudField = settingClamp(c.value("storm_field", stormCloudField), 0.0f, 3.0f);
         stormMoat = settingClamp(c.value("storm_moat", stormMoat), 0.0f, 3.0f);
         stormArmCirrus = settingClamp(c.value("storm_arm_cirrus", stormArmCirrus), 0.0f, 3.0f);
@@ -10394,6 +10399,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"storm_objects", stormObjects},
         {"storm_frequency", stormFrequency},
         {"storm_life", stormLifeScale},
+        {"storm_anvil_form_min", stormAnvilFormMin},
+        {"storm_anvil_decay_min", stormAnvilDecayMin},
         {"storm_field", stormCloudField},
         {"storm_moat", stormMoat},
         {"storm_arm_cirrus", stormArmCirrus},

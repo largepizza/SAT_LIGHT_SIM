@@ -39,9 +39,9 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   envelope copy keeps 64), `cv2ShieldAt`, between the tower list and the env block of
   `stormBuf`): a capsule from 0.3 rA upwind of the anvil-reaching towers' heads (strength-weighted) to L downwind (L grows
   at 0.6 x the storm's `upperWind` to 45 / 90 / 160 km by kind), radius rA (the head) growing to 1.15 rA + 0.25 L. Its
-  strength rises over 15 min after a tower first passes 0.42 (`TowerSpec::anvOn`, precomputed at birth) and LINGERS
-  `Storm::linger` (35-240 min by kind, drawn after the towers' Rng draws so every storm's towers stayed as they were) after
-  the last falls below it, drifting at 0.8 x upperWind, thinning (thick x 0.4, density x 0.5) and fraying (`age01`): orphan
+  strength rises over the "Anvil formation time" after a tower first passes 0.42 (`TowerSpec::anvOn`, precomputed at
+  birth) and LINGERS `Storm::linger` (70-240 min by kind at the default "Anvil decay time", drawn after the towers' Rng
+  draws so every storm's towers stayed as they were) after the last falls below it, drifting at 0.8 x upperWind, thinning (thick x 0.4, density x 0.5) and fraying (`age01`): orphan
   anvils turning into cirrus. `Storm::life` includes the linger (`kMaxLifeS` 8 h); the spawn rate is calibrated on the
   towers' life alone, so storm counts are unchanged. `cv2AnvilSigmaP` reads the shields instead of the map's cumulonimbus
   typing when storm objects are on (`cv2ShieldsOn`: `cv2ShieldHead.y`): fed by the map, shields stood over regions with no
@@ -50,6 +50,31 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   capsule's clean profile drew white pills from orbit), and `presA` is 0 at its 0.05 cutoff (it kept 2% there: at Anvils 8
   a view along the edge drew a hard arc). The user's anvil tune is the default (Anvils 8, thickness 3.7 km, hang 0.87 km,
   puffiness 0.45, lift 230 m, head lobes 0.12, lobes 0.37, waist 0.89, overshoot 0.14 km, storm erosion 0.24).
+  **Anvil formation and decay times (2026-11-03, issue 20261030_210137 "anvils pop in and out" at 5 min/s):** two
+  settings, "Anvil formation time (min)" `clouds_v2.storm_anvil_form_min` 60 and "Anvil decay time (min)"
+  `storm_anvil_decay_min` 70 (Weather tab, Storm objects, slots 450-451; `wx::Settings::anvilFormS` / `anvilLingerS`).
+  Formation = how long the single-cell kinds' shield takes to reach full strength from `anvOn` (its radius maturing over
+  max(45 min, it)); decay = an air-mass storm's shortest linger (each storm draws 1-2x it, multicells x 45/35,
+  supercells x 60/35, capped by `kMaxLifeS`; both are in `stormEnvHash`, so a change rebuilds the catalog). Line
+  systems keep their own hours-long ramps. Rise and decay are the RAMP g (0.6 + 0.4 g), not a smoothstep: the drawn
+  presence is smoothstep(0.05, 0.6, strength) (`cv2AnvilSigmaP`), so a smoothstep strength put the visible change into
+  a quarter of the ramp; this one is ~linear through 0.05..0.6 (10 -> 90% presence over 0.385 of it). The TOWER's
+  flared head and the anvil plate under it (`cv2ColumnSigma`'s `near`) were the bigger pop: they switch on with `full`
+  (strength 0.42 -> 0.6, ~3 sim min of a tower's growth), so the plate stood in one or two frames at 5 min/s whatever the
+  shield did. Each tower carries `wx::Tower::flareAge` (s since it passed `wx::kFlareOn` 0.42, from its cycle's peak and
+  growS) and `updateStorms` turns it into a SPREAD on the same ramp over the formation time: anvilK goes from 1 / flare
+  (no flare) to its value, and the spread rides in the GPU tower's c.z (anvilK + 8 x round((1 - spread) x 1000): a fully
+  spread tower's c.z is its plain anvilK; `cv2TowerAnvilK` / `cv2TowerSpread`, cv2_storms.glsl), which scales `near`. A
+  young Cb stands as a flat-topped column at the lid and spreads from there. Tower strength, life, lightning and
+  `mature_in_min` are unchanged (3612 near-row pairs over 5 h: identical); a storm's `left_min` grows by its longer linger.
+  Measured at the report's view (-2.50, 134.26, 10.4 km, 2036-12-25 03:14-08:14 UTC, 1-min paused steps, the 8 nearest
+  shields, harness `weather state` -> `shields`): shield presence 10 -> 90% 3.8 min (old 15 min / 35 min smoothstep) ->
+  21.7 min (median of 7, min 20.5); 90 -> 10% 14.8 (min 9.5) -> 43 min (min 32.5); the largest 5-min change of a
+  shield's presence 95% -> 22% of its peak. Constants alone (45 / 70, smoothstep) gave 11.0 / 26.5 min and 42%, and left
+  the plate's pop in the frame as it was (the band above the horizon 4% -> 38% cloud in 2 min, minutes 17-19); with the
+  spread it is 4% -> 11% (the flat top) and the anvil spreads after it. At 2x (120 / 140): strength 10 -> 90% 41.7 -> 80.1 min,
+  90 -> 10% 79.9 -> 141.5 min; presence 58.4 / 94.8 min (the longer rise overlaps the decay's start more). The march: 128
+  registers both, +256 B binary, GPU 18.58 vs 19.08 ms (4 reps, within noise).
   **Squall lines and MCSs (2026-10-23):** `StormKind::SquallLine` / `Mcs`, spawned by their own pass (`buildLineBin`: 3-h
   bins looking back `kLineMaxLifeS` 22 h, 6-degree cells, the flash climatology's monthly mean x `lineSystemFactor`
   (warm-season mid-latitude continents, the Sahel / monsoon band, tropical oceans) x an evening peak over land; mean

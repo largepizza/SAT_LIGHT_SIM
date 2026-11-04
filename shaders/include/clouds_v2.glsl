@@ -1600,7 +1600,7 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
         float r    = mix(Rc, rW, smoothstep(0.03, 0.5, zeta));
         // The flared head's width x the storm's own anvil factor (c.z: it spreads as the storm matures, wider for
         // supercells and organised multicells; the head drift likewise, c.w).
-        r += (Rc * cv2.column2.y * tw.c.z - rW) * smoothstep(0.62, 0.94, zeta) * fl;
+        r += (Rc * cv2.column2.y * cv2TowerAnvilK(tw.c) - rW) * smoothstep(0.62, 0.94, zeta) * fl;
         // The head rounds off over 1.5 km and stays 300 m inside the anvil: only the anvil's own lid,
         // lit as a deck, shows from above. A head closing over 500 m at the lid stood proud of it as a
         // flat plate tens of km wide: contour rings from the march steps, a moat around it, and dark
@@ -1651,7 +1651,7 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
             // a cliff in the anvil's underside (user snap 1, pass 17).
             float sa2  = cv2SqC(min(4.0 * Rc, max(limM - cv2.column2.z * tw.c.w - 4000.0, 0.3 * limM) / 2.2));
             float sc2  = cv2SqC(min(2.0 * Rc, limM / 2.2));
-            near = max(near, fl * str * exp(-(al * al) / sa2 - (ac * ac) / sc2)
+            near = max(near, fl * cv2TowerSpread(tw.c) * str * exp(-(al * al) / sa2 - (ac * ac) / sc2)
                              * (1.0 - smoothstep(0.7 * limM, limM, dhL)));
         }
     }

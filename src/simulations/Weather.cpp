@@ -169,8 +169,9 @@ const char *stormKindName(StormKind k) {
 }
 
 bool Catalog::towerCycleAt(const TowerSpec &ts, double tau, float &strength, float &age, float &life,
-                           uint32_t &seed, float &shift) {
+                           uint32_t &seed, float &shift, float *peak) {
     strength = 0.0f; age = 0.0f; life = ts.life; seed = ts.seed; shift = 0.0f;
+    if (peak) *peak = ts.peak;
     if (ts.period <= 0.0f) {
         strength = towerStrength(ts, tau);
         age = (float)(tau - (double)ts.t0);
@@ -196,6 +197,7 @@ bool Catalog::towerCycleAt(const TowerSpec &ts, double tau, float &strength, flo
             age = (float)lt;
             seed = (uint32_t)(mix64(h ^ 0x5EEDull) >> 32);
             shift = (float)(u53(mix64(h ^ 0x5417ull)) - 0.5);
+            if (peak) *peak = (float)pk;
         }
     }
     return strength > 0.0f;
@@ -393,7 +395,9 @@ struct Catalog::Impl {
             ts.anvOn = (float)((double)ts.t0 + (double)ts.growS * q);
             ts.anvOff = (float)((double)ts.t0 + (double)ts.life - (double)ts.decayS * q);
         }
-        const double lo = S.kind == StormKind::Supercell ? 60.0 : S.kind == StormKind::Multicell ? 45.0 : 35.0;
+        // (lo: the old fixed 35 / 45 / 60 min x the "Anvil decay time" setting (Settings::anvilLingerS) over 35 min.)
+        const double lo = (S.kind == StormKind::Supercell ? 60.0 : S.kind == StormKind::Multicell ? 45.0 : 35.0)
+                        * (std::max(60.0, (double)set.anvilLingerS) / (35.0 * kMin));
         const double li = r.range(lo, 2.0 * lo) * kMin * ls;
         S.upperWind = (float)r.range(6.0, 18.0);
         S.linger = anvil ? (float)std::min(li, std::max(0.0, kMaxLifeS - towersEnd)) : 0.0f;
@@ -794,11 +798,12 @@ void Catalog::configure(const Env &env, const Settings &s, const StormClimatolog
     const bool sameSet = I.configured && clim == I.clim && s.frequency == I.set.frequency &&
                          s.targetActive == I.set.targetActive && s.moistureMin == I.set.moistureMin &&
                          s.moistureFull == I.set.moistureFull && s.towerRadiusM == I.set.towerRadiusM &&
-                         s.lifeScale == I.set.lifeScale && s.lineFrequency == I.set.lineFrequency &&
+                         s.lifeScale == I.set.lifeScale && s.anvilLingerS == I.set.anvilLingerS && s.lineFrequency == I.set.lineFrequency &&
                          s.targetLineActive == I.set.targetLineActive && s.cycloneFrequency == I.set.cycloneFrequency &&
                          s.seaFactor == I.set.seaFactor;
     const bool same = sameSet && envKey == I.envKey;
     I.env = env;
+    I.set.anvilFormS = s.anvilFormS;   // (read by shieldsAt at any t: no cached storm depends on it)
     if (same) return;
     I.set = s;
     I.clim = clim;
@@ -974,9 +979,9 @@ void Catalog::towersAt(double t, const std::vector<const Storm *> &storms, std::
         const double la = (double)S->lineAz;
         for (int i = 0; i < S->towerCount; ++i) {
             const TowerSpec &ts = S->towers[i];
-            float s, cAge, cLife, shift;
+            float s, cAge, cLife, shift, pk;
             uint32_t cSeed;
-            if (!towerCycleAt(ts, tau, s, cAge, cLife, cSeed, shift)) continue;
+            if (!towerCycleAt(ts, tau, s, cAge, cLife, cSeed, shift, &pk)) continue;
             Tower T;
             glm::dvec3 o = e * (double)ts.offE + n * (double)ts.offN;
             // Each new cell of a line forms a little along the line from the last (a regenerating slot moves).
@@ -998,6 +1003,10 @@ void Catalog::towersAt(double t, const std::vector<const Storm *> &storms, std::
             T.age = cAge;
             T.growS = ts.growS;
             T.life = cLife;
+            // When it passed kFlareOn growing (strength = peak x smooth01(0, growS, age) then; a tower whose decay
+            // starts before it has grown only flares if it still gets there, and is then treated alike).
+            if (pk > kFlareOn && ts.growS > 0.0f)
+                T.flareAge = (float)((double)cAge - (double)ts.growS * invSmooth((double)kFlareOn / (double)pk));
             out.push_back(T);
         }
     }
@@ -1066,6 +1075,17 @@ void Catalog::shieldsAt(double t, const std::vector<const Storm *> &storms, cons
         }
         // Single-cell kinds: fed by the anvil-reaching towers (role 1, strength over ~0.42), lingering after.
         constexpr double kOn = 0.42;   // (= finishAnvil's anvOn / anvOff threshold)
+        // Its spread to full strength ("Anvil formation time", Settings::anvilFormS; 900 s until 2026-11-03).
+        const double formS = std::max(60.0, (double)impl_->set.anvilFormS);
+        // The rise and the decay are RAMPS, not smoothsteps (2026-11-03, issue 20261030_210137): the drawn shield's
+        // presence is smoothstep(0.05, 0.6, strength) (clouds_v2.glsl cv2AnvilSigmaP), so a smoothstep strength put
+        // the whole visible change into a quarter of the ramp — 10 -> 90% in 3.8 min of the old 15-min rise, 95% of
+        // it inside one 5-min step at 5 min/s. g (0.6 + 0.4 g) is ~linear through 0.05..0.6 (the visible range:
+        // 10 -> 90% over 0.385 of the ramp) and still reaches 1 (the thickness) at its end.
+        auto ramp = [](double g) {
+            g = std::clamp(g, 0.0, 1.0);
+            return g * (0.6 + 0.4 * g);
+        };
         glm::dvec3 F(0.0);
         double wSum = 0.0, act = 0.0, mature = 0.0, firstOn = 1e30, lastOff = -1e30;
         bool fed = false;
@@ -1077,10 +1097,10 @@ void Catalog::shieldsAt(double t, const std::vector<const Storm *> &storms, cons
             firstOn = std::min(firstOn, on);
             lastOff = std::max(lastOff, off);
             const double linger = std::max((double)S->linger, 1.0);
-            const double a = smooth01(on, on + 900.0, tau) * (1.0 - smooth01(off, off + linger, tau));
+            const double a = ramp((tau - on) / formS) * ramp(1.0 - (tau - off) / linger);
             if (a <= 0.0) continue;
             fed |= tau < off;
-            mature = std::max(mature, smooth01(on, on + 2700.0, tau));
+            mature = std::max(mature, smooth01(on, on + std::max(2700.0, formS), tau));   // (the radius: 45 min until formS passes it)
             // Where its head stands now (the tower's axis, blown downwind), then the drift aloft after it died.
             const glm::dvec3 o = e * (double)ts.offE + n * (double)ts.offN;
             const double d = glm::length(o);

@@ -459,6 +459,7 @@ uint64_t SatelliteSim::stormEnvHash() const
     auto mixD = [&](double v) { uint64_t b; std::memcpy(&b, &v, 8); h = (h ^ b) * 1099511628211ull; };
     for (double v : {(double)cloudDriftRate, cloudDriftPhaseOffset, (double)cv2Coverage, (double)cv2CoverClear,
                      (double)cv2CoverFull, (double)stormFrequency, (double)cv2CbRadiusKm, (double)stormLifeScale,
+                     (double)stormAnvilFormMin, (double)stormAnvilDecayMin,
                      (double)stormComplexes, (double)stormCyclones})
         mixD(v);
     return h;
@@ -541,6 +542,8 @@ void SatelliteSim::updateStorms()
         s.frequency = stormObjects ? std::max(stormFrequency, 0.0f) : 0.0f;
         s.towerRadiusM = std::clamp(cv2CbRadiusKm, 1.0f, 20.0f) * 1000.0f;
         s.lifeScale = std::max(stormLifeScale, 0.05f);
+        s.anvilFormS = std::clamp(stormAnvilFormMin, 1.0f, 240.0f) * 60.0f;
+        s.anvilLingerS = std::clamp(stormAnvilDecayMin, 1.0f, 240.0f) * 60.0f;
         s.lineFrequency = std::max(stormComplexes, 0.0f);
         s.cycloneFrequency = stormObjects ? std::max(stormCyclones, 0.0f) : 0.0f;
         stormCatalog->configure(env, s, stormClim.get(), key);
@@ -662,12 +665,24 @@ void SatelliteSim::updateStorms()
                            : tw.kind == wx::StormKind::Tropical ? 1.0 : 0.85;
         const double hs = (double)(stormHash(tw.seed ^ 0xA5A5A5A5u) & 0xFFFFu) / 65535.0;   // this storm's own spread
         double anvilK = std::max(1.0 / flare, (0.65 + (0.55 + 0.5 * hs) * mature) * kindK);
+        // The head spreads over the "Anvil formation time" from the moment it starts to flare (2026-11-03, issue
+        // 20261030_210137): it flared at 0.65+ of its width as the tower's strength crossed 0.42 -> 0.6, ~3 sim min,
+        // with the anvil plate under it (cv2ColumnSigma's 'near', sized by the reach that follows anvilK): at 5 min/s
+        // the anvil popped in within a frame or two. From 1 / flare (no flare: the head as wide as the tower), on the
+        // shield's ramp (wx::Catalog::shieldsAt), so the head and the shield it feeds spread together.
+        // The spread rides in the GPU tower's c.z with anvilK (cv2_storms.glsl cv2TowerSpread): it also scales the plate.
+        double spread = 1.0;
+        {
+            const double g = std::clamp((double)tw.flareAge / std::max(60.0, (double)stormAnvilFormMin * 60.0), 0.0, 1.0);
+            spread = g * (0.6 + 0.4 * g);
+            anvilK = 1.0 / flare + (anvilK - 1.0 / flare) * spread;
+        }
         double driftK = (0.25 + (0.9 + 0.8 * hs) * mature) * kindK;
         // A cyclone's towers do not flare: its anvil is the central dense overcast (a shield, cycloneShieldsAt). With
         // flared ~40-km heads every eyewall tower reached across the whole eye and eyewall (reach ~60 km), so every
         // sample there walked a full bin of towers: 16-19 ms of the cloud march from 12 km in the eye at Medium.
         // Measured (Medium, Rosa 2036-09-10, cloud bucket): 12 km in the eye 15.2 -> 12.5 ms, sea level 8.0 -> 6.5.
-        if (tw.kind == wx::StormKind::Tropical) { anvilK = 1.0 / flare; driftK = 0.25; }
+        if (tw.kind == wx::StormKind::Tropical) { anvilK = 1.0 / flare; driftK = 0.25; spread = 1.0; }
         const double reach = 1.06 * std::max(Rc * 1.3 * flare * anvilK + drift * driftK + Rc * 0.6 + 0.25 * (double)cv2Lean * span,
                                              1.1 * Rc + cuReach) + 1000.0;
         GpuStormTower g;
@@ -676,7 +691,7 @@ void SatelliteSim::updateStorms()
         uint32_t seedBits = tw.seed;
         float seedF;
         std::memcpy(&seedF, &seedBits, 4);
-        g.c = glm::vec4((float)reach, seedF, (float)anvilK, (float)driftK);
+        g.c = glm::vec4((float)reach, seedF, (float)(std::min(anvilK, 7.99) + 8.0 * std::round((1.0 - spread) * 1000.0)), (float)driftK);
         dst[i] = g;
         stormGpuTowers[i] = g;   // the envelope index's copy is made from these (buildStormEnvIndex)
         if (tight)

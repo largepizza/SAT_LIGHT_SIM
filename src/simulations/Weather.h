@@ -166,7 +166,12 @@ struct Tower {
     float      age = 0;         // seconds since the tower was born (its spec's t0)
     float      growS = 1200;    // its growth time (the anvil starts spreading once it has grown)
     float      life = 0;        // its lifetime (s)
+    // Seconds since its strength passed kFlareOn on the way up (its head starts to flare into the anvil: cv2ColumnSigma's
+    // 'full' starts there); negative before, -1e9 if it never does (2026-11-03: the head spreads over the "Anvil
+    // formation time" from then, SatelliteSim::updateStorms).
+    float      flareAge = -1e9f;
 };
+constexpr float kFlareOn = 0.42f;   // = cv2ColumnSigma's full = smoothstep(0.8, 1.0, smoothstep(0.02, 0.6, str)) > 0
 
 struct Env {
     // The map's cloud cover (0..1, after the Coverage / clear / full remap) averaged over ~100 km around a
@@ -191,6 +196,14 @@ struct Settings {
     float moistureFull = 0.6f;    // full rate from this cover
     float towerRadiusM = 15000.0f;// the tower-radius setting (cv2.column.z): flanking offsets scale with it
     float lifeScale = 1.0f;       // x every lifetime
+    // The single-cell kinds' anvil SHIELD (2026-11-03, issue 20261030_210137 "anvils pop in and out" at 5 min/s):
+    // anvilFormS = how long a shield takes to spread to full strength once a tower first reaches the anvil (was a
+    // fixed 900 s, its radius maturing over 3x that); anvilLingerS = an air-mass storm's shortest linger after its
+    // last anvil-reaching tower falls back (each storm draws 1-2x it; multicells x 45/35, supercells x 60/35; was a
+    // fixed 35 min). Both are ramps, not smoothsteps (Catalog::shieldsAt). Line systems keep their own hours-long
+    // ramps.
+    float anvilFormS = 60.0f * 60.0f;
+    float anvilLingerS = 70.0f * 60.0f;
     // Storms per flash over the sea vs land: a maritime storm makes ~an order of magnitude fewer flashes than a
     // continental one of the same size (weaker updrafts), so lightning density alone under-counts ocean storms.
     float seaFactor = 5.0f;
@@ -232,7 +245,7 @@ public:
     // The tower specs of one storm at the cycle running at tau (s since its birth): the dominant spec's cycle state
     // for a regenerating slot (age in the cycle, its life). False if the slot has no tower at tau.
     static bool towerCycleAt(const TowerSpec &ts, double tau, float &strength, float &age, float &life,
-                             uint32_t &seed, float &shift);
+                             uint32_t &seed, float &shift, float *peak = nullptr);   // peak: that cycle's
     // The storm with this id if it is cached (a selection), else nullptr.
     const Storm *find(uint64_t id) const;
     // Every storm born in one time bin (index floor(t / kBinS)), building it if needed (tools, the births view).

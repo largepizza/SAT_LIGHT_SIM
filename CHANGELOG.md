@@ -131,6 +131,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **Storms are objects with a life.** Air-mass cells, multicells, supercells, squall lines and mesoscale complexes
   form at a thunderstorm climatology, grow, mature and decay over hours, each with its towers, anvil shield
   (lingering as cirrus after the storm), rain core, cloud field and lightning. A pure function of sim time.
+- **Anvils spread and fade slowly.** A thunderstorm's anvil now spreads over about an hour after its tower reaches
+  the top of the troposphere (the tower stands flat-topped first) and lingers one to four hours after it dies, instead
+  of popping in and out within a few minutes in time warp. Settings > Weather: "Anvil formation time (min)" (60) and
+  "Anvil decay time (min)" (70).
 - **Tropical cyclones.** About 80 a year across six basins, named from the WMO lists, following climatological
   tracks with landfalls and recurvature: an eyewall, a clear eye, spiral rain bands, outflow cirrus, a whipped-up
   sea, wind that drives the rain and the ambience, and a storm surge that floods low coasts.
