@@ -2676,7 +2676,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     }
     // The aerial-perspective volume (sky_ap.comp): the sky pass's atmosphere loop once per froxel tile, for the full sky
-    // shader (not SKY_LITE / Potato, nor the HQ photo: cv2SkyAp is 0 there). It reads the froxels when they ran. Not from
+    // shader (not SKY_LITE / Potato; the HQ photo keeps it, issue_20261104_020521). It reads the froxels when they ran. Not from
     // above 1000 km: the loop starts at the top of the atmosphere there and is cheap, and the volume's pass (~0.4 ms) cost
     // more than it saved (5000 km: +0.3 ms a frame; 420-500 km about even; 2026-10-25, harness_runs/ap/pt1).
     cv2PassStampTo(cmd, 4);   // the god rays' froxels
