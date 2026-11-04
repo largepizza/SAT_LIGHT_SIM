@@ -550,6 +550,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     lobes are the detail volume's (erosion) business. Tried: hemispheres with R 0.9-1.25 (overlapping, few creases:
     skew +1.78), a multiplicative cascade (finer caps on parent crowns: +0.57..+1.36), x0.5 per octave (+0.57); the
     flattened profile (exponent 0.6 on the hemisphere) is what turned the skew negative.
+    Measured: cloud_march A/B in one live app (RTX 3070 Ti, 1600x900, the user's settings, 3 interleaved reps, two other agents' apps on the GPU, two contended reps dropped): caps -> billows 8.30 -> 8.42 ms (level flight at 1.5 km), 9.24 -> 9.35 (3 km looking down), 10.63 -> 10.89 (ground), 8.67 -> 8.66 (6 km over Darwin); caps-vs-caps spread 0.3-0.8 ms: neutral within the noise, the march SPV is unchanged. In the app (`harness_runs/cloudnoise/` in the worktree, not committed) the billows put
+    more, smaller lobes on cumulus outlines and fewer detached round puffs beside them.
   - **Full-resolution clouds** (`full_res`, "Full-resolution clouds", S9, `cloud_v2_combine.comp`): the CLOUD grid
     (`computeCloudExtent()`: the v2 march / resolve images and the final cloud targets A/B) is twice the half extent;
     `computeHalfExtent()` stays half (scene depth, `cloud_march.comp`'s dispatch). The march always runs sparse there

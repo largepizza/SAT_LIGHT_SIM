@@ -21,4 +21,4 @@ than ~60 m (on a 1 km cloud) are below the 128^3 shape volume's 14.8 m texel: th
 ## History
 Replaces "Cap lobes (0/1)" (`shape_caps`, 2026-10-22) as the default; the key changed so saved settings with caps on
 move to billows. Tried and dropped: overlapping hemispheres R 0.9-1.25 (few creases, skew +1.78), a cascade putting
-finer caps on the coarser crowns (+0.57..+1.36). Perf: PERF_TBD.
+finer caps on the coarser crowns (+0.57..+1.36). Perf: cloud_march A/B in one live app (RTX 3070 Ti, 1600x900, the user's settings, 3 interleaved reps, two other agents' apps on the GPU, two contended reps dropped): caps -> billows 8.30 -> 8.42 ms (level flight at 1.5 km), 9.24 -> 9.35 (3 km looking down), 10.63 -> 10.89 (ground), 8.67 -> 8.66 (6 km over Darwin); caps-vs-caps spread 0.3-0.8 ms: neutral within the noise, the march SPV is unchanged.
