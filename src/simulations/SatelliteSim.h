@@ -6187,11 +6187,17 @@ private:
     // one row per effective radius, march binding 24. cv2MieReff: the rows' radii (um).
     // The shape volume with cap-profile lobes (2026-10-22, noise mode 3, "shape_caps"): baked beside cv2ShapeImg with
     // the same seed; cv2SyncShapeVolume (top of recordCompute, before anything binds the sets) swaps the descriptors.
-    VkImage cv2ShapeCapsImg = VK_NULL_HANDLE;
-    VkDeviceMemory cv2ShapeCapsMem = VK_NULL_HANDLE;
-    VkImageView cv2ShapeCapsView = VK_NULL_HANDLE;
-    float cv2ShapeCaps = 1.0f, cv2ShapeCapsUsed = 0.0f;
-    VkImageView cv2ShapeActiveView() const { return (cv2ShapeCaps > 0.5f && cv2ShapeCapsView) ? cv2ShapeCapsView : cv2ShapeView; }
+    // The billow-lobe bake (2026-11-04, noise mode 4, "shape_lobes" 2, the default): hemisphere unions matched to the WDAS
+    // cumulus (clouds.md "Billow lobes"). cv2ShapeCaps is the "shape_lobes" setting: 0 cones, 1 caps, 2 billows.
+    VkImage cv2ShapeCapsImg = VK_NULL_HANDLE, cv2ShapeBillowImg = VK_NULL_HANDLE;
+    VkDeviceMemory cv2ShapeCapsMem = VK_NULL_HANDLE, cv2ShapeBillowMem = VK_NULL_HANDLE;
+    VkImageView cv2ShapeCapsView = VK_NULL_HANDLE, cv2ShapeBillowView = VK_NULL_HANDLE;
+    float cv2ShapeCaps = 2.0f, cv2ShapeCapsUsed = 0.0f;
+    VkImageView cv2ShapeActiveView() const
+    {
+        if (cv2ShapeCaps > 1.5f && cv2ShapeBillowView) return cv2ShapeBillowView;
+        return (cv2ShapeCaps > 0.5f && cv2ShapeCapsView) ? cv2ShapeCapsView : cv2ShapeView;
+    }
     void cv2SyncShapeVolume(VulkanContext &ctx);
     VkImage cv2MieImg = VK_NULL_HANDLE;
     VkDeviceMemory cv2MieMem = VK_NULL_HANDLE;
