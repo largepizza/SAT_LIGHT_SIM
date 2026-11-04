@@ -1845,6 +1845,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         p.precip = glm::vec4((float)tC, (float)std::fmod(simSecInDay, 600.0), std::clamp(cv2SnowWind, 0.0f, 8.0f),
                              (float)(xl * xl * (3.0 - 2.0 * xl)));
         cv2EyeTempC = (float)tC;
+        cv2SeaTempC = (float)(tC + 0.0065 * eyeAsl);
         cv2ShaftTempC = (float)tShaft;
         // The beams' light at the eye (SatelliteSim.cpp, from the cloud-light list) for the rain / snow particles.
         const float sunUpE = glm::dot(glm::vec3(p.sunE), glm::vec3(up));
@@ -1991,6 +1992,11 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                        std::clamp(cv2ToneContrast, 0.5f, 2.0f), 0.0f);
     p.gnd = glm::vec4((cv2GroundOvercast > 0.5f && cv2SkyMs > 0.5f) ? 1.0f : 0.0f, std::clamp(wildfireSmokeSpectral, 0.0f, 2.0f),
                       0.0f, 0.0f);   // (y: the wildfire smoke's Angstrom scale, smoke.glsl smokeSpecK)
+    // The droplet phase: x the droplet size (0 = off; needs the Mie table and the diffuse field), y the sea-level air
+    // temperature under the eye (the rain block's climate), z 1 / the table's rows (both halves), w the field's gain.
+    p.micro = glm::vec4((cv2DropletPhase > 0.5f && cv2MsModel > 0.5f && cv2MieReff.size() > 1) ? std::clamp(cv2DropletSize, 0.5f, 2.0f) : 0.0f,
+                        cv2SeaTempC, 0.5f / (float)std::max<size_t>(cv2MieReff.size(), 1),
+                        std::clamp(cv2DropletMsGain, 0.0f, 4.0f) * std::clamp(cv2MsDiffGain, 0.0f, 4.0f));
     skyApRanThisFrame = false;
     p.grid = glm::vec4((float)cv2HalfW, (float)cv2HalfH, cv2FullResActive() ? 1.0f : 0.0f, cv2FullResActive() ? 1.0f : 0.0f);
     // Full-res clouds in motion from altitude (full_res_moving_mode; 2026-10-22, issues 20261022_210358 / _220214): 0 the
@@ -2837,6 +2843,19 @@ void SatelliteSim::createCloudMie(VulkanContext &ctx)
         }
         if (cv2MieReff.empty())
             Log::line("init: cloud Mie table missing (tools/make_mie_lut.py): Henyey-Greenstein only");
+        else
+        {   // The droplet phase finds a radius's row by a fit to the table's radii (cloud_v2_march.comp cv2MicroRowV): say
+            // when the table no longer matches it (rows mis-picked: the phases stay plausible, the sizes do not).
+            float err = 0.0f;
+            for (size_t i = 0; i < cv2MieReff.size(); ++i)
+            {
+                const float L = std::log(std::max(cv2MieReff[i], 0.1f));
+                err = std::max(err, std::abs((-0.12333f * L + 6.15259f) * L - 8.45660f - (float)i));
+            }
+            if (err > 0.3f)
+                Log::line("init: WARNING cloud Mie table radii no longer match the droplet phase's row fit (off by "
+                          + std::to_string(err) + " rows): refit cv2MicroRowV");
+        }
     }
     const VkDeviceSize total = (VkDeviceSize)data.size() * 2;
     VkBuffer stageBuf;

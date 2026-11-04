@@ -269,16 +269,71 @@ void lightAmbOD(vec3 rel, vec3 ldir, vec3 up, float eyeH, mat3 enuToEcef, int nL
 // sideways before it reaches the far side, which a slab holds in); x (1 - e^-(1 - f) tauV) (it leaks out of the face the eye
 // looks at, hV: the march's bH, averaged over the sample's step). x 1.6: ~ the octaves' energy over a thick cloud at the defaults;
 // the path-traced level is ~1.6x that (cv2.ms.z; tools/cloud_ms_reference.py).
-float cv2DiffuseField(float tauT, float tauB, float hV, float cosK)
+// (beamX: 1 = the forward peak's extra beam at the Eddington phase; the droplet phase carries those orders itself, cv2MicroOrders.)
+float cv2DiffuseField(float tauT, float tauB, float hV, float cosK, float g, float beamX)
 {
-    float g  = cv2.ms.y, f = g * g, gp = g / (1.0 + g);
+    float f = g * g, gp = g / (1.0 + g);
     float t  = (1.0 - f) * tauT, ts = t + (1.0 - f) * tauB;
     float et = exp(-t);
     float C1 = (5.0 - exp(-ts)) / ((1.0 - gp) * ts + 4.0 / 3.0);
     float I1 = C1 - 3.0 * et;
     float I0 = 5.0 - (2.0 / 3.0) * C1 - (1.0 - gp) * C1 * t - 3.0 * et;
-    float J  = max(I0 + 0.3 * g * cosK * I1, 0.0) + (1.0 - f) * max(1.0 + 3.0 * gp * cosK, 0.0) * max(et - exp(-tauT), 0.0);
+    float J  = max(I0 + 0.3 * g * cosK * I1, 0.0) + beamX * (1.0 - f) * max(1.0 + 3.0 * gp * cosK, 0.0) * max(et - exp(-tauT), 0.0);
     return 1.6 * J * exp(-0.05 * t) * hV;
+}
+
+// ── The droplet phase (2026-11-04, cv2.micro; tools/cloud_micro_reference.py) ──────────────────────────────────────────────
+// Cloud is not one phase function. A droplet's phase is a diffraction peak a few degrees wide holding about half its light
+// (narrower the bigger the droplet) on a broad lobe with a cloudbow and a glory; ice crystals scatter a flatter lobe
+// (g ~0.75, no bow). The phase light ends up with depends on how many times it scattered: the light reaching the eye
+// from a sample after n scatterings has the phase composed n times, whose Legendre moments are the single phase's ^ n
+// (HG(g) composed with HG(g) is exactly HG(g^2)): it isotropizes ORDER BY ORDER, so a thin wisp (orders 1-2) keeps the
+// droplets' peaky phase and stays dark from the side, while a thick core is lit by the diffuse field of the many orders.
+//   Size: a droplet grows as it rises from its cloud's base (adiabatic liquid water ~2 g/m^3/km, about half of it realised,
+// ~200 droplets / cm^3): r_eff ~1.15 um x (height above the base, m)^(1/3): ~5 um at a cumulus base, ~12 um 1 km up, ~20 um
+// 5 km up a Cb (clamped to the Mie table's 4-30 um); "Droplet size" scales it (fewer CCN: maritime cloud ~1.3). The
+// height above the base comes from the sample's height fraction in its column and the column's top.
+//   Ice: the air at the sample (sea level under the eye less 6.5 C/km) glaciates between -10 and -35 C, so a Cb's upper
+// tower and its anvil turn to ice and lose the bow and glory.
+float cv2MicroReff(float hf, float topH, float h)
+{
+    float dz = clamp(hf * max(topH - h, 0.0) / max(1.0 - hf, 0.05), 0.0, 15000.0);
+    return clamp(cv2.micro.x * 1.15 * pow(dz + 40.0, 1.0 / 3.0), 4.0, 30.0);
+}
+float cv2MicroIce(float h) { return 1.0 - smoothstep(-35.0, -10.0, cv2.micro.y - 0.0065 * h); }
+// The Mie table's phase row (v) for an effective radius: its radii (tools/make_mie_lut.py REFF, 4-30 um) are about quadratic in
+// log r (to 0.2 of a row; the rows are bilinear). SatelliteSimCloudsV2.cpp checks the table against this fit at load.
+float cv2MicroRowV(float reff)
+{
+    float L = log(reff);
+    return (clamp((-0.12333 * L + 6.15259) * L - 8.45660, 0.0, 0.5 / cv2.micro.z - 1.0) + 0.5) * cv2.micro.z;
+}
+// The phase's shape (Jendersie & d'Eon 2023, "An Approximate Mie Scattering Function for Fog and Cloud Rendering": HG +
+// Draine fitted to Lorenz-Mie, droplet diameter d = 2 r_eff): x the peak's share, y its g, z the phase's mean cosine (the
+// diffuse field's g), mixed toward ice (a 0.45 peak on an HG(0.55): mean cosine 0.75).
+vec3 cv2MicroShape(float reff, float ice)
+{
+    float d   = 2.0 * reff;
+    float wD  = exp(-0.599085 / (d - 0.641583) - 0.665888);
+    float gHG = exp(-0.0990567 / (d - 1.67154));
+    float gD  = exp(-2.20679 / (d + 3.91029) - 0.428934);
+    float a   = exp(3.62489 - 8.29288 / (d + 5.52825));
+    float gDm = gD * (1.0 + a * (3.0 + 2.0 * gD * gD) / 5.0) / (1.0 + a * (1.0 + 2.0 * gD * gD) / 3.0);
+    return mix(vec3(1.0 - wD, gHG, (1.0 - wD) * gHG + wD * gDm), vec3(0.45, 0.995, 0.45 * 0.995 + 0.55 * 0.55), ice);
+}
+// The low orders: light scattered k = 1..3 times on its way in (Poisson in the optical depth toward the light: in a medium
+// this forward-peaked it has hardly turned), then once toward the eye, at the phase composed k + 1 times: the peak exactly
+// (share^n, HG(g^n)), the rest an HG keeping the composed mean cosine (gtot^n). Orders past 3 are the diffuse field's.
+float cv2MicroOrders(float tau, float cosK, vec3 sh)
+{
+    float F = 0.0, pk = exp(-tau), wn = sh.x, gn = sh.y, tn = sh.z;
+    [[unroll]] for (int k = 1; k <= 3; ++k) {
+        pk *= tau / float(k);
+        wn *= sh.x; gn *= sh.y; tn *= sh.z;
+        float gb = clamp((tn - wn * gn) / max(1.0 - wn, 1e-3), -0.5, 0.95);
+        F += pk * (wn * cv2HG(cosK, gn) + (1.0 - wn) * cv2HG(cosK, gb));
+    }
+    return F;
 }
 
 // Multiple scattering (Wrenninge octaves): each octave sees a fraction of the optical depth.
@@ -1097,8 +1152,27 @@ void main()
                 float pSilv = (moonIsKey ? phSilvM : phSilvS) * (1.0 - f.thin) * (1.0 - f.rain) * (1.0 - abs(f.soft));
                 // (Thin ice keeps the octaves: it has no light march, and its sheet is lit as it was tuned.)
                 // (A faint sample without its light march has no optical depth toward the light: none of the diffuse field.)
-                float msK = (cv2.ms.x > 0.5 && !thin)
-                          ? (skipL ? 0.0 : cv2.ms.z * cv2DiffuseField(od, odBk, bH[bj], cosK)) : pMS * msOctaves(od);
+                // The droplet phase (cv2.micro.x; water and ice cloud with a light march, not rain or the thin high layer):
+                // the single scattering from the Mie table at this sample's droplet size (or the ice lobe), the low orders
+                // at the composed phase, the diffuse field at the droplets' own mean cosine and its fitted gain; the
+                // tuned lobes, the Mie share, "Mie optics" and the silver lining (which stood in for the low orders) stand aside.
+                float msK;
+                if (cv2.micro.x > 0.0 && !thin && cv2.ms.x > 0.5) {
+                    float reff = cv2MicroReff(f.hf, f.topH, p.h), ice = cv2MicroIce(p.h);
+                    vec3  sh   = cv2MicroShape(reff, ice);
+                    float cap  = moonIsKey ? kCv2MoonMieCap : 1e9;
+                    vec3  pW   = 8.0 * textureLod(cv2MieTex, vec2(acos(clamp(cosK, -1.0, 1.0)) * (1.0 / PI), cv2MicroRowV(reff)), 0.0).rgb;
+                    vec3  pM   = min(mix(pW, vec3(0.45 * cv2HG(cosK, 0.995) + 0.55 * cv2HG(cosK, 0.55)), ice), vec3(cap));
+                    pSSv = mix(mix(pM, moonIsKey ? phIceMoon : phIceSun, f.thin), moonIsKey ? phRainMoon : phRainSun, f.rain);
+                    pSilv = 0.0;
+                    // (x T / (T + 2), T the chord along the light: a small cloud loses its diffuse light out of its sides,
+                    // which the slab holds in; fitted with the gain, 1.8, to the droplet-phase reference.)
+                    float tCh = od + odBk;
+                    msK = skipL ? 0.0 : cv2.micro.w * tCh / (tCh + 2.0) * cv2DiffuseField(od, odBk, bH[bj], cosK, sh.z, 0.0)
+                                        + min(cv2MicroOrders(od, cosK, sh), cap);
+                } else
+                    msK = (cv2.ms.x > 0.5 && !thin)
+                        ? (skipL ? 0.0 : cv2.ms.z * cv2DiffuseField(od, odBk, bH[bj], cosK, cv2.ms.y, 1.0)) : pMS * msOctaves(od);
                 keyS = keyCol * powder * (pSSv * exp(-od) + pSilv * exp(-0.3 * od) + msK * f.msBright);
             }
 
@@ -1416,7 +1490,7 @@ void main()
                 // below the sample as the far side; no finite-cloud leak terms: a fog bank is a slab). The octaves lit thin
                 // fog like a thick cloud.
                 float msFog = (cv2.ms.x > 0.5)
-                            ? cv2.ms.z * cv2DiffuseField(od, sf * dAgl / max(sUpF, 0.04), 1.0, cosSun) * exp(0.05 * (1.0 - cv2.ms.y * cv2.ms.y) * od)
+                            ? cv2.ms.z * cv2DiffuseField(od, sf * dAgl / max(sUpF, 0.04), 1.0, cosSun, cv2.ms.y, 1.0) * exp(0.05 * (1.0 - cv2.ms.y * cv2.ms.y) * od)
                             : phMS * msOctaves(od);
                 vec3  S    = sunF * covK * ((vec3(fd * phD + fs * phSS) + fi * phI) * exp(-od) * sunC
                                             + (msFog * fs + 0.9 * fd + 0.3 * fi) * mix(1.0, sunC, 0.7))
