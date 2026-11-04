@@ -766,8 +766,25 @@ the fix — see `docs/HARNESS.md`, *Gotchas* → `time sun`.
   gain 2; a hard-set texel value creased the shore ramp along texel edges). 25,740 texels raised, 21,420 flip
   land->water, none the other way; lakes (level > sea) untouched. Report view: ground samples on mapped water
   2.2% -> 7.7%, fjord drawn as 0-m land 18.5% -> 13.2% (the rest is DEM sea that Natural Earth calls land).
-  Still true: the cap flattens a steep wall to 0.25 m/m within ~1.5 km of a CORRECT shore (the fjord walls here
-  and in Norway), and the 8K day map paints mixed shore texels sea blue on the slopes.
+- **Sea-level land the day map paints as sea is dunked by the bake** (2026-11-03, same issue; the user: "dunk the
+  blue terrain"): texels the coastline calls land where the DEM byte is the sea's, the nearest body is the sea
+  (within 3 texels) and the 8K day map is sea blue ((b - (r+g)/2) / luminance > 0.22) get the same Gaussian bump
+  (K_DUNK 0.25): 39,035 texels, 32,866 of them water after it. Green polders and deltas at DEM 0 are not blue and
+  stay land (Zandvoort: 0 texels changed). At the report's shot, sea-blue TERRAIN (albedo view, terrain mask from a
+  red-albedo variant) 67.4% of the frame -> 1.4%: the rest of the blue is now the sea. A shader-side dunk of the
+  sub-texel fringe and a recolour of blue slopes from the least-blue neighbour texel were built and measured: no
+  pixel changed at the shot once the bake was in (removed).
+- **The shore cap keeps steep shores** (2026-11-03, same issue, terrain.glsl `shoreDemAbove`): the 0.25 m/m ramp
+  exists for the coastal artifact (the DEM's value where the map draws the shore), but as a plain cap it flattened
+  every steep shore the DEM gets right (a restored fjord's wall: 937 m drawn at 338 m, 1.35 km from the water). Now
+  the land is never pushed lower than DEM - hS x (1 - smoothstep(0, 800 m, x)), hS = the DEM (mip 0) at this
+  point's shore above the level, found down the distance field's forward-difference gradient; joined to the ramp
+  by a smooth max (k 20 m), and past 800 m the DEM stands. Flat coasts never reach it (offline over 0.5-0.7 deg
+  boxes: Zandvoort and Zeeland 0.00% of samples changed; Sognefjord 4.8% >5 m). Report shot, 416-probe grid:
+  samples > 100 m below the DEM 43.5% (before any fix) / 57.5% (channel restored, old cap) -> 1.7%; every sample
+  with DEM >= 700 m within 19 m. Cost: the fetches are free (a variant with hS = 0 cost the same; Alps / NL
+  0.0 +- 0.1 ms); drawing the restored relief costs +2.8 ms at the shot on a contended GPU (+6%, A-A spread 2 ms).
+  A mip-1 hS (first cut) averaged a fjord's walls into its floor and changed almost nothing.
 - **Review 16:** waves at `kSeaSpeed` 0.75 (the ~107-m ridges ran at ~27 m/s; a real 107-m wave at ~13), and a base
   ROUGHNESS from the sea state that grows toward grazing views (the unmodelled wind ripples, Cox & Munk), whatever the
   footprint: within ~8 km a calm sea mirrored clouds and the Milky Way crisply up to the horizon. It drives the same

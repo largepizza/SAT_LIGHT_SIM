@@ -83,6 +83,22 @@ NE_LAT = (-60.0, 72.0)     # the band the Natural Earth coastline replaces the 8
 NE_SCALE = 2               # 16K
 
 
+K_DUNK = 0.25         # sdf (8K texels) aimed at for sea-level land the day map paints as sea (a Gaussian bump)
+K_DUNK_REACH = 3.0    # ... only within this many texels (~15 km) of mapped water
+K_SEA_BLUE = 0.22     # the day map's "sea blue": (b - (r + g) / 2) / luminance above this (sat_sky.frag's coast
+                      # patches use 0.05-0.22 as their wet ramp; open ocean reads 0.5-1.2, green land < 0)
+
+
+def day_sea_blue(w, h):
+    """The 8K day map's texels that are sea blue (the JPEG, decoded once; same grid as the water map)."""
+    im = Image.open(os.path.join(TEX, "8k_earth_daymap.jpg")).convert("RGB")
+    assert im.size == (w, h), im.size
+    a = np.asarray(im, dtype=np.float32) / 255.0
+    del im
+    lum = a[..., 0] * 0.2126 + a[..., 1] * 0.7152 + a[..., 2] * 0.0722
+    return (a[..., 2] - 0.5 * (a[..., 0] + a[..., 1])) / np.maximum(lum, 0.02) > K_SEA_BLUE
+
+
 def ne_shapes(name):
     import shapefile
     cache = os.path.join(REPO, "build", "ne_cache")
@@ -236,6 +252,17 @@ def main():
         print(f"thin channels restored: {int(lost.sum())} texels, {int(held.sum())} water after the bump "
               f"(min {float(s8[lost].min()):.3f}, mean {float(s8[lost].mean()):.3f} texels)")
         del thin8, lost
+        # Sea-level ground the day map paints as sea (2026-11-03, issue_20261030_204632, the user: "dunk the blue
+        # terrain"): texels the coastline calls land where the DEM is the sea byte, the nearest body is the sea
+        # and the day map is sea blue - the DEM's and the photo's sea agree against Natural Earth (the rest of
+        # Puyuhuapi, coves Natural Earth smooths over). Green polders and deltas at DEM 0 are not blue: untouched.
+        day = day_sea_blue(w, h)
+        dunk = (s8 <= 0.0) & (s8 > -K_DUNK_REACH) & (dem <= K_SEA) & (level == K_SEA) & day
+        bump = ndimage.gaussian_filter(np.where(dunk, K_DUNK - s8, 0.0).astype(np.float32), K_CHANNEL_SIGMA,
+                                       mode="nearest") * K_CHANNEL_GAIN
+        s8 = (s8 + bump).astype(np.float32)
+        print(f"sea-blue sea-level land dunked: {int(dunk.sum())} texels, {int((dunk & (s8 > 0.0)).sum())} water")
+        del day, dunk, bump
         lat8 = 90.0 - (np.arange(h) + 0.5) / h * 180.0
         wgt = np.clip(np.minimum(lat8 - NE_LAT[0], NE_LAT[1] - lat8) / 2.0, 0.0, 1.0)[:, None]
         sdf = (sdf * (1.0 - wgt) + s8 * wgt).astype(np.float32)

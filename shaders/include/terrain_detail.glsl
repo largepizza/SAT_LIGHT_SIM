@@ -420,11 +420,17 @@ void tdDemAt(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY,
 #if !defined(SKY_LITE) && !defined(SKY_ENV)
         // The coves follow the moved shore.
         vec2 wmS = vec2(wm.r + sDs * (0.5 / kShoreSdfMaxM), wm.g);
-        h0 = waterAdjustHeightSurge(h0, wm, tdShoreOffset(q, enuX, enuY, enuZ, wmS) * (1.0 - 0.7 * cK), sS, sDs, water);
+        h0 = waterAdjustHeightSurge(h0, wm, tdShoreOffset(q, enuX, enuY, enuZ, wmS) * (1.0 - 0.7 * cK), sS, sDs,
+                                    elevTex, specTex, uv, water);
         if (water && wm.g >= 14.5 / 255.0 && cK <= 0.0 && sS <= 0.0 && sDs <= 0.0)
             gTdWaterClearM = (wm.r - 0.5) * 2.0 * kShoreSdfMaxM - kTdWaterClearMarginM;
 #else
+#ifndef SKY_LITE
+        h0 = waterAdjustHeight(h0, wm, tdShoreOffset(q, enuX, enuY, enuZ, wm) * (1.0 - 0.7 * cK), elevTex, specTex, uv,
+                               water);
+#else
         h0 = waterAdjustHeight(h0, wm, tdShoreOffset(q, enuX, enuY, enuZ, wm) * (1.0 - 0.7 * cK), water);
+#endif
 #endif
         if (water) hMip3 = kTdWaterMark;
     }

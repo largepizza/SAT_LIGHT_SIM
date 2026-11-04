@@ -90,7 +90,35 @@ const float kTdWaterMark   = -1.0e4;                        // hMip3 on water (t
 // inland by dShift, so the land between becomes water at that level; the bank and the ramp follow the new shore.
 // (Not in the Planetarium tier's SKY_LITE shader: its compiled size is budgeted, and it draws no relief.)
 #ifndef SKY_LITE
-float waterAdjustHeightSurge(float hDem, vec2 wm, float dOff, float surge, float dShift, out bool water) {
+// Shore cliffs (2026-11-03, issue_20261030_204632). The ramp below is there for the coastal ARTIFACT: the DEM's
+// value where the map draws the shore (its 35-m land baseline, or a coast ~1 km off the map's). Applied as a cap
+// it also flattened every steep shore the DEM gets right into a 0.25 m/m shelf for 1.5 km (a Chilean fjord wall:
+// 937 m drawn at 338 m, 1.35 km from the water). So within kShoreCliffM the land is never pushed lower than the
+// DEM minus that artifact, hS = the DEM at this point's shore (found down the distance field's gradient) above
+// the level, faded out over kShoreCliffM: the shore still meets the water, and the wall keeps the DEM's shape
+// (steeper by hS / kShoreCliffM). Flat coasts never reach it (there the ramp is already above the DEM - hS).
+const float kShoreCliffM = 800.0;
+float shoreDemAbove(sampler2D elevTex, sampler2D specTex, vec2 uv, float r0, float d, float level) {
+    // Forward differences one water texel east and south of the field here (r0): continuous, unlike the
+    // bilinear field's own gradient, which jumps at texel edges.
+    vec2  ts = 1.0 / vec2(textureSize(specTex, 0));
+    float gx = textureLod(specTex, uv + vec2(ts.x, 0.0), 0.0).r - r0;
+    float gy = textureLod(specTex, uv + vec2(0.0, ts.y), 0.0).r - r0;
+    float cl = max(sin(PI * uv.y), 0.05);                             // cos(latitude)
+    vec2  gm = vec2(gx / (ts.x * 2.0 * PI * cl), gy / (ts.y * PI));   // per metre east / south (common scale)
+    float gl = length(gm);
+    if (gl < 1e-9) return 0.0;
+    vec2  sh = (gm / gl) * (-d);                                      // metres to the shore, toward the water
+    vec2  su = uv + vec2(sh.x / (2.0 * PI * R_EARTH * cl), sh.y / (PI * R_EARTH));
+    // Mip 0: a coarser mip averages a fjord's walls into its floor (Puyuhuapi: hS +300 m at mip 1).
+    return max(0.0, textureLod(elevTex, su, 0.0).r * kElevRange - kElevOffset - level);
+}
+float smaxShore(float a, float b, float k) {
+    float h = clamp(0.5 + 0.5 * (a - b) / k, 0.0, 1.0);
+    return mix(b, a, h) + k * h * (1.0 - h);
+}
+float waterAdjustHeightSurge(float hDem, vec2 wm, float dOff, float surge, float dShift,
+                             sampler2D elevTex, sampler2D specTex, vec2 uv, out bool water) {
 #else
 float waterAdjustHeight(float hDem, vec2 wm, float dOff, out bool water) {
 #endif
@@ -113,11 +141,25 @@ float waterAdjustHeight(float hDem, vec2 wm, float dOff, out bool water) {
     water = d > 0.0;
     if (water) return level;
     float land = mix(max(hDem, level), hDem, smoothstep(0.0, kShoreBankM, -d));
-    return min(land, level - kShoreSlope * d + 1.0e4 * smoothstep(kShoreRampM, 2.0 * kShoreRampM, -d));
+    float cap  = level - kShoreSlope * d + 1.0e4 * smoothstep(kShoreRampM, 2.0 * kShoreRampM, -d);
+#ifndef SKY_LITE
+    // Only where the ramp would cut the land (the result is the same either side of that test: the smooth max
+    // is >= the cap, and the land is the min there anyway).
+    if (land > cap) {
+        float keep = land;   // past kShoreCliffM the DEM stands as it is (the ramp's own release starts at 1.5 km)
+        if (-d < kShoreCliffM) {
+            float hS = min(shoreDemAbove(elevTex, specTex, uv, wm.r, d, level), land - level);
+            keep -= hS * (1.0 - smoothstep(0.0, kShoreCliffM, -d));
+        }
+        cap = smaxShore(cap, keep, 20.0);
+    }
+#endif
+    return min(land, cap);
 }
 #ifndef SKY_LITE
-float waterAdjustHeight(float hDem, vec2 wm, float dOff, out bool water) {
-    return waterAdjustHeightSurge(hDem, wm, dOff, 0.0, 0.0, water);
+float waterAdjustHeight(float hDem, vec2 wm, float dOff, sampler2D elevTex, sampler2D specTex, vec2 uv,
+                        out bool water) {
+    return waterAdjustHeightSurge(hDem, wm, dOff, 0.0, 0.0, elevTex, specTex, uv, water);
 }
 #endif
 
@@ -137,7 +179,11 @@ float cityTerrainLimit(sampler2D elevTex, vec2 uv, float hLoc, float dens01) {
 float terrainHeightAtUV(sampler2D elevTex, sampler2D specTex, vec2 uv, float lod) {
     float h = max(0.0, textureLod(elevTex, uv, lod).r * kElevRange - kElevOffset);
     bool water;
+#ifndef SKY_LITE
+    return waterAdjustHeight(h, textureLod(specTex, uv, lod).rg, 0.0, elevTex, specTex, uv, water);
+#else
     return waterAdjustHeight(h, textureLod(specTex, uv, lod).rg, 0.0, water);
+#endif
 }
 
 float terrainHeightAtDir(sampler2D elevTex, sampler2D specTex, vec3 dirECEF) {
