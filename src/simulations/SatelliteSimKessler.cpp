@@ -36,7 +36,7 @@ constexpr double kFuryArriveT = 1184511600.0;
 constexpr double kFuryPeakKp = 11.0;
 constexpr uint64_t kStormSeed = 0x5EEDF0221ull;
 constexpr uint32_t kCacheMagic = 0x4B534C52u; // "RLSK"
-constexpr uint32_t kCacheVersion = 19; // (19: a catastrophic pair collision's fragments keep a share of their parent's velocity relative to the centre of mass (beta = 1 - 0.8 u^1.5), 2026-10-30; 18: a catastrophic pair collision's fragments move toward the centre-of-mass velocity, 2026-10-29; 17: an engine pair collision's projectile placed on the target at the spread event time, 2026-10-24; 16: the 2020 benchmark shells left out of the deployment era by default, 2026-10-21; 15: the deployment era: roster born / gone seconds, 2026-10-20; 14: the GEO belt joins the roster, 2026-10-20; 13: an explosion's fragment count scales with a parent over 2 t) bump whenever the world's logic changes (4: round 2, large pieces + grid;
+constexpr uint32_t kCacheVersion = 20; // (20: momentum kept exactly: a catastrophic pair collision's records and small population shifted to the centre-of-mass velocity, its dust at that velocity, 2026-11-03; 19: a catastrophic pair collision's fragments keep a share of their parent's velocity relative to the centre of mass (beta = 1 - 0.8 u^1.5), 2026-10-30; 18: a catastrophic pair collision's fragments move toward the centre-of-mass velocity, 2026-10-29; 17: an engine pair collision's projectile placed on the target at the spread event time, 2026-10-24; 16: the 2020 benchmark shells left out of the deployment era by default, 2026-10-21; 15: the deployment era: roster born / gone seconds, 2026-10-20; 14: the GEO belt joins the roster, 2026-10-20; 13: an explosion's fragment count scales with a parent over 2 t) bump whenever the world's logic changes (4: round 2, large pieces + grid;
                                        // 12: steps on a fixed grid, seeded by their index; a step's events ordered)
 
 uint64_t fnv(uint64_t h, const void *p, size_t n)
@@ -1141,6 +1141,7 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
     kFirstBounds.clear();
     kPoolUnborn.clear();
     kPoolHidden.clear();
+    kRosterHolds.clear();
     kShownSec = kHistPrunedUntil = kHistPrunedAt = INT32_MIN;
     kHistPruneFrontier = 0.0;
     kReplayPending = false;
@@ -1445,6 +1446,7 @@ void SatelliteSim::kesslerRestartInstall(RestartOut &out)
         kFirstBounds.clear();
         kPoolUnborn.clear();
         kPoolHidden.clear();
+    kRosterHolds.clear();
         kReentries.swap(out.snapReentries);
         for (uint32_t i = 0; i < activeSatCount && i < w.rosterDead.size(); ++i)
         {
@@ -1694,6 +1696,8 @@ void SatelliteSim::kesslerSync(VulkanContext &ctx)
     }
     // A generation born inside the shown second is shown once its own event's time (not the second's) arrives.
     kesslerShowUnborn(tNow);
+    // ... and a roster satellite killed by a collision is drawn whole, in its own attitude, until the impact itself.
+    kesslerRosterHold(nowSec, tNow);
     // (2026-10-28) ... and while sim time stands still (held at the frontier after a jump, paused) whenever the mirrored
     // frontier has moved a day since the last pass: generations keep arriving and all of them are older than "now". With
     // the shown second fixed the prune never ran, and a jump to day 600 held the mirror at ~33 GB.
@@ -2709,6 +2713,7 @@ void SatelliteSim::kesslerMirrorRewind(double tCk)
     kFirstBounds.clear();
     kPoolUnborn.clear();
     kPoolHidden.clear();
+    kRosterHolds.clear();
     for (const auto &kv : kPoolHist)
         for (size_t q = 1; q < kv.second.size(); ++q)
             kGenBounds.insert({kv.second[q].rec.bornSec, kv.first});
@@ -4318,13 +4323,56 @@ nlohmann::json SatelliteSim::kesslerStateJsonImpl(bool full) const
             o["vrel_mps"] = c.vrel;
             o["vrel_rtn"] = {c.vrelL.x, c.vrelL.y, c.vrelL.z};
             o["mass_kg"] = c.massKg;
+            o["target_kg"] = c.mT;
+            o["projectile_kg"] = c.mP;
+            o["ev"] = c.ev;
             o["standin"] = si;
             o["standin_to_target_m"] = si ? glm::length(P - a.posEci) : -1.0;
+            if (si && ctx_)
+            {
+                // where it is on screen (px, top-left origin): `select at` there picks it (kind 10 transient)
+                const glm::dvec3 ex(eci2enuX), ey(eci2enuY), ez(eci2enuZ), rel = P - glm::dvec3(obsECI);
+                const glm::vec3 dirE = glm::normalize(glm::vec3(glm::dot(rel, ex), glm::dot(rel, ey), glm::dot(rel, ez)));
+                float sx = 0.0f, sy = 0.0f;
+                if (projectSkyDirToScreen(dirE, (float)ctx_->swapExtent.width, (float)ctx_->swapExtent.height, sx, sy))
+                    o["standin_screen_px"] = {sx, sy};
+            }
             o["target_range_m"] = glm::length(a.posEci - glm::dvec3(obsECI));
             cl.push_back(o);
         }
         j["collisions_near"] = cl;
         j["collision_flash"] = kCollFlashDbg;
+        j["impact_frame"] = kCollImpactDbg > 0.0; // (2026-11-03) this frame shows a collision's impact frame
+        nlohmann::json ifr = nlohmann::json::array();
+        for (const KImpactFr &f : kCollImpactFr)
+            ifr.push_back({{"in_s", f.te - t}, {"frames_shown", f.frames}, {"age_at_cross_s", f.ageAtCross},
+                           {"frame_dt_at_cross_s", f.frameDtAtCross}});
+        j["impact_frames"] = ifr; // the impacts crossed lately: the crossing frame's sim interval and the impact's age in it
+        nlohmann::json hl = nlohmann::json::array();
+        for (const KRosterHold &h : kRosterHolds)
+            hl.push_back({{"sat", h.sat}, {"in_s", h.te - t}, {"dead", h.dead}, {"end", h.end}});
+        j["roster_holds"] = hl; // roster satellites a collision kills, drawn whole until its time (kesslerRosterHold)
+        // (2026-11-03) the collision hits sent to the "impact" layer (impactStep), latest last
+        nlohmann::json sn = nlohmann::json::array();
+        for (const ImpactSound &s : impactSounds_)
+            sn.push_back({{"ev", s.ev},         {"age_s", t - s.te},     {"dist_km", s.distKm},   {"energy_j", s.energyJ},
+                          {"mass_kg", s.massKg}, {"ground", s.ground},     {"gain", s.gain},        {"bass", s.bass},
+                          {"cutoff_hz", s.cutoffHz}, {"reverb", s.reverb}, {"attack_s", s.attackS}, {"decay_s", s.decayS},
+                          {"pan", s.pan},       {"thump_hz", s.thumpHz}, {"crack", s.crack},      {"sent", s.sent}});
+        j["collision_sounds"] = sn;
+        {
+            // What a hit would be sent now for each collision listed (its parameters at the current eye)
+            nlohmann::json pv = nlohmann::json::array();
+            for (const KCollVis &c : kCollVis)
+            {
+                ImpactSound s;
+                const bool aud = impactParams(c, glm::dvec3(obsECI), s);
+                pv.push_back({{"ev", c.ev}, {"audible", aud}, {"dist_km", s.distKm}, {"energy_j", s.energyJ},
+                              {"ground", s.ground}, {"gain", s.gain}, {"bass", s.bass}, {"cutoff_hz", s.cutoffHz},
+                              {"reverb", s.reverb}, {"attack_s", s.attackS}, {"decay_s", s.decayS}, {"crack", s.crack}});
+            }
+            j["collision_sound_preview"] = pv;
+        }
     }
     j["world_start_days"] = (kWorldStart - kFuryArriveT) / 86400.0;
     j["last_breakup_ms"] = kLastBreakupMs;
@@ -4848,6 +4896,174 @@ void SatelliteSim::kesslerBreakupFromUi(int sat, uint8_t kind)
 // kCollApproachS (its mesh in the reserved chunk, kesslerCollisionJobs; a point while unresolved), and the impact is a
 // flash and a brief expanding fireball. The real record is left as it is (thousands of km away, it vanishes at the same
 // moment): nothing in the world changes.
+double SatelliteSim::kesslerTypeMassKg(uint32_t ti) const
+{
+    if (ti >= satTypes.size())
+        return 300.0;
+    const SatelliteType &ty = satTypes[ti];
+    return ty.massKg > 0.0f ? (double)ty.massKg : defaultMassKg(ty.modelId, ty.name);
+}
+
+// A pair collision's bodies as the world builds it: the target is the one at the event's place (Kessler.cpp prepInputs
+// swaps them so the target is the heavier; the place is the target's), the relative velocity is the one the engine
+// found at its sample time, carried in the target's (radial, along, normal) frame (prepInputs' sampleDt carry).
+bool SatelliteSim::kesslerCollPair(size_t evIdx, const kessler::Event &e, KCollVis &c) const
+{
+    if (e.kind != kessler::EV_COLLISION || e.b == kessler::kSmallRef || e.b == kessler::kNoRef ||
+        e.a == kessler::kNoRef)
+        return false;
+    auto satOf = [&](uint32_t ref) -> uint32_t {
+        if (ref & kessler::kPoolBit)
+        {
+            const uint32_t j = ref & ~kessler::kPoolBit;
+            return j < kPool.size() ? poolIdx0() + j : UINT32_MAX;
+        }
+        return ref < activeSatCount ? ref : UINT32_MAX;
+    };
+    const glm::dvec3 ep(e.pos[0], e.pos[1], e.pos[2]);
+    if (glm::length(ep) < 1.0)
+        return false;
+    const uint32_t sa = satOf(e.a), sb = satOf(e.b);
+    if (sa == UINT32_MAX || sb == UINT32_MAX || sa >= satOrbits.size() || sb >= satOrbits.size())
+        return false;
+    const SatOrbitState A0 = satOrbitStateAt(orbitElemsOf(satOrbits[sa]), e.t);
+    const SatOrbitState B0 = satOrbitStateAt(orbitElemsOf(satOrbits[sb]), e.t);
+    const bool aIsT = glm::length(A0.posEci - ep) <= glm::length(B0.posEci - ep);
+    c = KCollVis{};
+    c.te = e.t;
+    c.ev = evIdx;
+    c.pos = ep;
+    c.tgt = aIsT ? sa : sb;
+    c.prj = aIsT ? sb : sa;
+    c.prjType = (int)satOrbits[c.prj].typeIdx;
+    c.seed = e.seed;
+    c.key = 0x6C0000000000ull ^ ((uint64_t)evIdx * 0x9E3779B97F4A7C15ull);
+    const double ts = e.t - (double)e.sampleDt;
+    const SatOrbitState at = satOrbitStateAt(orbitElemsOf(satOrbits[c.tgt]), ts);
+    const SatOrbitState pt = satOrbitStateAt(orbitElemsOf(satOrbits[c.prj]), ts);
+    const glm::dvec3 R = glm::normalize(at.posEci);
+    glm::dvec3 Nn = glm::cross(at.posEci, at.velEci);
+    Nn = glm::length(Nn) > 1e-9 ? glm::normalize(Nn) : glm::dvec3(0, 0, 1);
+    const glm::dvec3 Al = glm::cross(Nn, R);
+    const glm::dvec3 vr = pt.velEci - at.velEci;
+    c.vrelL = glm::dvec3(glm::dot(vr, R), glm::dot(vr, Al), glm::dot(vr, Nn));
+    c.vrel = glm::length(vr);
+    // The world's masses (a pool piece its record's; a roster satellite its type's, defaultMassKg when the type has
+    // none: a Starmind is 2500 kg, which the first cut read as 500).
+    auto massOfSat = [&](uint32_t s) {
+        if (s >= poolIdx0())
+        {
+            const uint32_t j = s - poolIdx0();
+            return j < kPool.size() ? std::max((double)kPool[j].massKg, 1e-3) : 1.0;
+        }
+        return kesslerTypeMassKg(satOrbits[s].typeIdx);
+    };
+    c.mT = massOfSat(c.tgt);
+    c.mP = massOfSat(c.prj);
+    c.massKg = std::min(c.mT, c.mP);
+    return true;
+}
+
+// (2026-11-03, issue_20261030_180204 "satellites turn into debris before the collision") A roster satellite's dead and
+// end words are whole seconds (kesslerBuf words 2i / 2i+1, the GPU's gate is the scenario's second): a target hit at
+// te = 2702.14 s was drawn dead (its tumble: the arrays swung into the Sun, a white "torn" shape) from 2702.0 s, then
+// gone, and so were the ring neighbours the breakup kills (damageCluster): 0.14 s before the projectile arrived.
+// For each pair collision drawn up close (kCollVis, the last fill's) whose second is the shown one or the next, the
+// satellites it kills - its two bodies and every roster satellite whose dead or end word is that second within 200 km
+// of the impact - keep the words they had (that second read as the next) until the continuous time reaches te. The
+// real words are put back at te, or as soon as time leaves the window (a jump), and never over a word the worker has
+// rewritten meanwhile.
+void SatelliteSim::kesslerRosterHold(int32_t nowSec, double tNow)
+{
+    FPROF_SCOPE("kesslerRosterHold");
+    for (size_t i = 0; i < kRosterHolds.size();)
+    {
+        const KRosterHold &h = kRosterHolds[i];
+        if (tNow < h.te && tNow > h.te - 3.0)
+        {
+            ++i;
+            continue;
+        }
+        if (2ull * h.sat + 1 < kRosterWords.size() && kRosterWords[2ull * h.sat] == h.heldDead &&
+            kRosterWords[2ull * h.sat + 1] == h.heldEnd)
+        {
+            kRosterWords[2ull * h.sat] = h.dead;
+            kRosterWords[2ull * h.sat + 1] = h.end;
+            kDirtyRoster.push_back(h.sat);
+        }
+        kRosterHolds.erase(kRosterHolds.begin() + (ptrdiff_t)i);
+    }
+    for (const KCollVis &c : kCollVis)
+    {
+        if (c.te <= tNow || c.te > tNow + 2.0)
+            continue;
+        const int32_t sec = (int32_t)std::floor(c.te - kFuryArriveT);
+        if (sec < nowSec || sec > nowSec + 1)
+            continue;
+        // Scanned already at this second with this log (the worker's roster changes come with its events).
+        bool scanned = false;
+        for (const KHoldScan &s : kHoldScans)
+            if (s.key == c.key && s.sec == nowSec && s.evN == kEvents.size())
+                scanned = true;
+        if (scanned)
+            continue;
+        kHoldScans.push_back({c.key, nowSec, kEvents.size()});
+        if (kHoldScans.size() > 64)
+            kHoldScans.erase(kHoldScans.begin());
+        auto hold = [&](uint32_t s) {
+            if (s >= activeSatCount || 2ull * s + 1 >= kRosterWords.size())
+                return;
+            const int32_t d = kRosterWords[2ull * s], e = kRosterWords[2ull * s + 1];
+            if (d != sec && e != sec)
+                return;
+            for (const KRosterHold &h : kRosterHolds)
+                if (h.sat == s)
+                    return;
+            KRosterHold h;
+            h.sat = s;
+            h.te = c.te;
+            h.dead = d;
+            h.end = e;
+            h.heldDead = d == sec ? sec + 1 : d;
+            h.heldEnd = e == sec ? sec + 1 : e;
+            kRosterWords[2ull * s] = h.heldDead;
+            kRosterWords[2ull * s + 1] = h.heldEnd;
+            kDirtyRoster.push_back(s);
+            kRosterHolds.push_back(h);
+        };
+        hold(c.tgt);
+        hold(c.prj);
+        const uint32_t n = std::min<uint32_t>(activeSatCount, (uint32_t)(kRosterWords.size() / 2));
+        for (uint32_t s = 0; s < n; ++s)
+            if ((kRosterWords[2ull * s] == sec || kRosterWords[2ull * s + 1] == sec) && s != c.tgt && s != c.prj &&
+                s < satOrbits.size() &&
+                glm::length(satOrbitStateAt(orbitElemsOf(satOrbits[s]), c.te).posEci - c.pos) < 200000.0)
+                hold(s);
+    }
+}
+
+// A selected stand-in (SelTransient kind 10): its elements as the stand-in's mesh has them (kesslerCollStandInElems).
+bool SatelliteSim::kesslerCollTransientElems(const SelTransient &s, double t0, SatOrbitElems &e) const
+{
+    for (const KCollVis &c : kCollVis)
+        if (c.key == s.key)
+        {
+            e = kesslerCollStandInElems(c, t0, s.pos, s.vel);
+            return true;
+        }
+    return false;
+}
+
+// The relative velocity c carries, in the target's (radial, along, normal) frame at time t (ECI).
+static glm::dvec3 collVrelAt(const glm::dvec3 &vrelL, const SatOrbitState &a)
+{
+    const glm::dvec3 R = glm::normalize(a.posEci);
+    glm::dvec3 N = glm::cross(a.posEci, a.velEci);
+    N = glm::length(N) > 1e-9 ? glm::normalize(N) : glm::dvec3(0, 0, 1);
+    const glm::dvec3 A = glm::cross(N, R);
+    return R * vrelL.x + A * vrelL.y + N * vrelL.z;
+}
+
 bool SatelliteSim::kesslerCollStandIn(const KCollVis &c, double t, glm::dvec3 &pos, glm::dvec3 &vel) const
 {
     if (t > c.te || t < c.te - kCollApproachS || c.tgt >= satOrbits.size())
@@ -4885,20 +5101,37 @@ void SatelliteSim::kesslerFillCollisions(GpuDustCloud *out, uint32_t &n, double 
     FPROF_SCOPE("kesslerFillCollisions");
     kCollVis.clear();
     kCollFlashDbg = 0.0;
+    kCollImpactDbg = 0.0;
     if (!kesslerEnabled || kEvents.empty() || !kFireMapped || !kesslerCollisionCloseup)
         return;
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    // (2026-11-03, issue_20261030_180204) The impact frame: the frame whose sim interval (tPrev, t] holds the impact
+    // shows the flash at its peak whatever the time scale (at x1000 a frame is ~16 s of sim time: the 3-s flash fell
+    // between two frames), and so do the next kImpactFrames - 1 frames. tPrev is the last frame's time when it was
+    // earlier and within an hour (a jump or a step back has no interval).
+    const double tPrev = (kCollPrevT < t && t - kCollPrevT < 3600.0) ? kCollPrevT : t;
+    kCollPrevT = t;
+    for (size_t i = 0; i < kCollImpactFr.size();)
+        if (t < kCollImpactFr[i].te || t - kCollImpactFr[i].te > 3600.0)
+            kCollImpactFr.erase(kCollImpactFr.begin() + (ptrdiff_t)i);
+        else
+            ++i;
     if (t < kWorldStart)
         return;
     constexpr double kFlashS = 3.0;
-    // The pair collisions within [t - kFlashS, t + kCollApproachS], from a cached list of the next ~half hour's
+    constexpr int kImpactFrames = 2;
+    double look = std::max(kFlashS, t - tPrev);
+    for (const KImpactFr &f : kCollImpactFr)
+        if (f.frames < kImpactFrames)
+            look = std::max(look, t - f.te + 1e-3); // its impact frames still to show (paused after a jump)
+    // The pair collisions within [t - look, t + kCollApproachS], from a cached list of the next ~half hour's
     // (events are in time order only to within one 6-h step: a scan covers 12 h of the log, so it is not done every
     // frame). Rebuilt when the time leaves the cached window or the log changes.
     constexpr double kWin = 1800.0;
-    if (t - kFlashS < kCollCacheT0 || t + kCollApproachS > kCollCacheT1 || kCollCacheN != kEvents.size() ||
+    if (t - look < kCollCacheT0 || t + kCollApproachS > kCollCacheT1 || kCollCacheN != kEvents.size() ||
         kCollCacheSrc != (const void *)kEvents.src)
     {
-        kCollCacheT0 = t - kFlashS - 60.0;
+        kCollCacheT0 = t - look - 60.0;
         kCollCacheT1 = t + kWin;
         kCollCacheN = kEvents.size();
         kCollCacheSrc = (const void *)kEvents.src;
@@ -4919,65 +5152,43 @@ void SatelliteSim::kesslerFillCollisions(GpuDustCloud *out, uint32_t &n, double 
     const glm::dvec3 eye = glm::dvec3(obsECI);
     const glm::dvec3 ex(eci2enuX), ey(eci2enuY), ez(eci2enuZ);
     auto toEnu = [&](const glm::dvec3 &v) { return glm::dvec3(glm::dot(v, ex), glm::dot(v, ey), glm::dot(v, ez)); };
-    auto satOf = [&](uint32_t ref) -> uint32_t {
-        if (ref & kessler::kPoolBit)
-        {
-            const uint32_t j = ref & ~kessler::kPoolBit;
-            return j < kPool.size() ? poolIdx0() + j : UINT32_MAX;
-        }
-        return ref < activeSatCount ? ref : UINT32_MAX;
-    };
     GpuFireball *fo = reinterpret_cast<GpuFireball *>(static_cast<char *>(kFireMapped) + 16);
     const double expo = std::max((double)skyExposure(), 1e-6);
     const glm::dvec3 sunD = glm::normalize(glm::dvec3(sunDirECI));
     for (size_t k : kCollCacheIdx)
     {
         const kessler::Event e = kEvents[k];
-        if (e.t < t - kFlashS || e.t > t + kCollApproachS)
+        if (e.t < t - look || e.t > t + kCollApproachS)
             continue;
-        const glm::dvec3 ep(e.pos[0], e.pos[1], e.pos[2]);
-        if (glm::length(ep) < 1.0 || glm::length(ep - eye) > 3.0e6)
-            continue;
-        const uint32_t sa = satOf(e.a), sb = satOf(e.b);
-        if (sa == UINT32_MAX || sb == UINT32_MAX || sa >= satOrbits.size() || sb >= satOrbits.size())
-            continue;
-        // The target is the one the world built the breakup on (its position is the event's).
-        const SatOrbitState A0 = satOrbitStateAt(orbitElemsOf(satOrbits[sa]), e.t);
-        const SatOrbitState B0 = satOrbitStateAt(orbitElemsOf(satOrbits[sb]), e.t);
-        const bool aIsT = glm::length(A0.posEci - ep) <= glm::length(B0.posEci - ep);
         KCollVis c;
-        c.te = e.t;
-        c.tgt = aIsT ? sa : sb;
-        c.prj = aIsT ? sb : sa;
-        c.prjType = (int)satOrbits[c.prj].typeIdx;
-        c.seed = e.seed;
-        c.key = 0x6C0000000000ull ^ ((uint64_t)k * 0x9E3779B97F4A7C15ull);
-        // The relative velocity as the world carries it (Kessler.cpp, apply): at the sample time ts in the target's
-        // (radial, along, normal) frame, kept in that frame at the impact.
-        const double ts = e.t - (double)e.sampleDt;
-        const SatOrbitState at = satOrbitStateAt(orbitElemsOf(satOrbits[c.tgt]), ts);
-        const SatOrbitState pt = satOrbitStateAt(orbitElemsOf(satOrbits[c.prj]), ts);
-        const glm::dvec3 R = glm::normalize(at.posEci);
-        glm::dvec3 Nn = glm::cross(at.posEci, at.velEci);
-        Nn = glm::length(Nn) > 1e-9 ? glm::normalize(Nn) : glm::dvec3(0, 0, 1);
-        const glm::dvec3 Al = glm::cross(Nn, R);
-        const glm::dvec3 vr = pt.velEci - at.velEci;
-        c.vrelL = glm::dvec3(glm::dot(vr, R), glm::dot(vr, Al), glm::dot(vr, Nn));
-        c.vrel = glm::length(vr);
-        auto massOfSat = [&](uint32_t s) {
-            const uint32_t ti = satOrbits[s].typeIdx;
-            const double m = ti < satTypes.size() ? (double)satTypes[ti].massKg : 0.0;
-            return m > 0.0 ? m : 500.0;
-        };
-        c.massKg = std::min(massOfSat(c.tgt), massOfSat(c.prj));
-        if (c.vrel < 10.0)
+        if (!kesslerCollPair(k, e, c) || glm::length(c.pos - eye) > 3.0e6 || c.vrel < 10.0)
             continue;
+        const glm::dvec3 ep = c.pos;
+        const glm::dvec3 vr = collVrelAt(c.vrelL, satOrbitStateAt(orbitElemsOf(satOrbits[c.tgt]), e.t));
         kCollVis.push_back(c);
 
         const double spE = glm::dot(ep, sunD);
         const bool lit = spE > 0.0 || glm::length(ep - spE * sunD) > satphot::kEarthRadiusM;
         // (1) Before the impact: the projectile's point while its mesh is unresolved (the mesh takes over past ~2 px).
         glm::dvec3 P, V;
+        // (2026-11-03, issue_20261030_180204 "the impactor is not selectable") The stand-in is listed as a transient
+        // (kind 10, a = the projectile's satellite): a click on its point or its mesh (rocketMeshSlotToTransient) selects
+        // it, and the selection's slot carries its state (kesslerCollTransientElems) until the impact.
+        if (t <= e.t && kesslerCollStandIn(c, t, P, V) && c.prjType >= 0)
+        {
+            SelTransient st;
+            st.key = c.key;
+            st.kind = 10;
+            st.a = c.prj;
+            st.tau = t - e.t;
+            st.pos = P;
+            st.vel = V;
+            st.acc = -kessler::kGM * P / std::pow(glm::length(P), 3.0);
+            st.type = c.prjType;
+            st.dirEnu = glm::vec3(toEnu((P - eye) / std::max(glm::length(P - eye), 1.0)));
+            st.flare = 1e-3f; // pickable (the point's own light is in kFireBuf)
+            addSelTransient(st);
+        }
         if (t < e.t && lit && kesslerCollStandIn(c, t, P, V) && c.prjType >= 0 && (size_t)c.prjType < satTypes.size() &&
             satTypes[c.prjType].isModel() && kFireCount < kFireballMax)
         {
@@ -5006,11 +5217,30 @@ void SatelliteSim::kesslerFillCollisions(GpuDustCloud *out, uint32_t &n, double 
         // expanding at ~0.15 of the closing speed and fading in ~1 s, carried with the pair's centre of mass. Light: the
         // kinetic energy of the smaller body at the closing speed x a luminous efficiency of 1e-3 over ~0.2 s (a
         // Starmind pair at 2.3 km/s: ~-12 mag at 1000 km); shown capped (glare, not a white screen).
-        const double age = t - e.t;
-        if (age < 0.0 || age > kFlashS)
+        double age = t - e.t;
+        if (age < 0.0)
+            continue;
+        // The impact frame (see tPrev): the interval holds the impact, or it is one of the frames right after it.
+        int *fr = nullptr;
+        for (KImpactFr &kf : kCollImpactFr)
+            if (kf.key == c.key)
+                fr = &kf.frames;
+        if (!fr && e.t > tPrev && e.t <= t)
+        {
+            kCollImpactFr.push_back({c.key, 0, e.t, t - e.t, t - tPrev});
+            fr = &kCollImpactFr.back().frames;
+        }
+        if (fr && *fr < kImpactFrames)
+        {
+            age = std::min(age, 0.01);
+            ++*fr;
+            kCollImpactDbg = std::max(kCollImpactDbg, 1.0);
+        }
+        if (age > kFlashS)
             continue;
         const SatOrbitState An = satOrbitStateAt(orbitElemsOf(satOrbits[c.tgt]), t);
-        const glm::dvec3 Pf = An.posEci + 0.5 * vr * age; // ~ the pair's centre of mass (equal masses)
+        // The pair's centre of mass, mass-weighted (the debris cloud's centre: Kessler.cpp planFragments)
+        const glm::dvec3 Pf = An.posEci + (c.mP / std::max(c.mT + c.mP, 1e-3)) * vr * age;
         const double rng = std::max(glm::length(Pf - eye), 1.0);
         const double Ek = 0.5 * c.massKg * c.vrel * c.vrel;
         const double Iwsr = 1e-3 * Ek / 0.2 / (4.0 * glm::pi<double>()); // W/sr at the peak

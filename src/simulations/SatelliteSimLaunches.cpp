@@ -10552,6 +10552,16 @@ void SatelliteSim::selTransientUpdate()
                 f = &s;
                 break;
             }
+    if (!f && selTransientCur.kind == 10 && t >= selTransientSeenT - selTransientCur.tau) // tau = t - te when listed
+    {
+        // A colliding projectile's stand-in is listed until the impact: past it the selection ends at once (paused just
+        // after the impact the grace below never ran out).
+        stopTrack();
+        selectedSatIndex = -1;
+        selTransientKey = 0;
+        formatSelectedSatInfo();
+        return;
+    }
     if (!f)
     {
         // Out of view this frame (behind the Earth, below the brightness cut) or over: gone for good after 2 s (or a
@@ -10606,6 +10616,8 @@ void SatelliteSim::transientWriteSlot(uint32_t slot, const SelTransient &s, doub
     LaunchImpl::transientLegs(*launchState, e, s);
     e.engineGlow = ((s.kind == 1 || s.kind == 8) && s.burn != 0) ? 1.0f : 0.0f; // its nozzles lit (sat_mesh.frag)
     e.fixT0 = t0;
+    if (s.kind == 10)
+        kesslerCollTransientElems(s, t0, e); // a colliding projectile: its own attitude law, build and tumble
     const uint32_t idx = activeSatCount + slot;
     if (idx < satOrbits.size())
     {
@@ -11034,6 +11046,22 @@ int SatelliteSim::rocketMeshSlotToTransient(int satIndex)
         return (int)transientSatIdx();
     }
     const uint32_t base = activeSatCount + kLaunchCap - 2 - kRocketMeshSlots;
+    // (2026-11-03, issue_20261030_180204 "the impactor is not selectable") A colliding projectile's stand-in mesh
+    // (kesslerCollisionJobs) is picked as its transient (kind 10, listed by kesslerFillCollisions).
+    const uint32_t collBase = base - kPadMeshSlots - kStackMeshSlots - kShipMeshSlots - kArmMeshSlots - kCollMeshSlots;
+    if (satIndex >= (int)collBase && satIndex < (int)(collBase + kCollMeshSlots))
+    {
+        const uint64_t key = kCollMeshKey[satIndex - (int)collBase];
+        for (const SelTransient &s : selTransients)
+            if (key != 0 && s.key == key)
+            {
+                selTransientTake(s);
+                selectedSatIndex = (int)transientSatIdx();
+                selectedPlanetIndex = -1;
+                return (int)transientSatIdx();
+            }
+        return -1;
+    }
     // A pad's mesh (its tower, mount, tanks) is scenery, a payload stack's (2026-10-20) part of its stage: not
     // selectable.
     if (satIndex >= (int)(base - kPadMeshSlots - kStackMeshSlots - kShipMeshSlots - kArmMeshSlots - kCollMeshSlots) &&
@@ -11074,6 +11102,8 @@ void SatelliteSim::selTransientTake(const SelTransient &s)
     LaunchImpl::transientLegs(*launchState, e, s);
     e.engineGlow = ((s.kind == 1 || s.kind == 8) && s.burn != 0) ? 1.0f : 0.0f; // its nozzles lit (sat_mesh.frag)
     e.fixT0 = t0;
+    if (s.kind == 10)
+        kesslerCollTransientElems(s, t0, e); // a colliding projectile: its own attitude law, build and tumble
     // A rocket has a model (Info, Go to, its mesh); a fireball none (Track only). The orbit rows read the state.
     const uint32_t idx = transientSatIdx();
     if (idx < satOrbits.size())
@@ -11206,8 +11236,8 @@ std::vector<int> SatelliteSim::launchMeshJobs(double pixAngle, const glm::dvec3 
     for (size_t i = 0; i < selTransients.size(); ++i)
     {
         const SelTransient &s = selTransients[i];
-        if (s.type < 0)
-            continue;
+        if (s.type < 0 || s.kind == 10)
+            continue; // (a colliding projectile's stand-in has its own chunk: kesslerCollisionJobs)
         const double px = rocketMeshPx(s, pixAngle, obsEci);
         if (px > 1.4)
             cs.push_back({px, i});
@@ -11584,6 +11614,20 @@ std::string SatelliteSim::transientLabelOf(const SelTransient &s) const
     case 5:
         snprintf(b, sizeof(b), tx(Txt::FmtReEntryKmUp), satLabel((int)s.a).c_str(), hKm);
         break;
+    case 10:
+    {
+        // (2026-11-03) a colliding projectile on its approach (kesslerFillCollisions): its own name, the impact ahead
+        double inS = 0.0, vr = 0.0;
+        for (const KCollVis &c : kCollVis)
+            if (c.key == s.key)
+            {
+                inS = c.te - ((double)simDayJ2000 * 86400.0 + simSecInDay);
+                vr = c.vrel;
+            }
+        snprintf(b, sizeof(b), "%s - on a collision course, impact in %.2f s (%.1f km/s closing)",
+                 satLabel((int)s.a).c_str(), std::max(inS, 0.0), vr / 1000.0);
+        break;
+    }
     case 9:
         snprintf(b, sizeof(b), tx(Txt::FmtReEntryBurningUpKmUp),
                  B ? L.cat.programs[B->prog].spacecraft.c_str() : "cargo ship", hKm);

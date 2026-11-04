@@ -2329,6 +2329,169 @@ private:
     int next_ = 0;
     float lastTrig_ = 0.0f;
 };
+
+// ── impact (2026-11-03, issue_20261030_180204) ──────────────────────────────────────────────────────
+// One hit per satellite collision the sim sees happen (SatelliteSimAmbience.cpp impactStep: the frame whose sim
+// interval holds the impact, the same "impact frame" as the flash). Space carries no sound: this is the film's
+// convention, scaled by what hit what and how far off. pushEvent [gain, bass 0..1, cutoff Hz, reverb send 0..1,
+// attack s, decay s, pan -1..1, thump Hz, crack 0..1]; the sim derives them from the collision's energy (CoM-frame
+// kinetic energy), the pair's mass and the distance, and from where the listener is (in the atmosphere: the
+// low-passed, slow, distant variant). A voice is
+//   * a crack: a burst of high-passed noise, ~15 ms (a close, high-energy hit is FAST),
+//   * the body: brown + pink noise low-passed at the cutoff, attack .. decay,
+//   * a thump: a sine falling an octave onto the thump frequency over ~80 ms (bass: energy and mass),
+// and a share of all of it goes to a reverb (an FDN; its tail grows with the bass, darker from the ground).
+const AmbientSynth::ParamDef kImpactParams[] = {
+    {"level", 1.0f},
+};
+
+class ImpactSynth final : public AmbientSynth
+{
+public:
+    ImpactSynth(uint32_t sr, uint32_t seed)
+        : AmbientSynth("impact", kImpactParams, (int)(sizeof(kImpactParams) / sizeof(kImpactParams[0])), sr, seed)
+    {
+    }
+    bool pushEvent(const float *data, int n) override
+    {
+        if (n < 9)
+            return false;
+        const uint32_t w = qW_.load(std::memory_order_relaxed);
+        if (w - qR_.load(std::memory_order_acquire) >= kQ)
+            return false;
+        std::copy(data, data + 9, q_[w % kQ].d);
+        qW_.store(w + 1, std::memory_order_release);
+        return true;
+    }
+
+protected:
+    static constexpr int kVoices = 4;
+    struct Voice
+    {
+        bool on = false;
+        float t = 0.0f, gain = 0.0f, bass = 0.0f, rev = 0.0f, att = 0.002f, dec = 0.3f, thumpHz = 50.0f, crack = 0.0f;
+        float gl = 0.707f, gr = 0.707f, ph = 0.0f, crk = 0.0f;
+        Svf lpL, lpR, crHp;
+        Brown brL, brR;
+        Pink pkL, pkR;
+    };
+
+    void block(float *out, uint32_t n) override
+    {
+        while (qR_.load(std::memory_order_relaxed) != qW_.load(std::memory_order_acquire))
+        {
+            const uint32_t rI = qR_.load(std::memory_order_relaxed);
+            const float *d = q_[rI % kQ].d;
+            // A free voice, else the oldest.
+            int v = 0;
+            for (int k = 0; k < kVoices; ++k)
+            {
+                if (!voices_[k].on)
+                {
+                    v = k;
+                    break;
+                }
+                if (voices_[k].t > voices_[v].t)
+                    v = k;
+            }
+            Voice &o = voices_[v];
+            o = Voice{};
+            o.on = true;
+            o.gain = std::clamp(d[0], 0.0f, 4.0f);
+            o.bass = std::clamp(d[1], 0.0f, 1.0f);
+            const float fc = std::clamp(d[2], 80.0f, 12000.0f);
+            o.rev = std::clamp(d[3], 0.0f, 1.0f);
+            o.att = std::clamp(d[4], 0.0005f, 0.5f);
+            o.dec = std::clamp(d[5], 0.05f, 6.0f);
+            panGains(std::clamp(d[6], -1.0f, 1.0f) * 0.8f, o.gl, o.gr);
+            o.thumpHz = std::clamp(d[7], 20.0f, 120.0f);
+            o.crack = std::clamp(d[8], 0.0f, 1.0f);
+            o.lpL.set(fc, 0.7f, sr_);
+            o.lpR.set(fc * 1.05f, 0.7f, sr_);
+            o.crHp.set(2200.0f, 0.7f, sr_);
+            // The tail: longer with the bass, darker when the hit itself is dark (from the ground).
+            revT60_ = fc < 600.0f ? 1.4f + 1.0f * o.bass : 0.4f + 0.8f * o.bass; // short in orbit, long from the ground
+            revDamp_ = fc < 600.0f ? 0.75f : 0.35f;
+            fc600_ = fc < 600.0f;
+            qR_.store(rI + 1, std::memory_order_release);
+        }
+        rev_.set(sr_, revT60_, fc600_ ? 2.2f : 1.4f);
+        const float lvl = p_[kILevel];
+        const float dt = 1.0f / sr_;
+        for (uint32_t i = 0; i < n; ++i)
+        {
+            float l = 0.0f, r = 0.0f, sL = 0.0f, sR = 0.0f;
+            bool any = false;
+            for (Voice &v : voices_)
+            {
+                if (!v.on)
+                    continue;
+                any = true;
+                v.t += dt;
+                const float env = (1.0f - expf(-v.t / v.att)) * expf(-v.t / v.dec);
+                if (v.t > v.att + 8.0f * v.dec + 0.5f)
+                {
+                    v.on = false;
+                    continue;
+                }
+                const float wl = bip(), wr = bip();
+                v.lpL.tick(v.brL.tick(wl) * 1.6f + v.pkL.tick(wl) * 1.4f);
+                v.lpR.tick(v.brR.tick(wr) * 1.6f + v.pkR.tick(wr) * 1.4f);
+                // The crack: ~15 ms of bright noise, then a few sparse ticks (shrapnel) for ~0.2 s.
+                float c = 0.0f;
+                if (v.crack > 0.0f && v.t < 0.3f)
+                {
+                    v.crk = v.t < 0.015f ? bip() : (uni() < 0.004f ? bip() * 0.6f : v.crk * 0.7f);
+                    v.crHp.tick(v.crk);
+                    c = v.crHp.hp * v.crack * (v.t < 0.015f ? 1.0f : expf(-(v.t - 0.015f) / 0.06f));
+                }
+                // The thump: an octave fall onto thumpHz over ~80 ms, the bass's share.
+                float th = 0.0f;
+                if (v.bass > 0.0f)
+                {
+                    const float f = v.thumpHz * (1.0f + expf(-v.t / 0.08f));
+                    v.ph += f * dt;
+                    v.ph -= floorf(v.ph);
+                    th = sinf(6.2831853f * v.ph) * v.bass * (1.0f - expf(-v.t / 0.004f)) *
+                         expf(-v.t / (0.15f + 0.6f * v.bass));
+                }
+                const float oL = (v.lpL.lp * env * 1.6f + c * 2.4f + th * 2.2f) * v.gain;
+                const float oR = (v.lpR.lp * env * 1.6f + c * 2.4f + th * 2.2f) * v.gain;
+                l += oL * v.gl * 1.41f;
+                r += oR * v.gr * 1.41f;
+                sL += oL * v.rev;
+                sR += oR * v.rev;
+            }
+            revEnv_ = std::max(std::fabs(sL) + std::fabs(sR), revEnv_ * 0.99997f);
+            if (revEnv_ > 1e-6f)
+            {
+                float eL = 0.0f, eR = 0.0f;
+                rev_.process(sL, sR, revDamp_, eL, eR);
+                l += eL * 0.7f;
+                r += eR * 0.7f;
+            }
+            out[2 * i] = l * lvl / (1.0f + fabsf(l * lvl) * 0.5f);
+            out[2 * i + 1] = r * lvl / (1.0f + fabsf(r * lvl) * 0.5f);
+        }
+    }
+
+private:
+    enum
+    {
+        kILevel,
+    };
+    static constexpr uint32_t kQ = 64;
+    struct Ev
+    {
+        float d[9];
+    };
+    Ev q_[kQ];
+    std::atomic<uint32_t> qW_{0}, qR_{0};
+    Voice voices_[kVoices];
+    Fdn rev_;
+    float revEnv_ = 0.0f, revT60_ = 0.0f, revDamp_ = 0.35f;
+    bool fc600_ = false;
+};
 } // namespace
 
 // ── AmbientSynth base ────────────────────────────────────────────────────────────────────────────
@@ -2376,12 +2539,14 @@ std::unique_ptr<AmbientSynth> AmbientSynth::create(const std::string &kind, uint
         return std::make_unique<RainSynth>(sampleRate, seed);
     if (kind == "thunder")
         return std::make_unique<ThunderSynth>(sampleRate, seed);
+    if (kind == "impact")
+        return std::make_unique<ImpactSynth>(sampleRate, seed);
     return nullptr;
 }
 
 std::vector<std::string> AmbientSynth::kinds()
 {
-    return {"wind", "hum", "drone", "beeps", "disk", "chorus", "surf", "saw", "pad", "bass", "rain", "thunder"};
+    return {"wind", "hum", "drone", "beeps", "disk", "chorus", "surf", "saw", "pad", "bass", "rain", "thunder", "impact"};
 }
 
 int AmbientSynth::paramIndex(const std::string &name) const

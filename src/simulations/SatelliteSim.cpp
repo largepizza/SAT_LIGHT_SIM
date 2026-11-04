@@ -7025,7 +7025,9 @@ void SatelliteSim::formatSelectedSatInfo()
         {
             const SelTransient &tr = selU == transientSatIdx() ? selTransientCur : followTrCur;
             st = tr.kind == 1 ? tx(Txt::ValKindRocketStage) : tr.kind == 2 ? tx(Txt::ValKindShipEntry) : tr.kind == 7 ? tx(Txt::ValKindFairingHalf)
-                 : tr.kind == 8 ? tx(Txt::ValKindSpacecraft) : tx(Txt::ValKindReEntryFireball);
+                 : tr.kind == 8 ? tx(Txt::ValKindSpacecraft)
+                 : tr.kind == 10 && orb.typeIdx < satTypes.size() ? satTypes[orb.typeIdx].name + " (colliding)"
+                                                                 : tx(Txt::ValKindReEntryFireball);
             if (orb.typeIdx < satTypes.size() && tr.kind <= 2) // (a spacecraft's model id, "capsule_dragon", left out)
             {
                 std::string tn = satTypes[orb.typeIdx].name; // "Rocket: starship_upper" -> "starship_upper"

@@ -116,6 +116,16 @@
       "when": { "agl_m": [25000, 12000], "thunder": [0.0, 0.5] }
     },
     {
+      "id": "impact",
+      "group": "space",
+      "synth": "impact",
+      "gain": 0.9,
+      "fade_in_s": 0.05,
+      "fade_out_s": 3.0,
+      "_note": "Satellite collisions (2026-11-03): one hit per pair collision drawn up close, in the frame whose sim interval holds the impact (SatelliteSimAmbience.cpp impactStep): gain from the collision's energy and distance, bass from energy and mass, a crack and a short reverb up close, a low-passed distant boom from the ground. Driver `impact` is 1 from the projectile's approach to a few seconds after.",
+      "when": { "impact": [0.0, 0.5] }
+    },
+    {
       "id": "wind_desert",
       "group": "wind",
       "synth": "wind",
