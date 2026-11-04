@@ -1621,8 +1621,29 @@ void Catalog::cycloneTowersAt(double t, const std::vector<CycloneState> &cs, std
     }
 }
 
-void Catalog::cycloneShieldsAt(double t, const std::vector<CycloneState> &cs, std::vector<Shield> &out, float armCirrus) const {
+void applyCycloneShape(std::vector<CycloneState> &cs, const CycloneShape &k) {
+    for (CycloneState &S : cs) {
+        if (k.arms >= 1.0f) S.arms = std::round(std::clamp(k.arms, 1.0f, 6.0f));
+        S.tanPitch = S.tanPitch / std::clamp(k.tightness, 0.25f, 4.0f);
+        S.bandRot = std::fmod(0.04 * std::clamp((double)k.speed, 0.0, 10.0) * S.turn, 2.0 * kPi);
+    }
+}
+
+// The packed spiral of a cyclone's upper-deck shield (Shield::spiral; cv2_storms.glsl cv2CycSpiral decodes it).
+static glm::vec4 cycloneSpiral(const CycloneState &S, int mode, double k, double o, double m, double a, double ro = 1.0) {
+    auto q = [](double v) { return std::round(std::clamp(v, 0.0, 1.0) * 15.0); };
+    const double nA = std::max(1.0, std::floor((double)S.arms + 0.15));
+    const double y = 1.0 / std::max((double)S.tanPitch, 0.05);
+    double z = std::fmod(S.bandRot - std::log(std::max((double)S.rmw, 1000.0)) * y, 2.0 * kPi);
+    if (z < 0.0) z += 2.0 * kPi;
+    const double code = 1.0 + mode + 2.0 * q(k) + 32.0 * q(o) + 512.0 * q(m) + 8192.0 * q(a) + 131072.0 * q(ro);
+    return glm::vec4((float)((double)S.c->hemi * nA), (float)y, (float)z, (float)-code);
+}
+
+void Catalog::cycloneShieldsAt(double t, const std::vector<CycloneState> &cs, std::vector<Shield> &out, float armCirrus,
+                               const CycloneShape *shape) const {
     (void)t;
+    const bool spiral = shape != nullptr && shape->spiral;
     for (const CycloneState &S : cs) {
         if (S.cdoR <= 0.0f) continue;
         Shield Sh;
@@ -1637,7 +1658,42 @@ void Catalog::cycloneShieldsAt(double t, const std::vector<CycloneState> &cs, st
         Sh.seed = S.c->seed;
         Sh.stormId = S.c->id;
         Sh.kind = StormKind::Tropical;
+        // The CDO's outline wound into the arms (2026-11-03, issue 20261030_205220, "Hurricane deck spiral"): the outer
+        // part of the overcast follows the arms out and is notched between them, not a round glob.
+        if (spiral && shape->deckSpiral > 0.0f) Sh.spiral = cycloneSpiral(S, 0, shape->deckSpiral, 0.0, 0.0, 0.0);
         if (Sh.strength > 0.0f) out.push_back(Sh);
+        Sh.spiral = glm::vec4(0.0f);
+        if (spiral)
+        {
+            // THE CIRRUS DECK (2026-11-03): one disc per cyclone past the CDO, the shader drawing on it the arms' cirrus
+            // (on the low arms' own log spirals: every crest, curved, continuous) and, between them, the outflow cirrus
+            // in thin streaks curving the other way (anticyclonically, as the outflow aloft turns). Replaced the outflow
+            // disc + 4 straight capsules per arm (chords of ~40 deg of the spiral each, every capsule thinning to 0.3 at its
+            // far end: a polygon of bars, stepping in brightness at every joint).
+            const double ds = smooth01(25.0, 45.0, (double)S.vmax) * std::clamp((double)armCirrus, 0.0, 3.0);
+            const double armS = 0.32 * ds;
+            const double ok = std::clamp((double)shape->outflow, 0.0, 3.0);
+            // (Strength at most 0.4: past it the shield's fray draws grey hard-edged blotches between the arms.)
+            const double outS = std::min(0.25 * smooth01(25.0, 50.0, S.vmax) * ok, 0.4);
+            const double r0 = 0.75 * (double)S.cdoR, r1 = std::max(0.95 * (double)S.outerR, 1.3 * r0);
+            const double rOut = std::max(1.6 * (double)S.cdoR, 0.6 * (double)S.outerR) * (0.7 + 0.3 * ok);
+            const double peak = std::max(armS, outS);
+            if (peak > 0.0)
+            {
+                Shield D = Sh;
+                const double rD = std::max(r1 / 1.1, rOut);
+                D.rA = D.rB = (float)rD;
+                D.strength = (float)peak;
+                D.thick = 0.3f;
+                D.age01 = 0.85f;
+                D.eyeR = (float)(r0 / 1.6);   // (cv2ShieldAt opens it to nothing inside 0.9 of this: under the CDO)
+                D.stormId = S.c->id ^ 0x0F10ull;
+                D.spiral = cycloneSpiral(S, 1, 0.5 * (double)shape->minor, outS / peak, (double)shape->streaks, armS / peak,
+                                         rOut / rD);   // (the outflow's reach in the disc's radii)
+                out.push_back(D);
+            }
+            continue;
+        }
         // The OUTFLOW cirrus (2026-10-23): a thin, frayed ice sheet spreading past the CDO toward the outer bands — the
         // shield shader's aged (orphan-anvil) look: thinner, half the density, frayed at both noise scales. Weak, so the
         // arms show through it; the CDO wins where they overlap (cv2ShieldAt takes the strongest).

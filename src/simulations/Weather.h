@@ -97,6 +97,12 @@ struct Shield {
     float bowM = 0;             // line systems: how far the line's middle stands ahead of its ends (m; the towers'
                                 // bow x (1 - x^2) along the spine, x = -1 .. 1)
     float eyeR = 0;             // tropical cyclones' central dense overcast: the eye's radius (m; 0 none)
+    // Tropical cyclones' upper deck (2026-11-03, issue 20261030_205220): the spiral the shader cuts into it (cv2_storms.glsl
+    // cv2CycSpiral). w < 0 = on: -(1 + mode + 2 k + 32 o + 512 m + 8192 a + 131072 ro), each 0..15 (the spiral's
+    // strength / the minor swirls, the outflow's share, its streaks, the arms' share, the outflow's reach in the disc's
+    // radii), mode 0 the CDO (its outline wound into the arms), 1 the cirrus deck (arms + outflow); x hemi x
+    // the arms (whole), y the log-radius' factor (1 / tan pitch; the phase at r m is hemi theta + y ln r + z), z the phase.
+    glm::vec4 spiral{0.0f};
     uint32_t seed = 0;
     uint64_t stormId = 0;
     StormKind kind = StormKind::AirMass;
@@ -147,6 +153,21 @@ struct CycloneState {
 const char *cycloneBasinName(int basin);        // "North Atlantic" ...
 const char *cycloneCategoryName(int cat, int basin);   // "Tropical depression", "Tropical storm", "Category 3 hurricane" /
                                                        // "typhoon" / "severe cyclonic storm" ... by basin
+
+// The user's control over a tropical cyclone's shape (2026-11-03, issue 20261030_205220; Settings > Weather, slots 455-461).
+struct CycloneShape {
+    float arms = 2.0f;          // the main arms (whole counts; 0 = by intensity, 2 -> 5.4 as before)
+    float tightness = 1.0f;     // x the cotangent of their pitch (2 = wound twice as tight)
+    float speed = 1.0f;         // x their turning (bandRot = 0.04 x speed x the circulation's turn)
+    float minor = 1.0f;         // the minor swirls between them (x; the weather bake's finer bands)
+    float deckSpiral = 0.6f;    // the upper deck's spiral: the CDO's outline wound into the arms, the cirrus over the arms
+    float outflow = 1.0f;       // the outflow cirrus' coverage (x its strength and reach)
+    float streaks = 0.6f;       // the outflow cirrus' streaks (anticyclonically curving, 0 = a plain sheet)
+    bool  spiral = true;        // false: the pre-2026-11-03 upper deck (outflow disc + arm-cirrus capsule chains)
+};
+// Applies the arm count, tightness and speed to the states cyclonesAt made (before cycloneTowersAt: the inner band towers
+// stand on the arms' crests).
+void applyCycloneShape(std::vector<CycloneState> &cs, const CycloneShape &k);
 
 struct ShieldParams {
     float headRadiusM = 20000.0f;   // a mature anvil-reaching head's radius (the tower radius x flare)
@@ -237,7 +258,8 @@ public:
     void cyclonesAt(double t, std::vector<CycloneState> &out);
     void cycloneTowersAt(double t, const std::vector<CycloneState> &cs, std::vector<Tower> &out) const;
     void cycloneShieldsAt(double t, const std::vector<CycloneState> &cs, std::vector<Shield> &out,
-                          float armCirrus = 1.0f) const;   // armCirrus: x the arms' cirrus (0 none)
+                          float armCirrus = 1.0f,            // armCirrus: x the arms' cirrus (0 none)
+                          const CycloneShape *shape = nullptr) const;
     // Every cyclone of a basin's season (built if needed), in genesis order; and one by id (cached seasons only).
     void cycloneSeason(int basin, int year, std::vector<const Cyclone *> &out);
     const Cyclone *findCyclone(uint64_t id) const;

@@ -5865,6 +5865,32 @@ private:
     int   stormShieldBinsAB = 0;                 // clouds_v2.storm_shield_bins_ab (no UI): 64 = list shields in the old
                                                  // 156-km bins (an A/B); 0 = kShieldBinsPerFace (128)
     float stormArmCirrus = 1.0f;                 // clouds_v2.storm_arm_cirrus: the cirrus along a cyclone's arms (x, 0 = none)
+    // A tropical cyclone's SHAPE (2026-11-03, issue 20261030_205220; wx::CycloneShape, Settings > Weather > Storm objects,
+    // slots 455-461, clouds_v2.storm_cyc_*): the main arms (count; was 2 -> 5.4 with intensity), their tightness (x the
+    // pitch's cotangent) and turning speed (x bandRot), the minor swirls between them, the upper deck's spiral (the CDO's
+    // outline and the cirrus deck's arms), the outflow cirrus' coverage and its streaks.
+    float stormCycArms = 2.0f;
+    float stormCycTightness = 1.0f;
+    float stormCycArmSpeed = 1.0f;
+    float stormCycMinorSwirls = 1.0f;
+    float stormCycDeckSpiral = 0.6f;
+    float stormCycOutflow = 1.0f;
+    float stormCycStreaks = 0.6f;
+    bool  stormCycSpiralAB = true;               // clouds_v2.storm_cyc_spiral (no UI): false = the pre-2026-11-03 upper deck
+                                                 // (outflow disc + arm-cirrus capsule chains), the perf A/B
+    wx::CycloneShape cycloneShape() const
+    {
+        wx::CycloneShape k;
+        k.arms = stormCycArms;
+        k.tightness = stormCycTightness;
+        k.speed = stormCycArmSpeed;
+        k.minor = stormCycMinorSwirls;
+        k.deckSpiral = stormCycDeckSpiral;
+        k.outflow = stormCycOutflow;
+        k.streaks = stormCycStreaks;
+        k.spiral = stormCycSpiralAB;
+        return k;
+    }
     // Wildfires (2026-10-23, Wildfire.h, SatelliteSimWildfire.cpp): hashed on the biome map's fuel x the season's
     // dryness; smoke as plume Gaussians (a contiguous range of the dust list, spectral: smoke.glsl), the front as point
     // sprites (kFireBuf) and its light as engine lights.

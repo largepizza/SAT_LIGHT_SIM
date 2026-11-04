@@ -21,6 +21,7 @@
 #include <bit>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <type_traits>
 
 namespace launchsim { double demElevCpu(double latDeg, double lonDeg); }   // (SatelliteSimLaunches.cpp: the full DEM)
@@ -581,6 +582,15 @@ void SatelliteSim::updateStorms()
         const int idxKey = (stormIndexTight ? 1 : 0) + 2 * stormShieldBinsAB;
         static int lastIdxKey = -1;
         if (idxKey != lastIdxKey) { lastIdxKey = idxKey; stormUploadedT = -1e300; }   // (the index's layout changed)
+        // (The cyclones' shape sliders and the arm cirrus change what is uploaded: re-upload while paused too.)
+        const float shapeKey[] = {stormCycArms, stormCycTightness, stormCycArmSpeed, stormCycMinorSwirls, stormCycDeckSpiral,
+                                  stormCycOutflow, stormCycStreaks, stormCycSpiralAB ? 1.0f : 0.0f, stormArmCirrus};
+        static float lastShapeKey[std::size(shapeKey)] = {-1.0f};
+        if (std::memcmp(shapeKey, lastShapeKey, sizeof(shapeKey)) != 0)
+        {
+            std::memcpy(lastShapeKey, shapeKey, sizeof(shapeKey));
+            stormUploadedT = -1e300;
+        }
     }
     if (t == stormUploadedT)
         return;   // paused: nothing moved
@@ -607,6 +617,8 @@ void SatelliteSim::updateStorms()
             stormOrganisedNow.push_back({S->id, glm::normalize(S->centreAt(t))});
     // Tropical cyclones: their eyewall and inner-band towers join the list (Earth-fixed tracks, in the map frame now).
     stormCatalog->cyclonesAt(t, stormCyclonesNow);
+    const wx::CycloneShape cycShape = cycloneShape();
+    wx::applyCycloneShape(stormCyclonesNow, cycShape);   // (arms, tightness, speed: before the band towers stand on them)
     stormCatalog->cycloneTowersAt(t, stormCyclonesNow, stormTowers);
     const auto tCat = std::chrono::steady_clock::now();
     split("storms.catalog");
@@ -723,7 +735,7 @@ void SatelliteSim::updateStorms()
         sp.headRadiusM = (float)(Rb * flare * 1.15);
         sp.headDriftM = (float)drift;
         stormCatalog->shieldsAt(t, stormsNow, sp, stormShields);
-        stormCatalog->cycloneShieldsAt(t, stormCyclonesNow, stormShields, stormArmCirrus);   // their central dense overcast
+        stormCatalog->cycloneShieldsAt(t, stormCyclonesNow, stormShields, stormArmCirrus, &cycShape);   // their central dense overcast
         std::sort(stormShields.begin(), stormShields.end(), [](const wx::Shield &a, const wx::Shield &b) {
             return a.strength != b.strength ? a.strength > b.strength : a.stormId < b.stormId;
         });
@@ -743,6 +755,11 @@ void SatelliteSim::updateStorms()
             // it; rA = 0.55 trail + the tower radius).
             const float front = s.lineK > 0.0f ? 0.45f / 0.55f * std::max(s.rA - (float)Rb, 0.0f) : 0.0f;
             g.d = glm::vec4(s.rear, s.kind == wx::StormKind::Tropical ? -std::max(s.eyeR, 1.0f) : front);
+            if (s.spiral.w < 0.0f)   // a cyclone's upper deck: c.w < 0 the packed spiral, d.xyz its arms / pitch / phase
+            {
+                g.c.w = s.spiral.w;
+                g.d = glm::vec4(s.spiral.x, s.spiral.y, s.spiral.z, -std::max(s.eyeR, 1.0f));
+            }
             sdst[i] = g;
             stormGpuShields[i] = g;
             const glm::dvec3 mid = glm::normalize(s.a + s.b);
@@ -776,7 +793,8 @@ void SatelliteSim::updateStorms()
             g.a = glm::vec4(glm::vec3(c.map), c.intensity01);
             g.b = glm::vec4(glm::vec3(f), c.c->hemi);
             g.c = glm::vec4(c.eyeR, c.cdoR, c.outerR, (float)c.bandRot);
-            g.d = glm::vec4(c.rmw, c.vmax, c.overLand ? 1.0f : 0.0f, c.arms);
+            // (d.z: over land + 2 x round(1000 x tan pitch), 2026-11-03: the pitch follows "Hurricane arm tightness".)
+            g.d = glm::vec4(c.rmw, c.vmax, (c.overLand ? 1.0f : 0.0f) + 2.0f * std::round(1000.0f * c.tanPitch), c.arms);
             cdst[i] = g;
         }
         reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kCycHeadOffset)[0] = nC;

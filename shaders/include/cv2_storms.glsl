@@ -197,6 +197,44 @@ bool cv2ShieldsOn()
 #endif
 }
 
+// A tropical cyclone's upper deck (2026-11-03, issue 20261030_205220): the spiral cut into its shield (c.w < 0, packed by
+// Weather.cpp cycloneSpiral; d.x hemi x the arms, d.y 1 / tan pitch, d.z the phase: the low arms' own log spirals, so the
+// deck's arms stand over the weather bake's). rM: the distance from the centre (m), u: in the disc's radii. Only the
+// strongest shield's (cv2ShieldAt, once a sample).
+//   mode 0, the CDO: its outer part wound into the arms (the outline follows them out, notched between them);
+//   mode 1, the cirrus deck: the arms' cirrus (crests of the arms, thinning outward) + minor swirls (k: three times as
+//   many, a tighter pitch) + the outflow cirrus between them (o) in thin streaks curving ANTICYCLONICALLY (m: their
+//   contrast), as the outflow aloft turns the other way.
+float cv2CycSpiral(vec3 wd, CV2Shield s, float u, float rM)
+{
+    float code = -s.c.w - 1.0;
+    float mode = mod(code, 2.0);  code = floor(code * 0.5);
+    float k    = mod(code, 16.0) * (1.0 / 15.0);  code = floor(code * (1.0 / 16.0));
+    float o    = mod(code, 16.0) * (1.0 / 15.0);  code = floor(code * (1.0 / 16.0));
+    float m    = mod(code, 16.0) * (1.0 / 15.0);  code = floor(code * (1.0 / 16.0));
+    float aK   = mod(code, 16.0) * (1.0 / 15.0);
+    float ro   = max(floor(code * (1.0 / 16.0)) * (1.0 / 15.0), 0.05);   // the outflow's reach (disc radii)
+    vec3  a    = s.a.xyz;
+    vec3  e    = normalize(vec3(-a.y, a.x, 0.0) + vec3(1e-7, 0.0, 0.0));
+    vec3  v    = wd - a;
+    float hemi = s.d.x < 0.0 ? -1.0 : 1.0;
+    float nA   = abs(s.d.x);
+    float th   = hemi * atan(dot(v, cross(a, e)), dot(v, e));
+    float lr   = log(max(rM, 1000.0)) * s.d.y;
+    float arm  = 0.5 + 0.5 * cos(nA * (th + lr + s.d.z));
+    if (mode < 0.5)
+        return 1.0 - k * smoothstep(0.2, 0.85, u) * (1.0 - smoothstep(0.1, 0.65, arm));
+    float armB = smoothstep(0.6, 0.92, arm) * (1.0 - 0.5 * smoothstep(0.3, 1.0, u));
+    float mi   = smoothstep(0.7, 0.95, 0.5 + 0.5 * cos(3.0 * nA * (th + 1.4 * lr + s.d.z) + 1.7)) * (1.0 - smoothstep(0.4, 1.1, u));
+    float st   = smoothstep(0.35, 0.9, 0.5 + 0.5 * cos((3.0 * nA + 2.0) * (th - 0.5 * lr) + 0.9 * s.d.z));
+    // (The outflow ends where the old outflow disc's frayed edge did, ~1.25 of its reach: past it the deck is exactly 0
+    // between the arms, so cv2AnvilSigmaP's early out skips its texture reads there (shot 1: +3 ms of march without).)
+    // (The streaks gather the sheet's ice: at m = 1 none between them and 2x on their crests, so they show; a sheet as
+    // thin as the outflow's (0.25) only just renders, and modulated down alone its streaks did not change the frame.)
+    return max(aK * max(armB, 1.2 * k * mi),
+               min(o * mix(1.0, 2.0 * st, m), 1.0) * (1.0 - smoothstep(0.9 * ro, 1.3 * ro, u)));
+}
+
 // The anvil shields over a map-frame direction: the strongest one's strength (x its taper toward the far end), its
 // distance from the spine in radii (uOut; the caller frays the outline with noise, so a shield reaches 1.6 radii), and
 // its thickness factor and age.
@@ -205,6 +243,7 @@ float cv2ShieldAt(vec3 wd, out float thickK, out float ageK, out float uOut)
     thickK = 1.0; ageK = 0.0; uOut = 9.0;
     float best = 0.0, bestS = 0.0;
 #ifdef CV2_STORM_BINDING
+    uint  bestI = 0xFFFFFFFFu;
     if (cv2ShieldHead.x == 0u) return 0.0;
     uint key = cv2StormBinKeyN(wd, cv2ShieldHead.y);   // (y: the bins per face side the CPU listed them in)
     uint h   = cv2StormHash(key) & (kCv2ShieldTableSize - 1u);
@@ -216,7 +255,8 @@ float cv2ShieldAt(vec3 wd, out float thickK, out float ageK, out float uOut)
         h = (h + 1u) & (kCv2ShieldTableSize - 1u);
     }
     [[dont_unroll]] for (uint k = 0u; k < bin.y; ++k) {
-        CV2Shield s = cv2Shields[cv2ShieldList[bin.x + k]];
+        uint      si = cv2ShieldList[bin.x + k];
+        CV2Shield s = cv2Shields[si];
         // (A bin lists its shields strongest first, and p <= sT <= a.w: none after this can do better. Exact.)
         if (s.a.w <= best) break;
         vec3  ab = s.b.xyz - s.a.xyz;
@@ -227,7 +267,13 @@ float cv2ShieldAt(vec3 wd, out float thickK, out float ageK, out float uOut)
         float sT = s.a.w * mix(1.0, 0.3, smoothstep(0.35, 1.0, t));   // thinning out toward its far (downwind) end
         if (s.d.w < 0.0) sT *= smoothstep(0.9, 1.6, u * r / -s.d.w);   // a cyclone's eye, open to the sea
         float p  = sT * (1.0 - smoothstep(0.3, 1.6, u));
-        if (p > best) { best = p; bestS = sT; uOut = u; thickK = s.c.y * mix(1.0, 0.65, t); ageK = s.c.z; }
+        if (p > best) { best = p; bestS = sT; uOut = u; thickK = s.c.y * mix(1.0, 0.65, t); ageK = s.c.z; bestI = si; }
+    }
+    // A cyclone's deck (c.w < 0, a disc: t = 0, r = c.x): its spiral, for the strongest shield only (<= 1: the bins'
+    // strongest-first early out above stays exact).
+    if (bestI != 0xFFFFFFFFu) {
+        CV2Shield s = cv2Shields[bestI];
+        if (s.c.w < 0.0 && s.d.w < 0.0) bestS *= cv2CycSpiral(wd, s, uOut, uOut * s.c.x);
     }
 #endif
     return bestS;

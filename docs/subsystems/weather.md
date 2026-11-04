@@ -132,6 +132,38 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   bake's spiral), 0.75 CDO .. 0.95 outer, a quarter of the arms' spacing wide, strength 0.32 falling 55% outward: frayed ice
   veils feathering the bands. Up to ~22 shields a cyclone, so a bin entry's count is 5 bits now (`y >> 5`, `& 31`, every
   storm index; kShieldMaxPerBin 31; the march stays at 128 registers).
+  **SHAPE (2026-11-03, issue 20261030_205220, `wx::CycloneShape`, Settings > Weather > Storm objects, slots 455-461,
+  `clouds_v2.storm_cyc_*`):** "Hurricane main arms" (`arms`, default 2, 0 = by intensity as before; most satellite images
+  show two major bands), "arm tightness" (x the pitch's cotangent), "arm speed" (bandRot = 0.04 x speed x turn) — all
+  three applied to `stormCyclonesNow` by `wx::applyCycloneShape` before `cycloneTowersAt`, so the band towers, the bake
+  and the deck agree; the bake reads the pitch from `CV2Cyclone.d.z` = over land + 2 x round(1000 tan pitch). "minor
+  swirls" (`pc.storm2.z`): 2n + 1 finer bands wound at 0.8 the pitch, broken by their own gaps (were 3 at a fixed 22 deg).
+  An arm is as wide in angle whatever the count (b^p, p = (4 / n)^2: the thresholds were tuned at ~4 arms; 2 drew fat
+  ribbons). ARM GAPS: an arm narrows to nothing along its own length (a wave in ln r with the arm's own phase, its crest
+  index mod n — periodic across atan's cut — raising the threshold). They were a multiplier `brk` of (ln r, theta) waves
+  whose zero lines cross every arm at an angle: arms cut off square — the report's "chopped in rectangular ways"
+  (shot 2 with `brk` = 1: every blunt arm end gone); `brk` and `pinch` also took 1.3 / 2.1 / 1.7 x theta, not whole
+  multiples, so atan's cut drew a straight radial seam across the arms: every angle term is now a whole multiple of
+  theta (arm indices mod n). An arm's core is smoothstep(thr, thr + 0.06, b): with the old min(thr + 0.06, 0.995) a
+  threshold lifted past ~0.94 (a gap) put edge0 > edge1, which NVIDIA evaluates inverted — the whole space between the
+  arms filled on one side of the gap's edge, a straight-edged wedge. "deck spiral" (0.8): the CDO's low deck (`inner`, the deck floor) reaches out along the
+  arms and recedes between them (r x (1 - 0.8 k (bA - 0.5)) x (1 - (0.4 k)^2)^-0.75, `pc.storm2.w`: the last factor
+  keeps the wound deck's mean area the round one's — 17% more overcast, raining deck cost ~1 ms), and the CDO shield's
+  outer part is notched between them (`cv2CycSpiral` mode 0). THE CIRRUS DECK replaces the outflow disc + 4 x n
+  arm-cirrus capsules (chords of ~40 deg of the spiral, each thinning to 0.3 at its far end: a polygon of bars stepping
+  in brightness): one disc per cyclone (max(r1 / 1.1, outflow reach), its eye hole r0 / 1.6) on which `cv2CycSpiral`
+  mode 1 draws the arms' cirrus on the low arms' own spirals, the minor swirls, and between them the outflow cirrus
+  ("outflow cirrus" x strength and reach) in 3n + 2 thin streaks curving ANTICYCLONICALLY ("outflow streaks", contrast).
+  The spiral rides in the shield (`Shield::spiral`): c.w < 0 a packed code -(1 + mode + 2k + 32o + 512m + 8192a +
+  131072 ro), d.xyz
+  hemi x arms / 1 / tan pitch / phase; `cv2ShieldAt` applies it once a sample, to the strongest shield only (x <= 1: the
+  strongest-first early out stays exact). `clouds_v2.storm_cyc_spiral false` (no UI) = the old deck, the A/B. Shot 2
+  azimuthal luminance round the eye (harness_runs/c03 azprof.py): the dominant harmonic is h2 at every radius 120-280 px,
+  its phase drifting -169 -> +36 deg outward (a log spiral); before, inside the CDO h2 was 0.010-0.019 of the mean
+  (now 0.041-0.134) and outside the peak harmonic was h5 with no steady phase. Perf (RTX 3070 Ti, 1600x900, the
+  report's settings, ABAB x 4, p50 GPU): shot 1 26.15 -> 25.68 ms, shot 2 19.14 -> 18.94; march 128 registers, binary
+  382592 -> 389376 B. The cirrus deck's outflow ends at ~1.25 of its reach (packed `ro`): over the whole disc it kept
+  cv2AnvilSigmaP's texture reads alive between the arms (+3 ms at shot 1).
   **STORM SURGE** (2026-10-23, terrain_detail.glsl `tdSurgeAt`, terrain.glsl `waterAdjustHeightSurge`, CPU
   `weatherFillSeaParams` + mirror `surgeAtDir`; UBO `surgeA/B[2]` + `surgeInfo` appended, 11104 -> 11184): per seaCyc
   cyclone a peak rise at the coast from the wind of the last ~6 h (max(vmax, 0.85 vmax 3 h ago, 0.7 vmax 6 h ago): 1.2 m

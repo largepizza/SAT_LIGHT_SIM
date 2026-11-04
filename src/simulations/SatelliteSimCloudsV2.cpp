@@ -2055,7 +2055,8 @@ SatelliteSim::GpuWeatherPC SatelliteSim::weatherEvoPC(int face, uint32_t mip) co
     pc.storm = glm::vec4(std::clamp(cv2CbRadiusKm, 1.0f, 20.0f) * 1000.0f, cv2CbCumulusReachKm * 1000.0f,
                          std::clamp(cv2CbHeadDriftKm, 0.0f, 30.0f) * 1000.0f, std::clamp(cv2CbFlare, 0.5f, 3.0f));
     pc.storm2 = glm::vec4(stormObjects && cv2CbColumns > 0.0f ? std::max(stormCloudField, 0.0f) : 0.0f,
-                          std::max(stormMoat, 0.0f), 0.0f, 0.0f);
+                          std::max(stormMoat, 0.0f), std::clamp(stormCycMinorSwirls, 0.0f, 2.0f),
+                          stormCycSpiralAB ? std::clamp(stormCycDeckSpiral, 0.0f, 1.0f) : 0.0f);
     return pc;
 }
 
@@ -2211,7 +2212,10 @@ uint64_t SatelliteSim::weatherBakeHash() const
     for (float v : {cv2EvoWindMps, cv2EvoGrowth, cv2EvoWindowH, cv2EvoDiurnal,
                     cv2Coverage, cv2CoverClear, cv2CoverFull,   // the coarse levels' coverage (review 18)
                     stormObjects ? 1.0f : 0.0f, stormCloudField, stormMoat, cv2CbColumns,   // the storms' stamp
-                    cv2CbRadiusKm, cv2CbCumulusReachKm, cv2CbHeadDriftKm, cv2CbFlare})
+                    cv2CbRadiusKm, cv2CbCumulusReachKm, cv2CbHeadDriftKm, cv2CbFlare,
+                    // (a cyclone's shape: its arms are stamped; 2026-11-03)
+                    stormCycArms, stormCycTightness, stormCycArmSpeed, stormCycMinorSwirls, stormCycDeckSpiral,
+                    stormCycSpiralAB ? 1.0f : 0.0f})
         h = (h ^ std::hash<float>{}(v)) * 1099511628211ull;
     return h;
 }
