@@ -118,7 +118,13 @@ void SatelliteSim::meteorsFill(GpuDustCloud *out, uint32_t &n, double toSky, dou
     const float warpNow = timeScaleNow(timePaused, timeScaleIdx);
     const bool lapse = meteorTimelapse && warpNow > 2.0f;
     meteorLapse_ = lapse;
-    if (!lapse && warpNow > 60.0f)
+    // Past 1 h/s none are drawn (2026-11-03, issue 20261030_175604). At 1 d/s a frame spans 24 min of sim time, so
+    // only the brightest bands fit the draw budget and every bolide of the slice arrived as its own head (floored at
+    // half its 1x peak): the reporter's view showed ~4 spiked flashes a frame over the nightside (11 meteor blobs a
+    // frame vs a 3.4 noise floor), each lasting one frame. A meteor lasts ~1 s; at 1 d/s it is ~1/1440 of a frame and
+    // nothing a person could see. 1 h/s is the time-lapse rate showers are meant to be caught at (issue 20261028_220640);
+    // the ladder has nothing between it and 1 d/s. (Kessler's small re-entries use the same 1 h/s line.)
+    if (warpNow > 3600.0f || (!lapse && warpNow > 60.0f))
     {
         meteorWarpOff_ = true;
         meteorPrevT_ = t;

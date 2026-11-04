@@ -300,6 +300,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- Meteors are no longer drawn past 1 hour/s: at 1 day/s and faster the Earth's nightside no longer sparkles with
+  one-frame spiked flashes. 1 hour/s and slower are unchanged (issue_20261030_175604).
 - Far city lights no longer blink at low angles under temporal AA; the sea no longer shows a fine white static
   under broken cloud; waves no longer leave trails in cinematic playback; climbing over a city at night no longer
   smears the lights.
