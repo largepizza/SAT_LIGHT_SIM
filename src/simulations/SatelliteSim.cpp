@@ -14336,6 +14336,13 @@ void SatelliteSim::createSkyTaaResources(VulkanContext &ctx)
         vkDestroyShaderModule(ctx.device, frag, nullptr);
     }
     skyTaaHistValid = false;
+    // The rain particles' descriptor set samples the two history colour images just (re)created: every caller that
+    // recreates them must rewrite it, or the set keeps the destroyed views. Only the resize path did (through
+    // recreateComputeScaledTargets); the harness `shaders reload sky=` and the boot chooser's on-demand full sky did
+    // not, and the next rain draw read freed image views: a second reload in a storm killed the app with no message
+    // (2026-11-04; the first one survived, likely by the driver reusing the freed allocations). No-op before the rain set
+    // exists (startup order).
+    writeRainDescriptors(ctx);
 }
 
 void SatelliteSim::destroySkyTaaResources(VkDevice device)
