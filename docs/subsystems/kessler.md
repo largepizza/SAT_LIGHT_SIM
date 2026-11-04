@@ -90,8 +90,10 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   the relative velocity in its radial / along / normal frame x (t - te)) for the last `kCollApproachS` (45 s): its mesh
   in its own reserved launch chunk (`kCollMeshSlots` 8, below the arm's; not selectable), a sunlit point while
   unresolved (evaluator photometry, kFireBuf). At the impact a flash (kinetic energy of the smaller body x 1e-3 over
-  ~0.2 s: a Starmind pair at 2.3 km/s ~-12 mag at 1000 km; capped at flare 400, decaying 0.12 s / 0.7 s) and an emissive
-  fireball expanding at 0.15 of the closing speed for 3 s, its resolved peak capped at ~1.2 of displayed white. The real
+  ~0.2 s: a Starmind pair at 2.3 km/s ~-12 mag at 1000 km; capped at flare 400, light curve 0.8 e^(-t/0.08 s) +
+  0.2 e^(-t/0.3 s)) and an emissive fireball expanding at 0.15 of the closing speed for 3 s, white cooling to orange
+  (e^(-t/0.2 s)). Its resolved peak is capped at ~1.2 of displayed white at its hot size (its size at 30 ms, sHot),
+  and its surface brightness then falls as (sHot / s)^2 as the vapour grows. The real
   projectile record is untouched (it vanishes far away at the same second). The candidate list is cached over half an
   hour and rebuilt when the log changes. Harness `kessler state` -> `collisions_near` (in_s, vrel, standin,
   `standin_to_target_m`, target_range_m), `collision_flash`.
@@ -105,7 +107,14 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
     / -0.050 / -0.010 s (it was dead from te-0.142 s), 4 satellites held, the 11 new records appear at te.
   - **Impact frames:** the frame whose sim interval (last fill's time, now] holds te, and the next one, show the flash at
     its peak whatever the time scale (at x1000 a frame is ~16 s: the 3-s flash fell between frames). Harness `kessler
-    state` -> `impact_frames` (frames_shown, age_at_cross_s, frame_dt_at_cross_s), `impact_frame`, `roster_holds`.
+    state` -> `impact_frames` (frames_shown, age_at_cross_s, frame_dt_at_cross_s, flash_at_cross), `impact_frame`,
+    `roster_holds`.
+  - **The fireball does not engulf a nearby camera (2026-11-03, issue_20261030_180204 follow-up):** the cap used to
+    grow with s^2, so the vapour at +0.5 s (sigma ~1.1 km at 15 km/s) was as bright per pixel as the young fireball,
+    and its 0.25 / 0.7-s tail kept it at 0.13 of the peak: from the reporter's shot 4 (~1 km off) 98% of the frame was
+    tinted brown at +0.5 s. With the hot-size cap and the 0.3-s tail: 7.7% (the mask's floor, moving points), the
+    point flash at the crossing 375 -> 361, still flare 360 in the impact frame at 16 s and 60 s frame steps. Mask: luma
+    over the te-0.24 s frame by > 8/255.
   - **The impactor is selectable:** the stand-in is listed as a transient (`SelTransient` kind 10, a = the projectile's
     satellite) by `kesslerFillCollisions`; a click on its point or its mesh (`rocketMeshSlotToTransient` maps the
     collision chunk) selects it, and the selection's slot takes its state and own attitude (`kesslerCollTransientElems`).

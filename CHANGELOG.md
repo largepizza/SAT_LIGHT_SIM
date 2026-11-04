@@ -82,7 +82,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   crimson); and once the cascade runs, many small meteor-like streaks.
 - **Collisions up close:** the projectile flies in on its real approach line and can be selected; the satellites a
   collision kills stay whole in their own attitude until the instant of impact; the impact is a flash at its peak in
-  the frame that holds it at any time warp, with a sound (energy, mass and distance shape it: a fast crack and a short
+  the frame that holds it at any time warp (white-hot and brief: it no longer lingers as a brown glow over a nearby
+  camera), with a sound (energy, mass and distance shape it: a fast crack and a short
   reverb up close, a low-passed boom from the ground); and the debris, its dust and its small fragments carry the
   pair's momentum (a head-on hit sends the cloud along the impactor's path instead of leaving it with the
   formation).

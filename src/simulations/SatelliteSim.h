@@ -3280,6 +3280,7 @@ private:
         int frames = 0; // impact frames shown
         double te = 0.0;
         double ageAtCross = 0.0, frameDtAtCross = 0.0; // the crossing frame's sim age of the impact, its sim interval
+        double flashAtCross = 0.0; // the impact frames' point flash (the brightest of them; harness)
     };
     std::vector<KImpactFr> kCollImpactFr;
     double kCollPrevT = -1e300, kCollImpactDbg = 0.0;

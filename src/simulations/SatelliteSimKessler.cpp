@@ -4770,7 +4770,7 @@ nlohmann::json SatelliteSim::kesslerStateJsonImpl(bool full) const
         nlohmann::json ifr = nlohmann::json::array();
         for (const KImpactFr &f : kCollImpactFr)
             ifr.push_back({{"in_s", f.te - t}, {"frames_shown", f.frames}, {"age_at_cross_s", f.ageAtCross},
-                           {"frame_dt_at_cross_s", f.frameDtAtCross}});
+                           {"frame_dt_at_cross_s", f.frameDtAtCross}, {"flash_at_cross", f.flashAtCross}});
         j["impact_frames"] = ifr; // the impacts crossed lately: the crossing frame's sim interval and the impact's age in it
         nlohmann::json hl = nlohmann::json::array();
         for (const KRosterHold &h : kRosterHolds)
@@ -5664,26 +5664,28 @@ void SatelliteSim::kesslerFillCollisions(GpuDustCloud *out, uint32_t &n, double 
             }
         }
         // (2) The impact: a flash (the contact's vaporised material, seen for a fraction of a second) and a fireball
-        // expanding at ~0.15 of the closing speed and fading in ~1 s, carried with the pair's centre of mass. Light: the
+        // expanding at ~0.15 of the closing speed and fading in ~0.3 s, carried with the pair's centre of mass. Light: the
         // kinetic energy of the smaller body at the closing speed x a luminous efficiency of 1e-3 over ~0.2 s (a
         // Starmind pair at 2.3 km/s: ~-12 mag at 1000 km); shown capped (glare, not a white screen).
         double age = t - e.t;
         if (age < 0.0)
             continue;
         // The impact frame (see tPrev): the interval holds the impact, or it is one of the frames right after it.
-        int *fr = nullptr;
+        KImpactFr *fr = nullptr;
         for (KImpactFr &kf : kCollImpactFr)
             if (kf.key == c.key)
-                fr = &kf.frames;
+                fr = &kf;
         if (!fr && e.t > tPrev && e.t <= t)
         {
             kCollImpactFr.push_back({c.key, 0, e.t, t - e.t, t - tPrev});
-            fr = &kCollImpactFr.back().frames;
+            fr = &kCollImpactFr.back();
         }
-        if (fr && *fr < kImpactFrames)
+        bool impactFrame = false;
+        if (fr && fr->frames < kImpactFrames)
         {
             age = std::min(age, 0.01);
-            ++*fr;
+            ++fr->frames;
+            impactFrame = true;
             kCollImpactDbg = std::max(kCollImpactDbg, 1.0);
         }
         if (age > kFlashS)
@@ -5695,12 +5697,17 @@ void SatelliteSim::kesslerFillCollisions(GpuDustCloud *out, uint32_t &n, double 
         const double Ek = 0.5 * c.massKg * c.vrel * c.vrel;
         const double Iwsr = 1e-3 * Ek / 0.2 / (4.0 * glm::pi<double>()); // W/sr at the peak
         const double J = Iwsr / 1361.0;                                      // m^2 sr^-1 per unit solar irradiance
-        const double curve = 0.75 * std::exp(-age / 0.12) + 0.25 * std::exp(-age / 0.7);
+        // (2026-11-03, issue_20261030_180204 follow-up) The light curve: the prompt flash (80 ms) and the vapour's glow
+        // as it cools (0.3 s; was 0.75 / 0.12 s + 0.25 / 0.7 s, whose tail at 0.13 of the peak at +0.5 s lit a camera
+        // 1 km off as a full-screen glow). The impact frames (age 0.01) keep ~0.9 of the peak.
+        const double curve = 0.8 * std::exp(-age / 0.08) + 0.2 * std::exp(-age / 0.3);
         const double magPk = -26.74 - 2.5 * std::log10(std::max(J / (rng * rng), 1e-300));
         const double fl = std::min(0.008 * std::pow(10.0, 0.4 * (6.0 - magPk)), 400.0) * curve;
         kCollFlashDbg = fl;
+        if (impactFrame)
+            fr->flashAtCross = std::max(fr->flashAtCross, fl);
         const glm::vec3 hot =
-            glm::mix(glm::vec3(1.0f, 0.62f, 0.32f), glm::vec3(1.0f, 0.95f, 0.9f), (float)std::exp(-age / 0.35));
+            glm::mix(glm::vec3(1.0f, 0.62f, 0.32f), glm::vec3(1.0f, 0.95f, 0.9f), (float)std::exp(-age / 0.2));
         if (kFireCount < kFireballMax && fl > 2e-4)
             fo[kFireCount++] = {glm::vec4(glm::vec3(toEnu((Pf - eye) / rng)), (float)fl), glm::vec4(hot, (float)rng)};
         if (n < kMaxDustClouds)
@@ -5709,8 +5716,13 @@ void SatelliteSim::kesslerFillCollisions(GpuDustCloud *out, uint32_t &n, double 
             const double sMin = 0.6 * 2.0 * pixFull * rng;
             const double s = std::max(sg, sMin);
             // unresolved: the point's on-screen energy (toSky); resolved: its peak capped at ~1.2 of displayed white
+            // while it is the hot plasma (its size at 30 ms, sHot), then its light spread over the growing vapour: the
+            // surface brightness falls as (sHot / s)^2 on top of the light curve. (2026-11-03, issue_20261030_180204
+            // follow-up: the cap grew with s^2, so a 750-m vapour at +0.5 s was as bright per pixel as the fireball,
+            // 98% of the reporter's shot-4 frame tinted brown; now 7.7%, the moving points' floor.)
+            const double sHot = std::max(sMin, std::min(sg, 2.0 + 0.15 * c.vrel * 0.03));
             const double cw =
-                std::min(0.4 * J * toSky, 1.2 * 2.0 * glm::pi<double>() * s * s / expo) * curve;
+                std::min(0.4 * J * toSky, 1.2 * 2.0 * glm::pi<double>() * sHot * sHot / expo) * curve;
             const glm::dvec3 rel = toEnu(Pf - eye);
             GpuDustCloud &d = out[n++];
             const double rad = 4.0 * s, dist = glm::length(rel);
