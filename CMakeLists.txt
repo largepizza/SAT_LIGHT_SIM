@@ -126,7 +126,7 @@ FetchContent_MakeAvailable(stb)
 FetchContent_Declare(
     miniaudio
     GIT_REPOSITORY https://github.com/mackron/miniaudio.git
-    GIT_TAG master
+    GIT_TAG 0.11.25   # pinned: tracking master broke the update step when upstream moved on
     GIT_SHALLOW TRUE
 )
 FetchContent_MakeAvailable(miniaudio)
