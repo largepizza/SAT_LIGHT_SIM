@@ -169,8 +169,9 @@ const char *stormKindName(StormKind k) {
 }
 
 bool Catalog::towerCycleAt(const TowerSpec &ts, double tau, float &strength, float &age, float &life,
-                           uint32_t &seed, float &shift) {
+                           uint32_t &seed, float &shift, float *peak) {
     strength = 0.0f; age = 0.0f; life = ts.life; seed = ts.seed; shift = 0.0f;
+    if (peak) *peak = ts.peak;
     if (ts.period <= 0.0f) {
         strength = towerStrength(ts, tau);
         age = (float)(tau - (double)ts.t0);
@@ -196,6 +197,7 @@ bool Catalog::towerCycleAt(const TowerSpec &ts, double tau, float &strength, flo
             age = (float)lt;
             seed = (uint32_t)(mix64(h ^ 0x5EEDull) >> 32);
             shift = (float)(u53(mix64(h ^ 0x5417ull)) - 0.5);
+            if (peak) *peak = (float)pk;
         }
     }
     return strength > 0.0f;
@@ -393,7 +395,9 @@ struct Catalog::Impl {
             ts.anvOn = (float)((double)ts.t0 + (double)ts.growS * q);
             ts.anvOff = (float)((double)ts.t0 + (double)ts.life - (double)ts.decayS * q);
         }
-        const double lo = S.kind == StormKind::Supercell ? 60.0 : S.kind == StormKind::Multicell ? 45.0 : 35.0;
+        // (lo: the old fixed 35 / 45 / 60 min x the "Anvil decay time" setting (Settings::anvilLingerS) over 35 min.)
+        const double lo = (S.kind == StormKind::Supercell ? 60.0 : S.kind == StormKind::Multicell ? 45.0 : 35.0)
+                        * (std::max(60.0, (double)set.anvilLingerS) / (35.0 * kMin));
         const double li = r.range(lo, 2.0 * lo) * kMin * ls;
         S.upperWind = (float)r.range(6.0, 18.0);
         S.linger = anvil ? (float)std::min(li, std::max(0.0, kMaxLifeS - towersEnd)) : 0.0f;
@@ -794,11 +798,13 @@ void Catalog::configure(const Env &env, const Settings &s, const StormClimatolog
     const bool sameSet = I.configured && clim == I.clim && s.frequency == I.set.frequency &&
                          s.targetActive == I.set.targetActive && s.moistureMin == I.set.moistureMin &&
                          s.moistureFull == I.set.moistureFull && s.towerRadiusM == I.set.towerRadiusM &&
-                         s.lifeScale == I.set.lifeScale && s.lineFrequency == I.set.lineFrequency &&
+                         s.lifeScale == I.set.lifeScale && s.anvilLingerS == I.set.anvilLingerS && s.lineFrequency == I.set.lineFrequency &&
                          s.targetLineActive == I.set.targetLineActive && s.cycloneFrequency == I.set.cycloneFrequency &&
                          s.seaFactor == I.set.seaFactor;
     const bool same = sameSet && envKey == I.envKey;
     I.env = env;
+    I.set.anvilFormS = s.anvilFormS;   // (read by shieldsAt at any t: no cached storm depends on it)
+    I.set.towerRiseS = s.towerRiseS;   // (read by towersAt / shieldsAt likewise)
     if (same) return;
     I.set = s;
     I.clim = clim;
@@ -974,9 +980,9 @@ void Catalog::towersAt(double t, const std::vector<const Storm *> &storms, std::
         const double la = (double)S->lineAz;
         for (int i = 0; i < S->towerCount; ++i) {
             const TowerSpec &ts = S->towers[i];
-            float s, cAge, cLife, shift;
+            float s, cAge, cLife, shift, pk;
             uint32_t cSeed;
-            if (!towerCycleAt(ts, tau, s, cAge, cLife, cSeed, shift)) continue;
+            if (!towerCycleAt(ts, tau, s, cAge, cLife, cSeed, shift, &pk)) continue;
             Tower T;
             glm::dvec3 o = e * (double)ts.offE + n * (double)ts.offN;
             // Each new cell of a line forms a little along the line from the last (a regenerating slot moves).
@@ -998,6 +1004,19 @@ void Catalog::towersAt(double t, const std::vector<const Storm *> &storms, std::
             T.age = cAge;
             T.growS = ts.growS;
             T.life = cLife;
+            // When it passed kFlareOn growing (strength = peak x smooth01(0, growS, age) then; a tower whose decay
+            // starts before it has grown only flares if it still gets there, and is then treated alike).
+            // The drawn top climbs over towerRiseS (ease-out); the head flares once the drawn height passes 0.8 too
+            // (cv2ColumnSigma's 'full': kFullAt of the climb), so the spread starts at the later of the two.
+            const double riseS = (double)impl_->set.towerRiseS;
+            double drawnOn = 0.0;
+            if (riseS > 0.0 && ts.growS > 0.0f) {
+                const double x = std::clamp((double)cAge / riseS, 0.0, 1.0);
+                T.heightCap = (float)(1.0 - (1.0 - x) * (1.0 - x) * (1.0 - x));
+                drawnOn = kFullAt * riseS;
+            }
+            if (pk > kFlareOn && ts.growS > 0.0f)
+                T.flareAge = (float)((double)cAge - std::max((double)ts.growS * invSmooth((double)kFlareOn / (double)pk), drawnOn));
             out.push_back(T);
         }
     }
@@ -1066,21 +1085,34 @@ void Catalog::shieldsAt(double t, const std::vector<const Storm *> &storms, cons
         }
         // Single-cell kinds: fed by the anvil-reaching towers (role 1, strength over ~0.42), lingering after.
         constexpr double kOn = 0.42;   // (= finishAnvil's anvOn / anvOff threshold)
+        // Its spread to full strength ("Anvil formation time", Settings::anvilFormS; 900 s until 2026-11-03).
+        const double formS = std::max(60.0, (double)impl_->set.anvilFormS);
+        // The rise and the decay are RAMPS, not smoothsteps (2026-11-03, issue 20261030_210137): the drawn shield's
+        // presence is smoothstep(0.05, 0.6, strength) (clouds_v2.glsl cv2AnvilSigmaP), so a smoothstep strength put
+        // the whole visible change into a quarter of the ramp — 10 -> 90% in 3.8 min of the old 15-min rise, 95% of
+        // it inside one 5-min step at 5 min/s. g (0.6 + 0.4 g) is ~linear through 0.05..0.6 (the visible range:
+        // 10 -> 90% over 0.385 of the ramp) and still reaches 1 (the thickness) at its end.
+        auto ramp = [](double g) {
+            g = std::clamp(g, 0.0, 1.0);
+            return g * (0.6 + 0.4 * g);
+        };
         glm::dvec3 F(0.0);
         double wSum = 0.0, act = 0.0, mature = 0.0, firstOn = 1e30, lastOff = -1e30;
         bool fed = false;
         for (int i = 0; i < S->towerCount; ++i) {
             const TowerSpec &ts = S->towers[i];
             if (ts.role < 0.99f || ts.peak < kOn + 0.02f || ts.period > 0.0f) continue;
-            const double on = (double)ts.anvOn, off = (double)ts.anvOff;
+            // (Not before the drawn top reaches the anvil: Tower::heightCap's climb passes 0.8 at kFullAt of it.)
+            const double on = std::max((double)ts.anvOn, (double)ts.t0 + kFullAt * (double)impl_->set.towerRiseS),
+                         off = (double)ts.anvOff;
             if (off <= on) continue;
             firstOn = std::min(firstOn, on);
             lastOff = std::max(lastOff, off);
             const double linger = std::max((double)S->linger, 1.0);
-            const double a = smooth01(on, on + 900.0, tau) * (1.0 - smooth01(off, off + linger, tau));
+            const double a = ramp((tau - on) / formS) * ramp(1.0 - (tau - off) / linger);
             if (a <= 0.0) continue;
             fed |= tau < off;
-            mature = std::max(mature, smooth01(on, on + 2700.0, tau));
+            mature = std::max(mature, smooth01(on, on + std::max(2700.0, formS), tau));   // (the radius: 45 min until formS passes it)
             // Where its head stands now (the tower's axis, blown downwind), then the drift aloft after it died.
             const glm::dvec3 o = e * (double)ts.offE + n * (double)ts.offN;
             const double d = glm::length(o);
@@ -1601,8 +1633,29 @@ void Catalog::cycloneTowersAt(double t, const std::vector<CycloneState> &cs, std
     }
 }
 
-void Catalog::cycloneShieldsAt(double t, const std::vector<CycloneState> &cs, std::vector<Shield> &out, float armCirrus) const {
+void applyCycloneShape(std::vector<CycloneState> &cs, const CycloneShape &k) {
+    for (CycloneState &S : cs) {
+        if (k.arms >= 1.0f) S.arms = std::round(std::clamp(k.arms, 1.0f, 6.0f));
+        S.tanPitch = S.tanPitch / std::clamp(k.tightness, 0.25f, 4.0f);
+        S.bandRot = std::fmod(0.04 * std::clamp((double)k.speed, 0.0, 10.0) * S.turn, 2.0 * kPi);
+    }
+}
+
+// The packed spiral of a cyclone's upper-deck shield (Shield::spiral; cv2_storms.glsl cv2CycSpiral decodes it).
+static glm::vec4 cycloneSpiral(const CycloneState &S, int mode, double k, double o, double m, double a, double ro = 1.0) {
+    auto q = [](double v) { return std::round(std::clamp(v, 0.0, 1.0) * 15.0); };
+    const double nA = std::max(1.0, std::floor((double)S.arms + 0.15));
+    const double y = 1.0 / std::max((double)S.tanPitch, 0.05);
+    double z = std::fmod(S.bandRot - std::log(std::max((double)S.rmw, 1000.0)) * y, 2.0 * kPi);
+    if (z < 0.0) z += 2.0 * kPi;
+    const double code = 1.0 + mode + 2.0 * q(k) + 32.0 * q(o) + 512.0 * q(m) + 8192.0 * q(a) + 131072.0 * q(ro);
+    return glm::vec4((float)((double)S.c->hemi * nA), (float)y, (float)z, (float)-code);
+}
+
+void Catalog::cycloneShieldsAt(double t, const std::vector<CycloneState> &cs, std::vector<Shield> &out, float armCirrus,
+                               const CycloneShape *shape) const {
     (void)t;
+    const bool spiral = shape != nullptr && shape->spiral;
     for (const CycloneState &S : cs) {
         if (S.cdoR <= 0.0f) continue;
         Shield Sh;
@@ -1617,7 +1670,42 @@ void Catalog::cycloneShieldsAt(double t, const std::vector<CycloneState> &cs, st
         Sh.seed = S.c->seed;
         Sh.stormId = S.c->id;
         Sh.kind = StormKind::Tropical;
+        // The CDO's outline wound into the arms (2026-11-03, issue 20261030_205220, "Hurricane deck spiral"): the outer
+        // part of the overcast follows the arms out and is notched between them, not a round glob.
+        if (spiral && shape->deckSpiral > 0.0f) Sh.spiral = cycloneSpiral(S, 0, shape->deckSpiral, 0.0, 0.0, 0.0);
         if (Sh.strength > 0.0f) out.push_back(Sh);
+        Sh.spiral = glm::vec4(0.0f);
+        if (spiral)
+        {
+            // THE CIRRUS DECK (2026-11-03): one disc per cyclone past the CDO, the shader drawing on it the arms' cirrus
+            // (on the low arms' own log spirals: every crest, curved, continuous) and, between them, the outflow cirrus
+            // in thin streaks curving the other way (anticyclonically, as the outflow aloft turns). Replaced the outflow
+            // disc + 4 straight capsules per arm (chords of ~40 deg of the spiral each, every capsule thinning to 0.3 at its
+            // far end: a polygon of bars, stepping in brightness at every joint).
+            const double ds = smooth01(25.0, 45.0, (double)S.vmax) * std::clamp((double)armCirrus, 0.0, 3.0);
+            const double armS = 0.32 * ds;
+            const double ok = std::clamp((double)shape->outflow, 0.0, 3.0);
+            // (Strength at most 0.4: past it the shield's fray draws grey hard-edged blotches between the arms.)
+            const double outS = std::min(0.25 * smooth01(25.0, 50.0, S.vmax) * ok, 0.4);
+            const double r0 = 0.75 * (double)S.cdoR, r1 = std::max(0.95 * (double)S.outerR, 1.3 * r0);
+            const double rOut = std::max(1.6 * (double)S.cdoR, 0.6 * (double)S.outerR) * (0.7 + 0.3 * ok);
+            const double peak = std::max(armS, outS);
+            if (peak > 0.0)
+            {
+                Shield D = Sh;
+                const double rD = std::max(r1 / 1.1, rOut);
+                D.rA = D.rB = (float)rD;
+                D.strength = (float)peak;
+                D.thick = 0.3f;
+                D.age01 = 0.85f;
+                D.eyeR = (float)(r0 / 1.6);   // (cv2ShieldAt opens it to nothing inside 0.9 of this: under the CDO)
+                D.stormId = S.c->id ^ 0x0F10ull;
+                D.spiral = cycloneSpiral(S, 1, 0.5 * (double)shape->minor, outS / peak, (double)shape->streaks, armS / peak,
+                                         rOut / rD);   // (the outflow's reach in the disc's radii)
+                out.push_back(D);
+            }
+            continue;
+        }
         // The OUTFLOW cirrus (2026-10-23): a thin, frayed ice sheet spreading past the CDO toward the outer bands — the
         // shield shader's aged (orphan-anvil) look: thinner, half the density, frayed at both noise scales. Weak, so the
         // arms show through it; the CDO wins where they overlap (cv2ShieldAt takes the strongest).

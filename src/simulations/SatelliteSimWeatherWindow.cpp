@@ -2124,6 +2124,28 @@ nlohmann::json SatelliteSim::weatherWindowJson()
     for (const WxStormRow &r : wxNearSlots)
         ns.push_back(r.id != 0 ? rowJ(r) : nlohmann::json());
     j["near_slots"] = ns;
+    {   // The 8 anvil shields nearest the eye this frame (2026-11-03, issue 20261030_210137: an anvil's rise and decay
+        // over sim time): storm id, strength, age01 (0 fed .. 1 gone), thickness factor, km to the spine's head.
+        const double ph = cloudDriftPhase();
+        const double c = std::cos(ph), s = std::sin(ph);
+        const glm::dvec3 oe = glm::normalize(glm::dvec3(obsDir));
+        std::vector<std::pair<double, size_t>> byDist;
+        for (size_t i = 0; i < stormShields.size(); ++i)
+        {
+            const glm::dvec3 d = glm::normalize(stormShields[i].a);
+            const glm::dvec3 e(d.x * c + d.y * s, -d.x * s + d.y * c, d.z);   // map frame -> Earth-fixed
+            byDist.push_back({std::acos(std::clamp(glm::dot(e, oe), -1.0, 1.0)) * 6371.0, i});
+        }
+        std::sort(byDist.begin(), byDist.end());
+        nlohmann::json sl = nlohmann::json::array();
+        for (size_t k = 0; k < byDist.size() && k < 8; ++k)
+        {
+            const wx::Shield &S = stormShields[byDist[k].second];
+            sl.push_back({{"storm", S.stormId}, {"strength", S.strength}, {"age01", S.age01}, {"thick", S.thick},
+                          {"dist_km", byDist[k].first}});
+        }
+        j["shields"] = sl;
+    }
     j["events"] = weatherFeaturedJson();
     nlohmann::json rd;
     rd["valid"] = wxShown.valid;

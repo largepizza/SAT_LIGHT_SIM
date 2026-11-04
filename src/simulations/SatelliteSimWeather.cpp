@@ -21,6 +21,7 @@
 #include <bit>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <type_traits>
 
 namespace launchsim { double demElevCpu(double latDeg, double lonDeg); }   // (SatelliteSimLaunches.cpp: the full DEM)
@@ -459,6 +460,7 @@ uint64_t SatelliteSim::stormEnvHash() const
     auto mixD = [&](double v) { uint64_t b; std::memcpy(&b, &v, 8); h = (h ^ b) * 1099511628211ull; };
     for (double v : {(double)cloudDriftRate, cloudDriftPhaseOffset, (double)cv2Coverage, (double)cv2CoverClear,
                      (double)cv2CoverFull, (double)stormFrequency, (double)cv2CbRadiusKm, (double)stormLifeScale,
+                     (double)stormAnvilFormMin, (double)stormAnvilDecayMin, (double)stormTowerRiseMin,
                      (double)stormComplexes, (double)stormCyclones})
         mixD(v);
     return h;
@@ -541,6 +543,9 @@ void SatelliteSim::updateStorms()
         s.frequency = stormObjects ? std::max(stormFrequency, 0.0f) : 0.0f;
         s.towerRadiusM = std::clamp(cv2CbRadiusKm, 1.0f, 20.0f) * 1000.0f;
         s.lifeScale = std::max(stormLifeScale, 0.05f);
+        s.anvilFormS = std::clamp(stormAnvilFormMin, 1.0f, 240.0f) * 60.0f;
+        s.anvilLingerS = std::clamp(stormAnvilDecayMin, 1.0f, 240.0f) * 60.0f;
+        s.towerRiseS = std::clamp(stormTowerRiseMin, 0.0f, 120.0f) * 60.0f;
         s.lineFrequency = std::max(stormComplexes, 0.0f);
         s.cycloneFrequency = stormObjects ? std::max(stormCyclones, 0.0f) : 0.0f;
         stormCatalog->configure(env, s, stormClim.get(), key);
@@ -578,6 +583,15 @@ void SatelliteSim::updateStorms()
         const int idxKey = (stormIndexTight ? 1 : 0) + 2 * stormShieldBinsAB;
         static int lastIdxKey = -1;
         if (idxKey != lastIdxKey) { lastIdxKey = idxKey; stormUploadedT = -1e300; }   // (the index's layout changed)
+        // (The cyclones' shape sliders and the arm cirrus change what is uploaded: re-upload while paused too.)
+        const float shapeKey[] = {stormCycArms, stormCycTightness, stormCycArmSpeed, stormCycMinorSwirls, stormCycDeckSpiral,
+                                  stormCycOutflow, stormCycStreaks, stormCycSpiralAB ? 1.0f : 0.0f, stormArmCirrus};
+        static float lastShapeKey[std::size(shapeKey)] = {-1.0f};
+        if (std::memcmp(shapeKey, lastShapeKey, sizeof(shapeKey)) != 0)
+        {
+            std::memcpy(lastShapeKey, shapeKey, sizeof(shapeKey));
+            stormUploadedT = -1e300;
+        }
     }
     if (t == stormUploadedT)
         return;   // paused: nothing moved
@@ -604,6 +618,8 @@ void SatelliteSim::updateStorms()
             stormOrganisedNow.push_back({S->id, glm::normalize(S->centreAt(t))});
     // Tropical cyclones: their eyewall and inner-band towers join the list (Earth-fixed tracks, in the map frame now).
     stormCatalog->cyclonesAt(t, stormCyclonesNow);
+    const wx::CycloneShape cycShape = cycloneShape();
+    wx::applyCycloneShape(stormCyclonesNow, cycShape);   // (arms, tightness, speed: before the band towers stand on them)
     stormCatalog->cycloneTowersAt(t, stormCyclonesNow, stormTowers);
     const auto tCat = std::chrono::steady_clock::now();
     split("storms.catalog");
@@ -662,12 +678,24 @@ void SatelliteSim::updateStorms()
                            : tw.kind == wx::StormKind::Tropical ? 1.0 : 0.85;
         const double hs = (double)(stormHash(tw.seed ^ 0xA5A5A5A5u) & 0xFFFFu) / 65535.0;   // this storm's own spread
         double anvilK = std::max(1.0 / flare, (0.65 + (0.55 + 0.5 * hs) * mature) * kindK);
+        // The head spreads over the "Anvil formation time" from the moment it starts to flare (2026-11-03, issue
+        // 20261030_210137): it flared at 0.65+ of its width as the tower's strength crossed 0.42 -> 0.6, ~3 sim min,
+        // with the anvil plate under it (cv2ColumnSigma's 'near', sized by the reach that follows anvilK): at 5 min/s
+        // the anvil popped in within a frame or two. From 1 / flare (no flare: the head as wide as the tower), on the
+        // shield's ramp (wx::Catalog::shieldsAt), so the head and the shield it feeds spread together.
+        // The spread rides in the GPU tower's c.z with anvilK (cv2_storms.glsl cv2TowerSpread): it also scales the plate.
+        double spread = 1.0;
+        {
+            const double g = std::clamp((double)tw.flareAge / std::max(60.0, (double)stormAnvilFormMin * 60.0), 0.0, 1.0);
+            spread = g * (0.6 + 0.4 * g);
+            anvilK = 1.0 / flare + (anvilK - 1.0 / flare) * spread;
+        }
         double driftK = (0.25 + (0.9 + 0.8 * hs) * mature) * kindK;
         // A cyclone's towers do not flare: its anvil is the central dense overcast (a shield, cycloneShieldsAt). With
         // flared ~40-km heads every eyewall tower reached across the whole eye and eyewall (reach ~60 km), so every
         // sample there walked a full bin of towers: 16-19 ms of the cloud march from 12 km in the eye at Medium.
         // Measured (Medium, Rosa 2036-09-10, cloud bucket): 12 km in the eye 15.2 -> 12.5 ms, sea level 8.0 -> 6.5.
-        if (tw.kind == wx::StormKind::Tropical) { anvilK = 1.0 / flare; driftK = 0.25; }
+        if (tw.kind == wx::StormKind::Tropical) { anvilK = 1.0 / flare; driftK = 0.25; spread = 1.0; }
         const double reach = 1.06 * std::max(Rc * 1.3 * flare * anvilK + drift * driftK + Rc * 0.6 + 0.25 * (double)cv2Lean * span,
                                              1.1 * Rc + cuReach) + 1000.0;
         GpuStormTower g;
@@ -676,7 +704,12 @@ void SatelliteSim::updateStorms()
         uint32_t seedBits = tw.seed;
         float seedF;
         std::memcpy(&seedF, &seedBits, 4);
-        g.c = glm::vec4((float)reach, seedF, (float)anvilK, (float)driftK);
+        // c.w packs the drawn height cap with driftK (< 4) likewise: driftK + 4 x round((1 - cap) x 1000) (cv2TowerDriftK /
+        // cv2TowerHeightCap; a grown tower's c.w is its plain driftK). wx::Tower::heightCap: the top climbs over the
+        // "Tower growth time" instead of the ~3 sim min its strength took through the height's smoothstep.
+        const double cap = (tw.kind == wx::StormKind::Tropical) ? 1.0 : std::clamp((double)tw.heightCap, 0.0, 1.0);
+        g.c = glm::vec4((float)reach, seedF, (float)(std::min(anvilK, 7.99) + 8.0 * std::round((1.0 - spread) * 1000.0)),
+                        (float)(std::min(driftK, 3.99) + 4.0 * std::round((1.0 - cap) * 1000.0)));
         dst[i] = g;
         stormGpuTowers[i] = g;   // the envelope index's copy is made from these (buildStormEnvIndex)
         if (tight)
@@ -708,7 +741,7 @@ void SatelliteSim::updateStorms()
         sp.headRadiusM = (float)(Rb * flare * 1.15);
         sp.headDriftM = (float)drift;
         stormCatalog->shieldsAt(t, stormsNow, sp, stormShields);
-        stormCatalog->cycloneShieldsAt(t, stormCyclonesNow, stormShields, stormArmCirrus);   // their central dense overcast
+        stormCatalog->cycloneShieldsAt(t, stormCyclonesNow, stormShields, stormArmCirrus, &cycShape);   // their central dense overcast
         std::sort(stormShields.begin(), stormShields.end(), [](const wx::Shield &a, const wx::Shield &b) {
             return a.strength != b.strength ? a.strength > b.strength : a.stormId < b.stormId;
         });
@@ -728,6 +761,11 @@ void SatelliteSim::updateStorms()
             // it; rA = 0.55 trail + the tower radius).
             const float front = s.lineK > 0.0f ? 0.45f / 0.55f * std::max(s.rA - (float)Rb, 0.0f) : 0.0f;
             g.d = glm::vec4(s.rear, s.kind == wx::StormKind::Tropical ? -std::max(s.eyeR, 1.0f) : front);
+            if (s.spiral.w < 0.0f)   // a cyclone's upper deck: c.w < 0 the packed spiral, d.xyz its arms / pitch / phase
+            {
+                g.c.w = s.spiral.w;
+                g.d = glm::vec4(s.spiral.x, s.spiral.y, s.spiral.z, -std::max(s.eyeR, 1.0f));
+            }
             sdst[i] = g;
             stormGpuShields[i] = g;
             const glm::dvec3 mid = glm::normalize(s.a + s.b);
@@ -761,7 +799,8 @@ void SatelliteSim::updateStorms()
             g.a = glm::vec4(glm::vec3(c.map), c.intensity01);
             g.b = glm::vec4(glm::vec3(f), c.c->hemi);
             g.c = glm::vec4(c.eyeR, c.cdoR, c.outerR, (float)c.bandRot);
-            g.d = glm::vec4(c.rmw, c.vmax, c.overLand ? 1.0f : 0.0f, c.arms);
+            // (d.z: over land + 2 x round(1000 x tan pitch), 2026-11-03: the pitch follows "Hurricane arm tightness".)
+            g.d = glm::vec4(c.rmw, c.vmax, (c.overLand ? 1.0f : 0.0f) + 2.0f * std::round(1000.0f * c.tanPitch), c.arms);
             cdst[i] = g;
         }
         reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kCycHeadOffset)[0] = nC;

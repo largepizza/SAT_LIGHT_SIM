@@ -5857,6 +5857,13 @@ private:
     bool  stormObjects = true;                   // weather.storm_objects (off = no towers at all)
     float stormFrequency = 1.0f;                 // weather.storm_frequency: x the calibrated spawn rate
     float stormLifeScale = 1.0f;                 // weather.storm_life: x every storm's lifetime
+    // The anvil shield's spread and linger (2026-11-03, issue 20261030_210137; wx::Settings::anvilFormS / anvilLingerS):
+    // clouds_v2.storm_anvil_form_min / storm_anvil_decay_min, slots 450 / 451. Were a fixed 15 / 35 min.
+    float stormAnvilFormMin = 60.0f;
+    // The tower's drawn top climbs to the anvil over this (wx::Settings::towerRiseS, clouds_v2.storm_tower_rise_min,
+    // slot 452; 0 = the old ~3-min climb with its strength).
+    float stormTowerRiseMin = 30.0f;
+    float stormAnvilDecayMin = 70.0f;
     float stormCloudField = 1.0f;                // clouds_v2.storm_field: each storm's own cloud in the weather cube
                                                  // (cloud_v2_weather.comp stormStamp; 0 = the map alone)
     float stormMoat = 1.0f;                      // clouds_v2.storm_moat: the clear moat round a storm (x the field)
@@ -5865,6 +5872,32 @@ private:
     int   stormShieldBinsAB = 0;                 // clouds_v2.storm_shield_bins_ab (no UI): 64 = list shields in the old
                                                  // 156-km bins (an A/B); 0 = kShieldBinsPerFace (128)
     float stormArmCirrus = 1.0f;                 // clouds_v2.storm_arm_cirrus: the cirrus along a cyclone's arms (x, 0 = none)
+    // A tropical cyclone's SHAPE (2026-11-03, issue 20261030_205220; wx::CycloneShape, Settings > Weather > Storm objects,
+    // slots 455-461, clouds_v2.storm_cyc_*): the main arms (count; was 2 -> 5.4 with intensity), their tightness (x the
+    // pitch's cotangent) and turning speed (x bandRot), the minor swirls between them, the upper deck's spiral (the CDO's
+    // outline and the cirrus deck's arms), the outflow cirrus' coverage and its streaks.
+    float stormCycArms = 2.0f;
+    float stormCycTightness = 1.0f;
+    float stormCycArmSpeed = 1.0f;
+    float stormCycMinorSwirls = 1.0f;
+    float stormCycDeckSpiral = 0.6f;
+    float stormCycOutflow = 1.0f;
+    float stormCycStreaks = 0.6f;
+    bool  stormCycSpiralAB = true;               // clouds_v2.storm_cyc_spiral (no UI): false = the pre-2026-11-03 upper deck
+                                                 // (outflow disc + arm-cirrus capsule chains), the perf A/B
+    wx::CycloneShape cycloneShape() const
+    {
+        wx::CycloneShape k;
+        k.arms = stormCycArms;
+        k.tightness = stormCycTightness;
+        k.speed = stormCycArmSpeed;
+        k.minor = stormCycMinorSwirls;
+        k.deckSpiral = stormCycDeckSpiral;
+        k.outflow = stormCycOutflow;
+        k.streaks = stormCycStreaks;
+        k.spiral = stormCycSpiralAB;
+        return k;
+    }
     // Wildfires (2026-10-23, Wildfire.h, SatelliteSimWildfire.cpp): hashed on the biome map's fuel x the season's
     // dryness; smoke as plume Gaussians (a contiguous range of the dust list, spectral: smoke.glsl), the front as point
     // sprites (kFireBuf) and its light as engine lights.
@@ -8419,7 +8452,7 @@ private:
     bool draggingPhoto[56] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 490;   // 440-441 (2026-11-03): turbulence cell size / speed; was 435;   // 428-434 (2026-10-30): the second stage's jellyfish (streaks, nucleus, staging cloud); was 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
+    static constexpr int kCloudSliderSlots = 490;   // 440-441 (2026-11-03): turbulence cell size / speed; 450-452: anvil formation / decay time, tower growth time; 455-461: hurricane shape; was 435;   // 428-434 (2026-10-30): the second stage's jellyfish (streaks, nucleus, staging cloud); was 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
     // gust fronts, drop persistence); 326: "Tropical cyclones (x)"; 325: "Storm complexes"; 321-324 (2026-10-23): storm
     // objects (frequency, life, cloud field, moat);
     // was 321: 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);

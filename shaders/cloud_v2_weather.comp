@@ -179,14 +179,17 @@ vec4 stormStampTowers(vec3 d)
         if (dhL > E) continue;
         vec3  eastW = cos(tw.b.w) * eastW0 + sin(tw.b.w) * northW0;   // downwind (the anvil's way)
         float Rc  = Rb * mix(0.7, 1.3, tw.b.y) * mix(0.8, 1.0, smoothstep(0.1, 0.6, str)) * mix(0.75, 1.0, role);
-        float s1  = smoothstep(0.05, 0.4, str) * mix(0.5, 1.0, role);
+        // (x the drawn climb squared, cv2TowerHeightCap, 2026-11-03: the cloud field round a young tower thickened from
+        // scattered cumulus to a mass in ~2 sim min on the strength alone; issue 20261030_210137.)
+        float capH = cv2TowerHeightCap(tw.c);
+        float s1  = min(smoothstep(0.05, 0.4, str), capH * capH) * mix(0.5, 1.0, role);
         float Rf  = 1.15 * Rc + max(cuR, 0.5 * Rc);
         o.x = max(o.x, (0.5 * (1.0 - smoothstep(0.3 * E, 0.8 * E, dhL)) + 0.5 * (1.0 - smoothstep(0.6 * Rf, Rf, dhL)))
                        * s1);
         // The forward flank: under the anvil (half-width aw, blown L downwind), from the tower out to ~the anvil's end.
         float dom = smoothstep(0.35, 0.7, str) * smoothstep(0.9, 1.0, role);
-        float aw  = Rc * flare * max(tw.c.z, 0.5);
-        float L   = aw + drift * tw.c.w;
+        float aw  = Rc * flare * max(cv2TowerAnvilK(tw.c), 0.5);
+        float L   = aw + drift * cv2TowerDriftK(tw.c);
         float al  = dot(dh, eastW);
         float cr  = length(dh - eastW * al);
         float qe  = length(vec2((al - 0.45 * L) / (0.6 * L), cr / (0.75 * aw)));
@@ -197,7 +200,7 @@ vec4 stormStampTowers(vec3 d)
         // the right of the motion (left in the south), at SatelliteSim::tornadoOf's place for a tornado (-0.65 x the
         // shear + 0.7 x across it, x 1.1 the mature tower's radius: just past its rain core). Not under a cyclone's
         // towers (their anvil factor is exactly 1 / flare: they do not flare). The map's own rain there hid tornadoes.
-        if (dom > 0.0 && tw.c.z * flare > 1.05) {
+        if (dom > 0.0 && cv2TowerAnvilK(tw.c) * flare > 1.05) {
             vec3  perp = cross(d, eastW) * (d.z >= 0.0 ? -1.0 : 1.0);
             float RcM  = Rb * mix(0.7, 1.3, tw.b.y);
             vec3  rf   = dh - (-0.65 * eastW + 0.7 * perp) * (1.1 * RcM);
@@ -268,20 +271,36 @@ vec4 stormStampFinish(vec4 o, vec3 d)
         // intensifies (30 -> 22 deg, the CPU's tanPitch: the inner band towers stand on these crests), turning by c.w.
         // They leave the central dense overcast (attached, wide near it) and taper and break up outward: spokes, not
         // rings (at 13-20 deg, detached from the CDO, they read as nested circles round a blob).
-        float nA  = max(cy.d.w, 2.0);
+        // (2026-11-03, issue 20261030_205220: the count is "Hurricane main arms" (CPU applyCycloneShape; 2 by default, as
+        // most hurricanes show two major bands), the pitch "Hurricane arm tightness" (d.z packs 1000 x tan pitch over the
+        // land flag), the turn "Hurricane arm speed".)
+        float nA  = max(cy.d.w, 1.0);
         float n0  = floor(nA), fA = nA - n0;
-        float ph  = hemi * th + lr / tan(radians(30.0 - 8.0 * I)) + cy.c.w;
+        float tanP = max(floor(cy.d.z * 0.5) * 0.001, 0.05);
+        float ph  = hemi * th + lr / tanP + cy.c.w;
         float bA  = 0.5 + 0.5 * cos(n0 * ph);
         float bB  = 0.5 + 0.5 * cos((n0 + 1.0) * ph);
         // (Over the last 15% only: two counts mixed half and half interfere into rings.)
         float b2  = mix(bA, bB, smoothstep(0.85, 1.0, fA));
+        // (An arm as wide in angle whatever the count: the thresholds below were tuned at ~4 arms; with 2, each covered
+        // twice the angle, fat ribbons. b^p with p = (4 / n)^2 keeps the width of the n = 4 crest.)
+        b2 = pow(b2, clamp(16.0 / (n0 * n0), 0.6, 16.0));
         float rf  = clamp(r / max(outer, 1.0), 0.0, 1.0);
-        // ...and three finer ones (pitch ~22 deg) between them, weaker; both thinning and breaking up outward (the
-        // breaks: two slow waves along each arm, deeper outward).
-        float b3  = 0.5 + 0.5 * cos(3.0 * (hemi * th + lr / 0.40) + 1.7 + 0.7 * cy.c.w);
-        // (The crests stay at full strength: below ~0.8 the stamp's coverage falls under the clear threshold and an
-        // arm vanishes; the breaks are gaps (brk ~0), the thinning outward is the threshold.)
-        float brk = smoothstep(-0.2 - 0.5 * rf, 0.1, sin(3.1 * lr + 1.3 * th + 2.0) * sin(5.3 * lr - 2.1 * th) + 0.6 - 0.6 * rf);
+        // MINOR SWIRLS between them ("Hurricane minor swirls", storm2.z): 2n + 1 finer bands, wound tighter than the main
+        // arms, short and broken (their own gaps), weaker: the secondary bands and swirls a satellite image shows round
+        // the two main arms. (Were three at a fixed 22 deg.)
+        float nM  = 2.0 * n0 + 1.0;
+        float phM = hemi * th + lr / (0.8 * tanP) + 0.7 * cy.c.w;
+        float b3  = 0.5 + 0.5 * cos(nM * phM + 1.7);
+        float iM  = floor(nM * phM * (0.5 / PI) + 0.5);
+        float gM  = smoothstep(-0.3, 0.5, sin(2.3 * lr + 2.4 * iM + 0.5 * cy.c.w));
+        // The main arms' GAPS (2026-11-03): an arm narrows to nothing and comes back, along its own length (a slow wave in
+        // ln r with each arm's own phase: iA its crest's index), more often outward. They were a multiplier of (ln r,
+        // theta) waves whose zero lines cross every arm at an angle: arms cut off square, "chopped in rectangular ways"
+        // (shot 2 of the issue: every blunt arm end was one of those cuts; harness_runs c03 nobrk).
+        float iA  = floor(n0 * ph * (0.5 / PI) + 0.5);
+        float gap = smoothstep(0.3 - 0.6 * rf, 0.9, sin(1.7 * lr + 2.9 * iA + 0.3 * cy.c.w) * 0.6
+                                                    + sin(3.3 * lr - 1.3 * iA + 1.1) * 0.4);
         // Ragged, cellular edges: the threshold moved by real cloud texture (the map read at a permuted direction:
         // unrelated cloud structure, ~5-40 km), so an arm's outline is a broken line of cells, not a painted arc.
         float tex = textureLod(earthCloudsTex, equirectUV(normalize(vec3(d.y, d.z, d.x))), pc.srcLod).r;
@@ -292,14 +311,30 @@ vec4 stormStampFinish(vec4 o, vec3 d)
         // thin streaks parallel to it just outside the core (a fine harmonic of the arm's phase), so the outline is a
         // fringe of filaments, not a ribbon's two parallel edges.
         // (An arm covers the share of its period where cos > 2 thr - 1: at thr 0.6, ~44% — pudgy; at 0.85, ~23%.)
-        float pinch = 0.04 * sin(4.0 * lr + 1.7 * hemi * th + 1.3 * cy.c.w + 2.1);
-        float thr = mix(0.8, 0.93, sqrt(rf)) + 0.015 * (nA - 2.0) + 0.25 * (1.0 + rf) * (tex - 0.35) + pinch;
-        float core = smoothstep(thr, min(thr + 0.06, 0.995), b2);
+        // (Each arm its own width: the first, the principal band, the widest.)
+        // (Every angle term a whole multiple of theta: atan's cut (theta = +-pi) is a jump of 2 pi, and 1.7 theta drew a
+        // straight radial seam across the arms there.)
+        float pinch = 0.04 * sin(4.0 * lr + 2.0 * hemi * th + 1.3 * cy.c.w + 2.1) - 0.03 * float(iA < 0.5)
+                    + 0.03 * sin(5.1 * iA + 0.7);
+        float thr = mix(0.8, 0.93, sqrt(rf)) + 0.015 * (nA - 2.0) + 0.25 * (1.0 + rf) * (tex - 0.35) + pinch
+                  + 0.3 * gap;
+        // (Not min(thr + 0.06, 0.995): once a gap lifts thr past ~0.94, edge0 > edge1 and smoothstep is undefined — on
+        // NVIDIA inverted, filling the whole space between the arms on one side of a gap's edge: a straight-edged wedge.)
+        float core = smoothstep(thr, thr + 0.06, b2);
         float fil  = smoothstep(0.55, 0.95, 0.5 + 0.5 * cos(7.0 * n0 * ph + 3.0 * tex))
                    * smoothstep(thr - 0.25, thr - 0.04, b2) * (1.0 - core) * 0.75;
-        float band = max(max(core, fil), 0.5 * smoothstep(mix(0.75, 0.92, rf), 0.985, b3)) * brk;
+        float mnr  = 1.4 * pc.storm2.z * gM * smoothstep(min(mix(0.76, 0.92, rf) + 0.25 * (tex - 0.35), 0.97), 0.99, b3);
+        float band = max(max(core, fil), min(mnr, 1.0));
         float wisp = mix(1.0, 0.5, smoothstep(0.35, 0.9, rf));   // the arm's coverage, fading outward
-        float inner  = 1.0 - smoothstep(0.75 * cdo, 1.1 * cdo, r);
+        // (The deck's outline wound into the arms, 2026-11-03, "Hurricane deck spiral" storm2.w: reaching out along them,
+        // receding between them, as the shield above it does (cv2CycSpiral): a round deck read as a glob.)
+        // (Review 2026-11-03: the moat between an arm and the CDO is NARROW and runs deep, to ~half the CDO's radius, as
+        // the feeder bands wrap in on visible imagery; a symmetric cos winding only moved the edge and left the CDO's outer
+        // half a featureless disc. Trough: radius x (1 + 0.7 k) over the share bA < 0.35; crest: x (1 - 0.25 k) over
+        // bA > 0.5. Its mean area is the round deck's (1.00 at k 0.8, 1.04 at 1): a larger overcast, raining deck costs
+        // the march.)
+        float dkS    = 1.0 + pc.storm2.w * (0.7 * (1.0 - smoothstep(0.0, 0.35, bA)) - 0.25 * smoothstep(0.5, 1.0, bA));
+        float inner  = 1.0 - smoothstep(0.75 * cdo, 1.1 * cdo, r * dkS);
         float bandsK = smoothstep(0.35 * cdo, 0.8 * cdo, r) * (1.0 - smoothstep(0.6 * outer, outer, r));
         float wall   = exp(-((r - rmw) * (r - rmw)) / (0.16 * rmw * rmw));
         // (An arm's coverage: at 0.45 x a weak storm's band it added ~0.3 of coverage, which the low cloud draws as

@@ -7191,12 +7191,24 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
     CloudSlider secStormObjects[] = {
         {tx(Txt::SldStormFrequencyX), &stormFrequency, 0.0f, 10.0f, 0.05f, "%.2f", 321},
         {tx(Txt::SldStormLifetimeX), &stormLifeScale, 0.1f, 5.0f, 0.05f, "%.2f", 322},
+        // 2026-11-03 (issue 20261030_210137): the anvil shield's spread and linger (were a fixed 15 / 35 min).
+        {tx(Txt::SldTowerGrowthTimeMin), &stormTowerRiseMin, 0.0f, 120.0f, 1.0f, "%.0f", 452},
+        {tx(Txt::SldAnvilFormationTimeMin), &stormAnvilFormMin, 1.0f, 240.0f, 1.0f, "%.0f", 450},
+        {tx(Txt::SldAnvilDecayTimeMin), &stormAnvilDecayMin, 1.0f, 240.0f, 1.0f, "%.0f", 451},
         {tx(Txt::SldStormCloudField), &stormCloudField, 0.0f, 3.0f, 0.05f, "%.2f", 323},
         {tx(Txt::SldStormClearMoat), &stormMoat, 0.0f, 3.0f, 0.05f, "%.2f", 324},
         {tx(Txt::SldStormComplexesX), &stormComplexes, 0.0f, 10.0f, 0.05f, "%.2f", 325},
         {tx(Txt::SldTropicalCyclonesX), &stormCyclones, 0.0f, 10.0f, 0.05f, "%.2f", 326},
         // 2026-10-28 (the settings round-up): until then only in the Weather window's Controls tab.
         {tx(Txt::SldHurricaneArmCirrus), &stormArmCirrus, 0.0f, 3.0f, 0.05f, "%.2f", 414},
+        // 2026-11-03 (issue 20261030_205220): a tropical cyclone's shape (wx::CycloneShape).
+        {tx(Txt::SldHurricaneMainArms), &stormCycArms, 0.0f, 6.0f, 1.0f, "%.0f", 455},
+        {tx(Txt::SldHurricaneArmTightness), &stormCycTightness, 0.25f, 4.0f, 0.05f, "%.2f", 456},
+        {tx(Txt::SldHurricaneArmSpeed), &stormCycArmSpeed, 0.0f, 10.0f, 0.05f, "%.2f", 457},
+        {tx(Txt::SldHurricaneMinorSwirls), &stormCycMinorSwirls, 0.0f, 2.0f, 0.05f, "%.2f", 458},
+        {tx(Txt::SldHurricaneDeckSpiral), &stormCycDeckSpiral, 0.0f, 1.0f, 0.05f, "%.2f", 459},
+        {tx(Txt::SldHurricaneOutflowCirrus), &stormCycOutflow, 0.0f, 3.0f, 0.05f, "%.2f", 460},
+        {tx(Txt::SldHurricaneOutflowStreaks), &stormCycStreaks, 0.0f, 1.0f, 0.05f, "%.2f", 461},
         {tx(Txt::SldStormSurgeX), &stormSurge, 0.0f, 2.0f, 0.05f, "%.2f", 415},
     };
     // Wildfires and haboobs (the Weather window's Controls tab had them; settings keys clouds_v2.wildfire* / haboobs).
@@ -9699,9 +9711,20 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         stormObjects = c.value("storm_objects", stormObjects);
         stormFrequency = settingClamp(c.value("storm_frequency", stormFrequency), 0.0f, 10.0f);
         stormLifeScale = settingClamp(c.value("storm_life", stormLifeScale), 0.1f, 5.0f);
+        stormAnvilFormMin = settingClamp(c.value("storm_anvil_form_min", stormAnvilFormMin), 1.0f, 240.0f);
+        stormTowerRiseMin = settingClamp(c.value("storm_tower_rise_min", stormTowerRiseMin), 0.0f, 120.0f);
+        stormAnvilDecayMin = settingClamp(c.value("storm_anvil_decay_min", stormAnvilDecayMin), 1.0f, 240.0f);
         stormCloudField = settingClamp(c.value("storm_field", stormCloudField), 0.0f, 3.0f);
         stormMoat = settingClamp(c.value("storm_moat", stormMoat), 0.0f, 3.0f);
         stormArmCirrus = settingClamp(c.value("storm_arm_cirrus", stormArmCirrus), 0.0f, 3.0f);
+        stormCycArms = settingClamp(c.value("storm_cyc_arms", stormCycArms), 0.0f, 6.0f);
+        stormCycTightness = settingClamp(c.value("storm_cyc_tightness", stormCycTightness), 0.25f, 4.0f);
+        stormCycArmSpeed = settingClamp(c.value("storm_cyc_arm_speed", stormCycArmSpeed), 0.0f, 10.0f);
+        stormCycMinorSwirls = settingClamp(c.value("storm_cyc_minor_swirls", stormCycMinorSwirls), 0.0f, 2.0f);
+        stormCycDeckSpiral = settingClamp(c.value("storm_cyc_deck_spiral", stormCycDeckSpiral), 0.0f, 1.0f);
+        stormCycOutflow = settingClamp(c.value("storm_cyc_outflow", stormCycOutflow), 0.0f, 3.0f);
+        stormCycStreaks = settingClamp(c.value("storm_cyc_streaks", stormCycStreaks), 0.0f, 1.0f);
+        stormCycSpiralAB = c.value("storm_cyc_spiral", stormCycSpiralAB);
         stormIndexTight = c.value("storm_index_tight", stormIndexTight);
         stormShieldBinsAB = c.value("storm_shield_bins_ab", stormShieldBinsAB);
         wildfireRate = settingClamp(c.value("wildfires", wildfireRate), 0.0f, 10.0f);
@@ -10407,9 +10430,20 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"storm_objects", stormObjects},
         {"storm_frequency", stormFrequency},
         {"storm_life", stormLifeScale},
+        {"storm_anvil_form_min", stormAnvilFormMin},
+        {"storm_tower_rise_min", stormTowerRiseMin},
+        {"storm_anvil_decay_min", stormAnvilDecayMin},
         {"storm_field", stormCloudField},
         {"storm_moat", stormMoat},
         {"storm_arm_cirrus", stormArmCirrus},
+        {"storm_cyc_arms", stormCycArms},
+        {"storm_cyc_tightness", stormCycTightness},
+        {"storm_cyc_arm_speed", stormCycArmSpeed},
+        {"storm_cyc_minor_swirls", stormCycMinorSwirls},
+        {"storm_cyc_deck_spiral", stormCycDeckSpiral},
+        {"storm_cyc_outflow", stormCycOutflow},
+        {"storm_cyc_streaks", stormCycStreaks},
+        {"storm_cyc_spiral", stormCycSpiralAB},
         {"storm_index_tight", stormIndexTight},
         {"storm_shield_bins_ab", stormShieldBinsAB},
         {"wildfires", wildfireRate},

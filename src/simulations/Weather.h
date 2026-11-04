@@ -97,6 +97,12 @@ struct Shield {
     float bowM = 0;             // line systems: how far the line's middle stands ahead of its ends (m; the towers'
                                 // bow x (1 - x^2) along the spine, x = -1 .. 1)
     float eyeR = 0;             // tropical cyclones' central dense overcast: the eye's radius (m; 0 none)
+    // Tropical cyclones' upper deck (2026-11-03, issue 20261030_205220): the spiral the shader cuts into it (cv2_storms.glsl
+    // cv2CycSpiral). w < 0 = on: -(1 + mode + 2 k + 32 o + 512 m + 8192 a + 131072 ro), each 0..15 (the spiral's
+    // strength / the minor swirls, the outflow's share, its streaks, the arms' share, the outflow's reach in the disc's
+    // radii), mode 0 the CDO (its outline wound into the arms), 1 the cirrus deck (arms + outflow); x hemi x
+    // the arms (whole), y the log-radius' factor (1 / tan pitch; the phase at r m is hemi theta + y ln r + z), z the phase.
+    glm::vec4 spiral{0.0f};
     uint32_t seed = 0;
     uint64_t stormId = 0;
     StormKind kind = StormKind::AirMass;
@@ -148,6 +154,21 @@ const char *cycloneBasinName(int basin);        // "North Atlantic" ...
 const char *cycloneCategoryName(int cat, int basin);   // "Tropical depression", "Tropical storm", "Category 3 hurricane" /
                                                        // "typhoon" / "severe cyclonic storm" ... by basin
 
+// The user's control over a tropical cyclone's shape (2026-11-03, issue 20261030_205220; Settings > Weather, slots 455-461).
+struct CycloneShape {
+    float arms = 2.0f;          // the main arms (whole counts; 0 = by intensity, 2 -> 5.4 as before)
+    float tightness = 1.0f;     // x the cotangent of their pitch (2 = wound twice as tight)
+    float speed = 1.0f;         // x their turning (bandRot = 0.04 x speed x the circulation's turn)
+    float minor = 1.0f;         // the minor swirls between them (x; the weather bake's finer bands)
+    float deckSpiral = 0.6f;    // the upper deck's spiral: the CDO's outline wound into the arms, the cirrus over the arms
+    float outflow = 1.0f;       // the outflow cirrus' coverage (x its strength and reach)
+    float streaks = 0.6f;       // the outflow cirrus' streaks (anticyclonically curving, 0 = a plain sheet)
+    bool  spiral = true;        // false: the pre-2026-11-03 upper deck (outflow disc + arm-cirrus capsule chains)
+};
+// Applies the arm count, tightness and speed to the states cyclonesAt made (before cycloneTowersAt: the inner band towers
+// stand on the arms' crests).
+void applyCycloneShape(std::vector<CycloneState> &cs, const CycloneShape &k);
+
 struct ShieldParams {
     float headRadiusM = 20000.0f;   // a mature anvil-reaching head's radius (the tower radius x flare)
     float headDriftM = 15000.0f;    // how far the head is blown downwind ("Cb head drift")
@@ -166,7 +187,19 @@ struct Tower {
     float      age = 0;         // seconds since the tower was born (its spec's t0)
     float      growS = 1200;    // its growth time (the anvil starts spreading once it has grown)
     float      life = 0;        // its lifetime (s)
+    // Seconds since its strength passed kFlareOn on the way up (its head starts to flare into the anvil: cv2ColumnSigma's
+    // 'full' starts there); negative before, -1e9 if it never does (2026-11-03: the head spreads over the "Anvil
+    // formation time" from then, SatelliteSim::updateStorms).
+    float      flareAge = -1e9f;
+    // The height it is DRAWN to, as a share of its full-strength height (2026-11-03, issue 20261030_210137): its top
+    // climbs to the anvil over the "Tower growth time" (Settings::towerRiseS) on an ease-out, 1 - (1 - age / T)^3 (the
+    // part that shows over the storm cumulus, 0.8..1, takes the last 58% of T: the updraft slows under the tropopause).
+    // Its strength rose over growS through smoothstep(0.02, 0.6, strength) (cv2ColumnSigma's height), so the top went
+    // from the storm cumulus to the anvil in ~3 sim min. 1 = as tall as its strength (cyclones, line cells, T 0).
+    float      heightCap = 1.0f;
 };
+constexpr float kFlareOn = 0.42f;
+constexpr double kFullAt = 0.4151964523;   // 1 - 0.2^(1/3): where Tower::heightCap's climb passes 0.8 ('full' starts)   // = cv2ColumnSigma's full = smoothstep(0.8, 1.0, smoothstep(0.02, 0.6, str)) > 0
 
 struct Env {
     // The map's cloud cover (0..1, after the Coverage / clear / full remap) averaged over ~100 km around a
@@ -191,6 +224,15 @@ struct Settings {
     float moistureFull = 0.6f;    // full rate from this cover
     float towerRadiusM = 15000.0f;// the tower-radius setting (cv2.column.z): flanking offsets scale with it
     float lifeScale = 1.0f;       // x every lifetime
+    // The single-cell kinds' anvil SHIELD (2026-11-03, issue 20261030_210137 "anvils pop in and out" at 5 min/s):
+    // anvilFormS = how long a shield takes to spread to full strength once a tower first reaches the anvil (was a
+    // fixed 900 s, its radius maturing over 3x that); anvilLingerS = an air-mass storm's shortest linger after its
+    // last anvil-reaching tower falls back (each storm draws 1-2x it; multicells x 45/35, supercells x 60/35; was a
+    // fixed 35 min). Both are ramps, not smoothsteps (Catalog::shieldsAt). Line systems keep their own hours-long
+    // ramps.
+    float anvilFormS = 60.0f * 60.0f;
+    float towerRiseS = 30.0f * 60.0f;   // Tower::heightCap's T (0 = off: the top follows the strength, as before)
+    float anvilLingerS = 70.0f * 60.0f;
     // Storms per flash over the sea vs land: a maritime storm makes ~an order of magnitude fewer flashes than a
     // continental one of the same size (weaker updrafts), so lightning density alone under-counts ocean storms.
     float seaFactor = 5.0f;
@@ -224,7 +266,8 @@ public:
     void cyclonesAt(double t, std::vector<CycloneState> &out);
     void cycloneTowersAt(double t, const std::vector<CycloneState> &cs, std::vector<Tower> &out) const;
     void cycloneShieldsAt(double t, const std::vector<CycloneState> &cs, std::vector<Shield> &out,
-                          float armCirrus = 1.0f) const;   // armCirrus: x the arms' cirrus (0 none)
+                          float armCirrus = 1.0f,            // armCirrus: x the arms' cirrus (0 none)
+                          const CycloneShape *shape = nullptr) const;
     // Every cyclone of a basin's season (built if needed), in genesis order; and one by id (cached seasons only).
     void cycloneSeason(int basin, int year, std::vector<const Cyclone *> &out);
     const Cyclone *findCyclone(uint64_t id) const;
@@ -232,7 +275,7 @@ public:
     // The tower specs of one storm at the cycle running at tau (s since its birth): the dominant spec's cycle state
     // for a regenerating slot (age in the cycle, its life). False if the slot has no tower at tau.
     static bool towerCycleAt(const TowerSpec &ts, double tau, float &strength, float &age, float &life,
-                             uint32_t &seed, float &shift);
+                             uint32_t &seed, float &shift, float *peak = nullptr);   // peak: that cycle's
     // The storm with this id if it is cached (a selection), else nullptr.
     const Storm *find(uint64_t id) const;
     // Every storm born in one time bin (index floor(t / kBinS)), building it if needed (tools, the births view).

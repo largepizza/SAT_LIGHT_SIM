@@ -39,9 +39,9 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   envelope copy keeps 64), `cv2ShieldAt`, between the tower list and the env block of
   `stormBuf`): a capsule from 0.3 rA upwind of the anvil-reaching towers' heads (strength-weighted) to L downwind (L grows
   at 0.6 x the storm's `upperWind` to 45 / 90 / 160 km by kind), radius rA (the head) growing to 1.15 rA + 0.25 L. Its
-  strength rises over 15 min after a tower first passes 0.42 (`TowerSpec::anvOn`, precomputed at birth) and LINGERS
-  `Storm::linger` (35-240 min by kind, drawn after the towers' Rng draws so every storm's towers stayed as they were) after
-  the last falls below it, drifting at 0.8 x upperWind, thinning (thick x 0.4, density x 0.5) and fraying (`age01`): orphan
+  strength rises over the "Anvil formation time" after a tower first passes 0.42 (`TowerSpec::anvOn`, precomputed at
+  birth) and LINGERS `Storm::linger` (70-240 min by kind at the default "Anvil decay time", drawn after the towers' Rng
+  draws so every storm's towers stayed as they were) after the last falls below it, drifting at 0.8 x upperWind, thinning (thick x 0.4, density x 0.5) and fraying (`age01`): orphan
   anvils turning into cirrus. `Storm::life` includes the linger (`kMaxLifeS` 8 h); the spawn rate is calibrated on the
   towers' life alone, so storm counts are unchanged. `cv2AnvilSigmaP` reads the shields instead of the map's cumulonimbus
   typing when storm objects are on (`cv2ShieldsOn`: `cv2ShieldHead.y`): fed by the map, shields stood over regions with no
@@ -50,6 +50,50 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   capsule's clean profile drew white pills from orbit), and `presA` is 0 at its 0.05 cutoff (it kept 2% there: at Anvils 8
   a view along the edge drew a hard arc). The user's anvil tune is the default (Anvils 8, thickness 3.7 km, hang 0.87 km,
   puffiness 0.45, lift 230 m, head lobes 0.12, lobes 0.37, waist 0.89, overshoot 0.14 km, storm erosion 0.24).
+  **Anvil formation and decay times (2026-11-03, issue 20261030_210137 "anvils pop in and out" at 5 min/s):** two
+  settings, "Anvil formation time (min)" `clouds_v2.storm_anvil_form_min` 60 and "Anvil decay time (min)"
+  `storm_anvil_decay_min` 70 (Weather tab, Storm objects, slots 450-451; `wx::Settings::anvilFormS` / `anvilLingerS`).
+  Formation = how long the single-cell kinds' shield takes to reach full strength from `anvOn` (its radius maturing over
+  max(45 min, it)); decay = an air-mass storm's shortest linger (each storm draws 1-2x it, multicells x 45/35,
+  supercells x 60/35, capped by `kMaxLifeS`; both are in `stormEnvHash`, so a change rebuilds the catalog). Line
+  systems keep their own hours-long ramps. Rise and decay are the RAMP g (0.6 + 0.4 g), not a smoothstep: the drawn
+  presence is smoothstep(0.05, 0.6, strength) (`cv2AnvilSigmaP`), so a smoothstep strength put the visible change into
+  a quarter of the ramp; this one is ~linear through 0.05..0.6 (10 -> 90% presence over 0.385 of it). The TOWER's
+  flared head and the anvil plate under it (`cv2ColumnSigma`'s `near`) were the bigger pop: they switch on with `full`
+  (strength 0.42 -> 0.6, ~3 sim min of a tower's growth), so the plate stood in one or two frames at 5 min/s whatever the
+  shield did. Each tower carries `wx::Tower::flareAge` (s since it passed `wx::kFlareOn` 0.42, from its cycle's peak and
+  growS) and `updateStorms` turns it into a SPREAD on the same ramp over the formation time: anvilK goes from 1 / flare
+  (no flare) to its value, and the spread rides in the GPU tower's c.z (anvilK + 8 x round((1 - spread) x 1000): a fully
+  spread tower's c.z is its plain anvilK; `cv2TowerAnvilK` / `cv2TowerSpread`, cv2_storms.glsl), which scales `near`. A
+  young Cb stands as a flat-topped column at the lid and spreads from there. Tower strength, life, lightning and
+  `mature_in_min` are unchanged (3612 near-row pairs over 5 h: identical); a storm's `left_min` grows by its longer linger.
+  Measured at the report's view (-2.50, 134.26, 10.4 km, 2036-12-25 03:14-08:14 UTC, 1-min paused steps, the 8 nearest
+  shields, harness `weather state` -> `shields`): shield presence 10 -> 90% 3.8 min (old 15 min / 35 min smoothstep) ->
+  21.7 min (median of 7, min 20.5); 90 -> 10% 14.8 (min 9.5) -> 43 min (min 32.5); the largest 5-min change of a
+  shield's presence 95% -> 22% of its peak. Constants alone (45 / 70, smoothstep) gave 11.0 / 26.5 min and 42%, and left
+  the plate's pop in the frame as it was (the band above the horizon 4% -> 38% cloud in 2 min, minutes 17-19); with the
+  spread it is 4% -> 11% (the flat top) and the anvil spreads after it. At 2x (120 / 140): strength 10 -> 90% 41.7 -> 80.1 min,
+  90 -> 10% 79.9 -> 141.5 min; presence 58.4 / 94.8 min (the longer rise overlaps the decay's start more). The march: 128
+  registers both, +256 B binary, GPU 18.58 vs 19.08 ms (4 reps, within noise).
+  **Tower growth time (2026-11-03, same issue, after a verifier's check):** with the anvil eased, the column itself
+  still popped at the report's moment: the drawn height is smoothstep(0.02, 0.6, strength) (`cv2ColumnSigma` hK) and the
+  storm cumulus round it smoothstep(0.05, 0.3, strength), and a tower's strength crosses those bands in ~3 / ~2 sim min
+  of its 15-25-min growth, so at 5 min/s the mound, the column and its cliff-sided flat top stood in one or two frames.
+  `wx::Tower::heightCap` = 1 - (1 - age / T)^3 over the "Tower growth time (min)" T (`clouds_v2.storm_tower_rise_min` 30,
+  slot 452, 0 = off; `Settings::towerRiseS`; cyclone towers 1), packed into the GPU tower's c.w with driftK (driftK + 4 x
+  round((1 - cap) x 1000), `cv2TowerDriftK` / `cv2TowerHeightCap`), caps hK (the column and `full`), the storm cumulus
+  (`prox`, by cap^2: the cubic rises fast early), the mid layer's rise over the storm (`storm`, cap^2) and the weather
+  stamp's cloud field round it (`s1`, cap^2). The head
+  flares when the capped height passes 0.8 (`kFullAt` = 1 - 0.2^(1/3) of T): `flareAge` and the shield's `anvOn` start
+  at the later of that and the strength's 0.42. Strength itself, the rain core, lightning (CPU and the GPU pass's
+  `a.w`) and `mature_in_min` are unchanged (576 near-row pairs, rise 0 vs 30: identical). Measured at the report's view
+  (03:14-04:00 UTC, 1-min paused steps, the column-top height over the cumulus in the frame, `top.py`): 10 -> 90% under
+  1 min (T 0, the old behaviour) -> ~5 min (T 30; the visible part is the column's last climb over the 12-km storm
+  cumulus) -> ~12+ min (T 60); the storm cumulus plateau first shows over the horizon at ~03:29 at ~7 km and climbs to the column's flat top at the
+  lid by ~03:38-03:41, instead of nothing at 03:30 and a cliff-sided flat top at 03:32. March: 128 registers both, +256 B
+  binary; GPU at the shot within noise (interleaved, 3 clean reps: new - old -1.9, -1.8, -0.1 ms on a shared GPU). Not changed: a tower that grows round a 10-km eye (06:45-06:50 in that sweep) can
+  leave the eye inside cloud; at 06:49:58 with T 0 boxy, texel-stepped walls persist after a 340-frame settle (real,
+  only with the eye at a tower's wall; not seen at 06:36-07:00 every 4 min with T 30 or 0).
   **Squall lines and MCSs (2026-10-23):** `StormKind::SquallLine` / `Mcs`, spawned by their own pass (`buildLineBin`: 3-h
   bins looking back `kLineMaxLifeS` 22 h, 6-degree cells, the flash climatology's monthly mean x `lineSystemFactor`
   (warm-season mid-latitude continents, the Sahel / monsoon band, tropical oceans) x an evening peak over land; mean
@@ -107,6 +151,48 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   bake's spiral), 0.75 CDO .. 0.95 outer, a quarter of the arms' spacing wide, strength 0.32 falling 55% outward: frayed ice
   veils feathering the bands. Up to ~22 shields a cyclone, so a bin entry's count is 5 bits now (`y >> 5`, `& 31`, every
   storm index; kShieldMaxPerBin 31; the march stays at 128 registers).
+  **SHAPE (2026-11-03, issue 20261030_205220, `wx::CycloneShape`, Settings > Weather > Storm objects, slots 455-461,
+  `clouds_v2.storm_cyc_*`):** "Hurricane main arms" (`arms`, default 2, 0 = by intensity as before; most satellite images
+  show two major bands), "arm tightness" (x the pitch's cotangent), "arm speed" (bandRot = 0.04 x speed x turn) — all
+  three applied to `stormCyclonesNow` by `wx::applyCycloneShape` before `cycloneTowersAt`, so the band towers, the bake
+  and the deck agree; the bake reads the pitch from `CV2Cyclone.d.z` = over land + 2 x round(1000 tan pitch). "minor
+  swirls" (`pc.storm2.z`): 2n + 1 finer bands wound at 0.8 the pitch, broken by their own gaps (were 3 at a fixed 22 deg).
+  An arm is as wide in angle whatever the count (b^p, p = (4 / n)^2: the thresholds were tuned at ~4 arms; 2 drew fat
+  ribbons). ARM GAPS: an arm narrows to nothing along its own length (a wave in ln r with the arm's own phase, its crest
+  index mod n — periodic across atan's cut — raising the threshold). They were a multiplier `brk` of (ln r, theta) waves
+  whose zero lines cross every arm at an angle: arms cut off square — the report's "chopped in rectangular ways"
+  (shot 2 with `brk` = 1: every blunt arm end gone); `brk` and `pinch` also took 1.3 / 2.1 / 1.7 x theta, not whole
+  multiples, so atan's cut drew a straight radial seam across the arms: every angle term is now a whole multiple of
+  theta (arm indices mod n). An arm's core is smoothstep(thr, thr + 0.06, b): with the old min(thr + 0.06, 0.995) a
+  threshold lifted past ~0.94 (a gap) put edge0 > edge1, which NVIDIA evaluates inverted — the whole space between the
+  arms filled on one side of the gap's edge, a straight-edged wedge. "deck spiral" (0.8): the CDO's low deck (`inner`, the deck floor) reaches out along the
+  arms and recedes between them (r x (1 - 0.8 k (bA - 0.5)) x (1 - (0.4 k)^2)^-0.75, `pc.storm2.w`: the last factor
+  keeps the wound deck's mean area the round one's — 17% more overcast, raining deck cost ~1 ms), and the CDO shield's
+  outer part is notched between them (`cv2CycSpiral` mode 0). THE CIRRUS DECK replaces the outflow disc + 4 x n
+  arm-cirrus capsules (chords of ~40 deg of the spiral, each thinning to 0.3 at its far end: a polygon of bars stepping
+  in brightness): one disc per cyclone (max(r1 / 1.1, outflow reach), its eye hole r0 / 1.6) on which `cv2CycSpiral`
+  mode 1 draws the arms' cirrus on the low arms' own spirals, the minor swirls, and between them the outflow cirrus
+  ("outflow cirrus" x strength and reach) in 3n + 2 thin streaks curving ANTICYCLONICALLY ("outflow streaks", contrast).
+  REVIEW (2026-11-03, the wave verifier): (1) the deck's outflow streaks were gathered to 2x on their crests and the
+  disc, ~700 km, was frayed like an anvil's edge (6-7.5 x the cluster noise): its thin sheet drew the noise's contours
+  as flat grey patches with hard edges between the arms. The streaks now only thin the sheet (o x mix(1, st, m)), and
+  the deck takes the shield's radial fade inside `cv2CycSpiral` while `cv2ShieldAt` hands the caller u / 10 for it
+  (no fray). (2) The CDO read as a featureless disc inside ~0.8 of its radius (2-arm share 0.002-0.03): the moat
+  between an arm and the CDO is NARROW and runs in to about half its radius, as feeder bands wrap in on GOES / Himawari
+  visible imagery (the core stays uniform): the low deck's radius x (1 + 0.7 k) over bA < 0.35 and x (1 - 0.25 k) over
+  bA > 0.5 (mean area 1.00 at k 0.8), the CDO shield thinned to 1 - min(1.15 k, 0.95) from u 0.3-0.6 over arm < 0.45.
+  Shot 2, 2-arm share at 90 / 110 / 140 px: 0.004 / 0.011 / 0.030 -> 0.034 / 0.040 / 0.068, phase +111 -> +176 ->
+  -167 -> -94 (170 px) deg; 50-70 px (the core) unchanged at 0.003.
+  The spiral rides in the shield (`Shield::spiral`): c.w < 0 a packed code -(1 + mode + 2k + 32o + 512m + 8192a +
+  131072 ro), d.xyz
+  hemi x arms / 1 / tan pitch / phase; `cv2ShieldAt` applies it once a sample, to the strongest shield only (x <= 1: the
+  strongest-first early out stays exact). `clouds_v2.storm_cyc_spiral false` (no UI) = the old deck, the A/B. Shot 2
+  azimuthal luminance round the eye (harness_runs/c03 azprof.py): the dominant harmonic is h2 at every radius 120-280 px,
+  its phase drifting -169 -> +36 deg outward (a log spiral); before, inside the CDO h2 was 0.010-0.019 of the mean
+  (now 0.041-0.134) and outside the peak harmonic was h5 with no steady phase. Perf (RTX 3070 Ti, 1600x900, the
+  report's settings, ABAB x 4, p50 GPU): shot 1 26.15 -> 25.68 ms, shot 2 19.14 -> 18.94; march 128 registers, binary
+  382592 -> 389376 B. The cirrus deck's outflow ends at ~1.25 of its reach (packed `ro`): over the whole disc it kept
+  cv2AnvilSigmaP's texture reads alive between the arms (+3 ms at shot 1).
   **STORM SURGE** (2026-10-23, terrain_detail.glsl `tdSurgeAt`, terrain.glsl `waterAdjustHeightSurge`, CPU
   `weatherFillSeaParams` + mirror `surgeAtDir`; UBO `surgeA/B[2]` + `surgeInfo` appended, 11104 -> 11184): per seaCyc
   cyclone a peak rise at the coast from the wind of the last ~6 h (max(vmax, 0.85 vmax 3 h ago, 0.7 vmax 6 h ago): 1.2 m
