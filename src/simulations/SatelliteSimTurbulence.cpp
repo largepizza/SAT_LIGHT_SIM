@@ -6,15 +6,27 @@
 // longer dances each star on its own.
 //
 // The field's rms per axis at a pixel = the refraction table's angle-of-arrival rms at the pixel's apparent elevation
-// (Refraction.cpp) x the share of the turbulent column in front of what the pixel shows (scene depth, cloud composite)
-// x "Turbulence warp" x a fade above the air. In pixels it is that angle / the pixel's angle: invisible at a wide field
-// (a 60-deg view's pixel is ~1 mrad; the jitter is 1-50 urad), boiling when zoomed. When the largest displacement in
-// view is under ~0.03 px the pass does not run at all (no copy): zero cost at a normal field of view.
+// (Refraction.cpp, 2.91 D^-1/3 int Cn^2 ds, D 1 cm; Cn^2 x "Turbulence strength") x the share of the turbulent column in
+// front of what the pixel shows (scene depth, cloud composite) x a fade above the air. In pixels it is that angle / the
+// pixel's angle: invisible at a wide field (a 60-deg view's pixel is ~1 mrad; the jitter is 1-50 urad), boiling when
+// zoomed. When the largest displacement in view is under 0.3 px (3 sigma) the pass does not run at all (no copy).
 //
-// Time: the field evolves on REAL (frame) seconds, not sim time — seeing is a property of the moment; time warp must not
-// strobe it, and a paused sky still boils. Frozen flow (a drift with a wind) + boiling (two phases of the noise
-// cross-faded, each re-drawn at its zero weight, normalised to a constant rms: three phases, so the field changes at a
-// constant rate).
+// The eddy band (2026-11-03, issue 20261103_191106 "Turbulence": the field was one ~12"-or-6-px cell, grown to 4x the
+// largest displacement so it would not fold, which at the user's 5.5x read as big chunky wobbles). A Kolmogorov tilt
+// field has roughly equal variance per octave of eddy size from the aperture D (1 cm) to the outer scale L0 (~5 m near
+// the ground, 0.4 x the height of the air, 1-50 m); seen through air whose turbulence sits aoaS away (the Cn^2-weighted
+// mean distance) that is the angular band D / aoaS .. L0 / aoaS (the sea 4.7 km out from 14 m: 0.4" .. 4'; a sky ray at
+// the horizon, aoaS ~95 km at ~700 m up: 0.02" .. 1.8'), x "Turbulence cell size". The field is six octaves of
+// vector value noise on fixed absolute angular cells (1 urad x 2^k): those from ~1.5 px up carry the band's variance as
+// displacement (each capped at 1/8 of its cell, so it never folds), the band below them (sub-pixel eddies, the seeing
+// disc) is a blur. So a sea-level horizon at 10"/px shimmers by ~half a pixel and softens; the chunks are gone.
+//
+// Time and place (same issue): the field evolves on SIM time (paused = frozen; turbClock_ = sim seconds x "Turbulence
+// speed"), and each octave is a frozen 3D field in the air, its lattice in ECEF metres on a sphere L_k = 100 / 300 /
+// 900 m around the eye (cell l_k = theta_k L_k): turning the camera keeps it fixed on the scene, moving the eye by
+// ~l_k changes it (a metre re-draws every octave: two eyes a metre apart see independent image motion). The lattice
+// drifts through itself at ~0.8 cells / s (a wind: frozen flow across the view, boiling along it); the physical
+// crossing rates v / l are 10-100 Hz at these scales, above the frame rate, which is what the blur stands for.
 #include "SatelliteSim.h"
 #include "Refraction.h"
 #include "FrameProfile.h"
@@ -25,13 +37,15 @@
 namespace
 {
 constexpr int kTabN = 64;
-constexpr double kCycleS = 0.9;          // a boiling phase's life (s): three phases a third of it apart, cross-faded
-constexpr int kPhases = 3;               // (2026-10-28, issue 20261028_223915) three sin^2 phases a third apart, normalised to
-                                         // unit rms, change at a CONSTANT rate; with two the field stood still every half
-                                         // cycle (each phase at its peak alone), read as updates ~2.5 times a second
-constexpr double kWindCellsPerS = 0.6;   // the frozen flow's drift (minimum cells / s), along the local east
-constexpr double kPhysCellRad = 6e-5;    // ~12": the field's cell (vertical) where the pixel is finer than it
-constexpr double kMinCellPx = 6.0;       // never finer than this on screen (no tearing of the point sprites)
+constexpr int kOct = 6;                  // octaves evaluated per pixel
+constexpr double kThetaBase = 1e-6;      // octave k's angular cell: kThetaBase x 2^k (rad)
+constexpr double kApertureM = 0.01;      // the band's inner end: the aperture the table's aoa is for (Refraction.cpp)
+// Its outer end: the outer scale grows with the height of the turbulent air, L0 = 0.4 z (the surface layer's mixing
+// length), 1-50 m (site measurements in the free air: ~20 m median, Paranal's 22 m); z is where the ray is aoaS out.
+constexpr double kOuterPerZ = 0.4, kOuterMinM = 1.0, kOuterMaxM = 50.0;
+constexpr double kCellsPerS = 0.8;       // the frozen flow's drift (cells / s at speed 1)
+constexpr double kFadeLoPx = 1.5, kFadeHiPx = 3.0;   // the finest octave fades in over these cell sizes ...
+constexpr double kTopLoPx = 48.0, kTopHiPx = 96.0;   // ... and the coarsest out over these
 constexpr float kFieldRms = 0.40f;       // the quintic value noise of uniform [-1, 1] corners: rms per component
 // The pass runs only when the largest displacement on screen (3 sigma) reaches this: below ~0.1 px rms the motion is
 // invisible and the resampling would only cost (~0.27 ms at 1920x1009) and soften the stars a little.
@@ -219,7 +233,7 @@ void SatelliteSim::updateTurbWarp(VulkanContext &ctx)
     turbWarpActive_ = false;
     turbMaxPx_ = 0.0f;
     const refr::Table &t = refrTable;
-    if (!turbMapped || !turbPipeline || turbWarpGain <= 0.0f || !t.valid || (debugDisableMask & 262144u))
+    if (!turbMapped || !turbPipeline || !t.valid || (debugDisableMask & 262144u))
         return;
     const double h0 = (double)obsEyeRadiusM(obsHeightOffset) - (double)satphot::kEarthRadiusM;
     // Above the air: the turbulent column is far and thin; faded out from 30 to 80 km.
@@ -263,72 +277,73 @@ void SatelliteSim::updateTurbWarp(VulkanContext &ctx)
         if (eN >= eMin && e <= eMax)
             aoaMax = std::max(aoaMax, (double)aoa);
     }
-    const double gain = (double)turbWarpGain * turbAltFade_;
+    const double gain = (double)turbAltFade_;
     // Largest displacement on screen: ~3 sigma of the field in its stronger (vertical) axis.
     turbMaxPx_ = (float)(3.0 * 1.2 * aoaMax * gain / pixAng);
     if (turbMaxPx_ < kMinRunPx)
         return;
 
-    // The field's cells: the physical ~12" or 6 px, whichever is larger, on power-of-two levels (a zoom cross-fades two
-    // fixed fields instead of rescaling one: q = m dir is ~1e4 cells, so any change of m would scramble the field).
-    // Twice as wide in E / N as in U: the jitter's cells are wider than tall near the horizon, and a scale that varied
-    // with elevation would shear the field (dq/de ~ m' x 1e4 cells). Its sky coordinates never change.
-    // ...and at least 4x the largest rms displacement in view: a field displaced by more than ~a quarter of its cell
-    // FOLDS (the resampling reads its source out of order: a torn, saw-toothed limb on a sea-level setting Sun at 2"/px,
-    // 5.7 px rms on 6-px cells).
-    const double cellWant = std::max(kMinCellPx, 4.0 * (double)turbMaxPx_ / 3.0) * pixAng;
-    const double lf = std::max(0.0, std::log2(cellWant / kPhysCellRad));
-    const double l0 = std::floor(lf), lw = lf - l0;
-    const double cell0 = kPhysCellRad * std::exp2(l0);
-    const glm::dvec3 m0(0.5 / cell0, 0.5 / cell0, 1.0 / cell0);
-    const double lvW[2] = {(1.0 - lw) / std::sqrt((1.0 - lw) * (1.0 - lw) + lw * lw),
-                           lw / std::sqrt((1.0 - lw) * (1.0 - lw) + lw * lw)};
-    const glm::dvec3 F(camF);
-    // Three phases: each drifts with the wind over its cycle and is re-drawn (a random jump) at its zero weight;
-    // weights sin^2 a third of a cycle apart, renormalised so the rms is constant. With three the normalised weights'
-    // rate of change is exactly constant (with two it fell to zero twice a cycle: the field paused, then moved, ~2.5
-    // times a second at the 0.8-s cycle). The wind is an angular speed (0.6 of the minimum cell a second).
-    const double tc = turbClock_ / kCycleS;
-    double w[kPhases];
-    glm::dvec3 off[kPhases][2];
-    for (int k = 0; k < kPhases; ++k)
+    // ECEF: the eye (double) and its ENU frame; the camera's axes in it.
+    const glm::dvec3 eye = followActive ? followObsEcef : glm::normalize(glm::dvec3(obsDir)) * (double)obsEyeRadiusM();
+    const glm::dvec3 up = glm::normalize(eye);
+    glm::dvec3 east = glm::cross(glm::dvec3(0.0, 0.0, 1.0), up);
+    east = glm::length(east) > 1e-9 ? glm::normalize(east) : glm::dvec3(1.0, 0.0, 0.0);
+    const glm::dvec3 north = glm::cross(up, east);
+    auto toEcef = [&](const glm::vec3 &v) { return east * (double)v.x + north * (double)v.y + up * (double)v.z; };
+    const glm::dvec3 R = toEcef(camR), U = toEcef(camU), F = toEcef(camF);
+
+    // The octaves: the finest whose cell is >= kFadeLoPx at the centre, and five coarser. Each octave's level k is
+    // absolute (its cell and seed never change with the zoom: the set slides, fading in at the fine end and out at the
+    // coarse end).
+    const double xl = std::log2(kFadeLoPx * pixAng / kThetaBase);
+    const int kLo = (int)std::ceil(xl);
+    turbOctLoPx_ = (float)(kThetaBase * std::exp2((double)kLo) / pixAng);
+    static const double kLayerM[3] = {100.0, 300.0, 900.0};
+    auto wrapD = [](double v) { return v - 4096.0 * std::floor(v / 4096.0); };
+    for (int o = 0; o < kOct; ++o)
     {
-        const double ph = tc + (double)k / kPhases;
-        const double cyc = std::floor(ph);
-        const double loc = ph - cyc;
-        w[k] = std::sin(glm::pi<double>() * loc) * std::sin(glm::pi<double>() * loc);
-        const uint32_t ci = (uint32_t)(int64_t)cyc;
-        for (int o = 0; o < 2; ++o)
+        const int k = kLo + o;
+        const double th = kThetaBase * std::exp2((double)k);
+        const double cPx = th / pixAng;
+        double fade = 1.0;
+        if (o == 0)
         {
-            // keyed by the ABSOLUTE level (l0 + o): a level keeps its field when the LOD steps past it
-            const uint32_t sd = ci * 128u + (uint32_t)(k * 32) + ((uint32_t)((int)l0 + o) & 31u);
-            const glm::dvec3 jump(hash01(sd, 1u) * 4000.0, hash01(sd, 2u) * 4000.0, hash01(sd, 3u) * 4000.0);
-            const double cellO = cell0 * (o ? 2.0 : 1.0);
-            const double windCells = kWindCellsPerS * std::max(cellWant, kPhysCellRad) / cellO;
-            off[k][o] = jump + glm::dvec3(windCells, 0.2 * windCells, 0.0) * (loc * kCycleS);
+            const double t = std::clamp((cPx - kFadeLoPx) / (kFadeHiPx - kFadeLoPx), 0.0, 1.0);
+            fade = t * t * (3.0 - 2.0 * t);
         }
+        if (o == kOct - 1)
+        {
+            const double t = std::clamp((cPx - kTopLoPx) / (kTopHiPx - kTopLoPx), 0.0, 1.0);
+            fade = 1.0 - t * t * (3.0 - 2.0 * t);
+        }
+        const uint32_t kk = (uint32_t)(k + 64);
+        const double Lk = kLayerM[kk % 3u];
+        const double ell = th * Lk;   // the cell in metres at the layer's distance
+        // The wind: a hashed direction per octave (its component along the view boils, across it drifts).
+        glm::dvec3 wd(hash01(kk, 7u) - 0.5, hash01(kk, 8u) - 0.5, hash01(kk, 9u) - 0.5);
+        wd = glm::length(wd) > 1e-6 ? glm::normalize(wd) : glm::dvec3(1.0, 0.0, 0.0);
+        const double drift = std::fmod(kCellsPerS * turbClock_, 4096.0 * 64.0);
+        // The forward ray's point on the layer, in cells, wrapped mod 4096 in double before it reaches float.
+        glm::dvec3 q = eye / ell + F / th + wd * drift;
+        q = glm::dvec3(wrapD(q.x), wrapD(q.y), wrapD(q.z));
+        const glm::dvec3 fl = glm::floor(q);
+        u->anc[o] = glm::ivec4((int)fl.x & 4095, (int)fl.y & 4095, (int)fl.z & 4095, (int)kk);
+        const glm::dvec3 fr = q - fl;
+        u->frac[o] = glm::vec4((float)fr.x, (float)fr.y, (float)fr.z, (float)(1.0 / th));
+        u->oct[o] = glm::vec4((float)std::log2(th), (float)fade, (float)cPx, 0.0f);
     }
-    double wn2 = 0.0;
-    for (int k = 0; k < kPhases; ++k)
-        wn2 += w[k] * w[k];
-    const double wn = std::sqrt(wn2);
-    for (int k = 0; k < kPhases; ++k)
-        for (int o = 0; o < 2; ++o)
-        {
-            const glm::dvec3 q = m0 * F * (o ? 0.5 : 1.0) + off[k][o];
-            const glm::dvec3 fl = glm::floor(q);
-            const int idx = k * 2 + o;
-            auto wrap = [](double v) { return (int)((((int64_t)v) % 4096 + 4096) % 4096); };
-            u->anc[idx] = glm::ivec4(wrap(fl.x), wrap(fl.y), wrap(fl.z), 0);
-            const glm::dvec3 fr = q - fl;
-            u->frac[idx] = glm::vec4((float)fr.x, (float)fr.y, (float)fr.z, (float)(w[k] / std::max(wn, 1e-6) * lvW[o]));
-        }
-    u->camR = glm::vec4(camR, 0.0f);
-    u->camU = glm::vec4(camU, 0.0f);
-    u->camF = glm::vec4(camF, 0.0f);
+    u->camR = glm::vec4(glm::vec3(R), 0.0f);
+    u->camU = glm::vec4(glm::vec3(U), 0.0f);
+    u->camF = glm::vec4(glm::vec3(F), 0.0f);
+    u->up = glm::vec4(glm::vec3(up), 0.0f);
     u->screen = glm::vec4((float)ex.width, (float)ex.height, (float)(tanH * aspect), (float)tanH);
     u->params = glm::vec4((float)pixAng, (float)gain, 1.0f / kFieldRms, 1.0f / (kTabN - 1));
-    u->mScale = glm::vec4((float)m0.x, (float)m0.y, (float)m0.z, 0.0f);
+    // The band (log2 of metres; the shader subtracts log2 aoaS to make it angles): the aperture and the outer scale x
+    // "cell size", and the angle where the displayed octaves take over from the blur (the middle of the finest's fade).
+    const double sz = std::clamp((double)turbCellSize, 0.25, 4.0);
+    u->band = glm::vec4((float)std::log2(kApertureM * sz), (float)std::log2(sz),
+                        (float)std::log2(0.5 * (kFadeLoPx + kFadeHiPx) * pixAng), (float)std::max(h0, 0.0));
+    u->outer = glm::vec4((float)kOuterPerZ, (float)kOuterMinM, (float)kOuterMaxM, 0.0f);
     // Near the horizon the jitter is mostly vertical (the old disc jitter's 0.9 / 1.2), isotropic from ~10 deg up
     // (the camera's elevation: uniform over the frame).
     const double hz = std::clamp((eCam - 0.03) / 0.15, 0.0, 1.0);
@@ -386,14 +401,16 @@ void SatelliteSim::recordTurbWarp(VkCommandBuffer cmd, VulkanContext &ctx, VkIma
 nlohmann::json SatelliteSim::turbWarpJson() const
 {
     nlohmann::json j;
-    j["gain"] = turbWarpGain;
+    j["strength"] = refrTurbulence;
+    j["cell_size"] = turbCellSize;
+    j["speed"] = turbSpeed;
+    j["finest_cell_px"] = turbOctLoPx_;
     j["active"] = turbWarpActive_;
     j["max_rms_px"] = turbMaxPx_ / 3.0f;
     j["max_px_3sigma"] = turbMaxPx_;
     j["alt_fade"] = turbAltFade_;
     j["frames_run"] = turbFrames_;
     j["clock_s"] = turbClock_;
-    j["star_twinkle_rate"] = starTwinkleRate;
     j["twinkle_clock_s"] = twinkleClock_;
     j["pixel_arcsec"] = camera.fovYDeg * 3600.0 / std::max(1u, turbFrameExtent.height);
     return j;

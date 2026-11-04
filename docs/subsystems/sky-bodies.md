@@ -310,58 +310,69 @@ air did to it: "a half faded fuzzball" low down.
   sky_taa=`): sky pass 21.42 / 21.34 -> 21.44 / 21.40 ms (+0.05), 168 registers both, binary 871 -> 885 KB; the table
   7-13 ms on a worker. SKY_LITE unchanged (230024 B).
 
-## Subsystem: Seeing — the turbulence warp and the twinkle clock (2026-10-28)
+## Subsystem: Seeing — the turbulence warp and the twinkle clock (2026-10-28; the eddy band 2026-11-03)
 
-Issues 20261028_191408 (twinkle far too fast, faster still under warp) and 20261028_193115 (turbulence should distort the
-whole picture, the Milky Way's star-cloud points and the Moon included). `SatelliteSimTurbulence.cpp`,
-`shaders/turb_warp.frag` (+ `taa_fullscreen.vert`).
-- **Real time, not sim time.** `buildUI` advances `twinkleClock_` (real frame seconds x "Star twinkle rate",
-  `photometry.star_twinkle_rate` 0.3, mod 1000 s: every twinkle frequency is a whole number of cycles in it) and
-  `turbClock_`. `PointDrawPC::waveTime` IS the twinkle clock now (only star_point.vert read it); the twinkle amplitude
-  is still the table's scintillation index, x min(rate / 0.1, 1) (`PointDrawPC::noTwinkle` = 1 - that share; 1 on the
-  planet draws): rate 0 = no twinkle at all. star_point.vert no longer dances each star by its aoa.
-- **The per-star phase is hashed from the star's INDEX** (`gl_VertexIndex`, 2026-10-28, issue 20261028_220009). It was
-  fract(sin(dot(skyDir, k)) x 43758) of the star's ENU direction, which moves every frame while time runs: a new random
-  phase each frame, so every catalogue star flickered as white noise at the frame rate whatever the rate (0 included),
-  none while paused, none above the air (no scintillation). Report view at rate 0, time running, the catalogue stars
-  alone (Milky Way star clouds off), 3x3 sum frame to frame 57% -> 1.3% (paused 0%).
-- **Point sprites average their PSF over the pixel** (`pointPixelGauss`, point_style.glsl; star_point.frag and
-  sat_point.frag): sampled at the pixel centre a sigma-0.4 point drew 0.69 of its light (0.2 of its peak) centred on a
-  pixel corner, so a star drifting with the sky (0.15 px/s at a 30-deg field) pulsed. The box-filtered Gaussian keeps
-  the drawn light at every sub-pixel phase (its mean over phases, i.e. the look, is unchanged; the brightest pixel at
-  the best phase drops ~0.6x for the faintest points). The Milky Way's star-cloud points (sigma 0.9 px, sky pass under
-  the TAA) vary ~3% frame to frame with time running (1.4% paused): the sub-pixel drift through the TAA, not a twinkle.
+Issues 20261028_191408 (twinkle far too fast), 20261028_193115 (turbulence should distort the whole picture),
+20261103_191106 ("Turbulence": big and chunky, a wiggly sea horizon, no regard for time and position, no star flicker).
+`SatelliteSimTurbulence.cpp`, `shaders/turb_warp.frag` (+ `taa_fullscreen.vert`), star_point.vert's twinkle.
+- **Three sliders, Sky tab "Seeing (twinkle, turbulence)"**: "Turbulence strength (x)" = `refraction.turbulence`
+  (x Cn^2 in the refraction profile: the warp's rms goes as its square root, the twinkle's sigma_R^2 linearly; 0 = no
+  warp pass at all and no twinkle), "Turbulence cell size (x)" = `refraction.cell_size` (0.25-4, shifts the eddy band),
+  "Turbulence speed (x)" = `refraction.speed` (0-4, how fast the warp and the twinkle evolve). Slider ids 411 / 440 /
+  441 (`buildCloudSliderRows`). `photometry.star_twinkle_rate` and `photometry.turbulence_warp` (an rms exaggeration,
+  0-20) are retired: no longer read or written; at 5.5 the second made the user's report view's chunky wobble.
+- **Sim time, not real time.** `buildUI` advances `turbClock_` by the sim clock's change x speed (a step capped at
+  +-1 s: time warp and `time set` jumps decorrelate the field anyway) and `twinkleClock_` by the same x
+  `kTwinkleRate` 0.3 (the old rate's default: the twinkle's 3.7 / 7.1 / 11.3 Hz become 1.1-3.4 Hz), mod 1000 s.
+  Paused = frozen (the clock does not move; the report view's Sun box changes 0.05 levels over 2 s, the same as with
+  the warp off), reverse time runs it backwards. `PointDrawPC::noTwinkle` is 0 on the stars, 1 on the planets.
+- **The per-star phase is hashed from the star's INDEX** (`gl_VertexIndex`, 2026-10-28, issue 20261028_220009). A hash
+  of its moving ENU direction gave a new phase each frame (white-noise flicker at the frame rate).
+- **Point sprites average their PSF over the pixel** (`pointPixelGauss`, point_style.glsl): a star drifting with the sky
+  no longer pulses with its sub-pixel phase.
 - **The warp** runs after the main pass, before the UI, inside the pre-UI hook (`recordPreUiCopy`, SatelliteSimVideo.cpp;
-  App now calls it for the HQ photo's frames too, the sim takes no clean copy of the photo target): the swapchain image
-  is copied to `turbFrameImg` (swap format, recreated in onResize, so the photo target's extent too), then a fullscreen
-  draw in `renderPassLoad` (its own framebuffer index from `ctx.swapImages`) resamples it (5-tap Catmull-Rom; an exact
-  texelFetch where the displacement is < 0.004 px). The clean video copy / settle probe then take the warped frame.
-- **Amplitude** per pixel = the refraction table's aoa rms at its apparent elevation (64-entry table in the UBO, denser
-  at the horizon) x sqrt(1 - exp(-d / aoaS)) (d = the scene depth / the cloud composite's opacity-weighted distance;
-  `refr::Entry::aoaS` = the Cn^2-weighted mean distance along the ray, new) x "Turbulence warp"
-  (`photometry.turbulence_warp`, 1 = physical, 0-20) x a fade from 30 to 80 km of eye altitude; anisotropic near the
-  horizon (0.9 / 1.2, the old disc jitter's).
-- **Field**: vector quintic value noise on the sky in ENU directions, anchored on the CPU in double (`anc` = the lattice
-  cell mod 4096, `frac` its fraction; the shader adds M (dir - fwd) formed without cancellation), so it neither swims
-  when the camera turns nor loses precision. Cells = max(12", 6 px, 4x the largest rms displacement in view) on
-  power-of-two levels cross-faded and keyed by the absolute level (a zoom never rescales a field: q = m dir is ~1e4
-  cells), 2x wide in E / N. **Never make the cell scale vary with elevation or the displacement exceed ~1/4 cell**: a
-  per-elevation scale shears the field by m' x 1e4 cells, and a 5.7-px rms on 6-px cells folded a setting Sun's limb
-  into saw teeth. Boils: THREE phases of 0.9 s a third apart, sin^2 weights renormalised, each re-drawn (a hashed jump)
-  at zero weight, plus a drift of 0.6 minimum cells / s. Three normalised sin^2 phases change at an exactly constant
-  rate; the first cut's two (0.8 s) stood still twice a cycle (each phase alone at its peak), which read as the warp
-  updating ~2.5 times a second (issue 20261028_223915: the frame-to-frame change's 8-frame mean swung 0.19-0.31 at
-  2.5 Hz, now flat 0.23-0.24).
+  the HQ photo's frames too): the swapchain image is copied to `turbFrameImg`, then a fullscreen draw in
+  `renderPassLoad` resamples it (5-tap Catmull-Rom) and blurs it. The clean video copy / settle probe take the warped frame.
+- **Amplitude** per pixel = the refraction table's aoa rms at its apparent elevation (64-entry table in the UBO; 2.91
+  D^-1/3 int Cn^2 ds, D 1 cm) x sqrt(1 - exp(-d / aoaS)) (d = scene depth / the cloud composite's distance; aoaS the
+  Cn^2-weighted mean distance along the ray) x a fade from 30 to 80 km of eye altitude; 0.9 / 1.2 horizontal /
+  vertical near the horizon. Report view (sea, 14 m, Sun at the horizon): 7.8" rms (0.79 px at 9.8"/px); the table's
+  aoaS is 4.7 km for the sea 0.2 deg down and ~95 km for a sky ray at the horizon (it grazes ~700 m up).
+- **The eddy band**: a Kolmogorov tilt field has about equal variance per octave of eddy size from the aperture D (1 cm)
+  to the outer scale L0 = 0.4 x the height of the air aoaS out along the ray, 1-50 m (site medians ~20 m), x cell
+  size; seen from aoaS away that is the angular band D / aoaS .. L0 / aoaS. Six octaves of vector value noise on
+  fixed absolute angular cells (1 urad x 2^k, finest >= 1.5 px, faded in over 1.5-3 px and the coarsest out over
+  48-96 px) carry the band's variance above ~2 px as displacement, spread by each octave's overlap with the band (the
+  coarsest stands for the band above it) and each **capped at 1/8 of its cell** (a field displaced by more than ~1/4
+  of its cell folds: the 2026-10-28 cut grew one cell to 4x the displacement instead, the "big and chunky" look). The
+  rest of the variance (sub-pixel eddies: the seeing disc) is a blur, a ring of six bilinear taps (3/7 r^2 per axis),
+  at most 1.5 px. Measured at the report view (horizon line, per-2-column vertical shift vs strength 0): 0.32 px
+  (3.2") rms, p99 0.5 px; it was 3.9 px (38") rms, p99 11-12 px with the old field at the user's 5.5x. Strength 5 /
+  20: 0.65 / 2.25 px rms. The Moon at 2.3"/px, 16 deg: 0.32 px rms in all (no visible limb ripple, as in a real
+  0.7" seeing).
+- **The field is in the air**: octave k's lattice is in ECEF metres on a sphere L = 100 / 300 / 900 m (by k mod 3)
+  around the eye, cell l_k = theta_k L; the CPU anchors the forward ray's point (eye / l + F / theta + drift) in double
+  and wraps it mod 4096 before it reaches float. Turning the camera keeps the field on the scene (yaw 0.1 deg: the
+  horizon's displacement profile correlates r 0.34-0.49 at the scene's 37-px shift, 0.7-0.9 for a repeat at one pose);
+  a 1-m move of the eye redraws it (r 0.05-0.12 at any shift), as two eyes a metre apart (>> r0) see independent motion.
+  Drift: each octave's lattice moves 0.8 cells / s x speed along a hashed 3D direction (across the view: frozen flow;
+  along it: boiling); the physical crossing rates v / l are 10-100 Hz at these scales, above the frame rate (the blur
+  stands for them). **Never make an octave's cell vary with the pixel or the elevation**: amplitudes may vary per pixel,
+  coordinates may not (a varying scale shears a ~1e4-cell coordinate).
+- **Twinkle** amplitude = the table's scintillation index (Rytov 2.25 k^(7/6) int Cn^2 s^(5/6) ds, saturated
+  sqrt(1 - e^(-sigma_R^2)); 0.54 at 45 deg, 0.99 at 10 deg, 1 lower in the report place) / 0.55 x the sum of three
+  sines (clamped at 0). Measured at shot 3's place, catalogue stars at a 10-deg field, linear flux std / mean over 40
+  frames of running time: 0.37 at 60 deg, 0.63 at 16 deg, 0.71 at 6 deg; 0.003 at strength 0. Brightness only (no
+  chromatic twinkle yet).
 - **Runs only when it shows**: the largest 3-sigma displacement in view >= 0.3 px (`kMinRunPx`), so not at a normal
-  field of view (physically 0.3-2" rms at the zenith or from a high site, ~10" at a sea-level horizon). Not on Potato.
-  The Sun's and the Moon's disc jitter in sat_sky.frag is GONE (they boil through the warp; `refrSun.z` is unread).
-- Measured (RTX 3070 Ti, 1920x1009): copy + warp 0.36-0.43 ms when it runs (six noise evaluations; four were 0.24-0.26) (it lands in the `ui_overlay` timestamp
-  bucket), 0 otherwise; star peak-over-background -1.3% in a 0.6-deg Milky Way field (lap^2 -2.4%). Harness `state` ->
-  `turbulence` {active, max_rms_px, max_px_3sigma, frames_run, clocks}; `refraction.samples[].aoa_mean_dist_km`.
-  Scripts / captures `harness_runs/turb/` (untracked; r3: the sea-level Sun boiling, `videos/sun_boil.mp4`).
-- Open: the Milky Way's sub-pixel star-cloud points do not twinkle (no brightness scintillation in the sky pass or the
-  warp); at the user's 4.9-deg report view the physical warp is 0.05 px rms (invisible; "Turbulence warp" exaggerates);
-  the warp's discontinuity at a near silhouette (terrain in front of sky) is not smoothed.
+  field of view. Not on Potato. The Sun's and the Moon's disc jitter in sat_sky.frag is gone (they move through the warp).
+- Measured (RTX 3070 Ti, 1920x1009, report view): the pass costs 0.27 ms GPU (in the `ui_overlay` timestamp bucket;
+  frame GPU 16.17 / 16.18 ms on vs 16.01 off, 3 interleaved reps); the 2026-10-28 field was 0.36-0.43 ms. Harness
+  `state` -> `turbulence` {active, max_rms_px, max_px_3sigma, finest_cell_px, strength, cell_size, speed, clock_s,
+  twinkle_clock_s, frames_run}; `refraction.samples[].aoa_mean_dist_km`.
+- Open: the Milky Way's sub-pixel star-cloud points do not twinkle; no chromatic scintillation; the warp's
+  discontinuity at a near silhouette is not smoothed; the near sea (a few hundred metres) in the report view changes
+  frame to frame while paused with or without the warp (not the turbulence; seen 2026-11-03, unexplained).
 
 ## Subsystem: The Moon as a body (2026-09-30)
 

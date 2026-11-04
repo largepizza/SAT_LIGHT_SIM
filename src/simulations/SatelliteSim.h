@@ -633,16 +633,17 @@ struct GpuPlanetDiscUBO
 };
 static_assert(sizeof(GpuPlanetDiscUBO) == 96 + 192 * kPlanetCount, "GpuPlanetDiscUBO layout");
 
-// The turbulence warp's UBO (2026-10-28): mirror of shaders/turb_warp.frag's TurbWarp block (std140, 16-byte members).
+// The turbulence warp's UBO (2026-10-28; 2026-11-03 the eddy-band field): mirror of shaders/turb_warp.frag's TurbWarp
+// block (std140, 16-byte members).
 struct GpuTurbWarpUBO
 {
-    glm::vec4 camR, camU, camF, screen, params, mScale;
-    glm::ivec4 anc[6];   // [phase k x 2 + level o], three boiling phases x two cell sizes
-    glm::vec4 frac[6];
-    glm::vec4 aniso;
+    glm::vec4 camR, camU, camF, up, screen, params, aniso, band, outer;   // camera axes and up in ECEF
+    glm::ivec4 anc[6];   // per octave: the lattice anchor (mod 4096) in xyz, the absolute octave level (the seed) in w
+    glm::vec4 frac[6];   // xyz the anchor's fraction, w 1 / the octave's angular cell (cells / rad)
+    glm::vec4 oct[6];    // x log2 of the octave's cell (rad), y its on-screen fade, z its cell (px)
     glm::vec4 tab[64];
 };
-static_assert(sizeof(GpuTurbWarpUBO) == 16 * (6 + 6 + 6 + 1 + 64), "GpuTurbWarpUBO layout");
+static_assert(sizeof(GpuTurbWarpUBO) == 16 * (9 + 6 + 6 + 6 + 64), "GpuTurbWarpUBO layout");
 
 // What the disc renderer and the selection panel know about each body this frame (SatelliteSimPlanets.cpp).
 struct PlanetView
@@ -4738,8 +4739,11 @@ private:
     bool turbWarpActive_ = false;   // this frame runs the pass (set in recordDraw, read by wantsPreUiCopy)
     float turbMaxPx_ = 0.0f;        // the largest rms displacement in view this frame (px; harness state)
     float turbAltFade_ = 1.0f;      // 1 under the air, 0 from orbit
-    double turbClock_ = 0.0;        // real (frame) seconds the field evolves on
-    double twinkleClock_ = 0.0;     // real seconds x starTwinkleRate, mod 1000 (PointDrawPC::waveTime)
+    float turbOctLoPx_ = 0.0f;      // the finest displayed octave's cell (px; harness state)
+    double turbClock_ = 0.0;        // SIM seconds x "Turbulence speed" the field evolves on (frozen while paused)
+    double twinkleClock_ = 0.0;     // the same x kTwinkleRate, mod 1000 (PointDrawPC::waveTime)
+    double turbPrevSimT_ = 0.0;     // last frame's sim time (s since J2000): the clocks advance by its change
+    bool turbPrevSimValid_ = false;
     uint64_t turbFrames_ = 0;       // frames the pass ran (harness state)
 
     // ── Simulation state ──────────────────────────────────────────────────────
@@ -6498,12 +6502,14 @@ private:
     float mwStarFaintLo = 0.0f;     // the band's glow below which the sky stays smooth (no points) ...
     float mwStarFaintHi = 0.002f;   // ... and above which it has its full share of points
     float mwStarNebula = 0.9276018f; // how fully the magenta emission nebulae stay a smooth glow (0 = points there too)
-    // Seeing (2026-10-28, Photometry tab): "Star twinkle rate" x the twinkle's old frequencies, on REAL time
-    // (photometry.star_twinkle_rate, issue 20261028_191408); "Turbulence warp" x the angle-of-arrival rms the whole picture
-    // is displaced by (photometry.turbulence_warp, issue 20261028_193115; 0 = no image motion at all: sat_sky.frag's own
-    // Sun / Moon disc jitter stays off, refrSun.z = 0).
-    float starTwinkleRate = 0.3f;
-    float turbWarpGain = 1.0f;
+    // Seeing (2026-11-03, issue 20261103_191106): the strength is refraction.turbulence (x Cn^2: the warp's rms goes as
+    // its square root, the twinkle's sigma_R^2 linearly); these two set the warp's eddy size (x the physical aperture-to-
+    // outer-scale band) and how fast the field and the stars' twinkle evolve on SIM time (refraction.cell_size / .speed).
+    // They replace photometry.star_twinkle_rate and photometry.turbulence_warp (an rms exaggeration), no longer read.
+    float turbCellSize = 1.0f;
+    float turbSpeed = 1.0f;
+    // The twinkle's 3.7 / 7.1 / 11.3 Hz (star_point.vert) x this at speed 1: the old "Star twinkle rate"'s default.
+    static constexpr double kTwinkleRate = 0.3;
     // ...and they stay exactly that for a source at `glareNearRangeKm` or beyond: proximity scales the
     // sprite's SIZE alone, so a satellite up in the sky is untouched while one resolved metres away (the
     // 3D viewer) or closing in on a zoomed 3D mesh spreads a much wider glare than a distant point
@@ -8413,7 +8419,7 @@ private:
     bool draggingPhoto[56] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 435;   // 428-434 (2026-10-30): the second stage's jellyfish (streaks, nucleus, staging cloud); was 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
+    static constexpr int kCloudSliderSlots = 490;   // 440-441 (2026-11-03): turbulence cell size / speed; was 435;   // 428-434 (2026-10-30): the second stage's jellyfish (streaks, nucleus, staging cloud); was 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
     // gust fronts, drop persistence); 326: "Tropical cyclones (x)"; 325: "Storm complexes"; 321-324 (2026-10-23): storm
     // objects (frequency, life, cloud field, moat);
     // was 321: 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);
