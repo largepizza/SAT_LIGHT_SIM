@@ -933,7 +933,15 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
         if (rate <= 0.0 && below) return false;
         if (rate > 0.0) {
         vec3  rr = rS + eastW * ((base - q.h) * 0.25);
+#ifndef SKY_LITE
+        // (Fractus, below: through its band the curtains' vertical squeeze eases off.)
+        float fDep = mix(250.0, 550.0, clamp(rate * 2.0, 0.0, 1.0));
+        float frK  = cv2.vert.w > 0.0 ? smoothstep(base - fDep - 150.0, base - fDep + 50.0, q.h) * (1.0 - smoothstep(base - 60.0, base, q.h))
+                                        * (1.0 - smoothstep(600.0, 1500.0, fpM)) : 0.0;
+        rr -= wd * (dot(rr, wd) * 0.85 * (1.0 - frK));
+#else
         rr -= wd * (dot(rr, wd) * 0.85);
+#endif
         // The curtains read 1.5 mips coarser with a softer threshold (review 22): at the shape period's finest
         // octaves and x4 they were a striped on/off pattern a still observer saw repeat ("perliny").
         vec4  sr = textureLod(cv2ShapeTex, cv2.anchorShape.xyz + rr * cv2.anchorShape.w,
@@ -950,14 +958,16 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
         f.topH     = base;
 #ifndef SKY_LITE
         // Fractus / scud (2026-11-05, vertical; "Fractus", vert.w): ragged cloud fragments in the saturated air under a
-        // raining base, from the shaft's own texel (no extra fetch): its smooth channels, thresholded, in a band hanging
-        // 60 m to ~250-550 m under the base (deeper in heavier rain), fading with the footprint (sub-pixel scraps would
-        // only grey the rain). Cloud, not rain: its share leaves f.rain (the bows keep the rain's).
-        if (cv2.vert.w > 0.0 && q.h < base - 60.0) {
-            float fDep  = mix(250.0, 550.0, clamp(rate * 2.0, 0.0, 1.0));
-            float band  = smoothstep(base - fDep, base - 0.55 * fDep, q.h) * (1.0 - smoothstep(base - 160.0, base - 60.0, q.h));
-            float rag   = smoothstep(0.62, 0.78, sr.r * 0.55 + sr.b * 0.45 + 0.18 * min(rate * 2.0, 1.0)) * band
-                        * (1.0 - smoothstep(600.0, 1500.0, fpM)) * min(rate * 4.0, 1.0);
+        // raining base, in a band hanging 60 m to ~250-550 m under it (deeper in heavier rain), fading with the footprint
+        // (sub-pixel scraps would only grey the rain). From the shaft's own texel (a second fetch here put the march at 249
+        // registers): through the band the shaft's vertical compression eases off (frK above), so the texel there is
+        // round noise, not curtains (thresholded, curtains drew a row of flat-topped blocks); its band edges move +-120 m
+        // with the texel. Cloud, not rain: its share leaves f.rain (the bows keep the rain's).
+        if (frK > 0.0) {
+            float hJ    = q.h + 240.0 * (sr.a - 0.5);
+            float band  = smoothstep(base - fDep, base - 0.55 * fDep, hJ) * (1.0 - smoothstep(base - 160.0, base - 60.0, hJ));
+            float rag   = smoothstep(0.58, 0.76, sr.r * 0.5 + sr.g * 0.3 + sr.b * 0.2 + 0.15 * min(rate * 2.0, 1.0)) * band
+                        * frK * min(rate * 4.0, 1.0);
             float sFr   = 0.012 * cv2.vert.w * rag;
             f.rain      = f.sigma / max(f.sigma + sFr, 1e-9);
             f.msBright  = mix(0.6, 0.85, 1.0 - f.rain);
@@ -1572,7 +1582,7 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
         float thW  = 260.0 + 200.0 * (1.0 - crW);
         if (q.h <= bWs - 150.0 || q.h >= bWs + thW + 150.0) return 0.0;
         float wReg = smoothstep(0.15, 0.45, covM) * (1.0 - smoothstep(0.85, 1.0, cov)) * cv2.vert2.x
-                   * smoothstep(0.42, 0.56, cl.a);
+                   * smoothstep(0.59 - 0.05 * cv2.vert2.x, 0.67 - 0.05 * cv2.vert2.x, cl.a);   // at 1 ~a fifth of the area, at 2 ~2/5
         if (wReg <= 0.0) return 0.0;
         vec3  wdW  = cv2Drift(q.dirE);
         vec3  eW   = vec3(-wdW.y, wdW.x, 0.0) * inversesqrt(max(dot(wdW.xy, wdW.xy), 1e-6));
@@ -1585,10 +1595,10 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
         float zW   = (q.h - bW2) / max(tW2 - bW2, 150.0);
         if (zW <= 0.0 || zW >= 1.0) return 0.0;
         float lensW = smoothstep(0.0, 0.35, zW) * (1.0 - smoothstep(0.5, 1.0, zW));
-        float str   = clamp((shW.b * 0.6 + shW.g * 0.4 - 0.7 + 0.12 * wReg) * 6.0, 0.0, 1.0);
+        float str   = clamp((shW.b * 0.6 + shW.g * 0.4 - 0.64 + 0.12 * wReg) * 5.0, 0.0, 1.0);
         str         = mix(str, 0.08 * wReg, smoothstep(400.0, 3000.0, fpM));      // sub-pixel: their thin mean
         hfMid = zW; topMid = tW2; deckMid = 0.0;
-        return lensW * str * min(wReg, 1.0) * 0.012 * cv2.atmo.z;
+        return lensW * str * min(wReg, 1.0) * 0.03 * cv2.atmo.z;
     }
 #endif
     float clA    = cl.a, uMid = -1.0;

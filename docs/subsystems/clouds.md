@@ -92,10 +92,16 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     rises by half a positive shift (desert cumulus are high AND tall); `anvil3.zw` carries +900 m x "condensation level".
     `cv2FarColumn` takes the same `cv2BaseShift` (no per-cell term), so bases agree at the near/far placement boundary.
   - Shell: `lo` widens by 1.5 alt.w x regional + 600 m x LCL + 500 m (fractus); with rain on (default) shell.x is 0 anyway.
-  - Fractus: in the rain branch, from the shaft's own texel `sr` (no fetch), a ragged band 60 m .. 250-550 m under a raining
-    base, cloud not rain (its share leaves `f.rain`, so bows keep the rain's), fading out by fpM 600-1500 m.
+  - Fractus: in the rain branch, from the shaft's own texel `sr` (a second fetch there put the march at 249 registers):
+    through a band 60 m .. 250-550 m (rate) under a raining base the curtains' vertical squeeze (0.85) eases off, so the
+    texel is round noise, thresholded into ragged shreds whose band edges move +-120 m with it. Thresholding the
+    squeezed curtain texel drew a row of flat-topped dark blocks. Cloud, not rain (its share leaves `f.rain`, the bows
+    keep the rain's); fades out by fpM 600-1500 m.
   - Mid-level wisps: `cv2MidSigma`'s low mode, 1.5-2.5 km + 0.8 ground, 260-460 m thick (>= 260: the CDC reads are 160 m
-    apart), one shape fetch stretched 2.5x along east, where the low cover is 0.15-1 but not overcast, x a regime from cl.a.
+    apart), one shape fetch stretched 2.5x along east, sigma 0.03, where the low cover is 0.15-1 but not overcast and the
+    cluster Perlin's a > 0.54-0.62 at "Mid-level wisps" 1 (about a fifth of the area; the slider widens it by 0.05 per unit). Measured (cumulus at 3 km, uncontended): the first cut over
+    ~75% of the area cost +0.9 ms of cloud_march, this one +0.4. Reusing the low field's coverage through a global (to skip
+    the mid layer's weather fetches) put the march at 249-251 registers.
   - Orographic lenses (`cv2OroSigma`, where `CV2_ELEV_BINDING` is defined: the DEM is binding 25 of the march set).
     Relief excess ex = h(DEM mip 1, 2 km upwind) - h(mip 3.3, the regional ground) against a dryness
     mix(2200, 350, moisture) m x (1.25 .. 0.85 over 8-25 m/s wind); lens centred hC + 1.1 ex + 500 m, half-thickness
