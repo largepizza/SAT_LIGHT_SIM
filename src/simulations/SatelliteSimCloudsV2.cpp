@@ -2005,11 +2005,16 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         // marched at a quarter of the density from a history without their detail: 64-px squares of the quarter lattice's
         // dots, greyer than their neighbours and missing the cirrus streaks, for ~1.5 s after the eye stopped. At the still
         // history weight (~0.05) 64 frames leave ~4% of the old history.
+        // While the eye moves (smooth_moving > 0, 2026-11-04): on, at the threshold x smooth_moving (0.5 = 15 levels), and
+        // in fast flight too. Without it a moving view marched every slot of the sparse grid: 360k rays a frame instead of
+        // ~220k at the anvil of issue 20261104_111947 (1600x900), the whole "moving costs more rays" of perf.md. The
+        // 004019 squares do not come back (its trail end and the 100 frames after it: 0.12-0.14 levels off settled).
         constexpr int kSmoothSettleFrames = 64;
         const uint32_t qTiles = ((cv2QuarterW + 15) / 16) * ((cv2QuarterH + 15) / 16);
+        const bool smoothMoving = cv2SmoothMoving > 0.0f;
         cv2SmoothNow = cv2SmoothTiles > 0.5f && cv2SparseBlockNow == 2 && cv2FullResActive() && !cv2FullRateNow && !cv2AdaptiveNow && !cv2HalfRateNow &&
-                       cv2EyeStillFrames >= kSmoothSettleFrames &&
-                       valid && cv2HistoryValid && glm::length(eye - cv2PrevEye) <= 150.0 && cv2MarchWg[0] == 16 &&
+                       (cv2EyeStillFrames >= kSmoothSettleFrames || smoothMoving) &&
+                       valid && cv2HistoryValid && (glm::length(eye - cv2PrevEye) <= 150.0 || smoothMoving) && cv2MarchWg[0] == 16 &&
                        cv2MarchWg[1] == 16 && qTiles <= kCv2MaxTiles && cv2MarchPassFPipeline != VK_NULL_HANDLE &&
                        cv2MarchPassFNoDustPipeline != VK_NULL_HANDLE && cv2TilesSmoothPipeline != VK_NULL_HANDLE &&
                        cv2TilesFillPipeline != VK_NULL_HANDLE;
@@ -2063,7 +2068,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.anvil3 = glm::vec4(std::clamp(cv2AnvilPuff, 0.0f, 2.0f), std::clamp(cv2AnvilLiftM, 0.0f, 3000.0f), lowTopB[0], lowTopB[1]);
     p.perf = glm::vec4(std::clamp(std::round(cv2NearCirrusStride), 1.0f, 4.0f), 12.0f,
                        std::clamp(std::round(cv2GodrayReads), 2.0f, 8.0f),
-                       cv2SmoothNow ? std::clamp(cv2SmoothTileThresh, 0.5f, 64.0f) / 255.0f : 0.0f);   // "Near cirrus stride", "God ray reads", smooth tiles
+                       cv2SmoothNow ? std::clamp(cv2SmoothTileThresh * (cv2EyeStillFrames >= 64 ? 1.0f : std::clamp(cv2SmoothMoving, 0.05f, 2.0f)), 0.5f, 64.0f) / 255.0f : 0.0f);   // (moving: x smooth_moving)   // "Near cirrus stride", "God ray reads", smooth tiles
     // The aerial-perspective volume: x is set to 1 in the mirrored copy by recordCloudsV2 once it is dispatched this frame.
     p.skyAp = glm::vec4(0.0f, 200.0f, std::sin(glm::radians(std::clamp(cv2SkyApBandDeg, 0.0f, 20.0f))),
                         std::clamp(cv2SkyApBandSteps, 1.0f, 16.0f));

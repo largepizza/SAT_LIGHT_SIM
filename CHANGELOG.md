@@ -323,6 +323,12 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   history; a settings key (`clouds_v2.sparse_block`: 2, the default, or 3 / 4 for one pixel in 9 / 16) trades
   sharpness in motion for speed in dense storms and anvils (an anvil top at 11 km, flying: about 121 -> 68 ms of
   cloud at 3, 47 at 4; standing still 49 -> 36 / 29).
+- **Cheaper clouds while flying.** Smooth stretches of cloud and clear sky are now marched at reduced density while
+  the camera moves too, not only once it has stood still for a second: in motion the clouds traced 1.6-2.3x the
+  rays than standing still. About 8-20% less cloud time while flying over anvils and storm tops (anvil at 11 km,
+  10 fps: 77 -> 72 ms; storm trail at 12 km, 60 fps: 36 -> 32.5), the image within the run-to-run noise. Setting (no
+  UI): `clouds_v2.smooth_moving` (0.5; 0 = the previous behaviour, 1 = more savings, slightly blockier edges at low
+  frame rates).
 - **Clouds skip absent layers.** The empty-space map also records which cloud layers (storm towers, low, mid,
   high, anvils) each cell can hold, and the cloud march computes only those there: about 10% less cloud time in
   storms and over cumulus (storm at 4.8 km 14.2 -> 12.6 ms, flying through it 21.4 -> 19.1, cumulus 9.3 -> 8.4;

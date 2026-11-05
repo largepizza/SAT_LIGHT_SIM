@@ -536,9 +536,34 @@ depth pass, so its variants interleave like the sky's and the clouds'.
   (1 km a frame at the walk): anvil 4.4% -> 3.2%, storm trail 2.3% -> 1.4% at 25%; 5% a frame dropped the clipmap there.
   Cost (cloud bucket, RTX 3070 Ti, 1600x900, High, full res, min of the uncontended interleaved reps; another app shared
   the GPU for the rest): anvil walk (issue 20261104_111947, 11 km, 9 km/s) still 49 / 49 ms, moving 75 -> 67; storm
-  trail (12 km) still 37 / 37, moving 54 -> 45. Moving still costs 1.2-1.4x standing still: the remaining cost is the
-  march's ray count (360k rays a frame moving vs 216k still at the anvil, `march_rays`), not the clipmap (it skipped as
-  many coarse steps moving as still, misses 0.011%). (The earlier "121 ms walking" at the anvil was with the GPU shared.)
+  trail (12 km) still 37 / 37, moving 54 -> 45. Moving then still cost 1.2-1.4x standing still: the march's ray count
+  (360k rays a frame moving vs 216k still at the anvil, `march_rays`), not the clipmap (it skipped as many coarse steps
+  moving as still, misses 0.011%) -- the smooth tiles, next item. (The earlier "121 ms walking" at the anvil was with
+  the GPU shared.)
+- **Moving marched every sparse slot: the smooth tiles were off** (`smooth_moving` 0.5; 2026-11-04, qa motion-rays,
+  `harness_runs/mr/`). The extra rays in motion are not disocclusion, a repair pass or the resolve: the full-res grid
+  marches 1 slot per 2x2 a frame moving or still (`sparse_block` 2, no moving mode at 11 km: `full_rate_above_km` 30),
+  and a still view marches FEWER, because its smooth tiles (cloud_v2_tiles.comp kMode 1, threshold 30 levels) take a
+  quarter of that, and the smooth tiles needed 64 eye-still frames and a step <= 150 m (issue 20261027_004019). Counters
+  (`-DCV2_EVAL_COUNT`, path stepped a frame at a time, 1600x900, rays / coarse + fine evaluations): anvil still 224k /
+  9.1M, moving 360k / 13.7M, smooth tiles off still 360k; storm trail (183909, 12 km) 158k / 2.9M still, 360k / 8.0M
+  moving; cumulus walk (~2 km) 93k still, 162k moving. With the tiles kept on in motion at the full threshold the moving
+  frame marches the still frame's rays (anvil 220k, storm 149k, cumulus 98k); at half the threshold (the default, 15
+  levels while the eye moves, 30 once it has been still 64 frames) 260k / 180k. Per pass (eased timers, anvil): the
+  march 38 still, 47-49 moving -> 39-41; what is left of moving's extra is the clipmap's bake following the eye
+  (`layer_map` 0.1 -> 3.4 ms) and 1-3 ms of march.
+  Cost (cloud bucket, min of 2-3 interleaved reps, RTX 3070 Ti, 1600x900, High; a second app shared the GPU in most
+  reps, so read the ratios): 60 fps, off / 0.5 / 1: anvil walk 71.0 / 65.0 / 61.4 (still 46-47), storm trail 36.0 / 32.5 /
+  30.1 (still 29); anvil trail 33.9 / 32.6 / 29.9 (still 13.5-14). Uncontended, off / 1: anvil walk 38.5 / 35.2 (still
+  27-29), storm 15.7 / 12.3 (still 12-14), cumulus 4.7 / 4.6. 10 fps (1 km a frame): anvil walk 77.4 / 72.3 / 68.6,
+  anvil trail 83.7 / 73.7 / 64.8, storm 45.9 / 38.3 / 35.9 (uncontended off / 1: 44.9 / 40.2, 45.9 / 36.4, 22.5 / 17.5).
+  Quality (gen.py + score.py frames vs settled refs, % px > 16 levels, mean |diff|; A-vs-A spread 0.01-0.11% / 0.01-0.04):
+  off / 0.5 / 1 at 10 fps: anvil walk 3.81 / 3.90 / 4.05% (mean 3.42 / 3.43 / 3.44), anvil trail 13.2 / 13.1 / 13.2,
+  storm 0.99 / 1.00 / 0.97, cumulus 0.82 / - / 0.81; at 60 fps: anvil walk 3.23 / 3.19 / 3.05, anvil trail 4.24 /
+  4.33 / 4.44, storm 0.17 / - / 0.17, cumulus 0.17 / - / 0.15. At 1 the 10-fps anvil walk is +6% (consistent over 3
+  batches) with slightly coarser stair-steps on cloud edges (the tiles' 4x4 lattice under the tent): 0.5 sits at the
+  A-vs-A spread for about half the saving. The 004019 squares after a fast flight do not return (that trail's end and
+  the 100 frames after it: 0.12-0.14 levels from settled, 0.17-0.20 with the tiles off).
 - **Rays per frame** (2026-11-04, clouds.md "Amortization"): the full-res grid marches 1 pixel in 4 a frame; at the
   anvil the march is proportional to its rays (`sparse_block` 2 / 3 / 4: 43 / 29 / 21-24 ms still, bucket 121 / 68 / 47
   walking), storm 10.7 / 9.8 / 6.5 (walking 26 / 16.5 / 13.5), cumulus 3.0 / 2.0 / 1.6. 3 / 4 cost ~5-10% / 15-25% more

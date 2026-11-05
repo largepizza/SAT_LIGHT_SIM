@@ -699,6 +699,16 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     fast motion trades grain for lag, and the settled-reference error counts the lag. **No block size reached parity
     with 2x2 in motion, so `sparse_block` stays 2 (the user's settings unchanged)**; 3 is the closest (~5-10% more error
     for ~20% less march at the anvil).
+  - **Smooth tiles while moving** (`smooth_moving` 0.5, no slider; 2026-11-04, perf.md "Moving marched every sparse
+    slot"): the smooth tiles (cloud_v2_tiles.comp kMode 1 / 2, march pass F: a 32x32 tile whose last resolved frame
+    varies by less than `smooth_tile_threshold` 30 levels in every 4x4 window is marched at a quarter of the sparse
+    grid) stay on while the eye moves, and in fast flight, at the threshold x `smooth_moving` (15 levels); after 64
+    eye-still frames the full threshold. 0 is the old rule (only after 64 eye-still frames and steps <= 150 m), under
+    which a moving view marched every sparse slot (anvil 360k rays vs 224k still) -- that, and not disocclusion or a
+    moving mode, was the moving view's extra rays. The classification reads last frame's resolved clouds at the same
+    pixel (no reprojection); in motion that frame is partly the quarter grid's tent and reads smoother than it is, which
+    is why the moving threshold is halved: at 1 (moving rays = still rays) the 10-fps anvil walk drew coarser
+    stair-steps (+6% of pixels past 16 levels), at 0.5 it is at the A-vs-A spread.
   - **Defaults (2026-10-22, the user: "continue forward"):** the occupancy clipmap (`cdc_skip` 2) and the god-ray froxels
     (`godray_froxels` 1) are ON; S2, Mie and cap lobes stay off. Default-settings totals at 1920x1009 (`harness_runs/s0/defs`,
     no validation errors): 58 km 26.3 ms (old defaults 34.0), anvils 29.0 (24.4), cumulus 32.0 (27.2), Pacific 27.7 (25.4):

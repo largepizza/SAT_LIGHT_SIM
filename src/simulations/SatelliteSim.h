@@ -5466,6 +5466,7 @@ private:
     float cv2CdcNearM = 0.0f;             // coarse steps skip only beyond this distance (m)
     float cv2FullRes = 1.0f;              // S9: full-resolution clouds (computeCloudExtent; on for High / Ultra, the compiled defaults)
     float cv2HistDepthTest = 0.0f;        // the resolve keeps a history whose reprojected distance matches (2026-11-04; an A/B, off: tstab storm walk 1.36 -> 1.57 at 2x2)
+    float cv2SmoothMoving = 0.5f;         // smooth tiles while the eye moves (0 = only after 64 still frames; > 0: on, the threshold x this; 2026-11-04)
     float cv2SparseBlock = 2.0f;          // full-res clouds' sparse march: one ray per K x K block a frame (2, 3 or 4; 2026-11-04)
     float cv2FullResMovingMode = 0.0f;    // full-res clouds while the eye moves from altitude (issues 20261022_210358 / _220214): 0 sparse, rotating (default); 1 sparse, held pixel; 2 full rate (every pixel, +1-6 ms; an A/B since the march's depth fix)
     bool  cv2CdcActive = false;           // this frame (fillCloudsV2Params)
