@@ -250,7 +250,7 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // -- vertical (2026-11-05, night wave agent E): varied cloud bases, fractus, mid-level wisps, orographic clouds --
     // vert: x "Cloud base condensation level" (cv2BaseShift's LCL proxy, x1), y "Cloud base cell spread" (m, per cumulus
     // cell), z "Cloud base regional spread" (x the type's alt.w at the cluster scale), w "Fractus" (ragged scud under wet bases)
-    // vert2: x "Mid-level wisps" (the mid layer's low thin mode), yzw spare
+    // vert2: x "Mid-level wisps" (the mid layer's low thin mode), yzw their anchor (anchorMid's, the drifted z x0.4)
     // oro0: x "Orographic clouds" (0 = off), y the lee wavelength (m, 2 pi U / N), zw the wind's (east, north) unit vector (the
     // way it blows); oro1: x lens moisture (0..1), y x the dryness (faster wind lifts more), zw the regional moisture phase
     vec4  vert;
@@ -1356,6 +1356,7 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
     float aBase = c.aBase, aRamp = c.aRamp, AshK = c.AshK, phK = c.phK, phP = c.phP, subPix = c.subPix, PhSub = c.PhSub;
     float sigK = c.sigK, billow = c.billow, erK = c.erK, erBase = c.erBase, wispE = c.wispE, rV = c.rV, fpFade = c.fpFade;
     float tur = c.tur;
+    float mEnv = m0;   // the envelope, before the bubbles divide it (the core floor, below)
     {
         // Before the shape fetch, bounded as if the base bumps lifted this point all the way (the
         // gBase and the lobe damping only fall with height): the lobes add at most ~0.6 x 1.25 lobeK.
@@ -1477,6 +1478,17 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
     float m     = m0 + (A + AshK) * lobes * 2.0 + turL * mix(0.3, 1.0, smoothstep(0.0, aRamp, hbE)) - gBase * gBase / 0.3;
 #ifndef SKY_LITE
     if (lobeRef < 0.0) m -= lobeRef * A * 2.0 * max(-lobes, 0.0);   // (storm3: an anvil plate's lobes only bulge)
+#endif
+#ifndef SKY_LITE
+    // CUMULUS CORE ("Cumulus core", ciHu2.y; 2026-11-05, issue 20261105_084815's follow-up: "keep turrets contained a bit so
+    // that they don't entirely tear up clouds into tiny pieces. We still need some big continuous clouds"). The bubbles divide
+    // the envelope's margin by 1 + x and the turrets and lobes are signed: together, deep inside a big mass, they cut it through
+    // into a field of fragments. Toward the envelope's interior the margin blends toward max(m, envelope): the carving gets
+    // shallower with depth, so the surface keeps the bubbles' shape (the blend is 0 at the envelope's skin) but a cut cannot
+    // reach through a big mass. (A hard floor, max(m, envelope - D), bared the envelope's smooth inner shell wherever the
+    // bubbles cut past D: paper cut-outs and gumdrops, harness 2026-11-05.) The positive side (towers) is untouched; cumulus
+    // only (deep convection keeps its own surface).
+    if (cv2.ciHu2.y > 0.0) m = mix(m, max(m, mEnv), min(cv2.ciHu2.y, 1.0) * (1.0 - deep) * smoothstep(0.0, 0.25, mEnv));
 #endif
     float Ph    = clamp(m * phK + phP, 0.0, 1.0) * smoothstep(0.0, 60.0, hbE);
     Ph = mix(Ph, PhSub, subPix);
@@ -1728,11 +1740,12 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
         float wReg = smoothstep(0.15, 0.45, covM) * (1.0 - smoothstep(0.85, 1.0, cov)) * cv2.vert2.x
                    * smoothstep(0.59 - 0.05 * cv2.vert2.x, 0.67 - 0.05 * cv2.vert2.x, cl.a);   // at 1 ~a fifth of the area, at 2 ~2/5
         if (wReg <= 0.0) return 0.0;
-        vec3  wdW  = cv2Drift(q.dirE);
-        vec3  eW   = vec3(-wdW.y, wdW.x, 0.0) * inversesqrt(max(dot(wdW.xy, wdW.xy), 1e-6));
-        vec3  rW   = cv2Drift(q.rSeaE);
-        rW        -= eW * (dot(rW, eW) * 0.6);
-        vec4  shW  = textureLod(cv2ShapeTex, cv2.anchorMid.xyz + vec3(0.29, 0.53, 0.11) + rW * cv2.anchorMid.w,
+        // Stretched along the Earth's axis-normal plane: the drifted frame's z squeezed x0.4 (shreds ~2.5x longer east-west
+        // than north-south at the equator, ~1.7x at 30 deg), on its own anchor (vert2.yzw, reduced on the CPU). A squeeze of
+        // the eye-relative offset across the local wind was centred on the eye: the wisps slid and changed as the eye moved
+        // (issue 20261105_084815).
+        vec3  rW   = cv2Drift(q.rSeaE) * vec3(1.0, 1.0, 0.4);
+        vec4  shW  = textureLod(cv2ShapeTex, cv2.vert2.yzw + vec3(0.29, 0.53, 0.11) + rW * cv2.anchorMid.w,
                                 cv2Lod(fpM, cv2.anchorMid.w));
         float bW2  = bWs + 150.0 * clamp(2.5 * (shW.a - 0.5), -1.0, 1.0);
         float tW2  = bWs + thW + 150.0 * clamp(2.5 * (shW.g - 0.5), -1.0, 1.0);
@@ -2819,23 +2832,25 @@ float cv2OroSigma(CV2Pos q, float detailAmt, float fpM, out float hfO, out float
     float infl = detailAmt < 0.0 ? 200.0 : 0.0;                   // the coarse (CDC) reads: never miss a rim 160 m thin
     float sig = 0.0;
     [[dont_unroll]] for (int k = 0; k < 2; ++k) {
-        // k = 0: the cap (the relief 2 km upwind); k = 1: the first lee lens (the relief one wavelength, oro0.y, upwind).
+        // k = 0: the cap (the relief 800 m upwind); k = 1: the first lee lens (the relief one wavelength, oro0.y, upwind).
         // Its HEIGHT from the excess at DEM mip 2 (~10 km): a broad dome, so the lens is a saucer at a near-constant height
         // whose base the summit pokes into (from the mip-1 excess it was a cone following the flanks); its FOOTPRINT from
         // the mip-1 excess (from mip 2 it spread over the whole massif).
-        float up  = k == 0 ? 2000.0 : cv2.oro0.y;
+        float up  = k == 0 ? 800.0 : cv2.oro0.y;   // (the cap 800 m downwind of the crest: at 2 km it hung off the summit's side)
         vec2  uvU = uv - duv * up;
         float amp = k == 0 ? 1.0 : 0.65;
         float ex  = (max(0.0, textureLod(cv2ElevTex, uvU, 1.0).r * kEr - kEo) - hC) * amp;   // the footprint: ~5 km relief
         float exB = (max(0.0, textureLod(cv2ElevTex, uvU, 2.0).r * kEr - kEo) - hC) * amp;   // the height: a ~10 km dome
+        // (Thickness 0.8 t + 100, 2026-11-05: at 0.4 t the Fuji cap was a thin translucent sliver. Widening the footprint
+        // with the mip-2 dome as well, max(ex, 0.75 exB), laid one smooth plate over the whole Alps.)
         float t   = ex - dry;
         float zc  = hC + 2.4 * exB + 300.0 + float(k) * 300.0;
-        float hl  = min(0.4 * t, 800.0) + infl;
+        float hl  = min(0.8 * t + 100.0, 800.0) + infl;
         float u   = q.h < zc ? (zc - q.h) / (0.4 * hl) : (q.h - zc) / (0.8 * hl);
         float s   = t > 0.0 ? (1.0 - smoothstep(0.5, 1.0, u)) * smoothstep(0.0, 150.0, t) : 0.0;
         if (s > sig) { sig = s; topO = zc + 0.8 * hl; hfO = clamp(0.5 + (q.h - zc) / (1.2 * hl), 0.0, 1.0); }
     }
-    return 0.025 * sig * (1.0 - smoothstep(300.0, 700.0, fpM)) * cv2.oro0.x;
+    return 0.05 * sig * (1.0 - smoothstep(300.0, 700.0, fpM)) * cv2.oro0.x;   // (0.025: a grey, see-through cap at Fuji, 2026-11-05)
 }
 #endif
 

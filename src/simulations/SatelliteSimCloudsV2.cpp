@@ -1323,7 +1323,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2MidFieldKm, cv2MidCover, cv2MsOctaves, cv2LobeOcclusion, cv2MsModel, cv2MsDiffG, cv2MsDiffGain, cv2MsBackM, cv2SkyLightModel, cv2SkyLightGain, cv2SkyGroundAlbedo,
                     cv2CuHeightVar, cv2CuBreakup, cv2CuHeadroom, cv2CuFineLobes, cv2CbFineLobes, cv2CuWisps,
                     cv2CuTurrets, cv2CuTurretStretch, cv2CuTurretLean, cv2CuTurretSkew,
-                    cv2CuBody, cv2CuEdge, cv2CuShowerCells, cv2CuShowerCores, cv2CuBubbles, cv2CuBubbleGain, cv2CuBubbleFine, cv2CuBubbleSize, cv2CuBubbleBase, cv2CuEnvTowers,
+                    cv2CuBody, cv2CuEdge, cv2CuShowerCells, cv2CuShowerCores, cv2CuBubbles, cv2CuBubbleGain, cv2CuBubbleFine, cv2CuBubbleSize, cv2CuBubbleBase, cv2CuEnvTowers, cv2CuCore,
                     cv2CirrusFibres, cv2CirrusHooks, stormCycTopSmooth, stormCycTopStreaks, stormCycTopDensity,
                     cv2AnvilFibres, cv2AnvilFibreAlongKm, cv2AnvilFibreAcrossM, cv2StormBubbles, cv2AnvilErosion,
                     cv2AnvilLidLobes, cv2AnvilUnderLobes,
@@ -2111,11 +2111,20 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // Fibrous cirrus and hurricane CDO tops (cirrus-hurr, 2026-11-05).
     p.ciHu  = glm::vec4(std::clamp(cv2CirrusFibres, 0.0f, 2.0f), std::clamp(cv2CirrusHooks, 0.0f, 2.0f),
                         std::clamp(stormCycTopSmooth, 0.0f, 1.0f), std::clamp(stormCycTopStreaks, 0.0f, 600.0f));
-    p.ciHu2 = glm::vec4(std::clamp(stormCycTopDensity, 1.0f, 20.0f), 0.0f, 0.0f, 0.0f);
+    p.ciHu2 = glm::vec4(std::clamp(stormCycTopDensity, 1.0f, 20.0f), std::clamp(cv2CuCore, 0.0f, 1.0f), 0.0f, 0.0f);
     // Vertical variation (vertical, 2026-11-05): cv2BaseShift's strengths, fractus, mid-level wisps.
     p.vert  = glm::vec4(std::clamp(cv2BaseLcl, 0.0f, 2.0f), std::clamp(cv2BaseCellM, 0.0f, 400.0f),
                         std::clamp(cv2BaseRegional, 0.0f, 2.0f), std::clamp(cv2Fractus, 0.0f, 2.0f));
-    p.vert2 = glm::vec4(std::clamp(cv2MidWisps, 0.0f, 2.0f), 0.0f, 0.0f, 0.0f);
+    {
+        // yzw: the wisps' own anchor, on anchorMid's period with the drifted frame's z squeezed x0.4 (cv2MidSigma). The squeeze
+        // is a fixed linear map of the WORLD position (z is the Earth's axis, which the drift turns about), so it is reduced here
+        // in double like every anchor; squeezing the eye-relative offset in the shader centred it on the eye, and the wisps
+        // slid as the eye moved (issue 20261105_084815).
+        const double mp = std::clamp((double)cv2MidPeriodM, 500.0, 60000.0);
+        glm::dvec3 a = (sea + windDir * ((double)cv2WindMps * simT)) / mp;
+        a.z *= 0.4;
+        p.vert2 = glm::vec4(std::clamp(cv2MidWisps, 0.0f, 2.0f), (float)fracPos(a.x), (float)fracPos(a.y), (float)fracPos(a.z));
+    }
     // Orographic lenses / caps (clouds_v2.glsl cv2OroSigma). The ridge wind: "Ridge wind (m/s)" (0 = 20) from "Ridge wind
     // from" (deg; -1 = by the eye's latitude: the trades (from the east) within 25 deg, the westerlies outside). Lenses are
     // local, so one wind for the view. Its lee wavelength 2 pi U / N (N = 0.01 /s); faster wind lifts a parcel further

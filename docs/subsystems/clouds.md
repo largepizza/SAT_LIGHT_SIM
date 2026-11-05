@@ -104,15 +104,22 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     or two over the horizon; a 6-15 km fade left them, 3-7 km removes them. Using `lift` for the ground test put the
     march at 249 registers; cv2Ground (the cached global) keeps 128.
   - Mid-level wisps: `cv2MidSigma`'s low mode, 1.5-2.5 km + 0.8 ground, 260-460 m thick (>= 260: the CDC reads are 160 m
-    apart), one shape fetch stretched 2.5x along east, sigma 0.03, where the low cover is 0.15-1 but not overcast and the
+    apart), one shape fetch on its own anchor (`vert2.yzw`: anchorMid's, with the drifted frame's z squeezed x0.4, reduced
+    in double on the CPU) -- the squeeze is a fixed linear map of the WORLD position, ~2.5x longer east-west than north-south at
+    the equator, ~1.7x at 30 deg. (It was a squeeze of the eye-relative offset across the local east: centred on the eye, the
+    wisps slid and changed as the eye moved, issue 20261105_084815. Any non-unit scale of `rSeaE` needs its own anchor.) sigma 0.03, where the low cover is 0.15-1 but not overcast and the
     cluster Perlin's a > 0.54-0.62 at "Mid-level wisps" 1 (about a fifth of the area; the slider widens it by 0.05 per unit). Measured (cumulus at 3 km, uncontended): the first cut over
     ~75% of the area cost +0.9 ms of cloud_march, this one +0.4. Reusing the low field's coverage through a global (to skip
     the mid layer's weather fetches) put the march at 249-251 registers.
   - Orographic lenses (`cv2OroSigma`, where `CV2_ELEV_BINDING` is defined: the DEM is binding 25 of the march set).
-    Relief excess ex = h(DEM mip 1, 2 km upwind) - h(mip 3.3, the regional ground) against a dryness
-    mix(2200, 350, moisture) m x (1.25 .. 0.85 over 8-25 m/s wind); lens centred hC + 1.1 ex + 500 m, half-thickness
-    min(0.3 (ex - dry), 900) (domed top 0.75 of it, base 0.45), sigma 0.025, smooth (no lobes / erosion); one lee lens at the
+    Relief excess ex = h(DEM mip 1, 800 m upwind for the cap) - h(mip 3.3, the regional ground) against a dryness
+    mix(2200, 350, moisture) m x (1.25 .. 0.85 over 8-25 m/s wind); lens centred hC + 2.4 exB (mip 2) + 300 m, half-size
+    hl = min(0.8 (ex - dry) + 100, 800) (top 0.8 hl, base 0.4 hl), sigma 0.05, smooth (no lobes / erosion); one lee lens at the
     relief one wavelength 2 pi U / N upwind (N 0.01 /s), x0.65. Earth-fixed. The wind (CPU, per view: lenses are local)
+    (2026-11-05 follow-up, the user had not seen any: the cap sat 2 km downwind, off the summit, and at sigma 0.025 and
+    0.4 t thick it was a grey see-through sliver; now 800 m, 0.05, 0.8 t + 100, moisture default 0.75. Widening the footprint
+    with max(ex, 0.75 exB) laid one plate over the whole Alps: not done. Over the Bernese Alps from 5 km the lens is still a
+    plate tens of km across overhead.)
     is "Ridge wind" / "Ridge wind from", or 20 m/s from the east within 25 deg of the equator, from the west outside.
     Moisture = `oro_moist` x (1 +- 0.5 x a slow lat/lon wave whose phase turns over in ~3 sim days), so ranges take turns.
     Gated on the ~20 km ground > 250 m, a 0.3-7 km band over it, fpM < 700 m. Under the mid layer's CDC mask bit; the
@@ -2539,6 +2546,13 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     round's base terms); the same with k a compile-time constant was 128, so was the additive form with the cap at 1; a cap
     of 1 + 0.9 k (uniform) was 249. The shipped form (additive k term in hVar, CONSTANT cap 1.7) is 128 (march, composite).
     Side effect: at k = 0 a cell whose hVar already exceeded 1 (cu.x) now rises to 1.7 x flow.w instead of flow.w.
+  - Cumulus core (2026-11-05; key `cumulus_core` 0.5, slot 553, `ciHu2.y`; cv2FieldLow after the margin m): the user, after
+    the night wave, "keep turrets contained a bit so that they don't entirely tear up clouds into tiny pieces. We still need
+    some big continuous clouds". m -> mix(m, max(m, mEnv), k (1 - deep) smoothstep(0, 0.25, mEnv)), mEnv the envelope's margin
+    before the bubbles divide it: the carving fades with depth into the envelope, so a cut cannot go through a big mass; the
+    skin (blend 0) and the towers (positive side) are unchanged. A hard floor max(m, mEnv - D) bared the envelope's smooth
+    inner shell wherever the bubbles cut past D (paper cut-outs, gumdrops); at k = 1 the blend also smooths too much (smooth
+    patches on the report's Himalaya view). 128 registers (march). Evidence qa/waves/20261106/evidence/core/core_ab3.png.
     **Measured** (RTX 3070 Ti, 1600x900, the user's settings, one live app, perf-frames 3a40b2e's march vs this, 3
     interleaved reps, other agents on the GPU): cloud_march 10.19 -> 10.87 ms (Amazon from the ground), 7.87 -> 8.34
     (Amazon across at 4 km), 11.19 -> 11.33 (Darwin across, 3 km), 8.22 -> 8.41 (trade across, 3 km), 12.29 -> 12.01
