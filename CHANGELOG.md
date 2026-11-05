@@ -315,6 +315,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   samples. Inside an anvil at 11 km the cloud time drops by about 40% (49 -> 29 ms standing still, 58 -> 37 ms
   flying; RTX 3070 Ti, 1080p, High); storms seen from above cost about the same as before. Setting (no UI):
   `clouds_v2.storm_unified` (1; 0 = the previous storm drawing).
+- **Anvils, polished.** Neighbouring storms' anvils merge into one plate (a dark channel no longer cuts across an
+  anvil where a smaller storm's shield overlaps a bigger one), the plate's edge thins out instead of standing as a
+  cliff of billows, overshooting tops stand out of the anvil again as domes (the dark dots seen from orbit), and the
+  billows of storm towers rise up the column again.
 - **Cloud ray budget.** The full-resolution clouds march one pixel in four each frame and rebuild the rest from
   history; a settings key (`clouds_v2.sparse_block`: 2, the default, or 3 / 4 for one pixel in 9 / 16) trades
   sharpness in motion for speed in dense storms and anvils (an anvil top at 11 km, flying: about 121 -> 68 ms of

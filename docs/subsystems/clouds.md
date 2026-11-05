@@ -1197,6 +1197,36 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   edge and underside and a smoother lid, the thin veil beyond it reads as ice (whiter than the old lit haze, e.g. the
   020257 sky); from orbit the plates are smoother and the overshoot domes' dark dots weaker. Not done: deleting
   cv2ColumnSigma and the shield's plate code (kept for the switch until the user judges the look).
+  **The plate, polished (2026-11-04, worktree storm-polish, `harness_runs/sp/`; sheets
+  `qa/waves/20261104/evidence/storm-polish/`).** (1) THE PLATE IS THE UNION OF THE SHIELDS: `cv2ShieldAtR` takes the
+  shield with the largest plate margin m = (a - 0.5) x (inside: its thickness x age factors), a =
+  `cv2ShieldPlateA` = sT x (1 - smoothstep(0.25, 1.25, u / ext)), for every caller. It took the strongest by
+  p = sT x (1 - smoothstep(0.3, 1.6, u)), a wider fade than the plate's: a smaller shield won p inside a big one's plate
+  where it stood outside its own plate, and cut a channel through it (the dark crease across issue 111947's anvil from
+  14.5 km); and the thickness stepped where the choice switched. The bins' strongest-first early out stays exact
+  (m <= a.w - 0.5). The old path (storm_unified 0) reads the same choice. (2) THE EDGE: the margin to the outline is
+  m x 12 km (continuous where shields overlap; it was metres from the outline, ~1.2 sT a radius, so the lobes frayed a
+  100-km outline by a km), cut below a = 0.25 (-3 km, past the lobes' 1.4 lobeS reach); toward the outline (m < 0.12)
+  the lobes shrink to half (CV2Storm.cap, the lobes' damping share): at full height the edge was a wall of billows
+  +-1.5 km about a plate a few hundred metres thick. The veil fades out across it (plate presence 0.42-0.55; it overlapped
+  the solid plate to 0.65 at first, and its thin-ice share relit a ring round the plate's inside) and the cirrus gives way
+  from the same fade (presA continuous with the plate's 1). (3) THE DOMES: over a tower's head (`near`) the lid keeps
+  ~5% of the lobes (0.6 + 0.35 near of them damped), a dome keeps a quarter, is the tower's cloud (wT) down its last km,
+  and stands `kCv2DomeU` 600 m higher than "Cb overshoot" puts it (140 m at the user's settings, buried in a lid of +-600 m
+  lumps: the domes' dots from orbit had faded). (4) THE FLOW: the storm-scale lobes rise at 1.5 x the wind, as
+  cv2ColumnSigma's did: `anchorStormA` slides along L, the lattice vector (components -2..2) of the noise tile nearest
+  the observer's up in the shape frame, by fract(phase) of it (the tile repeats: seamless; L changes, one jump, only
+  when the observer's up passes to another lattice vector). No shader cost. REGISTERS: the march is AT the 128 cliff;
+  each of these went to 244-255 and was dropped: a flow-map cross-fade of the storm read (two reads in a dont_unroll
+  loop), a bool parameter on the shield walk choosing the metric (even folded constant), a second running choice in the
+  walk, two globals handing the plate's cluster fetch on to the veil, CV2Storm.base carried across cv2LowA (now
+  recomputed from the cached ground: that freed the register `cap` takes). Rejected for the look: fraying the plate's
+  outline with the cluster noise as the veil does (+-0.12 presence: the fringe reached 111947's eye at 11 km, which
+  stood in fog, and the fetch cost ~3 ms over a plate). PERF (RTX 3070 Ti, 1920x1009, the user's settings, alone on the
+  GPU, interleaved x3 in one app, min of reps; cloud march ms, storm-rework 451f6b3 -> this): issue 111947 at 11 km 26.7 ->
+  24.8, the same from 14.5 km 25.6 -> 24.2, a supercell from 200 km 42.0 -> 42.6, its plate edge-on from 19 km 19.0 ->
+  19.2, over its core from 19 km looking down 10.3 -> 10.7: neutral (+-1 ms, the A-vs-A spread). 128 registers. Batches:
+  `.worktrees/storm-polish/harness_runs/sp/` (views.py: the five views; genperf.py / genlook.py write the batches).
 - **The unified volumetric composite (2026-10-26, branch perf-frames; the user: the plumes, smoke and tornadoes "feel entirely
   distinct in quality" and clip against rain, dust, smoke and clouds).** The dust list's Gaussians (launch plumes, flames,
   wildfire smoke, tornado funnels, haboob far field, Kessler dust and fireball trails) are still composited in cloud_march.comp

@@ -1461,6 +1461,32 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         };
         p.anchorShapeA = anchorF(f1, cv2ShapePeriodM, 1.0);
         p.anchorStormA = anchorF(f1, cv2ShapePeriodM * stormScale, 1.0);
+        // The storm lobes FLOW up (storms through the cumulus field, 2026-11-04): the storm-scale volume (towers, heads,
+        // anvil plates, deep convection; read at 2x this anchor) rises at 1.5 x the wind, as cv2ColumnSigma's lobes rose up
+        // its columns. Along L, the short lattice vector of the tile nearest the observer's up in this frame, by
+        // fract(phase) of it: the volume tiles, so the wrap is seamless, and no shader work (a flow-map cross-fade there,
+        // two reads, put the march over the 128-register cliff). A pure function of position and time; L changes (the
+        // lobes jump once) only when the observer's up turns past another lattice vector, hundreds of km away.
+        {
+            const glm::dvec3 upR = mulF(f1, glm::normalize(sea));
+            glm::dvec3 L(0.0, 0.0, 1.0);
+            double bestC = -2.0;
+            for (int x = -2; x <= 2; ++x)
+                for (int y = -2; y <= 2; ++y)
+                    for (int z = -2; z <= 2; ++z)
+                    {
+                        const glm::dvec3 v(x, y, z);
+                        if (x == 0 && y == 0 && z == 0) continue;
+                        const double c = glm::dot(v, upR) / glm::length(v);
+                        if (c > bestC + 1e-9) { bestC = c; L = v; }
+                    }
+            const double periodS = cv2ShapePeriodM * stormScale;
+            const double ph = fracPos(1.5 * (double)cv2WindMps * simT / (glm::length(L) * periodS));
+            const glm::dvec3 a = glm::dvec3(p.anchorStormA.x, p.anchorStormA.y, p.anchorStormA.z) - L * ph;
+            p.anchorStormA.x = (float)fracPos(a.x);
+            p.anchorStormA.y = (float)fracPos(a.y);
+            p.anchorStormA.z = (float)fracPos(a.z);
+        }
         cv2ShapeFrame = f1;
     }
     p.storm = glm::vec4((float)stormScale, cv2StormDetail, cv2Anvil, cv2BaseRoughness);

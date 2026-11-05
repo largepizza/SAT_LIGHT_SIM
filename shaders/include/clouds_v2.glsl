@@ -591,18 +591,19 @@ struct CV2Storm {
     float m;        // signed distance-like margin (m): > 0 inside a tower / the shield's plate (-1e9 = none)
     float top;      // the storm cloud's top over this point (m)
     float hf;       // the lighting's height share (0 base .. 1 top)
-    float base;     // the towers' base (m)
     float deck;     // 0 a tower .. 1 the shield's plate (lit as a deck)
     float sig;      // extinction at full presence (1/m)
     float near;     // under a full-height tower's head (CV2Col.near)
     float storm;    // the storm strength (CV2Col.storm)
     float prox;     // within the storm cumulus reach (CV2Col.prox)
+    float cap;      // the lobes' damping share (x 0.75 of them): an overshooting dome (a smooth bubble standing out of
+                    // the lid) and, at two thirds, the plate's outline (its edge thins instead of standing as a wall)
 };
 CV2Storm cv2StormNone()
 {
     CV2Storm g;
-    g.m = -1e9; g.top = 0.0; g.hf = 0.0; g.base = 0.0; g.deck = 0.0; g.sig = 0.0;
-    g.near = 0.0; g.storm = 0.0; g.prox = 0.0;
+    g.m = -1e9; g.top = 0.0; g.hf = 0.0; g.deck = 0.0; g.sig = 0.0;
+    g.near = 0.0; g.storm = 0.0; g.prox = 0.0; g.cap = 0.0;
     return g;
 }
 bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Field f, out CV2Carve c)
@@ -1076,13 +1077,19 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         float wS    = cu ? clamp(0.5 + (mS - c.m0) * 5.0, 0.0, 1.0) : 1.0;
         float hS    = cu ? max(0.2 - abs(mS - c.m0), 0.0) / 0.2 : 0.0;
         c.m0      = max(c.m0, mS) + hS * hS * 0.05;     // a smooth max (over 0.2 e units)
-        c.hb      = mix(c.hb, q.h - sg.base, wS);
+        // (The towers' base, cv2StormGeom's: recomputed, the ground is cached. Carried in CV2Storm it cost a register
+        // across cv2LowA, and the march sits at the 128-register cliff.)
+        c.hb      = mix(c.hb, q.h - (cv2.types[4].alt.x + cv2Ground(q.dirE) * 0.9), wS);
         c.baseAmp = mix(c.baseAmp, 200.0, wS);
         c.lobeRef = mix(c.lobeRef, 0.0, wS);
         c.bigL    = max(c.bigL, wS);
         c.deep    = max(c.deep, wS);
         // An anvil plate's lid is smooth-ish (spreading ice under the tropopause); its underside and edges billow.
-        c.lobeKL  = mix(c.lobeKL, lobeS * (1.0 - 0.6 * sg.deck * smoothstep(0.55, 0.95, sg.hf)), wS);
+        // Over a tower's head (sg.near) the lid is smoother still, and an overshooting dome (sg.cap) keeps a quarter of
+        // them, as the towers' own did (cv2ColumnSigma: the head's top smooth under the shield, the dome its own): with
+        // the lid's lobes there, +-600 m, the 140-m domes were buried in it (the supercell from orbit: their dots faded).
+        c.lobeKL  = mix(c.lobeKL, lobeS * (1.0 - (0.6 + 0.35 * min(sg.near, 1.0)) * sg.deck * smoothstep(0.55, 0.95, sg.hf))
+                                        * (1.0 - 0.75 * sg.cap), wS);
         c.aBase   = mix(c.aBase, 0.3, wS);
         c.aRamp   = mix(c.aRamp, 600.0, wS);
         c.AshK    = mix(c.AshK, 0.0, wS);
@@ -1136,6 +1143,8 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
     // pile of small bubbles, a "mountain" rather than towers.
     if (bigL > 0.02) {
         // (x2 of the storm anchor -- an integer, so the tile stays in register: lobes of 5, 2.6 and 1.3 km at 12x.)
+        // (The storm anchor carries the lobes' FLOW: anchorStormA rises along the observer's up, CPU side, as the
+        // towers' own did up their columns: SatelliteSimCloudsV2.cpp.)
         vec4 s2 = textureLod(cv2ShapeTex, (cv2.anchorStormA.xyz + rSA * cv2.anchorStorm.w) * 2.0,
                              cv2Lod(fpM, cv2.anchorStorm.w * 2.0));
         // "Storm cumulus fine lobes" (cu.w): the cumulus-scale lobes stay ON the storm-scale ones, strongest on
@@ -1921,8 +1930,13 @@ float cv2AnvilSigmaP(CV2Pos q, float fpM, float colNear, bool wantPres, out floa
     // stood over map regions with no tower under them (issue 20261023_002905 shot 3: "stranded anvils").
     float stormA = 0.0, shThick = 1.0, shAge = 0.0, shU = 9.0, shS = 0.0;
     bool  shOn   = cv2ShieldsOn();
-    // (The veil inside the plate: nothing to draw, the cirrus gives way. Before the walk and the fetches.)
-    if (gCv2AnvVeil && gCv2PlateA >= 0.45) { presA = 1.0; return 0.0; }
+    // (The veil inside the plate: nothing to draw, the cirrus gives way. Before the walk and the fetches. It fades out
+    // across the plate's frayed outline, presence 0.42-0.55, where the plate's lobes stand as ragged fragments; overlapping
+    // the solid plate (to 0.65) its thin-ice share relit the plate's edge, a ring drawn round its inside. The cirrus gives
+    // way from the same fade, continuous with the plate's presA = 1.)
+    float plP = gCv2AnvVeil ? smoothstep(0.3, 0.55, gCv2PlateA) : 0.0;
+    presA = plP;
+    if (gCv2AnvVeil && gCv2PlateA >= 0.55) { presA = 1.0; return 0.0; }
     if (shOn) {
         if (gCv2ShSet) { shS = gCv2Sh.x; shThick = gCv2Sh.y; shAge = gCv2Sh.z; shU = gCv2Sh.w; }
         else shS = cv2ShieldAt(wd, shThick, shAge, shU);
@@ -1968,8 +1982,8 @@ float cv2AnvilSigmaP(CV2Pos q, float fpM, float colNear, bool wantPres, out floa
     float a      = a0 + (sh.b - 0.45) * 0.15;
     // (From 0 at the cutoff: from 0.0, the outline at a = 0.05 kept ~2% of the density, and at "Anvils" 8 a view along
     // the shield's edge crossed tens of km of it: a hard arc, issue 20261023_002905 shot 1.)
-    presA = smoothstep(0.05, 0.6, a);
-    if (a <= 0.05 || !inBand || (gCv2AnvVeil && gCv2PlateA >= 0.6)) return 0.0;
+    presA = max(plP, smoothstep(0.05, 0.6, a));
+    if (a <= 0.05 || !inBand) return 0.0;
     float thick  = cv2.anvil2.x * clamp(a, 0.0, 1.0) * shThick + hang; // thickest over the storm, thin at its edge
     float za     = (q.h - (top - thick)) / thick;
     if (za <= -0.2) return 0.0;
@@ -1977,12 +1991,12 @@ float cv2AnvilSigmaP(CV2Pos q, float fpM, float colNear, bool wantPres, out floa
     // The lid is flat but not blank: low domes of the storm-lobe scale, highest over the core
     // (overshooting tops), ~ +-8% of the thickness.
     float lid    = 1.0 - smoothstep(0.93, 1.0, za - (sh.g - 0.45) * 0.3 * a);
-    float edge   = presA;
+    float edge   = smoothstep(0.05, 0.6, a);   // (its own, not the plate's give-way in presA)
     hfA  = clamp(za, 0.0, 1.0);
     topA = top;
     // An aged (orphan) shield is thinner ice.
     return edge * edge * under * lid * mix(0.85, 1.0, sh.r) * 0.01 * cv2.storm.z * mix(1.0, 0.5, shAge)   // "Anvils" is its density
-         * (gCv2AnvVeil ? 1.0 - smoothstep(0.45, 0.6, gCv2PlateA) : 1.0);
+         * (gCv2AnvVeil ? 1.0 - smoothstep(0.42, 0.55, gCv2PlateA) : 1.0);
 }
 
 float cv2AnvilSigma(CV2Pos q, float fpM, float colNear, out float hfA, out float topA)
@@ -2169,7 +2183,7 @@ float cv2SMax(float a, float b, float k)
     float h = max(k - abs(a - b), 0.0) / k;
     return max(a, b) + h * h * k * 0.25;
 }
-CV2Storm cv2StormGeom(CV2Pos q)
+CV2Storm cv2StormGeom(CV2Pos q, float fpM)
 {
     CV2Storm g = cv2StormNone();
     gCv2RainCore = 0.0;
@@ -2179,15 +2193,19 @@ CV2Storm cv2StormGeom(CV2Pos q)
     vec3  wd    = cv2Drift(q.dirE);
     float tropo = cv2Tropo(wd);
     float top   = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * tropo;
-    if (q.h > top + 50.0 + cv2.anvil2.w) return g;
+    // An overshooting dome stands kCv2DomeU higher than "Cb overshoot" puts it over the old shield's haze: the plate's lid
+    // here is a cloud surface with lobes of +-600 m (40% of them), which buried a 140-m dome (the supercell from orbit,
+    // 2026-11-04: its domes' dots faded); through the old translucent haze the dense dome showed whatever its height.
+    const float kCv2DomeU = 600.0;
+    if (q.h > top + 50.0 + cv2.anvil2.w + kCv2DomeU) return g;
     float lift  = cv2Ground(q.dirE) * 0.9;
     float base  = cv2.types[4].alt.x + lift;
     float hb    = q.h - base;
     bool  colH  = hb >= -300.0;
     float lid   = top - 250.0;
-    float osM   = cv2.anvil2.w;
+    float osM   = cv2.anvil2.w + kCv2DomeU;
     bool  inAnvil = q.h > lid - cv2.anvil2.x * 1.2 - 600.0 - cv2.anvil2.y;
-    float best = -1e9, bestTop = 0.0, bestZeta = 0.0, bestFull = 0.0;
+    float best = -1e9, bestTop = 0.0, bestZeta = 0.0, bestFull = 0.0, bestCap = 0.0;
     float near = 0.0, prox = 0.0, storm = 0.0;
     uvec2 bin   = cv2StormBin(wd);
     if (bin.y > 0u) {
@@ -2250,7 +2268,7 @@ CV2Storm cv2StormGeom(CV2Pos q)
             }
             float mT   = r - d;
             float topL = max(topC, (full > 0.0) ? apex * 1.0 + 1000.0 * (sqrt(max(1.0 - cv2SqC(d / max(0.35 * Rc, 1.0)), 0.0)) - 1.0) : 0.0);
-            if (mT > best) { best = mT; bestTop = topL; bestZeta = zeta; bestFull = full; }
+            if (mT > best) { best = mT; bestTop = topL; bestZeta = zeta; bestFull = full; bestCap = smoothstep(0.0, 1.0, zo) * full; }
             if (inAnvil) {
                 vec3  dn2  = dh - eastW * (cv2.column2.z * cv2TowerDriftK(tw.c) + 4000.0);
                 float al   = dot(dn2, eastW);
@@ -2263,29 +2281,40 @@ CV2Storm cv2StormGeom(CV2Pos q)
         }
     }
     g.near = near; g.storm = storm; g.prox = prox;
-    g.base = base;
     float zC = clamp(bestZeta, 0.0, 1.0);
     float hfT = clamp(mix(zC, (zC - 0.7) * (1.0 / 0.3), smoothstep(0.5, 0.7, zC) * bestFull), 0.0, 1.0);
     float sigT = mix(0.6, 1.0, smoothstep(0.0, 0.3, zC)) * cv2.types[4].shape.x * cv2.look.y * cv2.column.x;
     // The shield (the strongest capsule over this point): a lens under the lid, thickest over the storm, thin at its
     // edge, hanging lower under a tower's head. Its outline is the margin's zero, frayed by the cumulus lobes.
-    float mSh = -1e9, topS = lid, hfS = 0.0, sigS = 0.0;
+    float mSh = -1e9, topS = lid, hfS = 0.0, sigS = 0.0, edgeS = 0.0;
     if (cv2.storm.z > 0.0 && cv2ShieldsOn() && q.h > max(5000.0, 0.66 * top)) {   // (down through the cirrus band: its presence)
         float shThick, shAge, shU, shR;
         float shS = cv2ShieldAtR(wd, shThick, shAge, shU, shR);
         gCv2ShSet = true; gCv2Sh = vec4(shS, shThick, shAge, shU);
-        if (shS > 0.0) {
-            float ext   = 0.25 + 0.85 * sqrt(shS);                      // its radius grows as it forms (radii)
-            float a     = shS * (1.0 - smoothstep(0.25, 1.25, shU / ext));
+        // The plate: the shield with the largest plate margin (cv2ShieldAtR), its presence a.
+        float a  = cv2ShieldPlateA(shS, shU);
+        // (Not frayed at the cluster scale as well, the veil's +-0.12 of presence: the plate's fringe then reached issue
+        // 111947's eye at 11 km, which stood in fog, and the fetch cost ~3 ms over a plate.)
+        if (a > 0.25) {   // (the margin there, -3 km, is past the lobes' reach: 1.4 lobeS ~ 2.7 km)
             gCv2PlateA  = a;
             // The plate is where the old shield's presence passes 0.5, thinning toward it (below that its density x
             // presence^2 is a haze tens of km wide that every ray crossed in fine steps, issue 111947: there it is the veil,
             // thin ice at coarse steps; with the outline at 0.35 the eye at 11 km stood inside a plate of fog, -10% only).
-            float thick = cv2.anvil2.x * clamp((a - 0.5) / 0.5, 0.0, 1.0) * shThick * mix(1.0, 0.5, shAge)
-                        + cv2.anvil2.y * near + 150.0;
-            float mH    = (a - 0.5) * shR / max(1.2 * shS, 0.1) * ext; // to the outline (m): a's slope is ~1.2 shS a radius
+            // (mP: the walk's choice, the plate margin in presence units; inside, x the thickness and age factors.)
+            float mP    = (a - 0.5) * ((a > 0.5) ? shThick * mix(1.0, 0.5, shAge) : 1.0);
+            float thick = cv2.anvil2.x * max(mP, 0.0) * 2.0 + cv2.anvil2.y * near + 150.0;
+            // To the outline: a function of the plate margin (continuous where the shields overlap), and gentle (12 km of
+            // margin per unit presence): the storm lobes (+-1.5 km of margin) fray the edge over ~10% of the radius into
+            // ragged billows thinning into the veil, and its outer part is a wedge, thinner toward the edge. As a distance
+            // in metres (~1.2 shS a radius) the edge was a cliff as high as the plate is thick, its lobes a km of fray on a
+            // 100-km outline (the supercell's plate from 19 km, 2026-11-04: a mesa).
+            float mH    = mP * 12000.0;
             float mV    = min(q.h - (topS - thick), topS - q.h);        // to the underside / the lid (m)
             mSh  = min(mH, mV);
+            // Toward the outline the lobes shrink (to half at it): at full height there the edge stood as a wall of
+            // billows +-1.5 km about a plate a few hundred metres thick (the supercell from 19 km: a mesa); a real
+            // anvil's edge thins out.
+            edgeS = 1.0 - smoothstep(0.0, 0.12, mP);
             hfS  = clamp((q.h - (topS - thick)) / thick, 0.0, 1.0);
             sigS = 0.01 * cv2.storm.z * mix(1.0, 0.5, shAge) * mix(0.35, 1.0, smoothstep(0.35, 0.8, a));   // thinner ice toward its edge
         }
@@ -2293,11 +2322,16 @@ CV2Storm cv2StormGeom(CV2Pos q)
     float m = cv2SMax(best, mSh, 400.0);
     if (m < -1e8) return g;
     float wT = clamp(0.5 + (best - mSh) / 800.0, 0.0, 1.0);
+    // An overshooting dome is the TOWER's cloud (dense, lit as a tower: its shadowed flank and the shadow it casts) all the
+    // way down its last km, inside the plate too: as the plate's (wT ~ 0 where the plate's margin is the larger) only its
+    // top 140 m above the lid showed, and the domes' dark dots seen from orbit faded (2026-11-04).
+    wT = max(wT, bestCap * smoothstep(-300.0, 100.0, best));
     g.m    = m;
     g.top  = mix(topS, bestTop, wT);
     g.hf   = mix(hfS, hfT, wT);
     g.deck = 1.0 - wT;
     g.sig  = mix(sigS, sigT, wT);
+    g.cap  = max(bestCap * wT, 0.67 * edgeS * (1.0 - wT));   // (x 0.75 of the lobes: the dome's quarter, the edge's half)
     return g;
 }
 
@@ -2352,7 +2386,7 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     bool stU = CV2_STORM_U;
     CV2Storm sg = cv2StormNone();
     if (stU) {
-        if ((lm & (kCv2LayCol | kCv2LayLow)) != 0u) sg = cv2StormGeom(q);
+        if ((lm & (kCv2LayCol | kCv2LayLow)) != 0u) sg = cv2StormGeom(q, fpM);
         col.near = sg.near; col.storm = sg.storm; col.prox = sg.prox;
     } else if ((lm & kCv2LayCol) != 0u) col = cv2ColumnSigma(q, detailAmt, fpM);
 #ifdef CV2_LAYER_HITS
