@@ -1496,7 +1496,40 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   `readExposureMeter`), steps toward a linear mean of 0.32 and harder when > 4% clips, only DARKENS (to
   -3 EV x "Auto exposure (day)") and only by day. Harness `state` reports it under `exposure`. Highlight
   roll-off blends the tonemap toward 1 - 1/(1 + x + x^2/2) (same toe, long shoulder); White balance adapts
-  to the sunlight's colour at the observer (a low Sun is yellow; without it every cloud read beige).
+  to the low Sun's colour (a low Sun is yellow; without it every cloud read beige).
+  - **White balance's reference sunlight is the Sun 2 km over sea level under the eye, not at the eye (2026-11-05,
+    light2; `cloud.wbRef`, sat_sky.frag + the rain particles' copy in cloud_v2_lightning.comp).** The user: "at low sun
+    angles most clouds pick up this off-yellow ... clouds should stay whiter for longer ... from the top a sea of
+    off-yellow red clouds". Measured first, nothing in the cloud lighting was wrong: the Sun table's transmittance to a
+    sample is the sample's own height and path (Chapman + ozone; `qa/waves/20261105/evidence/light2/sun_trans_light2.py`
+    against a brute-force spherical integral: equal to 3 digits at 0-14 km, Sun 2-45 deg), Mie is negligible above 2 km
+    (H_M 1200), ozone takes ~20% of the green at 2-5 deg (magenta, not yellow). The display was: the reference was the
+    sunlight AT THE EYE, which swings with a kilometre of the eye's height near sunset, so it was faded out from 11.5 deg
+    of Sun to 1 deg, exactly where the light turns yellow (at 5 deg its weight was 0.19 x 0.6), and from an aircraft the
+    Sun at the eye is nearly white, so a sea of cloud below was not adapted at all. Now the reference height is fixed
+    (it blends back to the eye's from 60 to 200 km, where the frame spans the terminator) and the adaptation holds to
+    "White balance holds to" (`clouds_v2.white_balance_hold_deg` 6, slot 513; off at ~1 deg, so the last degrees keep
+    their orange). 2 km, not sea level: the reference takes the sky's Rayleigh while the clouds take "Cloud sunlight
+    Rayleigh" (0.65 in the user's settings), so a sea-level reference over-corrected high cloud (a 10-km deck lit b/r
+    1.64 at 10 deg, lavender from 18 km; 1.45 at 2 km). "White balance from the eye" (`white_balance_at_eye`, slot 512)
+    1 + hold 11.5 = the old behaviour. Lit-face colour (blue / red of the sunlight on a 2 km cloud after the adaptation
+    at the user's 0.6, from the ground): Sun 3 deg 0.25 -> 0.30, 5 deg 0.48 -> 0.70, 6 deg 0.60 -> 0.85, 8 deg 0.85 ->
+    0.96, 10 deg 1.06 -> 0.98, 20 deg 1.08 -> 1.01, 45 deg 1.05 -> 1.01 (from the ground the old over-corrected a
+    little: the eye's Sun is yellower than the clouds').
+  - **Where the grey and the off-yellow come from (the same views, term probes = march variants writing one term x0.1
+    as the sample's radiance, decoded from `debugview cloudrad`, on opaque cloud; `probe_terms_light2.satcmd`,
+    `terms_light2.py`).** Darwin cumulus from the ground, Sun 5 deg behind the eye: scene-linear lit / shaded 23.6 : 1,
+    blue / red lit 0.33 (saturated gold), shaded 0.47. Lit faces are 96% the diffuse field; the shaded faces 47% diffuse
+    field (the Sun's orange, b/r 0.18), 23% the upper sky (b/r 0.86: the clear hemisphere is b/r 1.6-2.0, the deck term's
+    diffuse sunlight warms it), 25% the lower hemisphere (b/r 0.53: the haze below lit by the low Sun). So lit and shaded
+    faces have nearly the SAME hue in the scene; on screen (AgX, contrast 1.15) the lit faces come out cream (display b/r
+    0.69-0.73, the tonemap's path to white) and the mid-tones khaki (sRGB ~178 171 155), contrast 3.1-3.4 : 1. The
+    reference photos (`refs/cb_*`): lit b/r 0.18-0.43, shaded ~1.9, contrast 5-8 (33 with lightning). The adaptation
+    separates the hues the way an eye does at sunset (the lit faces whiter, the sky-lit parts bluer: the shaded tenth's
+    display b/r 1.29 -> 1.60 at 5 deg); the contrast is the tonemap's (see "Cloud contrast": AgX contrast 1.35 is the
+    third column of the evidence sheets, a look choice). The sky's light at 2 km by halves (`sky_halves_light2.py`, a
+    numpy port of the bake): the anti-Sun half is 0.92-0.94 of the hemisphere in luminance and only ~5% bluer at 2-45 deg,
+    so splitting it would not change the shaded faces' hue.
 - **The Earth from space vs the Artemis II photographs (2026-09-30, `harness_runs/artemis_ref/`, Wikimedia
   Commons JPGs).** Measured: in the photos sunlit cloud is ~10x the open sea in linear light; the sim showed
   ~2.5x (a sky-cyan sea under a milky veil). The raw sea surface was right (debug view 43: navy); the cause
