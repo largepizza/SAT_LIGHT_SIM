@@ -130,6 +130,12 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **Fibrous cirrus.** Cirrus is drawn as tufts of thin bright filaments with clear sky between them, with denser
   heads and fall streaks that hook away below them, instead of a smooth marbled veil. Settings > Clouds: "Cirrus
   fibres", "Cirrus hooks".
+- **Cloud bases vary, and mountains wear lenticular clouds.** Low cloud bases now sit at different heights from
+  region to region and cloud to cloud: lower over the sea and in rain, high over dry land on a sunny afternoon. Ragged
+  fractus hangs under raining bases, thin wisps drift between the cumulus tops and the altocumulus, and smooth
+  lenticular lenses cap high mountains (Fuji, Rainier, the Andes), fixed to the ground while the weather drifts past.
+  Settings > Clouds: "Cloud base condensation level", "Cloud base cell spread (m)", "Cloud base regional spread",
+  "Fractus (ragged scud)", "Mid-level wisps", "Orographic clouds", "Ridge wind (m/s, 0 = auto)", "Ridge wind from (deg, -1 = auto)".
 - **Billowier cumulus.** The cauliflower lobes on cumulus sides and tops come from a new "billow" noise matched
   against a production cumulus model (the Disney WDAS cloud): round lobes of many sizes meeting in sharp creases,
   instead of pointed bumps over broad valleys, down to the fine erosion detail. Settings > Weather, "Lobe noise (0 cones, 1 caps, 2 billows)";

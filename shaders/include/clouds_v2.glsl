@@ -234,6 +234,16 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // streaks" (the swirl relief on the CDO's lid, m); ciHu2: x "Hurricane top density" (x the plate's ice), yzw spare
     vec4  ciHu;
     vec4  ciHu2;
+    // -- vertical (2026-11-05, night wave agent E): varied cloud bases, fractus, mid-level wisps, orographic clouds --
+    // vert: x "Cloud base condensation level" (cv2BaseShift's LCL proxy, x1), y "Cloud base cell spread" (m, per cumulus
+    // cell), z "Cloud base regional spread" (x the type's alt.w at the cluster scale), w "Fractus" (ragged scud under wet bases)
+    // vert2: x "Mid-level wisps" (the mid layer's low thin mode), yzw spare
+    // oro0: x "Orographic clouds" (0 = off), y the lee wavelength (m, 2 pi U / N), zw the wind's (east, north) unit vector (the
+    // way it blows); oro1: x lens moisture (0..1), y x the dryness (faster wind lifts more), zw the regional moisture phase
+    vec4  vert;
+    vec4  vert2;
+    vec4  oro0;
+    vec4  oro1;
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO
@@ -319,6 +329,32 @@ float cv2Ground(vec3 dirE)
     if (gCv2GroundSet) return gCv2Ground;
     return textureLod(cv2WeatherTex, dirE, CV2_WX_LOD(1.5)).a * 8000.0;
 }
+
+// ── Where a base sits (2026-11-05, vertical) ───────────────────────────────────────────────────────────────────────────
+// x: the REGIONAL spread, the cluster Perlin (cl.a, 0.50 +- 0.057) normalised as the fog and the mid layer read it, x the
+// type's "base variation" (alt.w): +-1.5 alt.w at the 8-64 km scale. Until 2026-11-05 the term was (cl.a - 0.5) x 2 x alt.w,
+// so a 300 m setting moved a base by about +-34 m: every base in a view sat on one line.
+// y: a lifting-condensation-level proxy (LCL ~ 125 m per K of dewpoint depression: ~500 m over a warm sea, 2-3 km over a
+// dry afternoon continent). Lower over the sea (low land counts: the sea fog's own test), in rain and under a full cover;
+// higher over dry land by day (the dust's dryness: the ~20 km cover fraction covF, no rain), most on convective types.
+// The near field (cv2LowA) and the far field (cv2FarColumn) both take it, from the same inputs, so the bases agree at
+// every distance. The top follows (cv2BaseTopShift); anvil3.zw's bound carries the margin (CPU).
+vec2 cv2BaseShift(CV2Type ty, float clA, vec4 w, float cov, float covF, float gF, vec3 dirE)
+{
+    float reg   = clamp((clA - 0.5) * 8.8, -1.5, 1.5) * ty.alt.w * cv2.vert.z;
+    float sea   = 1.0 - smoothstep(5.0, 60.0, gF);
+    float wet   = clamp(w.b * 3.0, 0.0, 1.0);
+    float dry   = (1.0 - smoothstep(0.02, 0.35, covF)) * (1.0 - sea) * (1.0 - wet);
+    float day   = smoothstep(0.0, 0.5, dot(dirE, cv2.sunE.xyz)) * (1.0 - sea);
+    float conv  = ty.look.z;
+    float lcl   = conv * (-350.0 * sea - 250.0 * wet - 200.0 * (cov - 0.5) + 1400.0 * dry * day + 300.0 * day)
+                + (1.0 - conv) * (-150.0 * sea - 150.0 * wet);
+    return vec2(reg, lcl * cv2.vert.x);
+}
+// The top moves with it: a lower condensation level (sea, rain) moves the whole cloud down (marine cumulus are low AND
+// capped low; only lowering the base deepened every puff and grew the cover seen from above), a higher one raises the top
+// by half (desert cumulus are high-based and tall), the regional spread by 0.7 (the cloud keeps most of its depth).
+float cv2BaseTopShift(vec2 bSh) { return min(bSh.y, 0.0) + 0.5 * max(bSh.y, 0.0) + 0.7 * bSh.x; }
 
 struct CV2Field {
     float sigma;     // extinction (1/m)
@@ -768,7 +804,14 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     // Closed-cell rims (cl.b) fade out with the footprint: from orbit they read as cracked ice.
     float rimAmt  = 0.25 * (1.0 - smoothstep(0.5, 2.5, cv2Lod(fpM, cv2.anchorCell.w)));
     float deckVar = clamp((ce.a - 0.5) * 3.0 + (cl.b - 0.5) * rimAmt * 4.0, -1.0, 1.0);
-    float base    = ty.alt.x + lift + (cl.a - 0.5) * 2.0 * ty.alt.w - strat * 150.0 * deckVar;
+    // The base (2026-11-05, vertical): the type's, + the regional spread and the condensation-level proxy (cv2BaseShift),
+    // + each cumulus cell's own offset (ce.g, the cell's strength: a weak, dying cell sits a little higher), - the deck's
+    // thickness variation. Kept >= 150 m over the ground and >= 400 m under the top (a thin cloud never inverts); the top
+    // follows (cv2BaseTopShift).
+    vec2  bSh     = cv2BaseShift(ty, cl.a, w, cov, covF, gF, q.dirE);
+    topMax       += cv2BaseTopShift(bSh);
+    float base    = ty.alt.x + lift + bSh.x + bSh.y + cv2.vert.y * (0.55 - ce.g) * ty.look.z - strat * 150.0 * deckVar;
+    base          = clamp(base, lift + 150.0, max(topMax - 400.0, lift + 150.0));
     // The base is bumped in 3D by the lobes below, by up to ~2.2 x baseAmp: a deck's underside is
     // lumpy (rolls, pouches), a cumulus base nearly flat (the condensation level).
     float baseAmp = mix(40.0, 220.0, strat) * cv2.storm.w;
@@ -905,6 +948,22 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
         f.ambient  = 0.8;
         f.rain     = 1.0;
         f.topH     = base;
+#ifndef SKY_LITE
+        // Fractus / scud (2026-11-05, vertical; "Fractus", vert.w): ragged cloud fragments in the saturated air under a
+        // raining base, from the shaft's own texel (no extra fetch): its smooth channels, thresholded, in a band hanging
+        // 60 m to ~250-550 m under the base (deeper in heavier rain), fading with the footprint (sub-pixel scraps would
+        // only grey the rain). Cloud, not rain: its share leaves f.rain (the bows keep the rain's).
+        if (cv2.vert.w > 0.0 && q.h < base - 60.0) {
+            float fDep  = mix(250.0, 550.0, clamp(rate * 2.0, 0.0, 1.0));
+            float band  = smoothstep(base - fDep, base - 0.55 * fDep, q.h) * (1.0 - smoothstep(base - 160.0, base - 60.0, q.h));
+            float rag   = smoothstep(0.62, 0.78, sr.r * 0.55 + sr.b * 0.45 + 0.18 * min(rate * 2.0, 1.0)) * band
+                        * (1.0 - smoothstep(600.0, 1500.0, fpM)) * min(rate * 4.0, 1.0);
+            float sFr   = 0.012 * cv2.vert.w * rag;
+            f.rain      = f.sigma / max(f.sigma + sFr, 1e-9);
+            f.msBright  = mix(0.6, 0.85, 1.0 - f.rain);
+            f.sigma    += sFr;
+        }
+#endif
         if (below) return false;
         }
     }
@@ -1457,8 +1516,9 @@ CV2Far cv2FarColumn(CV2Pos q, float fpM)
     float tropo  = cv2Tropo(wd);
     float lift   = cv2Ground(q.dirE) * mix(0.6, 0.9, ty.look.z);
     float topMax = ty.alt.x + (ty.alt.y - ty.alt.x) * tropo + w.b * strat * 3500.0;
-    r.base  = ty.alt.x + lift;
-    r.top   = topMax + lift;
+    vec2  bSh    = cv2BaseShift(ty, cl.a, w, cov, covF, cv2Ground(q.dirE), q.dirE);   // as cv2LowA (vertical, 2026-11-05)
+    r.top   = topMax + lift + cv2BaseTopShift(bSh);
+    r.base  = clamp(ty.alt.x + lift + bSh.x + bSh.y, lift + 150.0, max(r.top - 400.0, lift + 150.0));
     r.sigma = ty.shape.x * cv2.look.y;
     r.msBright = ty.look.x;
     r.strat = strat;
@@ -1478,9 +1538,11 @@ const float kCv2MidWanderM = 450.0;
 float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out float deckMid)
 {
     hfMid = 0.0; topMid = 0.0; deckMid = 0.0;
-    if (q.h < 2800.0 || q.h > 12000.0) return 0.0;
+    // Mid-level wisps (vert2.x, 2026-11-05) reach down to 1.35 km over the ground.
+    float hLoM = cv2.vert2.x > 0.0 ? 1350.0 : 2800.0;
+    if (q.h < hLoM || q.h > 12000.0) return 0.0;
     float gl  = cv2Ground(q.dirE) * 0.8;                                  // follows the terrain
-    if (q.h < 2800.0 + gl || q.h > 5900.0 + gl + 1300.0 * max(cv2.mid2.y, 1.0)) return 0.0;
+    if (q.h < hLoM + gl || q.h > 5900.0 + gl + 1300.0 * max(cv2.mid2.y, 1.0)) return 0.0;
     vec3  wF  = cv2FlowWeatherDirAt(q);                                 // the low cloud's (flowed) map
     vec4  w   = textureLod(cv2WeatherTex, wF, CV2_WX_LOD(max(1.0, gCv2WxLod)));                     // mid decks are broad
     float cov = clamp((w.r * cv2.look.x - cv2.cover.x) / max(cv2.cover.y - cv2.cover.x, 1e-3), 0.0, 1.0);
@@ -1498,6 +1560,37 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
     float covW   = clamp((textureLod(cv2WeatherTex, wF, CV2_WX_LOD(4.0)).r * cv2.look.x - cv2.cover.x)
                          / max(cv2.cover.y - cv2.cover.x, 1e-3), 0.0, 1.0);
     float covM   = mix(cov, max(cov, covW * 0.85), cv2.flow.y);
+#ifndef SKY_LITE
+    // ── Mid-level wisps (2026-11-05, vertical; "Mid-level wisps", vert2.x): the layer's second, LOW height mode. Thin
+    // (260-460 m), sparse, wind-stretched shreds between the cumulus tops and the altocumulus (1.5-2.5 km + ground):
+    // remnants of decayed tops and moist layers, where the low cover is broken-to-high but not overcast. The low field
+    // cannot draw them (a margin bounded below by its base), so they are this layer's: one shape fetch on its period,
+    // stretched 2.5x along the stand-in wind (east). Kept >= 260 m thick: the CDC's coarse reads are 160 m apart.
+    if (q.h < 2800.0 + gl) {
+        float crW  = clamp(0.5 + (cl.r - 0.5) * 4.4, 0.0, 1.0);
+        float bWs  = 1500.0 + gl + 1000.0 * crW;
+        float thW  = 260.0 + 200.0 * (1.0 - crW);
+        if (q.h <= bWs - 150.0 || q.h >= bWs + thW + 150.0) return 0.0;
+        float wReg = smoothstep(0.15, 0.45, covM) * (1.0 - smoothstep(0.85, 1.0, cov)) * cv2.vert2.x
+                   * smoothstep(0.42, 0.56, cl.a);
+        if (wReg <= 0.0) return 0.0;
+        vec3  wdW  = cv2Drift(q.dirE);
+        vec3  eW   = vec3(-wdW.y, wdW.x, 0.0) * inversesqrt(max(dot(wdW.xy, wdW.xy), 1e-6));
+        vec3  rW   = cv2Drift(q.rSeaE);
+        rW        -= eW * (dot(rW, eW) * 0.6);
+        vec4  shW  = textureLod(cv2ShapeTex, cv2.anchorMid.xyz + vec3(0.29, 0.53, 0.11) + rW * cv2.anchorMid.w,
+                                cv2Lod(fpM, cv2.anchorMid.w));
+        float bW2  = bWs + 150.0 * clamp(2.5 * (shW.a - 0.5), -1.0, 1.0);
+        float tW2  = bWs + thW + 150.0 * clamp(2.5 * (shW.g - 0.5), -1.0, 1.0);
+        float zW   = (q.h - bW2) / max(tW2 - bW2, 150.0);
+        if (zW <= 0.0 || zW >= 1.0) return 0.0;
+        float lensW = smoothstep(0.0, 0.35, zW) * (1.0 - smoothstep(0.5, 1.0, zW));
+        float str   = clamp((shW.b * 0.6 + shW.g * 0.4 - 0.7 + 0.12 * wReg) * 6.0, 0.0, 1.0);
+        str         = mix(str, 0.08 * wReg, smoothstep(400.0, 3000.0, fpM));      // sub-pixel: their thin mean
+        hfMid = zW; topMid = tW2; deckMid = 0.0;
+        return lensW * str * min(wReg, 1.0) * 0.012 * cv2.atmo.z;
+    }
+#endif
     float clA    = cl.a, uMid = -1.0;
 #ifdef CV2_MORPH_BINDING
     // Review 17: altocumulus organises in cells too — the closed-cell morphology (one read, the cube face the
@@ -2513,6 +2606,64 @@ layout(constant_id = 4) const int kCv2StormSpec = 1;
 // others, at every one of the cell's points: a storm's tower walk, the low field's weather reads, the shields, the mid and
 // high layers' reads ran in every field read of the light march through an altostratus sheet, nothing to add there.
 // The bake (CV2_LAYER_HITS) collects the bits a read needed in gCv2LayHit.
+// ── Orographic clouds: lenticular lenses and caps (2026-11-05, vertical; "Orographic clouds", oro0.x) ──────────────────
+// Air forced over a mountain rises, cools and, if it reaches its condensation level, condenses in a smooth lens that STAYS
+// over the mountain while the air streams through it (it forms on the upwind side of the crest and evaporates on the lee
+// side): a cap over an isolated cone (Fuji, Rainier), and downwind a stack of lenses at the lee wave's crests, one
+// wavelength lambda = 2 pi U / N (~12 km at 20 m/s) apart. Earth-fixed: no map drift. Read here from the DEM itself
+// (binding 25, the march set; the weather cube's ground is smoothed over ~20 km, which flattens Fuji into a 1.5 km hump):
+//   the relief's EXCESS over its regional mean, ex = h(5 km mip, a little upwind) - h(~25 km mip): how far a parcel is
+//   lifted above the level it rode in on. Where ex passes the air's dryness d (its condensation lift; "lens moisture",
+//   oro1.x, and a regional Perlin so not every range has them at once) a lens forms, centred ~ex x 1.1 + 500 m over the
+//   regional ground (the crest's DEM height, which the 2.7 km DEM under-reads, plus the cap's clearance), thick by
+//   0.3 (ex - d): a knife edge where the lift just reaches condensation, a lens over the summit. Domed top, flatter base.
+//   No erosion, no lobes: smoothness is their look. One lee lens per wavelength downwind (two DEM taps). The gates (the
+//   ~20 km ground > 250 m, the height band over it) cost the rest of the world one compare.
+#ifdef CV2_ELEV_BINDING
+layout(set = 0, binding = CV2_ELEV_BINDING) uniform sampler2D cv2ElevTex;
+// (Kept small: every inlined cv2Field copy pays its code, and the march sits at the 128-register cliff. One asin / atan per
+// sample; the upwind taps step in the DEM's uv by the wind's (east, north) per metre; the wind, the wavelength and the
+// regional moisture phase come from the CPU (the eye's latitude picks the auto wind: lenses are local).)
+float cv2OroSigma(CV2Pos q, float detailAmt, float fpM, out float hfO, out float topO)
+{
+    hfO = 0.0; topO = 0.0;
+    if (cv2.oro0.x <= 0.0) return 0.0;
+    float gG = cv2Ground(q.dirE);
+    if (gG < 250.0 || q.h < gG + 300.0 || q.h > gG + 7000.0 || fpM > 700.0) return 0.0;
+    vec3  d   = q.dirE;
+    float lat = asin(clamp(d.z, -1.0, 1.0));
+    float lon = atan(d.y, d.x);
+    vec2  uv  = vec2((lon + PI) / (2.0 * PI), (0.5 * PI - lat) / PI);
+    // the DEM's uv per metre along the wind (upwind = minus)
+    vec2  duv = vec2(cv2.oro0.z / (2.0 * PI * R_EARTH * max(cos(lat), 0.05)), -cv2.oro0.w / (PI * R_EARTH));
+    const float kEr = 9000.0, kEo = 15.0 / 255.0 * 9000.0;        // terrain.glsl's decode (15/255 = sea level)
+    float hC  = max(0.0, textureLod(cv2ElevTex, uv, 3.3).r * kEr - kEo);     // the regional ground (~25 km)
+    // the air's dryness (the lift it needs to condense): "lens moisture" x a slow regional wave, so ranges take turns
+    float mo  = clamp(cv2.oro1.x * (1.0 + 0.5 * sin(lon * 23.0 + cv2.oro1.z) * sin(lat * 29.0 + cv2.oro1.w)), 0.0, 1.0);
+    float dry = mix(2200.0, 350.0, mo) * cv2.oro1.y;
+    float infl = detailAmt < 0.0 ? 200.0 : 0.0;                   // the coarse (CDC) reads: never miss a rim 160 m thin
+    float sig = 0.0;
+    [[dont_unroll]] for (int k = 0; k < 2; ++k) {
+        // k = 0: the cap (the relief 2 km upwind); k = 1: the first lee lens (the relief one wavelength, oro0.y, upwind).
+        // Its HEIGHT from the excess at DEM mip 2 (~10 km): a broad dome, so the lens is a saucer at a near-constant height
+        // whose base the summit pokes into (from the mip-1 excess it was a cone following the flanks); its FOOTPRINT from
+        // the mip-1 excess (from mip 2 it spread over the whole massif).
+        float up  = k == 0 ? 2000.0 : cv2.oro0.y;
+        vec2  uvU = uv - duv * up;
+        float amp = k == 0 ? 1.0 : 0.65;
+        float ex  = (max(0.0, textureLod(cv2ElevTex, uvU, 1.0).r * kEr - kEo) - hC) * amp;   // the footprint: ~5 km relief
+        float exB = (max(0.0, textureLod(cv2ElevTex, uvU, 2.0).r * kEr - kEo) - hC) * amp;   // the height: a ~10 km dome
+        float t   = ex - dry;
+        float zc  = hC + 2.4 * exB + 300.0 + float(k) * 300.0;
+        float hl  = min(0.4 * t, 800.0) + infl;
+        float u   = q.h < zc ? (zc - q.h) / (0.4 * hl) : (q.h - zc) / (0.8 * hl);
+        float s   = t > 0.0 ? (1.0 - smoothstep(0.5, 1.0, u)) * smoothstep(0.0, 150.0, t) : 0.0;
+        if (s > sig) { sig = s; topO = zc + 0.8 * hl; hfO = clamp(0.5 + (q.h - zc) / (1.2 * hl), 0.0, 1.0); }
+    }
+    return 0.025 * sig * (1.0 - smoothstep(300.0, 700.0, fpM)) * cv2.oro0.x;
+}
+#endif
+
 const uint kCv2LayCol  = 1u;    // the storm objects' towers (cv2ColumnSigma): their sigma, or a proximity / strength /
                                 // rain core another layer reads
 const uint kCv2LayLow  = 2u;    // cv2FieldLow (the low layer, rain)
@@ -2626,6 +2777,16 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     // Wherever towers can stand (a weak storm-edge tower cut by a mid-layer belt, pass 20).
     if (cv2.column.x > 0.0) sm *= 1.0 - smoothstep(0.0, 0.15, col.storm);
     if (sm > 0.0) cv2Add(f, sm, hfX, topX, deckX);
+#if defined(CV2_ELEV_BINDING) && !defined(CV2_ORO_EXTERNAL)
+    // Orographic lenses and caps (vertical, 2026-11-05): under the mid layer's mask bit (the CDC knows no other). The march
+    // adds them itself at its one main sample (CV2_ORO_EXTERNAL): in every inlined cv2Field copy they cost the 128-register cliff.
+    float so = 0.0;
+    if ((lm & kCv2LayMid) != 0u) {
+        float hfO, topO;
+        so = cv2OroSigma(q, detailAmt, fpM, hfO, topO);
+        if (so > 0.0) cv2Add(f, so, hfO, topO, 0.0);
+    }
+#endif
     float hfH = 0.0, topHh = 0.0;
     float sh = 0.0;
     if ((lm & kCv2LayHigh) != 0u) sh = cv2HighSigma(q, fpM, hfH, topHh);
@@ -2676,7 +2837,11 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
         }
     }
     gCv2LayHit = ((col.sigma > 0.0 || colLow || colAnv || (col.storm > 0.0 && smRaw > 0.0)) ? kCv2LayCol : 0u)
-               | (dbgLow > 0.0 ? kCv2LayLow : 0u) | (sm > 0.0 ? kCv2LayMid : 0u) | (sh > 0.0 ? kCv2LayHigh : 0u)
+               | (dbgLow > 0.0 ? kCv2LayLow : 0u) | (sm > 0.0 ? kCv2LayMid : 0u)
+#if defined(CV2_ELEV_BINDING) && !defined(CV2_ORO_EXTERNAL)
+               | (so > 0.0 ? kCv2LayMid : 0u)
+#endif
+               | (sh > 0.0 ? kCv2LayHigh : 0u)
                | ((sa > 0.0 || presA > 0.0) ? kCv2LayAnv : 0u) | (sd > 0.0 ? kCv2LayDust : 0u);
 #endif
     gCv2FlowSet = false;

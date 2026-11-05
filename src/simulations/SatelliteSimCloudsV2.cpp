@@ -1324,7 +1324,9 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2CuHeightVar, cv2CuBreakup, cv2CuHeadroom, cv2CuFineLobes, cv2CbFineLobes, cv2CuWisps,
                     cv2CuTurrets, cv2CuTurretStretch, cv2CuTurretLean, cv2CuTurretSkew,
                     cv2CuBody, cv2CuEdge, cv2CuShowerCells, cv2CuShowerCores, cv2CuBubbles, cv2CuBubbleGain,
-                    cv2CirrusFibres, cv2CirrusHooks, stormCycTopSmooth, stormCycTopStreaks, stormCycTopDensity})
+                    cv2CirrusFibres, cv2CirrusHooks, stormCycTopSmooth, stormCycTopStreaks, stormCycTopDensity,
+                    cv2BaseLcl, cv2BaseCellM, cv2BaseRegional, cv2Fractus, cv2MidWisps, cv2OroAmount, cv2OroWindMps,
+                    cv2OroWindDirDeg, cv2OroMoist})
         mix(v);
     for (const GpuCloudV2Type &t : cv2Types)
         for (int k = 0; k < 4; ++k)
@@ -1602,7 +1604,10 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     for (int i = 0; i < kCloudV2Types; ++i)
     {
         p.types[i] = cv2Types[i];
-        lo = std::min(lo, cv2Types[i].alt.x - cv2Types[i].alt.w);
+        // cv2BaseShift lowers a base by up to 1.5 x alt.w x "Cloud base regional spread" + 600 m x "condensation level"
+        // (sea + rain; clamped to >= 150 m over the ground) and fractus hangs up to 500 m under it.
+        lo = std::min(lo, cv2Types[i].alt.x - std::max(cv2Types[i].alt.w * 1.5f * std::clamp(cv2BaseRegional, 0.0f, 2.0f), cv2Types[i].alt.w)
+                              - 600.0f * std::clamp(cv2BaseLcl, 0.0f, 2.0f) - (cv2Fractus > 0.0f ? 500.0f : 0.0f));
         hi = std::max(hi, cv2Types[i].alt.x + (cv2Types[i].alt.y - cv2Types[i].alt.x) * 1.35f);
     }
     // Rain falls to the ground: with it on, the shell reaches sea level.
@@ -2065,7 +2070,10 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                 const float wMap = sstep(0.8f, 0.95f, g);
                 m = std::max(m, T * (1.0f - wMap) + wMap * std::max(cuT, 0.0f));
             }
-            lowTopB[e] = m + 100.0f;
+            float altWMax = 0.0f;
+            for (int i = 0; i < kCloudV2Types; ++i) altWMax = std::max(altWMax, cv2Types[i].alt.w);
+            // + cv2BaseTopShift's rise: half the condensation level's (<= 1800 m x "LCL") + 0.7 x the regional spread's
+            lowTopB[e] = m + 100.0f + 900.0f * std::clamp(cv2BaseLcl, 0.0f, 2.0f) + 0.7f * 1.5f * altWMax * std::clamp(cv2BaseRegional, 0.0f, 2.0f);
         }
     }
     p.anvil3 = glm::vec4(std::clamp(cv2AnvilPuff, 0.0f, 2.0f), std::clamp(cv2AnvilLiftM, 0.0f, 3000.0f), lowTopB[0], lowTopB[1]);
@@ -2093,6 +2101,27 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.ciHu  = glm::vec4(std::clamp(cv2CirrusFibres, 0.0f, 2.0f), std::clamp(cv2CirrusHooks, 0.0f, 2.0f),
                         std::clamp(stormCycTopSmooth, 0.0f, 1.0f), std::clamp(stormCycTopStreaks, 0.0f, 600.0f));
     p.ciHu2 = glm::vec4(std::clamp(stormCycTopDensity, 1.0f, 6.0f), 0.0f, 0.0f, 0.0f);
+    // Vertical variation (vertical, 2026-11-05): cv2BaseShift's strengths, fractus, mid-level wisps.
+    p.vert  = glm::vec4(std::clamp(cv2BaseLcl, 0.0f, 2.0f), std::clamp(cv2BaseCellM, 0.0f, 400.0f),
+                        std::clamp(cv2BaseRegional, 0.0f, 2.0f), std::clamp(cv2Fractus, 0.0f, 2.0f));
+    p.vert2 = glm::vec4(std::clamp(cv2MidWisps, 0.0f, 2.0f), 0.0f, 0.0f, 0.0f);
+    // Orographic lenses / caps (clouds_v2.glsl cv2OroSigma). The ridge wind: "Ridge wind (m/s)" (0 = 20) from "Ridge wind
+    // from" (deg; -1 = by the eye's latitude: the trades (from the east) within 25 deg, the westerlies outside). Lenses are
+    // local, so one wind for the view. Its lee wavelength 2 pi U / N (N = 0.01 /s); faster wind lifts a parcel further
+    // (the dryness x 1.25 .. 0.85 over 8-25 m/s). The regional moisture phase turns over every ~3 sim days.
+    {
+        const glm::dvec3 eyeDir = up;
+        const float latDeg = (float)glm::degrees(std::asin(std::clamp(eyeDir.z, -1.0, 1.0)));
+        const float spd = cv2OroWindMps > 0.0f ? std::clamp(cv2OroWindMps, 1.0f, 40.0f) : 20.0f;
+        const float fromDeg = cv2OroWindDirDeg >= 0.0f ? cv2OroWindDirDeg : (std::fabs(latDeg) < 25.0f ? 90.0f : 270.0f);
+        const float fr = glm::radians(fromDeg);
+        const float lam = 6.2832f * spd / 0.01f;
+        const float sx = std::clamp((spd - 8.0f) / 17.0f, 0.0f, 1.0f);
+        const float dryK = 1.25f + (0.85f - 1.25f) * sx * sx * (3.0f - 2.0f * sx);
+        const double days = (double)simDayJ2000 + simSecInDay / 86400.0;
+        p.oro0 = glm::vec4(std::clamp(cv2OroAmount, 0.0f, 2.0f), lam, -std::sin(fr), -std::cos(fr));
+        p.oro1 = glm::vec4(std::clamp(cv2OroMoist, 0.0f, 1.0f), dryK, (float)std::fmod(days * 2.1, 6.2832), (float)std::fmod(days * 1.7, 6.2832));
+    }
     // Storms through the cumulus field (cv2StormGeom / cv2FieldLow, clouds_v2.glsl).
     p.stormU = glm::vec4(cv2StormUnified > 0.5f ? 1.0f : 0.0f, std::max(cv2StormUnifiedScaleM, 200.0f),
                          std::max(cv2StormUnifiedRampM, 20.0f), std::max(cv2StormUnifiedLobes, 0.0f));

@@ -28,6 +28,7 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_v2_march.com
 #define CV2_WEATHER_BINDING 2
 #define CV2_SHAPE_BINDING   3
 #define CV2_MESO_BINDING    5
+#define CV2_ELEV_BINDING    25   // the elevation map: the orographic lenses (clouds_v2.glsl cv2OroSigma)
 #define CV2_MORPH_BINDING   20   // the march set's (review 19: every consumer places clouds alike)
 #define CV2_STORM_BINDING   26   // the storm objects' towers (cv2_storms.glsl)
 #include "clouds_v2.glsl"
