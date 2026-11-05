@@ -118,8 +118,10 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     relief one wavelength 2 pi U / N upwind (N 0.01 /s), x0.65. Earth-fixed. The wind (CPU, per view: lenses are local)
     (2026-11-05 follow-up, the user had not seen any: the cap sat 2 km downwind, off the summit, and at sigma 0.025 and
     0.4 t thick it was a grey see-through sliver; now 800 m, 0.05, 0.8 t + 100, moisture default 0.75. Widening the footprint
-    with max(ex, 0.75 exB) laid one plate over the whole Alps: not done. Over the Bernese Alps from 5 km the lens is still a
-    plate tens of km across overhead.)
+    with max(ex, 0.75 exB) laid one plate over the whole Alps: not done. Second round: the footprint also needs prominence,
+    t = min(ex - dry, 3 (ex - exB) + 150); 1-4 stacked plates ~200 m apart in bands of v = (h - zc) / hl (soft gaps
+    with a 25% floor: hard 30-m gaps hatched with the march steps; not in the CDC reads); rims smoothstep(0.6, 1, u) (0.75 hatched the grazing top with the march steps) and 80 m of t.
+    Fuji's cap is < 240 m thick: one plate (the stack shows on lenses over ~300 m). The Bernese Alps from above are still one ~30 km sheet with a wavy edge: the Alps are prominent at every scale.)
     is "Ridge wind" / "Ridge wind from", or 20 m/s from the east within 25 deg of the equator, from the west outside.
     Moisture = `oro_moist` x (1 +- 0.5 x a slow lat/lon wave whose phase turns over in ~3 sim days), so ranges take turns.
     Gated on the ~20 km ground > 250 m, a 0.3-7 km band over it, fpM < 700 m. Under the mid layer's CDC mask bit; the
@@ -2553,6 +2555,18 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     skin (blend 0) and the towers (positive side) are unchanged. A hard floor max(m, mEnv - D) bared the envelope's smooth
     inner shell wherever the bubbles cut past D (paper cut-outs, gumdrops); at k = 1 the blend also smooths too much (smooth
     patches on the report's Himalaya view). 128 registers (march). Evidence qa/waves/20261106/evidence/core/core_ab3.png.
+  - Bubble warp (2026-11-05; key `cumulus_bubble_warp` 150 m, slot 554, `ciHu2.z`): the turret / bubble read rT is displaced by
+    (s.g, s.b, s.a) - (0.45, 0.45, 0.5), x4 the setting (the cumulus lobes already fetched; no fetch). The bubbles are a union
+    of true spheres, and from below their faces and creases read as circles and polka dots (A/B: gone with the bubbles off,
+    kept with the fine ones off). 150: the circles break up; 300 tears the edges.
+  - Head width (2026-11-05; key `cumulus_head_width` 0.5, slot 555, `ciHu2.w`): hVar's cell term reads
+    mix(cells, 0.15 + 0.85 smoothstep(0.05, 0.45, cells), k): a cell's top near-constant over the cell, so the vertical profile
+    (widest at zm) shapes the tower rather than the cell's 1 - d^2 dome stretched kilometres up. Fuller masses at the defaults,
+    a little towering on decks at low bubbles. 128 registers.
+  - Open (2026-11-05): at the DEFAULT bubbles (3.0) the tall towers at Darwin (-12.5 130.8, 2036-11-22 07:00) have flat vertical
+    faces, all on the same side, a few km tall (qa/waves/20261106/evidence/below/top_zoom.png). Not the clipmap (cdc_skip 0
+    keeps them), not the weather cube's seam, not tower spread / LCL / per-cell or regional bases / core / edge; the cell
+    lattice moves them. Not seen at bubbles 0.15.
     **Measured** (RTX 3070 Ti, 1600x900, the user's settings, one live app, perf-frames 3a40b2e's march vs this, 3
     interleaved reps, other agents on the GPU): cloud_march 10.19 -> 10.87 ms (Amazon from the ground), 7.87 -> 8.34
     (Amazon across at 4 km), 11.19 -> 11.33 (Darwin across, 3 km), 8.22 -> 8.41 (trade across, 3 km), 12.29 -> 12.01

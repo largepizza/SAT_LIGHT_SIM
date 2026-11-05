@@ -1323,7 +1323,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2MidFieldKm, cv2MidCover, cv2MsOctaves, cv2LobeOcclusion, cv2MsModel, cv2MsDiffG, cv2MsDiffGain, cv2MsBackM, cv2SkyLightModel, cv2SkyLightGain, cv2SkyGroundAlbedo,
                     cv2CuHeightVar, cv2CuBreakup, cv2CuHeadroom, cv2CuFineLobes, cv2CbFineLobes, cv2CuWisps,
                     cv2CuTurrets, cv2CuTurretStretch, cv2CuTurretLean, cv2CuTurretSkew,
-                    cv2CuBody, cv2CuEdge, cv2CuShowerCells, cv2CuShowerCores, cv2CuBubbles, cv2CuBubbleGain, cv2CuBubbleFine, cv2CuBubbleSize, cv2CuBubbleBase, cv2CuEnvTowers, cv2CuCore,
+                    cv2CuBody, cv2CuEdge, cv2CuShowerCells, cv2CuShowerCores, cv2CuBubbles, cv2CuBubbleGain, cv2CuBubbleFine, cv2CuBubbleSize, cv2CuBubbleBase, cv2CuEnvTowers, cv2CuCore, cv2CuBubbleWarp, cv2CuHeadWidth,
                     cv2CirrusFibres, cv2CirrusHooks, stormCycTopSmooth, stormCycTopStreaks, stormCycTopDensity,
                     cv2AnvilFibres, cv2AnvilFibreAlongKm, cv2AnvilFibreAcrossM, cv2StormBubbles, cv2AnvilErosion,
                     cv2AnvilLidLobes, cv2AnvilUnderLobes,
@@ -2111,7 +2111,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // Fibrous cirrus and hurricane CDO tops (cirrus-hurr, 2026-11-05).
     p.ciHu  = glm::vec4(std::clamp(cv2CirrusFibres, 0.0f, 2.0f), std::clamp(cv2CirrusHooks, 0.0f, 2.0f),
                         std::clamp(stormCycTopSmooth, 0.0f, 1.0f), std::clamp(stormCycTopStreaks, 0.0f, 600.0f));
-    p.ciHu2 = glm::vec4(std::clamp(stormCycTopDensity, 1.0f, 20.0f), std::clamp(cv2CuCore, 0.0f, 1.0f), 0.0f, 0.0f);
+    p.ciHu2 = glm::vec4(std::clamp(stormCycTopDensity, 1.0f, 20.0f), std::clamp(cv2CuCore, 0.0f, 1.0f), std::clamp(cv2CuBubbleWarp, 0.0f, 400.0f), std::clamp(cv2CuHeadWidth, 0.0f, 1.0f));
     // Vertical variation (vertical, 2026-11-05): cv2BaseShift's strengths, fractus, mid-level wisps.
     p.vert  = glm::vec4(std::clamp(cv2BaseLcl, 0.0f, 2.0f), std::clamp(cv2BaseCellM, 0.0f, 400.0f),
                         std::clamp(cv2BaseRegional, 0.0f, 2.0f), std::clamp(cv2Fractus, 0.0f, 2.0f));

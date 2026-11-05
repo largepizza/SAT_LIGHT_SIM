@@ -237,7 +237,7 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     vec4  shade;
     // -- cirrus-hurr (2026-11-05, night wave agent D) -- x "Cirrus fibres" (cv2IceFibres' filament contrast), y "Cirrus hooks"
     // (heads and hooked fall streaks), z "Hurricane top smoothing" (the CDO plate's lobes / erosion removed), w "Hurricane top
-    // streaks" (the swirl relief on the CDO's lid, m); ciHu2: x "Hurricane top density" (x the plate's ice), yzw spare
+    // streaks" (the swirl relief on the CDO's lid, m); ciHu2: x "Hurricane top density" (x the plate's ice), y "Cumulus core", z "Cumulus bubble warp" (m), w "Cumulus head width"
     vec4  ciHu;
     vec4  ciHu2;
     // 2026-11-05 (storm3, storms in the cumulus look; cv2AnvilFibre / cv2FieldLow): x "Anvil fibres" (0 = the eroded plate
@@ -1041,7 +1041,17 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     // the floor falls from 0.25 to 0.12 of the span, so a weak cell is a small puff. With one T per neighbourhood
     // and a 0.25 floor, a region of low coverage was sheets of one thickness: "pancakes".
     // (By cell on shallow types only: deep convection's coarse cells drew the towers out into fins.)
-    float hVar   = 1.0 + cv2.cu.x * (0.5 * clamp((cl16.a - 0.5) * 9.0, -1.0, 1.0) + 0.9 * (cells - 0.55) * (1.0 - deep));
+#if !defined(SKY_LITE)
+    // CUMULUS HEAD WIDTH ("Cumulus head width", ciHu2.w; 2026-11-05): the cell's own top follows its strength `cells`, a
+    // dome (1 - d^2) over its radius, so a tall cell's outline was that dome stretched kilometres up over ~1 km: a bullet
+    // with sheer sides (from below and the side, "slabs"). Toward a plateau (smoothstep(0.05, 0.45, cells)) the top is
+    // near-constant over the cell and the vertical profile (widest at zm, a narrower stem) shapes the tower: a head wider
+    // than its stem.
+    float cellsH = mix(cells, 0.15 + 0.85 * smoothstep(0.05, 0.45, cells), cv2.ciHu2.w);
+#else
+    float cellsH = cells;
+#endif
+    float hVar   = 1.0 + cv2.cu.x * (0.5 * clamp((cl16.a - 0.5) * 9.0, -1.0, 1.0) + 0.9 * (cellsH - 0.55) * (1.0 - deep));
 #if !defined(SKY_LITE)
     // CUMULUS TOWER SPREAD (envelope, 2026-11-05; clouds.md "Cumulus envelope"): the large-scale silhouette. Every cell's top
     // came from its cell-scale strength eB with the +-cu.x variation above, capped at flow.w of the span, so a mass of merged
@@ -1394,6 +1404,11 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
             float hP    = max(hb, 0.0);
             vec3  eastT = vec3(-wd.y, wd.x, 0.0) * inversesqrt(max(dot(wd.xy, wd.xy), 1e-6));
             rT += shR * (eastT * (cv2.cu3.z * cv2.form.y * hP) - wd * (cv2.cu3.y * hP));
+            // BUBBLE WARP ("Cumulus bubble warp", ciHu2.z, m; 2026-11-05): the bubbles are a union of true spheres, and from
+            // below their faces and creases read as circles and polka dots (harness: gone with the bubbles off, kept with
+            // the fine ones off). The read is displaced by the cumulus lobes already fetched (s: Worley G, B and the Perlin,
+            // each ~+-0.1-0.2 about its mean), so each sphere becomes a lumpy blob. No fetch; the tile stays in register.
+            rT += (vec3(s.g, s.b, s.a) - vec3(0.45, 0.45, 0.5)) * (4.0 * cv2.ciHu2.z);
         }
         vec4 s2 = textureLod(cv2ShapeTex, (cv2.anchorStormA.xyz + rT * cv2.anchorStorm.w) * 2.0,
                              cv2Lod(fpM, cv2.anchorStorm.w * 2.0));
@@ -2843,12 +2858,27 @@ float cv2OroSigma(CV2Pos q, float detailAmt, float fpM, out float hfO, out float
         float exB = (max(0.0, textureLod(cv2ElevTex, uvU, 2.0).r * kEr - kEo) - hC) * amp;   // the height: a ~10 km dome
         // (Thickness 0.8 t + 100, 2026-11-05: at 0.4 t the Fuji cap was a thin translucent sliver. Widening the footprint
         // with the mip-2 dome as well, max(ex, 0.75 exB), laid one smooth plate over the whole Alps.)
-        float t   = ex - dry;
+        // The footprint also needs PROMINENCE, the ~5 km relief standing over the ~10 km dome (x3, +150 m): a lens forms
+        // where the air is lifted over a summit, not wherever a massif is high. On the excess alone the Bernese Alps from 5 km
+        // were one smooth plate tens of km across overhead (2026-11-05); now each group of peaks wears its own.
+        float t   = min(ex - dry, 3.0 * (ex - exB) + 150.0);
         float zc  = hC + 2.4 * exB + 300.0 + float(k) * 300.0;
         float hl  = min(0.8 * t + 100.0, 800.0) + infl;
-        float u   = q.h < zc ? (zc - q.h) / (0.4 * hl) : (q.h - zc) / (0.8 * hl);
-        float s   = t > 0.0 ? (1.0 - smoothstep(0.5, 1.0, u)) * smoothstep(0.0, 150.0, t) : 0.0;
-        if (s > sig) { sig = s; topO = zc + 0.8 * hl; hfO = clamp(0.5 + (q.h - zc) / (1.2 * hl), 0.0, 1.0); }
+        float v   = (q.h - zc) / hl;
+        float u   = v < 0.0 ? -v / 0.4 : v / 0.8;
+        // Sharper rims than a fog: the outer 0.4 of the lens (0.5, before; 0.25 hatched the grazing top at Fuji with the march
+        // steps) and 80 m of the footprint's excess.
+        float s   = t > 0.0 ? (1.0 - smoothstep(0.6, 1.0, u)) * smoothstep(0.0, 80.0, t) : 0.0;
+        // A PILE OF PLATES (ref lenticular_fuji; "stacked" lenticulars): the lens splits into 1-4 plates ~200 m apart with
+        // clear gaps, each following the lens' dome (bands of v, so the upper plates are the smaller ones). Not in the
+        // coarse (CDC) reads, which must not miss a thin rim.
+        if (infl == 0.0 && s > 0.0) {
+            float nP = clamp(hl / 200.0, 1.0, 4.0);
+            float pf = fract((v + 0.4) * nP / 1.2);
+            // (Soft gaps with a 25% floor: hard 30-m gaps were thinner than a march step and drew vertical hatching at Fuji.)
+            s *= mix(1.0, 0.25 + 0.75 * smoothstep(0.0, 0.3, pf) * (1.0 - smoothstep(0.55, 0.95, pf)), smoothstep(1.2, 2.0, nP));
+        }
+        if (s > sig) { sig = s; topO = zc + 0.8 * hl; hfO = clamp(0.5 + v / 1.2, 0.0, 1.0); }
     }
     return 0.05 * sig * (1.0 - smoothstep(300.0, 700.0, fpM)) * cv2.oro0.x;   // (0.025: a grey, see-through cap at Fuji, 2026-11-05)
 }

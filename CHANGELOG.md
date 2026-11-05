@@ -143,7 +143,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **Cumulus clouds of many heights.** Within one cloud mass, towers kilometres tall now rise beside low shoulders, so
   a big cumulus reads as a skyline of separate heads instead of one dome with a single top. Settings > Clouds:
   "Cumulus tower spread" (0.75; 0 = one top per cloud, as before). "Cumulus core" (0.5) keeps the bubbles and turrets
-  from cutting a big cloud through into fragments: they shape its surface, and the mass stays whole.
+  from cutting a big cloud through into fragments: they shape its surface, and the mass stays whole. "Cumulus bubble
+  warp" (150 m) turns the bubbles from perfect spheres into lumpy ones (no rings or polka dots from below), and "Cumulus
+  head width" (0.5) gives towers heads wider than their stems.
 - **Volumetric clouds, rebuilt (clouds v2).** One 3D cloud field from the ground to orbit, driven by a weather
   map: cumulus with lobed, cauliflower sides and flatter bases, stratus decks with textured undersides,
   altocumulus and altostratus, cirrus streaks, veils and cirrocumulus, all lit by the Sun or the Moon through
