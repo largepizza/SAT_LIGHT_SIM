@@ -1323,7 +1323,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2MidFieldKm, cv2MidCover, cv2MsOctaves, cv2LobeOcclusion, cv2MsModel, cv2MsDiffG, cv2MsDiffGain, cv2MsBackM, cv2SkyLightModel, cv2SkyLightGain, cv2SkyGroundAlbedo,
                     cv2CuHeightVar, cv2CuBreakup, cv2CuHeadroom, cv2CuFineLobes, cv2CbFineLobes, cv2CuWisps,
                     cv2CuTurrets, cv2CuTurretStretch, cv2CuTurretLean, cv2CuTurretSkew,
-                    cv2CuBody, cv2CuEdge, cv2CuShowerCells, cv2CuShowerCores, cv2CuBubbles, cv2CuBubbleGain, cv2CuBubbleFine, cv2CuBubbleSize, cv2CuBubbleBase,
+                    cv2CuBody, cv2CuEdge, cv2CuShowerCells, cv2CuShowerCores, cv2CuBubbles, cv2CuBubbleGain, cv2CuBubbleFine, cv2CuBubbleSize, cv2CuBubbleBase, cv2CuEnvTowers,
                     cv2CirrusFibres, cv2CirrusHooks, stormCycTopSmooth, stormCycTopStreaks, stormCycTopDensity,
                     cv2AnvilFibres, cv2AnvilFibreAlongKm, cv2AnvilFibreAcrossM, cv2StormBubbles, cv2AnvilErosion,
                     cv2AnvilLidLobes, cv2AnvilUnderLobes,
@@ -2104,7 +2104,10 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.micro = glm::vec4((cv2DropletPhase > 0.5f && cv2MsModel > 0.5f && cv2MieReff.size() > 1) ? std::clamp(cv2DropletSize, 0.5f, 2.0f) : 0.0f,
                         cv2SeaTempC, 0.5f / (float)std::max<size_t>(cv2MieReff.size(), 1),
                         std::clamp(cv2DropletMsGain, 0.0f, 4.0f) * std::clamp(cv2MsDiffGain, 0.0f, 4.0f));
-    p.shade = glm::vec4(std::clamp(cv2SkyLightHue, 0.0f, 1.0f), std::clamp(cv2MsSideEscape, 0.0f, 0.4f), 0.0f, 0.0f);
+    // (z: "Cumulus tower spread", 2026-11-05: packed into shade's spare components, not a new member; a new vec4 once killed
+    // the boot at rain_particles.vert's pipeline. clouds.md "Cumulus envelope".)
+    p.shade = glm::vec4(std::clamp(cv2SkyLightHue, 0.0f, 1.0f), std::clamp(cv2MsSideEscape, 0.0f, 0.4f),
+                        std::clamp(cv2CuEnvTowers, 0.0f, 0.9f), 0.0f);
     // Fibrous cirrus and hurricane CDO tops (cirrus-hurr, 2026-11-05).
     p.ciHu  = glm::vec4(std::clamp(cv2CirrusFibres, 0.0f, 2.0f), std::clamp(cv2CirrusHooks, 0.0f, 2.0f),
                         std::clamp(stormCycTopSmooth, 0.0f, 1.0f), std::clamp(stormCycTopStreaks, 0.0f, 600.0f));

@@ -2515,6 +2515,34 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     after). Cloud streets were not built: the meso volume is read in a drifted ECEF frame, so rows baked along a
     texture axis would not follow the wind, and a per-sample anisotropic read of an absolute coordinate shears with
     the wind's turning over the globe.
+  - **Cumulus envelope: "Cumulus tower spread" (envelope round, 2026-11-05; key `cumulus_tower_spread` 0.75, slot 552,
+    UBO `shade.z`, packed: no new member).** What sets a cumulus' silhouette is not its surface terms but its envelope:
+    `m0 = eS(x,y) - reqC(z / T)`, a 2-D strength against one vertical profile whose top T comes from the CELL-scale
+    strength eB (two mips coarser than the cells) x `hVar` (+-cu.x by region and by fine cell). A mass of merged cells
+    therefore had ONE top, and the bubbles, turrets and lobes (all zero-mean perturbations of m, |grad| below the dome's
+    1.5-3 e units / km) only dressed its surface: "gumdrops, still 2D". Now hVar takes k x (1.8 s - 1), s =
+    smoothstep(-1, 1, clamp(6 (ce.a - 0.5), -1, 1) + 0.8 (cells - 0.55)) (the cell volume's Perlin, 1-8 km octaves, plus
+    the cells, at the cell fetch's mip), and T's clamp is 1.7 x flow.w (was 1), then the type's span. Inside one mass towers
+    several km tall stand beside shoulders a few hundred metres high; seen across or from below a cloud reads as a
+    skyline of separate heads, not one dome. The flat base and the cloud's footprint are unchanged (zeta = 0 there).
+    **Variants tried tonight** (one live app, `shaders reload`, evidence `qa/waves/20261105/evidence/envelope/`, main
+    checkout): (a) this, with a narrow ramp (x9 over +-0.7): sheer vertical walls where a tall top met a low one; the
+    x6 / +-1 ramp slopes them. (b) A lean: the cells read displaced by a height-proportional vector whose direction
+    comes from the cell Perlin (0.15-0.6 m/m): at 0.4+ it sheared tall masses into smooth slanted planes and floating
+    sheared fragments; at 0.15 little visible change. Dropped. (c) "Bubble relief" 0.8 with "Cumulus bubbles" 4 and
+    turrets 1.5: smooth glassy bubble ovals (as round 1 found). (d) A Gaussian pinch at 0.3-0.6 of each tall cloud's
+    thickness (stacked masses): invisible at these views and 250 registers. Also tried: the tower field from the Perlin
+    at a fixed coarse mip read with the smooth cells (cellsC), to rule out a footprint artefact: tops varied too slowly
+    (a whole mass tall again) and the march went to 249 registers; the ranks of tall lit columns seen from 25 km are the
+    same with it, so they are towers, not fins. **Registers (the 128 cliff):** written as T x mix(1 - k, 1 + 0.8 k, s) after
+    T's clamp (min'd to the span) the march was 128 on the pre-merge tree but 249 on the merged one (with the vertical
+    round's base terms); the same with k a compile-time constant was 128, so was the additive form with the cap at 1; a cap
+    of 1 + 0.9 k (uniform) was 249. The shipped form (additive k term in hVar, CONSTANT cap 1.7) is 128 (march, composite).
+    Side effect: at k = 0 a cell whose hVar already exceeded 1 (cu.x) now rises to 1.7 x flow.w instead of flow.w.
+    **Measured** (RTX 3070 Ti, 1600x900, the user's settings, one live app, perf-frames 3a40b2e's march vs this, 3
+    interleaved reps, other agents on the GPU): cloud_march 10.19 -> 10.87 ms (Amazon from the ground), 7.87 -> 8.34
+    (Amazon across at 4 km), 11.19 -> 11.33 (Darwin across, 3 km), 8.22 -> 8.41 (trade across, 3 km), 12.29 -> 12.01
+    (congestus across, 7 km); rep half-ranges <= 0.16 ms. The cost is the taller towers' extra volume, not the code.
 - **The blue-noise tile drawn over half-shadowed cloud, and shadows only near the eye (2026-10-12, user issues
   20261012_202341 / _195811; Sun 0.1-0.9 deg, light footprint 0, accumulation 0, history weight 0.02):**
   - **The resolve's still-view clamp box is 7x7 new samples** (`cloud_v2_resolve.comp`, `stillW`, motionPx < 0.05-0.5),

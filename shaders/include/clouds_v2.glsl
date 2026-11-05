@@ -232,7 +232,8 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     vec4  cu5;
     // 2026-11-04, cloud contrast (cloud_v2_march.comp; clouds.md "Cloud contrast"): x "Sky light keeps its colour" (the
     // sky's light diffused through cloud keeps its hue: cloud scattering is grey; 0 = greyed with depth as before), y the
-    // diffuse field's side escape ("Multi-scatter side escape": e^-y t; 0.05 as fitted 2026-10-26), zw spare
+    // diffuse field's side escape ("Multi-scatter side escape": e^-y t; 0.05 as fitted 2026-10-26), z "Cumulus tower spread" (envelope,
+    // 2026-11-05: each cumulus top x(1 - z) .. x(1 + 0.8 z) by a km-scale field; 0 = off), w spare
     vec4  shade;
     // -- cirrus-hurr (2026-11-05, night wave agent D) -- x "Cirrus fibres" (cv2IceFibres' filament contrast), y "Cirrus hooks"
     // (heads and hooked fall streaks), z "Hurricane top smoothing" (the CDO plate's lobes / erosion removed), w "Hurricane top
@@ -1041,6 +1042,23 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     // and a 0.25 floor, a region of low coverage was sheets of one thickness: "pancakes".
     // (By cell on shallow types only: deep convection's coarse cells drew the towers out into fins.)
     float hVar   = 1.0 + cv2.cu.x * (0.5 * clamp((cl16.a - 0.5) * 9.0, -1.0, 1.0) + 0.9 * (cells - 0.55) * (1.0 - deep));
+#if !defined(SKY_LITE)
+    // CUMULUS TOWER SPREAD (envelope, 2026-11-05; clouds.md "Cumulus envelope"): the large-scale silhouette. Every cell's top
+    // came from its cell-scale strength eB with the +-cu.x variation above, capped at flow.w of the span, so a mass of merged
+    // cells was ONE dome with one top, and the bubbles, turrets and lobes only dressed its surface ("still gumdrops, still
+    // 2D"). Here hVar takes k x (1.8 s - 1) (k = "Cumulus tower spread", shade.z; s = a km-scale field, the cell volume's
+    // Perlin (its 1-8 km octaves) plus the cells), and the top's cap below is 1.7 x flow.w, then the type's span: inside one
+    // mass, towers several km tall stand beside shoulders a few hundred metres high, and the dome becomes a skyline.
+    // (Written as T x mix(1 - k, 1 + 0.8 k, s) after the clamp, the look was the same and the march went to 249 registers
+    // on the merged tree; so did the cap as 1 + 0.9 k, and the Perlin at a fixed coarse mip read with cellsC (its tops also
+    // varied too slowly: a whole mass tall again). This form is 128. The ranks of tall lit columns seen from 25 km are
+    // towers, the same with the fixed mip: not a footprint artefact. The cap is a constant, so at k = 0 a cell whose hVar
+    // already took it past 1 (cu.x) now rises up to 1.7 x flow.w as well.)
+    hVar += cv2.shade.z * (1.8 * smoothstep(-1.0, 1.0, clamp((ce.a - 0.5) * 6.0, -1.0, 1.0) + 0.8 * (cells - 0.55)) - 1.0);
+    const float kCv2TopCap = 1.7;
+#else
+    const float kCv2TopCap = 1.0;
+#endif
     // A deck is a deck only where the sky is mostly covered: a stratiform type at low coverage is patches of
     // shallow cumulus (humilis, the broken edge of a stratocumulus sheet), shaped as cells with lobes like any
     // other. Kept flat, a region of low coverage was smooth lens-shaped sheets kilometres wide and a few
@@ -1049,8 +1067,8 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     float lowCov = max(1.0 - smoothstep(0.25, 0.65, covT), cv2.cu4.z * smoothstep(0.02, 0.2, w.b)) * cv2.cu.y
                        * smoothstep(0.1, 0.5, ty.look.z);
     float flatK  = ty.alt.z * (1.0 - lowCov);
-    float T      = max(cv2.flow.w, 0.05) * clamp(max(pow(eB, 0.83), 0.6 * pow(e, 0.83)) * max(hVar, 0.3),
-                                               mix(0.25, 0.12, cv2.cu.x), 1.0);
+    float T      = min(max(cv2.flow.w, 0.05) * clamp(max(pow(eB, 0.83), 0.6 * pow(e, 0.83)) * max(hVar, 0.3),
+                                                   mix(0.25, 0.12, cv2.cu.x), kCv2TopCap), 1.0);
     float zeta   = z / T;
     // (A smooth min: min() creased the surface where the two cross, and sqrt(cells) is a cliff at
     // each blob's rim — both drew flat, rock-like facets.)
