@@ -44,7 +44,10 @@ vec3 agx(vec3 v)
                            -0.0980208811401368, 1.15190312990417, -0.0980434501171241,
                            -0.0990297440797205, -0.0989611768448433, 1.15107367264116);
     const float minEv = -12.47393, maxEv = 4.026069;
-    v = clamp(log2(max(kIn * v, vec3(1e-10))), minEv, maxEv);
+    // ("AgX range" = pd.tone.x when AgX is on, light3: the sky's skyAgX, the same log contrast about mid grey.)
+    vec3 dEv = log2(max(kIn * v, vec3(1e-10))) + 2.473931;
+    dEv += (pd.tone.x - 1.0) * mix(1.5 * tanh(dEv / 1.5), dEv, step(0.0, dEv));
+    v = clamp(-2.473931 + dEv, minEv, maxEv);
     v = (v - minEv) / (maxEv - minEv);
     vec3 v2 = v * v, v4 = v2 * v2;
     v = 15.5 * v4 * v2 - 40.14 * v4 * v + 31.96 * v4 - 6.868 * v2 * v + 0.4298 * v2 + 0.1191 * v - 0.00232;
@@ -55,7 +58,7 @@ vec3 agx(vec3 v)
 }
 vec3 tonemap(vec3 x)
 {
-    if (pd.tone.x > 0.5) return agx(x);
+    if (pd.tone.x > 0.25) return agx(x);
     return mix(vec3(1.0) - exp(-x), vec3(1.0) - 1.0 / (vec3(1.0) + x + 0.5 * x * x), pd.tone.w);
 }
 

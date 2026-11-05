@@ -2080,7 +2080,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.amb = glm::vec4(cv2SkyLightModel > 0.5f ? 1.0f : 0.0f, std::clamp(cv2SkyLightGain, 0.0f, 4.0f),
                       std::clamp(cv2SkyGroundAlbedo, 0.0f, 1.0f), cv2SkyMs > 0.5f ? 1.0f : 0.0f);
     p.tone = glm::vec4(cv2Tonemap > 0.5f ? 1.0f : 0.0f, std::clamp(cv2ToneSat, 0.0f, 2.0f),
-                       std::clamp(cv2ToneContrast, 0.5f, 2.0f), 0.0f);
+                       std::clamp(cv2ToneContrast, 0.5f, 2.0f), std::clamp(cv2ToneRange, 0.5f, 2.0f));
     p.gnd = glm::vec4((cv2GroundOvercast > 0.5f && cv2SkyMs > 0.5f) ? 1.0f : 0.0f, std::clamp(wildfireSmokeSpectral, 0.0f, 2.0f),
                       0.0f, 0.0f);   // (y: the wildfire smoke's Angstrom scale, smoke.glsl smokeSpecK)
     // The droplet phase: x the droplet size (0 = off; needs the Mie table and the diffuse field), y the sea-level air

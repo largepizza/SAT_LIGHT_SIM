@@ -2731,7 +2731,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.highlightRolloff = std::clamp(cv2HighlightRolloff, 0.0f, 1.0f);
         cp.whiteBalance = std::clamp(cv2WhiteBalance, 0.0f, 1.0f);
         // light2 (2026-11-05): the white balance's reference sunlight, fixed at 2 km (cloud_params.glsl wbRef).
-        cp.wbRef = glm::vec4(cv2WbAtEye > 0.5f ? -1.0f : 2000.0f, 0.0f, 0.02f,
+        // light3: y = the clouds' own sunlight Rayleigh (+ ozone in the shader), so the reference is the light on the clouds.
+        cp.wbRef = glm::vec4(cv2WbAtEye > 0.5f ? -1.0f : 2000.0f,
+                             cv2WbCloudSun > 0.5f ? std::max(cv2CloudSunRayleigh, 1e-3f) : 0.0f, 0.02f,
                              std::max(std::sin(glm::radians(std::clamp(cv2WbHoldDeg, 1.5f, 30.0f))), 0.03f));
         cp.density = cloudDensity;
         cp.driftRate = cloudDriftRate;
@@ -9242,7 +9244,8 @@ void SatelliteSim::readExposureMeter()
     // A bright resolved satellite in view (2026-10-07, satAdaptLum): the camera may stop down at night too — only
     // as far as the clipping asks (the frame mean of dark space never wants darker).
     day = std::max(day, glm::smoothstep(0.02f, 0.2f, satAdaptLum));
-    constexpr float kTarget = 0.32f;   // linear mean of the displayed frame (~0.6 in sRGB)
+    // Linear mean of the displayed frame ("Auto exposure target", 0.32 ~ 0.6 in sRGB; light3 made it a setting).
+    const float kTarget = std::clamp(cv2AutoExposureTarget, 0.2f, 0.6f);
     float err = log2f(kTarget / std::max(meterMeanLum, 1e-3f)) - 4.0f * std::max(meterClipFrac - 0.04f, 0.0f);
     float lo = -3.0f * std::clamp(cv2AutoExposure, 0.0f, 1.0f);
     // From space (2026-09-30, the Artemis II photos): a SPOT meter on the lit Earth. The whole-frame mean
