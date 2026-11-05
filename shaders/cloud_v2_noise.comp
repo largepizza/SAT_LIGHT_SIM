@@ -208,6 +208,10 @@ float billowSmoothFbm(vec3 uvw, int n0, int octaves)
 // ~8200 of 0.08-0.15 eighth-periods). Union by a hard max: the V creases where bubbles meet are the concavities of a
 // cumulus. 52 % of the volume is inside (numpy over this lattice's statistics: median sd +0.005, p5 -0.15, p95 +0.34).
 // Stored as 0.5 + sd / 1.2. The low field reads it with the turret fetch (storm volume x2) as a margin term.
+// A smooth max over k (the polynomial smin's mirror): the bubbles meet in a rounded fillet ~k wide, not a V crease
+// (2026-11-05, shape2, issue 20261104_230832 "Odd shading on turrets": at a hard crease the surface normal turned at once
+// from a lit bubble's top to the next one's shadowed underside, and the shading stepped from white to grey along a line).
+float smax(float a, float b, float k) { float h = max(k - abs(a - b), 0.0) / k; return max(a, b) + h * h * k * 0.25; }
 float bubbleOct(vec3 uvw, int n, float keep, float r0, float r1)
 {
     vec3  p = uvw * float(n);
@@ -220,15 +224,15 @@ float bubbleOct(vec3 uvw, int n, float keep, float r0, float r1)
         vec3  h2 = hash3(c + ivec3(19, 53, 7), n);
         if (h2.x > keep) continue;
         float R  = mix(r0, r1, h2.y * h2.y);
-        best = max(best, (R - length(p - (vec3(c) + hash3(c, n)))) * 8.0 / float(n));
+        best = smax(best, (R - length(p - (vec3(c) + hash3(c, n)))) * 8.0 / float(n), 0.3 * 8.0 / float(n));
     }
     return best;
 }
 float bubbleSdf(vec3 uvw)
 {
-    return max(bubbleOct(uvw + vec3(0.31, 0.67, 0.13), 8, 0.4, 0.45, 0.9),
-               max(bubbleOct(uvw + vec3(0.73, 0.19, 0.41), 16, 0.35, 0.35, 0.75),
-                   bubbleOct(uvw + vec3(0.11, 0.83, 0.59), 32, 0.25, 0.3, 0.6)));
+    return smax(bubbleOct(uvw + vec3(0.31, 0.67, 0.13), 8, 0.4, 0.45, 0.9),
+                smax(bubbleOct(uvw + vec3(0.73, 0.19, 0.41), 16, 0.35, 0.35, 0.75),
+                     bubbleOct(uvw + vec3(0.11, 0.83, 0.59), 32, 0.25, 0.3, 0.6), 0.08), 0.12);
 }
 
 // Inverted Worley fBm: high AT the feature points (blobs), weights 0.625/0.25/0.125.
@@ -244,7 +248,9 @@ float remap01(float v, float lo, float hi) { return clamp((v - lo) / max(hi - lo
 // Cumulus cells: a blob per Worley point with its own radius, and about a third of the points
 // empty. One blob of one size per cell reads as a lattice from altitude (a jittered grid is nearly
 // regular); real fields vary in size and leave gaps.
-float blobField(vec3 uvw, int n, float keep)
+// 2026-11-05 (shape2, "heavy-tailed cells"): radius r0..1 cell (r0 0.45 until then), and the peak (the cloud's height
+// through eB) correlates with the radius by corr: big clouds stand tall, small ones low (was independent).
+float blobField(vec3 uvw, int n, float keep, float r0, float pk0, float pk1, float corr)
 {
     vec3  p = uvw * float(n);
     ivec3 i = ivec3(floor(p));
@@ -256,12 +262,12 @@ float blobField(vec3 uvw, int n, float keep)
         vec3  h = hash3(c, n);
         vec3  h2 = hash3(c + ivec3(71, 13, 37), n);
         if (h2.x > keep) continue;
-        float r = mix(0.45, 1.0, h2.y * h2.y);
+        float r = mix(r0, 1.0, h2.y * h2.y);
         float d = length(p - (vec3(c) + h)) / r;
         // A dome, not a plateau: the cloud's top height follows this value, so a flat plateau
         // gave flat tops and a steep rim gave vertical walls. Peaks vary so towers differ.
         float dome = clamp(1.0 - d * d, 0.0, 1.0);
-        dome *= sqrt(dome) * mix(0.5, 0.95, h2.z);
+        dome *= sqrt(dome) * mix(pk0, pk1, mix(h2.z, h2.y, corr));
         // A soft union, not max(): max() creased every junction into a straight Voronoi edge, and
         // the field thresholded into polygons. Overlapping blobs merge into one rounded cloud.
         v = v + dome - v * dome;
@@ -314,12 +320,20 @@ void main()
         // clumped by a Perlin field so the gaps between them vary. One or two sizes of round blobs
         // read as a Voronoi pattern from altitude.
         vec3  cw  = uvw + wv * 0.035 + wf * 0.012;
-        float c8  = blobField(cw + vec3(0.57, 0.08, 0.91), 8, 0.3);
-        float c16 = blobField(cw, 16, 0.6);
-        float c32 = blobField(cw + vec3(0.21, 0.63, 0.44), 32, 0.5);
+        // HEAVY-TAILED (2026-11-05, shape2): a fourth, rare octave of masses (4 cells: 8 km cells at the 32 km period,
+        // clouds 4-8 km across, a quarter of the points kept, tall), the radii spread down to 0.3 of a cell (the sizes
+        // between the octaves fill in: a continuum, not three sizes), each blob's peak correlated with its radius, and
+        // the 8-cell octave thinned 0.3 -> 0.25. The thresholded cover is unchanged (numpy over this lattice's statistics,
+        // fraction of sqrt(cells) over 0.2 / 0.4 / 0.6 / 0.8: 0.79 / 0.64 / 0.40 / 0.12 before, 0.78 / 0.63 / 0.42 / 0.14
+        // after); the cloud sizes are a power law's: many small, a few very large.
+        float c4  = blobField(cw + vec3(0.83, 0.36, 0.27), 4, 0.25, 0.55, 0.6, 1.0, 0.6);
+        float c8  = blobField(cw + vec3(0.57, 0.08, 0.91), 8, 0.25, 0.3, 0.5, 0.95, 0.5);
+        float c16 = blobField(cw, 16, 0.6, 0.3, 0.5, 0.95, 0.5);
+        float c32 = blobField(cw + vec3(0.21, 0.63, 0.44), 32, 0.5, 0.3, 0.5, 0.95, 0.5);
         float clump = perlinFbm(uvw + vec3(0.29, 0.52, 0.66), 8, 3);
         float cells = (c8 + c16 * 0.9 - c8 * c16 * 0.9);
         cells = cells + c32 * 0.7 - cells * c32 * 0.7;
+        cells = cells + c4 - cells * c4;
         cells = clamp(cells * mix(0.6, 1.2, clump), 0.0, 1.0);
         vec2  f8 = worleyTile(uvw + wv * 0.18, 8);
         float closed = smoothstep(0.02, 0.22, f8.y - f8.x);   // 0 on the cell rims, 1 inside

@@ -1323,7 +1323,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2MidFieldKm, cv2MidCover, cv2MsOctaves, cv2LobeOcclusion, cv2MsModel, cv2MsDiffG, cv2MsDiffGain, cv2MsBackM, cv2SkyLightModel, cv2SkyLightGain, cv2SkyGroundAlbedo,
                     cv2CuHeightVar, cv2CuBreakup, cv2CuHeadroom, cv2CuFineLobes, cv2CbFineLobes, cv2CuWisps,
                     cv2CuTurrets, cv2CuTurretStretch, cv2CuTurretLean, cv2CuTurretSkew,
-                    cv2CuBody, cv2CuEdge, cv2CuShowerCells, cv2CuShowerCores, cv2CuBubbles, cv2CuBubbleGain,
+                    cv2CuBody, cv2CuEdge, cv2CuShowerCells, cv2CuShowerCores, cv2CuBubbles, cv2CuBubbleGain, cv2CuBubbleFine, cv2CuBubbleSize, cv2CuBubbleBase,
                     cv2CirrusFibres, cv2CirrusHooks, stormCycTopSmooth, stormCycTopStreaks, stormCycTopDensity,
                     cv2AnvilFibres, cv2AnvilFibreAlongKm, cv2AnvilFibreAcrossM, cv2StormBubbles, cv2AnvilErosion,
                     cv2AnvilLidLobes, cv2AnvilUnderLobes})
@@ -2102,7 +2102,9 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                       std::clamp(cv2CuTurretLean, 0.0f, 6.0f), std::clamp(cv2CuTurretSkew, 0.0f, 3.0f));
     p.cu4 = glm::vec4(std::clamp(cv2CuBody, 0.0f, 4.0f), std::clamp(cv2CuEdge, 0.5f, 8.0f),
                       std::clamp(cv2CuShowerCells, 0.0f, 1.0f), std::clamp(cv2CuShowerCores, 0.0f, 1.0f));
-    p.cu5 = glm::vec4(std::clamp(cv2CuBubbles, 0.0f, 4.0f), std::clamp(cv2CuBubbleGain, 0.1f, 3.0f), 0.0f, 0.0f);
+    p.cu5 = glm::vec4(std::clamp(cv2CuBubbles, 0.0f, 4.0f), std::clamp(cv2CuBubbleGain, 0.1f, 3.0f),
+                      std::clamp(cv2CuBubbleFine, 0.0f, 3.0f),
+                      std::round(std::clamp(cv2CuBubbleSize, 0.0f, 1.0f) * 1000.0f) + std::clamp(cv2CuBubbleBase, 0.0f, 0.999f));
     {   // Storms in the cumulus look (storm3): the anvil fibres' along-wind period divides the equator (no seam).
         const float nAlong = std::max(1.0f, std::round(2.0f * 3.14159265f * 6371.0f / std::max(cv2AnvilFibreAlongKm, 2.0f)));
         p.storm3a = glm::vec4(std::clamp(cv2AnvilFibres, 0.0f, 2.0f), nAlong / (2.0f * 3.14159265f),
