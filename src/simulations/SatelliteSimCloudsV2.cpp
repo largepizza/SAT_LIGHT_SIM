@@ -1607,6 +1607,12 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         lo = std::min(lo, cv2Types[i].alt.x - cv2Types[i].alt.w);
         hi = std::max(hi, cv2Types[i].alt.x + (cv2Types[i].alt.y - cv2Types[i].alt.x) * 1.35f);
     }
+    // (storm-above, 2026-11-05) An overshooting dome stands "Cb overshoot" + 600 m (cv2StormGeom kCv2DomeU) over the anvil's
+    // lid, 250 m under the Cb top: in the tropics (cv2Tropo 1.35) that is up to ~0.5 km over the shell's top, which cut
+    // every dome flat. Entered from above inside dense cloud, the cut domes drew BLACK BLOTS from overhead (Yun-yeung's
+    // eyewall from 160 km, storm B at midday from 30 km). +200 m of margin.
+    hi = std::max(hi, cv2Types[4].alt.x + (cv2Types[4].alt.y - cv2Types[4].alt.x) * 1.35f - 250.0f
+                          + std::clamp(cv2CbOvershootKm, 0.0f, 3.0f) * 1000.0f + 600.0f + 200.0f);
     // Rain falls to the ground: with it on, the shell reaches sea level.
     // Fog and dust (cv2FogDust); knockout bit 2048 (the old "fog layer" bit, which the Low / Planetarium /
     // Potato presets set) switches them off.
@@ -2094,7 +2100,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // Fibrous cirrus and hurricane CDO tops (cirrus-hurr, 2026-11-05).
     p.ciHu  = glm::vec4(std::clamp(cv2CirrusFibres, 0.0f, 2.0f), std::clamp(cv2CirrusHooks, 0.0f, 2.0f),
                         std::clamp(stormCycTopSmooth, 0.0f, 1.0f), std::clamp(stormCycTopStreaks, 0.0f, 600.0f));
-    p.ciHu2 = glm::vec4(std::clamp(stormCycTopDensity, 1.0f, 6.0f), 0.0f, 0.0f, 0.0f);
+    p.ciHu2 = glm::vec4(std::clamp(stormCycTopDensity, 1.0f, 20.0f), 0.0f, 0.0f, 0.0f);
     // Storms through the cumulus field (cv2StormGeom / cv2FieldLow, clouds_v2.glsl).
     p.stormU = glm::vec4(cv2StormUnified > 0.5f ? 1.0f : 0.0f, std::max(cv2StormUnifiedScaleM, 200.0f),
                          std::max(cv2StormUnifiedRampM, 20.0f), std::max(cv2StormUnifiedLobes, 0.0f));

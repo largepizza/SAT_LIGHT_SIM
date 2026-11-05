@@ -1148,7 +1148,7 @@ void main()
                 float deckK = f.deck * (1.0 - max(f.soft, 0.0));
                 if (deckK > 0.0) {
                     float odDeck = f.sigma * max(max(f.topH - p.h, 0.0) / max(dot(up, keyDir), 0.03)
-                                                 - 2.0 * cv2.light.x, 0.0);
+                                                 - (thin ? 0.0 : 2.0 * cv2.light.x), 0.0);   // (thin ice has no light march)
                     od = max(od, odDeck * deckK * 0.5);
                 }
                 // ("Powder" darkened thin, sun-facing samples, a stand-in for the diffuse field's build-up: the old model's only.)
