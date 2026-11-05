@@ -7103,6 +7103,15 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         // Fibrous cirrus (2026-11-05, cirrus-hurr): slots 520-521.
         {tx(Txt::SldCirrusFibres), &cv2CirrusFibres, 0.0f, 2.0f, 0.05f, "%.2f", 520},
         {tx(Txt::SldCirrusHooks), &cv2CirrusHooks, 0.0f, 2.0f, 0.05f, "%.2f", 521},
+        // Vertical variation (2026-11-05, vertical): varied bases, fractus, mid-level wisps, orographic clouds. Slots 528-535.
+        {tx(Txt::SldCloudBaseLcl), &cv2BaseLcl, 0.0f, 2.0f, 0.05f, "%.2f", 528},
+        {tx(Txt::SldCloudBaseCellM), &cv2BaseCellM, 0.0f, 400.0f, 10.0f, "%.0f", 529},
+        {tx(Txt::SldCloudBaseRegional), &cv2BaseRegional, 0.0f, 2.0f, 0.05f, "%.2f", 530},
+        {tx(Txt::SldFractus), &cv2Fractus, 0.0f, 2.0f, 0.05f, "%.2f", 531},
+        {tx(Txt::SldMidWisps), &cv2MidWisps, 0.0f, 2.0f, 0.05f, "%.2f", 532},
+        {tx(Txt::SldOroClouds), &cv2OroAmount, 0.0f, 2.0f, 0.05f, "%.2f", 533},
+        {tx(Txt::SldOroWindMps), &cv2OroWindMps, 0.0f, 40.0f, 1.0f, "%.0f", 534},
+        {tx(Txt::SldOroWindDir), &cv2OroWindDirDeg, -1.0f, 360.0f, 5.0f, "%.0f", 535},
     };
 
     CloudSlider secQuality[] = {
@@ -9868,6 +9877,15 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CuBubbles = c.value("cumulus_bubbles", cv2CuBubbles);
         cv2CirrusFibres = settingClamp(c.value("cirrus_fibres", cv2CirrusFibres), 0.0f, 2.0f);
         cv2CirrusHooks = settingClamp(c.value("cirrus_hooks", cv2CirrusHooks), 0.0f, 2.0f);
+        cv2BaseLcl = settingClamp(c.value("base_lcl", cv2BaseLcl), 0.0f, 2.0f);
+        cv2BaseCellM = settingClamp(c.value("base_cell_m", cv2BaseCellM), 0.0f, 400.0f);
+        cv2BaseRegional = settingClamp(c.value("base_regional", cv2BaseRegional), 0.0f, 2.0f);
+        cv2Fractus = settingClamp(c.value("fractus", cv2Fractus), 0.0f, 2.0f);
+        cv2MidWisps = settingClamp(c.value("mid_wisps", cv2MidWisps), 0.0f, 2.0f);
+        cv2OroAmount = settingClamp(c.value("oro_amount", cv2OroAmount), 0.0f, 2.0f);
+        cv2OroWindMps = settingClamp(c.value("oro_wind_mps", cv2OroWindMps), 0.0f, 40.0f);
+        cv2OroWindDirDeg = settingClamp(c.value("oro_wind_dir_deg", cv2OroWindDirDeg), -1.0f, 360.0f);
+        cv2OroMoist = settingClamp(c.value("oro_moist", cv2OroMoist), 0.0f, 1.0f);
         stormCycTopSmooth = settingClamp(c.value("storm_cyc_top_smooth", stormCycTopSmooth), 0.0f, 1.0f);
         stormCycTopStreaks = settingClamp(c.value("storm_cyc_top_streaks_m", stormCycTopStreaks), 0.0f, 600.0f);
         stormCycTopDensity = settingClamp(c.value("storm_cyc_top_density", stormCycTopDensity), 1.0f, 6.0f);
@@ -10629,6 +10647,15 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cumulus_bubbles", cv2CuBubbles},
         {"cirrus_fibres", cv2CirrusFibres},
         {"cirrus_hooks", cv2CirrusHooks},
+        {"base_lcl", cv2BaseLcl},
+        {"base_cell_m", cv2BaseCellM},
+        {"base_regional", cv2BaseRegional},
+        {"fractus", cv2Fractus},
+        {"mid_wisps", cv2MidWisps},
+        {"oro_amount", cv2OroAmount},
+        {"oro_wind_mps", cv2OroWindMps},
+        {"oro_wind_dir_deg", cv2OroWindDirDeg},
+        {"oro_moist", cv2OroMoist},
         {"storm_cyc_top_smooth", stormCycTopSmooth},
         {"storm_cyc_top_streaks_m", stormCycTopStreaks},
         {"storm_cyc_top_density", stormCycTopDensity},

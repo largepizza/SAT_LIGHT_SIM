@@ -47,6 +47,8 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_march.comp)
 #define CV2_SHAPE_BINDING   3
 #define CV2_DETAIL_BINDING  4
 #define CV2_MESO_BINDING    5
+#define CV2_ELEV_BINDING    25   // the elevation map: the orographic lenses (clouds_v2.glsl cv2OroSigma)
+#define CV2_ORO_EXTERNAL         // ... added at the main sample only (below), not in every inlined cv2Field (registers)
 #define CV2_STORM_BINDING   26   // the storm objects' towers (cv2_storms.glsl)
 #define CV2_DUST_SPEC            // the haboob code is specialization constant 3 (clouds_v2.glsl kCv2DustOn)
 #include "clouds_v2.glsl"
@@ -858,6 +860,12 @@ void main()
 #endif
             CV2Field f = cv2Field(p, fine ? detailAmt : -1.0, fp);
             gCv2LayMask = 0xFFFFu;
+            // Orographic lenses / caps (vertical, 2026-11-05; clouds_v2.glsl cv2OroSigma): Earth-fixed, smooth, here only.
+            if ((lmC & kCv2LayMid) != 0u && cv2.oro0.x > 0.0) {
+                float hfO, topO;
+                float so = cv2OroSigma(p, fine ? detailAmt : -1.0, fp, hfO, topO);
+                if (so > 0.0) cv2Add(f, so, hfO, topO, 0.0);
+            }
             CV2_CNT(fine ? 2 : 1);
             gCv2DbgWant = false;
             // The thin ice's bounce light (below) reads the map where the field did. Its flow is still in

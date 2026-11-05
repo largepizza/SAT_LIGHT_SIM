@@ -82,6 +82,52 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   terrain does not); the tropopause it used to hold is a function of latitude (`cv2Tropo`). Low bases rise
   by 0.6 (decks) .. 0.9 (convective) x the ground, tops with them but capped at the Cb top; the mid layer by
   0.8x. Until then every base was above SEA level and the Andes/Tibet stood inside the cloud.
+- **Varied bases, fractus, mid-level wisps, orographic lenses** (2026-11-05, night wave "vertical"; `clouds_v2.glsl`
+  `cv2BaseShift`, `cv2LowA`, `cv2FarColumn`, `cv2MidSigma`, `cv2OroSigma`; UBO block `vert / vert2 / oro0 / oro1`; slots 528-535).
+  - The low base = type base + lift + `cv2BaseShift` (regional spread + condensation-level proxy) + per-cell offset - deck
+    variation, clamped to [lift + 150, top - 400]. The regional term normalises the cluster Perlin like the fog / mid layer
+    (`clamp((cl.a-0.5)*8.8, ±1.5) * alt.w`): the old `(cl.a-0.5)*2*alt.w` moved a 300 m setting by ±34 m (cl.a is 0.50 ± 0.057).
+  - The LCL proxy: convective types -350 m over the sea (ground < 5-60 m), -250 m x rain, -200 m x (cov - 0.5), +1400 m over
+    dry land (~20 km cover < 0.02-0.35, no rain) by day, +300 m over any land by day; decks -150 m sea, -150 m rain. The top
+    rises by half a positive shift (desert cumulus are high AND tall); `anvil3.zw` carries +900 m x "condensation level".
+    `cv2FarColumn` takes the same `cv2BaseShift` (no per-cell term), so bases agree at the near/far placement boundary.
+  - Shell: `lo` widens by 1.5 alt.w x regional + 600 m x LCL + 500 m (fractus); with rain on (default) shell.x is 0 anyway.
+  - Fractus: in the rain branch, from the shaft's own texel `sr` (a second fetch there put the march at 249 registers):
+    through a band 60 m .. 250-550 m (rate) under a raining base the curtains' vertical squeeze (0.85) eases off, so the
+    texel is round noise, thresholded into ragged shreds whose band edges move +-120 m with it. Thresholding the
+    squeezed curtain texel drew a row of flat-topped dark blocks. Cloud, not rain (its share leaves `f.rain`, the bows
+    keep the rain's); fades out by fpM 600-1500 m.
+  - Mid-level wisps: `cv2MidSigma`'s low mode, 1.5-2.5 km + 0.8 ground, 260-460 m thick (>= 260: the CDC reads are 160 m
+    apart), one shape fetch stretched 2.5x along east, sigma 0.03, where the low cover is 0.15-1 but not overcast and the
+    cluster Perlin's a > 0.54-0.62 at "Mid-level wisps" 1 (about a fifth of the area; the slider widens it by 0.05 per unit). Measured (cumulus at 3 km, uncontended): the first cut over
+    ~75% of the area cost +0.9 ms of cloud_march, this one +0.4. Reusing the low field's coverage through a global (to skip
+    the mid layer's weather fetches) put the march at 249-251 registers.
+  - Orographic lenses (`cv2OroSigma`, where `CV2_ELEV_BINDING` is defined: the DEM is binding 25 of the march set).
+    Relief excess ex = h(DEM mip 1, 2 km upwind) - h(mip 3.3, the regional ground) against a dryness
+    mix(2200, 350, moisture) m x (1.25 .. 0.85 over 8-25 m/s wind); lens centred hC + 1.1 ex + 500 m, half-thickness
+    min(0.3 (ex - dry), 900) (domed top 0.75 of it, base 0.45), sigma 0.025, smooth (no lobes / erosion); one lee lens at the
+    relief one wavelength 2 pi U / N upwind (N 0.01 /s), x0.65. Earth-fixed. The wind (CPU, per view: lenses are local)
+    is "Ridge wind" / "Ridge wind from", or 20 m/s from the east within 25 deg of the equator, from the west outside.
+    Moisture = `oro_moist` x (1 +- 0.5 x a slow lat/lon wave whose phase turns over in ~3 sim days), so ranges take turns.
+    Gated on the ~20 km ground > 250 m, a 0.3-7 km band over it, fpM < 700 m. Under the mid layer's CDC mask bit; the
+    coarse reads (detailAmt < 0) inflate it 200 m so the 160 m-spaced CDC reads never miss a rim.
+  - **Registers:** in `cv2Field` (inlined at every march call site) even the gated, two-tap version took the march from
+    128 to 251 registers; a uniform-gated single fetch stayed at 128. So the march defines `CV2_ORO_EXTERNAL` and adds the
+    lens at its ONE main sample (cloud_v2_march.comp, after `cv2Field`): 128. The CDC and lightning (STV) shaders keep it
+    in `cv2Field` (no cliff there): the lens is in the occupancy clipmap and shadows the ground and lower cloud. The light
+    march does not see it (a lens is thin; it is lit as unshadowed).
+  - **Cost** (2026-11-05, 1600x900, interleaved A/B in one app, 3 reps, lightly contended GPU: one other agent's app;
+    A = the perf-frames march SPV with every new term off, B = this one at defaults; cloud_march ms): cumulus from 3 km
+    7.73 -> 8.49, shower field from the ground 9.42 -> 10.36, Andes from 12 km 7.77 -> 8.54, Fuji from the ground
+    5.00 -> 5.41. March at 128 registers. Attribution (cumulus at 3 km, uncontended, 2 reps): the new code with every
+    term off +0.4, bases +0.2, fractus ~0 (no rain there), lenses +0.15 (no mountains), wisps the rest (the wisps' cost
+    follows their cover: sparser regime 0.54-0.62 is the trade-off).
+    Motion (cloud_suite trade_cu, off vs on, separate launches): motion score 1.46 vs 1.51, time-running step 6.07 vs 5.67.
+    Lenses under 1 h time warp at Fuji stay put and sharp (the resolve reprojects with the map drift, but a lens is a
+    smooth, slowly varying shape: no visible smear in captures 90 and 135 frames into the warp).
+  - Test views: qa/waves/20261105/evidence/vertical/*.satcmd (Fuji from Yamanakako az 245 el 12 fov 40 with cover_clear
+    0.9; Rainier, Aconcagua, Andes 12 km / orbit; trade cumulus ground / 900 m / 10 km; inland Darwin; a storm via
+    `weather go 0` then the ground 35 km toward it for fractus).
 - **Erosion detail fades with distance toward its MEAN, at full strength** (`df = mix(0.45, fetched,
   detailAmt)`). It used to fade the erosion toward NONE and then switch to the mean where detailAmt hit 0: a
   band of uneroded cloud just inside 4 x `detail_lod_start_m`, seen from orbit as a ring (~220 km out).
