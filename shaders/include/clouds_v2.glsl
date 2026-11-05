@@ -225,6 +225,10 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // 2026-11-04 (structure round): x "Cumulus bubbles" (the thermal bubbles' share of a convective cloud's margin, m0 ->
     // (m0 + x B) / (1 + x)), y "Bubble relief" (margin units per unit of bubble distance), zw spare
     vec4  cu5;
+    // 2026-11-04, cloud contrast (cloud_v2_march.comp; clouds.md "Cloud contrast"): x "Sky light keeps its colour" (the
+    // sky's light diffused through cloud keeps its hue: cloud scattering is grey; 0 = greyed with depth as before), y the
+    // diffuse field's side escape ("Multi-scatter side escape": e^-y t; 0.05 as fitted 2026-10-26), zw spare
+    vec4  shade;
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO

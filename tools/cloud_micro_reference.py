@@ -28,6 +28,15 @@ blob / its centre): soft 30 0.70 / 0.83, hard 30 0.93 / 1.03, lumpy 60 0.65 / 0.
 never lights a base brighter than the path tracer does: a base's brightness is its cloud's optical depth (tau 20 transmits
 ~45%: a light grey base is right for it; a dark base needs tau 50+). Deck bases are 2-5x too DARK (the view leak hV and
 e^(-0.05 t), fitted to blobs, take the slab's transmitted field down with them); not changed (the report asks the opposite).
+
+    python tools/cloud_micro_reference.py --quick --contrast  # SUNLIT vs SHADED half, the Sun at right angles to the view
+
+Measured 2026-11-04 (cloud contrast; lit-half / shaded-half mean of the multiple scattering, reference vs the model at the
+shipped e^(-0.05 t)): hard 30 10.7 / 5.5, hard 100 19.8 / 41, lumpy 60 6.6 / 5.3, lumpy 150 21 / 11, cauli 80 33 / 12,
+cauli 200 78 / 29, lumpy 60 low Sun 8.4 / 5.0: a lobed cloud's shaded half 1.5-2.2x too bright, its lit half 0.76-0.95.
+At e^(-0.11 t) ("Multi-scatter side escape" 0.11, the march's cv2.shade.y) the lobed shaded halves are
+0.90-1.22 (reference / model); the blobs' overall level (the other cases) 1.02 -> 1.07 reference / model; the uniform tau-100 sphere's shaded
+side, already 3x too dark, goes 13x (a uniform sphere is not a cumulus).
 """
 import argparse
 import numpy as np
@@ -142,6 +151,12 @@ def phase_order(c, d, n, gtot):
 CASES_BELOW = [('soft', 30, 'high'), ('hard', 30, 'high'), ('lumpy', 60, 'high'), ('slab', 20, 'high'),
                ('slab', 40, 'high'), ('slab', 100, 'high'), ('slab', 40, 'low'), ('hard', 30, 'low')]
 
+# Sunlit vs shadowed face (--contrast): the Sun at right angles to the view (from the image's side, 30 / 10 deg above the
+# view plane), lit-half mean / shadowed-half mean (pixels whose image position is > 0.35 toward / away from the Sun).
+CASES_SIDE = [('hard', 30, 'perp'), ('hard', 100, 'perp'), ('lumpy', 60, 'perp'), ('lumpy', 150, 'perp'),
+              ('cauli', 80, 'perp'), ('cauli', 200, 'perp'), ('lumpy', 60, 'perpL')]
+R.SUNS.setdefault('perp', [0., 1., 0.55]); R.SUNS.setdefault('perpL', [0., 1., 0.18])
+
 VARIANT = 'B'
 KMAX = 3
 
@@ -191,6 +206,7 @@ def main():
     ap.add_argument('--peak', type=float, default=0.97)
     ap.add_argument('--kmax', type=int, default=3)
     ap.add_argument('--below', action='store_true', help='cloud BASES: the eye looks straight up (CASES_BELOW)')
+    ap.add_argument('--contrast', action='store_true', help='sunlit / shadowed half ratio, Sun at right angles (CASES_SIDE)')
     a = ap.parse_args()
     global VARIANT, KMAX, PEAK_CAP
     VARIANT, KMAX, PEAK_CAP = a.variant, a.kmax, a.peak
@@ -198,7 +214,7 @@ def main():
     S = Sampler(a.d)
     print(f"d = {a.d} um: phase mean cosine {S.g:.3f}; peak share {1 - jde(a.d)[0]:.3f}, g_peak {jde(a.d)[1]:.4f}")
     view = np.array([0., 0, 1]) if a.below else np.array([1., 0, 0])
-    allc = CASES_BELOW if a.below else R.CASES
+    allc = CASES_BELOW if a.below else (CASES_SIDE if a.contrast else R.CASES)
     cases = allc if not a.cases else [c for c in allc if f"{c[0]}{c[1]}{c[2]}" in a.cases.split(',')]
     hdr = ' | '.join(f"g{x:<4} r  lvl  ctr" for x in a.gain)
     print(f"{'blob':>6} {'tau':>4} {'light':>6} | {'ref':>6} {'ctr':>6} | {'hg r':>5} {'lvl':>5} | {hdr}")
@@ -217,6 +233,13 @@ def main():
         cm = m & (np.hypot(*np.meshgrid(xs, xs)) < 0.5)            # the centre (a base seen from below: its middle)
         def st(im): return np.corrcoef(ref[m], im[m])[0, 1], im[m].mean() / ref[m].mean(), im[cm].mean() / ref[cm].mean()
         s = ' | '.join(f"{st(im)[0]:6.3f} {st(im)[1]:5.2f} {st(im)[2]:5.2f}" for im in ims)
+        if a.contrast:      # image-plane coordinate toward the Sun: the basis (u, w) the cameras use
+            u, w = R.basis(view); X, Y = np.meshgrid(xs, xs)
+            sp = np.array([sun @ u, sun @ w]); sp /= np.linalg.norm(sp)
+            c = X * sp[0] + Y * sp[1]
+            lit, sh = m & (c > 0.35), m & (c < -0.35)
+            def lr(im): return im[lit].mean() / max(im[sh].mean(), 1e-9)
+            s += f" | lit/shadow ref {lr(ref):5.2f} hg {lr(hgm):5.2f} " + ' '.join(f"micro {lr(im):5.2f}" for im in ims)
         print(f"{kind:>6} {s0:>4} {light:>6} | {ref[m].mean():6.3f} {ref[cm].mean():6.3f} | {st(hgm)[0]:5.3f} {st(hgm)[1]:5.2f} | {s}", flush=True)
         if a.png:
             from PIL import Image

@@ -1107,6 +1107,47 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     transmission (`ground_overcast`); the shadowed air is lit by the clear zenith's light, and an overcast's diffuse
     transmission (~0.4 x the Sun's under tau 15) would make it BRIGHTER, so the report's "overcast ambient under the
     clouds" would veil distant bases more, not less. `harness_runs/cb/` in the cloud-bottoms worktree.
+- **Cloud contrast: the shaded side (2026-11-04, branch qa/20261104/cloud-contrast; `cv2.shade`, cloud_v2_march.comp).**
+  Real cumulus have deep blue-grey shaded faces and crevices against near-white lit lobes; ours were a light grey. Measured
+  (user settings, 1600x900; views and scripts in `qa/waves/20261104/evidence/cloud-contrast/`):
+  - **What lights a shaded face.** Probe variants that write one term as the sample's radiance (x0.1), read through
+    `debugview cloudrad` and decoded (Reinhard x20 inverted), on opaque cloud (`cloudtrans` < 0.05), lit = top 10%, shaded =
+    bottom 10%: in a squall line from 14 km at Sun 21 deg the shaded pixels are 61% sky light and 38% diffuse field, in
+    cumulus fields from 12 km and from the ground 23-37% sky light and 52-79% diffuse field; ground bounce <= 4%; the air in
+    front is not in the term. The sky light on shaded faces had blue / red 0.4-0.9 (grey-warm); the photos' shaded faces
+    1.6-2.6.
+  - **The diffuse field lights a lobed cloud's shaded side 1.5-2.2x too brightly** (`tools/cloud_micro_reference.py
+    --contrast`, the Sun at right angles: lit / shaded multiple scattering, reference vs model, lumpy tau 150 21 vs 11,
+    cauliflower 80 33 vs 12, 200 78 vs 29; the lit half 0.76-0.95). The slab holds the light in sideways; a lobed cloud loses
+    it through the valleys before the far side. **"Multi-scatter side escape"** (`clouds_v2.ms_side_escape`, slot 474, the
+    k of the field's e^(-k t)) **0.11** (was the fixed 0.05): the lobed shaded halves 0.90-1.22 of the reference, the
+    blobs' overall level 5% darker (reference / model 1.02 -> 1.07), a uniform tau-100 sphere's shaded side 13x too dark
+    (it was 3x: uniform spheres are not cumulus).
+  - **The sky's light keeps its colour through cloud.** "Sky light keeps its colour" (`clouds_v2.sky_light_hue`, slot 473)
+    1: the sky light's hue was greyed by the cloud above (1 / (1 + 0.11 tau)) on the reasoning that it arrives "mixed with
+    the sunlight"; cloud scattering is grey, the sunlight's share is the key term's diffuse field, so the greying counted it
+    twice. Small (near-surface samples have little cloud above): blue / red of the shaded tenth +0.0-0.02 alone.
+  - **In the app** (display-linear luminance on opaque cloud, p95 / p10, and blue / red of the darkest 15%; old 0 / 0.05 ->
+    new 1 / 0.11; A-vs-A by re-running old after a toggle): squall line from 14 km, Sun 21 deg **3.7-3.9 -> 5.4**, b/r
+    1.32-1.35 -> 1.49; anvil top from 18 km, Sun 18 deg 1.75 -> 1.76; cumulus field from 12 km, Sun 25 / 19 deg 1.53-1.57 ->
+    1.59, 1.52-1.56 -> 1.64; from the ground under cumulus, Sun 25 deg 1.54-1.58 -> 1.59; towers on the horizon from the
+    ground, Sun 21 deg 2.07-2.17 -> 2.16. Sunlit tops (p95) -2%. The photos (`refs/shapes` 3-6, cloud crops): p95 / p10
+    3.4 / 6.9 / 5.0 / 14.8, b/r of the darkest 15% 2.1 / 2.6 / 1.6 / (6: saturated blue). The change moves the views with
+    relief (towers, crevices) toward the photos; the fair-weather fields stay flat: their shaded sides have little optical
+    depth toward the Sun (small, convex clouds; the shape work) and the haze in front.
+  - **The tonemap compresses the rest.** In the squall-line view the decoded scene radiance of lit / shaded opaque cloud is
+    ~28:1, the display 4:1 (AgX is a log curve; "Tonemap contrast" 1.15 in the user's settings). At contrast 1.35 (AgX's
+    "punchy" power) the same views read 8.3 / 1.9 / 1.67 / 1.76 / 1.70 / 2.37, with the lit tops -7%: the evidence sheets
+    carry it as a third column; a look decision, not changed. Auto exposure only darkens (target mean 0.32, display-linear),
+    so it does not pull a cloud frame toward mid grey.
+  - **Tried and dropped: the sky from the open side.** The upper hemisphere split into its Sun and anti-Sun halves, each
+    through the cloud on its side (the light march toward the Sun, the march away from it): in this sky model the anti-Sun
+    half's mean luminance is 0.94-0.98 of the hemisphere's at Sun 7-50 deg (the Psi multiple scattering and the bright
+    horizon all round), a +-5% effect; and either a fetch of its own (a sixth table layer) or the hemisphere's radiance
+    changed beside the light march put the march at 247-252 registers.
+  - Cost: two uniforms, binary 438,400 B either way, 128 registers; cloud march old / new / old (interleaved x3, another
+    agent's app on the GPU): squall line 13.48 / 13.68 / 12.93 ms, field 11.75 / 11.67 / 11.45, ground 10.05 / 9.91 / 9.79:
+    within the spread. UBO `cv2.shade` appended (+16 B; x hue, y side escape).
 - **The sky pass's multiple scattering + ozone (2026-10-26, branch cloud-ms).** The sky (sat_sky.frag's atmosphere loop,
   sky_ap.comp's volume, the sea's reflected-sky march) was single scattering: the air in the Earth's shadow was lit by a
   hand-made "sky-lit shadowed air" term (review 7), and the Sun's path had no ozone, so the twilight sky read olive /
