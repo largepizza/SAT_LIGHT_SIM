@@ -942,7 +942,7 @@ struct GpuCloudV2Params
     glm::vec4 skyAp;                    // 2026-10-25: the aerial-perspective volume: x ran this frame, y d0 (m), z band (sin)
     glm::vec4 ms;                       // 2026-10-26: multiple scattering: x model (0 octaves, 1 delta-Eddington), y g, z gain, w the reach away from the light (m)
     glm::vec4 amb;                      // 2026-10-26: the sky's light on the clouds: x model, y gain, z ground albedo, w the sky pass's multiple scattering
-    glm::vec4 tone;                     // 2026-10-26: the sky pass's tonemap: x AgX on, y saturation, z contrast
+    glm::vec4 tone;                     // 2026-10-26: the sky pass's tonemap: x AgX on, y saturation, z contrast, w AgX range (light3)
     glm::vec4 gnd;                      // 2026-10-26: x the ground's light under cloud (the cv2Vt map) on
     glm::vec4 micro;                    // 2026-11-04: the droplet phase: x droplet size (0 off), y sea-level temp (C), z 1 / Mie rows, w diffuse gain
     glm::vec4 stormU;                   // 2026-11-04: storms through the cumulus field: x on, y metres per margin unit, z the surface ramp (m), w lobe gain
@@ -2022,7 +2022,7 @@ struct GpuCloudParams
     glm::vec4 mwStar1;
     glm::vec4 mwStar2;
     // -- light2 (12336 -> 12352, 2026-11-05): the white balance's reference sunlight (cloud_params.glsl wbRef): x its height
-    // (m: 2000, < 0 = the eye's), y unused, z / w the Sun sines of the low-Sun fade (off / full).
+    // (m: 2000, < 0 = the eye's), y the Rayleigh gain it takes (light3: "Cloud sunlight Rayleigh"; 0 = the sky's), z / w the Sun sines of the low-Sun fade (off / full).
     glm::vec4 wbRef;
 };
 static_assert(sizeof(GpuCloudParams) == 12352, "GpuCloudParams layout mismatch");
@@ -5621,8 +5621,9 @@ private:
     float cv2GroundOvercast = 1.0f;       // the ground's light under cloud (cloud_v2_lightning.comp's cv2Vt map; needs cv2SkyMs)
     // The tonemap (2026-10-26, sat_sky.frag): AgX (Sobotka's; Wrensch's fit) in place of 1 - e^-x per channel.
     float cv2Tonemap = 1.0f;              // 0 = 1 - e^-x (with "Highlight roll-off"), 1 = AgX
-    float cv2ToneSat = 1.15f;             // AgX look: saturation about the luminance
+    float cv2ToneSat = 1.35f;             // AgX look: saturation about the luminance (1.15 before light3)
     float cv2ToneContrast = 1.15f;        // AgX look: power on the curve's output (contrast about mid grey)
+    float cv2ToneRange = 1.4f;            // AgX range (light3; 1 = before): x the scene's log contrast about mid grey before the curve
     float cv2LobeOcclusion = 0.0f;        // sky light darker in the creases between lobes, brighter on their tips
     float cv2LightFootprint = 0.0f;       // the light march's samples read the field at this x its length (0 = point samples). 0.08 hid grain but a cumulus lost its self-shadow: flat, glowing (issue 20261013_181252)
     float cv2SampClampSd = 1.4f;         // the history clamp in motion (sd of the new samples around)
@@ -5680,9 +5681,11 @@ private:
     float cv2HighlightRolloff = 1.0f;  // 0 = the old tonemap; 1 = a long highlight shoulder
     float cv2WhiteBalance = 0.6f;      // 0..1: adapt to the low Sun's colour (2 km over sea level under the eye)
     float cv2WbAtEye = 0.0f;           // 1 = the white balance's reference sunlight is the eye's (before 2026-11-05); 0 = the Sun 2 km over sea level
-    float cv2WbHoldDeg = 6.0f;         // the white balance is full down to this Sun elevation, off at ~1 deg (was 11.5)
+    float cv2WbCloudSun = 1.0f;        // 1 = the white balance's reference is the clouds' sunlight (their Rayleigh + ozone; light3)
+    float cv2WbHoldDeg = 6.0f;        // the white balance is full down to this Sun elevation, off at ~1 deg (was 11.5)
     float cv2BeamShafts = 1.0f;        // beams as light in the volumetric march (0 = the old drawn line)
     float cv2AutoExposure = 1.0f;      // 0..1: how far the metered auto exposure may darken a bright day
+    float cv2AutoExposureTarget = 0.40f; // (0.32 before light3) the meter's goal: the displayed frame's linear mean (light3: was a constant)
     // ── Global exposure (2026-09-28) ──
     // The scene is an HDR composite: the sky is tonemapped from radiance, and the post-tonemap terms
     // (satellites, stars, planets, the Milky Way, zodiacal light) carry their own photometry. ONE
@@ -8671,7 +8674,7 @@ private:
     bool draggingPhoto[56] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 536;   // 528-535 (2026-11-05, vertical): cloud base LCL / cell / regional spread, fractus, mid wisps, orographic amount / wind / direction; 496-498 (2026-11-05, shape2): bubble hierarchy / size / base; 504-511 (2026-11-05, storm3): anvil fibres, storm bubbles, anvil erosion; 512-513 (2026-11-05, light2): white balance reference / hold; 520-524 (2026-11-05, cirrus-hurr): cirrus fibres / hooks, hurricane top smoothing / streaks / density; 496-527: the 2026-11-05 night wave; 494-495 (2026-11-04): cumulus bubbles;   // 440-441 (2026-11-03): turbulence cell size / speed; 450-452: anvil formation / decay time, tower growth time; 455-461: hurricane shape; was 435;   // 428-434 (2026-10-30): the second stage's jellyfish (streaks, nucleus, staging cloud); was 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
+    static constexpr int kCloudSliderSlots = 544;   // 536-538 (2026-11-05, light3): AgX range, white balance from cloud sunlight, auto exposure target; 528-535 (2026-11-05, vertical): cloud base LCL / cell / regional spread, fractus, mid wisps, orographic amount / wind / direction; 496-498 (2026-11-05, shape2): bubble hierarchy / size / base; 504-511 (2026-11-05, storm3): anvil fibres, storm bubbles, anvil erosion; 512-513 (2026-11-05, light2): white balance reference / hold; 520-524 (2026-11-05, cirrus-hurr): cirrus fibres / hooks, hurricane top smoothing / streaks / density; 496-527: the 2026-11-05 night wave; 494-495 (2026-11-04): cumulus bubbles;   // 440-441 (2026-11-03): turbulence cell size / speed; 450-452: anvil formation / decay time, tower growth time; 455-461: hurricane shape; was 435;   // 428-434 (2026-10-30): the second stage's jellyfish (streaks, nucleus, staging cloud); was 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
     // gust fronts, drop persistence); 326: "Tropical cyclones (x)"; 325: "Storm complexes"; 321-324 (2026-10-23): storm
     // objects (frequency, life, cloud field, moat);
     // was 321: 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);

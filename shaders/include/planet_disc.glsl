@@ -24,7 +24,7 @@ struct PlanetDisc {
 
 layout(std140, set = 0, binding = 0) uniform PlanetDiscUBO {
     uvec4 head;        // x = count, y = Jupiter's disc index (or 99: its moons' shadows), z = the rings' map layer
-    vec4  tone;        // x = AgX on, y = saturation, z = contrast, w = highlight roll-off (the old curve)
+    vec4  tone;        // x = AgX on (> 0.25: its value is "AgX range", light3), y = saturation, z = contrast, w = highlight roll-off (the old curve)
     vec4  moons[4];    // Galilean moons in Jupiter's local frame (equatorial radii), w = their radius
     PlanetDisc disc[6];
 } pd;

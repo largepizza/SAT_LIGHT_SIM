@@ -1624,6 +1624,43 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     third column of the evidence sheets, a look choice). The sky's light at 2 km by halves (`sky_halves_light2.py`, a
     numpy port of the bake): the anti-Sun half is 0.92-0.94 of the hemisphere in luminance and only ~5% bluer at 2-45 deg,
     so splitting it would not change the shaded faces' hue.
+  - **The display look: "AgX range" and the meter's target (2026-11-05, light3; `qa/waves/20261105/evidence/light3/`).**
+    The grey was mostly auto exposure: by day the meter (`readExposureMeter`) holds the displayed frame's linear mean at
+    its target, and a frame of blue sky and white cloud is brighter than 0.32, so it stopped down -1.0 to -2.4 EV (Darwin
+    from the ground and from 14 km, Sun 5-45 deg; `state` -> `exposure.auto_ev`), and lit cloud sat about 1 EV over mid
+    grey, in AgX's flat middle, never near its shoulder (display lit Y 0.67-0.74, sRGB ~220). And AgX spans 16.5 EV, a
+    camera's whole latitude, so the 4.5 EV between a lit and a shaded face is a small slope. Two controls, both
+    post-process: "AgX range" (`clouds_v2.tonemap_range`, slot 536, `cv2.tone.w`; the planet discs' copy takes it in
+    `pd.tone.x`) scales the scene's log contrast about mid grey before the curve; BELOW mid grey the extra contrast
+    saturates 1.5 EV down (`1.5 tanh(d / 1.5)`, the curve stays smooth: at 1.4x everywhere the ground at a low Sun went
+    black; a 2.5-EV knee still took a low Sun's ground nearly to black). "Auto exposure target" (`clouds_v2.auto_exposure_target`, slot 538; was the constant 0.32) is the meter's
+    frame mean (below 100 km; the orbit spot meter keeps its 0.47). Contrast (a power on the display curve, about 0, not
+    mid grey) darkens everything, lit faces included: "punchy" (contrast 1.35, saturation 1.4) took the ratio 3.6 -> 5.2
+    but lit Y 0.71 -> 0.61, i.e. greyer. Measured on opaque cloud pixels (mask = `debugview cloudalpha` r; lit / shaded =
+    the brightest / darkest tenth, `cstat_light3.py`), Darwin cumulus from the ground at Sun 5 deg, auto exposure settled
+    (90 frames): before lit Y 0.67, lit / shaded 4.0, shaded b/r 1.47; range 1.4 + saturation 1.35: 0.81, 6.1; + target
+    0.40: 0.84, 5.2; + "Multi-scatter side escape" 0.30: 0.84, 5.6, shaded b/r 1.66 (a 2.5-EV knee; with the 1.5-EV one
+    as built: 0.69 / 3.7 / 1.45 -> 0.85 / 5.2 / 1.61; from 18 km over the Congo anvils, Sun 45 deg: 0.57 / 3.4 -> 0.72 /
+    4.7; frame time unchanged within noise, sky pass 7.21 vs 7.05 ms contended). Defaults since: range 1.4,
+    saturation 1.35, contrast 1.15, target 0.40. What it costs: at a 2-deg Sun from 14 km the lit tops reach the shoulder
+    (lit Y 0.98) and lose a little gold (b/r 0.85 -> 0.93).
+  - **The white balance's illuminant is the clouds' sunlight (light3, `cloud.wbRef.y`).** The reference took the sky's
+    Rayleigh (0.98 in the user's settings) and no ozone, while the Sun table that lights the clouds takes "Cloud sunlight
+    Rayleigh" (0.65) and the ozone (`cloud_v2_sunlut.comp` sunTransmit), so the reference was yellower than the light it
+    divided out: high cloud read lavender from above. Now `BETA_R_BASE x wbRef.y` + `atmOzoneTau` (sat_sky.frag and the
+    rain particles' copy); "White balance from cloud sunlight" (`clouds_v2.white_balance_cloud_sun`, slot 537) 0 = before.
+    Congo anvils from 18 km, Sun 10 deg, lit b/r 1.21 -> 1.12 (the Sun behind: 1.28 -> 1.17); Sun 5 deg 1.12 -> 1.08 (behind: 1.17 -> 1.13). Still
+    over 1: the anvil tops (12+ km) are lit by a whiter Sun than the 2-km reference, and the sky light on them is blue.
+    Not in SKY_LITE (its SPIR-V was 92 bytes under budget).
+  - **Multi-scatter "edge definition" (light3, probes only).** The diffuse field (cv2DiffuseField) at optical depth tau
+    toward the Sun peaks at t = (1 - g^2) tau ~1 and is nearly flat to t ~5 (I0 = 5 - 2/3 C1 - (1 - g') C1 t - 3 e^-t):
+    a crevice 11 optical depths behind a lit lobe takes ~the same diffuse light as the lit face (estimate at the user's
+    gains: lit 2.3 vs crevice 1.95 in key-light units), so lobes separate only by their single scattering and low orders.
+    A gap-aware slab cannot be read off the light march: its steps are ~1.1 km (equal steps, 2026-10-14), far coarser
+    than a lobe. The lever that exists is "Multi-scatter side escape" (`ms_side_escape`, e^-k t): 0.18 (the user's) ->
+    0.30 darkens and blues the shaded faces (Darwin ground Sun 5 deg: shaded Y 0.135 -> 0.116, b/r 1.47 -> 1.60; Sun
+    behind: 1.63 -> 2.08) and leaves lit faces within 2%. A backlit storm base (Amazon, Sun 20 deg) shows a silver rim
+    already (the droplet phase's forward peak at exp(-od) + the low orders); a lower "droplet_ms_gain" only darkened all.
 - **The Earth from space vs the Artemis II photographs (2026-09-30, `harness_runs/artemis_ref/`, Wikimedia
   Commons JPGs).** Measured: in the photos sunlit cloud is ~10x the open sea in linear light; the sim showed
   ~2.5x (a sky-cyan sea under a milky veil). The raw sea surface was right (debug view 43: navy); the cause

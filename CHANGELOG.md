@@ -115,6 +115,13 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   about 6 degrees (they went beige-khaki from about 10), turn orange only in the last few degrees, and a sea of cloud
   seen from an aircraft or from 45 km is adapted like the view from the ground. Settings > Photometry: "White balance
   holds to" (6 deg; 11.5 = before), "White balance from the eye" (0; 1 = the old reference).
+- **Sunlit clouds read brilliant, shadows deeper.** The tonemap gains "AgX range" (1.4): more contrast between lit and
+  shaded cloud without darkening the sunlit faces or crushing dark ground, and the day's auto exposure aims a little
+  brighter ("Auto exposure target", 0.40; was 0.32), so it no longer stops sky-and-cloud frames down until lit cloud is
+  grey. AgX saturation is now 1.35. A cumulus at a 5-degree Sun: lit faces about 25% brighter, lit/shaded 4:1 -> 5-6:1.
+  The white balance now uses the clouds' own sunlight colour ("Cloud sunlight Rayleigh" and ozone), so high cloud
+  seen from above no longer reads lavender. Settings > Photometry: "AgX range" (1 = before), "Auto exposure target",
+  "White balance from cloud sunlight" (0 = before).
 - **Deeper shaded sides on towering clouds.** The light that has scattered through a lumpy cloud now escapes through
   its valleys before it reaches the far side (fitted to a path tracer), so the shaded faces and crevices of storm
   towers are darker and bluer while the sunlit tops stay as they were; and the sky's light keeps its colour inside a

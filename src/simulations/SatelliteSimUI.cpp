@@ -5454,13 +5454,16 @@ void SatelliteSim::buildSettingsPhotometryRows(const UIInput &inp, UIRenderer &u
         CloudSlider secExposure[] = {
             {tx(Txt::SldExposureEv), &cv2ExposureEV, -3.0f, 3.0f, 0.05f, "%+.2f", 158},
             {tx(Txt::SldAutoExposureDay), &cv2AutoExposure, 0.0f, 1.0f, 0.05f, "%.2f", 163},
+            {tx(Txt::SldAutoExposureTarget), &cv2AutoExposureTarget, 0.2f, 0.6f, 0.01f, "%.2f", 538},
             {tx(Txt::SldHighlightRollOff), &cv2HighlightRolloff, 0.0f, 1.0f, 0.05f, "%.2f", 159},
             {tx(Txt::SldWhiteBalance), &cv2WhiteBalance, 0.0f, 1.0f, 0.05f, "%.2f", 160},
             {tx(Txt::SldWhiteBalanceAtEye), &cv2WbAtEye, 0.0f, 1.0f, 1.0f, "%.0f", 512},
             {tx(Txt::SldWhiteBalanceHoldDeg), &cv2WbHoldDeg, 1.5f, 15.0f, 0.5f, "%.1f", 513},
+            {tx(Txt::SldWhiteBalanceCloudSun), &cv2WbCloudSun, 0.0f, 1.0f, 1.0f, "%.0f", 537},
             {tx(Txt::SldTonemap0Exponential1Agx), &cv2Tonemap, 0.0f, 1.0f, 1.0f, "%.0f", 349},
             {tx(Txt::SldAgxSaturation), &cv2ToneSat, 0.0f, 2.0f, 0.05f, "%.2f", 350},
             {tx(Txt::SldAgxContrast), &cv2ToneContrast, 0.5f, 2.0f, 0.05f, "%.2f", 351},
+            {tx(Txt::SldAgxRange), &cv2ToneRange, 0.5f, 2.0f, 0.05f, "%.2f", 536},
             // The Moon's size, relief and shadows: the Sky tab (2026-10-28).
         };
         if (part == 0 && uiFold(inp, "PhotoSec", 20, tx(Txt::SecExposure))) // (folds like the Clouds tab's sections, 2026-10-30)
@@ -10021,6 +10024,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2Tonemap      = settingClamp(c.value("tonemap", cv2Tonemap), 0.0f, 1.0f);
         cv2ToneSat      = settingClamp(c.value("tonemap_saturation", cv2ToneSat), 0.0f, 2.0f);
         cv2ToneContrast = settingClamp(c.value("tonemap_contrast", cv2ToneContrast), 0.5f, 2.0f);
+        cv2ToneRange = settingClamp(c.value("tonemap_range", cv2ToneRange), 0.5f, 2.0f);
+        cv2WbCloudSun = settingClamp(c.value("white_balance_cloud_sun", cv2WbCloudSun), 0.0f, 1.0f);
         cv2WhiteBalance = c.value("white_balance", cv2WhiteBalance);
         cv2WbAtEye      = settingClamp(c.value("white_balance_at_eye", cv2WbAtEye), 0.0f, 1.0f);
         cv2WbHoldDeg    = settingClamp(c.value("white_balance_hold_deg", cv2WbHoldDeg), 1.5f, 15.0f);
@@ -10062,6 +10067,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2AnvilThickKm = c.value("anvil_thick_km", cv2AnvilThickKm);
         cv2AnvilHangKm = c.value("anvil_hang_km", cv2AnvilHangKm);
         cv2AutoExposure = c.value("auto_exposure", cv2AutoExposure);
+        cv2AutoExposureTarget = settingClamp(c.value("auto_exposure_target", cv2AutoExposureTarget), 0.2f, 0.6f);
     }
 
     if (schemaMatches && j.contains("clouds"))
@@ -10768,6 +10774,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"tonemap", cv2Tonemap},
         {"tonemap_saturation", cv2ToneSat},
         {"tonemap_contrast", cv2ToneContrast},
+        {"tonemap_range", cv2ToneRange},
+        {"white_balance_cloud_sun", cv2WbCloudSun},
         {"white_balance", cv2WhiteBalance},
         {"white_balance_at_eye", cv2WbAtEye},
         {"white_balance_hold_deg", cv2WbHoldDeg},
@@ -10808,7 +10816,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cb_cumulus_reach_km", cv2CbCumulusReachKm},
         {"anvil_thick_km", cv2AnvilThickKm},
         {"anvil_hang_km", cv2AnvilHangKm},
-        {"auto_exposure", cv2AutoExposure}};
+        {"auto_exposure", cv2AutoExposure},
+        {"auto_exposure_target", cv2AutoExposureTarget}};
 
     nlohmann::json kbArr = nlohmann::json::array();
     for (const auto &kb : keybindings)

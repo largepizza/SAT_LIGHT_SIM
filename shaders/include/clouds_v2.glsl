@@ -198,7 +198,7 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // scattering (sat_sky.frag, sky_ap.comp: (sigma_R + sigma_M) x Psi per step, in place of the shadowed air's sky light)
     vec4  amb;
     // 2026-10-26: the sky pass's tonemap: x 1 = AgX (0 = 1 - e^-x with "Highlight roll-off"), y its saturation, z its
-    // contrast (the look's power about mid grey), w spare
+    // contrast (the look's power about mid grey), w "AgX range" (light3: x the scene's log contrast about mid grey)
     vec4  tone;
     // 2026-10-26: the ground's light under cloud: x 1 = the cloud over the ground (cv2Vt) dims and greys the sky light and
     // adds the sunlight it scatters down (sat_sky.frag); y (2026-10-26) x the wildfire smoke's Angstrom exponent

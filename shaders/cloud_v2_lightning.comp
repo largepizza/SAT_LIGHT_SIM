@@ -701,7 +701,9 @@ void main()
                 // (sat_sky.frag's white balance, the same reference: keep in step.)
                 float eH = max(eyeH - 2.0, 0.0);
                 float rW = R_EARTH + ((cloud.wbRef.x < 0.0) ? eH : mix(cloud.wbRef.x, eH, smoothstep(60000.0, 200000.0, eH))), cW = sunUp;
-                vec3  sunW = exp(-(BETA_R * (atmColumnInf(rW, cW, H_R) * H_R) + BETA_M * 1.1 * (atmColumnInf(rW, cW, H_M) * H_M)));
+                vec3  bRW  = (cloud.wbRef.y > 0.0) ? BETA_R_BASE * cloud.wbRef.y : BETA_R;   // (light3: the clouds' sunlight)
+                vec3  oW   = (cloud.wbRef.y > 0.0) ? atmOzoneTau(vec3(0.0, 0.0, rW), sunENU) : vec3(0.0);
+                vec3  sunW = exp(-(bRW * (atmColumnInf(rW, cW, H_R) * H_R) + BETA_M * 1.1 * (atmColumnInf(rW, cW, H_M) * H_M) + oW));
                 vec3  wb = sunW / max(dot(sunW, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
                 wbDiv = mix(vec3(1.0), clamp(wb, vec3(0.4), vec3(2.5)), cloud.whiteBalance * smoothstep(cloud.wbRef.z, cloud.wbRef.w, cW));
             }
