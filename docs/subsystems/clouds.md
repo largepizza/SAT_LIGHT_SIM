@@ -1319,6 +1319,54 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   24.8, the same from 14.5 km 25.6 -> 24.2, a supercell from 200 km 42.0 -> 42.6, its plate edge-on from 19 km 19.0 ->
   19.2, over its core from 19 km looking down 10.3 -> 10.7: neutral (+-1 ms, the A-vs-A spread). 128 registers. Batches:
   `.worktrees/storm-polish/harness_runs/sp/` (views.py: the five views; genperf.py / genlook.py write the batches).
+  **Storms in the cumulus look (2026-11-05, night wave, worktree storm3; `harness_runs/storm3/` there: views.py,
+  genab.py, genlook.py, final.satcmd).** AUDIT of what a storm view pays beyond the cumulus field (run-time knockouts,
+  `&& cv2.shade.w > 0.5`, 128 registers; cloud march ms, interleaved x3 in one app, contended; A-vs-A within +-0.2):
+
+  | storm term (per field read)                               | 111947 @ 11 km | Cb from 30 km | anvil edge-on 10 km |
+  |-----------------------------------------------------------|---------------:|--------------:|--------------------:|
+  | base                                                      | 26.0           | 32.0          | 17.0                |
+  | the VEIL (cv2AnvilSigmaP: 3 fetches + thin-ice shading)   | -7.7           | -4.7          | -0.3                |
+  | the plate (shield walk + its share of the low carve)      | -1.8           | -4.5          | -1.4                |
+  | cv2StormGeom whole (tower bin walk + plate)               | -7.0           | -10.1         | -4.3                |
+  | the storm-scale detail fetch (deep carve)                 | ~0             | ~0            | ~0                  |
+  | (for scale: cirrus / mid / the whole low field)           | -1.8 / -2.1 / -9.6 | -3.9 / -1.5 / -18.9 | -2.7 / -2.5 / -9.9 |
+
+  What is left is ONE storm term besides the cumulus carve: the tower / shield walk (geometry, no fetches) and the
+  veil. The towers and plate were already the cumulus field's (storm-rework); the storm detail fetch replaces the
+  cumulus one rather than adding to it. Replaced tonight: the veil's three fray fetches (cluster field + two storm-lobe
+  octaves) by ONE read of the plate's fibre volume (`cv2AnvilFibreTex`, 4x wider across the wind for the veil), so the
+  veil frays into the same fibres as the plate's edge. Not replaced: the veil itself (it also draws a cyclone's
+  outflow deck, agent D's), and the walk (it IS the storm's placement).
+  THE ANVIL (`cv2AnvilFibre`, cv2FieldLow's storm block; "Anvil fibres" `clouds_v2.anvil_fibres` 1, "Anvil erosion"
+  `anvil_erosion` 0.2, `anvil_fibre_along_km` 15, `anvil_fibre_across_m` 1500, `anvil_lid_lobes` 0.25,
+  `anvil_under_lobes` 0.7; UBO `storm3a/b`; slots 504-506): the swiss cheese was the storm lobes (+-1.5 km) and the
+  Cb erosion cutting HOLES through a plate a few hundred metres thick. Now (plK = the plate's share x fibres) the
+  plate's lobes only BULGE (`m -= lobeRef A 2 max(-lobes, 0)`: gentle domes on the lid at 0.25 of the storm lobes,
+  pouches on the underside at 0.7), its erosion is 0.2 of the Cb erosion, its skin ramps over 3x the storm ramp, and
+  its density is combed by fibres: the shape volume's Perlin + Worley read in ABSOLUTE drifted lon / lat (the
+  along-wind period divides the equator: no seam; an observer-relative stretch would slide), meandered, 0.55-1.1 inside
+  and opening into wisps toward the skin (edge = 1 - Ph). The plate's share is carried past the fetch as a NEGATIVE
+  lobeRef (inert where it is read: max(lobeRef - hb, 0)); the fibre fetch runs only where the plate has density.
+  Tried: the fibres as a margin shift before the carve (ridges / fingers; a fetch over the whole band the surface may
+  reach: +1-2 ms looking down on a plate); the veil at the plate's 10:1 stretch (seen along the wind from 10 km: a
+  sunburst of rays converging on the vanishing point); choosing the veil's fetch on "Anvil fibres" at run time (253
+  registers: the veil path is now unconditional in unified mode).
+  THE TOWERS ("Storm bubbles" `clouds_v2.storm_bubbles` 1, slot 506 -> UBO storm3a.w): a tower takes the cumulus
+  bubbles (cu5) on its margin and the turrets' skew on its storm lobes, from the storm fetch it already makes, carried
+  NEGATIVE in wispE (inert: its readers take max(wispE, >= 0)); off the plate and the domes (x (1 - deck)^2 (1 - 1.5
+  cap)): at the plate's edge their creases pitted the lid with dark specks. Faded out by a 1-km footprint. They CARVE,
+  and bulge at most 0.1 margin units (~400 m) past the storm surface (`min(bubbled, m0 + 0.1)`): added freely as on a
+  cumulus, a tower's margin (metres / 4000, kilometres deep) let them stand as detached blobs up to ~2 km out, a debris
+  of puffs round every tower and along the anvil's edge; the clamp also keeps the pre-fetch bound at lobeS 1.4 + 0.1.
+  PERF (RTX 3070 Ti, 1600x900 window, the user's settings with kessler off, interleaved x3 in one live app, the GPU
+  shared with another agent's app: contended; cloud march ms, perf-frames 3638ae3 -> this, A-vs-A within +-0.2 unless
+  noted): issue 111947 at 11 km in the anvil band 22.2 -> 16.4 (-26%; again 20.7 -> 16.2 with the bubble clamp); storm
+  A from 30 km looking down at sunset 29.2 -> 31.6 (+8%: the fibre fetch in a plate seen across its whole lid, and the
+  bubbles); storm B's anvil edge-on from 10 km 15.1 -> 16.1; storm B from 30 km 33.8 -> 30.3 (+-3: noisy); congestus
+  from 10 km (no storm surface) 11.1 -> 11.2 (neutral). Flying at 9 km toward storm B (path play, 30 fps): 15.7 -> 16.1;
+  moving-vs-settled mean |diff| 3.3 -> 2.7 levels (no new flicker). 128 registers (the veil's fetch chosen on "Anvil
+  fibres" at run time was 253). Evidence (main checkout, untracked): `qa/waves/20261105/evidence/storm3/`.
 - **The unified volumetric composite (2026-10-26, branch perf-frames; the user: the plumes, smoke and tornadoes "feel entirely
   distinct in quality" and clip against rain, dust, smoke and clouds).** The dust list's Gaussians (launch plumes, flames,
   wildfire smoke, tornado funnels, haboob far field, Kessler dust and fireball trails) are still composited in cloud_march.comp

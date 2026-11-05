@@ -7267,6 +7267,10 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SldCbHeadLobes), &cv2CbHeadLobes, 0.0f, 1.5f, 0.02f, "%.2f", 207},
         {tx(Txt::SldAnvilPuffiness), &cv2AnvilPuff, 0.0f, 2.0f, 0.05f, "%.2f", 310},
         {tx(Txt::SldAnvilTopLiftM), &cv2AnvilLiftM, 0.0f, 3000.0f, 50.0f, "%.0f", 311},
+        // Storms in the cumulus look (2026-11-05, storm3): slots 504-506.
+        {tx(Txt::SldAnvilFibres), &cv2AnvilFibres, 0.0f, 2.0f, 0.05f, "%.2f", 504},
+        {tx(Txt::SldAnvilErosion), &cv2AnvilErosion, 0.0f, 1.0f, 0.05f, "%.2f", 505},
+        {tx(Txt::SldStormBubbles), &cv2StormBubbles, 0.0f, 2.0f, 0.05f, "%.2f", 506},
         {tx(Txt::SldCbSparsity), &cv2CbSparsity, 0.0f, 1.0f, 0.05f, "%.2f", 172},
         {tx(Txt::SldCbOvershootKm), &cv2CbOvershootKm, 0.0f, 3.0f, 0.05f, "%.2f", 173},
         {tx(Txt::SldStormCumulusTopKm), &cv2CbCumulusTopKm, 2.0f, 12.0f, 0.25f, "%.2f", 167},
@@ -9822,6 +9826,13 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2StormUnifiedScaleM = settingClamp(c.value("storm_unified_scale_m", cv2StormUnifiedScaleM), 200.0f, 50000.0f);
         cv2StormUnifiedRampM = settingClamp(c.value("storm_unified_ramp_m", cv2StormUnifiedRampM), 20.0f, 5000.0f);
         cv2StormUnifiedLobes = settingClamp(c.value("storm_unified_lobes", cv2StormUnifiedLobes), 0.0f, 4.0f);
+        cv2AnvilFibres = settingClamp(c.value("anvil_fibres", cv2AnvilFibres), 0.0f, 2.0f);
+        cv2AnvilFibreAlongKm = settingClamp(c.value("anvil_fibre_along_km", cv2AnvilFibreAlongKm), 2.0f, 400.0f);
+        cv2AnvilFibreAcrossM = settingClamp(c.value("anvil_fibre_across_m", cv2AnvilFibreAcrossM), 100.0f, 20000.0f);
+        cv2StormBubbles = settingClamp(c.value("storm_bubbles", cv2StormBubbles), 0.0f, 2.0f);
+        cv2AnvilErosion = settingClamp(c.value("anvil_erosion", cv2AnvilErosion), 0.0f, 1.0f);
+        cv2AnvilLidLobes = settingClamp(c.value("anvil_lid_lobes", cv2AnvilLidLobes), 0.0f, 1.0f);
+        cv2AnvilUnderLobes = settingClamp(c.value("anvil_under_lobes", cv2AnvilUnderLobes), 0.0f, 1.5f);
         cv2EyeHeightNow = c.value("eye_height_now", cv2EyeHeightNow);
         cv2SunVolumeOn = c.value("sun_volume", cv2SunVolumeOn);
         cv2CdcLight = c.value("cdc_light", cv2CdcLight);
@@ -10573,6 +10584,13 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"storm_unified_scale_m", cv2StormUnifiedScaleM},
         {"storm_unified_ramp_m", cv2StormUnifiedRampM},
         {"storm_unified_lobes", cv2StormUnifiedLobes},
+        {"anvil_fibres", cv2AnvilFibres},
+        {"anvil_fibre_along_km", cv2AnvilFibreAlongKm},
+        {"anvil_fibre_across_m", cv2AnvilFibreAcrossM},
+        {"storm_bubbles", cv2StormBubbles},
+        {"anvil_erosion", cv2AnvilErosion},
+        {"anvil_lid_lobes", cv2AnvilLidLobes},
+        {"anvil_under_lobes", cv2AnvilUnderLobes},
         {"eye_height_now", cv2EyeHeightNow},
         {"sun_volume", cv2SunVolumeOn},
         {"cdc_light", cv2CdcLight},
