@@ -232,7 +232,8 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     vec4  cu5;
     // 2026-11-04, cloud contrast (cloud_v2_march.comp; clouds.md "Cloud contrast"): x "Sky light keeps its colour" (the
     // sky's light diffused through cloud keeps its hue: cloud scattering is grey; 0 = greyed with depth as before), y the
-    // diffuse field's side escape ("Multi-scatter side escape": e^-y t; 0.05 as fitted 2026-10-26), zw spare
+    // diffuse field's side escape ("Multi-scatter side escape": e^-y t; 0.05 as fitted 2026-10-26), z "Cumulus tower spread" (envelope,
+    // 2026-11-05: each cumulus top x(1 - z) .. x(1 + 0.8 z) by a km-scale field; 0 = off), w spare
     vec4  shade;
     // -- cirrus-hurr (2026-11-05, night wave agent D) -- x "Cirrus fibres" (cv2IceFibres' filament contrast), y "Cirrus hooks"
     // (heads and hooked fall streaks), z "Hurricane top smoothing" (the CDO plate's lobes / erosion removed), w "Hurricane top
@@ -975,6 +976,22 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     float flatK  = ty.alt.z * (1.0 - lowCov);
     float T      = max(cv2.flow.w, 0.05) * clamp(max(pow(eB, 0.83), 0.6 * pow(e, 0.83)) * max(hVar, 0.3),
                                                mix(0.25, 0.12, cv2.cu.x), 1.0);
+#if !defined(SKY_LITE)
+    // CUMULUS TOWER SPREAD (envelope, 2026-11-05; clouds.md "Cumulus envelope"): the large-scale silhouette. Every cell's top
+    // came from its cell-scale strength eB with a +-cu.x variation, so a mass of merged cells was ONE dome with one top, and
+    // the bubbles, turrets and lobes only dressed its surface ("still gumdrops, still 2D"). Here the top is scaled by a
+    // km-scale field (the cell volume's Perlin, its 1-8 km octaves, plus the cells), from x(1 - k) to x(1 + 0.8 k) (k =
+    // "Cumulus tower spread", shade.z): inside one mass, towers several km tall stand beside shoulders a few hundred metres
+    // high, and the dome becomes a skyline. Capped at the type's span (the top bound above still holds).
+    {
+        // (The Perlin at the cell fetch's own mip, ce.a. Tried: the Perlin at a fixed coarse mip read with the smooth cells
+        // (cellsC): its tops varied too slowly (a whole mass tall again) and the march went to 249 registers. Tall towers seen
+        // from 25 km stand as ranks of lit columns with long shadows; the same with the fixed mip, so not a footprint artefact.)
+        float tk = cv2.shade.z;
+        T = min(T * mix(max(1.0 - tk, 0.1), 1.0 + 0.8 * tk,
+                        smoothstep(-1.0, 1.0, clamp((ce.a - 0.5) * 6.0, -1.0, 1.0) + 0.8 * (cells - 0.55))), 1.0);
+    }
+#endif
     float zeta   = z / T;
     // (A smooth min: min() creased the surface where the two cross, and sqrt(cells) is a cliff at
     // each blob's rim — both drew flat, rock-like facets.)
