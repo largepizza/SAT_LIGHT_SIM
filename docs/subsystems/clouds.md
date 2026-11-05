@@ -2148,6 +2148,44 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   - Open: a tower's flared head and the map-fed anvil are still smooth (their lobes are the user's "Cb head lobes");
     stratus at full coverage seen edge-on is still a slab; near clouds have nothing finer than the detail volume's
     24-m cells.
+- **Cumulus turrets (2026-11-04, issue 20261104_181014 "General Cloud Shapes"; `cu3`, keys `cumulus_turrets` 1.0,
+  `cumulus_turret_stretch` 0.5, `cumulus_turret_lean` 2.0, `cumulus_turret_skew` 1.0, slots 476-479, UBO 1312 -> 1328).**
+  Why the field reads 2D: a low-cloud point's margin is `m0(x,y,zeta) = e(x,y) - req(z / T(x,y))` (convective) or
+  `e - gStrat(z / zTop)` (decks), i.e. a 2D strength against ONE vertical profile per cell, plus zero-mean lobes. The
+  lobes are the only 3D term, and at the user's settings they are small: `shape_period_m` 1900 puts the cumulus lobes'
+  octaves at 475 / 238 / 119 m on clouds 2-6 km across, with "Cumulus lobes (bottom/top)" 0.16 / 0.14. The scale
+  between the cells (1-4 km) and the lobes (<0.5 km) had only `bigL`'s storm-volume read, on convective cloud thicker
+  than 1.2 km. And the issue's shower field (and most mid-latitude cumulus fields at > 65% cover) is typed between
+  stratocumulus and cumulus (`w.g` ~0.25-0.5): `flatK` 0.35-0.7, `convW` < 0.3 nearly everywhere (a march variant
+  that faded convW < 0.3 erased almost the whole frame), so it is shaped as a lumpy DECK with a hump per cell.
+  Turrets: the big-lobe fetch (storm volume x2, octaves 2.9 km / 1.4 km / 710 m / 360 m; no new fetch site) applies
+  to every cloud with a convective share, `turW = cu3.x x ty.look.z x (1 - deep)` (half on stratocumulus, none on
+  stratus or Cb), ADDED to the margin after the base bumps (the small billows and the flat base are unchanged). Its
+  coordinate is shifted along the sample's own up by -stretch x hb (columns taller than wide) and east by
+  lean x form.y x hb (with the cells' lean): a shift by the sample's own height keeps the anchored tile in register.
+  Positive excursions grow by skew x 1.5 (a few tall turrets over many low ones). Amplitude 0.5 x (1 + liftK) on the
+  convective profile (faded in over 250-900 m of thickness), 1.0 on a deck; a deck's requirement keeps rising over its
+  top (1 e unit per 1.5 km x turW) and `topMax` is raised by turW x 1200 m, so turrets stand out of a sheet up to
+  ~1.2 km. Registers: the deck term written into `gStrat` (with z, zTop) put the march at 250; subtracted from m0
+  after `f.topH` it is 128 (march, composite, no-haboob march all 128). Measured: see the resolution's table
+  (`qa/waves/20261104/resolutions/cloud-shape3d.md`, main checkout). Open: near masses still have soft, foggy flanks
+  (a deck's density ramp is not steepened; phK keys on convW), and the scale of the small lobes is fixed by
+  `shape_period_m`, not by the cloud's size.
+  - **Round 2 (same issue; `cu4`, UBO 1328 -> 1344, slots 480-483).** What made the shower field read as soft blobs was
+    mostly RAIN, not shape: at the user's `rain_amount` 3 the map's rain (`w.b`) hung a translucent curtain, and the
+    400-m rain floor inside the base, under every cloud base of a showery region, wrapping the field in grainy haze
+    (rain 0 at the shot: crisp outlines at once). **"Showers from cores"** (`showers_from_cores` 1, on): on a convective
+    type the map's rain falls only from strong cells, `rate x mix(1, smoothstep(0.55, 0.9, eB), cu4.w x look.z)`
+    (storm cores, `gCv2RainCore`, unchanged). Built and measured, OFF by default:
+    **"Cumulus body"** (`cumulus_body` 0): the adiabatic water profile, `sigma x (1 + 2 x body x (hb / 1 km)^(2/3))`
+    (x3 at 1 km over the base; not on a storm's own surface). Under auto exposure it changed the image little (sides
+    and tops are bright once tau > ~10; the creases did not darken visibly) and smoothed the near masses a little.
+    Written into cv2LowA's sigK it put the march at 248 registers; at `f.sigma` in cv2FieldLow it is 128.
+    **"Cumulus edge"** (`cumulus_edge` 1 = off): the margin's density ramp (phK) x this on convective-share cloud. At
+    x4 it REMOVED surface detail: erosion only acts where density < 1, so a steeper ramp leaves a thinner eroded skin
+    and smoother blobs (the old ramp is what shows the billow erosion). **"Showers as cells"** (`showers_as_cells` 0):
+    lowCov (cells instead of deck shaping) where the map rains on a convective-share type: more broken, about the same
+    heights; not clearly better.
 - **The blue-noise tile drawn over half-shadowed cloud, and shadows only near the eye (2026-10-12, user issues
   20261012_202341 / _195811; Sun 0.1-0.9 deg, light footprint 0, accumulation 0, history weight 0.02):**
   - **The resolve's still-view clamp box is 7x7 new samples** (`cloud_v2_resolve.comp`, `stillW`, motionPx < 0.05-0.5),

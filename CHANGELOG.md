@@ -106,6 +106,13 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Clouds and weather
 
+- **Cumulus turrets.** Cumulus and stratocumulus fields are no longer one smooth dome per cell: a 3D field of towers
+  of varied height, taller than wide and leaning with the wind, rises out of every cloud with a convective share,
+  so a shower field from an aircraft shows turrets standing over a lower mass instead of a sheet of gumdrops.
+  Settings > Clouds: "Cumulus turrets" (1.0; 0 = the old shape), "Turret stretch", "Turret lean", "Turret skew".
+- **Showers fall from the big clouds.** In a region of scattered showers the rain now falls as shafts under the strong
+  cells only, instead of a thin curtain under every cloud base that wrapped the whole field in grainy haze; the
+  cumulus there now have crisp outlines. Settings > Clouds: "Showers from cores" (1.0; 0 = rain under every cloud).
 - **Volumetric clouds, rebuilt (clouds v2).** One 3D cloud field from the ground to orbit, driven by a weather
   map: cumulus with lobed, cauliflower sides and flatter bases, stratus decks with textured undersides,
   altocumulus and altostratus, cirrus streaks, veils and cirrocumulus, all lit by the Sun or the Moon through

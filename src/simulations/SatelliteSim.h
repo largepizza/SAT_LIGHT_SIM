@@ -946,6 +946,8 @@ struct GpuCloudV2Params
     glm::vec4 gnd;                      // 2026-10-26: x the ground's light under cloud (the cv2Vt map) on
     glm::vec4 micro;                    // 2026-11-04: the droplet phase: x droplet size (0 off), y sea-level temp (C), z 1 / Mie rows, w diffuse gain
     glm::vec4 stormU;                   // 2026-11-04: storms through the cumulus field: x on, y metres per margin unit, z the surface ramp (m), w lobe gain
+    glm::vec4 cu3;                      // 2026-11-04: cumulus turrets: x strength, y vertical stretch, z lean (x "Lean"), w skew
+    glm::vec4 cu4;                      // 2026-11-04: x cumulus body (adiabatic), y cumulus edge (sharpening x), z showers as cells, w showers from cores
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -978,7 +980,8 @@ static_assert(offsetof(GpuCloudV2Params, amb) == 288 + 48 * kCloudV2Types + 1232
 static_assert(offsetof(GpuCloudV2Params, tone) == 288 + 48 * kCloudV2Types + 1248, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, gnd) == 288 + 48 * kCloudV2Types + 1264, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, micro) == 288 + 48 * kCloudV2Types + 1280, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1312, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1344, "GpuCloudV2Params layout");
+static_assert(offsetof(GpuCloudV2Params, cu3) == 288 + 48 * kCloudV2Types + 1312, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
 // 2026-08-09, fourth design for this feature. First was a per-target CPU aggregation anchored at
@@ -5516,6 +5519,17 @@ private:
     float cv2CuFineLobes = 0.5f;          // "Storm cumulus fine lobes": the cumulus-scale lobes kept on deep convection's storm-scale ones
     float cv2CbFineLobes = 0.5f;          // "Cb tower fine lobes": the same on the towers
     float cv2CuWisps = 0.5f;              // "Cumulus wisps": erosion concentrated at the cloud's edge (frayed edges, solid cores)
+    // Cumulus turrets (2026-11-04, issue 20261104_181014 "General Cloud Shapes"): a 3D field of towers at 0.36-2.9 km (the storm
+    // shape volume read 2x, as thick cumulus' big lobes) on every convective cloud thicker than ~250 m, stretched upward and
+    // leaned with the cells, skewed so few turrets rise high: the cell's dome becomes a cluster of towers of varied height.
+    float cv2CuTurrets = 1.0f;            // "Cumulus turrets" (0 = the dome-per-cell shape as before)
+    float cv2CuTurretStretch = 0.5f;      // "Turret stretch": the turret noise is read 1 / (1 - this) times slower upward (towers)
+    float cv2CuTurretLean = 2.0f;         // "Turret lean": the turrets lean this x the cells' "Lean"
+    float cv2CuTurretSkew = 1.0f;         // "Turret skew": the turrets' positive excursions grow (few tall towers, many low)
+    float cv2CuBody = 0.0f;               // "Cumulus body": the adiabatic water profile's gain (0 = off)
+    float cv2CuEdge = 1.0f;               // "Cumulus edge": the cloud surface's sharpening x this (1 = as before)
+    float cv2CuShowerCells = 0.0f;        // "Showers as cells": a convective type where the map rains is shaped as cells
+    float cv2CuShowerCores = 1.0f;        // "Showers from cores": a convective type's map rain falls from the strong cells only
     float cv2SilverLining = 0.5f;         // "Silver lining": forward-scattered sunlight leaking through thin cloud toward the Sun
     float cv2SmallCumulus = 0.06f;        // the near field makes low puffs this far under the coverage threshold (field units)
     float cv2ErosionVar = 0.6f;           // erosion strength and grain vary by region (0 = uniform)
