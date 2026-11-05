@@ -2249,11 +2249,13 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     wide: smooth hanging columns from the ground; 0.2 reads round. Lean unchanged. The pre-fetch bound is exact:
     nothing where m0 + 1.2 x y + (1 + x) L <= 0 (`c.lobeB`). "Cumulus turrets" 0 also turns the bubbles off.
     **Measured** (RTX 3070 Ti, 1600x900, the user's settings, one live app, 3 interleaved reps, another agent on the GPU;
-    4 views `qa/waves/20261104/evidence/cloud-structure/`): cloud_march off -> on 7.38 -> 7.41 ms (trade cumulus, 3 km
-    across), 7.00 -> 8.02 (Darwin, 10 km down), 11.51 -> 12.38 (storm-region field from the sea), 8.56 -> 8.97 (shower
-    field, 3 km across); march and composite 128 registers. Cover seen from 10 km (bright unsaturated pixels) 0.35 /
-    0.34 / 0.58 / 0.83 -> 0.34 / 0.34 / 0.50 / 0.80: the clouds stay where they were. From 400 km the image moves by
-    0.9 levels mean. TSTAB_PLACEHOLDER
+    4 views `qa/waves/20261104/evidence/cloud-structure/`, after the contrast merge): cloud_march off -> on 7.00 -> 7.24 ms
+    (trade cumulus, 3 km across), 7.32 -> 7.88 (Darwin, 10 km down), 11.01 -> 11.78 (storm-region field from the sea),
+    8.26 -> 8.37 (shower field, 3 km across); rep half-ranges 0.02-0.24 ms; march and composite 128 registers. The
+    cost is the extra surface the march walks near, not the bound: an exact vs a 9x looser `lobeB` timed the same.
+    Cover seen from 10 km (bright unsaturated pixels) 0.35 / 0.34 / 0.60 / 0.81 -> 0.34 / 0.34 / 0.50 / 0.76: the
+    clouds stay where they were (the shower deck breaks up). From 400 km: 2.5 levels mean.
+    Tstab (cloud_suite, 1920x1009, motion vs settled; walk/strafe/pan90/pitch/rise): sea_air (Darwin, 3 km) 0.88 -> 0.93, trade_cu (ground) 1.26 -> 1.31; still grain 1.75 -> 1.74, 7.13 -> 7.25. More relief is more to get wrong while moving (+4-6%).
     Open: bubble faces near the threshold (fragments, decks' outlines) can still be smooth ovals; the storm region's
     dense field from below still reads as a draped sheet; the bubble sizes follow `shape_period_m` x `storm_scale`,
     not the cloud's size (no lobe-to-cloud-size scaling yet); the cells (placement) are unchanged, so the size

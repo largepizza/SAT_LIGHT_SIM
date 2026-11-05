@@ -13,7 +13,8 @@ stacked sub-cells of different sizes and heights, heads wider than their stems, 
 them, and masses that break into fragments. Settings > Clouds: "Cumulus bubbles" (`cumulus_bubbles`, 3; 0 = the
 dome alone), "Bubble relief" (`cumulus_bubble_relief`, 0.2). "Turret stretch" (`cumulus_turret_stretch`) now
 defaults to 0.2 (was 0.5). Faded out at a ~1 km footprint, so the far field keeps its dome. Cost: cloud_march
-+0.03 to +1.0 ms (0-14%) on four cumulus views (RTX 3070 Ti, 1600x900), still at 128 registers.
++0.1 to +0.8 ms (1-8%) on four cumulus views (RTX 3070 Ti, 1600x900), still at 128 registers; motion-vs-settled
+(tstab) +4-6% on two cumulus views.
 
 ## History
 Issue 20261104_181014, third round: after the turrets the user said the cauliflower had improved but the clouds still
