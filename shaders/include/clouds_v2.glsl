@@ -222,6 +222,10 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // z "Showers as cells" (a convective type's deck shaping gives way to cells where the map rains), w "Showers from
     // cores" (a convective type's map rain falls from the strong cells only)
     vec4  cu4;
+    // 2026-11-04, cloud contrast (cloud_v2_march.comp; clouds.md "Cloud contrast"): x "Sky light keeps its colour" (the
+    // sky's light diffused through cloud keeps its hue: cloud scattering is grey; 0 = greyed with depth as before), y the
+    // diffuse field's side escape ("Multi-scatter side escape": e^-y t; 0.05 as fitted 2026-10-26), zw spare
+    vec4  shade;
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO

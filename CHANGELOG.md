@@ -110,6 +110,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   of varied height, taller than wide and leaning with the wind, rises out of every cloud with a convective share,
   so a shower field from an aircraft shows turrets standing over a lower mass instead of a sheet of gumdrops.
   Settings > Clouds: "Cumulus turrets" (1.0; 0 = the old shape), "Turret stretch", "Turret lean", "Turret skew".
+- **Deeper shaded sides on towering clouds.** The light that has scattered through a lumpy cloud now escapes through
+  its valleys before it reaches the far side (fitted to a path tracer), so the shaded faces and crevices of storm
+  towers are darker and bluer while the sunlit tops stay as they were; and the sky's light keeps its colour inside a
+  cloud. Settings > Clouds: "Multi-scatter side escape" (0.11; 0.05 = before), "Sky light keeps its colour" (1; 0 = before).
 - **Showers fall from the big clouds.** In a region of scattered showers the rain now falls as shafts under the strong
   cells only, instead of a thin curtain under every cloud base that wrapped the whole field in grainy haze; the
   cumulus there now have crisp outlines. Settings > Clouds: "Showers from cores" (1.0; 0 = rain under every cloud).
