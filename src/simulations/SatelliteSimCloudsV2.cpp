@@ -1323,7 +1323,9 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2MidFieldKm, cv2MidCover, cv2MsOctaves, cv2LobeOcclusion, cv2MsModel, cv2MsDiffG, cv2MsDiffGain, cv2MsBackM, cv2SkyLightModel, cv2SkyLightGain, cv2SkyGroundAlbedo,
                     cv2CuHeightVar, cv2CuBreakup, cv2CuHeadroom, cv2CuFineLobes, cv2CbFineLobes, cv2CuWisps,
                     cv2CuTurrets, cv2CuTurretStretch, cv2CuTurretLean, cv2CuTurretSkew,
-                    cv2CuBody, cv2CuEdge, cv2CuShowerCells, cv2CuShowerCores, cv2CuBubbles, cv2CuBubbleGain})
+                    cv2CuBody, cv2CuEdge, cv2CuShowerCells, cv2CuShowerCores, cv2CuBubbles, cv2CuBubbleGain,
+                    cv2AnvilFibres, cv2AnvilFibreAlongKm, cv2AnvilFibreAcrossM, cv2StormBubbles, cv2AnvilErosion,
+                    cv2AnvilLidLobes, cv2AnvilUnderLobes})
         mix(v);
     for (const GpuCloudV2Type &t : cv2Types)
         for (int k = 0; k < 4; ++k)
@@ -2096,6 +2098,13 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.cu4 = glm::vec4(std::clamp(cv2CuBody, 0.0f, 4.0f), std::clamp(cv2CuEdge, 0.5f, 8.0f),
                       std::clamp(cv2CuShowerCells, 0.0f, 1.0f), std::clamp(cv2CuShowerCores, 0.0f, 1.0f));
     p.cu5 = glm::vec4(std::clamp(cv2CuBubbles, 0.0f, 4.0f), std::clamp(cv2CuBubbleGain, 0.1f, 3.0f), 0.0f, 0.0f);
+    {   // Storms in the cumulus look (storm3): the anvil fibres' along-wind period divides the equator (no seam).
+        const float nAlong = std::max(1.0f, std::round(2.0f * 3.14159265f * 6371.0f / std::max(cv2AnvilFibreAlongKm, 2.0f)));
+        p.storm3a = glm::vec4(std::clamp(cv2AnvilFibres, 0.0f, 2.0f), nAlong / (2.0f * 3.14159265f),
+                              1.0f / std::max(cv2AnvilFibreAcrossM, 100.0f), std::clamp(cv2StormBubbles, 0.0f, 2.0f));
+        p.storm3b = glm::vec4(std::clamp(cv2AnvilErosion, 0.0f, 1.0f), std::clamp(cv2AnvilLidLobes, 0.0f, 1.0f),
+                              std::clamp(cv2AnvilUnderLobes, 0.0f, 1.5f), 0.0f);
+    }
     skyApRanThisFrame = false;
     p.grid = glm::vec4((float)cv2HalfW, (float)cv2HalfH, cv2FullResActive() ? 1.0f : 0.0f, cv2FullResActive() ? 1.0f : 0.0f);
     // Full-res clouds in motion from altitude (full_res_moving_mode; 2026-10-22, issues 20261022_210358 / _220214): 0 the

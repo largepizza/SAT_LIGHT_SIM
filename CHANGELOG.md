@@ -335,6 +335,15 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   anvil where a smaller storm's shield overlaps a bigger one), the plate's edge thins out instead of standing as a
   cliff of billows, overshooting tops stand out of the anvil again as domes (the dark dots seen from orbit), and the
   billows of storm towers rise up the column again.
+- **Anvils are fibrous ice, not eroded slabs.** An anvil's plate no longer has holes punched through it: its billows
+  only bulge (gentle domes on top, pouches underneath), its erosion is mostly gone, and its ice is combed into
+  fibres along the wind that open into wisps toward its edges; the thin veil around it frays into the same fibres.
+  Thunderstorm towers take the cumulus bubbles and turrets, so they read as the same cauliflower cloud as the
+  cumulus at storm scale. Inside an anvil at 11 km the cloud time drops by a further ~25% (22 -> 16 ms, RTX 3070 Ti, High); an anvil seen from
+  high above costs a little more (~+2 ms). Settings:
+  "Anvil fibres" (`clouds_v2.anvil_fibres`, 1), "Anvil erosion" (`anvil_erosion`, 0.2), "Storm bubbles"
+  (`storm_bubbles`, 1); no UI: `anvil_fibre_along_km` (15), `anvil_fibre_across_m` (1500), `anvil_lid_lobes` (0.25),
+  `anvil_under_lobes` (0.7).
 - **Cloud ray budget.** The full-resolution clouds march one pixel in four each frame and rebuild the rest from
   history; a settings key (`clouds_v2.sparse_block`: 2, the default, or 3 / 4 for one pixel in 9 / 16) trades
   sharpness in motion for speed in dense storms and anvils (an anvil top at 11 km, flying: about 121 -> 68 ms of
