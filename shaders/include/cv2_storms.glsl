@@ -257,10 +257,21 @@ float cv2CycSpiral(vec3 wd, CV2Shield s, float u, float rM)
 // dark crease across issue 111947's anvil from 14.5 km), and the thickness stepped. Beyond every plate (m < 0) it is
 // the nearest outline's shield, which the veil and the old path's presence fray read as before. (A second running
 // choice beside the first, or a bool parameter choosing the metric, put the march over the 128-register cliff.)
+// A tropical cyclone's CDO under this sample (2026-11-05, the user: hurricane tops "a nice smooth but textured swirl,
+// right now it is a bumpy mess"): when the strongest shield is a cyclone's central dense overcast, cv2ShieldAtR reads its
+// SWIRL TEXTURE into gCv2CycT (-1e9: none; else ~-1.5..1.5, ridged streaks along the flow), with the footprint the caller
+// left in gCv2FpM. cv2Field adds it to the plate's margin as relief and cv2FieldLow smooths the plate. The texture is the shape volume's
+// Perlin in log-polar coordinates about the eye: x along the flow (the angle, 8 periods a turn), y across it (log r,
+// 6 periods an e-folding, + 8 periods a turn: an inward spiral of ~12 deg; whole periods, so seam-free). Streaks
+// ~r / 25 apart (4 km at 100 km), ~5x as long as wide. Only where the shape volume is bound (CV2_CYC_TEX, clouds_v2.glsl); elsewhere 0 (smoothed, untextured). (Read here, in the storm walk,
+// not in cv2FieldLow: a fetch there put the march at 250 registers.) Reset per sample by cv2Field and here.
+float gCv2CycT = -1e9;
+float gCv2FpM  = 0.0;
 float cv2ShieldPlateA(float sT, float u) { return sT * (1.0 - smoothstep(0.25, 1.25, u / (0.25 + 0.85 * sqrt(sT)))); }
 float cv2ShieldAtR(vec3 wd, out float thickK, out float ageK, out float uOut, out float rOut)
 {
     thickK = 1.0; ageK = 0.0; uOut = 9.0; rOut = 1.0;
+    gCv2CycT = -1e9;
     float best = -1.0, bestS = 0.0;
 #ifdef CV2_STORM_BINDING
     uint  bestI = 0xFFFFFFFFu;
@@ -298,6 +309,29 @@ float cv2ShieldAtR(vec3 wd, out float thickK, out float ageK, out float uOut, ou
         if (s.c.w < 0.0 && s.d.w < 0.0) {
             bestS *= cv2CycSpiral(wd, s, uOut, uOut * s.c.x);
             if (mod(-s.c.w - 1.0, 2.0) > 0.5) { uOut *= 0.1; rOut *= 10.0; }   // (the cirrus deck: faded inside, not frayed)
+        }
+        // The CDO (a cyclone's eye, d.w < 0; not its cirrus deck): its swirl texture (gCv2CycT).
+        if (s.d.w < 0.0 && (s.c.w >= 0.0 || mod(-s.c.w - 1.0, 2.0) < 0.5)) {
+            gCv2CycT = 0.0;
+#ifdef CV2_CYC_TEX
+            vec3  a    = s.a.xyz;
+            vec3  e    = normalize(vec3(-a.y, a.x, 0.0) + vec3(1e-7, 0.0, 0.0));
+            vec3  v    = wd - a;
+            float hemi = ((s.c.w < 0.0) ? s.d.x : a.z) < 0.0 ? -1.0 : 1.0;
+            float th   = hemi * atan(dot(v, cross(a, e)), dot(v, e)) * (1.0 / 6.2831853);   // (turns)
+            float ph   = (s.c.w < 0.0) ? s.d.z * (1.0 / 6.2831853) : 0.0;              // (the arms' phase: it turns with them)
+            float rM   = max(uOut * s.c.x, 1000.0);
+            // (cv2Lod, defined after this file, + 1: the ridges run round the eye, so a grazing view looks ACROSS them and
+            // the footprint along the ray is several times the isotropic one; at + 0 they drew moire spokes behind the eye.)
+            float lodC = max(0.0, log2(max(gCv2FpM * (6.0 / rM) * 128.0, 1e-6)) + 1.0);
+            vec4  ct   = textureLod(cv2ShapeTex, vec3((th + ph) * 8.0, log(rM) * 6.0 + th * 8.0, 0.37), lodC);
+            float n    = (ct.a - 0.5) * (1.0 / 0.057);
+            gCv2CycT   = (1.0 - 2.0 * smoothstep(0.0, 1.2, abs(n))) * (1.0 - smoothstep(3.0, 6.0, lodC))
+                       + 0.15 * (ct.g - 0.475) * (1.0 / 0.12);   // (a little of the billow; at 0.4 its cells drew scales)
+            // Calm toward the eye (within ~4 eye radii: the eyewall's heads, the thickest and smoothest part): the eye's rim is a plate edge too, where cv2Field's edge boost
+            // drew a fingerprint of rings round a smooth stadium wall.
+            gCv2CycT  *= smoothstep(1.2, 4.0, rM / max(-s.d.w, 1000.0));
+#endif
         }
     }
 #endif

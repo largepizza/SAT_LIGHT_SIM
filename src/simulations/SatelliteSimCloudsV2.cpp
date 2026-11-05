@@ -1323,7 +1323,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2MidFieldKm, cv2MidCover, cv2MsOctaves, cv2LobeOcclusion, cv2MsModel, cv2MsDiffG, cv2MsDiffGain, cv2MsBackM, cv2SkyLightModel, cv2SkyLightGain, cv2SkyGroundAlbedo,
                     cv2CuHeightVar, cv2CuBreakup, cv2CuHeadroom, cv2CuFineLobes, cv2CbFineLobes, cv2CuWisps,
                     cv2CuTurrets, cv2CuTurretStretch, cv2CuTurretLean, cv2CuTurretSkew,
-                    cv2CuBody, cv2CuEdge, cv2CuShowerCells, cv2CuShowerCores, cv2CuBubbles, cv2CuBubbleGain})
+                    cv2CuBody, cv2CuEdge, cv2CuShowerCells, cv2CuShowerCores, cv2CuBubbles, cv2CuBubbleGain,
+                    cv2CirrusFibres, cv2CirrusHooks, stormCycTopSmooth, stormCycTopStreaks, stormCycTopDensity})
         mix(v);
     for (const GpuCloudV2Type &t : cv2Types)
         for (int k = 0; k < 4; ++k)
@@ -2088,6 +2089,10 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                         cv2SeaTempC, 0.5f / (float)std::max<size_t>(cv2MieReff.size(), 1),
                         std::clamp(cv2DropletMsGain, 0.0f, 4.0f) * std::clamp(cv2MsDiffGain, 0.0f, 4.0f));
     p.shade = glm::vec4(std::clamp(cv2SkyLightHue, 0.0f, 1.0f), std::clamp(cv2MsSideEscape, 0.0f, 0.4f), 0.0f, 0.0f);
+    // Fibrous cirrus and hurricane CDO tops (cirrus-hurr, 2026-11-05).
+    p.ciHu  = glm::vec4(std::clamp(cv2CirrusFibres, 0.0f, 2.0f), std::clamp(cv2CirrusHooks, 0.0f, 2.0f),
+                        std::clamp(stormCycTopSmooth, 0.0f, 1.0f), std::clamp(stormCycTopStreaks, 0.0f, 600.0f));
+    p.ciHu2 = glm::vec4(std::clamp(stormCycTopDensity, 1.0f, 6.0f), 0.0f, 0.0f, 0.0f);
     // Storms through the cumulus field (cv2StormGeom / cv2FieldLow, clouds_v2.glsl).
     p.stormU = glm::vec4(cv2StormUnified > 0.5f ? 1.0f : 0.0f, std::max(cv2StormUnifiedScaleM, 200.0f),
                          std::max(cv2StormUnifiedRampM, 20.0f), std::max(cv2StormUnifiedLobes, 0.0f));

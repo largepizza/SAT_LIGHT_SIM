@@ -91,6 +91,26 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
 - **High layer from orbit**: its regime follows the map's coverage over ~150 km (weather mip 4) — cirrus
   lives with the weather systems — and its streaks come in bundles (the volume read 4x coarser; the CPU keeps
   the along-wind period count a multiple of 4). On noise alone it covered the globe in even splotches.
+- **Fibrous cirrus (2026-11-05, the user: "about there, but ... gooey"; ref qa/waves/20261105/refs/cirrus_uncinus.png):**
+  `cv2IceFibres(p, lodR)` is self-contained (an anvil's fray or a cyclone's outflow can call it): p = the shape volume's
+  coordinates, x along the fibres (stretched by the caller), y across, z up; every factor it applies to x is an integer
+  (no seam). TUFTS: the Perlin (A) read 4x along / 1x across (elements ~3:1), y = smoothstep(-0.3, 1.1, sd + 0.5 x the
+  B billow in sd): cirrus comes in patches with clear sky round them. STRANDS: the Perlin 4x across (~700-m cells at
+  the 11 km period), height 0.5x, RIDGED (1 - smoothstep(0, 0.8, |sd|), squared) x a 3x finer ridged hair: thin bright
+  lines where the stretched fBm crosses its median, dark between; read in a frame deflected by the tufts' positive
+  excursion (+0.12 max(sd + 0.3, 0)^2 across): the strands bend round each element's head and fan out (hooks, feathers),
+  one-sided, so they do not wind like stirred paint. Faded to their mean (0.32) from LOD 1.5-3.5 of the strand read.
+  cv2HighSigma: ci = tuft (threshold 0.6 -> 0.12 with the regime, over 0.2) x mix(0.9, mix(0.04, 2.2, strands), "Cirrus
+  fibres" `clouds_v2.cirrus_fibres` 1, ciHu.x); HEADS = tuft > 0.75 and sd > 0.9-1.8, x0.6-2.4 up the layer, x "Cirrus
+  hooks" `cirrus_hooks` 1 (ciHu.y), which also bends the fall streaks: the along-wind lag is dep (2 + hooks x dep / 600)
+  m (was 2 dep: straight slanted sheets) and a cross-wind drift hooks x dep^2 / 2500 m. The cluster meander is +-0.35
+  period (was 0.7) and the bundles' crowding 0.5 (was 1.2): both read as marbling. Why it was gooey: two octaves of the
+  stretched Perlin thresholded over 0.07 of a +-0.04 spread (a soft ramp over the whole field), so every streak was a
+  smooth ribbon and the gaps never cleared; and the strands' height period moved a ridge ~a cell across over the layer's
+  depth (blur from below). Same fetch count (bundle, tuft, strand, hair). Not in the far layer's look beyond what
+  cv2HighSigma's far blend (LOD 1.5-4: the bundles' veil) already gave: from orbit cirrus is unchanged.
+  Cost (interleaved A/B, contended GPU, cloud_march ms, A-vs-A floor in brackets, high_amount 2 at 7 N 170 W): ground
+  looking up 5.15 [5.14] -> 5.21, 10 km across 9.11 [9.02] -> 9.32 (~+2%); 128 registers.
 - **Debug view 7**: per-layer optical depth (red low incl. rain, green mid, blue anvil, white high) — the
   first thing to look at when a cloud artifact has an unknown owner.
 - **Motion** (`cloud_v2_resolve.comp`): the new-sample weight and the clamp box follow PARALLAX (the
