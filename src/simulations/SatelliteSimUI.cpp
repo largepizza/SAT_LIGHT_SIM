@@ -7094,6 +7094,9 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SldCirrusDirectionWarp), &cv2CirrusDirWarp, 0.0f, 1.2f, 0.05f, "%.2f", 278},
         {tx(Txt::SldCirrusWindMS), &cv2CirrusWindMps, 0.0f, 80.0f, 1.0f, "%.0f", 154},
         {tx(Txt::SldCirrusFibrePeriodM), &cv2CirrusPeriodM, 1000.0f, 30000.0f, 250.0f, "%.0f", 2},
+        // Fibrous cirrus (2026-11-05, cirrus-hurr): slots 520-521.
+        {tx(Txt::SldCirrusFibres), &cv2CirrusFibres, 0.0f, 2.0f, 0.05f, "%.2f", 520},
+        {tx(Txt::SldCirrusHooks), &cv2CirrusHooks, 0.0f, 2.0f, 0.05f, "%.2f", 521},
     };
 
     CloudSlider secQuality[] = {
@@ -7233,6 +7236,10 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SldHurricaneDeckSpiral), &stormCycDeckSpiral, 0.0f, 1.0f, 0.05f, "%.2f", 459},
         {tx(Txt::SldHurricaneOutflowCirrus), &stormCycOutflow, 0.0f, 3.0f, 0.05f, "%.2f", 460},
         {tx(Txt::SldHurricaneOutflowStreaks), &stormCycStreaks, 0.0f, 1.0f, 0.05f, "%.2f", 461},
+        // 2026-11-05 (cirrus-hurr): the CDO's top, a smooth swirl with streaks along the flow. Slots 522-524.
+        {tx(Txt::SldHurricaneTopSmoothing), &stormCycTopSmooth, 0.0f, 1.0f, 0.05f, "%.2f", 522},
+        {tx(Txt::SldHurricaneTopStreaksM), &stormCycTopStreaks, 0.0f, 600.0f, 10.0f, "%.0f", 523},
+        {tx(Txt::SldHurricaneTopDensity), &stormCycTopDensity, 1.0f, 6.0f, 0.1f, "%.1f", 524},
         {tx(Txt::SldStormSurgeX), &stormSurge, 0.0f, 2.0f, 0.05f, "%.2f", 415},
     };
     // Wildfires and haboobs (the Weather window's Controls tab had them; settings keys clouds_v2.wildfire* / haboobs).
@@ -9842,6 +9849,11 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CuShowerCells = c.value("showers_as_cells", cv2CuShowerCells);
         cv2CuShowerCores = c.value("showers_from_cores", cv2CuShowerCores);
         cv2CuBubbles = c.value("cumulus_bubbles", cv2CuBubbles);
+        cv2CirrusFibres = settingClamp(c.value("cirrus_fibres", cv2CirrusFibres), 0.0f, 2.0f);
+        cv2CirrusHooks = settingClamp(c.value("cirrus_hooks", cv2CirrusHooks), 0.0f, 2.0f);
+        stormCycTopSmooth = settingClamp(c.value("storm_cyc_top_smooth", stormCycTopSmooth), 0.0f, 1.0f);
+        stormCycTopStreaks = settingClamp(c.value("storm_cyc_top_streaks_m", stormCycTopStreaks), 0.0f, 600.0f);
+        stormCycTopDensity = settingClamp(c.value("storm_cyc_top_density", stormCycTopDensity), 1.0f, 6.0f);
         cv2CuBubbleGain = c.value("cumulus_bubble_relief", cv2CuBubbleGain);
         cv2SilverLining = c.value("silver_lining", cv2SilverLining);
         cv2CirrusDirWarp = c.value("cirrus_direction_warp", cv2CirrusDirWarp);
@@ -10586,6 +10598,11 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"showers_as_cells", cv2CuShowerCells},
         {"showers_from_cores", cv2CuShowerCores},
         {"cumulus_bubbles", cv2CuBubbles},
+        {"cirrus_fibres", cv2CirrusFibres},
+        {"cirrus_hooks", cv2CirrusHooks},
+        {"storm_cyc_top_smooth", stormCycTopSmooth},
+        {"storm_cyc_top_streaks_m", stormCycTopStreaks},
+        {"storm_cyc_top_density", stormCycTopDensity},
         {"cumulus_bubble_relief", cv2CuBubbleGain},
         {"silver_lining", cv2SilverLining},
         {"cirrus_direction_warp", cv2CirrusDirWarp},
