@@ -222,6 +222,9 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // z "Showers as cells" (a convective type's deck shaping gives way to cells where the map rains), w "Showers from
     // cores" (a convective type's map rain falls from the strong cells only)
     vec4  cu4;
+    // 2026-11-04 (structure round): x "Cumulus bubbles" (the thermal bubbles' share of a convective cloud's margin, m0 ->
+    // (m0 + x B) / (1 + x)), y "Bubble relief" (margin units per unit of bubble distance), zw spare
+    vec4  cu5;
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO
@@ -1092,6 +1095,11 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     c.tur = tur;
     c.lobeB = lobeK * 0.75 * (1.0 + (1.5 + 0.4 * cv2.cu.w) * bigL) * (1.0 + liftK) + cv2.cu.y * 1.2
             + tur * 2.7 * (1.0 + 1.5 * cv2.cu3.w);
+#ifndef SKY_LITE
+    // (The bubbles, cv2FieldLow: m0 -> (m0 + x B) / (1 + x) with B <= 1.2 y, the lobes L added undivided: nothing where
+    // m0 + x 1.2 y + (1 + x) L <= 0.)
+    if (tur > 0.0) c.lobeB = c.lobeB * (1.0 + cv2.cu5.x) + cv2.cu5.x * 1.2 * cv2.cu5.y;
+#endif
     return true;
 }
 
@@ -1207,6 +1215,22 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         if (tur > 0.0) lobS += cv2.cu3.w * max(lobS, 0.0) * 1.5;
         lobes = mix(lobes, 2.5 * lobS + cv2.cu.w * lobes * (0.35 + 1.3 * clamp(lobS + 0.12, 0.0, 0.5)), bigL);
         turL  = tur * 2.5 * lobS;
+#ifndef SKY_LITE
+        // CUMULUS BUBBLES (cu5, 2026-11-04, the structure round of issue 20261104_181014): a cumulus is a cluster of thermal
+        // bubbles, not one dome. The billow shape bake's R is the signed distance to a heavy-tailed union of spheres (radii
+        // 0.08-0.9 of an eighth of the period: at the user's 1.9 km x 12 / 2, ~110 m to 1.3 km; cloud_v2_noise.comp
+        // bubbleSdf), read here with the turrets (the same fetch, the same upward stretch and lean). The dome's margin is
+        // DIVIDED by 1 + x and the bubbles added x times: the dome keeps the cloud where it was (the envelope: where, how
+        // big, how high) while the bubbles, the turrets and the small lobes, all un-divided, now shape it at x + 1 times their
+        // old weight against it -- stacked sub-cells of different sizes and heights, heads wider than their stems, creases
+        // and concavities between them, masses splitting into fragments. (Added to the dome undivided, the bubbles had to
+        // out-steepen it, and their smooth faces swallowed the lobes: sausages, 2026-11-04.) Faded out by a footprint of
+        // ~1 km (the far field keeps its dome). Rides on the turret fetch: "Cumulus turrets" 0 is no bubbles either.
+        if (tur > 0.0) {
+            float gB = min(tur / max(cv2.cu3.x * 0.5, 0.01), 1.0) * cv2.cu5.x * (1.0 - smoothstep(150.0, 1000.0, fpM));
+            m0 = (m0 + gB * (s2.r - 0.5) * (2.4 * cv2.cu5.y)) / (1.0 + gB);
+        }
+#endif
         s = mix(s, s2, deep);
     }
     // Inverted Worley at 4/8/16 cells (G: 1.75 km, 875 m, 440 m lobes for the 7 km period) and
