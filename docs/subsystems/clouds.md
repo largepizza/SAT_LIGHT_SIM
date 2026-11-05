@@ -2322,16 +2322,24 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     still read as gumdrops: their sizes were fixed by `shape_period_m` x `storm_scale` (110 m - 1.3 km at the user's
     settings), so a cloud smaller than the big bubbles was one oval slice of one sphere ("smooth glassy ovals"), and a
     big bubble's face was a smooth sphere with nothing on it. **Lobes on lobes** (`cu5.z`): the bubble volume is read
-    a second time 4x finer (`anchorStorm x 8`: bubbles ~30-330 m) and shapes a shell of +-shF (0.15 x, in the big read's
+    a second time 4x finer (`anchorStorm x 8`: bubbles ~30-330 m) and shapes a shell of +-shF (0.45 x, in the big read's
     eighth-periods) around the big bubbles' surface: `sd = clamp(sdF, sdB - shF, sdB + shF)` (the IQ "SDF fBm" form:
-    deep inside or far outside a big bubble nothing changes; on its face the fine bubbles add and carve). The fine read
+    deep inside or far outside a big bubble nothing changes; on its face the fine bubbles add and carve). sdF is
+    3x its geometric value (0.9 x z x (R - 0.5)): at 1x and a 0.15 shell the harness views did not change. The fine read
     fades out over a footprint of 80-400 m (and is skipped past it). **Size follows the cloud** (`cu5.w` floor / 1000): the big
     bubbles' distance is scaled by `smoothstep(250, 1800, thickM)` (cv2LowA, carried as `CV2Carve.thk`), so a small cloud
     is shaped by the fine bubbles alone and a tall one by big bubbles carrying fine ones. **Base flatness**
     (`cu5.w` fract): the bubbles' share of the margin (gB) is x (1 - z) at the base, back to full by 0.4 x the cloud's
     thickness: one flat-ish base (the dome's) under distinct towers. **Decoupled from the turrets:** the bubbles' gate
-    is `CV2Carve.bub` = the turret gate without `cu3.x` (identical to the old `min(tur / (0.5 cu3.x), 1)`), so
-    "Cumulus turrets" 0 keeps the bubbles. The pre-fetch bound's bubble term is `x 2y (0.6 + 0.15 cu5.z)`.
+    is `CV2Carve.bub` = the turret gate without `cu3.x` (the old `min(tur / (0.5 cu3.x), 1)`, but ramped in over
+    60-400 m of thickness, not 250-900: small clouds are where the fine bubbles matter), so "Cumulus turrets" 0 keeps the
+    bubbles. The pre-fetch bound's bubble term is `x 2y (0.6 + 0.45 cu5.z)`. **Smooth creases** (`bubbleSdf`): the
+    spheres are unioned by a polynomial smooth max (k = 0.3 cell within an octave, 0.08 / 0.12 between octaves), not a
+    hard max: at a V crease the normal turned at once from a lit bubble top to the next bubble's shadowed underside, a
+    white-to-grey step along a line (issue 20261104_230832, "Odd shading on turrets"). That issue's tower (5.96 N
+    166.6 W, seen from 5 km) is built almost entirely by the bubbles: with `cumulus_bubbles` 0 it is not there (m0 is
+    just under zero over the region, and (m0 + x B) / (1 + x) grows cloud wherever B > -m0 / x). Ruled out there: the
+    pre-fetch bound (100 units looser: the crop moved 1.2 levels mean), `cdc_light` 0, softer `edge_sharpness`.
   - **Heavy-tailed cells (same round; the meso bake, `cloud_v2_noise.comp` mode 2 G).** The whole-cloud placement's
     blobs gain a fourth, rare octave (4 cells per period: 8 km cells at `cell_period_m` 32 km, a quarter kept, radius
     0.55-1 cell, peak 0.6-1), the other octaves' radii spread down to 0.3 of a cell (was 0.45: the sizes between the

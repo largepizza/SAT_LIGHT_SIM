@@ -127,6 +127,12 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   hollows between them, clouds that merge into irregular masses or break into fragments, from the ground, at cloud
   level and from above. Settings > Clouds: "Cumulus bubbles" (3; 0 = the dome as before), "Bubble relief" (0.2);
   "Turret stretch" is now 0.2 (was 0.5).
+- **Cumulus bubbles at two scales, sized by the cloud.** The big bubbles now carry small ones on their faces (cauliflower
+  on the cauliflower), small clouds are built of small bubbles instead of being one smooth oval, the bubbles meet in
+  rounded fillets instead of hard creases, and they fade toward the base so a dense field stands on a flatter base
+  with separate towers above. Whole clouds come in a wider, long-tailed range of sizes (rare large masses, more small
+  ones). Settings > Clouds: "Bubble hierarchy" (1), "Bubbles follow cloud size" (1), "Bubble base flatness" (0.6);
+  "Cumulus turrets" 0 no longer turns the bubbles off.
 - **Volumetric clouds, rebuilt (clouds v2).** One 3D cloud field from the ground to orbit, driven by a weather
   map: cumulus with lobed, cauliflower sides and flatter bases, stratus decks with textured undersides,
   altocumulus and altostratus, cirrus streaks, veils and cirrocumulus, all lit by the Sun or the Moon through
