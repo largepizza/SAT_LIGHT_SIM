@@ -2563,6 +2563,10 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     mix(cells, 0.15 + 0.85 smoothstep(0.05, 0.45, cells), k): a cell's top near-constant over the cell, so the vertical profile
     (widest at zm) shapes the tower rather than the cell's 1 - d^2 dome stretched kilometres up. Fuller masses at the defaults,
     a little towering on decks at low bubbles. 128 registers.
+  - Cost of core + bubble warp + head width (live A/B, user settings, 1600x900, RTX 3070 Ti, 3 interleaved reps, A-vs-A
+    spread <= 0.2 ms; harness_runs/ab_cumulus_terms/gen.py): all three at 0 vs on, GPU ms: showers view (issue 181014)
+    20.83 -> 20.38, below (180745) 21.43 -> 21.12, turrets (230832) 16.63 -> 16.41. On is 0.2-0.45 ms faster: the
+    fuller masses leave less thin fringe for the march; the extra ALU does not show.
   - Open (2026-11-05): at the DEFAULT bubbles (3.0) the tall towers at Darwin (-12.5 130.8, 2036-11-22 07:00) have flat vertical
     faces, all on the same side, a few km tall (qa/waves/20261106/evidence/below/top_zoom.png). Not the clipmap (cdc_skip 0
     keeps them), not the weather cube's seam, not tower spread / LCL / per-cell or regional bases / core / edge; the cell
