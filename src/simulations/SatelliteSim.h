@@ -2011,7 +2011,7 @@ struct GpuCloudParams
     glm::vec4 mwStar1;
     glm::vec4 mwStar2;
     // -- light2 (12336 -> 12352, 2026-11-05): the white balance's reference sunlight (cloud_params.glsl wbRef): x its height
-    // (m: 0 = sea level, < 0 = the eye's), y unused, z / w the Sun sines of the low-Sun fade (off / full).
+    // (m: 2000, < 0 = the eye's), y unused, z / w the Sun sines of the low-Sun fade (off / full).
     glm::vec4 wbRef;
 };
 static_assert(sizeof(GpuCloudParams) == 12352, "GpuCloudParams layout mismatch");
@@ -5635,8 +5635,8 @@ private:
     float cv2SnowWind = 0.7f;          // the flakes' drift x the surface wind ("snow_drift", 2026-10-23; was "snow_wind")
     float cv2ExposureEV = 0.0f;        // exposure compensation (stops) on the sky's auto exposure
     float cv2HighlightRolloff = 1.0f;  // 0 = the old tonemap; 1 = a long highlight shoulder
-    float cv2WhiteBalance = 0.6f;      // 0..1: adapt to the low Sun's colour (at sea level under the eye)
-    float cv2WbAtEye = 0.0f;           // 1 = the white balance's reference sunlight is the eye's (before 2026-11-05); 0 = sea level's
+    float cv2WhiteBalance = 0.6f;      // 0..1: adapt to the low Sun's colour (2 km over sea level under the eye)
+    float cv2WbAtEye = 0.0f;           // 1 = the white balance's reference sunlight is the eye's (before 2026-11-05); 0 = the Sun 2 km over sea level
     float cv2WbHoldDeg = 6.0f;         // the white balance is full down to this Sun elevation, off at ~1 deg (was 11.5)
     float cv2BeamShafts = 1.0f;        // beams as light in the volumetric march (0 = the old drawn line)
     float cv2AutoExposure = 1.0f;      // 0..1: how far the metered auto exposure may darken a bright day

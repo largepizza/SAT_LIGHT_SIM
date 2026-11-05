@@ -2730,8 +2730,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.exposureScale = exp2f(globalExposureEV());
         cp.highlightRolloff = std::clamp(cv2HighlightRolloff, 0.0f, 1.0f);
         cp.whiteBalance = std::clamp(cv2WhiteBalance, 0.0f, 1.0f);
-        // light2 (2026-11-05): the white balance's reference sunlight, fixed at sea level (cloud_params.glsl wbRef).
-        cp.wbRef = glm::vec4(cv2WbAtEye > 0.5f ? -1.0f : 0.0f, 0.0f, 0.02f,
+        // light2 (2026-11-05): the white balance's reference sunlight, fixed at 2 km (cloud_params.glsl wbRef).
+        cp.wbRef = glm::vec4(cv2WbAtEye > 0.5f ? -1.0f : 2000.0f, 0.0f, 0.02f,
                              std::max(std::sin(glm::radians(std::clamp(cv2WbHoldDeg, 1.5f, 30.0f))), 0.03f));
         cp.density = cloudDensity;
         cp.driftRate = cloudDriftRate;

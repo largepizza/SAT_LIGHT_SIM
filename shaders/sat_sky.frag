@@ -7643,15 +7643,17 @@ void main() {
     // as beige; an eye or a camera adapts to its illuminant. Luminance-preserving, faded out as the
     // Sun sets (twilight keeps its colour).
     if (cloud.whiteBalance > 0.0) {
-        // The reference sunlight is the Sun's colour at SEA LEVEL under the eye (2026-11-05, light2; cloud.wbRef), whatever
-        // the eye's height. It was the sunlight AT THE EYE: it swung with a kilometre of the eye's altitude near sunset (user
+        // The reference sunlight is the Sun's colour 2 km over sea level under the eye, where cumulus is lit (2026-11-05,
+        // light2; cloud.wbRef.x), whatever the eye's height. It was the sunlight AT THE EYE: it swung with a kilometre of the eye's altitude near sunset (user
         // snaps 9-10, pass 13: the same clouds gold, then white, as the observer climbed), so the adaptation was faded out
         // from 11.5 deg of Sun down to 1 deg, exactly where the light turns yellow: every cloud between ~4 and ~11 deg read
         // beige (at 5 deg the lit faces' display b/r 0.69, the shaded faces khaki); and from an aircraft or 45 km up (the
-        // Sun at the eye nearly white) a sea of cloud below was not adapted at all. Fixed to sea level, nothing moves with
+        // Sun at the eye nearly white) a sea of cloud below was not adapted at all. At a fixed height nothing moves with
         // the eye, so the adaptation holds down to "White balance holds to" (6 deg; wbRef.zw = the fade's Sun sines, off at
         // ~1 deg: the last degrees keep their orange). Above 60 km it blends back to the eye's own (200 km: from orbit the
-        // frame spans the terminator). wbRef.x < 0 = the eye's height, the old reference (the A/B).
+        // frame spans the terminator). wbRef.x < 0 = the eye's height, the old reference (the A/B). 2 km, not sea level: the
+        // sea-level Sun is yellower than the light on the clouds (which take "Cloud sunlight Rayleigh", 0.65 in the user's
+        // settings), and dividing by it turned a 10-km anvil deck lavender from above (lit b/r 1.6 at 10 deg; 1.45 at 2 km).
         float cW = sunDirENU.z;
         float rW = R_EARTH + ((cloud.wbRef.x < 0.0) ? max(obsEffH, 0.0)
                               : mix(cloud.wbRef.x, max(obsEffH, 0.0), smoothstep(60000.0, 200000.0, obsEffH)));

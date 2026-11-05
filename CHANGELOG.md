@@ -110,7 +110,7 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   of varied height, taller than wide and leaning with the wind, rises out of every cloud with a convective share,
   so a shower field from an aircraft shows turrets standing over a lower mass instead of a sheet of gumdrops.
   Settings > Clouds: "Cumulus turrets" (1.0; 0 = the old shape), "Turret stretch", "Turret lean", "Turret skew".
-- **Clouds stay white longer as the Sun sets.** The white balance now adapts to the Sun's colour at sea level wherever
+- **Clouds stay white longer as the Sun sets.** The white balance now adapts to the Sun's colour 2 km up wherever
   the camera is, so it no longer had to be faded out from 11.5 degrees of Sun: sunlit clouds stay white-gold down to
   about 6 degrees (they went beige-khaki from about 10), turn orange only in the last few degrees, and a sea of cloud
   seen from an aircraft or from 45 km is adapted like the view from the ground. Settings > Photometry: "White balance
