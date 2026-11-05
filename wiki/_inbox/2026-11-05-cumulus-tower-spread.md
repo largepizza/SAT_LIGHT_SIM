@@ -8,8 +8,9 @@ A cumulus' envelope is a 2-D strength against one vertical profile whose top T c
 to each cell's height factor, s a km-scale field (the cell volume's Perlin, 1-8 km octaves, plus the cells), and the top
 may now reach 1.7 x "Tower top" of the span (was 1 x), capped at the type's span. Inside one cloud mass towers several km tall stand beside shoulders a few hundred metres
 high, so a big cumulus reads as a skyline of separate heads rather than one dome. Bases and footprints are unchanged.
-0 = one top per cloud. Not in SKY_LITE. Cost (RTX 3070 Ti, contended): cloud march +0.2 to +0.35 ms at Amazon and Darwin
-views, ~0 on trade cumulus; march stays at 128 registers.
+0 = one top per cloud. Not in SKY_LITE. Cost (RTX 3070 Ti, 1600x900, contended): cloud march +0.5 to +0.7 ms
+where tall cumulus fill the view (Amazon), +0.1-0.2 ms at Darwin / trade cumulus, -0.3 ms at a congestus field; march
+stays at 128 registers.
 
 ## History
 Two rounds of shape work (turrets, thermal bubbles, bubble hierarchy, heavy-tailed cells) changed only the surface; the

@@ -2504,6 +2504,10 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     round's base terms); the same with k a compile-time constant was 128, so was the additive form with the cap at 1; a cap
     of 1 + 0.9 k (uniform) was 249. The shipped form (additive k term in hVar, CONSTANT cap 1.7) is 128 (march, composite).
     Side effect: at k = 0 a cell whose hVar already exceeded 1 (cu.x) now rises to 1.7 x flow.w instead of flow.w.
+    **Measured** (RTX 3070 Ti, 1600x900, the user's settings, one live app, perf-frames 3a40b2e's march vs this, 3
+    interleaved reps, other agents on the GPU): cloud_march 10.19 -> 10.87 ms (Amazon from the ground), 7.87 -> 8.34
+    (Amazon across at 4 km), 11.19 -> 11.33 (Darwin across, 3 km), 8.22 -> 8.41 (trade across, 3 km), 12.29 -> 12.01
+    (congestus across, 7 km); rep half-ranges <= 0.16 ms. The cost is the taller towers' extra volume, not the code.
 - **The blue-noise tile drawn over half-shadowed cloud, and shadows only near the eye (2026-10-12, user issues
   20261012_202341 / _195811; Sun 0.1-0.9 deg, light footprint 0, accumulation 0, history weight 0.02):**
   - **The resolve's still-view clamp box is 7x7 new samples** (`cloud_v2_resolve.comp`, `stillW`, motionPx < 0.05-0.5),
