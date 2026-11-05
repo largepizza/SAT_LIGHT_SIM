@@ -116,6 +116,18 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     lens at its ONE main sample (cloud_v2_march.comp, after `cv2Field`): 128. The CDC and lightning (STV) shaders keep it
     in `cv2Field` (no cliff there): the lens is in the occupancy clipmap and shadows the ground and lower cloud. The light
     march does not see it (a lens is thin; it is lit as unshadowed).
+  - **Cost** (2026-11-05, 1600x900, interleaved A/B in one app, 3 reps, lightly contended GPU: one other agent's app;
+    A = the perf-frames march SPV with every new term off, B = this one at defaults; cloud_march ms): cumulus from 3 km
+    7.73 -> 8.49, shower field from the ground 9.42 -> 10.36, Andes from 12 km 7.77 -> 8.54, Fuji from the ground
+    5.00 -> 5.41. March at 128 registers. Attribution (cumulus at 3 km, uncontended, 2 reps): the new code with every
+    term off +0.4, bases +0.2, fractus ~0 (no rain there), lenses +0.15 (no mountains), wisps the rest (the wisps' cost
+    follows their cover: sparser regime 0.54-0.62 is the trade-off).
+    Motion (cloud_suite trade_cu, off vs on, separate launches): motion score 1.46 vs 1.51, time-running step 6.07 vs 5.67.
+    Lenses under 1 h time warp at Fuji stay put and sharp (the resolve reprojects with the map drift, but a lens is a
+    smooth, slowly varying shape: no visible smear in captures 90 and 135 frames into the warp).
+  - Test views: qa/waves/20261105/evidence/vertical/*.satcmd (Fuji from Yamanakako az 245 el 12 fov 40 with cover_clear
+    0.9; Rainier, Aconcagua, Andes 12 km / orbit; trade cumulus ground / 900 m / 10 km; inland Darwin; a storm via
+    `weather go 0` then the ground 35 km toward it for fractus).
 - **Erosion detail fades with distance toward its MEAN, at full strength** (`df = mix(0.45, fetched,
   detailAmt)`). It used to fade the erosion toward NONE and then switch to the mean where detailAmt hit 0: a
   band of uneroded cloud just inside 4 x `detail_lod_start_m`, seen from orbit as a ring (~220 km out).
