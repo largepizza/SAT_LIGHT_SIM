@@ -560,5 +560,10 @@ depth pass, so its variants interleave like the sky's and the clouds'.
 - **Dead ends:** skipping the sky pass's terrain march where the four cloud texels are opaque (-0.1..-0.3 ms, changes the
   depth the sky TAA reprojects with); the history copies (~0.1 ms); FIFO quantisation as the cause of "30 / 20 / 15 FPS"
   (the reports' frame times are not quantised: 27 ms median at a 28 ms GPU).
+- **Tried and dropped (2026-11-04): the light march's far steps from the Sun transmittance volume** (clouds.md, the S3
+  section, "Not a light volume for the march"): -1.1 / -1.4 / -2.1 ms of cloud march at the cumulus / storm / anvil views
+  (contended GPU, min of 3 reps), not the -4..-6 ms estimated: light steps 2-5 are S2 clipmap reads already, so only the
+  far sample's field read goes. The image moved +6 levels at the sunset anvil (the volume's height knots span ~10 km
+  along a ray under a 2-deg Sun).
 
 ---
