@@ -7257,7 +7257,7 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         // 2026-11-05 (cirrus-hurr): the CDO's top, a smooth swirl with streaks along the flow. Slots 522-524.
         {tx(Txt::SldHurricaneTopSmoothing), &stormCycTopSmooth, 0.0f, 1.0f, 0.05f, "%.2f", 522},
         {tx(Txt::SldHurricaneTopStreaksM), &stormCycTopStreaks, 0.0f, 600.0f, 10.0f, "%.0f", 523},
-        {tx(Txt::SldHurricaneTopDensity), &stormCycTopDensity, 1.0f, 6.0f, 0.1f, "%.1f", 524},
+        {tx(Txt::SldHurricaneTopDensity), &stormCycTopDensity, 1.0f, 20.0f, 0.1f, "%.1f", 524},
         {tx(Txt::SldStormSurgeX), &stormSurge, 0.0f, 2.0f, 0.05f, "%.2f", 415},
     };
     // Wildfires and haboobs (the Weather window's Controls tab had them; settings keys clouds_v2.wildfire* / haboobs).
@@ -9891,7 +9891,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2OroMoist = settingClamp(c.value("oro_moist", cv2OroMoist), 0.0f, 1.0f);
         stormCycTopSmooth = settingClamp(c.value("storm_cyc_top_smooth", stormCycTopSmooth), 0.0f, 1.0f);
         stormCycTopStreaks = settingClamp(c.value("storm_cyc_top_streaks_m", stormCycTopStreaks), 0.0f, 600.0f);
-        stormCycTopDensity = settingClamp(c.value("storm_cyc_top_density", stormCycTopDensity), 1.0f, 6.0f);
+        stormCycTopDensity = settingClamp(c.value("storm_cyc_top_density", stormCycTopDensity), 1.0f, 20.0f);
         cv2CuBubbleGain = c.value("cumulus_bubble_relief", cv2CuBubbleGain);
         cv2CuBubbleFine = c.value("cumulus_bubble_hierarchy", cv2CuBubbleFine);
         cv2CuBubbleSize = c.value("cumulus_bubble_size", cv2CuBubbleSize);

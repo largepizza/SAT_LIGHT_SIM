@@ -2313,7 +2313,11 @@ float cv2AnvilSigmaP(CV2Pos q, float fpM, float colNear, bool wantPres, out floa
     // way from the same fade, continuous with the plate's presA = 1.)
     float plP = gCv2AnvVeil ? smoothstep(0.3, 0.55, gCv2PlateA) : 0.0;
     presA = plP;
-    if (gCv2AnvVeil && gCv2PlateA >= 0.55) { presA = 1.0; return 0.0; }
+    // (storm-above, 2026-11-05: to 0.66, not 0.55. The plate is a 150-m wedge with a soft skin at its outline (presence 0.5)
+    // and reaches its density by ~0.6; the veil gone by 0.55 left a gap between them, where the shadowed low cloud showed
+    // through: the dark line round every anvil from orbit, the "crater rim". Lit as the plate is (the deck's slant path,
+    // below), the veil no longer relights a ring inside the plate.)
+    if (gCv2AnvVeil && gCv2PlateA >= 0.66) { presA = 1.0; return 0.0; }
     if (shOn) {
         if (gCv2ShSet) { shS = gCv2Sh.x; shThick = gCv2Sh.y; shAge = gCv2Sh.z; shU = gCv2Sh.w; }
         else shS = cv2ShieldAt(wd, shThick, shAge, shU);
@@ -2390,7 +2394,7 @@ float cv2AnvilSigmaP(CV2Pos q, float fpM, float colNear, bool wantPres, out floa
     topA = top;
     // An aged (orphan) shield is thinner ice.
     return edge * edge * under * lid * mix(0.85, 1.0, sh.r) * 0.01 * cv2.storm.z * mix(1.0, 0.5, shAge)   // "Anvils" is its density
-         * (gCv2AnvVeil ? 1.0 - smoothstep(0.42, 0.55, gCv2PlateA) : 1.0);
+         * (gCv2AnvVeil ? 1.0 - smoothstep(0.46, 0.66, gCv2PlateA) : 1.0);
 }
 
 float cv2AnvilSigma(CV2Pos q, float fpM, float colNear, out float hfA, out float topA)
@@ -2956,7 +2960,10 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
         float ca = clamp((wa.r * cv2.look.x - cv2.cover.x) / max(cv2.cover.y - cv2.cover.x, 1e-3), 0.0, 1.0);
         presA = max(presA, smoothstep(0.65, 0.85, wa.g) * smoothstep(0.25, 0.6, ca));
     }
-    if (sa > 0.0) cv2Add(f, sa, hfX, topX, veil ? 0.0 : 1.0);
+    // (The veil too is a DECK for the light, storm-above 2026-11-05: its self-shadow is the slant path to its top, the
+    // march's deckK term. As thin ice with a fixed 400-m self-shadow it was lit through its whole depth under a grazing
+    // Sun, ~5x the plate beside it: the bright halo round every anvil at sunset from orbit, the plate a dark crater in it.)
+    if (sa > 0.0) cv2Add(f, sa, hfX, topX, 1.0);
     float saThin = veil ? sa : 0.0;
     // The anvil is the high cloud around a storm: the cirrus layer (0.69-0.93 of the tropopause, the
     // anvil ~0.7-0.98) gives way to it, and continues outward from its edge. Both drawn, cirrus sheets

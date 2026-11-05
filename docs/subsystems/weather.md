@@ -222,9 +222,15 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   -> 28.5, from 30 km 50.0 [47.9] -> 28.5, from the ISS (400 km oblique) 27.6 [28.1] -> 25.4: the plate's lobes and
   erosion were most of a hurricane's march cost (their lobe bound kept every sample near the sheet fetching). 128
   registers.
-  Still open: the eyewall towers' heads stand as a whiter, flat-topped step over the CDO (their own lid), the
-  overshooting domes are dark blots from overhead, and the spiral bands outside the CDO are the low cloud's popcorn,
-  not cirrus-topped (the arm cirrus deck is thin).
+  THE PLATEAU (2026-11-05, storm-above): the "whiter, flat-topped plateau" beside Yun-yeung's eye from 30 km was not the
+  eyewall heads: it stayed with the towers knocked out, the heads' hang, the near-head lid smoothing, the CDO
+  smoothing, the veil, the mid and high layers, the low field above 7 km and the ambient / bounce terms; with the
+  plate knocked out a flower-shaped low cloud mass stood under it. The plate was TRANSLUCENT ("Hurricane top density"
+  3; the setting was also clamped at 6), so the white low mass showed through it beside the dark sea. Default 12, range
+  1-20 (`clouds_v2.storm_cyc_top_density`): from 160 km the white patches round the eye are gone, from 30 km the
+  plateau is a faint step. The domes' black blots were the march's shell top cutting them flat (clouds.md, "Storms from
+  above"). Still open: the spiral bands outside the CDO are the low cloud's popcorn, not cirrus-topped (the arm cirrus
+  deck is thin); the eye is a clean cylinder, not a stadium sloping outward.
   **STORM SURGE** (2026-10-23, terrain_detail.glsl `tdSurgeAt`, terrain.glsl `waterAdjustHeightSurge`, CPU
   `weatherFillSeaParams` + mirror `surgeAtDir`; UBO `surgeA/B[2]` + `surgeInfo` appended, 11104 -> 11184): per seaCyc
   cyclone a peak rise at the coast from the wind of the last ~6 h (max(vmax, 0.85 vmax 3 h ago, 0.7 vmax 6 h ago): 1.2 m
