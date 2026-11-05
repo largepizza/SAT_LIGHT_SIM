@@ -7041,6 +7041,10 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         // Cumulus bubbles (2026-11-04, structure round): slots 494-495.
         {tx(Txt::SldCumulusBubbles), &cv2CuBubbles, 0.0f, 4.0f, 0.1f, "%.1f", 494},
         {tx(Txt::SldBubbleRelief), &cv2CuBubbleGain, 0.1f, 3.0f, 0.05f, "%.2f", 495},
+        // Bubble hierarchy (2026-11-05, shape2): slots 496-498 (496-503 reserved).
+        {tx(Txt::SldBubbleHierarchy), &cv2CuBubbleFine, 0.0f, 3.0f, 0.05f, "%.2f", 496},
+        {tx(Txt::SldBubbleSize), &cv2CuBubbleSize, 0.0f, 1.0f, 0.05f, "%.2f", 497},
+        {tx(Txt::SldBubbleBase), &cv2CuBubbleBase, 0.0f, 1.0f, 0.05f, "%.2f", 498},
         {tx(Txt::SldLobeNoise012), &cv2ShapeCaps, 0.0f, 2.0f, 1.0f, "%.0f", 307},
     };
 
@@ -9843,6 +9847,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CuShowerCores = c.value("showers_from_cores", cv2CuShowerCores);
         cv2CuBubbles = c.value("cumulus_bubbles", cv2CuBubbles);
         cv2CuBubbleGain = c.value("cumulus_bubble_relief", cv2CuBubbleGain);
+        cv2CuBubbleFine = c.value("cumulus_bubble_hierarchy", cv2CuBubbleFine);
+        cv2CuBubbleSize = c.value("cumulus_bubble_size", cv2CuBubbleSize);
+        cv2CuBubbleBase = c.value("cumulus_bubble_base", cv2CuBubbleBase);
         cv2SilverLining = c.value("silver_lining", cv2SilverLining);
         cv2CirrusDirWarp = c.value("cirrus_direction_warp", cv2CirrusDirWarp);
         cv2AsDensity = c.value("altostratus_density", cv2AsDensity);
@@ -10587,6 +10594,9 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"showers_from_cores", cv2CuShowerCores},
         {"cumulus_bubbles", cv2CuBubbles},
         {"cumulus_bubble_relief", cv2CuBubbleGain},
+        {"cumulus_bubble_hierarchy", cv2CuBubbleFine},
+        {"cumulus_bubble_size", cv2CuBubbleSize},
+        {"cumulus_bubble_base", cv2CuBubbleBase},
         {"silver_lining", cv2SilverLining},
         {"cirrus_direction_warp", cv2CirrusDirWarp},
         {"altostratus_density", cv2AsDensity},

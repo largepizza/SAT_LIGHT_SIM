@@ -948,7 +948,7 @@ struct GpuCloudV2Params
     glm::vec4 stormU;                   // 2026-11-04: storms through the cumulus field: x on, y metres per margin unit, z the surface ramp (m), w lobe gain
     glm::vec4 cu3;                      // 2026-11-04: cumulus turrets: x strength, y vertical stretch, z lean (x "Lean"), w skew
     glm::vec4 cu4;                      // 2026-11-04: x cumulus body (adiabatic), y cumulus edge (sharpening x), z showers as cells, w showers from cores
-    glm::vec4 cu5;                      // 2026-11-04: cumulus bubbles: x weight (0 off), y margin units per bubble distance unit, zw spare
+    glm::vec4 cu5;                      // 2026-11-04: cumulus bubbles: x weight (0 off), y margin units per bubble distance unit; 2026-11-05 (shape2): z bubble hierarchy, w = floor(1000 x bubbles follow cloud size) + bubble base flatness (< 1) (packed: a 101st member crashed NVIDIA's rain_particles.vert compile)
     glm::vec4 shade;                    // 2026-11-04: cloud contrast: x sky light keeps its colour, y the diffuse field's side escape
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
@@ -5537,6 +5537,11 @@ private:
     // bubbles (a heavy-tailed union of spheres baked in the billow shape volume's R, read with the turrets), not one dome.
     float cv2CuBubbles = 3.0f;            // "Cumulus bubbles": the dome's margin is divided by 1 + x and the bubbles added x times
     float cv2CuBubbleGain = 0.2f;         // "Bubble relief": margin units per eighth of the turret period of bubble distance
+    // Bubble hierarchy (2026-11-05, shape2): the fine bubbles (the bubble volume 4x finer) on the big ones' surface, the
+    // big ones giving way to the fine on small clouds, and the bubbles fading toward the base (clouds.md "Bubble hierarchy").
+    float cv2CuBubbleFine = 1.0f;         // "Bubble hierarchy": the fine bubbles' shell (0 = off: one bubble size)
+    float cv2CuBubbleSize = 1.0f;         // "Bubbles follow cloud size": small clouds are built of the fine bubbles (0 = off)
+    float cv2CuBubbleBase = 0.6f;         // "Bubble base flatness": the bubbles' share lost at the base (0 = uniform)
     float cv2SilverLining = 0.5f;         // "Silver lining": forward-scattered sunlight leaking through thin cloud toward the Sun
     float cv2SmallCumulus = 0.06f;        // the near field makes low puffs this far under the coverage threshold (field units)
     float cv2ErosionVar = 0.6f;           // erosion strength and grain vary by region (0 = uniform)
@@ -8623,7 +8628,7 @@ private:
     bool draggingPhoto[56] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 496;   // 494-495 (2026-11-04): cumulus bubbles;   // 440-441 (2026-11-03): turbulence cell size / speed; 450-452: anvil formation / decay time, tower growth time; 455-461: hurricane shape; was 435;   // 428-434 (2026-10-30): the second stage's jellyfish (streaks, nucleus, staging cloud); was 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
+    static constexpr int kCloudSliderSlots = 528;   // 496-503 (2026-11-05, shape2): bubble hierarchy; 494-495 (2026-11-04): cumulus bubbles;   // 440-441 (2026-11-03): turbulence cell size / speed; 450-452: anvil formation / decay time, tower growth time; 455-461: hurricane shape; was 435;   // 428-434 (2026-10-30): the second stage's jellyfish (streaks, nucleus, staging cloud); was 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
     // gust fronts, drop persistence); 326: "Tropical cyclones (x)"; 325: "Storm complexes"; 321-324 (2026-10-23): storm
     // objects (frequency, life, cloud field, moat);
     // was 321: 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);

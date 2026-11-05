@@ -2260,6 +2260,33 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     dense field from below still reads as a draped sheet; the bubble sizes follow `shape_period_m` x `storm_scale`,
     not the cloud's size (no lobe-to-cloud-size scaling yet); the cells (placement) are unchanged, so the size
     distribution of whole clouds is still the three blob sizes.
+  - **Bubble hierarchy (shape2 round, 2026-11-05; UBO `cu5.z` and `cu5.w` = floor(1000 x size) + base, keys
+    `cumulus_bubble_hierarchy` 1, `cumulus_bubble_size` 1, `cumulus_bubble_base` 0.6, slots 496-498).** **CloudV2Params
+    holds 100 members and a 101st crashes the app at boot** (NVIDIA 596.19: the compiler dies silently on
+    rain_particles.vert's graphics pipeline, `createRainParticles`; the compute pipelines take it): new values go into
+    spare components (`shade.zw` are free) until the block is restructured. Why the bubbles
+    still read as gumdrops: their sizes were fixed by `shape_period_m` x `storm_scale` (110 m - 1.3 km at the user's
+    settings), so a cloud smaller than the big bubbles was one oval slice of one sphere ("smooth glassy ovals"), and a
+    big bubble's face was a smooth sphere with nothing on it. **Lobes on lobes** (`cu5.z`): the bubble volume is read
+    a second time 4x finer (`anchorStorm x 8`: bubbles ~30-330 m) and shapes a shell of +-shF (0.15 x, in the big read's
+    eighth-periods) around the big bubbles' surface: `sd = clamp(sdF, sdB - shF, sdB + shF)` (the IQ "SDF fBm" form:
+    deep inside or far outside a big bubble nothing changes; on its face the fine bubbles add and carve). The fine read
+    fades out over a footprint of 80-400 m (and is skipped past it). **Size follows the cloud** (`cu5.w` floor / 1000): the big
+    bubbles' distance is scaled by `smoothstep(250, 1800, thickM)` (cv2LowA, carried as `CV2Carve.thk`), so a small cloud
+    is shaped by the fine bubbles alone and a tall one by big bubbles carrying fine ones. **Base flatness**
+    (`cu5.w` fract): the bubbles' share of the margin (gB) is x (1 - z) at the base, back to full by 0.4 x the cloud's
+    thickness: one flat-ish base (the dome's) under distinct towers. **Decoupled from the turrets:** the bubbles' gate
+    is `CV2Carve.bub` = the turret gate without `cu3.x` (identical to the old `min(tur / (0.5 cu3.x), 1)`), so
+    "Cumulus turrets" 0 keeps the bubbles. The pre-fetch bound's bubble term is `x 2y (0.6 + 0.15 cu5.z)`.
+  - **Heavy-tailed cells (same round; the meso bake, `cloud_v2_noise.comp` mode 2 G).** The whole-cloud placement's
+    blobs gain a fourth, rare octave (4 cells per period: 8 km cells at `cell_period_m` 32 km, a quarter kept, radius
+    0.55-1 cell, peak 0.6-1), the other octaves' radii spread down to 0.3 of a cell (was 0.45: the sizes between the
+    octaves fill in), every blob's peak (its cloud's height, through eB) correlates with its radius (corr 0.5-0.6; was
+    independent), and the 8-cell octave is thinned 0.3 -> 0.25 so the cover holds (numpy over the lattice's statistics,
+    the fraction of sqrt(cells) over 0.2 / 0.4 / 0.6 / 0.8: 0.79 / 0.64 / 0.40 / 0.12 before, 0.78 / 0.63 / 0.42 / 0.14
+    after). Cloud streets were not built: the meso volume is read in a drifted ECEF frame, so rows baked along a
+    texture axis would not follow the wind, and a per-sample anisotropic read of an absolute coordinate shears with
+    the wind's turning over the globe.
 - **The blue-noise tile drawn over half-shadowed cloud, and shadows only near the eye (2026-10-12, user issues
   20261012_202341 / _195811; Sun 0.1-0.9 deg, light footprint 0, accumulation 0, history weight 0.02):**
   - **The resolve's still-view clamp box is 7x7 new samples** (`cloud_v2_resolve.comp`, `stillW`, motionPx < 0.05-0.5),

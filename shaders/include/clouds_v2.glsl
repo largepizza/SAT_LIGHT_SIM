@@ -223,7 +223,11 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // cores" (a convective type's map rain falls from the strong cells only)
     vec4  cu4;
     // 2026-11-04 (structure round): x "Cumulus bubbles" (the thermal bubbles' share of a convective cloud's margin, m0 ->
-    // (m0 + x B) / (1 + x)), y "Bubble relief" (margin units per unit of bubble distance), zw spare
+    // (m0 + x B) / (1 + x)), y "Bubble relief" (margin units per unit of bubble distance); 2026-11-05 (shape2, clouds.md
+    // "Bubble hierarchy"): z "Bubble hierarchy" (the fine bubbles, 4x smaller, on the big ones' surface: 0 off), w packs
+    // floor(w) / 1000 "Bubbles follow cloud size" (0 = one size for all) and fract(w) "Bubble base flatness" (0 = uniform).
+    // (Packed, not a new member: a 101st member in this block crashed NVIDIA's compiler on rain_particles.vert's
+    // graphics pipeline at boot, driver 596.19, 2026-11-05; the compute pipelines took it.)
     vec4  cu5;
     // 2026-11-04, cloud contrast (cloud_v2_march.comp; clouds.md "Cloud contrast"): x "Sky light keeps its colour" (the
     // sky's light diffused through cloud keeps its hue: cloud scattering is grey; 0 = greyed with depth as before), y the
@@ -602,6 +606,8 @@ struct CV2Carve {
     float fpFade;   // sub-pixel lobes average away
     float lobeB;    // the lobes' largest possible addition (the bound before the fetch)
     float tur;      // the turrets' amplitude (e units per unit noise; cu3.x on convective cloud thicker than ~250 m)
+    float bub;      // 0..1 the thermal bubbles' gate (convective share, thicker than ~250 m, not deep; shape2: no longer the turrets')
+    float thk;      // the cloud's thickness (m: the cell's top over its base); the bubbles' size and base ramp follow it (shape2)
 };
 // A storm object at a point (cv2StormGeom): the margin of its towers and its shield, in metres.
 struct CV2Storm {
@@ -627,7 +633,7 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
 {
     c.m0 = -1e9; c.hb = 0.0; c.baseAmp = 0.0; c.lobeRef = 0.0; c.bigL = 0.0; c.deep = 0.0; c.lobeKL = 0.0; c.aBase = 1.0;
     c.aRamp = 1.0; c.AshK = 0.0; c.phK = 1.0; c.phP = 0.0; c.subPix = 0.0; c.PhSub = 0.0; c.sigK = 0.0; c.billow = 0.0;
-    c.erK = 0.0; c.erBase = 1.0; c.wispE = 0.0; c.rV = 0.0; c.fpFade = 1.0; c.lobeB = 0.0; c.tur = 0.0;
+    c.erK = 0.0; c.erBase = 1.0; c.wispE = 0.0; c.rV = 0.0; c.fpFade = 1.0; c.lobeB = 0.0; c.tur = 0.0; c.bub = 0.0; c.thk = 0.0;
     if (q.h < cv2.shell.x || q.h > cv2.shell.y) return false;
 
     // The map drifts in longitude exactly as v1's flat layer and the ambience driver read it
@@ -1097,12 +1103,18 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     float tur = turW * (1.0 - deep) * fpFade
               * mix(0.5 * (1.0 + liftK) * smoothstep(250.0, 900.0, thickM), 1.0, flatK);
     c.tur = tur;
+    // The bubbles' gate: the turrets' own gate without their strength (cu3.x), so "Cumulus turrets" 0 keeps the bubbles
+    // (shape2, 2026-11-05; until then the bubbles rode on tur and went with it). The old min(tur / (0.5 cu3.x), 1), but from
+    // ~60 m of thickness, not ~250 m: a small cloud is where the fine bubbles matter most (they were one smooth oval).
+    c.bub = min(2.0 * ty.look.z * (1.0 - deep) * (1.0 - deep) * fpFade
+                * mix(0.5 * (1.0 + liftK) * smoothstep(60.0, 400.0, thickM), 1.0, flatK), 1.0);
+    c.thk = thickM;
     c.lobeB = lobeK * 0.75 * (1.0 + (1.5 + 0.4 * cv2.cu.w) * bigL) * (1.0 + liftK) + cv2.cu.y * 1.2
             + tur * 2.7 * (1.0 + 1.5 * cv2.cu3.w);
 #ifndef SKY_LITE
     // (The bubbles, cv2FieldLow: m0 -> (m0 + x B) / (1 + x) with B <= 1.2 y, the lobes L added undivided: nothing where
     // m0 + x 1.2 y + (1 + x) L <= 0.)
-    if (tur > 0.0) c.lobeB = c.lobeB * (1.0 + cv2.cu5.x) + cv2.cu5.x * 1.2 * cv2.cu5.y;
+    if (c.bub > 0.0) c.lobeB = c.lobeB * (1.0 + cv2.cu5.x) + cv2.cu5.x * 2.0 * cv2.cu5.y * (0.6 + 0.45 * cv2.cu5.z);
 #endif
     return true;
 }
@@ -1157,6 +1169,7 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         // within ~6 km of a storm's surface fetching: coarse view reads x1.8 looking down on an anvil plate.)
         c.lobeB   = mix(c.lobeB, lobeS * 1.4, wS);
         c.tur    *= 1.0 - wS;
+        c.bub    *= 1.0 - wS;
         f.hf       = mix(f.hf, sg.hf, wS);
         f.topH     = mix(f.topH, sg.top, wS);
         f.msBright = mix(cu ? f.msBright : 1.0, cv2.types[4].look.x, wS);
@@ -1192,7 +1205,7 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
     // Deep convection's lobes are storm.x times larger: at the cumulus scale a 12 km storm was a
     // pile of small bubbles, a "mountain" rather than towers.
     float turL = 0.0;   // the turrets' share of the lobes (added after the base bumps: a cumulus base stays flat)
-    if (bigL > 0.02 || tur > 0.02) {
+    if (bigL > 0.02 || tur > 0.02 || c.bub > 0.0) {
         // (x2 of the storm anchor -- an integer, so the tile stays in register: lobes of 5, 2.6 and 1.3 km at 12x.)
         // (The storm anchor carries the lobes' FLOW: anchorStormA rises along the observer's up, CPU side, as the
         // towers' own did up their columns: SatelliteSimCloudsV2.cpp.)
@@ -1200,7 +1213,7 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         // (cu3.z x form.y; the cells are read upwind with height, cv2LowA's mp). A shift along the sample's own up and
         // east by its own height: no observer dependence, the anchored tile stays in register.
         vec3 rT = rSA;
-        if (tur > 0.0) {
+        if (tur > 0.0 || c.bub > 0.0) {
             float hP    = max(hb, 0.0);
             vec3  eastT = vec3(-wd.y, wd.x, 0.0) * inversesqrt(max(dot(wd.xy, wd.xy), 1e-6));
             rT += shR * (eastT * (cv2.cu3.z * cv2.form.y * hP) - wd * (cv2.cu3.y * hP));
@@ -1229,10 +1242,32 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         // old weight against it -- stacked sub-cells of different sizes and heights, heads wider than their stems, creases
         // and concavities between them, masses splitting into fragments. (Added to the dome undivided, the bubbles had to
         // out-steepen it, and their smooth faces swallowed the lobes: sausages, 2026-11-04.) Faded out by a footprint of
-        // ~1 km (the far field keeps its dome). Rides on the turret fetch: "Cumulus turrets" 0 is no bubbles either.
-        if (tur > 0.0) {
-            float gB = min(tur / max(cv2.cu3.x * 0.5, 0.01), 1.0) * cv2.cu5.x * (1.0 - smoothstep(150.0, 1000.0, fpM));
-            m0 = (m0 + gB * (s2.r - 0.5) * (2.4 * cv2.cu5.y)) / (1.0 + gB);
+        // ~1 km (the far field keeps its dome). Rides on the turret fetch, gated on its own (c.bub): "Cumulus turrets" 0 keeps them.
+        if (c.bub > 0.0) {
+            float gB  = c.bub * cv2.cu5.x * (1.0 - smoothstep(150.0, 1000.0, fpM));
+            // BUBBLE HIERARCHY (shape2, 2026-11-05; clouds.md "Bubble hierarchy"). (a) Base flatness (cu5.w, fract): the
+            // bubbles' share fades toward the base, so a dense field stands on ONE flat-ish base (the dome's) with distinct
+            // towers over it, not a sheet draped over bubble-shaped bumps.
+            gB *= 1.0 - fract(cv2.cu5.w) * (1.0 - smoothstep(0.0, max(0.4 * c.thk, 150.0), hb));
+            float sdB = 1.2 * (s2.r - 0.5);   // the big bubbles' signed distance (eighth-periods of this read)
+            // (b) Lobes on lobes (cu5.z): the same bubble volume read 4x finer (bubbles ~30-330 m) shapes a shell of
+            // +-shF around the big bubbles' surface, sd = clamp(sdF, sdB - shF, sdB + shF): deep inside / far outside the
+            // big bubble nothing changes, at its surface the fine bubbles carve and add (cauliflower on the cauliflower).
+            // The fine distance is x3 its geometric value (0.9 = 3 x 1.2 / 4): at its true scale it moved a surface by tens
+            // of metres and the views did not change (harness A/B, 2026-11-05).
+            // (c) Size follows the cloud (cu5.w, floor / 1000): on a small cloud the big bubbles are bigger than the cloud (it was ONE
+            // smooth oval slice of one sphere); their distance is scaled toward 0 by the cloud's thickness, and a small
+            // cloud is built of the fine bubbles alone, a big one of big bubbles carrying the fine ones.
+            float shF = 0.45 * cv2.cu5.z * (1.0 - smoothstep(80.0, 400.0, fpM));
+#ifndef CV2_NO_FINE_BUBBLES
+            if (shF > 0.0) {
+                float sdF = 0.9 * cv2.cu5.z * (textureLod(cv2ShapeTex, (cv2.anchorStormA.xyz + rT * cv2.anchorStorm.w) * 8.0
+                                              + vec3(0.41, 0.17, 0.73), cv2Lod(fpM, cv2.anchorStorm.w * 8.0)).r - 0.5);
+                sdB *= mix(1.0, smoothstep(250.0, 1800.0, c.thk), floor(cv2.cu5.w) * 0.001);
+                sdB  = min(max(sdF, sdB - shF), sdB + shF);
+            }
+#endif
+            m0 = (m0 + gB * sdB * (2.0 * cv2.cu5.y)) / (1.0 + gB);
         }
 #endif
         s = mix(s, s2, deep);
