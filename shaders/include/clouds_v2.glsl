@@ -947,11 +947,18 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
         if (rate <= 0.0 && below) return false;
         if (rate > 0.0) {
         vec3  rr = rS + eastW * ((base - q.h) * 0.25);
-#ifndef SKY_LITE
-        // (Fractus, below: through its band the curtains' vertical squeeze eases off.)
+#if !defined(SKY_LITE) && defined(CV2_FRACTUS)
+        // (Fractus, below: through its band the curtains' vertical squeeze eases off. Only in the march and the occupancy
+        // clipmap's bake (CV2_FRACTUS): in the coarse volumes that also read cv2Field -- the froxels, the aerial-perspective
+        // volume, the Sun volume -- the thin band under every raining base became blue-grey rectangles low on the horizon,
+        // 2026-11-05 integration check.)
         float fDep = mix(250.0, 550.0, clamp(rate * 2.0, 0.0, 1.0));
         float frK  = cv2.vert.w > 0.0 ? smoothstep(base - fDep - 150.0, base - fDep + 50.0, q.h) * (1.0 - smoothstep(base - 60.0, base, q.h))
-                                        * (1.0 - smoothstep(600.0, 1500.0, fpM)) : 0.0;
+                                        * (1.0 - smoothstep(600.0, 1500.0, fpM))
+                                        * (1.0 - smoothstep(3000.0, 7000.0, length(q.rSeaE))) : 0.0;
+        // (... and only within ~3-7 km of the eye, 2026-11-05 integration fix: further out the band under low (sea) bases,
+        // 100-500 m up and seen nearly edge-on from the ground, drew rows of flat-topped blue-grey blobs a degree or two
+        // over the horizon (towers region -5 163, all within ~15 km: a 6-15 km fade left them). Scud is a detail overhead.)
         rr -= wd * (dot(rr, wd) * 0.85 * (1.0 - frK));
 #else
         rr -= wd * (dot(rr, wd) * 0.85);
@@ -970,19 +977,19 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
         f.ambient  = 0.8;
         f.rain     = 1.0;
         f.topH     = base;
-#ifndef SKY_LITE
+#if !defined(SKY_LITE) && defined(CV2_FRACTUS)
         // Fractus / scud (2026-11-05, vertical; "Fractus", vert.w): ragged cloud fragments in the saturated air under a
         // raining base, in a band hanging 60 m to ~250-550 m under it (deeper in heavier rain), fading with the footprint
         // (sub-pixel scraps would only grey the rain). From the shaft's own texel (a second fetch here put the march at 249
         // registers): through the band the shaft's vertical compression eases off (frK above), so the texel there is
-        // round noise, not curtains (thresholded, curtains drew a row of flat-topped blocks); its band edges move +-120 m
+        // round noise, not curtains (thresholded, curtains drew a row of flat-topped blocks); its band edges move +-250 m
         // with the texel. Cloud, not rain: its share leaves f.rain (the bows keep the rain's).
         if (frK > 0.0) {
-            float hJ    = q.h + 240.0 * (sr.a - 0.5);
+            float hJ    = q.h + 500.0 * (sr.a - 0.5);   // (+-250 m: at +-120 the band's flat top and base showed)
             float band  = smoothstep(base - fDep, base - 0.55 * fDep, hJ) * (1.0 - smoothstep(base - 160.0, base - 60.0, hJ));
-            float rag   = smoothstep(0.58, 0.76, sr.r * 0.5 + sr.g * 0.3 + sr.b * 0.2 + 0.15 * min(rate * 2.0, 1.0)) * band
-                        * frK * min(rate * 4.0, 1.0);
-            float sFr   = 0.012 * cv2.vert.w * rag;
+            float rag   = smoothstep(0.56, 0.8, sr.r * 0.5 + sr.g * 0.3 + sr.b * 0.2 + 0.15 * min(rate * 2.0, 1.0)) * band
+                        * frK * min(rate * 4.0, 1.0) * smoothstep(80.0, 250.0, q.h - cv2Ground(q.dirE));   // (not a ground fog)
+            float sFr   = 0.006 * cv2.vert.w * rag;   // (0.012: from under a raining edge, a dark veil over the whole view)
             f.rain      = f.sigma / max(f.sigma + sFr, 1e-9);
             f.msBright  = mix(0.6, 0.85, 1.0 - f.rain);
             f.sigma    += sFr;

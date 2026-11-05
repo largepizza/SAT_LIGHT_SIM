@@ -97,6 +97,12 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     texel is round noise, thresholded into ragged shreds whose band edges move +-120 m with it. Thresholding the
     squeezed curtain texel drew a row of flat-topped dark blocks. Cloud, not rain (its share leaves `f.rain`, the bows
     keep the rain's); fades out by fpM 600-1500 m.
+    Integration fix (2026-11-05, branch vertical2): fractus fades out 3-7 km from the eye (length(q.rSeaE)), stays 80-250 m
+    off the ground, sigma 0.006 (0.012 put a dark veil over a view from under a raining edge), band edges +-250 m, and it
+    exists only where CV2_FRACTUS is defined (cloud_v2_march.comp, cloud_v2_cdc.comp). Under the low sea bases of the towers
+    region (-5 163, from 30 m) the band, 100-500 m up and within ~15 km, drew rows of flat-topped blue-grey blobs a degree
+    or two over the horizon; a 6-15 km fade left them, 3-7 km removes them. Using `lift` for the ground test put the
+    march at 249 registers; cv2Ground (the cached global) keeps 128.
   - Mid-level wisps: `cv2MidSigma`'s low mode, 1.5-2.5 km + 0.8 ground, 260-460 m thick (>= 260: the CDC reads are 160 m
     apart), one shape fetch stretched 2.5x along east, sigma 0.03, where the low cover is 0.15-1 but not overcast and the
     cluster Perlin's a > 0.54-0.62 at "Mid-level wisps" 1 (about a fifth of the area; the slider widens it by 0.05 per unit). Measured (cumulus at 3 km, uncontended): the first cut over
