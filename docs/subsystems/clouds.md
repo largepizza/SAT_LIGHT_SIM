@@ -742,6 +742,30 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     1/4 the stored shadow kept the bakes' noise for ever: with time PAUSED the ground under an overcast wandered +-2-3
     levels over tens of frames and cumulus shadows shimmered (user: "shadows fade in, then go away"). Ground std under an
     overcast 1.17 -> 0.40; cloud_suite motion: overcast ground 1.29 -> 0.70, under a cumulus base 1.36 -> 0.77; cost 0.
+    **Not a light volume for the march (measured 2026-11-04, worktree sun-volume, `harness_runs/sv`, not kept):** a lit
+    sample inside level 0's window kept light steps 0-1 on the field and took steps 2-5 and the far sample as this volume's
+    optical depth between the end of step 1 (840 m sunward) and the key light's read (ln T(b) - ln T(a), one call site, 128
+    registers). Interleaved in one app (1600x900, the user's settings, other agents' apps on the GPU, min of 3 reps), cloud
+    march: cumulus 3 km 17.5 -> 16.4 ms, storm 020257 shot 1 29.3 -> 27.9, anvil 111947 62.1 -> 60.0: steps 2-5 are mostly S2
+    clipmap reads already (`cdc_light`), so only the far sample's field read goes. The image does not hold: anvil +6.2
+    levels mean, 26% of pixels past 8 levels (A-vs-A floor 0.8 / 0.9%); cumulus 1.5 / 2.6% (0.9 / 0.1%); storm 1.2 / 1.8%
+    (0.9 / 0.0%). The three views have the Sun within 2 deg of the horizon, the volume's worst case: its knots are by HEIGHT
+    (shell top / 47, ~340 m), so one knot spans 340 m / sin(Sun elevation) ALONG a ray (~10 km at 2 deg) and T is
+    interpolated linearly across it: a tower's optical depth between 0.8 and 5 km sunward is spread over the interval
+    and the anvil's towers come out lit through. Three field steps instead of two, or reading the near end without the
+    half-knot lift, changed nothing. A volume that replaces light steps needs knots ALONG the ray (by distance), which
+    this one, built for far shadows, does not have.
+    **In motion (2026-11-04):** walking at the anvil (issue 20261104_111947, 9.2 km/s at 60 and at 10 fps, time paused,
+    moving frames against settled captures at the same poses) the moving image's error is the same with the volume off
+    (`sun_volume 0`: mean |diff| 3.00 / 2.96 levels at 60 fps, 2.74 / 2.73 at 10 fps), a march lit by the volume alone
+    shows no motion-only bands, and a lookup that returns level 0's VALID share stays at 1 strafing ACROSS the Sun at
+    3.7 level-0 cells a frame (10 fps; `harness_runs/sv` stvvalid): the lead lines plus the catch-up round keep every slot
+    in view baked. The "dark diagonal bands" seen walking over the anvil's tops before the storm rework (build ea61f3f,
+    the same walk) are not this volume's either: with it off they stay (3.52 / 3.58 levels at 16-px scale, mean 4.23 /
+    4.34); they are the light march's grain without history (a diagonal hatch on the sunlit tops, gone in a march lit
+    without its light march) and the clipmap's motion guard (`cdc_motion_guard 0`: mean 4.30 -> 3.02, 16-px 3.59 ->
+    2.35; S2 off on top of it 3.13). The moving image's remaining error at the anvil is the march's and the resolve's
+    (grain on the translucent haze, the edges), see "Quality in motion" above.
   - **Cloud regression suite** (`tools/harness/cloud_suite.py`, docs/HARNESS.md): 11 daytime scenes at ordinary angles
     (cumulus from the ground / 3 km / cloud height, broken and overcast decks, sea, tropical towers, cumulus shadows on
     land at a 34 deg Sun from 3 km / 800 m / the ground, an overcast at 33 deg), each settled, time paused for 1200
