@@ -2087,6 +2087,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.micro = glm::vec4((cv2DropletPhase > 0.5f && cv2MsModel > 0.5f && cv2MieReff.size() > 1) ? std::clamp(cv2DropletSize, 0.5f, 2.0f) : 0.0f,
                         cv2SeaTempC, 0.5f / (float)std::max<size_t>(cv2MieReff.size(), 1),
                         std::clamp(cv2DropletMsGain, 0.0f, 4.0f) * std::clamp(cv2MsDiffGain, 0.0f, 4.0f));
+    p.shade = glm::vec4(std::clamp(cv2SkyLightHue, 0.0f, 1.0f), std::clamp(cv2MsSideEscape, 0.0f, 0.4f), 0.0f, 0.0f);
     // Storms through the cumulus field (cv2StormGeom / cv2FieldLow, clouds_v2.glsl).
     p.stormU = glm::vec4(cv2StormUnified > 0.5f ? 1.0f : 0.0f, std::max(cv2StormUnifiedScaleM, 200.0f),
                          std::max(cv2StormUnifiedRampM, 20.0f), std::max(cv2StormUnifiedLobes, 0.0f));

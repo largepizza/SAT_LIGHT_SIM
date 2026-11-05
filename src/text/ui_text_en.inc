@@ -553,6 +553,8 @@ UI_TEXT(SldMultiScatterReachAwayFromLight, "Multi-scatter reach away from light 
 UI_TEXT(SldSkyLightModel0Zenith1, "Sky light model (0 zenith / 1 hemispheres + multi-scatter)")
 UI_TEXT(SldSkyLightOnCloudsXPhysical, "Sky light on clouds (x physical)")
 UI_TEXT(SldGroundAlbedoSkyLight, "Ground albedo (sky light)")
+UI_TEXT(SldSkyLightKeepsHue, "Sky light keeps its colour")
+UI_TEXT(SldMultiScatterSideEscape, "Multi-scatter side escape")
 UI_TEXT(SldSkyModel0Single1Multi, "Sky model (0 single / 1 multi-scatter + ozone)")
 UI_TEXT(SldGroundLightUnderCloud01, "Ground light under cloud (0/1)")
 UI_TEXT(SldLobeOcclusionSkyLight, "Lobe occlusion (sky light)")

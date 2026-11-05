@@ -948,6 +948,7 @@ struct GpuCloudV2Params
     glm::vec4 stormU;                   // 2026-11-04: storms through the cumulus field: x on, y metres per margin unit, z the surface ramp (m), w lobe gain
     glm::vec4 cu3;                      // 2026-11-04: cumulus turrets: x strength, y vertical stretch, z lean (x "Lean"), w skew
     glm::vec4 cu4;                      // 2026-11-04: x cumulus body (adiabatic), y cumulus edge (sharpening x), z showers as cells, w showers from cores
+    glm::vec4 shade;                    // 2026-11-04: cloud contrast: x sky light keeps its colour, y the diffuse field's side escape
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -980,7 +981,7 @@ static_assert(offsetof(GpuCloudV2Params, amb) == 288 + 48 * kCloudV2Types + 1232
 static_assert(offsetof(GpuCloudV2Params, tone) == 288 + 48 * kCloudV2Types + 1248, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, gnd) == 288 + 48 * kCloudV2Types + 1264, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, micro) == 288 + 48 * kCloudV2Types + 1280, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1344, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1360, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, cu3) == 288 + 48 * kCloudV2Types + 1312, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
@@ -5560,6 +5561,10 @@ private:
     float cv2SkyLightModel = 1.0f;        // 0 zenith, 1 hemispheres + multiple scattering
     float cv2SkyLightGain = 1.0f;         // x the hemispheres' light (1 = physical)
     float cv2SkyGroundAlbedo = 0.25f;     // the ground's albedo in the sky's multiple scattering and under the clouds
+    // Cloud contrast (2026-11-04, cloud_v2_march.comp; clouds.md "Cloud contrast"): sky light diffused through cloud keeps the
+    // sky's colour (cloud scattering is grey), and the diffuse field escapes a lobed cloud's sides before its shaded face.
+    float cv2SkyLightHue = 1.0f;          // 0..1: 1 = the sky's light keeps its hue through cloud (0 = greyed with depth, as before)
+    float cv2MsSideEscape = 0.11f;        // the diffuse field's side escape, e^(-k t) (0.11: fitted to lobed clouds lit from the side; 0.05 = the 2026-10-26 fit, the A/B)
     float cv2SkyMs = 1.0f;                // the SKY PASS's multiple scattering (sat_sky.frag, sky_ap.comp; 0 = single + the shadowed-air term)
     float cv2GroundOvercast = 1.0f;       // the ground's light under cloud (cloud_v2_lightning.comp's cv2Vt map; needs cv2SkyMs)
     // The tonemap (2026-10-26, sat_sky.frag): AgX (Sobotka's; Wrensch's fit) in place of 1 - e^-x per channel.

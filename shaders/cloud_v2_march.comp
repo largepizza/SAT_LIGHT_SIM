@@ -273,8 +273,9 @@ void lightAmbOD(vec3 rel, vec3 ldir, vec3 up, float eyeH, mat3 enuToEcef, int nL
 //   I1 = C1 - 3 e^-t,  I0 = 5 - (2/3) C1 - (1 - g') C1 t - 3 e^-t,  C1 = (5 - e^-t*) / ((1 - g') t* + 4/3).
 // Toward the eye: I0 + a g mu I1 (mu = cosK) + the light the forward peak carried past the unscattered beam, scattered once more.
 // Three corrections for a finite 3D cloud, fitted to the reference (a soft sphere, a hard one and a lumpy blob, lit from
-// above, the front and behind, one gain for all): a = 0.3 (the field is nearly isotropic); x e^(-0.05 t) (light escapes
-// sideways before it reaches the far side, which a slab holds in); x (1 - e^-(1 - f) tauV) (it leaks out of the face the eye
+// above, the front and behind, one gain for all): a = 0.3 (the field is nearly isotropic); x e^(-k t), k = cv2.shade.y
+// ("Multi-scatter side escape", 0.05 as fitted then; light escapes sideways before it reaches the far side, which a slab
+// holds in; a lobed cloud's shaded side wants ~0.1, see clouds.md "Cloud contrast"); x (1 - e^-(1 - f) tauV) (it leaks out of the face the eye
 // looks at, hV: the march's bH, averaged over the sample's step). x 1.6: ~ the octaves' energy over a thick cloud at the defaults;
 // the path-traced level is ~1.6x that (cv2.ms.z; tools/cloud_ms_reference.py).
 // (beamX: 1 = the forward peak's extra beam at the Eddington phase; the droplet phase carries those orders itself, cv2MicroOrders.)
@@ -287,7 +288,7 @@ float cv2DiffuseField(float tauT, float tauB, float hV, float cosK, float g, flo
     float I1 = C1 - 3.0 * et;
     float I0 = 5.0 - (2.0 / 3.0) * C1 - (1.0 - gp) * C1 * t - 3.0 * et;
     float J  = max(I0 + 0.3 * g * cosK * I1, 0.0) + beamX * (1.0 - f) * max(1.0 + 3.0 * gp * cosK, 0.0) * max(et - exp(-tauT), 0.0);
-    return 1.6 * J * exp(-0.05 * t) * hV;
+    return 1.6 * J * exp(-cv2.shade.y * t) * hV;
 }
 
 // ── The droplet phase (2026-11-04, cv2.micro; tools/cloud_micro_reference.py) ──────────────────────────────────────────────
@@ -1217,7 +1218,11 @@ void main()
                 // transmission). With the zenith's colour all the way down, the underside of an overcast was
                 // sky-blue wherever the ambient was strongest and warm in the creases between (the lobe
                 // occlusion): a sky-coloured noise pattern on cloud bottoms (issue 20261012_235159).
-                ambHue = 1.0 / (1.0 + 0.11 * tauUp);
+                // (cv2.shade.x, "Sky light keeps its colour", 2026-11-04: cloud scattering is grey, so the sky's light that
+                // diffused through cloud is still the sky's colour; the white of a cloud's interior is the sunlight's diffuse
+                // field, which the key term carries. Greyed here, the sky light on a shaded face came out grey-warm: the photos'
+                // shaded faces are blue.)
+                ambHue = mix(1.0 / (1.0 + 0.11 * tauUp), 1.0, cv2.shade.x);
                 ambVis = mix(0.7, 1.0, f.hf) / (1.0 + 0.11 * tauUp) * mix(1.0, exp(-f.sigma * 150.0), 0.3);
                 // The light from below is the GROUND's (and the horizon haze's), and the ground under a cloud is
                 // lit through that cloud: 30% from the open country around (gaps, the horizon), the rest x the

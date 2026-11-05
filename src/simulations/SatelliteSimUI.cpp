@@ -7071,6 +7071,8 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SldSkyLightModel0Zenith1), &cv2SkyLightModel, 0.0f, 1.0f, 1.0f, "%.0f", 346},
         {tx(Txt::SldSkyLightOnCloudsXPhysical), &cv2SkyLightGain, 0.0f, 4.0f, 0.05f, "%.2f", 347},
         {tx(Txt::SldGroundAlbedoSkyLight), &cv2SkyGroundAlbedo, 0.0f, 1.0f, 0.01f, "%.2f", 348},
+        {tx(Txt::SldSkyLightKeepsHue), &cv2SkyLightHue, 0.0f, 1.0f, 0.05f, "%.2f", 473},
+        {tx(Txt::SldMultiScatterSideEscape), &cv2MsSideEscape, 0.0f, 0.4f, 0.01f, "%.2f", 474},
         {tx(Txt::SldSkyModel0Single1Multi), &cv2SkyMs, 0.0f, 1.0f, 1.0f, "%.0f", 352},
         {tx(Txt::SldGroundLightUnderCloud01), &cv2GroundOvercast, 0.0f, 1.0f, 1.0f, "%.0f", 353},
         {tx(Txt::SldLobeOcclusionSkyLight), &cv2LobeOcclusion, 0.0f, 1.0f, 0.05f, "%.2f", 285},
@@ -9856,6 +9858,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2SkyLightModel   = settingClamp(c.value("sky_light_model", cv2SkyLightModel), 0.0f, 1.0f);
         cv2SkyLightGain    = settingClamp(c.value("sky_light_gain", cv2SkyLightGain), 0.0f, 4.0f);
         cv2SkyGroundAlbedo = settingClamp(c.value("sky_ground_albedo", cv2SkyGroundAlbedo), 0.0f, 1.0f);
+        cv2SkyLightHue     = settingClamp(c.value("sky_light_hue", cv2SkyLightHue), 0.0f, 1.0f);
+        cv2MsSideEscape    = settingClamp(c.value("ms_side_escape", cv2MsSideEscape), 0.0f, 0.4f);
         cv2SkyMs           = settingClamp(c.value("sky_multiple_scattering", cv2SkyMs), 0.0f, 1.0f);
         cv2GroundOvercast  = settingClamp(c.value("ground_overcast", cv2GroundOvercast), 0.0f, 1.0f);
         cv2LobeOcclusion = c.value("lobe_occlusion", cv2LobeOcclusion);
@@ -10596,6 +10600,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"sky_light_model", cv2SkyLightModel},
         {"sky_light_gain", cv2SkyLightGain},
         {"sky_ground_albedo", cv2SkyGroundAlbedo},
+        {"sky_light_hue", cv2SkyLightHue},
+        {"ms_side_escape", cv2MsSideEscape},
         {"sky_multiple_scattering", cv2SkyMs},
         {"ground_overcast", cv2GroundOvercast},
         {"lobe_occlusion", cv2LobeOcclusion},
