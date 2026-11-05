@@ -377,6 +377,14 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   "Anvil fibres" (`clouds_v2.anvil_fibres`, 1), "Anvil erosion" (`anvil_erosion`, 0.2), "Storm bubbles"
   (`storm_bubbles`, 1); no UI: `anvil_fibre_along_km` (15), `anvil_fibre_across_m` (1500), `anvil_lid_lobes` (0.25),
   `anvil_under_lobes` (0.7).
+- **Storms seen from above lose their craters.** From orbit and 30 km at sunset an anvil was a capsule with a bright
+  halo, a dark ring round it and a dark inside: the thin ice veil round the plate was lit through its whole depth
+  under a grazing Sun (now it shades itself along the slant path to its top, as the plate does), and it ended
+  before the plate's edge had any density, leaving a dark gap. Anvil outlines are less capsule-like: a sharper,
+  flatter upwind edge and a wandering outline that keeps its shape as the storm drifts. A hurricane's central dense
+  overcast is opaque ice ("Hurricane top density" `clouds_v2.storm_cyc_top_density` 3 -> 12, range now 1-20): at 3
+  the low cloud under it showed through as a whiter, raised plateau beside the eye. Overshooting tops in the tropics
+  are no longer cut flat by the top of the cloud volume (black blots from overhead).
 - **Cloud ray budget.** The full-resolution clouds march one pixel in four each frame and rebuild the rest from
   history; a settings key (`clouds_v2.sparse_block`: 2, the default, or 3 / 4 for one pixel in 9 / 16) trades
   sharpness in motion for speed in dense storms and anvils (an anvil top at 11 km, flying: about 121 -> 68 ms of

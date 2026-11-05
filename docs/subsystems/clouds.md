@@ -97,6 +97,12 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     texel is round noise, thresholded into ragged shreds whose band edges move +-120 m with it. Thresholding the
     squeezed curtain texel drew a row of flat-topped dark blocks. Cloud, not rain (its share leaves `f.rain`, the bows
     keep the rain's); fades out by fpM 600-1500 m.
+    Integration fix (2026-11-05, branch vertical2): fractus fades out 3-7 km from the eye (length(q.rSeaE)), stays 80-250 m
+    off the ground, sigma 0.006 (0.012 put a dark veil over a view from under a raining edge), band edges +-250 m, and it
+    exists only where CV2_FRACTUS is defined (cloud_v2_march.comp, cloud_v2_cdc.comp). Under the low sea bases of the towers
+    region (-5 163, from 30 m) the band, 100-500 m up and within ~15 km, drew rows of flat-topped blue-grey blobs a degree
+    or two over the horizon; a 6-15 km fade left them, 3-7 km removes them. Using `lift` for the ground test put the
+    march at 249 registers; cv2Ground (the cached global) keeps 128.
   - Mid-level wisps: `cv2MidSigma`'s low mode, 1.5-2.5 km + 0.8 ground, 260-460 m thick (>= 260: the CDC reads are 160 m
     apart), one shape fetch stretched 2.5x along east, sigma 0.03, where the low cover is 0.15-1 but not overcast and the
     cluster Perlin's a > 0.54-0.62 at "Mid-level wisps" 1 (about a fifth of the area; the slider widens it by 0.05 per unit). Measured (cumulus at 3 km, uncontended): the first cut over
@@ -1413,6 +1419,35 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   from 10 km (no storm surface) 11.1 -> 11.2 (neutral). Flying at 9 km toward storm B (path play, 30 fps): 15.7 -> 16.1;
   moving-vs-settled mean |diff| 3.3 -> 2.7 levels (no new flicker). 128 registers (the veil's fetch chosen on "Anvil
   fibres" at run time was 253). Evidence (main checkout, untracked): `qa/waves/20261105/evidence/storm3/`.
+  **Storms from above (2026-11-05, night wave, worktree storm-above; evidence, untracked, in the main checkout:
+  `qa/waves/20261105/evidence/storm-above/`).** THE CRATER: from orbit and 30 km at sunset (storm A, 43.4 N 119.6 W,
+  the Sun ~1 deg up at the storms) every anvil was a capsule with a bright halo, a DARK RING round it and a darker
+  inside. Knockouts: the plate is opaque (debug view 2: no density hole); with the veil (cv2AnvilSigmaP) knocked out
+  the plates are smooth light patches with no ring; the light march without the clipmap's mean extinction changes
+  nothing. Both marks were the veil's. (1) Its LIGHT: thin ice takes a fixed 400-m self-shadow (`od = f.sigma x 400`,
+  the march), so under a grazing Sun the veil was lit through its whole depth, (1 - e^(-tau / mu)) e^(-400 sigma) per
+  column, where a slab's single scattering seen from above is ~mu0 / (mu0 + mu), ~0.03 at 1-2 deg: ~5x the plate beside
+  it. cv2Field adds the veil as a DECK (cv2Add's flag 1; unified mode had 0), so it takes the march's deckK term, the
+  slant path to its top sigma (topH - h) / mu0 x 0.5, without the light march's length subtracted for thin samples
+  (they march none). (2) A GAP: the plate's outline (presence 0.5) is a 150-m wedge with a 750-m skin and reaches its
+  density only by ~0.6, while the veil faded out over 0.42-0.55; between them the shadowed low cloud showed through,
+  the ring. The veil now fades over 0.46-0.66 (its early out at 0.66): lit as the plate is, it no longer relights a
+  ring inside the plate as it did at 0.65 in storm-polish. What is left of the "crater" at sunset is physical: a flat
+  lid under a 1-deg Sun is ~mu0 dim beside the sun-facing billows of its edge and towers.
+  THE OUTLINE (`cv2ShieldAtR`, `CV2_ANVIL_OUTLINE`; kCv2UpSq 1.8, kCv2OutA 0.45; not SKY_LITE; not a cyclone's CDO or
+  cirrus deck): behind the core (t < 0 along the spine) the cap is squashed x1.8 along it, a flatter, sharper upwind
+  edge with a narrow veil (faded in over |ab| ~0.5 radius: a round cell has no upwind); and u x (1 + 0.45 (0.5 + 0.5 n)),
+  n three sines in the shield's (along, across) frame in radii (wavelengths 0.7-2 radii; at 1.5-5 the outline took one or
+  two bumps and stayed an oval), phases from the storm's seed in b.w's FRACTION (64ths,
+  SatelliteSimWeather.cpp; the shields are re-sorted by strength every frame, so the index is no identity; the radius
+  loses < 1 m). Both only GROW u: the walk's 1.6-radius bins stay exact. Modest: from orbit the plates are soft-edged
+  ovals, not yet the photos' irregular plumes. (A margin term in cv2FieldLow for the hurricane's low cloud, 251 registers,
+  and a tower-material fade above a tower's top in cv2StormGeom, 247, both crossed the register cliff: dropped.)
+  THE DOMES' SHELL: the march's shell top was the Cb top x 1.35 (the tropics' cv2Tropo), and a dome stands "Cb overshoot"
+  + kCv2DomeU (600 m) over the lid, 250 m under that top: in the tropics up to ~0.5 km over the shell, cut flat and entered
+  from above inside dense cloud: BLACK BLOTS from overhead (Yun-yeung's eyewall from 160 km). The shell's top is now at
+  least the tropics' lid + "Cb overshoot" + 800 m (SatelliteSimCloudsV2.cpp). The domes' three lobe tips still read dark
+  from overhead (not the shell, not the Sun volume: open).
 - **The unified volumetric composite (2026-10-26, branch perf-frames; the user: the plumes, smoke and tornadoes "feel entirely
   distinct in quality" and clip against rain, dust, smoke and clouds).** The dust list's Gaussians (launch plumes, flames,
   wildfire smoke, tornado funnels, haboob far field, Kessler dust and fireball trails) are still composited in cloud_march.comp

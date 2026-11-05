@@ -753,7 +753,11 @@ void SatelliteSim::updateStorms()
             const wx::Shield &s = stormShields[i];
             GpuStormShield g;
             g.a = glm::vec4(glm::vec3(s.a), s.strength);
-            g.b = glm::vec4(glm::vec3(s.b), s.rB);
+            // (b.w's fraction: the storm's seed in 64ths, for the anvil outline's wander (cv2ShieldAtR, storm-above
+            // 2026-11-05); the shields are re-sorted by strength every frame, so their index is not an identity.
+            // The radius loses < 1 m.)
+            g.b = glm::vec4(glm::vec3(s.b), std::floor(s.rB)
+                            + ((float)((s.stormId * 0x9E3779B97F4A7C15ull) >> 58) + 0.5f) * (1.0f / 64.0f));
             // (c.w: a line system's rain share + 2 x its bow in whole km: cloud_v2_weather.comp stormStamp unpacks it.)
             g.c = glm::vec4(s.rA, s.thick, s.age01,
                             s.lineK > 0.0f ? std::min(s.rain, 0.999f) + 2.0f * std::round(s.bowM / 1000.0f) : s.rain);

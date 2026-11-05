@@ -948,11 +948,18 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
         if (rate <= 0.0 && below) return false;
         if (rate > 0.0) {
         vec3  rr = rS + eastW * ((base - q.h) * 0.25);
-#ifndef SKY_LITE
-        // (Fractus, below: through its band the curtains' vertical squeeze eases off.)
+#if !defined(SKY_LITE) && defined(CV2_FRACTUS)
+        // (Fractus, below: through its band the curtains' vertical squeeze eases off. Only in the march and the occupancy
+        // clipmap's bake (CV2_FRACTUS): in the coarse volumes that also read cv2Field -- the froxels, the aerial-perspective
+        // volume, the Sun volume -- the thin band under every raining base became blue-grey rectangles low on the horizon,
+        // 2026-11-05 integration check.)
         float fDep = mix(250.0, 550.0, clamp(rate * 2.0, 0.0, 1.0));
         float frK  = cv2.vert.w > 0.0 ? smoothstep(base - fDep - 150.0, base - fDep + 50.0, q.h) * (1.0 - smoothstep(base - 60.0, base, q.h))
-                                        * (1.0 - smoothstep(600.0, 1500.0, fpM)) : 0.0;
+                                        * (1.0 - smoothstep(600.0, 1500.0, fpM))
+                                        * (1.0 - smoothstep(3000.0, 7000.0, length(q.rSeaE))) : 0.0;
+        // (... and only within ~3-7 km of the eye, 2026-11-05 integration fix: further out the band under low (sea) bases,
+        // 100-500 m up and seen nearly edge-on from the ground, drew rows of flat-topped blue-grey blobs a degree or two
+        // over the horizon (towers region -5 163, all within ~15 km: a 6-15 km fade left them). Scud is a detail overhead.)
         rr -= wd * (dot(rr, wd) * 0.85 * (1.0 - frK));
 #else
         rr -= wd * (dot(rr, wd) * 0.85);
@@ -971,19 +978,19 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
         f.ambient  = 0.8;
         f.rain     = 1.0;
         f.topH     = base;
-#ifndef SKY_LITE
+#if !defined(SKY_LITE) && defined(CV2_FRACTUS)
         // Fractus / scud (2026-11-05, vertical; "Fractus", vert.w): ragged cloud fragments in the saturated air under a
         // raining base, in a band hanging 60 m to ~250-550 m under it (deeper in heavier rain), fading with the footprint
         // (sub-pixel scraps would only grey the rain). From the shaft's own texel (a second fetch here put the march at 249
         // registers): through the band the shaft's vertical compression eases off (frK above), so the texel there is
-        // round noise, not curtains (thresholded, curtains drew a row of flat-topped blocks); its band edges move +-120 m
+        // round noise, not curtains (thresholded, curtains drew a row of flat-topped blocks); its band edges move +-250 m
         // with the texel. Cloud, not rain: its share leaves f.rain (the bows keep the rain's).
         if (frK > 0.0) {
-            float hJ    = q.h + 240.0 * (sr.a - 0.5);
+            float hJ    = q.h + 500.0 * (sr.a - 0.5);   // (+-250 m: at +-120 the band's flat top and base showed)
             float band  = smoothstep(base - fDep, base - 0.55 * fDep, hJ) * (1.0 - smoothstep(base - 160.0, base - 60.0, hJ));
-            float rag   = smoothstep(0.58, 0.76, sr.r * 0.5 + sr.g * 0.3 + sr.b * 0.2 + 0.15 * min(rate * 2.0, 1.0)) * band
-                        * frK * min(rate * 4.0, 1.0);
-            float sFr   = 0.012 * cv2.vert.w * rag;
+            float rag   = smoothstep(0.56, 0.8, sr.r * 0.5 + sr.g * 0.3 + sr.b * 0.2 + 0.15 * min(rate * 2.0, 1.0)) * band
+                        * frK * min(rate * 4.0, 1.0) * smoothstep(80.0, 250.0, q.h - cv2Ground(q.dirE));   // (not a ground fog)
+            float sFr   = 0.006 * cv2.vert.w * rag;   // (0.012: from under a raining edge, a dark veil over the whole view)
             f.rain      = f.sigma / max(f.sigma + sFr, 1e-9);
             f.msBright  = mix(0.6, 0.85, 1.0 - f.rain);
             f.sigma    += sFr;
@@ -2331,7 +2338,11 @@ float cv2AnvilSigmaP(CV2Pos q, float fpM, float colNear, bool wantPres, out floa
     // way from the same fade, continuous with the plate's presA = 1.)
     float plP = gCv2AnvVeil ? smoothstep(0.3, 0.55, gCv2PlateA) : 0.0;
     presA = plP;
-    if (gCv2AnvVeil && gCv2PlateA >= 0.55) { presA = 1.0; return 0.0; }
+    // (storm-above, 2026-11-05: to 0.66, not 0.55. The plate is a 150-m wedge with a soft skin at its outline (presence 0.5)
+    // and reaches its density by ~0.6; the veil gone by 0.55 left a gap between them, where the shadowed low cloud showed
+    // through: the dark line round every anvil from orbit, the "crater rim". Lit as the plate is (the deck's slant path,
+    // below), the veil no longer relights a ring inside the plate.)
+    if (gCv2AnvVeil && gCv2PlateA >= 0.66) { presA = 1.0; return 0.0; }
     if (shOn) {
         if (gCv2ShSet) { shS = gCv2Sh.x; shThick = gCv2Sh.y; shAge = gCv2Sh.z; shU = gCv2Sh.w; }
         else shS = cv2ShieldAt(wd, shThick, shAge, shU);
@@ -2408,7 +2419,7 @@ float cv2AnvilSigmaP(CV2Pos q, float fpM, float colNear, bool wantPres, out floa
     topA = top;
     // An aged (orphan) shield is thinner ice.
     return edge * edge * under * lid * mix(0.85, 1.0, sh.r) * 0.01 * cv2.storm.z * mix(1.0, 0.5, shAge)   // "Anvils" is its density
-         * (gCv2AnvVeil ? 1.0 - smoothstep(0.42, 0.55, gCv2PlateA) : 1.0);
+         * (gCv2AnvVeil ? 1.0 - smoothstep(0.46, 0.66, gCv2PlateA) : 1.0);
 }
 
 float cv2AnvilSigma(CV2Pos q, float fpM, float colNear, out float hfA, out float topA)
@@ -2974,7 +2985,10 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
         float ca = clamp((wa.r * cv2.look.x - cv2.cover.x) / max(cv2.cover.y - cv2.cover.x, 1e-3), 0.0, 1.0);
         presA = max(presA, smoothstep(0.65, 0.85, wa.g) * smoothstep(0.25, 0.6, ca));
     }
-    if (sa > 0.0) cv2Add(f, sa, hfX, topX, veil ? 0.0 : 1.0);
+    // (The veil too is a DECK for the light, storm-above 2026-11-05: its self-shadow is the slant path to its top, the
+    // march's deckK term. As thin ice with a fixed 400-m self-shadow it was lit through its whole depth under a grazing
+    // Sun, ~5x the plate beside it: the bright halo round every anvil at sunset from orbit, the plate a dark crater in it.)
+    if (sa > 0.0) cv2Add(f, sa, hfX, topX, 1.0);
     float saThin = veil ? sa : 0.0;
     // The anvil is the high cloud around a storm: the cirrus layer (0.69-0.93 of the tropopause, the
     // anvil ~0.7-0.98) gives way to it, and continues outward from its edge. Both drawn, cirrus sheets

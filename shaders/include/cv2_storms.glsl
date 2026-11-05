@@ -265,6 +265,9 @@ float cv2CycSpiral(vec3 wd, CV2Shield s, float u, float rM)
 // 6 periods an e-folding, + 8 periods a turn: an inward spiral of ~12 deg; whole periods, so seam-free). Streaks
 // ~r / 25 apart (4 km at 100 km), ~5x as long as wide. Only where the shape volume is bound (CV2_CYC_TEX, clouds_v2.glsl); elsewhere 0 (smoothed, untextured). (Read here, in the storm walk,
 // not in cv2FieldLow: a fetch there put the march at 250 registers.) Reset per sample by cv2Field and here.
+#define CV2_ANVIL_OUTLINE
+const float kCv2UpSq = 1.8;    // the upwind cap's squash (the anvil's sharp upwind edge)
+const float kCv2OutA = 0.45;   // the outline's wander (u x 1 .. 1 + this)
 float gCv2CycT = -1e9;
 float gCv2FpM  = 0.0;
 float cv2ShieldPlateA(float sT, float u) { return sT * (1.0 - smoothstep(0.25, 1.25, u / (0.25 + 0.85 * sqrt(sT)))); }
@@ -292,9 +295,31 @@ float cv2ShieldAtR(vec3 wd, out float thickK, out float ageK, out float uOut, ou
         // this can do better. Exact.)
         if (s.a.w - 0.5 <= best) break;
         vec3  ab = s.b.xyz - s.a.xyz;
-        float t  = clamp(dot(wd - s.a.xyz, ab) / max(dot(ab, ab), 1e-14), 0.0, 1.0);
+        float tR = dot(wd - s.a.xyz, ab) / max(dot(ab, ab), 1e-14);
+        float t  = clamp(tR, 0.0, 1.0);
         float r  = mix(s.c.x, s.b.w, t);
         float u  = length(wd - (s.a.xyz + ab * t)) * (6371000.0 / max(r, 1.0));
+#if !defined(SKY_LITE) && defined(CV2_ANVIL_OUTLINE)
+        // (storm-above, 2026-11-05) A storm's anvil is not a capsule (from orbit: smooth pills and ovals). Its UPWIND edge
+        // is sharp and flatter (the outflow is cut off against the wind: the cap behind the core squashed x kCv2UpSq, so
+        // the veil there is a narrow fringe), and its outline wanders (three analytic waves in the shield's own frame,
+        // phases from the storm's seed in b.w's fraction: it keeps its shape as it drifts, no fetch). Both only GROW u (shrink the shield), so the
+        // walk's 1.6-radius bins stay exact. Not a cyclone's CDO or its cirrus deck (d.w < 0, c.w < 0).
+        if (s.d.w >= 0.0 && s.c.w >= 0.0) {
+            vec3  abN = ab * inversesqrt(max(dot(ab, ab), 1e-14));
+            vec3  v   = (wd - s.a.xyz) * (6371000.0 / max(r, 1.0));
+            float x   = dot(v, abN);
+            float y   = dot(v, cross(s.a.xyz, abN));
+            float ab1 = smoothstep(0.0, 0.3, dot(ab, ab) * (4.06e13 / max(r * r, 1.0)));   // (|ab| in radii; a round cell has no upwind)
+            if (tR < 0.0) u = max(u, length(vec2(x * mix(1.0, kCv2UpSq, ab1), y)));
+            vec3  ph  = 6.2831853 * fract(fract(s.b.w) * vec3(1.0, 7.0, 13.0) + vec3(0.0, 0.31, 0.67));   // (the storm's seed: b.w's fraction)
+            // (Wavelengths ~0.7-2 radii: at 1.5-5 radii, 0.3, a plate's outline 0.75 radii out took one or two bumps and
+            // stayed an oval.)
+            float n   = 0.5 * sin(3.1 * x + 2.2 * y + ph.x) + 0.3 * sin(-2.6 * x + 5.3 * y + ph.y)
+                      + 0.2 * sin(8.3 * x - 5.1 * y + ph.z);
+            u *= 1.0 + kCv2OutA * (0.5 + 0.5 * n);
+        }
+#endif
         if (u >= 1.6) continue;
         float sT = s.a.w * mix(1.0, 0.3, smoothstep(0.35, 1.0, t));   // thinning out toward its far (downwind) end
         if (s.d.w < 0.0) sT *= smoothstep(0.9, 1.6, u * r / -s.d.w);   // a cyclone's eye, open to the sea

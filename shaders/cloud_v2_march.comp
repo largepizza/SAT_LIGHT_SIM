@@ -48,6 +48,7 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_march.comp)
 #define CV2_DETAIL_BINDING  4
 #define CV2_MESO_BINDING    5
 #define CV2_ELEV_BINDING    25   // the elevation map: the orographic lenses (clouds_v2.glsl cv2OroSigma)
+#define CV2_FRACTUS              // fractus under raining bases (clouds_v2.glsl): only the march and the clipmap bake
 #define CV2_ORO_EXTERNAL         // ... added at the main sample only (below), not in every inlined cv2Field (registers)
 #define CV2_STORM_BINDING   26   // the storm objects' towers (cv2_storms.glsl)
 #define CV2_DUST_SPEC            // the haboob code is specialization constant 3 (clouds_v2.glsl kCv2DustOn)
@@ -1156,7 +1157,7 @@ void main()
                 float deckK = f.deck * (1.0 - max(f.soft, 0.0));
                 if (deckK > 0.0) {
                     float odDeck = f.sigma * max(max(f.topH - p.h, 0.0) / max(dot(up, keyDir), 0.03)
-                                                 - 2.0 * cv2.light.x, 0.0);
+                                                 - (thin ? 0.0 : 2.0 * cv2.light.x), 0.0);   // (thin ice has no light march)
                     od = max(od, odDeck * deckK * 0.5);
                 }
                 // ("Powder" darkened thin, sun-facing samples, a stand-in for the diffuse field's build-up: the old model's only.)
