@@ -350,7 +350,15 @@ vec3 skyAgX(vec3 v)
                            -0.0980208811401368, 1.15190312990417, -0.0980434501171241,
                            -0.0990297440797205, -0.0989611768448433, 1.15107367264116);
     const float minEv = -12.47393, maxEv = 4.026069;
-    v = clamp(log2(max(kIn * v, vec3(1e-10))), minEv, maxEv);
+    // "AgX range" (cv2.tone.w, light3 2026-11-05): the scene's log contrast about mid grey x w before the curve, i.e. the
+    // curve spans 16.5 EV / w of scene light. AgX's 16.5 EV is a camera's whole latitude; a sunset cumulus's lit / shaded
+    // 4.5 EV sat in its flat middle, so the shaded faces read khaki and the lit ones cream (3.2 : 1 on screen against
+    // 23.6 : 1 in the scene). Mid grey stays put, so the exposure means what it did. Below mid grey the extra contrast
+    // saturates 1.5 EV down (tanh: the curve stays smooth): at 1.4 x everywhere the ground at a low Sun went black.
+    const float kMidEv = -2.473931;   // log2(0.18)
+    vec3 dEv = log2(max(kIn * v, vec3(1e-10))) - kMidEv;
+    dEv += (cv2.tone.w - 1.0) * mix(1.5 * tanh(dEv / 1.5), dEv, step(0.0, dEv));
+    v = clamp(kMidEv + dEv, minEv, maxEv);
     v = (v - minEv) / (maxEv - minEv);
     vec3 v2 = v * v, v4 = v2 * v2;
     v = 15.5 * v4 * v2 - 40.14 * v4 * v + 31.96 * v4 - 6.868 * v2 * v + 0.4298 * v2 + 0.1191 * v - 0.00232;
@@ -7657,8 +7665,21 @@ void main() {
         float cW = sunDirENU.z;
         float rW = R_EARTH + ((cloud.wbRef.x < 0.0) ? max(obsEffH, 0.0)
                               : mix(cloud.wbRef.x, max(obsEffH, 0.0), smoothstep(60000.0, 200000.0, obsEffH)));
+        // The illuminant is the clouds' own sunlight (2026-11-05, light3; cloud.wbRef.y = "Cloud sunlight Rayleigh", > 0):
+        // the cloud march's Sun table takes BETA_R_BASE x that gain plus the ozone (cloud_v2_sunlut.comp sunTransmit). With
+        // the sky's Rayleigh (0.98 in the user's settings vs the clouds' 0.65) and no ozone, the reference was yellower than
+        // the light it was meant to cancel, and high cloud read lavender from above (18 km, Sun 10 deg: lit b/r 1.27).
+        // wbRef.y <= 0: the sky's Rayleigh, no ozone (before light3, the A/B).
+        // (Not in the light tiers: SKY_LITE's SPIR-V budget; they have no volumetric clouds to balance.)
+#ifdef SKY_SUN_SHADOW
+        vec3  bRW  = (cloud.wbRef.y > 0.0) ? BETA_R_BASE * cloud.wbRef.y : BETA_R;
+        vec3  oW   = (cloud.wbRef.y > 0.0) ? atmOzoneTau(vec3(0.0, 0.0, rW), sunDirENU.xyz) : vec3(0.0);
+        vec3  sunW = exp(-(bRW * (atmColumnInf(rW, cW, H_R) * H_R)
+                          + BETA_M * 1.1 * (atmColumnInf(rW, cW, H_M) * H_M) + oW));
+#else
         vec3  sunW = exp(-(BETA_R * (atmColumnInf(rW, cW, H_R) * H_R)
                           + BETA_M * 1.1 * (atmColumnInf(rW, cW, H_M) * H_M)));
+#endif
         vec3  wb = sunW / max(dot(sunW, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
         float k  = cloud.whiteBalance * smoothstep(cloud.wbRef.z, cloud.wbRef.w, cW);
         color /= mix(vec3(1.0), clamp(wb, vec3(0.4), vec3(2.5)), k);

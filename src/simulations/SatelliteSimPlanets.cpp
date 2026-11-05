@@ -180,7 +180,8 @@ void SatelliteSim::updatePlanetDiscs(GpuSatVisible *dst)
     ubo->head.y = 99u;
     ubo->head.z = planetMapLayers > 3 ? 3u : 0u;
     const bool fullSky = (debugDisableMask & (262144u | 524288u)) == 0u;
-    ubo->tone = glm::vec4(fullSky && cv2Tonemap > 0.5f ? 1.0f : 0.0f, std::clamp(cv2ToneSat, 0.0f, 2.0f),
+    ubo->tone = glm::vec4(fullSky && cv2Tonemap > 0.5f ? std::clamp(cv2ToneRange, 0.5f, 2.0f) : 0.0f,   // (x: AgX on = its range, light3)
+                           std::clamp(cv2ToneSat, 0.0f, 2.0f),
                           std::clamp(cv2ToneContrast, 0.5f, 2.0f), cv2HighlightRolloff);
 
     const double dJ = (double)simDayJ2000 + simSecInDay / 86400.0;

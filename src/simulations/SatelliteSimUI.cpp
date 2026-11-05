@@ -5454,13 +5454,16 @@ void SatelliteSim::buildSettingsPhotometryRows(const UIInput &inp, UIRenderer &u
         CloudSlider secExposure[] = {
             {tx(Txt::SldExposureEv), &cv2ExposureEV, -3.0f, 3.0f, 0.05f, "%+.2f", 158},
             {tx(Txt::SldAutoExposureDay), &cv2AutoExposure, 0.0f, 1.0f, 0.05f, "%.2f", 163},
+            {tx(Txt::SldAutoExposureTarget), &cv2AutoExposureTarget, 0.2f, 0.6f, 0.01f, "%.2f", 538},
             {tx(Txt::SldHighlightRollOff), &cv2HighlightRolloff, 0.0f, 1.0f, 0.05f, "%.2f", 159},
             {tx(Txt::SldWhiteBalance), &cv2WhiteBalance, 0.0f, 1.0f, 0.05f, "%.2f", 160},
             {tx(Txt::SldWhiteBalanceAtEye), &cv2WbAtEye, 0.0f, 1.0f, 1.0f, "%.0f", 512},
             {tx(Txt::SldWhiteBalanceHoldDeg), &cv2WbHoldDeg, 1.5f, 15.0f, 0.5f, "%.1f", 513},
+            {tx(Txt::SldWhiteBalanceCloudSun), &cv2WbCloudSun, 0.0f, 1.0f, 1.0f, "%.0f", 537},
             {tx(Txt::SldTonemap0Exponential1Agx), &cv2Tonemap, 0.0f, 1.0f, 1.0f, "%.0f", 349},
             {tx(Txt::SldAgxSaturation), &cv2ToneSat, 0.0f, 2.0f, 0.05f, "%.2f", 350},
             {tx(Txt::SldAgxContrast), &cv2ToneContrast, 0.5f, 2.0f, 0.05f, "%.2f", 351},
+            {tx(Txt::SldAgxRange), &cv2ToneRange, 0.5f, 2.0f, 0.05f, "%.2f", 536},
             // The Moon's size, relief and shadows: the Sky tab (2026-10-28).
         };
         if (part == 0 && uiFold(inp, "PhotoSec", 20, tx(Txt::SecExposure))) // (folds like the Clouds tab's sections, 2026-10-30)
@@ -7043,6 +7046,10 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         // Cumulus bubbles (2026-11-04, structure round): slots 494-495.
         {tx(Txt::SldCumulusBubbles), &cv2CuBubbles, 0.0f, 4.0f, 0.1f, "%.1f", 494},
         {tx(Txt::SldBubbleRelief), &cv2CuBubbleGain, 0.1f, 3.0f, 0.05f, "%.2f", 495},
+        // Bubble hierarchy (2026-11-05, shape2): slots 496-498 (496-503 reserved).
+        {tx(Txt::SldBubbleHierarchy), &cv2CuBubbleFine, 0.0f, 3.0f, 0.05f, "%.2f", 496},
+        {tx(Txt::SldBubbleSize), &cv2CuBubbleSize, 0.0f, 1.0f, 0.05f, "%.2f", 497},
+        {tx(Txt::SldBubbleBase), &cv2CuBubbleBase, 0.0f, 1.0f, 0.05f, "%.2f", 498},
         {tx(Txt::SldLobeNoise012), &cv2ShapeCaps, 0.0f, 2.0f, 1.0f, "%.0f", 307},
     };
 
@@ -7099,6 +7106,15 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         // Fibrous cirrus (2026-11-05, cirrus-hurr): slots 520-521.
         {tx(Txt::SldCirrusFibres), &cv2CirrusFibres, 0.0f, 2.0f, 0.05f, "%.2f", 520},
         {tx(Txt::SldCirrusHooks), &cv2CirrusHooks, 0.0f, 2.0f, 0.05f, "%.2f", 521},
+        // Vertical variation (2026-11-05, vertical): varied bases, fractus, mid-level wisps, orographic clouds. Slots 528-535.
+        {tx(Txt::SldCloudBaseLcl), &cv2BaseLcl, 0.0f, 2.0f, 0.05f, "%.2f", 528},
+        {tx(Txt::SldCloudBaseCellM), &cv2BaseCellM, 0.0f, 400.0f, 10.0f, "%.0f", 529},
+        {tx(Txt::SldCloudBaseRegional), &cv2BaseRegional, 0.0f, 2.0f, 0.05f, "%.2f", 530},
+        {tx(Txt::SldFractus), &cv2Fractus, 0.0f, 2.0f, 0.05f, "%.2f", 531},
+        {tx(Txt::SldMidWisps), &cv2MidWisps, 0.0f, 2.0f, 0.05f, "%.2f", 532},
+        {tx(Txt::SldOroClouds), &cv2OroAmount, 0.0f, 2.0f, 0.05f, "%.2f", 533},
+        {tx(Txt::SldOroWindMps), &cv2OroWindMps, 0.0f, 40.0f, 1.0f, "%.0f", 534},
+        {tx(Txt::SldOroWindDir), &cv2OroWindDirDeg, -1.0f, 360.0f, 5.0f, "%.0f", 535},
     };
 
     CloudSlider secQuality[] = {
@@ -9864,10 +9880,22 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CuBubbles = c.value("cumulus_bubbles", cv2CuBubbles);
         cv2CirrusFibres = settingClamp(c.value("cirrus_fibres", cv2CirrusFibres), 0.0f, 2.0f);
         cv2CirrusHooks = settingClamp(c.value("cirrus_hooks", cv2CirrusHooks), 0.0f, 2.0f);
+        cv2BaseLcl = settingClamp(c.value("base_lcl", cv2BaseLcl), 0.0f, 2.0f);
+        cv2BaseCellM = settingClamp(c.value("base_cell_m", cv2BaseCellM), 0.0f, 400.0f);
+        cv2BaseRegional = settingClamp(c.value("base_regional", cv2BaseRegional), 0.0f, 2.0f);
+        cv2Fractus = settingClamp(c.value("fractus", cv2Fractus), 0.0f, 2.0f);
+        cv2MidWisps = settingClamp(c.value("mid_wisps", cv2MidWisps), 0.0f, 2.0f);
+        cv2OroAmount = settingClamp(c.value("oro_amount", cv2OroAmount), 0.0f, 2.0f);
+        cv2OroWindMps = settingClamp(c.value("oro_wind_mps", cv2OroWindMps), 0.0f, 40.0f);
+        cv2OroWindDirDeg = settingClamp(c.value("oro_wind_dir_deg", cv2OroWindDirDeg), -1.0f, 360.0f);
+        cv2OroMoist = settingClamp(c.value("oro_moist", cv2OroMoist), 0.0f, 1.0f);
         stormCycTopSmooth = settingClamp(c.value("storm_cyc_top_smooth", stormCycTopSmooth), 0.0f, 1.0f);
         stormCycTopStreaks = settingClamp(c.value("storm_cyc_top_streaks_m", stormCycTopStreaks), 0.0f, 600.0f);
         stormCycTopDensity = settingClamp(c.value("storm_cyc_top_density", stormCycTopDensity), 1.0f, 20.0f);
         cv2CuBubbleGain = c.value("cumulus_bubble_relief", cv2CuBubbleGain);
+        cv2CuBubbleFine = c.value("cumulus_bubble_hierarchy", cv2CuBubbleFine);
+        cv2CuBubbleSize = c.value("cumulus_bubble_size", cv2CuBubbleSize);
+        cv2CuBubbleBase = c.value("cumulus_bubble_base", cv2CuBubbleBase);
         cv2SilverLining = c.value("silver_lining", cv2SilverLining);
         cv2CirrusDirWarp = c.value("cirrus_direction_warp", cv2CirrusDirWarp);
         cv2AsDensity = c.value("altostratus_density", cv2AsDensity);
@@ -9996,6 +10024,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2Tonemap      = settingClamp(c.value("tonemap", cv2Tonemap), 0.0f, 1.0f);
         cv2ToneSat      = settingClamp(c.value("tonemap_saturation", cv2ToneSat), 0.0f, 2.0f);
         cv2ToneContrast = settingClamp(c.value("tonemap_contrast", cv2ToneContrast), 0.5f, 2.0f);
+        cv2ToneRange = settingClamp(c.value("tonemap_range", cv2ToneRange), 0.5f, 2.0f);
+        cv2WbCloudSun = settingClamp(c.value("white_balance_cloud_sun", cv2WbCloudSun), 0.0f, 1.0f);
         cv2WhiteBalance = c.value("white_balance", cv2WhiteBalance);
         cv2WbAtEye      = settingClamp(c.value("white_balance_at_eye", cv2WbAtEye), 0.0f, 1.0f);
         cv2WbHoldDeg    = settingClamp(c.value("white_balance_hold_deg", cv2WbHoldDeg), 1.5f, 15.0f);
@@ -10037,6 +10067,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2AnvilThickKm = c.value("anvil_thick_km", cv2AnvilThickKm);
         cv2AnvilHangKm = c.value("anvil_hang_km", cv2AnvilHangKm);
         cv2AutoExposure = c.value("auto_exposure", cv2AutoExposure);
+        cv2AutoExposureTarget = settingClamp(c.value("auto_exposure_target", cv2AutoExposureTarget), 0.2f, 0.6f);
     }
 
     if (schemaMatches && j.contains("clouds"))
@@ -10622,10 +10653,22 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cumulus_bubbles", cv2CuBubbles},
         {"cirrus_fibres", cv2CirrusFibres},
         {"cirrus_hooks", cv2CirrusHooks},
+        {"base_lcl", cv2BaseLcl},
+        {"base_cell_m", cv2BaseCellM},
+        {"base_regional", cv2BaseRegional},
+        {"fractus", cv2Fractus},
+        {"mid_wisps", cv2MidWisps},
+        {"oro_amount", cv2OroAmount},
+        {"oro_wind_mps", cv2OroWindMps},
+        {"oro_wind_dir_deg", cv2OroWindDirDeg},
+        {"oro_moist", cv2OroMoist},
         {"storm_cyc_top_smooth", stormCycTopSmooth},
         {"storm_cyc_top_streaks_m", stormCycTopStreaks},
         {"storm_cyc_top_density", stormCycTopDensity},
         {"cumulus_bubble_relief", cv2CuBubbleGain},
+        {"cumulus_bubble_hierarchy", cv2CuBubbleFine},
+        {"cumulus_bubble_size", cv2CuBubbleSize},
+        {"cumulus_bubble_base", cv2CuBubbleBase},
         {"silver_lining", cv2SilverLining},
         {"cirrus_direction_warp", cv2CirrusDirWarp},
         {"altostratus_density", cv2AsDensity},
@@ -10731,6 +10774,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"tonemap", cv2Tonemap},
         {"tonemap_saturation", cv2ToneSat},
         {"tonemap_contrast", cv2ToneContrast},
+        {"tonemap_range", cv2ToneRange},
+        {"white_balance_cloud_sun", cv2WbCloudSun},
         {"white_balance", cv2WhiteBalance},
         {"white_balance_at_eye", cv2WbAtEye},
         {"white_balance_hold_deg", cv2WbHoldDeg},
@@ -10771,7 +10816,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cb_cumulus_reach_km", cv2CbCumulusReachKm},
         {"anvil_thick_km", cv2AnvilThickKm},
         {"anvil_hang_km", cv2AnvilHangKm},
-        {"auto_exposure", cv2AutoExposure}};
+        {"auto_exposure", cv2AutoExposure},
+        {"auto_exposure_target", cv2AutoExposureTarget}};
 
     nlohmann::json kbArr = nlohmann::json::array();
     for (const auto &kb : keybindings)

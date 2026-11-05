@@ -115,6 +115,13 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   about 6 degrees (they went beige-khaki from about 10), turn orange only in the last few degrees, and a sea of cloud
   seen from an aircraft or from 45 km is adapted like the view from the ground. Settings > Photometry: "White balance
   holds to" (6 deg; 11.5 = before), "White balance from the eye" (0; 1 = the old reference).
+- **Sunlit clouds read brilliant, shadows deeper.** The tonemap gains "AgX range" (1.4): more contrast between lit and
+  shaded cloud without darkening the sunlit faces or crushing dark ground, and the day's auto exposure aims a little
+  brighter ("Auto exposure target", 0.40; was 0.32), so it no longer stops sky-and-cloud frames down until lit cloud is
+  grey. AgX saturation is now 1.35. A cumulus at a 5-degree Sun: lit faces about 25% brighter, lit/shaded 4:1 -> 5-6:1.
+  The white balance now uses the clouds' own sunlight colour ("Cloud sunlight Rayleigh" and ozone), so high cloud
+  seen from above no longer reads lavender. Settings > Photometry: "AgX range" (1 = before), "Auto exposure target",
+  "White balance from cloud sunlight" (0 = before).
 - **Deeper shaded sides on towering clouds.** The light that has scattered through a lumpy cloud now escapes through
   its valleys before it reaches the far side (fitted to a path tracer), so the shaded faces and crevices of storm
   towers are darker and bluer while the sunlit tops stay as they were; and the sky's light keeps its colour inside a
@@ -127,6 +134,12 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   hollows between them, clouds that merge into irregular masses or break into fragments, from the ground, at cloud
   level and from above. Settings > Clouds: "Cumulus bubbles" (3; 0 = the dome as before), "Bubble relief" (0.2);
   "Turret stretch" is now 0.2 (was 0.5).
+- **Cumulus bubbles at two scales, sized by the cloud.** The big bubbles now carry small ones on their faces (cauliflower
+  on the cauliflower), small clouds are built of small bubbles instead of being one smooth oval, the bubbles meet in
+  rounded fillets instead of hard creases, and they fade toward the base so a dense field stands on a flatter base
+  with separate towers above. Whole clouds come in a wider, long-tailed range of sizes (rare large masses, more small
+  ones). Settings > Clouds: "Bubble hierarchy" (1), "Bubbles follow cloud size" (1), "Bubble base flatness" (0.6);
+  "Cumulus turrets" 0 no longer turns the bubbles off.
 - **Volumetric clouds, rebuilt (clouds v2).** One 3D cloud field from the ground to orbit, driven by a weather
   map: cumulus with lobed, cauliflower sides and flatter bases, stratus decks with textured undersides,
   altocumulus and altostratus, cirrus streaks, veils and cirrocumulus, all lit by the Sun or the Moon through
@@ -135,6 +148,12 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **Fibrous cirrus.** Cirrus is drawn as tufts of thin bright filaments with clear sky between them, with denser
   heads and fall streaks that hook away below them, instead of a smooth marbled veil. Settings > Clouds: "Cirrus
   fibres", "Cirrus hooks".
+- **Cloud bases vary, and mountains wear lenticular clouds.** Low cloud bases now sit at different heights from
+  region to region and cloud to cloud: lower over the sea and in rain, high over dry land on a sunny afternoon. Ragged
+  fractus hangs under raining bases, thin wisps drift between the cumulus tops and the altocumulus, and smooth
+  lenticular lenses cap high mountains (Fuji, Rainier, the Andes), fixed to the ground while the weather drifts past.
+  Settings > Clouds: "Cloud base condensation level", "Cloud base cell spread (m)", "Cloud base regional spread",
+  "Fractus (ragged scud)", "Mid-level wisps", "Orographic clouds", "Ridge wind (m/s, 0 = auto)", "Ridge wind from (deg, -1 = auto)".
 - **Billowier cumulus.** The cauliflower lobes on cumulus sides and tops come from a new "billow" noise matched
   against a production cumulus model (the Disney WDAS cloud): round lobes of many sizes meeting in sharp creases,
   instead of pointed bumps over broad valleys, down to the fine erosion detail. Settings > Weather, "Lobe noise (0 cones, 1 caps, 2 billows)";

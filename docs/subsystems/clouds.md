@@ -82,6 +82,52 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   terrain does not); the tropopause it used to hold is a function of latitude (`cv2Tropo`). Low bases rise
   by 0.6 (decks) .. 0.9 (convective) x the ground, tops with them but capped at the Cb top; the mid layer by
   0.8x. Until then every base was above SEA level and the Andes/Tibet stood inside the cloud.
+- **Varied bases, fractus, mid-level wisps, orographic lenses** (2026-11-05, night wave "vertical"; `clouds_v2.glsl`
+  `cv2BaseShift`, `cv2LowA`, `cv2FarColumn`, `cv2MidSigma`, `cv2OroSigma`; UBO block `vert / vert2 / oro0 / oro1`; slots 528-535).
+  - The low base = type base + lift + `cv2BaseShift` (regional spread + condensation-level proxy) + per-cell offset - deck
+    variation, clamped to [lift + 150, top - 400]. The regional term normalises the cluster Perlin like the fog / mid layer
+    (`clamp((cl.a-0.5)*8.8, ±1.5) * alt.w`): the old `(cl.a-0.5)*2*alt.w` moved a 300 m setting by ±34 m (cl.a is 0.50 ± 0.057).
+  - The LCL proxy: convective types -350 m over the sea (ground < 5-60 m), -250 m x rain, -200 m x (cov - 0.5), +1400 m over
+    dry land (~20 km cover < 0.02-0.35, no rain) by day, +300 m over any land by day; decks -150 m sea, -150 m rain. The top
+    rises by half a positive shift (desert cumulus are high AND tall); `anvil3.zw` carries +900 m x "condensation level".
+    `cv2FarColumn` takes the same `cv2BaseShift` (no per-cell term), so bases agree at the near/far placement boundary.
+  - Shell: `lo` widens by 1.5 alt.w x regional + 600 m x LCL + 500 m (fractus); with rain on (default) shell.x is 0 anyway.
+  - Fractus: in the rain branch, from the shaft's own texel `sr` (a second fetch there put the march at 249 registers):
+    through a band 60 m .. 250-550 m (rate) under a raining base the curtains' vertical squeeze (0.85) eases off, so the
+    texel is round noise, thresholded into ragged shreds whose band edges move +-120 m with it. Thresholding the
+    squeezed curtain texel drew a row of flat-topped dark blocks. Cloud, not rain (its share leaves `f.rain`, the bows
+    keep the rain's); fades out by fpM 600-1500 m.
+  - Mid-level wisps: `cv2MidSigma`'s low mode, 1.5-2.5 km + 0.8 ground, 260-460 m thick (>= 260: the CDC reads are 160 m
+    apart), one shape fetch stretched 2.5x along east, sigma 0.03, where the low cover is 0.15-1 but not overcast and the
+    cluster Perlin's a > 0.54-0.62 at "Mid-level wisps" 1 (about a fifth of the area; the slider widens it by 0.05 per unit). Measured (cumulus at 3 km, uncontended): the first cut over
+    ~75% of the area cost +0.9 ms of cloud_march, this one +0.4. Reusing the low field's coverage through a global (to skip
+    the mid layer's weather fetches) put the march at 249-251 registers.
+  - Orographic lenses (`cv2OroSigma`, where `CV2_ELEV_BINDING` is defined: the DEM is binding 25 of the march set).
+    Relief excess ex = h(DEM mip 1, 2 km upwind) - h(mip 3.3, the regional ground) against a dryness
+    mix(2200, 350, moisture) m x (1.25 .. 0.85 over 8-25 m/s wind); lens centred hC + 1.1 ex + 500 m, half-thickness
+    min(0.3 (ex - dry), 900) (domed top 0.75 of it, base 0.45), sigma 0.025, smooth (no lobes / erosion); one lee lens at the
+    relief one wavelength 2 pi U / N upwind (N 0.01 /s), x0.65. Earth-fixed. The wind (CPU, per view: lenses are local)
+    is "Ridge wind" / "Ridge wind from", or 20 m/s from the east within 25 deg of the equator, from the west outside.
+    Moisture = `oro_moist` x (1 +- 0.5 x a slow lat/lon wave whose phase turns over in ~3 sim days), so ranges take turns.
+    Gated on the ~20 km ground > 250 m, a 0.3-7 km band over it, fpM < 700 m. Under the mid layer's CDC mask bit; the
+    coarse reads (detailAmt < 0) inflate it 200 m so the 160 m-spaced CDC reads never miss a rim.
+  - **Registers:** in `cv2Field` (inlined at every march call site) even the gated, two-tap version took the march from
+    128 to 251 registers; a uniform-gated single fetch stayed at 128. So the march defines `CV2_ORO_EXTERNAL` and adds the
+    lens at its ONE main sample (cloud_v2_march.comp, after `cv2Field`): 128. The CDC and lightning (STV) shaders keep it
+    in `cv2Field` (no cliff there): the lens is in the occupancy clipmap and shadows the ground and lower cloud. The light
+    march does not see it (a lens is thin; it is lit as unshadowed).
+  - **Cost** (2026-11-05, 1600x900, interleaved A/B in one app, 3 reps, lightly contended GPU: one other agent's app;
+    A = the perf-frames march SPV with every new term off, B = this one at defaults; cloud_march ms): cumulus from 3 km
+    7.73 -> 8.49, shower field from the ground 9.42 -> 10.36, Andes from 12 km 7.77 -> 8.54, Fuji from the ground
+    5.00 -> 5.41. March at 128 registers. Attribution (cumulus at 3 km, uncontended, 2 reps): the new code with every
+    term off +0.4, bases +0.2, fractus ~0 (no rain there), lenses +0.15 (no mountains), wisps the rest (the wisps' cost
+    follows their cover: sparser regime 0.54-0.62 is the trade-off).
+    Motion (cloud_suite trade_cu, off vs on, separate launches): motion score 1.46 vs 1.51, time-running step 6.07 vs 5.67.
+    Lenses under 1 h time warp at Fuji stay put and sharp (the resolve reprojects with the map drift, but a lens is a
+    smooth, slowly varying shape: no visible smear in captures 90 and 135 frames into the warp).
+  - Test views: qa/waves/20261105/evidence/vertical/*.satcmd (Fuji from Yamanakako az 245 el 12 fov 40 with cover_clear
+    0.9; Rainier, Aconcagua, Andes 12 km / orbit; trade cumulus ground / 900 m / 10 km; inland Darwin; a storm via
+    `weather go 0` then the ground 35 km toward it for fractus).
 - **Erosion detail fades with distance toward its MEAN, at full strength** (`df = mix(0.45, fetched,
   detailAmt)`). It used to fade the erosion toward NONE and then switch to the mean where detailAmt hit 0: a
   band of uneroded cloud just inside 4 x `detail_lod_start_m`, seen from orbit as a ring (~220 km out).
@@ -1607,6 +1653,43 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     third column of the evidence sheets, a look choice). The sky's light at 2 km by halves (`sky_halves_light2.py`, a
     numpy port of the bake): the anti-Sun half is 0.92-0.94 of the hemisphere in luminance and only ~5% bluer at 2-45 deg,
     so splitting it would not change the shaded faces' hue.
+  - **The display look: "AgX range" and the meter's target (2026-11-05, light3; `qa/waves/20261105/evidence/light3/`).**
+    The grey was mostly auto exposure: by day the meter (`readExposureMeter`) holds the displayed frame's linear mean at
+    its target, and a frame of blue sky and white cloud is brighter than 0.32, so it stopped down -1.0 to -2.4 EV (Darwin
+    from the ground and from 14 km, Sun 5-45 deg; `state` -> `exposure.auto_ev`), and lit cloud sat about 1 EV over mid
+    grey, in AgX's flat middle, never near its shoulder (display lit Y 0.67-0.74, sRGB ~220). And AgX spans 16.5 EV, a
+    camera's whole latitude, so the 4.5 EV between a lit and a shaded face is a small slope. Two controls, both
+    post-process: "AgX range" (`clouds_v2.tonemap_range`, slot 536, `cv2.tone.w`; the planet discs' copy takes it in
+    `pd.tone.x`) scales the scene's log contrast about mid grey before the curve; BELOW mid grey the extra contrast
+    saturates 1.5 EV down (`1.5 tanh(d / 1.5)`, the curve stays smooth: at 1.4x everywhere the ground at a low Sun went
+    black; a 2.5-EV knee still took a low Sun's ground nearly to black). "Auto exposure target" (`clouds_v2.auto_exposure_target`, slot 538; was the constant 0.32) is the meter's
+    frame mean (below 100 km; the orbit spot meter keeps its 0.47). Contrast (a power on the display curve, about 0, not
+    mid grey) darkens everything, lit faces included: "punchy" (contrast 1.35, saturation 1.4) took the ratio 3.6 -> 5.2
+    but lit Y 0.71 -> 0.61, i.e. greyer. Measured on opaque cloud pixels (mask = `debugview cloudalpha` r; lit / shaded =
+    the brightest / darkest tenth, `cstat_light3.py`), Darwin cumulus from the ground at Sun 5 deg, auto exposure settled
+    (90 frames): before lit Y 0.67, lit / shaded 4.0, shaded b/r 1.47; range 1.4 + saturation 1.35: 0.81, 6.1; + target
+    0.40: 0.84, 5.2; + "Multi-scatter side escape" 0.30: 0.84, 5.6, shaded b/r 1.66 (a 2.5-EV knee; with the 1.5-EV one
+    as built: 0.69 / 3.7 / 1.45 -> 0.85 / 5.2 / 1.61; from 18 km over the Congo anvils, Sun 45 deg: 0.57 / 3.4 -> 0.72 /
+    4.7; frame time unchanged within noise, sky pass 7.21 vs 7.05 ms contended). Defaults since: range 1.4,
+    saturation 1.35, contrast 1.15, target 0.40. What it costs: at a 2-deg Sun from 14 km the lit tops reach the shoulder
+    (lit Y 0.98) and lose a little gold (b/r 0.85 -> 0.93).
+  - **The white balance's illuminant is the clouds' sunlight (light3, `cloud.wbRef.y`).** The reference took the sky's
+    Rayleigh (0.98 in the user's settings) and no ozone, while the Sun table that lights the clouds takes "Cloud sunlight
+    Rayleigh" (0.65) and the ozone (`cloud_v2_sunlut.comp` sunTransmit), so the reference was yellower than the light it
+    divided out: high cloud read lavender from above. Now `BETA_R_BASE x wbRef.y` + `atmOzoneTau` (sat_sky.frag and the
+    rain particles' copy); "White balance from cloud sunlight" (`clouds_v2.white_balance_cloud_sun`, slot 537) 0 = before.
+    Congo anvils from 18 km, Sun 10 deg, lit b/r 1.21 -> 1.12 (the Sun behind: 1.28 -> 1.17); Sun 5 deg 1.12 -> 1.08 (behind: 1.17 -> 1.13). Still
+    over 1: the anvil tops (12+ km) are lit by a whiter Sun than the 2-km reference, and the sky light on them is blue.
+    Not in SKY_LITE (its SPIR-V was 92 bytes under budget).
+  - **Multi-scatter "edge definition" (light3, probes only).** The diffuse field (cv2DiffuseField) at optical depth tau
+    toward the Sun peaks at t = (1 - g^2) tau ~1 and is nearly flat to t ~5 (I0 = 5 - 2/3 C1 - (1 - g') C1 t - 3 e^-t):
+    a crevice 11 optical depths behind a lit lobe takes ~the same diffuse light as the lit face (estimate at the user's
+    gains: lit 2.3 vs crevice 1.95 in key-light units), so lobes separate only by their single scattering and low orders.
+    A gap-aware slab cannot be read off the light march: its steps are ~1.1 km (equal steps, 2026-10-14), far coarser
+    than a lobe. The lever that exists is "Multi-scatter side escape" (`ms_side_escape`, e^-k t): 0.18 (the user's) ->
+    0.30 darkens and blues the shaded faces (Darwin ground Sun 5 deg: shaded Y 0.135 -> 0.116, b/r 1.47 -> 1.60; Sun
+    behind: 1.63 -> 2.08) and leaves lit faces within 2%. A backlit storm base (Amazon, Sun 20 deg) shows a silver rim
+    already (the droplet phase's forward peak at exp(-od) + the low orders); a lower "droplet_ms_gain" only darkened all.
 - **The Earth from space vs the Artemis II photographs (2026-09-30, `harness_runs/artemis_ref/`, Wikimedia
   Commons JPGs).** Measured: in the photos sunlit cloud is ~10x the open sea in linear light; the sim showed
   ~2.5x (a sky-cyan sea under a milky veil). The raw sea surface was right (debug view 43: navy); the cause
@@ -2390,6 +2473,42 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     dense field from below still reads as a draped sheet; the bubble sizes follow `shape_period_m` x `storm_scale`,
     not the cloud's size (no lobe-to-cloud-size scaling yet); the cells (placement) are unchanged, so the size
     distribution of whole clouds is still the three blob sizes.
+  - **Bubble hierarchy (shape2 round, 2026-11-05; UBO `cu5.z` and `cu5.w` = floor(1000 x size) + base, keys
+    `cumulus_bubble_hierarchy` 1, `cumulus_bubble_size` 1, `cumulus_bubble_base` 0.6, slots 496-498).** **Packed, not a new
+    member:** with a `vec4 shape2` appended after `shade` the app died silently at boot creating rain_particles.vert's
+    graphics pipeline (`createRainParticles`, NVIDIA 596.19; no FATAL line, no dump; located with log lines between the
+    pipeline creations); packed into `cu5.zw` it boots. `ciHu` / `ciHu2` were appended the same night and boot, so the
+    member count alone is not the cause: after adding a member to CloudV2Params, test a boot. Why the bubbles
+    still read as gumdrops: their sizes were fixed by `shape_period_m` x `storm_scale` (110 m - 1.3 km at the user's
+    settings), so a cloud smaller than the big bubbles was one oval slice of one sphere ("smooth glassy ovals"), and a
+    big bubble's face was a smooth sphere with nothing on it. **Lobes on lobes** (`cu5.z`): the bubble volume is read
+    a second time 4x finer (`anchorStorm x 8`: bubbles ~30-330 m) and shapes a shell of +-shF (0.45 x, in the big read's
+    eighth-periods) around the big bubbles' surface: `sd = clamp(sdF, sdB - shF, sdB + shF)` (the IQ "SDF fBm" form:
+    deep inside or far outside a big bubble nothing changes; on its face the fine bubbles add and carve). sdF is
+    3x its geometric value (0.9 x z x (R - 0.5)): at 1x and a 0.15 shell the harness views did not change. The fine read
+    fades out over a footprint of 80-400 m (and is skipped past it). **Size follows the cloud** (`cu5.w` floor / 1000): the big
+    bubbles' distance is scaled by `smoothstep(250, 1800, thickM)` (cv2LowA, carried as `CV2Carve.thk`), so a small cloud
+    is shaped by the fine bubbles alone and a tall one by big bubbles carrying fine ones. **Base flatness**
+    (`cu5.w` fract): the bubbles' share of the margin (gB) is x (1 - z) at the base, back to full by 0.4 x the cloud's
+    thickness: one flat-ish base (the dome's) under distinct towers. **Decoupled from the turrets:** the bubbles' gate
+    is `CV2Carve.bub` = the turret gate without `cu3.x` (the old `min(tur / (0.5 cu3.x), 1)`, but ramped in over
+    60-400 m of thickness, not 250-900: small clouds are where the fine bubbles matter), so "Cumulus turrets" 0 keeps the
+    bubbles. The pre-fetch bound's bubble term is `x 2y (0.6 + 0.45 cu5.z)`. **Smooth creases** (`bubbleSdf`): the
+    spheres are unioned by a polynomial smooth max (k = 0.3 cell within an octave, 0.08 / 0.12 between octaves), not a
+    hard max: at a V crease the normal turned at once from a lit bubble top to the next bubble's shadowed underside, a
+    white-to-grey step along a line (issue 20261104_230832, "Odd shading on turrets"). That issue's tower (5.96 N
+    166.6 W, seen from 5 km) is built almost entirely by the bubbles: with `cumulus_bubbles` 0 it is not there (m0 is
+    just under zero over the region, and (m0 + x B) / (1 + x) grows cloud wherever B > -m0 / x). Ruled out there: the
+    pre-fetch bound (100 units looser: the crop moved 1.2 levels mean), `cdc_light` 0, softer `edge_sharpness`.
+  - **Heavy-tailed cells (same round; the meso bake, `cloud_v2_noise.comp` mode 2 G).** The whole-cloud placement's
+    blobs gain a fourth, rare octave (4 cells per period: 8 km cells at `cell_period_m` 32 km, a quarter kept, radius
+    0.55-1 cell, peak 0.6-1), the other octaves' radii spread down to 0.3 of a cell (was 0.45: the sizes between the
+    octaves fill in), every blob's peak (its cloud's height, through eB) correlates with its radius (corr 0.5-0.6; was
+    independent), and the 8-cell octave is thinned 0.3 -> 0.25 so the cover holds (numpy over the lattice's statistics,
+    the fraction of sqrt(cells) over 0.2 / 0.4 / 0.6 / 0.8: 0.79 / 0.64 / 0.40 / 0.12 before, 0.78 / 0.63 / 0.42 / 0.14
+    after). Cloud streets were not built: the meso volume is read in a drifted ECEF frame, so rows baked along a
+    texture axis would not follow the wind, and a per-sample anisotropic read of an absolute coordinate shears with
+    the wind's turning over the globe.
 - **The blue-noise tile drawn over half-shadowed cloud, and shadows only near the eye (2026-10-12, user issues
   20261012_202341 / _195811; Sun 0.1-0.9 deg, light footprint 0, accumulation 0, history weight 0.02):**
   - **The resolve's still-view clamp box is 7x7 new samples** (`cloud_v2_resolve.comp`, `stillW`, motionPx < 0.05-0.5),
