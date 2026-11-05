@@ -719,7 +719,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     if (ctx_ && cv2MarchPipeline && (cv2StormUnified > 0.5f ? 1u : 0u) != cv2StormSpecBuilt)
     {
         std::string st;
-        const std::string err = reloadCloudsV2Shaders(*ctx_, cv2LastSpv[0], st, 0, 0, cv2LastSpv[1], cv2LastSpv[2], cv2LastSpv[3]);
+        const std::string err = reloadCloudsV2Shaders(*ctx_, cv2LastSpv[0], st, 0, 0, cv2LastSpv[1], cv2LastSpv[2], cv2LastSpv[3], cv2LastSpv[4]);
         if (!err.empty()) Log::line("clouds v2: storm_unified rebuild: " + err);
     }
     fprof::markReset(); // (buildUI's own splits: ui.seg*; recordCompute resets the mark for its rc.seg*)

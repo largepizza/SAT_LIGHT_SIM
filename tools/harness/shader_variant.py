@@ -7,7 +7,7 @@
     python tools/harness/shader_variant.py march --tag base         # no substitutions = the current source
 
 <slot> picks the shader and its build defines; it is also the `shaders reload` keyword:
-  march (cloud_v2_march.comp), resolve, lightning, composite (cloud_march.comp), weather, depth (scene_depth.comp),
+  march (cloud_v2_march.comp), cdc (cloud_v2_cdc.comp, the occupancy clipmap's bake), resolve, lightning, composite (cloud_march.comp), weather, depth (scene_depth.comp),
   sky (sat_sky.frag), sky_taa (sat_sky.frag -DSKY_TAA). Any other shader: --src shaders/x.comp (prints no reload line).
 
 Each `-s OLD=>NEW` (or each `OLD=>NEW` line of -f, `\\n` for a newline) must match EXACTLY ONCE across the shader
@@ -30,7 +30,7 @@ SLOTS = {
     "march": ("cloud_v2_march.comp", []), "resolve": ("cloud_v2_resolve.comp", []),
     "lightning": ("cloud_v2_lightning.comp", []), "composite": ("cloud_march.comp", []),
     "weather": ("cloud_v2_weather.comp", []), "depth": ("scene_depth.comp", []),
-    "sky": ("sat_sky.frag", []), "sky_taa": ("sat_sky.frag", ["-DSKY_TAA"]),
+    "sky": ("sat_sky.frag", []), "cdc": ("cloud_v2_cdc.comp", []), "sky_taa": ("sat_sky.frag", ["-DSKY_TAA"]),
 }
 
 
