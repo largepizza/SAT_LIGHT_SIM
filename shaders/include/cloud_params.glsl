@@ -541,4 +541,9 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     vec4  mwStar0;
     vec4  mwStar1;
     vec4  mwStar2;
+    // -- light2 (12336 -> 12352, 2026-11-05): "White balance"'s reference sunlight no longer moves with the eye
+    // (sat_sky.frag, cloud_v2_lightning.comp). wbRef x the height it is taken at (m: 0 = sea level; < 0 = the eye's height,
+    // the old reference), y unused, z / w the Sun's sine at the eye below which the adaptation is off / above which it is
+    // full ("White balance holds to", the low-Sun fade).
+    vec4  wbRef;
 } cloud;

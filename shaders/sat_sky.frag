@@ -7643,16 +7643,22 @@ void main() {
     // as beige; an eye or a camera adapts to its illuminant. Luminance-preserving, faded out as the
     // Sun sets (twilight keeps its colour).
     if (cloud.whiteBalance > 0.0) {
-        float rW = R_EARTH + max(obsEffH, 0.0);
+        // The reference sunlight is the Sun's colour at SEA LEVEL under the eye (2026-11-05, light2; cloud.wbRef), whatever
+        // the eye's height. It was the sunlight AT THE EYE: it swung with a kilometre of the eye's altitude near sunset (user
+        // snaps 9-10, pass 13: the same clouds gold, then white, as the observer climbed), so the adaptation was faded out
+        // from 11.5 deg of Sun down to 1 deg, exactly where the light turns yellow: every cloud between ~4 and ~11 deg read
+        // beige (at 5 deg the lit faces' display b/r 0.69, the shaded faces khaki); and from an aircraft or 45 km up (the
+        // Sun at the eye nearly white) a sea of cloud below was not adapted at all. Fixed to sea level, nothing moves with
+        // the eye, so the adaptation holds down to "White balance holds to" (6 deg; wbRef.zw = the fade's Sun sines, off at
+        // ~1 deg: the last degrees keep their orange). Above 60 km it blends back to the eye's own (200 km: from orbit the
+        // frame spans the terminator). wbRef.x < 0 = the eye's height, the old reference (the A/B).
         float cW = sunDirENU.z;
+        float rW = R_EARTH + ((cloud.wbRef.x < 0.0) ? max(obsEffH, 0.0)
+                              : mix(cloud.wbRef.x, max(obsEffH, 0.0), smoothstep(60000.0, 200000.0, obsEffH)));
         vec3  sunW = exp(-(BETA_R * (atmColumnInf(rW, cW, H_R) * H_R)
                           + BETA_M * 1.1 * (atmColumnInf(rW, cW, H_M) * H_M)));
         vec3  wb = sunW / max(dot(sunW, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
-        // Backed off near the horizon (from 11.5 deg down to 1 deg): at a grazing Sun its colour at the
-        // eye swings with a kilometre of altitude, and dividing the frame by it (up to x5) flipped the
-        // same clouds from gold to white as the observer climbed 1 km near sunset (user snaps 9-10,
-        // pass 13). The low Sun's colour is the look; adaptation is for a Sun well up.
-        float k  = cloud.whiteBalance * smoothstep(0.02, 0.2, cW);
+        float k  = cloud.whiteBalance * smoothstep(cloud.wbRef.z, cloud.wbRef.w, cW);
         color /= mix(vec3(1.0), clamp(wb, vec3(0.4), vec3(2.5)), k);
     }
 #endif

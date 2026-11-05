@@ -5456,6 +5456,8 @@ void SatelliteSim::buildSettingsPhotometryRows(const UIInput &inp, UIRenderer &u
             {tx(Txt::SldAutoExposureDay), &cv2AutoExposure, 0.0f, 1.0f, 0.05f, "%.2f", 163},
             {tx(Txt::SldHighlightRollOff), &cv2HighlightRolloff, 0.0f, 1.0f, 0.05f, "%.2f", 159},
             {tx(Txt::SldWhiteBalance), &cv2WhiteBalance, 0.0f, 1.0f, 0.05f, "%.2f", 160},
+            {tx(Txt::SldWhiteBalanceAtEye), &cv2WbAtEye, 0.0f, 1.0f, 1.0f, "%.0f", 512},
+            {tx(Txt::SldWhiteBalanceHoldDeg), &cv2WbHoldDeg, 1.5f, 15.0f, 0.5f, "%.1f", 513},
             {tx(Txt::SldTonemap0Exponential1Agx), &cv2Tonemap, 0.0f, 1.0f, 1.0f, "%.0f", 349},
             {tx(Txt::SldAgxSaturation), &cv2ToneSat, 0.0f, 2.0f, 0.05f, "%.2f", 350},
             {tx(Txt::SldAgxContrast), &cv2ToneContrast, 0.5f, 2.0f, 0.05f, "%.2f", 351},
@@ -9972,6 +9974,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2ToneSat      = settingClamp(c.value("tonemap_saturation", cv2ToneSat), 0.0f, 2.0f);
         cv2ToneContrast = settingClamp(c.value("tonemap_contrast", cv2ToneContrast), 0.5f, 2.0f);
         cv2WhiteBalance = c.value("white_balance", cv2WhiteBalance);
+        cv2WbAtEye      = settingClamp(c.value("white_balance_at_eye", cv2WbAtEye), 0.0f, 1.0f);
+        cv2WbHoldDeg    = settingClamp(c.value("white_balance_hold_deg", cv2WbHoldDeg), 1.5f, 15.0f);
         cv2BeamShafts = c.value("beam_shafts", cv2BeamShafts);
         cv2BeamHaze = c.value("beam_haze", cv2BeamHaze);
         cv2BeamLight = c.value("beam_light", cv2BeamLight);
@@ -10693,6 +10697,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"tonemap_saturation", cv2ToneSat},
         {"tonemap_contrast", cv2ToneContrast},
         {"white_balance", cv2WhiteBalance},
+        {"white_balance_at_eye", cv2WbAtEye},
+        {"white_balance_hold_deg", cv2WbHoldDeg},
         {"beam_shafts", cv2BeamShafts},
         {"beam_haze", cv2BeamHaze},
         {"beam_light", cv2BeamLight},
