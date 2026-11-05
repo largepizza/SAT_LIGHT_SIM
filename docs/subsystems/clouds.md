@@ -1545,7 +1545,9 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     but lit Y 0.71 -> 0.61, i.e. greyer. Measured on opaque cloud pixels (mask = `debugview cloudalpha` r; lit / shaded =
     the brightest / darkest tenth, `cstat_light3.py`), Darwin cumulus from the ground at Sun 5 deg, auto exposure settled
     (90 frames): before lit Y 0.67, lit / shaded 4.0, shaded b/r 1.47; range 1.4 + saturation 1.35: 0.81, 6.1; + target
-    0.40: 0.84, 5.2; + "Multi-scatter side escape" 0.30: 0.84, 5.6, shaded b/r 1.66. Defaults since: range 1.4,
+    0.40: 0.84, 5.2; + "Multi-scatter side escape" 0.30: 0.84, 5.6, shaded b/r 1.66 (a 2.5-EV knee; with the 1.5-EV one
+    as built: 0.69 / 3.7 / 1.45 -> 0.85 / 5.2 / 1.61; from 18 km over the Congo anvils, Sun 45 deg: 0.57 / 3.4 -> 0.72 /
+    4.7; frame time unchanged within noise, sky pass 7.21 vs 7.05 ms contended). Defaults since: range 1.4,
     saturation 1.35, contrast 1.15, target 0.40. What it costs: at a 2-deg Sun from 14 km the lit tops reach the shoulder
     (lit Y 0.98) and lose a little gold (b/r 0.85 -> 0.93).
   - **The white balance's illuminant is the clouds' sunlight (light3, `cloud.wbRef.y`).** The reference took the sky's
