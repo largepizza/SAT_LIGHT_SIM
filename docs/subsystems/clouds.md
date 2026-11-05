@@ -91,6 +91,26 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
 - **High layer from orbit**: its regime follows the map's coverage over ~150 km (weather mip 4) — cirrus
   lives with the weather systems — and its streaks come in bundles (the volume read 4x coarser; the CPU keeps
   the along-wind period count a multiple of 4). On noise alone it covered the globe in even splotches.
+- **Fibrous cirrus (2026-11-05, the user: "about there, but ... gooey"; ref qa/waves/20261105/refs/cirrus_uncinus.png):**
+  `cv2IceFibres(p, lodR)` is self-contained (an anvil's fray or a cyclone's outflow can call it): p = the shape volume's
+  coordinates, x along the fibres (stretched by the caller), y across, z up; every factor it applies to x is an integer
+  (no seam). TUFTS: the Perlin (A) read 4x along / 1x across (elements ~3:1), y = smoothstep(-0.3, 1.1, sd + 0.5 x the
+  B billow in sd): cirrus comes in patches with clear sky round them. STRANDS: the Perlin 4x across (~700-m cells at
+  the 11 km period), height 0.5x, RIDGED (1 - smoothstep(0, 0.8, |sd|), squared) x a 3x finer ridged hair: thin bright
+  lines where the stretched fBm crosses its median, dark between; read in a frame deflected by the tufts' positive
+  excursion (+0.12 max(sd + 0.3, 0)^2 across): the strands bend round each element's head and fan out (hooks, feathers),
+  one-sided, so they do not wind like stirred paint. Faded to their mean (0.32) from LOD 1.5-3.5 of the strand read.
+  cv2HighSigma: ci = tuft (threshold 0.6 -> 0.12 with the regime, over 0.2) x mix(0.9, mix(0.04, 2.2, strands), "Cirrus
+  fibres" `clouds_v2.cirrus_fibres` 1, ciHu.x); HEADS = tuft > 0.75 and sd > 0.9-1.8, x0.6-2.4 up the layer, x "Cirrus
+  hooks" `cirrus_hooks` 1 (ciHu.y), which also bends the fall streaks: the along-wind lag is dep (2 + hooks x dep / 600)
+  m (was 2 dep: straight slanted sheets) and a cross-wind drift hooks x dep^2 / 2500 m. The cluster meander is +-0.35
+  period (was 0.7) and the bundles' crowding 0.5 (was 1.2): both read as marbling. Why it was gooey: two octaves of the
+  stretched Perlin thresholded over 0.07 of a +-0.04 spread (a soft ramp over the whole field), so every streak was a
+  smooth ribbon and the gaps never cleared; and the strands' height period moved a ridge ~a cell across over the layer's
+  depth (blur from below). Same fetch count (bundle, tuft, strand, hair). Not in the far layer's look beyond what
+  cv2HighSigma's far blend (LOD 1.5-4: the bundles' veil) already gave: from orbit cirrus is unchanged.
+  Cost (interleaved A/B, contended GPU, cloud_march ms, A-vs-A floor in brackets, high_amount 2 at 7 N 170 W): ground
+  looking up 5.15 [5.14] -> 5.21, 10 km across 9.11 [9.02] -> 9.32 (~+2%); 128 registers.
 - **Debug view 7**: per-layer optical depth (red low incl. rain, green mid, blue anvil, white high) — the
   first thing to look at when a cloud artifact has an unknown owner.
 - **Motion** (`cloud_v2_resolve.comp`): the new-sample weight and the clamp box follow PARALLAX (the
@@ -1476,7 +1496,40 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   `readExposureMeter`), steps toward a linear mean of 0.32 and harder when > 4% clips, only DARKENS (to
   -3 EV x "Auto exposure (day)") and only by day. Harness `state` reports it under `exposure`. Highlight
   roll-off blends the tonemap toward 1 - 1/(1 + x + x^2/2) (same toe, long shoulder); White balance adapts
-  to the sunlight's colour at the observer (a low Sun is yellow; without it every cloud read beige).
+  to the low Sun's colour (a low Sun is yellow; without it every cloud read beige).
+  - **White balance's reference sunlight is the Sun 2 km over sea level under the eye, not at the eye (2026-11-05,
+    light2; `cloud.wbRef`, sat_sky.frag + the rain particles' copy in cloud_v2_lightning.comp).** The user: "at low sun
+    angles most clouds pick up this off-yellow ... clouds should stay whiter for longer ... from the top a sea of
+    off-yellow red clouds". Measured first, nothing in the cloud lighting was wrong: the Sun table's transmittance to a
+    sample is the sample's own height and path (Chapman + ozone; `qa/waves/20261105/evidence/light2/sun_trans_light2.py`
+    against a brute-force spherical integral: equal to 3 digits at 0-14 km, Sun 2-45 deg), Mie is negligible above 2 km
+    (H_M 1200), ozone takes ~20% of the green at 2-5 deg (magenta, not yellow). The display was: the reference was the
+    sunlight AT THE EYE, which swings with a kilometre of the eye's height near sunset, so it was faded out from 11.5 deg
+    of Sun to 1 deg, exactly where the light turns yellow (at 5 deg its weight was 0.19 x 0.6), and from an aircraft the
+    Sun at the eye is nearly white, so a sea of cloud below was not adapted at all. Now the reference height is fixed
+    (it blends back to the eye's from 60 to 200 km, where the frame spans the terminator) and the adaptation holds to
+    "White balance holds to" (`clouds_v2.white_balance_hold_deg` 6, slot 513; off at ~1 deg, so the last degrees keep
+    their orange). 2 km, not sea level: the reference takes the sky's Rayleigh while the clouds take "Cloud sunlight
+    Rayleigh" (0.65 in the user's settings), so a sea-level reference over-corrected high cloud (a 10-km deck lit b/r
+    1.64 at 10 deg, lavender from 18 km; 1.45 at 2 km). "White balance from the eye" (`white_balance_at_eye`, slot 512)
+    1 + hold 11.5 = the old behaviour. Lit-face colour (blue / red of the sunlight on a 2 km cloud after the adaptation
+    at the user's 0.6, from the ground): Sun 3 deg 0.25 -> 0.30, 5 deg 0.48 -> 0.70, 6 deg 0.60 -> 0.85, 8 deg 0.85 ->
+    0.96, 10 deg 1.06 -> 0.98, 20 deg 1.08 -> 1.01, 45 deg 1.05 -> 1.01 (from the ground the old over-corrected a
+    little: the eye's Sun is yellower than the clouds').
+  - **Where the grey and the off-yellow come from (the same views, term probes = march variants writing one term x0.1
+    as the sample's radiance, decoded from `debugview cloudrad`, on opaque cloud; `probe_terms_light2.satcmd`,
+    `terms_light2.py`).** Darwin cumulus from the ground, Sun 5 deg behind the eye: scene-linear lit / shaded 23.6 : 1,
+    blue / red lit 0.33 (saturated gold), shaded 0.47. Lit faces are 96% the diffuse field; the shaded faces 47% diffuse
+    field (the Sun's orange, b/r 0.18), 23% the upper sky (b/r 0.86: the clear hemisphere is b/r 1.6-2.0, the deck term's
+    diffuse sunlight warms it), 25% the lower hemisphere (b/r 0.53: the haze below lit by the low Sun). So lit and shaded
+    faces have nearly the SAME hue in the scene; on screen (AgX, contrast 1.15) the lit faces come out cream (display b/r
+    0.69-0.73, the tonemap's path to white) and the mid-tones khaki (sRGB ~178 171 155), contrast 3.1-3.4 : 1. The
+    reference photos (`refs/cb_*`): lit b/r 0.18-0.43, shaded ~1.9, contrast 5-8 (33 with lightning). The adaptation
+    separates the hues the way an eye does at sunset (the lit faces whiter, the sky-lit parts bluer: the shaded tenth's
+    display b/r 1.29 -> 1.60 at 5 deg); the contrast is the tonemap's (see "Cloud contrast": AgX contrast 1.35 is the
+    third column of the evidence sheets, a look choice). The sky's light at 2 km by halves (`sky_halves_light2.py`, a
+    numpy port of the bake): the anti-Sun half is 0.92-0.94 of the hemisphere in luminance and only ~5% bluer at 2-45 deg,
+    so splitting it would not change the shaded faces' hue.
 - **The Earth from space vs the Artemis II photographs (2026-09-30, `harness_runs/artemis_ref/`, Wikimedia
   Commons JPGs).** Measured: in the photos sunlit cloud is ~10x the open sea in linear light; the sim showed
   ~2.5x (a sky-cyan sea under a milky veil). The raw sea surface was right (debug view 43: navy); the cause
@@ -2261,10 +2314,11 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     not the cloud's size (no lobe-to-cloud-size scaling yet); the cells (placement) are unchanged, so the size
     distribution of whole clouds is still the three blob sizes.
   - **Bubble hierarchy (shape2 round, 2026-11-05; UBO `cu5.z` and `cu5.w` = floor(1000 x size) + base, keys
-    `cumulus_bubble_hierarchy` 1, `cumulus_bubble_size` 1, `cumulus_bubble_base` 0.6, slots 496-498).** **CloudV2Params
-    holds 100 members and a 101st crashes the app at boot** (NVIDIA 596.19: the compiler dies silently on
-    rain_particles.vert's graphics pipeline, `createRainParticles`; the compute pipelines take it): new values go into
-    spare components (`shade.zw` are free) until the block is restructured. Why the bubbles
+    `cumulus_bubble_hierarchy` 1, `cumulus_bubble_size` 1, `cumulus_bubble_base` 0.6, slots 496-498).** **Packed, not a new
+    member:** with a `vec4 shape2` appended after `shade` the app died silently at boot creating rain_particles.vert's
+    graphics pipeline (`createRainParticles`, NVIDIA 596.19; no FATAL line, no dump; located with log lines between the
+    pipeline creations); packed into `cu5.zw` it boots. `ciHu` / `ciHu2` were appended the same night and boot, so the
+    member count alone is not the cause: after adding a member to CloudV2Params, test a boot. Why the bubbles
     still read as gumdrops: their sizes were fixed by `shape_period_m` x `storm_scale` (110 m - 1.3 km at the user's
     settings), so a cloud smaller than the big bubbles was one oval slice of one sphere ("smooth glassy ovals"), and a
     big bubble's face was a smooth sphere with nothing on it. **Lobes on lobes** (`cu5.z`): the bubble volume is read

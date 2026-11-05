@@ -948,8 +948,12 @@ struct GpuCloudV2Params
     glm::vec4 stormU;                   // 2026-11-04: storms through the cumulus field: x on, y metres per margin unit, z the surface ramp (m), w lobe gain
     glm::vec4 cu3;                      // 2026-11-04: cumulus turrets: x strength, y vertical stretch, z lean (x "Lean"), w skew
     glm::vec4 cu4;                      // 2026-11-04: x cumulus body (adiabatic), y cumulus edge (sharpening x), z showers as cells, w showers from cores
-    glm::vec4 cu5;                      // 2026-11-04: cumulus bubbles: x weight (0 off), y margin units per bubble distance unit; 2026-11-05 (shape2): z bubble hierarchy, w = floor(1000 x bubbles follow cloud size) + bubble base flatness (< 1) (packed: a 101st member crashed NVIDIA's rain_particles.vert compile)
+    glm::vec4 cu5;                      // 2026-11-04: cumulus bubbles: x weight (0 off), y margin units per bubble distance unit; 2026-11-05 (shape2): z bubble hierarchy, w = floor(1000 x bubbles follow cloud size) + bubble base flatness (< 1) (packed: a new member after shade killed the boot at rain_particles.vert's pipeline, 2026-11-05)
     glm::vec4 shade;                    // 2026-11-04: cloud contrast: x sky light keeps its colour, y the diffuse field's side escape
+    // -- cirrus-hurr (2026-11-05, night wave agent D): fibrous cirrus + hurricane CDO tops --
+    glm::vec4 ciHu;                     // x "Cirrus fibres" (filament contrast), y "Cirrus hooks" (heads + hooked fall streaks),
+                                        // z "Hurricane top smoothing" (share of the CDO plate's lobes / erosion removed), w "Hurricane top streaks" (m)
+    glm::vec4 ciHu2;                    // x "Hurricane top density" (x the anvil plate's ice under a CDO), yzw spare
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -982,7 +986,7 @@ static_assert(offsetof(GpuCloudV2Params, amb) == 288 + 48 * kCloudV2Types + 1232
 static_assert(offsetof(GpuCloudV2Params, tone) == 288 + 48 * kCloudV2Types + 1248, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, gnd) == 288 + 48 * kCloudV2Types + 1264, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, micro) == 288 + 48 * kCloudV2Types + 1280, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1376, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1408, "GpuCloudV2Params layout");   // +32: cirrus-hurr (ciHu, ciHu2)
 static_assert(offsetof(GpuCloudV2Params, cu3) == 288 + 48 * kCloudV2Types + 1312, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
@@ -2010,8 +2014,11 @@ struct GpuCloudParams
     glm::vec4 mwStar0;
     glm::vec4 mwStar1;
     glm::vec4 mwStar2;
+    // -- light2 (12336 -> 12352, 2026-11-05): the white balance's reference sunlight (cloud_params.glsl wbRef): x its height
+    // (m: 2000, < 0 = the eye's), y unused, z / w the Sun sines of the low-Sun fade (off / full).
+    glm::vec4 wbRef;
 };
-static_assert(sizeof(GpuCloudParams) == 12336, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 12352, "GpuCloudParams layout mismatch");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -5533,6 +5540,13 @@ private:
     float cv2CuEdge = 1.0f;               // "Cumulus edge": the cloud surface's sharpening x this (1 = as before)
     float cv2CuShowerCells = 0.0f;        // "Showers as cells": a convective type where the map rains is shaped as cells
     float cv2CuShowerCores = 1.0f;        // "Showers from cores": a convective type's map rain falls from the strong cells only
+    // Fibrous cirrus and hurricane CDO tops (2026-11-05, night wave agent D "cirrus-hurr"; slots 520-524; GpuCloudV2Params
+    // ciHu / ciHu2; clouds_v2.glsl cv2IceFibres, cv2HighSigma, cv2FieldLow; cv2_storms.glsl cv2ShieldAtR).
+    float cv2CirrusFibres = 1.0f;         // "Cirrus fibres": the filaments' contrast (0 = smooth tufts, 1 = as tuned)
+    float cv2CirrusHooks = 1.0f;          // "Cirrus hooks": the dense heads and the hooked fall streaks (0 = straight, no heads)
+    float stormCycTopSmooth = 0.85f;      // "Hurricane top smoothing": the share of the CDO plate's lobes and erosion removed
+    float stormCycTopStreaks = 90.0f;     // "Hurricane top streaks": the swirl ridges on the CDO's lid (m; x11 at its edge)
+    float stormCycTopDensity = 3.0f;      // "Hurricane top density": x the anvil plate's ice under a CDO
     // Cumulus bubbles (2026-11-04, the large-scale structure round of issue 20261104_181014): a cumulus is a cluster of thermal
     // bubbles (a heavy-tailed union of spheres baked in the billow shape volume's R, read with the turrets), not one dome.
     float cv2CuBubbles = 3.0f;            // "Cumulus bubbles": the dome's margin is divided by 1 + x and the bubbles added x times
@@ -5637,7 +5651,9 @@ private:
     float cv2SnowWind = 0.7f;          // the flakes' drift x the surface wind ("snow_drift", 2026-10-23; was "snow_wind")
     float cv2ExposureEV = 0.0f;        // exposure compensation (stops) on the sky's auto exposure
     float cv2HighlightRolloff = 1.0f;  // 0 = the old tonemap; 1 = a long highlight shoulder
-    float cv2WhiteBalance = 0.6f;      // 0..1: adapt to the sunlight's colour at the observer
+    float cv2WhiteBalance = 0.6f;      // 0..1: adapt to the low Sun's colour (2 km over sea level under the eye)
+    float cv2WbAtEye = 0.0f;           // 1 = the white balance's reference sunlight is the eye's (before 2026-11-05); 0 = the Sun 2 km over sea level
+    float cv2WbHoldDeg = 6.0f;         // the white balance is full down to this Sun elevation, off at ~1 deg (was 11.5)
     float cv2BeamShafts = 1.0f;        // beams as light in the volumetric march (0 = the old drawn line)
     float cv2AutoExposure = 1.0f;      // 0..1: how far the metered auto exposure may darken a bright day
     // ── Global exposure (2026-09-28) ──
@@ -8628,7 +8644,7 @@ private:
     bool draggingPhoto[56] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 528;   // 496-503 (2026-11-05, shape2): bubble hierarchy; 494-495 (2026-11-04): cumulus bubbles;   // 440-441 (2026-11-03): turbulence cell size / speed; 450-452: anvil formation / decay time, tower growth time; 455-461: hurricane shape; was 435;   // 428-434 (2026-10-30): the second stage's jellyfish (streaks, nucleus, staging cloud); was 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
+    static constexpr int kCloudSliderSlots = 528;   // 496-498 (2026-11-05, shape2): bubble hierarchy / size / base; 512-513 (2026-11-05, light2): white balance reference / hold; 520-524 (2026-11-05, cirrus-hurr): cirrus fibres / hooks, hurricane top smoothing / streaks / density; 496-527: the 2026-11-05 night wave; 494-495 (2026-11-04): cumulus bubbles;   // 440-441 (2026-11-03): turbulence cell size / speed; 450-452: anvil formation / decay time, tower growth time; 455-461: hurricane shape; was 435;   // 428-434 (2026-10-30): the second stage's jellyfish (streaks, nucleus, staging cloud); was 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
     // gust fronts, drop persistence); 326: "Tropical cyclones (x)"; 325: "Storm complexes"; 321-324 (2026-10-23): storm
     // objects (frequency, life, cloud field, moat);
     // was 321: 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);

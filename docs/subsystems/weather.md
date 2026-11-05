@@ -197,6 +197,34 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   report's settings, ABAB x 4, p50 GPU): shot 1 26.15 -> 25.68 ms, shot 2 19.14 -> 18.94; march 128 registers, binary
   382592 -> 389376 B. The cirrus deck's outflow ends at ~1.25 of its reach (packed `ro`): over the whole disc it kept
   cv2AnvilSigmaP's texture reads alive between the arms (+3 ms at shot 1).
+  **THE CDO'S TOP (2026-11-05, the user: "a nice smooth but textured swirl, right now it is a bumpy mess"; ref
+  qa/waves/20261105/refs/hurricane_iss.png).** The CDO shield's plate went through cv2FieldLow's storm lobes and billow
+  erosion like any anvil (the grey dimpled sheet with dark erosion pits seen from 30-160 km) and at the anvil's ice it
+  was translucent: a grey sheet over the darker deck below, beside the white eyewall heads. Now, when the strongest
+  shield under a sample is a cyclone's CDO (d.w < 0, not the cirrus deck), `cv2ShieldAtR` reads the SWIRL TEXTURE into
+  `gCv2CycT` (-1e9 = none): the shape volume's Perlin in log-polar coordinates about the eye (x = turns x 8 + the arms'
+  phase, so it turns with them; y = 6 ln r + 8 turns: a ~12 deg inward spiral; whole periods, seam-free), ridged
+  (1 - 2 smoothstep(0, 1.2, |sd|), faded from LOD 3-6, the LOD +1 because a grazing view looks across the ridges: at +0
+  they drew moire spokes behind the eye) + 0.15 x the billow channel (at 0.4 its cells drew scales), calmed within ~4 eye
+  radii (the eye's rim is a plate edge too: a fingerprint of rings); streaks ~r / 25 apart, ~5x as long as wide. Its
+  footprint is `gCv2FpM`, set by cv2Field with the reset. cv2Field adds RIDGES to the storm margin where the plate is the
+  margin (deck > 0.6): sg.m += "Hurricane top streaks" (`clouds_v2.storm_cyc_top_streaks_m` 90 m, ciHu.w) x (1 + 10
+  sg.cap: toward the plate's outline, which frays into streaks along the swirl instead of a lid's step) x max(T + 0.3, 0).
+  Never negative: the plate's margin is the distance to its lid OR its underside, so an offset thickens or thins it, and
+  a thin plate thinned into holes; at 160 m the ridges seen obliquely from 30 km were dark scales. It multiplies the
+  plate's ice by 1 + ("Hurricane top density" `storm_cyc_top_density` 3, ciHu2.x - 1) x deck. cv2FieldLow removes
+  "Hurricane top smoothing" (`storm_cyc_top_smooth` 0.85, ciHu.z) x wS of the storm surface's lobes (lobeKL, lobeB), 0.94
+  of that of its erosion and all its billow, over the plate and the eyewall heads alike. Register cliff: the texture fetch
+  in cv2FieldLow, or the relief added to its c.m0 there, put the march at 248-250 registers (128 without); the fetch in
+  the shield walk and the relief on sg.m in cv2Field keep it at 128. Not in SKY_LITE (CV2_CYC_TEX). Cost (interleaved A/B in one app, the old march SPV
+  against the new, 3+3 reps, GPU shared with three other agents so absolute numbers are contended; cloud_march bucket,
+  ms, A-vs-A floor in brackets; qa/waves/20261105/evidence/cirrus-hurr/perf_ab.txt): Yun-yeung from 160 km 82.3 [79.7]
+  -> 28.5, from 30 km 50.0 [47.9] -> 28.5, from the ISS (400 km oblique) 27.6 [28.1] -> 25.4: the plate's lobes and
+  erosion were most of a hurricane's march cost (their lobe bound kept every sample near the sheet fetching). 128
+  registers.
+  Still open: the eyewall towers' heads stand as a whiter, flat-topped step over the CDO (their own lid), the
+  overshooting domes are dark blots from overhead, and the spiral bands outside the CDO are the low cloud's popcorn,
+  not cirrus-topped (the arm cirrus deck is thin).
   **STORM SURGE** (2026-10-23, terrain_detail.glsl `tdSurgeAt`, terrain.glsl `waterAdjustHeightSurge`, CPU
   `weatherFillSeaParams` + mirror `surgeAtDir`; UBO `surgeA/B[2]` + `surgeInfo` appended, 11104 -> 11184): per seaCyc
   cyclone a peak rise at the coast from the wind of the last ~6 h (max(vmax, 0.85 vmax 3 h ago, 0.7 vmax 6 h ago): 1.2 m

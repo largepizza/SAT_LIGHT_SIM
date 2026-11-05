@@ -226,13 +226,19 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // (m0 + x B) / (1 + x)), y "Bubble relief" (margin units per unit of bubble distance); 2026-11-05 (shape2, clouds.md
     // "Bubble hierarchy"): z "Bubble hierarchy" (the fine bubbles, 4x smaller, on the big ones' surface: 0 off), w packs
     // floor(w) / 1000 "Bubbles follow cloud size" (0 = one size for all) and fract(w) "Bubble base flatness" (0 = uniform).
-    // (Packed, not a new member: a 101st member in this block crashed NVIDIA's compiler on rain_particles.vert's
-    // graphics pipeline at boot, driver 596.19, 2026-11-05; the compute pipelines took it.)
+    // (Packed, not a new member: with a `vec4 shape2` appended after `shade` the app died silently creating
+    // rain_particles.vert's graphics pipeline at boot (NVIDIA 596.19, 2026-11-05); packed, it boots. ciHu / ciHu2 were
+    // appended the same night and boot, so the member count alone is not the cause.)
     vec4  cu5;
     // 2026-11-04, cloud contrast (cloud_v2_march.comp; clouds.md "Cloud contrast"): x "Sky light keeps its colour" (the
     // sky's light diffused through cloud keeps its hue: cloud scattering is grey; 0 = greyed with depth as before), y the
     // diffuse field's side escape ("Multi-scatter side escape": e^-y t; 0.05 as fitted 2026-10-26), zw spare
     vec4  shade;
+    // -- cirrus-hurr (2026-11-05, night wave agent D) -- x "Cirrus fibres" (cv2IceFibres' filament contrast), y "Cirrus hooks"
+    // (heads and hooked fall streaks), z "Hurricane top smoothing" (the CDO plate's lobes / erosion removed), w "Hurricane top
+    // streaks" (the swirl relief on the CDO's lid, m); ciHu2: x "Hurricane top density" (x the plate's ice), yzw spare
+    vec4  ciHu;
+    vec4  ciHu2;
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO
@@ -247,6 +253,9 @@ layout(set = 0, binding = CV2_DETAIL_BINDING)  uniform sampler3D   cv2DetailTex;
 #endif
 #ifdef CV2_MORPH_BINDING
 layout(set = 0, binding = CV2_MORPH_BINDING)   uniform sampler2D   cv2MorphTex;
+#endif
+#ifndef SKY_LITE
+#define CV2_CYC_TEX   // (cv2_storms.glsl: a cyclone CDO's swirl texture reads the shape volume)
 #endif
 #include "cv2_storms.glsl"   // the storm objects' towers (CV2_STORM_BINDING)
 
@@ -1170,6 +1179,20 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         c.lobeB   = mix(c.lobeB, lobeS * 1.4, wS);
         c.tur    *= 1.0 - wS;
         c.bub    *= 1.0 - wS;
+#ifndef SKY_LITE
+        // A HURRICANE'S CDO (2026-11-05, the user: "a nice smooth but textured swirl, right now it is a bumpy mess"): the
+        // plate of a cyclone's central dense overcast is a smooth sheet of outflow ice, not a storm's billowing anvil. Its
+        // lobes and billow erosion (the dimpled grey "bumpy mess", dark erosion pits all over it from orbit) mostly go,
+        // and the lid takes a streak texture along the swirl instead (gCv2CycT, cv2ShieldAtR).
+        if (gCv2CycT > -1e8) {
+            float cyK = wS;   // (the eyewall towers' heads too: under a CDO they are buried in its sheet)
+            float smK = cv2.ciHu.z * cyK;                  // "Hurricane top smoothing" (0.85)
+            c.lobeKL *= 1.0 - smK;
+            c.erK    *= 1.0 - 0.94 * smK;
+            c.billow *= 1.0 - min(smK * 1.18, 1.0);
+            c.lobeB  *= 1.0 - smK;
+        }
+#endif
         f.hf       = mix(f.hf, sg.hf, wS);
         f.topH     = mix(f.topH, sg.top, wS);
         f.msBright = mix(cu ? f.msBright : 1.0, cv2.types[4].look.x, wS);
@@ -1589,6 +1612,45 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
 // the (drifted) LONGITUDE x R, with a period that divides the equator an integer number of times
 // (high.y, no seam at the antimeridian); across it, latitude x R. Absolute angles in float resolve
 // ~1 m here, plenty for km-scale fibres. Near the poles the streaks shorten (longitude converges).
+// FIBROUS ICE (2026-11-05, the user: cirrus "can kind of look gooey ... more wispiness and general structure"; the
+// reference, qa/waves/20261105/refs/cirrus_uncinus.png: fibrous streaks with hooked tails, thin bright filaments and
+// clear sky between the bands). Self-contained so other ice (an anvil's fray, a cyclone's outflow) can reuse it.
+//   p    the shape volume's coordinates, x ALONG the fibres (the caller stretches it), y across, z up; every factor
+//        applied here to x is an integer, so a period the caller keeps seam-free stays so.
+//   lodR the unclamped LOD of a read at p's own scale (log2 of footprint x cells per unit along y).
+// Returns x: the filaments, 0..1 (ridged: thin bright lines where a stretched fBm crosses its median, dark between);
+// y: the tufts, 0..1 (the elements: a less stretched fBm thresholded, so the streaks come in patches with clear sky
+// round them, not as an even marbling); z: the tufts' noise in standard deviations (cirrocumulus and the heads use it);
+// w: the tufts' billow cells (G, ~0.475 +- 0.12: cirrocumulus cloudlets).
+// The strands are read in a frame DEFLECTED by the tufts (y += 0.12 max(sd + 0.3, 0)^2, one-sided: a two-sided
+// deflection wound every strand like stirred paint): they bend round each element's head and
+// fan out along its edges -- the hooks and feathers of uncinus -- instead of running as parallel contours of one field
+// (the old look: Perlin contours, marbled). The baked Perlin (A) spreads 0.50 +- ~0.057.
+vec4 cv2IceFibres(vec3 p, float lodR)
+{
+    // Tufts: 4x along, 1x across (elements ~3:1 where the fibres are ~40:1).
+    vec4  t   = textureLod(cv2ShapeTex, vec3(p.x * 4.0, p.y, p.z) + vec3(0.31, 0.73, 0.17), max(lodR, 0.0));
+    float tn  = (t.a - 0.5) * (1.0 / 0.057);
+    // Strands: 4x across (filaments ~1/5 of a 700 m cell at the 11 km period), deflected by the tufts.
+    float tp  = max(tn + 0.3, 0.0);
+    // (Slow in height, 0.5x: a strand is a sheet hanging through the layer, sharp seen from below. At 2x its ridge moved
+    // ~a cell across over the layer's depth and every filament seen from the ground was the blur of that.)
+    vec3  pf  = vec3(p.x, p.y * 4.0 + 0.12 * tp * tp, p.z * 0.5);
+    vec4  f1  = textureLod(cv2ShapeTex, pf, max(lodR + 2.0, 0.0));
+    // Hair: 3x finer again, on the strands (branching, frayed ends), a little less deflected.
+    vec4  f2  = textureLod(cv2ShapeTex, pf * vec3(3.0, 3.0, 3.0) + vec3(0.57, 0.11, 0.83) - vec3(0.0, 0.15 * tp * tp, 0.0),
+                           max(lodR + 3.585, 0.0));
+    float n1  = (f1.a - 0.5) * (1.0 / 0.057), n2 = (f2.a - 0.5) * (1.0 / 0.057);
+    // Ridges: 1 on the median line, 0 by ~0.8 sd; sharpened. Sub-pixel ridges average to their area share (~0.35): faded
+    // toward it with the reads' LOD, or a far streak shimmered.
+    float r1  = 1.0 - smoothstep(0.0, 0.8, abs(n1));
+    float r2  = 1.0 - smoothstep(0.0, 0.9, abs(n2));
+    float fib = r1 * r1 * mix(0.45, 1.0, r2) + 0.3 * r2 * r2;
+    fib = mix(fib, 0.32, smoothstep(1.5, 3.5, lodR + 2.0));
+    float tuf = smoothstep(-0.3, 1.1, tn + 0.5 * (t.b - 0.479) * (1.0 / 0.119));
+    return vec4(clamp(fib, 0.0, 1.0), tuf, tn, t.g);
+}
+
 float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
 {
     hfH = 0.0; topH = 0.0;
@@ -1636,21 +1698,27 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
     if (z <= 0.0 || z >= 1.0) return 0.0;
 
     float lon = atan(wdH.y, wdH.x), lat = asin(clamp(wdH.z, -1.0, 1.0));
-    // Fall streaks: the ice lower in the layer lags the generating heads above it.
-    float shear = (zb + thick - q.h) * 2.0;
+    // Fall streaks: the ice lower in the layer lags the generating heads above it, more the further it has fallen (the
+    // wind slackens below the jet core), so each tail CURVES away from its head -- the uncinus hook seen from the side --
+    // and drifts a little across the wind as well (directional shear: a hook seen from below too). (Linear, 2 m a metre,
+    // until 2026-11-05: straight slanted sheets.)
+    float dep   = zb + thick - q.h;
+    float shear = dep * (2.0 + dep * (cv2.ciHu.y / 600.0));   // ("Cirrus hooks" bends them)
     // "Cirrus direction warp" (tune.w, 2026-10-11): the across-wind coordinate displaced by three waves of whole
     // counts around the globe (no seam), so the streaks' heading swings by ~atan(0.7 x it) (rms) over 600-5700 km
     // and their spacing breathes; and the bundles break into patches (below). Every streak ran along the (flowed) parallels: from orbit, one set of stripes.
-    float latW  = lat * R_EARTH;
+    float latW  = lat * R_EARTH + dep * dep * (cv2.ciHu.y / 2500.0);
     if (cv2.tune.w > 0.0)
         latW += cv2.tune.w * 0.45 * R_EARTH * (sin(7.0 * lon + 3.0 * lat + 1.3) / 7.0 + sin(13.0 * lon - 5.0 * lat + 4.1) / 13.0
                                                + sin(23.0 * lon + 8.0 * lat + 2.2) / 23.0 + sin(41.0 * lon - 13.0 * lat + 5.7) / 41.0
                                                + sin(67.0 * lon + 29.0 * lat + 0.4) / 67.0);
     vec3  cc  = vec3((lon * R_EARTH - shear) * cv2.high.y + cv2.high.z,
-                     // meander: the cluster Perlin normalised by its spread (0.057), +-~0.7 period
-                     latW * cv2.high.w + (cl.a - 0.5) * 12.0,
+                     // meander: the cluster Perlin normalised by its spread (0.057), +-~0.35 period (+-0.7 until 2026-11-05:
+                     // with the fibres' own deflection every streak wound like stirred paint)
+                     latW * cv2.high.w + (cl.a - 0.5) * 6.0,
                      q.h * cv2.high.w);
-    float lod = cv2Lod(fpM, cv2.high.w);
+    float lodR = log2(max(fpM * cv2.high.w * 128.0, 1e-6));
+    float lod  = max(lodR, 0.0);
     // Bundles: the same volume read 4x coarser (swaths ~30 km across and a few hundred km long; the
     // CPU keeps the along-wind period's count around the equator a multiple of 4, so no seam).
     // Streaks come in bundles that converge and part, not as an even comb: at one scale, thresholded,
@@ -1660,21 +1728,25 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
     float bundle = smoothstep(0.43, 0.6, sb.a);
     // ... in patches (with the direction warp): unbroken, the bundles were evenly spaced stripes hundreds of km long.
     bundle *= mix(1.0, smoothstep(-1.2, 0.6, (cl.a - 0.5) / 0.057), min(cv2.tune.w * 2.0, 1.0));
-    cc.y += (sb.g - 0.45) * 1.2;                          // streaks crowd together and fan apart
-    vec4  s   = textureLod(cv2ShapeTex, cc, lod);
-    vec4  s2  = textureLod(cv2ShapeTex, cc * 3.0 + vec3(0.31, 0.73, 0.17), lod + 1.585);
+    cc.y += (sb.g - 0.45) * 0.5;                          // streaks crowd together and fan apart (1.2 until 2026-11-05: marbling)
     float strat = 1.0 - smoothstep(0.3, 0.55, wc.g);
     float ccK   = smoothstep(0.5, 0.7, cl.g) * (1.0 - strat) * 0.8;
 
-    float fibN = (s.a - 0.5) * 0.6 + (s2.a - 0.5) * 0.4;      // ~0 +- 0.04
-    float lo   = mix(0.06, -0.02, regime);
-    float ci   = smoothstep(lo, lo + 0.07, fibN) * mix(0.2, 1.0, bundle);
-    // Hair: a 9x finer read (still an integer multiple of the along-wind period, so no seam) combs
-    // each streak into fibres; without it they were smooth ribbons, like lenticular strands.
-    vec4  s3   = textureLod(cv2ShapeTex, cc * 9.0 + vec3(0.57, 0.11, 0.83), lod + 3.17);
-    ci *= mix(1.0, mix(0.3, 1.4, clamp((s3.a - 0.5) / 0.12 + 0.5, 0.0, 1.0)), 1.0 - smoothstep(1.0, 3.0, lod));
-    float cs   = regime * mix(0.6, 1.0, clamp(fibN / 0.08 + 0.5, 0.0, 1.0)) * mix(0.6, 1.0, bundle);
-    float cu   = clamp((s2.g - mix(0.75, 0.55, regime)) * 5.0, 0.0, 1.0);
+    // Fibrous ice (cv2IceFibres, 2026-11-05): tufts with clear sky round them, filaments inside, hooked by the
+    // tufts' deflection. Until then: two octaves of the stretched Perlin, thresholded over 0.07 of a +-0.04 spread
+    // (a soft ramp over the whole field: every streak a smooth ribbon, the gaps never clear), combed by a third --
+    // marbled, "gooey" (the user, 2026-11-05).
+    vec4  fb   = cv2IceFibres(cc, lodR);
+    float lo   = mix(0.6, 0.12, regime);
+    float el   = smoothstep(lo, lo + 0.2, fb.y) * mix(0.25, 1.0, bundle);
+    float ci   = el * max(mix(0.9, mix(0.04, 2.2, fb.x), cv2.ciHu.x), 0.0);   // ("Cirrus fibres": 0 = even tufts)
+    // Heads: the generating cells, where an element's tuft is strongest, are a denser, less fibrous core (the bright
+    // comma of uncinus); lower in the layer the same core, lagged downwind by the fall-streak shear, is its tail.
+    float head = smoothstep(0.75, 1.0, fb.y) * smoothstep(0.9, 1.8, fb.z);
+    ci += el * head * mix(0.6, 2.4, smoothstep(0.3, 0.85, z)) * mix(0.6, 1.0, fb.x) * cv2.ciHu.y;   // ("Cirrus hooks")
+    float cs   = regime * mix(0.6, 1.0, clamp(fb.z * 0.25 + 0.5, 0.0, 1.0)) * mix(0.6, 1.0, bundle)
+               * mix(0.75, 1.1, fb.x);                    // (the veil fibrous too, faintly)
+    float cu   = clamp((fb.w - mix(0.75, 0.55, regime)) * 5.0, 0.0, 1.0);
     // Fibres and cloudlets far below a pixel become the haze of their coverage (as the low cells
     // do) — in their bundles, so from orbit the high layer is banded, not an even veil.
     float far = smoothstep(1.5, 4.0, lod);
@@ -2503,9 +2575,23 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     // Storms through the cumulus field (cv2.stormU.x): the towers and shields are the low field's margin (cv2StormGeom),
     // carved by its lobes and erosion; their own density functions are not called.
     bool stU = CV2_STORM_U;
+    gCv2CycT = -1e9;   // (cv2ShieldAtR sets it under a cyclone's CDO)
+    gCv2FpM  = fpM;
     CV2Storm sg = cv2StormNone();
     if (stU) {
         if ((lm & (kCv2LayCol | kCv2LayLow)) != 0u) sg = cv2StormGeom(q, fpM);
+#ifndef SKY_LITE
+        // A hurricane CDO's top (gCv2CycT, set by cv2ShieldAtR under a cyclone's CDO; cv2FieldLow smooths the plate):
+        // the swirl texture as RIDGES on the plate's margin, "Hurricane top streaks" (ciHu.w, 90 m) x max(T + 0.3, 0), x11
+        // toward its outline (sg.cap: two thirds of the edge share there), so the CDO's edge frays into streaks along the
+        // swirl instead of ending as a lid's step over the bands. Never negative: the plate's margin is the distance to its
+        // lid OR its underside, so an offset thickens or thins it, and a thin plate thinned into holes. Only where the plate
+        // is the margin (deck > 0.6), not on the eyewall towers' heads. (At 160 m the ridges, seen obliquely from 30 km, were
+        // dark scales over the sheet.) On the margin here: added to cv2FieldLow's own margin it put the march at 248
+        // registers. And x "Hurricane top density" (ciHu2.x, 3) the plate's ice: a CDO is the top of a deep, raining
+        // overcast (tau ~100); at the anvil's density it was a translucent grey sheet over the darker cloud under it.
+        if (gCv2CycT > -1e8) { sg.m += smoothstep(0.6, 1.0, sg.deck) * cv2.ciHu.w * (1.0 + 10.0 * sg.cap) * max(gCv2CycT + 0.3, 0.0); sg.sig *= 1.0 + (cv2.ciHu2.x - 1.0) * sg.deck; }
+#endif
         col.near = sg.near; col.storm = sg.storm; col.prox = sg.prox;
     } else if ((lm & kCv2LayCol) != 0u) col = cv2ColumnSigma(q, detailAmt, fpM);
 #ifdef CV2_LAYER_HITS

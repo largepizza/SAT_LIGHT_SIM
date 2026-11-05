@@ -110,6 +110,11 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   of varied height, taller than wide and leaning with the wind, rises out of every cloud with a convective share,
   so a shower field from an aircraft shows turrets standing over a lower mass instead of a sheet of gumdrops.
   Settings > Clouds: "Cumulus turrets" (1.0; 0 = the old shape), "Turret stretch", "Turret lean", "Turret skew".
+- **Clouds stay white longer as the Sun sets.** The white balance now adapts to the Sun's colour 2 km up wherever
+  the camera is, so it no longer had to be faded out from 11.5 degrees of Sun: sunlit clouds stay white-gold down to
+  about 6 degrees (they went beige-khaki from about 10), turn orange only in the last few degrees, and a sea of cloud
+  seen from an aircraft or from 45 km is adapted like the view from the ground. Settings > Photometry: "White balance
+  holds to" (6 deg; 11.5 = before), "White balance from the eye" (0; 1 = the old reference).
 - **Deeper shaded sides on towering clouds.** The light that has scattered through a lumpy cloud now escapes through
   its valleys before it reaches the far side (fitted to a path tracer), so the shaded faces and crevices of storm
   towers are darker and bluer while the sunlit tops stay as they were; and the sky's light keeps its colour inside a
@@ -127,6 +132,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   altocumulus and altostratus, cirrus streaks, veils and cirrocumulus, all lit by the Sun or the Moon through
   the clouds above them, with sunset colours, silver linings and soft cloud shadows on the ground (long streaks
   at sunset), far cloud shadows and god rays, and mid / high layer shadows at any distance.
+- **Fibrous cirrus.** Cirrus is drawn as tufts of thin bright filaments with clear sky between them, with denser
+  heads and fall streaks that hook away below them, instead of a smooth marbled veil. Settings > Clouds: "Cirrus
+  fibres", "Cirrus hooks".
 - **Billowier cumulus.** The cauliflower lobes on cumulus sides and tops come from a new "billow" noise matched
   against a production cumulus model (the Disney WDAS cloud): round lobes of many sizes meeting in sharp creases,
   instead of pointed bumps over broad valleys, down to the fine erosion detail. Settings > Weather, "Lobe noise (0 cones, 1 caps, 2 billows)";
@@ -174,6 +182,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   arms instead of sitting on top as a round glob; and the cirrus over the arms and the outflow cirrus follow the same
   spirals (the outflow in thin streaks curving the other way). Settings > Weather > Storm objects: "Hurricane main arms",
   "arm tightness", "arm speed", "minor swirls", "deck spiral", "outflow cirrus", "outflow streaks".
+- **Hurricane tops are a smooth swirl.** The central dense overcast is a smooth, bright sheet with fine streaks
+  running along the swirl and an edge that frays into streaks, instead of a grey sheet of cumulus lumps and pits.
+  Settings > Weather > Storm objects: "Hurricane top smoothing", "Hurricane top streaks (m)", "Hurricane top density (x)".
 - **Tropical cyclones.** About 80 a year across six basins, named from the WMO lists, following climatological
   tracks with landfalls and recurvature: an eyewall, a clear eye, spiral rain bands, outflow cirrus, a whipped-up
   sea, wind that drives the rain and the ambience, and a storm surge that floods low coasts.
