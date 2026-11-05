@@ -948,6 +948,7 @@ struct GpuCloudV2Params
     glm::vec4 stormU;                   // 2026-11-04: storms through the cumulus field: x on, y metres per margin unit, z the surface ramp (m), w lobe gain
     glm::vec4 cu3;                      // 2026-11-04: cumulus turrets: x strength, y vertical stretch, z lean (x "Lean"), w skew
     glm::vec4 cu4;                      // 2026-11-04: x cumulus body (adiabatic), y cumulus edge (sharpening x), z showers as cells, w showers from cores
+    glm::vec4 cu5;                      // 2026-11-04: cumulus bubbles: x weight (0 off), y margin units per bubble distance unit, zw spare
     glm::vec4 shade;                    // 2026-11-04: cloud contrast: x sky light keeps its colour, y the diffuse field's side escape
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
@@ -981,7 +982,7 @@ static_assert(offsetof(GpuCloudV2Params, amb) == 288 + 48 * kCloudV2Types + 1232
 static_assert(offsetof(GpuCloudV2Params, tone) == 288 + 48 * kCloudV2Types + 1248, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, gnd) == 288 + 48 * kCloudV2Types + 1264, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, micro) == 288 + 48 * kCloudV2Types + 1280, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1360, "GpuCloudV2Params layout");
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1376, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, cu3) == 288 + 48 * kCloudV2Types + 1312, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
@@ -5524,13 +5525,18 @@ private:
     // shape volume read 2x, as thick cumulus' big lobes) on every convective cloud thicker than ~250 m, stretched upward and
     // leaned with the cells, skewed so few turrets rise high: the cell's dome becomes a cluster of towers of varied height.
     float cv2CuTurrets = 1.0f;            // "Cumulus turrets" (0 = the dome-per-cell shape as before)
-    float cv2CuTurretStretch = 0.5f;      // "Turret stretch": the turret noise is read 1 / (1 - this) times slower upward (towers)
+    float cv2CuTurretStretch = 0.2f;      // "Turret stretch": the turret noise is read 1 / (1 - this) times slower upward (towers;
+                                          // 0.5 until the bubbles, 2026-11-04: their spheres read 2x taller hung as smooth sausages)
     float cv2CuTurretLean = 2.0f;         // "Turret lean": the turrets lean this x the cells' "Lean"
     float cv2CuTurretSkew = 1.0f;         // "Turret skew": the turrets' positive excursions grow (few tall towers, many low)
     float cv2CuBody = 0.0f;               // "Cumulus body": the adiabatic water profile's gain (0 = off)
     float cv2CuEdge = 1.0f;               // "Cumulus edge": the cloud surface's sharpening x this (1 = as before)
     float cv2CuShowerCells = 0.0f;        // "Showers as cells": a convective type where the map rains is shaped as cells
     float cv2CuShowerCores = 1.0f;        // "Showers from cores": a convective type's map rain falls from the strong cells only
+    // Cumulus bubbles (2026-11-04, the large-scale structure round of issue 20261104_181014): a cumulus is a cluster of thermal
+    // bubbles (a heavy-tailed union of spheres baked in the billow shape volume's R, read with the turrets), not one dome.
+    float cv2CuBubbles = 3.0f;            // "Cumulus bubbles": the dome's margin is divided by 1 + x and the bubbles added x times
+    float cv2CuBubbleGain = 0.2f;         // "Bubble relief": margin units per eighth of the turret period of bubble distance
     float cv2SilverLining = 0.5f;         // "Silver lining": forward-scattered sunlight leaking through thin cloud toward the Sun
     float cv2SmallCumulus = 0.06f;        // the near field makes low puffs this far under the coverage threshold (field units)
     float cv2ErosionVar = 0.6f;           // erosion strength and grain vary by region (0 = uniform)
@@ -8617,7 +8623,7 @@ private:
     bool draggingPhoto[56] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 490;   // 440-441 (2026-11-03): turbulence cell size / speed; 450-452: anvil formation / decay time, tower growth time; 455-461: hurricane shape; was 435;   // 428-434 (2026-10-30): the second stage's jellyfish (streaks, nucleus, staging cloud); was 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
+    static constexpr int kCloudSliderSlots = 496;   // 494-495 (2026-11-04): cumulus bubbles;   // 440-441 (2026-11-03): turbulence cell size / speed; 450-452: anvil formation / decay time, tower growth time; 455-461: hurricane shape; was 435;   // 428-434 (2026-10-30): the second stage's jellyfish (streaks, nucleus, staging cloud); was 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
     // gust fronts, drop persistence); 326: "Tropical cyclones (x)"; 325: "Storm complexes"; 321-324 (2026-10-23): storm
     // objects (frequency, life, cloud field, moat);
     // was 321: 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);

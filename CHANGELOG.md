@@ -117,6 +117,11 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **Showers fall from the big clouds.** In a region of scattered showers the rain now falls as shafts under the strong
   cells only, instead of a thin curtain under every cloud base that wrapped the whole field in grainy haze; the
   cumulus there now have crisp outlines. Settings > Clouds: "Showers from cores" (1.0; 0 = rain under every cloud).
+- **Cumulus are built from bubbles.** A cumulus is now a cluster of rising thermal bubbles of very different sizes
+  instead of one dome per cell: sub-cells stacked at different heights, heads wider than their stems, creases and
+  hollows between them, clouds that merge into irregular masses or break into fragments, from the ground, at cloud
+  level and from above. Settings > Clouds: "Cumulus bubbles" (3; 0 = the dome as before), "Bubble relief" (0.2);
+  "Turret stretch" is now 0.2 (was 0.5).
 - **Volumetric clouds, rebuilt (clouds v2).** One 3D cloud field from the ground to orbit, driven by a weather
   map: cumulus with lobed, cauliflower sides and flatter bases, stratus decks with textured undersides,
   altocumulus and altostratus, cirrus streaks, veils and cirrocumulus, all lit by the Sun or the Moon through

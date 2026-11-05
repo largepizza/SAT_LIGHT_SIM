@@ -2227,6 +2227,39 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     and smoother blobs (the old ramp is what shows the billow erosion). **"Showers as cells"** (`showers_as_cells` 0):
     lowCov (cells instead of deck shaping) where the map rains on a convective-share type: more broken, about the same
     heights; not clearly better.
+  - **Cumulus bubbles (structure round, same issue; `cu5`, UBO 1344 -> 1360, keys `cumulus_bubbles` 3,
+    `cumulus_bubble_relief` 0.2, slots 494-495; `cumulus_turret_stretch` 0.5 -> 0.2).** After the turrets the user's
+    verdict was "cauliflower better, large-scale shape unchanged: convex gumdrops, 2-D". A cumulus is now a cluster of
+    thermal bubbles inside its dome. **The bake:** the billow shape volume's R (mode 4; its readers used R only as a
+    density variation, mix(0.75, 1, R), and a ~0.5-mean field still does that) is the signed distance to a union of
+    spheres, three octaves of jittered centres per period^3: ~200 of radius 0.45-0.9, ~1400 of 0.18-0.38, ~8200 of
+    0.08-0.15 eighth-periods (radius^2-weighted: many small, few large), hard max (the creases are the concavities),
+    stored 0.5 + sd / 1.2; 52% of the volume inside (`bubbleSdf`, cloud_v2_noise.comp). **The read:** none new -- it
+    comes with the turret fetch (storm volume x2: at 1.9 km x 12 the eighth-period is 1.43 km, bubbles ~110 m - 1.3 km),
+    so it inherits the turrets' upward stretch and lean. **The margin:** `m0 -> (m0 + x B) / (1 + x)`, B = 2.4 y (R - 0.5)
+    = 2 y sd, x = `cumulus_bubbles` x the turret gate (convective share, thicker than ~250 m, not deep; faded out by a
+    footprint of 150 m-1 km). The dome is the envelope (where, how big, how high the cloud is); dividing it lets the
+    bubbles, the turrets and the small billow lobes (all undivided) shape the surface at 1 + x times their old weight.
+    **Why this form:** added to the dome undivided (m0 + x B), B had to out-steepen the dome to show, and a steep margin
+    is one the lobes barely move: the bubble faces came out smooth, glassy facets and "sausages" (x 1-2 at y 0.7-2.4,
+    `harness_runs/cs_scout/` p5-p6 in the worktree); the same with B as a min/max shell around a shrunk dome (creased
+    facets where the shell clipped a bubble); reading the meso cells in 3D (the cells' 1-4 km spheres with the height
+    as the third axis, a third meso fetch: 253 registers, and the clouds stayed domes). At y 0.2 the bubble field is
+    about as steep as the dome, so the lobes keep their reach. The turrets' 0.5 stretch made the bubbles 2x taller than
+    wide: smooth hanging columns from the ground; 0.2 reads round. Lean unchanged. The pre-fetch bound is exact:
+    nothing where m0 + 1.2 x y + (1 + x) L <= 0 (`c.lobeB`). "Cumulus turrets" 0 also turns the bubbles off.
+    **Measured** (RTX 3070 Ti, 1600x900, the user's settings, one live app, 3 interleaved reps, another agent on the GPU;
+    4 views `qa/waves/20261104/evidence/cloud-structure/`, after the contrast merge): cloud_march off -> on 7.00 -> 7.24 ms
+    (trade cumulus, 3 km across), 7.32 -> 7.88 (Darwin, 10 km down), 11.01 -> 11.78 (storm-region field from the sea),
+    8.26 -> 8.37 (shower field, 3 km across); rep half-ranges 0.02-0.24 ms; march and composite 128 registers. The
+    cost is the extra surface the march walks near, not the bound: an exact vs a 9x looser `lobeB` timed the same.
+    Cover seen from 10 km (bright unsaturated pixels) 0.35 / 0.34 / 0.60 / 0.81 -> 0.34 / 0.34 / 0.50 / 0.76: the
+    clouds stay where they were (the shower deck breaks up). From 400 km: 2.5 levels mean.
+    Tstab (cloud_suite, 1920x1009, motion vs settled; walk/strafe/pan90/pitch/rise): sea_air (Darwin, 3 km) 0.88 -> 0.93, trade_cu (ground) 1.26 -> 1.31; still grain 1.75 -> 1.74, 7.13 -> 7.25. More relief is more to get wrong while moving (+4-6%).
+    Open: bubble faces near the threshold (fragments, decks' outlines) can still be smooth ovals; the storm region's
+    dense field from below still reads as a draped sheet; the bubble sizes follow `shape_period_m` x `storm_scale`,
+    not the cloud's size (no lobe-to-cloud-size scaling yet); the cells (placement) are unchanged, so the size
+    distribution of whole clouds is still the three blob sizes.
 - **The blue-noise tile drawn over half-shadowed cloud, and shadows only near the eye (2026-10-12, user issues
   20261012_202341 / _195811; Sun 0.1-0.9 deg, light footprint 0, accumulation 0, history weight 0.02):**
   - **The resolve's still-view clamp box is 7x7 new samples** (`cloud_v2_resolve.comp`, `stillW`, motionPx < 0.05-0.5),

@@ -202,6 +202,35 @@ float billowSmoothFbm(vec3 uvw, int n0, int octaves)
     return s / norm;
 }
 
+// THERMAL BUBBLES (2026-11-04, mode 4's R, "cumulus_bubbles"; docs/subsystems/clouds.md "Cumulus bubbles"): the signed
+// distance to a union of spheres, in units of an 8-cell (1/8 period), three octaves of jittered centres with a
+// heavy-tailed size distribution (few large, many small: per period^3 ~200 of radius 0.45-0.9, ~1400 of 0.18-0.38,
+// ~8200 of 0.08-0.15 eighth-periods). Union by a hard max: the V creases where bubbles meet are the concavities of a
+// cumulus. 52 % of the volume is inside (numpy over this lattice's statistics: median sd +0.005, p5 -0.15, p95 +0.34).
+// Stored as 0.5 + sd / 1.2. The low field reads it with the turret fetch (storm volume x2) as a margin term.
+float bubbleOct(vec3 uvw, int n, float keep, float r0, float r1)
+{
+    vec3  p = uvw * float(n);
+    ivec3 i = ivec3(floor(p));
+    float best = -1.0;
+    for (int dz = -1; dz <= 1; ++dz)
+    for (int dy = -1; dy <= 1; ++dy)
+    for (int dx = -1; dx <= 1; ++dx) {
+        ivec3 c  = i + ivec3(dx, dy, dz);
+        vec3  h2 = hash3(c + ivec3(19, 53, 7), n);
+        if (h2.x > keep) continue;
+        float R  = mix(r0, r1, h2.y * h2.y);
+        best = max(best, (R - length(p - (vec3(c) + hash3(c, n)))) * 8.0 / float(n));
+    }
+    return best;
+}
+float bubbleSdf(vec3 uvw)
+{
+    return max(bubbleOct(uvw + vec3(0.31, 0.67, 0.13), 8, 0.4, 0.45, 0.9),
+               max(bubbleOct(uvw + vec3(0.73, 0.19, 0.41), 16, 0.35, 0.35, 0.75),
+                   bubbleOct(uvw + vec3(0.11, 0.83, 0.59), 32, 0.25, 0.3, 0.6)));
+}
+
 // Inverted Worley fBm: high AT the feature points (blobs), weights 0.625/0.25/0.125.
 float worleyFbm(vec3 uvw, int n0)
 {
@@ -260,6 +289,9 @@ void main()
                                        clamp(BILLOW_B_SCALE * billowFbm(uvw, 8, 3) + BILLOW_B_BIAS, 0.0, 1.0))
                  : pc.mode == 3 ? vec2(worleyCapFbm(uvw, 4), worleyCapFbm(uvw, 8))
                                 : vec2(wlo, worleyFbm(uvw, 8));
+        // Mode 4's R: the thermal bubbles (its only readers use R as a density variation, mix(0.75, 1, R): a ~0.5-mean
+        // field does that job as well; the low field's turret fetch reads it as structure).
+        if (pc.mode == 4) pw = clamp(0.5 + bubbleSdf(uvw) / 1.2, 0.0, 1.0);
         o = vec4(pw, lob, perlinFbm(uvw + vec3(0.37, 0.11, 0.73), 4, 4));
     } else if (pc.mode == 1 || pc.mode == 5) {
         // The erosion detail: smooth F1 (the cracks it carves are rounded, not creased); mode 5 the smooth billows.
