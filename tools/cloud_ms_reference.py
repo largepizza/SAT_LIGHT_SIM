@@ -48,6 +48,8 @@ class Blob:
         r = np.linalg.norm(p, axis=-1)
         if self.kind == 'hard':
             return np.where(r < 1, 1.0, 0.0)
+        if self.kind == 'slab':     # a deck: a disc 0.5 thick (vertical optical depth 0.5 sigma0), ~4x as wide
+            return np.where((np.abs(p[..., 2]) < 0.25) & (r < 1), 1.0, 0.0)
         if self.kind == 'soft':     # density ramps over the outer half: a wispy edge
             return np.clip((1 - r) / 0.5, 0, 1) ** 1.5
         q = p * (3.0 if self.kind == 'lumpy' else 7.0)
@@ -160,7 +162,7 @@ def image(d, S):
     return (w * np.where(d['m'], S, 0)).sum(1).reshape(d['N'], d['N'])
 
 
-SUNS = {'top': [-0.2, 0, 1.], 'front': [-1., 0, 0.35], 'back': [1., 0, 0.35], 'side': [-0.4, 0.5, 0.75]}
+SUNS = {'high': [-0.5, 0, 1.], 'low': [-1., 0, 0.45], 'top': [-0.2, 0, 1.], 'front': [-1., 0, 0.35], 'back': [1., 0, 0.35], 'side': [-0.4, 0.5, 0.75]}
 CASES = [('soft', 2, 'top'), ('soft', 2, 'front'), ('soft', 5, 'top'), ('soft', 5, 'front'), ('soft', 5, 'back'),
          ('soft', 30, 'top'), ('soft', 30, 'front'), ('soft', 30, 'back'), ('lumpy', 60, 'top'), ('lumpy', 60, 'front'),
          ('lumpy', 60, 'back'), ('hard', 30, 'top'), ('cauli', 80, 'side'), ('cauli', 80, 'front')]

@@ -1076,6 +1076,27 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     `wait 160` after either before timing (the perf-ab skill).
   - Settings (Clouds tab, slots 486-488): `clouds_v2.droplet_phase` 1 (0 = the tuned phase, the A/B), `droplet_size` 1,
     `droplet_ms_gain` 1.8. Needs "Multi-scatter model" 1 and the Mie table. UBO `cv2.micro` appended (+16 B).
+  - **Cloud bases are as bright as their optical depth (issue_20261104_180745 "Cloud Bottom with multiscattering":
+    "bottoms always seem unusually bright ... why are clouds so transparent?").** Measured, nothing changed.
+    `tools/cloud_micro_reference.py --below` path-traces the blobs and decks with the eye under them: the droplet model
+    is 0.65-1.0x the reference at a cumulus base (centre 0.8-1.03x), 0.2-0.5x at a deck's (the view leak and
+    e^(-0.05 t) fitted to blobs take a slab's transmitted field down too), never brighter. With the reference's single
+    scattering added, a soft tau-30 blob's base / side centre ratio is 0.42 (reference 0.48). In the app (the report's
+    view: 186 m over the sea at -26.07, 170.25, Sun 59 deg; fixed exposure, linear; probes = shader variants writing one
+    term as the sample's radiance, divided by a constant-radiance variant): the visible base samples' optical depth toward
+    the Sun is **13-19** (a forced overcast, `cover_full` 0.03: 16-23), their extinction 0.02-0.03 /m, the cloud ~1.2 km
+    deep; the light march is not short (`light_len_m` 4000 or `cdc_light` 0: the same). The base's light: multiple
+    scattering ~47% (msK 1.0-1.7 x the key light), single + sky + ground bounce ~20%, the air in front 13-15%. A tau-15
+    cloud transmits ~45% of the sunlight: a light grey base 3-4x the zenith sky is right for it. An adiabatic cumulus
+    of that depth (the droplet phase's own ~1 g/m^3/km and r_eff) has tau ~100 (30-60 with entrainment): the FIELD is
+    3-6x thinner than real cumulus, and that is the "transparent" look. `clouds_v2.density` 2 / 3 (fixed exposure): the
+    bases -10/-18% overhead, -21/-35% at mid distance, tops from 4.5 km p90 +3/+4% (under auto exposure the change is
+    smaller and reads as grey relief on the bases); cloud march 23.6 vs 24.0 ms (no cost). Left at 1: a look change
+    across every view, the user's call. The user's own `droplet_ms_gain` 2.28 (fitted 1.8) lights the bases +3-5%.
+    The air under a cloud already takes its shadow (sky pass `SKY_SUN_SHADOW`) and the ground the deck's diffuse
+    transmission (`ground_overcast`); the shadowed air is lit by the clear zenith's light, and an overcast's diffuse
+    transmission (~0.4 x the Sun's under tau 15) would make it BRIGHTER, so the report's "overcast ambient under the
+    clouds" would veil distant bases more, not less. `harness_runs/cb/` in the cloud-bottoms worktree.
 - **The sky pass's multiple scattering + ozone (2026-10-26, branch cloud-ms).** The sky (sat_sky.frag's atmosphere loop,
   sky_ap.comp's volume, the sea's reflected-sky march) was single scattering: the air in the Earth's shadow was lit by a
   hand-made "sky-lit shadowed air" term (review 7), and the Sun's path had no ozone, so the twilight sky read olive /
