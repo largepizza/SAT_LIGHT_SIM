@@ -2117,6 +2117,29 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   - Open: a tower's flared head and the map-fed anvil are still smooth (their lobes are the user's "Cb head lobes");
     stratus at full coverage seen edge-on is still a slab; near clouds have nothing finer than the detail volume's
     24-m cells.
+- **Cumulus turrets (2026-11-04, issue 20261104_181014 "General Cloud Shapes"; `cu3`, keys `cumulus_turrets` 1.0,
+  `cumulus_turret_stretch` 0.5, `cumulus_turret_lean` 2.0, `cumulus_turret_skew` 1.0, slots 476-479, UBO 1312 -> 1328).**
+  Why the field reads 2D: a low-cloud point's margin is `m0(x,y,zeta) = e(x,y) - req(z / T(x,y))` (convective) or
+  `e - gStrat(z / zTop)` (decks), i.e. a 2D strength against ONE vertical profile per cell, plus zero-mean lobes. The
+  lobes are the only 3D term, and at the user's settings they are small: `shape_period_m` 1900 puts the cumulus lobes'
+  octaves at 475 / 238 / 119 m on clouds 2-6 km across, with "Cumulus lobes (bottom/top)" 0.16 / 0.14. The scale
+  between the cells (1-4 km) and the lobes (<0.5 km) had only `bigL`'s storm-volume read, on convective cloud thicker
+  than 1.2 km. And the issue's shower field (and most mid-latitude cumulus fields at > 65% cover) is typed between
+  stratocumulus and cumulus (`w.g` ~0.25-0.5): `flatK` 0.35-0.7, `convW` < 0.3 nearly everywhere (a march variant
+  that faded convW < 0.3 erased almost the whole frame), so it is shaped as a lumpy DECK with a hump per cell.
+  Turrets: the big-lobe fetch (storm volume x2, octaves 2.9 km / 1.4 km / 710 m / 360 m; no new fetch site) applies
+  to every cloud with a convective share, `turW = cu3.x x ty.look.z x (1 - deep)` (half on stratocumulus, none on
+  stratus or Cb), ADDED to the margin after the base bumps (the small billows and the flat base are unchanged). Its
+  coordinate is shifted along the sample's own up by -stretch x hb (columns taller than wide) and east by
+  lean x form.y x hb (with the cells' lean): a shift by the sample's own height keeps the anchored tile in register.
+  Positive excursions grow by skew x 1.5 (a few tall turrets over many low ones). Amplitude 0.5 x (1 + liftK) on the
+  convective profile (faded in over 250-900 m of thickness), 1.0 on a deck; a deck's requirement keeps rising over its
+  top (1 e unit per 1.5 km x turW) and `topMax` is raised by turW x 1200 m, so turrets stand out of a sheet up to
+  ~1.2 km. Registers: the deck term written into `gStrat` (with z, zTop) put the march at 250; subtracted from m0
+  after `f.topH` it is 128 (march, composite, no-haboob march all 128). Measured: see the resolution's table
+  (`qa/waves/20261104/resolutions/cloud-shape3d.md`, main checkout). Open: near masses still have soft, foggy flanks
+  (a deck's density ramp is not steepened; phK keys on convW), and the scale of the small lobes is fixed by
+  `shape_period_m`, not by the cloud's size.
 - **The blue-noise tile drawn over half-shadowed cloud, and shadows only near the eye (2026-10-12, user issues
   20261012_202341 / _195811; Sun 0.1-0.9 deg, light footprint 0, accumulation 0, history weight 0.02):**
   - **The resolve's still-view clamp box is 7x7 new samples** (`cloud_v2_resolve.comp`, `stillW`, motionPx < 0.05-0.5),

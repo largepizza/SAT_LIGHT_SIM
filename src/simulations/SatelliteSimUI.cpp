@@ -7029,6 +7029,11 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SldStormCumulusFineLobes), &cv2CuFineLobes, 0.0f, 2.0f, 0.05f, "%.2f", 292},
         {tx(Txt::SldCbTowerFineLobes), &cv2CbFineLobes, 0.0f, 2.0f, 0.05f, "%.2f", 293},
         {tx(Txt::SldCumulusWisps), &cv2CuWisps, 0.0f, 1.0f, 0.05f, "%.2f", 294},
+        // Cumulus turrets (2026-11-04, issue 20261104_181014): slots 476-479.
+        {tx(Txt::SldCumulusTurrets), &cv2CuTurrets, 0.0f, 2.0f, 0.05f, "%.2f", 476},
+        {tx(Txt::SldTurretStretch), &cv2CuTurretStretch, 0.0f, 0.8f, 0.05f, "%.2f", 477},
+        {tx(Txt::SldTurretLean), &cv2CuTurretLean, 0.0f, 6.0f, 0.1f, "%.1f", 478},
+        {tx(Txt::SldTurretSkew), &cv2CuTurretSkew, 0.0f, 3.0f, 0.05f, "%.2f", 479},
         {tx(Txt::SldLobeNoise012), &cv2ShapeCaps, 0.0f, 2.0f, 1.0f, "%.0f", 307},
     };
 
@@ -9818,6 +9823,10 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CuFineLobes = c.value("storm_cumulus_fine_lobes", cv2CuFineLobes);
         cv2CbFineLobes = c.value("cb_fine_lobes", cv2CbFineLobes);
         cv2CuWisps = c.value("cumulus_wisps", cv2CuWisps);
+        cv2CuTurrets = c.value("cumulus_turrets", cv2CuTurrets);
+        cv2CuTurretStretch = c.value("cumulus_turret_stretch", cv2CuTurretStretch);
+        cv2CuTurretLean = c.value("cumulus_turret_lean", cv2CuTurretLean);
+        cv2CuTurretSkew = c.value("cumulus_turret_skew", cv2CuTurretSkew);
         cv2SilverLining = c.value("silver_lining", cv2SilverLining);
         cv2CirrusDirWarp = c.value("cirrus_direction_warp", cv2CirrusDirWarp);
         cv2AsDensity = c.value("altostratus_density", cv2AsDensity);
@@ -10549,6 +10558,10 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"storm_cumulus_fine_lobes", cv2CuFineLobes},
         {"cb_fine_lobes", cv2CbFineLobes},
         {"cumulus_wisps", cv2CuWisps},
+        {"cumulus_turrets", cv2CuTurrets},
+        {"cumulus_turret_stretch", cv2CuTurretStretch},
+        {"cumulus_turret_lean", cv2CuTurretLean},
+        {"cumulus_turret_skew", cv2CuTurretSkew},
         {"silver_lining", cv2SilverLining},
         {"cirrus_direction_warp", cv2CirrusDirWarp},
         {"altostratus_density", cv2AsDensity},

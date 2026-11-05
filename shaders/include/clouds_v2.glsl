@@ -213,6 +213,10 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // towers and shields are a margin the low field's lobes and erosion carve; 0 = cv2ColumnSigma + cv2AnvilSigmaP),
     // y metres of storm surface per margin unit, z the storm surface's density ramp (m), w the storm lobes' gain
     vec4  stormU;
+    // 2026-11-04, cumulus turrets (cv2LowA / cv2FieldLow; issue 20261104_181014 "General Cloud Shapes"): x "Cumulus turrets"
+    // (0 = off), y "Turret stretch" (the turret noise runs 1 - y as fast upward: towers taller than wide), z "Turret lean"
+    // (x form.y, the cells' lean), w "Turret skew" (their positive excursions grow: few tall towers, many low ones)
+    vec4  cu3;
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO
@@ -585,6 +589,7 @@ struct CV2Carve {
     float rV;       // the regional lobe / erosion variation (-1..1)
     float fpFade;   // sub-pixel lobes average away
     float lobeB;    // the lobes' largest possible addition (the bound before the fetch)
+    float tur;      // the turrets' amplitude (e units per unit noise; cu3.x on convective cloud thicker than ~250 m)
 };
 // A storm object at a point (cv2StormGeom): the margin of its towers and its shield, in metres.
 struct CV2Storm {
@@ -610,7 +615,7 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
 {
     c.m0 = -1e9; c.hb = 0.0; c.baseAmp = 0.0; c.lobeRef = 0.0; c.bigL = 0.0; c.deep = 0.0; c.lobeKL = 0.0; c.aBase = 1.0;
     c.aRamp = 1.0; c.AshK = 0.0; c.phK = 1.0; c.phP = 0.0; c.subPix = 0.0; c.PhSub = 0.0; c.sigK = 0.0; c.billow = 0.0;
-    c.erK = 0.0; c.erBase = 1.0; c.wispE = 0.0; c.rV = 0.0; c.fpFade = 1.0; c.lobeB = 0.0;
+    c.erK = 0.0; c.erBase = 1.0; c.wispE = 0.0; c.rV = 0.0; c.fpFade = 1.0; c.lobeB = 0.0; c.tur = 0.0;
     if (q.h < cv2.shell.x || q.h > cv2.shell.y) return false;
 
     // The map drifts in longitude exactly as v1's flat layer and the ambience driver read it
@@ -747,7 +752,10 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     // The base is bumped in 3D by the lobes below, by up to ~2.2 x baseAmp: a deck's underside is
     // lumpy (rolls, pouches), a cumulus base nearly flat (the condensation level).
     float baseAmp = mix(40.0, 220.0, strat) * cv2.storm.w;
-    if (q.h > topMax) return false;
+    // Turrets (cu3) rise on any cloud with a convective share (ty.look.z: half on stratocumulus), up to turH over the
+    // type's top. (A shower field typed between stratocumulus and cumulus is shaped mostly as a DECK, flatK ~0.5-0.7: a
+    // lumpy sheet with a hump per cell, which is what issue 20261104_181014 saw from 4.7 km.)
+    if (q.h > topMax + cv2.cu3.x * ty.look.z * 1200.0) return false;
     // Below the (lowest possible) base: only rain, where the map says it precipitates.
     bool  below   = q.h <= base - 2.2 * baseAmp;
     // The bake's precipitation channel keys on the RAW map brightness (> 0.55-0.9), which few
@@ -964,6 +972,7 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     // A deck's top, in its span: thin parts glow from below, thick parts go dark (from below an
     // overcast is seen by the light it transmits, so its thickness IS its texture).
     float zTop   = clamp(0.75 + 0.3 * deckVar, 0.4, 1.0);
+    float turW   = cv2.cu3.x * ty.look.z * (1.0 - deep);   // (recomputed here: carried from the top test it cost registers)
     float gStrat = 1.2 * smoothstep(0.3, 1.0, z / zTop);
     // A deck's top is lifted by the lobes too (up to ~100 m: stratocumulus tops are lumpy, not a lens's skin).
     {
@@ -1033,6 +1042,9 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     // The deck's upper envelope (a lumpy top reaches ~zTop): the grazing-light shadow measures the
     // depth below it, and a mean top made every trough between the lumps black at sunrise.
     f.topH     = base + mix(T * 1.1, zTop, flatK) * (topMax - base);
+    // (With turrets a deck's requirement keeps rising over its top, 1 e unit per 1.5 km x turW: only the turrets stand
+    // there. Written into gStrat, with z and zTop, it put the march at 250 registers.)
+    if (turW > 0.0) m0 -= flatK * max(q.h - f.topH, 0.0) / (1500.0 * turW);
     // Erosion: base = bite the lumps (torn, wispy); higher up = bite the cracks, keep the lumps (billows). Deep
     // convection keeps storm.y of it and bites far fewer cracks (dark veins over every storm otherwise).
     float billow = ty.shape.z * smoothstep(0.05, 0.4, hf) * (1.0 - 0.7 * deep);
@@ -1056,7 +1068,17 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     c.m0 = m0; c.hb = hb; c.baseAmp = baseAmp; c.lobeRef = lobeRef; c.bigL = bigL; c.deep = deep; c.lobeKL = lobeKL;
     c.aBase = aBase; c.aRamp = aRamp; c.AshK = AshK; c.phK = phK; c.phP = phP; c.subPix = subPix; c.PhSub = PhSub;
     c.sigK = sigK; c.billow = billow; c.erK = erK; c.erBase = erBase; c.wispE = wispE; c.rV = rV; c.fpFade = fpFade;
-    c.lobeB = lobeK * 0.75 * (1.0 + (1.5 + 0.4 * cv2.cu.w) * bigL) * (1.0 + liftK) + cv2.cu.y * 1.2;
+    // TURRETS (cu3, 2026-11-04, issue 20261104_181014): every convective cloud, not only the thick ones, takes the big
+    // lobes' 3D field (the storm volume x2: 2.9 km / 1.4 km / 710 m / 360 m) as towers ON TOP of its own lobes, read
+    // stretched upward and leaned (cv2FieldLow). Without them a cell was ONE dome (a 2D strength under a parabolic
+    // profile) dimpled by lobes <= 475 m: "every cloud a gumdrop". Shallow puffs (< ~250 m) keep their small lobes alone.
+    // Their amplitude is their own (not "Cumulus lobes (bottom/top)", the small billows' strength), lifted at the top as the
+    // lobes are (liftK), and kept off the bottom by its own ramp in cv2FieldLow (a cumulus base stays flat).
+    float tur = turW * (1.0 - deep) * fpFade
+              * mix(0.5 * (1.0 + liftK) * smoothstep(250.0, 900.0, thickM), 1.0, flatK);
+    c.tur = tur;
+    c.lobeB = lobeK * 0.75 * (1.0 + (1.5 + 0.4 * cv2.cu.w) * bigL) * (1.0 + liftK) + cv2.cu.y * 1.2
+            + tur * 2.7 * (1.0 + 1.5 * cv2.cu3.w);
     return true;
 }
 
@@ -1109,6 +1131,7 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         // storm-scale lobes x 2.5 plus the fine ones on their crowns). The cumulus' formula, 3.35 lobeS, kept every point
         // within ~6 km of a storm's surface fetching: coarse view reads x1.8 looking down on an anvil plate.)
         c.lobeB   = mix(c.lobeB, lobeS * 1.4, wS);
+        c.tur    *= 1.0 - wS;
         f.hf       = mix(f.hf, sg.hf, wS);
         f.topH     = mix(f.topH, sg.top, wS);
         f.msBright = mix(cu ? f.msBright : 1.0, cv2.types[4].look.x, wS);
@@ -1118,6 +1141,7 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
     float m0 = c.m0, hb = c.hb, baseAmp = c.baseAmp, lobeRef = c.lobeRef, bigL = c.bigL, deep = c.deep, lobeKL = c.lobeKL;
     float aBase = c.aBase, aRamp = c.aRamp, AshK = c.AshK, phK = c.phK, phP = c.phP, subPix = c.subPix, PhSub = c.PhSub;
     float sigK = c.sigK, billow = c.billow, erK = c.erK, erBase = c.erBase, wispE = c.wispE, rV = c.rV, fpFade = c.fpFade;
+    float tur = c.tur;
     {
         // Before the shape fetch, bounded as if the base bumps lifted this point all the way (the
         // gBase and the lobe damping only fall with height): the lobes add at most ~0.6 x 1.25 lobeK.
@@ -1135,17 +1159,28 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
     // at the observer, clear of such alignments (a pure function of position and time; a change of frame reshapes
     // the lobes, never where the clouds are). Tried: a per-sample warp breaking the lattice (Perlin or analytic)
     // flipped this function to ~220 registers (+5-9 ms); a cross-fade between two frames cost 0.7 ms while idle.
-    vec3  rSA = mat3(cv2.shapeRotA[0].xyz, cv2.shapeRotA[1].xyz, cv2.shapeRotA[2].xyz) * (rS + wd * max(lobeRef - hb, 0.0));
+    mat3  shR = mat3(cv2.shapeRotA[0].xyz, cv2.shapeRotA[1].xyz, cv2.shapeRotA[2].xyz);
+    vec3  rSA = shR * (rS + wd * max(lobeRef - hb, 0.0));
     vec4  s   = textureLod(cv2ShapeTex, cv2.anchorShapeA.xyz + rSA * cv2.anchorShape.w,
                            cv2Lod(fpM, cv2.anchorShape.w));
     float lobes = (s.g * 0.6 + s.b * 0.25 + s.a * 0.15) - 0.47;
     // Deep convection's lobes are storm.x times larger: at the cumulus scale a 12 km storm was a
     // pile of small bubbles, a "mountain" rather than towers.
-    if (bigL > 0.02) {
+    float turL = 0.0;   // the turrets' share of the lobes (added after the base bumps: a cumulus base stays flat)
+    if (bigL > 0.02 || tur > 0.02) {
         // (x2 of the storm anchor -- an integer, so the tile stays in register: lobes of 5, 2.6 and 1.3 km at 12x.)
         // (The storm anchor carries the lobes' FLOW: anchorStormA rises along the observer's up, CPU side, as the
         // towers' own did up their columns: SatelliteSimCloudsV2.cpp.)
-        vec4 s2 = textureLod(cv2ShapeTex, (cv2.anchorStormA.xyz + rSA * cv2.anchorStorm.w) * 2.0,
+        // Turrets: the field read slower upward (cu3.y: columns taller than wide) and leaned downwind with the cells
+        // (cu3.z x form.y; the cells are read upwind with height, cv2LowA's mp). A shift along the sample's own up and
+        // east by its own height: no observer dependence, the anchored tile stays in register.
+        vec3 rT = rSA;
+        if (tur > 0.0) {
+            float hP    = max(hb, 0.0);
+            vec3  eastT = vec3(-wd.y, wd.x, 0.0) * inversesqrt(max(dot(wd.xy, wd.xy), 1e-6));
+            rT += shR * (eastT * (cv2.cu3.z * cv2.form.y * hP) - wd * (cv2.cu3.y * hP));
+        }
+        vec4 s2 = textureLod(cv2ShapeTex, (cv2.anchorStormA.xyz + rT * cv2.anchorStorm.w) * 2.0,
                              cv2Lod(fpM, cv2.anchorStorm.w * 2.0));
         // "Storm cumulus fine lobes" (cu.w): the cumulus-scale lobes stay ON the storm-scale ones, strongest on
         // their crowns (big lobes carrying small ones). With the storm-scale noise alone (storm.x, 12x at the user's
@@ -1155,7 +1190,10 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         // cumulus lobes' strength a 5 km lobe moved the surface by a few hundred metres, i.e. not at all.
         // (Tried: the storm scale itself on thick cumulus, smooth blobs; a third fetch 4x finer, 219 registers.)
         float lobS = (s2.g * 0.6 + s2.b * 0.25 + s2.a * 0.15) - 0.47;
+        // (Skewed: the positive excursions grow with cu3.w, so a few turrets stand well over the rest.)
+        if (tur > 0.0) lobS += cv2.cu3.w * max(lobS, 0.0) * 1.5;
         lobes = mix(lobes, 2.5 * lobS + cv2.cu.w * lobes * (0.35 + 1.3 * clamp(lobS + 0.12, 0.0, 0.5)), bigL);
+        turL  = tur * 2.5 * lobS;
         s = mix(s, s2, deep);
     }
     // Inverted Worley at 4/8/16 cells (G: 1.75 km, 875 m, 440 m lobes for the 7 km period) and
@@ -1171,7 +1209,7 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
     // "Base flatness" (high2.w): how little of the lobes survives at the base (0.3 of them at 0; at
     // the default 0.8, 0.1 — the lobes are 2.5x on convection, and the bases read as mammatus).
     float A     = lobeKL * mix(aBase, 1.0, smoothstep(0.0, aRamp, hbE));
-    float m     = m0 + (A + AshK) * lobes * 2.0 - gBase * gBase / 0.3;
+    float m     = m0 + (A + AshK) * lobes * 2.0 + turL * mix(0.3, 1.0, smoothstep(0.0, aRamp, hbE)) - gBase * gBase / 0.3;
     float Ph    = clamp(m * phK + phP, 0.0, 1.0) * smoothstep(0.0, 60.0, hbE);
     Ph = mix(Ph, PhSub, subPix);
     if (Ph <= 0.0) return f;
