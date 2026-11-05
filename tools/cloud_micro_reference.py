@@ -19,6 +19,15 @@ and prints, per blob and lighting: the correlation with the reference and the me
 Measured 2026-11-04 (256 spp, peak capped at g 0.97, d = 20 um): mean level against the reference, shipped HG model 0.69
 (backlit 0.38-0.42), droplet model at gain 1.8 with the T / (T + 2) side leak 1.01 (thick 0.99-1.08, backlit 0.68-0.78,
 thin soft blobs 0.9-2.4); d = 10 um 1.04. Default --variant B is the shader's model; A is the first cut (one forward order).
+
+    python tools/cloud_micro_reference.py --quick --below     # cloud BASES: the eye straight under the cloud
+
+Bases, measured 2026-11-04 (issue_20261104_180745 "bottoms too bright"; --quick, gain 1.8; level = model / reference, whole
+blob / its centre): soft 30 0.70 / 0.83, hard 30 0.93 / 1.03, lumpy 60 0.65 / 0.80, low Sun hard 30 0.84 / 0.98; slabs
+(decks of vertical tau 10 / 20 / 50) 0.37 / 0.30, 0.44 / 0.34, 0.39 / 0.20, low Sun tau 20 0.64 / 0.49. The droplet model
+never lights a base brighter than the path tracer does: a base's brightness is its cloud's optical depth (tau 20 transmits
+~45%: a light grey base is right for it; a dark base needs tau 50+). Deck bases are 2-5x too DARK (the view leak hV and
+e^(-0.05 t), fitted to blobs, take the slab's transmitted field down with them); not changed (the report asks the opposite).
 """
 import argparse
 import numpy as np
@@ -128,6 +137,11 @@ def phase_order(c, d, n, gtot):
     return wp * R.hg(c, gHG ** n) + (1 - wp) * R.hg(c, np.clip(gb, -0.9, 0.99))
 
 
+# Cloud BASES (--below): the eye looks straight up, the Sun 63 deg (high) or 24 deg (low) up. A slab's vertical optical
+# depth is 0.5 x sigma0 (slab 40 = a deck of tau 20, slab 100 = tau 50).
+CASES_BELOW = [('soft', 30, 'high'), ('hard', 30, 'high'), ('lumpy', 60, 'high'), ('slab', 20, 'high'),
+               ('slab', 40, 'high'), ('slab', 100, 'high'), ('slab', 40, 'low'), ('hard', 30, 'low')]
+
 VARIANT = 'B'
 KMAX = 3
 
@@ -176,16 +190,18 @@ def main():
     ap.add_argument('--variant', default='B')
     ap.add_argument('--peak', type=float, default=0.97)
     ap.add_argument('--kmax', type=int, default=3)
+    ap.add_argument('--below', action='store_true', help='cloud BASES: the eye looks straight up (CASES_BELOW)')
     a = ap.parse_args()
     global VARIANT, KMAX, PEAK_CAP
     VARIANT, KMAX, PEAK_CAP = a.variant, a.kmax, a.peak
     from scipy.ndimage import gaussian_filter
     S = Sampler(a.d)
     print(f"d = {a.d} um: phase mean cosine {S.g:.3f}; peak share {1 - jde(a.d)[0]:.3f}, g_peak {jde(a.d)[1]:.4f}")
-    view = np.array([1., 0, 0])
-    cases = R.CASES if not a.cases else [c for c in R.CASES if f"{c[0]}{c[1]}{c[2]}" in a.cases.split(',')]
-    hdr = ' | '.join(f"g{x:<4} r  lvl" for x in a.gain)
-    print(f"{'blob':>6} {'tau':>4} {'light':>6} | {'ref':>6} | {'hg r':>5} {'lvl':>5} | {hdr}")
+    view = np.array([0., 0, 1]) if a.below else np.array([1., 0, 0])
+    allc = CASES_BELOW if a.below else R.CASES
+    cases = allc if not a.cases else [c for c in allc if f"{c[0]}{c[1]}{c[2]}" in a.cases.split(',')]
+    hdr = ' | '.join(f"g{x:<4} r  lvl  ctr" for x in a.gain)
+    print(f"{'blob':>6} {'tau':>4} {'light':>6} | {'ref':>6} {'ctr':>6} | {'hg r':>5} {'lvl':>5} | {hdr}")
     rows = []
     for kind, s0, light in cases:
         N = 24 if a.quick else 32
@@ -197,9 +213,11 @@ def main():
         hgm = R.image(dat, R.model_new(dat))
         ims = [R.image(dat, model_micro(dat, a.d, S.g, gn)) for gn in a.gain]
         m = ref > 0
-        def st(im): return np.corrcoef(ref[m], im[m])[0, 1], im[m].mean() / ref[m].mean()
-        s = ' | '.join(f"{st(im)[0]:6.3f} {st(im)[1]:5.2f}" for im in ims)
-        print(f"{kind:>6} {s0:>4} {light:>6} | {ref[m].mean():6.3f} | {st(hgm)[0]:5.3f} {st(hgm)[1]:5.2f} | {s}", flush=True)
+        xs = (np.arange(N) + 0.5) / N * 2.2 - 1.1
+        cm = m & (np.hypot(*np.meshgrid(xs, xs)) < 0.5)            # the centre (a base seen from below: its middle)
+        def st(im): return np.corrcoef(ref[m], im[m])[0, 1], im[m].mean() / ref[m].mean(), im[cm].mean() / ref[cm].mean()
+        s = ' | '.join(f"{st(im)[0]:6.3f} {st(im)[1]:5.2f} {st(im)[2]:5.2f}" for im in ims)
+        print(f"{kind:>6} {s0:>4} {light:>6} | {ref[m].mean():6.3f} {ref[cm].mean():6.3f} | {st(hgm)[0]:5.3f} {st(hgm)[1]:5.2f} | {s}", flush=True)
         if a.png:
             from PIL import Image
             t = []
