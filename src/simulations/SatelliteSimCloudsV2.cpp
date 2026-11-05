@@ -1322,7 +1322,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2LightFootprint, cv2SmallCumulus, cv2ErosionVar, cv2LobeVar, cv2CirrusDirWarp, cv2AsDensity, cv2MidThick, cv2MidShadow,
                     cv2MidFieldKm, cv2MidCover, cv2MsOctaves, cv2LobeOcclusion, cv2MsModel, cv2MsDiffG, cv2MsDiffGain, cv2MsBackM, cv2SkyLightModel, cv2SkyLightGain, cv2SkyGroundAlbedo,
                     cv2CuHeightVar, cv2CuBreakup, cv2CuHeadroom, cv2CuFineLobes, cv2CbFineLobes, cv2CuWisps,
-                    cv2CuTurrets, cv2CuTurretStretch, cv2CuTurretLean, cv2CuTurretSkew})
+                    cv2CuTurrets, cv2CuTurretStretch, cv2CuTurretLean, cv2CuTurretSkew,
+                    cv2CuBody, cv2CuEdge, cv2CuShowerCells, cv2CuShowerCores})
         mix(v);
     for (const GpuCloudV2Type &t : cv2Types)
         for (int k = 0; k < 4; ++k)
@@ -2086,6 +2087,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                          std::max(cv2StormUnifiedRampM, 20.0f), std::max(cv2StormUnifiedLobes, 0.0f));
     p.cu3 = glm::vec4(std::clamp(cv2CuTurrets, 0.0f, 2.0f), std::clamp(cv2CuTurretStretch, 0.0f, 0.8f),
                       std::clamp(cv2CuTurretLean, 0.0f, 6.0f), std::clamp(cv2CuTurretSkew, 0.0f, 3.0f));
+    p.cu4 = glm::vec4(std::clamp(cv2CuBody, 0.0f, 4.0f), std::clamp(cv2CuEdge, 0.5f, 8.0f),
+                      std::clamp(cv2CuShowerCells, 0.0f, 1.0f), std::clamp(cv2CuShowerCores, 0.0f, 1.0f));
     skyApRanThisFrame = false;
     p.grid = glm::vec4((float)cv2HalfW, (float)cv2HalfH, cv2FullResActive() ? 1.0f : 0.0f, cv2FullResActive() ? 1.0f : 0.0f);
     // Full-res clouds in motion from altitude (full_res_moving_mode; 2026-10-22, issues 20261022_210358 / _220214): 0 the

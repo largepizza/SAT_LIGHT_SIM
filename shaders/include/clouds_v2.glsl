@@ -217,6 +217,11 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // (0 = off), y "Turret stretch" (the turret noise runs 1 - y as fast upward: towers taller than wide), z "Turret lean"
     // (x form.y, the cells' lean), w "Turret skew" (their positive excursions grow: few tall towers, many low ones)
     vec4  cu3;
+    // 2026-11-04 round 2 (issue 20261104_181014): x "Cumulus body" (the adiabatic water profile: extinction x (1 + x 2
+    // (height above the base / 1 km)^(2/3)), 0 = off), y "Cumulus edge" (the surface's sharpening x this; 1 = off),
+    // z "Showers as cells" (a convective type's deck shaping gives way to cells where the map rains), w "Showers from
+    // cores" (a convective type's map rain falls from the strong cells only)
+    vec4  cu4;
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO
@@ -862,7 +867,11 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
                      * smoothstep(0.4, 0.8, TR / max(cv2.flow.w, 0.3));
         float mBase  = mix(min(e, capR) - hSR * hSR * 0.05 - req0R, e, flatR);
         float under  = mix(smoothstep(0.0, 0.08, mBase), 1.0, smoothstep(300.0, 2000.0, fpM));
-        float rate = max(rainAmt * smoothstep(0.3, 0.8, e) * mix(0.4, 1.0, ty.look.z) * under, core);
+        // "Showers from cores" (cu4.w): on a convective type the map's rain falls from the strong cells only (the cell-scale
+        // strength eB: the big, tall clouds), as shafts under them; at 0 every cloud base of a showery region trailed a
+        // translucent curtain that wrapped the whole field in grainy haze (issue 20261104_181014: the "soft blobs").
+        float rate = max(rainAmt * smoothstep(0.3, 0.8, e) * mix(0.4, 1.0, ty.look.z) * under
+                         * mix(1.0, smoothstep(0.55, 0.9, eB), cv2.cu4.w * ty.look.z), core);
         if (rate <= 0.0 && below) return false;
         if (rate > 0.0) {
         vec3  rr = rS + eastW * ((base - q.h) * 0.25);
@@ -932,7 +941,8 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     // other. Kept flat, a region of low coverage was smooth lens-shaped sheets kilometres wide and a few
     // hundred metres thick ("pancakes", issue 20261012_235712 shot 1). Placement is unchanged.
     // (Not stratus: its thin, torn sheets are right as they are; as cells they came out as smooth blobs.)
-    float lowCov = (1.0 - smoothstep(0.25, 0.65, covT)) * cv2.cu.y * smoothstep(0.1, 0.5, ty.look.z);
+    float lowCov = max(1.0 - smoothstep(0.25, 0.65, covT), cv2.cu4.z * smoothstep(0.02, 0.2, w.b)) * cv2.cu.y
+                       * smoothstep(0.1, 0.5, ty.look.z);
     float flatK  = ty.alt.z * (1.0 - lowCov);
     float T      = max(cv2.flow.w, 0.05) * clamp(max(pow(eB, 0.83), 0.6 * pow(e, 0.83)) * max(hVar, 0.3),
                                                mix(0.25, 0.12, cv2.cu.x), 1.0);
@@ -1061,7 +1071,10 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     // The ramp steepens ABOUT the level the erosion cuts at (~half its strength), so the cloud's outline stays where
     // it was: steepened about zero, every small cloud grew by the margin the erosion used to remove, and a field of
     // separate cumulus closed up into a sheet.
-    float phK     = cv2.form.w / mix(1.0, clamp(eS, 0.3, 1.0), convW);
+    // "Cumulus edge" (cu4.y): the margin's density ramp x this on every low cloud with a convective share (a deck type's
+    // humps ramped in over ~100-300 m: the soft, foggy flanks of issue 20261104_181014), less as the footprint grows.
+    float phK     = cv2.form.w / mix(1.0, clamp(eS, 0.3, 1.0), convW)
+                  * mix(1.0, cv2.cu4.y, smoothstep(0.1, 0.5, ty.look.z) * (1.0 - smoothstep(60.0, 600.0, fpM)));
     float phP     = 0.5 * erK * (1.0 - phK / cv2.form.w);
     // Denser upward (cloud water grows with height); precipitation loads the base.
     float sigK   = mix(0.6, 1.0, smoothstep(0.0, 0.4, hf)) * (1.0 + w.b * ty.look.w * (1.0 - hf)) * ty.shape.x * cv2.look.y;
@@ -1267,7 +1280,11 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
 
     // (+ the rain floor above, if any: its share of the extinction is rain.)
     float sigR = f.sigma;
-    f.sigma    = d * sigK + sigR;
+    // "Cumulus body" (cu4.x): cloud water grows adiabatically with height over the base (LWC ~ hb, extinction ~ LWC^2/3):
+    // a 1.2 km cumulus is tau ~100 (30-60 with entrainment), where the old profile gave its bases 13-19 toward the Sun
+    // (cloud-bottoms, 2026-11-04). Optically thick, a lobe shadows the next and the creases go dark. Not on a storm's
+    // own surface (deep). (Here, not in cv2LowA's sigK: there it put the march at 248 registers.)
+    f.sigma    = d * sigK * (1.0 + cv2.cu4.x * 2.0 * (1.0 - deep) * pow(max(hb, 0.0) * 0.001, 0.6667)) + sigR;
     f.rain     = sigR / max(f.sigma, 1e-9);
     // "Lobe occlusion" (mid3.z): the sky light by where the sample sits in the lobe noise: the creases between
     // lobes (low) see a narrow cone of sky, the tips (high) most of it; mean ~1. The probe 250 m up and the depth
@@ -1351,7 +1368,8 @@ CV2Far cv2FarColumn(CV2Pos q, float fpM)
         float eB     = clamp((fieldB - thr0) / 0.55, 0.0, 1.0);
         float reqMin = 0.2 * smoothstep(0.1, 0.6, eB);
         float capS   = 0.3 + 0.7 * mix(ce.g, min(cellsC * 1.8, 1.0), deepE);
-        float lowCov = (1.0 - smoothstep(0.25, 0.65, covT)) * cv2.cu.y * smoothstep(0.1, 0.5, ty.look.z);
+        float lowCov = max(1.0 - smoothstep(0.25, 0.65, covT), cv2.cu4.z * smoothstep(0.02, 0.2, w.b)) * cv2.cu.y
+                       * smoothstep(0.1, 0.5, ty.look.z);
         float flatK  = ty.alt.z * (1.0 - lowCov);
         float convW  = mix(ty.look.z, 1.0, lowCov) * (1.0 - flatK);
         float subPix = smoothstep(1.0, 3.0, lodCell) * ty.look.z;

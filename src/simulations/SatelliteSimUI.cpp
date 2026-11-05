@@ -7034,6 +7034,10 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SldTurretStretch), &cv2CuTurretStretch, 0.0f, 0.8f, 0.05f, "%.2f", 477},
         {tx(Txt::SldTurretLean), &cv2CuTurretLean, 0.0f, 6.0f, 0.1f, "%.1f", 478},
         {tx(Txt::SldTurretSkew), &cv2CuTurretSkew, 0.0f, 3.0f, 0.05f, "%.2f", 479},
+        {tx(Txt::SldCumulusBody), &cv2CuBody, 0.0f, 4.0f, 0.05f, "%.2f", 480},
+        {tx(Txt::SldCumulusEdge), &cv2CuEdge, 0.5f, 8.0f, 0.1f, "%.1f", 481},
+        {tx(Txt::SldShowersAsCells), &cv2CuShowerCells, 0.0f, 1.0f, 0.05f, "%.2f", 482},
+        {tx(Txt::SldShowersFromCores), &cv2CuShowerCores, 0.0f, 1.0f, 0.05f, "%.2f", 483},
         {tx(Txt::SldLobeNoise012), &cv2ShapeCaps, 0.0f, 2.0f, 1.0f, "%.0f", 307},
     };
 
@@ -9827,6 +9831,10 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CuTurretStretch = c.value("cumulus_turret_stretch", cv2CuTurretStretch);
         cv2CuTurretLean = c.value("cumulus_turret_lean", cv2CuTurretLean);
         cv2CuTurretSkew = c.value("cumulus_turret_skew", cv2CuTurretSkew);
+        cv2CuBody = c.value("cumulus_body", cv2CuBody);
+        cv2CuEdge = c.value("cumulus_edge", cv2CuEdge);
+        cv2CuShowerCells = c.value("showers_as_cells", cv2CuShowerCells);
+        cv2CuShowerCores = c.value("showers_from_cores", cv2CuShowerCores);
         cv2SilverLining = c.value("silver_lining", cv2SilverLining);
         cv2CirrusDirWarp = c.value("cirrus_direction_warp", cv2CirrusDirWarp);
         cv2AsDensity = c.value("altostratus_density", cv2AsDensity);
@@ -10562,6 +10570,10 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cumulus_turret_stretch", cv2CuTurretStretch},
         {"cumulus_turret_lean", cv2CuTurretLean},
         {"cumulus_turret_skew", cv2CuTurretSkew},
+        {"cumulus_body", cv2CuBody},
+        {"cumulus_edge", cv2CuEdge},
+        {"showers_as_cells", cv2CuShowerCells},
+        {"showers_from_cores", cv2CuShowerCores},
         {"silver_lining", cv2SilverLining},
         {"cirrus_direction_warp", cv2CirrusDirWarp},
         {"altostratus_density", cv2AsDensity},

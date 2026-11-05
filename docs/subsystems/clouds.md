@@ -2161,6 +2161,21 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   (`qa/waves/20261104/resolutions/cloud-shape3d.md`, main checkout). Open: near masses still have soft, foggy flanks
   (a deck's density ramp is not steepened; phK keys on convW), and the scale of the small lobes is fixed by
   `shape_period_m`, not by the cloud's size.
+  - **Round 2 (same issue; `cu4`, UBO 1328 -> 1344, slots 480-483).** What made the shower field read as soft blobs was
+    mostly RAIN, not shape: at the user's `rain_amount` 3 the map's rain (`w.b`) hung a translucent curtain, and the
+    400-m rain floor inside the base, under every cloud base of a showery region, wrapping the field in grainy haze
+    (rain 0 at the shot: crisp outlines at once). **"Showers from cores"** (`showers_from_cores` 1, on): on a convective
+    type the map's rain falls only from strong cells, `rate x mix(1, smoothstep(0.55, 0.9, eB), cu4.w x look.z)`
+    (storm cores, `gCv2RainCore`, unchanged). Built and measured, OFF by default:
+    **"Cumulus body"** (`cumulus_body` 0): the adiabatic water profile, `sigma x (1 + 2 x body x (hb / 1 km)^(2/3))`
+    (x3 at 1 km over the base; not on a storm's own surface). Under auto exposure it changed the image little (sides
+    and tops are bright once tau > ~10; the creases did not darken visibly) and smoothed the near masses a little.
+    Written into cv2LowA's sigK it put the march at 248 registers; at `f.sigma` in cv2FieldLow it is 128.
+    **"Cumulus edge"** (`cumulus_edge` 1 = off): the margin's density ramp (phK) x this on convective-share cloud. At
+    x4 it REMOVED surface detail: erosion only acts where density < 1, so a steeper ramp leaves a thinner eroded skin
+    and smoother blobs (the old ramp is what shows the billow erosion). **"Showers as cells"** (`showers_as_cells` 0):
+    lowCov (cells instead of deck shaping) where the map rains on a convective-share type: more broken, about the same
+    heights; not clearly better.
 - **The blue-noise tile drawn over half-shadowed cloud, and shadows only near the eye (2026-10-12, user issues
   20261012_202341 / _195811; Sun 0.1-0.9 deg, light footprint 0, accumulation 0, history weight 0.02):**
   - **The resolve's still-view clamp box is 7x7 new samples** (`cloud_v2_resolve.comp`, `stillW`, motionPx < 0.05-0.5),
