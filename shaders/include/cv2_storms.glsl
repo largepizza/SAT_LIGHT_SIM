@@ -249,10 +249,19 @@ float cv2CycSpiral(vec3 wd, CV2Shield s, float u, float rM)
 // The anvil shields over a map-frame direction: the strongest one's strength (x its taper toward the far end), its
 // distance from the spine in radii (uOut; the caller frays the outline with noise, so a shield reaches 1.6 radii), and
 // its thickness factor and age.
+// It takes the shield with the largest PLATE MARGIN m = (a - 0.5) x (inside, a > 0.5: its thickness x age factors),
+// a = sT x (1 - smoothstep(0.25, 1.25, u / ext)) its plate presence (storms through the cumulus field: cv2StormGeom's
+// plate), not the strongest by the wider fade p = sT x (1 - smoothstep(0.3, 1.6, u)) it took until 2026-11-04. The
+// plates' outline is then the union of the shields' outlines and their thickness continuous where they overlap: with p,
+// a smaller shield won inside a big one's plate where it stood outside its own, a channel cut through the plate (the
+// dark crease across issue 111947's anvil from 14.5 km), and the thickness stepped. Beyond every plate (m < 0) it is
+// the nearest outline's shield, which the veil and the old path's presence fray read as before. (A second running
+// choice beside the first, or a bool parameter choosing the metric, put the march over the 128-register cliff.)
+float cv2ShieldPlateA(float sT, float u) { return sT * (1.0 - smoothstep(0.25, 1.25, u / (0.25 + 0.85 * sqrt(sT)))); }
 float cv2ShieldAtR(vec3 wd, out float thickK, out float ageK, out float uOut, out float rOut)
 {
     thickK = 1.0; ageK = 0.0; uOut = 9.0; rOut = 1.0;
-    float best = 0.0, bestS = 0.0;
+    float best = -1.0, bestS = 0.0;
 #ifdef CV2_STORM_BINDING
     uint  bestI = 0xFFFFFFFFu;
     if (cv2ShieldHead.x == 0u) return 0.0;
@@ -268,8 +277,9 @@ float cv2ShieldAtR(vec3 wd, out float thickK, out float ageK, out float uOut, ou
     [[dont_unroll]] for (uint k = 0u; k < bin.y; ++k) {
         uint      si = cv2ShieldList[bin.x + k];
         CV2Shield s = cv2Shields[si];
-        // (A bin lists its shields strongest first, and p <= sT <= a.w: none after this can do better. Exact.)
-        if (s.a.w <= best) break;
+        // (A bin lists its shields strongest first, and m <= sT - 0.5 <= a.w - 0.5 (the factors are <= 1): none after
+        // this can do better. Exact.)
+        if (s.a.w - 0.5 <= best) break;
         vec3  ab = s.b.xyz - s.a.xyz;
         float t  = clamp(dot(wd - s.a.xyz, ab) / max(dot(ab, ab), 1e-14), 0.0, 1.0);
         float r  = mix(s.c.x, s.b.w, t);
@@ -277,7 +287,8 @@ float cv2ShieldAtR(vec3 wd, out float thickK, out float ageK, out float uOut, ou
         if (u >= 1.6) continue;
         float sT = s.a.w * mix(1.0, 0.3, smoothstep(0.35, 1.0, t));   // thinning out toward its far (downwind) end
         if (s.d.w < 0.0) sT *= smoothstep(0.9, 1.6, u * r / -s.d.w);   // a cyclone's eye, open to the sea
-        float p  = sT * (1.0 - smoothstep(0.3, 1.6, u));
+        float aP = cv2ShieldPlateA(sT, u);
+        float p  = (aP - 0.5) * ((aP > 0.5) ? s.c.y * mix(1.0, 0.65, t) * mix(1.0, 0.5, s.c.z) : 1.0);
         if (p > best) { best = p; bestS = sT; uOut = u; rOut = r; thickK = s.c.y * mix(1.0, 0.65, t); ageK = s.c.z; bestI = si; }
     }
     // A cyclone's deck (c.w < 0, a disc: t = 0, r = c.x): its spiral, for the strongest shield only (<= 1: the bins'
