@@ -515,11 +515,11 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     every 2048 cells, 205 km on level 0; at 40 km/s the check refused ~620k cells a frame against the 65k budget).
     Measured: flying at 4.9 km/s from the storm report's pose (4.85 km), cloud march ~38 -> ~28 ms, misses 0.004% of the
     skipped steps (still 0.0013%), frames within ~1 level of the march without the clipmap; the report's 20 km/s trail at
-    600 m at the floor with the bracket (0.4% of pixels > 16 levels without it). NOT at 12 km over storm tops (issue
-    20261027_183909's trail, 60 fps): there the clipmap kept on put 12-19% of the pixels > 16 levels from the guard's frames
-    at any step limit down to 400 m a frame -- mostly the cells' S2 light moments replacing the field's light (as a still
-    view is lit), with S2 off still 4-5% (local shading patches; not the epoch frequency: 1x / 4x / 0.25x the scale alike;
-    cause not found). Hence the height limit (verified at 0.6 and 4.85 km only). Above it nothing changes.
+    600 m at the floor with the bracket (0.4% of pixels > 16 levels without it). Since 2026-11-04 (qa clip-motion) at
+    every height inside the shell (`cdc_motion_low_max_m` 30000: the shell top + 2 km decides) and up to 25% of the scale
+    a frame (`cdc_motion_low_frac` 0.25). The 12-km storm-tops loss that had kept it low (12-19% of the pixels > 16
+    levels) was the low shape volume's frame (`cv2ShapeFrame`, chosen at the observer) missing from the epoch, not the
+    footprint: the epoch now includes it (perf.md "Moving costs the clipmap").
   - **S2** (`cdc_light`, `cdc_light_levels` 3): light steps 3+ read the cell's mean + variance of the light extinction
     through the gamma model E[exp(-L e)] (a cell MEAN alone darkened broken cloud by up to 18 levels: Jensen). Modest.
   - **Layer mask** (2026-11-04, follow-up to "Storms between decks"; `cv2Field`'s `gCv2LayMask`, `kCv2Lay*` bits): each

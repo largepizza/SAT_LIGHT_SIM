@@ -515,20 +515,30 @@ depth pass, so its variants interleave like the sky's and the clouds'.
 - **Aurora culls** (cloud_march.comp): no march for a ray sunlit at every point (exact: the emission is x the sample's
   night, bounded between the 5 bound samples by half their arc), nor behind opaque cloud seen from below (x T^3). Storm at
   dusk -0.4 ms.
-- **Moving costs the clipmap** (`cdc_motion_guard`): on the user's own storm trail (issue 20261027_183909, 12 km,
-  `report load ... trail=on; path play fps=60`) GPU 35.6 ms with the guard, 29.7 without it, but without it the frames
-  past ~5 s lose cloud masses (11% of pixels > 16 levels from the settled reference, content lost). Clearing every stamp at
-  each new epoch (so the 3-bit epoch cannot wrap onto old cells) changed nothing: the loss is the bake's footprint seen
-  from another eye position, as the guard's comment says. Open: a bake that stays conservative while the eye moves.
-  **Below 6 km the guard is looser** (2026-11-04, issue 20261104_020257, `cdc_motion_low_frac` / `_epoch` / `_max_m`;
-  clouds.md "Storms between decks" and occupancy clipmap > "Low in the shell"): flying at 4.9 km/s between a storm's decks
-  at 4.85 km the clipmap was off the whole way (cloud march ~50 ms with the old shader, the reporter's 47.5); kept on:
-  ~38 -> ~28 ms. The bake brackets its footprint over the level's ring; refused cells are marked unknown. At 12 km over
-  storm tops (the trail above) keeping it on changed 12-19% of the pixels (mostly S2 light, 4-5% without): not there.
-  **At the anvil (issue 20261104_111947, 11 km, the player's walk = 9 km/s) the march costs 2-2.5x its still cost**
-  (cloud bucket ~49 ms still, ~121 ms walking, `harness_runs/cu`): the cause the user reads as "anvils halve the
-  frame rate when I move". Fewer rays (clouds.md "Amortization", `sparse_block` 3 / 4) take it to ~68 / ~47 ms. Same walk, 2x2, interleaved x2: `cdc_motion_guard` 1 cloud
-  bucket 179 / 120 ms, 0 76 / 75 ms (its image cost there not measured; at 12 km over storm tops it lost cloud masses).
+- **Moving costs the clipmap** (`cdc_motion_guard`, `cdc_motion_low_frac` 0.25, `_epoch` 4, `_max_m` 30000; 2026-11-04,
+  qa clip-motion): inside the shell (eye below the shell top + 2 km, any height) the clipmap stays on while the eye moves
+  up to 25% of the guard's 20-km scale a frame (5 km: 9 km/s at ~2 fps), with the bake's footprint bracket (clouds.md
+  "Low in the shell"); above that the old guard (0.4% a frame) still drops it. What made the kept-on clipmap lose cloud
+  masses at 12 km over storm tops was NOT the bake's footprint seen from another eye: it was the low shape volume's frame
+  (`cv2ShapeFrame`, one of four tile rotations chosen at the observer), missing from the clipmap's epoch. Crossing a line
+  where the choice changes reshapes every lobe; cells baked under the old frame read empty where the new lobes are.
+  The user's storm trail crosses one ~1.3 km before its t = 6 s pose. Found with the miss counters
+  (`-DCV2_EVAL_COUNT`, `cdc_missed`): flying 20 km into that pose at 150 m a frame left 30-37k missed skips a frame
+  (level 0), the same after a 1.5-km TELEPORT and not after a 1-km one, at a fixed 300-m footprint in bake and check
+  alike; `shape_frame` (harness `state`) switched 0 -> 2 between 1.25 and 1.5 km. With the frame in the epoch: ~700
+  a frame, the settled view's level. Dead ends on the way (each made no difference before the fix): 3 bracket reads
+  with a height margin, the stretch paired with the footprint, 4 corner reads of the (distance, height) box, an
+  eye-independent S2 footprint, a 2x wider sample box.
+  Quality (tstab-style, motion frames vs settled references, % of pixels > 16 levels / mean |diff|, 60 fps; frames of
+  `harness_runs/cm/gen.py`, scored by `score.py`): storm trail 1.36% / 2.01 (guard) -> 0.21% / 0.78 (kept on), anvil
+  walk 5.9% / 4.2 -> 3.3% / 3.4, cumulus walk at ~2 km 0.24% / 1.51 -> 0.15% / 1.51 -- the kept-on frames are CLOSER to
+  the settled ones, because a settled view has the clipmap's S2 light and the guard's moving frames had not. At 10 fps
+  (1 km a frame at the walk): anvil 4.4% -> 3.2%, storm trail 2.3% -> 1.4% at 25%; 5% a frame dropped the clipmap there.
+  Cost (cloud bucket, RTX 3070 Ti, 1600x900, High, full res, min of the uncontended interleaved reps; another app shared
+  the GPU for the rest): anvil walk (issue 20261104_111947, 11 km, 9 km/s) still 49 / 49 ms, moving 75 -> 67; storm
+  trail (12 km) still 37 / 37, moving 54 -> 45. Moving still costs 1.2-1.4x standing still: the remaining cost is the
+  march's ray count (360k rays a frame moving vs 216k still at the anvil, `march_rays`), not the clipmap (it skipped as
+  many coarse steps moving as still, misses 0.011%). (The earlier "121 ms walking" at the anvil was with the GPU shared.)
 - **Rays per frame** (2026-11-04, clouds.md "Amortization"): the full-res grid marches 1 pixel in 4 a frame; at the
   anvil the march is proportional to its rays (`sparse_block` 2 / 3 / 4: 43 / 29 / 21-24 ms still, bucket 121 / 68 / 47
   walking), storm 10.7 / 9.8 / 6.5 (walking 26 / 16.5 / 13.5), cumulus 3.0 / 2.0 / 1.6. 3 / 4 cost ~5-10% / 15-25% more

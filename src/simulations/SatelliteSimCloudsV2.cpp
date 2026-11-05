@@ -919,7 +919,8 @@ void SatelliteSim::makeSmoothTilePipelines(VulkanContext &ctx, const char *march
 
 std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::string &marchSpv, std::string &stats,
                                                 uint32_t wgX, uint32_t wgY, const std::string &resolveSpv,
-                                                const std::string &lightningSpv, const std::string &compositeSpv)
+                                                const std::string &lightningSpv, const std::string &compositeSpv,
+                                                const std::string &cdcSpv)
 {
     // Each override (harness `shaders reload march= resolve= lightning= composite=`) loads another SPV, so several
     // experiments can share one live app without overwriting the shipped SPVs; an empty one loads the shipped file.
@@ -927,7 +928,7 @@ std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::s
     if (wgX && wgY) { cv2MarchWg[0] = wgX; cv2MarchWg[1] = wgY; }
     gCv2StormSpec = cv2StormUnified > 0.5f ? 1u : 0u;
     cv2StormSpecBuilt = gCv2StormSpec;
-    cv2LastSpv[0] = marchSpv; cv2LastSpv[1] = resolveSpv; cv2LastSpv[2] = lightningSpv; cv2LastSpv[3] = compositeSpv;
+    cv2LastSpv[0] = marchSpv; cv2LastSpv[1] = resolveSpv; cv2LastSpv[2] = lightningSpv; cv2LastSpv[3] = compositeSpv; cv2LastSpv[4] = cdcSpv;
     vkDeviceWaitIdle(ctx.device);
     std::string err;
     auto swap = [&](VkPipeline &p, const char *spv, VkPipelineLayout layout, const uint32_t *wg) {
@@ -992,7 +993,7 @@ std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::s
         VkPipeline &cp = m == 0 ? cv2CdcPipeline : cv2CdcBakePipeline;
         try
         {
-            VkPipeline np = makeComputePipeline(ctx, "shaders/cloud_v2_cdc.comp.spv", cv2MarchPipeLayout, spec, 3);
+            VkPipeline np = makeComputePipeline(ctx, pick(cdcSpv, "shaders/cloud_v2_cdc.comp.spv"), cv2MarchPipeLayout, spec, 3);
             if (cp) vkDestroyPipeline(ctx.device, cp, nullptr);
             cp = np;
         }
@@ -1770,8 +1771,13 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             const float cdcBracket = (cv2CdcMotionGuard > 0.5f && cv2CdcMotionLowFrac > 0.0f && cv2CdcFp < 0.0f) ? 1.0f : 0.0f;
             if (!lightValid || cdcNewAnchor || cv2CdcFpUsed != cv2CdcFp || cv2CdcSkipUsed != cv2CdcSkip
                 || cv2CdcLightUsed != cv2CdcLight || cv2CdcLightLevelsUsed != cv2CdcLightLevels || cv2CdcMaxLevelUsed != cv2CdcMaxLevel
-                || cv2CdcBracketUsed != cdcBracket)
+                || cv2CdcBracketUsed != cdcBracket || cv2CdcShapeFrameUsed != cv2ShapeFrame)
                 ++cv2CdcEpoch;
+            // (The low shape volume's frame, cv2ShapeFrame above, is chosen at the observer: crossing a line where the choice
+            // changes reshapes every lobe, and the cells baked under the old frame read empty where the new lobes are. Until
+            // 2026-11-04 it was not in the epoch: that, not the bake's footprint, was the cloud the clipmap lost while the eye
+            // moved -- on the storm trail of issue 20261027_183909 the frame switches ~1.3 km before the pose at t = 6 s.)
+            cv2CdcShapeFrameUsed = cv2ShapeFrame;
             cv2CdcBracketUsed = cdcBracket;
             cv2CdcFpUsed = cv2CdcFp;
             cv2CdcLightUsed = cv2CdcLight;
@@ -1798,8 +1804,9 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                 // cell is read only from eyes within its level's ring of it at about this height, and the bake reads the
                 // field at that ring's nearest AND farthest footprints (the bracket, cloud_v2_cdc.comp), so it stays
                 // conservative while the eye flies over it (on the report's own low trail the images went from 0.4% of the
-                // pixels > 16 levels off the march without the clipmap to the floor). Not above cv2CdcMotionLowMaxM:
-                // see SatelliteSim.h for the 12-km storm-tops case.
+                // pixels > 16 levels off the march without the clipmap to the floor). Not above cv2CdcMotionLowMaxM (30 km
+                // since 2026-11-04: the shell top + 2 km decides; at 12 km over storm tops the loss blamed on the footprint
+                // was the shape frame missing from the epoch, above).
                 const bool   cdcLow   = cdcBracket > 0.5f && eyeH < std::min((double)hi + 2000.0, (double)cv2CdcMotionLowMaxM);
                 const double cdcFrac  = cdcLow ? std::max((double)cv2CdcMotionLowFrac, 0.004) : 0.004;
                 const double cdcEpoch = cdcLow ? std::max((double)cv2CdcMotionLowEpoch, 0.25) : 0.25;
@@ -1813,7 +1820,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                 // (Inside the shell also when the eye's HEIGHT has changed by a quarter of the scale: the bracket's
                 // distances are measured from the bake's eye height.)
                 if (cv2CdcActive && (!cv2CdcWasActive || glm::length(eye - cv2CdcRefEye) > cdcEpoch * cv2CdcRefS
-                                     || (cdcLow && std::abs(glm::length(eye) - glm::length(cv2CdcRefEye)) > 0.25 * cv2CdcRefS)))
+                                                          || (cdcLow && std::abs(glm::length(eye) - glm::length(cv2CdcRefEye)) > 0.25 * cv2CdcRefS)))
                     ++cv2CdcEpoch;
                 if (cv2CdcEpoch != cdcEpoch0 || !cv2CdcActive)
                 {

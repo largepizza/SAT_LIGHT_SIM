@@ -305,7 +305,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **Flying through storms.** Below 6 km the clouds' empty-space map now stays on while you fly (it used to switch
   off above ~2.4 km/s, so every step through a storm's layers paid for the full cloud), and a storm's smooth
   altostratus sheet is shaded at half the samples. Between a storm's decks at 4.8 km: about 22 -> 17 ms of cloud
-  standing still and about 50 -> 28 ms flying at 5 km/s (RTX 3070 Ti, 1080p, High).
+  standing still and about 50 -> 28 ms flying at 5 km/s (RTX 3070 Ti, 1080p, High). Since then at any height inside
+  the cloud layers too, and at up to 5 km a frame: flying over storm tops at 12 km about 54 -> 45 ms of cloud, walking
+  an anvil top at 11 km about 75 -> 67 ms (RTX 3070 Ti, 1600x900, High), and the moving frames are closer to the
+  settled ones than before.
 - **Storms are made of the same cloud as the cumulus.** Thunderstorm towers, their anvil heads and the anvil
   plate (and a hurricane's eyewall and dense overcast) are now shaped by the cumulus layer's own billowing lobes and
   erosion instead of a separate noise of their own, and an anvil's thin outer veil is drawn as ice at half the
@@ -357,6 +360,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- Clouds no longer lose whole masses for a moment after you fly across certain places: the clouds' empty-space map
+  now starts over when the cumulus lobes' noise frame changes under you (it changes at fixed lines on the globe).
 - Rain falls only from clouds: rain curtains and the drops at the eye no longer hang under the clear gaps between a
   storm's clouds (issue_20261104_020642).
 - Meteors are no longer drawn past 1 hour/s: at 1 day/s and faster the Earth's nightside no longer sparkles with

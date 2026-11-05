@@ -5457,6 +5457,7 @@ private:
     float cv2CdcMaxLevel = 6.0f;          // ... levels the march may use (0-8)
     float cv2CdcFpUsed = -1.0f, cv2CdcMaxLevelUsed = -1.0f, cv2CdcSkipUsed = -1.0f;
     float cv2CdcBracketUsed = -1.0f;       // the bake's footprint bracket (cdcC.w) the cells were baked with
+    int   cv2CdcShapeFrameUsed = -1;       // the low shape volume's frame (cv2ShapeFrame) the cells were baked under
     float cv2CdcDustKeyUsed = -1.0f;   // the haboob field the clipmap's cells were baked with (dust on, gain, cloud form)
     float cv2CdcMaxRate = 4.0f;           // ... used only up to this time rate (x real time)
     float cv2CdcLight = 1.0f;             // S2 (2026-10-22): the light march reads the clipmap's mean beyond its first 2 steps
@@ -5479,13 +5480,17 @@ private:
     // frame, 30 km/s at 30 fps) instead of 0.4%, starts a new epoch only after cdc_motion_low_epoch x the scale of travel
     // (or a quarter of it in HEIGHT), and the bake brackets the footprint (cloud_v2_cdc.comp, cdcC.w). Flying at 4.9 km/s
     // between a storm's decks at 4.85 km the clipmap was off the whole time (cloud march ~38 -> ~28 ms), frames within ~1
-    // level of the march without the clipmap; the report's 20 km/s trail at 600 m at the floor. NOT at 12 km over storm
-    // tops (issue 20261027_183909's trail): with the clipmap kept on 12-19% of the pixels differed by > 16 levels from the
-    // guard's frames (mostly its cells' S2 light moments; 4-5% with S2 off, cause not found), at any speed limit down to
-    // 400 m a frame -- hence the height limit. 0 = the old guard everywhere (and no bracket). Above it nothing changes.
-    float cv2CdcMotionLowFrac = 0.05f;
+    // level of the march without the clipmap; the report's 20 km/s trail at 600 m at the floor.
+    // 2026-11-04 (qa clip-motion): at EVERY height inside the shell (max_m 6000 -> 30000: the shell top + 2 km decides) and
+    // up to 25% of the scale a frame (5 km: the user's 9 km/s anvil walk at ~10 fps is ~1 km a frame, past the old 5%).
+    // What lost cloud at 12 km over storm tops was not the bake's footprint but the low shape volume's frame
+    // (cv2ShapeFrame), chosen at the observer and missing from the clipmap's epoch: the storm trail crosses a switch.
+    // With it in the epoch the clipmap kept on in motion is CLOSER to the settled frames than the guard's (storm trail
+    // 0.21% of pixels > 16 levels vs 1.36%, anvil walk 3.3% vs 5.9%; docs/subsystems/perf.md "Moving costs the clipmap").
+    // 0 = the old guard everywhere (and no bracket). Above the shell top + 2 km nothing changes.
+    float cv2CdcMotionLowFrac = 0.25f;
     float cv2CdcMotionLowEpoch = 4.0f;
-    float cv2CdcMotionLowMaxM = 6000.0f;
+    float cv2CdcMotionLowMaxM = 30000.0f;
     // Storms through the cumulus field (2026-11-04, issue 20261104_111947 "Anvil performance";
     // qa/waves/20261104/resolutions/storm-rework.md): the storm objects' towers and shields are a MARGIN the low field's
     // own lobes and erosion carve (cv2StormGeom + cv2FieldLow), not separate density functions with noise of their own.
@@ -8803,7 +8808,8 @@ private:
     std::string reloadWeatherBake(VulkanContext &ctx, const std::string &spv);
     std::string reloadCloudsV2Shaders(VulkanContext &ctx, const std::string &marchSpv, std::string &stats,
                                       uint32_t wgX = 0, uint32_t wgY = 0, const std::string &resolveSpv = {},
-                                      const std::string &lightningSpv = {}, const std::string &compositeSpv = {});
+                                      const std::string &lightningSpv = {}, const std::string &compositeSpv = {},
+                                      const std::string &cdcSpv = {});
     // harness `shaders reload sky=<spv> sky_taa=<spv>`: the full sky pass's fragment SPVs (the plain one, used at 100% with
     // the sky TAA off and by the low-res prepass, and the SKY_TAA one); "" = the shipped files. Rebuilds the full sky
     // pipelines from them (the same destroy + create as ensureFullSkyPipelines); stats = the TAA pipeline's (else the plain
@@ -8814,7 +8820,7 @@ private:
     // thread (65536 / the group's threads), i.e. the march's occupancy. Harness `shaders reload wg=`.
     uint32_t cv2MarchWg[2] = {16, 16};
     uint32_t cv2StormSpecBuilt = 1u;    // the march pipelines' storm_unified specialization (rebuilt when the setting changes)
-    std::string cv2LastSpv[4];          // the last `shaders reload` overrides (march, resolve, lightning, composite)
+    std::string cv2LastSpv[5];          // the last `shaders reload` overrides (march, resolve, lightning, composite, cdc)
     void writeCloudsV2ConsumerDescriptors(VulkanContext &ctx); // cloud_march / beam_self_march bindings
     void recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const CloudMarchPC &cpc);
     void fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cpc);
