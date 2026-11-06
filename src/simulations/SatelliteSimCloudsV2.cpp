@@ -1701,7 +1701,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // every dome flat. Entered from above inside dense cloud, the cut domes drew BLACK BLOTS from overhead (Yun-yeung's
     // eyewall from 160 km, storm B at midday from 30 km). +200 m of margin.
     hi = std::max(hi, cv2Types[4].alt.x + (cv2Types[4].alt.y - cv2Types[4].alt.x) * 1.35f - 250.0f
-                          + std::clamp(cv2CbOvershootKm, 0.0f, 3.0f) * 1000.0f + 600.0f + 200.0f);
+                          + std::clamp(cv2CbOvershootKm, 0.0f, 3.0f) * 1000.0f + 600.0f + 200.0f
+                          + 1000.0f);   // (Weather v2: cv2StormGeom's headroom over the dome, its billows and a CDO's ridges)
     // Rain falls to the ground: with it on, the shell reaches sea level.
     // Fog and dust (cv2FogDust); knockout bit 2048 (the old "fog layer" bit, which the Low / Planetarium /
     // Potato presets set) switches them off.

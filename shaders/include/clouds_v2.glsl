@@ -1507,10 +1507,14 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         if (gCv2CdoK > 0.0) {
             // (at least 0.97: the storm billows are 1.5 km since Weather v2, and the slider's 0.85 left a field of cauliflower
             // on the core's top; its texture is the swirl's ridges, cv2Field)
-            float smK = max(cv2.ciHu.z, 0.97) * wS * gCv2CdoK * (1.0 - 0.25 * gCv2EywK);   // (the eyewall billows a little)
+            // (the eyewall keeps a little of the SHAPE's billows, never the erosion: its eroded holes showed the dark sea through
+            // the densest cloud there is, a grey mottled ring round the eye)
+            float smE = max(cv2.ciHu.z, 0.97) * wS * gCv2CdoK;
+            float smK = smE * (1.0 - 0.25 * gCv2EywK * (1.0 - smoothstep(0.6, 0.85, sg.hf)));   // (its sides; its top as the CDO's:
+                                                                                               // billowed, from above, a dark pitted ring)
             c.lobeKL *= 1.0 - smK;
-            c.erK    *= 1.0 - 0.94 * smK;
-            c.billow *= 1.0 - min(smK * 1.18, 1.0);
+            c.erK    *= 1.0 - 0.94 * smE;
+            c.billow *= 1.0 - min(smE * 1.18, 1.0);
             c.lobeB  *= 1.0 - smK;
             c.bub    *= 1.0 - min(smK * 1.18, 1.0);
             c.tur    *= 1.0 - min(smK * 1.18, 1.0);
@@ -1779,7 +1783,15 @@ CV2Far cv2FarColumn(CV2Pos q, float fpM)
     vec3  wdF   = cv2FlowWeatherDir(wd, flowD);
     float covSpan = max(cv2.cover.y - cv2.cover.x, 1e-3);
     float wCoarse = textureLod(cv2WeatherTex, wdF, CV2_WX_LOD(2.0)).r * cv2.look.x;
-    if (wCoarse < cv2.cover.x * 0.25) return r;
+    // A storm's (a hurricane CDO's) mass, from the convection cube at ~20 km: the far layer draws it as the march does (it
+    // knew only the coverage, so past the march's reach the CDO turned into the grey deck under it, 2026-11-06).
+    float sK = 0.0;
+    vec4  cvS = vec4(0.0);
+#ifdef CV2_CONV_BINDING
+    cvS = textureLod(cv2ConvTex, q.dirE, 2.0);
+    sK  = smoothstep(0.3, 0.6, cvS.x) * step(0.0, cv2.column.x - 1e-6);
+#endif
+    if (wCoarse < cv2.cover.x * 0.25 && sK <= 0.0) return r;
     vec3  mp  = sP;
     vec3  mpF = mp + flowD;
     vec4  cl  = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + mpF * cv2.anchorCluster.w, cv2Lod(fpM, cv2.anchorCluster.w));
@@ -1788,7 +1800,7 @@ CV2Far cv2FarColumn(CV2Pos q, float fpM)
     vec4  w    = cv2WeatherSmooth(wdF + warp);
     float cov  = clamp((w.r * cv2.look.x - cv2.cover.x) / covSpan, 0.0, 1.0);
     float covF = clamp((wCoarse - cv2.cover.x) / covSpan, 0.0, 1.0);
-    if (cov <= 0.0 && covF <= 0.0) return r;
+    if (cov <= 0.0 && covF <= 0.0 && sK <= 0.0) return r;
     CV2Type ty = cv2TypeAt(w.g);
     float strat = 1.0 - ty.look.z;
     float covT  = max(cov, 0.5 * covF);
@@ -1878,6 +1890,21 @@ CV2Far cv2FarColumn(CV2Pos q, float fpM)
     r.msBright = ty.look.x;
     r.strat = strat;
     r.deep  = smoothstep(0.45, 0.85, w.g);
+    if (sK > 0.0) {
+        float baseS = cv2.types[4].alt.x + cv2Ground(q.dirE) * 0.9;
+        float lidS  = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * tropo - 250.0;
+        float topS  = baseS + (lidS - 300.0 - baseS) * cvS.y;
+        r.top   = mix(r.top, max(r.top, topS), sK);
+        r.base  = mix(r.base, min(r.base, baseS), sK);
+        r.e     = mix(r.e, 1.0, sK);
+        r.eRaw  = mix(r.eRaw, max(r.eRaw, 1.0), sK);
+        r.frac  = mix(r.frac, 1.0, sK);
+        r.covE  = mix(r.covE, 1.0, sK);
+        r.sigma = mix(r.sigma, cv2.types[3].shape.x * cv2.look.y, sK);
+        r.msBright = mix(r.msBright, cv2.types[3].look.x, sK);
+        r.strat = mix(r.strat, 0.0, sK);
+        r.deep  = max(r.deep, sK);
+    }
     return r;
 }
 #endif
@@ -2493,7 +2520,9 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
     float tropo = cv2Tropo(wd);
     float top   = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * tropo;
     const float kCv2DomeU = 600.0;
-    if (q.h > top + 50.0 + cv2.anvil2.w + kCv2DomeU) return g;
+    // (+1 km of headroom over the overshoot dome: its billows, the head's flare and a CDO's ridges rise past it, and a dome
+    // cut flat here is entered from above inside dense cloud: dark blots round a hurricane's eye, 2026-11-06)
+    if (q.h > top + 1050.0 + cv2.anvil2.w + kCv2DomeU) return g;
     cv2CycEye(wd, q.h, q.h - (cv2.types[4].alt.x + cv2Ground(q.dirE) * 0.9), cv2.types[4].alt.x + cv2Ground(q.dirE) * 0.9, top - 250.0);
     vec4  cvB = textureLod(cv2ConvTex, wd, 2.0);   // ~20 km: is a storm near at all (and its surroundings, its cumulus)
     if (cvB.x < 0.01 && cvB.z < 0.01) return g;
@@ -2649,10 +2678,12 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     if (gCv2CdoK > 0.0 && sg.m > -2000.0) {
         float lodF;
         vec4  sf = cv2CdoFibreTex(q.dirE, q.h, fpM, lodF);
-        float nF = clamp(0.5 + 2.5 * (sf.a - 0.5) + 1.2 * (sf.g - 0.45), 0.0, 1.0);
-        const float kCv2CdoStreakM = 250.0;   // (Weather v2: the swirl's ridges on the core's top; "Hurricane top streaks" was 90 m)
-        sg.m += smoothstep(0.75, 1.0, sg.hf) * gCv2CdoK * kCv2CdoStreakM * (1.0 + 10.0 * sg.cap) * nF
-              * (1.0 - smoothstep(0.5, 2.5, lodF));   // (on its top; faded before its ~9-km period aliases at grazing angles)
+        // (SMOOTH swells, not the fibres' sharp profile: sharp ridges stood as thin fins over the lid, grey and translucent at
+        // grazing angles -- the "lighting issue far off", 2026-11-06; 250 m of them did that)
+        float nF = smoothstep(0.25, 0.75, 0.5 + 1.2 * (sf.a - 0.5) + 0.6 * (sf.g - 0.45));
+        const float kCv2CdoStreakM = 80.0;   // (Weather v2: the swirl's swells on the core's top)
+        sg.m += smoothstep(0.75, 1.0, sg.hf) * gCv2CdoK * kCv2CdoStreakM * nF
+              * (1.0 - smoothstep(0.0, 1.5, lodF));   // (faded before its ~9-km period aliases at grazing angles)
     }
 #endif
 #ifdef CV2_LAYER_HITS
