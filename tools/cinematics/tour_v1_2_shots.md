@@ -19,7 +19,7 @@ Total ~5 min (22 shots).
 | 4 | | city | Los Angeles at night from 2.5 km, drifting east: street grids, lamp posts, real roads | 12 s | 1x | 34.05N 118.45W, Sun -25 deg | Procedural cities |
 | 5 | Weather | anvil | A cumulonimbus anvil lit gold at sunset from 6.6 km, mid-Pacific | 12 s | 1x | issue 20261023_003611 shot 1 (default settings) | Storm towers and anvils |
 | 6 | | mammatus | Under a storm's golden base over Venezuelan farmland (the default "Rainbow" bookmark), tilting up | 12 s | 1x | bookmark 5 | Storm bases, sunset light, farmland |
-| 7 | | haboob | A haboob's dust wall advancing over the Kalahari | 12 s | 1x | `weather event haboob` (the Weather window's Watch) | Weather events |
+| 7 | | squall | A squall line: towers on the leading edge, shelf cloud ahead, shield behind (the haboob shot until 2026-11-06) | 12 s | 1x | `weather event line` (the Weather window's Watch) | Weather events |
 | 8 | | fireline | A wildfire's flame front at night, smoke over it (Queensland) | 10 s | 1x | issue 20261028_191813 shot 1 | Wildfires |
 | 9 | | cyclone | Super Typhoon over Luzon from 885 km, slow push-in | 12 s | x60 | bookmark 10 | Tropical cyclones (arms turn; daytime only) |
 | 10 | | eyewall | Inside a hurricane's eye at 7.5 km: the eyewall and its cirrus outflow | 12 s | 1x | issue 20261027_213254 shot 3 | The cyclone up close |

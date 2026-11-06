@@ -23,9 +23,9 @@
 #include "WindField.h"
 // Weather v2 (.plans/WEATHER_V2_PLAN.md): no global cloud drift (SatelliteSim::cloudDriftPhase, updateStorms).
 inline constexpr bool kWeatherV2NoDrift = true;
-// Haboobs retired (2026-11-06, Weather v2: the user, they never looked right and their spawning caused issues): no dust
-// walls, no haboob events. SatelliteSimHaboob.cpp's fills return nothing; the march binds its dust-free pipeline.
-inline constexpr bool kHaboobsRetired = true;     // Weather v2: the one wind (2026-11-06)
+// (Haboobs, the dust walls on storms' gust fronts, were retired 2026-11-06 with Weather v2: the user, they never looked
+// right and their spawning caused issues. Their code (SatelliteSimHaboob.cpp), their dust grid in the storm buffer and
+// the cloud march's second pipeline variant (specialization constant 3, with the dust code) went with them.)
 #include "WeatherSystems.h"  // Weather v2: weather systems (extratropical cyclones, ...)
 #include "Wildfire.h"   // (and Biome.h)         // the land-cover map for the weather hazards (2026-10-23)
 #include "StormClimatology.h"
@@ -5494,7 +5494,6 @@ private:
     float cv2CdcFpUsed = -1.0f, cv2CdcMaxLevelUsed = -1.0f, cv2CdcSkipUsed = -1.0f;
     float cv2CdcBracketUsed = -1.0f;       // the bake's footprint bracket (cdcC.w) the cells were baked with
     int   cv2CdcShapeFrameUsed = -1;       // the low shape volume's frame (cv2ShapeFrame) the cells were baked under
-    float cv2CdcDustKeyUsed = -1.0f;   // the haboob field the clipmap's cells were baked with (dust on, gain, cloud form)
     float cv2CdcMaxRate = 4.0f;           // ... used only up to this time rate (x real time)
     float cv2CdcLight = 1.0f;             // S2 (2026-10-22): the light march reads the clipmap's mean beyond its first 2 steps
     float cv2CdcLightUsed = -1.0f;
@@ -5934,12 +5933,8 @@ private:
     // The ENVELOPE index (2026-10-22): the same towers, each listed out to its envelope (cv2_storms.glsl
     // cv2StormEnvRadius: ~1.8x its reach), read only by the weather bake (its storm cloud field, stormStamp).
     static constexpr uint32_t kStormEnvTableSize = 131072, kStormEnvListSize = 393216;
-    // The haboobs' DUST WALL grid (2026-10-24, = cv2_storms.glsl cv2DustHead / cv2DustFrame / cv2DustGrid): weatherFillDustGrid.
-    static constexpr uint32_t kDustGridN = 512;   // = kCv2DustGridN
-    static constexpr VkDeviceSize kDustHeadOffset = kCyclonesOffset + 64ull * kCycloneMax;
-    static constexpr VkDeviceSize kDustFrameOffset = kDustHeadOffset + 16;
-    static constexpr VkDeviceSize kDustGridOffset = kDustFrameOffset + 64;
-    static constexpr VkDeviceSize kStormEnvTableOffset = kDustGridOffset + 4ull * kDustGridN * kDustGridN;
+    // (The haboobs' dust wall grid stood between the cyclones and the envelope index until 2026-11-06.)
+    static constexpr VkDeviceSize kStormEnvTableOffset = kCyclonesOffset + 64ull * kCycloneMax;
     static constexpr VkDeviceSize kStormEnvListOffset = kStormEnvTableOffset + 8ull * kStormEnvTableSize;
     // The envelope index's own copy of the towers, a.xyz where the low cloud's weather lookup sees each (the flowed map,
     // cv2FlowDisp): the bake stamps there (buildStormEnvIndex).
@@ -5998,9 +5993,6 @@ private:
     // The slots each table filled last (fillStormIndex clears and re-uploads only those).
     std::vector<uint32_t> stormTableUsed, stormEnvTableUsed, shieldTableUsed, shieldEnvTableUsed;
     std::vector<wx::Shield> stormShields;        // this frame's anvil shields
-    // (2026-10-26) the organised storms alive this frame (id, centre in the map frame): the haboobs' candidates, so a
-    // storm whose towers have just died keeps its outflow's dust (haboobFrontOf's lagged towers)
-    std::vector<std::pair<uint64_t, glm::dvec3>> stormOrganisedNow;
     std::vector<GpuStormShield> stormGpuShields; // as uploaded (the bake's flowed copy is made from these)
     std::vector<StormEntry> shieldEntries, shieldEnvEntries;
     std::vector<glm::uvec2> shieldTable, shieldEnvTable;
@@ -6050,12 +6042,12 @@ private:
     // ── The Weather window's FEATURED events (2026-10-23, SatelliteSimWeatherFeatured.cpp) ─────────────────────
     // Reserved slots, always in the same order and the same size (the user: "anytime a new storm appears the window's
     // extents change"; "we should always have a tornado, haboob ready to go to"; cool events over storms near you): the
-    // next tornado, the strongest hurricane / typhoon, the next haboob, the strongest supercell, the strongest squall
-    // line / MCS, the next waterspout, the biggest wildfire. Tornadoes, waterspouts and haboobs are searched FORWARD in
-    // sim time (up to 24 / 24 / 48 h) on a second storm catalog (`wxScout`, same configuration: asking the main one for
+    // next tornado, the strongest hurricane / typhoon, the strongest supercell, the strongest squall line / MCS, the next
+    // waterspout, the biggest wildfire (the haboob slot went with the haboobs, 2026-11-06). Tornadoes and waterspouts are
+    // searched FORWARD in sim time (up to 24 h) on a second storm catalog (`wxScout`, same configuration: asking the main one for
     // another time evicts the bins the renderer needs), a few steps a frame while the window is open; the rest come from
     // the storms / cyclones alive now and the fires burning now (worker thread: firesWorld scans the globe).
-    enum WxFeatKind { kFeatTornado = 0, kFeatHurricane, kFeatHaboob, kFeatSupercell, kFeatLine, kFeatSpout, kFeatFire, kFeatCount };
+    enum WxFeatKind { kFeatTornado = 0, kFeatHurricane, kFeatSupercell, kFeatLine, kFeatSpout, kFeatFire, kFeatCount };
     struct WxFeatured
     {
         bool found = false;           // something to show
@@ -6091,7 +6083,7 @@ private:
         int step = 0;
         bool done = false;
         std::unordered_set<uint64_t> seen;
-        WxFeatured ft, fs, fh;   // the tornado, waterspout and haboob slots as the search left them
+        WxFeatured ft, fs;   // the tornado and waterspout slots as the search left them
     };
     std::future<WxScanState> wxScanJob;
     std::atomic<bool> wxScanCancel{false};
@@ -6268,8 +6260,7 @@ private:
     void recordWildfireGround(VkCommandBuffer cmd, VulkanContext &ctx);
     void weatherFillFireParams(GpuCloudParams &cp);   // the burn scars (sat_sky.frag fireScarAt): last frame's firesNow
     void destroyWildfireGround(VkDevice device);
-    uint32_t smokeHdrBits = 0;
-    uint32_t aerosolFirst = 0xFFFFFFFFu;       // this frame's first haboob Gaussian (weatherFillHaboobs; one range with the smoke)                 // the dust list header word 1's smoke range (smoke.glsl), this frame's
+    uint32_t smokeHdrBits = 0;   // the dust list header word 1's smoke range (smoke.glsl), this frame's
     struct FirePtSeg   // a segment's points (weatherFillWildfires builds the segments in parallel)
     {
         std::vector<GpuFireball> pts;
@@ -6277,47 +6268,6 @@ private:
     };
     std::vector<FirePtSeg> firePtSeg;
     void weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double pixFull);
-    // Haboobs (2026-10-23, SatelliteSimHaboob.cpp): the dust walls on storms' gust fronts over the biome map's dust.
-    struct HaboobPoint
-    {
-        glm::dvec3 dir{0, 0, 1}, out{1, 0, 0}, tan{0, 1, 0};   // Earth-fixed: position, outward (the front's motion), along
-        double strength = 0.0;
-    };
-    float haboobGain = 1.0f;          // clouds_v2.haboobs: x the dust walls (0 = none)
-    int haboobsNow = 0;               // storms drawing one this frame
-    double haboobNearestKm = -1.0;
-    // (towers: the towers to build it from; nullptr = this frame's, stormTowers. lagCat: the catalog the lingering
-    // outflow's past towers come from; nullptr = the main catalog when towers is nullptr, else none)
-    void haboobFrontOf(const wx::Storm &S, double t, std::vector<HaboobPoint> &pts,
-                       const std::vector<wx::Tower> *towers = nullptr, wx::Catalog *lagCat = nullptr) const;
-    double haboobPointK(const HaboobPoint &q) const;   // the dust raised there: the biome map's dust x the front's strength x gain
-    // The haboob of storm S at t: the front point with the most dust (false: none drawn). Builds the storm's towers
-    // itself, from cat (nullptr = the main catalog; the Weather window's forward search passes its scout).
-    bool haboobStrongestPoint(const wx::Storm &S, double t, HaboobPoint &best, double &bestK, wx::Catalog *cat = nullptr) const;
-    // The Sun on a haboob's face at an Earth-fixed point, clear of its storm's anvil (0..1), and the storm's parts for it.
-    double haboobSunOnFace(const glm::dvec3 &pE, double t, const std::vector<wx::Tower> &tw,
-                           const std::vector<wx::Shield> &sh) const;
-    void haboobStormParts(wx::Catalog &cat, const wx::Storm &S, double t, std::vector<wx::Tower> &tw,
-                          std::vector<wx::Shield> &sh) const;
-    void weatherFillHaboobs(GpuDustCloud *out, uint32_t &n);
-    // The haboobs as CLOUD (2026-10-24): their dust walls rasterised into the storm buffer's dust grid round the observer
-    // (cv2_storms.glsl cv2DustWallAt), drawn by the clouds v2 march (clouds_v2.glsl cv2DustWallSigma). Within the grid the
-    // plume Gaussians give way to it.
-    bool haboobField = true;          // clouds_v2.haboob_field (0 = the plume Gaussians everywhere, the old look)
-    void weatherFillDustGrid();
-    std::vector<uint32_t> dustGridCpu;           // the grid as written (kDustGridN^2)
-    glm::ivec4 dustBox{0, 0, 0, 0};              // the cells written last time (lo x, lo y, hi x, hi y; hi exclusive)
-    glm::dvec3 dustGridE{1, 0, 0}, dustGridN{0, 1, 0}, dustGridUp{0, 0, 1};
-    double dustGridCellM = 0.0;                  // 0 = no grid this frame
-    double dustGridT = -1e300;                   // the sim time the grid was built for
-    glm::dvec3 dustGridEye{0, 0, 0};
-    glm::dvec3 dustNoiseOff{0, 0, 0};            // the lobe noise's displacement (m, ECEF): the wall's motion + the rise
-    glm::dvec3 dustNoiseVel{0, 0, 0};            // the nearest wall's motion over the ground (m/s, ECEF)
-    static constexpr double kDustLobePeriodM = 4000.0;   // the walls' lobe noise period: lobes of ~1 km, 500 m, 250 m
-    double dustNoiseT = -1e300;
-    int dustWallsNow = 0, dustCellsNow = 0;      // storms in the grid, cells with dust (harness `fires`)
-    bool dustGpuOn = false;                      // the grid's head says a wall: the march with the haboob code (perf pass 4)
-    double dustGridMs = 0.0;
     nlohmann::json wildfiresJson(bool world);
     double stormPrevUploadT = -1e300;            // the previous upload's sim time (a jump re-bakes the weather cube)
     double stormLastFrameT = -1e300;             // last frame's sim time, and how many frames in a row moved > 2 h:
@@ -6482,12 +6432,10 @@ private:
     VkPipelineLayout cv2MarchPipeLayout = VK_NULL_HANDLE, cv2ResolvePipeLayout = VK_NULL_HANDLE;
     VkPipeline cv2MarchPipeline = VK_NULL_HANDLE, cv2ResolvePipeline = VK_NULL_HANDLE;
     VkPipeline cv2MarchPassBPipeline = VK_NULL_HANDLE;   // the adaptive rate's full-rate tiles (spec constant 2)
-    // The same two without the haboob code (spec constant 3 = 0, perf pass 4): bound while no dust wall is in the grid.
-    VkPipeline cv2MarchNoDustPipeline = VK_NULL_HANDLE, cv2MarchPassBNoDustPipeline = VK_NULL_HANDLE;
     VkPipeline cv2TilesPipeline = VK_NULL_HANDLE;        // ... and its tile classification (cloud_v2_tiles.comp)
-    // Smooth tiles (2026-10-25, the full-res grid): pass F (spec constant 2 = 2, with and without the haboob code), the
-    // tiles' classification (cloud_v2_tiles.comp kMode 1) and the sparse grid's fill (kMode 2).
-    VkPipeline cv2MarchPassFPipeline = VK_NULL_HANDLE, cv2MarchPassFNoDustPipeline = VK_NULL_HANDLE;
+    // Smooth tiles (2026-10-25, the full-res grid): pass F (spec constant 2 = 2), the tiles' classification
+    // (cloud_v2_tiles.comp kMode 1) and the sparse grid's fill (kMode 2).
+    VkPipeline cv2MarchPassFPipeline = VK_NULL_HANDLE;
     VkPipeline cv2TilesSmoothPipeline = VK_NULL_HANDLE, cv2TilesFillPipeline = VK_NULL_HANDLE;
     // Adaptive rate: the tiles pass A listed (header {pad, dispatch x, y, z}, 4096 tile ids, 4096 flags),
     // and pass B's full-rate targets.
@@ -6933,7 +6881,7 @@ private:
     // desert / ice drivers), classified from the same colours the ground is drawn with.
     std::vector<uint8_t> earthDayCpu;
     int earthDayCpuW = 0, earthDayCpuH = 0;
-    // The land-cover map for the weather hazards (Biome.h: wildfires' fuel, haboobs' dust), built at load from the
+    // The land-cover map for the weather hazards (Biome.h: wildfires' fuel, the regional dust), built at load from the
     // day map, the elevation and the ocean mask.
     wx::BiomeMap biomeMap;
     // Box-filtered 1024x512 byte copy of the CLOUD MAP (~39 km/px), the 2D coverage the clouds are

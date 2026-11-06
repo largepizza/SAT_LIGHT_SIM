@@ -6,12 +6,12 @@
 // hurricanes." So the Storms tab opens with one card per kind of event, always in the same order and the same size:
 //   Tornado      the next tornado touching down anywhere (in daylight if one comes within the search), up to 24 h ahead
 //   Hurricane    the strongest tropical cyclone now, and the next one that becomes a major (Category 3+) one
-//   Haboob       the next organised storm over dusty ground by day (the harness `haboob` test), up to 48 h ahead
 //   Supercell    the strongest supercell now (mature and in daylight preferred)
 //   Squall line  the strongest squall line / MCS now
 //   Waterspout   the next waterspout at sea (daylight preferred), up to 24 h ahead
 //   Wildfire     the biggest fire burning now
-// Tornadoes, waterspouts and haboobs come from a FORWARD search over sim time on a second storm catalog (wxScout, the
+// (A Haboob card, the next organised storm over dusty ground by day up to 48 h ahead, went with the haboobs, 2026-11-06.)
+// Tornadoes and waterspouts come from a FORWARD search over sim time on a second storm catalog (wxScout, the
 // main catalog's configuration): every storm alive at each 30-min step. Asking the main catalog for another time evicts
 // the bins the renderer needs this frame (Weather.cpp stormsAt keeps only [t - 9 h, t + 2 h]), so it is never used for
 // that. The search runs on a worker thread (wxScanJob) while the window is open, and restarts when sim time goes
@@ -36,11 +36,11 @@ namespace
 constexpr double kRe = 6371000.0;
 constexpr double kStepS = 1800.0;            // the search's step (= the catalog's spawn bin)
 constexpr double kTornadoAheadS = 24.0 * 3600.0;
-constexpr double kHaboobAheadS = 48.0 * 3600.0;
 
 // The storm icons (tools/make_icons.py, appended after the weather icon: SatelliteSimUI.cpp loadUiIcons). +1 = the
 // renderer's icon index convention.
-constexpr int kIconStormTornado = 23, kIconStormHurricane = 24, kIconStormHaboob = 25, kIconStormSupercell = 26,
+// (25, the haboobs' icon, unused since they were retired 2026-11-06.)
+constexpr int kIconStormTornado = 23, kIconStormHurricane = 24, kIconStormSupercell = 26,
               kIconStormSquall = 27, kIconStormSpout = 28, kIconStormFire = 29, kIconStormCell = 30;
 
 double wallMs() { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
@@ -88,7 +88,7 @@ void SatelliteSim::weatherFeaturedRestart(double now)
     wxScanStep = 0;
     wxScanDone = false;
     wxScanSeen.clear();
-    for (int s : {(int)kFeatTornado, (int)kFeatSpout, (int)kFeatHaboob})
+    for (int s : {(int)kFeatTornado, (int)kFeatSpout})
     {
         wxFeat[s].found = false;
         wxFeat[s].searching = true;
@@ -146,10 +146,10 @@ void SatelliteSim::weatherFeaturedNow(const std::vector<WxStormRow> &alive)
     }
 }
 
-// One 30-min step of the forward search on the scout catalog (tornadoes, waterspouts, haboobs), on state S. Runs on a
-// worker thread (weatherFeaturedUpdate's wxScanJob): it reads the scout catalog (only this search uses it), the settings and
-// the static maps, and writes S only. (On the main thread, one step was up to ~12 ms: the scout's new bins after a jump,
-// the haboobs' storm parts; perf4-cpu 2026-10-24.)
+// One 30-min step of the forward search on the scout catalog (tornadoes, waterspouts), on state S. Runs on a worker
+// thread (weatherFeaturedUpdate's wxScanJob): it reads the scout catalog (only this search uses it), the settings and the
+// static maps, and writes S only. (On the main thread, one step was up to ~12 ms: the scout's new bins after a jump, the
+// since-retired haboobs' storm parts; perf4-cpu 2026-10-24.)
 void SatelliteSim::weatherScanStep(WxScanState &S) const
 {
     std::vector<const wx::Storm *> v;
@@ -158,7 +158,7 @@ void SatelliteSim::weatherScanStep(WxScanState &S) const
         FPROF_SCOPE("wxf.stormsAt");
         wxScout->stormsAt(tk, v);
     }
-    WxFeatured &Ft = S.ft, &Fs = S.fs, &Fh = S.fh;
+    WxFeatured &Ft = S.ft, &Fs = S.fs;
     for (const wx::Storm *St : v)
     {
         // Tornadoes and waterspouts: each storm once (its tornado is fixed at its birth).
@@ -206,94 +206,6 @@ void SatelliteSim::weatherScanStep(WxScanState &S) const
                 }
             }
         }
-        // Haboobs: an organised line system at full strength (its envelope between sysOn + ramp and sysOff - ramp,
-        // >= 2 h old, an hour left before 70% of its life) by day (Sun > 10 deg at its centre), whose LEADING EDGE is
-        // over dust: of 9 points along the line, dG ahead of it (as haboobFrontOf: 5 + 14 km x the age ramp), at least
-        // 6 on the biome map's dust >= 0.3 and their mean >= 0.4. (The centre's dust alone picked storms whose front ran
-        // over farmland: no wall was drawn.) Inland (the coast's fog hid it). Ranked by its LIGHT: 2 for the Sun on the
-        // side the wall advances toward, clear of the storm's anvil and 18 deg up at least (a Go to stands there, the wall
-        // front-lit; against the Sun it is a dark silhouette, under a lower Sun the light crossed tens of km of the
-        // storm's cloud and the wall stood in shade); 1 for a Sun 25-60 deg up (its heads cast shadows, the face lit).
-        // The earliest of the best; rank 3 ends the search.
-        if ((!Fh.found || Fh.rank < 3) && tk <= S.base + kHaboobAheadS && wx::isLineSystem(St->kind) && biomeMap.ready() &&
-            tk - St->t0 >= 7200.0 && tk <= St->t0 + St->life * 0.7 - 3600.0)
-        {
-            const wx::TowerSpec &ts = St->towers[0];
-            const double age = tk - St->t0;
-            const bool full = age >= ts.sysOn + ts.sysRamp && age <= ts.sysOff - ts.sysRamp;
-            const glm::dvec3 c = glm::normalize(St->centreAt(tk));
-            const glm::dvec3 ce = weatherMapToEarth(c, tk);
-            if (full && weatherSunSin(ce, tk) > 0.17)
-            {
-                FPROF_SCOPE("wxf.haboob");
-                glm::dvec3 v = St->centreAt(tk + 60.0) - c;
-                v -= c * glm::dot(v, c);
-                double bowSgn = 1.0;   // (the towers' bow is toward the map-frame motion)
-                glm::dvec3 mv = glm::length(v) > 1e-15 ? glm::normalize(v) : glm::normalize(glm::dvec3(St->shear));
-                // (Ahead of its motion over the ground, as haboobFrontOf: the map frame drifts.)
-                if (glm::dot(weatherMapToEarth(glm::normalize(St->centreAt(tk + 60.0)), tk + 60.0) -
-                             weatherMapToEarth(glm::normalize(St->centreAt(tk - 60.0)), tk - 60.0),
-                             weatherMapToEarth(glm::normalize(c + mv * 1e-3), tk) - ce) < 0.0)
-                {
-                    mv = -mv;
-                    bowSgn = -1.0;
-                }
-                const glm::dvec3 ea = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), c) + glm::dvec3(1e-12, 0, 0));
-                const glm::dvec3 no = glm::cross(c, ea);
-                const glm::dvec3 L = ea * std::cos((double)St->lineAz) + no * std::sin((double)St->lineAz);
-                const double dG = 8000.0 + 22000.0 * glm::smoothstep(1800.0, 3.0 * 3600.0, age);   // (haboobFrontOf's, a line's)
-                int on = 0;
-                double sum = 0.0;
-                for (int q = -4; q <= 4; ++q)
-                {
-                    const double x = (double)q / 4.0;
-                    const double fwd = dG + bowSgn * (double)St->bow * (1.0 - x * x);
-                    const glm::dvec3 p = glm::normalize(c + (L * (x * (double)St->lineHalfM) + mv * fwd) / kRe);
-                    const glm::dvec3 pe = weatherMapToEarth(p, tk);
-                    const double d = biomeMap.dustAt(latOf(pe), lonOf(pe));
-                    sum += d;
-                    on += d >= 0.3 ? 1 : 0;
-                }
-                const glm::dvec3 me = weatherMapToEarth(glm::normalize(c + mv * 1e-3), tk) - ce;
-                const glm::dvec3 si = sunDirEciAt(tk);
-                const double gr = earthRotationAngle(tk);
-                const glm::dvec3 se(si.x * std::cos(gr) + si.y * std::sin(gr), -si.x * std::sin(gr) + si.y * std::cos(gr), si.z);
-                const glm::dvec3 sh = se - ce * glm::dot(se, ce);
-                const double sunEl = std::asin(std::clamp(weatherSunSin(ce, tk), -1.0, 1.0)) * (180.0 / 3.14159265358979);
-                // (the Sun must also reach the wall past the anvil: the middle of the leading edge)
-                double lit = 0.0;
-                if (glm::dot(sh, me) > 0.0)
-                {
-                    std::vector<wx::Tower> tw;
-                    std::vector<wx::Shield> shl;
-                    haboobStormParts(*wxScout, *St, tk, tw, shl);
-                    const glm::dvec3 pm = weatherMapToEarth(glm::normalize(c + mv * ((dG + bowSgn * (double)St->bow) / kRe)), tk);
-                    lit = haboobSunOnFace(pm, tk, tw, shl);
-                }
-                const int rank = (lit > 0.5 && sunEl >= 18.0 ? 2 : 0) + (sunEl >= 25.0 && sunEl <= 60.0 ? 1 : 0);
-                // Inland: within ~150 km of the sea the coast's fog and haze (cv2FogDust) hid the wall from a Go to.
-                const bool inland = oceanFraction(std::asin(std::clamp(ce.z, -1.0, 1.0)), std::atan2(ce.y, ce.x), 150000.0, 2) < 0.05f;
-                // ... and the front the Watch will stand in front of raises a wall then (haboobStrongestPoint, the same
-                // test, on the scout's towers): the leading edge's dust alone accepted lines whose front was gapped or
-                // whose towers were too weak at that moment, and the Watch found nothing (2026-10-27).
-                const double tEv = std::max(tk, S.now);
-                HaboobPoint hq;
-                double hk = 0.0;
-                if (!kHaboobsRetired && on >= 6 && sum / 9.0 >= 0.4 && inland && (!Fh.found || rank > Fh.rank) &&
-                    haboobStrongestPoint(*St, tEv, hq, hk, wxScout.get()))
-                {
-                    Fh.found = true;
-                    Fh.rank = rank;
-                    Fh.searching = rank < 3;
-                    Fh.tEvent = tEv;
-                    Fh.tEnd = std::min(St->t0 + St->life * 0.7, St->t0 + (double)ts.sysOff - (double)ts.sysRamp);
-                    Fh.day = true;
-                    Fh.earth = ce;
-                    Fh.storm = *St;
-                    Fh.hasStorm = true;
-                }
-            }
-        }
     }
     // Resolved: a daylit candidate touching down before this step (no storm born later can beat it), or the horizon.
     auto resolved = [&](WxFeatured &F) {
@@ -302,11 +214,8 @@ void SatelliteSim::weatherScanStep(WxScanState &S) const
         return r;
     };
     const bool rt = resolved(Ft), rs = resolved(Fs);
-    if (tk >= S.base + kHaboobAheadS)
-        Fh.searching = false;
-    const bool rh = !Fh.searching;
     ++S.step;
-    if (rt && rs && rh)
+    if (rt && rs)
         S.done = true;
 }
 
@@ -336,13 +245,13 @@ void SatelliteSim::weatherFeaturedUpdate()
         weatherFeaturedRestart(now);
     }
     bool restart = now < wxScanBase - 1.0 || now > wxScanBase + 12.0 * 3600.0;
-    for (int s : {(int)kFeatTornado, (int)kFeatSpout, (int)kFeatHaboob})
+    for (int s : {(int)kFeatTornado, (int)kFeatSpout})
         if (wxFeat[s].found && now > wxFeat[s].tEnd)
             restart = true;
     if (restart)
         weatherFeaturedRestart(now);
 
-    // ── The forward search (tornadoes, waterspouts, haboobs): on a worker (wxScanJob), its results taken here ──
+    // ── The forward search (tornadoes, waterspouts): on a worker (wxScanJob), its results taken here ──
     if (wxScanJob.valid() && wxScanJob.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
     {
         WxScanState r = wxScanJob.get();
@@ -353,7 +262,6 @@ void SatelliteSim::weatherFeaturedUpdate()
             wxScanSeen = std::move(r.seen);
             wxFeat[kFeatTornado] = r.ft;
             wxFeat[kFeatSpout] = r.fs;
-            wxFeat[kFeatHaboob] = r.fh;
         }
         wxScanJobStale = false;
     }
@@ -367,7 +275,6 @@ void SatelliteSim::weatherFeaturedUpdate()
         st.seen = wxScanSeen;
         st.ft = wxFeat[kFeatTornado];
         st.fs = wxFeat[kFeatSpout];
-        st.fh = wxFeat[kFeatHaboob];
         wxScanCancel = false;
         wxScanJob = std::async(std::launch::async, [this, st = std::move(st)]() mutable {
             // Until done, cancelled (a restart), or ~0.4 s (the cards show the progress as it goes).
@@ -516,46 +423,6 @@ bool SatelliteSim::weatherFeaturedAct(int slot, int act, std::string &msg)
     case kFeatSpout:
         if (!F.hasStorm) break;
         return weatherWatchTornadoOf(F.storm, act == 1 ? 1 : 0, msg);
-    case kFeatHaboob:
-    {
-        if (!F.hasStorm) break;
-        // In front of the wall itself: the strongest stretch of the storm's gust front over dust at that moment (its towers
-        // built for it, haboobStrongestPoint), standing D ahead of it and looking back at it (act 0, Watch: 6 km on the
-        // ground, the wall filling the view's lower third and reaching you in ~6 min; act 1 (harness): 9 km ahead, 2 km
-        // up (2.5 km until the walls were lowered to 0.5-1.8 km, 2026-10-26: that was inside the cloud above them), over its heads: from 3-4 km up the storm's own cumulus often stood in the way, from 1.2 km the regional dust haze). The first cut stood a fixed distance from the storm's
-        // CENTRE, measured to an estimate of the front (bow + the outflow's lead): its real front, built from the towers
-        // standing then, was 40-80 km away and a haze on the horizon, and the aloft view showed none.
-        const double t = std::max(F.tEvent, (double)simDayJ2000 * 86400.0 + simSecInDay);
-        setT(t);
-        const wx::Storm &S = F.storm;
-        const bool aloft = act == 1;
-        HaboobPoint q;
-        double k = 0.0;
-        // (The search found a wall at tEvent; a moment later its regenerating towers may be weaker: the first moment from
-        // t on, in 2-min steps up to an hour or the event's end, where the front raises one.)
-        double tW = t;
-        bool okW = haboobStrongestPoint(S, tW, q, k);
-        for (int i = 1; !okW && i <= 30 && t + 120.0 * i <= std::max(F.tEnd, t); ++i)
-        {
-            tW = t + 120.0 * i;
-            okW = haboobStrongestPoint(S, tW, q, k);
-        }
-        if (!okW)
-        {
-            msg = tx(Txt::ValItsGustFrontRaisesNoDust);
-            return false;
-        }
-        if (tW != t)
-            setT(tW);
-        const double D = aloft ? 9000.0 : 6000.0;
-        const glm::dvec3 oe = glm::normalize(q.dir + q.out * (D / kRe));
-        placeLooking(oe, aloft ? 2000.0 : 2.0, q.dir, aloft ? -6.0f : 6.0f);
-        camera.fovYDeg = 70.0f;
-        updatePositions(tW);
-        msg = std::string(tx(Txt::TxtAHaboobsDustWallOver)) + wx::biomeName(biomeMap.at(latOf(q.dir), lonOf(q.dir))) +
-              (aloft ? tx(Txt::TxtKmAwaySeenFrom2) : tx(Txt::TxtKmAwayAndComingToward));
-        return true;
-    }
     case kFeatSupercell:
     case kFeatLine:
         if (act == 0) return weatherWatchStormNow(F.row.id, msg);
@@ -732,7 +599,7 @@ void SatelliteSim::buildWeatherFeatured(const UIInput &inp, UIRenderer &ui)
         card(slot, spout ? kIconStormSpout : kIconStormTornado, title, spout ? Pal::chipIdle : Pal::btnDanger, st, l1, l2, b);
         if (!spout)
         {
-            // ── Hurricane, then haboob, supercell, line (the cards' order: the coolest first) ──
+            // ── Hurricane, then supercell, line (the cards' order: the coolest first) ──
             const WxFeatured &H = wxFeat[kFeatHurricane];
             const char *hs, *h1, *h2;
             if (H.hasCyc)
@@ -770,28 +637,6 @@ void SatelliteSim::buildWeatherFeatured(const UIInput &inp, UIRenderer &ui)
             (void)landfall;
             const Btn hb = {tx(Txt::LblTheWholeStormFromOrbitIts), H.hasCyc};
             card(kFeatHurricane, kIconStormHurricane, tx(Txt::LblHurricane), Pal::progressFill, hs, h1, h2, hb);
-
-            if (!kHaboobsRetired)   // (haboobs retired 2026-11-06: no card)
-            {
-                const WxFeatured &B = wxFeat[kFeatHaboob];
-                const char *bs, *b1, *b2;
-                if (!B.found)
-                {
-                    bs = B.searching ? searching : tx(Txt::ValNoneInTheNext2Days);
-                    b1 = B.searching ? wxStr(tx(Txt::FmtLookingHAhead), std::max(0.0, (wxScanBase + kStepS * wxScanStep - now) / 3600.0)) : "";
-                    b2 = "";
-                }
-                else
-                {
-                    fmtIn(B.tEvent - now, w, sizeof(w));
-                    bs = B.tEvent <= now + 60.0 ? tx(Txt::ValADustWallNow) : wxStr(tx(Txt::FmtIn), w);
-                    b1 = where(B.earth);
-                    b2 = wxStr(tx(Txt::FmtGustFrontOver), B.storm.kind == wx::StormKind::Mcs ? tx(Txt::TxtStormComplex2) : tx(Txt::ValSquallLine),
-                               wx::biomeName(biomeMap.at(latOf(B.earth), lonOf(B.earth))));
-                }
-                const Btn bb = {tx(Txt::LblTheDustWallRollingTowardYou), B.found};
-                card(kFeatHaboob, kIconStormHaboob, tx(Txt::LblHaboob), Pal::tagTwilight, bs, b1, b2, bb);
-            }
 
             for (int s : {(int)kFeatSupercell, (int)kFeatLine})
             {
@@ -849,7 +694,7 @@ void SatelliteSim::buildWeatherFeatured(const UIInput &inp, UIRenderer &ui)
 
 nlohmann::json SatelliteSim::weatherFeaturedJson()
 {
-    static const char *kNames[kFeatCount] = {"tornado", "hurricane", "haboob", "supercell", "line", "waterspout", "wildfire"};
+    static const char *kNames[kFeatCount] = {"tornado", "hurricane", "supercell", "line", "waterspout", "wildfire"};
     const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
     nlohmann::json j = nlohmann::json::object();
     for (int s = 0; s < kFeatCount; ++s)

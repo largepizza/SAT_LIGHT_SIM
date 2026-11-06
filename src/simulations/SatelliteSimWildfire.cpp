@@ -1,8 +1,8 @@
 // SatelliteSimWildfire.cpp — the wildfires drawn (2026-10-23, Wildfire.h, .plans/WEATHER_HAZARDS_PLAN.md section 1;
 // reworked 2026-10-23 b from the user's issue 20261023_225322).
 //
-// SMOKE: plume Gaussians appended to the dust list after the haboobs, one contiguous range with them whose bounds go in
-// the list header's word 1 (bits 8-17 first, 18-27 count; smoke.glsl). Each fire's smoke is a STREAK: parcels emitted
+// SMOKE: plume Gaussians appended to the dust list, one contiguous range (the haboobs' walls shared it until they were
+// retired, 2026-11-06) whose bounds go in the list header's word 1 (bits 8-17 first, 18-27 count; smoke.glsl). Each fire's smoke is a STREAK: parcels emitted
 // over the last hours, each risen to its layer and carried by the wind of its height at the moment it travelled
 // (Wildfire.h windAt: coherent in space, turning with height and changing over hours), so the column bends over, a
 // lower and an upper layer go different ways, older smoke follows older winds, and every plume wiggles and widens as it
@@ -102,10 +102,7 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
     flameCount = 0;
     if (!out) return;
     if (wildfireRate <= 0.0f || !biomeMap.ready())
-    {
-        if (n > aerosolFirst) smokeHdrBits = (aerosolFirst << 8u) | ((n - aerosolFirst) << 18u);
         return;
-    }
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
     const double eyeR = (double)obsEyeRadiusM();
@@ -352,7 +349,7 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
         d.ia = glm::vec4((float)Mx(0, 0), (float)Mx(1, 1), (float)Mx(2, 2), (float)(1.0 / (kTwoPi15 * sA * sB * sC)));
         const double lS = sunL.x + sunL.y + sunL.z, lI = skyL.x + skyL.y + skyL.z;
         const double share = std::min(lI / std::max(lI + lS, 1e-9), 0.999);
-        const double seedK = 128.0 + (double)(fwMix(seed) & 127u);   // (smoke: seeds 128-255; < 128 = haboob walls)
+        const double seedK = 128.0 + (double)(fwMix(seed) & 127u);   // (smoke: seeds 128-255; < 128 were the retired haboob walls)
         d.ib = glm::vec4((float)Mx(0, 1), (float)Mx(0, 2), (float)Mx(1, 2), (float)(4.0 * seedK + 2.0 + share));
         d.col = glm::vec4(glm::vec3(sunL + skyL), (float)(colW >= 0.0 ? colW : 2.0 + albedo));
         const double R = 5.5 * std::max(sA, std::max(sB, sC));
@@ -1534,11 +1531,11 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
             }
         }
     }
-    // (one range with the haboobs drawn just before: weatherFillHaboobs sets aerosolFirst)
+    // (the smoke's range: from first, where this fill started; the haboob walls drawn just before it shared the range
+    // until they were retired, 2026-11-06)
     {
-        const uint32_t f0 = std::min(first, aerosolFirst);
-        const uint32_t cnt = n - f0;
-        if (cnt > 0) smokeHdrBits = (f0 << 8u) | (cnt << 18u);
+        const uint32_t cnt = n - first;
+        if (cnt > 0) smokeHdrBits = (first << 8u) | (cnt << 18u);
     }
 
     // ── The front: points (kFireBuf), the flames close up (emissive Gaussians AFTER the smoke's range: they must not

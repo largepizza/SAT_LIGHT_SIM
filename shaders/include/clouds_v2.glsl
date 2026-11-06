@@ -2579,24 +2579,14 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
     return g;
 }
 
-// The haboob code in the field on / off (perf pass 4, 2026-10-25). Its mere presence, never run, cost the march 0.5-1 ms in
-// every view (the field is inlined at two sites: code size), so the march is built twice, specialization constant 3, and the
-// host binds the dust-free one while the dust grid holds no wall (SatelliteSim::dustGpuOn). Other shaders keep it on.
-#ifdef CV2_DUST_SPEC
-layout(constant_id = 3) const int kCv2DustOn = 1;
-#else
-const int kCv2DustOn = 1;
-#endif
-// Storms through the cumulus field (clouds_v2.storm_unified): the march's is specialization constant 4, so its pipeline
-// holds only the path in use (both behind the uniform: +0.6 ms of code size in views with no storm); the other shaders
-// read the uniform.
+// (The haboobs' dust code and the march's specialization constant 3 that took it out, kCv2DustOn, were retired
+// 2026-11-06 with the haboobs.)
+// Storms through the cumulus field (clouds_v2.storm_unified): until Weather v2 the march's was specialization constant 4
+// (both paths behind the uniform: +0.6 ms of code size in views with no storm); the other shaders read the uniform.
 #if defined(CV2_CONV_BINDING)
 // Weather v2: storms are the convection cube's, always drawn through the cumulus field (the old per-tower path is not
 // compiled in; it kept ~0.6 ms of code size and the register pressure).
 #define CV2_STORM_U true
-#elif defined(CV2_DUST_SPEC)
-layout(constant_id = 4) const int kCv2StormSpec = 1;
-#define CV2_STORM_U (kCv2StormSpec != 0)
 #else
 #define CV2_STORM_U (cv2.stormU.x > 0.5)
 #endif
@@ -2613,7 +2603,6 @@ const uint kCv2LayLow  = 2u;    // cv2FieldLow (the low layer, rain)
 const uint kCv2LayMid  = 4u;    // cv2MidSigma
 const uint kCv2LayHigh = 8u;    // cv2HighSigma
 const uint kCv2LayAnv  = 16u;   // cv2AnvilSigmaP, its presence (the cirrus gives way) and the shield-less presence read
-const uint kCv2LayDust = 32u;   // the haboob's dust (never skipped: its own specialization)
 uint gCv2LayMask = 0xFFFFu;
 #ifdef CV2_LAYER_HITS
 uint gCv2LayHit = 0u;

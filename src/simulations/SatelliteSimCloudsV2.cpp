@@ -667,9 +667,6 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     {
         const uint32_t specB[3] = {cv2MarchWg[0], cv2MarchWg[1], 1u};
         cv2MarchPassBPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_march.comp.spv", cv2MarchPipeLayout, specB, 3);
-        const uint32_t specN[4] = {cv2MarchWg[0], cv2MarchWg[1], 0u, 0u}, specNB[4] = {cv2MarchWg[0], cv2MarchWg[1], 1u, 0u};
-        cv2MarchNoDustPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_march.comp.spv", cv2MarchPipeLayout, specN, 4);
-        cv2MarchPassBNoDustPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_march.comp.spv", cv2MarchPipeLayout, specNB, 4);
     }
     cv2TilesPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_tiles.comp.spv", cv2MarchPipeLayout);
     makeSmoothTilePipelines(ctx, "shaders/cloud_v2_march.comp.spv");
@@ -925,18 +922,17 @@ static std::string pipelineStatsLine(VulkanContext &ctx, VkPipeline p)
 // docs/FREEZES.md). Same layouts, so descriptors and push constants carry over. Returns what failed.
 // marchSpv overrides the march's file (an A/B against another build in one batch); stats receives the
 // driver's statistics for the new march pipeline.
-// Smooth tiles (cloud_v2_tiles.comp): pass F from the march's SPV (spec constant 2 = 2; with and without the haboob
-// code), the classification (kMode 1) and the fill (kMode 2). Replaces the four pipelines; throws on failure.
+// Smooth tiles (cloud_v2_tiles.comp): pass F from the march's SPV (spec constant 2 = 2), the classification (kMode 1)
+// and the fill (kMode 2). Replaces the three pipelines; throws on failure.
 void SatelliteSim::makeSmoothTilePipelines(VulkanContext &ctx, const char *marchSpv)
 {
-    const uint32_t specF[3] = {cv2MarchWg[0], cv2MarchWg[1], 2u}, specFN[4] = {cv2MarchWg[0], cv2MarchWg[1], 2u, 0u};
+    const uint32_t specF[3] = {cv2MarchWg[0], cv2MarchWg[1], 2u};
     const uint32_t m1[1] = {1u}, m2[1] = {2u};
-    VkPipeline np[4] = {makeComputePipeline(ctx, marchSpv, cv2MarchPipeLayout, specF, 3),
-                        makeComputePipeline(ctx, marchSpv, cv2MarchPipeLayout, specFN, 4),
+    VkPipeline np[3] = {makeComputePipeline(ctx, marchSpv, cv2MarchPipeLayout, specF, 3),
                         makeComputePipeline(ctx, "shaders/cloud_v2_tiles.comp.spv", cv2MarchPipeLayout, m1, 1),
                         makeComputePipeline(ctx, "shaders/cloud_v2_tiles.comp.spv", cv2MarchPipeLayout, m2, 1)};
-    VkPipeline *dst[4] = {&cv2MarchPassFPipeline, &cv2MarchPassFNoDustPipeline, &cv2TilesSmoothPipeline, &cv2TilesFillPipeline};
-    for (int i = 0; i < 4; ++i)
+    VkPipeline *dst[3] = {&cv2MarchPassFPipeline, &cv2TilesSmoothPipeline, &cv2TilesFillPipeline};
+    for (int i = 0; i < 3; ++i)
     {
         if (*dst[i]) vkDestroyPipeline(ctx.device, *dst[i], nullptr);
         *dst[i] = np[i];
@@ -979,14 +975,6 @@ std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::s
             VkPipeline np = makeComputePipeline(ctx, ms, cv2MarchPipeLayout, specB, 3);
             if (cv2MarchPassBPipeline) vkDestroyPipeline(ctx.device, cv2MarchPassBPipeline, nullptr);
             cv2MarchPassBPipeline = np;
-            // (the dust-free pair from the same SPV: a variant without the constant ignores it)
-            const uint32_t specN[4] = {cv2MarchWg[0], cv2MarchWg[1], 0u, 0u}, specNB[4] = {cv2MarchWg[0], cv2MarchWg[1], 1u, 0u};
-            VkPipeline n0 = makeComputePipeline(ctx, ms, cv2MarchPipeLayout, specN, 4);
-            VkPipeline n1 = makeComputePipeline(ctx, ms, cv2MarchPipeLayout, specNB, 4);
-            if (cv2MarchNoDustPipeline) vkDestroyPipeline(ctx.device, cv2MarchNoDustPipeline, nullptr);
-            if (cv2MarchPassBNoDustPipeline) vkDestroyPipeline(ctx.device, cv2MarchPassBNoDustPipeline, nullptr);
-            cv2MarchNoDustPipeline = n0;
-            cv2MarchPassBNoDustPipeline = n1;
         }
         catch (const std::exception &e)
         {
@@ -1035,8 +1023,6 @@ std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::s
     // The composite's too (2026-10-21: its plume / dust pass is timed with composite= variants).
     if (const std::string cs = pipelineStatsLine(ctx, cloudMarchPipeline); !cs.empty())
         stats += "; composite: " + cs;
-    if (const std::string ns = pipelineStatsLine(ctx, cv2MarchNoDustPipeline); !ns.empty())
-        stats += "; march without the haboob code: " + ns;
     return err;
 }
 
@@ -1081,12 +1067,9 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     if (cv2LightningPipeline) vkDestroyPipeline(device, cv2LightningPipeline, nullptr);
     if (cv2MarchPassBPipeline) vkDestroyPipeline(device, cv2MarchPassBPipeline, nullptr);
     cv2MarchPassBPipeline = VK_NULL_HANDLE;
-    if (cv2MarchNoDustPipeline) vkDestroyPipeline(device, cv2MarchNoDustPipeline, nullptr);
-    if (cv2MarchPassBNoDustPipeline) vkDestroyPipeline(device, cv2MarchPassBNoDustPipeline, nullptr);
-    cv2MarchNoDustPipeline = cv2MarchPassBNoDustPipeline = VK_NULL_HANDLE;
     if (cv2TilesPipeline) vkDestroyPipeline(device, cv2TilesPipeline, nullptr);
     cv2TilesPipeline = VK_NULL_HANDLE;
-    for (VkPipeline *pp : {&cv2MarchPassFPipeline, &cv2MarchPassFNoDustPipeline, &cv2TilesSmoothPipeline, &cv2TilesFillPipeline})
+    for (VkPipeline *pp : {&cv2MarchPassFPipeline, &cv2TilesSmoothPipeline, &cv2TilesFillPipeline})
     {
         if (*pp) vkDestroyPipeline(device, *pp, nullptr);
         *pp = VK_NULL_HANDLE;
@@ -1878,14 +1861,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             // a time jump or a reset) invalidates every cell. Each level's cells expire after half a cell of wind slide at
             // 40 m/s of sim time (staggered per cell); paused, nothing expires.
             const uint32_t cdcEpoch0 = cv2CdcEpoch;
-            // A haboob's dust and its clear air are in the field the cells are baked from: when a wall appears or leaves
-            // (the march swaps its dust specialisation) or the haboob settings change, the cells baked empty under the clear
-            // air would skip the cloud now there (with time paused never expiring): cloud missing in clipmap-cell rectangles
-            // that popped in as they expired (2026-10-26, issue 20261026_204749, the "lighting snaps near haboobs" of 191842).
-            const float cdcDustKey = dustGpuOn ? haboobGain * (haboobField ? 1.0f : -1.0f) + 2.0f : 0.0f;
-            if (cdcDustKey != cv2CdcDustKeyUsed)
-                ++cv2CdcEpoch;
-            cv2CdcDustKeyUsed = cdcDustKey;
+            // (The haboobs' dust field key, which re-baked the cells when a wall came or went, was retired with them, 2026-11-06.)
             // Storms through the cumulus field (clouds_v2.storm_unified and its shape) change the field the cells hold.
             {
                 static float stormUKeyUsed = -1.0f;
@@ -2117,7 +2093,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                        (cv2EyeStillFrames >= kSmoothSettleFrames || smoothMoving) &&
                        valid && cv2HistoryValid && (glm::length(eye - cv2PrevEye) <= 150.0 || smoothMoving) && cv2MarchWg[0] == 16 &&
                        cv2MarchWg[1] == 16 && qTiles <= kCv2MaxTiles && cv2MarchPassFPipeline != VK_NULL_HANDLE &&
-                       cv2MarchPassFNoDustPipeline != VK_NULL_HANDLE && cv2TilesSmoothPipeline != VK_NULL_HANDLE &&
+                       cv2TilesSmoothPipeline != VK_NULL_HANDLE &&
                        cv2TilesFillPipeline != VK_NULL_HANDLE;
     }
     p.misc2.w = std::max(cv2AdaptiveParallaxPx, 0.05f);
@@ -2813,7 +2789,6 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         updateStorms();             // the storm objects' towers at this sim time (march, lightning, beams, clipmap)
     stormsUpdatedEarly = false;
     stormsMainPathLast = true;
-    weatherFillDustGrid();          // the haboobs' dust walls round the observer (the march draws them as cloud)
     // The weather cube keeps evolving with the clouds off: the flat stand-ins (sat_sky.frag's flat layers,
     // SKY_LITE, Potato's deck, reflections and probes) read it.
     recordWeatherEvolution(cmd);
@@ -2996,9 +2971,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT);
     }
     cv2PassStampTo(cmd, 7);   // adaptive-rate tiles
-    // (perf pass 4) the march without the haboob code while no dust wall is in the grid: its code alone cost 0.5-1 ms
-    const bool marchND = !dustGpuOn && cv2MarchNoDustPipeline != VK_NULL_HANDLE && cv2MarchPassBNoDustPipeline != VK_NULL_HANDLE;
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, marchND ? cv2MarchNoDustPipeline : cv2MarchPipeline);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2MarchPipeline);
     const uint32_t kBk = std::max(cv2SparseBlockNow, 2u);
     const uint32_t gw = cv2HalfRateNow ? (cv2HalfW + 1) / 2 : cv2FullRateNow ? cv2HalfW : (cv2HalfW + kBk - 1) / kBk;
     const uint32_t gh = cv2FullRateNow ? cv2HalfH : (cv2HalfH + kBk - 1) / kBk;
@@ -3008,7 +2981,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         // Pass F (four smooth tiles a workgroup, args from the classification), with no barrier after pass A: they write
         // different slots of the sparse grid, so the GPU runs both together (with one between them, each dispatch's tail
         // idled the GPU: pass F cost twice its share of rays).
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, marchND ? cv2MarchPassFNoDustPipeline : cv2MarchPassFPipeline);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2MarchPassFPipeline);
         vkCmdDispatchIndirect(cmd, cv2TileBuf, 4);
     }
     cv2PassStampTo(cmd, 8);   // march (pass A, and the smooth tiles' pass F)
@@ -3018,7 +2991,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_INDIRECT_COMMAND_READ_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT);
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, marchND ? cv2MarchPassBNoDustPipeline : cv2MarchPassBPipeline);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2MarchPassBPipeline);
         vkCmdDispatchIndirect(cmd, cv2TileBuf, 4);
     }
     if (cv2SmoothNow)

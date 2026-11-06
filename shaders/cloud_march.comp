@@ -537,7 +537,7 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
             // shows the plume as the structure in front, not a fog the camera is in). Far views: unchanged.
             // Not a tornado's (seedK >= 256, 2026-10-26, issue 20261026_191508): within ~1 km of a funnel the eye is inside
             // its wide base and debris Gaussians, and thinned to 10% the funnel went see-through close up.
-            // Not wildfire smoke / haboob dust either (the aerosol range; 2026-10-27, issue 20261027_001835 shot 3): a pall is
+            // Not wildfire smoke either (the aerosol range; 2026-10-27, issue 20261027_001835 shot 3): a pall is
             // hundreds of km wide and ~1-2 km thick, and from 747 m the eye stood inside it: thinned to 10%, every cloud
             // beyond showed through what should be a smoke-filled sky.
             float eM = e + tc * tc * q;   // = o.M.o (e = o.M.o - q tc^2: both terms >= 0, so far views stay large)
@@ -556,13 +556,13 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
             float lumpL = 1.0;
             float lumpA = 1.0;   // the billows' occlusion of light from inside the mass (the engine lights)
             float tLit  = -1.0;  // where its light comes from along the ray (>= 0: self-shadow the engine lights from there)
-            bool  isSm  = (i - smF) < smN;   // wildfire smoke / haboob dust: the aerosol range (smoke.glsl)
-            bool  isWall = isSm && floor(d.ib.w * 0.25) < 128.0;   // (haboob walls: seeds < 128; smoke 128-255)
+            bool  isSm  = (i - smF) < smN;   // wildfire smoke: the aerosol range (smoke.glsl; seeds 128-255. The haboob
+                                             // walls, seeds < 128, shared it until they were retired, 2026-11-06)
             vec3  redd  = vec3(1.0);         // smoke: the sunlight inside it reddened by its own path to the Sun
             if (tau <= 0.01) {
                 // (the faint tails of the low puffs are cut as below: left whole here they drew a thin halo outside a
                 // dark gap round every flame-lit ground cloud at night, rings)
-                float lowK0 = (isSm && !isWall) ? 0.0 : 1.0 - smoothstep(3000.0, 12000.0, length(P) - R_EARTH);
+                float lowK0 = isSm ? 0.0 : 1.0 - smoothstep(3000.0, 12000.0, length(P) - R_EARTH);
                 tau *= 1.0 - lowK0;
             }
             if (tau > 0.01) {   // (fainter: unmodulated; on every faint tail it cost up to 7 ms)
@@ -574,7 +574,7 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
                 float hP  = length(P) - R_EARTH;
                 // (wildfire smoke keeps its own billows in its own sigma units at any height: its Gaussians are km
                 // wide, and the shared ~700 m field aliased into grain from orbit)
-                float lowK = (isSm && !isWall) ? 0.0 : 1.0 - smoothstep(3000.0, 12000.0, hP);
+                float lowK = isSm ? 0.0 : 1.0 - smoothstep(3000.0, 12000.0, hP);
                 float mN = 1.0;
                 if (lowK < 1.0) {
                     // In the parcel's own frame (2026-10-21): the offset from its centre in Earth-fixed axes, in units of
@@ -598,7 +598,7 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
                     // km per pixel as the view turns: the billows were drawn as streaks fanning out of a vanishing point. The
                     // optical depth integrates the noise over ~1 / sqrt(q) of path: N cells of it average to 1 / sqrt(N) of
                     // the contrast (one cell ~1.5 of the Gaussian's smallest sigma; seen across its thickness, unchanged).
-                    if (isSm && !isWall) aa1 *= inversesqrt(max(1.0, inversesqrt(q) / (1.5 * sW)));
+                    if (isSm) aa1 *= inversesqrt(max(1.0, inversesqrt(q) / (1.5 * sW)));
                     // R = the baked Perlin-Worley (three octaves: billows of ~1 sigma down to a quarter of it).
                     // (2026-10-30, issue 20261030_134020) a hot-staging lobe (seeds 192-255, launchFillVisuals): the
                     // turbulent burst out of the interstage, ~2x the contrast and a second octave, as smoke's
@@ -611,7 +611,7 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
                     // within billows, not one smooth lump)
                     float aa2 = (1.0 - smoothstep(0.5, 2.0, fpT * 4.2)) *
                                 inversesqrt(max(1.0, 4.2 * inversesqrt(q) / (1.5 * sW)));   // (its cells 4.2x finer: more per path)
-                    if (((isSm && !isWall) || turbP) && aa2 > 0.0)
+                    if ((isSm || turbP) && aa2 > 0.0)
                         mN += aa2 * (turbP ? 1.2 : 0.8) * (textureLod(cloudNoiseTex, rl * 1.05 + sd.yzx, 0.0).r - kPlumeNoiseMean);
                 }
                 if (lowK > 0.0 && sk >= 256.0) {
@@ -669,7 +669,7 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
                 // (wildfire smoke: the billows fade in over tau 0.01-0.05 instead of switching on at 0.01: a pall's edge,
                 // seen grazing from orbit, was a hard ragged line with holes where its column crossed 0.01, 2026-10-27,
                 // issue 20261027_003452)
-                float mnK = (isSm && !isWall) ? smoothstep(0.01, 0.05, tau) : 1.0;
+                float mnK = isSm ? smoothstep(0.01, 0.05, tau) : 1.0;
                 tau *= mix(1.0, max(mN, sk >= 256.0 ? 0.3 : mix(0.2, 0.05, lowK)), mnK);
                 // ...and its faint tails cut where the billows thin it (low down): each puff gets a crisp, lumpy edge
                 // (a Gaussian's tail is a soft halo hundreds of metres wide: the ground cloud read as a glowing ball).
@@ -692,9 +692,8 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
                     float tauS = d.ia.w * d.c.w * max(IS, 0.0) * max(mN, 0.2);
                     shade = mix(exp(-tauS), 1.0, mix(0.4, 0.25, lowK));
                     // (light deeper in is multiply scattered: capped; wildfire smoke is mostly grey-brown, not orange:
-                    // its reddening is weaker than a haboob wall's, 2026-10-23 b)
-                    if (isSm) redd = isWall ? exp(-min(tauS, 3.0) * (kSmokeSpec - kSmokeSpec.r))
-                                            : exp(-min(0.6 * tauS, 1.0) * (smSpec - smSpec.r));
+                    // its reddening was weaker than a haboob wall's, 2026-10-23 b)
+                    if (isSm) redd = exp(-min(0.6 * tauS, 1.0) * (smSpec - smSpec.r));
                 }
                 shade *= lumpL;
             }
@@ -702,18 +701,17 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
             float litP = 1.0;
             // (wildfire smoke too, 2026-10-23 b: the CPU lights a Gaussian by the Sun's colour at its centre, and a pall
             // hundreds of km wide reaches past the terminator: lit there as at its centre it glowed over the night side)
-            if (fs < 2.0 || (isSm && !isWall)) {
+            if (fs < 2.0 || isSm) {
                 float sp = dot(P, sunDir);
-                if (sp <= 0.0) litP = (isSm && !isWall) ? smoothstep(R_EARTH - 2000.0, R_EARTH + 6000.0, length(P - sp * sunDir))
-                                                        : smoothstep(R_EARTH * 0.9995, R_EARTH * 1.003, length(P - sp * sunDir));
+                if (sp <= 0.0) litP = isSm ? smoothstep(R_EARTH - 2000.0, R_EARTH + 6000.0, length(P - sp * sunDir))
+                                           : smoothstep(R_EARTH * 0.9995, R_EARTH * 1.003, length(P - sp * sunDir));
             }
             // Smoke: the light that comes out of a thick column has crossed some of it on the way out (blue lost
             // first): thick cores orange-brown, thin edges grey-blue.
             // Wildfire smoke instead (2026-10-26, "it appears so beige"): its scattering is as spectral as its extinction,
             // so a thin veil scatters bluish light and a thick one grey (smokeScatterColor). The exit reddening it had
             // (0.15 x tau) and its warm tint made every plume beige whatever the light.
-            if (isWall) redd *= exp(-min(0.5 * tau, 1.2) * (kSmokeSpec - kSmokeSpec.r));
-            else if (isSm) redd *= smokeScatterColor(tau, smSpec);
+            if (isSm) redd *= smokeScatterColor(tau, smSpec);
             // The CLOUDS' light on it (2026-10-26, the unified composite), as the march lights its own samples: the Sun
             // through the clouds' shadow (the Sun transmittance volume at its lit point) and the sky light through the
             // cloud above it (cv2VtUp: the deck's diffuse transmission), plus the sunlight the deck scatters down
@@ -2397,7 +2395,7 @@ void main() {
 
     // Kessler dust clouds: above the weather, so seen from below the clouds hide them as they hide the aurora.
     float tEmitNear = kNoSurfaceT;
-    float pSmokeK   = 0.0;   // wildfire smoke's (and haboob dust's) share of the plumes' optical depth here
+    float pSmokeK   = 0.0;   // wildfire smoke's share of the plumes' optical depth here
     float pAirK     = 0.0;   // the plumes' share that may carry the air's split (dustCloudsCS tauAir)
     float pCloudT   = kNoSurfaceT;   // the CLOUD's own distance (its opacity profile's half point; none without one)
     float pFrontT   = 1e30;          // the plumes in front of that cloud: their light-weighted distance (dustCloudsCS tFront)

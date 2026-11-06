@@ -3234,7 +3234,6 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
                 const auto l0 = std::chrono::steady_clock::now();
                 s->launchFillVisuals(out, n, toSky, pixFull); // rockets, flames, plumes, the retirees' re-entries
                 s->weatherFillTornadoes(out, n);              // tornadoes and waterspouts (SatelliteSimWeather.cpp)
-                s->weatherFillHaboobs(out, n);                // haboob dust walls (SatelliteSimHaboob.cpp)
                 s->weatherFillWildfires(out, n, pixFull);              // wildfire smoke + fronts (SatelliteSimWildfire.cpp)
                 s->moonBasesFill();                                    // the lunar bases' glints (SatelliteSimMoonBases.cpp)
                 s->cometsFillHeads();                                  // the comets' heads (SatelliteSimComets.cpp)
@@ -4675,7 +4674,7 @@ nlohmann::json SatelliteSim::kesslerMemJson()
     v.push_back({"satOrbits.roster_launch", (double)satOrbits.capacity() * sizeof(SatOrbit)});
     v.push_back({"satOrbits.pool_tail", 0.0}); // (made on read since 2026-10-29: SatOrbitTable)
     v.push_back({"cpu_maps", vb(earthElevCpu) + vb(earthNightCpu) + vb(oceanMaskCpu) + vb(earthDayCpu) +
-                                 vb(earthCloudsCpu) + vb(dustGridCpu)});
+                                 vb(earthCloudsCpu)});
     launchMemReport(v);
     nlohmann::json j;
     double sum = 0.0;

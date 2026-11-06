@@ -5032,150 +5032,14 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             return Status::Done;
         }
         r = wildfiresJson(c.num("world", 0.0) > 0.0);
-        r["haboobs_now"] = haboobsNow;
-        r["haboob_nearest_km"] = haboobNearestKm;
-        {
-            // The dust grid (the walls drawn as cloud): its cells with a wall, and the nearest one (e > 0.3) from the eye.
-            double nearKm = -1.0, eMax = 0.0;
-            const int G = (int)kDustGridN;
-            if (dustGridCellM > 0.0 && dustGridCpu.size() == (size_t)G * G)
-                for (int y = dustBox.y; y < dustBox.w; ++y)
-                    for (int x = dustBox.x; x < dustBox.z; ++x)
-                    {
-                        const double e = (dustGridCpu[(size_t)y * G + x] & 0xFFFFu) / 65535.0;
-                        eMax = std::max(eMax, e);
-                        if (e < 0.3) continue;
-                        const double d = std::hypot(x - 0.5 * G + 0.5, y - 0.5 * G + 0.5) * dustGridCellM / 1000.0;
-                        if (nearKm < 0.0 || d < nearKm) nearKm = d;
-                    }
-            r["dust_grid"] = {{"on", haboobField}, {"walls", dustWallsNow}, {"cells", dustCellsNow}, {"cell_m", dustGridCellM},
-                              {"ms", dustGridMs}, {"nearest_wall_km", nearKm}, {"e_max", eMax}};
-        }
         r["message"] = std::to_string(firesNow.size()) + " fires in reach" +
                        (r.contains("world_count") ? ", " + std::to_string(r["world_count"].get<size_t>()) + " worldwide" : std::string());
         return Status::Done;
     }
-    // `haboob [hours=48] [dist_km=40] [alt=] [kind=squall|mcs|super|multi] [k=0]`: the k-th storm (an organised one by
-    // default) over the biome map's dust (> 0.4 at its centre) with the Sun > 10 deg there and >= 2 h old in the next
-    // `hours`; the clock set to it, the observer dist_km ahead of its motion on the ground, looking back at it.
+    // (`haboob`, the haboob test: the Weather window's Haboob card and its Watch, or kind= / k= the k-th organised storm
+    // over dust by day, went with the haboobs, 2026-11-06.)
     if (n == "haboob")
-    {
-        if (!stormCatalog || !biomeMap.ready()) fail("haboob: no storm catalog / biome map");
-        if (!c.has("kind") && !c.has("k"))
-        {
-            // The Weather window's Haboob card (its forward search on the scout catalog, run to its end; the main catalog
-            // must not be asked about other times: it evicts the bins the renderer needs), then its Go to: aloft= 1 = 30 km
-            // ahead and 3 km up, else 9 km ahead on the ground.
-            weatherFeaturedRestart((double)simDayJ2000 * 86400.0 + simSecInDay);
-            weatherFeaturedFinish(20.0);
-            if (kHaboobsRetired) fail("haboob: haboobs were retired (Weather v2, 2026-11-06)");
-            if (!wxFeat[kFeatHaboob].found) fail("haboob: none found in the search's window (48 h)");
-            std::string msg;
-            r["in_min"] = (wxFeat[kFeatHaboob].tEvent - ((double)simDayJ2000 * 86400.0 + simSecInDay)) / 60.0;
-            {
-                // (diagnostics: the front the Watch reads at the event's moment)
-                const WxFeatured &F = wxFeat[kFeatHaboob];
-                const double tE = std::max(F.tEvent, (double)simDayJ2000 * 86400.0 + simSecInDay);
-                std::vector<wx::Tower> tw;
-                std::vector<wx::Shield> shl;
-                haboobStormParts(*stormCatalog, F.storm, tE, tw, shl);
-                std::vector<HaboobPoint> pts;
-                haboobFrontOf(F.storm, tE, pts, &tw, stormCatalog.get());
-                double maxDust = 0.0, maxS = 0.0, maxK = 0.0;
-                int nOn = 0;
-                auto latOf = [](const glm::dvec3 &e) { return glm::degrees(std::asin(std::clamp(e.z, -1.0, 1.0))); };
-                auto lonOf = [](const glm::dvec3 &e) { return glm::degrees(std::atan2(e.y, e.x)); };
-                for (const HaboobPoint &q : pts)
-                {
-                    const double d = biomeMap.dustAt(latOf(q.dir), lonOf(q.dir));
-                    maxDust = std::max(maxDust, d);
-                    maxS = std::max(maxS, q.strength);
-                    maxK = std::max(maxK, haboobPointK(q));
-                    nOn += haboobPointK(q) >= 0.08 ? 1 : 0;
-                }
-                r["diag"] = {{"towers", tw.size()}, {"points", pts.size()}, {"max_dust", maxDust}, {"max_strength", maxS},
-                             {"max_k", maxK}, {"points_k_ok", nOn}, {"kind", wx::stormKindName(F.storm.kind)},
-                             {"age_h", (tE - F.storm.t0) / 3600.0}, {"lat", latOf(F.earth)}, {"lon", lonOf(F.earth)}};
-            }
-            if (!weatherFeaturedAct(kFeatHaboob, c.num("aloft", 0.0) > 0.0 ? 1 : 0, msg)) fail("haboob: " + msg);
-            r["message"] = msg;
-            return Status::Done;
-        }
-        const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
-        const std::string kind = lower(c.str("kind"));
-        const int want = (int)c.num("k", 0.0);
-        int seen = 0;
-        const wx::Storm *pick = nullptr;
-        double tPick = 0.0;
-        std::vector<uint64_t> tried;
-        for (int step = 0; step <= (int)(c.num("hours", 48.0) * 2.0) && !pick; ++step)
-        {
-            const double tt = tNow + 1800.0 * step;
-            std::vector<const wx::Storm *> v;
-            stormCatalog->stormsAt(tt, v);
-            for (const wx::Storm *S : v)
-            {
-                if (pick) break;
-                if (S->kind == wx::StormKind::AirMass || S->kind == wx::StormKind::Tropical) continue;
-                if (kind == "squall" && S->kind != wx::StormKind::SquallLine) continue;
-                if (kind == "mcs" && S->kind != wx::StormKind::Mcs) continue;
-                if (kind == "super" && S->kind != wx::StormKind::Supercell) continue;
-                if (kind == "multi" && S->kind != wx::StormKind::Multicell) continue;
-                if (kind.empty() && !wx::isLineSystem(S->kind)) continue;
-                if (tt - S->t0 < 7200.0 || tt > S->t0 + S->life * 0.7) continue;
-                if (std::find(tried.begin(), tried.end(), S->id) != tried.end()) continue;
-                const double phh = cloudDriftRate * (tt - kCloudDriftEpochS) + cloudDriftPhaseOffset;
-                const glm::dvec3 m = glm::normalize(S->centreAt(tt));
-                const glm::dvec3 e(m.x * std::cos(phh) + m.y * std::sin(phh), -m.x * std::sin(phh) + m.y * std::cos(phh), m.z);
-                const double lat = glm::degrees(std::asin(std::clamp(e.z, -1.0, 1.0))), lon = glm::degrees(std::atan2(e.y, e.x));
-                if (biomeMap.dustAt(lat, lon) < 0.4f) continue;
-                const glm::dvec3 si = sunDirEciAt(tt);
-                const double g = earthRotationAngle(tt);
-                const glm::dvec3 se(si.x * std::cos(g) + si.y * std::sin(g), -si.x * std::sin(g) + si.y * std::cos(g), si.z);
-                if (glm::dot(glm::normalize(se), e) < std::sin(glm::radians(10.0))) continue;
-                tried.push_back(S->id);
-                if (seen++ == want) { pick = S; tPick = tt; }
-            }
-        }
-        if (!pick) fail("haboob: no organised storm over dust by day in that window");
-        {
-            const double days = std::floor(tPick / 86400.0);
-            simDayJ2000 = (int64_t)days;
-            simSecInDay = tPick - days * 86400.0;
-        }
-        const wx::Storm S = *pick;   // (a copy: the catalog may evict)
-        const double phh = cloudDriftRate * (tPick - kCloudDriftEpochS) + cloudDriftPhaseOffset;
-        auto toE = [&](const glm::dvec3 &m) {
-            return glm::dvec3(m.x * std::cos(phh) + m.y * std::sin(phh), -m.x * std::sin(phh) + m.y * std::cos(phh), m.z);
-        };
-        const glm::dvec3 cm = glm::normalize(S.centreAt(tPick));
-        const glm::dvec3 ce = glm::normalize(toE(cm));
-        glm::dvec3 mv = glm::length(S.vel) > 0.5 ? glm::normalize(glm::cross(glm::normalize(glm::cross(S.pos0, S.vel)), cm))
-                                                 : glm::normalize(glm::dvec3(S.shear));
-        glm::dvec3 me = toE(mv);
-        me = glm::normalize(me - ce * glm::dot(me, ce));
-        const glm::dvec3 oe = glm::normalize(ce + me * (c.num("dist_km", 28.0) * 1000.0 / 6371000.0));
-        if (followActive) stopFollow();
-        obsDir = glm::vec3(oe);
-        obsLatDeg = (float)glm::degrees(std::asin(std::clamp(oe.z, -1.0, 1.0)));
-        obsLonDeg = (float)glm::degrees(std::atan2(oe.y, oe.x));
-        obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
-        obsHeightOffset = std::max(0.0f, std::max(obsTerrainH, 0.0f) + (float)c.num("alt", 20.0));
-        const glm::dvec3 oEast = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), oe)), oNorth = glm::cross(oe, oEast);
-        const glm::dvec3 to3 = ce - oe * glm::dot(ce, oe);
-        const double az = glm::degrees(std::atan2(glm::dot(to3, oEast), glm::dot(to3, oNorth)));
-        aimCameraAzEl((float)az, (float)c.num("el", 4.0));
-        trailClearPending = true;
-        cv2HistoryValid = false;
-        skyTaaHistValid = false;
-        for (double &bb : cv2WxBakedT) bb = -1e30;
-        r["storm"] = {{"id", std::to_string(S.id)}, {"kind", wx::stormKindName(S.kind)}, {"age_h", (tPick - S.t0) / 3600.0},
-                      {"lat", glm::degrees(std::asin(std::clamp(ce.z, -1.0, 1.0)))}, {"lon", glm::degrees(std::atan2(ce.y, ce.x))},
-                      {"speed_mps", glm::length(S.vel)}};
-        r["message"] = std::string(wx::stormKindName(S.kind)) + " over dust, " +
-                       std::to_string((tPick - tNow) / 3600.0).substr(0, 5) + " h ahead";
-        return Status::Done;
-    }
+        fail("haboob: haboobs were retired (Weather v2, 2026-11-06)");
     // `biome [<lat> <lon>] [export=<png>]`: the land-cover map (Biome.h) at a point (class, fuel, dust, the season's
     // dryness now), or at the observer; export= writes the class map as a colour PNG (in the run folder).
     if (n == "biome")
@@ -5226,10 +5090,11 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             return Status::Done;
         }
         // `weather events` — the Storms tab's featured events (the forward search run to its end first);
-        // `weather event <tornado|hurricane|haboob|supercell|line|waterspout|wildfire> [act=0-3]` — act 0 (default) presses
+        // `weather event <tornado|hurricane|supercell|line|waterspout|wildfire> [act=0-3]` — act 0 (default) presses
         // that card's one Watch button; the other acts are views the cards no longer offer (tornado / waterspout 1 aloft
         // mid-life, 2 a minute before touchdown; hurricane 1 the eye, 2 its next landfall, 3 the next major at its peak;
-        // haboob 1 aloft; supercell / line 1 the old Go to now, 2 its tornado / passage; wildfire 1 from orbit).
+        // supercell / line 1 the old Go to now, 2 its tornado / passage; wildfire 1 from orbit). (`haboob` fails: the
+        // haboobs were retired 2026-11-06.)
         if (sub == "events" || sub == "event")
         {
             weatherRefreshRows(true);
@@ -5241,11 +5106,12 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 r["message"] = std::string("events, search ") + (wxScanDone ? "done" : "not done");
                 return Status::Done;
             }
-            static const char *kNames[kFeatCount] = {"tornado", "hurricane", "haboob", "supercell", "line", "waterspout", "wildfire"};
+            static const char *kNames[kFeatCount] = {"tornado", "hurricane", "supercell", "line", "waterspout", "wildfire"};
+            if (lower(pos(1)) == "haboob") fail("weather event: haboobs were retired (Weather v2, 2026-11-06)");
             int slot = -1;
             for (int s = 0; s < kFeatCount; ++s)
                 if (lower(pos(1)) == kNames[s]) slot = s;
-            if (slot < 0) fail("weather event: name one of tornado hurricane haboob supercell line waterspout wildfire");
+            if (slot < 0) fail("weather event: name one of tornado hurricane supercell line waterspout wildfire");
             std::string msg;
             if (!weatherFeaturedAct(slot, (int)c.num("act", 0.0), msg))
                 fail("weather event: " + msg);

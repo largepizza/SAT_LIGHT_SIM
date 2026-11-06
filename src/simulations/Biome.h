@@ -1,5 +1,6 @@
 // Biome.h — a coarse land-cover map for the weather hazards (2026-10-23, .plans/WEATHER_HAZARDS_PLAN.md): wildfires
-// burn where there is fuel in a dry season, haboobs lift dust where the ground is bare and dry. Built once at load from
+// burn where there is fuel in a dry season, dust lies where the ground is bare and dry (the haboobs that lifted it were
+// retired 2026-11-06). Built once at load from
 // what the app already has: the day map's colour (the ground as drawn: the ambience's desert / forest / vegetation / ice
 // tests), latitude, the elevation and the ocean mask. Equirect, 2048 x 1024 (~20 km a texel), Earth-fixed.
 #pragma once

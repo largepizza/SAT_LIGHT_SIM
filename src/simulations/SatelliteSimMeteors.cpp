@@ -14,8 +14,8 @@
 //             over seconds to a minute and drifting with a hashed upper-atmosphere wind that turns with height
 // In time warp (above 2x) the TIME-LAPSE draw: every meteor that burned during the frame's sim-time interval as its
 // streak over that interval, its light integrated / an exposure (min(interval, meteors.timelapse_exposure_s)).
-// The dust list's share: at most 96 Gaussians, and never past kMaxDustClouds - 200 (the launches, tornadoes,
-// haboobs and wildfire smoke come after); the brightest meteors first.
+// The dust list's share: at most 96 Gaussians, and never past kMaxDustClouds - 200 (the launches, tornadoes and
+// wildfire smoke come after); the brightest meteors first.
 #include "../FrameProfile.h"
 #include "../Harness.h"
 #include "SatelliteSim.h"

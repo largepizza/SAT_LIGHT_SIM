@@ -4843,7 +4843,7 @@ void main() {
         float lenF  = fwC * segLen;
         float densR0 = densR, densM0 = densM, fRK = 1.0, fMK = 1.0, litFF = litF;
         // The piece's light reaches the eye through the air to the PIECE's middle (2026-10-27, issue 20261027_001835: a
-        // dark line along the horizon drawn through opaque haboob walls and tornadoes). It took the step's middle: with
+        // dark line along the horizon drawn through opaque haboob walls, since retired, and tornadoes). It took the step's middle: with
         // the split ~1-3 km out and the first step ~16 km long below the horizon (the ray ends at the ground) and up to
         // ~24 km above it, the air in front of a near wall or funnel was dimmed by 8-12 km of low hazy air it does not
         // have, more the flatter the ray (darkening toward the horizon) and less just below it (a step there).

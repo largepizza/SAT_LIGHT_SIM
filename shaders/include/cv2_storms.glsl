@@ -33,9 +33,6 @@ const uint kCv2ShieldBinsPerFace  = 128u;
 const uint kCv2ShieldEnvBinsPerFace = 64u;
 const uint kCv2ShieldMaxPerBin    = 31u;      // (5 bits of a bin entry: 2026-10-23, a cyclone's arm cirrus)
 const uint kCv2CycloneMax         = 8u;   // tropical cyclones (the weather bake stamps their bands, eyewall and eye)
-// The HABOOB dust walls (2026-10-24): a grid on the tangent plane at the observer's sea-level point, Earth-fixed axes,
-// rasterised by the CPU each frame from the storms' gust fronts (SatelliteSimHaboob.cpp weatherFillDustGrid).
-const uint kCv2DustGridN          = 512u;
 
 struct CV2Tower {
     vec4 a;   // xyz the tower's axis (map-frame unit vector), w strength 0..1 (its lifecycle x peak)
@@ -118,13 +115,7 @@ layout(std430, set = 0, binding = CV2_STORM_BINDING) readonly buffer CV2StormBuf
     uint     cv2ShieldList[kCv2ShieldListSize];
     uvec4    cv2CycHead;                            // x cyclones
     CV2Cyclone cv2Cyclones[kCv2CycloneMax];
-    uvec4    cv2DustHead;                           // x 1 = a dust wall in the grid, y its bounding box (lo x | lo y << 16),
-                                                    // z (hi x | hi y << 16), w unused
-    vec4     cv2DustFrame[4];                       // [0] xyz the grid's x axis (ECEF), w 1 / cell (m)
-                                                    // [1] xyz its y axis, w the highest dust top in it (m above the ground)
-                                                    // [2] xyz the lobe noise's anchor (frac, moving with the wall), w 1 / period
-                                                    // [3] xy the observer's sea-level point in grid cells (- 0.5)
-    uint     cv2DustGrid[kCv2DustGridN * kCv2DustGridN];   // e x 65535 | (top / 2 m) << 16 (12 bits) | rain-free x 15 << 28
+    // (The haboobs' dust wall grid, cv2DustHead / cv2DustFrame / cv2DustGrid, stood here until 2026-11-06.)
 #ifdef CV2_STORM_ENV
     uvec2    cv2StormEnvTable[kCv2StormEnvTableSize];
     uint     cv2StormEnvList[kCv2StormEnvListSize];
@@ -149,8 +140,6 @@ layout(std430, set = 0, binding = CV2_STORM_BINDING) readonly buffer CV2StormBuf
 #endif
 };
 #endif
-
-// (The haboobs' dust wall lookup, cv2DustWallAt, was retired 2026-11-06; the grid stays in the buffer's layout.)
 
 // An integer hash (the lightning's per-cell seeds).
 uint cv2StormHash(uint k)

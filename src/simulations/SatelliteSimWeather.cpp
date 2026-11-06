@@ -469,8 +469,8 @@ uint64_t SatelliteSim::stormEnvHash() const
 void SatelliteSim::updateStorms()
 {
     FPROF_SCOPE("updateStorms");
-    // Weather v2: no global drift. The storm catalog's "map frame" (its env.mapToEarth, the haboobs, bookmarks,
-    // cinematics) IS the Earth-fixed frame: with a drift rate left in, storms were placed and moved in a frame turning
+    // Weather v2: no global drift. The storm catalog's "map frame" (its env.mapToEarth, the since-retired haboobs,
+    // bookmarks, cinematics) IS the Earth-fixed frame: with a drift rate left in, storms were placed and moved in a frame turning
     // under the GPU's Earth-fixed one, and their convection cells landed far from where the catalog reported them.
     if (kWeatherV2NoDrift)
     {
@@ -621,10 +621,6 @@ void SatelliteSim::updateStorms()
     std::vector<const wx::Storm *> stormsNow;
     stormCatalog->stormsAt(t, stormsNow);
     stormCatalog->towersAt(t, stormsNow, stormTowers);
-    stormOrganisedNow.clear();
-    for (const wx::Storm *S : stormsNow)
-        if (S->kind != wx::StormKind::AirMass && S->kind != wx::StormKind::Tropical)
-            stormOrganisedNow.push_back({S->id, glm::normalize(S->centreAt(t))});
     // Tropical cyclones: their eyewall and inner-band towers join the list (Earth-fixed tracks, in the map frame now).
     stormCatalog->cyclonesAt(t, stormCyclonesNow);
     const wx::CycloneShape cycShape = cycloneShape();

@@ -52,7 +52,7 @@ SHOTS = {
                   dur=12, rate=1, moves=[(0, -6, 0, 1.1, 0, 0, 0), (12, 6, 0, 0.95, 0, 0, 0)]),
     "mammatus": dict(place="bookmark go 5; time pause",
                      dur=12, rate=1, moves=[(0, -20, -4, 1, 0, 0, 0), (12, 20, 6, 1, 0, 0, 0)]),
-    "haboob": dict(place="weather event haboob; time pause",
+    "squall": dict(place="weather event line; time pause",   # (the haboob shot until haboobs were retired, 2026-11-06)
                    dur=12, rate=1, moves=[(0, -8, 0, 1, 0, 0, 0), (12, 8, 2, 1, 0, 0, 0)]),
     "fireline": dict(place=f'report load "{R}/issue_20261028_191813" shot=1 settings=off trail=off',
                      dur=10, rate=1, moves=[(0, -6, 0, 1, 0, 0, 0), (10, 6, 0, 0.9, 0, 0, 0)]),
@@ -89,7 +89,7 @@ SHOTS = {
     "rings": dict(place="bookmark go 6; time pause; select sat 434774", follow=True, dur=14, rate=1,
                   offsets=[(0, "follow toward=sun dist=1000 side=-40 lift=15"), (14, "follow toward=sun dist=750 side=-15 lift=25")]),
 }
-ORDER = ["halo", "coast", "alps", "city", "anvil", "mammatus", "haboob", "fireline", "cyclone", "eyewall",
+ORDER = ["halo", "coast", "alps", "city", "anvil", "mammatus", "squall", "fireline", "cyclone", "eyewall",
          "liftoff", "jellyfish", "droneship", "catch", "iss", "rings", "aurora_orbit", "comet", "eclipse", "supernova",
          "fury", "dead"]
 

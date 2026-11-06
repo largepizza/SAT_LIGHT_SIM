@@ -658,7 +658,7 @@ void SatelliteSim::loadUiIcons(UIRenderer &ui)
             // 23-30: the Weather window's storm icons (SatelliteSimWeatherFeatured.cpp kIconStorm*, tools/make_icons.py)
             "assets/icons/ui/pixel--storm-tornado.png",
             "assets/icons/ui/pixel--storm-hurricane.png",
-            "assets/icons/ui/pixel--storm-haboob.png",
+            "assets/icons/ui/pixel--storm-haboob.png",   // 25: unused since the haboobs were retired (2026-11-06); kept so 26+ hold
             "assets/icons/ui/pixel--storm-supercell.png",
             "assets/icons/ui/pixel--storm-squall.png",
             "assets/icons/ui/pixel--storm-waterspout.png",
@@ -7265,7 +7265,8 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SldHurricaneTopDensity), &stormCycTopDensity, 1.0f, 20.0f, 0.1f, "%.1f", 524},
         {tx(Txt::SldStormSurgeX), &stormSurge, 0.0f, 2.0f, 0.05f, "%.2f", 415},
     };
-    // Wildfires and haboobs (the Weather window's Controls tab had them; settings keys clouds_v2.wildfire* / haboobs).
+    // Wildfires (the Weather window's Controls tab has them too; settings keys clouds_v2.wildfire*). (Haboobs shared the
+    // section until they were retired, 2026-11-06.)
     CloudSlider secFire[] = {
         {tx(Txt::SldWildfiresX), &wildfireRate, 0.0f, 10.0f, 0.05f, "%.2f", 416},
         {tx(Txt::SldWildfireSmoke), &wildfireSmoke, 0.0f, 5.0f, 0.05f, "%.2f", 417},
@@ -7373,7 +7374,7 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
              }
          }},
         CLOUD_SEC(tx(Txt::SecStormsCumulonimbus), secStorms),
-        {tx(Txt::SecWildfiresHaboobs), secFire, (int)(sizeof(secFire) / sizeof(secFire[0])),
+        {tx(Txt::SecWildfires2), secFire, (int)(sizeof(secFire) / sizeof(secFire[0])),
          [&]()
          {
              uiToggleRow(inp, ui, "WxSetOn", 2, tx(Txt::LblWildfireBurnScars), wildfireScars, tx(Txt::TipTheBurntGroundUnderAFire));
@@ -9798,8 +9799,6 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         wildfireSmokeCurtain = c.value("wildfire_smoke_curtain", wildfireSmokeCurtain);
         wildfireFlameBand = c.value("wildfire_flame_band", wildfireFlameBand);
         wildfireSmokeSpectral = settingClamp(c.value("wildfire_smoke_spectral", wildfireSmokeSpectral), 0.0f, 2.0f);
-        haboobGain = settingClamp(c.value("haboobs", haboobGain), 0.0f, 5.0f);
-        haboobField = c.value("haboob_field", haboobField);
         stormComplexes = settingClamp(c.value("storm_complexes", stormComplexes), 0.0f, 10.0f);
         stormCyclones = settingClamp(c.value("storm_cyclones", stormCyclones), 0.0f, 10.0f);
         stormSurge = settingClamp(c.value("storm_surge", stormSurge), 0.0f, 2.0f);
@@ -10577,8 +10576,6 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"wildfire_smoke_curtain", wildfireSmokeCurtain},
         {"wildfire_flame_band", wildfireFlameBand},
         {"wildfire_smoke_spectral", wildfireSmokeSpectral},
-        {"haboobs", haboobGain},
-        {"haboob_field", haboobField},
         {"storm_complexes", stormComplexes},
         {"storm_cyclones", stormCyclones},
         {"storm_surge", stormSurge},

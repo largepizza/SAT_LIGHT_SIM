@@ -2068,14 +2068,7 @@ void SatelliteSim::buildWeatherControlsTab(const UIInput &inp, UIRenderer &ui)
         tx(Txt::TipXTheSmokesAngstromExponent1));
     num(9, tx(Txt::SldWildfireLight), wildfireLight, 0.0f, 5.0f, 0.05f, "%.2f",
         tx(Txt::TipXTheFireFrontsLightThe));
-    num(11, tx(Txt::SldHaboobsX), haboobGain, 0.0f, 5.0f, 0.05f, "%.2f",
-        tx(Txt::TipXTheDustWallsStormsGust));
-    {
-        bool v = haboobField;
-        if (uiToggleRow(inp, ui, "WxCOn", 1, tx(Txt::LblHaboobsAsCloud), v,
-                        tx(Txt::TipOnTheDustWallsAreDrawn2)))
-            haboobField = v;
-    }
+    // (num 11 "Haboobs x" and the "Haboobs as cloud" toggle, WxCOn 1, went with the haboobs, 2026-11-06.)
     uiSection("WxCSec", 1, tx(Txt::SecLightning));
     num(4, tx(Txt::SldLightningRateCbTowersMinEach), cv2LightningRate, 0.0f, 30.0f, 0.1f, "%.1f",
         tx(Txt::TipFlashesAMinuteOfAFull));
