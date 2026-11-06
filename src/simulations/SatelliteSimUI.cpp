@@ -7032,7 +7032,6 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SldCumulusBreakUp), &cv2CuBreakup, 0.0f, 1.0f, 0.05f, "%.2f", 290},
         {tx(Txt::SldCumulusTopHeadroom), &cv2CuHeadroom, 0.0f, 2.0f, 0.05f, "%.2f", 291},
         {tx(Txt::SldStormCumulusFineLobes), &cv2CuFineLobes, 0.0f, 2.0f, 0.05f, "%.2f", 292},
-        {tx(Txt::SldCbTowerFineLobes), &cv2CbFineLobes, 0.0f, 2.0f, 0.05f, "%.2f", 293},
         {tx(Txt::SldCumulusWisps), &cv2CuWisps, 0.0f, 1.0f, 0.05f, "%.2f", 294},
         // Cumulus turrets (2026-11-04, issue 20261104_181014): slots 476-479.
         {tx(Txt::SldCumulusTurrets), &cv2CuTurrets, 0.0f, 2.0f, 0.05f, "%.2f", 476},
@@ -7245,24 +7244,17 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SldTowerGrowthTimeMin), &stormTowerRiseMin, 0.0f, 120.0f, 1.0f, "%.0f", 452},
         {tx(Txt::SldAnvilFormationTimeMin), &stormAnvilFormMin, 1.0f, 240.0f, 1.0f, "%.0f", 450},
         {tx(Txt::SldAnvilDecayTimeMin), &stormAnvilDecayMin, 1.0f, 240.0f, 1.0f, "%.0f", 451},
-        {tx(Txt::SldStormCloudField), &stormCloudField, 0.0f, 3.0f, 0.05f, "%.2f", 323},
-        {tx(Txt::SldStormClearMoat), &stormMoat, 0.0f, 3.0f, 0.05f, "%.2f", 324},
         {tx(Txt::SldStormComplexesX), &stormComplexes, 0.0f, 10.0f, 0.05f, "%.2f", 325},
         {tx(Txt::SldTropicalCyclonesX), &stormCyclones, 0.0f, 10.0f, 0.05f, "%.2f", 326},
-        // 2026-10-28 (the settings round-up): until then only in the Weather window's Controls tab.
-        {tx(Txt::SldHurricaneArmCirrus), &stormArmCirrus, 0.0f, 3.0f, 0.05f, "%.2f", 414},
-        // 2026-11-03 (issue 20261030_205220): a tropical cyclone's shape (wx::CycloneShape).
+        // 2026-11-03 (issue 20261030_205220): a tropical cyclone's shape (wx::CycloneShape). (Retired 2026-11-06 with
+        // the storm stamps and the shield shader, Weather v2: 323 "Storm cloud field", 324 "Storm clear moat", 414
+        // "Hurricane arm cirrus", 458-461 minor swirls / deck spiral / outflow cirrus / outflow streaks.)
         {tx(Txt::SldHurricaneMainArms), &stormCycArms, 0.0f, 6.0f, 1.0f, "%.0f", 455},
         {tx(Txt::SldHurricaneArmTightness), &stormCycTightness, 0.25f, 4.0f, 0.05f, "%.2f", 456},
         {tx(Txt::SldHurricaneArmSpeed), &stormCycArmSpeed, 0.0f, 10.0f, 0.05f, "%.2f", 457},
-        {tx(Txt::SldHurricaneMinorSwirls), &stormCycMinorSwirls, 0.0f, 2.0f, 0.05f, "%.2f", 458},
-        {tx(Txt::SldHurricaneDeckSpiral), &stormCycDeckSpiral, 0.0f, 1.0f, 0.05f, "%.2f", 459},
-        {tx(Txt::SldHurricaneOutflowCirrus), &stormCycOutflow, 0.0f, 3.0f, 0.05f, "%.2f", 460},
-        {tx(Txt::SldHurricaneOutflowStreaks), &stormCycStreaks, 0.0f, 1.0f, 0.05f, "%.2f", 461},
-        // 2026-11-05 (cirrus-hurr): the CDO's top, a smooth swirl with streaks along the flow. Slots 522-524.
+        // 2026-11-05 (cirrus-hurr): the CDO's top, a smooth swirl. Slot 522 (523 / 524, its streaks and density, retired
+        // 2026-11-06).
         {tx(Txt::SldHurricaneTopSmoothing), &stormCycTopSmooth, 0.0f, 1.0f, 0.05f, "%.2f", 522},
-        {tx(Txt::SldHurricaneTopStreaksM), &stormCycTopStreaks, 0.0f, 600.0f, 10.0f, "%.0f", 523},
-        {tx(Txt::SldHurricaneTopDensity), &stormCycTopDensity, 1.0f, 20.0f, 0.1f, "%.1f", 524},
         {tx(Txt::SldStormSurgeX), &stormSurge, 0.0f, 2.0f, 0.05f, "%.2f", 415},
     };
     // Wildfires (the Weather window's Controls tab has them too; settings keys clouds_v2.wildfire*). (Haboobs shared the
@@ -7278,26 +7270,16 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         // (423: "Haboobs x", retired 2026-11-06 with the haboobs)
     };
     CloudSlider secStorms[] = {
-        {tx(Txt::SldCbFillShareOfCells), &cv2CbFill, 0.05f, 1.0f, 0.05f, "%.2f", 189},
         {tx(Txt::SldCbColumns0None), &cv2CbColumns, 0.0f, 4.0f, 0.05f, "%.2f", 164},
-        {tx(Txt::SldCbSpacingKm), &cv2CbSpacingKm, 8.0f, 120.0f, 1.0f, "%.0f", 165},
         {tx(Txt::SldCbTowerRadiusKm), &cv2CbRadiusKm, 1.0f, 20.0f, 0.25f, "%.2f", 166},
-        {tx(Txt::SldCbWaistXRadius), &cv2CbWaist, 0.2f, 1.5f, 0.05f, "%.2f", 168},
         {tx(Txt::SldCbHeadFlareXRadius), &cv2CbFlare, 0.5f, 3.0f, 0.05f, "%.2f", 169},
         {tx(Txt::SldCbHeadDriftKm), &cv2CbHeadDriftKm, 0.0f, 30.0f, 0.5f, "%.1f", 170},
-        {tx(Txt::SldCbLobes), &cv2CbLobes, 0.0f, 1.5f, 0.05f, "%.2f", 171},
-        {tx(Txt::SldCbHeadLobes), &cv2CbHeadLobes, 0.0f, 1.5f, 0.02f, "%.2f", 207},
-        {tx(Txt::SldAnvilPuffiness), &cv2AnvilPuff, 0.0f, 2.0f, 0.05f, "%.2f", 310},
-        {tx(Txt::SldAnvilTopLiftM), &cv2AnvilLiftM, 0.0f, 3000.0f, 50.0f, "%.0f", 311},
-        // Storms in the cumulus look (2026-11-05, storm3): slots 504-506.
+        // Storms in the cumulus look (2026-11-05, storm3): slots 504-505 (506 "Storm bubbles" retired 2026-11-06).
         {tx(Txt::SldAnvilFibres), &cv2AnvilFibres, 0.0f, 2.0f, 0.05f, "%.2f", 504},
         {tx(Txt::SldAnvilErosion), &cv2AnvilErosion, 0.0f, 1.0f, 0.05f, "%.2f", 505},
-        {tx(Txt::SldStormBubbles), &cv2StormBubbles, 0.0f, 2.0f, 0.05f, "%.2f", 506},
-        {tx(Txt::SldCbSparsity), &cv2CbSparsity, 0.0f, 1.0f, 0.05f, "%.2f", 172},
         {tx(Txt::SldCbOvershootKm), &cv2CbOvershootKm, 0.0f, 3.0f, 0.05f, "%.2f", 173},
         {tx(Txt::SldStormCumulusTopKm), &cv2CbCumulusTopKm, 2.0f, 12.0f, 0.25f, "%.2f", 167},
         {tx(Txt::SldStormCumulusVariation), &cv2CbCumulusVar, 0.0f, 0.8f, 0.05f, "%.2f", 190},
-        {tx(Txt::SldStormCumulusReachKm), &cv2CbCumulusReachKm, 0.0f, 60.0f, 1.0f, "%.0f", 177},
         {tx(Txt::SldStormFeatureSize), &cv2StormScale, 0.5f, 12.0f, 0.1f, "%.2f", 147},
         {tx(Txt::SldStormErosion), &cv2StormDetail, 0.0f, 1.5f, 0.05f, "%.2f", 148},
         {tx(Txt::SldAnvils), &cv2Anvil, 0.0f, 2.0f, 0.05f, "%.2f", 149},
@@ -9765,7 +9747,6 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2LightningGlow = c.value("lightning_glow", cv2LightningGlow);
         cv2LightningBolt = c.value("lightning_bolt", cv2LightningBolt);
         cv2LightningSprites = c.value("lightning_sprites", cv2LightningSprites);
-        cv2CbFill = c.value("cb_fill", cv2CbFill);
         cv2CbCumulusVar = c.value("cb_cumulus_variation", cv2CbCumulusVar);
         cv2EvoWindMps = c.value("evo_wind_mps", cv2EvoWindMps);
         stormObjects = c.value("storm_objects", stormObjects);
@@ -9774,19 +9755,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         stormAnvilFormMin = settingClamp(c.value("storm_anvil_form_min", stormAnvilFormMin), 1.0f, 240.0f);
         stormTowerRiseMin = settingClamp(c.value("storm_tower_rise_min", stormTowerRiseMin), 0.0f, 120.0f);
         stormAnvilDecayMin = settingClamp(c.value("storm_anvil_decay_min", stormAnvilDecayMin), 1.0f, 240.0f);
-        stormCloudField = settingClamp(c.value("storm_field", stormCloudField), 0.0f, 3.0f);
-        stormMoat = settingClamp(c.value("storm_moat", stormMoat), 0.0f, 3.0f);
-        stormArmCirrus = settingClamp(c.value("storm_arm_cirrus", stormArmCirrus), 0.0f, 3.0f);
         stormCycArms = settingClamp(c.value("storm_cyc_arms", stormCycArms), 0.0f, 6.0f);
         stormCycTightness = settingClamp(c.value("storm_cyc_tightness", stormCycTightness), 0.25f, 4.0f);
         stormCycArmSpeed = settingClamp(c.value("storm_cyc_arm_speed", stormCycArmSpeed), 0.0f, 10.0f);
-        stormCycMinorSwirls = settingClamp(c.value("storm_cyc_minor_swirls", stormCycMinorSwirls), 0.0f, 2.0f);
-        stormCycDeckSpiral = settingClamp(c.value("storm_cyc_deck_spiral", stormCycDeckSpiral), 0.0f, 1.0f);
-        stormCycOutflow = settingClamp(c.value("storm_cyc_outflow", stormCycOutflow), 0.0f, 3.0f);
-        stormCycStreaks = settingClamp(c.value("storm_cyc_streaks", stormCycStreaks), 0.0f, 1.0f);
-        stormCycSpiralAB = c.value("storm_cyc_spiral", stormCycSpiralAB);
-        stormIndexTight = c.value("storm_index_tight", stormIndexTight);
-        stormShieldBinsAB = c.value("storm_shield_bins_ab", stormShieldBinsAB);
         wildfireRate = settingClamp(c.value("wildfires", wildfireRate), 0.0f, 10.0f);
         wildfireSmoke = settingClamp(c.value("wildfire_smoke", wildfireSmoke), 0.0f, 5.0f);
         wildfireLight = settingClamp(c.value("wildfire_light", wildfireLight), 0.0f, 5.0f);
@@ -9848,7 +9819,6 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2AnvilFibres = settingClamp(c.value("anvil_fibres", cv2AnvilFibres), 0.0f, 2.0f);
         cv2AnvilFibreAlongKm = settingClamp(c.value("anvil_fibre_along_km", cv2AnvilFibreAlongKm), 2.0f, 400.0f);
         cv2AnvilFibreAcrossM = settingClamp(c.value("anvil_fibre_across_m", cv2AnvilFibreAcrossM), 100.0f, 20000.0f);
-        cv2StormBubbles = settingClamp(c.value("storm_bubbles", cv2StormBubbles), 0.0f, 2.0f);
         cv2AnvilErosion = settingClamp(c.value("anvil_erosion", cv2AnvilErosion), 0.0f, 1.0f);
         cv2AnvilLidLobes = settingClamp(c.value("anvil_lid_lobes", cv2AnvilLidLobes), 0.0f, 1.0f);
         cv2AnvilUnderLobes = settingClamp(c.value("anvil_under_lobes", cv2AnvilUnderLobes), 0.0f, 1.5f);
@@ -9870,7 +9840,6 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CuBreakup = c.value("cumulus_breakup", cv2CuBreakup);
         cv2CuHeadroom = c.value("cumulus_top_headroom", cv2CuHeadroom);
         cv2CuFineLobes = c.value("storm_cumulus_fine_lobes", cv2CuFineLobes);
-        cv2CbFineLobes = c.value("cb_fine_lobes", cv2CbFineLobes);
         cv2CuWisps = c.value("cumulus_wisps", cv2CuWisps);
         cv2CuTurrets = c.value("cumulus_turrets", cv2CuTurrets);
         cv2CuTurretStretch = c.value("cumulus_turret_stretch", cv2CuTurretStretch);
@@ -9893,8 +9862,6 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2OroWindDirDeg = settingClamp(c.value("oro_wind_dir_deg", cv2OroWindDirDeg), -1.0f, 360.0f);
         cv2OroMoist = settingClamp(c.value("oro_moist", cv2OroMoist), 0.0f, 1.0f);
         stormCycTopSmooth = settingClamp(c.value("storm_cyc_top_smooth", stormCycTopSmooth), 0.0f, 1.0f);
-        stormCycTopStreaks = settingClamp(c.value("storm_cyc_top_streaks_m", stormCycTopStreaks), 0.0f, 600.0f);
-        stormCycTopDensity = settingClamp(c.value("storm_cyc_top_density", stormCycTopDensity), 1.0f, 20.0f);
         cv2CuBubbleGain = c.value("cumulus_bubble_relief", cv2CuBubbleGain);
         cv2CuBubbleFine = c.value("cumulus_bubble_hierarchy", cv2CuBubbleFine);
         cv2CuBubbleSize = c.value("cumulus_bubble_size", cv2CuBubbleSize);
@@ -10058,19 +10025,11 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2FastFlightLod = c.value("fast_flight_lod", cv2FastFlightLod);
         cv2FoveaRadius = c.value("fovea_radius", cv2FoveaRadius);
         cv2CbColumns = c.value("cb_columns", cv2CbColumns);
-        cv2CbSpacingKm = c.value("cb_spacing_km", cv2CbSpacingKm);
         cv2CbRadiusKm = c.value("cb_radius_km", cv2CbRadiusKm);
         cv2CbCumulusTopKm = c.value("cb_cumulus_top_km", cv2CbCumulusTopKm);
-        cv2CbWaist = c.value("cb_waist", cv2CbWaist);
         cv2CbFlare = c.value("cb_flare", cv2CbFlare);
         cv2CbHeadDriftKm = c.value("cb_head_drift_km", cv2CbHeadDriftKm);
-        cv2CbLobes = c.value("cb_lobes", cv2CbLobes);
-        cv2CbHeadLobes = c.value("cb_head_lobes", cv2CbHeadLobes);
-        cv2AnvilPuff = c.value("anvil_puffiness", cv2AnvilPuff);
-        cv2AnvilLiftM = c.value("anvil_lift_m", cv2AnvilLiftM);
-        cv2CbSparsity = c.value("cb_sparsity", cv2CbSparsity);
         cv2CbOvershootKm = c.value("cb_overshoot_km", cv2CbOvershootKm);
-        cv2CbCumulusReachKm = c.value("cb_cumulus_reach_km", cv2CbCumulusReachKm);
         cv2AnvilThickKm = c.value("anvil_thick_km", cv2AnvilThickKm);
         cv2AnvilHangKm = c.value("anvil_hang_km", cv2AnvilHangKm);
         cv2AutoExposure = c.value("auto_exposure", cv2AutoExposure);
@@ -10542,7 +10501,6 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"lightning_glow", cv2LightningGlow},
         {"lightning_bolt", cv2LightningBolt},
         {"lightning_sprites", cv2LightningSprites},
-        {"cb_fill", cv2CbFill},
         {"cb_cumulus_variation", cv2CbCumulusVar},
         {"evo_wind_mps", cv2EvoWindMps},
         {"storm_objects", stormObjects},
@@ -10551,19 +10509,9 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"storm_anvil_form_min", stormAnvilFormMin},
         {"storm_tower_rise_min", stormTowerRiseMin},
         {"storm_anvil_decay_min", stormAnvilDecayMin},
-        {"storm_field", stormCloudField},
-        {"storm_moat", stormMoat},
-        {"storm_arm_cirrus", stormArmCirrus},
         {"storm_cyc_arms", stormCycArms},
         {"storm_cyc_tightness", stormCycTightness},
         {"storm_cyc_arm_speed", stormCycArmSpeed},
-        {"storm_cyc_minor_swirls", stormCycMinorSwirls},
-        {"storm_cyc_deck_spiral", stormCycDeckSpiral},
-        {"storm_cyc_outflow", stormCycOutflow},
-        {"storm_cyc_streaks", stormCycStreaks},
-        {"storm_cyc_spiral", stormCycSpiralAB},
-        {"storm_index_tight", stormIndexTight},
-        {"storm_shield_bins_ab", stormShieldBinsAB},
         {"wildfires", wildfireRate},
         {"wildfire_smoke", wildfireSmoke},
         {"wildfire_light", wildfireLight},
@@ -10623,7 +10571,6 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"anvil_fibres", cv2AnvilFibres},
         {"anvil_fibre_along_km", cv2AnvilFibreAlongKm},
         {"anvil_fibre_across_m", cv2AnvilFibreAcrossM},
-        {"storm_bubbles", cv2StormBubbles},
         {"anvil_erosion", cv2AnvilErosion},
         {"anvil_lid_lobes", cv2AnvilLidLobes},
         {"anvil_under_lobes", cv2AnvilUnderLobes},
@@ -10645,7 +10592,6 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cumulus_breakup", cv2CuBreakup},
         {"cumulus_top_headroom", cv2CuHeadroom},
         {"storm_cumulus_fine_lobes", cv2CuFineLobes},
-        {"cb_fine_lobes", cv2CbFineLobes},
         {"cumulus_wisps", cv2CuWisps},
         {"cumulus_turrets", cv2CuTurrets},
         {"cumulus_turret_stretch", cv2CuTurretStretch},
@@ -10668,8 +10614,6 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"oro_wind_dir_deg", cv2OroWindDirDeg},
         {"oro_moist", cv2OroMoist},
         {"storm_cyc_top_smooth", stormCycTopSmooth},
-        {"storm_cyc_top_streaks_m", stormCycTopStreaks},
-        {"storm_cyc_top_density", stormCycTopDensity},
         {"cumulus_bubble_relief", cv2CuBubbleGain},
         {"cumulus_bubble_hierarchy", cv2CuBubbleFine},
         {"cumulus_bubble_size", cv2CuBubbleSize},
@@ -10810,19 +10754,11 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"fast_flight_lod", cv2FastFlightLod},
         {"fovea_radius", cv2FoveaRadius},
         {"cb_columns", cv2CbColumns},
-        {"cb_spacing_km", cv2CbSpacingKm},
         {"cb_radius_km", cv2CbRadiusKm},
         {"cb_cumulus_top_km", cv2CbCumulusTopKm},
-        {"cb_waist", cv2CbWaist},
         {"cb_flare", cv2CbFlare},
         {"cb_head_drift_km", cv2CbHeadDriftKm},
-        {"cb_lobes", cv2CbLobes},
-        {"cb_head_lobes", cv2CbHeadLobes},
-        {"anvil_puffiness", cv2AnvilPuff},
-        {"anvil_lift_m", cv2AnvilLiftM},
-        {"cb_sparsity", cv2CbSparsity},
         {"cb_overshoot_km", cv2CbOvershootKm},
-        {"cb_cumulus_reach_km", cv2CbCumulusReachKm},
         {"anvil_thick_km", cv2AnvilThickKm},
         {"anvil_hang_km", cv2AnvilHangKm},
         {"auto_exposure", cv2AutoExposure},

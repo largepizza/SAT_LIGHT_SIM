@@ -206,14 +206,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   of popping in and out within a few minutes in time warp. Settings > Weather: "Anvil formation time (min)" (60) and
   "Anvil decay time (min)" (70). Thunderstorm towers climb to the anvil over a "Tower growth time (min)" (30) instead
   of standing up in a couple of minutes.
-- **Hurricane shape.** A hurricane now shows two main spiral arms by default with minor swirls between them; its arms
-  narrow and break along their length instead of being cut off square; the central dense overcast winds out into the
-  arms instead of sitting on top as a round glob; and the cirrus over the arms and the outflow cirrus follow the same
-  spirals (the outflow in thin streaks curving the other way). Settings > Weather > Storm objects: "Hurricane main arms",
-  "arm tightness", "arm speed", "minor swirls", "deck spiral", "outflow cirrus", "outflow streaks".
-- **Hurricane tops are a smooth swirl.** The central dense overcast is a smooth, bright sheet with fine streaks
-  running along the swirl and an edge that frays into streaks, instead of a grey sheet of cumulus lumps and pits.
-  Settings > Weather > Storm objects: "Hurricane top smoothing", "Hurricane top streaks (m)", "Hurricane top density (x)".
+- **Hurricane shape.** A hurricane's central dense overcast is the top of its core's convection, centred on a clear
+  eye, sloping down at its edge to the rain bands and the decks between them; two main spiral bands by default, broken
+  along their length, with outflow cirrus winding out beyond. Settings > Weather > Storm objects: "Hurricane main
+  arms", "arm speed", "Hurricane top smoothing".
 - **Tropical cyclones.** About 80 a year across six basins, named from the WMO lists, following climatological
   tracks with landfalls and recurvature: an eyewall, a clear eye, spiral rain bands, outflow cirrus, a whipped-up
   sea, wind that drives the rain and the ambience, and a storm surge that floods low coasts.

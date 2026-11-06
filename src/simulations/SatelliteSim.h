@@ -5539,7 +5539,6 @@ private:
     float cv2AnvilFibres = 1.0f;           // "Anvil fibres" (clouds_v2.anvil_fibres; 0 = the eroded plate as before)
     float cv2AnvilFibreAlongKm = 15.0f;    // clouds_v2.anvil_fibre_along_km: the fibres' along-wind period
     float cv2AnvilFibreAcrossM = 1500.0f;  // clouds_v2.anvil_fibre_across_m: their across-wind spacing
-    float cv2StormBubbles = 1.0f;          // "Storm bubbles" (clouds_v2.storm_bubbles; 0 = off)
     float cv2AnvilErosion = 0.2f;          // "Anvil erosion" (clouds_v2.anvil_erosion): the plate's share of the Cb erosion
     float cv2AnvilLidLobes = 0.25f;        // clouds_v2.anvil_lid_lobes: the plate lid's share of the storm lobes
     float cv2AnvilUnderLobes = 0.7f;       // clouds_v2.anvil_under_lobes: the plate underside's share
@@ -5558,7 +5557,6 @@ private:
     float cv2CuBreakup = 0.6f;            // "Cumulus break-up": the lobes' strength at the base (shallow sheets break into puffs)
     float cv2CuHeadroom = 0.5f;           // "Cumulus top headroom": how far the tops stay under the type's ceiling (0 = cut flat at it)
     float cv2CuFineLobes = 0.5f;          // "Storm cumulus fine lobes": the cumulus-scale lobes kept on deep convection's storm-scale ones
-    float cv2CbFineLobes = 0.5f;          // "Cb tower fine lobes": the same on the towers
     float cv2CuWisps = 0.5f;              // "Cumulus wisps": erosion concentrated at the cloud's edge (frayed edges, solid cores)
     // Cumulus turrets (2026-11-04, issue 20261104_181014 "General Cloud Shapes"): a 3D field of towers at 0.36-2.9 km (the storm
     // shape volume read 2x, as thick cumulus' big lobes) on every convective cloud thicker than ~250 m, stretched upward and
@@ -5577,9 +5575,6 @@ private:
     float cv2CirrusFibres = 1.0f;         // "Cirrus fibres": the filaments' contrast (0 = smooth tufts, 1 = as tuned)
     float cv2CirrusHooks = 1.0f;          // "Cirrus hooks": the dense heads and the hooked fall streaks (0 = straight, no heads)
     float stormCycTopSmooth = 0.85f;      // "Hurricane top smoothing": the share of the CDO plate's lobes and erosion removed
-    float stormCycTopStreaks = 90.0f;     // "Hurricane top streaks": the swirl ridges on the CDO's lid (m; x11 at its edge)
-    float stormCycTopDensity = 12.0f;     // "Hurricane top density": x the anvil plate's ice under a CDO (storm-above: at 3 the
-                                          // plate was translucent, the low CDO mass under it a whiter plateau)
     // Vertical variation (2026-11-05, night wave agent E "vertical"; slots 528-535; GpuCloudV2Params vert / vert2 / oro0 / oro1;
     // clouds_v2.glsl cv2BaseShift, cv2LowA, cv2FarColumn, cv2MidSigma, cv2OroField).
     float cv2BaseLcl = 1.0f;              // "Cloud base condensation level": the LCL proxy's strength (sea / rain lower, dry land by day higher)
@@ -5769,18 +5764,15 @@ private:
     // full rate whatever their parallax.
     float cv2FoveaRadius = 0.0f;
     bool  boostHeldNow = false, cv2FastLodNow = false;
-    // Cumulonimbus as three layers (pass 15): the cumulus field capped at cv2CbCumulusTopKm, discrete
-    // concave towers on a lattice (cv2ColumnSigma), and the anvil hanging lower around their heads.
+    // Cumulonimbus (pass 15; Weather v2 2026-11-06 draws them from the convection cube, cv2StormGeom): the cumulus field
+    // capped at cv2CbCumulusTopKm round storms, the towers' radius (also the catalog's), the anvil hanging round their heads.
+    // (The lattice / waist / lobes / sparsity / fill / reach / head-lobe / anvil-puff / anvil-lift settings went with the
+    // per-sample tower walk, 2026-11-06.) cv2CbFlare / cv2CbHeadDriftKm still size the catalog's shield records.
     float cv2CbColumns = 2.0f;         // Cb column density (0 = no towers: a storm is tall congestus; the pass-14 deep cores are gone)
-    float cv2CbSpacingKm = 30.0f;      // lattice cell: about one tower per cell where storms are strong
     float cv2CbRadiusKm = 15.0f;        // a tower's base radius (waist ~0.7x, head ~1.6x)
     float cv2CbCumulusTopKm = 12.0f;    // the low (cumulus/congestus) field's top in storm regions
-    float cv2CbWaist = 0.89f;           // a tower's waist, x its base radius (1 = none: <1 read as smokestacks)
     float cv2CbFlare = 1.4f;           // its head under the anvil, x its base radius
     float cv2CbHeadDriftKm = 15.0f;     // how far downwind the head is blown
-    float cv2CbLobes = 0.37f;          // cauliflower lobes on the tower (fraction of its radius)
-    float cv2CbHeadLobes = 0.12f;      // ... and on its flared head (the anvil): smoother reads as the anvil
-    float cv2AnvilPuff = 0.45f;          // "Anvil puffiness" (2026-10-22): relief kept on the heads, x(1 + 1.5 it) head lobes, softer edge; 0 = before
     // S3 (2026-10-22): the Sun transmittance volume (cloud_lightning.glsl cv2Stv), the clouds' one Sun shadow. It replaced the
     // fine grid, the shaft rings, the cascade and the layer map (deleted 2026-10-22).
     double cv2StvLatA[4] = {}, cv2StvLatB[4] = {};   // the eye on each level's lattice (cells)
@@ -5791,11 +5783,7 @@ private:
     glm::dvec3 cv2CdcAnchor{0.0, 0.0, 1.0};        // the clipmap plane's anchor (a unit vector in the DRIFTED frame)
     bool   cv2CdcAnchorSet = false;
     int    cv2StvBoost = 0;                        // frames left of levels 0-1's second bake (catching up)
-    float cv2AnvilLiftM = 230.0f;       // "Anvil top lift (m)": how far the head lobes raise / lower its top
-    float cv2CbSparsity = 0.33f;       // 0: a tower in every lattice cell of a storm; 1: only the strongest
-    float cv2CbFill = 0.48f;            // share of 3x3 lattice blocks holding a storm cell (a dominant tower + a flanking line)
     float cv2CbCumulusVar = 0.8f;      // the storm cumulus top's regional variation (+- fraction of it)
-    float cv2CbCumulusReachKm = 31.0f;  // how far beyond a tower's edge the low cloud takes the storm cumulus top
     float cv2CbOvershootKm = 0.14f;     // a tower's overshooting dome above the anvil lid (every tower meets it)
     float cv2AnvilThickKm = 3.7f;      // the anvil shield's thickness over the storm's core
     float cv2AnvilHangKm = 0.87f;       // how much lower it hangs around a tower's head (the mushroom)
@@ -6118,38 +6106,23 @@ private:
     // slot 452; 0 = the old ~3-min climb with its strength).
     float stormTowerRiseMin = 30.0f;
     float stormAnvilDecayMin = 70.0f;
-    float stormCloudField = 1.0f;                // clouds_v2.storm_field: each storm's own cloud in the weather cube
-                                                 // (cloud_v2_weather.comp stormStamp; 0 = the map alone)
-    float stormMoat = 1.0f;                      // clouds_v2.storm_moat: the clear moat round a storm (x the field)
-    bool  stormIndexTight = true;                // clouds_v2.storm_index_tight: list a bin only where a tower / shield can reach it
-                                                 // (2026-10-27; false = every bin of the bounding rectangle, the A/B)
-    int   stormShieldBinsAB = 0;                 // clouds_v2.storm_shield_bins_ab (no UI): 64 = list shields in the old
-                                                 // 156-km bins (an A/B); 0 = kShieldBinsPerFace (128)
-    float stormArmCirrus = 1.0f;                 // clouds_v2.storm_arm_cirrus: the cirrus along a cyclone's arms (x, 0 = none)
+    // (Weather v2, 2026-11-06: "Storm cloud field", "Storm clear moat", "Hurricane arm cirrus", the storm index's A/Bs
+    // (storm_index_tight, storm_shield_bins_ab) and the cyclone's minor swirls / deck spiral / outflow cirrus / streaks
+    // tuned the weather cube's storm stamps and the shield shader, both gone: removed. The cyclone's upper-deck records
+    // keep wx::CycloneShape's defaults.)
     // A tropical cyclone's SHAPE (2026-11-03, issue 20261030_205220; wx::CycloneShape, Settings > Weather > Storm objects,
-    // slots 455-461, clouds_v2.storm_cyc_*): the main arms (count; was 2 -> 5.4 with intensity), their tightness (x the
-    // pitch's cotangent) and turning speed (x bandRot), the minor swirls between them, the upper deck's spiral (the CDO's
-    // outline and the cirrus deck's arms), the outflow cirrus' coverage and its streaks.
+    // slots 455-457, clouds_v2.storm_cyc_*): the main arms (count; was 2 -> 5.4 with intensity), their tightness (x the
+    // pitch's cotangent) and turning speed (x bandRot): the inner rainband towers stand on them (cycloneTowersAt), and the
+    // bake's bands follow the arms and their phase (cloud_v2_weather.comp wxCyclones).
     float stormCycArms = 2.0f;
     float stormCycTightness = 1.0f;
     float stormCycArmSpeed = 1.0f;
-    float stormCycMinorSwirls = 1.0f;
-    float stormCycDeckSpiral = 0.6f;
-    float stormCycOutflow = 1.0f;
-    float stormCycStreaks = 0.6f;
-    bool  stormCycSpiralAB = true;               // clouds_v2.storm_cyc_spiral (no UI): false = the pre-2026-11-03 upper deck
-                                                 // (outflow disc + arm-cirrus capsule chains), the perf A/B
     wx::CycloneShape cycloneShape() const
     {
         wx::CycloneShape k;
         k.arms = stormCycArms;
         k.tightness = stormCycTightness;
         k.speed = stormCycArmSpeed;
-        k.minor = stormCycMinorSwirls;
-        k.deckSpiral = stormCycDeckSpiral;
-        k.outflow = stormCycOutflow;
-        k.streaks = stormCycStreaks;
-        k.spiral = stormCycSpiralAB;
         return k;
     }
     // Wildfires (2026-10-23, Wildfire.h, SatelliteSimWildfire.cpp): hashed on the biome map's fuel x the season's

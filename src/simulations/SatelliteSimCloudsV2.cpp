@@ -1332,16 +1332,16 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2RainAmount, cv2OpticsGain, cv2CirrusPeriodM, cv2MidPeriodM, cv2MidDensity,
                     cv2CloudSunRayleigh, cv2TwilightSky, cv2FlowWarp, cv2FlowPeriodKm, cv2LayerSpread,
                     cv2TopHeavy, cv2TowerTop, cv2CirrusFieldKm, cv2CirrusFlow, cv2BaseFlatness, cv2CuLobesBottom, cv2CuLobesTop,
-                    cv2CbColumns, cv2CbSpacingKm, cv2CbRadiusKm, cv2CbCumulusTopKm, cv2CbWaist, cv2CbFlare,
-                    cv2CbHeadDriftKm, cv2CbLobes, cv2CbHeadLobes, cv2AnvilPuff, cv2AnvilLiftM, cv2CbSparsity, cv2CbOvershootKm, cv2AnvilThickKm, cv2AnvilHangKm, cv2CbCumulusReachKm, cv2LightLodFootprintM, cv2LightningRate, cv2CbFill, cv2CbCumulusVar, cv2FogAmount, cv2FogDepthM, cv2FogDensity, cv2DustAmount,
+                    cv2CbColumns, cv2CbRadiusKm, cv2CbCumulusTopKm, cv2CbFlare,
+                    cv2CbHeadDriftKm, cv2CbOvershootKm, cv2AnvilThickKm, cv2AnvilHangKm, cv2LightLodFootprintM, cv2LightningRate, cv2CbCumulusVar, cv2FogAmount, cv2FogDepthM, cv2FogDensity, cv2DustAmount,
                     cv2DustHeightM, cv2DustDensity, (float)(debugDisableMask & 2048u),
                     cv2LightFootprint, cv2SmallCumulus, cv2ErosionVar, cv2LobeVar, cv2CirrusDirWarp, cv2AsDensity, cv2MidThick, cv2MidShadow,
                     cv2MidFieldKm, cv2MidCover, cv2MsOctaves, cv2LobeOcclusion, cv2MsModel, cv2MsDiffG, cv2MsDiffGain, cv2MsBackM, cv2SkyLightModel, cv2SkyLightGain, cv2SkyGroundAlbedo,
-                    cv2CuHeightVar, cv2CuBreakup, cv2CuHeadroom, cv2CuFineLobes, cv2CbFineLobes, cv2CuWisps,
+                    cv2CuHeightVar, cv2CuBreakup, cv2CuHeadroom, cv2CuFineLobes, cv2CuWisps,
                     cv2CuTurrets, cv2CuTurretStretch, cv2CuTurretLean, cv2CuTurretSkew,
                     cv2CuBody, cv2CuEdge, cv2CuShowerCells, cv2CuShowerCores, cv2CuBubbles, cv2CuBubbleGain, cv2CuBubbleFine, cv2CuBubbleSize, cv2CuBubbleBase, cv2CuEnvTowers, cv2CuCore, cv2CuBubbleWarp, cv2CuHeadWidth,
-                    cv2CirrusFibres, cv2CirrusHooks, stormCycTopSmooth, stormCycTopStreaks, stormCycTopDensity,
-                    cv2AnvilFibres, cv2AnvilFibreAlongKm, cv2AnvilFibreAcrossM, cv2StormBubbles, cv2AnvilErosion,
+                    cv2CirrusFibres, cv2CirrusHooks, stormCycTopSmooth,
+                    cv2AnvilFibres, cv2AnvilFibreAlongKm, cv2AnvilFibreAcrossM, cv2AnvilErosion,
                     cv2AnvilLidLobes, cv2AnvilUnderLobes,
                     cv2BaseLcl, cv2BaseCellM, cv2BaseRegional, cv2Fractus, cv2MidWisps, cv2OroAmount, cv2OroWindMps,
                     cv2OroWindDirDeg, cv2OroMoist})
@@ -1402,7 +1402,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // history on its moving weight (at 0, as left by the drift's removal, 1 h/s held each frame's clouds for ~50 frames:
     // ghosts of cloud fields already gone).
     p.motion = glm::vec4((float)std::abs(kWxEvoSlideMps * std::clamp(dSimT, -600.0, 600.0)), std::clamp(cv2HistoryWeightMoving, 0.05f, 0.5f),
-                         std::clamp(cv2CbHeadLobes, 0.0f, 1.5f),
+                         0.0f,   // (z: "Cb head lobes", unread since Weather v2 drew storms from the convection cube)
                          // w: the noise LOD's pixel = the 100%-scale one (computeHalfExtent follows the render
                          // scale): at 50% the coarser pixel filtered the cumulus texture away.
                          // S9: full-res clouds keep the HALF-res pixel's LOD (w = 2): at the full-res pixel the sub-pixel
@@ -1603,9 +1603,6 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     }
 
     {
-        // The Cb column lattice: 64 cells per period, so a cell's id mod 64 (its hash) is stable as the
-        // observer moves; carried with the cells (0.85 of the wind), like the field they rise from.
-        const double cellM = std::clamp((double)cv2CbSpacingKm, 8.0, 120.0) * 1000.0;
         // The towers' own lobe noise (2026-10-10; the 3D lattice anchorCol held is gone since pass 16): the storm
         // shape volume WITHOUT the wind's slide, and in w the phase of the towers' flow (clouds_v2.glsl
         // cv2ColumnSigma: the lobes rise up a tower and spread out in its head, over kColFlowSpan of a period per
@@ -1616,18 +1613,16 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         const double stormP = cv2ShapePeriodM * stormScale;
         p.anchorCol = anchor(stormP, 0.0);
         p.anchorCol.w = (float)fracPos(1.5 * (double)cv2WindMps * simT / (kColFlowSpan * stormP));
-        p.column = glm::vec4(std::max(cv2CbColumns, 0.0f), (float)cellM,
+        // (Weather v2, 2026-11-06: the per-sample tower walk's lattice cell (column.y), its waist / flare / drift / lobes
+        // (column2), sparsity (anvil2.z), storm cumulus reach (column3.x) and fill (column3.w) have no reader: fed 0.)
+        p.column = glm::vec4(std::max(cv2CbColumns, 0.0f), 0.0f,
                              std::clamp(cv2CbRadiusKm, 1.0f, 20.0f) * 1000.0f,
                              std::clamp(cv2CbCumulusTopKm, 2.0f, 12.0f) * 1000.0f);
-        p.column2 = glm::vec4(std::clamp(cv2CbWaist, 0.2f, 1.5f), std::clamp(cv2CbFlare, 0.5f, 3.0f),
-                              std::clamp(cv2CbHeadDriftKm, 0.0f, 30.0f) * 1000.0f, std::clamp(cv2CbLobes, 0.0f, 1.5f));
+        p.column2 = glm::vec4(0.0f);
         p.anvil2 = glm::vec4(std::clamp(cv2AnvilThickKm, 0.3f, 6.0f) * 1000.0f,
                              std::clamp(cv2AnvilHangKm, 0.0f, 6.0f) * 1000.0f,
-                             std::clamp(cv2CbSparsity, 0.0f, 1.0f), std::clamp(cv2CbOvershootKm, 0.0f, 3.0f) * 1000.0f);
-        // The storm cumulus rises within this distance of a tower's edge (review 5: it was a weather mip,
-        // the map's storm REGION, which drew a continent-wide 5-7 km cumulus floor).
-        p.column3 = glm::vec4(std::clamp(cv2CbCumulusReachKm, 0.0f, 60.0f) * 1000.0f,
-                              0.0f, std::clamp(cv2CbCumulusVar, 0.0f, 0.8f), std::clamp(cv2CbFill, 0.02f, 1.0f));
+                             0.0f, std::clamp(cv2CbOvershootKm, 0.0f, 3.0f) * 1000.0f);
+        p.column3 = glm::vec4(0.0f, 0.0f, std::clamp(cv2CbCumulusVar, 0.0f, 0.8f), 0.0f);
     }
     // Light LOD (cloud_v2_march.comp), only for a light march up to 3 km: its second step is one sample over the
     // rest of the march, and at 8 km that is a 7.5-km all-or-nothing sample (the grain of 2026-10-11; a saved
@@ -1827,7 +1822,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         p.mid3 = glm::vec4(cv2MidFieldKm > 1.0f ? 1.0f / (1000.0f * cv2MidFieldKm) : 0.0f,
                            std::round(std::clamp(cv2MsOctaves, 1.0f, 8.0f)), std::clamp(cv2LobeOcclusion, 0.0f, 1.0f),
                            std::max(cv2HazeAloft, 0.0f));
-        p.cu2 = glm::vec4(std::clamp(cv2CbFineLobes, 0.0f, 2.0f), std::clamp(cv2CuWisps, 0.0f, 1.0f),
+        p.cu2 = glm::vec4(0.0f /* x: "Cb tower fine lobes", unread since Weather v2 */, std::clamp(cv2CuWisps, 0.0f, 1.0f),
                           std::clamp(cv2SilverLining, 0.0f, 4.0f),
                           std::clamp(((float)lightFill - 64.0f) / 32.0f, 0.0f, 1.0f));
 
@@ -2145,7 +2140,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             lowTopB[e] = m + 100.0f + 900.0f * std::clamp(cv2BaseLcl, 0.0f, 2.0f) + 0.7f * 1.5f * altWMax * std::clamp(cv2BaseRegional, 0.0f, 2.0f);
         }
     }
-    p.anvil3 = glm::vec4(std::clamp(cv2AnvilPuff, 0.0f, 2.0f), std::clamp(cv2AnvilLiftM, 0.0f, 3000.0f), lowTopB[0], lowTopB[1]);
+    // (xy: "Anvil puffiness" / "Anvil top lift", unread since Weather v2: removed.)
+    p.anvil3 = glm::vec4(0.0f, 0.0f, lowTopB[0], lowTopB[1]);
     p.perf = glm::vec4(std::clamp(std::round(cv2NearCirrusStride), 1.0f, 4.0f), 12.0f,
                        std::clamp(std::round(cv2GodrayReads), 2.0f, 8.0f),
                        cv2SmoothNow ? std::clamp(cv2SmoothTileThresh * (cv2EyeStillFrames >= 64 ? 1.0f : std::clamp(cv2SmoothMoving, 0.05f, 2.0f)), 0.5f, 64.0f) / 255.0f : 0.0f);   // (moving: x smooth_moving)   // "Near cirrus stride", "God ray reads", smooth tiles
@@ -2171,8 +2167,9 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                         std::clamp(cv2CuEnvTowers, 0.0f, 0.9f), 0.0f);
     // Fibrous cirrus and hurricane CDO tops (cirrus-hurr, 2026-11-05).
     p.ciHu  = glm::vec4(std::clamp(cv2CirrusFibres, 0.0f, 2.0f), std::clamp(cv2CirrusHooks, 0.0f, 2.0f),
-                        std::clamp(stormCycTopSmooth, 0.0f, 1.0f), std::clamp(stormCycTopStreaks, 0.0f, 600.0f));
-    p.ciHu2 = glm::vec4(std::clamp(stormCycTopDensity, 1.0f, 20.0f), std::clamp(cv2CuCore, 0.0f, 1.0f), std::clamp(cv2CuBubbleWarp, 0.0f, 400.0f), std::clamp(cv2CuHeadWidth, 0.0f, 1.0f));
+                        std::clamp(stormCycTopSmooth, 0.0f, 1.0f), 0.0f);   // (w: "Hurricane top streaks", now kCv2CdoStreakM)
+    // (x: "Hurricane top density", unread since Weather v2: removed.)
+    p.ciHu2 = glm::vec4(0.0f, std::clamp(cv2CuCore, 0.0f, 1.0f), std::clamp(cv2CuBubbleWarp, 0.0f, 400.0f), std::clamp(cv2CuHeadWidth, 0.0f, 1.0f));
     // Vertical variation (vertical, 2026-11-05): cv2BaseShift's strengths, fractus, mid-level wisps.
     p.vert  = glm::vec4(std::clamp(cv2BaseLcl, 0.0f, 2.0f), std::clamp(cv2BaseCellM, 0.0f, 400.0f),
                         std::clamp(cv2BaseRegional, 0.0f, 2.0f), std::clamp(cv2Fractus, 0.0f, 2.0f));
@@ -2217,7 +2214,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     {   // Storms in the cumulus look (storm3): the anvil fibres' along-wind period divides the equator (no seam).
         const float nAlong = std::max(1.0f, std::round(2.0f * 3.14159265f * 6371.0f / std::max(cv2AnvilFibreAlongKm, 2.0f)));
         p.storm3a = glm::vec4(std::clamp(cv2AnvilFibres, 0.0f, 2.0f), nAlong / (2.0f * 3.14159265f),
-                              1.0f / std::max(cv2AnvilFibreAcrossM, 100.0f), std::clamp(cv2StormBubbles, 0.0f, 2.0f));
+                              1.0f / std::max(cv2AnvilFibreAcrossM, 100.0f), 0.0f);   // (w: "Storm bubbles", unread: removed)
         p.storm3b = glm::vec4(std::clamp(cv2AnvilErosion, 0.0f, 1.0f), std::clamp(cv2AnvilLidLobes, 0.0f, 1.0f),
                               std::clamp(cv2AnvilUnderLobes, 0.0f, 1.5f), 0.0f);
     }
@@ -2293,9 +2290,7 @@ SatelliteSim::GpuWeatherPC SatelliteSim::weatherEvoPC(int face, uint32_t mip) co
     const double flowP = std::clamp((double)cv2FlowPeriodKm, 200.0, 20000.0) * 1000.0;
     pc.storm = glm::vec4((float)(std::clamp((double)cv2FlowWarp, 0.0, 0.1) * flowP),
                          (float)fracPos((double)cv2WindMps * 0.3 * t / flowP), (float)(1.0 / flowP), 0.0f);
-    pc.storm2 = glm::vec4(stormObjects && cv2CbColumns > 0.0f ? std::max(stormCloudField, 0.0f) : 0.0f,
-                          std::max(stormMoat, 0.0f), std::clamp(stormCycMinorSwirls, 0.0f, 2.0f),
-                          stormCycSpiralAB ? std::clamp(stormCycDeckSpiral, 0.0f, 1.0f) : 0.0f);
+    pc.storm2 = glm::vec4(0.0f);   // (unused since Weather v2: it carried the storm stamps' field / moat / cyclone swirls)
     return pc;
 }
 
@@ -2450,11 +2445,10 @@ uint64_t SatelliteSim::weatherBakeHash() const
     uint64_t h = 1469598103934665603ull;
     for (float v : {cv2EvoWindMps, cv2EvoGrowth, cv2EvoWindowH, cv2EvoDiurnal,
                     cv2Coverage, cv2CoverClear, cv2CoverFull,   // the coarse levels' coverage (review 18)
-                    stormObjects ? 1.0f : 0.0f, stormCloudField, stormMoat, cv2CbColumns,   // the storms' stamp
-                    cv2CbRadiusKm, cv2CbCumulusReachKm, cv2CbHeadDriftKm, cv2CbFlare,
-                    // (a cyclone's shape: its arms are stamped; 2026-11-03)
-                    stormCycArms, stormCycTightness, stormCycArmSpeed, stormCycMinorSwirls, stormCycDeckSpiral,
-                    stormCycSpiralAB ? 1.0f : 0.0f})
+                    stormObjects ? 1.0f : 0.0f, cv2CbColumns,   // the storms
+                    cv2CbRadiusKm, cv2CbHeadDriftKm, cv2CbFlare,
+                    // (a cyclone's shape: its arms are baked; 2026-11-03)
+                    stormCycArms, stormCycTightness, stormCycArmSpeed})
         h = (h ^ std::hash<float>{}(v)) * 1099511628211ull;
     return h;
 }
@@ -2472,7 +2466,7 @@ void SatelliteSim::recordWeatherEvolution(VkCommandBuffer cmd)
     const bool evolving = cv2EvoWindMps > 0.0f || cv2EvoGrowth > 0.0f || cv2EvoDiurnal > 0.0f;
     // The storms' stamp (stormStamp) moves with them (a hurricane ~45 m/s through the map's frame): a face at most
     // "Weather cube tick" (10 s: <= ~0.5 km of a hurricane's motion, a tenth of a texel) behind.
-    const bool stormsStamped = stormObjects && cv2CbColumns > 0.0f && stormCloudField > 0.0f;
+    const bool stormsStamped = stormObjects && cv2CbColumns > 0.0f;
     if (h != cv2WxHash)
     {
         for (double &b : cv2WxBakedT)

@@ -589,12 +589,8 @@ void SatelliteSim::updateStorms()
         }
     }
     {
-        const int idxKey = (stormIndexTight ? 1 : 0) + 2 * stormShieldBinsAB;
-        static int lastIdxKey = -1;
-        if (idxKey != lastIdxKey) { lastIdxKey = idxKey; stormUploadedT = -1e300; }   // (the index's layout changed)
-        // (The cyclones' shape sliders and the arm cirrus change what is uploaded: re-upload while paused too.)
-        const float shapeKey[] = {stormCycArms, stormCycTightness, stormCycArmSpeed, stormCycMinorSwirls, stormCycDeckSpiral,
-                                  stormCycOutflow, stormCycStreaks, stormCycSpiralAB ? 1.0f : 0.0f, stormArmCirrus};
+        // (The cyclones' shape sliders change what is uploaded: re-upload while paused too.)
+        const float shapeKey[] = {stormCycArms, stormCycTightness, stormCycArmSpeed};
         static float lastShapeKey[std::size(shapeKey)] = {-1.0f};
         if (std::memcmp(shapeKey, lastShapeKey, sizeof(shapeKey)) != 0)
         {
@@ -654,14 +650,14 @@ void SatelliteSim::updateStorms()
     const double flare = std::max((double)std::clamp(cv2CbFlare, 0.5f, 3.0f), 1.0);
     const double drift = std::clamp((double)cv2CbHeadDriftKm, 0.0, 30.0) * 1000.0;
     const double span = std::max((double)(cv2Types[4].alt.y - cv2Types[4].alt.x), 0.0);
-    const double cuReach = std::clamp((double)cv2CbCumulusReachKm, 0.0, 60.0) * 1000.0;
+    const double cuReach = 31000.0;   // (the retired "Storm cumulus reach", 2026-11-06: only the unbuilt tower list used it)
 
-    // The tight listing (2026-10-27, clouds_v2.storm_index_tight): a bin only where the tower's reach / the shield's
-    // capsule can touch it, not every bin of the disc's bounding rectangle.
-    // (clouds_v2.storm_shield_bins_ab 64: the old shield bins, an A/B; the shaders read the count from the head.)
-    const uint32_t shieldBinsN = stormShieldBinsAB == 64 ? 64u : kShieldBinsPerFace;
+    // The tight listing (2026-10-27): a bin only where the tower's reach / the shield's capsule can touch it, not every
+    // bin of the disc's bounding rectangle. (Its A/Bs, clouds_v2.storm_index_tight / storm_shield_bins_ab, were retired
+    // with the shader's storm index, 2026-11-06.)
+    const uint32_t shieldBinsN = kShieldBinsPerFace;
     const uint32_t towerBinsN = kStormBinsPerFace;
-    const bool tight = stormIndexTight;
+    const bool tight = true;
     if (tight) { binGeom(towerBinsN); binGeom(shieldBinsN); }
     // Weather v2: no shader reads the towers' GPU list or their bins any more (the convection cube holds the storms,
     // SatelliteSimWeatherSystems.cpp updateConvection): they are not built (~1 ms a frame).
@@ -772,7 +768,7 @@ void SatelliteSim::updateStorms()
         sp.headRadiusM = (float)(Rb * flare * 1.15);
         sp.headDriftM = (float)drift;
         stormCatalog->shieldsAt(t, stormsNow, sp, stormShields);
-        stormCatalog->cycloneShieldsAt(t, stormCyclonesNow, stormShields, stormArmCirrus, &cycShape);   // their central dense overcast
+        stormCatalog->cycloneShieldsAt(t, stormCyclonesNow, stormShields, 1.0f, &cycShape);   // their central dense overcast (arm cirrus x1)
         std::sort(stormShields.begin(), stormShields.end(), [](const wx::Shield &a, const wx::Shield &b) {
             return a.strength != b.strength ? a.strength > b.strength : a.stormId < b.stormId;
         });
@@ -965,7 +961,7 @@ SatelliteSim::StormEnvDirty SatelliteSim::buildStormEnvIndexWork(bool own)
     };
     auto *envTowers = reinterpret_cast<GpuStormTower *>(static_cast<char *>(stormMapped) + kStormEnvTowersOffset);
     stormEnvEntries.clear();
-    const bool tight = stormIndexTight;
+    const bool tight = true;
     if (tight) binGeom(kStormBinsPerFace);
     const uint32_t n =(uint32_t)std::min<size_t>(stormGpuTowers.size(), kStormMaxTowers);
     auto towerBody = [&](uint32_t i, std::vector<StormEntry> &ents) {

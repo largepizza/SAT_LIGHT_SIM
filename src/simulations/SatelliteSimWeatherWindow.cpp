@@ -2046,11 +2046,8 @@ void SatelliteSim::buildWeatherControlsTab(const UIInput &inp, UIRenderer &ui)
     };
     num(0, tx(Txt::SldStormFrequencyX), stormFrequency, 0.0f, 10.0f, 0.05f, "%.2f", tx(Txt::TipXTheCalibratedSpawnRateClouds));
     num(1, tx(Txt::SldStormLifetimeX), stormLifeScale, 0.1f, 5.0f, 0.05f, "%.2f", tx(Txt::TipXEveryStormsLifetimeCloudsV2));
-    num(2, tx(Txt::SldStormCloudField), stormCloudField, 0.0f, 3.0f, 0.05f, "%.2f",
-        tx(Txt::TipEachStormsOwnCloudInThe));
-    num(3, tx(Txt::SldStormClearMoat), stormMoat, 0.0f, 3.0f, 0.05f, "%.2f", tx(Txt::TipTheClearMoatRoundAStorm));
-    num(6, tx(Txt::SldHurricaneArmCirrus), stormArmCirrus, 0.0f, 3.0f, 0.05f, "%.2f",
-        tx(Txt::TipTheIceStreamingAlongATropical));
+    // (num 2 "Storm cloud field", 3 "Storm clear moat" and 6 "Hurricane arm cirrus" were retired with the storm stamps
+    // and the shield shader, Weather v2 2026-11-06.)
     num(10, tx(Txt::SldStormSurgeX), stormSurge, 0.0f, 2.0f, 0.05f, "%.2f",
         tx(Txt::TipXATropicalCyclonesStormSurge));
     uiSection("WxCSec", 2, tx(Txt::SecWildfires));

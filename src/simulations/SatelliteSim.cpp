@@ -1767,7 +1767,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     {
         updateStorms();
         stormsUpdatedEarly = true;
-        if (stormObjects && cv2CbColumns > 0.0f && stormCloudField > 0.0f)
+        if (stormObjects && cv2CbColumns > 0.0f)
             startStormEnvJob();
     }
     }
