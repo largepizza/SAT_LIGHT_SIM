@@ -7274,7 +7274,7 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SldSmokeSpreadX), &wildfireSmokeSpread, 0.25f, 4.0f, 0.05f, "%.2f", 420},
         {tx(Txt::SldSmokeSpectralX), &wildfireSmokeSpectral, 0.0f, 2.0f, 0.05f, "%.2f", 421},
         {tx(Txt::SldWildfireLight), &wildfireLight, 0.0f, 5.0f, 0.05f, "%.2f", 422},
-        {tx(Txt::SldHaboobsX), &haboobGain, 0.0f, 5.0f, 0.05f, "%.2f", 423},
+        // (423: "Haboobs x", retired 2026-11-06 with the haboobs)
     };
     CloudSlider secStorms[] = {
         {tx(Txt::SldCbFillShareOfCells), &cv2CbFill, 0.05f, 1.0f, 0.05f, "%.2f", 189},
@@ -7376,7 +7376,6 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SecWildfiresHaboobs), secFire, (int)(sizeof(secFire) / sizeof(secFire[0])),
          [&]()
          {
-             uiToggleRow(inp, ui, "WxSetOn", 1, tx(Txt::LblHaboobsAsCloud), haboobField, tx(Txt::TipOnTheDustWallsAreDrawn));
              uiToggleRow(inp, ui, "WxSetOn", 2, tx(Txt::LblWildfireBurnScars), wildfireScars, tx(Txt::TipTheBurntGroundUnderAFire));
          }},
         CLOUD_SEC(tx(Txt::SecLightning2), secLightning),

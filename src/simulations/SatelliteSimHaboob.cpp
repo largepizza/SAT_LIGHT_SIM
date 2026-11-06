@@ -198,7 +198,7 @@ void SatelliteSim::weatherFillHaboobs(GpuDustCloud *out, uint32_t &n)
     haboobsNow = 0;
     haboobNearestKm = -1.0;
     aerosolFirst = n;   // the haboobs and the wildfire smoke are one range (smoke.glsl): their own light, spectral
-    if (!out || haboobGain <= 0.0f || !stormObjects || !stormCatalog || !biomeMap.ready()) return;
+    if (kHaboobsRetired || !out || haboobGain <= 0.0f || !stormObjects || !stormCatalog || !biomeMap.ready()) return;
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
     const double eyeR = (double)obsEyeRadiusM();
@@ -443,7 +443,8 @@ void SatelliteSim::weatherFillDustGrid()
     auto *head = reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kDustHeadOffset);
     ctx_->mirrorDirty(stormMapped, kDustHeadOffset, kDustGridOffset - kDustHeadOffset); // head + frame (frames in flight)
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
-    const bool on = haboobField && haboobGain > 0.0f && stormObjects && stormCatalog && biomeMap.ready() && !stormTowers.empty();
+    const bool on = !kHaboobsRetired && haboobField && haboobGain > 0.0f && stormObjects && stormCatalog && biomeMap.ready()
+                 && !stormTowers.empty();
     if (!on)
     {
         head[0] = 0u;

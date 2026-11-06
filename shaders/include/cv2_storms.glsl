@@ -149,30 +149,7 @@ layout(std430, set = 0, binding = CV2_STORM_BINDING) readonly buffer CV2StormBuf
 };
 #endif
 
-// The dust wall at a point (its offset from the observer's sea-level point, ECEF axes, m): x the wall's strength 0..1
-// (the dust x the gust front's profile across it), y its top (m above the ground), z the rain-free air ahead of the
-// front 0..1. C1-smooth bilinear of four cells (linear facets of 0.4-3 km cells drew straight creases on the wall's face).
-vec3 cv2DustUnpack(uint c) { return vec3(float(c & 0xFFFFu) * (1.0 / 65535.0), float((c >> 16u) & 0xFFFu) * 2.0, float(c >> 28u) * (1.0 / 15.0)); }
-vec3 cv2DustWallAt(vec3 seaProjE)
-{
-#ifdef CV2_STORM_BINDING
-    if (cv2DustHead.x == 0u) return vec3(0.0);
-    vec2  g  = vec2(dot(seaProjE, cv2DustFrame[0].xyz), dot(seaProjE, cv2DustFrame[1].xyz)) * cv2DustFrame[0].w
-             + cv2DustFrame[3].xy;
-    vec2  lo = vec2(float(cv2DustHead.y & 0xFFFFu), float(cv2DustHead.y >> 16u));
-    vec2  hi = vec2(float(cv2DustHead.z & 0xFFFFu), float(cv2DustHead.z >> 16u));
-    if (any(lessThan(g, lo)) || any(greaterThanEqual(g, hi))) return vec3(0.0);
-    ivec2 i  = ivec2(floor(g));
-    vec2  f  = g - vec2(i);
-    f = f * f * (3.0 - 2.0 * f);
-    uint  N  = kCv2DustGridN;
-    uint  b  = uint(i.y) * N + uint(i.x);
-    return mix(mix(cv2DustUnpack(cv2DustGrid[b]), cv2DustUnpack(cv2DustGrid[b + 1u]), f.x),
-               mix(cv2DustUnpack(cv2DustGrid[b + N]), cv2DustUnpack(cv2DustGrid[b + N + 1u]), f.x), f.y);
-#else
-    return vec3(0.0);
-#endif
-}
+// (The haboobs' dust wall lookup, cv2DustWallAt, was retired 2026-11-06; the grid stays in the buffer's layout.)
 
 // An integer hash (the lightning's per-cell seeds).
 uint cv2StormHash(uint k)

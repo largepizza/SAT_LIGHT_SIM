@@ -22,7 +22,10 @@
 #include "Weather.h"       // weather events: storm objects (2026-10-22, .plans/WEATHER_EVENTS_PLAN.md)
 #include "WindField.h"
 // Weather v2 (.plans/WEATHER_V2_PLAN.md): no global cloud drift (SatelliteSim::cloudDriftPhase, updateStorms).
-inline constexpr bool kWeatherV2NoDrift = true;     // Weather v2: the one wind (2026-11-06)
+inline constexpr bool kWeatherV2NoDrift = true;
+// Haboobs retired (2026-11-06, Weather v2: the user, they never looked right and their spawning caused issues): no dust
+// walls, no haboob events. SatelliteSimHaboob.cpp's fills return nothing; the march binds its dust-free pipeline.
+inline constexpr bool kHaboobsRetired = true;     // Weather v2: the one wind (2026-11-06)
 #include "WeatherSystems.h"  // Weather v2: weather systems (extratropical cyclones, ...)
 #include "Wildfire.h"   // (and Biome.h)         // the land-cover map for the weather hazards (2026-10-23)
 #include "StormClimatology.h"
