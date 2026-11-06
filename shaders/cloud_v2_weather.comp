@@ -267,7 +267,7 @@ vec4 wxConvection(vec3 d, out float env, bool cellsOnly)
             float ci = c.b.x * exp(-(r * r) / (c.a.w * c.a.w));
             notC *= 1.0 - ci;
             notE *= 1.0 - c.b.x * exp(-(r * r) / (6.25 * c.a.w * c.a.w));
-            top = max(top, c.b.y * smoothstep(0.1, 0.5, ci));
+            top = max(top, c.b.y * smoothstep(0.02, 0.1, ci));   // (the cell's own top across its core: a falloff drew cones)
         } else if (!cellsOnly) {
             CV2Anvil A = cv2Anvils[e & 0x7FFFFFFFu];
             float cd = dot(d, A.a.xyz);
@@ -287,9 +287,11 @@ vec4 wxConvection(vec3 d, out float env, bool cellsOnly)
                 // so the oldest outflow frays into cirrus. A compact disc, not a Gaussian: overlapping Gaussian tails of
                 // neighbouring storms summed into one continent-sized plate.
                 float rk = A.a.w + 7.0 * min(s, 7200.0);
-                vec2  q  = p - vec2(A.c.w * s, 0.0);
+                // Anisotropic: the outflow spreads mostly downwind (its centre a further 0.4 of the spread on), narrower
+                // across the wind; upwind it overhangs only a little (a saucer round the column otherwise).
+                vec2  q  = p - vec2(A.c.w * s + 0.4 * (rk - A.a.w), 0.0);
                 if (A.d.x > 0.0) q -= ax * clamp(dot(q, ax), -A.d.x, A.d.x);   // to the line segment
-                float dq = length(q) / rk;
+                float dq = length(q * vec2(1.0, 1.25)) / rk;
                 float rr = A.a.w / rk;
                 acc += exp(-s / tauL) * (1.0 - smoothstep(0.55, 1.1, dq)) * rr;   // (r0 / r: it thins as it spreads, vertically too)
                 // the mid-level outflow: slower downwind, wider, longer-lived
@@ -487,8 +489,10 @@ void main()
     t -= cl.strat * (0.08 + 0.10 * ocean * (1.0 - tropics)); // decks: stratocumulus, stratus over cold sea
     t += 0.3 * aft * (0.5 + 0.5 * tropics);                  // afternoon: towering cumulus
     t  = min(t, 0.62);   // the map's own convection caps at congestus: cumulonimbus is the storms'
-    // Toward congestus over a storm's environment and cumulonimbus at its cores; the mid outflow's deck stratiform.
-    t  = mix(t, max(t, mix(0.55, 0.72, smoothstep(0.3, 0.8, cC))), smoothstep(0.02, 0.4, envC));
+    // Toward congestus over a storm's environment and its cores (the cumulus field's own deepest type: the column itself
+    // is the storm geometry's, clouds_v2.glsl cv2StormGeom; typed cumulonimbus here, the field drew its own tower as a
+    // cone through it); the mid outflow's deck stratiform.
+    t  = mix(t, max(t, mix(0.5, 0.62, smoothstep(0.3, 0.8, cC))), smoothstep(0.02, 0.4, envC));
     t  = mix(t, 0.15, smoothstep(0.1, 0.6, cMid) * (1.0 - smoothstep(0.1, 0.4, cC)));
     t  = clamp(t, 0.0, 1.0);
 

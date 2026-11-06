@@ -2436,17 +2436,26 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
     const float c0 = 0.35;
     float best = -1e9, hfT = 0.0, topHere = base;
     if (hb >= -300.0 && C > c0 - 0.15) {
-        float k    = clamp((C - c0) / 0.45, 0.0, 1.0);
-        float dome = sqrt(k * (2.0 - k));                                   // a quarter circle: steep sides, round head
+        // dH: the DISTANCE in from the c0 contour (m): for a core C = exp(-r^2 / sigma^2), r = sigma sqrt(-ln C), sigma the
+        // cells' 0.35 Rb. ((C - c0) x 1.6 Rb ran ~2.4 m a metre across the wall, which flattened the cumulus lobes carved
+        // into it to ~40% of their size: smooth walls with erosion pits, a snow mountain instead of cauliflower.)
+        float sg0  = 0.35 * Rb;
+        float rcol = sg0 * sqrt(-log(c0));
+        float dH   = sg0 * (sqrt(-log(c0)) - sqrt(-log(max(C, 1e-4))));
+        // The HEAD: a cap as round as the column is wide (radius rh), the top cv.y of the way to the lid; over it the
+        // strongest core overshoots in a dome. (The top rising linearly with the intensity drew every young tower as a
+        // spike.)
         float topC = base + (lid - 300.0 - base) * cv.y;
-        topHere    = mix(base + 1500.0, topC, dome) + osM * full * smoothstep(0.55, 0.95, C);
+        float rh   = min(rcol, 0.5 * max(topC - base, 600.0));
+        float dh   = clamp(rh - dH, 0.0, rh);
+        topHere    = topC - rh + sqrt(max(rh * rh - dh * dh, 0.0))
+                   + osM * full * smoothstep(0.3, 0.9, dH / max(rcol, 1.0));
         float zeta = clamp(hb / max(topHere - base, 300.0), 0.0, 1.0);
-        // (+ the head's FLARE where the column reaches the lid: it widens over its top third into the anvil it feeds, the
-        // outflow turning outward, instead of standing as a drum under a mushroom cap)
+        // + a little swell at mid-height, and the head's FLARE where the column reaches the lid: it widens over its top
+        // third into the anvil it feeds (the outflow turning outward), not a drum under a mushroom cap.
         float zl   = clamp(hb / max(lid - base, 300.0), 0.0, 1.0);
-        float mH   = (C - c0) * Rb * 1.6 + Rb * 0.12 * sin(3.14159 * zeta)
-                   + Rb * 0.7 * full * cv2SqC(smoothstep(0.6, 1.0, zl));
-        float mV   = (topHere - q.h) * 0.6;                                 // (a dome's flank: ~2 vertical metres a metre)
+        float mH   = dH + Rb * 0.06 * sin(3.14159 * zeta) + Rb * 0.7 * full * cv2SqC(smoothstep(0.6, 1.0, zl));
+        float mV   = topHere - q.h;
         best = -cv2SMax(-mH, -mV, 600.0);                                   // a smooth min(mH, mV)
         hfT  = zeta;
     }

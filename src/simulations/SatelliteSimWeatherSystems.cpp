@@ -81,7 +81,9 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
         const double Rc = Rb * (0.7 + 0.6 * T.size) * (0.8 + 0.2 * ss(0.1, 0.6, str)) * (0.75 + 0.25 * T.role);
         // The core: its 0.45 contour ~0.6 Rc out at full strength (an updraft core ~10-20 km across at the default 15-km
         // "Cb tower radius", which sized the old geometry's base; at 1.12 Rc the columns stood ~36 km wide).
-        const double sigma = 0.7 * Rc;
+        // (0.35 Rc: a core ~11 km across at the 15-km "Cb tower radius", a real updraft tower's ~10; at 0.7 Rc the
+        // columns stood 25 km wide)
+        const double sigma = 0.35 * Rc;
         const double top = std::min(ss(0.02, 0.6, str), (double)T.heightCap) * T.role;
         cells[nC].a = glm::vec4(glm::vec3(glm::normalize(T.dir)), (float)sigma);
         uint32_t seedBits = T.seed;   // z: the tower's seed as float bits (the lightning's stable per-cell hash)
@@ -101,10 +103,10 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
     {
         const double str = TS.str * ssD(0.0, 1500.0, tsAge) * (1.0 - ssD(TS.life - 2400.0, TS.life, tsAge));
         const double Rc = Rb * 1.0;
-        cells[nC].a = glm::vec4(glm::vec3(tsDir), (float)(0.7 * Rc));
+        cells[nC].a = glm::vec4(glm::vec3(tsDir), (float)(0.35 * Rc));
         uint32_t sb = 0x7E57u; float sf; std::memcpy(&sf, &sb, 4);
         cells[nC].b = glm::vec4((float)str, (float)ssD(0.02, 0.6, str), sf, 1.0f);
-        binCircle(tsDir, 4.5 * 0.7 * Rc, nC);
+        binCircle(tsDir, 4.5 * 0.35 * Rc, nC);
         ++nC;
     }
     // ANVIL sources: each storm whose towers reached the lid, from the moment the first did; it feeds the anvil until the
