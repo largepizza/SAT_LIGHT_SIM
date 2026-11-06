@@ -5878,6 +5878,11 @@ private:
     VkDescriptorPool cv2WxPool = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> cv2WxSets;
     std::vector<VkImageView> cv2WxMipViews;
+    // Weather v2: the CONVECTION cube, layers 6-11 of the weather image (cloud_v2_weather.comp binding 6 writes it; the
+    // march set's binding 28 reads it): x convective intensity, y the column's top (x the tropopause), z the anvil
+    // (upper outflow), w the mid-level outflow.
+    VkImageView cv2ConvView = VK_NULL_HANDLE;
+    std::vector<VkImageView> cv2ConvMipViews;
     double cv2WxBakedT[6] = {};        // sim time each face was last baked at
     double cv2WxPrevT = -1e300;        // sim time of the last frame's recordWeatherEvolution (its step: time warp)
     bool cv2WxOneFace = false;         // A/B (clouds_v2.weather_one_face): never bake all six faces together
@@ -5942,7 +5947,18 @@ private:
     static constexpr uint32_t kWxSystemMax = 128;   // = kCv2SystemMax
     static constexpr VkDeviceSize kSysHeadOffset = kShieldEnvOffset + 64ull * kShieldMax;
     static constexpr VkDeviceSize kSystemsOffset = kSysHeadOffset + 16;
-    static constexpr VkDeviceSize kStormBufBytes = kSystemsOffset + 64ull * kWxSystemMax;
+    // Weather v2 convection (= cv2_storms.glsl cv2ConvHead / CV2Cell / CV2Anvil / cv2ConvGrid / cv2ConvList).
+    struct GpuConvCell { glm::vec4 a, b; };
+    struct GpuConvAnvil { glm::vec4 a, b, c, d; };
+    static constexpr uint32_t kConvCellMax = 8192, kConvAnvilMax = 4096, kConvGridLon = 180, kConvGridLat = 90,
+                              kConvListMax = 131072;
+    static constexpr VkDeviceSize kConvHeadOffset = kSystemsOffset + 64ull * kWxSystemMax;
+    static constexpr VkDeviceSize kConvCellsOffset = kConvHeadOffset + 16;
+    static constexpr VkDeviceSize kConvAnvilsOffset = kConvCellsOffset + 32ull * kConvCellMax;
+    static constexpr VkDeviceSize kConvGridOffset = kConvAnvilsOffset + 64ull * kConvAnvilMax;
+    static constexpr VkDeviceSize kConvListOffset = kConvGridOffset + 8ull * kConvGridLon * kConvGridLat;
+    static constexpr VkDeviceSize kStormBufBytes = kConvListOffset + 4ull * kConvListMax;
+    static_assert(kConvCellsOffset % 16 == 0 && kConvAnvilsOffset % 16 == 0 && kConvGridOffset % 8 == 0, "std430 offsets");
     static_assert(kShieldHeadOffset % 16 == 0 && kStormEnvTableOffset % 16 == 0 && kShieldEnvOffset % 16 == 0,
                   "std430: the storm buffer's vec4 arrays start on 16 bytes");
     VkBuffer stormBuf = VK_NULL_HANDLE;
@@ -5954,6 +5970,9 @@ private:
     std::vector<wx::SystemState> wxSystemsNow;
     wx::SystemSettings wxSystemSettings;
     void updateWeatherSystems(double t);
+    void updateConvection(double t, const std::vector<const wx::Storm *> &storms);   // Weather v2: cells + anvil sources
+    std::vector<uint32_t> convGridCount, convGridStart;   // (scratch)
+    std::vector<std::pair<uint32_t, uint32_t>> convEntries;   // (grid cell, list value) scratch
     std::unique_ptr<wx::StormClimatology> stormClim;
     std::vector<wx::Tower> stormTowers;          // this frame's, strongest first
     struct StormEntry { uint32_t key, tower; };

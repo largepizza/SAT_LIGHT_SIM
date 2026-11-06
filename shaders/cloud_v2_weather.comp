@@ -489,6 +489,61 @@ bool cycloneNear(vec3 d, float hw)
     return false;
 }
 
+// ── Weather v2 convection: the convection cube (layers 6-11 of this image, binding 6) ──
+// x  convective intensity: the cells (catalog towers) as Gaussian cores, soft-unioned
+// y  the column's top as a share of the way to the lid (the strongest core's here)
+// z  the ANVIL: what the storms detrained at the lid, integrated over the time since each reached it along its
+//    storm-relative upper wind, spreading as it goes and decaying over its linger. So an anvil grows out of the column
+//    as the column reaches the lid, streams downwind, outlives its storm and fades; neighbours' anvils sum in one field
+//    (no props to intersect).
+// w  the mid-level outflow (not yet)
+layout(rgba8, set = 0, binding = 6) writeonly uniform image2DArray outConv;
+vec4 wxConvection(vec3 d)
+{
+    float lat = asin(clamp(d.z, -1.0, 1.0)) * (180.0 / PI), lon = atan(d.y, d.x) * (180.0 / PI);
+    uint  la  = uint(clamp(floor((lat + 90.0) * 0.5), 0.0, float(kCv2ConvGridLat - 1u)));
+    uint  lo  = uint(clamp(floor((lon + 180.0) * 0.5), 0.0, float(kCv2ConvGridLon - 1u)));
+    uvec2 g   = cv2ConvGrid[la * kCv2ConvGridLon + lo];
+    float notC = 1.0, top = 0.0, anv = 0.0;
+    for (uint k = 0u; k < g.y; ++k) {
+        uint e = cv2ConvList[g.x + k];
+        if ((e & 0x80000000u) == 0u) {
+            CV2Cell c = cv2Cells[e];
+            float r  = acos(clamp(dot(d, c.a.xyz), -1.0, 1.0)) * R_EARTH_W;
+            float ci = c.b.x * exp(-(r * r) / (c.a.w * c.a.w));
+            notC *= 1.0 - ci;
+            top = max(top, c.b.y * smoothstep(0.1, 0.5, ci));
+        } else {
+            CV2Anvil A = cv2Anvils[e & 0x7FFFFFFFu];
+            float cd = dot(d, A.a.xyz);
+            vec3  v  = d - A.a.xyz * cd;
+            float sv = length(v);
+            float kk = (sv > 1e-9 ? atan(sv, cd) / sv : 1.0) * R_EARTH_W;
+            vec3  sd = cross(A.a.xyz, A.b.xyz);
+            vec2  p  = vec2(dot(v, A.b.xyz), dot(v, sd)) * kk;          // (downwind, across) m
+            vec2  ax = vec2(dot(A.d.yzw, A.b.xyz), dot(A.d.yzw, sd));   // the line's axis in that frame
+            float tauL = A.c.z;
+            float sMax = min(A.c.x, 4.0 * tauL), sMin = max(A.c.x - A.c.y, 0.0);
+            if (sMin >= sMax) continue;
+            float acc = 0.0, ds = (sMax - sMin) / 8.0;
+            for (int j = 0; j < 8; ++j) {
+                float s  = sMin + (float(j) + 0.5) * ds;
+                // The outflow spreads at ~3 m/s for its first 1.5 h; what it holds thins as it spreads (mass: x (r0 / r)^2),
+                // so the oldest outflow frays into cirrus. A compact disc, not a Gaussian: overlapping Gaussian tails of
+                // neighbouring storms summed into one continent-sized plate.
+                float rk = A.a.w + 3.0 * min(s, 5400.0);
+                vec2  q  = p - vec2(A.c.w * s, 0.0);
+                if (A.d.x > 0.0) q -= ax * clamp(dot(q, ax), -A.d.x, A.d.x);   // to the line segment
+                float dq = length(q) / rk;
+                float rr = A.a.w / rk;
+                acc += exp(-s / tauL) * (1.0 - smoothstep(0.55, 1.1, dq)) * rr * rr;
+            }
+            anv += A.b.w * acc * ds / 2400.0;
+        }
+    }
+    return vec4(1.0 - notC, top, 1.0 - exp(-1.5 * anv), 0.0);
+}
+
 // ── Weather v2 systems (cv2_storms.glsl CV2System, WeatherSystems.h) ──
 // An extratropical cyclone's COMMA CLOUD in its own frame: X along its heading, Y poleward (so the southern
 // hemisphere's clockwise rotation is the same counter-clockwise wind-up), both in head radii, the low at the origin.
@@ -595,6 +650,8 @@ void main()
 
     vec2 st = (vec2(id.xy) + 0.5) / float(pc.faceSize);
     vec3 d  = faceDir(id.z, st);
+    // Weather v2: the convection cube (level 0, the 2048 one, holds nothing: its readers clamp to level 1).
+    imageStore(outConv, id, fine ? vec4(0.0) : wxConvection(d));
 
     // Tangent frame for neighbourhood taps, ~one output texel apart.
     vec3  up    = abs(d.z) < 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);

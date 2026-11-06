@@ -622,6 +622,7 @@ void SatelliteSim::updateStorms()
     const wx::CycloneShape cycShape = cycloneShape();
     wx::applyCycloneShape(stormCyclonesNow, cycShape);   // (arms, tightness, speed: before the band towers stand on them)
     stormCatalog->cycloneTowersAt(t, stormCyclonesNow, stormTowers);
+    updateConvection(t, stormsNow);   // Weather v2: the towers as convective cells, the storms as anvil sources
     const auto tCat = std::chrono::steady_clock::now();
     split("storms.catalog");
 

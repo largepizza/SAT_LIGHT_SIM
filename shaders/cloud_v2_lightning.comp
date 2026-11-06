@@ -26,6 +26,7 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_v2_march.com
 #include "common.glsl"
 #define CV2_PARAMS_BINDING  1
 #define CV2_WEATHER_BINDING 2
+#define CV2_CONV_BINDING 28   // Weather v2: the convection cube
 #define CV2_SHAPE_BINDING   3
 #define CV2_MESO_BINDING    5
 #define CV2_ELEV_BINDING    25   // the elevation map: orographic clouds (clouds_v2.glsl cv2OroField)

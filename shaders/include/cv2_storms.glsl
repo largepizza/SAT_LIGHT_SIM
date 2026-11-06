@@ -88,6 +88,21 @@ struct CV2System {
     vec4 d;   // x speed (m/s), yz spare, w cos(its reach / R)
 };
 
+// Weather v2 convection (the bake only): a cell is a convective core (a catalog tower, drawn by the cumulus layer from
+// the convection cube, never as geometry); an anvil source is a storm whose towers reached the lid: the bake integrates
+// what it detrained along its storm-relative upper wind (cloud_v2_weather.comp wxConvection).
+const uint kCv2CellMax = 8192u, kCv2AnvilMax = 4096u, kCv2ConvGridLon = 180u, kCv2ConvGridLat = 90u, kCv2ConvListMax = 131072u;
+struct CV2Cell {
+    vec4 a;   // xyz the axis (unit ECEF), w the core's radius (m)
+    vec4 b;   // x strength 0..1, y the top's share of the way to the lid (0..1), z overshoot 0..1, w role (1 dominant)
+};
+struct CV2Anvil {
+    vec4 a;   // xyz the source's centre now (unit ECEF), w its radius (m)
+    vec4 b;   // xyz downwind (unit tangent), w strength 0..1
+    vec4 c;   // x seconds since it first reached the lid, y how long it fed the anvil (s), z linger tau (s), w upper wind (m/s, storm-relative)
+    vec4 d;   // x a line's half-length (m, 0 = a disc), yzw the line's axis (unit tangent)
+};
+
 #ifdef CV2_STORM_BINDING
 layout(std430, set = 0, binding = CV2_STORM_BINDING) readonly buffer CV2StormBuf {
     uvec4    cv2StormHead;                          // x towers, y table entries used, z list entries used, w frame
@@ -122,6 +137,14 @@ layout(std430, set = 0, binding = CV2_STORM_BINDING) readonly buffer CV2StormBuf
     CV2Shield cv2EnvShields[kCv2ShieldMax];
     uvec4    cv2SysHead;                            // x systems (Weather v2)
     CV2System cv2Systems[kCv2SystemMax];
+    // Weather v2 convection (SatelliteSimWeatherSystems.cpp updateConvection): the CELLS (the catalog's towers as
+    // convective cores) and the ANVIL sources (each storm whose towers reached the lid), indexed on a lat-lon grid of
+    // kCv2ConvGridLon x kCv2ConvGridLat cells; a list entry's high bit marks an anvil.
+    uvec4    cv2ConvHead;                           // x cells, y anvils, z list entries used
+    CV2Cell  cv2Cells[kCv2CellMax];
+    CV2Anvil cv2Anvils[kCv2AnvilMax];
+    uvec2    cv2ConvGrid[kCv2ConvGridLon * kCv2ConvGridLat];   // x list start, y count
+    uint     cv2ConvList[kCv2ConvListMax];
 #endif
 };
 #endif
