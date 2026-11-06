@@ -700,7 +700,18 @@ void SatelliteSim::updateStorms()
                                              1.1 * Rc + cuReach) + 1000.0;
         GpuStormTower g;
         g.a = glm::vec4(glm::vec3(d), tw.strength);
-        g.b = glm::vec4(tw.role, tw.size, tw.overshoot, (float)bearing);
+        // The overshooting top PULSES (issue 20261105_201719): an overshooting core (overshoot > 0.6, cv2StormGeom's swell)
+        // pushes its top through the lid and lets it settle back, again and again over its life, each tower on its own
+        // 10-20 sim min cycle; between pushes it sits at the lid. Continuous in the tower's age: nothing pops in.
+        float overshoot = tw.overshoot;
+        if (overshoot > 0.6f)
+        {
+            const double hp = (double)(stormHash(tw.seed ^ 0x5EED0517u) & 0xFFFFu) / 65535.0;
+            const double period = 600.0 + 600.0 * hp;
+            const double s = 0.5 - 0.5 * std::cos(6.283185307 * ((double)tw.age / period + hp * 7.0));
+            overshoot = 0.6f + (overshoot - 0.6f) * (float)s;
+        }
+        g.b = glm::vec4(tw.role, tw.size, overshoot, (float)bearing);
         uint32_t seedBits = tw.seed;
         float seedF;
         std::memcpy(&seedF, &seedBits, 4);

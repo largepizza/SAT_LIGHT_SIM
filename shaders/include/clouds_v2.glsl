@@ -724,8 +724,8 @@ struct CV2Storm {
     float near;     // under a full-height tower's head (CV2Col.near)
     float storm;    // the storm strength (CV2Col.storm)
     float prox;     // within the storm cumulus reach (CV2Col.prox)
-    float cap;      // the lobes' damping share (x 0.75 of them): an overshooting dome (a smooth bubble standing out of
-                    // the lid) and, at two thirds, the plate's outline (its edge thins instead of standing as a wall)
+    float cap;      // the lobes' damping share (x 0.75 of them): two thirds at the plate's outline (its edge thins
+                    // instead of standing as a wall). (An overshooting dome's quarter until 2026-11-06: a smooth cap.)
 };
 CV2Storm cv2StormNone()
 {
@@ -1354,9 +1354,8 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         c.bigL    = max(c.bigL, wS);
         c.deep    = max(c.deep, wS);
         // An anvil plate's lid is smooth-ish (spreading ice under the tropopause); its underside and edges billow.
-        // Over a tower's head (sg.near) the lid is smoother still, and an overshooting dome (sg.cap) keeps a quarter of
-        // them, as the towers' own did (cv2ColumnSigma: the head's top smooth under the shield, the dome its own): with
-        // the lid's lobes there, +-600 m, the 140-m domes were buried in it (the supercell from orbit: their dots faded).
+        // Over a tower's head (sg.near) the lid is smoother still; toward the plate's outline (sg.cap) it keeps a
+        // quarter fewer (an overshooting dome's smooth cap shared sg.cap until 2026-11-06, issue 20261105_201719).
         // (storm3, 2026-11-05: the plate's lid keeps storm3b.y of the lobes, its underside storm3b.z; plK blends from the
         // polished plate's 0.4 / 1.)
         float nr  = min(sg.near, 1.0);
@@ -1381,7 +1380,7 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         // register across the fetches (the march sits at the 128 cliff). Not on the plate.
         float stB = 0.0;
 #ifndef SKY_LITE
-        // (Off the plate and the overshooting domes (deck, cap), squared: where a head meets the plate the bubbles' creases
+        // (Off the plate and its outline (deck, cap), squared: where a head meets the plate the bubbles' creases
         // pitted the plate's lid with dark specks, the storm from 30 km.)
         stB = cv2.storm3a.w * (1.0 - sg.deck) * (1.0 - sg.deck) * (1.0 - min(1.5 * sg.cap, 1.0)) * (1.0 - smoothstep(150.0, 1000.0, fpM));
 #endif
@@ -2189,7 +2188,7 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
     float hc     = lid - 1800.0;                         // a head rounds off from here to 300 m under the lid
     float osM    = cv2.anvil2.w;                         // overshooting top above the lid (m)
     bool  inAnvil = q.h > lid - cv2.anvil2.x * 1.2 - 600.0 - cv2.anvil2.y;   // where the hang can reach
-    float best = -1e9, bestZeta = 0.0, bestTop = 0.0, bestCap = 0.0, bestRc = 1.0;
+    float best = -1e9, bestZeta = 0.0, bestTop = 0.0, bestRc = 1.0;
     float bestAng = 0.0;                                 // the point's bearing about its tower's axis (from the local east)
     float near = 0.0, prox = 0.0, bestFull = 0.0, bestLiftG = 0.0, storm = 0.0;
     float cuReach = cv2.column3.x;                       // "Storm cumulus reach" beyond a tower's edge (m)
@@ -2269,22 +2268,18 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
         // from orbit (a grazing Sun's light-march ray skims through a plate; user snaps 1, 3 and 4).
         // (Up to 3 km, half the tower: over 1.5 km a flanking tower's top read as a flat box, review 4.)
         float rnd  = min(full > 0.5 ? 1500.0 : 3000.0, 0.5 * max(topC - base, 1.0));   // the top rounds off over this
-        float zh   = (q.h - (topC - rnd)) / rnd;
+        // The overshooting top (issue 20261105_201719): the head's own top swells up through the lid over the core, a broad
+        // low mound (~0.55 Rc across) carrying the head's lobes; only the stronger cores (about a third), each to its own
+        // height (with every tower doming through, the shield from orbit was an even grid of dots, pass 16). It was a
+        // separate dome (0.35 Rc, 1 km high, its lobes damped): a smooth cap that read as a mushroom on the lid.
+        float osS  = smoothstep(0.6, 0.9, hO) * mix(0.5, 1.0, smoothstep(0.3, 0.8, str));
+        float sw   = (300.0 + osM * osS) * smoothstep(0.0, 0.3, osS) * full * cv2SqC(max(1.0 - cv2SqC(d / (0.55 * Rc)), 0.0));
+        float zh   = (q.h - (topC + sw - rnd)) / rnd;
         // How fast the margin changes as the head's top surface is raised (per metre): the lift below moves the top
         // vertically (a margin moves the flat top of a 20-km head by metres, as the cumulus domes, liftK).
         float liftG = r / Rc * min(max(zh, 0.0) * inversesqrt(max(1.0 - cv2SqC(max(zh, 0.0)), 0.1)), 3.0) / rnd;
         r *= sqrt(max(1.0 - cv2SqC(max(zh, 0.0)), 0.0));
-        // Only the stronger cores overshoot (about a third), each to its own height: with every tower
-        // doming through, the shield from orbit was an even grid of dots (user snap 4, pass 16).
-        float osS  = smoothstep(0.6, 0.9, hO) * mix(0.5, 1.0, smoothstep(0.3, 0.8, str));
-        float osT  = osM * osS;
-        // The dome's apex: 400 m inside the anvil unless this tower overshoots. It sat exactly AT the
-        // lid for every tower, so from above each one showed a dense 4-5 km disc in the anvil's soft
-        // lid, on the lattice (user snap 3, pass 17).
-        float apex = mix(lid - 300.0, lid + osT, smoothstep(0.0, 0.3, osS));
-        float zo   = (q.h - (apex - 1000.0)) / 1000.0;
-        float rOs  = 0.35 * Rc * sqrt(max(1.0 - zo * zo, 0.0)) * step(0.0, zo) * full;
-        r = max(r, rOs);
+        r -= 10.0 * max(q.h - (topC + sw), 0.0);   // over the top the margin falls with height (cv2StormGeom)
         r *= 0.9 + 0.1 * smoothstep(0.0, 0.04, zeta);       // the base's rim curls up
         // Not a cylinder (review 4: "smokestacks"): the outline bulges into a few turrets whose places
         // turn with height, so the tower reads as a heaped cumulus mass. Low angular orders only, and
@@ -2295,13 +2290,10 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
             ang = atan(dot(dhz, nW), dot(dhz, eastW));
             r *= 1.0 + 0.15 * sin(3.0 * ang + 6.2832 * hS + 2.5 * zeta) + 0.08 * sin(5.0 * ang + 6.2832 * hO - 4.0 * zeta);
         }
-        float cap  = smoothstep(0.0, 1.0, zo);
         float mC   = (r - d) / Rc;
-        // ITS top over THIS point (the dome's surface here, else the head's): with the apex, every
-        // anvil sample in a dome's footprint was shaded as if under the whole dome (dark craters with
-        // bright rims from orbit, user snap 3, pass 17; lid + osM for every tower made dark pits).
-        float topL = max(topC, (full > 0.0) ? (apex - 1000.0) + 1000.0 * sqrt(max(1.0 - cv2SqC(d / max(0.35 * Rc, 1.0)), 0.0)) : 0.0);
-        if (mC > best) { best = mC; bestZeta = zeta; bestTop = topL; bestCap = cap; bestRc = Rc; bestFull = full; bestAng = ang + tw.b.w; bestLiftG = liftG; }   // ITS top: lid + osM shaded every tower's patch of anvil as if under 800 m more cloud (dark pits)
+        // ITS top over THIS point (the swell's surface here, else the head's): with lid + osM for every tower, every anvil
+        // sample in a tower's footprint was shaded as if under 800 m more cloud (dark pits, user snap 3, pass 17).
+        if (mC > best) { best = mC; bestZeta = zeta; bestTop = topC + sw; bestRc = Rc; bestFull = full; bestAng = ang + tw.b.w; bestLiftG = liftG; }
         // Under the head: the anvil thickens toward the column (a wide, downwind-stretched footprint),
         // tapered to zero before the search's limit (or it too would be cut along the lattice).
         if (inAnvil) {
@@ -2332,10 +2324,10 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
     // different material", pixel noise on the smooth tops). The fade now applies only under a shield.
     float puff    = clamp(cv2.anvil3.x, 0.0, 2.0);
     float headK   = smoothstep(0.5, 0.75, bestZeta) * bestFull;                    // in an anvil-reaching tower's head
-    float headTopE = smoothstep(lid - 1500.0, lid - 500.0, q.h) * (1.0 - bestCap);   // the erosion keeps it: cracks on the top read as rock
+    float headTopE = smoothstep(lid - 1500.0, lid - 500.0, q.h);   // the erosion keeps it: cracks on the top read as rock
     float headTop  = headTopE * ((cv2.storm.z > 0.0) ? 1.0 : clamp(1.0 - puff, 0.0, 1.0));
     // The head has its own lobes ("Cb head lobes", motion.z; review 5), x (1 + 1.5 puff).
-    float A  = mix(cv2.column2.w, cv2.motion.z * (1.0 + 1.5 * puff), headK) * fpFade * mix(0.25, 1.0, smoothstep(0.0, 0.12, bestZeta)) * (1.0 - 0.75 * bestCap)
+    float A  = mix(cv2.column2.w, cv2.motion.z * (1.0 + 1.5 * puff), headK) * fpFade * mix(0.25, 1.0, smoothstep(0.0, 0.12, bestZeta))
              * (1.0 - 0.85 * headTop);
     float liftA = puff * cv2.anvil3.y * headK * bestLiftG * fpFade;              // the top's lift, in margin units per unit lobe
     // Before the fetches: the lobes add at most ~0.75 x 2A in practice (the low layer's bound). A fixed
@@ -2729,9 +2721,9 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
     vec3  wd    = cv2Drift(q.dirE);
     float tropo = cv2Tropo(wd);
     float top   = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * tropo;
-    // An overshooting dome stands kCv2DomeU higher than "Cb overshoot" puts it over the old shield's haze: the plate's lid
-    // here is a cloud surface with lobes of +-600 m (40% of them), which buried a 140-m dome (the supercell from orbit,
-    // 2026-11-04: its domes' dots faded); through the old translucent haze the dense dome showed whatever its height.
+    // An overshooting top swells kCv2DomeU higher than "Cb overshoot" puts it over the old shield's haze: the plate's lid
+    // here is a cloud surface with lobes of +-600 m (40% of them), which buried a 140-m swell (the supercell from orbit,
+    // 2026-11-04); through the old translucent haze a dense top showed whatever its height.
     const float kCv2DomeU = 600.0;
     if (q.h > top + 50.0 + cv2.anvil2.w + kCv2DomeU) return g;
     float lift  = cv2Ground(q.dirE) * 0.9;
@@ -2741,7 +2733,7 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
     float lid   = top - 250.0;
     float osM   = cv2.anvil2.w + kCv2DomeU;
     bool  inAnvil = q.h > lid - cv2.anvil2.x * 1.2 - 600.0 - cv2.anvil2.y;
-    float best = -1e9, bestTop = 0.0, bestZeta = 0.0, bestFull = 0.0, bestCap = 0.0;
+    float best = -1e9, bestTop = 0.0, bestZeta = 0.0, bestFull = 0.0;
     float near = 0.0, prox = 0.0, storm = 0.0;
     uvec2 bin   = cv2StormBin(wd);
     if (bin.y > 0u) {
@@ -2790,12 +2782,20 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
             float r    = mix(Rc, rW, smoothstep(0.03, 0.5, zeta));
             r += (Rc * cv2.column2.y * cv2TowerAnvilK(tw.c) - rW) * smoothstep(0.62, 0.94, zeta) * fl;
             float rnd  = min(full > 0.5 ? 1500.0 : 3000.0, 0.5 * max(topC - base, 1.0));
-            float zh   = (q.h - (topC - rnd)) / rnd;
-            r *= sqrt(max(1.0 - cv2SqC(max(zh, 0.0)), 0.0));
+            // The overshooting top (issue 20261105_201719): the head's own top SWELLS up through the lid over the core, a
+            // broad low mound (~0.55 Rc across, ~1 km high at most) carrying the head's lobes and bubbles, merging into the
+            // plate by the smooth max. It was a separate dome primitive (0.35 Rc, 1 km high, a smooth cap): standing on the
+            // flat lid with its lower part in the plate's thin ice it read as a mushroom, a stem under a round cap, popping
+            // in as the tower's head reached the lid. hO pulses over the tower's life on the CPU (SatelliteSimWeather.cpp).
             float osS  = smoothstep(0.6, 0.9, hO) * mix(0.5, 1.0, smoothstep(0.3, 0.8, str));
-            float apex = mix(lid - 300.0, lid + osM * osS, smoothstep(0.0, 0.3, osS));
-            float zo   = (q.h - (apex - 1000.0)) / 1000.0;
-            r = max(r, 0.35 * Rc * sqrt(max(1.0 - zo * zo, 0.0)) * step(0.0, zo) * full);
+            float sw   = (300.0 + osM * osS) * smoothstep(0.0, 0.3, osS) * full * cv2SqC(max(1.0 - cv2SqC(d / (0.55 * Rc)), 0.0));
+            float zh   = (q.h - (topC + sw - rnd)) / rnd;
+            r *= sqrt(max(1.0 - cv2SqC(max(zh, 0.0)), 0.0));
+            // Over the top the margin falls with height (10 m a metre): r reached 0 there and the margin was -d, the distance
+            // from the axis whatever the height, so the lobes (+-1-2 km of margin with "Storm bubbles") stood a pillar ~2 km wide
+            // over every axis up to the search's cut (lid + overshoot + 200 m): the mushroom's stem, a flat-topped spire with
+            // the overshoot at 0 (issue 20261105_201719).
+            r -= 10.0 * max(q.h - (topC + sw), 0.0);
             r *= 0.9 + 0.1 * smoothstep(0.0, 0.04, zeta);
             {
                 vec3  nW  = cross(wd, eastW);
@@ -2803,8 +2803,7 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
                 r *= 1.0 + 0.15 * sin(3.0 * ang + 6.2832 * hS + 2.5 * zeta) + 0.08 * sin(5.0 * ang + 6.2832 * hO - 4.0 * zeta);
             }
             float mT   = r - d;
-            float topL = max(topC, (full > 0.0) ? apex * 1.0 + 1000.0 * (sqrt(max(1.0 - cv2SqC(d / max(0.35 * Rc, 1.0)), 0.0)) - 1.0) : 0.0);
-            if (mT > best) { best = mT; bestTop = topL; bestZeta = zeta; bestFull = full; bestCap = smoothstep(0.0, 1.0, zo) * full; }
+            if (mT > best) { best = mT; bestTop = topC + sw; bestZeta = zeta; bestFull = full; }
             if (inAnvil) {
                 vec3  dn2  = dh - eastW * (cv2.column2.z * cv2TowerDriftK(tw.c) + 4000.0);
                 float al   = dot(dn2, eastW);
@@ -2858,16 +2857,15 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
     float m = cv2SMax(best, mSh, 400.0);
     if (m < -1e8) return g;
     float wT = clamp(0.5 + (best - mSh) / 800.0, 0.0, 1.0);
-    // An overshooting dome is the TOWER's cloud (dense, lit as a tower: its shadowed flank and the shadow it casts) all the
-    // way down its last km, inside the plate too: as the plate's (wT ~ 0 where the plate's margin is the larger) only its
-    // top 140 m above the lid showed, and the domes' dark dots seen from orbit faded (2026-11-04).
-    wT = max(wT, bestCap * smoothstep(-300.0, 100.0, best));
+    // (An overshooting top is the head's own swell: the tower's cloud above the lid, the plate's inside it, merging into the
+    // lid. The old dome primitive was forced to the tower's cloud down its last km, inside the plate too: its lower part
+    // there was a dense core in thin ice, the mushroom's stem, issue 20261105_201719.)
     g.m    = m;
     g.top  = mix(topS, bestTop, wT);
     g.hf   = mix(hfS, hfT, wT);
     g.deck = 1.0 - wT;
     g.sig  = mix(sigS, sigT, wT);
-    g.cap  = max(bestCap * wT, 0.67 * edgeS * (1.0 - wT));   // (x 0.75 of the lobes: the dome's quarter, the edge's half)
+    g.cap  = 0.67 * edgeS * (1.0 - wT);   // (x 0.75 of the lobes: the edge's half)
     return g;
 }
 
