@@ -327,6 +327,7 @@ float wxTcBand(float th, float lr, float n, float cotA, float ph, float sharp)
     float phi = n * (th + cotA * lr) + ph;
     return pow(0.5 + 0.5 * cos(phi), sharp);
 }
+float gTcRain = 0.0, gTcOwn = 0.0;   // wxCyclones: the cyclones' own rain and how much of this point they own
 vec4 wxCyclones(vec3 d, out vec4 conv)
 {
     conv = vec4(0.0);
@@ -366,21 +367,30 @@ vec4 wxCyclones(vec3 d, out vec4 conv)
         // the bands stood as glossy tubes with walls and drop shadows over the decks (2026-11-06, the user: "out of place").
         float bndW = wxTcBand(th, lr, floor(nA + 0.5), cotA, cy.c.w, 1.5);
         float rS   = rq / (1.0 + 0.35 * bndW * smoothstep(0.5 * cdoR, 1.2 * cdoR, r));
-        float cdo  = (1.0 - smoothstep(0.35 * cdoR, 1.35 * cdoR, rS)) * smoothstep(0.1, 0.5, I);
+        // (2026-11-06, the user: the CDO "looks super out of place ... morph it out of existing cloud layers"): the CDO is the
+        // top of the core's deep convective MASS, not an anvil plate laid over the decks: the convection cube's intensity
+        // and top cover the disc (the cumulus field draws it from its base to under the lid, with its own material, the
+        // column's flare at its edge), its outline spiralling out with the bands.
+        float cdo  = (1.0 - smoothstep(0.6 * cdoR, 1.15 * cdoR, rS)) * smoothstep(0.1, 0.5, I);
+        // Its TOP slopes down over its outer half to meet the decks (full height it stood as a cake with vertical walls).
+        float cdoT = (1.0 - smoothstep(0.25 * cdoR, 1.1 * cdoR, rS)) * smoothstep(0.1, 0.5, I);
         float oc   = wxTcBand(-th, lr, 3.0, cotA * 0.8, cy.c.w * 0.7 + 1.0, 3.0) * smoothstep(0.9 * cdoR, 1.3 * cdoR, r)
                    * (1.0 - smoothstep(0.8 * outer, 1.2 * outer, r)) * smoothstep(0.3, 0.7, I);
         // (the outflow cirrus stays under the plate's threshold, 0.3: thin ice for the high layer, not lens-shaped plates
         // drawn as tubes)
-        float anv  = max(cdo, 0.25 * oc) * eyeK;
+        float anv  = 0.25 * oc * eyeK;   // (no plate: the outflow cirrus only, under the plate's threshold)
         // Stratiform between the bands (the mid outflow's deck) inside ~0.8 of the reach.
         float deck = 0.55 * (1.0 - bnd) * smoothstep(1.3 * rmw, 2.0 * rmw, r) * (1.0 - smoothstep(0.3 * outer, 0.55 * outer, r))
                    * smoothstep(0.1, 0.5, I);
         // The bands' convection stays under the columns' threshold (cv2StormGeom, 0.35): congestus lines of the cumulus field
         // (their coverage below), not domed columns (a continuous band of cores drew a smooth tube). The eyewall's are columns.
-        float Cc   = max(eyw, 0.3 * band) * eyeK;
-        // (the eyewall's top stays just under the lid: the CDO's sheet runs to the eye's edge; full-height, its columns'
-        // domes and overshoot stood as a raised lip round the eye)
-        vec4  cvI  = vec4(Cc, max(0.75 * eyw * eyeK, 0.5 * band), anv, deck);
+        float Cc   = max(max(eyw, 0.3 * band), 0.92 * cdo) * eyeK;
+        // (the bands' convection under the columns' threshold: congestus lines of the cumulus field; the core's mass near the
+        // lid, the eyewall part of it)
+        vec4  cvI  = vec4(Cc, max(max(0.97 * eyw, 0.3 + 0.67 * cdoT) * eyeK * step(0.01, Cc), 0.5 * band), anv, deck);
+        // Its rain (the radar, the shafts): heavy in the eyewall and the bands, moderate stratiform under the rest of the core.
+        gTcRain = max(gTcRain, max(max(0.95 * eyw * eyeK, 0.7 * band), max(0.45 * cdo * eyeK, 0.4 * deck)) * (1.0 - smoothstep(0.85 * outer, 1.2 * outer, r)));
+        gTcOwn  = max(gTcOwn, 1.0 - smoothstep(0.85 * outer, 1.2 * outer, r));
         conv = max(conv, cvI);
         // The coverage: the system's potential (the climatology's units), owning its disc.
         // (the decks round the core near overcast: broken, they read grey with sea between them beside a white CDO)
@@ -590,6 +600,7 @@ void main()
     float envK = smoothstep(0.02, 0.3, envC);
     precip = max(precip * (1.0 - 0.8 * envK),
                  max(0.9 * smoothstep(0.3, 0.75, cC) * smoothstep(0.3, 0.8, cvx.y), 0.55 * smoothstep(0.15, 0.7, cMid)));
+    precip = mix(precip, gTcRain, gTcOwn);   // (a cyclone's own: its core's intensity is its CDO, not one rain core)
 
     // Levels 0 and 1 hold the field itself (raw: below the clear threshold the brightness keeps the distance into clear
     // air); the coarse levels the TRUE mean coverage of the finer field (review 18: the far field reads mip 2 as a

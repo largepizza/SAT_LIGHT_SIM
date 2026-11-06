@@ -801,7 +801,8 @@ struct CV2Storm {
                     // instead of standing as a wall). (An overshooting dome's quarter until 2026-11-06: a smooth cap.)
 };
 float gCv2CdoK = 0.0;   // 0..1: inside a tropical cyclone's CDO (cv2StormGeom): its plate is a smooth sheet
-vec3  gCv2CycC = vec3(0.0, 0.0, 1.0);   // that cyclone's centre (unit ECEF): the CDO's fibres run round it
+vec3  gCv2CycC = vec3(0.0, 0.0, 1.0);
+float gCv2EywK = 0.0;   // 0..1: on the eyewall (within ~15 km outside the eye): hot towers, overshooting domes, billows   // that cyclone's centre (unit ECEF): the CDO's fibres run round it
 CV2Storm cv2StormNone()
 {
     CV2Storm g;
@@ -1433,7 +1434,10 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
                     * mix(1.0, 0.3, sg.deck);                           // (the anvil plate: gentle domes, not a cumulus deck)
         // (storm3, 2026-11-05) The anvil plate's share (x "Anvil fibres" up to 1): its lobes, erosion, skin and fibres.
         float plK  = sg.deck * min(cv2.storm3a.x, 1.0);
-        float wS    = cu ? clamp(0.5 + (mS - c.m0) * 5.0, 0.0, 1.0) : 1.0;
+        // Inside a hurricane's CDO the core's mass IS the cloud: the cumulus field's own margin gives way to it (an overcast
+        // congestus deck typed nearly as tall stood its turrets through the CDO's top: a field of cauliflower).
+        if (gCv2CdoK > 0.0) c.m0 = mix(c.m0, min(c.m0, mS), gCv2CdoK);
+        float wS    = cu ? max(clamp(0.5 + (mS - c.m0) * 5.0, 0.0, 1.0), gCv2CdoK) : 1.0;
         float hS    = cu ? max(0.2 - abs(mS - c.m0), 0.0) / 0.2 : 0.0;
         c.m0      = max(c.m0, mS) + hS * hS * 0.05;     // a smooth max (over 0.2 e units)
         // (The towers' base, cv2StormGeom's: recomputed, the ground is cached. Carried in CV2Storm it cost a register
@@ -1501,7 +1505,9 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         // plate of a cyclone's central dense overcast is a smooth sheet of outflow ice, not a storm's billowing anvil: its
         // lobes and billow erosion (dark erosion pits all over it from orbit) mostly go. "Hurricane top smoothing" (ciHu.z).
         if (gCv2CdoK > 0.0) {
-            float smK = cv2.ciHu.z * wS * gCv2CdoK;
+            // (at least 0.97: the storm billows are 1.5 km since Weather v2, and the slider's 0.85 left a field of cauliflower
+            // on the core's top; its texture is the swirl's ridges, cv2Field)
+            float smK = max(cv2.ciHu.z, 0.97) * wS * gCv2CdoK * (1.0 - 0.25 * gCv2EywK);   // (the eyewall billows a little)
             c.lobeKL *= 1.0 - smK;
             c.erK    *= 1.0 - 0.94 * smK;
             c.billow *= 1.0 - min(smK * 1.18, 1.0);
@@ -2439,6 +2445,35 @@ vec4 cv2ConvSmooth(vec3 wd, float lod)
                  + textureLod(cv2ConvTex, wd + n * h, lod) + textureLod(cv2ConvTex, wd - n * h, lod));
 }
 #endif
+// A tropical cyclone's EYE and CDO at a point (Weather v2 Phase 3), before any storm early-out (in the eye there is no
+// storm margin to return with): gCv2EyeM the storm margin's cut (a stadium whose radius grows with height, 0.8x at the
+// base to 1.7x at the lid, at least half the RMW, with a few harmonics: mesovortices' polygonal eyes), gCv2EyeClr the
+// other layers' share kept there (the low deck breaks too; a thin remnant under ~1.2 km), gCv2CdoK / gCv2CycC the CDO.
+float gCv2EyeM = 1e9;
+float gCv2EyeClr = 1.0;
+void cv2CycEye(vec3 wd, float h, float hb, float base, float lid)
+{
+#ifdef CV2_STORM_BINDING
+    for (uint i = 0u; i < min(cv2CycHead.x, 4u); ++i) {
+        CV2Cyclone cy = cv2Cyclones[i];
+        float rC = acos(clamp(dot(wd, cy.a.xyz), -1.0, 1.0)) * R_EARTH;
+        float cdoR = max(cy.c.y, 1.5 * cy.d.x);   // (= the bake's, wxCyclones)
+        if (rC > 1.4 * cdoR) continue;
+        float cdoK = 1.0 - smoothstep(1.0 * cdoR, 1.4 * cdoR, rC);
+        if (cdoK > gCv2CdoK) { gCv2CdoK = cdoK; gCv2CycC = cy.a.xyz; }
+        float eR = max(cy.c.x, 0.5 * cy.d.x);
+        if (eR <= 0.0 || cy.a.w < 0.3 || rC > 2.0 * eR + 30000.0) continue;
+        vec3  ce = normalize(cross(vec3(0.0, 0.0, 1.0), cy.a.xyz) + vec3(1e-6, 0.0, 0.0));
+        vec3  dv = wd - cy.a.xyz * dot(wd, cy.a.xyz);
+        float ta = atan(dot(dv, cross(cy.a.xyz, ce)), dot(dv, ce));
+        float rE = eR * (0.8 + 0.9 * clamp(hb / max(lid - base, 1000.0), 0.0, 1.0))
+                 * (1.0 + 0.07 * sin(4.0 * ta + cy.c.w) + 0.05 * sin(5.0 * ta - 1.7 * cy.c.w + 2.0) + 0.04 * sin(7.0 * ta + 0.6));
+        gCv2EyeM   = min(gCv2EyeM, (rC - rE) * 1.5);
+        gCv2EywK   = max(gCv2EywK, 1.0 - smoothstep(3000.0, 15000.0, rC - rE));
+        gCv2EyeClr = min(gCv2EyeClr, 1.0 - (1.0 - smoothstep(0.8 * rE, rE, rC)) * mix(0.7, 1.0, smoothstep(800.0, 1500.0, h)));
+    }
+#endif
+}
 CV2Storm cv2StormGeom(CV2Pos q, float fpM)
 {
     // Weather v2 (2026-11-06): the storm's SHAPE from the convection cube (cloud_v2_weather.comp wxConvection), not from
@@ -2449,6 +2484,8 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
     gCv2RainCore = 0.0;
     gCv2PlateA   = 0.0;
     gCv2CdoK     = 0.0;
+    gCv2EyeM     = 1e9;
+    gCv2EywK     = 0.0;
     gCv2ShSet    = false;
 #ifdef CV2_CONV_BINDING
     if (cv2.column.x <= 0.0 || q.h < (cv2.rain.x > 0.0 ? -100.0 : 400.0)) return g;
@@ -2457,6 +2494,7 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
     float top   = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * tropo;
     const float kCv2DomeU = 600.0;
     if (q.h > top + 50.0 + cv2.anvil2.w + kCv2DomeU) return g;
+    cv2CycEye(wd, q.h, q.h - (cv2.types[4].alt.x + cv2Ground(q.dirE) * 0.9), cv2.types[4].alt.x + cv2Ground(q.dirE) * 0.9, top - 250.0);
     vec4  cvB = textureLod(cv2ConvTex, wd, 2.0);   // ~20 km: is a storm near at all (and its surroundings, its cumulus)
     if (cvB.x < 0.01 && cvB.z < 0.01) return g;
     // (the cores read through the same tent at level 0: one bilinear tap, through the distance's sqrt(-ln C), drew the
@@ -2472,7 +2510,7 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
     float Rb    = cv2.column.z;
     g.storm = C;
     g.prox  = smoothstep(0.2, 0.55, cvB.x);
-    if (cv2.rain.x > 0.0 && hb < 0.0) gCv2RainCore = smoothstep(0.45, 0.85, C) * smoothstep(0.4, 0.9, cv.y);
+    if (cv2.rain.x > 0.0 && hb < 0.0) gCv2RainCore = smoothstep(0.45, 0.85, C) * smoothstep(0.4, 0.9, cv.y) * (1.0 - 0.6 * gCv2CdoK);
     // The COLUMN: where the cores' intensity passes 0.35, under a DOME: its top here rises from the base at that contour
     // to the column's top (cv.y of the way to the lid) at the core, so a cluster of cells stands as towers with rounded
     // heads, not a block with a flat roof. A little wider at mid-height (the updraft's buoyant swell); over the lid the
@@ -2493,7 +2531,7 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
         float rh   = min(rcol, 0.5 * max(topC - base, 600.0));
         float dh   = clamp(rh - dH, 0.0, rh);
         topHere    = topC - rh + sqrt(max(rh * rh - dh * dh, 0.0))
-                   + osM * full * smoothstep(0.3, 0.9, dH / max(rcol, 1.0));
+                   + osM * full * smoothstep(0.3, 0.9, dH / max(rcol, 1.0)) * (1.0 - gCv2CdoK * (1.0 - gCv2EywK));   // (a CDO: no dome over it all; the eyewall's hot towers keep theirs)
         float zeta = clamp(hb / max(topHere - base, 300.0), 0.0, 1.0);
         // + a little swell at mid-height, and the head's FLARE where the column reaches the lid: it widens over its top
         // third into the anvil it feeds (the outflow turning outward), not a drum under a mushroom cap.
@@ -2531,26 +2569,7 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
     }
     float m = cv2SMax(best, mSh, 700.0);
     if (m < -1e8) return g;
-#ifdef CV2_STORM_BINDING
-    // A tropical cyclone's EYE (Weather v2 Phase 3): carved analytically, a stadium whose radius grows with height (0.8x at
-    // the base to 1.7x at the lid); the cube's ~12-km texels fill a 10-20 km hole in the CDO's field.
-    for (uint i = 0u; i < min(cv2CycHead.x, 4u); ++i) {
-        CV2Cyclone cy = cv2Cyclones[i];
-        float eR = max(cy.c.x, 0.5 * cy.d.x);
-        if (eR <= 0.0 || cy.a.w < 0.3) continue;
-        float rC = acos(clamp(dot(wd, cy.a.xyz), -1.0, 1.0)) * R_EARTH;
-        if (rC > 2.0 * eR + 30000.0 && rC > 1.3 * cy.c.y) continue;
-        // (not a perfect circle: a few harmonics round it, turning with the bands' phase: the polygonal eyes of mesovortices)
-        vec3  ce = normalize(cross(vec3(0.0, 0.0, 1.0), cy.a.xyz) + vec3(1e-6, 0.0, 0.0));
-        vec3  dv = wd - cy.a.xyz * dot(wd, cy.a.xyz);
-        float ta = atan(dot(dv, cross(cy.a.xyz, ce)), dot(dv, ce));
-        float rE = eR * (0.8 + 0.9 * clamp(hb / max(lid - base, 1000.0), 0.0, 1.0))
-                 * (1.0 + 0.07 * sin(4.0 * ta + cy.c.w) + 0.05 * sin(5.0 * ta - 1.7 * cy.c.w + 2.0) + 0.04 * sin(7.0 * ta + 0.6));
-        if (rC < rE + 30000.0) m = min(m, (rC - rE) * 1.5);
-        float cdoK = 1.0 - smoothstep(0.8 * cy.c.y, 1.3 * cy.c.y, rC);
-        if (cdoK > gCv2CdoK) { gCv2CdoK = cdoK; gCv2CycC = cy.a.xyz; }
-    }
-#endif
+    m = min(m, gCv2EyeM);   // (a tropical cyclone's eye, cv2CycEye above)
     float wT = clamp(0.5 + (best - mSh) / 1200.0, 0.0, 1.0);
     g.m    = m;
     g.top  = mix(topS, max(topHere, q.h), wT);
@@ -2619,6 +2638,7 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     gCv2Oro = cv2OroField(q);   // (the march sets it itself, at its main sample: CV2_ORO_EXTERNAL)
 #endif
     gCv2RainCore = 0.0;
+    gCv2EyeClr   = 1.0;
     // Storms are the cumulus field's margin (cv2StormGeom: the convection cube), carved by its lobes and erosion.
     CV2Storm sg = cv2StormNone();
     if ((lm & (kCv2LayCol | kCv2LayLow)) != 0u) sg = cv2StormGeom(q, fpM);
@@ -2626,12 +2646,13 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     // A hurricane CDO's top: its swirl's streaks as RIDGES on the plate's margin ("Hurricane top streaks", ciHu.w, x11 toward
     // its outline), never negative (the plate's margin is the distance to its lid or its underside: an offset thickens it).
     // Density fibres alone do not show on an overcast that thick; the smoothed sheet read as white plastic.
-    if (gCv2CdoK > 0.0 && sg.deck > 0.6) {
+    if (gCv2CdoK > 0.0 && sg.m > -2000.0) {
         float lodF;
         vec4  sf = cv2CdoFibreTex(q.dirE, q.h, fpM, lodF);
         float nF = clamp(0.5 + 2.5 * (sf.a - 0.5) + 1.2 * (sf.g - 0.45), 0.0, 1.0);
-        sg.m += smoothstep(0.6, 1.0, sg.deck) * gCv2CdoK * cv2.ciHu.w * (1.0 + 10.0 * sg.cap) * nF
-              * (1.0 - smoothstep(1.5, 4.0, lodF));
+        const float kCv2CdoStreakM = 250.0;   // (Weather v2: the swirl's ridges on the core's top; "Hurricane top streaks" was 90 m)
+        sg.m += smoothstep(0.75, 1.0, sg.hf) * gCv2CdoK * kCv2CdoStreakM * (1.0 + 10.0 * sg.cap) * nF
+              * (1.0 - smoothstep(0.5, 2.5, lodF));   // (on its top; faded before its ~9-km period aliases at grazing angles)
     }
 #endif
 #ifdef CV2_LAYER_HITS
@@ -2648,6 +2669,8 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     // lies in the valleys and flows over the lower ridges, and the peaks stand in clear gaps.
     f.sigma *= 1.0 - gCv2Oro.w * (1.0 - smoothstep(gCv2Oro.z - 300.0, gCv2Oro.z + 900.0, q.h));
 #endif
+    // A cyclone's eye clears the other layers too (cv2CycEye): the low deck breaks under it.
+    f.sigma *= gCv2EyeClr; f.rain *= gCv2EyeClr;
     float dbgLow = f.sigma;
 #ifdef CV2_LAYER_HITS
     // The towers' proximity and rain core change the low field (the storm cumulus' top moves toward its own, either way;
@@ -2708,10 +2731,11 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     // pass 17). Only where the towers are drawn (the storm's strength is read for them).
     // Wherever towers can stand (a weak storm-edge tower cut by a mid-layer belt, pass 20).
     if (cv2.column.x > 0.0) sm *= 1.0 - smoothstep(0.0, 0.15, sg.storm);
+    sm *= gCv2EyeClr;
     if (sm > 0.0) cv2Add(f, sm, hfX, topX, deckX);
     float hfH = 0.0, topHh = 0.0;
     float sh = 0.0;
-    if ((lm & kCv2LayHigh) != 0u) sh = cv2HighSigma(q, fpM, hfH, topHh);
+    if ((lm & kCv2LayHigh) != 0u) sh = cv2HighSigma(q, fpM, hfH, topHh) * gCv2EyeClr;
 #ifdef CV2_LAYER_HITS
     float shPre = sh;
 #endif
