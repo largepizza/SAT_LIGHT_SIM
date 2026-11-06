@@ -47,7 +47,7 @@ layout(set = 0, binding = 5) uniform sampler2DArray wxLevel1;
 // (cover.xy), w this level's mip.
 // wx (2026-10-22): xy cos / sin of the map's drift: d is in the MAP frame, and the land / sea mask is Earth-fixed;
 // z the first row (2026-10-25: a face re-baked over several frames, a slice of rows each).
-// storm / storm2: unused since Weather v2 step 5 (the storms' cloud comes from the convection cube, wxConvection).
+// storm: the flow warp (x rms displacement m, y its phase in cycles, z 1 / its period 1/m: wxFlowDisp); storm2 unused.
 layout(push_constant) uniform PC { int faceSize; float srcLod; int face; float pad /* ring scale */; vec4 evo0; vec4 evo1; vec4 evo2;
                                    vec4 remap; vec4 wx; vec4 storm; vec4 storm2; } pc;
 
@@ -252,6 +252,11 @@ vec2 eqTap(vec3 dc, vec2 uvc, float latc, vec3 tx, vec3 ty, vec2 o)
 //    life (1.5 x): the trailing stratiform deck and its rain (a line system's especially)
 // env (out): the storms' ENVIRONMENT, the cells widened ~2.5x: the cumulus field round a storm (coverage, not stored)
 layout(rgba8, set = 0, binding = 6) writeonly uniform image2DArray outConv;
+// A line system's GUST FRONT (wxConvection's out globals): its cold pool runs ahead of the line and lifts the moist inflow
+// over it into a SHELF CLOUD, a low, flat-based wedge rising from the front back to the towers' bases, with the clear air
+// the outflow pushes ahead of it. gShelf the shelf's share, gShelfH where in it (0 at the front, 1 at the towers),
+// gAhead the clear band ahead.
+float gShelf = 0.0, gShelfH = 0.0, gAhead = 0.0;
 vec4 wxConvection(vec3 d, out float env, bool cellsOnly)
 {
     float lat = asin(clamp(d.z, -1.0, 1.0)) * (180.0 / PI), lon = atan(d.y, d.x) * (180.0 / PI);
@@ -282,6 +287,18 @@ vec4 wxConvection(vec3 d, out float env, bool cellsOnly)
                 }
             }
             top = max(top, c.b.y * smoothstep(0.02, 0.1, ci));   // (the cell's own top across its core: a falloff drew cones)
+            if (c.c.w > 0.0) {
+                // its gust front, c.c.w ahead of its column's edge along its forward c.c.xyz; across the line each cell's
+                // share overlaps its neighbours' (~17 km apart), so the union traces the line's bow
+                float rcS = c.a.w * sqrt(log(max(c.b.x, 0.36) / 0.35)) + 0.5 * c.a.w;
+                float fS  = dot(d - c.a.xyz, c.c.xyz) * R_EARTH_W;
+                float lS2 = max(r * r - fS * fS, 0.0);
+                float fF  = rcS + c.c.w;
+                float wL  = exp(-lS2 / (2.0 * 4.8 * c.a.w * c.a.w)) * smoothstep(0.3, 0.6, c.b.x);
+                float sh  = wL * smoothstep(fF + 1500.0, fF - 1500.0, fS) * smoothstep(0.4 * rcS, 0.9 * rcS, fS);
+                if (sh > gShelf) { gShelf = sh; gShelfH = clamp((fF - fS) / max(fF - 0.6 * rcS, 1.0), 0.0, 1.0); }
+                gAhead = max(gAhead, wL * smoothstep(fF, fF + 3000.0, fS) * smoothstep(fF + 25000.0, fF + 8000.0, fS));
+            }
         } else if (!cellsOnly) {
             CV2Anvil A = cv2Anvils[e & 0x7FFFFFFFu];
             float cd = dot(d, A.a.xyz);
@@ -313,10 +330,12 @@ vec4 wxConvection(vec3 d, out float env, bool cellsOnly)
                 float dq = length(q * vec2(1.0, 1.25)) / rk;
                 float rr = A.a.w / rk;
                 acc += wq * exp(-s / tauL) * (1.0 - smoothstep(0.55, 1.1, dq)) * rr;   // (r0 / r: it thins as it spreads, vertically too)
-                // the mid-level outflow: slower downwind, wider, longer-lived
-                vec2  qm = p - vec2(0.4 * A.c.w * s, 0.0);
-                if (A.d.x > 0.0) qm -= ax * clamp(dot(qm, ax), -A.d.x, A.d.x);
+                // the mid-level outflow: slower downwind, wider, longer-lived; it too spreads downwind (its upwind edge stays
+                // near the source: spread evenly, a line's trailing stratiform reached ~35 km AHEAD of its towers as a
+                // deck over the shelf and the clear air)
                 float rkM = 1.3 * A.a.w + 2.0 * min(s, 7200.0);
+                vec2  qm = p - vec2(0.4 * A.c.w * s + 0.85 * (rkM - 1.3 * A.a.w), 0.0);
+                if (A.d.x > 0.0) qm -= ax * clamp(dot(qm, ax), -A.d.x, A.d.x);
                 float rrM = 1.3 * A.a.w / rkM;
                 accM += wq * exp(-s / (1.5 * tauL)) * (1.0 - smoothstep(0.5, 1.1, length(qm) / rkM)) * rrM * rrM;
             }
@@ -325,6 +344,9 @@ vec4 wxConvection(vec3 d, out float env, bool cellsOnly)
         }
     }
     env = 1.0 - notE;
+    // (no shelf over any cell's core or the ground ahead of it: in a bow the flank cells' shelves reach forward over the
+    // middle cells' columns, and typed as a deck there they flattened the line's towers)
+    gShelf *= 1.0 - smoothstep(0.04, 0.2, 1.0 - notC);
     // The outflow is not a swept disc: its integral is modulated by two octaves of noise (~120 and ~40 km), so an anvil's or
     // a line's shield has a lobed, irregular outline and uneven thickness (a line source drew a perfect pill from orbit).
     float nA = 0.0;
@@ -519,6 +541,27 @@ vec4 wxSystems(vec3 d)
     return vec4(m / ws, st / ws, cv / ws, own);
 }
 
+// The FLOW WARP (= clouds_v2.glsl cv2FlowDisp, the curl of eight smooth waves): bends the BACKGROUND field (climatology,
+// moisture) into curved bands and swirls. Applied here, not in the march's map read: read through it there, the whole
+// map sat ~100 km (its rms) from the convection cube, so a storm's cumulus, its trailing stratiform and a line's shelf
+// stood apart from its columns ("two blobs" from above), the CDO off its eye, and the radar off the towers.
+vec3 wxFlowDisp(vec3 d)
+{
+    if (pc.storm.x <= 0.0) return vec3(0.0);
+    const vec3 kd[8] = vec3[8](vec3( 0.62,  0.48,  0.62), vec3(-0.71,  0.30,  0.64), vec3( 0.18, -0.93,  0.32),
+                               vec3( 0.85,  0.21, -0.48), vec3(-0.34, -0.55, -0.76), vec3( 0.05,  0.77, -0.64),
+                               vec3(-0.90, -0.40,  0.17), vec3( 0.44, -0.29,  0.85));
+    const float ks[8] = float[8](1.0, 1.13, 0.87, 1.31, 0.74, 1.52, 0.93, 1.21);
+    const float ph[8] = float[8](0.3, 2.1, 4.4, 1.7, 5.6, 3.2, 0.9, 2.7);
+    float k0 = 6.2831853 * R_EARTH_W * pc.storm.z;
+    vec3  g  = vec3(0.0);
+    for (int i = 0; i < 8; ++i) {
+        vec3 kv = normalize(kd[i]) * (k0 * ks[i]);
+        g += kv * cos(dot(kv, d) + ph[i] + pc.storm.y * 6.2831853) / ks[i];
+    }
+    return cross(d, g) / (k0 * 2.0) * pc.storm.x;
+}
+
 void main()
 {
     ivec3 id = ivec3(gl_GlobalInvocationID);
@@ -542,7 +585,6 @@ void main()
     float envC = 0.0;
     vec4  cvx  = wxConvection(d, envC, fine);
 
-
     // Tangent frame for neighbourhood taps, ~one output texel apart.
     vec3  up    = abs(d.z) < 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
     vec3  tx    = normalize(cross(up, d));
@@ -561,9 +603,10 @@ void main()
     vec4  l1      = fine ? textureLod(wxLevel1, vec3(st, float(id.z)), 0.0) : vec4(0.0);
     float cutL    = 2.5 * texM;                       // the shortest wavelength a level holds
     float varLeft;
-    float nz      = fine ? wxMoistureNoise(d, cutL, 2.5 * texM * 2.0, varLeft)
-                         : wxMoistureNoise(d, cutL, 1e30, varLeft);
-    WxClim cl     = wxClimate(d, ocean);
+    vec3  dF      = normalize(d + wxFlowDisp(d) / R_EARTH_W);   // (the background's bent frame)
+    float nz      = fine ? wxMoistureNoise(dF, cutL, 2.5 * texM * 2.0, varLeft)
+                         : wxMoistureNoise(dF, cutL, 1e30, varLeft);
+    WxClim cl     = wxClimate(dF, ocean);
     // The weather systems own their regions: their potential and shares replace the climatology's there, and the
     // background noise is calmed so their bands stay bands.
     vec4  sy      = fine ? vec4(0.0) : wxSystems(d);
@@ -596,6 +639,15 @@ void main()
         // (evoGrowth, v1's growth and decay, is not added: its 1500-km waves swept the map at ~40 m/s and decorrelated the
         // large scales in hours; the moisture flow map's windows are the evolution now, GMGSI benchmark 2026-11-06)
     }
+    if (!fine) {
+        // The gust front: the shelf overcast, the air ahead of it cleared (level 0 sharpens the shelf, wedge and all). A
+        // coarse level holds it as the share of its texel the ~10-km band covers (point-sampled into 25-50-km texels and
+        // spread by the march's filter, it stood ~90 km wide from orbit).
+        gShelf *= clamp(12000.0 / texM, 0.0, 1.0);
+        gAhead *= clamp(25000.0 / texM, 0.0, 1.0);
+        raw = min(raw, mix(raw, 0.3, 0.6 * gAhead * (1.0 - gShelf)));
+        raw = mix(raw, max(raw, 1.05), gShelf);
+    }
     float cov = clamp(raw, 0.0, 1.0);
 
     if (fine) {
@@ -606,7 +658,11 @@ void main()
         // The convective cores' rain at this level's own resolution: a ~5-km core is diluted away in level 1's 12-km texels
         // (a squall line's radar was one even slab, no line of cores). Not a cyclone's (its CDO is its own, gTcRain).
         pr = max(pr, 0.95 * smoothstep(0.25, 0.6, cvx.x) * smoothstep(0.3, 0.8, cvx.y) * (1.0 - gTcOwn));
-        imageStore(outWeather, id, vec4(clamp(pc.remap.y + raw * span, 0.0, 1.0), l1.g, pr, l1.a));
+        // The shelf at this level's resolution (level 1's 12-km texels hold it ~1 texel deep): overcast, typed as a wedge.
+        raw = mix(raw, max(raw, 1.05), gShelf);
+        float tF = mix(l1.g, mix(0.08, 0.5, gShelfH), gShelf);
+        pr *= 1.0 - gShelf * (1.0 - gShelfH);
+        imageStore(outWeather, id, vec4(clamp(pc.remap.y + raw * span, 0.0, 1.0), tF, pr, l1.a));
         return;
     }
 
@@ -624,6 +680,8 @@ void main()
     // cone through it); the mid outflow's deck stratiform.
     t  = mix(t, max(t, mix(0.5, 0.62, smoothstep(0.3, 0.8, cC))), smoothstep(0.02, 0.4, envC));
     t  = mix(t, 0.15, smoothstep(0.1, 0.6, cMid) * (1.0 - smoothstep(0.1, 0.4, cC)));
+    // The shelf: a deck at the front (near-stratus, flat) rising to cumulus at the towers' bases (a wedge ~3 km high).
+    t  = mix(t, mix(0.08, 0.5, gShelfH), gShelf);
     t  = clamp(t, 0.0, 1.0);
 
     float precip = clamp(smoothstep(0.6, 1.0, cov) * (smoothstep(0.55, 0.9, t) + cl.strat * 0.35), 0.0, 1.0);
@@ -633,6 +691,7 @@ void main()
     precip = max(precip * (1.0 - 0.8 * envK),
                  max(0.9 * smoothstep(0.3, 0.75, cC) * smoothstep(0.3, 0.8, cvx.y), 0.55 * smoothstep(0.15, 0.7, cMid)));
     precip = mix(precip, gTcRain, gTcOwn);   // (a cyclone's own: its core's intensity is its CDO, not one rain core)
+    precip *= 1.0 - gShelf * (1.0 - gShelfH);  // (the shelf leads the rain)
 
     // Levels 0 and 1 hold the field itself (raw: below the clear threshold the brightness keeps the distance into clear
     // air); the coarse levels the TRUE mean coverage of the finer field (review 18: the far field reads mip 2 as a

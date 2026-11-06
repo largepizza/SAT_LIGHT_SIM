@@ -2312,9 +2312,11 @@ SatelliteSim::GpuWeatherPC SatelliteSim::weatherEvoPC(int face, uint32_t mip) co
     // w = the LOGICAL mip (the coarse levels' true mean coverage; levels 0 and 1, 5 and 10 km, are untouched).
     pc.remap = glm::vec4(cv2Coverage, cv2CoverClear, std::max(cv2CoverFull, cv2CoverClear + 0.01f),
                          (float)(mip > 0 ? mip - 1 : 0));
-    // The storms' own cloud (cloud_v2_weather.comp stormStamp): the tower geometry cv2ColumnSigma draws with.
-    pc.storm = glm::vec4(std::clamp(cv2CbRadiusKm, 1.0f, 20.0f) * 1000.0f, cv2CbCumulusReachKm * 1000.0f,
-                         std::clamp(cv2CbHeadDriftKm, 0.0f, 30.0f) * 1000.0f, std::clamp(cv2CbFlare, 0.5f, 3.0f));
+    // The flow warp (= the march's p.flow / p.anchorFlow; clouds_v2.glsl cv2FlowDisp): the bake bends the background
+    // field through it (wxFlowDisp), the storms stay where they are.
+    const double flowP = std::clamp((double)cv2FlowPeriodKm, 200.0, 20000.0) * 1000.0;
+    pc.storm = glm::vec4((float)(std::clamp((double)cv2FlowWarp, 0.0, 0.1) * flowP),
+                         (float)fracPos((double)cv2WindMps * 0.3 * t / flowP), (float)(1.0 / flowP), 0.0f);
     pc.storm2 = glm::vec4(stormObjects && cv2CbColumns > 0.0f ? std::max(stormCloudField, 0.0f) : 0.0f,
                           std::max(stormMoat, 0.0f), std::clamp(stormCycMinorSwirls, 0.0f, 2.0f),
                           stormCycSpiralAB ? std::clamp(stormCycDeckSpiral, 0.0f, 1.0f) : 0.0f);

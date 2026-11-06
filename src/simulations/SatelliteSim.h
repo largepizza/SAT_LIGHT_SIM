@@ -5955,13 +5955,15 @@ private:
     static constexpr VkDeviceSize kSysHeadOffset = kShieldEnvOffset + 64ull * kShieldMax;
     static constexpr VkDeviceSize kSystemsOffset = kSysHeadOffset + 16;
     // Weather v2 convection (= cv2_storms.glsl cv2ConvHead / CV2Cell / CV2Anvil / cv2ConvGrid / cv2ConvList).
-    struct GpuConvCell { glm::vec4 a, b; };
+    struct GpuConvCell { glm::vec4 a, b, c; };
+    static_assert(sizeof(GpuConvCell) == 48, "GpuConvCell == cv2_storms.glsl's CV2Cell");
     struct GpuConvAnvil { glm::vec4 a, b, c, d; };
+    std::vector<std::pair<uint64_t, glm::vec4>> convLineFwd;   // updateConvection scratch: line systems' forward + gust-front lead
     static constexpr uint32_t kConvCellMax = 8192, kConvAnvilMax = 4096, kConvGridLon = 180, kConvGridLat = 90,
                               kConvListMax = 131072;
     static constexpr VkDeviceSize kConvHeadOffset = kSystemsOffset + 64ull * kWxSystemMax;
     static constexpr VkDeviceSize kConvCellsOffset = kConvHeadOffset + 16;
-    static constexpr VkDeviceSize kConvAnvilsOffset = kConvCellsOffset + 32ull * kConvCellMax;
+    static constexpr VkDeviceSize kConvAnvilsOffset = kConvCellsOffset + 48ull * kConvCellMax;
     static constexpr VkDeviceSize kConvGridOffset = kConvAnvilsOffset + 64ull * kConvAnvilMax;
     static constexpr VkDeviceSize kConvListOffset = kConvGridOffset + 8ull * kConvGridLon * kConvGridLat;
     static constexpr VkDeviceSize kStormBufBytes = kConvListOffset + 4ull * kConvListMax;

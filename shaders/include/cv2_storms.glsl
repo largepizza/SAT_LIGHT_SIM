@@ -95,6 +95,7 @@ const uint kCv2CellMax = 8192u, kCv2AnvilMax = 4096u, kCv2ConvGridLon = 180u, kC
 struct CV2Cell {
     vec4 a;   // xyz the axis (unit ECEF), w the core's radius (m)
     vec4 b;   // x strength 0..1, y the top's share of the way to the lid (0..1), z the tower's seed (uint bits), w role (1 dominant)
+    vec4 c;   // xyz a line cell's forward (unit tangent: its gust front's side), w how far its gust front leads the column (m, 0 none)
 };
 struct CV2Anvil {
     vec4 a;   // xyz the source's centre now (unit ECEF), w its radius (m)

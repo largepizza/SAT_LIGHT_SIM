@@ -728,10 +728,11 @@ vec3 cv2FlowDisp(vec3 wd, vec3 sP)
     vec3 v = cross(wd, g) / (k0 * 2.0);
     return v * cv2.flow.x;
 }
-// The weather-map direction the low cloud reads at q (half the flow). Every layer that follows the
-// low cloud's weather (mid, high, anvils, the far-field early outs) must read it here too, or with
-// the flow on those layers sit up to ~100 km from the systems they belong to.
-vec3 cv2FlowWeatherDir(vec3 wd, vec3 flowD) { return normalize(wd + flowD * (1.0 / R_EARTH)); }
+// The weather-map direction the low cloud reads at q. Weather v2 (2026-11-06): the map is read where it was written. The
+// flow's bend is baked into the background field (cloud_v2_weather.comp wxFlowDisp); read through the flow here, the
+// whole map sat ~100 km from the convection cube, the storm cells and the radar's own reads. flowD still moves the
+// cluster field (texture). Every reader of the map keeps calling this, so they stay in one frame.
+vec3 cv2FlowWeatherDir(vec3 wd, vec3 flowD) { return wd; }
 vec3 cv2FlowWeatherDirAt(CV2Pos q)
 {
     vec3 wd = cv2Drift(q.dirE);
@@ -844,7 +845,7 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     // The noise volumes are read in the same drifted frame.
     vec3 rS = cv2Mat(q.rSeaE);
     vec3 sP = cv2Mat(q.seaProjE);
-    // The flow (cv2FlowDisp) moves the weather map and the cluster field by flowD (not the cells).
+    // The flow (cv2FlowDisp) moves the cluster field by flowD (the weather map has it baked in: cv2FlowWeatherDir).
     vec3 flowD = cv2FlowDisp(wd, sP);
     vec3 wdF   = cv2FlowWeatherDir(wd, flowD);
 

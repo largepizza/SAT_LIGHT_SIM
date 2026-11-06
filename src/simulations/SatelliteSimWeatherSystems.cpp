@@ -71,6 +71,25 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
     };
     // CELLS: every tower alive (the catalog's lifecycle in its strength and height cap).
     const double Rb = std::clamp((double)cv2CbRadiusKm, 1.0, 20.0) * 1000.0;
+    // A line system's cells carry its motion: their gust front (the cold pool's leading edge) runs ahead of the line and
+    // lifts a shelf cloud along it (the bake, wxConvection). It leads the columns more as the system matures.
+    convLineFwd.clear();
+    for (const wx::Storm *S : storms)
+        if (wx::isLineSystem(S->kind) && glm::length(S->vel) > 0.5)
+        {
+            const double m = std::clamp((t - S->t0) / std::max((double)S->sysLife, 600.0), 0.0, 1.0);
+            convLineFwd.push_back({S->id, glm::vec4(glm::vec3(glm::normalize(S->vel)), (float)((3.0 + 7.0 * std::sqrt(m)) * 1000.0))});
+        }
+    auto lineFwd = [&](uint64_t id, const glm::dvec3 &at) {
+        for (const auto &e : convLineFwd)
+            if (e.first == id)
+            {
+                glm::dvec3 f = glm::dvec3(e.second);
+                f -= at * glm::dot(f, at);
+                return glm::length(f) > 1e-9 ? glm::vec4(glm::vec3(glm::normalize(f)), e.second.w) : glm::vec4(0.0f);
+            }
+        return glm::vec4(0.0f);
+    };
     uint32_t nC = 0;
     for (const wx::Tower &T : stormTowers)
     {
@@ -93,7 +112,9 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
         float seedF;
         std::memcpy(&seedF, &seedBits, 4);
         cells[nC].b = glm::vec4((float)str, (float)top, seedF, T.role);
-        binCircle(glm::normalize(T.dir), 4.5 * sigma, nC);   // (the bake's environment field reaches 2.5 sigma wide)
+        cells[nC].c = wx::isLineSystem(T.kind) ? lineFwd(T.stormId, glm::normalize(T.dir)) : glm::vec4(0.0f);
+        // (the bake's environment field reaches 2.5 sigma wide; a gust front its lead + its clear band ahead)
+        binCircle(glm::normalize(T.dir), std::max(4.5 * sigma, 1.2 * Rc + cells[nC].c.w + 20000.0 * (cells[nC].c.w > 0.0f)), nC);
         ++nC;
     }
     // The harness's test storm (`storms test`): one cell rising over ~25 min, mature, decaying over its last 40 min.
@@ -120,7 +141,10 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
             uint32_t sb = 0x7E57u + (uint32_t)k; float sf; std::memcpy(&sf, &sb, 4);
             cells[nC].a = glm::vec4(glm::vec3(d), (float)sg);
             cells[nC].b = glm::vec4((float)str, (float)ssD(0.02, 0.6, str), sf, 1.0f);
-            binCircle(d, 4.5 * sg, nC);
+            const double lead = (3.0 + 7.0 * std::sqrt(std::clamp(tsAge / std::max(TS.life, 600.0), 0.0, 1.0))) * 1000.0;
+            glm::dvec3 fw = tsFw - d * glm::dot(tsFw, d);
+            cells[nC].c = glm::vec4(glm::vec3(glm::normalize(fw)), (float)lead);
+            binCircle(d, std::max(4.5 * sg, 3.5 * sg + lead + 20000.0), nC);
             ++nC;
         }
     }
@@ -131,6 +155,7 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
         cells[nC].a = glm::vec4(glm::vec3(tsDir), (float)(0.35 * Rc));
         uint32_t sb = 0x7E57u; float sf; std::memcpy(&sf, &sb, 4);
         cells[nC].b = glm::vec4((float)str, (float)ssD(0.02, 0.6, str), sf, 1.0f);
+        cells[nC].c = glm::vec4(0.0f);
         binCircle(tsDir, 4.5 * 0.35 * Rc, nC);
         ++nC;
     }
@@ -245,7 +270,7 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
     auto *head = reinterpret_cast<uint32_t *>(base + kConvHeadOffset);
     head[0] = nC; head[1] = nA; head[2] = used; head[3] = 0u;
     convStatCells = nC; convStatAnvils = nA; convStatEntries = acc;
-    ctx_->mirrorDirty(stormMapped, kConvHeadOffset, 16 + 32ull * nC);
+    ctx_->mirrorDirty(stormMapped, kConvHeadOffset, 16 + 48ull * nC);
     ctx_->mirrorDirty(stormMapped, kConvAnvilsOffset, 64ull * nA);
     ctx_->mirrorDirty(stormMapped, kConvGridOffset, 8ull * nCells);
     ctx_->mirrorDirty(stormMapped, kConvListOffset, 4ull * used);
