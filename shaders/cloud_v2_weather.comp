@@ -309,6 +309,86 @@ vec4 wxConvection(vec3 d, out float env, bool cellsOnly)
     return vec4(1.0 - notC, top, 1.0 - exp(-1.5 * anv), 1.0 - exp(-1.5 * mid));
 }
 
+
+// ── Weather v2 tropical cyclones (Phase 3, 2026-11-06): the catalog's cyclones (cv2Cyclones) as SYSTEMS that write fields ──
+// In the storm's polar frame (r from the centre, th counter-clockwise looking down, the southern hemisphere mirrored so
+// both wind up cyclonically), everything scaled by the radius of maximum wind (RMW) and the outer bands' reach:
+//   eyewall  a ring of full-height convection at ~1.1 RMW (the convection cube's cores: its columns)
+//   bands    n log-spiral rain bands (pitch ~15 deg) winding inward cyclonically from the outer reach to ~1.5 RMW, broken
+//            into segments along their length (convective, shorter tops)
+//   CDO      the upper outflow over the core out to the CDO radius (the anvil field: its plate), the eye punched through it,
+//            and beyond it outflow cirrus in arms winding OUT anticyclonically
+//   deck     stratiform rain between the bands (the mid outflow)
+//   coverage the system owns its disc: overcast core, bands and stratiform, the eye clear, subsidence at its edge
+// conv (out): x intensity, y top share, z anvil, w mid, to max into the convection cube. Returns (potential, strat, conv, own).
+float cv2Sq(float x) { return x * x; }
+float wxTcBand(float th, float lr, float n, float cotA, float ph, float sharp)
+{
+    float phi = n * (th + cotA * lr) + ph;
+    return pow(0.5 + 0.5 * cos(phi), sharp);
+}
+vec4 wxCyclones(vec3 d, out vec4 conv)
+{
+    conv = vec4(0.0);
+    vec4 best = vec4(0.0);
+#ifdef CV2_STORM_BINDING
+    for (uint i = 0u; i < min(cv2CycHead.x, kCv2CycloneMax); ++i) {
+        CV2Cyclone cy = cv2Cyclones[i];
+        float outer = max(cy.c.z, 1.0e5);
+        float cd = dot(d, cy.a.xyz);
+        float r  = acos(clamp(cd, -1.0, 1.0)) * R_EARTH_W;
+        if (r > 1.25 * outer) continue;
+        float I    = cy.a.w;                               // 0..1 (17.5 .. 75 m/s)
+        float rmw  = max(cy.d.x, 8000.0);
+        float eyeR = cy.a.w >= 0.3 ? max(cy.c.x, 0.5 * rmw) : 0.0;   // (= the march's stadium, cv2StormGeom)
+        float cdoR = max(cy.c.y, 1.5 * rmw);
+        float hemi = cy.b.w;
+        vec3  e  = normalize(cross(vec3(0.0, 0.0, 1.0), cy.a.xyz) + vec3(1e-6, 0.0, 0.0));
+        vec3  nn = cross(cy.a.xyz, e);
+        vec3  v  = d - cy.a.xyz * cd;
+        float th = atan(dot(v, nn) * hemi, dot(v, e));     // (mirrored in the south: cyclonic = counter-clockwise here)
+        float lr = log(max(r, 100.0) / rmw);
+        const float cotA = 3.73;                            // cot(15 deg): the bands' pitch
+        // The eyewall: a ring of cores just outside the RMW, full height from tropical-storm strength on.
+        float eyw = exp(-cv2Sq((r - 1.1 * rmw) / (0.45 * rmw))) * smoothstep(0.05, 0.4, I);
+        // The rain bands: n arms (continuous, from the catalog), segmented along their length.
+        float nA   = max(cy.d.w, 2.0);
+        float bnd  = wxTcBand(th, lr, floor(nA + 0.5), cotA, cy.c.w, 6.0);
+        float seg  = smoothstep(-0.2, 0.5, sin(4.0 * lr * 2.3 + th * 1.0 + cy.c.w * 1.7) + 0.4 * sin(9.0 * lr + 2.0 * th));
+        float band = bnd * seg * smoothstep(1.4 * rmw, 2.2 * rmw, r) * (1.0 - smoothstep(0.65 * outer, outer, r));
+        // The CDO (upper outflow) and the outflow cirrus winding out anticyclonically beyond it; the eye through both.
+        float eyeK = eyeR > 0.0 ? smoothstep(0.75 * eyeR, 1.15 * eyeR, r) : 1.0;
+        // (soft, and streaked along the outflow's spiral: a hard disc stood as a lid with a cliff round it)
+        // (its outline irregular: a smooth noise on the radius, not the spiral streaks, which drew a polygon)
+        float rq   = r * (1.0 + 0.18 * wxNoise(d * (R_EARTH_W / 2.5e5) + vec3(cy.c.w, 3.1, 7.7)));
+        // The core disc, and beyond it the overcast continuing out ALONG the bands (wider than their rain): the CDO's edge is
+        // a spiral running into the bands, not a disc's outline over them (cf. qa/waves/20261105/refs/hurricane_iss.png).
+        float bndW = wxTcBand(th, lr, floor(nA + 0.5), cotA, cy.c.w, 1.5);
+        float cdo  = max(1.0 - smoothstep(0.45 * cdoR, 1.05 * cdoR, rq),
+                         0.95 * bndW * (1.0 - smoothstep(0.9 * cdoR, 2.3 * cdoR, rq)))
+                   * smoothstep(0.1, 0.5, I);
+        float oc   = wxTcBand(-th, lr, 3.0, cotA * 0.8, cy.c.w * 0.7 + 1.0, 3.0) * smoothstep(0.9 * cdoR, 1.3 * cdoR, r)
+                   * (1.0 - smoothstep(0.8 * outer, 1.2 * outer, r)) * smoothstep(0.3, 0.7, I);
+        // (the outflow cirrus stays under the plate's threshold, 0.3: thin ice for the high layer, not lens-shaped plates
+        // drawn as tubes)
+        float anv  = max(cdo, 0.25 * oc) * eyeK;
+        // Stratiform between the bands (the mid outflow's deck) inside ~0.8 of the reach.
+        float deck = 0.55 * (1.0 - bnd) * smoothstep(1.3 * rmw, 2.0 * rmw, r) * (1.0 - smoothstep(0.5 * outer, 0.8 * outer, r))
+                   * smoothstep(0.1, 0.5, I);
+        // The bands' convection stays under the columns' threshold (cv2StormGeom, 0.35): congestus lines of the cumulus field
+        // (their coverage below), not domed columns (a continuous band of cores drew a smooth tube). The eyewall's are columns.
+        float Cc   = max(eyw, 0.3 * band) * eyeK;
+        vec4  cvI  = vec4(Cc, max(eyw * eyeK, 0.5 * band), anv, deck);
+        conv = max(conv, cvI);
+        // The coverage: the system's potential (the climatology's units), owning its disc.
+        float M    = -0.5 + 1.9 * max(max(Cc, band), max(0.85 * cdo * eyeK, deck)) - 1.4 * (1.0 - eyeK);
+        float own  = 1.0 - smoothstep(0.85 * outer, 1.2 * outer, r);
+        if (own > best.w) best = vec4(M, max(cdo, deck), max(Cc, band), own);
+    }
+#endif
+    return best;
+}
+
 // ── Weather v2 systems (cv2_storms.glsl CV2System, WeatherSystems.h) ──
 // An extratropical cyclone's COMMA CLOUD in its own frame: X along its heading, Y poleward (so the southern
 // hemisphere's clockwise rotation is the same counter-clockwise wind-up), both in head radii, the low at the origin.
@@ -420,7 +500,6 @@ void main()
     float envC = 0.0;
     vec4  cvx  = wxConvection(d, envC, fine);
     if (fine) cvx.zw = vec2(0.0);
-    imageStore(outConv, id, cvx);
 
     // Tangent frame for neighbourhood taps, ~one output texel apart.
     vec3  up    = abs(d.z) < 0.99 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
@@ -446,6 +525,11 @@ void main()
     // The weather systems own their regions: their potential and shares replace the climatology's there, and the
     // background noise is calmed so their bands stay bands.
     vec4  sy      = fine ? vec4(0.0) : wxSystems(d);
+    // Tropical cyclones (Phase 3): their fields into the convection cube (stored after this, max-combined) and their disc.
+    vec4  tcCv;
+    vec4  tc      = wxCyclones(d, tcCv);
+    cvx = vec4(1.0 - (1.0 - cvx.x) * (1.0 - tcCv.x), max(cvx.y, tcCv.y), fine ? 0.0 : max(cvx.z, tcCv.z), fine ? 0.0 : max(cvx.w, tcCv.w));
+    if (tc.w > sy.w) sy = tc;
     if (sy.w > 0.0) {
         cl.raw   = mix(cl.raw, sy.x, sy.w);
         cl.strat = mix(cl.strat, sy.y, sy.w);
@@ -455,6 +539,7 @@ void main()
 
     // The storms' own cloud, from the convection cube's fields (2026-11-06; the per-tower stamps are gone): broken
     // cumulus over their environment, the cores themselves, the trailing stratiform deck (mid outflow), in coverage units.
+    imageStore(outConv, id, cvx);   // (with the cyclones' fields)
     float cC = cvx.x, cMid = cvx.w;
     float stormAdd = 0.45 * smoothstep(0.02, 0.5, envC) + 0.6 * smoothstep(0.1, 0.5, cC) + 0.9 * smoothstep(0.05, 0.6, cMid);
 

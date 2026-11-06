@@ -76,6 +76,9 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
     {
         if (nC >= kConvCellMax) break;
         if (T.strength <= 0.02f) continue;
+        // (A tropical cyclone's eyewall / band towers: its eyewall and bands are the bake's own fields now, wxCyclones;
+        // as cells too they drew a second eyewall ring off the eye.)
+        if (T.kind == wx::StormKind::Tropical) continue;
         const double str = T.strength;
         auto ss = [](double e0, double e1, double x) { const double u = std::clamp((x - e0) / (e1 - e0), 0.0, 1.0); return u * u * (3 - 2 * u); };
         const double Rc = Rb * (0.7 + 0.6 * T.size) * (0.8 + 0.2 * ss(0.1, 0.6, str)) * (0.75 + 0.25 * T.role);

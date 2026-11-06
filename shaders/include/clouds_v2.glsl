@@ -800,6 +800,7 @@ struct CV2Storm {
     float cap;      // the lobes' damping share (x 0.75 of them): two thirds at the plate's outline (its edge thins
                     // instead of standing as a wall). (An overshooting dome's quarter until 2026-11-06: a smooth cap.)
 };
+float gCv2CdoK = 0.0;   // 0..1: inside a tropical cyclone's CDO (cv2StormGeom): its plate is a smooth sheet
 CV2Storm cv2StormNone()
 {
     CV2Storm g;
@@ -1470,6 +1471,18 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         c.tur    *= 1.0 - wS;
         c.bub     = mix(c.bub, bubS, wS);
         c.thk     = mix(c.thk, 4000.0, wS);
+#ifndef SKY_LITE
+        // A HURRICANE'S CDO (2026-11-05, the user: "a nice smooth but textured swirl, right now it is a bumpy mess"): the
+        // plate of a cyclone's central dense overcast is a smooth sheet of outflow ice, not a storm's billowing anvil: its
+        // lobes and billow erosion (dark erosion pits all over it from orbit) mostly go. "Hurricane top smoothing" (ciHu.z).
+        if (gCv2CdoK > 0.0) {
+            float smK = cv2.ciHu.z * wS * gCv2CdoK;
+            c.lobeKL *= 1.0 - smK;
+            c.erK    *= 1.0 - 0.94 * smK;
+            c.billow *= 1.0 - min(smK * 1.18, 1.0);
+            c.lobeB  *= 1.0 - smK;
+        }
+#endif
         f.hf       = mix(f.hf, sg.hf, wS);
         f.topH     = mix(f.topH, sg.top, wS);
         f.msBright = mix(cu ? f.msBright : 1.0, cv2.types[3].look.x, wS);
@@ -2407,6 +2420,7 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
     CV2Storm g = cv2StormNone();
     gCv2RainCore = 0.0;
     gCv2PlateA   = 0.0;
+    gCv2CdoK     = 0.0;
     gCv2ShSet    = false;
 #ifdef CV2_CONV_BINDING
     if (cv2.column.x <= 0.0 || q.h < (cv2.rain.x > 0.0 ? -100.0 : 400.0)) return g;
@@ -2480,6 +2494,19 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
     }
     float m = cv2SMax(best, mSh, 700.0);
     if (m < -1e8) return g;
+#ifdef CV2_STORM_BINDING
+    // A tropical cyclone's EYE (Weather v2 Phase 3): carved analytically, a stadium whose radius grows with height (0.8x at
+    // the base to 1.7x at the lid); the cube's ~12-km texels fill a 10-20 km hole in the CDO's field.
+    for (uint i = 0u; i < min(cv2CycHead.x, 4u); ++i) {
+        CV2Cyclone cy = cv2Cyclones[i];
+        float eR = max(cy.c.x, 0.5 * cy.d.x);
+        if (eR <= 0.0 || cy.a.w < 0.3) continue;
+        float rC = acos(clamp(dot(wd, cy.a.xyz), -1.0, 1.0)) * R_EARTH;
+        float rE = eR * (0.8 + 0.9 * clamp(hb / max(lid - base, 1000.0), 0.0, 1.0));
+        if (rC < rE + 30000.0) m = min(m, (rC - rE) * 1.5);
+        gCv2CdoK = max(gCv2CdoK, 1.0 - smoothstep(0.8 * cy.c.y, 1.3 * cy.c.y, rC));
+    }
+#endif
     float wT = clamp(0.5 + (best - mSh) / 1200.0, 0.0, 1.0);
     g.m    = m;
     g.top  = mix(topS, max(topHere, q.h), wT);
