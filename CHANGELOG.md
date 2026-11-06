@@ -441,6 +441,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 - Clouds no longer lose whole masses for a moment after you fly across certain places: the clouds' empty-space map
   now starts over when the cumulus lobes' noise frame changes under you (it changes at fixed lines on the globe).
+- Raining cloud fields seen from above no longer show a thin dark line, like a contour, running just inside the
+  edge of every clear gap: the clouds' thin margins over rain are drawn whole instead of half see-through
+  (issue_20261105_180442).
 - Rain falls only from clouds: rain curtains and the drops at the eye no longer hang under the clear gaps between a
   storm's clouds (issue_20261104_020642).
 - Meteors are no longer drawn past 1 hour/s: at 1 day/s and faster the Earth's nightside no longer sparkles with
