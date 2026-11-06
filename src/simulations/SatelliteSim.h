@@ -5714,6 +5714,8 @@ private:
     bool meterPendingS[VulkanContext::kMaxFramesInFlight] = {};
     double meterLastT = 0.0;
     float meterMeanLum = 0.0f, meterClipFrac = 0.0f;   // last reading (harness `state`)
+    bool meterTakenPreUi_ = false;   // this frame's meter was copied before the UI (recordPreUiCopy)
+    void recordExposureMeter(VkCommandBuffer cmd, VulkanContext &ctx, VkImage image);   // image in TRANSFER_SRC
     void readExposureMeter();
     float cv2BeamHaze = 1.6f;          // aerosol (haze, dust) in the beams' air scattering, x
     float cv2BeamLight = 32.0f;        // beam light on cloud, x the physical irradiance (the night view's

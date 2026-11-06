@@ -439,6 +439,11 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- Auto exposure no longer brightens the whole picture while a window is open: it meters the frame without the UI.
+  With the Settings window open the clouds came out ~1.4x brighter (+0.5 EV) than with it closed, so cloud bases
+  looked too bright while you were tuning them (issue_20261105_181849).
+- Shaded cloud no longer shows a pattern of rings and cells repeating every 64 pixels, in motion or standing still
+  (issue_20261105_181702).
 - Clouds no longer lose whole masses for a moment after you fly across certain places: the clouds' empty-space map
   now starts over when the cumulus lobes' noise frame changes under you (it changes at fixed lines on the globe).
 - Rain falls only from clouds: rain curtains and the drops at the eye no longer hang under the clear gaps between a
