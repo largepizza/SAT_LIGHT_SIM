@@ -35,7 +35,7 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_v2_march.com
 #define CV2_SHAPE_BINDING   3
 #define CV2_DETAIL_BINDING  4
 #define CV2_MESO_BINDING    5
-#define CV2_ELEV_BINDING    25   // the elevation map: the orographic lenses (clouds_v2.glsl cv2OroSigma)
+#define CV2_ELEV_BINDING    25   // the elevation map: orographic clouds (clouds_v2.glsl cv2OroField)
 #define CV2_FRACTUS              // fractus under raining bases (clouds_v2.glsl): only the march and the clipmap bake
 #define CV2_STORM_BINDING   26   // the storm objects' towers (cv2_storms.glsl)
 #define CV2_LAYER_HITS            // cv2Field reports the layers each read needed (gCv2LayHit): the cells' layer masks

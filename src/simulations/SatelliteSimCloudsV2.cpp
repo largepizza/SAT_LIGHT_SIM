@@ -2125,7 +2125,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         a.z *= 0.4;
         p.vert2 = glm::vec4(std::clamp(cv2MidWisps, 0.0f, 2.0f), (float)fracPos(a.x), (float)fracPos(a.y), (float)fracPos(a.z));
     }
-    // Orographic lenses / caps (clouds_v2.glsl cv2OroSigma). The ridge wind: "Ridge wind (m/s)" (0 = 20) from "Ridge wind
+    // Orographic clouds: the lee-wave lenses in the mid layer and the low cloud parting round massifs (clouds_v2.glsl
+    // cv2OroField, 2026-11-06; until then a lens object, cv2OroSigma). The ridge wind: "Ridge wind (m/s)" (0 = 20) from "Ridge wind
     // from" (deg; -1 = by the eye's latitude: the trades (from the east) within 25 deg, the westerlies outside). Lenses are
     // local, so one wind for the view. Its lee wavelength 2 pi U / N (N = 0.01 /s); faster wind lifts a parcel further
     // (the dryness x 1.25 .. 0.85 over 8-25 m/s). The regional moisture phase turns over every ~3 sim days.
