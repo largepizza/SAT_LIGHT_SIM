@@ -961,6 +961,9 @@ struct GpuCloudV2Params
     glm::vec4 vert2;                    // x "Mid-level wisps", yzw the wisps' anchor (z squeezed)
     glm::vec4 oro0;                     // x "Orographic clouds", y "Ridge wind" (m/s, 0 = 20), z wind from (deg, -1 = by latitude), w spare
     glm::vec4 oro1;                     // x lens moisture, yzw spare
+    // 2026-11-06: the low shape volume's PREVIOUS frame while a frame change cross-fades (clouds_v2.glsl cv2Field):
+    // [0..2] xyz its rotation's columns, [0].w the share of reads still in it (0 = no fade); [3] its anchorShape, [4] its anchorStorm
+    glm::vec4 shapeB[5];
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -993,7 +996,7 @@ static_assert(offsetof(GpuCloudV2Params, amb) == 288 + 48 * kCloudV2Types + 1232
 static_assert(offsetof(GpuCloudV2Params, tone) == 288 + 48 * kCloudV2Types + 1248, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, gnd) == 288 + 48 * kCloudV2Types + 1264, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, micro) == 288 + 48 * kCloudV2Types + 1280, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1504, "GpuCloudV2Params layout");   // +32: cirrus-hurr (ciHu, ciHu2); +32: storm3 (storm3a, storm3b); +64: vertical (vert, vert2, oro0, oro1)
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1584, "GpuCloudV2Params layout");   // +32: cirrus-hurr (ciHu, ciHu2); +32: storm3 (storm3a, storm3b); +64: vertical (vert, vert2, oro0, oro1); +80: shapeB
 static_assert(offsetof(GpuCloudV2Params, cu3) == 288 + 48 * kCloudV2Types + 1312, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
@@ -5640,6 +5643,10 @@ private:
     float cv2HazeAloft = 1.9f;            // "Haze near clouds": extra aerosol in the sky pass where the weather is (x sea-level Mie)
     float cv2GodrayRangeKm = 400.0f;      // the light volume's half-extent about the eye (km)
     int   cv2ShapeFrame = 0;   // the low shape volume's frame this frame (harness state)
+    // A change of that frame cross-fades (2026-11-06, issue_20261105_202810 shot 3 "Sudden shape change"): for
+    // kCv2ShapeFadeFrames frames a share of the field reads still take the old frame (GpuCloudV2Params::shapeB).
+    static constexpr int kCv2ShapeFadeFrames = 90;
+    int   cv2ShapeFadeFrom = 0, cv2ShapeFadeLeft = 0;
     float cv2StepBaseM = 60.0f;        // step at the eye ...
     float cv2StepGrowth = 0.014f;       // ... growing by this per metre of distance ...
     float cv2StepMaxM = 1700.0f;       // ... capped here (and at 1.2% of the distance beyond)

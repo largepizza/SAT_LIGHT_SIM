@@ -1459,6 +1459,12 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         int f1 = 0;
         if (m[0] < 0.05)
             for (int f = 1; f < 4; ++f) if (m[f] > m[f1]) f1 = f;
+        // Hysteresis (2026-11-06): a frame in use is kept while it is still clear enough (the identity down to 0.035; another
+        // while it holds 0.05 and the identity has not passed 0.065), so a flight along the line where the choice changes
+        // does not switch back and forth. Not across a jump: a teleport takes the place's own choice.
+        if (nearPrev && f1 != cv2ShapeFrame &&
+            (cv2ShapeFrame == 0 ? m[0] >= 0.035 : (m[cv2ShapeFrame] >= 0.05 && m[0] < 0.065)))
+            f1 = cv2ShapeFrame;
         for (int c = 0; c < 3; ++c)
             p.shapeRotA[c] = glm::vec4((float)kFrames[f1][0][c], (float)kFrames[f1][1][c], (float)kFrames[f1][2][c], 0.0f);
         auto anchorF = [&](int f, double periodM, double windMul)
@@ -1466,16 +1472,16 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             const glm::dvec3 a = mulF(f, sea + windDir * ((double)cv2WindMps * windMul * simT)) / periodM;
             return glm::vec4((float)fracPos(a.x), (float)fracPos(a.y), (float)fracPos(a.z), (float)(1.0 / periodM));
         };
-        p.anchorShapeA = anchorF(f1, cv2ShapePeriodM, 1.0);
-        p.anchorStormA = anchorF(f1, cv2ShapePeriodM * stormScale, 1.0);
         // The storm lobes FLOW up (storms through the cumulus field, 2026-11-04): the storm-scale volume (towers, heads,
         // anvil plates, deep convection; read at 2x this anchor) rises at 1.5 x the wind, as cv2ColumnSigma's lobes rose up
         // its columns. Along L, the short lattice vector of the tile nearest the observer's up in this frame, by
         // fract(phase) of it: the volume tiles, so the wrap is seamless, and no shader work (a flow-map cross-fade there,
         // two reads, put the march over the 128-register cliff). A pure function of position and time; L changes (the
         // lobes jump once) only when the observer's up turns past another lattice vector, hundreds of km away.
+        auto stormAnchorF = [&](int f)
         {
-            const glm::dvec3 upR = mulF(f1, glm::normalize(sea));
+            glm::vec4 aS = anchorF(f, cv2ShapePeriodM * stormScale, 1.0);
+            const glm::dvec3 upR = mulF(f, glm::normalize(sea));
             glm::dvec3 L(0.0, 0.0, 1.0);
             double bestC = -2.0;
             for (int x = -2; x <= 2; ++x)
@@ -1489,11 +1495,37 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     }
             const double periodS = cv2ShapePeriodM * stormScale;
             const double ph = fracPos(1.5 * (double)cv2WindMps * simT / (glm::length(L) * periodS));
-            const glm::dvec3 a = glm::dvec3(p.anchorStormA.x, p.anchorStormA.y, p.anchorStormA.z) - L * ph;
-            p.anchorStormA.x = (float)fracPos(a.x);
-            p.anchorStormA.y = (float)fracPos(a.y);
-            p.anchorStormA.z = (float)fracPos(a.z);
+            const glm::dvec3 a = glm::dvec3(aS.x, aS.y, aS.z) - L * ph;
+            return glm::vec4((float)fracPos(a.x), (float)fracPos(a.y), (float)fracPos(a.z), aS.w);
+        };
+        p.anchorShapeA = anchorF(f1, cv2ShapePeriodM, 1.0);
+        p.anchorStormA = stormAnchorF(f1);
+        // A change of frame CROSS-FADES (2026-11-06, issue_20261105_202810 shot 3 "Sudden shape change"): the frame is
+        // chosen at the observer, so flying across a place where the choice changes reshaped every lobe in view at once
+        // (31.47 N 118.63 E at 5.9 km: frame 1 -> 0 within 200 m of travel). For kCv2ShapeFadeFrames frames a falling
+        // share of the field's reads (a hash of the sample's position and the frame, cv2Field) still take the old frame
+        // and its anchors (shapeB), and the history blends the two shapes. Not across a jump (a teleport, a report
+        // load: the new place shows at once), and the clipmap is off meanwhile (its cells hold one frame's field).
+        if (f1 != cv2ShapeFrame)
+        {
+            cv2ShapeFadeFrom = cv2ShapeFrame;
+            cv2ShapeFadeLeft = nearPrev ? kCv2ShapeFadeFrames : 0;
         }
+        else if (cv2ShapeFadeLeft > 0)
+            --cv2ShapeFadeLeft;
+        if (cv2ShapeFadeLeft > 0)
+        {
+            const glm::vec4 bS = anchorF(cv2ShapeFadeFrom, cv2ShapePeriodM, 1.0), bT = stormAnchorF(cv2ShapeFadeFrom);
+            const float share = (float)cv2ShapeFadeLeft / (float)kCv2ShapeFadeFrames;
+            const int fB = cv2ShapeFadeFrom;
+            for (int c = 0; c < 3; ++c)
+                p.shapeB[c] = glm::vec4((float)kFrames[fB][0][c], (float)kFrames[fB][1][c], (float)kFrames[fB][2][c], 0.0f);
+            p.shapeB[0].w = share * share * (3.0f - 2.0f * share);
+            p.shapeB[3] = bS;
+            p.shapeB[4] = bT;
+        }
+        else
+            for (auto &v : p.shapeB) v = glm::vec4(0.0f);
         cv2ShapeFrame = f1;
     }
     p.storm = glm::vec4((float)stormScale, cv2StormDetail, cv2Anvil, cv2BaseRoughness);
@@ -1830,7 +1862,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             // Only up to cdc_max_rate x real time: at 10x the cells expire ~10x as fast as a frame's budget bakes them, most
             // read unknown, and the bake + lookups cost more than they save (+2 ms at 58 km, harness_runs/s0/run13).
             const float rate = timePaused ? 0.0f : kTimeScales[std::clamp(timeScaleIdx, 0, (int)(sizeof(kTimeScales) / sizeof(kTimeScales[0])) - 1)];
-            cv2CdcActive = cv2CdcSkip > 0.5f && rate <= cv2CdcMaxRate && cv2CdcBufFull;
+            cv2CdcActive = cv2CdcSkip > 0.5f && rate <= cv2CdcMaxRate && cv2CdcBufFull && cv2ShapeFadeLeft == 0;   // (and not while the shape frame cross-fades)
             // The motion guard (SatelliteSim.h cv2CdcMotionGuard): a cell's bake read the field at the footprint seen from
             // where the eye WAS, and paused it never expires. Its distance scale: the nearest cloud is at least this far
             // (from orbit the height above the shell; near the ground 20 km, so normal and boosted low flight keep it).
