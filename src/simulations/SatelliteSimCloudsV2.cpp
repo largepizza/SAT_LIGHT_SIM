@@ -1398,6 +1398,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // Weather v2 (2026-11-06): the noise no longer slides on one global wind; it moves with the local wind through the
     // flow map (clouds_v2.glsl cv2NoiseDisp, shaders/include/wind_field.glsl). The old slide terms are kept at 0.
     constexpr double kNoSlide = 0.0;
+    constexpr double kWxEvoSlideMps = 5.0;
     const double dSimT = simT - cv2PrevSimT;
 
     p.prevSkyView = cv2PrevSkyView;
@@ -1410,8 +1411,12 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     const glm::dvec3 windShift = rotD(windDir * (kNoSlide * 0.9 * dSimT),
                                       std::cos(-cv2PrevDrift), std::sin(-cv2PrevDrift));
     p.obsDelta = glm::vec4(glm::vec3(rotD(eye, cDD, sDD) - cv2PrevEye + windShift), cv2PrevAspect);
-    // What is left unreprojected: the volumes' relative slide (detail 1.6, cluster 0.6 of the wind).
-    p.motion = glm::vec4((float)std::abs(kNoSlide * 0.7 * dSimT), std::clamp(cv2HistoryWeightMoving, 0.05f, 0.5f),
+    // What is left unreprojected (m this frame): weather v2's evolution as an equivalent slide (2026-11-06): the flow
+    // map's renewals cross-fading, the weather cube's finest octaves turning over (~10 km in ~40 min) and the cube's
+    // 3-km advection against the texture's 2-km wind, ~5 m/s together. At 1x a few cm a frame; in time warp it puts the
+    // history on its moving weight (at 0, as left by the drift's removal, 1 h/s held each frame's clouds for ~50 frames:
+    // ghosts of cloud fields already gone).
+    p.motion = glm::vec4((float)std::abs(kWxEvoSlideMps * std::clamp(dSimT, -600.0, 600.0)), std::clamp(cv2HistoryWeightMoving, 0.05f, 0.5f),
                          std::clamp(cv2CbHeadLobes, 0.0f, 1.5f),
                          // w: the noise LOD's pixel = the 100%-scale one (computeHalfExtent follows the render
                          // scale): at 50% the coarser pixel filtered the cumulus texture away.
@@ -1587,6 +1592,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         const double pu = twoPiR / n;
         p.high = glm::vec4(cv2HighAmount, (float)(1.0 / pu), (float)fracPos(-(double)cv2CirrusWindMps * simT / pu),
                            (float)(1.0 / cirrusP));
+        p.wind2 = glm::vec4(cv2CirrusWindMps, 0.0f, 0.0f, 0.0f);
         p.high2 = glm::vec4(cv2HighDensity,
                             (float)(1.0 / (std::clamp((double)cv2CirrusFieldKm, 50.0, 8000.0) * 1000.0)),
                             std::clamp(cv2CirrusFlow, 0.0f, 4.0f), std::clamp(cv2BaseFlatness, 0.0f, 1.0f));
@@ -2291,7 +2297,7 @@ SatelliteSim::GpuWeatherPC SatelliteSim::weatherEvoPC(int face, uint32_t mip) co
     // Weather v2 (2026-11-06): the bake synthesises the weather (cloud_v2_weather.comp wxClimate / wxMoistureNoise).
     // evo0 = the wind's state; evo1.x the macro flow map's window count mod 1024, y growth / decay, z its window (s);
     // wx.x the sim time within the window (s).
-    const double P = std::clamp((double)wxMacroWindowH, 0.5, 24.0) * 3600.0;
+    const double P = std::clamp((double)wxMacroWindowH, 0.5, 240.0) * 3600.0;
     pc.evo0 = windStateNow().gpu();
     pc.evo1 = glm::vec4((float)std::fmod(std::floor(t / P), 1024.0), std::max(cv2EvoGrowth, 0.0f), (float)P, 0.0f);
     // The Sun three hours ago, Earth-fixed (the Earth rotation angle; 3 h back it stood 45 deg further east).

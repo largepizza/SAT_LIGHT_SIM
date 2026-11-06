@@ -89,50 +89,57 @@ float wxNoise(vec3 p)
                      mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y), u.z);
 }
 const float kWxL0   = 1.2e6;   // the moisture fBm's largest wavelength (m)
-const float kWxGain = 0.6;
-// The moisture fBm at a material direction m: the octaves with wavelengths in [minL, maxL] (level 0 adds the ones
-// below level 1's cut to level 1's field). varOut: the variance of the octaves under minL (left out).
-float wxFbm(vec3 m, float minL, float maxL, vec3 seed, out float varOut)
-{
-    vec3  p  = m * (R_EARTH_W / kWxL0) + seed;
-    // A domain warp at the two largest scales: fronts and comma shapes, not round blobs.
-    vec3  wq = vec3(wxNoise(p * 0.7 + 3.1), wxNoise(p * 0.7 + 7.9), wxNoise(p * 0.7 + 12.4));
-    p += wq * 0.35;
-    float n = 0.0, a = 1.0, L = kWxL0, v = 0.0;
-    for (int o = 0; o < 9; ++o) {
-        if (L < minL) v += a * a;
-        else if (L <= maxL) n += a * wxNoise(p);
-        p = p * 2.03 + vec3(1.7, 9.2, 4.4);
-        a *= kWxGain; L *= 0.4926;
-    }
-    varOut = v * 0.09 * 0.62 * 0.62;   // (gradient noise's variance ~0.09 a unit amplitude)
-    return n * 0.62;
-}
+const float kWxGain = 0.7;   // (GMGSI: real cloud fields keep ~0.7 of the variance an octave down to ~30 km; 0.6 drew
+                              // continent-sized blobs with little inside them)
 float wxStagger(vec3 d) { return 0.31 * sin(dot(d, vec3(3.3, -2.1, 1.7)) + 1.3) + 0.21 * sin(dot(d, vec3(-2.6, 1.4, 3.9)) + 0.4); }
-// The moisture noise through the macro flow map: both phases, blended keeping the variance.
+// One phase of octave o's flow map: its material position (in kWxL0 units, with the window's fresh-field offset) and
+// weight. nW: the octave's windows per evo1.z; c: the phase (half a window apart).
+vec3 wxPhase(vec3 d, vec3 W0, int o, float nW, float fT, int c, out float w)
+{
+    float fc  = fT + 0.5 * float(c);
+    float f   = fract(fc);
+    w = sin(PI * f);
+    float age = f * pc.evo1.z / nW;
+    // Back along the steering wind (a midpoint step for the day-long windows of the two largest octaves).
+    vec3  Wm  = o < 2 ? wfWind(normalize(d - W0 * (0.5 * age / R_EARTH_W)), 3000.0, pc.evo0) : W0;
+    vec3  dc  = normalize(d - Wm * (age / R_EARTH_W));
+    float k   = pc.evo1.x * nW + floor(fc) + 0.5 * float(c);
+    vec3  sd  = fract(sin(vec3(k * 12.9898 + float(o) * 3.7, k * 78.233 + float(o) * 1.3, k * 37.719)) * 43758.5453) * 97.0;
+    return dc * (R_EARTH_W / kWxL0) + sd;
+}
+// The moisture fBm through a flow map PER OCTAVE (2026-11-06, benchmarked against NOAA GMGSI's hourly global IR mosaic:
+// a cloud pattern's Lagrangian lifetime grows ~linearly with its size, ~4.5 h at 512 km, ~9 h at 1000 km, ~1 day at
+// 2000 km; one window for every scale renewed the continents' weather every few hours). Octave o (wavelength
+// kWxL0 / 2.03^o) renews over its own window evo1.z / 2^o (>= 1/32 of it): two phases half a window apart, each carried
+// back along the steering wind by its age with a fresh field per window, weighted sin / cos (their squares sum to 1: the
+// variance is kept). A two-phase window of P decorrelates (1/e) in ~0.45 P. The domain warp (fronts and comma shapes,
+// not round blobs) is the largest octave's, applied to every octave. varOut: the variance of the octaves under minL.
 float wxMoistureNoise(vec3 d, float minL, float maxL, out float varOut)
 {
-    float P  = pc.evo1.z;
-    float fT = pc.wx.x / P + wxStagger(d);
-    float n = 0.0, wsum = 0.0;
-    varOut = 0.0;
+    float st = wxStagger(d);
     vec3  W0 = wfWind(d, 3000.0, pc.evo0);
-    for (int c = 0; c < 2; ++c) {
-        float fc  = fT + 0.5 * float(c);
-        float f   = fract(fc);
-        float w   = sin(PI * f);
-        float age = f * P;
-        // Back along the steering wind (a midpoint step), then a fresh field per window (its index's hash).
-        vec3  dm  = normalize(d - W0 * (0.5 * age / R_EARTH_W));
-        vec3  dc  = normalize(d - wfWind(dm, 3000.0, pc.evo0) * (age / R_EARTH_W));
-        float k   = pc.evo1.x + floor(fc) + 0.5 * float(c);
-        vec3  sd  = fract(sin(vec3(k * 12.9898, k * 78.233, k * 37.719)) * 43758.5453) * 97.0;
-        float vv;
-        n    += w * wxFbm(dc, minL, maxL, sd, vv);
-        wsum += w * w;
-        varOut = vv;
+    float fT0 = pc.wx.x / pc.evo1.z + st;
+    float wA, wB;
+    vec3  pA = wxPhase(d, W0, 0, 1.0, fT0, 0, wA);
+    vec3  pB = wxPhase(d, W0, 0, 1.0, fT0, 1, wB);
+    vec3  warp = 0.35 * (wA * vec3(wxNoise(pA * 0.7 + 3.1), wxNoise(pA * 0.7 + 7.9), wxNoise(pA * 0.7 + 12.4))
+                       + wB * vec3(wxNoise(pB * 0.7 + 3.1), wxNoise(pB * 0.7 + 7.9), wxNoise(pB * 0.7 + 12.4)));
+    float n = 0.0, a = 1.0, L = kWxL0, v = 0.0, fq = 1.0;
+    for (int o = 0; o < 9; ++o) {
+        if (L < minL) v += a * a;
+        else if (L <= maxL) {
+            float nW = float(1 << min(o, 5));
+            float fT = pc.wx.x / pc.evo1.z * nW + st + 0.618034 * float(o);
+            if (o > 0) {
+                pA = wxPhase(d, W0, o, nW, fT, 0, wA);
+                pB = wxPhase(d, W0, o, nW, fT, 1, wB);
+            }
+            n += a * (wA * wxNoise(pA * fq + warp * fq) + wB * wxNoise(pB * fq + warp * fq));
+        }
+        a *= kWxGain; L *= 0.4926; fq *= 2.03;
     }
-    return n / sqrt(max(wsum, 1e-4));
+    varOut = v * 0.09 * 0.55 * 0.55;   // (gradient noise's variance ~0.09 a unit amplitude)
+    return n * 0.55;                   // (0.62 at gain 0.6: the same total variance)
 }
 // Expected value of clamp(x + N(0, s^2), 0, 1): the true mean coverage of a field whose finer octaves were left out.
 float wxPos(float z) { return z / (1.0 + exp(-1.702 * z)) + exp(-0.5 * z * z) * 0.3989; }
@@ -709,7 +716,8 @@ void main()
     if (fine) raw = (l1.r - pc.remap.y) / span + kWxContrast * kWxNoise * nz;   // level 1's field + the finer octaves
     else {
         raw = 0.5 + kWxContrast * (cl.raw + kWxNoise * nz) + stormAdd + 0.2 * aft;
-        if (pc.evo1.y > 0.0) raw += pc.evo1.y * evoGrowth(d);
+        // (evoGrowth, v1's growth and decay, is not added: its 1500-km waves swept the map at ~40 m/s and decorrelated the
+        // large scales in hours; the moisture flow map's windows are the evolution now, GMGSI benchmark 2026-11-06)
         raw = max(raw, gCycDeck);
     }
     float cov = clamp(raw, 0.0, 1.0);

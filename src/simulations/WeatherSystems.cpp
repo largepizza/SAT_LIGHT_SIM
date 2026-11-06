@@ -110,12 +110,24 @@ void SystemCatalog::systemsAt(double t, double /*decl*/, const SystemSettings &s
                 SystemState st;
                 st.id = id;
                 st.kind = SystemKind::Extratropical;
-                st.centre = glm::normalize(tr.pos[k] * (1.0 - w) + tr.pos[k + 1] * w);
-                glm::dvec3 mv = tr.pos[k + 1] - tr.pos[k];
+                // Position: a cubic Hermite through the knots (the velocity continuous: no kink every step). Heading: the
+                // track's direction over +-3 h about each knot, interpolated: the per-step chord turned the comma, and
+                // its 3000-km cold front, by a degree or two at once every 30 min ("lines move in fixed steps").
+                const int last = (int)tr.pos.size() - 1;
+                auto knotTan = [&](int i, int span) {
+                    const int i0 = std::max(i - span, 0), i1 = std::min(i + span, last);
+                    return (tr.pos[i1] - tr.pos[i0]) / (double)std::max(i1 - i0, 1);
+                };
+                const glm::dvec3 m0 = knotTan(k, 1), m1 = knotTan(k + 1, 1);
+                const double w2 = w * w, w3 = w2 * w;
+                st.centre = glm::normalize(tr.pos[k] * (2 * w3 - 3 * w2 + 1) + m0 * (w3 - 2 * w2 + w) +
+                                           tr.pos[k + 1] * (-2 * w3 + 3 * w2) + m1 * (w3 - w2));
+                const glm::dvec3 vel = m0 * (1.0 - w) + m1 * w;   // per step
+                glm::dvec3 mv = knotTan(k, 6) * (1.0 - w) + knotTan(k + 1, 6) * w;
                 mv -= st.centre * glm::dot(mv, st.centre);
                 const double ml = glm::length(mv);
                 st.heading = ml > 1e-12 ? mv / ml : glm::normalize(glm::dvec3(-st.centre.y, st.centre.x, 0.0) + glm::dvec3(1e-9, 0, 0));
-                st.speedMps = ml * kR / kTrackStepS;
+                st.speedMps = glm::length(vel - st.centre * glm::dot(vel, st.centre)) * kR / kTrackStepS;
                 st.hemi = tr.hemi;
                 st.radiusM = tr.radiusM * std::max(s.sizeScale, 0.1);
                 st.age01 = std::clamp((t - tr.birthT) / tr.lifeS, 0.0, 1.0);

@@ -201,7 +201,7 @@ void main()
         float tauU = 0.0, mB = 4500.0, mT = 800.0;
         {
             float gl  = cv2Ground(p.dirE) * 0.8;
-            vec3  sPd = p.seaProjE - cv2NoiseDispAt(p.dirE, kWfMidH);   // (the upper layers' moving frame)
+            vec3  sPd = p.seaProjE - cv2NoiseDispAt(p.dirE, kWfLowH);   // (one steering wind for every layer, as the march)
             vec4  clm = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + sPd * cv2.anchorCluster.w,
                                    cv2Lod(fp, cv2.anchorCluster.w));
             float cr  = clamp(0.5 + (clm.r - 0.5) * 4.4, 0.0, 1.0);

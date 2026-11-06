@@ -265,6 +265,7 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // window (s), y the window (s), z the phases' blend (fraction each side of a reset), w sim seconds since last frame
     vec4  wind0;
     vec4  wind1;
+    vec4  wind2;   // x the cirrus fibres' eastward slide (m/s at the equator; cv2HighSigma's high.z), for the resolve
 } cv2;
 #include "wind_field.glsl"
 
@@ -370,6 +371,16 @@ vec3 cv2NoiseDispAt(vec3 dirE, float hSteer)
     float k   = floor(cv2.wind1.z) + floor(pA ? fT : fT + 0.5) + (pA ? 0.0 : 0.5);
     vec3  j   = fract(sin(vec3(k * 12.9898, k * 78.233, k * 37.719)) * 43758.5453) - 0.5;
     return wfWind(dirE, hSteer, cv2.wind0) * age + j * 4.0e5;
+}
+// Whether the flow map is cross-fading at dirE (within pad of a window's blend): there a ray may read either phase, so
+// anything that stands in for the march's reads (the clipmap's occupancy) must hold both.
+bool cv2NoiseBlending(vec3 dirE, float pad)
+{
+    float P = cv2.wind1.y;
+    if (P <= 0.0) return false;
+    float f = fract(cv2.wind1.x / P + cv2WindStagger(dirE));
+    float b = fract(cv2.wind1.z) + pad;
+    return f < b || f > 1.0 - b;
 }
 // A noise-read offset (eye-relative ECEF m) in the moving frame: cv2Field / cv2FarColumn shift q's rSeaE and seaProjE
 // by the displacement on entry, so this is the identity (the name marks a read that rides the wind).
