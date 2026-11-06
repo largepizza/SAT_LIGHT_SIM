@@ -20,6 +20,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   mesoscale fields on the sea-level sphere x 3D shape noise x detail erosion; 5 cloud types
   (`cv2Types`, SatelliteSim.h). Metric coordinates anchored at the observer's sea-level point (CPU
   double), like terrain detail — never an absolute ECEF position in float.
+- **Weather v2 (2026-11-06): there is no drift** (`cv2Drift` is the identity, `kWeatherV2NoDrift`); the map frame is
+  Earth-fixed and the clouds move with the wind (weather.md "Weather v2"). The note below is history.
 - **The map drifts** (~16 deg of longitude per 12 h), and every consumer reads ONE phase:
   `SatelliteSim::cloudDriftPhase()` = rate x (t - 2036-06-21) + `cloudDriftPhaseOffset` (session state;
   the default keeps the default rate's map exactly where rate x (t - J2000) put it). It used to be rate x
@@ -377,6 +379,9 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   (`cv2FlowWeatherDirAt`). **Beam cloud light**: only beams landing within ~1 footprint of their site (the
   line's perpendicular miss) feed its light, fading out as they leave; slewing beams get none (a departing
   mirror dragged the site's light out, then it snapped back).
+- **Weather v2 (2026-11-06): the flow no longer moves the map READ.** `cv2FlowWeatherDir` is the identity and the
+  bake bends only the background through the same waves (`wxFlowDisp`): read through the flow, the map sat ~100 km from
+  the convection cube (weather.md "Weather v2", ONE FRAME). The cluster field still moves with flowD.
 - **Pass 13 (2026-09-28):** **The flow is ANALYTIC** (`cv2FlowDisp`: the curl of eight smooth waves on the
   drifted sphere, float, divergence-free; `anchorFlow` = x its slow evolution phase, w 1/period). It was the
   RGBA8 mesoscale volume's Perlin channel at a coarse mip, and hardware filtering has 8-bit sub-texel weights:
@@ -1430,6 +1435,9 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   ~60% of that frame (thin margins over rain fill in, the gap shrinks). Motion (tstab walk / pitch at that view): 4.43 /
   1.81 -> 3.97 / 1.50 (floor 1.43). Cost within the A-A spread (contended GPU, 3 reps): from the ground under the rain
   28.1 / 29.5 (A, A) vs 28.4 ms, the reporter's view 30.9 / 29.9 vs 29.7. 128 registers.
+- **Weather v2 (2026-11-06):** the storm geometry below is now fed by the convection cube (cells as analytic distance
+  fields, the anvil integral, cyclones' CDO), not towers and shields: weather.md "Weather v2". Its margin / material
+  hand-off to cv2FieldLow is unchanged; the tower / shield walks it describes are deleted.
 - **Storms through the cumulus field (2026-11-04, issue 20261104_111947 "Anvil performance"; `clouds_v2.storm_unified` 1,
   no UI, `storm_unified_scale_m` 4000 / `_ramp_m` 250 / `_lobes` 1; worktree storm-rework, `harness_runs/att/` and `look/`;
   design + tables: `qa/waves/20261104/resolutions/storm-rework.md`).** A storm object's towers and anvil shield are a

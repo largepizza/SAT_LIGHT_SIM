@@ -5,7 +5,7 @@
 The biggest update yet. The constellations now have a life cycle: rockets launch them, trains of new satellites
 climb to their slots, crews and cargo fly to the stations, old satellites re-enter, and from the late 2010s to
 2036 the sky fills up launch by launch. A scripted solar superstorm in July 2037 can set off a Kessler cascade.
-Around them: a new weather system with storms, hurricanes, tornadoes, haboobs and wildfires; a night sky with the
+Around them: a new weather system with storms, hurricanes, tornadoes and wildfires; a night sky with the
 real stars, resolved planets, comets, meteor showers and a supernova; a living Earth from the ground to orbit;
 satellites you can fly up to and inspect as real 3D models; and a sim clock that runs on real UTC. Accepted photometric error is listed in
 `data/benchmarks/KNOWN_RESIDUALS.md`; the full reference is the project wiki (`wiki/`).
@@ -219,11 +219,19 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   sea, wind that drives the rain and the ambience, and a storm surge that floods low coasts.
 - **Tornadoes and waterspouts** under supercells and strong storms at sea, hanging from the storm's real base,
   spinning, with a wall cloud, debris cloud and roar.
-- **Haboobs.** A storm's gust front over dry land raises a towering wall of dust, drawn as beige billowing cloud.
+- **One wind moves all the weather.** The clouds no longer slide across the globe as one map: a single wind field
+  (trade winds, westerlies, meandering jet-stream waves) carries the cloud texture and the weather systems, and cloud
+  fields evolve at real rates (small ones in about an hour, continent-sized ones over a day, benchmarked on hourly
+  satellite imagery). Cloud motion is smooth at every time-warp speed and the image stays sharp while it moves.
+- **Storms grow out of the clouds around them.** A thunderstorm is the cumulus field pushed up into a column that
+  fans out under the tropopause into an anvil, which streams downwind, outlives the storm and frays into cirrus.
+  Squall lines are rows of towers with a long shield trailing behind and a low shelf cloud along the gust front ahead;
+  on the radar, a line of red cores leads the steady rain. A hurricane's dense overcast, eyewall and bands are made
+  the same way, around an eye that is clear down to the sea. The radar, the lightning and the clouds you see agree.
 - **Wildfires.** Fires start by biome, season and dryness and spread with a coherent wind: a ragged flaming front
   with embers, smoke that follows real trajectories into a regional pall, burn scars, and their glow at night.
 - **The Weather window** (the cloud button, or N): featured events (the next tornado, the strongest hurricane, a
-  haboob, a supercell, a squall line, a waterspout, the biggest wildfire), storms near you, a local precipitation
+  supercell, a squall line, a waterspout, the biggest wildfire), storms near you, a local precipitation
   radar with a loop, and the named storms with track maps and milestones. One **Watch** button per event lands on
   it as it happens.
 

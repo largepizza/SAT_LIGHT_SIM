@@ -1,10 +1,78 @@
 # Weather objects, lightning, weather evolution
 
-Storm objects (towers, shields, squall lines, MCSs, cyclones, tornadoes, surge), biome map + wildfires, haboobs, the Weather window, lightning + thunder, weather-cube evolution.
+Weather v2 (one wind, the synthesised map, the convection cube, lines + shelf clouds, cyclones), the storm catalog (kinds, lifecycles, cyclone seasons, tornadoes, surge), biome map + wildfires, the Weather window, lightning + thunder, weather-cube evolution.
 
 Part of the subsystem notes (`docs/subsystems/`, map in `AGENTS.md` §4). Moved verbatim from
 `CLAUDE.md` on 2026-11-03. Do not read this file whole: `python tools/outline.py docs/subsystems/weather.md`
 lists its sections and topics with line numbers. New notes go next to the section they belong to.
+
+## Weather v2: one wind, a synthesised map, storms from a convection cube (2026-11-06, branch `weather-v2`)
+
+The authoritative description of how weather is drawn. The sections below it describe the storm CATALOG (still the
+source of every storm and cyclone: `wx::Catalog`, kinds, lifecycles, seasons) and, where they describe how storms were
+DRAWN (towers, shields, stamps, the env index, the map's drift, the CDO swirl, haboobs), history: that code is deleted.
+Plan and progress log: `.plans/WEATHER_V2_PLAN.md` (untracked).
+
+- **One wind, no drift.** `wind_field.glsl` / `WindField.cpp` give an analytic wind (zonal climatology + Rossby waves
+  + mesoscale curl). There is no global map drift (`kWeatherV2NoDrift`; `updateStorms` zeroes `cloudDriftRate` and the
+  phase offset): the map frame IS the Earth-fixed frame. With the drift left in, storms landed hundreds of km from their
+  cells. The noise volumes ride the wind through a two-phase flow map (`cv2NoiseDisp`, `wind1`); the resolve's
+  reprojection uses the same wind (`wind2`), so the sky TAA follows the clouds.
+- **The map is synthesised** (`cloud_v2_weather.comp`): climatology (`wxClimate`: ITCZ, dry subtropics, storm tracks,
+  cold-sea decks) + the systems (`wxSystems`, `wxCyclones`) + moisture fBm advected per octave through flow-map windows
+  (`wxPhase` / `wxMoistureNoise`: the 1200-km octave's window `wxMacroWindowH` 60 h, halving per octave, >= 1/32;
+  gain `kWxGain` 0.7). Benchmarked on NOAA GMGSI hourly IR (2025-09-15): a real cloud field's lifetime is ~linear in its
+  size (~1 h at 64 km, 4.5 h at 512 km, ~1 day at 2000 km); v1's 1500-km growth waves decorrelated the large scales in
+  hours, and are not added.
+- **ONE FRAME (invariant).** Every reader of the weather cube (low / mid / high layers, the far field, the clipmap,
+  the radar, the lightning's region test, the eye's rain) goes through `cv2FlowWeatherDir`, the identity. The flow
+  warp that bends systems into curved bands (`cv2FlowDisp`, `cv2FlowWarp` 0.018 x `cv2FlowPeriodKm` 6000 = ~108 km rms)
+  is applied in the bake to the BACKGROUND only (`wxFlowDisp`, the bake's push constant `storm`). Read through it in the
+  march (v1), the whole map sat ~100 km from the convection cube: a storm's cumulus and trailing stratiform stood apart
+  from its columns ("two blobs" from above), a hurricane's CDO off its eye, the radar off the towers. The cluster field
+  (texture) still moves with flowD.
+- **Convection cube** (weather image layers 6-11, binding 6 of the bake; the march's `cv2ConvTex`). Level 0 (5 km)
+  holds the CELLS only: x intensity, y the column top's share of the way to the lid, z / w the cells' columns as
+  ANALYTIC distance fields (z = 0.5 + dIn / 40 km, dIn = the distance inside the radius where the cell alone passes the
+  march's 0.35 contour, rc = sigma sqrt(ln(str / 0.35)); w = the round head's drop below its top / 10 km). Levels >= 1:
+  x / y, z the ANVIL integral, w the MID outflow. Inputs (`updateConvection`, SatelliteSimWeatherSystems.cpp): `CV2Cell`
+  (48 B: axis + sigma = 0.35 Rc, strength, top, seed bits, role; c = a line cell's forward + gust-front lead) and
+  `CV2Anvil` (64 B: source, downwind, lid age / feed / linger / upper wind, a line's half-length + axis), binned on a
+  2-degree grid. Tropical cyclones' towers are not cells (the bake's `wxCyclones` owns them).
+- **The anvil** is an integral over the time since the source reached the lid: 8 quadratic taps (dense on the young
+  outflow at the tops), each a disc of radius r0 + 7 m/s x s (2 h max), centred a further 0.4 of its spread downwind,
+  anisotropic (1, 1.25), thinned x r0 / r, decaying over the linger; modulated by two octaves of noise (`kN` clamped
+  0.5-1.6: wider split a lone anvil in two). The mid outflow: 0.4 x the wind, 2 m/s spread, 1.5 x the life, also
+  shifted downwind by 0.85 of its spread (spread evenly it reached ~35 km ahead of a line). A line system's sources go
+  REARWARD of its motion (dw = -vel, U >= 10 m/s), fed from 0.7 of its bow forward.
+- **Drawn through the cumulus field** (`clouds_v2.glsl` `cv2StormGeom` -> `cv2FieldLow`): the cores are read at level 0
+  through a 4-tap tent (`cv2ConvSmooth`), the column margin is a DISTANCE (else the cumulus lobes flatten: "snow
+  mountain"), the cell's top does not fall off toward its edge (cones), a round head cap + overshoot, the head flares
+  toward the lid; the plate is a lens from z under the lid whose underside slopes into the full column (the Cb fans out
+  near the top: fanK over 0.8-3 core sigma, 0.35 of the column height). The map's own type caps at congestus (0.62):
+  cumulonimbus is the storms'. Storm billows are a fixed 1.5 km; turrets on the tower, 0.25 bubbles on the plate.
+  Billow rise: the storm-scale lobe volume scrolls up at 1.5 x the wind (`stormAnchorF`, along a lattice vector: seamless).
+- **Squall lines**: ~12 cells on a bowed line; the shield trails rearward; level-0 core rain draws the radar's line of
+  cores ahead of the stratiform. **Shelf cloud**: each line cell carries its forward and its gust front's lead (3 + 7
+  sqrt(maturity) km past its column); the bake makes the band overcast, typed as a wedge (0.08 at the front, a flat
+  deck, to 0.5 at the towers), rain-free, the air ahead cleared (up to 25 km), never over a core (a bow's flank cells'
+  shelves otherwise reached over the middle cells and flattened them). Coarse levels hold it as its share of the texel.
+- **Tropical cyclones** (`wxCyclones` in the bake, `cv2CycEye` in the march): eyewall ring, log-spiral bands (congestus,
+  below the column threshold), the CDO as the convection cube's mass over a disc (C 0.92, top 0.3 + 0.67 x a taper over
+  0.25-1.1 cdoR), no plate; outflow cirrus under the threshold; their own rain (`gTcRain`, owning `gTcOwn`). The eye is a
+  stadium that clears EVERY layer (called before any early-out); inside the CDO the cumulus margin gives way and the
+  smoothing is >= 0.97 (less left cauliflower); CDO swells are smooth 80-m (sharp ridges acted as fins: grey streaks at
+  grazing angles). Catalog seasons keep cyclones >= 1200 km apart (a later one forms 4 days on, up to 8 times).
+- **Haboobs are retired** (2026-11-06, the user: they never looked right and their spawning caused issues). The regional
+  dust haze (Biome dust) is a separate system and stays.
+- **Lab**: harness `storms test lat= lon= [age_min] [life_min] [str] [kind=line] [az]` injects one stationary supercell
+  or line into the upload (re-bakes every face, time may stay paused; give the bake ~200 frames). Clear air: Sahara
+  23 N 10 E at 15:00 UTC (the site has an afternoon dust haze at ~1.5 km: normal). Judge from above (el=-89, not -90:
+  the camera's roll is undefined straight down), from the ground ahead and from the side.
+- **Cost**: the march at 242-246 registers (forcing 128 with wg 16x32 spills and is slower: cumulus 6.2 -> 7.2, storm
+  7.2 -> 10.1, orbit 7.7 -> 11.7 ms); cloud pass ~15.5 ms over a hurricane from 420 km.
+- **Open**: a backlit storm from the ground reads pale (bright puffs, not a dark mass with a silver rim); a CDO has a hard
+  circular rim from orbit and is a smooth bright dome (no overshooting clusters); a per-core billow rise rate.
 
 ## Storm objects, wildfires, haboobs and the Weather window (from "Subsystem: Clouds v2")
 
@@ -610,77 +678,10 @@ lists its sections and topics with line numbers. New notes go next to the sectio
     list in the Weather window, fire ambience, fires in a snowy boreal November (the dryness curve leaves ~6% of the
     summer rate at 60 N in late November: the issue's Siberian fires), the smoke's shape by day (a column that bends over
     into a flat layer within a few km; no towering convective column).
-- **Haboobs (2026-10-23, reworked 2026-10-24 as CLOUD; `SatelliteSimHaboob.cpp`, `clouds_v2.glsl` `cv2DustWallSigma`,
-  `cv2_storms.glsl` `cv2DustWallAt`).** A storm's gust front lifting dust: `haboobFrontOf` makes the front from the storm's
-  towers (map frame -> Earth-fixed by the drift phase): line systems along their line of towers, dG ahead (5 km + 14 km x
-  smoothstep(0.5 h, 3 h) of the storm's age), curving back round both ends; multicells / supercells a semicircle round the
-  dominant tower. **"Ahead" is the storm's motion OVER THE GROUND** (its map-frame motion plus the map's drift): ahead of the
-  map-frame motion alone, a storm moving against the drift ran its wall AWAY from a viewer put "ahead" of it (~15 m/s in
-  the Gobi tests). Where the biome map's DUST x the front's strength x "Haboobs (x)" (`clouds_v2.haboobs` 1) passes 0.08:
-  - **The wall is cloud in the clouds v2 field** (the user: "I really just want the cumulus clouds but beige"). Each frame
-    `weatherFillDustGrid` (after `updateStorms`) rasterises the fronts into a 512 x 512 grid in the storm buffer
-    (`kDustHeadOffset`, between the cyclones and the envelope index; cells 400 m near the ground, + 0.6% of the eye's
-    altitude, to 6 km), on the tangent plane at the observer's sea-level point: per cell the wall's strength e (bits 0-15;
-    nothing 1.5 km ahead of the front, full 1 km behind it, the pall behind at half, gone 26 km back; x a smooth noise of
-    the distance along the front, 3.5-km knots: a row of HEADS of different sizes, not a slab), its top (bits 16-27, 2 m
-    units: 0.9-2.9 km x the heads' noise, 0.4 of it over the pall) and the CLEAR AIR ahead (28-31: from 2.5 km behind the
-    foot to ~12 km ahead). Each front point stamps a strip (+-1.2 of its spacing, max-combined), in 16 row bands on worker
-    threads; rebuilt when sim time moves 2 s or the eye a quarter cell (the grid's offset from the eye is passed, so a
-    stale grid stays in place). `cv2DustWallSigma` is the low layer's 3D margin, m = e + 1.6 lobes - g(z): g least at the
-    NOSE (0.35 of the top: the head runs ahead of its foot), the lobes the cumulus shape volume at a 4-km period read at an
-    anchor that MOVES WITH THE WALL (the nearest wall's motion over the ground, integrated, + a 2 m/s rise: the billows
-    churn up the face); 0.016 /m at the core (visibility ~200 m: from inside, a brown-out). The march lights it as cloud
-    (light march, the Sun transmittance volume: the anvil shades it), and tints it: its share of a sample rides as a
-    NEGATIVE `CV2Field.soft` (a member more risks the register cliff; every `soft` reader takes max(soft, 0)), and the
-    sample's light x `kCv2DustTint` (0.95, 0.70, 0.45), the sky light x its square (scattered many times in a thick wall).
-    In the clear air ahead the low cloud and rain go (x (1 - smoothstep(0, 0.8, z)): OUTRIGHT where it is clear; x 0.05 left
-    a thin milky veil over the whole view that every ray marched and lit, 7 ms of cloud march at the haboob Watch with the
-    user's settings, perf pass 4): the line's shelf band is stamped 1-22 km ahead of its towers whatever the outflow's lead,
-    and it and the weather map's rain hid the wall from every Go to. Debug view 7's red includes the dust. **The march
-    without the haboob code** (perf pass 4): its presence alone, never run, cost the march 0.5-1.2 ms in every view, so the
-    march (and pass B) is built twice, specialization constant 3 `kCv2DustOn` (clouds_v2.glsl under `CV2_DUST_SPEC`), and
-    the host binds the dust-free pair while the grid's head holds no wall (`dustGpuOn`, weatherFillDustGrid). Other shaders
-    that call cv2Field keep the code (the lightning pass's variant measured nothing). Beyond the grid (from orbit) the plume Gaussians below still draw, faded in over its outer 15%.
-  - **The plume Gaussians** (the first cut, now the far field and `clouds_v2.haboob_field` false — "Haboobs as cloud",
-    Weather window > Controls): wall, head and pall Gaussians, 1.5-3 km tall, in the aerosol range of the dust list
-    (`aerosolFirst`, spectral extinction, no sky light given back), the Earth-fixed billow field (`isWall`). Up close they
-    read as 4-20 km flat slabs with an Earth-fixed noise the wall slid through at the storm's speed.
-  - **Measured** (RTX 3070 Ti, 1600x900, interleaved in one app): march 128 registers (binary 341 -> 351 KB). Medium, a
-    Mongolian MCS from the ground 9 km ahead: cloud march 9.3-9.6 ms; the wall's own cost (it drawn as nothing) 0.1-0.4;
-    without the clear air (the rain and shelf left in front of it) 5.2-5.4 — revealing the storm behind costs the other
-    ~4 ms. The Gobi card view: 12.1 vs 5.8 haboobs off (High, the rain-only first cut: 30.5 vs 19.4). CPU: the grid
-    1.3-1.9 ms a rebuild (every frame in time warp, every 2 s at 1x).
-  - Harness `haboob [aloft=1]` = the Weather window's Haboob card (its search on the scout catalog, then its Go to; the old
-    search on the MAIN catalog, kept for `kind=` / `k=`, evicted the renderer's bins and stood a fixed 28 km from the
-    storm's centre); `fires` -> `dust_grid` {on, walls, cells, cell_m, ms, nearest_wall_km (e > 0.3), e_max}. Scripts
-    `harness_runs/hb/` (untracked; `final.satcmd`). Not yet: the wall from orbit is still the Gaussians; the regional dust
-    haze (`cv2FogDust`) and the walls are separate; the Sun-lit test for a Go to knows the storm's anvil, not the weather
-    map's own overcast.
-  **Arcs that fade (2026-10-26, issue 20261026_192211: "when they are done, they just disappear ... pretty huge and
-  continuous, I'd expect just an arc front"):** `haboobFrontOf` weights each tower by its strength (smoothstep 0.03-0.4;
-  a hard 0.25 cut took the wall with it), scallops a line's front (furthest ahead at each tower, 0.55 of that between
-  two), leaves dusty only ~half of it (a 60 / 22-km value noise across the storm's motion, a storm-fixed coordinate) and
-  lets the outflow OUTLIVE its towers: the towers of 15 / 30 / 45 min ago (`towersAt`, carried with the storm) sustain
-  the current ones' strength, decaying to 0 over 45 min, and stand in alone when the storm has none left (a storm stays
-  a candidate while it lives: `stormOrganisedNow`). Mixing lagged towers in as extra sources made a zigzag front (tried).
-  **Lower walls, further ahead, the storm left whole (2026-10-26, issue 20261026_204749, 18.1 S 17.3 E: "hyper eroded,
-  cavities carved out", "giant chunk missing out of squall line", "does it span all the way up to the cloud base?").**
-  The cavities were the CLEAR AIR: it removed all low cloud below 1.35 x the tallest head (~5 km AGL with heads to
-  3.4 km) from 2.5 km behind the front to 12 km ahead, and with the front only 5-19 km (cells 3-10) ahead of the towers
-  that strip ran through the line's own storm cumulus (it reaches 31 km past a tower's edge): a 5-km tunnel under the
-  storm (shot 5; with `clouds_v2.haboobs 0` the cloud is there; debug view 7 shows it is the low layer). Now: walls
-  0.5-1.8 km a head (`m.H0` (700 + 500 k) x 0.75-1.25; the far-field Gaussians' H 0.7-1.9 km) — a real haboob is ~1-2 km,
-  rarely ~3, under a dry-desert Cb base 2.5-4 km up — so the clear air is a BASE LIFT to ~3 km AGL (its edge lumps
-  1200 m x the coarse lobes, was 2400), and it reaches back over the pall to 8 km behind the front (the wall's top was
-  inside cloud there); the front leads a line by 8 + 22 km x the age ramp (~30 km mature, in the line's subsidence
-  ahead of the shelf band) and a cell by 4 + 11 km. Harness `haboob aloft=1` stands 2 km up (2.5 was now inside the
-  cloud above the walls). **The clipmap is rebuilt when the dust field changes** (`cv2CdcDustKeyUsed`: dust on / off,
-  gain, form): cells baked empty under the clear air kept skipping the cloud after the march swapped to the dust-free
-  specialisation, never expiring with time paused (rectangles of missing cloud, popping in as cells expired — the
-  likely "lighting snaps near haboobs" of 20261026_191842, whose trail did not show a snap on or off afterwards). The
-  shot-6 "eroded top layer" is the ANVIL shields (`clouds_v2.anvil 0` removes it; storm erosion, the mid and high
-  layers do not), and its pop-in after a turn is the resolve converging that thin, frayed ice: Sun volume, clipmap,
-  S2 light and the faint-sample skip off each leave the convergence unchanged (harness_runs/hb26, untracked).
+- **Haboobs (2026-10-23 - 2026-11-06, history).** Dust walls on storms' gust fronts over the biome map's dust, first
+  as plume Gaussians, then (2026-10-24) as cloud in the march (a dust grid in `stormBuf`, the march's dust
+  specialization). Retired with Weather v2: they never looked right and their spawning caused issues. A line's gust
+  front now lifts a shelf cloud instead (Weather v2 above).
 - **The Weather window (2026-10-23, `SatelliteSimWeatherWindow.cpp`, `shaders/weather_radar.comp`; the weather-cloud
   button beside Missions on the right HUD panel (`TimeWeatherBtn`, `pixel--weather.png` from `tools/make_icons.py`), key N
   `KB_WEATHER`, window id 12, `wxChrome`; harness `ui open weather [tab=radar|storms|controls]`, `weather ...`).** Missions-
@@ -840,6 +841,8 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   lightning draw. It REPLACED (2026-09-29 .. 10-04) `lightningCS` / `spriteCS` in cloud_march.comp: a 14-vertex channel
   with fixed branches and the glow, per pixel inside the half-res composite (smeared by the sky TAA, a 3-m minimum
   width = pudgy), and only dominant towers flashed (a map-typed storm without anvil towers had none: user snapshot 43).
+- **Weather v2 (2026-11-06):** the map's evolution is the bake's per-octave flow-map windows ("Weather v2" above); the
+  re-bake schedule below still applies, v1's growth / decay waves (`evoGrowth`) are not added.
 - **Weather evolution (2026-09-29, decision A):** the weather cube is re-baked as sim time moves
   (`SatelliteSim::recordWeatherEvolution`, one face per frame with all its mips, once it lags by ~300 m of
   wind drift or the settings change; the bake's pipeline and per-mip sets are kept, `cv2Wx*`). **In time warp all six
