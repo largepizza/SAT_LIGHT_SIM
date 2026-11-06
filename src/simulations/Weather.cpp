@@ -1479,6 +1479,33 @@ void Catalog::Impl::buildSeason(int basin, int year, std::vector<Cyclone> &out) 
         out.push_back(std::move(C));
     }
     std::sort(out.begin(), out.end(), [](const Cyclone &a, const Cyclone &b) { return a.t0 < b.t0; });
+    // Separation (Weather v2, 2026-11-06): independent draws put two storms within ~100 km of each other (Lane and Kristy,
+    // Cat 5 and Cat 3, sharing one overcast with two eyes). Real cyclones keep ~1000+ km apart (closer they merge or
+    // orbit). A storm whose track comes within 1200 km of an earlier one while both are alive forms 4 days later (its
+    // track is unchanged), up to 8 times; past that it is dropped. Deterministic: the order of genesis decides.
+    {
+        auto conflicts = [](const Cyclone &A, const Cyclone &B) {
+            const double t0 = std::max(A.t0, B.t0), t1 = std::min(A.t0 + (double)A.life, B.t0 + (double)B.life);
+            const double cosMin = std::cos(1.2e6 / kREarthM);
+            for (double t = t0; t <= t1; t += 6.0 * 3600.0)
+                if (glm::dot(A.earthAt(t), B.earthAt(t)) > cosMin) return true;
+            return false;
+        };
+        std::vector<Cyclone> kept;
+        kept.reserve(out.size());
+        for (Cyclone &C : out) {
+            bool ok = false;
+            for (int tries = 0; tries <= 8 && !ok; ++tries) {
+                ok = true;
+                for (const Cyclone &K : kept)
+                    if (conflicts(K, C)) { ok = false; break; }
+                if (!ok) { C.t0 += 4.0 * kDay; C.tPeak += 4.0 * kDay; }
+            }
+            if (ok) kept.push_back(std::move(C));
+        }
+        out = std::move(kept);
+        std::sort(out.begin(), out.end(), [](const Cyclone &a, const Cyclone &b) { return a.t0 < b.t0; });
+    }
     // Names in order of genesis among those that reached tropical-storm strength.
     const char *const *names = nullptr;
     size_t nn = 0;

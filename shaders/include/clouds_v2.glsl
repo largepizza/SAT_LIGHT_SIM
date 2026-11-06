@@ -1467,12 +1467,18 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         // storm-scale lobes x 2.5 plus the fine ones on their crowns), x (1 + x) with the cumulus bubbles, + their own reach
         // (cv2LowA's bound). The cumulus' lobe formula, 3.35 lobeS, kept every point within ~6 km of a storm's surface
         // fetching: coarse view reads x1.8 looking down on an anvil plate.)
-        float bubS = 0.0;
+        // BUBBLES and TURRETS on the storm too (Weather v2, 2026-11-06, the user: the anvil "looks like a gumdrop rather than a
+        // billow"): the tower's heads are the same stacked thermal bubbles and turrets as a cumulus; the plate keeps a quarter
+        // of the bubbles and no turrets (with 60% / 70% it read as a raised cumulus deck, cotton balls). Both
+        // were zeroed on the plate and the turrets on the whole storm: a smooth lens over a lumpy column.
+        float bubS = 0.0, turS = 0.0;
 #ifndef SKY_LITE
-        bubS = fpS * (1.0 - sg.deck) * (1.0 - sg.deck);
+        bubS = fpS * mix(1.0, 0.25, sg.deck);
+        turS = cv2.cu3.x * fpS * (1.0 - sg.deck);
 #endif
-        c.lobeB   = mix(c.lobeB, lobeS * 1.4 * (1.0 + cv2.cu5.x * bubS) + cv2.cu5.x * bubS * 2.0 * cv2.cu5.y * (0.6 + 0.45 * cv2.cu5.z), wS);
-        c.tur    *= 1.0 - wS;
+        c.lobeB   = mix(c.lobeB, lobeS * 1.4 * (1.0 + cv2.cu5.x * bubS) + cv2.cu5.x * bubS * 2.0 * cv2.cu5.y * (0.6 + 0.45 * cv2.cu5.z)
+                                 + turS * 2.7 * (1.0 + 1.5 * cv2.cu3.w), wS);
+        c.tur     = mix(c.tur, turS, wS);
         c.bub     = mix(c.bub, bubS, wS);
         c.thk     = mix(c.thk, 4000.0, wS);
 #ifndef SKY_LITE
@@ -1485,6 +1491,8 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
             c.erK    *= 1.0 - 0.94 * smK;
             c.billow *= 1.0 - min(smK * 1.18, 1.0);
             c.lobeB  *= 1.0 - smK;
+            c.bub    *= 1.0 - smK;
+            c.tur    *= 1.0 - smK;
         }
 #endif
         f.hf       = mix(f.hf, sg.hf, wS);
@@ -2490,7 +2498,14 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
         gCv2PlateA  = a;
         float aK    = smoothstep(0.3, 1.0, a);
         topS        = lid + 400.0 * smoothstep(0.4, 0.9, C) * full;
-        float thick = 200.0 + cv2.anvil2.x * pow(aK, 0.7) + cv2.anvil2.y * g.near;
+        // The FAN (the user: a cumulonimbus fans out near its top): round a full-height column the plate's underside slopes
+        // down into it, from the column's edge out ~2.2 core radii, by up to 0.35 of the column's height, so the tower
+        // spreads into its anvil (incus) instead of carrying a saucer on a stalk. dCore: the distance from the core's centre
+        // (sigma sqrt(-ln C), 0.35 Rb; C reads ~0 past ~3 sigma).
+        float sgC   = 0.35 * Rb;
+        float dCore = sgC * sqrt(-log(max(C, 1e-4)));
+        float fanK  = full * (1.0 - smoothstep(0.8 * sgC, 3.0 * sgC, dCore));
+        float thick = 200.0 + cv2.anvil2.x * pow(aK, 0.7) + cv2.anvil2.y * g.near + 0.35 * (lid - base) * fanK * fanK;
         float mH    = (a - 0.3) * 15000.0;
         float mV    = min(q.h - (topS - thick), topS - q.h);
         mSh   = -cv2SMax(-mH, -mV, 300.0);
