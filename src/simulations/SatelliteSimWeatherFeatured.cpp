@@ -279,7 +279,7 @@ void SatelliteSim::weatherScanStep(WxScanState &S) const
                 const double tEv = std::max(tk, S.now);
                 HaboobPoint hq;
                 double hk = 0.0;
-                if (on >= 6 && sum / 9.0 >= 0.4 && inland && (!Fh.found || rank > Fh.rank) &&
+                if (!kHaboobsRetired && on >= 6 && sum / 9.0 >= 0.4 && inland && (!Fh.found || rank > Fh.rank) &&
                     haboobStrongestPoint(*St, tEv, hq, hk, wxScout.get()))
                 {
                     Fh.found = true;
@@ -771,24 +771,27 @@ void SatelliteSim::buildWeatherFeatured(const UIInput &inp, UIRenderer &ui)
             const Btn hb = {tx(Txt::LblTheWholeStormFromOrbitIts), H.hasCyc};
             card(kFeatHurricane, kIconStormHurricane, tx(Txt::LblHurricane), Pal::progressFill, hs, h1, h2, hb);
 
-            const WxFeatured &B = wxFeat[kFeatHaboob];
-            const char *bs, *b1, *b2;
-            if (!B.found)
+            if (!kHaboobsRetired)   // (haboobs retired 2026-11-06: no card)
             {
-                bs = B.searching ? searching : tx(Txt::ValNoneInTheNext2Days);
-                b1 = B.searching ? wxStr(tx(Txt::FmtLookingHAhead), std::max(0.0, (wxScanBase + kStepS * wxScanStep - now) / 3600.0)) : "";
-                b2 = "";
+                const WxFeatured &B = wxFeat[kFeatHaboob];
+                const char *bs, *b1, *b2;
+                if (!B.found)
+                {
+                    bs = B.searching ? searching : tx(Txt::ValNoneInTheNext2Days);
+                    b1 = B.searching ? wxStr(tx(Txt::FmtLookingHAhead), std::max(0.0, (wxScanBase + kStepS * wxScanStep - now) / 3600.0)) : "";
+                    b2 = "";
+                }
+                else
+                {
+                    fmtIn(B.tEvent - now, w, sizeof(w));
+                    bs = B.tEvent <= now + 60.0 ? tx(Txt::ValADustWallNow) : wxStr(tx(Txt::FmtIn), w);
+                    b1 = where(B.earth);
+                    b2 = wxStr(tx(Txt::FmtGustFrontOver), B.storm.kind == wx::StormKind::Mcs ? tx(Txt::TxtStormComplex2) : tx(Txt::ValSquallLine),
+                               wx::biomeName(biomeMap.at(latOf(B.earth), lonOf(B.earth))));
+                }
+                const Btn bb = {tx(Txt::LblTheDustWallRollingTowardYou), B.found};
+                card(kFeatHaboob, kIconStormHaboob, tx(Txt::LblHaboob), Pal::tagTwilight, bs, b1, b2, bb);
             }
-            else
-            {
-                fmtIn(B.tEvent - now, w, sizeof(w));
-                bs = B.tEvent <= now + 60.0 ? tx(Txt::ValADustWallNow) : wxStr(tx(Txt::FmtIn), w);
-                b1 = where(B.earth);
-                b2 = wxStr(tx(Txt::FmtGustFrontOver), B.storm.kind == wx::StormKind::Mcs ? tx(Txt::TxtStormComplex2) : tx(Txt::ValSquallLine),
-                           wx::biomeName(biomeMap.at(latOf(B.earth), lonOf(B.earth))));
-            }
-            const Btn bb = {tx(Txt::LblTheDustWallRollingTowardYou), B.found};
-            card(kFeatHaboob, kIconStormHaboob, tx(Txt::LblHaboob), Pal::tagTwilight, bs, b1, b2, bb);
 
             for (int s : {(int)kFeatSupercell, (int)kFeatLine})
             {

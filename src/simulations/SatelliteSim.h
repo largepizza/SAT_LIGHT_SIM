@@ -20,6 +20,9 @@
 #include "SpaceWeather.h"  // aurora activity over sim time + the oval (2026-10-03)
 #include "Kessler.h"       // Kessler syndrome: breakups, the debris pool, the cascade (2026-10-16)
 #include "Weather.h"       // weather events: storm objects (2026-10-22, .plans/WEATHER_EVENTS_PLAN.md)
+// Haboobs retired (2026-11-06, Weather v2: the user, they never looked right and their spawning caused issues): no dust
+// walls, no haboob events. SatelliteSimHaboob.cpp's fills return nothing; the march binds its dust-free pipeline.
+inline constexpr bool kHaboobsRetired = true;     // Weather v2: the one wind (2026-11-06)
 #include "Wildfire.h"   // (and Biome.h)         // the land-cover map for the weather hazards (2026-10-23)
 #include "StormClimatology.h"
 #include "SegVec.h"        // kEvents: a segmented vector (no reallocation hitches, 2026-10-21)

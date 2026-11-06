@@ -5065,6 +5065,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             // ahead and 3 km up, else 9 km ahead on the ground.
             weatherFeaturedRestart((double)simDayJ2000 * 86400.0 + simSecInDay);
             weatherFeaturedFinish(20.0);
+            if (kHaboobsRetired) fail("haboob: haboobs were retired (Weather v2, 2026-11-06)");
             if (!wxFeat[kFeatHaboob].found) fail("haboob: none found in the search's window (48 h)");
             std::string msg;
             r["in_min"] = (wxFeat[kFeatHaboob].tEvent - ((double)simDayJ2000 * 86400.0 + simSecInDay)) / 60.0;

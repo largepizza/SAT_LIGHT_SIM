@@ -1411,11 +1411,6 @@ void main()
             }
 
             vec3  S     = keyS + ambS + bounceS + nightS;
-            // A haboob's dust (cv2DustWallSigma: its share of the sample as a negative soft): mineral dust absorbs in the
-            // blue, so the light it scatters, multiply scattered as in a cloud, comes out beige.
-            // (The sky light, scattered many times in a thick wall, takes the tint twice.)
-            float dK = max(-f.soft, 0.0);
-            if (kCv2DustOn != 0 && dK > 0.0) S = mix(S, (S - ambS) * kCv2DustTint + ambS * (kCv2DustTint * kCv2DustTint), dK);
             L += bW[bj] * S;
         }
         } while (nB >= kBatch);
