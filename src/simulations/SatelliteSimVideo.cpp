@@ -129,7 +129,9 @@ void SatelliteSim::videoFrameTick(float dt)
 bool SatelliteSim::wantsPreUiCopy() const
 {
     const bool photo = ctx_ && ctx_->photoActive;
-    return turbWarpActive_ || (!photo && ((video_.wantsCapture() && !video_.options().ui) || settleProbeWanted_));
+    // (And every frame the exposure meter runs: it meters the frame without the UI, issue_20261105_181849.)
+    const bool meter = ctx_ && ctx_->screenshotSupported && cv2AutoExposure > 0.0f;
+    return turbWarpActive_ || (!photo && ((video_.wantsCapture() && !video_.options().ui) || settleProbeWanted_ || meter));
 }
 
 void SatelliteSim::recordPreUiCopy(VkCommandBuffer cmd, VulkanContext &ctx, VkImage image)
@@ -153,6 +155,11 @@ void SatelliteSim::recordPreUiCopy(VkCommandBuffer cmd, VulkanContext &ctx, VkIm
         settleProbe_.record(cmd, ctx, image, ctx.swapExtent, ctx.swapFormat, 0);
     if (!photo)
         settleProbeWanted_ = false;
+    if (!photo && ctx.screenshotSupported && cv2AutoExposure > 0.0f)
+    {
+        recordExposureMeter(cmd, ctx, image);
+        meterTakenPreUi_ = true;
+    }
     // The UI is drawn next in the load variant of the main pass, whose initial layout is TRANSFER_DST_OPTIMAL.
     ctx.imageBarrier(cmd, image, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
                      VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,

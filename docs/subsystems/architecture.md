@@ -72,8 +72,10 @@ sim->recordDraw(cmd)     → sky/ground background (the mesh is a surface in it,
                            (satellite sprites + mesh glints) → trail composite
 ui.record(cmd)           → Clay → Vulkan quads/text/icons on top
 vkCmdEndRenderPass       → owned by App
-sim->recordScreenshotCopy() → the auto-exposure meter's 64x36 blit (every frame while auto exposure is on), + the UC6
-                           screenshot / bookmark-thumbnail copy when one is pending
+  (while auto exposure is on, App ends the pass after recordDraw: recordPreUiCopy takes the meter's 64x36 blit of the
+   frame WITHOUT the UI, then the UI draws in the load variant of the pass)
+sim->recordScreenshotCopy() → the UC6 screenshot / bookmark-thumbnail copy when one is pending (and the meter's blit on
+                           the HQ photo's frames, which draw no UI)
 ```
 
 ### Unified scene depth (Phase 4, 2026-09-23)

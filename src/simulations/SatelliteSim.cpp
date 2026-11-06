@@ -9049,6 +9049,46 @@ float SatelliteSim::cpuTerrainHeightM(float latDeg, float lonDeg) const
     return (pixVal <= kSeaLevel) ? 0.0f : std::max(0.0f, (pixVal - kSeaLevel) * 8848.0f);
 }
 
+// ─── The exposure meter's copy ───────────────────────────────────────────────
+// The frame's central 60% (most HUD panels sit outside it), blitted down to 64x36 into a linear RGBA8 image (the blit
+// decodes sRGB) and copied to the host; readExposureMeter() reads it after the next fence. `image` is in
+// TRANSFER_SRC_OPTIMAL with the frame's writes visible to transfers, and stays so.
+// Taken BEFORE the UI (recordPreUiCopy, every frame the meter runs; issue_20261105_181849): metered after it, an open
+// window in the middle of the screen (the Settings window: a dark panel over ~a third of the metered area) lowered the
+// mean, and the meter, which only darkens a bright day, darkened it ~0.5 EV less: with the Settings open the clouds
+// came out ~1.4x brighter than with it closed (-1.20 against -1.72 EV at the report's view), and they brightened
+// over ~1.6 s whenever the window opened.
+void SatelliteSim::recordExposureMeter(VkCommandBuffer cmd, VulkanContext &ctx, VkImage image)
+{
+    if (!meterImg)
+    {
+        ctx.createImage(kMeterW, kMeterH, VK_FORMAT_R8G8B8A8_UNORM,
+                        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, meterImg, meterImgMem);
+        ctx.slotted(&meterBuf, &meterBufMem, &meterMapped, (VkDeviceSize)kMeterW * kMeterH * 4,
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT, VulkanContext::kHostReadProps, "exposureMeter");
+    }
+    ctx.imageBarrier(cmd, meterImg, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+                     VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    const int32_t W = (int32_t)ctx.swapExtent.width, Hh = (int32_t)ctx.swapExtent.height;
+    VkImageBlit blit{};
+    blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    blit.srcOffsets[0] = {W / 5, Hh / 5, 0};
+    blit.srcOffsets[1] = {W - W / 5, Hh - Hh / 5, 1};
+    blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    blit.dstOffsets[1] = {(int32_t)kMeterW, (int32_t)kMeterH, 1};
+    vkCmdBlitImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, meterImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                   1, &blit, ctx.bestBlitFilter(ctx.swapFormat));
+    ctx.imageBarrier(cmd, meterImg, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                     VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    VkBufferImageCopy region{};
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {kMeterW, kMeterH, 1};
+    vkCmdCopyImageToBuffer(cmd, meterImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, meterBuf, 1, &region);
+    meterPendingS[ctx.frameSlot] = true;
+}
+
 // ─── recordScreenshotCopy ────────────────────────────────────────────────────
 // UC6. See Simulation.h for the calling convention: App calls this once per frame, right after
 // the render pass ends (image is back in PRESENT_SRC_KHR, holding the fully composited frame —
@@ -9087,45 +9127,19 @@ void SatelliteSim::recordScreenshotCopy(VkCommandBuffer cmd, VulkanContext &ctx,
     else
         finishStormEnvIndex();
     FPROF_SCOPE("recordScreenshotCopy");
-    // ── The exposure meter (every frame): the frame as displayed, its central 60% (most HUD panels
-    // sit outside it), blitted down to 64x36 into a linear RGBA8 image (the blit decodes sRGB) and
-    // copied to the host; readExposureMeter() reads it after the next fence. ──
-    if (ctx.screenshotSupported && cv2AutoExposure > 0.0f)
+    // ── The exposure meter (every frame): the frame as displayed WITHOUT the UI. Taken here (after the UI) only on a
+    // frame whose meter the pre-UI hook did not take (the HQ photo's, which draw no UI). ──
+    if (ctx.screenshotSupported && cv2AutoExposure > 0.0f && !meterTakenPreUi_)
     {
-        if (!meterImg)
-        {
-            ctx.createImage(kMeterW, kMeterH, VK_FORMAT_R8G8B8A8_UNORM,
-                            VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, meterImg, meterImgMem);
-            ctx.slotted(&meterBuf, &meterBufMem, &meterMapped, (VkDeviceSize)kMeterW * kMeterH * 4,
-                        VK_BUFFER_USAGE_TRANSFER_DST_BIT, VulkanContext::kHostReadProps, "exposureMeter");
-        }
         ctx.imageBarrier(cmd, image, VK_ACCESS_MEMORY_READ_BIT, VK_ACCESS_TRANSFER_READ_BIT,
                          VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                          VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-        ctx.imageBarrier(cmd, meterImg, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
-                         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                         VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-        const int32_t W = (int32_t)ctx.swapExtent.width, Hh = (int32_t)ctx.swapExtent.height;
-        VkImageBlit blit{};
-        blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        blit.srcOffsets[0] = {W / 5, Hh / 5, 0};
-        blit.srcOffsets[1] = {W - W / 5, Hh - Hh / 5, 1};
-        blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        blit.dstOffsets[1] = {(int32_t)kMeterW, (int32_t)kMeterH, 1};
-        vkCmdBlitImage(cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, meterImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                       1, &blit, ctx.bestBlitFilter(ctx.swapFormat));
+        recordExposureMeter(cmd, ctx, image);
         ctx.imageBarrier(cmd, image, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT,
                          VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                          VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
-        ctx.imageBarrier(cmd, meterImg, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
-                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
-        VkBufferImageCopy region{};
-        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        region.imageExtent = {kMeterW, kMeterH, 1};
-        vkCmdCopyImageToBuffer(cmd, meterImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, meterBuf, 1, &region);
-        meterPendingS[ctx.frameSlot] = true;
     }
+    meterTakenPreUi_ = false;
 
     videoPostUiCopy(cmd, ctx, image); // a video recording WITH the UI (SatelliteSimVideo.cpp)
 

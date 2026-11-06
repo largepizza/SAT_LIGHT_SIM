@@ -957,6 +957,16 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
       Walk grain 3.66 -> 2.16, 1 s after stopping > 16 levels 13.1% -> 0.4%, still view unchanged. Not changed: the
       shared `jL` itself (per-step `fract(jL + 0.618 k)`: std 23.8 -> 17.2 but the settled image ~18 levels darker,
       i.e. less Jensen bias — the user's call); the orbit flicker (small puffs, shot 4).
+    - **`jL`'s tile is read at a hashed offset per 64 x 64 pixel block (2026-11-06, issue_20261105_181702 "Darker shades
+      always noisy": rings and cells repeating at a fixed pixel period over shaded cloud).** A shaded sample's light hangs
+      on whether its light steps land in a lobe, so its value is nearly a threshold of `jL`, and the 64 x 64 blue-noise
+      tile, read identically in every block, printed its rank pattern every 64 px. Measured on the high-passed shaded
+      crop (1920x1009, the report's trail at 2.8 km/s): autocorrelation at 64 px 0.71 moving / 0.53 still; `jL` held at
+      0.5 -> 0.00 (the source); the view jitter `bn` held -> 0.60; the tile shifted per FRAME -> 0.70 (still periodic in
+      each frame: in motion the current frame dominates); a fixed per-block offset (a multiply hash of `pix >> 6`) -> 0.01 / 0.01,
+      grain std unchanged (4.1 / 1.5 levels), 128 registers. A per-frame per-block offset raised the still grain 1.5 ->
+      2.1 (the golden-ratio sequence per pixel is lost). The grain itself in motion (the resolve passing one frame's
+      samples near the eye) is unchanged.
     - **Far shadows broke when moving (220718): the shaft rings are toroidal**, so slots at the trailing edge became the
       leading edge holding the shadow from ~a window away until their bake (every 32 frames), then blended out at 1/4.
       Ring values now carry a STAMP (`cv2ShaftPack`: 10 bits of T + the slot's offset from the eye in bins); a lookup
@@ -1645,9 +1655,22 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   pads): **one GLOBAL exposure** (`globalExposureEV()` = Exposure (EV) + the metered auto offset) scales the
   sky's radiance, the point sources (the point style's ref/limit magnitudes shift by `exposureGainMag()`,
   like the zoom gain) and the Milky Way / zodiacal light; `skyExposure()` mirrors it. **Auto exposure**
-  meters the displayed frame (`recordScreenshotCopy`: the central 60% blitted to 64x36, read next frame in
-  `readExposureMeter`), steps toward a linear mean of 0.32 and harder when > 4% clips, only DARKENS (to
-  -3 EV x "Auto exposure (day)") and only by day. Harness `state` reports it under `exposure`. Highlight
+  meters the displayed frame WITHOUT the UI (`recordExposureMeter` from the pre-UI hook `recordPreUiCopy`: the
+  central 60% blitted to 64x36, read next frame in `readExposureMeter`), steps toward a linear mean of 0.32 and harder when > 4% clips, only DARKENS (to
+  -3 EV x "Auto exposure (day)") and only by day. Harness `state` reports it under `exposure`.
+  - **The meter must not see the UI (2026-11-06, issue_20261105_181849 "Cloud bottoms too bright").** Metered after the
+    UI, the Settings window's dark panel over the metered centre lowered the mean, and the meter (which only darkens)
+    darkened less: at the report's view -1.20 EV with the Settings open against -1.72 closed (that run at
+    `droplet_ms_gain` 2.27), the whole frame +0.52 EV (x1.43) while the user tuned the clouds, easing in over ~1.6 s
+    whenever a window opened (the reporter's shot was metered at -1.09, ours closed at the user's settings -1.61).
+    Every frame the meter runs, App now ends the main pass after recordDraw (the video / settle-probe hook) and the UI
+    draws in the load pass. With the fix, user settings: -1.62 open, -1.61 closed (closed unchanged). The "first frames after a reset are dark, then it converges
+    bright" half of the report is not a temporal bias: with exposure locked (-3.5 EV, near-linear) the cloud base's mean
+    at frames 2, 3, 10, 60, 300 after a history reset is within 1-2% of each other (frame 1 alone -14%: the first
+    frame's sparse samples; noisy speckle also reads darker through the tonemap's curve). Knockouts that would show a
+    bright-biased (Jensen) light estimate went the other way: the light march's jitter held at 0.5 lit the base +12%,
+    24 light steps +12% (region means at -1.6 EV fixed). So the base-brightness note above (path-traced reference,
+    issue_20261104_180745) stands. Highlight
   roll-off blends the tonemap toward 1 - 1/(1 + x + x^2/2) (same toe, long shoulder); White balance adapts
   to the low Sun's colour (a low Sun is yellow; without it every cloud read beige).
   - **White balance's reference sunlight is the Sun 2 km over sea level under the eye, not at the eye (2026-11-05,

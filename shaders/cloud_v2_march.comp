@@ -1135,9 +1135,17 @@ void main()
             // flat cloud top and its light steps' positions moved together, and their product did not average
             // out over the visits — contour rings round the nadir on the Cb heads' lids, at the view step's
             // period (4 light steps over 2.5 km). Another cell of the blue-noise tile, its own golden step.
+            // Each 64 x 64 block of pixels reads the tile at its own (hashed, fixed) toroidal offset (2026-11-06,
+            // issue_20261105_181702 "Darker shades always noisy"): where a shaded sample's light hangs on whether its
+            // light steps land in a lobe, its value is close to a threshold of jL, and the tile, read the same way in
+            // every block, printed its own rank pattern -- rings and cells repeating every 64 px over every shaded face
+            // (high-passed autocorrelation at 64 px 0.71 moving at 2.8 km/s, 0.53 still; with the offsets 0.01 / 0.01,
+            // the same grain, 128 registers). Fixed per block, so a still pixel keeps its golden-ratio sequence.
             float jL;
             {
-                uint  bj = uint((pix.x + 32) & 63) + 64u * uint((pix.y + 21) & 63);
+                uint  bh = (uint(pix.x >> 6) * 0x9E3779B1u) ^ (uint(pix.y >> 6) * 0x85EBCA77u);
+                bh = (bh ^ (bh >> 15u)) * 0x2C1B3C6Du;
+                uint  bj = uint((pix.x + 32 + int(bh >> 26u)) & 63) + 64u * uint((pix.y + 21 + int((bh >> 20u) & 63u)) & 63);
                 float vL = visit;
                 jL = fract((float((cv2BlueNoise[bj >> 2u] >> (8u * (bj & 3u))) & 0xFFu) + 0.5) / 256.0
                            + 0.5385973 * (cv2.misc2.z > 0.5 ? cv2.frame.x : vL));
