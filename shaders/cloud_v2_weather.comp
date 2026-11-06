@@ -306,7 +306,15 @@ vec4 wxConvection(vec3 d, out float env, bool cellsOnly)
         }
     }
     env = 1.0 - notE;
-    return vec4(1.0 - notC, top, 1.0 - exp(-1.5 * anv), 1.0 - exp(-1.5 * mid));
+    // The outflow is not a swept disc: its integral is modulated by two octaves of noise (~120 and ~40 km), so an anvil's or
+    // a line's shield has a lobed, irregular outline and uneven thickness (a line source drew a perfect pill from orbit).
+    float nA = 0.0;
+    if (anv + mid > 0.0) {
+        vec3 pn = d * (R_EARTH_W / 1.2e5);
+        nA = 0.65 * wxNoise(pn + vec3(5.1, 2.7, 9.3)) + 0.35 * wxNoise(pn * 3.0 + vec3(1.3, 8.8, 4.2));
+    }
+    float kN = clamp(1.0 + 1.0 * nA, 0.5, 1.6);   // (0.25-1.8 split a lone storm's anvil in two)
+    return vec4(1.0 - notC, top, 1.0 - exp(-1.5 * anv * kN), 1.0 - exp(-1.5 * mid * kN));
 }
 
 
