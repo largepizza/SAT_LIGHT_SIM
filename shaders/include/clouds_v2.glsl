@@ -352,13 +352,13 @@ float cv2Ground(vec3 dirE)
 // streams through it; in the troughs it evaporates. The low cloud does not climb a massif: it parts around it.
 // gCv2Oro (cv2OroField, per sample, Earth-fixed, from the DEM: binding 25):
 //   x the streamlines' lift (m): e(0.1 lambda upwind) + 0.7 e(lambda) - 0.6 max(e(lambda / 2) - e(0.1 lambda), 0), e =
-//     the ~5 km relief's excess over the ~13 km massif (DEM mips 1 and 2.3) at the upwind tap: the crest over the ridge,
-//     the first lee crest, and the trough half a wavelength downwind of a ridge (not over a summit wider than lambda / 2,
-//     whose upwind flank is no trough); saturating, x 1.5 km / (1.5 km + lift);
-//   y the lift the air needs to condense (m): mix(1400, 300, "lens moisture" (oro1.x) x a slow regional wave, so ranges
-//     take turns) x the wind's dryness factor (oro1.y);
-//   z the relief's envelope (the 2.7 km DEM + 0.8 x its excess over the massif, m above sea level), w its prominence
-//     over the ~20 km ground the low bases ride on (0..1).
+//     the ~6 km relief's excess over the ~19 km massif (DEM mips 1.2 and 2.8: smooth over the lee wave's scale) at the
+//     upwind tap: the crest over the ridge, the first lee crest, and the trough half a wavelength downwind of a ridge (not
+//     over a summit wider than lambda / 2, whose upwind flank is no trough); saturating, x 1.5 km / (1.5 km + lift);
+//   y the lift the air needs to condense (m): mix(1400, 300, "lens moisture" (oro1.x) x the wave-cloud-day gate: two slow
+//     waves that open it over ~a fifth of the land at a time, turning over in days) x the wind's dryness factor (oro1.y);
+//   z the relief's envelope (the ~5 km DEM, mip 1, + 1.5 x its excess over the massif, m above sea level), w its
+//     prominence over the ~20 km ground the low bases ride on (0..1).
 // The mid layer reads x / y (cv2MidSigma), the low field z / w (cv2Field). Zero (the default) = no terrain effect, so flat
 // land and every shader without the DEM are unchanged. The march computes it ONCE at its main sample (CV2_ORO_EXTERNAL)
 // and the light / other reads keep it: computed inside every inlined cv2Field copy it cost the 128-register cliff
@@ -379,19 +379,30 @@ vec4 cv2OroField(CV2Pos q)
     // the DEM's uv per metre along the wind (upwind = minus)
     vec2  duv = vec2(cv2.oro0.z / (2.0 * PI * R_EARTH * max(cos(lat), 0.05)), -cv2.oro0.w / (PI * R_EARTH)) * cv2.oro0.y;
     const float kEr = 9000.0, kEo = 15.0 / 255.0 * 9000.0;        // terrain.glsl's decode (15/255 = sea level)
-    float hR  = textureLod(cv2ElevTex, uv, 2.3).r * kEr;                              // the ~13 km massif
-    float hF  = max(0.0, textureLod(cv2ElevTex, uv, 0.0).r * kEr - kEo);              // the relief (the DEM's 2.7 km)
-    float eC  = max(0.0, textureLod(cv2ElevTex, uv - duv * 0.1, 1.0).r * kEr - hR);
-    float eT  = max(0.0, textureLod(cv2ElevTex, uv - duv * 0.5, 1.0).r * kEr - hR);
-    float eL  = max(0.0, textureLod(cv2ElevTex, uv - duv,       1.0).r * kEr - hR);
-    float mo  = clamp(cv2.oro1.x * (1.0 + 0.5 * sin(lon * 23.0 + cv2.oro1.z) * sin(lat * 29.0 + cv2.oro1.w)), 0.0, 1.0);
-    // The relief's envelope: the 2.7 km DEM under-reads the peaks the terrain's detail draws (the ridges poked ~1 km
-    // through a deck sitting 900 m over it), so it is raised by 0.8 x its height over the ~13 km massif.
+    // The lift reads the relief at ~6 km over the ~19 km massif (mips 1.2 / 2.8; 2026-11-06, issue 20261105_201521): the
+    // air's response to a ridge is a wave at the lee wavelength's scale, not the crest line. At the 5 km relief (mip 1) the
+    // lifted layer bent into a sharp inverted V over each ridge.
+    float hRL = textureLod(cv2ElevTex, uv, 2.8).r * kEr;                              // the ~19 km massif
+    float eC  = max(0.0, textureLod(cv2ElevTex, uv - duv * 0.1, 1.2).r * kEr - hRL);
+    float eT  = max(0.0, textureLod(cv2ElevTex, uv - duv * 0.5, 1.2).r * kEr - hRL);
+    float eL  = max(0.0, textureLod(cv2ElevTex, uv - duv,       1.2).r * kEr - hRL);
+    // Wave-cloud days (2026-11-06, issue 20261105_201331 "too uniform and persistent"): the moist, stable layer a lens needs
+    // is a regional, passing condition, not the climate. Two slow waves (~1500 km, drifting west, turning over in ~3 days)
+    // open it over ~a fifth of the land at a time; elsewhere the condensation lift is the dry air's 1400 m, which no relief
+    // reaches (the lift saturates near 1.5 km): no lenses. (It was 1 +- 0.5 x one wave: lenses over every range, always.)
+    float wv  = 0.6 * sin(lon * 23.0 + cv2.oro1.z) * sin(lat * 29.0 + cv2.oro1.w) + 0.4 * sin(lon * 37.0 - lat * 19.0 - 1.3 * cv2.oro1.z + 2.0);
+    float mo  = cv2.oro1.x * smoothstep(0.2, 0.6, wv);
     // The lift saturates (x 1.5 km / (1.5 km + lift)): the Himalaya's 2-7 km excesses lifted a fifth of the range past the
     // condensation level, Fuji's ~2 km a few percent; compressed, ~8% and ~2%.
     float lf  = eC + 0.7 * eL - 0.6 * max(eT - eC, 0.0);
-    return vec4(lf * 1500.0 / (1500.0 + max(lf, 0.0)), mix(1400.0, 300.0, mo) * cv2.oro1.y, hF + 0.8 * max(hF + kEo - hR, 0.0),
-                smoothstep(150.0, 700.0, hF - gG));
+    // The envelope the low cloud parts round is the ~5 km relief (mip 1) + 1.5 x its excess over the ~19 km massif
+    // (2026-11-06, issue 20261105_201521): at the 2.7 km DEM + 0.8 x its excess the gap's roof followed every crest line,
+    // a sharp inverted V over the ridge seen from under the deck; now a smooth arch, a little higher over the summits (the
+    // bare DEM under-reads the peaks the terrain's detail draws; at +0.8 x they poked ~1 km through a deck 900 m over it).
+    // Its prominence over the ~20 km ground (w) from the same read: at the 2.7 km DEM the gap's sides followed the spurs.
+    float hS  = max(0.0, textureLod(cv2ElevTex, uv, 1.0).r * kEr - kEo);
+    return vec4(lf * 1500.0 / (1500.0 + max(lf, 0.0)), mix(1400.0, 300.0, mo) * cv2.oro1.y, hS + 1.5 * max(hS + kEo - hRL, 0.0),
+                smoothstep(150.0, 700.0, hS - gG));
 }
 #endif
 
@@ -1865,22 +1876,22 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
     // ── Orographic clouds (2026-11-06, issue 20261105_174850; gCv2Oro, cv2OroField): the layer FOLLOWS the lee wave,
     // lifted by half the streamlines' lift over the ridges and their lee crests and sunk in the troughs (where its regime
     // thins to 15%). Where the lift passes the air's condensation lift (gCv2Oro.y x 1.3 .. 0.7 as the layer's cover covM
-    // rises) the layer's cloud condenses into a LENS (lensC: a sharp rim over 80 m of lift): its vertical profile is a
-    // saucer centred in the layer, half as thick as the lift's excess + 150 m (the CDC's coarse reads are 160 m apart),
-    // flatter below; its cloudlets merge (a dense, low-contrast texture of the same shape fetch), x1.5 density. Lenses form
+    // rises) the layer's cloud condenses into a LENS (lensC: a sharp rim over 120 m of lift): its vertical profile is a
+    // saucer centred in the layer, half as thick as the lift's excess + 200 m (>= 160: the CDC's coarse reads are 160 m apart),
+    // flatter below; its cloudlets merge (a dense texture of the same shape fetch, x2.2 contrast), x3.5 density (it was x1.5: thinner
+    // since the lift is smoothed, a lens was a translucent grey film). Lenses form
     // in moist air even where the regime has no altocumulus (a lenticular in an otherwise clear sky), never with the mid
     // layer off ("Mid-level amount" 0) or no cover at all. Earth-fixed: they stay over the relief while the map drifts.
-    float lensC = 0.0, lensP = 0.0, lensV = 0.0, lensH = 1.0;
+    // Finite lenses (2026-11-06, issue 20261105_201331: "too uniform"; continuous ribbons along every ridge): the air's
+    // moisture at the layer is not even along a range. The cluster Perlin (the moist patches the wind carries, 8-64 km,
+    // +-1.5 sd -> +-225 m of the condensation lift) and, below, the shape volume's base-wander channel (km scale, +-220 m)
+    // break a crest's lens into separate almonds that form and fade as the patches drift through the standing wave.
+    float lensC = 0.0, lensP = 0.0, lensV = 0.0, lensH = 1.0, tO = -1e4;
     if (liftO != 0.0) {
         base += 0.5 * liftO;
-        float tO = liftO - gCv2Oro.y * mix(1.3, 0.7, covM);
-        lensC = smoothstep(0.0, 80.0, tO) * smoothstep(0.0, 0.15, covM) * smoothstep(0.0, 0.3, cv2.misc.w);
-        if (lensC > 0.0) {
-            lensH = min(0.5 * tO + 150.0, 0.5 * thick + 0.5 * kCv2MidWanderM);
-            lensV = (q.h - base - 0.5 * thick) / lensH;
-            // A flatter base and a domed top (the saucer): rims over the outer 40%.
-            lensP = 1.0 - smoothstep(0.6, 1.0, lensV < 0.0 ? -lensV / 0.7 : lensV);
-        }
+        tO = liftO - gCv2Oro.y * mix(1.3, 0.7, covM) + 150.0 * clamp((cl.a - 0.5) * 8.8, -1.5, 1.5);
+        // (an upper bound for the early out: the terms below add up to 520 m)
+        lensC = smoothstep(-520.0, 0.0, tO) * smoothstep(0.0, 0.15, covM) * smoothstep(0.0, 0.3, cv2.misc.w);
         regime *= 1.0 - 0.85 * smoothstep(100.0, 600.0, -liftO);
     }
     float regL = max(regime, 0.9 * lensC);
@@ -1898,15 +1909,32 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
     float bW    = base + kCv2MidWanderM * clamp(2.5 * (sh.a - 0.5), -1.0, 1.0);
     float tW    = base + thick + kCv2MidWanderM * clamp(2.5 * (sh.g - 0.5), -1.0, 1.0);
     float zm    = (q.h - bW) / max(tW - bW, 150.0);
+    if (lensC > 0.0) {
+        // The 4-32 km Perlin (the closed-cell volume's, on its own anchor; read only here, inside a lens): a crest's lens
+        // in separate almonds 10-20 km long. Added to the lift alone it only frayed the rims of a crest lifted far past its
+        // condensation level (still one ribbon down the range), so it also cuts.
+        vec4  ceL = textureLod(cv2MesoTex, cv2.anchorCell.xyz + cv2Drift(q.seaProjE) * cv2.anchorCell.w,
+                               cv2Lod(fpM, cv2.anchorCell.w));
+        float brk = clamp((ceL.a - 0.5) * 8.8, -1.5, 1.5);
+        tO   += 220.0 * clamp(2.5 * (sh.a - 0.5), -1.0, 1.0) + 200.0 * brk;
+        lensC = smoothstep(0.0, 120.0, tO) * smoothstep(-0.4, 0.2, brk) * smoothstep(0.0, 0.15, covM) * smoothstep(0.0, 0.3, cv2.misc.w);
+        // Its half-height grows with the lift's excess and swells and thins with the cloudlets' own lobes (x0.75 .. 1.25):
+        // a lens of even thickness along its whole length was the flat ribbon.
+        lensH = min((0.5 * max(tO, 0.0) + 200.0) * (0.75 + 0.5 * sh.g), 0.5 * thick + 0.5 * kCv2MidWanderM);
+        lensV = (q.h - base - 0.5 * thick) / lensH;
+        // A flatter base and a domed top (the saucer): rims over the outer 40%.
+        lensP = 1.0 - smoothstep(0.6, 1.0, lensV < 0.0 ? -lensV / 0.7 : lensV);
+        regL  = max(regime, 0.9 * lensC);
+    }
     // A lens: thin at its edges and top and bottom, the cloudlets' own lobes shaping both faces. Over a lee-wave crest
     // the orographic lens' profile (lensP) instead: the cloudlets condense into one smooth-faced saucer, their texture
-    // softened (x2.5 contrast, not 5) but kept, so it reads as the layer's cloud shaped by the relief.
+    // softened (x2.2 contrast, not 5) but kept, so it reads as the layer's cloud shaped by the relief.
     float lens  = (zm <= 0.0 || zm >= 1.0) ? 0.0
                 : smoothstep(0.0, 0.3, zm + (sh.a - 0.5) * 0.4) * (1.0 - smoothstep(0.55, 1.0, zm + (sh.b - 0.45) * 0.5));
     lens        = mix(lens, lensP, lensC);
     if (lens <= 0.0) return 0.0;
     float ac    = clamp((sh.b * 0.7 + sh.g * 0.3 - (1.0 - regime * 0.8)) * 5.0, 0.0, 1.0);
-    ac          = mix(ac, clamp(0.65 + (sh.b * 0.7 + sh.g * 0.3 - 0.45) * 1.2, 0.3, 1.0), lensC);   // (floor 0.3: x2 from 0 tore dark holes through a lens)
+    ac          = mix(ac, clamp(0.6 + (sh.b * 0.7 + sh.g * 0.3 - 0.45) * 2.2, 0.4, 1.0), lensC);   // (floor 0.4: from 0 it tore dark holes; x1.2 was flat paint, 201331)
     // Cloudlets far below a pixel become the haze of their coverage (as the low cells do).
     // Review 17: from orbit the cloudlets' haze is the closed cells at the regime's area fraction, not a flat sheet
     // (the mid layer over the whole low field was what flattened orbit views: low layer alone D 1.42 / slope 2.3,
@@ -1919,8 +1947,10 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
     strat      *= 1.0 - lensC;
     hfMid       = clamp(mix(zm, 0.5 + 0.5 * lensV, lensC), 0.0, 1.0);
     topMid      = mix(tW, base + 0.5 * thick + lensH, lensC);
-    deckMid     = strat;
-    return lens * mix(ac * 0.035, as_ * 0.004 * cv2.mid2.x, strat) * cv2.atmo.z * (1.0 + 0.5 * lensC);
+    // An orographic lens is flagged by a NEGATIVE deck share (2026-11-06, issue 20261105_201331): the march adds its own
+    // body toward the Sun, which its light march cannot see (cloud_v2_march.comp, the key light).
+    deckMid     = strat - lensC;
+    return lens * mix(ac * 0.035, as_ * 0.004 * cv2.mid2.x, strat) * cv2.atmo.z * (1.0 + 2.5 * lensC);
 }
 
 // ── The high layer: cirrus / cirrostratus / cirrocumulus (0.7-0.9 of the tropopause) ─────────────
