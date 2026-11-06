@@ -55,34 +55,150 @@ layout(push_constant) uniform PC { int faceSize; float srcLod; int face; float p
 const float PI = 3.14159265359;
 const float R_EARTH_W = 6371000.0;
 
-// The evolution's wind: the curl of eight smooth waves (~4000 km) on the unit sphere, unit rms,
-// slowly turning (a day's period). The same construction as cv2FlowDisp, its own constants.
-vec3 evoWind(vec3 d)
+// ── Weather v2 (2026-11-06, .plans/WEATHER_V2_PLAN.md): the weather is SYNTHESISED, not read from the satellite map ──
+// coverage = a climatology (the ITCZ, the dry subtropics, the mid-latitude storm tracks, polar cloud, the cold-sea
+// stratocumulus decks; following the Sun) + the Rossby waves' lift (poleward flow at 5 km: the warm conveyor's cloud
+// bands, clear cold air behind them; Eulerian, so the bands move with the waves while the air moves through them) +
+// moisture fBm ADVECTED by the steering wind (wind_field.glsl) through a two-phase flow map (both phases evaluated
+// and blended variance-preservingly here, each renewal a fresh field). Storms are still the old stamps (step 3 makes
+// every system a writer into these fields).
+// Push constants (repurposed from the map's evolution): evo0 = the wind's state (wind_field.glsl ws); evo1.x the macro
+// flow map's window count mod 1024, z its window (s); wx.x the sim time within the window (s).
+#include "wind_field.glsl"
+
+float wxHash(vec3 p)
 {
-    const vec3 kd[8] = vec3[8](vec3( 0.31, -0.72,  0.62), vec3(-0.66,  0.52,  0.54), vec3( 0.84,  0.27, -0.47),
-                               vec3( 0.12,  0.97,  0.21), vec3(-0.41, -0.33, -0.85), vec3( 0.58, -0.61, -0.54),
-                               vec3(-0.93,  0.08,  0.36), vec3( 0.26,  0.44,  0.86));
-    const float ks[8] = float[8](1.0, 1.19, 0.83, 1.37, 0.71, 1.08, 0.92, 1.26);
-    const float ph[8] = float[8](1.1, 3.7, 0.4, 5.2, 2.6, 4.4, 0.9, 3.0);
-    float k0 = 2.0 * PI * R_EARTH_W / 4.0e6;
-    float tp = pc.evo1.z * (2.0 * PI / 86400.0);
-    vec3  g  = vec3(0.0);
-    [[unroll]] for (int i = 0; i < 8; ++i) {
-        vec3 kv = normalize(kd[i]) * (k0 * ks[i]);
-        g += kv * cos(dot(kv, d) + ph[i] + tp * (0.5 + 0.1 * float(i))) / ks[i];
-    }
-    return cross(d, g) / (k0 * 2.0);
+    p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+    p += dot(p, p.yxz + 33.33);
+    return fract((p.x + p.y) * p.z);
 }
+vec3 wxGradV(vec3 c) { return normalize(vec3(wxHash(c), wxHash(c + 17.17), wxHash(c + 41.31)) - 0.5); }
+// Gradient noise, ~[-1, 1] (std ~0.3).
+float wxNoise(vec3 p)
+{
+    vec3 i = floor(p), f = p - i, u = f * f * (3.0 - 2.0 * f);
+    float n000 = dot(wxGradV(i), f);
+    float n100 = dot(wxGradV(i + vec3(1, 0, 0)), f - vec3(1, 0, 0));
+    float n010 = dot(wxGradV(i + vec3(0, 1, 0)), f - vec3(0, 1, 0));
+    float n110 = dot(wxGradV(i + vec3(1, 1, 0)), f - vec3(1, 1, 0));
+    float n001 = dot(wxGradV(i + vec3(0, 0, 1)), f - vec3(0, 0, 1));
+    float n101 = dot(wxGradV(i + vec3(1, 0, 1)), f - vec3(1, 0, 1));
+    float n011 = dot(wxGradV(i + vec3(0, 1, 1)), f - vec3(0, 1, 1));
+    float n111 = dot(wxGradV(i + vec3(1, 1, 1)), f - vec3(1, 1, 1));
+    return 2.0 * mix(mix(mix(n000, n100, u.x), mix(n010, n110, u.x), u.y),
+                     mix(mix(n001, n101, u.x), mix(n011, n111, u.x), u.y), u.z);
+}
+const float kWxL0   = 1.2e6;   // the moisture fBm's largest wavelength (m)
+const float kWxGain = 0.6;
+// The moisture fBm at a material direction m: the octaves with wavelengths in [minL, maxL] (level 0 adds the ones
+// below level 1's cut to level 1's field). varOut: the variance of the octaves under minL (left out).
+float wxFbm(vec3 m, float minL, float maxL, vec3 seed, out float varOut)
+{
+    vec3  p  = m * (R_EARTH_W / kWxL0) + seed;
+    // A domain warp at the two largest scales: fronts and comma shapes, not round blobs.
+    vec3  wq = vec3(wxNoise(p * 0.7 + 3.1), wxNoise(p * 0.7 + 7.9), wxNoise(p * 0.7 + 12.4));
+    p += wq * 0.35;
+    float n = 0.0, a = 1.0, L = kWxL0, v = 0.0;
+    for (int o = 0; o < 9; ++o) {
+        if (L < minL) v += a * a;
+        else if (L <= maxL) n += a * wxNoise(p);
+        p = p * 2.03 + vec3(1.7, 9.2, 4.4);
+        a *= kWxGain; L *= 0.4926;
+    }
+    varOut = v * 0.09 * 0.62 * 0.62;   // (gradient noise's variance ~0.09 a unit amplitude)
+    return n * 0.62;
+}
+float wxStagger(vec3 d) { return 0.31 * sin(dot(d, vec3(3.3, -2.1, 1.7)) + 1.3) + 0.21 * sin(dot(d, vec3(-2.6, 1.4, 3.9)) + 0.4); }
+// The moisture noise through the macro flow map: both phases, blended keeping the variance.
+float wxMoistureNoise(vec3 d, float minL, float maxL, out float varOut)
+{
+    float P  = pc.evo1.z;
+    float fT = pc.wx.x / P + wxStagger(d);
+    float n = 0.0, wsum = 0.0;
+    varOut = 0.0;
+    vec3  W0 = wfWind(d, 3000.0, pc.evo0);
+    for (int c = 0; c < 2; ++c) {
+        float fc  = fT + 0.5 * float(c);
+        float f   = fract(fc);
+        float w   = sin(PI * f);
+        float age = f * P;
+        // Back along the steering wind (a midpoint step), then a fresh field per window (its index's hash).
+        vec3  dm  = normalize(d - W0 * (0.5 * age / R_EARTH_W));
+        vec3  dc  = normalize(d - wfWind(dm, 3000.0, pc.evo0) * (age / R_EARTH_W));
+        float k   = pc.evo1.x + floor(fc) + 0.5 * float(c);
+        vec3  sd  = fract(sin(vec3(k * 12.9898, k * 78.233, k * 37.719)) * 43758.5453) * 97.0;
+        float vv;
+        n    += w * wxFbm(dc, minL, maxL, sd, vv);
+        wsum += w * w;
+        varOut = vv;
+    }
+    return n / sqrt(max(wsum, 1e-4));
+}
+// Expected value of clamp(x + N(0, s^2), 0, 1): the true mean coverage of a field whose finer octaves were left out.
+float wxPos(float z) { return z / (1.0 + exp(-1.702 * z)) + exp(-0.5 * z * z) * 0.3989; }
+float wxExpectedCover(float x, float s)
+{
+    if (s < 1e-3) return clamp(x, 0.0, 1.0);
+    return clamp(s * (wxPos(x / s) - wxPos((x - 1.0) / s)), 0.0, 1.0);
+}
+// Cold-upwelling stratocumulus decks off the subtropical west coasts (lat, lon of each centre, deg).
+float wxScDecks(vec3 d)
+{
+    const vec2 c[5] = vec2[5](vec2(28.0, -126.0), vec2(-18.0, -82.0), vec2(-19.0, 6.0), vec2(24.0, -22.0), vec2(-28.0, 106.0));
+    float s = 0.0;
+    for (int i = 0; i < 5; ++i) {
+        float la = radians(c[i].x), lo = radians(c[i].y);
+        vec3  a  = vec3(cos(la) * cos(lo), cos(la) * sin(lo), sin(la));
+        float r  = acos(clamp(dot(a, d), -1.0, 1.0)) * R_EARTH_W;
+        s = max(s, exp(-(r * r) / (1.3e6 * 1.3e6)));
+    }
+    return s;
+}
+// The climatology and the waves' lift at d (Eulerian). raw: coverage before the noise; strat / conv / deep 0..1.
+struct WxClim { float raw; float strat; float conv; float deep; float lift; };
+const float kWxContrast = 0.9;   // coverage per unit of moisture potential
+const float kWxNoise    = 1.5;   // the moisture fBm's weight in the potential
+WxClim wxClimate(vec3 d, float ocean)
+{
+    WxClim o;
+    float lat  = asin(clamp(d.z, -1.0, 1.0));
+    float latS = lat - 0.35 * pc.evo0.y;
+    float a    = abs(latS) * (180.0 / PI);
+    float land = 1.0 - ocean;
+    float itcz = wfG(a, 0.0, 4.5);
+    float dry  = wfG(a, 25.0, 8.0);
+    float mid  = wfG(a, 52.0, 10.0);
+    float pol  = wfG(a, 75.0, 10.0);
+    float sc   = wxScDecks(d) * ocean;
+    // The MOISTURE POTENTIAL (coverage = 0.5 + kWxContrast x it, main): > ~0.55 overcast, < ~-0.55 clear.
+    float raw  = -0.2 + 0.45 * itcz - (0.75 + 0.45 * land) * dry + (0.3 + 0.2 * ocean) * mid + 0.25 * pol + 0.9 * sc;
+    // The Rossby waves' lift: poleward flow at 5 km (the warm conveyor, ahead of a trough) clouds over; equatorward
+    // (the cold air behind it) clears into open cumulus.
+    vec3  w5    = wfWind(d, 5000.0, pc.evo0);
+    vec3  east  = normalize(vec3(-d.y, d.x, 0.0) + vec3(1e-6, 0.0, 0.0));
+    vec3  north = cross(d, east);
+    float pole  = dot(w5, north) * (lat >= 0.0 ? 1.0 : -1.0);
+    float lift  = clamp(pole / 10.0, -1.5, 1.5) * smoothstep(20.0, 35.0, a);
+    raw += 0.5 * lift;   // (the long frontal bands are the extratropical systems' own; this is the waves' background)
+    o.raw   = raw;
+    o.lift  = lift;
+    o.strat = clamp(smoothstep(0.15, 0.8, lift) + sc + 0.6 * pol, 0.0, 1.0);
+    o.conv  = clamp(0.75 * wfG(a, 15.0, 9.0) * ocean + itcz + smoothstep(0.1, 0.9, -lift) * 0.8 + 0.3 * land * (1.0 - pol), 0.0, 1.0)
+            * (1.0 - 0.7 * o.strat);
+    o.deep  = clamp(itcz * (0.6 + 0.4 * land) + 0.35 * wfG(a, 12.0, 8.0), 0.0, 1.0);
+    return o;
+}
+
 // Growth and decay: a smooth field (~1500 km) whose waves drift through their phases over 10-30 h.
 float evoGrowth(vec3 d)
 {
     const vec3 kd[6] = vec3[6](vec3( 0.73,  0.21, -0.65), vec3(-0.25,  0.91,  0.33), vec3( 0.47, -0.58,  0.66),
                                vec3(-0.81, -0.44, -0.39), vec3( 0.05, -0.29, -0.96), vec3(-0.52,  0.63,  0.58));
-    const float T[6] = float[6](36000.0, 52000.0, 71000.0, 45000.0, 98000.0, 63000.0);
+    const float T[6] = float[6](2592000.0 / 72.0, 2592000.0 / 50.0, 2592000.0 / 36.0, 2592000.0 / 58.0, 2592000.0 / 26.0, 2592000.0 / 41.0);
     float k1 = 2.0 * PI * R_EARTH_W / 1.5e6;
     float g  = 0.0;
     [[unroll]] for (int i = 0; i < 6; ++i)
-        g += cos(dot(normalize(kd[i]) * k1, d) + float(i) * 1.7 + pc.evo1.z * (2.0 * PI / T[i]));
+        g += cos(dot(normalize(kd[i]) * k1, d) + float(i) * 1.7 + pc.evo0.x * (2.0 * PI / T[i]));   // (the wind clock)
     return g / 1.73;                                     // ~unit rms
 }
 
@@ -399,49 +515,22 @@ void main()
     float texel = 2.0 / float(pc.faceSize);   // angular size of one output texel (rad, ~at face centre)
     gEqLin = abs(d.z) < 0.97 && texel * 16.0 * pc.pad < 0.04;   // (eqTap: the taps reach 8 x pad texels)
 
-    // Coverage: a 2x2 supersample at the matching source mip.
-    // The map's coverage and, over ~8 texels (~40 km at the full-resolution level), its standard
-    // deviation, which separates broken (convective) fields from smooth (stratiform) ones — read through
-    // the two advected copies and blended.
-    float cov = 0.0, m1 = 0.0, m2 = 0.0;
-    const int kRing = 12;
-    vec3 wv = (pc.evo1.x > 0.0) ? evoWind(d) * (pc.evo1.x / R_EARTH_W) : vec3(0.0);
-    vec3 dS = cycloneSwirl(d);   // where the map is read (wound round any cyclone)
-    for (int c = 0; c < 2; ++c) {
-        float w = (c == 0) ? pc.evo0.z : pc.evo0.w;
-        if (w < 1e-3) continue;
-        vec3  dc = normalize(dS - wv * ((c == 0) ? pc.evo0.x : pc.evo0.y));   // back along the wind
-        vec2  uvc = equirectUV(dc);
-        float latc = asin(clamp(dc.z, -1.0, 1.0));
-        float cc = 0.0;
-        for (int k = 0; k < 4; ++k) {
-            vec2 o = (vec2(k & 1, k >> 1) - 0.5) * 0.5 * texel;
-            cc += textureLod(earthCloudsTex, eqTap(dc, uvc, latc, tx, ty, o), pc.srcLod).r;
-        }
-        float a1 = 0.0, a2 = 0.0;
-        if (fine) {   // (level 0: no ring, its type is level 1's; the afternoon term's local mean from one ~40-km read)
-            float v = textureLod(earthCloudsTex, uvc, pc.srcLod + 3.0).r;
-            a1 = v * float(kRing); a2 = v * v * float(kRing);
-        } else
-        for (int k = 0; k < kRing; ++k) {
-            float ang = float(k) * (2.0 * PI / float(kRing));
-            float r   = ((k & 1) == 0 ? 4.0 : 8.0) * pc.pad;   // (pad 2 on the 2048 level: the 1024 scale it was tuned at)
-            float v   = textureLod(earthCloudsTex, eqTap(dc, uvc, latc, tx, ty, vec2(cos(ang), sin(ang)) * r * texel),
-                                   pc.srcLod + 1.0 + log2(pc.pad)).r;
-            a1 += v; a2 += v * v;
-        }
-        cov += w * cc * 0.25;
-        m1  += w * a1 / float(kRing);
-        m2  += w * a2 / float(kRing);
-    }
-    float sd = sqrt(max(m2 - m1 * m1, 0.0));
-    // The storms' own cloud (stormStamp), as a brightness delta (coverage x (full - clear) / Coverage): cloud round
-    // the towers and under the anvils, a clear moat round them.
-    // A cyclone's part averaged over the texel (2026-10-25): sampled at the centre alone, a hurricane's arms, filaments and
-    // eye edge (a few km sharp) were point-sampled, and as the storm moved through the map's frame (~45 m/s: the map's
-    // drift plus its track) whole texels switched on and off — square cells popping from orbit. 3 x 3 points where a
-    // cyclone can reach; the towers' and lines' fields once (smooth over tens of km; 9 reads of them over the tropics'
-    // storm envelopes cost ~1 ms a 2048 face).
+    // ── Weather v2: the coverage is synthesised (wxClimate + wxMoistureNoise above), Earth-fixed; the map is not read ──
+    float latAbs  = abs(asin(clamp(d.z, -1.0, 1.0))) * (180.0 / PI);
+    float ocean   = textureLod(earthSpecTex, equirectUV(d), pc.srcLod + 2.0).r;
+    float tropics = 1.0 - smoothstep(18.0, 32.0, latAbs);
+    float polar   = smoothstep(50.0, 70.0, latAbs);
+    float texM    = texel * R_EARTH_W;               // this level's texel (m)
+    float span    = max(pc.remap.z - pc.remap.y, 1e-3);
+    // Level 0 adds only the octaves level 1 leaves out to level 1's field (stored as brightness: clear + raw x span).
+    vec4  l1      = fine ? textureLod(wxLevel1, vec3(st, float(id.z)), 0.0) : vec4(0.0);
+    float cutL    = 2.5 * texM;                       // the shortest wavelength a level holds
+    float varLeft;
+    float nz      = fine ? wxMoistureNoise(d, cutL, 2.5 * texM * 2.0, varLeft)
+                         : wxMoistureNoise(d, cutL, 1e30, varLeft);
+    WxClim cl     = wxClimate(d, ocean);
+
+    // The storms' own cloud (the old stamps until step 3), in coverage units.
     gRainFree = 0.0;
     gCycDeck  = 0.0;
     vec4  sT  = stormStampTowers(d);
@@ -456,133 +545,53 @@ void main()
     } else {
         sst = stormStampFinish(sT, d);
     }
-    float sSpan = max(pc.remap.z - pc.remap.y, 1e-3) / max(pc.remap.x, 1e-3);
-    float stormAdd = (0.4 * sst.x + 0.5 * sst.y - 0.25 * sst.w) * sSpan;
-    // Under a cyclone's central dense overcast the low cloud is OVERCAST (a raining nimbostratus deck under the shield),
-    // whatever the map had there (2026-10-27, issue 20261027_003307): an additive brightness left a clear map broken,
-    // so the deck under the CDO was scattered cloud and no rain fell from it. A floor at the full threshold, in
-    // brightness units; it fades out with the CDO's edge (stormStampFinish's inner).
-    float deckFloor = gCycDeck * pc.remap.z / max(pc.remap.x, 1e-3);
-    cov = clamp(max(cov + stormAdd, deckFloor), 0.0, 1.0);
-    m1  = clamp(max(m1 + stormAdd, deckFloor), 0.0, 1.0);
-    // Systems strengthen and weaken: clear air clouds over where the field rises, overcast thins where it
-    // falls (the types below follow the new coverage, so storms grow and decay with it).
-    if (pc.evo1.y > 0.0) cov = clamp(cov + pc.evo1.y * evoGrowth(d), 0.0, 1.0);
+    float stormAdd = 0.4 * sst.x + 0.5 * sst.y - 0.25 * sst.w;
 
-    float latAbs  = abs(asin(clamp(d.z, -1.0, 1.0))) * (180.0 / PI);
-    // The sea under this part of the map NOW (the map drifts over the Earth: cv2Drift turns Earth-fixed e by +phase).
-    // It was read at the map-frame d, so the afternoon land convection and the cold-sea stratus followed a land mask
-    // displaced by the whole drift (thousands of km by the start date).
-    vec3  dE      = vec3(d.x * pc.wx.x + d.y * pc.wx.y, -d.x * pc.wx.y + d.y * pc.wx.x, d.z);
-    float ocean   = textureLod(earthSpecTex, equirectUV(dE), pc.srcLod + 2.0).r;
-    float tropics = 1.0 - smoothstep(18.0, 32.0, latAbs);
-    float polar   = smoothstep(50.0, 70.0, latAbs);
-
-    // Afternoon convection over land: the ground heats under the Sun of the last few hours (its height
-    // three hours ago here), and where the map has moisture nearby (its local mean cover) cumulus builds
-    // into congestus and storms through the afternoon, dying back after dark. The map is one moment's
-    // clouds everywhere; this is the diurnal cycle it cannot carry.
+    // Afternoon convection over land: the ground heats under the Sun of the last few hours.
     float heat = (pc.evo2.w > 0.0) ? smoothstep(0.15, 0.85, dot(d, pc.evo2.xyz)) : 0.0;
-    float aft  = pc.evo2.w * heat * (1.0 - ocean) * smoothstep(0.05, 0.3, m1);
-    cov = clamp(cov + 0.2 * aft, 0.0, 1.0);
+    float aft  = pc.evo2.w * heat * (1.0 - ocean) * smoothstep(0.2, 0.6, cl.raw);
+
+    float raw;
+    if (fine) raw = (l1.r - pc.remap.y) / span + kWxContrast * kWxNoise * nz;   // level 1's field + the finer octaves
+    else {
+        raw = 0.5 + kWxContrast * (cl.raw + kWxNoise * nz) + stormAdd + 0.2 * aft;
+        if (pc.evo1.y > 0.0) raw += pc.evo1.y * evoGrowth(d);
+        raw = max(raw, gCycDeck);
+    }
+    float cov = clamp(raw, 0.0, 1.0);
+
     if (fine) {
-        // Type and ground from level 1; the PRECIPITATION from this level's own coverage, as the full path below makes it
-        // (from level 1 it fell as rain over every texel the 10-km field touched: +4.5 ms of march in a storm view). Its
-        // convective share needs the variance ring, read only where the cloud is deep enough to rain.
-        vec4  l1   = textureLod(wxLevel1, vec3(st, float(id.z)), 0.0);
-        float deepF = smoothstep(0.55, 0.9, cov);
-        float pr = 0.0;
-        if (deepF > 0.0) {
-            float b1 = 0.0, b2 = 0.0;
-            for (int c = 0; c < 2; ++c) {
-                float w = (c == 0) ? pc.evo0.z : pc.evo0.w;
-                if (w < 1e-3) continue;
-                vec3  dc = normalize(dS - wv * ((c == 0) ? pc.evo0.x : pc.evo0.y));
-                vec2  uvc = equirectUV(dc);
-                float latc = asin(clamp(dc.z, -1.0, 1.0));
-                float a1 = 0.0, a2 = 0.0;
-                for (int k = 0; k < kRing; ++k) {
-                    float ang = float(k) * (2.0 * PI / float(kRing));
-                    float r   = ((k & 1) == 0 ? 4.0 : 8.0) * pc.pad;
-                    float v   = textureLod(earthCloudsTex, eqTap(dc, uvc, latc, tx, ty, vec2(cos(ang), sin(ang)) * r * texel),
-                                           pc.srcLod + 1.0 + log2(pc.pad)).r;
-                    a1 += v; a2 += v * v;
-                }
-                b1 += w * a1 / float(kRing);
-                b2 += w * a2 / float(kRing);
-            }
-            float sdF   = sqrt(max(b2 - b1 * b1, 0.0));
-            float convF = max(smoothstep(0.06, 0.2, sdF), 0.8 * aft);
-            pr = clamp(deepF * smoothstep(0.55, 0.9, l1.g) + deepF * (1.0 - convF) * 0.35, 0.0, 1.0);
-        }
+        // Type and ground from level 1; the precipitation from this level's own coverage.
+        float deepF = smoothstep(0.6, 1.0, cov);
+        float pr = clamp(deepF * smoothstep(0.55, 0.9, l1.g) + deepF * smoothstep(0.35, 0.15, l1.g) * 0.35, 0.0, 1.0);
         pr = max(pr * (1.0 - 0.95 * smoothstep(0.02, 0.2, sst.x)) * (1.0 - 0.9 * gRainFree), 0.85 * sst.z);
-        imageStore(outWeather, id, vec4(cov, l1.g, pr, l1.a));
+        imageStore(outWeather, id, vec4(clamp(pc.remap.y + raw * span, 0.0, 1.0), l1.g, pr, l1.a));
         return;
     }
 
-    float conv = max(smoothstep(0.06, 0.2, sd), 0.8 * aft);  // broken field (afternoon convection is)
-    float deep = smoothstep(0.55, 0.9, cov);                // bright = thick/tall
+    float conv = max(cl.conv, 0.8 * aft);
+    float deep = smoothstep(0.55, 0.95, cov) * max(cl.deep, aft);
 
     float t = 0.25;                                          // stratocumulus by default
     t += conv * 0.28;                                        // -> cumulus
-    t += deep * conv * (0.22 + 0.25 * tropics);              // -> congestus / cumulonimbus
-    t += deep * tropics * 0.12 * (1.0 - ocean * 0.5);        // tropical land convection
-    t -= (1.0 - conv) * ocean * (0.12 + 0.12 * polar);       // smooth cloud over cold sea -> stratus
-    t += 0.3 * aft * (0.5 + 0.5 * tropics);                  // afternoon: towering cumulus, storms
-    // With storm objects (2026-10-23, the plan's "the map's own Cb typing goes away"): the map's bright broken regions
-    // stop at congestus; cumulonimbus, and its convective rain, come only from the storms' own stamp below. Typed by the
-    // map, whole tropical regions rained at full rate under no tower (the radar's saturated 45-50 dBZ sheets, tornadoes
-    // hidden in the map's rain round their storm).
+    t += deep * conv * (0.22 + 0.25 * tropics);              // -> congestus (cumulonimbus only from storms)
+    t -= cl.strat * (0.08 + 0.10 * ocean * (1.0 - tropics)); // decks: stratocumulus, stratus over cold sea
+    t += 0.3 * aft * (0.5 + 0.5 * tropics);                  // afternoon: towering cumulus
     if (pc.storm2.x > 0.0) t = min(t, 0.62);
-    // A storm's field: congestus round its towers (a convective field the column layer's storm cumulus rises
-    // from), a stratiform deck under its forward flank (between stratus and stratocumulus: the low layer thickens a
-    // raining stratiform deck into nimbostratus).
     t  = mix(t, max(t, mix(0.55, 0.72, smoothstep(0.5, 1.0, sst.x))), min(sst.x * 2.0, 1.0));
     t  = mix(t, 0.15, sst.y * (1.0 - sst.x));
     t  = clamp(t, 0.0, 1.0);
 
-    float precip = clamp(deep * smoothstep(0.55, 0.9, t) + deep * (1.0 - conv) * 0.35, 0.0, 1.0);
-    // Inside a storm's envelope only the storm's own rain falls (its forward flank / trailing stratiform region here,
-    // its core in the march): the map's precipitation there (its stratiform rule, and the congestus the storm field
-    // types) rained 30-45 dBZ over ~100 km round a supercell, whose inflow is rain-free, and hid its tornado; the
-    // rear flank's rain-free base clears it further (2026-10-23).
-    // (Nearly all of it: "Rain" 3 multiplies what is left, and half the map's rain still saturated the eye's rate.)
+    float precip = clamp(smoothstep(0.6, 1.0, cov) * (smoothstep(0.55, 0.9, t) + cl.strat * 0.35), 0.0, 1.0);
     float envK = smoothstep(0.02, 0.2, sst.x);
     precip = max(precip * (1.0 - 0.95 * envK) * (1.0 - 0.9 * gRainFree), 0.85 * sst.z);
 
-    // Review 18: the COARSE levels hold the brightness whose coverage is the true mean coverage of the fine
-    // texels under them. Every consumer reads coverage as clamp((r x Coverage - clear) / (full - clear)), and a
-    // coarse level used to hold the MEAN brightness, so its coverage was that of the mean: inflated wherever a
-    // field is broken (half the texels clear, half at 0.6 read as 0.3 brightness, i.e. ~40% cover instead
-    // of 50%... and a clear-threshold-straddling field read as overcast or clear as a whole). The far field
-    // takes its cloud fraction from mip 2 (clouds_v2.glsl), so it must be a fraction. Mip 0 is untouched; the
-    // types and the precipitation above keep the mean brightness.
-    float covStore = cov;
-    if (pc.remap.w > 0.5 && pc.remap.x > 0.0) {
-        int   N    = clamp(2 << int(pc.remap.w), 2, 8);
-        float lodT = max(pc.srcLod - log2(float(N) * 0.5), 0.0);
-        float add  = (pc.evo1.y > 0.0 ? pc.evo1.y * evoGrowth(d) : 0.0) + 0.2 * aft + stormAdd;
-        float span = max(pc.remap.z - pc.remap.y, 1e-3);
-        float frac = 0.0;
-        for (int c = 0; c < 2; ++c) {
-            float wc = (c == 0) ? pc.evo0.z : pc.evo0.w;
-            if (wc < 1e-3) continue;
-            vec3  dc  = normalize(dS - wv * ((c == 0) ? pc.evo0.x : pc.evo0.y));
-            vec2  uvc = equirectUV(dc);
-            float latc = asin(clamp(dc.z, -1.0, 1.0));
-            gEqLin = abs(d.z) < 0.97 && texel < 0.04;   // (offsets up to half a texel)
-            float acc = 0.0;
-            for (int j = 0; j < N; ++j)
-                for (int i = 0; i < N; ++i) {
-                    vec2  o = ((vec2(i, j) + 0.5) / float(N) - 0.5) * texel;
-                    float b = textureLod(earthCloudsTex, eqTap(dc, uvc, latc, tx, ty, o), lodT).r;
-                    acc += clamp((max(b + add, deckFloor) * pc.remap.x - pc.remap.y) / span, 0.0, 1.0);
-                }
-            frac += wc * acc / float(N * N);
-        }
-        covStore = frac > 0.0 ? (pc.remap.y + frac * span) / pc.remap.x
-                              : min(cov, pc.remap.y / pc.remap.x);
-    }
+    // Levels 0 and 1 hold the field itself (raw: below the clear threshold the brightness keeps the distance into clear
+    // air); the coarse levels the TRUE mean coverage of the finer field (review 18: the far field reads mip 2 as a
+    // fraction), from the variance of the octaves they leave out.
+    float covStore = pc.remap.w > 0.5 ? pc.remap.y + wxExpectedCover(raw, kWxContrast * kWxNoise * sqrt(varLeft)) * span
+                                      : pc.remap.y + raw * span;
+    covStore = clamp(covStore, 0.0, 1.0);
 
     // Ground height (terrain.glsl's encoding: 15/255 is sea level, 255/255 ~8.5 km above it), a 2x2
     // supersample at this mip's scale (the DEM's 2.7 km texels, ~2 mips finer than the source map's).

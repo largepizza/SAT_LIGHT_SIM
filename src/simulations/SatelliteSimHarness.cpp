@@ -5847,7 +5847,9 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                                        // the sky's light on a horizontal face, cosine-weighted (x2), and skyambraw at x2: the table the ground reads
                                        "skyambhemi", "skyambraw10",
                                        // the cloud's vertical optical depth over the ground: log2(1 + tau) / 10
-                                       "groundtau"};
+                                       "groundtau",
+                                       // Weather v2 (sat_sky.frag): the weather cube as an equirect map (32 coverage + rain, 33 type / cover / rain)
+                                       "wxmap", "wxtype"};
         const int viewCount = (int)(sizeof(kViews) / sizeof(kViews[0]));
         const std::string v = lower(pos(0) == "terrain" ? pos(1) : pos(0));
         int idx = -1;

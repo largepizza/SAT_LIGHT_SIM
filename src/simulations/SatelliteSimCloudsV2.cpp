@@ -1537,7 +1537,9 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         const wx::WindState ws = windStateNow();
         p.wind0 = ws.gpu();
         const double P = std::clamp((double)wxNoiseWindowH, 0.25, 12.0) * 3600.0;
-        p.wind1 = glm::vec4((float)(fracPos(simT / P) * P), (float)P, std::clamp(wxNoiseBlend, 0.02f, 0.45f),
+        // z: the window count mod 1024 (whole part: the renewal's fresh-texture hash) + the blend (fraction)
+        p.wind1 = glm::vec4((float)(fracPos(simT / P) * P), (float)P,
+                            (float)std::fmod(std::floor(simT / P), 1024.0) + std::clamp(wxNoiseBlend, 0.02f, 0.45f),
                             (float)std::clamp(simT - cv2PrevSimT, -600.0, 600.0));
     }
     p.storm = glm::vec4((float)stormScale, cv2StormDetail, cv2Anvil, cv2BaseRoughness);
@@ -2256,25 +2258,18 @@ SatelliteSim::GpuWeatherPC SatelliteSim::weatherEvoPC(int face, uint32_t mip) co
     pc.face = face;
     pc.pad = mip == 0 ? 2.0f : 1.0f;   // the convective-variance ring's radius in texels x this: the 1024 scale it was tuned at
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
-    const double P = std::max((double)cv2EvoWindowH, 0.1) * 3600.0;
-    const double ph0 = t / P - std::floor(t / P), ph1 = ph0 + 0.5 - std::floor(ph0 + 0.5);
-    const float w0 = (float)(std::sin(3.14159265358979 * ph0) * std::sin(3.14159265358979 * ph0));
-    if (cv2EvoWindMps > 0.0f)
-        pc.evo0 = glm::vec4((float)(ph0 * P), (float)(ph1 * P), w0, 1.0f - w0);
-    else
-        pc.evo0 = glm::vec4(0.0f, 0.0f, 1.0f, 0.0f);   // the static map
-    pc.evo1 = glm::vec4(std::max(cv2EvoWindMps, 0.0f), std::max(cv2EvoGrowth, 0.0f),
-                        (float)std::fmod(t, 1.0e6), 0.0f);
-    // The Sun three hours ago, Earth-fixed (the Earth rotation angle;
-    // 3 h back it stood 45 deg further east), then into the map's (drifted) frame as cv2Drift turns it.
+    // Weather v2 (2026-11-06): the bake synthesises the weather (cloud_v2_weather.comp wxClimate / wxMoistureNoise).
+    // evo0 = the wind's state; evo1.x the macro flow map's window count mod 1024, y growth / decay, z its window (s);
+    // wx.x the sim time within the window (s).
+    const double P = std::clamp((double)wxMacroWindowH, 0.5, 24.0) * 3600.0;
+    pc.evo0 = windStateNow().gpu();
+    pc.evo1 = glm::vec4((float)std::fmod(std::floor(t / P), 1024.0), std::max(cv2EvoGrowth, 0.0f), (float)P, 0.0f);
+    // The Sun three hours ago, Earth-fixed (the Earth rotation angle; 3 h back it stood 45 deg further east).
     const double g = earthRotationAngle(t) - 3.0 * 3600.0 * satphot::kOmegaEarth;
     const glm::dvec3 si = glm::dvec3(sunDirECI);
     const glm::dvec3 se(si.x * std::cos(g) + si.y * std::sin(g), -si.x * std::sin(g) + si.y * std::cos(g), si.z);
-    const double dr = cloudDriftPhase();
-    const glm::dvec3 sm(se.x * std::cos(dr) - se.y * std::sin(dr), se.x * std::sin(dr) + se.y * std::cos(dr), se.z);
-    pc.evo2 = glm::vec4(glm::vec3(glm::normalize(sm)), std::max(cv2EvoDiurnal, 0.0f));
-    // The drift itself: the land / sea mask is Earth-fixed, the map is not (cloud_v2_weather.comp).
-    pc.wx = glm::vec4((float)std::cos(dr), (float)std::sin(dr), 0.0f, 0.0f);
+    pc.evo2 = glm::vec4(glm::vec3(glm::normalize(se)), std::max(cv2EvoDiurnal, 0.0f));
+    pc.wx = glm::vec4((float)(fracPos(t / P) * P), 0.0f, 0.0f, 0.0f);
     // w = the LOGICAL mip (the coarse levels' true mean coverage; levels 0 and 1, 5 and 10 km, are untouched).
     pc.remap = glm::vec4(cv2Coverage, cv2CoverClear, std::max(cv2CoverFull, cv2CoverClear + 0.01f),
                          (float)(mip > 0 ? mip - 1 : 0));

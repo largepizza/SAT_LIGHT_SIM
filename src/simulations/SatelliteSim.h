@@ -7355,6 +7355,7 @@ private:
     float wxWindEddies   = 1.0f;    // mesoscale eddies' gain
     float wxNoiseWindowH = 2.0f;    // the cloud noise's flow-map window (h): how long a texture rides the wind before it renews
     float wxNoiseBlend   = 0.12f;   // the share of the window each side of a renewal that cross-fades to the other phase
+    float wxMacroWindowH = 4.0f;    // the weather bake's moisture flow-map window (h)
     float cloudSunGain = 1.1f;       // near-horizon/sunset sun-gain endpoint — blended toward
                                      // cloudSunGainZenith by sun elevation (see cloud_march.comp)
     float cloudSunGainZenith = 1.0f; // sun-gain endpoint when the sun is near zenith (midday)

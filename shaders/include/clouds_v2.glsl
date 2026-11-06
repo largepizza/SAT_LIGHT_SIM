@@ -348,16 +348,22 @@ vec3 cv2NoiseDispAt(vec3 dirE, float hSteer)
 {
     float P = cv2.wind1.y;
     if (P <= 0.0) return vec3(0.0);
-    float f   = fract(cv2.wind1.x / P + cv2WindStagger(dirE));
-    float b   = cv2.wind1.z;
+    float fT  = cv2.wind1.x / P + cv2WindStagger(dirE);   // windows elapsed here (the stagger shifts them)
+    float f   = fract(fT);
+    float b   = fract(cv2.wind1.z);                         // (wind1.z = the window count mod 1024 + the blend)
     float wA  = smoothstep(0.0, b, f) * (1.0 - smoothstep(1.0 - b, 1.0, f));
 #ifdef CV2_PHASE_XI
     float xi  = CV2_PHASE_XI;   // the march: per pixel and frame, from builtins (a live global put it over the register cliff)
 #else
     float xi  = 0.5;            // everyone else: the dominant phase (shadows, beams, probes)
 #endif
-    float age = (xi < wA) ? f * P : fract(f + 0.5) * P;
-    return wfWind(dirE, hSteer, cv2.wind0) * age;
+    bool  pA  = xi < wA;
+    float age = pA ? f * P : fract(f + 0.5) * P;
+    // Each renewal starts from FRESH texture: a jump of the read position by a hash of the window's index (otherwise
+    // every window would rewind the clouds to the same unadvected noise). Constant within a window: no motion.
+    float k   = floor(cv2.wind1.z) + floor(pA ? fT : fT + 0.5) + (pA ? 0.0 : 0.5);
+    vec3  j   = fract(sin(vec3(k * 12.9898, k * 78.233, k * 37.719)) * 43758.5453) - 0.5;
+    return wfWind(dirE, hSteer, cv2.wind0) * age + j * 4.0e5;
 }
 // A noise-read offset (eye-relative ECEF m) in the moving frame: cv2Field / cv2FarColumn shift q's rSeaE and seaProjE
 // by the displacement on entry, so this is the identity (the name marks a read that rides the wind).

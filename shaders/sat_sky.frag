@@ -3888,6 +3888,20 @@ void main() {
 #endif
     vec3 sunDir = normalize(sunDirENU.xyz);
 
+#if !defined(SKY_NO_DEBUG_VIEWS) && !defined(SKY_REFL) && !defined(SKY_LITE)
+    // Weather v2 (2026-11-06): debug views 32 "wxmap" / 33 "wxtype": the weather cube as an equirect map over the screen
+    // (lon -180 at the left, north up), the whole planet's weather in one capture. wxmap: grey = the coverage brightness
+    // (the clear threshold ~0.12 dark), blue = precipitation, ocean tinted; wxtype: R type, G coverage, B precipitation.
+    if (int(cloud.terrainDebugView + 0.5) == 32 || int(cloud.terrainDebugView + 0.5) == 33) {
+        vec2  uv  = gl_FragCoord.xy / vec2(cloud.skyScreenW, cloud.skyScreenH);
+        float lon = (uv.x * 2.0 - 1.0) * 3.14159265, lat = (0.5 - uv.y) * 3.14159265;
+        vec4  w   = textureLod(earthCloudsCube, vec3(cos(lat) * cos(lon), cos(lat) * sin(lon), sin(lat)), 1.0);
+        outColor = int(cloud.terrainDebugView + 0.5) == 32 ? vec4(vec3(w.r) + vec3(0.0, 0.0, 0.6) * w.b + vec3(0.0, 0.03, 0.08), 1.0)
+                                                           : vec4(w.g, w.r, w.b, 1.0);
+        return;
+    }
+#endif
+
 #if CLOUD_DEBUG == 6
     // Minimal, direct test: sample cloudNoiseTex straight from the view direction, bypassing
     // the entire raymarch/threshold/lighting pipeline entirely. If the seam still appears here,
