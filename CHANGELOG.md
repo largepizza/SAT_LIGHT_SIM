@@ -376,6 +376,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **No more mushrooms on anvils.** A thin stem with a round cap no longer grows out of the top of a thunderstorm's
   anvil. An overshooting top is now a broad, low swell of the tower's head pushing up through the anvil's lid,
   rising and settling back over 10-20 minutes, instead of a smooth dome standing on the anvil.
+- **Anvils are made of the same cloud as the cumulus.** A thunderstorm's towers and anvil now take the cumulus'
+  density, lighting, billows and bubbles; only their shape is the storm's. The anvil plate is no longer a thin ice
+  sheet of its own density, and it meets the cumulus around it without a dark seam.
 - **Anvils are fibrous ice, not eroded slabs.** An anvil's plate no longer has holes punched through it: its billows
   only bulge (gentle domes on top, pouches underneath), its erosion is mostly gone, and its ice is combed into
   fibres along the wind that open into wisps toward its edges; the thin veil around it frays into the same fibres.

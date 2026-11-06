@@ -16,3 +16,10 @@ the margin was the horizontal distance from its axis at any height, so the lobes
 wide over every anvil-reaching tower, up to lid + overshoot + 800 m: with the dome it read as a mushroom (a thin stem
 under a smooth round cap) growing out of the anvil (issue 20261105_201719). With `cb_overshoot_km` 0 the pillar was
 still there as a flat-topped spire.
+
+## Now (material, same day)
+A storm's towers and anvil are the cumulus layer's cloud: the storm objects give only the shape (tower, flared head,
+lid at the tropopause, plate spreading downwind, overshoot swell); density (the congestus type's, the plate thinning
+with age and toward its edge), billow erosion, multiple-scattering and ambient multipliers and the thermal bubbles are
+the cumulus'. The fine bubbles are off on storms (on a 20-km wall they read as a sponge of pits from afar). The plate's
+own thin-ice density and the hurricane CDO top density setting (`storm_cyc_top_density`) no longer apply.

@@ -720,7 +720,7 @@ struct CV2Storm {
     float top;      // the storm cloud's top over this point (m)
     float hf;       // the lighting's height share (0 base .. 1 top)
     float deck;     // 0 a tower .. 1 the shield's plate (lit as a deck)
-    float sig;      // extinction at full presence (1/m)
+    float sig;      // the density factor on the congestus type's (1 a tower; an anvil plate thins with age and toward its edge)
     float near;     // under a full-height tower's head (CV2Col.near)
     float storm;    // the storm strength (CV2Col.storm)
     float prox;     // within the storm cumulus reach (CV2Col.prox)
@@ -1352,6 +1352,12 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         // the "swiss cheese". A negative lobeRef is inert where it is read, max(lobeRef - hb, 0).)
         c.lobeRef = mix(c.lobeRef, -plK, wS);
         c.bigL    = max(c.bigL, wS);
+        // THE CUMULUS' MATERIAL (2026-11-06, the user: anvils read as another material next to the billows, meet the cumulus
+        // at a seam, miss the bubbles and only scattered like cloud at density ~0.1): a storm is a thick cumulus of this
+        // layer, not deep convection with its own surface. The storm gives the SHAPE (its margin: towers, lid, plate, the
+        // overshoot's swell); the lobes, bubbles, billow erosion, density and lighting are the congestus type's, read
+        // through the same path as every cumulus. (deep 0: the cumulus-scale shape and detail under the storm-scale lobes,
+        // bigL, as on a thick cumulus; the core floor, ciHu2.y, keeps the bubbles from holing the plate.)
         c.deep    = max(c.deep, wS);
         // An anvil plate's lid is smooth-ish (spreading ice under the tropopause); its underside and edges billow.
         // Over a tower's head (sg.near) the lid is smoother still; toward the plate's outline (sg.cap) it keeps a
@@ -1367,32 +1373,30 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         c.AshK    = mix(c.AshK, 0.0, wS);
         // The surface ramps in over stormU.z metres whatever the storm's size (a tower is km wide, its skin is not).
         // (Never sharper than ~1.5 footprints: a cut-out edge a pixel cannot resolve stipples from afar.)
-        // (The plate's ice ramps in over 3x that: spreading ice has a soft skin.)
-        c.phK     = mix(c.phK, cv2.stormU.y / max(cv2.stormU.z * (1.0 + 2.0 * plK), 1.5 * fpM), wS);
+        c.phK     = mix(c.phK, cv2.stormU.y / max(cv2.stormU.z, 1.5 * fpM), wS);
         c.phP     = mix(c.phP, 0.0, wS);
         c.subPix  = mix(c.subPix, 0.0, wS);
-        c.sigK    = mix(c.sigK, sg.sig, wS);
-        c.billow  = mix(c.billow, cv2.types[4].shape.z * smoothstep(0.05, 0.4, sg.hf) * 0.3, wS);
-        c.erK     = mix(c.erK, cv2.types[4].shape.y * cv2.look.z * cv2.storm.y * mix(1.0, cv2.storm3b.x, plK), wS);
+        // (sg.sig: 1, or a hurricane CDO's top density factor.)
+        c.sigK    = mix(c.sigK, mix(0.6, 1.0, smoothstep(0.0, 0.4, sg.hf)) * cv2.types[3].shape.x * cv2.look.y * sg.sig, wS);
+        c.billow  = mix(c.billow, cv2.types[3].shape.z * smoothstep(0.05, 0.4, sg.hf) * 0.3, wS);
+        c.erK     = mix(c.erK, cv2.types[3].shape.y * cv2.look.z * cv2.storm.y * mix(1.0, cv2.storm3b.x, plK), wS);
         c.erBase  = mix(c.erBase, 1.0 - 0.7 * cv2.high2.w, wS);
-        // "Storm bubbles" (storm3a.w): a tower's share of the cumulus bubbles and the turrets' skew (cv2FieldLow, after the
-        // storm fetch), carried NEGATIVE in wispE, which a storm zeroes and whose readers take max(wispE, >= 0): no
-        // register across the fetches (the march sits at the 128 cliff). Not on the plate.
-        float stB = 0.0;
-#ifndef SKY_LITE
-        // (Off the plate and its outline (deck, cap), squared: where a head meets the plate the bubbles' creases
-        // pitted the plate's lid with dark specks, the storm from 30 km.)
-        stB = cv2.storm3a.w * (1.0 - sg.deck) * (1.0 - sg.deck) * (1.0 - min(1.5 * sg.cap, 1.0)) * (1.0 - smoothstep(150.0, 1000.0, fpM));
-#endif
-        c.wispE   = mix(c.wispE, -stB, wS);
+        c.wispE   = mix(c.wispE, 0.0, wS);
         c.rV      = mix(c.rV, 0.0, wS);
-        c.fpFade  = mix(c.fpFade, mix(1.0, 0.3, smoothstep(300.0, 2000.0, fpM)), wS);
+        float fpS = mix(1.0, 0.3, smoothstep(300.0, 2000.0, fpM));
+        c.fpFade  = mix(c.fpFade, fpS, wS);
         // (The storm lobes' largest addition in practice: 2 x lobeS x ~0.7 (the billow channels' spread is ~0.12, the
-        // storm-scale lobes x 2.5 plus the fine ones on their crowns). The cumulus' formula, 3.35 lobeS, kept every point
-        // within ~6 km of a storm's surface fetching: coarse view reads x1.8 looking down on an anvil plate.)
-        c.lobeB   = mix(c.lobeB, lobeS * 1.4 * (1.0 + 0.6 * cv2.cu3.w * stB) + (stB > 0.0 ? 0.1 : 0.0), wS);
+        // storm-scale lobes x 2.5 plus the fine ones on their crowns), x (1 + x) with the cumulus bubbles, + their own reach
+        // (cv2LowA's bound). The cumulus' lobe formula, 3.35 lobeS, kept every point within ~6 km of a storm's surface
+        // fetching: coarse view reads x1.8 looking down on an anvil plate.)
+        float bubS = 0.0;
+#ifndef SKY_LITE
+        bubS = fpS * (1.0 - sg.deck) * (1.0 - sg.deck);
+#endif
+        c.lobeB   = mix(c.lobeB, lobeS * 1.4 * (1.0 + cv2.cu5.x * bubS) + cv2.cu5.x * bubS * 2.0 * cv2.cu5.y * (0.6 + 0.45 * cv2.cu5.z), wS);
         c.tur    *= 1.0 - wS;
-        c.bub    *= 1.0 - wS;
+        c.bub     = mix(c.bub, bubS, wS);
+        c.thk     = mix(c.thk, 4000.0, wS);
 #ifndef SKY_LITE
         // A HURRICANE'S CDO (2026-11-05, the user: "a nice smooth but textured swirl, right now it is a bumpy mess"): the
         // plate of a cyclone's central dense overcast is a smooth sheet of outflow ice, not a storm's billowing anvil. Its
@@ -1409,8 +1413,8 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
 #endif
         f.hf       = mix(f.hf, sg.hf, wS);
         f.topH     = mix(f.topH, sg.top, wS);
-        f.msBright = mix(cu ? f.msBright : 1.0, cv2.types[4].look.x, wS);
-        f.ambient  = mix(cu ? f.ambient : 1.0, cv2.types[4].look.y, wS);
+        f.msBright = mix(cu ? f.msBright : 1.0, cv2.types[3].look.x, wS);
+        f.ambient  = mix(cu ? f.ambient : 1.0, cv2.types[3].look.y, wS);
         f.deck     = mix(f.deck, sg.deck, wS);
     } else if (!cu) return f;
     float m0 = c.m0, hb = c.hb, baseAmp = c.baseAmp, lobeRef = c.lobeRef, bigL = c.bigL, deep = c.deep, lobeKL = c.lobeKL;
@@ -1501,7 +1505,7 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
             // (c) Size follows the cloud (cu5.w, floor / 1000): on a small cloud the big bubbles are bigger than the cloud (it was ONE
             // smooth oval slice of one sphere); their distance is scaled toward 0 by the cloud's thickness, and a small
             // cloud is built of the fine bubbles alone, a big one of big bubbles carrying the fine ones.
-            float shF = 0.45 * cv2.cu5.z * (1.0 - smoothstep(80.0, 400.0, fpM));
+            float shF = 0.45 * cv2.cu5.z * (1.0 - smoothstep(80.0, 400.0, fpM)) * (1.0 - deep);
 #ifndef CV2_NO_FINE_BUBBLES
             if (shF > 0.0) {
                 float sdF = 0.9 * cv2.cu5.z * (textureLod(cv2ShapeTex, (cv2.anchorStormA.xyz + rT * cv2.anchorStorm.w) * 8.0
@@ -2818,7 +2822,6 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
     g.near = near; g.storm = storm; g.prox = prox;
     float zC = clamp(bestZeta, 0.0, 1.0);
     float hfT = clamp(mix(zC, (zC - 0.7) * (1.0 / 0.3), smoothstep(0.5, 0.7, zC) * bestFull), 0.0, 1.0);
-    float sigT = mix(0.6, 1.0, smoothstep(0.0, 0.3, zC)) * cv2.types[4].shape.x * cv2.look.y * cv2.column.x;
     // The shield (the strongest capsule over this point): a lens under the lid, thickest over the storm, thin at its
     // edge, hanging lower under a tower's head. Its outline is the margin's zero, frayed by the cumulus lobes.
     float mSh = -1e9, topS = lid, hfS = 0.0, sigS = 0.0, edgeS = 0.0;
@@ -2851,7 +2854,7 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
             // anvil's edge thins out.
             edgeS = 1.0 - smoothstep(0.0, 0.12, mP);
             hfS  = clamp((q.h - (topS - thick)) / thick, 0.0, 1.0);
-            sigS = 0.01 * cv2.storm.z * mix(1.0, 0.5, shAge) * mix(0.35, 1.0, smoothstep(0.35, 0.8, a));   // thinner ice toward its edge
+            sigS = mix(1.0, 0.5, shAge) * mix(0.35, 1.0, smoothstep(0.35, 0.8, a));   // thinner as it ages and toward its edge
         }
     }
     float m = cv2SMax(best, mSh, 400.0);
@@ -2864,7 +2867,7 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
     g.top  = mix(topS, bestTop, wT);
     g.hf   = mix(hfS, hfT, wT);
     g.deck = 1.0 - wT;
-    g.sig  = mix(sigS, sigT, wT);
+    g.sig  = mix(sigS, 1.0, wT);   // a factor on the congestus' density (cv2FieldLow): the storm is the cumulus' material
     g.cap  = 0.67 * edgeS * (1.0 - wT);   // (x 0.75 of the lobes: the edge's half)
     return g;
 }
@@ -2937,7 +2940,7 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
         // dark scales over the sheet.) On the margin here: added to cv2FieldLow's own margin it put the march at 248
         // registers. And x "Hurricane top density" (ciHu2.x, 3) the plate's ice: a CDO is the top of a deep, raining
         // overcast (tau ~100); at the anvil's density it was a translucent grey sheet over the darker cloud under it.
-        if (gCv2CycT > -1e8) { sg.m += smoothstep(0.6, 1.0, sg.deck) * cv2.ciHu.w * (1.0 + 10.0 * sg.cap) * max(gCv2CycT + 0.3, 0.0); sg.sig *= 1.0 + (cv2.ciHu2.x - 1.0) * sg.deck; }
+        if (gCv2CycT > -1e8) { sg.m += smoothstep(0.6, 1.0, sg.deck) * cv2.ciHu.w * (1.0 + 10.0 * sg.cap) * max(gCv2CycT + 0.3, 0.0); }
 #endif
         col.near = sg.near; col.storm = sg.storm; col.prox = sg.prox;
     } else if ((lm & kCv2LayCol) != 0u) col = cv2ColumnSigma(q, detailAmt, fpM);
