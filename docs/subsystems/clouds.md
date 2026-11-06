@@ -1311,6 +1311,21 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   > occupancy clipmap > "Low in the shell". Shot 1, 1920x1009, interleaved: still 22.2 -> 16.5 ms; flying east at 4.9 km/s
   ~50 -> ~28 ms (old shader 49.8, new shader 38.9, + the clipmap kept on 27.7-29.0); the reporter's trail 1 33.2 -> ~28;
   shot 2 still 8.5 -> 8.5; cumulus from 3 km 11.3 -> 11.0 (non-storm, no regression); 128 registers.
+- **Rain alone is BELOW the base** (2026-11-06, issue 20261105_180442 "Cloud base edge contour", branch qa/20261106/contour-a).
+  `coarseThin`'s rain case (a coarse sample standing for four steps, review 22) takes `rainAlone = f.rain > 0.9 && f.hf <= 0.0`:
+  a sample with no cloud body under it (`cv2LowA` sets `f.hf` once it gets past the rain branch, i.e. above the base).
+  The rain also fills a floor up to `kCv2RainIntoM` (400 m) over a raining base (2026-10-22), in the clear air above a thin
+  cloud too. A ray from above met that pure rain first, strode four steps (~250-400 m from a few km) and skipped a cloud
+  whose top was within ~4 steps of its base: a see-through line just inside the edge of every raining field (where the top
+  falls into the floor; outside it there is no rain under the margin), and a thinned, grainy margin elsewhere. Found by
+  knockouts at the reporter's view (51.34 N 111.74 E, 4.6 km, looking down): none of the base / LCL / regional / cell /
+  fractus / wisps / bubbles / turrets / core settings, the occupancy clipmap, the cv2FieldLow cull or top cull, the scene
+  depth / ground-contact fade, erosion, lobes or gBase changed it; 15 m steps thinned it to faint double lines (a stride
+  artefact); dropping `f.rain > 0.9` from `coarseThin` removed it; keeping the stride for pure rain (`f.rain >= 1`) above
+  the base did not. The fix moves the frame toward a 15 m-step reference (mean |diff| 12.9 -> 5.4 levels) and changes
+  ~60% of that frame (thin margins over rain fill in, the gap shrinks). Motion (tstab walk / pitch at that view): 4.43 /
+  1.81 -> 3.97 / 1.50 (floor 1.43). Cost within the A-A spread (contended GPU, 3 reps): from the ground under the rain
+  28.1 / 29.5 (A, A) vs 28.4 ms, the reporter's view 30.9 / 29.9 vs 29.7. 128 registers.
 - **Storms through the cumulus field (2026-11-04, issue 20261104_111947 "Anvil performance"; `clouds_v2.storm_unified` 1,
   no UI, `storm_unified_scale_m` 4000 / `_ramp_m` 250 / `_lobes` 1; worktree storm-rework, `harness_runs/att/` and `look/`;
   design + tables: `qa/waves/20261104/resolutions/storm-rework.md`).** A storm object's towers and anvil shield are a

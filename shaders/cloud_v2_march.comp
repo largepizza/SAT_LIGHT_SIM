@@ -889,7 +889,13 @@ void main()
             // From 4.8 km between a storm's decks it was 57% of the lit samples (7.7 a ray, each a light march) and every
             // ray crossed it nearly edge-on for tens of km without its transmittance falling: s1 cloud march 22.5 -> 16.7 ms
             // (1920x1009), the image within the noise floor (harness_runs/storm). Altocumulus (deck < 0.5) keeps fine steps.
-            bool coarseThin = !fine && f.sigma > 0.0 && (f.thin > 0.9 || f.rain > 0.9 || (f.soft > 0.9 && f.deck > 0.5));
+            // 2026-11-06 (issue 20261105_180442, "cloud base edge contour"): rain alone means BELOW the base (no cloud
+            // body set f.hf). The rain also fills a floor up to kCv2RainIntoM (400 m) over a raining base, in the clear air
+            // over a thin cloud too; a ray from above met that pure rain first, strode its four steps and skipped a cloud
+            // whose top was within ~4 steps of its base: a see-through line round every raining field's thin margin (where
+            // the top falls into the floor), and a thinned, grainy margin elsewhere. Below the base the stride is as before.
+            bool rainAlone  = f.rain > 0.9 && f.hf <= 0.0;
+            bool coarseThin = !fine && f.sigma > 0.0 && (f.thin > 0.9 || rainAlone || (f.soft > 0.9 && f.deck > 0.5));
             if (!fine && !coarseThin) {
                 // Back two steps and on to a JITTERED fine lattice: the start jitter covers only the
                 // first (shortest) step, so without this every fine sample sat on the coarse grid and
@@ -921,7 +927,7 @@ void main()
             // snapshot, Dushanbe) the shafts were ~14 of 40 ms of cloud march; x4 saved 13 ms there and 1.5 ms in the
             // review-22 daytime storm, where a shaft's edge reads ~3 levels brighter (a step carries its density a
             // little past the edge).
-            float rK = (coarseThin && f.rain > 0.9) ? 4.0 : 2.0;
+            float rK = (coarseThin && rainAlone) ? 4.0 : 2.0;
             if (coarseThin) pathLen += rK * stepF;
             else {
                 // Surface refinement (2026-10-10): far from the eye a step is hundreds of metres (1.2% of the
@@ -973,7 +979,7 @@ void main()
             // perf win is from altitude). Near the eye, inside or just above the layer (review 9: 9 km at
             // 62 N), two-step samples caught its fibres on some frames and missed them on others: crisp
             // flickering specks over the low clouds' edges.
-            float stepW = ((f.thin > 0.9 && fp > 60.0) || (f.rain > 0.9 && !fine) || (coarseThin && f.soft > 0.9)) ? rK * stepF : stepF;
+            float stepW = ((f.thin > 0.9 && fp > 60.0) || (rainAlone && !fine) || (coarseThin && f.soft > 0.9)) ? rK * stepF : stepF;
             // "Near cirrus stride" (perf.x, 2026-10-24; 1 = off): with the eye inside the high layer every ray runs through
             // its soft haze (cv2HighSigma's nearK) in ~60-120 m steps, each a field evaluation and a lit sample: two thirds
             // of the cloud march under an anvil at 12.4 km (issue 20261023_230322). There a pure thin-ice sample stands for
