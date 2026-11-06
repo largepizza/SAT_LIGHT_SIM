@@ -469,6 +469,14 @@ uint64_t SatelliteSim::stormEnvHash() const
 void SatelliteSim::updateStorms()
 {
     FPROF_SCOPE("updateStorms");
+    // Weather v2: no global drift. The storm catalog's "map frame" (its env.mapToEarth, the haboobs, bookmarks,
+    // cinematics) IS the Earth-fixed frame: with a drift rate left in, storms were placed and moved in a frame turning
+    // under the GPU's Earth-fixed one, and their convection cells landed far from where the catalog reported them.
+    if (kWeatherV2NoDrift)
+    {
+        cloudDriftRate = 0.0f;
+        cloudDriftPhaseOffset = 0.0;
+    }
     finishStormEnvIndex();   // (last frame's, if a frame ended before its join)
     if (stormEnvLate)
     {

@@ -1241,6 +1241,7 @@ void SatelliteSim::writeCloudsV2ConsumerDescriptors(VulkanContext &ctx)
     VkDescriptorBufferInfo flashes{cv2FlashBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo storms{stormBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo profile{cv2ProfileBuf, 0, VK_WHOLE_SIZE};   // the march's opacity profile (composite 26)
+    VkDescriptorImageInfo conv{cv2RepeatSampler, cv2ConvView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};   // (weather v2)
     // The sky set's binding 7 (sat_sky.frag's flat layers, its SKY_ENV / SKY_LITE variants and Potato):
     // the weather cube, so every flat stand-in shows the same evolving map as the volumetric clouds.
     VkDescriptorImageInfo weatherCube{cv2RepeatSampler, cv2WeatherView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
@@ -1269,7 +1270,8 @@ void SatelliteSim::writeCloudsV2ConsumerDescriptors(VulkanContext &ctx)
         imageWrite(beamSelfMarchDescSet, 7, TEX, &shape),
         imageWrite(beamSelfMarchDescSet, 8, TEX, &meso),
         imageWrite(beamSelfMarchDescSet, 9, TEX, &morph),
-        bufferWrite(beamSelfMarchDescSet, 10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &storms)};
+        bufferWrite(beamSelfMarchDescSet, 10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &storms),
+        imageWrite(beamSelfMarchDescSet, 11, TEX, &conv)};
     frameSafeUpdateDescriptorSets(ctx.device, (uint32_t)(sizeof(w) / sizeof(w[0])), w, 0, nullptr);
 }
 

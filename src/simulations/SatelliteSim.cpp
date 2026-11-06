@@ -11837,7 +11837,7 @@ void SatelliteSim::createSceneDepthPipeline(VulkanContext &ctx)
 // set — see that shader's header, still applicable, for why this isn't built on any shared grid).
 void SatelliteSim::createBeamSelfMarchDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[11] = {};
+    VkDescriptorSetLayoutBinding bindings[12] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
@@ -11851,15 +11851,16 @@ void SatelliteSim::createBeamSelfMarchDescriptors(VulkanContext &ctx)
     bindings[8] = {8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[9] = {9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};   // morphology (review 19)
     bindings[10] = {10, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};       // storm objects' towers
+    bindings[11] = {11, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}; // the convection cube (weather v2)
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 11;
+    li.bindingCount = 12;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &beamSelfMarchDescLayout);
 
     VkDescriptorPoolSize ps[3] = {
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 7},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.poolSizeCount = 3;
@@ -18711,7 +18712,6 @@ wx::WindState SatelliteSim::windStateNow() const
     return wx::windState(t, decl, wxWindWaves, wxWindEddies);
 }
 
-static constexpr bool kWeatherV2NoDrift = true;
 double SatelliteSim::cloudDriftPhase() const
 {
     // Weather v2 (2026-11-06, .plans/WEATHER_V2_PLAN.md): there is no global drift. Clouds move with the wind field

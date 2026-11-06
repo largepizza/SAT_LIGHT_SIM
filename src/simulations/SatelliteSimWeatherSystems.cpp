@@ -4,6 +4,7 @@
 #include "../FrameProfile.h"
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 void SatelliteSim::updateWeatherSystems(double t)
 {
@@ -31,6 +32,7 @@ void SatelliteSim::updateWeatherSystems(double t)
     }
     auto *head = reinterpret_cast<uint32_t *>(base + kSysHeadOffset);
     head[0] = n; head[1] = head[2] = head[3] = 0u;
+    convStatSystems = n;
     ctx_->mirrorDirty(stormMapped, kSysHeadOffset, 16 + 64ull * n);
 }
 
@@ -82,14 +84,33 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
         const double sigma = 0.7 * Rc;
         const double top = std::min(ss(0.02, 0.6, str), (double)T.heightCap) * T.role;
         cells[nC].a = glm::vec4(glm::vec3(glm::normalize(T.dir)), (float)sigma);
-        cells[nC].b = glm::vec4((float)str, (float)top, T.overshoot, T.role);
-        binCircle(glm::normalize(T.dir), 2.6 * sigma, nC);
+        uint32_t seedBits = T.seed;   // z: the tower's seed as float bits (the lightning's stable per-cell hash)
+        float seedF;
+        std::memcpy(&seedF, &seedBits, 4);
+        cells[nC].b = glm::vec4((float)str, (float)top, seedF, T.role);
+        binCircle(glm::normalize(T.dir), 4.5 * sigma, nC);   // (the bake's environment field reaches 2.5 sigma wide)
+        ++nC;
+    }
+    // The harness's test storm (`storms test`): one cell rising over ~25 min, mature, decaying over its last 40 min.
+    auto ssD = [](double e0, double e1, double x) { const double u = std::clamp((x - e0) / (e1 - e0), 0.0, 1.0); return u * u * (3 - 2 * u); };
+    const WxTestStorm &TS = wxTestStorm;
+    const double tsAge = t - TS.t0;
+    const double tsLat = glm::radians(TS.lat), tsLon = glm::radians(TS.lon);
+    const glm::dvec3 tsDir(std::cos(tsLat) * std::cos(tsLon), std::cos(tsLat) * std::sin(tsLon), std::sin(tsLat));
+    if (TS.on && tsAge > 0.0 && tsAge < TS.life && nC < kConvCellMax)
+    {
+        const double str = TS.str * ssD(0.0, 1500.0, tsAge) * (1.0 - ssD(TS.life - 2400.0, TS.life, tsAge));
+        const double Rc = Rb * 1.0;
+        cells[nC].a = glm::vec4(glm::vec3(tsDir), (float)(0.7 * Rc));
+        uint32_t sb = 0x7E57u; float sf; std::memcpy(&sf, &sb, 4);
+        cells[nC].b = glm::vec4((float)str, (float)ssD(0.02, 0.6, str), sf, 1.0f);
+        binCircle(tsDir, 4.5 * 0.7 * Rc, nC);
         ++nC;
     }
     // ANVIL sources: each storm whose towers reached the lid, from the moment the first did; it feeds the anvil until the
     // last falls back, then what it put up drifts downwind and decays (its linger). Line systems feed along the line.
     uint32_t nA = 0;
-    const double spread = 3.0;   // m/s: the outflow spreading at the lid (= the bake's, wxConvection)
+    const double spread = 7.0;   // m/s: the outflow spreading at the lid (= the bake's, wxConvection, for 2 h)
     for (const wx::Storm *S : storms)
     {
         if (nA >= kConvAnvilMax) break;
@@ -132,11 +153,32 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
         anvils[nA].d = glm::vec4((float)half, glm::vec3(axis));
         // Its reach: the drift of the oldest material it still holds, the spread and the line, from the source.
         const double age = std::min(lidAge, feed + 4.0 * linger);
-        const double reach = U * age + r0 * 2.5 + spread * std::min(age, 1.5 * 3600.0) + half;
-        binCircle(c + dw * (0.5 * U * age / kR), 0.5 * U * age + r0 * 2.5 + spread * std::min(age, 1.5 * 3600.0) + half,
+        const double reach = U * age + r0 * 2.5 + spread * std::min(age, 2.0 * 3600.0) + half;
+        binCircle(c + dw * (0.5 * U * age / kR), 0.5 * U * age + r0 * 2.5 + spread * std::min(age, 2.0 * 3600.0) + half,
                   0x80000000u | nA);
         (void)reach;
         ++nA;
+    }
+    if (TS.on && nA < kConvAnvilMax)
+    {
+        // Its anvil: fed from when the column nears the lid (~20 min) to 40 min before its end, carried by the 10-km wind.
+        const double on = 1200.0, off = std::max(TS.life - 2400.0, on + 60.0);
+        if (tsAge > on && tsAge - on < (off - on) + 4.0 * 3600.0)
+        {
+            const wx::WindState ws = windStateNow();
+            glm::dvec3 U = wx::windAt(tsDir, 10000.0, ws);
+            U -= tsDir * glm::dot(U, tsDir);
+            const double Um = glm::length(U);
+            const glm::dvec3 dw = Um > 0.1 ? U / Um : glm::normalize(glm::cross(glm::dvec3(0, 0, 1), tsDir) + glm::dvec3(1e-9, 0, 0));
+            const double r0 = 0.8 * Rb, lidAge = tsAge - on, age = std::min(lidAge, (off - on) + 4.0 * 3600.0);
+            anvils[nA].a = glm::vec4(glm::vec3(tsDir), (float)r0);
+            anvils[nA].b = glm::vec4(glm::vec3(dw), (float)TS.str);
+            anvils[nA].c = glm::vec4((float)lidAge, (float)(off - on), 3600.0f, (float)Um);
+            anvils[nA].d = glm::vec4(0.0f);
+            binCircle(glm::normalize(tsDir + dw * (0.5 * Um * age / kR)),
+                      0.5 * Um * age + r0 * 2.5 + spread * std::min(age, 2.0 * 3600.0), 0x80000000u | nA);
+            ++nA;
+        }
     }
     // The grid: a counting sort of the entries by cell.
     const uint32_t nCells = kConvGridLon * kConvGridLat;
@@ -163,6 +205,7 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
     }
     auto *head = reinterpret_cast<uint32_t *>(base + kConvHeadOffset);
     head[0] = nC; head[1] = nA; head[2] = used; head[3] = 0u;
+    convStatCells = nC; convStatAnvils = nA; convStatEntries = acc;
     ctx_->mirrorDirty(stormMapped, kConvHeadOffset, 16 + 32ull * nC);
     ctx_->mirrorDirty(stormMapped, kConvAnvilsOffset, 64ull * nA);
     ctx_->mirrorDirty(stormMapped, kConvGridOffset, 8ull * nCells);

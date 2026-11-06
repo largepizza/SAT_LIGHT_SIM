@@ -210,7 +210,7 @@ const char *kHelp =
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select star <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s] [wait=1]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [cdc=<spv>] [sky=<spv>] [sky_taa=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; skyevents [state]|events|list <kind>|watch <solar|lunar|conjunction|occultation|moonglint|meteors|comet|supernova|cme|cometstorm|row|special <0-3>|aurora [t=]> [n=]|spaceweather; stars [state]|find <name>|select <name>; moonbase [state]|windows [days=] [limit=] [jitter=]|base <i> [lean=] [jitter=]; meteors [state]|count [minutes=] [lm=] [shower=]|force [kind=meteor|fireball|bolide] [shower=] [mag=] [az=] [el=] [v=] [delay=]|go [shower=]; comets [state]|list [days=]|watch [k|great] [days=] [sun_max=] [orbit=1]; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|pick|return|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|preview <file> [shot=] [scale=] [fps=]|save|load|state|stop; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [cdc=<spv>] [sky=<spv>] [sky_taa=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; skyevents [state]|events|list <kind>|watch <solar|lunar|conjunction|occultation|moonglint|meteors|comet|supernova|cme|cometstorm|row|special <0-3>|aurora [t=]> [n=]|spaceweather; stars [state]|find <name>|select <name>; moonbase [state]|windows [days=] [limit=] [jitter=]|base <i> [lean=] [jitter=]; meteors [state]|count [minutes=] [lm=] [shower=]|force [kind=meteor|fireball|bolide] [shower=] [mag=] [az=] [el=] [v=] [delay=]|go [shower=]; comets [state]|list [days=]|watch [k|great] [days=] [sun_max=] [orbit=1]; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|pick|return|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; storms test lat= lon= [age_min=] [life_min=] [str=]|storms test off; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|preview <file> [shot=] [scale=] [fps=]|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=] [frames=] [video=]; video start [name] [fps=] [scale=] [ui=on]|stop|state; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
@@ -914,6 +914,9 @@ json SatelliteSim::harnessStateJson()
             w["cube"] = {{"rebakes", cv2WxRebakes}, {"all_six_bakes", cv2WxAllSixBakes}, {"face_lag_s", lag},
                          {"one_face", cv2WxOneFace}, {"rect_bake", cv2WxRectBake}, {"rect_bakes", cv2WxRectBakes}, {"env_job_ms", stormEnvJobMs}, {"env_late", stormEnvLateCount}, {"tick_s", cv2WxTickS}, {"bake_ms", cv2WxBakeMs}, {"bake_faces", cv2WxLastBakeFaces}, {"bake_ms_per_face", cv2WxBakeMsPerFace}};
         }
+        // Weather v2: the convection upload (cells, anvil sources, list entries wanted vs kept) and the systems.
+        w["conv"] = {{"cells", convStatCells}, {"anvils", convStatAnvils}, {"entries", convStatEntries},
+                     {"list_max", kConvListMax}, {"systems", convStatSystems}};
         {   // Each tornado drawn: its funnel's base (the drawn cloud's, probed on the GPU) and the light on it.
             nlohmann::json tl = nlohmann::json::array();
             for (const TornadoNow &T : tornadoesNow)
@@ -5365,6 +5368,32 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     }
     if (n == "storms")
     {
+        // `storms test lat= lon= [age_min=60] [life_min=240] [str=1]` | `storms test off`: one stationary supercell injected
+        // into the convection upload (SatelliteSimWeatherSystems.cpp), born age_min ago: a lab for the storm's shape. The
+        // weather cube re-bakes every face at once (time may be paused).
+        if (lower(pos(0)) == "test")
+        {
+            const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            if (lower(pos(1)) == "off")
+                wxTestStorm.on = false;
+            else
+            {
+                wxTestStorm.on = true;
+                wxTestStorm.lat = c.num("lat", (double)obsLatDeg);
+                wxTestStorm.lon = c.num("lon", (double)obsLonDeg);
+                wxTestStorm.life = c.num("life_min", 240.0) * 60.0;
+                wxTestStorm.t0 = tNow - c.num("age_min", 60.0) * 60.0;
+                wxTestStorm.str = (float)c.num("str", 1.0);
+            }
+            for (double &b : cv2WxBakedT) b = -1e30;
+            stormUploadedT = -1e300;   // (paused, updateStorms would skip the upload the cells come from)
+            cv2HistoryValid = false;
+            r["test_storm"] = {{"on", wxTestStorm.on}, {"lat_deg", wxTestStorm.lat}, {"lon_deg", wxTestStorm.lon},
+                               {"age_min", (tNow - wxTestStorm.t0) / 60.0}, {"life_min", wxTestStorm.life / 60.0}};
+            r["message"] = wxTestStorm.on ? "test storm at " + std::to_string(wxTestStorm.lat) + ", " + std::to_string(wxTestStorm.lon)
+                                          : std::string("test storm off");
+            return Status::Done;
+        }
         // A storm's centre now (map frame -> Earth-fixed), as a row like stormNearestJson's (for `go storm=`, `list`).
         auto stormRow = [&](const wx::Storm &S) -> json {
             const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;

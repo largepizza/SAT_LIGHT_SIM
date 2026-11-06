@@ -20,7 +20,9 @@
 #include "SpaceWeather.h"  // aurora activity over sim time + the oval (2026-10-03)
 #include "Kessler.h"       // Kessler syndrome: breakups, the debris pool, the cascade (2026-10-16)
 #include "Weather.h"       // weather events: storm objects (2026-10-22, .plans/WEATHER_EVENTS_PLAN.md)
-#include "WindField.h"     // Weather v2: the one wind (2026-11-06)
+#include "WindField.h"
+// Weather v2 (.plans/WEATHER_V2_PLAN.md): no global cloud drift (SatelliteSim::cloudDriftPhase, updateStorms).
+inline constexpr bool kWeatherV2NoDrift = true;     // Weather v2: the one wind (2026-11-06)
 #include "WeatherSystems.h"  // Weather v2: weather systems (extratropical cyclones, ...)
 #include "Wildfire.h"   // (and Biome.h)         // the land-cover map for the weather hazards (2026-10-23)
 #include "StormClimatology.h"
@@ -5975,6 +5977,10 @@ private:
     void updateConvection(double t, const std::vector<const wx::Storm *> &storms);   // Weather v2: cells + anvil sources
     std::vector<uint32_t> convGridCount, convGridStart;   // (scratch)
     std::vector<std::pair<uint32_t, uint32_t>> convEntries;   // (grid cell, list value) scratch
+    uint32_t convStatCells = 0, convStatAnvils = 0, convStatEntries = 0, convStatSystems = 0;   // the last upload (harness state)
+    // `storms test` (harness): one stationary supercell injected into the convection upload, a lab for its shape.
+    struct WxTestStorm { bool on = false; double lat = 0, lon = 0, t0 = 0, life = 4 * 3600.0; float str = 1.0f; };
+    WxTestStorm wxTestStorm;
     std::unique_ptr<wx::StormClimatology> stormClim;
     std::vector<wx::Tower> stormTowers;          // this frame's, strongest first
     struct StormEntry { uint32_t key, tower; };
