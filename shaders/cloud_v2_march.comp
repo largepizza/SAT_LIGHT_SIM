@@ -52,6 +52,9 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_march.comp)
 #define CV2_ORO_EXTERNAL         // ... added at the main sample only (below), not in every inlined cv2Field (registers)
 #define CV2_STORM_BINDING   26   // the storm objects' towers (cv2_storms.glsl)
 #define CV2_DUST_SPEC            // the haboob code is specialization constant 3 (clouds_v2.glsl kCv2DustOn)
+// Weather v2: the cloud texture's flow-map phase per pixel and frame (clouds_v2.glsl cv2NoiseDispAt), recomputed from
+// builtins where it is used: a global holding it put the march over the 128-register cliff.
+#define CV2_PHASE_XI fract(52.9829189 * fract(dot(vec2(gl_GlobalInvocationID.xy), vec2(0.06711056, 0.00583715))) + 0.6180340 * cv2.frame.x)
 #include "clouds_v2.glsl"
 #include "atmosphere.glsl"
 #include "eclipse.glsl"

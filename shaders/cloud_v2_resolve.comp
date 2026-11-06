@@ -377,9 +377,13 @@ void main()
     // cumulus: "small clouds get filtered out when moving or changing altitude").
     float ndR = nd.x > 0.0 ? nd.x : (dNear < 1e29 ? dNear : 0.0);
     if (ndR > 0.0) {
-        vec3 v = vE * ndR;
-        vE = vec3(v.x * cv2.extra.z - v.y * cv2.extra.w, v.x * cv2.extra.w + v.y * cv2.extra.z, v.z)
-           + cv2.obsDelta.xyz;
+        // Weather v2 (2026-11-06): no drift; the cloud texture rides the wind (clouds_v2.glsl cv2NoiseDispAt), so the
+        // content at the point P now was at P - W(P) dt last frame. W at the steering height of the layer P is in.
+        vec3  v  = vE * ndR;
+        vec3  P  = normalize(pc.obsECEFDir.xyz) * (6371000.0 + pc.obsEffH) + v;
+        float hP = length(P) - 6371000.0;
+        float hS = hP < 3500.0 ? kWfLowH : (hP < 7500.0 ? kWfMidH : kWfHighH);
+        vE = v - wfWind(normalize(P), hS, cv2.wind0) * cv2.wind1.w + cv2.obsDelta.xyz;
     }
     vec3 cam = mat3(cv2.prevSkyView) * (transpose(mPrev) * vE);
     bool valid = cv2.frame.y > 0.5 && cam.z < 0.0;

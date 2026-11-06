@@ -20,6 +20,7 @@
 #include "SpaceWeather.h"  // aurora activity over sim time + the oval (2026-10-03)
 #include "Kessler.h"       // Kessler syndrome: breakups, the debris pool, the cascade (2026-10-16)
 #include "Weather.h"       // weather events: storm objects (2026-10-22, .plans/WEATHER_EVENTS_PLAN.md)
+#include "WindField.h"     // Weather v2: the one wind (2026-11-06)
 #include "Wildfire.h"   // (and Biome.h)         // the land-cover map for the weather hazards (2026-10-23)
 #include "StormClimatology.h"
 #include "SegVec.h"        // kEvents: a segmented vector (no reallocation hitches, 2026-10-21)
@@ -964,6 +965,11 @@ struct GpuCloudV2Params
     // 2026-11-06: the low shape volume's PREVIOUS frame while a frame change cross-fades (clouds_v2.glsl cv2Field):
     // [0..2] xyz its rotation's columns, [0].w the share of reads still in it (0 = no fade); [3] its anchorShape, [4] its anchorStorm
     glm::vec4 shapeB[5];
+    // Weather v2 (2026-11-06): the one wind (shaders/include/wind_field.glsl, WindField.h). wind0 = wx::WindState::gpu()
+    // (clock, declination, waves, eddies); wind1: x sim time mod the noise flow map's window (s), y the window (s), z the
+    // phases' blend (fraction of the window each side of a reset), w sim seconds since last frame (the resolve)
+    glm::vec4 wind0;
+    glm::vec4 wind1;
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -996,7 +1002,7 @@ static_assert(offsetof(GpuCloudV2Params, amb) == 288 + 48 * kCloudV2Types + 1232
 static_assert(offsetof(GpuCloudV2Params, tone) == 288 + 48 * kCloudV2Types + 1248, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, gnd) == 288 + 48 * kCloudV2Types + 1264, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, micro) == 288 + 48 * kCloudV2Types + 1280, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1584, "GpuCloudV2Params layout");   // +32: cirrus-hurr (ciHu, ciHu2); +32: storm3 (storm3a, storm3b); +64: vertical (vert, vert2, oro0, oro1); +80: shapeB
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1616, "GpuCloudV2Params layout");   // +32: cirrus-hurr (ciHu, ciHu2); +32: storm3 (storm3a, storm3b); +64: vertical (vert, vert2, oro0, oro1); +80: shapeB; +32: wind (wind0, wind1)
 static_assert(offsetof(GpuCloudV2Params, cu3) == 288 + 48 * kCloudV2Types + 1312, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
@@ -7343,6 +7349,12 @@ private:
     static constexpr double kGmstShiftS = 18901.0;
     double cloudDriftPhaseOffset = kCloudDriftPhaseDefault;
     double cloudDriftPhase() const;
+    // Weather v2 (2026-11-06, .plans/WEATHER_V2_PLAN.md): the one wind (WindField.h) at the sim's moment, and its settings.
+    wx::WindState windStateNow() const;
+    float wxWindWaves    = 1.0f;    // Rossby waves' gain
+    float wxWindEddies   = 1.0f;    // mesoscale eddies' gain
+    float wxNoiseWindowH = 2.0f;    // the cloud noise's flow-map window (h): how long a texture rides the wind before it renews
+    float wxNoiseBlend   = 0.12f;   // the share of the window each side of a renewal that cross-fades to the other phase
     float cloudSunGain = 1.1f;       // near-horizon/sunset sun-gain endpoint — blended toward
                                      // cloudSunGainZenith by sun elevation (see cloud_march.comp)
     float cloudSunGainZenith = 1.0f; // sun-gain endpoint when the sun is near zenith (midday)

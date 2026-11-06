@@ -261,7 +261,12 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // [0..2] xyz its rotation's columns (as shapeRotA), [0].w the share of reads still taking it (0 = no fade); [3] xyz its
     // anchorShape, [4] xyz its anchorStorm
     vec4  shapeB[5];
+    // Weather v2 (2026-11-06): wind0 = the wind's state (wind_field.glsl ws); wind1: x sim time mod the noise flow map's
+    // window (s), y the window (s), z the phases' blend (fraction each side of a reset), w sim seconds since last frame
+    vec4  wind0;
+    vec4  wind1;
 } cv2;
+#include "wind_field.glsl"
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO
 layout(set = 0, binding = CV2_WEATHER_BINDING) uniform samplerCube cv2WeatherTex;
@@ -322,11 +327,41 @@ CV2Type cv2TypeAt(float t)
 // An Earth-fixed vector turned into the DRIFTED frame the whole field is read in: the weather cube
 // and the noise volumes alike, so the clouds move with the map as one body (and the resolve can
 // reproject that motion exactly — cv2.extra.zw).
-vec3 cv2Drift(vec3 v)
-{
-    return vec3(v.x * cv2.cover.z - v.y * cv2.cover.w, v.x * cv2.cover.w + v.y * cv2.cover.z, v.z);
-}
+// Weather v2 (2026-11-06): there is no drift. The map frame IS the Earth-fixed frame; the clouds move with the wind
+// (cv2NoiseDisp below). Kept as the identity so every former map-frame read stays where it was written.
+vec3 cv2Drift(vec3 v) { return v; }
 vec3 cv2WeatherDir(vec3 d) { return cv2Drift(d); }
+
+// ── Weather v2: the cloud TEXTURE rides the wind (2026-11-06, .plans/WEATHER_V2_PLAN.md) ────────────────────────────
+// A flow map: the noise volumes are read at p - W(p) x age, W the layer's steering wind (wind_field.glsl), age the time
+// since the texture there last renewed. Two phases half a window (cv2.wind1.y) apart; phase A renews at f = 0 and phase B
+// carries the texture across A's renewal (A is used away from it, wA = 1 over 1 - 2 blend of the window). A RAY picks
+// one phase (CV2_PHASE_XI, per pixel and frame in the march, so the history averages the cross-fade): one field
+// evaluation, not two. The renewal time is staggered by a smooth field (~3000 km), so only ~2 x blend of the sky renews at once.
+// Not the sample's own height: a passive tracer in the shear (~3 m/s per km) is smeared ~20x over a 2-h window.
+float cv2WindStagger(vec3 d)
+{
+    return 0.23 * sin(dot(d, vec3(4.1, 2.7, -1.3)) + 0.7) + 0.19 * sin(dot(d, vec3(-1.9, 3.6, 2.4)) + 2.1)
+         + 0.11 * sin(dot(d, vec3(2.2, -1.1, 4.3)));
+}
+vec3 cv2NoiseDispAt(vec3 dirE, float hSteer)
+{
+    float P = cv2.wind1.y;
+    if (P <= 0.0) return vec3(0.0);
+    float f   = fract(cv2.wind1.x / P + cv2WindStagger(dirE));
+    float b   = cv2.wind1.z;
+    float wA  = smoothstep(0.0, b, f) * (1.0 - smoothstep(1.0 - b, 1.0, f));
+#ifdef CV2_PHASE_XI
+    float xi  = CV2_PHASE_XI;   // the march: per pixel and frame, from builtins (a live global put it over the register cliff)
+#else
+    float xi  = 0.5;            // everyone else: the dominant phase (shadows, beams, probes)
+#endif
+    float age = (xi < wA) ? f * P : fract(f + 0.5) * P;
+    return wfWind(dirE, hSteer, cv2.wind0) * age;
+}
+// A noise-read offset (eye-relative ECEF m) in the moving frame: cv2Field / cv2FarColumn shift q's rSeaE and seaProjE
+// by the displacement on entry, so this is the identity (the name marks a read that rides the wind).
+vec3 cv2Mat(vec3 v) { return v; }
 
 // Tropopause (cloud-top scale): ~16 km in the tropics, ~9 km at the poles; the type table's tops are
 // written for the mid-latitudes (scale 1.0 at ~11 km). A function of latitude only, so it is computed
@@ -677,7 +712,7 @@ vec3 cv2FlowWeatherDir(vec3 wd, vec3 flowD) { return normalize(wd + flowD * (1.0
 vec3 cv2FlowWeatherDirAt(CV2Pos q)
 {
     vec3 wd = cv2Drift(q.dirE);
-    return cv2FlowWeatherDir(wd, cv2FlowDisp(wd, cv2Drift(q.seaProjE)));
+    return cv2FlowWeatherDir(wd, cv2FlowDisp(wd, cv2Mat(q.seaProjE)));
 }
 
 // detailAmt: > 0 = erosion from the detail volume at that strength (faded with distance by the
@@ -781,8 +816,8 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     float covSpan = max(cv2.cover.y - cv2.cover.x, 1e-3);
 
     // The noise volumes are read in the same drifted frame.
-    vec3 rS = cv2Drift(q.rSeaE);
-    vec3 sP = cv2Drift(q.seaProjE);
+    vec3 rS = cv2Mat(q.rSeaE);
+    vec3 sP = cv2Mat(q.seaProjE);
     // The flow (cv2FlowDisp) moves the weather map and the cluster field by flowD (not the cells).
     vec3 flowD = cv2FlowDisp(wd, sP);
     vec3 wdF   = cv2FlowWeatherDir(wd, flowD);
@@ -1023,7 +1058,7 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
         float fDep = mix(250.0, 550.0, clamp(rate * 2.0, 0.0, 1.0));
         float frK  = cv2.vert.w > 0.0 ? smoothstep(base - fDep - 150.0, base - fDep + 50.0, q.h) * (1.0 - smoothstep(base - 60.0, base, q.h))
                                         * (1.0 - smoothstep(600.0, 1500.0, fpM))
-                                        * (1.0 - smoothstep(3000.0, 7000.0, length(q.rSeaE))) : 0.0;
+                                        * (1.0 - smoothstep(3000.0, 7000.0, R_EARTH * length(cross(q.dirE, cv2.prevObs.xyz)))) : 0.0;
         // (... and only within ~3-7 km of the eye, 2026-11-05 integration fix: further out the band under low (sea) bases,
         // 100-500 m up and seen nearly edge-on from the ground, drew rows of flat-topped blue-grey blobs a degree or two
         // over the horizon (towers region -5 163, all within ~15 km: a 6-15 km fade left them). Scud is a detail overhead.)
@@ -1445,7 +1480,7 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         if (m0 - gB * gB / 0.3 + c.lobeB <= 0.0 && subPix <= 0.0) return f;
     }
     vec3 wd = cv2Drift(q.dirE);
-    vec3 rS = cv2Drift(q.rSeaE);
+    vec3 rS = cv2Mat(q.rSeaE);
 
     // The shape volume tiles, and a sphere slices it: wherever the local horizontal plane holds a short lattice
     // direction of the tile (an axis, a face or body diagonal), the slice repeats along it every 1-1.7 periods and
@@ -1681,8 +1716,9 @@ CV2Far cv2FarColumn(CV2Pos q, float fpM)
 {
     CV2Far r;
     r.e = 0.0; r.eRaw = -1.0; r.frac = 0.0; r.sigma = 0.0; r.base = 0.0; r.top = 0.0; r.msBright = 1.0; r.strat = 0.0; r.deep = 0.0; r.covE = 0.0;
+    { vec3 dD = cv2NoiseDispAt(q.dirE, kWfLowH); q.rSeaE -= dD; q.seaProjE -= dD; }   // (as cv2Field)
     vec3  wd    = cv2Drift(q.dirE);
-    vec3  sP    = cv2Drift(q.seaProjE);
+    vec3  sP    = cv2Mat(q.seaProjE);
     vec3  flowD = cv2FlowDisp(wd, vec3(0.0));   // as cv2Field evaluates it for every layer (gCv2FlowD)
     vec3  wdF   = cv2FlowWeatherDir(wd, flowD);
     float covSpan = max(cv2.cover.y - cv2.cover.x, 1e-3);
@@ -1817,7 +1853,7 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
     // (The spread below can place mid cloud where the local low coverage is 0, so no early out on cov
     // alone when it is on.)
     if (cov <= 0.0 && cv2.flow.y <= 0.0) return 0.0;
-    vec4  cl  = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + cv2Drift(q.seaProjE) * cv2.anchorCluster.w,
+    vec4  cl  = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + q.seaProjE * cv2.anchorCluster.w,
                            cv2Lod(fpM, cv2.anchorCluster.w));
     // Fades in with the coverage: the source map is a JPEG, and in clear areas its 8x8 blocks
     // (~40 km) sit just above or below the clear threshold. A full altostratus sheet wherever the
@@ -1846,7 +1882,7 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
         // than north-south at the equator, ~1.7x at 30 deg), on its own anchor (vert2.yzw, reduced on the CPU). A squeeze of
         // the eye-relative offset across the local wind was centred on the eye: the wisps slid and changed as the eye moved
         // (issue 20261105_084815).
-        vec3  rW   = cv2Drift(q.rSeaE) * vec3(1.0, 1.0, 0.4);
+        vec3  rW   = q.rSeaE * vec3(1.0, 1.0, 0.4);
         vec4  shW  = textureLod(cv2ShapeTex, cv2.vert2.yzw + vec3(0.29, 0.53, 0.11) + rW * cv2.anchorMid.w,
                                 cv2Lod(fpM, cv2.anchorMid.w));
         float bW2  = bWs + 150.0 * clamp(2.5 * (shW.a - 0.5), -1.0, 1.0);
@@ -1869,7 +1905,7 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
         vec3  wdM = cv2Drift(q.dirE), aw = abs(wdM);
         // At 1.7x the frequency, on its own anchor (farTune2.yzw): never scale an anchored coordinate by a
         // non-integer — frac(a) x 1.7 jumps 0.7 of a period as the observer crosses a period plane.
-        vec3  aM  = cv2.farTune2.yzw + cv2Drift(q.seaProjE) * (cv2.anchorMorph.w * 1.7);
+        vec3  aM  = cv2.farTune2.yzw + q.seaProjE * (cv2.anchorMorph.w * 1.7);
         vec2  uvM = (aw.x >= aw.y && aw.x >= aw.z) ? aM.yz : (aw.y >= aw.z ? aM.xz + vec2(0.37) : aM.xy + vec2(0.71));
         float uM  = textureLod(cv2MorphTex, uvM, cv2Lod(fpM, cv2.anchorMorph.w * 1.7) + 3.0).r;
         clA = mix(cl.a, 0.5 + 0.057 * 2.6 * (uM - 0.5) * 1.2, cv2.morph.x * 0.75);
@@ -1923,7 +1959,7 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
     float strat = 1.0 - smoothstep(0.3, 0.55, w.g);                 // stratiform below -> As
     // Its own period (anchorMid): on the cumulus shape period, enlarging the cumulus lobes made the
     // altocumulus cloudlets huge too.
-    vec4  sh    = textureLod(cv2ShapeTex, cv2.anchorMid.xyz + cv2Drift(q.rSeaE) * cv2.anchorMid.w,
+    vec4  sh    = textureLod(cv2ShapeTex, cv2.anchorMid.xyz + q.rSeaE * cv2.anchorMid.w,
                              cv2Lod(fpM, cv2.anchorMid.w));
     float bW    = base + kCv2MidWanderM * clamp(2.5 * (sh.a - 0.5), -1.0, 1.0);
     float tW    = base + thick + kCv2MidWanderM * clamp(2.5 * (sh.g - 0.5), -1.0, 1.0);
@@ -1932,7 +1968,7 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
         // The 4-32 km Perlin (the closed-cell volume's, on its own anchor; read only here, inside a lens): a crest's lens
         // in separate almonds 10-20 km long. Added to the lift alone it only frayed the rims of a crest lifted far past its
         // condensation level (still one ribbon down the range), so it also cuts.
-        vec4  ceL = textureLod(cv2MesoTex, cv2.anchorCell.xyz + cv2Drift(q.seaProjE) * cv2.anchorCell.w,
+        vec4  ceL = textureLod(cv2MesoTex, cv2.anchorCell.xyz + q.seaProjE * cv2.anchorCell.w,
                                cv2Lod(fpM, cv2.anchorCell.w));
         float brk = clamp((ceL.a - 0.5) * 8.8, -1.5, 1.5);
         tO   += 220.0 * clamp(2.5 * (sh.a - 0.5), -1.0, 1.0) + 200.0 * brk;
@@ -2047,7 +2083,7 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
     float covL   = clamp((wc.r * cv2.look.x - cv2.cover.x) / span, 0.0, 1.0);
     float covS   = clamp((wb.r * cv2.look.x - cv2.cover.x) / span, 0.0, 1.0);
     float sys    = max(covS, 0.7 * covL);
-    vec4  cl     = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + cv2Drift(q.seaProjE) * cv2.anchorCluster.w
+    vec4  cl     = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + q.seaProjE * cv2.anchorCluster.w
                               + vec3(0.41, 0.17, 0.69), cv2Lod(fpM, cv2.anchorCluster.w));
     // The baked Perlin fBm is narrow: 0.50 +- 0.057 (1-99%: 0.37-0.63, measured by replicating the
     // bake). Thresholds are set against that spread; the first cut used 0.5-0.7 and drew no cirrus.
@@ -2396,7 +2432,7 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
     // and one that wrapped would pop), the blend's lost contrast put back. Until then the towers read the
     // storm volume at the wind's anchor, a slide along ONE direction of the drifted ECEF frame through towers
     // that stand still in it: wherever that direction points down, the lobes sank down the columns.
-    vec3  colX  = cv2.anchorCol.xyz + cv2Drift(q.rSeaE) * cv2.anchorStorm.w;
+    vec3  colX  = cv2.anchorCol.xyz + cv2Mat(q.rSeaE) * cv2.anchorStorm.w;
     vec3  colF  = normalize(mix(wd, cos(bestAng) * eastW0 + sin(bestAng) * northW0, smoothstep(0.5, 0.85, bestZeta) * bestFull)) * kCv2ColFlowSpan;
     float colPh = cv2.anchorCol.w;
     float colW  = 1.0 - abs(2.0 * colPh - 1.0);
@@ -2431,7 +2467,7 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
 #ifdef CV2_DETAIL_BINDING
         if (detailAmt > 0.0) {
             // (Without the wind's slide, like the lobes: the cracks stay with the tower and the lobes rise through them.)
-            vec4 dd = textureLod(cv2DetailTex, cv2.lightning2.yzw + cv2Drift(q.rSeaE) * cv2.anchorStormDetail.w,
+            vec4 dd = textureLod(cv2DetailTex, cv2.lightning2.yzw + cv2Mat(q.rSeaE) * cv2.anchorStormDetail.w,
                                  cv2Lod(fpM, cv2.anchorStormDetail.w));
             df = mix(0.45, dd.r * 0.75 + dd.g * 0.25, detailAmt);
         }
@@ -2534,13 +2570,13 @@ float cv2AnvilSigmaP(CV2Pos q, float fpM, float colNear, bool wantPres, out floa
     } else
 #endif
     {
-        cl   = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + cv2Drift(q.seaProjE) * cv2.anchorCluster.w,
+        cl   = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + cv2Mat(q.seaProjE) * cv2.anchorCluster.w,
                           cv2Lod(fpM, cv2.anchorCluster.w));
-        sh   = cv2ShapeSmooth(cv2.anchorStorm.xyz + cv2Drift(q.rSeaE) * cv2.anchorStorm.w,
+        sh   = cv2ShapeSmooth(cv2.anchorStorm.xyz + cv2Mat(q.rSeaE) * cv2.anchorStorm.w,
                               cv2Lod(fpM, cv2.anchorStorm.w));
         // (+ an octave three times finer of the storm lobes; never below 0.8, or the noise would reach past the radius the
         // shield is binned to, 1.6.)
-        if (shOn) sh3b = cv2ShapeSmooth((cv2.anchorStorm.xyz + cv2Drift(q.rSeaE) * cv2.anchorStorm.w) * 3.0,
+        if (shOn) sh3b = cv2ShapeSmooth((cv2.anchorStorm.xyz + cv2Mat(q.rSeaE) * cv2.anchorStorm.w) * 3.0,
                                         cv2Lod(fpM, 3.0 * cv2.anchorStorm.w)).b;
     }
     // A storm shield's outline, frayed at two scales (the cluster field, the storm lobes; more as it ages into cirrus):
@@ -2644,7 +2680,7 @@ float cv2FogDust(CV2Pos q, float fpM, out float dustS, out float fogTopH, out fl
     float sea  = 1.0 - smoothstep(5.0, 60.0, gF);                  // the coast and the sea
     float sig  = 0.0;
     if (cv2.fog.x > 0.0 && agl < 1.6 * cv2.fog.y) {
-        vec4  cl    = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + cv2Drift(q.seaProjE) * cv2.anchorCluster.w,
+        vec4  cl    = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + cv2Mat(q.seaProjE) * cv2.anchorCluster.w,
                                  cv2Lod(fpM, cv2.anchorCluster.w));
         float sunS  = dot(q.dirE, cv2.sunE.xyz);                   // sin of the Sun's elevation here
         float night = 1.0 - smoothstep(0.0, 0.2, sunS);            // burns off by ~12 deg of Sun
@@ -2661,7 +2697,7 @@ float cv2FogDust(CV2Pos q, float fpM, out float dustS, out float fogTopH, out fl
         float n01   = clamp(0.5 + 0.5 * ((cl.a - 0.5) * 8.8 + 0.5 * (cl.r - 0.5) * 4.4), 0.0, 1.0);
         float pres  = smoothstep(0.3, 0.7, pot * (0.4 + 1.2 * n01));
         // Its top undulates with the low cloud's shape noise (~2 km): a flat sheet read as a painted plane.
-        float sN    = textureLod(cv2ShapeTex, cv2.anchorShape.xyz + cv2Drift(q.rSeaE) * cv2.anchorShape.w,
+        float sN    = textureLod(cv2ShapeTex, cv2.anchorShape.xyz + cv2Mat(q.rSeaE) * cv2.anchorShape.w,
                                  cv2Lod(fpM, cv2.anchorShape.w)).r;
         float top   = cv2.fog.y * (0.5 + pres) * (0.6 + 0.8 * sN);
         sig     = cv2.fog.z * pres * (1.0 - smoothstep(0.55 * top, top, agl));
@@ -2669,7 +2705,7 @@ float cv2FogDust(CV2Pos q, float fpM, out float dustS, out float fogTopH, out fl
         fogHf   = clamp(agl / max(top, 1.0), 0.0, 1.0);
     }
     if (cv2.fog.w > 0.0) {
-        vec4  clC   = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + cv2Drift(q.seaProjE) * cv2.anchorCluster.w,
+        vec4  clC   = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + cv2Mat(q.seaProjE) * cv2.anchorCluster.w,
                                  cv2Lod(fpM, cv2.anchorCluster.w) + 2.0);
         float dry   = (1.0 - smoothstep(0.02, 0.25, cov4)) * (1.0 - sea) * (1.0 - clamp(w1.b * 3.0, 0.0, 1.0));
         float plume = smoothstep(0.42, 0.68, clC.a);
@@ -2693,7 +2729,7 @@ float cv2FogDust(CV2Pos q, float fpM, out float dustS, out float fogTopH, out fl
                          smoothstep(70.0, 78.0, latD) * (1.0 - sea)));                            // high Arctic land
         if (ice > 0.0) {
             float clear = 1.0 - smoothstep(0.25, 0.7, cov1);
-            vec4  clI   = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + cv2Drift(q.seaProjE) * cv2.anchorCluster.w,
+            vec4  clI   = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + cv2Mat(q.seaProjE) * cv2.anchorCluster.w,
                                      cv2Lod(fpM, cv2.anchorCluster.w) + 1.0);
             float patchI = smoothstep(0.40, 0.64, clI.a);
             // REGIONS of its own (~960 km and ~590 km; the dust's frequencies are not reused): one stretch of
@@ -2959,6 +2995,11 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     gCv2FlowSet = false;
     gCv2FlowD   = cv2FlowDisp(cv2Drift(q.dirE), vec3(0.0));
     gCv2FlowSet = true;
+    {   // Weather v2: the texture rides the wind. The sample's noise positions are shifted IN PLACE (q is a copy): a
+        // displacement held live through the field put the march over the 128-register cliff (251).
+        vec3 dD = cv2NoiseDispAt(q.dirE, kWfLowH);
+        q.rSeaE -= dD; q.seaProjE -= dD;
+    }
     gCv2GroundSet = false;
     gCv2Ground    = cv2Ground(q.dirE);
     gCv2GroundSet = true;
@@ -3034,7 +3075,7 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     float aglD = q.h - gCv2Ground;
     float hT   = cv2DustFrame[1].w;
     if (kCv2DustOn != 0 && cv2DustHead.x != 0u && (aglD < hT || (f.sigma > 0.0 && aglD < hT + kCv2DustClearFadeM + 900.0)))
-        dw = cv2DustWallAt(q.seaProjE);
+        dw = cv2DustWallAt(q.seaProjE + cv2NoiseDispAt(q.dirE, kWfLowH));   // (placed in the Earth frame)
     float clr = dw.z;
     float lobD = 0.0, lobG = 0.0;   // the lobe volume about its mean (all octaves, the coarse one), 0 where not read
     if (dw.x > 0.02 || (clr > 0.0 && (clr < 1.0 || aglD > hT - 900.0))) {
@@ -3146,7 +3187,7 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
 // circle (very well aligned plates), w = 46 deg halo. Evaluated once per RAY (the march caches it).
 vec4 cv2IceHabit(CV2Pos q)
 {
-    vec3  m = cv2.anchorCluster.xyz + cv2Drift(q.seaProjE) * cv2.anchorCluster.w;
+    vec3  m = cv2.anchorCluster.xyz + cv2Mat(q.seaProjE) * cv2.anchorCluster.w;
     float a = textureLod(cv2MesoTex, m + vec3(0.73, 0.29, 0.11), 1.0).a;
     float b = textureLod(cv2MesoTex, m + vec3(0.17, 0.83, 0.47), 1.0).a;
     float c = textureLod(cv2MesoTex, m * 2.0 + vec3(0.61, 0.07, 0.35), 1.0).a;

@@ -18,6 +18,7 @@
 
 #include "../FrameProfile.h"
 #include "SatelliteSim.h"
+#include "WindField.h"
 
 #include "Log.h"
 
@@ -1364,6 +1365,9 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     const double dDrift = drift - cv2PrevDrift;
     const double cDD = std::cos(dDrift), sDD = std::sin(dDrift);
     const glm::dvec3 windDir = glm::normalize(glm::dvec3(0.83, 0.52, 0.19));
+    // Weather v2 (2026-11-06): the noise no longer slides on one global wind; it moves with the local wind through the
+    // flow map (clouds_v2.glsl cv2NoiseDisp, shaders/include/wind_field.glsl). The old slide terms are kept at 0.
+    constexpr double kNoSlide = 0.0;
     const double dSimT = simT - cv2PrevSimT;
 
     p.prevSkyView = cv2PrevSkyView;
@@ -1373,11 +1377,11 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // the resolve turns the eye-relative point by dDrift and adds this: Rz(dDrift) eye - prevEye
     // plus the wind's shift, taken at 0.9 of the shape wind (the cells, which place the clouds, move
     // at 0.85 of it, the lobes at 1.0).
-    const glm::dvec3 windShift = rotD(windDir * ((double)cv2WindMps * 0.9 * dSimT),
+    const glm::dvec3 windShift = rotD(windDir * (kNoSlide * 0.9 * dSimT),
                                       std::cos(-cv2PrevDrift), std::sin(-cv2PrevDrift));
     p.obsDelta = glm::vec4(glm::vec3(rotD(eye, cDD, sDD) - cv2PrevEye + windShift), cv2PrevAspect);
     // What is left unreprojected: the volumes' relative slide (detail 1.6, cluster 0.6 of the wind).
-    p.motion = glm::vec4((float)std::abs((double)cv2WindMps * 0.7 * dSimT), std::clamp(cv2HistoryWeightMoving, 0.05f, 0.5f),
+    p.motion = glm::vec4((float)std::abs(kNoSlide * 0.7 * dSimT), std::clamp(cv2HistoryWeightMoving, 0.05f, 0.5f),
                          std::clamp(cv2CbHeadLobes, 0.0f, 1.5f),
                          // w: the noise LOD's pixel = the 100%-scale one (computeHalfExtent follows the render
                          // scale): at 50% the coarser pixel filtered the cumulus texture away.
@@ -1393,7 +1397,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     const glm::dvec3 sea = rotD(up * R, cD, sD);
     auto anchor = [&](double periodM, double windMul)
     {
-        const glm::dvec3 a = (sea + windDir * ((double)cv2WindMps * windMul * simT)) / periodM;
+        const glm::dvec3 a = (sea + windDir * (kNoSlide * windMul * simT)) / periodM;
         return glm::vec4((float)fracPos(a.x), (float)fracPos(a.y), (float)fracPos(a.z), (float)(1.0 / periodM));
     };
     p.anchorShape = anchor(cv2ShapePeriodM, 1.0);
@@ -1412,7 +1416,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         // frac(anchor) by 1.7 jumped the pattern by 0.7 of a period whenever the observer crossed a period
         // plane (an instant change of the Ac/As texture on moving ~1 km): reduce the scaled anchor here.
         const double mp = (double)std::clamp(cv2MorphPeriodKm, 40.0f, 2000.0f) * 1000.0 / 1.7;
-        const glm::dvec3 a = (sea + windDir * ((double)cv2WindMps * 0.6 * simT)) / mp;
+        const glm::dvec3 a = (sea + windDir * (kNoSlide * 0.6 * simT)) / mp;
         p.farTune2 = glm::vec4(std::clamp(cv2FarLowSun, 0.0f, 4.0f),
                                (float)fracPos(a.x), (float)fracPos(a.y), (float)fracPos(a.z));
     }
@@ -1469,7 +1473,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             p.shapeRotA[c] = glm::vec4((float)kFrames[f1][0][c], (float)kFrames[f1][1][c], (float)kFrames[f1][2][c], 0.0f);
         auto anchorF = [&](int f, double periodM, double windMul)
         {
-            const glm::dvec3 a = mulF(f, sea + windDir * ((double)cv2WindMps * windMul * simT)) / periodM;
+            const glm::dvec3 a = mulF(f, sea + windDir * (kNoSlide * windMul * simT)) / periodM;
             return glm::vec4((float)fracPos(a.x), (float)fracPos(a.y), (float)fracPos(a.z), (float)(1.0 / periodM));
         };
         // The storm lobes FLOW up (storms through the cumulus field, 2026-11-04): the storm-scale volume (towers, heads,
@@ -1527,6 +1531,14 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         else
             for (auto &v : p.shapeB) v = glm::vec4(0.0f);
         cv2ShapeFrame = f1;
+    }
+    {
+        // Weather v2: the one wind and the cloud noise's flow map (clouds_v2.glsl cv2NoiseDisp).
+        const wx::WindState ws = windStateNow();
+        p.wind0 = ws.gpu();
+        const double P = std::clamp((double)wxNoiseWindowH, 0.25, 12.0) * 3600.0;
+        p.wind1 = glm::vec4((float)(fracPos(simT / P) * P), (float)P, std::clamp(wxNoiseBlend, 0.02f, 0.45f),
+                            (float)std::clamp(simT - cv2PrevSimT, -600.0, 600.0));
     }
     p.storm = glm::vec4((float)stormScale, cv2StormDetail, cv2Anvil, cv2BaseRoughness);
     // The high layer's streak coordinates: along the wind = the drifted longitude x R, with a period
@@ -2153,7 +2165,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         // in double like every anchor; squeezing the eye-relative offset in the shader centred it on the eye, and the wisps
         // slid as the eye moved (issue 20261105_084815).
         const double mp = std::clamp((double)cv2MidPeriodM, 500.0, 60000.0);
-        glm::dvec3 a = (sea + windDir * ((double)cv2WindMps * simT)) / mp;
+        glm::dvec3 a = (sea + windDir * (kNoSlide * simT)) / mp;
         a.z *= 0.4;
         p.vert2 = glm::vec4(std::clamp(cv2MidWisps, 0.0f, 2.0f), (float)fracPos(a.x), (float)fracPos(a.y), (float)fracPos(a.z));
     }

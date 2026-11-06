@@ -18704,8 +18704,19 @@ void SatelliteSim::updatePositions(double t, float dt)
 // rad, so the slightest change of the rate (the slider, or the intro's old forced rate) threw the
 // whole map to an unrelated longitude. kCloudDriftPhaseDefault keeps the default rate's positions
 // exactly where they were.
+wx::WindState SatelliteSim::windStateNow() const
+{
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const double decl = std::asin(std::clamp((double)glm::normalize(glm::dvec3(sunDirECI)).z, -1.0, 1.0));
+    return wx::windState(t, decl, wxWindWaves, wxWindEddies);
+}
+
+static constexpr bool kWeatherV2NoDrift = true;
 double SatelliteSim::cloudDriftPhase() const
 {
+    // Weather v2 (2026-11-06, .plans/WEATHER_V2_PLAN.md): there is no global drift. Clouds move with the wind field
+    // (shaders/include/wind_field.glsl); every former map-frame consumer now reads the Earth-fixed frame.
+    if (kWeatherV2NoDrift) return 0.0;
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     const double ph = std::fmod((double)cloudDriftRate * (t - kCloudDriftEpochS) + cloudDriftPhaseOffset,
                                 glm::two_pi<double>());
