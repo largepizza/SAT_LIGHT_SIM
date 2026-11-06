@@ -83,7 +83,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   by 0.6 (decks) .. 0.9 (convective) x the ground, tops with them but capped at the Cb top; the mid layer by
   0.8x. Until then every base was above SEA level and the Andes/Tibet stood inside the cloud.
 - **Varied bases, fractus, mid-level wisps, orographic lenses** (2026-11-05, night wave "vertical"; `clouds_v2.glsl`
-  `cv2BaseShift`, `cv2LowA`, `cv2FarColumn`, `cv2MidSigma`, `cv2OroSigma`; UBO block `vert / vert2 / oro0 / oro1`; slots 528-535).
+  `cv2BaseShift`, `cv2LowA`, `cv2FarColumn`, `cv2MidSigma`, `cv2OroField`; UBO block `vert / vert2 / oro0 / oro1`; slots 528-535).
   - The low base = type base + lift + `cv2BaseShift` (regional spread + condensation-level proxy) + per-cell offset - deck
     variation, clamped to [lift + 150, top - 400]. The regional term normalises the cluster Perlin like the fog / mid layer
     (`clamp((cl.a-0.5)*8.8, ±1.5) * alt.w`): the old `(cl.a-0.5)*2*alt.w` moved a 300 m setting by ±34 m (cl.a is 0.50 ± 0.057).
@@ -111,35 +111,41 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     cluster Perlin's a > 0.54-0.62 at "Mid-level wisps" 1 (about a fifth of the area; the slider widens it by 0.05 per unit). Measured (cumulus at 3 km, uncontended): the first cut over
     ~75% of the area cost +0.9 ms of cloud_march, this one +0.4. Reusing the low field's coverage through a global (to skip
     the mid layer's weather fetches) put the march at 249-251 registers.
-  - Orographic lenses (`cv2OroSigma`, where `CV2_ELEV_BINDING` is defined: the DEM is binding 25 of the march set).
-    Relief excess ex = h(DEM mip 1, 800 m upwind for the cap) - h(mip 3.3, the regional ground) against a dryness
-    mix(2200, 350, moisture) m x (1.25 .. 0.85 over 8-25 m/s wind); lens centred hC + 2.4 exB (mip 2) + 300 m, half-size
-    hl = min(0.8 (ex - dry) + 100, 800) (top 0.8 hl, base 0.4 hl), sigma 0.05, smooth (no lobes / erosion); one lee lens at the
-    relief one wavelength 2 pi U / N upwind (N 0.01 /s), x0.65. Earth-fixed. The wind (CPU, per view: lenses are local)
-    (2026-11-05 follow-up, the user had not seen any: the cap sat 2 km downwind, off the summit, and at sigma 0.025 and
-    0.4 t thick it was a grey see-through sliver; now 800 m, 0.05, 0.8 t + 100, moisture default 0.75. Widening the footprint
-    with max(ex, 0.75 exB) laid one plate over the whole Alps: not done. Second round: the footprint also needs prominence,
-    t = min(ex - dry, 3 (ex - exB) + 150); 1-4 stacked plates ~200 m apart in bands of v = (h - zc) / hl (soft gaps
-    with a 25% floor: hard 30-m gaps hatched with the march steps; not in the CDC reads); rims smoothstep(0.6, 1, u) (0.75 hatched the grazing top with the march steps) and 80 m of t.
-    Fuji's cap is < 240 m thick: one plate (the stack shows on lenses over ~300 m). The Bernese Alps from above are still one ~30 km sheet with a wavy edge: the Alps are prominent at every scale.)
-    is "Ridge wind" / "Ridge wind from", or 20 m/s from the east within 25 deg of the equator, from the west outside.
-    Moisture = `oro_moist` x (1 +- 0.5 x a slow lat/lon wave whose phase turns over in ~3 sim days), so ranges take turns.
-    Gated on the ~20 km ground > 250 m, a 0.3-7 km band over it, fpM < 700 m. Under the mid layer's CDC mask bit; the
-    coarse reads (detailAmt < 0) inflate it 200 m so the 160 m-spaced CDC reads never miss a rim.
-  - **Registers:** in `cv2Field` (inlined at every march call site) even the gated, two-tap version took the march from
-    128 to 251 registers; a uniform-gated single fetch stayed at 128. So the march defines `CV2_ORO_EXTERNAL` and adds the
-    lens at its ONE main sample (cloud_v2_march.comp, after `cv2Field`): 128. The CDC and lightning (STV) shaders keep it
-    in `cv2Field` (no cliff there): the lens is in the occupancy clipmap and shadows the ground and lower cloud. The light
-    march does not see it (a lens is thin; it is lit as unshadowed).
-  - **Cost** (2026-11-05, 1600x900, interleaved A/B in one app, 3 reps, lightly contended GPU: one other agent's app;
-    A = the perf-frames march SPV with every new term off, B = this one at defaults; cloud_march ms): cumulus from 3 km
-    7.73 -> 8.49, shower field from the ground 9.42 -> 10.36, Andes from 12 km 7.77 -> 8.54, Fuji from the ground
-    5.00 -> 5.41. March at 128 registers. Attribution (cumulus at 3 km, uncontended, 2 reps): the new code with every
-    term off +0.4, bases +0.2, fractus ~0 (no rain there), lenses +0.15 (no mountains), wisps the rest (the wisps' cost
-    follows their cover: sparser regime 0.54-0.62 is the trade-off).
-    Motion (cloud_suite trade_cu, off vs on, separate launches): motion score 1.46 vs 1.51, time-running step 6.07 vs 5.67.
-    Lenses under 1 h time warp at Fuji stay put and sharp (the resolve reprojects with the map drift, but a lens is a
-    smooth, slowly varying shape: no visible smear in captures 90 and 135 frames into the warp).
+  - Orographic clouds (2026-11-06, issue 20261105_174850; `cv2OroField` -> `gCv2Oro`, read by `cv2MidSigma` and `cv2Field`;
+    where `CV2_ELEV_BINDING` is defined: the DEM is binding 25 of the march / CDC / lightning sets). NOT an object: a
+    modifier of the layers the wind carries over the relief. Per sample, Earth-fixed, from the DEM: the streamlines' lift
+    = e(0.1 lambda upwind) + 0.7 e(lambda) - 0.6 max(e(lambda/2) - e(0.1 lambda), 0), e = the DEM mip-1 relief's excess over
+    the mip-2.3 massif (~5 km over ~13 km), lambda = 2 pi U / N (N 0.01 /s); saturating, x 1.5 km / (1.5 km + lift)
+    (uncompressed, a fifth of the Himalaya condensed: one smooth plate tens of km across). The condensation lift:
+    mix(1400, 300, `oro_moist` x a slow regional lat/lon wave) x the wind's dryness factor x 1.3 .. 0.7 with the mid
+    layer's cover covM.
+    - Mid layer: lifted by half the lift (sunk in the troughs, where its regime thins to 15%). Where the lift passes the
+      condensation lift (rim over 80 m) its cloud condenses into a lens: a saucer centred in the layer, half-height
+      0.5 (lift - dry) + 150 m (>= 150: the CDC's coarse reads are 160 m apart), flatter below, the cloudlets' texture
+      kept at low contrast (floor 0.3: from 0 it tore dark holes through the lens), x1.5 density. Forms in moist air even
+      with no altocumulus regime (covM > 0), never with "Mid-level amount" 0. Fuji: a saucer just downwind of the summit
+      (with `oro_moist` 1); the eastern Himalaya: lens trains along the ridges, seen from the ground as sharp-rimmed almonds.
+    - Low field: where the relief envelope (the 2.7 km DEM + 0.8 x its excess over the massif: the bare DEM under-reads
+      the peaks the terrain detail draws, which poked ~1 km through a deck 900 m over it) stands 150-700 m prominent over
+      the ~20 km ground the bases ride on, low cloud below envelope + 900 m gives way (ramp from envelope - 300 m): the
+      deck lies in the valleys and the massif stands in a clear gap with cloud walls round it.
+    - Replaced the lens OBJECT (`cv2OroSigma`, 2026-11-05: a cap + one lee lens from the DEM excess, with 1-4 stacked
+      `fract` plates): from above it was a smooth blob with parallel stripes and chevrons (the plates) and lighting
+      glitches (issue 20261105_174850). Flat land is unchanged (Kansas off/on: 0.01 levels mean, no pixel over 8).
+  - **Registers:** computed inside `cv2Field` at every inlined march call site, the 2026-11-05 lens object put the march at
+    251. The march (`CV2_ORO_EXTERNAL`) sets `gCv2Oro` at its ONE main sample, before `cv2Field`, and zeroes it right
+    after: kept live across the light march it was 254 registers; zeroed, 128 (the light march does not see the terrain
+    terms: a lens is lit as unshadowed by itself there, the STV sees it). The CDC and lightning shaders compute it in
+    `cv2Field` (no cliff there): lenses and parting are in the occupancy clipmap and the Sun volume.
+  - **Cost** (2026-11-06, the reporter's view of issue 20261105_174850, the live app's window, the user's settings; GPU
+    shared with two other agents' apps, so frame times swung 17-68 ms): cloud_march, the 2026-11-05 lens-object SPVs
+    (march + lightning + CDC) vs these, 16 ABBA pairs of 60 frames: median paired difference +0.2 ms; the three pairs
+    taken while the GPU was quiet (march 9-12 ms) +0.16, +0.57, +1.26. The field costs one asin / atan and five DEM
+    fetches per main sample over relief (ground > 250 m), nothing elsewhere. March at 128 registers.
+  - Test views: qa/waves/20261106/evidence/lens-a/final.satcmd, final2.satcmd (the reporter's view; the same massif from
+    the ground and 1 km up; parting with `cover_full` 0.35 and `mid_amount` 0 from 2.5 km; Fuji from the ground NE of
+    Gotemba with `oro_moist` 1; the Bernese Alps 2026-11-11 10 UTC; Kansas on/off from the ground and 8 km);
+    lift.py beside them models the lift field offline from the R8 DEM.
   - Test views: qa/waves/20261105/evidence/vertical/*.satcmd (Fuji from Yamanakako az 245 el 12 fov 40 with cover_clear
     0.9; Rainier, Aconcagua, Andes 12 km / orbit; trade cumulus ground / 900 m / 10 km; inland Darwin; a storm via
     `weather go 0` then the ground 35 km toward it for fractus).

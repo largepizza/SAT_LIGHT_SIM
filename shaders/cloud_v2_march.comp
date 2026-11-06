@@ -47,7 +47,7 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_march.comp)
 #define CV2_SHAPE_BINDING   3
 #define CV2_DETAIL_BINDING  4
 #define CV2_MESO_BINDING    5
-#define CV2_ELEV_BINDING    25   // the elevation map: the orographic lenses (clouds_v2.glsl cv2OroSigma)
+#define CV2_ELEV_BINDING    25   // the elevation map: orographic clouds (clouds_v2.glsl cv2OroField)
 #define CV2_FRACTUS              // fractus under raining bases (clouds_v2.glsl): only the march and the clipmap bake
 #define CV2_ORO_EXTERNAL         // ... added at the main sample only (below), not in every inlined cv2Field (registers)
 #define CV2_STORM_BINDING   26   // the storm objects' towers (cv2_storms.glsl)
@@ -859,14 +859,16 @@ void main()
 #ifndef CV2_NO_LAYMASK
             gCv2LayMask = lmC;
 #endif
+#ifdef CV2_ORO
+            // Orographic clouds (2026-11-06; clouds_v2.glsl cv2OroField): the terrain's lift / parting at this sample, read
+            // here once (in every inlined cv2Field copy it cost the 128-register cliff) and kept by the reads that follow.
+            gCv2Oro = ((lmC & (kCv2LayMid | kCv2LayLow)) != 0u) ? cv2OroField(p) : vec4(0.0);
+#endif
             CV2Field f = cv2Field(p, fine ? detailAmt : -1.0, fp);
             gCv2LayMask = 0xFFFFu;
-            // Orographic lenses / caps (vertical, 2026-11-05; clouds_v2.glsl cv2OroSigma): Earth-fixed, smooth, here only.
-            if ((lmC & kCv2LayMid) != 0u && cv2.oro0.x > 0.0) {
-                float hfO, topO;
-                float so = cv2OroSigma(p, fine ? detailAmt : -1.0, fp, hfO, topO);
-                if (so > 0.0) cv2Add(f, so, hfO, topO, 0.0);
-            }
+#ifdef CV2_ORO
+            gCv2Oro = vec4(0.0);   // (the light march does not see it: live across it, the march took 254 registers)
+#endif
             CV2_CNT(fine ? 2 : 1);
             gCv2DbgWant = false;
             // The thin ice's bounce light (below) reads the map where the field did. Its flow is still in

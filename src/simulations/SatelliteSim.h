@@ -5565,16 +5565,16 @@ private:
     float stormCycTopDensity = 12.0f;     // "Hurricane top density": x the anvil plate's ice under a CDO (storm-above: at 3 the
                                           // plate was translucent, the low CDO mass under it a whiter plateau)
     // Vertical variation (2026-11-05, night wave agent E "vertical"; slots 528-535; GpuCloudV2Params vert / vert2 / oro0 / oro1;
-    // clouds_v2.glsl cv2BaseShift, cv2LowA, cv2FarColumn, cv2MidSigma, cv2OroSigma; cloud_v2_oro.comp).
+    // clouds_v2.glsl cv2BaseShift, cv2LowA, cv2FarColumn, cv2MidSigma, cv2OroField).
     float cv2BaseLcl = 1.0f;              // "Cloud base condensation level": the LCL proxy's strength (sea / rain lower, dry land by day higher)
     float cv2BaseCellM = 120.0f;          // "Cloud base cell spread" (m): each cumulus cell's own base offset
     float cv2BaseRegional = 1.0f;         // "Cloud base regional spread": x the type's base variation (alt.w) at the cluster scale
     float cv2Fractus = 1.0f;              // "Fractus": ragged scud under raining / humid bases
     float cv2MidWisps = 1.0f;             // "Mid-level wisps": the mid layer's thin low mode between the cumulus tops and the altocumulus
-    float cv2OroAmount = 1.0f;            // "Orographic clouds": lenticular lenses / caps over mountains (0 = off)
+    float cv2OroAmount = 1.0f;            // "Orographic clouds": lee-wave lenses in the mid layer, low cloud parting round massifs (0 = off)
     float cv2OroWindMps = 0.0f;           // "Ridge wind (m/s)": 0 = from the weather evolution's wind x 2.5
     float cv2OroWindDirDeg = -1.0f;       // "Ridge wind from (deg)": meteorological, -1 = the evolution's direction at the eye
-    float cv2OroMoist = 0.75f;            // lens moisture (settings key only): how readily a wave crest condenses
+    float cv2OroMoist = 0.75f;            // lens moisture (settings key only): how readily a lee-wave crest condenses the mid layer
     // Cumulus bubbles (2026-11-04, the large-scale structure round of issue 20261104_181014): a cumulus is a cluster of thermal
     // bubbles (a heavy-tailed union of spheres baked in the billow shape volume's R, read with the turrets), not one dome.
     float cv2CuBubbles = 3.0f;            // "Cumulus bubbles": the dome's margin is divided by 1 + x and the bubbles added x times
