@@ -446,6 +446,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   looked too bright while you were tuning them (issue_20261105_181849).
 - Shaded cloud no longer shows a pattern of rings and cells repeating every 64 pixels, in motion or standing still
   (issue_20261105_181702).
+- The shaded grey-blue lobes and crevices of cumulus now show on every cloud: past ~20 km, under time warp and right
+  after it, not only on nearby clouds in a still view (issue_20261105_202810, issue_20261105_203119).
+- Flying across certain places no longer changes the shape of every cloud in view in one frame: the cumulus lobes'
+  noise frame now cross-fades over about a second and a half (issue_20261105_202810 shot 3).
 - Clouds no longer lose whole masses for a moment after you fly across certain places: the clouds' empty-space map
   now starts over when the cumulus lobes' noise frame changes under you (it changes at fixed lines on the globe).
 - Raining cloud fields seen from above no longer show a thin dark line, like a contour, running just inside the

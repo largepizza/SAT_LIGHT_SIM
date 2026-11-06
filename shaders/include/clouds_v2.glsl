@@ -257,6 +257,10 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     vec4  vert2;
     vec4  oro0;
     vec4  oro1;
+    // 2026-11-06: the shape volume's PREVIOUS frame while a change of frame cross-fades (SatelliteSimCloudsV2.cpp, cv2Field):
+    // [0..2] xyz its rotation's columns (as shapeRotA), [0].w the share of reads still taking it (0 = no fade); [3] xyz its
+    // anchorShape, [4] xyz its anchorStorm
+    vec4  shapeB[5];
 } cv2;
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO
@@ -1436,9 +1440,19 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
     // at the observer, clear of such alignments (a pure function of position and time; a change of frame reshapes
     // the lobes, never where the clouds are). Tried: a per-sample warp breaking the lattice (Perlin or analytic)
     // flipped this function to ~220 registers (+5-9 ms); a cross-fade between two frames cost 0.7 ms while idle.
-    mat3  shR = mat3(cv2.shapeRotA[0].xyz, cv2.shapeRotA[1].xyz, cv2.shapeRotA[2].xyz);
-    vec3  rSA = shR * (rS + wd * max(lobeRef - hb, 0.0));
-    vec4  s   = textureLod(cv2ShapeTex, cv2.anchorShapeA.xyz + rSA * cv2.anchorShape.w,
+    // A change of frame cross-fades (2026-11-06, issue_20261105_202810 "Sudden shape change"): for ~90 frames a falling
+    // share of the RAYS (shapeB[0].w; IGN of the invocation, a new offset each frame: a ray -- one invocation of the view
+    // march -- sees one frame's field whole) take the old frame, and the history blends the two images. Picked per point,
+    // a ray crossed a random mix of two fields: a foggy mush for the fade's length; a per-ray global set by the march put
+    // it at 253 registers (the invocation id is a special register). (Each use selects its product, not the matrix: a
+    // selected mat3 + anchors held across the reads put the march at 250 registers; the UBO operands need none.)
+    bool  useB = cv2.shapeB[0].w > 0.0
+              && fract(52.9829189 * fract(dot(vec2(gl_GlobalInvocationID.xy), vec2(0.06711056, 0.00583715))) + 0.6180340 * cv2.frame.x)
+                 < cv2.shapeB[0].w;
+    vec3  vS  = rS + wd * max(lobeRef - hb, 0.0);
+    vec3  rSA = useB ? mat3(cv2.shapeB[0].xyz, cv2.shapeB[1].xyz, cv2.shapeB[2].xyz) * vS
+                     : mat3(cv2.shapeRotA[0].xyz, cv2.shapeRotA[1].xyz, cv2.shapeRotA[2].xyz) * vS;
+    vec4  s   = textureLod(cv2ShapeTex, (useB ? cv2.shapeB[3].xyz : cv2.anchorShapeA.xyz) + rSA * cv2.anchorShape.w,
                            cv2Lod(fpM, cv2.anchorShape.w));
     float lobes = (s.g * 0.6 + s.b * 0.25 + s.a * 0.15) - 0.47;
     // Deep convection's lobes are storm.x times larger: at the cumulus scale a 12 km storm was a
@@ -1455,14 +1469,16 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         if (tur > 0.0 || c.bub > 0.0) {
             float hP    = max(hb, 0.0);
             vec3  eastT = vec3(-wd.y, wd.x, 0.0) * inversesqrt(max(dot(wd.xy, wd.xy), 1e-6));
-            rT += shR * (eastT * (cv2.cu3.z * cv2.form.y * hP) - wd * (cv2.cu3.y * hP));
+            vec3 dT = eastT * (cv2.cu3.z * cv2.form.y * hP) - wd * (cv2.cu3.y * hP);
+            rT += useB ? mat3(cv2.shapeB[0].xyz, cv2.shapeB[1].xyz, cv2.shapeB[2].xyz) * dT
+                       : mat3(cv2.shapeRotA[0].xyz, cv2.shapeRotA[1].xyz, cv2.shapeRotA[2].xyz) * dT;
             // BUBBLE WARP ("Cumulus bubble warp", ciHu2.z, m; 2026-11-05): the bubbles are a union of true spheres, and from
             // below their faces and creases read as circles and polka dots (harness: gone with the bubbles off, kept with
             // the fine ones off). The read is displaced by the cumulus lobes already fetched (s: Worley G, B and the Perlin,
             // each ~+-0.1-0.2 about its mean), so each sphere becomes a lumpy blob. No fetch; the tile stays in register.
             rT += (vec3(s.g, s.b, s.a) - vec3(0.45, 0.45, 0.5)) * (4.0 * cv2.ciHu2.z);
         }
-        vec4 s2 = textureLod(cv2ShapeTex, (cv2.anchorStormA.xyz + rT * cv2.anchorStorm.w) * 2.0,
+        vec4 s2 = textureLod(cv2ShapeTex, ((useB ? cv2.shapeB[4].xyz : cv2.anchorStormA.xyz) + rT * cv2.anchorStorm.w) * 2.0,
                              cv2Lod(fpM, cv2.anchorStorm.w * 2.0));
         // "Storm cumulus fine lobes" (cu.w): the cumulus-scale lobes stay ON the storm-scale ones, strongest on
         // their crowns (big lobes carrying small ones). With the storm-scale noise alone (storm.x, 12x at the user's
@@ -1505,7 +1521,7 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
             float shF = 0.45 * cv2.cu5.z * (1.0 - smoothstep(80.0, 400.0, fpM));
 #ifndef CV2_NO_FINE_BUBBLES
             if (shF > 0.0) {
-                float sdF = 0.9 * cv2.cu5.z * (textureLod(cv2ShapeTex, (cv2.anchorStormA.xyz + rT * cv2.anchorStorm.w) * 8.0
+                float sdF = 0.9 * cv2.cu5.z * (textureLod(cv2ShapeTex, ((useB ? cv2.shapeB[4].xyz : cv2.anchorStormA.xyz) + rT * cv2.anchorStorm.w) * 8.0
                                               + vec3(0.41, 0.17, 0.73), cv2Lod(fpM, cv2.anchorStorm.w * 8.0)).r - 0.5);
                 sdB *= mix(1.0, smoothstep(250.0, 1800.0, c.thk), floor(cv2.cu5.w) * 0.001);
                 sdB  = min(max(sdF, sdB - shF), sdB + shF);

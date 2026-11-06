@@ -609,6 +609,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     footprint: the epoch now includes it (perf.md "Moving costs the clipmap").
   - **S2** (`cdc_light`, `cdc_light_levels` 3): light steps 3+ read the cell's mean + variance of the light extinction
     through the gamma model E[exp(-L e)] (a cell MEAN alone darkened broken cloud by up to 18 levels: Jensen). Modest.
+    Not the diffuse field's far side (tauB) since 2026-11-06: that is jittered field reads at every range ("The look at
+    every range and rate", under the droplet phase).
   - **Layer mask** (2026-11-04, follow-up to "Storms between decks"; `cv2Field`'s `gCv2LayMask`, `kCv2Lay*` bits): each
     cell's low 16 bits (which held half(max coarse sigma), only ever tested for zero) are a mask of the layer functions
     that matter there -- towers (`cv2ColumnSigma`), low, mid, high, anvils/shields (+ dust, never skipped) -- with bit 64
@@ -1183,6 +1185,56 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     `wait 160` after either before timing (the perf-ab skill).
   - Settings (Clouds tab, slots 486-488): `clouds_v2.droplet_phase` 1 (0 = the tuned phase, the A/B), `droplet_size` 1,
     `droplet_ms_gain` 1.8. Needs "Multi-scatter model" 1 and the Mie table. UBO `cv2.micro` appended (+16 B).
+  - **The look at every range and rate (2026-11-06, issue_20261105_202810 "Droplet phase range and cloud discontinuity",
+    issue_20261105_203119 "No droplet phase on moving clouds"; branch qa/20261106/phase-a).** What the user calls the droplet
+    look -- grey-blue shaded lobes and crevices on front-lit cumulus -- is the diffuse field where little cloud lies BEHIND
+    a sample (tauB, `lightAmbOD` k = nL + 5..6) at the scale of a few hundred metres. Knockouts at 202810 shot 1 (5.9 km,
+    the marked towers ~20 km out): `cdc_light` 0, `cdc_skip` 0 (the clipmap off) or tauB alone from the field (a variant)
+    -> every cloud flat white; the light steps alone from the field -> no change; `droplet_phase` 0 flattens too; tauB x0.35
+    -> no change (it is not the level, it is where tauB is small); `cdc_light_levels` 8 -> the far towers shaded. So tauB
+    came from the clipmap's cell moments (S2, gamma model over 100-400 m cells, which mix the clear air round a surface
+    into it) within `cdc_light_levels`' reach (3 levels: the stochastic fade at 15-25 km), and from two point reads of
+    the field elsewhere, which inside a cumulus always find dense cloud. Hence: flat beyond ~20 km, flat under time warp
+    past `cdc_max_rate` (4x: the clipmap is off; 203119 shot 2 ran at 1 min/s) and for the refill after it ("takes a
+    while to kick in"), and the shading's scale jumped at each level (100 / 200 / 400 m cells). Extending the levels
+    (`cdc_light_levels` 8 for tauB only) carried the look further for +0.3 ms but turned the far band grey (1.6-3.2 km
+    cells are mostly clear air) and kept the time-warp hole. **Now** tauB never reads the clipmap: its two field reads are
+    jittered over a neighbourhood (+-450 m along the local up, +-300 m across the light, `kCv2BackJitZ` / `kCv2BackJitH`,
+    antithetic: the second read mirrors the first) and their mean and variance go through the same gamma model over
+    `ms_back_m`. The same estimator at every distance, rate and motion: no hand-over. Measured (user settings, 1920x1009,
+    display luminance of cloud pixels, shaded = p10, contrast = p95/p10): 202810 shot 2 (the look the user liked) old
+    1.261 / new 1.227, shot 1's towers 1.296 / 1.217 (old: half flat); 203119 at 60x time warp vs the same moment settled:
+    old 1.121 vs 1.216 (p10 +10%), new 1.183 vs 1.175 (p10 -1%). The far band (50-200 km) is shaded too (it was flat warm
+    white). Grain: still +0.2 levels (high-pass std 1.36 -> 1.58), under 60x time warp 1.29 -> 1.9 (the resolve passes
+    more new samples there). A sample the eye sees through less than a tenth of its cloud (`T` < 0.1) skips the reads
+    (the column estimate, as past a 150-m pixel): -0.15..-0.25 ms, contrast within 0.01.
+    **Cost** (RTX 3070 Ti, 1920x1009, user settings, one live app alone on the GPU, interleaved, cloud march): 202810
+    shot 1 13.86 -> 14.75 / 13.63 -> 13.85, shot 2 14.23 -> 14.47, 203119 shot 1 (a storm with an anvil) 12.70 -> 13.88 /
+    11.38 -> 12.95 (two batches): +0.2..+0.9 ms over cumulus, +1.2..+1.6 ms in the storm view -- over the +0.5 budget:
+    the far side's two reads are field reads (with the layer mask) where they were two clipmap lookups within ~25 km.
+    128 registers. Dead ends, measured: the clipmap within its reach and the jittered field beyond (any form: a flag
+    for which source served the first read, or a sentinel in the read's `thin`) puts the march at 250-251 registers;
+    the clipmap's moments read at the jittered points and combined the same way stay at 128 but darken and flatten
+    the near look (contrast 1.18 at shot 2); a footprint floor of 40 / 100 m on the reads costs the same; the sample's
+    own sigma as the second read (one field read fewer) is flat (contrast 1.15); the coarse field (-1, no erosion)
+    -0.2 ms but contrast 1.17; +-250 / +-150 m finer and crinklier. (A trap met here: `--target CompileShaders` writes
+    build/shaders/, not build/Release/shaders/ where the exe and a bare `shaders reload` read; copy them, or a "new"
+    timing measures the previous build's SPV.)
+  - **The shape frame cross-fades** (same issue, shot 3 "Sudden shape change"): the low shape volume's frame
+    (`cv2ShapeFrame`, one of four tile rotations chosen at the observer) switched 1 -> 0 between two poses 200 m apart on
+    the reporter's trail (31.47 N 118.63 E), reshaping every lobe in view in one frame (a recorded path: one step 8x the
+    median frame difference); the clipmap's epoch then refilled, so the look also went flat for ~1 s. Now a change starts
+    a 90-frame fade (`kCv2ShapeFadeFrames`): `shapeB[5]` (UBO, +80 B) carries the old frame's rotation and anchors and
+    the share of RAYS that still take it (smoothstep of the frames left; IGN of `gl_GlobalInvocationID` with a new
+    offset each frame, so a ray -- one invocation of the view march -- sees one frame's field whole; a per-ray global
+    set by the march instead put it at 253 registers), and the history blends the two images; the clipmap is off meanwhile (its cells hold one frame's field), and a jump (`nearPrev`
+    false: a teleport, a report load) switches at once. A frame in use is kept while it is still clear enough
+    (hysteresis: the identity down to clearance 0.035, another while it holds 0.05 and the identity is under 0.065), so
+    a flight along the switch line does not flip back and forth. Same path: largest step 1.3-1.4x the median. Mid-fade
+    the two layouts overlap (a soft double exposure for ~1-2 s): a cross-fade of two different lobe fields cannot be
+    a shape-preserving morph. Picked per POINT (the first try) a ray crossed a random mix of the two fields: foggy mush.
+    Each use selects its PRODUCT with the UBO matrix, not the matrix: a selected mat3 and anchors held across the
+    reads put the march at 250 registers.
   - **Cloud bases are as bright as their optical depth (issue_20261104_180745 "Cloud Bottom with multiscattering":
     "bottoms always seem unusually bright ... why are clouds so transparent?").** Measured, nothing changed.
     `tools/cloud_micro_reference.py --below` path-traces the blobs and decks with the eye under them: the droplet model

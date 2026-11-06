@@ -170,6 +170,16 @@ const float kCv2MoonMieCap = 40.0;   // the Mie table's 8 P past ~3 deg; see the
 // inlined at every call, and five copies of it in this shader (coarse, fine, light, far, probe) cost
 // registers and instruction cache on every sample (perf sprint, 2026-09-29). wantLight = false runs
 // the probe alone.
+// The far side's reads (k = nL + 5..6, the diffuse field's tauB) sample a NEIGHBOURHOOD behind the sample: jittered
+// +-kCv2BackJitZ / 2 up and +-kCv2BackJitH / 2 across the light per visit (the second read mirrors the first's offset),
+// the pair's mean and variance through the gamma model (2026-11-06, issue_20261105_202810 / _203119). The look the user calls the droplet phase -- grey-blue shaded lobes
+// and crevices -- is the diffuse field where little cloud lies behind a sample at the neighbourhood's scale; until then
+// tauB came from the clipmap's cell moments (S2) within cdc_light_levels' reach (~15-25 km), and from two point reads of
+// the field elsewhere, which inside a cumulus always find dense cloud: flat white beyond the reach, under time warp past
+// cdc_max_rate (the clipmap off) and for the refill after it, and the shading's scale jumped at each clipmap level (100,
+// 200, 400 m cells). The field read the same way at every distance and rate has no hand-over.
+const float kCv2BackJitZ = 900.0;
+const float kCv2BackJitH = 600.0;
 void lightAmbOD(vec3 rel, vec3 ldir, vec3 up, float eyeH, mat3 enuToEcef, int nL, float lSeg0,
                 float jitter, float detailAmt, float fp, bool wantLight, out float od, out float sigUp,
                 bool wantBeam, vec3 bdir, out float odBeam, bool lod, bool wantBack, out float odBack)
@@ -209,7 +219,9 @@ void lightAmbOD(vec3 rel, vec3 ldir, vec3 up, float eyeH, mat3 enuToEcef, int nL
                   : (k == nL) ? ldir * (cv2.light.x * (1.2 + 0.8 * fract(jitter + 0.4142136)))
                   : (k == nL + 1) ? up * 250.0
                   : (k <= nL + 4) ? bdir * (sb + sg * 0.5)
-                  : ldir * (-cv2.ms.w * ((k == nL + 5) ? 0.25 * fract(jitter + 0.3819660) : 0.25 + 0.75 * fract(jitter + 0.7639320)));
+                  : ldir * (-cv2.ms.w * ((k == nL + 5) ? 0.25 * fract(jitter + 0.3819660) : 0.25 + 0.75 * fract(jitter + 0.7639320)))
+                    + up * (kCv2BackJitZ * (fract(jitter + 0.2112) - 0.5) * ((k == nL + 5) ? 1.0 : -1.0))
+                    + normalize(cross(ldir, up) + vec3(1e-4, 0.0, 0.0)) * (kCv2BackJitH * (fract(jitter + 0.5698) - 0.5) * ((k == nL + 5) ? 1.0 : -1.0));
         // The view sample's footprint, not the step's: a longer footprint would turn the gaps
         // between cells into haze and shadow everything.
         // S2 ("cdc_light"): beyond the first two steps (which keep the detail: the lobes' self-shadow) and for the far
@@ -225,7 +237,8 @@ void lightAmbOD(vec3 rel, vec3 ldir, vec3 up, float eyeH, mat3 enuToEcef, int nL
         // cells' moments there read far clearer than the field (towers' far shadows gone), and where S2 held it and where
         // it fell back to the field (the clipmap's levels, unbaked cells) the clouds' light stepped: a lit band with a
         // straight edge at the clipmap's z cells across the storm and box-shaped shadows, moving with the eye.
-        if (cv2.cdcC.x > 0.5 && ((k >= 2 && k < nL) || k >= nL + 5)
+        // (Not the march away from the light, nL + 5..6, since 2026-11-06: see kCv2BackJitZ.)
+        if (cv2.cdcC.x > 0.5 && k >= 2 && k < nL
             && cv2CdcMeanAt(rel + off, R_EARTH + eyeH,
                             (k < nL) ? ((lodN && k + 1 < nL) ? lSeg * (1.0 + kLightRatio) : lSeg)
                             : (k == nL) ? cv2.light.x * 0.8 : cv2.ms.w * ((k == nL + 5) ? 0.25 : 0.75),
@@ -258,7 +271,14 @@ void lightAmbOD(vec3 rel, vec3 ldir, vec3 up, float eyeH, mat3 enuToEcef, int nL
             odBeam += lf.sigma * (1.0 - 0.45 * lf.thin) * sg;
             sb += sg; sg *= 3.0;
         } else {
-            odBack += lf.sigma * (1.0 - 0.8 * lf.thin - cv2.mid2.z * max(lf.soft, 0.0)) * cv2.ms.w * ((k == nL + 5) ? 0.25 : 0.75);
+            // The far side's two reads as a sample of the neighbourhood behind the sample: their mean and variance through
+            // the gamma model over cv2.ms.w (the first read is held in sb: the beams, which used it, ran before k = nL + 5).
+            float eB = lf.sigma * (1.0 - 0.8 * lf.thin - cv2.mid2.z * max(lf.soft, 0.0));
+            if (k == nL + 5) sb = eB;
+            else {
+                float mu = 0.5 * (sb + eB), va = 0.25 * (sb - eB) * (sb - eB);
+                odBack = (va <= 1e-6 * mu * mu) ? mu * cv2.ms.w : (mu * mu / va) * log(1.0 + cv2.ms.w * va / max(mu, 1e-9));
+            }
         }
     }
     gCv2LayMask = 0xFFFFu;
@@ -1125,8 +1145,9 @@ void main()
             bool  wantB = dayness < 0.9 && beamGather(pW, p.h, dir, eye, bE, bDir, bPh);
             // The optical depth away from the light (the slab's far side): marched (lightAmbOD) near; past a 150-m pixel (from
             // ~80 km up) the path to the column's base along the light (no field reads: the march cost 1.4 ms of an orbit view,
-            // where no wisp is resolved).
-            bool  wantBk = wantL && !thin && cv2.ms.x > 0.5 && fp < 150.0;
+            // where no wisp is resolved). Nor for a sample the eye sees through less than a tenth of the cloud it is in (2026-11-06:
+            // the far side's reads became field reads everywhere, kCv2BackJitZ; the gate saves ~0.15-0.25 ms, image unchanged).
+            bool  wantBk = wantL && !thin && cv2.ms.x > 0.5 && fp < 150.0 && T > 0.1;
             float odBk = 0.0;
             // Light LOD (cv2.column3.y, "Light LOD footprint", m; 0 = off): a sample the ray sees
             // through little of (T < 0.5), or whose pixel footprint is past the setting, gets a 2-step
