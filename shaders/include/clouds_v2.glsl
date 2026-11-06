@@ -2492,7 +2492,8 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
     if (cvB.x < 0.01 && cvB.z < 0.01) return g;
     // (the cores read through the same tent at level 0: one bilinear tap, through the distance's sqrt(-ln C), drew the
     // 5-km texels' facets as flat faces on every tower)
-    vec4  cv  = vec4(cv2ConvSmooth(wd, 0.0).xy, cv2ConvSmooth(wd, 1.0).zw);
+    vec4  cv0 = cv2ConvSmooth(wd, 0.0);   // level 0: x / y the cores, z / w the cells' column distance fields
+    vec4  cv  = vec4(cv0.xy, cv2ConvSmooth(wd, 1.0).zw);
     float C     = cv.x;
     float lift  = cv2Ground(q.dirE) * 0.9;
     float base  = cv2.types[4].alt.x + lift;
@@ -2503,27 +2504,30 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
     float Rb    = cv2.column.z;
     g.storm = C;
     g.prox  = smoothstep(0.2, 0.55, cvB.x);
-    if (cv2.rain.x > 0.0 && hb < 0.0) gCv2RainCore = smoothstep(0.45, 0.85, C) * smoothstep(0.4, 0.9, cv.y) * (1.0 - 0.6 * gCv2CdoK);
+    if (cv2.rain.x > 0.0 && hb < 0.0) gCv2RainCore = smoothstep(0.3, 0.6, C) * smoothstep(0.4, 0.9, cv.y) * (1.0 - 0.6 * gCv2CdoK);   // (cores ~5 km across peak ~0.3-0.6 read through the tent)
     // The COLUMN: where the cores' intensity passes 0.35, under a DOME: its top here rises from the base at that contour
     // to the column's top (cv.y of the way to the lid) at the core, so a cluster of cells stands as towers with rounded
     // heads, not a block with a flat roof. A little wider at mid-height (the updraft's buoyant swell); over the lid the
     // strongest core overshoots in a dome.
     const float c0 = 0.35;
     float best = -1e9, hfT = 0.0, topHere = base;
-    if (hb >= -300.0 && C > c0 - 0.15) {
+    if (hb >= -300.0 && (C > c0 - 0.15 || cv0.z > 0.49)) {   // (or inside a cell's analytic column)
         // dH: the DISTANCE in from the c0 contour (m): for a core C = exp(-r^2 / sigma^2), r = sigma sqrt(-ln C), sigma the
         // cells' 0.35 Rb. ((C - c0) x 1.6 Rb ran ~2.4 m a metre across the wall, which flattened the cumulus lobes carved
         // into it to ~40% of their size: smooth walls with erosion pits, a snow mountain instead of cauliflower.)
         float sg0  = 0.35 * Rb;
         float rcol = sg0 * sqrt(-log(c0));
-        float dH   = sg0 * (sqrt(-log(c0)) - sqrt(-log(max(C, 1e-4))));
+        float dHc  = sg0 * (sqrt(-log(c0)) - sqrt(-log(max(C, 1e-4))));   // (the intensity's: a hurricane's CDO plateau)
+        float dIn  = (cv0.z - 0.5) * 40000.0;                             // (the cells' own, analytic: cloud_v2_weather.comp)
+        bool  cellK = dIn > dHc;
+        float dH   = max(dIn, dHc);
         // The HEAD: a cap as round as the column is wide (radius rh), the top cv.y of the way to the lid; over it the
         // strongest core overshoots in a dome. (The top rising linearly with the intensity drew every young tower as a
         // spike.)
         float topC = base + (lid - 300.0 - base) * cv.y;
         float rh   = min(rcol, 0.5 * max(topC - base, 600.0));
         float dh   = clamp(rh - dH, 0.0, rh);
-        topHere    = topC - rh + sqrt(max(rh * rh - dh * dh, 0.0))
+        topHere    = (cellK ? topC - min(cv0.w * 10000.0, 0.5 * max(topC - base, 600.0)) : topC - rh + sqrt(max(rh * rh - dh * dh, 0.0)))
                    + osM * full * smoothstep(0.3, 0.9, dH / max(rcol, 1.0)) * (1.0 - gCv2CdoK * (1.0 - gCv2EywK));   // (a CDO: no dome over it all; the eyewall's hot towers keep theirs)
         float zeta = clamp(hb / max(topHere - base, 300.0), 0.0, 1.0);
         // + a little swell at mid-height, and the head's FLARE where the column reaches the lid: it widens over its top

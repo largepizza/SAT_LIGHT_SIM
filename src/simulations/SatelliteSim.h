@@ -5982,7 +5982,7 @@ private:
     std::vector<std::pair<uint32_t, uint32_t>> convEntries;   // (grid cell, list value) scratch
     uint32_t convStatCells = 0, convStatAnvils = 0, convStatEntries = 0, convStatSystems = 0;   // the last upload (harness state)
     // `storms test` (harness): one stationary supercell injected into the convection upload, a lab for its shape.
-    struct WxTestStorm { bool on = false; double lat = 0, lon = 0, t0 = 0, life = 4 * 3600.0; float str = 1.0f; };
+    struct WxTestStorm { bool on = false; double lat = 0, lon = 0, t0 = 0, life = 4 * 3600.0; float str = 1.0f; int kind = 0; double az = 90.0; };
     WxTestStorm wxTestStorm;
     std::unique_ptr<wx::StormClimatology> stormClim;
     std::vector<wx::Tower> stormTowers;          // this frame's, strongest first

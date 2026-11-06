@@ -102,7 +102,29 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
     const double tsAge = t - TS.t0;
     const double tsLat = glm::radians(TS.lat), tsLon = glm::radians(TS.lon);
     const glm::dvec3 tsDir(std::cos(tsLat) * std::cos(tsLon), std::cos(tsLat) * std::sin(tsLon), std::sin(tsLat));
-    if (TS.on && tsAge > 0.0 && tsAge < TS.life && nC < kConvCellMax)
+    // (kind 1: a squall line: 12 cells over 200 km along az, bowed 25 km forward at its middle, of varying strength)
+    const glm::dvec3 tsE = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), tsDir) + glm::dvec3(1e-9, 0, 0)), tsN = glm::cross(tsDir, tsE);
+    const glm::dvec3 tsAx = tsE * std::cos(glm::radians(TS.az)) + tsN * std::sin(glm::radians(TS.az));
+    const glm::dvec3 tsFw = glm::cross(tsDir, tsAx) * -1.0;   // forward: the axis turned 90 deg clockwise
+    if (TS.on && TS.kind == 1 && tsAge > 0.0 && tsAge < TS.life)
+    {
+        const double str0 = TS.str * ssD(0.0, 1500.0, tsAge) * (1.0 - ssD(TS.life - 2400.0, TS.life, tsAge));
+        for (int k = 0; k < 12 && nC < kConvCellMax; ++k)
+        {
+            const double u = (k + 0.5) / 12.0 * 2.0 - 1.0;
+            const uint64_t hk = (uint64_t)(k * 2654435761u + 12345u);
+            const double hv = (double)((hk >> 8) & 0xFFFF) / 65535.0, hv2 = (double)((hk >> 3) & 0xFFFF) / 65535.0;
+            const glm::dvec3 d = glm::normalize(tsDir + (tsAx * (u * 1.0e5 + (hv2 - 0.5) * 6000.0) + tsFw * (25000.0 * (1.0 - u * u))) / kR);
+            const double str = str0 * (0.6 + 0.4 * hv);
+            const double sg = 0.35 * Rb * (0.8 + 0.3 * hv2);
+            uint32_t sb = 0x7E57u + (uint32_t)k; float sf; std::memcpy(&sf, &sb, 4);
+            cells[nC].a = glm::vec4(glm::vec3(d), (float)sg);
+            cells[nC].b = glm::vec4((float)str, (float)ssD(0.02, 0.6, str), sf, 1.0f);
+            binCircle(d, 4.5 * sg, nC);
+            ++nC;
+        }
+    }
+    if (TS.on && TS.kind == 0 && tsAge > 0.0 && tsAge < TS.life && nC < kConvCellMax)
     {
         const double str = TS.str * ssD(0.0, 1500.0, tsAge) * (1.0 - ssD(TS.life - 2400.0, TS.life, tsAge));
         const double Rc = Rb * 1.0;
@@ -139,10 +161,14 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
         if (lidAge > feed + 4.0 * linger) continue;
         const glm::dvec3 c = glm::normalize(S->centreAt(t));
         glm::dvec3 dw = glm::dvec3(S->shear);
+        // A line system's shield and its trailing stratiform go REARWARD of its motion (leading line, trailing stratiform:
+        // the front-to-rear flow aloft), at least ~10 m/s system-relative.
+        if (wx::isLineSystem(S->kind) && glm::length(S->vel) > 0.5)
+            dw = -S->vel;
         dw -= c * glm::dot(dw, c);
         dw = glm::length(dw) > 1e-9 ? glm::normalize(dw) : glm::normalize(glm::cross(glm::dvec3(0, 0, 1), c) + glm::dvec3(1e-9, 0, 0));
         const double r0 = (wx::isLineSystem(S->kind) ? 1.1 : 0.8) * Rb;
-        const double U = std::max((double)S->upperWind, 0.0);
+        const double U = wx::isLineSystem(S->kind) ? std::max((double)S->upperWind, 10.0) : std::max((double)S->upperWind, 0.0);
         glm::dvec3 axis(0.0);
         double half = 0.0;
         if (wx::isLineSystem(S->kind))
@@ -152,7 +178,12 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
             axis = east * std::cos((double)S->lineAz) + north * std::sin((double)S->lineAz);
             half = S->lineHalfM;
         }
-        anvils[nA].a = glm::vec4(glm::vec3(c), (float)r0);
+        // (a bowed line's towers stand up to `bow` ahead of its centre: its shield is fed from the bow, ~0.7 of it forward,
+        // or it stood apart from its towers with clear air between)
+        glm::dvec3 cA = c;
+        if (wx::isLineSystem(S->kind) && glm::length(S->vel) > 0.5)
+            cA = glm::normalize(c - dw * (0.7 * (double)S->bow / kR));
+        anvils[nA].a = glm::vec4(glm::vec3(cA), (float)r0);
         anvils[nA].b = glm::vec4(glm::vec3(dw), (float)peak);
         anvils[nA].c = glm::vec4((float)lidAge, (float)feed, (float)linger, (float)U);
         anvils[nA].d = glm::vec4((float)half, glm::vec3(axis));
@@ -173,15 +204,18 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
             const wx::WindState ws = windStateNow();
             glm::dvec3 U = wx::windAt(tsDir, 10000.0, ws);
             U -= tsDir * glm::dot(U, tsDir);
-            const double Um = glm::length(U);
-            const glm::dvec3 dw = Um > 0.1 ? U / Um : glm::normalize(glm::cross(glm::dvec3(0, 0, 1), tsDir) + glm::dvec3(1e-9, 0, 0));
-            const double r0 = 0.8 * Rb, lidAge = tsAge - on, age = std::min(lidAge, (off - on) + 4.0 * 3600.0);
-            anvils[nA].a = glm::vec4(glm::vec3(tsDir), (float)r0);
+            double Um = glm::length(U);
+            glm::dvec3 dw = Um > 0.1 ? U / Um : glm::normalize(glm::cross(glm::dvec3(0, 0, 1), tsDir) + glm::dvec3(1e-9, 0, 0));
+            const bool line = TS.kind == 1;
+            if (line) { dw = -tsFw; Um = 12.0; }   // (a line's shield trails rearward)
+            const double r0 = (line ? 1.1 : 0.8) * Rb, lidAge = tsAge - on, age = std::min(lidAge, (off - on) + 4.0 * 3600.0);
+            const glm::dvec3 cA = line ? glm::normalize(tsDir + tsFw * (0.7 * 25000.0 / kR)) : tsDir;   // (the bow, as above)
+            anvils[nA].a = glm::vec4(glm::vec3(cA), (float)r0);
             anvils[nA].b = glm::vec4(glm::vec3(dw), (float)TS.str);
             anvils[nA].c = glm::vec4((float)lidAge, (float)(off - on), 3600.0f, (float)Um);
-            anvils[nA].d = glm::vec4(0.0f);
+            anvils[nA].d = line ? glm::vec4(1.0e5f, glm::vec3(tsAx)) : glm::vec4(0.0f);
             binCircle(glm::normalize(tsDir + dw * (0.5 * Um * age / kR)),
-                      0.5 * Um * age + r0 * 2.5 + spread * std::min(age, 2.0 * 3600.0), 0x80000000u | nA);
+                      0.5 * Um * age + r0 * 2.5 + spread * std::min(age, 2.0 * 3600.0) + (line ? 1.3e5 : 0.0), 0x80000000u | nA);
             ++nA;
         }
     }
