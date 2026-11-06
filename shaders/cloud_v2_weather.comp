@@ -361,27 +361,30 @@ vec4 wxCyclones(vec3 d, out vec4 conv)
         // (soft, and streaked along the outflow's spiral: a hard disc stood as a lid with a cliff round it)
         // (its outline irregular: a smooth noise on the radius, not the spiral streaks, which drew a polygon)
         float rq   = r * (1.0 + 0.18 * wxNoise(d * (R_EARTH_W / 2.5e5) + vec3(cy.c.w, 3.1, 7.7)));
-        // The core disc, and beyond it the overcast continuing out ALONG the bands (wider than their rain): the CDO's edge is
-        // a spiral running into the bands, not a disc's outline over them (cf. qa/waves/20261105/refs/hurricane_iss.png).
+        // The CDO: one disc whose OUTLINE spirals out along the bands (its radius modulated by them) and FEATHERS over a
+        // wide radius (the plate thins and its density falls with the field: a translucent edge). Arms of plate laid along
+        // the bands stood as glossy tubes with walls and drop shadows over the decks (2026-11-06, the user: "out of place").
         float bndW = wxTcBand(th, lr, floor(nA + 0.5), cotA, cy.c.w, 1.5);
-        float cdo  = max(1.0 - smoothstep(0.45 * cdoR, 1.05 * cdoR, rq),
-                         0.95 * bndW * (1.0 - smoothstep(0.9 * cdoR, 2.3 * cdoR, rq)))
-                   * smoothstep(0.1, 0.5, I);
+        float rS   = rq / (1.0 + 0.35 * bndW * smoothstep(0.5 * cdoR, 1.2 * cdoR, r));
+        float cdo  = (1.0 - smoothstep(0.35 * cdoR, 1.35 * cdoR, rS)) * smoothstep(0.1, 0.5, I);
         float oc   = wxTcBand(-th, lr, 3.0, cotA * 0.8, cy.c.w * 0.7 + 1.0, 3.0) * smoothstep(0.9 * cdoR, 1.3 * cdoR, r)
                    * (1.0 - smoothstep(0.8 * outer, 1.2 * outer, r)) * smoothstep(0.3, 0.7, I);
         // (the outflow cirrus stays under the plate's threshold, 0.3: thin ice for the high layer, not lens-shaped plates
         // drawn as tubes)
         float anv  = max(cdo, 0.25 * oc) * eyeK;
         // Stratiform between the bands (the mid outflow's deck) inside ~0.8 of the reach.
-        float deck = 0.55 * (1.0 - bnd) * smoothstep(1.3 * rmw, 2.0 * rmw, r) * (1.0 - smoothstep(0.5 * outer, 0.8 * outer, r))
+        float deck = 0.55 * (1.0 - bnd) * smoothstep(1.3 * rmw, 2.0 * rmw, r) * (1.0 - smoothstep(0.3 * outer, 0.55 * outer, r))
                    * smoothstep(0.1, 0.5, I);
         // The bands' convection stays under the columns' threshold (cv2StormGeom, 0.35): congestus lines of the cumulus field
         // (their coverage below), not domed columns (a continuous band of cores drew a smooth tube). The eyewall's are columns.
         float Cc   = max(eyw, 0.3 * band) * eyeK;
-        vec4  cvI  = vec4(Cc, max(eyw * eyeK, 0.5 * band), anv, deck);
+        // (the eyewall's top stays just under the lid: the CDO's sheet runs to the eye's edge; full-height, its columns'
+        // domes and overshoot stood as a raised lip round the eye)
+        vec4  cvI  = vec4(Cc, max(0.75 * eyw * eyeK, 0.5 * band), anv, deck);
         conv = max(conv, cvI);
         // The coverage: the system's potential (the climatology's units), owning its disc.
-        float M    = -0.5 + 1.9 * max(max(Cc, band), max(0.85 * cdo * eyeK, deck)) - 1.4 * (1.0 - eyeK);
+        // (the decks round the core near overcast: broken, they read grey with sea between them beside a white CDO)
+        float M    = -0.3 + 1.9 * max(max(Cc, band), max(0.85 * cdo * eyeK, 1.35 * deck)) - 1.4 * (1.0 - eyeK);
         float own  = 1.0 - smoothstep(0.85 * outer, 1.2 * outer, r);
         if (own > best.w) best = vec4(M, max(cdo, deck), max(Cc, band), own);
     }

@@ -801,6 +801,7 @@ struct CV2Storm {
                     // instead of standing as a wall). (An overshooting dome's quarter until 2026-11-06: a smooth cap.)
 };
 float gCv2CdoK = 0.0;   // 0..1: inside a tropical cyclone's CDO (cv2StormGeom): its plate is a smooth sheet
+vec3  gCv2CycC = vec3(0.0, 0.0, 1.0);   // that cyclone's centre (unit ECEF): the CDO's fibres run round it
 CV2Storm cv2StormNone()
 {
     CV2Storm g;
@@ -1387,10 +1388,24 @@ vec4 cv2AnvilFibreTex(vec3 wd, float h, float fpM, float acrossK, out float lod)
     lod = cv2Lod(fpM, aK);
     return textureLod(cv2ShapeTex, c + vec3(0.37, 0.61, 0.19), lod);
 }
+// A hurricane CDO's fibres (Weather v2): the swirl's streaks, running ROUND its centre (circles: the across coordinate is
+// the radius, so nothing seams), 24 along-periods round it, ~9 km apart, meandering by whole harmonics of the azimuth.
+vec4 cv2CdoFibreTex(vec3 wd, float h, float fpM, out float lod)
+{
+    vec3  e  = normalize(cross(vec3(0.0, 0.0, 1.0), gCv2CycC) + vec3(1e-6, 0.0, 0.0));
+    vec3  dv = wd - gCv2CycC * dot(wd, gCv2CycC);
+    float th = atan(dot(dv, cross(gCv2CycC, e)), dot(dv, e));
+    float r  = acos(clamp(dot(wd, gCv2CycC), -1.0, 1.0)) * R_EARTH;
+    const float aK = 1.0 / 9000.0;   // (a CDO's striations are ~10 km apart: seen from orbit, not the anvils' 1.5-km fibres)
+    vec3  c  = vec3(th * (24.0 / 6.2831853), r * aK, h * (4.0 * aK));
+    c.y += 1.8 * sin(5.0 * th + 1.3) + 1.1 * sin(11.0 * th + c.y * 0.11);
+    lod = cv2Lod(fpM, aK);
+    return textureLod(cv2ShapeTex, c + vec3(0.37, 0.61, 0.19), lod);
+}
 float cv2AnvilFibre(vec3 wd, float h, float fpM, float edge)
 {
     float lod;
-    vec4  s   = cv2AnvilFibreTex(wd, h, fpM, 1.0, lod);
+    vec4  s   = gCv2CdoK > 0.5 ? cv2CdoFibreTex(wd, h, fpM, lod) : cv2AnvilFibreTex(wd, h, fpM, 1.0, lod);
     float n   = clamp(0.5 + 2.5 * (s.a - 0.5) + 1.2 * (s.g - 0.45), 0.0, 1.0);
     float cut = mix(0.0, 0.42, edge);
     float k   = mix(0.55, 1.1, smoothstep(cut, cut + 0.45, n)) * smoothstep(cut - 0.05, cut + 0.2, n + 0.25 * (1.0 - edge));
@@ -1491,8 +1506,8 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
             c.erK    *= 1.0 - 0.94 * smK;
             c.billow *= 1.0 - min(smK * 1.18, 1.0);
             c.lobeB  *= 1.0 - smK;
-            c.bub    *= 1.0 - smK;
-            c.tur    *= 1.0 - smK;
+            c.bub    *= 1.0 - min(smK * 1.18, 1.0);
+            c.tur    *= 1.0 - min(smK * 1.18, 1.0);
         }
 #endif
         f.hf       = mix(f.hf, sg.hf, wS);
@@ -1666,7 +1681,8 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
     // (storm3) An anvil plate's ice combed into fibres (cv2AnvilFibre), inside the cloud only (one fetch where the plate
     // has density, not over the band its surface may reach): toward its skin (Ph small) the fibres open into wisps.
     if (lobeRef < 0.0) {
-        d *= mix(1.0, cv2AnvilFibre(wd, q.h, fpM, 1.0 - Ph), -lobeRef);
+        // (a hurricane's CDO: its swirl's streaks at least 0.8 strong, its texture where the smoothing took the billows)
+        d *= mix(1.0, cv2AnvilFibre(wd, q.h, fpM, 1.0 - Ph), max(-lobeRef, 0.8 * gCv2CdoK));
         if (d <= 0.0) return f;
     }
 #endif
@@ -2505,13 +2521,13 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
         float sgC   = 0.35 * Rb;
         float dCore = sgC * sqrt(-log(max(C, 1e-4)));
         float fanK  = full * (1.0 - smoothstep(0.8 * sgC, 3.0 * sgC, dCore));
-        float thick = 200.0 + cv2.anvil2.x * pow(aK, 0.7) + cv2.anvil2.y * g.near + 0.35 * (lid - base) * fanK * fanK;
+        float thick = 200.0 + cv2.anvil2.x * pow(aK, 1.1) + cv2.anvil2.y * g.near + 0.35 * (lid - base) * fanK * fanK;
         float mH    = (a - 0.3) * 15000.0;
         float mV    = min(q.h - (topS - thick), topS - q.h);
         mSh   = -cv2SMax(-mH, -mV, 300.0);
         edgeS = 1.0 - smoothstep(0.0, 0.35, a - 0.3);
         hfS   = clamp((q.h - (topS - thick)) / thick, 0.0, 1.0);
-        sigS  = mix(0.35, 1.0, smoothstep(0.3, 0.8, a));
+        sigS  = mix(0.12, 1.0, smoothstep(0.3, 0.9, a));   // (feathered: thin, translucent ice toward its outline)
     }
     float m = cv2SMax(best, mSh, 700.0);
     if (m < -1e8) return g;
@@ -2523,9 +2539,16 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
         float eR = max(cy.c.x, 0.5 * cy.d.x);
         if (eR <= 0.0 || cy.a.w < 0.3) continue;
         float rC = acos(clamp(dot(wd, cy.a.xyz), -1.0, 1.0)) * R_EARTH;
-        float rE = eR * (0.8 + 0.9 * clamp(hb / max(lid - base, 1000.0), 0.0, 1.0));
+        if (rC > 2.0 * eR + 30000.0 && rC > 1.3 * cy.c.y) continue;
+        // (not a perfect circle: a few harmonics round it, turning with the bands' phase: the polygonal eyes of mesovortices)
+        vec3  ce = normalize(cross(vec3(0.0, 0.0, 1.0), cy.a.xyz) + vec3(1e-6, 0.0, 0.0));
+        vec3  dv = wd - cy.a.xyz * dot(wd, cy.a.xyz);
+        float ta = atan(dot(dv, cross(cy.a.xyz, ce)), dot(dv, ce));
+        float rE = eR * (0.8 + 0.9 * clamp(hb / max(lid - base, 1000.0), 0.0, 1.0))
+                 * (1.0 + 0.07 * sin(4.0 * ta + cy.c.w) + 0.05 * sin(5.0 * ta - 1.7 * cy.c.w + 2.0) + 0.04 * sin(7.0 * ta + 0.6));
         if (rC < rE + 30000.0) m = min(m, (rC - rE) * 1.5);
-        gCv2CdoK = max(gCv2CdoK, 1.0 - smoothstep(0.8 * cy.c.y, 1.3 * cy.c.y, rC));
+        float cdoK = 1.0 - smoothstep(0.8 * cy.c.y, 1.3 * cy.c.y, rC);
+        if (cdoK > gCv2CdoK) { gCv2CdoK = cdoK; gCv2CycC = cy.a.xyz; }
     }
 #endif
     float wT = clamp(0.5 + (best - mSh) / 1200.0, 0.0, 1.0);
@@ -2599,6 +2622,18 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     // Storms are the cumulus field's margin (cv2StormGeom: the convection cube), carved by its lobes and erosion.
     CV2Storm sg = cv2StormNone();
     if ((lm & (kCv2LayCol | kCv2LayLow)) != 0u) sg = cv2StormGeom(q, fpM);
+#ifndef SKY_LITE
+    // A hurricane CDO's top: its swirl's streaks as RIDGES on the plate's margin ("Hurricane top streaks", ciHu.w, x11 toward
+    // its outline), never negative (the plate's margin is the distance to its lid or its underside: an offset thickens it).
+    // Density fibres alone do not show on an overcast that thick; the smoothed sheet read as white plastic.
+    if (gCv2CdoK > 0.0 && sg.deck > 0.6) {
+        float lodF;
+        vec4  sf = cv2CdoFibreTex(q.dirE, q.h, fpM, lodF);
+        float nF = clamp(0.5 + 2.5 * (sf.a - 0.5) + 1.2 * (sf.g - 0.45), 0.0, 1.0);
+        sg.m += smoothstep(0.6, 1.0, sg.deck) * gCv2CdoK * cv2.ciHu.w * (1.0 + 10.0 * sg.cap) * nF
+              * (1.0 - smoothstep(1.5, 4.0, lodF));
+    }
+#endif
 #ifdef CV2_LAYER_HITS
     float rcHit = gCv2RainCore;
 #endif
