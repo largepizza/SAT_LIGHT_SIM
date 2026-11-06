@@ -171,7 +171,7 @@ WxClim wxClimate(vec3 d, float ocean)
     float pol  = wfG(a, 75.0, 10.0);
     float sc   = wxScDecks(d) * ocean;
     // The MOISTURE POTENTIAL (coverage = 0.5 + kWxContrast x it, main): > ~0.55 overcast, < ~-0.55 clear.
-    float raw  = -0.2 + 0.45 * itcz - (0.75 + 0.45 * land) * dry + (0.3 + 0.2 * ocean) * mid + 0.25 * pol + 0.9 * sc;
+    float raw  = -0.05 + 0.45 * itcz - (0.75 + 0.45 * land) * dry + (0.3 + 0.2 * ocean) * mid + 0.25 * pol + 0.9 * sc;
     // The Rossby waves' lift: poleward flow at 5 km (the warm conveyor, ahead of a trough) clouds over; equatorward
     // (the cold air behind it) clears into open cumulus.
     vec3  w5    = wfWind(d, 5000.0, pc.evo0);
@@ -489,6 +489,94 @@ bool cycloneNear(vec3 d, float hw)
     return false;
 }
 
+// ── Weather v2 systems (cv2_storms.glsl CV2System, WeatherSystems.h) ──
+// An extratropical cyclone's COMMA CLOUD in its own frame: X along its heading, Y poleward (so the southern
+// hemisphere's clockwise rotation is the same counter-clockwise wind-up), both in head radii, the low at the origin.
+//   comma head  a band spiralling inward and cyclonically from the warm front's root, wrapping further as it occludes
+//   warm front  a broad stratiform shield poleward of a front running ahead (east-north-east) of the low
+//   cold front  a long, narrow band trailing equatorward and curving back west (convective along its line)
+//   dry slot    clear air wrapping into the low behind the cold front, wider as it occludes
+//   cold air    open cumulus behind the cold front
+// Between the features the system subsides (clear-ish). Returns x the moisture potential it sets (the climatology's
+// units), y its stratiform share, z its convective share, w how much it owns this point (0..1).
+vec4 wxEtc(float X, float Y, float occ)
+{
+    float r  = length(vec2(X, Y));
+    float th = atan(Y, X);
+    // Comma head: a log spiral from the warm front's root (th0, just south of east) wound cyclonically to thEnd.
+    const float th0 = -0.35;
+    float thEnd = 1.3 + 3.4 * occ;
+    float head  = 0.0;
+    for (int k = 0; k < 2; ++k) {
+        float tw = th - th0;
+        tw = tw - 6.2831853 * floor(tw / 6.2831853) + 6.2831853 * float(k);   // [0, 2pi) then the next turn
+        if (tw > thEnd - th0) continue;
+        float ra = 1.15 * exp(-0.30 * tw);                                    // the arm's radius at this angle
+        float wd = mix(0.30, 0.20, tw / max(thEnd - th0, 1e-3));              // its width in ln r: broader at the root
+        float lr = log(max(r, 1e-3) / ra);
+        // Faded in from the warm front's root and out at its tip (a band starting at full strength on the th0 ray, ~3
+        // head radii wide in ln r, drew hard arcs across the map).
+        head = max(head, exp(-(lr * lr) / (wd * wd)) * smoothstep(0.0, 0.9, tw) * smoothstep(thEnd - th0, thEnd - th0 - 0.6, tw));
+    }
+    // The low's own cloud mass inside the head (a filled comma at first, opening into the occluded spiral).
+    head = max(head, (1.0 - smoothstep(0.25, 0.75 + 0.2 * (1.0 - occ), r)) * (1.0 - 0.6 * occ));
+    head *= 1.0 - smoothstep(1.5, 2.2, r);
+    // Warm front: from the root ahead of the low; the shield lies poleward of it (overrunning warm air).
+    // (The front curves poleward ahead of the low; its edges are soft: a straight, sharp front drew hard arcs on the map.)
+    float yWf  = 0.12 * X + 0.10 * X * X;
+    float aboveWf = Y - yWf;
+    float warm = smoothstep(-0.35, 0.2, aboveWf) * (1.0 - smoothstep(0.4, 1.2, aboveWf))
+               * smoothstep(-0.4, 0.3, X) * (1.0 - smoothstep(0.9 + 0.5 * (1.0 - occ), 2.1, X)) * (1.0 - 0.5 * occ);
+    // Cold front: param t = -Y / Lc along it, its line curving back west.
+    const float Lc = 3.4;
+    float tc  = -Y / Lc;
+    float xCf = Lc * (0.10 * tc - 0.50 * tc * tc) + 0.15 * (1.0 - occ);
+    float wCf = mix(0.22, 0.10, clamp(tc, 0.0, 1.0));
+    float dx  = X - xCf;
+    float cold = exp(-(dx * dx) / (wCf * wCf)) * smoothstep(-0.05, 0.1, tc) * (1.0 - smoothstep(0.7, 1.0, tc));
+    // A broader, weaker pre-frontal band in the warm sector.
+    cold = max(cold, 0.45 * exp(-((dx - 0.3) * (dx - 0.3)) / 0.12) * smoothstep(0.0, 0.15, tc) * (1.0 - smoothstep(0.5, 0.85, tc)));
+    // Dry slot: behind the cold front, wrapping toward the low.
+    float dry = smoothstep(0.08, 0.35, -dx) * exp(-((Y + 0.45) * (Y + 0.45)) / 0.5) * (1.0 - smoothstep(0.9, 1.7, r))
+              * (0.35 + 0.65 * occ);
+    // Cold air behind the front: open cumulus.
+    float coldAir = smoothstep(0.25, 0.8, -dx) * smoothstep(-3.2, -0.6, Y) * (1.0 - smoothstep(0.3, 1.3, Y))
+                  * (1.0 - smoothstep(2.5, 3.6, -dx));
+    float band = max(max(head, warm), cold);
+    float M    = -0.55 + 1.75 * band - 1.0 * dry + 0.35 * coldAir * (1.0 - band);
+    float strat = max(head, warm) * (1.0 - 0.5 * cold);
+    float conv  = clamp(0.7 * cold + coldAir * (1.0 - band), 0.0, 1.0);
+    // Ownership: the region the system organises (an ellipse stretched along the cold front's trail).
+    float own = 1.0 - smoothstep(2.0, 3.2, length(vec2(X - 0.3, (Y + (Y < 0.0 ? 0.0 : 0.0)) * (Y < 0.0 ? 0.55 : 1.0))));
+    return vec4(M, strat, conv, own);
+}
+
+vec4 wxSystems(vec3 d)
+{
+    float m = 0.0, st = 0.0, cv = 0.0, ws = 0.0, own = 0.0;
+    uint n = min(cv2SysHead.x, kCv2SystemMax);
+    for (uint i = 0u; i < n; ++i) {
+        CV2System S = cv2Systems[i];
+        float cd = dot(d, S.a.xyz);
+        if (cd < S.d.w) continue;
+        vec3  e2 = cross(S.a.xyz, S.b.xyz) * S.c.y;          // poleward
+        // Azimuthal equidistant about the centre (true distances: a tangent-plane projection compressed the far points
+        // inside the ownership region, which the reach test then cut in hard arcs).
+        vec3  v  = d - S.a.xyz * cd;
+        float sv = length(v);
+        float k  = (sv > 1e-7 ? atan(sv, cd) / sv : 1.0) * R_EARTH_W / S.a.w;
+        float X  = dot(v, S.b.xyz) * k;
+        float Y  = dot(v, e2) * k;
+        vec4  e  = wxEtc(X, Y, S.c.x);
+        float w  = e.w * S.b.w;
+        if (w <= 0.0) continue;
+        m += w * e.x; st += w * e.y; cv += w * e.z; ws += w;
+        own = max(own, w);
+    }
+    if (ws <= 0.0) return vec4(0.0);
+    return vec4(m / ws, st / ws, cv / ws, own);
+}
+
 void main()
 {
     ivec3 id = ivec3(gl_GlobalInvocationID);
@@ -529,6 +617,15 @@ void main()
     float nz      = fine ? wxMoistureNoise(d, cutL, 2.5 * texM * 2.0, varLeft)
                          : wxMoistureNoise(d, cutL, 1e30, varLeft);
     WxClim cl     = wxClimate(d, ocean);
+    // The weather systems own their regions: their potential and shares replace the climatology's there, and the
+    // background noise is calmed so their bands stay bands.
+    vec4  sy      = fine ? vec4(0.0) : wxSystems(d);
+    if (sy.w > 0.0) {
+        cl.raw   = mix(cl.raw, sy.x, sy.w);
+        cl.strat = mix(cl.strat, sy.y, sy.w);
+        cl.conv  = mix(cl.conv, sy.z, sy.w);
+        nz      *= 1.0 - 0.45 * sy.w;
+    }
 
     // The storms' own cloud (the old stamps until step 3), in coverage units.
     gRainFree = 0.0;

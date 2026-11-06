@@ -479,6 +479,7 @@ void SatelliteSim::updateStorms()
         return;
     const auto t0 = std::chrono::steady_clock::now();
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    updateWeatherSystems(t);   // Weather v2 (SatelliteSimWeatherSystems.cpp)
     if (!stormCatalog)
     {
         stormClim = std::make_unique<wx::StormClimatology>();

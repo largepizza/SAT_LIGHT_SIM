@@ -21,6 +21,7 @@
 #include "Kessler.h"       // Kessler syndrome: breakups, the debris pool, the cascade (2026-10-16)
 #include "Weather.h"       // weather events: storm objects (2026-10-22, .plans/WEATHER_EVENTS_PLAN.md)
 #include "WindField.h"     // Weather v2: the one wind (2026-11-06)
+#include "WeatherSystems.h"  // Weather v2: weather systems (extratropical cyclones, ...)
 #include "Wildfire.h"   // (and Biome.h)         // the land-cover map for the weather hazards (2026-10-23)
 #include "StormClimatology.h"
 #include "SegVec.h"        // kEvents: a segmented vector (no reallocation hitches, 2026-10-21)
@@ -5935,13 +5936,24 @@ private:
     static constexpr VkDeviceSize kShieldEnvTableOffset = kStormEnvTowersOffset + 48ull * kStormMaxTowers;
     static constexpr VkDeviceSize kShieldEnvListOffset = kShieldEnvTableOffset + 8ull * kShieldTableSize;
     static constexpr VkDeviceSize kShieldEnvOffset = kShieldEnvListOffset + 4ull * kShieldListSize;
-    static constexpr VkDeviceSize kStormBufBytes = kShieldEnvOffset + 64ull * kShieldMax;
+    // Weather v2 systems (2026-11-06, = cv2_storms.glsl cv2SysHead / CV2System), read by the bake only.
+    struct GpuWxSystem { glm::vec4 a, b, c, d; };
+    static_assert(sizeof(GpuWxSystem) == 64, "GpuWxSystem == cv2_storms.glsl's CV2System");
+    static constexpr uint32_t kWxSystemMax = 128;   // = kCv2SystemMax
+    static constexpr VkDeviceSize kSysHeadOffset = kShieldEnvOffset + 64ull * kShieldMax;
+    static constexpr VkDeviceSize kSystemsOffset = kSysHeadOffset + 16;
+    static constexpr VkDeviceSize kStormBufBytes = kSystemsOffset + 64ull * kWxSystemMax;
     static_assert(kShieldHeadOffset % 16 == 0 && kStormEnvTableOffset % 16 == 0 && kShieldEnvOffset % 16 == 0,
                   "std430: the storm buffer's vec4 arrays start on 16 bytes");
     VkBuffer stormBuf = VK_NULL_HANDLE;
     VkDeviceMemory stormMem = VK_NULL_HANDLE;
     void *stormMapped = nullptr;
     std::unique_ptr<wx::Catalog> stormCatalog;
+    // Weather v2 systems (WeatherSystems.h): the catalog, this frame's systems, their settings.
+    wx::SystemCatalog wxSystems;
+    std::vector<wx::SystemState> wxSystemsNow;
+    wx::SystemSettings wxSystemSettings;
+    void updateWeatherSystems(double t);
     std::unique_ptr<wx::StormClimatology> stormClim;
     std::vector<wx::Tower> stormTowers;          // this frame's, strongest first
     struct StormEntry { uint32_t key, tower; };

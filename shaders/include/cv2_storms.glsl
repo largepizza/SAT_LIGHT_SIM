@@ -78,6 +78,16 @@ struct CV2Cyclone {
     vec4 d;   // x the radius of maximum wind (m), y vmax (m/s), z 1 over land, w the spiral arms (2 .. ~5, continuous)
 };
 
+// Weather v2 (2026-11-06): a weather SYSTEM (WeatherSystems.h; SatelliteSimWeatherSystems.cpp), read by the bake only
+// (cloud_v2_weather.comp wxSystems): an object travelling on the steering wind that writes its own fields.
+const uint kCv2SystemMax = 128u;
+struct CV2System {
+    vec4 a;   // xyz the centre (unit ECEF), w the comma head's radius (m)
+    vec4 b;   // xyz the heading (unit tangent), w intensity 0..1
+    vec4 c;   // x age 0..1 (the occlusion's progress), y hemisphere (+1 north), z kind (0 extratropical), w seed 0..1
+    vec4 d;   // x speed (m/s), yz spare, w cos(its reach / R)
+};
+
 #ifdef CV2_STORM_BINDING
 layout(std430, set = 0, binding = CV2_STORM_BINDING) readonly buffer CV2StormBuf {
     uvec4    cv2StormHead;                          // x towers, y table entries used, z list entries used, w frame
@@ -110,6 +120,8 @@ layout(std430, set = 0, binding = CV2_STORM_BINDING) readonly buffer CV2StormBuf
     uvec2    cv2ShieldEnvTable[kCv2ShieldTableSize];
     uint     cv2ShieldEnvList[kCv2ShieldListSize];
     CV2Shield cv2EnvShields[kCv2ShieldMax];
+    uvec4    cv2SysHead;                            // x systems (Weather v2)
+    CV2System cv2Systems[kCv2SystemMax];
 #endif
 };
 #endif
