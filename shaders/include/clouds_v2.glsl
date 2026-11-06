@@ -1410,8 +1410,12 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
     // both, from one set of fetches (2026-11-04, storm-rework.md). Past the lobes' reach the storm is not there at all.
     float mS = sg.m / cv2.stormU.y;
     if (mS > -2.0) {
-        float lobeS = cv2.stormU.w * cv2.column2.w * cv2.column.z * 0.35 / cv2.stormU.y
-                    * mix(1.0, 0.3, smoothstep(300.0, 2000.0, fpM));   // (sub-pixel lobes average away)
+        // (Weather v2: 1.5 km of billow x "Storm lobes"; it was "Cb lobes" x the old towers' radius, which a setting tuned
+        // for those towers left at ~250 m: smooth walls and flat tops on every storm.)
+        const float kCv2StormBillowM = 1500.0;
+        float lobeS = cv2.stormU.w * kCv2StormBillowM / cv2.stormU.y
+                    * mix(1.0, 0.3, smoothstep(300.0, 2000.0, fpM))     // (sub-pixel lobes average away)
+                    * mix(1.0, 0.3, sg.deck);                           // (the anvil plate: gentle domes, not a cumulus deck)
         // (storm3, 2026-11-05) The anvil plate's share (x "Anvil fibres" up to 1): its lobes, erosion, skin and fibres.
         float plK  = sg.deck * min(cv2.storm3a.x, 1.0);
         float wS    = cu ? clamp(0.5 + (mS - c.m0) * 5.0, 0.0, 1.0) : 1.0;
@@ -2398,17 +2402,17 @@ float cv2SMax(float a, float b, float k)
     float h = max(k - abs(a - b), 0.0) / k;
     return max(a, b) + h * h * k * 0.25;
 }
-// The convection cube's ANVIL fields (z, w) read smooth: four bilinear taps half a level-1 texel round wd, averaged (a
-// tent over ~2 texels): one bilinear tap drew the plate's outline as the texels' polygon. (The cores, x / y, are read at
-// level 0, 5 km: they are ~10 km across.)
+// The convection cube read smooth at a level: four bilinear taps half a texel round wd, averaged (a tent over ~2 texels):
+// one bilinear tap drew contours as the texels' polygons. The cores (x, y) at level 0 (5 km: they are ~10 km across), the
+// anvil fields (z, w) at level 1.
 #ifdef CV2_CONV_BINDING
-vec4 cv2ConvSmooth(vec3 wd)
+vec4 cv2ConvSmooth(vec3 wd, float lod)
 {
     vec3  e  = normalize(cross(vec3(0.0, 0.0, 1.0), wd) + vec3(1e-6, 0.0, 0.0));
     vec3  n  = cross(wd, e);
-    const float h = 0.5 * 2.0 / 1024.0;   // (level 1: 1024 texels a face side, 2 / 1024 rad each at its centre)
-    return 0.25 * (textureLod(cv2ConvTex, wd + e * h, 1.0) + textureLod(cv2ConvTex, wd - e * h, 1.0)
-                 + textureLod(cv2ConvTex, wd + n * h, 1.0) + textureLod(cv2ConvTex, wd - n * h, 1.0));
+    float h  = 0.5 * 2.0 / (2048.0 * exp2(-lod));   // (half a texel: level l has 2048 / 2^l a face side, 2 / that rad each)
+    return 0.25 * (textureLod(cv2ConvTex, wd + e * h, lod) + textureLod(cv2ConvTex, wd - e * h, lod)
+                 + textureLod(cv2ConvTex, wd + n * h, lod) + textureLod(cv2ConvTex, wd - n * h, lod));
 }
 #endif
 CV2Storm cv2StormGeom(CV2Pos q, float fpM)
@@ -2431,7 +2435,9 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
     if (q.h > top + 50.0 + cv2.anvil2.w + kCv2DomeU) return g;
     vec4  cvB = textureLod(cv2ConvTex, wd, 2.0);   // ~20 km: is a storm near at all (and its surroundings, its cumulus)
     if (cvB.x < 0.01 && cvB.z < 0.01) return g;
-    vec4  cv  = vec4(textureLod(cv2ConvTex, wd, 0.0).xy, cv2ConvSmooth(wd).zw);
+    // (the cores read through the same tent at level 0: one bilinear tap, through the distance's sqrt(-ln C), drew the
+    // 5-km texels' facets as flat faces on every tower)
+    vec4  cv  = vec4(cv2ConvSmooth(wd, 0.0).xy, cv2ConvSmooth(wd, 1.0).zw);
     float C     = cv.x;
     float lift  = cv2Ground(q.dirE) * 0.9;
     float base  = cv2.types[4].alt.x + lift;
