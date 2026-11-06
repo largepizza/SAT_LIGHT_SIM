@@ -1488,6 +1488,36 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   from above inside dense cloud: BLACK BLOTS from overhead (Yun-yeung's eyewall from 160 km). The shell's top is now at
   least the tropics' lid + "Cb overshoot" + 800 m (SatelliteSimCloudsV2.cpp). The domes' three lobe tips still read dark
   from overhead (not the shell, not the Sun volume: open).
+- **Overshooting tops are a swell of the head, not a dome (2026-11-06, issue 20261105_201719 "Anvil shootthrough
+  mushroom").** A tower's margin over its own top is no longer `-d` (the distance from its axis, whatever the height): the
+  head's rounding `r *= sqrt(1 - zh^2)` reaches 0 at the top, and from there `r -= 10 (h - top)` (10 m of margin a metre,
+  cv2StormGeom and cv2ColumnSigma). With `-d`, the lobes and "Storm bubbles" (+-1-2 km of margin) stood a pillar ~2 km wide
+  over EVERY anvil-reaching tower's axis, up to the search's cut at lid + overshoot + kCv2DomeU + 200 m: the mushroom's
+  stem (a flat-topped spire even with `cb_overshoot_km` 0), which grew out of the lid as the head reached it. The dome
+  primitive (0.35 Rc, 1 km high, a quarter of the lobes) is gone with `CV2Storm.cap`'s dome share and `bestCap`: an
+  overshooting core (hO > 0.6, about a third) raises its head's top by `sw = (300 + osM osS) (1 - (d / 0.55 Rc)^2)^2`, a
+  broad low mound (~0.55 Rc in radius, at most "Cb overshoot" + 600 m over the lid) that is the tower's cloud above the lid
+  and merges into the plate by the smooth max. hO PULSES on the CPU (SatelliteSimWeather.cpp, the GPU tower's b.z): from
+  0.6 to its own value and back on a 10-20 sim min cycle per tower, continuous in the tower's age. The domes' "three
+  lobe tips read dark from overhead" above were most likely this pillar too. Register count unchanged (128); cloud march
+  at the issue's view 8.93 -> 8.62 ms (interleaved, 3 reps, within noise).
+- **Storms take the cumulus' material (2026-11-06, the user after issue 20261105_201719: anvils read as another material,
+  met the cumulus at a seam, skipped the bubbles, and only scattered like cloud at density ~0.1).** cv2StormGeom gives the
+  SHAPE only (its margin: towers, flared heads, lid, plate, the overshoot swell; it is the footprint lookup that stays, the
+  storm bins' tower loop). Its density is a FACTOR (`CV2Storm.sig`: 1 on a tower, the plate's age / edge thinning on the
+  shield) on the congestus type's density (`types[3].shape.x x look.y`, x 0.6-1 up the cloud as every cumulus), and
+  cv2FieldLow's storm block takes the congestus' billow, erosion (`storm.y` deep-convection share, the plate's "Anvil
+  erosion"), multiple-scattering brightness and ambient, the cumulus bubbles (`c.bub`, off the plate) instead of the "Storm
+  bubbles" (`storm3a.w` no longer read there), and one skin ramp (no 3x soft plate skin). The plate's thin-ice density
+  (0.01 x `storm.z`, ~0.0014 /m at the user's settings), the tower's `types[4] x cb_columns` density and the hurricane
+  CDO's top density factor (`ciHu2.x`) are gone. Kept: `deep` (the storm-scale lobes and detail, as the cumulus field's own
+  deep convection), the lid's lobe damping and bulge-only plate lobes, the plate fibres ("Anvil fibres").
+  The cumulus' FINE bubbles (cu5.z, ~30-330 m, 8x the storm read) are off on deep convection (`x (1 - deep)`): on a
+  20-km tower wall they carved a sponge of dark pits seen from 30-40 km (`harness_runs/storm_b_ab` variants m4/m6, 0.4 of
+  them still pitted); with them, close up, the wall is a cauliflower (the reporter's view). A storm-scale bubble octave
+  is the open next step. 128 registers. Cloud march at the issue's view 8.79 -> 8.57 ms, from 32 km over a storm
+  16.88 -> 17.02 (interleaved, within noise): the separate shape evaluation was already shared (one fetch set since
+  2026-11-04), so nothing measurable is saved. The non-unified path (`storm_unified` 0, cv2ColumnSigma) is unchanged.
 - **The unified volumetric composite (2026-10-26, branch perf-frames; the user: the plumes, smoke and tornadoes "feel entirely
   distinct in quality" and clip against rain, dust, smoke and clouds).** The dust list's Gaussians (launch plumes, flames,
   wildfire smoke, tornado funnels, haboob far field, Kessler dust and fireball trails) are still composited in cloud_march.comp
