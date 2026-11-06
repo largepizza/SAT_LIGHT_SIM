@@ -132,10 +132,46 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     - Replaced the lens OBJECT (`cv2OroSigma`, 2026-11-05: a cap + one lee lens from the DEM excess, with 1-4 stacked
       `fract` plates): from above it was a smooth blob with parallel stripes and chevrons (the plates) and lighting
       glitches (issue 20261105_174850). Flat land is unchanged (Kansas off/on: 0.01 levels mean, no pixel over 8).
+    - Round 2 (2026-11-06, issues 20261105_201331 "too uniform and persistent, lighting odd", 20261105_201521 "sharp V";
+      branch qa/20261106/lens-b). At `oro_moist` 0.75 (the user's) the threshold sat at ~540 m everywhere, all the time:
+      every range wore smooth ribbons tens of km long. Now:
+      - Wave-cloud days: `mo` = `oro_moist` x smoothstep(0.2, 0.6, wv), wv = 0.6 sin(23 lon + oro1.z) sin(29 lat + oro1.w)
+        + 0.4 sin(37 lon - 19 lat - 1.3 oro1.z + 2) (oro1.zw turn over in ~3 days): the gate is open (partly) over ~33% of
+        the area-time, fully over ~8%; closed, the condensation lift is 1400 m x dryness, past the saturating lift.
+      - Finite lenses: the condensation lift moves with the cluster Perlin (+-225 m), the mid shape volume's `a` (+-220 m),
+        and the 4-32 km Perlin of the closed-cell volume (`anchorCell`, read only inside a lens: +-300 m AND a cut,
+        smoothstep(-0.4, 0.2, n)). Added to the lift alone the noise only frayed a crest lifted far past its threshold.
+        Half-height (0.5 excess + 200 m) x (0.75 + 0.5 sh.g); texture x2.2 contrast, floor 0.4; density x3.5.
+      - Smooth response: lift taps at DEM mip 1.2 over the mip-2.8 massif (were 1.0 / 2.3); the parting envelope is the
+        mip-1 relief + 1.5 x its excess over mip 2.8 (was mip 0 + 0.8 x over 2.3), prominence from the same mip-1 read.
+        The V roof over the 201521 ridge was the PARTING (it stays with "Mid-level amount" 0). At mip 1.5 for the envelope
+        and prominence the prominence fell under its ramp at the reporter's ridge and the deck closed over the eye.
+      - Lighting: neither the light march nor the march away from the light (the diffuse slab's far side, odBk) saw the
+        lens (gCv2Oro is the main sample's alone), so the diffuse field took it for a wisp: grey-blue and flat. cv2MidSigma
+        flags a lens with a negative deck share (strat - lensC); the key light takes od = max(od, sigma x (topH - h) /
+        max(mu, 0.15) x lens share), and a lens sample (deck < -0.5) takes odBk from its own path to its base (the
+        no-march formula). Measured on the 201331 view, lens pixels over clear ground vs the cumulus in the same frame
+        (luminance p10/50/90 183/210/224, B/R 0.99): before 129/160/202, B/R 1.21; with od alone 130/164/191, B/R 1.15 (as
+        with gCv2Oro kept live over the light march, 254 registers); with odBk too 127/215/225, B/R 1.00. The far side was
+        most of it. (STV skipped for lenses, or ice off: no change.)
+      - Cost (the live app's 1600x900 window, user settings, GPU shared with two other agents' apps; lens-a SPVs vs these,
+        march + lightning + CDC): with no lens on either side the code costs nothing measurable (201331's place at +2 d,
+        3 ABBA pairs, cloud_march 13.41 vs 13.36 ms; the reporter's view with both lens densities zeroed, 48.0 vs 47.7 ms
+        under contention). At the reporter's own view cloud_march is +1.1-2.9 ms (quiet pairs 16.8-17.2 -> 18.0-19.7):
+        lens-a's opaque ribbons covered ~33% of that frame and ended its rays 3-4 km above the cumulus; the broken lenses
+        cover ~6% and the cumulus under the old ribbons is marched again. March at 128 registers.
+      - Tried: the ribbon breaks from the cluster Perlin alone (8-64 km, +-450 m): a regional gate, the lens either gone
+        or a ribbon; the lift taps at mip 1.6 / 1.4: lenses too weak to form at Fuji; envelope and prominence at mip 1.5
+        (or +400 m, or 2.5 x the excess): the prominence fell under its 150-700 m ramp and the deck closed over the
+        201521 eye; density x4 alone (lens-a): no change of colour (it was already opaque).
+      - Test views: qa/waves/20261106/evidence/lens-b/final.satcmd (reporter views, lens / no-lens masks, the +0 / +6 h /
+        +1 d / +2 d / +3 d series, Fuji 2036-11-21 04 UTC with `oro_moist` 1 -- the gate is open there then -- Kansas
+        ground / 8 km), final2.satcmd + perf*.satcmd (ABBA), lenscolor.py (lens vs cumulus colour from a lens / no-lens
+        pair).
   - **Registers:** computed inside `cv2Field` at every inlined march call site, the 2026-11-05 lens object put the march at
     251. The march (`CV2_ORO_EXTERNAL`) sets `gCv2Oro` at its ONE main sample, before `cv2Field`, and zeroes it right
     after: kept live across the light march it was 254 registers; zeroed, 128 (the light march does not see the terrain
-    terms: a lens is lit as unshadowed by itself there, the STV sees it). The CDC and lightning shaders compute it in
+    terms; a lens stands in its own path to its top, round 2 above; the STV sees it). The CDC and lightning shaders compute it in
     `cv2Field` (no cliff there): lenses and parting are in the occupancy clipmap and the Sun volume.
   - **Cost** (2026-11-06, the reporter's view of issue 20261105_174850, the live app's window, the user's settings; GPU
     shared with two other agents' apps, so frame times swung 17-68 ms): cloud_march, the 2026-11-05 lens-object SPVs
