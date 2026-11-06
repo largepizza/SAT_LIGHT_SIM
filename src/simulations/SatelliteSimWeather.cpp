@@ -667,91 +667,105 @@ void SatelliteSim::updateStorms()
     const uint32_t towerBinsN = kStormBinsPerFace;
     const bool tight = stormIndexTight;
     if (tight) { binGeom(towerBinsN); binGeom(shieldBinsN); }
+    // Weather v2: no shader reads the towers' GPU list or their bins any more (the convection cube holds the storms,
+    // SatelliteSimWeatherSystems.cpp updateConvection): they are not built (~1 ms a frame).
     auto *head = static_cast<uint32_t *>(stormMapped);
-    auto *dst = reinterpret_cast<GpuStormTower *>(static_cast<char *>(stormMapped) + kStormTowersOffset);
-    stormEntries.clear();      // (key, tower) pairs, towers strongest first
-    stormGpuTowers.resize(nT);
-    parallelEntries(stormCatalog.get(), nT, tight ? 384u : 4096u, stormEntries, [&](uint32_t i, std::vector<StormEntry> &ents) {
-        const wx::Tower &tw = stormTowers[i];
-        const glm::dvec3 d = glm::normalize(tw.dir);
-        const glm::dvec3 east = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), d) + glm::dvec3(1e-12, 0, 0));
-        const glm::dvec3 north = glm::cross(d, east);
-        const glm::dvec3 sh(tw.shear);
-        const double bearing = std::atan2(glm::dot(sh, north), glm::dot(sh, east));
-        const double Rc = Rb * (0.7 + 0.6 * tw.size) * (0.75 + 0.25 * tw.role);
-        // The anvil grows with the storm (2026-10-22): a young head is narrow and stands over its tower; over the
-        // ~45 minutes after the tower has grown it spreads and is blown downwind, an organised storm's (multicell,
-        // supercell) furthest. The flared head IS the anvil (cv2ColumnSigma), so this is its size.
-        const double mature = glm::smoothstep(0.0, 2700.0, (double)tw.age - (double)tw.growS);
-        const double kindK = tw.kind == wx::StormKind::Supercell ? 1.35
-                           : (tw.kind == wx::StormKind::Multicell || wx::isLineSystem(tw.kind)) ? 1.1
-                           : tw.kind == wx::StormKind::Tropical ? 1.0 : 0.85;
-        const double hs = (double)(stormHash(tw.seed ^ 0xA5A5A5A5u) & 0xFFFFu) / 65535.0;   // this storm's own spread
-        double anvilK = std::max(1.0 / flare, (0.65 + (0.55 + 0.5 * hs) * mature) * kindK);
-        // The head spreads over the "Anvil formation time" from the moment it starts to flare (2026-11-03, issue
-        // 20261030_210137): it flared at 0.65+ of its width as the tower's strength crossed 0.42 -> 0.6, ~3 sim min,
-        // with the anvil plate under it (cv2ColumnSigma's 'near', sized by the reach that follows anvilK): at 5 min/s
-        // the anvil popped in within a frame or two. From 1 / flare (no flare: the head as wide as the tower), on the
-        // shield's ramp (wx::Catalog::shieldsAt), so the head and the shield it feeds spread together.
-        // The spread rides in the GPU tower's c.z with anvilK (cv2_storms.glsl cv2TowerSpread): it also scales the plate.
-        double spread = 1.0;
-        {
-            const double g = std::clamp((double)tw.flareAge / std::max(60.0, (double)stormAnvilFormMin * 60.0), 0.0, 1.0);
-            spread = g * (0.6 + 0.4 * g);
-            anvilK = 1.0 / flare + (anvilK - 1.0 / flare) * spread;
-        }
-        double driftK = (0.25 + (0.9 + 0.8 * hs) * mature) * kindK;
-        // A cyclone's towers do not flare: its anvil is the central dense overcast (a shield, cycloneShieldsAt). With
-        // flared ~40-km heads every eyewall tower reached across the whole eye and eyewall (reach ~60 km), so every
-        // sample there walked a full bin of towers: 16-19 ms of the cloud march from 12 km in the eye at Medium.
-        // Measured (Medium, Rosa 2036-09-10, cloud bucket): 12 km in the eye 15.2 -> 12.5 ms, sea level 8.0 -> 6.5.
-        if (tw.kind == wx::StormKind::Tropical) { anvilK = 1.0 / flare; driftK = 0.25; spread = 1.0; }
-        const double reach = 1.06 * std::max(Rc * 1.3 * flare * anvilK + drift * driftK + Rc * 0.6 + 0.25 * (double)cv2Lean * span,
-                                             1.1 * Rc + cuReach) + 1000.0;
-        GpuStormTower g;
-        g.a = glm::vec4(glm::vec3(d), tw.strength);
-        // The overshooting top PULSES (issue 20261105_201719): an overshooting core (overshoot > 0.6, cv2StormGeom's swell)
-        // pushes its top through the lid and lets it settle back, again and again over its life, each tower on its own
-        // 10-20 sim min cycle; between pushes it sits at the lid. Continuous in the tower's age: nothing pops in.
-        float overshoot = tw.overshoot;
-        if (overshoot > 0.6f)
-        {
-            const double hp = (double)(stormHash(tw.seed ^ 0x5EED0517u) & 0xFFFFu) / 65535.0;
-            const double period = 600.0 + 600.0 * hp;
-            const double s = 0.5 - 0.5 * std::cos(6.283185307 * ((double)tw.age / period + hp * 7.0));
-            overshoot = 0.6f + (overshoot - 0.6f) * (float)s;
-        }
-        g.b = glm::vec4(tw.role, tw.size, overshoot, (float)bearing);
-        uint32_t seedBits = tw.seed;
-        float seedF;
-        std::memcpy(&seedF, &seedBits, 4);
-        // c.w packs the drawn height cap with driftK (< 4) likewise: driftK + 4 x round((1 - cap) x 1000) (cv2TowerDriftK /
-        // cv2TowerHeightCap; a grown tower's c.w is its plain driftK). wx::Tower::heightCap: the top climbs over the
-        // "Tower growth time" instead of the ~3 sim min its strength took through the height's smoothstep.
-        const double cap = (tw.kind == wx::StormKind::Tropical) ? 1.0 : std::clamp((double)tw.heightCap, 0.0, 1.0);
-        g.c = glm::vec4((float)reach, seedF, (float)(std::min(anvilK, 7.99) + 8.0 * std::round((1.0 - spread) * 1000.0)),
-                        (float)(std::min(driftK, 3.99) + 4.0 * std::round((1.0 - cap) * 1000.0)));
-        dst[i] = g;
-        stormGpuTowers[i] = g;   // the envelope index's copy is made from these (buildStormEnvIndex)
-        if (tight)
-            listStormBins(d, reach, i, towerBinsN, ents, KeepDisc{d, reach / kReW + 60.0 / kReW});
-        else
-            listStormBins(d, reach, i, towerBinsN, ents);
-    });
-    split("storms.towerBins");
-    auto *list = reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kStormListOffset);
-    const StormIndexStats ix = fillStormIndex(stormEntries, stormTable, stormTableUsed, stormCounts, kStormTableSize,
-                                              kStormListSize, kStormMaxPerBin, list,
-                                              reinterpret_cast<glm::uvec2 *>(static_cast<char *>(stormMapped) + kStormTableOffset));
-    const uint32_t bins = ix.bins, entries = ix.entries, truncated = ix.truncated, lost = ix.lost, start = ix.used;
-    head[0] = nT;
-    head[1] = bins;
-    head[2] = start;
-    head[3] = (uint32_t)cv2Frame;
-    // (Frames in flight: what changed reaches the GPU at the start of the frame's work.)
-    ctx_->mirrorDirty(stormMapped, 0, kStormTowersOffset + 48ull * nT);
-    ctx_->mirrorDirty(stormMapped, kStormTableOffset, 8ull * kStormTableSize);
-    ctx_->mirrorDirty(stormMapped, kStormListOffset, 4ull * start);
+    uint32_t bins = 0, entries = 0, truncated = 0, lost = 0;
+    if (!kWeatherV2NoDrift)
+    {
+        auto *dst = reinterpret_cast<GpuStormTower *>(static_cast<char *>(stormMapped) + kStormTowersOffset);
+        stormEntries.clear();      // (key, tower) pairs, towers strongest first
+        stormGpuTowers.resize(nT);
+        parallelEntries(stormCatalog.get(), nT, tight ? 384u : 4096u, stormEntries, [&](uint32_t i, std::vector<StormEntry> &ents) {
+            const wx::Tower &tw = stormTowers[i];
+            const glm::dvec3 d = glm::normalize(tw.dir);
+            const glm::dvec3 east = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), d) + glm::dvec3(1e-12, 0, 0));
+            const glm::dvec3 north = glm::cross(d, east);
+            const glm::dvec3 sh(tw.shear);
+            const double bearing = std::atan2(glm::dot(sh, north), glm::dot(sh, east));
+            const double Rc = Rb * (0.7 + 0.6 * tw.size) * (0.75 + 0.25 * tw.role);
+            // The anvil grows with the storm (2026-10-22): a young head is narrow and stands over its tower; over the
+            // ~45 minutes after the tower has grown it spreads and is blown downwind, an organised storm's (multicell,
+            // supercell) furthest. The flared head IS the anvil (cv2ColumnSigma), so this is its size.
+            const double mature = glm::smoothstep(0.0, 2700.0, (double)tw.age - (double)tw.growS);
+            const double kindK = tw.kind == wx::StormKind::Supercell ? 1.35
+                               : (tw.kind == wx::StormKind::Multicell || wx::isLineSystem(tw.kind)) ? 1.1
+                               : tw.kind == wx::StormKind::Tropical ? 1.0 : 0.85;
+            const double hs = (double)(stormHash(tw.seed ^ 0xA5A5A5A5u) & 0xFFFFu) / 65535.0;   // this storm's own spread
+            double anvilK = std::max(1.0 / flare, (0.65 + (0.55 + 0.5 * hs) * mature) * kindK);
+            // The head spreads over the "Anvil formation time" from the moment it starts to flare (2026-11-03, issue
+            // 20261030_210137): it flared at 0.65+ of its width as the tower's strength crossed 0.42 -> 0.6, ~3 sim min,
+            // with the anvil plate under it (cv2ColumnSigma's 'near', sized by the reach that follows anvilK): at 5 min/s
+            // the anvil popped in within a frame or two. From 1 / flare (no flare: the head as wide as the tower), on the
+            // shield's ramp (wx::Catalog::shieldsAt), so the head and the shield it feeds spread together.
+            // The spread rides in the GPU tower's c.z with anvilK (cv2_storms.glsl cv2TowerSpread): it also scales the plate.
+            double spread = 1.0;
+            {
+                const double g = std::clamp((double)tw.flareAge / std::max(60.0, (double)stormAnvilFormMin * 60.0), 0.0, 1.0);
+                spread = g * (0.6 + 0.4 * g);
+                anvilK = 1.0 / flare + (anvilK - 1.0 / flare) * spread;
+            }
+            double driftK = (0.25 + (0.9 + 0.8 * hs) * mature) * kindK;
+            // A cyclone's towers do not flare: its anvil is the central dense overcast (a shield, cycloneShieldsAt). With
+            // flared ~40-km heads every eyewall tower reached across the whole eye and eyewall (reach ~60 km), so every
+            // sample there walked a full bin of towers: 16-19 ms of the cloud march from 12 km in the eye at Medium.
+            // Measured (Medium, Rosa 2036-09-10, cloud bucket): 12 km in the eye 15.2 -> 12.5 ms, sea level 8.0 -> 6.5.
+            if (tw.kind == wx::StormKind::Tropical) { anvilK = 1.0 / flare; driftK = 0.25; spread = 1.0; }
+            const double reach = 1.06 * std::max(Rc * 1.3 * flare * anvilK + drift * driftK + Rc * 0.6 + 0.25 * (double)cv2Lean * span,
+                                                 1.1 * Rc + cuReach) + 1000.0;
+            GpuStormTower g;
+            g.a = glm::vec4(glm::vec3(d), tw.strength);
+            // The overshooting top PULSES (issue 20261105_201719): an overshooting core (overshoot > 0.6, cv2StormGeom's swell)
+            // pushes its top through the lid and lets it settle back, again and again over its life, each tower on its own
+            // 10-20 sim min cycle; between pushes it sits at the lid. Continuous in the tower's age: nothing pops in.
+            float overshoot = tw.overshoot;
+            if (overshoot > 0.6f)
+            {
+                const double hp = (double)(stormHash(tw.seed ^ 0x5EED0517u) & 0xFFFFu) / 65535.0;
+                const double period = 600.0 + 600.0 * hp;
+                const double s = 0.5 - 0.5 * std::cos(6.283185307 * ((double)tw.age / period + hp * 7.0));
+                overshoot = 0.6f + (overshoot - 0.6f) * (float)s;
+            }
+            g.b = glm::vec4(tw.role, tw.size, overshoot, (float)bearing);
+            uint32_t seedBits = tw.seed;
+            float seedF;
+            std::memcpy(&seedF, &seedBits, 4);
+            // c.w packs the drawn height cap with driftK (< 4) likewise: driftK + 4 x round((1 - cap) x 1000) (cv2TowerDriftK /
+            // cv2TowerHeightCap; a grown tower's c.w is its plain driftK). wx::Tower::heightCap: the top climbs over the
+            // "Tower growth time" instead of the ~3 sim min its strength took through the height's smoothstep.
+            const double cap = (tw.kind == wx::StormKind::Tropical) ? 1.0 : std::clamp((double)tw.heightCap, 0.0, 1.0);
+            g.c = glm::vec4((float)reach, seedF, (float)(std::min(anvilK, 7.99) + 8.0 * std::round((1.0 - spread) * 1000.0)),
+                            (float)(std::min(driftK, 3.99) + 4.0 * std::round((1.0 - cap) * 1000.0)));
+            dst[i] = g;
+            stormGpuTowers[i] = g;   // the envelope index's copy is made from these (buildStormEnvIndex)
+            if (tight)
+                listStormBins(d, reach, i, towerBinsN, ents, KeepDisc{d, reach / kReW + 60.0 / kReW});
+            else
+                listStormBins(d, reach, i, towerBinsN, ents);
+        });
+        split("storms.towerBins");
+        auto *list = reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kStormListOffset);
+        const StormIndexStats ix = fillStormIndex(stormEntries, stormTable, stormTableUsed, stormCounts, kStormTableSize,
+                                                  kStormListSize, kStormMaxPerBin, list,
+                                                  reinterpret_cast<glm::uvec2 *>(static_cast<char *>(stormMapped) + kStormTableOffset));
+        bins = ix.bins; entries = ix.entries; truncated = ix.truncated; lost = ix.lost;
+        const uint32_t start = ix.used;
+        head[0] = nT;
+        head[1] = bins;
+        head[2] = start;
+        head[3] = (uint32_t)cv2Frame;
+        // (Frames in flight: what changed reaches the GPU at the start of the frame's work.)
+        ctx_->mirrorDirty(stormMapped, 0, kStormTowersOffset + 48ull * nT);
+        ctx_->mirrorDirty(stormMapped, kStormTableOffset, 8ull * kStormTableSize);
+        ctx_->mirrorDirty(stormMapped, kStormListOffset, 4ull * start);
+
+    }
+    else
+    {
+        head[0] = head[1] = head[2] = 0u;
+        head[3] = (uint32_t)cv2Frame;
+        ctx_->mirrorDirty(stormMapped, 0, 16);
+    }
     const auto tIdx = std::chrono::steady_clock::now();
     split("storms.towerIndex");
 
@@ -766,7 +780,8 @@ void SatelliteSim::updateStorms()
         std::sort(stormShields.begin(), stormShields.end(), [](const wx::Shield &a, const wx::Shield &b) {
             return a.strength != b.strength ? a.strength > b.strength : a.stormId < b.stormId;
         });
-        const uint32_t nS = (uint32_t)std::min<size_t>(stormShields.size(), kShieldMax);
+        // (Weather v2: the shields stay a catalog record for the Weather window; no shader reads their GPU list or bins.)
+        const uint32_t nS = kWeatherV2NoDrift ? 0u : (uint32_t)std::min<size_t>(stormShields.size(), kShieldMax);
         auto *sdst = reinterpret_cast<GpuStormShield *>(static_cast<char *>(stormMapped) + kShieldsOffset);
         stormGpuShields.resize(nS);
         shieldEntries.clear();
@@ -895,8 +910,8 @@ glm::dvec3 SatelliteSim::stormFlowedDir(const glm::dvec3 &wd, double t) const
 void SatelliteSim::buildStormEnvIndex()
 {
     FPROF_SCOPE("buildStormEnvIndex");
-    if (!stormMapped)
-        return;
+    if (!stormMapped || kWeatherV2NoDrift)
+        return;   // (Weather v2: no shader reads the envelope index; the bake reads the convection grid)
     const double tNow = (double)simDayJ2000 * 86400.0 + simSecInDay;
     if (stormEnvAsync && stormEnvJob.valid() && stormEnvJobT == tNow)
         return;   // started earlier this frame (startStormEnvJob)
@@ -915,7 +930,7 @@ void SatelliteSim::buildStormEnvIndex()
 
 void SatelliteSim::startStormEnvJob()
 {
-    if (!stormMapped)
+    if (!stormMapped || kWeatherV2NoDrift)
         return;
     finishStormEnvIndex();
     if (stormEnvHoldFrame)
