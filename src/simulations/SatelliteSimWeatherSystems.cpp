@@ -98,7 +98,9 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
     // starts when the drawn top passes ~0.85 of the way (kAnvilAt of the rise), not when the strength did.
     const double riseS = std::clamp((double)stormTowerRiseMin, 0.0, 120.0) * 60.0;
     auto s5 = [](double x) { x = std::clamp(x, 0.0, 1.0); return x * x * x * (x * (x * 6.0 - 15.0) + 10.0); };
-    constexpr double kAnvilAt = 0.72;   // s5(0.72) ~ 0.85
+    // (0.85: s5 ~ 0.97, the head at the lid. At 0.72, s5 ~ 0.85, the round head stood ~2 km under the plate and the anvil
+    // appeared as a disc floating over its tower for minutes, 2026-11-07, the report's ITCZ from the sea at 1 min/s.)
+    constexpr double kAnvilAt = 0.85;
     // The drawn rise starts when the column APPEARS: its width is sigma sqrt(ln(str / 0.35)) (cv2CellColumn), nothing
     // until the strength (peak x smooth01 over growS) passes 0.35. Timed from the tower's birth, the top had climbed a
     // third of the way by then: a 5-km tower out of clear air in a minute, no cumulus growing into it (2026-11-07, the
@@ -128,7 +130,7 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
         const double sigma = 0.35 * Rc;
         const double up = riseS > 0.0 ? s5(((double)T.age - visibleAt(T.peak, T.growS)) / riseS) : 1.0;
         const double dn = T.decayS > 0.0f ? s5(((double)T.life - (double)T.age) / (double)T.decayS) : 1.0;
-        const double top = ss(0.2, 0.6, (double)T.peak) * up * dn * T.role;
+        const double top = ss(0.2, 0.45, (double)T.peak) * up * dn * T.role;
         cells[nC].a = glm::vec4(glm::vec3(glm::normalize(T.dir)), (float)sigma);
         uint32_t seedBits = T.seed;   // z: the tower's seed as float bits (the lightning's stable per-cell hash)
         float seedF;
@@ -166,7 +168,7 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
             const double sg = 0.35 * Rb * (0.8 + 0.3 * hv2);
             uint32_t sb = 0x7E57u + (uint32_t)k; float sf; std::memcpy(&sf, &sb, 4);
             cells[nC].a = glm::vec4(glm::vec3(d), (float)sg);
-            cells[nC].b = glm::vec4((float)str, (float)(tsUp * tsDn * ssD(0.2, 0.6, TS.str * (0.6 + 0.4 * hv))), sf, 1.0f);
+            cells[nC].b = glm::vec4((float)str, (float)(tsUp * tsDn * ssD(0.2, 0.45, TS.str * (0.6 + 0.4 * hv))), sf, 1.0f);
             const double lead = (3.0 + 7.0 * std::sqrt(std::clamp(tsAge / std::max(TS.life, 600.0), 0.0, 1.0))) * 1000.0;
             glm::dvec3 fw = tsFw - d * glm::dot(tsFw, d);
             cells[nC].c = glm::vec4(glm::vec3(glm::normalize(fw)), (float)lead);
@@ -180,7 +182,7 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
         const double Rc = Rb * 1.0;
         cells[nC].a = glm::vec4(glm::vec3(tsDir), (float)(0.35 * Rc));
         uint32_t sb = 0x7E57u; float sf; std::memcpy(&sf, &sb, 4);
-        cells[nC].b = glm::vec4((float)str, (float)(tsUp * tsDn * ssD(0.2, 0.6, TS.str)), sf, 1.0f);
+        cells[nC].b = glm::vec4((float)str, (float)(tsUp * tsDn * ssD(0.2, 0.45, TS.str)), sf, 1.0f);
         cells[nC].c = glm::vec4(0.0f, 0.0f, 0.0f, -(float)(1.0 - tsDn));
         binCircle(tsDir, 4.5 * 0.35 * Rc, nC);
         ++nC;

@@ -103,8 +103,13 @@ Plan and progress log: `.plans/WEATHER_V2_PLAN.md` (untracked).
   - The drawn height's LIFECYCLE (`updateConvection`): smootherstep up over the tower-growth time, smootherstep down
     over the tower's decay, x smoothstep(0.2, 0.6, its peak) x role (`wx::Tower::peak / decayS`). It was min(smoothstep(
     0.02, 0.6, strength), a cubic ease-out): saturated at 60% of the peak, the top shot up, sat flat and dropped.
-  - The anvil starts when the DRAWN top passes ~0.85 (kAnvilAt 0.72 of the rise), not when the strength did: it
-    appeared before its tower.
+  - The anvil starts when the DRAWN top passes ~0.97 (kAnvilAt 0.85 of the rise), not when the strength did: it
+    appeared before its tower; at 0.72 (top ~0.85) the round head stood ~2 km under the plate and the anvil hung as a disc
+    over its tower for minutes.
+  - An anvil-making tower reaches the lid: the top share is smoothstep(0.2, 0.45, peak) (an anvil needs peak >= 0.44;
+    at (0.2, 0.6) a 0.5 peak stood 84% of the way), and the column reads its winning cell's top share EXACTLY
+    (`cv2CellColumn`'s grow, over the 5-km tent read, which averaged a ~13-km core with the empty texels round it and
+    stood the head ~half way to the anvil it fed).
   - The drawn rise starts when the column APPEARS (its strength, peak x smooth01 over growS, passes 0.35, where
     `cv2CellColumn`'s width sqrt(ln(str / 0.35)) begins); the anvil's start moves with it. Timed from birth, the top was a
     third of the way up when the column appeared: a 5-km tower out of clear air in a minute (the report's ITCZ).

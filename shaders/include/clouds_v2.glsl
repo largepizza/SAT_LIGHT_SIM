@@ -2601,6 +2601,9 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
     float dropA, decA = 0.0, growA = 1.0;
     float dInA = (hb >= -300.0 && (C > c0 - 0.15 || cv0.z > 0.5 - (1.35 * Rb + 4600.0) / 40000.0)) ? cv2CellColumn(wd, dropA, decA, growA) : -20000.0;
     g.dec = decA;
+    // The column's top share is its winning cell's own, exactly: read through the 5-km tent, a ~13-km core averaged
+    // with the empty texels round it and its head stood ~half way to the anvil it fed (2026-11-07, from the sea at 1 min/s).
+    if (dInA > -19999.0) { cv.y = max(cv.y, growA); full = smoothstep(0.8, 1.0, cv.y); }
 #else
     float dInA = (cv0.z - 0.5) * 40000.0, dropA = cv0.w * 10000.0, growA = 1.0;
 #endif
