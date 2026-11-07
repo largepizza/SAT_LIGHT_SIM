@@ -76,6 +76,16 @@ Plan and progress log: `.plans/WEATHER_V2_PLAN.md` (untracked).
   the camera's roll is undefined straight down), from the ground ahead and from the side.
 - **Cost**: the march at 242-246 registers (forcing 128 with wg 16x32 spills and is slower: cumulus 6.2 -> 7.2, storm
   7.2 -> 10.1, orbit 7.7 -> 11.7 ms); cloud pass ~15.5 ms over a hurricane from 420 km.
+- **The column's profile** (2026-11-06, issue_20261106_171931, `cv2StormGeom`): a foot 0.5 Rb wider narrowing over the
+  lower 60% of the column, the flare into the anvil only over the top fifth under the lid (from 0.6 up it read as a
+  pyramid), shoulders smoothed over 1.5 km (600 m: sharp corners). The gate that admits a sample to the column reaches
+  1.35 Rb past the contour: gated at C > 0.2 (~0.1 Rb out) the column was cut there, a drum with vertical walls.
+- **Bins must hold the bake's reach** (`updateConvection`, `anvilBinRadius`): an anvil's bin circle covers the disc 1.1 x
+  its spread radius centred a further 0.4 of the spread downwind (+ 5 km); at 2.5 r0 + 7 s mature anvils were cut ~20 km
+  in along the 2-degree grid's lines (straight-edged slabs, the map overlay's parallelograms). Gust-front cells: + 27 km.
+- **Anvil strength**: the integral is / 1200 s (was / 2400: a lone supercell in a 20 m/s upper wind stayed round the
+  plate's 0.3 outline, no anvil at any age in the storm review). Open: the plate stands detached downwind of a tower
+  that tops out well under the lid; a line's plate is a slab over small towers.
 - **Open**: a backlit storm from the ground reads pale (bright puffs, not a dark mass with a silver rim); a CDO has a hard
   circular rim from orbit and is a smooth bright dome (no overshooting clusters); a per-core billow rise rate.
 

@@ -2543,7 +2543,9 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
     // strongest core overshoots in a dome.
     const float c0 = 0.35;
     float best = -1e9, hfT = 0.0, topHere = base;
-    if (hb >= -300.0 && (C > c0 - 0.15 || cv0.z > 0.49)) {   // (or inside a cell's analytic column)
+    // (Admitted out to the widest the profile below reaches past the contour, the foot's and the flare's: gated at C > 0.2
+    // alone, ~0.1 Rb out, the column was cut there whatever its margin said -- a drum with vertical walls, issue_20261106_171931.)
+    if (hb >= -300.0 && (C > c0 - 0.15 || cv0.z > 0.5 - (1.35 * Rb + 600.0) / 40000.0)) {   // (or near a cell's analytic column)
         // dH: the DISTANCE in from the c0 contour (m): for a core C = exp(-r^2 / sigma^2), r = sigma sqrt(-ln C), sigma the
         // cells' 0.35 Rb. ((C - c0) x 1.6 Rb ran ~2.4 m a metre across the wall, which flattened the cumulus lobes carved
         // into it to ~40% of their size: smooth walls with erosion pits, a snow mountain instead of cauliflower.)
@@ -2564,10 +2566,16 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
         float zeta = clamp(hb / max(topHere - base, 300.0), 0.0, 1.0);
         // + a little swell at mid-height, and the head's FLARE where the column reaches the lid: it widens over its top
         // third into the anvil it feeds (the outflow turning outward), not a drum under a mushroom cap.
+        // The FOOT (2026-11-06, issue_20261106_171931 "plume rise up needs more bottom taper, needs more wideness"): the
+        // column stands on a base half a core radius wider, narrowing over its lower half (the inflow's cloud base and the
+        // flanking cumulus merging into it), not a drum. The flare only over the top fifth under the lid: from 0.6 of the way
+        // up it read as a pyramid between the tower and its anvil ("the connection to the anvil is a pyramid shape").
         float zl   = clamp(hb / max(lid - base, 300.0), 0.0, 1.0);
-        float mH   = dH + Rb * 0.06 * sin(3.14159 * zeta) + Rb * 0.7 * full * cv2SqC(smoothstep(0.6, 1.0, zl));
+        float foot = Rb * 0.5 * cv2SqC(1.0 - smoothstep(0.0, 0.6, zeta));
+        float mH   = dH + foot + Rb * 0.06 * sin(3.14159 * zeta) + Rb * 0.85 * full * cv2SqC(smoothstep(0.8, 1.0, zl));
         float mV   = topHere - q.h;
-        best = -cv2SMax(-mH, -mV, 600.0);                                   // a smooth min(mH, mV)
+        // (rounded shoulders: at 600 m of smoothing the head met the wall at a sharp corner -- "sharp edges and corners")
+        best = -cv2SMax(-mH, -mV, 1500.0);                                  // a smooth min(mH, mV)
         hfT  = zeta;
     }
     g.near = full * smoothstep(0.4, 0.8, C);

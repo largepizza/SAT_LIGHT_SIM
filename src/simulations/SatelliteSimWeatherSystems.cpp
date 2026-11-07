@@ -114,7 +114,7 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
         cells[nC].b = glm::vec4((float)str, (float)top, seedF, T.role);
         cells[nC].c = wx::isLineSystem(T.kind) ? lineFwd(T.stormId, glm::normalize(T.dir)) : glm::vec4(0.0f);
         // (the bake's environment field reaches 2.5 sigma wide; a gust front its lead + its clear band ahead)
-        binCircle(glm::normalize(T.dir), std::max(4.5 * sigma, 1.2 * Rc + cells[nC].c.w + 20000.0 * (cells[nC].c.w > 0.0f)), nC);
+        binCircle(glm::normalize(T.dir), std::max(4.5 * sigma, 1.2 * Rc + cells[nC].c.w + 27000.0 * (cells[nC].c.w > 0.0f)), nC);
         ++nC;
     }
     // The harness's test storm (`storms test`): one cell rising over ~25 min, mature, decaying over its last 40 min.
@@ -144,7 +144,7 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
             const double lead = (3.0 + 7.0 * std::sqrt(std::clamp(tsAge / std::max(TS.life, 600.0), 0.0, 1.0))) * 1000.0;
             glm::dvec3 fw = tsFw - d * glm::dot(tsFw, d);
             cells[nC].c = glm::vec4(glm::vec3(glm::normalize(fw)), (float)lead);
-            binCircle(d, std::max(4.5 * sg, 3.5 * sg + lead + 20000.0), nC);
+            binCircle(d, std::max(4.5 * sg, 3.5 * sg + lead + 27000.0), nC);
             ++nC;
         }
     }
@@ -163,6 +163,14 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
     // last falls back, then what it put up drifts downwind and decays (its linger). Line systems feed along the line.
     uint32_t nA = 0;
     const double spread = 7.0;   // m/s: the outflow spreading at the lid (= the bake's, wxConvection, for 2 h)
+    // The bin circle round the oldest material's midpoint (0.5 U age downwind of the source) must hold every tap the bake
+    // sums: a disc 1.1 x its spread radius rk = r0 + 7 s (s <= 2 h), centred a further 0.4 (rk - r0) downwind, + the line's
+    // half-length. Short of it (2.5 r0 + 7 s until 2026-11-06) a mature anvil was cut ~20 km in along the 2-degree grid's
+    // lines: straight-edged slabs and parallelograms (issue_20261106_171931 shot 2; the map overlay's anvil layer).
+    auto anvilBinRadius = [&](double U, double age, double r0, double half) {
+        const double s = std::min(age, 2.0 * 3600.0);
+        return 0.5 * U * age + 1.1 * r0 + (1.1 + 0.4) * spread * s + half + 5000.0;
+    };
     for (const wx::Storm *S : storms)
     {
         if (nA >= kConvAnvilMax) break;
@@ -214,10 +222,7 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
         anvils[nA].d = glm::vec4((float)half, glm::vec3(axis));
         // Its reach: the drift of the oldest material it still holds, the spread and the line, from the source.
         const double age = std::min(lidAge, feed + 4.0 * linger);
-        const double reach = U * age + r0 * 2.5 + spread * std::min(age, 2.0 * 3600.0) + half;
-        binCircle(c + dw * (0.5 * U * age / kR), 0.5 * U * age + r0 * 2.5 + spread * std::min(age, 2.0 * 3600.0) + half,
-                  0x80000000u | nA);
-        (void)reach;
+        binCircle(c + dw * (0.5 * U * age / kR), anvilBinRadius(U, age, r0, half), 0x80000000u | nA);
         ++nA;
     }
     if (TS.on && nA < kConvAnvilMax)
@@ -239,8 +244,8 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
             anvils[nA].b = glm::vec4(glm::vec3(dw), (float)TS.str);
             anvils[nA].c = glm::vec4((float)lidAge, (float)(off - on), 3600.0f, (float)Um);
             anvils[nA].d = line ? glm::vec4(1.0e5f, glm::vec3(tsAx)) : glm::vec4(0.0f);
-            binCircle(glm::normalize(tsDir + dw * (0.5 * Um * age / kR)),
-                      0.5 * Um * age + r0 * 2.5 + spread * std::min(age, 2.0 * 3600.0) + (line ? 1.3e5 : 0.0), 0x80000000u | nA);
+            binCircle(glm::normalize(tsDir + dw * (0.5 * Um * age / kR)), anvilBinRadius(Um, age, r0, line ? 1.0e5 : 0.0),
+                      0x80000000u | nA);
             ++nA;
         }
     }

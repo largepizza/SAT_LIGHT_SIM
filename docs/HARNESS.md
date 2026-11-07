@@ -434,6 +434,30 @@ python tools/harness/matrix_suite.py gen frag.satcmd --quick --fragment  # comma
   ~150 ms): ~13 min `--quick` (4 motions per altitude, one reference each), ~22 min full. Settling references is most of it.
 - A cell's failed command (no converged beam site, a satellite without a model) is listed under `errors` by `score`.
 
+## Storm review (`tools/harness/storm_review.py`)
+
+Each weather object from every angle, through its life and in motion, the same way every time (2026-11-06: storms judged
+from a few settled stills passed with square columns, cliffs, rings, a frozen hurricane and a flicker over a quarter of
+the sky).
+
+```
+tools/harness/.venv/Scripts/python tools/harness/storm_review.py run [--objects cumulus,supercell,line,hurricane] [--out DIR] [--quick] [--no-motion]
+tools/harness/.venv/Scripts/python tools/harness/storm_review.py report DIR
+```
+
+- Objects (`OBJECTS` in the script): a cumulus field (control), the `storms test` supercell and line (Sahara 23 N 10 E),
+  and Isaac (2036-09-10, located by `weather cyclone Isaac go=eye`). Each has a centre, a radius S and a top H.
+- Views: 8 bearings x 3 heights looking at the centre (ground 300 m, 8 km, high), straight down, from under the core;
+  the field of view fits the object. Life: the 8 km south view and the top at several ages (the labs) or hours (the
+  hurricane). Flicker: 30 frames at 1x, camera still (`<obj>_flicker_heat.png`: the per-pixel spread). Motion: 90
+  per-frame captures at the object's time scale from the 8 km view and the top; `numbers.json` holds each run's
+  `sim_s_per_frame`, median / max frame change (each frame normalised to its own mean and spread: a sunset is not a
+  jump), `spike` = max / median and `over_3x`; the "jump" pair is on `<obj>_motion.png`, the run in `<obj>_<view>.mp4`.
+- `--quick`: 7 views per object (no life, flicker or motion), ~1.5 min an object: for shape iteration with one live app.
+- Runs on `user_data/settings.json` when it exists (the user's look), in ONE live app (started and stopped unless `--keep`).
+- `review.md` lists the sheets and numbers; `storm_review_checklist.md` is the rubric, built from the user's reports,
+  for a reviewer (an agent that was not told what changed).
+
 ## Still-view flicker (`tools/harness/flicker.py`)
 
 Per-pixel temporal statistics of a recorded sequence with the camera still (review 18, the MEO cloud flicker):
