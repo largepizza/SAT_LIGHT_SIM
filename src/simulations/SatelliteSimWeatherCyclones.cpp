@@ -521,6 +521,221 @@ void SatelliteSim::weatherMapRaster()
     wxMapCpuMs = std::chrono::duration<float, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
+// ── The weather-map overlay (shaders/weather_map_view.comp) ─────────────────────────────────────────────────────
+// The weather cube the march reads, one channel, on the map's box: a storage image the compute pass writes (linear RGBA,
+// alpha = the overlay) and the UI draws between the land / sea raster and the tracks.
+bool SatelliteSim::weatherOverlayEnsureImage(UIRenderer &ui)
+{
+    if (wxOvImg != VK_NULL_HANDLE)
+        return wxOvUiId != 0;
+    if (!ctx_ || wxOvImgFailed)
+        return false;
+    VulkanContext &ctx = *ctx_;
+    try
+    {
+        ctx.createImage(kWxMapW, kWxMapH, VK_FORMAT_R8G8B8A8_UNORM,
+                        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, wxOvImg,
+                        wxOvImgMem);
+    }
+    catch (const std::exception &e)
+    {
+        Log::line(std::string("weather map overlay: ") + e.what());
+        wxOvImgFailed = true;
+        return false;
+    }
+    VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vi.image = wxOvImg;
+    vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format = VK_FORMAT_R8G8B8A8_UNORM;
+    vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCreateImageView(ctx.device, &vi, nullptr, &wxOvView);
+    VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    si.magFilter = si.minFilter = VK_FILTER_LINEAR;
+    si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    vkCreateSampler(ctx.device, &si, nullptr, &wxOvSampler);
+    VkCommandBuffer cmd = ctx.beginOneTimeCommands();
+    ctx.imageBarrier(cmd, wxOvImg, 0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    const VkClearColorValue clear{{0.0f, 0.0f, 0.0f, 0.0f}};
+    const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdClearColorImage(cmd, wxOvImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear, 1, &range);
+    ctx.imageBarrier(cmd, wxOvImg, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    ctx.endOneTimeCommands(cmd);
+    wxOvUiId = ui.registerImage(ctx.device, wxOvView, wxOvSampler);
+    if (wxOvUiId == 0)
+    {
+        wxOvImgFailed = true;
+        Log::line("weather map overlay: no free UI image slot");
+    }
+    return wxOvUiId != 0;
+}
+
+void SatelliteSim::weatherOverlayRecord(VkCommandBuffer cmd)
+{
+    if (!wxOvWanted || !ctx_ || wxOvImg == VK_NULL_HANDLE || wxOvFailed)
+        return;
+    wxOvWanted = false;
+    FPROF_SCOPE("weatherOverlayRecord");
+    VulkanContext &ctx = *ctx_;
+    if (!wxOvPipe)
+    {
+        if (!cv2MarchDescLayout || !cv2MarchDescSet)
+        {
+            wxOvFailed = true;
+            Log::line("weather map overlay: no cloud march descriptor set (clouds v2 not built)");
+            return;
+        }
+        VkDevice dev = ctx.device;
+        VkDescriptorSetLayoutBinding b{0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        li.bindingCount = 1;
+        li.pBindings = &b;
+        vkCreateDescriptorSetLayout(dev, &li, nullptr, &wxOvSetLayout);
+        VkDescriptorSetLayout lays[2] = {cv2MarchDescLayout, wxOvSetLayout};
+        VkPushConstantRange pr{VK_SHADER_STAGE_COMPUTE_BIT, 0, 32};
+        VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        pli.setLayoutCount = 2;
+        pli.pSetLayouts = lays;
+        pli.pushConstantRangeCount = 1;
+        pli.pPushConstantRanges = &pr;
+        vkCreatePipelineLayout(dev, &pli, nullptr, &wxOvPipeLayout);
+        VkShaderModule mod = VK_NULL_HANDLE;
+        try
+        {
+            mod = ctx.loadShader("shaders/weather_map_view.comp.spv");
+        }
+        catch (const std::exception &e)
+        {
+            Log::line(std::string("weather map overlay: ") + e.what());
+            wxOvFailed = true;
+            return;
+        }
+        VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, mod, "main", nullptr};
+        ci.layout = wxOvPipeLayout;
+        const VkResult res = vkCreateComputePipelines(dev, ctx.pipelineCache, 1, &ci, nullptr, &wxOvPipe);
+        vkDestroyShaderModule(dev, mod, nullptr);
+        if (res != VK_SUCCESS)
+        {
+            Log::line("weather map overlay: vkCreateComputePipelines failed");
+            wxOvPipe = VK_NULL_HANDLE;
+            wxOvFailed = true;
+            return;
+        }
+        VkDescriptorPoolSize ps{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1};
+        VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        pi.maxSets = 1;
+        pi.poolSizeCount = 1;
+        pi.pPoolSizes = &ps;
+        vkCreateDescriptorPool(dev, &pi, nullptr, &wxOvPool);
+        VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        ai.descriptorPool = wxOvPool;
+        ai.descriptorSetCount = 1;
+        ai.pSetLayouts = &wxOvSetLayout;
+        vkAllocateDescriptorSets(dev, &ai, &wxOvSet);
+        VkDescriptorImageInfo ii{VK_NULL_HANDLE, wxOvView, VK_IMAGE_LAYOUT_GENERAL};
+        VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        w.dstSet = wxOvSet;
+        w.dstBinding = 0;
+        w.descriptorCount = 1;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        w.pImageInfo = &ii;
+        frameSafeUpdateDescriptorSets(dev, 1, &w, 0, nullptr);
+        Log::line("weather map overlay: pipeline ready");
+    }
+    // The cloud passes' writes (the weather cube's bake) before this read; the UI's last read of the image before this write.
+    VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &mb, 0,
+                         nullptr, 0, nullptr);
+    ctx.imageBarrier(cmd, wxOvImg, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                     VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+    struct
+    {
+        glm::vec4 box, opt;
+    } pc{glm::vec4((float)wxMapBox[0], (float)wxMapBox[1], (float)wxMapBox[2], (float)wxMapBox[3]),
+         glm::vec4((float)wxOvChannel, wxOvOpacity, wxOvMapOnly ? 1.0f : 0.0f, wxOvLod)};
+    static_assert(sizeof(pc) == 32, "weather_map_view.comp's push constants");
+    VkDescriptorSet sets[2] = {cv2MarchDescSet, wxOvSet};
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, wxOvPipe);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, wxOvPipeLayout, 0, 2, sets, 0, nullptr);
+    vkCmdPushConstants(cmd, wxOvPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pc), &pc);
+    vkCmdDispatch(cmd, (kWxMapW + 7) / 8, (kWxMapH + 7) / 8, 1);
+    ctx.imageBarrier(cmd, wxOvImg, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_IMAGE_LAYOUT_GENERAL,
+                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    wxOvValid = true;
+    wxOvDispWall = wallNow();
+    std::memcpy(wxOvDispBox, wxMapBox, sizeof(wxMapBox));
+    wxOvDispChannel = wxOvChannel;
+    wxOvDispOpacity = wxOvOpacity;
+    wxOvDispMapOnly = wxOvMapOnly;
+    wxOvDispLod = wxOvLod;
+    ++wxOvDispatches;
+}
+
+void SatelliteSim::weatherOverlayDestroy(VkDevice device)
+{
+    if (wxOvPipe) vkDestroyPipeline(device, wxOvPipe, nullptr);
+    if (wxOvPipeLayout) vkDestroyPipelineLayout(device, wxOvPipeLayout, nullptr);
+    if (wxOvPool) vkDestroyDescriptorPool(device, wxOvPool, nullptr);
+    if (wxOvSetLayout) vkDestroyDescriptorSetLayout(device, wxOvSetLayout, nullptr);
+    if (wxOvSampler) vkDestroySampler(device, wxOvSampler, nullptr);
+    if (wxOvView) vkDestroyImageView(device, wxOvView, nullptr);
+    if (wxOvImg) vkDestroyImage(device, wxOvImg, nullptr);
+    if (wxOvImgMem) vkFreeMemory(device, wxOvImgMem, nullptr);
+    wxOvPipe = VK_NULL_HANDLE;
+    wxOvPipeLayout = VK_NULL_HANDLE;
+    wxOvPool = VK_NULL_HANDLE;
+    wxOvSetLayout = VK_NULL_HANDLE;
+    wxOvSet = VK_NULL_HANDLE;
+    wxOvSampler = VK_NULL_HANDLE;
+    wxOvView = VK_NULL_HANDLE;
+    wxOvImg = VK_NULL_HANDLE;
+    wxOvImgMem = VK_NULL_HANDLE;
+}
+
+namespace
+{
+// The overlay's ramps for the legend (= weather_map_view.comp's, display sRGB 0..1).
+glm::vec3 wxPoly(const float (&c)[7][3], float t)
+{
+    t = std::clamp(t, 0.0f, 1.0f);
+    glm::vec3 r(0.0f);
+    for (int k = 6; k >= 0; --k)
+        r = r * t + glm::vec3(c[k][0], c[k][1], c[k][2]);
+    return glm::clamp(r, glm::vec3(0.0f), glm::vec3(1.0f));
+}
+constexpr float kViridis[7][3] = {{0.2777273f, 0.0054073f, 0.3340998f}, {0.1050930f, 1.4046135f, 1.3845902f},
+                                  {-0.3308618f, 0.2148476f, 0.0950952f}, {-4.6342305f, -5.7991010f, -19.3324410f},
+                                  {6.2282699f, 14.1799334f, 56.6905526f}, {4.7763850f, -13.7451454f, -65.3530326f},
+                                  {-5.4354559f, 4.6458526f, 26.3124352f}};
+constexpr float kInferno[7][3] = {{0.0002189f, 0.0016510f, -0.0194809f}, {0.1065134f, 0.5639564f, 3.9327124f},
+                                  {11.6024931f, -3.9728540f, -15.9423941f}, {-41.7039961f, 17.4363989f, 44.3541452f},
+                                  {77.1629357f, -33.4023589f, -81.8073093f}, {-71.3194282f, 32.6260643f, 73.2095199f},
+                                  {25.1311262f, -12.2426690f, -23.0703250f}};
+glm::vec3 wxOvRamp(int ch, float v)   // ch: SatelliteSim::WxOvChannel
+{
+    switch (ch)
+    {
+    case 1: return glm::vec3(v);   // cover
+    case 2:  // type
+    {
+        static const glm::vec3 k[5] = {{0.62f, 0.66f, 0.74f}, {0.30f, 0.72f, 0.88f}, {0.38f, 0.82f, 0.36f},
+                                       {0.96f, 0.82f, 0.26f}, {0.92f, 0.26f, 0.24f}};
+        const float x = std::clamp(v, 0.0f, 1.0f) * 4.0f;
+        const int i = std::min((int)x, 3);
+        return glm::mix(k[i], k[i + 1], x - (float)i);
+    }
+    case 3: return wxPoly(kViridis, 0.15f + 0.85f * v);   // rain
+    case 4:  // ground
+        return glm::mix(glm::vec3(0.20f, 0.42f, 0.18f), glm::vec3(0.96f, 0.92f, 0.84f), std::sqrt(std::clamp(v, 0.0f, 1.0f)));
+    default: return wxPoly(kInferno, 0.25f + 0.75f * v);
+    }
+}
+} // namespace
+
 // ── The tab ─────────────────────────────────────────────────────────────────────────────────────────────────────
 void SatelliteSim::buildWeatherCyclonesTab(const UIInput &inp, UIRenderer &ui, float bodyW)
 {
@@ -654,6 +869,22 @@ void SatelliteSim::buildWeatherCyclonesTab(const UIInput &inp, UIRenderer &ui, f
                     wxSelCyclone = wxMapCycs[(size_t)wxMapHover].id;
             }
         }
+        // The weather-map overlay: asked for at most 4 times a second while a box / channel / look changed, else twice a
+        // second (the cube re-bakes as sim time moves); recordCompute dispatches it after the clouds' pass.
+        const bool ovOn = haveImg && wxOvChannel != WxOvOff && weatherOverlayEnsureImage(ui);
+        if (ovOn)
+        {
+            const bool changed = !wxOvValid || std::memcmp(wxOvDispBox, wxMapBox, sizeof(wxMapBox)) != 0 ||
+                                 wxOvDispChannel != wxOvChannel || wxOvDispOpacity != wxOvOpacity ||
+                                 wxOvDispMapOnly != wxOvMapOnly || wxOvDispLod != wxOvLod;
+            if (wallNow() - wxOvDispWall >= (changed ? 0.25 : 0.5))
+                wxOvWanted = true;
+        }
+        wxOvEl.imageId = wxOvUiId;
+        auto marks = [&]() {
+            CLAY(CLAY_ID("WxCycMapMarks"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}},
+                                            .custom = {.customData = &wxMapMarks}}) {}
+        };
         CLAY(CLAY_ID("WxCycMapBack"), {.layout = {.sizing = {CLAY_SIZING_FIXED(W), CLAY_SIZING_FIXED(H)}},
                                        .backgroundColor = Pal::insetBg,
                                        .cornerRadius = CLAY_CORNER_RADIUS(4)})
@@ -662,8 +893,16 @@ void SatelliteSim::buildWeatherCyclonesTab(const UIInput &inp, UIRenderer &ui, f
             {
                 CLAY(mid, {.layout = {.sizing = {CLAY_SIZING_FIXED(W), CLAY_SIZING_FIXED(H)}}, .custom = {.customData = &wxMapEl}})
                 {
-                    CLAY(CLAY_ID("WxCycMapMarks"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}},
-                                                    .custom = {.customData = &wxMapMarks}}) {}
+                    if (ovOn && wxOvValid)   // between the land / sea raster and the tracks
+                    {
+                        CLAY(CLAY_ID("WxCycMapOv"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_GROW(0)}},
+                                                     .custom = {.customData = &wxOvEl}})
+                        {
+                            marks();
+                        }
+                    }
+                    else
+                        marks();
                 }
             }
         }
@@ -678,6 +917,48 @@ void SatelliteSim::buildWeatherCyclonesTab(const UIInput &inp, UIRenderer &ui, f
             CLAY(CLAY_ID("WxCycKeyGap"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}}) {}
             if (uiButton(inp, ui, "WxCycZoom", 0, wxCycZoom ? tx(Txt::BtnWorld) : tx(Txt::LblZoom), wxCycZoom ? tx(Txt::TipTheWholeWorld) : tx(Txt::TipTheSelectedStormsTrack)))
                 wxCycZoom = !wxCycZoom;
+        }
+        // The overlay's controls: the map's channels, the convection cube's, the look, the mip; then the channel's key.
+        {
+            const char *mapOpts[5] = {tx(Txt::LblOff), tx(Txt::OptCover), tx(Txt::OptType), tx(Txt::SldRain), tx(Txt::OptGround)};
+            const char *cvOpts[4] = {tx(Txt::OptCells), tx(Txt::OptTops), tx(Txt::OptAnvil), tx(Txt::OptOutflow)};
+            const int pm = uiChoiceRow(inp, ui, "WxOvMap", 0, tx(Txt::LblWeatherMap), mapOpts, 5,
+                                       wxOvChannel <= WxOvGround ? wxOvChannel : -1, tx(Txt::TipWeatherMapOverlay));
+            if (pm >= 0) wxOvChannel = pm;
+            const int pc = uiChoiceRow(inp, ui, "WxOvMap", 1, tx(Txt::LblConvection), cvOpts, 4,
+                                       wxOvChannel >= WxOvConv ? wxOvChannel - WxOvConv : -1, tx(Txt::TipWeatherMapConvection));
+            if (pc >= 0) wxOvChannel = WxOvConv + pc;
+            if (wxOvChannel != WxOvOff)
+            {
+                const char *opOpts[5] = {tx(Txt::Opt25Pct), tx(Txt::Opt50Pct), tx(Txt::Opt75Pct), tx(Txt::Opt100Pct), tx(Txt::OptMapOnly)};
+                const int opCur = wxOvMapOnly ? 4 : std::clamp((int)std::lround(wxOvOpacity * 4.0f) - 1, 0, 3);
+                const int po = uiChoiceRow(inp, ui, "WxOvOpac", 0, tx(Txt::LblOpacity), opOpts, 5, opCur);
+                if (po >= 0) { wxOvMapOnly = po == 4; if (po < 4) wxOvOpacity = 0.25f * (float)(po + 1); }
+                const char *lodOpts[6] = {tx(Txt::OptAuto), "0", "1", "2", "3", "4"};
+                const int lodCur = wxOvLod < 0.0f ? 0 : std::clamp((int)wxOvLod + 1, 1, 5);
+                const int pl = uiChoiceRow(inp, ui, "WxOvMip", 0, tx(Txt::LblMip), lodOpts, 6, lodCur, tx(Txt::TipWeatherMapMip));
+                if (pl >= 0) wxOvLod = pl == 0 ? -1.0f : (float)(pl - 1);
+                static const Txt kNotes[WxOvCount] = {Txt::LblOff, Txt::NoteWxOvCover, Txt::NoteWxOvType, Txt::NoteWxOvRain,
+                                                      Txt::NoteWxOvGround, Txt::NoteWxOvCells, Txt::NoteWxOvTops,
+                                                      Txt::NoteWxOvAnvil, Txt::NoteWxOvOutflow};
+                CLAY(CLAY_ID("WxOvKey"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                     .childGap = 6,
+                                                     .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
+                                                     .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                {
+                    CLAY(CLAY_ID("WxOvRamp"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
+                                                          .layoutDirection = CLAY_LEFT_TO_RIGHT}})
+                    {
+                        for (int k = 0; k < 12; ++k)
+                        {
+                            const glm::vec3 c = wxOvRamp(wxOvChannel, (k + 0.5f) / 12.0f) * 255.0f;
+                            CLAY(CLAY_IDI("WxOvSw", (uint32_t)k), {.layout = {.sizing = {CLAY_SIZING_FIXED(8), CLAY_SIZING_FIXED(10)}},
+                                                                   .backgroundColor = {c.r, c.g, c.b, 255.0f}}) {}
+                        }
+                    }
+                    text(tx(kNotes[std::clamp(wxOvChannel, 0, (int)WxOvCount - 1)]), Pal::textDim, 10, true);
+                }
+            }
         }
     }
 
@@ -894,6 +1175,9 @@ nlohmann::json SatelliteSim::weatherCyclonesJson()
         j["milestones"] = m;
     }
     j["map"] = {{"box", {wxMapBox[0], wxMapBox[1], wxMapBox[2], wxMapBox[3]}}, {"ui_image_id", wxMapUiId},
-                {"raster_ms", wxMapCpuMs}, {"quads", wxMapQuads.size()}, {"markers", wxMapCycs.size()}};
+                {"raster_ms", wxMapCpuMs}, {"quads", wxMapQuads.size()}, {"markers", wxMapCycs.size()},
+                {"overlay", {{"channel", wxOvChannel}, {"opacity", wxOvOpacity}, {"map_only", wxOvMapOnly}, {"lod", wxOvLod},
+                             {"ui_image_id", wxOvUiId}, {"valid", wxOvValid}, {"failed", wxOvFailed || wxOvImgFailed},
+                             {"dispatches", wxOvDispatches}}}};
     return j;
 }

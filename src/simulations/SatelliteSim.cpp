@@ -3565,6 +3565,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         recordCloudsV2(cmd, ctx, cpc);
         weatherTornadoFixTick();   // a tornado Go to's radar probe: out of the rain (SatelliteSimWeatherWindow.cpp)
         weatherRadarRecord(cmd);   // the Weather window's radar, a few times a second while it is shown
+        weatherOverlayRecord(cmd); // the Cyclones tab's weather-map overlay (SatelliteSimWeatherCyclones.cpp), while shown
 
         // Pre-dispatch: both targets are left in SHADER_READ_ONLY_OPTIMAL after the previous
         // frame's post-dispatch barrier below (or by createCloudMarchResources on the first frame
