@@ -2529,7 +2529,10 @@ float cv2CellColumn(vec3 wd, out float drop, out float dec, out float grow)
         float r = length(wd - ca.xyz) * R_EARTH;   // (the chord: < 1 m from the arc within a storm)
         if (r < 4.0 * ca.w) gW = max(gW, cb.y);
         if (cb.x <= 0.36) continue;
-        float rc = ca.w * sqrt(log(cb.x / 0.35));
+        // (+ sigma as it rises (its top share 0.3 .. 0.9): a mature column is broad, the cloudy air round its updraft core.
+        // On the contour alone a strength-0.5 cell stood ~6 km wide under a 100-km anvil: a stalk, a mushroom cloud from
+        // the ground, 2026-11-07. = cloud_v2_weather.comp's.)
+        float rc = ca.w * (sqrt(log(cb.x / 0.35)) + smoothstep(0.3, 0.9, cb.y));
         float di = rc - r;
         if (di > dIn) {
             dIn = di;
