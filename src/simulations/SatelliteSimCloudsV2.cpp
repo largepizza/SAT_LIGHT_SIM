@@ -2203,8 +2203,13 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // sparse rotation (default), 1 the sample held at one pixel of each 2x2 block, 2 full rate (above). Modes 1-2 were the
     // workaround for flicker and lost far cloud masses in motion whose cause was the march's half-res scene depth (one row
     // parity of rays clipped short near the limb, fixed in cloud_v2_march.comp); since that fix mode 0 matches mode 2
-    // (flicker 0.79 vs 0.93%, far band within ~1 level of settled) at 1-6 ms less (harness_runs/rc1022g). Kept for A/B.
-    cv2FullResHeldNow = cv2FullResActive() && cv2FullResMovingMode > 0.5f && cv2FullResMovingMode < 1.5f && !cv2FullRateNow && eyeH > (double)cv2FullRateAboveKm * 1000.0 &&
+    // (flicker 0.79 vs 0.93%, far band within ~1 level of settled) at 1-6 ms less (harness_runs/rc1022g).
+    // MODE 1 IS THE DEFAULT, at any height (2026-11-07, tools/harness/artifacts.py on the reports' own flights at 30 fps): in
+    // motion the history is replaced within a few frames, and the 2x2 rotation -- each frame's fresh ray at another pixel of
+    // its block -- crawled over every cloud as flicker and 2-px blocks (the ITCZ flight: pixels reversing by > 12 levels
+    // 0.95 -> 0.23 %, block excess 0.22 -> 0.13 levels, lag equal; the 650-km flight unchanged: no far masses lost; the
+    // march's cost the same, 33.1 vs 33.3 ms). Held, a moving view is the half-res grid's, steady.
+    cv2FullResHeldNow = cv2FullResActive() && cv2FullResMovingMode > 0.5f && cv2FullResMovingMode < 1.5f && !cv2FullRateNow &&
                         cv2StillFrames < 8;
     {
         // The block's offsets, one per frame over K*K frames: for 2x2 the ordered (diagonal first) cycle of before; for 3x3 a

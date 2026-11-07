@@ -5493,7 +5493,7 @@ private:
     float cv2HistDepthTest = 0.0f;        // the resolve keeps a history whose reprojected distance matches (2026-11-04; an A/B, off: tstab storm walk 1.36 -> 1.57 at 2x2)
     float cv2SmoothMoving = 0.5f;         // smooth tiles while the eye moves (0 = only after 64 still frames; > 0: on, the threshold x this; 2026-11-04)
     float cv2SparseBlock = 2.0f;          // full-res clouds' sparse march: one ray per K x K block a frame (2, 3 or 4; 2026-11-04)
-    float cv2FullResMovingMode = 0.0f;    // full-res clouds while the eye moves from altitude (issues 20261022_210358 / _220214): 0 sparse, rotating (default); 1 sparse, held pixel; 2 full rate (every pixel, +1-6 ms; an A/B since the march's depth fix)
+    float cv2FullResMovingMode = 1.0f;    // full-res clouds while the view moves (issues 20261022_210358 / _220214): 0 sparse, rotating; 1 sparse, held pixel (default since 2026-11-07, any height); 2 full rate (every pixel, ~3x the march; above full_rate_above_km)
     bool  cv2CdcActive = false;           // this frame (fillCloudsV2Params)
     // 2026-10-22 (r1022 orbit, the matrix's "clouds thin out climbing from orbit"): the clipmap's bake reads the field at the
     // march's footprint FROM THE EYE AT BAKE TIME, and its cells never expire with time paused: climbing, cells baked lower
