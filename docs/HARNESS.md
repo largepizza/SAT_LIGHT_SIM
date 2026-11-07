@@ -434,6 +434,33 @@ python tools/harness/matrix_suite.py gen frag.satcmd --quick --fragment  # comma
   ~150 ms): ~13 min `--quick` (4 motions per altitude, one reference each), ~22 min full. Settling references is most of it.
 - A cell's failed command (no converged beam site, a satellite without a model) is listed under `errors` by `score`.
 
+## Artifact gate (`tools/harness/artifacts.py`)
+
+Flicker, blockiness, stair-stepping and drag AS THE USER SEES THEM (2026-11-07): the user watches storms at 1 min/s at
+~30 fps, and every earlier check ran at the harness's 1/60 s step, at 1x or settled, judged from lossy videos -- the
+time-lapse's artifacts (reversal flicker 0 at 1x, 6% at 1 min/s, 20% at 5 min/s on a report's tower) all passed.
+
+```
+tools/harness/.venv/Scripts/python tools/harness/artifacts.py run [--scenarios tower,anvil,sunset,itcz,orbit] [--scales 1x,1m,5m] [--keep] [--out DIR]
+tools/harness/.venv/Scripts/python tools/harness/artifacts.py score DIR
+tools/harness/.venv/Scripts/python tools/harness/artifacts.py compare DIR_BEFORE DIR_AFTER
+```
+
+- One live app at a 1/30 s fixed step (`live.py start --fixed-dt`); scenarios are report views (`SCENARIOS` in the script).
+  Per scenario and scale: settle paused, play, capture 16 CONSECUTIVE full-resolution PNG crops (no codec, no downscale:
+  both hide 2-px blocks), then pause, settle and capture the same moment as the reference.
+- Numbers (`numbers.json`, `review.md`): `rev12` / `rev6` = % of pixel-frames whose change reverses sign with both steps
+  over 12 / 6 levels (smooth motion is monotonic: this is flicker and sparkle, not movement); `blkT2` / `blkT4` = block
+  structure of the frame-to-frame change on a 2 / 4 px grid (ratio; 1.0 none), `blkT2_lv` / `blkS2_lv` the same as an
+  excess in levels on the change / the image (a ratio rises when everything else gets quieter); `lag` / `lag16` = the
+  last running frame vs the settled reference (drag, ghosts -- but it also holds the weather cube's own time-lapse lag:
+  compare builds, never read it alone); `d1` = mean frame-to-frame change (context). Per run: `<run>_heat.png` (the
+  per-pixel reversal count) and `<run>_worst.png` (the worst 128-px tile, 3 frames at 3x).
+- 1x is the floor. Run it before and after any change to clouds, the resolve, the march's rate or anything time-driven,
+  and `compare`: a fix must not trade flicker for blocks or drag (all three move together here).
+- Baseline (2026-11-07, 00e62dd, `harness_runs/artifacts/riselag`): rev12 tower 0.0 / 5.8 / 20.0 %, itcz 0.1 / 1.0 /
+  3.4, anvil 0.0 / 1.4 / 5.2 at 1x / 1m / 5m; blkT2_lv tower 0.002 / 0.19 / 0.33.
+
 ## Storm review (`tools/harness/storm_review.py`)
 
 Each weather object from every angle, through its life and in motion, the same way every time (2026-11-06: storms judged

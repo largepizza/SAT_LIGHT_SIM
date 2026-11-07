@@ -163,6 +163,12 @@ Plan and progress log: `.plans/WEATHER_V2_PLAN.md` (untracked).
     resolve's weights (the rise added to `motion`'s unreprojected slide), marching every pixel (`full_res_moving_mode` 2 at
     0 km: 28 -> 96 ms, no change), smooth tiles, the clipmap, the Sun volume, storms moving with the wind instead of their
     own velocity. Still open at 5 min/s: blocky lit blobs (the storms' own evolution at 300x).
+  - Measured with `tools/harness/artifacts.py` (2026-11-07) and NOT kept: the flow map and analytic flow on the same capped
+    clock (flicker at 5 min/s 20 -> 3.8 % on the tower, but block excess 0.33 -> 0.54 levels: the cloud texture slowed
+    while the weather cube's coverage kept drifting at sim speed, so coverage edges slid over the texture, which nothing
+    reprojects); + the resolve's unreprojected slide on that clock too (flicker 1.5 %, blocks down, but the history went
+    sticky: smeared ghost towers). The remaining time-lapse artifact is the texture sliding with the wind across storm
+    columns that stand still (the storms move at their own 1-6 m/s).
   - A cell is binned out to 1.3 sigma + 1.65 "Cb tower radius" + 6 km (its column, foot and swell into the anvil); 4.5
     sigma (~24 km) was short of the swell.
   - Observed, not changed: a tower under its anvil at a high sun is in the anvil's shadow (sky-lit: flat blue-grey); a
