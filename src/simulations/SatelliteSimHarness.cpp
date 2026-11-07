@@ -210,7 +210,7 @@ const char *kHelp =
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select star <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s] [wait=1]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [cdc=<spv>] [sky=<spv>] [sky_taa=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; skyevents [state]|events|list <kind>|watch <solar|lunar|conjunction|occultation|moonglint|meteors|comet|supernova|cme|cometstorm|row|special <0-3>|aurora [t=]> [n=]|spaceweather; stars [state]|find <name>|select <name>; moonbase [state]|windows [days=] [limit=] [jitter=]|base <i> [lean=] [jitter=]; meteors [state]|count [minutes=] [lm=] [shower=]|force [kind=meteor|fireball|bolide] [shower=] [mag=] [az=] [el=] [v=] [delay=]|go [shower=]; comets [state]|list [days=]|watch [k|great] [days=] [sun_max=] [orbit=1]; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|pick|return|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; storms test lat= lon= [age_min=] [life_min=] [str=] [kind=line] [az=]|storms test off; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|preview <file> [shot=] [scale=] [fps=]|save|load|state|stop; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [cdc=<spv>] [sky=<spv>] [sky_taa=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; skyevents [state]|events|list <kind>|watch <solar|lunar|conjunction|occultation|moonglint|meteors|comet|supernova|cme|cometstorm|row|special <0-3>|aurora [t=]> [n=]|spaceweather; stars [state]|find <name>|select <name>; moonbase [state]|windows [days=] [limit=] [jitter=]|base <i> [lean=] [jitter=]; meteors [state]|count [minutes=] [lm=] [shower=]|force [kind=meteor|fireball|bolide] [shower=] [mag=] [az=] [el=] [v=] [delay=]|go [shower=]; comets [state]|list [days=]|watch [k|great] [days=] [sun_max=] [orbit=1]; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|pick|return|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; storms test lat= lon= [age_min=] [life_min=] [str=] [kind=line] [az=]|storms test off; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|map <off|cover|type|rain|ground|cells|tops|anvil|outflow> [opacity=] [only=] [lod=] [zoom=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|preview <file> [shot=] [scale=] [fps=]|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=] [frames=] [video=]; video start [name] [fps=] [scale=] [ui=on]|stop|state; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
@@ -5217,6 +5217,33 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["message"] = msg;
             return Status::Done;
         }
+        // `weather map <off|cover|type|rain|ground|cells|tops|anvil|outflow> [opacity=0..1] [only=0|1] [lod=auto|0-5]
+        // [zoom=0|1]`: the Cyclones tab's weather-map overlay (SatelliteSimWeatherCyclones.cpp; opens the tab). The
+        // overlay is dispatched on the frames after: `wait 10` before a capture.
+        if (sub == "map")
+        {
+            static const char *kCh[WxOvCount] = {"off", "cover", "type", "rain", "ground", "cells", "tops", "anvil", "outflow"};
+            const std::string m = lower(pos(1));
+            if (!m.empty())
+            {
+                int ch = -1;
+                for (int k = 0; k < WxOvCount; ++k)
+                    if (m == kCh[k]) ch = k;
+                if (ch < 0)
+                    fail("weather map: name one of off cover type rain ground cells tops anvil outflow");
+                wxOvChannel = ch;
+            }
+            if (c.has("opacity")) wxOvOpacity = std::clamp((float)c.num("opacity", 0.75), 0.0f, 1.0f);
+            if (c.has("only")) wxOvMapOnly = c.num("only", 0.0) != 0.0;
+            if (c.has("lod")) wxOvLod = lower(c.str("lod")) == "auto" ? -1.0f : std::clamp((float)c.num("lod", -1.0), -1.0f, 8.0f);
+            if (c.has("zoom")) wxCycZoom = c.num("zoom", 1.0) != 0.0;
+            wxTab = 3;
+            wxChrome.open = true;
+            uiVisible = true;
+            r = weatherCyclonesJson()["map"];
+            r["message"] = std::string("weather map ") + kCh[std::clamp(wxOvChannel, 0, (int)WxOvCount - 1)];
+            return Status::Done;
+        }
         if (sub == "tab")
         {
             const std::string t = lower(pos(1));
@@ -5228,7 +5255,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         if (!sub.empty() && sub != "state")
             fail("weather: state | radar [range=50|150|400] [clouds=] [labels=] [loop=] | go <k> [list=near|world] | "
                  "watch <k> [list=] | cyclones [basin=] | cyclone <name|id|k> [go=near|orbit|eye|landfall] [watch=1] "
-                 "[milestone=<i>] | tab radar|storms|cyclones|controls");
+                 "[milestone=<i>] | map <off|cover|type|rain|ground|cells|tops|anvil|outflow> [opacity=] [only=] [lod=] [zoom=] | "
+                 "tab radar|storms|cyclones|controls");
         r = weatherWindowJson();
         r["message"] = std::to_string(wxStormsAlive) + " storms alive, " + std::to_string(wxNear.size()) + " near";
         return Status::Done;

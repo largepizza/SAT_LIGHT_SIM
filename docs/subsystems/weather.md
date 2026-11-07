@@ -786,6 +786,23 @@ Plan and progress log: `.plans/WEATHER_V2_PLAN.md` (untracked).
   their kind names; their stage is the regenerating envelope's (`sysOn` / `sysOff`), each slot's strength from
   `towerCycleAt`. Cost: closed nothing; open on the Cyclones tab `build_ui` +0.17 ms (layout of the rows), the map raster
   only on a box change.
+- **The weather-map overlay (2026-11-06, `shaders/weather_map_view.comp`, `SatelliteSimWeatherCyclones.cpp`
+  `weatherOverlay*`; harness `weather map <channel> [opacity=] [only=] [lod=] [zoom=]`).** The Cyclones tab's map can show
+  the weather cube the march reads, one channel at a time, drawn between the land / sea raster and the tracks (so the
+  catalog's cyclone markers sit over the map's own eyes): Weather map Off / Cover / Type / Rain / Ground, Convection Cells /
+  Tops / Anvil / Outflow, Opacity 25-100% / Map only, Mip Auto / 0-4. It is an inspection view of the STORED data: each
+  pixel of the map's box (same lon / lat placement as `weatherMapRaster`) builds its ECEF direction (z north, lon =
+  atan2(y, x)), goes through `cv2Drift` + `cv2FlowWeatherDir` (the readers' ONE FRAME) and the hardware samplerCube lookup
+  the march uses (set 0 = the march's descriptor set, as the radar), with the coverage remapped by look.x / cover.xy as
+  every reader does; nothing is recomputed. Channels: R cover (white over clear), G type (stratus .. Cb ramp, x the cover),
+  B rain, A ground x 8 km (transparent at sea level: the coasts must land on the raster's — they do), conv x / y / z / w
+  (anvil and outflow read level >= 1: level 0's z / w are the cells' distance fields). Mip Auto = the pixel's footprint
+  over the 2048 face's texel, half a level sharp (~3.2 for the world, 0-1 zoomed on a track). Mid and high cloud are not
+  stored (the march derives them from R), so they have no channel. Output: a 512 x 256 RGBA8 storage image, LINEAR values
+  (the UI samples it as the SRGB raster), one more of the UI's 8 external image slots. Dispatched from recordCompute after the
+  radar, only while the tab shows a channel: <= 4 a second while the box / channel / look changes, 2 a second otherwise
+  (the cube re-bakes as time moves); not on Potato (no cloud pass). First check (2036-09-10 16:00 UTC): ground on the
+  coasts, no face seams, the ITCZ in type / cover at ~0-10 N, Isaac's / Prapiroon's eye rings on their markers.
 
 ## Lightning, thunder and weather evolution (from "Subsystem: Clouds v2")
 

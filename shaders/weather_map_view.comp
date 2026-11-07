@@ -1,0 +1,134 @@
+#version 450
+#extension GL_EXT_control_flow_attributes : enable
+// ── The Weather window's weather-map overlay (2026-11-06, SatelliteSimWeatherCyclones.cpp) ────────────────────────
+// The weather cube the cloud march reads (cloud_v2_weather.comp's bake: faces 0-5 the map, 6-11 the convection cube),
+// reprojected onto the Cyclones tab's equirect map box and colour-mapped, one channel at a time. A debug / inspection
+// view: it shows the STORED data, read the way the clouds read it — the direction through cv2Drift and
+// cv2FlowWeatherDir (clouds_v2.glsl: the ONE FRAME every reader shares) and the hardware cube lookup (the same face
+// selection the march's samplerCube does), the coverage remapped by "Coverage" / the clear and full thresholds as
+// every reader remaps it. Nothing is recomputed.
+// Channel (pc.opt.x): 1 low cover (R, remapped), 2 cloud type (G: stratus .. cumulonimbus, shown x the cover), 3 rain
+// (B), 4 ground (A x 8 km), 5 convection intensity (conv x), 6 column top (conv y: share of the way to the lid),
+// 7 anvil (conv z, levels >= 1), 8 mid outflow (conv w, levels >= 1).
+// Output: RGBA8 UNORM, LINEAR values (the UI samples it straight through like the SRGB base map it is drawn over),
+// alpha = the overlay's coverage x opacity, or opaque over a dark ground with "map only" (pc.opt.z).
+// Same descriptor set (set 0) as the cloud march; set 1 binding 0 = the output image. Dispatched only while the
+// Cyclones tab shows the overlay, at most 4 times a second.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(push_constant) uniform PC {
+    vec4 box;   // lon0, lat0, lon1, lat1 (degrees; lon may run past +-180)
+    vec4 opt;   // x channel, y opacity 0..1, z map only (1), w the cube's mip (< 0: from the pixel's footprint)
+} pc;
+
+#define CLOUD_PARAMS_BINDING 0
+#include "cloud_params.glsl"
+#include "common.glsl"
+#define CV2_PARAMS_BINDING  1
+#define CV2_WEATHER_BINDING 2
+#define CV2_CONV_BINDING 28   // Weather v2: the convection cube
+#define CV2_SHAPE_BINDING   3
+#define CV2_MESO_BINDING    5
+#define CV2_MORPH_BINDING   20
+#define CV2_STORM_BINDING   26
+#include "clouds_v2.glsl"
+
+layout(rgba8, set = 1, binding = 0) writeonly uniform image2D outMap;
+
+// Perceptual ramps (polynomial fits of matplotlib's viridis / inferno, display sRGB).
+vec3 viridis(float t)
+{
+    const vec3 c0 = vec3(0.2777273272234177, 0.005407344544966578, 0.3340998053353061);
+    const vec3 c1 = vec3(0.1050930431085774, 1.404613529898575, 1.384590162594685);
+    const vec3 c2 = vec3(-0.3308618287255563, 0.214847559468213, 0.09509516302823659);
+    const vec3 c3 = vec3(-4.634230498983486, -5.799100973351585, -19.33244095627987);
+    const vec3 c4 = vec3(6.228269936347081, 14.17993336680509, 56.69055260068105);
+    const vec3 c5 = vec3(4.776384997670288, -13.74514537774601, -65.35303263337234);
+    const vec3 c6 = vec3(-5.435455855934631, 4.645852612178535, 26.3124352495832);
+    t = clamp(t, 0.0, 1.0);
+    return clamp(c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6))))), 0.0, 1.0);
+}
+vec3 inferno(float t)
+{
+    const vec3 c0 = vec3(0.0002189403691192265, 0.001651004631001012, -0.01948089843709184);
+    const vec3 c1 = vec3(0.1065134194856116, 0.5639564367884091, 3.932712388889277);
+    const vec3 c2 = vec3(11.60249308247187, -3.972853965665698, -15.9423941062914);
+    const vec3 c3 = vec3(-41.70399613139459, 17.43639888205313, 44.35414519872813);
+    const vec3 c4 = vec3(77.162935699427, -33.40235894210092, -81.80730925738993);
+    const vec3 c5 = vec3(-71.31942824499214, 32.62606426397723, 73.20951985803202);
+    const vec3 c6 = vec3(25.13112622477341, -12.24266895238567, -23.07032500287172);
+    t = clamp(t, 0.0, 1.0);
+    return clamp(c0 + t * (c1 + t * (c2 + t * (c3 + t * (c4 + t * (c5 + t * c6))))), 0.0, 1.0);
+}
+// The type table's five types (clouds_v2.glsl CV2_NUM_TYPES: G = index / 4), interpolated as the march does.
+vec3 typeRamp(float t)
+{
+    const vec3 k[5] = vec3[5](vec3(0.62, 0.66, 0.74),    // stratus
+                              vec3(0.30, 0.72, 0.88),    // stratocumulus
+                              vec3(0.38, 0.82, 0.36),    // cumulus
+                              vec3(0.96, 0.82, 0.26),    // congestus
+                              vec3(0.92, 0.26, 0.24));   // cumulonimbus
+    float x = clamp(t, 0.0, 1.0) * 4.0;
+    int   i = min(int(x), 3);
+    return mix(k[i], k[i + 1], x - float(i));
+}
+vec3 toLinear(vec3 c) { return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }
+
+void main()
+{
+    ivec2 sz = imageSize(outMap);
+    ivec2 p  = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= sz.x || p.y >= sz.y) return;
+    // The pixel's centre, exactly as SatelliteSim::weatherMapRaster places the base map's (row 0 = north).
+    float lonD = pc.box.x + (float(p.x) + 0.5) / float(sz.x) * (pc.box.z - pc.box.x);
+    float latD = pc.box.w - (float(p.y) + 0.5) / float(sz.y) * (pc.box.w - pc.box.y);
+    float lon = radians(lonD), lat = radians(latD);
+    // ECEF (z north, x lon 0, y lon 90 E): the direction the bake (faceDir / equirectUV) and the march (dirE) use.
+    vec3 dirE = vec3(cos(lat) * cos(lon), cos(lat) * sin(lon), sin(lat));
+
+    // The map's direction, through the readers' one frame (cv2FlowWeatherDir is the identity in Weather v2; called so
+    // the overlay follows it if it ever changes).
+    vec3 wd   = cv2Drift(dirE);
+    vec3 flow = cv2FlowDisp(wd, cv2Drift(dirE * R_EARTH));
+    vec3 wF   = cv2FlowWeatherDir(wd, flow);
+
+    int   ch   = int(pc.opt.x + 0.5);
+    bool  conv = ch >= 5;
+    // The mip: the pixel's footprint over the cube's finest texel (~2 / faceSize rad at a face's centre), half a level
+    // sharp; a set value wins. The anvil and the outflow exist only from level 1 (level 0's z / w are the cells'
+    // distance fields).
+    float size0 = float(conv ? textureSize(cv2ConvTex, 0).x : textureSize(cv2WeatherTex, 0).x);
+    float nLev  = float(conv ? textureQueryLevels(cv2ConvTex) : textureQueryLevels(cv2WeatherTex));
+    float pixR  = max(radians(pc.box.w - pc.box.y) / float(sz.y), radians(pc.box.z - pc.box.x) / float(sz.x) * cos(lat));
+    float lod   = pc.opt.w >= 0.0 ? pc.opt.w : log2(max(pixR * size0 * 0.5, 1.0)) - 0.5;
+    if (ch >= 7) lod = max(lod, 1.0);
+    lod = clamp(lod, 0.0, nLev - 1.0);
+
+    vec4 w = textureLod(cv2WeatherTex, wF, conv ? 0.0 : lod);
+    float covSpan = max(cv2.cover.y - cv2.cover.x, 1e-3);
+    float cov = clamp((w.r * cv2.look.x - cv2.cover.x) / covSpan, 0.0, 1.0);   // as every reader remaps it
+
+    vec3  rgb = vec3(0.0);
+    float a   = 0.0;
+    if (ch == 1) { rgb = vec3(1.0); a = cov; }
+    else if (ch == 2) { rgb = typeRamp(w.g); a = mix(0.15, 1.0, cov); }
+    else if (ch == 3) { rgb = viridis(0.15 + 0.85 * w.b); a = smoothstep(0.0, 0.06, w.b); }
+    else if (ch == 4) {
+        float hM = w.a * 8000.0;
+        rgb = mix(vec3(0.20, 0.42, 0.18), vec3(0.96, 0.92, 0.84), sqrt(clamp(hM / 6000.0, 0.0, 1.0)));
+        a = smoothstep(0.0, 40.0, hM);
+    }
+    else if (conv) {
+        vec4 cv = textureLod(cv2ConvTex, wF, lod);
+        float v = ch == 5 ? cv.x : ch == 6 ? cv.y : ch == 7 ? cv.z : cv.w;
+        rgb = inferno(0.25 + 0.75 * v);
+        a = smoothstep(0.0, 0.05, v);
+    }
+    if (pc.opt.z > 0.5) {
+        rgb = mix(vec3(0.03, 0.035, 0.05), rgb, a);
+        a = 1.0;
+    } else {
+        a *= clamp(pc.opt.y, 0.0, 1.0);
+    }
+    imageStore(outMap, p, vec4(toLinear(rgb), a));
+}

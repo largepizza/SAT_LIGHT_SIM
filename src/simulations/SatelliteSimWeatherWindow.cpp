@@ -1052,6 +1052,7 @@ void SatelliteSim::weatherRadarDestroy(VkDevice device)
     wxMapView = VK_NULL_HANDLE;
     wxMapImg = VK_NULL_HANDLE;
     wxMapImgMem = VK_NULL_HANDLE;
+    weatherOverlayDestroy(device);   // the Cyclones tab's weather-map overlay
 }
 
 // Last frame's dispatch, read back (the fence has been waited on: single frame in flight).

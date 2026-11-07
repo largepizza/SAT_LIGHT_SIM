@@ -4322,6 +4322,36 @@ private:
     struct WxMapCyc { float x, y; uint64_t id; };
     std::vector<WxMapCyc> wxMapCycs;
     int wxMapHover = -1;
+    // The weather-map overlay (2026-11-06, shaders/weather_map_view.comp): the weather cube the march reads, one channel
+    // reprojected onto the map's box and drawn between the land / sea raster and the tracks. A GPU pass on the march's
+    // set 0 (as the radar), into a storage image the UI samples; only while the Cyclones tab shows it, <= 4 a second.
+    enum WxOvChannel { WxOvOff = 0, WxOvCover, WxOvType, WxOvRain, WxOvGround, WxOvConv, WxOvTop, WxOvAnvil, WxOvOutflow,
+                       WxOvCount };
+    int wxOvChannel = WxOvOff;
+    float wxOvOpacity = 0.75f;
+    bool wxOvMapOnly = false;
+    float wxOvLod = -1.0f;               // the cube's mip read (< 0: from the pixel's footprint)
+    VkImage wxOvImg = VK_NULL_HANDLE;
+    VkDeviceMemory wxOvImgMem = VK_NULL_HANDLE;
+    VkImageView wxOvView = VK_NULL_HANDLE;
+    VkSampler wxOvSampler = VK_NULL_HANDLE;
+    uint32_t wxOvUiId = 0;
+    bool wxOvImgFailed = false, wxOvFailed = false, wxOvWanted = false, wxOvValid = false;
+    VkPipeline wxOvPipe = VK_NULL_HANDLE;
+    VkPipelineLayout wxOvPipeLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout wxOvSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool wxOvPool = VK_NULL_HANDLE;
+    VkDescriptorSet wxOvSet = VK_NULL_HANDLE;
+    double wxOvDispWall = -1e300;        // the last dispatch (wall), and what it drew
+    double wxOvDispBox[4] = {0, 0, 0, 0};
+    int wxOvDispChannel = -1;
+    float wxOvDispOpacity = -1.0f, wxOvDispLod = -2.0f;
+    bool wxOvDispMapOnly = false;
+    int wxOvDispatches = 0;
+    UIImage wxOvEl;
+    bool weatherOverlayEnsureImage(UIRenderer &ui);
+    void weatherOverlayRecord(VkCommandBuffer cmd);                     // recordCompute, after the radar
+    void weatherOverlayDestroy(VkDevice device);
     static constexpr VkDeviceSize kStageBytes = 16ull << 20;
     uint32_t kPoolCap = 16384;            // records the GPU buffers hold
     // Satellite indices: [0, activeSatCount) the roster, then kLaunchCap launch records (trains raising, retirees

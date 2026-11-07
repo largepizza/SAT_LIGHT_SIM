@@ -230,6 +230,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   supercell, a squall line, a waterspout, the biggest wildfire), storms near you, a local precipitation
   radar with a loop, and the named storms with track maps and milestones. One **Watch** button per event lands on
   it as it happens.
+- **Weather map overlay** on the Weather window's Cyclones map: the global weather map the clouds are drawn from
+  (cover, cloud type, rain, ground, and the storm cells, tops, anvils and outflow), one layer at a time, with opacity,
+  "map only" and the mip read, under the cyclone tracks. Harness: `weather map <layer>`.
 
 ### The night sky
 
