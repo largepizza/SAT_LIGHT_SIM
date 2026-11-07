@@ -3530,6 +3530,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         }
         // Potato's flat deck reads the weather cube: it keeps evolving (a dispatch only when a face is due).
         recordWeatherEvolution(cmd);
+        cv2PatchConvLag();
         stormsMainPathLast = false;
     }
     else if (!dbgEnv("SATLIGHTSIM_SKIP_CLOUDMARCH"))

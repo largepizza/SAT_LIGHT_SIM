@@ -13,7 +13,8 @@ blocks and the stair-stepped billow edges all passed (issue_20261107_124812 and 
 - runs ONE live app at a 1/30 s fixed step (`live.py start --fixed-dt`), on user_data/settings.json unless a scenario's
   report brings its own;
 - per scenario (a report's view, `SCENARIOS` below) and time scale: settles paused, plays at the scale, then captures
-  `--frames` CONSECUTIVE frames as full-resolution PNGs (a crop: no codec, no downscale -- both hide 2-px blocks);
+  `--frames` CONSECUTIVE frames as full-resolution PNGs (a still camera path whose sim channel runs at the scale, recorded
+  every frame; then cropped: no codec, no downscale -- both hide 2-px blocks);
 - scores each run (`numbers.json`, `review.md`, a heat map and a worst-tile crop per run):
     rev12   share of pixel-frames whose change REVERSES sign with both steps > 12 levels (smooth motion is monotonic:
             this is flicker / sparkle, not movement)
@@ -64,6 +65,16 @@ SCENARIOS = {
     "itcz":   ([f'report load "{REP}issue_20261106_184711" shot=1 trail=off', "time pause"], (480, 150, 960, 640)),
     # The cumulus field from 650 km (issue_20261107_125245: "noise repetition").
     "orbit":  ([f'report load "{REP}issue_20261107_125245" shot=1 trail=off', "time pause"], (480, 200, 960, 600)),
+    # MOTION: the reports' own flights (their trails, with the sim time they ran at), the last frames scored. The user flies
+    # through storms at 1 min/s; every still scenario above is clean while this is where the history is lost.
+    "trail_tower": ([f'report load "{REP}issue_20261107_124812" shot=1'], (300, 0, 960, 640), {"trail": True}),
+    "trail_anvil": ([f'report load "{REP}issue_20261107_124930" shot=1'], (480, 0, 960, 640), {"trail": True}),
+    "trail_itcz":  ([f'report load "{REP}issue_20261106_184711" shot=1'], (480, 150, 960, 640), {"trail": True}),
+    # The tower of "tower" from a STORM-RELATIVE camera: 15 km east of the storm at 4.1 km, looking west -- the same
+    # framing whatever moves the storm (an A/B of storm motion keeps the storm in view).
+    "towerrel": ([f'report load "{REP}issue_20261107_124812" shot=1 trail=off', "time pause",
+                  "time set 2036-11-22T08:02:30Z"], (480, 100, 960, 640),
+                 {"storm": 14471041659953394158, "east_km": 15.0, "agl": 4100, "az": 270, "el": 10, "fov": 80}),
 }
 
 
@@ -193,28 +204,82 @@ def cmd_run(a):
     if os.path.exists(os.path.join(out, "meta.json")):   # (a second run into the same folder adds to it)
         meta["runs"] = json.load(open(os.path.join(out, "meta.json"), encoding="utf-8")).get("runs", {})
     try:
+        if a.pre:
+            send([c.strip() for c in a.pre.split(";") if c.strip()])
+            meta["pre"] = a.pre
         for s in scen:
-            setup, crop = SCENARIOS[s]
+            setup, crop = SCENARIOS[s][0], SCENARIOS[s][1]
+            rel = SCENARIOS[s][2] if len(SCENARIOS[s]) > 2 else None
+            if rel and rel.get("trail"):   # the report's flight: its length first, then its last frames
+                tag = s
+                res = send(list(setup) + ["path goto 0", "wait 60", f"path play fps={round(1.0 / a.dt)} record=af_probe_ frames=0"])
+                import re
+                nF = int(re.search(r"played (\d+) frames", str(res[-1].get("result")) + str(res[-1])).group(1))
+                keep = ",".join(str(i) for i in range(max(nF - a.frames, 0), nF))
+                print(f"[{tag}] {nF} frames", flush=True)
+                send(list(setup) + ["path goto 0", "wait 90", f"path play fps={round(1.0 / a.dt)} record=af_{tag}_ frames={keep}",
+                                    "time pause", "wait settle auto max=250", f"capture af_{tag}_ref crop={','.join(str(v) for v in crop)}"],
+                     timeout=1800)
+                rd = live_dir()
+                dst = os.path.join(out, tag)
+                os.makedirs(dst, exist_ok=True)
+                for j, k in enumerate(list(range(max(nF - a.frames, 0), nF)) + ["ref"]):
+                    src = os.path.join(rd, "captures", f"af_{tag}__{k:05d}.png" if k != "ref" else f"af_{tag}_ref.png")
+                    t0 = time.time()
+                    while not os.path.exists(src) and time.time() - t0 < 30.0:
+                        time.sleep(0.2)
+                    time.sleep(0.3)
+                    if k == "ref":
+                        shutil.copy(src, dst)
+                    else:
+                        x, y, w, h = crop
+                        Image.open(src).crop((x, y, x + w, y + h)).save(os.path.join(dst, f"af_{tag}_{j:02d}.png"))
+                meta["runs"][tag] = {"scenario": s, "scale": "trail"}
+                continue
+            if rel:   # place the camera relative to the storm, found by id at the setup's moment
+                res = send(list(setup) + ["wait 30", "weather state"])
+                st = [n for r in res if "weather state" in str(r.get("cmd", ""))
+                      for n in r["result"]["near"] + r["result"].get("world", []) if n.get("id") == rel["storm"]]
+                if not st:
+                    print(f"[{s}] storm {rel['storm']} not found: skipped")
+                    continue
+                la, lo = st[0]["lat_deg"], st[0]["lon_deg"]
+                import math
+                olo = lo + rel["east_km"] / (111.32 * math.cos(math.radians(la)))
+                setup = list(setup) + [f"observer lat={la:.4f} lon={olo:.4f} agl={rel['agl']}",
+                                       f"camera az={rel['az']} el={rel['el']} fov={rel['fov']}"]
             cr = ",".join(str(v) for v in crop)
             for sc in scales:
                 tag = f"{s}_{sc}"
-                cmds = list(setup) + ["time scale 1x", "wait settle auto max=250", f"time scale {sc}", "time play",
-                                      f"wait {a.warm}"]
-                cmds += [f"capture af_{tag}_{k:02d} crop={cr}" for k in range(a.frames)]
-                # LAG: the same moment settled (paused right after the last frame): how far the running image trails it.
-                cmds += ["time pause", "time scale 1x", "wait settle auto max=250", f"capture af_{tag}_ref crop={cr}"]
+                # CONSECUTIVE frames: a still camera path whose sim channel advances at the scale, played at 1/dt and
+                # recorded every frame (a `capture` per frame took ~5 frames each: at 1 min/s the "consecutive" frames were
+                # 10-12 sim s apart). The first `warm` frames fill the history and are not written.
+                mult = {"1x": 1.0, "10x": 10.0, "1m": 60.0, "5m": 300.0, "1h": 3600.0}[sc]
+                fps = round(1.0 / a.dt)
+                n = a.warm + a.frames
+                T = n / fps
+                keep = ",".join(str(i) for i in range(a.warm, n))
+                cmds = list(setup) + ["time scale 1x", "wait settle auto max=250", "path clear", "path key 0",
+                                      f"path key {T:.4f} simadd={T * mult:.3f}",
+                                      f"path play fps={fps} record=af_{tag}_ frames={keep}"]
+                # LAG: the same moment settled (time stays where the path left it): how far the running image trails it.
+                cmds += ["time pause", "wait settle auto max=250", f"capture af_{tag}_ref crop={cr}"]
                 print(f"[{tag}]", flush=True)
                 send(cmds, timeout=1800)
                 rd = live_dir()
                 dst = os.path.join(out, tag)
                 os.makedirs(dst, exist_ok=True)
-                for k in list(range(a.frames)) + ["ref"]:
-                    src = os.path.join(rd, "captures", f"af_{tag}_{k:02d}.png" if k != "ref" else f"af_{tag}_ref.png")
+                for k in list(range(a.warm, a.warm + a.frames)) + ["ref"]:
+                    src = os.path.join(rd, "captures", f"af_{tag}__{k:05d}.png" if k != "ref" else f"af_{tag}_ref.png")
                     t0 = time.time()
                     while not os.path.exists(src) and time.time() - t0 < 30.0:   # (the PNG encode trails the result)
                         time.sleep(0.2)
                     time.sleep(0.3)
-                    shutil.copy(src, dst)
+                    if k == "ref":
+                        shutil.copy(src, dst)
+                    else:   # (the path records whole frames: the scenario's crop here)
+                        x, y, w, h = crop
+                        Image.open(src).crop((x, y, x + w, y + h)).save(os.path.join(dst, f"af_{tag}_{k - a.warm:02d}.png"))
                 meta["runs"][tag] = {"scenario": s, "scale": sc}
     finally:
         with open(os.path.join(out, "meta.json"), "w", encoding="utf-8") as f:
@@ -276,6 +341,7 @@ def main():
     r.add_argument("--dt", type=float, default=1.0 / 30.0)
     r.add_argument("--out")
     r.add_argument("--keep", action="store_true", help="leave the live app running")
+    r.add_argument("--pre", default="", help="commands sent once before the runs (an A/B: 'set clouds_v2.x 0; ...')")
     s = sub.add_parser("score")
     s.add_argument("dir")
     c = sub.add_parser("compare")

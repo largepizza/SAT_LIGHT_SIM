@@ -1,5 +1,6 @@
 #include "Weather.h"
 #include "StormClimatology.h"
+#include "WindField.h"
 #include "../FrameProfile.h"
 
 #include <algorithm>
@@ -152,6 +153,12 @@ struct Cell {
 } // namespace
 
 glm::dvec3 Storm::centreAt(double t) const {
+    if (trackN >= 2) {
+        const double u = std::clamp((t - t0) / kTrackDtS, 0.0, (double)(trackN - 1));
+        const int i = std::min((int)u, trackN - 2);
+        const double f = u - (double)i;
+        return glm::normalize(glm::dvec3(track[i]) * (1.0 - f) + glm::dvec3(track[i + 1]) * f);
+    }
     const double sp = glm::length(vel);
     if (sp < 1e-9) return pos0;
     return moveAlong(pos0, vel / sp, sp * (t - t0));
@@ -477,6 +484,32 @@ struct Catalog::Impl {
         S.life = (float)(sysLife + linger);
     }
 
+    // A single cell's TRACK through the wind at the clouds' steering height (2026-11-07): moving at a random 1-6 m/s of its
+    // own while the cloud noise on its towers rode the wind field, its column stood still under billows sliding across it
+    // at the wind's speed -- at 1 min/s ~16 m a frame that no reprojection follows: flicker and the sparse grid's blocks
+    // on every tower (tools/harness/artifacts.py). RK2 every kTrackDtS; vel = the wind at birth (its direction elsewhere).
+    void traceTrack(Storm &S) const {
+        if (isLineSystem(S.kind) || !set.windTracks) return;
+        const glm::dvec3 sun = env.sunEarth ? env.sunEarth(S.t0) : glm::dvec3(1, 0, 0);
+        const double decl = std::asin(std::clamp(sun.z, -1.0, 1.0));
+        auto step = [](const glm::dvec3 &p, const glm::dvec3 &v, double dt) {
+            const double sp = glm::length(v);
+            return sp > 1e-9 ? moveAlong(p, v / sp, sp * dt) : p;
+        };
+        const int n = std::clamp((int)std::ceil((double)S.life / Storm::kTrackDtS) + 1, 2, Storm::kTrackN);
+        glm::dvec3 p = S.pos0;
+        S.track[0] = glm::vec3(p);
+        const WindState ws0 = windState(S.t0, decl, (double)set.windWaves, (double)set.windEddies);
+        S.vel = windAt(p, kWfLowH, ws0);
+        for (int k = 1; k < n; ++k) {
+            const WindState ws = windStateAt(ws0, (double)(k - 1) * Storm::kTrackDtS);
+            const glm::dvec3 pm = step(p, windAt(p, kWfLowH, ws), 0.5 * Storm::kTrackDtS);
+            p = step(p, windAt(pm, kWfLowH, windStateAt(ws, 0.5 * Storm::kTrackDtS)), Storm::kTrackDtS);
+            S.track[k] = glm::vec3(p);
+        }
+        S.trackN = (uint8_t)n;
+    }
+
     // A storm's whole life from its seed. lat/land/doy: the birth's (kind mix, shear).
     void makeStorm(Storm &S, uint64_t id, const glm::dvec3 &pos, double t0, double latDeg, double land,
                    double doy) const {
@@ -696,6 +729,7 @@ struct Catalog::Impl {
                 Storm &S = out.emplace_back();   // (built in place: a Storm is ~1.3 KB)
                 const uint64_t id = key3((uint64_t)ci, (uint64_t)bin, (uint64_t)k, 0x570A3ull);
                 makeStorm(S, id, p, tb, std::asin(std::clamp(sLat, -1.0, 1.0)) / kDeg, landP, dayOfYear(tb));
+                traceTrack(S);
                 S.potential = (float)fd;
                 S.moisture = (float)m;
             }
@@ -800,7 +834,8 @@ void Catalog::configure(const Env &env, const Settings &s, const StormClimatolog
                          s.moistureFull == I.set.moistureFull && s.towerRadiusM == I.set.towerRadiusM &&
                          s.lifeScale == I.set.lifeScale && s.anvilLingerS == I.set.anvilLingerS && s.lineFrequency == I.set.lineFrequency &&
                          s.targetLineActive == I.set.targetLineActive && s.cycloneFrequency == I.set.cycloneFrequency &&
-                         s.seaFactor == I.set.seaFactor;
+                         s.seaFactor == I.set.seaFactor && s.windTracks == I.set.windTracks &&
+                         s.windWaves == I.set.windWaves && s.windEddies == I.set.windEddies;
     const bool same = sameSet && envKey == I.envKey;
     I.env = env;
     I.set.anvilFormS = s.anvilFormS;   // (read by shieldsAt at any t: no cached storm depends on it)

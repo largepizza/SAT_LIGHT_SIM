@@ -1633,11 +1633,16 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         p.column = glm::vec4(std::max(cv2CbColumns, 0.0f), 0.0f,
                              std::clamp(cv2CbRadiusKm, 1.0f, 20.0f) * 1000.0f,
                              std::clamp(cv2CbCumulusTopKm, 2.0f, 12.0f) * 1000.0f);
-        p.column2 = glm::vec4(0.0f);
+        // xyz: the steering wind at the eye (m/s, ECEF), with which the storm geometry reads the convection cube back by its
+        // face's bake lag (packed in column3.xw / anvil2.z: cv2PatchConvLag); (column2's tower-walk terms are gone)
+        {
+            const glm::dvec3 We = wx::windAt(up, wx::kWfLowH, windStateNow());
+            p.column2 = glm::vec4(glm::vec3(We), 0.0f);
+        }
         p.anvil2 = glm::vec4(std::clamp(cv2AnvilThickKm, 0.3f, 6.0f) * 1000.0f,
                              std::clamp(cv2AnvilHangKm, 0.0f, 6.0f) * 1000.0f,
-                             0.0f, std::clamp(cv2CbOvershootKm, 0.0f, 3.0f) * 1000.0f);
-        p.column3 = glm::vec4(0.0f, 0.0f, std::clamp(cv2CbCumulusVar, 0.0f, 0.8f), 0.0f);
+                             8390656.0f, std::clamp(cv2CbOvershootKm, 0.0f, 3.0f) * 1000.0f);   // (z: no lag, cv2PatchConvLag)
+        p.column3 = glm::vec4(8390656.0f, 0.0f, std::clamp(cv2CbCumulusVar, 0.0f, 0.8f), 8390656.0f);   // (xw: no lag yet)
     }
     // Light LOD (cloud_v2_march.comp), only for a light march up to 3 km: its second step is one sample over the
     // rest of the march, and at 8 km that is a 7.5-km all-or-nothing sample (the grain of 2026-10-11; a saved
@@ -2471,6 +2476,26 @@ uint64_t SatelliteSim::weatherBakeHash() const
 // One face of the weather cube per frame, all its mips, re-baked when sim time has moved on enough to
 // show (the evolution at 1x is metres per frame; in time warp every frame) or the settings changed.
 // The face is taken out of SHADER_READ_ONLY for the writes and returned before the passes read it.
+// THE CONVECTION CUBE'S LAG (2026-11-07): each face re-bakes on its own schedule, up to ~35 sim s behind in time-lapse, and the
+// storms it holds have moved on since; the storm geometry reads it back along the wind by the face's lag (clouds_v2.glsl
+// cv2ConvAt). Packed two faces a float, half-seconds + 2048 (+-1024 s). Written after this frame's bakes (they run after
+// fillCloudsV2Params): a face baked now with last frame's lag in it was read ~lag x wind off for a frame, every bake.
+void SatelliteSim::cv2PatchConvLag()
+{
+    if (!cv2ParamsMapped)
+        return;
+    const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    float lg[6];
+    for (int f = 0; f < 6; ++f)
+        lg[f] = cv2WxBakedT[f] < -1e29 ? 2048.0f : (float)(std::clamp(std::round(2.0 * (t - cv2WxBakedT[f])), -2047.0, 2047.0) + 2048.0);
+    auto *p = static_cast<GpuCloudV2Params *>(cv2ParamsMapped);
+    p->column3.x = lg[0] + 4096.0f * lg[1];
+    p->column3.w = lg[2] + 4096.0f * lg[3];
+    p->anvil2.z  = lg[4] + 4096.0f * lg[5];
+    if (ctx_)
+        ctx_->mirrorDirtyAll(cv2ParamsMapped);
+}
+
 void SatelliteSim::recordWeatherEvolution(VkCommandBuffer cmd)
 {
     FPROF_SCOPE("recordWeatherEvolution");
@@ -2801,6 +2826,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     // The weather cube keeps evolving with the clouds off: the flat stand-ins (sat_sky.frag's flat layers,
     // SKY_LITE, Potato's deck, reflections and probes) read it.
     recordWeatherEvolution(cmd);
+    cv2PatchConvLag();
     if (!cv2MarchPipeline)
         return;
     // Knockout 32768 (Planetarium, Potato): nothing else of clouds v2 is recorded — no march, resolve, far layer,

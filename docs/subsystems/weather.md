@@ -169,6 +169,14 @@ Plan and progress log: `.plans/WEATHER_V2_PLAN.md` (untracked).
     reprojects); + the resolve's unreprojected slide on that clock too (flicker 1.5 %, blocks down, but the history went
     sticky: smeared ghost towers). The remaining time-lapse artifact is the texture sliding with the wind across storm
     columns that stand still (the storms move at their own 1-6 m/s).
+  - Single-cell storms MOVE WITH THE WIND (2026-11-07, `storm_wind_tracks`, default on): a track of 30-min knots traced
+    (RK2) through the wind field at the clouds' steering height when its bin is built (`Storm::track`, `centreAt`
+    interpolates; vel = the wind at birth). At their own random 1-6 m/s the columns stood still under billows riding the
+    wind across them. Line systems keep their own (propagating) motion. +3 ms of catalog build on a day's jump.
+  - The storm geometry reads the convection cube BACK ALONG THE WIND by its face's bake lag (`cv2ConvAt`: the eye's steering
+    wind in `column2.xyz`, the six lags packed two a float in `column3.xw` / `anvil2.z`, written after the frame's bakes by
+    `cv2PatchConvLag`): faces re-bake up to ~35 sim s late in time-lapse while their storms move on. Storm-relative A/B
+    (`artifacts.py`, towerrel, consecutive frames): lag 5.1 -> 2.4 levels and stair-stepping 0.14 -> 0 at 5 min/s.
   - A cell is binned out to 1.3 sigma + 1.65 "Cb tower radius" + 6 km (its column, foot and swell into the anvil); 4.5
     sigma (~24 km) was short of the swell.
   - Observed, not changed: a tower under its anvil at a high sun is in the anvil's shadow (sky-lit: flat blue-grey); a

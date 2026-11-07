@@ -6139,6 +6139,7 @@ private:
     // The tower's drawn top climbs to the anvil over this (wx::Settings::towerRiseS, clouds_v2.storm_tower_rise_min,
     // slot 452; 0 = the old ~3-min climb with its strength).
     float stormTowerRiseMin = 30.0f;
+    bool  stormWindTracks = true;      // single-cell storms move with the wind their billows ride ("storm_wind_tracks")
     float stormAnvilDecayMin = 70.0f;
     // (Weather v2, 2026-11-06: "Storm cloud field", "Storm clear moat", "Hurricane arm cirrus", the storm index's A/Bs
     // (storm_index_tight, storm_shield_bins_ab) and the cyclone's minor swirls / deck spiral / outflow cirrus / streaks
@@ -6423,6 +6424,7 @@ private:
     VkBuffer cv2ParamsBuf = VK_NULL_HANDLE;
     VkDeviceMemory cv2ParamsMem = VK_NULL_HANDLE;
     void *cv2ParamsMapped = nullptr;
+    void cv2PatchConvLag();   // the convection cube's per-face bake lag into the v2 UBO (SatelliteSimCloudsV2.cpp)
     VkImage cv2NewImg = VK_NULL_HANDLE, cv2NewDepthImg = VK_NULL_HANDLE;
     VkImage cv2AgeImg = VK_NULL_HANDLE, cv2AgeHistImg = VK_NULL_HANDLE;   // the resolve's sample ages (R32F)
     VkDeviceMemory cv2AgeMem = VK_NULL_HANDLE, cv2AgeHistMem = VK_NULL_HANDLE;

@@ -2549,6 +2549,22 @@ float cv2CellColumn(vec3 wd, out float drop, out float dec, out float grow)
     return dIn;
 }
 #endif
+#ifdef CV2_CONV_BINDING
+// The convection cube read BACK ALONG THE WIND by its face's bake lag (2026-11-07): a face re-bakes on its own schedule, up to
+// ~35 sim s behind in time-lapse, while its storms ride the wind on; read in place, a storm's baked intensity, top and anvil
+// trailed its exact column (cv2CellColumn) and the gates and edges flipped at every re-bake (tools/harness/artifacts.py).
+// cv2.column2.xyz: the steering wind at the eye; the lags packed by SatelliteSim::cv2PatchConvLag.
+vec3 cv2ConvAt(vec3 wd)
+{
+    vec3  a = abs(wd);
+    float pk; bool hi;
+    if (a.x >= a.y && a.x >= a.z) { pk = cv2.column3.x; hi = wd.x < 0.0; }
+    else if (a.y >= a.z)          { pk = cv2.column3.w; hi = wd.y < 0.0; }
+    else                          { pk = cv2.anvil2.z;  hi = wd.z < 0.0; }
+    float lag = ((hi ? floor(pk / 4096.0) : pk - 4096.0 * floor(pk / 4096.0)) - 2048.0) * 0.5;
+    return normalize(wd - cv2.column2.xyz * (lag / R_EARTH));
+}
+#endif
 CV2Storm cv2StormGeom(CV2Pos q, float fpM)
 {
     // Weather v2 (2026-11-06): the storm's SHAPE from the convection cube (cloud_v2_weather.comp wxConvection), not from
@@ -2572,12 +2588,13 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
     // cut flat here is entered from above inside dense cloud: dark blots round a hurricane's eye, 2026-11-06)
     if (q.h > top + 1050.0 + cv2.anvil2.w + kCv2DomeU) return g;
     cv2CycEye(wd, q.h, q.h - (cv2.types[4].alt.x + cv2Ground(q.dirE) * 0.9), cv2.types[4].alt.x + cv2Ground(q.dirE) * 0.9, top - 250.0);
-    vec4  cvB = textureLod(cv2ConvTex, wd, 2.0);   // ~20 km: is a storm near at all (and its surroundings, its cumulus)
+    vec3  wdC = cv2ConvAt(wd);                     // (the cube's reads, back by its lag)
+    vec4  cvB = textureLod(cv2ConvTex, wdC, 2.0);   // ~20 km: is a storm near at all (and its surroundings, its cumulus)
     if (cvB.x < 0.01 && cvB.z < 0.01) return g;
     // (the cores read through the same tent at level 0: one bilinear tap, through the distance's sqrt(-ln C), drew the
     // 5-km texels' facets as flat faces on every tower)
-    vec4  cv0 = cv2ConvSmooth(wd, 0.0);   // level 0: x / y the cores, z / w the cells' column distance fields
-    vec4  cv  = vec4(cv0.xy, cv2ConvSmooth(wd, 1.0).zw);
+    vec4  cv0 = cv2ConvSmooth(wdC, 0.0);   // level 0: x / y the cores, z / w the cells' column distance fields
+    vec4  cv  = vec4(cv0.xy, cv2ConvSmooth(wdC, 1.0).zw);
     float C     = cv.x;
     float lift  = cv2Ground(q.dirE) * 0.9;
     float base  = cv2.types[4].alt.x + lift;

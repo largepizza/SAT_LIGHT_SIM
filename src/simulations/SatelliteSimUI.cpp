@@ -9754,6 +9754,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         stormLifeScale = settingClamp(c.value("storm_life", stormLifeScale), 0.1f, 5.0f);
         stormAnvilFormMin = settingClamp(c.value("storm_anvil_form_min", stormAnvilFormMin), 1.0f, 240.0f);
         stormTowerRiseMin = settingClamp(c.value("storm_tower_rise_min", stormTowerRiseMin), 0.0f, 120.0f);
+        stormWindTracks = c.value("storm_wind_tracks", stormWindTracks);
         stormAnvilDecayMin = settingClamp(c.value("storm_anvil_decay_min", stormAnvilDecayMin), 1.0f, 240.0f);
         stormCycArms = settingClamp(c.value("storm_cyc_arms", stormCycArms), 0.0f, 6.0f);
         stormCycTightness = settingClamp(c.value("storm_cyc_tightness", stormCycTightness), 0.25f, 4.0f);
@@ -10508,6 +10509,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"storm_life", stormLifeScale},
         {"storm_anvil_form_min", stormAnvilFormMin},
         {"storm_tower_rise_min", stormTowerRiseMin},
+        {"storm_wind_tracks", stormWindTracks},
         {"storm_anvil_decay_min", stormAnvilDecayMin},
         {"storm_cyc_arms", stormCycArms},
         {"storm_cyc_tightness", stormCycTightness},

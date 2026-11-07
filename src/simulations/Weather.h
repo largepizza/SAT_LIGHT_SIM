@@ -79,7 +79,14 @@ struct Storm {
     float     trailM = 0;       // line systems: how far the stratiform region / shield trails behind the line (m)
     float     bow = 0;          // line systems: the line's forward bulge at its middle (m)
     float     sysLife = 0;      // line systems: the convective life (s), the shield lingers past it
-    // The storm centre at time t (map frame): pos0 moved along the great circle of vel.
+    // Its TRACK (single-cell kinds, 2026-11-07): the centre every kTrackDtS from t0, traced through the wind field at the
+    // clouds' steering height (WindField.h kWfLowH) -- the wind the cloud noise rides and the resolve reprojects with, so a
+    // tower and its billows move together. trackN 0: pos0 along the great circle of vel (line systems; tracks off).
+    static constexpr int kTrackN = 24;
+    static constexpr double kTrackDtS = 1800.0;
+    uint8_t   trackN = 0;
+    glm::vec3 track[kTrackN];
+    // The storm centre at time t (map frame): along its track, else pos0 moved along the great circle of vel.
     glm::dvec3 centreAt(double t) const;
 };
 
@@ -245,6 +252,9 @@ struct Settings {
     float targetLineActive = 160.0f;
     // Tropical cyclones: x each basin's climatological count per season (~85 a year worldwide at 1).
     float cycloneFrequency = 1.0f;
+    // Single-cell storms move WITH THE WIND (their tracks, Storm::track) or at a random velocity of their own (false).
+    bool  windTracks = true;
+    float windWaves = 1.0f, windEddies = 1.0f;   // the wind field's gains (WindField.h windState), for the tracks
 };
 
 class Catalog {

@@ -447,8 +447,13 @@ tools/harness/.venv/Scripts/python tools/harness/artifacts.py compare DIR_BEFORE
 ```
 
 - One live app at a 1/30 s fixed step (`live.py start --fixed-dt`); scenarios are report views (`SCENARIOS` in the script).
-  Per scenario and scale: settle paused, play, capture 16 CONSECUTIVE full-resolution PNG crops (no codec, no downscale:
-  both hide 2-px blocks), then pause, settle and capture the same moment as the reference.
+  Per scenario and scale: settle paused, then a still camera PATH whose sim channel runs at the scale (`path key T
+  simadd=`), played at 30 fps and recorded every frame (`path play record= frames=`: 30 warm-up frames, 16 scored), cropped
+  at full resolution (no codec, no downscale: both hide 2-px blocks); then the same moment settled as the reference.
+  (A `capture` per frame takes ~5 frames: at 1 min/s such "consecutive" frames are 10 sim s apart and measure the
+  evolution between converged images, not flicker -- the first version of this tool did that.) `towerrel` places the
+  camera relative to a storm found by id (an A/B of storm motion keeps it framed). `trail_*` replay a report's own flight
+  (its trail, at the sim time it ran) and score its last 16 frames: MOTION, where the history is lost.
 - Numbers (`numbers.json`, `review.md`): `rev12` / `rev6` = % of pixel-frames whose change reverses sign with both steps
   over 12 / 6 levels (smooth motion is monotonic: this is flicker and sparkle, not movement); `blkT2` / `blkT4` = block
   structure of the frame-to-frame change on a 2 / 4 px grid (ratio; 1.0 none), `blkT2_lv` / `blkS2_lv` the same as an
@@ -458,8 +463,9 @@ tools/harness/.venv/Scripts/python tools/harness/artifacts.py compare DIR_BEFORE
   per-pixel reversal count) and `<run>_worst.png` (the worst 128-px tile, 3 frames at 3x).
 - 1x is the floor. Run it before and after any change to clouds, the resolve, the march's rate or anything time-driven,
   and `compare`: a fix must not trade flicker for blocks or drag (all three move together here).
-- Baseline (2026-11-07, 00e62dd, `harness_runs/artifacts/riselag`): rev12 tower 0.0 / 5.8 / 20.0 %, itcz 0.1 / 1.0 /
-  3.4, anvil 0.0 / 1.4 / 5.2 at 1x / 1m / 5m; blkT2_lv tower 0.002 / 0.19 / 0.33.
+- Baseline (2026-11-07, `harness_runs/artifacts/c_true`, `trails_true`): every still scenario at 1x / 1m / 5m has rev12
+  ~0 and blkT2_lv < 0.002 (lag 0.5-4); the flights: trail_itcz rev12 0.95 %, blkT2_lv 0.22, lag 15; trail_tower 0.09 %,
+  0.10, 5.6; trail_anvil ~0. Motion is the open problem (grain and vertical smears: the resolve's fast-motion path).
 
 ## Storm review (`tools/harness/storm_review.py`)
 

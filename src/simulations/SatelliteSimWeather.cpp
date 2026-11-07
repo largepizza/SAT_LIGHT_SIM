@@ -461,7 +461,8 @@ uint64_t SatelliteSim::stormEnvHash() const
     for (double v : {(double)cloudDriftRate, cloudDriftPhaseOffset, (double)cv2Coverage, (double)cv2CoverClear,
                      (double)cv2CoverFull, (double)stormFrequency, (double)cv2CbRadiusKm, (double)stormLifeScale,
                      (double)stormAnvilFormMin, (double)stormAnvilDecayMin, (double)stormTowerRiseMin,
-                     (double)stormComplexes, (double)stormCyclones})
+                     (double)stormComplexes, (double)stormCyclones, stormWindTracks ? 1.0 : 0.0,
+                     (double)wxWindWaves, (double)wxWindEddies})
         mixD(v);
     return h;
 }
@@ -557,6 +558,9 @@ void SatelliteSim::updateStorms()
         s.towerRiseS = std::clamp(stormTowerRiseMin, 0.0f, 120.0f) * 60.0f;
         s.lineFrequency = std::max(stormComplexes, 0.0f);
         s.cycloneFrequency = stormObjects ? std::max(stormCyclones, 0.0f) : 0.0f;
+        s.windTracks = stormWindTracks;
+        s.windWaves = wxWindWaves;
+        s.windEddies = wxWindEddies;
         stormCatalog->configure(env, s, stormClim.get(), key);
         wxScoutEnv = env;          // (the Weather window's forward search runs a second catalog configured alike)
         wxScoutSettings = s;
