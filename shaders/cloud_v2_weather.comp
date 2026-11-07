@@ -279,7 +279,7 @@ vec4 wxConvection(vec3 d, out float env, bool cellsOnly)
             // weaker cell came out narrower AND lower, and a ~5-km core sampled at 5-km texels lost a third of its peak: a
             // squall line's towers stood as stubs half-way to the lid.
             if (c.b.x > 0.36) {
-                float rc = c.a.w * (sqrt(log(c.b.x / 0.35)) + smoothstep(0.3, 0.9, c.b.y));   // (+ sigma as it rises: = cv2CellColumn)
+                float rc = c.a.w * max(sqrt(log(c.b.x / 0.35)), 1.3 * smoothstep(0.3, 0.9, c.b.y));   // (>= 1.3 sigma risen: = cv2CellColumn)
                 float di = rc - r;
                 if (di > dIn) {
                     dIn = di;
@@ -291,7 +291,7 @@ vec4 wxConvection(vec3 d, out float env, bool cellsOnly)
             if (c.c.w > 0.0) {
                 // its gust front, c.c.w ahead of its column's edge along its forward c.c.xyz; across the line each cell's
                 // share overlaps its neighbours' (~17 km apart), so the union traces the line's bow
-                float rcS = c.a.w * (sqrt(log(max(c.b.x, 0.36) / 0.35)) + smoothstep(0.3, 0.9, c.b.y)) + 0.5 * c.a.w;
+                float rcS = c.a.w * max(sqrt(log(max(c.b.x, 0.36) / 0.35)), 1.3 * smoothstep(0.3, 0.9, c.b.y)) + 0.5 * c.a.w;
                 float fS  = dot(d - c.a.xyz, c.c.xyz) * R_EARTH_W;
                 float lS2 = max(r * r - fS * fS, 0.0);
                 float fF  = rcS + c.c.w;

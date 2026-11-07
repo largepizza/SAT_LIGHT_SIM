@@ -136,9 +136,10 @@ Plan and progress log: `.plans/WEATHER_V2_PLAN.md` (untracked).
     rise, not a mesa with vertical walls.
   - Cirrus: the streak slide wraps over FOUR periods (the bundle read is x0.25): a wrap over one jumped every bundle in the
     sky about once an hour at 5 min/s.
-  - A column WIDENS as it rises: its radius sigma (sqrt(ln(str / 0.35)) + smoothstep(0.3, 0.9, its top share))
+  - A column WIDENS as it rises: its radius sigma max(sqrt(ln(str / 0.35)), 1.3 smoothstep(0.3, 0.9, its top share))
     (`cv2CellColumn`, the bake's copy and its gust front's offset): on the contour alone a strength-0.5 cell stood ~6 km
-    wide under a 100-km anvil, a mushroom cloud from the ground. (+0.6 sigma was still a stalk.)
+    wide under a 100-km anvil, a mushroom cloud from the ground. Added (+ sigma) instead of a floor, a strength-0.9
+    supercell's head became a ~50-km drum once its exact top share reached 1.
   - The anvil's OUTLINE has lobes: the disc's radius x 0.6 .. 1.35 by two octaves of noise (~22 and ~8 km) in the source's
     frame, seeded per storm (its feed span and peak) and evolving with its age (`cloud_v2_weather.comp` kO; the CPU's bin
     is 2.1 spread radii). The integral's noise kN cannot move a saturated plate's outline: from orbit every anvil was a
