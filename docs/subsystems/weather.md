@@ -105,8 +105,19 @@ Plan and progress log: `.plans/WEATHER_V2_PLAN.md` (untracked).
     0.02, 0.6, strength), a cubic ease-out): saturated at 60% of the peak, the top shot up, sat flat and dropped.
   - The anvil starts when the DRAWN top passes ~0.85 (kAnvilAt 0.72 of the rise), not when the strength did: it
     appeared before its tower.
-  - It is fed from the storm's towers' centroid weighted by (strength x role)^2, not the storm's centre: a catalog
-    tower stands up to ~20 km off it, and the anvil grew over clear air beside its storm.
+  - The drawn rise starts when the column APPEARS (its strength, peak x smooth01 over growS, passes 0.35, where
+    `cv2CellColumn`'s width sqrt(ln(str / 0.35)) begins); the anvil's start moves with it. Timed from birth, the top was a
+    third of the way up when the column appeared: a 5-km tower out of clear air in a minute (the report's ITCZ).
+  - A YOUNG cell comes in from out of the billows' reach: its margin is lowered by 4 km x (1 - smoothstep(0, 0.3, its top
+    share)) and its foot scaled by the same rise (`cv2CellColumn`'s `grow`: the winning cell's top share; for cells all still
+    too weak for a column, the largest within 4 sigma; 1 with none, a CDO). Where its intensity passed 0.2 the column
+    region opened ~1.3 km out, inside the bubbles' and turrets' reach, and a 2-3 km cumulus mass heaped up in one step
+    (a variant with the whole storm geometry off removed it; the bake's coverage and the cumulus raise did not).
+  - It is FED from its anvil towers' spec offsets, each weighted by (peak x role)^2, ramping in over the 15 min before
+    that tower's column reaches the lid and fading at e^-1 per 30 min after it falls back (deterministic, from the specs:
+    the point slides between a multicell's towers and freezes once all have fallen). From the towers alive it snapped to
+    the storm's centre when the last one ended, and the whole anvil, integrated from that one point, jumped ~20 km in a
+    frame (frame change 9x the next largest).
   - It SPREADS as the root of its age (`kCv2AnvSpreadM` 45 km at 1 h, x2 at 4 h, x sqrt(strength); the CPU's
     `kAnvSpreadM`), thinning as sqrt(r0 / r); its disc is centred 0.6 of the spread downwind and its upwind half is 1.6x
     shorter (~12 km of overhang). At 7 m/s for 2 h a supercell's anvil stayed ~80 x 45 km; spreading as far upwind as
@@ -120,10 +131,15 @@ Plan and progress log: `.plans/WEATHER_V2_PLAN.md` (untracked).
     rise, not a mesa with vertical walls.
   - Cirrus: the streak slide wraps over FOUR periods (the bundle read is x0.25): a wrap over one jumped every bundle in the
     sky about once an hour at 5 min/s.
+  - A decaying single cell's billows soften, fray and thin (`CV2Storm.dec`: the cell's c.w = -(1 - its decay s-curve);
+    lobes x(1 - 0.6 dk), erosion x(1 + 1.5 dk), density x(1 - 0.45 dk), not on the plate).
+  - Tried and reverted (no visible change on video): the bake's congestus environment and core coverage, and the storm
+    cumulus raise, weighted by the cells' top share; an anvil plate thickness from the un-saturated integral
+    (-ln(1 - a) / 1.5): the integral is noise-split, not densest at the tower, and the plate thinned with stringy gaps.
   - Observed, not changed: a tower under its anvil at a high sun is in the anvil's shadow (sky-lit: flat blue-grey); a
     backlit tower reads pale (the lighting's open item).
-- Open: a squall line's towers reach about half way to its plate and fade into a hazy underside; the decaying storm's
-  billows keep rising (the storm-scale volume's rise is global); the hurricane (no rotation, no CDO).
+- Open: a squall line's towers reach about half way to its plate and fade into a hazy underside; the hurricane (no
+  rotation, no CDO).
 - **Open**: a backlit storm from the ground reads pale (bright puffs, not a dark mass with a silver rim); a CDO has a hard
   circular rim from orbit and is a smooth bright dome (no overshooting clusters); a per-core billow rise rate.
 

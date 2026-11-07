@@ -99,11 +99,18 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
     const double riseS = std::clamp((double)stormTowerRiseMin, 0.0, 120.0) * 60.0;
     auto s5 = [](double x) { x = std::clamp(x, 0.0, 1.0); return x * x * x * (x * (x * 6.0 - 15.0) + 10.0); };
     constexpr double kAnvilAt = 0.72;   // s5(0.72) ~ 0.85
+    // The drawn rise starts when the column APPEARS: its width is sigma sqrt(ln(str / 0.35)) (cv2CellColumn), nothing
+    // until the strength (peak x smooth01 over growS) passes 0.35. Timed from the tower's birth, the top had climbed a
+    // third of the way by then: a 5-km tower out of clear air in a minute, no cumulus growing into it (2026-11-07, the
+    // report's ITCZ on video).
+    constexpr double kColumnStr = 0.35;
+    auto visibleAt = [](double pk, double growS) {
+        if (pk <= kColumnStr || growS <= 0.0) return 0.0;
+        double lo = 0.0, hi = 1.0;   // x with x^2 (3 - 2x) = 0.35 / peak (smooth01's inverse)
+        for (int i = 0; i < 24; ++i) { const double m = 0.5 * (lo + hi); ((m * m * (3.0 - 2.0 * m)) < kColumnStr / pk ? lo : hi) = m; }
+        return growS * 0.5 * (lo + hi);
+    };
     uint32_t nC = 0;
-    // Where each storm's anvil is fed: its towers' centroid weighted by (strength x role)^2 -- the dominant column, moving
-    // continuously as a multicell's towers take over -- not the storm's centre (a tower stands up to ~20 km off it: the
-    // anvil grew over clear air beside its storm, 2026-11-06).
-    std::unordered_map<uint64_t, glm::dvec3> feedAt;
     for (const wx::Tower &T : stormTowers)
     {
         if (nC >= kConvCellMax) break;
@@ -119,11 +126,7 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
         // (0.35 Rc: a core ~11 km across at the 15-km "Cb tower radius", a real updraft tower's ~10; at 0.7 Rc the
         // columns stood 25 km wide)
         const double sigma = 0.35 * Rc;
-        {
-            const double w = (double)T.strength * T.role;
-            feedAt[T.stormId] += glm::normalize(T.dir) * (w * w);
-        }
-        const double up = riseS > 0.0 ? s5((double)T.age / riseS) : 1.0;
+        const double up = riseS > 0.0 ? s5(((double)T.age - visibleAt(T.peak, T.growS)) / riseS) : 1.0;
         const double dn = T.decayS > 0.0f ? s5(((double)T.life - (double)T.age) / (double)T.decayS) : 1.0;
         const double top = ss(0.2, 0.6, (double)T.peak) * up * dn * T.role;
         cells[nC].a = glm::vec4(glm::vec3(glm::normalize(T.dir)), (float)sigma);
@@ -131,7 +134,9 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
         float seedF;
         std::memcpy(&seedF, &seedBits, 4);
         cells[nC].b = glm::vec4((float)str, (float)top, seedF, T.role);
-        cells[nC].c = wx::isLineSystem(T.kind) ? lineFwd(T.stormId, glm::normalize(T.dir)) : glm::vec4(0.0f);
+        // (c: a line cell's forward + gust-front lead; a single cell's DECAY as -w, 0 .. 1 over its decay: the march softens a
+        // dying tower's billows -- clouds_v2.glsl cv2CellColumn -- the user: "on decay, clouds continue to move up")
+        cells[nC].c = wx::isLineSystem(T.kind) ? lineFwd(T.stormId, glm::normalize(T.dir)) : glm::vec4(0.0f, 0.0f, 0.0f, -(float)(1.0 - dn));
         // (the bake's environment field reaches 2.5 sigma wide; a gust front its lead + its clear band ahead)
         binCircle(glm::normalize(T.dir), std::max(4.5 * sigma, 1.2 * Rc + cells[nC].c.w + 27000.0 * (cells[nC].c.w > 0.0f)), nC);
         ++nC;
@@ -146,7 +151,8 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
     const glm::dvec3 tsE = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), tsDir) + glm::dvec3(1e-9, 0, 0)), tsN = glm::cross(tsDir, tsE);
     const glm::dvec3 tsAx = tsE * std::cos(glm::radians(TS.az)) + tsN * std::sin(glm::radians(TS.az));
     const glm::dvec3 tsFw = glm::cross(tsDir, tsAx) * -1.0;   // forward: the axis turned 90 deg clockwise
-    const double tsUp = riseS > 0.0 ? s5(tsAge / riseS) : 1.0, tsDn = s5((TS.life - tsAge) / 2400.0);   // (as a catalog tower's)
+    const double tsVis = visibleAt(TS.str, 1500.0);   // (its strength: TS.str x smooth01 over its first 25 min)
+    const double tsUp = riseS > 0.0 ? s5((tsAge - tsVis) / riseS) : 1.0, tsDn = s5((TS.life - tsAge) / 2400.0);   // (as a catalog tower's)
     if (TS.on && TS.kind == 1 && tsAge > 0.0 && tsAge < TS.life)
     {
         const double str0 = TS.str * ssD(0.0, 1500.0, tsAge) * (1.0 - ssD(TS.life - 2400.0, TS.life, tsAge));
@@ -175,7 +181,7 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
         cells[nC].a = glm::vec4(glm::vec3(tsDir), (float)(0.35 * Rc));
         uint32_t sb = 0x7E57u; float sf; std::memcpy(&sf, &sb, 4);
         cells[nC].b = glm::vec4((float)str, (float)(tsUp * tsDn * ssD(0.2, 0.6, TS.str)), sf, 1.0f);
-        cells[nC].c = glm::vec4(0.0f);
+        cells[nC].c = glm::vec4(0.0f, 0.0f, 0.0f, -(float)(1.0 - tsDn));
         binCircle(tsDir, 4.5 * 0.35 * Rc, nC);
         ++nC;
     }
@@ -206,7 +212,7 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
             {
                 const wx::TowerSpec &ts = S->towers[k];
                 if (ts.anvOff <= ts.anvOn) continue;
-                on = std::min(on, std::max((double)ts.anvOn, (double)ts.t0 + kAnvilAt * riseS));
+                on = std::min(on, std::max((double)ts.anvOn, (double)ts.t0 + visibleAt(ts.peak, ts.growS) + kAnvilAt * riseS));
                 off = std::max(off, (double)ts.anvOff);
                 peak = std::max(peak, (double)ts.peak * ts.role);
             }
@@ -214,10 +220,29 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
         const double lidAge = tau - on, feed = std::max(off - on, 60.0), linger = std::max((double)S->linger, 600.0);
         if (lidAge > feed + 4.0 * linger) continue;
         glm::dvec3 c = glm::normalize(S->centreAt(t));
+        // Where the anvil is FED: its anvil towers' centroid (a tower stands up to ~20 km off the storm's centre: fed from the
+        // centre, the anvil grew over clear air beside its storm), each weighted by (peak x role)^2, ramping in over the 15
+        // min before its column reaches the lid and fading at e^-1 per 30 min after it falls back, so the point slides
+        // between a multicell's towers and freezes once all have fallen (their ratios then constant). From the towers ALIVE
+        // it snapped to the storm's centre when the last one ended: the whole anvil, which is integrated from this one
+        // point, jumped ~20 km in a frame (2026-11-07, the report's ITCZ on video).
         if (!wx::isLineSystem(S->kind))
         {
-            const auto it = feedAt.find(S->id);
-            if (it != feedAt.end() && glm::length(it->second) > 1e-12) c = glm::normalize(it->second);
+            const glm::dvec3 east = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), c) + glm::dvec3(1e-9, 0, 0));
+            const glm::dvec3 north = glm::cross(c, east);
+            glm::dvec3 off(0.0);
+            double wSum = 0.0;
+            for (int k = 0; k < S->towerCount; ++k)
+            {
+                const wx::TowerSpec &ts = S->towers[k];
+                if (ts.anvOff <= ts.anvOn) continue;
+                const double onK = std::max((double)ts.anvOn, (double)ts.t0 + visibleAt(ts.peak, ts.growS) + kAnvilAt * riseS);
+                const double pr = (double)ts.peak * ts.role;
+                const double w = pr * pr * ssD(onK - 900.0, onK, tau) * std::exp(-std::max(tau - (double)ts.anvOff, 0.0) / 1800.0);
+                off += (east * (double)ts.offE + north * (double)ts.offN) * w;
+                wSum += w;
+            }
+            if (wSum > 1e-12) c = glm::normalize(c + off / (wSum * kR));
         }
         glm::dvec3 dw = glm::dvec3(S->shear);
         // A line system's shield and its trailing stratiform go REARWARD of its motion (leading line, trailing stratiform:
@@ -254,7 +279,7 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
     if (TS.on && nA < kConvAnvilMax)
     {
         // Its anvil: fed from when the column nears the lid (~20 min) to 40 min before its end, carried by the 10-km wind.
-        const double on = std::max(kAnvilAt * riseS, 60.0), off = std::max(TS.life - 2400.0, on + 60.0);
+        const double on = std::max(tsVis + kAnvilAt * riseS, 60.0), off = std::max(TS.life - 2400.0, on + 60.0);
         if (tsAge > on && tsAge - on < (off - on) + 4.0 * 3600.0)
         {
             const wx::WindState ws = windStateNow();

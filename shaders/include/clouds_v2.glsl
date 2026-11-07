@@ -822,6 +822,7 @@ struct CV2Storm {
     float near;     // under a full-height tower's head (CV2Col.near)
     float storm;    // the storm strength (CV2Col.storm)
     float prox;     // within the storm cumulus reach (CV2Col.prox)
+    float dec;      // 0 .. 1: the column's cell decaying (cv2CellColumn): its billows soften, it frays and thins
     float cap;      // the lobes' damping share (x 0.75 of them): two thirds at the plate's outline (its edge thins
                     // instead of standing as a wall). (An overshooting dome's quarter until 2026-11-06: a smooth cap.)
 };
@@ -832,7 +833,7 @@ CV2Storm cv2StormNone()
 {
     CV2Storm g;
     g.m = -1e9; g.top = 0.0; g.hf = 0.0; g.deck = 0.0; g.sig = 0.0;
-    g.near = 0.0; g.storm = 0.0; g.prox = 0.0; g.cap = 0.0;
+    g.near = 0.0; g.storm = 0.0; g.prox = 0.0; g.cap = 0.0; g.dec = 0.0;
     return g;
 }
 bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Field f, out CV2Carve c)
@@ -1492,7 +1493,10 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         float nr  = min(sg.near, 1.0);
         float lkP = mix(mix(1.0, cv2.storm3b.z, plK), mix(0.4 - 0.35 * nr, cv2.storm3b.y * (1.0 - 0.8 * nr), plK),
                         smoothstep(0.55, 0.95, sg.hf));
-        c.lobeKL  = mix(c.lobeKL, lobeS * mix(1.0, lkP, sg.deck) * (1.0 - 0.75 * sg.cap), wS);
+        // A DECAYING tower (sg.dec, its cell's decay; not the plate): its billows go soft, it frays and thins -- a glaciating,
+        // collapsing column, not cauliflower still boiling up the storm volume's rise (the user, 2026-11-06).
+        float dk  = sg.dec * (1.0 - sg.deck);
+        c.lobeKL  = mix(c.lobeKL, lobeS * mix(1.0, lkP, sg.deck) * (1.0 - 0.75 * sg.cap) * (1.0 - 0.6 * dk), wS);
         c.aBase   = mix(c.aBase, 0.3, wS);
         c.aRamp   = mix(c.aRamp, 600.0, wS);
         c.AshK    = mix(c.AshK, 0.0, wS);
@@ -1502,9 +1506,9 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         c.phP     = mix(c.phP, 0.0, wS);
         c.subPix  = mix(c.subPix, 0.0, wS);
         // (sg.sig: 1, or a hurricane CDO's top density factor.)
-        c.sigK    = mix(c.sigK, mix(0.6, 1.0, smoothstep(0.0, 0.4, sg.hf)) * cv2.types[3].shape.x * cv2.look.y * sg.sig, wS);
+        c.sigK    = mix(c.sigK, mix(0.6, 1.0, smoothstep(0.0, 0.4, sg.hf)) * cv2.types[3].shape.x * cv2.look.y * sg.sig * (1.0 - 0.45 * dk), wS);
         c.billow  = mix(c.billow, cv2.types[3].shape.z * smoothstep(0.05, 0.4, sg.hf) * 0.3, wS);
-        c.erK     = mix(c.erK, cv2.types[3].shape.y * cv2.look.z * cv2.storm.y * mix(1.0, cv2.storm3b.x, plK), wS);
+        c.erK     = mix(c.erK, cv2.types[3].shape.y * cv2.look.z * cv2.storm.y * mix(1.0, cv2.storm3b.x, plK) * (1.0 + 1.5 * dk), wS);
         c.erBase  = mix(c.erBase, 1.0 - 0.7 * cv2.high2.w, wS);
         c.wispE   = mix(c.wispE, 0.0, wS);
         c.rV      = mix(c.rV, 0.0, wS);
@@ -2505,8 +2509,13 @@ void cv2CycEye(vec3 wd, float h, float hb, float base, float lid)
 // lists, cv2_storms.glsl), and the round head's drop there (a cap as round as the column, <= 5 km). Read from the
 // convection cube's 5-km texels (z / w) the distance field interpolated a ~12-km core into a rounded polygon: straight
 // sides, flat faces and a flat ledge on every tower from some side (the storm review's catalog supercell).
-float cv2CellColumn(vec3 wd, out float drop)
+// grow: that cell's top share (its drawn rise, 0 .. 1); a bin whose cells are all still too weak for a column, the largest
+// within 4 sigma; 1 with no cell near (a cyclone's CDO, which has none).
+float cv2CellColumn(vec3 wd, out float drop, out float dec, out float grow)
 {
+    dec = 0.0;
+    grow = -1.0;
+    float gW = -1.0;
     float lat = asin(clamp(wd.z, -1.0, 1.0)) * (180.0 / PI), lon = atan(wd.y, wd.x) * (180.0 / PI);
     uint  la  = uint(clamp(floor((lat + 90.0) * 0.5), 0.0, float(kCv2ConvGridLat - 1u)));
     uint  lo  = uint(clamp(floor((lon + 180.0) * 0.5), 0.0, float(kCv2ConvGridLon - 1u)));
@@ -2517,15 +2526,20 @@ float cv2CellColumn(vec3 wd, out float drop)
         uint e = cv2ConvList[g.x + k];
         if ((e & 0x80000000u) != 0u) continue;
         vec4 ca = cv2Cells[e].a, cb = cv2Cells[e].b;
+        float r = length(wd - ca.xyz) * R_EARTH;   // (the chord: < 1 m from the arc within a storm)
+        if (r < 4.0 * ca.w) gW = max(gW, cb.y);
         if (cb.x <= 0.36) continue;
         float rc = ca.w * sqrt(log(cb.x / 0.35));
-        float di = rc - length(wd - ca.xyz) * R_EARTH;   // (the chord: < 1 m from the arc within a storm)
+        float di = rc - r;
         if (di > dIn) {
             dIn = di;
             float rh = min(rc, 5000.0), dh = clamp(rh - di, 0.0, rh);
             drop = rh - sqrt(max(rh * rh - dh * dh, 0.0));
+            dec  = max(-cv2Cells[e].c.w, 0.0);   // (a single cell's decay; a line cell's c.w is its gust-front lead)
+            grow = cb.y;
         }
     }
+    if (grow < 0.0) grow = gW < 0.0 ? 1.0 : gW;
     return dIn;
 }
 #endif
@@ -2578,10 +2592,11 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
     // (Admitted out to the widest the profile below reaches past the contour, the foot's and the flare's: gated at C > 0.2
     // alone, ~0.1 Rb out, the column was cut there whatever its margin said -- a drum with vertical walls, issue_20261106_171931.)
 #ifdef CV2_STORM_ENV
-    float dropA;
-    float dInA = (hb >= -300.0 && (C > c0 - 0.15 || cv0.z > 0.5 - (1.35 * Rb + 4600.0) / 40000.0)) ? cv2CellColumn(wd, dropA) : -20000.0;
+    float dropA, decA = 0.0, growA = 1.0;
+    float dInA = (hb >= -300.0 && (C > c0 - 0.15 || cv0.z > 0.5 - (1.35 * Rb + 4600.0) / 40000.0)) ? cv2CellColumn(wd, dropA, decA, growA) : -20000.0;
+    g.dec = decA;
 #else
-    float dInA = (cv0.z - 0.5) * 40000.0, dropA = cv0.w * 10000.0;
+    float dInA = (cv0.z - 0.5) * 40000.0, dropA = cv0.w * 10000.0, growA = 1.0;
 #endif
     if (hb >= -300.0 && (C > c0 - 0.15 || dInA > -(1.35 * Rb + 600.0))) {   // (or near a cell's column)
         // dH: the DISTANCE in from the c0 contour (m): for a core C = exp(-r^2 / sigma^2), r = sigma sqrt(-ln C), sigma the
@@ -2619,10 +2634,16 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
         // to the anvil is a pyramid shape"), over the top fifth only as a small, intermittent stub (issue_20261106_184711:
         // it also needed the column within 0.8 of the lid, which the tent-read tops of many cells are not).
         float zl   = clamp(hb / max(lid - base, 300.0), 0.0, 1.0);
-        float foot = Rb * (0.15 + 0.3 * cv2SqC(1.0 - smoothstep(0.0, 0.6, zeta)));   // (+0.15 Rb all the way up: on the core's
-                                                                                      // ~11 km alone the tower was a stalk)
+        // (x the cell's rise, growA: at full width from the frame its intensity passed 0.2, the foot stood a ~13-km disc at the
+        // base that the storm's billows heaped into a 2-3 km mass out of clear sky in one step, 2026-11-07, the report's ITCZ)
+        float foot = Rb * (0.15 + 0.3 * cv2SqC(1.0 - smoothstep(0.0, 0.6, zeta))) * smoothstep(0.0, 0.3, growA);   // (+0.15 Rb all
+                                                                                      // the way up: on the core's ~11 km alone the tower was a stalk)
         float swl  = smoothstep(0.6, 1.0, zl);
-        float mH   = dH + foot + Rb * 0.06 * sin(3.14159 * zeta) + Rb * 1.1 * smoothstep(0.55, 0.9, cv.y) * swl * swl * swl;
+        float mH   = dH + foot + Rb * 0.06 * sin(3.14159 * zeta) + Rb * 1.1 * smoothstep(0.55, 0.9, cv.y) * swl * swl * swl
+                   // A YOUNG cell comes in from out of the billows' reach as it rises (growA 0 .. 0.3): where its intensity passed
+                   // 0.2 the column opened ~1.3 km out, within the bubbles' and turrets' reach, and they heaped a 2-3 km mass there
+                   // in one step, minutes before its column rose (2026-11-07, the report's ITCZ on video).
+                   - 4000.0 * (1.0 - smoothstep(0.0, 0.3, growA));
         float mV   = topHere - q.h;
         // (rounded shoulders: at 600 m of smoothing the head met the wall at a sharp corner -- "sharp edges and corners")
         best = -cv2SMax(-mH, -mV, 1500.0);                                  // a smooth min(mH, mV)
