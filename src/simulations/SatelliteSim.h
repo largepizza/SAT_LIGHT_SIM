@@ -5848,6 +5848,9 @@ private:
     glm::dvec3 cv2PrevEye{0.0};
     float cv2PrevTanHalf = 1.0f, cv2PrevAspect = 1.0f;
     double cv2PrevSimT = 0.0;
+    // The storm billows' RISE clock (s; SatelliteSimCloudsV2.cpp stormAnchorF): sim time, but at most 10x real time a frame.
+    double cv2StormRiseT = 0.0;
+    bool cv2StormRiseInit = false;
     double cv2PrevDrift = 0.0;          // the map drift angle last frame (rad)
     uint64_t cv2SettingsHash = 0;      // a change drops the history
     // The Sun shadow grids live in the clouds' space, not on screen: a resize of the screen images (the HQ photo's

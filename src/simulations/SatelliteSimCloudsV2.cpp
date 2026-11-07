@@ -1386,6 +1386,18 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     constexpr double kNoSlide = 0.0;
     constexpr double kWxEvoSlideMps = 5.0;
     const double dSimT = simT - cv2PrevSimT;
+    // The storm billows' RISE runs on its own clock (2026-11-07, issue_20261107_124812, the user watching storms at 1 min/s:
+    // "extremely flickery and glitchy ... smearing ... pixelization"): sim time, but advancing at most 10x real time a
+    // frame. At 60x the billows climbed ~25 m a frame through towers whose shape (the convection cells) stands still, which
+    // no reprojection follows: stair-stepped, flickering edges on every lit / shadowed billow (cloud wind 0 removed them).
+    // The storms' lives, motion and anvils keep sim time; a jump (a teleport, a report load) resyncs the clock to it, so a
+    // settled view is the same as before.
+    {
+        const double cap = 10.0 * std::max((double)skyTaaFrameDt, 1e-3);
+        if (!cv2StormRiseInit || !nearPrev) cv2StormRiseT = simT;
+        else cv2StormRiseT += std::clamp(dSimT, -cap, cap);
+        cv2StormRiseInit = true;
+    }
 
     p.prevSkyView = cv2PrevSkyView;
     p.prevObs = glm::vec4(cv2PrevObsDir, cv2PrevTanHalf);
@@ -1519,7 +1531,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                         if (c > bestC + 1e-9) { bestC = c; L = v; }
                     }
             const double periodS = cv2ShapePeriodM * stormScale;
-            const double ph = fracPos(1.5 * (double)cv2WindMps * simT / (glm::length(L) * periodS));
+            const double ph = fracPos(1.5 * (double)cv2WindMps * cv2StormRiseT / (glm::length(L) * periodS));   // (its own clock, above)
             const glm::dvec3 a = glm::dvec3(aS.x, aS.y, aS.z) - L * ph;
             return glm::vec4((float)fracPos(a.x), (float)fracPos(a.y), (float)fracPos(a.z), aS.w);
         };
@@ -1615,7 +1627,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         const double kColFlowSpan = 0.35;   // = kCv2ColFlowSpan
         const double stormP = cv2ShapePeriodM * stormScale;
         p.anchorCol = anchor(stormP, 0.0);
-        p.anchorCol.w = (float)fracPos(1.5 * (double)cv2WindMps * simT / (kColFlowSpan * stormP));
+        p.anchorCol.w = (float)fracPos(1.5 * (double)cv2WindMps * cv2StormRiseT / (kColFlowSpan * stormP));
         // (Weather v2, 2026-11-06: the per-sample tower walk's lattice cell (column.y), its waist / flare / drift / lobes
         // (column2), sparsity (anvil2.z), storm cumulus reach (column3.x) and fill (column3.w) have no reader: fed 0.)
         p.column = glm::vec4(std::max(cv2CbColumns, 0.0f), 0.0f,

@@ -156,6 +156,15 @@ Plan and progress log: `.plans/WEATHER_V2_PLAN.md` (untracked).
   - Tried and reverted (no visible change on video): the bake's congestus environment and core coverage, and the storm
     cumulus raise, weighted by the cells' top share; an anvil plate thickness from the un-saturated integral
     (-ln(1 - a) / 1.5): the integral is noise-split, not densest at the tower, and the plate thinned with stringy gaps.
+  - The storm billows' RISE (`stormAnchorF`, `anchorCol.w`: the storm-scale volume climbing at 1.5 x the wind) runs on its
+    own clock, `cv2StormRiseT`: sim time, but at most 10x real time a frame, resynced to sim time on a jump. At 1 min/s it
+    climbed ~25 m a frame through towers that stand still, which no reprojection follows: stair-stepped, flickering edges on
+    every billow (issue_20261107_124812; `wind_mps` 0 removed them, so did the clock). Measured and NOT the cause: the
+    resolve's weights (the rise added to `motion`'s unreprojected slide), marching every pixel (`full_res_moving_mode` 2 at
+    0 km: 28 -> 96 ms, no change), smooth tiles, the clipmap, the Sun volume, storms moving with the wind instead of their
+    own velocity. Still open at 5 min/s: blocky lit blobs (the storms' own evolution at 300x).
+  - A cell is binned out to 1.3 sigma + 1.65 "Cb tower radius" + 6 km (its column, foot and swell into the anvil); 4.5
+    sigma (~24 km) was short of the swell.
   - Observed, not changed: a tower under its anvil at a high sun is in the anvil's shadow (sky-lit: flat blue-grey); a
     backlit tower reads pale (the lighting's open item).
 - Open: a squall line's towers reach about half way to its plate and fade into a hazy underside; the hurricane (no

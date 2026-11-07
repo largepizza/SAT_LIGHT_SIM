@@ -139,8 +139,12 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
         // (c: a line cell's forward + gust-front lead; a single cell's DECAY as -w, 0 .. 1 over its decay: the march softens a
         // dying tower's billows -- clouds_v2.glsl cv2CellColumn -- the user: "on decay, clouds continue to move up")
         cells[nC].c = wx::isLineSystem(T.kind) ? lineFwd(T.stormId, glm::normalize(T.dir)) : glm::vec4(0.0f, 0.0f, 0.0f, -(float)(1.0 - dn));
-        // (the bake's environment field reaches 2.5 sigma wide; a gust front its lead + its clear band ahead)
-        binCircle(glm::normalize(T.dir), std::max(4.5 * sigma, 1.2 * Rc + cells[nC].c.w + 27000.0 * (cells[nC].c.w > 0.0f)), nC);
+        // (the bake's environment field reaches 2.5 sigma wide; a gust front its lead + its clear band ahead; the COLUMN
+        // its core (<= 1.3 sigma risen) + its foot and the head's swell into the anvil (<= 1.65 "Cb tower radius",
+        // cv2StormGeom) + the billows: listed out to 4.5 sigma (~24 km) it was cut along the 2-degree grid's lines, a flat
+        // vertical wall with stair-stepped, flickering pixels on every tall tower, 2026-11-07 issue_20261107_124812)
+        binCircle(glm::normalize(T.dir), std::max({4.5 * sigma, 1.2 * Rc + cells[nC].c.w + 27000.0 * (cells[nC].c.w > 0.0f),
+                                                   1.3 * sigma + 1.65 * Rb + 6000.0}), nC);
         ++nC;
     }
     // The harness's test storm (`storms test`): one cell rising over ~25 min, mature, decaying over its last 40 min.
@@ -184,7 +188,7 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
         uint32_t sb = 0x7E57u; float sf; std::memcpy(&sf, &sb, 4);
         cells[nC].b = glm::vec4((float)str, (float)(tsUp * tsDn * ssD(0.2, 0.45, TS.str)), sf, 1.0f);
         cells[nC].c = glm::vec4(0.0f, 0.0f, 0.0f, -(float)(1.0 - tsDn));
-        binCircle(tsDir, 4.5 * 0.35 * Rc, nC);
+        binCircle(tsDir, std::max(4.5 * 0.35 * Rc, 1.3 * 0.35 * Rc + 1.65 * Rb + 6000.0), nC);   // (as a catalog cell's)
         ++nC;
     }
     // ANVIL sources: each storm whose towers reached the lid, from the moment the first did; it feeds the anvil until the
