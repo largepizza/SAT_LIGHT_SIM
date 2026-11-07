@@ -31,6 +31,8 @@ blocks and the stair-stepped billow edges all passed (issue_20261107_124812 and 
             a cumulus present while running, gone in the reference): compare lag between builds, never alone.
     d1      mean |frame-to-frame change| (context: motion and evolution, not an error)
 - `compare` prints both runs side by side with the ratio, for a fix's before / after.
+- A `report load` restores the settings the report was saved with: to test a new default on an old report's view, pass it
+  in `--pre` (applied after each scenario's setup).
 
 A run at 1x is the floor: a scenario's 1m / 5m numbers far above it are the time-lapse's own artifacts.
 """
@@ -70,6 +72,8 @@ SCENARIOS = {
     "trail_tower": ([f'report load "{REP}issue_20261107_124812" shot=1'], (300, 0, 960, 640), {"trail": True}),
     "trail_anvil": ([f'report load "{REP}issue_20261107_124930" shot=1'], (480, 0, 960, 640), {"trail": True}),
     "trail_itcz":  ([f'report load "{REP}issue_20261106_184711" shot=1'], (480, 150, 960, 640), {"trail": True}),
+    "trail_orbit": ([f'report load "{REP}issue_20261107_125245" shot=1'], (480, 200, 960, 600), {"trail": True}),
+    "trail_sunset": ([f'report load "{REP}issue_20261107_125130" shot=1'], (480, 250, 960, 560), {"trail": True}),
     # The tower of "tower" from a STORM-RELATIVE camera: 15 km east of the storm at 4.1 km, looking west -- the same
     # framing whatever moves the storm (an A/B of storm motion keeps the storm in view).
     "towerrel": ([f'report load "{REP}issue_20261107_124812" shot=1 trail=off', "time pause",
@@ -204,11 +208,12 @@ def cmd_run(a):
     if os.path.exists(os.path.join(out, "meta.json")):   # (a second run into the same folder adds to it)
         meta["runs"] = json.load(open(os.path.join(out, "meta.json"), encoding="utf-8")).get("runs", {})
     try:
-        if a.pre:
-            send([c.strip() for c in a.pre.split(";") if c.strip()])
+        pre = [c.strip() for c in a.pre.split(";") if c.strip()]
+        if pre:
             meta["pre"] = a.pre
         for s in scen:
-            setup, crop = SCENARIOS[s][0], SCENARIOS[s][1]
+            # (--pre goes AFTER the scenario's setup: a `report load` restores the report's saved settings)
+            setup, crop = list(SCENARIOS[s][0]) + pre, SCENARIOS[s][1]
             rel = SCENARIOS[s][2] if len(SCENARIOS[s]) > 2 else None
             if rel and rel.get("trail"):   # the report's flight: its length first, then its last frames
                 tag = s
@@ -341,7 +346,7 @@ def main():
     r.add_argument("--dt", type=float, default=1.0 / 30.0)
     r.add_argument("--out")
     r.add_argument("--keep", action="store_true", help="leave the live app running")
-    r.add_argument("--pre", default="", help="commands sent once before the runs (an A/B: 'set clouds_v2.x 0; ...')")
+    r.add_argument("--pre", default="", help="commands after each scenario's setup (an A/B: 'set clouds_v2.x 0; ...')")
     s = sub.add_parser("score")
     s.add_argument("dir")
     c = sub.add_parser("compare")
