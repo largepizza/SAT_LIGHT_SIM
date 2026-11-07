@@ -84,8 +84,21 @@ Plan and progress log: `.plans/WEATHER_V2_PLAN.md` (untracked).
   its spread radius centred a further 0.4 of the spread downwind (+ 5 km); at 2.5 r0 + 7 s mature anvils were cut ~20 km
   in along the 2-degree grid's lines (straight-edged slabs, the map overlay's parallelograms). Gust-front cells: + 27 km.
 - **Anvil strength**: the integral is / 1200 s (was / 2400: a lone supercell in a 20 m/s upper wind stayed round the
-  plate's 0.3 outline, no anvil at any age in the storm review). Open: the plate stands detached downwind of a tower
-  that tops out well under the lid; a line's plate is a slab over small towers.
+  plate's 0.3 outline, no anvil at any age in the storm review). Its ROOT: while a storm feeds its anvil a disc of 0.9
+  over the source (1.6 r0, leaning 0.5 r0 downwind), fading over a quarter of the linger after the feeding stops: in a
+  20 m/s upper wind only the first ~15 min of the integral cover the column, and the plate began downwind of its tower.
+- **Tower to anvil** (issue_20261106_184711): a column that reaches the lid flattens into its plate (the round head's
+  <= 5 km drop x (1 - 0.8 full); blurred by the tent read it held a mature top 2-3 km under the plate), and swells into it
+  (+1.1 Rb x the cube of its height share over the top 40%, from cv.y 0.55: convex, a billowing shoulder). The plate's
+  FAN (its underside sloping down to the column) is gone: it was what had bridged the gap, as a cone (the "pyramid"), and
+  hung as a funnel from any anvil over a lower column. The column is 0.15 Rb wider all the way up (on the ~11 km core
+  alone it read as a stalk), the foot + 0.3 Rb.
+- **Reprojection by height** (`cloud_v2_resolve.comp`, binding 11 = the convection cube): the low wind below 6.5 km,
+  the cirrus slide above 8.5 km, a blend between, and the low wind wherever the cube has a storm (cells or anvil > ~0.1):
+  storm tops and anvils are low-layer cloud. The hard cut at 6.5 km reprojected them by the jet and drew a line across
+  a storm in motion at the eye's height (the user: "TAA and drift errors, especially above the horizon line").
+- Open: a squall line's towers reach about half way to its plate and fade into a hazy underside; the decaying storm's
+  billows keep rising (the storm-scale volume's rise is global); the hurricane (no rotation, no CDO).
 - **Open**: a backlit storm from the ground reads pale (bright puffs, not a dark mass with a silver rim); a CDO has a hard
   circular rim from orbit and is a smooth bright dome (no overshooting clusters); a per-core billow rise rate.
 

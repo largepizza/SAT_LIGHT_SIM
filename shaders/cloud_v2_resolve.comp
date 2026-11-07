@@ -49,6 +49,9 @@ layout(set = 0, binding = 7) uniform sampler2D fullDepthTex;
 // (2026-11-04) y: the pixel's resolved mean distance (m, 0 = none), reprojected with the age: the depth test below.
 layout(set = 0, binding = 9, rg32f) uniform writeonly image2D outAge;
 layout(set = 0, binding = 10) uniform sampler2D histAgeTex;
+// Weather v2: the convection cube (cells x, anvil z): a storm's tower and anvil are drawn by the LOW layer and move with its
+// wind at any height, not with the cirrus' slide (the reprojection below).
+layout(set = 0, binding = 11) uniform samplerCube convTexR;
 layout(std430, set = 0, binding = 8) readonly buffer TileBuf { uint tPad, tDispX, tDispY, tDispZ; uint tList[4096]; uint tFlag[4096]; };
 
 ivec2 gHalf, gQs;
@@ -386,7 +389,13 @@ void main()
         vec3  v  = vE * ndR;
         vec3  P  = normalize(pc.obsECEFDir.xyz) * (6371000.0 + pc.obsEffH) + v;
         vec3  Pn = normalize(P);
-        vec3  W  = (length(P) - 6371000.0 > 6500.0) ? vec3(-Pn.y, Pn.x, 0.0) * cv2.wind2.x : wfWind(Pn, kWfLowH, cv2.wind0);
+        // (2026-11-06, issue_20261106_184711 "TAA and drift errors on moving storms, especially above the horizon line": the
+        // switch was a hard cut at 6.5 km for every pixel, so a storm's upper tower and anvil -- low-layer cloud riding the
+        // low wind -- were reprojected by the cirrus slide; from an eye at ~6.7 km the cut sat on the horizon and drew a
+        // line across the storm in motion. Now a blend over 6.5-8.5 km, and never where the convection cube has a storm.)
+        vec4  cvR = textureLod(convTexR, Pn, 2.0);
+        float hiK = smoothstep(6500.0, 8500.0, length(P) - 6371000.0) * (1.0 - smoothstep(0.02, 0.12, max(cvR.x, cvR.z)));
+        vec3  W  = mix(wfWind(Pn, kWfLowH, cv2.wind0), vec3(-Pn.y, Pn.x, 0.0) * cv2.wind2.x, hiK);
         vE = v - W * cv2.wind1.w + cv2.obsDelta.xyz;
     }
     vec3 cam = mat3(cv2.prevSkyView) * (transpose(mPrev) * vE);

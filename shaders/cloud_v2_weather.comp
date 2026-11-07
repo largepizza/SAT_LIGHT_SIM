@@ -342,6 +342,14 @@ vec4 wxConvection(vec3 d, out float env, bool cellsOnly)
             // (/ 1200 s since 2026-11-06: at / 2400 a lone supercell's outflow in a 20 m/s upper wind integrated to ~0.15-0.5,
             // round the plate's 0.3 outline: the storm review's lab cell had no anvil at any age)
             anv += A.b.w * acc * ds / 1200.0;
+            // THE ROOT (2026-11-06, issue_20261106_184711 "the connecting swell to the anvil top is intermittent and small"):
+            // while the storm feeds its anvil the outflow is densest over the updraft it leaves. In a 20 m/s upper wind only
+            // the first ~15 min of the integral cover the column, so the plate began downwind of its tower, detached. A disc
+            // over the source (1.6 r0, leaning downwind), fading over a quarter of the linger once the feeding stops.
+            float feedNow = exp(-max(A.c.x - A.c.y, 0.0) / max(0.25 * tauL, 60.0)) * smoothstep(0.0, 900.0, A.c.x);
+            vec2  q0 = (p - vec2(0.5 * A.a.w, 0.0)) * vec2(1.0, 1.25);
+            if (A.d.x > 0.0) q0 -= ax * clamp(dot(q0, ax), -A.d.x, A.d.x);
+            anv += A.b.w * feedNow * 0.9 * (1.0 - smoothstep(0.6, 1.0, length(q0) / (1.6 * A.a.w)));
             mid += A.b.w * accM * ds / 3600.0 * (A.d.x > 0.0 ? 2.0 : 1.0);
         }
     }

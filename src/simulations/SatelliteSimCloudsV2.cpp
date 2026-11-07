@@ -632,10 +632,10 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
                                              TEX});   // 28: the convection cube (Weather v2)
     // cloud_v2_resolve.comp: 0 CloudV2Params, 1 new color, 2 new depth, 3 history, 4 out color, 5 out depth,
     // 6/7 the full-rate tiles' color/depth, 8 the tile list
-    // 9 / 10 the sample ages (out, history)
-    cv2ResolveDescLayout = makeSetLayout(dev, {UBO, TEX, TEX, TEX, IMG, IMG, TEX, TEX, SSBO, IMG, TEX});
+    // 9 / 10 the sample ages (out, history), 11 the convection cube (Weather v2: where storms stand, for the reprojection)
+    cv2ResolveDescLayout = makeSetLayout(dev, {UBO, TEX, TEX, TEX, IMG, IMG, TEX, TEX, SSBO, IMG, TEX, TEX});
     {
-        VkDescriptorPoolSize ps[4] = {{UBO, 3}, {TEX, 19}, {SSBO, 9}, {IMG, 9}};
+        VkDescriptorPoolSize ps[4] = {{UBO, 3}, {TEX, 20}, {SSBO, 9}, {IMG, 9}};
         VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pi.maxSets = 2;
         pi.poolSizeCount = 4;
@@ -732,6 +732,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
             bufferWrite(cv2MarchDescSet, 1, UBO, &v2Info),
             imageWrite(cv2MarchDescSet, 2, TEX, &weather),
             imageWrite(cv2MarchDescSet, 28, TEX, &convCube),
+            imageWrite(cv2ResolveDescSet, 11, TEX, &convCube),
             imageWrite(cv2MarchDescSet, 3, TEX, &shape),
             imageWrite(cv2MarchDescSet, 4, TEX, &detail),
             imageWrite(cv2MarchDescSet, 5, TEX, &meso),

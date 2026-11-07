@@ -2561,18 +2561,25 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
         float topC = base + (lid - 300.0 - base) * cv.y;
         float rh   = min(rcol, 0.5 * max(topC - base, 600.0));
         float dh   = clamp(rh - dH, 0.0, rh);
-        topHere    = (cellK ? topC - min(cv0.w * 10000.0, 0.5 * max(topC - base, 600.0)) : topC - rh + sqrt(max(rh * rh - dh * dh, 0.0)))
+        // (A column that reaches the lid flattens into its anvil: the round head's drop goes to a fifth where the cell is full.
+        // Its whole <= 5 km drop, blurred toward the core by the tent read, held a mature tower's top 2-3 km under the plate:
+        // an anvil floating over its storm, issue_20261106_184711.)
+        topHere    = (cellK ? topC - min(cv0.w * 10000.0 * (1.0 - 0.8 * full), 0.5 * max(topC - base, 600.0)) : topC - rh + sqrt(max(rh * rh - dh * dh, 0.0)))
                    + osM * full * smoothstep(0.3, 0.9, dH / max(rcol, 1.0)) * (1.0 - gCv2CdoK * (1.0 - gCv2EywK));   // (a CDO: no dome over it all; the eyewall's hot towers keep theirs)
         float zeta = clamp(hb / max(topHere - base, 300.0), 0.0, 1.0);
         // + a little swell at mid-height, and the head's FLARE where the column reaches the lid: it widens over its top
         // third into the anvil it feeds (the outflow turning outward), not a drum under a mushroom cap.
         // The FOOT (2026-11-06, issue_20261106_171931 "plume rise up needs more bottom taper, needs more wideness"): the
         // column stands on a base half a core radius wider, narrowing over its lower half (the inflow's cloud base and the
-        // flanking cumulus merging into it), not a drum. The flare only over the top fifth under the lid: from 0.6 of the way
-        // up it read as a pyramid between the tower and its anvil ("the connection to the anvil is a pyramid shape").
+        // flanking cumulus merging into it), not a drum. The SWELL into the anvil is convex (cubed over the top 40%): it
+        // widens late and round, a billowing shoulder; linear from 0.6 of the way up it read as a pyramid ("the connection
+        // to the anvil is a pyramid shape"), over the top fifth only as a small, intermittent stub (issue_20261106_184711:
+        // it also needed the column within 0.8 of the lid, which the tent-read tops of many cells are not).
         float zl   = clamp(hb / max(lid - base, 300.0), 0.0, 1.0);
-        float foot = Rb * 0.5 * cv2SqC(1.0 - smoothstep(0.0, 0.6, zeta));
-        float mH   = dH + foot + Rb * 0.06 * sin(3.14159 * zeta) + Rb * 0.85 * full * cv2SqC(smoothstep(0.8, 1.0, zl));
+        float foot = Rb * (0.15 + 0.3 * cv2SqC(1.0 - smoothstep(0.0, 0.6, zeta)));   // (+0.15 Rb all the way up: on the core's
+                                                                                      // ~11 km alone the tower was a stalk)
+        float swl  = smoothstep(0.6, 1.0, zl);
+        float mH   = dH + foot + Rb * 0.06 * sin(3.14159 * zeta) + Rb * 1.1 * smoothstep(0.55, 0.9, cv.y) * swl * swl * swl;
         float mV   = topHere - q.h;
         // (rounded shoulders: at 600 m of smoothing the head met the wall at a sharp corner -- "sharp edges and corners")
         best = -cv2SMax(-mH, -mV, 1500.0);                                  // a smooth min(mH, mV)
@@ -2587,16 +2594,11 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
     if (cv2.storm.z > 0.0 && q.h > max(5000.0, 0.6 * top) && cv.z > 0.15) {
         float a     = cv.z;
         gCv2PlateA  = a;
-        float aK    = smoothstep(0.3, 1.0, a);
+        float aK    = smoothstep(0.3, 0.95, a);   // (the field saturates under 1: 1 - exp(-1.5 anv), cloud_v2_weather.comp)
         topS        = lid + 400.0 * smoothstep(0.4, 0.9, C) * full;
-        // The FAN (the user: a cumulonimbus fans out near its top): round a full-height column the plate's underside slopes
-        // down into it, from the column's edge out ~2.2 core radii, by up to 0.35 of the column's height, so the tower
-        // spreads into its anvil (incus) instead of carrying a saucer on a stalk. dCore: the distance from the core's centre
-        // (sigma sqrt(-ln C), 0.35 Rb; C reads ~0 past ~3 sigma).
-        float sgC   = 0.35 * Rb;
-        float dCore = sgC * sqrt(-log(max(C, 1e-4)));
-        float fanK  = full * (1.0 - smoothstep(0.8 * sgC, 3.0 * sgC, dCore));
-        float thick = 200.0 + cv2.anvil2.x * pow(aK, 1.1) + cv2.anvil2.y * g.near + 0.35 * (lid - base) * fanK * fanK;
+        // (no fan since 2026-11-06: the column's own swell joins it to the plate; the fan's underside sloping down toward a
+        // column drew a cone hanging from the anvil wherever that column stood lower, issue_20261106_184711)
+        float thick = 200.0 + cv2.anvil2.x * pow(aK, 1.1) + cv2.anvil2.y * g.near;
         float mH    = (a - 0.3) * 15000.0;
         float mV    = min(q.h - (topS - thick), topS - q.h);
         mSh   = -cv2SMax(-mH, -mV, 300.0);
