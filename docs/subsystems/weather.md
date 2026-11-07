@@ -97,6 +97,31 @@ Plan and progress log: `.plans/WEATHER_V2_PLAN.md` (untracked).
   the cirrus slide above 8.5 km, a blend between, and the low wind wherever the cube has a storm (cells or anvil > ~0.1):
   storm tops and anvils are low-layer cloud. The hard cut at 6.5 km reprojected them by the jet and drew a line across
   a storm in motion at the eye's height (the user: "TAA and drift errors, especially above the horizon line").
+- **Catalog storms on video** (2026-11-06, the user: "in sim they generate over one another and barely develop ... use
+  videos for validation"; `tools/harness/vidsheet.py` sheets a harness video and plots its frame-to-frame change, keyframes
+  of the encoder excluded):
+  - The drawn height's LIFECYCLE (`updateConvection`): smootherstep up over the tower-growth time, smootherstep down
+    over the tower's decay, x smoothstep(0.2, 0.6, its peak) x role (`wx::Tower::peak / decayS`). It was min(smoothstep(
+    0.02, 0.6, strength), a cubic ease-out): saturated at 60% of the peak, the top shot up, sat flat and dropped.
+  - The anvil starts when the DRAWN top passes ~0.85 (kAnvilAt 0.72 of the rise), not when the strength did: it
+    appeared before its tower.
+  - It is fed from the storm's towers' centroid weighted by (strength x role)^2, not the storm's centre: a catalog
+    tower stands up to ~20 km off it, and the anvil grew over clear air beside its storm.
+  - It SPREADS as the root of its age (`kCv2AnvSpreadM` 45 km at 1 h, x2 at 4 h, x sqrt(strength); the CPU's
+    `kAnvSpreadM`), thinning as sqrt(r0 / r); its disc is centred 0.6 of the spread downwind and its upwind half is 1.6x
+    shorter (~12 km of overhang). At 7 m/s for 2 h a supercell's anvil stayed ~80 x 45 km; spreading as far upwind as
+    down, it shaded its tower into a flat blue ghost.
+  - The column is computed EXACTLY (`cv2CellColumn`: the 2-degree bin's cells, in every shader with `CV2_STORM_ENV`):
+    the convection cube's 5-km texels interpolated a ~12-km core's distance field into a rounded polygon (straight
+    sides, flat faces, ledges). Outside the core contour its top falls quadratically (0.7 km 1 km out): the head's drop
+    stopped at its rim and the wider foot stood as a flat-topped drum (a wedding cake). Inside the column the density
+    stays a tower's where the plate's margin wins the blend.
+  - The storm cumulus raise is squared over a wide ramp (prox = smoothstep(0.03, 0.5) of the 20-km intensity): a flanking
+    rise, not a mesa with vertical walls.
+  - Cirrus: the streak slide wraps over FOUR periods (the bundle read is x0.25): a wrap over one jumped every bundle in the
+    sky about once an hour at 5 min/s.
+  - Observed, not changed: a tower under its anvil at a high sun is in the anvil's shadow (sky-lit: flat blue-grey); a
+    backlit tower reads pale (the lighting's open item).
 - Open: a squall line's towers reach about half way to its plate and fade into a hazy underside; the decaying storm's
   billows keep rising (the storm-scale volume's rise is global); the hurricane (no rotation, no CDO).
 - **Open**: a backlit storm from the ground reads pale (bright puffs, not a dark mass with a silver rim); a CDO has a hard

@@ -52,6 +52,7 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_march.comp)
 #define CV2_FRACTUS              // fractus under raining bases (clouds_v2.glsl): only the march and the clipmap bake
 #define CV2_ORO_EXTERNAL         // ... added at the main sample only (below), not in every inlined cv2Field (registers)
 #define CV2_STORM_BINDING   26   // the storm objects' towers (cv2_storms.glsl)
+#define CV2_STORM_ENV            // (the storm buffer's full layout: the convection cells and their lists, cv2CellColumn)
 #include "clouds_v2.glsl"
 #include "atmosphere.glsl"
 #include "eclipse.glsl"

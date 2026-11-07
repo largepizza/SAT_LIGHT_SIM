@@ -2137,6 +2137,26 @@ nlohmann::json SatelliteSim::weatherWindowJson()
         }
         j["shields"] = sl;
     }
+    if (stormMapped)
+    {   // (2026-11-06, the storm look work) the 8 convection cells nearest the eye as uploaded to the bake: strength,
+        // top share (of the way to the lid), sigma (m), km. The map frame is Earth-fixed since Weather v2.
+        const auto *cells = reinterpret_cast<const GpuConvCell *>(static_cast<const char *>(stormMapped) + kConvCellsOffset);
+        const glm::dvec3 oe = glm::normalize(glm::dvec3(obsDir));
+        std::vector<std::pair<double, uint32_t>> byDist;
+        for (uint32_t i = 0; i < convCellsN; ++i)
+            byDist.push_back({std::acos(std::clamp(glm::dot(glm::dvec3(cells[i].a), oe), -1.0, 1.0)) * 6371.0, i});
+        std::partial_sort(byDist.begin(), byDist.begin() + std::min<size_t>(8, byDist.size()), byDist.end());
+        nlohmann::json cl = nlohmann::json::array();
+        for (size_t k = 0; k < byDist.size() && k < 8; ++k)
+        {
+            const GpuConvCell &C = cells[byDist[k].second];
+            cl.push_back({{"str", C.b.x}, {"top", C.b.y}, {"sigma_m", C.a.w}, {"role", C.b.w}, {"lead_m", C.c.w},
+                          {"dist_km", byDist[k].first}, {"lat", glm::degrees(std::asin(std::clamp(C.a.z, -1.0f, 1.0f)))},
+                          {"lon", glm::degrees(std::atan2(C.a.y, C.a.x))}});
+        }
+        j["conv_cells"] = cl;
+        j["conv_cells_n"] = convCellsN;
+    }
     j["events"] = weatherFeaturedJson();
     nlohmann::json rd;
     rd["valid"] = wxShown.valid;

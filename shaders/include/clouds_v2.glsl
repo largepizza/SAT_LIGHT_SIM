@@ -964,7 +964,10 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
         // Its height varies by region (the cluster Perlin, ~+-2 sd -> +-"Storm cumulus variation"): one
         // flat target made every storm's cumulus field the same height (user, 2026-09-29).
         float cwT = cv2.column.w * (1.0 + cv2.column3.z * clamp((cl.a - 0.5) * 8.8, -1.0, 1.0));
-        topMax = mix(topMax, cwT + lift, stormProx * min(ty.look.z * 2.0, 1.0));
+        // (2026-11-06: squared over a wide ramp (cv2StormGeom's prox): the cumulus steps up toward a storm over tens of km, a
+        // flanking line; at smoothstep(0.2, 0.55) of the 20-km intensity it rose ~5 km within a few: a flat-topped mesa
+        // with vertical walls round every storm, the first thing a storm drew, under its anvil)
+        topMax = mix(topMax, cwT + lift, stormProx * stormProx * min(ty.look.z * 2.0, 1.0));
     }
 
     // A deck is not a slab: its thickness follows the closed cells and a km-scale Perlin field, and
@@ -2497,6 +2500,35 @@ void cv2CycEye(vec3 wd, float h, float hb, float base, float lid)
     }
 #endif
 }
+#if defined(CV2_CONV_BINDING) && defined(CV2_STORM_ENV)
+// The cells' COLUMN, exactly (2026-11-06): the largest (rc - r) over the cells binned at wd's 2-degree grid cell (the bake's
+// lists, cv2_storms.glsl), and the round head's drop there (a cap as round as the column, <= 5 km). Read from the
+// convection cube's 5-km texels (z / w) the distance field interpolated a ~12-km core into a rounded polygon: straight
+// sides, flat faces and a flat ledge on every tower from some side (the storm review's catalog supercell).
+float cv2CellColumn(vec3 wd, out float drop)
+{
+    float lat = asin(clamp(wd.z, -1.0, 1.0)) * (180.0 / PI), lon = atan(wd.y, wd.x) * (180.0 / PI);
+    uint  la  = uint(clamp(floor((lat + 90.0) * 0.5), 0.0, float(kCv2ConvGridLat - 1u)));
+    uint  lo  = uint(clamp(floor((lon + 180.0) * 0.5), 0.0, float(kCv2ConvGridLon - 1u)));
+    uvec2 g   = cv2ConvGrid[la * kCv2ConvGridLon + lo];
+    float dIn = -20000.0;
+    drop = 10000.0;
+    for (uint k = 0u; k < min(g.y, 64u); ++k) {
+        uint e = cv2ConvList[g.x + k];
+        if ((e & 0x80000000u) != 0u) continue;
+        vec4 ca = cv2Cells[e].a, cb = cv2Cells[e].b;
+        if (cb.x <= 0.36) continue;
+        float rc = ca.w * sqrt(log(cb.x / 0.35));
+        float di = rc - length(wd - ca.xyz) * R_EARTH;   // (the chord: < 1 m from the arc within a storm)
+        if (di > dIn) {
+            dIn = di;
+            float rh = min(rc, 5000.0), dh = clamp(rh - di, 0.0, rh);
+            drop = rh - sqrt(max(rh * rh - dh * dh, 0.0));
+        }
+    }
+    return dIn;
+}
+#endif
 CV2Storm cv2StormGeom(CV2Pos q, float fpM)
 {
     // Weather v2 (2026-11-06): the storm's SHAPE from the convection cube (cloud_v2_weather.comp wxConvection), not from
@@ -2535,7 +2567,7 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
     float full  = smoothstep(0.8, 1.0, cv.y);
     float Rb    = cv2.column.z;
     g.storm = C;
-    g.prox  = smoothstep(0.2, 0.55, cvB.x);
+    g.prox  = smoothstep(0.03, 0.5, cvB.x);
     if (cv2.rain.x > 0.0 && hb < 0.0) gCv2RainCore = smoothstep(0.3, 0.6, C) * smoothstep(0.4, 0.9, cv.y) * (1.0 - 0.6 * gCv2CdoK);   // (cores ~5 km across peak ~0.3-0.6 read through the tent)
     // The COLUMN: where the cores' intensity passes 0.35, under a DOME: its top here rises from the base at that contour
     // to the column's top (cv.y of the way to the lid) at the core, so a cluster of cells stands as towers with rounded
@@ -2545,14 +2577,20 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
     float best = -1e9, hfT = 0.0, topHere = base;
     // (Admitted out to the widest the profile below reaches past the contour, the foot's and the flare's: gated at C > 0.2
     // alone, ~0.1 Rb out, the column was cut there whatever its margin said -- a drum with vertical walls, issue_20261106_171931.)
-    if (hb >= -300.0 && (C > c0 - 0.15 || cv0.z > 0.5 - (1.35 * Rb + 600.0) / 40000.0)) {   // (or near a cell's analytic column)
+#ifdef CV2_STORM_ENV
+    float dropA;
+    float dInA = (hb >= -300.0 && (C > c0 - 0.15 || cv0.z > 0.5 - (1.35 * Rb + 4600.0) / 40000.0)) ? cv2CellColumn(wd, dropA) : -20000.0;
+#else
+    float dInA = (cv0.z - 0.5) * 40000.0, dropA = cv0.w * 10000.0;
+#endif
+    if (hb >= -300.0 && (C > c0 - 0.15 || dInA > -(1.35 * Rb + 600.0))) {   // (or near a cell's column)
         // dH: the DISTANCE in from the c0 contour (m): for a core C = exp(-r^2 / sigma^2), r = sigma sqrt(-ln C), sigma the
         // cells' 0.35 Rb. ((C - c0) x 1.6 Rb ran ~2.4 m a metre across the wall, which flattened the cumulus lobes carved
         // into it to ~40% of their size: smooth walls with erosion pits, a snow mountain instead of cauliflower.)
         float sg0  = 0.35 * Rb;
         float rcol = sg0 * sqrt(-log(c0));
         float dHc  = sg0 * (sqrt(-log(c0)) - sqrt(-log(max(C, 1e-4))));   // (the intensity's: a hurricane's CDO plateau)
-        float dIn  = (cv0.z - 0.5) * 40000.0;                             // (the cells' own, analytic: cloud_v2_weather.comp)
+        float dIn  = dInA;                                                 // (the cells' own, exact: cv2CellColumn)
         bool  cellK = dIn > dHc;
         float dH   = max(dIn, dHc);
         // The HEAD: a cap as round as the column is wide (radius rh), the top cv.y of the way to the lid; over it the
@@ -2564,8 +2602,13 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
         // (A column that reaches the lid flattens into its anvil: the round head's drop goes to a fifth where the cell is full.
         // Its whole <= 5 km drop, blurred toward the core by the tent read, held a mature tower's top 2-3 km under the plate:
         // an anvil floating over its storm, issue_20261106_184711.)
-        topHere    = (cellK ? topC - min(cv0.w * 10000.0 * (1.0 - 0.8 * full), 0.5 * max(topC - base, 600.0)) : topC - rh + sqrt(max(rh * rh - dh * dh, 0.0)))
+        topHere    = (cellK ? topC - min(dropA * (1.0 - 0.8 * full), 0.5 * max(topC - base, 600.0)) : topC - rh + sqrt(max(rh * rh - dh * dh, 0.0)))
                    + osM * full * smoothstep(0.3, 0.9, dH / max(rcol, 1.0)) * (1.0 - gCv2CdoK * (1.0 - gCv2EywK));   // (a CDO: no dome over it all; the eyewall's hot towers keep theirs)
+        // Outside the core's contour the top keeps FALLING, quadratically (a convex shoulder: 0.7 km 1 km out, 2.7 km 2 km
+        // out): the head's drop stops at its rim (dh clamps to rh), so the foot -- up to 0.45 Rb wider -- stood as a
+        // flat-topped drum round the column, a wedding cake under the anvil (2026-11-06, the storm review's catalog
+        // supercell); falling linearly it read as a cone.
+        topHere -= cv2SqC(max(-dH, 0.0)) / 1500.0;
         float zeta = clamp(hb / max(topHere - base, 300.0), 0.0, 1.0);
         // + a little swell at mid-height, and the head's FLARE where the column reaches the lid: it widens over its top
         // third into the anvil it feeds (the outflow turning outward), not a drum under a mushroom cap.
@@ -2614,7 +2657,9 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
     g.top  = mix(topS, max(topHere, q.h), wT);
     g.hf   = mix(hfS, hfT, wT);
     g.deck = 1.0 - wT;
-    g.sig  = mix(sigS, 1.0, wT);
+    // (Inside the column it stays a tower's density: where the plate's margin won the blend the upper tower took the plate's
+    // feathered density -- 0.12 where its field is weak -- and faded into its anvil as a ghost, 2026-11-06.)
+    g.sig  = mix(sigS, 1.0, max(wT, smoothstep(-300.0, 300.0, best)));
     g.cap  = 0.67 * edgeS * (1.0 - wT);
 #endif
     return g;

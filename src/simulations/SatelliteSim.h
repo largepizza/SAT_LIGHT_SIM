@@ -5972,6 +5972,7 @@ private:
     static_assert(sizeof(GpuConvCell) == 48, "GpuConvCell == cv2_storms.glsl's CV2Cell");
     struct GpuConvAnvil { glm::vec4 a, b, c, d; };
     std::vector<std::pair<uint64_t, glm::vec4>> convLineFwd;   // updateConvection scratch: line systems' forward + gust-front lead
+    uint32_t convCellsN = 0;   // the convection cells uploaded this frame (harness `weather state` -> conv_cells)
     static constexpr uint32_t kConvCellMax = 8192, kConvAnvilMax = 4096, kConvGridLon = 180, kConvGridLat = 90,
                               kConvListMax = 131072;
     static constexpr VkDeviceSize kConvHeadOffset = kSystemsOffset + 64ull * kWxSystemMax;

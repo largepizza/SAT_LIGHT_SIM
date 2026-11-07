@@ -1004,6 +1004,8 @@ void Catalog::towersAt(double t, const std::vector<const Storm *> &storms, std::
             T.age = cAge;
             T.growS = ts.growS;
             T.life = cLife;
+            T.peak = pk;
+            T.decayS = ts.decayS;
             // When it passed kFlareOn growing (strength = peak x smooth01(0, growS, age) then; a tower whose decay
             // starts before it has grown only flares if it still gets there, and is then treated alike).
             // The drawn top climbs over towerRiseS (ease-out); the head flares once the drawn height passes 0.8 too

@@ -1576,7 +1576,9 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         // A multiple of 4: the bundle read (clouds_v2.glsl) is 4x coarser and must not seam either.
         const double n = std::max(4.0, std::round(twoPiR / along / 4.0) * 4.0);
         const double pu = twoPiR / n;
-        p.high = glm::vec4(cv2HighAmount, (float)(1.0 / pu), (float)fracPos(-(double)cv2CirrusWindMps * simT / pu),
+        // (z wraps over FOUR periods: the bundle read is x0.25, so a wrap over one jumped every bundle in the sky by a
+        // quarter period, about once an hour at 5 min/s -- the storm review's videos, 2026-11-06)
+        p.high = glm::vec4(cv2HighAmount, (float)(1.0 / pu), (float)(4.0 * fracPos(-(double)cv2CirrusWindMps * simT / (4.0 * pu))),
                            (float)(1.0 / cirrusP));
         p.wind2 = glm::vec4(cv2CirrusWindMps, 0.0f, 0.0f, 0.0f);
         p.high2 = glm::vec4(cv2HighDensity,

@@ -30,6 +30,7 @@ layout(push_constant) uniform PC {
 #define CV2_MESO_BINDING    5
 #define CV2_MORPH_BINDING   20   // the march set's (every consumer places clouds alike)
 #define CV2_STORM_BINDING   26   // the storm objects' towers (cv2_storms.glsl)
+#define CV2_STORM_ENV            // (the storm buffer's full layout: the convection cells and their lists, cv2CellColumn)
 #include "clouds_v2.glsl"
 
 layout(std430, set = 1, binding = 0) writeonly buffer RadarOut { vec4 radar[]; };

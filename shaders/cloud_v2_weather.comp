@@ -244,6 +244,7 @@ vec2 eqTap(vec3 dc, vec2 uvc, float latc, vec3 tx, vec3 ty, vec2 o)
 // ── Weather v2 convection: the convection cube (layers 6-11 of this image, binding 6) ──
 // x  convective intensity: the cells (catalog towers) as Gaussian cores, soft-unioned
 // y  the column's top as a share of the way to the lid (the strongest core's here)
+const float kCv2AnvSpreadM = 45000.0;   // the anvil's spread radius after 1 h (= SatelliteSimWeatherSystems.cpp kAnvSpreadM)
 // z  the ANVIL: what the storms detrained at the lid, integrated over the time since each reached it along its
 //    storm-relative upper wind, spreading as it goes and decaying over its linger. So an anvil grows out of the column
 //    as the column reaches the lid, streams downwind, outlives its storm and fades; neighbours' anvils sum in one field
@@ -319,17 +320,24 @@ vec4 wxConvection(vec3 d, out float env, bool cellsOnly)
                 float uq = (float(j) + 0.5) / 8.0;
                 float s  = sMin + (sMax - sMin) * uq * uq;
                 float wq = 2.0 * uq;
-                // The outflow spreads at ~7 m/s for its first 2 h (a mature anvil ~100 km across); what it holds thins as it spreads (x r0 / r; (r0 / r)^2 at 3 m/s),
-                // so the oldest outflow frays into cirrus. A compact disc, not a Gaussian: overlapping Gaussian tails of
-                // neighbouring storms summed into one continent-sized plate.
-                float rk = A.a.w + 7.0 * min(s, 7200.0);
+                // The outflow SPREADS like a gravity current under the lid: fast at first, slowing, its radius growing as the
+                // root of its age (kCv2AnvSpreadM at 1 h, x2 at 4 h, x the root of the storm's strength; = the CPU's
+                // anvilBinRadius): ~18 km in its first 10 min, a mature supercell's anvil 150-200 km across (2026-11-06,
+                // the user: "we never get large anvils that blow up width wise"; at 7 m/s for 2 h they stayed ~80 x 45 km).
+                // What it holds thins as it spreads, x sqrt(r0 / r) (x r0 / r thinned a wide plate under its outline).
+                // A compact disc, not a Gaussian: overlapping Gaussian tails of neighbouring storms summed into one
+                // continent-sized plate.
+                float rk = A.a.w + kCv2AnvSpreadM * sqrt(min(s, 14400.0) / 3600.0) * sqrt(clamp(A.b.w, 0.3, 1.0));
                 // Anisotropic: the outflow spreads mostly downwind (its centre a further 0.4 of the spread on), narrower
                 // across the wind; upwind it overhangs only a little (a saucer round the column otherwise).
-                vec2  q  = p - vec2(A.c.w * s + 0.4 * (rk - A.a.w), 0.0);
+                // (2026-11-06: centred 0.6 of the spread on, its UPWIND half 1.6x shorter: ~12 km of overhang past the
+                // tower, a fan downwind. Spreading as far upwind as down, a big anvil shaded its whole tower: a flat blue
+                // ghost under it, the storm review's multicell. = the CPU's anvilBinRadius.)
+                vec2  q  = p - vec2(A.c.w * s + 0.6 * (rk - A.a.w), 0.0);
                 if (A.d.x > 0.0) q -= ax * clamp(dot(q, ax), -A.d.x, A.d.x);   // to the line segment
-                float dq = length(q * vec2(1.0, 1.25)) / rk;
-                float rr = A.a.w / rk;
-                acc += wq * exp(-s / tauL) * (1.0 - smoothstep(0.55, 1.1, dq)) * rr;   // (r0 / r: it thins as it spreads, vertically too)
+                float dq = length(q * vec2(q.x < 0.0 ? 1.6 : 1.0, 1.25)) / rk;
+                float rr = sqrt(A.a.w / rk);
+                acc += wq * exp(-s / tauL) * (1.0 - smoothstep(0.55, 1.1, dq)) * rr;   // (it thins as it spreads, vertically too)
                 // the mid-level outflow: slower downwind, wider, longer-lived; it too spreads downwind (its upwind edge stays
                 // near the source: spread evenly, a line's trailing stratiform reached ~35 km AHEAD of its towers as a
                 // deck over the shelf and the clear air)

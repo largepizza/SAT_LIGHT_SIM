@@ -197,6 +197,9 @@ struct Tower {
     // Its strength rose over growS through smoothstep(0.02, 0.6, strength) (cv2ColumnSigma's height), so the top went
     // from the storm cumulus to the anvil in ~3 sim min. 1 = as tall as its strength (cyclones, line cells, T 0).
     float      heightCap = 1.0f;
+    // (Weather v2, 2026-11-06) this cycle's peak strength and its decay time: the drawn height's eased lifecycle
+    // (SatelliteSim::updateConvection) rises over the tower-growth time and falls over decayS on S-curves.
+    float      peak = 1.0f, decayS = 1200.0f;
 };
 constexpr float kFlareOn = 0.42f;
 constexpr double kFullAt = 0.4151964523;   // 1 - 0.2^(1/3): where Tower::heightCap's climb passes 0.8 ('full' starts)   // = cv2ColumnSigma's full = smoothstep(0.8, 1.0, smoothstep(0.02, 0.6, str)) > 0

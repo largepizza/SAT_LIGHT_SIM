@@ -31,6 +31,7 @@ layout(push_constant) uniform PC {
 #define CV2_MESO_BINDING    5
 #define CV2_MORPH_BINDING   20
 #define CV2_STORM_BINDING   26
+#define CV2_STORM_ENV            // (the storm buffer's full layout: the convection cells and their lists, cv2CellColumn)
 #include "clouds_v2.glsl"
 
 layout(rgba8, set = 1, binding = 0) writeonly uniform image2D outMap;
