@@ -342,36 +342,60 @@ vec3 cv2WeatherDir(vec3 d) { return cv2Drift(d); }
 // ── Weather v2: the cloud TEXTURE rides the wind (2026-11-06, .plans/WEATHER_V2_PLAN.md) ────────────────────────────
 // A flow map: the noise volumes are read at p - W(p) x age, W the layer's steering wind (wind_field.glsl), age the time
 // since the texture there last renewed. Two phases half a window (cv2.wind1.y) apart; phase A renews at f = 0 and phase B
-// carries the texture across A's renewal (A is used away from it, wA = 1 over 1 - 2 blend of the window). A RAY picks
-// one phase (CV2_PHASE_XI, per pixel and frame in the march, so the history averages the cross-fade): one field
-// evaluation, not two. The renewal time is staggered by a smooth field (~3000 km), so only ~2 x blend of the sky renews at once.
+// carries the texture across A's renewal (A is used away from it, wA = 1 over 1 - 2 blend of the window); within the
+// blend the main noise reads take both (cv2PhRead, below). The renewal time is staggered by a smooth field (~3000 km), so only ~2 x blend of the sky renews at once.
 // Not the sample's own height: a passive tracer in the shear (~3 m/s per km) is smeared ~20x over a 2-h window.
 float cv2WindStagger(vec3 d)
 {
     return 0.23 * sin(dot(d, vec3(4.1, 2.7, -1.3)) + 0.7) + 0.19 * sin(dot(d, vec3(-1.9, 3.6, 2.4)) + 2.1)
          + 0.11 * sin(dot(d, vec3(2.2, -1.1, 4.3)));
 }
+// THE CROSS-FADE (2026-11-06, issue_20261106_173357 "all clouds now flicker", "why are clouds transparent"): within a
+// renewal's blend the NOISE VALUES of the two phases are mixed, contrast kept (cv2PhRead): the clouds morph from one
+// texture into the next. Until then a ray picked one phase at random per pixel and frame: a quarter of the sky at any
+// moment was two unrelated fields averaged by the history -- grain under motion, half-transparent mush when settled.
+// cv2NoiseDispAt returns the DOMINANT phase's displacement (the sample's positions are shifted by it) and leaves the
+// other's read offset and weight in gCv2PhD / gCv2PhW for the reads that mix (the main ones of every layer; the rest,
+// and the far layer, take the dominant phase).
+vec3  gCv2PhD = vec3(0.0);   // the other phase's read offset (m, added to a shifted noise position)
+float gCv2PhW = 0.0;         // its weight (0 .. 0.5; 0 = one phase)
 vec3 cv2NoiseDispAt(vec3 dirE, float hSteer)
 {
+    gCv2PhW = 0.0;
     float P = cv2.wind1.y;
     if (P <= 0.0) return vec3(0.0);
     float fT  = cv2.wind1.x / P + cv2WindStagger(dirE);   // windows elapsed here (the stagger shifts them)
     float f   = fract(fT);
     float b   = fract(cv2.wind1.z);                         // (wind1.z = the window count mod 1024 + the blend)
     float wA  = smoothstep(0.0, b, f) * (1.0 - smoothstep(1.0 - b, 1.0, f));
-#ifdef CV2_PHASE_XI
-    float xi  = CV2_PHASE_XI;   // the march: per pixel and frame, from builtins (a live global put it over the register cliff)
-#else
-    float xi  = 0.5;            // everyone else: the dominant phase (shadows, beams, probes)
-#endif
-    bool  pA  = xi < wA;
-    float age = pA ? f * P : fract(f + 0.5) * P;
     // Each renewal starts from FRESH texture: a jump of the read position by a hash of the window's index (otherwise
     // every window would rewind the clouds to the same unadvected noise). Constant within a window: no motion.
-    float k   = floor(cv2.wind1.z) + floor(pA ? fT : fT + 0.5) + (pA ? 0.0 : 0.5);
-    vec3  j   = fract(sin(vec3(k * 12.9898, k * 78.233, k * 37.719)) * 43758.5453) - 0.5;
-    return wfWind(dirE, hSteer, cv2.wind0) * age + j * 4.0e5;
+    float kA  = floor(cv2.wind1.z) + floor(fT);
+    float kB  = floor(cv2.wind1.z) + floor(fT + 0.5) + 0.5;
+    vec3  jA  = fract(sin(vec3(kA * 12.9898, kA * 78.233, kA * 37.719)) * 43758.5453) - 0.5;
+    vec3  jB  = fract(sin(vec3(kB * 12.9898, kB * 78.233, kB * 37.719)) * 43758.5453) - 0.5;
+    vec3  W   = wfWind(dirE, hSteer, cv2.wind0);
+    vec3  dA  = W * (f * P) + jA * 4.0e5;
+    vec3  dB  = W * (fract(f + 0.5) * P) + jB * 4.0e5;
+    bool  pA  = wA >= 0.5;
+    float wO  = pA ? 1.0 - wA : wA;
+    if (wO > 0.01) { gCv2PhW = wO; gCv2PhD = pA ? dA - dB : dB - dA; }
+    return pA ? dA : dB;
 }
+// A noise read mixed over the two phases (uv the dominant's coordinates, duv the other's offset in texture units, m the
+// channels' means): the deviations are mixed and renormalised (variance kept), so mid-fade the clouds are as defined
+// as either phase's, not a dimmer average of both.
+vec4 cv2PhRead(sampler3D t, vec3 uv, vec3 duv, float lod, vec4 m)
+{
+    vec4 a = textureLod(t, uv, lod);
+    float w = gCv2PhW;
+    if (w <= 0.0) return a;
+    vec4 b = textureLod(t, uv + duv, lod);
+    return m + ((1.0 - w) * (a - m) + w * (b - m)) * inversesqrt((1.0 - w) * (1.0 - w) + w * w);
+}
+const vec4 kCv2MesoMean  = vec4(0.5);
+const vec4 kCv2ShapeMean = vec4(0.5, 0.45, 0.45, 0.5);
+const vec4 kCv2DetMean   = vec4(0.45);
 // Whether the flow map is cross-fading at dirE (within pad of a window's blend): there a ray may read either phase, so
 // anything that stands in for the march's reads (the clipmap's occupancy) must hold both.
 bool cv2NoiseBlending(vec3 dirE, float pad)
@@ -867,13 +891,13 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     // stretched by the synoptic flow; it is only placed by it (the map).
     vec3 mp    = sP - eastW * (cv2.form.y * max(q.h - 800.0, 0.0));
     vec3 mpF   = mp + flowD;
-    vec4 cl = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + mpF * cv2.anchorCluster.w,
-                         cv2Lod(fpM, cv2.anchorCluster.w));
+    vec4 cl = cv2PhRead(cv2MesoTex, cv2.anchorCluster.xyz + mpF * cv2.anchorCluster.w, gCv2PhD * cv2.anchorCluster.w,
+                        cv2Lod(fpM, cv2.anchorCluster.w), kCv2MesoMean);
     // ... and near a tower with the storm cumulus target's real value here (cwT below).
     if (q.h > max(hTypB, cv2.column.w * (1.0 + cv2.column3.z * clamp((cl.a - 0.5) * 8.8, -1.0, 1.0))
                          + cv2Ground(q.dirE) + 50.0)) return false;
-    vec4 ce = textureLod(cv2MesoTex, cv2.anchorCell.xyz + mp * cv2.anchorCell.w,
-                         cv2Lod(fpM, cv2.anchorCell.w));
+    vec4 ce = cv2PhRead(cv2MesoTex, cv2.anchorCell.xyz + mp * cv2.anchorCell.w, gCv2PhD * cv2.anchorCell.w,
+                        cv2Lod(fpM, cv2.anchorCell.w), kCv2MesoMean);
 
     // The weather map's texels are 5 km: thresholding them bilinearly draws their squares, which
     // read as a grid from altitude. Warping the lookup by a few km of mesoscale noise hides it.
@@ -999,10 +1023,10 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     // footprint (fpF, review 18): the march's ray lands at another point of its texel each visit, and a field
     // read at the footprint's own mip changed inside it (flicker on scattered puffs from MEO).
     float fpF    = fpM * 2.0 * cv2.morph.w * gCv2Stretch;   // morph.w = 2^-"Far-field sharpness"
-    vec4  cl4    = textureLod(cv2MesoTex, (cv2.anchorCluster.xyz + mpF * cv2.anchorCluster.w) * 4.0
-                              + vec3(0.37, 0.61, 0.13), cv2Lod(fpF, cv2.anchorCluster.w * 4.0));
-    vec4  cl16   = textureLod(cv2MesoTex, (cv2.anchorCluster.xyz + mpF * cv2.anchorCluster.w) * 16.0
-                              + vec3(0.71, 0.23, 0.47), cv2Lod(fpF, cv2.anchorCluster.w * 16.0));
+    vec4  cl4    = cv2PhRead(cv2MesoTex, (cv2.anchorCluster.xyz + mpF * cv2.anchorCluster.w) * 4.0 + vec3(0.37, 0.61, 0.13),
+                             gCv2PhD * (cv2.anchorCluster.w * 4.0), cv2Lod(fpF, cv2.anchorCluster.w * 4.0), kCv2MesoMean);
+    vec4  cl16   = cv2PhRead(cv2MesoTex, (cv2.anchorCluster.xyz + mpF * cv2.anchorCluster.w) * 16.0 + vec3(0.71, 0.23, 0.47),
+                             gCv2PhD * (cv2.anchorCluster.w * 16.0), cv2Lod(fpF, cv2.anchorCluster.w * 16.0), kCv2MesoMean);
     float fz     = ((cl.a - 0.5) * 0.5 + (cl4.a - 0.5) * 0.3 + (cl16.a - 0.5) * 0.2) / 0.035;
     float zMs    = fz;
 #ifdef CV2_MORPH_BINDING
@@ -1561,8 +1585,10 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
     vec3  vS  = rS + wd * max(lobeRef - hb, 0.0);
     vec3  rSA = useB ? mat3(cv2.shapeB[0].xyz, cv2.shapeB[1].xyz, cv2.shapeB[2].xyz) * vS
                      : mat3(cv2.shapeRotA[0].xyz, cv2.shapeRotA[1].xyz, cv2.shapeRotA[2].xyz) * vS;
-    vec4  s   = textureLod(cv2ShapeTex, (useB ? cv2.shapeB[3].xyz : cv2.anchorShapeA.xyz) + rSA * cv2.anchorShape.w,
-                           cv2Lod(fpM, cv2.anchorShape.w));
+    vec4  s   = cv2PhRead(cv2ShapeTex, (useB ? cv2.shapeB[3].xyz : cv2.anchorShapeA.xyz) + rSA * cv2.anchorShape.w,
+                          (useB ? mat3(cv2.shapeB[0].xyz, cv2.shapeB[1].xyz, cv2.shapeB[2].xyz) * gCv2PhD
+                                : mat3(cv2.shapeRotA[0].xyz, cv2.shapeRotA[1].xyz, cv2.shapeRotA[2].xyz) * gCv2PhD) * cv2.anchorShape.w,
+                          cv2Lod(fpM, cv2.anchorShape.w), kCv2ShapeMean);
     float lobes = (s.g * 0.6 + s.b * 0.25 + s.a * 0.15) - 0.47;
     // Deep convection's lobes are storm.x times larger: at the cumulus scale a 12 km storm was a
     // pile of small bubbles, a "mountain" rather than towers.
@@ -1587,8 +1613,10 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
             // each ~+-0.1-0.2 about its mean), so each sphere becomes a lumpy blob. No fetch; the tile stays in register.
             rT += (vec3(s.g, s.b, s.a) - vec3(0.45, 0.45, 0.5)) * (4.0 * cv2.ciHu2.z);
         }
-        vec4 s2 = textureLod(cv2ShapeTex, ((useB ? cv2.shapeB[4].xyz : cv2.anchorStormA.xyz) + rT * cv2.anchorStorm.w) * 2.0,
-                             cv2Lod(fpM, cv2.anchorStorm.w * 2.0));
+        vec4 s2 = cv2PhRead(cv2ShapeTex, ((useB ? cv2.shapeB[4].xyz : cv2.anchorStormA.xyz) + rT * cv2.anchorStorm.w) * 2.0,
+                            (useB ? mat3(cv2.shapeB[0].xyz, cv2.shapeB[1].xyz, cv2.shapeB[2].xyz) * gCv2PhD
+                                  : mat3(cv2.shapeRotA[0].xyz, cv2.shapeRotA[1].xyz, cv2.shapeRotA[2].xyz) * gCv2PhD) * (cv2.anchorStorm.w * 2.0),
+                            cv2Lod(fpM, cv2.anchorStorm.w * 2.0), kCv2ShapeMean);
         // "Storm cumulus fine lobes" (cu.w): the cumulus-scale lobes stay ON the storm-scale ones, strongest on
         // their crowns (big lobes carrying small ones). With the storm-scale noise alone (storm.x, 12x at the user's
         // settings: 10 km lobes) deep convection was smooth, lobeless mounds and pillars.
@@ -1630,8 +1658,11 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
             float shF = 0.45 * cv2.cu5.z * (1.0 - smoothstep(80.0, 400.0, fpM)) * (1.0 - deep);
 #ifndef CV2_NO_FINE_BUBBLES
             if (shF > 0.0) {
-                float sdF = 0.9 * cv2.cu5.z * (textureLod(cv2ShapeTex, ((useB ? cv2.shapeB[4].xyz : cv2.anchorStormA.xyz) + rT * cv2.anchorStorm.w) * 8.0
-                                              + vec3(0.41, 0.17, 0.73), cv2Lod(fpM, cv2.anchorStorm.w * 8.0)).r - 0.5);
+                float sdF = 0.9 * cv2.cu5.z * (cv2PhRead(cv2ShapeTex, ((useB ? cv2.shapeB[4].xyz : cv2.anchorStormA.xyz) + rT * cv2.anchorStorm.w) * 8.0
+                                              + vec3(0.41, 0.17, 0.73),
+                                              (useB ? mat3(cv2.shapeB[0].xyz, cv2.shapeB[1].xyz, cv2.shapeB[2].xyz) * gCv2PhD
+                                                    : mat3(cv2.shapeRotA[0].xyz, cv2.shapeRotA[1].xyz, cv2.shapeRotA[2].xyz) * gCv2PhD) * (cv2.anchorStorm.w * 8.0),
+                                              cv2Lod(fpM, cv2.anchorStorm.w * 8.0), kCv2ShapeMean).r - 0.5);
                 sdB *= mix(1.0, smoothstep(250.0, 1800.0, c.thk), floor(cv2.cu5.w) * 0.001);
                 sdB  = min(max(sdF, sdB - shF), sdB + shF);
             }
@@ -1704,12 +1735,12 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         if (detailAmt > 0.0) {
             vec3  dist = (vec3(s.a, s.g, s.b) - vec3(0.5, 0.45, 0.45)) * 0.35;
             // (Not at deep ~ 1, a storm's own surface: only the storm-scale detail is used there.)
-            vec4  dn   = (deep < 0.99) ? textureLod(cv2DetailTex, cv2.anchorDetail.xyz + rS * cv2.anchorDetail.w + dist,
-                                                    cv2Lod(fpM, cv2.anchorDetail.w)) : vec4(0.45);
+            vec4  dn   = (deep < 0.99) ? cv2PhRead(cv2DetailTex, cv2.anchorDetail.xyz + rS * cv2.anchorDetail.w + dist,
+                                                   gCv2PhD * cv2.anchorDetail.w, cv2Lod(fpM, cv2.anchorDetail.w), kCv2DetMean)
+                                       : vec4(0.45);
             if (deep > 0.02) {
-                vec4 dn2 = textureLod(cv2DetailTex,
-                                      cv2.anchorStormDetail.xyz + rS * cv2.anchorStormDetail.w + dist,
-                                      cv2Lod(fpM, cv2.anchorStormDetail.w));
+                vec4 dn2 = cv2PhRead(cv2DetailTex, cv2.anchorStormDetail.xyz + rS * cv2.anchorStormDetail.w + dist,
+                                     gCv2PhD * cv2.anchorStormDetail.w, cv2Lod(fpM, cv2.anchorStormDetail.w), kCv2DetMean);
                 dn = mix(dn, dn2, deep);
             }
             // Mostly the coarse octave: the fine one (~125 m cells) made every dense cumulus
@@ -1937,8 +1968,8 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
     // (The spread below can place mid cloud where the local low coverage is 0, so no early out on cov
     // alone when it is on.)
     if (cov <= 0.0 && cv2.flow.y <= 0.0) return 0.0;
-    vec4  cl  = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + q.seaProjE * cv2.anchorCluster.w,
-                           cv2Lod(fpM, cv2.anchorCluster.w));
+    vec4  cl  = cv2PhRead(cv2MesoTex, cv2.anchorCluster.xyz + q.seaProjE * cv2.anchorCluster.w, gCv2PhD * cv2.anchorCluster.w,
+                          cv2Lod(fpM, cv2.anchorCluster.w), kCv2MesoMean);
     // Fades in with the coverage: the source map is a JPEG, and in clear areas its 8x8 blocks
     // (~40 km) sit just above or below the clear threshold. A full altostratus sheet wherever the
     // coverage was above 0 drew those blocks as straight-edged translucent rectangles.
@@ -2043,8 +2074,8 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
     float strat = 1.0 - smoothstep(0.3, 0.55, w.g);                 // stratiform below -> As
     // Its own period (anchorMid): on the cumulus shape period, enlarging the cumulus lobes made the
     // altocumulus cloudlets huge too.
-    vec4  sh    = textureLod(cv2ShapeTex, cv2.anchorMid.xyz + q.rSeaE * cv2.anchorMid.w,
-                             cv2Lod(fpM, cv2.anchorMid.w));
+    vec4  sh    = cv2PhRead(cv2ShapeTex, cv2.anchorMid.xyz + q.rSeaE * cv2.anchorMid.w, gCv2PhD * cv2.anchorMid.w,
+                            cv2Lod(fpM, cv2.anchorMid.w), kCv2ShapeMean);
     float bW    = base + kCv2MidWanderM * clamp(2.5 * (sh.a - 0.5), -1.0, 1.0);
     float tW    = base + thick + kCv2MidWanderM * clamp(2.5 * (sh.g - 0.5), -1.0, 1.0);
     float zm    = (q.h - bW) / max(tW - bW, 150.0);
@@ -2167,8 +2198,8 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
     float covL   = clamp((wc.r * cv2.look.x - cv2.cover.x) / span, 0.0, 1.0);
     float covS   = clamp((wb.r * cv2.look.x - cv2.cover.x) / span, 0.0, 1.0);
     float sys    = max(covS, 0.7 * covL);
-    vec4  cl     = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + q.seaProjE * cv2.anchorCluster.w
-                              + vec3(0.41, 0.17, 0.69), cv2Lod(fpM, cv2.anchorCluster.w));
+    vec4  cl     = cv2PhRead(cv2MesoTex, cv2.anchorCluster.xyz + q.seaProjE * cv2.anchorCluster.w + vec3(0.41, 0.17, 0.69),
+                             gCv2PhD * cv2.anchorCluster.w, cv2Lod(fpM, cv2.anchorCluster.w), kCv2MesoMean);
     // The baked Perlin fBm is narrow: 0.50 +- 0.057 (1-99%: 0.37-0.63, measured by replicating the
     // bake). Thresholds are set against that spread; the first cut used 0.5-0.7 and drew no cirrus.
     // A clear system shifts it by ~-1 sd (~13% of the area has some cirrus), a cloudy one by ~+1.2 sd

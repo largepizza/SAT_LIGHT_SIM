@@ -40,10 +40,6 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_v2_march.com
 #define CV2_FRACTUS              // fractus under raining bases (clouds_v2.glsl): only the march and the clipmap bake
 #define CV2_STORM_BINDING   26   // the storm objects' towers (cv2_storms.glsl)
 #define CV2_LAYER_HITS            // cv2Field reports the layers each read needed (gCv2LayHit): the cells' layer masks
-// The flow map's phase (clouds_v2.glsl cv2NoiseDispAt): while it cross-fades, the march's rays read either phase (per
-// pixel and frame), so a cell is baked from both and holds their union; else the dominant one (0.5).
-float gCdcXi = 0.5;
-#define CV2_PHASE_XI gCdcXi
 #include "clouds_v2.glsl"
 layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
 layout(set = 0, binding = 6) uniform sampler2D sceneDepthTex;   // (its size: the march's pixel)
@@ -131,8 +127,6 @@ void bakePass(uint ti)
     // low trail, 20 km/s at 600 m: 0.4% of the pixels > 16 levels off without the bracket, the floor with it).
     // Off (cdcC.w 0): one read at the eye's footprint.
     bool  brk = cv2.cdcC.w > 0.5 && cv2.cdcB.y < 0.0;
-    // (the clipmap reaches a few hundred km; the renewal's stagger varies over thousands: the eye's state, padded, holds)
-    bool  blend2 = cv2NoiseBlending(normalize(pc.obsECEFDir.xyz), 0.02);
     float r0  = cv2.cdcA.z * float(kCv2CdcN / 2 - 2) * float(1 << lv);
     float dzE = abs(zc - eyeH);
     float fpLo = -cv2.cdcB.y * length(vec2(lv == 0 ? 0.0 : 0.5 * r0, dzE)) * pixA;
@@ -149,13 +143,10 @@ void bakePass(uint ti)
         // run 10; kept so the bake reads exactly what the march would).
         gCv2Stretch = 1.0 / max(abs(dot(normalize(rel), normalize(rel + eyeP))), 0.25);
         float fpS = cv2.cdcB.y < 0.0 ? -cv2.cdcB.y * length(rel) * pixA : cv2.cdcB.y * cell;
-        // (One call site in a loop: the field is inlined at every call.) Reads: the bracket's footprints x the flow map's
-        // phases while it cross-fades (2026-11-06: a cell baked "empty" from the dominant phase skipped the other phase's
-        // cloud on the rays that read it, so just after a renewal the clouds the history held popped in and out).
-        int nPh = blend2 ? 2 : 1, nB = brk ? 2 : 1;
-        [[dont_unroll]] for (int bb = 0; bb < nB * nPh; ++bb) {
-            int b = bb % nB;
-            gCdcXi = blend2 ? float(bb / nB) : 0.5;   // 0: phase A wherever it has weight, 1: phase B
+        // (One call site in a loop: the field is inlined at every call.) Reads: the bracket's footprints. (The flow map's
+        // cross-fade is in the field itself since 2026-11-06, cv2PhRead: the bake reads the mixed field the march draws.)
+        int nB = brk ? 2 : 1;
+        [[dont_unroll]] for (int b = 0; b < nB; ++b) {
             CV2Field f = cv2Field(cv2Pos(rel, eyeH, enuToEcef), -1.0, brk ? ((b == 0) ? fpLo : fpHi) : fpS);
             // Every point's bits, cloud or not (a tower's strength that cut a mid sheet to nothing is needed there: skipped,
             // the sheet would appear); bit 64 = a trace of cloud at some point (the cell is not empty).
@@ -165,7 +156,6 @@ void bakePass(uint ti)
         // at the pattern's points pulled in to the cell itself (+-0.5 cell): a mean over the dilated 2-cell box blurred
         // gaps into cloud, and exp(-mean od) of a broken field is darker than the mean of exp(-od) (s2 run: -18 levels).
         if (cv2.cdcC.x > 0.5 && lv < int(cv2.cdcC.y)) {
-            gCdcXi = 0.5;
             vec2  uM = uc + o.xy * 0.5 * cell;
             float hM = max(zc + o.z * kCv2CdcDZ * 0.5, 0.0);
             vec3  rM = normalize(cv2.layA.xyz * kCv2CdcR + cv2.layE.xyz * uM.x + cv2.layN.xyz * uM.y) * (R_EARTH + hM) - eyeP;

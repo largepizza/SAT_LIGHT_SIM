@@ -17,7 +17,12 @@ Plan and progress log: `.plans/WEATHER_V2_PLAN.md` (untracked).
   + mesoscale curl). There is no global map drift (`kWeatherV2NoDrift`; `updateStorms` zeroes `cloudDriftRate` and the
   phase offset): the map frame IS the Earth-fixed frame. With the drift left in, storms landed hundreds of km from their
   cells. The noise volumes ride the wind through a two-phase flow map (`cv2NoiseDisp`, `wind1`); the resolve's
-  reprojection uses the same wind (`wind2`), so the sky TAA follows the clouds.
+  reprojection uses the same wind (`wind2`), so the sky TAA follows the clouds. Within a renewal's cross-fade (~24% of
+  the sky at any moment: blend 0.12 each side of a 2-h window) the main noise reads of every layer take BOTH phases and
+  mix their deviations with the variance kept (`cv2PhRead`, `gCv2PhD` / `gCv2PhW`): the clouds morph. Until 2026-11-06
+  a ray picked one phase at random per pixel and frame, and the history averaged two unrelated fields: grain whenever
+  the history was rejected (any motion), half-transparent mush when settled (issue_20261106_173357). March 244 -> 248
+  registers. The far layer (`cv2FarColumn`), fog and rain shafts still take the dominant phase (a swap at w = 0.5).
 - **The map is synthesised** (`cloud_v2_weather.comp`): climatology (`wxClimate`: ITCZ, dry subtropics, storm tracks,
   cold-sea decks) + the systems (`wxSystems`, `wxCyclones`) + moisture fBm advected per octave through flow-map windows
   (`wxPhase` / `wxMoistureNoise`: the 1200-km octave's window `wxMacroWindowH` 60 h, halving per octave, >= 1/32;
