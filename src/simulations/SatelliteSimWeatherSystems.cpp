@@ -196,7 +196,8 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
     constexpr double kAnvSpreadM = 45000.0;
     auto anvilBinRadius = [&](double U, double age, double r0, double half) {
         const double rk = r0 + kAnvSpreadM * std::sqrt(std::min(age, 4.0 * 3600.0) / 3600.0);
-        return 0.5 * U * age + 1.7 * rk - 0.6 * r0 + half + 5000.0;   // (its disc centred 0.6 (rk - r0) on, 1.1 rk downwind)
+        // (its disc centred 0.6 (rk - r0) on, 1.1 rk downwind x its outline's lobes, up to 1.35 (the bake's kO): 2.1 rk)
+        return 0.5 * U * age + 2.1 * rk - 0.6 * r0 + half + 5000.0;
     };
     for (const wx::Storm *S : storms)
     {
@@ -267,6 +268,11 @@ void SatelliteSim::updateConvection(double t, const std::vector<const wx::Storm 
         glm::dvec3 cA = c;
         if (wx::isLineSystem(S->kind) && glm::length(S->vel) > 0.5)
             cA = glm::normalize(c - dw * (0.7 * (double)S->bow / kR));
+        // It DISSOLVES over the last half linger (<= 1 h) of the storm's life: the catalog drops a storm at its towers' end +
+        // one linger, when the outflow still holds e^-1 of itself -- a saturated plate -- and a whole anvil vanished from
+        // the sky in a frame (2026-11-07, the report's ITCZ from orbit, at a catalog time bin's edge).
+        const double endW = std::clamp(0.5 * linger, 600.0, 3600.0);
+        peak *= 1.0 - ssD((double)S->life - endW, (double)S->life, tau);
         anvils[nA].a = glm::vec4(glm::vec3(cA), (float)r0);
         anvils[nA].b = glm::vec4(glm::vec3(dw), (float)peak);
         anvils[nA].c = glm::vec4((float)lidAge, (float)feed, (float)linger, (float)U);

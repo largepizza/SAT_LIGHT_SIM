@@ -131,6 +131,13 @@ Plan and progress log: `.plans/WEATHER_V2_PLAN.md` (untracked).
     rise, not a mesa with vertical walls.
   - Cirrus: the streak slide wraps over FOUR periods (the bundle read is x0.25): a wrap over one jumped every bundle in the
     sky about once an hour at 5 min/s.
+  - The anvil's OUTLINE has lobes: the disc's radius x 0.6 .. 1.35 by two octaves of noise (~22 and ~8 km) in the source's
+    frame, seeded per storm (its feed span and peak) and evolving with its age (`cloud_v2_weather.comp` kO; the CPU's bin
+    is 2.1 spread radii). The integral's noise kN cannot move a saturated plate's outline: from orbit every anvil was a
+    perfect white disc.
+  - It DISSOLVES over the last half linger (10 min .. 1 h) of its storm's life (its source strength x 1 - smoothstep): the
+    catalog lists a storm until its towers' end + one linger, when the outflow still holds e^-1 of itself, and a whole
+    anvil vanished from the sky in a frame (orbit film over the report's ITCZ: 0 spikes over 4 h after, max change /15).
   - A decaying single cell's billows soften, fray and thin (`CV2Storm.dec`: the cell's c.w = -(1 - its decay s-curve);
     lobes x(1 - 0.6 dk), erosion x(1 + 1.5 dk), density x(1 - 0.45 dk), not on the plate).
   - Tried and reverted (no visible change on video): the bake's congestus environment and core coverage, and the storm

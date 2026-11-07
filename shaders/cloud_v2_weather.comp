@@ -313,6 +313,13 @@ vec4 wxConvection(vec3 d, out float env, bool cellsOnly)
             float sMax = min(A.c.x, 4.0 * tauL), sMin = max(A.c.x - A.c.y, 0.0);
             if (sMin >= sMax) continue;
             float acc = 0.0, accM = 0.0, ds = (sMax - sMin) / 8.0;
+            // The outline's LOBES: the disc's radius x 0.65 .. 1.35 by two octaves of noise (~22 and ~8 km) in the source's
+            // frame, seeded per storm and evolving with its age. The integral's noise (kN, below) cannot move the outline of a
+            // saturated plate: from orbit every anvil was a perfect white disc (2026-11-07). (= the CPU's anvilBinRadius.)
+            vec2  pw  = p / 22000.0;
+            float sdA = fract(A.c.y * 0.0137 + A.b.w * 7.3) * 50.0;
+            float kO  = clamp(1.0 + 0.35 * (wxNoise(vec3(pw, sdA + A.c.x / 5400.0)) + 0.5 * wxNoise(vec3(pw * 2.7, sdA + 3.1 + A.c.x / 2700.0))),
+                              0.6, 1.35);
             for (int j = 0; j < 8; ++j) {
                 // (quadratic spacing, each tap weighted by its share 2u: dense on the young outflow at the tops it leaves.
                 // Evenly spaced over hours, the youngest tap was ~30 min old and ~20 km downwind: a line's shield stood apart
@@ -335,7 +342,7 @@ vec4 wxConvection(vec3 d, out float env, bool cellsOnly)
                 // ghost under it, the storm review's multicell. = the CPU's anvilBinRadius.)
                 vec2  q  = p - vec2(A.c.w * s + 0.6 * (rk - A.a.w), 0.0);
                 if (A.d.x > 0.0) q -= ax * clamp(dot(q, ax), -A.d.x, A.d.x);   // to the line segment
-                float dq = length(q * vec2(q.x < 0.0 ? 1.6 : 1.0, 1.25)) / rk;
+                float dq = length(q * vec2(q.x < 0.0 ? 1.6 : 1.0, 1.25)) / (rk * kO);
                 float rr = sqrt(A.a.w / rk);
                 acc += wq * exp(-s / tauL) * (1.0 - smoothstep(0.55, 1.1, dq)) * rr;   // (it thins as it spreads, vertically too)
                 // the mid-level outflow: slower downwind, wider, longer-lived; it too spreads downwind (its upwind edge stays
