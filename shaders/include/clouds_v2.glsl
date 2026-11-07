@@ -1496,7 +1496,10 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         // A DECAYING tower (sg.dec, its cell's decay; not the plate): its billows go soft, it frays and thins -- a glaciating,
         // collapsing column, not cauliflower still boiling up the storm volume's rise (the user, 2026-11-06).
         float dk  = sg.dec * (1.0 - sg.deck);
-        c.lobeKL  = mix(c.lobeKL, lobeS * mix(1.0, lkP, sg.deck) * (1.0 - 0.75 * sg.cap) * (1.0 - 0.6 * dk), wS);
+        // (Toward the plate's outline, sg.cap <= 0.67, its lobes x (1 - 1.3 cap) and its bubbles x (1 - 1.4 cap) -- below: a thin,
+        // feathered sheet carved by them broke into salt, a field of white specks, wherever an anvil thinned (its edges, and the
+        // whole of it as it dissolves, 2026-11-07); with them gone its fibres streak it along the wind like cirrus.)
+        c.lobeKL  = mix(c.lobeKL, lobeS * mix(1.0, lkP, sg.deck) * (1.0 - 1.3 * sg.cap) * (1.0 - 0.6 * dk), wS);
         c.aBase   = mix(c.aBase, 0.3, wS);
         c.aRamp   = mix(c.aRamp, 600.0, wS);
         c.AshK    = mix(c.AshK, 0.0, wS);
@@ -1524,7 +1527,7 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         // were zeroed on the plate and the turrets on the whole storm: a smooth lens over a lumpy column.
         float bubS = 0.0, turS = 0.0;
 #ifndef SKY_LITE
-        bubS = fpS * mix(1.0, 0.25, sg.deck);
+        bubS = fpS * mix(1.0, 0.25, sg.deck) * (1.0 - 1.4 * sg.cap);
         turS = cv2.cu3.x * fpS * (1.0 - sg.deck);
 #endif
         c.lobeB   = mix(c.lobeB, lobeS * 1.4 * (1.0 + cv2.cu5.x * bubS) + cv2.cu5.x * bubS * 2.0 * cv2.cu5.y * (0.6 + 0.45 * cv2.cu5.z)

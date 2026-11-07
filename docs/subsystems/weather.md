@@ -141,6 +141,10 @@ Plan and progress log: `.plans/WEATHER_V2_PLAN.md` (untracked).
   - It DISSOLVES over the last half linger (10 min .. 1 h) of its storm's life (its source strength x 1 - smoothstep): the
     catalog lists a storm until its towers' end + one linger, when the outflow still holds e^-1 of itself, and a whole
     anvil vanished from the sky in a frame (orbit film over the report's ITCZ: 0 spikes over 4 h after, max change /15).
+  - Toward the plate's outline (sg.cap <= 0.67) its lobes go x (1 - 1.3 cap) and its bubbles x (1 - 1.4 cap): a thin
+    feathered sheet carved by them broke into salt (white specks) wherever an anvil thinned, its edges and all of it as
+    it dissolves; without them its fibres streak it along the wind. At 1 min/s and faster the dissolving edge still
+    sweeps a band of holes across the plate (the history cannot keep up); at 1x / 10x it is a clean fibrous sheet.
   - A decaying single cell's billows soften, fray and thin (`CV2Storm.dec`: the cell's c.w = -(1 - its decay s-curve);
     lobes x(1 - 0.6 dk), erosion x(1 + 1.5 dk), density x(1 - 0.45 dk), not on the plate).
   - Tried and reverted (no visible change on video): the bake's congestus environment and core coverage, and the storm
