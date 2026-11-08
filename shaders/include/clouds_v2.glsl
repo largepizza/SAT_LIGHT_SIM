@@ -1285,7 +1285,10 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
         // (convex in the noise -- sqrt: a broad, round head on a sloping foot; over 0.5-1.3 sd the step was ~2 km wide and the
         // towers stood as smooth vertical slabs)
         float twN = smoothstep(-0.4, 1.2, zT);
-        T = mix(T, min(0.28 + 0.75 * sqrt(twN) + 0.06 * (cellsB - 0.5), 1.0) * smoothstep(0.1, 0.5, eB), sK);
+        // (its shoulders 0.15 .. 0.28 of the span by the same noise below the towers' threshold, + the coarse cells' lumps: at
+        // one floor, 0.28, a third of a storm was a flat-topped mesa with the towers standing on it -- a castle, 2026-11-08)
+        float flr = 0.15 + 0.13 * smoothstep(-2.0, -0.4, zT);
+        T = mix(T, min(flr + 0.75 * sqrt(twN) + 0.12 * (cellsB - 0.5), 1.0) * smoothstep(0.1, 0.5, eB), sK);
         // (under a hurricane's CDO, outside its eyewall: buried under the shield, 0.8 of the span -- with the storm lobes'
         // lift its tower heads stood through the CDO in dozens of blocks, 2026-11-08)
         T = min(T, mix(1.0, 0.8, gCv2CdoK * (1.0 - gCv2EywK)));   // (not max(): the field's own smooth dome made a mountain)
