@@ -222,6 +222,12 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
       side, `cirrus_flow_blend`), renewals staggered by a ~3000-km field and jumped by a hash of the window index; within
       a blend the other phase's fibres are read too (cv2IceFibres twice) and mixed. Cost +0.25 ms from 400 km (28.1 vs 27.9
       GPU), 0 from the ground; march 249 -> 252 registers. The resolve still reprojects cirrus by the even slide alone.
+    - The far side's depth beyond a 225-m footprint (2026-11-08, issue_20261106_172424 shot 2, the "phase boundary as a
+      sharp ring"): its path estimate (`odBkA`, cloud_v2_march.comp) is capped at the far march's reach `cv2.ms.w`, what the
+      field read inside the footprint measures, and the switch is blended over 150-225 m. Uncapped it was the whole column
+      to the base: over a CDO or a deck from altitude the far clouds' diffuse field read a slab many km deep, brighter than
+      the field-read disc round the nadir. Image change elsewhere ~4 levels mean (orbit, ITCZ storm walls a little more
+      shaded). Still open: the clipmap's light (`cdc_light`) draws a faint rectangle (its level boxes) over a CDO from 36 km.
 - **Debug view 7**: per-layer optical depth (red low incl. rain, green mid, blue anvil, white high) — the
   first thing to look at when a cloud artifact has an unknown owner.
 - **Motion** (`cloud_v2_resolve.comp`): the new-sample weight and the clamp box follow PARALLAX (the

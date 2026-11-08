@@ -1189,7 +1189,11 @@ void main()
             // main sample's alone. With ~0 depth on its far side the diffuse field took it for a wisp: grey-blue, luminance
             // ~164 against the cumulus' 183-224 beside it; its own path to its base, 215, issue 20261105_201331.)
             {
-                float odBkA = f.sigma * f.hf * max(f.topH - p.h, 0.0) / max(1.0 - f.hf, 0.05) / max(dot(up, keyDir), 0.1);
+                // (2026-11-08, issue_20261106_172424 shot 2 "extend the attenuation effects of cloud droplet phase outward to the
+                // farther clouds"): the path to the base CAPPED at the far march's reach, cv2.ms.w -- what the field read inside
+                // the 225-m footprint measures. Uncapped, a deep cloud's far side (a CDO, a deck seen from orbit) was the whole
+                // column, its diffuse field brighter: a disc of darker cloud round the nadir, the far clouds too bright.)
+                float odBkA = f.sigma * min(f.hf * max(f.topH - p.h, 0.0) / max(1.0 - f.hf, 0.05) / max(dot(up, keyDir), 0.1), cv2.ms.w);
                 odBk = (!wantBk || skipL || faint || f.deck < -0.5) ? odBkA : mix(odBk, odBkA, smoothstep(150.0, 225.0, fp));
             }
             if (wantL) {
