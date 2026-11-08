@@ -1435,6 +1435,11 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   > occupancy clipmap > "Low in the shell". Shot 1, 1920x1009, interleaved: still 22.2 -> 16.5 ms; flying east at 4.9 km/s
   ~50 -> ~28 ms (old shader 49.8, new shader 38.9, + the clipmap kept on 27.7-29.0); the reporter's trail 1 33.2 -> ~28;
   shot 2 still 8.5 -> 8.5; cumulus from 3 km 11.3 -> 11.0 (non-storm, no regression); 128 registers.
+- **Rain with scud strides like rain** (2026-11-07, issue_20261107_163713, under a snowing deck from 500 m): `rainAlone` is
+  `f.rain > 0.2 && f.hf <= 0.0` (was > 0.9). The fractus band under a raining base lowers the rain's share of its samples,
+  and every ray from an eye under the deck took fine steps and a full light march through it for 3-7 km: fractus was 18 of
+  41 ms of cloud march there. Now 40.4 -> 32.9 ms, mean 2.5 levels (the scud slightly softer). With weather v2's stratiform
+  rain under most decks and the user's rain_amount 3, precipitation was ~2/3 of that view's march (rain 0: 14 ms).
 - **Rain alone is BELOW the base** (2026-11-06, issue 20261105_180442 "Cloud base edge contour", branch qa/20261106/contour-a).
   `coarseThin`'s rain case (a coarse sample standing for four steps, review 22) takes `rainAlone = f.rain > 0.9 && f.hf <= 0.0`:
   a sample with no cloud body under it (`cv2LowA` sets `f.hf` once it gets past the rain branch, i.e. above the base).

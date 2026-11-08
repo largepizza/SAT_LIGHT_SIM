@@ -917,7 +917,12 @@ void main()
             // over a thin cloud too; a ray from above met that pure rain first, strode its four steps and skipped a cloud
             // whose top was within ~4 steps of its base: a see-through line round every raining field's thin margin (where
             // the top falls into the floor), and a thinned, grainy margin elsewhere. Below the base the stride is as before.
-            bool rainAlone  = f.rain > 0.9 && f.hf <= 0.0;
+            // 2026-11-07 (issue_20261107_163713 "awful performance ... something up with sampling?", under a snowing deck from
+            // 500 m): the FRACTUS band under a raining base (cv2.vert.w) lowers the rain's share of a sample, and at > 0.9 every
+            // ray from an eye under the deck took fine steps and full light marches through ~250-550 m of scud for 3-7 km:
+            // 18 of 41 ms of cloud march (fractus 0: 23 ms). Below the base, rain with scud strides like rain (> 0.2): 40.4 ->
+            // 32.9 ms, mean 2.5 levels (the scud slightly softer).
+            bool rainAlone  = f.rain > 0.2 && f.hf <= 0.0;
             bool coarseThin = !fine && f.sigma > 0.0 && (f.thin > 0.9 || rainAlone || (f.soft > 0.9 && f.deck > 0.5));
             if (!fine && !coarseThin) {
                 // Back two steps and on to a JITTERED fine lattice: the start jitter covers only the
