@@ -106,6 +106,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Clouds and weather
 
+- **No more cloud rows from orbit.** Near the equator the cumulus field no longer lies in straight north-south streaks
+  and a grid when seen from space.
 - **Cumulus turrets.** Cumulus and stratocumulus fields are no longer one smooth dome per cell: a 3D field of towers
   of varied height, taller than wide and leaning with the wind, rises out of every cloud with a convective share,
   so a shower field from an aircraft shows turrets standing over a lower mass instead of a sheet of gumdrops.
