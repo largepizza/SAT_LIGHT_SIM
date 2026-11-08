@@ -1536,6 +1536,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             return glm::vec4((float)fracPos(a.x), (float)fracPos(a.y), (float)fracPos(a.z), aS.w);
         };
         p.anchorShapeA = anchorF(f1, cv2ShapePeriodM, 1.0);
+        p.cellA = anchorF(f1, cv2CellPeriodM, 0.85);   // (the cell volume in the same frame: clouds_v2.glsl cv2CellUV)
         p.anchorStormA = stormAnchorF(f1);
         // A change of frame CROSS-FADES (2026-11-06, issue_20261105_202810 shot 3 "Sudden shape change"): the frame is
         // chosen at the observer, so flying across a place where the choice changes reshaped every lobe in view at once
@@ -1560,9 +1561,13 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             p.shapeB[0].w = share * share * (3.0f - 2.0f * share);
             p.shapeB[3] = bS;
             p.shapeB[4] = bT;
+            p.cellB = anchorF(cv2ShapeFadeFrom, cv2CellPeriodM, 0.85);
         }
         else
+        {
             for (auto &v : p.shapeB) v = glm::vec4(0.0f);
+            p.cellB = glm::vec4(0.0f);
+        }
         cv2ShapeFrame = f1;
     }
     {

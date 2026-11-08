@@ -2823,6 +2823,12 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   placement. Tried: per-sample warps (Perlin, analytic sines, in place or not) all flipped cv2FieldLow to ~220
   registers (+5-9 ms); a cross-fade of two frames cost 0.7 ms idle. Only the low lobes and storm lobes use it; the
   detail erosion, cells, mid layer etc. still tile in the drifted ECEF frame.
+  **The cumulus CELL volume too, since 2026-11-07** (`cellA` / `cellB`, clouds_v2.glsl `cv2CellUV`; issue_20261107_125245
+  "noise repetition"): Weather v2 removed the drift, so the map frame is the Earth's and the 32-km cell tile's rows stood
+  still along the equator: from orbit the cumulus lay in straight N-S streaks and a ~100-km lattice (-2.5 146.7, -1 -150).
+  Read now through the same frame and, during a frame change's fade, a ray's share in the old one (a change moves the
+  cells; the history eases it). Same registers (250) and cost; gate unchanged. Diagonal cloud rows at ~35 N -150 remain:
+  they are not the cells, the mesoscale terms or the morphology (all knocked out), and read as streets.
 - **`GpuCloudV2Params` mirrors `CloudV2Params`** (all vec4/mat4; offsetof asserts) — keep the order.
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).

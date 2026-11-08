@@ -266,6 +266,9 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     vec4  wind0;
     vec4  wind1;
     vec4  wind2;   // x the cirrus fibres' eastward slide (m/s at the equator; cv2HighSigma's high.z), for the resolve
+    // (2026-11-07) The CELL volume's anchor in the shape frame (cellA) and in the fading frame (cellB, shapeB's): see cv2CellUV.
+    vec4  cellA;
+    vec4  cellB;
 } cv2;
 #include "wind_field.glsl"
 
@@ -708,6 +711,25 @@ vec4 cv2WeatherBilinear(vec3 d, float lodL)
     return mix(mix(r[0], r[1], f.x), mix(r[2], r[3], f.x), f.y);
 }
 
+// THE CELL VOLUME IN THE SHAPE FRAME (2026-11-07, issue_20261107_125245 "noise repetition" from orbit): the cumulus cells
+// (32-km tile) were read unrotated, and since Weather v2 removed the drift the map frame is the Earth's. Wherever the local
+// horizontal plane holds a short lattice direction of the tile (the whole equator holds its z axis; the axes' and diagonals'
+// great circles elsewhere) the sphere's slice repeated along it every 1-1.7 periods: from orbit the cumulus field stood in
+// straight rows, streaks and a lattice ~100 km across (-2.5 146.7, -1 -150, 35 -150). Read now through the low shape
+// volume's frame (shapeRotA, chosen at the observer clear of such alignments) and, while a frame change fades, a ray's
+// share in the old one (shapeB), as cv2FieldLow's shape read: a frame change moves the cells, and the history eases it.
+bool cv2ShapeUseB()
+{
+    return cv2.shapeB[0].w > 0.0
+        && fract(52.9829189 * fract(dot(vec2(gl_GlobalInvocationID.xy), vec2(0.06711056, 0.00583715))) + 0.6180340 * cv2.frame.x)
+           < cv2.shapeB[0].w;
+}
+vec3 cv2CellRot(vec3 v)
+{
+    return cv2ShapeUseB() ? mat3(cv2.shapeB[0].xyz, cv2.shapeB[1].xyz, cv2.shapeB[2].xyz) * v
+                          : mat3(cv2.shapeRotA[0].xyz, cv2.shapeRotA[1].xyz, cv2.shapeRotA[2].xyz) * v;
+}
+vec3 cv2CellUV(vec3 mp) { return (cv2ShapeUseB() ? cv2.cellB.xyz : cv2.cellA.xyz) + cv2CellRot(mp) * cv2.anchorCell.w; }
 float cv2MesoSmoothG(vec3 uvw, float lod)
 {
     float l0 = floor(lod), fl = lod - l0;
@@ -897,7 +919,7 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     // ... and near a tower with the storm cumulus target's real value here (cwT below).
     if (q.h > max(hTypB, cv2.column.w * (1.0 + cv2.column3.z * clamp((cl.a - 0.5) * 8.8, -1.0, 1.0))
                          + cv2Ground(q.dirE) + 50.0)) return false;
-    vec4 ce = cv2PhRead(cv2MesoTex, cv2.anchorCell.xyz + mp * cv2.anchorCell.w, gCv2PhD * cv2.anchorCell.w,
+    vec4 ce = cv2PhRead(cv2MesoTex, cv2CellUV(mp), cv2CellRot(gCv2PhD) * cv2.anchorCell.w,
                         cv2Lod(fpM, cv2.anchorCell.w), kCv2MesoMean);
 
     // The weather map's texels are 5 km: thresholding them bilinearly draws their squares, which
@@ -1013,7 +1035,8 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     // and at footprint + 2 (+ 4 below) they changed with the viewing distance, so every storm was
     // stretched along the view rays into fins radiating from the camera (user snaps, pass 13).
     float lodCell    = cv2Lod(fpM, cv2.anchorCell.w);
-    float cellsC     = cv2MesoSmoothG(cv2.anchorCell.xyz + mp * cv2.anchorCell.w, max(lodCell, 2.0));
+    vec3  cellUV     = cv2CellUV(mp);
+    float cellsC     = cv2MesoSmoothG(cellUV, max(lodCell, 2.0));
     // Deep types: the coarse cells only. The fine cells' 2 km edges, extruded up a 10 km column, were
     // vertical grooves on every storm wall (user snaps 7-10, pass 13): the 3D lobes shape a tower.
     float cells      = mix(ce.g, min(cellsC * 1.8, 1.0), deep);
@@ -1057,7 +1080,7 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     // four for deep types, whose cells are already the coarse ones). It sets each cell's height and
     // its peak, so every column of a cell shares one profile (see THE CONVECTIVE PROFILE below).
     float cellsB     = deep > 0.02
-                     ? mix(cellsC, cv2MesoSmoothG(cv2.anchorCell.xyz + mp * cv2.anchorCell.w, max(lodCell, 4.0)), deep)
+                     ? mix(cellsC, cv2MesoSmoothG(cellUV, max(lodCell, 4.0)), deep)
                      : cellsC;
     float fieldB     = 0.15 + 0.85 * sqrt(min(cellsB * 1.8, 1.0)) * mix(0.6, 1.0, cl.r)
                      + 0.08 * clamp(fz, -2.5, 2.5);
@@ -1837,7 +1860,8 @@ CV2Far cv2FarColumn(CV2Pos q, float fpM)
     vec3  mp  = sP;
     vec3  mpF = mp + flowD;
     vec4  cl  = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + mpF * cv2.anchorCluster.w, cv2Lod(fpM, cv2.anchorCluster.w));
-    vec4  ce  = textureLod(cv2MesoTex, cv2.anchorCell.xyz + mp * cv2.anchorCell.w, cv2Lod(fpM, cv2.anchorCell.w));
+    vec3  cellUV = cv2CellUV(mp);
+    vec4  ce  = textureLod(cv2MesoTex, cellUV, cv2Lod(fpM, cv2.anchorCell.w));
     vec3  warp = (vec3(ce.a, cl.a, 0.5 * (ce.a + cl.a)) - 0.5) * cv2.extra.y;
     vec4  w    = cv2WeatherSmooth(wdF + warp);
     float cov  = clamp((w.r * cv2.look.x - cv2.cover.x) / covSpan, 0.0, 1.0);
@@ -1878,9 +1902,9 @@ CV2Far cv2FarColumn(CV2Pos q, float fpM)
     {
         float thr0   = 1.0 - covT;
         float deepE  = smoothstep(0.45, 0.85, w.g);
-        float cellsC = cv2MesoSmoothG(cv2.anchorCell.xyz + mp * cv2.anchorCell.w, max(lodCell, 2.0));
+        float cellsC = cv2MesoSmoothG(cellUV, max(lodCell, 2.0));
         float cellsB = deepE > 0.02
-                     ? mix(cellsC, cv2MesoSmoothG(cv2.anchorCell.xyz + mp * cv2.anchorCell.w, max(lodCell, 4.0)), deepE)
+                     ? mix(cellsC, cv2MesoSmoothG(cellUV, max(lodCell, 4.0)), deepE)
                      : cellsC;
         float fieldB = 0.15 + 0.85 * sqrt(min(cellsB * 1.8, 1.0)) * mix(0.6, 1.0, cl.r) + 0.08 * clamp(fz, -2.5, 2.5);
         float eB     = clamp((fieldB - thr0) / 0.55, 0.0, 1.0);

@@ -106,6 +106,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Clouds and weather
 
+- **No more cloud rows from orbit.** Near the equator the cumulus field no longer lies in straight north-south streaks
+  and a grid when seen from space.
+- **Faster under rain and snow.** Looking up from under a precipitating deck costs much less (the scud below the base).
 - **Clean clouds in time-lapse.** At 1 min/s and faster, clouds that had moved or dissolved no longer linger as blocky
   ghosts and trails, and a storm tower that has gone no longer stays lit in the sky. Time-lapse is also cheaper: the
   empty-space skipping of the cloud march now stays on above 4x real time.
