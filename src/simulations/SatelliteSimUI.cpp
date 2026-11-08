@@ -7262,6 +7262,7 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SldHurricaneArmSpeed), &stormCycArmSpeed, 0.0f, 10.0f, 0.05f, "%.2f", 457},
         {tx(Txt::SldHurricaneMinorSwirls), &stormCycMinorSwirls, 0.0f, 2.0f, 0.05f, "%.2f", 458},
         {tx(Txt::SldHurricaneDeckSpiral), &stormCycDeckSpiral, 0.0f, 1.0f, 0.05f, "%.2f", 459},
+        {tx(Txt::SldHurricaneCdoPlate), &stormCycCdoPlate, 0.0f, 1.0f, 0.05f, "%.2f", 547},
         {tx(Txt::SldHurricaneOutflowCirrus), &stormCycOutflow, 0.0f, 3.0f, 0.05f, "%.2f", 460},
         {tx(Txt::SldHurricaneOutflowStreaks), &stormCycStreaks, 0.0f, 1.0f, 0.05f, "%.2f", 461},
         // 2026-11-05 (cirrus-hurr): the CDO's top, a smooth swirl with streaks along the flow. Slots 522-524.
@@ -9788,6 +9789,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         stormCycArmSpeed = settingClamp(c.value("storm_cyc_arm_speed", stormCycArmSpeed), 0.0f, 10.0f);
         stormCycMinorSwirls = settingClamp(c.value("storm_cyc_minor_swirls", stormCycMinorSwirls), 0.0f, 2.0f);
         stormCycDeckSpiral = settingClamp(c.value("storm_cyc_deck_spiral", stormCycDeckSpiral), 0.0f, 1.0f);
+        stormCycCdoPlate = settingClamp(c.value("storm_cyc_cdo_plate", stormCycCdoPlate), 0.0f, 1.0f);
         stormCycOutflow = settingClamp(c.value("storm_cyc_outflow", stormCycOutflow), 0.0f, 3.0f);
         stormCycStreaks = settingClamp(c.value("storm_cyc_streaks", stormCycStreaks), 0.0f, 1.0f);
         stormCycSpiralAB = c.value("storm_cyc_spiral", stormCycSpiralAB);
@@ -10571,6 +10573,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"storm_cyc_arm_speed", stormCycArmSpeed},
         {"storm_cyc_minor_swirls", stormCycMinorSwirls},
         {"storm_cyc_deck_spiral", stormCycDeckSpiral},
+        {"storm_cyc_cdo_plate", stormCycCdoPlate},
         {"storm_cyc_outflow", stormCycOutflow},
         {"storm_cyc_streaks", stormCycStreaks},
         {"storm_cyc_spiral", stormCycSpiralAB},

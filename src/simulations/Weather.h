@@ -164,6 +164,10 @@ struct CycloneShape {
     float outflow = 1.0f;       // the outflow cirrus' coverage (x its strength and reach)
     float streaks = 0.6f;       // the outflow cirrus' streaks (anticyclonically curving, 0 = a plain sheet)
     bool  spiral = true;        // false: the pre-2026-11-03 upper deck (outflow disc + arm-cirrus capsule chains)
+    // The CDO as a PLATE shield (x its strength; 0 = none, 2026-11-08 weather salvage): without it the overcast is the
+    // weather bake's cyclone stamp drawn by the cumulus field (weather-v2's "no top layer"), the cirrus deck over it. On (1)
+    // until the low field carries a storm's own mass (weather-v2's storm share, sK): off, the stamp draws broken cumulus.
+    float cdoPlate = 1.0f;
 };
 // Applies the arm count, tightness and speed to the states cyclonesAt made (before cycloneTowersAt: the inner band towers
 // stand on the arms' crests).
