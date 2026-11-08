@@ -42,8 +42,9 @@ Plan and progress log: `.plans/WEATHER_V2_PLAN.md` (untracked).
   - Tropical cyclones: the bake types the eyewall / core (Cc -> 1) and the bands (Cc ~0.3 -> ~0.75) as storm share; the
     eye (cv2CycEye) runs in cv2Field whatever the clipmap's layer mask (else the anvil band's cells left a square eye).
   - Storm lobes x (1 + 3 sK): the towers' T rises ~0.7 of the span over ~5 km, so x1.8 lobes moved a wall ~200 m (smooth
-    slabs); turrets stay off on deep types (needles). The storm share's ceiling is the Cb top + 1 km x sK: the strongest
-    towers overshoot the anvil (whose top is the tropopause's).
+    slabs); turrets stay off on deep types (needles). The storm share's ceiling is the Cb top + 400 m x sK^2 (+1 km x sK
+    stood every CDO tower peak through its shield). The anvil's top rises 500 m x aS^2 over the tropopause - 100 m (a thick
+    shield buries the towers' lobe-lifted heads); under a hurricane's CDO outside the eyewall a tower's T <= 0.8.
   - MID outflow: the cube's w (level 2, lag-corrected) is the mid layer's altostratus regime + strat (cv2MidSigma): a
     line's trailing shield, a cyclone's deck between its bands; it gives way over the towers (type > 0.7, cv2Field).
   - The convection cube's LAG (cv2PatchConvLag) is the face's RECTANGLE bake time where it has one: in time warp a face in
