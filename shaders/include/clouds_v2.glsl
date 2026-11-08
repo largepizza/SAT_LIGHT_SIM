@@ -2262,13 +2262,14 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
         aS = smoothstep(0.1, 0.6, max(cvA.z, 0.8 * smoothstep(0.1, 0.5, cvA.x)));
     }
 #endif
-    if (q.h < base0 - 700.0 || q.h > max(base0 + 2400.0, aS > 0.0 ? tropTop + 500.0 : 0.0)) return 0.0;
+    if (q.h < base0 - 700.0 || q.h > (aS > 0.0 ? max(base0 + 2400.0, tropTop + 500.0) : base0 + 2400.0)) return 0.0;
     vec3  flowL  = cv2FlowDisp(wd, vec3(0.0));
     vec3  wF     = cv2FlowWeatherDir(wd, flowL);              // the low cloud's (flowed) map
     // The high layer's own frame: the low flow x "Cirrus flow" (the jet bends the upper cloud more;
     // until pass 13 cirrus ignored the flow entirely).
     vec3  wdH    = normalize(wd + flowL * (cv2.high2.z / R_EARTH));
     vec4  wc     = textureLod(cv2WeatherTex, wF, CV2_WX_LOD(max(2.0, gCv2WxLod)));
+    // (the storms' own anvil over their wide envelope is in the cube's z: the bake, continuous storms)
     // Cirrus lives with the weather systems: in the jet ahead of fronts and in the outflow of deep
     // convection; the subtropical highs are mostly free of it. The regime therefore follows the map's
     // coverage over the surrounding ~150 km (mip 4) as much as its own noise. On the noise alone the
@@ -2392,10 +2393,10 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
     d = mix(d, prof * aS * clamp(0.8 + 0.3 * (sb.a - 0.5) + 0.8 * lmp, 0.3, 1.2), smoothstep(0.15, 0.6, aS));
     hfH  = z;
     topH = zb + thick;
-    // (the anvil's ice: ~4-10 x cirrus' extinction where it is thick)
+    // (the anvil's ice: an optical depth of ~20-30 where it is thick -- at 0.004 /m, ~5, it read grey from above)
     float aK = smoothstep(0.0, 0.6, aS);
     gCv2AnvK = aK;
-    return d * mix(mix(mix(0.0008, 0.0003, strat), 0.0016, ccK) * cv2.high2.x, 0.004, aK) * mix(1.0, 0.6, far);
+    return d * mix(mix(mix(0.0008, 0.0003, strat), 0.0016, ccK) * cv2.high2.x, 0.012, aK) * mix(1.0, 0.6, far);
 }
 
 float cv2SqC(float x) { return x * x; }
@@ -2674,12 +2675,7 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
 #ifdef CV2_CONV_BINDING
     // CONTINUOUS STORMS (column.y, 2026-11-07): no column or plate here -- the storms steer the weather map (the bake) and the
     // cumulus field draws them; the high layer draws the anvil (cv2HighSigma). Only a tropical cyclone's eye is cut.
-    if (cv2.column.y > 0.5) {
-        float topE  = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * cv2Tropo(q.dirE);
-        float baseE = cv2.types[4].alt.x + cv2Ground(q.dirE) * 0.9;
-        cv2CycEye(q.dirE, q.h, q.h - baseE, baseE, topE - 250.0);
-        return g;
-    }
+    if (cv2.column.y > 0.5) return g;   // (the eye: cv2Field, whatever the layer mask)
     if (cv2.column.x <= 0.0 || q.h < (cv2.rain.x > 0.0 ? -100.0 : 400.0)) return g;
     vec3  wd    = q.dirE;
     float tropo = cv2Tropo(wd);
@@ -2863,6 +2859,13 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     // Storms are the cumulus field's margin (cv2StormGeom: the convection cube), carved by its lobes and erosion.
     CV2Storm sg = cv2StormNone();
     if ((lm & (kCv2LayCol | kCv2LayLow)) != 0u) sg = cv2StormGeom(q, fpM);
+    // (continuous storms: a cyclone's eye is cut from every layer whatever the clipmap's mask -- under the storm read's mask
+    // alone, the anvil band's cells skipped it and the eye was the clipmap cells' square hole in the CDO)
+    if (cv2.column.y > 0.5) {
+        float topE  = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * cv2Tropo(q.dirE);
+        float baseE = cv2.types[4].alt.x + cv2Ground(q.dirE) * 0.9;
+        cv2CycEye(q.dirE, q.h, q.h - baseE, baseE, topE - 250.0);
+    }
 #ifndef SKY_LITE
     // A hurricane CDO's top: its swirl's streaks as RIDGES on the plate's margin ("Hurricane top streaks", ciHu.w, x11 toward
     // its outline), never negative (the plate's margin is the distance to its lid or its underside: an offset thickens it).
@@ -2939,7 +2942,8 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     if (sh > 0.0) f.thin = sh / f.sigma * (1.0 - gCv2AnvK);
     if (sm > 0.0) f.soft = sm / f.sigma;
     if (gCv2DbgWant)
-        gCv2Dbg = vec4(dbgLow * (1.0 - gCv2DbgSK), max(sm, 0.0), dbgLow * gCv2DbgSK, max(sh, 0.0));
+        gCv2Dbg = vec4(dbgLow * (1.0 - gCv2DbgSK), max(sm, 0.0) + max(sh, 0.0) * (1.0 - gCv2AnvK), dbgLow * gCv2DbgSK,
+                       max(sh, 0.0) * gCv2AnvK);   // (view 7: R low, G mid + cirrus, B the storms' low cloud, grey their anvil)
 #ifdef CV2_LAYER_HITS
     // The layers this read needed: a function whose result was zero AND changed nothing else. The storm geometry (Col):
     // where its proximity or rain core changed the low field, its strength cut a mid sheet, or its plate cut the cirrus.

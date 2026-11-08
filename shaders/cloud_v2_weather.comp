@@ -688,6 +688,9 @@ void main()
 
     // The storms' own cloud, from the convection cube's fields (2026-11-06; the per-tower stamps are gone): broken
     // cumulus over their environment, the cores themselves, the trailing stratiform deck (mid outflow), in coverage units.
+    // (continuous storms: every storm's OWN anvil over its wide envelope's core, by its strength, at the coarse levels -- the
+    // march's high layer draws an anvil sheet where z is high; the catalog's integral spreads it downwind and lets it linger)
+    if (pc.storm2.x > 0.5 && !fine) cvx.z = max(cvx.z, 0.85 * smoothstep(0.04, 0.45, gEnvW));
     imageStore(outConv, id, cvx);   // (with the cyclones' fields)
     float cC = cvx.x, cMid = cvx.w;
     float stormAdd = 0.45 * smoothstep(0.02, 0.5, envC) + 0.6 * smoothstep(0.1, 0.5, cC) + 0.9 * smoothstep(0.05, 0.6, cMid);
@@ -754,7 +757,7 @@ void main()
     // CONTINUOUS STORMS (2026-11-07): there is no column geometry; the storm IS the cumulus field's own deep cloud. Over the
     // wide envelope congestus, rising toward cumulonimbus over the cells' environment: the field draws it with its coarse
     // cells, big lobes and tops up to the tropopause, all varying smoothly with the cells' summed strength.
-    if (contS) t = mix(t, max(t, mix(0.68, 1.0, smoothstep(0.05, 0.65, envC))), sWide);
+    if (contS) t = mix(t, max(t, mix(0.7, 1.0, smoothstep(0.03, 0.4, envC))), sWide);
     t  = mix(t, 0.15, smoothstep(0.1, 0.6, cMid) * (1.0 - smoothstep(0.1, 0.4, cC)));
     // The shelf: a deck at the front (near-stratus, flat) rising to cumulus at the towers' bases (a wedge ~3 km high).
     t  = mix(t, mix(0.08, 0.5, gShelfH), gShelf);
