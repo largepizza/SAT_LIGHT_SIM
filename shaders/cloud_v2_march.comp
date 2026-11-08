@@ -1152,7 +1152,10 @@ void main()
             // ~80 km up) the path to the column's base along the light (no field reads: the march cost 1.4 ms of an orbit view,
             // where no wisp is resolved). Nor for a sample the eye sees through less than a tenth of the cloud it is in (2026-11-06:
             // the far side's reads became field reads everywhere, kCv2BackJitZ; the gate saves ~0.15-0.25 ms, image unchanged).
-            bool  wantBk = wantL && !thin && cv2.ms.x > 0.5 && fp < 150.0 && T > 0.1;
+            // (2026-11-08, issue_20261106_172424 shot 2 "the phase boundary as a sharp ring"): the switch to the path estimate is
+            // BLENDED over a 150-225 m footprint (below). Cut at 150 m it drew a ring round the nadir from altitude, the far
+            // clouds lit brighter outside it.
+            bool  wantBk = wantL && !thin && cv2.ms.x > 0.5 && fp < 225.0 && T > 0.1;
             float odBk = 0.0;
             // Light LOD (cv2.column3.y, "Light LOD footprint", m; 0 = off): a sample the ray sees
             // through little of (T < 0.5), or whose pixel footprint is past the setting, gets a 2-step
@@ -1185,7 +1188,10 @@ void main()
             // (And for an orographic lens, f.deck < -0.5: the march away from the light does not see it either, gCv2Oro being the
             // main sample's alone. With ~0 depth on its far side the diffuse field took it for a wisp: grey-blue, luminance
             // ~164 against the cumulus' 183-224 beside it; its own path to its base, 215, issue 20261105_201331.)
-            if (!wantBk || skipL || faint || f.deck < -0.5) odBk = f.sigma * f.hf * max(f.topH - p.h, 0.0) / max(1.0 - f.hf, 0.05) / max(dot(up, keyDir), 0.1);
+            {
+                float odBkA = f.sigma * f.hf * max(f.topH - p.h, 0.0) / max(1.0 - f.hf, 0.05) / max(dot(up, keyDir), 0.1);
+                odBk = (!wantBk || skipL || faint || f.deck < -0.5) ? odBkA : mix(odBk, odBkA, smoothstep(150.0, 225.0, fp));
+            }
             if (wantL) {
                 float od = thin ? f.sigma * 400.0 : odL;
                 // A deck lit at a grazing angle is shadowed by the rest of the deck, tens of km
