@@ -281,13 +281,20 @@ float gShelf = 0.0, gShelfH = 0.0, gAhead = 0.0;
 // The storms' WIDE envelope (continuous storms, pc.storm2.x): the cells widened 3.5x (~18 km sigma at the default 15-km
 // "Cb tower radius"), soft-unioned: a storm complex as one region of big cloud, whatever its cells do one by one.
 float gEnvW = 0.0;
+// ... and its ANVIL's share: the same envelope, but only of the cells whose tops have reached the lid (their drawn top
+// share b.y past 0.75): the anvil forms as the towers get there, over the tower growth time, not with the storm's strength
+// (a 60-km anvil out of nothing in ~5 sim min, 2026-11-08, the US MCS at 1 min/s).
+float gEnvA = 0.0;
+// ... and the cells' environment weighted by their drawn TOP share (b.y): how far toward cumulonimbus the type goes, so the
+// towers rise over the catalog's tower growth time and the anvil (gEnvA) follows once they reach the lid.
+float gEnvT = 0.0;
 vec4 wxConvection(vec3 d, out float env, bool cellsOnly)
 {
     float lat = asin(clamp(d.z, -1.0, 1.0)) * (180.0 / PI), lon = atan(d.y, d.x) * (180.0 / PI);
     uint  la  = uint(clamp(floor((lat + 90.0) * 0.5), 0.0, float(kCv2ConvGridLat - 1u)));
     uint  lo  = uint(clamp(floor((lon + 180.0) * 0.5), 0.0, float(kCv2ConvGridLon - 1u)));
     uvec2 g   = cv2ConvGrid[la * kCv2ConvGridLon + lo];
-    float notC = 1.0, top = 0.0, anv = 0.0, mid = 0.0, notE = 1.0, notW = 1.0;
+    float notC = 1.0, top = 0.0, anv = 0.0, mid = 0.0, notE = 1.0, notW = 1.0, notA = 1.0, notT = 1.0;
     float dIn = -20000.0, drop = 10000.0;   // the cells' COLUMN as distance fields (level 0's z / w): see below
     for (uint k = 0u; k < g.y; ++k) {
         uint e = cv2ConvList[g.x + k];
@@ -298,6 +305,8 @@ vec4 wxConvection(vec3 d, out float env, bool cellsOnly)
             notC *= 1.0 - ci;
             notE *= 1.0 - c.b.x * exp(-(r * r) / (6.25 * c.a.w * c.a.w));
             notW *= 1.0 - c.b.x * exp(-(r * r) / (12.25 * c.a.w * c.a.w));
+            notA *= 1.0 - c.b.x * smoothstep(0.75, 1.0, c.b.y) * exp(-(r * r) / (12.25 * c.a.w * c.a.w));
+            notT *= 1.0 - c.b.x * smoothstep(0.1, 0.9, c.b.y) * exp(-(r * r) / (6.25 * c.a.w * c.a.w));
             // Its column ANALYTICALLY: the radius where this cell alone passes the march's contour (0.35) and, inside it, how
             // far its round head drops below its top (a cap as round as the column, <= 5 km). From the intensity alone a
             // weaker cell came out narrower AND lower, and a ~5-km core sampled at 5-km texels lost a third of its peak: a
@@ -406,6 +415,8 @@ vec4 wxConvection(vec3 d, out float env, bool cellsOnly)
     }
     env = 1.0 - notE;
     gEnvW = 1.0 - notW;
+    gEnvA = 1.0 - notA;
+    gEnvT = 1.0 - notT;
     // (no shelf over any cell's core or the ground ahead of it: in a bow the flank cells' shelves reach forward over the
     // middle cells' columns, and typed as a deck there they flattened the line's towers)
     gShelf *= 1.0 - smoothstep(0.04, 0.2, 1.0 - notC);
@@ -705,7 +716,7 @@ void main()
     // A cyclone's CDO is its anvil too (its core's mass, Cc ~0.92 x cdo, feathered with it); the bands are not (Cc 0.3).
     // (+ its outflow cirrus arms, x1.6: written under the old plate's threshold, they drew a grey ring round a hard-edged CDO
     // disc from orbit; the CDO ramps in from Cc 0.25 so its edge feathers into them)
-    if (pc.storm2.x > 0.5 && !fine) cvx.z = max(cvx.z, max(max(0.85 * smoothstep(0.04, 0.45, gEnvW), 0.9 * smoothstep(0.25, 0.9, tcCv.x)),
+    if (pc.storm2.x > 0.5 && !fine) cvx.z = max(cvx.z, max(max(0.85 * smoothstep(0.04, 0.45, gEnvA), 0.9 * smoothstep(0.25, 0.9, tcCv.x)),
                                                           min(1.6 * tcCv.z, 0.8)));
     imageStore(outConv, id, cvx);   // (with the cyclones' fields)
     float cC = cvx.x, cMid = cvx.w;
@@ -773,7 +784,7 @@ void main()
     // CONTINUOUS STORMS (2026-11-07): there is no column geometry; the storm IS the cumulus field's own deep cloud. Over the
     // wide envelope congestus, rising toward cumulonimbus over the cells' environment: the field draws it with its coarse
     // cells, big lobes and tops up to the tropopause, all varying smoothly with the cells' summed strength.
-    if (contS) t = mix(t, max(t, mix(0.7, 1.0, smoothstep(0.03, 0.4, envC))), sWide);
+    if (contS) t = mix(t, max(t, mix(0.7, 1.0, smoothstep(0.03, 0.4, gEnvT))), sWide);
     // (a tropical cyclone's convection: towering congestus along its bands (Cc ~0.3), cumulonimbus in its eyewall and core)
     if (contS) t = mix(t, max(t, mix(0.74, 1.0, smoothstep(0.3, 0.85, tcCv.x))), smoothstep(0.08, 0.25, tcCv.x));
     t  = mix(t, 0.15, smoothstep(0.1, 0.6, cMid) * (1.0 - smoothstep(0.1, 0.4, cC)));

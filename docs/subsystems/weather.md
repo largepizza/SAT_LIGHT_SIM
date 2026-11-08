@@ -38,6 +38,10 @@ Plan and progress log: `.plans/WEATHER_V2_PLAN.md` (untracked).
     mode (its linger x 0.4: the whole downwind tail of an old storm stood as dense anvil over the sky, issue_20261107_125130);
     the storm's own anvil is its envelope's. A higher share threshold (0.25) instead lost young storms' anvils.
   - Settings > Weather > Storms (cumulonimbus): "Continuous storms (0 = columns)" (slot 544).
+  - LIFE CYCLE: the type's cumulonimbus end follows the cells' environment weighted by their drawn TOP share (gEnvT,
+    smoothstep(0.1, 0.9, b.y)), and the storm's own anvil the envelope of the cells past 0.75 of the lid (gEnvA): towers rise
+    over the catalog's tower growth time, the anvil forms after (ITCZ storm at 1 min/s: towers 8-29 min, anvil from ~33).
+    Keyed on strength alone, a 60-km anvil came out of nothing in ~5 sim min and towers stood at the lid before any anvil.
   - Shoulders: a storm's non-tower T is 0.15 .. 0.28 by the same tower noise (+ 0.12 x coarse cells); at one 0.28 floor a
     third of a storm was a flat mesa under its towers ("a castle"). Hurricane outflow arms (the cyclone's z, 0.25 oc) x 1.6
     (<= 0.8) and the CDO ramps in from Cc 0.25. Tried and reverted: the cluster Perlin on the anvil share's outline
