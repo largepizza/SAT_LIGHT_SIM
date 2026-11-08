@@ -1398,8 +1398,11 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     if (turW > 0.0) m0 -= flatK * max(q.h - f.topH, 0.0) / (1500.0 * turW);
     // Erosion: base = bite the lumps (torn, wispy); higher up = bite the cracks, keep the lumps (billows). Deep
     // convection keeps storm.y of it and bites far fewer cracks (dark veins over every storm otherwise).
-    float billow = ty.shape.z * smoothstep(0.05, 0.4, hf) * (1.0 - 0.7 * deep);
-    float erK    = ty.shape.y * cv2.look.z * mix(1.0, cv2.storm.y, deep) * max(1.0 - 0.6 * cv2.tune.y * rV, 0.1);
+    // (continuous storms: a storm's cloud keeps the cumulus' billows and erosion -- the deep types' cut, made for the old
+    // towers, left its whole mass smooth grey domes from above, 2026-11-08)
+    float dpE    = deep * (1.0 - sK);
+    float billow = ty.shape.z * smoothstep(0.05, 0.4, hf) * (1.0 - 0.7 * dpE);
+    float erK    = ty.shape.y * cv2.look.z * mix(1.0, cv2.storm.y, dpE) * max(1.0 - 0.6 * cv2.tune.y * rV, 0.1);
     float erBase = mix(1.0, 1.0 - 0.7 * cv2.high2.w, ty.look.z);
     // "Cumulus wisps" (cu2.y): where a cloud is evaporating its edge is ragged and soft, where it grows it is hard.
     // Small, weak clouds (fractus) are wispy all round; a formed cloud on the parts the shape volume's Perlin
