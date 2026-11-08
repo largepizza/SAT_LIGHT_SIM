@@ -1501,7 +1501,9 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                                (float)fracPos(a.x), (float)fracPos(a.y), (float)fracPos(a.z));
     }
     p.anchorCell = anchor(cv2CellPeriodM, 0.85);
-    const double stormScale = std::clamp((double)cv2StormScale, 0.25, 16.0);
+    // (continuous storms: <= 8 -- the storm cloud is the cumulus field's, its lobes and bubbles a few km at most; at the
+    // user's 25 (16 after the clamp, tuned for the old columns) a tower's walls were 4-km smooth bulbs, meringue up close)
+    const double stormScale = std::clamp((double)cv2StormScale, 0.25, cv2StormContinuous > 0.5f ? 8.0 : 16.0);
     p.anchorStorm = anchor(cv2ShapePeriodM * stormScale, 1.0);
     p.anchorStormDetail = anchor(cv2DetailPeriodM * stormScale, 1.6);
     // The low shape volume's frame (2026-10-04): the volume tiles, and where the local horizontal plane holds a short
