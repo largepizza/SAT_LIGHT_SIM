@@ -772,11 +772,10 @@ void main()
     t += deep * conv * (0.22 + 0.25 * tropics);              // -> congestus (cumulonimbus only from storms)
     t -= cl.strat * (0.08 + 0.10 * ocean * (1.0 - tropics)); // decks: stratocumulus, stratus over cold sea
     t += 0.3 * aft * (0.5 + 0.5 * tropics);                  // afternoon: towering cumulus
-    // (continuous storms: the map's own deep convection -- dense cover over the ITCZ, the monsoons, an afternoon over land --
-    // reaches past congestus into the storm share, so convective regions tower as long as the map's systems live: hours,
-    // the GMGSI-benchmarked lifetimes, not a catalog cell's)
-    float tCap = contS ? 0.62 + 0.26 * smoothstep(0.7, 1.0, cov) * smoothstep(0.3, 0.8, max(deep * conv, 0.8 * aft)) : 0.62;
-    t  = min(t, tCap);   // the map's own convection caps at congestus: cumulonimbus is the storms'
+    // (Tried 2026-11-08, continuous storms: the map's own dense deep convection past congestus into the storm share, up to
+    // 0.88. Whole tropical cloud fields became storm cloud, drawn from orbit as a grey sheet with ~10-km square holes
+    // (issue_20261107_125245's view); the storms' persistence is their own system envelope now, gEnvW.)
+    t  = min(t, 0.62);   // the map's own convection caps at congestus: cumulonimbus is the storms'
     // Toward congestus over a storm's environment and its cores (the cumulus field's own deepest type: the column itself
     // is the storm geometry's, clouds_v2.glsl cv2StormGeom; typed cumulonimbus here, the field drew its own tower as a
     // cone through it); the mid outflow's deck stratiform.
