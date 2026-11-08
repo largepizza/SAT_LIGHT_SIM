@@ -106,6 +106,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Clouds and weather
 
+- **Cirrus rides the wind.** High-cloud streaks now follow the jet stream and its eddies instead of all sliding east
+  together, and slowly re-form every couple of hours (Weather > Cirrus flow window; 0 turns it off).
 - **Anvils that last.** Thunderstorm anvils now come mostly from organised storm systems, spaced apart, and live for
   hours: they form once, hold while their storm feeds them, and thin away slowly. Ordinary storms no longer leave their
   own anvils behind (Weather > Storm objects > "Single-storm anvils"; 2 restores them), so the grey speckled discs seen

@@ -214,6 +214,14 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   cv2HighSigma's far blend (LOD 1.5-4: the bundles' veil) already gave: from orbit cirrus is unchanged.
   Cost (interleaved A/B, contended GPU, cloud_march ms, A-vs-A floor in brackets, high_amount 2 at 7 N 170 W): ground
   looking up 5.15 [5.14] -> 5.21, 10 km across 9.11 [9.02] -> 9.32 (~+2%); 128 registers.
+    - Cirrus flow map (2026-11-08, branch `weather-salvage`, from weather-v2's noise flow map, where the user found the
+      cirrus "astonishing in motion"): `cv2CirrusFlow` displaces the fibres' coordinates (the fibres and their bundles; the
+      regime, meander and cloudlets stay with the map) by the jet-level wind (`wind_field.glsl` wfWind at 10 km, less the
+      fibres' own even slide `wind1.w` = "Cirrus wind" - the map's drift) x the time since the texture renewed. Two phases
+      half a window apart ("Cirrus flow window" `clouds_v2.cirrus_flow_window_h` 2 h, 0 = off, slot 546; blend 0.15 each
+      side, `cirrus_flow_blend`), renewals staggered by a ~3000-km field and jumped by a hash of the window index; within
+      a blend the other phase's fibres are read too (cv2IceFibres twice) and mixed. Cost +0.25 ms from 400 km (28.1 vs 27.9
+      GPU), 0 from the ground; march 249 -> 252 registers. The resolve still reprojects cirrus by the even slide alone.
 - **Debug view 7**: per-layer optical depth (red low incl. rain, green mid, blue anvil, white high) — the
   first thing to look at when a cloud artifact has an unknown owner.
 - **Motion** (`cloud_v2_resolve.comp`): the new-sample weight and the clamp box follow PARALLAX (the

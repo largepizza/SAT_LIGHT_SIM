@@ -7107,6 +7107,8 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SldCirrusStretch), &cv2CirrusStretch, 1.0f, 30.0f, 0.5f, "%.1f", 153},
         {tx(Txt::SldCirrusDirectionWarp), &cv2CirrusDirWarp, 0.0f, 1.2f, 0.05f, "%.2f", 278},
         {tx(Txt::SldCirrusWindMS), &cv2CirrusWindMps, 0.0f, 80.0f, 1.0f, "%.0f", 154},
+        // 2026-11-08 (weather salvage): the fibres ride the wind through a flow map renewed every window (0 = off).
+        {tx(Txt::SldCirrusFlowWindowH), &cv2CirrusFlowWindowH, 0.0f, 12.0f, 0.25f, "%.2f", 546},
         {tx(Txt::SldCirrusFibrePeriodM), &cv2CirrusPeriodM, 1000.0f, 30000.0f, 250.0f, "%.0f", 2},
         // Fibrous cirrus (2026-11-05, cirrus-hurr): slots 520-521.
         {tx(Txt::SldCirrusFibres), &cv2CirrusFibres, 0.0f, 2.0f, 0.05f, "%.2f", 520},
@@ -9993,6 +9995,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2HighDensity = c.value("high_density", cv2HighDensity);
         cv2CirrusStretch = c.value("cirrus_stretch", cv2CirrusStretch);
         cv2CirrusWindMps = c.value("cirrus_wind_mps", cv2CirrusWindMps);
+        cv2CirrusFlowWindowH = settingClamp(c.value("cirrus_flow_window_h", cv2CirrusFlowWindowH), 0.0f, 12.0f);
+        cv2CirrusFlowBlend = settingClamp(c.value("cirrus_flow_blend", cv2CirrusFlowBlend), 0.02f, 0.45f);
         cv2RainAmount = c.value("rain_amount", cv2RainAmount);
         cv2OpticsGain = c.value("optics_gain", cv2OpticsGain);
         cv2RainStreaks = c.value("rain_streaks", cv2RainStreaks);
@@ -10772,6 +10776,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"high_density", cv2HighDensity},
         {"cirrus_stretch", cv2CirrusStretch},
         {"cirrus_wind_mps", cv2CirrusWindMps},
+        {"cirrus_flow_window_h", cv2CirrusFlowWindowH},
+        {"cirrus_flow_blend", cv2CirrusFlowBlend},
         {"rain_amount", cv2RainAmount},
         {"optics_gain", cv2OpticsGain},
         {"rain_streaks", cv2RainStreaks},

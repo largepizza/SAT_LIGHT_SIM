@@ -1552,6 +1552,20 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                             (float)(1.0 / (std::clamp((double)cv2CirrusFieldKm, 50.0, 8000.0) * 1000.0)),
                             std::clamp(cv2CirrusFlow, 0.0f, 4.0f), std::clamp(cv2BaseFlatness, 0.0f, 1.0f));
     }
+    // The cirrus fibres' flow map (2026-11-08, weather salvage; clouds_v2.glsl cv2HighSigma, wind_field.glsl). The wind's
+    // clock wraps at its 30-day period (every frequency in it is a whole multiple: exact in float); the declination from
+    // the day of the year is close enough for the zonal belts' seasonal shift.
+    {
+        constexpr double kWfPeriodS = 2592000.0;
+        const double doy = std::fmod(simT / 86400.0 + 365.25 * 64.0, 365.2422);
+        const double decl = -0.40910518 * std::cos(glm::two_pi<double>() * (doy + 10.0) / 365.2422);
+        p.wind0 = glm::vec4((float)(fracPos(simT / kWfPeriodS) * kWfPeriodS), (float)decl, 1.0f, 1.0f);
+        const double P = cv2CirrusFlowWindowH > 0.0f ? std::clamp((double)cv2CirrusFlowWindowH, 0.25, 12.0) * 3600.0 : 0.0;
+        // w: the fibres' slide over the Earth before the flow map (cv2Drift turns the map WEST at +cloudDriftRate).
+        p.wind1 = glm::vec4(P > 0.0 ? (float)(fracPos(simT / P) * P) : 0.0f, (float)P,
+                            P > 0.0 ? (float)std::fmod(std::floor(simT / P), 1024.0) + std::clamp(cv2CirrusFlowBlend, 0.02f, 0.45f) : 0.0f,
+                            (float)((double)cv2CirrusWindMps - (double)cloudDriftRate * R));
+    }
     p.rain = glm::vec4(cv2RainAmount, cv2OpticsGain, cv2RainStreaks, cv2WindMps); // w: the streaks' wind
     // w: a beam's intensity (sat_orbit.comp: 1361 x area x F x cos x beamGain) back to its reflecting
     // area, so the shaders can light with the physical irradiance (area / the spot's area, in Suns).

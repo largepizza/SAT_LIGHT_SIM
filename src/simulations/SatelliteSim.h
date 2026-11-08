@@ -970,6 +970,12 @@ struct GpuCloudV2Params
     // (2026-11-07) the cumulus CELL volume's anchor in the shape frame and in the fading one (clouds_v2.glsl cv2CellUV)
     glm::vec4 cellA;
     glm::vec4 cellB;
+    // (2026-11-08, weather salvage) The cirrus fibres' flow map (clouds_v2.glsl cv2HighSigma, wind_field.glsl): wind0 the
+    // wind's state (x clock mod 30 d, y the Sun's declination, z waves, w eddies); wind1 x sim time mod the window (s), y the
+    // window (s; 0 = off), z the window count mod 1024 + the blend, w the fibres' own eastward slide over the Earth (m/s at
+    // the equator: "Cirrus wind" minus the map's drift), which the flow map's wind is relative to.
+    glm::vec4 wind0;
+    glm::vec4 wind1;
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -1002,7 +1008,7 @@ static_assert(offsetof(GpuCloudV2Params, amb) == 288 + 48 * kCloudV2Types + 1232
 static_assert(offsetof(GpuCloudV2Params, tone) == 288 + 48 * kCloudV2Types + 1248, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, gnd) == 288 + 48 * kCloudV2Types + 1264, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, micro) == 288 + 48 * kCloudV2Types + 1280, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1616, "GpuCloudV2Params layout");   // +32: cellA, cellB; +32: cirrus-hurr (ciHu, ciHu2); +32: storm3 (storm3a, storm3b); +64: vertical (vert, vert2, oro0, oro1); +80: shapeB
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1648, "GpuCloudV2Params layout");   // +32: wind0, wind1; +32: cellA, cellB; +32: cirrus-hurr (ciHu, ciHu2); +32: storm3 (storm3a, storm3b); +64: vertical (vert, vert2, oro0, oro1); +80: shapeB
 static_assert(offsetof(GpuCloudV2Params, cu3) == 288 + 48 * kCloudV2Types + 1312, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
@@ -5676,7 +5682,11 @@ private:
     float cv2CirrusFieldKm = 3700.0f;  // cirrus regions: the size of the areas the high layer covers (was the
                                        // ~cluster scale: splotches)
     float cv2CirrusFlow = 3.3f;        // the flow warp at cirrus level, x the low cloud's (the jet bends more)
-    float cv2CirrusWindMps = 30.0f;    // the jet: cirrus moves this fast eastward over the map
+    float cv2CirrusWindMps = 30.0f;
+    // 2026-11-08 (weather salvage, from weather-v2): the cirrus fibres ride the wind (wind_field.glsl) through a two-phase
+    // flow map, renewed every cirrus_flow_window_h (0 = off: the even eastward slide alone). clouds_v2.cirrus_flow_window_h.
+    float cv2CirrusFlowWindowH = 2.0f;
+    float cv2CirrusFlowBlend = 0.15f;   // the share of a window each side of a renewal that cross-fades the two phases    // the jet: cirrus moves this fast eastward over the map
     float cv2RainAmount = 3.0f;         // rain shafts under precipitating cloud, 0 = none
     float cv2OpticsGain = 1.0f;        // halos, sundogs, circumzenithal arc, rainbows
     float cv2RainStreaks = 3.1f;       // the rain particles' visibility (x their real coverage; "Drops at the eye")
@@ -8699,7 +8709,7 @@ private:
     bool draggingPhoto[56] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 560;   // 544-545 (2026-11-08): single-storm anvils, storm complex spacing; 553-555 (2026-11-05): cumulus core, bubble warp, head width; 552 (2026-11-05, envelope): cumulus tower spread (552-559 reserved); 544-551 (2026-11-05, storm-above): reserved, none used; 536-538 (2026-11-05, light3): AgX range, white balance from cloud sunlight, auto exposure target; 528-535 (2026-11-05, vertical): cloud base LCL / cell / regional spread, fractus, mid wisps, orographic amount / wind / direction; 496-498 (2026-11-05, shape2): bubble hierarchy / size / base; 504-511 (2026-11-05, storm3): anvil fibres, storm bubbles, anvil erosion; 512-513 (2026-11-05, light2): white balance reference / hold; 520-524 (2026-11-05, cirrus-hurr): cirrus fibres / hooks, hurricane top smoothing / streaks / density; 496-527: the 2026-11-05 night wave; 494-495 (2026-11-04): cumulus bubbles;   // 440-441 (2026-11-03): turbulence cell size / speed; 450-452: anvil formation / decay time, tower growth time; 455-461: hurricane shape; was 435;   // 428-434 (2026-10-30): the second stage's jellyfish (streaks, nucleus, staging cloud); was 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
+    static constexpr int kCloudSliderSlots = 560;   // 544-546 (2026-11-08): single-storm anvils, storm complex spacing, cirrus flow window; 553-555 (2026-11-05): cumulus core, bubble warp, head width; 552 (2026-11-05, envelope): cumulus tower spread (552-559 reserved); 544-551 (2026-11-05, storm-above): reserved, none used; 536-538 (2026-11-05, light3): AgX range, white balance from cloud sunlight, auto exposure target; 528-535 (2026-11-05, vertical): cloud base LCL / cell / regional spread, fractus, mid wisps, orographic amount / wind / direction; 496-498 (2026-11-05, shape2): bubble hierarchy / size / base; 504-511 (2026-11-05, storm3): anvil fibres, storm bubbles, anvil erosion; 512-513 (2026-11-05, light2): white balance reference / hold; 520-524 (2026-11-05, cirrus-hurr): cirrus fibres / hooks, hurricane top smoothing / streaks / density; 496-527: the 2026-11-05 night wave; 494-495 (2026-11-04): cumulus bubbles;   // 440-441 (2026-11-03): turbulence cell size / speed; 450-452: anvil formation / decay time, tower growth time; 455-461: hurricane shape; was 435;   // 428-434 (2026-10-30): the second stage's jellyfish (streaks, nucleus, staging cloud); was 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
     // gust fronts, drop persistence); 326: "Tropical cyclones (x)"; 325: "Storm complexes"; 321-324 (2026-10-23): storm
     // objects (frequency, life, cloud field, moat);
     // was 321: 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);

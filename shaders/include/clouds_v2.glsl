@@ -264,7 +264,12 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // (2026-11-07) The CELL volume's anchor in the shape frame (cellA) and in the fading frame (cellB, shapeB's): see cv2CellUV.
     vec4  cellA;
     vec4  cellB;
+    // (2026-11-08, weather salvage) the cirrus fibres' flow map: wind0 the wind's state, wind1 x time in the window, y the
+    // window (s, 0 off), z the window count + blend, w the fibres' own eastward slide (m/s at the equator)
+    vec4  wind0;
+    vec4  wind1;
 } cv2;
+#include "wind_field.glsl"
 
 #ifndef CV2_PARAMS_ONLY   // the resolve pass needs only the UBO
 layout(set = 0, binding = CV2_WEATHER_BINDING) uniform samplerCube cv2WeatherTex;
@@ -2050,6 +2055,46 @@ vec4 cv2IceFibres(vec3 p, float lodR)
     return vec4(clamp(fib, 0.0, 1.0), tuf, tn, t.g);
 }
 
+// THE CIRRUS FLOW MAP (2026-11-08, weather salvage; from weather-v2's cv2NoiseDispAt, where the user found cirrus "astonishing
+// in motion"). The fibres' coordinates are read at p - W x age, W the jet-level wind (wind_field.glsl) less the fibres' own
+// even eastward slide (cv2.wind1.w x cos lat: "Cirrus wind" minus the map's drift), age the time since the texture there
+// renewed. Two phases half a window apart; phase A renews at f = 0, B carries the texture across it, and within the blend
+// (a fraction cv2.wind1.z of the window each side) the fibres of both are mixed: the streaks morph from one texture into
+// the next. The renewal is staggered by a smooth ~3000-km field, so only ~2 x blend of the sky renews at once, and each
+// renewal jumps the read by a hash of its index (fresh texture, not the same unadvected noise again).
+// Returns the dominant phase's offset in the fibres' coordinates (along, across); oth the other's, wO its weight (0..0.5).
+float cv2WindStagger(vec3 d)
+{
+    return 0.23 * sin(dot(d, vec3(4.1, 2.7, -1.3)) + 0.7) + 0.19 * sin(dot(d, vec3(-1.9, 3.6, 2.4)) + 2.1)
+         + 0.11 * sin(dot(d, vec3(2.2, -1.1, 4.3)));
+}
+vec2 cv2CirrusFlow(vec3 dirE, out vec2 oth, out float wO)
+{
+    oth = vec2(0.0); wO = 0.0;
+    float P = cv2.wind1.y;
+    if (P <= 0.0) return vec2(0.0);
+    float fT = cv2.wind1.x / P + cv2WindStagger(dirE);
+    float f  = fract(fT);
+    float b  = fract(cv2.wind1.z);
+    float wA = smoothstep(0.0, b, f) * (1.0 - smoothstep(1.0 - b, 1.0, f));
+    float kA = floor(cv2.wind1.z) + floor(fT);
+    float kB = floor(cv2.wind1.z) + floor(fT + 0.5) + 0.5;
+    vec2  jA = fract(sin(vec2(kA * 12.9898, kA * 78.233)) * 43758.5453) * 64.0;
+    vec2  jB = fract(sin(vec2(kB * 12.9898, kB * 78.233)) * 43758.5453) * 64.0;
+    vec3  W  = wfWind(dirE, kWfHighH, cv2.wind0);
+    float cl = max(length(dirE.xy), 0.05);
+    vec3  eE = vec3(-dirE.y, dirE.x, 0.0) / cl;
+    vec2  Wr = vec2(dot(W, eE) - cv2.wind1.w * cl, dot(W, cross(dirE, eE)));
+    // (metres to the fibres' coordinates: along = longitude x R x high.y, so an eastward metre is 1 / cos lat of it)
+    vec2  sc = vec2(cv2.high.y / cl, cv2.high.w);
+    vec2  dA = Wr * sc * (f * P) + jA;
+    vec2  dB = Wr * sc * (fract(f + 0.5) * P) + jB;
+    bool  pA = wA >= 0.5;
+    wO  = pA ? 1.0 - wA : wA;
+    oth = pA ? dB : dA;
+    return pA ? dA : dB;
+}
+
 float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
 {
     hfH = 0.0; topH = 0.0;
@@ -2123,11 +2168,19 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
     // Streaks come in bundles that converge and part, not as an even comb: at one scale, thresholded,
     // they read as regular sand ripples. From orbit, where the fibres are far below a pixel, the
     // bundles are what shows: long bands along the jet.
+    // (The flow map: the fibres and their bundles ride the wind; the regime, the meander and the cloudlets' cluster field
+    // stay with the map. Within a renewal's blend the other phase's fibres are read too and mixed, wO.)
+    vec2  flO; float flW;
+    vec2  flD    = cv2CirrusFlow(q.dirE, flO, flW);
+    vec3  ccO    = cc - vec3(flO, 0.0);
+    cc          -= vec3(flD, 0.0);
     vec4  sb     = textureLod(cv2ShapeTex, cc * 0.25 + vec3(0.13, 0.47, 0.29), max(lod - 2.0, 0.0));
+    if (flW > 0.01) sb = mix(sb, textureLod(cv2ShapeTex, ccO * 0.25 + vec3(0.13, 0.47, 0.29), max(lod - 2.0, 0.0)), flW);
     float bundle = smoothstep(0.43, 0.6, sb.a);
     // ... in patches (with the direction warp): unbroken, the bundles were evenly spaced stripes hundreds of km long.
     bundle *= mix(1.0, smoothstep(-1.2, 0.6, (cl.a - 0.5) / 0.057), min(cv2.tune.w * 2.0, 1.0));
     cc.y += (sb.g - 0.45) * 0.5;                          // streaks crowd together and fan apart (1.2 until 2026-11-05: marbling)
+    ccO.y += (sb.g - 0.45) * 0.5;
     float strat = 1.0 - smoothstep(0.3, 0.55, wc.g);
     float ccK   = smoothstep(0.5, 0.7, cl.g) * (1.0 - strat) * 0.8;
 
@@ -2136,6 +2189,7 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
     // (a soft ramp over the whole field: every streak a smooth ribbon, the gaps never clear), combed by a third --
     // marbled, "gooey" (the user, 2026-11-05).
     vec4  fb   = cv2IceFibres(cc, lodR);
+    if (flW > 0.01) fb = mix(fb, cv2IceFibres(ccO, lodR), flW);
     float lo   = mix(0.6, 0.12, regime);
     float el   = smoothstep(lo, lo + 0.2, fb.y) * mix(0.25, 1.0, bundle);
     float ci   = el * max(mix(0.9, mix(0.04, 2.2, fb.x), cv2.ciHu.x), 0.0);   // ("Cirrus fibres": 0 = even tufts)
