@@ -7270,6 +7270,8 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         // (423: "Haboobs x", retired 2026-11-06 with the haboobs)
     };
     CloudSlider secStorms[] = {
+        // (2026-11-08) slot 544 (of the reserved 544-551): storms as the cumulus field's own deep cloud + a high-layer anvil
+        {tx(Txt::SldContinuousStorms), &cv2StormContinuous, 0.0f, 1.0f, 1.0f, "%.0f", 544},
         {tx(Txt::SldCbColumns0None), &cv2CbColumns, 0.0f, 4.0f, 0.05f, "%.2f", 164},
         {tx(Txt::SldCbTowerRadiusKm), &cv2CbRadiusKm, 1.0f, 20.0f, 0.25f, "%.2f", 166},
         {tx(Txt::SldCbHeadFlareXRadius), &cv2CbFlare, 0.5f, 3.0f, 0.05f, "%.2f", 169},
