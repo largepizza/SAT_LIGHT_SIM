@@ -106,6 +106,7 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Clouds and weather
 
+- **Fewer shadow trails in time-lapse.** At 1 min/s and faster, storm shadows no longer trail behind growing towers as grey blobs.
 - **Billowy storms.** Thunderstorm towers are big rounded billows instead of a pitted, eroded crust.
 - **Hurricanes without the painted lid.** A hurricane's central overcast is now built from the clouds themselves: a
   mass of storm towers under a smooth, lumpy ice sheet with a ragged edge and a clean eye, instead of a flat plate with

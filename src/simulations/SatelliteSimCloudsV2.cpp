@@ -1716,7 +1716,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         // and under time warp. A level starting to fill (or a new cell / knot range) is cleared first, so its slots read
         // invalid until baked and the next level out stands in. On while the march draws clouds.
         {
-            const bool stvOn = sinE > -0.1 && cloudFarBlend() < 0.999f && cv2SunVolumeOn > 0.5f;   // (sun_volume 0: a diagnostic)
+            const bool stvOn = sinE > -0.1 && cloudFarBlend() < 0.999f && cv2SunVolumeOn > 0.5f   // (sun_volume 0: a diagnostic)
+                               && std::fabs(dSimT) <= (double)cv2SunVolumeMaxStepS;              // (time-lapse: see cv2SunVolumeMaxStepS)
             const double hHi = (double)hi + 1000.0;
             const glm::dvec3 dEye = rotD(eye, cDD, sDD) - cv2PrevEye;
             glm::vec4 lat[4];

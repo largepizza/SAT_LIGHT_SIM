@@ -242,6 +242,14 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
       300-1500 m over the point (the foehn gap) takes up to -0.35. Land only, `kWxOroK` (a constant: the bake's push
       constants are full). Frame cost: none (the bake's); the march's follows the cloud it adds (Andes from 350 km +2.8,
       Alps -0.4 ms, single runs).
+    - The Sun volume in time-lapse (2026-11-08, `sun_volume_max_step_s` 1 s): off while a frame advances sim time by more
+      than this (the sim step: a path's sim channel or a cinematic runs time without the time-scale setting). Diagnosed with
+      artifacts.py on the ITCZ report at 5 min/s: ghostT 29% with everything, 0% with storm objects off, 1.8% with the Sun
+      volume off, unchanged with the evolution frozen or the storms' weather stamp off -- the volume's rays, baked over rounds,
+      trailed the growing, moving towers as grey shadow blobs. With the cap: 5 min/s ghostT 27.5 -> 12.7%, worst tile 72 -> 41
+      levels; 1 min/s 17 -> 18%, worst 77 -> 37. Cost: the light march lights the clouds there (~+0.8 ms); block excess on
+      the image +0.2-0.4 levels, running grain +0.2-0.3 levels (below visible). Also tried, no gain: weather-v2's evoK history
+      (a3aa2ad) and the volume's lattice following the noise wind.
 - **Debug view 7**: per-layer optical depth (red low incl. rain, green mid, blue anvil, white high) — the
   first thing to look at when a cloud artifact has an unknown owner.
 - **Motion** (`cloud_v2_resolve.comp`): the new-sample weight and the clamp box follow PARALLAX (the

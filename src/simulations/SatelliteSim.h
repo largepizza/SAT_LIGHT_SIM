@@ -5542,6 +5542,13 @@ private:
     float cv2AnvilErosion = 0.2f;          // "Anvil erosion" (clouds_v2.anvil_erosion): the plate's share of the Cb erosion
     float cv2AnvilLidLobes = 0.1f;         // clouds_v2.anvil_lid_lobes: the plate lid's share of the storm lobes
     float cv2AnvilUnderLobes = 0.7f;       // clouds_v2.anvil_under_lobes: the plate underside's share
+    // 2026-11-08: ... and only while a frame advances sim time by at most this (s; clouds_v2.sun_volume_max_step_s: 1 s is ~30x
+    // real time at 30 fps -- the sim step, not the time-scale setting: a path's sim channel or a cinematic runs time too).
+    // Its rays are baked over rounds;
+    // in time-lapse the storm towers grow and move faster than it refills, and their shadows trailed as grey blobs (artifacts.py,
+    // ITCZ report at 5 min/s: 29% of the 32-px tiles off the settled image by > 10 levels; without the volume 1.8%). Past
+    // it the light march lights the clouds (~+0.8 ms there).
+    float cv2SunVolumeMaxStepS = 1.0f;
     float cv2SunVolumeOn = 1.0f;           // diagnostic (r1022): 0 = no Sun transmittance volume (clouds lit by the light march alone)
     float cv2EyeHeightNow = 1.0f;          // the v2 eye from this frame's height offset, not last frame's GPU readback (0 = old)
     glm::dvec3 cv2CdcRefEye{0.0};          // the eye when the clipmap's current epoch began
