@@ -972,6 +972,14 @@ Plan and progress log: `.plans/WEATHER_V2_PLAN.md` (untracked).
   width = pudgy), and only dominant towers flashed (a map-typed storm without anvil towers had none: user snapshot 43).
 - **Weather v2 (2026-11-06):** the map's evolution is the bake's per-octave flow-map windows ("Weather v2" above); the
   re-bake schedule below still applies, v1's growth / decay waves (`evoGrowth`) are not added.
+- **The bake's flow cube (2026-11-07):** the moisture fBm's large-scale terms (the 3-km steering wind W0, the day-long
+  windows' midpoint winds, the largest octave's domain warp) were evaluated per output texel -- 5 wind-field calls and 6
+  gradient noises, half the bake. A flow pass of cloud_v2_weather.comp (pc.pad < 0) now evaluates them on a 256 x 256 cube
+  (RGBA32F, layers 0-5 warp, 6-11 W0; bindings 7-9) at the start of every bake (recordWeatherBakeDispatches), and the
+  levels sample it. Six faces 33 -> 18.8 ms; at 5 min/s on the tower report the bake is ~3.3 ms a frame (was 7-8). Image:
+  the finest octaves shift by ~1 km (bilinear on a 39-km grid of a ~1700-km field): tower 0.8% of pixels > 8 levels, orbit
+  4.4% (fine detail moved, no seams); artifact gate unchanged. Knockout costs that led here (six faces): warp 11.5 ms,
+  midpoint winds 5 ms, all moisture noise 25 ms, the convection cells 3-4 ms, the cyclones ~0.5 ms.
 - **Weather evolution (2026-09-29, decision A):** the weather cube is re-baked as sim time moves
   (`SatelliteSim::recordWeatherEvolution`, one face per frame with all its mips, once it lags by ~300 m of
   wind drift or the settings change; the bake's pipeline and per-mip sets are kept, `cv2Wx*`). **In time warp all six

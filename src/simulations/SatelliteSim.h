@@ -5914,6 +5914,11 @@ private:
     // march set's binding 28 reads it): x convective intensity, y the column's top (x the tropopause), z the anvil
     // (upper outflow), w the mid-level outflow.
     VkImageView cv2ConvView = VK_NULL_HANDLE;
+    // (2026-11-07) The weather bake's FLOW cube (cloud_v2_weather.comp, its flow pass): 256^2, layers 0-5 the moisture fBm's
+    // warp, 6-11 the 3-km steering wind, RGBA32F, re-made right before every bake.
+    VkImage cv2WxFlowImg = VK_NULL_HANDLE;
+    VkDeviceMemory cv2WxFlowMem = VK_NULL_HANDLE;
+    VkImageView cv2WxFlowStoreView = VK_NULL_HANDLE, cv2WxFlowWarpView = VK_NULL_HANDLE, cv2WxFlowWindView = VK_NULL_HANDLE;
     std::vector<VkImageView> cv2ConvMipViews;
     double cv2WxBakedT[6] = {};        // sim time each face was last baked at
     double cv2WxPrevT = -1e300;        // sim time of the last frame's recordWeatherEvolution (its step: time warp)

@@ -32,7 +32,8 @@
 namespace
 {
 constexpr uint32_t kCv2NoiseRes = 128;
-constexpr uint32_t kCv2NoiseMips = 8;     // 128 .. 1: the field reads them at the pixel footprint
+constexpr uint32_t kCv2NoiseMips = 8;
+constexpr uint32_t kCv2WxFlowRes = 256;   // == cloud_v2_weather.comp kWxFlowRes     // 128 .. 1: the field reads them at the pixel footprint
 // 2048 (2026-10-25): the finest level matches the 8K source map (~5 km); every other level keeps the scale it had at
 // 1024 one index up (the shaders read them through CV2_WX_LOD, logical mip + 1). From orbit the 10-km texels showed as
 // square cells and stair-stepped cloud edges round a hurricane.
@@ -403,6 +404,31 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
                                   0, kCv2WeatherMips, 6);
         cv2ConvView = makeViewL(dev, cv2WeatherImg, VK_IMAGE_VIEW_TYPE_CUBE, VK_FORMAT_R8G8B8A8_UNORM,
                                 0, kCv2WeatherMips, 6, 6);
+        {   // The bake's flow cube (cloud_v2_weather.comp, the flow pass): 12 layers, cube views over 0-5 and 6-11.
+            VkImageCreateInfo fi{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+            fi.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+            fi.imageType = VK_IMAGE_TYPE_2D;
+            fi.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+            fi.extent = {kCv2WxFlowRes, kCv2WxFlowRes, 1};
+            fi.mipLevels = 1;
+            fi.arrayLayers = 12;
+            fi.samples = VK_SAMPLE_COUNT_1_BIT;
+            fi.tiling = VK_IMAGE_TILING_OPTIMAL;
+            fi.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+            fi.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            if (vkCreateImage(dev, &fi, nullptr, &cv2WxFlowImg) != VK_SUCCESS)
+                throw std::runtime_error("clouds v2: weather flow cube vkCreateImage failed");
+            VkMemoryRequirements fr;
+            vkGetImageMemoryRequirements(dev, cv2WxFlowImg, &fr);
+            VkMemoryAllocateInfo fa{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+            fa.allocationSize = fr.size;
+            fa.memoryTypeIndex = ctx.findMemoryType(fr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            vkAllocateMemory(dev, &fa, nullptr, &cv2WxFlowMem);
+            vkBindImageMemory(dev, cv2WxFlowImg, cv2WxFlowMem, 0);
+            cv2WxFlowStoreView = makeViewL(dev, cv2WxFlowImg, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_FORMAT_R32G32B32A32_SFLOAT, 0, 1, 0, 12);
+            cv2WxFlowWarpView = makeViewL(dev, cv2WxFlowImg, VK_IMAGE_VIEW_TYPE_CUBE, VK_FORMAT_R32G32B32A32_SFLOAT, 0, 1, 0, 6);
+            cv2WxFlowWindView = makeViewL(dev, cv2WxFlowImg, VK_IMAGE_VIEW_TYPE_CUBE, VK_FORMAT_R32G32B32A32_SFLOAT, 0, 1, 6, 6);
+        }
 
         VkDescriptorSetLayout bl = makeSetLayout(dev, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                                        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
@@ -410,7 +436,10 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
                                                        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                                        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,     // 4: the storms
                                                        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,    // 5: level 1 (for level 0)
-                                                       VK_DESCRIPTOR_TYPE_STORAGE_IMAGE});           // 6: the convection cube's mip
+                                                       VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,             // 6: the convection cube's mip
+                                                       VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,             // 7: the flow cube (written)
+                                                       VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,    // 8: its warp
+                                                       VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER});  // 9: its wind
         VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(GpuWeatherPC)};
         VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         pli.setLayoutCount = 1;
@@ -421,8 +450,8 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         vkCreatePipelineLayout(dev, &pli, nullptr, &pl);
         VkPipeline pipe = makeComputePipeline(ctx, "shaders/cloud_v2_weather.comp.spv", pl);
 
-        VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4 * kCv2WeatherMips},
-                                      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2 * kCv2WeatherMips},
+        VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 6 * kCv2WeatherMips},
+                                      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 3 * kCv2WeatherMips},
                                       {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kCv2WeatherMips}};
         VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pi.maxSets = kCv2WeatherMips;
@@ -452,6 +481,12 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         transitionAll(cmd, cv2WeatherImg, kCv2WeatherMips, 12, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                       0, VK_ACCESS_SHADER_WRITE_BIT,
                       VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        transitionAll(cmd, cv2WxFlowImg, 1, 12, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                      0, VK_ACCESS_SHADER_WRITE_BIT,
+                      VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        VkDescriptorImageInfo flowStore{VK_NULL_HANDLE, cv2WxFlowStoreView, VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorImageInfo flowWarp{cv2ClampSampler, cv2WxFlowWarpView, VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorImageInfo flowWind{cv2ClampSampler, cv2WxFlowWindView, VK_IMAGE_LAYOUT_GENERAL};
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
         // The source map is 8192 wide: ~0.044 deg/texel, a 2048 face texel at its centre; each weather mip is one more
         // (weatherEvoPC's srcLod).
@@ -470,15 +505,18 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
             const VkImageView convMip = makeViewL(dev, cv2WeatherImg, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_FORMAT_R8G8B8A8_UNORM, m, 1, 6, 6);
             cv2ConvMipViews.push_back(convMip);
             VkDescriptorImageInfo convInfo{VK_NULL_HANDLE, convMip, VK_IMAGE_LAYOUT_GENERAL};
-            VkWriteDescriptorSet w[7] = {
+            VkWriteDescriptorSet w[10] = {
                 imageWrite(set, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cloudsInfo),
                 imageWrite(set, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &specInfo),
                 imageWrite(set, 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &outInfo),
                 imageWrite(set, 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &elevInfo),
                 bufferWrite(set, 4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &stormInfo),
                 imageWrite(set, 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &l1Info),
-                imageWrite(set, 6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &convInfo)};
-            frameSafeUpdateDescriptorSets(dev, 7, w, 0, nullptr);
+                imageWrite(set, 6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &convInfo),
+                imageWrite(set, 7, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &flowStore),
+                imageWrite(set, 8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &flowWarp),
+                imageWrite(set, 9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &flowWind)};
+            frameSafeUpdateDescriptorSets(dev, 10, w, 0, nullptr);
             cv2WxSets.push_back(set);
         }
         cv2WxPipeline = pipe;
@@ -1114,6 +1152,15 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     cv2ConvMipViews.clear();
     if (cv2ConvView) vkDestroyImageView(device, cv2ConvView, nullptr);
     cv2ConvView = VK_NULL_HANDLE;
+    for (VkImageView *v : {&cv2WxFlowStoreView, &cv2WxFlowWarpView, &cv2WxFlowWindView})
+    {
+        if (*v) vkDestroyImageView(device, *v, nullptr);
+        *v = VK_NULL_HANDLE;
+    }
+    if (cv2WxFlowImg) vkDestroyImage(device, cv2WxFlowImg, nullptr);
+    if (cv2WxFlowMem) vkFreeMemory(device, cv2WxFlowMem, nullptr);
+    cv2WxFlowImg = VK_NULL_HANDLE;
+    cv2WxFlowMem = VK_NULL_HANDLE;
     cv2WxSets.clear();
     if (cv2WxPipeline) vkDestroyPipeline(device, cv2WxPipeline, nullptr);
     if (cv2WxPipeLayout) vkDestroyPipelineLayout(device, cv2WxPipeLayout, nullptr);
@@ -2395,6 +2442,18 @@ void SatelliteSim::recordWeatherBakeDispatches(VkCommandBuffer cmd, int face, ui
         for (int f = 0; f < 6; ++f)
             nFaces += (faceMask == 0u || (faceMask >> f) & 1u) ? 1u : 0u;
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2WxPipeline);
+    {   // The flow cube first (cloud_v2_weather.comp: pad < 0), at this bake's moment: every level below samples it.
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2WxPipeLayout, 0, 1, &cv2WxSets[0], 0, nullptr);
+        GpuWeatherPC pcf = weatherEvoPC(-1, 1u);
+        pcf.pad = -1.0f;
+        vkCmdPushConstants(cmd, cv2WxPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(pcf), &pcf);
+        vkCmdDispatch(cmd, kCv2WxFlowRes / 8, kCv2WxFlowRes / 8, 6);
+        VkMemoryBarrier fb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+        fb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT;
+        fb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &fb, 0,
+                             nullptr, 0, nullptr);
+    }
     for (uint32_t k = 1; k <= kCv2WeatherMips; ++k)
     {
         const uint32_t m = k % kCv2WeatherMips;
