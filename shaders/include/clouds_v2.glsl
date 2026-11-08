@@ -2233,6 +2233,22 @@ vec4 cv2IceFibres(vec3 p, float lodR)
     return vec4(clamp(fib, 0.0, 1.0), tuf, tn, t.g);
 }
 
+#ifdef CV2_CONV_BINDING
+// The convection cube read BACK ALONG THE WIND by its face's bake lag (2026-11-07): a face re-bakes on its own schedule, up to
+// ~35 sim s behind in time-lapse, while its storms ride the wind on; read in place, a storm's baked intensity, top and anvil
+// trailed its exact column (cv2CellColumn) and the gates and edges flipped at every re-bake (tools/harness/artifacts.py).
+// cv2.column2.xyz: the steering wind at the eye; the lags packed by SatelliteSim::cv2PatchConvLag.
+vec3 cv2ConvAt(vec3 wd)
+{
+    vec3  a = abs(wd);
+    float pk; bool hi;
+    if (a.x >= a.y && a.x >= a.z) { pk = cv2.column3.x; hi = wd.x < 0.0; }
+    else if (a.y >= a.z)          { pk = cv2.column3.w; hi = wd.y < 0.0; }
+    else                          { pk = cv2.anvil2.z;  hi = wd.z < 0.0; }
+    float lag = ((hi ? floor(pk / 4096.0) : pk - 4096.0 * floor(pk / 4096.0)) - 2048.0) * 0.5;
+    return normalize(wd - cv2.column2.xyz * (lag / R_EARTH));
+}
+#endif
 // The continuous storms' anvil share of the last cv2HighSigma (its ice is drawn as cloud, not as thin cirrus: cv2Field).
 float gCv2AnvK = 0.0;
 float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
@@ -2251,11 +2267,13 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
 #ifdef CV2_CONV_BINDING
     if (cv2.column.y > 0.5) {
         // (a tent of four level-2 taps a texel out (~20 km), the lookup warped by ~+-12 km of the cluster Perlin: one bilinear
-        // read thresholded drew the texels' squares as the outline. No face-lag correction at this scale: cv2ConvAt is below.)
+        // read thresholded drew the texels' squares as the outline.)
         vec3  e  = normalize(cross(vec3(0.0, 0.0, 1.0), wd) + vec3(1e-6, 0.0, 0.0));
         vec3  n  = cross(wd, e);
         vec4  cw = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + q.seaProjE * cv2.anchorCluster.w + vec3(0.13, 0.57, 0.31), 1.0);
-        vec3  wA = normalize(wd + (e * (cw.a - 0.5) + n * (cw.r - 0.5)) * (2.0 * 12000.0 / 0.057 * 0.057 / R_EARTH) * 4.0);
+        // (back along the wind by its face's bake lag, cv2ConvAt: read in place, the anvil's outline stepped at every re-bake in
+        // time-lapse -- a line along its edge in the frame-to-frame change, 2026-11-08)
+        vec3  wA = cv2ConvAt(normalize(wd + (e * (cw.a - 0.5) + n * (cw.r - 0.5)) * (2.0 * 12000.0 / 0.057 * 0.057 / R_EARTH) * 4.0));
         const float hT = 2.0 / 512.0;
         vec4  cvA = 0.25 * (textureLod(cv2ConvTex, wA + e * hT, 2.0) + textureLod(cv2ConvTex, wA - e * hT, 2.0)
                           + textureLod(cv2ConvTex, wA + n * hT, 2.0) + textureLod(cv2ConvTex, wA - n * hT, 2.0));
@@ -2644,22 +2662,6 @@ float cv2CellColumn(vec3 wd, out float drop, out float dec, out float grow)
     }
     if (grow < 0.0) grow = gW < 0.0 ? 1.0 : gW;
     return dIn;
-}
-#endif
-#ifdef CV2_CONV_BINDING
-// The convection cube read BACK ALONG THE WIND by its face's bake lag (2026-11-07): a face re-bakes on its own schedule, up to
-// ~35 sim s behind in time-lapse, while its storms ride the wind on; read in place, a storm's baked intensity, top and anvil
-// trailed its exact column (cv2CellColumn) and the gates and edges flipped at every re-bake (tools/harness/artifacts.py).
-// cv2.column2.xyz: the steering wind at the eye; the lags packed by SatelliteSim::cv2PatchConvLag.
-vec3 cv2ConvAt(vec3 wd)
-{
-    vec3  a = abs(wd);
-    float pk; bool hi;
-    if (a.x >= a.y && a.x >= a.z) { pk = cv2.column3.x; hi = wd.x < 0.0; }
-    else if (a.y >= a.z)          { pk = cv2.column3.w; hi = wd.y < 0.0; }
-    else                          { pk = cv2.anvil2.z;  hi = wd.z < 0.0; }
-    float lag = ((hi ? floor(pk / 4096.0) : pk - 4096.0 * floor(pk / 4096.0)) - 2048.0) * 0.5;
-    return normalize(wd - cv2.column2.xyz * (lag / R_EARTH));
 }
 #endif
 CV2Storm cv2StormGeom(CV2Pos q, float fpM)

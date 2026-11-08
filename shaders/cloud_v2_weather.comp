@@ -389,6 +389,15 @@ vec4 wxConvection(vec3 d, out float env, bool cellsOnly)
             vec2  q0 = (p - vec2(0.5 * A.a.w, 0.0)) * vec2(1.0, 1.25);
             if (A.d.x > 0.0) q0 -= ax * clamp(dot(q0, ax), -A.d.x, A.d.x);
             anv += A.b.w * feedNow * 0.9 * (1.0 - smoothstep(0.6, 1.0, length(q0) / (1.6 * A.a.w)));
+            // The SYSTEM (continuous storms, 2026-11-08; the user: "systems should stick around"): the storm's own envelope
+            // round its source, fading over its anvil's linger once it stops feeding, not with each tower -- a storm that has
+            // rained out leaves a decaying congestus mass under its lingering anvil. Into the wide envelope (gEnvW).
+            if (pc.storm2.x > 0.5) {
+                float sysK = A.b.w * exp(-max(A.c.x - A.c.y, 0.0) / max(0.6 * tauL, 600.0)) * smoothstep(0.0, 1200.0, A.c.x);
+                vec2  qs   = p - vec2(0.3 * A.a.w, 0.0);
+                if (A.d.x > 0.0) qs -= ax * clamp(dot(qs, ax), -A.d.x, A.d.x);
+                notW *= 1.0 - 0.8 * sysK * exp(-dot(qs, qs) / (2.25 * A.a.w * A.a.w));
+            }
             mid += A.b.w * accM * ds / 3600.0 * (A.d.x > 0.0 ? 2.0 : 1.0);
         }
     }
