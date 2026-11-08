@@ -1183,9 +1183,12 @@ void main()
                            + 0.5385973 * (cv2.misc2.z > 0.5 ? cv2.frame.x : vL));
             }
             bool skipL = thin || (CV2_FAINT_MODE == 0 && faint && !wantB);
-            if (!skipL)
+            if (!skipL) {
+                gCv2WUse = true;   // (its light steps reuse this sample's steering wind: clouds_v2.glsl gCv2WLast)
                 lightAmbOD(rel, keyDir, up, eyeH, enuToEcef, nL, lSeg0,
                            jL, detailAmt, fp, wantL, odL, sigUp, wantB, bDir, odB, lodL || faint, wantBk && !faint, odBk);
+                gCv2WUse = false;
+            }
             // (And for an orographic lens, f.deck < -0.5: the march away from the light does not see it either, gCv2Oro being the
             // main sample's alone. With ~0 depth on its far side the diffuse field took it for a wisp: grey-blue, luminance
             // ~164 against the cumulus' 183-224 beside it; its own path to its base, 215, issue 20261105_201331.)

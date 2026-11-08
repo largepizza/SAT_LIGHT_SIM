@@ -362,6 +362,12 @@ float cv2WindStagger(vec3 d)
 // and the far layer, take the dominant phase).
 vec3  gCv2PhD = vec3(0.0);   // the other phase's read offset (m, added to a shifted noise position)
 float gCv2PhW = 0.0;         // its weight (0 .. 0.5; 0 = one phase)
+// The steering wind of the last cv2NoiseDispAt, and whether to reuse it (2026-11-08, perf): the march's LIGHT steps, within
+// ~1-2 km of their sample, take its wind (~0.01 m/s off: tens of metres of texture over a window) -- the analytic wind
+// field (wfWind) evaluated per light step was ~5 ms of the 35-ms march from orbit; the cache saves ~2.3 of it, image
+// unchanged (mean |diff| 0.8 / 255). Never for view samples: the clipmap and the Sun volume read the exact wind.
+vec3  gCv2WLast = vec3(0.0);
+bool  gCv2WUse = false;
 vec3 cv2NoiseDispAt(vec3 dirE, float hSteer)
 {
     gCv2PhW = 0.0;
@@ -377,7 +383,8 @@ vec3 cv2NoiseDispAt(vec3 dirE, float hSteer)
     float kB  = floor(cv2.wind1.z) + floor(fT + 0.5) + 0.5;
     vec3  jA  = fract(sin(vec3(kA * 12.9898, kA * 78.233, kA * 37.719)) * 43758.5453) - 0.5;
     vec3  jB  = fract(sin(vec3(kB * 12.9898, kB * 78.233, kB * 37.719)) * 43758.5453) - 0.5;
-    vec3  W   = wfWind(dirE, hSteer, cv2.wind0);
+    vec3  W   = gCv2WUse ? gCv2WLast : wfWind(dirE, hSteer, cv2.wind0);
+    gCv2WLast = W;
     vec3  dA  = W * (f * P) + jA * 4.0e5;
     vec3  dB  = W * (fract(f + 0.5) * P) + jB * 4.0e5;
     bool  pA  = wA >= 0.5;
