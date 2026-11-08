@@ -106,6 +106,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Clouds and weather
 
+- **Flat cloud bases.** Cumulus bottoms are flat with crisp edges instead of rounding downward, and storm clouds
+  no longer bulge down into their rain below the base of the clouds around them.
 - **No bright ring in distant clouds.** Seen from altitude over a deep overcast, clouds beyond a few tens of km no
   longer light up brighter than the ones near you; the lighting is consistent out to the horizon.
 - **Cirrus rides the wind.** High-cloud streaks now follow the jet stream and its eddies instead of all sliding east

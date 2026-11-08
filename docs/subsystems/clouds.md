@@ -228,6 +228,13 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
       to the base: over a CDO or a deck from altitude the far clouds' diffuse field read a slab many km deep, brighter than
       the field-read disc round the nadir. Image change elsewhere ~4 levels mean (orbit, ITCZ storm walls a little more
       shaded). Still open: the clipmap's light (`cdc_light`) draws a faint rectangle (its level boxes) over a CDO from 36 km.
+    - Flat bases (2026-11-08, issue_20261108_135011, the user: "pie-crust ends ... every cloud has a convex downwards bottom",
+      "rain poke downs"): (1) the base curl `gBase` acts over 80 m above the bumped base (350 m before: every cumulus'
+      underside curled up toward its edge). (2) A storm's margin stands on the low field's OWN base at that column
+      (`gCv2BaseLow`, set in cv2LowA once the base is known; the cumulonimbus type's 900 m + 0.9 ground only where cv2LowA
+      returned before it): the type's fixed base has none of the field's condensation-level spread, and under every storm
+      cell the cloud hung hundreds of metres below the base around it, a V poking down into its rain from 600 m. March 252
+      registers, unchanged.
 - **Debug view 7**: per-layer optical depth (red low incl. rain, green mid, blue anvil, white high) — the
   first thing to look at when a cloud artifact has an unknown owner.
 - **Motion** (`cloud_v2_resolve.comp`): the new-sample weight and the clamp box follow PARALLAX (the

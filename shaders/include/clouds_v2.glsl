@@ -776,8 +776,12 @@ CV2Storm cv2StormNone()
     g.near = 0.0; g.storm = 0.0; g.prox = 0.0; g.cap = 0.0;
     return g;
 }
+// The low field's own base at the last cv2LowA (m; -1 where it returned before computing it): a storm's margin takes it
+// (cv2FieldLow) so a storm cloud stands on the field's base (2026-11-08, issue_20261108_135011).
+float gCv2BaseLow = -1.0;
 bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Field f, out CV2Carve c)
 {
+    gCv2BaseLow = -1.0;
     c.m0 = -1e9; c.hb = 0.0; c.baseAmp = 0.0; c.lobeRef = 0.0; c.bigL = 0.0; c.deep = 0.0; c.lobeKL = 0.0; c.aBase = 1.0;
     c.aRamp = 1.0; c.AshK = 0.0; c.phK = 1.0; c.phP = 0.0; c.subPix = 0.0; c.PhSub = 0.0; c.sigK = 0.0; c.billow = 0.0;
     c.erK = 0.0; c.erBase = 1.0; c.wispE = 0.0; c.rV = 0.0; c.fpFade = 1.0; c.lobeB = 0.0; c.tur = 0.0; c.bub = 0.0; c.thk = 0.0;
@@ -920,6 +924,7 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     topMax       += cv2BaseTopShift(bSh);
     float base    = ty.alt.x + lift + bSh.x + bSh.y + cv2.vert.y * (0.55 - ce.g) * ty.look.z - strat * 150.0 * deckVar;
     base          = clamp(base, lift + 150.0, max(topMax - 400.0, lift + 150.0));
+    gCv2BaseLow   = base;
     // The base is bumped in 3D by the lobes below, by up to ~2.2 x baseAmp: a deck's underside is
     // lumpy (rolls, pouches), a cumulus base nearly flat (the condensation level).
     float baseAmp = mix(40.0, 220.0, strat) * cv2.storm.w;
@@ -1387,7 +1392,11 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         c.m0      = max(c.m0, mS) + hS * hS * 0.05;     // a smooth max (over 0.2 e units)
         // (The towers' base, cv2StormGeom's: recomputed, the ground is cached. Carried in CV2Storm it cost a register
         // across cv2LowA, and the march sits at the 128-register cliff.)
-        c.hb      = mix(c.hb, q.h - (cv2.types[4].alt.x + cv2Ground(q.dirE) * 0.9), wS);
+        // ON THE FIELD'S BASE (2026-11-08, issue_20261108_135011 "rain poke downs"): the cumulonimbus type's fixed base (900 m
+        // over 0.9 x the ground) has none of the field's condensation-level spread (cv2BaseShift, the cell offsets): under
+        // every storm cell the cloud hung hundreds of metres below the base around it, a bulge poking down into its rain.
+        // The field's own base here when cv2LowA reached it; the type's where it returned before.
+        c.hb      = mix(c.hb, q.h - (gCv2BaseLow > 0.0 ? gCv2BaseLow : cv2.types[4].alt.x + cv2Ground(q.dirE) * 0.9), wS);
         c.baseAmp = mix(c.baseAmp, 200.0, wS);
         // (lobeRef < 0 carries the plate's share past the fetch: its lobes only BULGE (cv2FieldLow, after m), the lid's
         // gentle domes and the underside's pouches; cutting into a sheet a few hundred metres thick they holed it through,
@@ -1593,7 +1602,9 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
     // 8/16/32 (B), with a little Perlin (A) so the lobes are not all spheres. ~zero mean.
     float hbE   = hb + baseAmp * lobes * 4.0;          // height above the bumped base
     if (hbE <= 0.0 && subPix <= 0.0) return f;
-    float gBase = 0.3 * (1.0 - smoothstep(0.0, 350.0, hbE));
+    // (Over 80 m, 2026-11-08, issue_20261108_135011 shots 3-4 "pie-crust ends ... convex downwards bottom": over 350 m the
+    // extra strength curled every cumulus' underside up toward its edge; a cumulus base is flat to a crisp edge.)
+    float gBase = 0.3 * (1.0 - smoothstep(0.0, 80.0, hbE));
     // Lobes are strong on convective types, gentler on decks, and damped near the base (cumulus
     // bases are flat: they are the condensation level, not a surface the turbulence shapes).
     // Convective lobes grow up the cloud (a cauliflower head over a smoother stem).
