@@ -587,7 +587,7 @@ void SatelliteSim::updateStorms()
         if (idxKey != lastIdxKey) { lastIdxKey = idxKey; stormUploadedT = -1e300; }   // (the index's layout changed)
         // (The cyclones' shape sliders and the arm cirrus change what is uploaded: re-upload while paused too.)
         const float shapeKey[] = {stormCycArms, stormCycTightness, stormCycArmSpeed, stormCycMinorSwirls, stormCycDeckSpiral,
-                                  stormCycOutflow, stormCycStreaks, stormCycSpiralAB ? 1.0f : 0.0f, stormArmCirrus};
+                                  stormCycOutflow, stormCycStreaks, stormCycSpiralAB ? 1.0f : 0.0f, stormArmCirrus, stormCycCdoPlate};
         static float lastShapeKey[std::size(shapeKey)] = {-1.0f};
         if (std::memcmp(shapeKey, lastShapeKey, sizeof(shapeKey)) != 0)
         {
