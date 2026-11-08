@@ -1712,9 +1712,8 @@ void Catalog::cycloneShieldsAt(double t, const std::vector<CycloneState> &cs, st
         // The CDO's outline wound into the arms (2026-11-03, issue 20261030_205220, "Hurricane deck spiral"): the outer
         // part of the overcast follows the arms out and is notched between them, not a round glob.
         if (spiral && shape->deckSpiral > 0.0f) Sh.spiral = cycloneSpiral(S, 0, shape->deckSpiral, 0.0, 0.0, 0.0);
-        // (2026-11-08: the plate only at CycloneShape::cdoPlate > 0; at 0 the cumulus field draws the CDO from the bake's stamp.)
-        const float plateK = shape ? std::clamp(shape->cdoPlate, 0.0f, 1.0f) : 1.0f;
-        if (Sh.strength > 0.0f && plateK > 0.0f) { Sh.strength *= plateK; out.push_back(Sh); Sh.strength /= plateK; }
+        // (No CDO plate since 2026-11-08: the cumulus field draws the CDO from the bake's stamp as one storm mass under the high
+        // layer's ice sheet, clouds_v2.glsl sK / cv2CdoShare. Sh carries on as the cirrus deck's template.)
         Sh.spiral = glm::vec4(0.0f);
         if (spiral)
         {

@@ -108,7 +108,7 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 - **Hurricanes without the painted lid.** A hurricane's central overcast is now built from the clouds themselves: a
   mass of storm towers under a smooth, lumpy ice sheet with a ragged edge and a clean eye, instead of a flat plate with
-  a spiral cut into it. (Weather > Hurricane CDO plate brings the old one back.)
+  a spiral cut into it. The old plate is gone, which also made every cloud view 1-2.5 ms faster.
 - **Mountains shape the weather.** Windward slopes of mountain ranges gather more cloud and the lee side clears
   (the foehn gap), following the prevailing winds.
 - **Flat cloud bases.** Cumulus bottoms are flat with crisp edges instead of rounding downward, and storm clouds

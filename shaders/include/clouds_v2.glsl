@@ -285,7 +285,6 @@ layout(set = 0, binding = CV2_DETAIL_BINDING)  uniform sampler3D   cv2DetailTex;
 layout(set = 0, binding = CV2_MORPH_BINDING)   uniform sampler2D   cv2MorphTex;
 #endif
 #ifndef SKY_LITE
-#define CV2_CYC_TEX   // (cv2_storms.glsl: a cyclone CDO's swirl texture reads the shape volume)
 #endif
 #include "cv2_storms.glsl"   // the storm objects' towers (CV2_STORM_BINDING)
 
@@ -1469,20 +1468,6 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         c.tur    *= 1.0 - wS;
         c.bub     = mix(c.bub, bubS, wS);
         c.thk     = mix(c.thk, 4000.0, wS);
-#ifndef SKY_LITE
-        // A HURRICANE'S CDO (2026-11-05, the user: "a nice smooth but textured swirl, right now it is a bumpy mess"): the
-        // plate of a cyclone's central dense overcast is a smooth sheet of outflow ice, not a storm's billowing anvil. Its
-        // lobes and billow erosion (the dimpled grey "bumpy mess", dark erosion pits all over it from orbit) mostly go,
-        // and the lid takes a streak texture along the swirl instead (gCv2CycT, cv2ShieldAtR).
-        if (gCv2CycT > -1e8) {
-            float cyK = wS;   // (the eyewall towers' heads too: under a CDO they are buried in its sheet)
-            float smK = cv2.ciHu.z * cyK;                  // "Hurricane top smoothing" (0.85)
-            c.lobeKL *= 1.0 - smK;
-            c.erK    *= 1.0 - 0.94 * smK;
-            c.billow *= 1.0 - min(smK * 1.18, 1.0);
-            c.lobeB  *= 1.0 - smK;
-        }
-#endif
         f.hf       = mix(f.hf, sg.hf, wS);
         f.topH     = mix(f.topH, sg.top, wS);
         f.msBright = mix(cu ? f.msBright : 1.0, cv2.types[3].look.x, wS);
@@ -3111,23 +3096,9 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     // Storms through the cumulus field (cv2.stormU.x): the towers and shields are the low field's margin (cv2StormGeom),
     // carved by its lobes and erosion; their own density functions are not called.
     bool stU = CV2_STORM_U;
-    gCv2CycT = -1e9;   // (cv2ShieldAtR sets it under a cyclone's CDO)
-    gCv2FpM  = fpM;
     CV2Storm sg = cv2StormNone();
     if (stU) {
         if ((lm & (kCv2LayCol | kCv2LayLow)) != 0u) sg = cv2StormGeom(q, fpM);
-#ifndef SKY_LITE
-        // A hurricane CDO's top (gCv2CycT, set by cv2ShieldAtR under a cyclone's CDO; cv2FieldLow smooths the plate):
-        // the swirl texture as RIDGES on the plate's margin, "Hurricane top streaks" (ciHu.w, 90 m) x max(T + 0.3, 0), x11
-        // toward its outline (sg.cap: two thirds of the edge share there), so the CDO's edge frays into streaks along the
-        // swirl instead of ending as a lid's step over the bands. Never negative: the plate's margin is the distance to its
-        // lid OR its underside, so an offset thickens or thins it, and a thin plate thinned into holes. Only where the plate
-        // is the margin (deck > 0.6), not on the eyewall towers' heads. (At 160 m the ridges, seen obliquely from 30 km, were
-        // dark scales over the sheet.) On the margin here: added to cv2FieldLow's own margin it put the march at 248
-        // registers. And x "Hurricane top density" (ciHu2.x, 3) the plate's ice: a CDO is the top of a deep, raining
-        // overcast (tau ~100); at the anvil's density it was a translucent grey sheet over the darker cloud under it.
-        if (gCv2CycT > -1e8) { sg.m += smoothstep(0.6, 1.0, sg.deck) * cv2.ciHu.w * (1.0 + 10.0 * sg.cap) * max(gCv2CycT + 0.3, 0.0); }
-#endif
         col.near = sg.near; col.storm = sg.storm; col.prox = sg.prox;
     } else if ((lm & kCv2LayCol) != 0u) col = cv2ColumnSigma(q, detailAmt, fpM);
 #ifdef CV2_LAYER_HITS

@@ -7262,14 +7262,10 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SldHurricaneArmSpeed), &stormCycArmSpeed, 0.0f, 10.0f, 0.05f, "%.2f", 457},
         {tx(Txt::SldHurricaneMinorSwirls), &stormCycMinorSwirls, 0.0f, 2.0f, 0.05f, "%.2f", 458},
         {tx(Txt::SldHurricaneDeckSpiral), &stormCycDeckSpiral, 0.0f, 1.0f, 0.05f, "%.2f", 459},
-        {tx(Txt::SldHurricaneCdoPlate), &stormCycCdoPlate, 0.0f, 1.0f, 0.05f, "%.2f", 547},
         {tx(Txt::SldStormMass), &cv2StormMass, 0.0f, 1.0f, 0.05f, "%.2f", 548},
         {tx(Txt::SldHurricaneOutflowCirrus), &stormCycOutflow, 0.0f, 3.0f, 0.05f, "%.2f", 460},
         {tx(Txt::SldHurricaneOutflowStreaks), &stormCycStreaks, 0.0f, 1.0f, 0.05f, "%.2f", 461},
         // 2026-11-05 (cirrus-hurr): the CDO's top, a smooth swirl with streaks along the flow. Slots 522-524.
-        {tx(Txt::SldHurricaneTopSmoothing), &stormCycTopSmooth, 0.0f, 1.0f, 0.05f, "%.2f", 522},
-        {tx(Txt::SldHurricaneTopStreaksM), &stormCycTopStreaks, 0.0f, 600.0f, 10.0f, "%.0f", 523},
-        {tx(Txt::SldHurricaneTopDensity), &stormCycTopDensity, 1.0f, 20.0f, 0.1f, "%.1f", 524},
         {tx(Txt::SldStormSurgeX), &stormSurge, 0.0f, 2.0f, 0.05f, "%.2f", 415},
     };
     // Wildfires and haboobs (the Weather window's Controls tab had them; settings keys clouds_v2.wildfire* / haboobs).
@@ -9790,7 +9786,6 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         stormCycArmSpeed = settingClamp(c.value("storm_cyc_arm_speed", stormCycArmSpeed), 0.0f, 10.0f);
         stormCycMinorSwirls = settingClamp(c.value("storm_cyc_minor_swirls", stormCycMinorSwirls), 0.0f, 2.0f);
         stormCycDeckSpiral = settingClamp(c.value("storm_cyc_deck_spiral", stormCycDeckSpiral), 0.0f, 1.0f);
-        stormCycCdoPlate = settingClamp(c.value("storm_cyc_cdo_plate", stormCycCdoPlate), 0.0f, 1.0f);
         cv2StormMass = settingClamp(c.value("storm_mass", cv2StormMass), 0.0f, 1.0f);
         stormCycOutflow = settingClamp(c.value("storm_cyc_outflow", stormCycOutflow), 0.0f, 3.0f);
         stormCycStreaks = settingClamp(c.value("storm_cyc_streaks", stormCycStreaks), 0.0f, 1.0f);
@@ -9904,9 +9899,6 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2OroWindMps = settingClamp(c.value("oro_wind_mps", cv2OroWindMps), 0.0f, 40.0f);
         cv2OroWindDirDeg = settingClamp(c.value("oro_wind_dir_deg", cv2OroWindDirDeg), -1.0f, 360.0f);
         cv2OroMoist = settingClamp(c.value("oro_moist", cv2OroMoist), 0.0f, 1.0f);
-        stormCycTopSmooth = settingClamp(c.value("storm_cyc_top_smooth", stormCycTopSmooth), 0.0f, 1.0f);
-        stormCycTopStreaks = settingClamp(c.value("storm_cyc_top_streaks_m", stormCycTopStreaks), 0.0f, 600.0f);
-        stormCycTopDensity = settingClamp(c.value("storm_cyc_top_density", stormCycTopDensity), 1.0f, 20.0f);
         cv2CuBubbleGain = c.value("cumulus_bubble_relief", cv2CuBubbleGain);
         cv2CuBubbleFine = c.value("cumulus_bubble_hierarchy", cv2CuBubbleFine);
         cv2CuBubbleSize = c.value("cumulus_bubble_size", cv2CuBubbleSize);
@@ -10575,7 +10567,6 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"storm_cyc_arm_speed", stormCycArmSpeed},
         {"storm_cyc_minor_swirls", stormCycMinorSwirls},
         {"storm_cyc_deck_spiral", stormCycDeckSpiral},
-        {"storm_cyc_cdo_plate", stormCycCdoPlate},
         {"storm_mass", cv2StormMass},
         {"storm_cyc_outflow", stormCycOutflow},
         {"storm_cyc_streaks", stormCycStreaks},
@@ -10687,9 +10678,6 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"oro_wind_mps", cv2OroWindMps},
         {"oro_wind_dir_deg", cv2OroWindDirDeg},
         {"oro_moist", cv2OroMoist},
-        {"storm_cyc_top_smooth", stormCycTopSmooth},
-        {"storm_cyc_top_streaks_m", stormCycTopStreaks},
-        {"storm_cyc_top_density", stormCycTopDensity},
         {"cumulus_bubble_relief", cv2CuBubbleGain},
         {"cumulus_bubble_hierarchy", cv2CuBubbleFine},
         {"cumulus_bubble_size", cv2CuBubbleSize},

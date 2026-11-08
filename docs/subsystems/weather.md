@@ -56,7 +56,11 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   puffiness 0.45, lift 230 m, head lobes 0.12, lobes 0.37, waist 0.89, overshoot 0.14 km, storm erosion 0.24).
   **Hurricanes as one storm mass (2026-11-08, branch `weather-salvage`; weather-v2's "removal of the top layer and insistence
   on just modifying the noise", which the user found "tremendously better"):** the CDO is no plate shield
-  (`CycloneShape::cdoPlate`, "Hurricane CDO plate" `storm_cyc_cdo_plate` 0, slot 547; 1 restores it). (1) The bake types the
+  (`Catalog::cycloneShieldsAt` emits only the cirrus deck). The plate and everything only it read were RETIRED the same day
+  (the user: "we do not need to maintain things like the old plate"): the CDO swirl texture in cv2ShieldAtR (a shape-volume
+  read), the top smoothing in cv2FieldLow, the swirl ridges on its margin, "Hurricane top smoothing / streaks / density"
+  (slots 522-524, ciHu.zw, ciHu2.x now 0) and the brief "Hurricane CDO plate" (547). Every view of the baseline 0.9-2.6 ms
+  faster (code size; the march stays at 255 registers), report 172424 shot 2 -8 ms (harness_runs/salv_after3 vs _after2). (1) The bake types the
   CDO 0.95 (cloud_v2_weather.comp, its own share: gCycDeck carries "Storm cloud field", which at the user's 0.65 left the type
   at ~0.7). (2) Where the type passes congestus the low field draws ONE storm mass (`sK`, "Storm mass" `storm_mass` 1 =
   cv2.column.y, slot 548; ported from weather-v2's continuous storms): tops to 0.8 of the span from the tower noise (cluster
