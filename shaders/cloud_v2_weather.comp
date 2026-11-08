@@ -278,13 +278,16 @@ layout(rgba8, set = 0, binding = 6) writeonly uniform image2DArray outConv;
 // the outflow pushes ahead of it. gShelf the shelf's share, gShelfH where in it (0 at the front, 1 at the towers),
 // gAhead the clear band ahead.
 float gShelf = 0.0, gShelfH = 0.0, gAhead = 0.0;
+// The storms' WIDE envelope (continuous storms, pc.storm2.x): the cells widened 3.5x (~18 km sigma at the default 15-km
+// "Cb tower radius"), soft-unioned: a storm complex as one region of big cloud, whatever its cells do one by one.
+float gEnvW = 0.0;
 vec4 wxConvection(vec3 d, out float env, bool cellsOnly)
 {
     float lat = asin(clamp(d.z, -1.0, 1.0)) * (180.0 / PI), lon = atan(d.y, d.x) * (180.0 / PI);
     uint  la  = uint(clamp(floor((lat + 90.0) * 0.5), 0.0, float(kCv2ConvGridLat - 1u)));
     uint  lo  = uint(clamp(floor((lon + 180.0) * 0.5), 0.0, float(kCv2ConvGridLon - 1u)));
     uvec2 g   = cv2ConvGrid[la * kCv2ConvGridLon + lo];
-    float notC = 1.0, top = 0.0, anv = 0.0, mid = 0.0, notE = 1.0;
+    float notC = 1.0, top = 0.0, anv = 0.0, mid = 0.0, notE = 1.0, notW = 1.0;
     float dIn = -20000.0, drop = 10000.0;   // the cells' COLUMN as distance fields (level 0's z / w): see below
     for (uint k = 0u; k < g.y; ++k) {
         uint e = cv2ConvList[g.x + k];
@@ -294,6 +297,7 @@ vec4 wxConvection(vec3 d, out float env, bool cellsOnly)
             float ci = c.b.x * exp(-(r * r) / (c.a.w * c.a.w));
             notC *= 1.0 - ci;
             notE *= 1.0 - c.b.x * exp(-(r * r) / (6.25 * c.a.w * c.a.w));
+            notW *= 1.0 - c.b.x * exp(-(r * r) / (12.25 * c.a.w * c.a.w));
             // Its column ANALYTICALLY: the radius where this cell alone passes the march's contour (0.35) and, inside it, how
             // far its round head drops below its top (a cap as round as the column, <= 5 km). From the intensity alone a
             // weaker cell came out narrower AND lower, and a ~5-km core sampled at 5-km texels lost a third of its peak: a
@@ -389,6 +393,7 @@ vec4 wxConvection(vec3 d, out float env, bool cellsOnly)
         }
     }
     env = 1.0 - notE;
+    gEnvW = 1.0 - notW;
     // (no shelf over any cell's core or the ground ahead of it: in a bow the flank cells' shelves reach forward over the
     // middle cells' columns, and typed as a deck there they flattened the line's towers)
     gShelf *= 1.0 - smoothstep(0.04, 0.2, 1.0 - notC);
@@ -686,6 +691,10 @@ void main()
     imageStore(outConv, id, cvx);   // (with the cyclones' fields)
     float cC = cvx.x, cMid = cvx.w;
     float stormAdd = 0.45 * smoothstep(0.02, 0.5, envC) + 0.6 * smoothstep(0.1, 0.5, cC) + 0.9 * smoothstep(0.05, 0.6, cMid);
+    // Continuous storms: the whole complex is cloudy (broken to overcast), its wide envelope's share.
+    const bool contS = pc.storm2.x > 0.5;
+    float sWide = contS ? smoothstep(0.03, 0.45, gEnvW) : 0.0;
+    stormAdd += 1.0 * sWide;
 
     // Afternoon convection over land: the ground heats under the Sun of the last few hours.
     float heat = (pc.evo2.w > 0.0) ? smoothstep(0.15, 0.85, dot(d, pc.evo2.xyz)) : 0.0;
@@ -733,11 +742,19 @@ void main()
     t += deep * conv * (0.22 + 0.25 * tropics);              // -> congestus (cumulonimbus only from storms)
     t -= cl.strat * (0.08 + 0.10 * ocean * (1.0 - tropics)); // decks: stratocumulus, stratus over cold sea
     t += 0.3 * aft * (0.5 + 0.5 * tropics);                  // afternoon: towering cumulus
-    t  = min(t, 0.62);   // the map's own convection caps at congestus: cumulonimbus is the storms'
+    // (continuous storms: the map's own deep convection -- dense cover over the ITCZ, the monsoons, an afternoon over land --
+    // reaches past congestus into the storm share, so convective regions tower as long as the map's systems live: hours,
+    // the GMGSI-benchmarked lifetimes, not a catalog cell's)
+    float tCap = contS ? 0.62 + 0.26 * smoothstep(0.7, 1.0, cov) * smoothstep(0.3, 0.8, max(deep * conv, 0.8 * aft)) : 0.62;
+    t  = min(t, tCap);   // the map's own convection caps at congestus: cumulonimbus is the storms'
     // Toward congestus over a storm's environment and its cores (the cumulus field's own deepest type: the column itself
     // is the storm geometry's, clouds_v2.glsl cv2StormGeom; typed cumulonimbus here, the field drew its own tower as a
     // cone through it); the mid outflow's deck stratiform.
     t  = mix(t, max(t, mix(0.5, 0.62, smoothstep(0.3, 0.8, cC))), smoothstep(0.02, 0.4, envC));
+    // CONTINUOUS STORMS (2026-11-07): there is no column geometry; the storm IS the cumulus field's own deep cloud. Over the
+    // wide envelope congestus, rising toward cumulonimbus over the cells' environment: the field draws it with its coarse
+    // cells, big lobes and tops up to the tropopause, all varying smoothly with the cells' summed strength.
+    if (contS) t = mix(t, max(t, mix(0.68, 1.0, smoothstep(0.05, 0.65, envC))), sWide);
     t  = mix(t, 0.15, smoothstep(0.1, 0.6, cMid) * (1.0 - smoothstep(0.1, 0.4, cC)));
     // The shelf: a deck at the front (near-stratus, flat) rising to cumulus at the towers' bases (a wedge ~3 km high).
     t  = mix(t, mix(0.08, 0.5, gShelfH), gShelf);

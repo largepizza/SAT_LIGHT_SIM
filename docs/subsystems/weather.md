@@ -13,6 +13,21 @@ source of every storm and cyclone: `wx::Catalog`, kinds, lifecycles, seasons) an
 DRAWN (towers, shields, stamps, the env index, the map's drift, the CDO swirl, haboobs), history: that code is deleted.
 Plan and progress log: `.plans/WEATHER_V2_PLAN.md` (untracked).
 
+- **Continuous storms** (`storm_continuous`, default on, 2026-11-08; the user: "take a huge step back on anvils ...
+  use the weather map to simply drive cloud shape, size, bubbles, coverage"). No column or plate geometry: the march's
+  `column.x` is 0 (cv2StormGeom only cuts a cyclone's eye) and `column.y` = 1 flags the mode. The bake (`pc.storm2.x`)
+  adds a WIDE envelope (`gEnvW`, the cells at 3.5 sigma; cells are binned to 11 sigma for it): + 1.0 coverage and type
+  toward 0.68 .. 1.0 (by the 2.5-sigma env); the map's own deep convection may pass the 0.62 cap up to 0.88 where dense
+  (hours-long, map lifetimes). In `cv2LowA` the storm share `sK = smoothstep(0.7, 0.95, type)` lifts topMax to the
+  cumulonimbus top, takes the cell top T from a TOWER NOISE (cluster Perlin at 16 + 64 km, normalised, + coarse cells:
+  `0.28 + 0.75 sqrt(smoothstep(-0.4, 1.2, zT))`, MIXED, not max: the field's own dome made a smooth mountain), drops the
+  fair-weather headroom / cell caps (else heads stop at ~0.6 of the span), coarser cells (+1 mip), lobes x1.8 and keeps
+  bubbles; turrets stay off on deep types (needles). The anvil is the HIGH layer (`cv2HighSigma`): a share aS from the
+  convection cube's anvil field + cores (level-2 tent, lookup warped ~6 km), a flat-topped sheet to ~2.6 km under the
+  tropopause, ~0.004 /m, lumpy underside from the shape volume at 2x period, drawn as cloud (`gCv2AnvK` clears f.thin:
+  as thin ice it read grey and see-through). Mid sheets give way over type > 0.7. Cost: same as the column storms
+  (ITCZ 184711: cloud 7.2 vs 7.4 ms near, 9.5 vs 8.8 orbit). 30 min at 1 min/s: no pops (vidsheet spikes 0).
+  Debug view 7: the low field's storm share is the third channel.
 - **One wind, no drift.** `wind_field.glsl` / `WindField.cpp` give an analytic wind (zonal climatology + Rossby waves
   + mesoscale curl). There is no global map drift (`kWeatherV2NoDrift`; `updateStorms` zeroes `cloudDriftRate` and the
   phase offset): the map frame IS the Earth-fixed frame. With the drift left in, storms landed hundreds of km from their

@@ -1682,7 +1682,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         p.anchorCol.w = (float)fracPos(1.5 * (double)cv2WindMps * cv2StormRiseT / (kColFlowSpan * stormP));
         // (Weather v2, 2026-11-06: the per-sample tower walk's lattice cell (column.y), its waist / flare / drift / lobes
         // (column2), sparsity (anvil2.z), storm cumulus reach (column3.x) and fill (column3.w) have no reader: fed 0.)
-        p.column = glm::vec4(std::max(cv2CbColumns, 0.0f), 0.0f,
+        // (y: continuous storms, cv2StormContinuous: the column geometry off, x = 0)
+        p.column = glm::vec4(cv2StormContinuous > 0.5f ? 0.0f : std::max(cv2CbColumns, 0.0f), cv2StormContinuous > 0.5f ? 1.0f : 0.0f,
                              std::clamp(cv2CbRadiusKm, 1.0f, 20.0f) * 1000.0f,
                              std::clamp(cv2CbCumulusTopKm, 2.0f, 12.0f) * 1000.0f);
         // xyz: the steering wind at the eye (m/s, ECEF), with which the storm geometry reads the convection cube back by its
@@ -2378,7 +2379,8 @@ SatelliteSim::GpuWeatherPC SatelliteSim::weatherEvoPC(int face, uint32_t mip) co
     const double flowP = std::clamp((double)cv2FlowPeriodKm, 200.0, 20000.0) * 1000.0;
     pc.storm = glm::vec4((float)(std::clamp((double)cv2FlowWarp, 0.0, 0.1) * flowP),
                          (float)fracPos((double)cv2WindMps * 0.3 * t / flowP), (float)(1.0 / flowP), 0.0f);
-    pc.storm2 = glm::vec4(0.0f);   // (unused since Weather v2: it carried the storm stamps' field / moat / cyclone swirls)
+    // x: continuous storms (cv2StormContinuous): the storms steer the map's type and coverage over a wide envelope
+    pc.storm2 = glm::vec4(cv2StormContinuous > 0.5f ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
     return pc;
 }
 
@@ -2545,7 +2547,7 @@ uint64_t SatelliteSim::weatherBakeHash() const
     uint64_t h = 1469598103934665603ull;
     for (float v : {cv2EvoWindMps, cv2EvoGrowth, cv2EvoWindowH, cv2EvoDiurnal,
                     cv2Coverage, cv2CoverClear, cv2CoverFull,   // the coarse levels' coverage (review 18)
-                    stormObjects ? 1.0f : 0.0f, cv2CbColumns,   // the storms
+                    stormObjects ? 1.0f : 0.0f, cv2CbColumns, cv2StormContinuous,   // the storms
                     cv2CbRadiusKm, cv2CbHeadDriftKm, cv2CbFlare,
                     // (a cyclone's shape: its arms are baked; 2026-11-03)
                     stormCycArms, stormCycTightness, stormCycArmSpeed})

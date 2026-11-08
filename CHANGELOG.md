@@ -204,6 +204,11 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Storms, hurricanes and wildfires
 
+- **Storms are big clouds, not props.** A thunderstorm is now the cumulus field's own deep cloud: the storm raises
+  the weather map's cloud type and coverage over its whole area, and its towers come from smooth noise, so they rise
+  and fall gradually instead of popping as cylinders. Anvils are a dense ice sheet under the tropopause, shaped by the
+  high-cloud layer's noise rather than drawn as a plate. Dense tropical convection on the map towers too, so stormy
+  regions last as long as the weather systems. `storm_continuous` (on); 0 brings back the column-and-plate storms.
 - **Storms are objects with a life.** Air-mass cells, multicells, supercells, squall lines and mesoscale complexes
   form at a thunderstorm climatology, grow, mature and decay over hours, each with its towers, anvil shield
   (lingering as cirrus after the storm), rain core, cloud field and lightning. A pure function of sim time.

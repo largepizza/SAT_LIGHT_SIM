@@ -5804,6 +5804,10 @@ private:
     // (The lattice / waist / lobes / sparsity / fill / reach / head-lobe / anvil-puff / anvil-lift settings went with the
     // per-sample tower walk, 2026-11-06.) cv2CbFlare / cv2CbHeadDriftKm still size the catalog's shield records.
     float cv2CbColumns = 2.0f;         // Cb column density (0 = no towers: a storm is tall congestus; the pass-14 deep cores are gone)
+    // CONTINUOUS STORMS (2026-11-07, "storm_continuous"): no column / anvil-plate geometry (cv2StormGeom off, column.x = 0); the
+    // storms only steer the weather map (type toward cumulonimbus, coverage) over a wide envelope, and the anvil is the high
+    // layer's sheet over the convection cube's anvil field (cv2HighSigma). The cumulus field draws them as its own big clouds.
+    float cv2StormContinuous = 1.0f;
     float cv2CbRadiusKm = 15.0f;        // a tower's base radius (waist ~0.7x, head ~1.6x)
     float cv2CbCumulusTopKm = 12.0f;    // the low (cumulus/congestus) field's top in storm regions
     float cv2CbFlare = 1.4f;           // its head under the anvil, x its base radius

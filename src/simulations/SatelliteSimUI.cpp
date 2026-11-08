@@ -10027,6 +10027,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2FastFlightLod = c.value("fast_flight_lod", cv2FastFlightLod);
         cv2FoveaRadius = c.value("fovea_radius", cv2FoveaRadius);
         cv2CbColumns = c.value("cb_columns", cv2CbColumns);
+        cv2StormContinuous = c.value("storm_continuous", cv2StormContinuous);
         cv2CbRadiusKm = c.value("cb_radius_km", cv2CbRadiusKm);
         cv2CbCumulusTopKm = c.value("cb_cumulus_top_km", cv2CbCumulusTopKm);
         cv2CbFlare = c.value("cb_flare", cv2CbFlare);
@@ -10758,6 +10759,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"fast_flight_lod", cv2FastFlightLod},
         {"fovea_radius", cv2FoveaRadius},
         {"cb_columns", cv2CbColumns},
+        {"storm_continuous", cv2StormContinuous},
         {"cb_radius_km", cv2CbRadiusKm},
         {"cb_cumulus_top_km", cv2CbCumulusTopKm},
         {"cb_flare", cv2CbFlare},
