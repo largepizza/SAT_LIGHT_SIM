@@ -37,6 +37,11 @@ Plan and progress log: `.plans/WEATHER_V2_PLAN.md` (untracked).
   - Thickness 400 m + "Anvil thickness" (<= 2.2 km) x aS^1.2; the catalog's outflow integral decays 2.5 x faster in this
     mode (its linger x 0.4: the whole downwind tail of an old storm stood as dense anvil over the sky, issue_20261107_125130);
     the storm's own anvil is its envelope's. A higher share threshold (0.25) instead lost young storms' anvils.
+  - Settings > Weather > Storms (cumulonimbus): "Continuous storms (0 = columns)" (slot 544).
+  - Shoulders: a storm's non-tower T is 0.15 .. 0.28 by the same tower noise (+ 0.12 x coarse cells); at one 0.28 floor a
+    third of a storm was a flat mesa under its towers ("a castle"). Hurricane outflow arms (the cyclone's z, 0.25 oc) x 1.6
+    (<= 0.8) and the CDO ramps in from Cc 0.25. Tried and reverted: the cluster Perlin on the anvil share's outline
+    (holes in a CDO, polygonal anvils), a 5-s weather tick for the anvil's re-bake ticks (CPU 2 -> 4.8 ms at 1 min/s).
   - Towers: the 64-km octave leads the tower noise, the 16-km one at half weight (led by 16 km: spires from 30-40 km; a
     steeper height curve on those made flat vertical walls).
   - Density 0.012 /m x aK (smoothstep(0.15, 0.85, aS)); at 0.004 the sheet read grey from above. A share under ~0.3 stays
