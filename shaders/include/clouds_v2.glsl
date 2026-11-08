@@ -2273,6 +2273,8 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
         vec4  cw = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + q.seaProjE * cv2.anchorCluster.w + vec3(0.13, 0.57, 0.31), 1.0);
         // (back along the wind by its face's bake lag, cv2ConvAt: read in place, the anvil's outline stepped at every re-bake in
         // time-lapse -- a line along its edge in the frame-to-frame change, 2026-11-08)
+        // (level 2: level 1 is baked on its own schedule, and read back by the face's lag it slid off its storm. Wider taps or
+        // a ~15-km warp diluted a young storm's anvil away, 2026-11-08.)
         vec3  wA = cv2ConvAt(normalize(wd + (e * (cw.a - 0.5) + n * (cw.r - 0.5)) * (2.0 * 12000.0 / 0.057 * 0.057 / R_EARTH) * 4.0));
         const float hT = 2.0 / 512.0;
         vec4  cvA = 0.25 * (textureLod(cv2ConvTex, wA + e * hT, 2.0) + textureLod(cv2ConvTex, wA - e * hT, 2.0)
@@ -2407,7 +2409,8 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
         vec4 shA = textureLod(cv2ShapeTex, cv2.anchorShape.xyz + cv2Mat(q.rSeaE) * (cv2.anchorShape.w * 0.5), max(cv2Lod(fpM, cv2.anchorShape.w * 0.5), 0.0));
         lmp = (shA.r * 0.6 + shA.g * 0.4 - 0.5);
     }
-    prof = mix(prof, smoothstep(0.0, 0.35, z + 0.9 * lmp) * (1.0 - smoothstep(0.85, 1.0, z + 0.15 * lmp)), aS);
+    // (its top too: ~+-0.2 of its thickness, a few hundred metres of swells that shade from orbit -- a flat top read as a plate)
+    prof = mix(prof, smoothstep(0.0, 0.35, z + 0.9 * lmp) * (1.0 - smoothstep(0.8, 1.0, z + 0.4 * lmp)), aS);
     float d    = prof * mix(mix(ci, cs, strat), cu, ccK);
     // (its body: the share itself, a little uneven with the bundles' volume; the fibres and veil only toward its edge)
     // (a weak share stays fibrous cirrus: as a dense body a distant fragment hung as a grey lens, 2026-11-08)
@@ -2415,7 +2418,7 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
     hfH  = z;
     topH = zb + thick;
     // (the anvil's ice: an optical depth of ~20-30 where it is thick -- at 0.004 /m, ~5, it read grey from above)
-    float aK = smoothstep(0.2, 0.75, aS);
+    float aK = smoothstep(0.15, 0.85, aS);   // (the ice thickens toward the core over most of the share: a softer outline)
     gCv2AnvK = aK;
     return d * mix(mix(mix(0.0008, 0.0003, strat), 0.0016, ccK) * cv2.high2.x, 0.012, aK) * mix(1.0, 0.6, far);
 }
