@@ -42,8 +42,14 @@ Plan and progress log: `.plans/WEATHER_V2_PLAN.md` (untracked).
   - Tropical cyclones: the bake types the eyewall / core (Cc -> 1) and the bands (Cc ~0.3 -> ~0.75) as storm share; the
     eye (cv2CycEye) runs in cv2Field whatever the clipmap's layer mask (else the anvil band's cells left a square eye).
   - Storm lobes x (1 + 3 sK): the towers' T rises ~0.7 of the span over ~5 km, so x1.8 lobes moved a wall ~200 m (smooth
-    slabs); turrets stay off on deep types (needles). Open: the anvil's outline ticks at every cube re-bake (each 40 sim s)
-    because its material moves with the storm's catalog shear, which no march-side lag knows.
+    slabs); turrets stay off on deep types (needles). The storm share's ceiling is the Cb top + 1 km x sK: the strongest
+    towers overshoot the anvil (whose top is the tropopause's).
+  - MID outflow: the cube's w (level 2, lag-corrected) is the mid layer's altostratus regime + strat (cv2MidSigma): a
+    line's trailing shield, a cyclone's deck between its bands; it gives way over the towers (type > 0.7, cv2Field).
+  - The convection cube's LAG (cv2PatchConvLag) is the face's RECTANGLE bake time where it has one: in time warp a face in
+    view re-bakes its visible part (levels 0-4) every tick and whole only at 4 x the tick, and by the whole bake's time the
+    reads were corrected for drift they did not have and snapped back at each whole bake (the anvil's outline stepped every
+    ~40 sim s at 1 min/s; level-1 reads slid off their storms).
 - **One wind, no drift.** `wind_field.glsl` / `WindField.cpp` give an analytic wind (zonal climatology + Rossby waves
   + mesoscale curl). There is no global map drift (`kWeatherV2NoDrift`; `updateStorms` zeroes `cloudDriftRate` and the
   phase offset): the map frame IS the Earth-fixed frame. With the drift left in, storms landed hundreds of km from their

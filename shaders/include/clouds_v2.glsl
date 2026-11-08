@@ -974,7 +974,9 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     // with their own headroom and tower spread, not the fair-weather cumulus'.
     float sK         = cv2.column.y > 0.5 ? smoothstep(0.7, 0.95, w.g) : 0.0;
     gCv2DbgSK = sK;
-    topMax = mix(topMax, topCap, sK);
+    // (+ up to ~400 m where the share is full: the strongest towers OVERSHOOT the anvil, whose top is the tropopause's,
+    // cv2HighSigma. At + 1 km x sK every tower peak of a hurricane's CDO stood through its shield as a block.)
+    topMax = mix(topMax, topCap + 400.0 * sK * sK, sK);
     // With the Cb COLUMN layer on (cv2ColumnSigma) the towers and their heads are that layer's: here a
     // storm region is only its cumulus/congestus field, capped at column.w. A low-layer core running
     // the full span was a mountain sloping up into the anvil: a margin field thresholded per height
@@ -1280,7 +1282,10 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
         // (convex in the noise -- sqrt: a broad, round head on a sloping foot; over 0.5-1.3 sd the step was ~2 km wide and the
         // towers stood as smooth vertical slabs)
         float twN = smoothstep(-0.4, 1.2, zT);
-        T = mix(T, min(0.28 + 0.75 * sqrt(twN) + 0.06 * (cellsB - 0.5), 1.0) * smoothstep(0.1, 0.5, eB), sK);   // (not max(): the field's own smooth dome made a mountain)
+        T = mix(T, min(0.28 + 0.75 * sqrt(twN) + 0.06 * (cellsB - 0.5), 1.0) * smoothstep(0.1, 0.5, eB), sK);
+        // (under a hurricane's CDO, outside its eyewall: buried under the shield, 0.8 of the span -- with the storm lobes'
+        // lift its tower heads stood through the CDO in dozens of blocks, 2026-11-08)
+        T = min(T, mix(1.0, 0.8, gCv2CdoK * (1.0 - gCv2EywK)));   // (not max(): the field's own smooth dome made a mountain)
     }
     float zeta   = z / T;
     // (A smooth min: min() creased the surface where the two cross, and sqrt(cells) is a cliff at
@@ -1999,6 +2004,22 @@ CV2Far cv2FarColumn(CV2Pos q, float fpM)
 }
 #endif
 
+#ifdef CV2_CONV_BINDING
+// The convection cube read BACK ALONG THE WIND by its face's bake lag (2026-11-07): a face re-bakes on its own schedule, up to
+// ~35 sim s behind in time-lapse, while its storms ride the wind on; read in place, a storm's baked intensity, top and anvil
+// trailed its exact column (cv2CellColumn) and the gates and edges flipped at every re-bake (tools/harness/artifacts.py).
+// cv2.column2.xyz: the steering wind at the eye; the lags packed by SatelliteSim::cv2PatchConvLag.
+vec3 cv2ConvAt(vec3 wd)
+{
+    vec3  a = abs(wd);
+    float pk; bool hi;
+    if (a.x >= a.y && a.x >= a.z) { pk = cv2.column3.x; hi = wd.x < 0.0; }
+    else if (a.y >= a.z)          { pk = cv2.column3.w; hi = wd.y < 0.0; }
+    else                          { pk = cv2.anvil2.z;  hi = wd.z < 0.0; }
+    float lag = ((hi ? floor(pk / 4096.0) : pk - 4096.0 * floor(pk / 4096.0)) - 2048.0) * 0.5;
+    return normalize(wd - cv2.column2.xyz * (lag / R_EARTH));
+}
+#endif
 // ── The mid-level layer: altocumulus / altostratus (2.8-7 km) ────────────────────────────────────
 // A second, independent field above the low system, so clouds overlap in altitude and cover: the
 // low field alone put every cloud on the same flat base. Present only where the map has cloud (the
@@ -2094,6 +2115,17 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
     }
     float regime = smoothstep(0.5 - cv2.mid2.w, 0.68 - cv2.mid2.w, clA + 0.15 * (covM - 0.5)) * cv2.misc.w * smoothstep(0.0, 0.35, covM)
                  * mix(1.0, 0.55, cv2.flow.y * smoothstep(0.75, 1.0, cov));
+    // CONTINUOUS STORMS (column.y, 2026-11-08; the user, a hurricane's bands: "these storms also need some mid layer help"):
+    // the storms' MID-LEVEL outflow (the convection cube's w: their trailing stratiform, a line's shield) is this layer's
+    // altostratus sheet, from the cube read smooth at level 2 (back along the wind by its face's lag). It gives way over the
+    // towers themselves (cv2Field: the map's type past 0.7).
+    float mOut = 0.0;
+#ifdef CV2_CONV_BINDING
+    if (cv2.column.y > 0.5) {
+        mOut   = smoothstep(0.08, 0.5, textureLod(cv2ConvTex, cv2ConvAt(cv2Drift(q.dirE)), 2.0).w);
+        regime = max(regime, mOut * clamp(cv2.misc.w * 1.5, 0.0, 1.0));
+    }
+#endif
     // The baked Perlin is 0.50 +- 0.057: read raw, the base spanned ~300 m, and the layer was one flat
     // sheet at ~4.5 km around the planet — seen edge-on from near its height, a dead-straight line
     // across every storm, with the towers below it seen dimmed through it (user snap 1, pass 17).
@@ -2129,7 +2161,7 @@ float cv2MidSigma(CV2Pos q, float fpM, out float hfMid, out float topMid, out fl
     // height (8-64 km) it was flat over the tens of km a view along it crosses, and seen edge-on from near its height
     // its top and base lined up into a straight translucent strip across a storm.
     if (q.h <= base - kCv2MidWanderM || q.h >= base + thick + kCv2MidWanderM) return 0.0;
-    float strat = 1.0 - smoothstep(0.3, 0.55, w.g);                 // stratiform below -> As
+    float strat = max(1.0 - smoothstep(0.3, 0.55, w.g), mOut);      // stratiform below (or a storm's outflow) -> As
     // Its own period (anchorMid): on the cumulus shape period, enlarging the cumulus lobes made the
     // altocumulus cloudlets huge too.
     vec4  sh    = cv2PhRead(cv2ShapeTex, cv2.anchorMid.xyz + q.rSeaE * cv2.anchorMid.w, gCv2PhD * cv2.anchorMid.w,
@@ -2233,22 +2265,6 @@ vec4 cv2IceFibres(vec3 p, float lodR)
     return vec4(clamp(fib, 0.0, 1.0), tuf, tn, t.g);
 }
 
-#ifdef CV2_CONV_BINDING
-// The convection cube read BACK ALONG THE WIND by its face's bake lag (2026-11-07): a face re-bakes on its own schedule, up to
-// ~35 sim s behind in time-lapse, while its storms ride the wind on; read in place, a storm's baked intensity, top and anvil
-// trailed its exact column (cv2CellColumn) and the gates and edges flipped at every re-bake (tools/harness/artifacts.py).
-// cv2.column2.xyz: the steering wind at the eye; the lags packed by SatelliteSim::cv2PatchConvLag.
-vec3 cv2ConvAt(vec3 wd)
-{
-    vec3  a = abs(wd);
-    float pk; bool hi;
-    if (a.x >= a.y && a.x >= a.z) { pk = cv2.column3.x; hi = wd.x < 0.0; }
-    else if (a.y >= a.z)          { pk = cv2.column3.w; hi = wd.y < 0.0; }
-    else                          { pk = cv2.anvil2.z;  hi = wd.z < 0.0; }
-    float lag = ((hi ? floor(pk / 4096.0) : pk - 4096.0 * floor(pk / 4096.0)) - 2048.0) * 0.5;
-    return normalize(wd - cv2.column2.xyz * (lag / R_EARTH));
-}
-#endif
 // The continuous storms' anvil share of the last cv2HighSigma (its ice is drawn as cloud, not as thin cirrus: cv2Field).
 float gCv2AnvK = 0.0;
 float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
@@ -2284,7 +2300,7 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
         aS = smoothstep(0.1, 0.6, cvA.z);
     }
 #endif
-    if (q.h < base0 - 700.0 || q.h > (aS > 0.0 ? max(base0 + 2400.0, tropTop + 500.0) : base0 + 2400.0)) return 0.0;
+    if (q.h < base0 - 700.0 || q.h > (aS > 0.0 ? max(base0 + 2400.0, tropTop + 1000.0) : base0 + 2400.0)) return 0.0;
     vec3  flowL  = cv2FlowDisp(wd, vec3(0.0));
     vec3  wF     = cv2FlowWeatherDir(wd, flowL);              // the low cloud's (flowed) map
     // The high layer's own frame: the low flow x "Cirrus flow" (the jet bends the upper cloud more;
@@ -2327,7 +2343,9 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
     {   // the anvil sheet: its top just under the tropopause (+-200 m), up to ~2.6 km thick where its share is full
         // (its own constants: the plate's "Anvil" / "Anvil thickness" sliders were tuned down for the old plate)
         float thA = 400.0 + 2200.0 * pow(aS, 1.2) * (0.8 + 0.4 * cl.g);
-        float tA  = tropTop - 100.0 + (cl.r - 0.5) * 400.0;
+        // (+ up to 400 m where the share is full: a thick shield -- a hurricane's CDO -- buries all but the strongest tower
+        // heads, which reach the tropopause too; at its rim the towers stood through it in dozens, 2026-11-08)
+        float tA  = tropTop - 100.0 + 500.0 * aS * aS + (cl.r - 0.5) * 400.0;
         zb    = mix(zb, tA - thA, aS);
         thick = mix(thick, thA, aS);
     }
@@ -2414,7 +2432,9 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
     float d    = prof * mix(mix(ci, cs, strat), cu, ccK);
     // (its body: the share itself, a little uneven with the bundles' volume; the fibres and veil only toward its edge)
     // (a weak share stays fibrous cirrus: as a dense body a distant fragment hung as a grey lens, 2026-11-08)
-    d = mix(d, prof * aS * clamp(0.8 + 0.3 * (sb.a - 0.5) + 0.8 * lmp, 0.3, 1.2), smoothstep(0.3, 0.7, aS));
+    // (its body's texture is the lumps' alone, which ride the LOW wind as the resolve reprojects storm cloud: with the cirrus
+    // bundles' (the jet's slide) in it, the time-lapse history lagged a whole anvil, ghost tiles 5 -> 34% at 5 min/s)
+    d = mix(d, prof * aS * clamp(0.8 + 1.0 * lmp, 0.3, 1.2), smoothstep(0.3, 0.7, aS));
     hfH  = z;
     topH = zb + thick;
     // (the anvil's ice: an optical depth of ~20-30 where it is thick -- at 0.004 /m, ~5, it read grey from above)
@@ -2872,6 +2892,7 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     if (cv2.column.y > 0.5) {
         float topE  = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * cv2Tropo(q.dirE);
         float baseE = cv2.types[4].alt.x + cv2Ground(q.dirE) * 0.9;
+        gCv2CdoK = 0.0; gCv2EyeM = 1e9; gCv2EywK = 0.0;   // (cv2StormGeom's resets: it may not have run, the layer mask)
         cv2CycEye(q.dirE, q.h, q.h - baseE, baseE, topE - 250.0);
     }
 #ifndef SKY_LITE

@@ -1800,7 +1800,16 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         {
             const bool stvOn = sinE > -0.1 && cloudFarBlend() < 0.999f && cv2SunVolumeOn > 0.5f;   // (sun_volume 0: a diagnostic)
             const double hHi = (double)hi + 1000.0;
-            const glm::dvec3 dEye = rotD(eye, cDD, sDD) - cv2PrevEye;
+            // (2026-11-08) ... relative to the clouds' TEXTURE, which rides the low wind (Weather v2: no drift, the noise moves
+            // with wfWind at kWfLowH; the resolve reprojects by it too): by the eye's motion alone, under time warp a ray stayed
+            // where its clouds had been, and a coarse level's shadow -- an anvil's on the towers under it, re-baked once a
+            // 32-64-frame round -- lagged minutes of wind behind its cloud (the ITCZ view at 5 min/s: tower walls lit while
+            // running, shaded when settled). Gate at 5 min/s (continuous storms): the tower view 5.2 -> 0.7% ghost tiles; the
+            // ITCZ view ~35% either way (open: its anvil's shadow on the towers; 0.3% with the volume off). With the old storms
+            // it costs the ITCZ view 4.5 -> 14.5% (the far, high cloud's shadows, the cirrus sliding its own way); on the fine
+            // levels alone the same. A time-lapse boost of the coarse levels changed nothing.
+            const glm::dvec3 Wsv = wx::windAt(glm::normalize(eye), wx::kWfLowH, windStateNow());
+            const glm::dvec3 dEye = rotD(eye, cDD, sDD) - cv2PrevEye - Wsv * std::clamp(dSimT, -600.0, 600.0);
             glm::vec4 lat[4];
             for (int lv = 0; lv < 4; ++lv)
             {
@@ -2568,8 +2577,16 @@ void SatelliteSim::cv2PatchConvLag()
         return;
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     float lg[6];
+    // (2026-11-08) A face in view is re-baked as a RECTANGLE (its visible part, levels 0-4) every tick and whole only at the
+    // out-of-view rate: the lag the march reads by is the rectangle's where it has one -- by the whole bake's alone the
+    // reads were corrected for up to 4 ticks of drift they did not have, and snapped back at each whole bake (an anvil's
+    // outline stepped every ~40 sim s at 1 min/s; reads at level 1 slid off their storms).
     for (int f = 0; f < 6; ++f)
-        lg[f] = cv2WxBakedT[f] < -1e29 ? 2048.0f : (float)(std::clamp(std::round(2.0 * (t - cv2WxBakedT[f])), -2047.0, 2047.0) + 2048.0);
+    {
+        const bool rectOk = cv2WxRect[f].z > cv2WxRect[f].x && cv2WxRect[f].w > cv2WxRect[f].y;
+        const double bt = rectOk ? std::max(cv2WxBakedT[f], cv2WxRectT[f]) : cv2WxBakedT[f];
+        lg[f] = cv2WxBakedT[f] < -1e29 ? 2048.0f : (float)(std::clamp(std::round(2.0 * (t - bt)), -2047.0, 2047.0) + 2048.0);
+    }
     auto *p = static_cast<GpuCloudV2Params *>(cv2ParamsMapped);
     p->column3.x = lg[0] + 4096.0f * lg[1];
     p->column3.w = lg[2] + 4096.0f * lg[3];
