@@ -5538,7 +5538,7 @@ private:
     float cv2AnvilFibres = 1.0f;           // "Anvil fibres" (clouds_v2.anvil_fibres; 0 = the eroded plate as before)
     float cv2AnvilFibreAlongKm = 15.0f;    // clouds_v2.anvil_fibre_along_km: the fibres' along-wind period
     float cv2AnvilFibreAcrossM = 1500.0f;  // clouds_v2.anvil_fibre_across_m: their across-wind spacing
-    float cv2StormBubbles = 1.0f;          // "Storm bubbles" (clouds_v2.storm_bubbles; 0 = off)
+    float cv2StormBubbles = 0.5f;           // "Storm bubbles" (clouds_v2.storm_bubbles; 0 = off)
     float cv2AnvilErosion = 0.2f;          // "Anvil erosion" (clouds_v2.anvil_erosion): the plate's share of the Cb erosion
     float cv2AnvilLidLobes = 0.1f;         // clouds_v2.anvil_lid_lobes: the plate lid's share of the storm lobes
     float cv2AnvilUnderLobes = 0.7f;       // clouds_v2.anvil_under_lobes: the plate underside's share
@@ -5556,7 +5556,7 @@ private:
     float cv2CuHeightVar = 0.6f;          // "Cumulus height variation": each cloud's top varies by this (x) across a field
     float cv2CuBreakup = 0.6f;            // "Cumulus break-up": the lobes' strength at the base (shallow sheets break into puffs)
     float cv2CuHeadroom = 0.5f;           // "Cumulus top headroom": how far the tops stay under the type's ceiling (0 = cut flat at it)
-    float cv2CuFineLobes = 0.5f;          // "Storm cumulus fine lobes": the cumulus-scale lobes kept on deep convection's storm-scale ones
+    float cv2CuFineLobes = 0.0f;          // "Storm cumulus fine lobes": the cumulus-scale lobes kept on deep convection's storm-scale ones
     float cv2CbFineLobes = 0.5f;          // "Cb tower fine lobes": the same on the towers
     float cv2CuWisps = 0.5f;              // "Cumulus wisps": erosion concentrated at the cloud's edge (frayed edges, solid cores)
     // Cumulus turrets (2026-11-04, issue 20261104_181014 "General Cloud Shapes"): a 3D field of towers at 0.36-2.9 km (the storm
@@ -5666,7 +5666,7 @@ private:
     int   cv2EyeStillFrames = 0;       // consecutive frames whose EYE motion showed under 1/4 half-res px of parallax (no time warp, history kept)
     float cv2MidAmount = 0.75f;         // the mid-level layer (altocumulus / altostratus), 0 = off
     float cv2StormScale = 12.0f;        // deep convection's lobes and erosion are this much larger
-    float cv2StormDetail = 0.24f;       // share of the erosion kept on deep convection
+    float cv2StormDetail = 0.04f;       // share of the erosion kept on deep convection
     float cv2Anvil = 8.0f;             // the anvil shield's density ("Anvils"), 0 = off. With storm objects each storm's
                                        // shield (cv2ShieldAt, 2026-10-23): a puffy layer round the towers' flared heads
                                        // that outlives them. 8 with the user's anvil tune (thickness 3.7 km, hang,

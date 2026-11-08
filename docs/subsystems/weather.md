@@ -54,6 +54,12 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   capsule's clean profile drew white pills from orbit), and `presA` is 0 at its 0.05 cutoff (it kept 2% there: at Anvils 8
   a view along the edge drew a hard arc). The user's anvil tune is the default (Anvils 8, thickness 3.7 km, hang 0.87 km,
   puffiness 0.45, lift 230 m, head lobes 0.12, lobes 0.37, waist 0.89, overshoot 0.14 km, storm erosion 0.24).
+  **Storms billowy, not pitted (2026-11-08, the user: intense weather "extremely spikey and eroded ... more intensive storms
+  are more billowy and continuous"):** "Storm cumulus fine lobes" 0.5 -> 0, "Storm bubbles" 1 -> 0.5, "Storm erosion"
+  (share of the erosion kept on deep convection) 0.24 -> 0.04: the towers' surface is the storm-scale lobes' big billows
+  instead of a pitted crust of cumulus-scale lobes, bubbles and erosion (ITCZ report 184711; 0.57 ms faster there). Tried
+  first: the storm share's profile round the towers (stormProx into sK: smooth vertical slabs, the coarse cells extruded)
+  and more cumulus top headroom near storms (no visible change).
   **Hurricanes as one storm mass (2026-11-08, branch `weather-salvage`; weather-v2's "removal of the top layer and insistence
   on just modifying the noise", which the user found "tremendously better"):** the CDO is no plate shield
   (`Catalog::cycloneShieldsAt` emits only the cirrus deck). The plate and everything only it read were RETIRED the same day
