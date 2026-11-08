@@ -207,8 +207,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **Storms are big clouds, not props.** A thunderstorm is now the cumulus field's own deep cloud: the storm raises
   the weather map's cloud type and coverage over its whole area, and its towers come from smooth noise, so they rise
   and fall gradually instead of popping as cylinders. Anvils are a dense ice sheet under the tropopause, shaped by the
-  high-cloud layer's noise rather than drawn as a plate. Dense tropical convection on the map towers too, so stormy
-  regions last as long as the weather systems. `storm_continuous` (on); 0 brings back the column-and-plate storms.
+  high-cloud layer's noise rather than drawn as a plate. `storm_continuous` (on); 0 brings back the column-and-plate
+  storms.
   A storm's towers rise as it grows, and its own anvil forms once they reach the tropopause, then spreads downwind and
   thins into cirrus; a storm that has rained out leaves a decaying cloud mass under it instead of vanishing. Anvil
   thickness follows "Anvil thickness"; Settings > Weather > Storms has the "Continuous storms" switch. The strongest towers overshoot the anvil. A hurricane's central dense overcast is

@@ -29,3 +29,5 @@
 - Life cycle: a storm's towers rise as the catalog's cells grow (their drawn tops, over the tower growth time), and its
   anvil forms only once they reach the tropopause, then spreads; the catalog's lingering outflow thins faster, and the
   anvil's thickness follows Settings > Weather > Storms "Anvil thickness". Settings toggle: "Continuous storms (0 = columns)".
+- Correction: the map's own deep convection is NOT raised into storm cloud (tried; whole tropical fields turned into a grey
+  blocky sheet from orbit). Storm persistence comes from each storm's lingering system envelope.

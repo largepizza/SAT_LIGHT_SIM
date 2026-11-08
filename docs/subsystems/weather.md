@@ -17,8 +17,8 @@ Plan and progress log: `.plans/WEATHER_V2_PLAN.md` (untracked).
   use the weather map to simply drive cloud shape, size, bubbles, coverage"). No column or plate geometry: the march's
   `column.x` is 0 (cv2StormGeom only cuts a cyclone's eye) and `column.y` = 1 flags the mode. The bake (`pc.storm2.x`)
   adds a WIDE envelope (`gEnvW`, the cells at 3.5 sigma; cells are binned to 11 sigma for it): + 1.0 coverage and type
-  toward 0.68 .. 1.0 (by the 2.5-sigma env); the map's own deep convection may pass the 0.62 cap up to 0.88 where dense
-  (hours-long, map lifetimes). In `cv2LowA` the storm share `sK = smoothstep(0.7, 0.95, type)` lifts topMax to the
+  toward 0.7 .. 1.0 (by the top-weighted env, gEnvT, below); the map's own convection stays capped at congestus (0.62:
+  lifted to 0.88 where dense, whole tropical fields became storm cloud, a grey square-holed sheet from orbit). In `cv2LowA` the storm share `sK = smoothstep(0.7, 0.95, type)` lifts topMax to the
   cumulonimbus top, takes the cell top T from a TOWER NOISE (cluster Perlin at 16 + 64 km, normalised, + coarse cells:
   `0.28 + 0.75 sqrt(smoothstep(-0.4, 1.2, zT))`, MIXED, not max: the field's own dome made a smooth mountain), drops the
   fair-weather headroom / cell caps (else heads stop at ~0.6 of the span), coarser cells (+1 mip), lobes x1.8 and keeps
