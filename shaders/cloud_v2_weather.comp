@@ -368,7 +368,10 @@ vec4 wxConvection(vec3 d, out float env, bool cellsOnly)
                 if (A.d.x > 0.0) q -= ax * clamp(dot(q, ax), -A.d.x, A.d.x);   // to the line segment
                 float dq = length(q * vec2(q.x < 0.0 ? 1.6 : 1.0, 1.25)) / (rk * kO);
                 float rr = sqrt(A.a.w / rk);
-                acc += wq * exp(-s / tauL) * (1.0 - smoothstep(0.55, 1.1, dq)) * rr;   // (it thins as it spreads, vertically too)
+                // (continuous storms: the outflow thins 2.5 x faster -- the storm's own anvil is its envelope's, written below; over
+                // the catalog's linger the whole downwind tail of an old storm stood as dense anvil over the sky,
+                // issue_20261107_125130 "anvil heads too thick and stick around for way too long")
+                acc += wq * exp(-s / (pc.storm2.x > 0.5 ? 0.4 * tauL : tauL)) * (1.0 - smoothstep(0.55, 1.1, dq)) * rr;   // (it thins as it spreads, vertically too)
                 // the mid-level outflow: slower downwind, wider, longer-lived; it too spreads downwind (its upwind edge stays
                 // near the source: spread evenly, a line's trailing stratiform reached ~35 km AHEAD of its towers as a
                 // deck over the shelf and the clear air)

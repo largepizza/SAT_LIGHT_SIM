@@ -2346,9 +2346,9 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
     if (regime <= 0.0) return 0.0;
     float zb     = base0 + (cl.r - 0.5) * 1200.0;
     float thick  = mix(500.0, 1600.0, regime);
-    {   // the anvil sheet: its top just under the tropopause (+-200 m), up to ~2.6 km thick where its share is full
-        // (its own constants: the plate's "Anvil" / "Anvil thickness" sliders were tuned down for the old plate)
-        float thA = 400.0 + 2200.0 * pow(aS, 1.2) * (0.8 + 0.4 * cl.g);
+    {   // the anvil sheet: its top just under the tropopause (+-200 m), 400 m + "Anvil thickness" (<= 2.2 km) where its share
+        // is full (issue_20261107_125130 "anvil heads are too thick": the user's 0.3 km gives ~0.7 km sheets)
+        float thA = 400.0 + min(cv2.anvil2.x, 2200.0) * pow(aS, 1.2) * (0.8 + 0.4 * cl.g);
         // (+ up to 400 m where the share is full: a thick shield -- a hurricane's CDO -- buries all but the strongest tower
         // heads, which reach the tropopause too; at its rim the towers stood through it in dozens, 2026-11-08)
         float tA  = tropTop - 100.0 + 500.0 * aS * aS + (cl.r - 0.5) * 400.0;

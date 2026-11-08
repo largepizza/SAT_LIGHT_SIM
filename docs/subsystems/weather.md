@@ -34,6 +34,11 @@ Plan and progress log: `.plans/WEATHER_V2_PLAN.md` (untracked).
     plate and its disc one hard-edged lid. Measured dead ends: the map's type as the anvil's source (level 2 averages a
     core under any threshold; level 1 too narrow), level 1 reads (baked on its own schedule: the lag correction slid them
     off their storms), wider taps / a 15-km warp (diluted young anvils away), density x aK^2 (anvils vanished).
+  - Thickness 400 m + "Anvil thickness" (<= 2.2 km) x aS^1.2; the catalog's outflow integral decays 2.5 x faster in this
+    mode (its linger x 0.4: the whole downwind tail of an old storm stood as dense anvil over the sky, issue_20261107_125130);
+    the storm's own anvil is its envelope's. A higher share threshold (0.25) instead lost young storms' anvils.
+  - Towers: the 64-km octave leads the tower noise, the 16-km one at half weight (led by 16 km: spires from 30-40 km; a
+    steeper height curve on those made flat vertical walls).
   - Density 0.012 /m x aK (smoothstep(0.15, 0.85, aS)); at 0.004 the sheet read grey from above. A share under ~0.3 stays
     fibrous cirrus (a dense body there hung as a grey lens). As cloud, not thin ice (gCv2AnvK clears f.thin).
   - SYSTEMS: each anvil source also adds its storm's envelope (1.5 r0, 0.8 x its strength) to gEnvW, fading over 0.6 x its
