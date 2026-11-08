@@ -235,6 +235,13 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
       returned before it): the type's fixed base has none of the field's condensation-level spread, and under every storm
       cell the cloud hung hundreds of metres below the base around it, a V poking down into its rain from 600 m. March 252
       registers, unchanged.
+    - The relief in the weather map (2026-11-08, cloud_v2_weather.comp, the user: weather-v2's clouds "breaking or flowing
+      over mountains", "the elevation term ... cheaply"; v2 had no explicit term, the look came from its clouds moving over
+      the fixed relief): along the climatology's low-level wind (the trades within ~25 degrees, the westerlies outside), the
+      DEM at the level's scale 30 / 60 km upwind: a windward rise of 250-1200 m adds up to +0.25 cover, a ridge upwind
+      300-1500 m over the point (the foehn gap) takes up to -0.35. Land only, `kWxOroK` (a constant: the bake's push
+      constants are full). Frame cost: none (the bake's); the march's follows the cloud it adds (Andes from 350 km +2.8,
+      Alps -0.4 ms, single runs).
 - **Debug view 7**: per-layer optical depth (red low incl. rain, green mid, blue anvil, white high) — the
   first thing to look at when a cloud artifact has an unknown owner.
 - **Motion** (`cloud_v2_resolve.comp`): the new-sample weight and the clamp box follow PARALLAX (the
