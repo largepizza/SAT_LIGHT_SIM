@@ -2392,11 +2392,12 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
     prof = mix(prof, smoothstep(0.0, 0.35, z + 0.9 * lmp) * (1.0 - smoothstep(0.85, 1.0, z + 0.15 * lmp)), aS);
     float d    = prof * mix(mix(ci, cs, strat), cu, ccK);
     // (its body: the share itself, a little uneven with the bundles' volume; the fibres and veil only toward its edge)
-    d = mix(d, prof * aS * clamp(0.8 + 0.3 * (sb.a - 0.5) + 0.8 * lmp, 0.3, 1.2), smoothstep(0.15, 0.6, aS));
+    // (a weak share stays fibrous cirrus: as a dense body a distant fragment hung as a grey lens, 2026-11-08)
+    d = mix(d, prof * aS * clamp(0.8 + 0.3 * (sb.a - 0.5) + 0.8 * lmp, 0.3, 1.2), smoothstep(0.3, 0.7, aS));
     hfH  = z;
     topH = zb + thick;
     // (the anvil's ice: an optical depth of ~20-30 where it is thick -- at 0.004 /m, ~5, it read grey from above)
-    float aK = smoothstep(0.0, 0.6, aS);
+    float aK = smoothstep(0.2, 0.75, aS);
     gCv2AnvK = aK;
     return d * mix(mix(mix(0.0008, 0.0003, strat), 0.0016, ccK) * cv2.high2.x, 0.012, aK) * mix(1.0, 0.6, far);
 }
