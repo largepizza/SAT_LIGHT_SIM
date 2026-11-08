@@ -1278,7 +1278,10 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     // a threshold: ~a quarter of the storm's area, plateaus a few km to ~10 km wide with steep sides; the coarse cells add
     // their lumps. The rest of the storm is a congestus mass ~a third of the span high.)
     {
-        float zT  = (cl16.a - 0.5) / 0.057 + 0.6 * (cl4.a - 0.5) / 0.057 + 2.0 * (cellsC - 0.5);
+        // (the 64-km octave leads, the 16-km one rides on it at half weight: towers as broad as they are tall, turrets on them.
+        // Led by the 16-km octave the towers were ~8 km plateaus 10 km tall, spires from 30-40 km; a steeper height curve on
+        // them made flat vertical walls instead, 2026-11-08)
+        float zT  = 0.55 * (cl16.a - 0.5) / 0.057 + 1.0 * (cl4.a - 0.5) / 0.057 + 2.0 * (cellsC - 0.5);
         // (convex in the noise -- sqrt: a broad, round head on a sloping foot; over 0.5-1.3 sd the step was ~2 km wide and the
         // towers stood as smooth vertical slabs)
         float twN = smoothstep(-0.4, 1.2, zT);
