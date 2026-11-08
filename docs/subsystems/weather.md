@@ -27,7 +27,23 @@ Plan and progress log: `.plans/WEATHER_V2_PLAN.md` (untracked).
   tropopause, ~0.004 /m, lumpy underside from the shape volume at 2x period, drawn as cloud (`gCv2AnvK` clears f.thin:
   as thin ice it read grey and see-through). Mid sheets give way over type > 0.7. Cost: same as the column storms
   (ITCZ 184711: cloud 7.2 vs 7.4 ms near, 9.5 vs 8.8 orbit). 30 min at 1 min/s: no pops (vidsheet spikes 0).
-  Debug view 7: the low field's storm share is the third channel.
+  Debug view 7: R low, G mid + cirrus, B the storms' low cloud, grey their anvil.
+  - The ANVIL's share is the cube's z ONLY (level 2, 4-tap tent one texel out, lookup warped ~6 km, read back by the face's
+    lag, cv2ConvAt). The bake writes into z each storm's own anvil, 0.85 x smoothstep(0.04, 0.45, gEnvW), and a cyclone's
+    CDO, 0.9 x smoothstep(0.35, 0.9, Cc). With the cores' intensity in it too, a hurricane's bands were white arcs of
+    plate and its disc one hard-edged lid. Measured dead ends: the map's type as the anvil's source (level 2 averages a
+    core under any threshold; level 1 too narrow), level 1 reads (baked on its own schedule: the lag correction slid them
+    off their storms), wider taps / a 15-km warp (diluted young anvils away), density x aK^2 (anvils vanished).
+  - Density 0.012 /m x aK (smoothstep(0.15, 0.85, aS)); at 0.004 the sheet read grey from above. A share under ~0.3 stays
+    fibrous cirrus (a dense body there hung as a grey lens). As cloud, not thin ice (gCv2AnvK clears f.thin).
+  - SYSTEMS: each anvil source also adds its storm's envelope (1.5 r0, 0.8 x its strength) to gEnvW, fading over 0.6 x its
+    linger once it stops feeding: a storm that has rained out leaves a decaying congestus mass under its anvil (5 min/s
+    film: a bank on the horizon for 2 h instead of gone in ~20 min).
+  - Tropical cyclones: the bake types the eyewall / core (Cc -> 1) and the bands (Cc ~0.3 -> ~0.75) as storm share; the
+    eye (cv2CycEye) runs in cv2Field whatever the clipmap's layer mask (else the anvil band's cells left a square eye).
+  - Storm lobes x (1 + 3 sK): the towers' T rises ~0.7 of the span over ~5 km, so x1.8 lobes moved a wall ~200 m (smooth
+    slabs); turrets stay off on deep types (needles). Open: the anvil's outline ticks at every cube re-bake (each 40 sim s)
+    because its material moves with the storm's catalog shear, which no march-side lag knows.
 - **One wind, no drift.** `wind_field.glsl` / `WindField.cpp` give an analytic wind (zonal climatology + Rossby waves
   + mesoscale curl). There is no global map drift (`kWeatherV2NoDrift`; `updateStorms` zeroes `cloudDriftRate` and the
   phase offset): the map frame IS the Earth-fixed frame. With the drift left in, storms landed hundreds of km from their
