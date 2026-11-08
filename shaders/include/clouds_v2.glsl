@@ -1342,7 +1342,7 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     float rV     = clamp((cl4.a - 0.5) * 9.0, -1.0, 1.0);
     // (Stratocumulus, a deck type that is half convective: x2.4 on the deck's own lobes. Its tops were smooth mounds.)
     float lobeK  = mix(cv2.form.x * (1.0 + 4.0 * ty.look.z * flatK), lobeH, convW) * mix(0.5, 1.0, max(ty.look.z, lowCov)) * fpFade
-                 * mix(1.0, 2.5, convW) * max(1.0 + cv2.tune.z * rV, 0.1) * (1.0 + 0.8 * sK);   // (a storm's walls billow)
+                 * mix(1.0, 2.5, convW) * max(1.0 + cv2.tune.z * rV, 0.1) * (1.0 + 3.0 * sK);   // (a storm's walls billow: ~1 km of bulge on a tower wall whose T rises ~0.7 over ~5 km)
     // Sub-pixel cells: thresholding the mip-averaged field would erase them (the average sits
     // below the threshold), so where a cell is smaller than the footprint the presence becomes the
     // fraction of area covered — a haze of the right opacity instead of nothing, or aliasing dots.
@@ -2259,7 +2259,9 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
         const float hT = 2.0 / 512.0;
         vec4  cvA = 0.25 * (textureLod(cv2ConvTex, wA + e * hT, 2.0) + textureLod(cv2ConvTex, wA - e * hT, 2.0)
                           + textureLod(cv2ConvTex, wA + n * hT, 2.0) + textureLod(cv2ConvTex, wA - n * hT, 2.0));
-        aS = smoothstep(0.1, 0.6, max(cvA.z, 0.8 * smoothstep(0.1, 0.5, cvA.x)));
+        // (z only: the bake writes each storm's and each cyclone CDO's own anvil into it. With the cores' intensity too, a
+        // hurricane's rain bands stood as smooth white arcs of anvil and its whole disc as one hard-edged plate.)
+        aS = smoothstep(0.1, 0.6, cvA.z);
     }
 #endif
     if (q.h < base0 - 700.0 || q.h > (aS > 0.0 ? max(base0 + 2400.0, tropTop + 500.0) : base0 + 2400.0)) return 0.0;

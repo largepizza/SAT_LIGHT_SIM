@@ -690,7 +690,8 @@ void main()
     // cumulus over their environment, the cores themselves, the trailing stratiform deck (mid outflow), in coverage units.
     // (continuous storms: every storm's OWN anvil over its wide envelope's core, by its strength, at the coarse levels -- the
     // march's high layer draws an anvil sheet where z is high; the catalog's integral spreads it downwind and lets it linger)
-    if (pc.storm2.x > 0.5 && !fine) cvx.z = max(cvx.z, 0.85 * smoothstep(0.04, 0.45, gEnvW));
+    // A cyclone's CDO is its anvil too (its core's mass, Cc ~0.92 x cdo, feathered with it); the bands are not (Cc 0.3).
+    if (pc.storm2.x > 0.5 && !fine) cvx.z = max(cvx.z, max(0.85 * smoothstep(0.04, 0.45, gEnvW), 0.9 * smoothstep(0.35, 0.9, tcCv.x)));
     imageStore(outConv, id, cvx);   // (with the cyclones' fields)
     float cC = cvx.x, cMid = cvx.w;
     float stormAdd = 0.45 * smoothstep(0.02, 0.5, envC) + 0.6 * smoothstep(0.1, 0.5, cC) + 0.9 * smoothstep(0.05, 0.6, cMid);
@@ -758,6 +759,8 @@ void main()
     // wide envelope congestus, rising toward cumulonimbus over the cells' environment: the field draws it with its coarse
     // cells, big lobes and tops up to the tropopause, all varying smoothly with the cells' summed strength.
     if (contS) t = mix(t, max(t, mix(0.7, 1.0, smoothstep(0.03, 0.4, envC))), sWide);
+    // (a tropical cyclone's convection: towering congestus along its bands (Cc ~0.3), cumulonimbus in its eyewall and core)
+    if (contS) t = mix(t, max(t, mix(0.74, 1.0, smoothstep(0.3, 0.85, tcCv.x))), smoothstep(0.08, 0.25, tcCv.x));
     t  = mix(t, 0.15, smoothstep(0.1, 0.6, cMid) * (1.0 - smoothstep(0.1, 0.4, cC)));
     // The shelf: a deck at the front (near-stratus, flat) rising to cumulus at the towers' bases (a wedge ~3 km high).
     t  = mix(t, mix(0.08, 0.5, gShelfH), gShelf);
