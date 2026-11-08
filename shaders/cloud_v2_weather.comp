@@ -703,7 +703,10 @@ void main()
     // (continuous storms: every storm's OWN anvil over its wide envelope's core, by its strength, at the coarse levels -- the
     // march's high layer draws an anvil sheet where z is high; the catalog's integral spreads it downwind and lets it linger)
     // A cyclone's CDO is its anvil too (its core's mass, Cc ~0.92 x cdo, feathered with it); the bands are not (Cc 0.3).
-    if (pc.storm2.x > 0.5 && !fine) cvx.z = max(cvx.z, max(0.85 * smoothstep(0.04, 0.45, gEnvW), 0.9 * smoothstep(0.35, 0.9, tcCv.x)));
+    // (+ its outflow cirrus arms, x1.6: written under the old plate's threshold, they drew a grey ring round a hard-edged CDO
+    // disc from orbit; the CDO ramps in from Cc 0.25 so its edge feathers into them)
+    if (pc.storm2.x > 0.5 && !fine) cvx.z = max(cvx.z, max(max(0.85 * smoothstep(0.04, 0.45, gEnvW), 0.9 * smoothstep(0.25, 0.9, tcCv.x)),
+                                                          min(1.6 * tcCv.z, 0.8)));
     imageStore(outConv, id, cvx);   // (with the cyclones' fields)
     float cC = cvx.x, cMid = cvx.w;
     float stormAdd = 0.45 * smoothstep(0.02, 0.5, envC) + 0.6 * smoothstep(0.1, 0.5, cC) + 0.9 * smoothstep(0.05, 0.6, cMid);
