@@ -560,6 +560,11 @@ void main()
     // raining stratiform deck into nimbostratus).
     t  = mix(t, max(t, mix(0.55, 0.72, smoothstep(0.5, 1.0, sst.x))), min(sst.x * 2.0, 1.0));
     t  = mix(t, 0.15, sst.y * (1.0 - sst.x));
+    // A hurricane's central dense overcast is DEEP CONVECTION (2026-11-08, weather salvage; weather-v2's hurricanes, "tremendously
+    // better" to the user with "the removal of the top layer and insistence on just modifying the noise"): typed past
+    // congestus, the low field's storm share (clouds_v2.glsl sK, "Storm mass") draws it as one billowing mass; the plate
+    // shield over it is off by default (CycloneShape::cdoPlate). Typed as the deck it was a flat stratiform disc under a plate.
+    t  = mix(t, 0.95, clamp(gCycDeck / max(pc.storm2.x, 1e-3), 0.0, 1.0));   // (its own share: gCycDeck carries "Storm cloud field")
     t  = clamp(t, 0.0, 1.0);
 
     float precip = clamp(deep * smoothstep(0.55, 0.9, t) + deep * (1.0 - conv) * 0.35, 0.0, 1.0);

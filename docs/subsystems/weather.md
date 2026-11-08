@@ -54,6 +54,19 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   capsule's clean profile drew white pills from orbit), and `presA` is 0 at its 0.05 cutoff (it kept 2% there: at Anvils 8
   a view along the edge drew a hard arc). The user's anvil tune is the default (Anvils 8, thickness 3.7 km, hang 0.87 km,
   puffiness 0.45, lift 230 m, head lobes 0.12, lobes 0.37, waist 0.89, overshoot 0.14 km, storm erosion 0.24).
+  **Hurricanes as one storm mass (2026-11-08, branch `weather-salvage`; weather-v2's "removal of the top layer and insistence
+  on just modifying the noise", which the user found "tremendously better"):** the CDO is no plate shield
+  (`CycloneShape::cdoPlate`, "Hurricane CDO plate" `storm_cyc_cdo_plate` 0, slot 547; 1 restores it). (1) The bake types the
+  CDO 0.95 (cloud_v2_weather.comp, its own share: gCycDeck carries "Storm cloud field", which at the user's 0.65 left the type
+  at ~0.7). (2) Where the type passes congestus the low field draws ONE storm mass (`sK`, "Storm mass" `storm_mass` 1 =
+  cv2.column.y, slot 548; ported from weather-v2's continuous storms): tops to 0.8 of the span from the tower noise (cluster
+  Perlin at 1/16 and 1/4 period + coarse cells), shoulders 0.15-0.28, strong cores to the top (capS), no cumulus headroom,
+  cells a mip coarser, lobes x (1 + 2 sK); the far column takes full cover and strength. Erosion stays the storm's (v2's
+  full cumulus erosion read "spiky and eroded"). (3) Its top is an ice SHEET in the high layer (cv2HighSigma, v2's anvil
+  sheet): just under the tropopause, 400 m + "Anvil thickness", lumpy below and above, dense (0.012), lit as cloud
+  (gCv2AnvK off f.thin); its share is ANALYTIC from the cyclone list (`cv2CdoShare`: out to 0.7-1.1 CDO radii warped by
+  the regime noise and the cluster Perlin, open at 0.9-1.5 eye radii, x intensity) -- read from the map's type it was a
+  blocky slab with no eye. GPU: report 172424 shot 2 37.6 ms, from 350 km 47.2 (plate: ~39 / 49). March 255 registers.
   **Anvils carried by the organised systems (2026-11-08, branch `weather-salvage`, `.plans/WEATHER_SALVAGE_PLAN.md`; the
   user: "spawn big anvils and force the objects to stick around. Do not spawn too many anvils near one another. Let anvils
   live for hours"):** (1) A single cell spreads a shield only as a supercell (`wx::Settings::singleAnvils`, "Single-storm

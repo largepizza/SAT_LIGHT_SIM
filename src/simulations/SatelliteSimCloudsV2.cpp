@@ -1600,7 +1600,10 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         const double stormP = cv2ShapePeriodM * stormScale;
         p.anchorCol = anchor(stormP, 0.0);
         p.anchorCol.w = (float)fracPos(1.5 * (double)cv2WindMps * simT / (kColFlowSpan * stormP));
-        p.column = glm::vec4(std::max(cv2CbColumns, 0.0f), (float)cellM,
+        // (y: "Storm mass", the low field's storm share x this, clouds_v2.glsl sK; 2026-11-08. The old lattice's cell size it
+        // held had no reader left.)
+        (void)cellM;
+        p.column = glm::vec4(std::max(cv2CbColumns, 0.0f), std::clamp(cv2StormMass, 0.0f, 1.0f),
                              std::clamp(cv2CbRadiusKm, 1.0f, 20.0f) * 1000.0f,
                              std::clamp(cv2CbCumulusTopKm, 2.0f, 12.0f) * 1000.0f);
         p.column2 = glm::vec4(std::clamp(cv2CbWaist, 0.2f, 1.5f), std::clamp(cv2CbFlare, 0.5f, 3.0f),

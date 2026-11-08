@@ -889,6 +889,12 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     float lift   = gC + (gF - gC) * mix(0.6, 0.9, ty.look.z);
     float topCap = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * tropo;
     topMax = min(topMax + lift, max(topCap, ty.alt.x + lift + 500.0));
+    // THE STORM SHARE (2026-11-08, weather salvage; weather-v2's continuous storms): where the map types deep convection past
+    // congestus (the bake: a hurricane's central dense overcast) the cumulus field draws ONE storm mass: tops up to the
+    // tropopause where its tower noise rises, shoulders round them, strong cores all the way up, coarser cells and bigger
+    // lobes -- continuous noise, no columns, no plate. x "Storm mass" (cv2.column.y; 0 = off).
+    float sK     = cv2.column.y * smoothstep(0.7, 0.95, w.g);
+    topMax = mix(topMax, topCap + 400.0 * sK * sK, sK);
     // With the Cb COLUMN layer on (cv2ColumnSigma) the towers and their heads are that layer's: here a
     // storm region is only its cumulus/congestus field, capped at column.w. A low-layer core running
     // the full span was a mountain sloping up into the anvil: a margin field thresholded per height
@@ -955,7 +961,7 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     // stretched along the view rays into fins radiating from the camera (user snaps, pass 13).
     float lodCell    = cv2Lod(fpM, cv2.anchorCell.w);
     vec3  cellUV     = cv2CellUV(mp);
-    float cellsC     = cv2MesoSmoothG(cellUV, max(lodCell, 2.0));
+    float cellsC     = cv2MesoSmoothG(cellUV, max(lodCell, 2.0 + sK));   // (a storm's cells a mip coarser: bigger masses)
     // Deep types: the coarse cells only. The fine cells' 2 km edges, extruded up a 10 km column, were
     // vertical grooves on every storm wall (user snaps 7-10, pass 13): the 3D lobes shape a tower.
     float cells      = mix(ce.g, min(cellsC * 1.8, 1.0), deep);
@@ -999,7 +1005,7 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     // four for deep types, whose cells are already the coarse ones). It sets each cell's height and
     // its peak, so every column of a cell shares one profile (see THE CONVECTIVE PROFILE below).
     float cellsB     = deep > 0.02
-                     ? mix(cellsC, cv2MesoSmoothG(cellUV, max(lodCell, 4.0)), deep)
+                     ? mix(cellsC, cv2MesoSmoothG(cellUV, max(lodCell, 4.0 + sK)), deep)
                      : cellsC;
     float fieldB     = 0.15 + 0.85 * sqrt(min(cellsB * 1.8, 1.0)) * mix(0.6, 1.0, cl.r)
                      + 0.08 * clamp(fz, -2.5, 2.5);
@@ -1164,6 +1170,7 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     // towers, the same with the fixed mip: not a footprint artefact. The cap is a constant, so at k = 0 a cell whose hVar
     // already took it past 1 (cu.x) now rises up to 1.7 x flow.w as well.)
     hVar += cv2.shade.z * (1.8 * smoothstep(-1.0, 1.0, clamp((ce.a - 0.5) * 6.0, -1.0, 1.0) + 0.8 * (cells - 0.55)) - 1.0);
+    hVar += sK * (0.55 * clamp((cellsB - 0.5) * 3.0 + (cl4.a - 0.5) * 9.0, -1.0, 1.0) - 0.1);
     const float kCv2TopCap = 1.7;
 #else
     const float kCv2TopCap = 1.0;
@@ -1176,12 +1183,23 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     float lowCov = max(1.0 - smoothstep(0.25, 0.65, covT), cv2.cu4.z * smoothstep(0.02, 0.2, w.b)) * cv2.cu.y
                        * smoothstep(0.1, 0.5, ty.look.z);
     float flatK  = ty.alt.z * (1.0 - lowCov);
-    float T      = min(max(cv2.flow.w, 0.05) * clamp(max(pow(eB, 0.83), 0.6 * pow(e, 0.83)) * max(hVar, 0.3),
+    float T      = min(mix(max(cv2.flow.w, 0.05), 0.75, sK) * clamp(max(pow(eB, 0.83), 0.6 * pow(e, 0.83)) * max(hVar, 0.3),
                                                    mix(0.25, 0.12, cv2.cu.x), kCv2TopCap), 1.0);
+    // A storm's TOWERS (weather-v2, 2026-11-08): its top from the tower noise (the cluster Perlin at 1/16 and 1/4 of its period, the
+    // coarse cells), its shoulders 0.15-0.28 of the span below the towers' threshold. Capped at 0.8 of the span: on this branch the
+    // share is a hurricane CDO's, whose towers stay buried (with the lobes' lift they stood through it in blocks, weather-v2);
+    // the eyewall's are the storm objects'.
+    if (sK > 0.0) {
+        float zT  = 0.55 * (cl16.a - 0.5) / 0.057 + 1.0 * (cl4.a - 0.5) / 0.057 + 2.0 * (cellsC - 0.5);
+        float twN = smoothstep(-0.4, 1.2, zT);
+        float flr = 0.15 + 0.13 * smoothstep(-2.0, -0.4, zT);
+        T = mix(T, min(flr + 0.75 * sqrt(twN) + 0.12 * (cellsB - 0.5), 1.0) * smoothstep(0.1, 0.5, eB), sK);
+        T = min(T, mix(1.0, 0.8, sK));
+    }
     float zeta   = z / T;
     // (A smooth min: min() creased the surface where the two cross, and sqrt(cells) is a cliff at
     // each blob's rim — both drew flat, rock-like facets.)
-    float capS   = 0.3 + 0.7 * cells;
+    float capS   = mix(0.3 + 0.7 * cells, 0.85 + 0.15 * cells, sK);   // (a storm's cells: strong cores all the way up)
     float hS     = max(0.2 - abs(e - capS), 0.0) / 0.2;
     float eS     = min(e, capS) - hS * hS * 0.05;
     float zmC    = mix(0.55, 0.65, deep);
@@ -1203,7 +1221,7 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     float thickM = T * max(topMax - base, 1.0);
     float liftK  = 2.0 * (1.0 + 0.5 * cv2.cu.z - reqMin) * min(vC, 1.3) / (1.0 - zmC) * min(kCv2LobeLiftM / thickM, 0.7)
                                 * (1.0 - flatK);
-    float reqC   = reqMin + (req0 - reqMin) * uC * uC + (1.0 + 0.5 * cv2.cu.z - reqMin) * vC * vC;
+    float reqC   = reqMin + (req0 - reqMin) * uC * uC + (1.0 + 0.5 * cv2.cu.z * (1.0 - sK) - reqMin) * vC * vC;
     // ("Cumulus top headroom", cu.z: the strength needed AT the cell's top is past what a column has, so the top is
     // shaped by the field and the lobes all the way up. At 1.0 every strong column reached zeta = 1 and the tops of
     // a dense field were cut flat at one level: mesas, "blocky layers".)
@@ -1238,7 +1256,7 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     float rV     = clamp((cl4.a - 0.5) * 9.0, -1.0, 1.0);
     // (Stratocumulus, a deck type that is half convective: x2.4 on the deck's own lobes. Its tops were smooth mounds.)
     float lobeK  = mix(cv2.form.x * (1.0 + 4.0 * ty.look.z * flatK), lobeH, convW) * mix(0.5, 1.0, max(ty.look.z, lowCov)) * fpFade
-                 * mix(1.0, 2.5, convW) * max(1.0 + cv2.tune.z * rV, 0.1);
+                 * mix(1.0, 2.5, convW) * max(1.0 + cv2.tune.z * rV, 0.1) * (1.0 + 2.0 * sK);   // (a storm's walls billow)
     // Sub-pixel cells: thresholding the mip-averaged field would erase them (the average sits
     // below the threshold), so where a cell is smaller than the footprint the presence becomes the
     // fraction of area covered — a haze of the right opacity instead of nothing, or aliasing dots.
@@ -1828,6 +1846,20 @@ CV2Far cv2FarColumn(CV2Pos q, float fpM)
     r.msBright = ty.look.x;
     r.strat = strat;
     r.deep  = smoothstep(0.45, 0.85, w.g);
+    // (The storm share, as cv2LowA: one mass, full cover and strength, up to the CDO's cap at 0.8 of the span. weather-v2.)
+    float sK = cv2.column.y * smoothstep(0.7, 0.95, w.g);
+    if (sK > 0.0) {
+        float lidS = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * tropo - 250.0;
+        r.top   = mix(r.top, max(r.top, r.base + 0.8 * (lidS - r.base)), sK);
+        r.e     = mix(r.e, 1.0, sK);
+        r.eRaw  = mix(r.eRaw, max(r.eRaw, 1.0), sK);
+        r.frac  = mix(r.frac, 1.0, sK);
+        r.covE  = mix(r.covE, 1.0, sK);
+        r.sigma = mix(r.sigma, cv2.types[3].shape.x * cv2.look.y, sK);
+        r.msBright = mix(r.msBright, cv2.types[3].look.x, sK);
+        r.strat = mix(r.strat, 0.0, sK);
+        r.deep  = max(r.deep, sK);
+    }
     return r;
 }
 #endif
@@ -2106,20 +2138,49 @@ vec2 cv2CirrusFlow(vec3 dirE, out vec2 oth, out float wO)
     return pA ? dA : dB;
 }
 
+// A storm mass's ICE SHEET (2026-11-08, weather salvage; weather-v2's anvil-as-high-layer): its share here, read by the high layer
+// and removed from f.thin (cv2Field) so the sheet is lit as cloud, not as thin ice.
+float gCv2AnvK = 0.0;
+// The CDO's sheet share at a map direction (the flowed frame the low cloud and the bake's cyclone stamp use): from each
+// tropical cyclone's own disc, not the weather map's type (its coarse mips drew a blocky slab with no eye). warp: the
+// outline's noise, in units of the disc's radius (+- ~0.25). Out to ~1.1 CDO radii, open at the eye, x the intensity.
+float cv2CdoShare(vec3 wF, float warp)
+{
+    float a = 0.0;
+#ifdef CV2_STORM_BINDING
+    for (uint i = 0u; i < min(cv2CycHead.x, kCv2CycloneMax); ++i) {
+        CV2Cyclone cy = cv2Cyclones[i];
+        float r   = length(wF - cy.b.xyz) * R_EARTH;
+        float cdo = max(cy.c.y, 1000.0);
+        if (r > 1.5 * cdo) continue;
+        float u   = r / cdo * (1.0 + warp);
+        float eye = cy.c.x > 0.0 ? smoothstep(0.9 * cy.c.x, 1.5 * cy.c.x, r) : 1.0;
+        a = max(a, (1.0 - smoothstep(0.7, 1.1, u)) * eye * smoothstep(0.1, 0.35, cy.a.w));
+    }
+#endif
+    return a;
+}
 float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
 {
     hfH = 0.0; topH = 0.0;
-    if (cv2.high.x <= 0.0 || q.h < 5500.0 || q.h > 14500.0) return 0.0;
+    gCv2AnvK = 0.0;
+    if (cv2.high.x <= 0.0 || q.h < 5500.0 || q.h > 17500.0) return 0.0;
     vec3  wd     = cv2Drift(q.dirE);
     float tropTop = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * cv2Tropo(wd);
     float base0  = 0.74 * tropTop;
-    if (q.h < base0 - 700.0 || q.h > base0 + 2400.0) return 0.0;
+    if (q.h < base0 - 700.0 || q.h > max(base0 + 2400.0, tropTop + 1000.0)) return 0.0;
     vec3  flowL  = cv2FlowDisp(wd, vec3(0.0));
     vec3  wF     = cv2FlowWeatherDir(wd, flowL);              // the low cloud's (flowed) map
     // The high layer's own frame: the low flow x "Cirrus flow" (the jet bends the upper cloud more;
     // until pass 13 cirrus ignored the flow entirely).
     vec3  wdH    = normalize(wd + flowL * (cv2.high2.z / R_EARTH));
     vec4  wc     = textureLod(cv2WeatherTex, wF, CV2_WX_LOD(max(2.0, gCv2WxLod)));
+    // The storm mass's sheet: where the map types deep convection past ~0.85 (a hurricane's CDO), x "Storm mass" (column.y). It
+    // is the storm's top -- a dense ice sheet just under the tropopause over its towers (the low field caps them at 0.8 of the
+    // span), lumpy below and above, fibrous where its share is weak. weather-v2's CDO, "tremendously better" to the user.
+    // (Its reach first, unwarped and generous, for the early out above the cirrus band; the outline below.)
+    float aS     = cv2.column.y > 0.0 ? cv2CdoShare(wF, -0.3) : 0.0;
+    if (q.h > base0 + 2400.0 && aS <= 0.0) return 0.0;
     // Cirrus lives with the weather systems: in the jet ahead of fronts and in the outflow of deep
     // convection; the subtropical highs are mostly free of it. The regime therefore follows the map's
     // coverage over the surrounding ~150 km (mip 4) as much as its own noise. On the noise alone the
@@ -2146,9 +2207,18 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
                  + (cl.a - 0.5) * 0.2;
     float regime = smoothstep(0.51 - widen, 0.57 - widen, 0.5 + rgN + 0.12 * (1.0 - 0.5 * cv2.flow.y) * (sys - 0.45))
                  * min(cv2.high.x, 1.0);
+    // (The outline warped by the regime's noise and the cluster Perlin: ragged, never a disc.)
+    if (aS > 0.0) aS = cv2.column.y * cv2CdoShare(wF, 0.35 * rgN + 1.5 * (cl.a - 0.5));
+    regime = max(regime, aS);
     if (regime <= 0.0) return 0.0;
     float zb     = base0 + (cl.r - 0.5) * 1200.0;
     float thick  = mix(500.0, 1600.0, regime);
+    {   // the sheet: its top just under the tropopause (+-200 m), 400 m + "Anvil thickness" (<= 2.2 km) where its share is full
+        float thA = 400.0 + min(cv2.anvil2.x, 2200.0) * pow(aS, 1.2) * (0.8 + 0.4 * cl.g);
+        float tA  = tropTop - 100.0 + 500.0 * aS * aS + (cl.r - 0.5) * 400.0;
+        zb    = mix(zb, tA - thA, aS);
+        thick = mix(thick, thA, aS);
+    }
     float z      = (q.h - zb) / thick;
     if (z <= 0.0 || z >= 1.0) return 0.0;
 
@@ -2192,7 +2262,7 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
     bundle *= mix(1.0, smoothstep(-1.2, 0.6, (cl.a - 0.5) / 0.057), min(cv2.tune.w * 2.0, 1.0));
     cc.y += (sb.g - 0.45) * 0.5;                          // streaks crowd together and fan apart (1.2 until 2026-11-05: marbling)
     ccO.y += (sb.g - 0.45) * 0.5;
-    float strat = 1.0 - smoothstep(0.3, 0.55, wc.g);
+    float strat = max(1.0 - smoothstep(0.3, 0.55, wc.g), smoothstep(0.2, 0.6, aS));   // (the sheet: a veil, fibrous at its edge)
     float ccK   = smoothstep(0.5, 0.7, cl.g) * (1.0 - strat) * 0.8;
 
     // Fibrous ice (cv2IceFibres, 2026-11-05): tufts with clear sky round them, filaments inside, hooked by the
@@ -2213,7 +2283,7 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
     float cu   = clamp((fb.w - mix(0.75, 0.55, regime)) * 5.0, 0.0, 1.0);
     // Fibres and cloudlets far below a pixel become the haze of their coverage (as the low cells
     // do) — in their bundles, so from orbit the high layer is banded, not an even veil.
-    float far = smoothstep(1.5, 4.0, lod);
+    float far = smoothstep(1.5, 4.0, lod) * (1.0 - aS);
     // Mostly a soft veil at a distance: a stretched noise is parallel streaks at every scale, and
     // thresholded far away it read as evenly spaced ripples from orbit.
     // From orbit: the bundles' streaks (squared: thin bands), not the regime's blob, and thinner —
@@ -2229,10 +2299,20 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
     ci = mix(ci, regime * 0.4 * mix(0.6, 1.0, bundle), nearK);
     cu = mix(cu, regime * 0.25, nearK);
     float prof = smoothstep(0.0, 0.25, z) * (1.0 - smoothstep(0.55, 1.0, z));
+    // (The sheet's underside and top lumpy, from the shape volume at twice its period.)
+    float lmp = 0.0;
+    if (aS > 0.02) {
+        vec4 shA = textureLod(cv2ShapeTex, cv2.anchorShape.xyz + cv2Drift(q.rSeaE) * (cv2.anchorShape.w * 0.5), max(cv2Lod(fpM, cv2.anchorShape.w * 0.5), 0.0));
+        lmp = (shA.r * 0.6 + shA.g * 0.4 - 0.5);
+    }
+    prof = mix(prof, smoothstep(0.0, 0.35, z + 0.9 * lmp) * (1.0 - smoothstep(0.8, 1.0, z + 0.4 * lmp)), aS);
     float d    = prof * mix(mix(ci, cs, strat), cu, ccK);
+    d = mix(d, prof * aS * clamp(0.8 + 1.0 * lmp, 0.3, 1.2), smoothstep(0.3, 0.7, aS));
     hfH  = z;
     topH = zb + thick;
-    return d * mix(mix(0.0008, 0.0003, strat), 0.0016, ccK) * cv2.high2.x * mix(1.0, 0.6, far);
+    float aK = smoothstep(0.15, 0.85, aS);   // (the ice thickens toward the core over most of the share: a softer outline)
+    gCv2AnvK = aK;
+    return d * mix(mix(mix(0.0008, 0.0003, strat), 0.0016, ccK) * cv2.high2.x, 0.012, aK) * mix(1.0, 0.6, far);
 }
 
 // ── The cumulonimbus anvil ───────────────────────────────────────────────────────────────────────
@@ -3121,7 +3201,7 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     sh *= 1.0 - presA;
     hfX = hfH; topX = topHh;
     if (sh > 0.0) cv2Add(f, sh, hfX, topX, 0.0);
-    if (sh + saThin > 0.0) f.thin = (sh + saThin) / f.sigma;
+    if (sh + saThin > 0.0) f.thin = (sh * (1.0 - gCv2AnvK) + saThin) / f.sigma;   // (a storm mass's sheet is lit as cloud)
     if (sm > 0.0) f.soft = sm / f.sigma;
     if (gCv2DbgWant)
         gCv2Dbg = vec4(dbgLow, max(sm, 0.0), max(sa, 0.0) + max(col.sigma, 0.0), max(sh, 0.0));
