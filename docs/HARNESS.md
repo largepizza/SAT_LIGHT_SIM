@@ -461,6 +461,14 @@ tools/harness/.venv/Scripts/python tools/harness/artifacts.py compare DIR_BEFORE
   last running frame vs the settled reference (drag, ghosts -- but it also holds the weather cube's own time-lapse lag:
   compare builds, never read it alone); `d1` = mean frame-to-frame change (context). Per run: `<run>_heat.png` (the
   per-pixel reversal count) and `<run>_worst.png` (the worst 128-px tile, 3 frames at 3x).
+- **Local and regression metrics (2026-11-07, issue_20261107_163510 "clouds leave ghost trails ... how does your pipeline
+  keep missing these"):** a crop-wide mean averaged a blocky ghost cumulus over ~2% of the crop to lag 3.4, "clean". Now
+  also `ghostT_pct` (% of 32-px tiles whose mean |running - settled| > 10 levels) and `lagT_max` (the worst tile),
+  `grain` / `grain_run` (mean |I - its 3x3 box|, settled / last running frame), `acc2` (mean |second difference| over
+  the 16 frames: pops and crawl), and `cloud_ms` (a settled `perf` of the view, `--no-perf` to skip). `--exe` runs another
+  build (a baseline worktree's), so the same views compare across branches: **perf-frames is the reference** for the
+  weather-v2 rebuild (`harness_runs/artifacts/reg_base`, `reg_step1`, `reg_head`). Scenarios `cu_trails`, `cu_horizon`
+  (163510: cumulus from 11 km at 5 min/s), `tundra` (163713), `frost` (163318).
 - 1x is the floor. Run it before and after any change to clouds, the resolve, the march's rate or anything time-driven,
   and `compare`: a fix must not trade flicker for blocks or drag (all three move together here).
 - Baseline (2026-11-07, `harness_runs/artifacts/c_true`, `trails_true`): every still scenario at 1x / 1m / 5m has rev12

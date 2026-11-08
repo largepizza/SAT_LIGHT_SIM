@@ -67,6 +67,14 @@ SCENARIOS = {
     "itcz":   ([f'report load "{REP}issue_20261106_184711" shot=1 trail=off', "time pause"], (480, 150, 960, 640)),
     # The cumulus field from 650 km (issue_20261107_125245: "noise repetition").
     "orbit":  ([f'report load "{REP}issue_20261107_125245" shot=1 trail=off', "time pause"], (480, 200, 960, 600)),
+    # A cumulus field from 11 km at 5 min/s, a still camera (issue_20261107_163510 shot 2: checkered ghost trails streaming
+    # downwind of every cumulus) and shot 4 (blocky cloud over the horizon).
+    "cu_trails": ([f'report load "{REP}issue_20261107_163510" shot=2 trail=off', "time pause"], (716, 703, 604, 306)),
+    "cu_horizon": ([f'report load "{REP}issue_20261107_163510" shot=4 trail=off', "time pause"], (898, 306, 368, 295)),
+    # Under a sunset deck from 500 m (issue_20261107_163713: 52 ms of cloud march, "is something up with sampling?").
+    "tundra": ([f'report load "{REP}issue_20261107_163713" shot=1 trail=off', "time pause"], (480, 100, 960, 640)),
+    # A storm tower at sunset from 5 km (issue_20261107_163318: flat grey "frosting" on thick tops).
+    "frost": ([f'report load "{REP}issue_20261107_163318" shot=1 trail=off', "time pause"], (480, 100, 960, 640)),
     # MOTION: the reports' own flights (their trails, with the sim time they ran at), the last frames scored. The user flies
     # through storms at 1 min/s; every still scenario above is clean while this is where the history is lost.
     "trail_tower": ([f'report load "{REP}issue_20261107_124812" shot=1'], (300, 0, 960, 640), {"trail": True}),
@@ -138,6 +146,12 @@ def grid_excess(img, b):
     return float(0.5 * ((gx[:, ix].mean() - gx[:, ~ix].mean()) + (gy[iy, :].mean() - gy[~iy, :].mean())))
 
 
+def grain(img):
+    k = np.pad(img, 1, mode="edge")
+    box = sum(k[1 + dy:1 + dy + img.shape[0], 1 + dx:1 + dx + img.shape[1]] for dy in (-1, 0, 1) for dx in (-1, 0, 1)) / 9.0
+    return float(np.abs(img - box).mean())
+
+
 def score_seq(paths):
     f = np.stack([lum(p) for p in paths])
     d = np.diff(f, axis=0)
@@ -155,6 +169,8 @@ def score_seq(paths):
         "blkT2_lv": round(float(np.mean([grid_excess(x, 2) for x in ad])), 4),
         "blkS2_lv": round(float(np.mean([grid_excess(x, 2) for x in f])), 4),
         "d1": round(float(ad.mean()), 2),
+        # INSTABILITY: mean |second difference| (levels): smooth motion and evolution ~0, flicker / crawl / pops large
+        "acc2": round(float(np.abs(np.diff(f, n=2, axis=0)).mean()), 2),
     }, rev6.sum(axis=0)
 
 
@@ -199,6 +215,8 @@ def cmd_run(a):
         args = [sys.executable, os.path.join(HERE, "live.py"), "start", "--window", "1920x1009", "--fixed-dt", str(a.dt)]
         if os.path.exists(sett):
             args += ["--settings", sett]
+        if a.exe:   # (another build: a baseline branch's tree, for a regression A/B on the same views)
+            args += ["--exe", a.exe]
         subprocess.run(args, check=True)
         started = True
     else:
@@ -269,8 +287,15 @@ def cmd_run(a):
                                       f"path play fps={fps} record=af_{tag}_ frames={keep}"]
                 # LAG: the same moment settled (time stays where the path left it): how far the running image trails it.
                 cmds += ["time pause", "wait settle auto max=250", f"capture af_{tag}_ref crop={cr}"]
+                if a.perf:   # (the cost of the same view, settled: a regression in the march shows next to its artifacts)
+                    cmds += ["set display.fps_cap_mode 0", "set display.dynamic_resolution false", "wait 30",
+                             f"perf frames=60 name=af_{tag}"]
                 print(f"[{tag}]", flush=True)
-                send(cmds, timeout=1800)
+                res = send(cmds, timeout=1800)
+                pr = [r for r in res if str(r.get("cmd", "")).startswith("perf")]
+                if pr:
+                    meta.setdefault("perf", {})[tag] = {"cloud_ms": pr[-1]["result"]["gpu_ms"].get("cloud_march"),
+                                                        "gpu_ms": pr[-1]["result"]["gpu_total_ms"].get("mean")}
                 rd = live_dir()
                 dst = os.path.join(out, tag)
                 os.makedirs(dst, exist_ok=True)
@@ -296,9 +321,11 @@ def cmd_run(a):
 
 def cmd_score(a):
     meta = json.load(open(os.path.join(a.dir, "meta.json"), encoding="utf-8"))
+    a.perf_meta = meta.get("perf", {})
     nums = {}
     lines = ["# Artifact gate", "", f"fixed step {meta['dt']} s, {meta['frames']} consecutive frames a run", "",
-             "| run | rev12 % | rev6 % | blkT2 | blkT4 | blkS2 | blkT2 lv | blkS2 lv | lag | lag16 % | d1 |", "|---|---|---|---|---|---|---|---|---|---|---|"]
+             "| run | rev12 % | rev6 % | acc2 | blkT2 lv | blkS2 lv | lag | lag16 % | ghostT % | lagT max | grain | grain run | d1 | cloud ms |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for tag in meta["runs"]:
         paths = sorted(p for p in glob.glob(os.path.join(a.dir, tag, f"af_{tag}_*.png")) if not p.endswith("_ref.png"))
         ref = os.path.join(a.dir, tag, f"af_{tag}_ref.png")
@@ -306,12 +333,29 @@ def cmd_score(a):
             continue
         n, revmap = score_seq(paths)
         if os.path.exists(ref):
-            dl = np.abs(lum(paths[-1]) - lum(ref))
+            R = lum(ref)
+            dl = np.abs(lum(paths[-1]) - R)
             n["lag"] = round(float(dl.mean()), 2)
             n["lag16_pct"] = round(100.0 * float((dl > 16).mean()), 2)
+            # LOCAL drag (2026-11-07, issue_20261107_163510: a blocky ghost cumulus over ~2% of the crop scored lag 3.4, "clean"):
+            # 32-px tiles whose mean |running - settled| passes 10 levels, and the worst tile's mean. A mean over the crop
+            # averages a ghost away; a tile does not.
+            T = 32
+            H, W = (dl.shape[0] // T) * T, (dl.shape[1] // T) * T
+            tm = dl[:H, :W].reshape(H // T, T, W // T, T).mean(axis=(1, 3))
+            n["ghostT_pct"] = round(100.0 * float((tm > 10).mean()), 2)
+            n["lagT_max"] = round(float(tm.max()), 1)
+            # GRAIN: the settled image's and the last running frame's high-frequency residue, mean |I - its 3x3 box| (levels):
+            # settled grain is the field's / the history's floor, running grain over it is the motion's.
+            n["grain"] = round(grain(R), 2)
+            n["grain_run"] = round(grain(lum(paths[-1])), 2)
+        if a.__dict__.get("perf_meta") and tag in a.perf_meta:
+            n.update(a.perf_meta[tag])
         nums[tag] = n
         heat_and_worst(paths, revmap, os.path.join(a.dir, f"{tag}_heat.png"), os.path.join(a.dir, f"{tag}_worst.png"))
-        lines.append(f"| {tag} | {n['rev12_pct']} | {n['rev6_pct']} | {n['blkT2']} | {n['blkT4']} | {n['blkS2']} | {n['blkT2_lv']} | {n['blkS2_lv']} | {n.get('lag', '-')} | {n.get('lag16_pct', '-')} | {n['d1']} |")
+        lines.append(f"| {tag} | {n['rev12_pct']} | {n['rev6_pct']} | {n['acc2']} | {n['blkT2_lv']} | {n['blkS2_lv']} | {n.get('lag', '-')} | "
+                     f"{n.get('lag16_pct', '-')} | {n.get('ghostT_pct', '-')} | {n.get('lagT_max', '-')} | {n.get('grain', '-')} | "
+                     f"{n.get('grain_run', '-')} | {n['d1']} | {n.get('cloud_ms', '-')} |")
     with open(os.path.join(a.dir, "numbers.json"), "w", encoding="utf-8") as f:
         json.dump(nums, f, indent=1)
     lines += ["", "Heat maps: `<run>_heat.png` (a frame | its rev6 count per pixel). Worst tile: `<run>_worst.png`."]
@@ -323,7 +367,7 @@ def cmd_score(a):
 def cmd_compare(a):
     A = json.load(open(os.path.join(a.a, "numbers.json"), encoding="utf-8"))
     B = json.load(open(os.path.join(a.b, "numbers.json"), encoding="utf-8"))
-    keys = ["rev12_pct", "blkT2_lv", "blkS2_lv", "lag", "lag16_pct", "d1"]
+    keys = ["rev12_pct", "acc2", "blkS2_lv", "lag16_pct", "ghostT_pct", "lagT_max", "grain", "grain_run", "cloud_ms"]
     print("run".ljust(16) + "".join(k.rjust(22) for k in keys))
     for tag in A:
         if tag not in B:
@@ -340,12 +384,14 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run")
     r.add_argument("--scenarios", default=",".join(SCENARIOS))
+    r.add_argument("--exe", default="", help="the app to start (default: the freshest build/Release exe)")
     r.add_argument("--scales", default="1x,1m,5m")
     r.add_argument("--frames", type=int, default=16)
     r.add_argument("--warm", type=int, default=30, help="frames played before the captures")
     r.add_argument("--dt", type=float, default=1.0 / 30.0)
     r.add_argument("--out")
     r.add_argument("--keep", action="store_true", help="leave the live app running")
+    r.add_argument("--no-perf", dest="perf", action="store_false", help="skip the settled perf per still run")
     r.add_argument("--pre", default="", help="commands after each scenario's setup (an A/B: 'set clouds_v2.x 0; ...')")
     s = sub.add_parser("score")
     s.add_argument("dir")

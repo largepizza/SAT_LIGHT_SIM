@@ -648,6 +648,13 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     a frame (`cdc_motion_low_frac` 0.25). The 12-km storm-tops loss that had kept it low (12-19% of the pixels > 16
     levels) was the low shape volume's frame (`cv2ShapeFrame`, chosen at the observer) missing from the epoch, not the
     footprint: the epoch now includes it (perf.md "Moving costs the clipmap").
+    **Time-lapse level floor** (`cdc_timelapse`, default on, 2026-11-07; GpuCloudV2Params `storm3b.w`): past `cdc_max_rate`
+    the clipmap stays on, read from the finest level whose cells live >= 4 frames (0.5 x 100 m x 2^L / 40 m/s >= 4 x the
+    frame's sim seconds: 1 min/s level 3, 5 min/s level 5; none past ~30 min/s), the check pass leaving the finer levels
+    stale. Off (the old rule) the weather-v2 field's coarse steps through empty air were all evaluated: 13.8 M reads a
+    frame at 5 min/s on the tower report vs 0.5 M paused; with the floor 3.1 M, cloud march -2 ms (5 min/s) / -1.4 ms
+    (1 min/s), misses ~0.002% of skipped steps. Budget-bound (~360k cells refused a frame). Without a floor (cdc_max_rate
+    raised) every view was 2-12 ms SLOWER: the finest levels expire every frame.
   - **S2** (`cdc_light`, `cdc_light_levels` 3): light steps 3+ read the cell's mean + variance of the light extinction
     through the gamma model E[exp(-L e)] (a cell MEAN alone darkened broken cloud by up to 18 levels: Jensen). Modest.
     Not the diffuse field's far side (tauB) since 2026-11-06: that is jittered field reads at every range ("The look at
@@ -1034,6 +1041,14 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
       unclamped (`uK`). Per-frame pixels past 8 levels: 158 km 0.10% -> 0.0002%, 20.8 km 1.14% -> 0.00002%; tstab at
       shot 1 (paused and live time) and 184710 within the base-vs-base floor. **Harness trap:** `path play` with time
       paused holds sim time (`simRate` = 0) — `time play` first or the path measures a frozen sky; `report load` pauses.
+    - **Weather v2: in-place evolution is change, not stillness (2026-11-07, `evoK`, issue_20261107_163510).** The weather
+      now changes in place (cube re-bakes, coverage on the 3-km wind under the 2-km texture, flow-map renewals, storm
+      lives), none of it reprojectable. With the eye still, every cloud past ~30 km took the still treatment (7x7 box +
+      its slack, from ~0.1 px unclamped `uK`, ~25-frame memory): at 1-5 min/s cumulus that had gone stayed as blocky ghosts
+      and a dissolved storm tower stood lit over a sunset. `evoK` = smoothstep(0.5, 5, sim s a frame): no still box, no
+      `uK`, variance clipping; and the history's memory is capped at ~15 sim s (w >= 1 - exp(-dSimT / 15)). 1x-10x
+      unchanged. artifacts.py: ghosted tiles 7-12% -> 0 (cumulus 1 / 5 min/s, the frosting tower at 5 min/s), worst tile
+      40-109 -> 4-9 levels, grain and 2-px blocks down. Not fixed by it: the ITCZ and tower views (storm motion / cube lag).
     - **Light march: EQUAL steps, each its own jitter** (`kLightRatio` 1, `fract(jitter + 0.618 k)`; merge threshold kept
       at the old first step). The 1.6 geometric series made the far steps single point samples for 1-3 km, and the
       history converges on the mean of exp(-od) (Jensen): under a low Sun, clouds in another's shadow were 30-60 levels

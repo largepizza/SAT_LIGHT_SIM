@@ -66,6 +66,7 @@ void checkPass(uint gi)
     if (gi >= uint(kCv2CdcTotal)) return;
     int   lv;
     ivec3 c  = cellOf(gi, lv);
+    if (lv < int(cv2.storm3b.w)) return;   // (the time-lapse floor: levels the march does not read now are left stale)
     uint  st = cv2CdcStamp(c, lv);
     if ((cv2CdcData[gi] >> 16u) == st) return;
     // Outside the shell (with the sample pattern's reach): empty, no field read.

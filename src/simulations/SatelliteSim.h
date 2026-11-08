@@ -5524,7 +5524,9 @@ private:
     float cv2CdcFpUsed = -1.0f, cv2CdcMaxLevelUsed = -1.0f, cv2CdcSkipUsed = -1.0f;
     float cv2CdcBracketUsed = -1.0f;       // the bake's footprint bracket (cdcC.w) the cells were baked with
     int   cv2CdcShapeFrameUsed = -1;       // the low shape volume's frame (cv2ShapeFrame) the cells were baked under
-    float cv2CdcMaxRate = 4.0f;           // ... used only up to this time rate (x real time)
+    float cv2CdcMaxRate = 4.0f;           // ... used only up to this time rate (x real time), and past it ...
+    bool  cv2CdcTimeLapse = true;         // ... with a level floor (cdc_timelapse, 2026-11-07: the finest level whose cells live >= 4 frames)
+    float cv2CdcLvFloor = 0.0f;           // this frame's floor (GpuCloudV2Params storm3b.w)
     float cv2CdcLight = 1.0f;             // S2 (2026-10-22): the light march reads the clipmap's mean beyond its first 2 steps
     float cv2CdcLightUsed = -1.0f;
     float cv2CdcLightLevels = 3.0f, cv2CdcLightLevelsUsed = -1.0f;   // ... on levels below this (cells to 400 m)

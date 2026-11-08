@@ -9809,6 +9809,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CdcFp = c.value("cdc_fp", cv2CdcFp);
         cv2CdcMaxLevel = c.value("cdc_max_level", cv2CdcMaxLevel);
         cv2CdcMaxRate = c.value("cdc_max_rate", cv2CdcMaxRate);
+        cv2CdcTimeLapse = c.value("cdc_timelapse", cv2CdcTimeLapse);
         cv2CdcMotionGuard = c.value("cdc_motion_guard", cv2CdcMotionGuard);
         cv2CdcMotionLowFrac = c.value("cdc_motion_low_frac", cv2CdcMotionLowFrac);
         cv2CdcMotionLowEpoch = c.value("cdc_motion_low_epoch", cv2CdcMotionLowEpoch);
@@ -10562,6 +10563,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cdc_fp", cv2CdcFp},
         {"cdc_max_level", cv2CdcMaxLevel},
         {"cdc_max_rate", cv2CdcMaxRate},
+        {"cdc_timelapse", cv2CdcTimeLapse},
         {"cdc_motion_guard", cv2CdcMotionGuard},
         {"cdc_motion_low_frac", cv2CdcMotionLowFrac},
         {"cdc_motion_low_epoch", cv2CdcMotionLowEpoch},

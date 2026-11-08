@@ -66,7 +66,7 @@ int cv2CdcLevel(vec3 rel, float eyeR)
     float dA = dot(d, cv2.layA.xyz);
     vec2  uv = vec2(dot(d, cv2.layE.xyz), dot(d, cv2.layN.xyz)) * (kCv2CdcR / max(dA, 1.0));
     vec2  du = abs(uv - cv2.cdcA.xy);
-    return min(int(ceil(log2(max(max(du.x, du.y) / (cv2.cdcA.z * float(kCv2CdcN / 2 - 2)), 1.0)))), kCv2CdcL);
+    return min(max(int(ceil(log2(max(max(du.x, du.y) / (cv2.cdcA.z * float(kCv2CdcN / 2 - 2)), 1.0)))), int(cv2.storm3b.w)), kCv2CdcL);
 }
 // 1 = the coarse field is zero at this point (known), 0 = it may not be (or the cell is unknown / outside the clipmap).
 // rel: offset from the eye (observer ENU); eyeR: the eye's distance from the Earth's centre.
@@ -89,7 +89,7 @@ bool cv2CdcMeanAt(vec3 rel, float eyeR, float L, float u, out float m)
     if (h < 0.0 || iz >= kCv2CdcNZ) return false;
     vec2  uv = vec2(dot(d, cv2.layE.xyz), dot(d, cv2.layN.xyz)) * (kCv2CdcR / dA);
     vec2  du = abs(uv - cv2.cdcA.xy);
-    int   lv = int(ceil(log2(max(max(du.x, du.y) / (cv2.cdcA.z * float(kCv2CdcN / 2 - 2)), 1.0))));
+    int   lv = max(int(ceil(log2(max(max(du.x, du.y) / (cv2.cdcA.z * float(kCv2CdcN / 2 - 2)), 1.0)))), int(cv2.storm3b.w));
     int   lvM = min(min(kCv2CdcL, int(cv2.cdcB.w)), int(cv2.cdcC.y));   // only the finest levels (cdc_light_levels)
     if (lv >= lvM) return false;
     if (lv == lvM - 1 && u < smoothstep(0.6, 1.0, max(du.x, du.y) / (cv2CdcCell(lv) * float(kCv2CdcN / 2 - 2)))) return false;
@@ -149,7 +149,10 @@ uint cv2CdcMask(vec3 rel, float eyeR)
     vec2  uv = vec2(dot(d, cv2.layE.xyz), dot(d, cv2.layN.xyz)) * (kCv2CdcR / dA);   // m on the plane
     vec2  du = abs(uv - cv2.cdcA.xy);
     float reach = cv2.cdcA.z * float(kCv2CdcN / 2 - 2);
-    int   lv = int(ceil(log2(max(max(du.x, du.y) / reach, 1.0))));
+    // (cv2.storm3b.w, the time-lapse floor, 2026-11-07: with time running fast the finest levels' cells expire every frame,
+    // ~5 M a frame against a 65k budget, and the clipmap was switched off above 4x -- 26x the coarse field reads at 5 min/s.
+    // Reads take the finest level whose cells live >= ~4 frames; near the eye they are coarser, never wrong.)
+    int   lv = max(int(ceil(log2(max(max(du.x, du.y) / reach, 1.0)))), int(cv2.storm3b.w));
     if (lv >= min(kCv2CdcL, int(cv2.cdcB.w))) return 0xFFFFu;
     ivec3 c  = ivec3(ivec2(floor(uv / cv2CdcCell(lv))), iz);
     uint  v  = cv2CdcData[cv2CdcIndex(c, lv)];

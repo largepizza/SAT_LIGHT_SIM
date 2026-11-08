@@ -1906,7 +1906,18 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             // Only up to cdc_max_rate x real time: at 10x the cells expire ~10x as fast as a frame's budget bakes them, most
             // read unknown, and the bake + lookups cost more than they save (+2 ms at 58 km, harness_runs/s0/run13).
             const float rate = timePaused ? 0.0f : kTimeScales[std::clamp(timeScaleIdx, 0, (int)(sizeof(kTimeScales) / sizeof(kTimeScales[0])) - 1)];
-            cv2CdcActive = cv2CdcSkip > 0.5f && rate <= cv2CdcMaxRate && cv2CdcBufFull && cv2ShapeFadeLeft == 0;   // (and not while the shape frame cross-fades)
+            // TIME-LAPSE (2026-11-07, cdc_timelapse): past cdc_max_rate the clipmap stays on with a LEVEL FLOOR -- the finest level
+            // whose cells live >= 4 frames (a cell's quantum is half a cell of slide at 40 m/s: 0.5 x 100 m x 2^L / 40 >= 4 x the
+            // frame's sim seconds). Off, the weather-v2 field's coarse steps through empty air were evaluated: 26x the reads at
+            // 5 min/s on the tower report (0.5 M -> 13.8 M), the march 4.6 -> ~10 ms.
+            cv2CdcLvFloor = 0.0f;
+            bool cdcRateOk = rate <= cv2CdcMaxRate;
+            if (!cdcRateOk && cv2CdcTimeLapse) {
+                const double dS = std::max(std::fabs(dSimT), 1e-3);
+                const int fl = std::max(0, (int)std::ceil(std::log2(4.0 * dS * cdcWind / (0.5 * cdcCell0))));
+                if (fl < (int)std::clamp(cv2CdcMaxLevel, 0.0f, 8.0f)) { cv2CdcLvFloor = (float)fl; cdcRateOk = true; }
+            }
+            cv2CdcActive = cv2CdcSkip > 0.5f && cdcRateOk && cv2CdcBufFull && cv2ShapeFadeLeft == 0;   // (and not while the shape frame cross-fades)
             // The motion guard (SatelliteSim.h cv2CdcMotionGuard): a cell's bake read the field at the footprint seen from
             // where the eye WAS, and paused it never expires. Its distance scale: the nearest cloud is at least this far
             // (from orbit the height above the shell; near the ground 20 km, so normal and boosted low flight keep it).
@@ -2236,7 +2247,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         p.storm3a = glm::vec4(std::clamp(cv2AnvilFibres, 0.0f, 2.0f), nAlong / (2.0f * 3.14159265f),
                               1.0f / std::max(cv2AnvilFibreAcrossM, 100.0f), 0.0f);   // (w: "Storm bubbles", unread: removed)
         p.storm3b = glm::vec4(std::clamp(cv2AnvilErosion, 0.0f, 1.0f), std::clamp(cv2AnvilLidLobes, 0.0f, 1.0f),
-                              std::clamp(cv2AnvilUnderLobes, 0.0f, 1.5f), 0.0f);
+                              std::clamp(cv2AnvilUnderLobes, 0.0f, 1.5f), cv2CdcActive ? cv2CdcLvFloor : 0.0f);   // w: the clipmap's level floor
     }
     skyApRanThisFrame = false;
     p.grid = glm::vec4((float)cv2HalfW, (float)cv2HalfH, cv2FullResActive() ? 1.0f : 0.0f, cv2FullResActive() ? 1.0f : 0.0f);

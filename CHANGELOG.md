@@ -106,6 +106,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Clouds and weather
 
+- **Clean clouds in time-lapse.** At 1 min/s and faster, clouds that had moved or dissolved no longer linger as blocky
+  ghosts and trails, and a storm tower that has gone no longer stays lit in the sky. Time-lapse is also cheaper: the
+  empty-space skipping of the cloud march now stays on above 4x real time.
 - **Cumulus turrets.** Cumulus and stratocumulus fields are no longer one smooth dome per cell: a 3D field of towers
   of varied height, taller than wide and leaning with the wind, rises out of every cloud with a convective share,
   so a shower field from an aircraft shows turrets standing over a lower mass instead of a sheet of gumdrops.

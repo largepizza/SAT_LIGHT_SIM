@@ -474,6 +474,16 @@ void main()
         float lagK   = 1.0 / max(cv2.look2.w, 0.01);
         float mNb    = max(motionPx, (eyePx / min(min(dNear, ndR > 0.0 ? ndR : 1e30), capD)) * lagK);
         float stillW = 1.0 - smoothstep(0.05, 0.5, mNb);
+        // EVOLUTION (2026-11-07, issue_20261107_163510 "clouds leave ghost trails"): with time running the weather changes IN
+        // PLACE -- the weather cube's faces re-bake, the coverage drifts on the 3-km wind under the texture's 2-km one, the
+        // flow map renews, storms grow and decay -- and none of it is a reprojection. A still eye kept the still view's
+        // treatment for every cloud past ~30 km (its 5 m/s evolution slide is under half a pixel there): the 7x7 box, its
+        // slack, and from ~0.1 px the history UNCLAMPED, at a ~25-frame memory. At 1 min/s and up, cumulus that had gone or
+        // moved stayed as blocky ghosts (the 3x3 box cut them on the sparse grid) and a storm tower dissolved minutes of sim
+        // time ago stood lit over the sunset (artifacts.py: 7-12% of the 32-px tiles off by > 10 levels, the worst 40-109;
+        // after 0%, worst 4-9; grain and blocks down). evoK: 0 at <= 0.5 sim s a frame (1x-10x), 1 from 5 s (5 min/s at 30
+        // fps): no still box, no unclamped history, variance clipping; and below, the history holds at most ~15 sim s.
+        float evoK = smoothstep(0.5, 5.0, abs(cv2.wind1.w));   // (wind1.w: this frame's sim seconds)
         // The wide neighbourhood is read in motion too (2026-10-13, issue 20261013_214939: the colour box below).
         vec3 cMn = mn.rgb, cMx = mx.rgb, rMnC = rMn, rMxC = rMx;
         float dRef = ndR > 0.0 ? ndR : -1.0;
@@ -517,6 +527,7 @@ void main()
                 mNb    = max(mNb, max(motionPx, (eyePx / min(dWide, capD)) * lagK));
                 stillW = 1.0 - smoothstep(0.05, 0.5, mNb);
             }
+            stillW *= 1.0 - evoK;
             mn = mix(mn, mnW, stillW); mx = mix(mx, mxW, stillW);
             rMn = mix(rMn, rMnW, stillW); rMx = mix(rMx, rMxW, stillW);
         }
@@ -542,7 +553,7 @@ void main()
             for (int k = 0; k < 4; ++k) if (hd4[k] > 0.0) e = min(e, abs(hd4[k] - dP));
             hConf = (1.0 - smoothstep(0.06, 0.2, e / dP)) * cv2.gnd.w;
         }
-        float mv  = smoothstep(0.1, 1.5, mNb);
+        float mv  = max(smoothstep(0.1, 1.5, mNb), evoK);
         vec4  bLo = mix(mn - slack, max(mn, m1 - cv2.samp.z * sdBox), mv);
         vec4  bHi = mix(mx + slack, min(mx, m1 + cv2.samp.z * sdBox + vec4(1e-4)), mv);
         // Issue 20261013_214939 ("noise on moving clouds"): in motion the box above is the 3x3 of new samples, and a new
@@ -570,7 +581,7 @@ void main()
         // x cu2.w (CPU): 0 while the Sun shadow volume fills after a reset (the shadows arriving are a real change the
         // clamp must let through quickly), up to 1 from ~64-96 frames on.
         float uK = (1.0 - smoothstep(0.05, 0.15, max(motTrue, eyePx / min(min(min(dNear, dWide), ndR > 0.0 ? ndR : 1e30), capD))))
-                 * cv2.cu2.w;
+                 * cv2.cu2.w * (1.0 - evoK);   // (time-lapse: the weather moves in place, see evoK)
         vec4 hc = cv2FromMean(clamp(cv2ToMean(hist), bLo, bHi));
         hc = mix(hc, hist, uK);
         // Review 20b: and never brighter (or darker) than the new samples' own RADIANCE box. The mean colour divides
@@ -619,6 +630,8 @@ void main()
         // single ray's jitter grain; blur is the pixel itself on the sparse grid, where the axial mix does it).
         fresh = mix(fresh, blur, max(0.8 * mf, (full || tFull) ? 0.4 * mk * w : 0.0));
         w     = mix(w, mix(0.7, 0.3, hConf), mf0);
+        // (evoK) The history's memory in SIM time: at most ~15 s (1x: nothing; 1 min/s ~0.13 a frame; 5 min/s ~0.5).
+        w = max(w, 1.0 - exp(-abs(cv2.wind1.w) / 15.0));
         outC = mix(hc, fresh, w);
     } else {
         outC = isNew ? mix(nc, blur, 0.8) : (tentQ ? blur : spatial);
