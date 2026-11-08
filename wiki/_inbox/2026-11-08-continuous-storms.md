@@ -26,3 +26,6 @@
   ~40 sim s in time-lapse); the Sun shadow volume's lattice moves with the low wind (shadows no longer lag their clouds in
   time-lapse: tower view at 5 min/s ghost tiles 5.2 -> 0.7%); the march's far-side optical depth blends into its path
   estimate over a footprint range (no lighting ring round the nadir from altitude).
+- Life cycle: a storm's towers rise as the catalog's cells grow (their drawn tops, over the tower growth time), and its
+  anvil forms only once they reach the tropopause, then spreads; the catalog's lingering outflow thins faster, and the
+  anvil's thickness follows Settings > Weather > Storms "Anvil thickness". Settings toggle: "Continuous storms (0 = columns)".

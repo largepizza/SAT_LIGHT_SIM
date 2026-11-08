@@ -41,6 +41,9 @@ Plan and progress log: `.plans/WEATHER_V2_PLAN.md` (untracked).
   - LIFE CYCLE: the type's cumulonimbus end follows the cells' environment weighted by their drawn TOP share (gEnvT,
     smoothstep(0.1, 0.9, b.y)), and the storm's own anvil the envelope of the cells past 0.75 of the lid (gEnvA): towers rise
     over the catalog's tower growth time, the anvil forms after (ITCZ storm at 1 min/s: towers 8-29 min, anvil from ~33).
+  - OPEN (gate itcz_5m ~30% ghost tiles; 1 min/s 1.5-4%): an anvil growing in time-lapse leaves the Sun volume's shadow of
+    it stale (the tower walls under it lit while running, shaded when settled; 6.8% with the high layer off, 0.3% with the
+    volume off). Not fixed by: boosting levels 0-1 or 1-2 in time-lapse, the lattice's wind, the clipmap floor.
     Keyed on strength alone, a 60-km anvil came out of nothing in ~5 sim min and towers stood at the lid before any anvil.
   - Shoulders: a storm's non-tower T is 0.15 .. 0.28 by the same tower noise (+ 0.12 x coarse cells); at one 0.28 floor a
     third of a storm was a flat mesa under its towers ("a castle"). Hurricane outflow arms (the cyclone's z, 0.25 oc) x 1.6
