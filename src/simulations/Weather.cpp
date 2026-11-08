@@ -387,6 +387,9 @@ struct Catalog::Impl {
             towersEnd = std::max(towersEnd, (double)ts.t0 + (double)ts.life);
             anvil |= ts.role >= 0.99f && ts.peak >= 0.45f;
         }
+        // (Settings::singleAnvils, 2026-11-08: the organised systems carry the anvils; a single cell spreads one only as a
+        // supercell by default. Its towers still flare at the lid; there is no shield and no linger.)
+        if (set.singleAnvils <= 0 || (set.singleAnvils == 1 && S.kind != StormKind::Supercell)) anvil = false;
         // Each anvil-reaching tower's span above strength 0.42 (cv2ColumnSigma's "full": the head flares).
         for (int i = 0; i < S.towerCount; ++i) {
             TowerSpec &ts = S.towers[i];
@@ -610,7 +613,8 @@ struct Catalog::Impl {
         const glm::dvec3 sun = env.sunEarth ? env.sunEarth(tMid) : glm::dvec3(1, 0, 0);
         const double sunLonDeg = std::atan2(sun.y, sun.x) / kDeg;
         const double doy = dayOfYear(tMid);
-        const double freq = std::max(0.0, (double)set.lineFrequency) * std::max(0.0, (double)set.frequency);
+        // (2026-11-08: "Storm complexes" alone. They carry the anvils now; "Storm frequency" thins the single cells.)
+        const double freq = std::max(0.0, (double)set.lineFrequency);
         for (size_t ci = 0; ci < lineCells.size(); ++ci) {
             const Cell &c = lineCells[ci];
             const glm::dvec3 ce = env.mapToEarth(c.centre, tMid);
@@ -622,13 +626,34 @@ struct Catalog::Impl {
             hour = std::fmod(hour + 24.0, 24.0);
             const double fd = clim ? (double)clim->monthlyMean(latE, lonE, doy, land) : 1.0;
             const double diurnal = 1.0 + 0.8 * (double)land * std::cos(2.0 * kPi * (hour - 19.0) / 24.0);
+            // SPACED (2026-11-08, the user: "do not spawn too many anvils near one another"): at most one system per line cell
+            // (6 degrees) and bin, none for Settings::lineGapBins bins after one (a pure function: the earlier bins' draws are
+            // recomputed, not looked up), placed in the middle 60% of its cell. The rate per spawning bin is raised by the
+            // gap's share so the count stays near its calibration where systems are rare.
+            const int gap = std::max(0, set.lineGapBins);
             const double lambda = KLine * freq * fd * lineSystemFactor(latE, land, doy) * diurnal * c.areaKm2 * kLineBinS;
             if (!(lambda > 0.0)) continue;
-            const int nc = poisson(u53(key3((uint64_t)ci, (uint64_t)bin, 0xFFFEull, 0x11E5B1Aull)), lambda);
+            auto spawnsIn = [&](int64_t b) {
+                const double tb = ((double)b + 0.5) * kLineBinS;
+                const glm::dvec3 sb = env.sunEarth ? env.sunEarth(tb) : glm::dvec3(1, 0, 0);
+                const glm::dvec3 cb = env.mapToEarth(c.centre, tb);
+                const double laB = std::asin(std::clamp(cb.z, -1.0, 1.0)) / kDeg, loB = std::atan2(cb.y, cb.x) / kDeg;
+                const float ldB = env.land ? env.land(cb) : 0.0f;
+                double hB = std::fmod(12.0 + wrapDeg(loB - std::atan2(sb.y, sb.x) / kDeg) / 15.0 + 24.0, 24.0);
+                const double fdB = clim ? (double)clim->monthlyMean(laB, loB, dayOfYear(tb), ldB) : 1.0;
+                const double lB = KLine * freq * fdB * lineSystemFactor(laB, ldB, dayOfYear(tb))
+                                * (1.0 + 0.8 * (double)ldB * std::cos(2.0 * kPi * (hB - 19.0) / 24.0)) * c.areaKm2 * kLineBinS;
+                return lB > 0.0 && poisson(u53(key3((uint64_t)ci, (uint64_t)b, 0xFFFEull, 0x11E5B1Aull)), lB * (1.0 + gap)) > 0;
+            };
+            if (!spawnsIn(bin)) continue;
+            bool recent = false;
+            for (int g = 1; g <= gap && !recent; ++g) recent = spawnsIn(bin - g);
+            if (recent) continue;
+            const int nc = 1;
             for (int k = 0; k < nc; ++k) {
                 Rng r(key3((uint64_t)ci, (uint64_t)bin, (uint64_t)k, 0x11E5CA4Dull));
-                const double sLat = c.sin0 + (c.sin1 - c.sin0) * r.u();
-                const double lon = c.lon0 + (c.lon1 - c.lon0) * r.u();
+                const double sLat = c.sin0 + (c.sin1 - c.sin0) * r.range(0.2, 0.8);
+                const double lon = c.lon0 + (c.lon1 - c.lon0) * r.range(0.2, 0.8);
                 const double tb = binT0 + kLineBinS * r.u();
                 const double uKeep = r.u();
                 const double uKind = r.u();
@@ -642,7 +667,9 @@ struct Catalog::Impl {
                 const double landP = env.land ? (double)env.land(pe) : 0.0;
                 const double latP = std::asin(std::clamp(sLat, -1.0, 1.0)) / kDeg;
                 // MCSs are continental (and the monsoon's); over the sea it is mostly squall lines.
-                const StormKind kind = (uKind < 0.25 + 0.4 * landP) ? StormKind::Mcs : StormKind::SquallLine;
+                // (2026-11-08: and the tropical oceans' cloud clusters, under one round shield, more often than lines.)
+                const double tropP = 1.0 - smooth01(12.0, 20.0, std::fabs(latP));
+                const StormKind kind = (uKind < 0.25 + 0.4 * landP + 0.35 * (1.0 - landP) * tropP) ? StormKind::Mcs : StormKind::SquallLine;
                 Storm S;
                 const uint64_t id = key3((uint64_t)ci, (uint64_t)bin, (uint64_t)k, 0x11E5570Aull) | 1ull;
                 makeLineSystem(S, id, p, tb, latP, kind);
@@ -800,7 +827,7 @@ void Catalog::configure(const Env &env, const Settings &s, const StormClimatolog
                          s.moistureFull == I.set.moistureFull && s.towerRadiusM == I.set.towerRadiusM &&
                          s.lifeScale == I.set.lifeScale && s.anvilLingerS == I.set.anvilLingerS && s.lineFrequency == I.set.lineFrequency &&
                          s.targetLineActive == I.set.targetLineActive && s.cycloneFrequency == I.set.cycloneFrequency &&
-                         s.seaFactor == I.set.seaFactor;
+                         s.seaFactor == I.set.seaFactor && s.singleAnvils == I.set.singleAnvils && s.lineGapBins == I.set.lineGapBins;
     const bool same = sameSet && envKey == I.envKey;
     I.env = env;
     I.set.anvilFormS = s.anvilFormS;   // (read by shieldsAt at any t: no cached storm depends on it)
@@ -1096,9 +1123,19 @@ void Catalog::shieldsAt(double t, const std::vector<const Storm *> &storms, cons
             g = std::clamp(g, 0.0, 1.0);
             return g * (0.6 + 0.4 * g);
         };
+        if (S->linger <= 0.0f) continue;   // (no shield of its own: Settings::singleAnvils, finishAnvil)
+        // ONE ENVELOPE PER STORM (2026-11-08, weather salvage; the user: "the sim wants to spawn anvils at specific points and
+        // then automatically kills them ... Let anvils live for hours"). Until now each anvil-reaching tower ran its own
+        // formation ramp and the shield took the strongest: a multicell's next tower restarted the spread from nothing, and at
+        // the user's "Anvil formation time" of 240 min no tower (above the lid for ~30-60 min) took its shield past ~0.1 before
+        // the linger began -- faint anvils at the towers, fading. Now the shield forms ONCE from the storm's first tower at the
+        // lid over min(formation time, 0.7 x the span its towers feed it), holds while any tower is (or was) feeding it, and
+        // lingers from the last one's fall. The towers' own ramps (900 s) only place it: the heads' strength-weighted centroid.
         glm::dvec3 F(0.0);
-        double wSum = 0.0, act = 0.0, mature = 0.0, firstOn = 1e30, lastOff = -1e30;
+        double wSum = 0.0, mature = 0.0, firstOn = 1e30, lastOff = -1e30;
         bool fed = false;
+        const double linger = std::max((double)S->linger, 1.0);
+        for (int pass = 0; pass < 2; ++pass)
         for (int i = 0; i < S->towerCount; ++i) {
             const TowerSpec &ts = S->towers[i];
             if (ts.role < 0.99f || ts.peak < kOn + 0.02f || ts.period > 0.0f) continue;
@@ -1106,13 +1143,12 @@ void Catalog::shieldsAt(double t, const std::vector<const Storm *> &storms, cons
             const double on = std::max((double)ts.anvOn, (double)ts.t0 + kFullAt * (double)impl_->set.towerRiseS),
                          off = (double)ts.anvOff;
             if (off <= on) continue;
-            firstOn = std::min(firstOn, on);
-            lastOff = std::max(lastOff, off);
-            const double linger = std::max((double)S->linger, 1.0);
-            const double a = ramp((tau - on) / formS) * ramp(1.0 - (tau - off) / linger);
+            if (pass == 0) { firstOn = std::min(firstOn, on); lastOff = std::max(lastOff, off); continue; }
+            // Its weight in the head's position: up over 15 min at the lid, down over the linger after (never 0 between
+            // a multicell's towers while the shield lives: the last one's head keeps drifting downwind).
+            const double a = ramp((tau - on) / 900.0) * ramp(1.0 - (tau - off) / linger);
             if (a <= 0.0) continue;
             fed |= tau < off;
-            mature = std::max(mature, smooth01(on, on + std::max(2700.0, formS), tau));   // (the radius: 45 min until formS passes it)
             // Where its head stands now (the tower's axis, blown downwind), then the drift aloft after it died.
             const glm::dvec3 o = e * (double)ts.offE + n * (double)ts.offN;
             const double d = glm::length(o);
@@ -1121,8 +1157,11 @@ void Catalog::shieldsAt(double t, const std::vector<const Storm *> &storms, cons
             const glm::dvec3 hp = moveAlong(axis, sh, adv);
             F += hp * a;
             wSum += a;
-            act = std::max(act, a);
         }
+        if (!(lastOff > firstOn)) continue;
+        const double formEff = std::clamp(0.7 * (lastOff - firstOn), 600.0, formS);
+        const double act = ramp((tau - firstOn) / formEff) * ramp(1.0 - std::max(0.0, tau - lastOff) / linger);
+        mature = smooth01(firstOn, firstOn + std::max(2700.0, formEff), tau);   // (the radius)
         if (act <= 0.0 || wSum <= 0.0) continue;
         F = glm::normalize(F / wSum);
         const double kindL = S->kind == StormKind::Supercell ? 160000.0 : S->kind == StormKind::Multicell ? 90000.0 : 45000.0;

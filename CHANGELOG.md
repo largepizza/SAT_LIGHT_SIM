@@ -106,6 +106,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Clouds and weather
 
+- **Anvils that last.** Thunderstorm anvils now come mostly from organised storm systems, spaced apart, and live for
+  hours: they form once, hold while their storm feeds them, and thin away slowly. Ordinary storms no longer leave their
+  own anvils behind (Weather > Storm objects > "Single-storm anvils"; 2 restores them), so the grey speckled discs seen
+  from orbit are gone. An anvil's top is a continuous smooth sheet instead of a holed, mottled one.
 - **No more cloud rows from orbit.** Near the equator the cumulus field no longer lies in straight north-south streaks
   and a grid when seen from space.
 - **Cumulus turrets.** Cumulus and stratocumulus fields are no longer one smooth dome per cell: a 3D field of towers

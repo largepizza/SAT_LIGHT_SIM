@@ -7245,6 +7245,9 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SldTowerGrowthTimeMin), &stormTowerRiseMin, 0.0f, 120.0f, 1.0f, "%.0f", 452},
         {tx(Txt::SldAnvilFormationTimeMin), &stormAnvilFormMin, 1.0f, 240.0f, 1.0f, "%.0f", 450},
         {tx(Txt::SldAnvilDecayTimeMin), &stormAnvilDecayMin, 1.0f, 240.0f, 1.0f, "%.0f", 451},
+        // 2026-11-08: the organised systems carry the anvils, spaced; single cells only as supercells (by default).
+        {tx(Txt::SldSingleStormAnvils), &stormSingleAnvils, 0.0f, 2.0f, 1.0f, "%.0f", 544},
+        {tx(Txt::SldStormComplexGap), &stormComplexGap, 0.0f, 8.0f, 1.0f, "%.0f", 545},
         {tx(Txt::SldStormCloudField), &stormCloudField, 0.0f, 3.0f, 0.05f, "%.2f", 323},
         {tx(Txt::SldStormClearMoat), &stormMoat, 0.0f, 3.0f, 0.05f, "%.2f", 324},
         {tx(Txt::SldStormComplexesX), &stormComplexes, 0.0f, 10.0f, 0.05f, "%.2f", 325},
@@ -9773,6 +9776,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         stormAnvilFormMin = settingClamp(c.value("storm_anvil_form_min", stormAnvilFormMin), 1.0f, 240.0f);
         stormTowerRiseMin = settingClamp(c.value("storm_tower_rise_min", stormTowerRiseMin), 0.0f, 120.0f);
         stormAnvilDecayMin = settingClamp(c.value("storm_anvil_decay_min", stormAnvilDecayMin), 1.0f, 240.0f);
+        stormSingleAnvils = settingClamp(c.value("storm_single_anvils", stormSingleAnvils), 0.0f, 2.0f);
+        stormComplexGap = settingClamp(c.value("storm_complex_gap", stormComplexGap), 0.0f, 8.0f);
         stormCloudField = settingClamp(c.value("storm_field", stormCloudField), 0.0f, 3.0f);
         stormMoat = settingClamp(c.value("storm_moat", stormMoat), 0.0f, 3.0f);
         stormArmCirrus = settingClamp(c.value("storm_arm_cirrus", stormArmCirrus), 0.0f, 3.0f);
@@ -10552,6 +10557,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"storm_anvil_form_min", stormAnvilFormMin},
         {"storm_tower_rise_min", stormTowerRiseMin},
         {"storm_anvil_decay_min", stormAnvilDecayMin},
+        {"storm_single_anvils", stormSingleAnvils},
+        {"storm_complex_gap", stormComplexGap},
         {"storm_field", stormCloudField},
         {"storm_moat", stormMoat},
         {"storm_arm_cirrus", stormArmCirrus},

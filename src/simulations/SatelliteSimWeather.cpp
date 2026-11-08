@@ -460,7 +460,7 @@ uint64_t SatelliteSim::stormEnvHash() const
     auto mixD = [&](double v) { uint64_t b; std::memcpy(&b, &v, 8); h = (h ^ b) * 1099511628211ull; };
     for (double v : {(double)cloudDriftRate, cloudDriftPhaseOffset, (double)cv2Coverage, (double)cv2CoverClear,
                      (double)cv2CoverFull, (double)stormFrequency, (double)cv2CbRadiusKm, (double)stormLifeScale,
-                     (double)stormAnvilFormMin, (double)stormAnvilDecayMin, (double)stormTowerRiseMin,
+                     (double)stormAnvilFormMin, (double)stormAnvilDecayMin, (double)stormSingleAnvils, (double)stormComplexGap, (double)stormTowerRiseMin,
                      (double)stormComplexes, (double)stormCyclones})
         mixD(v);
     return h;
@@ -545,6 +545,8 @@ void SatelliteSim::updateStorms()
         s.lifeScale = std::max(stormLifeScale, 0.05f);
         s.anvilFormS = std::clamp(stormAnvilFormMin, 1.0f, 240.0f) * 60.0f;
         s.anvilLingerS = std::clamp(stormAnvilDecayMin, 1.0f, 240.0f) * 60.0f;
+        s.singleAnvils = (int)std::lround(std::clamp(stormSingleAnvils, 0.0f, 2.0f));
+        s.lineGapBins = (int)std::lround(std::clamp(stormComplexGap, 0.0f, 8.0f));
         s.towerRiseS = std::clamp(stormTowerRiseMin, 0.0f, 120.0f) * 60.0f;
         s.lineFrequency = std::max(stormComplexes, 0.0f);
         s.cycloneFrequency = stormObjects ? std::max(stormCyclones, 0.0f) : 0.0f;

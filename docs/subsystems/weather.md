@@ -54,6 +54,25 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   capsule's clean profile drew white pills from orbit), and `presA` is 0 at its 0.05 cutoff (it kept 2% there: at Anvils 8
   a view along the edge drew a hard arc). The user's anvil tune is the default (Anvils 8, thickness 3.7 km, hang 0.87 km,
   puffiness 0.45, lift 230 m, head lobes 0.12, lobes 0.37, waist 0.89, overshoot 0.14 km, storm erosion 0.24).
+  **Anvils carried by the organised systems (2026-11-08, branch `weather-salvage`, `.plans/WEATHER_SALVAGE_PLAN.md`; the
+  user: "spawn big anvils and force the objects to stick around. Do not spawn too many anvils near one another. Let anvils
+  live for hours"):** (1) A single cell spreads a shield only as a supercell (`wx::Settings::singleAnvils`, "Single-storm
+  anvils" `clouds_v2.storm_single_anvils` 1; 0 none, 2 every kind as before; slot 544): every air-mass and multicell storm
+  that reached the lid had its own, lingering for hours, ~930 shields worldwide at the user's settings (Plains, July 21Z),
+  now ~115 (34 systems + the supercells); the grey, speckled lingering discs from orbit are gone. (2) ONE envelope per
+  storm (`Catalog::shieldsAt`): it forms once from the first tower at the lid over min("Anvil formation time", 0.7 x the
+  span its towers feed it, >= 10 min), holds while any feeds it and lingers from the last one's fall. Each tower ran its
+  own ramp before (a multicell's next tower restarted the spread) and at the user's 240-min formation time no shield
+  passed ~0.1 before its linger began. A supercell's shield now forms over ~75 min, holds ~2 h at 1, and is ~0.7 three
+  hours on. (3) Squall lines / MCSs are SPACED: one per 6-degree line cell and bin, none for "Storm complex spacing"
+  (`storm_complex_gap` 2 bins = 6 h, slot 545) after one (the earlier bins' Poisson draws recomputed: pure in time), placed
+  in the middle 60% of the cell; their rate takes "Storm complexes" alone (not "Storm frequency", which thins single
+  cells), and over tropical seas they are more often MCS cloud clusters (+0.35 share) than lines. (4) The plate is
+  continuous: its lobes only bulge (`lobeRef = -sg.deck`) and "Anvil lid / underside lobes" apply over the whole plate.
+  Both were x "Anvil fibres" (plK): at the user's 0.47 half the lobes cut down into a ~700-m plate (a holed, grey sheet
+  from 30 km) and half the lid kept the polished 0.4 of the storm lobes (bulges whose shadows mottled it). Lid lobes
+  default 0.1 (0.25 still mottles from 80 km at low Sun). (5) An orphan plate recedes as it ages (presence x 1 -
+  smoothstep(0.15, 0.6, age)); the thin veil (cv2AnvilSigmaP) lingers.
   **Anvil formation and decay times (2026-11-03, issue 20261030_210137 "anvils pop in and out" at 5 min/s):** two
   settings, "Anvil formation time (min)" `clouds_v2.storm_anvil_form_min` 60 and "Anvil decay time (min)"
   `storm_anvil_decay_min` 70 (Weather tab, Storm objects, slots 450-451; `wx::Settings::anvilFormS` / `anvilLingerS`).

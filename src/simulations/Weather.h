@@ -240,6 +240,13 @@ struct Settings {
     // everywhere (x "Storm complexes" setting).
     float lineFrequency = 1.0f;
     float targetLineActive = 160.0f;
+    // Anvils (2026-11-08, weather salvage; the user: "spawn big anvils and force the objects to stick around. Do not spawn
+    // too many anvils near one another. Let anvils live for hours"): which single-cell kinds spread a shield of their own
+    // (0 none, 1 supercells (default), 2 every kind, as until 2026-11-08). The organised systems (squall lines, MCSs) carry
+    // the anvils; they are spaced (one per line cell and lineGapBins) and their rate no longer takes "Storm frequency".
+    int   singleAnvils = 1;
+    int   lineGapBins = 2;          // a line cell spawns no system for this many line bins (3 h each) after one
+
     // Tropical cyclones: x each basin's climatological count per season (~85 a year worldwide at 1).
     float cycloneFrequency = 1.0f;
 };

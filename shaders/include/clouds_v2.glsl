@@ -1387,7 +1387,9 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         // (lobeRef < 0 carries the plate's share past the fetch: its lobes only BULGE (cv2FieldLow, after m), the lid's
         // gentle domes and the underside's pouches; cutting into a sheet a few hundred metres thick they holed it through,
         // the "swiss cheese". A negative lobeRef is inert where it is read, max(lobeRef - hb, 0).)
-        c.lobeRef = mix(c.lobeRef, -plK, wS);
+        // (2026-11-08: the whole plate's share, sg.deck -- x "Anvil fibres" (plK) it left 1 - 0.47 of the lobes at the user's
+        // 0.47 cutting down into a ~700 m plate: a mature anvil from 30 km a holed, grey sheet.)
+        c.lobeRef = mix(c.lobeRef, -sg.deck, wS);
         c.bigL    = max(c.bigL, wS);
         // THE CUMULUS' MATERIAL (2026-11-06, the user: anvils read as another material next to the billows, meet the cumulus
         // at a seam, miss the bubbles and only scattered like cloud at density ~0.1): a storm is a thick cumulus of this
@@ -1402,8 +1404,9 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         // (storm3, 2026-11-05: the plate's lid keeps storm3b.y of the lobes, its underside storm3b.z; plK blends from the
         // polished plate's 0.4 / 1.)
         float nr  = min(sg.near, 1.0);
-        float lkP = mix(mix(1.0, cv2.storm3b.z, plK), mix(0.4 - 0.35 * nr, cv2.storm3b.y * (1.0 - 0.8 * nr), plK),
-                        smoothstep(0.55, 0.95, sg.hf));
+        // (2026-11-08: "Anvil lid / underside lobes" over the whole plate, not x "Anvil fibres" as plK: at the user's 0.47
+        // half the lid kept the polished 0.4 of the storm lobes, bulges whose shadows mottled a mature anvil grey.)
+        float lkP = mix(cv2.storm3b.z, cv2.storm3b.y * (1.0 - 0.8 * nr), smoothstep(0.55, 0.95, sg.hf));
         c.lobeKL  = mix(c.lobeKL, lobeS * mix(1.0, lkP, sg.deck) * (1.0 - 0.75 * sg.cap), wS);
         c.aBase   = mix(c.aBase, 0.3, wS);
         c.aRamp   = mix(c.aRamp, 600.0, wS);
@@ -2864,6 +2867,11 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
         gCv2ShSet = true; gCv2Sh = vec4(shS, shThick, shAge, shU);
         // The plate: the shield with the largest plate margin (cv2ShieldAtR), its presence a.
         float a  = cv2ShieldPlateA(shS, shU);
+        // AGEING INTO ICE (2026-11-08, weather salvage; the user: lingering anvils as "gigantic toxic-sludge looking clouds"):
+        // an orphan shield's plate is cumulus material, and thinned in place the cumulus erosion holed it into a grey
+        // Swiss-cheese sheet for hours. The plate now recedes as it ages (gone by age 0.6) and the veil -- thin, smooth
+        // ice, cv2AnvilSigmaP, which gives way only to the plate (gCv2PlateA) -- is what lingers.
+        a *= 1.0 - smoothstep(0.15, 0.6, shAge);
         // (Not frayed at the cluster scale as well, the veil's +-0.12 of presence: the plate's fringe then reached issue
         // 111947's eye at 11 km, which stood in fog, and the fetch cost ~3 ms over a plate.)
         if (a > 0.25) {   // (the margin there, -3 km, is past the lobes' reach: 1.4 lobeS ~ 2.7 km)
