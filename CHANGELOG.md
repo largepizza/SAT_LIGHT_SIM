@@ -117,6 +117,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   (the foehn gap), following the prevailing winds.
 - **Flat cloud bases.** Cumulus bottoms are flat with crisp edges instead of rounding downward, and storm clouds
   no longer bulge down into their rain below the base of the clouds around them.
+- **Hurricanes filled, with a real eyewall.** The central dense overcast is solid cloud up to its icy top instead of
+  low flat mesas under an empty sky, the eyewall is the storm cloud itself rising round a stadium-shaped eye with
+  fluted walls, and the top sheet follows the spiral arms out, frays into streaks at its edge and carries a faint
+  swirl ripple (Clouds > Hurricane sheet swirl / Hurricane eyewall).
 - **Small cumulus are heaps, not pucks.** Shallow fair-weather cumulus rise from their flat base in a dome instead of
   standing as wide, flat-walled discs with a cap on top, and are a little deeper (Clouds > Shallow cumulus heaps / depth).
 - **No bright ring in distant clouds.** Seen from altitude over a deep overcast, clouds beyond a few tens of km no

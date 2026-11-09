@@ -587,7 +587,8 @@ void SatelliteSim::updateStorms()
         if (idxKey != lastIdxKey) { lastIdxKey = idxKey; stormUploadedT = -1e300; }   // (the index's layout changed)
         // (The cyclones' shape sliders and the arm cirrus change what is uploaded: re-upload while paused too.)
         const float shapeKey[] = {stormCycArms, stormCycTightness, stormCycArmSpeed, stormCycMinorSwirls, stormCycDeckSpiral,
-                                  stormCycOutflow, stormCycStreaks, stormCycSpiralAB ? 1.0f : 0.0f, stormArmCirrus};
+                                  stormCycOutflow, stormCycStreaks, stormCycSpiralAB ? 1.0f : 0.0f, stormArmCirrus,
+                                  cv2HurrEyewall, cv2StormMass};   // (the eyewall towers' fade, below)
         static float lastShapeKey[std::size(shapeKey)] = {-1.0f};
         if (std::memcmp(shapeKey, lastShapeKey, sizeof(shapeKey)) != 0)
         {
@@ -663,6 +664,12 @@ void SatelliteSim::updateStorms()
     auto *dst = reinterpret_cast<GpuStormTower *>(static_cast<char *>(stormMapped) + kStormTowersOffset);
     stormEntries.clear();      // (key, tower) pairs, towers strongest first
     stormGpuTowers.resize(nT);
+    // Each cyclone's eyewall share (the storm mass draws its eyewall: its ring of towers leaves the march; below).
+    std::vector<std::pair<uint64_t, float>> cycHide;
+    for (const wx::CycloneState &c : stormCyclonesNow)
+        if (c.c != nullptr && c.eyeR > 0.0f)
+            cycHide.push_back({c.c->id, std::clamp(cv2HurrEyewall, 0.0f, 1.0f) * std::clamp(cv2StormMass, 0.0f, 1.0f)
+                                            * (float)glm::smoothstep(0.2, 0.6, (double)c.eyeR / (0.45 * std::max((double)c.rmw, 2000.0)))});
     parallelEntries(stormCatalog.get(), nT, tight ? 384u : 4096u, stormEntries, [&](uint32_t i, std::vector<StormEntry> &ents) {
         const wx::Tower &tw = stormTowers[i];
         const glm::dvec3 d = glm::normalize(tw.dir);
@@ -723,8 +730,17 @@ void SatelliteSim::updateStorms()
         const double cap = (tw.kind == wx::StormKind::Tropical) ? 1.0 : std::clamp((double)tw.heightCap, 0.0, 1.0);
         g.c = glm::vec4((float)reach, seedF, (float)(std::min(anvilK, 7.99) + 8.0 * std::round((1.0 - spread) * 1000.0)),
                         (float)(std::min(driftK, 3.99) + 4.0 * std::round((1.0 - cap) * 1000.0)));
-        dst[i] = g;
         stormGpuTowers[i] = g;   // the envelope index's copy is made from these (buildStormEnvIndex)
+        // An eyewall tower under the storm mass's own eyewall (2026-11-08, issue_20261108_173906; clouds_v2.glsl cv2LowA "THE
+        // EYEWALL", the same ramp on the eye's size): faded out of the march's copy (its column a cylinder standing in the
+        // wall), not listed once gone. The bake's envelope copy above keeps it: its rain, the stamp and the lightning stay.
+        float hideK = 0.0f;
+        if (tw.kind == wx::StormKind::Tropical && tw.role >= 0.99f)
+            for (const auto &h : cycHide)
+                if (h.first == tw.stormId) hideK = h.second;
+        if (hideK > 0.0f) g.a.w = tw.strength * (1.0f - hideK);
+        dst[i] = g;
+        if (hideK >= 0.98f) return;
         if (tight)
             listStormBins(d, reach, i, towerBinsN, ents, KeepDisc{d, reach / kReW + 60.0 / kReW});
         else
