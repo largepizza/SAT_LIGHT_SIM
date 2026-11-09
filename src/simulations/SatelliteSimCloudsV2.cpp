@@ -2072,8 +2072,30 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // The sparse grid's block (2026-11-04, "sparse_block"): the full-res grid's sparse march takes one ray per K x K block a
     // frame (K 3: 1/9 of the pixels, 4: 1/16), the offsets rotating over K*K frames; the resolve rebuilds the rest from the
     // reprojected history. Every other rate, and the half-res grid, keep 2x2 (their tile passes are laid out for it).
-    cv2SparseBlockNow = (cv2FullResActive() && !cv2FullRateNow && !cv2HalfRateNow && !cv2AdaptiveNow)
-                        ? (uint32_t)std::clamp((int)std::lround(cv2SparseBlock), 2, 4) : 2u;
+    // A STILL view (2026-11-08, issue_20261108_172846 "Big laggy formation", "sparse_block_still" 3): once nothing has moved
+    // for kStillBlockFrames (camera, eye, time warp; cv2StillFrames), 3x3. The history integrates the same pixels, 9 frames a
+    // round instead of 4: the settled image is the 2x2 grid's within the A-vs-A floor at the report's shots (a little less
+    // grain in a speckled deck). What 3x3 costs is motion error, so any turn or step goes back to 2x2 on that frame. It also turns the smooth tiles off (they are laid out for 2x2): a textured deck filling the
+    // view (the report's sunset anvil: 82% of the 2x2 slots marched) takes 1/9 of the pixels instead of ~1/5.
+    // The resolve then gives the pixels without a ray this frame 3 / (K^2 - 1) of their usual weight (gnd.z's fraction 0.25
+    // marks the mode): a pixel's own rays keep the 2x2 grid's share of its mean against the interpolated estimate. At the
+    // full weight the eight in-between frames blended that estimate in 2.7x as much and the settled image came out softer
+    // (lobes' outlines, the deck's grain; from orbit every cumulus edge). Not from above full_rate_above_km (30 km): from
+    // orbit a pixel spans a cumulus' edge and the settled 3x3 image lost the small puffs whatever the weight (900 km: 0.97-1.24
+    // levels from 2x2 against an A-vs-A 0.53).
+    constexpr int kStillBlockFrames = 64;
+    bool stillBlock = false;
+    {
+        int blk = std::clamp((int)std::lround(cv2SparseBlock), 2, 4);
+        const int blkStill = std::clamp((int)std::lround(cv2SparseBlockStill), 2, 4);
+        if (cv2StillFrames >= kStillBlockFrames && cv2HistoryValid && blkStill > blk && eyeH < (double)cv2FullRateAboveKm * 1000.0)
+        {
+            blk = blkStill;
+            stillBlock = true;
+        }
+        cv2SparseBlockNow = (cv2FullResActive() && !cv2FullRateNow && !cv2HalfRateNow && !cv2AdaptiveNow) ? (uint32_t)blk : 2u;
+        stillBlock = stillBlock && cv2SparseBlockNow > 2;
+    }
     // Smooth tiles (2026-10-25): with full-res clouds on the sparse grid, the tiles whose last resolved frame is smooth are
     // marched at a quarter of its density (cloud_v2_tiles.comp). Needs a history (it is classified from it), the 16x16
     // workgroups (a tile is one), and the tile list's capacity (4096 tiles: 2048x2048 of cloud grid).
@@ -2247,7 +2269,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                                          {1, 0}, {3, 2}, {3, 0}, {1, 2}, {0, 1}, {2, 3}, {2, 1}, {0, 3}};
         if (cv2SparseBlockNow == 3) { const int *o3 = kOff3[cv2Frame % 9u]; p.frame.z = (float)o3[0]; p.frame.w = (float)o3[1]; }
         if (cv2SparseBlockNow == 4) { const int *o4 = kOff4[cv2Frame % 16u]; p.frame.z = (float)o4[0]; p.frame.w = (float)o4[1]; }
-        p.gnd.z = (float)cv2SparseBlockNow;
+        p.gnd.z = (float)cv2SparseBlockNow + (stillBlock ? 0.25f : 0.0f);   // (the resolve rounds K; the fraction = the still mode)
         p.gnd.w = std::clamp(cv2HistDepthTest, 0.0f, 1.0f);   // the resolve's depth-consistent history (0 = off)
     }
     if (cv2FullResHeldNow)

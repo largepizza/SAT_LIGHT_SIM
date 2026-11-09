@@ -582,6 +582,26 @@ depth pass, so its variants interleave like the sky's and the clouds'.
   Cloud march (RTX 3070 Ti, 1920x1009, user settings, interleaved x3): 49.0 -> 28.9 ms still, 57.8 -> 36.7 on the report's
   trail; a plate seen from 19 km above +3 ms (a dense billowed lid where the old one was haze). The switch is a
   specialization constant: behind a uniform both paths cost ~0.6 ms of code size in every view.
+- **A sunset anvil deck overhead** (2026-11-08, issue_20261108_172846 "Big laggy formation": 31.7 S 147.3 E, 2.7 / 4.9 km,
+  FOV 120, the user's settings; an MCS storm object's shield plate, strength 0.8, lit from below by the setting Sun and by
+  Reflect beams; evidence and batches `qa/waves/20261108/evidence/laggy/`). Cloud march 31-33 ms (GPU 42-45), frames
+  GPU-bound (`app.wait_fence` 41-42 of 43.5-45.4 ms). Where it goes (RTX 3070 Ti, 1920x1009, interleaved in one app):
+  storm objects off -16 ms (14.7 / 12.6 left; `cb_columns` 0 the same, it gates the storm geometry), `anvil` 0 -11.7 / -6,
+  mid 0 -6 / -4.5, high 0 ~-1 / -2.7. The light march is half (probe off: -14.4 / -16.8): Reflect beams' gather and
+  three occlusion reads -4.6 / -2.5 (visible: 9.5% of shot 1's pixels move > 8 levels without them), the far side's two
+  reads -2.1, the sky probe -1.1 / -1.4, the far sample -1.0 / -1.5, the steps the rest. Rays: 396k a frame at shot 1 =
+  82% of the 2x2 slots (the textured deck leaves few smooth tiles), 205k with the anvil off; per ray 12.3 coarse + 5.3
+  fine reads, 2.8 lit samples (6.4 light reads each), 2.2 faint, 1.0 thin ice. The storm SEARCH is small: loop-doubling
+  probes (x5) tower +0.8 / +2.6 ms, shield +1.3 / +1.3 (spread 1-2 ms), so a cached per-frame 2D storm field could save
+  at most ~2-4 ms here (~10%; the plate margin and the towers' radius profile are per height, so per-sample maths stays).
+  Empty air costs nothing (coarse skips at twice the stride: +0.2 / -1.3, noise). CPU: `updateStorms` 0.64 ms a frame at
+  1x and nothing paused (`weather.cpu_ms` 0.55-0.62 at 1x: catalog 0.12-0.15, shields 0.12, tower index 0.30-0.34; a paused
+  `state` shows the last update's 50 ms, the catalog rebuild of the report's time jump); the clipmap's bake follows the
+  time quantum at 1x (`layer_map` 0.07 -> 1.6-2.0 ms). Kept: `sparse_block_still` (clouds.md, Amortization): 31.4 ->
+  21.4 / 30.2 -> 23.7 ms still. Tried and dropped: skipping the light reads' field call where the clipmap says the cell is
+  empty (exact; +1.0 / -3.1 +-3.3 ms, noise: the empty reads were already cheap), `light_steps` 5 (+1.7 / -1.0). The
+  reported 362-ms frames were the HQ photo's (the user log: "Photo target 3840x2018" 12 s before the shot; its 48
+  offscreen frames at 4x the pixels ran 185-370 ms): the report's `frame_ms` no longer counts them (capture.md).
 - **Dead ends:** skipping the sky pass's terrain march where the four cloud texels are opaque (-0.1..-0.3 ms, changes the
   depth the sky TAA reprojects with); the history copies (~0.1 ms); FIFO quantisation as the cause of "30 / 20 / 15 FPS"
   (the reports' frame times are not quantised: 27 ms median at a 28 ms GPU).

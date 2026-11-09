@@ -5512,6 +5512,7 @@ private:
     float cv2HistDepthTest = 0.0f;        // the resolve keeps a history whose reprojected distance matches (2026-11-04; an A/B, off: tstab storm walk 1.36 -> 1.57 at 2x2)
     float cv2SmoothMoving = 0.5f;         // smooth tiles while the eye moves (0 = only after 64 still frames; > 0: on, the threshold x this; 2026-11-04)
     float cv2SparseBlock = 2.0f;          // full-res clouds' sparse march: one ray per K x K block a frame (2, 3 or 4; 2026-11-04)
+    float cv2SparseBlockStill = 3.0f;     // ... and once the view has been still kCv2StillBlockFrames (2026-11-08, issue_20261108_172846; 2 = off)
     float cv2FullResMovingMode = 1.0f;    // full-res clouds while the view moves (issues 20261022_210358 / _220214): 0 sparse, rotating; 1 sparse, held pixel (default since 2026-11-07, any height); 2 full rate (every pixel, ~3x the march; above full_rate_above_km)
     bool  cv2CdcActive = false;           // this frame (fillCloudsV2Params)
     // 2026-10-22 (r1022 orbit, the matrix's "clouds thin out climbing from orbit"): the clipmap's bake reads the field at the
@@ -8298,6 +8299,7 @@ private:
     double reportClock_ = 0.0;
     float  reportFrameMs_[240] = {};      // the last frames' wall dt (a ring)
     int    reportFrameN_ = 0;
+    bool   reportPhotoPrev_ = false;      // last frame was an HQ photo's (its first frame after is the restore: not counted either)
     std::string reportActiveId_;          // the issue new shots go to ("" = the next shot starts one)
     int    reportShotPending_ = 0;        // 1 = a shot into the active issue, 2 = into a new issue
     bool   reportNewKeyPending = false;   // KB_REPORT_NEW
