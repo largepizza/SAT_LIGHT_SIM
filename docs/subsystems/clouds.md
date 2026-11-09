@@ -1184,6 +1184,48 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   within the current cloud (`bTr`), not from the eye. Tried and dropped: the slab alone at physical strength (3-7x the
   old energy, flat: a slab along the light assumes mu0 = 1 and holds the light in), the octaves x the slab's reflectance
   over the sample's neighbourhood (saturates in dense cumulus: no visible change).
+  - **The far side has a floor: the column's path to the base under a high Sun** (2026-11-08, issue_20261108_172314
+    "the clouds get dark, and then suddenly brighten near the ground", issue_20261108_171510; branch qa/20261108/bottoms).
+    The two reads away from the light sit 0-300 m and 300-1200 m down the light's line, jittered +-450 m up and across
+    (`kCv2BackJitZ` / `H`). Under a high Sun that line is near vertical, and a cumulus a few hundred metres deep has no
+    cloud there: at the report's view (Australian interior, Sun ~75 deg, cells 235-280 m deep, probes = march variants
+    writing one term into `debugview cloudrad`) the tops' tauB read 0.6-2.7 against ~10 down their column, so a top was
+    lit as a wisp (diffuse field 0.4-0.6 x the key) while the wall below it, deeper toward the Sun, built up to 1.3: dim
+    grey-blue tops over a bright skirt. `odBk = max(reads, odBkA x smoothstep(0.3, 0.7, mu))` (odBkA = the path to the
+    column's base, capped at `ms_back_m`, which the far samples already used alone); faded out under a low Sun, where the
+    line runs along the layer and the reads stay in it. Measured (user settings, auto exposure): the luminance rise from a
+    side's darkest row down to its base, 3 columns, +25/+40/+98% -> 0/0/0% (the tops are now the brightest part); orbit
+    (420 km) and a 12-deg Sun at the same places unchanged (diff = the A-vs-A floor); from 25 km over the same field the
+    shallow cumulus are white instead of translucent grey-blue. Bases seen from below +6% (their lowest samples' tauB was
+    also read short). No new setting.
+  - **What lights a fair-weather base, measured (same reports).** Knockouts at the report's under-cloud view (fixed
+    exposure): the key light alone draws the bases at ~95% of the full image, the sky ambient ~10-15% of the base's
+    light, the ground bounce a few %. The bases there are cells 350-1100 m deep (od toward the Sun 6-34, extinction
+    0.02-0.06 /m); the diffuse field at a base is 2-2.8 x the key against ~5 at a sunlit top: ~0.5, which is the slab's
+    T / R for tau ~20, and the radiance toward an eye below is already under the Eddington value (I0 + 0.3 g mu I1, not
+    I0 + I1). The "storm" in 172314 shot 3 is one of these (rain under ~1 km of cloud), not a deep tower. Bases get darker
+    only with optically thicker cloud (the 2026-11-04 note above: the field is 3-6x thinner than real cumulus); density
+    2x darkened them 10-30% (linear). The reporter's `ambient_gain` and `sky_light_gain` are 2 (default 1).
+  - **Shallow cumulus are heaps, not pucks (issue_20261108_171510; `cv2LowA` "SHALLOW CUMULUS HEAPS", UBO `cv2.pucks`).**
+    Weak cells sit at T's floor (235-280 m at the report's view) with a 2D strength e of only ~0.05-0.35, ramping from the
+    edge to the core (a probe writing e into `debugview cloudrad`: not a plateau). Under the tall cells' profile (the
+    requirement flat at reqMin up to the widest point zm = 0.55, then 1.3 vC^2) such a cell stood straight for its lower
+    ~130 m and domed only its top ~50 m: a puck, km wide, its 2D outline extruded; the lobes could not break that wall (finest
+    period 440 m, x0.4 on weak cells, damped at the base; the user's "Cumulus lobes (bottom)" is 0). Now a shallow cell
+    (shK: 1 below ~350 m of depth, 0 above ~900 m; convective; not deep, a deck or a storm mass) takes its widest point at
+    0.12 of the cell and a dome scaled to such strengths (0.5 at the top, not 1.3), so its outline slopes in from the base
+    all the way up and its height follows e; and it is deeper by "Shallow cumulus depth" (`cumulus_heap_depth` 0.8: T x
+    1.8). "Shallow cumulus heaps" (`cumulus_heaps` 1, slot 549; 0 = the old profile, identical maths) and the depth (slot
+    550). The base never gets a rising requirement: that is the narrower stem that rounded undersides into the rejected
+    "pie-crust" bottoms (issue_20261108_135011). Measured, user settings, 4 nadir spots at the report's region (probes
+    writing the column's height above the base): width / depth median 3.8 -> 2.8 (depth 190 -> 260 m); cover from 25 km
+    +6% at alpha > 0.1, +13% mean alpha, from orbit +2% / +5% (deeper heaps are more opaque at their rims; the base
+    footprints do not move). The clouds of issue_20261108_172314 shot 1 are the same 200-300 m cells and change the same
+    way; storms (135011 shot 1) do not. 255 registers before and after; cloud march at the report's shot 1 no slower
+    (interleaved A/B, contended GPU). Dead ends (each alone): a stem on every cell (0.15 / 0.5 x uC^2: nothing, or
+    pie-crust); the widest point at 0.2 with the old dome scale (thin lenses, most volume gone); the dome alone without
+    the depth (flat lenses ~150 m deep, cover -8%); lobes undamped at the base (little change). Still smooth mounds up
+    close at the user's lobe settings: the side texture is the lobes' and bubbles'.
 - **The sky's light on the clouds = the hemispheres with multiple scattering (2026-10-26, branch cloud-ms;
   cloud_v2_sunlut.comp layers 2-4).** The march took the ZENITH's single-scattering radiance x "Sky ambient" (2 in the
   user's settings) x the twilight boost ("Twilight sky light") and the dusk fade: the zenith is the darkest part of the
@@ -2421,6 +2463,16 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     `cv2ShapeSmooth`, each gave 222 registers; one carried float (the bearing, `bestAng`) and a 2-iteration fetch loop keep
     128. Not changed: the low layer's lobes (storm cumulus, every cumulus) still slide along `windDir`, so they sink or
     rise by place; the map-fed shield (`cv2AnvilSigmaP`, off by default) still reads the wind anchor.
+  - **The one-direction slide is what reads as "noise moving toward the anvil"** (issue_20261108_171948, 29.6 S 145.7 E, 2.3 km,
+    1 min/s; harness knock-outs, qa/waves/20261108/evidence/anvilflow): every slid anchor (shape 1.0, detail 1.6, cells 0.85,
+    storm 1.0, mid 1.0 x "Wind") moves along `windDir`, so an anvil's lobes and every deck around it travel the same way.
+    No change in the time-lapse with the storm lobes' rise 0, "Storm mass" 0, cumulus bubbles and turrets 0, or detail 0.
+    Tried and dropped (no visible change in the filmed time-lapse, and every anchor change reshuffles the whole field):
+    sliding each tile along a lattice vector near the wind's HORIZONTAL direction at the observer (here windDir is 44%
+    vertical); one common horizontal advection at 0.85 plus the relative rates as a vertical boil. Separately, under
+    1 min/s the deck's billows vanish into a fine streaky texture and come back after pausing 160 frames at the same
+    instant: not the Sun volume, the clipmap, `full_res_moving_mode`, the reprojection's wind share or
+    `history_weight_moving` (each knocked out at the shot). Open.
   - **The Sun shadow CASCADE** (`cv2SunCasc` in the flash buffer, `cv2.sunCasc0-2`, "Far cloud shadows (0/1)" slot 269,
     `clouds_v2.sun_cascade`, default on). A sample's light march reaches ~5 km and the fine Sun shadow grid covers
     3-3.9 km about the eye's line to the Sun, so a tower 20 km off stood sunlit behind a storm that shaded it and the

@@ -106,6 +106,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Clouds and weather
 
+- **White tops on small cumulus.** Under a high Sun, shallow fair-weather cumulus now have bright sunlit tops instead of
+  grey-blue, see-through ones, and their sides no longer brighten again toward the base.
 - **Fewer shadow trails in time-lapse.** At 1 min/s and faster, storm shadows no longer trail behind growing towers as grey blobs.
 - **Billowy storms.** Thunderstorm towers are big rounded billows instead of a pitted, eroded crust.
 - **Hurricanes without the painted lid.** A hurricane's central overcast is now built from the clouds themselves: a
@@ -115,6 +117,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   (the foehn gap), following the prevailing winds.
 - **Flat cloud bases.** Cumulus bottoms are flat with crisp edges instead of rounding downward, and storm clouds
   no longer bulge down into their rain below the base of the clouds around them.
+- **Small cumulus are heaps, not pucks.** Shallow fair-weather cumulus rise from their flat base in a dome instead of
+  standing as wide, flat-walled discs with a cap on top, and are a little deeper (Clouds > Shallow cumulus heaps / depth).
 - **No bright ring in distant clouds.** Seen from altitude over a deep overcast, clouds beyond a few tens of km no
   longer light up brighter than the ones near you; the lighting is consistent out to the horizon.
 - **Cirrus rides the wind.** High-cloud streaks now follow the jet stream and its eddies instead of all sliding east

@@ -7055,6 +7055,8 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SldCumulusCore), &cv2CuCore, 0.0f, 1.0f, 0.05f, "%.2f", 553},
         {tx(Txt::SldCumulusBubbleWarp), &cv2CuBubbleWarp, 0.0f, 400.0f, 10.0f, "%.0f", 554},
         {tx(Txt::SldCumulusHeadWidth), &cv2CuHeadWidth, 0.0f, 1.0f, 0.05f, "%.2f", 555},
+        {tx(Txt::SldCumulusHeaps), &cv2CuHeaps, 0.0f, 1.0f, 0.05f, "%.2f", 549},
+        {tx(Txt::SldCumulusHeapDepth), &cv2CuHeapDepth, 0.0f, 2.0f, 0.05f, "%.2f", 550},
         {tx(Txt::SldLobeNoise012), &cv2ShapeCaps, 0.0f, 2.0f, 1.0f, "%.0f", 307},
     };
 
@@ -9908,6 +9910,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CuCore = settingClamp(c.value("cumulus_core", cv2CuCore), 0.0f, 1.0f);
         cv2CuBubbleWarp = settingClamp(c.value("cumulus_bubble_warp", cv2CuBubbleWarp), 0.0f, 400.0f);
         cv2CuHeadWidth = settingClamp(c.value("cumulus_head_width", cv2CuHeadWidth), 0.0f, 1.0f);
+        cv2CuHeaps = settingClamp(c.value("cumulus_heaps", cv2CuHeaps), 0.0f, 1.0f);
+        cv2CuHeapDepth = settingClamp(c.value("cumulus_heap_depth", cv2CuHeapDepth), 0.0f, 2.0f);
         cv2SilverLining = c.value("silver_lining", cv2SilverLining);
         cv2CirrusDirWarp = c.value("cirrus_direction_warp", cv2CirrusDirWarp);
         cv2AsDensity = c.value("altostratus_density", cv2AsDensity);
@@ -10688,6 +10692,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cumulus_core", cv2CuCore},
         {"cumulus_bubble_warp", cv2CuBubbleWarp},
         {"cumulus_head_width", cv2CuHeadWidth},
+        {"cumulus_heaps", cv2CuHeaps},
+        {"cumulus_heap_depth", cv2CuHeapDepth},
         {"silver_lining", cv2SilverLining},
         {"cirrus_direction_warp", cv2CirrusDirWarp},
         {"altostratus_density", cv2AsDensity},
