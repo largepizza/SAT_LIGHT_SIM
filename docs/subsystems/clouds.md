@@ -2398,6 +2398,16 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     `cv2ShapeSmooth`, each gave 222 registers; one carried float (the bearing, `bestAng`) and a 2-iteration fetch loop keep
     128. Not changed: the low layer's lobes (storm cumulus, every cumulus) still slide along `windDir`, so they sink or
     rise by place; the map-fed shield (`cv2AnvilSigmaP`, off by default) still reads the wind anchor.
+  - **The one-direction slide is what reads as "noise moving toward the anvil"** (issue_20261108_171948, 29.6 S 145.7 E, 2.3 km,
+    1 min/s; harness knock-outs, qa/waves/20261108/evidence/anvilflow): every slid anchor (shape 1.0, detail 1.6, cells 0.85,
+    storm 1.0, mid 1.0 x "Wind") moves along `windDir`, so an anvil's lobes and every deck around it travel the same way.
+    No change in the time-lapse with the storm lobes' rise 0, "Storm mass" 0, cumulus bubbles and turrets 0, or detail 0.
+    Tried and dropped (no visible change in the filmed time-lapse, and every anchor change reshuffles the whole field):
+    sliding each tile along a lattice vector near the wind's HORIZONTAL direction at the observer (here windDir is 44%
+    vertical); one common horizontal advection at 0.85 plus the relative rates as a vertical boil. Separately, under
+    1 min/s the deck's billows vanish into a fine streaky texture and come back after pausing 160 frames at the same
+    instant: not the Sun volume, the clipmap, `full_res_moving_mode`, the reprojection's wind share or
+    `history_weight_moving` (each knocked out at the shot). Open.
   - **The Sun shadow CASCADE** (`cv2SunCasc` in the flash buffer, `cv2.sunCasc0-2`, "Far cloud shadows (0/1)" slot 269,
     `clouds_v2.sun_cascade`, default on). A sample's light march reaches ~5 km and the fine Sun shadow grid covers
     3-3.9 km about the eye's line to the Sun, so a tower 20 km off stood sunlit behind a storm that shaded it and the
