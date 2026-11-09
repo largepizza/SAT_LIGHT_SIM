@@ -470,6 +470,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- Standing in a rain curtain and looking at the horizon, the far clouds there no longer show as strongly as a row of
+  jagged light and dark blocks: each part of a cloud now gets the haze of its own distance (the rain in front of the
+  horizon had taken the far clouds' haze). Reduced, not gone (issue_20261108_172203).
 - The Milky Way and the zodiacal light now wash out under light pollution as they do in reality: a brighter sky
   takes away their contrast, not only their faintest parts. ~55 km from Mexico City (about 20.5 mag/arcsec^2) the
   band's core went from +286% over the sky to +57%; dark sites are unchanged (issue_20261108_174856).
