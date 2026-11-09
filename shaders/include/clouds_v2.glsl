@@ -268,6 +268,9 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // window (s, 0 off), z the window count + blend, w the fibres' own eastward slide (m/s at the equator)
     vec4  wind0;
     vec4  wind1;
+    // (2026-11-08, pucks) Shallow cumulus heaps (cv2LowA): x "Shallow cumulus heaps" (0 = the old flat-walled profile),
+    // y "Shallow cumulus depth" (the extra depth at full share: T x (1 + y)), zw unused
+    vec4  pucks;
 } cv2;
 #include "wind_field.glsl"
 
@@ -1195,13 +1198,36 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
         T = mix(T, min(flr + 0.75 * sqrt(twN) + 0.12 * (cellsB - 0.5), 1.0) * smoothstep(0.1, 0.5, eB), sK);
         T = min(T, mix(1.0, 0.8, sK));
     }
+    // SHALLOW CUMULUS HEAPS ("Shallow cumulus heaps" pucks.x, "Shallow cumulus depth" pucks.y; 2026-11-08, issue_20261108_171510
+    // "every cloud ... the exact same profile extruded upwards"). A weak cell's top sits at T's floor (~250 m) while its 2D
+    // strength e is only ~0.05-0.35 (probe at the report's view: e ramps from the edge to the core over the cell, it is not a
+    // plateau). Under the tall cells' profile below (the requirement flat at reqMin up to the widest point zm = 0.55, then
+    // 1.3 vC^2) such a cell stood straight for the lower ~55% of its depth and its weak e domed only the top ~20%: a PUCK,
+    // kilometres wide and ~250 m deep, its 2D outline extruded. On a shallow cell (shK: thinner than ~350-900 m, convective,
+    // not deep / a deck / a storm mass) the widest point drops to 0.12 of the cell (a crisp flat base edge) and the dome's
+    // requirement is scaled to the strengths such cells have (0.5 at the top, not 1.3): the outline slopes in from the base
+    // the whole way up, so the cell is a heap whose height follows e, and the lobes and bubbles (now on a slope, not a wall)
+    // shape its sides. The cell is also deeper by pucks.y (x1.8 at the default): the dome alone, on the old depth, left thin
+    // lenses (tried 2026-11-08 at widest point 0.2 with the old dome scale: most of the volume gone). The base stays the
+    // condensation level: the requirement never rises toward it (a narrower stem rounded the undersides into the rejected
+    // "pie-crust" bottoms of issue_20261108_135011). Measured at the report's region (nadir probes, 4 spots, 41 / 32 clouds):
+    // width / depth 3.8 -> 2.8 median (depth 190 -> 260 m); cover from 25 km +6% at alpha > 0.1, +13% mean alpha (the deeper
+    // heaps are more opaque at their rims; the base footprints do not move); 255 registers, as before.
+#if !defined(SKY_LITE)
+    float shK = cv2.pucks.x * (1.0 - smoothstep(350.0, 900.0, T * max(topMax - base, 1.0))) * (1.0 - deep) * (1.0 - flatK)
+              * (1.0 - sK) * smoothstep(0.1, 0.5, max(ty.look.z, lowCov));
+    T = min(T * (1.0 + cv2.pucks.y * shK), 1.0);
+#else
+    const float shK = 0.0;
+#endif
+    const float kPkZm = 0.12, kPkAmp = 0.5;
     float zeta   = z / T;
     // (A smooth min: min() creased the surface where the two cross, and sqrt(cells) is a cliff at
     // each blob's rim — both drew flat, rock-like facets.)
     float capS   = mix(0.3 + 0.7 * cells, 0.85 + 0.15 * cells, sK);   // (a storm's cells: strong cores all the way up)
     float hS     = max(0.2 - abs(e - capS), 0.0) / 0.2;
     float eS     = min(e, capS) - hS * hS * 0.05;
-    float zmC    = mix(0.55, 0.65, deep);
+    float zmC    = mix(mix(0.55, 0.65, deep), kPkZm, shK);
     // reqMin keeps the gaps between cells in a dense field; a weak, isolated cell (small eB) needs
     // almost none, or the fair-weather puffs vanish (e barely clears the coverage there).
     float reqMin = 0.2 * smoothstep(0.1, 0.6, eB);
@@ -1218,9 +1244,9 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     // (At most 0.7 of the cell's own thickness per unit: a small cloud has small lobes. Uncapped, a 300 m puff took
     // 300 m bumps and a field of clean cumulus broke up into scattered shreds.)
     float thickM = T * max(topMax - base, 1.0);
-    float liftK  = 2.0 * (1.0 + 0.5 * cv2.cu.z - reqMin) * min(vC, 1.3) / (1.0 - zmC) * min(kCv2LobeLiftM / thickM, 0.7)
+    float liftK  = 2.0 * mix(1.0 + 0.5 * cv2.cu.z - reqMin, kPkAmp, shK) * min(vC, 1.3) / (1.0 - zmC) * min(kCv2LobeLiftM / thickM, 0.7)
                                 * (1.0 - flatK);
-    float reqC   = reqMin + (req0 - reqMin) * uC * uC + (1.0 + 0.5 * cv2.cu.z * (1.0 - sK) - reqMin) * vC * vC;
+    float reqC   = reqMin + (req0 - reqMin) * uC * uC + mix(1.0 + 0.5 * cv2.cu.z * (1.0 - sK) - reqMin, kPkAmp, shK) * vC * vC;
     // ("Cumulus top headroom", cu.z: the strength needed AT the cell's top is past what a column has, so the top is
     // shaped by the field and the lobes all the way up. At 1.0 every strong column reached zeta = 1 and the tops of
     // a dense field were cut flat at one level: mesas, "blocky layers".)

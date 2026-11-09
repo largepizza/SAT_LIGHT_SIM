@@ -1206,17 +1206,26 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     I0 + I1). The "storm" in 172314 shot 3 is one of these (rain under ~1 km of cloud), not a deep tower. Bases get darker
     only with optically thicker cloud (the 2026-11-04 note above: the field is 3-6x thinner than real cumulus); density
     2x darkened them 10-30% (linear). The reporter's `ambient_gain` and `sky_light_gain` are 2 (default 1).
-  - **The "extruded" lower wall of shallow cumulus (issue_20261108_171510) is the cell profile, not the base.** The cells
-    in the report are 235-280 m deep (T at its floor, weak cells: eB small); for a cell that is not tall, `req0 = reqMin`,
-    so the requirement is flat from the base to the widest point (zm = 0.55 of the cell): the 2D outline stands straight
-    up for the lower ~130 m, and the dome above it narrows: a puck. The lobes cannot break that wall on a cloud this
-    small (their finest period is 440 m; on weak cells x0.4, at the base x aBase over aRamp >= 150 m, i.e. the whole
-    cell). Tried, none kept (harness, the report's views and a side view at 1000 m): a stem on every cell, 0.15 x uC^2
-    (no visible change: the 2D field's edge is steep, a small requirement does not move it) and 0.5 x uC^2 (a rounded
-    lens: the "pie-crust" undersides of issue_20261108_135011 again); the widest point at 0.2 for short cells (the pucks
-    become thin flat lenses, most of their volume gone); the lobes undamped at the base, or ramped in over 0.25 x the
-    cell + 40 m, with the bubbles' base fade over 30 m (little visible change). A fix is a morphology change (lobes and
-    bubbles at the cell's own scale on small cells, or thicker weak cells), not a base-local term.
+  - **Shallow cumulus are heaps, not pucks (issue_20261108_171510; `cv2LowA` "SHALLOW CUMULUS HEAPS", UBO `cv2.pucks`).**
+    Weak cells sit at T's floor (235-280 m at the report's view) with a 2D strength e of only ~0.05-0.35, ramping from the
+    edge to the core (a probe writing e into `debugview cloudrad`: not a plateau). Under the tall cells' profile (the
+    requirement flat at reqMin up to the widest point zm = 0.55, then 1.3 vC^2) such a cell stood straight for its lower
+    ~130 m and domed only its top ~50 m: a puck, km wide, its 2D outline extruded; the lobes could not break that wall (finest
+    period 440 m, x0.4 on weak cells, damped at the base; the user's "Cumulus lobes (bottom)" is 0). Now a shallow cell
+    (shK: 1 below ~350 m of depth, 0 above ~900 m; convective; not deep, a deck or a storm mass) takes its widest point at
+    0.12 of the cell and a dome scaled to such strengths (0.5 at the top, not 1.3), so its outline slopes in from the base
+    all the way up and its height follows e; and it is deeper by "Shallow cumulus depth" (`cumulus_heap_depth` 0.8: T x
+    1.8). "Shallow cumulus heaps" (`cumulus_heaps` 1, slot 549; 0 = the old profile, identical maths) and the depth (slot
+    550). The base never gets a rising requirement: that is the narrower stem that rounded undersides into the rejected
+    "pie-crust" bottoms (issue_20261108_135011). Measured, user settings, 4 nadir spots at the report's region (probes
+    writing the column's height above the base): width / depth median 3.8 -> 2.8 (depth 190 -> 260 m); cover from 25 km
+    +6% at alpha > 0.1, +13% mean alpha, from orbit +2% / +5% (deeper heaps are more opaque at their rims; the base
+    footprints do not move). The clouds of issue_20261108_172314 shot 1 are the same 200-300 m cells and change the same
+    way; storms (135011 shot 1) do not. 255 registers before and after; cloud march at the report's shot 1 no slower
+    (interleaved A/B, contended GPU). Dead ends (each alone): a stem on every cell (0.15 / 0.5 x uC^2: nothing, or
+    pie-crust); the widest point at 0.2 with the old dome scale (thin lenses, most volume gone); the dome alone without
+    the depth (flat lenses ~150 m deep, cover -8%); lobes undamped at the base (little change). Still smooth mounds up
+    close at the user's lobe settings: the side texture is the lobes' and bubbles'.
 - **The sky's light on the clouds = the hemispheres with multiple scattering (2026-10-26, branch cloud-ms;
   cloud_v2_sunlut.comp layers 2-4).** The march took the ZENITH's single-scattering radiance x "Sky ambient" (2 in the
   user's settings) x the twilight boost ("Twilight sky light") and the dusk fade: the zenith is the darkest part of the
