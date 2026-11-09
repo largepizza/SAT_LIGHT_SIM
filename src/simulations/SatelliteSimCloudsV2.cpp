@@ -1373,8 +1373,15 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // the resolve turns the eye-relative point by dDrift and adds this: Rz(dDrift) eye - prevEye
     // plus the wind's shift, taken at 0.9 of the shape wind (the cells, which place the clouds, move
     // at 0.85 of it, the lobes at 1.0).
-    const glm::dvec3 windShift = rotD(windDir * ((double)cv2WindMps * 0.9 * dSimT),
-                                      std::cos(-cv2PrevDrift), std::sin(-cv2PrevDrift));
+    // Its HORIZONTAL part only (2026-11-08, issue_20261108_171948; clouds_v2.reproj_wind_vertical, SatelliteSim.h): windDir
+    // is fixed in ECEF, so by place up to ~45% of the slide is vertical, but the layers' height profile stands still -- a
+    // deck's top and its billows stay at their height while the noise boils down or up through them. Reprojected along the
+    // full 3D slide, a deck seen at a grazing angle had its history walked up or down the screen (at 29.6 S 145.7 E, 2.3 km
+    // up, 1 min/s: ~0.4 half-res px a frame 5 km out) and the billows blurred into a flat sheet; the vertical part also
+    // counted as the eye's parallax (eyePx below obsDelta) and clamped the history to the sparse grid's grain.
+    glm::dvec3 windShift = rotD(windDir * ((double)cv2WindMps * 0.9 * dSimT),
+                                std::cos(-cv2PrevDrift), std::sin(-cv2PrevDrift));
+    windShift -= up * (glm::dot(windShift, up) * (1.0 - (double)std::clamp(cv2ReprojWindVertical, 0.0f, 1.0f)));
     p.obsDelta = glm::vec4(glm::vec3(rotD(eye, cDD, sDD) - cv2PrevEye + windShift), cv2PrevAspect);
     // What is left unreprojected: the volumes' relative slide (detail 1.6, cluster 0.6 of the wind).
     p.motion = glm::vec4((float)std::abs((double)cv2WindMps * 0.7 * dSimT), std::clamp(cv2HistoryWeightMoving, 0.05f, 0.5f),

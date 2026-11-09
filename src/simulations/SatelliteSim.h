@@ -5553,6 +5553,13 @@ private:
     // it the light march lights the clouds (~+0.8 ms there).
     float cv2SunVolumeMaxStepS = 1.0f;
     float cv2SunVolumeOn = 1.0f;           // diagnostic (r1022): 0 = no Sun transmittance volume (clouds lit by the light march alone)
+    // 2026-11-08 (tlbillows, issue_20261108_171948): the share of the noise slide's VERTICAL part the resolve reprojects
+    // (clouds_v2.reproj_wind_vertical; 0 = horizontal only, the default; 1 = the old full 3D slide). The noise slides along a
+    // fixed ECEF windDir, up to ~45% vertical by place, but the layers' height profile does not move: a deck's top stays
+    // where it is while the lobes boil through it. Reprojected in 3D, the history of a deck seen at a grazing angle walked
+    // up or down the screen by the slide's vertical part (~0.4 half-res px a frame at 1 min/s, 5 km out) and the billows
+    // blurred away in time-lapse; the eye's-motion term also took it for parallax and clamped the history to grain.
+    float cv2ReprojWindVertical = 0.0f;
     float cv2EyeHeightNow = 1.0f;          // the v2 eye from this frame's height offset, not last frame's GPU readback (0 = old)
     glm::dvec3 cv2CdcRefEye{0.0};          // the eye when the clipmap's current epoch began
     double cv2CdcRefS = 0.0;               // ... and its distance scale then

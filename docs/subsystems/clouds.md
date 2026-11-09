@@ -257,6 +257,21 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   A rotation reprojects exactly; raising the weight during a pan swapped the accumulated image for the
   quarter grid's noisy samples (a knitted cross-hatch). In parallax all four pixels of a 2x2 block take
   nearly the same update. Check motion with `path play record=` (a settled `capture` hides it).
+  - **The wind's share of the reprojection is HORIZONTAL** (`obsDelta`'s `windShift`, SatelliteSimCloudsV2.cpp;
+    `clouds_v2.reproj_wind_vertical`, default 0 = horizontal only, 1 = the old 3D slide). The noise slides along the fixed
+    ECEF `windDir` (up to ~45% vertical by place) but the layers' height profile stands still, so a deck's top does not
+    move vertically: the vertical part is evolution, not motion. Reprojected in 3D (until 2026-11-08), a grazing view of a
+    deck had its history walked up/down the screen by ~0.4 half-res px a frame at 1 min/s (5 km out), and the same vertical
+    metres entered `eyePx` as parallax and clamped the history to the sparse grid's grain: the billows of
+    issue_20261108_171948 vanished under time-lapse and came back on pausing. **How it was found** (so the next agent does
+    not repeat it): a resolve variant with `outC = fresh` (true raw: `history_weight` is clamped to 0.15, `sky_taa_weight 1`
+    is not raw either, smooth tiles fill from the history) showed the march's per-frame output the same paused and running;
+    `time set` steps of 0.45 vs 0.55 s with time paused reproduce it without the time scale. Not the cause: the Sun volume,
+    the clipmap, the rate / held / smooth-tile modes, weather evolution, storm objects, motion.x. Measured (band-pass
+    2.5-10 px std of the deck, time-lapse frame / paused-settled at the same instant): 1 min/s 0.62 -> 0.69, 5 min/s
+    0.62 -> 0.67. Dropping the HORIZONTAL wind share too (drift only) scored 0.73 at 1 min/s but 0.62 at 5 min/s: kept at
+    0.9. What is left is real evolution inside the history's ~22-frame memory (the settled field decorrelates to 0.93 in
+    10 sim s here) -- the noise's own vertical slide (the "noise slide" above), which no reprojection can follow.
 - **Far field (orbit)**: a fractal presence from the cluster Perlin at 1x and 4x (3-90 km, `fz`), thresholded
   to the map's coverage (area ~ cov), replaces the sub-pixel cells' uniform haze as the cells stop resolving
   (`farK`), and clusters the near field a little (0.08) so orbit and ground agree on where the holes are.
@@ -2438,9 +2453,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     Tried and dropped (no visible change in the filmed time-lapse, and every anchor change reshuffles the whole field):
     sliding each tile along a lattice vector near the wind's HORIZONTAL direction at the observer (here windDir is 44%
     vertical); one common horizontal advection at 0.85 plus the relative rates as a vertical boil. Separately, under
-    1 min/s the deck's billows vanish into a fine streaky texture and come back after pausing 160 frames at the same
-    instant: not the Sun volume, the clipmap, `full_res_moving_mode`, the reprojection's wind share or
-    `history_weight_moving` (each knocked out at the shot). Open.
+    1 min/s the deck's billows vanished into a fine grainy texture: the resolve reprojected the slide's VERTICAL part
+    (see "Motion", `reproj_wind_vertical`).
   - **The Sun shadow CASCADE** (`cv2SunCasc` in the flash buffer, `cv2.sunCasc0-2`, "Far cloud shadows (0/1)" slot 269,
     `clouds_v2.sun_cascade`, default on). A sample's light march reaches ~5 km and the fine Sun shadow grid covers
     3-3.9 km about the eye's line to the Sun, so a tower 20 km off stood sunlit behind a storm that shaded it and the
