@@ -112,6 +112,16 @@ float darkSkyArtRatio(vec3 dir) {
 float darkSkyPollutionMagPhys(vec3 dir) {
     return kSkyMagPristine - 2.5 * log(1.0 + darkSkyArtRatio(dir)) / log(10.0);
 }
+// The CONTRAST the artificial glow leaves a faint diffuse feature (2026-11-08, issue 20261108_174856 "Light
+// pollution?"). Skyglow brightens the real sky x (1 + ratio); the rendered sky does not (its night background is the
+// pristine one, the city in-scatter aside), so a feature added on top keeps its dark-sky contrast unless it is scaled
+// by the same 1 / (1 + ratio): what an eye adapted to the brighter sky sees. darkSkyVis is the detection threshold
+// ON TOP of it (the faint parts go first). Measured at the report's view (20.5 mag/arcsec^2, 3.9x the natural sky):
+// the band read +290% over the sky with darkSkyVis alone, +469% with no skyglow; physically (core 21.0 on 20.4) +58%.
+// The artificial part only: moonlight and twilight ARE rendered into the sky's background, so they keep darkSkyVis.
+float darkSkyArtContrast(vec3 dir, float share) {
+    return 1.0 / (1.0 + darkSkyArtRatio(dir) * share);
+}
 
 // ── Twilight ─────────────────────────────────────────────────────────────────
 // The sun's own contribution to sky background brightness. Until this existed, the only solar

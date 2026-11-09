@@ -468,6 +468,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- The Milky Way and the zodiacal light now wash out under light pollution as they do in reality: a brighter sky
+  takes away their contrast, not only their faintest parts. ~55 km from Mexico City (about 20.5 mag/arcsec^2) the
+  band's core went from +286% over the sky to +57%; dark sites are unchanged (issue_20261108_174856).
 - Auto exposure no longer brightens the whole picture while a window is open: it meters the frame without the UI.
   With the Settings window open the clouds came out ~1.4x brighter (+0.5 EV) than with it closed, so cloud bases
   looked too bright while you were tuning them (issue_20261105_181849).

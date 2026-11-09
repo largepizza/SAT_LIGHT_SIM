@@ -131,6 +131,24 @@ convention; natural = `kSkyMagPristine` 22.0 mag/arcsec^2), so the sky is 22 - 2
   too dark: the natural sky varies (airglow, the solar cycle) and is fixed at 22.0. Naked-eye limit at the zenith:
   7.8 pristine, 7.2 Teide / Arizona (B3), 5.5-5.7 Ames / Ithaca (B6), 3.2 downtown LA. The Kp 9 aurora views of issue
   20261014_193231 (BC, Iowa farm, Arizona) read 21.7 / 21.7 / 21.0 and look as before.
+- **The contrast the glow leaves** (2026-11-08, issue 20261108_174856 "Light pollution?", 19.76N 98.60W, 3745 m, ~55
+  km NE of Mexico City): the rendered night sky is NOT brightened by the skyglow (its background is the pristine one;
+  the orange `accumCity` in-scatter is separate and near the horizon), so a feature added on top kept its dark-sky
+  contrast and only `darkSkyVis` (the detection threshold) dimmed it. The Milky Way, its sea reflection and the
+  zodiacal light are now also x `darkSkyArtContrast(dir) = 1 / (1 + darkSkyArtRatio(dir))` (darksky.glsl): the
+  contrast an eye adapted to a sky (1 + ratio) x brighter sees. Artificial glow only: moonlight and twilight are
+  rendered into the background and keep `darkSkyVis` alone. Not applied to the aurora (cloud_march.comp, register
+  budget) or comets. At the report's view (zenith model 20.52, ratio 2.90; the band at ~45 deg el, ~20.4) the band
+  core read +286% over the sky with the gate alone, +469% with no skyglow, now +57% (physical: a 21.0 core on a 20.4
+  sky, +58%); a mid-band box +95% -> +27%, a faint arm +32% -> 0. With `darkSkyVis` the core keeps (vs pristine)
+  ~0.75 of its contrast at 21.7, 0.31 at 21.0, 0.15 at 20.5, 0.025 at 19.5, 0.003 at 18.5 (Bortle 3 .. 8). Paranal
+  (ratio 0) image diff = the same-shader floor; Mexico City centre (17.19) and Teotihuacan (18.68) had no band left.
+  Ground truth there: D. Lorenz's atlas (Cinzano's model on VIIRS; djlorenz.github.io/astronomy/lp, 1024-px tiles at
+  z6) puts the shot's ground point in zone 5b (2016 tiles, LPI 5.2-9, 20.02-19.50) / 6a (2025, LPI 9-15.6); over a
+  0.15-deg grid of central Mexico at ground level the model reads 0.06 mag darker than the 2016 tiles (median, 99
+  points) and 0.45 darker than 2025's. The reporter's eye is 560 m above the app's ground (DEM 3184 m; the real ground
+  is ~2480 m: the DEM reads ~30% high there, Mexico City 2960 m vs 2240), which the altitude term turns into 20.52
+  against 20.15 at the ground.
 - **Known residuals**: the map does not know lighting codes or shielding (Flagstaff 1.1 too bright; La Palma's ORM is
   right only through the altitude term), clips everything brighter than a suburb, and smears every light over ~5 km;
   the sky pass's own rendered city glow (the orange in-scatter, `accumCity`) is a separate model and is not calibrated

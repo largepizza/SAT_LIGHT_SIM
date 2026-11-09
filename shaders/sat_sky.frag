@@ -7082,6 +7082,7 @@ void main() {
                         pow(10.0, -0.4 * atmExtinctionMag(hitPt, reflDir, 0.0, cloud.extinctionCoeff));
 
                     reflColor += rMwColor * darkSkyVis(rMwObjMag, rMwSkyBgMag)
+                               * darkSkyArtContrast(reflDir, 1.0) // as the direct view
                                * extinctionMwRefl * reflCloudOccl * reflTerrainOccl
                                * cloud.oceanMwReflGain * featureReflFade * (1.0 - 0.5 * seaRough);
                 }
@@ -7914,6 +7915,11 @@ void main() {
 
         float visibility = nightFactorEffSky
                           * darkSkyVis(mwObjMag, mwSkyBgMag)
+#ifdef SKY_ENV
+                          * darkSkyArtContrast(dir, atmFracSky) // the glow's contrast loss (darksky.glsl)
+#else
+                          * darkSkyArtContrast(dir, 1.0)
+#endif
                           * (1.0 - beamDomeVal * kMWBeamPollutionMaxDim)
                           * extinctionMW
                           * sunGlareSuppress
@@ -8095,7 +8101,12 @@ void main() {
                              * (tSurface > 0.0 ? 0.0 : 1.0) // blocked by terrain/ocean
                              * (moonDiscHit ? 0.0 : 1.0)    // blocked by the Moon's own opaque disc
                              * pow(clamp(cloudBlock, 0.0, 1.0), kZodCloudSuppressPower)
-                             * darkSkyVis(zodObjMag, zodSkyBgMag);
+                             * darkSkyVis(zodObjMag, zodSkyBgMag)
+#ifdef SKY_ENV
+                             * darkSkyArtContrast(dir, atmFracSkyZ); // as the Milky Way's
+#else
+                             * darkSkyArtContrast(dir, 1.0);
+#endif
 
         color += zodCol * zodShape * cloud.eclipticPoleENU.w * visibilityZod * cloud.exposureScale;
     }
