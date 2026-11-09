@@ -1193,8 +1193,17 @@ void main()
                 // farther clouds"): the path to the base CAPPED at the far march's reach, cv2.ms.w -- what the field read inside
                 // the 225-m footprint measures. Uncapped, a deep cloud's far side (a CDO, a deck seen from orbit) was the whole
                 // column, its diffuse field brighter: a disc of darker cloud round the nadir, the far clouds too bright.)
+                // (2026-11-08, issue_20261108_172314 shot 1 "the clouds get dark, and then suddenly brighten near the ground"; the
+                // reads' FLOOR under a high Sun): the two reads away from the light sit 0-300 m and 300-1200 m down the light's
+                // line, +-450 m up and across (kCv2BackJitZ / H). Under a high Sun that line is near vertical, and a cloud a few
+                // hundred metres deep has nothing there: the reads saw the clear air under a 240-m cumulus' base and took its top
+                // for a wisp (tau below the top 0.6-2.7 against ~10 down its column), while its side, deeper toward the Sun, built
+                // up the field: a dim grey-blue top over a bright wall. The column's own path to the base is a floor for them.
+                // (Faded out under a low Sun, mu < 0.3-0.7, where the line is near horizontal: the reads stay in the layer, and a
+                // path to the base along it would count kilometres of cloud a shaded side does not have.)
                 float odBkA = f.sigma * min(f.hf * max(f.topH - p.h, 0.0) / max(1.0 - f.hf, 0.05) / max(dot(up, keyDir), 0.1), cv2.ms.w);
-                odBk = (!wantBk || skipL || faint || f.deck < -0.5) ? odBkA : mix(odBk, odBkA, smoothstep(150.0, 225.0, fp));
+                odBk = (!wantBk || skipL || faint || f.deck < -0.5)
+                     ? odBkA : max(mix(odBk, odBkA, smoothstep(150.0, 225.0, fp)), odBkA * smoothstep(0.3, 0.7, dot(up, keyDir)));
             }
             if (wantL) {
                 float od = thin ? f.sigma * 400.0 : odL;

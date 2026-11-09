@@ -1184,6 +1184,39 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   within the current cloud (`bTr`), not from the eye. Tried and dropped: the slab alone at physical strength (3-7x the
   old energy, flat: a slab along the light assumes mu0 = 1 and holds the light in), the octaves x the slab's reflectance
   over the sample's neighbourhood (saturates in dense cumulus: no visible change).
+  - **The far side has a floor: the column's path to the base under a high Sun** (2026-11-08, issue_20261108_172314
+    "the clouds get dark, and then suddenly brighten near the ground", issue_20261108_171510; branch qa/20261108/bottoms).
+    The two reads away from the light sit 0-300 m and 300-1200 m down the light's line, jittered +-450 m up and across
+    (`kCv2BackJitZ` / `H`). Under a high Sun that line is near vertical, and a cumulus a few hundred metres deep has no
+    cloud there: at the report's view (Australian interior, Sun ~75 deg, cells 235-280 m deep, probes = march variants
+    writing one term into `debugview cloudrad`) the tops' tauB read 0.6-2.7 against ~10 down their column, so a top was
+    lit as a wisp (diffuse field 0.4-0.6 x the key) while the wall below it, deeper toward the Sun, built up to 1.3: dim
+    grey-blue tops over a bright skirt. `odBk = max(reads, odBkA x smoothstep(0.3, 0.7, mu))` (odBkA = the path to the
+    column's base, capped at `ms_back_m`, which the far samples already used alone); faded out under a low Sun, where the
+    line runs along the layer and the reads stay in it. Measured (user settings, auto exposure): the luminance rise from a
+    side's darkest row down to its base, 3 columns, +25/+40/+98% -> 0/0/0% (the tops are now the brightest part); orbit
+    (420 km) and a 12-deg Sun at the same places unchanged (diff = the A-vs-A floor); from 25 km over the same field the
+    shallow cumulus are white instead of translucent grey-blue. Bases seen from below +6% (their lowest samples' tauB was
+    also read short). No new setting.
+  - **What lights a fair-weather base, measured (same reports).** Knockouts at the report's under-cloud view (fixed
+    exposure): the key light alone draws the bases at ~95% of the full image, the sky ambient ~10-15% of the base's
+    light, the ground bounce a few %. The bases there are cells 350-1100 m deep (od toward the Sun 6-34, extinction
+    0.02-0.06 /m); the diffuse field at a base is 2-2.8 x the key against ~5 at a sunlit top: ~0.5, which is the slab's
+    T / R for tau ~20, and the radiance toward an eye below is already under the Eddington value (I0 + 0.3 g mu I1, not
+    I0 + I1). The "storm" in 172314 shot 3 is one of these (rain under ~1 km of cloud), not a deep tower. Bases get darker
+    only with optically thicker cloud (the 2026-11-04 note above: the field is 3-6x thinner than real cumulus); density
+    2x darkened them 10-30% (linear). The reporter's `ambient_gain` and `sky_light_gain` are 2 (default 1).
+  - **The "extruded" lower wall of shallow cumulus (issue_20261108_171510) is the cell profile, not the base.** The cells
+    in the report are 235-280 m deep (T at its floor, weak cells: eB small); for a cell that is not tall, `req0 = reqMin`,
+    so the requirement is flat from the base to the widest point (zm = 0.55 of the cell): the 2D outline stands straight
+    up for the lower ~130 m, and the dome above it narrows: a puck. The lobes cannot break that wall on a cloud this
+    small (their finest period is 440 m; on weak cells x0.4, at the base x aBase over aRamp >= 150 m, i.e. the whole
+    cell). Tried, none kept (harness, the report's views and a side view at 1000 m): a stem on every cell, 0.15 x uC^2
+    (no visible change: the 2D field's edge is steep, a small requirement does not move it) and 0.5 x uC^2 (a rounded
+    lens: the "pie-crust" undersides of issue_20261108_135011 again); the widest point at 0.2 for short cells (the pucks
+    become thin flat lenses, most of their volume gone); the lobes undamped at the base, or ramped in over 0.25 x the
+    cell + 40 m, with the bubbles' base fade over 30 m (little visible change). A fix is a morphology change (lobes and
+    bubbles at the cell's own scale on small cells, or thicker weak cells), not a base-local term.
 - **The sky's light on the clouds = the hemispheres with multiple scattering (2026-10-26, branch cloud-ms;
   cloud_v2_sunlut.comp layers 2-4).** The march took the ZENITH's single-scattering radiance x "Sky ambient" (2 in the
   user's settings) x the twilight boost ("Twilight sky light") and the dusk fade: the zenith is the darkest part of the
