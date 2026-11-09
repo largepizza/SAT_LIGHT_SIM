@@ -337,9 +337,28 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   seed carries a spin phase (3840ths of a turn: the funnel ~35 m/s at its radius, debris 0.7 x, wall cloud a turn in ~5 min,
   cyclonic), and cloud_march.comp reads the low billow field in LOG-POLAR coordinates about its centre turned by it
   (`tornadoCyl`: radius cells would draw the wall cloud as rings). The plume composite blends in front of / behind the cloud
-  over +-(15% + 150 m) of distance (a hard switch cut a cloud-shaped hole round the funnel top). Placed 1.1 x the mature
-  tower's own radius (0.7-1.3 x "Cb tower radius" by size) out, past its rain core (0.9 of it); the bake clears a rear-flank
-  rain-free base there and suppresses the map's rain inside every storm envelope (x 0.05: "Rain" 3 saturated what was left).
+  over +-(15% + 150 m) of distance (a hard switch cut a cloud-shaped hole round the funnel top). Placed at one of TWO
+  places on the rear flank (2026-11-08, issue 20261108_173628 "Where's the tornado here?"; `tornadoOf` -> `mapDir` /
+  `mapDirIn`; the direction -0.65 shear + 0.7 across is 0.955 long): OUTER, 1.1 x the mature tower's own radius Rc
+  (0.7-1.3 x "Cb tower radius" by size; ~1.05 Rc), past the rain core (to 0.9 Rc) -- the rain-free base when the map's
+  low deck reaches past the tower there; INNER, 0.8 x (~0.76 Rc), under the tower's own base just inside its edge, where
+  the rain core has faded to ~5%. weatherFillTornadoes probes both columns (the four probe columns hold two tornadoes'
+  pairs; with more, a window of four rotates a frame at a time) and draws the funnel at the outer place while a storm base
+  stands over it, else at the inner one (`TornadoProbe::choice`, kept while its base holds; a move fades the funnel in
+  again). The outer place alone stood PAST the drawn tower's base (its body fades out by ~0.85-0.9 Rc, its base rising
+  there): over clear air the probe gate below hid the funnel while the Storms tab listed it on the ground. Probed at the
+  report's storm (Argentina, Rc 21 km with the reporter's 20-km tower radius): 1.1 no base; 0.9 a base 2.65 km up; 0.75 /
+  0.6 / 0.45 / 0.3 a base 1.0-1.15 km up, tau above 900-1000; captured, the funnel shows at 0.8 and is veiled by the rain
+  core at 0.7 and in. At another (2036-11-25 off Brisbane) the outer place had a base 1.1 km up and a clearly drawn
+  funnel, while at 0.8 it was lost in the rain (light_k 0.09 under tau ~1000, against rain): neither place alone works for
+  every storm. The Watch views, `storms tornado` and the featured search frame the OUTER place (an inner funnel stands
+  ~0.3 Rc nearer the tower: in frame from their distances). `state` -> `weather.tornado_list[]` also carries `placement`
+  (outer / inner), `tower_km` (the drawn place from the dominant tower's axis), `rc_km`, `found` (the drawn place's last
+  probe found a base), `found_outer`, `found_inner`. Cost (contended RTX 3070 Ti, 1600x900, the report's view, `storms
+  tornado draw=1|0` interleaved x3): cloud_march within noise (funnel in frame +0.0-0.15 ms, out of frame +-0.2 ms; the
+  A-vs-A spread 0.1-0.8 ms); the second probe column per tornado costs ~40 field evaluations on an idle thread of the
+  lightning pass. The bake clears a
+  rear-flank rain-free base (centred 1.1 Rc, cleared within 0.35 Rc: it covers both places) and suppresses the map's rain inside every storm envelope (x 0.05: "Rain" 3 saturated what was left).
   Only within ~250 km, by day. Harness `storms tornado [spout=1]
   [dist_km=] [alt=] [el=] [az_from=]`: the next daylit one among the storms alive over the next 12 h, time set into it,
   the observer on its inflow side; `state` -> `weather.tornadoes`. Known: a neighbouring storm's forward flank can still
@@ -731,7 +750,9 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   up, radius 50 / 150 / 400 km, 256 x 256 cells), NWS reflectivity colours (rain green .. yellow .. red .. magenta, snow
   blues and mixed pinks by the rain particles' air temperature 500 m over each cell's ground), range rings, you, storm
   markers (strongest tower of each storm; the label's number is its place in the Storms list; click = its row with Go to /
-  Watch), the low cloud's cover faintly, and a Loop over the frames taken while it was open (one per 5 min of sim time,
+  Watch), tornadoes on the ground (2026-11-08, issue 20261108_173628: a red down-pointing triangle with its point on the
+  funnel, from `tornadoOf` for each storm marked on the map; waterspouts only over water; harness `weather radar` ->
+  `radar.tornadoes_on_map`, `radar.tornado_marks` [{storm, lat, lon}]), the low cloud's cover faintly, and a Loop over the frames taken while it was open (one per 5 min of sim time,
   10 kept; a move or a range change starts it again). **The rain is the renderer's**: the pass binds the cloud march's
   descriptor set (set 0, so it sees exactly the weather cube, flow, drift, morphology and `stormBuf` the march does; set 1
   = its host-visible output) and calls `cv2Field` at 120 m over `cv2Ground` in every cell, like the lightning pass's rain

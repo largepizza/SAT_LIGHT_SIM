@@ -4266,12 +4266,15 @@ private:
     struct WxRadarStats
     {
         float maxRain = 0.0f, maxDbz = 0.0f, rainShare = 0.0f, coreShare = 0.0f;
-        int raining = 0, snowing = 0, stormsOnMap = 0;
+        int raining = 0, snowing = 0, stormsOnMap = 0, tornadoesOnMap = 0;
         float centreRain = 0.0f, eyeTempC = 0.0f;
     } wxStats;
     int wxHoverStorm = -1;               // the storm marker under the pointer (index into wxMapStorms)
     struct WxMapStorm { float x, y; uint64_t id; int kind; int rank; float strength; };
     std::vector<WxMapStorm> wxMapStorms;
+    // The tornadoes marked on the radar (2026-11-08): each funnel's Earth-fixed place and its storm (harness `weather radar`).
+    struct WxTornadoMark { glm::dvec3 earth; uint64_t id; };
+    std::vector<WxTornadoMark> wxTornadoMarks;
     // ── Named storms (2026-10-23, SatelliteSimWeatherCyclones.cpp): the tropical cyclones (wx::Cyclone) ────────────
     // Copies (the catalog's seasons can be rebuilt under a pointer): the active ones, the selected basin's season (this
     // year and the next, within ~200 days of now), the next genesis in every basin. Rebuilt every 2 s or after a jump.
@@ -5992,6 +5995,10 @@ private:
         uint64_t stormId = 0;
         float r0 = 100.0f;                  // its width at the ground (m, radius)
         glm::dvec3 mapDir{0, 0, 1}, earthDir{0, 0, 1};
+        // (2026-11-08) the inner place under the tower's own base (tornadoOf); earthDir above is the place DRAWN: the
+        // outer place (mapDir) while a storm base stands over it, else this one (TornadoProbe::choice).
+        glm::dvec3 mapDirIn{0, 0, 1}, earthDirIn{0, 0, 1};
+        int placement = 0;                  // the place drawn: 0 outer (mapDir), 1 inner (mapDirIn)
         glm::dvec3 upwindMap{1, 0, 0};      // map-frame tangent away from the forward flank (the inflow side)
         // Drawn (weatherFillTornadoes, 2026-10-23): the DRAWN cloud's base over it (the GPU probe, eased; else the Cb
         // type's base), the optical depth of the cloud above, and the light on the funnel relative to clear sky.
@@ -6001,6 +6008,7 @@ private:
         // kTornadoMaxBaseAglM of the ground with at least kTornadoMinTauAbove above it), eased. The funnel, wall cloud,
         // debris and roar are x this: no cloud over the column, no tornado.
         float present = 0.0f;
+        float towerKm = 0.0f, towerKmIn = 0.0f, rcKm = 0.0f; // the places' distance from the tower's axis, its radius (km)
     };
     std::vector<TornadoNow> tornadoesNow;   // drawn this frame
     // The tornado probes (cloud_v2_lightning.comp threads 2-5): the columns asked for this frame (storm ids, 0 = none) and
@@ -6008,11 +6016,19 @@ private:
     // Per frame slot (frames in flight): the columns a frame asked for and whether its lightning pass answered
     // them; the slot's copy of the flash buffer's head holds that frame's answers.
     uint64_t tornadoProbeIdsS[VulkanContext::kMaxFramesInFlight][4] = {};
+    uint8_t tornadoProbeCandS[VulkanContext::kMaxFramesInFlight][4] = {};   // which place each column was (0 outer, 1 inner)
+    uint32_t tornadoProbeRot = 0;                                            // the columns' rotation over >2 tornadoes
     bool tornadoProbeRanS[VulkanContext::kMaxFramesInFlight] = {};
     bool harnessTornadoHidden_ = false;   // harness `storms tornado draw=0`: the funnels are listed but not drawn (A/B)
     // found: the LAST answer held a base (0xFFFF = no cloud in the column); present: the eased presence (see TornadoNow).
-    struct TornadoProbe { float baseAsl = 0.0f, tau = 0.0f, present = 0.0f; bool valid = false, found = false;
-                          double wall = 0.0, presWall = 0.0; };
+    // Per place (2026-11-08: c[0] the outer, c[1] the inner, tornadoOf) and which one is drawn (-1 none yet).
+    struct TornadoProbe
+    {
+        struct Cand { float baseAsl = 0.0f, tau = 0.0f; bool valid = false, found = false; double wall = 0.0; } c[2];
+        int choice = -1;
+        float present = 0.0f;
+        double wall = 0.0, presWall = 0.0;
+    };
     std::unordered_map<uint64_t, TornadoProbe> tornadoProbes;
     // Each funnel's ground (2026-10-25): the full DEM under it (launchsim::demElevCpu), xyz = the Earth-fixed direction it
     // was read at, w = metres above sea level; re-read once the funnel has moved ~500 m. (weatherFillTornadoes)

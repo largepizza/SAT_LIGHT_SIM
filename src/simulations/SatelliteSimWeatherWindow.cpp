@@ -1632,6 +1632,52 @@ void SatelliteSim::buildWeatherRadarTab(const UIInput &inp, UIRenderer &ui, floa
                 label(x + r + 2.0f, y - r - (float)fs(9) * 0.5f, nb);
             }
         }
+        // Tornadoes on the ground now (2026-11-08, issue 20261108_173628 "should tornado positions be visible on the
+        // radar?"): a red down-pointing triangle at each funnel's place, for the storms marked on the map: the place the
+        // renderer draws it (weatherFillTornadoes' choice between tornadoOf's outer and inner places, once probed; the
+        // outer one otherwise). Waterspouts only over water, as weatherFillTornadoes draws them.
+        wxStats.tornadoesOnMap = 0;
+        wxTornadoMarks.clear();
+        if (showF->valid && !looping && stormCatalog)
+        {
+            const glm::dvec3 up = showF->obs;
+            const glm::dvec3 E = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), up) + glm::dvec3(1e-12, 0, 0));
+            const glm::dvec3 Nn = glm::cross(up, E);
+            const double halfM = showF->cellM * kWxN * 0.5;
+            for (const WxMapStorm &m : wxMapStorms)
+            {
+                const wx::Storm *st = stormCatalog->find(m.id);
+                TornadoNow T;
+                if (!st || !tornadoOf(*st, now, T) || !T.active)
+                    continue;
+                const auto pit = tornadoProbes.find(m.id);
+                const bool inner = pit != tornadoProbes.end() && pit->second.choice == 1;
+                const glm::dvec3 e = weatherMapToEarth(inner ? T.mapDirIn : T.mapDir, now);
+                if (T.spout && oceanFraction(std::asin(std::clamp(e.z, -1.0, 1.0)), std::atan2(e.y, e.x), 3000.0, 1) <= 0.5f)
+                    continue;
+                const double d = std::acos(std::clamp(glm::dot(e, up), -1.0, 1.0)) * kRe;
+                const glm::dvec3 to = e - up * glm::dot(e, up);
+                const double b = glm::length(to) > 0.0 ? std::atan2(glm::dot(to, E), glm::dot(to, Nn)) : 0.0;
+                const float x = (float)(0.5 + 0.5 * d * std::sin(b) / halfM) * G;
+                const float y = (float)(0.5 - 0.5 * d * std::cos(b) / halfM) * G;
+                if (x < 0.0f || x > G || y < 0.0f || y > G)
+                    continue;
+                // The triangle as rows of quads over a white outline (it sits in the echoes' reds and magentas): 9 px wide
+                // at the top, its point on the funnel.
+                const glm::vec4 red(0.95f, 0.05f, 0.1f, 1.0f), edge(1.0f, 1.0f, 1.0f, 0.95f);
+                constexpr int kRows = 5;
+                for (int pass = 0; pass < 2; ++pass)
+                    for (int i = 0; i < kRows; ++i)
+                    {
+                        const float o = pass == 0 ? 1.0f : 0.0f;
+                        const float hw = 0.5f + 4.0f * (float)(kRows - i) / (float)kRows + o;
+                        const float yy = y - 2.0f * (float)(kRows - i) - o;
+                        wxQuads.push_back({x - hw, yy, 2.0f * hw, 2.6f + 1.4f * o, pass == 0 ? edge : red});
+                    }
+                wxTornadoMarks.push_back({e, m.id});
+                ++wxStats.tornadoesOnMap;
+            }
+        }
         // Tropical cyclones in range: the track (hourly dots in Saffir-Simpson colours, faint ahead) and the centre.
         if (showF->valid && !looping)
         {
@@ -2164,6 +2210,14 @@ nlohmann::json SatelliteSim::weatherWindowJson()
     rd["snow_cells"] = wxStats.snowing;
     rd["centre_rain"] = wxStats.centreRain;
     rd["storms_on_map"] = wxStats.stormsOnMap;
+    {   // (2026-11-08) the tornadoes marked on the radar: storm id and the funnel's place
+        nlohmann::json tm = nlohmann::json::array();
+        for (const WxTornadoMark &m : wxTornadoMarks)
+            tm.push_back({{"storm", m.id}, {"lat", glm::degrees(std::asin(std::clamp(m.earth.z, -1.0, 1.0)))},
+                          {"lon", glm::degrees(std::atan2(m.earth.y, m.earth.x))}});
+        rd["tornadoes_on_map"] = wxStats.tornadoesOnMap;
+        rd["tornado_marks"] = tm;
+    }
     rd["loop_frames"] = wxLoopFrames.size();
     if (cv2FlashMapped)
     {
