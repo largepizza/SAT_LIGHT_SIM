@@ -128,9 +128,14 @@ void main()
     // km, < 0 = none (-1); <= -2: -2 - the distance, not smoke (cloud_march.comp: no air pull)
     float tEmitR = texelFetch(halfDATex, clamp(p * H / F, ivec2(0), H - 1), 0).a;
     float tEmit  = (tEmitR <= -1.5) ? -2.0 - tEmitR : tEmitR;
+    // Smoke past the cloud's first contact (cloud_march.comp, issue_20261108_171841): DA.a flagged holds the smoke's
+    // distance with that share merged in, possibly past the cloud; the smoke's share is then all the composite's opacity
+    // but the cloud's.
+    bool  smBack = tEmitR >= 0.0 && cloudAlphaIsEmit(tEmitR);
     // Smoke in front of the cloud pulls the distance toward the smoke's (cloud_march.comp, issue 20261025_185309)
-    if (tEmitR >= 0.0 && tMean < kNoSurfaceT && gBB < 0.999) {
-        float oP = 1.0 - gBB, oC = gBB * (1.0 - rc.a);
+    if (tEmitR >= 0.0 && tMean < kNoSurfaceT && (gBB < 0.999 || smBack)) {
+        float oC = gBB * (1.0 - rc.a);
+        float oP = smBack ? max(1.0 - dot(A, vec3(1.0 / 3.0)) - oC, 0.0) : 1.0 - gBB;
         // (tEmit is already capped at the cloud's own distance by cloud_march.comp, 2026-10-27: capped here at the resolved
         //  mean, which holds the fog / dust haze too, the split jumped at every thin cloud's edge seen through smoke)
         float tS = tEmit * 1000.0;
@@ -138,7 +143,7 @@ void main()
         float tH  = tan(pc.fovYRad * 0.5);
         vec3  dir = normalize(mat3(transpose(pc.skyView)) * vec3(ndc.x * tH * pc.aspect, -ndc.y * tH, -1.0));
         vec3  eye = vec3(0.0, 0.0, R_EARTH + pc.obsEffH + 2.0);
-        tMean = smokeAirSplitM(eye, dir, tS, max(tMean, tS), oC / max(oC + oP, 1e-4));   // (cloud_occlusion.glsl)
+        tMean = smokeAirSplitM(eye, dir, tS, smBack ? tMean : max(tMean, tS), oC / max(oC + oP, 1e-4));   // (cloud_occlusion.glsl)
     }
     float occKm = (tOcc >= 0.0) ? ((tMean < kNoSurfaceT && tMean > 0.0) ? tMean : tOcc) * 0.001
                 : -((tMean < kNoSurfaceT) ? tMean * 0.001 : (tEmit >= 0.0 ? tEmit : 60000.0));

@@ -1658,8 +1658,8 @@ void main()
         // Each sample's light now takes the air in front of it (cv2AirOD), and the sky pass's airFront x (1 - T) at this
         // split is the samples' airlight if airlight ~ (1 - air transmittance) along the ray. The split is solved with the
         // air's optical depth linear in distance (exact for a level ray); one cloud (samples within its depth) keeps ~its
-        // mean distance. PARTIAL: the resolve still averages the split over the 3x3 new samples (review 20c), which
-        // spreads the far rays' split onto the rain-only rays beside them: docs/subsystems/clouds.md "Rain curtain air split".
+        // mean distance. (The issue's blocks were mostly a wildfire pall behind the rain taking the rain's split, fixed in
+        // cloud_march.comp: docs/subsystems/clouds.md "Rain curtain air split", weather.md "Smoke behind a cloud".)
         float odM = dot(cv2AirOD(eye, dir, eyeH, meanT, BETA_R, BETA_M), vec3(1.0 / 3.0));
         float odS = -log(clamp(aAcc / wAcc, 1e-6, 1.0));
         float tSp = (odM > 1e-6) ? clamp(meanT * odS / odM, 0.0, meanT) : meanT;

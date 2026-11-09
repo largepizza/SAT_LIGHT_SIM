@@ -54,26 +54,37 @@ float cloudPointVisibilityAt(sampler2D texA, sampler2D texB, vec2 uv, float rang
 // the split is solved so the air to it carries that much light, in AIR-BRIGHTNESS space: the horizon's air saturates
 // within ~50 km, and a split by distance (tS + T (tC - tS)) put almost the whole bright horizon haze in front of every far
 // cloud. kS = the share of the texel's opacity that is the cloud seen through the smoke.
-// The brightness is 1 - e^(-0.2 c(t)), c = the molecular column along THIS ray from the eye (atmosphere.glsl, sea-level
+// The brightness was 1 - e^(-0.2 c(t)), c = the molecular column along THIS ray from the eye (atmosphere.glsl, sea-level
 // vertical columns; 0.2 c = t / 40 km for a level ray at sea level, the form it replaced, 2026-10-27). It was
 // 1 - e^(-t / 40 km) whatever the ray: from orbit the air in front of a cloud is all in its last ~100 km, hundreds of km
 // out, where that form had saturated (both ends at b ~ 1, the split clamped at 552 km): every cloud past 552 km seen
 // through even a trace of smoke lost the air in front of it, the limb's blue haze, and read orange-yellow in a hard-edged
 // patch wherever the smoke's optical depth passed 1e-3 (issue 20261027_182936, Queensland from 156 / 1834 km).
+// Either order (2026-11-08, issue_20261108_171841 "black line on horizon"): tS may lie BEYOND tC (the callers merge the
+// smoke past the cloud's first contact into tS: a pall at the horizon behind a thin high veil); the split is then
+// between the two from the near side. And the brightness is the air's own optical depth along the ray, 0.108 per
+// molecular column (Rayleigh at 550 nm) + 0.0138 per aerosol column (1.2 km): t / 40 km for a level ray at sea level as
+// before, but the aerosol stays below ~2 km, and 0.2 per molecular column saturated twice as fast as the air does
+// above it. From 14 km the veil's split was put ~100 km short of the pall's: the pall a 5-8 level grey line (the
+// sky pass's own loop at the pall's distance, without the veil, showed none); 0.108 + 0.0138 leaves <= 2.
 #ifdef ATMOSPHERE_GLSL
+float smokeAirTau(vec3 eye, vec3 dir, float t)
+{
+    t = max(t, 1.0);
+    return 0.108 * atmColumn(eye, dir, t, ATM_H_RAY) + 0.0138 * atmColumn(eye, dir, t, ATM_H_AER);
+}
 float smokeAirSplitM(vec3 eye, vec3 dir, float tS, float tC, float kS)
 {
-    tS = clamp(tS, 0.0, tC);
-    float cS = atmColumn(eye, dir, max(tS, 1.0), ATM_H_RAY), cC = atmColumn(eye, dir, max(tC, 1.0), ATM_H_RAY);
-    float bS = 1.0 - exp(-0.2 * cS), bC = 1.0 - exp(-0.2 * cC);
-    float b  = bS + clamp(kS, 0.0, 1.0) * max(bC - bS, 0.0);
-    // the column the split must reach, then its distance: c(t) grows with t, bisected over [tS, tC]
-    float cT = min(-5.0 * log(max(1.0 - b, 1e-7)), cC);
-    if (cT <= cS + 1e-6) return tS;
-    float lo = tS, hi = tC;
+    tS = max(tS, 0.0);
+    float cS = smokeAirTau(eye, dir, tS), cC = smokeAirTau(eye, dir, tC);
+    float b  = mix(1.0 - exp(-cS), 1.0 - exp(-cC), clamp(kS, 0.0, 1.0));
+    // the optical depth the split must reach, then its distance: it grows with t, bisected between the two
+    float cT = clamp(-log(max(1.0 - b, 1e-7)), min(cS, cC), max(cS, cC));
+    float lo = min(tS, tC), hi = max(tS, tC);
+    if (cT <= min(cS, cC) + 1e-6) return lo;
     [[dont_unroll]] for (int k = 0; k < 14; ++k) {
         float m = 0.5 * (lo + hi);
-        if (atmColumn(eye, dir, max(m, 1.0), ATM_H_RAY) < cT) lo = m; else hi = m;
+        if (smokeAirTau(eye, dir, m) < cT) lo = m; else hi = m;
     }
     return 0.5 * (lo + hi);
 }
