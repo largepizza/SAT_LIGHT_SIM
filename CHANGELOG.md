@@ -478,6 +478,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- Wildfire smoke on the horizon BEHIND a cloud gets the haze of its own distance: standing in a rain curtain, the
+  row of jagged light and dark blocks along the horizon is gone (issue_20261108_172203), and from an aircraft the thin
+  dark line where a high veil met the horizon is gone (issue_20261108_171841). Both were a distant smoke pall that took
+  the haze of the rain or veil in front of it. Each part of a cloud also gets the haze of its own distance.
 - The Milky Way and the zodiacal light now wash out under light pollution as they do in reality: a brighter sky
   takes away their contrast, not only their faintest parts. ~55 km from Mexico City (about 20.5 mag/arcsec^2) the
   band's core went from +286% over the sky to +57%; dark sites are unchanged (issue_20261108_174856).

@@ -612,6 +612,29 @@ lists its sections and topics with line numbers. New notes go next to the sectio
     is tau ~0.4 from above here (the comment at its emit says 0.01-0.05). Billows per Gaussian, a
     second octave at ~4x for smoke. `sat_sky.frag` (`smokeSunTransmit`) dims and reddens the Sun on land and sea under
     it (the first 96 Gaussians; skipped where the Sun is down: it cost ~1 ms from orbit at night).
+  - **Smoke behind a cloud takes its own air** (2026-11-08, issues 20261108_171841 "Black line on horizon" and
+    20261108_172203 "Render artifacts within rain", inland NSW / QLD, a pall at the horizon). The sky pass has ONE air
+    split per pixel; with a cloud on the ray the composite put the smoke at its share IN FRONT of the cloud (pFrontT)
+    and, with none in front (gBB ~ 1), skipped the smoke entirely: a pall 200-300 km out behind a thin high veil
+    (45-80 km out, seen from 14 km) or behind a rain curtain (a few hundred m out) took the veil's / the rain's split
+    and drew dark grey for the air it lacked: a line along the horizon, and the half-res "blocks" in the rain (gone on
+    leaving the curtain: no cloud on the ray, the smoke's own distance). Knock-outs: `clouds_v2.wildfires 0`, the
+    composite's plume block off, or the sky's split at infinity removed both; the far layer, cirrus, fog, sky TAA, the
+    march budget, the Sun volume, every term of the cloud's light did not. Now (`cloud_march.comp`, end of the plume
+    block): `dustCloudsCS` also returns `tBack`, the light-weighted distance of the plumes past the cloud's first contact
+    (all less those in front: two more sums in its loop took the composite from 128 to 249 registers); the segment
+    loop sums the plumes' visible opacity in front of / past that contact; their distances merge in air-brightness space
+    (`smokeAirSplitM`, which now takes either order), and the final split weighs the smoke as ALL the composite's
+    opacity but the cloud's (1 - A - gBB (1 - T_cloud)). Also with no opacity profile on this frame's ray but a resolved
+    cloud nearer than the smoke (rain's sparse rays). DA.a carries the merged distance FLAGGED (the half float's lowest
+    mantissa bit, `cloudAlphaFlag`) and `cloud_v2_combine.comp` then splits two-sided with the same weights. The
+    brightness is now the air's own optical depth, 0.108 per molecular column (Rayleigh, 550 nm) + 0.0138 per aerosol
+    column: t / 40 km for a level ray at sea level as before, half the old 0.2-per-molecular-column above the haze
+    (from 14 km the old form put the merged split ~100 km short: a 5-8 level line left). Reporter's views (luminance
+    levels): 171841 the line's dip below both sides 26-42 -> <= 4 (no wildfire at all: <= 3); 172203 shot 1 horizon
+    band std 8.7 -> 2.8 (no wildfire: 2.7), shot 2 band px > 15 below the median 298 -> 0. Composite 128 registers;
+    GPU within contended noise of HEAD with the march unchanged (interleaved, RTX 3070 Ti shared with two other apps).
+    Seen changing elsewhere: a pall seen from high above (issue 20261027_004019) +1.4 levels hazier (the slower brightness).
   - **The flame band** (2026-10-27, issue 20261027_212337 "Flame particles": "the sprites seem to disappear when up close
     and are just dots"; `clouds_v2.wildfire_flame_band` 1, no UI, 0 = the old tongues below). Two causes: the close-up
     flames, their share of the points and the glow were gated on the range to the IGNITION point (a fire burning for

@@ -2082,6 +2082,25 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   transmittance and radiance were smooth). The mean is the transmittance-weighted origin of the cloud's
   light, i.e. the right split. Also: the march's ray moves within its texel each visit (an R2 sequence,
   not in fast flight) so the history integrates the texel's footprint.
+- **Rain curtain air split (2026-11-08, issue_20261108_172203, branches qa/20261108/rainart + airsplit).** One air split
+  per pixel serves a ray that meets rain a few hundred metres out AND cloud or smoke far out only approximately (the
+  eye in or beside a rain curtain, looking at the horizon). The march attenuates each lit sample's light by the air
+  between the eye and it (`cv2AirOD`, a straight-line column between the two heights, two `exp` per sample) and puts the
+  split where the air transmittance equals the samples' light-weighted mean (`aAcc`; the optical depth taken linear
+  along the ray, then the exact `optDepth` ratio at the split). The row of jagged blocks the reporter saw (29.99 S
+  146.04 E, 452 m) was NOT the clouds: it was a wildfire pall at the horizon behind the rain, which took the rain's
+  split (weather.md "Smoke behind a cloud takes its own air"); knocked out by `clouds_v2.wildfires 0` or the
+  composite's plume block. Horizon band luminance std (12 rows above the horizon, 9-px horizontal median against the
+  rain streaks; `qa/waves/20261108/evidence/airsplit/band2.py`): HEAD 9.0, the smoke fix alone 5.3, with this march term
+  2.8 (no wildfire at all: 2.7). Registers (`shaders reload`, RTX 3070 Ti): the march is 255 on weather-salvage
+  (local memory 1808 B, shared 520 B) and 128 with `cv2AirOD` (local memory 2032 B, shared 48656 B: the driver moved its
+  spills to shared memory); the composite stays 128. Interleaved perf (4 reps, the GPU shared with two other agents'
+  apps, frames 50-75 ms): the cloud bucket from orbit 53.5 -> 46.3 ms and at the curtain 33.4 -> 28.3 with this term
+  (HEAD's march + the smoke fix -> both), i.e. no slower, likely faster at 128 registers. Dead ends (rainart): the resolve's still history on the pixel's own
+  distance (7x more dark far "shafts" just outside the curtain: those were the same smoke) and haze-space averaging of
+  the 3x3 distances. Harness gotcha: each `shaders reload` reloads EVERY cloud shader, the ones it does not name from
+  the build's SPVs, and the combine pass has no slot: swap its SPV on disk between batches
+  (`qa/waves/20261108/evidence/airsplit/ab_driver.py`).
 - **Review 14 (2026-09-30):** **no dust or ice fog under the ground** in the fog march (`pp.h < cv2Ground - 30`;
   their height terms come back clamped at 0, so a sample below the surface read the densest value). Past the
   detailed terrain march's range the scene depth lands below the real surface, and from 180 km over the Ronne

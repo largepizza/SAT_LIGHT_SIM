@@ -495,6 +495,15 @@ float beamColumn(float h0, float h1, float len, float H)
     return abs(dh) < 1e-3 ? len * 0.5 * (a + c) : len * (a - c) / dh;
 }
 
+// The air's optical depth (per channel: Rayleigh + aerosol, the attenuation's own mix) from the eye to distance t along
+// dir, on the straight line between the two heights (2026-11-08, issue_20261108_172203): the per-sample estimate the
+// march's light and air split take (main, after the march), corrected to the exact path at the split.
+vec3 cv2AirOD(vec3 eye, vec3 dir, float eyeH, float t, vec3 betaR, float betaM)
+{
+    float h = length(eye + dir * t) - R_EARTH;
+    return betaR * beamColumn(eyeH, h, t, H_R) + vec3(betaM * 1.1 * beamColumn(eyeH, h, t, H_M));
+}
+
 // The shafts in clear air, per view ray: the stretch of the ray INSIDE each beam's column (a ray -
 // cylinder intersection, clipped to the eye, the scene depth, the beam's ground point and ~60 km of
 // altitude), times the air's and the aerosol's density integrated along that stretch, their phase at
@@ -785,6 +794,7 @@ void main()
     // cloud bases.
     float Tent = -1.0;
     float dAcc = 0.0, wAcc = 0.0, tHalf = -1.0;
+    float aAcc = 0.0;   // the weighted air transmittance from the eye to each sample (cv2AirOD)
     float tFst = 1e30, tLst = 0.0;   // first / last cloud contact (the opacity profile, cv2Profile)
     float odRain = 0.0;                               // debug view 5
     vec4  odLayer = vec4(0.0);                        // debug view 7: low, mid, anvil, high
@@ -1430,7 +1440,10 @@ void main()
             }
 
             vec3  S     = keyS + ambS + bounceS + nightS;
-            L += bW[bj] * S;
+            // The air between the eye and THIS sample (2026-11-08, issue_20261108_172203): see cv2AirOD.
+            vec3  odA = cv2AirOD(eye, dir, eyeH, t, BETA_R, BETA_M);
+            L    += bW[bj] * S * exp(-odA);
+            aAcc += bW[bj] * exp(-dot(odA, vec3(1.0 / 3.0)));
         }
         } while (nB >= kBatch);
         if (iters >= kMaxIters && t < tEnd) remLen += tEnd - t;
@@ -1444,6 +1457,7 @@ void main()
         float w    = T * (1.0 - Trem);
         L    += w * (L / wAcc);
         dAcc += w * (dAcc / wAcc + remLen * 0.5);
+        aAcc += w * (aAcc / wAcc);
         wAcc += w;
         T    *= Trem;
     }
@@ -1620,6 +1634,13 @@ void main()
                 if (tS < mcT) { L1 += T1 * (1.0 - Ts) * S; dF += T1 * (1.0 - Ts) * tS; wF += T1 * (1.0 - Ts); T1 *= Ts; }
                 else          { L2 += T2 * (1.0 - Ts) * S; dF += T * T2 * (1.0 - Ts) * tS; wF += T * T2 * (1.0 - Ts); T2 *= Ts; }
             }
+            // The fog's light seen through the air to its mean distance, as the clouds' samples are (cv2AirOD).
+            if (wF > 1e-6) {
+                vec3 odF = cv2AirOD(eye, dir, eyeH, dF / wF, BETA_R, BETA_M);
+                vec3 aF  = exp(-odF);
+                L1 *= aF; L2 *= aF;
+                aAcc += wF * exp(-dot(odF, vec3(1.0 / 3.0)));
+            }
             L = L1 + T1 * (L + T * L2);
             T = T1 * T * T2;
             dAcc += dF; wAcc += wF;
@@ -1629,6 +1650,21 @@ void main()
     float meanT = (wAcc > 1e-4) ? dAcc / wAcc : 0.0;
     vec3  outRgb = vec3(0.0);
     if (wAcc > 1e-4) {
+        // The air split's distance (2026-11-08, issue_20261108_172203 "render artifacts within rain"): the distance whose
+        // air transmittance from the eye equals the samples' mean (aAcc, weighted as their light), not their mean
+        // distance. With the eye in a rain curtain a horizon ray's opacity is the rain a few hundred metres out AND cloud
+        // 30-60 km out: one split at the mean distance gave the rain the far cloud's ~30 km of haze (bright patches) and
+        // the far cloud's light no air at all, the pattern of the far cloud's broken half-res shapes along the horizon.
+        // Each sample's light now takes the air in front of it (cv2AirOD), and the sky pass's airFront x (1 - T) at this
+        // split is the samples' airlight if airlight ~ (1 - air transmittance) along the ray. The split is solved with the
+        // air's optical depth linear in distance (exact for a level ray); one cloud (samples within its depth) keeps ~its
+        // mean distance. (The issue's blocks were mostly a wildfire pall behind the rain taking the rain's split, fixed in
+        // cloud_march.comp: docs/subsystems/clouds.md "Rain curtain air split", weather.md "Smoke behind a cloud".)
+        float odM = dot(cv2AirOD(eye, dir, eyeH, meanT, BETA_R, BETA_M), vec3(1.0 / 3.0));
+        float odS = -log(clamp(aAcc / wAcc, 1e-6, 1.0));
+        float tSp = (odM > 1e-6) ? clamp(meanT * odS / odM, 0.0, meanT) : meanT;
+        vec3  aSp = exp(-cv2AirOD(eye, dir, eyeH, tSp, BETA_R, BETA_M));
+        meanT = tSp;
         // Aerial perspective between the eye and the cloud (v1's camPathInscatter, same physics),
         // integrated only over the part of the path inside the atmosphere: from orbit, uniform
         // steps from the eye spent almost all of themselves in vacuum and missed the dense air
@@ -1644,7 +1680,8 @@ void main()
         // beside it. This march's 8-step airlight read far darker than the sky's at a grazing Sun (distant
         // clouds were dark silhouettes on the horizon), and a split between the two by distance (review 8)
         // disagreed at cloud edges: dark specks and flicker along every silhouette.
-        outRgb = attn * L;
+        // L is already through each sample's own air (cv2AirOD): this is the exact path's ratio to the estimate at the split.
+        outRgb = attn / max(aSp, vec3(1e-6)) * L;
     }
     // (Godrays: the SKY PASS shadows its own air samples by the Sun shadow cascade since 2026-10-10 (sat_sky.frag,
     //  SKY_SUN_SHADOW). The march used to scale this pixel's transmittance by the shadowed share of its airlight;
