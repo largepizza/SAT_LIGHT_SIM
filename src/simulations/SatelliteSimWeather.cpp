@@ -1166,11 +1166,27 @@ bool SatelliteSim::tornadoOf(const wx::Storm &S, double t, TornadoNow &out) cons
     // The tower's own radius at maturity, as cv2ColumnSigma sizes it (x mix(0.7, 1.3, size)): its rain core reaches 0.9
     // of it (gCv2RainCore). At a fixed 0.8 x "Cb tower radius" a big tower's core (to 1.17 of that) hid the tornado.
     const double Rc = std::clamp((double)cv2CbRadiusKm, 1.0, 20.0) * 1000.0 * (0.7 + 0.6 * (double)ts.size);
-    // (Just past the core, ~1.05 tower radii out: the rain-free base under the updraft's rear edge.)
-    const glm::dvec3 off = (-0.65 * sh + 0.7 * perp) * (1.1 * Rc) * (out.spout ? 0.3 : 1.0);
+    // Two places on the rear flank (-0.65 x the shear + 0.7 across it: 0.955 long). OUTER (mapDir, x 1.1: ~1.05 radii
+    // out, just past the rain core): the rain-free base, when the map's low deck reaches past the tower there; it is
+    // where every caller frames the funnel. INNER (mapDirIn, x 0.8: ~0.76 radii out): under the tower's own base, just
+    // inside its edge, where the rain core has faded to ~5%. weatherFillTornadoes draws the funnel at the outer place
+    // while the probe finds a storm base over it, else at the inner one (TornadoProbe::choice). (2026-11-08, issue
+    // 20261108_173628 "Where's the tornado here?": the outer place alone stood PAST the drawn tower's base -- its body
+    // fades out by ~0.85-0.9 radii, its base rising there -- over clear air; the probe's gate hid the funnel while the
+    // Storms tab listed it on the ground. At that storm (Rc 21 km) the probe found no base at 1.1, a 2.65-km base at 0.9,
+    // ~1.1 km at 0.75 and in; at 0.7 and in the rain core veils the funnel. At another (2036-11-25, off Brisbane) the
+    // outer place had a base 1.1 km up and a clearly drawn funnel, the inner one a funnel lost in the rain: neither
+    // place alone works for every storm.) cloud_v2_weather.comp's rain-free patch (centred 1.1, cleared within 0.35 x
+    // the radius) covers both.
+    const glm::dvec3 dirF = (-0.65 * sh + 0.7 * perp) * (out.spout ? 0.3 : 1.0);
+    const glm::dvec3 off = dirF * (1.1 * Rc), offIn = dirF * (0.8 * Rc);
+    out.towerKm = (float)(glm::length(off) / 1000.0);
+    out.towerKmIn = (float)(glm::length(offIn) / 1000.0);
+    out.rcKm = (float)(Rc / 1000.0);
     out.upwindMap = -sh;
-    const double offL = glm::length(off);
+    const double offL = glm::length(off), offInL = glm::length(offIn);
     out.mapDir = offL > 0.0 ? tnMove(axis, off / offL, offL) : axis;
+    out.mapDirIn = offInL > 0.0 ? tnMove(axis, offIn / offInL, offInL) : axis;
     out.active = t >= out.t0 && t < out.t1;
     return true;
 }
@@ -1212,6 +1228,8 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
         const bool sea = oceanFraction(glm::radians((double)lat), glm::radians((double)lon), 3000.0, 1) > 0.5f;
         if (T.spout && !sea) continue;   // waterspouts only over water
         T.earthDir = te;
+        const glm::dvec3 mi = T.mapDirIn;
+        T.earthDirIn = glm::dvec3(mi.x * cph + mi.y * sph, -mi.x * sph + mi.y * cph, mi.z);
         T.sea = sea;
         tornadoesNow.push_back(T);
     }
@@ -1224,9 +1242,33 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
     // hundreds of metres higher or lower: its top ended in clear air under the cloud. cloud_v2_lightning.comp (threads
     // 2-5) finds the DRAWN cloud's base and the optical depth above it in the columns asked for here (cv2SunProf[8..19]);
     // the answers (cv2RainMisc) are last frame's, eased per storm over ~0.4 s.
+    // (2026-11-08) Each tornado has two places (tornadoOf: the outer rain-free base, the inner one under the tower's own
+    // base); both are probed (the four columns cover two tornadoes' pairs; more rotate through them a frame at a time).
+    //
+    // The ground under a place: the FULL DEM (the drawn ground is it + the procedural detail, tens of metres). It was the
+    // CPU's 18-km DEM copy (cpuTerrainHeightM): in issue 20261025_184550's view 105 m under the drawn ground, so the
+    // funnel's foot and half the debris cloud were buried, and the debris' top ended at the eye's height: the funnel
+    // read as cut off along the horizon.
+    if (tornadoGround.size() > 64) tornadoGround.clear();
+    auto groundAt = [&](const TornadoNow &T, int cand) -> double {
+        if (T.sea) return 0.0;
+        const glm::dvec3 &dir = cand ? T.earthDirIn : T.earthDir;
+        glm::dvec4 &G = tornadoGround[T.stormId ^ (cand ? 0x5bd1e9955bd1e995ull : 0ull)];
+        if (G.w <= 0.0 || glm::dot(glm::dvec3(G), dir) < std::cos(500.0 / kReW))
+            G = glm::dvec4(dir, std::max(1.0, launchsim::demElevCpu(
+                    glm::degrees(std::asin(std::clamp(dir.z, -1.0, 1.0))), glm::degrees(std::atan2(dir.y, dir.x)))));
+        return G.w;
+    };
+    // (2026-10-27, issue 20261027_212628 "Tornado formation under absolutely zero cloud cover") A tornado hangs from a
+    // storm's base or not at all. The probe found NO cloud over the column (a supercell 16 km off, the map clear over
+    // the rear flank) and the funnel hung from the Cb type's base in clear sky. Now it is drawn (and heard) only
+    // while the probe finds a base within kTornadoMaxBaseAglM of the ground with a real storm column above it
+    // (kTornadoMinTauAbove), faded in / out over ~0.6 s; never probed (clouds v2 off, no lightning pass): none.
+    constexpr double kTornadoMaxBaseAglM = 3500.0, kTornadoMinTauAbove = 3.0;
     {
         const double wallNow = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
         uint64_t *probeIds = tornadoProbeIdsS[ctx_->frameSlot]; // the columns the slot's frame asked for
+        uint8_t *probeCand = tornadoProbeCandS[ctx_->frameSlot];
         if (cv2FlashMapped && tornadoProbeRanS[ctx_->frameSlot])
         {
             uint32_t res[4];
@@ -1235,84 +1277,95 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
             {
                 if (!probeIds[k]) continue;
                 TornadoProbe &P = tornadoProbes[probeIds[k]];
-                const double dtW = std::clamp(wallNow - P.wall, 0.0, 1.0);
-                P.wall = wallNow;
+                TornadoProbe::Cand &C = P.c[probeCand[k] & 1u];
+                const double dtW = std::clamp(wallNow - C.wall, 0.0, 1.0);
+                C.wall = P.wall = wallNow;
                 const uint32_t b = res[k] & 0xFFFFu;
-                P.found = b != 0xFFFFu;
-                if (!P.found) continue;   // no cloud found over it: keep the last base (the funnel fades out: `present`)
+                C.found = b != 0xFFFFu;
+                if (!C.found) continue;   // no cloud found over it: keep the last base (the funnel fades out: `present`)
                 const float baseAsl = (float)b, tauA = (float)(res[k] >> 16) * (1.0f / 64.0f);
-                if (!P.valid)
+                if (!C.valid)
                 {
-                    P.baseAsl = baseAsl;
-                    P.tau = tauA;
-                    P.valid = true;
+                    C.baseAsl = baseAsl;
+                    C.tau = tauA;
+                    C.valid = true;
                 }
                 else
                 {
                     const float a = (float)(1.0 - std::exp(-dtW / 0.4));
-                    P.baseAsl += (baseAsl - P.baseAsl) * a;
-                    P.tau += (tauA - P.tau) * a;
+                    C.baseAsl += (baseAsl - C.baseAsl) * a;
+                    C.tau += (tauA - C.tau) * a;
                 }
             }
         }
         tornadoProbeRanS[ctx_->frameSlot] = false;
         for (auto it = tornadoProbes.begin(); it != tornadoProbes.end();)
             it = (wallNow - it->second.wall > 30.0) ? tornadoProbes.erase(it) : std::next(it);
+        // The columns: (tornado, place) pairs, nearest tornado first; over four pairs a window of four rotates.
+        const size_t nPairs = 2 * tornadoesNow.size();
+        const size_t start = nPairs > 4 ? (size_t)(tornadoProbeRot++ * 4u) % nPairs : 0;
         float req[12] = {};
         for (int k = 0; k < 4; ++k)
         {
             probeIds[k] = 0;
-            if (k < (int)tornadoesNow.size())
+            probeCand[k] = 0;
+            if ((size_t)k < nPairs)
             {
-                const TornadoNow &T = tornadoesNow[k];
+                const size_t p = (start + (size_t)k) % nPairs;
+                const TornadoNow &T = tornadoesNow[p / 2];
+                const int cand = (int)(p & 1u);
+                const glm::dvec3 &dir = cand ? T.earthDirIn : T.earthDir;
                 probeIds[k] = T.stormId;
-                req[3 * k] = (float)T.earthDir.x;
-                req[3 * k + 1] = (float)T.earthDir.y;
-                req[3 * k + 2] = (float)T.earthDir.z;
+                probeCand[k] = (uint8_t)cand;
+                req[3 * k] = (float)dir.x;
+                req[3 * k + 1] = (float)dir.y;
+                req[3 * k + 2] = (float)dir.z;
                 TornadoProbe &P = tornadoProbes[T.stormId];
                 if (P.wall == 0.0) P.wall = wallNow;
             }
         }
         if (cv2FlashBuf)
             ctx_->uploadPatch(cv2FlashBuf, kCv2RainMapOffset - 80 + 8 * 4, req, sizeof req); // (frame start)
+        // The place drawn: the outer one while a storm base stands over it, else the inner one; kept while its base
+        // holds (no hopping between the two), and a move fades the funnel in again at its new place.
+        for (TornadoNow &T : tornadoesNow)
+        {
+            const auto it = tornadoProbes.find(T.stormId);
+            if (it == tornadoProbes.end()) continue;
+            TornadoProbe &P = it->second;
+            auto good = [&](int cand) {
+                const TornadoProbe::Cand &C = P.c[cand];
+                return C.valid && C.found && (double)C.baseAsl - groundAt(T, cand) <= kTornadoMaxBaseAglM
+                       && (double)C.tau >= kTornadoMinTauAbove;
+            };
+            if (P.choice < 0 || !good(P.choice))
+            {
+                const int nc = good(0) ? 0 : good(1) ? 1 : P.choice;
+                if (nc != P.choice && P.choice >= 0) P.present = 0.0f;
+                P.choice = nc;
+            }
+            T.placement = std::max(P.choice, 0);
+            if (T.placement == 1) T.earthDir = T.earthDirIn;
+        }
     }
     const double kTwoPi15 = 15.749609945722419;
     if (harnessTornadoHidden_) return;   // (harness A/B: listed and probed, not drawn)
-    if (tornadoGround.size() > 64) tornadoGround.clear();
     for (TornadoNow &T : tornadoesNow)
     {
-        // The ground under it: the FULL DEM (the drawn ground is it + the procedural detail, tens of metres). It was the
-        // CPU's 18-km DEM copy (cpuTerrainHeightM): in issue 20261025_184550's view 105 m under the drawn ground, so the
-        // funnel's foot and half the debris cloud were buried, and the debris' top ended at the eye's height: the funnel
-        // read as cut off along the horizon.
-        double ground = 0.0;
-        if (!T.sea)
-        {
-            glm::dvec4 &G = tornadoGround[T.stormId];
-            if (G.w <= 0.0 || glm::dot(glm::dvec3(G), T.earthDir) < std::cos(500.0 / kReW))
-                G = glm::dvec4(T.earthDir, std::max(1.0, launchsim::demElevCpu(
-                        glm::degrees(std::asin(std::clamp(T.earthDir.z, -1.0, 1.0))), glm::degrees(std::atan2(T.earthDir.y, T.earthDir.x)))));
-            ground = G.w;
-        }
+        const double ground = groundAt(T, T.placement);
         // The funnel's top: the drawn base over it (the probe), else the Cb type's.
         double Hb = std::max(800.0, (double)cv2Types[4].alt.x) * (T.spout ? 0.8 : 1.0);
         double tauAbove = 0.0;
         {
-            // (2026-10-27, issue 20261027_212628 "Tornado formation under absolutely zero cloud cover") A tornado hangs from a
-            // storm's base or not at all. The probe found NO cloud over the column (a supercell 16 km off, the map clear over
-            // the rear flank) and the funnel hung from the Cb type's base in clear sky. Now it is drawn (and heard) only
-            // while the probe finds a base within kTornadoMaxBaseAglM of the ground with a real storm column above it
-            // (kTornadoMinTauAbove), faded in / out over ~0.6 s; never probed (clouds v2 off, no lightning pass): none.
-            constexpr double kTornadoMaxBaseAglM = 3500.0, kTornadoMinTauAbove = 3.0;
             bool ok = false;
             const auto it = tornadoProbes.find(T.stormId);
-            if (it != tornadoProbes.end() && it->second.valid)
+            const TornadoProbe::Cand *C = it != tornadoProbes.end() ? &it->second.c[T.placement] : nullptr;
+            if (C && C->valid)
             {
-                Hb = std::clamp((double)it->second.baseAsl - ground, 250.0, 5000.0);
-                tauAbove = it->second.tau;
+                Hb = std::clamp((double)C->baseAsl - ground, 250.0, 5000.0);
+                tauAbove = C->tau;
                 T.baseProbed = true;
-                ok = it->second.found && (double)it->second.baseAsl - ground <= kTornadoMaxBaseAglM
-                     && tauAbove >= kTornadoMinTauAbove;
+                ok = C->found && (double)C->baseAsl - ground <= kTornadoMaxBaseAglM && tauAbove >= kTornadoMinTauAbove;
             }
             float present = 0.0f;
             if (it != tornadoProbes.end())

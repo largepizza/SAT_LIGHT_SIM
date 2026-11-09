@@ -237,7 +237,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   tracks with landfalls and recurvature: an eyewall, a clear eye, spiral rain bands, outflow cirrus, a whipped-up
   sea, wind that drives the rain and the ambience, and a storm surge that floods low coasts.
 - **Tornadoes and waterspouts** under supercells and strong storms at sea, hanging from the storm's real base,
-  spinning, with a wall cloud, debris cloud and roar.
+  spinning, with a wall cloud, debris cloud and roar. A supercell's tornado touches down under the tower's own base when
+  no rain-free base stands past it (it could stand over clear air and not be drawn while the Weather window listed it), and the radar
+  marks tornadoes on the ground with a red triangle.
 - **Haboobs.** A storm's gust front over dry land raises a towering wall of dust, drawn as beige billowing cloud.
 - **Wildfires.** Fires start by biome, season and dryness and spread with a coherent wind: a ragged flaming front
   with embers, smoke that follows real trajectories into a regional pall, burn scars, and their glow at night.
