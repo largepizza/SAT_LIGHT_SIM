@@ -117,6 +117,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   (the foehn gap), following the prevailing winds.
 - **Flat cloud bases.** Cumulus bottoms are flat with crisp edges instead of rounding downward, and storm clouds
   no longer bulge down into their rain below the base of the clouds around them.
+- **Small cumulus are heaps, not pucks.** Shallow fair-weather cumulus rise from their flat base in a dome instead of
+  standing as wide, flat-walled discs with a cap on top, and are a little deeper (Clouds > Shallow cumulus heaps / depth).
 - **No bright ring in distant clouds.** Seen from altitude over a deep overcast, clouds beyond a few tens of km no
   longer light up brighter than the ones near you; the lighting is consistent out to the horizon.
 - **Cirrus rides the wind.** High-cloud streaks now follow the jet stream and its eddies instead of all sliding east
