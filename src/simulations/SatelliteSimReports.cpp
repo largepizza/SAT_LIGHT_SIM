@@ -150,9 +150,19 @@ void SatelliteSim::reportTick(float dt)
         reportsLoad();
 
     reportClock_ += (double)dt;
-    reportFrameMs_[reportFrameN_++ % 240] = dt * 1000.0f;
-    if (reportFrameN_ >= 480)
-        reportFrameN_ -= 240;
+    // Not the HQ photo's frames (photoState != 0: 48 offscreen frames at the photo's resolution, ~4x the pixels, nothing
+    // presented): a shot taken after a photo counted them as the view's own, ~190-370 ms "hitches" (issue_20261108_172846
+    // shot 2: p95 362 ms at a 45-ms view; the log's "Photo target 3840x2018" 12 s before the shot). Nor the frame after the
+    // photo (the swapchain restored: one ~220-ms frame in the test).
+    const bool photoNow = photoState != 0;
+    const bool photoSkip = photoNow || reportPhotoPrev_;
+    reportPhotoPrev_ = photoNow;
+    if (!photoSkip)
+    {
+        reportFrameMs_[reportFrameN_++ % 240] = dt * 1000.0f;
+        if (reportFrameN_ >= 480)
+            reportFrameN_ -= 240;
+    }
 
     if (reportTrail_.empty() || reportClock_ - reportTrail_.back().t >= kReportTrailStepS)
     {

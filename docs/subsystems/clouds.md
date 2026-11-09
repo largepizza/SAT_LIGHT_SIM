@@ -875,6 +875,22 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     fast motion trades grain for lag, and the settled-reference error counts the lag. **No block size reached parity
     with 2x2 in motion, so `sparse_block` stays 2 (the user's settings unchanged)**; 3 is the closest (~5-10% more error
     for ~20% less march at the anvil).
+    **A STILL view takes 3x3** (`sparse_block_still` 3, default; 2 = off; no slider; 2026-11-08, issue_20261108_172846
+    "Big laggy formation"): once `cv2StillFrames` reaches 64 (no turn, step, zoom or time warp; 1x time counts as still),
+    the eye below `full_rate_above_km`, and the history valid, `cv2SparseBlockNow` is 3; the first moving frame is 2x2
+    again, so motion is unchanged. The host marks the mode with 0.25 on `cv2.gnd.z` (both shaders round K) and the resolve
+    scales the weight of a pixel WITHOUT a ray this frame by 3 / (K^2 - 1), after the age floor: its own rays keep the 2x2
+    grid's share against the interpolated estimate (at full weight the 8 in-between frames blended the 3-px estimate in
+    2.7x as much and the settled image was visibly softer: lobes' outlines, the deck's grain). From orbit (900 km) the
+    settled 3x3 lost the small cumulus puffs at any weight (0.97-1.24 levels from 2x2 vs an A-vs-A 0.53; 1/(K^2-1): 0.97,
+    0 = no estimate: 1.41 and grainier), hence the height gate. The smooth tiles are off at 3x3; the trade wins anyway
+    where they do little (the report's anvil: 82% of the 2x2 slots marched) and also measured faster in smooth-ish views.
+    Cloud march (RTX 3070 Ti, 1920x1009, interleaved x3 in one app, 2 -> 3, ms; `qa/waves/20261108/evidence/laggy/`):
+    report shot 1 31.4 -> 21.4, shot 2 30.2 -> 23.7, the ITCZ tower (issue 20261106_184711) 18.7 -> 13.2, cumulus from
+    100 m 11.3 -> 9.3, from 3 km 12.5 -> 9.8, trade cumulus from 20 m 11.2 -> 9.2, orbit unchanged (gated). Settled
+    captures vs 2x2 (mean |diff|, the A-vs-A floor in brackets): 1.47 (1.55), 0.78 (0.65), 1.25 (1.34), 1.75 (1.90),
+    0.77 (0.78), 2.61 (3.35); shot 2's crops show slightly less grain in the deck's speckled patch. A still view with time
+    running refreshes each pixel every 9 frames: slow evolution lags a little more in the history.
   - **Smooth tiles while moving** (`smooth_moving` 0.5, no slider; 2026-11-04, perf.md "Moving marched every sparse
     slot"): the smooth tiles (cloud_v2_tiles.comp kMode 1 / 2, march pass F: a 32x32 tile whose last resolved frame
     varies by less than `smooth_tile_threshold` 30 levels in every 4x4 window is marched at a quarter of the sparse

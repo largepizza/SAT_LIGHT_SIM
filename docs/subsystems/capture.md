@@ -110,7 +110,9 @@ Performance tab's "Save snapshot" button is still the bare `profile_log.jsonl` l
 its record there with a `report` {id, shot} key (tools/perf_analysis and `snapshot` keep working).
 - **A shot** = `record` (buildPerfSnapshotJson: view, drift, full settings, timings) + `state`
   (harnessStateJson) + `capture` (cloud / sky-TAA history valid, live render scale, auto-exposure EV, eye
-  speed, turn rate) + `frame_ms` (the last 240 frames) + `trail` (the camera's last 12 s at 30 Hz,
+  speed, turn rate) + `frame_ms` (the last 240 interactive frames: not an HQ photo's offscreen frames nor the one after it,
+  `reportPhotoPrev_`; 2026-11-08, issue_20261108_172846, whose shot 2 counted a 4K photo's 185-370 ms frames as a p95 of
+  362 ms; a photo then a shot, wall clock: HEAD p95 274 / max 288 ms over 98 frames, now 37 / 38 over 45) + `trail` (the camera's last 12 s at 30 Hz,
   `reportTrail_`, sampled every frame in `reportTick`, its last row the shot's own pose) +
   `settings_changed_since_previous` (a leaf diff against the issue's previous shot; camera / observer / time
   left out) + `note`.

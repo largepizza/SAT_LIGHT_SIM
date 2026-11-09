@@ -373,6 +373,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Performance
 
+- **Still views march fewer cloud rays:** once the camera has been still for about a second (below 30 km), the clouds
+  are marched one pixel in nine a frame instead of one in four, with the same settled image; any movement switches back.
+  A sunset anvil deck overhead: cloud march 31 -> 21 ms; cumulus views about 20% less (issue_20261108_172846).
 - **Two frames in flight:** the CPU prepares the next frame while the GPU draws this one (frames about 5-10% faster).
 - An **aerial-perspective volume** computes the sky's atmosphere once per screen tile (about a quarter off the sky pass).
 - **Temporal anti-aliasing** of the terrain, sky and sea, which is also a **temporal upscaler** below 100%
@@ -480,6 +483,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- An issue report's frame times no longer count the HQ photo's frames: a shot taken after a photo showed its
+  slow offscreen frames as 300-ms hitches of the view (issue_20261108_172846).
 - Wildfire smoke on the horizon BEHIND a cloud gets the haze of its own distance: standing in a rain curtain, the
   row of jagged light and dark blocks along the horizon is gone (issue_20261108_172203), and from an aircraft the thin
   dark line where a high veil met the horizon is gone (issue_20261108_171841). Both were a distant smoke pall that took
