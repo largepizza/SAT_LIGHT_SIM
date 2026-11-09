@@ -77,6 +77,29 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   (gCv2AnvK off f.thin); its share is ANALYTIC from the cyclone list (`cv2CdoShare`: out to 0.7-1.1 CDO radii warped by
   the regime noise and the cluster Perlin, open at 0.9-1.5 eye radii, x intensity) -- read from the map's type it was a
   blocky slab with no eye. GPU: report 172424 shot 2 37.6 ms, from 350 km 47.2 (plate: ~39 / 49). March 255 registers.
+  **The CDO filled, its eyewall and its sheet's edge (2026-11-08, issue_20261108_173906):** (1) THE MASS REACHES ITS TOP.
+  With the Cb columns on, cv2LowA's storm-target block (`if (colOn)`) capped every Cb-typed region at the cumulus top
+  (~4 km) away from a tower and at "Storm cumulus top" (7 km at the reporter's settings) within reach of one, AFTER the
+  storm share had set the tropopause, and the early out `stormProx <= 0 && q.h > hTypB` (the CPU's anvil3.zw bound, which
+  has no storm mass in it) clipped it at ~5 km: the CDO's interior was flat mesas at 4-7 km under an empty 7 km to the
+  sheet. Now the storm share re-takes its own top after that block, and near a cyclone's CDO (1.6 CDO radii + 50 km of
+  `cv2Cyclones[i].a`, looked up only for samples above the bound) the bound is the Cb top + 4 km. The mass's towers
+  now reach their cap, 0.8 +- 0.1 of the span (the 16-km cluster octave and the coarse cells, met by a smooth min; a hard
+  0.8 drew one flat plain under the sheet), ~11-14 km: the report's shot 2 eye (12 km) is inside cloud, from 8 km too.
+  (2) THE EYEWALL is the storm mass, not the 18 tower objects: within 0.5-1.2 radii of maximum wind of the eye's edge
+  (`eyw`, x the eye's grown share `smoothstep(0.2, 0.6, eyeR / 0.45 rmw)`, x "Hurricane eyewall" hurricane.y, slot 557) the
+  span rises 4 km and every cell is a tower (cellsC + 1.5 eyw: the tower noise saturates); the eye is cut in 3D as a
+  STADIUM through covT (1 unit of coverage per 2.5 km inside it), radius 0.85 eyeR at the base to 1.2 at the top, x (1 +-
+  0.22) of the cell and cluster noise plus a height wave (`sin(h / 1.7 km + 40 ce.a)`): fluted, bulging walls, stretched
+  cumulus, sloping out as the real eye does. The sheet's hole opens over 1.1-1.6 eyeR so the wall's top stands inside it.
+  The ring's tower objects (`Weather.cpp cycloneTowersAt`, role 1) fade out of the march's copy by the same share
+  (`SatelliteSimWeather.cpp`, the GPU strength x (1 - k), unlisted at k >= 0.98); the bake's envelope copy keeps them,
+  so their rain, stamp and lightning stay. Their columns stood in the wall as separate cylinders with flat heads.
+  (3) THE SHEET'S EDGE AND SWIRL ("Hurricane sheet swirl" hurricane.x, slot 556; `cv2CdoShare`): on the bake's own main
+  arms (same phase as stormStampFinish) the outline reaches out along each crest (u x 0.75, to ~1.45 CDO radii) and is
+  notched between them (x 1.3); its outer ~40% frays into 3n + 1 streaks wound tighter (lr / 0.6 tanP), their phase moved
+  by the outline's noise (breaks); the top rises and falls 140 m along a 12-band spiral (lr / 0.45) with the noise in its
+  phase (`gCv2CdoRip`). From orbit the CDO is a spiral with arms and frays, no longer a round disc.
   **Anvils carried by the organised systems (2026-11-08, branch `weather-salvage`, `.plans/WEATHER_SALVAGE_PLAN.md`; the
   user: "spawn big anvils and force the objects to stick around. Do not spawn too many anvils near one another. Let anvils
   live for hours"):** (1) A single cell spreads a shield only as a supercell (`wx::Settings::singleAnvils`, "Single-storm

@@ -979,6 +979,10 @@ struct GpuCloudV2Params
     // (2026-11-08, pucks) Shallow cumulus heaps (clouds_v2.glsl cv2LowA): x "Shallow cumulus heaps" share (0 = the old
     // flat-walled profile), y "Shallow cumulus depth" (T x (1 + y) at full share), zw unused
     glm::vec4 pucks;
+    // (2026-11-08, hurricane) A hurricane's CDO and eyewall (clouds_v2.glsl cv2CdoShare, cv2LowA "THE EYEWALL"): x "Hurricane
+    // sheet swirl" (the sheet's spiral outline, frays and ripple), y "Hurricane eyewall" (the storm mass's ring round the eye),
+    // zw unused
+    glm::vec4 hurricane;
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -1011,7 +1015,7 @@ static_assert(offsetof(GpuCloudV2Params, amb) == 288 + 48 * kCloudV2Types + 1232
 static_assert(offsetof(GpuCloudV2Params, tone) == 288 + 48 * kCloudV2Types + 1248, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, gnd) == 288 + 48 * kCloudV2Types + 1264, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, micro) == 288 + 48 * kCloudV2Types + 1280, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1664, "GpuCloudV2Params layout");   // +16: pucks; +32: wind0, wind1; +32: cellA, cellB; +32: cirrus-hurr (ciHu, ciHu2); +32: storm3 (storm3a, storm3b); +64: vertical (vert, vert2, oro0, oro1); +80: shapeB
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1680, "GpuCloudV2Params layout");   // +16: hurricane; +16: pucks; +32: wind0, wind1; +32: cellA, cellB; +32: cirrus-hurr (ciHu, ciHu2); +32: storm3 (storm3a, storm3b); +64: vertical (vert, vert2, oro0, oro1); +80: shapeB
 static_assert(offsetof(GpuCloudV2Params, cu3) == 288 + 48 * kCloudV2Types + 1312, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
@@ -5701,6 +5705,11 @@ private:
     // 2026-11-08 (weather salvage, weather-v2's continuous storms): where the map types deep convection past congestus (a
     // hurricane's CDO) the cumulus field draws one storm mass (clouds_v2.glsl sK). clouds_v2.storm_mass, slot 548; 0 = off.
     float cv2StormMass = 1.0f;
+    // 2026-11-08 (hurricane, issue_20261108_173906): the CDO sheet's spiral outline, frays and swirl ripple (clouds_v2.glsl
+    // cv2CdoShare; clouds_v2.hurricane_sheet_swirl, slot 556) and the eyewall drawn by the storm mass, its ring of tower
+    // objects faded out of the march (cv2LowA "THE EYEWALL"; clouds_v2.hurricane_eyewall, slot 557). 0 = off.
+    float cv2HurrSheetSwirl = 1.0f;
+    float cv2HurrEyewall = 1.0f;
     float cv2RainAmount = 3.0f;         // rain shafts under precipitating cloud, 0 = none
     float cv2OpticsGain = 1.0f;        // halos, sundogs, circumzenithal arc, rainbows
     float cv2RainStreaks = 3.1f;       // the rain particles' visibility (x their real coverage; "Drops at the eye")

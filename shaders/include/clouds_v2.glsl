@@ -271,6 +271,9 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // (2026-11-08, pucks) Shallow cumulus heaps (cv2LowA): x "Shallow cumulus heaps" (0 = the old flat-walled profile),
     // y "Shallow cumulus depth" (the extra depth at full share: T x (1 + y)), zw unused
     vec4  pucks;
+    // (2026-11-08, hurricane) A hurricane's CDO and eyewall (cv2CdoShare, cv2LowA "THE EYEWALL"): x "Hurricane sheet swirl"
+    // (the sheet's spiral outline, frays and ripple), y "Hurricane eyewall" (the storm mass's ring round the eye), zw unused
+    vec4  hurricane;
 } cv2;
 #include "wind_field.glsl"
 
@@ -809,6 +812,16 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
         float stT = cv2.types[1].alt.x + (cv2.types[1].alt.y - cv2.types[1].alt.x) * trB + 3500.0;
         if (q.h > max(max(cgT, stT), cv2.column.w * (1.0 + cv2.column3.z)) + cv2Ground(q.dirE) * 0.9 + 50.0) return false;
         hTypB = mix(cv2.anvil3.z, cv2.anvil3.w, (trB - 0.8) / 0.55) + cv2Ground(q.dirE) + 50.0;
+        // (Near a tropical cyclone's CDO the storm mass (sK below) rises to the tropopause: the bound is its top + the lobes'
+        // and the base shift's reach. 2026-11-08, issue_20261108_173906: with the bound at the cumulus top the mass was cut
+        // flat at ~5 km everywhere but within reach of a tower -- mesas under an empty 8 km. Looked up only above the bound.)
+#ifdef CV2_STORM_BINDING
+        if (q.h > hTypB && cv2.column.y > 0.0)
+            for (uint i = 0u; i < min(cv2CycHead.x, kCv2CycloneMax); ++i)
+                if (length(wd - cv2Cyclones[i].a.xyz) * R_EARTH < 1.6 * max(cv2Cyclones[i].c.y, 1000.0) + 50000.0)
+                    hTypB = max(hTypB, cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * trB + 4000.0
+                                       + cv2Ground(q.dirE));
+#endif
         if (stormProx <= 0.0 && q.h > hTypB) return false;
     }
     float covSpan = max(cv2.cover.y - cv2.cover.x, 1e-3);
@@ -917,7 +930,38 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
         // flat target made every storm's cumulus field the same height (user, 2026-09-29).
         float cwT = cv2.column.w * (1.0 + cv2.column3.z * clamp((cl.a - 0.5) * 8.8, -1.0, 1.0));
         topMax = mix(topMax, cwT + lift, stormProx * min(ty.look.z * 2.0, 1.0));
+        // (The storm mass keeps its own top, the tropopause's: this block's cumulus / storm-cumulus targets capped it at ~4 km
+        // away from the towers and ~12 km near them -- flat mesas far under the CDO's sheet, issue_20261108_173906 shot 2.)
+        topMax = mix(topMax, topCap + 400.0 * sK * sK, sK);
     }
+    // THE EYEWALL (2026-11-08, issue_20261108_173906; weather-v2's cv2CycEye, "Hurricane eyewall" hurricane.y): round a
+    // hurricane's eye the storm mass stands as one ring of towers, its cumulus stretched up to the tropopause -- the 18 tower
+    // objects of the ring (Weather.cpp cycloneTowersAt) are not drawn (SatelliteSimCloudsV2.cpp: their columns would stand in
+    // it as separate cylinders); they still rain, flash and feed the bake. Within ~0.5-1.2 radii of maximum wind of the eye's
+    // edge: the top rises by up to 4 km of span (the mass's 0.8 cap then reaches ~the tropopause), every cell is a tower
+    // (cellsC below: the tower noise and the cells' strength saturate), and the eye is cut in 3D as a STADIUM (the eye's
+    // radius 0.9x at the base to 1.6x at the top: its wall slopes outward, as the sheet's hole, cv2CdoShare, is 0.9-1.5x),
+    // through covT: the field falls 1 unit per 1.5 km inside it. (The bake's eye clears the map's coverage in 2D, a
+    // vertical cut: the wall was the cells' extruded outline.)
+    float eyw = 0.0;
+#if !defined(SKY_LITE) && defined(CV2_STORM_BINDING)
+    if (sK > 0.0 && cv2.hurricane.y > 0.0) {
+        float eyeM = 1e9;
+        for (uint i = 0u; i < min(cv2CycHead.x, kCv2CycloneMax); ++i) {
+            CV2Cyclone cy = cv2Cyclones[i];
+            float rC  = length(wdF - cy.b.xyz) * R_EARTH;
+            float rmw = max(cy.d.x, 2000.0);
+            if (cy.c.x <= 0.0 || rC > 1.5 * rmw + cy.c.x + 20000.0) continue;
+            float rE  = cy.c.x * (0.85 + 0.35 * clamp((q.h - lift - 1000.0) / max(topCap - 1000.0, 1000.0), 0.0, 1.0))
+                      * (1.0 + 0.22 * clamp((ce.a - 0.5) * 6.0 + (cl.a - 0.5) * 9.0 + 0.7 * sin(q.h * (1.0 / 1700.0) + 40.0 * ce.a), -1.0, 1.0));
+            eyeM = min(eyeM, rC - rE);
+            eyw  = max(eyw, (1.0 - smoothstep(0.5 * rmw, 1.2 * rmw, rC - rE)) * smoothstep(0.2, 0.6, cy.c.x / (0.45 * rmw)));
+        }
+        eyw   *= cv2.hurricane.y * sK;
+        topMax += 4000.0 * eyw;
+        covT  += min(eyeM, 0.0) * (cv2.hurricane.y / 2500.0);
+    }
+#endif
 
     // A deck is not a slab: its thickness follows the closed cells and a km-scale Perlin field, and
     // a thicker part hangs lower (an overcast seen from below was one flat, featureless plane).
@@ -963,7 +1007,7 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     // stretched along the view rays into fins radiating from the camera (user snaps, pass 13).
     float lodCell    = cv2Lod(fpM, cv2.anchorCell.w);
     vec3  cellUV     = cv2CellUV(mp);
-    float cellsC     = cv2MesoSmoothG(cellUV, max(lodCell, 2.0 + sK));   // (a storm's cells a mip coarser: bigger masses)
+    float cellsC     = cv2MesoSmoothG(cellUV, max(lodCell, 2.0 + sK)) + 1.5 * eyw;   // (a storm's cells a mip coarser: bigger masses; the eyewall's all towers)
     // Deep types: the coarse cells only. The fine cells' 2 km edges, extruded up a 10 km column, were
     // vertical grooves on every storm wall (user snaps 7-10, pass 13): the 3D lobes shape a tower.
     float cells      = mix(ce.g, min(cellsC * 1.8, 1.0), deep);
@@ -1196,7 +1240,11 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
         float twN = smoothstep(-0.4, 1.2, zT);
         float flr = 0.15 + 0.13 * smoothstep(-2.0, -0.4, zT);
         T = mix(T, min(flr + 0.75 * sqrt(twN) + 0.12 * (cellsB - 0.5), 1.0) * smoothstep(0.1, 0.5, eB), sK);
-        T = min(T, mix(1.0, 0.8, sK));
+        // (The cap varies by ~+-0.1 of the span over the 16-km cluster octave and the coarse cells, met by a smooth min: with
+        // the mass reaching its top (issue_20261108_173906) a hard 0.8 drew one flat, sheet-shadowed plain under the sheet.)
+        float capT = mix(1.0, 0.8 + 0.1 * clamp((cl16.a - 0.5) * 9.0 + (cellsB - 0.5) * 3.0, -1.0, 1.0), sK);
+        float hT   = max(0.12 - abs(T - capT), 0.0) / 0.12;
+        T = min(T, capT) - hT * hT * 0.03;
     }
     // SHALLOW CUMULUS HEAPS ("Shallow cumulus heaps" pucks.x, "Shallow cumulus depth" pucks.y; 2026-11-08, issue_20261108_171510
     // "every cloud ... the exact same profile extruded upwards"). A weak cell's top sits at T's floor (~250 m) while its 2D
@@ -2155,18 +2203,45 @@ float gCv2AnvK = 0.0;
 // The CDO's sheet share at a map direction (the flowed frame the low cloud and the bake's cyclone stamp use): from each
 // tropical cyclone's own disc, not the weather map's type (its coarse mips drew a blocky slab with no eye). warp: the
 // outline's noise, in units of the disc's radius (+- ~0.25). Out to ~1.1 CDO radii, open at the eye, x the intensity.
-float cv2CdoShare(vec3 wF, float warp)
+// SPIRAL OUTLINE AND SWIRL RIPPLE (2026-11-08, issue_20261108_173906: "subtle swirl ripple ... more breaks and spiral frays
+// along the end"; "Hurricane sheet swirl" hurricane.x). On the bake's own main arms (cloud_v2_weather.comp stormStampFinish:
+// the same phase, so the sheet's arms lie over the low cloud's): the outline reaches out along each arm's crest (to ~1.45
+// CDO radii) and is notched between them; its outer ~40% frays into thin streaks wound tighter than the arms (3n + 1 of
+// them, their phase moved by the outline's noise, so the breaks are irregular); and gCv2CdoRip is a low ripple along a tight
+// spiral (8 bands, ~10 deg pitch: ~15-20 km apart at the CDO's mid radius), the sheet's top raised and lowered by it in
+// cv2HighSigma. fine = false: the reach alone (the high layer's early out), the outline's extent with no frays.
+float gCv2CdoRip = 0.0;
+float cv2CdoShare(vec3 wF, float warp, bool fine)
 {
     float a = 0.0;
+    gCv2CdoRip = 0.0;
 #ifdef CV2_STORM_BINDING
+    vec3 eW = vec3(-wF.y, wF.x, 0.0) * inversesqrt(max(dot(wF.xy, wF.xy), 1e-6));
+    vec3 nW = cross(wF, eW);
     for (uint i = 0u; i < min(cv2CycHead.x, kCv2CycloneMax); ++i) {
         CV2Cyclone cy = cv2Cyclones[i];
-        float r   = length(wF - cy.b.xyz) * R_EARTH;
+        vec3  off = (wF - cy.b.xyz) * R_EARTH;
+        float r   = length(off);
         float cdo = max(cy.c.y, 1000.0);
-        if (r > 1.5 * cdo) continue;
-        float u   = r / cdo * (1.0 + warp);
-        float eye = cy.c.x > 0.0 ? smoothstep(0.9 * cy.c.x, 1.5 * cy.c.x, r) : 1.0;
-        a = max(a, (1.0 - smoothstep(0.7, 1.1, u)) * eye * smoothstep(0.1, 0.35, cy.a.w));
+        if (r > 1.6 * cdo) continue;
+        float sw  = cv2.hurricane.x;
+        float th  = atan(dot(off, nW), dot(off, eW));
+        float lr  = log(max(r, 1000.0) / max(cy.d.x, 2000.0));
+        float tanP = max(floor(cy.d.z * 0.5) * 0.001, 0.05);
+        float n0  = floor(max(cy.d.w, 1.0));
+        float hth = cy.b.w * th;
+        float bA  = 0.5 + 0.5 * cos(n0 * (hth + lr / tanP + cy.c.w));   // (1 on an arm's crest)
+        float u   = r / cdo * (1.0 + warp)
+                  * (1.0 + sw * (0.3 * (1.0 - smoothstep(0.0, 0.4, bA)) - 0.25 * smoothstep(0.45, 1.0, bA)));
+        float eye = cy.c.x > 0.0 ? smoothstep(mix(0.9, 1.1, sw) * cy.c.x, mix(1.5, 1.6, sw) * cy.c.x, r) : 1.0;
+        float s   = (1.0 - smoothstep(0.7, 1.1, u)) * eye * smoothstep(0.1, 0.35, cy.a.w);
+        if (fine && s > 0.0) {
+            float fr = 0.5 + 0.5 * cos((3.0 * n0 + 1.0) * (hth + lr / (0.6 * tanP) + 0.5 * cy.c.w) + 7.0 * warp);
+            s *= mix(1.0, smoothstep(0.25, 0.65, fr), sw * smoothstep(0.55, 0.95, u));
+            if (s > a)
+                gCv2CdoRip = sw * cos(12.0 * (hth + lr / 0.45 + 0.3 * cy.c.w) + 5.0 * warp) * (0.55 + 0.45 * cos(3.0 * hth + 2.0 * lr));
+        }
+        a = max(a, s);
     }
 #endif
     return a;
@@ -2190,7 +2265,7 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
     // is the storm's top -- a dense ice sheet just under the tropopause over its towers (the low field caps them at 0.8 of the
     // span), lumpy below and above, fibrous where its share is weak. weather-v2's CDO, "tremendously better" to the user.
     // (Its reach first, unwarped and generous, for the early out above the cirrus band; the outline below.)
-    float aS     = cv2.column.y > 0.0 ? cv2CdoShare(wF, -0.3) : 0.0;
+    float aS     = cv2.column.y > 0.0 ? cv2CdoShare(wF, -0.3, false) : 0.0;
     if (q.h > base0 + 2400.0 && aS <= 0.0) return 0.0;
     // Cirrus lives with the weather systems: in the jet ahead of fronts and in the outflow of deep
     // convection; the subtropical highs are mostly free of it. The regime therefore follows the map's
@@ -2219,14 +2294,14 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
     float regime = smoothstep(0.51 - widen, 0.57 - widen, 0.5 + rgN + 0.12 * (1.0 - 0.5 * cv2.flow.y) * (sys - 0.45))
                  * min(cv2.high.x, 1.0);
     // (The outline warped by the regime's noise and the cluster Perlin: ragged, never a disc.)
-    if (aS > 0.0) aS = cv2.column.y * cv2CdoShare(wF, 0.35 * rgN + 1.5 * (cl.a - 0.5));
+    if (aS > 0.0) aS = cv2.column.y * cv2CdoShare(wF, 0.35 * rgN + 1.5 * (cl.a - 0.5), true);
     regime = max(regime, aS);
     if (regime <= 0.0) return 0.0;
     float zb     = base0 + (cl.r - 0.5) * 1200.0;
     float thick  = mix(500.0, 1600.0, regime);
     {   // the sheet: its top just under the tropopause (+-200 m), 400 m + "Anvil thickness" (<= 2.2 km) where its share is full
         float thA = 400.0 + min(cv2.anvil2.x, 2200.0) * pow(aS, 1.2) * (0.8 + 0.4 * cl.g);
-        float tA  = tropTop - 100.0 + 500.0 * aS * aS + (cl.r - 0.5) * 400.0;
+        float tA  = tropTop - 100.0 + 500.0 * aS * aS + (cl.r - 0.5) * 400.0 + 140.0 * gCv2CdoRip * aS;   // (the swirl ripple)
         zb    = mix(zb, tA - thA, aS);
         thick = mix(thick, thA, aS);
     }
