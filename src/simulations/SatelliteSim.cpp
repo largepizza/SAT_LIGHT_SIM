@@ -577,6 +577,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     createOrbitPipeline(ctx);
     createCloudMarchDescriptors(ctx); // needs cloudParamsBuf from createGlowResources above
     createCloudMarchPipeline(ctx);
+    createTerrainClip(ctx);           // the height clipmap: its set layout joins the depth and sky pipeline layouts
     createSceneDepthDescriptors(ctx); // needs earthElev/earthSpec from createGlowResources above
     createSceneDepthPipeline(ctx);
     createBeamSelfMarchDescriptors(ctx); // needs cloudParamsBuf/earthClouds/cloudNoise/cloudWarpNoise
@@ -1507,6 +1508,13 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     {
         FPROF_SCOPE("rc.ensureFullSkyPipelines");
         ensureFullSkyPipelines(ctx);
+    }
+    // The sky pipelines are built from the clipmap or the procedural terrain variant (sat_sky*_clip.frag.spv): rebuilt
+    // when "clouds.terrain_clipmap" changes hands.
+    if (!fullSkyDeferred && tcSkyBuiltClip != terrainClipActive())
+    {
+        std::string st;
+        reloadSkyShaders(ctx, skyFragSpvOverride, skyTaaFragSpvOverride, st);
     }
     // Binding 2: the old face-on Moon photo for Potato's minimal sky, the albedo + elevation map otherwise. Before
     // anything below binds skyDescSet.
@@ -3110,6 +3118,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // two barriers matters on MoltenVK/older-Metal, where each barrier forces a command-encoder
     // restart that can dominate the frame — see Potato preset. (Previously bit 1024 only made the
     // shader early-return; the dispatch + barriers still ran every frame.)
+    // The terrain height clipmap: this frame's windows + the bake of what came into them (also with the depth pass
+    // knocked out: the sky pass reads it).
+    recordTerrainClip(cmd, ctx, obsDir, *static_cast<const GpuCloudParams *>((const void *)cloudParamsMapped));
     if ((debugDisableMask & 1024u) == 0u)
     {
         sceneDepthHoldsNoSurface = false;
@@ -3128,6 +3139,10 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         const VkExtent2D halfE = computeHalfExtent(ctx);
         uint32_t halfW = halfE.width;
         uint32_t halfH = halfE.height;
+        // Both depth passes run the terrain clipmap's variant (the frame pass below stays procedural: one thread, the
+        // exact ground under the eye).
+        const bool tcOn = terrainClipActive() && sceneDepthClipPipeline != VK_NULL_HANDLE;
+        const VkPipeline depthPipe = tcOn ? sceneDepthClipPipeline : sceneDepthPipeline;
 
         // Quarter-res pre-pass: the same march at 1/16 of the pixels; its result seeds the half-res
         // pass below (and it writes terrainFrameBuf). Measured with the harness: the half-res pass
@@ -3159,6 +3174,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                                      nullptr, 1, &tb, 0, nullptr);
             }
             qpc.quarterPass = 1.0f;
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, depthPipe);
+            if (tcOn)
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, sceneDepthPipeLayout, 1, 1, &tcSet, 0, nullptr);
             vkCmdPushConstants(cmd, sceneDepthPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(qpc), &qpc);
             vkCmdDispatch(cmd, (qW + 15) / 16, (qH + 15) / 16, 1);
             ctx.imageBarrier(cmd, sceneDepthQImg,
@@ -3178,9 +3196,11 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, sceneDepthPipeline);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, depthPipe);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 sceneDepthPipeLayout, 0, 1, &sceneDepthDescSet, 0, nullptr);
+        if (tcOn)
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, sceneDepthPipeLayout, 1, 1, &tcSet, 0, nullptr);
         vkCmdPushConstants(cmd, sceneDepthPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                            0, sizeof(dpc), &dpc);
         vkCmdDispatch(cmd, (halfW + 15) / 16, (halfH + 15) / 16, 1);
@@ -7855,6 +7875,8 @@ void SatelliteSim::recordPrePass(VkCommandBuffer cmd, VulkanContext &ctx, float 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyLowResPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             skyBgPipeLayout, 0, 1, &skyDescSet, 0, nullptr);
+    if (tcSupported)
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyBgPipeLayout, 1, 1, &tcSet, 0, nullptr);
     vkCmdPushConstants(cmd, skyBgPipeLayout,
                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(pc), &pc);
@@ -7959,6 +7981,8 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float dt)
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyPipe);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                     skyBgPipeLayout, 0, 1, &skyDescSet, 0, nullptr);
+            if (tcSupported)
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyBgPipeLayout, 1, 1, &tcSet, 0, nullptr);
             vkCmdPushConstants(cmd, skyBgPipeLayout,
                                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                0, sizeof(skyPc), &skyPc);
@@ -8324,6 +8348,9 @@ void SatelliteSim::cleanup(VkDevice device)
     // ── Scene depth pipeline (pipeline unification) ────────────────────────────
     vkDestroyPipeline(device, sceneDepthPipeline, nullptr);
     vkDestroyPipelineLayout(device, sceneDepthPipeLayout, nullptr);
+    if (sceneDepthClipPipeline) vkDestroyPipeline(device, sceneDepthClipPipeline, nullptr);
+    sceneDepthClipPipeline = VK_NULL_HANDLE;
+    if (ctx_) destroyTerrainClip(*ctx_);
     vkDestroyDescriptorPool(device, sceneDepthDescPool, nullptr);
     vkDestroyDescriptorSetLayout(device, sceneDepthDescLayout, nullptr);
     vkDestroySampler(device, sceneDepthSampler, nullptr);
@@ -11826,8 +11853,10 @@ void SatelliteSim::createSceneDepthPipeline(VulkanContext &ctx)
     VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(SceneDepthPC)};
 
     VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    li.setLayoutCount = 1;
-    li.pSetLayouts = &sceneDepthDescLayout;
+    // Set 1: the terrain height clipmap (the TD_CLIPMAP variant reads it; SatelliteSimTerrainClip.cpp).
+    const VkDescriptorSetLayout depthLayouts[2] = {sceneDepthDescLayout, tcSetLayout};
+    li.setLayoutCount = tcSupported ? 2 : 1;
+    li.pSetLayouts = depthLayouts;
     li.pushConstantRangeCount = 1;
     li.pPushConstantRanges = &pcr;
     vkCreatePipelineLayout(ctx.device, &li, nullptr, &sceneDepthPipeLayout);
@@ -11839,6 +11868,14 @@ void SatelliteSim::createSceneDepthPipeline(VulkanContext &ctx)
         throw std::runtime_error("SatelliteSim: failed to create scene_depth compute pipeline");
 
     vkDestroyShaderModule(ctx.device, mod, nullptr);
+    if (tcSupported)
+    {
+        VkShaderModule cmod = ctx.loadShader("shaders/scene_depth_clip.comp.spv");
+        ci.stage.module = cmod;
+        if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &sceneDepthClipPipeline) != VK_SUCCESS)
+            throw std::runtime_error("SatelliteSim: failed to create scene_depth (clipmap) compute pipeline");
+        vkDestroyShaderModule(ctx.device, cmod, nullptr);
+    }
 }
 
 // (createCloudShadowResources / Descriptors / Pipeline lived here — the 128x128 R16_SFLOAT grid,
@@ -13798,7 +13835,8 @@ void SatelliteSim::createGlowResources(VulkanContext &ctx)
 void SatelliteSim::createSkyBgPipeline(VulkanContext &ctx)
 {
     VkShaderModule vert = ctx.loadShader("shaders/sat_sky.vert.spv");
-    VkShaderModule frag = ctx.loadShader(skyFragSpvOverride.empty() ? "shaders/sat_sky.frag.spv" : skyFragSpvOverride.c_str());
+    tcSkyBuiltClip = terrainClipActive();
+    VkShaderModule frag = ctx.loadShader(skyFragSpvOverride.empty() ? (terrainClipActive() ? "shaders/sat_sky_clip.frag.spv" : "shaders/sat_sky.frag.spv") : skyFragSpvOverride.c_str());
 
     VkPipelineShaderStageCreateInfo stages[2] = {};
     stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
@@ -13848,8 +13886,10 @@ void SatelliteSim::createSkyBgPipeline(VulkanContext &ctx)
         VkPushConstantRange pcr{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                                 0, sizeof(SatDrawPC)};
         VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-        li.setLayoutCount = 1;
-        li.pSetLayouts = &skyDescLayout;
+        // Set 1: the terrain height clipmap (sat_sky.frag -DTD_CLIPMAP; SatelliteSimTerrainClip.cpp), where supported.
+        const VkDescriptorSetLayout skyLayouts[2] = {skyDescLayout, tcSetLayout};
+        li.setLayoutCount = tcSupported ? 2 : 1;
+        li.pSetLayouts = skyLayouts;
         li.pushConstantRangeCount = 1;
         li.pPushConstantRanges = &pcr;
         vkCreatePipelineLayout(ctx.device, &li, nullptr, &skyBgPipeLayout);
@@ -13962,7 +14002,7 @@ void SatelliteSim::createSkyLowResResources(VulkanContext &ctx)
 
     // ── Pipeline: same shaders/layout as skyBgPipeline, low-res viewport, no depth ────────────
     VkShaderModule vert = ctx.loadShader("shaders/sat_sky.vert.spv");
-    VkShaderModule frag = ctx.loadShader(skyFragSpvOverride.empty() ? "shaders/sat_sky.frag.spv" : skyFragSpvOverride.c_str());
+    VkShaderModule frag = ctx.loadShader(skyFragSpvOverride.empty() ? (terrainClipActive() ? "shaders/sat_sky_clip.frag.spv" : "shaders/sat_sky.frag.spv") : skyFragSpvOverride.c_str());
     VkPipelineShaderStageCreateInfo stages[2] = {};
     stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
                  VK_SHADER_STAGE_VERTEX_BIT, vert, "main", nullptr};
@@ -14193,7 +14233,7 @@ void SatelliteSim::createSkyTaaResources(VulkanContext &ctx)
     if (!fullSkyDeferred)
     {
         VkShaderModule vert = ctx.loadShader("shaders/sat_sky.vert.spv");
-        VkShaderModule frag = ctx.loadShader(skyTaaFragSpvOverride.empty() ? "shaders/sat_sky_taa.frag.spv" : skyTaaFragSpvOverride.c_str());
+        VkShaderModule frag = ctx.loadShader(skyTaaFragSpvOverride.empty() ? (terrainClipActive() ? "shaders/sat_sky_taa_clip.frag.spv" : "shaders/sat_sky_taa.frag.spv") : skyTaaFragSpvOverride.c_str());
         VkPipelineShaderStageCreateInfo stages[2] = {};
         stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vert, "main", nullptr};
         stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, frag, "main", nullptr};
@@ -14451,6 +14491,8 @@ bool SatelliteSim::recordSkyTaa(VkCommandBuffer cmd, VulkanContext &ctx, uint32_
         vkCmdSetScissor(cmd, 0, 1, &sc);
     }
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyBgPipeLayout, 0, 1, &skyDescSet, 0, nullptr);
+    if (tcSupported)
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyBgPipeLayout, 1, 1, &tcSet, 0, nullptr);
     vkCmdPushConstants(cmd, skyBgPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
     vkCmdDraw(cmd, 3, 1, 0, 0);
     vkCmdEndRenderPass(cmd);

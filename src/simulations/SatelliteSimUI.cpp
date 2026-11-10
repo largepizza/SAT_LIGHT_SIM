@@ -10127,6 +10127,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         terrainDetailErode = c.value("terrain_detail_erode", terrainDetailErode);
         terrainShadowStrength = c.value("terrain_shadow_strength", terrainShadowStrength);
         terrainShadowHalfRes = settingClamp(c.value("terrain_shadow_half_res", terrainShadowHalfRes), 0.0f, 1.0f);
+        terrainClipmap = settingClamp(c.value("terrain_clipmap", terrainClipmap), 0.0f, 1.0f);
         terrainMaterialStrength = c.value("terrain_material_strength", terrainMaterialStrength);
         terrainErosionStrength = c.value("terrain_erosion_strength", terrainErosionStrength);
         terrainErosionSize = c.value("terrain_erosion_size", terrainErosionSize);
@@ -10446,6 +10447,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"terrain_detail_erode", terrainDetailErode},
         {"terrain_shadow_strength", terrainShadowStrength},
         {"terrain_shadow_half_res", terrainShadowHalfRes},
+        {"terrain_clipmap", terrainClipmap},
         {"terrain_material_strength", terrainMaterialStrength},
         {"terrain_erosion_strength", terrainErosionStrength},
         {"terrain_erosion_size", terrainErosionSize},

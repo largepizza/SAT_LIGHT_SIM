@@ -380,6 +380,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   report went from 46-70 ms to 30-38 ms of GPU frame (RTX 3070 Ti, 1920x1009). The cloud layer is drawn from one pixel in
   nine while nothing moves, the sky's horizon band is cheaper, and haze-thin cloud is marched in longer steps. Views below
   about 30 km changed little.
+- **Ground views render 5-7 ms faster a frame:** the terrain's fine relief is baked into textures round the observer
+  instead of being computed again at every step of three ray marches a frame (clear desert 21 -> 16 ms, the Alps from
+  the ground 29 -> 21 ms of GPU frame, RTX 3070 Ti, 1920x1009). The terrain looks the same; "clouds.terrain_clipmap" 0
+  in settings.json turns it off.
 - **Two frames in flight:** the CPU prepares the next frame while the GPU draws this one (frames about 5-10% faster).
 - An **aerial-perspective volume** computes the sky's atmosphere once per screen tile (about a quarter off the sky pass).
 - **Temporal anti-aliasing** of the terrain, sky and sea, which is also a **temporal upscaler** below 100%

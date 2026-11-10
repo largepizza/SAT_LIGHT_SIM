@@ -1,0 +1,69 @@
+#version 450
+#extension GL_EXT_control_flow_attributes : require // [[dont_unroll]] in terrain_detail.glsl
+
+// ── The terrain height clipmap's bake (2026-11-10; include/terrain_clip.glsl) ────────────────────────────────────────
+// One dispatch per rectangle of a level's texels that entered its window (SatelliteSim::recordTerrainClip): each texel
+// evaluates the procedural detail of terrain_detail.glsl ONCE, at its ground point and its level's LOD, exactly as the
+// procedural march's full evaluation does (tdDemAt, tdBegin, the octaves with the erosion between them), and stores
+// the value octaves' height (A) and the first three octaves' height + the coarse octaves' gradient (B).
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(push_constant) uniform PC {
+    ivec4 rect;         // xy = the rectangle's first texel (absolute plane cell), zw = its size
+    ivec4 lvl;          // x = the level
+    vec4  obsECEFDir;   // xyz = the observer's ECEF unit vector (the frame the points are formed in)
+} pc;
+
+layout(set = 0, binding = 0) uniform sampler2D earthElevTex;
+layout(set = 0, binding = 1) uniform sampler2D earthSpecTex;
+#define CLOUD_PARAMS_BINDING 2
+#include "cloud_params.glsl"
+layout(set = 0, binding = 3, r32f)    uniform writeonly image2DArray clipA;
+layout(set = 0, binding = 4, rgba16f) uniform writeonly image2DArray clipB;
+
+#include "common.glsl"
+#include "terrain.glsl"
+#include "terrain_detail.glsl"
+#define TD_CLIP_BAKE
+#define TD_CLIP_SET 0
+#define TD_CLIP_UBO_BINDING 5
+#include "terrain_clip.glsl"
+
+void main() {
+    ivec2 lc = ivec2(gl_GlobalInvocationID.xy);
+    if (lc.x >= pc.rect.z || lc.y >= pc.rect.w) return;
+    int   j     = pc.lvl.x;
+    ivec2 a     = pc.rect.xy + lc;                                              // the texel's absolute plane cell
+    vec2  d     = (vec2(a - tcCell[j].xy) + 0.5 - tcLevel[j].zw) * tcTexel(j);  // its centre from the observer (m)
+    // The ground point in the anchor's frame is (X, Y, sqrt(R^2 - X^2 - Y^2)); its offset from the observer's (tcObs)
+    // has the height difference formed without cancellation: (Z^2 - Zo^2) / (Z + Zo).
+    float X  = tcObs.x + d.x, Y = tcObs.y + d.y;
+    float Z  = sqrt(max(R_EARTH * R_EARTH - X * X - Y * Y, 1.0));
+    float dz = -(d.x * (2.0 * tcObs.x + d.x) + d.y * (2.0 * tcObs.y + d.y)) / (Z + tcObs.z);
+    vec3  eE = d.x * tcAxE.xyz + d.y * tcAxN.xyz + dz * tcAxU.xyz;              // ECEF, from the observer's sea point
+    vec3 enuX, enuY, enuZ;
+    enuBasis(pc.obsECEFDir.xyz, enuX, enuY, enuZ);
+    vec3 q = vec3(dot(eE, enuX), dot(eE, enuY), dot(eE, enuZ));
+
+    float h0, hMip3;
+    tdDemAt(earthElevTex, earthSpecTex, q, enuX, enuY, enuZ, h0, hMip3);
+    float h  = 0.0;
+    vec4  sd = vec4(0.0);
+    if (tdEnabled()) {
+        // tdOctaves' stages by hand: the coarse octaves (their gradient is what the erosion follows, B.yz), the
+        // erosion (not stored: the readers evaluate it; here for the slope it adds, which damps the fine octaves),
+        // the fine octaves. A = everything but the erosion's own height.
+        float lod = kTcLod0 * exp2(float(j));
+        TdState st = tdBegin(q, enuX, enuY, enuZ, h0, hMip3);
+        tdValueOctaves(st, lod, kTdCoarseOctaves);
+        vec3 gC = st.grad;
+        tdErosion(earthElevTex, st, lod);
+        tdValueOctaves(st, lod, kTdOctaves);
+        h  = st.h - st.hEro;
+        sd = vec4(st.hC3, dot(gC, tcAxE.xyz), dot(gC, tcAxN.xyz), 0.0);
+    }
+    ivec2 tc = a & (int(kTcN) - 1);
+    imageStore(clipA, ivec3(tc, j), vec4(h));
+    if (j >= kTcBFirst) imageStore(clipB, ivec3(tc, j - kTcBFirst), sd);
+}

@@ -665,6 +665,67 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   used 21600x10800 texel offsets on the 14999x7500 DEM; the per-pixel jittered march start was the
   salt-and-pepper silhouette speckle.
 
+### The terrain height clipmap (2026-11-10) — `shaders/include/terrain_clip.glsl`, `terrain_clip_bake.comp`, `SatelliteSimTerrainClip.cpp`
+
+The VALUE octaves of the procedural detail are baked into nested textures round the observer, and the three terrain
+marches of a frame (scene_depth.comp's quarter and half passes, sat_sky.frag's full-resolution pass) read them instead
+of evaluating the octaves at every step. `clouds.terrain_clipmap` 1 (0 = the procedural shaders; no UI). Issue
+issue_20261109_184851; evidence `harness_runs/cloudsky/attr1`, `lc2` (t2_*), `tc`.
+
+- **Why.** At ground level the procedural detail was the largest single cost of the frame, above the clouds:
+  `clouds.terrain_detail_strength 0` = -7.7 ms at clear_2m (frame 21.9: sky pass 9.6 -> 5.1, scene depth 4.4 -> 1.0), -7.3 at
+  term_2m, -9.9 at the Reflect-beam site (30.2); the march over the DEM alone is ~1 ms. The surface is static, and
+  the marches re-derived it per step, per pass, per frame.
+- **What is baked.** Level j (0..10) holds the value octaves at the geometry LOD lod_j = 1 m x 2^j: every octave whose
+  cell is at least 2 lod_j, with the damping the erosion's slope adds to the fine ones (the bake runs tdValueOctaves,
+  tdErosion, tdValueOctaves, as tdOctaves does, and stores the height WITHOUT the erosion's own). An octave's weight is
+  smoothstep(lod, 2 lod, cell) and its damping depends only on coarser octaves, so for lod_j <= lod < 2 lod_j the height
+  is exactly mix(level j + 1, level j, smoothstep(lod, 2 lod, 2 lod_j)): two reads. A (r32f, 11 layers of 1024^2, 46 MB):
+  that height, read with one gather and exact bilinear weights. B (rgba16f, 8 layers from level 3, 67 MB): x = the
+  first three octaves' height (the terrain shadow's surface, terrainSunShadow), yz = the coarse octaves' gradient
+  along the plane's axes (what the erosion follows).
+- **The erosion is NOT baked.** Its gullies crease at the scale of a pixel, far below a level's texel (lod / 3). A first
+  cut that baked it (height + gradient) drew the gullies soft and their low-Sun shading flat (the Alps at an 8-degree
+  Sun: mean |diff| 0.73 levels against a floor of 0.13, the `shadow` debug view 5.4 levels off an exact evaluation at the
+  hit where the procedural march is 0.5 off). It is evaluated as before: once per march, at the sample where the ray
+  comes within its bound of the value surface (tdClipErosion: tdErosion fed the baked coarse gradient), then taken as
+  a plane through that sample for the refinement and the shading normal (gTdHitEro). The normal's value octaves stay
+  procedural (terrainDetailLinEro: they run at the shading LOD, finer than the geometry's).
+- **Levels 0-3 hold the same sum** (the finest octave's cell is 16 m): they exist for their texels. With level 3 alone
+  (2.7-m texels, bilinear) the ground within ~80 m of a 2-m eye sat a few centimetres off and its features moved
+  pixels at that grazing angle (the Alps from the ground 1.4 levels, with levels 0-2 0.5-0.7 against a floor of 0.35-0.5).
+- **The plane.** Orthographic onto the tangent plane at an anchor point (re-anchored, and everything rebaked, 300 km
+  away: 0.1% of foreshortening). Texel = lod_j / 3, so a level reaches 170 lod_j from the observer, and the LOD is at
+  least 1.2% of the distance: the level a point needs always holds it (a guard takes a coarser level outside the
+  window). Toroidal: a texel lives at its absolute plane cell mod 1024; the CPU (double) gives each level the
+  observer's cell and the fraction inside it, so the shaders form no coordinate larger than a window.
+- **The bake** (recordTerrainClip, before the scene-depth passes): the strips of each level's window that came in since
+  last frame, one dispatch a rectangle. Standing still: nothing. Walking: ~2k texels a frame, 280 m/s at 2.6 km: ~9k,
+  5.7 km/s at 4.5 km: ~50k. A level the observer crosses half of in one frame is dropped and the readers start one
+  coarser (`tcAxU.w`). The finest level kept comes from the nearest ground on the CPU's DEM (under the eye and on five
+  rings round it, + the detail's relief, x 0.7): from 5 km up the levels under 32 m are not baked. Rebaked whole when the
+  terrain sliders or the launch pads' graded ground change (a hash) and on a jump (~11.5 M texels, one frame).
+- **Where it runs.** The readers' set (UBO + A + B) is set 1 of the scene-depth and sky pipeline layouts; the variants
+  are scene_depth_clip.comp.spv, sat_sky_clip.frag.spv and sat_sky_taa_clip.frag.spv (-DTD_CLIPMAP). Two samplers past
+  sat_sky.frag's sixteen: on a device at the 16-sampler floor (build.md) there is no clipmap and the procedural
+  shaders run (`tcSupported`). The observer's own ground (the frame pass, one thread) stays procedural. SKY_LITE /
+  SKY_ENV have no detail and no clipmap. `state` -> `observer.terrain_clip` (active, finest_level, baked_texels).
+- **Measured** (RTX 3070 Ti, 1920x1009, the user's settings, GPU frame p50, clipmap off -> on, interleaved in one app):
+  the eight golden views: Alps ground 28.8 -> 21.4 ms, Alps 3.5 km low Sun 22.5 -> 19.8, Everest 24.8 -> 18.9, Grand
+  Canyon 33.9 -> 27.3, Rockies 10.5 km 17.1 -> 17.3, Andes 30 km 18.0 -> 17.1, Himalaya 400 km equal, Big Sur 34.5 ->
+  28.1. Matrix cells (x3): clear_2m 21.3 -> 16.3 (sky pass 10.3 -> 7.7, scene depth 4.25 -> 1.8), ovc_2m 27.1 -> 21.4,
+  term_2m 27.0 -> 21.8, beams_site 29.2 -> 23.5, stA_2m / dense_6km / ovc_6km / ovc_850km within noise. Moving (GPU
+  mean over a 3-s path): walking 29.0 -> 21.0, 280 m/s 19.4 -> 16.4, 5.7 km/s 18.8 -> 16.9, a 1.5 -> 14 km climb 21.9 ->
+  19.4. Images, mean |diff| against the procedural shaders (a recapture of the same shaders in brackets): Alps ground
+  0.66 (0.35), Alps low Sun 0.18 (0.17), Everest 0.92 (1.00), Grand Canyon 1.36 (1.55), the four from altitude and
+  every matrix cell at the floor. Against a march with a 20x tighter hit test and no erosion plane (the Alps ground):
+  procedural 1.75, clipmap 1.73 levels: what is left between the two is inside the march's own tolerance.
+- **Costs.** 113 MB of VRAM. From altitude the sky pass is ~0.4-0.7 ms dearer where no fine level is read (two
+  gathers a height against one or two hashed octaves), paid back in the depth passes (Rockies 10.5 km: +0.2 ms net).
+- **Before it** (same day, e8220f3): scene_depth.comp ran the whole detail + erosion at the observer in every texel
+  for the eye's ground height; a one-workgroup frame pass (quarterPass 2) writes it to terrainFrameBuf once and both
+  depth passes read it (scene depth 4.49 -> 4.23 ms at clear_2m).
+
 ### Elevation texture encoding — READ THIS BEFORE TOUCHING TERRAIN CODE
 
 **File:** `assets/textures/earth_elevation.png` (R8_UNORM, 14999×7500 — ~2.67 km/texel; older notes said 21600×10800 — land-only DEM)

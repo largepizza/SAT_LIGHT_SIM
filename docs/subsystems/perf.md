@@ -713,5 +713,16 @@ depth pass, so its variants interleave like the sky's and the clouds'.
     numeric leaf of `perf`'s state and CPU timings (a diff separates only the pass timers), uploads (1.56 MB, 27 copies a
     frame in both), the app's dedicated / shared GPU memory (2258 / 221 MB, constant), the app log. One submit a frame.
     Untested: the driver's power management mode (NVIDIA Control Panel, "Prefer maximum performance").
+  - **Round 3 (2026-11-10): the terrain height clipmap** (terrain.md "The terrain height clipmap"): the value octaves of
+    the terrain detail baked into 11 nested levels round the observer, read by the three terrain marches; the erosion
+    still evaluated once per march. Ground frames -5 to -7.5 ms (clear_2m 21.3 -> 16.3, ovc_2m 27.1 -> 21.4, term_2m
+    27.0 -> 21.8, beams_site 29.2 -> 23.5, the Alps from the ground 28.8 -> 21.4), nothing from 6 km up. Tried on the
+    way: baking the erosion too (-10 to -12 ms, but soft gullies and flat low-Sun shading: not kept); the composite's
+    (cloud_march.comp) per-pixel observerEffHeightDetailed replaced by the DEM alone: no change, left.
+    RENDER SCALE on High, measured for the user's decision (harness_runs/cloudsky/r3): 80% = clear_2m 20.7 -> 17.9,
+    term_2m 24.6 -> 21.4, beams_site 28.6 -> 23.4, stA_2m 18.9 -> 16.5, dense_6km 19.9 -> 16.5 (the sky pass only).
+    `clouds_v2.sparse_block_orbit_moving` 1 (default 0, the user's decision from clips): the orbit block through a
+    pan, 27.2 -> 20.3 ms (stA_850km), 28.9 -> 21.3 (brk_850km), 22.3 -> 19.6 (dense_300km); boosted flight unchanged
+    (36.9 -> 33.8, 35.8 -> 36.3): something else holds the 2x2 grid there.
 
 ---

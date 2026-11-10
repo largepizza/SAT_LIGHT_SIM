@@ -354,6 +354,36 @@ add_custom_command(
 )
 list(APPEND SPV_FILES ${SKY_TAA_SPV})
 
+# The terrain height clipmap's variants (-DTD_CLIPMAP; shaders/include/terrain_clip.glsl): the full sky, its TAA variant
+# and the scene-depth pass with the terrain detail read from the baked levels (SatelliteSimTerrainClip.cpp).
+set(SKY_CLIP_SPV "${SHADER_OUT_DIR}/sat_sky_clip.frag.spv")
+add_custom_command(
+    OUTPUT ${SKY_CLIP_SPV}
+    COMMAND ${GLSLC} -I "${SHADER_INC_DIR}" -DTD_CLIPMAP "${SHADER_SRC_DIR}/sat_sky.frag" -o ${SKY_CLIP_SPV}
+    DEPENDS "${SHADER_SRC_DIR}/sat_sky.frag" ${SHADER_HEADERS}
+    COMMENT "Compiling shader: sat_sky.frag (TD_CLIPMAP variant)"
+    VERBATIM
+)
+list(APPEND SPV_FILES ${SKY_CLIP_SPV})
+set(SKY_TAA_CLIP_SPV "${SHADER_OUT_DIR}/sat_sky_taa_clip.frag.spv")
+add_custom_command(
+    OUTPUT ${SKY_TAA_CLIP_SPV}
+    COMMAND ${GLSLC} -I "${SHADER_INC_DIR}" -DSKY_TAA -DTD_CLIPMAP "${SHADER_SRC_DIR}/sat_sky.frag" -o ${SKY_TAA_CLIP_SPV}
+    DEPENDS "${SHADER_SRC_DIR}/sat_sky.frag" ${SHADER_HEADERS}
+    COMMENT "Compiling shader: sat_sky.frag (SKY_TAA + TD_CLIPMAP variant)"
+    VERBATIM
+)
+list(APPEND SPV_FILES ${SKY_TAA_CLIP_SPV})
+set(DEPTH_CLIP_SPV "${SHADER_OUT_DIR}/scene_depth_clip.comp.spv")
+add_custom_command(
+    OUTPUT ${DEPTH_CLIP_SPV}
+    COMMAND ${GLSLC} -I "${SHADER_INC_DIR}" -DTD_CLIPMAP "${SHADER_SRC_DIR}/scene_depth.comp" -o ${DEPTH_CLIP_SPV}
+    DEPENDS "${SHADER_SRC_DIR}/scene_depth.comp" ${SHADER_HEADERS}
+    COMMENT "Compiling shader: scene_depth.comp (TD_CLIPMAP variant)"
+    VERBATIM
+)
+list(APPEND SPV_FILES ${DEPTH_CLIP_SPV})
+
 # Two more compiles of sat_mesh.frag for the scene pass's depth pre-pass (SatMeshRenderer): a
 # depth-only variant (just the open-lattice cut-outs) and a shading variant with forced early
 # fragment tests and no discard, drawn with depth EQUAL — so each covered pixel is shaded ONCE. The

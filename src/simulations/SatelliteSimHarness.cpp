@@ -399,6 +399,8 @@ json SatelliteSim::harnessStateJson()
                      {"alt_m", eyeAsl},
                      {"agl_m", eyeAsl - ground},
                      {"ground_m", ground},
+                     {"terrain_clip", {{"active", terrainClipActive()}, {"supported", tcSupported}, {"finest_level", tcFinest},
+                                       {"baked_texels", tcBakedTexels}}},
                      {"ground_source", gpuGround ? "gpu" : "cpu"},
                      {"terrain_cpu_m", obsTerrainH},
                      {"height_offset_m", obsHeightOffset},
