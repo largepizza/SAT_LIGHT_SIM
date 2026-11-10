@@ -2122,8 +2122,12 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     dRotO = std::max(dRotO, std::abs(cpc.skyView[c][r] - cv2PrevSkyView[c][r]));
             const bool   turning  = dRotO > 0.3f * pixAngC || std::abs(tanHalf - cv2PrevTanHalf) > 1e-5f;
             const bool   quiet    = valid && cv2HistoryValid && eyeH > (double)cv2FullRateAboveKm * 1000.0 && quietPx < 0.1 && !turning;
-            cv2OrbitQuietFrames = quiet ? std::min(cv2OrbitQuietFrames + 1, 1000) : 0;
-            if (blkOrbit > blk && cv2OrbitQuietFrames >= kOrbitQuietFrames) { blk = blkOrbit; orbitBlock = true; stillBlock = false; }
+            // "sparse_block_orbit_moving" 1 (2026-11-10, the user's to judge from clips; default 0): the block also while the view
+            // moves, turns or zooms, 8 frames after the history became valid. Softer in motion (above), ~-10 ms in boosted flight.
+            const bool   moving   = cv2SparseBlockOrbitMoving > 0.5f && valid && cv2HistoryValid
+                                    && eyeH > (double)cv2FullRateAboveKm * 1000.0;
+            cv2OrbitQuietFrames = (quiet || moving) ? std::min(cv2OrbitQuietFrames + 1, 1000) : 0;
+            if (blkOrbit > blk && cv2OrbitQuietFrames >= (moving ? 8 : kOrbitQuietFrames)) { blk = blkOrbit; orbitBlock = true; stillBlock = false; }
         }
         cv2SparseBlockNow = (cv2FullResActive() && !cv2FullRateNow && !cv2HalfRateNow && !cv2AdaptiveNow) ? (uint32_t)blk : 2u;
         stillBlock = stillBlock && cv2SparseBlockNow > 2;

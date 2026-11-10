@@ -5517,6 +5517,7 @@ private:
     // reproject (the eye's parallax over the cloud layer, the volumes' slide under time warp) stays a small fraction of a
     // pixel a frame. See fillCloudsV2Params.
     float cv2SparseBlockOrbit = 3.0f;
+    float cv2SparseBlockOrbitMoving = 0.0f;   // 1 = the orbit block also in motion ("sparse_block_orbit_moving"; the user's to judge)
     float cv2FullResMovingMode = 1.0f;    // full-res clouds while the view moves (issues 20261022_210358 / _220214): 0 sparse, rotating; 1 sparse, held pixel (default since 2026-11-07, any height); 2 full rate (every pixel, ~3x the march; above full_rate_above_km)
     bool  cv2CdcActive = false;           // this frame (fillCloudsV2Params)
     // 2026-10-22 (r1022 orbit, the matrix's "clouds thin out climbing from orbit"): the clipmap's bake reads the field at the
