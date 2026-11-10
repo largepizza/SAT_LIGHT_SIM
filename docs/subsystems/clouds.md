@@ -685,7 +685,15 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     stride 1 costs +4.5 ms at shot 5 and +1.6 at the overcast deck from 6.5 km. Image vs stride 1 (mean |diff| / changed
     pixels; the floor in brackets): shot 5 0.50 / 0.22% (0.34 / 0.05%), overcast 6.5 km and dense 2 m at the floor, shot 1
     (733 km) 1.50 / 3.2% (0.73 / 0.4%): the faint veil between puffs changes grain. The user picks 2 or 3 from pairs
-    (sent 2026-11-10); 2 is the default until then.
+    (sent 2026-11-10); the user kept 2.
+  - **No sky probe under a large pixel** (`CV2_PROBE_FP` 250.0 in cloud_v2_march.comp, lightAmbOD; 0 = always read). The
+    light march's read 250 m above the sample (sigUp, the sky light's occlusion) is skipped where the sample's footprint
+    is past 250-500 m (the threshold jittered per visit, so no ring round the nadir): from ~250 km up the read is inside
+    the pixel, and the shading's other bound, the path to the column's top (tauUp), stands alone. Interleaved x3
+    (1600x900, the user's settings), cloud bucket: ovc_850km 16.2 -> 15.5, stA_850km 15.75 -> 15.38, dense_300km 12.66 ->
+    12.34; dense_6km and stA_2m unchanged. Images at the floor in all five (mean |diff| 0.49-1.79 against 0.48-1.77 for a
+    recapture of the same shader). 128 registers.
+  - **A cache of light marches by world cell does not hold the look** (2026-11-10, not kept; perf.md "Round 2").
   - **Where the march's time goes, 2026-11-09** (knockout variants, shot 1 / shot 3 / shot 5, cloud bucket ms). Base 60.2 /
     47.3 / 28.0; no march at all 6.2 / 4.9 / 5.1 (the rest of the bucket: far layer, lightning + Sun volume bakes, froxels,
     AP volume, resolve + copies, composite). No lighting loop 26.1 / 23.9 / 13.4, so the light loop is 34 / 23 / 15 ms;
