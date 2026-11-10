@@ -5513,6 +5513,10 @@ private:
     float cv2SmoothMoving = 0.5f;         // smooth tiles while the eye moves (0 = only after 64 still frames; > 0: on, the threshold x this; 2026-11-04)
     float cv2SparseBlock = 2.0f;          // full-res clouds' sparse march: one ray per K x K block a frame (2, 3 or 4; 2026-11-04)
     float cv2SparseBlockStill = 3.0f;     // ... and once the view has been still kCv2StillBlockFrames (2026-11-08, issue_20261108_172846; 2 = off)
+    // ... and from ORBIT (2026-11-09, issue_20261109_184851; 2 = off): above full_rate_above_km, while what the history cannot
+    // reproject (the eye's parallax over the cloud layer, the volumes' slide under time warp) stays a small fraction of a
+    // pixel a frame. See fillCloudsV2Params.
+    float cv2SparseBlockOrbit = 3.0f;
     float cv2FullResMovingMode = 1.0f;    // full-res clouds while the view moves (issues 20261022_210358 / _220214): 0 sparse, rotating; 1 sparse, held pixel (default since 2026-11-07, any height); 2 full rate (every pixel, ~3x the march; above full_rate_above_km)
     bool  cv2CdcActive = false;           // this frame (fillCloudsV2Params)
     // 2026-10-22 (r1022 orbit, the matrix's "clouds thin out climbing from orbit"): the clipmap's bake reads the field at the
@@ -5859,6 +5863,8 @@ private:
     // Frame-to-frame state for the temporal resolve.
     uint32_t cv2Frame = 0;
     bool cv2FullRateNow = false;       // this frame's march covers every half-res pixel
+    int cv2OrbitQuietFrames = 0;       // frames in a row the orbit block's conditions held (cv2SparseBlockOrbit)
+    bool cv2OrbitBlockNow = false;     // this frame marches the orbit block (harness `state`)
     uint32_t cv2SparseBlockNow = 2;    // this frame's sparse block (K x K pixels a ray; "sparse_block" on the full-res grid's sparse march)
     bool cv2FullResHeldNow = false;    // this frame's full-res sparse sample is held at one pixel of each block (cv2FullResMovingMode 1)
     bool cv2HalfRateNow = false;       // ... or, "Half rate while moving", half of them (a checkerboard)
