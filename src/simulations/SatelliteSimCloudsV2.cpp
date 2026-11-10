@@ -1342,7 +1342,11 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     mix(cv2FullRateAboveKm);
     mix(cv2CdcSkip);
 
-    const bool nearPrev = glm::length(eye - cv2PrevEye) < 20000.0 && std::abs(simT - cv2PrevSimT) < 600.0;
+    // A step of the eye past 20 km drops the history (a jump). From altitude a step is a jump only past a share of the
+    // eye's height ("history_jump_frac", EXPERIMENT 2026-11-10, 0 = 20 km at any height): boosted flight at 850 km
+    // moves 20-60 km a frame, a fraction of the view, and lost its history every frame.
+    const double jumpM = std::max(20000.0, (double)cv2HistoryJumpFrac * eyeH);
+    const bool nearPrev = glm::length(eye - cv2PrevEye) < jumpM && std::abs(simT - cv2PrevSimT) < 600.0;
     bool valid = cv2HistoryValid && h == cv2SettingsHash && nearPrev;
     // The Sun shadow grids (below) survive what only drops the SCREEN history: the HQ photo recreates the screen
     // images and switches the march to full rate, and with the grids reset by that the photo's first ~40 frames

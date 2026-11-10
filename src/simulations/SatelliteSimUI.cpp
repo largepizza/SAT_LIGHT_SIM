@@ -9880,6 +9880,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2SparseBlockStill = std::clamp(c.value("sparse_block_still", cv2SparseBlockStill), 2.0f, 4.0f);
         cv2SparseBlockOrbit = std::clamp(c.value("sparse_block_orbit", cv2SparseBlockOrbit), 2.0f, 4.0f);
         cv2SparseBlockOrbitMoving = std::clamp(c.value("sparse_block_orbit_moving", cv2SparseBlockOrbitMoving), 0.0f, 1.0f);
+        cv2HistoryJumpFrac = std::clamp(c.value("history_jump_frac", cv2HistoryJumpFrac), 0.0f, 1.0f);
         cv2FarLayerMinBlend = std::clamp(c.value("far_layer_min_blend", cv2FarLayerMinBlend), 0.0f, 0.5f);
         cv2SmoothMoving = std::clamp(c.value("smooth_moving", cv2SmoothMoving), 0.0f, 2.0f);
         cv2HistDepthTest = std::clamp(c.value("history_depth_test", cv2HistDepthTest), 0.0f, 1.0f);
@@ -10672,6 +10673,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"sparse_block_still", cv2SparseBlockStill},
         {"sparse_block_orbit", cv2SparseBlockOrbit},
         {"sparse_block_orbit_moving", cv2SparseBlockOrbitMoving},
+        {"history_jump_frac", cv2HistoryJumpFrac},
         {"far_layer_min_blend", cv2FarLayerMinBlend},
         {"smooth_moving", cv2SmoothMoving},
         {"history_depth_test", cv2HistDepthTest},

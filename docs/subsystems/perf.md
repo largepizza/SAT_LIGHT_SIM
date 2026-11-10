@@ -723,6 +723,11 @@ depth pass, so its variants interleave like the sky's and the clouds'.
     term_2m 24.6 -> 21.4, beams_site 28.6 -> 23.4, stA_2m 18.9 -> 16.5, dense_6km 19.9 -> 16.5 (the sky pass only).
     `clouds_v2.sparse_block_orbit_moving` 1 (default 0, the user's decision from clips): the orbit block through a
     pan, 27.2 -> 20.3 ms (stA_850km), 28.9 -> 21.3 (brk_850km), 22.3 -> 19.6 (dense_300km); boosted flight unchanged
-    (36.9 -> 33.8, 35.8 -> 36.3): something else holds the 2x2 grid there.
+    (36.9 -> 33.8, 35.8 -> 36.3): the matrix's boosted path moves ~60 km a frame, past the 20-km step that drops the
+    history (fillCloudsV2Params nearPrev), so every frame is a fresh 2x2 grid with no history, and the block's gate
+    (history valid) never opens. `clouds_v2.history_jump_frac` (default 0 = 20 km at any height; EXPERIMENT, the
+    user's decision from a clip): a step is a jump only past this share of the eye's height. At 0.1 the history
+    survives the flight: stA_850km boosted 36.3 -> 35.7 ms alone, 26.6 ms with the moving block (cloud bucket 27.8 ->
+    18.0), and the clouds smear along the flight direction where today they are crisp and grainy.
 
 ---
