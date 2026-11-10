@@ -94,6 +94,10 @@ const float kBounceOpen    = CV2_BOUNCE_OPEN;
 #ifndef CV2_FAINT_MODE
 #define CV2_FAINT_MODE 0
 #endif
+// A faint FINE sample's stride in steps (the view march, "FAINT STRIDE"; 1.0 = off, the A/B: -D CV2_FAINT_STRIDE=1.0).
+#ifndef CV2_FAINT_STRIDE
+#define CV2_FAINT_STRIDE 2.0
+#endif
 const float kBounceAlbHigh = CV2_BOUNCE_ALB_HIGH;
 // The cloud droplets' Mie phase (2026-10-22, tools/make_mie_lut.py): 4 pi p(theta) / 8 per angle (x) and effective radius
 // (y, cv2.mie.y), linear sRGB. A texel per 0.088 deg: the corona's rings, the cloudbow, the glory.
@@ -1033,6 +1037,15 @@ void main()
             // of the cloud march under an anvil at 12.4 km (issue 20261023_230322). There a pure thin-ice sample stands for
             // perf.x steps. Opt-in: a dense cloud starting inside the stride is entered up to ~2 steps late.
             if (f.thin > 0.9 && !fine && fp < cv2.perf.y) stepW = max(stepW, cv2.perf.x * stepF);
+            // FAINT STRIDE (2026-11-09, issue_20261109_184851; CV2_FAINT_STRIDE, 1 = off): a FAINT fine sample (the lighting's
+            // `faint`: under CV2_FAINT_OD of optical depth over the light march's length, no light march) stands for
+            // CV2_FAINT_STRIDE steps. Haze this thin is lit without its own shadow and adds under 1% of opacity a step, but
+            // a grazing ray took a fine step and a field read for each: from 6.5 km over a deck 22 of the 23 samples a ray
+            // kept were faint. (The user: "haze is haze, so the look can be cheapened where it can".)
+            if (CV2_FAINT_STRIDE > 1.0 && fine && f.thin <= 0.5 && f.sigma * cv2.light.x < CV2_FAINT_OD) {
+                pathLen += (CV2_FAINT_STRIDE - 1.0) * stepF;
+                stepW = max(stepW, CV2_FAINT_STRIDE * stepF);
+            }
             float Tstep = exp(-f.sigma * stepW);
             float w     = T * (1.0 - Tstep);
             // Its light is added in the batch's second half, below.
