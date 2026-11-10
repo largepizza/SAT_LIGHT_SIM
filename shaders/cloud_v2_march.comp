@@ -95,6 +95,9 @@ const float kBounceOpen    = CV2_BOUNCE_OPEN;
 #define CV2_FAINT_MODE 0
 #endif
 // A faint FINE sample's stride in steps (the view march, "FAINT STRIDE"; 1.0 = off, the A/B: -D CV2_FAINT_STRIDE=1.0).
+#ifndef CV2_PROBE_FP
+#define CV2_PROBE_FP 250.0   // the footprint (m) past which the light march's sky probe is skipped; 0 = never
+#endif
 #ifndef CV2_FAINT_STRIDE
 #define CV2_FAINT_STRIDE 2.0
 #endif
@@ -216,6 +219,11 @@ void lightAmbOD(vec3 rel, vec3 ldir, vec3 up, float eyeH, mat3 enuToEcef, int nL
         // steps across a smooth surface, and the big smooth storm domes showed contour ripples (pass 13).
         // Light LOD: two steps spanning the same length (the loop's bounds stay uniform).
         if (lod && k >= 2 && k < nL) continue;
+        // No sky probe under a large pixel (2026-11-10): 250 m above the sample is inside the pixel from ~250 km up, and
+        // the shading's other bound (the path to the column's top, tauUp) stands alone there. Faded in by chance over a
+        // 250-500 m footprint (no ring round the nadir where the footprint crosses a threshold). Cloud bucket -0.3..-0.9 ms
+        // at 850 / 300 km (1600x900), images at the floor, 128 registers. CV2_PROBE_FP 0 = always read.
+        if (CV2_PROBE_FP > 0.0 && k == nL + 1 && wantLight && fp > CV2_PROBE_FP * (1.0 + fract(jitter + 0.77))) continue;
         if (lodN && k < nL && (k & 1) == 1) continue;
         // Each step at its OWN offset (golden-ratio steps from the shared jitter, 2026-10-14): one offset for all of them
         // moved every sample forward or back together, and their errors added (raw std 26.5 -> 18.8 levels alone).

@@ -686,5 +686,32 @@ depth pass, so its variants interleave like the sky's and the clouds'.
     half the march" compared across regimes (clouds.md, "Tried and dropped, 2026-11-09").
   - **The unstable in-cloud cell:** stB_1km (the eye inside a storm cloud) is not a stable still: five captures of one
     view span 115-135 mean levels, so it cannot gate an image comparison.
+  - **Round 2 (2026-11-10, evidence `harness_runs/cloudsky/attr1`, `lc1`-`lc3`, `fog`, `reg`, `FINDINGS.md` section 7).**
+    WHERE A GROUND FRAME GOES (1920x1009, the user's settings, knockouts twice a cell): the terrain march is the largest
+    item, above the clouds -- `terrain_march` off = -8.8 ms at clear_2m (frame 20.7: cloud bucket 5.9, sky pass 9.7, scene
+    depth 4.3), -8.4 ovc_2m, -7.1 term_2m, -12.1 at the beam site (28.8), and nearly all of it is the procedural detail
+    (`clouds.terrain_detail_strength 0`: -7.7 / -7.3 / -9.9 ms; the sky pass 9.6 -> 5.1, scene depth 4.4 -> 1.0 at
+    clear_2m), evaluated in three marches a frame (quarter, half, full resolution). `terrain_shadow_strength 0` -1..-1.5.
+    Render scale 0.8 / 0.67 (sky TAA upscaling): -3.5 / -4.6 ms clear_2m, -4.5 / -7.9 beam site, all in the sky pass (scene
+    depth and the cloud bucket do not follow it). From 850 km: fog_layer -2.3..-3.2 ms, atmosphere_loop -1.4..-1.7. The 8
+    GPU buckets sum to the total within 0.15 ms.
+    KEPT: no sky probe under a large pixel (cloud_v2_march.comp `CV2_PROBE_FP` 250; clouds.md, the perf pass's bullets).
+    TRIED AND DROPPED: (1) a LIGHT CACHE -- a hash table (2^23 entries) of the light march's answers by world cell (the
+    drifted cube-face coordinates + height; 2-4 footprints across, 16-128 m tall), read and written at a jittered
+    position, 128 registers. One answer a cell: cloud bucket 27.1 -> 24.0 at shot 1 with grain on the tops (2.4 levels, 9%
+    of pixels past 8); a running mean answering after 4-8 marches: 16.9 -> 14.0 (1600x900) with the tops mottled and grey
+    (2.9 levels, 12%; floor 0.8, 0.3%); cells 4 footprints x 128 m: 24.2 -> 16.7, flat grey (5.2 levels, 28%). The light
+    under a top changes over tens of metres of depth, so cells that keep the look are millions a view, each visited every
+    few hundred frames, and a 32-lane group waits for any lane that marches. (2) The fog march at 8 / 6 steps above
+    120 km: -0.2 / -0.4 ms. (3) The blue-noise tile in device-local memory (it is in plain host memory): no change.
+    THE SPEED REGIMES, MORE (80 x `perf frames=45` at shot 1, four runs): the switch is abrupt (within one 45-frame
+    sample): slow for 15-50 s after the load, then fast with relapses of ~2 s at irregular gaps. Slow / fast GPU 37.3 /
+    31.2 ms (1920x1009); cloud bucket +30%, sky pass +19%, satellite_star_draw +18%, orbit_compute 0: the texture-heavy
+    passes, so NOT the clouds alone as written above. GPU clock 1905 MHz and no clock-event flag throughout one run (4-5
+    Hz log; another run showed the driver's gpu_idle flag at 1800 MHz for 24 s then 2-4 s bursts, the same pattern), power
+    220 W slow / 231 W fast. Ruled out: other processes (Windows GPU Engine counters: only the app above 0.5%), every
+    numeric leaf of `perf`'s state and CPU timings (a diff separates only the pass timers), uploads (1.56 MB, 27 copies a
+    frame in both), the app's dedicated / shared GPU memory (2258 / 221 MB, constant), the app log. One submit a frame.
+    Untested: the driver's power management mode (NVIDIA Control Panel, "Prefer maximum performance").
 
 ---
