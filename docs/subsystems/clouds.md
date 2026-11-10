@@ -666,6 +666,55 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     atmosphere loop ~9.5, the god rays 2-4 of that). From orbit: full rate vs sparse 38 vs 14 ms, Cb columns
     -30% (content as much as search), step base 120 m -15%, light steps 2 -14%, high layer -13%. The user's
     `shadow_ring1_cell_m` 100 (default 250) costs ~0.5 ms; `fovea_radius` does nothing with the adaptive rate off.
+- **Cloud march perf pass (2026-11-09/10, issue_20261109_184851, `harness_runs/cloudsky/`; matrix and numbers in perf.md
+  "Clouds and sky pass, 2026-11-09/10").** RTX 3070 Ti, 1920x1009, the user's settings; GPU frame ms, interleaved in one
+  app, 128 registers. The orbit block is under "Amortization" above, the far-layer threshold under "The far layer's edge".
+  - **Lit samples first** (cloud_v2_march.comp, commit 8d707c1; exact: same samples, same image). The march keeps up to
+    32 samples a batch and lights them in a second loop. The batch is filled from both ends: samples that will run a
+    light march (not thin ice, not faint) from slot 0 up, the rest from the top down, and the lighting loop visits the
+    front first. The ray's crystal habit is read at its first ice sample BEFORE the loop (the loop is no longer in ray
+    order). Why: only a few kept samples run a light march (`-DCV2_EVAL_COUNT`: from 6 km 0.76 of 23.3 kept samples a
+    ray, from 733 km 2.25 of 8.2), and in ray order they sat at a different batch slot in each ray, so the group's
+    lighting loop ran to the highest slot any ray had. Measured (user's settings x2): shot 1 70.8 -> 63.3, shot 3
+    62.3 -> 59.2, shot 5 37.7 -> 34.9, overcast deck from 6.5 km 27.0 -> 24.6, dense cumulus 2 m 17.8 -> 17.2. Images at
+    the A-vs-A floor at every view.
+  - **Faint stride** (`CV2_FAINT_STRIDE` 2.0 in cloud_v2_march.comp, commit 9721a8a; 1.0 = off, `-D CV2_FAINT_STRIDE=1.0`
+    for an A/B; a look change, user-approved in principle). A FINE sample that is faint (sigma x light-march length under
+    `CV2_FAINT_OD` 0.2: it runs no light march) stands for 2 steps. 3.0 measured within noise of 2 at most views. Measured
+    on top of lit-samples-first (x3): shot 1 63.6 -> 60.2, shot 3 59.9 -> 57.7, shot 5 34.1 -> 29.6; in the final stack
+    stride 1 costs +4.5 ms at shot 5 and +1.6 at the overcast deck from 6.5 km. Image vs stride 1 (mean |diff| / changed
+    pixels; the floor in brackets): shot 5 0.50 / 0.22% (0.34 / 0.05%), overcast 6.5 km and dense 2 m at the floor, shot 1
+    (733 km) 1.50 / 3.2% (0.73 / 0.4%): the faint veil between puffs changes grain. The user picks 2 or 3 from pairs
+    (sent 2026-11-10); 2 is the default until then.
+  - **Where the march's time goes, 2026-11-09** (knockout variants, shot 1 / shot 3 / shot 5, cloud bucket ms). Base 60.2 /
+    47.3 / 28.0; no march at all 6.2 / 4.9 / 5.1 (the rest of the bucket: far layer, lightning + Sun volume bakes, froxels,
+    AP volume, resolve + copies, composite). No lighting loop 26.1 / 23.9 / 13.4, so the light loop is 34 / 23 / 15 ms;
+    without the light march only (shading kept) 30.3 / 25.9 / 16.4, so the light march itself is 30 / 21.5 / 12 ms; the
+    density walk 20 / 19 / 8 ms. Counters a ray (shot 1 / 3 / 5): coarse steps 54 / 76 / 20 (+63 skipped by the clipmap
+    at shot 5), fine steps 20 / 15 / 33 of which empty 14 / 10.6 / 9.5, surface-refinement reads 1.2 / 1.5 / 1.2; kept
+    samples 8.2 / 8.8 / 23.3 of which thin or faint 5.9 / 6.9 / 22.5 and lit 2.25 / 1.9 / 0.76; light reads per lit sample
+    ~6 from orbit (pairs), ~11 at 6 km. Lit samples carry the image: mean weight 0.22 at shot 1, and only 2% (shot 1) to
+    17% (shot 3) are under 0.01. Rays: 458k a frame at shot 1 (2x2 of 1920x1009 less the smooth tiles), 216k at shot 5
+    (3x3 still).
+  - **Tried and dropped, 2026-11-09** (each measured, shot 1 unless said).
+    - A separate, compacted light pass (wavefront): a diagnostic variant capping every ray at one light march a batch
+      removed 69% of the marches and ~13 of ~22 ms: the cost per march is about constant (20-29 ns), so the cost follows
+      the rays that march, not how they are packed. Compaction would gain little; not built.
+    - Shared light marches from altitude (lit samples within a pixel footprint in one cloud share one march, corrected by
+      the view ray's optical depth along the light): -10 ms, but the field reads lighter between puffs (mean 6.4 levels,
+      31% of pixels). Parked: needs a better depth model.
+    - Tight far coarse read (the coarse read applies the mean erosion past the detail range, so it IS the fine read):
+      -2 ms, image above the floor (2.7 vs 0.8 levels). Dropped.
+    - No re-walk on re-entry into fine steps: -1.5 ms here, nothing elsewhere (noise level). Dropped.
+    - Leaving fine mode after 2 empty steps instead of 6: 2x SLOWER (140 vs 71 ms): the coarse field (no erosion) is far
+      fatter than the cloud, so rays re-enter at once and re-walk. 68-70% of fine steps from orbit find nothing (14 of 20
+      a ray).
+    - Vertical step cap 200 -> 800 m, termination at T 0.05 instead of 0.01: within noise at shots 1 and 5 (-5 ms at
+      shot 3 for the termination).
+    - A per-ray cache of the map / cell reads along a column: texture reads are ~10-15% of the march at shot 1 when
+      variants are compared in one speed regime (doubling every noise-volume read +3.7..+6 ms, every weather-map read
+      +0.9 ms, of ~42); an earlier reading of "half" compared across regimes (perf.md, the two speed regimes). Not built.
+    - 4x4 from orbit: 36.0 ms vs 3x3's 46.1 (first-cut numbers), visibly softer.
 - **Cloud rebuild experiments (2026-10-21/22, `.plans/CLOUD_REBUILD_PLAN.md`, runs and `summary.txt` in
   `harness_runs/s0/`).** All OFF by default (Weather tab "Rebuild experiments", slots 302-308) except the flash buffer's
   placement. Measuring tools kept: `-DCV2_EVAL_COUNT` variants count field evaluations per caller (`cv2EvalCount` at the
@@ -883,7 +932,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     grid's share against the interpolated estimate (at full weight the 8 in-between frames blended the 3-px estimate in
     2.7x as much and the settled image was visibly softer: lobes' outlines, the deck's grain). From orbit (900 km) the
     settled 3x3 lost the small cumulus puffs at any weight (0.97-1.24 levels from 2x2 vs an A-vs-A 0.53; 1/(K^2-1): 0.97,
-    0 = no estimate: 1.41 and grainier), hence the height gate. The smooth tiles are off at 3x3; the trade wins anyway
+    0 = no estimate: 1.41 and grainier), hence the height gate (2026-11-08; superseded 2026-11-09: that loss was the
+    estimate's share, and from orbit a block of its own now runs at 1/(K^2-1): see "THE ORBIT BLOCK" below). The smooth tiles are off at 3x3; the trade wins anyway
     where they do little (the report's anvil: 82% of the 2x2 slots marched) and also measured faster in smooth-ish views.
     Cloud march (RTX 3070 Ti, 1920x1009, interleaved x3 in one app, 2 -> 3, ms; `qa/waves/20261108/evidence/laggy/`):
     report shot 1 31.4 -> 21.4, shot 2 30.2 -> 23.7, the ITCZ tower (issue 20261106_184711) 18.7 -> 13.2, cumulus from
@@ -891,6 +941,38 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     captures vs 2x2 (mean |diff|, the A-vs-A floor in brackets): 1.47 (1.55), 0.78 (0.65), 1.25 (1.34), 1.75 (1.90),
     0.77 (0.78), 2.61 (3.35); shot 2's crops show slightly less grain in the deck's speckled patch. A still view with time
     running refreshes each pixel every 9 frames: slow evolution lags a little more in the history.
+  - **THE ORBIT BLOCK: one ray per 3x3 from orbit while the view is quiet** (`clouds_v2.sparse_block_orbit` 3; 2 = off;
+    2026-11-09, issue_20261109_184851, commit dc8cad8). **Gate** (SatelliteSimCloudsV2.cpp `fillCloudsV2Params`, "FROM
+    ORBIT"): the eye above `full_rate_above_km` (30 km), the history valid, the eye's step plus the volumes' slide under
+    time warp under 0.1 cloud-grid pixel a frame (over the nearest a cloud can be), NOT turning or zooming, for 64
+    frames. Real orbital speed and 1 min/s pass; boosted flight, 1 h/s, a pan and the first second after a jump do not
+    (they keep the 2x2 grid, held pixel, as before). **Resolve:** a pixel without a ray this frame takes 1 / (K^2 - 1)
+    of its 2x2 weight toward the interpolated estimate (`cv2.gnd.z` fraction 0.375; the still block below 30 km keeps
+    3 / (K^2 - 1), fraction 0.25). Unlike the 2x2 grid in "moving" states the block keeps ROTATING its ray (not held):
+    at 1 min/s from orbit the history holds, so the full-resolution image accumulates (held, it would be a
+    third-resolution image).
+    **Why the 2026-11-08 gate no longer holds** ("from orbit the settled 3x3 loses the small puffs"): it was the
+    estimate's share. Settled crops at issue shot 1 vs 2x2 (mean |diff| / pixels changed; A-vs-A 0.61 / 0.02%): 3x3 at the
+    full weight 2.40 / 8.0%, at 3/(K^2-1) 1.88 / 3.7%, at 1/(K^2-1) 1.58 / 0.64%, no estimate 3.56 / 12.6% (grainier). The
+    user compared the crops: "they match".
+    **Measured:** shot 1 2x2 71.9 -> 3x3 37.5 ms (base march); in the final stack the block alone is worth 9.1 ms at shot 1
+    and 12.8 ms at shot 3; at 1 min/s (the report's state) shot 1 69.2 -> 36.7 with the whole stack. 4x4 is ~-4 ms more
+    at shot 1 (cloud bucket 23.7 vs 26.8) but softer: not adopted.
+    **Stability** (matrix, mean |diff| moving vs settled). The FIRST CUT (8 quiet frames, on through turns) made every
+    orbit pan 0.3-0.7 levels worse (sunset_300km look 0.94 -> 1.66, stA_300km 0.79 -> 1.34, signed +: softer) and the
+    jump to 850 km 1.93 levels from settled at +60 frames (2x2: 0.68): hence "not while turning, 64 frames". The SHIPPED
+    gate (`mx/orbit2`): the pans are back at base's share of pixels past 16 levels (0.1%) and 0.05-0.3 levels of mean above
+    base (brk_300km 0.58 -> 0.70, dense 0.55 -> 0.60, ovc 0.46 -> 0.66, stA 0.79 -> 0.98, term 0.53 -> 0.62, sunset 0.94 ->
+    1.26): the moving frames are the 2x2 grid's as before, their settled reference is now the 3x3 image. Fast flight is
+    within 0.2 levels of base, time-warp steps 0.75 -> 0.70 / 0.65 -> 0.58 / 0.65 -> 0.60. One flag is left in
+    `cloudsky_matrix.py compare`: the stB_300km pan, signed 0.54 -> 1.24 (mean 1.06 -> 1.39, 0.0 -> 0.1% past 16).
+    **When a view becomes quiet** the image moves from the 2x2 image to the 3x3 one over the next frames (~1.6 levels
+    mean, 0.6% of pixels past 8 at shot 1): 60 frames after a jump to 850 km a frame is 1.7 levels from its settled
+    reference where the base run is 0.7.
+    **Costs with the shipped gate** (matrix `orbit2`, GPU p50 / path mean): stills as the first cut (ovc_850km 54.2 ->
+    30.8, dense_850km 46.2 -> 29.1, stA_850km 50.3 -> 24.9); a 90 deg/s pan keeps most of base's cost (brk_300km 25.3 ->
+    23.4, ovc_300km 34.2 -> 28.8, stA_300km 30.7 -> 27.6, sunset_300km 31.7 -> 27.5); time warp started from a settled
+    view keeps the block (brk_300km 27.0 -> 20.7, dense_300km 35.5 -> 24.7, stA_300km 39.6 -> 24.0).
   - **Smooth tiles while moving** (`smooth_moving` 0.5, no slider; 2026-11-04, perf.md "Moving marched every sparse
     slot"): the smooth tiles (cloud_v2_tiles.comp kMode 1 / 2, march pass F: a 32x32 tile whose last resolved frame
     varies by less than `smooth_tile_threshold` 30 levels in every 4x4 window is marched at a quarter of the sparse
@@ -2436,6 +2518,11 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   0.86 r 0.55, 0.19 / 0.61 r 0.59, 0.14 / 0.37 r 0.86). A diagnostic far shader that integrates cv2FieldLow down each
   ray (`harness_runs/iss173412/mkdiag.py`) checks the edge against the march at any "Detail" (mask IoU 0.78 / 0.95 / 0.69-0.75
   at 0.77 / 0 / 1.5).
+- **The far-layer pass is skipped below a visible share** (`clouds_v2.far_layer_min_blend` 0.004; 2026-11-09, issue
+  20261109_184851, commit c1bb3a8; 0 = the old behaviour). `cloudFarBlend()` returns 0 below the threshold and rescales
+  above it (continuous, still reaches 1). With the user's range 600 .. 8900 km the share was 0.0008 at 733 km and 0.003
+  at 850 km while cloud_v2_far.comp ran at full resolution: 2.1-3.1 ms (pass timer `lut_far`) at the report's shots 1, 2
+  and 4, for a layer nobody could see. The pass now starts at ~905 km.
 - **Review 25 (2026-10-02, records 10-12):** **a straight line across the sky in the clouds** (from under / inside a deck
   at 65 S) was review 22b's Sun-path darkening, applied only for cosSun > 0: with samples within ~2 km it was full on one
   side of the great circle 90 deg from the Sun and off on the other (debug view cloudrad stepped; transmittance and the

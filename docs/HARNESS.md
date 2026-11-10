@@ -433,6 +433,28 @@ python tools/harness/matrix_suite.py gen frag.satcmd --quick --fragment  # comma
   ~150 ms): ~13 min `--quick` (4 motions per altitude, one reference each), ~22 min full. Settling references is most of it.
 - A cell's failed command (no converged beam site, a satellite without a model) is listed under `errors` by `score`.
 
+## Clouds-and-sky matrix (`tools/harness/cloudsky_matrix.py`)
+
+`matrix_suite.py`'s generator and scorer over the cells of the cloud / sky perf pass (2026-11-09; the goal: High under
+25 ms across all of them). It crosses 9 sites (clear, broken cumulus, dense cumulus, overcast deck, two live storm
+objects, terminator, sunset, night; Reflect-beam cells from the matrix suite) with 6 altitudes (2 m .. 850 km), still +
+perf, 16 noise / 16 live frames, walk / fast / look / rise paths against settled references, time warp at 1 min/s, jumps
+between cells (`--jumps`, `jumpscore`) and the five shots of the issue as loaded (`--issue`).
+
+```
+python tools/harness/cloudsky_matrix.py gen harness_runs/cloudsky/mx/mx.satcmd [--issue] [--jumps] [--quick] [--only cell=brk_300km]
+python tools/harness/run.py harness_runs/cloudsky/mx/mx.satcmd --window 1920x1009 --settings user_data/settings.json --out harness_runs/cloudsky/mx/base
+python tools/harness/cloudsky_matrix.py score harness_runs/cloudsky/mx/base
+python tools/harness/cloudsky_matrix.py compare harness_runs/cloudsky/mx/base harness_runs/cloudsky/mx/after
+python tools/harness/cloudsky_matrix.py jumpscore harness_runs/cloudsky/mx/base
+```
+
+- **`--settings` is mandatory:** without it run.py starts from the built-in defaults, an older cloud look (98 clouds_v2
+  keys differ by more than 2%). `gen --core --quick --issue` is the ~6 min set to run after each kept change.
+- **Exposure** is metered once per cell (`exposure fast`, wait 45, `exposure hold`), not switched off: the suite's
+  `auto_exposure 0` clips every daytime frame. A full run is ~33 min. Timing traps (the two speed regimes, wait >= 350
+  frames after a switch, pair in one app): docs/subsystems/perf.md "Clouds and sky pass, 2026-11-09/10".
+
 ## Still-view flicker (`tools/harness/flicker.py`)
 
 Per-pixel temporal statistics of a recorded sequence with the camera still (review 18, the MEO cloud flicker):

@@ -610,5 +610,81 @@ depth pass, so its variants interleave like the sky's and the clouds'.
   (contended GPU, min of 3 reps), not the -4..-6 ms estimated: light steps 2-5 are S2 clipmap reads already, so only the
   far sample's field read goes. The image moved +6 levels at the sunset anvil (the volume's height knots span ~10 km
   along a ray under a 2-deg Sun).
+- **Clouds and sky pass, 2026-11-09/10 (issue_20261109_184851; branch perf/20261109/cloudsky; evidence
+  `harness_runs/cloudsky/`).** RTX 3070 Ti, 1920x1009, the user's settings.json. Kept, all ON with an off switch each
+  (clouds.md): lit samples first, the faint stride (`CV2_FAINT_STRIDE`), the far-layer threshold (`far_layer_min_blend`),
+  the orbit block (`sparse_block_orbit`, "Amortization"), the limb volume (`sky_ap_limb`, render-pipeline.md "THE LIMB
+  VOLUME"). Tool: `tools/harness/cloudsky_matrix.py` (docs/HARNESS.md "Clouds-and-sky matrix").
+  - **The matrix** (57 cells: 9 sites x 6 altitudes (2 m, 1.5 km, 6.5 km, 11 km, 300 km, 850 km) + night_3km + 2 Reflect-beam
+    cells; stills, 16 noise frames, 16 live frames, 69 motion paths scored against settled references, time warp at
+    1 min/s, 4 jumps, the report's 5 shots; sites: clear Sahara, broken cumulus Indian Ocean, dense cumulus Pacific 7 N,
+    overcast Antarctic plateau, two live storm objects from 40 km, terminator Siberia, sunset into the Sun, night).
+    GPU frame p50, ms, base -> after (mean of the cells; the worst cell after):
+
+    | altitude | mean | worst after |
+    |---|---|---|
+    | 2 m | 20.4 -> 20.3 | term_2m 28.6 |
+    | 1.5 km | 18.8 -> 18.5 | term_1km 22.1 |
+    | 6.5 km | 20.6 -> 18.9 | term_6km 22.8 |
+    | 11 km | 20.9 -> 19.1 | term_11km 21.1 |
+    | 300 km | 30.2 -> 21.7 | dense_300km 25.0 |
+    | 850 km | 39.5 -> 26.5 | ovc_850km 31.0 |
+
+    | weather / light | mean | worst after |
+    |---|---|---|
+    | clear | 19.4 -> 18.0 | clear_850km 23.5 |
+    | broken | 21.9 -> 19.4 | brk_850km 25.1 |
+    | dense | 26.3 -> 21.5 | dense_850km 29.5 |
+    | overcast | 31.5 -> 24.5 | ovc_850km 31.0 |
+    | storm A | 28.0 -> 21.5 | stA_850km 29.0 |
+    | storm B | 19.7 -> 18.1 | stB_850km 22.0 |
+    | terminator | 29.9 -> 24.2 | term_2m 28.6 |
+    | sunset | 25.3 -> 21.3 | sunset_850km 27.6 |
+    | night | 23.5 -> 19.1 | night_850km 24.2 |
+    | beams | 28.9 / 26.0 -> 30.4 / 28.0 | beams_site 30.4 |
+
+  - Still cells over 25 ms: 23 -> 10 of 57. Motion paths over 25 ms mean: 39 -> 21 of 69. Per pass, mean over the 54 site
+    stills: cloud bucket 14.8 -> 11.9 ms, sky pass 8.1 -> 6.8 ms; at 850 km cloud 28.9 -> 17.9, sky 8.4 -> 6.5; at 300 km
+    20.3 -> 13.5, 7.7 -> 6.0; at 2 m 9.1 -> 9.3, 8.5 -> 8.1.
+  - **The report's shots**, paused / running (p50): s1 70.5 -> 38.3 / 70.5 -> 39.1, s2 45.9 -> 29.7 / 47.0 -> 30.6, s3
+    60.9 -> 35.5 / 62.0 -> 36.6, s4 62.9 -> 34.7 / 63.3 -> 35.9, s5 39.5 -> 29.2 / 39.6 -> 29.9. Their trails replayed (GPU
+    mean): 60.9 -> 43.1, 44.4 -> 33.7, 61.3 -> 35.2, 52.7 -> 38.4, 44.4 -> 37.2. Paired, interleaved x3 in one app (best
+    rep p50): s1 54.6 -> 36.3, s1 at 1 min/s 69.2 -> 36.7, s2 44.7 -> 28.8, s3 49.6 -> 28.9, s4 50.3 -> 29.3, s5 35.3 ->
+    27.2, ovc_850km 42.3 -> 30.9, stA_850km 39.8 -> 27.7, dense_300km 29.9 -> 24.2, ovc_6km 25.2 -> 20.8, term_6km 25.1 ->
+    21.8, dense_2m 16.5 -> 16.9.
+  - **Moving**, worst after (GPU mean / max): stA_850km-fast 37.0 / 45.8 (base 42.9), brk_850km-fast 36.3 / 43.9 (43.1),
+    ovc_6km-fast 33.8 / 42.9 (41.1), term_6km-fast 32.2 / 36.2 (37.0), beams_site-look 30.9 (27.7), stA_300km-fast 30.7
+    (34.8). **Time warp 1 min/s** (p50): brk_300km 26.9 -> 20.8, dense_300km 35.4 -> 24.3, stA_300km 39.4 -> 25.0; at
+    6.5 km 24.3 -> 23.8, 32.0 -> 30.2, 33.6 -> 32.9. **Jumps** (GPU mean, first 30 frames / next 60): to stA_2m 29.9 ->
+    29.6 / 26.2 -> 25.9; to dense_6km 33.1 -> 31.2 / 28.6 -> 26.8; to ovc_850km 56.0 -> 33.6 / 54.9 -> 32.1 (first cut,
+    block on after 8 frames); to brk_2m 24.4 -> 24.6.
+  - **Stability:** noise (16 paused frames) and live (16 frames at 1x) unchanged in every cell (worst noise stA_1km 1.02 ->
+    1.02; worst live brk_2m 9.79 -> 9.80). Motion: below 300 km every path within 0.15 levels of base. Orbit: clouds.md
+    "THE ORBIT BLOCK". Stills base vs after (held exposure identical in every cell): mean |diff| under 1.5 levels except
+    storm B at 1.5 km (4.8: the eye is inside the storm cloud; the same view captured five times in one app spans 115-135
+    mean, whatever the configuration) and storm B at 2 m (2.8).
+  - **Still above 25 ms, and what would get them there.** 850 km with dense / overcast / storm fields, still: 27-31 ms (was
+    46-54); the march is ~18 ms at 1 ray in 9, and a 4x4 block there is ~-4 ms more (cloud bucket 23.7 vs 26.8 ms at shot
+    1) but softer: not adopted. Fast (boosted) flight at 850 km: 36-37 ms (was 43); the block is off in motion (the image
+    moves tens of pixels a frame), so it needs the resolve to trust depth-consistent history in fast motion
+    (`history_depth_test`, off) or a cheaper ray. Fast flight over a deck at 6.5 km and at the terminator: 32-34 ms (was
+    37-41): the 2x2 grid's ray count in motion. Terminator and overcast at 2 m (28 ms) and the Reflect-beam cells (28-30
+    ms): the sky pass is 10-14 ms there (terrain, sea and the beams' own passes), the clouds 6-12 ms; untouched by this
+    pass. The report's shots 1, 3, 4 (dense storm fields from orbit at sunset): 35-38 ms in the matrix run, 29-36 paired
+    (was 61-70).
+  - **Measurement traps.** SETTINGS: run.py / live.py without `--settings` start from the built-in defaults, an older
+    cloud look (98 clouds_v2 keys differ by > 2%); every benchmark runs on the user's file. EXPOSURE: the suites set
+    `clouds_v2.auto_exposure 0`, which clips every daytime frame; use `exposure fast` (settles the metered offset by a
+    fixed share per frame), wait 45, `exposure hold` (holds it on a quarter-stop grid).
+  - **Two speed regimes.** With identical work (rays, every evaluation counter, the clipmap's skip count, every exported
+    state) the cloud bucket runs ~20-25% slower for tens of seconds after a `report load` (up to ~900 frames), ~200-350
+    frames after a `shaders reload` or a cloud setting change, and on and off with time running. Only the cloud passes
+    move (march -24%, composite -17%, resolve -9%); the sky pass does not. GPU clocks (1905 / 9501 MHz) and temperature
+    are constant, no throttle flag; GPU power is LOWER in the slow phase (~210 W vs ~222 W). Cause not found. A 60-frame
+    window is usually wholly in one regime. Protocol: wait >= 350 frames after any switch, >= 3 interleaved reps, report
+    per-rep `gpu_total_ms` min / p50 and compare best reps; pair before / after in ONE app. An earlier "texture reads are
+    half the march" compared across regimes (clouds.md, "Tried and dropped, 2026-11-09").
+  - **The unstable in-cloud cell:** stB_1km (the eye inside a storm cloud) is not a stable still: five captures of one
+    view span 115-135 mean levels, so it cannot gate an image comparison.
 
 ---

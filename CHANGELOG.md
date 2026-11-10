@@ -376,6 +376,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **Still views march fewer cloud rays:** once the camera has been still for about a second (below 30 km), the clouds
   are marched one pixel in nine a frame instead of one in four, with the same settled image; any movement switches back.
   A sunset anvil deck overhead: cloud march 31 -> 21 ms; cumulus views about 20% less (issue_20261108_172846).
+- **Clouds from orbit render about twice as fast when the view is still or time is running:** the four orbit views of one
+  report went from 46-70 ms to 30-38 ms of GPU frame (RTX 3070 Ti, 1920x1009). The cloud layer is drawn from one pixel in
+  nine while nothing moves, the sky's horizon band is cheaper, and haze-thin cloud is marched in longer steps. Views below
+  about 30 km changed little.
 - **Two frames in flight:** the CPU prepares the next frame while the GPU draws this one (frames about 5-10% faster).
 - An **aerial-perspective volume** computes the sky's atmosphere once per screen tile (about a quarter off the sky pass).
 - **Temporal anti-aliasing** of the terrain, sky and sea, which is also a **temporal upscaler** below 100%

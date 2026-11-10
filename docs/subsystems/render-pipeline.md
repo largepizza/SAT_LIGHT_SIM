@@ -62,9 +62,11 @@ atmHalfAvg3, airglow noise, cityBrightness) moved unchanged into `include/sky_at
   constants): steps follow the slices, cut into sub-steps no longer than the pixel loop's step (100 km / "View samples
   min"); the god rays read the tile's own froxel column (the same ray and offset); the shadowed air's sky light is taken at
   the shadow's mean point UP TO each slice. **Keep its step in step with the N_VIEW loop** — the band below still runs the
-  loop. ~0.3-0.7 ms (RTX 3070 Ti).
+  loop (the band's fallback, see "THE LIMB VOLUME" below). ~0.3-0.7 ms (RTX 3070 Ti).
 - **The band**: within `clouds_v2.sky_ap_band_deg` (2 deg, at most 12 tiles since 2026-10-28, at least 2.5 tiles) of the horizon / the Earth's limb (and the
-  atmosphere's top seen from above it), where the integral changes too fast across a tile, the loop runs as before; over
+  atmosphere's top seen from above it), where the integral changes too fast across a tile, the tile volume cannot be
+  used and the pixel reads the LIMB VOLUME (since 2026-11-09; the per-pixel loop runs there only as the fallback: see the
+  next bullet). Before that the band ran the loop, and over
   the band's outer part (2.5 tiles out to its edge) the pixel takes BOTH and cross-fades (`apW`). The volume is the MORE
   accurate (finer slices: against a 64-1024-sample loop 0.01-0.34 levels mean where the default loop is 0.6-0.8, ~5 levels
   at dusk near the horizon), so a hard edge was a step of ~1-4 levels. `sky_ap_band_steps` (no UI, 1) multiplies the loop's
@@ -115,8 +117,28 @@ atmHalfAvg3, airglow noise, cityBrightness) moved unchanged into `include/sky_at
   paths 1408 -> 1293 ms (-8.2%; ground and air -7..-14%, the eclipse -20..-25%, orbit -1..-11%). Matrix suite on vs off:
   every motion and noise number within 0.01-0.07 levels. Sky TAA pipeline 168 registers both, binary 811 -> 835 KB.
   Validation clean.
-- Open: the pass is one thread a tile (57,600 threads, long loops); the band from orbit is the whole limb ring and keeps
-  the loop's (less accurate) result there.
+- Open: the pass is one thread a tile (57,600 threads, long loops). The band from orbit is the whole limb ring; it reads
+  the limb volume now (previous bullet), and keeps the loop's (less accurate) result only where the volume is not
+  available (`sky_ap_limb` 0, outside the grid's azimuth range, above 1000 km where the aerial-perspective volume is off).
+- **THE LIMB VOLUME** (`clouds_v2.sky_ap_limb` 1; 0 = the per-pixel loop in the band; 2026-11-09, issue_20261109_184851,
+  commit 95f82f3; `sky_ap.comp` second layer, `include/sky_ap.glsl`, `sat_sky.frag`). The band round the horizon / the
+  Earth's limb, where a 6-px tile volume cannot be interpolated across, ran the sky pass's per-pixel atmosphere loop:
+  knockout `atmosphere_loop` 2.4 / 5.7 / 3.3 ms of the sky pass at the report's shots 1 / 3 / 5. Now `sky_ap.comp`
+  marches the band's rays on a grid of their own in its second dispatch layer (z = 1): 96 rows uniform in
+  sin(elevation) across [limb - band, atmosphere limb + band] (about a pixel apart), 320 columns in azimuth across the
+  view's azimuth range (the full circle when the nadir or zenith is inside the frustum's cone), 48 slices as the tiles.
+  The frame is computed identically in the bake and the sky pass from the push constants (`skyApLimbFrame`). Band
+  pixels read it bilinearly (per unit of their own air column) and cross-fade to the tile volume by `apW` where they
+  used to cross-fade from the loop; a pixel outside the grid (azimuth range) falls back to the loop. The limb rays'
+  god rays read the Sun transmittance volume directly (no froxel column: a limb ray is no tile's). Buffer: +35 MB
+  (320 x 96 x 48 cells x 24 B) after the tiles' arrays; `cv2.skyAp.x` = 2 while it is up. **Measured** (best of 3
+  interleaved reps, sky pass ms, before -> after the whole stack): shot 3 10.7 -> 6.8, shot 4 8.4 -> 6.1, shot 5 5.8 ->
+  4.3, overcast 850 km 6.6 -> 4.8, overcast 6.5 km 5.7 -> 4.5, terminator 6.5 km 6.2 -> 4.6; switched alone at shot 3:
+  3.9 ms. Matrix mean over 54 stills: sky 8.1 -> 6.8 ms. **Image vs the loop:** within the capture floor at 4 of 6
+  views; ~0.5-0.9 level brighter air over the sea below the horizon at sunset from 2 m (mean 0.45 vs floor 0.27); at
+  shot 3's limb rows 0.75-1.6 levels mean |diff|, unsigned. **SKY_LITE:** its SPIR-V budget had 92 bytes left at the
+  baseline; the limb variables are `#ifdef SKY_SUN_SHADOW` and a constant otherwise (+20 bytes). The budget is exhausted
+  for practical purposes: the next sky feature in `sat_sky.frag` has to pay for itself in SKY_LITE bytes.
 
 ---
 
