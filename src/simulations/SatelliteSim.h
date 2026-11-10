@@ -6437,6 +6437,7 @@ private:
     float cv2FarLowSun = 0.38f;   // slot 255: the far layer's key light goes as mu0^(1 / (1 + this)) (0 = a flat slab)
     float cv2FarKeyGain = 4.1f, cv2FarSkyGain = 0.6f;   // review 24b: the user's tuning (was 10 / 0.3)   // "Far cloud layer sunlight / sky light" (review 21: matched to the march's cloud radiance at 1460 km and its image at 3000-8000 km)
     float cv2FarLayerFullKm = 8900.0f;   // review 24b: the user's tuning (was 1500)
+    float cv2FarLayerMinBlend = 0.004f;  // the far layer's share below which its pass is not run (cloudFarBlend)
     // The volumetric clouds are off (knockout 32768: Planetarium, Potato, or the Performance tab). Then nothing of
     // clouds v2 runs on the GPU — march, resolve, far layer, lightning, rain map — and every host consumer of
     // their outputs (lightning bolts, rain particles, thunder, the rain ambience, the Sun's cloud transmittance)
@@ -6479,7 +6480,14 @@ private:
         const double h = (double)obsEyeRadiusM() - satphot::kEarthRadiusM;
         const double a = (double)cv2FarLayerFromKm * 1000.0, b = std::max((double)cv2FarLayerFullKm * 1000.0, a + 1000.0);
         const double x = std::clamp((h - a) / (b - a), 0.0, 1.0);
-        return (float)(x * x * (3.0 - 2.0 * x));
+        // The share starts where it can be seen (2026-11-09): with the defaults (600 .. 8900 km) the smoothstep is
+        // 0.0008 at 733 km and 0.003 at 850 km -- under one 8-bit level of the far layer's own radiance -- while its
+        // full-resolution pass (cloud_v2_far.comp) cost 2-3 ms of every frame from 600 km up. Below kFarBlendMin the
+        // share is 0 (no pass); above it the share is rescaled, so it is continuous and still reaches 1.
+        // ("far_layer_min_blend", no slider; 0 = the old behaviour, the pass from "from" up.)
+        const double kFarBlendMin = std::clamp((double)cv2FarLayerMinBlend, 0.0, 0.5);
+        const double s = x * x * (3.0 - 2.0 * x);
+        return s <= kFarBlendMin ? 0.0f : (float)((s - kFarBlendMin) / (1.0 - kFarBlendMin));
     }
     VkSampler cv2RepeatSampler = VK_NULL_HANDLE; // trilinear REPEAT (noise) — also the weather cube
     VkSampler cv2ClampSampler = VK_NULL_HANDLE;  // bilinear CLAMP (screen targets)

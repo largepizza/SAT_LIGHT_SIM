@@ -9877,6 +9877,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2FullResMovingMode = std::clamp(c.value("full_res_moving_mode", cv2FullResMovingMode), 0.0f, 2.0f);
         cv2SparseBlock = std::clamp(c.value("sparse_block", cv2SparseBlock), 2.0f, 4.0f);
         cv2SparseBlockStill = std::clamp(c.value("sparse_block_still", cv2SparseBlockStill), 2.0f, 4.0f);
+        cv2FarLayerMinBlend = std::clamp(c.value("far_layer_min_blend", cv2FarLayerMinBlend), 0.0f, 0.5f);
         cv2SmoothMoving = std::clamp(c.value("smooth_moving", cv2SmoothMoving), 0.0f, 2.0f);
         cv2HistDepthTest = std::clamp(c.value("history_depth_test", cv2HistDepthTest), 0.0f, 1.0f);
         cv2ShadowRing1CellM = c.value("shadow_ring1_cell_m", cv2ShadowRing1CellM);
@@ -10663,6 +10664,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"full_res_moving_mode", cv2FullResMovingMode},
         {"sparse_block", cv2SparseBlock},
         {"sparse_block_still", cv2SparseBlockStill},
+        {"far_layer_min_blend", cv2FarLayerMinBlend},
         {"smooth_moving", cv2SmoothMoving},
         {"history_depth_test", cv2HistDepthTest},
         {"shadow_ring1_cell_m", cv2ShadowRing1CellM},
