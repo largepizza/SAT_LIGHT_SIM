@@ -40,6 +40,44 @@ uvec2 skyApLoadB(int c) { return skyAp2[2 * kSkyApCells + c]; }
 
 int skyApCell(int x, int y, int z) { return (z * kSkyApY + y) * kSkyApX + x; }
 
+// ── The LIMB volume (2026-11-09, issue_20261109_184851) ─────────────────────────────────────────────────────────────
+// The band round the horizon / the Earth's limb, where the integral changes too fast across a 6-px screen tile, used
+// to run the sky pass's loop in every pixel: 2.4-5.7 ms of the sky pass (the whole limb ring from orbit, the horizon
+// band from the ground). The same rays are now marched by sky_ap.comp (its second layer) on a grid laid out for them:
+// kSkyApLimbE rows uniform in sin(elevation) across the band (about a pixel apart), kSkyApLimbA columns in azimuth across
+// the view's azimuth range (the full circle when the nadir or the zenith is in view), kSkyApZ slices as the tiles'. A
+// band pixel reads it bilinearly (per unit of its own air column, as the tiles) and cross-fades to the tile volume over
+// the band's outer part (apW), where it used to cross-fade from the loop. cv2.skyAp.x = 2 while it is up.
+// Stored after the tiles' arrays: A at [kSkyApLimbBase + 2c], [.. + 2c + 1], B at [kSkyApLimbBase + 2 kSkyApLimbCells + c].
+const int kSkyApLimbA = 320, kSkyApLimbE = 96;            // == SatelliteSim.h kSkyApLimbA / E
+const int kSkyApLimbCells = kSkyApLimbA * kSkyApLimbE * kSkyApZ;
+const int kSkyApLimbBase  = 3 * kSkyApCells;
+const float kSkyApBandTiles = 12.0;                       // the band is at most this many tiles wide (sat_sky.frag)
+int skyApLimbCell(int a, int e, int z) { return (z * kSkyApLimbE + e) * kSkyApLimbA + a; }
+// The band's sin(elevation) half-width and inner edge for this view (sat_sky.frag's apW uses the same two).
+vec2 skyApBand(float fovY)
+{
+    float inner = 2.5 * fovY / float(kSkyApY);
+    return vec2(inner, max(min(cv2.skyAp.z, kSkyApBandTiles * fovY / float(kSkyApY)), inner + 1e-4));
+}
+// The limb grid's frame: x the centre azimuth (from north, toward east), y its half range (PI = the full circle),
+// z the first row's sin(elevation), w the rows' span. From the push constants and the eye's radius alone, so the bake
+// and the sky pass compute the same one.
+vec4 skyApLimbFrame(mat3 camToENU, float fovY, float aspect, float obsR)
+{
+    vec3  fwd  = normalize(camToENU * vec3(0.0, 0.0, -1.0));
+    float th   = tan(0.5 * fovY);
+    float cone = atan(th * sqrt(1.0 + aspect * aspect));   // the cone round the frustum
+    float ce   = sqrt(max(1.0 - fwd.z * fwd.z, 0.0));
+    float sc   = sin(cone);
+    float azH  = (sc >= 0.97 * ce) ? PI : min(asin(sc / ce) * 1.04 + 0.02, PI);
+    float limbZ   = (obsR > R_EARTH) ? -sqrt(max(0.0, 1.0 - (R_EARTH / obsR) * (R_EARTH / obsR))) : 0.0;
+    float limbAtm = (obsR > R_ATMOS) ? -sqrt(max(0.0, 1.0 - (R_ATMOS / obsR) * (R_ATMOS / obsR))) : limbZ;
+    float band = skyApBand(fovY).y;
+    float z0 = limbZ - band, z1 = max(limbZ, limbAtm) + band;
+    return vec4(atan(fwd.x, fwd.y), azH, z0, z1 - z0);
+}
+
 // Slice coordinate (0..Z-1) of distance t on a ray entering the atmosphere at tStart with length L: log-spaced from BOTH
 // ends (d0 from the start and from the end): fine near the eye for near surfaces, fine near the end where a ray
 // descending into the dense air (from orbit, from an aircraft) gathers most of its light — a log from the start alone
@@ -144,6 +182,66 @@ SkyApSum skyApRead(vec2 uv, float s)
     r.odR = b.x / kSkyApScale; r.odM = b.y / kSkyApScale; r.airG = b.z / kSkyApScale; r.airS = b.w / kSkyApScale;
     return r;
 }
+
+// The limb grid's fractional coordinates of a direction (false: outside it).
+bool skyApLimbCoord(vec3 dir, vec4 fr, out vec2 fc, out bool wrap)
+{
+    fc = vec2(0.0);
+    wrap = fr.y >= PI - 1e-4;
+    float fe = (dir.z - fr.z) / fr.w * float(kSkyApLimbE - 1);
+    if (fe < 0.0 || fe > float(kSkyApLimbE - 1)) return false;
+    float da = atan(dir.x, dir.y) - fr.x;
+    da -= 2.0 * PI * floor(da / (2.0 * PI) + 0.5);
+    float fa = wrap ? (da / (2.0 * PI) + 0.5) * float(kSkyApLimbA) : (da / fr.y * 0.5 + 0.5) * float(kSkyApLimbA - 1);
+    if (!wrap && (fa < 0.0 || fa > float(kSkyApLimbA - 1))) return false;
+    fc = vec2(fa, fe);
+    return true;
+}
+#ifndef SKY_AP_WRITE
+// The limb volume's sums at slice s (bilinear in azimuth and row, linear between two slices); onlyA: array A alone.
+SkyApSum skyApLimbRead(vec2 fc, bool wrap, float s, bool onlyA)
+{
+    float fa = wrap ? fc.x : clamp(fc.x, 0.0, float(kSkyApLimbA - 1) - 1e-3);
+    float fe = clamp(fc.y, 0.0, float(kSkyApLimbE - 1) - 1e-3);
+    int   a0 = int(floor(fa)), e0 = int(fe);
+    vec2  w  = vec2(fa - float(a0), fe - float(e0));
+    float sz = clamp(s, 0.0, float(kSkyApZ - 1) - 1e-3);
+    int   z0 = int(sz);
+    float wz = sz - float(z0);
+    SkyApSum r = SkyApSum(vec3(0.0), 0.0, vec3(0.0), 0.0, 0.0, 0.0, 0.0, 0.0);
+    vec4 b = vec4(0.0);
+    for (int c = 0; c < 8; ++c) {
+        int   dx = c & 1, dy = (c >> 1) & 1, dz = c >> 2;
+        float k  = (dx != 0 ? w.x : 1.0 - w.x) * (dy != 0 ? w.y : 1.0 - w.y) * (dz != 0 ? wz : 1.0 - wz);
+        int   ax = a0 + dx;
+        ax = wrap ? ((ax % kSkyApLimbA) + kSkyApLimbA) % kSkyApLimbA : min(ax, kSkyApLimbA - 1);
+        int   ci = skyApLimbCell(ax, e0 + dy, z0 + dz);
+        skyApAddA(r, uvec4(skyAp2[kSkyApLimbBase + 2 * ci], skyAp2[kSkyApLimbBase + 2 * ci + 1]), k);
+        if (!onlyA) {
+            uvec2 bb = skyAp2[kSkyApLimbBase + 2 * kSkyApLimbCells + ci];
+            b += k * vec4(unpackHalf2x16(bb.x), unpackHalf2x16(bb.y));
+        }
+    }
+    r.accR *= 1.0 / kSkyApScale; r.accM *= 1.0 / kSkyApScale; r.city *= 1.0 / kSkyApScale; r.shadow *= 1.0 / kSkyApShScale;
+    r.odR = b.x / kSkyApScale; r.odM = b.y / kSkyApScale; r.airG = b.z / kSkyApScale; r.airS = b.w / kSkyApScale;
+    return r;
+}
+SkyApSum skyApReadA(vec2 uv, float s);
+// A pixel's sums: the tiles' (limb false), or the limb volume's cross-faded to the tiles' by wTile (the band's outer part).
+SkyApSum skyApReadBoth(vec2 uv, float s, bool onlyA, bool limb, vec2 fc, bool wrap, float wTile)
+{
+    if (!limb) { if (onlyA) return skyApReadA(uv, s); return skyApRead(uv, s); }
+    SkyApSum l = skyApLimbRead(fc, wrap, s, onlyA);
+    if (wTile <= 0.0) return l;
+    SkyApSum t;
+    if (onlyA) t = skyApReadA(uv, s); else t = skyApRead(uv, s);
+    l.accR = mix(l.accR, t.accR, wTile); l.accM = mix(l.accM, t.accM, wTile);
+    l.shadow = mix(l.shadow, t.shadow, wTile); l.city = mix(l.city, t.city, wTile);
+    l.odR = mix(l.odR, t.odR, wTile); l.odM = mix(l.odM, t.odM, wTile);
+    l.airG = mix(l.airG, t.airG, wTile); l.airS = mix(l.airS, t.airS, wTile);
+    return l;
+}
+#endif
 
 // Only array A (the air in front of the clouds: accumR / accumM, the shadow light, the city glow).
 SkyApSum skyApReadA(vec2 uv, float s)

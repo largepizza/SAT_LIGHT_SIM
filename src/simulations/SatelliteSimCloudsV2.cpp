@@ -2987,10 +2987,13 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, skyApPipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, skyApPipeLayout, 1, 1, &skyApSet, 0, nullptr);
-        vkCmdDispatch(cmd, (kSkyApX + 7) / 8, (kSkyApY + 7) / 8, 1);
+        // (The second layer of workgroups marches the limb volume's rays: 320 x 96 of them fit the tiles' 40 x 23 groups.)
+        static_assert(kSkyApLimbA <= kSkyApX && kSkyApLimbE <= kSkyApY, "the limb grid rides in the tiles' dispatch");
+        const bool apLimb = cv2SkyApLimb > 0.5f;
+        vkCmdDispatch(cmd, (kSkyApX + 7) / 8, (kSkyApY + 7) / 8, apLimb ? 2 : 1);
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-        ((GpuCloudV2Params *)cv2ParamsMapped)->skyAp.x = 1.0f;   // the mirror is copied up after the frame is recorded
+        ((GpuCloudV2Params *)cv2ParamsMapped)->skyAp.x = apLimb ? 2.0f : 1.0f;   // the mirror is copied up after the frame is recorded
         skyApRanThisFrame = true;
     }
     cv2PassStampTo(cmd, 5);   // the aerial-perspective volume

@@ -6547,7 +6547,12 @@ private:
     // the horizon / the limb. The buffer (~66 MB) is made the first frame the volume runs (ensureSkyAp): until then binding
     // 33 holds the flash buffer as a placeholder (never read: cv2.skyAp.x is 0). Set 1 of its pipeline = the buffer.
     static constexpr uint32_t kSkyApX = 320, kSkyApY = 180, kSkyApZ = 48;   // == include/sky_ap.glsl
-    static constexpr VkDeviceSize kSkyApBytes = (VkDeviceSize)kSkyApX * kSkyApY * kSkyApZ * 24;
+    // + the LIMB volume (2026-11-09, include/sky_ap.glsl kSkyApLimbA / E): the band round the horizon / the limb on a grid
+    // of its own (azimuth x sin(elevation)), in the sky pass's per-pixel loop's place. "sky_ap_limb" 0 = the loop (the A/B).
+    static constexpr uint32_t kSkyApLimbA = 320, kSkyApLimbE = 96;
+    static constexpr VkDeviceSize kSkyApBytes =
+        ((VkDeviceSize)kSkyApX * kSkyApY + (VkDeviceSize)kSkyApLimbA * kSkyApLimbE) * kSkyApZ * 24;
+    float cv2SkyApLimb = 1.0f;
     VkPipeline            skyApPipeline   = VK_NULL_HANDLE;
     VkPipelineLayout      skyApPipeLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout skyApSetLayout  = VK_NULL_HANDLE;

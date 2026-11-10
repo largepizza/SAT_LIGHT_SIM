@@ -9838,6 +9838,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2SkyAp = settingClamp(c.value("sky_ap", cv2SkyAp), 0.0f, 1.0f);
         cv2SkyApBandDeg = settingClamp(c.value("sky_ap_band_deg", cv2SkyApBandDeg), 0.0f, 10.0f);
         cv2SkyApBandSteps = settingClamp(c.value("sky_ap_band_steps", cv2SkyApBandSteps), 1.0f, 16.0f);
+        cv2SkyApLimb = settingClamp(c.value("sky_ap_limb", cv2SkyApLimb), 0.0f, 1.0f);
         cv2SmoothTiles = settingClamp(c.value("smooth_tiles", cv2SmoothTiles), 0.0f, 1.0f);
         cv2SmoothTileThresh = settingClamp(c.value("smooth_tile_threshold", cv2SmoothTileThresh), 0.5f, 32.0f);
         cv2TerrainGodrays = settingClamp(c.value("terrain_godrays", cv2TerrainGodrays), 0.0f, 1.0f);
@@ -10628,6 +10629,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"sky_ap", cv2SkyAp},
         {"sky_ap_band_deg", cv2SkyApBandDeg},
         {"sky_ap_band_steps", cv2SkyApBandSteps},
+        {"sky_ap_limb", cv2SkyApLimb},
         {"smooth_tiles", cv2SmoothTiles},
         {"smooth_tile_threshold", cv2SmoothTileThresh},
         {"terrain_godrays", cv2TerrainGodrays},

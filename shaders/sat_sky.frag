@@ -4459,6 +4459,12 @@ void main() {
     // more costs ~2x the sky pass from orbit, where the band is the whole limb).
     float apW = 0.0;   // 1 = the volume alone (no loop), 0 = the loop alone
 #ifdef SKY_SUN_SHADOW
+    bool  apLimb = false, apLimbWrap = false;   // the band's pixel reads the limb volume (no loop either)
+    vec2  apLimbFc = vec2(0.0);
+#else
+    const bool apLimb = false;                  // (SKY_LITE has no volume, and no SPIR-V to spare: a constant folds away)
+#endif
+#ifdef SKY_SUN_SHADOW
     if (cv2.skyAp.x > 0.5 && !dbgSkipAtmosphere()) {
         float limbAtm = (obsR > R_ATMOS) ? -sqrt(max(0.0, 1.0 - (R_ATMOS / obsR) * (R_ATMOS / obsR))) : limbZ;
         float inner   = 2.5 * pc.fovYRad / float(kSkyApY);
@@ -4466,17 +4472,21 @@ void main() {
         // kSkyApBandTiles tiles wide (2026-10-28, issue 20261028_192855: zoomed to a 0.58-deg field on the refracted
         // Sun from 96 km, a tile is 0.003 deg and the fixed 2-deg band covered the whole screen, so every pixel ran
         // the loop: sky pass 34 ms). 12 tiles are 2 deg at a 30-deg field: unchanged at 30 deg and wider.
-        const float kSkyApBandTiles = 12.0;
+        // (kSkyApBandTiles: include/sky_ap.glsl skyApBand, the same two numbers.)
         float band    = max(min(cv2.skyAp.z, kSkyApBandTiles * pc.fovYRad / float(kSkyApY)), inner + 1e-4);
         float outside = max(limbZ - dir.z, dir.z - max(limbZ, limbAtm));   // sin(elevation) past the grazing range
         apW = smoothstep(inner, band, outside);
-        if (apW < 1.0) {
+        // The LIMB volume (2026-11-09, cv2.skyAp.x = 2; include/sky_ap.glsl): the band's rays marched by sky_ap.comp on
+        // a grid of their own (rows in sin(elevation), columns in azimuth), read here in the loop's place.
+        if (apW < 1.0 && cv2.skyAp.x > 1.5)
+            apLimb = skyApLimbCoord(dir, skyApLimbFrame(mat3(transpose(pc.skyView)), pc.fovYRad, pc.aspect, obsR), apLimbFc, apLimbWrap);
+        if (apW < 1.0 && !apLimb) {
             targetStepLen  /= cv2.skyAp.w;
             viewSamplesMax *= cv2.skyAp.w;
         }
     }
 #endif
-    bool  useAp = apW >= 1.0;
+    bool  useAp = apW >= 1.0 || apLimb;
     int   N_VIEW = (dbgSkipAtmosphere() || useAp) ? 0
                  : int(clamp(ceil((tEnd - tStart) / targetStepLen), viewSamplesMin, viewSamplesMax));
     float segLen = (tEnd - tStart) / float(N_VIEW);
@@ -5069,15 +5079,16 @@ void main() {
     // the nearest cloud: the loop's accumR / accumM / camera columns / city glow / airglow and its shadowed air's sky light.
     vec3 apShadow = vec3(0.0), apShadowF = vec3(0.0);
 #ifdef SKY_SUN_SHADOW
-    if (apW > 0.0) {
+    if (apW > 0.0 || apLimb) {
         vec2  uvAp = gl_FragCoord.xy / vec2(cloud.skyScreenW, cloud.skyScreenH);
         float apL  = ((tBase.x > 0.0) ? min(tAtmos.y, tBase.x) : tAtmos.y) - tStart;
         // (each x this ray's own air column to that distance: the volume stores them per unit of it, skyApNorm)
         // (Mixed with the loop's by apW: where the loop did not run its sums are 0 and apW is 1. The loop's shadowed air
         // goes into its sky light below through shR / shM, scaled here; the volume's comes ready-made, apShadow.)
-        float w  = apW;
+        // (A limb pixel: the limb volume's sums, cross-faded to the tiles' by apW, in full: w = 1.)
+        float w  = apLimb ? 1.0 : apW;
         vec2  nE = skyApNorm(obsPos, dir, tEnd);
-        SkyApSum e = skyApRead(uvAp, skyApSlice(tEnd, tStart, apL));
+        SkyApSum e = skyApReadBoth(uvAp, skyApSlice(tEnd, tStart, apL), false, apLimb, apLimbFc, apLimbWrap, apW);
         accumR    = mix(accumR,    e.accR * nE.x, w);
         accumM    = mix(accumM,    e.accM * nE.y, w);
         odR_cam   = mix(odR_cam,   e.odR * nE.x,  w);
@@ -5088,12 +5099,13 @@ void main() {
         apShadow = e.shadow * (nE.x * w);
         float tF = min(tAirFrontM, tEnd);
         vec2  nF = skyApNorm(obsPos, dir, tF);
-        SkyApSum f = skyApReadA(uvAp, skyApSlice(tF, tStart, apL));
+        SkyApSum f = skyApReadBoth(uvAp, skyApSlice(tF, tStart, apL), true, apLimb, apLimbFc, apLimbWrap, apW);
         accumRF   = mix(accumRF, f.accR * nF.x, w);
         accumMF   = mix(accumMF, f.accM * nF.y, w);
         apShadowF = f.shadow * (nF.x * w);
         float tC = min(tCloudFrontM, tEnd);
-        accumCityFront = mix(accumCityFront, skyApReadA(uvAp, skyApSlice(tC, tStart, apL)).city * skyApNorm(obsPos, dir, tC).x, w);
+        accumCityFront = mix(accumCityFront, skyApReadBoth(uvAp, skyApSlice(tC, tStart, apL), true, apLimb, apLimbFc, apLimbWrap, apW).city
+                                             * skyApNorm(obsPos, dir, tC).x, w);
         shR *= 1.0 - w; shM *= 1.0 - w; shRF *= 1.0 - w; shMF *= 1.0 - w;
         msS *= 1.0 - w; msSF *= 1.0 - w;
     }
