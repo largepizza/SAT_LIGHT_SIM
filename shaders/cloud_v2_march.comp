@@ -811,6 +811,17 @@ void main()
     float bT[kBatch], bTr[kBatch], bCov[kBatch], bW[kBatch], bH[kBatch];
     int   kMaxIters = int(cv2.misc.x);
     float pathLen = 0.0, odPath = 0.0, remLen = 0.0;   // for filling what the budget leaves
+    // LIT SAMPLES FIRST (2026-11-09, issue_20261109_184851): the batch is filled from both ends -- the samples that
+    // will run a light march (not thin ice, not faint: the lighting loop's skipL, guessed here from the field alone)
+    // from slot 0 up, the rest from slot kBatch - 1 down -- and the lighting loop visits the front first. In ray order a
+    // ray's few lit samples sat between its faint and thin ones (0.8 of 23 kept samples a ray from 6 km, 2.2 of 8 from
+    // orbit), at other slots than its neighbours': front-loaded, the rays of a group run their light marches
+    // (lightAmbOD, 6-11 field evaluations) in the same iterations. Same samples, weights and light (the sum's order
+    // changes: float rounding); a wrong guess (a faint sample under the Moon, or with a beam) only runs its light march
+    // late. GPU frame -6..-8 ms from orbit, -2.5..-3 at 6 km, images at the A-vs-A floor, 128 registers
+    // (docs/subsystems/clouds.md "Lit samples first"). nBl = the front's count.
+    int   nBl = 0;
+    float tIce = -1.0;   // the batch's first ice sample (the ray's crystal habit is read there, before the lighting loop)
     // The distance limit is measured from where the ray enters the shell, not from the eye: from
     // orbit the Earth itself is further than the limit, and the far half of the clouds was cut off.
     float tLimit = seg[0].x + cv2.march.w;
@@ -845,7 +856,7 @@ void main()
         // Batches of 4 gained nothing from orbit, 16 most of it, 24-64 the same: 32. (One sample per batch --
         // "search, then light" -- was slower on overcast: every lit ray waited on the slowest search each time.)
         do {
-        nB = 0;
+        nB = 0; nBl = 0; tIce = -1.0;
         [[dont_unroll]] while (t < tEnd && iters < kMaxIters && T > 0.01 && nB < kBatch) {
             ++iters;
             // Steps grow with distance (the noise is read at the pixel footprint there anyway, so
@@ -1032,7 +1043,13 @@ void main()
             float aV = 1.0 - cv2.ms.y * cv2.ms.y, tS = f.sigma * stepW;
             float hV = 1.0 - pow(max(T / Tent, 1e-6), aV)
                        * (1.0 - exp(-(1.0 + aV) * tS)) / ((1.0 + aV) * max(1.0 - exp(-tS), 1e-6));
-            bF[nB] = f; bT[nB] = t; bTr[nB] = T / Tent; bCov[nB] = covB; bW[nB] = w; bH[nB] = hV; ++nB;
+            {
+                bool litG = f.thin <= 0.5 && f.sigma * cv2.light.x >= CV2_FAINT_OD;
+                int  bi   = litG ? nBl : kBatch - 1 - (nB - nBl);
+                bF[bi] = f; bT[bi] = t; bTr[bi] = T / Tent; bCov[bi] = covB; bW[bi] = w; bH[bi] = hV;
+                ++nB; if (litG) ++nBl;
+                if (tIce < 0.0 && f.thin > 0.0) tIce = t;
+            }
             wAcc += w;
             dAcc += w * t;
             if (w > 1e-5) { tFst = min(tFst, t); tLst = t + stepW; }
@@ -1044,8 +1061,16 @@ void main()
             if (tq.w > 1e29 && T < 0.05) tq.w = t;
             t += stepW;
         }
-        // The batch's light.
-        [[dont_unroll]] for (int bj = 0; bj < nB; ++bj) {
+        // The ray's crystal habit, at its first ice sample (before the batch's light: the loop below is not in ray order).
+        if (tIce >= 0.0 && !iceHabitSet) {
+            habRay = cv2IceHabit(cv2Pos(dir * tIce, eyeH, enuToEcef));
+            phIceSun  += og * cv2IceOptics(dir, sunDir, habRay) / 0.55;
+            phIceMoon += og * cv2IceOptics(dir, moonDir, habRay) / 0.55;
+            iceHabitSet = true;
+        }
+        // The batch's light: the front (the light marches) first, then the back in ray order.
+        [[dont_unroll]] for (int bk = 0; bk < nB; ++bk) {
+            int bj = bk < nBl ? bk : kBatch - 1 - (bk - nBl);
             float t = bT[bj];                               // (these shadow the march's own: this sample's)
             float T = bTr[bj];                              // (within the cloud the ray is in: see Tent)
             CV2Field f = bF[bj];
@@ -1146,12 +1171,6 @@ void main()
             bool thin = f.thin > 0.5;
             // (Faint: see CV2_FAINT_OD. By the Sun only: the volume is the Sun's.)
             bool faint = !thin && !moonIsKey && f.sigma * cv2.light.x < CV2_FAINT_OD;
-            if (f.thin > 0.0 && !iceHabitSet) {
-                habRay = cv2IceHabit(p);
-                phIceSun  += og * cv2IceOptics(dir, sunDir, habRay) / 0.55;
-                phIceMoon += og * cv2IceOptics(dir, moonDir, habRay) / 0.55;
-                iceHabitSet = true;
-            }
             vec3 keyS = vec3(0.0);
             bool  wantL = dot(keyCol, keyCol) > 0.0;
             float odL = 0.0, sigUp = 0.0, odB = 0.0;
