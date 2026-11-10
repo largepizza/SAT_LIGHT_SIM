@@ -578,7 +578,10 @@ void main()
         // (The still view's larger block, sparse_block_still: gnd.z's fraction. Its pixels without a ray take 3 / (K^2 - 1)
         // of the share, so each pixel's own rays keep the 2x2 grid's weight against the estimate: 8 in-between frames at
         // the same weight blended it in 2.7x as much as the 2x2's 3: the settled 3x3 image was softer, issue_20261108_172846.)
-        float kStillW = (fract(cv2.gnd.z) > 0.1) ? 3.0 / float(kB * kB - 1) : 1.0;
+        // (The ORBIT block, 2026-11-09, fraction 0.375: 1 / (K^2 - 1). From orbit a pixel spans a cumulus' edge, and the
+        // estimate between rays 3 px apart has none of the puffs a pixel's own rays find: at the still block's share the
+        // settled image lost them, at 1 / (K^2 - 1) it is the 2x2 image -- SatelliteSimCloudsV2.cpp, "FROM ORBIT".)
+        float kStillW = (fract(cv2.gnd.z) > 0.3) ? 1.0 / float(kB * kB - 1) : (fract(cv2.gnd.z) > 0.1) ? 3.0 / float(kB * kB - 1) : 1.0;
         float w     = isNew ? wNew : wNew * mix(0.15, 0.85, mk);
         // Past ~16 px of parallax a frame the history is someone else's cloud: lean on this frame,
         // filtered (the corduroy otherwise, see blur).

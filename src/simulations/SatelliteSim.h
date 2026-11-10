@@ -5513,6 +5513,10 @@ private:
     float cv2SmoothMoving = 0.5f;         // smooth tiles while the eye moves (0 = only after 64 still frames; > 0: on, the threshold x this; 2026-11-04)
     float cv2SparseBlock = 2.0f;          // full-res clouds' sparse march: one ray per K x K block a frame (2, 3 or 4; 2026-11-04)
     float cv2SparseBlockStill = 3.0f;     // ... and once the view has been still kCv2StillBlockFrames (2026-11-08, issue_20261108_172846; 2 = off)
+    // ... and from ORBIT (2026-11-09, issue_20261109_184851; 2 = off): above full_rate_above_km, while what the history cannot
+    // reproject (the eye's parallax over the cloud layer, the volumes' slide under time warp) stays a small fraction of a
+    // pixel a frame. See fillCloudsV2Params.
+    float cv2SparseBlockOrbit = 3.0f;
     float cv2FullResMovingMode = 1.0f;    // full-res clouds while the view moves (issues 20261022_210358 / _220214): 0 sparse, rotating; 1 sparse, held pixel (default since 2026-11-07, any height); 2 full rate (every pixel, ~3x the march; above full_rate_above_km)
     bool  cv2CdcActive = false;           // this frame (fillCloudsV2Params)
     // 2026-10-22 (r1022 orbit, the matrix's "clouds thin out climbing from orbit"): the clipmap's bake reads the field at the
@@ -5755,6 +5759,12 @@ private:
     // Milky Way / zodiacal light scale with it. Auto exposure only DARKENS, and only by day: the night
     // exposures were tuned by hand and stay put.
     float autoExposureEV = 0.0f;       // runtime: the metered offset (<= 0), eased
+    // The harness's `exposure auto|hold|fast` (2026-11-09; not saved): 0 = the controller as the player has it (eased in
+    // wall-clock time, so a capture's exposure depends on the frame rate before it), 1 = the offset is HELD, 2 = it
+    // settles by a fixed share per reading (deterministic in frames). Benchmarks that compare frames meter each view
+    // (`exposure fast; wait 45; exposure hold`) instead of switching the auto exposure off, which blows out every
+    // daytime frame.
+    int harnessExposureMode = 0;
     float globalExposureEV() const { return cv2ExposureEV + autoExposureEV; }
     float exposureGainMag() const { return 2.5f * 0.30103f * globalExposureEV(); }
     // The meter: the frame's central 60%, blitted to 64x36 (linear RGBA8), copied to the host and read
@@ -5853,6 +5863,8 @@ private:
     // Frame-to-frame state for the temporal resolve.
     uint32_t cv2Frame = 0;
     bool cv2FullRateNow = false;       // this frame's march covers every half-res pixel
+    int cv2OrbitQuietFrames = 0;       // frames in a row the orbit block's conditions held (cv2SparseBlockOrbit)
+    bool cv2OrbitBlockNow = false;     // this frame marches the orbit block (harness `state`)
     uint32_t cv2SparseBlockNow = 2;    // this frame's sparse block (K x K pixels a ray; "sparse_block" on the full-res grid's sparse march)
     bool cv2FullResHeldNow = false;    // this frame's full-res sparse sample is held at one pixel of each block (cv2FullResMovingMode 1)
     bool cv2HalfRateNow = false;       // ... or, "Half rate while moving", half of them (a checkerboard)
@@ -6431,6 +6443,7 @@ private:
     float cv2FarLowSun = 0.38f;   // slot 255: the far layer's key light goes as mu0^(1 / (1 + this)) (0 = a flat slab)
     float cv2FarKeyGain = 4.1f, cv2FarSkyGain = 0.6f;   // review 24b: the user's tuning (was 10 / 0.3)   // "Far cloud layer sunlight / sky light" (review 21: matched to the march's cloud radiance at 1460 km and its image at 3000-8000 km)
     float cv2FarLayerFullKm = 8900.0f;   // review 24b: the user's tuning (was 1500)
+    float cv2FarLayerMinBlend = 0.004f;  // the far layer's share below which its pass is not run (cloudFarBlend)
     // The volumetric clouds are off (knockout 32768: Planetarium, Potato, or the Performance tab). Then nothing of
     // clouds v2 runs on the GPU — march, resolve, far layer, lightning, rain map — and every host consumer of
     // their outputs (lightning bolts, rain particles, thunder, the rain ambience, the Sun's cloud transmittance)
@@ -6473,7 +6486,14 @@ private:
         const double h = (double)obsEyeRadiusM() - satphot::kEarthRadiusM;
         const double a = (double)cv2FarLayerFromKm * 1000.0, b = std::max((double)cv2FarLayerFullKm * 1000.0, a + 1000.0);
         const double x = std::clamp((h - a) / (b - a), 0.0, 1.0);
-        return (float)(x * x * (3.0 - 2.0 * x));
+        // The share starts where it can be seen (2026-11-09): with the defaults (600 .. 8900 km) the smoothstep is
+        // 0.0008 at 733 km and 0.003 at 850 km -- under one 8-bit level of the far layer's own radiance -- while its
+        // full-resolution pass (cloud_v2_far.comp) cost 2-3 ms of every frame from 600 km up. Below kFarBlendMin the
+        // share is 0 (no pass); above it the share is rescaled, so it is continuous and still reaches 1.
+        // ("far_layer_min_blend", no slider; 0 = the old behaviour, the pass from "from" up.)
+        const double kFarBlendMin = std::clamp((double)cv2FarLayerMinBlend, 0.0, 0.5);
+        const double s = x * x * (3.0 - 2.0 * x);
+        return s <= kFarBlendMin ? 0.0f : (float)((s - kFarBlendMin) / (1.0 - kFarBlendMin));
     }
     VkSampler cv2RepeatSampler = VK_NULL_HANDLE; // trilinear REPEAT (noise) — also the weather cube
     VkSampler cv2ClampSampler = VK_NULL_HANDLE;  // bilinear CLAMP (screen targets)
@@ -6527,7 +6547,12 @@ private:
     // the horizon / the limb. The buffer (~66 MB) is made the first frame the volume runs (ensureSkyAp): until then binding
     // 33 holds the flash buffer as a placeholder (never read: cv2.skyAp.x is 0). Set 1 of its pipeline = the buffer.
     static constexpr uint32_t kSkyApX = 320, kSkyApY = 180, kSkyApZ = 48;   // == include/sky_ap.glsl
-    static constexpr VkDeviceSize kSkyApBytes = (VkDeviceSize)kSkyApX * kSkyApY * kSkyApZ * 24;
+    // + the LIMB volume (2026-11-09, include/sky_ap.glsl kSkyApLimbA / E): the band round the horizon / the limb on a grid
+    // of its own (azimuth x sin(elevation)), in the sky pass's per-pixel loop's place. "sky_ap_limb" 0 = the loop (the A/B).
+    static constexpr uint32_t kSkyApLimbA = 320, kSkyApLimbE = 96;
+    static constexpr VkDeviceSize kSkyApBytes =
+        ((VkDeviceSize)kSkyApX * kSkyApY + (VkDeviceSize)kSkyApLimbA * kSkyApLimbE) * kSkyApZ * 24;
+    float cv2SkyApLimb = 1.0f;
     VkPipeline            skyApPipeline   = VK_NULL_HANDLE;
     VkPipelineLayout      skyApPipeLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout skyApSetLayout  = VK_NULL_HANDLE;

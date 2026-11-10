@@ -9838,6 +9838,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2SkyAp = settingClamp(c.value("sky_ap", cv2SkyAp), 0.0f, 1.0f);
         cv2SkyApBandDeg = settingClamp(c.value("sky_ap_band_deg", cv2SkyApBandDeg), 0.0f, 10.0f);
         cv2SkyApBandSteps = settingClamp(c.value("sky_ap_band_steps", cv2SkyApBandSteps), 1.0f, 16.0f);
+        cv2SkyApLimb = settingClamp(c.value("sky_ap_limb", cv2SkyApLimb), 0.0f, 1.0f);
         cv2SmoothTiles = settingClamp(c.value("smooth_tiles", cv2SmoothTiles), 0.0f, 1.0f);
         cv2SmoothTileThresh = settingClamp(c.value("smooth_tile_threshold", cv2SmoothTileThresh), 0.5f, 32.0f);
         cv2TerrainGodrays = settingClamp(c.value("terrain_godrays", cv2TerrainGodrays), 0.0f, 1.0f);
@@ -9877,6 +9878,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2FullResMovingMode = std::clamp(c.value("full_res_moving_mode", cv2FullResMovingMode), 0.0f, 2.0f);
         cv2SparseBlock = std::clamp(c.value("sparse_block", cv2SparseBlock), 2.0f, 4.0f);
         cv2SparseBlockStill = std::clamp(c.value("sparse_block_still", cv2SparseBlockStill), 2.0f, 4.0f);
+        cv2SparseBlockOrbit = std::clamp(c.value("sparse_block_orbit", cv2SparseBlockOrbit), 2.0f, 4.0f);
+        cv2FarLayerMinBlend = std::clamp(c.value("far_layer_min_blend", cv2FarLayerMinBlend), 0.0f, 0.5f);
         cv2SmoothMoving = std::clamp(c.value("smooth_moving", cv2SmoothMoving), 0.0f, 2.0f);
         cv2HistDepthTest = std::clamp(c.value("history_depth_test", cv2HistDepthTest), 0.0f, 1.0f);
         cv2ShadowRing1CellM = c.value("shadow_ring1_cell_m", cv2ShadowRing1CellM);
@@ -10626,6 +10629,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"sky_ap", cv2SkyAp},
         {"sky_ap_band_deg", cv2SkyApBandDeg},
         {"sky_ap_band_steps", cv2SkyApBandSteps},
+        {"sky_ap_limb", cv2SkyApLimb},
         {"smooth_tiles", cv2SmoothTiles},
         {"smooth_tile_threshold", cv2SmoothTileThresh},
         {"terrain_godrays", cv2TerrainGodrays},
@@ -10663,6 +10667,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"full_res_moving_mode", cv2FullResMovingMode},
         {"sparse_block", cv2SparseBlock},
         {"sparse_block_still", cv2SparseBlockStill},
+        {"sparse_block_orbit", cv2SparseBlockOrbit},
+        {"far_layer_min_blend", cv2FarLayerMinBlend},
         {"smooth_moving", cv2SmoothMoving},
         {"history_depth_test", cv2HistDepthTest},
         {"shadow_ring1_cell_m", cv2ShadowRing1CellM},

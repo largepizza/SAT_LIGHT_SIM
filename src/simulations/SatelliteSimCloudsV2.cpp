@@ -2093,8 +2093,42 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             blk = blkStill;
             stillBlock = true;
         }
+        // FROM ORBIT (2026-11-09, issue_20261109_184851; "sparse_block_orbit" 3, 2 = off): above full_rate_above_km the
+        // clouds are hundreds of km away, and what the history cannot reproject is small: the eye's step as parallax over
+        // the nearest a cloud can be, and the noise volumes' slide under time warp (cv2.motion.x), each under a tenth of a
+        // cloud-grid pixel a frame for kOrbitQuietFrames frames (real orbital speed and 1 min/s both pass, boosted flight
+        // and 1 h/s do not). Then one ray per 3 x 3 block. The gate that kept the
+        // still block below this height -- the settled 3 x 3 image lost its small puffs -- was the share of the
+        // interpolated estimate: a pixel without a ray takes 1 / (K^2 - 1) of its 2 x 2 weight here (the resolve, gnd.z's
+        // fraction 0.375), not the still block's 3 / (K^2 - 1), and the settled image is the 2 x 2's (issue shot 1: 0.6% of
+        // the pixels past the A-vs-A floor's 0.02%, mean 1.6 levels against 0.6; at the full weight 8%, 2.4 levels).
+        // NOT WHILE THE VIEW TURNS OR ZOOMS, and only 64 quiet frames after it last did (the matrix, 2026-11-10,
+        // harness_runs/cloudsky/mx: with the block on through a 90 deg/s pan, 8 frames after a jump, every orbit cell's pan
+        // read 0.3-0.7 levels further from its settled frame, signed +, i.e. softer -- the strip a pan uncovers takes nine
+        // frames to fill instead of four, and each pixel's resampled history waits nine for a fresh ray -- and 60 frames
+        // after a jump to 850 km the image was 1.9 levels from settled where the 2 x 2 grid is at 0.7). A turn keeps the
+        // 2 x 2 grid's held pixel, as before.
+        constexpr int kOrbitQuietFrames = 64;
+        bool orbitBlock = false;
+        {
+            const int    blkOrbit = std::clamp((int)std::lround(cv2SparseBlockOrbit), 2, 4);
+            const float  pixAngC  = 2.0f * tanHalf / (float)std::max(cv2HalfH, 1u);
+            const double nearO    = std::max(eyeH - (double)hi, 0.0) + 20000.0;
+            const double dSimO    = std::abs(simT - cv2PrevSimT);
+            const double quietPx  = (glm::length(eye - cv2PrevEye) + std::abs((double)cv2WindMps * 0.7 * dSimO)) / (nearO * (double)pixAngC);
+            float dRotO = 0.0f;
+            for (int c = 0; c < 3; ++c)
+                for (int r = 0; r < 3; ++r)
+                    dRotO = std::max(dRotO, std::abs(cpc.skyView[c][r] - cv2PrevSkyView[c][r]));
+            const bool   turning  = dRotO > 0.3f * pixAngC || std::abs(tanHalf - cv2PrevTanHalf) > 1e-5f;
+            const bool   quiet    = valid && cv2HistoryValid && eyeH > (double)cv2FullRateAboveKm * 1000.0 && quietPx < 0.1 && !turning;
+            cv2OrbitQuietFrames = quiet ? std::min(cv2OrbitQuietFrames + 1, 1000) : 0;
+            if (blkOrbit > blk && cv2OrbitQuietFrames >= kOrbitQuietFrames) { blk = blkOrbit; orbitBlock = true; stillBlock = false; }
+        }
         cv2SparseBlockNow = (cv2FullResActive() && !cv2FullRateNow && !cv2HalfRateNow && !cv2AdaptiveNow) ? (uint32_t)blk : 2u;
         stillBlock = stillBlock && cv2SparseBlockNow > 2;
+        orbitBlock = orbitBlock && cv2SparseBlockNow > 2;
+        cv2OrbitBlockNow = orbitBlock;
     }
     // Smooth tiles (2026-10-25): with full-res clouds on the sparse grid, the tiles whose last resolved frame is smooth are
     // marched at a quarter of its density (cloud_v2_tiles.comp). Needs a history (it is classified from it), the 16x16
@@ -2259,8 +2293,10 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // its block -- crawled over every cloud as flicker and 2-px blocks (the ITCZ flight: pixels reversing by > 12 levels
     // 0.95 -> 0.23 %, block excess 0.22 -> 0.13 levels, lag equal; the 650-km flight unchanged: no far masses lost; the
     // march's cost the same, 33.1 vs 33.3 ms). Held, a moving view is the half-res grid's, steady.
+    // (Not the orbit block: it runs only while the history holds -- a turn or 1 min/s from orbit counts as "moving" for
+    // cv2StillFrames but replaces nothing -- and held at one pixel of each 3x3 it would be a third-resolution image.)
     cv2FullResHeldNow = cv2FullResActive() && cv2FullResMovingMode > 0.5f && cv2FullResMovingMode < 1.5f && !cv2FullRateNow &&
-                        cv2StillFrames < 8;
+                        cv2StillFrames < 8 && !cv2OrbitBlockNow;
     {
         // The block's offsets, one per frame over K*K frames: for 2x2 the ordered (diagonal first) cycle of before; for 3x3 a
         // Latin-square order (each run of three covers every row and column); for 4x4 the Bayer matrix's order.
@@ -2269,7 +2305,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                                          {1, 0}, {3, 2}, {3, 0}, {1, 2}, {0, 1}, {2, 3}, {2, 1}, {0, 3}};
         if (cv2SparseBlockNow == 3) { const int *o3 = kOff3[cv2Frame % 9u]; p.frame.z = (float)o3[0]; p.frame.w = (float)o3[1]; }
         if (cv2SparseBlockNow == 4) { const int *o4 = kOff4[cv2Frame % 16u]; p.frame.z = (float)o4[0]; p.frame.w = (float)o4[1]; }
-        p.gnd.z = (float)cv2SparseBlockNow + (stillBlock ? 0.25f : 0.0f);   // (the resolve rounds K; the fraction = the still mode)
+        // (the resolve rounds K; the fraction = the mode: 0.25 the still block, 0.375 the orbit block)
+        p.gnd.z = (float)cv2SparseBlockNow + (cv2OrbitBlockNow ? 0.375f : stillBlock ? 0.25f : 0.0f);
         p.gnd.w = std::clamp(cv2HistDepthTest, 0.0f, 1.0f);   // the resolve's depth-consistent history (0 = off)
     }
     if (cv2FullResHeldNow)
@@ -2950,10 +2987,13 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, skyApPipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, skyApPipeLayout, 1, 1, &skyApSet, 0, nullptr);
-        vkCmdDispatch(cmd, (kSkyApX + 7) / 8, (kSkyApY + 7) / 8, 1);
+        // (The second layer of workgroups marches the limb volume's rays: 320 x 96 of them fit the tiles' 40 x 23 groups.)
+        static_assert(kSkyApLimbA <= kSkyApX && kSkyApLimbE <= kSkyApY, "the limb grid rides in the tiles' dispatch");
+        const bool apLimb = cv2SkyApLimb > 0.5f;
+        vkCmdDispatch(cmd, (kSkyApX + 7) / 8, (kSkyApY + 7) / 8, apLimb ? 2 : 1);
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-        ((GpuCloudV2Params *)cv2ParamsMapped)->skyAp.x = 1.0f;   // the mirror is copied up after the frame is recorded
+        ((GpuCloudV2Params *)cv2ParamsMapped)->skyAp.x = apLimb ? 2.0f : 1.0f;   // the mirror is copied up after the frame is recorded
         skyApRanThisFrame = true;
     }
     cv2PassStampTo(cmd, 5);   // the aerial-perspective volume

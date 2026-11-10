@@ -167,6 +167,7 @@ knockout +terrain_march ; wait settle 10 ; capture dusk_noterrain
 | `ui open <settings [tab=Name]\|viewcontrols\|trace\|info\|viewer\|cine\|bookmarks\|reports\|missions [tab=upcoming\|ongoing\|kessler]\|weather [tab=]\|skyevents\|console>`, `ui close <name\|all>` (`all` includes the Issue reports and Missions windows) | windows (`info`/`viewer`/`trace` need a selected satellite). An advanced tab (incl. Performance) turns on "show advanced settings". A UI kit row is clicked as `Key:index` (`ui click ReplayIntroBtn:0`, `ui click InfoSectHdr:2`). A `ui click` presses on the frame the pointer arrives, which the sky picker can take for a click on empty sky: re-`select` before a window that needs the selection |
 | `bookmark add [name] [id=] [scale=] [paused=]\|go <n>\|update <n>\|rename <n> <name>\|delete <n>\|restore\|list` | the Bookmarks window's actions (n from 1). The thumbnail is captured a few frames later (`wait 3`); results list each bookmark (`thumbnail` true once it has one). `id=` fixes the id (replacing a bookmark that has it), `scale=` / `paused=` store the optional look (the clock a Go sets: time scale index, 0 = 1x). `restore` = the window's "Restore defaults". `scripts/ui_windows.satcmd`; the shipped defaults: `scripts/default_bookmarks.satcmd` |
 | `drift [default] [phase=<rad>] [rate=<rad/s>]` | the cloud map's drift (session state a bookmark or snapshot stores): `phase=` sets the offset giving that phase at the CURRENT sim time (set the time first), `default` the compiled-in offset (a fresh session's map); bare, reports it |
+| `exposure [auto\|hold\|fast]` | (2026-11-09) the auto exposure's controller, for runs that compare frames: `fast` settles the metered offset by a fixed share per frame (deterministic, ~45 frames), `hold` keeps it where it is, `auto` is the player's (eased in wall-clock time, so a capture's exposure depends on the frame rate before it). Bare: the mode, `ev`, `auto_ev`, `meter_mean`, `meter_clip`. Meter each view (`exposure fast`, `wait 45`, `exposure hold`) instead of `set clouds_v2.auto_exposure 0`, which blows out every daytime frame (`cloudsky_matrix.py` does) |
 | `tutorial start [step] [pad=1]`, `tutorial step <n\|name>`, `tutorial next\|back\|skip\|pick\|return\|state` | the first-run tutorial (never started on its own in a harness run). Steps 1-14 or look/move/altitude/boost/select/info/goto/trace/time/capture/missions/ongoing/settings/graphics (`actions` = info, the pre-2026-10-21 name); its action steps finish on real input, so `next` moves past them (or drive the real buttons with `ui click`: `TutPick`, `SelActBtn:<i>`, `FollowExitBtn`, `TimeMissionsBtn`, `MsGo:0`, `MsTab:1`, `TutReturn`). `pick` = the card's "Pick one for me", `return` = its "Back to <time>" after the Missions step's jump. `pad=1` shows the gamepad graphics. Results carry `step`, `step_count`, `progress`, `done_showing`, `needs_pick`, `return_offered` / `return_label`, `tutorial_done`. `scripts/tutorial.satcmd` |
 | `pad <a\|b\|x\|y\|lb\|rb\|start\|view\|ls\|rs\|up\|down\|left\|right>` | a gamepad button press as `pollGamepad` handles it, no controller needed: its context meaning first (the tutorial card's Start/View, the selection's D-pad focus / A / B), else its binding. Marks the pad as the last input. Results carry `action`, `pad_focus`. `scripts/gamepad_nav.satcmd` |
 | `ui open cine` | the Cinematics window (see "Cinematics") |
@@ -431,6 +432,28 @@ python tools/harness/matrix_suite.py gen frag.satcmd --quick --fragment  # comma
 - **Cost:** `gen` prints an estimate calibrated on cloud_suite's run (a settle frame ~30 ms at 1920x1009, a capture
   ~150 ms): ~13 min `--quick` (4 motions per altitude, one reference each), ~22 min full. Settling references is most of it.
 - A cell's failed command (no converged beam site, a satellite without a model) is listed under `errors` by `score`.
+
+## Clouds-and-sky matrix (`tools/harness/cloudsky_matrix.py`)
+
+`matrix_suite.py`'s generator and scorer over the cells of the cloud / sky perf pass (2026-11-09; the goal: High under
+25 ms across all of them). It crosses 9 sites (clear, broken cumulus, dense cumulus, overcast deck, two live storm
+objects, terminator, sunset, night; Reflect-beam cells from the matrix suite) with 6 altitudes (2 m .. 850 km), still +
+perf, 16 noise / 16 live frames, walk / fast / look / rise paths against settled references, time warp at 1 min/s, jumps
+between cells (`--jumps`, `jumpscore`) and the five shots of the issue as loaded (`--issue`).
+
+```
+python tools/harness/cloudsky_matrix.py gen harness_runs/cloudsky/mx/mx.satcmd [--issue] [--jumps] [--quick] [--only cell=brk_300km]
+python tools/harness/run.py harness_runs/cloudsky/mx/mx.satcmd --window 1920x1009 --settings user_data/settings.json --out harness_runs/cloudsky/mx/base
+python tools/harness/cloudsky_matrix.py score harness_runs/cloudsky/mx/base
+python tools/harness/cloudsky_matrix.py compare harness_runs/cloudsky/mx/base harness_runs/cloudsky/mx/after
+python tools/harness/cloudsky_matrix.py jumpscore harness_runs/cloudsky/mx/base
+```
+
+- **`--settings` is mandatory:** without it run.py starts from the built-in defaults, an older cloud look (98 clouds_v2
+  keys differ by more than 2%). `gen --core --quick --issue` is the ~6 min set to run after each kept change.
+- **Exposure** is metered once per cell (`exposure fast`, wait 45, `exposure hold`), not switched off: the suite's
+  `auto_exposure 0` clips every daytime frame. A full run is ~33 min. Timing traps (the two speed regimes, wait >= 350
+  frames after a switch, pair in one app): docs/subsystems/perf.md "Clouds and sky pass, 2026-11-09/10".
 
 ## Still-view flicker (`tools/harness/flicker.py`)
 
