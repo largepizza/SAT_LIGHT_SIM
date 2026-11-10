@@ -9284,6 +9284,14 @@ void SatelliteSim::readExposureMeter()
         }
     }
     float want = std::clamp(autoExposureEV + err, lo, 0.0f) * day;
+    // The harness's `exposure hold` / `exposure fast` (harnessExposureMode).
+    if (harnessExposureMode == 1)
+        return;
+    if (harnessExposureMode == 2)
+    {
+        autoExposureEV += (want - autoExposureEV) * 0.25f;
+        return;
+    }
     // ~1 s to adapt (darkening, like an eye stepping into daylight), a little slower back.
     const float tau = want < autoExposureEV ? 0.8f : 1.6f;
     autoExposureEV += (want - autoExposureEV) * (1.0f - expf(-dt / tau));

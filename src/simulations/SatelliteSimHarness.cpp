@@ -209,6 +209,7 @@ const char *kHelp =
     "observer lat= lon= [agl=|alt=]; beams [list] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [clamp=on] [drift=intro|default]; report list [dir] | report info <issue dir> | report load <issue dir> [shot=1] [settings=on|off] [clamp=on] [trail=on|off] | report shot [note] [new=1] [title=] [bar=1] | report mark [issue] shot= [pin=x,y|off] [rect=x,y,w,h|off] | report export [issue]; drift [default] [phase=] [rate=]; camera [az= el= fov=] | camera look|track <sun|moon|sel|planet name|off>; "
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select star <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
+    "exposure [auto|hold|fast]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s] [wait=1]; photo <name> [scale=1-4] [frames=N]; "
     "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [cdc=<spv>] [sky=<spv>] [sky_taa=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; skyevents [state]|events|list <kind>|watch <solar|lunar|conjunction|occultation|moonglint|meteors|comet|supernova|cme|cometstorm|row|special <0-3>|aurora [t=]> [n=]|spaceweather; stars [state]|find <name>|select <name>; moonbase [state]|windows [days=] [limit=] [jitter=]|base <i> [lean=] [jitter=]; meteors [state]|count [minutes=] [lm=] [shower=]|force [kind=meteor|fireball|bolide] [shower=] [mag=] [az=] [el=] [v=] [delay=]|go [shower=]; comets [state]|list [days=]|watch [k|great] [days=] [sun_max=] [orbit=1]; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|pick|return|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|preview <file> [shot=] [scale=] [fps=]|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=] [frames=] [video=]; video start [name] [fps=] [scale=] [ui=on]|stop|state; overlay text|label|clear ...; "
@@ -1465,6 +1466,42 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         r["cloud_drift_rate"] = cloudDriftRate;
         char buf[96];
         snprintf(buf, sizeof(buf), "cloud drift phase %.6f rad, rate %.3g rad/s", cloudDriftPhase(), (double)cloudDriftRate);
+        r["message"] = buf;
+        return Status::Done;
+    }
+
+    // `exposure [auto|hold|fast]`: the auto exposure's controller for benchmarks (harnessExposureMode). `fast` settles
+    // the metered offset by a fixed share per frame (deterministic; ~45 frames), `hold` keeps it where it is, `auto`
+    // is the player's (eased in wall-clock time). Bare: reports the mode and the EVs.
+    if (n == "exposure")
+    {
+        const std::string m = lower(pos(0));
+        if (m == "auto")
+            harnessExposureMode = 0;
+        else if (m == "hold")
+        {
+            // Held on a quarter-stop grid: the meter's reading wanders ~+-0.05 EV with the frame's own noise (its
+            // clipped share), and two runs of one view should hold the same exposure.
+            harnessExposureMode = 1;
+            autoExposureEV = std::round(autoExposureEV * 4.0f) / 4.0f;
+        }
+        else if (m == "fast")
+            harnessExposureMode = 2;
+        else if (!m.empty())
+        {
+            r["message"] = "exposure [auto|hold|fast]";
+            return Status::Error;
+        }
+        const char *mode = harnessExposureMode == 1 ? "hold" : harnessExposureMode == 2 ? "fast" : "auto";
+        r["mode"] = mode;
+        r["ev"] = cv2ExposureEV;
+        r["auto_ev"] = autoExposureEV;
+        r["global_ev"] = globalExposureEV();
+        r["meter_mean"] = meterMeanLum;
+        r["meter_clip"] = meterClipFrac;
+        char buf[128];
+        snprintf(buf, sizeof(buf), "exposure %s: ev %.2f, auto %.3f, meter mean %.3f, clipped %.3f", mode, cv2ExposureEV,
+                 autoExposureEV, meterMeanLum, meterClipFrac);
         r["message"] = buf;
         return Status::Done;
     }

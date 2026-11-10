@@ -5755,6 +5755,12 @@ private:
     // Milky Way / zodiacal light scale with it. Auto exposure only DARKENS, and only by day: the night
     // exposures were tuned by hand and stay put.
     float autoExposureEV = 0.0f;       // runtime: the metered offset (<= 0), eased
+    // The harness's `exposure auto|hold|fast` (2026-11-09; not saved): 0 = the controller as the player has it (eased in
+    // wall-clock time, so a capture's exposure depends on the frame rate before it), 1 = the offset is HELD, 2 = it
+    // settles by a fixed share per reading (deterministic in frames). Benchmarks that compare frames meter each view
+    // (`exposure fast; wait 45; exposure hold`) instead of switching the auto exposure off, which blows out every
+    // daytime frame.
+    int harnessExposureMode = 0;
     float globalExposureEV() const { return cv2ExposureEV + autoExposureEV; }
     float exposureGainMag() const { return 2.5f * 0.30103f * globalExposureEV(); }
     // The meter: the frame's central 60%, blitted to 64x36 (linear RGBA8), copied to the host and read
