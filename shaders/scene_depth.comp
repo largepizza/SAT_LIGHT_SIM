@@ -58,7 +58,7 @@ layout(set = 0, binding = 3, r32f) uniform readonly image2D meshDistImg;
 #define CLOUD_PARAMS_BINDING 4
 #include "cloud_params.glsl"
 // x = the observer's eye ground height with terrain detail, for sat_sky.frag (binding 26 there).
-layout(set = 0, binding = 5, std430) writeonly buffer TerrainFrame { vec4 terrainFrame; };
+layout(set = 0, binding = 5, std430) buffer TerrainFrame { vec4 terrainFrame; };
 // The quarter-res pre-pass's result, which seeds this (half-res) pass. In the quarter pass itself
 // this binding is the half-res image and is not read.
 layout(set = 0, binding = 7) uniform sampler2D seedDepthTex;
@@ -97,13 +97,19 @@ void main() {
     // The observer's detailed ground height, once for sat_sky.frag (it would otherwise evaluate the
     // detail octaves in every pixel). Written before the knockout early-out below so it is always
     // this frame's value.
-    const bool quarter = pc.quarterPass > 0.5;
-    if (quarter && coord == ivec2(0))
-        // .xyz only: .w is the rain rate at the eye, written by cloud_v2_march.comp (read on the host
-        // for the rain ambience).
-        terrainFrame.xyz = vec3(observerEffHeightDetailed(earthElevTex, earthSpecTex, pc.obsECEFDir),
-                                observerEffHeightDetailed(earthElevTex, earthSpecTex, vec4(pc.obsECEFDir.xyz, 0.0)),
-                                0.0);
+    // (2026-11-10) quarterPass 2 = the FRAME pass: one workgroup, dispatched before the two depth passes, whose first
+    // thread alone evaluates the observer's ground. The depth passes read it back (obsEffH below): each of their texels
+    // ran the whole detail + erosion at the observer for the same number.
+    const bool quarter = pc.quarterPass > 0.5 && pc.quarterPass < 1.5;
+    if (pc.quarterPass > 1.5) {
+        if (coord == ivec2(0))
+            // .xyz only: .w is the rain rate at the eye, written by cloud_v2_march.comp (read on the host
+            // for the rain ambience).
+            terrainFrame.xyz = vec3(observerEffHeightDetailed(earthElevTex, earthSpecTex, pc.obsECEFDir),
+                                    observerEffHeightDetailed(earthElevTex, earthSpecTex, vec4(pc.obsECEFDir.xyz, 0.0)),
+                                    0.0);
+        return;
+    }
 
     // Knockout: fill with "nothing anywhere". Every consumer's operation is min()/>= against this,
     // so a uniform kNoSurfaceT reproduces the pre-unification behaviour (volumetrics and beams
@@ -130,7 +136,7 @@ void main() {
     // GPU-resolved observer height — the SAME shared helper sat_sky.frag and cloud_march.comp now
     // use. They previously disagreed (one CPU value, one GPU lookup), which was harmless while
     // each only compared against itself but is not once one produces distances the other consumes.
-    float obsEffH = observerEffHeightDetailed(earthElevTex, earthSpecTex, pc.obsECEFDir);
+    float obsEffH = terrainFrame.x;   // (the frame pass's: observerEffHeightDetailed(pc.obsECEFDir))
     vec3  obsPos  = observerPos(obsEffH);
 
     vec2 tBase  = raySphere(obsPos, dir, R_EARTH);

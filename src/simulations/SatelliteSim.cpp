@@ -3139,10 +3139,26 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL,
                              VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
             SceneDepthPC qpc = dpc;
-            qpc.quarterPass = 1.0f;
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, sceneDepthPipeline);
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, sceneDepthPipeLayout, 0, 1,
                                     &sceneDepthQDescSet, 0, nullptr);
+            // The frame pass (quarterPass 2, 2026-11-10): one workgroup writes the observer's ground into terrainFrameBuf;
+            // both depth passes read it instead of evaluating the detail at the observer in every texel.
+            qpc.quarterPass = 2.0f;
+            vkCmdPushConstants(cmd, sceneDepthPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(qpc), &qpc);
+            vkCmdDispatch(cmd, 1, 1, 1);
+            {
+                VkBufferMemoryBarrier tb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+                tb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+                tb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+                tb.srcQueueFamilyIndex = tb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                tb.buffer = terrainFrameBuf;
+                tb.offset = 0;
+                tb.size = VK_WHOLE_SIZE;
+                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0,
+                                     nullptr, 1, &tb, 0, nullptr);
+            }
+            qpc.quarterPass = 1.0f;
             vkCmdPushConstants(cmd, sceneDepthPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(qpc), &qpc);
             vkCmdDispatch(cmd, (qW + 15) / 16, (qH + 15) / 16, 1);
             ctx.imageBarrier(cmd, sceneDepthQImg,
