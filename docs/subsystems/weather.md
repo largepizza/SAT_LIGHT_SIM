@@ -138,9 +138,23 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   count followed the moment's vmax, and `floor(arms + 0.15)` stepping as a storm weakened re-placed every arm-cirrus
   capsule and band tower in one frame (at 827 km, 1 h/s: arm-sized patches switching at the same sim minutes with the
   rotation off, the clipmap off and the cube's rect bake off) -- the auto count now follows the storm's PEAK wind. Perf
-  (RTX 3070 Ti, 1920x1080, interleaved A/B in one app, the GPU shared with another agent's app): cloud march 45.9 -> 46.6
-  ms over the eye from 46 km (184801), 53.7 -> 54.2 over the CDO from 61 km (232743 shot 1), both inside the base-vs-base
-  spread (1.9 ms); 128 registers on every reload. Not shipped: a general flow of all cloud noise on `wfWind` (weather-v2's
+  (RTX 3070 Ti, 1920x1080, A B interleaved in one app alone on the GPU, 3 reps of 60 frames, no pre-waits; the first
+  A/B on a shared GPU read +0.5-0.7 ms and was wrong): cloud march +4.6 and +4.1 ms over the eye from 46 km (184801,
+  47.6 -> 52.3, 47.2 -> 51.2), +2.8 and +9.9 ms over the CDO from 61 km (232743 shot 1; the base itself moved 58.3 -> 62.7
+  between the runs: the post-reload regime), +0.8 and +1.1 ms with no cyclone in view (125245 from 650 km); 128 registers on
+  every reload. OVER the wave's +0.5 ms budget: the per-sample loop (a cross, a length, three sines, sin / cos, the hash)
+  runs at every field sample inside a reach, and in a hurricane view that is every sample; "Hurricane rotation" 0 returns
+  it to the base's cost (the loop's first test). A cheaper form (the stagger without atan / log, inversesqrt for the
+  profile, the lock share on the CPU) did not move the number: the remaining cost is the loop's existence per sample. The
+  next step would be one evaluation per ray or per coarse step (the displacement varies over ~10 km), not per sample.
+  The artifacts gate (`artifacts.py`, hurr_eye / hurr_orbit / hurr_top, 1x / 1m / 5m; the after run under the 2-second
+  settle cap, so its lag reference is not converged): the eye view's lag16 6.9 -> 10.8 % (1x), 9.7 -> 11.6 (1m), 9.5 ->
+  11.3 (5m) and grain 1.0 -> 1.2 (the eyewall turns 25 deg a frame at 5 min/s, which the sparse-block history cannot
+  hide); the orbit view's lag16 0.75 -> 0.56 (1m), 1.7 -> 0.95 (5m); the top view's lag16 0.9 -> 0.02 (1x). The 827-km
+  1 h/s change curve: spikes at 5.9 / 4.8 / 5.3 x the median on the base (frames 18, 78, 212) -> one at 3.5 x (frame 78).
+  Measured turn (250 km straight down, 5 min/s, polar cross-correlation at 1.1-1.6 RMW): 5-8 deg counter-clockwise per
+  5 min (the rate predicts ~16; the history smears the rest); at 4-6 RMW the sheet is featureless under a noon Sun, so
+  nothing can be tracked there. Not shipped: a general flow of all cloud noise on `wfWind` (weather-v2's
   `cv2NoiseDispAt`): it needs the wind evaluated per sample in the march and per pixel in the resolve, and the lattice
   seams it showed from orbit (e453372); the storm lock covers the user's case (storms vs the drift).
   **Anvils carried by the organised systems (2026-11-08, branch `weather-salvage`, `.plans/WEATHER_SALVAGE_PLAN.md`; the
