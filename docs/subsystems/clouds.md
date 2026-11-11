@@ -644,6 +644,43 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   conservative per-column ceiling (tropopause top + overshoot, ground-lifted low tops) — 0% (the
   steps are inside the cloud, not above it); a vertical step cap growing with the footprint (200 -> up
   to 500 m) — -0.4%. An orbit LOD needs a cheaper field (an impostor), not fewer steps.
+- **The merged march's 255-register regime, measured and mapped (2026-11-11, regdiet-b, branch `qa/20261110/regdiet2`;
+  batches `harness_runs/regdiet2/` (`gen_s1.py`, `gen_attr.py`, `gen_gate.py`, `scan1.py`), evidence
+  `qa/waves/20261110/evidence/regdiet-b/`; the three features it is the sum of: weather.md "The cyclone flow map", round 3):**
+  (1) **Did the 2026-11-10 wave slow the ordinary views?** Yes, a little; the storm views more. f1ce160 (128 registers,
+  local memory 2032 B) against c95630d (255, 1808 B), the SAME script on each exe in two sequential sessions (not
+  interleaved: launch-to-launch noise 5-10%), the user's settings, 1600x900, `perf frames=60` x 3 after a 160-frame settle,
+  the third rep (settled) as cloud_march / GPU total ms: 400 km over the Pacific 13.4 / 23.4 -> 16.5 / 26.4; cumulus from
+  1.5 km 6.0 / 10.1 -> 7.6 / 11.7; a 4-km field 6.7 / 15.6 -> 7.1 / 16.0; issue_20261109_184510 (the fill view) 11.5 / 16.8
+  -> 17.8 / 24.7; issue_20261109_184801 (the eye from 46 km) 18.1 / 27.2 -> 26.4 / 34.5. The march pass itself
+  (`clouds_v2.pass_ms.march_a`) 9.8 -> 12.9, 1.3 -> 2.8, 1.66 -> 1.86, 6.9 -> 12.7, 13.5 -> 21.0. The merged tree also
+  CONVERGES SLOWER after a view change: its first rep after the settle sits 1-13 ms over its third (the layer-map pass
+  1.6-6.4 ms in that rep against 0.1-0.3 on f1ce160), so by the 2-s rule it is slower still than the settled numbers say.
+  (2) **What the ordinary views pay for, interleaved in one app at 400 km (cloud_march, 3 x 60 frames):** the shipped SPV
+  (255) 18.2; the fill block out 17.6; the flow map out 17.2; the ray's ice lookups out 17.8; all three out, which the
+  compiler gives 128 registers (local 2080 B) 15.7 -- and 8.4 -> 7.9 at the 1.5-km cumulus. A NATURAL 128 is therefore
+  2.5 ms faster at the orbit view where the forced one (`wg=32x16`, 2176 B) was 2.4 ms slower: the regime is worth having,
+  the cap is not. (3) **The register map** (`shaders reload` on one build, every variant a text substitution of the same
+  source, `scan1.py`): any one feature out 254-255; the ray's two ice-table lookups out 246; the beams' two lookups out
+  (beamFinish, inside the light loop) 254, but WITH the fill out 128, or with the flow out 128; all three 128. Exact
+  restructures that did NOT move it: the fill loop called twice so nothing of it crosses the meso / curtain fetches (255;
+  with the beams' lookups out 252); the two beam lookups as ONE frame with each table row fetched once (`cv2IceOptics2`,
+  bit-identical: 255); a per-ray reach gate on the fill loop (255); the ray's lookups halved, or analytic (255); the ray's
+  lookups out with the habit kept (251); with the beams out, the fill out 128 but the flow out 255. The compiler's choice
+  follows code in the light loop and the field's inlined copies, not liveness: a 128 needs the beams' lookups out of the
+  light loop AND the fill loop out of the field's copies, which only approximations give (the beams' halo once per ray at
+  the energy-weighted beam direction; the fill's hR / hW / hE from the main sample kept across the light march, as the
+  flow's displacement is) -- not done. (4) **Kept, behaviour-identical, 255 registers as before** (`v_d4`): the per-ray
+  reach test for the hurricane fill (`gCv2HurrNear`, the march beside the flow map's `cycNear`: `cv2HurrAt` looped over every
+  cyclone on the planet, 1-2 at an ordinary view, at every low-field sample; on a ray none can reach within 1.3 CDO radii
+  + the flow warp's margin every iteration would `continue`); `cycNear` folded into `tCycD` (+1e30 = no vortex near); the
+  beams' ice and snow halos from one `cv2IceOptics2` call. Gate (base vs d4 interleaved, 3 x 60 frames, cloud_march):
+  orbit 17.80 / 17.68, cumulus 8.45 / 8.42, field 7.95 / 7.92, fill view 19.03 / 19.09, eye 40.87 / 40.97 -- every pair
+  inside the A-vs-A spread, no view slower, none measurably faster. Parity: the halo view (issue_20261110_180734 shot 2)
+  0.05% of pixels past 8 levels against a 0.04% floor; the fill and eye views cannot resolve it -- two reloads of the SAME
+  SPV differ by 8.5% / 2.6% there (the history and layer map re-converge for seconds after a reload, even settled 160
+  frames), d4 against the base reloaded right before it 0.8% / 1.4%, and the heatmap is a smooth level shift over the whole
+  storm, not a local feature.
 - **Perf pass (2026-10-13, `harness_runs/perf13/`: `mkvar.py` builds text-substituted march variants, `ab.py`
   times them interleaved in one live app, `tab2.py` tabulates).** Cloud bucket at 1920x1009, the user's settings
   (430 iterations, 7 light steps, full rate above 30 km, sparse below), before -> after: orbit storm 388 km

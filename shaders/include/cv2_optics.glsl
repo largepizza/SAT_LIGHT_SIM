@@ -109,6 +109,60 @@ vec3 cv2IceOptics(vec3 v, vec3 s, vec3 up, vec4 hab)
     return cv2IceOpticsAnalytic(vec3(dot(v, e1), dot(v, e2), dot(v, up)), vec3(dot(s, e1), dot(s, e2), dot(s, up)), hab);
 }
 
+// The same for TWO habits at one geometry (2026-11-11, regdiet): the beams light thin ice with the region's habit and snow
+// shafts with a fixed one (plates and columns), at the same view ray, light and vertical; as two calls inside the march's
+// light loop each computed the frame and fetched its rows, the snow's two rows being rows of the ice's. One frame, each row
+// fetched once and weighted twice; a row is fetched when either habit wants it (a zero weight adds exactly 0). Bit-identical
+// to the two calls' results, in their summation order.
+void cv2IceOptics2(vec3 v, vec3 s, vec3 up, vec4 habA, vec4 habB, out vec3 resA, out vec3 resB)
+{
+    resA = vec3(0.0); resB = vec3(0.0);
+#ifdef CV2_ICE_OPTICS_BINDING
+    if (cv2.optics.x > 0.5) {
+        float sz  = dot(s, up);
+        float e   = degrees(asin(clamp(sz, -1.0, 1.0)));
+        float th  = degrees(acos(clamp(dot(v, s), -1.0, 1.0)));
+        vec3  u   = up - s * sz;
+        float ul  = length(u);
+        u = ul > 1e-4 ? u / ul : normalize(cross(s, abs(s.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0)));
+        vec3  r   = cross(s, u);
+        float phi = degrees(atan(abs(dot(v, r)), dot(v, u)));
+        if (e < 0.0) { e = -e; phi = 180.0 - phi; }
+        float x = cv2IoU(th), z = cv2IoW(e);
+        float py = phi * (0.5 / CV2_IO_H);
+        if (habA.x > 0.0 || habB.x > 0.0) {
+            vec3 d = cv2IoDecode(textureLod(cv2IceOpticsTex, vec3(x, 1.0 / CV2_IO_H, z), 0.0).rgb);
+            resA += habA.x * d; resB += habB.x * d;
+        }
+        if (habA.w > 0.0 || habB.w > 0.0) {
+            vec3 d = cv2IoDecode(textureLod(cv2IceOpticsTex, vec3(x, 3.0 / CV2_IO_H, z), 0.0).rgb);
+            resA += habA.w * d; resB += habB.w * d;
+        }
+        if (habA.y > 0.0 || habB.y > 0.0) {
+            vec3 d = cv2IoDecode(textureLod(cv2IceOpticsTex, vec3(x, 4.5 / CV2_IO_H + py, z), 0.0).rgb);
+            resA += habA.y * d; resB += habB.y * d;
+        }
+        float colA = habA.x * cv2.optics.z, parA = habA.z * cv2.optics.y;
+        float colB = habB.x * cv2.optics.z, parB = habB.z * cv2.optics.y;
+        if (colA > 0.0 || colB > 0.0) {
+            vec3 d = cv2IoDecode(textureLod(cv2IceOpticsTex, vec3(x, 95.5 / CV2_IO_H + py, z), 0.0).rgb);
+            resA += colA * d; resB += colB * d;
+        }
+        if (parA > 0.0 || parB > 0.0) {
+            vec3 d = cv2IoDecode(textureLod(cv2IceOpticsTex, vec3(x, 186.5 / CV2_IO_H + py, z), 0.0).rgb);
+            resA += parA * d; resB += parB * d;
+        }
+        resA *= CV2_IO_GAIN; resB *= CV2_IO_GAIN;
+        return;
+    }
+#endif
+    vec3 e1 = normalize(cross(up, abs(up.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0)));
+    vec3 e2 = cross(up, e1);
+    vec3 vv = vec3(dot(v, e1), dot(v, e2), dot(v, up)), ss = vec3(dot(s, e1), dot(s, e2), dot(s, up));
+    resA = cv2IceOpticsAnalytic(vv, ss, habA);
+    resB = cv2IceOpticsAnalytic(vv, ss, habB);
+}
+
 // The sun pillar: plate crystals near the ground, drifting almost level, make a vertical streak above
 // (and below) a low Sun, diamond dust's signature. v, s in the observer's ENU. (Wobbling plates, tilts of
 // 5-15 deg: a population the table does not carry, the one feature still placed.)
