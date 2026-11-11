@@ -2011,7 +2011,12 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   analytic (`cv2PillarOptics`: wobbling plates, tilts 5-15 deg, a population the table does not carry). Iridescence
   and coronae are diffraction by droplets / young ice crystals (a size-distribution effect, Mie): the droplet table
   (`cv2MieTex`, `make_mie_lut.py`) carries the corona and the cloudbow for liquid cloud; there is no ice-crystal
-  corona (small-crystal diffraction) in either table.
+  corona (small-crystal diffraction) in either table. Cost (2026-11-10, RTX 3070 Ti, 1600x900, the GPU shared with a
+  second agent's app so absolute numbers are inflated): the base march SPV against the table one interleaved 3 reps
+  per view, cloud march 20.1 -> 19.2 ms at the diamond-dust view (180734 shot 2) and 25.0 -> 25.8 ms at the orbit
+  cirrus view (shot 1), both inside the rep spread (+-1.7..3.7 ms); 128 registers and the same local memory in both,
+  the binary 512640 -> 543488 bytes (the table path inlined at five call sites beside the kept analytic one). The
+  table's own lookups are 3-5 trilinear fetches per ray per light, once per ray.
   The sun path to every cloud sample is the Chapman column (`sunTransmit`, include/atmosphere.glsl) plus
   ozone: a 12-step midpoint rule along a grazing path misses the tangent point's dense air.
 - **Tonemap controls** (Photometry tab, EXPOSURE AND MOON section since 2026-10-06 — they were deep in the Clouds
