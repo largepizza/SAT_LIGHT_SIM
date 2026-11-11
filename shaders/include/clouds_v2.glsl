@@ -274,6 +274,10 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // (2026-11-08, hurricane) A hurricane's CDO and eyewall (cv2CdoShare, cv2LowA "THE EYEWALL"): x "Hurricane sheet swirl"
     // (the sheet's spiral outline, frays and ripple), y "Hurricane eyewall" (the storm mass's ring round the eye), zw unused
     vec4  hurricane;
+    // (2026-11-10, storms) stormsA: x the moat strength ("Storm clear moat"), y its width (m), z its feathering, w the share of
+    // storms with one; stormsB: x the cumulus top inside a storm object (share of the Cb top), y fullness, z overhang, w puffiness
+    vec4  stormsA;
+    vec4  stormsB;
 } cv2;
 #include "wind_field.glsl"
 
@@ -771,6 +775,7 @@ struct CV2Storm {
     float near;     // under a full-height tower's head (CV2Col.near)
     float storm;    // the storm strength (CV2Col.storm)
     float prox;     // within the storm cumulus reach (CV2Col.prox)
+    float inner;    // 0..1 inside the storm object's own cumulus (2026-11-10): its towers' radius + half "Storm cumulus reach"
     float cap;      // the lobes' damping share (x 0.75 of them): two thirds at the plate's outline (its edge thins
                     // instead of standing as a wall). (An overshooting dome's quarter until 2026-11-06: a smooth cap.)
 };
@@ -778,13 +783,13 @@ CV2Storm cv2StormNone()
 {
     CV2Storm g;
     g.m = -1e9; g.top = 0.0; g.hf = 0.0; g.deck = 0.0; g.sig = 0.0;
-    g.near = 0.0; g.storm = 0.0; g.prox = 0.0; g.cap = 0.0;
+    g.near = 0.0; g.storm = 0.0; g.prox = 0.0; g.cap = 0.0; g.inner = 0.0;
     return g;
 }
 // The low field's own base at the last cv2LowA (m; -1 where it returned before computing it): a storm's margin takes it
 // (cv2FieldLow) so a storm cloud stands on the field's base (2026-11-08, issue_20261108_135011).
 float gCv2BaseLow = -1.0;
-bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Field f, out CV2Carve c)
+bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, float stormIn, inout CV2Field f, out CV2Carve c)
 {
     gCv2BaseLow = -1.0;
     c.m0 = -1e9; c.hb = 0.0; c.baseAmp = 0.0; c.lobeRef = 0.0; c.bigL = 0.0; c.deep = 0.0; c.lobeKL = 0.0; c.aBase = 1.0;
@@ -810,18 +815,26 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
         float trB = cv2Tropo(wd);
         float cgT = cv2.types[3].alt.x + (cv2.types[3].alt.y - cv2.types[3].alt.x) * trB;
         float stT = cv2.types[1].alt.x + (cv2.types[1].alt.y - cv2.types[1].alt.x) * trB + 3500.0;
-        if (q.h > max(max(cgT, stT), cv2.column.w * (1.0 + cv2.column3.z)) + cv2Ground(q.dirE) * 0.9 + 50.0) return false;
+        // (+ inside a storm object its own cumulus top, "Storm tower height" x the Cb top: cv2.stormsB.x, 2026-11-10.)
+        float cbT = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * trB;
+        float bndC = max(max(cgT, stT), max(cv2.column.w * (1.0 + cv2.column3.z), stormIn > 0.0 ? cv2.stormsB.x * cbT : 0.0))
+                   + cv2Ground(q.dirE) * 0.9 + 50.0;
         hTypB = mix(cv2.anvil3.z, cv2.anvil3.w, (trB - 0.8) / 0.55) + cv2Ground(q.dirE) + 50.0;
         // (Near a tropical cyclone's CDO the storm mass (sK below) rises to the tropopause: the bound is its top + the lobes'
         // and the base shift's reach. 2026-11-08, issue_20261108_173906: with the bound at the cumulus top the mass was cut
         // flat at ~5 km everywhere but within reach of a tower -- mesas under an empty 8 km. Looked up only above the bound.)
+        // (2026-11-10, issue_20261110_183113: and before the first test too, which took "Storm cumulus top" x (1 + its
+        // variation) and so cut the mass wherever the cumulus top was set below the mass's own: the storm's towers followed
+        // the cumulus slider. The mass's height is its own, "Storm tower height", below.)
+        float massB = 0.0;
 #ifdef CV2_STORM_BINDING
-        if (q.h > hTypB && cv2.column.y > 0.0)
+        if (q.h > min(hTypB, bndC) && cv2.column.y > 0.0)
             for (uint i = 0u; i < min(cv2CycHead.x, kCv2CycloneMax); ++i)
                 if (length(wd - cv2Cyclones[i].a.xyz) * R_EARTH < 1.6 * max(cv2Cyclones[i].c.y, 1000.0) + 50000.0)
-                    hTypB = max(hTypB, cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * trB + 4000.0
-                                       + cv2Ground(q.dirE));
+                    massB = cbT + 4000.0 + cv2Ground(q.dirE);
 #endif
+        if (q.h > max(bndC, massB)) return false;
+        hTypB = max(hTypB, massB);
         if (stormProx <= 0.0 && q.h > hTypB) return false;
     }
     float covSpan = max(cv2.cover.y - cv2.cover.x, 1e-3);
@@ -854,7 +867,8 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     vec4 cl = textureLod(cv2MesoTex, cv2.anchorCluster.xyz + mpF * cv2.anchorCluster.w,
                          cv2Lod(fpM, cv2.anchorCluster.w));
     // ... and near a tower with the storm cumulus target's real value here (cwT below).
-    if (q.h > max(hTypB, cv2.column.w * (1.0 + cv2.column3.z * clamp((cl.a - 0.5) * 8.8, -1.0, 1.0))
+    if (q.h > max(hTypB, max(cv2.column.w * (1.0 + cv2.column3.z * clamp((cl.a - 0.5) * 8.8, -1.0, 1.0)),
+                             stormIn > 0.0 ? cv2.stormsB.x * (cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * cv2Tropo(wd)) : 0.0)
                          + cv2Ground(q.dirE) + 50.0)) return false;
     vec4 ce = textureLod(cv2MesoTex, cv2CellUV(mp), cv2Lod(fpM, cv2.anchorCell.w));
 
@@ -929,7 +943,15 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
         // Its height varies by region (the cluster Perlin, ~+-2 sd -> +-"Storm cumulus variation"): one
         // flat target made every storm's cumulus field the same height (user, 2026-09-29).
         float cwT = cv2.column.w * (1.0 + cv2.column3.z * clamp((cl.a - 0.5) * 8.8, -1.0, 1.0));
+        // INSIDE A STORM OBJECT (2026-11-10, issue_20261110_183113; cv2StormGeom's inner: its towers' radius + half the reach) the
+        // cumulus' top is the storm's own, "Storm tower height" x the Cb top (stormsB.x), not "Storm cumulus top" x its
+        // regional variation: the same 12 km x (1 + 0.6) that suits the cumulus round an anvil drew 19-km drums among the
+        // towers (topCap is the Cb top here, + lift below as every target).
+        cwT = mix(cwT, cv2.stormsB.x * topCap, stormIn);
         topMax = mix(topMax, cwT + lift, stormProx * min(ty.look.z * 2.0, 1.0));
+        // "Storm fullness" (stormsB.y): inside a storm object the field's threshold falls, so the gaps between its cells close
+        // and the storm is one mass of towers rather than separate columns with canyons between them.
+        covT = min(covT + cv2.stormsB.y * stormIn * stormProx, 1.0);
         // (The storm mass keeps its own top, the tropopause's: this block's cumulus / storm-cumulus targets capped it at ~4 km
         // away from the towers and ~12 km near them -- flat mesas far under the CDO's sheet, issue_20261108_173906 shot 2.)
         topMax = mix(topMax, topCap + 400.0 * sK * sK, sK);
@@ -1238,11 +1260,19 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     if (sK > 0.0) {
         float zT  = 0.55 * (cl16.a - 0.5) / 0.057 + 1.0 * (cl4.a - 0.5) / 0.057 + 2.0 * (cellsC - 0.5);
         float twN = smoothstep(-0.4, 1.2, zT);
-        float flr = 0.15 + 0.13 * smoothstep(-2.0, -0.4, zT);
-        T = mix(T, min(flr + 0.75 * sqrt(twN) + 0.12 * (cellsB - 0.5), 1.0) * smoothstep(0.1, 0.5, eB), sK);
+        // INTRA-STORM CONTROLS (2026-11-10, issue_20261110_183113, the user inside a tropical storm's mass: "decouple the
+        // cumulus storm height from the storm objects ... fuller, puffier, with marginal overhang"): the towers' rise and cap
+        // x "Storm tower height" / 0.85 (stormsB.x, a share of the Cb top: 0.85 = the mass as it was); "Storm fullness"
+        // (stormsB.y) lifts the shoulders' floor and lets the weak columns between the towers keep that share of it (the
+        // floor, not the towers: given the towers' height too they stood as rows of thin spires), so the canyons down to
+        // the base between the towers fill (shot 2: "This should all really be cloud").
+        float hM  = cv2.stormsB.x * (1.0 / 0.85);
+        float flr = 0.15 + 0.13 * smoothstep(-2.0, -0.4, zT) + 0.3 * cv2.stormsB.y;
+        float eBs = smoothstep(0.1, 0.5, eB);
+        T = mix(T, min(flr * mix(eBs, 1.0, cv2.stormsB.y) + (0.75 * hM * sqrt(twN) + 0.12 * (cellsB - 0.5)) * eBs, 1.0), sK);
         // (The cap varies by ~+-0.1 of the span over the 16-km cluster octave and the coarse cells, met by a smooth min: with
         // the mass reaching its top (issue_20261108_173906) a hard 0.8 drew one flat, sheet-shadowed plain under the sheet.)
-        float capT = mix(1.0, 0.8 + 0.1 * clamp((cl16.a - 0.5) * 9.0 + (cellsB - 0.5) * 3.0, -1.0, 1.0), sK);
+        float capT = mix(1.0, min((0.8 + 0.1 * clamp((cl16.a - 0.5) * 9.0 + (cellsB - 0.5) * 3.0, -1.0, 1.0)) * hM, 1.0), sK);
         float hT   = max(0.12 - abs(T - capT), 0.0) / 0.12;
         T = min(T, capT) - hT * hT * 0.03;
     }
@@ -1282,7 +1312,10 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     // Only TALL cells get the narrower stem: on every cell it rounded the shallow cumulus' undersides
     // into balls, and a field seen from below read as mammatus (user snap, pass 13).
     float tallC  = smoothstep(0.4, 0.8, T / max(cv2.flow.w, 0.3));
-    float req0   = reqMin + cv2.flow.z * mix(0.15, 0.3, deep) * smoothstep(0.05, 0.4, eB) * tallC;
+    // ("Storm overhang", stormsB.z, 2026-11-10: inside a storm object the stem needs more strength, so the heads stand out
+    // over narrower bases at the cells' margins.)
+    float req0   = reqMin + (cv2.flow.z * mix(0.15, 0.3, deep) + 0.35 * cv2.stormsB.z * max(stormIn * stormProx, sK))
+                          * smoothstep(0.05, 0.4, eB) * tallC;
     float uC     = min(zeta / zmC, 1.0) - 1.0;                  // -1 at the base .. 0 at zm
     float vC     = max(zeta - zmC, 0.0) / (1.0 - zmC);          // 0 at zm .. 1 at the top
     // The lobes LIFT the cloud's upper surface by a height in metres (kCv2LobeLiftM x their strength), whatever
@@ -1329,7 +1362,8 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     float rV     = clamp((cl4.a - 0.5) * 9.0, -1.0, 1.0);
     // (Stratocumulus, a deck type that is half convective: x2.4 on the deck's own lobes. Its tops were smooth mounds.)
     float lobeK  = mix(cv2.form.x * (1.0 + 4.0 * ty.look.z * flatK), lobeH, convW) * mix(0.5, 1.0, max(ty.look.z, lowCov)) * fpFade
-                 * mix(1.0, 2.5, convW) * max(1.0 + cv2.tune.z * rV, 0.1) * (1.0 + 2.0 * sK);   // (a storm's walls billow)
+                 * mix(1.0, 2.5, convW) * max(1.0 + cv2.tune.z * rV, 0.1) * (1.0 + 2.0 * sK)   // (a storm's walls billow)
+                 * (1.0 + cv2.stormsB.w * max(stormIn * stormProx, sK));   // ("Storm puffiness", 2026-11-10: inside a storm object or mass)
     // Sub-pixel cells: thresholding the mip-averaged field would erase them (the average sits
     // below the threshold), so where a cell is smaller than the footprint the presence becomes the
     // fraction of area covered — a haze of the right opacity instead of nothing, or aliasing dots.
@@ -1468,7 +1502,7 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
     f.sigma = 0.0; f.hf = 0.0; f.msBright = 1.0; f.ambient = 1.0; f.deck = 0.0; f.topH = 0.0; f.thin = 0.0;
     f.rain = 0.0; f.soft = 0.0;
     CV2Carve c;
-    bool cu = cv2LowA(q, detailAmt, fpM, stormProx, f, c);
+    bool cu = cv2LowA(q, detailAmt, fpM, stormProx, sg.inner, f, c);
     // A storm object's towers and shield (cv2StormGeom): their margin, in this field's units, joins the cumulus' as a
     // smooth max, and the carve's scalars blend toward the storm's where it dominates: the SAME lobes and erosion shape
     // both, from one set of fetches (2026-11-04, storm-rework.md). Past the lobes' reach the storm is not there at all.
@@ -1909,7 +1943,7 @@ CV2Far cv2FarColumn(CV2Pos q, float fpM)
     float sK = cv2.column.y * smoothstep(0.7, 0.95, w.g);
     if (sK > 0.0) {
         float lidS = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * tropo - 250.0;
-        r.top   = mix(r.top, max(r.top, r.base + 0.8 * (lidS - r.base)), sK);
+        r.top   = mix(r.top, max(r.top, r.base + min(0.8 * cv2.stormsB.x * (1.0 / 0.85), 1.0) * (lidS - r.base)), sK);   // ("Storm tower height")
         r.e     = mix(r.e, 1.0, sK);
         r.eRaw  = mix(r.eRaw, max(r.eRaw, 1.0), sK);
         r.frac  = mix(r.frac, 1.0, sK);
@@ -3005,7 +3039,7 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
     float osM   = cv2.anvil2.w + kCv2DomeU;
     bool  inAnvil = q.h > lid - cv2.anvil2.x * 1.2 - 600.0 - cv2.anvil2.y;
     float best = -1e9, bestTop = 0.0, bestZeta = 0.0, bestFull = 0.0;
-    float near = 0.0, prox = 0.0, storm = 0.0;
+    float near = 0.0, prox = 0.0, storm = 0.0, inner = 0.0;
     uvec2 bin   = cv2StormBin(wd);
     if (bin.y > 0u) {
         float Rb      = cv2.column.z;
@@ -3030,10 +3064,30 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
             float hO   = tw.b.z;
             vec3  eastW = cos(tw.b.w) * eastW0 + sin(tw.b.w) * northW0;
             float capH = cv2TowerHeightCap(tw.c);
-            storm = max(storm, min(str, capH * capH) * (1.0 - smoothstep(0.6 * limM, limM, dhL)));
             float Rc   = Rb * mix(0.7, 1.3, hS) * mix(0.8, 1.0, smoothstep(0.1, 0.6, str)) * mix(0.75, 1.0, role);
+            // Where the mid layer gives way (cv2Field), 2026-11-10 (issue_20261110_185127 "Storm moats"): over the towers
+            // themselves (1.15 Rc: a mid sheet cut a tower as a horizontal belt, pass 20), and, round the share "Storm moat
+            // frequency" of the storms (by the dominant tower's seed) when "Storm clear moat" is on, out through the storm's
+            // cumulus (Rf, the bake's: 1.15 Rc + "Storm cumulus reach") and THE MOAT past it, the clear subsiding air: "Storm
+            // moat width" further, its outer edge feathered over "Storm moat feathering" of it (the bake clears the low
+            // field's coverage over the same ring, cloud_v2_weather.comp). It gave way out to 0.6-1.0 of the tower's whole
+            // reach (its anvil's, ~50-80 km) whatever the moat: from orbit every storm stood in a dark annulus of the low
+            // field's shadowed cumulus where the mid deck had been cut away, "Storm clear moat" 0 or not.
+            {
+                float Rf  = 1.15 * Rc + max(cuReach, 0.5 * Rc);
+                uint  sd  = floatBitsToUint(tw.c.y) * 747796405u + 2891336453u;
+                float mo  = (role > 0.9 && float(sd >> 8u) * (1.0 / 16777216.0) < cv2.stormsA.w) ? min(cv2.stormsA.x, 1.0) : 0.0;
+                float W   = cv2.stormsA.y;
+                float fW  = max(cv2.stormsA.z * W, 1500.0);
+                float cut = max(1.0 - smoothstep(0.9 * Rc, 1.15 * Rc, dhL), mo * (1.0 - smoothstep(Rf + W - fW, Rf + W, dhL)));
+                storm = max(storm, min(str, capH * capH) * cut * (1.0 - smoothstep(0.85 * limM, limM, dhL)));
+            }
             prox = max(prox, min(smoothstep(0.05, 0.3, str), capH * capH) * (1.0 - smoothstep(1.1 * Rc, 1.1 * Rc + cuReach, dhL))
                              * (1.0 - smoothstep(0.7 * limM, limM, dhL)));
+            // (2026-11-10, storms: how far INSIDE the storm object's own cumulus this is, its towers' radius + half the reach:
+            // there cv2LowA takes the storm's own cumulus ("Storm tower height", fullness, overhang, puffiness), and only the
+            // outer half of the reach band, the cumulus round the storm, keeps "Storm cumulus top".)
+            inner = max(inner, 1.0 - smoothstep(1.1 * Rc + 0.5 * cuReach, 1.1 * Rc + cuReach, dhL));
             if (cv2.rain.x > 0.0 && hb < 0.0) {
                 float dom = smoothstep(0.8, 1.0, smoothstep(0.02, 0.6, str) * role) * smoothstep(0.1, 0.5, str);
                 float al  = dot(dh, eastW);
@@ -3086,7 +3140,7 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
             }
         }
     }
-    g.near = near; g.storm = storm; g.prox = prox;
+    g.near = near; g.storm = storm; g.prox = prox; g.inner = inner;
     float zC = clamp(bestZeta, 0.0, 1.0);
     float hfT = clamp(mix(zC, (zC - 0.7) * (1.0 / 0.3), smoothstep(0.5, 0.7, zC) * bestFull), 0.0, 1.0);
     // The shield (the strongest capsule over this point): a lens under the lid, thickest over the storm, thin at its

@@ -1323,7 +1323,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2MidFieldKm, cv2MidCover, cv2MsOctaves, cv2LobeOcclusion, cv2MsModel, cv2MsDiffG, cv2MsDiffGain, cv2MsBackM, cv2SkyLightModel, cv2SkyLightGain, cv2SkyGroundAlbedo,
                     cv2CuHeightVar, cv2CuBreakup, cv2CuHeadroom, cv2CuFineLobes, cv2CbFineLobes, cv2CuWisps,
                     cv2CuTurrets, cv2CuTurretStretch, cv2CuTurretLean, cv2CuTurretSkew,
-                    cv2CuBody, cv2CuEdge, cv2CuShowerCells, cv2CuShowerCores, cv2CuBubbles, cv2CuBubbleGain, cv2CuBubbleFine, cv2CuBubbleSize, cv2CuBubbleBase, cv2CuEnvTowers, cv2CuCore, cv2CuBubbleWarp, cv2CuHeadWidth, cv2CuHeaps, cv2CuHeapDepth, cv2HurrSheetSwirl, cv2HurrEyewall, cv2StormMass,
+                    cv2CuBody, cv2CuEdge, cv2CuShowerCells, cv2CuShowerCores, cv2CuBubbles, cv2CuBubbleGain, cv2CuBubbleFine, cv2CuBubbleSize, cv2CuBubbleBase, cv2CuEnvTowers, cv2CuCore, cv2CuBubbleWarp, cv2CuHeadWidth, cv2CuHeaps, cv2CuHeapDepth, cv2HurrSheetSwirl, cv2HurrEyewall, cv2StormMass, stormMoat, stormMoatWidthKm, stormMoatFeather, stormMoatFrequency, stormTowerHeight, stormFullness, stormOverhang, stormPuffiness,
                     cv2CirrusFibres, cv2CirrusHooks,
                     cv2AnvilFibres, cv2AnvilFibreAlongKm, cv2AnvilFibreAcrossM, cv2StormBubbles, cv2AnvilErosion,
                     cv2AnvilLidLobes, cv2AnvilUnderLobes,
@@ -1871,7 +1871,9 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             {
                 static float stormUKeyUsed = -1.0f;
                 const float stormUKey = (cv2StormUnified > 0.5f ? 1.0f : 0.0f) + cv2StormUnifiedScaleM * 3.1f
-                                      + cv2StormUnifiedRampM * 17.3f + cv2StormUnifiedLobes * 1013.0f;
+                                      + cv2StormUnifiedRampM * 17.3f + cv2StormUnifiedLobes * 1013.0f
+                                      + stormMoat * 7.7f + stormMoatWidthKm * 51.1f + stormMoatFeather * 97.3f + stormMoatFrequency * 211.9f
+                                      + stormTowerHeight * 401.7f + stormFullness * 811.3f + stormOverhang * 1601.9f + stormPuffiness * 3203.3f;
                 if (stormUKey != stormUKeyUsed) ++cv2CdcEpoch;
                 stormUKeyUsed = stormUKey;
             }
@@ -2241,6 +2243,11 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.pucks = glm::vec4(std::clamp(cv2CuHeaps, 0.0f, 1.0f), std::clamp(cv2CuHeapDepth, 0.0f, 2.0f), 0.0f, 0.0f);
     // A hurricane's CDO sheet and eyewall (2026-11-08, hurricane; clouds_v2.glsl cv2CdoShare, cv2LowA "THE EYEWALL").
     p.hurricane = glm::vec4(std::clamp(cv2HurrSheetSwirl, 0.0f, 1.0f), std::clamp(cv2HurrEyewall, 0.0f, 1.0f), 0.0f, 0.0f);
+    // (2026-11-10, storms) the moat round a storm and the cumulus inside one (clouds_v2.glsl cv2StormGeom / cv2LowA / cv2Field).
+    p.stormsA = glm::vec4(stormObjects ? std::max(stormMoat, 0.0f) : 0.0f, std::clamp(stormMoatWidthKm, 0.0f, 60.0f) * 1000.0f,
+                          std::clamp(stormMoatFeather, 0.0f, 1.0f), std::clamp(stormMoatFrequency, 0.0f, 1.0f));
+    p.stormsB = glm::vec4(std::clamp(stormTowerHeight, 0.2f, 1.0f), std::clamp(stormFullness, 0.0f, 1.0f),
+                          std::clamp(stormOverhang, 0.0f, 1.0f), std::clamp(stormPuffiness, 0.0f, 2.0f));
     // Vertical variation (vertical, 2026-11-05): cv2BaseShift's strengths, fractus, mid-level wisps.
     p.vert  = glm::vec4(std::clamp(cv2BaseLcl, 0.0f, 2.0f), std::clamp(cv2BaseCellM, 0.0f, 400.0f),
                         std::clamp(cv2BaseRegional, 0.0f, 2.0f), std::clamp(cv2Fractus, 0.0f, 2.0f));
@@ -2372,10 +2379,17 @@ SatelliteSim::GpuWeatherPC SatelliteSim::weatherEvoPC(int face, uint32_t mip) co
     pc.remap = glm::vec4(cv2Coverage, cv2CoverClear, std::max(cv2CoverFull, cv2CoverClear + 0.01f),
                          (float)(mip > 0 ? mip - 1 : 0));
     // The storms' own cloud (cloud_v2_weather.comp stormStamp): the tower geometry cv2ColumnSigma draws with.
-    pc.storm = glm::vec4(std::clamp(cv2CbRadiusKm, 1.0f, 20.0f) * 1000.0f, cv2CbCumulusReachKm * 1000.0f,
-                         std::clamp(cv2CbHeadDriftKm, 0.0f, 30.0f) * 1000.0f, std::clamp(cv2CbFlare, 0.5f, 3.0f));
+    // (2026-11-10, storms: the push constants are full (128 bytes), so the moat's width, feathering and frequency ride in the
+    // high parts: y + 65536 x the width in 250-m units, w + 4 x the feathering in thousandths, storm2.y + 4 x the
+    // frequency in thousandths. Exact in a float: y < 2^24, w and storm2.y < 4004.)
+    const float moatW = std::round(std::clamp(stormMoatWidthKm, 0.0f, 60.0f) * 4.0f);
+    pc.storm = glm::vec4(std::clamp(cv2CbRadiusKm, 1.0f, 20.0f) * 1000.0f,
+                         std::clamp(cv2CbCumulusReachKm, 0.0f, 60.0f) * 1000.0f + 65536.0f * moatW,
+                         std::clamp(cv2CbHeadDriftKm, 0.0f, 30.0f) * 1000.0f,
+                         std::clamp(cv2CbFlare, 0.5f, 3.0f) + 4.0f * std::round(std::clamp(stormMoatFeather, 0.0f, 1.0f) * 1000.0f));
     pc.storm2 = glm::vec4(stormObjects && cv2CbColumns > 0.0f ? std::max(stormCloudField, 0.0f) : 0.0f,
-                          std::max(stormMoat, 0.0f), std::clamp(stormCycMinorSwirls, 0.0f, 2.0f),
+                          std::clamp(stormMoat, 0.0f, 3.0f) + 4.0f * std::round(std::clamp(stormMoatFrequency, 0.0f, 1.0f) * 1000.0f),
+                          std::clamp(stormCycMinorSwirls, 0.0f, 2.0f),
                           stormCycSpiralAB ? std::clamp(stormCycDeckSpiral, 0.0f, 1.0f) : 0.0f);
     return pc;
 }
@@ -2531,7 +2545,7 @@ uint64_t SatelliteSim::weatherBakeHash() const
     uint64_t h = 1469598103934665603ull;
     for (float v : {cv2EvoWindMps, cv2EvoGrowth, cv2EvoWindowH, cv2EvoDiurnal,
                     cv2Coverage, cv2CoverClear, cv2CoverFull,   // the coarse levels' coverage (review 18)
-                    stormObjects ? 1.0f : 0.0f, stormCloudField, stormMoat, cv2CbColumns,   // the storms' stamp
+                    stormObjects ? 1.0f : 0.0f, stormCloudField, stormMoat, stormMoatWidthKm, stormMoatFeather, stormMoatFrequency, cv2CbColumns,   // the storms' stamp
                     cv2CbRadiusKm, cv2CbCumulusReachKm, cv2CbHeadDriftKm, cv2CbFlare,
                     // (a cyclone's shape: its arms are stamped; 2026-11-03)
                     stormCycArms, stormCycTightness, stormCycArmSpeed, stormCycMinorSwirls, stormCycDeckSpiral,

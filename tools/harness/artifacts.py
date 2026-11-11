@@ -54,6 +54,14 @@ LIVE = os.path.join(REPO, "harness_live")
 sys.path.insert(0, HERE)
 
 REP = os.path.join(REPO, "user_data", "reports").replace(os.sep, "/") + "/"
+if not os.path.isdir(REP):   # a git worktree has no user_data (gitignored): the reports are the main checkout's
+    try:
+        _common = subprocess.run(["git", "-C", REPO, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                                 capture_output=True, text=True).stdout.strip()
+        if _common:
+            REP = os.path.join(os.path.dirname(_common), "user_data", "reports").replace(os.sep, "/") + "/"
+    except OSError:
+        pass
 # name: (setup commands, crop x,y,w,h at 1920x1009). The setups pause time; the run plays from there.
 SCENARIOS = {
     # A tall air-mass tower from 4.3 km, 14 km away, midday (issue_20261107_124812: blocks, the flat "wall").
@@ -75,6 +83,8 @@ SCENARIOS = {
     "tundra": ([f'report load "{REP}issue_20261107_163713" shot=1 trail=off', "time pause"], (480, 100, 960, 640)),
     # A storm tower at sunset from 5 km (issue_20261107_163318: flat grey "frosting" on thick tops).
     "frost": ([f'report load "{REP}issue_20261107_163318" shot=1 trail=off', "time pause"], (480, 100, 960, 640)),
+    # Inside a tropical storm's mass from 6.2 km (issue_20261110_183113: flat-walled drums, canyons between them).
+    "storm_mass": ([f'report load "{REP}issue_20261110_183113" shot=1 trail=off', "time pause"], (280, 330, 1360, 420)),
     # MOTION: the reports' own flights (their trails, with the sim time they ran at), the last frames scored. The user flies
     # through storms at 1 min/s; every still scenario above is clean while this is where the history is lost.
     "trail_tower": ([f'report load "{REP}issue_20261107_124812" shot=1'], (300, 0, 960, 640), {"trail": True}),

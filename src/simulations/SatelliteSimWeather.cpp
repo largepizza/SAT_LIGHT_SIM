@@ -588,7 +588,8 @@ void SatelliteSim::updateStorms()
         // (The cyclones' shape sliders and the arm cirrus change what is uploaded: re-upload while paused too.)
         const float shapeKey[] = {stormCycArms, stormCycTightness, stormCycArmSpeed, stormCycMinorSwirls, stormCycDeckSpiral,
                                   stormCycOutflow, stormCycStreaks, stormCycSpiralAB ? 1.0f : 0.0f, stormArmCirrus,
-                                  cv2HurrEyewall, cv2StormMass};   // (the eyewall towers' fade, below)
+                                  cv2HurrEyewall, cv2StormMass,   // (the eyewall towers' fade, below)
+                                  stormMoat, stormMoatWidthKm, stormMoatFrequency};   // (a moat widens its storm's reach, 2026-11-10)
         static float lastShapeKey[std::size(shapeKey)] = {-1.0f};
         if (std::memcmp(shapeKey, lastShapeKey, sizeof(shapeKey)) != 0)
         {
@@ -705,8 +706,18 @@ void SatelliteSim::updateStorms()
         // sample there walked a full bin of towers: 16-19 ms of the cloud march from 12 km in the eye at Medium.
         // Measured (Medium, Rosa 2036-09-10, cloud bucket): 12 km in the eye 15.2 -> 12.5 ms, sea level 8.0 -> 6.5.
         if (tw.kind == wx::StormKind::Tropical) { anvilK = 1.0 / flare; driftK = 0.25; spread = 1.0; }
-        const double reach = 1.06 * std::max(Rc * 1.3 * flare * anvilK + drift * driftK + Rc * 0.6 + 0.25 * (double)cv2Lean * span,
-                                             1.1 * Rc + cuReach) + 1000.0;
+        double reach = 1.06 * std::max(Rc * 1.3 * flare * anvilK + drift * driftK + Rc * 0.6 + 0.25 * (double)cv2Lean * span,
+                                       1.1 * Rc + cuReach) + 1000.0;
+        // A storm with a MOAT (2026-11-10, issue_20261110_185127; clouds_v2.glsl cv2StormGeom, the same draw: the dominant
+        // tower's seed hashed against "Storm moat frequency") reaches past its cumulus by "Storm moat width" too, or the
+        // march's walk never sees the ring's outer part and every width was cut at the reach.
+        if (stormMoat > 0.0f && tw.role > 0.9f && stormMoatWidthKm > 0.0f && tw.kind != wx::StormKind::Tropical)
+        {
+            const uint32_t sd = tw.seed * 747796405u + 2891336453u;
+            if ((double)(sd >> 8) / 16777216.0 < (double)std::clamp(stormMoatFrequency, 0.0f, 1.0f))
+                reach = std::max(reach, 1.06 * (1.15 * Rc + std::max(cuReach, 0.5 * Rc) + std::clamp((double)stormMoatWidthKm, 0.0, 60.0) * 1000.0)
+                                        + 1000.0);
+        }
         GpuStormTower g;
         g.a = glm::vec4(glm::vec3(d), tw.strength);
         // The overshooting top PULSES (issue 20261105_201719): an overshooting core (overshoot > 0.6, cv2StormGeom's swell)

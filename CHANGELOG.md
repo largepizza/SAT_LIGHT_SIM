@@ -227,6 +227,13 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Storms, hurricanes and wildfires
 
+- **Storm moats you can tune.** Storms no longer stand in a dark ring when "Storm clear moat" is off (the cloud deck
+  around them was being cut away out to the reach of their anvils). The moat, when on, is a clear ring past the storm's
+  own cumulus with its own "Storm moat width (km)", "Storm moat feathering" and "Storm moat frequency" (the share of
+  storms that have one), Settings > Weather > Storm objects.
+- **Controls for the inside of a storm.** "Storm tower height", "Storm fullness", "Storm overhang" and "Storm
+  puffiness" shape the cloud inside a storm and a tropical storm's mass, and "Storm cumulus top" no longer cuts the
+  towers of a tropical storm short or sets the height of the cumulus among a storm's towers.
 - **Storms are objects with a life.** Air-mass cells, multicells, supercells, squall lines and mesoscale complexes
   form at a thunderstorm climatology, grow, mature and decay over hours, each with its towers, anvil shield
   (lingering as cirrus after the storm), rain core, cloud field and lightning. A pure function of sim time.
