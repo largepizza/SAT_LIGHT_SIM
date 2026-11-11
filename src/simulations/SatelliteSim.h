@@ -5731,8 +5731,8 @@ private:
     // (vmax / rmw at the RMW; 0 = off); hurricane_flow_turns: the winding per flow-map window (turns; sets the window);
     // hurricane_flow_blend: the share of a window each side of a renewal that cross-fades the two phases.
     float cv2HurrRotation = 0.6f;
-    float cv2HurrFlowTurns = 0.75f;
-    float cv2HurrFlowBlend = 0.2f;
+    float cv2HurrFlowTurns = 0.25f;
+    float cv2HurrFlowBlend = 0.12f;
     std::unordered_map<uint32_t, double> cycFlowPhase;   // each active cyclone's flow-map clock (windows), by its seed
     float cv2RainAmount = 3.0f;         // rain shafts under precipitating cloud, 0 = none
     float cv2OpticsGain = 1.0f;        // halos, sundogs, circumzenithal arc, rainbows

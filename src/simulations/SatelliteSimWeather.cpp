@@ -838,13 +838,13 @@ void SatelliteSim::updateStorms()
             g.d = glm::vec4(c.rmw, c.vmax, (c.overLand ? 1.0f : 0.0f) + 2.0f * std::round(1000.0f * c.tanPitch), c.arms);
             // THE FLOW MAP (2026-11-10, flowmaps; clouds_v2.glsl cv2CycFlowAt): x its clock (windows since the session
             // first saw it; mod 1024), y the window (s: the winding "Hurricane flow turns" over the texture's rate at the
-            // RMW, 20 min .. 2 h), zw the centre's velocity through the NOISE frame (the map's: Rz(-drift) x its track
+            // RMW, 5 min .. 2 h), zw the centre's velocity through the NOISE frame (the map's: Rz(-drift) x its track
             // velocity, less the map's own drift under it), east and north at the centre (m/s): the storm lock's rate.
             {
                 const double rate = (double)std::max(cv2HurrRotation, 0.0f) * (double)std::max(c.vmax, 5.0f)
                                   / (double)std::max(c.rmw, 2000.0f);
                 const double P = std::clamp(6.2831853 * (double)std::max(cv2HurrFlowTurns, 0.05f) / std::max(rate, 1e-9),
-                                            1200.0, 7200.0);
+                                            300.0, 7200.0);
                 double &phase = cycFlowPhase[c.c ? c.c->seed : (uint32_t)i];
                 phase = std::fmod(phase + flowDt / P + 1024.0, 1024.0);
                 const double dr = cloudDriftPhase();

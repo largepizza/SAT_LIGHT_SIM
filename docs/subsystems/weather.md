@@ -112,13 +112,15 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   0.6, slot 560) inside the radius of maximum wind, x (r / rmw)^-1.5 outside, to 0 over the outer half of the bands' reach;
   cyclonic (counter-clockwise in the north). (2) A rotation by rate x time winds up without bound, so it is a flow map like
   the cirrus fibres' (`cv2CirrusFlow`): two phases half a window apart, each a rotation by the rate x its own age, renewed
-  in turn; the window = "Hurricane flow winding" (`hurricane_flow_turns`, 0.75 turn, slot 561) over the rate at the RMW,
-  clamped 20 min .. 2 h, its clock integrated per cyclone on the CPU (`cycFlowPhase`, `CV2Cyclone.e.x`: the record grew a
+  in turn; the window = "Hurricane flow winding" (`hurricane_flow_turns`, 0.25 turn, slot 561) over the rate at the RMW,
+  clamped 5 min .. 2 h, its clock integrated per cyclone on the CPU (`cycFlowPhase`, `CV2Cyclone.e.x`: the record grew a
   fifth row, 80 B) and the renewal staggered by a smooth field of (angle, ln r) in the storm's frame so no ring or disc
-  renews at once. Within the blend (`hurricane_flow_blend`, 0.2 of the window each side, slot 562) the phases are DITHERED
+  renews at once. Within the blend (`hurricane_flow_blend`, 0.12 of the window each side, slot 562) the phases are DITHERED
   per ray (the pixel-and-frame hash `cv2ShapeUseB` uses) and the resolve's history averages the rays into the cross-fade: a
   density blend costs a second field evaluation at every sample in the band, and a blend of the two ANGLES turns the
-  texture backward through every renewal. The occupancy clipmap's bake picks the phase per bake POINT (`CV2_FLOW_POINT_DITHER`)
+  texture backward through every renewal; and the winding per window is small and the blend narrow because two phases
+  half a window apart are two copies of the texture turned by half the winding -- dithered together, a double exposure:
+  at 0.75 turn / 0.2 a sector of the CDO's top was smeared along arcs in every settled view (the first cut). The occupancy clipmap's bake picks the phase per bake POINT (`CV2_FLOW_POINT_DITHER`)
   so a cell covers both; the other bakes take the dominant phase. (3) The STORM LOCK: the noise frame drifts with the map
   (`clouds.drift_rate`) and the storm follows its own track through it, so the clouds slid through every storm at ~25 m/s
   (232743 shot 3); within the reach the texture is dragged with the centre (`e.zw`: Rz(drift) x its track velocity + the

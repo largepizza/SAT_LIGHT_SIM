@@ -2265,7 +2265,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             const wx::CycloneState &c = *pick;
             const double rmw  = std::max((double)c.rmw, 2000.0);
             const double rate = (double)cv2HurrRotation * (double)std::max(c.vmax, 5.0f) / rmw;
-            const double P    = std::clamp(6.2831853 * (double)std::max(cv2HurrFlowTurns, 0.05f) / std::max(rate, 1e-9), 1200.0, 7200.0);
+            const double P    = std::clamp(6.2831853 * (double)std::max(cv2HurrFlowTurns, 0.05f) / std::max(rate, 1e-9), 300.0, 7200.0);
             const glm::dvec3 a = c.map;
             const double cl = std::max(std::hypot(a.x, a.y), 1e-3);
             const glm::dvec3 vM = rotD(c.motionEarth, cD, sD);

@@ -735,12 +735,16 @@ vec3 cv2FlowWeatherDirAt(CV2Pos q)
 // e.zw), as far as the reach's fade band keeps its shear under ~0.5.
 // A rotation by rate x time winds up without bound, so it is a FLOW MAP like the cirrus fibres' (cv2CirrusFlow): two phases
 // half a window apart, each a rotation by the rate x its own age (plus the lock and a jitter per renewal), renewed in
-// turn; the window is "Hurricane flow winding" over the rate at the RMW (20 min .. 2 h, SatelliteSimWeather.cpp), its clock
+// turn; the window is "Hurricane flow winding" over the rate at the RMW (5 min .. 2 h, SatelliteSimWeather.cpp), its clock
 // integrated on the CPU (e.x), and the renewal is staggered by a smooth field of (angle, ln r) in the storm's frame so no
 // ring or disc renews at once. Within the blend (flowP.z of the window each side of a renewal) the phases are DITHERED per
 // ray (the pixel-and-frame hash cv2ShapeUseB uses) and the resolve's history averages the rays into the cross-fade: a
 // density blend costs a second field evaluation at every sample in the band (~2 x blend of the storm's samples), and a
-// blend of the two ANGLES turns the texture backward through every renewal. The bakes (the clipmap, the Sun volume, the
+// blend of the two ANGLES turns the texture backward through every renewal. The winding per window is SMALL (0.25 turn at
+// the RMW) and the blend narrow (0.12): two phases half a window apart are two copies of the texture turned by half the
+// winding, and dithered together they are a double exposure -- at 0.75 turn a sector of the CDO's top was smeared along
+// arcs in every settled view. At 0.25 a feature turns ~90 deg at the RMW, then morphs over ~2 min into the next: a
+// boiling top. The bakes (the clipmap, the Sun volume, the
 // far field) take the dominant phase: a dithered bake would be a half-filled occupancy. The weather bake's own differential
 // swirl (cloud_v2_weather.comp cycloneSwirl) stays: it shapes the map's own cloud, statically in the storm's frame.
 // wd: the sample's drifted direction. Returns the displacement (m, the drifted frame) the noise reads add (the sea-level
