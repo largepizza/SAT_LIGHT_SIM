@@ -5763,6 +5763,11 @@ private:
     // count, the fade's rate and the resolve's pick read these (fillCloudsV2Params); updateStorms fills them.
     struct FlowVortex { glm::dvec3 earth, map, vEarth; float rmw, vmax, outer, hemi; };
     std::vector<FlowVortex> cv2FlowVortices;
+    // The tornadoes' spin phases (weatherFillTornadoes, round 3): per tornado seed x part, integrated per frame with a
+    // time-lapse fade; tornadoSpinDt is this frame's sim step for them (set once per fill from tornadoSpinPrevT).
+    struct TornadoSpin { double turns = 0.0, fade = 1.0, seen = 0.0; bool live = false; };
+    std::unordered_map<uint64_t, TornadoSpin> tornadoSpin;
+    double tornadoSpinPrevT = -1e300, tornadoSpinDt = 0.0;
     float cv2RainAmount = 3.0f;         // rain shafts under precipitating cloud, 0 = none
     float cv2OpticsGain = 1.0f;        // halos, sundogs, circumzenithal arc, rainbows
     // (2026-11-10, optics) The ice halos from the traced crystal table (cv2_optics.glsl): 1 the table, 0 the analytic lobes;

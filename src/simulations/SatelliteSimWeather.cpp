@@ -1293,6 +1293,12 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
     tornadoesNow.clear();
     if (!stormObjects || !stormCatalog || !out) return;
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    // (the spin phases' step this fill: 0 on the first, a jump of hours is a jump; entries unseen for an hour are dropped)
+    tornadoSpinDt = tornadoSpinPrevT < -1e299 ? 0.0 : std::clamp(t - tornadoSpinPrevT, -3600.0, 3600.0);
+    tornadoSpinPrevT = t;
+    if (tornadoSpin.size() > 256)
+        for (auto it = tornadoSpin.begin(); it != tornadoSpin.end();)
+            it = std::abs(t - it->second.seen) > 3600.0 ? tornadoSpin.erase(it) : std::next(it);
     const double ph = cloudDriftPhase(), cph = std::cos(ph), sph = std::sin(ph);
     const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
     const glm::dvec3 eye = up * (double)obsEyeRadiusM();
@@ -1509,8 +1515,19 @@ void SatelliteSim::weatherFillTornadoes(GpuDustCloud *out, uint32_t &n)
         // ~5 min. cloud_march.comp reads the billows in cylindrical coordinates turned by this phase (seedK >= 256).
         const double hemi = T.earthDir.z >= 0.0 ? 1.0 : -1.0;
         const double wFun = std::clamp(35.0 / std::max((double)T.r0, 1.0), 0.12, 0.6);
+        // THE TIME-LAPSE FADE (2026-11-10, flowmaps round 3): the phase is INTEGRATED per frame and per part (the funnel,
+        // the debris, the wall cloud each at its rate) with the rate faded past 4-12 deg of turn a frame (1 min/s: the
+        // funnel 14-69 deg a frame), smoothed over ~10 frames: a turn the frame rate cannot resolve is not shown. It was
+        // omega x age: at 1 min/s the funnel strobed. Continuous with that on first sight (the same phase).
+        int part = 0;
         auto spinK = [&](double omega) {
-            const double turns = hemi * omega * tau / (2.0 * glm::pi<double>());
+            TornadoSpin &sp = tornadoSpin[(uint64_t)T.seed * 16ull + (uint64_t)(part++ & 15)];
+            if (!sp.live) { sp.live = true; sp.turns = hemi * omega * tau / (2.0 * glm::pi<double>()); sp.fade = 1.0; }
+            const double target = 1.0 - glm::smoothstep(4.0, 12.0, glm::degrees(omega * std::abs(tornadoSpinDt)));
+            sp.fade = glm::mix(sp.fade, target, 0.1);
+            sp.turns += hemi * omega * sp.fade * tornadoSpinDt / (2.0 * glm::pi<double>());
+            sp.seen = t;
+            const double turns = sp.turns;
             return 256.0 + std::floor((turns - std::floor(turns)) * 3840.0);
         };
         auto emit = [&](const glm::dvec3 &C, const glm::dvec3 &axis, double sA, double sP, double tau0, double albedo,
