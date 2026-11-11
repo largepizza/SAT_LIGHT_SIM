@@ -235,7 +235,21 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   past 4-12 deg of turn a frame; at 1 min/s the funnel turned 14-69 deg a frame). Measured at 1x, 1.5 km south of the
   funnel of issue_20261108_173628 (r 98 m): the funnel's texture advances +2 px per 0.5 s across it, three captures in a
   row (corr 0.99) -- consistent, slow at that range; the wall cloud from 4 km: 0.01 % of pixels change in 2 s (a turn in
-  5 min is 2.4 deg: not visible). Not shipped: a general flow of all cloud noise on `wfWind` (weather-v2's
+  5 min is 2.4 deg: not visible). **Round 4 (branch `qa/20261110/regdiet` on 11e9478, the register diet):** the cheap
+  lever first: `shaders reload wg=32x16` (512 threads a group) caps a thread at 128 registers with the SAME SPIR-V, so
+  the two regimes were measured on one build (interleaved, 3 x 60 frames, no pre-waits, alone): registers 255 -> 128,
+  spill 1808 -> 2176 B; cloud march at 400 km over the Pacific 28.6 -> 31.0 ms, cumulus from 1.5 km 12.0 -> 17.3, a 4-km
+  field 9.7 -> 13.5 -- SLOWER by 2.4-5.3 ms at every ordinary view -- and 69.2 -> 59.7 (-9.5) over the eye from 46 km. So
+  the merged march's 255 regime is not the 30-ms loss it looked like: a forced 128 spills more than the wider register
+  file costs, except where the eye view's heaviest rays run; the orchestrator's 37.7 ms at the eye on a natural 128 (hurrshape
+  alone) against 69.2 here is the merged features' own cost (fill, ice halos, the rotation) plus ~10 ms of regime. The
+  workgroup cap is therefore not shipped (`cv2MarchWg` stays 16x16); a natural 128 needs the code diet (the ice halos once
+  per ray, the fill ramp without new live state, the displacement not live across the light march) -- not done in this
+  round. THE PIPELINE CACHE (`VulkanContext.cpp`): it held every build's pipelines and was discarded only past 256 MB, so
+  after the wave's merges it stood at 238 MB of stale entries and the app died silently at pipeline creation with it
+  loaded; it is now keyed to a hash of every shipped `shaders/*.spv` (`pipeline_cache.key`, written on save) and starts
+  over when any shader changes (one slow launch: "Pipeline cache: starting over (the shaders changed)"), cap 160 MB; a
+  fresh cache after a full boot is 11-14 MB. Not shipped: a general flow of all cloud noise on `wfWind` (weather-v2's
   `cv2NoiseDispAt`): it needs the wind evaluated per sample in the march and per pixel in the resolve, and the lattice
   seams it showed from orbit (e453372); the storm lock covers the user's case (storms vs the drift).
   **Anvils carried by the organised systems (2026-11-08, branch `weather-salvage`, `.plans/WEATHER_SALVAGE_PLAN.md`; the
