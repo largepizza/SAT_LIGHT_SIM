@@ -161,8 +161,23 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   one uniform test per sample. THE TIME-LAPSE FADE: past ~2 deg of turn a frame at the RMW (1 h/s gives ~10; 5 min/s 0.8)
   the rate fades to 0 over 2-8 deg, smoothed over ~10 frames (`cv2FlowFadeS`): a turn the frame rate cannot resolve is
   not shown, the storm lock stays; the resolve's window keeps the unfaded rate so its lock share matches the upload's.
-  ROUND-2 NUMBERS below (A B interleaved alone on the GPU, 3 x 60 frames, no pre-waits; the gate twice on the same exe
-  and settle cap, rotation 0 as the base). Not shipped: a general flow of all cloud noise on `wfWind` (weather-v2's
+  A ray runs the loop only when a vortex's reach comes near its shell segment (`cycNear`, the two ends' map directions
+  against the reach + the segment's span), and the displacement is refreshed every 1 km of the ray. SUPERCELLS: each
+  supercell's dominant tower is appended to the cyclone records as a MESOCYCLONE (`cv2CycHead.y` counts both; the
+  hurricane consumers read `.x`): the same vortex on a 2-3 km RMW at 20-35 m/s (~a turn in 6-10 min), reach 5 RMW, no
+  storm lock, the nearest to the eye in the records left; the wall cloud and the base turn under the updraft.
+  ROUND-2 NUMBERS (A B interleaved alone on the GPU, 3 x 60 frames, no pre-waits): no vortex in reach ~0 (650 km orbit
+  with a cyclone inside the view's cap 28.06 -> 28.03 ms; a storm-free ground view 14.38 -> 14.34); the tornado view of
+  issue_20261108_173628 (a supercell 5 km off) 28.30 -> 29.10 (+0.8); the hurricane views are unchanged by all of it --
+  eye from 46 km +3.4 then +3.8 ms, CDO from 61 km +4.3 then +6.0 (its base drifts 58-67 ms between runs) -- so the
+  per-sample loop was never their cost; what is left is the field reading two textures a quarter turn apart in
+  neighbouring rays (the per-ray dither) -- NOT that either: at the eye view, base 46.5, the per-ray dither 49.7, the
+  dominant phase alone 50.5, a 16-px-tile dither 49.5 ms (3 x 60 frames each, 128 registers). The ~+3 ms is the
+  displaced reads themselves (every layer's noise read at a position turned about the eye); unexplained beyond that:
+  the base and the flow variant differ only in cv2CycFlowAt's body and the displacement it returns. The gate twice on the same exe and settle cap (rotation 0 as
+  the base; hurr_eye): lag16 12.2 -> 10.9 % (1x), 12.7 -> 14.0 (1m), 11.8 -> 12.2 (5m), grain equal (0.97 / 0.94 / 0.87).
+  The supercell's 1x sequence (3 captures 1 s apart at 173628) shows no measurable turn from that vantage: the funnel is
+  5 km off and the wall cloud is not in the frame; ~1 deg of turn at the RMW in 2 s. Not shipped: a general flow of all cloud noise on `wfWind` (weather-v2's
   `cv2NoiseDispAt`): it needs the wind evaluated per sample in the march and per pixel in the resolve, and the lattice
   seams it showed from orbit (e453372); the storm lock covers the user's case (storms vs the drift).
   **Anvils carried by the organised systems (2026-11-08, branch `weather-salvage`, `.plans/WEATHER_SALVAGE_PLAN.md`; the
