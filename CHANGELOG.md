@@ -106,6 +106,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Clouds and weather
 
+- **Clouds settle sooner after a jump.** After a view change (a report, a bookmark, an event's Watch) the cloud
+  occupancy map used to wait a second before rebuilding itself, and the frame ran slow until it had; it now starts a
+  quarter of a second after the eye stops, and the rebuild itself costs less per frame (from orbit it read every point
+  twice).
 - **White tops on small cumulus.** Under a high Sun, shallow fair-weather cumulus now have bright sunlit tops instead of
   grey-blue, see-through ones, and their sides no longer brighten again toward the base.
 - **Fewer shadow trails in time-lapse.** At 1 min/s and faster, storm shadows no longer trail behind growing towers as grey blobs.

@@ -764,12 +764,13 @@ vec3 cv2FlowWeatherDirAt(CV2Pos q)
 // (cv2.flowA / flowB / flowC, SatelliteSimCloudsV2.cpp).
 vec3 gCv2CycD = vec3(0.0);   // the march's main sample sets it (CV2_CYC_EXTERNAL); every cv2Field of that step reads it
 bool gCv2HurrNear = true;    // a cyclone's 1.3 CDO radii can touch this ray (the march sets it per ray; cv2HurrAt is skipped otherwise)
+bool gCv2FlowNear = true;    // a cyclone's bands' reach can touch this cell (the clipmap bake sets it per cell; the loop below is skipped otherwise)
 vec3 cv2CycFlowAt(vec3 wd)
 {
     vec3 D = vec3(0.0);
 #if defined(CV2_STORM_BINDING) && !defined(SKY_LITE)
     // (flowP.w: the cyclones whose reach meets the view's cap, counted on the CPU: with none, one uniform test per sample.)
-    if (cv2.flowP.x <= 0.0 || cv2.flowP.w <= 0.0) return D;
+    if (cv2.flowP.x <= 0.0 || cv2.flowP.w <= 0.0 || !gCv2FlowNear) return D;
     float best = 0.0;
     // (cv2CycHead.y: the cyclones and, after them, the supercells' MESOCYCLONES (SatelliteSimWeather.cpp): the same vortex
     // on a 2-3 km RMW at 20-35 m/s -- the wall cloud and the base turn under the updraft; reach 5 RMW.)

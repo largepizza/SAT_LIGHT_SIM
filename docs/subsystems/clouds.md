@@ -681,6 +681,62 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   SPV differ by 8.5% / 2.6% there (the history and layer map re-converge for seconds after a reload, even settled 160
   frames), d4 against the base reloaded right before it 0.8% / 1.4%, and the heatmap is a smooth level shift over the whole
   storm, not a local feature.
+- **Perf recovery after the 2026-11-10 wave (2026-11-11, perfrec, branch `qa/20261110/perfrec`; batches and generators in
+  `harness_runs/perfrec/`: `gen_attr.py` settled / first-2-s setting knockouts, `trace*.satcmd`, `gen_ab.py`, `gen_bake.py`,
+  `scan2.py`, `gen_final.py`).** The user's settings, 1600x900, one live app, interleaved, 3 x `perf frames=60`.
+  (1) **Settled, by SETTING knockout (cloud march ms; base = every feature on):** orbit 400 km 15.9; cdc_base_band 0 15.8,
+  hurricane_rotation 0 15.5, hurricane_fill 0 16.1, the whole hurricane block (fill + eyewall + smoothing 0) 15.9,
+  ice_optics_table 0 16.1, storm_moat_frequency 0 16.1, history_time_jump_s 0 16.1 -- all inside the A-vs-A spread; the
+  same at the 1.5-km cumulus (6.9-7.1) and the 4-km field (6.7-6.8). So the ordinary views' +2.5-3 ms against f1ce160
+  is NOT a feature's runtime cost: it is the 255-register regime (the note above), which no setting switches off. At the
+  fill view (issue_20261109_184510, the eye INSIDE the storm's cloud) 16.9: the hurricane block 14.4 (-2.5: fill alone
+  15.8), the rest within noise; hurricane_rotation 0 reads 5.4 there because the texture at the eye changes and the ray
+  ends in dense cloud at once (the capture is a different grey) -- not a saving. At the eye (184801) 26.1: the hurricane
+  block OFF is SLOWER (nofill 35.9, the block 42.7: the eye fills with cumulus to march), rotation 25.3, the rest 25.7-26.7.
+  (2) **The first 2 s after a view change were misread.** The merged tree's "slow re-convergence" against f1ce160 was the
+  harness: f1ce160 predates the 2-s settle cap (a675400), so its `wait settle auto` ran up to 160 frames and hid what a
+  capped settle shows. Traced with `state` every 10 frames (`trace2.satcmd`): an `observer` jump and a `report load` trip
+  the clipmap's MOTION GUARD (2026-10-22, `cv2CdcSlowFrames`), which held the clipmap OFF for 60 still frames -- the march
+  with no skips: orbit 13-14.5 ms against 9 settled, the fill view 23-37 against 11 -- and only then a new epoch and the
+  ~70-frame re-bake at the 65536-cell budget (orbit 1.1-2.5 ms a frame, the hurricane views 4-10), i.e. the view converges
+  ~130 frames (3 s) after the change on BOTH trees; a `time set` alone is an epoch with no guard (the bake starts at once).
+  Now the guard returns after 16 still frames (`kCdcSlowFramesOn`, SatelliteSimCloudsV2.cpp): a view change is a teleport,
+  one fast frame then still. And the bake is cheaper a frame (cloud_v2_cdc.comp, `v_ab2_cdc.spv` against the shipped,
+  `gen_bake.py`: a `time add` epoch, 60 of the ~70 bake frames timed): per CELL the cyclones' reach test skips the
+  hurricane fill's loop and the flow map's where none can reach (exact), and the footprint BRACKET's second read is
+  dropped where its two footprints are within 15% (from orbit both ends of a level's ring are ~the eye's height away: the
+  second read of every point was the first again) -- the bake's pass 1.45 / 1.13 -> 0.84 / 0.70 ms a frame at orbit,
+  5.6 / 3.7 -> 5.2 / 2.7 at the fill view, 6.0 / 5.3 -> 5.7 / 2.5 at the eye (the storm pairs noisy: each epoch moves the
+  storm an hour on). Parity of the new bake (`post.satcmd`, `cdcpar2.satcmd`: the shipped bake twice against it, each
+  after the same fresh epoch, settled): orbit 0.40 levels mean against a 0.57 same-bake floor; the 1.5-km cumulus 0.8 / 1.3
+  against 3.6 (a uniform 1-4 level drift of the whole frame between any two captures there, no pixel past 8 levels); the
+  eye 4.8 against 4.7 (the storm's own 20-s evolution). The base band (`cdc_base_band`) costs the bake 0.5-0.8 ms a frame
+  at orbit and ~1.5 at the fill view while it runs; it is kept (it draws the cloud that was missing).
+  (3) **The two approximations the regime note proposed were tried and do NOT move the count** (`v_ab1_march.spv`, a
+  byte-identical base beside it): the beams' ice and snow halos summed per sample and read ONCE per ray after the march at
+  the energy-weighted beam direction (exact up to that direction), and the hurricane fill's loop at the main sample only
+  (`cv2HurrSelect`, the ramp and reach held across the light march, the eye's bowl recomputed per sample from the held
+  centre): 255 registers, binary +3.4 KB, orbit 12.6 -> 12.7, cumulus 6.70 -> 6.71, field 5.52 -> 5.62, the fill view
+  11.3 -> 12.1, the eye 27.0 -> 26.5. On top of it (`scan2.py`, 13 variants) the ray's, the fog's and the snow's table
+  lookups out (together, and with the deferred halo out), the table binding out, the flow loop out, the select out, the
+  flow AND the select out: every one 255 (binaries 470-547 KB). The restructure is not shipped (reverted); the regime
+  stays, and the ordinary views stay ~+2.5 ms over f1ce160 at orbit until a different idea reaches 128 -- the previous
+  note's register map (one feature out 254-255, two out 128) holds for the shipped code, not for this restructure of it.
+  (4) **Final, f1ce160 against this tree (`final.satcmd` on each exe, sequential sessions, `final_table.py`; settled =
+  reps 2-3 after 200 frames, cloud march / GPU total ms):** orbit 13.6 / 23.9 -> 16.6 / 26.7; cumulus 1.5 km 6.0 / 10.4 ->
+  7.5 / 11.9; the 4-km field 6.9 / 15.8 -> 7.4 / 16.4; the fill view 11.0 / 16.6 -> 17.7 / 24.9; the eye 17.5 / 26.8 ->
+  26.6 / 34.9. **The first 2 s after a view change** (`perf frames=60` twice straight after the load, cloud march p0 ->
+  p1, and the bake's pass ms a frame): orbit f1ce160 14.4 -> 12.4 (bake 2.5 -> 1.2, still running at frame 120), this tree
+  18.7 -> 13.8 (0.8 -> 0.07: the bake is DONE by frame ~90); the eye 30.7 -> 23.8 (3.4 -> 1.9, running) against 48.1 ->
+  28.6 (3.8 -> 0.07, done); the fill view 26.3 -> 16.8 (running) against 14.1 -> 10.0 (done). The clipmap now returns
+  ~1.1 s sooner after a jump than on f1ce160; what remains over f1ce160 in every window is the 255-register march itself
+  (p0 at orbit: the march with no skips 15.4 against 11.5), and at the fill view the clipmap's own effect: this tree's
+  march reads 3 ms while its cells are unknown and 12 once baked, f1ce160's 19 -> 9 -> 6. **The fill view's cost is
+  bistable on this tree** (`cdcskip.satcmd`): the same report, paused at its own time, reads cloud march 6.1 in one visit
+  (clipmap on 6.1 / off 6.3: the same image, 0.03 levels) and 16.9-17.7 in others (the attribution and final sessions),
+  with the eye inside the storm's cloud mass; the flow map's phase clock runs on the CPU per frame, so what lies at the
+  eye differs per visit, and f1ce160 (no flow map) reads a steady 11. At the eye the clipmap is a plain win (on 26.7 /
+  off 40.4 ms, the image 0.9 levels apart), so the +9 ms there against f1ce160 is the march itself.
 - **Perf pass (2026-10-13, `harness_runs/perf13/`: `mkvar.py` builds text-substituted march variants, `ab.py`
   times them interleaved in one live app, `tab2.py` tabulates).** Cloud bucket at 1920x1009, the user's settings
   (430 iterations, 7 light steps, full rate above 30 km, sparse below), before -> after: orbit storm 388 km

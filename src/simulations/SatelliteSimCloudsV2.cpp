@@ -1912,6 +1912,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             cv2CdcSkipUsed = cv2CdcSkip;
             cv2CdcMaxLevelUsed = cv2CdcMaxLevel;
             const double cdcCell0 = 100.0, cdcWind = 40.0;
+            const int    kCdcSlowFramesOn = 16;   // still frames before the clipmap returns after a fast one (the motion guard, below)
             // Only up to cdc_max_rate x real time: at 10x the cells expire ~10x as fast as a frame's budget bakes them, most
             // read unknown, and the bake + lookups cost more than they save (+2 ms at 58 km, harness_runs/s0/run13).
             const float rate = timePaused ? 0.0f : kTimeScales[std::clamp(timeScaleIdx, 0, (int)(sizeof(kTimeScales) / sizeof(kTimeScales[0])) - 1)];
@@ -1973,7 +1974,14 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                 // clipmap came back on mid-flight with cells baked from far behind, and skipped the distant cloud masses
                 // (far band -30% of cloud while moving at ~700 km/s from 1278 km, harness_runs/fl1022c).
                 cv2CdcSlowFrames = (cdcStep > cdcFrac * cdcS) ? 0 : std::min(cv2CdcSlowFrames + 1, 1000);
-                if (cv2CdcSlowFrames < 60)
+                // Back after kCdcSlowFramesOn still frames (2026-11-11, perfrec: 60 -> 16). A view change (a report, a bookmark,
+                // an event's Watch, the harness) is a teleport: one fast frame, then still. The guard then held the clipmap
+                // off for 60 frames -- the march with no skips (the fill view 23-37 ms against 11 settled, orbit +2) -- and
+                // only then began the ~70-frame re-bake, so the view converged ~2.2 s after the change (traced in
+                // harness_runs/perfrec/trace2.satcmd: `observer` and `report load` trip the guard, `time set` does not). At
+                // 16 the bake starts 0.25 s after the eye stops; a flight that pauses that long and resumes pays one wasted
+                // bake burst (2-8 ms a frame while it lasts), which is what every stop paid at 60 as well.
+                if (cv2CdcSlowFrames < kCdcSlowFramesOn)
                     cv2CdcActive = false;
                 // (Inside the shell also when the eye's HEIGHT has changed by a quarter of the scale: the bracket's
                 // distances are measured from the bake's eye height.)
