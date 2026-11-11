@@ -274,6 +274,9 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // (2026-11-08, hurricane) A hurricane's CDO and eyewall (cv2CdoShare, cv2LowA "THE EYEWALL"): x "Hurricane sheet swirl"
     // (the sheet's spiral outline, frays and ripple), y "Hurricane eyewall" (the storm mass's ring round the eye), zw unused
     vec4  hurricane;
+    // (2026-11-10, grain) x "cdc_base_band": the occupancy clipmap bake's extra reads over the low field's base
+    // (cloud_v2_cdc.comp "THE BASE BAND"; 0 = off), yzw unused
+    vec4  grain;
 } cv2;
 #include "wind_field.glsl"
 

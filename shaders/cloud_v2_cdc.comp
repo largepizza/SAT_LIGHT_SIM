@@ -130,12 +130,30 @@ void bakePass(uint ti)
     float dzE = abs(zc - eyeH);
     float fpLo = -cv2.cdcB.y * length(vec2(lv == 0 ? 0.0 : 0.5 * r0, dzE)) * pixA;
     float fpHi = -cv2.cdcB.y * length(vec2(1.4142136 * r0, dzE + kCv2CdcDZ)) * pixA;
-    [[dont_unroll]] for (int k = int(lane); k < nS; k += int(kCdcLanes)) {
+    // THE BASE BAND (2026-11-10, issue_20261110_182715 "Pixelated cloud edges"): the pattern's four heights are 160 m apart,
+    // and a low cloud thinner than that between two of them -- the margin of every flat-based cumulus, where its top comes
+    // down to its base, and whole fields of thin humilis -- read empty at every point: the march skipped it, and the clouds'
+    // outlines followed the cells (stair-stepped edges, isolated square puffs; at the report's shot 1 0.9% of the skipped
+    // steps held cloud, all of it the low layer 0-150 m over its base). The thin part lies on its base: after the pattern,
+    // each lane reads the 9 columns again at 30 / 80 / 130 m over the lowest and highest bases its own reads met
+    // (gCv2BaseLow), where those heights lie in the pattern's range (k >= nS below; the same call site, so the field is not
+    // inlined again). A cell nowhere near a base reads nothing more. grain.x 0 = off.
+    float bLo = 1e9, bHi = -1.0;
+    int   nB  = cv2.grain.x > 0.5 ? 54 : 0;
+    [[dont_unroll]] for (int k = int(lane); k < nS + nB; k += int(kCdcLanes)) {
         int   kk = k - 1;
         vec3  o  = (nS == 36) ? vec3(float(k % 3) - 1.0, float((k / 3) % 3) - 1.0, (float(k / 9) - 1.5) * 0.5)
                  : (k == 0) ? vec3(0.0) : vec3(float(kk & 1), float((kk >> 1) & 1), float((kk >> 2) & 1)) * 2.0 - 1.0;
-        vec2  u  = uc + o.xy * cell;
         float h  = max(zc + o.z * kCv2CdcDZ, 0.0);
+        bool  band = k >= nS;
+        if (band) {
+            int e = k - nS, m = e / 9;   // column e % 9, height m: 0-2 over bLo, 3-5 over bHi
+            if (bHi <= 0.0 || (m >= 3 && bHi < bLo + 40.0)) continue;
+            o = vec3(float(e % 3) - 1.0, float((e / 3) % 3) - 1.0, 0.0);
+            h = ((m < 3) ? bLo : bHi) + 30.0 + 50.0 * float(m % 3);
+            if (abs(h - zc) > 0.75 * kCv2CdcDZ) continue;
+        }
+        vec2  u  = uc + o.xy * cell;
         vec3  d  = normalize(cv2.layA.xyz * kCv2CdcR + cv2.layE.xyz * u.x + cv2.layN.xyz * u.y);
         vec3  rel = d * (R_EARTH + h) - eyeP;
         // The stretch the view march sets for a ray from the eye through this point (made no measurable difference,
@@ -148,11 +166,13 @@ void bakePass(uint ti)
             // Every point's bits, cloud or not (a tower's strength that cut a mid sheet to nothing is needed there: skipped,
             // the sheet would appear); bit 64 = a trace of cloud at some point (the cell is not empty).
             lm |= gCv2LayHit | (f.sigma > 0.0 ? 64u : 0u);
+            if (gCv2BaseLow > 0.0) { bLo = min(bLo, gCv2BaseLow); bHi = max(bHi, gCv2BaseLow); }
         }
         // S2 ("cdc_light"): the light march's own read (mean erosion), its effective extinction summed in fixed point,
         // at the pattern's points pulled in to the cell itself (+-0.5 cell): a mean over the dilated 2-cell box blurred
         // gaps into cloud, and exp(-mean od) of a broken field is darker than the mean of exp(-od) (s2 run: -18 levels).
-        if (cv2.cdcC.x > 0.5 && lv < int(cv2.cdcC.y)) {
+        // (Not at the base band's points: the sums' count is the pattern's.)
+        if (!band && cv2.cdcC.x > 0.5 && lv < int(cv2.cdcC.y)) {
             vec2  uM = uc + o.xy * 0.5 * cell;
             float hM = max(zc + o.z * kCv2CdcDZ * 0.5, 0.0);
             vec3  rM = normalize(cv2.layA.xyz * kCv2CdcR + cv2.layE.xyz * uM.x + cv2.layN.xyz * uM.y) * (R_EARTH + hM) - eyeP;

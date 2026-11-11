@@ -751,6 +751,22 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     a frame (`cdc_motion_low_frac` 0.25). The 12-km storm-tops loss that had kept it low (12-19% of the pixels > 16
     levels) was the low shape volume's frame (`cv2ShapeFrame`, chosen at the observer) missing from the epoch, not the
     footprint: the epoch now includes it (perf.md "Moving costs the clipmap").
+    **The base band** (2026-11-10, issue_20261110_182715 "Pixelated cloud edges", `clouds_v2.cdc_base_band` 1, no UI;
+    `cv2.grain.x`; cloud_v2_cdc.comp "THE BASE BAND"). The pattern's four heights are 160 m apart (cell centre +-80 /
+    +-240 m), and a low cloud thinner than that between two of them read empty at all 36 points: the margin of every
+    flat-based cumulus (its top comes down to its base) and whole fields of thin humilis. The march skipped it and the
+    clouds' outlines followed the cells: stair-stepped edges, isolated square puffs, from any height (the report's 48 S
+    150 W field; the user's own settings too: no setting the reporter changed made it). Measured at the report's shot 1
+    with `-DCV2_EVAL_COUNT` and probes: 46.8k of 5.45M skipped steps held cloud (0.9%; 92% dense), all of it the low
+    layer, levels 0-1, 0-150 m over the field's own base (mean 65 m), ~100 m thick, horizontally km-wide (97% still cloud
+    50 m away); the read footprint (1 m .. 4x), the bracket, the plane round trip (exact), the oro / storm / terrain
+    paths changed nothing. Each lane now reads the 9 columns again at 30 / 80 / 130 m over the lowest and highest
+    `gCv2BaseLow` its own pattern reads met (only heights inside the pattern's range; the same call site, k >= nS):
+    misses 46.8k -> 27, skipped steps 5.45M -> 5.19M. Cells nowhere near a base read nothing more; paused, nothing
+    re-bakes. Cost = the cloud that is now drawn: view field evaluations +24% at shot 1 (3.69M -> 4.59M), +1% at shot 4
+    (10.3 km); cloud march at shot 1 with time running ~10.0 -> ~11.2 ms (RTX 3070 Ti, 1920x1009, the reporter's
+    settings; the uncontended reps of an A/B on a GPU shared with another app, the rest unusable). The image now matches
+    the march without the clipmap in shape (mean |diff| 21.3 -> 4.3 levels; the rest is S2's light moments).
   - **S2** (`cdc_light`, `cdc_light_levels` 3): light steps 3+ read the cell's mean + variance of the light extinction
     through the gamma model E[exp(-L e)] (a cell MEAN alone darkened broken cloud by up to 18 levels: Jensen). Modest.
     Not the diffuse field's far side (tauB) since 2026-11-06: that is jittered field reads at every range ("The look at
@@ -2789,7 +2805,18 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     grew with more light steps. What removed them: **each coarse stride is 1.5-2.5 steps** (2 on average), by a
     per-step golden sequence off the ray's jitter (`cj` in the march's coarse branch), so the lattice is a random walk
     a few steps past the entry instead of one lattice offset once. Why the start jitter alone left a height-periodic
-    bias was not explained. Also: the four per-visit offsets (sub-texel x 2, start jitter, light jitter) now step by
+    bias was not explained. **Hashed strides** (2026-11-10, issue_20261110_182715 "Concentric circles", `cv2StrideU`):
+    the golden sequence fract(j + 0.618 i) made every stride of a ray a function of ONE number, so over the jitters a
+    pixel visits the coarse samples' depths were still not uniform modulo the stride (a model of the walk, 150-m steps,
+    60-m slab, 44 visits: hit share 0.20 +- 0.074 over the slab's depth). A cloud thinner than the stride (the thin
+    cumulus of the report, 10.3 km over the 48 S field) converged to concentric rings round the nadir at the stride's
+    period (21 px there; 40 px at step growth 0.008). Each coarse stride now draws its share from a hash of (jitter,
+    step): bias +- 0.001 (the sampling floor), per-pixel noise 0.061 vs 0.048 (Monte Carlo instead of the golden
+    sequence's low discrepancy). Tried: fract(k_i j + c_i), k_i in 1-4 (model bias 0.008, noise 0.053): in the app no
+    less grain than the hash and more ripple left (ring sector band amplitude 0.35 vs 0.21-0.27), not kept. The hash
+    changes no work (field evaluations within 0.3% at both shots; uncontended cloud march 9.9 vs 10.5 / 9.8 vs 10.3 ms,
+    within the contended A/B's noise). Ring sector of shot 4's radial profile (21-px band amplitude, levels): 0.88 ->
+    0.21 (reporter's settings), 0.87 -> 0.22 (the user's); the golden strides with the base band alone 1.06. Also: the four per-visit offsets (sub-texel x 2, start jitter, light jitter) now step by
     the four R4 constants (the light jitter and the sub-texel x shared 0.7549: locked together for ever). With the
     high layer over a head a finer moire remains at 12 light steps (the cirrus fibres' shadow), faint at 7.
     cv2ShapeSmooth's terraces (zero slope at texel centres) were suspected and are NOT the cause (a two-tap
