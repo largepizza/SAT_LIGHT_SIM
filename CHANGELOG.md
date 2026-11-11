@@ -123,6 +123,13 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   low flat mesas under an empty sky, the eyewall is the storm cloud itself rising round a stadium-shaped eye with
   fluted walls, and the top sheet follows the spiral arms out, frays into streaks at its edge and carries a faint
   swirl ripple (Clouds > Hurricane sheet swirl / Hurricane eyewall).
+- **Hurricanes rotate.** The cloud texture round a tropical cyclone turns about its eye with the circulation (faster
+  inside the radius of maximum wind, slower outward, counter-clockwise in the north) and rides with the storm instead of
+  sliding through it with the global cloud drift; the spiral bands stay as the storm's quasi-stationary envelope and the
+  clouds stream along them. A two-phase flow map like the cirrus fibres', so nothing winds up or jumps; the history
+  reprojects the turn. Arms no longer re-cut themselves as the storm moves, and a storm keeps one arm count through its
+  life (both were "arms teleporting" in time-lapse). The top sheet's lumps scale with the storm and show the turn from
+  above (Clouds > Hurricane rotation / Hurricane flow winding / Hurricane flow blend).
 - **Small cumulus are heaps, not pucks.** Shallow fair-weather cumulus rise from their flat base in a dome instead of
   standing as wide, flat-walled discs with a cap on top, and are a little deeper (Clouds > Shallow cumulus heaps / depth).
 - **No bright ring in distant clouds.** Seen from altitude over a deep overcast, clouds beyond a few tens of km no

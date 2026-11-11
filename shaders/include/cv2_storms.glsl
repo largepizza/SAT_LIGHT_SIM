@@ -76,6 +76,9 @@ struct CV2Cyclone {
     vec4 b;   // xyz the centre where the low cloud reads the cube (flowed), w hemisphere (+1 north, -1 south)
     vec4 c;   // x the eye's radius (m, 0 none), y the CDO's radius, z the outer bands' reach, w the bands' phase (rad)
     vec4 d;   // x the radius of maximum wind (m), y vmax (m/s), z 1 over land, w the spiral arms (2 .. ~5, continuous)
+    vec4 e;   // (2026-11-10, flowmaps) the cyclone's FLOW MAP (clouds_v2.glsl cv2CycFlowAt): x its phase clock (windows
+              //   since genesis, the CPU's integral of dt / window; mod 1024), y the window (s), zw the centre's velocity
+              //   through the noise frame x the lock share (east, north at the centre, m/s: the storm-lock translation's rate)
 };
 
 #ifdef CV2_STORM_BINDING
@@ -90,7 +93,9 @@ layout(std430, set = 0, binding = CV2_STORM_BINDING) readonly buffer CV2StormBuf
     CV2Shield cv2Shields[kCv2ShieldMax];
     uvec2    cv2ShieldTable[kCv2ShieldTableSize];   // as cv2StormTable, kCv2ShieldBinsPerFace bins
     uint     cv2ShieldList[kCv2ShieldListSize];
-    uvec4    cv2CycHead;                            // x cyclones
+    uvec4    cv2CycHead;                            // x cyclones; y (2026-11-10, flowmaps) cyclones + the MESOCYCLONES appended after them
+                                                    //   (a supercell's dominant tower: a = axis / strength, b.w hemi, c.y 0 = no CDO: the
+                                                    //   flow map alone reads them, c.z reach, d.x rmw, d.y vmax, e the flow clock)
     CV2Cyclone cv2Cyclones[kCv2CycloneMax];
     uvec4    cv2DustHead;                           // x 1 = a dust wall in the grid, y its bounding box (lo x | lo y << 16),
                                                     // z (hi x | hi y << 16), w unused

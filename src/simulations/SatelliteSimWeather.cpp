@@ -574,6 +574,7 @@ void SatelliteSim::updateStorms()
             stormTowers.clear();
             stormShields.clear();
             stormCyclonesNow.clear();
+            cv2FlowVortices.clear();
             stormGpuTowers.clear();
             stormGpuShields.clear();
             stormStats.towers = stormStats.shields = stormStats.cyclones = 0;
@@ -603,6 +604,8 @@ void SatelliteSim::updateStorms()
     if (std::fabs(t - stormPrevUploadT) > 900.0)
         for (double &b : cv2WxBakedT)
             b = -1e30;
+    // (flowmaps, 2026-11-10: the cyclone flow maps' clocks advance by this upload's step; a jump of hours is a jump.)
+    const double flowDt = std::clamp(t - stormPrevUploadT, -86400.0, 86400.0);
     stormPrevUploadT = t;
     stormUploadedT = t;
     // Sections of this function (local splits: fprof::mark would move recordCompute's own rc.seg splits).
@@ -824,6 +827,7 @@ void SatelliteSim::updateStorms()
         // The cyclones' records for the bake (centre where the low cloud reads the cube; the bands turn slowly).
         const uint32_t nC = (uint32_t)std::min<size_t>(stormCyclonesNow.size(), kCycloneMax);
         auto *cdst = reinterpret_cast<GpuStormCyclone *>(static_cast<char *>(stormMapped) + kCyclonesOffset);
+        cv2FlowVortices.clear();
         for (uint32_t i = 0; i < nC; ++i)
         {
             const wx::CycloneState &c = stormCyclonesNow[i];
@@ -834,13 +838,78 @@ void SatelliteSim::updateStorms()
             g.c = glm::vec4(c.eyeR, c.cdoR, c.outerR, (float)c.bandRot);
             // (d.z: over land + 2 x round(1000 x tan pitch), 2026-11-03: the pitch follows "Hurricane arm tightness".)
             g.d = glm::vec4(c.rmw, c.vmax, (c.overLand ? 1.0f : 0.0f) + 2.0f * std::round(1000.0f * c.tanPitch), c.arms);
+            // THE FLOW MAP (2026-11-10, flowmaps; clouds_v2.glsl cv2CycFlowAt): x its clock (windows since the session
+            // first saw it; mod 1024), y the window (s: the winding "Hurricane flow turns" over the texture's rate at the
+            // RMW, 5 min .. 2 h), zw the centre's velocity through the NOISE frame (the map's: Rz(-drift) x its track
+            // velocity, less the map's own drift under it), east and north at the centre (m/s): the storm lock's rate.
+            {
+                const double rate = (double)std::max(cv2HurrRotation, 0.0f) * (double)std::max(c.vmax, 5.0f)
+                                  / (double)std::max(c.rmw, 2000.0f);
+                const double P = std::clamp(6.2831853 * (double)std::max(cv2HurrFlowTurns, 0.05f) / std::max(rate, 1e-9),
+                                            300.0, 7200.0);
+                double &phase = cycFlowPhase[c.c ? c.c->seed : (uint32_t)i];
+                phase = std::fmod(phase + flowDt / P + 1024.0, 1024.0);
+                const double dr = cloudDriftPhase();
+                const glm::dvec3 vE = c.motionEarth;
+                const glm::dvec3 vM(vE.x * std::cos(dr) - vE.y * std::sin(dr), vE.x * std::sin(dr) + vE.y * std::cos(dr), vE.z);
+                const glm::dvec3 a = c.map;
+                const double cl = std::max(std::hypot(a.x, a.y), 1e-3);
+                const glm::dvec3 eW(-a.y / cl, a.x / cl, 0.0), nW = glm::cross(a, eW);
+                // map = Rz(+drift) earth (cv2Drift), so d(map)/dt = Rz(drift) v_earth + drift_rate (z x map): the map's
+                // content moves west under the storm, the storm east through it.
+                const glm::dvec3 vMap = vM + (double)cloudDriftRate * glm::dvec3(-a.y, a.x, 0.0) * kReW;
+                // (x the lock share: as much of the motion as keeps the reach's fade band under ~0.5 of shear; the shader
+                // took it per sample until the clean A/B, 2026-11-10.)
+                const double lockK = std::min(1.0, 0.25 * (double)std::max(c.outerR, 1000.0f) / std::max(glm::length(vMap) * P, 1.0));
+                g.e = glm::vec4((float)phase, (float)P, (float)(glm::dot(vMap, eW) * lockK), (float)(glm::dot(vMap, nW) * lockK));
+            }
             cdst[i] = g;
+            cv2FlowVortices.push_back({c.earth, c.map, c.motionEarth, c.rmw, c.vmax, c.outerR, c.c->hemi});
         }
+        // THE MESOCYCLONES (2026-11-10, flowmaps, the user: "would be great for tornados"): each supercell's dominant tower
+        // as a record after the cyclones (cv2CycHead.y counts both; the hurricane consumers read .x): the same flow map
+        // on a 2-3 km RMW at 20-35 m/s (~1 turn in 6-10 min, cyclonic in the north), reach 5 RMW, no storm lock (the
+        // tower object carries the storm's motion), the nearest to the eye in the records left.
+        uint32_t nAll = nC;
+        if (cv2HurrRotation > 0.0f && nC < kCycloneMax)
+        {
+            const double dr = cloudDriftPhase();
+            const glm::dvec3 eE = glm::normalize(glm::dvec3(obsDir));
+            const glm::dvec3 eyeMap(eE.x * std::cos(dr) - eE.y * std::sin(dr), eE.x * std::sin(dr) + eE.y * std::cos(dr), eE.z);
+            std::vector<std::pair<double, const wx::Tower *>> cands;
+            for (const wx::Tower &T : stormTowers)
+                if (T.kind == wx::StormKind::Supercell && T.role >= 0.99f && T.strength > 0.1f)
+                    cands.push_back({std::acos(std::clamp(glm::dot(T.dir, eyeMap), -1.0, 1.0)), &T});
+            std::sort(cands.begin(), cands.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
+            for (const auto &cd : cands)
+            {
+                if (nAll >= kCycloneMax) break;
+                const wx::Tower &T = *cd.second;
+                const float rmw = 2500.0f * (0.7f + 0.6f * std::clamp(T.size, 0.0f, 1.0f));
+                const float vmax = 20.0f + 15.0f * std::clamp(T.strength, 0.0f, 1.0f);
+                const float hemi = T.dir.z >= 0.0 ? 1.0f : -1.0f;
+                const double rate = (double)cv2HurrRotation * vmax / rmw;
+                const double P = std::clamp(6.2831853 * (double)std::max(cv2HurrFlowTurns, 0.05f) / std::max(rate, 1e-9), 300.0, 7200.0);
+                double &phase = cycFlowPhase[T.seed];
+                phase = std::fmod(phase + flowDt / P + 1024.0, 1024.0);
+                GpuStormCyclone g;
+                g.a = glm::vec4(glm::vec3(T.dir), T.strength);
+                g.b = glm::vec4(glm::vec3(T.dir), hemi);
+                g.c = glm::vec4(0.0f, 0.0f, 5.0f * rmw, 0.0f);
+                g.d = glm::vec4(rmw, vmax, 0.0f, 0.0f);
+                g.e = glm::vec4((float)phase, (float)P, 0.0f, 0.0f);
+                cdst[nAll++] = g;
+                const glm::dvec3 earthDir(T.dir.x * std::cos(dr) + T.dir.y * std::sin(dr), -T.dir.x * std::sin(dr) + T.dir.y * std::cos(dr), T.dir.z);
+                cv2FlowVortices.push_back({earthDir, T.dir, glm::dvec3(0.0), rmw, vmax, 5.0f * rmw, hemi});
+            }
+        }
+        if (cycFlowPhase.size() > 64) cycFlowPhase.clear();   // (seasons' worth of dead storms: start the clocks over)
         reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kCycHeadOffset)[0] = nC;
+        reinterpret_cast<uint32_t *>(static_cast<char *>(stormMapped) + kCycHeadOffset)[1] = nAll;
         ctx_->mirrorDirty(stormMapped, kShieldHeadOffset, 16 + 64ull * nS);
         ctx_->mirrorDirty(stormMapped, kShieldTableOffset, 8ull * kShieldTableSize);
         ctx_->mirrorDirty(stormMapped, kShieldListOffset, 4ull * sx.used);
-        ctx_->mirrorDirty(stormMapped, kCycHeadOffset, 16 + 64ull * nC);
+        ctx_->mirrorDirty(stormMapped, kCycHeadOffset, 16 + sizeof(GpuStormCyclone) * nAll);
         stormStats.cyclones = (int)nC;
         stormStats.shieldBins = (int)sx.bins;
         stormStats.shieldEntries = (int)sx.entries;

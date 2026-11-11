@@ -54,7 +54,11 @@ LIVE = os.path.join(REPO, "harness_live")
 sys.path.insert(0, HERE)
 
 REP = os.path.join(REPO, "user_data", "reports").replace(os.sep, "/") + "/"
+# (2026-11-10: a worktree has no user_data; SATLIGHT_REPORTS names the main checkout's reports folder.)
+if os.environ.get("SATLIGHT_REPORTS"):
+    REP = os.environ["SATLIGHT_REPORTS"].replace(os.sep, "/").rstrip("/") + "/"
 # name: (setup commands, crop x,y,w,h at 1920x1009). The setups pause time; the run plays from there.
+SETTLE_X = ""   # (--settle-exact: " maxs=0")
 SCENARIOS = {
     # A tall air-mass tower from 4.3 km, 14 km away, midday (issue_20261107_124812: blocks, the flat "wall").
     "tower":  ([f'report load "{REP}issue_20261107_124812" shot=1 trail=off', "time pause",
@@ -82,6 +86,13 @@ SCENARIOS = {
     "trail_itcz":  ([f'report load "{REP}issue_20261106_184711" shot=1'], (480, 150, 960, 640), {"trail": True}),
     "trail_orbit": ([f'report load "{REP}issue_20261107_125245" shot=1'], (480, 200, 960, 600), {"trail": True}),
     "trail_sunset": ([f'report load "{REP}issue_20261107_125130" shot=1'], (480, 250, 960, 560), {"trail": True}),
+    # Tropical cyclones (2026-11-10, flowmaps: the cloud texture turns about the eye and rides with the storm, a flow map the
+    # resolve reprojects): over the eye from 46 km (issue_20261109_184801), the whole storm from 827 km (issue_20261106_172424
+    # shot 7), the CDO's top from 61 km and an outer band from 41 km (issue_20261105_232743 shots 1 and 3).
+    "hurr_eye":  ([f'report load "{REP}issue_20261109_184801" shot=1 trail=off', "time pause"], (480, 150, 960, 640)),
+    "hurr_orbit": ([f'report load "{REP}issue_20261106_172424" shot=7 trail=off', "time pause"], (640, 180, 720, 620)),
+    "hurr_top":  ([f'report load "{REP}issue_20261105_232743" shot=1 trail=off', "time pause"], (480, 150, 960, 640)),
+    "hurr_band": ([f'report load "{REP}issue_20261105_232743" shot=3 trail=off', "time pause"], (480, 150, 960, 640)),
     # The tower of "tower" from a STORM-RELATIVE camera: 15 km east of the storm at 4.1 km, looking west -- the same
     # framing whatever moves the storm (an A/B of storm motion keeps the storm in view).
     "towerrel": ([f'report load "{REP}issue_20261107_124812" shot=1 trail=off', "time pause",
@@ -200,6 +211,8 @@ def heat_and_worst(paths, revmap, out_png, out_crop, tile=128):
 
 
 def cmd_run(a):
+    global SETTLE_X
+    SETTLE_X = " maxs=0" if a.settle_exact else ""
     scen = [s for s in a.scenarios.split(",") if s]
     scales = [s for s in a.scales.split(",") if s]
     out = a.out or os.path.join(REPO, "harness_runs", "artifacts", time.strftime("%Y%m%d_%H%M%S"))
@@ -241,7 +254,7 @@ def cmd_run(a):
                 keep = ",".join(str(i) for i in range(max(nF - a.frames, 0), nF))
                 print(f"[{tag}] {nF} frames", flush=True)
                 send(list(setup) + ["path goto 0", "wait 90", f"path play fps={round(1.0 / a.dt)} record=af_{tag}_ frames={keep}",
-                                    "time pause", "wait settle auto max=250", f"capture af_{tag}_ref crop={','.join(str(v) for v in crop)}"],
+                                    "time pause", "wait settle auto max=250" + SETTLE_X, f"capture af_{tag}_ref crop={','.join(str(v) for v in crop)}"],
                      timeout=1800)
                 rd = live_dir()
                 dst = os.path.join(out, tag)
@@ -282,11 +295,11 @@ def cmd_run(a):
                 n = a.warm + a.frames
                 T = n / fps
                 keep = ",".join(str(i) for i in range(a.warm, n))
-                cmds = list(setup) + ["time scale 1x", "wait settle auto max=250", "path clear", "path key 0",
+                cmds = list(setup) + ["time scale 1x", "wait settle auto max=250" + SETTLE_X, "path clear", "path key 0",
                                       f"path key {T:.4f} simadd={T * mult:.3f}",
                                       f"path play fps={fps} record=af_{tag}_ frames={keep}"]
                 # LAG: the same moment settled (time stays where the path left it): how far the running image trails it.
-                cmds += ["time pause", "wait settle auto max=250", f"capture af_{tag}_ref crop={cr}"]
+                cmds += ["time pause", "wait settle auto max=250" + SETTLE_X, f"capture af_{tag}_ref crop={cr}"]
                 if a.perf:   # (the cost of the same view, settled: a regression in the march shows next to its artifacts)
                     cmds += ["set display.fps_cap_mode 0", "set display.dynamic_resolution false", "wait 30",
                              f"perf frames=60 name=af_{tag}"]
@@ -392,6 +405,7 @@ def main():
     r.add_argument("--out")
     r.add_argument("--keep", action="store_true", help="leave the live app running")
     r.add_argument("--no-perf", dest="perf", action="store_false", help="skip the settled perf per still run")
+    r.add_argument("--settle-exact", action="store_true", help="settles run their full frame count (maxs=0) under the 2-s rule: a converged lag reference")
     r.add_argument("--pre", default="", help="commands after each scenario's setup (an A/B: 'set clouds_v2.x 0; ...')")
     s = sub.add_parser("score")
     s.add_argument("dir")

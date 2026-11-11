@@ -990,6 +990,8 @@ struct GpuCloudV2Params
     // supra / infralateral arcs), w unused
     glm::vec4 optics;
     glm::vec4 grain;         // (2026-11-10, grain) x "cdc_base_band" (the clipmap bake's base band, cloud_v2_cdc.comp), yzw unused
+    // flowmaps (2026-11-10): the cyclone flow map's parameters and the resolve's reprojected cyclone (clouds_v2.glsl).
+    glm::vec4 flowP, flowA, flowB, flowC;
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -1022,7 +1024,7 @@ static_assert(offsetof(GpuCloudV2Params, amb) == 288 + 48 * kCloudV2Types + 1232
 static_assert(offsetof(GpuCloudV2Params, tone) == 288 + 48 * kCloudV2Types + 1248, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, gnd) == 288 + 48 * kCloudV2Types + 1264, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, micro) == 288 + 48 * kCloudV2Types + 1280, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1712, "GpuCloudV2Params layout");   // +16: grain; +16: optics; +16: hurricane; +16: pucks; +32: wind0, wind1; +32: cellA, cellB; +32: cirrus-hurr (ciHu, ciHu2); +32: storm3 (storm3a, storm3b); +64: vertical (vert, vert2, oro0, oro1); +80: shapeB
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1776, "GpuCloudV2Params layout");   // +64: flowmaps (flowP, flowA, flowB, flowC); +16: grain; +16: optics; +16: hurricane; +16: pucks; +32: wind0, wind1; +32: cellA, cellB; +32: cirrus-hurr (ciHu, ciHu2); +32: storm3 (storm3a, storm3b); +64: vertical (vert, vert2, oro0, oro1); +80: shapeB
 static_assert(offsetof(GpuCloudV2Params, cu3) == 288 + 48 * kCloudV2Types + 1312, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
@@ -5737,6 +5739,19 @@ private:
     // objects faded out of the march (cv2LowA "THE EYEWALL"; clouds_v2.hurricane_eyewall, slot 557). 0 = off.
     float cv2HurrSheetSwirl = 1.0f;
     float cv2HurrEyewall = 1.0f;
+    // 2026-11-10 (flowmaps, issue_20261109_184801): the cyclone flow map (clouds_v2.glsl cv2CycFlowAt; the resolve
+    // reprojects it). Slots 560-563. hurricane_rotation: the cloud texture's angular rate as a share of the surface wind's
+    // (vmax / rmw at the RMW; 0 = off); hurricane_flow_turns: the winding per flow-map window (turns; sets the window);
+    // hurricane_flow_blend: the share of a window each side of a renewal that cross-fades the two phases.
+    float cv2HurrRotation = 0.6f;
+    float cv2HurrFlowTurns = 0.25f;
+    float cv2HurrFlowBlend = 0.12f;
+    std::unordered_map<uint32_t, double> cycFlowPhase;   // each active cyclone's flow-map clock (windows), by its seed
+    float cv2FlowFadeS = 1.0f;   // the rotation's time-lapse fade (1 = full; toward 0 past a few degrees of turn a frame), smoothed
+    // The vortices the flow map turns this frame (cyclones, then supercells' mesocyclones), Earth-fixed: the view-cap
+    // count, the fade's rate and the resolve's pick read these (fillCloudsV2Params); updateStorms fills them.
+    struct FlowVortex { glm::dvec3 earth, map, vEarth; float rmw, vmax, outer, hemi; };
+    std::vector<FlowVortex> cv2FlowVortices;
     float cv2RainAmount = 3.0f;         // rain shafts under precipitating cloud, 0 = none
     float cv2OpticsGain = 1.0f;        // halos, sundogs, circumzenithal arc, rainbows
     // (2026-11-10, optics) The ice halos from the traced crystal table (cv2_optics.glsl): 1 the table, 0 the analytic lobes;
@@ -5987,8 +6002,9 @@ private:
     static constexpr VkDeviceSize kShieldTableOffset = kShieldsOffset + 64ull * kShieldMax;
     static constexpr VkDeviceSize kShieldListOffset = kShieldTableOffset + 8ull * kShieldTableSize;
     // Tropical cyclones (2026-10-23, = cv2_storms.glsl CV2Cyclone): the bake stamps their bands, eyewall and eye.
-    struct GpuStormCyclone { glm::vec4 a, b, c, d; };
-    static_assert(sizeof(GpuStormCyclone) == 64, "GpuStormCyclone == cv2_storms.glsl's CV2Cyclone");
+    // (2026-11-10, flowmaps: e = the cyclone's flow-map clock, window and velocity through the noise frame, cv2CycFlowAt.)
+    struct GpuStormCyclone { glm::vec4 a, b, c, d, e; };
+    static_assert(sizeof(GpuStormCyclone) == 80, "GpuStormCyclone == cv2_storms.glsl's CV2Cyclone");
     static constexpr uint32_t kCycloneMax = 8;
     static constexpr VkDeviceSize kCycHeadOffset = kShieldListOffset + 4ull * kShieldListSize;
     static constexpr VkDeviceSize kCyclonesOffset = kCycHeadOffset + 16;
@@ -5997,7 +6013,7 @@ private:
     static constexpr uint32_t kStormEnvTableSize = 131072, kStormEnvListSize = 393216;
     // The haboobs' DUST WALL grid (2026-10-24, = cv2_storms.glsl cv2DustHead / cv2DustFrame / cv2DustGrid): weatherFillDustGrid.
     static constexpr uint32_t kDustGridN = 512;   // = kCv2DustGridN
-    static constexpr VkDeviceSize kDustHeadOffset = kCyclonesOffset + 64ull * kCycloneMax;
+    static constexpr VkDeviceSize kDustHeadOffset = kCyclonesOffset + sizeof(GpuStormCyclone) * kCycloneMax;
     static constexpr VkDeviceSize kDustFrameOffset = kDustHeadOffset + 16;
     static constexpr VkDeviceSize kDustGridOffset = kDustFrameOffset + 64;
     static constexpr VkDeviceSize kStormEnvTableOffset = kDustGridOffset + 4ull * kDustGridN * kDustGridN;
