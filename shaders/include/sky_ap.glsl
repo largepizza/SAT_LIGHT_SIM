@@ -60,6 +60,14 @@ vec2 skyApBand(float fovY)
     float inner = 2.5 * fovY / float(kSkyApY);
     return vec2(inner, max(min(cv2.skyAp.z, kSkyApBandTiles * fovY / float(kSkyApY)), inner + 1e-4));
 }
+// sin(elevation) of the sphere of radius rS's limb from radius obsR, as raySphere decides hit or miss: from the height
+// (obsR - rS, exact in float) and not 1 - (rS / obsR)^2, which near the ground keeps ~3% of its value (+-0.5 of a row
+// at 10 m): the grid's row of the horizon and the rays' own hit / miss disagreed (issue_20261110_180445).
+float skyApLimbZ(float obsR, float rS)
+{
+    float h = obsR - rS;
+    return (h > 0.0) ? -sqrt(h * (obsR + rS)) / obsR : 0.0;
+}
 // The limb grid's frame: x the centre azimuth (from north, toward east), y its half range (PI = the full circle),
 // z the first row's sin(elevation), w the rows' span. From the push constants and the eye's radius alone, so the bake
 // and the sky pass compute the same one.
@@ -71,8 +79,8 @@ vec4 skyApLimbFrame(mat3 camToENU, float fovY, float aspect, float obsR)
     float ce   = sqrt(max(1.0 - fwd.z * fwd.z, 0.0));
     float sc   = sin(cone);
     float azH  = (sc >= 0.97 * ce) ? PI : min(asin(sc / ce) * 1.04 + 0.02, PI);
-    float limbZ   = (obsR > R_EARTH) ? -sqrt(max(0.0, 1.0 - (R_EARTH / obsR) * (R_EARTH / obsR))) : 0.0;
-    float limbAtm = (obsR > R_ATMOS) ? -sqrt(max(0.0, 1.0 - (R_ATMOS / obsR) * (R_ATMOS / obsR))) : limbZ;
+    float limbZ   = skyApLimbZ(obsR, R_EARTH);
+    float limbAtm = (obsR > R_ATMOS) ? skyApLimbZ(obsR, R_ATMOS) : limbZ;
     float band = skyApBand(fovY).y;
     float z0 = limbZ - band, z1 = max(limbZ, limbAtm) + band;
     return vec4(atan(fwd.x, fwd.y), azH, z0, z1 - z0);
@@ -183,28 +191,40 @@ SkyApSum skyApRead(vec2 uv, float s)
     return r;
 }
 
-// The limb grid's fractional coordinates of a direction (false: outside it).
-bool skyApLimbCoord(vec3 dir, vec4 fr, out vec2 fc, out bool wrap)
+// The limb grid's fractional coordinates of a direction (false: outside it). limbZ: the Earth's limb (skyApLimbZ, as
+// skyApLimbFrame's); ground: the pixel's ray meets the sea-level sphere (its own raySphere, which also sets its slices).
+// A pixel never blends rows from the other side of the limb (2026-11-10, issue_20261110_180445 "Horizon line
+// artifact"): a row just below it ends on the ground, one just above crosses the whole atmosphere, and their sums per
+// unit of air column differ by far more than one row's step. Bilinear between the two, the row of pixels between them
+// read a mix times its own column: a bright line along the horizon at every altitude (+25..+63 levels, one pixel
+// thick). Within a row of the limb the pixel reads its own side's rows only (fc.y the lower row, fc.z the weight of the
+// upper one): a sky pixel extrapolates the first two sky rows (fc.z < 0; the first row held flat over its width, ~2 px
+// from orbit, left a 2-px step of ~4 levels at shot 1's limb), a ground pixel holds the last ground row (extrapolated,
+// the sea just under the horizon read ~2 levels dark over 5 rows at shot 5, 10 m).
+bool skyApLimbCoord(vec3 dir, vec4 fr, float limbZ, bool ground, out vec3 fc, out bool wrap)
 {
-    fc = vec2(0.0);
+    fc = vec3(0.0);
     wrap = fr.y >= PI - 1e-4;
     float fe = (dir.z - fr.z) / fr.w * float(kSkyApLimbE - 1);
     if (fe < 0.0 || fe > float(kSkyApLimbE - 1)) return false;
+    float fH = (limbZ - fr.z) / fr.w * float(kSkyApLimbE - 1);   // the limb's row coordinate
+    if (ground) fe = min(fe, ceil(fH) - 1.0);
+    float e0 = min(floor(fe), float(kSkyApLimbE - 2));
+    e0 = ground ? min(e0, ceil(fH) - 2.0) : max(e0, floor(fH) + 1.0);
     float da = atan(dir.x, dir.y) - fr.x;
     da -= 2.0 * PI * floor(da / (2.0 * PI) + 0.5);
     float fa = wrap ? (da / (2.0 * PI) + 0.5) * float(kSkyApLimbA) : (da / fr.y * 0.5 + 0.5) * float(kSkyApLimbA - 1);
     if (!wrap && (fa < 0.0 || fa > float(kSkyApLimbA - 1))) return false;
-    fc = vec2(fa, fe);
+    fc = vec3(fa, e0, fe - e0);
     return true;
 }
 #ifndef SKY_AP_WRITE
 // The limb volume's sums at slice s (bilinear in azimuth and row, linear between two slices); onlyA: array A alone.
-SkyApSum skyApLimbRead(vec2 fc, bool wrap, float s, bool onlyA)
+SkyApSum skyApLimbRead(vec3 fc, bool wrap, float s, bool onlyA)
 {
     float fa = wrap ? fc.x : clamp(fc.x, 0.0, float(kSkyApLimbA - 1) - 1e-3);
-    float fe = clamp(fc.y, 0.0, float(kSkyApLimbE - 1) - 1e-3);
-    int   a0 = int(floor(fa)), e0 = int(fe);
-    vec2  w  = vec2(fa - float(a0), fe - float(e0));
+    int   a0 = int(floor(fa)), e0 = clamp(int(fc.y), 0, kSkyApLimbE - 2);
+    vec2  w  = vec2(fa - float(a0), fc.z);
     float sz = clamp(s, 0.0, float(kSkyApZ - 1) - 1e-3);
     int   z0 = int(sz);
     float wz = sz - float(z0);
@@ -228,7 +248,7 @@ SkyApSum skyApLimbRead(vec2 fc, bool wrap, float s, bool onlyA)
 }
 SkyApSum skyApReadA(vec2 uv, float s);
 // A pixel's sums: the tiles' (limb false), or the limb volume's cross-faded to the tiles' by wTile (the band's outer part).
-SkyApSum skyApReadBoth(vec2 uv, float s, bool onlyA, bool limb, vec2 fc, bool wrap, float wTile)
+SkyApSum skyApReadBoth(vec2 uv, float s, bool onlyA, bool limb, vec3 fc, bool wrap, float wTile)
 {
     if (!limb) { if (onlyA) return skyApReadA(uv, s); return skyApRead(uv, s); }
     SkyApSum l = skyApLimbRead(fc, wrap, s, onlyA);
