@@ -769,13 +769,13 @@ vec3 cv2CycFlowAt(vec3 wd)
         best = fade;
         float rmw   = max(cy.d.x, 2000.0);
         float P     = max(cy.e.y, 60.0);
-        // The phase: the clock + the stagger (whole multiples of the angle: no seam at the atan cut).
+        // The phase: the clock + the stagger, a smooth field of the offset in RMW units (three waves ~3-6 RMW long; no
+        // atan / log: the clean A/B put this loop at +4.6 ms over the eye with them, and a stagger needs only to be smooth).
         vec3  eW    = vec3(-a.y, a.x, 0.0) * inversesqrt(max(dot(a.xy, a.xy), 1e-6));
         vec3  nW    = cross(a, eW);
         vec3  off   = wd - a;
-        float th    = atan(dot(off, nW), dot(off, eW));
-        float lr    = log(max(r, 1000.0) / rmw);
-        float st    = 0.2 * sin(2.0 * th + 1.1 * lr) + 0.15 * sin(3.0 * th - 0.8 * lr + 2.0) + 0.1 * sin(5.0 * th + 1.7 * lr + 4.0);
+        vec2  uv    = vec2(dot(off, eW), dot(off, nW)) * (R_EARTH / rmw);
+        float st    = 0.2 * sin(1.1 * uv.x + 0.7 * uv.y) + 0.15 * sin(0.9 * uv.y - 0.5 * uv.x + 2.0) + 0.1 * sin(0.6 * uv.x - 1.3 * uv.y + 4.0);
         float fT    = cy.e.x + st;
         float f     = fract(fT);
         float b     = clamp(cv2.flowP.z, 0.01, 0.49);
@@ -792,17 +792,16 @@ vec3 cv2CycFlowAt(vec3 wd)
         float fS    = pA ? f : fract(f + 0.5);
         float kS    = pA ? floor(fT) : floor(fT + 0.5) + 0.5;
         float age   = fS * P;
-        float g     = pow(max(r / rmw, 1.0), -1.5) * fade;
+        float ix    = min(rmw / r, 1.0);
+        float g     = ix * sqrt(ix) * fade;                               // (r / rmw)^-1.5 outside the RMW, 1 inside
         float thR   = -cy.b.w * (cv2.flowP.x * cy.d.y / rmw) * g * age;   // the READ turn: the content turns the other way, cyclonic
         float sn = sin(thR), cs = cos(thR);
         vec3  Dr    = (sn * ax + (1.0 - cs) * cross(a, ax)) * R_EARTH;
-        // The storm lock (as much of the centre's motion as keeps the fade band's shear under ~0.5: a slow storm in a long
-        // window would stretch its outer clouds 2x), and a jitter per renewal (<= 0.12 CDO radii) so a stationary storm does
-        // not show the same unwound clouds every window.
-        vec2  v     = cy.e.zw;
-        float lockK = min(1.0, 0.25 * outer / max(length(v) * P, 1.0));
-        vec2  jit   = (fract(sin(vec2(kS * 12.9898, kS * 78.233)) * 43758.5453) - 0.5) * min(0.12 * max(cy.c.y, 1000.0), 30000.0);
-        vec2  T     = -v * (age * lockK) + jit;   // (read behind the storm's motion: the content rides with it)
+        // The storm lock (e.zw: the centre's velocity through the noise frame x the lock share the CPU set: as much as keeps
+        // the fade band's shear under ~0.5), and a jitter per renewal (<= 0.12 CDO radii) so a stationary storm does not
+        // show the same unwound clouds every window.
+        vec2  jit   = (fract(vec2(kS * 0.7548777, kS * 0.5698402) * 7.0 + kS * vec2(0.1031, 0.2971)) - 0.5) * min(0.12 * max(cy.c.y, 1000.0), 30000.0);
+        vec2  T     = -cy.e.zw * age + jit;   // (read behind the storm's motion: the content rides with it)
         D = Dr + (eW * T.x + nW * T.y) * fade;
     }
 #endif
@@ -2335,7 +2334,8 @@ float cv2CdoShare(vec3 wF, float warp, bool fine)
         float cang = 0.0;
         if (cv2.flowP.x > 0.0 && fine) {
             float rmw = max(cy.d.x, 2000.0);
-            float st  = 0.2 * sin(2.0 * th + 1.1 * lr) + 0.15 * sin(3.0 * th - 0.8 * lr + 2.0) + 0.1 * sin(5.0 * th + 1.7 * lr + 4.0);
+            vec2  uv  = vec2(dot(off, eW), dot(off, nW)) * (1.0 / rmw);   // (off is in metres here)
+            float st  = 0.2 * sin(1.1 * uv.x + 0.7 * uv.y) + 0.15 * sin(0.9 * uv.y - 0.5 * uv.x + 2.0) + 0.1 * sin(0.6 * uv.x - 1.3 * uv.y + 4.0);
             float fT  = cy.e.x + st, f = fract(fT), b = clamp(cv2.flowP.z, 0.01, 0.49);
             float wA  = smoothstep(0.0, b, f) * (1.0 - smoothstep(1.0 - b, 1.0, f));
 #if defined(CV2_FLOW_DITHER)

@@ -856,7 +856,10 @@ void SatelliteSim::updateStorms()
                 // map = Rz(+drift) earth (cv2Drift), so d(map)/dt = Rz(drift) v_earth + drift_rate (z x map): the map's
                 // content moves west under the storm, the storm east through it.
                 const glm::dvec3 vMap = vM + (double)cloudDriftRate * glm::dvec3(-a.y, a.x, 0.0) * kReW;
-                g.e = glm::vec4((float)phase, (float)P, (float)glm::dot(vMap, eW), (float)glm::dot(vMap, nW));
+                // (x the lock share: as much of the motion as keeps the reach's fade band under ~0.5 of shear; the shader
+                // took it per sample until the clean A/B, 2026-11-10.)
+                const double lockK = std::min(1.0, 0.25 * (double)std::max(c.outerR, 1000.0f) / std::max(glm::length(vMap) * P, 1.0));
+                g.e = glm::vec4((float)phase, (float)P, (float)(glm::dot(vMap, eW) * lockK), (float)(glm::dot(vMap, nW) * lockK));
             }
             cdst[i] = g;
         }
