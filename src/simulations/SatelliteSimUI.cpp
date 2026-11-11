@@ -7268,6 +7268,10 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         // 2026-11-08 (hurricane, issue_20261108_173906): the CDO sheet's spiral outline / ripple, the eyewall. Slots 556-557.
         {tx(Txt::SldHurricaneSheetSwirl), &cv2HurrSheetSwirl, 0.0f, 1.0f, 0.05f, "%.2f", 556},
         {tx(Txt::SldHurricaneEyewall), &cv2HurrEyewall, 0.0f, 1.0f, 0.05f, "%.2f", 557},
+        // 2026-11-10 (flowmaps, issue_20261109_184801): the cyclone flow map (clouds_v2.glsl cv2CycFlowAt). Slots 560-563.
+        {tx(Txt::SldHurricaneRotation), &cv2HurrRotation, 0.0f, 2.0f, 0.05f, "%.2f", 560},
+        {tx(Txt::SldHurricaneFlowTurns), &cv2HurrFlowTurns, 0.1f, 3.0f, 0.05f, "%.2f", 561},
+        {tx(Txt::SldHurricaneFlowBlend), &cv2HurrFlowBlend, 0.02f, 0.45f, 0.01f, "%.2f", 562},
         {tx(Txt::SldHurricaneOutflowCirrus), &stormCycOutflow, 0.0f, 3.0f, 0.05f, "%.2f", 460},
         {tx(Txt::SldHurricaneOutflowStreaks), &stormCycStreaks, 0.0f, 1.0f, 0.05f, "%.2f", 461},
         // 2026-11-05 (cirrus-hurr): the CDO's top, a smooth swirl with streaks along the flow. Slots 522-524.
@@ -9794,6 +9798,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2StormMass = settingClamp(c.value("storm_mass", cv2StormMass), 0.0f, 1.0f);
         cv2HurrSheetSwirl = settingClamp(c.value("hurricane_sheet_swirl", cv2HurrSheetSwirl), 0.0f, 1.0f);
         cv2HurrEyewall = settingClamp(c.value("hurricane_eyewall", cv2HurrEyewall), 0.0f, 1.0f);
+        cv2HurrRotation = settingClamp(c.value("hurricane_rotation", cv2HurrRotation), 0.0f, 2.0f);
+        cv2HurrFlowTurns = settingClamp(c.value("hurricane_flow_turns", cv2HurrFlowTurns), 0.1f, 3.0f);
+        cv2HurrFlowBlend = settingClamp(c.value("hurricane_flow_blend", cv2HurrFlowBlend), 0.02f, 0.45f);
         stormCycOutflow = settingClamp(c.value("storm_cyc_outflow", stormCycOutflow), 0.0f, 3.0f);
         stormCycStreaks = settingClamp(c.value("storm_cyc_streaks", stormCycStreaks), 0.0f, 1.0f);
         stormCycSpiralAB = c.value("storm_cyc_spiral", stormCycSpiralAB);
@@ -10589,6 +10596,9 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"storm_mass", cv2StormMass},
         {"hurricane_sheet_swirl", cv2HurrSheetSwirl},
         {"hurricane_eyewall", cv2HurrEyewall},
+        {"hurricane_rotation", cv2HurrRotation},
+        {"hurricane_flow_turns", cv2HurrFlowTurns},
+        {"hurricane_flow_blend", cv2HurrFlowBlend},
         {"storm_cyc_outflow", stormCycOutflow},
         {"storm_cyc_streaks", stormCycStreaks},
         {"storm_cyc_spiral", stormCycSpiralAB},

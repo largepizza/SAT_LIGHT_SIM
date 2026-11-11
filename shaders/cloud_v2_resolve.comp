@@ -378,6 +378,22 @@ void main()
     float ndR = nd.x > 0.0 ? nd.x : (dNear < 1e29 ? dNear : 0.0);
     if (ndR > 0.0) {
         vec3 v = vE * ndR;
+        // THE CYCLONE FLOW MAP (2026-11-10, flowmaps; clouds_v2.glsl cv2CycFlowAt): round a tropical cyclone the cloud texture
+        // turns about its centre (the read turn per frame at the RMW, flowA.w, x the vortex profile) and rides with the storm
+        // (the lock's shift per frame, flowB.xyz), so the point that shows this cloud now showed it turned back and shifted
+        // back last frame. Without it the history trailed the rotation (at 1 min/s ~4 px a frame in the eyewall from 46 km).
+        if (cv2.flowC.w > 0.0) {
+            vec3  P     = v + cv2.flowC.xyz;
+            vec3  a     = cv2.flowA.xyz;
+            vec3  ax    = cross(a, P);
+            float Pl    = length(P);
+            float r     = length(ax) / max(Pl, 1.0) * 6371000.0;
+            if (r < cv2.flowC.w && dot(a, P) > 0.0) {
+                float fade = 1.0 - smoothstep(0.5 * cv2.flowC.w, cv2.flowC.w, r);
+                float th   = cv2.flowA.w * pow(max(r / cv2.flowB.w, 1.0), -1.5) * fade;
+                v += sin(th) * ax + (1.0 - cos(th)) * cross(a, ax) - cv2.flowB.xyz * fade;
+            }
+        }
         vE = vec3(v.x * cv2.extra.z - v.y * cv2.extra.w, v.x * cv2.extra.w + v.y * cv2.extra.z, v.z)
            + cv2.obsDelta.xyz;
     }

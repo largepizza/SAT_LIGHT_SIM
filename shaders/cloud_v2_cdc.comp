@@ -39,6 +39,7 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_v2_march.com
 #define CV2_FRACTUS              // fractus under raining bases (clouds_v2.glsl): only the march and the clipmap bake
 #define CV2_STORM_BINDING   26   // the storm objects' towers (cv2_storms.glsl)
 #define CV2_LAYER_HITS            // cv2Field reports the layers each read needed (gCv2LayHit): the cells' layer masks
+#define CV2_FLOW_POINT_DITHER     // the cyclone flow map's phases chosen per bake point (clouds_v2.glsl cv2CycFlowAt): a cell covers both
 #include "clouds_v2.glsl"
 layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
 layout(set = 0, binding = 6) uniform sampler2D sceneDepthTex;   // (its size: the march's pixel)

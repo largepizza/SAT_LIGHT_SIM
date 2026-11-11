@@ -1324,6 +1324,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2CuHeightVar, cv2CuBreakup, cv2CuHeadroom, cv2CuFineLobes, cv2CbFineLobes, cv2CuWisps,
                     cv2CuTurrets, cv2CuTurretStretch, cv2CuTurretLean, cv2CuTurretSkew,
                     cv2CuBody, cv2CuEdge, cv2CuShowerCells, cv2CuShowerCores, cv2CuBubbles, cv2CuBubbleGain, cv2CuBubbleFine, cv2CuBubbleSize, cv2CuBubbleBase, cv2CuEnvTowers, cv2CuCore, cv2CuBubbleWarp, cv2CuHeadWidth, cv2CuHeaps, cv2CuHeapDepth, cv2HurrSheetSwirl, cv2HurrEyewall, cv2StormMass,
+                    cv2HurrRotation, cv2HurrFlowTurns, cv2HurrFlowBlend,
                     cv2CirrusFibres, cv2CirrusHooks,
                     cv2AnvilFibres, cv2AnvilFibreAlongKm, cv2AnvilFibreAcrossM, cv2StormBubbles, cv2AnvilErosion,
                     cv2AnvilLidLobes, cv2AnvilUnderLobes,
@@ -2241,6 +2242,41 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.pucks = glm::vec4(std::clamp(cv2CuHeaps, 0.0f, 1.0f), std::clamp(cv2CuHeapDepth, 0.0f, 2.0f), 0.0f, 0.0f);
     // A hurricane's CDO sheet and eyewall (2026-11-08, hurricane; clouds_v2.glsl cv2CdoShare, cv2LowA "THE EYEWALL").
     p.hurricane = glm::vec4(std::clamp(cv2HurrSheetSwirl, 0.0f, 1.0f), std::clamp(cv2HurrEyewall, 0.0f, 1.0f), 0.0f, 0.0f);
+    // THE CYCLONE FLOW MAP (2026-11-10, flowmaps; clouds_v2.glsl cv2CycFlowAt, cloud_v2_resolve.comp): its parameters, and
+    // for the resolve's reprojection the cyclone the eye is deepest in (its axis, Earth-fixed; the read turn per frame at
+    // the RMW, the shader scales it by the profile; the storm lock's shift per frame in Earth axes, as windShift above).
+    p.flowP = glm::vec4(std::clamp(cv2HurrRotation, 0.0f, 2.0f), 6.2831853f * std::clamp(cv2HurrFlowTurns, 0.05f, 3.0f),
+                        std::clamp(cv2HurrFlowBlend, 0.02f, 0.45f), 0.0f);
+    p.flowA = glm::vec4(0.0f);
+    p.flowB = glm::vec4(0.0f);
+    p.flowC = glm::vec4(0.0f);
+    if (cv2HurrRotation > 0.0f && stormObjects)
+    {
+        const wx::CycloneState *pick = nullptr;
+        double bestIn = 0.0;
+        for (const wx::CycloneState &c : stormCyclonesNow)
+        {
+            const double dist = std::acos(std::clamp(glm::dot(c.earth, up), -1.0, 1.0)) * R;
+            const double in = (double)c.outerR - dist;
+            if (in > bestIn) { bestIn = in; pick = &c; }
+        }
+        if (pick)
+        {
+            const wx::CycloneState &c = *pick;
+            const double rmw  = std::max((double)c.rmw, 2000.0);
+            const double rate = (double)cv2HurrRotation * (double)std::max(c.vmax, 5.0f) / rmw;
+            const double P    = std::clamp(6.2831853 * (double)std::max(cv2HurrFlowTurns, 0.05f) / std::max(rate, 1e-9), 1200.0, 7200.0);
+            const glm::dvec3 a = c.map;
+            const double cl = std::max(std::hypot(a.x, a.y), 1e-3);
+            const glm::dvec3 vM = rotD(c.motionEarth, cD, sD);
+            const glm::dvec3 vMap = vM + (double)cloudDriftRate * glm::dvec3(-a.y, a.x, 0.0) * R;   // (as SatelliteSimWeather.cpp's e.zw)
+            const double lockK = std::min(1.0, 0.25 * (double)std::max(c.outerR, 1000.0f) / std::max(glm::length(vMap) * P, 1.0));
+            const glm::dvec3 shiftE = rotD(vMap * (lockK * dSimT), std::cos(-cv2PrevDrift), std::sin(-cv2PrevDrift));
+            p.flowA = glm::vec4(glm::vec3(c.earth), (float)(-(double)c.c->hemi * rate * dSimT));
+            p.flowB = glm::vec4(glm::vec3(shiftE), (float)rmw);
+            p.flowC = glm::vec4(glm::vec3(eye), std::max(c.outerR, 1000.0f));
+        }
+    }
     // Vertical variation (vertical, 2026-11-05): cv2BaseShift's strengths, fractus, mid-level wisps.
     p.vert  = glm::vec4(std::clamp(cv2BaseLcl, 0.0f, 2.0f), std::clamp(cv2BaseCellM, 0.0f, 400.0f),
                         std::clamp(cv2BaseRegional, 0.0f, 2.0f), std::clamp(cv2Fractus, 0.0f, 2.0f));

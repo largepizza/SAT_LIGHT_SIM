@@ -51,6 +51,7 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_march.comp)
 #define CV2_FRACTUS              // fractus under raining bases (clouds_v2.glsl): only the march and the clipmap bake
 #define CV2_ORO_EXTERNAL         // ... added at the main sample only (below), not in every inlined cv2Field (registers)
 #define CV2_STORM_BINDING   26   // the storm objects' towers (cv2_storms.glsl)
+#define CV2_FLOW_DITHER          // the cyclone flow map's phases dithered per ray (clouds_v2.glsl cv2CycFlowAt): the march only
 #define CV2_DUST_SPEC            // the haboob code is specialization constant 3 (clouds_v2.glsl kCv2DustOn)
 #include "clouds_v2.glsl"
 #include "atmosphere.glsl"

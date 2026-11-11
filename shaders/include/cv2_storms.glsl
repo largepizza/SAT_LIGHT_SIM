@@ -76,6 +76,9 @@ struct CV2Cyclone {
     vec4 b;   // xyz the centre where the low cloud reads the cube (flowed), w hemisphere (+1 north, -1 south)
     vec4 c;   // x the eye's radius (m, 0 none), y the CDO's radius, z the outer bands' reach, w the bands' phase (rad)
     vec4 d;   // x the radius of maximum wind (m), y vmax (m/s), z 1 over land, w the spiral arms (2 .. ~5, continuous)
+    vec4 e;   // (2026-11-10, flowmaps) the cyclone's FLOW MAP (clouds_v2.glsl cv2CycFlowAt): x its phase clock (windows
+              //   since genesis, the CPU's integral of dt / window; mod 1024), y the window (s), zw the centre's velocity
+              //   through the noise frame (east, north at the centre, m/s: the storm-lock translation's rate)
 };
 
 #ifdef CV2_STORM_BINDING

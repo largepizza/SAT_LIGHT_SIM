@@ -100,6 +100,47 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   notched between them (x 1.3); its outer ~40% frays into 3n + 1 streaks wound tighter (lr / 0.6 tanP), their phase moved
   by the outline's noise (breaks); the top rises and falls 140 m along a 12-band spiral (lr / 0.45) with the noise in its
   phase (`gCv2CdoRip`). From orbit the CDO is a spiral with arms and frays, no longer a round disc.
+  **The cyclone flow map (2026-11-10, flowmaps; issue_20261109_184801 "Hurricane rotation", 20261106_172424 shot 7, 20261105_232743
+  shots 1 and 3; `clouds_v2.glsl cv2CycFlowAt`, `cloud_v2_resolve.comp`, `SatelliteSimWeather.cpp`):** the cloud TEXTURE round a
+  tropical cyclone turns about its centre and rides with the storm, while the weather cube's stamp (the bands, the deck, the
+  eye: the storm's envelope, quasi-stationary in its frame) stays put and the texture streams through it, as the cloud
+  elements of a real rainband stream along the band. `cv2Field` evaluates the displacement ONCE per sample and folds it into
+  `q.rSeaE` / `q.seaProjE` (undrifted), so every layer's noise read (cells, cluster, shape, storm and detail volumes, the mid
+  layer's, the sheet's lumps) takes it with no state of its own: held as a global across the layers, with the loop inlined
+  at five read sites, the march compiled to 255 registers (+13-23 ms); folded into q it is 128, as the base (binary +7 KB,
+  spill +16 B). (1) The rate: a modified Rankine vortex, vmax / rmw x "Hurricane rotation" (`clouds_v2.hurricane_rotation`,
+  0.6, slot 560) inside the radius of maximum wind, x (r / rmw)^-1.5 outside, to 0 over the outer half of the bands' reach;
+  cyclonic (counter-clockwise in the north). (2) A rotation by rate x time winds up without bound, so it is a flow map like
+  the cirrus fibres' (`cv2CirrusFlow`): two phases half a window apart, each a rotation by the rate x its own age, renewed
+  in turn; the window = "Hurricane flow winding" (`hurricane_flow_turns`, 0.75 turn, slot 561) over the rate at the RMW,
+  clamped 20 min .. 2 h, its clock integrated per cyclone on the CPU (`cycFlowPhase`, `CV2Cyclone.e.x`: the record grew a
+  fifth row, 80 B) and the renewal staggered by a smooth field of (angle, ln r) in the storm's frame so no ring or disc
+  renews at once. Within the blend (`hurricane_flow_blend`, 0.2 of the window each side, slot 562) the phases are DITHERED
+  per ray (the pixel-and-frame hash `cv2ShapeUseB` uses) and the resolve's history averages the rays into the cross-fade: a
+  density blend costs a second field evaluation at every sample in the band, and a blend of the two ANGLES turns the
+  texture backward through every renewal. The occupancy clipmap's bake picks the phase per bake POINT (`CV2_FLOW_POINT_DITHER`)
+  so a cell covers both; the other bakes take the dominant phase. (3) The STORM LOCK: the noise frame drifts with the map
+  (`clouds.drift_rate`) and the storm follows its own track through it, so the clouds slid through every storm at ~25 m/s
+  (232743 shot 3); within the reach the texture is dragged with the centre (`e.zw`: Rz(drift) x its track velocity + the
+  drift under it, east / north at the centre), as far as the fade band's shear stays under ~0.5 (`lockK`), plus a jitter per
+  renewal (<= 0.12 CDO radii) so a stationary storm does not show the same unwound clouds every window. (4) The resolve
+  reprojects the rate's and the lock's motion for the cyclone the eye is deepest in (`cv2.flowA` / `flowB` / `flowC`,
+  `fillCloudsV2Params`): the point that shows this cloud now showed it turned back and shifted back last frame. (5) The
+  sheet's ripple turns with the content (`cv2CdoShare` recomputes the turn locally: a few flops on sheet samples, not a
+  register the march pays for), and its lumps (`lmp`, now read before the sheet block) raise and lower the top by 400 m x
+  their value so the turn shows from above, where the thick sheet's density does not; the lumps' period follows the CDO's
+  radius (x0.7 .. 1.6 over 100 .. 400 km) with a second read at a third of it (232743 shot 1 "repetitive, size is not a
+  factor"). (6) Two causes of "the arms teleport" that were not the rotation: the bake read the arms' ragged texture
+  (`tex`) at the map direction, so the storm moved through it at ~25 m/s and every outline was re-cut by unrelated 5-40 km
+  cells (now read at the centre + the offset: it travels with the storm); and with "Hurricane main arms" at 0 (auto) the
+  count followed the moment's vmax, and `floor(arms + 0.15)` stepping as a storm weakened re-placed every arm-cirrus
+  capsule and band tower in one frame (at 827 km, 1 h/s: arm-sized patches switching at the same sim minutes with the
+  rotation off, the clipmap off and the cube's rect bake off) -- the auto count now follows the storm's PEAK wind. Perf
+  (RTX 3070 Ti, 1920x1080, interleaved A/B in one app, the GPU shared with another agent's app): cloud march 45.9 -> 46.6
+  ms over the eye from 46 km (184801), 53.7 -> 54.2 over the CDO from 61 km (232743 shot 1), both inside the base-vs-base
+  spread (1.9 ms); 128 registers on every reload. Not shipped: a general flow of all cloud noise on `wfWind` (weather-v2's
+  `cv2NoiseDispAt`): it needs the wind evaluated per sample in the march and per pixel in the resolve, and the lattice
+  seams it showed from orbit (e453372); the storm lock covers the user's case (storms vs the drift).
   **Anvils carried by the organised systems (2026-11-08, branch `weather-salvage`, `.plans/WEATHER_SALVAGE_PLAN.md`; the
   user: "spawn big anvils and force the objects to stick around. Do not spawn too many anvils near one another. Let anvils
   live for hours"):** (1) A single cell spreads a shield only as a supercell (`wx::Settings::singleAnvils`, "Single-storm

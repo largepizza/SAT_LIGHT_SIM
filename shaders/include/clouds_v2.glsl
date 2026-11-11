@@ -274,6 +274,16 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // (2026-11-08, hurricane) A hurricane's CDO and eyewall (cv2CdoShare, cv2LowA "THE EYEWALL"): x "Hurricane sheet swirl"
     // (the sheet's spiral outline, frays and ripple), y "Hurricane eyewall" (the storm mass's ring round the eye), zw unused
     vec4  hurricane;
+    // -- flowmaps (2026-11-10, issue_20261109_184801 "Hurricane rotation"; cv2CycFlowAt, cloud_v2_resolve.comp) --
+    // flowP: x "Hurricane rotation" (the cloud texture's angular rate as a share of the surface wind's, 0 = off), y the
+    //   winding per flow-map window (rad; sets the window: it / the rate at the radius of maximum wind), z the window share
+    //   each side of a renewal that cross-fades the phases, w spare
+    // flowA: xyz the reprojected cyclone's axis (ECEF), w its read-rotation per frame at the RMW (rad, signed); flowB: xyz the
+    //   storm-lock shift per frame (ECEF m), w its RMW (m); flowC: xyz the eye (ECEF m), w its outer reach (m; 0 = none)
+    vec4  flowP;
+    vec4  flowA;
+    vec4  flowB;
+    vec4  flowC;
 } cv2;
 #include "wind_field.glsl"
 
@@ -712,6 +722,89 @@ vec3 cv2FlowWeatherDirAt(CV2Pos q)
     return cv2FlowWeatherDir(wd, cv2FlowDisp(wd, cv2Drift(q.seaProjE)));
 }
 
+// THE CYCLONE FLOW MAP (2026-11-10, flowmaps; issue_20261109_184801 "Hurricane rotation", 20261106_172424 shot 7 "the arms
+// teleport", 20261105_232743 shot 3 "storm movements do not work well with cloud drift"). The cloud TEXTURE round a tropical
+// cyclone -- every noise read of the low, mid and high layers: the cells, the cluster field, the shape, storm and detail
+// volumes -- is read through a displacement about the storm's centre, so it turns with the circulation while the weather
+// cube (the bands, the deck, the eye: the storm's ENVELOPE, quasi-stationary in its frame) stays put and the texture streams
+// through it, as the cloud elements of a real rainband stream along the band. Differential: a modified Rankine vortex, the
+// angular rate vmax / rmw x "Hurricane rotation" inside the radius of maximum wind and x (r / rmw)^-1.5 outside, fading to
+// 0 over the outer half of the reach; cyclonic (counter-clockwise in the north). Plus the STORM LOCK: the noise frame drifts
+// with the map (clouds.drift_rate) and the storm follows its own track through it, so the clouds slid through every storm at
+// ~25 m/s; within the reach the texture is dragged along with the centre instead (its velocity through the noise frame,
+// e.zw), as far as the reach's fade band keeps its shear under ~0.5.
+// A rotation by rate x time winds up without bound, so it is a FLOW MAP like the cirrus fibres' (cv2CirrusFlow): two phases
+// half a window apart, each a rotation by the rate x its own age (plus the lock and a jitter per renewal), renewed in
+// turn; the window is "Hurricane flow winding" over the rate at the RMW (20 min .. 2 h, SatelliteSimWeather.cpp), its clock
+// integrated on the CPU (e.x), and the renewal is staggered by a smooth field of (angle, ln r) in the storm's frame so no
+// ring or disc renews at once. Within the blend (flowP.z of the window each side of a renewal) the phases are DITHERED per
+// ray (the pixel-and-frame hash cv2ShapeUseB uses) and the resolve's history averages the rays into the cross-fade: a
+// density blend costs a second field evaluation at every sample in the band (~2 x blend of the storm's samples), and a
+// blend of the two ANGLES turns the texture backward through every renewal. The bakes (the clipmap, the Sun volume, the
+// far field) take the dominant phase: a dithered bake would be a half-filled occupancy. The weather bake's own differential
+// swirl (cloud_v2_weather.comp cycloneSwirl) stays: it shapes the map's own cloud, statically in the storm's frame.
+// wd: the sample's drifted direction. Returns the displacement (m, the drifted frame) the noise reads add (the sea-level
+// point's; a point at height h takes x (1 + h / R)). cv2Field evaluates it once per sample and folds it into q (the only
+// site: the layers hold no state for it); the resolve reprojects the rate's and the lock's motion for one cyclone
+// (cv2.flowA / flowB / flowC, SatelliteSimCloudsV2.cpp).
+vec3 cv2CycFlowAt(vec3 wd)
+{
+    vec3 D = vec3(0.0);
+#if defined(CV2_STORM_BINDING) && !defined(SKY_LITE)
+    if (cv2.flowP.x <= 0.0) return D;
+    float best = 0.0;
+    [[dont_unroll]] for (uint i = 0u; i < min(cv2CycHead.x, kCv2CycloneMax); ++i) {
+        CV2Cyclone cy = cv2Cyclones[i];
+        float outer = max(cy.c.z, 1000.0);
+        vec3  a     = cy.a.xyz;
+        vec3  ax    = cross(a, wd);                                   // |ax| = sin(r / R)
+        float r     = length(ax) * R_EARTH;
+        if (r >= outer || dot(a, wd) <= 0.0) continue;
+        float fade  = 1.0 - smoothstep(0.5 * outer, outer, r);
+        if (fade <= best) continue;                                   // (overlapping reaches: the one this point is deepest in)
+        best = fade;
+        float rmw   = max(cy.d.x, 2000.0);
+        float P     = max(cy.e.y, 60.0);
+        // The phase: the clock + the stagger (whole multiples of the angle: no seam at the atan cut).
+        vec3  eW    = vec3(-a.y, a.x, 0.0) * inversesqrt(max(dot(a.xy, a.xy), 1e-6));
+        vec3  nW    = cross(a, eW);
+        vec3  off   = wd - a;
+        float th    = atan(dot(off, nW), dot(off, eW));
+        float lr    = log(max(r, 1000.0) / rmw);
+        float st    = 0.2 * sin(2.0 * th + 1.1 * lr) + 0.15 * sin(3.0 * th - 0.8 * lr + 2.0) + 0.1 * sin(5.0 * th + 1.7 * lr + 4.0);
+        float fT    = cy.e.x + st;
+        float f     = fract(fT);
+        float b     = clamp(cv2.flowP.z, 0.01, 0.49);
+        float wA    = smoothstep(0.0, b, f) * (1.0 - smoothstep(1.0 - b, 1.0, f));
+#if defined(CV2_FLOW_DITHER)
+        bool  pA    = fract(52.9829189 * fract(dot(vec2(gl_GlobalInvocationID.xy), vec2(0.06711056, 0.00583715))) + 0.6180340 * cv2.frame.x) < wA;
+#elif defined(CV2_FLOW_POINT_DITHER)
+        // (The occupancy clipmap's bake: its cell is the max over 9 points, so a hash per POINT makes the cell cover both
+        // phases through the blend; the dominant phase alone flipped whole cells' occupancy at wA = 0.5.)
+        bool  pA    = fract(sin(dot(wd, vec3(12.9898, 78.233, 37.719))) * 43758.5453) < wA;
+#else
+        bool  pA    = wA >= 0.5;
+#endif
+        float fS    = pA ? f : fract(f + 0.5);
+        float kS    = pA ? floor(fT) : floor(fT + 0.5) + 0.5;
+        float age   = fS * P;
+        float g     = pow(max(r / rmw, 1.0), -1.5) * fade;
+        float thR   = -cy.b.w * (cv2.flowP.x * cy.d.y / rmw) * g * age;   // the READ turn: the content turns the other way, cyclonic
+        float sn = sin(thR), cs = cos(thR);
+        vec3  Dr    = (sn * ax + (1.0 - cs) * cross(a, ax)) * R_EARTH;
+        // The storm lock (as much of the centre's motion as keeps the fade band's shear under ~0.5: a slow storm in a long
+        // window would stretch its outer clouds 2x), and a jitter per renewal (<= 0.12 CDO radii) so a stationary storm does
+        // not show the same unwound clouds every window.
+        vec2  v     = cy.e.zw;
+        float lockK = min(1.0, 0.25 * outer / max(length(v) * P, 1.0));
+        vec2  jit   = (fract(sin(vec2(kS * 12.9898, kS * 78.233)) * 43758.5453) - 0.5) * min(0.12 * max(cy.c.y, 1000.0), 30000.0);
+        vec2  T     = -v * (age * lockK) + jit;   // (read behind the storm's motion: the content rides with it)
+        D = Dr + (eW * T.x + nW * T.y) * fade;
+    }
+#endif
+    return D;
+}
+
 // detailAmt: > 0 = erosion from the detail volume at that strength (faded with distance by the
 // caller); 0 = the MEAN erosion, no fetch — for lighting, shadows and beams, whose optical depth
 // must match the eroded clouds on average (v1's cone learned this: an uneroded field is far denser
@@ -826,7 +919,7 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, inout CV2Fie
     }
     float covSpan = max(cv2.cover.y - cv2.cover.x, 1e-3);
 
-    // The noise volumes are read in the same drifted frame.
+    // The noise volumes are read in the same drifted frame (the cyclone flow map's displacement is already in q: cv2Field).
     vec3 rS = cv2Drift(q.rSeaE);
     vec3 sP = cv2Drift(q.seaProjE);
     // The flow (cv2FlowDisp) moves the weather map and the cluster field by flowD (not the cells).
@@ -2211,6 +2304,7 @@ float gCv2AnvK = 0.0;
 // spiral (8 bands, ~10 deg pitch: ~15-20 km apart at the CDO's mid radius), the sheet's top raised and lowered by it in
 // cv2HighSigma. fine = false: the reach alone (the high layer's early out), the outline's extent with no frays.
 float gCv2CdoRip = 0.0;
+float gCv2CdoR   = 200000.0;   // (flowmaps, 2026-11-10) the CDO radius of the sheet read last (m): the sheet's lumps scale with it
 float cv2CdoShare(vec3 wF, float warp, bool fine)
 {
     float a = 0.0;
@@ -2230,6 +2324,25 @@ float cv2CdoShare(vec3 wF, float warp, bool fine)
         float tanP = max(floor(cy.d.z * 0.5) * 0.001, 0.05);
         float n0  = floor(max(cy.d.w, 1.0));
         float hth = cy.b.w * th;
+        // THE RIPPLE TURNS (flowmaps, 2026-11-10): the sheet's visible pattern from above is this ripple (the frays and
+        // the outline are the storm's envelope), so it turns with the flow map's content: the same phase clock, stagger,
+        // dither and vortex profile as cv2CycFlowAt, evaluated here for this cyclone (a few flops on sheet samples only;
+        // carried over from the texture's evaluation it was a register the whole march paid for).
+        float cang = 0.0;
+        if (cv2.flowP.x > 0.0 && fine) {
+            float rmw = max(cy.d.x, 2000.0);
+            float st  = 0.2 * sin(2.0 * th + 1.1 * lr) + 0.15 * sin(3.0 * th - 0.8 * lr + 2.0) + 0.1 * sin(5.0 * th + 1.7 * lr + 4.0);
+            float fT  = cy.e.x + st, f = fract(fT), b = clamp(cv2.flowP.z, 0.01, 0.49);
+            float wA  = smoothstep(0.0, b, f) * (1.0 - smoothstep(1.0 - b, 1.0, f));
+#if defined(CV2_FLOW_DITHER)
+            bool  pA  = fract(52.9829189 * fract(dot(vec2(gl_GlobalInvocationID.xy), vec2(0.06711056, 0.00583715))) + 0.6180340 * cv2.frame.x) < wA;
+#else
+            bool  pA  = wA >= 0.5;
+#endif
+            float g   = pow(max(r / rmw, 1.0), -1.5) * (1.0 - smoothstep(0.5 * max(cy.c.z, 1000.0), max(cy.c.z, 1000.0), r));
+            cang = (cv2.flowP.x * cy.d.y / rmw) * g * (pA ? f : fract(f + 0.5)) * max(cy.e.y, 60.0);
+        }
+        float hthR = hth - cang;   // (the ripple's angle, turned cyclonically by the content's turn)
         float bA  = 0.5 + 0.5 * cos(n0 * (hth + lr / tanP + cy.c.w));   // (1 on an arm's crest)
         float u   = r / cdo * (1.0 + warp)
                   * (1.0 + sw * (0.3 * (1.0 - smoothstep(0.0, 0.4, bA)) - 0.25 * smoothstep(0.45, 1.0, bA)));
@@ -2238,8 +2351,10 @@ float cv2CdoShare(vec3 wF, float warp, bool fine)
         if (fine && s > 0.0) {
             float fr = 0.5 + 0.5 * cos((3.0 * n0 + 1.0) * (hth + lr / (0.6 * tanP) + 0.5 * cy.c.w) + 7.0 * warp);
             s *= mix(1.0, smoothstep(0.25, 0.65, fr), sw * smoothstep(0.55, 0.95, u));
-            if (s > a)
-                gCv2CdoRip = sw * cos(12.0 * (hth + lr / 0.45 + 0.3 * cy.c.w) + 5.0 * warp) * (0.55 + 0.45 * cos(3.0 * hth + 2.0 * lr));
+            if (s > a) {
+                gCv2CdoRip = sw * cos(12.0 * (hthR + lr / 0.45 + 0.3 * cy.c.w) + 5.0 * warp) * (0.55 + 0.45 * cos(3.0 * hthR + 2.0 * lr));
+                gCv2CdoR   = cdo;
+            }
         }
         a = max(a, s);
     }
@@ -2297,11 +2412,24 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
     if (aS > 0.0) aS = cv2.column.y * cv2CdoShare(wF, 0.35 * rgN + 1.5 * (cl.a - 0.5), true);
     regime = max(regime, aS);
     if (regime <= 0.0) return 0.0;
+    // (The sheet's underside and top lumpy, from the shape volume at twice its period.)
+    // (flowmaps, 2026-11-10, issue_20261105_232743 shot 1 "repetitive ... size is not a factor": the lumps' period follows
+    // the CDO's radius (x0.7 .. 1.6 of the shape volume's double period over 100 .. 400 km), and a second read at a third
+    // of that period breaks the one-size stipple into lumps of two sizes; they turn with the flow map (in q), and they
+    // raise and lower the top (below) so the turn shows from above, where the thick sheet's density does not.)
+    float lmp = 0.0;
+    if (aS > 0.02) {
+        float lsc = cv2.anchorShape.w * 0.5 * clamp(180000.0 / max(gCv2CdoR, 1000.0), 0.6, 1.5);
+        vec3  rL  = cv2Drift(q.rSeaE);
+        vec4  shA = textureLod(cv2ShapeTex, cv2.anchorShape.xyz + rL * lsc, max(cv2Lod(fpM, lsc), 0.0));
+        vec4  shB = textureLod(cv2ShapeTex, cv2.anchorShape.xyz + vec3(0.37, 0.61, 0.17) + rL * (lsc * 3.0), max(cv2Lod(fpM, lsc * 3.0), 0.0));
+        lmp = (shA.r * 0.6 + shA.g * 0.4 - 0.5) + 0.45 * (shB.r - 0.5);
+    }
     float zb     = base0 + (cl.r - 0.5) * 1200.0;
     float thick  = mix(500.0, 1600.0, regime);
     {   // the sheet: its top just under the tropopause (+-200 m), 400 m + "Anvil thickness" (<= 2.2 km) where its share is full
         float thA = 400.0 + min(cv2.anvil2.x, 2200.0) * pow(aS, 1.2) * (0.8 + 0.4 * cl.g);
-        float tA  = tropTop - 100.0 + 500.0 * aS * aS + (cl.r - 0.5) * 400.0 + 140.0 * gCv2CdoRip * aS;   // (the swirl ripple)
+        float tA  = tropTop - 100.0 + 500.0 * aS * aS + (cl.r - 0.5) * 400.0 + (140.0 * gCv2CdoRip + 400.0 * lmp) * aS;   // (the swirl ripple, the lumps)
         zb    = mix(zb, tA - thA, aS);
         thick = mix(thick, thA, aS);
     }
@@ -2385,12 +2513,6 @@ float cv2HighSigma(CV2Pos q, float fpM, out float hfH, out float topH)
     ci = mix(ci, regime * 0.4 * mix(0.6, 1.0, bundle), nearK);
     cu = mix(cu, regime * 0.25, nearK);
     float prof = smoothstep(0.0, 0.25, z) * (1.0 - smoothstep(0.55, 1.0, z));
-    // (The sheet's underside and top lumpy, from the shape volume at twice its period.)
-    float lmp = 0.0;
-    if (aS > 0.02) {
-        vec4 shA = textureLod(cv2ShapeTex, cv2.anchorShape.xyz + cv2Drift(q.rSeaE) * (cv2.anchorShape.w * 0.5), max(cv2Lod(fpM, cv2.anchorShape.w * 0.5), 0.0));
-        lmp = (shA.r * 0.6 + shA.g * 0.4 - 0.5);
-    }
     prof = mix(prof, smoothstep(0.0, 0.35, z + 0.9 * lmp) * (1.0 - smoothstep(0.8, 1.0, z + 0.4 * lmp)), aS);
     float d    = prof * mix(mix(ci, cs, strat), cu, ccK);
     d = mix(d, prof * aS * clamp(0.8 + 1.0 * lmp, 0.3, 1.2), smoothstep(0.3, 0.7, aS));
@@ -3185,6 +3307,15 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     gCv2FlowSet = false;
     gCv2FlowD   = cv2FlowDisp(cv2Drift(q.dirE), vec3(0.0));
     gCv2FlowSet = true;
+    // The cyclone flow map (cv2CycFlowAt): its displacement goes INTO q (undrifted: every layer reads its noise through
+    // cv2Drift(q.rSeaE / q.seaProjE)), so no layer carries it as state -- as a global held across the layers, with the
+    // loop inlined at five read sites, the march compiled to 255 registers (2026-11-10: +13-23 ms).
+    {
+        vec3 cD = cv2CycFlowAt(cv2Drift(q.dirE));
+        vec3 cU = vec3(cD.x * cv2.cover.z + cD.y * cv2.cover.w, -cD.x * cv2.cover.w + cD.y * cv2.cover.z, cD.z);
+        q.seaProjE += cU;
+        q.rSeaE    += cU * (1.0 + q.h * (1.0 / R_EARTH));
+    }
     gCv2GroundSet = false;
     gCv2Ground    = cv2Ground(q.dirE);
     gCv2GroundSet = true;
