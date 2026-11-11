@@ -1615,7 +1615,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   ~50 -> ~28 ms (old shader 49.8, new shader 38.9, + the clipmap kept on 27.7-29.0); the reporter's trail 1 33.2 -> ~28;
   shot 2 still 8.5 -> 8.5; cumulus from 3 km 11.3 -> 11.0 (non-storm, no regression); 128 registers.
 - **Rain with scud strides like rain** (2026-11-07, issue_20261107_163713, under a snowing deck from 500 m): `rainAlone` is
-  `f.rain > 0.2 && f.hf <= 0.0` (was > 0.9). The fractus band under a raining base lowers the rain's share of its samples,
+  `f.rain > 0.0 && f.hf <= 0.0` (> 0.2 from 2026-11-07, > 0.9 before; 2026-11-10: "Rain below a base has no light march"). The fractus band under a raining base lowers the rain's share of its samples,
   and every ray from an eye under the deck took fine steps and a full light march through it for 3-7 km: fractus was 18 of
   41 ms of cloud march there. Now 40.4 -> 32.9 ms, mean 2.5 levels (the scud slightly softer). With weather v2's stratiform
   rain under most decks and the user's rain_amount 3, precipitation was ~2/3 of that view's march (rain 0: 14 ms).
@@ -1967,6 +1967,31 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   40.6 -> 27.2 ms; in review 22's daytime storm 8.3 -> 6.8, a shaft's edge ~3 levels brighter. Tried: skipping the
   rain light march (-20 ms, but sunlight would reach shafts under thick cloud again), reusing it over 1.5-4 km of rain
   (222 registers).
+- **Rain below a base has no light march, and its scud strides like rain** (2026-11-10, issue_20261110_181505 "FPS within
+  storms", `CV2_RAIN_LIT` in cloud_v2_march.comp; `-D CV2_RAIN_LIT_OFF` = the old light march, the A/B). A sample with any
+  rain share below the base (`f.rain > 0 && f.hf <= 0`: a shaft, and the fractus band in it, which until then took fine
+  steps below a 0.2 rain share) stands for four coarse steps (`rainAlone`) and, lit by the Sun, reads only the sky probe
+  (and the beams); its key light is the Sun transmittance volume read
+  AT the sample (cv2StvT, lL = 0: the deck over it and the storm beyond), its optical depth toward the light
+  `f.sigma x cv2.light.x`, its far side `f.sigma x 2 cv2.light.x` (uniform rain). Why it holds: the old "sunlight under thick
+  cloud" objection predates the volume (2026-10-22). Measured in the base (CV2_EVAL_COUNT, per lit rain sample): the light
+  march's optical depth was f.sigma x 8-38 km (it is the deck's, not the rain's), the far side's f.sigma x ~2 km, the probe
+  250 m up ~29 x the sample's own density. Moonlit rain keeps the march (no Moon volume).
+  ATTRIBUTION (81.5 S 26.2 E, 4.4 / 4.1 km, inside a snowing deck, rain_amount 3, the reporter's settings; RTX 3070 Ti, alone
+  on the GPU, 3 interleaved reps): cloud bucket ~17-21 ms; rain 0 -> ~9-10 (`rain_amount 0`, or the field's rain alone off in
+  the shader: the same); fractus 0 -2..-5; no light march at all -12; per ray ~11 kept rain-alone samples (every coarse
+  sample of the ray) + ~2.3 scud samples (fractus, rain share <= 0.2, fine steps and a full light march), of ~11 lit samples
+  a ray (1.5 with rain 0). Removing the rain-alone samples' shading and light alone saved only 0.5-4 ms, the scud alone
+  2-3; both together -8 to -10 (a warp waits on its slowest lane: rays hold either). RESULT (cloud_march bucket, reps 2-3 of
+  3, interleaved A B C, the app alone, 1600x900, 128 registers either way): shot 1 24.1 / 24.4 -> 14.6 / 14.5 ms (-40%),
+  shot 2 19.5 / 19.4 -> 14.5 / 14.7 (-25%), issue_20261110_180734 shot 3 25.8 / 24.7 -> 14.5 / 14.5 (-42%); the shafts'
+  light alone (threshold 0.2, no scud change) gave only -14 / -12 / -14%. From 400 km over the same storm 15.8 / 15.7 ->
+  15.8 / 15.8; a rain-free cumulus view (180734 shot 2) 7.9 / 8.7 -> 8.7 / 8.2. Image (settled, vs the base; the base
+  against itself 1.3 / 0.7 levels): mean |diff| 4.0 / 1.7 / 5.8 levels at shots 1 / 2 / 3, signed -3.7 / -0.7 / -3.5 (the
+  rain a little darker: the uniform od over cv2.light.x), the shafts' and scud's shapes unchanged, slightly smoother.
+  Motion (artifacts.py at shot 1, 1x / 1 min/s, a `snow_in` scenario): rev12 0 -> 0, grain 0.40 / 0.31 -> 0.22 / 0.23,
+  lag16 0 -> 0, blkS2_lv 0.01 / -0.01 -> 0.08 / 0.05 levels, lagT_max 5.5 / 3.6 -> 4.8 / 6.7.
+  Evidence: `qa/waves/20261110/evidence/rainperf/`.
 - **Rain + optics** (2026-09-28, `.plans/ATMOS_OPTICS_AND_STORMS.md`): rain shafts are cv2FieldLow's
   below-base branch (`CV2Field.rain`; the shell floor is 0 m while Rain > 0); rain at the eye drives a
   streak overlay in cloud_march.comp (after the resolve, so it animates). Halos / sundogs / parhelic
