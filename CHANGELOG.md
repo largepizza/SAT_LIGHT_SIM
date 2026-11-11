@@ -380,6 +380,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Performance
 
+- **Faster inside rain and snow:** rain shafts and the ragged scud under a raining base are lit from the storm's sun-shadow
+  volume instead of a light march of their own. Inside a snowing deck the cloud march went 24 -> 15 ms (19 -> 15 ms a
+  few hundred metres lower), with the curtains' look kept (issue_20261110_181505).
 - **Still views march fewer cloud rays:** once the camera has been still for about a second (below 30 km), the clouds
   are marched one pixel in nine a frame instead of one in four, with the same settled image; any movement switches back.
   A sunset anvil deck overhead: cloud march 31 -> 21 ms; cumulus views about 20% less (issue_20261108_172846).

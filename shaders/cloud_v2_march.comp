@@ -95,6 +95,12 @@ const float kBounceOpen    = CV2_BOUNCE_OPEN;
 #ifndef CV2_FAINT_MODE
 #define CV2_FAINT_MODE 0
 #endif
+// Rain-alone samples lit without a light march (RAIN LIGHT, main(); -D CV2_RAIN_LIT_OFF = the old light march, the A/B).
+#ifdef CV2_RAIN_LIT_OFF
+#define CV2_RAIN_LIT(f) false
+#else
+#define CV2_RAIN_LIT(f) ((f).rain > 0.0 && (f).hf <= 0.0 && cv2.stvH.z > 0.5)
+#endif
 // A faint FINE sample's stride in steps (the view march, "FAINT STRIDE"; 1.0 = off, the A/B: -D CV2_FAINT_STRIDE=1.0).
 #ifndef CV2_PROBE_FP
 #define CV2_PROBE_FP 250.0   // the footprint (m) past which the light march's sky probe is skipped; 0 = never
@@ -968,7 +974,10 @@ void main()
             // ray from an eye under the deck took fine steps and full light marches through ~250-550 m of scud for 3-7 km:
             // 18 of 41 ms of cloud march (fractus 0: 23 ms). Below the base, rain with scud strides like rain (> 0.2): 40.4 ->
             // 32.9 ms, mean 2.5 levels (the scud slightly softer).
-            bool rainAlone  = f.rain > 0.2 && f.hf <= 0.0;
+            // 2026-11-10 (issue_20261110_181505 "FPS within storms", 4.4 km inside a snowing deck): any rain share below the base
+            // (> 0: the scud band too) strides like rain and takes RAIN LIGHT (below): the scud's fine steps and full light
+            // marches and the shafts' light marches were ~8 of ~10 ms that rain added to the cloud march there.
+            bool rainAlone  = f.rain > 0.0 && f.hf <= 0.0;
             bool coarseThin = !fine && f.sigma > 0.0 && (f.thin > 0.9 || rainAlone || (f.soft > 0.9 && f.deck > 0.5));
             if (!fine && !coarseThin) {
                 // Back two steps and on to a JITTERED fine lattice: the start jitter covers only the
@@ -1194,7 +1203,7 @@ void main()
                 // range (the fine grid, the shaft rings, the cascade, the layer map; .plans/CLOUD_REBUILD_PLAN.md).
                 if (cv2.stvH.z > 0.5) {
                     float hT = (f.thin > 0.5) ? (f.topH - p.h) * (1.0 - 0.5 / max(1.0 - f.hf, 0.15)) : 0.0;
-                    float lL = (CV2_FAINT_MODE == 0 && f.sigma * cv2.light.x < CV2_FAINT_OD) ? 0.0 : 2.0 * cv2.light.x * (1.0 - f.thin);
+                    float lL = ((CV2_FAINT_MODE == 0 && f.sigma * cv2.light.x < CV2_FAINT_OD) || CV2_RAIN_LIT(f)) ? 0.0 : 2.0 * cv2.light.x * (1.0 - f.thin);
                     keyCol *= cv2StvT(rel + up * hT + sunDir * lL,
                                       p.h + hT + dot(up, sunDir) * lL + 0.5 * (cv2.stvH.y - cv2.stvH.x) / float(kCv2StvK - 1));
                 }
@@ -1250,9 +1259,18 @@ void main()
                            + 0.5385973 * (cv2.misc2.z > 0.5 ? cv2.frame.x : vL));
             }
             bool skipL = thin || (CV2_FAINT_MODE == 0 && faint && !wantB);
+            // RAIN LIGHT (2026-11-10, issue_20261110_181505 "FPS within storms"; CV2_RAIN_LIT): a sample below a base with any rain
+            // share (a shaft, the scud in it) runs no light march and no march away from the light, only the sky probe. Its key light is the Sun
+            // transmittance volume read AT the sample (the deck above, the storm beyond: cv2Stv), and its own rain over the light
+            // march's reach (cv2.light.x) and its far side (2 x) are taken uniform. Rain is a near-uniform medium whose light is
+            // set by the cloud over it: in the base, a rain sample's light march measured 8-38 km of its own density (the deck),
+            // its far side ~2 km. From 4.4 km inside a snowing deck (81.5 S 26.2 E) ~11 rain samples a ray were lit, each with
+            // ~11 field reads.
+            bool rainL = CV2_RAIN_LIT(f) && !moonIsKey;   // (the Moon has no transmittance volume)
             if (!skipL)
                 lightAmbOD(rel, keyDir, up, eyeH, enuToEcef, nL, lSeg0,
-                           jL, detailAmt, fp, wantL, odL, sigUp, wantB, bDir, odB, lodL || faint, wantBk && !faint, odBk);
+                           jL, detailAmt, fp, wantL && !rainL, odL, sigUp, wantB, bDir, odB, lodL || faint, wantBk && !faint && !rainL, odBk);
+            if (rainL) odL = f.sigma * cv2.light.x;
             // (And for an orographic lens, f.deck < -0.5: the march away from the light does not see it either, gCv2Oro being the
             // main sample's alone. With ~0 depth on its far side the diffuse field took it for a wisp: grey-blue, luminance
             // ~164 against the cumulus' 183-224 beside it; its own path to its base, 215, issue 20261105_201331.)
@@ -1272,6 +1290,7 @@ void main()
                 float odBkA = f.sigma * min(f.hf * max(f.topH - p.h, 0.0) / max(1.0 - f.hf, 0.05) / max(dot(up, keyDir), 0.1), cv2.ms.w);
                 odBk = (!wantBk || skipL || faint || f.deck < -0.5)
                      ? odBkA : max(mix(odBk, odBkA, smoothstep(150.0, 225.0, fp)), odBkA * smoothstep(0.3, 0.7, dot(up, keyDir)));
+                if (rainL) odBk = f.sigma * 2.0 * cv2.light.x;
             }
             if (wantL) {
                 float od = thin ? f.sigma * 400.0 : odL;
