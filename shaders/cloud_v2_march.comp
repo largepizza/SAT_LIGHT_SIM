@@ -968,6 +968,9 @@ void main()
             gCv2LayMask = 0xFFFFu;
 #ifdef CV2_ORO
             gCv2Oro = vec4(0.0);   // (the light march does not see it: live across it, the march took 254 registers)
+            // (The cyclone flow map's displacement gCv2CycD stays live across the light march on purpose: clearing it here
+            // (round 3, the merged tree at 255 registers) left the march at 255 / 254, so the light samples keep the
+            // displaced field. The cliff there is three features' sum: see weather.md "The cyclone flow map", round 3.)
 #endif
             CV2_CNT(fine ? 2 : 1);
             gCv2DbgWant = false;

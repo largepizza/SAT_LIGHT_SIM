@@ -216,7 +216,26 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   the base and the flow variant differ only in cv2CycFlowAt's body and the displacement it returns. The gate twice on the same exe and settle cap (rotation 0 as
   the base; hurr_eye): lag16 12.2 -> 10.9 % (1x), 12.7 -> 14.0 (1m), 11.8 -> 12.2 (5m), grain equal (0.97 / 0.94 / 0.87).
   The supercell's 1x sequence (3 captures 1 s apart at 173628) shows no measurable turn from that vantage: the funnel is
-  5 km off and the wall cloud is not in the frame; ~1 deg of turn at the RMW in 2 s. Not shipped: a general flow of all cloud noise on `wfWind` (weather-v2's
+  5 km off and the wall cloud is not in the frame; ~1 deg of turn at the RMW in 2 s. **Round 3 (2026-11-11, on the
+  merged tree 6d4f2d6):** (1) a tree rebuilt after the wave's merges died silently at pipeline creation (after "terrain
+  clipmap: supported") twice, even with a 900 s boot timeout: the 238 MB `pipeline_cache.bin` of the pre-merge tree;
+  deleted, it boots (the UBO mirror was fine). (2) THE REGISTER CLIFF: on the merged tree the march is at 255 registers
+  (hurrshape-a saw it too; every cluster measured 128 alone). One-feature-out variants: the flow map out 255, rain-lit off
+  255, grain's stride out 255, storms' `stormIn` out 255, CV2_CYC_EXTERNAL off 255, optics' ice halos out 254, hurrshape's
+  fill block out 255; pairs: flow + optics 253, flow + fill 255, flow + storms + grain 255; ALL THREE of flow + fill + ice
+  halos out: 128. A sum of three features, no single tipping one. The flow map's own trims did not move it: its
+  displacement cleared before the light march (as `gCv2Oro`) 255, that plus the 1-km refresh dropped 254 -- so the clear
+  is not kept (the light samples keep the displaced field), and the way back to 128 needs the fill block and the ice
+  halos to shed as well (the orchestrator's call across clusters). In the 255 regime the eye view's cloud march is 69 ms (37.7 at 128 per the orchestrator), so the
+  cliff is worth ~30 ms: more than every feature it holds. (3) Re-baselined rotation A/B on 6d4f2d6 (by setting, 0 vs 0.6,
+  interleaved 3 x 60, no pre-waits, in the 255 regime): eye from 46 km 69.2 -> 71.1 ms (+1.8), CDO from 61 km 82.1 -> 86.4
+  (+4.3), the tornado view 23.0 -> 24.6 (+1.6). (4) The tornado funnel already turns (the tornado work: `seedK` carries a
+  spin phase, the funnel ~35 m/s at its radius, the wall cloud a turn in ~5 min, debris slower, `cloud_march.comp`
+  `tornadoCyl`); round 3 integrates that phase per frame and per part with the time-lapse fade (`tornadoSpin`,
+  past 4-12 deg of turn a frame; at 1 min/s the funnel turned 14-69 deg a frame). Measured at 1x, 1.5 km south of the
+  funnel of issue_20261108_173628 (r 98 m): the funnel's texture advances +2 px per 0.5 s across it, three captures in a
+  row (corr 0.99) -- consistent, slow at that range; the wall cloud from 4 km: 0.01 % of pixels change in 2 s (a turn in
+  5 min is 2.4 deg: not visible). Not shipped: a general flow of all cloud noise on `wfWind` (weather-v2's
   `cv2NoiseDispAt`): it needs the wind evaluated per sample in the march and per pixel in the resolve, and the lattice
   seams it showed from orbit (e453372); the storm lock covers the user's case (storms vs the drift).
   **Anvils carried by the organised systems (2026-11-08, branch `weather-salvage`, `.plans/WEATHER_SALVAGE_PLAN.md`; the
