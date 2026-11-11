@@ -491,6 +491,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- The thin bright line along the horizon is gone, from the sea surface to orbit (issue_20261110_180445). The sky's
+  horizon volume blended the air of rays that end on the sea with rays that cross the whole atmosphere in the one row
+  of pixels between them.
 - An issue report's frame times no longer count the HQ photo's frames: a shot taken after a photo showed its
   slow offscreen frames as 300-ms hitches of the view (issue_20261108_172846).
 - Wildfire smoke on the horizon BEHIND a cloud gets the haze of its own distance: standing in a rain curtain, the

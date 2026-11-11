@@ -4460,7 +4460,7 @@ void main() {
     float apW = 0.0;   // 1 = the volume alone (no loop), 0 = the loop alone
 #ifdef SKY_SUN_SHADOW
     bool  apLimb = false, apLimbWrap = false;   // the band's pixel reads the limb volume (no loop either)
-    vec2  apLimbFc = vec2(0.0);
+    vec3  apLimbFc = vec3(0.0);
 #else
     const bool apLimb = false;                  // (SKY_LITE has no volume, and no SPIR-V to spare: a constant folds away)
 #endif
@@ -4479,7 +4479,8 @@ void main() {
         // The LIMB volume (2026-11-09, cv2.skyAp.x = 2; include/sky_ap.glsl): the band's rays marched by sky_ap.comp on
         // a grid of their own (rows in sin(elevation), columns in azimuth), read here in the loop's place.
         if (apW < 1.0 && cv2.skyAp.x > 1.5)
-            apLimb = skyApLimbCoord(dir, skyApLimbFrame(mat3(transpose(pc.skyView)), pc.fovYRad, pc.aspect, obsR), apLimbFc, apLimbWrap);
+            apLimb = skyApLimbCoord(dir, skyApLimbFrame(mat3(transpose(pc.skyView)), pc.fovYRad, pc.aspect, obsR), skyApLimbZ(obsR, R_EARTH),
+                                    tBase.x > 0.0, apLimbFc, apLimbWrap);
         if (apW < 1.0 && !apLimb) {
             targetStepLen  /= cv2.skyAp.w;
             viewSamplesMax *= cv2.skyAp.w;

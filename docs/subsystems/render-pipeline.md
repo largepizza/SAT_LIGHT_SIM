@@ -139,6 +139,19 @@ atmHalfAvg3, airglow noise, cityBrightness) moved unchanged into `include/sky_at
   shot 3's limb rows 0.75-1.6 levels mean |diff|, unsigned. **SKY_LITE:** its SPIR-V budget had 92 bytes left at the
   baseline; the limb variables are `#ifdef SKY_SUN_SHADOW` and a constant otherwise (+20 bytes). The budget is exhausted
   for practical purposes: the next sky feature in `sat_sky.frag` has to pay for itself in SKY_LITE bytes.
+- **The limb's own row: no blend across it** (issue_20261110_180445 "Horizon line artifact", `skyApLimbCoord`). A row
+  just below the Earth's limb ends on the sea-level sphere; one just above crosses the whole atmosphere. Their sums per
+  unit of air column differ far more than one row's step, so a bilinear read between the two, times the pixel's own
+  column, drew a 1-3-px bright line along the horizon at every altitude (one-row luminance spike over its neighbours'
+  mean: +63 levels from 111 km, +40 at 11.8 km, +25 at 386 m, +11 / +42 at 15 / 10 m; `sky_ap_limb 0` removed it).
+  Now a pixel reads its OWN side's rows only: which side is its own `raySphere` against the sea-level sphere (`tBase.x >
+  0`, the test that also sets its slices), a sky pixel extrapolates the first two sky rows over the gap, a ground pixel
+  holds the last ground row (extrapolating it read the sea under the horizon ~2 levels dark over 5 rows at 10 m; holding
+  the first sky row flat left a 2-px step of ~4 levels from orbit). The limb's sine is `skyApLimbZ` (from the height,
+  `obsR - R`, exact in float, as `raySphere` decides): `-sqrt(1 - (R / obsR)^2)` keeps ~3% of its value near the ground,
+  half a row at 10 m, and with it the line stayed at 10 m (+53 levels) where the rows were right everywhere else.
+  After: the same spikes +4 / +1 / -1 / +4 / -2 (the 15-m figure is sea glitter, the same with the loop); the profile
+  across the limb follows the loop's within ~1-2 levels.
 
 ---
 
