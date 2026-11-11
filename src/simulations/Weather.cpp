@@ -398,10 +398,13 @@ struct Catalog::Impl {
             ts.anvOn = (float)((double)ts.t0 + (double)ts.growS * q);
             ts.anvOff = (float)((double)ts.t0 + (double)ts.life - (double)ts.decayS * q);
         }
-        // (lo: the old fixed 35 / 45 / 60 min x the "Anvil decay time" setting (Settings::anvilLingerS) over 35 min.)
-        const double lo = (S.kind == StormKind::Supercell ? 60.0 : S.kind == StormKind::Multicell ? 45.0 : 35.0)
-                        * (std::max(60.0, (double)set.anvilLingerS) / (35.0 * kMin));
-        const double li = r.range(lo, 2.0 * lo) * kMin * ls;
+        // The linger IS the "Anvil decay time" (Settings::anvilLingerS), x 1 / 1.3 / 1.7 for an air-mass cell / a multicell /
+        // a supercell (the old 35 / 45 / 60 min ratios), x 0.75..1.25 per storm (2026-11-10, issue 20261105_233447 "decay
+        // timing unaffected by the slider", 20261107_125130 "anvils stick around for way too long"). It was the slider /
+        // 35 min x 35 / 45 / 60 min x 1..2: at the user's 240 a supercell's anvil lingered 6.9-13.7 h, a slider labelled
+        // in minutes reading as nearly 3x itself (and capped by the storm's maximum life well before its end).
+        const double kindL = S.kind == StormKind::Supercell ? 1.7 : S.kind == StormKind::Multicell ? 1.3 : 1.0;
+        const double li = r.range(0.75, 1.25) * kindL * std::max(60.0, (double)set.anvilLingerS) * ls;
         S.upperWind = (float)r.range(6.0, 18.0);
         S.linger = anvil ? (float)std::min(li, std::max(0.0, kMaxLifeS - towersEnd)) : 0.0f;
         S.life = (float)(towersEnd + S.linger);
@@ -435,7 +438,9 @@ struct Catalog::Impl {
         const double ls = std::max(0.05, (double)set.lifeScale);
         const double sysRamp = r.range(1.2, 2.0) * 3600.0 * ls;
         double sysLife = (mcs ? r.range(8.0, 15.0) : r.range(6.0, 11.0)) * 3600.0 * ls;
-        double linger = r.range(1.5, 3.0) * 3600.0 * ls;
+        // (The shield's linger scales with "Anvil decay time" too, 1.5-3 h at its old default of 70 min: lines ignored both
+        // anvil sliders until 2026-11-10, issue 20261105_233447.)
+        double linger = r.range(1.5, 3.0) * 3600.0 * ls * (std::max(60.0, (double)set.anvilLingerS) / (70.0 * kMin));
         sysLife = std::min(sysLife, kLineMaxLifeS - 3600.0);
         linger = std::min(linger, kLineMaxLifeS - sysLife);
         S.sysLife = (float)sysLife;
@@ -1086,10 +1091,13 @@ void Catalog::shieldsAt(double t, const std::vector<const Storm *> &storms, cons
         if (isLineSystem(S->kind)) {
             const double sysLife = (double)S->sysLife, linger = std::max((double)S->linger, 1.0);
             const double ramp = (double)S->towers[0].sysRamp;
-            const double act = smooth01(0.3 * ramp, 1.2 * ramp, tau) * (1.0 - smooth01(sysLife, sysLife + linger, tau));
+            // (The shield's rise spans 0.9 of the line's ramp at "Anvil formation time" 60 min, its old default, and scales
+            // with the slider: lines ignored it until 2026-11-10, issue 20261105_233447.)
+            const double riseK = std::max(60.0, (double)impl_->set.anvilFormS) / 3600.0;
+            const double act = smooth01(0.3 * ramp, 0.3 * ramp + 0.9 * ramp * riseK, tau) * (1.0 - smooth01(sysLife, sysLife + linger, tau));
             if (act <= 0.0) continue;
             const double age01 = smooth01(sysLife, sysLife + linger, tau);
-            const double grow = smooth01(0.0, 3.0 * 3600.0, tau);
+            const double grow = smooth01(0.0, 3.0 * 3600.0 * riseK, tau);
             const double half = (double)S->lineHalfM * (0.6 + 0.4 * smooth01(0.0, 1.5 * ramp, tau));
             const double trail = (double)S->trailM * (0.45 + 0.55 * grow) * (1.0 + 0.3 * age01);
             const double la = (double)S->lineAz;
@@ -1161,7 +1169,10 @@ void Catalog::shieldsAt(double t, const std::vector<const Storm *> &storms, cons
         if (!(lastOff > firstOn)) continue;
         const double formEff = std::clamp(0.7 * (lastOff - firstOn), 600.0, formS);
         const double act = ramp((tau - firstOn) / formEff) * ramp(1.0 - std::max(0.0, tau - lastOff) / linger);
-        mature = smooth01(firstOn, firstOn + std::max(2700.0, formEff), tau);   // (the radius)
+        // (The radius matures over the "Anvil formation time" itself, not the feed-capped formEff: with the towers feeding a
+        // shield ~30-60 min, every setting past ~40 min drew the same anvil, issue 20261105_233447. Its density still comes
+        // up over formEff, so a long formation time is a full-density shield that keeps spreading, not a faint one.)
+        mature = smooth01(firstOn, firstOn + std::max(2700.0, formS), tau);   // (the radius)
         if (act <= 0.0 || wSum <= 0.0) continue;
         F = glm::normalize(F / wSum);
         const double kindL = S->kind == StormKind::Supercell ? 160000.0 : S->kind == StormKind::Multicell ? 90000.0 : 45000.0;

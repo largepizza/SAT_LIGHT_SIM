@@ -144,6 +144,11 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   hours: they form once, hold while their storm feeds them, and thin away slowly. Ordinary storms no longer leave their
   own anvils behind (Weather > Storm objects > "Single-storm anvils"; 2 restores them), so the grey speckled discs seen
   from orbit are gone. An anvil's top is a continuous smooth sheet instead of a holed, mottled one.
+- **Anvil timing sliders mean what they say.** "Anvil formation time" sets how long an anvil takes to spread and
+  "Anvil decay time" how long it lingers (x1.3 for multicells, x1.7 for supercells), for squall lines and MCSs too. Before,
+  a long formation time drew the same anvil as a short one, and the decay slider lingered anvils up to ~3x its value.
+  Neighbouring storms' anvils at the same height now merge smoothly instead of meeting in a seam, and the inside of a storm
+  is grey cloud rather than a flat deep-navy volume.
 - **No more cloud rows from orbit.** Near the equator the cumulus field no longer lies in straight north-south streaks
   and a grid when seen from space.
 - **Cumulus turrets.** Cumulus and stratocumulus fields are no longer one smooth dome per cell: a 3D field of towers

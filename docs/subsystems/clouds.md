@@ -1890,6 +1890,31 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   is the open next step. 128 registers. Cloud march at the issue's view 8.79 -> 8.57 ms, from 32 km over a storm
   16.88 -> 17.02 (interleaved, within noise): the separate shape evaluation was already shared (one fetch set since
   2026-11-04), so nothing measurable is saved. The non-unified path (`storm_unified` 0, cv2ColumnSigma) is unchanged.
+- **Anvils round 11-10 (cluster c11, issues 20261105_233447, 20261106_171931, 20261106_184711, 20261107_124812, 20261107_125130).**
+  THE TOWERS' UNION IS SMOOTH: cv2StormGeom blends every tower's margin into `best` by `cv2SMax(.., 1500 m)` and mixes the
+  chosen top / zeta / full by the same weight (it took the strongest alone: two heads at one height met in a crease where the
+  profile switched, issue 233447's seam). THE HEAD FLARES over a band `1.5 x "Anvil thickness" + "Anvil hang"` under its top
+  (600 m .. 0.45 of the tower) on s^2 (a trumpet), not over zeta 0.62..0.94 on a smoothstep. KNOCKOUTS at 171931 shot 4
+  (reporter settings): the "slab" with the blue wall is the tower's FLARED HEAD (`cb_flare` 0.5 removes it), not the shield
+  (`anvil` 0, `anvil_thick_km` 0.3, `anvil_hang_km` 0 leave it; the shield is the grey sheet above), and its blue "wall" is the
+  flat underside seen from below; the band change does not visibly thin it at that view (open: the head's underside wants the
+  plate's under-lobes, and its rim a taper). THE INSIDE OF A STORM (cloud_v2_march.comp): a ray whose first dense sample lies
+  within 1-4 steps of the eye enters with `Tent = T e^20` (faded over the steps): the diffuse field's face leak hV is ~1 there,
+  and on such rays (T < e^-14) the share of the Sun shadow volume's optical depth that is the sample's own cloud (its path to its
+  own top along the Sun, capped by the volume's tau) reaches it as diffuse transmission 1 / (1 + 0.11 tau), not e^-tau. Measured
+  (mean RGB of the view, 1600x900): issue 124812 at 4.3 km inside a tower 0.1/0.2/0.5 -> 98/98/100 (black/navy -> grey);
+  171931 trail inside the tower top at 11 km under the shield 54/80/122 -> 68/93/133 (still blue: the Sun is behind the
+  ANVIL there, another cloud, which keeps Beer's law; the sky light at "Sky light gain" 2 with its hue kept dominates).
+  Applied to every sample the own-cloud diffusion relit every shaded tower face (~4 levels over a storm view): gated to
+  inside rays. The trail's "pop" (frames 170 / 198-200, 14% of pixels) is the eye passing into and out of the tower's top
+  at -6 min/s, not an anvil spawning. 255 registers before and after (binary 548352 -> 549248 B); cloud march (RTX 3070 Ti,
+  1600x900, interleaved x3, alone) 233447 11.83 -> 11.98 ms, 171931 shot 4 14.08 -> 14.12, orbit 125245 16.11 -> 16.39.
+  ANVIL TIMING (Weather.cpp): a single cell's linger is "Anvil decay time" x 1 / 1.3 / 1.7 (air mass / multicell / supercell)
+  x 0.75..1.25 (was decay / 35 min x 35 / 45 / 60 min x 1..2: up to ~3.4x the slider), its radius matures over the
+  formation time itself (was min(formation, 0.7 x the feed span): every setting past ~40 min drew the same anvil); a line
+  system's shield rise (0.9 of its ramp), trail growth and linger scale by formation / 60 min and decay / 70 min. Measured at
+  233447's multicells (60 km overhead, 15-min captures): white area at +60 / +75 min 0.088 / 0.097 at formation 30 min,
+  0.034 / 0.062 at 240; the storm's life 152 / 278 / 447 min at decay 30 / 120 / 240.
 - **The unified volumetric composite (2026-10-26, branch perf-frames; the user: the plumes, smoke and tornadoes "feel entirely
   distinct in quality" and clip against rain, dust, smoke and clouds).** The dust list's Gaussians (launch plumes, flames,
   wildfire smoke, tornado funnels, haboob far field, Kessler dust and fireball trails) are still composited in cloud_march.comp

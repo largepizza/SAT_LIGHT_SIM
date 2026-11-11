@@ -227,9 +227,10 @@ struct Settings {
     // The single-cell kinds' anvil SHIELD (2026-11-03, issue 20261030_210137 "anvils pop in and out" at 5 min/s):
     // anvilFormS = how long a shield takes to spread to full strength once a tower first reaches the anvil (was a
     // fixed 900 s, its radius maturing over 3x that); anvilLingerS = an air-mass storm's shortest linger after its
-    // last anvil-reaching tower falls back (each storm draws 1-2x it; multicells x 45/35, supercells x 60/35; was a
-    // fixed 35 min). Both are ramps, not smoothsteps (Catalog::shieldsAt). Line systems keep their own hours-long
-    // ramps.
+    // last anvil-reaching tower falls back (x 0.75..1.25 per storm; multicells x 1.3, supercells x 1.7; was a fixed
+    // 35 min, then until 2026-11-10 1-2x it x 45/35, 60/35). Both are ramps, not smoothsteps (Catalog::shieldsAt); the
+    // shield's RADIUS matures over anvilFormS itself. Line systems keep their own hours-long ramps, scaled by both
+    // (x anvilFormS / 60 min, x anvilLingerS / 70 min: their old defaults).
     float anvilFormS = 60.0f * 60.0f;
     float towerRiseS = 30.0f * 60.0f;   // Tower::heightCap's T (0 = off: the top follows the strength, as before)
     float anvilLingerS = 70.0f * 60.0f;
