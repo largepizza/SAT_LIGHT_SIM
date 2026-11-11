@@ -491,17 +491,22 @@ vec3 beamFinish(vec3 pW, float h, vec3 dir, CV2Field f, float dayness, float og,
     else od = max(odMarch, 0.5 * f.sigma * max(f.topH - h, 0.0) / max(dot(normalize(pW), dirS), 0.15));
     float cosB = dot(dir, dirS);
     vec3  ph   = vec3(phSum / Esum);
+    // The ice's and the snow's halos round the satellites at one geometry (cv2IceOptics2, 2026-11-11: one frame, each table
+    // row once; two calls here, inside the light loop, were one of the three loads of the merged march's 255 registers).
+    float liq   = cv2.precip.w;
+    bool  wantI = f.thin > 0.0, wantS = f.rain > 0.0 && liq < 1.0;
+    vec3  opI = vec3(0.0), opS = vec3(0.0);
+    if (wantI || wantS)
+        cv2IceOptics2(dir, dirS, vec3(0.0, 0.0, 1.0), wantI ? hab : vec4(0.0), wantS ? vec4(0.2, 0.35, 0.0, 0.0) : vec4(0.0), opI, opS);
     if (f.thin > 0.0)   // ice, delta-scaled (see the march)
-        ph = mix(ph, vec3(cv2HG(cosB, 0.3)) + og * cv2IceOptics(dir, dirS, vec3(0.0, 0.0, 1.0), hab) / 0.55, f.thin);
+        ph = mix(ph, vec3(cv2HG(cosB, 0.3)) + og * opI / 0.55, f.thin);
     // Precipitation: rain (the bows opposite the satellites) or, where the shafts' air is below freezing (cv2.precip.w,
     // the march's liqR for the Sun and Moon), snow: broad lobes, a faint halo and sundogs around the satellites, no bow.
     // Until 2026-10-06 the beams lit every shaft as rain: a "satbow" in Antarctic snow at -23 C.
     if (f.rain > 0.0) {
-        float liq = cv2.precip.w;
         vec3  phR = vec3(0.3 * cv2HG(cosB, 0.97) + 0.55 * cv2HG(cosB, 0.35));
         if (liq > 0.0) phR += og * liq * 0.5 * cv2RainOptics(dir, dirS);
-        if (liq < 1.0) phR += og * (1.0 - liq) * (0.25 * cv2IceOptics(dir, dirS, vec3(0.0, 0.0, 1.0), vec4(0.2, 0.35, 0.0, 0.0))
-                                                  + vec3(0.15 * cv2PillarOptics(dir, dirS)));
+        if (liq < 1.0) phR += og * (1.0 - liq) * (0.25 * opS + vec3(0.15 * cv2PillarOptics(dir, dirS)));
         ph = mix(ph, phR, f.rain);
     }
     float pMS = 0.85 * cv2HG(cosB, 0.2) + 0.15 * cv2HG(cosB, -0.4);
@@ -720,17 +725,36 @@ void main()
     // own angular span: when none, no sample of the ray runs the loop (a cyclone inside the view's 31-deg cap but out of
     // reach still cost +0.7 ms at 650 km). tCycD: the ray's distance at the last displacement evaluation (refreshed every
     // 1 km: the displacement varies over ~10 km, the march steps 100-500 m near a storm).
-    bool  cycNear = false;
-    float tCycD   = -1e9;
+    // (One value for both: tCycD = +1e30 is "no vortex near this ray" (the test below excludes it) and -1e9 "near, not yet
+    // evaluated". 2026-11-11, regdiet.)
+    float tCycD = 1e30;
 #if defined(CV2_STORM_BINDING)
-    if (cv2.flowP.x > 0.0 && cv2.flowP.w > 0.0 && nSeg > 0) {
+    // THE HURRICANE FILL'S PER-RAY TEST (2026-11-11, regdiet; gCv2HurrNear): cv2HurrAt loops over every cyclone on the planet
+    // at every low-field sample (its reach test, 1.3 CDO radii, is per cyclone per sample: 1-2 cyclones exist at an ordinary
+    // view). On a ray none can reach, every iteration would `continue`, so the loop is skipped as a whole: the same test as
+    // the flow map's, with the flow warp's largest displacement (cv2FlowDisp: ~N(0,1) x flow.x per component) as margin.
+    bool hurrTest = cv2.hurricane.y + cv2.hurricane.z + cv2.hurricane.w > 0.0 && cv2CycHead.x > 0u;
+    gCv2HurrNear = false;
+    if ((hurrTest || (cv2.flowP.x > 0.0 && cv2.flowP.w > 0.0)) && nSeg > 0) {
         vec3  d0   = cv2Drift(cv2Pos(dir * seg[0].x, eyeH, enuToEcef).dirE);
         vec3  d1   = cv2Drift(cv2Pos(dir * (nSeg > 1 ? seg[1].y : seg[0].y), eyeH, enuToEcef).dirE);
+        vec3  dm   = normalize(d0 + d1);
         float span = acos(clamp(dot(d0, d1), -1.0, 1.0));
-        [[dont_unroll]] for (uint i = 0u; i < min(cv2CycHead.y, kCv2CycloneMax); ++i) {
-            vec3  a   = cv2Cyclones[i].a.xyz;
-            float lim = cos(min(max(cv2Cyclones[i].c.z, 1000.0) * (1.0 / R_EARTH) + 0.5 * span, 3.1));
-            if (max(dot(a, d0), dot(a, normalize(d0 + d1))) > lim || dot(a, d1) > lim) { cycNear = true; break; }
+        if (cv2.flowP.x > 0.0 && cv2.flowP.w > 0.0) {
+            [[dont_unroll]] for (uint i = 0u; i < min(cv2CycHead.y, kCv2CycloneMax); ++i) {
+                vec3  a   = cv2Cyclones[i].a.xyz;
+                float lim = cos(min(max(cv2Cyclones[i].c.z, 1000.0) * (1.0 / R_EARTH) + 0.5 * span, 3.1));
+                if (max(dot(a, d0), dot(a, dm)) > lim || dot(a, d1) > lim) { tCycD = -1e9; break; }
+            }
+        }
+        if (hurrTest) {
+            float margin = 8.0 * max(cv2.flow.x, 0.0) + 20000.0;
+            [[dont_unroll]] for (uint i = 0u; i < min(cv2CycHead.x, kCv2CycloneMax); ++i) {
+                vec3  b   = cv2Cyclones[i].b.xyz;
+                float cdo = max(cv2Cyclones[i].c.y, 2.0 * max(cv2Cyclones[i].d.x, 2000.0));
+                float lim = cos(min((1.3 * cdo + margin) * (1.0 / R_EARTH) + 0.5 * span, 3.1));
+                if (max(dot(b, d0), dot(b, dm)) > lim || dot(b, d1) > lim) { gCv2HurrNear = true; break; }
+            }
         }
     }
 #endif
@@ -960,7 +984,7 @@ void main()
 #endif
             // The cyclone flow map's displacement (clouds_v2.glsl cv2CycFlowAt, CV2_CYC_EXTERNAL): once here, and the light
             // march's samples of this step take the same (it varies over ~10 km). Zero with no cyclone in the view's cap.
-            if (cycNear && abs(t - tCycD) > 1000.0 && (lmC & (kCv2LayLow | kCv2LayMid | kCv2LayHigh)) != 0u) {
+            if (tCycD < 1e29 && abs(t - tCycD) > 1000.0 && (lmC & (kCv2LayLow | kCv2LayMid | kCv2LayHigh)) != 0u) {
                 gCv2CycD = cv2CycFlowAt(cv2Drift(p.dirE));
                 tCycD    = t;
             }

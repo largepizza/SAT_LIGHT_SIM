@@ -763,6 +763,7 @@ vec3 cv2FlowWeatherDirAt(CV2Pos q)
 // site: the layers hold no state for it); the resolve reprojects the rate's and the lock's motion for one cyclone
 // (cv2.flowA / flowB / flowC, SatelliteSimCloudsV2.cpp).
 vec3 gCv2CycD = vec3(0.0);   // the march's main sample sets it (CV2_CYC_EXTERNAL); every cv2Field of that step reads it
+bool gCv2HurrNear = true;    // a cyclone's 1.3 CDO radii can touch this ray (the march sets it per ray; cv2HurrAt is skipped otherwise)
 vec3 cv2CycFlowAt(vec3 wd)
 {
     vec3 D = vec3(0.0);
@@ -893,6 +894,39 @@ CV2Storm cv2StormNone()
     g.near = 0.0; g.storm = 0.0; g.prox = 0.0; g.cap = 0.0; g.inner = 0.0;
     return g;
 }
+#if !defined(SKY_LITE) && defined(CV2_STORM_BINDING)
+// The hurricane's ramp (hR), reach (hW), eye wall (hE), eyewall lift (eyw) and the eye's floor (eyeM) at the low field's map
+// point, before their gains (cv2LowA applies "Hurricane eyewall / fill / smoothing" and sK). The loop over every cyclone, run
+// at every low-field sample; the march skips it on a ray no cyclone's 1.3 CDO radii can touch (gCv2HurrNear, 2026-11-11:
+// the same per-ray test as the flow map's; called twice, once at the cover and once at the ramp so that nothing of it crossed
+// the fetches between, it still compiled to 255 registers -- regdiet, weather.md "The cyclone flow map").
+void cv2HurrAt(vec3 wdF, float ceA, float clA, out float hR, out float hW, out float hE, out float eyw, out float eyeM)
+{
+    eyw = 0.0; hR = 0.0; hW = 0.0; hE = 1.0; eyeM = 1e9;
+    for (uint i = 0u; i < min(cv2CycHead.x, kCv2CycloneMax); ++i) {
+        CV2Cyclone cy = cv2Cyclones[i];
+        float rC  = length(wdF - cy.b.xyz) * R_EARTH;
+        float rmw = max(cy.d.x, 2000.0);
+        float cdo = max(cy.c.y, 2.0 * rmw);
+        if (rC > 1.3 * cdo) continue;
+        float eR  = max(cy.c.x, 0.0), iK = smoothstep(0.1, 0.35, cy.a.w);
+        hW = max(hW, (1.0 - smoothstep(0.9 * cdo, 1.3 * cdo, rC)) * iK);
+        hR = max(hR, (1.0 - smoothstep(eR + rmw, max(0.9 * cdo, eR + 2.0 * rmw), rC)) * iK);
+        if (cy.c.x <= 0.0 || rC > 1.5 * rmw + cy.c.x + 20000.0) continue;   // (the eye's cut takes any low cloud, not only the mass's)
+        // THE EYE AS A BOWL (2026-11-10, hurrshape; issue_20261109_184650 "odd cloud shapes in hurricane eye"): the floor is
+        // cleared through covT inside the eye radius (gentle noise, no height term), and the wall is the mass's TOP sloping
+        // up and out, a stadium: ~0.16 of the span at the eye's edge to the full top at 1.5 eye radii (hE caps T in cv2LowA;
+        // capped lower, inside the edge, the foot was thin flat pancakes with the cells' outlines for sides). The cut was a height-varying
+        // radius through covT (0.85-1.2 eye radii, +-0.22 from saturated noise, a 1.7-km height wave): the cells' 2D outlines
+        // extruded into vertical slabs and terraced shelves round the eye.
+        float nE  = 1.0 + 0.12 * clamp((ceA - 0.5) * 3.0 + (clA - 0.5) * 4.0, -1.0, 1.0);
+        float rE  = cy.c.x * nE;
+        eyeM = min(eyeM, rC - rE);
+        hE   = min(hE, smoothstep(0.7 * rE, 1.5 * rE, rC));
+        eyw  = max(eyw, (1.0 - smoothstep(0.5 * rmw, 1.2 * rmw, rC - rE)) * smoothstep(0.2, 0.6, cy.c.x / (0.45 * rmw)));
+    }
+}
+#endif
 // The low field's own base at the last cv2LowA (m; -1 where it returned before computing it): a storm's margin takes it
 // (cv2FieldLow) so a storm cloud stands on the field's base (2026-11-08, issue_20261108_135011).
 float gCv2BaseLow = -1.0;
@@ -1077,32 +1111,12 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, float stormI
     // upper disk"): hR is 1 from the eyewall out to one RMW past the eye's edge and falls to 0 at 0.9 CDO radii (the mass's
     // top rides it, below: a smooth slope up to the sheet, no canyons); hW is the cyclone's reach (to 1.3 CDO radii), where
     // "Hurricane smoothing" (hurricane.w) calms the low field's lobes, erosion and cut-through.
+    // (The loop is cv2HurrAt, above, skipped on a ray no cyclone can reach: gCv2HurrNear, the march's per-ray test.)
     float eyw = 0.0, hR = 0.0, hW = 0.0, hE = 1.0;
 #if !defined(SKY_LITE) && defined(CV2_STORM_BINDING)
-    if (cv2.hurricane.y + cv2.hurricane.z + cv2.hurricane.w > 0.0) {
-        float eyeM = 1e9;
-        for (uint i = 0u; i < min(cv2CycHead.x, kCv2CycloneMax); ++i) {
-            CV2Cyclone cy = cv2Cyclones[i];
-            float rC  = length(wdF - cy.b.xyz) * R_EARTH;
-            float rmw = max(cy.d.x, 2000.0);
-            float cdo = max(cy.c.y, 2.0 * rmw);
-            if (rC > 1.3 * cdo) continue;
-            float eR  = max(cy.c.x, 0.0), iK = smoothstep(0.1, 0.35, cy.a.w);
-            hW = max(hW, (1.0 - smoothstep(0.9 * cdo, 1.3 * cdo, rC)) * iK);
-            hR = max(hR, (1.0 - smoothstep(eR + rmw, max(0.9 * cdo, eR + 2.0 * rmw), rC)) * iK);
-            if (cy.c.x <= 0.0 || rC > 1.5 * rmw + cy.c.x + 20000.0) continue;   // (the eye's cut takes any low cloud, not only the mass's)
-            // THE EYE AS A BOWL (2026-11-10, hurrshape; issue_20261109_184650 "odd cloud shapes in hurricane eye"): the floor is
-            // cleared through covT inside the eye radius (gentle noise, no height term), and the wall is the mass's TOP sloping
-            // up and out, a stadium: ~0.16 of the span at the eye's edge to the full top at 1.5 eye radii (hE caps T below;
-            // capped lower, inside the edge, the foot was thin flat pancakes with the cells' outlines for sides). The cut was a height-varying
-            // radius through covT (0.85-1.2 eye radii, +-0.22 from saturated noise, a 1.7-km height wave): the cells' 2D outlines
-            // extruded into vertical slabs and terraced shelves round the eye.
-            float nE  = 1.0 + 0.12 * clamp((ce.a - 0.5) * 3.0 + (cl.a - 0.5) * 4.0, -1.0, 1.0);
-            float rE  = cy.c.x * nE;
-            eyeM = min(eyeM, rC - rE);
-            hE   = min(hE, smoothstep(0.7 * rE, 1.5 * rE, rC));
-            eyw  = max(eyw, (1.0 - smoothstep(0.5 * rmw, 1.2 * rmw, rC - rE)) * smoothstep(0.2, 0.6, cy.c.x / (0.45 * rmw)));
-        }
+    if (gCv2HurrNear && cv2.hurricane.y + cv2.hurricane.z + cv2.hurricane.w > 0.0) {
+        float eyeM;
+        cv2HurrAt(wdF, ce.a, cl.a, hR, hW, hE, eyw, eyeM);
         hE     = mix(1.0, hE, cv2.hurricane.y * sK);
         eyw   *= cv2.hurricane.y * sK;
         topMax += 4000.0 * eyw;
