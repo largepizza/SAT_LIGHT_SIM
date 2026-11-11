@@ -1602,7 +1602,12 @@ void Catalog::cyclonesAt(double t, std::vector<CycloneState> &out) {
                 S.intensity01 = (float)smooth01(17.5, 75.0, S.vmax);
                 S.rmw = (float)cycloneRmw((double)C.rmw0, (double)S.vmax);
                 S.turn = C.turnAt(t);
-                S.arms = (float)std::clamp(2.0 + 3.0 * smooth01(28.0, 65.0, (double)S.vmax)
+                // The arm count by the storm's PEAK wind, not the moment's (flowmaps, 2026-11-10, issue_20261106_172424 shot 7
+                // "the arms teleport randomly"): the band towers and the arm-cirrus capsules take floor(arms + 0.15) arms, so
+                // as a storm weakened through a whole count every capsule and band tower was re-placed in one frame (at
+                // 827 km, 1 h/s: arm-sized patches switching at ~36, 156 and 424 min of Sara, the same frames with the
+                // rotation off, the clipmap off, the cube's rect bake off). A storm keeps one count through its life.
+                S.arms = (float)std::clamp(2.0 + 3.0 * smooth01(28.0, 65.0, (double)std::max(C.vPeak, S.vmax))
                                            + 0.7 * (u53(mix64((uint64_t)C.seed ^ 0xA2u)) - 0.5), 2.0, 5.4);
                 S.tanPitch = (float)std::tan((30.0 - 8.0 * (double)S.intensity01) * kDeg);
                 S.bandRot = std::fmod(0.04 * S.turn, 2.0 * kPi);

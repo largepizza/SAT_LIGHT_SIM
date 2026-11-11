@@ -303,7 +303,12 @@ vec4 stormStampFinish(vec4 o, vec3 d)
                                                     + sin(3.3 * lr - 1.3 * iA + 1.1) * 0.4);
         // Ragged, cellular edges: the threshold moved by real cloud texture (the map read at a permuted direction:
         // unrelated cloud structure, ~5-40 km), so an arm's outline is a broken line of cells, not a painted arc.
-        float tex = textureLod(earthCloudsTex, equirectUV(normalize(vec3(d.y, d.z, d.x))), pc.srcLod).r;
+        // IN THE STORM'S FRAME (2026-11-10, flowmaps; issue_20261106_172424 shot 7 "the arms teleport randomly"): read at the
+        // centre plus the offset, so the texture travels with the storm. Read at d itself it stood still in the map while
+        // the storm moved through it at ~25 m/s (its track + the map's drift): every arm's outline was re-cut by unrelated
+        // texture as it went -- at 1 h/s, 3 km a frame through 5-40 km cells, segments of arm coming and going.
+        vec3  dT  = normalize(cy.b.xyz + off * (1.0 / R_EARTH_W));
+        float tex = textureLod(earthCloudsTex, equirectUV(normalize(vec3(dT.y, dT.z, dT.x))), pc.srcLod).r;
         // Thin, tapering arms (2026-10-23, the user: "a tad pudgy"): a narrow core (the threshold starts at 0.5 and rises
         // to ~0.9 outward, the ramp 0.12 wide), the ragged texture stronger outward, and (below) the coverage fading
         // outward so an arm's outer third draws as broken cumulus streaks — wisps — not a solid band.
