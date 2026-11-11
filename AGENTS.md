@@ -26,7 +26,7 @@ Each one has a section behind it; violating these is what makes an agent's work 
 
 - **Launch the app only through the harness** — `tools/harness/run.py` or `live.py`, never interactively,
   and **never back-to-back**: the launch gate spaces launches 30 s after the last launch and the last exit,
-  and keeps fewer than 2 app processes machine-wide. Relaunching straight after an exit has frozen the
+  and keeps one app process machine-wide. Relaunching straight after an exit has frozen the
   developer's whole machine (`docs/FREEZES.md`). Batch commands into one script instead of many launches.
 - **Use a Release build for harness runs.** PNG encoding in Debug is very slow and makes every run lie
   about time. Build: `cmake --build build --config Release --target SatLightSim`.

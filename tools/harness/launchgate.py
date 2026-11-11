@@ -24,7 +24,7 @@ STAMP = os.path.join(STATE_DIR, ".last_app_exit")
 LAUNCH_STAMP = os.path.join(STATE_DIR, ".last_app_launch")
 LOCK = os.path.join(STATE_DIR, ".launch.lock")
 COOLDOWN_S = 30.0
-MAX_APPS = int(os.environ.get("SATLIGHT_HARNESS_MAX_APPS", "2"))
+MAX_APPS = int(os.environ.get("SATLIGHT_HARNESS_MAX_APPS", "1"))   # 1 since 2026-11-10 (user: two apps sharing the GPU made every run slower)
 _APP_RE = re.compile(r"^sat_?light_?sim", re.IGNORECASE)
 
 
