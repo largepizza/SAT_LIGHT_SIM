@@ -390,14 +390,14 @@ def launches_schedule_and_phasing():
     # (Batches are built at most ~100 a frame (buildCap) and the deployment era's window holds ~5000: the waits let the
     # whole window build. 30 frames left the first state at ~4000 of its 16,422 train satellites, 2026-10-21.)
     out, res, _ = run("launches", """
-wait 150
+wait 150 maxs=0
 launch list hours=24
 launch check
 launch state
 time add 86400
-wait 150
+wait 150 maxs=0
 time add -86400
-wait 150
+wait 150 maxs=0
 launch list hours=24
 launch state
 """)
