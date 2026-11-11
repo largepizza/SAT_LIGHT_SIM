@@ -1881,7 +1881,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             }
             // The bake's footprint bracket (cloud_v2_cdc.comp, cdcC.w) goes with the looser motion guard inside the shell.
             const float cdcBracket = (cv2CdcMotionGuard > 0.5f && cv2CdcMotionLowFrac > 0.0f && cv2CdcFp < 0.0f) ? 1.0f : 0.0f;
-            if (!lightValid || cdcNewAnchor || cv2CdcFpUsed != cv2CdcFp || cv2CdcSkipUsed != cv2CdcSkip
+            if (!lightValid || cdcNewAnchor || cv2CdcFpUsed != cv2CdcFp || cv2CdcSkipUsed != cv2CdcSkip || cv2CdcBaseBandUsed != cv2CdcBaseBand
                 || cv2CdcLightUsed != cv2CdcLight || cv2CdcLightLevelsUsed != cv2CdcLightLevels || cv2CdcMaxLevelUsed != cv2CdcMaxLevel
                 || cv2CdcBracketUsed != cdcBracket || cv2CdcShapeFrameUsed != cv2ShapeFrame)
                 ++cv2CdcEpoch;
@@ -1892,6 +1892,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             cv2CdcShapeFrameUsed = cv2ShapeFrame;
             cv2CdcBracketUsed = cdcBracket;
             cv2CdcFpUsed = cv2CdcFp;
+            cv2CdcBaseBandUsed = cv2CdcBaseBand;
             cv2CdcLightUsed = cv2CdcLight;
             cv2CdcLightLevelsUsed = cv2CdcLightLevels;
             cv2CdcSkipUsed = cv2CdcSkip;
@@ -2248,6 +2249,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // The ice crystals' traced halo table (2026-11-10, optics; cv2_optics.glsl cv2IceOptics): off without the asset.
     p.optics = glm::vec4((cv2IceOpticsLoaded && cv2IceOpticsTable > 0.5f) ? 1.0f : 0.0f, std::clamp(cv2IceOpticsParry, 0.0f, 1.0f),
                          std::clamp(cv2IceOpticsColumns, 0.0f, 1.0f), 0.0f);
+    p.grain = glm::vec4(cv2CdcBaseBand > 0.5f ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
     // Vertical variation (vertical, 2026-11-05): cv2BaseShift's strengths, fractus, mid-level wisps.
     p.vert  = glm::vec4(std::clamp(cv2BaseLcl, 0.0f, 2.0f), std::clamp(cv2BaseCellM, 0.0f, 400.0f),
                         std::clamp(cv2BaseRegional, 0.0f, 2.0f), std::clamp(cv2Fractus, 0.0f, 2.0f));

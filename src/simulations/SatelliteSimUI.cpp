@@ -9854,6 +9854,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CdcSkip = c.value("cdc_skip", cv2CdcSkip);
         cv2CdcBudget = c.value("cdc_budget", cv2CdcBudget);
         cv2CdcFp = c.value("cdc_fp", cv2CdcFp);
+        cv2CdcBaseBand = c.value("cdc_base_band", cv2CdcBaseBand);
         cv2CdcMaxLevel = c.value("cdc_max_level", cv2CdcMaxLevel);
         cv2CdcMaxRate = c.value("cdc_max_rate", cv2CdcMaxRate);
         cv2CdcMotionGuard = c.value("cdc_motion_guard", cv2CdcMotionGuard);
@@ -10650,6 +10651,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cdc_skip", cv2CdcSkip},
         {"cdc_budget", cv2CdcBudget},
         {"cdc_fp", cv2CdcFp},
+        {"cdc_base_band", cv2CdcBaseBand},
         {"cdc_max_level", cv2CdcMaxLevel},
         {"cdc_max_rate", cv2CdcMaxRate},
         {"cdc_motion_guard", cv2CdcMotionGuard},

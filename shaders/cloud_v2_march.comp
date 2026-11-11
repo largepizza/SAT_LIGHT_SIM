@@ -156,6 +156,19 @@ vec3 rayDirAt(vec2 texel, ivec2 size, float tanHalfFov, mat3 camToENU) {
 
 float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
 
+// The coarse stride's share (0..1) at step i of a ray with jitter j: a hash of both (2026-11-10, issue_20261110_182715
+// "Concentric circles"). It was fract(j + 0.618 i): every stride of a ray a function of ONE number, so over all the
+// jitters a pixel visits the coarse samples' depths were not uniform modulo the stride. A cloud thinner than the stride
+// (a flat cumulus field's margins, ~100 m) was met by 10-35% of the visits depending on its distance, with the stride's
+// period: converged, concentric rings round the nadir on every thin cloud (a model of the walk: hit share 0.20 +- 0.063
+// over depth; hashed strides 0.20 +- 0.002, the sampling floor). Each stride now draws its own share.
+float cv2StrideU(float j, int i)
+{
+    uint x = uint(j * 16777216.0) ^ (uint(i) * 0x9E3779B1u);
+    x ^= x >> 16u; x *= 0x7FEB352Du; x ^= x >> 15u; x *= 0x846CA68Bu; x ^= x >> 16u;
+    return float(x >> 8u) * (1.0 / 16777216.0);
+}
+
 // The Sun's colour arriving at a point and the zenith sky's radiance there come from a table (cv2SunLutTex,
 // include/cv2_sunlut.glsl, baked by cloud_v2_sunlut.comp where sunColorAt / skyZenithAt now live).
 
@@ -904,7 +917,7 @@ void main()
                     if (fm.sigma * stepF > 0.1) CV2_CNT(28);                 // [28] misses with od > 0.1 over the step
                 }
 #endif
-                float cj = 2.0 * stepF * (0.75 + 0.5 * fract(jitter + 0.6180340 * float(iters)));
+                float cj = 2.0 * stepF * (0.75 + 0.5 * cv2StrideU(jitter, iters));
                 t += cj; pathLen += cj;
                 continue;
             }
@@ -971,15 +984,15 @@ void main()
                     t = tb > seg[si].x ? tb : seg[si].x + jitter * cv2.march.x;
                     continue;
                 }
-                // Each coarse stride is 1.5-2.5 steps (2 on average), by a per-step golden sequence off the ray's
-                // jitter (2026-10-13). On a lattice offset once at the segment's start, the depth at which a ray's
+                // Each coarse stride is 1.5-2.5 steps (2 on average), by a per-step hash of the ray's jitter
+                // (cv2StrideU: a golden sequence off it from 2026-10-13 until 2026-11-10, which left rings). On a lattice offset once at the segment's start, the depth at which a ray's
                 // first samples met a smooth, dense surface still followed the surface's height with the lattice's
                 // period -- whatever the start jitter's sequence, white noise included -- and so did the light
                 // they got: evenly spaced contour rings on every anvil head and tower wall (the "wood grain", open
                 // since pass 14; user issue 20261012_235712 shot 6). A stride of its own length per step turns the
                 // lattice into a random walk within a few steps of the entry.
                 Tent = -1.0;
-                { float cj = 2.0 * stepF * (0.75 + 0.5 * fract(jitter + 0.6180340 * float(iters)));
+                { float cj = 2.0 * stepF * (0.75 + 0.5 * cv2StrideU(jitter, iters));
                   t += cj; pathLen += cj; }
                 continue;
             }

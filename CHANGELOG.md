@@ -501,6 +501,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - The thin bright line along the horizon is gone, from the sea surface to orbit (issue_20261110_180445). The sky's
   horizon volume blended the air of rays that end on the sea with rays that cross the whole atmosphere in the one row
   of pixels between them.
+- Low clouds no longer come out as pixelated, stair-stepped blocks with isolated square puffs (issue_20261110_182715).
+  The empty-air skip map missed clouds thinner than its 160-m height spacing (flat cumulus margins, thin cumulus
+  fields) and cut them off along its cells; it now also checks just above each cloud base. The same clouds no
+  longer show concentric rings round the point below you: the march's coarse steps are now independently random.
 - An issue report's frame times no longer count the HQ photo's frames: a shot taken after a photo showed its
   slow offscreen frames as 300-ms hitches of the view (issue_20261108_172846).
 - Wildfire smoke on the horizon BEHIND a cloud gets the haze of its own distance: standing in a rain curtain, the

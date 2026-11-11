@@ -989,6 +989,7 @@ struct GpuCloudV2Params
     // z "Ice optics: column share" (singly oriented columns among its halo crystals: tangent arcs, the circumscribed halo,
     // supra / infralateral arcs), w unused
     glm::vec4 optics;
+    glm::vec4 grain;         // (2026-11-10, grain) x "cdc_base_band" (the clipmap bake's base band, cloud_v2_cdc.comp), yzw unused
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -1021,7 +1022,7 @@ static_assert(offsetof(GpuCloudV2Params, amb) == 288 + 48 * kCloudV2Types + 1232
 static_assert(offsetof(GpuCloudV2Params, tone) == 288 + 48 * kCloudV2Types + 1248, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, gnd) == 288 + 48 * kCloudV2Types + 1264, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, micro) == 288 + 48 * kCloudV2Types + 1280, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1696, "GpuCloudV2Params layout");   // +16: optics; +16: hurricane; +16: pucks; +32: wind0, wind1; +32: cellA, cellB; +32: cirrus-hurr (ciHu, ciHu2); +32: storm3 (storm3a, storm3b); +64: vertical (vert, vert2, oro0, oro1); +80: shapeB
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1712, "GpuCloudV2Params layout");   // +16: grain; +16: optics; +16: hurricane; +16: pucks; +32: wind0, wind1; +32: cellA, cellB; +32: cirrus-hurr (ciHu, ciHu2); +32: storm3 (storm3a, storm3b); +64: vertical (vert, vert2, oro0, oro1); +80: shapeB
 static_assert(offsetof(GpuCloudV2Params, cu3) == 288 + 48 * kCloudV2Types + 1312, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
@@ -5505,7 +5506,11 @@ private:
     float cv2CdcBudget = 65536.0f;        // ... cells baked a frame at most
     float cv2CdcFp = -1.0f;               // ... the bake's read footprint: > 0 x the cell, < 0 x the march's own footprint there
     float cv2CdcMaxLevel = 6.0f;          // ... levels the march may use (0-8)
-    float cv2CdcFpUsed = -1.0f, cv2CdcMaxLevelUsed = -1.0f, cv2CdcSkipUsed = -1.0f;
+    // ... the bake's BASE BAND (2026-11-10, issue_20261110_182715, cloud_v2_cdc.comp): each cell's columns read again just over
+    // the low field's base, where a cloud thinner than the pattern's 160-m height spacing lies (flat cumulus margins).
+    // 0 = off (the cells then cut those clouds into cell-shaped blocks). No slider.
+    float cv2CdcBaseBand = 1.0f;
+    float cv2CdcFpUsed = -1.0f, cv2CdcMaxLevelUsed = -1.0f, cv2CdcSkipUsed = -1.0f, cv2CdcBaseBandUsed = -1.0f;
     float cv2CdcBracketUsed = -1.0f;       // the bake's footprint bracket (cdcC.w) the cells were baked with
     int   cv2CdcShapeFrameUsed = -1;       // the low shape volume's frame (cv2ShapeFrame) the cells were baked under
     float cv2CdcDustKeyUsed = -1.0f;   // the haboob field the clipmap's cells were baked with (dust on, gain, cloud form)

@@ -278,6 +278,9 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // lobes), y the Parry share of a region's well-aligned crystals (Parry arcs), z the singly-oriented-column share of its
     // halo crystals (tangent arcs), w unused
     vec4  optics;
+    // (2026-11-10, grain) x "cdc_base_band": the occupancy clipmap bake's extra reads over the low field's base
+    // (cloud_v2_cdc.comp "THE BASE BAND"; 0 = off), yzw unused
+    vec4  grain;
 } cv2;
 #include "wind_field.glsl"
 
