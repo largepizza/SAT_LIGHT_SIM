@@ -501,6 +501,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- Clouds no longer show a field of square tiles after a jump of the sim clock (issue_20261107_163510). A jump of a
+  whole multiple of 20 s (a report, a bookmark, a time set, a scrub) kept parts of the empty-air skip map from before
+  it, and with time paused the cloud they hid never came back. Any clock jump of 10 s or more now starts the map
+  over, and a jump of more than 30 s also restarts the clouds' screen history.
 - The thin bright line along the horizon is gone, from the sea surface to orbit (issue_20261110_180445). The sky's
   horizon volume blended the air of rays that end on the sea with rays that cross the whole atmosphere in the one row
   of pixels between them.

@@ -767,6 +767,24 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     (10.3 km); cloud march at shot 1 with time running ~10.0 -> ~11.2 ms (RTX 3070 Ti, 1920x1009, the reporter's
     settings; the uncontended reps of an A/B on a GPU shared with another app, the rest unusable). The image now matches
     the march without the clipmap in shape (mean |diff| 21.3 -> 4.3 levels; the rest is S2's light moments).
+    **A clock step is a new epoch** (2026-11-10, issue_20261107_163510 "Cloud trails"; SatelliteSimCloudsV2.cpp "A CLOCK
+    STEP"). A cell's sim-time quantum is 4 bits (`floor(ph) & 15`, half a cell of 40 m/s slide: 1.25 s at level 0,
+    doubling per level), so a step of a whole multiple of 16 quanta (every 20 s at level 0, 40 s at level 1) matched the
+    stamps of cells baked before it; only a 600-s step (`lightValid`) took a new epoch. The cells baked empty from the old
+    clouds then skipped the cloud now there: SQUARE TILES of missing cloud over the anvil at the report's shot 4, which
+    with time paused never expire. Deterministic repro (1920x1009, the reporter's settings): from shot 4, `time add 320`
+    or `-320` drew blocks at 2 s and 200 frames on; `time add 330` none; `cdc_skip 0` none. The shot 3 -> shot 4 load (a
+    519-s step) hit it in about half the tries, by the clock's sub-second phase. Now any step of 8 level-0 quanta or more
+    (|dSimT| >= 10 s; the clipmap runs only up to `cdc_max_rate` 4x, where a frame's step is far below that) takes a new
+    epoch; a second step within 64 frames (a scrub) switches the clipmap off until 64 frames after the last one, then one
+    more epoch (the 3-bit epoch must not wrap onto cells baked a few steps back). After: +-320 s clean at 1 s and 2 s, the
+    shapes those of `cdc_skip 0`. Steady views are untouched (a CPU branch): cloud march A-vs-A within the spread at
+    shot 4 and from 400 km. The trail's scrub frames (120/121, 200/201) are within 1.5-2.9 levels of base, the speckle
+    unchanged: that grain is the sparse grid under the scrub's time steps, not the clipmap.
+    The screen history drops on such a step too (`history_time_jump_s` 30, no UI, 0 = the 600-s rule only): the part of
+    the frame's sim-time step the time warp did not run (`cv2SimAdvanceAcc`, the sim's dt x time scale, less a Kessler
+    hold; a hitch under warp is not a jump). Without it the still frames after a step blend the old clouds out at the
+    still weight with the wide box. The Sun shadow volume already restarts on any step over `sun_volume_max_step_s` (1 s).
   - **S2** (`cdc_light`, `cdc_light_levels` 3): light steps 3+ read the cell's mean + variance of the light extinction
     through the gamma model E[exp(-L e)] (a cell MEAN alone darkened broken cloud by up to 18 levels: Jensen). Modest.
     Not the diffuse field's far side (tauB) since 2026-11-06: that is jittered field reads at every range ("The look at
