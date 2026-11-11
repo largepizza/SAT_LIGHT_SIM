@@ -126,11 +126,13 @@ void bakePass(uint ti)
     // overhead at the fine one can read "empty" between puffs that the ring's coarser footprint merges (on the report's
     // low trail, 20 km/s at 600 m: 0.4% of the pixels > 16 levels off without the bracket, the floor with it).
     // Off (cdcC.w 0): one read at the eye's footprint.
-    bool  brk = cv2.cdcC.w > 0.5 && cv2.cdcB.y < 0.0;
     float r0  = cv2.cdcA.z * float(kCv2CdcN / 2 - 2) * float(1 << lv);
     float dzE = abs(zc - eyeH);
     float fpLo = -cv2.cdcB.y * length(vec2(lv == 0 ? 0.0 : 0.5 * r0, dzE)) * pixA;
     float fpHi = -cv2.cdcB.y * length(vec2(1.4142136 * r0, dzE + kCv2CdcDZ)) * pixA;
+    // (2026-11-11, perfrec: no bracket where its two footprints are within 15% of each other -- from orbit both ends of a
+    // level's ring are ~the eye's height away, and the second read of every point was the first again: half the bake.)
+    bool  brk = cv2.cdcC.w > 0.5 && cv2.cdcB.y < 0.0 && fpHi > 1.15 * fpLo;
     // THE BASE BAND (2026-11-10, issue_20261110_182715 "Pixelated cloud edges"): the pattern's four heights are 160 m apart,
     // and a low cloud thinner than that between two of them -- the margin of every flat-based cumulus, where its top comes
     // down to its base, and whole fields of thin humilis -- read empty at every point: the march skipped it, and the clouds'
@@ -141,6 +143,24 @@ void bakePass(uint ti)
     // inlined again). A cell nowhere near a base reads nothing more. grain.x 0 = off.
     float bLo = 1e9, bHi = -1.0;
     int   nB  = cv2.grain.x > 0.5 ? 54 : 0;
+    // THE CYCLONES' REACH PER CELL (2026-11-11, perfrec): the hurricane fill's loop (cv2HurrAt) and the flow map's (cv2CycFlowAt)
+    // ran at every bake point of every cell on the planet's near side; a cell no cyclone can reach (1.3 CDO radii / the bands'
+    // reach, + the pattern's 1.5 cells and the flow warp's margin) skips both, as the march does per ray (gCv2HurrNear /
+    // gCv2FlowNear). Exact: inside the reach nothing changes; outside it every iteration would have `continue`d.
+    {
+        vec3  dC   = cv2Drift(cv2Pos(normalize(cv2.layA.xyz * kCv2CdcR + cv2.layE.xyz * uc.x + cv2.layN.xyz * uc.y) * (R_EARTH + zc) - eyeP,
+                                     eyeH, enuToEcef).dirE);
+        float span = (1.5 * cell + 8.0 * max(cv2.flow.x, 0.0) + 20000.0) * (1.0 / R_EARTH);
+        gCv2HurrNear = false; gCv2FlowNear = false;
+        if (cv2.hurricane.y + cv2.hurricane.z + cv2.hurricane.w > 0.0)
+            for (uint i = 0u; i < min(cv2CycHead.x, kCv2CycloneMax); ++i) {
+                float cdo = max(cv2Cyclones[i].c.y, 2.0 * max(cv2Cyclones[i].d.x, 2000.0));
+                if (dot(cv2Cyclones[i].b.xyz, dC) > cos(min(1.3 * cdo * (1.0 / R_EARTH) + span, 3.1))) { gCv2HurrNear = true; break; }
+            }
+        if (cv2.flowP.x > 0.0 && cv2.flowP.w > 0.0)
+            for (uint i = 0u; i < min(cv2CycHead.y, kCv2CycloneMax); ++i)
+                if (dot(cv2Cyclones[i].a.xyz, dC) > cos(min(max(cv2Cyclones[i].c.z, 1000.0) * (1.0 / R_EARTH) + span, 3.1))) { gCv2FlowNear = true; break; }
+    }
     [[dont_unroll]] for (int k = int(lane); k < nS + nB; k += int(kCdcLanes)) {
         int   kk = k - 1;
         vec3  o  = (nS == 36) ? vec3(float(k % 3) - 1.0, float((k / 3) % 3) - 1.0, (float(k / 9) - 1.5) * 0.5)
