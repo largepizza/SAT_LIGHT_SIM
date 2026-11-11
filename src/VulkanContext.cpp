@@ -8,6 +8,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <iostream>
 #include <map>
 #include <set>
@@ -682,15 +683,28 @@ void VulkanContext::createDevice()
         }
         if (!pipelineCachePath.empty())
         {
+            // THE CACHE IS KEYED TO THE SHIPPED SPIR-V (2026-11-11, flowmaps round 4): every build's pipelines were added
+            // to it and nothing removed, so after a wave of merges it stood at 238 MB of mostly stale entries, and with
+            // that loaded the app died silently at pipeline creation (the driver's work on a near-cap cache) until the
+            // file was deleted by hand. pipeline_cache.key beside it holds a hash of every shaders/*.spv (size and
+            // bytes); a mismatch (any shader rebuilt) starts the cache over -- one slow launch, as past the size cap.
+            const std::string keyNow = pipelineCacheKey();
+            std::string keyOld;
+            {
+                std::ifstream k(pipelineCachePath + ".key");
+                if (k) std::getline(k, keyOld);
+            }
             std::ifstream f(pipelineCachePath, std::ios::binary | std::ios::ate);
             const std::streamoff n = f ? (std::streamoff)f.tellg() : 0;
-            // Stale entries from earlier builds accumulate: start over past 256 MB (one slow launch).
-            if (n > 0 && n < (std::streamoff)256 * 1024 * 1024)
+            // Stale entries from earlier builds accumulate: start over past 160 MB (one slow launch).
+            if (n > 0 && n < (std::streamoff)160 * 1024 * 1024 && keyOld == keyNow)
             {
                 data.resize((size_t)n);
                 f.seekg(0);
                 f.read(data.data(), n);
             }
+            else if (n > 0)
+                Log::line("Pipeline cache: starting over (" + std::string(keyOld == keyNow ? "past the size cap" : "the shaders changed") + ").");
         }
         VkPipelineCacheCreateInfo pc{VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
         pc.initialDataSize = data.size();
@@ -707,10 +721,36 @@ void VulkanContext::createDevice()
     }
 }
 
+// A hash of the shipped SPIR-V set (every shaders/*.spv beside the exe: its size and bytes, FNV-1a 64): the pipeline
+// cache's key (above). ~30 MB read once at boot.
+std::string VulkanContext::pipelineCacheKey() const
+{
+    uint64_t h = 1469598103934665603ull;
+    std::error_code ec;
+    std::vector<std::string> names;
+    for (const auto &e : std::filesystem::directory_iterator(Paths::exeDir() + "/shaders", ec))
+        if (e.is_regular_file(ec) && e.path().extension() == ".spv")
+            names.push_back(e.path().string());
+    std::sort(names.begin(), names.end());
+    for (const std::string &p : names)
+    {
+        std::ifstream f(p, std::ios::binary);
+        std::vector<char> b((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        h = (h ^ (uint64_t)b.size()) * 1099511628211ull;
+        for (char c : b)
+            h = (h ^ (uint8_t)c) * 1099511628211ull;
+    }
+    return std::to_string(h) + " " + std::to_string(names.size());
+}
+
 void VulkanContext::savePipelineCache()
 {
     if (pipelineCache == VK_NULL_HANDLE || pipelineCachePath.empty())
         return;
+    {
+        std::ofstream k(pipelineCachePath + ".key", std::ios::trunc);
+        if (k) k << pipelineCacheKey() << "\n";
+    }
     size_t n = 0;
     if (vkGetPipelineCacheData(device, pipelineCache, &n, nullptr) != VK_SUCCESS || n == 0)
         return;

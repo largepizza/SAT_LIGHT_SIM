@@ -84,6 +84,7 @@ struct VulkanContext {
     VkPipelineCache          pipelineCache = VK_NULL_HANDLE;
     std::string              pipelineCachePath;
     void                     savePipelineCache();
+    std::string              pipelineCacheKey() const;   // a hash of the shipped SPIR-V set: the cache starts over when it changes
 
     // ── Render pass & framebuffers ─────────────────────────────────────────
     VkRenderPass                renderPass = VK_NULL_HANDLE;
