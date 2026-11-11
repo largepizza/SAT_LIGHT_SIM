@@ -287,6 +287,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
 
     createCloudMorph(ctx);
     createCloudMie(ctx);
+    createCloudIceOptics(ctx);
 
     // ── Noise bakes (cloud_v2_noise.comp, modes 0/1/2) ──
     {
@@ -604,14 +605,15 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     // 25 the elevation map (2026-10-22: the terrain Sun-horizon map's bake, cloud_v2_terrsun.comp, alone reads it)
     // 26 the storm objects' towers + their bins (cv2_storms.glsl, SatelliteSimWeather.cpp)
     // 27 last frame's resolved clouds (the history copy: the smooth tiles' classification, cloud_v2_tiles.comp)
+    // 28 the ice crystals' traced halo table (2026-11-10, cv2_optics.glsl cv2IceOptics, tools/make_ice_optics.py)
     cv2MarchDescLayout = makeSetLayout(dev, {UBO, UBO, TEX, TEX, TEX, TEX, TEX, TEX, SSBO, SSBO, IMG, IMG, SSBO, IMG, TEX, SSBO,
-                                             TEX, IMG, IMG, SSBO, TEX, IMG, SSBO, SSBO, TEX, TEX, SSBO, TEX});
+                                             TEX, IMG, IMG, SSBO, TEX, IMG, SSBO, SSBO, TEX, TEX, SSBO, TEX, TEX});
     // cloud_v2_resolve.comp: 0 CloudV2Params, 1 new color, 2 new depth, 3 history, 4 out color, 5 out depth,
     // 6/7 the full-rate tiles' color/depth, 8 the tile list
     // 9 / 10 the sample ages (out, history)
     cv2ResolveDescLayout = makeSetLayout(dev, {UBO, TEX, TEX, TEX, IMG, IMG, TEX, TEX, SSBO, IMG, TEX});
     {
-        VkDescriptorPoolSize ps[4] = {{UBO, 3}, {TEX, 18}, {SSBO, 9}, {IMG, 9}};
+        VkDescriptorPoolSize ps[4] = {{UBO, 3}, {TEX, 19}, {SSBO, 9}, {IMG, 9}};
         VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pi.maxSets = 2;
         pi.poolSizeCount = 4;
@@ -692,6 +694,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         VkDescriptorBufferInfo cdc{cv2CdcBuf, 0, VK_WHOLE_SIZE};
         VkDescriptorBufferInfo storms{stormBuf, 0, VK_WHOLE_SIZE};
         VkDescriptorImageInfo mieI{cv2ClampSampler, cv2MieView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+        VkDescriptorImageInfo iceI{cv2ClampSampler, cv2IceOpticsView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo lvOut{VK_NULL_HANDLE, cv2SunLutView, VK_IMAGE_LAYOUT_GENERAL};
         VkDescriptorImageInfo lvIn{cv2ClampSampler, cv2SunLutView, VK_IMAGE_LAYOUT_GENERAL};
         VkDescriptorImageInfo elevI{earthElevSampler ? earthElevSampler : noiseSampler,
@@ -703,6 +706,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
             bufferWrite(cv2MarchDescSet, 23, SSBO, &cdc),
             bufferWrite(cv2MarchDescSet, 26, SSBO, &storms),
             imageWrite(cv2MarchDescSet, 24, TEX, &mieI),
+            imageWrite(cv2MarchDescSet, 28, TEX, &iceI),
             bufferWrite(cv2ResolveDescSet, 8, SSBO, &tiles),
             imageWrite(cv2MarchDescSet, 13, IMG, &lvOut),
             imageWrite(cv2MarchDescSet, 14, TEX, &lvIn),
@@ -1139,11 +1143,11 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     cv2ParamsMem = VK_NULL_HANDLE;
     cv2ParamsMapped = nullptr;
     VkImageView *views[] = {&cv2WeatherView, &cv2ShapeView, &cv2DetailView, &cv2MesoView, &cv2MorphView, &cv2MieView,
-                            &cv2ShapeCapsView, &cv2ShapeBillowView, &cv2DetailBillowView};
+                            &cv2ShapeCapsView, &cv2ShapeBillowView, &cv2DetailBillowView, &cv2IceOpticsView};
     VkImage *imgs[] = {&cv2WeatherImg, &cv2ShapeImg, &cv2DetailImg, &cv2MesoImg, &cv2MorphImg, &cv2MieImg, &cv2ShapeCapsImg,
-                       &cv2ShapeBillowImg, &cv2DetailBillowImg};
+                       &cv2ShapeBillowImg, &cv2DetailBillowImg, &cv2IceOpticsImg};
     VkDeviceMemory *mems[] = {&cv2WeatherMem, &cv2ShapeMem, &cv2DetailMem, &cv2MesoMem, &cv2MorphMem, &cv2MieMem,
-                              &cv2ShapeCapsMem, &cv2ShapeBillowMem, &cv2DetailBillowMem};
+                              &cv2ShapeCapsMem, &cv2ShapeBillowMem, &cv2DetailBillowMem, &cv2IceOpticsMem};
     for (int i = 0; i < (int)(sizeof(views) / sizeof(views[0])); ++i)
     {
         if (*views[i]) vkDestroyImageView(device, *views[i], nullptr);
@@ -1313,7 +1317,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2DetailPeriodM, cv2CellPeriodM, cv2ClusterPeriodM, (float)cv2DebugView, cv2EdgeSharpness,
                     cv2WeatherWarpKm, cv2MidAmount, cv2StormScale, cv2StormDetail,
                     cv2Anvil, cv2BaseRoughness, cv2HighAmount, cv2HighDensity, cv2CirrusStretch,
-                    cv2RainAmount, cv2OpticsGain, cv2CirrusPeriodM, cv2MidPeriodM, cv2MidDensity,
+                    cv2RainAmount, cv2OpticsGain, cv2IceOpticsTable, cv2IceOpticsColumns, cv2IceOpticsParry, cv2CirrusPeriodM, cv2MidPeriodM, cv2MidDensity,
                     cv2CloudSunRayleigh, cv2TwilightSky, cv2FlowWarp, cv2FlowPeriodKm, cv2LayerSpread,
                     cv2TopHeavy, cv2TowerTop, cv2CirrusFieldKm, cv2CirrusFlow, cv2BaseFlatness, cv2CuLobesBottom, cv2CuLobesTop,
                     cv2CbColumns, cv2CbSpacingKm, cv2CbRadiusKm, cv2CbCumulusTopKm, cv2CbWaist, cv2CbFlare,
@@ -2241,6 +2245,9 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.pucks = glm::vec4(std::clamp(cv2CuHeaps, 0.0f, 1.0f), std::clamp(cv2CuHeapDepth, 0.0f, 2.0f), 0.0f, 0.0f);
     // A hurricane's CDO sheet and eyewall (2026-11-08, hurricane; clouds_v2.glsl cv2CdoShare, cv2LowA "THE EYEWALL").
     p.hurricane = glm::vec4(std::clamp(cv2HurrSheetSwirl, 0.0f, 1.0f), std::clamp(cv2HurrEyewall, 0.0f, 1.0f), 0.0f, 0.0f);
+    // The ice crystals' traced halo table (2026-11-10, optics; cv2_optics.glsl cv2IceOptics): off without the asset.
+    p.optics = glm::vec4((cv2IceOpticsLoaded && cv2IceOpticsTable > 0.5f) ? 1.0f : 0.0f, std::clamp(cv2IceOpticsParry, 0.0f, 1.0f),
+                         std::clamp(cv2IceOpticsColumns, 0.0f, 1.0f), 0.0f);
     // Vertical variation (vertical, 2026-11-05): cv2BaseShift's strengths, fractus, mid-level wisps.
     p.vert  = glm::vec4(std::clamp(cv2BaseLcl, 0.0f, 2.0f), std::clamp(cv2BaseCellM, 0.0f, 400.0f),
                         std::clamp(cv2BaseRegional, 0.0f, 2.0f), std::clamp(cv2Fractus, 0.0f, 2.0f));
@@ -3207,6 +3214,84 @@ void SatelliteSim::createCloudMie(VulkanContext &ctx)
     vkDestroyBuffer(ctx.device, stageBuf, nullptr);
     vkFreeMemory(ctx.device, stageMem, nullptr);
     cv2MieView = makeView(ctx.device, cv2MieImg, VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_R16G16B16A16_SFLOAT, 0, 1, 1);
+}
+
+// ─── The ice crystals' traced halo table (2026-11-10, optics, tools/make_ice_optics.py) ──────────────────────────────
+// assets/textures/ice_optics.rgba8: 'SLIO', NT, H, NE, NP, PMAX, NRAND, NPOP, then NE layers x H rows x NT texels of RGBA8
+// (the layout cv2_optics.glsl spells out: theta from the light x phi about it per crystal population x the light's
+// elevation). Missing, or of another layout than the shader's constants: a 1x1x1 texel and cv2IceOpticsLoaded false, so
+// cv2.optics.x is 0 and the march draws the analytic lobes as before.
+void SatelliteSim::createCloudIceOptics(VulkanContext &ctx)
+{
+    uint32_t nt = 1, h = 1, ne = 1;
+    std::vector<uint8_t> data(4, 0);
+    cv2IceOpticsLoaded = false;
+    {
+        const char *path = "assets/textures/ice_optics.rgba8";
+        Log::line(std::string("init: texture: ") + path);
+        if (FILE *f = std::fopen(path, "rb"))
+        {
+            char magic[4] = {};
+            uint32_t hdr[4] = {}, tail[2] = {};
+            float pmax = 0.0f;
+            if (std::fread(magic, 1, 4, f) == 4 && std::memcmp(magic, "SLIO", 4) == 0 && std::fread(hdr, 4, 4, f) == 4
+                && std::fread(&pmax, 4, 1, f) == 1 && std::fread(tail, 4, 2, f) == 2
+                && hdr[0] == 244 && hdr[1] == 277 && hdr[2] == 31 && hdr[3] == 91 && std::fabs(pmax - 512.0f) < 1e-3f)
+            {
+                std::vector<uint8_t> d((size_t)hdr[0] * hdr[1] * hdr[2] * 4);
+                if (std::fread(d.data(), 1, d.size(), f) == d.size())
+                {
+                    nt = hdr[0];
+                    h = hdr[1];
+                    ne = hdr[2];
+                    data.swap(d);
+                    cv2IceOpticsLoaded = true;
+                }
+            }
+            std::fclose(f);
+        }
+        if (!cv2IceOpticsLoaded)
+            Log::line("init: ice optics table missing or of another layout (tools/make_ice_optics.py): analytic halos");
+        else
+            Log::line("init: ice optics table " + std::to_string(nt) + "x" + std::to_string(h) + "x" + std::to_string(ne)
+                      + " RGBA8, " + std::to_string(data.size() / 1024) + " KB");
+    }
+    const VkDeviceSize total = (VkDeviceSize)data.size();
+    VkBuffer stageBuf;
+    VkDeviceMemory stageMem;
+    ctx.createBuffer(total, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, stageBuf, stageMem);
+    {
+        void *mapped;
+        vkMapMemory(ctx.device, stageMem, 0, total, 0, &mapped);
+        std::memcpy(mapped, data.data(), (size_t)total);
+        vkUnmapMemory(ctx.device, stageMem);
+    }
+    ctx.createImage(nt, h, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                    cv2IceOpticsImg, cv2IceOpticsMem, 1, ne);
+    VkCommandBuffer cmd = ctx.beginOneTimeCommands();
+    VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    b.image = cv2IceOpticsImg;
+    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+    VkBufferImageCopy region{};
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {nt, h, ne};
+    vkCmdCopyBufferToImage(cmd, stageBuf, cv2IceOpticsImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+    ctx.endOneTimeCommands(cmd);
+    vkDestroyBuffer(ctx.device, stageBuf, nullptr);
+    vkFreeMemory(ctx.device, stageMem, nullptr);
+    cv2IceOpticsView = makeView(ctx.device, cv2IceOpticsImg, VK_IMAGE_VIEW_TYPE_3D, VK_FORMAT_R8G8B8A8_UNORM, 0, 1, 1);
 }
 
 // ─── Cloud morphology (review 17) ─────────────────────────────────────────────────────────────────

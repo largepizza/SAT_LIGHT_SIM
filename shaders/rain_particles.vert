@@ -32,6 +32,7 @@
 #define CV2_PARAMS_BINDING 1
 #define CV2_PARAMS_ONLY
 #include "clouds_v2.glsl"
+#define CV2_ICE_OPTICS_BINDING 6   // the ice crystals' traced halo table (2026-11-10)
 #include "cv2_optics.glsl"
 #define CV2_FLASH_BINDING 2
 #include "cloud_lightning.glsl"
@@ -78,7 +79,7 @@ vec3 dropPhase(uint kind, vec3 vdir, vec3 L, vec3 nPl, float og)
     if (kind == 1u) {
         vec4 habSnow = vec4(0.2, 0.35, 0.0, 0.0);
         return vec3(0.3 * cv2HG(cosK, 0.97) + 0.55 * cv2HG(cosK, 0.35))
-             + og * (0.25 * cv2IceOptics(vdir, L, habSnow) + 0.15 * cv2PillarOptics(vdir, L))
+             + og * (0.25 * cv2IceOptics(vdir, L, vec3(0.0, 0.0, 1.0), habSnow) + 0.15 * cv2PillarOptics(vdir, L))
              + vec3(exp(-(1.0 - abs(dot(nPl, hv))) / 6e-4) * (0.05 / 6e-4) * 0.5 * og);
     }
     return vec3(0.3 * cv2HG(cosK, 0.97) + 0.55 * cv2HG(cosK, 0.35)) + og * 0.5 * cv2RainOptics(vdir, L);

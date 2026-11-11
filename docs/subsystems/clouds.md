@@ -1975,6 +1975,48 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   march, for the Sun or the Moon. Debug views 5 (rain optical depth) and 6 (rain at the eye, streak
   mask). Ice optics are gated per REGION by crystal habit (`cv2IceHabit`, evaluated at a ray's first ice
   sample): a 22 deg halo in ~1/3 of cirrus, sundogs less, the CZA/parhelic circle rarely, 46 deg very rarely.
+- **Ice halos are PREDICTED from crystal geometry, not placed (2026-11-10, issue_20261110_180734 "Optics physics").**
+  `cv2IceOptics(v, s, up, hab)` (include/cv2_optics.glsl) reads `assets/textures/ice_optics.rgba8`, a 244 x 277 x 31
+  RGBA8 3D texture (8.4 MB, march binding 28, rain particles binding 6, `createCloudIceOptics`) that
+  `tools/make_ice_optics.py` ray-traces through hexagonal ice prisms (Monte-Carlo geometric optics: Fresnel reflection,
+  refraction, total internal reflection through the 8 faces, 2 M rays per population x elevation x colour channel at
+  the ice indices R 1.3069 / G 1.3108 / B 1.3165, ~15 min on the CPU; shipped, not baked at start). Axes: x the
+  scattering angle from the light (0..64 deg at 0.5 deg, then 64..180 at 1 deg), y the crystal POPULATION and the
+  azimuth about the light from its zenith side (rows 0-1 random columns c/2a 2.5, 2-3 random compact 1.0, then 91
+  rows of phi 0..180 at 2 deg for plates (c/2a 0.25, tilt sigma 1 deg), singly oriented columns (tilt 1.5 deg) and
+  Parry-oriented columns (a prism face level, spin sigma 1 deg)), z the light's elevation over the crystals' local
+  horizontal (0..60 at 2.5 deg, 65..90 at 5). Texel = (P / 512)^(1/3), P the phase in cv2HG's isotropic = 1
+  convention without the undeviated rays (0.25-0.29 of the geometric light goes straight through two parallel faces:
+  the march's delta-scaled extinction carries it). The lookup is 3-5 trilinear fetches per ray (the Sun and the Moon
+  each) at the ray's FIRST ice sample, the fog's midpoint and each particle, weighted by the habit: x random columns
+  (and "Ice optics: column share" `ice_optics_columns` 0.5 of them singly oriented), y plates, z well-aligned
+  crystals ("Ice optics: Parry share" `ice_optics_parry` 0.2 of them Parry), w compact random crystals; `CV2_IO_GAIN`
+  0.25 puts the traced 22 deg halo peak (~16 x isotropic) where the approved analytic one sat (4): the RELATIVE
+  strengths are the trace's (sundogs ~30 x the halo near the horizon, the 46 deg halo ~1/8 of it, fading with
+  elevation as the plates' effective index grows). "Ice optics: traced crystal table" `ice_optics_table` 1 (0, or a
+  missing asset, = the analytic lobes `cv2IceOpticsAnalytic`, kept as the A/B). What the table predicts and the tool's
+  `--check` verifies against closed forms (all within one 0.5 deg texel): the 22.0 / 46 deg halos at the minimum
+  deviations 21.6 / 21.9 / 22.3 and 45.1 / 45.9 / 47.2 deg (R/G/B); the sundog's distance 21.9 deg at the horizon,
+  23.1 at 20 deg, 27.7 at 40, 32.5 at 50, gone past 61; the circumzenithal arc at asin(sqrt(n^2 - cos^2 e)) - e above
+  the Sun, Sun below 32.2 deg only; the circumhorizon arc below 46-58 deg under the Sun, Sun above 57.8 only; the
+  tangent arcs' tops 22 deg above / below, closing into the circumscribed halo above ~29 deg; the supralateral arc
+  at ~46-48 deg above; the subsun at 2e below the Sun; the Parry arc above the upper tangent arc. The light's
+  elevation is taken over the crystals' OWN vertical (`up` = the first ice sample's `CV2Pos.dirE` in ENU; the fog's
+  `normalize(pm)`; `vec3(0,0,1)` at the eye for particles, snow and beams): from orbit the sample's horizontal is
+  degrees from the eye's. A light below that horizontal (twilight cirrus lit from under) is the mirror pattern
+  (e -> -e, phi -> 180 - phi). FROM ABOVE THE LAYER the physics says, and the table draws: the circular halos'
+  lower halves (random crystals scatter the same in every direction: aircraft photograph the 22 deg ring on cloud
+  decks below), the subsun, subparhelia and subparhelic circle (plate reflections at -e), NO sundogs, parhelic
+  circle, CZA or tangent arcs below the horizon (those leave plates / columns upward only). The sun pillar stays
+  analytic (`cv2PillarOptics`: wobbling plates, tilts 5-15 deg, a population the table does not carry). Iridescence
+  and coronae are diffraction by droplets / young ice crystals (a size-distribution effect, Mie): the droplet table
+  (`cv2MieTex`, `make_mie_lut.py`) carries the corona and the cloudbow for liquid cloud; there is no ice-crystal
+  corona (small-crystal diffraction) in either table. Cost (2026-11-10, RTX 3070 Ti, 1600x900, the GPU shared with a
+  second agent's app so absolute numbers are inflated): the base march SPV against the table one interleaved 3 reps
+  per view, cloud march 20.1 -> 19.2 ms at the diamond-dust view (180734 shot 2) and 25.0 -> 25.8 ms at the orbit
+  cirrus view (shot 1), both inside the rep spread (+-1.7..3.7 ms); 128 registers and the same local memory in both,
+  the binary 512640 -> 543488 bytes (the table path inlined at five call sites beside the kept analytic one). The
+  table's own lookups are 3-5 trilinear fetches per ray per light, once per ray.
   The sun path to every cloud sample is the Chapman column (`sunTransmit`, include/atmosphere.glsl) plus
   ozone: a 12-step midpoint rule along a grazing path misses the tangent point's dense air.
 - **Tonemap controls** (Photometry tab, EXPOSURE AND MOON section since 2026-10-06 — they were deep in the Clouds

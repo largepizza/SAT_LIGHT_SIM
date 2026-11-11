@@ -983,6 +983,12 @@ struct GpuCloudV2Params
     // sheet swirl" (the sheet's spiral outline, frays and ripple), y "Hurricane eyewall" (the storm mass's ring round the eye),
     // zw unused
     glm::vec4 hurricane;
+    // (2026-11-10, optics, issue_20261110_180734) The ice crystals' traced halo table (cv2_optics.glsl cv2IceOptics,
+    // tools/make_ice_optics.py): x 1 = the table ("Ice optics: traced table"; 0 = the analytic lobes, also when the asset is
+    // missing), y "Ice optics: Parry share" (Parry-oriented columns among a region's well-aligned crystals: Parry arcs),
+    // z "Ice optics: column share" (singly oriented columns among its halo crystals: tangent arcs, the circumscribed halo,
+    // supra / infralateral arcs), w unused
+    glm::vec4 optics;
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -1015,7 +1021,7 @@ static_assert(offsetof(GpuCloudV2Params, amb) == 288 + 48 * kCloudV2Types + 1232
 static_assert(offsetof(GpuCloudV2Params, tone) == 288 + 48 * kCloudV2Types + 1248, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, gnd) == 288 + 48 * kCloudV2Types + 1264, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, micro) == 288 + 48 * kCloudV2Types + 1280, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1680, "GpuCloudV2Params layout");   // +16: hurricane; +16: pucks; +32: wind0, wind1; +32: cellA, cellB; +32: cirrus-hurr (ciHu, ciHu2); +32: storm3 (storm3a, storm3b); +64: vertical (vert, vert2, oro0, oro1); +80: shapeB
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1696, "GpuCloudV2Params layout");   // +16: optics; +16: hurricane; +16: pucks; +32: wind0, wind1; +32: cellA, cellB; +32: cirrus-hurr (ciHu, ciHu2); +32: storm3 (storm3a, storm3b); +64: vertical (vert, vert2, oro0, oro1); +80: shapeB
 static_assert(offsetof(GpuCloudV2Params, cu3) == 288 + 48 * kCloudV2Types + 1312, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
@@ -5726,6 +5732,12 @@ private:
     float cv2HurrEyewall = 1.0f;
     float cv2RainAmount = 3.0f;         // rain shafts under precipitating cloud, 0 = none
     float cv2OpticsGain = 1.0f;        // halos, sundogs, circumzenithal arc, rainbows
+    // (2026-11-10, optics) The ice halos from the traced crystal table (cv2_optics.glsl): 1 the table, 0 the analytic lobes;
+    // the shares of singly oriented columns (tangent arcs) among a region's halo crystals and of Parry-oriented columns
+    // (Parry arcs) among its well-aligned ones. clouds_v2.ice_optics_table / _columns / _parry, slots 584-586.
+    float cv2IceOpticsTable = 1.0f;
+    float cv2IceOpticsColumns = 0.5f;
+    float cv2IceOpticsParry = 0.2f;
     float cv2RainStreaks = 3.1f;       // the rain particles' visibility (x their real coverage; "Drops at the eye")
     float moveSpeedPerHeight = 1.0f;   // WASD: this many times the height above the ground per second (capped
                                        // at the old fixed 0.08 rad/s, ~510 km/s): slow near the surface
@@ -6417,6 +6429,14 @@ private:
     VkImageView cv2MieView = VK_NULL_HANDLE;
     std::vector<float> cv2MieReff;
     void createCloudMie(VulkanContext &ctx);
+    // The ice crystals' traced halo table (2026-11-10, tools/make_ice_optics.py -> assets/textures/ice_optics.rgba8): a 3D
+    // RGBA8 texture (theta from the light x phi about it per crystal population x the light's elevation), march binding 28,
+    // rain particles binding 6. cv2IceOpticsLoaded: the asset was found with the layout cv2_optics.glsl expects.
+    VkImage cv2IceOpticsImg = VK_NULL_HANDLE;
+    VkDeviceMemory cv2IceOpticsMem = VK_NULL_HANDLE;
+    VkImageView cv2IceOpticsView = VK_NULL_HANDLE;
+    bool cv2IceOpticsLoaded = false;
+    void createCloudIceOptics(VulkanContext &ctx);
     VkImage cv2MorphImg = VK_NULL_HANDLE;
     VkDeviceMemory cv2MorphMem = VK_NULL_HANDLE;
     VkImageView cv2MorphView = VK_NULL_HANDLE;
