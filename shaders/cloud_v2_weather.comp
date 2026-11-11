@@ -365,7 +365,10 @@ vec4 stormStampFinish(vec4 o, vec3 d)
         // whole CDO now overcast, a flat 0.55 drew one uniform 40-dBZ disc 400 km across on the radar.)
         o.z = max(o.z, max(wall * mix(0.6, 1.0, I), max(inner * mix(0.6, 0.25, smoothstep(rmw, cdo, r)), band * bandsK * 0.7)));
         o.w = max(o.w, (1.0 - band) * bandsK * 0.7);
-        if (cy.c.x > 0.0) eyeAcc = max(eyeAcc, (1.0 - smoothstep(0.7 * cy.c.x, 1.15 * cy.c.x, r)) * smoothstep(0.15, 0.4, I));
+        // (The eye's 2D clearing is its floor only, 0.45-0.8 eye radii (2026-11-10, hurrshape, issue_20261109_184650): the
+        // low field cuts the rest in 3D, a stadium sloping out to 1.5 eye radii at the top (clouds_v2.glsl cv2LowA "THE EYE
+        // AS A BOWL"). Cleared out to 1.15 here, the wall was the map's 2D edge extruded: vertical slabs and cliffs.)
+        if (cy.c.x > 0.0) eyeAcc = max(eyeAcc, (1.0 - smoothstep(0.45 * cy.c.x, 0.8 * cy.c.x, r)) * smoothstep(0.15, 0.4, I));
         deckC = max(deckC, inner);
     }
     gCycDeck = max(gCycDeck, deckC * pc.storm2.x * (1.0 - eyeAcc));

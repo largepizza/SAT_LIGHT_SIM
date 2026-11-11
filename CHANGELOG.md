@@ -123,6 +123,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   low flat mesas under an empty sky, the eyewall is the storm cloud itself rising round a stadium-shaped eye with
   fluted walls, and the top sheet follows the spiral arms out, frays into streaks at its edge and carries a faint
   swirl ripple (Clouds > Hurricane sheet swirl / Hurricane eyewall).
+- **Hurricane low cloud smoother and fuller, the eye a bowl.** Under the central overcast the low cloud is one deep,
+  calm mass rising toward the eyewall to meet the top sheet, instead of cut-up columns under an empty gap; erosion is
+  turned down within a hurricane's reach only; the eye's wall slopes out like a stadium instead of standing in slabs.
+  Also cheaper: ~10 ms less GPU under and over the core (Clouds > Hurricane fill / Hurricane smoothing).
 - **Hurricanes rotate.** The cloud texture round a tropical cyclone turns about its eye with the circulation (faster
   inside the radius of maximum wind, slower outward, counter-clockwise in the north) and rides with the storm instead of
   sliding through it with the global cloud drift; the spiral bands stay as the storm's quasi-stationary envelope and the

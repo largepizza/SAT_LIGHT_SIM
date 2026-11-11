@@ -1329,6 +1329,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2CuTurrets, cv2CuTurretStretch, cv2CuTurretLean, cv2CuTurretSkew,
                     cv2CuBody, cv2CuEdge, cv2CuShowerCells, cv2CuShowerCores, cv2CuBubbles, cv2CuBubbleGain, cv2CuBubbleFine, cv2CuBubbleSize, cv2CuBubbleBase, cv2CuEnvTowers, cv2CuCore, cv2CuBubbleWarp, cv2CuHeadWidth, cv2CuHeaps, cv2CuHeapDepth, cv2HurrSheetSwirl, cv2HurrEyewall, cv2StormMass, stormMoat, stormMoatWidthKm, stormMoatFeather, stormMoatFrequency, stormTowerHeight, stormFullness, stormOverhang, stormPuffiness,
                     cv2HurrRotation, cv2HurrFlowTurns, cv2HurrFlowBlend,
+                    cv2HurrFill, cv2HurrSmooth,
                     cv2CirrusFibres, cv2CirrusHooks,
                     cv2AnvilFibres, cv2AnvilFibreAlongKm, cv2AnvilFibreAcrossM, cv2StormBubbles, cv2AnvilErosion,
                     cv2AnvilLidLobes, cv2AnvilUnderLobes,
@@ -2289,7 +2290,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // Shallow cumulus heaps (2026-11-08, pucks; clouds_v2.glsl cv2LowA).
     p.pucks = glm::vec4(std::clamp(cv2CuHeaps, 0.0f, 1.0f), std::clamp(cv2CuHeapDepth, 0.0f, 2.0f), 0.0f, 0.0f);
     // A hurricane's CDO sheet and eyewall (2026-11-08, hurricane; clouds_v2.glsl cv2CdoShare, cv2LowA "THE EYEWALL").
-    p.hurricane = glm::vec4(std::clamp(cv2HurrSheetSwirl, 0.0f, 1.0f), std::clamp(cv2HurrEyewall, 0.0f, 1.0f), 0.0f, 0.0f);
+    p.hurricane = glm::vec4(std::clamp(cv2HurrSheetSwirl, 0.0f, 1.0f), std::clamp(cv2HurrEyewall, 0.0f, 1.0f),
+                            std::clamp(cv2HurrFill, 0.0f, 1.0f), std::clamp(cv2HurrSmooth, 0.0f, 1.0f));
     // The ice crystals' traced halo table (2026-11-10, optics; cv2_optics.glsl cv2IceOptics): off without the asset.
     p.optics = glm::vec4((cv2IceOpticsLoaded && cv2IceOpticsTable > 0.5f) ? 1.0f : 0.0f, std::clamp(cv2IceOpticsParry, 0.0f, 1.0f),
                          std::clamp(cv2IceOpticsColumns, 0.0f, 1.0f), 0.0f);

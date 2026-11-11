@@ -5744,6 +5744,12 @@ private:
     // objects faded out of the march (cv2LowA "THE EYEWALL"; clouds_v2.hurricane_eyewall, slot 557). 0 = off.
     float cv2HurrSheetSwirl = 1.0f;
     float cv2HurrEyewall = 1.0f;
+    // (2026-11-10, hurrshape; issues 20261109_184510 / 184650) a hurricane's low field: "Hurricane fill" (clouds_v2.hurricane_fill,
+    // slot 600) = the storm mass's top as a smooth ramp rising to the CDO sheet at the eyewall, full overcast under it;
+    // "Hurricane smoothing" (clouds_v2.hurricane_smoothing, slot 601) = less lobes / erosion / cut-through within the cyclone's
+    // reach (cv2LowA "THE HURRICANE'S RAMP"). 0 = as before.
+    float cv2HurrFill = 1.0f;
+    float cv2HurrSmooth = 0.7f;
     // 2026-11-10 (flowmaps, issue_20261109_184801): the cyclone flow map (clouds_v2.glsl cv2CycFlowAt; the resolve
     // reprojects it). Slots 560-563. hurricane_rotation: the cloud texture's angular rate as a share of the surface wind's
     // (vmax / rmw at the RMW; 0 = off); hurricane_flow_turns: the winding per flow-map window (turns; sets the window);
