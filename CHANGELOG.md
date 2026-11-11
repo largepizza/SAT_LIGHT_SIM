@@ -490,6 +490,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - The disabled legacy-lighting Starlink Gen2 comparison shell was removed from the roster.
 - **Ultra keeps the light shafts under time warp.** At Ultra the clouds' light shafts and shadows stay on at any time
   rate (they switched off from 10x up); the other graphics tiers keep the faster time-lapse lighting.
+- **No green clouds near sunset.** With the Sun a few degrees up, the white balance turned cloud and ambient light
+  green-yellow (it corrected red and green fully but blue only partly); it now corrects along the sunlight's own colour.
 
 ### Fixed
 

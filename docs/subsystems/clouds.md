@@ -2071,6 +2071,17 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     Congo anvils from 18 km, Sun 10 deg, lit b/r 1.21 -> 1.12 (the Sun behind: 1.28 -> 1.17); Sun 5 deg 1.12 -> 1.08 (behind: 1.17 -> 1.13). Still
     over 1: the anvil tops (12+ km) are lit by a whiter Sun than the 2-km reference, and the sky light on them is blue.
     Not in SKY_LITE (its SPIR-V was 92 bytes under budget).
+  - **The white balance's divisor is limited along the sunlight's own colour** (2026-11-10, issue_20261109_185137 "why do
+    clouds and lighting get green here"; `cv2WbLimit`, atmosphere.glsl, used by sat_sky.frag and the rain particles'
+    copy). Its channels were clamped to 0.4 .. 2.5 one by one: with the Sun 2-3 deg up the reference is ~(1.9, 0.83,
+    0.10), so blue lost most of its correction while red and green kept theirs, and every light that is not the sunlight
+    itself (the sky's ambient, the multiply-scattered light in a cloud) came out green-yellow. Now every channel's log is
+    scaled by one factor so the largest stays within ln 2.5 (the correction stays on the illuminant's axis). Attribution
+    on the report (Sun 2.4 deg, 1.7 km, the reporter's white balance 0.6 from the eye, cloud sunlight 0, saturation 1.4,
+    Kp 11), mean CIELAB a / b of the deck: as replayed -4.4 / +9.5 (the shot -4.4 / +9.5); Kp 0, airglow 0, saturation 1:
+    -4.3 / -4.3 / -3.2 (not them); white balance from cloud sunlight 1: -0.7; white balance 0: +7.1 / +27 (orange).
+    After: +4.8 / +12.3 (warm). Same place, Sun 4 deg: -1.6 -> +2.4; 8 deg (no channel past the limit): unchanged. Full
+    sky shader only (`#ifdef SKY_SUN_SHADOW`; SKY_LITE keeps the per-channel clamp, its SPIR-V budget).
   - **Multi-scatter "edge definition" (light3, probes only).** The diffuse field (cv2DiffuseField) at optical depth tau
     toward the Sun peaks at t = (1 - g^2) tau ~1 and is nearly flat to t ~5 (I0 = 5 - 2/3 C1 - (1 - g') C1 t - 3 e^-t):
     a crevice 11 optical depths behind a lit lobe takes ~the same diffuse light as the lit face (estimate at the user's

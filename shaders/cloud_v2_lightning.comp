@@ -704,7 +704,7 @@ void main()
                 vec3  bRW  = (cloud.wbRef.y > 0.0) ? BETA_R_BASE * cloud.wbRef.y : BETA_R;   // (light3: the clouds' sunlight)
                 vec3  oW   = (cloud.wbRef.y > 0.0) ? atmOzoneTau(vec3(0.0, 0.0, rW), sunENU) : vec3(0.0);
                 vec3  sunW = exp(-(bRW * (atmColumnInf(rW, cW, H_R) * H_R) + BETA_M * 1.1 * (atmColumnInf(rW, cW, H_M) * H_M) + oW));
-                vec3  wb = sunW / max(dot(sunW, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
+                vec3  wb = cv2WbLimit(sunW / max(dot(sunW, vec3(0.2126, 0.7152, 0.0722)), 1e-4));
                 wbDiv = mix(vec3(1.0), clamp(wb, vec3(0.4), vec3(2.5)), cloud.whiteBalance * smoothstep(cloud.wbRef.z, cloud.wbRef.w, cW));
             }
             float liq = smoothstep(-1.0, 2.5, cv2.precip.x);
