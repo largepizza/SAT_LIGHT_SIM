@@ -1068,27 +1068,49 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, float stormI
     // objects of the ring (Weather.cpp cycloneTowersAt) are not drawn (SatelliteSimCloudsV2.cpp: their columns would stand in
     // it as separate cylinders); they still rain, flash and feed the bake. Within ~0.5-1.2 radii of maximum wind of the eye's
     // edge: the top rises by up to 4 km of span (the mass's 0.8 cap then reaches ~the tropopause), every cell is a tower
-    // (cellsC below: the tower noise and the cells' strength saturate), and the eye is cut in 3D as a STADIUM (the eye's
-    // radius 0.9x at the base to 1.6x at the top: its wall slopes outward, as the sheet's hole, cv2CdoShare, is 0.9-1.5x),
-    // through covT: the field falls 1 unit per 1.5 km inside it. (The bake's eye clears the map's coverage in 2D, a
-    // vertical cut: the wall was the cells' extruded outline.)
-    float eyw = 0.0;
+    // (cellsC below: the tower noise and the cells' strength saturate), and the eye is a BOWL: its floor cleared through covT
+    // inside the eye radius (1 unit per 1.5 km), its wall the mass's top sloping up and out to 1.5 eye radii (hE below), as
+    // the sheet's hole, cv2CdoShare, opens over 0.9-1.5x. (The bake clears only the eye's middle, 0.45-0.8 eye radii: its
+    // 2D cut was a vertical wall, the cells' extruded outline.)
+    // THE HURRICANE'S RAMP (2026-11-10, hurrshape; issues 20261109_184510, 20261105_232743 shot 2, the user: "turn down erosion
+    // on hurricane cumulus clouds; make the lower part fuller and smoother, rising towards the eye wall, where it meets the
+    // upper disk"): hR is 1 from the eyewall out to one RMW past the eye's edge and falls to 0 at 0.9 CDO radii (the mass's
+    // top rides it, below: a smooth slope up to the sheet, no canyons); hW is the cyclone's reach (to 1.3 CDO radii), where
+    // "Hurricane smoothing" (hurricane.w) calms the low field's lobes, erosion and cut-through.
+    float eyw = 0.0, hR = 0.0, hW = 0.0, hE = 1.0;
 #if !defined(SKY_LITE) && defined(CV2_STORM_BINDING)
-    if (sK > 0.0 && cv2.hurricane.y > 0.0) {
+    if (cv2.hurricane.y + cv2.hurricane.z + cv2.hurricane.w > 0.0) {
         float eyeM = 1e9;
         for (uint i = 0u; i < min(cv2CycHead.x, kCv2CycloneMax); ++i) {
             CV2Cyclone cy = cv2Cyclones[i];
             float rC  = length(wdF - cy.b.xyz) * R_EARTH;
             float rmw = max(cy.d.x, 2000.0);
-            if (cy.c.x <= 0.0 || rC > 1.5 * rmw + cy.c.x + 20000.0) continue;
-            float rE  = cy.c.x * (0.85 + 0.35 * clamp((q.h - lift - 1000.0) / max(topCap - 1000.0, 1000.0), 0.0, 1.0))
-                      * (1.0 + 0.22 * clamp((ce.a - 0.5) * 6.0 + (cl.a - 0.5) * 9.0 + 0.7 * sin(q.h * (1.0 / 1700.0) + 40.0 * ce.a), -1.0, 1.0));
+            float cdo = max(cy.c.y, 2.0 * rmw);
+            if (rC > 1.3 * cdo) continue;
+            float eR  = max(cy.c.x, 0.0), iK = smoothstep(0.1, 0.35, cy.a.w);
+            hW = max(hW, (1.0 - smoothstep(0.9 * cdo, 1.3 * cdo, rC)) * iK);
+            hR = max(hR, (1.0 - smoothstep(eR + rmw, max(0.9 * cdo, eR + 2.0 * rmw), rC)) * iK);
+            if (cy.c.x <= 0.0 || rC > 1.5 * rmw + cy.c.x + 20000.0) continue;   // (the eye's cut takes any low cloud, not only the mass's)
+            // THE EYE AS A BOWL (2026-11-10, hurrshape; issue_20261109_184650 "odd cloud shapes in hurricane eye"): the floor is
+            // cleared through covT inside the eye radius (gentle noise, no height term), and the wall is the mass's TOP sloping
+            // up and out, a stadium: ~0.16 of the span at the eye's edge to the full top at 1.5 eye radii (hE caps T below;
+            // capped lower, inside the edge, the foot was thin flat pancakes with the cells' outlines for sides). The cut was a height-varying
+            // radius through covT (0.85-1.2 eye radii, +-0.22 from saturated noise, a 1.7-km height wave): the cells' 2D outlines
+            // extruded into vertical slabs and terraced shelves round the eye.
+            float nE  = 1.0 + 0.12 * clamp((ce.a - 0.5) * 3.0 + (cl.a - 0.5) * 4.0, -1.0, 1.0);
+            float rE  = cy.c.x * nE;
             eyeM = min(eyeM, rC - rE);
+            hE   = min(hE, smoothstep(0.7 * rE, 1.5 * rE, rC));
             eyw  = max(eyw, (1.0 - smoothstep(0.5 * rmw, 1.2 * rmw, rC - rE)) * smoothstep(0.2, 0.6, cy.c.x / (0.45 * rmw)));
         }
+        hE     = mix(1.0, hE, cv2.hurricane.y * sK);
         eyw   *= cv2.hurricane.y * sK;
         topMax += 4000.0 * eyw;
-        covT  += min(eyeM, 0.0) * (cv2.hurricane.y / 2500.0);
+        // (The ramp is full overcast: "Hurricane fill" (hurricane.z) closes the gaps between the mass's cells where it stands.)
+        hR    *= cv2.hurricane.z * sK;
+        covT   = min(covT + smoothstep(0.0, 0.4, hR), 1.0);
+        covT  += min(eyeM, 0.0) * (1.0 / 1500.0);   // (the eye's floor, whatever "Hurricane eyewall": the bake clears only its middle)
+        hW    *= cv2.hurricane.w;
     }
 #endif
 
@@ -1382,6 +1404,13 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, float stormI
         float capT = mix(1.0, min((0.8 + 0.1 * clamp((cl16.a - 0.5) * 9.0 + (cellsB - 0.5) * 3.0, -1.0, 1.0)) * hM, 1.0), sK);
         float hT   = max(0.12 - abs(T - capT), 0.0) / 0.12;
         T = min(T, capT) - hT * hT * 0.03;
+        // THE HURRICANE'S RAMP (hR, above): the mass's top is a smooth slope, 0.35 of the span at 0.9 CDO radii rising to the
+        // sheet's base (0.97) at the eyewall, with the tower noise kept above it at 1 - "Hurricane smoothing" of its height:
+        // the shoulders, canyons and fluted columns of a cut-up field under an empty gap (issue_20261109_184510) become one
+        // deep, nearly continuous cloud under the CDO, as the real one is.
+        float tR = mix(0.35, 0.97, sqrt(hR));
+        T = mix(T, min(tR + max(T - tR, 0.0) * (1.0 - hW), 1.0), smoothstep(0.0, 0.3, hR));
+        T = min(T, max(hE, 0.04));   // (the eye's stadium wall, hE above)
     }
     // SHALLOW CUMULUS HEAPS ("Shallow cumulus heaps" pucks.x, "Shallow cumulus depth" pucks.y; 2026-11-08, issue_20261108_171510
     // "every cloud ... the exact same profile extruded upwards"). A weak cell's top sits at T's floor (~250 m) while its 2D
@@ -1470,7 +1499,8 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, float stormI
     // (Stratocumulus, a deck type that is half convective: x2.4 on the deck's own lobes. Its tops were smooth mounds.)
     float lobeK  = mix(cv2.form.x * (1.0 + 4.0 * ty.look.z * flatK), lobeH, convW) * mix(0.5, 1.0, max(ty.look.z, lowCov)) * fpFade
                  * mix(1.0, 2.5, convW) * max(1.0 + cv2.tune.z * rV, 0.1) * (1.0 + 2.0 * sK)   // (a storm's walls billow)
-                 * (1.0 + cv2.stormsB.w * max(stormIn * stormProx, sK));   // ("Storm puffiness", 2026-11-10: inside a storm object or mass)
+                 * (1.0 + cv2.stormsB.w * max(stormIn * stormProx, sK))   // ("Storm puffiness", 2026-11-10: inside a storm object or mass)
+                 * (1.0 - 0.6 * hW);   // ("Hurricane smoothing", 2026-11-10: a hurricane's low field billows less)
     // Sub-pixel cells: thresholding the mip-averaged field would erase them (the average sits
     // below the threshold), so where a cell is smaller than the footprint the presence becomes the
     // fraction of area covered — a haze of the right opacity instead of nothing, or aliasing dots.
@@ -1491,7 +1521,7 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, float stormI
     // the base, crests stand as puffs about as wide as they are tall. An additive lobe moves a sheet's top by a few
     // metres and its edge by a few tens: the sheet stayed a smooth lens. (A deck's thin margin, where its strength
     // runs out, frays the same way: it tapered to a knife edge.)
-    float AshK   = cv2.cu.y * 1.5 * min(eS, e) * fpFade * max(convW, flatK * ty.look.z)
+    float AshK   = cv2.cu.y * 1.5 * (1.0 - hW) * min(eS, e) * fpFade * max(convW, flatK * ty.look.z)
                                 * mix(1.0 - smoothstep(300.0, 1200.0, thickM), 1.0 - smoothstep(0.2, 0.6, e), flatK);
     // "Cumulus break-up" (cu.y): in the cloud's lowest part the lobes are read at one height (lobeRef above the
     // base), i.e. extruded straight down to the base: they can cut a shallow cloud through to its base, into puffs
@@ -1522,7 +1552,8 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, float stormI
     // Erosion: base = bite the lumps (torn, wispy); higher up = bite the cracks, keep the lumps (billows). Deep
     // convection keeps storm.y of it and bites far fewer cracks (dark veins over every storm otherwise).
     float billow = ty.shape.z * smoothstep(0.05, 0.4, hf) * (1.0 - 0.7 * deep);
-    float erK    = ty.shape.y * cv2.look.z * mix(1.0, cv2.storm.y, deep) * max(1.0 - 0.6 * cv2.tune.y * rV, 0.1);
+    float erK    = ty.shape.y * cv2.look.z * mix(1.0, cv2.storm.y, deep) * max(1.0 - 0.6 * cv2.tune.y * rV, 0.1)
+                 * (1.0 - 0.8 * hW);   // ("Hurricane smoothing": inside a hurricane's reach the erosion bites less)
     float erBase = mix(1.0, 1.0 - 0.7 * cv2.high2.w, ty.look.z);
     // "Cumulus wisps" (cu2.y): where a cloud is evaporating its edge is ragged and soft, where it grows it is hard.
     // Small, weak clouds (fractus) are wispy all round; a formed cloud on the parts the shape volume's Perlin

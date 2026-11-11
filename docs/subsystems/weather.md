@@ -116,6 +116,29 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   notched between them (x 1.3); its outer ~40% frays into 3n + 1 streaks wound tighter (lr / 0.6 tanP), their phase moved
   by the outline's noise (breaks); the top rises and falls 140 m along a 12-band spiral (lr / 0.45) with the noise in its
   phase (`gCv2CdoRip`). From orbit the CDO is a spiral with arms and frays, no longer a round disc.
+  **The low field's ramp, its smoothing and the eye's bowl (2026-11-10, hurrshape; issues 20261109_184510 "Hurricane low
+  clouds", 20261109_184650 "Odd cloud shapes in hurricane eye", 20261105_232743 shot 2; the user: "turn down erosion on hurricane
+  cumulus clouds; make the lower part fuller and smoother, rising towards the eye wall, where it meets the upper disk").**
+  Attribution at 184510 (11.9 km, ~3 RMW out under the CDO): the canyons and fluted columns were the storm mass's tops from
+  its 2D tower noise (shoulders 0.15-0.28 of the span, towers to 0.8): every column a cell outline extruded, with clear air
+  from ~4-8 km up to the sheet; "Storm erosion" (0.04 there), "Storm puffiness" / "tower height" / "fullness" and the
+  cumulus lobes did not change it, "Storm mass" 0 left a flat low deck under an empty gap. Now (cv2LowA, "THE HURRICANE'S
+  RAMP", one pass through the cyclone list shared with the eyewall): (1) hR = 1 from the eyewall to one RMW past the eye's
+  edge, 0 at 0.9 CDO radii; the mass's top T is the ramp 0.35 -> 0.97 of the span (sqrt(hR)) with the tower noise kept
+  above it at 1 - "Hurricane smoothing", and the coverage closes (+smoothstep(0, 0.4, hR)): one deep cloud rising to the
+  sheet's base at the eyewall ("Hurricane fill" `clouds_v2.hurricane_fill` 1, hurricane.z, slot 600). (2) Within 1.3 CDO
+  radii (hW) "Hurricane smoothing" (`clouds_v2.hurricane_smoothing` 0.7, hurricane.w, slot 601) takes the lobes x (1 - 0.6
+  k), the erosion x (1 - 0.8 k) and the shallow cut-through x (1 - k): the outer bands' cumulus are calmer too; outside a
+  cyclone's reach nothing changes (a fair-weather view on/off differs 1.24 levels mean, its own repeat 1.41). (3) THE EYE
+  AS A BOWL: the bake clears the map in 2D only over 0.45-0.8 eye radii (was 0.7-1.15: the wall was that 2D edge
+  extruded, the "slabs"); the low field clears any cloud inside the eye radius through covT (1 unit per 1.5 km, gentle
+  +-12% noise, whatever "Hurricane eyewall"), and the wall is the mass's top capped by hE = smoothstep(0.7, 1.5 eye radii):
+  ~0.16 of the span at the eye's edge rising to the full top, a stadium. The old cut (radius 0.85-1.2 eyeR with height,
+  +-0.22 from saturated noise and a 1.7-km height wave) drew terraced shelves and vertical slabs. Measured (RTX 3070 Ti,
+  1920x1009, interleaved base/new march + cdc SPVs, 3 reps, 255 registers both): 184510 shot 1 GPU 29.5 -> 18.9 ms (cloud
+  march 22.3 -> 11.0: the filled column goes opaque in a few steps), 184801 (the eye from above) 56.8 -> 46.0 (47.7 ->
+  37.7), 172424 shot 7 (orbit) 37.8 -> 37.4. High-pass energy of the low cloud (|I - blur3|, lower 2/3 of the frame) at
+  184510 shots 1 / 2: -42% / -57%. From inside the CDO below ~13 km a camera is now inside cloud (a real CDO is).
   **The cyclone flow map (2026-11-10, flowmaps; issue_20261109_184801 "Hurricane rotation", 20261106_172424 shot 7, 20261105_232743
   shots 1 and 3; `clouds_v2.glsl cv2CycFlowAt`, `cloud_v2_resolve.comp`, `SatelliteSimWeather.cpp`):** the cloud TEXTURE round a
   tropical cyclone turns about its centre and rides with the storm, while the weather cube's stamp (the bands, the deck, the
