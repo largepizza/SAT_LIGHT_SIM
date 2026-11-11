@@ -75,6 +75,8 @@ def cmd_start(a):
             print(f"running: {st['run_dir']}")
             return
         time.sleep(0.5)
+    if app.poll() is None:
+        sys.exit(f"app (pid {app.pid}) is running but did not answer within {a.timeout:.0f}s: check `live.py status` before relaunching (see the run folder's satlight_log.txt)")
     sys.exit("app did not come up (see the run folder's satlight_log.txt)")
 
 
@@ -130,7 +132,7 @@ def main():
     sp = ap.add_subparsers(dest="cmd", required=True)
     s = sp.add_parser("start")
     s.add_argument("--config", default="Release"); s.add_argument("--exe"); s.add_argument("--window", default="1600x900")
-    s.add_argument("--settings"); s.add_argument("--fixed-dt"); s.add_argument("--timeout", type=float, default=90)
+    s.add_argument("--settings"); s.add_argument("--fixed-dt"); s.add_argument("--timeout", type=float, default=180)   # 180 since 2026-11-10: a cold worktree build booted in 69-120 s while other agents compiled
     s.add_argument("--forensics", action="store_true", help="record GPU/CPU telemetry to blackbox.csv (docs/FREEZES.md)")
     s.add_argument("--no-blackbox", action="store_true", help=argparse.SUPPRESS)
     s = sp.add_parser("send")
