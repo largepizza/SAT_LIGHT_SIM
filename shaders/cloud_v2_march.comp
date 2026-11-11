@@ -1110,7 +1110,13 @@ void main()
             float Tstep = exp(-f.sigma * stepW);
             float w     = T * (1.0 - Tstep);
             // Its light is added in the batch's second half, below.
-            if (Tent < 0.0) Tent = T;
+            // A ray that STARTS inside a cloud (its first dense sample within a few steps of the eye) has no face between the eye
+            // and the samples it sees: the diffuse field there is the cloud's interior, not light leaking out of a surface.
+            // Entered at T = 1 as from outside, hV ~0 over the first optical depths -- which are all the eye sees from inside --
+            // left only the sky ambient: a flat deep-navy volume inside every storm (issues 20261106_171931 shots 1-3,
+            // 20261107_124812; 2026-11-10). As if the cloud went on ~20 optical depths behind the eye, faded out over 1-4
+            // steps so a cloud surface passing the eye brightens over a few frames, not one.
+            if (Tent < 0.0) Tent = T * exp(20.0 * (1.0 - smoothstep(stepF, 4.0 * stepF, t)));
             // The multiple scattering's leak through the face the eye looks at (cv2DiffuseField): 1 - e^(-a x), x the view's
             // optical depth into this cloud, AVERAGED over the step as the step's light is (weight e^-x): a cloud's first
             // sample is often several optical depths thick, and taken at the step's start (x = 0) it got none at all.
@@ -1234,8 +1240,20 @@ void main()
                 if (cv2.stvH.z > 0.5) {
                     float hT = (f.thin > 0.5) ? (f.topH - p.h) * (1.0 - 0.5 / max(1.0 - f.hf, 0.15)) : 0.0;
                     float lL = ((CV2_FAINT_MODE == 0 && f.sigma * cv2.light.x < CV2_FAINT_OD) || CV2_RAIN_LIT(f)) ? 0.0 : 2.0 * cv2.light.x * (1.0 - f.thin);
-                    keyCol *= cv2StvT(rel + up * hT + sunDir * lL,
-                                      p.h + hT + dot(up, sunDir) * lL + 0.5 * (cv2.stvH.y - cv2.stvH.x) / float(kCv2StvK - 1));
+                    float hS  = p.h + hT + dot(up, sunDir) * lL;
+                    float tauS = -log(max(cv2StvT(rel + up * hT + sunDir * lL, hS + 0.5 * (cv2.stvH.y - cv2.stvH.x) / float(kCv2StvK - 1)), 1e-30));
+                    // The share of that shadow that is the sample's OWN cloud (the path to its own top along the Sun) reaches it
+                    // DIFFUSED, 1 / (1 + 0.11 tau) as the sky light through cloud above (below), not by Beer's law: deep in a
+                    // tower, kilometres under its top, e^-tau left the Sun nothing and the interior took the blue sky light
+                    // alone -- a flat deep-navy volume seen from inside a storm (issues 20261106_171931, 20261107_124812;
+                    // 2026-11-10). Another cloud's share (a deck or an anvil above the sample's own top) keeps Beer's law: its
+                    // diffuse light is the "deck above" term's (cv2.gnd.x).
+                    // Only on a ray from INSIDE the cloud (T, the transmittance within the cloud the ray is in, starts ~e^-20
+                    // there, see Tent): from outside the eye sees the surface, whose light the march and the octaves were tuned
+                    // on (applied to every sample it relit every shaded tower face and base, ~4 levels over a storm view).
+                    float tOwn = min(f.sigma * max(f.topH - hS, 0.0) / max(dot(up, sunDir), 0.1), tauS)
+                               * smoothstep(14.0, 18.0, -log(max(T, 1e-30)));
+                    keyCol *= exp(tOwn - tauS) / (1.0 + 0.11 * tOwn);
                 }
 #endif
             } else if (nightK > 0.0) {

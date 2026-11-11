@@ -3273,7 +3273,14 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
             float d    = length(dhz);
             float rW   = Rc * mix(1.0, cv2.column2.x, full);
             float r    = mix(Rc, rW, smoothstep(0.03, 0.5, zeta));
-            r += (Rc * cv2.column2.y * cv2TowerAnvilK(tw.c) - rW) * smoothstep(0.62, 0.94, zeta) * fl;
+            // The head flares over a band under its top as thick as the anvil it feeds ("Anvil thickness" x 1.5 + "Anvil
+            // hang"), on a TRUMPET (s^2: the tower's wall curves out into the anvil's underside). It flared over zeta
+            // 0.62..0.94 on a smoothstep: a third of the tower's height (~3.5 km of a 12-km Cb at any "Anvil thickness"),
+            // a cone into a slab with a cliff for a side -- the "anvil heads too thick", "pyramid connection" and "slab
+            // anvils" of issues 20261107_125130, 20261106_171931, 20261106_184711 (2026-11-10).
+            float hH   = clamp(1.5 * cv2.anvil2.x + cv2.anvil2.y, 600.0, 0.45 * max(topC - base, 300.0));
+            float sH   = clamp((q.h - (topC - hH)) / hH, 0.0, 1.0);
+            r += (Rc * cv2.column2.y * cv2TowerAnvilK(tw.c) - rW) * (sH * sH) * fl;
             float rnd  = min(full > 0.5 ? 1500.0 : 3000.0, 0.5 * max(topC - base, 1.0));
             // The overshooting top (issue 20261105_201719): the head's own top SWELLS up through the lid over the core, a
             // broad low mound (~0.55 Rc across, ~1 km high at most) carrying the head's lobes and bubbles, merging into the
@@ -3296,7 +3303,16 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
                 r *= 1.0 + 0.15 * sin(3.0 * ang + 6.2832 * hS + 2.5 * zeta) + 0.08 * sin(5.0 * ang + 6.2832 * hO - 4.0 * zeta);
             }
             float mT   = r - d;
-            if (mT > best) { best = mT; bestTop = topC + sw; bestZeta = zeta; bestFull = full; }
+            // A SMOOTH union of the towers (2026-11-10, issue 20261105_233447 "anvils rise and fall directly intersecting one
+            // another"): the strongest margin alone met a neighbour's head at the same height in a crease, the seam where one
+            // surface's choice (its top, its height fraction) gave way to the other's. Within kU of each other the margins
+            // blend into one fillet and the profile follows the blend.
+            const float kU = 1500.0;
+            float wB   = clamp(0.5 + (mT - best) / kU, 0.0, 1.0);
+            bestTop  = mix(bestTop, topC + sw, wB);
+            bestZeta = mix(bestZeta, zeta, wB);
+            bestFull = mix(bestFull, full, wB);
+            best     = cv2SMax(best, mT, kU);
             if (inAnvil) {
                 vec3  dn2  = dh - eastW * (cv2.column2.z * cv2TowerDriftK(tw.c) + 4000.0);
                 float al   = dot(dn2, eastW);
