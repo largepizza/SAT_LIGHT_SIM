@@ -5530,6 +5530,8 @@ private:
     float cv2SparseBlockOrbit = 3.0f;
     float cv2SparseBlockOrbitMoving = 0.0f;   // 1 = the orbit block also in motion ("sparse_block_orbit_moving"; the user's to judge)
     float cv2HistoryJumpFrac = 0.0f;   // "history_jump_frac": an eye step is a jump past this share of the eye's height (0 = 20 km)
+    float cv2HistoryTimeJumpS = 30.0f;   // "history_time_jump_s": a step of the clock past what the time warp ran is a jump past this many s (0 = only 600 s)
+    double cv2SimAdvanceAcc = 0.0;       // sim seconds the clock RAN (dt x time scale) since fillCloudsV2Params last read it
     float cv2FullResMovingMode = 1.0f;    // full-res clouds while the view moves (issues 20261022_210358 / _220214): 0 sparse, rotating; 1 sparse, held pixel (default since 2026-11-07, any height); 2 full rate (every pixel, ~3x the march; above full_rate_above_km)
     bool  cv2CdcActive = false;           // this frame (fillCloudsV2Params)
     // 2026-10-22 (r1022 orbit, the matrix's "clouds thin out climbing from orbit"): the clipmap's bake reads the field at the
@@ -6657,6 +6659,8 @@ private:
     void cv2EnsureCdcBuffer(VulkanContext &ctx);
     VkPipeline cv2CdcBakePipeline = VK_NULL_HANDLE;   // pass 1 (cv2CdcPipeline is pass 0, the check)
     uint32_t cv2CdcEpoch = 0;
+    bool     cv2CdcClockHold = false;    // a burst of clock steps: the clipmap off until 64 frames after the last
+    int      cv2CdcClockFrames = 1000;   // frames since a sim-time step bumped the clipmap epoch (fillCloudsV2Params, "A CLOCK STEP")
     VkDeviceMemory cv2FlashMem = VK_NULL_HANDLE;
     // The host's view of the flash buffer: a per-slot copy of its first kCv2FlashHeadBytes (the flash list, rain map
     // and light, tornado columns, eval counters), the values of ctx.completedFrame(); host writes go through

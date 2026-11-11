@@ -1719,6 +1719,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     if (!timePaused)
     {
         simSecInDay += (double)dt * kTimeScales[timeScaleIdx] * timeDir;
+        cv2SimAdvanceAcc += (double)dt * kTimeScales[timeScaleIdx] * timeDir;   // the clouds' history tells a jump from this
         // Re-base to [0, 86400) and carry whole-day overflow into simDayJ2000.
         // Using a loop (not fmod) so timeDir reversal is handled cleanly.
         while (simSecInDay >= 86400.0)
@@ -1754,6 +1755,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         {
             const double back = tNowK - holdAt;
             simSecInDay -= back;
+            cv2SimAdvanceAcc -= back;   // held, not run
             while (simSecInDay < 0.0)
             {
                 simSecInDay += 86400.0;

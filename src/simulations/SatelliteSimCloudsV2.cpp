@@ -1351,7 +1351,17 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // moves 20-60 km a frame, a fraction of the view, and lost its history every frame.
     const double jumpM = std::max(20000.0, (double)cv2HistoryJumpFrac * eyeH);
     const bool nearPrev = glm::length(eye - cv2PrevEye) < jumpM && std::abs(simT - cv2PrevSimT) < 600.0;
-    bool valid = cv2HistoryValid && h == cv2SettingsHash && nearPrev;
+    // A JUMP OF THE CLOCK (2026-11-10, issue_20261107_163510; "history_time_jump_s" 30): the part of this frame's sim-time
+    // step that the time warp did not run (a time set, a scrub, a report's or bookmark's time; not a hitch under warp,
+    // which the clock ran). The clouds evolve between the two times, which no reprojection follows; the frame of the step
+    // took the moving weight, and the still frames after it the still weight (a ~50-frame memory) with the still view's
+    // wide 7 x 7 box: the clouds of before the jump stayed in the history, clamped block by block, as a field of square
+    // tiles over the anvil still there 2 s later (a 519-s step, under the 600-s rule). The SCREEN history only: the Sun
+    // grids and the clipmap re-bake with the field as they did.
+    const double clockJumpS = std::abs((simT - cv2PrevSimT) - cv2SimAdvanceAcc);
+    cv2SimAdvanceAcc = 0.0;
+    const bool clockJump = cv2HistoryTimeJumpS > 0.0f && clockJumpS > (double)cv2HistoryTimeJumpS;
+    bool valid = cv2HistoryValid && h == cv2SettingsHash && nearPrev && !clockJump;
     // The Sun shadow grids (below) survive what only drops the SCREEN history: the HQ photo recreates the screen
     // images and switches the march to full rate, and with the grids reset by that the photo's first ~40 frames
     // had no far cloud shadows and no god rays (user report, 2026-10-10).
@@ -1909,6 +1919,37 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             // once it has moved a quarter of it (>= ~60 frames apart, so the 3-bit epoch never wraps onto unbaked cells).
             // Matrix run 1 (r1022): climbing 500 -> 1745 km the march skipped every cloud mass the 500-km bake had seen as
             // gaps between puffs (mx_alt500km-rise, -1.0 signed, 2.5% px past 16 levels).
+            // A CLOCK STEP (2026-11-10, issue_20261107_163510 "Cloud trails": square tiles over the anvil after the trail's
+            // sim-time jumps). A cell's sim-time quantum is 4 bits (cv2_cdc.glsl: floor(ph) & 15), so a step of a whole
+            // multiple of 16 quanta matches the stamp of a cell baked BEFORE it: at level 0 (1.25-s quanta) every 20 s of
+            // sim time, at level 1 every 40 s. Under the 600-s jump (the epoch below, via lightValid) such a step kept the
+            // cells baked from the old clouds, and the ones baked empty skipped the cloud now there: cloud missing in
+            // clipmap-cell blocks, paused never expiring (time add +-320 s at the report's shot 4: blocks in every frame,
+            // still there 200 frames on; +330 s: none; cdc_skip 0: none). A step of 8 level-0 quanta or more (10 s; time
+            // warp keeps the clipmap only up to cdc_max_rate, a frame there is well under it) is a new epoch. Steps in a
+            // burst (a scrub) switch the clipmap off until 64 frames after the last one instead, then one more epoch: the
+            // 3-bit epoch must not wrap onto cells baked a few steps back.
+            {
+                cv2CdcClockFrames = std::min(cv2CdcClockFrames + 1, 1000);
+                if (std::abs(dSimT) >= 8.0 * (0.5 * cdcCell0 / cdcWind))
+                {
+                    if (cv2CdcClockFrames > 64 && !cv2CdcClockHold)
+                        ++cv2CdcEpoch;
+                    else
+                        cv2CdcClockHold = true;
+                    cv2CdcClockFrames = 0;
+                }
+                if (cv2CdcClockHold)
+                {
+                    if (cv2CdcClockFrames >= 64)
+                    {
+                        cv2CdcClockHold = false;
+                        ++cv2CdcEpoch;
+                    }
+                    else
+                        cv2CdcActive = false;
+                }
+            }
             if (cv2CdcMotionGuard > 0.5f)
             {
                 const double cdcS = std::max(eyeH - (double)hi, 0.0) + 20000.0;
