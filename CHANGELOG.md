@@ -482,6 +482,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   default; HQ photos at 1x the window; rain amount 3, rain fall speed 5x. The Milky Way, the launch exhaust and the
   meteors carry the author's tuned settings too: a dimmer band whose star clouds are in at nearly every field of view,
   plume opacity 0.3 with a long, wide jellyfish, fireballs at a tenth the old rate and trains at 7% of their decay time.
+- The cloud defaults are the author's 2026-11-10 tune (shapes, lighting, tonemap, storms, sky TAA weights): darker
+  cloud bases from "Multi-scatter side escape" 0.31 (was 0.11), the light that leaves a cloud through its sides no
+  longer reaching its base.
 - Saved times now show a different local time of day (the clock is real UTC; about 5 h 15 min earlier for the
   same timestamp). The start time moved so the intro is unchanged.
 - "Storm strength" for the aurora is replaced by Kp (automatic by default).

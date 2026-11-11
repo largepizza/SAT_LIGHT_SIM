@@ -5301,8 +5301,8 @@ private:
     };
     static_assert(sizeof(SkyTaaPC) == 128, "SkyTaaPC must be exactly 128 bytes");
     bool skyTaaEnabled = true;
-    float skyTaaWeightStill = 0.1f;
-    float skyTaaWeightMoving = 0.35f;
+    float skyTaaWeightStill = 0.42f; // (was 0.1, 2026-11-10 bake)
+    float skyTaaWeightMoving = 0.49f; // (was 0.35, 2026-11-10 bake)
     // Issue 20261022_174155 (2026-10-22): sky-depth pixels (translucent cloud, haze) and far surfaces take the eye's
     // parallax at this stand-in distance for their history weight / clip while the EYE moves (sky_taa.comp, e2p[1].w).
     // 0 = off (the old behaviour). display.sky_taa_parallax_floor_m.
@@ -5449,31 +5449,31 @@ private:
     // ── Clouds v2 (SatelliteSimCloudsV2.cpp, .plans/CLOUDS_V2_PLAN.md) ──────────────────────────
     // Settings (persisted under "clouds_v2"; harness: set clouds_v2.<key> <value>; Clouds tab).
     // The only volumetric cloud renderer since 2026-09-27 (v1's cloudMarchCS was deleted).
-    float cv2Coverage = 0.96f;          // x the weather map's brightness before the remap below
-    float cv2CoverClear = 0.0026f;       // map brightness that is clear sky ...
-    float cv2CoverFull = 1.0f;         // ... and that is overcast (thin cloud is grey in the imagery)
-    float cv2Density = 1.3f;           // x every type's extinction
-    float cv2Detail = 0.77f;            // erosion detail strength
-    float cv2Wobble = 0.21f;           // 3D noise on a column's edge (fraction of the span): bulges, turrets
+    float cv2Coverage = 0.42f;          // x the weather map's brightness before the remap below (was 0.96, 2026-11-10 bake)
+    float cv2CoverClear = 0.0f;       // map brightness that is clear sky ... (was 0.0026, 2026-11-10 bake)
+    float cv2CoverFull = 0.45f;         // ... and that is overcast (thin cloud is grey in the imagery) (was 1.0, 2026-11-10 bake)
+    float cv2Density = 1.6f;           // x every type's extinction (was 1.3, 2026-11-10 bake)
+    float cv2Detail = 0.18f;            // erosion detail strength (was 0.77, 2026-11-10 bake)
+    float cv2Wobble = 0.2f;           // 3D noise on a column's edge (fraction of the span): bulges, turrets (was 0.21, 2026-11-10 bake)
     float cv2Lean = 0.15f;             // horizontal shift of a tower per metre of height
-    float cv2InteriorErosion = 0.74f;  // share of the erosion that applies deep inside a cloud
-    float cv2ColumnEdge = 1.7f;        // 1 / the column edge's softness (fraction of the span)
-    float cv2AmbientGain = 2.0f;       // sky light (zenith radiance x this)
+    float cv2InteriorErosion = 0.66f;  // share of the erosion that applies deep inside a cloud (was 0.74, 2026-11-10 bake)
+    float cv2ColumnEdge = 0.5f;        // 1 / the column edge's softness (fraction of the span) (was 1.7, 2026-11-10 bake)
+    float cv2AmbientGain = 1.7f;       // sky light (zenith radiance x this) (was 2.0, 2026-11-10 bake)
     float cv2SunGain = 1.0f;
-    float cv2MoonGain = 1.0f;          // x the terrain's moonlight (cloud.moonGain) as the night key light
-    float cv2BounceGain = 0.95f;        // light reflected up from the ground
-    float cv2Powder = 0.21f;
-    float cv2MsExtinction = 0.21f;     // multiple scattering: extinction ratio per octave ...
-    float cv2MsStrength = 0.56f;        // ... and contribution ratio per octave
-    float cv2PhaseG = 0.57f;            // forward-scattering lobe (silver lining)
+    float cv2MoonGain = 0.87f;          // x the terrain's moonlight (cloud.moonGain) as the night key light (was 1.0, 2026-11-10 bake)
+    float cv2BounceGain = 0.98f;        // light reflected up from the ground (was 0.95, 2026-11-10 bake)
+    float cv2Powder = 0.23f; // (was 0.21, 2026-11-10 bake)
+    float cv2MsExtinction = 0.19f;     // multiple scattering: extinction ratio per octave ... (was 0.21, 2026-11-10 bake)
+    float cv2MsStrength = 0.29f;        // ... and contribution ratio per octave (was 0.56, 2026-11-10 bake)
+    float cv2PhaseG = 0.39f;            // forward-scattering lobe (silver lining) (was 0.57, 2026-11-10 bake)
     float cv2HistoryWeightMoving = 0.05f; // the same weight once the view moves (parallax past ~2 half-res px)
-    float cv2HistoryWeight = 0.046f;     // weight of a new sample over its reprojected history (still view;
+    float cv2HistoryWeight = 0.039f;     // weight of a new sample over its reprojected history (still view; (was 0.046, 2026-11-10 bake)
                                        // the resolve raises it toward 0.35 with motion)
     float cv2HqHistWeight = 0.0f;       // HQ cinematic export only (cineTick): replaces the still weight per settle frame
                                        // with a running mean's 1/n (and lifts the accumulation cap); 0 = off
     float cv2BeamEyeIrr = 0.0f;           // the Reflect beams' irradiance at the eye (Suns), per frame (rain particles)
     glm::vec3 cv2BeamEyeDir{0.0f, 0.0f, 1.0f};   // its weighted direction to the satellites (ENU)
-    float cv2LightLenM = 2500.0f;      // light-march length
+    float cv2LightLenM = 1000.0f;      // light-march length (was 2500.0, 2026-11-10 bake)
     float cv2LightSteps = 7.0f;
     float cv2LightLodFootprintM = 0.0f;   // past this pixel footprint (m) a 2-step light march; 0 = off (the default since 2026-10-11:
                                           // at a long light march its second step is one sample for kilometres - the main source of grain)
@@ -5485,16 +5485,16 @@ private:
     float cv2LightningBolt = 1.25f;        // the cloud-to-ground channels
     float cv2LightningSprites = 0.013f;    // chance a ground stroke sets off a red sprite 50-90 km up (0 = never)
     float cv2EvoWindMps = 8.0f;           // the weather map's evolution: its advecting wind (m/s); 0 = static
-    float cv2EvoGrowth = 0.12f;           // ... and how much its coverage grows and decays (0 = none)
-    float cv2EvoWindowH = 0.01f;            // ... each advected copy's window (h): the displacement's bound
+    float cv2EvoGrowth = 0.043f;           // ... and how much its coverage grows and decays (0 = none) (was 0.12, 2026-11-10 bake)
+    float cv2EvoWindowH = 0.1f;            // ... each advected copy's window (h): the displacement's bound (was 0.01, 2026-11-10 bake)
     float cv2EvoDiurnal = 0.6f;           // afternoon convection over land (0 = none)
     float cv2FogAmount = 0.26f;           // fog (cv2FogDust): how readily it forms (0 = none)
     float cv2FogDepthM = 200.0f;          // ... its depth over the smoothed ground (valleys fill deeper)
     float cv2FogDensity = 0.0013f;        // ... its extinction (1/m; ~2.3 km visibility)
     float cv2DustAmount = 0.5f;           // dust over dry land (0 = none)
     float cv2DustHeightM = 1500.0f;       // ... its scale height (m)
-    float cv2IceFogAmount = 0.42f;         // ice fog / diamond dust over the ice sheets (0 = none), with ice optics
-    float cv2IceFogDensity = 0.000079f;     // ... its extinction at the ground (1/m; ~20 km visibility)
+    float cv2IceFogAmount = 1.2f;         // ice fog / diamond dust over the ice sheets (0 = none), with ice optics (was 0.42, 2026-11-10 bake)
+    float cv2IceFogDensity = 7.2e-4f;     // ... its extinction at the ground (1/m; ~20 km visibility) (was 0.000079, 2026-11-10 bake)
     float cv2DustDensity = 0.00025f;      // ... its extinction at the ground in a full plume (1/m; ~15 km visibility)
     float cv2AdaptiveRate = 0.0f;         // 1 = while moving, full rate only in tiles whose clouds show parallax (dynamic sampling)
     float cv2AdaptiveParallaxPx = 1.6f;   // ... past this many half-res pixels a frame (or history from off screen)
@@ -5563,11 +5563,11 @@ private:
     float cv2StormUnifiedLobes = 1.0f;     // clouds_v2.storm_unified_lobes: x the storm lobes' strength
     // Storms in the cumulus look (2026-11-05, storm3; cv2AnvilFibre / cv2FieldLow): the anvil plate as fibrous spreading
     // ice, the towers carved by the cumulus bubbles.
-    float cv2AnvilFibres = 1.0f;           // "Anvil fibres" (clouds_v2.anvil_fibres; 0 = the eroded plate as before)
+    float cv2AnvilFibres = 0.65f;           // "Anvil fibres" (clouds_v2.anvil_fibres; 0 = the eroded plate as before) (was 1.0, 2026-11-10 bake)
     float cv2AnvilFibreAlongKm = 15.0f;    // clouds_v2.anvil_fibre_along_km: the fibres' along-wind period
     float cv2AnvilFibreAcrossM = 1500.0f;  // clouds_v2.anvil_fibre_across_m: their across-wind spacing
     float cv2StormBubbles = 0.5f;           // "Storm bubbles" (clouds_v2.storm_bubbles; 0 = off)
-    float cv2AnvilErosion = 0.2f;          // "Anvil erosion" (clouds_v2.anvil_erosion): the plate's share of the Cb erosion
+    float cv2AnvilErosion = 0.23f;          // "Anvil erosion" (clouds_v2.anvil_erosion): the plate's share of the Cb erosion (was 0.2, 2026-11-10 bake)
     float cv2AnvilLidLobes = 0.1f;         // clouds_v2.anvil_lid_lobes: the plate lid's share of the storm lobes
     float cv2AnvilUnderLobes = 0.7f;       // clouds_v2.anvil_under_lobes: the plate underside's share
     // 2026-11-08: ... and only while a frame advances sim time by at most this (s; clouds_v2.sun_volume_max_step_s: 1 s is ~30x
@@ -5592,27 +5592,27 @@ private:
     int   cv2CdcSlowFrames = 0;
     float cv2MiePhase = 0.11f;             // "Mie phase" (2026-10-22): the droplets' Mie phase's share of single scattering
     float cv2MieOptics = 0.33f;            // "Mie optics": the tuned phase x the Mie table's structure (corona, cloudbow, glory)
-    float cv2DropletReffUm = 9.7f;       // ... their effective radius (um): 4 continental .. 15+ maritime / rain-forming
+    float cv2DropletReffUm = 9.1f;       // ... their effective radius (um): 4 continental .. 15+ maritime / rain-forming (was 9.7, 2026-11-10 bake)
     // 2026-10-11 (clouds_v2.glsl tune / mid2 / mid3 / samp; slots 270-282).
     // 2026-10-13 (issue 20261012_235712, slots 289-295, UBO cu / cu2): the cumulus shape.
-    float cv2CuHeightVar = 0.6f;          // "Cumulus height variation": each cloud's top varies by this (x) across a field
-    float cv2CuBreakup = 0.6f;            // "Cumulus break-up": the lobes' strength at the base (shallow sheets break into puffs)
-    float cv2CuHeadroom = 0.5f;           // "Cumulus top headroom": how far the tops stay under the type's ceiling (0 = cut flat at it)
-    float cv2CuFineLobes = 0.0f;          // "Storm cumulus fine lobes": the cumulus-scale lobes kept on deep convection's storm-scale ones
+    float cv2CuHeightVar = 0.0f;          // "Cumulus height variation": each cloud's top varies by this (x) across a field (was 0.6, 2026-11-10 bake)
+    float cv2CuBreakup = 0.33f;            // "Cumulus break-up": the lobes' strength at the base (shallow sheets break into puffs) (was 0.6, 2026-11-10 bake)
+    float cv2CuHeadroom = 0.6f;           // "Cumulus top headroom": how far the tops stay under the type's ceiling (0 = cut flat at it) (was 0.5, 2026-11-10 bake)
+    float cv2CuFineLobes = 0.28f;          // "Storm cumulus fine lobes": the cumulus-scale lobes kept on deep convection's storm-scale ones (was 0.0, 2026-11-10 bake)
     float cv2CbFineLobes = 0.5f;          // "Cb tower fine lobes": the same on the towers
-    float cv2CuWisps = 0.5f;              // "Cumulus wisps": erosion concentrated at the cloud's edge (frayed edges, solid cores)
+    float cv2CuWisps = 0.21f;              // "Cumulus wisps": erosion concentrated at the cloud's edge (frayed edges, solid cores) (was 0.5, 2026-11-10 bake)
     // Cumulus turrets (2026-11-04, issue 20261104_181014 "General Cloud Shapes"): a 3D field of towers at 0.36-2.9 km (the storm
     // shape volume read 2x, as thick cumulus' big lobes) on every convective cloud thicker than ~250 m, stretched upward and
     // leaned with the cells, skewed so few turrets rise high: the cell's dome becomes a cluster of towers of varied height.
-    float cv2CuTurrets = 1.0f;            // "Cumulus turrets" (0 = the dome-per-cell shape as before)
-    float cv2CuTurretStretch = 0.2f;      // "Turret stretch": the turret noise is read 1 / (1 - this) times slower upward (towers;
+    float cv2CuTurrets = 0.41f;            // "Cumulus turrets" (0 = the dome-per-cell shape as before) (was 1.0, 2026-11-10 bake)
+    float cv2CuTurretStretch = 0.25f;      // "Turret stretch": the turret noise is read 1 / (1 - this) times slower upward (towers; (was 0.2, 2026-11-10 bake)
                                           // 0.5 until the bubbles, 2026-11-04: their spheres read 2x taller hung as smooth sausages)
-    float cv2CuTurretLean = 2.0f;         // "Turret lean": the turrets lean this x the cells' "Lean"
-    float cv2CuTurretSkew = 1.0f;         // "Turret skew": the turrets' positive excursions grow (few tall towers, many low)
-    float cv2CuBody = 0.0f;               // "Cumulus body": the adiabatic water profile's gain (0 = off)
-    float cv2CuEdge = 1.0f;               // "Cumulus edge": the cloud surface's sharpening x this (1 = as before)
-    float cv2CuShowerCells = 0.0f;        // "Showers as cells": a convective type where the map rains is shaped as cells
-    float cv2CuShowerCores = 1.0f;        // "Showers from cores": a convective type's map rain falls from the strong cells only
+    float cv2CuTurretLean = 0.0f;         // "Turret lean": the turrets lean this x the cells' "Lean" (was 2.0, 2026-11-10 bake)
+    float cv2CuTurretSkew = 0.5f;         // "Turret skew": the turrets' positive excursions grow (few tall towers, many low) (was 1.0, 2026-11-10 bake)
+    float cv2CuBody = 0.81f;               // "Cumulus body": the adiabatic water profile's gain (0 = off) (was 0.0, 2026-11-10 bake)
+    float cv2CuEdge = 1.6f;               // "Cumulus edge": the cloud surface's sharpening x this (1 = as before) (was 1.0, 2026-11-10 bake)
+    float cv2CuShowerCells = 0.19f;        // "Showers as cells": a convective type where the map rains is shaped as cells (was 0.0, 2026-11-10 bake)
+    float cv2CuShowerCores = 0.34f;        // "Showers from cores": a convective type's map rain falls from the strong cells only (was 1.0, 2026-11-10 bake)
     // Fibrous cirrus and hurricane CDO tops (2026-11-05, night wave agent D "cirrus-hurr"; slots 520-524; GpuCloudV2Params
     // ciHu / ciHu2; clouds_v2.glsl cv2IceFibres, cv2HighSigma, cv2FieldLow; cv2_storms.glsl cv2ShieldAtR).
     float cv2CirrusFibres = 1.0f;         // "Cirrus fibres": the filaments' contrast (0 = smooth tufts, 1 = as tuned)
@@ -5630,61 +5630,61 @@ private:
     float cv2OroMoist = 0.75f;            // lens moisture (settings key only): how readily a lee-wave crest condenses the mid layer
     // Cumulus bubbles (2026-11-04, the large-scale structure round of issue 20261104_181014): a cumulus is a cluster of thermal
     // bubbles (a heavy-tailed union of spheres baked in the billow shape volume's R, read with the turrets), not one dome.
-    float cv2CuBubbles = 3.0f;            // "Cumulus bubbles": the dome's margin is divided by 1 + x and the bubbles added x times
-    float cv2CuBubbleGain = 0.2f;         // "Bubble relief": margin units per eighth of the turret period of bubble distance
+    float cv2CuBubbles = 0.63f;            // "Cumulus bubbles": the dome's margin is divided by 1 + x and the bubbles added x times (was 3.0, 2026-11-10 bake)
+    float cv2CuBubbleGain = 0.22f;         // "Bubble relief": margin units per eighth of the turret period of bubble distance (was 0.2, 2026-11-10 bake)
     // Bubble hierarchy (2026-11-05, shape2): the fine bubbles (the bubble volume 4x finer) on the big ones' surface, the
     // big ones giving way to the fine on small clouds, and the bubbles fading toward the base (clouds.md "Bubble hierarchy").
-    float cv2CuBubbleFine = 1.0f;         // "Bubble hierarchy": the fine bubbles' shell (0 = off: one bubble size)
-    float cv2CuBubbleSize = 1.0f;         // "Bubbles follow cloud size": small clouds are built of the fine bubbles (0 = off)
-    float cv2CuBubbleBase = 0.6f;         // "Bubble base flatness": the bubbles' share lost at the base (0 = uniform)
+    float cv2CuBubbleFine = 2.7f;         // "Bubble hierarchy": the fine bubbles' shell (0 = off: one bubble size) (was 1.0, 2026-11-10 bake)
+    float cv2CuBubbleSize = 0.51f;         // "Bubbles follow cloud size": small clouds are built of the fine bubbles (0 = off) (was 1.0, 2026-11-10 bake)
+    float cv2CuBubbleBase = 0.24f;         // "Bubble base flatness": the bubbles' share lost at the base (0 = uniform) (was 0.6, 2026-11-10 bake)
     // Cumulus envelope (2026-11-05, envelope): the large-scale silhouette, not the surface (clouds.md "Cumulus envelope").
-    float cv2CuBubbleWarp = 150.0f;        // "Cumulus bubble warp" (m): the bubble read displaced by the lobes, x4 their +-spread (clouds_v2.glsl "BUBBLE WARP")
-    float cv2CuHeadWidth = 0.5f;           // "Cumulus head width": a cell's top toward a plateau over the cell (clouds_v2.glsl "CUMULUS HEAD WIDTH")
+    float cv2CuBubbleWarp = 130.0f;        // "Cumulus bubble warp" (m): the bubble read displaced by the lobes, x4 their +-spread (clouds_v2.glsl "BUBBLE WARP") (was 150.0, 2026-11-10 bake)
+    float cv2CuHeadWidth = 0.52f;           // "Cumulus head width": a cell's top toward a plateau over the cell (clouds_v2.glsl "CUMULUS HEAD WIDTH") (was 0.5, 2026-11-10 bake)
     float cv2CuHeaps = 1.0f;               // "Shallow cumulus heaps" (slot 549): shallow cells domed from the base, not flat-walled pucks (clouds_v2.glsl "SHALLOW CUMULUS HEAPS")
     float cv2CuHeapDepth = 0.8f;           // "Shallow cumulus depth" (slot 550): a shallow cell's extra depth at full share (T x (1 + this))
-    float cv2CuCore = 0.5f;                // "Cumulus core": the envelope's interior the bubbles / turrets / lobes cannot carve (0 = off; clouds_v2.glsl "CUMULUS CORE")
-    float cv2CuEnvTowers = 0.75f;          // "Cumulus tower spread": each cloud's top varies by a km-scale field, x(1 - k) .. x(1 + 0.8 k) (0 = off)
-    float cv2SilverLining = 0.5f;         // "Silver lining": forward-scattered sunlight leaking through thin cloud toward the Sun
-    float cv2SmallCumulus = 0.06f;        // the near field makes low puffs this far under the coverage threshold (field units)
-    float cv2ErosionVar = 0.6f;           // erosion strength and grain vary by region (0 = uniform)
-    float cv2LobeVar = 0.5f;              // the lobes' strength varies by region (0 = uniform)
+    float cv2CuCore = 0.49f;                // "Cumulus core": the envelope's interior the bubbles / turrets / lobes cannot carve (0 = off; clouds_v2.glsl "CUMULUS CORE") (was 0.5, 2026-11-10 bake)
+    float cv2CuEnvTowers = 0.045f;          // "Cumulus tower spread": each cloud's top varies by a km-scale field, x(1 - k) .. x(1 + 0.8 k) (0 = off) (was 0.75, 2026-11-10 bake)
+    float cv2SilverLining = 0.76f;         // "Silver lining": forward-scattered sunlight leaking through thin cloud toward the Sun (was 0.5, 2026-11-10 bake)
+    float cv2SmallCumulus = 0.15f;        // the near field makes low puffs this far under the coverage threshold (field units) (was 0.06, 2026-11-10 bake)
+    float cv2ErosionVar = 0.37f;           // erosion strength and grain vary by region (0 = uniform) (was 0.6, 2026-11-10 bake)
+    float cv2LobeVar = 0.29f;              // the lobes' strength varies by region (0 = uniform) (was 0.5, 2026-11-10 bake)
     float cv2CirrusDirWarp = 0.5f;        // the cirrus streaks' heading swings (their slope; 0 = along the flowed parallels)
     float cv2AsDensity = 2.5f;            // x the altostratus sheets' extinction (the altocumulus keeps "Mid layer density")
     float cv2MidThick = 1.0f;             // x the mid layer's thickness (450-1200 m)
     float cv2MidShadow = 0.3f;            // the share of the mid layer's extinction in the SHADOW it casts (1 = a hard-edged shadow)
-    float cv2MidFieldKm = 0.0f;           // the mid layer's field size (km; 0 = the cluster field's patches)
+    float cv2MidFieldKm = 2470.5884f;           // the mid layer's field size (km; 0 = the cluster field's patches) (was 0.0, 2026-11-10 bake; exact, not 2 s.f.: a noise / map coordinate scale, rounding re-rolls every cloud)
     float cv2MidCover = 0.0f;             // mid layer cover bias (sd of its regime noise; + = more sheet)
-    float cv2SampAccum = 39.0f;           // the resolve's per-pixel accumulation: the sample count it caps at (0 = off)
-    float cv2SampNewSmooth = 0.42f;        // how much a young pixel leans on its neighbourhood's estimate
-    float cv2MsOctaves = 2.0f;            // multiple-scattering octaves (2-8): strength^k x exp(-od x extinction^k)
+    float cv2SampAccum = 32.0f;           // the resolve's per-pixel accumulation: the sample count it caps at (0 = off) (was 39.0, 2026-11-10 bake)
+    float cv2SampNewSmooth = 0.21f;        // how much a young pixel leans on its neighbourhood's estimate (was 0.42, 2026-11-10 bake)
+    float cv2MsOctaves = 3.9f;            // multiple-scattering octaves (2-8): strength^k x exp(-od x extinction^k) (was 2.0, 2026-11-10 bake)
     // Multiple scattering as a delta-Eddington diffuse field (2026-10-26, cloud_v2_march.comp cv2DiffuseField): dark
     // wisps and edges, bright cores. 0 = the octaves above (with "Powder", which only that model uses).
     float cv2MsModel = 1.0f;              // 0 octaves, 1 delta-Eddington
-    float cv2MsDiffG = 0.85f;             // the droplets' asymmetry g (delta-scaled: f = g^2)
-    float cv2MsDiffGain = 1.0f;           // x the diffuse field (1 ~ the octaves' energy in a thick cloud; ~1.6 = path traced)
-    float cv2MsBackM = 1200.0f;           // how far the march away from the light reaches (m)
+    float cv2MsDiffG = 0.52f;             // the droplets' asymmetry g (delta-scaled: f = g^2) (was 0.85, 2026-11-10 bake)
+    float cv2MsDiffGain = 2.1f;           // x the diffuse field (1 ~ the octaves' energy in a thick cloud; ~1.6 = path traced) (was 1.0, 2026-11-10 bake)
+    float cv2MsBackM = 370.0f;           // how far the march away from the light reaches (m) (was 1200.0, 2026-11-10 bake)
     // The droplet phase (2026-11-04, cloud_v2_march.comp cv2Micro*): each sample's droplet size from its height above its
     // cloud's base (adiabatic growth), ice above the glaciation height; the single scattering from the Mie table at that
     // size, the low orders at the composed droplet phase, the diffuse field at the droplets' own g and its fitted gain.
     float cv2DropletPhase = 1.0f;         // 0 = the tuned phase (the Mie share, the silver lining, "droplet g") as before
-    float cv2DropletSize = 1.0f;          // x the adiabatic effective radius (fewer, larger droplets: maritime ~1.3)
-    float cv2DropletMsGain = 1.8f;        // the diffuse field's gain in this model (x "Multi-scatter diffuse strength"; fitted, tools/cloud_micro_reference.py)
+    float cv2DropletSize = 0.97f;          // x the adiabatic effective radius (fewer, larger droplets: maritime ~1.3) (was 1.0, 2026-11-10 bake)
+    float cv2DropletMsGain = 2.5f;        // the diffuse field's gain in this model (x "Multi-scatter diffuse strength"; fitted, tools/cloud_micro_reference.py) (was 1.8, 2026-11-10 bake)
     // The sky's light on the clouds (2026-10-26): the hemispheres' mean radiance with multiple scattering
     // (cloud_v2_sunlut.comp layers 2-3); 0 = the zenith x "Sky ambient" with the twilight terms.
     float cv2SkyLightModel = 1.0f;        // 0 zenith, 1 hemispheres + multiple scattering
-    float cv2SkyLightGain = 1.0f;         // x the hemispheres' light (1 = physical)
-    float cv2SkyGroundAlbedo = 0.25f;     // the ground's albedo in the sky's multiple scattering and under the clouds
+    float cv2SkyLightGain = 2.0f;         // x the hemispheres' light (1 = physical) (was 1.0, 2026-11-10 bake)
+    float cv2SkyGroundAlbedo = 0.19f;     // the ground's albedo in the sky's multiple scattering and under the clouds (was 0.25, 2026-11-10 bake)
     // Cloud contrast (2026-11-04, cloud_v2_march.comp; clouds.md "Cloud contrast"): sky light diffused through cloud keeps the
     // sky's colour (cloud scattering is grey), and the diffuse field escapes a lobed cloud's sides before its shaded face.
-    float cv2SkyLightHue = 1.0f;          // 0..1: 1 = the sky's light keeps its hue through cloud (0 = greyed with depth, as before)
-    float cv2MsSideEscape = 0.11f;        // the diffuse field's side escape, e^(-k t) (0.11: fitted to lobed clouds lit from the side; 0.05 = the 2026-10-26 fit, the A/B)
+    float cv2SkyLightHue = 0.7f;          // 0..1: 1 = the sky's light keeps its hue through cloud (0 = greyed with depth, as before) (was 1.0, 2026-11-10 bake)
+    float cv2MsSideEscape = 0.31f;        // the diffuse field's side escape, e^(-k t) (0.11: fitted to lobed clouds lit from the side; 0.05 = the 2026-10-26 fit, the A/B) (was 0.11, 2026-11-10 bake)
     float cv2SkyMs = 1.0f;                // the SKY PASS's multiple scattering (sat_sky.frag, sky_ap.comp; 0 = single + the shadowed-air term)
     float cv2GroundOvercast = 1.0f;       // the ground's light under cloud (cloud_v2_lightning.comp's cv2Vt map; needs cv2SkyMs)
     // The tonemap (2026-10-26, sat_sky.frag): AgX (Sobotka's; Wrensch's fit) in place of 1 - e^-x per channel.
     float cv2Tonemap = 1.0f;              // 0 = 1 - e^-x (with "Highlight roll-off"), 1 = AgX
-    float cv2ToneSat = 1.35f;             // AgX look: saturation about the luminance (1.15 before light3)
-    float cv2ToneContrast = 1.15f;        // AgX look: power on the curve's output (contrast about mid grey)
-    float cv2ToneRange = 1.4f;            // AgX range (light3; 1 = before): x the scene's log contrast about mid grey before the curve
+    float cv2ToneSat = 1.4f;             // AgX look: saturation about the luminance (1.15 before light3) (was 1.35, 2026-11-10 bake)
+    float cv2ToneContrast = 1.5f;        // AgX look: power on the curve's output (contrast about mid grey) (was 1.15, 2026-11-10 bake)
+    float cv2ToneRange = 0.95f;            // AgX range (light3; 1 = before): x the scene's log contrast about mid grey before the curve (was 1.4, 2026-11-10 bake)
     float cv2LobeOcclusion = 0.0f;        // sky light darker in the creases between lobes, brighter on their tips
     float cv2LightFootprint = 0.0f;       // the light march's samples read the field at this x its length (0 = point samples). 0.08 hid grain but a cumulus lost its self-shadow: flat, glowing (issue 20261013_181252)
     float cv2SampClampSd = 1.4f;         // the history clamp in motion (sd of the new samples around)
@@ -5708,17 +5708,17 @@ private:
     float cv2SparseWhenStill = 0.0f;   // > 0.5: while the view is still, march 1 pixel in 4 (history fills in)
     int   cv2StillFrames = 0;          // consecutive frames with no camera / eye / time-warp motion
     int   cv2EyeStillFrames = 0;       // consecutive frames whose EYE motion showed under 1/4 half-res px of parallax (no time warp, history kept)
-    float cv2MidAmount = 0.75f;         // the mid-level layer (altocumulus / altostratus), 0 = off
-    float cv2StormScale = 12.0f;        // deep convection's lobes and erosion are this much larger
+    float cv2MidAmount = 0.6f;         // the mid-level layer (altocumulus / altostratus), 0 = off (was 0.75, 2026-11-10 bake)
+    float cv2StormScale = 30.0f;        // deep convection's lobes and erosion are this much larger (was 12.0, 2026-11-10 bake)
     float cv2StormDetail = 0.04f;       // share of the erosion kept on deep convection
-    float cv2Anvil = 8.0f;             // the anvil shield's density ("Anvils"), 0 = off. With storm objects each storm's
+    float cv2Anvil = 0.35f;             // the anvil shield's density ("Anvils"), 0 = off. With storm objects each storm's (was 8.0, 2026-11-10 bake)
                                        // shield (cv2ShieldAt, 2026-10-23): a puffy layer round the towers' flared heads
                                        // that outlives them. 8 with the user's anvil tune (thickness 3.7 km, hang,
                                        // puffiness, lift, lobes, waist, overshoot, storm erosion), 2026-10-23
-    float cv2BaseRoughness = 0.38f;     // bumps on cloud bases (decks most), x the default amplitude
+    float cv2BaseRoughness = 0.0f;     // bumps on cloud bases (decks most), x the default amplitude (was 0.38, 2026-11-10 bake)
     float cv2HighAmount = 1.3f;        // the high layer (cirrus / cirrostratus / cirrocumulus), 0 = off
     float cv2HighDensity = 0.32f;       // x its extinction
-    float cv2CirrusStretch = 11.0f;     // cirrus fibres are this much longer along the wind than across
+    float cv2CirrusStretch = 13.0f;     // cirrus fibres are this much longer along the wind than across (was 11.0, 2026-11-10 bake)
     float cv2CirrusFieldKm = 3700.0f;  // cirrus regions: the size of the areas the high layer covers (was the
                                        // ~cluster scale: splotches)
     float cv2CirrusFlow = 3.3f;        // the flow warp at cirrus level, x the low cloud's (the jet bends more)
@@ -5761,11 +5761,11 @@ private:
     float cv2DropPersistMs = 60.0f;     // how long one rain particle is drawn before it is redrawn elsewhere (0 = never)
     float cv2SnowWind = 0.7f;          // the flakes' drift x the surface wind ("snow_drift", 2026-10-23; was "snow_wind")
     float cv2ExposureEV = 0.0f;        // exposure compensation (stops) on the sky's auto exposure
-    float cv2HighlightRolloff = 1.0f;  // 0 = the old tonemap; 1 = a long highlight shoulder
+    float cv2HighlightRolloff = 0.88f;  // 0 = the old tonemap; 1 = a long highlight shoulder (was 1.0, 2026-11-10 bake)
     float cv2WhiteBalance = 0.6f;      // 0..1: adapt to the low Sun's colour (2 km over sea level under the eye)
-    float cv2WbAtEye = 0.0f;           // 1 = the white balance's reference sunlight is the eye's (before 2026-11-05); 0 = the Sun 2 km over sea level
-    float cv2WbCloudSun = 1.0f;        // 1 = the white balance's reference is the clouds' sunlight (their Rayleigh + ozone; light3)
-    float cv2WbHoldDeg = 6.0f;        // the white balance is full down to this Sun elevation, off at ~1 deg (was 11.5)
+    float cv2WbAtEye = 1.0f;           // 1 = the white balance's reference sunlight is the eye's (before 2026-11-05); 0 = the Sun 2 km over sea level (was 0.0, 2026-11-10 bake)
+    float cv2WbCloudSun = 0.0f;        // 1 = the white balance's reference is the clouds' sunlight (their Rayleigh + ozone; light3) (was 1.0, 2026-11-10 bake)
+    float cv2WbHoldDeg = 2.5f;        // the white balance is full down to this Sun elevation, off at ~1 deg (was 11.5) (was 6.0, 2026-11-10 bake)
     float cv2BeamShafts = 1.0f;        // beams as light in the volumetric march (0 = the old drawn line)
     float cv2AutoExposure = 1.0f;      // 0..1: how far the metered auto exposure may darken a bright day
     float cv2AutoExposureTarget = 0.40f; // (0.32 before light3) the meter's goal: the displayed frame's linear mean (light3: was a constant)
@@ -5805,23 +5805,23 @@ private:
                                        // moon is ~2400x physical; 1 = beams dim beside it)
     // Per-layer scales, so tuning the cumulus does not move the cirrus or the altocumulus (all three
     // used to read the shape volume at cv2ShapePeriodM).
-    float cv2CirrusPeriodM = 11000.0f;  // cirrus fibre spacing across the wind (along it: x stretch)
+    float cv2CirrusPeriodM = 23438.914f;  // cirrus fibre spacing across the wind (along it: x stretch) (was 11000.0, 2026-11-10 bake; exact, not 2 s.f.: a noise / map coordinate scale, rounding re-rolls every cloud)
     float cv2MidPeriodM = 5300.0f;     // altocumulus cloudlets
-    float cv2MidDensity = 0.47f;        // x the mid layer's extinction (the low system keeps "Density")
-    float cv2CloudSunRayleigh = 0.86f;  // Rayleigh on the sunlight reaching cloud, x physical (the sky's own
+    float cv2MidDensity = 0.72f;        // x the mid layer's extinction (the low system keeps "Density") (was 0.47, 2026-11-10 bake)
+    float cv2CloudSunRayleigh = 0.65f;  // Rayleigh on the sunlight reaching cloud, x physical (the sky's own (was 0.86, 2026-11-10 bake)
                                        // gain no longer reddens every low-sun cloud)
     float cv2TwilightSky = 0.0f;       // extra sky light on cloud while the Sun is low or just set at it
     float cv2BeamLines = 0.25f;        // each beam's own faint streak beside the shafts (the shafts cluster converged beams)
-    float cv2FlowWarp = 0.018f;        // the flow field's displacement, as a fraction of its period (curved systems)
-    float cv2FlowPeriodKm = 6000.0f;   // the flow field's scale (swirls of about half this)
-    float cv2LayerSpread = 0.57f;       // 0: mid/high cloud only over the low cloud; 1: spread around whole systems
+    float cv2FlowWarp = 0.073f;        // the flow field's displacement, as a fraction of its period (curved systems) (was 0.018, 2026-11-10 bake)
+    float cv2FlowPeriodKm = 6693.213f;   // the flow field's scale (swirls of about half this) (was 6000.0, 2026-11-10 bake; exact, not 2 s.f.: a noise / map coordinate scale, rounding re-rolls every cloud)
+    float cv2LayerSpread = 0.42f;       // 0: mid/high cloud only over the low cloud; 1: spread around whole systems (was 0.57, 2026-11-10 bake)
     // Convective shape (pass 12): each cell is one cloud with a vertical profile — a narrower base,
     // widest high up, a domed top under the cell's own height — instead of a cone per column.
-    float cv2TopHeavy = 1.0f;          // how much narrower the base is than the body (0 = straight sides)
-    float cv2TowerTop = 0.85f;         // the tallest cell's top, as a fraction of its type's span (headroom)
-    float cv2BaseFlatness = 0.91f;      // cumulus bases: how flat (the 3D lobes damped near the base)
+    float cv2TopHeavy = 0.0f;          // how much narrower the base is than the body (0 = straight sides) (was 1.0, 2026-11-10 bake)
+    float cv2TowerTop = 0.43f;         // the tallest cell's top, as a fraction of its type's span (headroom) (was 0.85, 2026-11-10 bake)
+    float cv2BaseFlatness = 1.0f;      // cumulus bases: how flat (the 3D lobes damped near the base) (was 0.91, 2026-11-10 bake)
     // Review 22: convective lobes taper up the cloud ("Lobes (3D)" units; replace it on cumulus types).
-    float cv2CuLobesBottom = 0.044f, cv2CuLobesTop = 0.23f;   // slots 244 / 245, UBO farLight.zw
+    float cv2CuLobesBottom = 0.99f, cv2CuLobesTop = 0.14f;   // slots 244 / 245, UBO farLight.zw (cv2CuLobesBottom was 0.044, cv2CuLobesTop was 0.23, 2026-11-10 bake)
     float sunCloudTEased = 1.0f;       // review 22: the Sun disc's cloud transmittance (CloudParams::sunCloudT)
     // Review 22: "Fast-flight cloud LOD" (slot 246, clouds_v2.fast_flight_lod): while boost is held and the eye
     // moves, or the eye moves > 150 m a frame, the march takes <= 2 light steps, 60% of its iteration budget and
@@ -5834,16 +5834,16 @@ private:
     bool  boostHeldNow = false, cv2FastLodNow = false;
     // Cumulonimbus as three layers (pass 15): the cumulus field capped at cv2CbCumulusTopKm, discrete
     // concave towers on a lattice (cv2ColumnSigma), and the anvil hanging lower around their heads.
-    float cv2CbColumns = 2.0f;         // Cb column density (0 = no towers: a storm is tall congestus; the pass-14 deep cores are gone)
+    float cv2CbColumns = 1.7f;         // Cb column density (0 = no towers: a storm is tall congestus; the pass-14 deep cores are gone) (was 2.0, 2026-11-10 bake)
     float cv2CbSpacingKm = 30.0f;      // lattice cell: about one tower per cell where storms are strong
-    float cv2CbRadiusKm = 15.0f;        // a tower's base radius (waist ~0.7x, head ~1.6x)
+    float cv2CbRadiusKm = 20.0f;        // a tower's base radius (waist ~0.7x, head ~1.6x) (was 15.0, 2026-11-10 bake)
     float cv2CbCumulusTopKm = 12.0f;    // the low (cumulus/congestus) field's top in storm regions
     float cv2CbWaist = 0.89f;           // a tower's waist, x its base radius (1 = none: <1 read as smokestacks)
-    float cv2CbFlare = 1.4f;           // its head under the anvil, x its base radius
-    float cv2CbHeadDriftKm = 15.0f;     // how far downwind the head is blown
+    float cv2CbFlare = 1.1f;           // its head under the anvil, x its base radius (was 1.4, 2026-11-10 bake)
+    float cv2CbHeadDriftKm = 7.9f;     // how far downwind the head is blown (was 15.0, 2026-11-10 bake)
     float cv2CbLobes = 0.37f;          // cauliflower lobes on the tower (fraction of its radius)
     float cv2CbHeadLobes = 0.12f;      // ... and on its flared head (the anvil): smoother reads as the anvil
-    float cv2AnvilPuff = 0.45f;          // "Anvil puffiness" (2026-10-22): relief kept on the heads, x(1 + 1.5 it) head lobes, softer edge; 0 = before
+    float cv2AnvilPuff = 0.36f;          // "Anvil puffiness" (2026-10-22): relief kept on the heads, x(1 + 1.5 it) head lobes, softer edge; 0 = before (was 0.45, 2026-11-10 bake)
     // S3 (2026-10-22): the Sun transmittance volume (cloud_lightning.glsl cv2Stv), the clouds' one Sun shadow. It replaced the
     // fine grid, the shaft rings, the cascade and the layer map (deleted 2026-10-22).
     double cv2StvLatA[4] = {}, cv2StvLatB[4] = {};   // the eye on each level's lattice (cells)
@@ -5857,19 +5857,19 @@ private:
     float cv2AnvilLiftM = 230.0f;       // "Anvil top lift (m)": how far the head lobes raise / lower its top
     float cv2CbSparsity = 0.33f;       // 0: a tower in every lattice cell of a storm; 1: only the strongest
     float cv2CbFill = 0.48f;            // share of 3x3 lattice blocks holding a storm cell (a dominant tower + a flanking line)
-    float cv2CbCumulusVar = 0.8f;      // the storm cumulus top's regional variation (+- fraction of it)
+    float cv2CbCumulusVar = 0.62f;      // the storm cumulus top's regional variation (+- fraction of it) (was 0.8, 2026-11-10 bake)
     float cv2CbCumulusReachKm = 31.0f;  // how far beyond a tower's edge the low cloud takes the storm cumulus top
-    float cv2CbOvershootKm = 0.14f;     // a tower's overshooting dome above the anvil lid (every tower meets it)
-    float cv2AnvilThickKm = 3.7f;      // the anvil shield's thickness over the storm's core
-    float cv2AnvilHangKm = 0.87f;       // how much lower it hangs around a tower's head (the mushroom)
+    float cv2CbOvershootKm = 0.054f;     // a tower's overshooting dome above the anvil lid (every tower meets it) (was 0.14, 2026-11-10 bake)
+    float cv2AnvilThickKm = 1.1f;      // the anvil shield's thickness over the storm's core (was 3.7, 2026-11-10 bake)
+    float cv2AnvilHangKm = 0.49f;       // how much lower it hangs around a tower's head (the mushroom) (was 0.87, 2026-11-10 bake)
     float cv2DetailLodStartM = 8900.0f; // detail erosion fades from here to 4x
-    float cv2ShapePeriodM = 1900.0f;   // tiling periods of the noise volumes
-    float cv2DetailPeriodM = 1800.0f;
+    float cv2ShapePeriodM = 3099.5476f;   // tiling periods of the noise volumes (was 1900.0, 2026-11-10 bake; exact, not 2 s.f.: a noise / map coordinate scale, rounding re-rolls every cloud)
+    float cv2DetailPeriodM = 341.17648f; // (was 1800.0, 2026-11-10 bake; exact, not 2 s.f.: a noise / map coordinate scale, rounding re-rolls every cloud)
     float cv2CellPeriodM = 32000.0f;
     float cv2ClusterPeriodM = 256000.0f;
     float cv2WindMps = 8.0f;           // noise advection (the weather map itself is static until phase 5)
-    float cv2EdgeSharpness = 1.5f;     // density gain after erosion (clamped at 1): harder surfaces
-    float cv2WeatherWarpKm = 7.0f;     // mesoscale warp of the weather lookup (hides its 5 km texels)
+    float cv2EdgeSharpness = 2.3f;     // density gain after erosion (clamped at 1): harder surfaces (was 1.5, 2026-11-10 bake)
+    float cv2WeatherWarpKm = 100.0f;     // mesoscale warp of the weather lookup (hides its 5 km texels) (was 7.0, 2026-11-10 bake)
     int   cv2DebugView = 0;            // 1 iterations, 2 opacity, 3 depth zebra, 4 weather at shell entry
     GpuCloudV2Type cv2Types[kCloudV2Types] = {
         // alt: base, top, flatness (0 dome, 1 deck), base var | shape: ext, erosion, billow, anvil | look: ms, amb, conv, precip
@@ -6032,7 +6032,7 @@ private:
     std::vector<GpuStormShield> stormGpuShields; // as uploaded (the bake's flowed copy is made from these)
     std::vector<StormEntry> shieldEntries, shieldEnvEntries;
     std::vector<glm::uvec2> shieldTable, shieldEnvTable;
-    float stormComplexes = 1.0f;                 // clouds_v2.storm_complexes: x the squall lines' / MCSs' spawn rate
+    float stormComplexes = 0.9f;                 // clouds_v2.storm_complexes: x the squall lines' / MCSs' spawn rate (was 1.0, 2026-11-10 bake)
     float stormCyclones = 1.0f;                  // clouds_v2.storm_cyclones: x each basin's tropical cyclones a season
     std::vector<wx::CycloneState> stormCyclonesNow;   // this frame's, strongest first
     float stormSurge = 1.0f;                     // clouds_v2.storm_surge: x the cyclones' storm surge (0 = none, 0..2)
@@ -6158,20 +6158,20 @@ private:
     double stormUploadedT = -1e300;
     uint64_t stormEnvKey = 0;
     bool  stormObjects = true;                   // weather.storm_objects (off = no towers at all)
-    float stormFrequency = 1.0f;                 // weather.storm_frequency: x the calibrated spawn rate
+    float stormFrequency = 0.18f;                 // weather.storm_frequency: x the calibrated spawn rate (was 1.0, 2026-11-10 bake)
     float stormLifeScale = 1.0f;                 // weather.storm_life: x every storm's lifetime
     // The anvil shield's spread and linger (2026-11-03, issue 20261030_210137; wx::Settings::anvilFormS / anvilLingerS):
     // clouds_v2.storm_anvil_form_min / storm_anvil_decay_min, slots 450 / 451. Were a fixed 15 / 35 min.
-    float stormAnvilFormMin = 60.0f;
+    float stormAnvilFormMin = 240.0f; // (was 60.0, 2026-11-10 bake)
     // The tower's drawn top climbs to the anvil over this (wx::Settings::towerRiseS, clouds_v2.storm_tower_rise_min,
     // slot 452; 0 = the old ~3-min climb with its strength).
-    float stormTowerRiseMin = 30.0f;
-    float stormAnvilDecayMin = 70.0f;
+    float stormTowerRiseMin = 26.0f; // (was 30.0, 2026-11-10 bake)
+    float stormAnvilDecayMin = 240.0f; // (was 70.0, 2026-11-10 bake)
     // 2026-11-08 (weather salvage): which single cells spread an anvil (wx::Settings::singleAnvils: 0 none, 1 supercells,
     // 2 all) and the storm complexes' spacing (lineGapBins, 3-h bins); clouds_v2.storm_single_anvils / storm_complex_gap, slots 544 / 545.
-    float stormSingleAnvils = 1.0f;
+    float stormSingleAnvils = 2.0f; // (was 1.0, 2026-11-10 bake)
     float stormComplexGap = 2.0f;
-    float stormCloudField = 1.0f;                // clouds_v2.storm_field: each storm's own cloud in the weather cube
+    float stormCloudField = 0.65f;                // clouds_v2.storm_field: each storm's own cloud in the weather cube (was 1.0, 2026-11-10 bake)
                                                  // (cloud_v2_weather.comp stormStamp; 0 = the map alone)
     float stormMoat = 1.0f;                      // clouds_v2.storm_moat: the clear moat round a storm (x the field)
     bool  stormIndexTight = true;                // clouds_v2.storm_index_tight: list a bin only where a tower / shield can reach it
@@ -6905,9 +6905,9 @@ private:
     float mwGainGround = 0.470588237f;
     float mwGainSpace = 0.7963801f;
     float mwContrastSpace = 1.25f;
-    float mwNightVision = 0.5022625f;
+    float mwNightVision = 0.57f; // (was 0.5022625, 2026-11-10 bake)
     float mwStarClouds = 1.0f;
-    float mwZoomDetail = 0.98642534f;
+    float mwZoomDetail = 0.91f; // (was 0.98642534, 2026-11-10 bake)
     bool mwZoomOn = true;   // photometry.milky_way_zoom (no UI): false = the old single fetch at every field of view (A/B)
     // The zoomed star clouds' tunables (2026-10-28, issue 20261028_191142; GpuCloudParams::mwStar0-2, Photometry tab,
     // photometry.milky_way_star_*). Defaults since 2026-10-30 are the tuned settings.json values: the zoomed view is in
@@ -7261,7 +7261,7 @@ private:
     float mirrorBoost = 1000.0f;
     float visThresh = 0.0001f;
     float highlightFlare = 0.01f;
-    float moonSuppression = 6.6f;    // sky background suppression from moonlight (mirrors daySuppression,
+    float moonSuppression = 16.0f;    // sky background suppression from moonlight (mirrors daySuppression, (was 6.6, 2026-11-10 bake)
                                      // user-tuned value — moon is ~14 magnitudes dimmer than the sun)
     float extinctionCoeff = 0.18f;  // sea-level ZENITH extinction, magnitudes (atmosphere.glsl);
                                      // ~0.2-0.3 is typical clear-sky V band. One line-of-sight
@@ -7272,7 +7272,7 @@ private:
     float pointRefMag = 1.5f;        // "Point peak mag": magnitude whose core peaks at 1
     float pointGamma = 0.8f;         // "Point contrast": drawn flux ∝ flux^gamma (1 = linear)
     float pointLimitMag = 8.0f;      // "Point limit mag": faintest drawn
-    float pointSigmaPx = 0.45f;      // "Point size (px)": base PSF sigma
+    float pointSigmaPx = 0.4f;      // "Point size (px)": base PSF sigma (was 0.45, 2026-11-10 bake)
     float pointSigmaMaxPx = 6.0f;    // "Point max size (px)": PSF growth cap
     // Zoom optics (Phase 4): zooming is magnification M = tan(35°)/tan(fov/2) (1 at the default 70°
     // FOV and wider), and the view is modelled as an instrument whose aperture grows with it at the
@@ -7496,7 +7496,7 @@ private:
     float cloudDensity = 1.3f;
     float cloudBaseAltM = 6000.0f; // layer 0 shell altitude (low cloud / stratus)
     float cloudTopAltM = 15000.0f; // layer 1 shell altitude (high cirrus)
-    float cloudDriftRate = 6.5e-06f;
+    float cloudDriftRate = 3.7104073e-06f; // (was 6.5e-06, 2026-11-10 bake; exact, not 2 s.f.: a noise / map coordinate scale, rounding re-rolls every cloud)
     // The map's drift phase = rate x (t - kCloudDriftEpochS) + this offset (session state, never
     // saved). The default puts the default rate's map exactly where rate x (t - J2000 - kGmstShiftS) did,
     // i.e. where it was before the Earth rotation gained its GMST term (an old time + kGmstShiftS shows the
@@ -7709,7 +7709,7 @@ private:
     // what it was" and "only entries at ~60 % of fIntens' range or brighter draw at all". The tuned
     // file carries both keys, so this changes nothing for it; a settings.json written by an older
     // build (neither key present) now gets this look instead of the old hardcoded one.
-    float oceanGlintGain = 0.020175438f;  // multiplier on the whole glint term (0 = no flare glints on water)
+    float oceanGlintGain = 0.072f;  // multiplier on the whole glint term (0 = no flare glints on water) (was 0.020175438, 2026-11-10 bake)
     // "Sea glitter (Sun)" (2026-10-27, issue 20261027_001448 shot 1): x the Sun's glint on the waves (the smooth path and
     // its sparkles alike), clouds.ocean_sun_glitter, UBO surgeInfo.z. 1 = the physical microfacet lobe.
     float oceanSunGlitter = 3.0f;
