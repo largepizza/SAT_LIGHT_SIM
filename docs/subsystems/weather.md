@@ -154,7 +154,15 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   1 h/s change curve: spikes at 5.9 / 4.8 / 5.3 x the median on the base (frames 18, 78, 212) -> one at 3.5 x (frame 78).
   Measured turn (250 km straight down, 5 min/s, polar cross-correlation at 1.1-1.6 RMW): 5-8 deg counter-clockwise per
   5 min (the rate predicts ~16; the history smears the rest); at 4-6 RMW the sheet is featureless under a noon Sun, so
-  nothing can be tracked there. Not shipped: a general flow of all cloud noise on `wfWind` (weather-v2's
+  nothing can be tracked there. **Round 2 (the same day):** the march computes the displacement ONCE at its main sample
+  (`CV2_CYC_EXTERNAL`, as `CV2_ORO_EXTERNAL`) and the light march's samples of that step reuse it (it varies over ~10 km;
+  the light steps are within a few km): the loop ran in every inlined cv2Field, 12 light samples per main sample. The CPU
+  counts the cyclones whose reach meets the view's cap (`flowP.w`; the eye's horizon + 6 deg): none, and the march does
+  one uniform test per sample. THE TIME-LAPSE FADE: past ~2 deg of turn a frame at the RMW (1 h/s gives ~10; 5 min/s 0.8)
+  the rate fades to 0 over 2-8 deg, smoothed over ~10 frames (`cv2FlowFadeS`): a turn the frame rate cannot resolve is
+  not shown, the storm lock stays; the resolve's window keeps the unfaded rate so its lock share matches the upload's.
+  ROUND-2 NUMBERS below (A B interleaved alone on the GPU, 3 x 60 frames, no pre-waits; the gate twice on the same exe
+  and settle cap, rotation 0 as the base). Not shipped: a general flow of all cloud noise on `wfWind` (weather-v2's
   `cv2NoiseDispAt`): it needs the wind evaluated per sample in the march and per pixel in the resolve, and the lattice
   seams it showed from orbit (e453372); the storm lock covers the user's case (storms vs the drift).
   **Anvils carried by the organised systems (2026-11-08, branch `weather-salvage`, `.plans/WEATHER_SALVAGE_PLAN.md`; the

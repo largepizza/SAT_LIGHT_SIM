@@ -93,7 +93,9 @@ layout(std430, set = 0, binding = CV2_STORM_BINDING) readonly buffer CV2StormBuf
     CV2Shield cv2Shields[kCv2ShieldMax];
     uvec2    cv2ShieldTable[kCv2ShieldTableSize];   // as cv2StormTable, kCv2ShieldBinsPerFace bins
     uint     cv2ShieldList[kCv2ShieldListSize];
-    uvec4    cv2CycHead;                            // x cyclones
+    uvec4    cv2CycHead;                            // x cyclones; y (2026-11-10, flowmaps) cyclones + the MESOCYCLONES appended after them
+                                                    //   (a supercell's dominant tower: a = axis / strength, b.w hemi, c.y 0 = no CDO: the
+                                                    //   flow map alone reads them, c.z reach, d.x rmw, d.y vmax, e the flow clock)
     CV2Cyclone cv2Cyclones[kCv2CycloneMax];
     uvec4    cv2DustHead;                           // x 1 = a dust wall in the grid, y its bounding box (lo x | lo y << 16),
                                                     // z (hi x | hi y << 16), w unused

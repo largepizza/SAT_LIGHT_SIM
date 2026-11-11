@@ -751,13 +751,17 @@ vec3 cv2FlowWeatherDirAt(CV2Pos q)
 // point's; a point at height h takes x (1 + h / R)). cv2Field evaluates it once per sample and folds it into q (the only
 // site: the layers hold no state for it); the resolve reprojects the rate's and the lock's motion for one cyclone
 // (cv2.flowA / flowB / flowC, SatelliteSimCloudsV2.cpp).
+vec3 gCv2CycD = vec3(0.0);   // the march's main sample sets it (CV2_CYC_EXTERNAL); every cv2Field of that step reads it
 vec3 cv2CycFlowAt(vec3 wd)
 {
     vec3 D = vec3(0.0);
 #if defined(CV2_STORM_BINDING) && !defined(SKY_LITE)
-    if (cv2.flowP.x <= 0.0) return D;
+    // (flowP.w: the cyclones whose reach meets the view's cap, counted on the CPU: with none, one uniform test per sample.)
+    if (cv2.flowP.x <= 0.0 || cv2.flowP.w <= 0.0) return D;
     float best = 0.0;
-    [[dont_unroll]] for (uint i = 0u; i < min(cv2CycHead.x, kCv2CycloneMax); ++i) {
+    // (cv2CycHead.y: the cyclones and, after them, the supercells' MESOCYCLONES (SatelliteSimWeather.cpp): the same vortex
+    // on a 2-3 km RMW at 20-35 m/s -- the wall cloud and the base turn under the updraft; reach 5 RMW.)
+    [[dont_unroll]] for (uint i = 0u; i < min(cv2CycHead.y, kCv2CycloneMax); ++i) {
         CV2Cyclone cy = cv2Cyclones[i];
         float outer = max(cy.c.z, 1000.0);
         vec3  a     = cy.a.xyz;
@@ -3314,8 +3318,15 @@ CV2Field cv2Field(CV2Pos q, float detailAmt, float fpM)
     // The cyclone flow map (cv2CycFlowAt): its displacement goes INTO q (undrifted: every layer reads its noise through
     // cv2Drift(q.rSeaE / q.seaProjE)), so no layer carries it as state -- as a global held across the layers, with the
     // loop inlined at five read sites, the march compiled to 255 registers (2026-11-10: +13-23 ms).
+    // (CV2_CYC_EXTERNAL, the march: computed ONCE at the main sample and kept across the light march's samples -- the
+    // displacement varies over ~10 km, the light steps are within a few km -- in place of a loop in every inlined copy:
+    // the clean A/B put those at +4 ms over a hurricane.)
     {
+#ifdef CV2_CYC_EXTERNAL
+        vec3 cD = gCv2CycD;
+#else
         vec3 cD = cv2CycFlowAt(cv2Drift(q.dirE));
+#endif
         vec3 cU = vec3(cD.x * cv2.cover.z + cD.y * cv2.cover.w, -cD.x * cv2.cover.w + cD.y * cv2.cover.z, cD.z);
         q.seaProjE += cU;
         q.rSeaE    += cU * (1.0 + q.h * (1.0 / R_EARTH));

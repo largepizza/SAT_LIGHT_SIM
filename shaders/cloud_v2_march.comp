@@ -52,6 +52,7 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_march.comp)
 #define CV2_ORO_EXTERNAL         // ... added at the main sample only (below), not in every inlined cv2Field (registers)
 #define CV2_STORM_BINDING   26   // the storm objects' towers (cv2_storms.glsl)
 #define CV2_FLOW_DITHER          // the cyclone flow map's phases dithered per ray (clouds_v2.glsl cv2CycFlowAt): the march only
+#define CV2_CYC_EXTERNAL         // ... its displacement computed at the main sample only (below), kept across the light march
 #define CV2_DUST_SPEC            // the haboob code is specialization constant 3 (clouds_v2.glsl kCv2DustOn)
 #include "clouds_v2.glsl"
 #include "atmosphere.glsl"
@@ -694,6 +695,25 @@ void main()
 
     vec2 seg[2];
     int  nSeg = cv2ShellSegments(eye, dir, seg[0], seg[1]);
+    // THE CYCLONE FLOW MAP'S PER-RAY TEST (2026-11-10, flowmaps): does any vortex's reach (cyclones, mesocyclones:
+    // cv2CycHead.y) come near this ray's shell segment? Its two ends' map directions against the reach + the segment's
+    // own angular span: when none, no sample of the ray runs the loop (a cyclone inside the view's 31-deg cap but out of
+    // reach still cost +0.7 ms at 650 km). tCycD: the ray's distance at the last displacement evaluation (refreshed every
+    // 1 km: the displacement varies over ~10 km, the march steps 100-500 m near a storm).
+    bool  cycNear = false;
+    float tCycD   = -1e9;
+#if defined(CV2_STORM_BINDING)
+    if (cv2.flowP.x > 0.0 && cv2.flowP.w > 0.0 && nSeg > 0) {
+        vec3  d0   = cv2Drift(cv2Pos(dir * seg[0].x, eyeH, enuToEcef).dirE);
+        vec3  d1   = cv2Drift(cv2Pos(dir * (nSeg > 1 ? seg[1].y : seg[0].y), eyeH, enuToEcef).dirE);
+        float span = acos(clamp(dot(d0, d1), -1.0, 1.0));
+        [[dont_unroll]] for (uint i = 0u; i < min(cv2CycHead.y, kCv2CycloneMax); ++i) {
+            vec3  a   = cv2Cyclones[i].a.xyz;
+            float lim = cos(min(max(cv2Cyclones[i].c.z, 1000.0) * (1.0 / R_EARTH) + 0.5 * span, 3.1));
+            if (max(dot(a, d0), dot(a, normalize(d0 + d1))) > lim || dot(a, d1) > lim) { cycNear = true; break; }
+        }
+    }
+#endif
 
     // Knockout 32768 (volumetric cloud march) also covers v2.
     if ((cloud.dbgDisableMask & 32768u) != 0u || cv2.look.x <= 0.0) nSeg = 0;
@@ -918,6 +938,12 @@ void main()
             // here once (in every inlined cv2Field copy it cost the 128-register cliff) and kept by the reads that follow.
             gCv2Oro = ((lmC & (kCv2LayMid | kCv2LayLow)) != 0u) ? cv2OroField(p) : vec4(0.0);
 #endif
+            // The cyclone flow map's displacement (clouds_v2.glsl cv2CycFlowAt, CV2_CYC_EXTERNAL): once here, and the light
+            // march's samples of this step take the same (it varies over ~10 km). Zero with no cyclone in the view's cap.
+            if (cycNear && abs(t - tCycD) > 1000.0 && (lmC & (kCv2LayLow | kCv2LayMid | kCv2LayHigh)) != 0u) {
+                gCv2CycD = cv2CycFlowAt(cv2Drift(p.dirE));
+                tCycD    = t;
+            }
             CV2Field f = cv2Field(p, fine ? detailAmt : -1.0, fp);
             gCv2LayMask = 0xFFFFu;
 #ifdef CV2_ORO

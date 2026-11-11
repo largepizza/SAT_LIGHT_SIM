@@ -5734,6 +5734,11 @@ private:
     float cv2HurrFlowTurns = 0.25f;
     float cv2HurrFlowBlend = 0.12f;
     std::unordered_map<uint32_t, double> cycFlowPhase;   // each active cyclone's flow-map clock (windows), by its seed
+    float cv2FlowFadeS = 1.0f;   // the rotation's time-lapse fade (1 = full; toward 0 past a few degrees of turn a frame), smoothed
+    // The vortices the flow map turns this frame (cyclones, then supercells' mesocyclones), Earth-fixed: the view-cap
+    // count, the fade's rate and the resolve's pick read these (fillCloudsV2Params); updateStorms fills them.
+    struct FlowVortex { glm::dvec3 earth, map, vEarth; float rmw, vmax, outer, hemi; };
+    std::vector<FlowVortex> cv2FlowVortices;
     float cv2RainAmount = 3.0f;         // rain shafts under precipitating cloud, 0 = none
     float cv2OpticsGain = 1.0f;        // halos, sundogs, circumzenithal arc, rainbows
     float cv2RainStreaks = 3.1f;       // the rain particles' visibility (x their real coverage; "Drops at the eye")
