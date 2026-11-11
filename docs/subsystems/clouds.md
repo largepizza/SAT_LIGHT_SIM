@@ -1507,6 +1507,26 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     k of the field's e^(-k t)) **0.11** (was the fixed 0.05): the lobed shaded halves 0.90-1.22 of the reference, the
     blobs' overall level 5% darker (reference / model 1.02 -> 1.07), a uniform tau-100 sphere's shaded side 13x too dark
     (it was 3x: uniform spheres are not cumulus).
+  - **Side escape is what darkens a base: default 0.31** (2026-11-10 bake of the user's tune; was 0.11). The diffuse
+    field is the light that has scattered many times inside the cloud; e^(-k t) is the share of it that is still inside
+    after diffusing a delta-scaled optical depth t from the sunlit surface. In a slab every photon that leaves sideways
+    is replaced by one coming in from the neighbouring column, so nothing is lost; a real cumulus is finite and lobed,
+    and the light that wanders out through its sides and valleys never reaches the base. The deeper a sample sits under
+    the sunlit top, the more of the field has left, so the base, which has the most cloud between it and the Sun, darkens
+    most while the sunlit top (small t) barely changes. The user's judgement from the ground: 0.31 is "the missing link
+    for cloud bottoms being too light" (issue 20261104_180745). Measured under the new defaults (High, 2036-11-22 21:30 UTC,
+    -26.07 170.25, 200 m, looking up 25 deg at an overcast base, three headings; 0.11 -> 0.31 alone): the scene-referred
+    base needs +1.1-1.2 EV more auto exposure (global EV -1.49 / -1.52 / -1.68 -> -0.35 / -0.31 / -0.53, i.e. it is about
+    half as bright before exposure), and the displayed base is still 4-7% darker (display-linear mean of the upper 60%
+    0.415 / 0.392 / 0.384 -> 0.385 / 0.374 / 0.359). Free: a uniform. At the issue's own pose the whole 2026-11-10
+    default set (this plus the shape / lighting / tonemap tune) takes the overhead deck from display-linear 0.38 (the old
+    defaults' overcast) to 0.135 (a storm's base).
+  - **Coordinate scales are baked exactly, not to 2 significant figures** (`shape_period_m`, `detail_period_m`,
+    `cirrus_period_m`, `flow_period_km`, `mid_field_km`, `clouds.drift_rate`): each multiplies a world coordinate many
+    times its own size (or months of sim time), so rounding one re-rolls every cloud (built-in defaults vs the tuned
+    file at one pose: 6-14% mean difference rounded, 0.4-0.7% exact). The storm catalog's inputs (coverage, cover_full,
+    storm_frequency, storm_tower_rise_min, storm_complexes) are rounded: that re-rolls a few storms only (319 vs 303 alive
+    at 2036-11-22 21:30; one anvil edge shifts, 2.2% at the issue pose).
   - **The sky's light keeps its colour through cloud.** "Sky light keeps its colour" (`clouds_v2.sky_light_hue`, slot 473)
     1: the sky light's hue was greyed by the cloud above (1 / (1 + 0.11 tau)) on the reasoning that it arrives "mixed with
     the sunlight"; cloud scattering is grey, the sunlight's share is the key term's diffuse field, so the greying counted it
