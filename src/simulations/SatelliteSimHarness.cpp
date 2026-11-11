@@ -204,7 +204,7 @@ json patchFor(const std::string &dotted, const json &value)
 }
 
 const char *kHelp =
-    "wait <frames> | wait seconds <s> | wait settle [frames] | wait settle auto [max=160] [min=40] [thr=0.1] [hold=4] [noise=1.5]; "
+    "wait <frames> | wait seconds <s> | wait settle [frames] [maxs=5] | wait settle auto [max=160] [min=40] [thr=0.1] [hold=4] [noise=1.5] [maxs=5]; "
     "time [set <iso>|add <s>|sun <el deg|noon|midnight> [rising|setting]|pause|play|scale <label>|reverse on/off]; "
     "observer lat= lon= [agl=|alt=]; beams [list] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [clamp=on] [drift=intro|default]; report list [dir] | report info <issue dir> | report load <issue dir> [shot=1] [settings=on|off] [clamp=on] [trail=on|off] | report shot [note] [new=1] [title=] [bar=1] | report mark [issue] shot= [pin=x,y|off] [rect=x,y,w,h|off] | report export [issue]; drift [default] [phase=] [rate=]; camera [az= el= fov=] | camera look|track <sun|moon|sel|planet name|off>; "
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select star <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
@@ -1195,6 +1195,11 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 skyTaaFrame = 0;
                 harnessSettleFrames_ = std::max(1, frames);
                 a.scratch["frames"] = harnessSettleFrames_;
+                // A wall-clock cap (2026-11-10, user: "it should not take > 5 seconds to settle"): on a slow or shared
+                // GPU, 160 frames ran 30+ s. `maxs=<s>` (default 5; 0 = no cap) ends the settle early; the result says
+                // `capped` so a check that needs a converged history can see it did not get one.
+                a.scratch["t0"] = harness::nowS();
+                a.scratch["maxs"] = c.num("maxs", 5.0);
                 a.scratch["auto"] = autoMode && ctx_ && ctx_->screenshotSupported;
                 if (a.scratch["auto"].get<bool>())
                 {
@@ -1209,6 +1214,11 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             }
             bool stop = --harnessSettleFrames_ <= 0;
             const bool isAuto = a.scratch["auto"].get<bool>();
+            const double maxS = a.scratch["maxs"].get<double>();
+            const double tookS = harness::nowS() - a.scratch["t0"].get<double>();
+            const bool capped = !stop && maxS > 0.0 && tookS >= maxS;
+            if (capped)
+                stop = true;
             if (isAuto && !stop)
             {
                 const int hold = a.scratch["hold"].get<int>();
@@ -1237,8 +1247,11 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             harnessSettleFrames_ = 0;
             settleProbeWanted_ = false;
             timePaused = harnessSettleSavedPaused_;
-            const int ran = isAuto ? a.frame : a.scratch["frames"].get<int>();
+            const int ran = (isAuto || capped) ? a.frame : a.scratch["frames"].get<int>();
             r["frames"] = ran;
+            r["seconds"] = std::round(tookS * 100.0) / 100.0;
+            if (capped)
+                r["capped"] = true;
             if (isAuto)
             {
                 r["auto"] = true;
@@ -1257,7 +1270,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                     r["diff32_last"] = settleTrace32_.back();
                 }
             }
-            r["message"] = "settled " + std::to_string(ran) + " frames" + (isAuto ? " (auto)" : "");
+            r["message"] = "settled " + std::to_string(ran) + " frames" + (isAuto ? " (auto)" : "")
+                         + (capped ? " (capped at " + std::to_string((int)maxS) + " s)" : "");
             return Status::Done;
         }
         if (mode == "seconds" || mode == "s")
