@@ -250,6 +250,15 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
       levels; 1 min/s 17 -> 18%, worst 77 -> 37. Cost: the light march lights the clouds there (~+0.8 ms); block excess on
       the image +0.2-0.4 levels, running grain +0.2-0.3 levels (below visible). Also tried, no gain: weather-v2's evoK history
       (a3aa2ad) and the volume's lattice following the noise wind.
+    - **Ultra keeps the light shafts in time-lapse** (2026-11-10, issue_20261110_190018 "Light rays under timewarp"). The
+      shafts the user sees through a deck's gaps are the light march reading the occupancy clipmap's light (`cdc_light`):
+      knocked out paused (`cdc_light` 0 or `cdc_skip` 0) the deck reads flat, with the Sun volume off they stay. The
+      clipmap is off past `cdc_max_rate` x real time (4), so 10x already lost them (the report's shot 1), and the Sun
+      volume past `sun_volume_max_step_s`. Both are in the graphics-preset table now: Ultra 1e6 / 1e6 (no cut-off), every
+      other tier 4 / 1 (High = the defaults); a settings file saved at Ultra takes them at load (the named preset
+      re-derives its row). artifacts.py on the ITCZ report at Ultra, cut-offs -> kept: 5 min/s ghostT 25.8 -> 20.0%,
+      lagT max 72 -> 30 levels; 1 min/s 19.0 -> 11.0%, 71 -> 37 (the settled reference is lit by the clipmap and the
+      volume, so keeping them in time-lapse is closer to it; the volume's ghost of 2026-11-08 did not return).
 - **Debug view 7**: per-layer optical depth (red low incl. rain, green mid, blue anvil, white high) — the
   first thing to look at when a cloud artifact has an unknown owner.
 - **Motion** (`cloud_v2_resolve.comp`): the new-sample weight and the clamp box follow PARALLAX (the
@@ -2140,6 +2149,17 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     Congo anvils from 18 km, Sun 10 deg, lit b/r 1.21 -> 1.12 (the Sun behind: 1.28 -> 1.17); Sun 5 deg 1.12 -> 1.08 (behind: 1.17 -> 1.13). Still
     over 1: the anvil tops (12+ km) are lit by a whiter Sun than the 2-km reference, and the sky light on them is blue.
     Not in SKY_LITE (its SPIR-V was 92 bytes under budget).
+  - **The white balance's divisor is limited along the sunlight's own colour** (2026-11-10, issue_20261109_185137 "why do
+    clouds and lighting get green here"; `cv2WbLimit`, atmosphere.glsl, used by sat_sky.frag and the rain particles'
+    copy). Its channels were clamped to 0.4 .. 2.5 one by one: with the Sun 2-3 deg up the reference is ~(1.9, 0.83,
+    0.10), so blue lost most of its correction while red and green kept theirs, and every light that is not the sunlight
+    itself (the sky's ambient, the multiply-scattered light in a cloud) came out green-yellow. Now every channel's log is
+    scaled by one factor so the largest stays within ln 2.5 (the correction stays on the illuminant's axis). Attribution
+    on the report (Sun 2.4 deg, 1.7 km, the reporter's white balance 0.6 from the eye, cloud sunlight 0, saturation 1.4,
+    Kp 11), mean CIELAB a / b of the deck: as replayed -4.4 / +9.5 (the shot -4.4 / +9.5); Kp 0, airglow 0, saturation 1:
+    -4.3 / -4.3 / -3.2 (not them); white balance from cloud sunlight 1: -0.7; white balance 0: +7.1 / +27 (orange).
+    After: +4.8 / +12.3 (warm). Same place, Sun 4 deg: -1.6 -> +2.4; 8 deg (no channel past the limit): unchanged. Full
+    sky shader only (`#ifdef SKY_SUN_SHADOW`; SKY_LITE keeps the per-channel clamp, its SPIR-V budget).
   - **Multi-scatter "edge definition" (light3, probes only).** The diffuse field (cv2DiffuseField) at optical depth tau
     toward the Sun peaks at t = (1 - g^2) tau ~1 and is nearly flat to t ~5 (I0 = 5 - 2/3 C1 - (1 - g') C1 t - 3 e^-t):
     a crevice 11 optical depths behind a lit lobe takes ~the same diffuse light as the lit face (estimate at the user's

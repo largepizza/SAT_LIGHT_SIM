@@ -498,6 +498,12 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - Exposure, auto exposure, highlight roll-off, white balance and the Moon's size are in a new **Exposure and
   Moon** section of the Photometry tab (settings keys unchanged). The "City light blur LOD" slider is gone.
 - The disabled legacy-lighting Starlink Gen2 comparison shell was removed from the roster.
+- **Ultra keeps the light shafts under time warp.** At Ultra the clouds' light shafts and shadows stay on at any time
+  rate (they switched off from 10x up); the other graphics tiers keep the faster time-lapse lighting.
+- **Rockets no longer show see-through cloud patches.** A rocket inside its own exhaust (a Starship high up at sunset)
+  showed dark, blocky, cloud-shaped patches that slid over the hull as you moved: the clouds behind it leaking through.
+- **No green clouds near sunset.** With the Sun a few degrees up, the white balance turned cloud and ambient light
+  green-yellow (it corrected red and green fully but blue only partly); it now corrects along the sunlight's own colour.
 
 ### Fixed
 

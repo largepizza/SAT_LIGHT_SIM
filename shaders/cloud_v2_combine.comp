@@ -103,7 +103,7 @@ void main()
     ivec2 i0 = ivec2(floor(hp));
     vec2  fr = hp - vec2(i0);
     vec3  Bh = vec3(0.0), Ah = vec3(0.0), gBA = vec3(0.0), gAA = vec3(0.0), bH = vec3(0.0);
-    float gBB = 0.0, aH = 0.0;
+    float gBB = 0.0, aH = 0.0, wBehind = 0.0;
     [[unroll]] for (int k = 0; k < 4; ++k) {
         ivec2 o = ivec2(k & 1, k >> 1);
         ivec2 c = clamp(i0 + o, ivec2(0), H - 1);
@@ -111,13 +111,17 @@ void main()
         Bh  += w * texelFetch(halfATex, c, 0).rgb;
         Ah  += w * texelFetch(halfBTex, c, 0).rgb;
         vec4 db = texelFetch(halfDBTex, c, 0);
-        gBA += w * db.rgb;
-        gBB += w * db.a;
-        gAA += w * texelFetch(halfDATex, c, 0).rgb;
+        // DB.a -1: cloud_march dropped this texel's cloud as behind its surface (a mesh, a ridge): none of it comes back.
+        bool behind = db.a < -0.5;
+        wBehind += behind ? w : 0.0;
+        gBA += behind ? vec3(0.0) : w * db.rgb;
+        gBB += behind ? 0.0 : w * db.a;
+        gAA += behind ? vec3(0.0) : w * texelFetch(halfDATex, c, 0).rgb;
         vec4 ch = cv2Off ? vec4(0.0, 0.0, 0.0, 1.0) : farMap(textureLod(resolvedTex, (vec2(c) + 0.5) / vec2(H), 0.0));
         bH  += w * ch.rgb;
         aH  += w * ch.a;
     }
+    if (wBehind > 0.5) rd = vec2(0.0, -1.0);   // (its distance too: the alpha falls back to the plumes' / none)
     float dA = rc.a - aH;
     vec3  B  = max(Bh + gBB * (rc.rgb - bH) + gBA * dA, vec3(0.0));
     vec3  A  = clamp(Ah + gAA * dA, vec3(0.0), vec3(1.0));

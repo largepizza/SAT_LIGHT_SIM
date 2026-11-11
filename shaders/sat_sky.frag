@@ -7695,6 +7695,9 @@ void main() {
                           + BETA_M * 1.1 * (atmColumnInf(rW, cW, H_M) * H_M)));
 #endif
         vec3  wb = sunW / max(dot(sunW, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
+#ifdef SKY_SUN_SHADOW
+        wb = cv2WbLimit(wb);
+#endif
         float k  = cloud.whiteBalance * smoothstep(cloud.wbRef.z, cloud.wbRef.w, cW);
         color /= mix(vec3(1.0), clamp(wb, vec3(0.4), vec3(2.5)), k);
     }

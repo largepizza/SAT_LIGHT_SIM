@@ -687,6 +687,17 @@ launches follow per-program cadences (no real manifest).
     the engines) and the faint column to the pad (the low trail lit by the engine light; gone with "Rocket light on
     clouds" Off) are the exhaust, not reflections. Open: lightning.frag's ground term lights the sea as a 0.15-albedo
     diffuser (water's body reflectance is ~0.02-0.05).
+- **A hull inside its own exhaust shows no cloud from behind it** (2026-11-10, issue_20261110_184611 "Odd transparency on
+  rockets", a Starship at 58 km at sunset, the eye inside the plume). cloud_march.comp drops a resolved cloud whose
+  distance is past the texel's surface (2026-10-21); with full-res clouds cloud_v2_combine.comp then added each pixel's
+  own resolved cloud back on top (its derivatives), the far deck behind the hull, with the cloud's distance as the alpha,
+  so sat_sky.frag's per-texel mesh test also dropped the exhaust in front there: dark, cloud-shaped, half-res-stepped
+  patches over the hull that slid as the eye moved (knocked out by `plume_gain` 0, `coverage` 0, `cdc_skip` 0, half-res
+  clouds or the full-rate march; not by reflections or the sky TAA). cloud_march now flags such a texel (DB.a -1) and the
+  combine adds none of its cloud and drops its distance. The report's view: the hull strip's luminance 22..117 (sd 32)
+  -> 58..118 (sd 15), the patches gone in every frame of the reporter's trail. What remains is physical in the sim's
+  terms: the hull veiled evenly by the exhaust it sits in, as the sky around it is (`plume_gain` decides how much).
+  Only texels the 2026-10-21 guard already empties change (a cloud behind a mesh or a ridge); cost a branch.
 - **Sound**: each burning rocket within 150 km on a thunder voice (`launchSounds`, called from `thunderStep`): the
   retarded time, Earth-fixed (the air carries it), level ~ sqrt(flow) / distance, thinning with the air at the rocket.
   The retarded time is the LATEST emission tau with (T - tau) = |P(tau) - eye| / 343, found by a scan back over 440 s

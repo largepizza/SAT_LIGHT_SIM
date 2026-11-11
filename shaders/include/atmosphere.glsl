@@ -53,6 +53,18 @@ float atmColumn(vec3 p, vec3 d, float L, float H)
     return max(c, 0.0);
 }
 
+// The white balance's divisor (sat_sky.frag, cloud_v2_lightning.comp), its channels kept within 0.4 .. 2.5 ALONG the
+// reference sunlight's own colour (2026-11-10, issue_20261109_185137 "why do clouds and lighting get green"): every channel's
+// log scaled by one factor. Clamped per channel, a Sun 2-3 deg up (wb ~ 1.9, 0.83, 0.10) lost only its blue correction while
+// red and green kept theirs: R / 1.9 against G / 0.83 tinted every light that is not the sunlight itself (the sky's ambient,
+// the multiply-scattered light in a cloud) green-yellow.
+vec3 cv2WbLimit(vec3 wb)
+{
+    vec3  lw = log(max(wb, vec3(1e-4)));
+    float e  = max(max(abs(lw.x), abs(lw.y)), abs(lw.z));
+    return exp(lw * min(1.0, 0.9162907 / max(e, 1e-6)));   // ln 2.5
+}
+
 // Extinction in magnitudes; k = sea-level zenith extinction (the "Extinction" slider).
 float atmExtinctionMag(vec3 p, vec3 d, float L, float k)
 {
