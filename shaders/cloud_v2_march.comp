@@ -47,6 +47,7 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_march.comp)
 #define CV2_SHAPE_BINDING   3
 #define CV2_DETAIL_BINDING  4
 #define CV2_MESO_BINDING    5
+#define CV2_ICE_OPTICS_BINDING 28   // the ice crystals' traced halo table (cv2_optics.glsl cv2IceOptics, 2026-11-10)
 #define CV2_ELEV_BINDING    25   // the elevation map: orographic clouds (clouds_v2.glsl cv2OroField)
 #define CV2_FRACTUS              // fractus under raining bases (clouds_v2.glsl): only the march and the clipmap bake
 #define CV2_ORO_EXTERNAL         // ... added at the main sample only (below), not in every inlined cv2Field (registers)
@@ -470,7 +471,7 @@ vec3 beamFinish(vec3 pW, float h, vec3 dir, CV2Field f, float dayness, float og,
     float cosB = dot(dir, dirS);
     vec3  ph   = vec3(phSum / Esum);
     if (f.thin > 0.0)   // ice, delta-scaled (see the march)
-        ph = mix(ph, vec3(cv2HG(cosB, 0.3)) + og * cv2IceOptics(dir, dirS, hab) / 0.55, f.thin);
+        ph = mix(ph, vec3(cv2HG(cosB, 0.3)) + og * cv2IceOptics(dir, dirS, vec3(0.0, 0.0, 1.0), hab) / 0.55, f.thin);
     // Precipitation: rain (the bows opposite the satellites) or, where the shafts' air is below freezing (cv2.precip.w,
     // the march's liqR for the Sun and Moon), snow: broad lobes, a faint halo and sundogs around the satellites, no bow.
     // Until 2026-10-06 the beams lit every shaft as rain: a "satbow" in Antarctic snow at -23 C.
@@ -478,7 +479,7 @@ vec3 beamFinish(vec3 pW, float h, vec3 dir, CV2Field f, float dayness, float og,
         float liq = cv2.precip.w;
         vec3  phR = vec3(0.3 * cv2HG(cosB, 0.97) + 0.55 * cv2HG(cosB, 0.35));
         if (liq > 0.0) phR += og * liq * 0.5 * cv2RainOptics(dir, dirS);
-        if (liq < 1.0) phR += og * (1.0 - liq) * (0.25 * cv2IceOptics(dir, dirS, vec4(0.2, 0.35, 0.0, 0.0))
+        if (liq < 1.0) phR += og * (1.0 - liq) * (0.25 * cv2IceOptics(dir, dirS, vec3(0.0, 0.0, 1.0), vec4(0.2, 0.35, 0.0, 0.0))
                                                   + vec3(0.15 * cv2PillarOptics(dir, dirS)));
         ph = mix(ph, phR, f.rain);
     }
@@ -751,7 +752,7 @@ void main()
             vec3  sL  = (li == 0) ? sunDir : moonDir;
             float cS  = (li == 0) ? cosSun : cosMoon;
             vec3  phS = vec3(0.3 * cv2HG(cS, 0.97) + 0.55 * cv2HG(cS, 0.35))
-                      + og * (0.25 * cv2IceOptics(dir, sL, habSnow) + 0.15 * cv2PillarOptics(dir, sL));
+                      + og * (0.25 * cv2IceOptics(dir, sL, vec3(0.0, 0.0, 1.0), habSnow) + 0.15 * cv2PillarOptics(dir, sL));
             if (li == 0) phRainSun = mix(phS, phRainSun, liqR); else phRainMoon = mix(phS, phRainMoon, liqR);
         }
     }
@@ -1083,10 +1084,14 @@ void main()
             t += stepW;
         }
         // The ray's crystal habit, at its first ice sample (before the batch's light: the loop below is not in ray order).
+        // The optics over the crystals' OWN vertical (2026-11-10): from orbit the first ice sample can be 1000 km from the
+        // eye, its horizontal 9 deg from the eye's; the Sun's elevation there decides which arcs the plates make.
         if (tIce >= 0.0 && !iceHabitSet) {
-            habRay = cv2IceHabit(cv2Pos(dir * tIce, eyeH, enuToEcef));
-            phIceSun  += og * cv2IceOptics(dir, sunDir, habRay) / 0.55;
-            phIceMoon += og * cv2IceOptics(dir, moonDir, habRay) / 0.55;
+            CV2Pos qIce = cv2Pos(dir * tIce, eyeH, enuToEcef);
+            vec3   upIce = qIce.dirE * enuToEcef;             // ECEF -> ENU (the transpose)
+            habRay = cv2IceHabit(qIce);
+            phIceSun  += og * cv2IceOptics(dir, sunDir, upIce, habRay) / 0.55;
+            phIceMoon += og * cv2IceOptics(dir, moonDir, upIce, habRay) / 0.55;
             iceHabitSet = true;
         }
         // The batch's light: the front (the light marches) first, then the back in ray order.
@@ -1571,10 +1576,12 @@ void main()
             // column crystals: the 22 degree halo, sundogs, the arcs, the pillar), for the Sun or Moon.
             vec3  phI  = vec3(cv2HG(cosSun, 0.3)), phIM = vec3(cv2HG(cosMoon, 0.3));
             if (cv2.fog2.w > 0.0) {
-                const vec4 habDD = vec4(1.0, 0.8, 0.5, 0.25);
+                // Plates and columns both (Antarctic diamond dust shows Parry arcs often): z = 1 with "Ice optics: Parry share".
+                const vec4 habDD = vec4(1.0, 0.8, 1.0, 0.25);
                 float ogI = max(og, 0.5);
-                phI  += ogI * (cv2IceOptics(dir, sunDir, habDD) / 0.55 + cv2PillarOptics(dir, sunDir));
-                phIM += ogI * (cv2IceOptics(dir, moonDir, habDD) / 0.55 + cv2PillarOptics(dir, moonDir));
+                vec3  upF = normalize(pm);                    // the fog's own vertical (pm is from the Earth's centre)
+                phI  += ogI * (cv2IceOptics(dir, sunDir, upF, habDD) / 0.55 + cv2PillarOptics(dir, sunDir));
+                phIM += ogI * (cv2IceOptics(dir, moonDir, upF, habDD) / 0.55 + cv2PillarOptics(dir, moonDir));
             }
             vec3  L1 = vec3(0.0), L2 = vec3(0.0);
             float T1 = 1.0, T2 = 1.0, dF = 0.0, wF = 0.0;

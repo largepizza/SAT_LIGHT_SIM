@@ -19,23 +19,24 @@
 void SatelliteSim::createRainParticles(VulkanContext &ctx)
 {
     const VkShaderStageFlags st = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    VkDescriptorSetLayoutBinding b[6] = {
+    VkDescriptorSetLayoutBinding b[7] = {
         {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, st, nullptr},          // CloudParams
         {1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, st, nullptr},          // CloudV2Params
         {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, st, nullptr},          // the flash buffer (rain map, light at the eye)
         {3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},  // the half-res scene depth
         {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},  // sky TAA history 0: the frame behind (floor)
         {5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},  // sky TAA history 1
+        {6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},  // the ice crystals' halo table (2026-11-10, cv2_optics.glsl)
     };
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 6;
+    li.bindingCount = 7;
     li.pBindings = b;
     if (vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &rainDescLayout) != VK_SUCCESS)
         throw std::runtime_error("SatelliteSim: rain particle descriptor layout");
 
     VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
                                   {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
-                                  {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3}};
+                                  {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.maxSets = 1;
     pi.poolSizeCount = 3;
@@ -143,8 +144,9 @@ void SatelliteSim::writeRainDescriptors(VulkanContext &ctx)
     const bool bgReady = skyTaaLinearSampler && skyTaaHistColorView[0] && skyTaaHistColorView[1];
     VkDescriptorImageInfo bg[2] = {{skyTaaLinearSampler, skyTaaHistColorView[0], VK_IMAGE_LAYOUT_GENERAL},
                                    {skyTaaLinearSampler, skyTaaHistColorView[1], VK_IMAGE_LAYOUT_GENERAL}};
-    VkWriteDescriptorSet w[6] = {};
-    const int n = bgReady ? 6 : 4;
+    VkDescriptorImageInfo ice{cv2ClampSampler, cv2IceOpticsView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet w[7] = {};
+    const int n = bgReady ? 7 : 5;   // the ice table (binding 6) rides as the last entry, before the sky histories exist too
     for (int i = 0; i < n; ++i)
     {
         w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -152,6 +154,9 @@ void SatelliteSim::writeRainDescriptors(VulkanContext &ctx)
         w[i].dstBinding = (uint32_t)i;
         w[i].descriptorCount = 1;
     }
+    w[n - 1].dstBinding = 6;
+    w[n - 1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    w[n - 1].pImageInfo = &ice;
     w[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     w[0].pBufferInfo = &cp;
     w[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -160,7 +165,7 @@ void SatelliteSim::writeRainDescriptors(VulkanContext &ctx)
     w[2].pBufferInfo = &fl;
     w[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     w[3].pImageInfo = &dp;
-    for (int i = 4; i < n; ++i)
+    for (int i = 4; i < n - 1; ++i)
     {
         w[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         w[i].pImageInfo = &bg[i - 4];

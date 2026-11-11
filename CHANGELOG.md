@@ -212,6 +212,13 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   channel's shape, delayed by distance.
 - **Rainbows, halos and ice optics** for the Sun or the Moon: rainbows at storms, 22-degree halos, sundogs, the
   circumzenithal arc, sun pillars.
+- **Ice halos are ray-traced through real crystals.** The halos of cirrus, snow and diamond dust come from a table
+  traced through hexagonal ice prisms (random, plate, column and Parry orientations), so every arc sits where the
+  crystals send the light for the Sun's elevation: the 22 and 46 degree halos, sundogs that drift outward as the Sun
+  climbs, the circumzenithal arc below 32 degrees of Sun and the circumhorizon arc above 58, upper and lower tangent
+  arcs closing into the circumscribed halo, supralateral and Parry arcs, the parhelic circle, and from above a cloud
+  deck the subsun and subparhelia instead of sundogs. Settings: "Ice optics: traced crystal table", "column share",
+  "Parry share" (Clouds tab).
 - **Fog, dust and ice fog.** Radiation fog in valleys at night, sea fog on coasts, dust plumes over dry land,
   diamond-dust ice fog over Antarctica and Greenland, patchy by region the way the dust is.
 - **Physical light.** Multiple scattering in the clouds (dark wisps, bright cores), the sky's light on clouds and

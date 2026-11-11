@@ -7073,6 +7073,10 @@ void SatelliteSim::buildSettingsCloudsTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SldMultiScatterReach), &cv2MsExtinction, 0.05f, 0.9f, 0.01f, "%.2f", 129},
         {tx(Txt::SldMultiScatterStrength), &cv2MsStrength, 0.0f, 1.0f, 0.01f, "%.2f", 130},
         {tx(Txt::SldOpticsHalosRainbows), &cv2OpticsGain, 0.0f, 3.0f, 0.05f, "%.2f", 156},
+        // 2026-11-10 (optics, issue_20261110_180734): the ice halos from the traced crystal table. Slots 584-586.
+        {tx(Txt::SldIceOpticsTable), &cv2IceOpticsTable, 0.0f, 1.0f, 1.0f, "%.0f", 584},
+        {tx(Txt::SldIceOpticsColumns), &cv2IceOpticsColumns, 0.0f, 1.0f, 0.05f, "%.2f", 585},
+        {tx(Txt::SldIceOpticsParry), &cv2IceOpticsParry, 0.0f, 1.0f, 0.05f, "%.2f", 586},
         {tx(Txt::SldForwardScatterG), &cv2PhaseG, 0.0f, 0.95f, 0.01f, "%.2f", 131},
         {tx(Txt::SldLightMarchM), &cv2LightLenM, 250.0f, 16000.0f, 50.0f, "%.0f", 132},
         {tx(Txt::SldLightSteps), &cv2LightSteps, 1.0f, 12.0f, 1.0f, "%.0f", 133},
@@ -10012,6 +10016,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2CirrusFlowBlend = settingClamp(c.value("cirrus_flow_blend", cv2CirrusFlowBlend), 0.02f, 0.45f);
         cv2RainAmount = c.value("rain_amount", cv2RainAmount);
         cv2OpticsGain = c.value("optics_gain", cv2OpticsGain);
+        cv2IceOpticsTable = settingClamp(c.value("ice_optics_table", cv2IceOpticsTable), 0.0f, 1.0f);
+        cv2IceOpticsColumns = settingClamp(c.value("ice_optics_columns", cv2IceOpticsColumns), 0.0f, 1.0f);
+        cv2IceOpticsParry = settingClamp(c.value("ice_optics_parry", cv2IceOpticsParry), 0.0f, 1.0f);
         cv2RainStreaks = c.value("rain_streaks", cv2RainStreaks);
         precipParticles = c.value("precipitation", precipParticles);
         // "drop_reach_m": the rain particles' reach (2026-10-04). The old "drop_distance_m" was the per-pixel lattice's
@@ -10805,6 +10812,9 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"cirrus_flow_blend", cv2CirrusFlowBlend},
         {"rain_amount", cv2RainAmount},
         {"optics_gain", cv2OpticsGain},
+        {"ice_optics_table", cv2IceOpticsTable},
+        {"ice_optics_columns", cv2IceOpticsColumns},
+        {"ice_optics_parry", cv2IceOpticsParry},
         {"rain_streaks", cv2RainStreaks},
         {"precipitation", precipParticles},
         {"drop_reach_m", cv2DropDistM},

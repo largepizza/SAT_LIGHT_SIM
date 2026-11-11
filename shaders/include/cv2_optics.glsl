@@ -3,18 +3,48 @@
 // Atmospheric optics shared by the volumetric clouds (clouds_v2.glsl includes this) and the rain
 // particles at the eye (rain_particles.vert): ONE copy of the bows, halos and phase lobes, so a drop
 // drawn as a particle scatters exactly as the rain volume it stands in for. Pure functions; needs
-// common.glsl (PI). Moved out of clouds_v2.glsl unchanged (2026-10-04).
+// common.glsl (PI) and the CloudV2Params UBO (cv2.optics). Moved out of clouds_v2.glsl unchanged (2026-10-04).
+//
+// ICE OPTICS ARE PREDICTED, NOT PLACED (2026-11-10, issue_20261110_180734 "Optics physics"): cv2IceOptics reads a
+// table ray-traced through hexagonal ice crystals (tools/make_ice_optics.py -> assets/textures/ice_optics.rgba8:
+// Monte-Carlo geometric optics, refraction + Fresnel + total internal reflection, per colour channel) for five
+// crystal POPULATIONS: randomly oriented columns (the 22 deg halo), compact random crystals (22 + 46 deg), plates
+// falling flat (sundogs, parhelic circle, circumzenithal / circumhorizon arcs, subsun, subparhelia), singly oriented
+// columns (tangent arcs -> circumscribed halo, supra / infralateral arcs) and Parry-oriented columns (Parry arcs).
+// Every arc is where the crystals send the rays, for the light's elevation above the crystals' LOCAL horizontal
+// (`up`: from orbit the first ice sample's own vertical, not the eye's), including the mirror pattern below the
+// horizon that an eye ABOVE the layer sees (subsun, subparhelia, the halos' lower halves). The analytic lobes
+// (cv2IceOpticsAnalytic) remain as the A/B and the fallback without the table (cv2.optics.x = 0).
 const vec3 CV2_N_ICE   = vec3(1.3069, 1.3108, 1.3165);
 const vec3 CV2_N_WATER = vec3(1.3314, 1.3350, 1.3403);
 
 float cv2Sq(float x) { return x * x; }
 
-// Ice crystals: the 22 and 46 degree halos (randomly oriented hexagonal prisms: minimum deviation of
-// the 60 and 90 degree prisms), and from plates falling flat the sundogs (at the light's elevation,
-// through the effective index n' = sqrt(n^2 - sin^2 e) / cos e — 22 deg out at the horizon, 36 at
-// 40 deg, none above ~61), the parhelic circle and the circumzenithal arc (only below 32 deg).
-// hab: cv2IceHabit's weights for this region.
-vec3 cv2IceOptics(vec3 v, vec3 s, vec4 hab)
+// The table's layout (tools/make_ice_optics.py: change both). x theta from the light: 0..64 deg at 0.5 (128 texels)
+// then 64..180 at 1 (116); y rows 0-1 random columns, 2-3 random compact, then 91 rows (phi 0..180 at 2 deg: the azimuth
+// about the light from its zenith side) per oriented population: plates, columns, Parry; z the light's elevation:
+// 0..60 at 2.5 deg (25 layers), 65..90 at 5 (6). Texel = (P / 512)^(1/3): P the phase in cv2HG's convention
+// (isotropic = 1), the undeviated forward rays left out (the march's delta-scaled extinction carries them).
+const float CV2_IO_NT = 244.0, CV2_IO_H = 277.0, CV2_IO_NE = 31.0, CV2_IO_NP = 91.0, CV2_IO_PMAX = 512.0;
+// The table's 22 deg halo peaks at ~16 x isotropic (its physical single-scatter contrast); the look the user approved
+// drew it at 4 on the ice lobe, so the table comes in at a quarter: the relative strengths (sundogs ~30 x the halo,
+// the 46 deg halo ~1/8 of it) are the trace's, the overall level the previous one. "Optics (halos, rainbows)" scales it.
+const float CV2_IO_GAIN = 0.25;
+
+#ifdef CV2_ICE_OPTICS_BINDING
+layout(set = 0, binding = CV2_ICE_OPTICS_BINDING) uniform sampler3D cv2IceOpticsTex;
+#endif
+
+float cv2IoU(float thDeg) { return (thDeg < 64.0 ? thDeg * 2.0 : 128.0 + (thDeg - 64.0)) / CV2_IO_NT; }
+float cv2IoW(float eDeg)  { return ((eDeg <= 60.0 ? eDeg * 0.4 : 24.0 + (eDeg - 60.0) * 0.2) + 0.5) / CV2_IO_NE; }
+vec3  cv2IoDecode(vec3 v) { return CV2_IO_PMAX * v * v * v; }
+
+// Ice crystals, the analytic stand-ins (until 2026-11-10 the only version): the 22 and 46 degree halos (randomly
+// oriented hexagonal prisms: minimum deviation of the 60 and 90 degree prisms), and from plates falling flat the
+// sundogs (at the light's elevation, through the effective index n' = sqrt(n^2 - sin^2 e) / cos e — 22 deg out at
+// the horizon, 36 at 40 deg, none above ~61), the parhelic circle and the circumzenithal arc (only below 32 deg).
+// v, s in a frame whose z is up. hab: cv2IceHabit's weights for this region.
+vec3 cv2IceOpticsAnalytic(vec3 v, vec3 s, vec4 hab)
 {
     float a = acos(clamp(dot(v, s), -1.0, 1.0));
     vec3  D22 = 2.0 * asin(CV2_N_ICE * 0.5) - radians(60.0);
@@ -43,8 +73,45 @@ vec3 cv2IceOptics(vec3 v, vec3 s, vec4 hab)
     return 4.0 * hab.x * h22 + 0.7 * hab.w * h46 + up * (12.0 * hab.y * dogs + hab.z * (vec3(circle) + 3.0 * cza));
 }
 
+// Ice crystals, predicted: the traced table at (theta from the light, phi about it, the light's elevation over the
+// crystals' local horizontal `up`), weighted by the region's habit. hab: x random columns (the 22 deg halo; with
+// "Ice optics columns" cv2.optics.z of them singly oriented: tangent arcs), y plates (sundogs, parhelic circle,
+// CZA / CHA, subsun), z well-aligned crystals (with "Ice optics Parry" cv2.optics.y: Parry arcs), w compact random
+// crystals (the 46 deg halo). v the view ray, s toward the light, up the local vertical, all unit, one frame.
+vec3 cv2IceOptics(vec3 v, vec3 s, vec3 up, vec4 hab)
+{
+#ifdef CV2_ICE_OPTICS_BINDING
+    if (cv2.optics.x > 0.5) {
+        float sz  = dot(s, up);
+        float e   = degrees(asin(clamp(sz, -1.0, 1.0)));
+        float th  = degrees(acos(clamp(dot(v, s), -1.0, 1.0)));
+        vec3  u   = up - s * sz;                              // the zenith side of the light, on the sky
+        float ul  = length(u);
+        u = ul > 1e-4 ? u / ul : normalize(cross(s, abs(s.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0)));
+        vec3  r   = cross(s, u);
+        float phi = degrees(atan(abs(dot(v, r)), dot(v, u)));   // 0 above the light .. 180 below it
+        if (e < 0.0) { e = -e; phi = 180.0 - phi; }           // lit from below the horizontal: the mirror pattern
+        float x = cv2IoU(th), z = cv2IoW(e);
+        float py = phi * (0.5 / CV2_IO_H);                     // 2 deg per row
+        vec3 res = vec3(0.0);
+        if (hab.x > 0.0) res += hab.x * cv2IoDecode(textureLod(cv2IceOpticsTex, vec3(x, 1.0 / CV2_IO_H, z), 0.0).rgb);
+        if (hab.w > 0.0) res += hab.w * cv2IoDecode(textureLod(cv2IceOpticsTex, vec3(x, 3.0 / CV2_IO_H, z), 0.0).rgb);
+        if (hab.y > 0.0) res += hab.y * cv2IoDecode(textureLod(cv2IceOpticsTex, vec3(x, 4.5 / CV2_IO_H + py, z), 0.0).rgb);
+        float col = hab.x * cv2.optics.z, par = hab.z * cv2.optics.y;
+        if (col > 0.0) res += col * cv2IoDecode(textureLod(cv2IceOpticsTex, vec3(x, 95.5 / CV2_IO_H + py, z), 0.0).rgb);
+        if (par > 0.0) res += par * cv2IoDecode(textureLod(cv2IceOpticsTex, vec3(x, 186.5 / CV2_IO_H + py, z), 0.0).rgb);
+        return CV2_IO_GAIN * res;
+    }
+#endif
+    // The analytic lobes assume z up: express v and s over `up`.
+    vec3 e1 = normalize(cross(up, abs(up.x) < 0.9 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0)));
+    vec3 e2 = cross(up, e1);
+    return cv2IceOpticsAnalytic(vec3(dot(v, e1), dot(v, e2), dot(v, up)), vec3(dot(s, e1), dot(s, e2), dot(s, up)), hab);
+}
+
 // The sun pillar: plate crystals near the ground, drifting almost level, make a vertical streak above
-// (and below) a low Sun, diamond dust's signature. v, s in the observer's ENU.
+// (and below) a low Sun, diamond dust's signature. v, s in the observer's ENU. (Wobbling plates, tilts of
+// 5-15 deg: a population the table does not carry, the one feature still placed.)
 float cv2PillarOptics(vec3 v, vec3 s)
 {
     float e   = asin(clamp(s.z, -1.0, 1.0));

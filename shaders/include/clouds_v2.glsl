@@ -274,6 +274,10 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // (2026-11-08, hurricane) A hurricane's CDO and eyewall (cv2CdoShare, cv2LowA "THE EYEWALL"): x "Hurricane sheet swirl"
     // (the sheet's spiral outline, frays and ripple), y "Hurricane eyewall" (the storm mass's ring round the eye), zw unused
     vec4  hurricane;
+    // (2026-11-10, optics) The ice crystals' traced halo table (cv2_optics.glsl cv2IceOptics): x 1 = the table (0 = the analytic
+    // lobes), y the Parry share of a region's well-aligned crystals (Parry arcs), z the singly-oriented-column share of its
+    // halo crystals (tangent arcs), w unused
+    vec4  optics;
 } cv2;
 #include "wind_field.glsl"
 
