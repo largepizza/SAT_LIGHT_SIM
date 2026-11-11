@@ -580,6 +580,23 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   top" (12 km) on a cumulus-typed map, was 1-2 km cells extruded 10 km: rows of spires. `deep` also follows the cloud's
   own span (smoothstep 3.5-8 km of topMax - base). Ordinary cumulus A/B (cloud suite towers / trade / cu_air / sea):
   visually identical, cost equal; 128 registers.
+- **Inside a storm: its own height, fullness, overhang and puffiness (2026-11-10, issue_20261110_183113 "Storms and
+  hurricane odd towers", worktree storms; `stormsB` in the cloud UBO, slots 571-574).** The report stood 6-9 km up
+  INSIDE a weak tropical storm (Ancha, towers 0.03-0.1 strength): its flat-walled drums and the canyons between them are
+  the STORM MASS (`cv2LowA` sK: `storm_mass` 0 removes them; `storm_field` 0 too, the bake's CDO typing; `cb_columns`,
+  `cb_cumulus_reach_km`, `hurricane_eyewall` 0 leave them). "Storm cumulus top" reached it through the low field's first
+  early-out bound (`column.w` x (1 + `column3.z`)), which ran before the cyclone's raise of the bound: the mass was cut
+  wherever the cumulus top was set below its own (at 4 km a flat sheet at ~7 km). The cyclone raise (`massB`, within
+  1.6 CDO radii + 50 km) now feeds that first test too, so the cumulus top no longer touches the mass. Four controls act
+  on the storm's own cloud: "Storm tower height" `storm_tower_height` (0.85; the towers' rise and cap x it / 0.85, the
+  far column's top likewise: 0.85 = the mass as it was), "Storm fullness" `storm_fullness` (0.6: the shoulders' floor
+  + 0.3 x it of the span, and the weak columns between the towers keep that share of the floor, not of the towers (that drew rows of spires): the canyons fill),
+  "Storm overhang" `storm_overhang` (0.4: + 0.35 x it on the stem's requirement, heads standing out over narrower stems)
+  and "Storm puffiness" `storm_puffiness` (0.4: the lobes x (1 + it)). The same four act inside a STORM OBJECT's own
+  cumulus (`CV2Storm.inner`, `cv2StormGeom`: within its towers' radius + half "Storm cumulus reach"; x the tower's
+  prox): there the cumulus' top is "Storm tower height" x the Cb top, not "Storm cumulus top" x (1 + its variation),
+  which keeps the outer half of the reach band, the cumulus round a storm. The early-out bounds take the larger of the
+  two tops where `inner` > 0.
 
 - **Pass 20 (2026-09-29):** "Storm cumulus top" reaches the cloud AROUND a storm: the weather map
   types only a storm's core as Cb (which the towers cover) and the cloud around it as stratocumulus,

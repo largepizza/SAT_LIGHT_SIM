@@ -49,6 +49,8 @@ layout(set = 0, binding = 5) uniform sampler2DArray wxLevel1;
 // z the first row (2026-10-25: a face re-baked over several frames, a slice of rows each).
 // storm / storm2 (2026-10-22, stormStamp): storm x the tower radius (m, "Cb tower radius"), y "Storm cumulus reach" (m),
 // z "Cb head drift" (m), w "Cb flare"; storm2 x "Storm cloud field" (0 = the map alone), y its clear moat's strength.
+// (2026-11-10, storms: packed, the push constants being full: storm.y + 65536 x "Storm moat width" in 250-m units, storm.w
+// + 4 x "Storm moat feathering" in thousandths, storm2.y + 4 x "Storm moat frequency" in thousandths: moatPC below.)
 layout(push_constant) uniform PC { int faceSize; float srcLod; int face; float pad /* ring scale */; vec4 evo0; vec4 evo1; vec4 evo2;
                                    vec4 remap; vec4 wx; vec4 storm; vec4 storm2; } pc;
 
@@ -165,7 +167,9 @@ vec4 stormStampTowers(vec3 d)
     uvec2 bin = cv2StormEnvBin(d);
     vec3 eastW0  = vec3(-d.y, d.x, 0.0) * inversesqrt(max(dot(d.xy, d.xy), 1e-6));
     vec3 northW0 = cross(d, eastW0);
-    float Rb = pc.storm.x, cuR = pc.storm.y, drift = pc.storm.z, flare = max(pc.storm.w, 1.0);
+    float Rb = pc.storm.x, cuR = mod(pc.storm.y, 65536.0), drift = pc.storm.z, flare = max(mod(pc.storm.w, 4.0), 1.0);
+    float moW = floor(pc.storm.y * (1.0 / 65536.0)) * 250.0, moF = floor(pc.storm.w * 0.25) * 0.001;
+    float moFreq = floor(pc.storm2.y * 0.25) * 0.001;
     for (uint k = 0u; k < bin.y; ++k) {
         uint     ti = cv2StormEnvList[bin.x + k];
         CV2Tower tw = cv2EnvTowers[ti];
@@ -206,8 +210,14 @@ vec4 stormStampTowers(vec3 d)
             vec3  rf   = dh - (-0.65 * eastW + 0.7 * perp) * (1.1 * RcM);
             gRainFree  = max(gRainFree, dom * (1.0 - smoothstep(0.35 * RcM, 0.7 * RcM, length(rf))));
         }
-        // The moat at the envelope's edge (none in line with the anvil).
-        float ring = smoothstep(0.7 * E, 0.85 * E, dhL) * (1.0 - smoothstep(0.9 * E, E, dhL));
+        // The moat (none in line with the anvil): from the edge of the storm's cumulus (Rf) out "Storm moat width" (moW), its
+        // outer edge feathered over "Storm moat feathering" of it, round the share "Storm moat frequency" of the storms (by
+        // the dominant tower's seed: the march's mid-layer moat, clouds_v2.glsl cv2StormGeom, takes the same towers), inside
+        // the envelope. (2026-11-10, issue_20261110_185127: it was a fixed ring at 0.7-1.0 of the envelope.)
+        uint  sdM  = floatBitsToUint(tw.c.y) * 747796405u + 2891336453u;
+        float fW   = max(moF * moW, 1500.0);
+        float ring = (role > 0.9 && float(sdM >> 8u) * (1.0 / 16777216.0) < moFreq ? 1.0 : 0.0)
+                   * smoothstep(0.9 * Rf, Rf, dhL) * (1.0 - smoothstep(Rf + moW - fW, Rf + moW, dhL)) * (1.0 - smoothstep(0.9 * E, E, dhL));
         o.w = max(o.w, ring * s1 * mix(1.0, smoothstep(1.0, 1.5, qe), dom));
     }
     // Line systems (squall lines, MCSs, 2026-10-23): the shield's TRAILING STRATIFORM region, a raining deck behind the
@@ -360,7 +370,7 @@ vec4 stormStampFinish(vec4 o, vec3 d)
     }
     gCycDeck = max(gCycDeck, deckC * pc.storm2.x * (1.0 - eyeAcc));
     o.xyz *= pc.storm2.x;
-    o.w   *= pc.storm2.x * pc.storm2.y * (1.0 - max(o.x, o.y));
+    o.w   *= pc.storm2.x * mod(pc.storm2.y, 4.0) * (1.0 - max(o.x, o.y));
     // The eye: clear (x4 the moat's weight: the full coverage span).
     o.xyz *= 1.0 - eyeAcc;
     o.w    = max(o.w, 4.0 * eyeAcc);

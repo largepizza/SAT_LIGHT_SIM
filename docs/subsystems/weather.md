@@ -24,8 +24,24 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   map air rained from nothing under its anvil; from above, anvils on bare ground). `cloud_v2_weather.comp`
   `stormStamp` (binding 4 = `stormBuf`): within each tower's ENVELOPE (`cv2StormEnvRadius` = reach + max(40 km, 0.8
   reach)) a broken cumulus field thickening toward the tower (congestus within "Storm cumulus reach"), a stratiform
-  raining deck under the anvil's forward flank (type ~0.15: the low layer thickens it), rain there, and a clear moat
-  at the envelope's edge; "Storm cloud field" `storm_field` 1 / "Storm clear moat" `storm_moat` 1 (slots 323-324).
+  raining deck under the anvil's forward flank (type ~0.15: the low layer thickens it), rain there, and a clear moat;
+  "Storm cloud field" `storm_field` 1 / "Storm clear moat" `storm_moat` 1 (slots 323-324).
+  **The moat** (2026-11-10, issue_20261110_185127 "Storm moats", worktree storms): a ring from the edge of the storm's
+  cumulus (Rf = 1.15 Rc + max("Storm cumulus reach", 0.5 Rc)) out "Storm moat width" `storm_moat_width_km` (12),
+  its outer edge feathered over "Storm moat feathering" `storm_moat_feather` (0.6) of the width (>= 1.5 km), round
+  the share "Storm moat frequency" `storm_moat_frequency` (0.5) of the storms (the DOMINANT tower's seed hashed:
+  role > 0.9, so one draw per storm; slots 568-570), x "Storm clear moat". Such a tower's reach (`SatelliteSimWeather.cpp`,
+  the GPU tower's c.x; not a cyclone's) covers the ring, or the march's walk stopped at the old reach and every width
+  looked the same. (Gating the moat on a spreading anvil, anvilK x "Cb flare" > 1.02-1.15, removed it from every storm of
+  the report: tried and dropped.) The same ring in two places: the bake lowers
+  the low field's coverage over it, and the march's mid layer gives way over it (`cv2StormGeom`'s `storm`, which
+  `cv2Field` cuts the mid layer by). The bake's push constants are full (128 bytes): width, feathering and frequency
+  ride packed in the high parts of `storm.y`, `storm.w`, `storm2.y` (`SatelliteSim::weatherEvoPC`). The RINGS of the
+  report were not this moat (it was 0): the mid layer gave way out to 0.6-1.0 of each tower's whole reach (its anvil's,
+  ~50-80 km), and from orbit at a low Sun every storm stood in a dark annulus of the low field's shadowed cumulus where
+  the orange mid deck had been cut (knockout: `mid_amount` 0 removes the rings with the deck; `storm_field` 0 and
+  `cb_cumulus_reach_km` 0 leave them). The mid layer now gives way only over the towers (1.15 Rc), and past them only
+  where a storm has a moat.
   Invariants: (1) the bake reads a SECOND index (envelope bins + its own tower copy, `kStormEnv*`, declared only under
   `CV2_STORM_ENV`) that the march never reads: listing towers to their envelope in the march's index would multiply
   the column search. Built only on a frame the bake runs (`buildStormEnvIndex`, ~1-2 ms; every frame it cost +2 ms).

@@ -992,6 +992,11 @@ struct GpuCloudV2Params
     glm::vec4 grain;         // (2026-11-10, grain) x "cdc_base_band" (the clipmap bake's base band, cloud_v2_cdc.comp), yzw unused
     // flowmaps (2026-11-10): the cyclone flow map's parameters and the resolve's reprojected cyclone (clouds_v2.glsl).
     glm::vec4 flowP, flowA, flowB, flowC;
+    // (2026-11-10, storms) issues 20261110_185127 / 183113 (clouds_v2.glsl cv2StormGeom, cv2LowA, cv2Field): stormsA x the moat
+    // strength ("Storm clear moat"), y its width (m), z its feathering 0..1, w the share of storms with one; stormsB x the
+    // cumulus top inside a storm object as a share of the Cb top, y its fullness, z its overhang, w its puffiness
+    glm::vec4 stormsA;
+    glm::vec4 stormsB;
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -1024,7 +1029,7 @@ static_assert(offsetof(GpuCloudV2Params, amb) == 288 + 48 * kCloudV2Types + 1232
 static_assert(offsetof(GpuCloudV2Params, tone) == 288 + 48 * kCloudV2Types + 1248, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, gnd) == 288 + 48 * kCloudV2Types + 1264, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, micro) == 288 + 48 * kCloudV2Types + 1280, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1776, "GpuCloudV2Params layout");   // +64: flowmaps (flowP, flowA, flowB, flowC); +16: grain; +16: optics; +16: hurricane; +16: pucks; +32: wind0, wind1; +32: cellA, cellB; +32: cirrus-hurr (ciHu, ciHu2); +32: storm3 (storm3a, storm3b); +64: vertical (vert, vert2, oro0, oro1); +80: shapeB
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1808, "GpuCloudV2Params layout");   // +32: storms (stormsA, stormsB); +64: flowmaps (flowP, flowA, flowB, flowC); +16: grain; +16: optics; +16: hurricane; +16: pucks; +32: wind0, wind1; +32: cellA, cellB; +32: cirrus-hurr (ciHu, ciHu2); +32: storm3 (storm3a, storm3b); +64: vertical (vert, vert2, oro0, oro1); +80: shapeB
 static_assert(offsetof(GpuCloudV2Params, cu3) == 288 + 48 * kCloudV2Types + 1312, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
@@ -6192,6 +6197,19 @@ private:
     float stormCloudField = 0.65f;                // clouds_v2.storm_field: each storm's own cloud in the weather cube (was 1.0, 2026-11-10 bake)
                                                  // (cloud_v2_weather.comp stormStamp; 0 = the map alone)
     float stormMoat = 1.0f;                      // clouds_v2.storm_moat: the clear moat round a storm (x the field)
+    // 2026-11-10 (storms, issue_20261110_185127): the moat's width (km past the storm's cumulus), its feathering (0 = a hard
+    // edge, 1 = soft across its whole width) and the share of storms that have one (by tower). Slots 568-570.
+    float stormMoatWidthKm = 12.0f;              // clouds_v2.storm_moat_width_km
+    float stormMoatFeather = 0.6f;               // clouds_v2.storm_moat_feather
+    float stormMoatFrequency = 0.5f;             // clouds_v2.storm_moat_frequency
+    // 2026-11-10 (storms, issue_20261110_183113): the cloud INSIDE a storm (a storm object's cumulus within its towers'
+    // radius + half "Storm cumulus reach", whose outer half keeps "Storm cumulus top"; and a tropical cyclone's storm mass,
+    // clouds_v2.glsl sK): its towers' height as a share of the cumulonimbus top (0.85 = the mass as it was), how full it is
+    // (the canyons between its towers fill), the heads' overhang over narrower stems, and its lobes' size. Slots 571-574.
+    float stormTowerHeight = 0.85f;              // clouds_v2.storm_tower_height
+    float stormFullness = 0.6f;                  // clouds_v2.storm_fullness
+    float stormOverhang = 0.4f;                  // clouds_v2.storm_overhang
+    float stormPuffiness = 0.4f;                 // clouds_v2.storm_puffiness
     bool  stormIndexTight = true;                // clouds_v2.storm_index_tight: list a bin only where a tower / shield can reach it
                                                  // (2026-10-27; false = every bin of the bounding rectangle, the A/B)
     int   stormShieldBinsAB = 0;                 // clouds_v2.storm_shield_bins_ab (no UI): 64 = list shields in the old

@@ -7258,6 +7258,15 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SldStormComplexGap), &stormComplexGap, 0.0f, 8.0f, 1.0f, "%.0f", 545},
         {tx(Txt::SldStormCloudField), &stormCloudField, 0.0f, 3.0f, 0.05f, "%.2f", 323},
         {tx(Txt::SldStormClearMoat), &stormMoat, 0.0f, 3.0f, 0.05f, "%.2f", 324},
+        // 2026-11-10 (storms, issues 20261110_185127 / 183113): the moat's width, feathering and frequency; the cumulus inside a
+        // storm object (its height as a share of the Cb top, fullness, overhang, puffiness). Slots 568-574.
+        {tx(Txt::SldStormMoatWidthKm), &stormMoatWidthKm, 0.0f, 60.0f, 0.5f, "%.1f", 568},
+        {tx(Txt::SldStormMoatFeather), &stormMoatFeather, 0.0f, 1.0f, 0.05f, "%.2f", 569},
+        {tx(Txt::SldStormMoatFrequency), &stormMoatFrequency, 0.0f, 1.0f, 0.05f, "%.2f", 570},
+        {tx(Txt::SldStormTowerHeight), &stormTowerHeight, 0.2f, 1.0f, 0.05f, "%.2f", 571},
+        {tx(Txt::SldStormFullness), &stormFullness, 0.0f, 1.0f, 0.05f, "%.2f", 572},
+        {tx(Txt::SldStormOverhang), &stormOverhang, 0.0f, 1.0f, 0.05f, "%.2f", 573},
+        {tx(Txt::SldStormPuffiness), &stormPuffiness, 0.0f, 2.0f, 0.05f, "%.2f", 574},
         {tx(Txt::SldStormComplexesX), &stormComplexes, 0.0f, 10.0f, 0.05f, "%.2f", 325},
         {tx(Txt::SldTropicalCyclonesX), &stormCyclones, 0.0f, 10.0f, 0.05f, "%.2f", 326},
         // 2026-10-28 (the settings round-up): until then only in the Weather window's Controls tab.
@@ -9802,6 +9811,13 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         stormComplexGap = settingClamp(c.value("storm_complex_gap", stormComplexGap), 0.0f, 8.0f);
         stormCloudField = settingClamp(c.value("storm_field", stormCloudField), 0.0f, 3.0f);
         stormMoat = settingClamp(c.value("storm_moat", stormMoat), 0.0f, 3.0f);
+        stormMoatWidthKm = settingClamp(c.value("storm_moat_width_km", stormMoatWidthKm), 0.0f, 60.0f);
+        stormMoatFeather = settingClamp(c.value("storm_moat_feather", stormMoatFeather), 0.0f, 1.0f);
+        stormMoatFrequency = settingClamp(c.value("storm_moat_frequency", stormMoatFrequency), 0.0f, 1.0f);
+        stormTowerHeight = settingClamp(c.value("storm_tower_height", stormTowerHeight), 0.2f, 1.0f);
+        stormFullness = settingClamp(c.value("storm_fullness", stormFullness), 0.0f, 1.0f);
+        stormOverhang = settingClamp(c.value("storm_overhang", stormOverhang), 0.0f, 1.0f);
+        stormPuffiness = settingClamp(c.value("storm_puffiness", stormPuffiness), 0.0f, 2.0f);
         stormArmCirrus = settingClamp(c.value("storm_arm_cirrus", stormArmCirrus), 0.0f, 3.0f);
         stormCycArms = settingClamp(c.value("storm_cyc_arms", stormCycArms), 0.0f, 6.0f);
         stormCycTightness = settingClamp(c.value("storm_cyc_tightness", stormCycTightness), 0.25f, 4.0f);
@@ -10605,6 +10621,13 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"storm_complex_gap", stormComplexGap},
         {"storm_field", stormCloudField},
         {"storm_moat", stormMoat},
+        {"storm_moat_width_km", stormMoatWidthKm},
+        {"storm_moat_feather", stormMoatFeather},
+        {"storm_moat_frequency", stormMoatFrequency},
+        {"storm_tower_height", stormTowerHeight},
+        {"storm_fullness", stormFullness},
+        {"storm_overhang", stormOverhang},
+        {"storm_puffiness", stormPuffiness},
         {"storm_arm_cirrus", stormArmCirrus},
         {"storm_cyc_arms", stormCycArms},
         {"storm_cyc_tightness", stormCycTightness},
