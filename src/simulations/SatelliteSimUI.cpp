@@ -9209,6 +9209,15 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
     // Full-resolution clouds on Medium, High and Ultra (2026-10-22, S9; Medium added the same day by the user, issue
     // 20261022_180607: at Medium's 67% render scale the half-res clouds flickered badly and Medium + full res ran ~60 fps).
     cv2FullRes = (p == GraphicsPreset::Medium || !cheapClouds) ? 1.0f : 0.0f;
+    // The light shafts in time-lapse (2026-11-10, issue_20261110_190018 "Light rays under timewarp": "at least have those
+    // rays on for Ultra"). The shafts through a deck's gaps are the light march reading the occupancy clipmap's light
+    // (cdc_light; with it off, or with the clipmap off, the deck reads flat), and the clipmap is off past cdc_max_rate x
+    // real time (4: 10x already lost them); the Sun volume (the clouds' shadow on the sea and the air's god rays) is off
+    // past a 1-s sim step (1 min/s at 30 fps). Ultra keeps both at any time rate (+~3-6 ms there, contended); the other
+    // tiers keep the compiled-in values (High = the defaults). A settings file saved at Ultra takes these at load (the
+    // named preset re-derives its row in applySettingsJson); Custom keeps what it was saved with.
+    cv2CdcMaxRate = (p == GraphicsPreset::Ultra) ? 1.0e6f : 4.0f;
+    cv2SunVolumeMaxStepS = (p == GraphicsPreset::Ultra) ? 1.0e6f : 1.0f;
     // Procedural terrain detail (terrain_detail.glsl). Measured with the harness on an RTX 3070 Ti:
     // +3 ms at Medium in the Anchorage worst case (10.0 vs 6.9 ms), +5-8 ms at High on the ground in
     // mountains, ~+1 ms from aircraft altitude. Off on the integrated-GPU tiers — and on Planetarium /

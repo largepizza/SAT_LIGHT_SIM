@@ -250,6 +250,15 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
       levels; 1 min/s 17 -> 18%, worst 77 -> 37. Cost: the light march lights the clouds there (~+0.8 ms); block excess on
       the image +0.2-0.4 levels, running grain +0.2-0.3 levels (below visible). Also tried, no gain: weather-v2's evoK history
       (a3aa2ad) and the volume's lattice following the noise wind.
+    - **Ultra keeps the light shafts in time-lapse** (2026-11-10, issue_20261110_190018 "Light rays under timewarp"). The
+      shafts the user sees through a deck's gaps are the light march reading the occupancy clipmap's light (`cdc_light`):
+      knocked out paused (`cdc_light` 0 or `cdc_skip` 0) the deck reads flat, with the Sun volume off they stay. The
+      clipmap is off past `cdc_max_rate` x real time (4), so 10x already lost them (the report's shot 1), and the Sun
+      volume past `sun_volume_max_step_s`. Both are in the graphics-preset table now: Ultra 1e6 / 1e6 (no cut-off), every
+      other tier 4 / 1 (High = the defaults); a settings file saved at Ultra takes them at load (the named preset
+      re-derives its row). artifacts.py on the ITCZ report at Ultra, cut-offs -> kept: 5 min/s ghostT 25.8 -> 20.0%,
+      lagT max 72 -> 30 levels; 1 min/s 19.0 -> 11.0%, 71 -> 37 (the settled reference is lit by the clipmap and the
+      volume, so keeping them in time-lapse is closer to it; the volume's ghost of 2026-11-08 did not return).
 - **Debug view 7**: per-layer optical depth (red low incl. rain, green mid, blue anvil, white high) — the
   first thing to look at when a cloud artifact has an unknown owner.
 - **Motion** (`cloud_v2_resolve.comp`): the new-sample weight and the clamp box follow PARALLAX (the

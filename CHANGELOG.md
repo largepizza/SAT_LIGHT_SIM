@@ -488,6 +488,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - Exposure, auto exposure, highlight roll-off, white balance and the Moon's size are in a new **Exposure and
   Moon** section of the Photometry tab (settings keys unchanged). The "City light blur LOD" slider is gone.
 - The disabled legacy-lighting Starlink Gen2 comparison shell was removed from the roster.
+- **Ultra keeps the light shafts under time warp.** At Ultra the clouds' light shafts and shadows stay on at any time
+  rate (they switched off from 10x up); the other graphics tiers keep the faster time-lapse lighting.
 
 ### Fixed
 
