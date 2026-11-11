@@ -88,10 +88,10 @@ knockout +terrain_march ; wait settle 10 ; capture dusk_noterrain
 
 | Command | What it does |
 |---|---|
-| `wait <frames>` | wait N frames |
+| `wait <frames> [maxs=2]` | wait N frames, but never longer than `maxs` wall-clock seconds (default 2, 2026-11-10: the user's rule that what is not drawn within 2 s does not matter in play; result `capped` + `frames_run`). `maxs=0` = the exact count (a fixed-dt time-lapse that must advance N steps). Not a settle for perf: see "Waits" below |
 | `wait seconds <s>` | wait wall-clock seconds |
-| `wait settle auto [max=160] [min=40] [thr=0.1] [hold=4] [noise=1.5] [maxs=5]` | (2026-10-25) the settle below, stopped once the image has stopped changing: every settle frame is copied at 1/4 size before the UI and compared with the frames 8 and 32 before it (mean \|luminance difference\|, 0-255). A probe is settled when its 32-frame difference is under `thr`, or under `noise` x its 8-frame difference (the view's own flicker does not grow with the lag; a slow drift - shadows filling in, a running mean converging - does, and is waited out); done after `hold` settled probes in a row and at least `min` frames, else at `max`. The result's `frames` is what it took, `diff8_trace` / `diff32_trace` the probes (two frames behind the render). Measured (1920x1009): a cumulus sky, an overcast, a clear sky ~50 frames (residual vs 320 frames 0.05-0.17 mean, p99 1.0 level; 160 fixed: 0.02-0.04); a storm view keeps drifting (most settles run to `max`); from orbit the stationary flicker reads as drift (runs to `max`) |
-| `wait settle [frames] [maxs=5]` (or `settle`) | (both forms, 2026-11-10) never longer than `maxs` wall-clock seconds (default 5, 0 = no cap); a cut-short settle returns `capped: true`, and every settle returns `seconds`. Hold sim time and run 40 (or N) frames at a 0.5 s step, so eased values converge: sky glare, the dark-sky dome, mesh fades, beam-light fades, environment probes. The sky TAA restarts with it. **From orbit, add `wait 90` after it before a capture:** a settled capture from 400 km draws the clouds' edges in ~5-km blocks, which 90 ordinary frames clear (review 11; not the settle length — 120 settle frames or holding the march at full rate left them) Use before every capture that follows a change |
+| `wait settle auto [max=160] [min=40] [thr=0.1] [hold=4] [noise=1.5] [maxs=2]` | (2026-10-25) the settle below, stopped once the image has stopped changing: every settle frame is copied at 1/4 size before the UI and compared with the frames 8 and 32 before it (mean \|luminance difference\|, 0-255). A probe is settled when its 32-frame difference is under `thr`, or under `noise` x its 8-frame difference (the view's own flicker does not grow with the lag; a slow drift - shadows filling in, a running mean converging - does, and is waited out); done after `hold` settled probes in a row and at least `min` frames, else at `max`. The result's `frames` is what it took, `diff8_trace` / `diff32_trace` the probes (two frames behind the render). Measured (1920x1009): a cumulus sky, an overcast, a clear sky ~50 frames (residual vs 320 frames 0.05-0.17 mean, p99 1.0 level; 160 fixed: 0.02-0.04); a storm view keeps drifting (most settles run to `max`); from orbit the stationary flicker reads as drift (runs to `max`) |
+| `wait settle [frames] [maxs=2]` (or `settle`) | (both forms, 2026-11-10) never longer than `maxs` wall-clock seconds (default 2, 0 = no cap); a cut-short settle returns `capped: true`, and every settle returns `seconds`. Hold sim time and run 40 (or N) frames at a 0.5 s step, so eased values converge: sky glare, the dark-sky dome, mesh fades, beam-light fades, environment probes. The sky TAA restarts with it. **From orbit, add `wait 90` after it before a capture:** a settled capture from 400 km draws the clouds' edges in ~5-km blocks, which 90 ordinary frames clear (review 11; not the settle length — 120 settle frames or holding the march at full rate left them) Use before every capture that follows a change |
 | `time set <ISO>` | e.g. `2036-06-21T04:00:00Z`. Real UTC (the Earth rotation angle is GMST since 2026-10-03; an older script's time + 5 h 15 min 01 s gives its old view). `time sun` is still the easy way to a local time of day |
 | `time sun <el> [rising\|setting]` | the time nearest now (within 12 h) when the Sun is at `<el>` degrees for this observer. `time sun noon` / `time sun midnight` |
 | `time add <s>`, `time j2000 <s>` | relative / absolute (seconds since J2000) |
@@ -793,6 +793,20 @@ and `harness_live/run_*` older than `--keep-days` (7) unless they are PINNED (`g
 `harness_runs/cloud_v2_p10b` keeps that evidence), or the live app's current folder. `--slim` also thins the
 `path play record=` frame sequences of kept runs older than `--slim-days` (1) to every 30th frame — most of
 the space. Pin a run you will want to compare against later before it ages out.
+
+## Waits: the 2-second rule (2026-11-10)
+
+The user's rule: what the renderer has not drawn within ~2 s of arriving does not matter to standard play, so the
+harness does not wait longer than that by default. `wait N`, `wait settle` and `wait settle auto` all stop after
+`maxs` wall-clock seconds (default 2; the result says `capped`). `maxs=0` restores an exact frame count, only where the
+frame count IS the experiment (a fixed-dt time-lapse that must advance N sim steps, a build that runs ~100 items a frame,
+the determinism checks).
+
+- Do not settle 350 frames before every perf rep. Interleave variants (A B A B ...), >= 3 reps, and let the
+  interleaving average out the march's slow / fast regimes; `perf frames=60` itself is the measurement window.
+- Capture what decides a criterion, not every frame: a path recording of 300 frames for one before/after crop is
+  waste. Record only the frames the check reads (`path play ... record=<name> frames=i,j,...`).
+- A frame that takes > 2 s is itself a finding (contention, a re-bake, a pathological view): report it, do not wait it out.
 
 ## Launch spacing (read this before scripting many runs)
 
