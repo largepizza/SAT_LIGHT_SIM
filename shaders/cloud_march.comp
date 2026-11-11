@@ -2342,10 +2342,17 @@ void main() {
     // it — flying past a landing Starship at 86 m/s, the far cumulus behind the hull stayed in the hull's texels as
     // blocky dark patches (the sparse grid refreshes a texel every 4th frame). A cloud whose distance is past the
     // surface cannot be seen here: dropped, over a margin (a cloud meeting a slope keeps its soft contact).
+    // With full-res clouds the combine pass adds each pixel's own resolved cloud back on top of this texel's (the
+    // derivatives below), and that cloud stood behind the surface too: a texel dropped here is flagged to it (DB.a -1)
+    // so it adds none (2026-11-10, issue_20261110_184611 "Odd transparency on rockets": a Starship inside its plume
+    // took the far cloud behind it back from the full-res resolve, half-res-stepped, cloud-shaped patches that slid
+    // with the eye, with the cloud's distance as the alpha, so sat_sky.frag's mesh test dropped the exhaust in front of
+    // the hull there too).
+    bool cv2Behind = false;
     if (tScene < kNoSurfaceT && rd.x > 1.0) {
         float kBehind = smoothstep(tScene * 1.05 + 20.0, tScene * 1.25 + 60.0, rd.x);
         rc = mix(rc, vec4(0.0, 0.0, 0.0, 1.0), kBehind);
-        if (kBehind > 0.5) rd = vec2(0.0, -1.0);
+        if (kBehind > 0.5) { rd = vec2(0.0, -1.0); cv2Behind = true; }
     }
     // Review 18: the far cloud layer (cloud_v2_far.comp, composited by sat_sky.frag) takes over the volumetric
     // clouds by its share (CloudParams.farBlend); at 1 the march is not even dispatched (stale image).
@@ -2919,7 +2926,7 @@ void main() {
     imageStore(targetA, coord, vec4(B_total, occKm));
     imageStore(targetB, coord, vec4(A_total, terrainSunT));
     if (fullRes) {
-        imageStore(targetDB, coord, vec4(gBA, gBB));
+        imageStore(targetDB, coord, vec4(gBA, cv2Behind ? -1.0 : gBB));   // (-1: the cloud behind the surface, above)
         // DA.a: the plume / emissive distance (km), negated - 2 when not smoke-dominated (no air pull); -1 = none.
         // (smoke: its distance already capped at the cloud's own, as above: the combine pass has no profile)
         // (the flag: tSmD holds smoke behind the cloud, possibly beyond it: the combine splits without its max())
