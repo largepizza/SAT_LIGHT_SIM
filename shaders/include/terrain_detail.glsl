@@ -833,6 +833,51 @@ float tdShadeLodM(float t, float pixAngle) { return max(3.0 * pixAngle * t, 0.25
 // Full terrain height (DEM + detail) at q. h0 returns the DEM part. terrainHeightCoarse: the same
 // up to kEnd <= kTdCoarseOctaves, without the erosion (shadows, the tail march) — a separate
 // function so those paths do not carry its code.
+#ifdef TD_CLIPMAP
+// ── The clipmap's variants (terrain_clip.glsl): the VALUE octaves read from the baked levels; the DEM and the
+// erosion octaves as ever. The erosion is not baked: its gullies crease at the scale of a pixel, far below a level's
+// texel (a baked erosion drew every gully soft and its low-Sun shading flat: harness_runs/cloudsky/tc, 2026-11-10),
+// and it was already evaluated once per march and taken as a plane round that point (terrainHeightLinEro).
+#include "terrain_clip.glsl"
+// The value octaves' height at q (A): every octave in LOD range, damped by the slope the erosion added, as baked.
+float tdClipH(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float lodM) {
+    vec3 off = tdSphereOffset(q);
+    return tcDetail(off.x * enuX + off.y * enuY + off.z * enuZ, lodM);
+}
+// The erosion at q: tdErosion fed the coarse octaves' gradient from the bake (B.yz, along the anchor's east / north;
+// tangent to the sphere at q, so its third component follows) instead of running them.
+void tdClipErosion(sampler2D elevTex, inout TdState st, vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float lodM) {
+    // (tdErosion's own early returns, before the lookup: past ~21 km the gullies are out of LOD range.)
+    if (cloud.terrainErosion.x <= 0.0 || st.amp0 <= 0.0 || kTdBaseCellM * exp2(-float(tdErosionK())) <= 2.0 * lodM) {
+        st.ero = true;
+        return;
+    }
+    vec3  off = tdSphereOffset(q);
+    vec4  sd  = tcSide(off.x * enuX + off.y * enuY + off.z * enuZ, lodM);
+    float gU  = -(sd.y * dot(tcAxE.xyz, st.up) + sd.z * dot(tcAxN.xyz, st.up)) / max(dot(tcAxU.xyz, st.up), 0.5);
+    st.grad = sd.y * tcAxE.xyz + sd.z * tcAxN.xyz + gU * tcAxU.xyz;
+    tdErosion(elevTex, st, lodM);
+}
+// (The observer's ground under the scene-depth knockout, and nothing else: the value octaves alone.)
+float terrainHeightDetailed(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ,
+                            float lodM, int kEnd, out float h0) {
+    float hMip3;
+    tdDemAt(elevTex, specTex, q, enuX, enuY, enuZ, h0, hMip3);
+    if (!tdEnabled()) return h0;
+    return h0 + tdClipH(q, enuX, enuY, enuZ, lodM);
+}
+// kEnd below the coarse octaves' count: the first three octaves (the terrain shadow's surface, B.x); else the value
+// octaves (the march's tail, which took the coarse ones).
+float terrainHeightCoarse(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ,
+                          float lodM, int kEnd, out float h0) {
+    float hMip3;
+    tdDemAt(elevTex, specTex, q, enuX, enuY, enuZ, h0, hMip3);
+    if (!tdEnabled()) return h0;
+    if (kEnd >= kTdCoarseOctaves) return h0 + tdClipH(q, enuX, enuY, enuZ, lodM);
+    vec3 off = tdSphereOffset(q);
+    return h0 + tcSide(off.x * enuX + off.y * enuY + off.z * enuZ, lodM).x;
+}
+#else
 float terrainHeightDetailed(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ,
                             float lodM, int kEnd, out float h0) {
     float hMip3;
@@ -869,6 +914,7 @@ float terrainHeightLinEro(sampler2D elevTex, sampler2D specTex, vec3 q, vec3 enu
     return h0 + st.h;
 }
 
+#endif // TD_CLIPMAP
 // The observer's ground: DEM + full detail right under the eye, so the eye (observerPos, +2 m) can
 // never sit inside a detail bump. The one definition for every pass that shares the depth buffer.
 float observerEffHeightDetailed(sampler2D elevTex, sampler2D specTex, vec4 obsECEFDir) {
@@ -921,6 +967,130 @@ TdSample terrainDetailLinEro(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float lodM
 // full-resolution march (it starts there) — and cheap. Consumers of the shared depth (cloud and
 // beam clamps, the cloud-shadow start point) see a surface at most that bound (~30 m on the most
 // rugged terrain) above the real one.
+#ifdef TD_CLIPMAP
+// The clipmap's march: the procedural march's steps and tests with the value octaves one lookup.
+//   - above the DEM + the bound on all the detail: step on that gap (DEM fetches only), as ever;
+//   - else read the value octaves; above them + the bound on the erosion: step on that gap;
+//   - else evaluate the erosion at the sample (tdClipErosion) and step on the true gap; a sign change is refined by
+//     regula falsi with the erosion as the plane through that sample, which also goes to the caller's shading normal
+//     (gTdHitEro), exactly as in the procedural march. (envelope and coarseK are the procedural march's.)
+float terrainMarchDetailed(sampler2D elevTex, sampler2D specTex, float hEye, vec3 dir,
+                           vec3 enuX, vec3 enuY, vec3 enuZ, float tStart, float tExit, float pixAngle,
+                           int maxSteps, float lodScale, bool envelope, int coarseK, out int stepsUsed) {
+    stepsUsed = 0;
+    gTdHitEro = vec4(0.0);
+    bool  detail = tdEnabled();
+    float t = max(tStart, 2.0), tPrev = t;
+    float prevGap = 0.0;        // the TRUE gap at tPrev, when it was computed (regula falsi)
+    bool  prevGapValid = false;
+    bool  atExit = false;
+    for (int i = 0; i < maxSteps; ++i) {
+        if (t > tExit) {
+            if (atExit || tPrev >= tExit) break;
+            t = tExit;
+            atExit = true;
+        }
+        stepsUsed = i + 1;
+        vec3  q    = vec3(0.0, 0.0, hEye) + t * dir;
+        float rayH = tdAltitude(q);
+        if (rayH < -1.0) break;
+        float h0, hMip3;
+        tdDemAt(elevTex, specTex, q, enuX, enuY, enuZ, h0, hMip3);
+        float grow    = float(i) / float(maxSteps);
+        float minStep = max(0.5, t * mix(0.015, 0.05, grow * grow));
+        float maxStep = clamp(t * 0.3, 20.0, 12000.0);
+        float amp0 = detail ? tdAmp0(h0, hMip3) * TD_PAD_LAST : 0.0;
+        float eroBound = detail ? tdErosionBound(amp0) : 0.0;
+        float allBound = detail ? tdTailBound(amp0) + eroBound : 0.0;
+#if !defined(SKY_LITE) && !defined(SKY_ENV)
+        float stepFloor = 0.0;   // over open water: the distance to any land (gTdWaterClearM), at most 12 km a step
+#endif
+        float gap;
+        if (rayH > h0 + allBound) {
+            gap = rayH - h0 - allBound;
+#if !defined(SKY_LITE) && !defined(SKY_ENV)
+            if (hMip3 <= kTdWaterMark) stepFloor = min(TD_WATER_CLEAR, 12000.0);
+#endif
+        } else if (!detail) {
+            gap = rayH - h0;
+            if (gap < 0.0) {
+                float tLo = tPrev, tHi = t;
+                for (int j = 0; j < 10; ++j) {
+                    float tM = 0.5 * (tLo + tHi);
+                    vec3  qm = vec3(0.0, 0.0, hEye) + tM * dir;
+                    float m0, m3;
+                    tdDemAt(elevTex, specTex, qm, enuX, enuY, enuZ, m0, m3);
+                    if (tdAltitude(qm) < m0) tHi = tM; else tLo = tM;
+                }
+                return 0.5 * (tLo + tHi);
+            }
+        } else {
+            float lod = tdGeomLodM(t, pixAngle) * lodScale;
+            float hv  = tdClipH(q, enuX, enuY, enuZ, lod);
+            gap = rayH - h0 - hv - eroBound;
+            if (gap <= 0.0) {
+                TdState st = tdBegin(q, enuX, enuY, enuZ, h0, hMip3);
+                tdClipErosion(elevTex, st, q, enuX, enuY, enuZ, lod);
+                gap = rayH - h0 - hv - st.hEro;
+                if (gap >= 0.0 && gap < pixAngle * t) {
+                    gTdHitEro = vec4(st.gEro, st.hEro); gTdHitEroQ = q;
+                    return t;
+                }
+                if (gap < 0.0) {
+                    float tA = tPrev, gA = max(prevGap, 1e-3), tB = t, gB = gap;
+                    for (int j = prevGapValid ? 0 : -1; j < 3; ++j) {
+                        float tM = (j < 0) ? tA : tA + (tB - tA) * gA / (gA - gB);
+                        vec3  qm = vec3(0.0, 0.0, hEye) + tM * dir;
+                        float m0, m3;
+                        tdDemAt(elevTex, specTex, qm, enuX, enuY, enuZ, m0, m3);
+                        vec3  dq = qm - q;
+                        float gM = tdAltitude(qm) - m0 - tdClipH(qm, enuX, enuY, enuZ, tdGeomLodM(tM, pixAngle) * lodScale)
+                                 - (st.hEro + dot(st.gEro, dq.x * enuX + dq.y * enuY + dq.z * enuZ));
+                        if (j < 0)            gA = max(gM, 1e-3);
+                        else if (gM < 0.0)  { tB = tM; gB = gM; }
+                        else                { tA = tM; gA = max(gM, 1e-3); }
+                    }
+                    gTdHitEro = vec4(st.gEro, st.hEro); gTdHitEroQ = q;
+                    return tA + (tB - tA) * gA / (gA - gB);
+                }
+                prevGap = gap;
+                prevGapValid = true;
+                tPrev = t;
+                t += clamp(0.6 * gap, minStep, maxStep);
+                continue;
+            }
+        }
+        prevGapValid = false;
+        tPrev = t;
+        t += TD_STEP_FLOOR(clamp(0.6 * gap, minStep, maxStep), stepFloor);
+    }
+    // Out of budget before tExit: finished in at most 48 steps sized to reach tExit (the procedural march's tail).
+    if (t < tExit) {
+        float tailStep = max((tExit - t) / 48.0, 50.0);
+        for (int i = 0; i < 48 && t < tExit; ++i) {
+            vec3  q  = vec3(0.0, 0.0, hEye) + t * dir;
+            float h0;
+            float gap = tdAltitude(q) - terrainHeightCoarse(elevTex, specTex, q, enuX, enuY, enuZ,
+                                                            tdGeomLodM(t, pixAngle) * lodScale, kTdCoarseOctaves, h0);
+            if (gap < 0.0) {
+                float tLo = tPrev, tHi = t;
+                for (int j = 0; j < 8; ++j) {
+                    float tM = 0.5 * (tLo + tHi);
+                    vec3  qm = vec3(0.0, 0.0, hEye) + tM * dir;
+                    float m0;
+                    float mT = terrainHeightCoarse(elevTex, specTex, qm, enuX, enuY, enuZ,
+                                                   tdGeomLodM(tM, pixAngle) * lodScale, kTdCoarseOctaves, m0);
+                    if (tdAltitude(qm) < mT) tHi = tM; else tLo = tM;
+                }
+                return 0.5 * (tLo + tHi);
+            }
+            tPrev = t;
+            t += clamp(0.6 * gap, 0.2 * tailStep, tailStep);
+        }
+    }
+    return -1.0;
+}
+#else
 float terrainMarchDetailed(sampler2D elevTex, sampler2D specTex, float hEye, vec3 dir,
                            vec3 enuX, vec3 enuY, vec3 enuZ, float tStart, float tExit, float pixAngle,
                            int maxSteps, float lodScale, bool envelope, int coarseK, out int stepsUsed) {
@@ -1065,6 +1235,8 @@ float terrainMarchDetailed(sampler2D elevTex, sampler2D specTex, float hEye, vec
     }
     return -1.0;
 }
+
+#endif // TD_CLIPMAP
 
 // Soft sun shadow from the terrain at q (a hit point): 0 = in shadow, 1 = lit. sunDir and n (the
 // shading normal) in ENU. Coarse octaves only (the fine ones are normal-mapped at shading distances

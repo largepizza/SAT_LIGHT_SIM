@@ -5517,6 +5517,8 @@ private:
     // reproject (the eye's parallax over the cloud layer, the volumes' slide under time warp) stays a small fraction of a
     // pixel a frame. See fillCloudsV2Params.
     float cv2SparseBlockOrbit = 3.0f;
+    float cv2SparseBlockOrbitMoving = 0.0f;   // 1 = the orbit block also in motion ("sparse_block_orbit_moving"; the user's to judge)
+    float cv2HistoryJumpFrac = 0.0f;   // "history_jump_frac": an eye step is a jump past this share of the eye's height (0 = 20 km)
     float cv2FullResMovingMode = 1.0f;    // full-res clouds while the view moves (issues 20261022_210358 / _220214): 0 sparse, rotating; 1 sparse, held pixel (default since 2026-11-07, any height); 2 full rate (every pixel, ~3x the march; above full_rate_above_km)
     bool  cv2CdcActive = false;           // this frame (fillCloudsV2Params)
     // 2026-10-22 (r1022 orbit, the matrix's "clouds thin out climbing from orbit"): the clipmap's bake reads the field at the
@@ -6706,6 +6708,55 @@ private:
     VkDescriptorPool sceneDepthDescPool = VK_NULL_HANDLE;
     VkDescriptorSet sceneDepthDescSet = VK_NULL_HANDLE;
     VkPipelineLayout sceneDepthPipeLayout = VK_NULL_HANDLE;
+    // ── The terrain height clipmap (2026-11-10; SatelliteSimTerrainClip.cpp, shaders/include/terrain_clip.glsl) ──
+    // The procedural terrain detail baked into kTcLevels nested toroidal textures round the observer; the TD_CLIPMAP
+    // variants of scene_depth.comp and sat_sky.frag read them (set 1 of their pipeline layouts) instead of evaluating
+    // the octaves at every march step. "clouds.terrain_clipmap" 1 (0 = the procedural shaders).
+    static constexpr int kTcLevels = 11;
+    static constexpr int kTcBFirst = 3;   // B (the shadow surface + the coarse gradient) has layers from this level
+    static constexpr int kTcN = 1024;
+    static constexpr double kTcLod0 = 1.0;
+    struct GpuTerrainClip   // std140 mirror of terrain_clip.glsl's TdClip
+    {
+        glm::vec4 axE, axN, axU, obs;
+        glm::vec4 level[kTcLevels];
+        glm::ivec4 cell[kTcLevels];
+    };
+    struct TerrainClipBakePC
+    {
+        glm::ivec4 rect;
+        glm::ivec4 lvl;
+        glm::vec4 obsECEFDir;
+    };
+    bool tcSupported = false;            // the device offers the two samplers past sat_sky.frag's sixteen
+    float terrainClipmap = 1.0f;         // "clouds.terrain_clipmap"
+    bool terrainClipActive() const { return tcSupported && terrainClipmap > 0.5f; }
+    bool tcSkyBuiltClip = false;         // the variant the sky pipelines were last built from
+    VkImage tcImgA = VK_NULL_HANDLE, tcImgB = VK_NULL_HANDLE;
+    VkDeviceMemory tcMemA = VK_NULL_HANDLE, tcMemB = VK_NULL_HANDLE;
+    VkImageView tcViewA = VK_NULL_HANDLE, tcViewB = VK_NULL_HANDLE;
+    VkSampler tcSamplerA = VK_NULL_HANDLE, tcSamplerB = VK_NULL_HANDLE;
+    VkBuffer tcUboBuf = VK_NULL_HANDLE;
+    VkDeviceMemory tcUboMem = VK_NULL_HANDLE;
+    void *tcUboMapped = nullptr;
+    VkDescriptorSetLayout tcSetLayout = VK_NULL_HANDLE, tcBakeLayout = VK_NULL_HANDLE;
+    VkDescriptorPool tcPool = VK_NULL_HANDLE;
+    VkDescriptorSet tcSet = VK_NULL_HANDLE, tcBakeSet = VK_NULL_HANDLE;
+    VkPipelineLayout tcBakePipeLayout = VK_NULL_HANDLE;
+    VkPipeline tcBakePipeline = VK_NULL_HANDLE;
+    VkPipeline sceneDepthClipPipeline = VK_NULL_HANDLE;   // scene_depth.comp -DTD_CLIPMAP
+    bool tcAnchorValid = false;
+    glm::dvec3 tcAxE{1.0, 0.0, 0.0}, tcAxN{0.0, 1.0, 0.0}, tcAxU{0.0, 0.0, 1.0};
+    uint64_t tcEpoch = 0;
+    bool tcWinValid[kTcLevels] = {};
+    int64_t tcWinX[kTcLevels] = {}, tcWinY[kTcLevels] = {};
+    bool tcPrevValid = false;
+    double tcPrevOx = 0.0, tcPrevOy = 0.0;
+    int tcFinest = 0;                    // the finest level baked this frame (harness state)
+    uint32_t tcBakedTexels = 0;          // texels baked this frame (harness state)
+    void createTerrainClip(VulkanContext &ctx);
+    void destroyTerrainClip(VulkanContext &ctx);
+    void recordTerrainClip(VkCommandBuffer cmd, VulkanContext &ctx, const glm::vec3 &obsDir, const GpuCloudParams &cp);
     VkPipeline sceneDepthPipeline = VK_NULL_HANDLE;
 
     // ── Flare/corona render-to-texture pipeline (flare architecture overhaul) ─────────────────
