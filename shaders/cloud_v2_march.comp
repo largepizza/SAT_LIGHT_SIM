@@ -978,7 +978,12 @@ void main()
 #endif
 #ifdef CV2_EVAL_COUNT
                 // Conservativeness check: what the skipped step would have read ([18] misses, [19] their optical depth x 1e4).
+                // (With the flow map's displacement at THIS point: the held one is the last marched step's, and against
+                // it 290k of 3.6M skipped steps at issue_20261111_164105's eye "missed", 3k against the point's own.)
+                vec3 sD = gCv2CycD;
+                if (tCycD < 1e29) gCv2CycD = cv2CycFlowAt(cv2Drift(p.dirE));
                 CV2Field fm = cv2Field(p, -1.0, fp);
+                gCv2CycD = sD;
                 if (fm.sigma > 0.0) {
                     CV2_CNT(18); atomicAdd(cv2EvalCount[19], uint(fm.sigma * stepF * 1e4 + 0.5));
                     CV2_CNT(20 + min(cv2CdcLevel(rel, R_EARTH + eyeH), 7));   // [20..27] misses by level
