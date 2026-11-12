@@ -548,6 +548,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- Rocket plumes no longer vanish for the rest of a session after you jump between launches or fly away from one
+  (issue_20261111_211610). Plume builds for launches that left view kept their worker slots, and after four of them
+  no plume was built again; finished builds nobody collects are now dropped and rebuilt when needed.
 - Tornadoes seen from close range no longer show black rectangles along the horizon, a rectangular notch in the
   funnel or a dark line under the storm (issue_20261111_171327, issue_20261111_171428). The horizon haze behind the
   funnel, its debris and its wall cloud was drawn through them wherever a near rain shaft or cloud lobe stood in the

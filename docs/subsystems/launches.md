@@ -330,6 +330,14 @@ launches follow per-program cadences (no real manifest).
   Zhuque-3 / Tianlong-3, Amazon Leo Falcon 9. A plane is refreshed in one burst per design life, so a
   constellation's cadence follows its plane count: Qianfan ~6 launches a month, Guowang ~4, Starmind ~10 a day.
   Harness `launch why [hours=]` counts the cached batches by program and reason.
+- **Plume builds that nobody collects are dropped** (2026-11-11, issue_20261111_211610 "No plumes?";
+  `LaunchState::parcelJobSeen`): a launch's parcels are built on a worker (`parcelJobs`, at most 4 in flight) and taken only by
+  that launch's batch when it is drawn again in range and out of fast warp. A build whose launch dropped out of view (the eye
+  flew on, `launch next` / a jump moved the clock) kept its slot for the rest of the session; after four, no plume was built
+  again and every rocket flew with no exhaust (the report's `launch` state: plume_parcels 0, rockets_drawn 5). Reproduced by
+  six `launch next` jumps then the report's view (parcels 0); now a FINISHED build not asked for in 4 frames is dropped (its
+  future does not block) and rebuilt on demand: parcels 500, the jellyfish drawn. CPU only; the shaders were not involved
+  (the report's view on the pre- and post-tornado composites differs by 0.04 levels).
 - **Plumes** (`buildParcels`, `launch::makeParcel`): parcels of exhaust every 1-1.5 s of each burn, integrated once per
   launch (only for launches within ~4500 km of the eye and not past 1 h/s of warp) with entrainment: the gas expands
   at ~2 km/s while it outweighs the air it has taken in, then diffuses (above ~80 km the coupling to the air falls to
