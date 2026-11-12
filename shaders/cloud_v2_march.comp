@@ -144,9 +144,14 @@ layout(set = 0, binding = 11, rg32f)   uniform writeonly image2D outDepth;
 // The ray's cloud OPACITY PROFILE (2026-10-26, the unified volumetric composite): per 2x2 block of the cloud grid (this
 // frame's ray), the depths of first contact, half opacity and last contact + the cloud's transmittance, so
 // cloud_march.comp can put each plume / smoke / flame Gaussian in front of, inside or behind the cloud by depth instead
-// of one front/behind switch at the mean distance. Packed by cv2ProfileCode (log2 metres in 16 bits; 0xFFFF none).
+// of one front/behind switch at the mean distance. Packed by cv2ProfileCode (log2 metres in 12 bits; 0xFFF none):
+// x = first contact | half opacity << 12 | transmittance x 254 << 24, y = last contact | the LIGHT's centroid << 12
+// (2026-11-11, issues 20261111_171327 / 171428: the luminance-weighted depth of the cloud's radiance; the composite dims
+// the cloud's light by the plumes in front of THAT, not by an opacity share: with rain or a base lobe near the eye and
+// bright clouds far behind it, the opacity split put half the far clouds' light at the near cloud's depth, in front of a
+// tornado's funnel, and the funnel lost a rectangle there).
 layout(std430, set = 0, binding = 22) writeonly buffer CloudProfile { uvec2 cv2Profile[]; };
-uint cv2ProfileCode(float t) { return uint(clamp(log2(max(t, 1.0)) * (65534.0 / 27.0), 0.0, 65534.0)); }
+uint cv2ProfileCode(float t) { return uint(clamp(log2(max(t, 1.0)) * (4094.0 / 27.0), 0.0, 4094.0)); }
 
 const int N_LIGHT = 12;
 vec2 optDepth(vec3 p, vec3 d, float segTotal) {
@@ -883,6 +888,7 @@ void main()
     // cloud bases.
     float Tent = -1.0;
     float dAcc = 0.0, wAcc = 0.0, tHalf = -1.0;
+    float ldA = 0.0;    // the light's luminance x depth, summed (the profile's light centroid, cv2Profile)
     float aAcc = 0.0;   // the weighted air transmittance from the eye to each sample (cv2AirOD)
     float tFst = 1e30, tLst = 0.0;   // first / last cloud contact (the opacity profile, cv2Profile)
     float odRain = 0.0;                               // debug view 5
@@ -1633,7 +1639,9 @@ void main()
             vec3  S     = keyS + ambS + bounceS + nightS;
             // The air between the eye and THIS sample (2026-11-08, issue_20261108_172203): see cv2AirOD.
             vec3  odA = cv2AirOD(eye, dir, eyeH, t, BETA_R, BETA_M);
-            L    += bW[bj] * S * exp(-odA);
+            vec3  dLs = bW[bj] * S * exp(-odA);
+            L    += dLs;
+            ldA  += dot(dLs, vec3(1.0 / 3.0)) * bT[bj];
             aAcc += bW[bj] * exp(-dot(odA, vec3(1.0 / 3.0)));
         }
         } while (nB >= kBatch);
@@ -1643,6 +1651,7 @@ void main()
     // What the budget left unmarched (long horizon rays through a broken field) is filled with the
     // path's mean extinction and the cloud's mean colour so far, instead of being left transparent:
     // a ray that ran out used to draw the horizon through the clouds in front of it.
+    ldA /= max(dot(L, vec3(1.0 / 3.0)), 1e-30);   // the light's centroid (m), of the marched part
     if (remLen > 0.0 && T > 0.01 && wAcc > 1e-4 && pathLen > 0.0) {
         float Trem = exp(-odPath / pathLen * remLen);
         float w    = T * (1.0 - Trem);
@@ -1657,8 +1666,9 @@ void main()
         ivec2 pb = pix >> 1;
         uint  pi = uint(pb.y * ((halfSize.x + 1) / 2) + pb.x);
         bool  pv = wAcc > 1e-4 && T < 0.999;
-        cv2Profile[pi] = pv ? uvec2(cv2ProfileCode(tFst) | (((T < 0.5 && tHalf > 0.0) ? cv2ProfileCode(tHalf) : 0xFFFFu) << 16u),
-                                    cv2ProfileCode(max(tLst, tFst)) | (uint(clamp(T, 0.0, 1.0) * 65535.0 + 0.5) << 16u))
+        cv2Profile[pi] = pv ? uvec2(cv2ProfileCode(tFst) | (((T < 0.5 && tHalf > 0.0) ? cv2ProfileCode(tHalf) : 0xFFFu) << 12u)
+                                    | (uint(clamp(T, 0.0, 1.0) * 254.0) << 24u),
+                                    cv2ProfileCode(max(tLst, tFst)) | (cv2ProfileCode(ldA > 0.0 ? ldA : tFst) << 12u))
                             : uvec2(0xFFFFFFFFu);
     }
 

@@ -545,20 +545,30 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   base) still veils a funnel the mean puts behind it; the opacity median (`tCloudOcclude`) instead drew the wall cloud as a
   dark mushroom in front of the base (tried, dropped). The wall cloud's edges where the base's distance crosses it are hard.
   Harness `storms tornado draw=0|1` hides / shows the funnels (an A/B of what shows through them).
-  **Open: the funnel's blocks from close range** (2026-11-11, qa blocks; issues 20261111_171327, 20261111_171428): at
-  ~1 km AGL near a funnel (0.18-4.5 km) the view shows dark rectangles with vertical sides and flat tops along the
-  horizon, a rectangular notch in the funnel above the horizon line and a hard dark line under the storm. Every one goes
-  with `storms tornado draw=0` and none with the cloud march's own changes (a march that writes solid red does not show
-  through at 171428 shot 1: the eye is 180 m from the funnel, inside its debris and wall-cloud Gaussians, which cover the
-  frame). They are the plume composite's front / behind split (`cloud_march.comp`, `pK` from `cv2Profile`): the
-  Gaussians' share in front of the cloud's first contact / half opacity / last contact is drawn over the cloud, the rest
-  under it, so the edges are where the profile's distances jump across the plume's closest approach -- distant rain
-  shafts and bases (flat tops, vertical sides) seen through a plume the eye stands in. Without the profile (the mean
-  distance +-15% for every texel) the plume covers the whole frame. NOT the cause (each knocked out on the base with the
-  rectangles unchanged, at 171327 shot 1 where the march shows): the occupancy clipmap (`cdc_skip 0`), the cyclone /
-  mesocyclone flow map (`hurricane_rotation 0`), the storm index's per-bin cap (12 -> 31: truncation 76 -> 0), the base
-  cells (`base_cell_m` 0), full-res / the still sparse block; at 171428 shot 1 the plume tile cull and significance cull.
-  Unfixed.
+  **The air in front of a funnel** (2026-11-11, qa tornado; issues 20261111_171327, 20261111_171428). From ~1 km AGL
+  near a funnel (0.18-4.5 km) the view drew dark rectangles with vertical sides and flat tops along the horizon, a
+  rectangular notch in the funnel above the horizon line and a hard dark line under the storm. None of it was the cloud
+  field (the clipmap, the flow map, the storm index's bin cap, the base cells, sparse / full-res all knocked out with the
+  rectangles unchanged; `storms tornado draw=0` removed every one): it was the sky pass's AIR SPLIT, the distance up to which
+  `sat_sky.frag` adds the air in front of the composite x its opacity (cloud_march.comp's alpha, `tAirM`). Through an
+  opaque funnel / debris / wall cloud it was set at the cloud's mean distance, tens of km out, so the horizon air was drawn
+  through the plume in every texel where the plumes did not count as "in front of the cloud": where the cloud's first
+  contact (a rain wisp, a base lobe) lay inside the plume, where a wildfire's glow reached part of the funnel's Gaussians
+  (they then lost the air-pull share, `pAirK`, and the funnel had a vertical seam), and on long grazing rays whose plume
+  distance (light- or optical-depth-weighted) sat on a wall cloud's chord tens of km out. The edges of those texel sets
+  are the near rain shafts' and lobes' outlines: the rectangles. Now (`cloud_march.comp` "PLUMES THAT ARE NOT SMOKE",
+  `cloud_v2_combine.comp` DA.a -1.25): a tornado's Gaussians always carry the air split; the plumes' distance for it is a
+  soft minimum of their closest approaches (`plNearT`, -L ln(sum tau e^(-t/L) / sum tau), L 3 km), their front / back
+  shares weighted by optical depth, not light; and the split is two layers -- the plumes (opacity 1 - e^-tau) and the
+  cloud's mass (its half-opacity point), each seen through the nearer one -- between the plumes' near distance and the
+  cloud's (mean -> half point as the plumes thicken). The full-res combine takes that texel's alpha as it is. The cloud's
+  light is dimmed by the plumes in front of the depth it comes from (the profile now carries the luminance-weighted LIGHT
+  CENTROID, 12-bit depth codes; cloud_v2_march.comp `ldA`), not by opacity segments. Smoke keeps its own split. Measured
+  (RTX 3070 Ti, 1920x1009, the reporters' settings, interleaved x3): GPU 24.81 -> 24.67 ms (171327 shot 1), 21.81 -> 21.78
+  (171428 shot 1), 23.82 -> 23.85 (shot 2); march 128 registers, composite 128. With the tornado hidden the four shots
+  differ by 0.3-0.9 levels mean (< 0.5% of pixels past 8, the settle noise). Left: from inside the plume (171428 shot 1)
+  the frame is near black (the plume is opaque); a stipple of a few dark dots where the wall cloud's edge meets far broken
+  cloud (171428 shot 2); the half-res stair on the funnel's silhouette just above the horizon.
   **Its roar** (layer `tornado_roar`, synth wind: low brown rumble 130-360 Hz, broad, fast churning gusts and flutter, debris
   hiss close; driver `tornado` = sum over the funnels within ~200 km of sqrt(width / 150 m) x lifecycle / (1 + (d / 2 km)^2),
   d to the nearest point of the funnel; heard below ~3-6 km AGL). Offline (`audio record ... solo=tornado_roar`): -36 dBFS
