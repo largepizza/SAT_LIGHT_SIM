@@ -6736,6 +6736,18 @@ private:
     // cloud_march.comp binding 26 (the unified volumetric composite). Sized with the cloud targets.
     VkBuffer       cv2ProfileBuf = VK_NULL_HANDLE;
     VkDeviceMemory cv2ProfileMem = VK_NULL_HANDLE;
+    // Neural-light sandbox (2026-11-11, branch neural-light): the -DCV2_NDUMP march variant's per-pixel record buffer
+    // (march set binding 29; harness `ndump`; tools/neural/). Host-visible and mapped for the app's life; the shipped
+    // march never touches the binding (the profile buffer stands in until `ndump on`). kCv2NDumpK == the shader's kCv2NdK.
+    static constexpr uint32_t kCv2NDumpK = 56;
+    VkBuffer       cv2NDumpBuf = VK_NULL_HANDLE;
+    VkDeviceMemory cv2NDumpMem = VK_NULL_HANDLE;
+    void          *cv2NDumpMapped = nullptr;
+    VkDeviceSize   cv2NDumpSize = 0;
+    bool           cv2NDumpOn = false;      // forces the full-rate march (every grid pixel a frame)
+    int            cv2NDumpFrames = 0;      // march frames recorded since the last write / reset
+    void cv2NDumpEnsure(VulkanContext &ctx);   // (re)allocates to the cloud grid and binds it
+    void cv2NDumpDestroy(VkDevice device);
     VkDeviceMemory cv2BlueNoiseMem = VK_NULL_HANDLE;
     static constexpr uint32_t kCv2FlashMax = 128;             // == kCv2FlashMax in cloud_lightning.glsl
     // + review 22's rain map (cloud_lightning.glsl): 4 workgroup maxima and 32 x 32 rain rates after the flashes.

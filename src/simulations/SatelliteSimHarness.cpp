@@ -210,6 +210,7 @@ const char *kHelp =
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select star <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "exposure [auto|hold|fast]; "
+    "ndump on | off | write <name> [frames=32] (the neural-light feature dump; needs the -DCV2_NDUMP march variant); "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s] [wait=1]; photo <name> [scale=1-4] [frames=N]; "
     "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [cdc=<spv>] [sky=<spv>] [sky_taa=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; skyevents [state]|events|list <kind>|watch <solar|lunar|conjunction|occultation|moonglint|meteors|comet|supernova|cme|cometstorm|row|special <0-3>|aurora [t=]> [n=]|spaceweather; stars [state]|find <name>|select <name>; moonbase [state]|windows [days=] [limit=] [jitter=]|base <i> [lean=] [jitter=]; meteors [state]|count [minutes=] [lm=] [shower=]|force [kind=meteor|fireball|bolide] [shower=] [mag=] [az=] [el=] [v=] [delay=]|go [shower=]; comets [state]|list [days=]|watch [k|great] [days=] [sun_max=] [orbit=1]; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|pick|return|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|preview <file> [shot=] [scale=] [fps=]|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=] [frames=] [video=]; video start [name] [fps=] [scale=] [ui=on]|stop|state; overlay text|label|clear ...; "
@@ -4890,6 +4891,89 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     }
 
     // ── probe ───────────────────────────────────────────────────────────────────
+    // ── ndump: the neural-light sandbox's feature dump (2026-11-11, branch neural-light; tools/neural/). The march must be
+    // the -DCV2_NDUMP variant (shader_variant.py march --tag ndump -D CV2_NDUMP; `shaders reload march=...`). `ndump on`
+    // allocates the record buffer and forces the full-rate march; `ndump write <name> [frames=32]` waits until that many
+    // march frames have accumulated since the last write, drains the GPU, writes captures/<name>.f32 (w x h x 48 floats,
+    // row-major) + <name>.json (shape, the record layout, the state), and zeroes the buffer for the next view. ──
+    if (n == "ndump")
+    {
+        const std::string sub = pos(0);
+        if (sub == "on")
+        {
+            if (!ctx_) fail("ndump: no Vulkan context");
+            cv2NDumpEnsure(*ctx_);
+            if (!cv2NDumpMapped) fail("ndump: the record buffer could not be mapped");
+            cv2NDumpOn = true;
+            cv2NDumpFrames = 0;
+            r["w"] = cv2HalfW; r["h"] = cv2HalfH; r["k"] = kCv2NDumpK; r["bytes"] = (double)cv2NDumpSize;
+            r["message"] = "ndump on: " + std::to_string(cv2HalfW) + "x" + std::to_string(cv2HalfH) + " x 48 floats";
+            return Status::Done;
+        }
+        if (sub == "off")
+        {
+            cv2NDumpOn = false;
+            r["message"] = "ndump off";
+            return Status::Done;
+        }
+        if (sub != "write") fail("ndump on | off | write <name> [frames=32]");
+        if (!cv2NDumpOn || !cv2NDumpMapped) fail("ndump write: run `ndump on` first");
+        const int want = (int)c.num("frames", 32.0);
+        if (a.frame == 0)
+        {
+            // The record starts HERE: drain the frames in flight (they write it), zero it, count from 0. (It accumulated
+            // from `ndump on`, so a view's first write carried the frames of the view before it.)
+            a.scratch["name"] = safeName(pos(1));
+            ctx_->drainFrames();
+            std::memset(cv2NDumpMapped, 0, (size_t)cv2NDumpSize);
+            cv2NDumpFrames = 0;
+            return Status::Pending;
+        }
+        if (cv2NDumpFrames < want)
+            return Status::Pending;
+        ctx_->drainFrames();   // every recorded frame's writes have landed
+        const std::string name = a.scratch["name"];
+        const std::string raw = harnessRunner_->capturePath(name, ".f32");
+        const std::string meta = harnessRunner_->capturePath(name, ".json");
+        {
+            std::ofstream f(raw, std::ios::binary);
+            if (!f) fail("ndump write: cannot open " + raw);
+            f.write(static_cast<const char *>(cv2NDumpMapped), (std::streamsize)cv2NDumpSize);
+        }
+        // The mean visit count over the grid (every pixel should have `frames` visits at full rate).
+        double visits = 0.0;
+        {
+            const float *v = static_cast<const float *>(cv2NDumpMapped);
+            const size_t n = (size_t)cv2HalfW * cv2HalfH;
+            for (size_t i = 0; i < n; ++i) visits += v[i * kCv2NDumpK + 14];
+            visits /= (double)std::max<size_t>(n, 1);
+        }
+        json m;
+        m["w"] = cv2HalfW; m["h"] = cv2HalfH; m["k"] = kCv2NDumpK;
+        m["frames"] = cv2NDumpFrames; m["mean_visits"] = visits;
+        m["layout"] = {"key_r", "key_g", "key_b", "amb_r", "amb_g", "amb_b", "rest_r", "rest_g", "rest_b",
+                       "out_r", "out_g", "out_b", "T", "mean_t", "count",
+                       "od_total", "t_first", "t_od025", "t_od1", "t_od4", "t_od10", "t_last", "t_half", "w_acc",
+                       "x_od_light", "x_od_back", "x_od_up", "x_stv_t", "x_h", "x_sigma", "x_thin", "x_rain",
+                       "x_ice", "x_hf", "x_cos_k", "x_hv", "x_top_h", "x_fp", "x_key_r", "x_key_g", "x_key_b",
+                       "x_sky_r", "x_sky_g", "x_sky_b", "x_t", "x_moon_key", "x_dayness", "x_T",
+                       "x_key_s_r", "x_key_s_g", "x_key_s_b", "x_amb_s_r", "x_amb_s_g", "x_amb_s_b", "x_amb_vis", "x_amb_low"};
+        m["accumulated"] = 15;   // channels 0..14 are sums over `count` visits; the rest are the last visit's
+        m["state"] = harnessStateJson();
+        {
+            std::ofstream f(meta);
+            f << m.dump(1);
+        }
+        std::memset(cv2NDumpMapped, 0, (size_t)cv2NDumpSize);
+        cv2NDumpFrames = 0;
+        r["path"] = raw; r["meta"] = meta; r["w"] = cv2HalfW; r["h"] = cv2HalfH; r["k"] = kCv2NDumpK;
+        r["frames"] = m["frames"]; r["mean_visits"] = visits;
+        char buf[160];
+        snprintf(buf, sizeof(buf), "ndump %s: %ux%ux48, %d frames, %.1f visits a pixel", name.c_str(), cv2HalfW, cv2HalfH,
+                 m["frames"].get<int>(), visits);
+        r["message"] = buf;
+        return Status::Done;
+    }
     if (n == "probe")
     {
         // What the terrain algorithm computes for one pixel's ray (terrain_probe.comp): the seed

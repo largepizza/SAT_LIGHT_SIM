@@ -3358,3 +3358,23 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
 - Noise volumes are mip-mapped and read at the pixel footprint (`cv2Lod`). Lighting, shadow and beam
   samples pass detailAmt 0 (MEAN erosion) and the VIEW footprint; the coarse march passes -1 (none).
 - All v2 screen images live in VK_IMAGE_LAYOUT_GENERAL (memory barriers only).
+
+- **Neural-light sandbox (2026-11-11, branch `neural-light`, `tools/neural/`; the paper: Leonard & Westermann, arXiv
+  2611.12103, radiance inferred by an image-space U-Net from primary-ray features, ONE light march per pixel).** The
+  march's `-DCV2_NDUMP` variant (`shader_variant.py march --tag ndump -D CV2_NDUMP`, never shipped) records 56 floats per (48 until 2026-11-12: the march's own key / ambient terms at the interaction sample were added as features 48-55)
+  grid pixel into march set binding 29 (`cv2NDump*`, SatelliteSim.h; the shipped SPV never touches the binding, the
+  profile buffer stands in until harness `ndump on`): channels 0-14 the lighting TARGETS summed over the visits (key /
+  ambient / rest = bounce + night, the march's colour, T, mean depth, count), 15-47 the last visit's FEATURES (the kept
+  samples' optical depth and where it crosses 0.25 / 1 / 4 / 10, first / last / half contact, and at the INTERACTION
+  sample -- where T crosses 0.5, else the heaviest -- one full light march, the far side, the probe, the Sun volume's T,
+  height, sigma, thin / rain / ice / hf, cos to the key light, hV, top, footprint, the key and sky colours, t, the Moon
+  flag, dayness, T). `ndump on` forces the full-rate march; `ndump write <name> frames=N` zeroes, accumulates N frames,
+  drains and writes `<name>.f32` + `.json`. The buffer is device-local host-visible (the BAR heap): in system RAM the
+  per-pixel read-modify-writes crossed PCIe and a 1600x900 full-res frame took 330 ms. The layout's descriptor pool has
+  10 SSBOs for it. Training targets are the CURRENT look (the 7-step march's jitter average), not a path-traced truth
+  (the user's choice): `collect.py` walks the user's report shots and perf snapshots, perturbed; `train.py` fits the
+  net (key / key colour, ambient / sky colour; beams, lightning and the night glow stay marched). Gates and the plan:
+  `tools/neural/README.md`. Verdict 2026-11-12 (1665 views, 56 floats each): a width-32 U-Net reaches 3.7 / 5.8 / 6.0
+  display levels mean |diff| on cloud pixels by day (ground / aircraft / orbit; the A-vs-A floor is ~2), 1.7 at
+  twilight, 0.2 at night, and costs 24 ms at the user's half-res grid in eager PyTorch, the size of the 34 / 23 / 15 ms
+  lighting loop it would replace. Neither gate met; no in-engine path. The dump path and dataset stay reusable.

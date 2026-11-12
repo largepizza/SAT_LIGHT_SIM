@@ -151,6 +151,15 @@ layout(set = 0, binding = 11, rg32f)   uniform writeonly image2D outDepth;
 // bright clouds far behind it, the opacity split put half the far clouds' light at the near cloud's depth, in front of a
 // tornado's funnel, and the funnel lost a rectangle there).
 layout(std430, set = 0, binding = 22) writeonly buffer CloudProfile { uvec2 cv2Profile[]; };
+#ifdef CV2_NDUMP
+// Neural-light sandbox (2026-11-11, branch neural-light; tools/neural/): the -DCV2_NDUMP variant records, per pixel of the
+// cloud grid, kCv2NdK floats into a host-visible buffer (harness `ndump`): the lighting TARGETS accumulated over frames
+// (key / ambient / rest, the march's colour, T, mean depth, the visit count) and the FEATURES of the last visit (the ray's
+// optical depth and its crossings, and the interaction sample's light march, far side, probe, Sun volume, medium and
+// geometry). Layout: tools/neural/ndump.py (kept in step by hand). Never shipped: a variant SPV via shader_variant.py.
+const int kCv2NdK = 56;
+layout(std430, set = 0, binding = 29) buffer NDump { float cv2Nd[]; };
+#endif
 uint cv2ProfileCode(float t) { return uint(clamp(log2(max(t, 1.0)) * (4094.0 / 27.0), 0.0, 4094.0)); }
 
 const int N_LIGHT = 12;
@@ -891,6 +900,12 @@ void main()
     float ldA = 0.0;    // the light's luminance x depth, summed (the profile's light centroid, cv2Profile)
     float aAcc = 0.0;   // the weighted air transmittance from the eye to each sample (cv2AirOD)
     float tFst = 1e30, tLst = 0.0;   // first / last cloud contact (the opacity profile, cv2Profile)
+#ifdef CV2_NDUMP
+    vec3  ndKey = vec3(0.0), ndAmb = vec3(0.0), ndRest = vec3(0.0);
+    float ndOd = 0.0; vec4 ndTx = vec4(-1.0);          // t where the kept samples' optical depth crosses 0.25 / 1 / 4 / 10
+    int   ndLockBi = -1; bool ndDone = false; float ndWrec = -1.0;
+    float ndF[32]; for (int i = 0; i < 32; ++i) ndF[i] = 0.0;
+#endif
     float odRain = 0.0;                               // debug view 5
     vec4  odLayer = vec4(0.0);                        // debug view 7: low, mid, anvil, high
     bool  dbgLayers = int(cv2.shell.z + 0.5) == 7;
@@ -1189,6 +1204,15 @@ void main()
                 bool litG = f.thin <= 0.5 && f.sigma * cv2.light.x >= CV2_FAINT_OD;
                 int  bi   = litG ? nBl : kBatch - 1 - (nB - nBl);
                 bF[bi] = f; bT[bi] = t; bTr[bi] = T / Tent; bCov[bi] = covB; bW[bi] = w; bH[bi] = hV;
+#ifdef CV2_NDUMP
+                // The interaction sample: where the ray's transmittance crosses 0.5 (else the heaviest sample, below).
+                if (!ndDone && ndLockBi < 0 && T * Tstep < 0.5) ndLockBi = bi;
+                ndOd += f.sigma * stepW;
+                if (ndTx.x < 0.0 && ndOd >= 0.25) ndTx.x = t;
+                if (ndTx.y < 0.0 && ndOd >= 1.0)  ndTx.y = t;
+                if (ndTx.z < 0.0 && ndOd >= 4.0)  ndTx.z = t;
+                if (ndTx.w < 0.0 && ndOd >= 10.0) ndTx.w = t;
+#endif
                 ++nB; if (litG) ++nBl;
                 if (tIce < 0.0 && f.thin > 0.0) tIce = t;
             }
@@ -1640,10 +1664,40 @@ void main()
             // The air between the eye and THIS sample (2026-11-08, issue_20261108_172203): see cv2AirOD.
             vec3  odA = cv2AirOD(eye, dir, eyeH, t, BETA_R, BETA_M);
             vec3  dLs = bW[bj] * S * exp(-odA);
+#ifdef CV2_NDUMP
+            {
+                vec3 wA = bW[bj] * exp(-odA);
+                ndKey += wA * keyS; ndAmb += wA * ambS; ndRest += wA * (bounceS + nightS);
+                bool ndCand = !ndDone && ((ndLockBi == bj) || (ndLockBi < 0 && bW[bj] > ndWrec));
+                if (ndCand) {
+                    // One full light march at this sample whatever the perf gates skipped (faint, deep, rain).
+                    float nOd, nUp, nBm, nBk;
+                    lightAmbOD(rel, keyDir, up, eyeH, enuToEcef, nL, lSeg0, jL, detailAmt, fp, true, nOd, nUp,
+                               false, bDir, nBm, false, true, nBk);
+                    float nStv = (cv2.stvH.z > 0.5) ? cv2StvT(rel, p.h) : 1.0;
+                    ndF[0] = nOd; ndF[1] = nBk; ndF[2] = nUp; ndF[3] = nStv;
+                    ndF[4] = p.h; ndF[5] = f.sigma; ndF[6] = f.thin; ndF[7] = f.rain;
+                    ndF[8] = cv2MicroIce(p.h); ndF[9] = f.hf; ndF[10] = cosK; ndF[11] = bH[bj];
+                    ndF[12] = f.topH; ndF[13] = fp; ndF[14] = keyCol.r; ndF[15] = keyCol.g; ndF[16] = keyCol.b;
+                    ndF[17] = skyDay.r; ndF[18] = skyDay.g; ndF[19] = skyDay.b; ndF[20] = t;
+                    ndF[21] = moonIsKey ? 1.0 : 0.0; ndF[22] = dayness; ndF[23] = T;
+                    // The march's own single-sample terms here (what one light march per pixel buys in-engine): the net
+                    // then learns the correction from one sample to the ray's integral, not the multi-scatter model.
+                    ndF[24] = keyS.r; ndF[25] = keyS.g; ndF[26] = keyS.b;
+                    ndF[27] = ambS.r; ndF[28] = ambS.g; ndF[29] = ambS.b;
+                    ndF[30] = ambVis; ndF[31] = ambLow;
+                    ndWrec = bW[bj];
+                    if (ndLockBi == bj) ndDone = true;
+                }
+            }
+#endif
             L    += dLs;
             ldA  += dot(dLs, vec3(1.0 / 3.0)) * bT[bj];
             aAcc += bW[bj] * exp(-dot(odA, vec3(1.0 / 3.0)));
         }
+#ifdef CV2_NDUMP
+        ndLockBi = -1;   // (batch indices are per batch)
+#endif
         } while (nB >= kBatch);
         if (iters >= kMaxIters && t < tEnd) remLen += tEnd - t;
     }
@@ -1936,6 +1990,27 @@ void main()
     // exemption here, (dbg != 0 && dbg != 11), flipped this shader to ~224 registers: +19%.)
     float Tout = (dbg != 0) ? 0.0 : T * godT;
 
+#ifdef CV2_NDUMP
+    {
+        uint nb = uint(pix.y * halfSize.x + pix.x) * uint(kCv2NdK);
+        // Only into a buffer of the grid's size: before `ndump on` binding 29 holds the small profile buffer, and this
+        // variant loaded first wrote past it (device lost, 2026-11-11).
+        if (nb + uint(kCv2NdK) <= uint(cv2Nd.length())) {
+        // Targets: sums over visits (the host divides by the count).
+        cv2Nd[nb + 0u] += ndKey.r;  cv2Nd[nb + 1u] += ndKey.g;  cv2Nd[nb + 2u] += ndKey.b;
+        cv2Nd[nb + 3u] += ndAmb.r;  cv2Nd[nb + 4u] += ndAmb.g;  cv2Nd[nb + 5u] += ndAmb.b;
+        cv2Nd[nb + 6u] += ndRest.r; cv2Nd[nb + 7u] += ndRest.g; cv2Nd[nb + 8u] += ndRest.b;
+        cv2Nd[nb + 9u] += outRgb.r; cv2Nd[nb + 10u] += outRgb.g; cv2Nd[nb + 11u] += outRgb.b;
+        cv2Nd[nb + 12u] += Tout;    cv2Nd[nb + 13u] += meanT;    cv2Nd[nb + 14u] += 1.0;
+        // Features: the last visit's.
+        cv2Nd[nb + 15u] = ndOd;
+        cv2Nd[nb + 16u] = (tFst < 1e29) ? tFst : -1.0;
+        cv2Nd[nb + 17u] = ndTx.x; cv2Nd[nb + 18u] = ndTx.y; cv2Nd[nb + 19u] = ndTx.z; cv2Nd[nb + 20u] = ndTx.w;
+        cv2Nd[nb + 21u] = tLst; cv2Nd[nb + 22u] = tHalf; cv2Nd[nb + 23u] = wAcc;
+        for (int i = 0; i < 32; ++i) cv2Nd[nb + 24u + uint(i)] = ndF[i];
+        }
+    }
+#endif
     vec4 oD = vec4(meanT, (T < 0.1 && tHalf > 0.0) ? tHalf : -1.0, 0.0, 0.0);
     if (passB) {
         // The full targets, and this tile's sparse-grid samples (the quarter grid stays complete).

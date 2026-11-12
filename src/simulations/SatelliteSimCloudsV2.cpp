@@ -607,13 +607,14 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     // 27 last frame's resolved clouds (the history copy: the smooth tiles' classification, cloud_v2_tiles.comp)
     // 28 the ice crystals' traced halo table (2026-11-10, cv2_optics.glsl cv2IceOptics, tools/make_ice_optics.py)
     cv2MarchDescLayout = makeSetLayout(dev, {UBO, UBO, TEX, TEX, TEX, TEX, TEX, TEX, SSBO, SSBO, IMG, IMG, SSBO, IMG, TEX, SSBO,
-                                             TEX, IMG, IMG, SSBO, TEX, IMG, SSBO, SSBO, TEX, TEX, SSBO, TEX, TEX});
+                                             TEX, IMG, IMG, SSBO, TEX, IMG, SSBO, SSBO, TEX, TEX, SSBO, TEX, TEX,
+                                             SSBO});   // 29: the neural-light dump (CV2_NDUMP variants only)
     // cloud_v2_resolve.comp: 0 CloudV2Params, 1 new color, 2 new depth, 3 history, 4 out color, 5 out depth,
     // 6/7 the full-rate tiles' color/depth, 8 the tile list
     // 9 / 10 the sample ages (out, history)
     cv2ResolveDescLayout = makeSetLayout(dev, {UBO, TEX, TEX, TEX, IMG, IMG, TEX, TEX, SSBO, IMG, TEX});
     {
-        VkDescriptorPoolSize ps[4] = {{UBO, 3}, {TEX, 19}, {SSBO, 9}, {IMG, 9}};
+        VkDescriptorPoolSize ps[4] = {{UBO, 3}, {TEX, 19}, {SSBO, 10}, {IMG, 9}};   // (SSBO 10: + the neural-light dump, binding 29)
         VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         pi.maxSets = 2;
         pi.poolSizeCount = 4;
@@ -795,6 +796,8 @@ void SatelliteSim::createCloudsV2Targets(VulkanContext &ctx)
 
     VkDescriptorImageInfo depthInfo{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorBufferInfo profInfo{cv2ProfileBuf, 0, VK_WHOLE_SIZE};
+    if (cv2NDumpBuf) cv2NDumpEnsure(ctx);   // (resized with the grid; it writes binding 28 itself)
+    VkDescriptorBufferInfo ndInfo{cv2NDumpBuf ? cv2NDumpBuf : cv2ProfileBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorImageInfo newOut{VK_NULL_HANDLE, cv2NewView, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo newDepthOut{VK_NULL_HANDLE, cv2NewDepthView, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo newIn{cv2ClampSampler, cv2NewView, VK_IMAGE_LAYOUT_GENERAL};
@@ -814,6 +817,7 @@ void SatelliteSim::createCloudsV2Targets(VulkanContext &ctx)
     VkWriteDescriptorSet w[] = {
         imageWrite(cv2MarchDescSet, 6, TEX, &depthInfo),
         bufferWrite(cv2MarchDescSet, 22, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &profInfo),
+        bufferWrite(cv2MarchDescSet, 29, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &ndInfo),
         imageWrite(cv2MarchDescSet, 10, IMG, &newOut),
         imageWrite(cv2MarchDescSet, 11, IMG, &newDepthOut),
         imageWrite(cv2ResolveDescSet, 1, TEX, &newIn),
@@ -847,6 +851,7 @@ void SatelliteSim::destroyCloudsV2Targets(VkDevice device)
     if (cv2ProfileMem) vkFreeMemory(device, cv2ProfileMem, nullptr);
     cv2ProfileBuf = VK_NULL_HANDLE;
     cv2ProfileMem = VK_NULL_HANDLE;
+    cv2NDumpDestroy(device);
     for (int i = 0; i < 10; ++i)
     {
         if (*views[i]) vkDestroyImageView(device, *views[i], nullptr);
@@ -1279,6 +1284,52 @@ bool SatelliteSim::ensureSkyAp(VulkanContext &ctx)
 // ─── Per frame ────────────────────────────────────────────────────────────────────────────────────
 // Filled every frame, v2 on or off: beam_self_march.comp reads cv2.shell while cloudsV2 is set,
 // and the harness can switch v2 on between any two frames.
+// Neural-light sandbox (2026-11-11): the dump buffer, kCv2NDumpK floats per cloud-grid pixel, host-visible and coherent,
+// mapped once; zeroed here and by the harness after each write. Rebuilt when the grid changes size.
+void SatelliteSim::cv2NDumpEnsure(VulkanContext &ctx)
+{
+    const VkDeviceSize need = (VkDeviceSize)cv2HalfW * cv2HalfH * kCv2NDumpK * sizeof(float);
+    if (cv2NDumpBuf && cv2NDumpSize == need)
+        return;
+    ctx.drainFrames();
+    cv2NDumpDestroy(ctx.device);
+    // Device-local + host-visible (the BAR heap: all of VRAM with Resizable BAR, as the flash buffer), else system RAM:
+    // as plain HOST_VISIBLE memory every per-pixel read-modify-write crossed PCIe and a 1600x900 frame took 330 ms.
+    try
+    {
+        ctx.createBuffer(need, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                         cv2NDumpBuf, cv2NDumpMem);
+    }
+    catch (const std::exception &)
+    {
+        cv2NDumpBuf = VK_NULL_HANDLE; cv2NDumpMem = VK_NULL_HANDLE;
+        ctx.createBuffer(need, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                         VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, cv2NDumpBuf, cv2NDumpMem);
+        Log::line("ndump: no device-local host-visible heap, the record is in system RAM (slow)");
+    }
+    cv2NDumpSize = need;
+    if (vkMapMemory(ctx.device, cv2NDumpMem, 0, VK_WHOLE_SIZE, 0, &cv2NDumpMapped) != VK_SUCCESS)
+        cv2NDumpMapped = nullptr;
+    if (cv2NDumpMapped)
+        std::memset(cv2NDumpMapped, 0, (size_t)need);
+    cv2NDumpFrames = 0;
+    VkDescriptorBufferInfo ndInfo{cv2NDumpBuf, 0, VK_WHOLE_SIZE};
+    VkWriteDescriptorSet w = bufferWrite(cv2MarchDescSet, 29, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &ndInfo);
+    frameSafeUpdateDescriptorSets(ctx.device, 1, &w, 0, nullptr);
+}
+
+void SatelliteSim::cv2NDumpDestroy(VkDevice device)
+{
+    if (cv2NDumpMapped) vkUnmapMemory(device, cv2NDumpMem);
+    if (cv2NDumpBuf) vkDestroyBuffer(device, cv2NDumpBuf, nullptr);
+    if (cv2NDumpMem) vkFreeMemory(device, cv2NDumpMem, nullptr);
+    cv2NDumpMapped = nullptr;
+    cv2NDumpBuf = VK_NULL_HANDLE;
+    cv2NDumpMem = VK_NULL_HANDLE;
+    cv2NDumpSize = 0;
+}
+
 void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cpc)
 {
     if (!cv2ParamsMapped)
@@ -2130,6 +2181,11 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                          tiles <= kCv2MaxTiles && cv2MarchPassBPipeline != VK_NULL_HANDLE && cv2TilesPipeline != VK_NULL_HANDLE;
         if (cv2AdaptiveNow)
             cv2FullRateNow = false;
+    }
+    if (cv2NDumpOn) {   // the neural-light dump: every grid pixel every frame, no checkerboard, no tiles
+        cv2FullRateNow = true;
+        cv2HalfRateNow = false;
+        cv2AdaptiveNow = false;
     }
     // The sparse grid's block (2026-11-04, "sparse_block"): the full-res grid's sparse march takes one ray per K x K block a
     // frame (K 3: 1/9 of the pixels, 4: 1/16), the offsets rotating over K*K frames; the resolve rebuilds the rest from the
@@ -3037,6 +3093,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
 
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2MarchPipeLayout, 0, 1, &cv2MarchDescSet, 0, nullptr);
+    if (cv2NDumpOn) ++cv2NDumpFrames;
     vkCmdPushConstants(cmd, cv2MarchPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(cpc), &cpc);
     // The Sun / sky colour table: a function of the scattering gains alone, baked when one changes (and on the
     // first frame). The march, below, samples it.
