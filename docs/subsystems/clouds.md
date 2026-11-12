@@ -681,6 +681,9 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   SPV differ by 8.5% / 2.6% there (the history and layer map re-converge for seconds after a reload, even settled 160
   frames), d4 against the base reloaded right before it 0.8% / 1.4%, and the heatmap is a smooth level shift over the whole
   storm, not a local feature.
+  **Back to 128 (2026-11-11, hurrperf):** the march compiles to 128 with every feature kept through a never-run register guard
+  (`CV2_REG_GUARD`, cloud_v2_march.comp top; docs/subsystems/perf.md "The hurricane march pass"): the eye view's cloud bucket
+  -15 ms with the deep-light reuse beside it. Check `shaders reload`'s Register Count after any edit to the march.
 - **Perf recovery after the 2026-11-10 wave (2026-11-11, perfrec, branch `qa/20261110/perfrec`; batches and generators in
   `harness_runs/perfrec/`: `gen_attr.py` settled / first-2-s setting knockouts, `trace*.satcmd`, `gen_ab.py`, `gen_bake.py`,
   `scan2.py`, `gen_final.py`).** The user's settings, 1600x900, one live app, interleaved, 3 x `perf frames=60`.

@@ -730,4 +730,35 @@ depth pass, so its variants interleave like the sky's and the clouds'.
     survives the flight: stA_850km boosted 36.3 -> 35.7 ms alone, 26.6 ms with the moving block (cloud bucket 27.8 ->
     18.0), and the clouds smear along the flight direction where today they are crisp and grainy.
 
+
+**The hurricane march pass (2026-11-11, hurrperf; issue_20261111_164105 "Hurricane performance", the eye from 24 km; RTX 3070
+Ti, 1600x900, the reporter's settings, variants interleaved in one live app, 3 x `perf frames=60`; batches and variant
+generators in `qa/waves/20261111/evidence/hurrperf/`):** (1) **Where it went.** The reporter's 74 ms was the march with the
+occupancy clipmap OFF: their trail ran the clock at ~1 min/s (274 s of sim time in 12 s) and flew at up to 15-39 km/s, and
+either switches the clipmap off (`cdc_max_rate`, the motion guard). The trail replayed at 1 min/s: cloud bucket 63-65 ms.
+Still at shot 1 with the clipmap on, 46-67 ms between sessions (+-0.2-5 within one); march_a ~36, the clipmap's check +
+bake ("layer_map") ~4.7 ms even still and paused. Eval counters a ray (`-DCV2_EVAL_COUNT`): 4.3 coarse, 5.0 fine, 9 clipmap
+skips, 3.6 lit samples at 8.2 field reads each: the light march is ~80% of the field reads, and 29% of the lit samples lie
+where the ray's transmittance is already < 0.1. Knockouts (cloud bucket vs the base, same session): the hurricane fill out
+-3.5 ms, the ice table out -2.9, the flow map out +9 (slower), all three out ~0 (still 255 registers on this tree); the ray's
+cut at T < 0.05 instead of 0.01 -6.8 ms. Light steps taken after the light's optical depth passes 30 / 80: 6% / < 1% (an
+od cutoff in the light march buys nothing). The clipmap skipped ~93k steps a frame that held cloud (80k of them dense,
+od > 0.1 over the step: blocks' area, the 2026-11-11 wave). (2) **Kept: THE REGISTER GUARD** (`CV2_REG_GUARD`,
+cloud_v2_march.comp): two branches on a uniform that never holds (`cv2.misc.x < -1`) -- an atomic on the eval counters at
+the light march's head, and a third `cv2Field` call site at the clipmap skip with an atomic on its result, the flash buffer
+writable -- put the merged march in the 128-register regime (255 without; binary 549 -> ~696 KB, the never-run copy).
+Either one alone, or the buffer readonly, leaves 255; the full `-DCV2_EVAL_COUNT` build was the first 128 seen. Behaviour
+identical (image at the A-vs-A floor). FRAGILE: the regime follows code shape; check the Register Count after every edit.
+(3) **Kept: DEEP LIGHT** (`clouds_v2.deep_light_t` 0.1, UBO `cv2.hurrperf.x`): a lit sample deeper than T 0.1 in its cloud
+borrows the previous lit sample's optical depth toward the light + its own extinction over the extra depth; thresholds
+0.2 / 0.3 were no faster. (4) **Measured, OFF: THE OPACITY STOP** (`clouds_v2.opacity_stop_t`, 0 = off; 0.05 tried): the
+ray ends at that transmittance and its last sample takes the rest of the weight (the mean colour as the fill read greyer
+over the CDO top). (5) **Numbers** (base / guard + deep light / + stop 0.05, cloud bucket ms): shot 1 still 67.4 (63.0
+again) / 51.9 / 48.1; the trail at 1 min/s 62.8 (65.4 again) / 48.2 / 44.8, GPU p90 107.5 (112.7) / 81.3 / 71.2; the eye
+from 45 km (issue_20261111_165853) 54.0 (56.6) / 47.1 / 43.8; under a hurricane (165715) 40.1 (42.7) / 38.0 / 35.1;
+orbit 400 km 19.41 / 18.34; cumulus 1.5 km 10.55 / 10.34. Parity, mean |diff| vs the base (floor = the base twice): shot 1
+2.26 (2.17), stop 2.54 with spots on the cloud edges; 45 km 1.16 (1.05), stop 1.00; under 6.36 (7.12), stop 7.37.
+Tried and dropped: the fill / mass loops out of the light march's cv2Field copy only (255), one cyclone instead of the loop
+(255), deep light with the probe's value kept as well (255).
+
 ---

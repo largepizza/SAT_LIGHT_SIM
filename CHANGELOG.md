@@ -407,6 +407,11 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Performance
 
+- **Faster in hurricanes:** the cloud march is back to its fast register budget on NVIDIA (128, was 255), and a sample
+  deep inside an opaque cloud reuses the light path of the sample in front of it instead of marching its own. Over a
+  hurricane's eye from 24 km the clouds cost ~20-23% less (67 -> 52 ms still; 63-65 -> 48 ms flying the reporter's path at
+  1 min/s), orbit ~1 ms less, the image unchanged. An optional earlier ray stop ("opacity_stop_t", off) saves a few ms
+  more (issue_20261111_164105).
 - **Faster inside rain and snow:** rain shafts and the ragged scud under a raining base are lit from the storm's sun-shadow
   volume instead of a light march of their own. Inside a snowing deck the cloud march went 24 -> 15 ms (19 -> 15 ms a
   few hundred metres lower), with the curtains' look kept (issue_20261110_181505).
