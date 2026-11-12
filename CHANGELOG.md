@@ -542,6 +542,13 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- The thin dark line along the Earth's limb seen from orbit toward a low Sun is gone (issue_20261111_170539). The
+  sky's horizon volume extended its first two sky rows into the last row above the limb, where the cloud tops sit,
+  and that extrapolation went dark there; it now holds the first row.
+- The subsun and subparhelia seen on a cloud deck below you (the vertical streaks under a low Sun and its sundogs)
+  no longer stretch by up to ~40% and pulse as the Sun rises (issue_20261111_164656). They are real plate-crystal
+  reflections, elongated vertically by the crystals' wobble; the halo table now has 1-degree steps of Sun elevation
+  below 20 degrees (2.5 before), so they keep their traced length at every Sun height.
 - Clouds no longer show a field of square tiles after a jump of the sim clock (issue_20261107_163510). A jump of a
   whole multiple of 20 s (a report, a bookmark, a time set, a scrub) kept parts of the empty-air skip map from before
   it, and with time paused the cloud they hid never came back. Any clock jump of 10 s or more now starts the map

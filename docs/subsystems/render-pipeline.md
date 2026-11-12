@@ -152,6 +152,16 @@ atmHalfAvg3, airglow noise, cityBrightness) moved unchanged into `include/sky_at
   half a row at 10 m, and with it the line stayed at 10 m (+53 levels) where the rows were right everywhere else.
   After: the same spikes +4 / +1 / -1 / +4 / -2 (the 15-m figure is sea glitter, the same with the loop); the profile
   across the limb follows the loop's within ~1-2 levels.
+- **The sky side of the limb HOLDS its first row** (2026-11-11, issue_20261111_170539 "Line on horizon 2",
+  `skyApLimbCoord` returns `fc.z >= 0`). It used to extrapolate the first two sky rows over the gap. From orbit toward
+  a low Sun (406 / 357 km, the Sun's glow saturating the limb) the cloud tops at the limb fall in the sky side's last
+  pixel row, and that slope carried down to their slices drew a 1-px DARK line, segmented by the grid's columns:
+  -160 levels at shot 1's row, -35 / -20 over two rows at shot 2's. `sky_ap_limb 0` removed it, and so did the cloud
+  march knocked out; `sparse_block_orbit` had no effect. Holding only behind cloud, weighted by its opacity, left -90 /
+  -10 (thin cloud at the edge); holding everywhere leaves none at either shot. The price is a 1-px step of ~+4 levels
+  at issue_20261110_180445 shot 1 (111 km; the extrapolation had removed it, base +2 there). Its shot 3, and an orbit
+  limb at night, are unchanged. The sky pass is unchanged in cost (shot 1, 3 interleaved reps: sky 6.49 -> 6.38 ms,
+  GPU 21.10 +-0.85 -> 21.28 +-0.93). SKY_LITE has no limb volume and its SPIR-V is byte-identical.
 
 ---
 

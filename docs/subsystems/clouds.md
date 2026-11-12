@@ -2202,8 +2202,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   mask). Ice optics are gated per REGION by crystal habit (`cv2IceHabit`, evaluated at a ray's first ice
   sample): a 22 deg halo in ~1/3 of cirrus, sundogs less, the CZA/parhelic circle rarely, 46 deg very rarely.
 - **Ice halos are PREDICTED from crystal geometry, not placed (2026-11-10, issue_20261110_180734 "Optics physics").**
-  `cv2IceOptics(v, s, up, hab)` (include/cv2_optics.glsl) reads `assets/textures/ice_optics.rgba8`, a 244 x 277 x 31
-  RGBA8 3D texture (8.4 MB, march binding 28, rain particles binding 6, `createCloudIceOptics`) that
+  `cv2IceOptics(v, s, up, hab)` (include/cv2_optics.glsl) reads `assets/textures/ice_optics.rgba8`, a 244 x 277 x 43
+  RGBA8 3D texture (11.6 MB, march binding 28, rain particles binding 6, `createCloudIceOptics`) that
   `tools/make_ice_optics.py` ray-traces through hexagonal ice prisms (Monte-Carlo geometric optics: Fresnel reflection,
   refraction, total internal reflection through the 8 faces, 2 M rays per population x elevation x colour channel at
   the ice indices R 1.3069 / G 1.3108 / B 1.3165, ~15 min on the CPU; shipped, not baked at start). Axes: x the
@@ -2211,7 +2211,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   azimuth about the light from its zenith side (rows 0-1 random columns c/2a 2.5, 2-3 random compact 1.0, then 91
   rows of phi 0..180 at 2 deg for plates (c/2a 0.25, tilt sigma 1 deg), singly oriented columns (tilt 1.5 deg) and
   Parry-oriented columns (a prism face level, spin sigma 1 deg)), z the light's elevation over the crystals' local
-  horizontal (0..60 at 2.5 deg, 65..90 at 5). Texel = (P / 512)^(1/3), P the phase in cv2HG's isotropic = 1
+  horizontal (0..20 at 1 deg, 22.5..60 at 2.5, 65..90 at 5). Texel = (P / 512)^(1/3), P the phase in cv2HG's isotropic = 1
   convention without the undeviated rays (0.25-0.29 of the geometric light goes straight through two parallel faces:
   the march's delta-scaled extinction carries it). The lookup is 3-5 trilinear fetches per ray (the Sun and the Moon
   each) at the ray's FIRST ice sample, the fog's midpoint and each particle, weighted by the habit: x random columns
@@ -2243,6 +2243,20 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   cirrus view (shot 1), both inside the rep spread (+-1.7..3.7 ms); 128 registers and the same local memory in both,
   the binary 512640 -> 543488 bytes (the table path inlined at five call sites beside the kept analytic one). The
   table's own lookups are 3-5 trilinear fetches per ray per light, once per ray.
+  **The subsun and subparhelia are vertical streaks, and that is the physics** (issue_20261111_164656 "Weird optic",
+  11.9 km above a deck, the Sun ~7 deg up: three vertical streaks under the Sun and the sundogs). They are reflections
+  off the plates' basal faces (the subsun externally, the subparhelia inside the crystal between two prism faces), so
+  a plate tilted by t moves the ray 2t in elevation and only ~2t sin e in azimuth: at a low Sun the plates' 1-deg
+  wobble spreads them almost purely vertically, and the lobe peaks far above the table's clip (~1000 x isotropic for
+  the subsun at e = 7: P >= 128 over ~9-10 deg of elevation in the trace). What was wrong was the LAYERS: the subsun
+  sits 2e below the Sun, so between two layers 2.5 deg apart the trilinear blend drew two lobes 5 deg apart, one
+  streak up to ~40% longer (P >= 128: 13.9 deg at e = 6 against 9.4-9.9 on a layer; P >= 32: 15.9 against 11.9), the
+  length pulsing as the Sun rose through the layers. Below 20 deg the layers are now 1 deg (43 layers, +3.2 MB): the
+  same extents 9.4-10.4 deg at every elevation. The layers they share with the old table differ by the Monte-Carlo
+  noise only (|byte| mean 0.4, p99 4): the halos and sundogs are unchanged. At the report's view (the Sun near the
+  7.5-deg layer, so the old blend was mostly one layer) the subsun's half-peak length went 86 -> 80 px; the analytic
+  lobes (`ice_optics_table 0`) draw no subsun at all, which is how the three streaks were identified as the table's
+  plate population. Cost: the same fetches (cloud march 29.6 ms both, 3 interleaved reps at the view).
   The sun path to every cloud sample is the Chapman column (`sunTransmit`, include/atmosphere.glsl) plus
   ozone: a 12-step midpoint rule along a grazing path misses the tangent point's dense air.
 - **Tonemap controls** (Photometry tab, EXPOSURE AND MOON section since 2026-10-06 — they were deep in the Clouds

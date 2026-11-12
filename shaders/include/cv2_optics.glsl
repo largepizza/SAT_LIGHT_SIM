@@ -23,9 +23,11 @@ float cv2Sq(float x) { return x * x; }
 // The table's layout (tools/make_ice_optics.py: change both). x theta from the light: 0..64 deg at 0.5 (128 texels)
 // then 64..180 at 1 (116); y rows 0-1 random columns, 2-3 random compact, then 91 rows (phi 0..180 at 2 deg: the azimuth
 // about the light from its zenith side) per oriented population: plates, columns, Parry; z the light's elevation:
-// 0..60 at 2.5 deg (25 layers), 65..90 at 5 (6). Texel = (P / 512)^(1/3): P the phase in cv2HG's convention
+// 0..20 at 1 deg (21 layers; 2.5 until 2026-11-11: the subsun / subparhelia, which move 2 deg per degree of elevation,
+// blended from two layers 5 deg apart into one streak ~40% too long, issue_20261111_164656), 22.5..60 at 2.5 (16),
+// 65..90 at 5 (6). Texel = (P / 512)^(1/3): P the phase in cv2HG's convention
 // (isotropic = 1), the undeviated forward rays left out (the march's delta-scaled extinction carries them).
-const float CV2_IO_NT = 244.0, CV2_IO_H = 277.0, CV2_IO_NE = 31.0, CV2_IO_NP = 91.0, CV2_IO_PMAX = 512.0;
+const float CV2_IO_NT = 244.0, CV2_IO_H = 277.0, CV2_IO_NE = 43.0, CV2_IO_NP = 91.0, CV2_IO_PMAX = 512.0;
 // The table's 22 deg halo peaks at ~16 x isotropic (its physical single-scatter contrast); the look the user approved
 // drew it at 4 on the ice lobe, so the table comes in at a quarter: the relative strengths (sundogs ~30 x the halo,
 // the 46 deg halo ~1/8 of it) are the trace's, the overall level the previous one. "Optics (halos, rainbows)" scales it.
@@ -36,7 +38,7 @@ layout(set = 0, binding = CV2_ICE_OPTICS_BINDING) uniform sampler3D cv2IceOptics
 #endif
 
 float cv2IoU(float thDeg) { return (thDeg < 64.0 ? thDeg * 2.0 : 128.0 + (thDeg - 64.0)) / CV2_IO_NT; }
-float cv2IoW(float eDeg)  { return ((eDeg <= 60.0 ? eDeg * 0.4 : 24.0 + (eDeg - 60.0) * 0.2) + 0.5) / CV2_IO_NE; }
+float cv2IoW(float eDeg)  { return ((eDeg <= 20.0 ? eDeg : eDeg <= 60.0 ? 20.0 + (eDeg - 20.0) * 0.4 : 36.0 + (eDeg - 60.0) * 0.2) + 0.5) / CV2_IO_NE; }
 vec3  cv2IoDecode(vec3 v) { return CV2_IO_PMAX * v * v * v; }
 
 // Ice crystals, the analytic stand-ins (until 2026-11-10 the only version): the 22 and 46 degree halos (randomly

@@ -198,9 +198,13 @@ SkyApSum skyApRead(vec2 uv, float s)
 // unit of air column differ by far more than one row's step. Bilinear between the two, the row of pixels between them
 // read a mix times its own column: a bright line along the horizon at every altitude (+25..+63 levels, one pixel
 // thick). Within a row of the limb the pixel reads its own side's rows only (fc.y the lower row, fc.z the weight of the
-// upper one): a sky pixel extrapolates the first two sky rows (fc.z < 0; the first row held flat over its width, ~2 px
-// from orbit, left a 2-px step of ~4 levels at shot 1's limb), a ground pixel holds the last ground row (extrapolated,
-// the sea just under the horizon read ~2 levels dark over 5 rows at shot 5, 10 m).
+// upper one): a sky pixel holds the first sky row, a ground pixel the last ground row (extrapolated, the sea just under
+// the horizon read ~2 levels dark over 5 rows at shot 5, 10 m). The sky side extrapolated the first two sky rows until
+// 2026-11-11 (issue_20261111_170539 "Line on horizon 2"): from orbit toward a low Sun the cloud tops at the limb sit in
+// the sky side's last pixel row, and the two rows' slope carried down there drew a 1-px DARK line along the limb (-160
+// levels at its shot 1, -35 / -20 over two rows at shot 2; also gone with sky_ap_limb 0 or the clouds knocked out;
+// holding only behind cloud, by its opacity, left -90 / -10). The hold costs the 1-px step of ~+4 levels at
+// issue_20261110_180445 shot 1 (111 km) that the extrapolation had removed.
 bool skyApLimbCoord(vec3 dir, vec4 fr, float limbZ, bool ground, out vec3 fc, out bool wrap)
 {
     fc = vec3(0.0);
@@ -215,7 +219,7 @@ bool skyApLimbCoord(vec3 dir, vec4 fr, float limbZ, bool ground, out vec3 fc, ou
     da -= 2.0 * PI * floor(da / (2.0 * PI) + 0.5);
     float fa = wrap ? (da / (2.0 * PI) + 0.5) * float(kSkyApLimbA) : (da / fr.y * 0.5 + 0.5) * float(kSkyApLimbA - 1);
     if (!wrap && (fa < 0.0 || fa > float(kSkyApLimbA - 1))) return false;
-    fc = vec3(fa, e0, fe - e0);
+    fc = vec3(fa, e0, max(fe - e0, 0.0));
     return true;
 }
 #ifndef SKY_AP_WRITE

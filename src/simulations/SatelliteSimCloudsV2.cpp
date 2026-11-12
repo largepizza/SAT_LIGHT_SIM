@@ -3366,7 +3366,7 @@ void SatelliteSim::createCloudIceOptics(VulkanContext &ctx)
             float pmax = 0.0f;
             if (std::fread(magic, 1, 4, f) == 4 && std::memcmp(magic, "SLIO", 4) == 0 && std::fread(hdr, 4, 4, f) == 4
                 && std::fread(&pmax, 4, 1, f) == 1 && std::fread(tail, 4, 2, f) == 2
-                && hdr[0] == 244 && hdr[1] == 277 && hdr[2] == 31 && hdr[3] == 91 && std::fabs(pmax - 512.0f) < 1e-3f)
+                && hdr[0] == 244 && hdr[1] == 277 && hdr[2] == 43 && hdr[3] == 91 && std::fabs(pmax - 512.0f) < 1e-3f)
             {
                 std::vector<uint8_t> d((size_t)hdr[0] * hdr[1] * hdr[2] * 4);
                 if (std::fread(d.data(), 1, d.size(), f) == d.size())
