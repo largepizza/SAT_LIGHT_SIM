@@ -997,6 +997,10 @@ struct GpuCloudV2Params
     // cumulus top inside a storm object as a share of the Cb top, y its fullness, z its overhang, w its puffiness
     glm::vec4 stormsA;
     glm::vec4 stormsB;
+    // (2026-11-11, hurrperf) issue_20261111_164105 (cloud_v2_march.comp): x "cloud_deep_light_t" (a lit sample this deep in
+    // its cloud, transmittance below x, borrows the light path of the lit sample before it; 0 = off), y "cloud_opacity_stop_t"
+    // (the ray stops at this transmittance and its last sample takes the rest; 0 = the old 1% cut), zw unused
+    glm::vec4 hurrperf;
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -1029,7 +1033,7 @@ static_assert(offsetof(GpuCloudV2Params, amb) == 288 + 48 * kCloudV2Types + 1232
 static_assert(offsetof(GpuCloudV2Params, tone) == 288 + 48 * kCloudV2Types + 1248, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, gnd) == 288 + 48 * kCloudV2Types + 1264, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, micro) == 288 + 48 * kCloudV2Types + 1280, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1808, "GpuCloudV2Params layout");   // +32: storms (stormsA, stormsB); +64: flowmaps (flowP, flowA, flowB, flowC); +16: grain; +16: optics; +16: hurricane; +16: pucks; +32: wind0, wind1; +32: cellA, cellB; +32: cirrus-hurr (ciHu, ciHu2); +32: storm3 (storm3a, storm3b); +64: vertical (vert, vert2, oro0, oro1); +80: shapeB
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1824, "GpuCloudV2Params layout");   // +16: hurrperf; +32: storms (stormsA, stormsB); +64: flowmaps (flowP, flowA, flowB, flowC); +16: grain; +16: optics; +16: hurricane; +16: pucks; +32: wind0, wind1; +32: cellA, cellB; +32: cirrus-hurr (ciHu, ciHu2); +32: storm3 (storm3a, storm3b); +64: vertical (vert, vert2, oro0, oro1); +80: shapeB
 static_assert(offsetof(GpuCloudV2Params, cu3) == 288 + 48 * kCloudV2Types + 1312, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
@@ -5509,6 +5513,11 @@ private:
     // EXPERIMENT (2026-10-21, .plans/CLOUD_REBUILD_PLAN.md S1): the cloud density clipmap. Coarse march steps skip the field
     // in known-empty cells. 0 off, 1 = 9-point bake, 2 = 36-point bake (the measured choice: -4..-9 ms below orbit at full
     // rate, harness_runs/s0). Off until judged in motion.
+    // (2026-11-11, hurrperf, issue_20261111_164105; cloud_v2_march.comp "DEEP LIGHT" / "OPACITY STOP"): a lit sample whose
+    // transmittance within its cloud is below cv2DeepLightT borrows the light path of the lit sample before it (no light
+    // march); cv2OpacityStopT > 0 ends the ray at that transmittance, its last sample taking the rest (0 = the 1% cut, off).
+    float cv2DeepLightT = 0.1f;           // clouds_v2.deep_light_t
+    float cv2OpacityStopT = 0.0f;         // clouds_v2.opacity_stop_t
     float cv2CdcSkip = 2.0f;   // the occupancy clipmap, on by default since 2026-10-22 (36-point bake)
     float cv2CdcBudget = 65536.0f;        // ... cells baked a frame at most
     float cv2CdcFp = -1.0f;               // ... the bake's read footprint: > 0 x the cell, < 0 x the march's own footprint there

@@ -9889,6 +9889,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2ShapeCaps = settingClamp(c.value("shape_lobes", cv2ShapeCaps), 0.0f, 2.0f);
         cv2DropletReffUm = c.value("droplet_reff_um", cv2DropletReffUm);
         cv2CdcSkip = c.value("cdc_skip", cv2CdcSkip);
+        cv2DeepLightT = settingClamp(c.value("deep_light_t", cv2DeepLightT), 0.0f, 0.5f);
+        cv2OpacityStopT = settingClamp(c.value("opacity_stop_t", cv2OpacityStopT), 0.0f, 0.2f);
         cv2CdcBudget = c.value("cdc_budget", cv2CdcBudget);
         cv2CdcFp = c.value("cdc_fp", cv2CdcFp);
         cv2CdcBaseBand = c.value("cdc_base_band", cv2CdcBaseBand);
@@ -10699,6 +10701,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"shape_lobes", cv2ShapeCaps},
         {"droplet_reff_um", cv2DropletReffUm},
         {"cdc_skip", cv2CdcSkip},
+        {"deep_light_t", cv2DeepLightT},
+        {"opacity_stop_t", cv2OpacityStopT},
         {"cdc_budget", cv2CdcBudget},
         {"cdc_fp", cv2CdcFp},
         {"cdc_base_band", cv2CdcBaseBand},

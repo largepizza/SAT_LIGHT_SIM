@@ -54,6 +54,15 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_march.comp)
 #define CV2_STORM_BINDING   26   // the storm objects' towers (cv2_storms.glsl)
 #define CV2_FLOW_DITHER          // the cyclone flow map's phases dithered per ray (clouds_v2.glsl cv2CycFlowAt): the march only
 #define CV2_CYC_EXTERNAL         // ... its displacement computed at the main sample only (below), kept across the light march
+// THE REGISTER GUARD (2026-11-11, hurrperf; issue_20261111_164105 "Hurricane performance"; docs/subsystems/perf.md "The march's
+// register guard"). NVIDIA's compiler gives this shader either 128 registers or 255, and which one follows the code's SHAPE,
+// not its liveness (clouds.md "The merged march's 255-register regime"). Two branches that NEVER run (cv2.misc.x, the iteration
+// budget, is never negative) -- an atomic on the eval counters at the head of the light march, and a third cv2Field call site
+// at the clipmap's skip with an atomic on its result -- put it in the 128 regime with every feature kept, bit for bit the
+// same image. Without either of them, or with the flash buffer readonly, it is 255. FRAGILE: any edit to the march can move
+// it; read the Register Count `shaders reload` prints after every change (128 expected). Measured at the hurricane eye view
+// (issue_20261111_164105 shot 1, 1600x900): cloud bucket -2..-5 ms on its own.
+#define CV2_REG_GUARD
 #define CV2_DUST_SPEC            // the haboob code is specialization constant 3 (clouds_v2.glsl kCv2DustOn)
 #include "clouds_v2.glsl"
 #include "atmosphere.glsl"
@@ -215,6 +224,9 @@ void lightAmbOD(vec3 rel, vec3 ldir, vec3 up, float eyeH, mat3 enuToEcef, int nL
 {
     od = 0.0; sigUp = 0.0; odBeam = 0.0; odBack = 0.0;
     CV2_CNT(7);
+#ifdef CV2_REG_GUARD
+    if (cv2.misc.x < -1.0) atomicAdd(cv2EvalCount[7], 1u);   // never runs: the register guard (top of file)
+#endif
     float s = 0.0, lSeg = lSeg0, sb = 0.0, sg = 150.0;
     // The light samples read the field at a footprint of samp.w x the march's length ("Light march footprint",
     // 0.04 = 320 m of an 8-km march): a POINT sample standing for kilometres of path is in a cloud or in a gap, so
@@ -898,6 +910,7 @@ void main()
     // late. GPU frame -6..-8 ms from orbit, -2.5..-3 at 6 km, images at the A-vs-A floor, 128 registers
     // (docs/subsystems/clouds.md "Lit samples first"). nBl = the front's count.
     int   nBl = 0;
+    float lOdL = -1.0, lH = 0.0;   // DEEP LIGHT (below): the last lit sample's light optical depth and height
     float tIce = -1.0;   // the batch's first ice sample (the ray's crystal habit is read there, before the lighting loop)
     // The distance limit is measured from where the ray enters the shell, not from the eye: from
     // orbit the Earth itself is further than the limit, and the far half of the clouds was cut off.
@@ -959,6 +972,10 @@ void main()
             uint lmC = (cv2.cdcA.w > 0.5 && t > cv2.cdcC.z) ? cv2CdcMask(rel, R_EARTH + eyeH) : 0xFFFFu;
             if (!fine && lmC == 0u) {
                 CV2_CNT(15);
+#ifdef CV2_REG_GUARD
+                // Never runs: the register guard (top of file). A third cv2Field call site, its result written.
+                if (cv2.misc.x < -1.0) { CV2Field fg = cv2Field(p, -1.0, fp); if (fg.sigma > 0.0) atomicAdd(cv2EvalCount[18], 1u); }
+#endif
 #ifdef CV2_EVAL_COUNT
                 // Conservativeness check: what the skipped step would have read ([18] misses, [19] their optical depth x 1e4).
                 CV2Field fm = cv2Field(p, -1.0, fp);
@@ -1132,7 +1149,11 @@ void main()
                 stepW = max(stepW, CV2_FAINT_STRIDE * stepF);
             }
             float Tstep = exp(-f.sigma * stepW);
-            float w     = T * (1.0 - Tstep);
+            // OPACITY STOP (2026-11-11, hurrperf; cv2.hurrperf.y "cloud_opacity_stop_t", 0 = off): the ray ends where its
+            // transmittance falls below the stop, and this last sample takes the rest of the pixel's weight (the cloud behind it
+            // taken to look like it). Off, the march runs on to the 1% cut below and the last 1% shows what is behind.
+            float stopT = max(cv2.hurrperf.y, 0.0);
+            float w     = (T * Tstep < stopT) ? T : T * (1.0 - Tstep);
             // Its light is added in the batch's second half, below.
             // A ray that STARTS inside a cloud (its first dense sample within a few steps of the eye) has no face between the eye
             // and the samples it sees: the diffuse field there is the cloud's interior, not light leaking out of a surface.
@@ -1157,7 +1178,7 @@ void main()
             wAcc += w;
             dAcc += w * t;
             if (w > 1e-5) { tFst = min(tFst, t); tLst = t + stepW; }
-            T    *= Tstep;
+            T     = (T * Tstep < stopT) ? 0.0 : T * Tstep;
             if (tHalf < 0.0 && T < 0.5) tHalf = t;
             if (tq.x > 1e29 && T < 0.8)  tq.x = t;
             if (tq.y > 1e29 && T < 0.5)  tq.y = t;
@@ -1339,9 +1360,19 @@ void main()
             // its far side ~2 km. From 4.4 km inside a snowing deck (81.5 S 26.2 E) ~11 rain samples a ray were lit, each with
             // ~11 field reads.
             bool rainL = CV2_RAIN_LIT(f) && !moonIsKey;   // (the Moon has no transmittance volume)
+            // DEEP LIGHT (2026-11-11, hurrperf; issue_20261111_164105 "Hurricane performance", cv2.hurrperf.x "cloud_deep_light_t"):
+            // a sample the eye sees through more than ~2.3 optical depths of its own cloud (T, within the cloud, < 0.1) runs no
+            // light march: its optical depth toward the light is the previous lit sample's (the batch's front is in ray
+            // order) + its own extinction over the extra depth below that sample, along the light. Together such samples
+            // carry < 10% of the pixel, yet in a hurricane's opaque walls and CDO they were 29% of the lit samples and their
+            // light marches (2 steps + far + probe) ~9% of the field reads. The sky probe still runs. Image at the A-vs-A floor
+            // at the eye view (mean |diff| 1.91 vs 1.67-1.96 between two captures of the same shader).
+            bool deepL = T < cv2.hurrperf.x && lOdL >= 0.0 && !rainL && !wantB && !moonIsKey && !faint;
             if (!skipL)
                 lightAmbOD(rel, keyDir, up, eyeH, enuToEcef, nL, lSeg0,
-                           jL, detailAmt, fp, wantL && !rainL, odL, sigUp, wantB, bDir, odB, lodL || faint, wantBk && !faint && !rainL, odBk);
+                           jL, detailAmt, fp, wantL && !rainL && !deepL, odL, sigUp, wantB, bDir, odB, lodL || faint, wantBk && !faint && !rainL, odBk);
+            if (deepL) odL = lOdL + f.sigma * max(lH - p.h, 0.0) / max(dot(up, keyDir), 0.1);
+            else if (!skipL && !rainL && !faint && !moonIsKey) { lOdL = odL; lH = p.h; }
             if (rainL) odL = f.sigma * cv2.light.x;
             // (And for an orographic lens, f.deck < -0.5: the march away from the light does not see it either, gCv2Oro being the
             // main sample's alone. With ~0 depth on its far side the diffuse field took it for a wisp: grey-blue, luminance

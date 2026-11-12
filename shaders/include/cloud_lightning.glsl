@@ -68,7 +68,8 @@ const int   kCv2VtL = 5, kCv2VtN = 32;
 const float kCv2VtAnchorM = 2000000.0;
 const float kCv2VtCell0 = 1000.0;   // cv2GroundSky: every 4th column of the Sun table, rows 0..15
 layout(std430, set = 0, binding = CV2_FLASH_BINDING)
-#if !defined(CV2_FLASH_WRITE) && !defined(CV2_EVAL_COUNT)
+// (CV2_REG_GUARD: the cloud march's register guard writes it -- never, but the compiler must allow it: cloud_v2_march.comp.)
+#if !defined(CV2_FLASH_WRITE) && !defined(CV2_EVAL_COUNT) && !defined(CV2_REG_GUARD)
 readonly
 #endif
 buffer CV2FlashBuf {

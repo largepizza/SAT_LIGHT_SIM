@@ -295,6 +295,9 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // storms with one; stormsB: x the cumulus top inside a storm object (share of the Cb top), y fullness, z overhang, w puffiness
     vec4  stormsA;
     vec4  stormsB;
+    // (2026-11-11, hurrperf) x "cloud_deep_light_t" (cloud_v2_march.comp: a lit sample deeper than this transmittance borrows
+    // the previous lit sample's light path; 0 = off), y "cloud_opacity_stop_t" (the ray's opacity stop; 0 = the 1% cut)
+    vec4  hurrperf;
 } cv2;
 #include "wind_field.glsl"
 
