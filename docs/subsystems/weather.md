@@ -201,7 +201,7 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   the rate fades to 0 over 2-8 deg, smoothed over ~10 frames (`cv2FlowFadeS`): a turn the frame rate cannot resolve is
   not shown, the storm lock stays; the resolve's window keeps the unfaded rate so its lock share matches the upload's.
   A ray runs the loop only when a vortex's reach comes near its shell segment (`cycNear`, the two ends' map directions
-  against the reach + the segment's span), and the displacement is refreshed every 1 km of the ray. SUPERCELLS: each
+  against the reach + the segment's span), and the displacement is evaluated at every main step of the march (not held for 1 km of the ray: see "Held for 1 km" below). SUPERCELLS: each
   supercell's dominant tower is appended to the cyclone records as a MESOCYCLONE (`cv2CycHead.y` counts both; the
   hurricane consumers read `.x`): the same vortex on a 2-3 km RMW at 20-35 m/s (~a turn in 6-10 min), reach 5 RMW, no
   storm lock, the nearest to the eye in the records left; the wall cloud and the base turn under the updraft.
@@ -252,6 +252,22 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   fresh cache after a full boot is 11-14 MB. Not shipped: a general flow of all cloud noise on `wfWind` (weather-v2's
   `cv2NoiseDispAt`): it needs the wind evaluated per sample in the march and per pixel in the resolve, and the lattice
   seams it showed from orbit (e453372); the storm lock covers the user's case (storms vs the drift).
+  **Held for 1 km** (2026-11-11, qa blocks; issue_20261111_165715 "Pixelated and seamy clouds in hurricanes"): the march
+  evaluates the displacement at EVERY main step of a ray near a vortex (`cloud_v2_march.comp`, the `tCycD` block; the light
+  march's samples of the step still reuse it). It was held for 1 km of the ray on the theory that it varies over ~10 km,
+  but the differential turn (r^-1.5) shears it: its gradient is ~2.5 x the turn (rad) + the lock's |T| / reach, so near
+  the RMW it moves by kilometres per kilometre of ray. The held value drew another place's clouds (a stippled, smeared
+  hurricane wall), and the occupancy clipmap, baked with each point's OWN displacement, then skipped that cloud at its
+  cells' faces: rectangular blocks with vertical and horizontal edges. Measured at the report's shot 1 (RTX 3070 Ti,
+  1920x1009, the reporter's settings, `-DCV2_EVAL_COUNT`): the clipmap's miss counter read 1.47M of 12.9M skipped steps
+  against the HELD displacement and 53 against the point's own (the clipmap was conservative all along; with the flow
+  off, 16 misses); image vs the same frame with `cdc_skip 0` 20.0 levels mean -> 8.1 (the rest is S2's light moments: 9.9
+  with the flow off too). Knockouts that did NOT remove the blocks: the bake's per-cell cyclone gates and the 15% bracket
+  skip of b54a3d7 (cdc variants: 2.1 / 2.3 levels from base, the A-A floor), the bake's per-point phase dither (the
+  dominant phase in both: misses unchanged). Perf (interleaved A B, 3 x 60 frames, alone): cloud march at the hurricane
+  shot 28.1 -> 23.4 ms (the cells now skip what the march does not draw), the tornado view of 171428 15.4 -> 15.6 (within
+  +-0.3), orbit (170803, 496 km) 32.8 -> 33.1 (+-1.0); 255 registers both. An adaptive hold (refresh past 100 / 300 m of
+  displacement error) measured the same and was not kept.
   **Anvils carried by the organised systems (2026-11-08, branch `weather-salvage`, `.plans/WEATHER_SALVAGE_PLAN.md`; the
   user: "spawn big anvils and force the objects to stick around. Do not spawn too many anvils near one another. Let anvils
   live for hours"):** (1) A single cell spreads a shield only as a supercell (`wx::Settings::singleAnvils`, "Single-storm
@@ -505,6 +521,20 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   base) still veils a funnel the mean puts behind it; the opacity median (`tCloudOcclude`) instead drew the wall cloud as a
   dark mushroom in front of the base (tried, dropped). The wall cloud's edges where the base's distance crosses it are hard.
   Harness `storms tornado draw=0|1` hides / shows the funnels (an A/B of what shows through them).
+  **Open: the funnel's blocks from close range** (2026-11-11, qa blocks; issues 20261111_171327, 20261111_171428): at
+  ~1 km AGL near a funnel (0.18-4.5 km) the view shows dark rectangles with vertical sides and flat tops along the
+  horizon, a rectangular notch in the funnel above the horizon line and a hard dark line under the storm. Every one goes
+  with `storms tornado draw=0` and none with the cloud march's own changes (a march that writes solid red does not show
+  through at 171428 shot 1: the eye is 180 m from the funnel, inside its debris and wall-cloud Gaussians, which cover the
+  frame). They are the plume composite's front / behind split (`cloud_march.comp`, `pK` from `cv2Profile`): the
+  Gaussians' share in front of the cloud's first contact / half opacity / last contact is drawn over the cloud, the rest
+  under it, so the edges are where the profile's distances jump across the plume's closest approach -- distant rain
+  shafts and bases (flat tops, vertical sides) seen through a plume the eye stands in. Without the profile (the mean
+  distance +-15% for every texel) the plume covers the whole frame. NOT the cause (each knocked out on the base with the
+  rectangles unchanged, at 171327 shot 1 where the march shows): the occupancy clipmap (`cdc_skip 0`), the cyclone /
+  mesocyclone flow map (`hurricane_rotation 0`), the storm index's per-bin cap (12 -> 31: truncation 76 -> 0), the base
+  cells (`base_cell_m` 0), full-res / the still sparse block; at 171428 shot 1 the plume tile cull and significance cull.
+  Unfixed.
   **Its roar** (layer `tornado_roar`, synth wind: low brown rumble 130-360 Hz, broad, fast churning gusts and flutter, debris
   hiss close; driver `tornado` = sum over the funnels within ~200 km of sqrt(width / 150 m) x lifecycle / (1 + (d / 2 km)^2),
   d to the nearest point of the funnel; heard below ~3-6 km AGL). Offline (`audio record ... solo=tornado_roar`): -36 dBFS
