@@ -29,7 +29,8 @@ Layout (raw, little-endian), a 3D RGBA8 texture of NT x H x NE texels:
        then NP = 91 rows per oriented population (plates, columns, parry): phi = the azimuth about the light's
        direction from its zenith side, 0..180 deg at 2 deg (folded: the pattern is mirror-symmetric about the
        Sun's vertical plane for every population).
-    z: the light's elevation above the crystals' local horizontal: 0..60 at 2.5 deg (25 layers), 65..90 at 5 (6).
+    z: the light's elevation above the crystals' local horizontal: 0..20 at 1 deg (21 layers), 22.5..60 at 2.5 (16),
+       65..90 at 5 (6).
        A light BELOW the local horizontal is the mirror image (elevation -e, phi -> 180 - phi): the shader does that.
     texel = (P / PMAX)^(1/3) in 8 bits, P = 4 pi dN / (N dOmega): the phase function in this codebase's convention
     (isotropic = 1, cv2HG), WITHOUT the undeviated rays (theta < 0.3 deg: two parallel faces; the march carries
@@ -52,8 +53,12 @@ ROW0 = 2 * NRAND                    # first oriented row (4)
 POPS = ["plates", "columns", "parry"]
 NPOP = len(POPS)
 H = ROW0 + NP * NPOP                # 277 rows
-ELEVS = [2.5 * i for i in range(25)] + [65.0, 70.0, 75.0, 80.0, 85.0, 90.0]   # 31 layers
+# 0..20 at 1 deg: below ~20 deg the plate features that ride with the Sun (the subsun at 2e below it, the subparhelia,
+# the sundogs' tails) move 2 deg of sky per degree of elevation, and a trilinear blend of two layers 2.5 deg apart drew
+# them as two lobes 5 deg apart, a streak ~40% longer than either (issue_20261111_164656 "Weird optic"). 1 deg: 2 apart.
+ELEVS = [1.0 * i for i in range(21)] + [20.0 + 2.5 * i for i in range(1, 17)] + [65.0, 70.0, 75.0, 80.0, 85.0, 90.0]   # 43
 NE = len(ELEVS)
+assert NE == 43
 PMAX = 512.0
 N_ICE = np.array([1.3069, 1.3108, 1.3165])        # R, G, B (CV2_N_ICE)
 DELTA_DEG = 0.3                                   # rays this close to undeviated are the forward peak, not the table
