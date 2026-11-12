@@ -1001,6 +1001,9 @@ struct GpuCloudV2Params
     // its cloud, transmittance below x, borrows the light path of the lit sample before it; 0 = off), y "cloud_opacity_stop_t"
     // (the ray stops at this transmittance and its last sample takes the rest; 0 = the old 1% cut), zw unused
     glm::vec4 hurrperf;
+    // (2026-11-11, hurrlook) issues 20261111_165853 / 170803 (clouds_v2.glsl cv2LowA, cv2CdoShare): x "Hurricane eye cloud" (the
+    // low cloud left on the eye's floor: 1 = the stadium as before, 0 = a clear eye), yzw unused
+    glm::vec4 hurrlook;
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -1033,7 +1036,7 @@ static_assert(offsetof(GpuCloudV2Params, amb) == 288 + 48 * kCloudV2Types + 1232
 static_assert(offsetof(GpuCloudV2Params, tone) == 288 + 48 * kCloudV2Types + 1248, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, gnd) == 288 + 48 * kCloudV2Types + 1264, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, micro) == 288 + 48 * kCloudV2Types + 1280, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1824, "GpuCloudV2Params layout");   // +16: hurrperf; +32: storms (stormsA, stormsB); +64: flowmaps (flowP, flowA, flowB, flowC); +16: grain; +16: optics; +16: hurricane; +16: pucks; +32: wind0, wind1; +32: cellA, cellB; +32: cirrus-hurr (ciHu, ciHu2); +32: storm3 (storm3a, storm3b); +64: vertical (vert, vert2, oro0, oro1); +80: shapeB
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1840, "GpuCloudV2Params layout");   // +16: hurrlook; +16: hurrperf; +32: storms (stormsA, stormsB); +64: flowmaps (flowP, flowA, flowB, flowC); +16: grain; +16: optics; +16: hurricane; +16: pucks; +32: wind0, wind1; +32: cellA, cellB; +32: cirrus-hurr (ciHu, ciHu2); +32: storm3 (storm3a, storm3b); +64: vertical (vert, vert2, oro0, oro1); +80: shapeB
 static_assert(offsetof(GpuCloudV2Params, cu3) == 288 + 48 * kCloudV2Types + 1312, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
@@ -5759,6 +5762,10 @@ private:
     // reach (cv2LowA "THE HURRICANE'S RAMP"). 0 = as before.
     float cv2HurrFill = 1.0f;
     float cv2HurrSmooth = 0.7f;
+    // 2026-11-11 (hurrlook, issue_20261111_165853): "Hurricane eye cloud" (clouds_v2.hurricane_eye_cloud, slot 608): the low
+    // cloud on the eye's floor inside the eyewall's stadium (clouds_v2.glsl cv2LowA "THE EYE AS A BOWL"). 1 = as before (a
+    // broken low deck in the eye, as many real eyes have), 0 = a clear eye, the sea showing; the wall is unchanged.
+    float cv2HurrEyeCloud = 1.0f;
     // 2026-11-10 (flowmaps, issue_20261109_184801): the cyclone flow map (clouds_v2.glsl cv2CycFlowAt; the resolve
     // reprojects it). Slots 560-563. hurricane_rotation: the cloud texture's angular rate as a share of the surface wind's
     // (vmax / rmw at the RMW; 0 = off); hurricane_flow_turns: the winding per flow-map window (turns; sets the window);

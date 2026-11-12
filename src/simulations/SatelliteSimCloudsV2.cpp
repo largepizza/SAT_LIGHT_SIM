@@ -1329,7 +1329,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2CuTurrets, cv2CuTurretStretch, cv2CuTurretLean, cv2CuTurretSkew,
                     cv2CuBody, cv2CuEdge, cv2CuShowerCells, cv2CuShowerCores, cv2CuBubbles, cv2CuBubbleGain, cv2CuBubbleFine, cv2CuBubbleSize, cv2CuBubbleBase, cv2CuEnvTowers, cv2CuCore, cv2CuBubbleWarp, cv2CuHeadWidth, cv2CuHeaps, cv2CuHeapDepth, cv2HurrSheetSwirl, cv2HurrEyewall, cv2StormMass, stormMoat, stormMoatWidthKm, stormMoatFeather, stormMoatFrequency, stormTowerHeight, stormFullness, stormOverhang, stormPuffiness,
                     cv2HurrRotation, cv2HurrFlowTurns, cv2HurrFlowBlend,
-                    cv2HurrFill, cv2HurrSmooth,
+                    cv2HurrFill, cv2HurrSmooth, cv2HurrEyeCloud,
                     cv2CirrusFibres, cv2CirrusHooks,
                     cv2AnvilFibres, cv2AnvilFibreAlongKm, cv2AnvilFibreAcrossM, cv2StormBubbles, cv2AnvilErosion,
                     cv2AnvilLidLobes, cv2AnvilUnderLobes,
@@ -2371,6 +2371,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.stormsB = glm::vec4(std::clamp(stormTowerHeight, 0.2f, 1.0f), std::clamp(stormFullness, 0.0f, 1.0f),
                           std::clamp(stormOverhang, 0.0f, 1.0f), std::clamp(stormPuffiness, 0.0f, 2.0f));
     p.hurrperf = glm::vec4(std::clamp(cv2DeepLightT, 0.0f, 0.5f), std::clamp(cv2OpacityStopT, 0.0f, 0.2f), 0.0f, 0.0f);
+    // (2026-11-11, hurrlook) "Hurricane eye cloud" (clouds_v2.glsl cv2LowA "THE EYE AS A BOWL").
+    p.hurrlook = glm::vec4(std::clamp(cv2HurrEyeCloud, 0.0f, 1.0f), 0.0f, 0.0f, 0.0f);
     // Vertical variation (vertical, 2026-11-05): cv2BaseShift's strengths, fractus, mid-level wisps.
     p.vert  = glm::vec4(std::clamp(cv2BaseLcl, 0.0f, 2.0f), std::clamp(cv2BaseCellM, 0.0f, 400.0f),
                         std::clamp(cv2BaseRegional, 0.0f, 2.0f), std::clamp(cv2Fractus, 0.0f, 2.0f));

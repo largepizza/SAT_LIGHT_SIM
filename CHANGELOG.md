@@ -138,6 +138,12 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   reprojects the turn. Arms no longer re-cut themselves as the storm moves, and a storm keeps one arm count through its
   life (both were "arms teleporting" in time-lapse). The top sheet's lumps scale with the storm and show the turn from
   above (Clouds > Hurricane rotation / Hurricane flow winding / Hurricane flow blend).
+- **A hurricane's eye can be clear, and its cirrus is a canopy, not rings.** New "Hurricane eye cloud" (Clouds;
+  1 = the broken low deck that fills many real eyes, as before; 0 = a clear eye with the sea showing, the stadium wall
+  unchanged). The cirrus deck round the central overcast no longer draws its minor swirls as tight, sharp spirals that
+  read from orbit as evenly spaced concentric rings with the sea between them: the outflow cirrus is now one thin
+  canopy fanning out anticyclonically in nearly radial streaks with a lobed, frayed edge ("Hurricane outflow cirrus" /
+  "Hurricane outflow streaks"). The minor swirls stay in the low cloud.
 - **Small cumulus are heaps, not pucks.** Shallow fair-weather cumulus rise from their flat base in a dome instead of
   standing as wide, flat-walled discs with a cap on top, and are a little deeper (Clouds > Shallow cumulus heaps / depth).
 - **No bright ring in distant clouds.** Seen from altitude over a deep overcast, clouds beyond a few tens of km no

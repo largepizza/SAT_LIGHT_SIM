@@ -7284,6 +7284,8 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         // 2026-11-10 (hurrshape, issues 20261109_184510 / 184650): the low field's ramp to the sheet, its smoothing. Slots 600-601.
         {tx(Txt::SldHurricaneFill), &cv2HurrFill, 0.0f, 1.0f, 0.05f, "%.2f", 600},
         {tx(Txt::SldHurricaneSmoothing), &cv2HurrSmooth, 0.0f, 1.0f, 0.05f, "%.2f", 601},
+        // 2026-11-11 (hurrlook, issue_20261111_165853): the low cloud on the eye's floor. Slot 608.
+        {tx(Txt::SldHurricaneEyeCloud), &cv2HurrEyeCloud, 0.0f, 1.0f, 0.05f, "%.2f", 608},
         // 2026-11-10 (flowmaps, issue_20261109_184801): the cyclone flow map (clouds_v2.glsl cv2CycFlowAt). Slots 560-563.
         {tx(Txt::SldHurricaneRotation), &cv2HurrRotation, 0.0f, 2.0f, 0.05f, "%.2f", 560},
         {tx(Txt::SldHurricaneFlowTurns), &cv2HurrFlowTurns, 0.1f, 3.0f, 0.05f, "%.2f", 561},
@@ -9832,6 +9834,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2HurrEyewall = settingClamp(c.value("hurricane_eyewall", cv2HurrEyewall), 0.0f, 1.0f);
         cv2HurrFill = settingClamp(c.value("hurricane_fill", cv2HurrFill), 0.0f, 1.0f);
         cv2HurrSmooth = settingClamp(c.value("hurricane_smoothing", cv2HurrSmooth), 0.0f, 1.0f);
+        cv2HurrEyeCloud = settingClamp(c.value("hurricane_eye_cloud", cv2HurrEyeCloud), 0.0f, 1.0f);
         cv2HurrRotation = settingClamp(c.value("hurricane_rotation", cv2HurrRotation), 0.0f, 2.0f);
         cv2HurrFlowTurns = settingClamp(c.value("hurricane_flow_turns", cv2HurrFlowTurns), 0.1f, 3.0f);
         cv2HurrFlowBlend = settingClamp(c.value("hurricane_flow_blend", cv2HurrFlowBlend), 0.02f, 0.45f);
@@ -10646,6 +10649,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"hurricane_eyewall", cv2HurrEyewall},
         {"hurricane_fill", cv2HurrFill},
         {"hurricane_smoothing", cv2HurrSmooth},
+        {"hurricane_eye_cloud", cv2HurrEyeCloud},
         {"hurricane_rotation", cv2HurrRotation},
         {"hurricane_flow_turns", cv2HurrFlowTurns},
         {"hurricane_flow_blend", cv2HurrFlowBlend},
