@@ -626,6 +626,13 @@ struct SatelliteSim::LaunchState
     // batch; a std::async future's destructor waits, so clearing the map joins them: launchInitBlock does (the batches
     // they were made for go), and the destructor does before the catalog and pads they read are destroyed.
     std::unordered_map<uint64_t, std::future<std::vector<launch::Parcel>>> parcelJobs;
+    // (2026-11-11, issue_20261111_211610 "No plumes?") The frame each job's batch last asked for it (launchFillVisuals'
+    // counter). A job is consumed only by its own batch, when that batch is drawn again within range and not in fast warp;
+    // one whose launch dropped out of view (the eye flew on, the clock jumped) held its slot for the rest of the session,
+    // and after four of them no plume was ever built again: rockets flew with no exhaust at all. Finished jobs nobody has
+    // asked for in a few frames are now dropped (a finished future's destructor does not wait), and rebuilt on demand.
+    std::unordered_map<uint64_t, uint64_t> parcelJobSeen;
+    uint64_t parcelFrame = 0;
     ~LaunchState()
     {
         joinJob();
@@ -935,6 +942,7 @@ void SatelliteSim::launchInitBlock(bool keepPlanes)
     {
         FPROF_SCOPE("launch.initBlock.parcelJobs");
         L.parcelJobs.clear(); // (waits for plume builds in flight: their batches go)
+        L.parcelJobSeen.clear();
     }
     // (2026-10-21) A Kessler restart keeps the planes, their sites and the candidates / rival day index: they are
     // functions of the roster and the catalog alone (the batches read the Kessler state and go). Rebuilding them cost
@@ -6680,6 +6688,20 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
     static std::vector<Cand> plumes; // (kept: its capacity is reused frame to frame; main thread only)
     plumes.clear();
     L.plumeSkipped = 0;
+    ++L.parcelFrame;
+    for (auto it = L.parcelJobs.begin(); it != L.parcelJobs.end();)
+    {
+        auto sn = L.parcelJobSeen.find(it->first);
+        const bool stale = sn == L.parcelJobSeen.end() || sn->second + 4 < L.parcelFrame;
+        if (stale && it->second.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+        {
+            if (sn != L.parcelJobSeen.end())
+                L.parcelJobSeen.erase(sn);
+            it = L.parcelJobs.erase(it);
+        }
+        else
+            ++it;
+    }
     double plumeMs = 0.0;
     double reMs = 0.0, buildMs = 0.0;
     // The plumes' light (cloud_march.comp: phases per steradian) in the sky's units: the sky and the clouds use
@@ -7564,6 +7586,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 continue;
             const auto bt0 = std::chrono::steady_clock::now();
             const uint64_t jobKey = L.visList[li].first;
+            L.parcelJobSeen[jobKey] = L.parcelFrame;
             auto job = L.parcelJobs.find(jobKey);
             if (job == L.parcelJobs.end())
             {
@@ -7585,6 +7608,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             B.parcels = job->second.get();
             B.parcelsBuilt = true;
             L.parcelJobs.erase(job);
+            L.parcelJobSeen.erase(jobKey);
             buildMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - bt0).count();
         }
         if (tau < 0.0)
