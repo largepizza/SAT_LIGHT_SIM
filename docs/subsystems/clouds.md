@@ -2033,6 +2033,12 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   this frame: the mean distance x (0.85, 1, 1.15). It replaced ONE front / behind blend over +-(15% + 150 m) of the cloud's
   mean distance: a funnel 3 km away in a rain shaft was hidden whole (the rain's mean distance in front), a plume inside a
   cloud was wholly in front or behind.
+  **The profile's light centroid** (2026-11-11, issues 20261111_171327 / 171428): `cv2Profile` packs 12-bit depth codes
+  (log2 m x 4094/27, 0.46% steps; x = first contact | half opacity << 12 | T x 254 << 24, y = last contact | the light's
+  centroid << 12): the march sums luminance x depth over its lit samples (`ldA`). The cloud's light is dimmed by the plumes
+  in front of that depth (each segment's plumes spread evenly over it), not by each opacity segment's share: with rain near
+  the eye and bright cloud far behind, the near segment held the far cloud's light in front of a funnel. Plumes that are
+  not smoke take a two-layer air split (weather.md "The air in front of a funnel").
   **Lit by the clouds** (plumes and smoke, not tornadoes: the CPU lights those through their storm's probed column): the Sun
   through `cv2StvT` at the Gaussian's lit point, the sky share through the deck above (`cv2VtUpCell` / `cv2VtUpH`) and the
   sunlight the deck scatters down (2 mu ((1/2 + 3/4 mu) Td - the direct), isotropic), below 16 km. Multiple scattering is

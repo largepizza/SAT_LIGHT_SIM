@@ -152,6 +152,10 @@ void main()
     float occKm = (tOcc >= 0.0) ? ((tMean < kNoSurfaceT && tMean > 0.0) ? tMean : tOcc) * 0.001
                 : -((tMean < kNoSurfaceT) ? tMean * 0.001 : (tEmit >= 0.0 ? tEmit : 60000.0));
     occKm = cloudAlphaFlag(occKm, tMean >= kNoSurfaceT && tOcc < 0.0 && tEmit >= 0.0);
+    // A plume that is not smoke (DA.a -1.25, cloud_march.comp plAir, 2026-11-11: a tornado's funnel, debris and wall cloud):
+    // its texel's alpha as cloud_march split it (two layers ordered by depth, at the plumes' near distance); the form above
+    // has no cloud profile to order them by.
+    if (tEmitR < -1.1 && tEmitR > -1.6) occKm = texelFetch(halfATex, clamp(p * H / F, ivec2(0), H - 1), 0).a;
 
     // ── The ground's cloud shadow: a [1 2 1] tent of the half-res texels (four bilinear taps half a texel out) —
     // the march's 2x2 ordered offsets average out exactly, as sat_sky.frag's tent does at half res. ──

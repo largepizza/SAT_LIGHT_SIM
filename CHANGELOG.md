@@ -548,6 +548,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- Tornadoes seen from close range no longer show black rectangles along the horizon, a rectangular notch in the
+  funnel or a dark line under the storm (issue_20261111_171327, issue_20261111_171428). The horizon haze behind the
+  funnel, its debris and its wall cloud was drawn through them wherever a near rain shaft or cloud lobe stood in the
+  way; the funnel now hides the air behind it, and joins the cloud base as one column.
 - The thin dark line along the Earth's limb seen from orbit toward a low Sun is gone (issue_20261111_170539). The
   sky's horizon volume extended its first two sky rows into the last row above the limb, where the cloud tops sit,
   and that extrapolation went dark there; it now holds the first row.

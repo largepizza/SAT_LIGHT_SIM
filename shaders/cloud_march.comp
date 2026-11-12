@@ -156,10 +156,22 @@ struct DustCloud
 // plumes' billow contrast, "Plume billows", 1 = as tuned).
 layout(set = 0, binding = 23) readonly buffer DustBuf { uint dustCount; uint dustPad0, dustPad1, dustPad2; DustCloud dust[]; };
 // The v2 march's per-ray cloud OPACITY PROFILE (2026-10-26, cloud_v2_march.comp cv2Profile): per 2x2 block of the cloud
-// grid, x = first contact | half opacity << 16, y = last contact | transmittance x 65535 << 16 (depths log2 m x 65534/27,
-// 0xFFFF none; all ones = no cloud). The plumes, smoke and flames are composited through the cloud by it.
+// grid, x = first contact | half opacity << 12 | transmittance x 254 << 24, y = last contact | the light's centroid << 12
+// (depths log2 m x 4094/27 in 12 bits, 0xFFF none; all ones = no cloud). The plumes, smoke and flames are composited
+// through the cloud by it.
 layout(std430, set = 0, binding = 26) readonly buffer CloudProfile { uvec2 cv2Profile[]; };
-float cv2ProfileDepth(uint code) { return exp2(float(code) * (27.0 / 65534.0)); }
+float cv2ProfileDepth(uint code) { return exp2(float(code & 0xFFFu) * (27.0 / 4094.0)); }
+// The depth the cloud's LIGHT comes from at this texel (the profile's luminance-weighted centroid; < 0 = no profile) and
+// its first / half / last contact: read again after dustCloudsCS (held across its loop, the composite left 128 registers).
+vec4 cv2ProfileLight(ivec2 coord, ivec2 rsz, ivec2 osz)
+{
+    ivec2 pb = min((coord * rsz) / max(osz, ivec2(1)), rsz - 1) >> 1;
+    uvec2 pr = cv2Profile[pb.y * ((rsz.x + 1) / 2) + pb.x];
+    if (pr.x == 0xFFFFFFFFu) return vec4(-1.0);
+    float tF = cv2ProfileDepth(pr.x), tL = max(cv2ProfileDepth(pr.y), tF);
+    float tH = ((pr.x >> 12u) & 0xFFFu) != 0xFFFu ? clamp(cv2ProfileDepth(pr.x >> 12u), tF, tL) : tL;
+    return vec4(clamp(cv2ProfileDepth(pr.y >> 12u), tF, tL), tF, tH, tL);
+}
 
 // Per-tile cull of the dust / plume / flame list (2026-10-21, Forward+ like cullBeamsForTile below): one workgroup owns
 // a 16x16-texel tile, its 256 threads test every Gaussian's view cone once against the tile's bounding cone and set a
@@ -239,6 +251,14 @@ const float kPlumeNoiseMean = 0.70; // ~ inverted Worley (0.45) + Perlin (0.5) x
 
 #include "smoke.glsl"
 
+// The plumes' NEAR distance on this ray (2026-11-11, issues 20261111_171327 / 171428): a soft minimum of their closest
+// approaches, weighted by optical depth (-L ln(sum tau e^(-t/L) / sum tau), L = 3 km), what the sky pass's air split stops
+// at for plumes that are not smoke. Every mean of the plumes' distances (light- or optical-depth-weighted) sat on the long
+// grazing chords through a wall cloud or debris skirt tens of km out along a low ray, behind a funnel 4.5 km away, and
+// that much horizon air was drawn through the opaque funnel; a hard nearest-opaque minimum drew the threshold's outline.
+float gPlS1 = 0.0;
+float gPlOp = 0.0;   // the plumes' opacity on this ray, 1 - e^-tau (the two-layer split below)
+float plNearT(float tauP) { return tauP > 0.0 ? max(-3000.0 * log(max(gPlS1 / tauP, 1e-30)), 10.0) : 1e30; }
 float dustErf(float x)
 {
     float x2 = x * x;
@@ -404,12 +424,12 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
     tE = 0.0;   // the emissive light's brightness-weighted distance (a rocket's flame in front of its own mesh)
     float wE = 0.0;
     float wPL = 0.0, tPL = 0.0;   // plumes: their LIGHT-weighted distance (below)
-    // tFront: in, > 0.5 = the cloud has an opacity profile on this ray; out, the light-weighted distance of the plumes' share
+    // tFront: in, > 0.5 = the cloud has an opacity profile on this ray; out, the optical-depth-weighted distance of the plumes' share
     // IN FRONT of the cloud (its first contact; all of them without a profile), 1e30 = none (the caller's air split)
     bool  frProf = tFront > 0.5;
     float wPF = 0.0, tPF = 0.0;
     tFront = 1e30;
-    // tBack (2026-11-08, issue_20261108_171841): the light-weighted distance of the plumes' share past the cloud's first
+    // tBack (2026-11-08, issue_20261108_171841): the optical-depth-weighted distance of the plumes' share past the cloud's first
     // contact (with a profile; 1e30 = none): the caller's air split gives it its own air, not the cloud's.
     // (as all of them less those in front: two more sums carried through the Gaussians' loop cost registers)
     tBack = 1e30;
@@ -787,8 +807,11 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
             if (isSm) tauSm += tau;                   // (smoke dims what is behind it spectrally: the caller)
             // The plumes that may carry the air's split (2026-10-27, issue 20261027_001835): all but those an engine light
             // reaches (a burning rocket's exhaust: the engine-light pass would light it again as cloud at the pulled
-            // distance, the "bright ball"). Smoke always (its fires' glows are engine lights).
-            if (isSm || sDustLM[i] == 0u) tauAir += tau;
+            // distance, the "bright ball"). Smoke always (its fires' glows are engine lights). A TORNADO always too
+            // (seedK >= 256; 2026-11-11, issue_20261111_171327): a wildfire's glow reaching part of a funnel's Gaussians put
+            // that part under the 0.5 share and the rest over it, and the funnel was cut by a vertical seam, one side with
+            // the cloud's split (tens of km of horizon air drawn through the opaque funnel: the notch above the horizon).
+            if (isSm || sDustLM[i] == 0u || sk >= 256.0) tauAir += tau;
             // its albedo (col.w = 2 + albedo): the caller gives back 0.85 x albedo x (1 - exp(-tau)) of the BACKGROUND, the sky's
             // light it scatters toward the eye. A tornado (seedK >= 256) carries its own sky light, the storm's (the CPU's
             // iso term x lightK): with the give-back 0.85 x 0.45 = 38% of whatever stood behind the funnel showed through
@@ -799,6 +822,7 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
             if (!isSm) Ls += tau * (sk >= 256.0 ? 0.0 : d.col.w - 2.0);
             tauP += tau;
             tP   += tau * clamp(tc, 0.0, T);
+            gPlS1 += tau * exp(-clamp(tc, 0.0, T) * (1.0 / 3000.0));
             // (2026-10-20, QA) where the plumes' LIGHT comes from: the caller puts it in front of or behind the
             // clouds by this. Weighted by optical depth alone, a dim, thick ground cloud km away outweighed the bright
             // exhaust beside a burning stage 300 m off, and the glow vanished wherever a far cloud stood behind it
@@ -807,7 +831,13 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
                        dot(lpeI, vec3(1.0 / 3.0)) + 1e-9 * tau;
             wPL += wl;
             tPL += wl * clamp(tc, 0.0, T);
-            float wf = frProf ? wl * wSeg.x : wl;
+            // The share in front of the cloud's first contact, for the sky pass's air split (tFront / tBack): weighted by
+            // OPACITY, not light (2026-11-11, issues 20261111_171327 / 171428): the air behind a plume is hidden by its
+            // optical depth whatever its brightness. Light-weighted, the unlit debris and wall cloud round a tornado next
+            // to the eye weighed nothing against a sunlit Gaussian tens of km out, the split went there, and the sky pass
+            // added all that horizon air in front of an opaque plume -- bright windows with the near rain shafts' and base
+            // lobes' vertical sides and flat tops (where the first contact fell inside the plume), black rectangles between.
+            float wf = frProf ? tau * wSeg.x : tau;
             wPF += wf;
             tPF += wf * clamp(tc, 0.0, T);
             // Per unit optical depth: single scattering by the phase, and as the parcel thickens multiple scattering takes
@@ -854,9 +884,10 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
     tScat = wT > 0.0 ? tScat / wT : 0.0;
     tE = wE > 0.0 ? tE / wE : 0.0;
     if (tauP > 0.0) {
+        // (tFront / tBack: optical-depth weighted, as tP's own sum before it becomes the light-weighted distance)
+        if (wPF > 1e-12 * tauP) tFront = tPF / wPF;
+        if (frProf && tauP - wPF > 1e-6 * tauP) tBack = (tP - tPF) / (tauP - wPF);
         tP = wPL > 0.0 ? tPL / wPL : tP / tauP;
-        if (wPF > 1e-12 * max(wPL, 1e-30)) tFront = tPF / wPF;
-        if (frProf && wPL - wPF > 1e-6 * wPL) tBack = (tPL - tPF) / (wPL - wPF);
         aP = Ls / max(tauP - tauSm, 1e-9);
     }
     return L * phase;
@@ -2412,7 +2443,7 @@ void main() {
     float pSmokeK   = 0.0;   // wildfire smoke's (and haboob dust's) share of the plumes' optical depth here
     float pAirK     = 0.0;   // the plumes' share that may carry the air's split (dustCloudsCS tauAir)
     float pCloudT   = kNoSurfaceT;   // the CLOUD's own distance (its opacity profile's half point; none without one)
-    float pFrontT   = 1e30;          // the plumes in front of that cloud: their light-weighted distance (dustCloudsCS tFront)
+    float pFrontT   = 1e30;          // the plumes in front of that cloud: their optical-depth-weighted distance (dustCloudsCS tFront)
     float pBackT    = 1e30;          // ... and past its first contact (dustCloudsCS tBack)
     // The smoke's distance for the air split below (and DA.a), set at the end of this block: its share past the cloud's
     // first contact merged in where there is one (smokeBack). (Set here, not at the split: three more values live through
@@ -2434,10 +2465,10 @@ void main() {
             ivec2 pb  = min((coord * rsz) / max(osz, ivec2(1)), rsz - 1) >> 1;
             uvec2 pr  = cv2Profile[pb.y * ((rsz.x + 1) / 2) + pb.x];
             if (pr.x != 0xFFFFFFFFu && tCloudMeanT < kNoSurfaceT) {
-                float tF = cv2ProfileDepth(pr.x & 0xFFFFu), tL = max(cv2ProfileDepth(pr.y & 0xFFFFu), tF);
-                float Tp = float(pr.y >> 16u) * (1.0 / 65535.0);
-                bool  hH = (pr.x >> 16u) != 0xFFFFu;
-                float tH = hH ? clamp(cv2ProfileDepth(pr.x >> 16u), tF, tL) : tL;
+                float tF = cv2ProfileDepth(pr.x), tL = max(cv2ProfileDepth(pr.y), tF);
+                float Tp = float(pr.x >> 24u) * (1.0 / 254.0);
+                bool  hH = ((pr.x >> 12u) & 0xFFFu) != 0xFFFu;
+                float tH = hH ? clamp(cv2ProfileDepth(pr.x >> 12u), tF, tL) : tL;
                 pK  = vec3(tF, tH, tL);
                 pOH = hH ? clamp(0.5 / max(1.0 - Tp, 0.5), 0.0, 1.0) : 1.0;
                 pCloudT = tH;
@@ -2454,11 +2485,17 @@ void main() {
         vec3  dc = dustCloudsCS(obsPos, dir, sunDir, tScene, pK, pOH, oR, dLe, dT, sTau, sU, sL, LeX, pTau, pT, pA, eT, pTauS, pTauA,
                                 pFrontT, pBackT);
         pAirK = pTau > 1e-6 ? pTauA / pTau : 0.0;
+        gPlS1 = plNearT(pTau);   // (from here on the plumes' near distance, m)
+        gPlOp = 1.0 - exp(-pTau);
         // Where the nearest emissive / plume light is, for a texel with no cloud of its own (alpha below): sat_sky.frag
         // composites this texel over a satellite / rocket MESH only when its distance is nearer than the mesh, and
         // the no-cloud marker (60000 km) hid a burning stage's flame behind the stage's own hull (2026-10-20).
         if (dot(dLe, dLe) > 0.0) tEmitNear = min(tEmitNear, max(eT, 1.0));
-        if (pTau > 1e-3) tEmitNear = min(tEmitNear, max(pT, 1.0));
+        // (Plumes no engine light reaches (pAirK) on a ray without a cloud profile: their OPTICAL-DEPTH-weighted distance
+        // (pFrontT, all of them there), as the air split's with a profile (2026-11-11, issue_20261111_171428): the light-
+        // weighted one sat on a sunlit Gaussian tens of km out behind a tornado's unlit debris round the eye, and the rays
+        // past a near rain shaft (with a profile) split near, those beside it far: dark rectangles under the horizon.)
+        if (pTau > 1e-3) tEmitNear = min(tEmitNear, max((pCloudT >= kNoSurfaceT && pAirK > 0.5 && pFrontT < 1e29) ? min(pFrontT, gPlS1) : pT, 1.0));
         // Rocket plumes: in front of the clouds (nearer than their mean distance) they cover them, behind they are
         // seen through them; either way they dim what lies behind them (the sky, the stars) by exp(-tau).
         if (pTau > 1e-6) {
@@ -2483,19 +2520,31 @@ void main() {
                 float tj  = sTau[j];
                 float tO  = tj * (1.0 - pSmokeK), tS = tj * pSmokeK;
                 vec3  trF = vec3(exp(-tO) + 0.85 * pA * (1.0 - exp(-tO))) * exp(-tS * smokeSpecK(cv2.gnd.y));
-                // the segment's cloud light: its share in front of the segment's plumes (uj) undimmed, the rest behind
-                // them dimmed by all of them (it was half the segment's optical depth for all of it, wherever the plume
-                // stood in the segment: a funnel near a rain segment's start hid only half the rain behind it)
-                float uj  = tj > 1e-9 ? clamp(sU[j] / tj, 0.0, 1.0) : 0.5;
-                vec3  trH = mix(trF, vec3(1.0), uj);
+                // (the cloud's own light: after the loop, behind the plumes in front of where it comes from)
                 vec3  Lj  = tj > 1e-9 ? sL[j] * ((1.0 - exp(-tj)) / tj) * pExt : vec3(0.0);
-                float f   = xB[j] - xA[j], xm = 0.5 * (xA[j] + xB[j]);
-                Bn   += B_cloud * f * Pf * trH + Lj * (1.0 - oR * xm) * Pf;
-                gBBn += f * dot(Pf * trH, vec3(1.0 / 3.0));
+                float xm  = 0.5 * (xA[j] + xB[j]);
+                Bn   += Lj * (1.0 - oR * xm) * Pf;
                 gBAn += Lj * xm * Pf;
                 float oj = dot(Pf, vec3(1.0 / 3.0)) * (1.0 - oR * xm) * (1.0 - dot(trF, vec3(1.0 / 3.0)));
                 if (j == 0) oSmF += oj; else oSmB += oj;
                 Pf   *= trF;
+            }
+            // THE CLOUD'S LIGHT behind the plumes (2026-11-11, issues 20261111_171327 / 171428): dimmed by the plumes'
+            // optical depth in front of the depth it comes from (the profile's light centroid; the mean distance without
+            // one), each segment's plumes taken spread evenly over it. It was each opacity segment's share of the light
+            // behind that segment's plumes: with a base lobe or rain near the eye and bright cloud far behind, the near
+            // segment held half the far cloud's light, in front of the funnel, and the funnel lost a rectangle there.
+            {
+                vec4  pl  = cv2ProfileLight(coord, textureSize(cv2ResolvedTex, 0), imageSize(targetA));
+                float tLt = pl.x >= 0.0 ? pl.x : tCloudMeanT;
+                vec3  b0  = pl.x >= 0.0 ? pl.yzw : vec3(0.85, 1.0, 1.15) * tCloudMeanT;
+                float tauL = sTau.x * clamp(tLt / max(b0.x, 1.0), 0.0, 1.0)
+                           + sTau.y * clamp((tLt - b0.x) / max(b0.y - b0.x, 1.0), 0.0, 1.0)
+                           + sTau.z * clamp((tLt - b0.y) / max(b0.z - b0.y, 1.0), 0.0, 1.0);
+                float tLO = tauL * (1.0 - pSmokeK), tLS = tauL * pSmokeK;
+                vec3  trL = vec3(exp(-tLO) + 0.85 * pA * (1.0 - exp(-tLO))) * exp(-tLS * smokeSpecK(cv2.gnd.y));
+                Bn   += B_cloud * trL;
+                gBBn  = dot(trL, vec3(1.0 / 3.0));
             }
             B_total = Bbg * Pf + Bn;
             gBA = gBA * Pf + gBAn;
@@ -2511,6 +2560,10 @@ void main() {
                  && (cPr ? (pBackT < 1e29 && oSmB > 1e-3) : (tCloudMeanT < tEmitNear));
         tSmD = cPr ? min(pFrontT, tCloudMeanT) : tEmitNear;
         if (smokeBack && cPr) tSmD = smokeAirSplitM(obsPos, dir, min(pFrontT, pBackT), pBackT, oSmB / max(oSmF + oSmB, 1e-4));
+        // (not smoke: the plumes' own distance, wherever they stand against the cloud -- the two-layer split below orders them)
+        if (pSmokeK < 0.5 && cPr && min(pFrontT, pBackT) < 1e29)
+            tSmD = (pFrontT < 1e29 && pBackT < 1e29) ? smokeAirSplitM(obsPos, dir, pFrontT, pBackT, oSmB / max(oSmF + oSmB, 1e-4))
+                                                     : min(pFrontT, pBackT);
         if (dot(dc, dc) + dot(dLe, dLe) > 0.0) {
             float ext = dot(dc, dc) > 0.0 ? pow(10.0, -0.4 * atmExtinctionMag(obsPos, dir, max(dT, 1.0), cloud.extinctionCoeff)) : 0.0;
             // Clouds hide them only from below the weather (they are all above 45 km): the aurora's 95-km test hid
@@ -2892,7 +2945,24 @@ void main() {
     // thickened in front of the pall (knocked out: wildfires 0, or the split at infinity). It joins the smoke's distance
     // in air-brightness space (smokeAirSplitM, either order), weighted by its opacity; cloud_v2_combine.comp reads the
     // merged distance flagged (DA.a's lowest mantissa bit) and splits the same way at full resolution.
-    if (smokeAir && tCloudMeanT < kNoSurfaceT && (gBB < 0.999 || smokeBack)) {
+    // PLUMES THAT ARE NOT SMOKE (a tornado's funnel, debris and wall cloud; pAirK, no engine light; 2026-11-11, issues
+    // 20261111_171327 / 171428): two layers, the plumes at tSmD and the cloud's mass at its half-opacity point (the mean
+    // distance without a profile), each seen through the nearer one, weight the split between the plumes' distance and the
+    // cloud's. The smoke form below takes the cloud's share through gBB (the plumes' transmission over the cloud's LIGHT):
+    // where a near base lobe or rain wisp holds the cloud's light in front of a funnel, gBB ~ 1 gave the cloud the whole
+    // split and the far cloud's mean distance put tens of km of horizon air in front of the opaque funnel -- the funnel
+    // lost a rectangle above the horizon, and from inside the plume each near rain shaft was a bright window.
+    bool plAir = smokeAir && pSmokeK < 0.5 && tCloudMeanT < kNoSurfaceT;
+    if (plAir) {
+        float oc  = clamp(1.0 - rc.a, 0.0, 1.0);
+        float op  = gPlOp;   // (1 - A / the cloud's T was noise where the cloud is near opaque: speckled splits)
+        float tc  = pCloudT < kNoSurfaceT ? pCloudT : tCloudMeanT;
+        float kF  = smoothstep(0.8, 1.25, tc / max(min(tSmD, gPlS1), 1.0));   // 1 = the plumes in front of the cloud's mass
+        float ocS = oc * (1.0 - op * kF), opS = op * (1.0 - oc * (1.0 - kF));
+        // (the cloud's distance: its half-opacity point as the plumes thicken, its mean as they vanish -- continuous with
+        // the texels beside the plume, which take the mean)
+        tAirM = smokeAirSplitM(obsPos, dir, min(tSmD, gPlS1), mix(tCloudMeanT, tc, op), ocS / max(ocS + opS, 1e-4));
+    } else if (smokeAir && tCloudMeanT < kNoSurfaceT && (gBB < 0.999 || smokeBack)) {
         // (merged: the smoke's share is all the composite's opacity but the cloud's)
         float oC = gBB * (1.0 - rc.a);
         float oP = smokeBack ? max(1.0 - dot(A_total, vec3(1.0 / 3.0)) - oC, 0.0) : 1.0 - gBB;
@@ -2930,7 +3000,8 @@ void main() {
         // DA.a: the plume / emissive distance (km), negated - 2 when not smoke-dominated (no air pull); -1 = none.
         // (smoke: its distance already capped at the cloud's own, as above: the combine pass has no profile)
         // (the flag: tSmD holds smoke behind the cloud, possibly beyond it: the combine splits without its max())
-        imageStore(targetDA, coord, vec4(gAA, tEmitNear < kNoSurfaceT ? (smokeAir ? cloudAlphaFlag(tSmD * 0.001, smokeBack) : -2.0 - tEmitNear * 0.001)
+        // (-1.25: a plume that is not smoke (plAir): the combine takes this texel's alpha, the two-layer split, as it is)
+        imageStore(targetDA, coord, vec4(gAA, plAir ? -1.25 : tEmitNear < kNoSurfaceT ? (smokeAir ? cloudAlphaFlag(tSmD * 0.001, smokeBack) : -2.0 - tEmitNear * 0.001)
                                                                       : -1.0));
     }
 }
