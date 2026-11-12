@@ -139,6 +139,16 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   march 22.3 -> 11.0: the filled column goes opaque in a few steps), 184801 (the eye from above) 56.8 -> 46.0 (47.7 ->
   37.7), 172424 shot 7 (orbit) 37.8 -> 37.4. High-pass energy of the low cloud (|I - blur3|, lower 2/3 of the frame) at
   184510 shots 1 / 2: -42% / -57%. From inside the CDO below ~13 km a camera is now inside cloud (a real CDO is).
+  **THE EYE'S FLOOR (2026-11-11, hurrlook; issue_20261111_165853 "Parameter to control hurricane eye clearness").** The
+  covT cut clears the low field's coverage inside the eye radius, but a ~600 m floor deck stays across the eye whatever
+  the coverage (covT at 1/50 per m instead of 1/1500 left it, capping the mass's top at 0 left it; a `return false` at
+  eyeM < 0 cleared it). "Hurricane eye cloud" (`clouds_v2.hurricane_eye_cloud` 1, `hurrlook.x`, slot 608) gates that
+  return in cv2LowA cell by cell (0.5 + 0.5 x the clamped cell + cluster noise nE uses > 1.15 x - 0.075): 1 never
+  returns (the base exactly), 0.5 drops the floor over the weaker half, 0 clears the eye; the stadium wall (outside
+  the eye radius) is untouched. 165853 shot 1 (1600x900, r = 150 px round the eye): mean luminance 175 / 156 / 91,
+  cloud share (not sea-blue) 0.999 / 0.886 / 0.195 at 1 / 0.5 / 0; at 1 the A/B against the base SPV differs 1.3
+  levels mean, under the base-vs-base 1.6-5.8. Under the eye (165715) the floor deck opens to the eyewall and the CDO's
+  inner edge at 0. March 128 registers, binary 696320 -> 700800 B.
   **The cyclone flow map (2026-11-10, flowmaps; issue_20261109_184801 "Hurricane rotation", 20261106_172424 shot 7, 20261105_232743
   shots 1 and 3; `clouds_v2.glsl cv2CycFlowAt`, `cloud_v2_resolve.comp`, `SatelliteSimWeather.cpp`):** the cloud TEXTURE round a
   tropical cyclone turns about its centre and rides with the storm, while the weather cube's stamp (the bands, the deck, the
@@ -430,6 +440,20 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   report's settings, ABAB x 4, p50 GPU): shot 1 26.15 -> 25.68 ms, shot 2 19.14 -> 18.94; march 128 registers, binary
   382592 -> 389376 B. The cirrus deck's outflow ends at ~1.25 of its reach (packed `ro`): over the whole disc it kept
   cv2AnvilSigmaP's texture reads alive between the arms (+3 ms at shot 1).
+  **THE OUTFLOW CANOPY (2026-11-11, hurrlook; issue_20261111_170803 "Hurricane cirrus").** From 496 km at dusk the outer
+  bands were crossed by evenly spaced concentric rings with the sea between them. Knockouts on the reporter's settings
+  (harness_live of the hurrlook worktree): the CDO sheet's frays, swirl ripple, spiral outline and ripple turn, the flow
+  map ("Hurricane rotation" 0), the step size (max 250 m, growth 0.003), the occupancy clipmap (`cdc_skip` 0) and the high
+  layer (`high_amount` 0) all left them; the deck's minor swirls `mi` alone drew them (3n bands, smoothstep(0.7, 0.95) of
+  a cos wound 1.4x tighter than the arms: ~15 deg, three sharp tight spirals = nested rings). The deck no longer draws
+  minor swirls ("Hurricane minor swirls" shapes the low cloud only); its outflow is a CANOPY: the outflow sheet (o, to
+  ro) thinned by two whole-count waves of streaks (6n + 11 and 10n + 19) along an anticyclonic spiral theta - 0.55 ln r
+  (~60 deg off the tangent: nearly radial, as GOES / Himawari visible frames of mature hurricanes show the outflow),
+  each bent by a slow angular wave (fibres, not a comb), "outflow streaks" (m) their contrast rising toward the edge;
+  the edge notched INWARD by two angular waves with the streaks reaching furthest, so it still ends by 1.3 ro and the
+  sampler's early out holds. Perf (RTX 3070 Ti, 1600x900, base / new march + cdc interleaved, 128 registers both):
+  cloud march 170803 21.03 -> 21.01 (3 reps) and 22.08 -> 21.88 (6 reps, +-2 ms run noise), 165853 25.9 -> 25.7
+  (median of 4), 165715 20.3 -> 19.5 (median of 4).
   **THE CDO'S TOP (2026-11-05, the user: "a nice smooth but textured swirl, right now it is a bumpy mess"; ref
   qa/waves/20261105/refs/hurricane_iss.png).** The CDO shield's plate went through cv2FieldLow's storm lobes and billow
   erosion like any anvil (the grey dimpled sheet with dark erosion pits seen from 30-160 km) and at the anvil's ice it

@@ -298,6 +298,8 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // (2026-11-11, hurrperf) x "cloud_deep_light_t" (cloud_v2_march.comp: a lit sample deeper than this transmittance borrows
     // the previous lit sample's light path; 0 = off), y "cloud_opacity_stop_t" (the ray's opacity stop; 0 = the 1% cut)
     vec4  hurrperf;
+    // (2026-11-11, hurrlook) x "Hurricane eye cloud" (cv2LowA: the low cloud on the eye's floor; 1 = as before, 0 = clear), yzw unused
+    vec4  hurrlook;
 } cv2;
 #include "wind_field.glsl"
 
@@ -1128,6 +1130,15 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, float stormI
         hR    *= cv2.hurricane.z * sK;
         covT   = min(covT + smoothstep(0.0, 0.4, hR), 1.0);
         covT  += min(eyeM, 0.0) * (1.0 / 1500.0);   // (the eye's floor, whatever "Hurricane eyewall": the bake clears only its middle)
+        // THE EYE'S FLOOR (2026-11-11, hurrlook; issue_20261111_165853 "Parameter to control hurricane eye clearness"): the cut
+        // above clears the low field's COVERAGE inside the eye radius, but a ~600 m floor deck stays across the eye whatever
+        // the coverage (an overcast eye with a few holes; covT at 1/50 per m instead of 1/1500 left it as it was, capping the
+        // storm mass's top at 0 there too; a return here cleared it). "Hurricane eye cloud" (hurrlook.x) takes that floor away
+        // cell by cell, by the noise the eye's edge wanders by: 1 = all of it stays (exactly as before: the noise term is at
+        // most 1, under 1.075), 0.5 = the half over the weaker cells goes, 0 = a clear eye, the sea showing. Outside the eye
+        // radius (the stadium wall) nothing changes.
+        if (eyeM < 0.0 && 0.5 + 0.5 * clamp((ce.a - 0.5) * 3.0 + (cl.a - 0.5) * 4.0, -1.0, 1.0) > 1.15 * cv2.hurrlook.x - 0.075)
+            return false;
         hW    *= cv2.hurricane.w;
     }
 #endif

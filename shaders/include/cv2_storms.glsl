@@ -189,9 +189,9 @@ bool cv2ShieldsOn()
 // deck's arms stand over the weather bake's). rM: the distance from the centre (m), u: in the disc's radii. Only the
 // strongest shield's (cv2ShieldAt, once a sample).
 //   mode 0, the CDO: its outer part wound into the arms (the outline follows them out, notched between them);
-//   mode 1, the cirrus deck: the arms' cirrus (crests of the arms, thinning outward) + minor swirls (k: three times as
-//   many, a tighter pitch) + the outflow cirrus between them (o) in thin streaks curving ANTICYCLONICALLY (m: their
-//   contrast), as the outflow aloft turns the other way.
+//   mode 1, the cirrus deck: the arms' cirrus (crests of the arms, thinning outward) + the outflow canopy (o) fanning out
+//   ANTICYCLONICALLY in nearly radial streaks (m: their contrast), as the outflow aloft turns the other way. (k, the
+//   minor swirls, is packed but unused here since 2026-11-11: drawn on the deck they were nested rings.)
 float cv2CycSpiral(vec3 wd, CV2Shield s, float u, float rM)
 {
     float code = -s.c.w - 1.0;
@@ -214,18 +214,31 @@ float cv2CycSpiral(vec3 wd, CV2Shield s, float u, float rM)
         // radius out, untouched over the core and along the arms.)
         return 1.0 - min(1.15 * k, 0.95) * smoothstep(0.3, 0.6, u) * (1.0 - smoothstep(0.0, 0.45, arm));
     float armB = smoothstep(0.6, 0.92, arm) * (1.0 - 0.5 * smoothstep(0.3, 1.0, u));
-    float mi   = smoothstep(0.7, 0.95, 0.5 + 0.5 * cos(3.0 * nA * (th + 1.4 * lr + s.d.z) + 1.7)) * (1.0 - smoothstep(0.4, 1.1, u));
-    float st   = smoothstep(0.35, 0.9, 0.5 + 0.5 * cos((3.0 * nA + 2.0) * (th - 0.5 * lr) + 0.9 * s.d.z));
-    // (The outflow ends where the old outflow disc's frayed edge did, ~1.25 of its reach: past it the deck is exactly 0
-    // between the arms, so cv2AnvilSigmaP's early out skips its texture reads there (shot 1: +3 ms of march without).)
-    // (The streaks only thin the sheet, never thicken it past the outflow's own strength: gathered to 2x on their
-    // crests they crossed the shield fray's presence threshold and drew flat grey patches with hard edges between the
-    // arms — the old outflow at 0.4 did the same.)
+    // THE OUTFLOW CANOPY (2026-11-11, hurrlook; issue_20261111_170803 "Hurricane cirrus"). A mature hurricane's cirrus from
+    // orbit (GOES / Himawari visible, e.g. Isabel 2003, Dorian 2019) is one thin canopy spreading out of the CDO's top,
+    // fanning ANTICYCLONICALLY into fibrous streaks that lie nearly radial (~60 deg off the tangent) and fray its outer
+    // edge into lobes. Until now the deck drew, besides the arms' cirrus, the "minor swirls" as 3n sharp bands wound 1.4x
+    // tighter than the arms (smoothstep(0.7, 0.95) of a cos): at the arms' 20-30 deg pitch that is ~15 deg, and three
+    // tight sharp spirals round the CDO read as evenly spaced concentric rings with the sea between them (shot 1; the
+    // deck's `mi` alone, knocked out per term). The minor swirls stay in the low cloud (the bake); the deck draws the
+    // canopy: the outflow sheet ("outflow cirrus" o, out to its reach ro), thinned by two whole-count waves of streaks
+    // along the anticyclonic spiral, each bent by a slow angular wave (irregular fibres, not a comb), "outflow streaks" (m)
+    // their contrast, rising toward the edge; the edge notched inward by two angular waves (the canopy never reaches past
+    // 1.3 ro, so cv2AnvilSigmaP's early out keeps skipping its texture reads past it) with the streaks reaching furthest.
+    // (lr / d.y: ln r, the spiral terms' own unit, independent of the arms' pitch. Every angle term a whole multiple of th.)
+    float lnr  = lr / max(s.d.y, 1e-3);
+    float ao   = th - 0.55 * lnr;
+    float fib  = smoothstep(0.25, 0.95, 0.3 + 0.3 * cos((6.0 * nA + 11.0) * ao + 1.9 * sin(3.0 * th + 1.7 * lnr + s.d.z))
+                                      + 0.2 * cos((10.0 * nA + 19.0) * ao + 0.8 + 2.3 * sin(5.0 * th - 1.1 * lnr)));
+    float uo   = u / ro * (1.0 + 0.18 * (1.0 + sin(4.0 * th + 2.0 * lnr + s.d.z)) + 0.1 * (1.0 + sin(9.0 * th - 3.0 * lnr)));
+    float can  = o * (1.0 - smoothstep(0.55, 1.3, uo + 0.25 * (1.0 - fib))) * mix(1.0, fib, m * mix(0.5, 1.0, smoothstep(0.3, 0.9, uo)));
+    // (The canopy only thins the sheet, never thickens it past the outflow's own strength: gathered to 2x on their
+    // crests the old streaks crossed the shield fray's presence threshold and drew flat grey patches with hard edges
+    // between the arms -- the old outflow at 0.4 did the same.)
     // (x the shield's own radial fade, without its noise fray: cv2ShieldAt hands the caller u / 10 for this disc, whose
     // edge is not a cloud's edge. Frayed at 6-7.5 x the cluster noise over ~700 km, its thin sheet showed the noise's
     // contours as flat grey patches with hard edges between the arms.)
-    return max(aK * max(armB, 1.2 * k * mi), o * mix(1.0, st, m) * (1.0 - smoothstep(0.9 * ro, 1.3 * ro, u)))
-         * (1.0 - smoothstep(0.25, 1.25, u));
+    return max(aK * armB, can) * (1.0 - smoothstep(0.25, 1.25, u));
 }
 
 // The anvil shields over a map-frame direction: the strongest one's strength (x its taper toward the far end), its
