@@ -819,6 +819,11 @@ right after another exited (docs/FREEZES.md). So:
   --cooldown S` overrides the spacing, never set it to 0 by habit; `SATLIGHT_HARNESS_MAX_APPS` the cap).
   The gate's state is machine-wide (`%LOCALAPPDATA%/SatLightSimHarness`), so agents in separate git
   worktrees share it, and the running count comes from the process list (the user's own app counts).
+- Waiting launchers are served **first come, first served** (2026-11-11): each takes a ticket in
+  `%LOCALAPPDATA%/SatLightSimHarness/queue/` and only the oldest live ticket may launch (`launch gate: waiting
+  (queued: N launcher(s) ahead)`). A ticket not refreshed for 20 s belongs to a dead launcher and is reaped.
+  Before this the first waiter to poll after a slot freed won, and one agent starved for 1 h 45 min. A worktree
+  on a base older than this change runs the old gate and does not queue: rebase it before a long wave.
 - For many small batches, start **one** app with `live.py start` and `send` to it; don't loop `run.py`.
 - Batch your checks into one script where you can. Every launch is a risk; plan them.
 
