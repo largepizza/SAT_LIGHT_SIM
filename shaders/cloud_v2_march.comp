@@ -735,8 +735,8 @@ void main()
     // THE CYCLONE FLOW MAP'S PER-RAY TEST (2026-11-10, flowmaps): does any vortex's reach (cyclones, mesocyclones:
     // cv2CycHead.y) come near this ray's shell segment? Its two ends' map directions against the reach + the segment's
     // own angular span: when none, no sample of the ray runs the loop (a cyclone inside the view's 31-deg cap but out of
-    // reach still cost +0.7 ms at 650 km). tCycD: the ray's distance at the last displacement evaluation (refreshed every
-    // 1 km: the displacement varies over ~10 km, the march steps 100-500 m near a storm).
+    // reach still cost +0.7 ms at 650 km). tCycD: < 1e29 = the ray is near a vortex (the displacement is evaluated at every
+    // main step, below: held for 1 km it drew blocks, 2026-11-11).
     // (One value for both: tCycD = +1e30 is "no vortex near this ray" (the test below excludes it) and -1e9 "near, not yet
     // evaluated". 2026-11-11, regdiet.)
     float tCycD = 1e30;
@@ -978,7 +978,12 @@ void main()
 #endif
 #ifdef CV2_EVAL_COUNT
                 // Conservativeness check: what the skipped step would have read ([18] misses, [19] their optical depth x 1e4).
+                // (With the flow map's displacement at THIS point: the held one is the last marched step's, and against
+                // it 290k of 3.6M skipped steps at issue_20261111_164105's eye "missed", 3k against the point's own.)
+                vec3 sD = gCv2CycD;
+                if (tCycD < 1e29) gCv2CycD = cv2CycFlowAt(cv2Drift(p.dirE));
                 CV2Field fm = cv2Field(p, -1.0, fp);
+                gCv2CycD = sD;
                 if (fm.sigma > 0.0) {
                     CV2_CNT(18); atomicAdd(cv2EvalCount[19], uint(fm.sigma * stepF * 1e4 + 0.5));
                     CV2_CNT(20 + min(cv2CdcLevel(rel, R_EARTH + eyeH), 7));   // [20..27] misses by level
@@ -1000,8 +1005,14 @@ void main()
             gCv2Oro = ((lmC & (kCv2LayMid | kCv2LayLow)) != 0u) ? cv2OroField(p) : vec4(0.0);
 #endif
             // The cyclone flow map's displacement (clouds_v2.glsl cv2CycFlowAt, CV2_CYC_EXTERNAL): once here, and the light
-            // march's samples of this step take the same (it varies over ~10 km). Zero with no cyclone in the view's cap.
-            if (tCycD < 1e29 && abs(t - tCycD) > 1000.0 && (lmC & (kCv2LayLow | kCv2LayMid | kCv2LayHigh)) != 0u) {
+            // march's samples of this step take the same. Zero with no cyclone in the view's cap.
+            // AT EVERY STEP (2026-11-11, blocks; issue_20261111_165715): it was kept for 1 km of the ray, on the theory that
+            // it varies over ~10 km -- but the differential turn shears it: near the RMW it changes by ~2.5x the turn (rad)
+            // per metre, km of noise offset per km of ray, so a held value drew the clouds of another place (the stippled,
+            // smeared hurricane wall), and the occupancy clipmap, baked with the point's own displacement, cut that cloud at
+            // its cells' faces: rectangular blocks. Every step: the image matches the bake, and the hurricane view got
+            // FASTER (cloud march 28.1 -> 23.4 ms at the report's shot: the cells now skip what the march does not draw).
+            if (tCycD < 1e29 && (lmC & (kCv2LayLow | kCv2LayMid | kCv2LayHigh)) != 0u) {
                 gCv2CycD = cv2CycFlowAt(cv2Drift(p.dirE));
                 tCycD    = t;
             }

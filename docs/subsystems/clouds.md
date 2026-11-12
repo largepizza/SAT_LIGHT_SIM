@@ -907,6 +907,12 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     the frame's sim-time step the time warp did not run (`cv2SimAdvanceAcc`, the sim's dt x time scale, less a Kessler
     hold; a hitch under warp is not a jump). Without it the still frames after a step blend the old clouds out at the
     still weight with the wide box. The Sun shadow volume already restarts on any step over `sun_volume_max_step_s` (1 s).
+    **The march's field must be the bake's** (2026-11-11, issue_20261111_165715): a cell is conservative only for the field
+    the bake reads. The cyclone flow map's displacement held for 1 km of a ray (the march's only per-ray cache of a field
+    input) made the march read cloud the bake never saw, and the skip cut it at the cells' faces: blocks in every hurricane
+    view (1.47M of 12.9M skipped steps "missed" against the held value, 53 against the point's own). Any new per-ray or
+    per-step cache of a field input needs the same validity in the bake, or the clipmap draws its cells (weather.md
+    "Held for 1 km").
   - **S2** (`cdc_light`, `cdc_light_levels` 3): light steps 3+ read the cell's mean + variance of the light extinction
     through the gamma model E[exp(-L e)] (a cell MEAN alone darkened broken cloud by up to 18 levels: Jensen). Modest.
     Not the diffuse field's far side (tauB) since 2026-11-06: that is jittered field reads at every range ("The look at

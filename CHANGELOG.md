@@ -549,6 +549,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   no longer stretch by up to ~40% and pulse as the Sun rises (issue_20261111_164656). They are real plate-crystal
   reflections, elongated vertically by the crystals' wobble; the halo table now has 1-degree steps of Sun elevation
   below 20 degrees (2.5 before), so they keep their traced length at every Sun height.
+- Hurricane walls are no longer built of rectangular blocks with stippled, smeared fill (issue_20261111_165715). The
+  turning cloud texture round a hurricane was evaluated once per kilometre of each view ray, so the march drew clouds
+  from the wrong place and the empty-air skip map cut them at its cells. It is now evaluated at every step: the walls
+  are solid and sharp, at no extra cost.
 - Clouds no longer show a field of square tiles after a jump of the sim clock (issue_20261107_163510). A jump of a
   whole multiple of 20 s (a report, a bookmark, a time set, a scrub) kept parts of the empty-air skip map from before
   it, and with time paused the cloud they hid never came back. Any clock jump of 10 s or more now starts the map
