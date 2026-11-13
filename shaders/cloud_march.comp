@@ -2404,8 +2404,18 @@ void main() {
     // took the far cloud behind it back from the full-res resolve, half-res-stepped, cloud-shaped patches that slid
     // with the eye, with the cloud's distance as the alpha, so sat_sky.frag's mesh test dropped the exhaust in front of
     // the hull there too).
+    // MESH texels only (2026-11-12, issue_20261112_215754 "Black line on sky terrain intersection"; scene_depth.comp .g 3).
+    // Both cases above are a hull holding the history of the cloud behind it. On terrain and the sea the resolved
+    // distance is not evidence of that: it is the opacity-weighted mean of the 3x3 NEW samples round the pixel
+    // (cloud_v2_resolve.comp, review 20c), so along a ridge against a hazy sky the crest's texels carried the sky samples'
+    // dust distance (~25 km at opacity ~0.55) against a surface 5 km out, and the drop removed the dust IN FRONT of the
+    // ridge (which the march had clamped correctly): a 1-2 px dark band along every silhouette over haze, 10 levels deep
+    // for the first ~60 frames after a history reset and 24 once the still view had settled (~120 frames). Filling the
+    // dropped texel from its same-surface neighbours held only for those first frames (then they were "behind" too:
+    // 0 -> 16-19 levels); a fill on a hull drew the limb's haze onto it. On a mesh the pollution is what makes the drop fire in
+    // motion (the hull's own fresh samples hold no cloud; the samples beside it hold the cloud behind), so it stays as is.
     bool cv2Behind = false;
-    if (tScene < kNoSurfaceT && rd.x > 1.0) {
+    if (tScene < kNoSurfaceT && rd.x > 1.0 && texelFetch(sceneDepthTex, coord, 0).g > 2.5) {
         float kBehind = smoothstep(tScene * 1.05 + 20.0, tScene * 1.25 + 60.0, rd.x);
         rc = mix(rc, vec4(0.0, 0.0, 0.0, 1.0), kBehind);
         if (kBehind > 0.5) { rd = vec2(0.0, -1.0); cv2Behind = true; }
