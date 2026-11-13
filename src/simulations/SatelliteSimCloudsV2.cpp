@@ -2373,6 +2373,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.hurrperf = glm::vec4(std::clamp(cv2DeepLightT, 0.0f, 0.5f), std::clamp(cv2OpacityStopT, 0.0f, 0.2f), 0.0f, 0.0f);
     // (2026-11-11, hurrlook) "Hurricane eye cloud" (clouds_v2.glsl cv2LowA "THE EYE AS A BOWL").
     p.hurrlook = glm::vec4(std::clamp(cv2HurrEyeCloud, 0.0f, 1.0f), 0.0f, 0.0f, 0.0f);
+    // (2026-11-12, storms) "Storm billow lobes" (clouds_v2.glsl cv2FieldLow).
+    p.storms2 = glm::vec4(std::clamp(stormBillowLobes, 0.0f, 4.0f), 0.0f, 0.0f, 0.0f);
     // Vertical variation (vertical, 2026-11-05): cv2BaseShift's strengths, fractus, mid-level wisps.
     p.vert  = glm::vec4(std::clamp(cv2BaseLcl, 0.0f, 2.0f), std::clamp(cv2BaseCellM, 0.0f, 400.0f),
                         std::clamp(cv2BaseRegional, 0.0f, 2.0f), std::clamp(cv2Fractus, 0.0f, 2.0f));

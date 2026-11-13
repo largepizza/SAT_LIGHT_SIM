@@ -7279,6 +7279,8 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SldStormFullness), &stormFullness, 0.0f, 1.0f, 0.05f, "%.2f", 572},
         {tx(Txt::SldStormOverhang), &stormOverhang, 0.0f, 1.0f, 0.05f, "%.2f", 573},
         {tx(Txt::SldStormPuffiness), &stormPuffiness, 0.0f, 2.0f, 0.05f, "%.2f", 574},
+        // 2026-11-12 (storms, issue_20261112_220642): the cumulus-scale lobes on deep convection. Slot 622.
+        {tx(Txt::SldStormBillowLobes), &stormBillowLobes, 0.0f, 4.0f, 0.05f, "%.2f", 622},
         {tx(Txt::SldStormComplexesX), &stormComplexes, 0.0f, 10.0f, 0.05f, "%.2f", 325},
         {tx(Txt::SldTropicalCyclonesX), &stormCyclones, 0.0f, 10.0f, 0.05f, "%.2f", 326},
         // 2026-10-28 (the settings round-up): until then only in the Weather window's Controls tab.
@@ -9837,6 +9839,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         stormFullness = settingClamp(c.value("storm_fullness", stormFullness), 0.0f, 1.0f);
         stormOverhang = settingClamp(c.value("storm_overhang", stormOverhang), 0.0f, 1.0f);
         stormPuffiness = settingClamp(c.value("storm_puffiness", stormPuffiness), 0.0f, 2.0f);
+        stormBillowLobes = settingClamp(c.value("storm_billow_lobes", stormBillowLobes), 0.0f, 4.0f);
         stormArmCirrus = settingClamp(c.value("storm_arm_cirrus", stormArmCirrus), 0.0f, 3.0f);
         stormCycArms = settingClamp(c.value("storm_cyc_arms", stormCycArms), 0.0f, 6.0f);
         stormCycTightness = settingClamp(c.value("storm_cyc_tightness", stormCycTightness), 0.25f, 4.0f);
@@ -10654,6 +10657,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"storm_fullness", stormFullness},
         {"storm_overhang", stormOverhang},
         {"storm_puffiness", stormPuffiness},
+        {"storm_billow_lobes", stormBillowLobes},
         {"storm_arm_cirrus", stormArmCirrus},
         {"storm_cyc_arms", stormCycArms},
         {"storm_cyc_tightness", stormCycTightness},
