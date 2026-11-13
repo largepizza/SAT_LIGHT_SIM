@@ -6907,8 +6907,64 @@ void main() {
                     // (Review 22: over 30% of the frame past the edge, not 8%: with the shadowed fallback below, the switch
                     // to off screen drew dark wedges in the sea's lower corners under a sunset-lit deck.)
                     float onS = smoothstep(-0.3, 0.0, min(eM.x, eM.y));
+                    float onSSky = onS;                                    // the mirrored DIRECTION's (terrain, below)
+                    vec2  reflSkyUV = clamp(reflScreenUV, vec2(0.001), vec2(0.999));
+                    // 2026-11-12 (issues 20261112_220250 / _220359): the reflected clouds are found ALONG THE REFLECTED
+                    // RAY, not at its direction. The lookup at the mirrored direction assumed every cloud at infinity:
+                    // a cumulus 1-2 km up and 5-60 km away was read where the camera sees it, not where this sea point's
+                    // ray meets it, so its reflection sat at the wrong place on the sea (bright blobs in a band below the
+                    // horizon under no cloud), and slid and changed shape as the camera moved. The ray is now sampled where
+                    // it crosses five altitudes through the cloud layers (0.3-5 km), each sample projected into the camera
+                    // and tested against the composite's cloud distance there (cloudTargetA.a, km): the first sample at the
+                    // visible cloud's distance (within its depth, max(2.5 km, 30%)) is the cloud this ray meets, refined by
+                    // one bisection. No hit on screen = clear (the clear march); a ray that leaves the frame first fades to
+                    // the off-screen fallback. Cost at 220250 shot 1 (RTX 3070 Ti, 1920x1009): sky +0.23 ms, GPU +0.09 ms
+                    // (8 samples, two bisections and a transmittance fetch each cost +0.86 ms).
+                    float hitK = 0.0;
+                    {
+                        // Camera space throughout (the rotation keeps lengths): P(t) = relC + rdC t, uv = its projection.
+                        const float kReflAlt[5] = float[5](300.0, 900.0, 1600.0, 2600.0, 5000.0);
+                        vec3  relC  = mat3(pc.skyView) * (hitPt - obsPos);
+                        vec3  rdC   = reflCam;
+                        float rB    = dot(hitPt, reflDir), rL = length(hitPt);
+                        vec2  cSz   = vec2(textureSize(cloudTargetA, 0));
+                        vec2  uvK   = vec2(0.5 / pc.aspect, 0.5) / tanHFRefl;   // (x, -y) / -z  ->  uv - 0.5
+                        float tPrev = 0.0, tHit = -1.0;
+                        float onT   = 1.0;
+                        [[dont_unroll]] for (int k = 0; k < 5; ++k) {
+                            float rr = R_EARTH + kReflAlt[k];
+                            float tk = -rB + sqrt(max(rB * rB - (rL - rr) * (rL + rr), 0.0));
+                            if (tk <= tPrev) continue;
+                            vec3  Pc = relC + rdC * tk;
+                            if (Pc.z > -0.01 * length(Pc)) { onT = 0.0; break; }
+                            vec2  uk = vec2(Pc.x, -Pc.y) / -Pc.z * uvK + 0.5;
+                            vec2  ek = min(uk, 1.0 - uk);
+                            if (min(ek.x, ek.y) < 0.0) { onT = smoothstep(-0.3, 0.0, min(ek.x, ek.y)); break; }
+                            float aK = texelFetch(cloudTargetA, ivec2(uk * cSz), 0).a;
+                            if (abs(aK) < 50000.0) {   // (an engine light's texel: dropped by the emissive test below)
+                                float dc = abs(aK) * 1000.0;
+                                float df = length(Pc) - dc;
+                                if (df >= -max(200.0, 0.02 * dc) && df <= max(2500.0, 0.3 * dc)) { tHit = tk; break; }
+                            }
+                            tPrev = tk;
+                        }
+                        if (tHit > 0.0) {
+                            // one bisection between the last sample in front and the hit: the nearer crossing
+                            float tm = 0.5 * (tPrev + tHit);
+                            vec3  Pm = relC + rdC * tm;
+                            vec2  um = clamp(vec2(Pm.x, -Pm.y) / -min(Pm.z, -1e-3) * uvK + 0.5, vec2(0.0), vec2(0.9999));
+                            float aM = texelFetch(cloudTargetA, ivec2(um * cSz), 0).a;
+                            bool  hm = abs(aM) < 50000.0
+                                    && length(Pm) >= abs(aM) * 1000.0 - max(200.0, 0.02 * abs(aM) * 1000.0);
+                            vec3  Ph = relC + rdC * (hm ? tm : tHit);
+                            reflScreenUV = vec2(Ph.x, -Ph.y) / -min(Ph.z, -1e-3) * uvK + 0.5;
+                            hitK = 1.0;
+                            onT  = 1.0;
+                        }
+                        onS = onT;
+                    }
                     reflScreenUV = clamp(reflScreenUV, vec2(0.001), vec2(0.999));
-                    vec3 reflCloudT = mix(vec3(1.0), texture(cloudTargetB, reflScreenUV).rgb, onS);
+                    vec3 reflCloudT = mix(vec3(1.0), texture(cloudTargetB, reflScreenUV).rgb, onS * hitK);
                     reflCloudOccl   = dot(reflCloudT, vec3(1.0 / 3.0));
                     // The clouds in the reflection (2026-09-30): the march above is clear sky, so under an overcast
                     // the sea mirrored a sunlit clear horizon. The composite's own (A, B) at the mirrored direction.
@@ -6927,7 +6983,7 @@ void main() {
                                 if (k == 0) continue;
                                 vec2 uvk = clamp(reflScreenUV + vec2(0.0, float(k) * spr), vec2(0.001), vec2(0.999));
                                 sA += texture(cloudTargetA, uvk).rgb;
-                                sT += mix(vec3(1.0), texture(cloudTargetB, uvk).rgb, onS);
+                                sT += mix(vec3(1.0), texture(cloudTargetB, uvk).rgb, onS * hitK);
                             }
                             rCA.rgb = sA * 0.2;
                             reflCloudT = sT * 0.2;
@@ -6949,7 +7005,7 @@ void main() {
                         // path from the horizon down, where its mirror image is 74 deg below the horizon. Such texels drop out
                         // when the reflected ray misses the light's position by more than a few degrees (seen from the sea);
                         // the lights themselves are mirrored from where they are (the engine-light glint after the Sun glint, below). Real clouds
-                        // are not tested (their screen-space reflection is the approximation it always was).
+                        // are not tested here (they are found along the reflected ray, above).
                         vec4  emK = vec4(0.0);
                         for (int k = 0; k < 4; ++k) {
                             if (!cloudAlphaIsEmit(gaRaw[k])) continue;
@@ -7015,13 +7071,14 @@ void main() {
                     reflCloudT = mix(reflCloudT, vec3(1.0), rEmitBad);
                     rKf = mix(rKf, 1.0, 0.7 * seaRough);   // a rough sea blurs the clouds in it away
                     rKf = mix(rKf, 1.0, 0.3 * smoothstep(3000.0, 30000.0, dist));   // review 22b: and far out, more of it
-                    rKf = mix(1.0, rKf, onS);
+                    rKf = mix(1.0, rKf, onS * hitK);       // no cloud met along the ray: the clear march
+                    rHasCloud *= hitK;
                     dbgReflUV = vec3(fract(reflScreenUV * vec2(textureSize(cloudTargetA, 0))), rKf);
                     // The air in front is dimmed where there is cloud in the reflection or it is off screen; a clear
                     // on-screen reflection keeps the clear march (the sky there is known to be clear).
                     float frontK = mix(1.0, ovcK, max(1.0 - onS, rHasCloud));
                     reflColor  = clearRefl * (frontK * rKf + (1.0 - rKf) * reflCloudT) + rCA.rgb * (1.0 - rKf);
-                    reflTerrainOccl = mix(1.0, (texture(sceneDepthTex, reflScreenUV).r >= kNoSurfaceT * 0.5) ? 1.0 : 0.0, onS);
+                    reflTerrainOccl = mix(1.0, (texture(sceneDepthTex, reflSkyUV).r >= kNoSurfaceT * 0.5) ? 1.0 : 0.0, onSSky);
                 }
 #endif
 

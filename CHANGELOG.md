@@ -560,6 +560,11 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- Clouds reflected in the sea now sit under the clouds that cast them, and stay put as you move or turn
+  (issue_20261112_220250, issue_20261112_220359). The reflection was looked up where the camera sees the reflected
+  direction, as if every cloud were infinitely far: nearby cumulus drew bright blobs in a band below the horizon
+  where no cloud was, which slid and changed shape with the camera. Each sea point's reflected ray is now followed
+  up through the cloud layers to the cloud it actually meets.
 - Rocket plumes no longer vanish for the rest of a session after you jump between launches or fly away from one
   (issue_20261111_211610). Plume builds for launches that left view kept their worker slots, and after four of them
   no plume was built again; finished builds nobody collects are now dropped and rebuilt when needed.
