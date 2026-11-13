@@ -4801,9 +4801,10 @@ void main() {
             // (green 96 +- 9 km, sodium 90 +- 6.5 km), and their three noise reads per step were 1.4-2.8 ms of the sky
             // pass in the daytime storm views (every step of every ray took them wherever the Sun is under ~8.6 deg).
             if (airNight > 0.001 && h > 62000.0 && h < 130000.0) {
-                vec3  spDirECEF = spDirENU.x * enuX + spDirENU.y * enuY + spDirENU.z * enuZ;
+                vec3  spDirECEF = airglowWindDir(spDirENU.x * enuX + spDirENU.y * enuY + spDirENU.z * enuZ);
                 float airPatch = 0.6 + 0.4 * warpPerlin3(spDirECEF * kAirglowNoiseFreq
-                                    + vec3(pc.waveTime * kAirglowDriftRate, 17.0, -5.0));
+                                    + airglowTimeOfs(pc.waveTime) + vec3(0.0, 17.0, -5.0));
+                vec3  agK = airglowNightK(spDirENU, sunDir, vec3(enuX.z, enuY.z, enuZ.z));
                 // Coverage patchiness — independent noise samples per band so green and sodium
                 // don't brighten/dim in perfect lockstep (real thermospheric density variation
                 // doesn't affect both emission layers identically).
@@ -4814,8 +4815,8 @@ void main() {
                 float dzS = (h - kAirglowSodiumPeakM) / kAirglowSodiumHalfWidthM;
                 float densAirG = exp(-dzG * dzG) * segLen;
                 float densAirS = exp(-dzS * dzS) * segLen;
-                accumAirglow += (kAirglowGreenColor  * cloud.airglowGreenGain  * densAirG * mix(1.0, coverageG, covGainC)
-                                + kAirglowSodiumColor * cloud.airglowSodiumGain * densAirS * mix(1.0, coverageS, covGainC))
+                accumAirglow += (kAirglowGreenColor  * cloud.airglowGreenGain  * densAirG * mix(1.0, coverageG, covGainC) * agK.x
+                                + kAirglowSodiumColor * cloud.airglowSodiumGain * densAirS * mix(1.0, coverageS, covGainC) * agK.y)
                                 * airNight * airPatch;
             }
         }
@@ -5203,7 +5204,24 @@ void main() {
         accumAirglow += kAirglowGreenColor * cloud.airglowGreenGain * col * night;
     }
 #endif
+    // The Sun's glare gate above the air (2026-11-12), the Milky Way's and the zodiacal light's: with the Sun on screen
+    // from orbit (or the eye sunlit, sunlitBgVisibility) the limb's airglow line stayed at full brightness beside the
+    // Sun's disc, which no camera or eye exposing for the Sun shows (the line is ~19 mag/arcsec^2). In the air it is 1:
+    // there the bands are only ever lit where the SAMPLE is in night (the Sun under ~8.6 deg there). Not in SKY_LITE:
+    // its SPIR-V was 72 bytes under the build-enforced budget (its limb line stays ungated).
+#ifdef SKY_LITE
     color += accumAirglow * kAirglowScale * cloud.airglowGain;
+#else
+    {
+        float agAtm = 1.0 - clamp((obsEffH - 40000.0) / 60000.0, 0.0, 1.0);
+#ifdef SKY_ENV
+        float agGate = mix(envGlareVis, 1.0, agAtm);
+#else
+        float agGate = mix(cloud.skyGlareVisibility, 1.0, agAtm);
+#endif
+        color += accumAirglow * (kAirglowScale * cloud.airglowGain * agGate);
+    }
+#endif
 
     // Red band (630nm) supplemental march: peaks at 275km, well past N_VIEW's ~100km ceiling
     // (R_ATMOS), so it never rode those samples the way green/sodium do above. Perf (this

@@ -1,6 +1,7 @@
 // Video export (2026-10-25): the player's recording (KB_VIDEO, the HUD's video button), the harness's `video` /
 // `path play ... video=` (SatelliteSimHarness.cpp), and the harness's settle probe (`wait settle auto`).
 // The frame-side pieces: VideoRecorder.h / FrameCapture.h (src/). See CLAUDE.md "Video export".
+#include "../AudioSystem.h"
 #include "../FrameProfile.h"
 #include "../Harness.h"
 #include "SatelliteSim.h"
@@ -24,7 +25,7 @@ namespace fs = std::filesystem;
 const char *keyDisplayName(int key); // SatelliteSimUI.cpp
 
 // ─── Start / stop ─────────────────────────────────────────────────────────────────────────────────
-bool SatelliteSim::videoStart(const VideoRecordOptions &o, bool byHarness, std::string &err)
+bool SatelliteSim::videoStart(const VideoRecordOptions &o, bool byHarness, std::string &err, int sound)
 {
     if (!ctx_)
     {
@@ -43,16 +44,37 @@ bool SatelliteSim::videoStart(const VideoRecordOptions &o, bool byHarness, std::
         err = tx(Txt::ValNoWindowToRecordMinimisedOr);
         return false;
     }
+    // The sound: the AudioSystem tap (every bus passes through it to the speakers) copies the chosen buses into a ring
+    // that VideoRecorder drains each frame into an AAC track. Live, the mix runs on the device's clock, i.e. wall
+    // time, which is the live video's clock too; a lossless export (cinematics, path play) runs slower than real time,
+    // so it is silent unless no device runs the mix (offline: a harness run without --sound), where the recorder pumps
+    // the mix with the video's own clock.
+    if (sound < 0)
+        sound = videoSoundSetting;
+    const uint32_t buses = sound == 2 ? AudioSystem::BusAmbience : (sound == 1 ? (uint32_t)AudioSystem::BusAll : 0u);
+    const bool offline = audio_ && audio_->isOffline();
+    VideoRecordOptions opt = o;
+    opt.wallClock = !harness::active() || harness::options().fixedDt <= 0.0f;
+    if (buses && audio_ && audio_->isInitialized() && (!o.lossless || offline))
+    {
+        AudioSystem *a = audio_;
+        opt.audioRate = (int)a->captureRate();
+        opt.audioPull = [a](float *dst, uint32_t n) { return a->readCapture(dst, n); };
+        if (offline)
+            opt.audioPump = [a](uint32_t n) { a->pumpOffline(n); };
+    }
     const double t0 = harness::nowS();
-    if (!video_.start(*ctx_, w, h, o, err))
+    if (!video_.start(*ctx_, w, h, opt, err))
     {
         Log::line("video: start failed: " + err);
         return false;
     }
+    videoSoundOn_ = opt.audioRate > 0 && audio_->startCapture(buses);
     videoByHarness_ = byHarness;
     Log::line("video: recording " + o.path + " (" + video_.stats().value("encoder", std::string()) + ", " +
               std::to_string(video_.stats().value("width", 0)) + "x" + std::to_string(video_.stats().value("height", 0)) +
-              " @ " + std::to_string((int)o.fps) + " fps, opened in " + std::to_string((int)((harness::nowS() - t0) * 1000.0)) +
+              " @ " + std::to_string((int)o.fps) + " fps, sound " +
+              (videoSoundOn_ ? (sound == 2 ? std::string("ambience") : std::string("all")) : std::string("off")) + ", opened in " + std::to_string((int)((harness::nowS() - t0) * 1000.0)) +
               " ms)");
     return true;
 }
@@ -114,7 +136,13 @@ void SatelliteSim::videoToggle()
 void SatelliteSim::videoFrameTick(float dt)
 {
     if (!video_.recording())
+    {
+        // (Stopped by any path: videoStop, the harness's video_.stop(), a path play's end. stop() took the last sound.)
+        if (videoSoundOn_ && audio_)
+            audio_->stopCapture();
+        videoSoundOn_ = false;
         return;
+    }
     // A harness settle frame is 0.5 s of frame time with the sim held: one video frame each (the convergence plays
     // back fast instead of as 30 copies of every settle frame).
     // (The frame a settle ends in still has its 0.5-s step: a command after the settle runs in that frame's buildUI.)

@@ -209,15 +209,16 @@ void main()
                 float airDayness = clamp((sampleSunDotGeo + 0.15) / 0.3, 0.0, 1.0);
                 float airNight   = 1.0 - airDayness;
                 if (airNight > 0.001 && h > 62000.0 && h < 130000.0) {
-                    vec3  spDirECEF = spDirENU.x * enuX + spDirENU.y * enuY + spDirENU.z * enuZ;
-                    float airPatch = 0.6 + 0.4 * warpPerlin3(spDirECEF * kAirglowNoiseFreq + vec3(pc.waveTime * kAirglowDriftRate, 17.0, -5.0));
+                    vec3  spDirECEF = airglowWindDir(spDirENU.x * enuX + spDirENU.y * enuY + spDirENU.z * enuZ);
+                    float airPatch = 0.6 + 0.4 * warpPerlin3(spDirECEF * kAirglowNoiseFreq + airglowTimeOfs(pc.waveTime) + vec3(0.0, 17.0, -5.0));
+                    vec3  agK = airglowNightK(spDirENU, sunDir, vec3(enuX.z, enuY.z, enuZ.z));
                     float coverageG = airglowCoverageMask(spDirECEF, pc.waveTime, vec3(3.0, 29.0, -11.0));
                     float coverageS = airglowCoverageMask(spDirECEF, pc.waveTime, vec3(-37.0, 6.0, 44.0));
                     float covGainC  = clamp(cloud.airglowCoverageGain, 0.0, 1.0);
                     float dzG = (h - kAirglowGreenPeakM) / kAirglowGreenHalfWidthM;
                     float dzS = (h - kAirglowSodiumPeakM) / kAirglowSodiumHalfWidthM;
-                    airG += exp(-dzG * dzG) * segLen * mix(1.0, coverageG, covGainC) * airNight * airPatch;
-                    airS += exp(-dzS * dzS) * segLen * mix(1.0, coverageS, covGainC) * airNight * airPatch;
+                    airG += exp(-dzG * dzG) * segLen * mix(1.0, coverageG, covGainC) * airNight * airPatch * agK.x;
+                    airS += exp(-dzS * dzS) * segLen * mix(1.0, coverageS, covGainC) * airNight * airPatch * agK.y;
                 }
             }
 

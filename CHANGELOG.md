@@ -384,6 +384,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **Settings search** across every tab, a new **Sky** tab, and every control that changes the look has a row in
   Settings.
 - **Video recording** (F6, or the record button) to MP4, with or without the UI; cinematics export video too.
+  Videos carry the sound (Settings > Display > VIDEO > Sound): **Everything** you hear, **Ambience only** (no music
+  and no UI sounds, to lay your own track over), or **Off**. The master volume is not applied, so a muted app still
+  records its sound. Cinematic exports are silent.
 - **Mission milestones.** Skip to the next or previous milestone of a launch, train, retiree or the satellite in a
   slot (`]` / `[`, the follow HUD, the Info window's MISSION section with a progress bar by milestone).
 - **Issue reports.** F9 adds a shot (frame, place, camera, time, weather, settings, frame times, the last 12 s
@@ -545,6 +548,15 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   showed dark, blocky, cloud-shaped patches that slid over the hull as you moved: the clouds behind it leaking through.
 - **No green clouds near sunset.** With the Sun a few degrees up, the white balance turned cloud and ambient light
   green-yellow (it corrected red and green fully but blue only partly); it now corrects along the sunlight's own colour.
+- **Airglow is visible again, and changes through the night.** The airglow defaults are ~12x brighter, and the Milky
+  Way's night-vision default is lower. The red band is brightest in the hours after dusk (strongest in the arcs
+  ~15 deg either side of the magnetic equator) and fades towards midnight. The green band fades more gently, then
+  rises again a little after midnight. The sodium band is brighter in winter. The patterns drift slowly with the
+  upper-atmosphere winds instead of sweeping past, and no longer jump at midnight UTC. With the Sun in view from
+  orbit the airglow is hidden by its glare, like the stars and the Milky Way.
+- **A mirror's flare keeps its glare when you zoom in.** Tracking a Reflect mirror's flare from a distance, its
+  glare faded away as the mirror grew on screen and turned white: now the Sun's image in it glares at full strength
+  at any size.
 
 ### Fixed
 

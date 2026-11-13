@@ -103,7 +103,14 @@ an aliased centre) and a blue anamorphic streak the sun doesn't have; both are g
   `glintShare`: each lobe's sunlight x smoothstep(150, 1500, pi x its mean radiance), mesh_bloom's test): the rest
   (diffuse, glossy, earthshine) glares only while the mesh fades in (fadeIn -> fadeFull, 1.5 -> 3 px). Keeping all
   of it to 12-36 px drew a backlit, earthlit StarMind 17 px wide (mag -4.5 at 4.7 km, its mesh near black) as a
-  full starburst, x7 by the near gain. A Reflect mirror's glint share is 1 (unchanged). The first cut let
+  full starburst, x7 by the near gain. A Reflect mirror's glint share is 1 (unchanged). **The dominant lobe's
+  glint keeps the sprite's glare at every size (2026-11-12):** its share of the sun-like light (`glintDomShare`, x
+  smoothstep(0.5, 0.9, the glint weight w)) holds the glare keep at max(point-like, it), and the mesh's glints give
+  up the same share (`GpuMeshInstance::glarePoint`, mesh_bloom's 1 - it). Resolved, a white mirror spread its glint
+  over thousands of texels each holding its share of the flux, and no 5x5 maximum glared: tracking a Reflect mirror
+  from 5 km in its beam, the starburst was gone from ~80 px (`harness_runs/glare_before` / `glare_after`, fov 40 ->
+  2.5, 19 -> 323 px). The Sun's image in a flat lobe is one compact region at glintDir, so its glare is the
+  unresolved flux's there. The first cut let
   all of it glare: every edge and vertex of a close-up satellite flared (each a sliver of a very
   bright satellite's flux) and filled the 64 slots with ~400 px sprites, a large part of the close-up
   frame-rate drop. `glare_find.comp` lists every 5×5 local maximum past the threshold into `glintBuf`

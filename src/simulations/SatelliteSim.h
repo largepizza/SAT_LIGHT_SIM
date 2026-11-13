@@ -6970,7 +6970,7 @@ private:
     float mwGainGround = 0.470588237f;
     float mwGainSpace = 0.7963801f;
     float mwContrastSpace = 1.25f;
-    float mwNightVision = 0.57f; // (was 0.5022625, 2026-11-10 bake)
+    float mwNightVision = 0.33f; // (2026-11-12 bake from settings.json; was 0.57)
     float mwStarClouds = 1.0f;
     float mwZoomDetail = 0.91f; // (was 0.98642534, 2026-11-10 bake)
     bool mwZoomOn = true;   // photometry.milky_way_zoom (no UI): false = the old single fetch at every field of view (A/B)
@@ -7741,11 +7741,11 @@ private:
     float cloudHgG = 0.99f;
     float cloudCirrusWindDeg = 40.0f;  // C13: cirrus streak wind azimuth (degrees, converted to radians for the UBO)
     float cloudCirrusStretch = 2.4f;   // C13: cirrus noise anisotropic elongation factor (1 = no stretch)
-    float airglowGain = 0.066f;        // C15: master airglow brightness multiplier
+    float airglowGain = 0.77f;         // C15: master airglow brightness multiplier (2026-11-12 bake; was 0.066)
     float airglowGreenGain = 0.053f;   // C15: green (557.7nm) band gain
-    float airglowRedGain = 0.013f;     // C15: red (630.0nm) band gain — diffuse/broad, keep subtle
-    float airglowSodiumGain = 0.08f;   // C15: sodium (589.3nm) band gain — kept dim relative to green
-    float airglowCoverageGain = 0.32f; // patchy-coverage strength for all 3 airglow bands, [0,1]
+    float airglowRedGain = 0.005f;     // C15: red (630.0nm) band gain — diffuse/broad, keep subtle
+    float airglowSodiumGain = 0.095f;  // C15: sodium (589.3nm) band gain — kept dim relative to green
+    float airglowCoverageGain = 0.47f; // patchy-coverage strength for all 3 airglow bands, [0,1]
     float airglowPolarGain = 2.4f;     // red band only: extra boost toward the geomagnetic pole
     float zodiacalGain = 0.01f;        // master brightness multiplier for the zodiacal light cone
     // Milky Way reflected in the ocean surface (sat_sky.frag's sky-reflection block). Small by
@@ -7987,11 +7987,14 @@ private:
     bool videoUiSetting = false;     // display.video_ui: the UI in the video (else the frame before the UI)
     float videoFpsSetting = 60.0f;   // display.video_fps
     float videoScaleSetting = 1.0f;  // display.video_scale (of the window)
+    int videoSoundSetting = 1;       // display.video_sound: 0 off, 1 everything heard, 2 ambience only (no music / UI)
+    bool videoSoundOn_ = false;      // this recording captures sound (the AudioSystem tap is on)
     bool videoByHarness_ = false;    // started by the harness: no REC badge, no toast
     bool hovVideoBtn = false;
     std::string videoLastFile_;
     void videoToggle();                                    // KB_VIDEO / the HUD button
-    bool videoStart(const VideoRecordOptions &o, bool byHarness, std::string &err);
+    // sound: 0 off, 1 everything, 2 ambience only, -1 = videoSoundSetting.
+    bool videoStart(const VideoRecordOptions &o, bool byHarness, std::string &err, int sound = -1);
     void videoStop();
     void videoFrameTick(float dt);                         // recordCompute: the recorder's clock
     void videoPostUiCopy(VkCommandBuffer cmd, VulkanContext &ctx, VkImage image); // recordScreenshotCopy (ui=on)

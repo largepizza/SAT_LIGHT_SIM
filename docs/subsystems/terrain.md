@@ -36,6 +36,23 @@ Read it at the start of any terrain-related session before making changes.
   constants, not UBO fields. Reuses the analytic `warpPerlin3` noise (same one `cloudWarpOffset`
   uses) for horizontal patchiness — no new texture/binding. See `TERRAIN_PLAN.md` session 22 log for
   the original writeup, session 29 log for the move.
+- **Airglow over time (2026-11-12, `sky_atmos.glsl` airglowTimeOfs / airglowWindDir / airglowNightK; red copies in
+  cloud_march.comp).** The noise's time offset is a closed loop through noise space once a UTC day (radius 0.6:
+  ~70 m/s of morphing at the 1600-km features), and the sample direction is turned about the pole by
+  2 x `cloud.cloudPhase` (~47 m/s zonal; a whole multiple, so its 2-pi wrap is seamless). It was
+  `pc.waveTime x 0.015` along x: ~24 km/s, and a jump at 00:00 UTC (`waveTime` = sim seconds in the day).
+  Per-sample brightness (mean ~1 over a night, so the gains keep their meaning; hours since the sample's own
+  sunset from the Sun's hour angle and the sunset hour angle): green 0.85 + 0.4 e^(-0.4 t) + a post-midnight
+  bump at 2 h; sodium (0.9 + 0.2 e^(-t/3)) x a winter maximum (1 -/+ 0.45 at 45 deg, sin lat x sin dec);
+  red 0.66 + 2.06 e^(-t/2) x (1 + 1.5 x the equatorial anomaly: |geomagnetic lat| ~15 deg +- 6, gone by 3-7 h
+  after sunset). Above the air (40 -> 100 km) the bands are x the Sun's glare gate (`skyGlareVisibility`, the
+  Milky Way's): with the Sun on screen from orbit the limb line stayed full beside its disc (39 levels -> 2).
+  Not in SKY_LITE (its SPIR-V was 72 bytes under budget; the helpers are `#ifndef SKY_LITE`). Sky pass
+  A/B at a night horizon (Atacama, 4 reps interleaved): 8.68 vs 8.84 ms without, GPU 16.64 vs 16.54, noise.
+  Defaults since 2026-11-12 are the user's: gain 0.77 (was 0.066: from the ground the bands were < 1 level,
+  invisible), red 0.005, sodium 0.095, coverage 0.47. Physical line ratios at a mid-latitude zenith are green
+  ~250 R : sodium 30-150 R : red ~50-100 R: column-weighted, sodium 0.095 is ~1.3x green, which makes the limb
+  line olive; ~0.02 reads green as in the ISS photographs (`harness_runs/airglow2`, o_na020).
 - **Raymarch-from-inside-a-volume fix (session 22):** `raySphere` reformulates `c = dot(ro,ro)-r*r`
   as `c = (|ro|-r)*(|ro|+r)` — the naive form catastrophically cancels at R_EARTH scale (~1e13
   float32 magnitude) exactly at grazing/near-tangent rays, i.e. every horizon, across all 29 call

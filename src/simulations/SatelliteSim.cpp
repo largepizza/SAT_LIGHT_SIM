@@ -5559,18 +5559,18 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         // every edge and vertex of a close-up satellite, holding a sliver of a very bright satellite's
         // flux, flared.
         const float glarePoint = 1.0f - (float)glm::smoothstep((double)kGlarePointPx, 3.0 * kGlarePointPx, px);
-        inst.glarePoint = glarePoint;
         // Which of its light may keep the SPRITE's glare once the mesh resolves (2026-10-07): only the share that is a
         // sun-like glint, mesh_bloom.frag's own test (π × the lobe's mean radiance per unit irradiance, 150 → 1500)
         // applied to each lobe's sunlight. Diffuse, glossy and Earth light glares only while the satellite is a point
         // (the mesh's fade-in, fadeIn → fadeFull). The whole flux used to keep its glare to 12-36 px, so a StarMind
         // 17 px wide, backlit and earthlit (mag -4.5 at 4.7 km, its mesh near black), drew as a full-size starburst,
         // x7 by the near gain (user snapshots, profile_log 2026-10-07 5-8).
-        float glintShare = 0.0f;
-        if (glarePoint > 0.0f && r.intensity > 0.0 && r.litFactor > 0.0)
+        // (Evaluated at every size since 2026-11-12: the dominant lobe's glint keeps the sprite's glare, below.)
+        float glintShare = 0.0f, glintDomShare = 0.0f;
+        if (r.intensity > 0.0 && r.litFactor > 0.0)
         {
             const glm::dvec3 s = geo.sun, o = -rel / range;
-            double glint = 0.0;
+            double glint = 0.0, glintDom = 0.0;
             for (int li = 0; li < (int)type.lobes.size(); ++li)
             {
                 const GpuSatLobe &L = type.lobes[li];
@@ -5581,12 +5581,15 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
                 const double I = satLobeIntensitySun(n, L.area, L.diffArea, L.albedoD, L.f0, L.alpha2Mat,
                                                      satLobeBeckmann(L), s, o, 0.0, satLobeMinnaert(L));
                 const double piL = glm::pi<double>() * I / std::max((double)L.area * no, 1e-9);
-                glint += I * glm::smoothstep(150.0, 1500.0, piL);
+                const double g = I * glm::smoothstep(150.0, 1500.0, piL);
+                glint += g;
+                if (li == r.dominantLobe)
+                    glintDom = g;
             }
             glintShare = (float)glm::clamp(glint * r.litFactor / r.intensity, 0.0, 1.0);
+            glintDomShare = glint > 0.0 ? (float)glm::clamp(glintDom / glint, 0.0, 1.0) : 0.0f;
         }
         const float diffuseGlare = 1.0f - (float)glm::smoothstep(fi, fadeFull * fadeScale, px);
-        const float glareKeep = glintShare * glarePoint + (1.0f - glintShare) * std::min(diffuseGlare, glarePoint);
         // Review 28: the sprite (point, bloom, glare) sits on the satellite's GLINT, not its centre. A flat lobe shows
         // the Sun at one point: where the camera's ray along the Sun's mirror image (d = s - 2 (s.n) n) meets it,
         // clamped to the lobe's extent (off it, the brightest part of the lobe's tail is its nearest edge), weighted by
@@ -5642,6 +5645,18 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
                 out.glintW = (float)w;
             }
         }
+        // The Sun in its dominant lobe keeps the SPRITE's glare at every size (2026-11-12, user: tracking a Reflect
+        // mirror's flare from far off, zoomed in, the glare died as the mesh grew past 12-36 px while the mirror was
+        // all white). Resolved, the glare came only from mesh_bloom's texels, each holding ITS share of the flux: a
+        // uniformly white mirror 100 px wide spread the glint over thousands of texels and no 5x5 maximum glared. The
+        // Sun's image in a flat lobe is one compact white region (the whole lobe while it subtends less than the Sun,
+        // else a 0.53-deg disc on it) at exactly where glintDir points, so its glare is the unresolved flux's glare
+        // there. Weighted by how far the glint direction sits on that lobe (w), and the mesh's own glints give up the
+        // same share (mesh_bloom.frag's 1 - glarePoint) so the two never draw two stars.
+        const float domKeep = glintDomShare * (float)glm::smoothstep(0.5, 0.9, (double)out.glintW);
+        const float sunKeep = std::max(glarePoint, domKeep);
+        inst.glarePoint = sunKeep;
+        const float glareKeep = glintShare * sunKeep + (1.0f - glintShare) * std::min(diffuseGlare, glarePoint);
         inst.probeSlot = kNoProbe; // assigned below, once every instance is known
         out.ok = true;
         out.type = ti;

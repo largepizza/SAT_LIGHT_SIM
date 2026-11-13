@@ -33,6 +33,20 @@ frame), `src/VideoEncoder.h/.cpp` (NV12 BT.709 limited range -> H.264 .mp4: Wind
 - Measured (RTX 3070 Ti, 1920x1009, mf-hw): frame time / GPU within 0-0.5 ms of not recording; the worker's NV12
   conversion ~3.7 ms and encode ~0.8 ms a 1920x1008 frame (one thread: ~200 fps); ~105 MB a minute of motion, ~40-50
   of a still view; real time at ~40 fps into a 60-fps video: 0 drops, a third of the frames repeated.
+- **Sound** (2026-11-12, `display.video_sound`: 0 off, 1 everything, 2 ambience only; harness `sound=`): the three
+  buses (music, sfx, ambience) reach the endpoint through one miniaudio node, `AudioCaptureTap` (AudioSystem.cpp:
+  three inputs, their sum out, `MA_NODE_FLAG_CONTINUOUS_PROCESSING` so it runs every period even while all are
+  silent). While capturing it also sums the masked buses into an 8-s SPSC `ma_pcm_rb`, before the master volume
+  (the master is the speakers' knob). `VideoRecorder::poll` drains it every frame (`audioPull`) into the worker,
+  which writes AAC (Media Foundation's encoder, 16-bit PCM in, 192 kbit/s; ffmpeg: a raw f32 side file muxed in at
+  close with `-c:v copy`) and pads the track with silence to the video's length. A ring overflow comes back as
+  silence, so the sound never runs short of the video. Clocks: live, the sound is on the device clock and the video
+  on frame dts (both wall time; measured 8.00 s video / 8.02 s sound / 8.016 s wall, 20.00 / 20.02 / 20.02); a
+  muted harness run has no device, so `audioPump` mixes exactly the frames the video's timeline owes (equal
+  lengths). A lossless export (cinematics, `path play video=`) is slower than real time, so it is silent unless
+  muted-offline. `VideoRecorder::tick` adds a frame's own dt before placing it and takes `start()`'s stall (~0.1 s,
+  `stallS_`, wall clocks only) out of the second frame's dt (start runs in buildUI, before the tick): adding dt
+  after placing, as before, held frame 0 for the stall and put the whole video ~0.1 s behind the wall clock.
 - **`wait settle auto`** (harness) reuses FrameCapture as a 1/4-size probe of every settle frame (before the UI),
   compared 8 and 32 frames back. Do not stop on the 8-frame difference alone: Sun-shadow volumes and running means
   drift ~0.1 level per 8 frames for 160+ frames in storm views (the first cut stopped at ~30 frames there with

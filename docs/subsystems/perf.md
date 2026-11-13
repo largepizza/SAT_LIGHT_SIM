@@ -760,5 +760,17 @@ orbit 400 km 19.41 / 18.34; cumulus 1.5 km 10.55 / 10.34. Parity, mean |diff| vs
 2.26 (2.17), stop 2.54 with spots on the cloud edges; 45 km 1.16 (1.05), stop 1.00; under 6.36 (7.12), stop 7.37.
 Tried and dropped: the fill / mass loops out of the light march's cv2Field copy only (255), one cyclone instead of the loop
 (255), deep light with the probe's value kept as well (255).
+- **v1.2 release benchmark (2026-11-12, weather-salvage 4e0be39, RTX 3070 Ti, 1920x1009, the user's settings.json; one
+  run each, evidence `harness_runs/final_1112/` — gitignored):** the cloud-and-sky matrix (`cloudsky_matrix.py`, the
+  11-10 script `mx.satcmd` reused verbatim so the 57 cells match) against the 11-10 "after" run (31527ce): STILL GPU
+  mean 21.1 -> 21.9 ms, median 20.2 -> 21.7, max 30.9 -> 31.4 (ovc_850km -> dense_850km), cells over 25 ms 10 -> 12.
+  The cloud march carries it all, 11.6 -> 13.6 ms mean (+1.7..+2.5 per altitude: the merged march's 255-register regime,
+  "Perf recovery after the 2026-11-10 wave"), offset by the sky pass 7.1 -> 6.4 and the rest 2.4 -> 2.0 (the terrain
+  clipmap). Per altitude 2 m 20.3 -> 20.1, 1 km 18.4 -> 18.8, 6 km 18.8 -> 20.6, 11 km 19.1 -> 20.2, 300 km 21.7 ->
+  22.9, 850 km 26.6 -> 28.1. Look-pan GPU max from 300 km 38-49 ms (was 25-31). `frame_bench.py` (wall, GPU, CPU; no
+  earlier full run to compare): every scene GPU-bound (wall - GPU <= 1.2 ms, CPU <= 5 ms at 1 h/s); still 14.7
+  (eclipse) .. 36.7 ms (500 km), the worst rows 500 km with time running (1x 45.4, 1 min/s 44.6) and storm_15km at 1 h/s
+  (39.3). Settings differ from 11-10 (the baked look), and single runs carry the two speed regimes (~20%): read a
+  row-level change under ~2 ms as noise.
 
 ---

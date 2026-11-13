@@ -88,6 +88,7 @@ def main():
     ap.add_argument("--window", default="1600x900")
     ap.add_argument("--settings", help="start from this settings.json (default: built-in defaults)")
     ap.add_argument("--fixed-dt", help="seconds per frame fed to the sim (default 1/60; 0 = real time)")
+    ap.add_argument("--sound", action="store_true", help="a real audio device (audible; default: none, the mix is pumped offline)")
     ap.add_argument("--timeout", type=float, default=600, help="seconds before the run is killed")
     ap.add_argument("--quiet", action="store_true", help="only errors and the summary")
     ap.add_argument("--cooldown", type=float, default=None,
@@ -127,6 +128,8 @@ def main():
         cmd += ["--settings", os.path.abspath(a.settings)]
     if a.fixed_dt is not None:
         cmd += ["--fixed-dt", a.fixed_dt]
+    if a.sound:
+        cmd += ["--sound"]
     # The loading screen is a property of the launch, not a harness option, so it travels in the
     # environment (SATLIGHTSIM_BOOT_SCREEN / SATLIGHTSIM_BOOT_CAPTURE), and only when asked for.
     env = dict(os.environ)

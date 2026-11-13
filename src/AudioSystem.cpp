@@ -9,9 +9,57 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 
 AudioSystem::~AudioSystem() { cleanup(); }
+
+// ── The capture tap ───────────────────────────────────────────────────────────
+// One node with three inputs (music, sfx, ambience: the Bus bit order) and one output (their sum) to the endpoint.
+// CONTINUOUS_PROCESSING: miniaudio fires it with a full block every period, silent inputs padded with silence, so the
+// recording advances with the device clock even while every bus is quiet.
+struct AudioCaptureTap {
+    ma_node_base base;              // first: miniaudio treats the node pointer as its base
+    ma_pcm_rb rb;                   // interleaved stereo f32 at the engine's rate; SPSC (audio thread -> reader)
+    bool rbOk = false;
+    ma_uint32 channels = 2;         // the engine's (a 5.1 device: the first two are kept)
+    std::atomic<uint32_t> mask{0};  // Bus bits being recorded; 0 = not capturing
+    std::atomic<uint64_t> lost{0};  // frames the full ring could not take (the reader replays them as silence)
+};
+
+static void tapProcess(ma_node* node, const float** in, ma_uint32* inCount, float** out, ma_uint32* outCount)
+{
+    AudioCaptureTap* t = reinterpret_cast<AudioCaptureTap*>(node);
+    const ma_uint32 n = (std::min)(*inCount, *outCount);
+    const ma_uint32 ch = t->channels;
+    float* o = out[0];
+    for (size_t i = 0; i < (size_t)n * ch; ++i) o[i] = in[0][i] + in[1][i] + in[2][i];
+    *inCount = n;
+    *outCount = n;
+    const uint32_t mask = t->mask.load(std::memory_order_acquire);
+    if (!mask || !t->rbOk) return;
+    const ma_uint32 rc = ch > 1 ? 1 : 0; // the right channel's offset (a mono engine: both from channel 0)
+    ma_uint32 done = 0;
+    while (done < n) {
+        ma_uint32 want = n - done;
+        void* w = nullptr;
+        if (ma_pcm_rb_acquire_write(&t->rb, &want, &w) != MA_SUCCESS || want == 0) break;
+        float* d = static_cast<float*>(w);
+        for (ma_uint32 f = 0; f < want; ++f) {
+            const size_t s = (size_t)(done + f) * ch;
+            float l = 0.0f, r = 0.0f;
+            for (int b = 0; b < 3; ++b)
+                if (mask & (1u << b)) { l += in[b][s]; r += in[b][s + rc]; }
+            d[f * 2] = l;
+            d[f * 2 + 1] = r;
+        }
+        ma_pcm_rb_commit_write(&t->rb, want);
+        done += want;
+    }
+    if (done < n) t->lost.fetch_add(n - done, std::memory_order_relaxed);
+}
+
+static ma_node_vtable kTapVtable = {tapProcess, nullptr, 3, 1, MA_NODE_FLAG_CONTINUOUS_PROCESSING};
 
 // ── init ─────────────────────────────────────────────────────────────────────
 void AudioSystem::init(bool offline)
@@ -65,6 +113,32 @@ void AudioSystem::init(bool offline)
         applyAmbienceVolume();
     }
 
+    // The capture tap goes between the three buses and the endpoint (see AudioCaptureTap). Without it the buses
+    // stay on the endpoint and videos are silent.
+    {
+        const ma_uint32 ch = ma_engine_get_channels(engine_);
+        auto* t = new AudioCaptureTap;
+        t->channels = ch;
+        ma_uint32 inCh[3] = {ch, ch, ch}, outCh[1] = {ch};
+        ma_node_config nc = ma_node_config_init();
+        nc.vtable = &kTapVtable;
+        nc.pInputChannels = inCh;
+        nc.pOutputChannels = outCh;
+        if (ma_node_init(ma_engine_get_node_graph(engine_), &nc, nullptr, &t->base) != MA_SUCCESS) {
+            fprintf(stderr, "[AudioSystem] Failed to create the capture tap: videos will be silent.\n");
+            delete t;
+        } else {
+            ma_node_attach_output_bus(&t->base, 0, ma_engine_get_endpoint(engine_), 0);
+            // 8 s of headroom: the frame thread drains it every frame; a longer stall becomes silence, not drift.
+            t->rbOk = ma_pcm_rb_init(ma_format_f32, 2, ma_engine_get_sample_rate(engine_) * 8, nullptr, nullptr,
+                                     &t->rb) == MA_SUCCESS;
+            ma_sound_group* gs[3] = {musicGroup_, sfxGroup_, ambienceGroup_};
+            for (int b = 0; b < 3; ++b)
+                if (gs[b]) ma_node_attach_output_bus(gs[b], 0, &t->base, (ma_uint32)b);
+            tap_ = t;
+        }
+    }
+
     offline_ = offline;
     initialized_ = true;
 }
@@ -91,6 +165,19 @@ void AudioSystem::cleanup()
         ma_sound_group_uninit(musicGroup_);
         delete musicGroup_;
         musicGroup_ = nullptr;
+    }
+    if (tap_) {
+        // (After the groups: uninitialising a group detaches it from the tap.)
+        tap_->mask.store(0);
+        ma_node_uninit(&tap_->base, nullptr);
+        if (tap_->rbOk) ma_pcm_rb_uninit(&tap_->rb);
+        delete tap_;
+        tap_ = nullptr;
+    }
+    if (capRs_) {
+        ma_linear_resampler_uninit(capRs_, nullptr);
+        delete capRs_;
+        capRs_ = nullptr;
     }
     if (engine_) {
         ma_engine_uninit(engine_);
@@ -638,6 +725,95 @@ void AudioSystem::playAmbienceOneShot(const std::string& path, float gain, float
     ma_sound_set_pan(snd, std::clamp(pan, -1.0f, 1.0f));
     ma_sound_start(snd);
     oneShots_.push_back({snd});
+}
+
+// ── Video sound capture ───────────────────────────────────────────────────────
+bool AudioSystem::capturing() const { return tap_ && tap_->mask.load() != 0; }
+
+uint32_t AudioSystem::captureRate() const
+{
+    const uint32_t r = engine_ ? ma_engine_get_sample_rate(engine_) : 48000;
+    return (r == 44100 || r == 48000) ? r : 48000;
+}
+
+bool AudioSystem::startCapture(uint32_t busMask)
+{
+    if (!initialized_ || !tap_ || !tap_->rbOk || !(busMask & BusAll)) return false;
+    tap_->mask.store(0, std::memory_order_release);
+    // Drop whatever an earlier capture left in the ring (the reader owns the read side; at most one block of the
+    // last capture can still land after its stop, long before this).
+    for (;;) {
+        ma_uint32 n = ma_pcm_rb_available_read(&tap_->rb);
+        void* p = nullptr;
+        if (n == 0 || ma_pcm_rb_acquire_read(&tap_->rb, &n, &p) != MA_SUCCESS || n == 0) break;
+        ma_pcm_rb_commit_read(&tap_->rb, n);
+    }
+    tap_->lost.store(0);
+    capSilence_ = 0;
+    if (capRs_) {
+        ma_linear_resampler_uninit(capRs_, nullptr);
+        delete capRs_;
+        capRs_ = nullptr;
+    }
+    const uint32_t inRate = ma_engine_get_sample_rate(engine_), outRate = captureRate();
+    if (inRate != outRate) {
+        capRs_ = new ma_linear_resampler;
+        ma_linear_resampler_config rc = ma_linear_resampler_config_init(ma_format_f32, 2, inRate, outRate);
+        if (ma_linear_resampler_init(&rc, nullptr, capRs_) != MA_SUCCESS) {
+            delete capRs_;
+            capRs_ = nullptr;
+            return false;
+        }
+    }
+    tap_->mask.store(busMask & BusAll, std::memory_order_release);
+    return true;
+}
+
+void AudioSystem::stopCapture()
+{
+    if (tap_) tap_->mask.store(0, std::memory_order_release);
+}
+
+uint32_t AudioSystem::readCapture(float* dst, uint32_t maxFrames)
+{
+    if (!tap_ || !tap_->rbOk || !dst) return 0;
+    const uint32_t inRate = ma_engine_get_sample_rate(engine_), outRate = captureRate();
+    if (const uint64_t lost = tap_->lost.exchange(0)) capSilence_ += lost * outRate / inRate;
+    const uint32_t sil = (uint32_t)(std::min<uint64_t>)(capSilence_, maxFrames);
+    std::fill(dst, dst + (size_t)sil * 2, 0.0f);
+    capSilence_ -= sil;
+    uint32_t done = sil;
+    while (done < maxFrames) {
+        ma_uint32 n = ma_pcm_rb_available_read(&tap_->rb);
+        void* p = nullptr;
+        if (n == 0) break;
+        if (!capRs_) n = (std::min)(n, maxFrames - done);
+        if (ma_pcm_rb_acquire_read(&tap_->rb, &n, &p) != MA_SUCCESS || n == 0) break;
+        if (!capRs_) {
+            memcpy(dst + (size_t)done * 2, p, (size_t)n * 2 * sizeof(float));
+            ma_pcm_rb_commit_read(&tap_->rb, n);
+            done += n;
+        } else {
+            ma_uint64 fin = n, fout = maxFrames - done;
+            ma_linear_resampler_process_pcm_frames(capRs_, p, &fin, dst + (size_t)done * 2, &fout);
+            ma_pcm_rb_commit_read(&tap_->rb, (ma_uint32)fin);
+            done += (uint32_t)fout;
+            if (fin == 0 && fout == 0) break;
+        }
+    }
+    return done;
+}
+
+void AudioSystem::pumpOffline(uint32_t frames)
+{
+    if (!initialized_ || !offline_ || frames == 0) return;
+    float buf[1024 * 2];
+    while (frames > 0) {
+        const uint32_t n = (std::min)(frames, 1024u);
+        ma_uint64 got = 0;
+        ma_engine_read_pcm_frames(engine_, buf, n, &got);
+        frames -= n;
+    }
 }
 
 // ── Offline render ────────────────────────────────────────────────────────────

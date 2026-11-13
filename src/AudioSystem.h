@@ -5,12 +5,15 @@
 #include "miniaudio.h"
 #include "AmbientSynth.h" // Voice owns its synth (unique_ptr needs the complete type in every TU)
 
+#include <atomic>
 #include <functional>
 #include <future>
 #include <memory>
 #include <string>
 #include <vector>
 
+
+struct AudioCaptureTap; // AudioSystem.cpp: the node every bus reaches the speakers through
 
 // ── AudioSystem ───────────────────────────────────────────────────────────────
 // Thin wrapper around miniaudio that provides:
@@ -144,6 +147,23 @@ public:
     bool renderWav(const std::string& path, double seconds, uint32_t busMask, int soloVoice,
                    const std::function<void(float)>& perChunk, RenderStats& stats, std::string& err);
 
+    // ── Video sound capture (VideoRecorder's AAC track) ──────────────────────
+    // Every bus reaches the speakers through one tap node (music, sfx, ambience in; their sum out). While a capture
+    // is on, the tap also writes the buses in `busMask` (Bus bits) into a lock-free ring: before the master volume
+    // (the master is the speakers' knob, so a muted master still records), after each bus's own volume and fades.
+    // The ring holds 8 s; if the reader falls further behind, the lost frames come back as silence so the sound's
+    // timeline never shrinks against the video's.
+    bool startCapture(uint32_t busMask); // false when audio is off or the tap could not be made
+    void stopCapture();
+    bool capturing() const;
+    // The rate readCapture() delivers: the engine's when it is 44.1 or 48 kHz (what AAC takes), else 48 kHz.
+    uint32_t captureRate() const;
+    // Up to maxFrames interleaved stereo float frames at captureRate(); returns how many. One reader at a time.
+    uint32_t readCapture(float* dst, uint32_t maxFrames);
+    // Offline mode (no device pulls the graph): mixes `frames` at captureRate() through it, discarded, so the tap
+    // sees exactly what a listener would have heard during that time.
+    void pumpOffline(uint32_t frames);
+
 private:
     void loadTrack(int idx);    // load + start tracks_[idx] (and its upwell, on the same frame)
     void releaseUpwell(bool keepTail); // keepTail: let it ring out (reaped in update) instead of cutting
@@ -168,6 +188,9 @@ private:
         ma_sound* sound = nullptr;
     };
 
+    AudioCaptureTap* tap_       = nullptr;  // the capture node (AudioSystem.cpp)
+    ma_linear_resampler* capRs_ = nullptr;  // readCapture's resampler when the engine is not 44.1 / 48 kHz
+    uint64_t        capSilence_ = 0;        // output frames of silence still owed for ring overflows
     ma_engine*      engine_     = nullptr;
     ma_sound_group* musicGroup_ = nullptr;  // music sub-mix node
     ma_sound_group* sfxGroup_   = nullptr;  // SFX  sub-mix node

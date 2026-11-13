@@ -5077,6 +5077,11 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
                                    tx(Txt::TipSmallerFilesTheFrameIsScaled));
         if (sc >= 0)
             videoScaleSetting = sc == 0 ? 1.0f : (sc == 1 ? 0.75f : 0.5f);
+        const char *kSound[] = {tx(Txt::OptVideoSoundOff), tx(Txt::OptVideoSoundAll), tx(Txt::OptVideoSoundAmbience)};
+        const int so = uiChoiceRow(inp, ui, "VideoSound", 0, tx(Txt::LblVideoSound), kSound, 3,
+                                   std::clamp(videoSoundSetting, 0, 2), tx(Txt::TipVideoSound));
+        if (so >= 0)
+            videoSoundSetting = so;
         if (!videoLastFile_.empty())
             uiKV("VideoLast", 0, tx(Txt::LblLastVideo), uiKitStr("%s", videoLastFile_.c_str()));
     }
@@ -9448,6 +9453,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         videoUiSetting = d.value("video_ui", videoUiSetting);
         videoFpsSetting = std::clamp(d.value("video_fps", videoFpsSetting), 10.0f, 120.0f);
         videoScaleSetting = std::clamp(d.value("video_scale", videoScaleSetting), 0.25f, 1.0f);
+        videoSoundSetting = std::clamp(d.value("video_sound", videoSoundSetting), 0, 2);
         photoSettleFrames = std::clamp(d.value("photo_frames", photoSettleFrames), 4.0f, 240.0f);
         // UC3 follow-up: back to real persisted behavior now that the cinematic itself is settled
         // (the always-on-every-launch testing override is gone). "play_intro_on_startup" absent
@@ -10429,6 +10435,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"video_ui", videoUiSetting},
         {"video_fps", videoFpsSetting},
         {"video_scale", videoScaleSetting},
+        {"video_sound", videoSoundSetting},
         {"photo_frames", photoSettleFrames},
         {"trail_enabled", trailEnabled}};
     if (settingsChrome.x >= 0.0f)

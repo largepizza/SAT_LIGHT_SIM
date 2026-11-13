@@ -52,7 +52,9 @@ const vec3  kAirglowRedColor      = vec3(1.0, 0.12, 0.05);
 // (which pre-dates the cloud warp's migration from a noiseTex lookup to this analytic
 // evaluator — see cloudWarpOffset's comment; follow the current code, not the stale plan).
 const float kAirglowNoiseFreq = 4.0;
-const float kAirglowDriftRate = 0.015; // wall-clock rad/s (pc.waveTime), slow independent drift
+// (kAirglowDriftRate, a straight drift of the noise at 0.015 units/s of pc.waveTime, is gone since 2026-11-12: the
+// pattern swept past at ~24 km/s and jumped at 00:00 UTC, where pc.waveTime = sim seconds in the day wraps.
+// airglowTimeOfs / airglowWindDir below.)
 // First-pass brightness scale, same convention as kNightGlowScale/kCityUpwellStrength
 // above: raw accumulation (density × segLen, summed over qualifying march samples) is
 // a large unnormalized number, this brings it into visible range. Deliberately
@@ -305,8 +307,51 @@ float warpPerlin3(vec3 p) {
 // minus-shimmer look exactly; gain=1 is full patchiness. Duplicated in cloud_march.comp (which
 // needs its own copy for the red band's supplemental march) rather than shared — matches this
 // file's standing convention for small per-shader noise helpers, see the aurora functions above.
+// ── Airglow over time (2026-11-12) ───────────────────────────────────────────
+// The noise's time offset: a closed loop through noise space once a UTC day (t = pc.waveTime, sim seconds in the
+// day, which wraps 86400 -> 0 with no jump here). Moving the sphere through the 3D noise MORPHS its patches rather
+// than sliding them: at radius 0.6 the 1600-km features (kAirglowNoiseFreq 4) change at ~70 m/s, the speed real
+// nightglow structure moves at (tens of m/s; the old drift was ~24 km/s).
+// (Not in SKY_LITE, whose SPIR-V has a build-enforced budget: it has no green / sodium march.)
+#ifndef SKY_LITE
+const float kAirglowEvolveR = 0.6;
+vec3 airglowTimeOfs(float t) {
+    float th = t * (6.28318531 / 86400.0);
+    return kAirglowEvolveR * vec3(cos(th), sin(th), 0.5 * sin(2.0 * th));
+}
+// ... and the mesopause's zonal wind carries the patterns round the pole: the sample's ECEF direction turned by
+// 2 x the clouds' drift phase (cloud.cloudPhase, continuous sim time, ~47 m/s at the equator; a whole multiple of
+// the phase, so its 2 pi wrap is seamless). With the daily loop the pattern does not repeat from night to night.
+vec3 airglowWindDir(vec3 d) {
+    float a = 2.0 * cloud.cloudPhase;
+    float c = cos(a), s = sin(a);
+    return vec3(c * d.x - s * d.y, s * d.x + c * d.y, d.z);
+}
+// The bands' brightness through the night and the year, per sample (x green 557.7, y sodium 589.3, z red 630.0; mean
+// ~1 over a night, so the gains keep their meaning). r = the sample's direction, s = the Sun's, z = the Earth's axis,
+// all in one frame. Hours since the sample's own sunset from the Sun's local hour angle and the sunset hour angle
+// (latitude and season in it). What each band does (nightglow climatology, mid-latitudes):
+//  * green: brightest after dusk, falling into the night, a weaker post-midnight rise (~2 h);
+//  * sodium: little nightly change; a strong annual cycle, winter maximum ~2-3x summer (the hemisphere whose
+//    pole points away from the Sun);
+//  * red (F-region recombination): ~3x in the first hours after dusk, decaying through the evening as the
+//    ionosphere does (x the equatorial anomaly in cloud_march.comp's own copy).
+vec3 airglowNightK(vec3 r, vec3 s, vec3 z) {
+    float rz = dot(r, z), sz = dot(s, z);
+    float H  = atan(dot(cross(s, r), z), dot(s, r) - sz * rz);        // 0 = local noon, > 0 = afternoon / evening
+    float cH0 = -rz * sz / max(sqrt(max((1.0 - rz * rz) * (1.0 - sz * sz), 0.0)), 1e-4);
+    float H0 = acos(clamp(cH0, -1.0, 1.0));                             // sunset hour angle
+    float tSS = mod(H - H0, 6.28318531) * (12.0 / 3.14159265);          // hours since sunset
+    float x  = (H - sign(H) * 3.14159265) * (12.0 / 3.14159265);        // hours from local midnight
+    float ev = exp(-0.4 * tSS);
+    float green = 0.85 + 0.4 * ev + 0.15 * exp(-0.44 * (x - 2.0) * (x - 2.0));
+    float na = (0.9 + 0.2 * ev) * (1.0 - 0.45 * clamp(rz * sz * 3.6, -1.0, 1.0));
+    float red = 0.66 + 2.06 * exp(-0.5 * tSS);
+    return vec3(green, na, red);
+}
 float airglowCoverageMask(vec3 dirECEF, float t, vec3 seedOffset) {
     float n = warpPerlin3(dirECEF * (kAirglowNoiseFreq * 0.5)
-                          + vec3(t * kAirglowDriftRate * 0.6, 0.0, 0.0) + seedOffset);
+                          + 0.6 * airglowTimeOfs(t) + seedOffset);
     return smoothstep(-0.2, 0.5, n);
 }
+#endif

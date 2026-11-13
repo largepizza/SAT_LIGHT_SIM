@@ -14,6 +14,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -33,9 +34,18 @@ struct VideoRecordOptions
     float scale = 1.0f;        // of the window size (the output is rounded down to even)
     bool ui = false;           // include the UI (else the frame before the UI is drawn)
     bool lossless = false;     // every frame is one video frame; never drop (the caller holds back)
+    bool wallClock = true;     // tick()'s dt is wall time (not a harness's fixed step): start()'s stall is not video
     int bitrateKbps = 0;       // 0 = auto
     std::string encoder = "auto";
     int slots = 6;             // readback ring
+    // Sound (an AAC track) when audioRate > 0 and audioPull is set. audioPull(dst, max) hands over up to max
+    // interleaved stereo float frames captured since the last call; the frame thread calls it every poll() (and once
+    // more in stop()). audioPump, when set (a harness run: no audio device pulls the mix), is asked first for the
+    // frames the video's timeline owes, so the sound follows the video clock exactly. At the end the track is padded
+    // with silence to the video's length.
+    int audioRate = 0;
+    std::function<uint32_t(float *, uint32_t)> audioPull;
+    std::function<void(uint32_t)> audioPump;
 };
 
 class VideoRecorder
@@ -72,13 +82,16 @@ private:
     {
         int slot;
         int repeat;
+        int64_t skip = 0;     // video frames the timeline moved on without before this one (sound on: a gap)
     };
     void worker();
+    void pullAudio();         // frame thread: audioPump / audioPull into audioQ_
 
     VideoRecordOptions opt_;
     FrameCapture cap_;
     State state_ = State::Idle;
     double clock_ = 0.0;      // seconds of video time owed
+    double stallS_ = 0.0;     // start()'s own duration, taken out of the next dt (wallClock)
     int due_ = 0;             // video frames this frame stands for
     bool requested_ = false;  // lossless: requestFrame() this frame
     int carry_ = 0;           // frames dropped since the last capture (the next one repeats for them)
@@ -94,6 +107,10 @@ private:
     std::mutex mx_;
     std::condition_variable cv_;
     std::deque<Item> queue_;
+    std::deque<std::vector<float>> audioQ_; // interleaved stereo chunks for the worker
+    bool audioOn_ = false;
+    int64_t audioPumped_ = 0, audioIn_ = 0; // frame thread: frames pumped (offline) / pulled
+    int64_t skipOwed_ = 0;                   // frame thread: repeats cut by the 2-s cap, given to the next item
     bool endOfStream_ = false;
     std::atomic<bool> workerDone_{false};
     std::string workerErr_, encoderName_;

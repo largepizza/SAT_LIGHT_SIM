@@ -117,6 +117,51 @@ static std::string ffmpegPathFound()
 
 bool ffmpegOnPath() { return !ffmpegPathFound().empty(); }
 
+// Runs a command line to completion; returns its exit code (-1 if it could not start).
+static int runCommand(const std::string &cmd)
+{
+#ifdef _WIN32
+    STARTUPINFOW si{sizeof(si)};
+    PROCESS_INFORMATION pi{};
+    std::wstring wcmd(cmd.size() + 1, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, cmd.c_str(), -1, wcmd.data(), (int)wcmd.size());
+    if (!CreateProcessW(nullptr, wcmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS,
+                        nullptr, nullptr, &si, &pi))
+        return -1;
+    CloseHandle(pi.hThread);
+    WaitForSingleObject(pi.hProcess, 600000);
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hProcess);
+    return (int)code;
+#else
+    return std::system(cmd.c_str());
+#endif
+}
+
+static FILE *openUtf8(const std::string &path, const char *mode)
+{
+#ifdef _WIN32
+    std::wstring w(path.size() + 1, L'\0'), m(strlen(mode) + 1, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, w.data(), (int)w.size());
+    MultiByteToWideChar(CP_UTF8, 0, mode, -1, m.data(), (int)m.size());
+    return _wfopen(w.c_str(), m.c_str());
+#else
+    return fopen(path.c_str(), mode);
+#endif
+}
+
+static void removeUtf8(const std::string &path)
+{
+#ifdef _WIN32
+    std::wstring w(path.size() + 1, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, path.c_str(), -1, w.data(), (int)w.size());
+    DeleteFileW(w.c_str());
+#else
+    unlink(path.c_str());
+#endif
+}
+
 class FfmpegEncoder : public VideoEncoder
 {
 public:
@@ -125,6 +170,22 @@ public:
         name_ = "ffmpeg";
         w_ = c.width;
         h_ = c.height;
+        exe_ = exe;
+        path_ = c.path;
+        audioRate_ = c.audioRate;
+        audioKbps_ = c.audioKbps;
+        // With sound, the video goes to a side file first and the sound to a raw float one; close() muxes them.
+        vpath_ = audioRate_ > 0 ? c.path + ".video.mp4" : c.path;
+        if (audioRate_ > 0)
+        {
+            apath_ = c.path + ".sound.f32";
+            afile_ = openUtf8(apath_, "wb");
+            if (!afile_)
+            {
+                err_ = "ffmpeg: could not create " + apath_;
+                return false;
+            }
+        }
         uint32_t num, den;
         fpsRatio(c.fps, num, den);
         char cmd[4096];
@@ -133,7 +194,7 @@ public:
                  "\"%s\" -hide_banner -loglevel error -y -f rawvideo -pix_fmt nv12 -s %dx%d -r %u/%u -i - "
                  "-c:v libx264 -preset veryfast -crf 18 -maxrate %dk -bufsize %dk -pix_fmt yuv420p "
                  "-color_primaries bt709 -color_trc bt709 -colorspace bt709 -color_range tv -movflags +faststart \"%s\"",
-                 exe.c_str(), w_, h_, num, den, autoBitrateKbps(c) * 2, autoBitrateKbps(c) * 4, c.path.c_str());
+                 exe.c_str(), w_, h_, num, den, autoBitrateKbps(c) * 2, autoBitrateKbps(c) * 4, vpath_.c_str());
 #ifdef _WIN32
         SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
         HANDLE rd = nullptr, wr = nullptr;
@@ -177,7 +238,46 @@ public:
     {
         return put(y, (size_t)w_ * h_) && put(uv, (size_t)w_ * h_ / 2);
     }
+    bool writeAudio(const float *lr, uint32_t frames) override
+    {
+        if (!afile_ || frames == 0)
+            return true;
+        if (fwrite(lr, sizeof(float) * 2, frames, afile_) != frames)
+        {
+            err_ = "ffmpeg: could not write the sound side file";
+            return false;
+        }
+        return true;
+    }
     bool close() override
+    {
+        bool ok = closeVideo();
+        if (afile_)
+        {
+            fclose(afile_);
+            afile_ = nullptr;
+            if (ok)
+            {
+                char cmd[4096];
+                snprintf(cmd, sizeof(cmd),
+                         "\"%s\" -hide_banner -loglevel error -y -i \"%s\" -f f32le -ar %d -ac 2 -i \"%s\" -map 0:v -map 1:a "
+                         "-c:v copy -c:a aac -b:a %dk -movflags +faststart \"%s\"",
+                         exe_.c_str(), vpath_.c_str(), audioRate_, apath_.c_str(), audioKbps_, path_.c_str());
+                const int code = runCommand(cmd);
+                if (code != 0)
+                {
+                    err_ = "ffmpeg (adding the sound) exited with code " + std::to_string(code) + "; the silent video is " +
+                           vpath_;
+                    ok = false;
+                }
+                else
+                    removeUtf8(vpath_);
+            }
+            removeUtf8(apath_);
+        }
+        return ok;
+    }
+    bool closeVideo()
     {
         bool ok = true;
 #ifdef _WIN32
@@ -239,6 +339,9 @@ private:
 #endif
     }
     int w_ = 0, h_ = 0;
+    int audioKbps_ = 192;
+    std::string exe_, path_, vpath_, apath_;
+    FILE *afile_ = nullptr;
 #ifdef _WIN32
     HANDLE pipe_ = nullptr, proc_ = nullptr;
 #else
@@ -337,9 +440,69 @@ public:
             }
             safeRelease(api);
         }
+        // The sound: 16-bit PCM in, AAC-LC out (the Windows AAC encoder takes 44.1 / 48 kHz, 96..192 kbit/s stereo).
+        if (c.audioRate > 0)
+        {
+            audioRate_ = c.audioRate;
+            IMFMediaType *aout = nullptr, *ain = nullptr;
+            MFCreateMediaType(&aout);
+            aout->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
+            aout->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_AAC);
+            aout->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16);
+            aout->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, (UINT32)audioRate_);
+            aout->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, 2);
+            const int kbps = c.audioKbps >= 176 ? 192 : (c.audioKbps >= 144 ? 160 : (c.audioKbps >= 112 ? 128 : 96));
+            aout->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, (UINT32)kbps * 125u);
+            h = writer_->AddStream(aout, &astream_);
+            safeRelease(aout);
+            if (FAILED(h))
+                return fail("AddStream (AAC)", h);
+            MFCreateMediaType(&ain);
+            ain->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
+            ain->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_PCM);
+            ain->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16);
+            ain->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, (UINT32)audioRate_);
+            ain->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, 2);
+            ain->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, 4);
+            ain->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, (UINT32)audioRate_ * 4u);
+            h = writer_->SetInputMediaType(astream_, ain, nullptr);
+            safeRelease(ain);
+            if (FAILED(h))
+                return fail("SetInputMediaType (PCM)", h);
+        }
         h = writer_->BeginWriting();
         if (FAILED(h))
             return fail("BeginWriting", h);
+        return true;
+    }
+    bool writeAudio(const float *lr, uint32_t frames) override
+    {
+        if (audioRate_ <= 0 || frames == 0)
+            return true;
+        const DWORD size = (DWORD)frames * 4;
+        IMFMediaBuffer *buf = nullptr;
+        if (FAILED(MFCreateMemoryBuffer(size, &buf)))
+            return fail("MFCreateMemoryBuffer (sound)");
+        BYTE *p = nullptr;
+        buf->Lock(&p, nullptr, nullptr);
+        int16_t *d = reinterpret_cast<int16_t *>(p);
+        for (size_t i = 0; i < (size_t)frames * 2; ++i)
+            d[i] = (int16_t)std::lround(std::clamp(lr[i], -1.0f, 1.0f) * 32767.0f);
+        buf->Unlock();
+        buf->SetCurrentLength(size);
+        IMFSample *s = nullptr;
+        MFCreateSample(&s);
+        s->AddBuffer(buf);
+        const LONGLONG t0 = (LONGLONG)(audioFrames_ * 10000000ll / audioRate_);
+        audioFrames_ += frames;
+        const LONGLONG t1 = (LONGLONG)(audioFrames_ * 10000000ll / audioRate_);
+        s->SetSampleTime(t0);
+        s->SetSampleDuration(t1 - t0);
+        const HRESULT h = writer_->WriteSample(astream_, s);
+        safeRelease(s);
+        safeRelease(buf);
+        if (FAILED(h))
+            return fail("WriteSample (sound)", h);
         return true;
     }
     bool write(const uint8_t *y, const uint8_t *uv, int64_t index) override
@@ -401,7 +564,8 @@ private:
         return false;
     }
     IMFSinkWriter *writer_ = nullptr;
-    DWORD stream_ = 0;
+    DWORD stream_ = 0, astream_ = 0;
+    int64_t audioFrames_ = 0;
     int w_ = 0, h_ = 0;
     double fps_ = 60.0;
     int64_t written_ = 0;

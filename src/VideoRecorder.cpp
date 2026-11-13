@@ -44,6 +44,7 @@ bool VideoRecorder::start(VulkanContext &ctx, uint32_t srcW, uint32_t srcH, cons
         err = "video needs swapchain TRANSFER_SRC (not supported by this GPU/driver)";
         return false;
     }
+    const double t0 = wallNow();
     opt_ = o;
     opt_.fps = std::clamp(opt_.fps, 1.0, 240.0);
     opt_.scale = std::clamp(opt_.scale, 0.1f, 1.0f);
@@ -82,6 +83,10 @@ bool VideoRecorder::start(VulkanContext &ctx, uint32_t srcW, uint32_t srcH, cons
     cfg.fps = opt_.fps;
     cfg.bitrateKbps = opt_.bitrateKbps;
     cfg.backend = opt_.encoder;
+    audioOn_ = opt_.audioRate > 0 && (bool)opt_.audioPull;
+    cfg.audioRate = audioOn_ ? opt_.audioRate : 0;
+    audioQ_.clear();
+    audioPumped_ = audioIn_ = skipOwed_ = 0;
     thread_ = std::thread([this, cfg, opened]()
     {
         std::string e;
@@ -95,19 +100,42 @@ bool VideoRecorder::start(VulkanContext &ctx, uint32_t srcW, uint32_t srcH, cons
             return;
         }
         std::vector<uint8_t> y((size_t)cfg.width * cfg.height), uv((size_t)cfg.width * cfg.height / 2);
-        int64_t index = 0;
+        int64_t index = 0, audioOut = 0;
         bool failed = false;
+        std::deque<std::vector<float>> sound;
         for (;;)
         {
             Item it{};
+            bool haveItem = false;
             {
                 std::unique_lock<std::mutex> lk(mx_);
-                cv_.wait(lk, [&] { return !queue_.empty() || endOfStream_; });
-                if (queue_.empty())
+                cv_.wait(lk, [&] { return !queue_.empty() || !audioQ_.empty() || endOfStream_; });
+                sound.swap(audioQ_);
+                if (!queue_.empty())
+                {
+                    it = queue_.front();
+                    queue_.pop_front();
+                    haveItem = true;
+                }
+                else if (sound.empty())
                     break; // end of stream, all written
-                it = queue_.front();
-                queue_.pop_front();
             }
+            for (const std::vector<float> &ch : sound)
+            {
+                if (!failed && !enc->writeAudio(ch.data(), (uint32_t)(ch.size() / 2)))
+                    failed = true;
+                audioOut += (int64_t)(ch.size() / 2);
+            }
+            sound.clear();
+            if (failed)
+            {
+                std::lock_guard<std::mutex> lk(mx_);
+                if (workerErr_.empty())
+                    workerErr_ = enc->error();
+            }
+            if (!haveItem)
+                continue;
+            index += it.skip;
             const double t0 = wallNow();
             const FrameCapture::Slot &s = cap_.slot(it.slot);
             if (!failed)
@@ -128,6 +156,18 @@ bool VideoRecorder::start(VulkanContext &ctx, uint32_t srcW, uint32_t srcH, cons
             maxEncodeMs_ = std::max(maxEncodeMs_, (t2 - t1) * 1000.0);
             ++workerFrames_;
         }
+        // The sound track ends with the video: pad a short one with silence (a long one is cut by the players).
+        if (!failed && enc->hasAudio())
+        {
+            const int64_t want = (int64_t)std::llround((double)index / cfg.fps * cfg.audioRate);
+            std::vector<float> zeros(4096 * 2, 0.0f);
+            while (audioOut < want && !failed)
+            {
+                const uint32_t n = (uint32_t)std::min<int64_t>(4096, want - audioOut);
+                failed = !enc->writeAudio(zeros.data(), n);
+                audioOut += n;
+            }
+        }
         if (!enc->close())
         {
             std::lock_guard<std::mutex> lk(mx_);
@@ -146,6 +186,7 @@ bool VideoRecorder::start(VulkanContext &ctx, uint32_t srcW, uint32_t srcH, cons
     }
     state_ = State::Recording;
     startWall_ = wallNow();
+    stallS_ = opt_.wallClock ? startWall_ - t0 : 0.0;
     return true;
 }
 
@@ -169,10 +210,19 @@ void VideoRecorder::tick(double dt)
         requested_ = false;
         return;
     }
-    // Video frame k shows [k / fps, (k + 1) / fps): this frame (drawn at clock_) owes every frame up to its own.
+    // This frame is drawn at clock_ = the time since the first recorded frame: its own dt is added before it is
+    // placed; the first frame's dt (from before recording began) never is. start() runs in buildUI, before this
+    // frame's tick, so its own stall (~0.1 s: the readback ring, the encoder open) lands in the SECOND frame's dt, and
+    // on a wall clock is taken out of it. (Before 2026-11-12 each dt was added after placing its frame: frame 0 held
+    // for the stall and the whole video ran ~0.1 s behind the wall clock, a constant lead of the sound track.)
+    if (framesRendered_ > 1)
+    {
+        clock_ += std::max(0.0, dt - stallS_);
+        stallS_ = 0.0;
+    }
+    // Video frame k shows [k / fps, (k + 1) / fps): this frame owes every frame up to its own.
     const int64_t target = (int64_t)std::floor(clock_ * opt_.fps + 1e-6) + 1;
     due_ = (int)std::max<int64_t>(0, target - (framesIn_ + carry_));
-    clock_ += std::max(0.0, dt);
 }
 
 bool VideoRecorder::recordCopy(VkCommandBuffer cmd, VulkanContext &ctx, VkImage image, VkExtent2D ext, VkFormat fmt)
@@ -186,6 +236,8 @@ bool VideoRecorder::recordCopy(VkCommandBuffer cmd, VulkanContext &ctx, VkImage 
     {
         dropped_ += repeat - maxRepeat;
         framesIn_ += repeat - maxRepeat; // the timeline moves on without them
+        if (audioOn_)
+            skipOwed_ += repeat - maxRepeat; // ...and with sound the encoder leaves the gap, so the two stay in step
         repeat = maxRepeat;
     }
     const int slot = cap_.record(cmd, ctx, image, ext, fmt, repeat);
@@ -215,6 +267,13 @@ bool VideoRecorder::poll(VulkanContext &ctx)
     {
         std::vector<Item> got;
         cap_.collect(ctx, [&](int slot, const FrameCapture::Slot &s) { got.push_back({slot, s.tag}); });
+        if (!got.empty() && skipOwed_ > 0)
+        {
+            got.front().skip = skipOwed_;
+            skipOwed_ = 0;
+        }
+        if (state_ == State::Recording)
+            pullAudio();
         if (!got.empty())
         {
             {
@@ -246,10 +305,44 @@ bool VideoRecorder::poll(VulkanContext &ctx)
     return false;
 }
 
+void VideoRecorder::pullAudio()
+{
+    if (!audioOn_)
+        return;
+    if (opt_.audioPump)
+    {
+        const int64_t owed = (int64_t)std::llround((double)framesIn_ / opt_.fps * opt_.audioRate) - audioPumped_;
+        if (owed > 0)
+        {
+            opt_.audioPump((uint32_t)std::min<int64_t>(owed, (int64_t)opt_.audioRate * 10));
+            audioPumped_ += owed;
+        }
+    }
+    std::vector<float> chunk;
+    for (;;)
+    {
+        const size_t old = chunk.size();
+        chunk.resize(old + 4096 * 2);
+        const uint32_t n = opt_.audioPull(chunk.data() + old, 4096);
+        chunk.resize(old + (size_t)n * 2);
+        if (n < 4096)
+            break;
+    }
+    if (chunk.empty())
+        return;
+    audioIn_ += (int64_t)(chunk.size() / 2);
+    {
+        std::lock_guard<std::mutex> lk(mx_);
+        audioQ_.push_back(std::move(chunk));
+    }
+    cv_.notify_one();
+}
+
 void VideoRecorder::stop()
 {
     if (state_ != State::Recording)
         return;
+    pullAudio(); // the sound up to now (the capture is stopped by its owner after this)
     state_ = State::Stopping;
     stopWall_ = wallNow();
     due_ = 0;
@@ -289,6 +382,8 @@ nlohmann::json VideoRecorder::stats() const
     j["fps"] = opt_.fps;
     j["ui"] = opt_.ui;
     j["lossless"] = opt_.lossless;
+    j["audio_rate"] = audioOn_ ? opt_.audioRate : 0;
+    j["audio_captured_s"] = audioOn_ && opt_.audioRate > 0 ? (double)audioIn_ / opt_.audioRate : 0.0;
     j["frames"] = framesOut_.load();               // video frames written
     j["duration_s"] = (double)framesOut_.load() / opt_.fps;
     j["captures"] = captures_;                     // distinct frames copied

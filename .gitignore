@@ -96,3 +96,9 @@ satellite_models_debug/
 /qa/
 # QA worktrees (git worktree add .worktrees/<slug>)
 /.worktrees/
+
+# tools/neural (PyTorch venv, datasets, checkpoints)
+tools/neural/.venv/
+tools/neural/data/
+tools/neural/runs/
+tools/neural/__pycache__/
