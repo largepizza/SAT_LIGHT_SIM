@@ -1729,7 +1729,7 @@ void SatMeshRenderer::recordReflections(VkCommandBuffer cmd, VkDescriptorSet sky
 // ─── Bloom source (4c) ────────────────────────────────────────────────────────────────────────────
 struct MeshBloomPC
 {
-    float exposure, gain, scale, pad;
+    float exposure, gain, scale, surfGain;
 };
 
 void SatMeshRenderer::createBloomPipeline(VulkanContext &ctx, VkRenderPass flareSourcePass)
@@ -1830,7 +1830,8 @@ void SatMeshRenderer::createBloomPipeline(VulkanContext &ctx, VkRenderPass flare
     vkDestroyShaderModule(ctx.device, f, nullptr);
 }
 
-void SatMeshRenderer::recordBloom(VkCommandBuffer cmd, uint32_t targetW, uint32_t targetH, float exposure, float gain)
+void SatMeshRenderer::recordBloom(VkCommandBuffer cmd, uint32_t targetW, uint32_t targetH, float exposure, float gain,
+                                  float surfGain)
 {
     if (!bloomPipe || !sceneColorViewH || targetW == 0 || targetH == 0)
         return;
@@ -1840,7 +1841,7 @@ void SatMeshRenderer::recordBloom(VkCommandBuffer cmd, uint32_t targetW, uint32_
     vkCmdSetScissor(cmd, 0, 1, &sc);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomPipe);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bloomPipeLayout, 0, 1, &bloomDescSet, 0, nullptr);
-    MeshBloomPC pc{exposure, gain, (float)sceneW / (float)targetW, 0.0f};
+    MeshBloomPC pc{exposure, gain, (float)sceneW / (float)targetW, std::max(surfGain, 0.0f)};
     vkCmdPushConstants(cmd, bloomPipeLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(pc), &pc);
     vkCmdDraw(cmd, 3, 1, 0, 0);
 }

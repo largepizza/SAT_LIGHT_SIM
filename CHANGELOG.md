@@ -557,6 +557,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **A mirror's flare keeps its glare when you zoom in.** Tracking a Reflect mirror's flare from a distance, its
   glare faded away as the mirror grew on screen and turned white: now the Sun's image in it glares at full strength
   at any size.
+- **Close-up models glow and glare.** A sunlit model that clips to white now blooms by its own brightness and size
+  (Settings > Photometry > Bloom and glare, "Model glare", 1.0; 0 = the old look), and a mirror filled with the
+  Sun's reflection throws its starburst from its edges instead of hiding it behind the white mirror. Dark and
+  shadowed models are unchanged.
 
 ### Fixed
 

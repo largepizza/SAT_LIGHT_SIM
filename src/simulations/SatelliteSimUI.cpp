@@ -5537,6 +5537,13 @@ void SatelliteSim::buildSettingsPhotometryRows(const UIInput &inp, UIRenderer &u
             for (auto &pp : photoParams)
                 if (pp.idx == kGroups[g].ids[k])
                     photoRow(pp);
+        if (strcmp(kGroups[g].title, tx(Txt::LblBloomAndGlare)) == 0)
+        {
+            // Model glare (2026-11-12, issue 20261112_195153, mesh_bloom.frag): a resolved model's own bloom past white.
+            // Slot 620 (621 reserved).
+            CloudSlider mg[] = {{tx(Txt::SldModelGlare), &meshGlareGain, 0.0f, 4.0f, 0.05f, "%.2f", 620}};
+            buildCloudSliderRows(inp, ui, mg, 1, false);
+        }
     }
 
     if (part == 1)
@@ -9365,6 +9372,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         glareFalloff = p.value("glare_falloff", glareFalloff);
         glareSpikes = p.value("glare_spikes", glareSpikes);
         glareNearGain = p.value("glare_near_gain", glareNearGain);
+        meshGlareGain = settingClamp(p.value("model_glare", meshGlareGain), 0.0f, 4.0f);
         glareNearRangeKm = p.value("glare_near_range_km", glareNearRangeKm);
         glareClusterMerge = p.value("glare_cluster_merge", glareClusterMerge);
         satResolvedStrength = p.value("sat_resolved", satResolvedStrength);
@@ -10369,6 +10377,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"glare_falloff", glareFalloff},
         {"glare_spikes", glareSpikes},
         {"glare_near_gain", glareNearGain},
+        {"model_glare", meshGlareGain},
         {"glare_near_range_km", glareNearRangeKm},
         {"glare_cluster_merge", glareClusterMerge},
         {"sat_resolved", satResolvedStrength},
