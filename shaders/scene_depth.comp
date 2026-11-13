@@ -115,7 +115,8 @@ void main() {
     // so a uniform kNoSurfaceT reproduces the pre-unification behaviour (volumetrics and beams
     // unoccluded by terrain) — making the whole architecture a single A/B checkbox.
     if ((pc.debugDisableMask & 1024u) != 0u) {
-        imageStore(sceneDepth, coord, vec4(meshDistAt(coord, size), 2.0, 0.0, 0.0));
+        float tMesh = meshDistAt(coord, size);
+        imageStore(sceneDepth, coord, vec4(tMesh, tMesh < kNoSurfaceT ? 3.0 : 2.0, 0.0, 0.0));   // (.g 3: a mesh, below)
         return;
     }
 
@@ -207,5 +208,9 @@ void main() {
             }
         }
     }
-    imageStore(sceneDepth, coord, vec4(quarter ? tOut : min(tOut, meshDistAt(coord, size)), shadow, 0.0, 0.0));
+    // .g 3 = a satellite / rocket MESH is this texel's surface (2026-11-12, issue_20261112_215754): cloud_march.comp drops
+    // resolved cloud "behind the surface" on meshes only. (sat_sky.frag takes .g as the terrain's shadow only up to 1.5,
+    // like 2 "not computed".)
+    float tMesh = quarter ? kNoSurfaceT : meshDistAt(coord, size);
+    imageStore(sceneDepth, coord, vec4(min(tOut, tMesh), tMesh < tOut ? 3.0 : shadow, 0.0, 0.0));
 }

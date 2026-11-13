@@ -129,6 +129,21 @@ staircase along every mesh edge); `lightning.frag` mode 2 lights cloud / fog on 
 mesh and ends its haze there; `cloud_march.comp` drops a RESOLVED v2 cloud whose distance is past the texel's surface
 (the resolve's history kept the cumulus behind a moving hull as dark blocky patches; the march clamps only new samples).
 
+**That drop is for MESH texels only (2026-11-12, issue_20261112_215754 "Black line on sky terrain intersection").** The
+depth pass marks a texel whose surface is a mesh with `.g` = 3 (`scene_depth.comp`; `sat_sky.frag` reads `.g` as the
+terrain's shadow only up to 1.5, so 3 is "not computed" there). On terrain and the sea the resolved distance is no
+evidence of stale cloud: it is the opacity-weighted mean of the 3x3 NEW samples round the pixel (`cloud_v2_resolve.comp`,
+review 20c), so at a ridge against a hazy sky the crest's texels carried the sky samples' dust distance (~25 km at
+opacity ~0.55, against ~2.5 km at ~0.1 for the ground's) while their surface was 5 km out. The drop removed the dust IN
+FRONT of the ridge (the march had clamped it correctly) and the combine pass (DB.a -1) gave the full-res pixels round it
+none: a 1-2 px dark band along every silhouette over haze, ~10 levels for the first ~60 frames after a history reset and
+~24 once the still view settled (~120 frames on). Knockout `fog_layer` / `dust_amount 0` removed it; the AP and limb
+volumes, the sky TAA, the sparse grid, the full-res grid and the history depth test did not. On a mesh that same mixing is
+what makes the drop work in motion (the hull's own fresh samples hold no cloud, the samples beside it the cloud behind).
+Dead end: filling a dropped terrain texel from its same-surface neighbours that are not behind theirs held only for the
+first ~60 frames (0 levels), then its neighbours were "behind" too (16-19 levels); on a hull it drew the limb's haze as
+orange blotches (issue_20261110_184611's path).
+
 **Never store a distance in a half-float.** `tEnterCombined` lived in an `RGBA16F` alpha, whose
 65504 ceiling every near-horizon cloud entry overflowed to `+inf` — silently suppressing the entire
 composite on any ray that also hit the sea-level sphere. That bug is why `sceneDepthImg` is R32.

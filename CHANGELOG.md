@@ -560,6 +560,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- The thin dark line where hazy sky or clouds meet the terrain's silhouette is gone (issue_20261112_215754). The
+  clouds' composite dropped the dust and fog in front of a ridge's edge as if it lay behind the ridge (its distance was
+  averaged with the sky's beside it). That drop is meant for rockets and satellites passing in front of clouds, and
+  now applies to them only.
 - Rocket plumes no longer vanish for the rest of a session after you jump between launches or fly away from one
   (issue_20261111_211610). Plume builds for launches that left view kept their worker slots, and after four of them
   no plume was built again; finished builds nobody collects are now dropped and rebuilt when needed.
