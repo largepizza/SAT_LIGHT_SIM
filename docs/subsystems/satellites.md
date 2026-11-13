@@ -645,6 +645,20 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     from the colour target's alpha (slot + 1). A flare keeps its full glow across the hand-off, and
     on a large model the glow sits on the glint. The first cut (1 texel per block over 2× white) was
     far too weak.
+  - **Model glare (2026-11-12, issue 20261112_195153, `photometry.model_glare` 1.0, slider slot 620):** the
+    energy-matched seed is a sprite's few texels of glow, so spread over a model hundreds of pixels wide it vanished
+    (a Reflect mirror holding the Sun, mag -28.7 at 2 km, drew as a white quad on black). `mesh_bloom.frag` now
+    seeds each texel with max(that, the sprite's own log response b = clamp(log2(x / 2) / 2, 0, 4) on the pixel's
+    DISPLAYED value x = luminance × `skyExposure()`, averaged over the texel): a model glows like a sprite of its
+    own size and surface brightness. The satellite adaptation (up to 8 mag, raised by that same mirror) dims the
+    sprite's seed but not the mesh's pixels, which is why the old path gave ~0. A pixel at or under 2× white (dark,
+    shadowed or Earth-shadowed models) adds nothing (A/B diff 0). The shot: halo to 1% of white 3 px -> 73 px (18%
+    of the mirror's diagonal). Model glare 0 = the old image exactly; GPU A/B at the shot within noise (9.09 / 8.98
+    / 9.23 ms, A / B / A). The mirror's STARBURST is the sprite's (the dominant-lobe glare keep, glare.vert), sized
+    by "Glare size" x the proximity gain: under the reporter's `glare_near_range_km` 1.0 (default 21.86) it is ~85 px
+    and sits inside the 240 px white mirror; at the default it reaches well past it. A first try that widened the
+    mesh-glint-list glare by the glint's measured extent (glare_find.comp) changed nothing here, because this glare
+    is not in that list; it was reverted.
   - **Targets:** RGBA32F pre-exposure radiance plus R32F *true distance* (0 = none), full swap
     extent, GENERAL layout, always cleared.
   - **Depth pre-pass (2026-09-24):** each mesh is drawn twice — `sat_mesh_depth.frag.spv` (only the

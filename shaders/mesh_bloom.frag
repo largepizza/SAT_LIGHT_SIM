@@ -23,10 +23,10 @@ layout(set = 0, binding = 0, rgba32f) uniform readonly image2D meshColorImg; // 
 struct MeshInstanceBloom { vec4 pad[20]; uint firstMaterial, firstOccluder, occluderCount; float bloomScale; uvec4 tail; vec4 earthSh[5]; };
 layout(set = 0, binding = 1, std430) readonly buffer MeshInstances { MeshInstanceBloom instances[]; };
 layout(push_constant) uniform PC {
-    float exposure; // unused (kept for the layout)
+    float exposure; // the sky's exposure (SatelliteSim::skyExposure): the mesh's displayed value = radiance x it
     float gain;
     float scale;    // scene pixels per target pixel
-    float pad;
+    float surfGain; // "Model glare" (meshGlareGain, 0 = off): the over-white surface's own bloom, below
 } pc;
 layout(location = 0) out vec4 outColor;
 
@@ -46,6 +46,15 @@ void main()
     ivec2 base = ivec2(gl_FragCoord.xy) * s;
     float seed = 0.0, flare = 0.0;
     vec3  col  = vec3(0.0);
+    // Model glare (2026-11-12, issue 20261112_195153): a RESOLVED mesh blooms by its own displayed surface brightness.
+    // The energy-matched seed is the sprite's (a few texels of point glow): spread over a mesh hundreds of pixels wide
+    // it vanished, and a Reflect mirror filling the view with the Sun's image (mag -28.7 at 2 km, ~4e5 x the white
+    // point) drew as a flat white quad on black. Each pixel takes the sprite's own log response (flare_source.frag:
+    // b = log2(flare) / 2, 0 -> 4, from twice the point style's white) on its displayed value, radiance x exposure, per
+    // unit of texel area: a mesh as wide as a sprite seeds as a sprite of that brightness, a larger one glows in
+    // proportion to its area. Max, not sum, with the energy-matched seed (both are that light). A pixel at or below
+    // twice white (a dark model, a face in Earth's shadow) adds nothing.
+    const float surfK = pc.surfGain / float(s * s);
     for (int y = 0; y < s; ++y)
         for (int x = 0; x < s; ++x) {
             vec4 m = imageLoad(meshColorImg, min(base + ivec2(x, y), size - 1));
@@ -60,7 +69,10 @@ void main()
             float l = dot(m.rgb, vec3(0.2126, 0.7152, 0.0722)) * share;
             MeshInstanceBloom inst = instances[int(floor(m.a)) - 1];
             float k = l * inst.bloomScale;
-            seed += k;
+            float lumAll = dot(m.rgb, vec3(0.2126, 0.7152, 0.0722));
+            float kS = surfK * clamp(log2(max(0.5 * lumAll * pc.exposure, 1.0)) * 0.5, 0.0, 4.0);
+            float kB = max(k, kS);
+            seed += kB;
             // Sun-like = intense AND a compact image of the Sun: a rough lobe at grazing incidence passes the radiance
             // test along every edge of a stainless hull (2026-10-19).
             float glareW = smoothstep(kGlareRadiance0, kGlareRadiance1, l) * roughK;
@@ -68,7 +80,7 @@ void main()
             // sprite's glare keep), so only the rest glares here: both at once drew two stars a few
             // pixels apart over the hand-off.
             flare += k * uintBitsToFloat(inst.tail.z) * glareW * (1.0 - uintBitsToFloat(inst.tail.w));
-            col  += m.rgb * (k / max(dot(m.rgb, vec3(0.2126, 0.7152, 0.0722)), 1e-6));
+            col  += m.rgb * (kB / max(lumAll, 1e-6));
         }
     if (seed <= 0.0) discard;
     outColor = vec4(col * pc.gain, log2(1.0 + flare)); // rgb carries the tint, like fragColor × brightness

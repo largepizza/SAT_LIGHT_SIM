@@ -3877,7 +3877,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         vkCmdDraw(cmd, 1, 1, 0, 1);
         // Phase 4c: satellite mesh glints seed the same bloom (only while a mesh is drawn).
         if (meshRendererInit && meshesDrawnThisFrame)
-            meshRenderer.recordBloom(cmd, flareExtent.width, flareExtent.height, skyExposure(), 1.0f);
+            meshRenderer.recordBloom(cmd, flareExtent.width, flareExtent.height, skyExposure(), 1.0f, meshGlareGain);
         vkCmdEndRenderPass(cmd);                     // finalLayout=GENERAL — ready for the compute blur below, no
                                                      // extra barrier (same convention skyLowResRenderPass established)
 

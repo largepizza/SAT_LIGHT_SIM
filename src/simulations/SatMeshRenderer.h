@@ -200,7 +200,9 @@ public:
     // caller's flare-source render pass, turning the over-white part of the scene radiance (times
     // `exposure`, the sky's) into the same log-compressed glow the satellite sprites seed there.
     void createBloomPipeline(VulkanContext &ctx, VkRenderPass flareSourcePass);
-    void recordBloom(VkCommandBuffer cmd, uint32_t targetW, uint32_t targetH, float exposure, float gain);
+    // surfGain: "Model glare" (mesh_bloom.frag: a resolved mesh's over-white pixels seed the bloom themselves, 0 = off).
+    void recordBloom(VkCommandBuffer cmd, uint32_t targetW, uint32_t targetH, float exposure, float gain,
+                     float surfGain);
 
     // ── Sharp reflections (2026-09-25) ──────────────────────────────────────────────────────────
     // The scene pass also writes a reflection G-buffer (RGBA32UI, sceneReflGView): for each mirror-smooth

@@ -7000,6 +7000,11 @@ private:
     // 3D viewer) or closing in on a zoomed 3D mesh spreads a much wider glare than a distant point
     // (glare.glsl's glareNearScale: 1 → glareNearGain over 0..nearRangeM, smoothstepped).
     float glareNearGain = 8.0f;      // the size multiplier at zero range (1 = off)
+    // "Model glare" (2026-11-12, issue 20261112_195153, mesh_bloom.frag): a resolved model's pixels past twice the
+    // white point seed the bloom by their own displayed brightness (the sprite's log response per unit of area), so
+    // a sunlit white model or a mirror holding the Sun glows in proportion to its size. 0 = only the energy-matched
+    // sprite seed (the old look: a close Reflect mirror was a white quad with no glow). Slider slot 620.
+    float meshGlareGain = 1.0f;
     float glareNearRangeKm = 21.86f; // where the multiplier is 1 again: a satellite seen from the ground
                                      // is never this close, so the tuned look above is intact
     float flareStreakGain = 0.35f;      // per-tap streak/godray strength (flare_blur.comp mode=2)
