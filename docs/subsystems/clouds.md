@@ -1992,6 +1992,30 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   is the open next step. 128 registers. Cloud march at the issue's view 8.79 -> 8.57 ms, from 32 km over a storm
   16.88 -> 17.02 (interleaved, within noise): the separate shape evaluation was already shared (one fetch set since
   2026-11-04), so nothing measurable is saved. The non-unified path (`storm_unified` 0, cv2ColumnSigma) is unchanged.
+- **Storm billow lobes: cauliflower heads on deep convection (2026-11-12, issue_20261112_220642 "Storm shape": "flat
+  vertical storm mountains ... where are the billows?").** On deep convection (cv2LowA's `deep` -> 1: the storm mass `sK`,
+  a congestus-typed map, a storm object's towers through cv2FieldLow's `c.deep = max(c.deep, wS)`) the lobes are
+  `2.5 x lobS + k x lobes x (0.35 + 1.3 x crown)`: lobS the storm-scale read (the shape volume at 2 x the storm anchor),
+  lobes the cumulus-scale one. k is "Storm billow lobes" (`clouds_v2.storm_billow_lobes` 2.0, `storms2.x`, slot 622) mixed
+  in by `deep` from "Storm cumulus fine lobes" (`cu.w`, 0.28 at the user's settings), which keeps every other cloud,
+  and faded back to `cu.w` over footprints of 25-100 m (~25-100 km at 1080p): unfaded, a storm object's tower from 60 km
+  (14 km up) turned to a perforated popcorn of sky-blue gaps; faded, it is as before. WHY:
+  at "Storm feature size" 30 (clamped to 16 on the CPU) x the 3.1 km shape period (the 2026-11-10 bake; the comments
+  written at 12 x 1.9 km read 2.2x smaller) lobS's octaves are 6.2 / 3.1 / 1.6 / 0.8 km -- they ARE the towers' mass --
+  and the cumulus' 0.8 / 0.4 / 0.2 km lobes at 0.28 were invisible: smooth ridges with only the storm erosion's grain.
+  KNOCKOUTS at the shot (reporter settings, harness crops; `qa/waves/20261112/evidence/storms/`, gitignored): the lobes'
+  900 m lift (kCv2LobeLiftM) raised to 2.5 / 5 km on deep: the ridge stays, a few detached heads; the thermal bubbles
+  (`c.bub`'s (1 - deep)^2) and the fine bubbles (`shF`'s (1 - deep)) on deep: nothing visible; `storm_erosion` 0.04 -> 0.5:
+  nothing; `storm_cumulus_fine_lobes` 0.28 -> 1: lumps on the crown (the cause); `storm_scale` 12: lobes, but every cloud
+  re-rolled; `storm_mass` 0: the towers go (they are the mass, not storm objects: the nearest object was 1170 km off).
+  The early-out bounds follow k: cv2LowA's `lobeB` (0.4 x k on bigL) and the storm block's (`lobeS x (1.4 + 0.3 k)`).
+  MEASURED (RTX 3070 Ti, 1920x1009, the reporter's settings, one live app, 3 interleaved reps + an A-A, locked exposure):
+  cloud march at the shot 14.24 -> 14.33 ms (A-A 14.22; unfaded 14.47 -> 14.89 in an earlier batch), 5 km over the storm
+  mass 12.82 -> 13.02 (A-A 12.96); 128 registers both. Top edge of the main tower (crop 760,280 700x420): convex lobes
+  3 -> 4, edge roughness at ~200-800 m 6.75 -> 8.30 px rms. Mean |diff| against the A-A floor: fair-weather cumulus
+  (the view turned) 0.22 / 0.23, the shot's foreground cumulus 0.72 / 0.75 (unchanged); 5 km over the mass 2.62 / 0.51
+  (melted mounds -> heads); 30 km 0.78 / 0.65 and the storm object from 60 km 1.01 / 0.95 (the fade: as before).
+  Turning (the reporter's trail, 6 frames): no new shimmer on the tower edges.
 - **Anvils round 11-10 (cluster c11, issues 20261105_233447, 20261106_171931, 20261106_184711, 20261107_124812, 20261107_125130).**
   THE TOWERS' UNION IS SMOOTH: cv2StormGeom blends every tower's margin into `best` by `cv2SMax(.., 1500 m)` and mixes the
   chosen top / zeta / full by the same weight (it took the strongest alone: two heads at one height met in a crease where the

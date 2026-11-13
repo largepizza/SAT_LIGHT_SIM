@@ -260,6 +260,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Storms, hurricanes and wildfires
 
+- **Storm towers billow.** Thunderstorm towers and a tropical storm's mass carry stacked cauliflower heads instead of
+  smooth, peaked "mountains" with a fine grain. New "Storm billow lobes" (2.0) sets how strongly the cumulus-scale
+  lobes ride on a storm's big ones, Settings > Weather.
 - **Storm moats you can tune.** Storms no longer stand in a dark ring when "Storm clear moat" is off (the cloud deck
   around them was being cut away out to the reach of their anvils). The moat, when on, is a clear ring past the storm's
   own cumulus with its own "Storm moat width (km)", "Storm moat feathering" and "Storm moat frequency" (the share of

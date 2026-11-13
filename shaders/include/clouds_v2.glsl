@@ -300,6 +300,8 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     vec4  hurrperf;
     // (2026-11-11, hurrlook) x "Hurricane eye cloud" (cv2LowA: the low cloud on the eye's floor; 1 = as before, 0 = clear), yzw unused
     vec4  hurrlook;
+    // (2026-11-12, storms) x "Storm billow lobes" (cv2FieldLow: the cumulus-scale lobes' weight on deep convection), yzw unused
+    vec4  storms2;
 } cv2;
 #include "wind_field.glsl"
 
@@ -1620,7 +1622,8 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, float stormI
     c.bub = min(2.0 * ty.look.z * (1.0 - deep) * (1.0 - deep) * fpFade
                 * mix(0.5 * (1.0 + liftK) * smoothstep(60.0, 400.0, thickM), 1.0, flatK), 1.0);
     c.thk = thickM;
-    c.lobeB = lobeK * 0.75 * (1.0 + (1.5 + 0.4 * cv2.cu.w) * bigL) * (1.0 + liftK) + cv2.cu.y * 1.2
+    // (The fine lobes' weight on deep convection is "Storm billow lobes", storms2.x: cv2FieldLow.)
+    c.lobeB = lobeK * 0.75 * (1.0 + (1.5 + 0.4 * mix(cv2.cu.w, cv2.storms2.x, deep)) * bigL) * (1.0 + liftK) + cv2.cu.y * 1.2
             + tur * 2.7 * (1.0 + 1.5 * cv2.cu3.w);
 #ifndef SKY_LITE
     // (The bubbles, cv2FieldLow: m0 -> (m0 + x B) / (1 + x) with B <= 1.2 y, the lobes L added undivided: nothing where
@@ -1739,7 +1742,7 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
 #ifndef SKY_LITE
         bubS = fpS * (1.0 - sg.deck) * (1.0 - sg.deck);
 #endif
-        c.lobeB   = mix(c.lobeB, lobeS * 1.4 * (1.0 + cv2.cu5.x * bubS) + cv2.cu5.x * bubS * 2.0 * cv2.cu5.y * (0.6 + 0.45 * cv2.cu5.z), wS);
+        c.lobeB   = mix(c.lobeB, lobeS * (1.4 + 0.3 * cv2.storms2.x) * (1.0 + cv2.cu5.x * bubS) + cv2.cu5.x * bubS * 2.0 * cv2.cu5.y * (0.6 + 0.45 * cv2.cu5.z), wS);
         c.tur    *= 1.0 - wS;
         c.bub     = mix(c.bub, bubS, wS);
         c.thk     = mix(c.thk, 4000.0, wS);
@@ -1821,7 +1824,18 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         float lobS = (s2.g * 0.6 + s2.b * 0.25 + s2.a * 0.15) - 0.47;
         // (Skewed: the positive excursions grow with cu3.w, so a few turrets stand well over the rest.)
         if (tur > 0.0) lobS += cv2.cu3.w * max(lobS, 0.0) * 1.5;
-        lobes = mix(lobes, 2.5 * lobS + cv2.cu.w * lobes * (0.35 + 1.3 * clamp(lobS + 0.12, 0.0, 0.5)), bigL);
+        // STORM BILLOW LOBES (storms2.x, 2026-11-12, issue_20261112_220642 "Storm shape": "flat vertical storm mountains,
+        // where are the billows?"). On deep convection (the storm mass, a storm object's towers: deep -> 1) the cumulus-scale
+        // lobes weigh "Storm billow lobes" (2) in place of cu.w (0.28 at the user's settings). At "Storm feature size" 30
+        // (clamped to 16) x the 3.1 km period the storm-scale lobes here are 6.2 / 3.1 / 1.6 / 0.8 km: they make the towers'
+        // mass, and with the cumulus' 0.8 / 0.4 / 0.2 km lobes at 0.28 nothing in between showed, a smooth ridge with only
+        // the storm erosion's grain. (Harness knockouts at the shot: the lobes' 900 m lift raised to 2.5 km on deep, alone,
+        // changed little; the thermal bubbles and the fine bubbles on deep, nothing visible; this term, cauliflower heads.)
+        // Faded back to cu.w over footprints of 25-100 m (~25-100 km away at 1080p): there the 0.2-0.8 km lobes are a few
+        // pixels, and a storm object's tower seen from 60 km turned to a perforated popcorn of sky-blue gaps. (The bounds
+        // take the unfaded weight.)
+        lobes = mix(lobes, 2.5 * lobS + mix(cv2.cu.w, cv2.storms2.x, deep * (1.0 - smoothstep(25.0, 100.0, fpM))) * lobes
+                                      * (0.35 + 1.3 * clamp(lobS + 0.12, 0.0, 0.5)), bigL);
         turL  = tur * 2.5 * lobS;
 #ifndef SKY_LITE
         // CUMULUS BUBBLES (cu5, 2026-11-04, the structure round of issue 20261104_181014): a cumulus is a cluster of thermal
