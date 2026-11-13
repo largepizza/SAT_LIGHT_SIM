@@ -821,6 +821,21 @@ the fix — see `docs/HARNESS.md`, *Gotchas* → `time sun`.
   a ~1000-km grazing path made the extinction far too high and the reflected horizon tan (streaks on every
   steep face — the "tan patches" were pre-existing). The on-screen clouds are composited into the reflection,
   leaning back to the clear march by the cloud's distance (the target lacks the air in front of it).
+- **The reflected clouds are found along the reflected RAY** (2026-11-12, issues 20261112_220250 / _220359). The
+  lookup at the mirrored DIRECTION assumed every cloud at infinity: a cumulus 1-2 km up and 5-60 km out was read
+  where the camera sees it, not where this sea point's ray meets it, so the sea drew bright blobs in a band just
+  below the horizon under no cloud, and they slid and changed shape with camera motion ("screen-space"). The ray is
+  sampled where it crosses 0.3 / 0.9 / 1.6 / 2.6 / 5 km, each sample projected into the camera and tested against
+  cloudTargetA.a (km) there: the first sample within [-max(200 m, 2%), +max(2.5 km, 30%)] of the visible cloud's
+  distance is the hit, refined by one bisection; the cloud reads (B, A, gather, smear, emissive tests) happen at the
+  hit's UV. No hit with the ray on screen = clear (the clear march); a ray that leaves the frame fades to the
+  off-screen fallback by where it left. The terrain test still reads the mirrored direction. Clouds hidden from the
+  camera behind nearer ones are not reflected. Measured (RTX 3070 Ti, 1920x1009, interleaved, 5 reps, 220250 shot 1):
+  sky +0.23 ms, GPU +0.09 ms (A-A spread +-0.24); a first cut with 8 samples, two bisections and a transmittance fetch
+  per sample cost +0.86 ms. Pitch test at shot 3 (exposure-normalised, the same sea seen at el -1.7 vs -16.7 deg):
+  mean |d| 11.8 -> 4.4 levels; vs +13.3 deg 2.2 -> 1.5. 220359 path, band below the horizon, 2-frame change
+  (16-px blur) 2.3 -> 1.3 levels. The reflections now stand under their clouds as columns, so the band's row contrast
+  is unchanged (s3 7.8 -> 8.9); the near sea that mirrored the frame-top cloud is bluer (s3 open sea -9%).
 - **The satellite ocean-glint loop is skipped when its result is zero** (day, or above ~8 km): 512 entries x two
   texture fetches per ocean pixel cost 6 ms of the sky pass from orbit (the `water_map` knockout "saved" it only
   because it turns the sea into cheaper terrain).
