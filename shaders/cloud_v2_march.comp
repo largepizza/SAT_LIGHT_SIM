@@ -1175,6 +1175,15 @@ void main()
                 pathLen += (CV2_FAINT_STRIDE - 1.0) * stepF;
                 stepW = max(stepW, CV2_FAINT_STRIDE * stepF);
             }
+            // A ray's FIRST sample, when it stands for more than one step (the eye in rain: x4), strides 0.5-1.5 x that by
+            // the stride hash (2026-11-14, cluster c03 "zenith rings"). The start jitter spans two steps; rain alone strides
+            // a fixed four, so a ray starting IN rain (the eye under a raining deck) met the base at half the lattice's
+            // phases, a share that changed with the base's distance: converged rings round the zenith (the default start,
+            // -67 -67, under overcast at sunset, twilight and midday). Offset U[0,2] + stride U[2,6] is uniform modulo 4, so
+            // one stride is enough (the hash, not `jitter`: 2j + 4(0.5 + j) covers 1.5 periods and left one ring). The weight
+            // takes the stride it stands for. Every long stride hashed (the same image) cost +0.46 ms GPU there (rays in rain
+            // fall out of step), the first one ~+0.2 (docs/subsystems/clouds.md "A ray's first long stride is hashed").
+            if (stepW > 1.5 * stepF && iters == 1) stepW *= 0.5 + cv2StrideU(jitter, iters);
             float Tstep = exp(-f.sigma * stepW);
             // OPACITY STOP (2026-11-11, hurrperf; cv2.hurrperf.y "cloud_opacity_stop_t", 0 = off): the ray ends where its
             // transmittance falls below the stop, and this last sample takes the rest of the pixel's weight (the cloud behind it

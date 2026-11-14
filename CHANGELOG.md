@@ -579,6 +579,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- No more concentric rings overhead when standing in rain under an overcast (the default harness start, -67, -67).
+  A ray starting in rain stepped through it on a lattice its random offset covered only half of, so it met the cloud
+  base at a bias that changed with the angle from the zenith: bright and dark rings round the zenith, at sunset and
+  at midday. The first stride is now randomized too.
 - Clouds under a reflector's beam light the way moonlit clouds do (issue_20261113_183043). The beams still lit
   clouds with the older multiple-scattering model the Sun and Moon had left, so a deck under a beam, seen from
   above, was a flat blue wash, brightest only when looking toward the satellites. Its tops now come back white,
