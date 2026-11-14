@@ -435,6 +435,19 @@ EXPOSURE AND MOON section since 2026-10-06, key
   and the slider keeps 0.25-4); within 1.5-4 deg of the Sun the drawn disc eases back to its TRUE size (`moonAngR`),
   so a solar eclipse's contacts, totality and annularity are the real ones at any setting. The occultation search
   (`sky::SearchCtx::moonSizeScale`) and the Moon-base glints' place on the disc follow the setting.
+- **The moonlit sky, the Moon's corona and its halo are hidden by cloud** (2026-11-14, issue_20261114_150555 "Sky
+  light issue?", `sat_sky.frag` "Moonlight ambient"). They are display-space terms added AFTER the tonemap, so the
+  composite's cloud transmittance never reached them; the halo is x `hClip` (cut at the horizon). From 5.8 km at
+  night a near storm cloud (~15 km off) wore the whole sky's halo above the horizon and none below it: a sharp line
+  across its dark face at the horizon's height, +10.8 levels over 10-px bands either side. Now they take
+  `moonSkyT + moonFrontK`: the cloud's transmittance (`cloudBlock`) for the air behind it, plus, for the air in
+  front, the share of the ray's Rayleigh in-scatter (1 - e^-tau, tau = mean BETA_R x the column) before the air's
+  split `tAirFrontM`, the front column by the midpoint rule (one exp; two `skyApNorm` calls cost +7 KB of binary,
+  +0.15 ms). The front share keeps `hClip`, as the open pixels next to the cloud do (without it a deck below the
+  horizon took the halo where the sea between its clouds has none, +3.5 levels at twilight). Measured (RTX 3070 Ti,
+  1920x1009): the step 10.8 -> 1.7 levels; open sky and the horizon glow beside the cloud within 0.3 levels; dawn /
+  day / twilight views at the A-A floor; sky pass 5.49 / 5.46 (A, A again) -> 5.44 ms. SKY_LITE / SKY_ENV keep the
+  old lines (`#else`, SKY_LITE's SPIR-V byte-identical).
 - **The eye stops at 100,000 km** above sea level (`kMaxObsHeightM`: Q/E, the altitude scroll, the follow offset;
   review 16 — boost reached the Moon).
 - **Lunar eclipses** per surface point: the Earth's disc (enlarged 1/85 for the atmosphere, Danjon) against the
