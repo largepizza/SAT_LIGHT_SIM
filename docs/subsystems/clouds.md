@@ -1823,6 +1823,23 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   ~60% of that frame (thin margins over rain fill in, the gap shrinks). Motion (tstab walk / pitch at that view): 4.43 /
   1.81 -> 3.97 / 1.50 (floor 1.43). Cost within the A-A spread (contended GPU, 3 reps): from the ground under the rain
   28.1 / 29.5 (A, A) vs 28.4 ms, the reporter's view 30.9 / 29.9 vs 29.7. 128 registers.
+- **A ray's first long stride is hashed** (2026-11-14, cluster c03 "zenith rings": the user's "concentric ring lighting
+  glitch right above you at 67, 67 on harness starts"). The march's start jitter spans TWO steps (`t += 2 x step x jitter`);
+  rain alone strides a fixed FOUR. A ray whose first sample is rain (the eye under a raining deck) therefore met the base at
+  half the lattice's phases, with a share that changed with the base's distance: converged bright/dark rings concentric
+  round the zenith, which no jitter sequence averages out (white-noise jitter: the same rings; a constant jitter: sharp
+  contour rings; spacing follows `step_base_m`). The default harness start (-67, -67, 2036-11-22) sits under a raining
+  overcast, with rings at sunset (Sun 0.4 deg), twilight (-0.5) and midday (39). Now when the FIRST sample of a ray stands
+  for more than 1.5 steps, its stride is `stepW x (0.5 + cv2StrideU(jitter, 1))`: offset U[0,2] + stride U[2,6] is uniform
+  modulo 4, so one stride is enough. The stride must be the hash and not `jitter` (2j + 4(0.5 + j) covers 1.5 periods: one
+  ring stayed). Ring amplitude (sector-coherent band-pass of the radial profile, 800x450, levels) 0.35 / 0.78 / 0.67 ->
+  0.18 / 0.20 / 0.14; a 20 m-step reference reads 0.26 / 0.26 / 0.27 (the scene's own structure). Hashing EVERY long stride
+  (rain, thin ice x2, the faint stride) gave the same image at +0.46 ms GPU (rays in rain fall out of step); the first
+  stride alone measures +0.15 / +0.24 / +0.29 ms GPU in three interleaved batches at the zenith view (A-vs-A 0.01-0.15;
+  1600x900, 128 registers), within the noise at a horizon view there. Tried: a deterministic first stride
+  `stepW (0.5 + j) + stepF (1 - 2j)` (uniform modulo 4 in theory, +0.08 ms): fine rings remained (the step grows and is
+  capped, so the start offset is not exactly two of the first sample's steps). Not covered: a faint fine sample's x2 stride from the fine lattice's
+  one-step phase (the same class; no rings were seen from it). Evidence: `qa/waves/20261114/evidence/zenithrings/`.
 - **Storms through the cumulus field (2026-11-04, issue 20261104_111947 "Anvil performance"; `clouds_v2.storm_unified` 1,
   no UI, `storm_unified_scale_m` 4000 / `_ramp_m` 250 / `_lobes` 1; worktree storm-rework, `harness_runs/att/` and `look/`;
   design + tables: `qa/waves/20261104/resolutions/storm-rework.md`).** A storm object's towers and anvil shield are a
