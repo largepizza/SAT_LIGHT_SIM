@@ -8225,9 +8225,38 @@ void main() {
     float moonIllum = moonDirENU.w;
     // Atmosphere weight: glow and ambient fade to zero above the atmosphere.
     float atmosWeight = 1.0 - exp(-odR_cam / 5000.0);
+    // The moonlit air behind a cloud is hidden by it; only the air IN FRONT of it shows (2026-11-14, issue_20261114_150555
+    // "Sky light issue?"). These terms are added after the tonemap, so the composite's cloud transmittance never reached
+    // them: at night from 5.8 km a near storm cloud wore the whole sky's moon halo above the horizon and none below it
+    // (the halo's hClip), a sharp line across its dark face at the horizon's height (+11 levels over the line). Behind
+    // the cloud they take its transmittance; in front, the share of the ray's Rayleigh in-scatter (1 - e^-tau, optically
+    // thick along the horizon) that lies before the air's split (tAirFrontM, the composite's): ~10-25% for a cloud 15 km off,
+    // all of it for one on the horizon. The front share keeps the halo's hClip, as the open pixels beside the cloud do: given
+    // none, a deck below the horizon took the halo where the sea between its clouds has none (+3.5 levels at twilight).
+    // (Not in SKY_LITE / SKY_ENV: no volumetric clouds there, and SKY_LITE's SPIR-V budget is spent; the #else lines
+    //  are the old ones, byte for byte.)
+#ifdef SKY_SUN_SHADOW
+    float moonSkyT = 1.0, moonFrontK = 0.0;
+    if (cloudBlock < 0.999 && odR_cam > 0.0) {   // (by day too: the halo has no nightAmt)
+        moonSkyT = clamp(cloudBlock, 0.0, 1.0);
+        if (tAirFrontM < 1e11) {
+            // (the front column by the midpoint rule, one exp: where the cloud is far enough for it to be off, the
+            //  share is ~1 either way. Two skyApNorm calls here grew the sky pass's binary by 7 KB, +0.15 ms.)
+            float bR   = dot(BETA_R, vec3(1.0 / 3.0));
+            float tF   = min(tAirFrontM, tEnd);
+            float tauE = bR * odR_cam;
+            float tauF = min(bR * tF * exp(-max(length(obsPos + dir * (0.5 * tF)) - R_EARTH, 0.0) / H_R), tauE);
+            moonFrontK = (1.0 - moonSkyT) * (1.0 - exp(-tauF)) / max(1.0 - exp(-tauE), 1e-6);
+        }
+    }
+#endif
     {   // the moonlit sky: from the night key (the supernova's light scatters too); the Moon's glow below stays its own
         NK_DECL(nkA)
+#ifdef SKY_SUN_SHADOW
+        color += vec3(0.0025, 0.003, 0.004) * NK(nkA).w * clamp(NK(nkA).z, 0.0, 1.0) * nightAmt * atmosWeight * (moonSkyT + moonFrontK);
+#else
         color += vec3(0.0025, 0.003, 0.004) * NK(nkA).w * clamp(NK(nkA).z, 0.0, 1.0) * nightAmt * atmosWeight;
+#endif
     }
 
     // ── Moon glow: tight corona + wide diffuse halo (atmosphere-only) ─────────
@@ -8244,12 +8273,21 @@ void main() {
 
         // Tight inner corona — peaks at disc edge, falls off quickly.
         float corona = exp(-moonAngle * moonAngle / (2.0 * 0.012 * 0.012)) * nightAmt;
+#ifdef SKY_SUN_SHADOW
+        float moonGlowK = hClip * (moonSkyT + moonFrontK) * moonFade * moonIllum * atmosWeight;
+        color += corona * vec3(0.92, 0.94, 1.00) * 0.04 * moonGlowK;
+#else
         color += hClip * moonFade * corona * vec3(0.92, 0.94, 1.00) * moonIllum * 0.04 * atmosWeight;
+#endif
 
         // Wide diffuse halo — scattered moonlight glow, atmosphere-only.
         float scale = 100.0;
         float halo  = exp(-moonAngle * moonAngle / (2.0 * 0.018 * 0.018 * scale * scale));
+#ifdef SKY_SUN_SHADOW
+        color += halo * vec3(0.88, 0.90, 1.00) * 0.012 * moonGlowK;
+#else
         color += hClip * moonFade * halo * vec3(0.88, 0.90, 1.00) * moonIllum * 0.012 * atmosWeight;
+#endif
     }
 
 #ifdef SKY_ENV

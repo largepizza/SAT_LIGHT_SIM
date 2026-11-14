@@ -579,6 +579,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- At night a cloud no longer shows a line at the horizon's height with the sky's glow over its upper half
+  (issue_20261114_150555). The moonlit sky and the Moon's glow were added on top of everything, clouds included, and
+  the glow stops at the horizon; they now show only through a cloud's thin parts and in the air in front of it.
 - No more concentric rings overhead when standing in rain under an overcast (the default harness start, -67, -67).
   A ray starting in rain stepped through it on a lattice its random offset covered only half of, so it met the cloud
   base at a bias that changed with the angle from the zenith: bright and dark rings round the zenith, at sunset and
