@@ -35,6 +35,28 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   0.0000065`).
 - **Coverage** is the map's brightness remapped (`cover.xy`: clear below 0.12, overcast above 0.6);
   the raw value used as a fraction never let anywhere close over.
+  **No cloud at zero coverage, continuously** (2026-11-14, issue_20261114_112011 "Clouds flickering on and off?";
+  `cv2ZeroCoverLift`, UBO `cloudflip`, `clouds_v2.zero_cover_fade` 0.02, no UI, 0 = the old step). The low field draws
+  cloud where `field > 1 - covT`, and its cells, morphology and the small-cumulus lift take `field` past 1 over much of
+  any region, so any `covT` over 0 drew a whole fair-weather cumulus field while `cov <= 0 && covF <= 0` returns
+  nothing: a step at zero. Since the 11-10 bake ("Clear below" 0, Coverage 0.42) a clear map region's coverage is the
+  JPEG's noise floor (0-10/255) plus the evolution's growth offset, and there the ~20-km fraction (`covF`, mip 2) crossed
+  0 back and forth as the two advected copies slid sub-texel through the 6-min window ("Weather evolution window" 0.1 h).
+  At the report's spot (29.58 N 92.22 W, 2036-11-21 20:33-20:48 UTC, paused) the whole sky switched between cumulus and
+  clear every ~2-3 sim minutes. Found by elimination: the UBO (every field copied from a cloudy frame into a clear one)
+  changed nothing; a weather cube frozen at a cloudy time made the clear time cloudy; all three evolution terms off made
+  it steady; the march with the zero early-out removed drew the cumulus at the clear time; painted test decks showed
+  `cov` 0 near the eye at both times and `covF` > 0 only at the cloudy ones. (Bake variants judged with the occupancy
+  clipmap on are unreliable: its cells are baked by the unmodified field and skip what a variant adds; use `cdc_skip 0`.)
+  Now, at zero coverage, the threshold rises by `cloudflip.y` (0.75, past the field's largest value; `cv2LowA` and
+  `cv2FarColumn`) and the cloud's margin `m0` falls by `cloudflip.z` x the same (2.7: the lobes, bubbles and turrets
+  stand on the margin, and with only the threshold lifted they kept a full field standing at e = 0), both back to their
+  own over `zero_cover_fade` of coverage. Cloud grows from nothing as coverage grows. Measured at the spot: every cloudy
+  frame of the sweep had max(cov, 0.5 covF) <= 0.02 under the eye (a painted test deck at that threshold never showed),
+  so the fair-weather field the step drew there was the map's noise floor; with the fade the region is clear at every
+  time (shot 2's cumulus are gone with it), and ordinary cumulus regions (coverage 0.1-0.4) are unchanged. Tried and
+  dropped: blending the copies' coverage after their clamps in the bake (no change: the mip-2 fraction already clamps per
+  tap and per copy); the threshold lift alone (0.02 or even 0.3: the lobes kept the big clouds).
 - **The shape is a 3D margin, not a heightfield** (2026-09-27): cloud exists where
   `m = e(x,y) + lobes(x,y,z) - g(z) - gBase(h) > 0`. `e` = how far inside the thresholded 2D field;
   `lobes` = inverted-Worley 1.75 km / 875 m / 440 m octaves in the SAME units as `e`, so they move the

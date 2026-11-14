@@ -1007,6 +1007,10 @@ struct GpuCloudV2Params
     // (2026-11-12, storms) issue_20261112_220642 (clouds_v2.glsl cv2FieldLow): x "Storm billow lobes" (the cumulus-scale
     // lobes' weight on deep convection's storm-scale lobes; "Storm cumulus fine lobes" on other clouds), yzw unused
     glm::vec4 storms2;
+    // (2026-11-14, cloudflip) issue_20261114_112011 (clouds_v2.glsl cv2ZeroCoverLift): x "zero_cover_fade" (the coverage over
+    // which the low field's threshold falls from 1 + y to its own: no cloud at zero coverage, continuously), y the threshold's lift,
+    // z the margin's (x the same fade: cv2LowA's m0, past the lobes' reach); w unused
+    glm::vec4 cloudflip;
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -1039,7 +1043,7 @@ static_assert(offsetof(GpuCloudV2Params, amb) == 288 + 48 * kCloudV2Types + 1232
 static_assert(offsetof(GpuCloudV2Params, tone) == 288 + 48 * kCloudV2Types + 1248, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, gnd) == 288 + 48 * kCloudV2Types + 1264, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, micro) == 288 + 48 * kCloudV2Types + 1280, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1856, "GpuCloudV2Params layout");   // +16: storms2; +16: hurrlook; +16: hurrperf; +32: storms (stormsA, stormsB); +64: flowmaps (flowP, flowA, flowB, flowC); +16: grain; +16: optics; +16: hurricane; +16: pucks; +32: wind0, wind1; +32: cellA, cellB; +32: cirrus-hurr (ciHu, ciHu2); +32: storm3 (storm3a, storm3b); +64: vertical (vert, vert2, oro0, oro1); +80: shapeB
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1872, "GpuCloudV2Params layout");   // +16: cloudflip; +16: storms2; +16: hurrlook; +16: hurrperf; +32: storms (stormsA, stormsB); +64: flowmaps (flowP, flowA, flowB, flowC); +16: grain; +16: optics; +16: hurricane; +16: pucks; +32: wind0, wind1; +32: cellA, cellB; +32: cirrus-hurr (ciHu, ciHu2); +32: storm3 (storm3a, storm3b); +64: vertical (vert, vert2, oro0, oro1); +80: shapeB
 static_assert(offsetof(GpuCloudV2Params, cu3) == 288 + 48 * kCloudV2Types + 1312, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
@@ -6249,6 +6253,9 @@ private:
     // mass, storm objects' towers), in place of "Storm cumulus fine lobes" there; the storm-scale lobes alone are kilometres
     // wide and left the towers smooth ridges. Slot 622.
     float stormBillowLobes = 2.0f;               // clouds_v2.storm_billow_lobes
+    // (2026-11-14, cloudflip; no UI) the coverage over which the low field fades in from none at zero (clouds_v2.glsl
+    // cv2ZeroCoverLift); 0 = the old step (any coverage over 0 drew a whole fair-weather field)
+    float cv2ZeroCoverFade = 0.02f;              // clouds_v2.zero_cover_fade
     bool  stormIndexTight = true;                // clouds_v2.storm_index_tight: list a bin only where a tower / shield can reach it
                                                  // (2026-10-27; false = every bin of the bounding rectangle, the A/B)
     int   stormShieldBinsAB = 0;                 // clouds_v2.storm_shield_bins_ab (no UI): 64 = list shields in the old

@@ -1327,7 +1327,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2MidFieldKm, cv2MidCover, cv2MsOctaves, cv2LobeOcclusion, cv2MsModel, cv2MsDiffG, cv2MsDiffGain, cv2MsBackM, cv2SkyLightModel, cv2SkyLightGain, cv2SkyGroundAlbedo,
                     cv2CuHeightVar, cv2CuBreakup, cv2CuHeadroom, cv2CuFineLobes, cv2CbFineLobes, cv2CuWisps,
                     cv2CuTurrets, cv2CuTurretStretch, cv2CuTurretLean, cv2CuTurretSkew,
-                    cv2CuBody, cv2CuEdge, cv2CuShowerCells, cv2CuShowerCores, cv2CuBubbles, cv2CuBubbleGain, cv2CuBubbleFine, cv2CuBubbleSize, cv2CuBubbleBase, cv2CuEnvTowers, cv2CuCore, cv2CuBubbleWarp, cv2CuHeadWidth, cv2CuHeaps, cv2CuHeapDepth, cv2HurrSheetSwirl, cv2HurrEyewall, cv2StormMass, stormMoat, stormMoatWidthKm, stormMoatFeather, stormMoatFrequency, stormTowerHeight, stormFullness, stormOverhang, stormPuffiness,
+                    cv2CuBody, cv2CuEdge, cv2CuShowerCells, cv2CuShowerCores, cv2CuBubbles, cv2CuBubbleGain, cv2CuBubbleFine, cv2CuBubbleSize, cv2CuBubbleBase, cv2CuEnvTowers, cv2CuCore, cv2CuBubbleWarp, cv2CuHeadWidth, cv2CuHeaps, cv2CuHeapDepth, cv2HurrSheetSwirl, cv2HurrEyewall, cv2StormMass, stormMoat, stormMoatWidthKm, stormMoatFeather, stormMoatFrequency, stormTowerHeight, stormFullness, stormOverhang, stormPuffiness, cv2ZeroCoverFade,
                     cv2HurrRotation, cv2HurrFlowTurns, cv2HurrFlowBlend,
                     cv2HurrFill, cv2HurrSmooth, cv2HurrEyeCloud,
                     cv2CirrusFibres, cv2CirrusHooks,
@@ -2375,6 +2375,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     p.hurrlook = glm::vec4(std::clamp(cv2HurrEyeCloud, 0.0f, 1.0f), 0.0f, 0.0f, 0.0f);
     // (2026-11-12, storms) "Storm billow lobes" (clouds_v2.glsl cv2FieldLow).
     p.storms2 = glm::vec4(std::clamp(stormBillowLobes, 0.0f, 4.0f), 0.0f, 0.0f, 0.0f);
+    p.cloudflip = glm::vec4(std::clamp(cv2ZeroCoverFade, 0.0f, 0.5f), 0.75f, 2.7f, 0.0f);   // (clouds_v2.glsl cv2ZeroCoverLift)
     // Vertical variation (vertical, 2026-11-05): cv2BaseShift's strengths, fractus, mid-level wisps.
     p.vert  = glm::vec4(std::clamp(cv2BaseLcl, 0.0f, 2.0f), std::clamp(cv2BaseCellM, 0.0f, 400.0f),
                         std::clamp(cv2BaseRegional, 0.0f, 2.0f), std::clamp(cv2Fractus, 0.0f, 2.0f));
