@@ -180,7 +180,7 @@ Location- and context-aware ambience on its own bus under the music (Settings â†
   "melody" content: hums are noise through resonances, beeps are data bursts.
 - **Collision sounds (2026-11-03, issue_20261030_180204; `impactStep` in SatelliteSimAmbience.cpp, `ImpactSynth`
   "impact", layer `impact` in group space, driver `impact`).** Space carries no sound: the hit is the film's
-  convention, one per pair collision drawn up close (kCollVis), sent when the step's sim interval (thunderStep's
+  convention, one per collision drawn up close (kCollVis: pair collisions and, since 2026-11-14, the bright grid hits), sent when the step's sim interval (thunderStep's
   nowP, now] holds the impact (with the flash's impact frame; none across a > 20 s jump, so none at 1 h/s). The
   driver is up from the projectile's approach (45 s) to 6 s after, so the voice exists before the hit. Parameters:
   energy E = 0.5 mT mP / (mT + mP) vrel^2, e01 = (log10 E - 6) / 6; closeness (1 + d / 2 km)^-0.75 in orbit,

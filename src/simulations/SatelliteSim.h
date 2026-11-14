@@ -3328,6 +3328,7 @@ private:
         uint32_t seed = 0;
         uint64_t key = 0;
         size_t ev = 0;             // index in kEvents
+        bool grid = false;         // a grid hit: the projectile is a small fragment (no record: prj UINT32_MAX)
     };
     std::vector<KCollVis> kCollVis;
     // (2026-11-03) A pair collision's two bodies as the world builds the breakup (the target is the one at the event's
@@ -3338,6 +3339,9 @@ private:
     bool kesslerCollTransientElems(const SelTransient &s, double t0, SatOrbitElems &e) const;
     static constexpr double kCollApproachS = 45.0;
     bool kesslerCollStandIn(const KCollVis &c, double t, glm::dvec3 &pos, glm::dvec3 &vel) const;
+    // (2026-11-14) a collision's peak flash magnitude at the eye; a grid hit is drawn up close only brighter than this
+    double kesslerCollGridMag(const KCollVis &c, const glm::dvec3 &eye) const;
+    static constexpr double kCollGridMaxMag = 1.0;
     SatOrbitElems kesslerCollStandInElems(const KCollVis &c, double t, const glm::dvec3 &P, const glm::dvec3 &V) const;
     void kesslerFillCollisions(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull);
     void kesslerCollisionJobs(double pixAngle, const glm::dvec3 &obsEci, std::vector<int> &jobs);
