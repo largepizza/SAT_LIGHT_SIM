@@ -7911,17 +7911,11 @@ private:
                                            // demote (that launch already forced Planetarium for a different reason)
 
     // ── UC3: cinematic intro camera path (folds in UC1 mechanism 2, the first-run benchmark) ──
-    // Does not move obsDir/lat-lon DURING playback — only obsHeightOffset (altitude, literally
-    // what Q/E controls), camera.elDeg/fovYDeg, and a facing-azimuth rotation change across the
-    // beat sheet (see kIntroKeyframes in SatelliteSim.cpp). It DOES force obsDir/lat-lon once, at
-    // the very start of playback (see updateIntroCinematic's one-time init block) — to the fixed
-    // kIntroObserverLatDeg/LonDeg vantage point, not whatever the player's last position happened
-    // to be — so the intro (including a Display-tab replay) is reproducible regardless of where
-    // the player has since wandered off to. Since obsDir is fixed for the rest of playback after
-    // that, the East/North tangent basis below is computed once and stays valid the whole time —
-    // no great-circle interpolation needed.
+    // updateIntroCinematic drives the observer (lat/lon/altitude), the camera and the sim clock along
+    // kIntroKeyframes. introBasisValid = "this playback's one-time setup ran" (the moment, the cloud phase,
+    // time paused for the intro to drive); the Display tab's "Replay Intro" clears it, so a replay starts
+    // from the same moment wherever the player has since gone.
     bool introBasisValid = false;
-    glm::vec3 introEastEF{1, 0, 0}, introNorthEF{0, 1, 0};
     float introElapsed = 0.0f;    // seconds since the intro cinematic started
     int introCaptionIndex = 0;    // index into kIntroKeyframes of the most recently reached caption
     bool introSkipped = false;    // true if dismissed early (Space/gamepad Start) — gates the benchmark below
@@ -9592,6 +9586,7 @@ private:
     // showIntro is true. Also accumulates the UC1 benchmark and auto-ends the intro at the last
     // keyframe (calling finishIntro(false)).
     void updateIntroCinematic(float dt);
+    void startIntroReplay(); // Display tab "Replay Intro" / harness `intro play`
     // Ends the intro (showIntro=false). wasSkipped=true means the user dismissed early (click/key/
     // pad) — no representative frame-time average was collected, so the benchmark promote/demote
     // is skipped entirely and whatever preset was already active (the device-type seed, or a prior
@@ -9610,24 +9605,32 @@ static constexpr float kTimeScales[] = {1.0f, 10.0f, 60.0f, 300.0f, 3600.0f,
 static constexpr const char *kTimeLabels[] = {"1x", "10x", "1m", "5m", "1h", "1d", "1w", "1mo", "1yr"};
 static constexpr int kNumTimeScales = 9;
 
-// ── UC3 intro cinematic fixed vantage (session follow-up) ─────────────────────
-// The intro always opens from this exact real-world spot — the California coast at twilight,
-// facing out toward the SpaceX AI-datacenter satellites and the Reflect Orbital mirrors aimed at
-// the nearby Topaz solar farm — rather than wherever the player's last saved/current observer
-// position happens to be. Values are the live camera/observer state the vantage was designed
-// against (settings.json: observer.lat_deg/lon_deg, camera.az_deg/el_deg/fov_y_deg). Forced onto
-// obsDir/obsLatDeg/obsLonDeg/camera.azDeg/elDeg/fovYDeg once, at the start of every intro playback
-// (see updateIntroCinematic's one-time init block) — including a Display-tab replay — so the
-// cinematic is reproducible no matter where the player has since wandered off to.
-static constexpr float kIntroObserverLatDeg = 35.869096f; // 300 m SSW of the original (review 12: the eroded ridge filled the right of frame)
-static constexpr float kIntroObserverLonDeg = -121.401905f;
-static constexpr float kIntroStartAzDeg = -61.32f;
-static constexpr float kIntroStartElDeg = 20.8f;
-static constexpr float kIntroStartFovDeg = 70.0f;
-// The intro's cloud layout, as a rate: the map sat at phase kIntroCloudDriftRate x (time since
-// J2000) when the intro was tuned (a clear patch over the vantage). updateIntroCinematic's one-time
-// init turns it into this session's cloudDriftPhaseOffset. It used to FORCE cloudDriftRate to this
-// value, which settings.json then saved: every intro silently changed the player's drift rate.
+// ── UC3 intro cinematic: the moment and the path (2026-11-13, "intro2") ───────
+// The intro is the user's saved cinematic "intro2" (made in the Cinematics window; the source file was
+// <user data>/cinematics/intro2.json): from the ground in the Mississippi delta (Arkansas) at twilight,
+// Starmind's trains overhead, Reflect Orbital mirrors flaring and their beam on the eastern horizon (the
+// busiest beam site, ~55 km east); rising, panning south onto a Starship climbing out of Starbase, Texas over
+// the Gulf with the sunset behind; out to orbit with the Sun setting on the limb, "SAT LIGHT SIM".
+// Its 8 keys sit one per songbeat (the cinematic had them 5 s apart; key k is beat k). Sim time runs at
+// kIntroSimRate so the sky at each key is the one the key was framed on.
+//
+// THE DATE was moved from the cinematic's (2036-11-21 23:19:46 UTC, a 16%-lit crescent) to the same scene four
+// days later, for a quarter-to-half Moon (the user: some ambient light at night, where the clouds look best):
+// 2036-11-25 23:15:46.57 UTC, the Moon 50% lit (first quarter), ~42 deg up in the south at dusk. It is the same
+// launch geometry: a Starship from Starbase, Texas lifts off eastward at 23:10:16 (the cinematic's at 23:14:16),
+// with the Sun ~4.5 deg up at the pad; the intro opens 330.6 s after lift-off, as the cinematic did, and the
+// observer's Sun is -4.1 deg (the cinematic's -4.8). Found with `launch list` over Nov 23-27 (Nov 24's
+// 41% Moon has an earlier, brighter twilight launch from a Boca Chica sea platform).
+// Launches, beams and satellites are pure functions of sim time, so this moment is the same on every machine.
+static constexpr double kIntroSimStartJ2000S = 1164539746.5667517; // 2036-11-25T23:15:46.567Z
+static constexpr double kIntroSimRate = 5.0 / 7.61;                 // sim s per intro s: the cinematic's 5 s per key over a songbeat
+// The cloud map's phase at the intro's start (`drift phase=` in the harness). The cinematic was framed on the
+// default map (2.774 at its own time); at Nov 25 that phase puts a cloud bank over the opening train and the
+// horizon beam, and a sweep of 9 phases found 2.356 clear over the vantage with the beam showing, and the Gulf's
+// clouds lit by the sunset from orbit. Session state, like a bookmark's drift: the player's drift RATE is kept.
+static constexpr double kIntroCloudPhase = 2.356;
+// The OLD intro's cloud layout as a rate (phase = rate x (time since J2000)); only the harness's
+// `snapshot drift=intro` still reads it, to rebuild the map of a snapshot taken in a session that played that intro.
 static constexpr float kIntroCloudDriftRate = 6.55e-6f;
 
 // ── UC3 intro cinematic beat sheet (RELEASE_v1_1_PLAN.md) ─────────────────────
@@ -9635,40 +9638,43 @@ static constexpr float kIntroCloudDriftRate = 6.55e-6f;
 // SatelliteSimUI.cpp (buildIntroOverlay, the caption text) — header-scope so both translation
 // units see the identical table without a getter. `text == nullptr` means "no new caption at
 // this keyframe" (introCaptionIndex just holds whatever the last non-null one was).
+// The path between keys is cineEval's (Cinematic.cpp, the Cinematics window's own spline): Catmull-Rom per
+// channel, altitude and FOV in log space, azimuth unwrapped (keys 4 -> 5 cross +-180). Each channel is
+// exactly as the cinematic stored it.
 struct IntroKeyframe
 {
-    float t;    // seconds from intro start
-    float altM; // obsHeightOffset target
+    float t;           // seconds from intro start
+    double latDeg, lonDeg;
+    float altM;        // metres above sea level (the cinematic's alt; floored at the ground)
     float azDeg, elDeg, fovDeg;
     const char *text;
 };
 static constexpr float songbeat = 7.61f; // beat timings below are synced to this (music tempo)
 static constexpr IntroKeyframe kIntroKeyframes[] = {
-    // Beat 0 — "2036" title/date card. Ground, twilight, facing the fixed vantage above.
-    {0.0f, 0.0f, kIntroStartAzDeg, kIntroStartElDeg, kIntroStartFovDeg, "2036"},
-    // Beat 1 — first narrative line; holds the same framing. The skip hint (buildIntroOverlay)
-    // only appears once this beat is reached — see kIntroHintRevealIndex.
-    {songbeat * 1.0, 0.0f, kIntroStartAzDeg, kIntroStartElDeg, kIntroStartFovDeg,
+    // Beat 0 — "2036" title/date card. Ground, twilight, looking north up Starmind's train.
+    {songbeat * 0.0f, 33.56354697522229, -91.28908090163594, 54.56f, 3.19f, 18.25f, 46.50f, "2036"},
+    // Beat 1 — first narrative line. The skip hint (buildIntroOverlay) only appears once this beat is
+    // reached — see kIntroHintRevealIndex. Panning right along the train.
+    {songbeat * 1.0f, 33.56354697522229, -91.28908090163594, 54.56f, 35.62f, 36.08f, 62.16f,
      "Satellite megaconstellations dominate the night sky"},
-    // Beat 3 — level out in preparation for launch. Still ground level.
-    {songbeat * 2.0, 00000.0f, kIntroStartAzDeg - 5, 25.0f, 64.0f, "From the ground, we watch sunlight glint off their solar arrays"},
-    // Beat 4 — the pull to LEO begins (ascent happens across THIS beat's transition). Still
-    // facing horizontally west, per the storyboard, even as altitude climbs.
-    {songbeat * 3.0, 60000.0f, kIntroStartAzDeg - 25, 35.0f, 62.0f, "They power an orbital network of communications and AI compute."},
-    // Beat 5 — pull continues; camera starts rotating away from due-west as we climb high enough
-    // to reveal the Earth's curve.
-    {songbeat * 4.0, 140000.0f, kIntroStartAzDeg - 35, 20.0f, 62.0f, "A promise to the markets above all else"},
-    {songbeat * 5.0, 250000.0f, kIntroStartAzDeg - 45, 10.0, 70.0f, "We will come to miss the quiet sky"},
-    // Beat 6 — arrival in LEO: pulled back and up enough to see the backlit AI sats against a
-    // rising sun. Camera motion stops here; beats 7-8 hold this exact framing. Title reveal.
-    // Azimuth nudged +5deg right (vs. the beat 5 pan target) to catch the sunset before FOV expands.
-    {songbeat * 6.0, 300000.0f, kIntroStartAzDeg - 45, 0.0, 80.0f, "SAT LIGHT SIM"},
-    // Beat 7 — arrival: the camera settles on the final framing and the title fades over the last
-    // second (buildIntroOverlay's alphaOut), then finishIntro(false) hands over to the tutorial
-    // (SatelliteSimTutorial.cpp). Until 2026-10-03 this beat was a "WASD to move / Q-E / click a
-    // satellite" caption that unlocked movement but not clicking, and a ninth keyframe held it for a
-    // further beat; the controls are the tutorial's job now.
-    {songbeat * 7.0, 300000.0f, kIntroStartAzDeg - 45, 20.0, 120.0f, nullptr},
+    // Beat 2 — east: the mirrors' flares, the beam on the horizon.
+    {songbeat * 2.0f, 33.56354697522229, -91.28908090163594, 54.56f, 99.10f, 28.16f, 66.84f,
+     "From the ground, we watch sunlight glint off their solar arrays"},
+    // Beat 3 — rising (2.6 km), panning south-east toward the Gulf.
+    {songbeat * 3.0f, 33.56354697522229, -91.28908090163594, 2614.49f, 131.26f, 17.00f, 66.84f,
+     "They power an orbital network of communications and AI compute."},
+    // Beat 4 — 57 km, facing south: the Starship's plume over the Gulf, the sunset to the right.
+    {songbeat * 4.0f, 33.56354697522229, -91.28908090163594, 56987.57f, 159.10f, 1.40f, 83.10f,
+     "A promise to the markets above all else"},
+    // Beat 5 — out to orbit (277 km), drifting north-east with the pan.
+    {songbeat * 5.0f, 34.627120828647875, -89.1136023191353, 277289.31f, -166.21f, -8.20f, 83.10f,
+     "We will come to miss the quiet sky"},
+    // Beat 6 — arrival in orbit, the Sun setting on the limb. Title reveal.
+    {songbeat * 6.0f, 36.65105711070121, -84.1048559646296, 428441.09f, -133.47f, -6.28f, 89.35f, "SAT LIGHT SIM"},
+    // Beat 7 — the camera eases to a stop on the final framing while the title fades over the last second
+    // (buildIntroOverlay's alphaOut), then finishIntro(false) hands over to the tutorial
+    // (SatelliteSimTutorial.cpp).
+    {songbeat * 7.0f, 37.45175640036591, -77.3299032926075, 638241.50f, -105.19f, -8.56f, 89.35f, nullptr},
 };
 static constexpr int kIntroKeyframeCount = sizeof(kIntroKeyframes) / sizeof(kIntroKeyframes[0]);
 static constexpr int kIntroYearIndex = 0;       // "2036" title/date card

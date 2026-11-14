@@ -387,6 +387,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### UI
 
+- **New intro.** It opens on the ground in the Mississippi delta at twilight, under Starmind's trains, with Reflect
+  mirrors flaring and a beam on the horizon. It rises over a Starship launch from Starbase with the sunset behind it,
+  then pulls out to orbit as the Sun sets on the limb. It plays on 2036-11-25 under a first-quarter Moon, and
+  "Replay Intro" always returns to that moment.
 - **Missions window** (the rocket button, or M): the next launches, pinned twilight and crewed launches, the Sun's
   Fury countdown; what is flying now (crew transfers, stations, launches, trains, retirees, build-out); and the
   Kessler tab. Every row has one **Watch** button that lands on the event as it happens.

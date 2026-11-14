@@ -439,7 +439,8 @@ void SatelliteSim::init(VulkanContext &ctx)
         std::ofstream sentinelOut(crashSentinelPath, std::ios::trunc);
     }
 
-    // Fixed start time: 2036-11-22 02:06:22 UTC (the intro's California twilight)
+    // Fixed start time: 2036-11-22 02:06:22 UTC (the first intro's California twilight; the harness's default
+    // moment, which baselines and scripts assume). The intro sets its own moment since 2026-11-13 (kIntroSimStartJ2000S).
     // J2000.0 = 2000-01-01 12:00:00 UTC = Unix 946728000
     // 2036-06-21 00:00:00 UTC = Unix 2097619200 = 1150891200 s from J2000
     // It was 2036-11-21 20:51:21 under the old Earth rotation angle (no GMST term); + kGmstShiftS turns the
@@ -8916,109 +8917,86 @@ void SatelliteSim::updateIntroCinematic(float dt)
 {
     if (!introBasisValid)
     {
-        // Lock the intro's starting location/orientation to the fixed vantage
-        // (kIntroObserverLatDeg/LonDeg, SatelliteSim.h) rather than wherever obsDir/camera
-        // happen to already be — otherwise a replay from a different in-game location would
-        // play the whole cinematic somewhere else, and the beat sheet's altitude/az/el values
-        // (tuned against this exact spot) would no longer line up with what's actually below.
-        float lat = glm::radians(kIntroObserverLatDeg);
-        float lon = glm::radians(kIntroObserverLonDeg);
-        obsDir = {cosf(lat) * cosf(lon), cosf(lat) * sinf(lon), sinf(lat)};
-        obsFacing = {-sinf(lat) * cosf(lon), -sinf(lat) * sinf(lon), cosf(lat)};
-        obsLatDeg = kIntroObserverLatDeg;
-        obsLonDeg = kIntroObserverLonDeg;
-        obsHeightOffset = 0.0f;
-        camera.azDeg = kIntroStartAzDeg;
-        camera.elDeg = kIntroStartElDeg;
-        camera.fovYDeg = kIntroStartFovDeg;
-
-        // "Ensure we are at 1x speed on start": the intro is a fixed, tuned-at-1x cinematic —
-        // force this regardless of whatever timeScaleIdx/pause/direction the player last saved
-        // or left the sim in (a replay in particular runs on live state, not a fresh boot).
+        // The intro's moment (kIntroSimStartJ2000S, SatelliteSim.h), every playback — a replay from the Display
+        // tab included, whatever time and place the player has since moved to: the launch, the beams and the
+        // Moon the beat sheet was framed on exist only then. The intro drives the clock itself (below), paused
+        // like the Cinematics window's playback; finishIntro hands it back running at 1x.
+        if (followActive)
+            stopFollow();
+        stopTrack();
         timeScaleIdx = 0;
-        timePaused = false;
         timeDir = 1.0f;
-
-        // Where the cloud map sits over the California vantage on frame 1: the layout the intro
-        // was tuned on (a clear patch overhead — under overcast the satellites the cinematic is
-        // framed around are hidden). That layout was the phase kIntroCloudDriftRate x simTime.
-        // Until 2026-09-28 the intro FORCED that rate, and settings.json then saved it: every
-        // intro rewrote the player's drift rate, and since the phase was rate x the time since
-        // J2000, that 0.8% change moved the whole map by tens of radians. Now the intro sets only
-        // this session's phase offset, and the map keeps drifting at the player's rate from there.
+        timePaused = true;
         {
-            const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
-            cloudDriftPhaseOffset = std::fmod((double)kIntroCloudDriftRate * (t - kGmstShiftS)
-                                              - (double)cloudDriftRate * (t - kCloudDriftEpochS),
-                                              glm::two_pi<double>());
+            const double days = std::floor(kIntroSimStartJ2000S / 86400.0);
+            simDayJ2000 = (int64_t)days;
+            simSecInDay = kIntroSimStartJ2000S - days * 86400.0;
         }
+        trailClearPending = true; // the boot / last time is days away: no trails across the jump
 
-        float sL = obsDir.z;
-        float cLH = sqrtf(obsDir.x * obsDir.x + obsDir.y * obsDir.y);
-        float inv = (cLH > 1e-7f) ? 1.0f / cLH : 0.0f;
-        float cLn = obsDir.x * inv, sLn = obsDir.y * inv;
-        introEastEF = {-sLn, cLn, 0.0f};
-        introNorthEF = {-sL * cLn, -sL * sLn, cLH};
+        // The cloud map's phase at the intro's start (kIntroCloudPhase: clear over the vantage). Only this
+        // session's phase offset is set; the map keeps drifting at the player's rate from there. Until
+        // 2026-09-28 the intro FORCED the drift rate, which settings.json then saved: every intro rewrote it.
+        cloudDriftPhaseOffset = std::fmod(kIntroCloudPhase - (double)cloudDriftRate * (kIntroSimStartJ2000S - kCloudDriftEpochS),
+                                          glm::two_pi<double>());
         introBasisValid = true;
     }
 
     introElapsed += dt;
-    float tEnd = kIntroKeyframes[kIntroKeyframeCount - 1].t;
-    float tClamped = std::min(introElapsed, tEnd);
+    const float tEnd = kIntroKeyframes[kIntroKeyframeCount - 1].t;
+    const float tClamped = std::min(introElapsed, tEnd);
 
     int i = 0;
     while (i < kIntroKeyframeCount - 2 && kIntroKeyframes[i + 1].t <= tClamped)
         ++i;
 
-    // Follow-up: per-segment smoothstep easing (old code) has zero velocity at EVERY waypoint,
-    // not just the first and last — so the camera visibly decelerates to a stop and re-accelerates
-    // at every single beat boundary, which read as a stutter/stop-start rather than one continuous
-    // move. Replaced with a Catmull-Rom/cubic-Hermite spline through all the keyframes: the
-    // tangent at each interior key is estimated from its two neighbors (time-weighted, since beats
-    // aren't evenly spaced), so velocity carries through a waypoint instead of resetting there.
-    // The start falls back to the one-sided neighbor difference (~0: beats 0-1 share their values);
-    // the end eases to a stop (see m1).
-    auto hermite = [&](float IntroKeyframe::*field) -> float
+    // The path is cineEval's (the Cinematics window's spline, what the user framed the keys with): Catmull-Rom
+    // per channel, so velocity carries through every beat instead of stopping at it (the pre-2026-10 intro
+    // smoothstepped each segment and stuttered at every key); log altitude, so the climb from 55 m to 640 km
+    // takes each decade in its stride; azimuth unwrapped.
+    static const std::vector<CineKey> keys = []
     {
-        float p0 = kIntroKeyframes[i].*field;
-        float p1 = kIntroKeyframes[i + 1].*field;
-        float t0 = kIntroKeyframes[i].t;
-        float t1 = kIntroKeyframes[i + 1].t;
-        float segDt = t1 - t0;
-        float m0 = (i == 0)
-                       ? (p1 - p0) / segDt
-                       : (kIntroKeyframes[i + 1].*field - kIntroKeyframes[i - 1].*field) /
-                             (kIntroKeyframes[i + 1].t - kIntroKeyframes[i - 1].t);
-        // The final key eases to a stop (zero tangent): the intro hands the camera to the player
-        // there, and a one-sided tangent arrived at speed and stopped dead on the handoff frame.
-        float m1 = (i + 1 == kIntroKeyframeCount - 1)
-                       ? 0.0f
-                       : (kIntroKeyframes[i + 2].*field - kIntroKeyframes[i].*field) /
-                             (kIntroKeyframes[i + 2].t - kIntroKeyframes[i].t);
-        float u = (segDt > 0.0f) ? glm::clamp((tClamped - t0) / segDt, 0.0f, 1.0f) : 1.0f;
-        float u2 = u * u, u3 = u2 * u;
-        float h00 = 2.0f * u3 - 3.0f * u2 + 1.0f;
-        float h10 = u3 - 2.0f * u2 + u;
-        float h01 = -2.0f * u3 + 3.0f * u2;
-        float h11 = u3 - u2;
-        return h00 * p0 + h10 * (m0 * segDt) + h01 * p1 + h11 * (m1 * segDt);
-    };
-
+        std::vector<CineKey> v;
+        for (const IntroKeyframe &f : kIntroKeyframes)
+        {
+            CineKey k;
+            k.t = f.t;
+            k.lat = f.latDeg;
+            k.lon = f.lonDeg;
+            k.alt = f.altM;
+            k.az = f.azDeg;
+            k.el = f.elDeg;
+            k.fov = f.fovDeg;
+            v.push_back(k);
+        }
+        return v;
+    }();
+    // Its end tangents are one-sided: the camera would leave the first key and arrive at the last at speed.
+    // The first and last segments' clocks are remapped to start / stop gently (velocity 0 at the ends, the
+    // spline's own speed where they meet the next segment), so the "2036" card opens still and the hand-over
+    // frame is still. Every key is still reached on its beat.
+    double tCam = tClamped;
     {
-        obsHeightOffset = std::max(0.0f, hermite(&IntroKeyframe::altM));
-        camera.elDeg = hermite(&IntroKeyframe::elDeg);
-        camera.fovYDeg = hermite(&IntroKeyframe::fovDeg);
-        float azDegMixed = hermite(&IntroKeyframe::azDeg);
-        // Both must be set: camera.azDeg is what viewMatrix() actually renders with, while
-        // obsFacing is the ground-movement tangent buildUI's post-intro block re-derives
-        // camera.azDeg FROM — leaving either one stale caused a one-frame camera snap the moment
-        // the intro handed off (camera.azDeg was previously never touched here, so the rendered
-        // view didn't pan at all during playback and then jumped to match obsFacing on the very
-        // first post-intro frame).
-        camera.azDeg = azDegMixed;
-        float az = glm::radians(azDegMixed);
-        obsFacing = glm::normalize(cosf(az) * introNorthEF + sinf(az) * introEastEF);
+        const double t1 = kIntroKeyframes[1].t, tN1 = kIntroKeyframes[kIntroKeyframeCount - 2].t;
+        if (tCam < t1)
+        {
+            const double u = tCam / t1;
+            tCam = t1 * (2.0 * u * u - u * u * u);
+        }
+        else if (tCam > tN1)
+        {
+            const double u = (tCam - tN1) / (tEnd - tN1);
+            tCam = tN1 + (tEnd - tN1) * (u + u * u - u * u * u);
+        }
     }
+    CineKey k = cineEval(keys, tCam);
+    // Sim time on the un-eased clock, at the cinematic's rate: the sky at each key is the one it was framed on.
+    k.hasSim = true;
+    k.simT = kIntroSimStartJ2000S + kIntroSimRate * (double)tClamped;
+    // What the Cinematics playback applies (observer lat/lon/altitude, camera.azDeg AND obsFacing — outside the
+    // intro buildUI derives camera.azDeg from obsFacing, so both must agree at the hand-over — FOV, sim time).
+    harnessApplyCam(k);
+    obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
 
     // Track the most recently reached non-null caption (see IntroKeyframe's text field doc).
     for (int k = 0; k <= i; ++k)
@@ -9037,11 +9015,32 @@ void SatelliteSim::updateIntroCinematic(float dt)
         finishIntro(false);
 }
 
+// ─── startIntroReplay ────────────────────────────────────────────────────────
+// The Display tab's "Replay Intro" (and the harness's `intro play`): from the top, at the intro's own moment.
+// introIsReplay suppresses the UC1 benchmark however this playthrough ends (see finishIntro).
+void SatelliteSim::startIntroReplay()
+{
+    showIntro = true;
+    introElapsed = 0.0f;
+    introCaptionIndex = 0;
+    introBasisValid = false;
+    introBenchMsSum = 0.0f;
+    introBenchFrames = 0;
+    introIsReplay = true;
+    if (audio_) // the intro is cut to the first track
+    {
+        audio_->setMusicPaused(false);
+        audio_->playTrack(0);
+    }
+}
+
 // ─── finishIntro ─────────────────────────────────────────────────────────────
 void SatelliteSim::finishIntro(bool wasSkipped)
 {
     showIntro = false;
     introSkipped = wasSkipped;
+    // The intro drove the clock while paused (updateIntroCinematic); the player gets it running at 1x.
+    timePaused = false;
     // The controls are taught by the tutorial (SatelliteSimTutorial.cpp), once; a replay of the intro
     // does not re-run it (the Display tab has its own Replay Tutorial).
     if (!tutorialDone && !tutActive && !introIsReplay && !harnessRunner_)

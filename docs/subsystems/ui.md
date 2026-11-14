@@ -360,46 +360,49 @@ default rather than the fixed `WIN_W`x`WIN_H` (1280x720). A small window the pla
 manually enlarge undercut the cinematic's impact and invited resizing instead of watching it.
 `WIN_W`/`WIN_H` are still passed as the restore size for whenever the player un-maximizes later.
 
-**Fixed vantage, locked every playback.** The intro always opens from `kIntroObserverLatDeg/LonDeg`
-+ `kIntroStartAzDeg/ElDeg/FovDeg` (`SatelliteSim.h`) — the California coast at twilight facing the
-SpaceX AI-datacenter satellites and the Reflect Orbital mirrors aimed at the nearby Topaz solar
-farm — not whatever the player's current/saved observer position happens to be.
-`updateIntroCinematic`'s one-time init block (`!introBasisValid`) force-sets
-`obsDir`/`obsLatDeg`/`obsLonDeg`/`obsHeightOffset`/`camera.azDeg/elDeg/fovYDeg` from these
-constants before computing the East/North tangent basis the rest of playback rides on. The
-Display tab's "Replay Intro" button resets `introBasisValid = false`, so a replay re-locks to the
-same spot regardless of where the player has since wandered off to. Also forces
-`timeScaleIdx = 0` / `timePaused = false` / `timeDir = 1.0f` here — the beat sheet is tuned at 1x
-and a replay runs on live state, not a fresh boot, so it can't rely on `loadSettings()` alone.
+**A fixed moment, locked every playback (2026-11-13: "intro2").** The intro is the user's saved cinematic
+`intro2` (made in the Cinematics window), its 8 keys copied into `kIntroKeyframes[]` (`SatelliteSim.h`: lat/lon,
+altitude above sea level, az/el/FOV, caption) one per beat: the Mississippi delta (Arkansas) at twilight, Starmind's
+trains overhead, the Reflect mirrors' flares and the busiest beam site (~55 km east) on the horizon; rising and
+panning south onto a Starship climbing out of Starbase, Texas over the Gulf, the sunset behind it; out to orbit with
+the Sun on the limb for the title. `updateIntroCinematic`'s one-time init (`!introBasisValid`) sets the sim time to
+`kIntroSimStartJ2000S` (2036-11-25 23:15:46.57 UTC), the cloud map's phase to `kIntroCloudPhase` (2.356 rad: the
+offset only, the player's drift rate is kept), 1x, and PAUSES the clock: the intro drives sim time itself, at
+`kIntroSimRate` = 5 s / songbeat, so the sky at each key is the one the cinematic framed it on (its keys were 5 s
+apart). `finishIntro` hands the clock back running at 1x. The Display tab's "Replay Intro" (`startIntroReplay`,
+also the harness's `intro play`) clears `introBasisValid`, so a replay returns to the same moment and place.
 
-**`camera.azDeg` vs `obsFacing` — read this before touching keyframe azimuth.** `camera.azDeg` is
-what `SkyCamera::viewMatrix()` actually renders with; `obsFacing` is only the ground-movement
-tangent, and outside the intro `camera.azDeg` is *derived from* `obsFacing` every frame in
-`buildUI` (search "Derive camera.azDeg from obsFacing"). That derivation is skipped entirely while
-`showIntro` is true (same gate as the RMB-look block), so `updateIntroCinematic` must set BOTH
-every frame — it used to set only `obsFacing`, which meant the rendered view never actually panned
-in azimuth during playback and then snapped to match `obsFacing` on the first post-intro frame.
-Fixed by computing the mixed azimuth once and assigning it to both.
+**Why that date.** The cinematic was framed on 2036-11-21 23:19:46 UTC, under a 16%-lit crescent. The user wanted
+a quarter-to-half Moon, for some ambient light at night (where the clouds look best). `launch list` over Nov 23-27
+found the same scene four days later: a Starship from Starbase, Texas lifting off eastward at 23:10:16 (the
+cinematic's at 23:14:16) with the Sun ~4.5 deg up at the pad; the intro opens 330.6 s after lift-off as the
+cinematic did, the observer's Sun at -4.1 deg (was -4.8), the Moon 50% lit, ~42 deg up in the south. Launches,
+beams and satellites are pure functions of sim time, so the moment is identical on every machine. The cinematic's
+own cloud phase (the default map, 2.774) put a bank over the opening train and the beam at Nov 25; a sweep of 9
+phases picked 2.356 (clear over the vantage, the beam showing, the Gulf's clouds sunset-lit from orbit). Under the
+brighter Moon the train reads dimmer than on the crescent night: that is the trade for the moonlight.
+`kInitWholeSec` (the boot time, 2036-11-22 02:06:22, the first intro's California twilight) is unchanged: harness
+runs start there and baselines assume it.
 
 **Beat sheet** (`kIntroKeyframes[]`, timings synced to `songbeat` = 7.61s, a music-tempo unit —
 hand-tuned by the user, not derived): `kIntroYearIndex` (0) is a "2036" title card, bottom-anchored
 like every other caption but at a larger font size (not centered — that was tried and reverted, it
 read as inconsistent with the rest of the captions); `kIntroHintRevealIndex` (1) is the first
 narrative line and also where the bottom-right skip hint first appears (not from frame 0 — see
-below); the middle beats hold at ground level then pull to LEO; `kIntroTitleIndex` (6) is the
-arrival "SAT LIGHT SIM" reveal; beat 7 (the last key, text null) settles the final framing while the
+below); beats 0-2 are on the ground, 3-4 climb (2.6 km, 57 km), 5-7 are in orbit; `kIntroTitleIndex` (6) is the
+"SAT LIGHT SIM" reveal; beat 7 (the last key, text null) settles the final framing while the
 title fades, and the intro ends there (`kIntroBenchEndT` = its time: the whole intro feeds the UC1
 benchmark).
 
-**Camera path is a Catmull-Rom/cubic-Hermite spline, not per-segment smoothstep.** The original
-implementation eased in/out (smoothstep) independently within each keyframe segment, which gives
-zero velocity at *every* waypoint, not just the first and last — the camera visibly decelerated to
-a stop and re-accelerated at every beat boundary, reading as a stutter rather than one continuous
-move. `updateIntroCinematic`'s local `hermite(field)` lambda instead estimates a time-weighted
-tangent at each interior key from its two neighbors and blends with cubic Hermite basis functions,
-so velocity carries through a waypoint instead of resetting there. The start's tangent is the
-one-sided difference (~0: beats 0-1 share their values); the LAST key's is zero, so the camera eases
-to a stop on the handoff frame.
+**The camera path is `cineEval`'s** (`Cinematic.cpp`, the Cinematics window's own spline), applied with
+`harnessApplyCam` as the Cinematics playback does: Catmull-Rom per channel, so velocity carries through every beat
+(the pre-2026-10 intro smoothstepped each segment and visibly stopped at every key); altitude and FOV in log space,
+so the climb from 55 m to 640 km takes each decade in its stride; azimuth unwrapped (keys 4 -> 5 cross +-180, which
+a raw spline would turn the long way round). Its end tangents are one-sided, so the first and last segments' clocks
+are remapped (`2u^2 - u^3`, `u + u^2 - u^3`): the "2036" card opens still and the hand-over frame is still, and
+every key is still reached on its beat. `harnessApplyCam` sets both `camera.azDeg` and `obsFacing`: outside the
+intro `buildUI` derives `camera.azDeg` from `obsFacing` every frame (search "Derive camera.azDeg from obsFacing"),
+and a stale one snapped the camera on the first post-intro frame.
 
 **No controls in the intro (2026-10-03).** Beat 7 used to be a "WASD to move / Q-E / click a
 satellite" caption that unlocked movement and look (`kIntroControlsIndex`) while clicking stayed

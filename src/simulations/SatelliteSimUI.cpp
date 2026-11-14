@@ -5107,19 +5107,7 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     {
         if (uiButton(inp, ui, "ReplayIntroBtn", 0, tx(Txt::BtnReplayIntro), nullptr, false, !showIntro))
         {
-            // introIsReplay suppresses the UC1 benchmark however this playthrough ends (see finishIntro).
-            showIntro = true;
-            introElapsed = 0.0f;
-            introCaptionIndex = 0;
-            introBasisValid = false;
-            introBenchMsSum = 0.0f;
-            introBenchFrames = 0;
-            introIsReplay = true;
-            if (audio_) // the intro is cut to the first track
-            {
-                audio_->setMusicPaused(false);
-                audio_->playTrack(0);
-            }
+            startIntroReplay();
         }
         if (uiButton(inp, ui, "ReplayTutorialBtn", 0, tx(Txt::BtnReplayTutorial), nullptr, false, !showIntro))
         {
@@ -9749,7 +9737,6 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
     }
 
     if (j.contains("launches") && j["launches"].is_object())
-        launchOrbitVent = settingClamp(lj.value("orbit_vent", launchOrbitVent), 0.0f, 20.0f);
     {
         const auto &lj = j["launches"];
         launchesEnabled = lj.value("enabled", launchesEnabled);
@@ -9762,6 +9749,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         launchPlumeBillows = settingClamp(lj.value("plume_billows", launchPlumeBillows), 0.0f, 10.0f);
         launchPlumeGrowth = settingClamp(lj.value("plume_growth", launchPlumeGrowth), 0.0f, 20.0f);
         launchPlumeDispersal = settingClamp(lj.value("plume_dispersal", launchPlumeDispersal), 0.0f, 20.0f);
+        launchOrbitVent = settingClamp(lj.value("orbit_vent", launchOrbitVent), 0.0f, 20.0f);
         launchStreakCount = settingClamp(lj.value("jelly_streak_count", launchStreakCount), 0.0f, 12.0f);
         launchStreakBright = settingClamp(lj.value("jelly_streak_brightness", launchStreakBright), 0.0f, 5.0f);
         launchStreakSpread = settingClamp(lj.value("jelly_streak_spread", launchStreakSpread), 0.0f, 5.0f);
@@ -11025,7 +11013,6 @@ nlohmann::json SatelliteSim::buildSettingsJson()
                        {"train_duration", meteorTrainDuration}, {"timelapse", meteorTimelapse},
                        {"timelapse_exposure_s", meteorTimelapseExposureS}, {"timelapse_head_cap", meteorTimelapseHeadCap}};
     j["stars"] = {{"sky_limit", starSkyLimit}, {"limit_boost", starLimitBoost}, {"dark_sky_extra", starDarkExtraMag}, {"supernova", supernovaEnabled},
-                     {"orbit_vent", launchOrbitVent},
                   {"betelgeuse_variable", betelgeuseVariable}};
     // Launches (SatelliteSimLaunches.cpp).
     j["launches"] = {{"enabled", launchesEnabled},
@@ -11038,6 +11025,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
                      {"plume_billows", launchPlumeBillows},
                      {"plume_growth", launchPlumeGrowth},
                      {"plume_dispersal", launchPlumeDispersal},
+                     {"orbit_vent", launchOrbitVent},
                      {"jelly_streak_count", launchStreakCount},
                      {"jelly_streak_brightness", launchStreakBright},
                      {"jelly_streak_spread", launchStreakSpread},

@@ -206,7 +206,7 @@ json patchFor(const std::string &dotted, const json &value)
 const char *kHelp =
     "wait <frames> [maxs=2] | wait seconds <s> | wait settle [frames] [maxs=2] | wait settle auto [max=160] [min=40] [thr=0.1] [hold=4] [noise=1.5] [maxs=2]; "
     "time [set <iso>|add <s>|sun <el deg|noon|midnight> [rising|setting]|pause|play|scale <label>|reverse on/off]; "
-    "observer lat= lon= [agl=|alt=]; beams [list] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [clamp=on] [drift=intro|default]; report list [dir] | report info <issue dir> | report load <issue dir> [shot=1] [settings=on|off] [clamp=on] [trail=on|off] | report shot [note] [new=1] [title=] [bar=1] | report mark [issue] shot= [pin=x,y|off] [rect=x,y,w,h|off] | report export [issue]; drift [default] [phase=] [rate=]; camera [az= el= fov=] | camera look|track <sun|moon|sel|planet name|off>; "
+    "observer lat= lon= [agl=|alt=]; beams [list] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [clamp=on] [drift=intro|default]; report list [dir] | report info <issue dir> | report load <issue dir> [shot=1] [settings=on|off] [clamp=on] [trail=on|off] | report shot [note] [new=1] [title=] [bar=1] | report mark [issue] shot= [pin=x,y|off] [rect=x,y,w,h|off] | report export [issue]; drift [default] [phase=] [rate=]; intro [state|play|skip]; camera [az= el= fov=] | camera look|track <sun|moon|sel|planet name|off>; "
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select star <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "exposure [auto|hold|fast]; "
@@ -1475,6 +1475,29 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         char buf[128];
         snprintf(buf, sizeof(buf), "%.4f, %.4f  alt %.0f m, agl %.0f m  (terrain %.0f m)", obsLatDeg, obsLonDeg,
                  eyeAsl, eyeAsl - obsTerrainH, obsTerrainH);
+        r["message"] = buf;
+        return Status::Done;
+    }
+
+    // ── intro ───────────────────────────────────────────────────────────────────
+    // `intro [state]`, `intro play`, `intro skip` (2026-11-13): the intro cinematic. `play` = the Display tab's
+    // Replay Intro (from the top, at its own moment; no tutorial or benchmark after it under the harness); `skip`
+    // ends it as Space does. `state` = playing, elapsed, the caption beat, the sim time.
+    if (n == "intro")
+    {
+        const std::string sub = lower(pos(0));
+        if (sub == "play")
+            startIntroReplay();
+        else if (sub == "skip" && showIntro)
+            finishIntro(true);
+        r["playing"] = showIntro;
+        r["elapsed_s"] = introElapsed;
+        r["beat"] = introCaptionIndex;
+        r["length_s"] = kIntroKeyframes[kIntroKeyframeCount - 1].t;
+        r["utc"] = isoFromJ2000((double)simDayJ2000 * 86400.0 + simSecInDay);
+        char buf[128];
+        snprintf(buf, sizeof(buf), "intro %s, %.1f / %.1f s, beat %d", showIntro ? "playing" : "off", introElapsed,
+                 kIntroKeyframes[kIntroKeyframeCount - 1].t, introCaptionIndex);
         r["message"] = buf;
         return Status::Done;
     }
