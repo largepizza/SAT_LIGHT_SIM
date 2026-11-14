@@ -6929,7 +6929,7 @@ void main() {
                         float rB    = dot(hitPt, reflDir), rL = length(hitPt);
                         vec2  cSz   = vec2(textureSize(cloudTargetA, 0));
                         vec2  uvK   = vec2(0.5 / pc.aspect, 0.5) / tanHFRefl;   // (x, -y) / -z  ->  uv - 0.5
-                        float tPrev = 0.0, tHit = -1.0;
+                        float tPrev = 0.0, tHit = -1.0, tBef = 0.0, hitW = 0.0;
                         float onT   = 1.0;
                         [[dont_unroll]] for (int k = 0; k < 5; ++k) {
                             float rr = R_EARTH + kReflAlt[k];
@@ -6940,25 +6940,43 @@ void main() {
                             vec2  uk = vec2(Pc.x, -Pc.y) / -Pc.z * uvK + 0.5;
                             vec2  ek = min(uk, 1.0 - uk);
                             if (min(ek.x, ek.y) < 0.0) { onT = smoothstep(-0.3, 0.0, min(ek.x, ek.y)); break; }
-                            float aK = texelFetch(cloudTargetA, ivec2(uk * cSz), 0).a;
-                            if (abs(aK) < 50000.0) {   // (an engine light's texel: dropped by the emissive test below)
-                                float dc = abs(aK) * 1000.0;
+                            // 2026-11-14 (issue 20261114_112348): a SOFT hit. The test was yes/no on the nearest texel, and
+                            // near the horizon a sample's distance changes ~10% per sea row (it reaches its altitude ~a/angle
+                            // away), so the -2% / +30% window was a band a few rows deep whose edges followed each texel's
+                            // distance: reflected patches cut off flat, in stair steps of the composite's texels magnified by
+                            // the grazing reflection. Now the visible cloud's distance is interpolated over the four texels
+                            // (cloud texels only; their share is the cover), the window's edges ramp over 10% of that
+                            // distance, and the strongest sample wins (a full hit still stops the search).
+                            vec4  gK = abs(textureGather(cloudTargetA, uk, 3));   // (an engine light's texel: dropped by the emissive test below)
+                            vec2  fk = fract(uk * cSz - 0.5);
+                            vec4  wK = vec4((1.0 - fk.x) * fk.y, fk.x * fk.y, fk.x * (1.0 - fk.y), (1.0 - fk.x) * (1.0 - fk.y))
+                                     * vec4(lessThan(gK, vec4(50000.0)));
+                            float cov = wK.x + wK.y + wK.z + wK.w;
+                            if (cov > 1e-3) {
+                                float dc = dot(wK, gK) / cov * 1000.0;
                                 float df = length(Pc) - dc;
-                                if (df >= -max(200.0, 0.02 * dc) && df <= max(2500.0, 0.3 * dc)) { tHit = tk; break; }
+                                float lo = max(200.0, 0.02 * dc), hi = max(2500.0, 0.3 * dc);
+                                float hk = cov * smoothstep(-lo - 0.1 * dc, -lo, df) * (1.0 - smoothstep(hi, hi + 0.1 * dc, df));
+                                if (hk > hitW) { hitW = hk; tHit = tk; tBef = tPrev; }
+                                if (hitW > 0.99) break;
                             }
                             tPrev = tk;
                         }
                         if (tHit > 0.0) {
-                            // one bisection between the last sample in front and the hit: the nearer crossing
-                            float tm = 0.5 * (tPrev + tHit);
+                            // one bisection between the sample before and the hit: the nearer crossing (blended, not picked)
+                            float tm = 0.5 * (tBef + tHit);
                             vec3  Pm = relC + rdC * tm;
                             vec2  um = clamp(vec2(Pm.x, -Pm.y) / -min(Pm.z, -1e-3) * uvK + 0.5, vec2(0.0), vec2(0.9999));
-                            float aM = texelFetch(cloudTargetA, ivec2(um * cSz), 0).a;
-                            bool  hm = abs(aM) < 50000.0
-                                    && length(Pm) >= abs(aM) * 1000.0 - max(200.0, 0.02 * abs(aM) * 1000.0);
-                            vec3  Ph = relC + rdC * (hm ? tm : tHit);
+                            vec4  gM = abs(textureGather(cloudTargetA, um, 3));
+                            vec2  fm = fract(um * cSz - 0.5);
+                            vec4  wM = vec4((1.0 - fm.x) * fm.y, fm.x * fm.y, fm.x * (1.0 - fm.y), (1.0 - fm.x) * (1.0 - fm.y))
+                                     * vec4(lessThan(gM, vec4(50000.0)));
+                            float cM = wM.x + wM.y + wM.z + wM.w;
+                            float dM = cM > 1e-3 ? dot(wM, gM) / cM * 1000.0 : 1e30;
+                            float hm = cM * smoothstep(-0.25 * dM, 0.0, length(Pm) - dM + max(200.0, 0.02 * dM));
+                            vec3  Ph = relC + rdC * mix(tHit, tm, hm);
                             reflScreenUV = vec2(Ph.x, -Ph.y) / -min(Ph.z, -1e-3) * uvK + 0.5;
-                            hitK = 1.0;
+                            hitK = hitW;
                             onT  = 1.0;
                         }
                         onS = onT;

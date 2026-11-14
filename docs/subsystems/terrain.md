@@ -836,6 +836,21 @@ the fix — see `docs/HARNESS.md`, *Gotchas* → `time sun`.
   mean |d| 11.8 -> 4.4 levels; vs +13.3 deg 2.2 -> 1.5. 220359 path, band below the horizon, 2-frame change
   (16-px blur) 2.3 -> 1.3 levels. The reflections now stand under their clouds as columns, so the band's row contrast
   is unchanged (s3 7.8 -> 8.9); the near sea that mirrored the frame-top cloud is bluer (s3 open sea -9%).
+- **The reflected ray's hit test is soft** (2026-11-14, issue 20261114_112348). Near the horizon a sample reaches its
+  altitude ~a/angle away, so its distance changes ~10% per sea row; a yes/no test on the nearest texel with a -2% /
+  +30% window made each hit a band a few rows deep whose edges followed the half-res texels' distances, magnified
+  ~4x vertically by the grazing reflection (the 300 m sample maps a sea row to ~1/4 of a sky row): reflected
+  patches cut off flat, in stair steps (debug view 50 with r = hitK read only 0 or 1). Now the visible cloud's
+  distance is interpolated over the four gathered texels (cloud texels only; their bilinear share is the cover),
+  the window's edges ramp over 10% of that distance (smoothstep), the strongest sample wins (a full hit still stops
+  the search), hitK is that weight, and the bisection blends its two candidates by a soft (25%-wide) version of its test.
+  Measured (RTX 3070 Ti, 1920x1009, interleaved, 3 reps, the issue's shot): GPU 22.98 -> 23.01 ms (+-0.3), sky
+  7.59 -> 7.67 ms, 168 registers either way. Hard flat cuts in the patch band (|dL/dy| > 10 in runs >= 6 px) 3186 ->
+  1877; 220250 pitch test 2.46 -> 2.40; 220359 path 2-frame change (blur16) 1.35 -> 1.53 (+0.1..0.2, run-to-run
+  noise ~0.15); the issue's own path 5.7 -> 5.2. Ramps of 25% / 50% soften the outlines more (flat cuts 1236 at 25%)
+  but add partial hits under the rough sea's per-pixel reflected directions (the hit map is wave noise there):
+  220359's path change +20-27%. Still open: a reflected cloud whose visible surface is nearer than every sample
+  (its inside, seen from the sea) is missed, so far-sea patches can show as outlines with clear sea inside.
 - **The satellite ocean-glint loop is skipped when its result is zero** (day, or above ~8 km): 512 entries x two
   texture fetches per ocean pixel cost 6 ms of the sky pass from orbit (the `water_map` knockout "saved" it only
   because it turns the sea into cheaper terrain).
