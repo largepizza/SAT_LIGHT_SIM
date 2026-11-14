@@ -501,7 +501,7 @@ bool beamGather(vec3 pW, float h, vec3 dir, vec3 eye, out float Esum, out vec3 d
 // odMarch: the cloud between this sample and the satellites, three coarse steps up the beam (150, 450,
 // 1350 m, lightAmbOD), with the depth to the column's top as a floor (a deck lit from above).
 vec3 beamFinish(vec3 pW, float h, vec3 dir, CV2Field f, float dayness, float og, vec4 hab,
-                float Esum, vec3 dirS, float phSum, float odMarch)
+                float Esum, vec3 dirS, float phSum, float odMarch, float hV)
 {
     float od;
     if (f.thin > 0.5) od = f.sigma * (1.0 - 0.45 * f.thin) * 400.0;
@@ -526,8 +526,18 @@ vec3 beamFinish(vec3 pW, float h, vec3 dir, CV2Field f, float dayness, float og,
         if (liq < 1.0) phR += og * (1.0 - liq) * (0.25 * opS + vec3(0.15 * cv2PillarOptics(dir, dirS)));
         ph = mix(ph, phR, f.rain);
     }
+    // Multiple scattering: the Moon's model, the slab's diffuse field (cv2DiffuseField, cv2.ms.x 1), its far side the path to
+    // the column's base along the beam (the Moon's odBkA: no field reads). Until 2026-11-13 the beams kept the octaves after
+    // the Sun and Moon left them (issue_20261113_183043 "Reflect cloud lighting"): a deck under a beam, seen from above, was
+    // a flat blue wash (no light built up inside it to come back out of its top), brightest looking toward the satellites.
+    // Shot 1's lit tiles +4-6 levels, register count 128 unchanged, cloud march within the A-vs-A spread.
     float pMS = 0.85 * cv2HG(cosB, 0.2) + 0.15 * cv2HG(cosB, -0.4);
-    return Esum * (ph * exp(-od) + pMS * msOctaves(od) * f.msBright)
+    float msB = pMS * msOctaves(od);
+    if (cv2.ms.x > 0.5 && f.thin < 0.5) {
+        float odBkB = f.sigma * min(f.hf * max(f.topH - h, 0.0) / max(1.0 - f.hf, 0.05) / max(dot(normalize(pW), dirS), 0.1), cv2.ms.w);
+        msB = cv2.ms.z * cv2DiffuseField(od, odBkB, hV, cosB, cv2.ms.y, 1.0);
+    }
+    return Esum * (ph * exp(-od) + msB * f.msBright)
          * SUN_INTENSITY * cv2.beam.z * vec3(1.0, 0.97, 0.92) * (1.0 - dayness);
 }
 
@@ -1633,7 +1643,7 @@ void main()
                     nightS += (cr / max(lum, 0.001)) * cityBrightness(lum) * smoothstep(0.45, 0.0, f.hf)
                             * (1.0 - dayness) * kCityUpwellStrength * cloud.ambientGain;
                 }
-                if (wantB) nightS += beamFinish(pW, p.h, dir, f, dayness, og, habRay, bE, bDir, bPh, odB);
+                if (wantB) nightS += beamFinish(pW, p.h, dir, f, dayness, og, habRay, bE, bDir, bPh, odB, bH[bj]);
             }
 
             vec3  S     = keyS + ambS + bounceS + nightS;

@@ -567,6 +567,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- Clouds under a reflector's beam light the way moonlit clouds do (issue_20261113_183043). The beams still lit
+  clouds with the older multiple-scattering model the Sun and Moon had left, so a deck under a beam, seen from
+  above, was a flat blue wash, brightest only when looking toward the satellites. Its tops now come back white,
+  with their relief, at no measured cost.
 - The thin dark line where hazy sky or clouds meet the terrain's silhouette is gone (issue_20261112_215754). The
   clouds' composite dropped the dust and fog in front of a ridge's edge as if it lay behind the ridge (its distance was
   averaged with the sky's beside it). That drop is meant for rockets and satellites passing in front of clouds, and
