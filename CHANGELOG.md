@@ -32,6 +32,12 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   bells high above a dark ground; steam and exhaust clouds rolling off the pad at lift-off; dust or spray at
   landing; engine-sized flames; fuel-dump spirals. At night the engines light the clouds, haze, exhaust, sea and
   ground around them. The rockets' roar arrives at the speed of sound.
+- **Starship vents the whole time it is in orbit.** From the ground at twilight a sunlit Starship drags a fan of
+  ice opening from the ship, through its satellite deployment until its deorbit burn, as in photos of real
+  deployments. Its density has a slider: Settings > Launches, "Starship orbital vent (x)".
+- **A Starship's satellites spread out ahead of it.** The train drifts ahead of the ship and its gaps grow with
+  time, so an hour or more after deployment it is an evenly spaced string of separate dots leading the venting ship,
+  instead of one blob.
 - **Selectable rockets and fireballs.** Rocket stages, a ship coming home and every re-entry fireball can be
   selected, tracked and followed (Go to rides a rocket through staging, deployment and re-entry).
 - **Mission milestones.** Every launch has a timeline (lift-off, max-Q, staging, fairing, SECO, deployment,

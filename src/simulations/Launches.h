@@ -63,6 +63,10 @@ struct Vehicle
     double sepSpeedMps = 0.45;       // their separation speed from the dispenser (mostly up, a little back)
     double sepSpreadMps = 0.12;      // +- per member and axis: a stack's spread (Starship's PEZ dispenser: a few cm/s,
                                      // so the train leaves as one clean string, sep x interval apart)
+    // (2026-11-14) The train's dispersal: the first member out leaves this much faster retrograde than the last (graded
+    // linearly by release order), so the train drifts ahead of the stage and its gaps grow with time (~3x the step x
+    // age), in order: no member overtakes another. 0 = one string that keeps its release spacing.
+    double trainSpreadMps = 0.0;
     double flow1 = 2500.0, flow2 = 300.0; // propellant flow (kg/s): booster, upper stage
     double vex1 = 2900.0, vex2 = 3400.0;  // exhaust speed (m/s)
     int recovery = 2;                // booster: 0 expendable, 1 return to the pad (RTLS / tower catch), 2 droneship
@@ -78,6 +82,12 @@ struct Vehicle
     int upperEngines = 1;
     bool hotStaging = false;
     double ventChance = 0.35;        // the upper stage vents spinning after its deorbit burn (a spiral)
+    // (2026-11-13) A steady vent the whole time the upper stage is in orbit (Starship's cryogenic boil-off / settling
+    // vents, seen from the ground as a fan of ice opening from the ship): kg/s out of the aft end at orbitVentMps,
+    // spreading at orbitVentSpreadMps (the fan's half-angle ~ atan(spread / speed)). 0 = none.
+    double orbitVentKgS = 0.0;
+    double orbitVentMps = 250.0;
+    double orbitVentSpreadMps = 80.0;
     double mountM = 0.0;             // the launch mount's height: the vehicle stands on it (Starship: ~20 m)
     double catchM = 0.0;             // a tower-caught booster stops this far above the mount (its aft end)
     double legM = 0.0;               // its deployed landing legs' feet stand this far below its aft end (2026-10-21:

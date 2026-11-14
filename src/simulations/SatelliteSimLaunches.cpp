@@ -2600,7 +2600,13 @@ static void buildBatch(SatelliteSim &sim, SatelliteSim::LaunchState &L, LBatch &
                 double vc = sd * (2.0 * std::fmod(0.6180339887498949 * (double)mi + 0.5 * h01(B.seed, 37, 1), 1.0) - 1.0);
                 if (mb.stacked && stk.layout == launch::Stack::Column)
                     vc += sp * mb.exitDir.x; // (the stage's X is the circle's normal at deployment)
-                mb.ffV = glm::dvec3(vin.x, vin.y - 2.0 * B.nPark * mb.ffP.x, vc);
+                // The train's dispersal (2026-11-14, vehicle train_spread_mps): the first out leaves fastest retrograde,
+                // graded to 0 for the last, so the members drift ahead of the stage, in release order, and their gaps
+                // grow ~3 x step x age (Starship 0.7: ~1.5 km apart and the leader ~10 km ahead an hour on; CW check:
+                // no pair under 37 m, the stage never under 1.3 km after 3/4 orbit).
+                const double nmem = (double)B.mem.size();
+                const double vDisp = nmem > 1.0 ? vh.trainSpreadMps * (nmem - 1.0 - (double)mi) / (nmem - 1.0) : 0.0;
+                mb.ffV = glm::dvec3(vin.x, vin.y - vDisp - 2.0 * B.nPark * mb.ffP.x, vc);
                 mb.ff = true;
             }
         }
@@ -3781,6 +3787,37 @@ static glm::dvec3 shipEntry(const LBatch &B, double te, double *vOut, double *hO
 static double ventStart(const SatelliteSim::LaunchState &L, const LBatch &B)
 {
     return L.cat.vehicles[B.veh].upperDeorbit ? B.tDeorbBurn + 50.0 : std::max(B.tDeorbBurn - 1200.0, B.tD + 3.0 * 3600.0);
+}
+
+// (2026-11-13) Whether the upper stage's steady orbital vent (Vehicle::orbitVentKgS) runs tau s after lift-off: from
+// orbit insertion to its deorbit burn, and after the burn until the entry interface.
+static bool orbitVentOn(const SatelliteSim::LaunchState &L, const LBatch &B, double tau)
+{
+    if (L.cat.vehicles[B.veh].orbitVentKgS <= 0.0)
+        return false;
+    const double tb = B.tDeorbBurn - B.tL, tEI = B.tStageGone - B.tL;
+    return (tau >= B.t2 + 5.0 && tau < tb) || (tau >= tb + B.burnDur + 5.0 && tau < tEI - 30.0);
+}
+// A free body's ECI position and velocity carried T s on under point-mass gravity (RK4, steps <= 20 s).
+static void coastRk4(glm::dvec3 &p, glm::dvec3 &v, double T)
+{
+    if (T <= 0.0)
+        return;
+    auto acc = [](const glm::dvec3 &r) {
+        const double r2 = glm::dot(r, r);
+        return (-launch::kGM / (r2 * std::sqrt(r2))) * r;
+    };
+    const int n = std::max(1, (int)std::ceil(T / 20.0));
+    const double h = T / n;
+    for (int i = 0; i < n; ++i)
+    {
+        const glm::dvec3 k1v = acc(p), k1p = v;
+        const glm::dvec3 k2v = acc(p + 0.5 * h * k1p), k2p = v + 0.5 * h * k1v;
+        const glm::dvec3 k3v = acc(p + 0.5 * h * k2p), k3p = v + 0.5 * h * k2v;
+        const glm::dvec3 k4v = acc(p + h * k3p), k4p = v + h * k3v;
+        p += (h / 6.0) * (k1p + 2.0 * k2p + 2.0 * k3p + k4p);
+        v += (h / 6.0) * (k1v + 2.0 * k2v + 2.0 * k3v + k4v);
+    }
 }
 
 // A rocket model's engines (tools/make_rocket_models.py): the exit plane's height on the body axis (the origin is the
@@ -7585,6 +7622,10 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             if (fast || dNear > 4.5e6 + 2.0 * eyeAlt)
                 continue;
             const auto bt0 = std::chrono::steady_clock::now();
+            // (2026-11-13) A stage venting in orbit draws its steady vent (below, not parcels) while the parcels are
+            // built: B.parcels is empty until then, so the parcel passes draw nothing (the vent waited for the build:
+            // after a time jump the ship showed no vent for the build's frames).
+            const bool ventPending = launchOrbitVent > 0.0f && LaunchImpl::orbitVentOn(L, B, tau);
             const uint64_t jobKey = L.visList[li].first;
             L.parcelJobSeen[jobKey] = L.parcelFrame;
             auto job = L.parcelJobs.find(jobKey);
@@ -7601,15 +7642,22 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                                          }));
                 }
                 buildMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - bt0).count();
-                continue;
+                if (!ventPending)
+                    continue;
             }
-            if (job->second.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
-                continue;
+            else if (job->second.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+            {
+                if (!ventPending)
+                    continue;
+            }
+            else
+            {
             B.parcels = job->second.get();
             B.parcelsBuilt = true;
             L.parcelJobs.erase(job);
             L.parcelJobSeen.erase(jobKey);
             buildMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - bt0).count();
+            }
         }
         if (tau < 0.0)
             continue;
@@ -8229,6 +8277,80 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         }
         curKind = 0;
         curJelly = false;
+        // ── The steady orbital vent (2026-11-13, the user's photo of a Starship Starlink deployment from the ground at
+        // twilight: a fan of ice opening from the ship, there the whole time it is in orbit; Vehicle::orbitVentKgS).
+        // From a coasting ship a steady vent is a STEADY fan in the ship's frame, so it is not built as parcels (hours of
+        // them: thousands a launch, each integrated over its life on a worker) but drawn each frame: knots at fixed ages
+        // behind the ship (quadratic: dense at the ship), each the gas vented then out of the aft end (-stageNose) at
+        // orbitVentMps, coasted to now; consecutive knots are a chord Gaussian whose cross-section is the mass vented
+        // between them, its radius the spread (orbitVentSpreadMps x age). The knot is the ship now + (the gas coasted -
+        // the ship's state then coasted): the integrator's and the launch model's small differences cancel; across a
+        // burn the gas is placed where it coasted to. Faded out over the last 60% of kOrbitVentAgeS.
+        if (vh.orbitVentKgS > 0.0 && launchOrbitVent > 0.0f && tau > B.t2)
+        {
+            glm::dvec3 Pnow;
+            if (LaunchImpl::rocketPos(L, B, 1, tau, Pnow) &&
+                glm::length(Pnow - eye) < 4.5e6 + 2.0 * std::max(glm::length(eye) - kR, 0.0))
+            {
+                FPROF_SCOPE("launch.orbitVent");
+                constexpr int nK = 17;
+                constexpr double kOrbitVentAgeS = 360.0, kVentKappa = 2000.0, kVentSig0 = 4.0;
+                glm::dvec3 kc[nK];
+                double ka[nK];
+                bool kok[nK];
+                const double tbS = B.tDeorbBurn - B.tL, tbE = tbS + B.burnDur;
+                for (int j = 0; j < nK; ++j)
+                {
+                    const double u = (double)j / (nK - 1);
+                    const double a = kOrbitVentAgeS * u * u, te = tau - a;
+                    ka[j] = a;
+                    kok[j] = false;
+                    if (!LaunchImpl::orbitVentOn(L, B, te))
+                        continue;
+                    if (j == 0)
+                    {
+                        kc[j] = eciToEcef(Pnow, t);
+                        kok[j] = true;
+                        continue;
+                    }
+                    glm::dvec3 P, Pa, Pb;
+                    if (!LaunchImpl::rocketPos(L, B, 1, te, P) || !LaunchImpl::rocketPos(L, B, 1, te - 0.5, Pa) ||
+                        !LaunchImpl::rocketPos(L, B, 1, te + 0.5, Pb))
+                        continue;
+                    const glm::dvec3 V = Pb - Pa;
+                    const glm::dvec3 nose = LaunchImpl::stageNose(L, B, 1, te);
+                    const double sp = glm::length(V);
+                    const glm::dvec3 aft = glm::length(nose) > 0.5 ? -glm::normalize(nose) : (sp > 1.0 ? -V / sp : -glm::normalize(P));
+                    glm::dvec3 pg = P, vg = V + vh.orbitVentMps * aft;
+                    LaunchImpl::coastRk4(pg, vg, a);
+                    glm::dvec3 c = pg;
+                    if (!(te < tbE && tau > tbS)) // (no burn between: relative to the ship as drawn)
+                    {
+                        glm::dvec3 ps = P, vs = V;
+                        LaunchImpl::coastRk4(ps, vs, a);
+                        c = Pnow + (pg - ps);
+                    }
+                    kc[j] = eciToEcef(c, t);
+                    kok[j] = true;
+                }
+                auto sigAt = [&](double a) { return kVentSig0 + vh.orbitVentSpreadMps * a; };
+                auto condAt = [&](double a) { return 1.0 - glm::smoothstep(0.4 * kOrbitVentAgeS, kOrbitVentAgeS, a); };
+                for (int j = 0; j + 1 < nK; ++j)
+                {
+                    if (!kok[j] || !kok[j + 1])
+                        continue;
+                    const glm::dvec3 seg = kc[j + 1] - kc[j];
+                    const double sl = glm::length(seg);
+                    if (sl < 1e-3)
+                        continue;
+                    const double Sigma = kVentKappa * vh.orbitVentKgS * (ka[j + 1] - ka[j]) * 0.5 *
+                                         (condAt(ka[j]) + condAt(ka[j + 1])) * gain * (double)launchOrbitVent;
+                    addPlume(0.5 * (kc[j] + kc[j + 1]), seg / sl, 0.45 * sl, 0.5 * (sigAt(ka[j]) + sigAt(ka[j + 1])), Sigma,
+                             0.0, 0.98, 0.5 * (ka[j] + ka[j + 1]), B.seed ^ (0x0F1E7ull * (uint64_t)(j + 1)), true,
+                             glm::vec3(1.0f));
+                }
+            }
+        }
     }
     L.prof[7] += (plumeMs - L.prof[7]) / 30.0;
     L.prof[9] += (reMs - L.prof[9]) / 30.0;
@@ -10016,6 +10138,8 @@ void SatelliteSim::buildLaunchGraphicsSection(const UIInput &inp, UIRenderer &ui
         {tx(Txt::SldJellyStreakDiffusionX), &launchStreakDiffusion, 0.0f, 5.0f, 0.05f, "%.2f", 432},
         {tx(Txt::SldJellyNucleusBrightX), &launchNucleusBright, 0.0f, 5.0f, 0.05f, "%.2f", 433},
         {tx(Txt::SldStagingCloudX), &launchStagingCloud, 0.0f, 3.0f, 0.05f, "%.2f", 434},
+        // 2026-11-14: Starship's steady orbital vent (launches.orbit_vent: x the vehicle's orbit_vent_kg_s, Starship 5)
+        {tx(Txt::SldOrbitVentX), &launchOrbitVent, 0.0f, 4.0f, 0.05f, "%.2f", 624},
     };
     buildCloudSliderRows(inp, ui, rows, (int)(sizeof(rows) / sizeof(rows[0])), false);
     if (uiButton(inp, ui, "LdGfxReset", 0, tx(Txt::BtnResetExhaustToDefaults), tx(Txt::TipEverySliderAboveBackToDefault)))
@@ -10036,6 +10160,7 @@ void SatelliteSim::buildLaunchGraphicsSection(const UIInput &inp, UIRenderer &ui
         launchStreakDiffusion = 0.5882353f;
         launchNucleusBright = 1.040724f;
         launchStagingCloud = 1.90045261f;
+        launchOrbitVent = 0.29f;
     }
 }
 

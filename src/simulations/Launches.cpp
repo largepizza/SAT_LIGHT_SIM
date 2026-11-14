@@ -191,6 +191,7 @@ bool Catalog::load(const std::string &path, std::string &err)
             vh.deployIntervalS = std::max(v.value("deploy_interval_s", vh.deployIntervalS), 0.0);
             vh.sepSpeedMps = std::max(v.value("sep_speed_mps", vh.sepSpeedMps), 0.0);
             vh.sepSpreadMps = std::max(v.value("sep_spread_mps", vh.sepSpreadMps), 0.0);
+            vh.trainSpreadMps = std::max(v.value("train_spread_mps", vh.trainSpreadMps), 0.0);
             vh.flow1 = v.value("flow1_kg_s", vh.flow1);
             vh.flow2 = v.value("flow2_kg_s", vh.flow2);
             vh.vex1 = v.value("exhaust1_m_s", vh.vex1);
@@ -205,6 +206,9 @@ bool Catalog::load(const std::string &path, std::string &err)
             vh.upperEngines = std::max(v.value("upper_engines", vh.upperEngines), 1);
             vh.hotStaging = v.value("hot_staging", vh.hotStaging);
             vh.ventChance = v.value("vent_chance", vh.ventChance);
+            vh.orbitVentKgS = std::max(v.value("orbit_vent_kg_s", vh.orbitVentKgS), 0.0);
+            vh.orbitVentMps = std::max(v.value("orbit_vent_m_s", vh.orbitVentMps), 1.0);
+            vh.orbitVentSpreadMps = std::max(v.value("orbit_vent_spread_m_s", vh.orbitVentSpreadMps), 0.0);
             vh.mountM = std::max(v.value("mount_m", vh.mountM), 0.0);
             vh.catchM = std::max(v.value("catch_m", vh.catchM), 0.0);
             vh.legM = std::max(v.value("leg_m", vh.legM), 0.0);

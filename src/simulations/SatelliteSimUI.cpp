@@ -9749,6 +9749,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
     }
 
     if (j.contains("launches") && j["launches"].is_object())
+        launchOrbitVent = settingClamp(lj.value("orbit_vent", launchOrbitVent), 0.0f, 20.0f);
     {
         const auto &lj = j["launches"];
         launchesEnabled = lj.value("enabled", launchesEnabled);
@@ -11024,6 +11025,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
                        {"train_duration", meteorTrainDuration}, {"timelapse", meteorTimelapse},
                        {"timelapse_exposure_s", meteorTimelapseExposureS}, {"timelapse_head_cap", meteorTimelapseHeadCap}};
     j["stars"] = {{"sky_limit", starSkyLimit}, {"limit_boost", starLimitBoost}, {"dark_sky_extra", starDarkExtraMag}, {"supernova", supernovaEnabled},
+                     {"orbit_vent", launchOrbitVent},
                   {"betelgeuse_variable", betelgeuseVariable}};
     // Launches (SatelliteSimLaunches.cpp).
     j["launches"] = {{"enabled", launchesEnabled},

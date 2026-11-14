@@ -78,6 +78,15 @@ launches follow per-program cadences (no real manifest).
   and every orbit after. All but columns now leave with sp x (0.97, -0.24) (`releaseInPlane`): ~2.8 km an orbit of drift
   ahead at 0.7 m/s, the member-to-member rate unchanged. `launch trace` -> deployment `min_stage_gap_after_orbit_m` (from
   3/4 of an orbit on; mission_ops FAIL under 500 m): 1.4 km for Starmind.
+  **The train disperses (2026-11-14, the user's ground photo: the train well spread and ahead of the venting ship,
+  "a result of more time post deployment"):** one common push keeps every member on one trajectory, 30-90 m apart for
+  the whole free flight (8 Starminds ~250 m end to end: one blob from the ground). `Vehicle::trainSpreadMps` (launches.json
+  `train_spread_mps`, Starship 0.7, else 0) adds a retrograde along-track push graded by release order, the whole step
+  for the first out and 0 for the last, so the gaps grow ~3 x (step / (n-1)) x age, in order (an earlier member is
+  always faster ahead: none overtakes another). Starmind: leader ~10 km ahead and gaps 1.3-1.6 km 1 h on, ~1.7 km at
+  1.5 h, a straight evenly spaced string ahead of the ship from the ground at 1.5 and 3 h (a twilight pass 420 km
+  away). `launch trace`: `min_member_gap_after_60s_m` 36 m (was 32), `min_stage_gap_after_orbit_m` 1.4 km (unchanged);
+  offline CW check, Reflect Orbital (25 at 150 s, 1.0 m/s): 157 m (was 150), stage 568 m (unchanged).
 - **Unfolding after release** (2026-10-19): a model's stowable parts (`SatComponent::stow`, JSON
   `"stow": {"axis", "root", "scale", "phase"}`; model `"deployment": {"unfold_delay_s", "unfold_s"}`) leave the
   dispenser packed — an accordion array or a folded radiator scaled along `axis` toward the plane dot(axis, x) = root
@@ -272,6 +281,24 @@ launches follow per-program cadences (no real manifest).
   along its own axis (`stageNose`), ~10 t over 3 min at 350 m/s, 20 min before its deorbit burn and at least 3 h after
   deployment (`ventStart`) — it was 10 min after deploying, spinning, among its train. Expendable stages keep the spiral
   after their deorbit burn (the real Falcon 9 dump spirals).
+  **The steady orbital vent (2026-11-13, the user's ground photo of a twilight Starship Starlink deployment: a fan of
+  ice opening from the ship; "Starship needs to keep venting at all times in orbit"):** `Vehicle::orbitVentKgS` /
+  `orbitVentMps` / `orbitVentSpreadMps` (launches.json `orbit_vent_kg_s` / `orbit_vent_m_s` / `orbit_vent_spread_m_s`;
+  Starship 5 / 250 / 80, others 0), running from SECO + 5 s to the deorbit burn and from the burn's end to 30 s before
+  the entry interface (`orbitVentOn`). NOT parcels: hours of them are thousands a launch, each integrated on the worker
+  (a build is already 80-190 ms). A steady vent from a coasting ship is a steady fan in its frame, so
+  launchFillVisuals draws it each frame after the streaks: 17 knots at ages 360 s x (j/16)^2, each the gas vented then
+  out of -`stageNose` at orbitVentMps, coasted to now by `coastRk4` (point-mass RK4, steps <= 20 s) and placed at the
+  ship now + (gas coasted - ship state coasted) so the integrator's and the launch model's differences cancel
+  (absolute across the deorbit burn); each chord is one Gaussian (cross-section 2000 m^2/kg x the mass vented between
+  its knots, radius 4 m + spread x age, faded over the last 60% of 360 s), lit by `addPlume` like any plume. 360 s, not
+  longer: retrograde gas at 250 m/s falls ~200 km and swings back within 15 min (a curled lobe the photos do not show),
+  and the oldest Gaussians are the widest, i.e. the costliest. 5 kg/s (2026-11-14; was 15): still a clear fan from
+  the ground, and 3 km from the ship a bright jet in a haze instead of a white wall; 15 kg/s (the slider's 3x) matches
+  the photo's brightness, 1.5 kg/s (a boil-off guess) is invisible from the ground (peak tau ~0.005 at 640 km). It does not wait for the launch's parcel
+  build (`ventPending`: the loop falls through with no parcels; after a time jump the ship had no vent for the build's
+  frames). `launches.orbit_vent` (Settings > Launches "Starship orbital vent (x)", slot 624, 0-4, default 0.29 = the user's tuned look, i.e. ~1.45 kg/s at plume opacity 1.0, 0 = off) scales it. Cost (RTX 3070 Ti, 1600x900, the fan filling
+  a 40-deg view from the ground 440 km away, interleaved): GPU 7.81 -> 8.48 ms (cloud composite), CPU +0.06 ms.
 - **Attitude** (`stageNose`, 2026-10-19): the booster's nose is a pitch angle in its trajectory's vertical plane
   (`boosterPitchRaw`: along the velocity on the way up, engines first after staging, along the thrust in its burns,
   upright for landing; branch [-90, 270) deg so nothing wraps), smoothed by `boosterPsi`: a causal Hann window
