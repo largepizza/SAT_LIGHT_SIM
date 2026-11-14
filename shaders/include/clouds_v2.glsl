@@ -302,6 +302,8 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     vec4  hurrlook;
     // (2026-11-12, storms) x "Storm billow lobes" (cv2FieldLow: the cumulus-scale lobes' weight on deep convection), yzw unused
     vec4  storms2;
+    // (2026-11-14, cloudflip) x "zero_cover_fade", y the threshold's and z the margin's lift at zero coverage (cv2ZeroCoverLift), w unused
+    vec4  cloudflip;
 } cv2;
 #include "wind_field.glsl"
 
@@ -475,6 +477,20 @@ vec2 cv2BaseShift(CV2Type ty, float clA, vec4 w, float cov, float covF, float gF
 // The top moves with it: a lower condensation level (sea, rain) moves the whole cloud down (marine cumulus are low AND
 // capped low; only lowering the base deepened every puff and grew the cover seen from above), a higher one raises the top
 // by half (desert cumulus are high-based and tall), the regional spread by 0.7 (the cloud keeps most of its depth).
+// THE FIELD AT ZERO COVERAGE (2026-11-14, cloudflip; issue_20261114_112011 "Clouds flickering on and off?"): the low field
+// draws cloud where field > 1 - covT, and its cells, morphology and the small-cumulus lift take the field past 1 over much
+// of any region, so ANY coverage over 0 drew a whole fair-weather cumulus field, while 0 itself is an early out (nothing):
+// a step at zero. A clear map region's coverage is the imagery's noise floor (the JPEG's 0-10/255 under "Clear below" 0)
+// plus the evolution's growth offset, and the ~20-km fraction there (mip 2) crossed 0 back and forth as the advected copies
+// slid sub-texel through the 6-min window: the whole sky switched between cumulus and clear every ~2-3 sim minutes (paused,
+// deterministic). The threshold now rises by cloudflip.y (0.75: past the field's largest value) and the cloud's margin
+// falls by cloudflip.z (2.7 x the same: past the lobes', bubbles' and turrets' reach, which stand on the margin) at zero,
+// both back to their own over cloudflip.x of coverage ("zero_cover_fade", 0.02): cloud grows from nothing as the
+// coverage grows, and a region at the noise floor is clear. cv2FarColumn takes the threshold's lift (kept in step).
+float cv2ZeroCoverLift(float covT)
+{
+    return cv2.cloudflip.x > 0.0 ? cv2.cloudflip.y * (1.0 - smoothstep(0.0, cv2.cloudflip.x, covT)) : 0.0;
+}
 float cv2BaseTopShift(vec2 bSh) { return min(bSh.y, 0.0) + 0.5 * max(bSh.y, 0.0) + 0.7 * bSh.x; }
 
 struct CV2Field {
@@ -1219,7 +1235,7 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, float stormI
     // at every footprint, so the cells' masses and puffs up close and the imagery's structure from orbit are
     // one placement. (Review 17's near clustering was 0.075.)
     field += 0.3 * cv2.morph.y * clamp(zMs, -2.5, 2.5);
-    float thr        = 1.0 - covT;
+    float thr        = 1.0 - covT + cv2ZeroCoverLift(covT);
     // How far into the cloud this column is: 0 at the edge, 1 well inside. Not normalised by the
     // coverage, so sparse fair-weather cells stay small and low; only a dense field builds towers.
     // "Small cumulus" (tune.x, 2026-10-11): the field is lifted by tune.x at the threshold, tapering to nothing 3 x tune.x
@@ -1604,6 +1620,9 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, float stormI
     float phP     = 0.5 * erK * (1.0 - phK / cv2.form.w);
     // Denser upward (cloud water grows with height); precipitation loads the base.
     float sigK   = mix(0.6, 1.0, smoothstep(0.0, 0.4, hf)) * (1.0 + w.b * ty.look.w * (1.0 - hf)) * ty.shape.x * cv2.look.y;
+    // (cloudflip: the cloud's margin itself also falls at zero coverage, past the lobes', bubbles' and turrets' reach: they
+    // stand on the margin, and with only the threshold lifted they kept a field of lobes standing where e is 0.)
+    m0 -= cv2.cloudflip.z * cv2ZeroCoverLift(covT);
     c.m0 = m0; c.hb = hb; c.baseAmp = baseAmp; c.lobeRef = lobeRef; c.bigL = bigL; c.deep = deep; c.lobeKL = lobeKL;
     c.aBase = aBase; c.aRamp = aRamp; c.AshK = AshK; c.phK = phK; c.phP = phP; c.subPix = subPix; c.PhSub = PhSub;
     c.sigK = sigK; c.billow = billow; c.erK = erK; c.erBase = erBase; c.wispE = wispE; c.rV = rV; c.fpFade = fpFade;
@@ -2047,7 +2066,7 @@ CV2Far cv2FarColumn(CV2Pos q, float fpM)
     float seaM  = 1.0 - smoothstep(5.0, 120.0, w.a * 8000.0);
     float zMs   = mix(fz, cv2MorphZ(wd, mpF, fpF, strat, seaM, cl.r), cv2.morph.x);
     field += 0.3 * cv2.morph.y * clamp(zMs, -2.5, 2.5);
-    float thr   = 1.0 - covT - cv2.farTune.y;   // review 24: "Far cloud layer coverage bias"
+    float thr   = 1.0 - covT - cv2.farTune.y + cv2ZeroCoverLift(covT);   // review 24: "Far cloud layer coverage bias"
     float sigU = mix(0.03, 0.03 + 0.2 * smoothstep(0.0, 3.0, lodCell), ty.look.z) * max(cv2.farTune.w, 0.05);
     // WHERE THE MARCH DRAWS CLOUD (issue 20261021_173412). The march does not draw cloud wherever the field passes the
     // coverage threshold: a column is cloud where its density at the cloud's widest point survives the EROSION. That
@@ -2064,7 +2083,7 @@ CV2Far cv2FarColumn(CV2Pos q, float fpM)
     float xeMin = 0.0;
     float eLift;
     {
-        float thr0   = 1.0 - covT;
+        float thr0   = 1.0 - covT + cv2ZeroCoverLift(covT);
         float deepE  = smoothstep(0.45, 0.85, w.g);
         float cellsC = cv2MesoSmoothG(cellUV, max(lodCell, 2.0));
         float cellsB = deepE > 0.02

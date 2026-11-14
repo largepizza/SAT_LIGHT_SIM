@@ -9840,6 +9840,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         stormOverhang = settingClamp(c.value("storm_overhang", stormOverhang), 0.0f, 1.0f);
         stormPuffiness = settingClamp(c.value("storm_puffiness", stormPuffiness), 0.0f, 2.0f);
         stormBillowLobes = settingClamp(c.value("storm_billow_lobes", stormBillowLobes), 0.0f, 4.0f);
+        cv2ZeroCoverFade = settingClamp(c.value("zero_cover_fade", cv2ZeroCoverFade), 0.0f, 0.5f);
         stormArmCirrus = settingClamp(c.value("storm_arm_cirrus", stormArmCirrus), 0.0f, 3.0f);
         stormCycArms = settingClamp(c.value("storm_cyc_arms", stormCycArms), 0.0f, 6.0f);
         stormCycTightness = settingClamp(c.value("storm_cyc_tightness", stormCycTightness), 0.25f, 4.0f);
@@ -10658,6 +10659,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"storm_overhang", stormOverhang},
         {"storm_puffiness", stormPuffiness},
         {"storm_billow_lobes", stormBillowLobes},
+        {"zero_cover_fade", cv2ZeroCoverFade},
         {"storm_arm_cirrus", stormArmCirrus},
         {"storm_cyc_arms", stormCycArms},
         {"storm_cyc_tightness", stormCycTightness},

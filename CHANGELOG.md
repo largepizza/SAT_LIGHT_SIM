@@ -567,6 +567,11 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- Clouds no longer switch on and off over a clear region as sim time moves (issue_20261114_112011). Where the cloud
+  map is nearly clear, its coverage hovered at zero, and any coverage above zero drew a full field of fair-weather
+  cumulus: as the weather evolution moved the map by a few kilometres, the whole sky flipped between cumulus and
+  clear every two or three sim minutes. Cloud now grows from nothing as the coverage rises from zero, so such a region
+  stays clear (`clouds_v2.zero_cover_fade`, 0 = the old behaviour).
 - Clouds under a reflector's beam light the way moonlit clouds do (issue_20261113_183043). The beams still lit
   clouds with the older multiple-scattering model the Sun and Moon had left, so a deck under a beam, seen from
   above, was a flat blue wash, brightest only when looking toward the satellites. Its tops now come back white,
