@@ -302,6 +302,13 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   350 ms frames over Anchorage (the user's profile; 3-4 ms after). Harness framing: `beams` / `beams go`
   (the site where beams converge NOW — a guessed time and site framed none three times), coverage forced to
   0 / up for clear / cloudy nights (harness_runs/cloud_v2_p10b.satcmd).
+  **Multiple scattering is the Moon's** (2026-11-13, issue_20261113_183043): `beamFinish` takes the diffuse field
+  (`cv2DiffuseField`, cv2.ms.x 1) at the beam's phase angle, the far side the column's path to its base along the beam
+  (the Moon's `odBkA`, no field reads), `hV` = the march's `bH`. With the octaves (still the fallback, cv2.ms.x 0) a
+  deck under a beam seen from above was a flat blue wash, lit most toward the satellites. Report shots (3070 Ti,
+  1600x900): lit tiles +4-6 levels from above, -1..-6 toward the satellites; 128 registers both; march +0.1/+0.5 ms
+  inside the A-vs-A spread (+-0.6-1.2). Brightness against the Moon: the beam is physical x `beam.z` 30, the night
+  view's Moon ~2400x physical, and Betelgeuse rides the Moon's key light (`nightKeyLightENU`), so it is lit as the Moon is.
 - **Rain / sleet / snow / diamond dust at the eye are PARTICLES** (2026-10-04, `rain_particles.vert/.frag`,
   `SatelliteSimRain.cpp`): one instanced draw in the main pass after everything else, i.e. AFTER the sky TAA,
   at full resolution, premultiplied over the tonemapped frame (ONE / ONE_MINUS_SRC_ALPHA: a drop dimmer than the
