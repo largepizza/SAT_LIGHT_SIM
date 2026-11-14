@@ -4777,6 +4777,7 @@ nlohmann::json SatelliteSim::kesslerStateJsonImpl(bool full) const
             }
             o["projectile_kg"] = c.mP;
             o["ev"] = c.ev;
+            o["grid"] = c.grid;
             o["standin"] = si;
             o["standin_to_target_m"] = si ? glm::length(P - a.posEci) : -1.0;
             if (si && ctx_)
@@ -4788,10 +4789,85 @@ nlohmann::json SatelliteSim::kesslerStateJsonImpl(bool full) const
                 if (projectSkyDirToScreen(dirE, (float)ctx_->swapExtent.width, (float)ctx_->swapExtent.height, sx, sy))
                     o["standin_screen_px"] = {sx, sy};
             }
+            if (ctx_)
+            {
+                // (2026-11-14) the target now (the impact's place once it is hit) on screen
+                const glm::dvec3 ex(eci2enuX), ey(eci2enuY), ez(eci2enuZ), rel = a.posEci - glm::dvec3(obsECI);
+                const glm::vec3 dirE = glm::normalize(glm::vec3(glm::dot(rel, ex), glm::dot(rel, ey), glm::dot(rel, ez)));
+                float sx = 0.0f, sy = 0.0f;
+                if (projectSkyDirToScreen(dirE, (float)ctx_->swapExtent.width, (float)ctx_->swapExtent.height, sx, sy))
+                    o["target_screen_px"] = {sx, sy};
+            }
             o["target_range_m"] = glm::length(a.posEci - glm::dvec3(obsECI));
             cl.push_back(o);
         }
         j["collisions_near"] = cl;
+        if (full)
+        {
+            // (2026-11-14, issue_20261114_113233) every event of the log within 3000 km of the eye from 120 s ago to 60 s
+            // ahead (what happened here, drawn up close or not), and the collisions within 3000 km in the last sim hour
+            // by class (pair / grid hit; the eye's place now)
+            nlohmann::json en = nlohmann::json::array();
+            int pairH = 0, gridH = 0, gridCatH = 0, gridDrawnH = 0, gridMagH[5] = {};
+            static constexpr double kGridMagBins[5] = {-4.0, -2.0, 0.0, 1.0, 3.0};
+            const glm::dvec3 eye(obsECI);
+            const size_t i0 = kEvents.lowerBound(t - 3600.0 - 6.0 * 3600.0,
+                                                 [](const kessler::Event &e, double x) { return e.t < x; });
+            for (size_t k = i0; k < kEvents.size(); ++k)
+            {
+                const kessler::Event e = kEvents[k];
+                if (e.t > t + 6.0 * 3600.0)
+                    break;
+                const glm::dvec3 ep(e.pos[0], e.pos[1], e.pos[2]);
+                const double d = glm::length(ep - eye);
+                if (glm::length(ep) < 1.0 || d > 3.0e6)
+                    continue;
+                if (e.kind == kessler::EV_COLLISION && e.t <= t && e.t > t - 3600.0)
+                {
+                    if (e.b == kessler::kSmallRef)
+                    {
+                        ++gridH;
+                        gridCatH += e.catastrophic ? 1 : 0;
+                        KCollVis g;
+                        if (kesslerCollPair(k, e, g))
+                        {
+                            const double m = kesslerCollGridMag(g, eye);
+                            gridDrawnH += m <= kCollGridMaxMag ? 1 : 0;
+                            for (int b = 0; b < 5; ++b)
+                                gridMagH[b] += m <= kGridMagBins[b] ? 1 : 0;
+                        }
+                    }
+                    else
+                        ++pairH;
+                }
+                if (e.t < t - 120.0 || e.t > t + 60.0 || en.size() >= 32)
+                    continue;
+                bool drawn = false;
+                for (const KCollVis &c : kCollVis)
+                    drawn = drawn || c.ev == k;
+                en.push_back({{"ev", k},
+                              {"in_s", e.t - t},
+                              {"kind", (int)e.kind},
+                              {"origin", (int)e.origin},
+                              {"catastrophic", (int)e.catastrophic},
+                              {"a", e.a},
+                              {"b", e.b == kessler::kSmallRef ? std::string("small")
+                                                                : (e.b == kessler::kNoRef ? std::string("none")
+                                                                                          : std::to_string(e.b))},
+                              {"dist_km", d / 1000.0},
+                              {"vrel_mps", e.vRel},
+                              {"m_proj_kg", e.mProj},
+                              {"n_rec", e.nRec},
+                              {"drawn_up_close", drawn}});
+                KCollVis g;
+                if (kesslerCollPair(k, e, g))
+                    en.back()["flash_peak_mag"] = kesslerCollGridMag(g, eye);
+            }
+            j["events_near"] = en;
+            j["collisions_3000km_last_hour"] = {{"pair", pairH}, {"grid", gridH}, {"grid_catastrophic", gridCatH}, {"grid_drawn", gridDrawnH},
+                                                {"grid_flash_at_or_under_mag_m4_m2_0_1_3",
+                                                 {gridMagH[0], gridMagH[1], gridMagH[2], gridMagH[3], gridMagH[4]}}};
+        }
         j["collision_flash"] = kCollFlashDbg;
         j["impact_frame"] = kCollImpactDbg > 0.0; // (2026-11-03) this frame shows a collision's impact frame
         nlohmann::json ifr = nlohmann::json::array();
@@ -5386,8 +5462,7 @@ double SatelliteSim::kesslerTypeMassKg(uint32_t ti) const
 // found at its sample time, carried in the target's (radial, along, normal) frame (prepInputs' sampleDt carry).
 bool SatelliteSim::kesslerCollPair(size_t evIdx, const kessler::Event &e, KCollVis &c) const
 {
-    if (e.kind != kessler::EV_COLLISION || e.b == kessler::kSmallRef || e.b == kessler::kNoRef ||
-        e.a == kessler::kNoRef)
+    if (e.kind != kessler::EV_COLLISION || e.b == kessler::kNoRef || e.a == kessler::kNoRef)
         return false;
     auto satOf = [&](uint32_t ref) -> uint32_t {
         if (ref & kessler::kPoolBit)
@@ -5400,6 +5475,44 @@ bool SatelliteSim::kesslerCollPair(size_t evIdx, const kessler::Event &e, KCollV
     const glm::dvec3 ep(e.pos[0], e.pos[1], e.pos[2]);
     if (glm::length(ep) < 1.0)
         return false;
+    auto massOfSat = [&](uint32_t s) {
+        if (s >= poolIdx0())
+        {
+            const uint32_t j = s - poolIdx0();
+            return j < kPool.size() ? std::max((double)kPool[j].massKg, 1e-3) : 1.0;
+        }
+        return kesslerTypeMassKg(satOrbits[s].typeIdx);
+    };
+    if (e.b == kessler::kSmallRef)
+    {
+        // (2026-11-14, issue_20261114_113233) A grid hit: one of the small fragments (the density grid, 0.1-1 m) hit the
+        // target, a catastrophic one breaking it up as a pair collision does. The projectile has no record (no
+        // stand-in, no mesh, no roster hold of its own); the flash, the fireball and the sound are drawn from its mass
+        // (the event's mProj) and speed (vRel). The engine keeps no direction: the fireball's drift (mP / (mT + mP)
+        // of it) takes one hashed from the event's seed, horizontal (the grid's headings are).
+        const uint32_t sa = satOf(e.a);
+        if (sa == UINT32_MAX || sa >= satOrbits.size() || !(e.vRel > 0.0f))
+            return false;
+        c = KCollVis{};
+        c.te = e.t;
+        c.ev = evIdx;
+        c.pos = ep;
+        c.tgt = sa;
+        c.prj = UINT32_MAX;
+        c.prjType = -1;
+        c.grid = true;
+        c.seed = e.seed;
+        c.key = 0x6C0000000000ull ^ ((uint64_t)evIdx * 0x9E3779B97F4A7C15ull);
+        const double ang = (double)((e.seed * 2654435761u) >> 8) / 16777216.0 * 2.0 * glm::pi<double>();
+        c.vrel = (double)e.vRel;
+        c.vrelL = glm::dvec3(0.0, std::cos(ang), std::sin(ang)) * c.vrel;
+        c.mT = massOfSat(sa);
+        c.mP = std::max((double)e.mProj, 1e-3);
+        if (c.mP > c.mT)
+            std::swap(c.mT, c.mP); // a piece of a piece (Kessler.cpp prepInputs)
+        c.massKg = std::min(c.mT, c.mP);
+        return true;
+    }
     const uint32_t sa = satOf(e.a), sb = satOf(e.b);
     if (sa == UINT32_MAX || sb == UINT32_MAX || sa >= satOrbits.size() || sb >= satOrbits.size())
         return false;
@@ -5427,14 +5540,6 @@ bool SatelliteSim::kesslerCollPair(size_t evIdx, const kessler::Event &e, KCollV
     c.vrel = glm::length(vr);
     // The world's masses (a pool piece its record's; a roster satellite its type's, defaultMassKg when the type has
     // none: a Starmind is 2500 kg, which the first cut read as 500).
-    auto massOfSat = [&](uint32_t s) {
-        if (s >= poolIdx0())
-        {
-            const uint32_t j = s - poolIdx0();
-            return j < kPool.size() ? std::max((double)kPool[j].massKg, 1e-3) : 1.0;
-        }
-        return kesslerTypeMassKg(satOrbits[s].typeIdx);
-    };
     c.mT = massOfSat(c.tgt);
     c.mP = massOfSat(c.prj);
     c.massKg = std::min(c.mT, c.mP);
@@ -5545,10 +5650,19 @@ static glm::dvec3 collVrelAt(const glm::dvec3 &vrelL, const SatOrbitState &a)
     return R * vrelL.x + A * vrelL.y + N * vrelL.z;
 }
 
+// (2026-11-14) A collision's flash at its peak seen from the eye (magnitude; the light model of kesslerFillCollisions:
+// the smaller body's kinetic energy x 1e-3 over 0.2 s, isotropic).
+double SatelliteSim::kesslerCollGridMag(const KCollVis &c, const glm::dvec3 &eye) const
+{
+    const double rng = std::max(glm::length(c.pos - eye), 1.0);
+    const double J = 1e-3 * 0.5 * c.massKg * c.vrel * c.vrel / 0.2 / (4.0 * glm::pi<double>()) / 1361.0;
+    return -26.74 - 2.5 * std::log10(std::max(J / (rng * rng), 1e-300));
+}
+
 bool SatelliteSim::kesslerCollStandIn(const KCollVis &c, double t, glm::dvec3 &pos, glm::dvec3 &vel) const
 {
-    if (t > c.te || t < c.te - kCollApproachS || c.tgt >= satOrbits.size())
-        return false;
+    if (c.grid || t > c.te || t < c.te - kCollApproachS || c.tgt >= satOrbits.size())
+        return false; // a grid hit's projectile is a small fragment: nothing to draw on the approach
     const SatOrbitState a = satOrbitStateAt(orbitElemsOf(satOrbits[c.tgt]), t);
     const glm::dvec3 R = glm::normalize(a.posEci);
     glm::dvec3 N = glm::cross(a.posEci, a.velEci);
@@ -5625,7 +5739,7 @@ void SatelliteSim::kesslerFillCollisions(GpuDustCloud *out, uint32_t &n, double 
             if (e.t > kCollCacheT1 + 6.0 * 3600.0)
                 break;
             if (e.t < kCollCacheT0 || e.t > kCollCacheT1 || e.kind != kessler::EV_COLLISION ||
-                e.b == kessler::kSmallRef || e.b == kessler::kNoRef || e.a == kessler::kNoRef)
+                e.b == kessler::kNoRef || e.a == kessler::kNoRef)
                 continue;
             kCollCacheIdx.push_back(k);
         }
@@ -5643,6 +5757,10 @@ void SatelliteSim::kesslerFillCollisions(GpuDustCloud *out, uint32_t &n, double 
             continue;
         KCollVis c;
         if (!kesslerCollPair(k, e, c) || glm::length(c.pos - eye) > 3.0e6 || c.vrel < 10.0)
+            continue;
+        // (2026-11-14) grid hits are ~20x the pair collisions (41 against 2 within 3000 km in an hour, day 72), most of
+        // them tens-of-gram fragments cratering a piece: only those whose flash would be seen are drawn up close
+        if (c.grid && kesslerCollGridMag(c, eye) > kCollGridMaxMag)
             continue;
         const glm::dvec3 ep = c.pos;
         const glm::dvec3 vr = collVrelAt(c.vrelL, satOrbitStateAt(orbitElemsOf(satOrbits[c.tgt]), e.t));

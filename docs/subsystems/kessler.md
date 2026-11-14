@@ -133,6 +133,21 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
     centre of mass along the relative velocity turned into the frame at te (it used the sample time's ECI vector, up to
     6 h of orbit off).
   - **The sound:** one hit per collision on the `impact` layer (sound.md "Collision sounds").
+  - **Grid hits are drawn up close too (2026-11-14, issue_20261114_113233):** a hit by one of the small fragments (`b ==
+    kSmallRef`, the density grid) breaks a satellite up exactly as a pair collision does, but the list took pair
+    collisions only, so a dead Starmind shattering 0.8 km in front of the reporter (ev 195142: 2.57-kg fragment at the
+    event's vRel, 2.6e8 J, 41 records) had no flash, no sound and no roster hold. `kesslerCollPair` now builds a grid hit
+    too (`KCollVis::grid`): the target is the record, the projectile has none (prj UINT32_MAX, no stand-in, no mesh, no
+    selectable transient), its mass is the event's `mProj` and its speed `vRel`; the engine keeps no direction, so the
+    fireball's drift (mP / (mT + mP) of it, negligible) takes one hashed from the seed. Grid hits outnumber the pair
+    collisions ~10-20x, most of them tens-of-gram pieces cratering a fragment, so one is drawn only when its peak flash at
+    the eye (`kesslerCollGridMag`, the flash's own light model) is at or brighter than `kCollGridMaxMag` (magnitude 1).
+    Measured within 3000 km of the reporter's orbiting eye, an hour each, day 72 (grid / of them at or under mag 3 / 1 /
+    pair): 05:40 40 / 27 / 5 / 2, 04:40 28 / 17 / 5 / 3, 02:40 5 / 3 / 1 / 0, 22:40 4 / 2 / 0 / 0, 05:58 35 / 20 / 6 / 4:
+    at magnitude 1 the grid hits drawn are about as many as the pair collisions (a cut at 3 drew 20-27 an hour). Harness `kessler state`
+    -> `collisions_near[].grid`, `target_screen_px`; `events_near` (every logged event within 3000 km, 120 s back to 60 s
+    ahead: kind, parties, `b` "small" for a grid hit, `flash_peak_mag`, `drawn_up_close`) and
+    `collisions_3000km_last_hour` {pair, grid, grid_catastrophic, grid_drawn}.
 - **The dust up close:** a cloud starts at 0.2 s of spread (was 1 s: ~sv wide at once), and a resolved piece's light is
   its surface brightness (pi x radiance per unit solar irradiance x "Dust cloud brightness"), blended geometrically from
   the point units (toSky, ~10 mag over a surface's physical brightness) as its smallest sigma goes 1.5 -> 8 half-res px:
