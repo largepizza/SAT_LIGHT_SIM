@@ -867,6 +867,12 @@ bool gCv2NoFar = false;
 // cv2FieldLow's rain shafts (cv2Field calls them in that order): a core under the tower's base, drawn out downwind
 // under the anvil. The map's precipitation alone put the heaviest rain anywhere its regions said, in stripes.
 float gCv2RainCore = 0.0;
+#ifdef CV2_FRACTUS
+// The eye's altitude above sea level (m), for the fractus band's view test (2026-11-15, issue_20261115_132950): set at the
+// top of main by the two shaders that define CV2_FRACTUS (the march, the clipmap bake), whose terrainFrame is declared
+// after this include.
+float gCv2EyeH = 0.0;
+#endif
 // The low field's shape, folded into the scalars the shape fetch and the erosion read (2026-11-04, storms through the
 // cumulus field): cv2LowA computes them from the weather map and the cells (the cumulus), a storm object's margin
 // (cv2StormGeom) supplies its own, and cv2FieldLow carves the blend of the two with ONE set of fetches.
@@ -1305,7 +1311,15 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, float stormI
         float fDep = mix(250.0, 550.0, clamp(rate * 2.0, 0.0, 1.0));
         float frK  = cv2.vert.w > 0.0 ? smoothstep(base - fDep - 150.0, base - fDep + 50.0, q.h) * (1.0 - smoothstep(base - 60.0, base, q.h))
                                         * (1.0 - smoothstep(600.0, 1500.0, fpM))
-                                        * (1.0 - smoothstep(3000.0, 7000.0, length(q.rSeaE))) : 0.0;
+                                        * (1.0 - smoothstep(3000.0, 7000.0, length(q.rSeaE)))
+                                        // ... and only seen from BELOW (2026-11-15, issue_20261115_132950 "Odd rain clumps",
+                                        // from 2.2 km beside a storm whose base was at the eye's height): from level with the
+                                        // band or above it, the band (a slab a few hundred metres thick) cut off by the
+                                        // 3-7 km ring drew detached, flat-topped pale lenses under the base, lit brighter
+                                        // than the rain round them. Scud is a detail overhead: the band fades in between
+                                        // ~0 and 4.6 deg of elevation from the eye (tan 0 .. 0.08).
+                                        * smoothstep(0.0, 0.08, (q.h - gCv2EyeH)
+                                                     * inversesqrt(max(dot(q.rSeaE, q.rSeaE) - q.h * q.h, 1.0))) : 0.0;
         // (... and only within ~3-7 km of the eye, 2026-11-05 integration fix: further out the band under low (sea) bases,
         // 100-500 m up and seen nearly edge-on from the ground, drew rows of flat-topped blue-grey blobs a degree or two
         // over the horizon (towers region -5 163, all within ~15 km: a 6-15 km fade left them). Scud is a detail overhead.)

@@ -107,6 +107,7 @@ void bakePass(uint ti)
     vec3  enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ));
     mat3  enuToEcef = mat3(enuX, cross(enuZ, enuX), enuZ);
     float eyeH = terrainFrame.x + 2.0;               // == cloud_v2_march.comp's
+    gCv2EyeH = eyeH;                                 // the fractus band's view test (clouds_v2.glsl)
     vec3  eyeP = vec3(0.0, 0.0, R_EARTH + eyeH);
     vec2  uc   = (vec2(c.xy) + 0.5) * cell;          // the cell centre on the plane (m)
     float zc   = (float(c.z) + 0.5) * kCv2CdcDZ;
