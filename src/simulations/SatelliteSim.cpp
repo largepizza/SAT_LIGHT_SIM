@@ -470,13 +470,13 @@ void SatelliteSim::init(VulkanContext &ctx)
         {"Cinematic Pan", GLFW_KEY_LEFT_ALT, -1, false, false},                              // KB_CINEMATIC  (event, toggle)
         {"Raise Elevation", GLFW_KEY_Q, -1, true, false},                                    // KB_RAISE_ELEV (held) — gamepad is the analog right trigger, see gpElevRaise
         {"Lower Elevation", GLFW_KEY_E, -1, true, false},                                    // KB_LOWER_ELEV (held) — gamepad is the analog left trigger, see gpElevLower
-        {"Reset Elevation", GLFW_KEY_Z, -1, false, false},                                   // KB_RESET_ELEV (event) — Y reassigned to Reset Zoom below
+        {"Reset Elevation", GLFW_KEY_X, -1, false, false},                                   // KB_RESET_ELEV (event) — Y reassigned to Reset Zoom below; Z until key layout 3 (Roll Left)
         {"Zoom In", GLFW_KEY_EQUAL, GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER, true, false},          // KB_ZOOM_IN    (held)
         {"Zoom Out", GLFW_KEY_MINUS, GLFW_GAMEPAD_BUTTON_LEFT_BUMPER, true, false},          // KB_ZOOM_OUT   (held)
         {"Reset Zoom", GLFW_KEY_0, GLFW_GAMEPAD_BUTTON_RIGHT_THUMB, false, false},           // KB_ZOOM_RESET (event)
         {"Select Satellite", -1, GLFW_GAMEPAD_BUTTON_A, false, false},                       // KB_SELECT_SAT (event) — center-of-screen pick; no key since key layout 2 (T is Track; a click selects)
         {"Screenshot", GLFW_KEY_F12, -1, false, false},                                      // KB_SCREENSHOT (event) — no standard gamepad "capture" button to default to
-        {"Toggle Cursor", GLFW_KEY_C, GLFW_GAMEPAD_BUTTON_START, false, false},              // KB_TOGGLE_CURSOR (event) — UC5: gamepad virtual-cursor mode; no meaningful effect for KBM (mouse is always a free cursor), kept rebindable/listed for consistency
+        {"Toggle Cursor", -1, GLFW_GAMEPAD_BUTTON_START, false, false},              // KB_TOGGLE_CURSOR (event) — UC5: gamepad virtual-cursor mode; no meaningful effect for KBM (mouse is always a free cursor), kept rebindable/listed for consistency
         {"Star Trails", GLFW_KEY_F, -1, false, false},                                       // KB_TOGGLE_TRAILS (event) — long-exposure trail on/off (X went to Pause, pad layout 2)
         {"Save Snapshot", GLFW_KEY_F9, -1, false, false},                                    // KB_SAVE_SNAPSHOT (event) — how the user hands over a location
         {"HQ Photo", GLFW_KEY_F8, -1, false, false},                                         // KB_PHOTO (event) — supersampled screenshot (requestPhoto)
@@ -492,8 +492,10 @@ void SatelliteSim::init(VulkanContext &ctx)
         {"Sky Events", GLFW_KEY_K, -1, false, false},                                        // KB_SKY_EVENTS (event) — the Sky events window
         {"Info Window", GLFW_KEY_I, -1, false, false},                                       // KB_INFO (event) — the selection's Info window
         {"Track", GLFW_KEY_T, -1, false, false},                                             // KB_TRACK (event) — lock the camera on the selection
+        {"Roll Left", GLFW_KEY_Z, -1, true, false},                                          // KB_ROLL_LEFT (held) — only while the horizon is free (camLevelActive false)
+        {"Roll Right", GLFW_KEY_C, -1, true, false},                                         // KB_ROLL_RIGHT (held)
     };
-    static_assert(KB_COUNT == 32, "KB enum and keybindings initializer are out of sync");
+    static_assert(KB_COUNT == 34, "KB enum and keybindings initializer are out of sync");
 
     // Launch breadcrumbs: one fsynced `init: <step>` log line before each step (a launch that dies
     // names the step it died in), and a bootStatus() line for the loading screen (App), which
@@ -1679,6 +1681,16 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             obsHeightOffset = std::clamp(obsHeightOffset, floorH, kMaxObsHeightM);
         }
 
+        // Z / C: roll, only while the horizon is free (above the auto-level height, or auto-level off): below it the
+        // camera levels itself and a roll key would only fight that (camera rig, SatelliteSimCamera.cpp).
+        {
+            float rollIn = (glfwGetKey(win, keybindings[KB_ROLL_RIGHT].key) == GLFW_PRESS || gpHeld(KB_ROLL_RIGHT) ? 1.0f : 0.0f) -
+                           (glfwGetKey(win, keybindings[KB_ROLL_LEFT].key) == GLFW_PRESS || gpHeld(KB_ROLL_LEFT) ? 1.0f : 0.0f);
+            rollIn = glm::clamp(rollIn + harnessRoll_, -1.0f, 1.0f);
+            if (rollIn != 0.0f && !camLevelActive())
+                camRoll((double)rollIn * kCamRollDegS * (boost ? 2.0 : fine ? 0.25 : 1.0) * (double)std::min(dt, 0.25f));
+        }
+
         // Zoom in/out (held): narrows/widens FOV at a fixed rate. Independent of boost/fine —
         // those are movement-speed modifiers, not a zoom concept.
         bool zoomIn = (glfwGetKey(win, keybindings[KB_ZOOM_IN].key) == GLFW_PRESS) || gpHeld(KB_ZOOM_IN);
@@ -1705,6 +1717,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             }
         }
     }
+
+    camLevelTick(dt); // horizon auto-level: a roll eases back to level below the auto-level height
 
     float simDt = timePaused ? 0.0f : fabsf(dt * kTimeScales[timeScaleIdx]);
     const double tBeforeAdvance = (double)simDayJ2000 * 86400.0 + simSecInDay; // Kessler frontier hold
@@ -6408,8 +6422,7 @@ void SatelliteSim::updateFollow(float dt)
     const bool freeView = !followAimLock && followFlight == 0 && followBasisValid;
     if (freeView)
     {
-        const double el = glm::radians((double)camera.elDeg);
-        const glm::dvec3 v = std::cos(el) * glm::dvec3(obsFacing) + std::sin(el) * glm::dvec3(obsDir);
+        const glm::dvec3 v = camFwd; // (the camera rig's look, exact at any elevation and roll)
         viewSat = glm::dvec3(glm::dot(v, followBasisT), glm::dot(v, followBasisN), glm::dot(v, followBasisR));
     }
 
@@ -6699,8 +6712,7 @@ void SatelliteSim::updateFollow(float dt)
     // (The heading stays on the horizontal plane and camera.azDeg follows it: the camera rig publishes both.)
     if (followLogOn_ && followLog_.size() < 2000000)
     {
-        const double el = glm::radians((double)camera.elDeg);
-        const glm::dvec3 v = std::cos(el) * glm::dvec3(obsFacing) + std::sin(el) * glm::dvec3(obsDir);
+        const glm::dvec3 v = camFwd;
         const glm::dvec3 c = followObsEcef - (P - followHandD); // from the object itself (the eased jump included)
         FollowLogRow w{};
         w.t = tNow;
@@ -6727,9 +6739,9 @@ void SatelliteSim::updateFollow(float dt)
 // ─── Selection "Track" (the Track button in the selection panel / chip) ───────────────────────────
 // Point the camera at an azimuth/elevation in the observer's local ENU (the camera rig, SatelliteSimCamera.cpp).
 // (Same body the harness's own `camera az=`/`look`/`track` used before this existed; it was `harnessSetLook`.)
-void SatelliteSim::aimCameraAzEl(float azDeg, float elDeg)
+void SatelliteSim::aimCameraAzEl(float azDeg, float elDeg, bool keepRoll)
 {
-    camAimAzEl(azDeg, elDeg);
+    camAimAzEl(azDeg, elDeg, 90.0, keepRoll);
 }
 
 void SatelliteSim::startTrack()
@@ -6759,7 +6771,7 @@ void SatelliteSim::updateTrack()
     {
         glm::vec3 d;
         if (moonBaseDrawnEnu(selectedMoonBase, d))
-            aimCameraAzEl(glm::degrees(atan2f(d.x, d.y)), glm::degrees(asinf(glm::clamp(d.z, -1.0f, 1.0f))));
+            aimCameraAzEl(glm::degrees(atan2f(d.x, d.y)), glm::degrees(asinf(glm::clamp(d.z, -1.0f, 1.0f))), true);
         return;
     }
     if (followActive || selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
@@ -6775,7 +6787,7 @@ void SatelliteSim::updateTrack()
     const glm::vec3 d = selSkyDirCpu;
     if (glm::dot(d, d) < 1e-12f)
         return; // no direction yet (nothing propagated) — leave the camera alone
-    aimCameraAzEl(glm::degrees(atan2f(d.x, d.y)), glm::degrees(asinf(glm::clamp(d.z, -1.0f, 1.0f))));
+    aimCameraAzEl(glm::degrees(atan2f(d.x, d.y)), glm::degrees(asinf(glm::clamp(d.z, -1.0f, 1.0f))), true); // (Track keeps the roll)
     // Deliberately still aimed when the satellite is behind the Earth (el clamps at -89.9): the lock
     // holds until the player releases it, and the selection panel's out-of-view chip — where the
     // button that does that lives — is already on screen telling them it is out of view.

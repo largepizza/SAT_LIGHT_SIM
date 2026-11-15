@@ -122,13 +122,8 @@ void SatelliteSim::inertialTick()
         camSetEyeDir(p / r);
         obsHeightOffset = (float)std::max(r - satphot::kEarthRadiusM, 0.0);
     }
-    const glm::dvec3 up = camEyeDir;
-    glm::dvec3 E, N;
-    enuBasis(up, E, N);
     const glm::dvec3 v = eciToEcef(inertialViewEci, th);
-    const float az = (float)glm::degrees(std::atan2(glm::dot(v, E), glm::dot(v, N)));
-    const float el = (float)glm::degrees(std::asin(std::clamp(glm::dot(v, up), -1.0, 1.0)));
-    aimCameraAzEl(az, el);
+    camSetLookDir(v); // (keeps the roll: the camera turns onto the held direction the shortest way)
     inertialLastTheta = th;
     inertialLastObsDir = obsDir;
     inertialLastHeight = obsHeightOffset;
@@ -154,6 +149,7 @@ harness::Status SatelliteSim::harnessInertial(harness::Active &a)
     {
         // held movement input through the real WASD / Q-E code (sticks until the next `inertial move`; no args = stop)
         harnessMove_ = glm::vec3((float)c.num("fwd", 0.0), (float)c.num("right", 0.0), (float)c.num("up", 0.0));
+        harnessRoll_ = (float)c.num("roll", 0.0); // (2026-11-14) held Z (-1) / C (+1), through the real roll code
         r["move"] = {harnessMove_.x, harnessMove_.y, harnessMove_.z};
         r["observer"] = {{"lat_deg", obsLatDeg}, {"lon_deg", obsLonDeg}, {"alt_m", obsHeightOffset}};
         return harness::Status::Done;

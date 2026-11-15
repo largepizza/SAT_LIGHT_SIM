@@ -389,6 +389,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### UI
 
+- **Camera: look straight down without a jolt, and roll in space.** Looking past 88 deg down (or up) no longer turns
+  the whole view round. Below 100 km the horizon stays level as before ("Auto-level the horizon" and "Auto-level up
+  to (km)" in Settings > Controls); above it, or with auto-level off, the camera turns freely: look past straight
+  down, and roll with Z / C. A message says when you cross the height. Reset Elevation moved from Z to X.
 - **New intro.** It opens on the ground in the Mississippi delta at twilight, under Starmind's trains, with Reflect
   mirrors flaring and a beam on the horizon. It rises over a Starship launch from Starbase with the sunset behind it,
   then pulls out to orbit as the Sun sets on the limb. It plays on 2036-11-25 under a first-quarter Moon, and

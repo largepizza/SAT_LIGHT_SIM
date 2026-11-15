@@ -879,10 +879,7 @@ void SatelliteSim::thunderStep(double now, const glm::dvec3 &eye, float realDt)
     const int li = ambience_ ? ambience_->layerIndex("thunder") : -1;
     const int vi = (li >= 0) ? ambience_->layerVoice(li) : -1;
     AmbientSynth *syn = (audio_ && vi >= 0) ? audio_->voiceSynth(vi) : nullptr;
-    const glm::dvec3 upE = glm::normalize(eye);
-    const glm::dvec3 eE = glm::normalize(glm::cross(glm::dvec3(0.0, 0.0, 1.0), upE));
-    const glm::dvec3 nE = glm::cross(upE, eE);
-    const float camAz = glm::radians(camera.azDeg);
+    const glm::dvec3 camR = camRightEcef(); // left / right = the screen's right (rolls with the camera; 2026-11-14)
 
     bool sounded[kThunderVoices] = {};
     bool near = false;
@@ -934,10 +931,10 @@ void SatelliteSim::thunderStep(double now, const glm::dvec3 &eye, float realDt)
         const float level = kGain * (float)std::sqrt(P / T) * s.energy * (1.0f - glm::smoothstep(20000.0f, 40000.0f, d));
         if (level <= 1e-4f)
             continue;
-        // Left/right from the bearing of what is arriving against the camera's heading; overhead = centre.
+        // Left/right: what is arriving against the screen's right (a level camera: the bearing against the heading,
+        // times the horizontal share; overhead = centre).
         const glm::dvec3 dir = sumDir / std::max(glm::length(sumDir), 1e-12);
-        const double hE = glm::dot(dir, eE), hN = glm::dot(dir, nE);
-        const float pan = (float)(std::sin(std::atan2(hE, hN) - (double)camAz) * std::sqrt(hE * hE + hN * hN));
+        const float pan = (float)glm::dot(dir, camR);
 
         int v = -1;
         for (int k = 0; k < kThunderVoices; ++k)
@@ -981,7 +978,7 @@ void SatelliteSim::thunderStep(double now, const glm::dvec3 &eye, float realDt)
     }
     // Launches (SatelliteSimLaunches.cpp): each audible rocket's roar, as it left the rocket a few seconds ago (the
     // retarded time), on a voice of its own like a roll of thunder.
-    for (const LaunchSound &ls : launchSounds(now, eye, camAz))
+    for (const LaunchSound &ls : launchSounds(now, eye, camR))
     {
         int v = -1;
         for (int k = 0; k < kThunderVoices; ++k)
@@ -1086,12 +1083,13 @@ bool SatelliteSim::impactParams(const KCollVis &c, const glm::dvec3 &eye, Impact
         s.reverb = (float)std::clamp(0.6 * close * (0.6 + 0.4 * e01), 0.0, 1.0);
         s.crack = (float)std::clamp(close * (0.4 + 0.6 * e01), 0.0, 1.0);
     }
-    // Left / right: the impact's bearing against the camera's heading (as thunder's).
+    // Left / right: the impact's direction against the screen's right (as thunder's), the right taken from the view
+    // (ENU) onto this frame's ENU axes in ECI.
     const glm::dvec3 ex(eci2enuX), ey(eci2enuY), ez(eci2enuZ);
     const glm::dvec3 rel = c.pos - eye;
-    const double hE = glm::dot(rel, ex), hN = glm::dot(rel, ey);
-    const double hh = std::sqrt(hE * hE + hN * hN), ll = std::max(glm::length(rel), 1e-9);
-    s.pan = (float)(std::sin(std::atan2(hE, hN) - (double)glm::radians(camera.azDeg)) * hh / ll);
+    const glm::mat3 &V = camera.viewEnu; // rows: right, up, back (ENU components)
+    const glm::dvec3 rightEci = (double)V[0][0] * ex + (double)V[1][0] * ey + (double)V[2][0] * ez;
+    s.pan = (float)(glm::dot(rel, rightEci) / std::max(glm::length(rel), 1e-9));
     return s.gain > 0.004f;
 }
 

@@ -1942,6 +1942,8 @@ UI_TEXT(NoteConstellationParametersAreDrawnFromPubli, "Constellation parameters 
 
 // -- SatelliteSim.cpp (by hand) --
 UI_TEXT(ToastLeftGoTo, "Left Go to: you stay here")
+UI_TEXT(ToastHorizonFree, "Above %.0f km: the horizon is free. Z / C roll")
+UI_TEXT(ToastHorizonLevelOn, "Below %.0f km: the horizon levels itself")
 UI_TEXT(ValNoMagnitudeSimpleType, "this type has no 3D model, so it has no true magnitude.")
 UI_TEXT(ValNoMagnitudeNoTargets, "this type aims at ground sites, and none are loaded.")
 UI_TEXT(ValKindRocketStage, "Rocket stage")
@@ -2118,6 +2120,9 @@ UI_TEXT(LblCinematicMovement, "Cinematic movement")
 UI_TEXT(LblPrecipitationParticles, "Rain and snow particles")
 UI_TEXT(TipFrameMovement, "Earth: the view turns with the ground. Stars: the view is held on the stars and the Earth turns beneath (an orbit-height eye is held in space too).")
 UI_TEXT(TipCinematicMovement, "Look, movement and zoom start and stop gradually, and the look keeps coasting. Latched on until switched off.")
+UI_TEXT(LblAutoLevelHorizon, "Auto-level the horizon")
+UI_TEXT(TipAutoLevelHorizon, "Below the height set here the horizon stays level, as when standing on the ground. Above it, or with this off, the camera turns freely: look past straight down and roll with Z / C.")
+UI_TEXT(SldAutoLevelUpToKm, "Auto-level up to (km)")
 UI_TEXT(TipCoronagraph, "Your own coronagraph: the Sun's disc, glare and bloom are hidden wherever you are. The sky and the other lights are left alone.")
 UI_TEXT(TipPrecipitationParticles, "Draw the rain drops and snow flakes round the eye. The clouds' rain shafts are unchanged.")
 UI_TEXT(TxtTheSunsFuryCme, "The Sun's Fury: a Carrington-class CME")

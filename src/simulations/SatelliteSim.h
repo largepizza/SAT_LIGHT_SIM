@@ -2150,10 +2150,14 @@ struct SkyCamera
     float azDeg = 0.0f;    // azimuth of look direction (0=North, 90=East), degrees
     float elDeg = 30.0f;   // elevation of look direction, degrees
     float fovYDeg = 70.0f; // vertical field of view, degrees
-    // Roll about the look direction, degrees (+ = the camera banks right: the scene turns anticlockwise on screen).
-    // 2026-11-14 camera revamp phase 1: set only by the harness (`camera roll=`) to audit every pass under roll;
-    // 0 keeps viewMatrix() bit-identical to before.
+    // Roll about the look direction, degrees (+ = the camera banks right: the scene turns anticlockwise on screen):
+    // a mirror the camera rig publishes (SatelliteSim::camRollDeg), like azDeg / elDeg.
     float rollDeg = 0.0f;
+    // ENU -> camera rotation, published by the camera rig (2026-11-14, phase 3) from its look and up vectors: the
+    // view is no longer built from az / el, so there is no up-vector switch near the zenith or nadir and the camera
+    // can roll. Until the first publish, viewMatrix() falls back to the az / el construction.
+    glm::mat3 viewEnu{1.0f};
+    bool viewSet = false;
     float sens = 0.12f;    // mouse sensitivity (degrees per pixel)
     bool captured = false;
 
@@ -2171,6 +2175,8 @@ struct SkyCamera
     // Camera convention: +X=right, +Y=up, -Z=forward (standard OpenGL).
     glm::mat4 viewMatrix() const
     {
+        if (viewSet)
+            return glm::mat4(viewEnu);
         float az = glm::radians(azDeg);
         float el = glm::radians(elDeg);
         // Forward vector in ENU (x=East, y=North, z=Up)
@@ -3024,8 +3030,9 @@ private:
     void stopTrack();
     void updateTrack();
     // Point the camera at an az/el in the observer's local ENU (camAimAzEl); the harness's `camera az=` / `look` /
-    // `track` commands go through it as well.
-    void aimCameraAzEl(float azDeg, float elDeg);
+    // `track` commands go through it as well. An aim levels the horizon; keepRoll (the per-frame re-aims: Track,
+    // inertial) turns the camera onto the new direction the shortest way instead, keeping its roll.
+    void aimCameraAzEl(float azDeg, float elDeg, bool keepRoll = false);
 
     // ── Camera rig (2026-11-14, camera revamp phase 2; SatelliteSimCamera.cpp, docs/subsystems/ui.md "Camera rig") ──
     // The eye's direction and the look direction, Earth-fixed (ECEF), in DOUBLE, are the camera's only state.
@@ -3033,22 +3040,43 @@ private:
     // ~400 readers; every write goes through the cam* setters, which publish at once. A float obsDir could not move
     // less than ~0.4 m a step: WASD stalled under ~10 m/s and went where the rounding pointed (phase 1 audit).
     // camSync() is the net under that rule: a mirror changed since the last publish is adopted (and logged once).
+    // Phase 3 (2026-11-14): camUp, the camera's up (unit, normal to camFwd), makes the orientation complete: the
+    // view (camera.viewEnu) is built from camFwd / camUp, so looking straight down has no singularity and the camera
+    // can roll. HORIZON AUTO-LEVEL (camLevelActive: camLevelEnabled and the eye below camLevelAltKm): the mouse yaws
+    // about the local up, pitch stops at +-89 deg, and any roll eases back to level (camLevelTick). FREE (above it, or
+    // switched off): yaw and pitch turn about the camera's own axes (no spin looking down), no pitch limit, and Z / C
+    // roll (KB_ROLL_LEFT / RIGHT).
     glm::dvec3 camEyeDir{0.0, 0.0, 1.0}; // unit, the eye's direction from the Earth's centre
     glm::dvec3 camFwd{1.0, 0.0, 0.0};    // unit, the look direction
+    glm::dvec3 camUp{0.0, 0.0, 1.0};     // unit, the camera's up (normal to camFwd)
     bool camRigInit = false;             // false until the first camSync() adopts the startup mirrors
     glm::vec3 camPubObsDir{0.0f}, camPubFacing{0.0f};
     float camPubElDeg = 0.0f, camPubAzDeg = 0.0f;
     int camAdoptLogs = 0;                // outside writes adopted (logged; a missed setter conversion)
-    glm::dvec3 camFacing() const;        // the look's heading: camFwd on the local horizontal plane (unit)
+    bool camLevelEnabled = true;         // camera.auto_level: Settings > Controls "Auto-level the horizon"
+    float camLevelAltKm = 100.0f;        // camera.auto_level_km: auto-level below this eye altitude (slot 625)
+    int camLevelWas = -1;                // camLevelActive() last frame (-1 = not yet): the toast on a change
+    static constexpr double kCamRollDegS = 45.0;   // Z / C roll rate (boost x2, fine x0.25)
+    static constexpr double kCamLevelTauS = 0.3;   // auto-level's ease of a roll back to level
+    glm::dvec3 camFacing() const;        // the heading: the look on the horizontal plane (the screen's top near nadir)
     double camElDeg() const;             // the look's elevation above the local horizontal
-    // The eye moves; the heading is carried over (projected onto the new horizontal plane) and the elevation kept.
+    double camRollDeg() const;           // the up's angle from level about the look (+ = banked right)
+    glm::dvec3 camRightEcef() const { return glm::cross(camFwd, camUp); }
+    double camEyeAltM() const;           // the eye's height above sea level (Go to: the camera's)
+    bool camLevelActive() const;
+    // The eye moves: the look and up are carried along (the rotation taking the old local up to the new one), so the
+    // heading, elevation and roll stay what they were relative to the ground.
     void camSetEyeDir(const glm::dvec3 &dir);
     // Heading (any vector: projected onto the horizontal plane; a vertical one leaves the heading) and elevation.
-    void camSetLook(const glm::dvec3 &facing, double elDeg, double elClampDeg = 89.9);
-    void camSetLookDir(const glm::dvec3 &dir, double elClampDeg = 89.9); // a look direction (ECEF)
-    void camAimAzEl(double azDeg, double elDeg, double elClampDeg = 89.9);
-    void camYaw(double rad);                               // + = turn left (about the local up)
-    void camPitch(double deg, double elClampDeg = 89.0);   // + = look up
+    // keepRoll: the up turns with the look the shortest way; otherwise the horizon is level.
+    void camSetLook(const glm::dvec3 &facing, double elDeg, double elClampDeg = 90.0, bool keepRoll = true);
+    void camSetLookDir(const glm::dvec3 &dir, double elClampDeg = 90.0, bool keepRoll = true); // a look direction (ECEF)
+    void camAimAzEl(double azDeg, double elDeg, double elClampDeg = 90.0, bool keepRoll = false);
+    void camYaw(double rad);     // + = turn left
+    void camPitch(double deg);   // + = look up (auto-level: stops at +-89)
+    void camRoll(double deg);    // + = bank right
+    void camSetRoll(double deg); // roll from level
+    void camLevelTick(float dt); // auto-level's ease to level, and the toast when it switches on / off
     void camPublish();
     void camSync();
     void buildTrackButton(const UIInput &inp, UIRenderer &ui, int idx);
@@ -3685,7 +3713,7 @@ private:
         int stage = 0, burn = 0;  // readouts (harness `launch state`): the stage, its burn and T+ as heard now
         float tau = 0.0f, altKm = 0.0f;
     };
-    std::vector<LaunchSound> launchSounds(double now, const glm::dvec3 &eye, float camAz) const;
+    std::vector<LaunchSound> launchSounds(double now, const glm::dvec3 &eye, const glm::dvec3 &camRightEcef) const;
     nlohmann::json launchCheckJson() const;
     nlohmann::json launchJitterJson(int maxBatches); // harness `launch jitter`
     // Mission-operations suite (2026-10-20, harness `launch trace` / `launch formation`; tools/harness/mission_ops.py):
@@ -8238,7 +8266,7 @@ private:
         KB_CINEMATIC = 7,      // event — toggles camera drift mode while panning
         KB_RAISE_ELEV = 8,     // Q — held — raise observer above terrain (gamepad: analog right trigger, see gpElevRaise, not this binding's gpButton)
         KB_LOWER_ELEV = 9,     // E — held — lower observer toward terrain (gamepad: analog left trigger, see gpElevLower)
-        KB_RESET_ELEV = 10,    // Z — event — snap observer back to terrain elevation
+        KB_RESET_ELEV = 10,    // X — event — snap observer back to terrain elevation (Z until key layout 3: Z is Roll Left)
         KB_ZOOM_IN = 11,       // held — narrows FOV (zoom in)
         KB_ZOOM_OUT = 12,      // held — widens FOV (zoom out)
         KB_ZOOM_RESET = 13,    // event — snap FOV back to default
@@ -8262,7 +8290,9 @@ private:
         KB_SKY_EVENTS = 29,    // event — the Sky events window (eclipses, conjunctions, occultations) open / closed; K
         KB_INFO = 30,          // event — the selected satellite's Info window open / closed; I
         KB_TRACK = 31,         // event — Track (lock the camera on the selection) on / off; T
-        KB_COUNT = 32,
+        KB_ROLL_LEFT = 32,     // held — roll the camera left while the horizon is free (above auto-level); Z
+        KB_ROLL_RIGHT = 33,    // held — ... right; C
+        KB_COUNT = 34,
     };
 
     // Dispatches the event-style action for keybindings[bindIdx] — shared by onKey()
@@ -8973,7 +9003,7 @@ private:
     bool draggingPhoto[56] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 625;   // 624 (2026-11-14): Starship orbital vent (Launches); was 624; 616-623 (2026-11-12 wave, reserved per cluster): 616-619 ocean reflections, 620-621 model glare, 622-623 storm shape; was 616; 608-615 (2026-11-11 wave, reserved per cluster): 608-611 hurricane look, 612-613 smalls, 614-615 hurricane perf; was 608; 560-607 (2026-11-10 wave, reserved per cluster): 560-567 flowmaps, 568-575 storms, 576-579 horizon, 580-583 grain, 584-591 optics, 592-595 smalls, 596-599 rainperf, 600-607 hurricane shape; was 560; 549-550 (2026-11-08, pucks): shallow cumulus heaps / depth; 544-548 (2026-11-08): single-storm anvils, storm complex spacing, cirrus flow window, (547 free: the retired CDO plate), storm mass; 522-524 free (the CDO plate's top sliders, retired 2026-11-08); 553-555 (2026-11-05): cumulus core, bubble warp, head width; 552 (2026-11-05, envelope): cumulus tower spread (552-559 reserved); 544-551 (2026-11-05, storm-above): reserved, none used; 536-538 (2026-11-05, light3): AgX range, white balance from cloud sunlight, auto exposure target; 528-535 (2026-11-05, vertical): cloud base LCL / cell / regional spread, fractus, mid wisps, orographic amount / wind / direction; 496-498 (2026-11-05, shape2): bubble hierarchy / size / base; 504-511 (2026-11-05, storm3): anvil fibres, storm bubbles, anvil erosion; 512-513 (2026-11-05, light2): white balance reference / hold; 520-524 (2026-11-05, cirrus-hurr): cirrus fibres / hooks, hurricane top smoothing / streaks / density; 496-527: the 2026-11-05 night wave; 494-495 (2026-11-04): cumulus bubbles;   // 440-441 (2026-11-03): turbulence cell size / speed; 450-452: anvil formation / decay time, tower growth time; 455-461: hurricane shape; was 435;   // 428-434 (2026-10-30): the second stage's jellyfish (streaks, nucleus, staging cloud); was 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
+    static constexpr int kCloudSliderSlots = 626;   // 625 (2026-11-14): auto-level up to (km) (Controls); was 625; 624 (2026-11-14): Starship orbital vent (Launches); was 624; 616-623 (2026-11-12 wave, reserved per cluster): 616-619 ocean reflections, 620-621 model glare, 622-623 storm shape; was 616; 608-615 (2026-11-11 wave, reserved per cluster): 608-611 hurricane look, 612-613 smalls, 614-615 hurricane perf; was 608; 560-607 (2026-11-10 wave, reserved per cluster): 560-567 flowmaps, 568-575 storms, 576-579 horizon, 580-583 grain, 584-591 optics, 592-595 smalls, 596-599 rainperf, 600-607 hurricane shape; was 560; 549-550 (2026-11-08, pucks): shallow cumulus heaps / depth; 544-548 (2026-11-08): single-storm anvils, storm complex spacing, cirrus flow window, (547 free: the retired CDO plate), storm mass; 522-524 free (the CDO plate's top sliders, retired 2026-11-08); 553-555 (2026-11-05): cumulus core, bubble warp, head width; 552 (2026-11-05, envelope): cumulus tower spread (552-559 reserved); 544-551 (2026-11-05, storm-above): reserved, none used; 536-538 (2026-11-05, light3): AgX range, white balance from cloud sunlight, auto exposure target; 528-535 (2026-11-05, vertical): cloud base LCL / cell / regional spread, fractus, mid wisps, orographic amount / wind / direction; 496-498 (2026-11-05, shape2): bubble hierarchy / size / base; 504-511 (2026-11-05, storm3): anvil fibres, storm bubbles, anvil erosion; 512-513 (2026-11-05, light2): white balance reference / hold; 520-524 (2026-11-05, cirrus-hurr): cirrus fibres / hooks, hurricane top smoothing / streaks / density; 496-527: the 2026-11-05 night wave; 494-495 (2026-11-04): cumulus bubbles;   // 440-441 (2026-11-03): turbulence cell size / speed; 450-452: anvil formation / decay time, tower growth time; 455-461: hurricane shape; was 435;   // 428-434 (2026-10-30): the second stage's jellyfish (streaks, nucleus, staging cloud); was 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
     // gust fronts, drop persistence); 326: "Tropical cyclones (x)"; 325: "Storm complexes"; 321-324 (2026-10-23): storm
     // objects (frequency, life, cloud field, moat);
     // was 321: 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);
@@ -9041,6 +9071,7 @@ private:
     void inertialFly(float fwd, float right, float speedRadPerS, float dt); // WASD with the eye held in ECI
     float inertialLastHeight = 0.0f;
     glm::vec3 harnessMove_{0.0f};       // harness `inertial move fwd= right= up=`: held movement input (forward, right, up), -1..1
+    float harnessRoll_ = 0.0f;          // harness `inertial move roll=`: held roll input (-1 = Z, +1 = C)
 
     // ── NEW-7: frame limiter ────────────────────────────────────────────────
     FpsCapMode fpsCapMode = FpsCapMode::VSync;  // Display tab setting; see FpsCapMode comment
@@ -9592,7 +9623,7 @@ private:
     // Keyboard layout of the saved bindings (controls.key_layout). 2 (2026-10-28, issue 20261028_223530): T is Track,
     // I Info, G Go to / leave; "Select Satellite" lost its T (a saved T is dropped once), and "Leave Go To Here" was
     // renamed "Go To / Leave Here" (a saved key under the old name carries over).
-    static constexpr int kKeyLayoutVersion = 2;
+    static constexpr int kKeyLayoutVersion = 3; // 3 (2026-11-14): Z / C roll; Reset Elevation Z -> X, Toggle Cursor off C
     void trackToggle();          // Track (key T, the panel's button); during Go to it is the aim lock
     bool trackShownOn() const;   // the Track button lit
     bool selectionKeyAction(int bindIdx); // KB_INFO / KB_TRACK / KB_FOLLOW_STAY on the selection; false = nothing to do

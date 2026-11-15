@@ -407,7 +407,10 @@ json SatelliteSim::harnessStateJson()
     // The camera rig's double state (2026-11-14): the eye's direction (ECEF unit) and the look direction; lat_deg /
     // lon_deg above are float caches (~0.2-1.6 m), too coarse to measure a slow walk.
     j["observer"]["eye_dir_ecef"] = {camEyeDir.x, camEyeDir.y, camEyeDir.z};
-    j["camera_rig"] = {{"fwd_ecef", {camFwd.x, camFwd.y, camFwd.z}}, {"el_deg", camElDeg()}, {"adopted_writes", camAdoptLogs}};
+    j["camera_rig"] = {{"fwd_ecef", {camFwd.x, camFwd.y, camFwd.z}}, {"up_ecef", {camUp.x, camUp.y, camUp.z}},
+                       {"el_deg", camElDeg()}, {"roll_deg", camRollDeg()}, {"level_active", camLevelActive()},
+                       {"level_enabled", camLevelEnabled}, {"level_km", camLevelAltKm}, {"eye_alt_m", camEyeAltM()},
+                       {"adopted_writes", camAdoptLogs}};
     if (followActive)
     {
         j["observer"]["follow"] = {{"sat", followSatIndex},
@@ -2248,7 +2251,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         if (c.has("fov"))
             camera.fovYDeg = glm::clamp((float)c.num("fov", camera.fovYDeg), SkyCamera::kMinFovDeg, SkyCamera::kMaxFovDeg);
         if (c.has("roll"))
-            camera.rollDeg = (float)std::remainder(c.num("roll", camera.rollDeg), 360.0);
+            camSetRoll(c.num("roll", camera.rollDeg));
         r["az_deg"] = camera.azDeg;
         r["el_deg"] = camera.elDeg;
         r["fov_y_deg"] = camera.fovYDeg;

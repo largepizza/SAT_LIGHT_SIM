@@ -8651,7 +8651,7 @@ nlohmann::json SatelliteSim::launchStateJson() const
     {
         const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
         const glm::dvec3 eyeE = glm::normalize(glm::dvec3(obsDir)) * (kR + std::max((double)obsTerrainH + 2.0, (double)obsHeightOffset));
-        const std::vector<LaunchSound> ls = launchSounds(now, eyeE, glm::radians(camera.azDeg));
+        const std::vector<LaunchSound> ls = launchSounds(now, eyeE, camRightEcef());
         nlohmann::json sa = nlohmann::json::array();
         for (const LaunchSound &x : ls)
             sa.push_back({{"level", x.level}, {"km", x.km}, {"pan", x.pan}, {"stage", x.stage}, {"burn", x.burn},
@@ -10167,7 +10167,7 @@ void SatelliteSim::buildLaunchGraphicsSection(const UIInput &inp, UIRenderer &ui
 // The rockets' roar at the listener (eye: ECI-like Earth-centred position the thunder uses, Earth-fixed axes): for
 // each burning rocket within 150 km, the sound arriving now left it at the retarded time tau (tau + r(tau) / c = now);
 // loudness as the flow's square root over the distance, thinning with the air at the rocket. Pure function of time.
-std::vector<SatelliteSim::LaunchSound> SatelliteSim::launchSounds(double now, const glm::dvec3 &eyeEcef, float camAz) const
+std::vector<SatelliteSim::LaunchSound> SatelliteSim::launchSounds(double now, const glm::dvec3 &eyeEcef, const glm::dvec3 &camRightEcef) const
 {
     std::vector<LaunchSound> out;
     if (!launchState || !launchesEnabled)
@@ -10176,9 +10176,6 @@ std::vector<SatelliteSim::LaunchSound> SatelliteSim::launchSounds(double now, co
     if (!L.loaded)
         return out;
     constexpr double kC = 343.0;
-    const glm::dvec3 upE = glm::normalize(eyeEcef);
-    const glm::dvec3 eE = glm::normalize(glm::cross(glm::dvec3(0.0, 0.0, 1.0), upE));
-    const glm::dvec3 nE = glm::cross(upE, eE);
     for (uint64_t key : L.live)
     {
         auto it = L.batches.find(key);
@@ -10261,12 +10258,11 @@ std::vector<SatelliteSim::LaunchSound> SatelliteSim::launchSounds(double now, co
             if (lvl < 1e-3)
                 continue;
             const glm::dvec3 dir = (P - eyeEcef) / r;
-            const double hE = glm::dot(dir, eE), hN = glm::dot(dir, nE);
             LaunchSound s;
             s.id = 0xA0000000u | (uint32_t)((key * 2 + (uint64_t)stage) & 0x0FFFFFFFu);
             s.level = (float)std::min(lvl, 8.0);
             s.km = (float)(r / 1000.0);
-            s.pan = (float)(std::sin(std::atan2(hE, hN) - (double)camAz) * std::sqrt(hE * hE + hN * hN));
+            s.pan = (float)glm::dot(dir, camRightEcef); // (the screen's right: rolls with the camera)
             s.stage = stage;
             s.burn = burn;
             s.tau = (float)tau;

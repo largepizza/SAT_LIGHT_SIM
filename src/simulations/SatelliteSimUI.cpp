@@ -4698,9 +4698,13 @@ void SatelliteSim::buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui)
     {
         CloudSlider mv[] = {
             {tx(Txt::SldMoveSpeedXHeightPerS), &moveSpeedPerHeight, 0.05f, 5.0f, 0.05f, "%.2f", 210},
+            {tx(Txt::SldAutoLevelUpToKm), &camLevelAltKm, 10.0f, 2000.0f, 10.0f, "%.0f", 625},
         };
-        buildCloudSliderRows(inp, ui, mv, 1, false);
+        buildCloudSliderRows(inp, ui, mv, 2, false);
     }
+    // Horizon auto-level (camera rig, SatelliteSimCamera.cpp): below the height above, the horizon levels itself;
+    // above it, or off, the camera turns freely and Z / C roll.
+    uiToggleRow(inp, ui, "AutoLevelChk", 0, tx(Txt::LblAutoLevelHorizon), camLevelEnabled, tx(Txt::TipAutoLevelHorizon));
 
     // ── KEY BINDINGS: column widths and the row height scale with uiScale like the fonts in them (fixed pixels
     // wrapped "Lower Elevation" and ran "[D-Right]" into its button at 2.0 — the harness's `ui dump` overlap check).
@@ -9505,6 +9509,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         camSetLook(camFacing(), c.value("el_deg", camera.elDeg));
         camera.fovYDeg = c.value("fov_y_deg", camera.fovYDeg);
         moveSpeedPerHeight = c.value("move_speed_per_height", moveSpeedPerHeight);
+        camLevelEnabled = c.value("auto_level", camLevelEnabled);
+        camLevelAltKm = settingClamp(c.value("auto_level_km", camLevelAltKm), 10.0f, 2000.0f);
     }
 
     if (j.contains("observer"))
@@ -9549,7 +9555,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         // are dropped once, or B would still pause and the D-pad still change the time scale.
         const bool padLayoutCurrent = j["controls"].value("pad_layout", 1) >= kPadLayoutVersion;
         std::unordered_map<std::string, LoadedBinding> actionKey;
-        const bool keyLayoutCurrent = j["controls"].value("key_layout", 1) >= kKeyLayoutVersion;
+        const int keyLayoutSaved = j["controls"].value("key_layout", 1);
         for (const auto &kb : j["controls"]["keybindings"])
             if (kb.contains("action") && kb.contains("key"))
             {
@@ -9557,8 +9563,12 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
                 if (act == "Leave Go To Here")
                     act = "Go To / Leave Here"; // renamed in key layout 2
                 int k = kb["key"].get<int>();
-                if (!keyLayoutCurrent && act == "Select Satellite" && k == GLFW_KEY_T)
+                if (keyLayoutSaved < 2 && act == "Select Satellite" && k == GLFW_KEY_T)
                     k = -1; // T is Track since key layout 2
+                if (keyLayoutSaved < 3 && act == "Reset Elevation" && k == GLFW_KEY_Z)
+                    k = GLFW_KEY_X; // Z / C roll since key layout 3
+                if (keyLayoutSaved < 3 && act == "Toggle Cursor" && k == GLFW_KEY_C)
+                    k = -1;
                 actionKey[act] = {k, kb.value("gp_button", -1), kb.contains("gp_button")};
             }
         for (auto &kb : keybindings)
@@ -9573,7 +9583,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         }
         // Actions new in this build keep their default key only where no saved binding already uses it (the
         // player's own bindings win).
-        for (int ni : {(int)KB_INFO, (int)KB_TRACK})
+        for (int ni : {(int)KB_INFO, (int)KB_TRACK, (int)KB_ROLL_LEFT, (int)KB_ROLL_RIGHT})
             if (actionKey.find(keybindings[ni].action) == actionKey.end())
                 for (int o = 0; o < (int)keybindings.size(); ++o)
                     if (o != ni && keybindings[o].key >= 0 && keybindings[o].key == keybindings[ni].key)
@@ -10454,7 +10464,9 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"az_deg", camera.azDeg},
         {"el_deg", followActive ? followSavedEl : camera.elDeg},
         {"fov_y_deg", followActive ? followSavedFov : camera.fovYDeg},
-        {"move_speed_per_height", moveSpeedPerHeight}};
+        {"move_speed_per_height", moveSpeedPerHeight},
+        {"auto_level", camLevelEnabled},
+        {"auto_level_km", camLevelAltKm}};
 
     j["observer"] = {{"lat_deg", glm::degrees(asinf(glm::clamp(saveObsDir.z, -1.0f, 1.0f)))},
                      {"lon_deg", glm::degrees(atan2f(saveObsDir.y, saveObsDir.x))}};
