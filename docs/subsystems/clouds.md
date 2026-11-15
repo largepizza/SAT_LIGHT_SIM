@@ -303,6 +303,22 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     0.62 -> 0.67. Dropping the HORIZONTAL wind share too (drift only) scored 0.73 at 1 min/s but 0.62 at 5 min/s: kept at
     0.9. What is left is real evolution inside the history's ~22-frame memory (the settled field decorrelates to 0.93 in
     10 sim s here) -- the noise's own vertical slide (the "noise slide" above), which no reprojection can follow.
+  - **The ground bounds a pixel's distance** (`cloud_v2_resolve.comp` `tSurf` / `onSurf`, binding 11 = the march's scene
+    depth, issue_20261115_133245 "Odd clipping on terrain"). The march stops at the ground, so nothing a ground pixel shows
+    is farther than the surface: its reprojection distance is min(cloud distance, tSurf) (tSurf alone with no cloud of its
+    own), and the eye-parallax floor's cap `capD` is tSurf. Before, a ground pixel with no cloud reprojected at infinity or
+    at a far cloud's distance taken from the sky past the ridge (`dNear`), so its parallax was the 50-km floor's: "still"
+    1 km from a hillside, history taken unclamped (`uK`) at the still weight. Dropping into a valley at walking pace, the
+    hill rose over the sky and the clouds above the ridge stayed on it as blobs and stair-stepped bands, one per frame of
+    the descent, fading over ~120 still frames (a settle / history reset cleared them). The volumes' slide (`motion.x`)
+    and the colour box's depth class (`dRef`) keep the cloud's own distance (`ndCl`); sky pixels are bit-identical.
+    Measured (the report's shot-1 trail, frame 360, terrain crop x1100 y330 820x250, interleaved in one app): terrain mean
+    luminance 58.3 -> 38.7 against 38.2 for the same frame with no cloud history at all (a resolve with `outC = fresh`)
+    and 32.5 settled (the rest is the sky's eased glare, not the clouds); still shots 2/3 mean |diff| 0.31 / 0.47;
+    GPU 19.80 -> 19.90 ms (+-0.16). In motion the airlight in front of the ground is now clamped to its new samples like
+    any near pixel's: a little more of the godrays' grain on hazy slopes under the Sun while moving (`harness_runs/qa-c04/ab`).
+    The composite's own behind-the-surface drop (cloud_march.comp `cv2Behind`) stays mesh-only: it acts on the resolved
+    distance, which on terrain is the neighbourhood's mean, not this history's.
 - **Far field (orbit)**: a fractal presence from the cluster Perlin at 1x and 4x (3-90 km, `fz`), thresholded
   to the map's coverage (area ~ cov), replaces the sub-pixel cells' uniform haze as the cells stop resolving
   (`farK`), and clusters the near field a little (0.08) so orbit and ground agree on where the holes are.

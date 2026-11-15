@@ -120,6 +120,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   twice).
 - **White tops on small cumulus.** Under a high Sun, shallow fair-weather cumulus now have bright sunlit tops instead of
   grey-blue, see-through ones, and their sides no longer brighten again toward the base.
+- **No clouds left on hillsides after moving.** Flying low over a ridge and dropping into a valley, the clouds that had
+  been above the ridge no longer stay painted on the hill as blobs and striped bands until the view settles.
 - **Fewer shadow trails in time-lapse.** At 1 min/s and faster, storm shadows no longer trail behind growing towers as grey blobs.
 - **Billows in time-lapse.** At 1 min/s and faster, a cloud deck keeps its billows instead of turning into a flat,
   grainy sheet until time is paused.
