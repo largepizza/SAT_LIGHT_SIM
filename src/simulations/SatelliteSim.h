@@ -3064,6 +3064,11 @@ private:
     glm::dvec3 camRightEcef() const { return glm::cross(camFwd, camUp); }
     double camEyeAltM() const;           // the eye's height above sea level (Go to: the camera's)
     bool camLevelActive() const;
+    // Q / E's direction, as the weight of the camera's up against the local up (issue_20261115_133412): 0 while the
+    // horizon auto-levels (pure altitude), 1 with it switched off or above camLevelAltKm x kCamVertBlend, a smoothstep
+    // between, so the move direction turns continuously as the eye crosses the auto-level height.
+    double camVertFreeWeight() const;
+    static constexpr double kCamVertBlend = 1.25;
     // The eye moves: the look and up are carried along (the rotation taking the old local up to the new one), so the
     // heading, elevation and roll stay what they were relative to the ground.
     void camSetEyeDir(const glm::dvec3 &dir);

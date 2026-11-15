@@ -375,6 +375,15 @@ dropped Toggle Cursor's C) roll. No toast at the crossing (one was tried; the us
 camera's up near the nadir under auto-level was tried and dropped: a sideways drag at -89 slid the view to -79 and
 swung the heading 144 deg.
 
+**Q / E follow the same rule** (issue_20261115_133412, the user's call 2026-11-15). Auto-levelling: the pure altitude
+move (`obsHeightOffset` only; the eye's lat / lon do not change). Free: the eye moves along `camUp` (in double, the
+ground a floor, `camSetEyeDir` carrying the look; under inertial hold the look is re-held as `inertialFly` does), so
+from orbit looking down Q slides the view toward the screen's top. `camVertFreeWeight()` is the weight of `camUp`
+against the local up: 0 below `camLevelAltKm`, smoothstep to 1 at `kCamVertBlend` (1.25) x it, 1 with auto-level
+off; the move is along the normalised blend, so the direction turns continuously across the limit instead of jumping
+by up to the look's pitch (90 deg looking straight down). The rate is unchanged. Follow mode's Q / E (the satellite's
+frame, `updateFollow`) are untouched.
+
 **Measured.** No snap: `viewMatrix()` was lookAt(az / el, up = Up, North past |el| 88): -87.9 -> -88.1 deg from 420 km
 turned the image by the azimuth (mean change 40 levels); now 8.3 (cloud detail; 2.7 at 10 km). A level camera's frames
 are as before (phase 3 vs 2 A/B: PSNR 64-70 dB, mean |difference| 0.006-0.025 levels, every camera state the same).
@@ -390,7 +399,7 @@ bearing of 2.7 deg at 10 m whether facing 0 or 45 deg (the rounding chose it), 7
 camera-relative (hi / lo) eye in the shaders would remove that.
 
 **Fly where you look** (phase 4). W / S move along `camFwd` and A / D along the camera's right, in 3D, at any angle
-and roll; Q / E stay the pure up / down. The speed is the old arc rate on the Earth's radius, still scaled by the height
+and roll; Q / E are the pure up / down while auto-levelling (along the camera's up when free, above). The speed is the old arc rate on the Earth's radius, still scaled by the height
 above the ground (a dive slows toward the ground, a climb speeds up), and the ground is a floor: a step into it keeps
 its part along the ground (W looking down slides). After each step the look is carried with the ground (`camSetEyeDir`),
 so W at el 0 holds the height (follows the Earth's curve). Measured (`harness_runs/cam_p4`, 2 s of W / D): looking up 30

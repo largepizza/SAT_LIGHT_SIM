@@ -137,6 +137,14 @@ bool SatelliteSim::camLevelActive() const
     return camLevelEnabled && camEyeAltM() < (double)camLevelAltKm * 1000.0;
 }
 
+double SatelliteSim::camVertFreeWeight() const
+{
+    if (!camLevelEnabled)
+        return 1.0;
+    const double L = (double)camLevelAltKm * 1000.0;
+    return smooth01(L, L * kCamVertBlend, camEyeAltM());
+}
+
 // (A setter before the first camSync() runs it first: the rig starts from the startup mirrors.)
 void SatelliteSim::camSetEyeDir(const glm::dvec3 &dir)
 {
