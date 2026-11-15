@@ -1800,6 +1800,10 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
             //  - the smoke starts dark and thick over the flames (the near-smoke columns in the smoke's range, above).
             // Positions are pure functions of sim time (hashes, value noise in t): deterministic, reversible.
             const double fadeR = 1.0 - glm::smoothstep(25.0, 40.0, nearKm);
+            // (the flame height at full activity: constant over the fire's life, unlike hFl)
+            wx::FireState sFull = s;
+            sFull.activity = 1.0;
+            const double hFlRef = wx::fireFlameHeightM(f, sFull);
             constexpr int kFL = 16, kBaseF = 6;
             const double spPx = kFlamePx * pixFull * std::max((double)flameLodScale, 1.0);   // radians between tongues
             const glm::dvec2 w10 = wx::windAt(G, 10.0, t);
@@ -1843,7 +1847,7 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
             {
                 glm::dvec3 P, T, Cx, Nout, upP, rel;
                 glm::dvec2 q, nOut;
-                double a, heat, hh0, ds, dep, range, px, res, overlap, kCommon, spread;
+                double a, heat, hh0, hhRef, ds, dep, range, px, res, overlap, kCommon, spread;
                 glm::vec3 colHot;
                 uint64_t h;
                 int K, lv;
@@ -1900,6 +1904,8 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                 c.heat = heat0 * (1.05 - 0.35 * std::clamp(c.dep / dFl, 0.0, 1.0));
                 // its size: the front's heat x a hashed spread (some tongues tall, most smaller)
                 c.hh0 = hFl * (0.55 + 0.6 * std::min(c.heat, 1.2)) * (0.55 + 0.9 * std::pow(fwU(h ^ 7), 1.4));
+                // (its size at full activity and heat 1, constant in time: what its flames' puffing rate follows)
+                c.hhRef = hFlRef * 1.15 * (0.55 + 0.9 * std::pow(fwU(h ^ 7), 1.4));
                 c.P = at(c.q.x, c.q.y, 0.45 * c.hh0 + dzOf(c.q));
                 c.rel = c.P - eye;
                 c.range = std::max(glm::length(c.rel), 1.0);
@@ -2001,8 +2007,13 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                     const double along = (fwU(hs ^ 1) - 0.5) * 0.95 * spread;
                     const double dep2 = (fwU(hs ^ 2) - 0.5) * 0.5 * dFl;
                     const double hf = i == 0 ? 0.9 + 0.3 * fwU(hs ^ 3) : 0.45 + 0.7 * fwU(hs ^ 3);
-                    const double b = hh0 * hf * (0.11 + 0.1 * fwU(hs ^ 4));            // its base half width
-                    const double fP = 1.5 / std::sqrt(std::max(4.0 * b, 0.5)) * (0.75 + 0.5 * fwU(hs ^ 5));   // puffing (Hz)
+                    const double bK = hf * (0.11 + 0.1 * fwU(hs ^ 4));
+                    const double b = hh0 * bK;            // its base half width
+                    // Puffing (Hz) at the width of the flame at full activity and heat 1 (hhRef): a CONSTANT. The
+                    // phases below are t x fP with t ~1.2e9 s since J2000, so a frequency that follows the heat or
+                    // the activity (both drift with t) turned a drift of 4e-8 into ~25 cycles per millisecond: every
+                    // frame a new random height, sway and flicker (2026-11-15, issue 20261115_133156).
+                    const double fP = 1.5 / std::sqrt(std::max(4.0 * c.hhRef * bK, 0.5)) * (0.75 + 0.5 * fwU(hs ^ 5));
                     const double ph = 1000.0 * fwU(hs ^ 6);
                     const double n1 = tnoise(t * fP + ph, hs ^ 0x11), n2 = tnoise(t * fP * 1.7 + 2.3 * ph, hs ^ 0x22);
                     const double n3 = tnoise(t * fP * 0.6 + 0.7 * ph, hs ^ 0x33);

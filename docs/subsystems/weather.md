@@ -883,7 +883,13 @@ lists its sections and topics with line numbers. New notes go next to the sectio
       of the head (8%).
     - **Clusters, not paired licks**: a resolved tongue is 1-4 flames at hashed places along it, each a body + a tip
       leaning downwind and swaying, its height pulsing with smooth value noise in t at the puffing frequency of its
-      width (~1.5 / sqrt(D) Hz), the bigger ones shedding a rising, fading puff. Budget 512 (smoke n + 576): two passes
+      width (~1.5 / sqrt(D) Hz), the bigger ones shedding a rising, fading puff. **That frequency is a constant**
+      (`FlameCand::hhRef`: the tongue's size at full activity and heat 1). Every phase is `t x fP` with t ~1.2e9 s
+      since J2000, so a frequency that follows anything that drifts with t (the heat, the activity) moves the phase by
+      `t x dfP/dt`. With fP from the live `hh0` (2026-11-15, issue 20261115_133156) a relative drift of 4e-8 per ms
+      was ~25 cycles per ms, and every frame drew a new random height, sway, flicker and puff (frame-to-frame
+      |d| 8.2 on the shot's fire, 87% of the power above 4 Hz; now 0.47, 3%, mean brightness unchanged). Any new
+      `t x rate` animation here must take its rate from hashes and constants only. Budget 512 (smoke n + 576): two passes
       (`FlameCand`), the nearest tongues take the most flames that still leave every farther one a single flame;
       `flameLodScale` widens the spacing only when even that overflows (`flameNearScale`, the floor 1.4 x the flame
       height, only once that saturates). `kFlamePx` 12. Unresolved ribbons overlap (0.45 x the spacing).

@@ -595,6 +595,11 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- Wildfire flames close up no longer flicker into a new shape every frame at 1x (issue_20261115_133156). Each
+  flame's height, sway and flicker pulsed at a rate that followed the fire's heat. That rate drifted very slightly
+  with time, and multiplied by the sim clock it jumped the animation many cycles per frame. The rate now comes from
+  the flame's size at full strength, so the flames rise, sway and shed puffs at about 0.3-2 Hz. At time-lapse speeds
+  they still change from frame to frame.
 - The red airglow no longer shows in front of nearby clouds (issue_20261115_015559). At dusk under a raining deck
   a red band with a hard bottom edge lay over the opaque cloud: the 630-nm band, 90-500 km up, was added after the
   clouds without their transmittance. Seen from under it, it is now hidden by the clouds in front as the aurora is.
