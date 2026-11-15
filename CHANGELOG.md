@@ -593,6 +593,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- The red airglow no longer shows in front of nearby clouds (issue_20261115_015559). At dusk under a raining deck
+  a red band with a hard bottom edge lay over the opaque cloud: the 630-nm band, 90-500 km up, was added after the
+  clouds without their transmittance. Seen from under it, it is now hidden by the clouds in front as the aurora is.
 - An overcast seen from inside the rain under it no longer shows huge lit areas with straight edges and steps at
   sunset (issue_20261114_234423). The rain at your eye was taken for the inside of the cloud, so every part of the deck
   you saw through unbroken rain was lit like the inside of a cloud and every part seen through a gap in the rain like

@@ -53,6 +53,16 @@ Read it at the start of any terrain-related session before making changes.
   invisible), red 0.005, sodium 0.095, coverage 0.47. Physical line ratios at a mid-latitude zenith are green
   ~250 R : sodium 30-150 R : red ~50-100 R: column-weighted, sodium 0.095 is ~1.3x green, which makes the limb
   line olive; ~0.02 reads green as in the ISS photographs (`harness_runs/airglow2`, o_na020).
+- **Airglow behind the clouds (2026-11-15, issue_20261115_015559).** Green and sodium are added to the sky colour
+  before `sat_sky.frag`'s cloud composite (`color * cloudB + cloudA`), so the clouds' transmittance covers them. The
+  red band rides inside the half-res composite's `B_total` (`cloud_march.comp`), where it is added after the clouds:
+  from under its 100-km shell it takes `A_total` (cirrus x cloud x plumes) and its derivative `gAA` into `gBA` (the
+  full-res combine), and it is not marched where `A_total` < 1e-3. From above the shell its march runs from the eye to
+  the top of the air, in front of every cloud, and is added unchanged. It had no cloud term: at dusk from 1.6 km the
+  red band (with the geometric horizon's hard bottom edge, where the march stops on the ground) lay over an opaque
+  rain cloud. At that view, over pixels with cloud transmittance < 0.05: red on - off 2.0 -> 0.13 levels; the clear
+  sky's red share unchanged (0.72 vs 0.69). The aurora already took `A_total` cubed. Above 600 km the far cloud layer
+  is composited behind the whole half-res composite (aurora and airglow in front of it), which is right there.
 - **Raymarch-from-inside-a-volume fix (session 22):** `raySphere` reformulates `c = dot(ro,ro)-r*r`
   as `c = (|ro|-r)*(|ro|+r)` — the naive form catastrophically cancels at R_EARTH scale (~1e13
   float32 magnitude) exactly at grazing/near-tangent rays, i.e. every horizon, across all 29 call
