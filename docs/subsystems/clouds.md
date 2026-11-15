@@ -2087,6 +2087,24 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   system's shield rise (0.9 of its ramp), trail growth and linger scale by formation / 60 min and decay / 70 min. Measured at
   233447's multicells (60 km overhead, 15-min captures): white area at +60 / +75 min 0.088 / 0.097 at formation 30 min,
   0.034 / 0.062 at 240; the storm's life 152 / 278 / 447 min at decay 30 / 120 / 240.
+  **RAIN IS NOT THE CLOUD (2026-11-15, cluster c02 "sunsetedge", issue 20261114_234423 shots 3-4):** the eye-inside rule
+  keys on the first dense sample, and under a raining deck that is the rain at the eye (rain alone below the base: f.rain 1,
+  hf 0, sigma ~1e-5 /m). Tent then carried T / Tent = e^-20 through the shaft into the deck: every base a ray reached through
+  UNBROKEN rain was shaded as the cloud's interior (hV ~1, no march away from the light -- `T > 0.1` fails -- and the Sun
+  volume's own-cloud share diffused), every base reached through a gap in the rain as a face. The lit / shaded switch drew
+  the rain region's outline on the overcast at sunset: a huge orange area bounded by long straight edges and steps (16.3 N
+  91.5 W, ~1 km, Sun 0.75 deg; debug view cloudrad stepped, cloudtrans smooth). Identified by elimination: the edge stayed
+  with `sun_volume 0`, `terrain_godrays 0`, `cdc_light 0`, `cdc_skip 0` (all at once too), a constant terrain lift and
+  `base_lcl` / `base_regional` 0; it went with the key light (a `keyS` knockout) and a per-pixel dump of the first lit
+  sample read T / Tent 0 inside, ~1 outside, with the same light-march depth. Now Tent set by rain alone is stored as
+  `-2 - T` and the first cloud-body sample after it sets it afresh (a bool beside Tent took the march to 255 registers; the
+  sign code keeps 128). Rain samples themselves are lit as before. Measured (RTX 3070 Ti, 1920x1009, the reporter's
+  settings, interleaved x3): longest hard straight edge above the horizon strata (2-px step > 0.03, half-res) shot 3 253 ->
+  155 px (the 155 is the horizon strata, present in both), shot 4 163 -> 73; a 120-m climb x 8 from shot 3 moves the
+  crepuscular shadows smoothly (no blocks). Look elsewhere (adjacent captures, mean |d|): midday cumulus 0.26, towers in
+  rain 0.89 (A-vs-A 1.07), anvil 111947 0.06. Cost: the deck's first optical depths behind the rain now take the light
+  march and the far-side reads every other deck face takes (light steps +59%, far-side reads +115% at shot 3): cloud march
+  19.7 -> 20.4 ms, GPU 29.3 -> 30.1 at shot 3, 28.1 -> 29.1 at shot 4 (spread +-0.2).
 - **The unified volumetric composite (2026-10-26, branch perf-frames; the user: the plumes, smoke and tornadoes "feel entirely
   distinct in quality" and clip against rain, dust, smoke and clouds).** The dust list's Gaussians (launch plumes, flames,
   wildfire smoke, tornado funnels, haboob far field, Kessler dust and fireball trails) are still composited in cloud_march.comp
