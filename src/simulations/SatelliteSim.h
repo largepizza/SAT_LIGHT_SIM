@@ -6958,6 +6958,16 @@ private:
     VkSampler flareSampler = VK_NULL_HANDLE;             // shared by both images; resolution-independent, created once
     VkRenderPass flareSourceRenderPass = VK_NULL_HANDLE; // single color attachment, CLEAR, finalLayout=COLOR_ATTACHMENT_OPTIMAL
     VkFramebuffer flareSourceFramebuffer = VK_NULL_HANDLE;
+    // The glare sprites' sum (2026-11-15, issue_20261115_131830): glare.frag / glare_mesh.frag draw into
+    // this full-resolution RGBA16F target (recordCompute, right after the glare clusters), and
+    // flare_composite.frag adds it to the frame in one write. Drawn straight into the 8-bit sRGB swapchain,
+    // every overlapping sprite's add was rounded to 8 bits on its own: a crowd of dim halo tails summed into
+    // stepped rings with a rim (a contribution under half a level vanished, one over it counted as a whole).
+    VkImage glareAccumImg = VK_NULL_HANDLE; // RGBA16F, COLOR_ATTACHMENT|SAMPLED, swap extent
+    VkDeviceMemory glareAccumMem = VK_NULL_HANDLE;
+    VkImageView glareAccumView = VK_NULL_HANDLE;
+    VkRenderPass glareAccumRenderPass = VK_NULL_HANDLE; // CLEAR -> SHADER_READ_ONLY_OPTIMAL
+    VkFramebuffer glareAccumFramebuffer = VK_NULL_HANDLE;
     // Stage 1 (render): reuses the EXISTING descLayout/descSet (satVisibleBuf binding 1,
     // cloudTargetA/B bindings 5/6 are already there for sat_point.frag; binding 7 (sceneDepthTex)
     // is new — see createDescriptors()) — own pipeline layout only because the push constant type
@@ -6981,7 +6991,7 @@ private:
     VkDescriptorSet flareCompositeDescSet = VK_NULL_HANDLE;
     VkPipelineLayout flareCompositePipeLayout = VK_NULL_HANDLE;
     VkPipeline flareCompositePipeline = VK_NULL_HANDLE;
-    VkPipeline glarePipeline = VK_NULL_HANDLE; // per-satellite glare sprites (main pass)
+    VkPipeline glarePipeline = VK_NULL_HANDLE; // per-satellite glare sprites (glareAccumRenderPass)
     // Mesh-glint glare (2026-09-24): glare_find.comp lists the concentrated glints mesh_bloom.frag put
     // in the flare source's alpha; glare_mesh.vert/.frag draws them like glare.vert's sprites.
     VkBuffer glintBuf = VK_NULL_HANDLE;

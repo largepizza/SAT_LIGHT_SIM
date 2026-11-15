@@ -10,6 +10,11 @@ layout(location = 0) in vec2 uv;
 layout(location = 0) out vec4 outColor;
 
 layout(set = 0, binding = 0) uniform sampler2D flareTex;
+// The glare sprites' sum at full resolution (glare.frag / glare_mesh.frag into an RGBA16F target,
+// 2026-11-15): added here in one write. Blended one sprite at a time into the 8-bit sRGB frame, each
+// overlapping sprite's add was rounded on its own, so a crowd's dim halo tails summed into stepped rings
+// with a rim around the pile (issue_20261115_131830).
+layout(set = 0, binding = 1) uniform sampler2D glareTex;
 
 layout(push_constant) uniform PC {
     float gain; // user-tunable overall glow gain (Settings > Display, "Flare glow gain")
@@ -32,6 +37,9 @@ void main() {
         c *= lc / l;
     }
     c = min(c, vec3(1.0));
+
+    // The glare, as before the 2026-11-15 change, is not under the glow's ceiling: only its rounding moved.
+    c += texelFetch(glareTex, ivec2(gl_FragCoord.xy), 0).rgb;
 
     outColor = vec4(c, 1.0);
 }

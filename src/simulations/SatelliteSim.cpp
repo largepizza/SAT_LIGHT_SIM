@@ -991,10 +991,14 @@ void SatelliteSim::onResize(VulkanContext &ctx)
     frameSafeUpdateDescriptorSets(ctx.device, 2, flareBlurWrites, 0, nullptr);
 
     VkDescriptorImageInfo flareFinalInfo{flareSampler, flareSourceView, VK_IMAGE_LAYOUT_GENERAL};
-    VkWriteDescriptorSet flareCompWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
-                                        flareCompositeDescSet, 0, 0, 1,
-                                        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &flareFinalInfo, nullptr, nullptr};
-    frameSafeUpdateDescriptorSets(ctx.device, 1, &flareCompWrite, 0, nullptr);
+    VkDescriptorImageInfo glareAccumInfo{flareSampler, glareAccumView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet flareCompWrites[2] = {
+        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, flareCompositeDescSet, 0, 0, 1,
+         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &flareFinalInfo, nullptr, nullptr},
+        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, flareCompositeDescSet, 1, 0, 1,
+         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &glareAccumInfo, nullptr, nullptr},
+    };
+    frameSafeUpdateDescriptorSets(ctx.device, 2, flareCompWrites, 0, nullptr);
 
     // ── Long-exposure trail pipeline — trailAccumExtent derives from ctx.swapExtent, same
     // destroy/recreate/patch dance as the flare block above. trailSatPipeline/trailStarPipeline/
@@ -3985,6 +3989,49 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                 vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, 0, 1,
                                      &mb, 0, nullptr, 0, nullptr);
             }
+        }
+
+        // Glare sprites for the bright ones (glare.vert/.frag) and the mesh glints (glare_mesh.frag), summed
+        // in float (glareAccumImg's member comment): flare_composite.frag adds the sum to the frame in one
+        // write. Drawn one by one into the 8-bit frame, each overlapping sprite's add was rounded on its own,
+        // and a crowd's halo tails summed into stepped rings (issue_20261115_131830). Always cleared, so the
+        // composite never adds an old frame's glare.
+        {
+            VkClearValue glareClear{};
+            glareClear.color = {{0.0f, 0.0f, 0.0f, 0.0f}};
+            VkRenderPassBeginInfo grbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+            grbi.renderPass = glareAccumRenderPass;
+            grbi.framebuffer = glareAccumFramebuffer;
+            grbi.renderArea = {{0, 0}, ctx.swapExtent};
+            grbi.clearValueCount = 1;
+            grbi.pClearValues = &glareClear;
+            vkCmdBeginRenderPass(cmd, &grbi, VK_SUBPASS_CONTENTS_INLINE);
+            if (glareGain > 0.0f && glarePipeline != VK_NULL_HANDLE)
+            {
+                GlarePC gpc = buildGlarePC(ctx, flareEyeAdaptGain);
+                // The cluster grid filled just above (none: every glare keeps its spikes).
+                gpc.tilePx = glareGridTilePx;
+                gpc.gridW = glareGridW;
+                gpc.gridH = glareGridH;
+                const VkDescriptorSet gsets[2] = {descSet, glareMeshDescSet};
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glarePipeline);
+                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glarePipeLayout, 0, 2, gsets, 0,
+                                        nullptr);
+                vkCmdPushConstants(cmd, glarePipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                                   sizeof(gpc), &gpc);
+                vkCmdDrawIndirect(cmd, satListBuf, offsetof(GpuSatListHeader, drawVertexCount), 1, 0);
+                // Glare on the mesh glints glare_find.comp listed this frame.
+                if (meshGlareListed && glareMeshPipeline != VK_NULL_HANDLE)
+                {
+                    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glareMeshPipeline);
+                    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glareMeshPipeLayout, 0, 1,
+                                            &glareMeshDescSet, 0, nullptr);
+                    vkCmdPushConstants(cmd, glareMeshPipeLayout,
+                                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(gpc), &gpc);
+                    vkCmdDrawIndirect(cmd, glintBuf, offsetof(GpuGlintList, vertexCount), 1, 0);
+                }
+            }
+            vkCmdEndRenderPass(cmd);
         }
 
         // Stage 2: blur/streak — one pipeline, three dispatches ping-ponging flareSourceImg <->
@@ -8096,32 +8143,8 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float dt)
             vkCmdDraw(cmd, 3, 1, 0, 0);
         }
 
-        // Glare sprites for the bright ones (glare.vert/.frag): the sharp rays the broad bloom
-        // above cannot draw at quarter resolution.
-        if (activeSatCount > 0 && glareGain > 0.0f && glarePipeline != VK_NULL_HANDLE)
-        {
-            GlarePC gpc = buildGlarePC(ctx, flareEyeAdaptGain);
-            // The cluster grid recordCompute filled this frame (none: every glare keeps its spikes).
-            gpc.tilePx = glareGridTilePx;
-            gpc.gridW = glareGridW;
-            gpc.gridH = glareGridH;
-            const VkDescriptorSet gsets[2] = {descSet, glareMeshDescSet};
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glarePipeline);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glarePipeLayout, 0, 2, gsets, 0, nullptr);
-            vkCmdPushConstants(cmd, glarePipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-                               sizeof(gpc), &gpc);
-            vkCmdDrawIndirect(cmd, satListBuf, offsetof(GpuSatListHeader, drawVertexCount), 1, 0);
-            // Glare on the mesh glints glare_find.comp listed this frame.
-            if (meshGlareListed && glareMeshPipeline != VK_NULL_HANDLE)
-            {
-                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glareMeshPipeline);
-                vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, glareMeshPipeLayout, 0, 1,
-                                        &glareMeshDescSet, 0, nullptr);
-                vkCmdPushConstants(cmd, glareMeshPipeLayout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                                   0, sizeof(gpc), &gpc);
-                vkCmdDrawIndirect(cmd, glintBuf, offsetof(GpuGlintList, vertexCount), 1, 0);
-            }
-        }
+        // The glare sprites (glare.vert/.frag: the sharp rays the broad bloom cannot draw at quarter
+        // resolution) are summed in recordCompute into glareAccumImg, which this composite adds.
     }
 
     // ── Pass 5: long-exposure trail composite ──────────────────────────────────
@@ -14926,10 +14949,76 @@ void SatelliteSim::createFlareResources(VulkanContext &ctx)
     fci.layers = 1;
     if (vkCreateFramebuffer(ctx.device, &fci, nullptr, &flareSourceFramebuffer) != VK_SUCCESS)
         throw std::runtime_error("SatelliteSim: failed to create flare source framebuffer");
+
+    // ── The glare sprites' float sum (glareAccumImg's member comment) ─────────────────────────
+    // Full resolution (the glare's spikes are a pixel wide), cleared each frame, read once by
+    // flare_composite.frag. The two dependencies order the clear after last frame's composite read and
+    // make the sprites' writes visible to this frame's composite.
+    {
+        VkAttachmentDescription ga = color;
+        ga.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkSubpassDependency deps[2] = {};
+        deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
+        deps[0].dstSubpass = 0;
+        deps[0].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        deps[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        deps[0].srcAccessMask = 0;
+        deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        deps[1].srcSubpass = 0;
+        deps[1].dstSubpass = VK_SUBPASS_EXTERNAL;
+        deps[1].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        deps[1].dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        deps[1].srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        deps[1].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        VkRenderPassCreateInfo grp = rpci;
+        grp.pAttachments = &ga;
+        grp.dependencyCount = 2;
+        grp.pDependencies = deps;
+        if (vkCreateRenderPass(ctx.device, &grp, nullptr, &glareAccumRenderPass) != VK_SUCCESS)
+            throw std::runtime_error("SatelliteSim: failed to create glare accumulation render pass");
+        ctx.createImage(ctx.swapExtent.width, ctx.swapExtent.height, VK_FORMAT_R16G16B16A16_SFLOAT,
+                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, glareAccumImg, glareAccumMem);
+        vci.image = glareAccumImg;
+        vkCreateImageView(ctx.device, &vci, nullptr, &glareAccumView);
+        // The composite may sample it before the first glare pass has run (the layout it expects).
+        auto cmd = ctx.beginOneTimeCommands();
+        ctx.imageBarrier(cmd, glareAccumImg, 0, VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT);
+        VkClearColorValue zero{};
+        VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdClearColorImage(cmd, glareAccumImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1, &range);
+        ctx.imageBarrier(cmd, glareAccumImg, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                         VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        ctx.endOneTimeCommands(cmd);
+        VkFramebufferCreateInfo gfci = fci;
+        gfci.renderPass = glareAccumRenderPass;
+        gfci.pAttachments = &glareAccumView;
+        gfci.width = ctx.swapExtent.width;
+        gfci.height = ctx.swapExtent.height;
+        if (vkCreateFramebuffer(ctx.device, &gfci, nullptr, &glareAccumFramebuffer) != VK_SUCCESS)
+            throw std::runtime_error("SatelliteSim: failed to create glare accumulation framebuffer");
+    }
 }
 
 void SatelliteSim::destroyFlareResources(VkDevice device)
 {
+    if (glareAccumFramebuffer)
+        vkDestroyFramebuffer(device, glareAccumFramebuffer, nullptr);
+    if (glareAccumRenderPass)
+        vkDestroyRenderPass(device, glareAccumRenderPass, nullptr);
+    if (glareAccumView)
+        vkDestroyImageView(device, glareAccumView, nullptr);
+    if (glareAccumImg)
+        vkDestroyImage(device, glareAccumImg, nullptr);
+    if (glareAccumMem)
+        vkFreeMemory(device, glareAccumMem, nullptr);
+    glareAccumFramebuffer = VK_NULL_HANDLE;
+    glareAccumRenderPass = VK_NULL_HANDLE;
+    glareAccumView = VK_NULL_HANDLE;
+    glareAccumImg = VK_NULL_HANDLE;
+    glareAccumMem = VK_NULL_HANDLE;
     if (flareSourceFramebuffer)
         vkDestroyFramebuffer(device, flareSourceFramebuffer, nullptr);
     if (flareSourceRenderPass)
@@ -14999,14 +15088,17 @@ void SatelliteSim::createFlareDescriptors(VulkanContext &ctx)
     // ── Stage 3 (composite draw): 1 COMBINED_IMAGE_SAMPLER binding ────────────────────────────
     // Sampled directly in VK_IMAGE_LAYOUT_GENERAL — legal, and this image is small/short-lived
     // enough per frame that skipping a dedicated layout-transition barrier costs nothing measurable.
-    VkDescriptorSetLayoutBinding compBinding{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
-                                             VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+    // Binding 1 (2026-11-15): the glare sprites' full-resolution float sum (glareAccumImg).
+    VkDescriptorSetLayoutBinding compBindings[2] = {
+        {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+    };
     VkDescriptorSetLayoutCreateInfo compLi{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    compLi.bindingCount = 1;
-    compLi.pBindings = &compBinding;
+    compLi.bindingCount = 2;
+    compLi.pBindings = compBindings;
     vkCreateDescriptorSetLayout(ctx.device, &compLi, nullptr, &flareCompositeDescLayout);
 
-    VkDescriptorPoolSize compPs{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1};
+    VkDescriptorPoolSize compPs{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2};
     VkDescriptorPoolCreateInfo compPi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     compPi.poolSizeCount = 1;
     compPi.pPoolSizes = &compPs;
@@ -15022,10 +15114,14 @@ void SatelliteSim::createFlareDescriptors(VulkanContext &ctx)
     // Final result lands back in flareSourceImg (see the dispatch-order comment at the flare_blur.comp
     // call site in recordCompute() and flare_blur.comp's header).
     VkDescriptorImageInfo flareFinalInfo{flareSampler, flareSourceView, VK_IMAGE_LAYOUT_GENERAL};
-    VkWriteDescriptorSet compWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr,
-                                   flareCompositeDescSet, 0, 0, 1,
-                                   VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &flareFinalInfo, nullptr, nullptr};
-    frameSafeUpdateDescriptorSets(ctx.device, 1, &compWrite, 0, nullptr);
+    VkDescriptorImageInfo glareAccumInfo{flareSampler, glareAccumView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    VkWriteDescriptorSet compWrites[2] = {
+        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, flareCompositeDescSet, 0, 0, 1,
+         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &flareFinalInfo, nullptr, nullptr},
+        {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, flareCompositeDescSet, 1, 0, 1,
+         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &glareAccumInfo, nullptr, nullptr},
+    };
+    frameSafeUpdateDescriptorSets(ctx.device, 2, compWrites, 0, nullptr);
 }
 
 // ─── createFlarePipelines ──────────────────────────────────────────────────────
@@ -15319,7 +15415,7 @@ void SatelliteSim::createFlarePipelines(VulkanContext &ctx)
         vkDestroyShaderModule(ctx.device, frag, nullptr);
 
         // ── Stage 4: glarePipeline — per-satellite glare sprites (glare.vert/.frag), full
-        // resolution, additive, over the composite. Same compact list and descriptor set as the flare
+        // resolution, additive into glareAccumImg (the composite adds it). Same compact list and descriptor set as the flare
         // source (flareSourcePipeLayout); point sprites up to the device's maxPointSize.
         VkShaderModule gv = ctx.loadShader("shaders/glare.vert.spv");
         VkShaderModule gf = ctx.loadShader("shaders/glare.frag.spv");
@@ -15334,6 +15430,8 @@ void SatelliteSim::createFlarePipelines(VulkanContext &ctx)
         gci.pStages = gst;
         gci.pInputAssemblyState = &gia;
         gci.layout = glarePipeLayout; // descLayout + the glare cluster grid's set (2026-10-20)
+        // Into the glare sprites' float sum, not the frame (glareAccumImg's member comment, 2026-11-15).
+        gci.renderPass = glareAccumRenderPass;
         if (vkCreateGraphicsPipelines(ctx.device, ctx.pipelineCache, 1, &gci, nullptr, &glarePipeline) != VK_SUCCESS)
             throw std::runtime_error("SatelliteSim: failed to create glare pipeline");
         vkDestroyShaderModule(ctx.device, gv, nullptr);

@@ -604,6 +604,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   with time, and multiplied by the sim clock it jumped the animation many cycles per frame. The rate now comes from
   the flame's size at full strength, so the flames rise, sway and shed puffs at about 0.3-2 Hz. At time-lapse speeds
   they still change from frame to frame.
+- Crowds of flaring satellites no longer glare in stepped rings with a grey rim (issue_20261115_131830). The glare
+  sprites were added to the screen one at a time, each rounded to the screen's 8 bits, so where dozens overlapped
+  (a fresh launch train) their faint outer halos summed in steps. The glare is now summed in full precision and
+  added once: one continuous glow.
 - The red airglow no longer shows in front of nearby clouds (issue_20261115_015559). At dusk under a raining deck
   a red band with a hard bottom edge lay over the opaque cloud: the 630-nm band, 90-500 km up, was added after the
   clouds without their transmittance. Seen from under it, it is now hidden by the clouds in front as the aurora is.
