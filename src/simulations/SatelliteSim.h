@@ -5535,23 +5535,23 @@ private:
     // ── Clouds v2 (SatelliteSimCloudsV2.cpp, .plans/CLOUDS_V2_PLAN.md) ──────────────────────────
     // Settings (persisted under "clouds_v2"; harness: set clouds_v2.<key> <value>; Clouds tab).
     // The only volumetric cloud renderer since 2026-09-27 (v1's cloudMarchCS was deleted).
-    float cv2Coverage = 0.42f;          // x the weather map's brightness before the remap below (was 0.96, 2026-11-10 bake)
+    float cv2Coverage = 0.75f;          // x the weather map's brightness before the remap below (was 0.42, 2026-11-15 bake)
     float cv2CoverClear = 0.0f;       // map brightness that is clear sky ... (was 0.0026, 2026-11-10 bake)
-    float cv2CoverFull = 0.45f;         // ... and that is overcast (thin cloud is grey in the imagery) (was 1.0, 2026-11-10 bake)
-    float cv2Density = 1.6f;           // x every type's extinction (was 1.3, 2026-11-10 bake)
+    float cv2CoverFull = 0.54f;         // ... and that is overcast (thin cloud is grey in the imagery) (was 0.45, 2026-11-15 bake)
+    float cv2Density = 0.5f;           // x every type's extinction (was 1.6, 2026-11-15 bake)
     float cv2Detail = 0.18f;            // erosion detail strength (was 0.77, 2026-11-10 bake)
     float cv2Wobble = 0.2f;           // 3D noise on a column's edge (fraction of the span): bulges, turrets (was 0.21, 2026-11-10 bake)
     float cv2Lean = 0.15f;             // horizontal shift of a tower per metre of height
     float cv2InteriorErosion = 0.66f;  // share of the erosion that applies deep inside a cloud (was 0.74, 2026-11-10 bake)
     float cv2ColumnEdge = 0.5f;        // 1 / the column edge's softness (fraction of the span) (was 1.7, 2026-11-10 bake)
-    float cv2AmbientGain = 1.7f;       // sky light (zenith radiance x this) (was 2.0, 2026-11-10 bake)
+    float cv2AmbientGain = 1.5f;       // sky light (zenith radiance x this) (was 1.7, 2026-11-15 bake)
     float cv2SunGain = 1.0f;
     float cv2MoonGain = 0.87f;          // x the terrain's moonlight (cloud.moonGain) as the night key light (was 1.0, 2026-11-10 bake)
-    float cv2BounceGain = 0.98f;        // light reflected up from the ground (was 0.95, 2026-11-10 bake)
+    float cv2BounceGain = 1.8f;        // light reflected up from the ground (was 0.98, 2026-11-15 bake)
     float cv2Powder = 0.23f; // (was 0.21, 2026-11-10 bake)
-    float cv2MsExtinction = 0.19f;     // multiple scattering: extinction ratio per octave ... (was 0.21, 2026-11-10 bake)
-    float cv2MsStrength = 0.29f;        // ... and contribution ratio per octave (was 0.56, 2026-11-10 bake)
-    float cv2PhaseG = 0.39f;            // forward-scattering lobe (silver lining) (was 0.57, 2026-11-10 bake)
+    float cv2MsExtinction = 0.13f;     // multiple scattering: extinction ratio per octave ... (was 0.19, 2026-11-15 bake)
+    float cv2MsStrength = 0.34f;        // ... and contribution ratio per octave (was 0.29, 2026-11-15 bake)
+    float cv2PhaseG = 0.37f;            // forward-scattering lobe (silver lining) (was 0.39, 2026-11-15 bake)
     float cv2HistoryWeightMoving = 0.05f; // the same weight once the view moves (parallax past ~2 half-res px)
     float cv2HistoryWeight = 0.039f;     // weight of a new sample over its reprojected history (still view; (was 0.046, 2026-11-10 bake)
                                        // the resolve raises it toward 0.35 with motion)
@@ -5749,12 +5749,12 @@ private:
     float cv2MidCover = 0.0f;             // mid layer cover bias (sd of its regime noise; + = more sheet)
     float cv2SampAccum = 32.0f;           // the resolve's per-pixel accumulation: the sample count it caps at (0 = off) (was 39.0, 2026-11-10 bake)
     float cv2SampNewSmooth = 0.21f;        // how much a young pixel leans on its neighbourhood's estimate (was 0.42, 2026-11-10 bake)
-    float cv2MsOctaves = 3.9f;            // multiple-scattering octaves (2-8): strength^k x exp(-od x extinction^k) (was 2.0, 2026-11-10 bake)
+    float cv2MsOctaves = 4.0f;            // multiple-scattering octaves (2-8): strength^k x exp(-od x extinction^k) (was 3.9, 2026-11-15 bake)
     // Multiple scattering as a delta-Eddington diffuse field (2026-10-26, cloud_v2_march.comp cv2DiffuseField): dark
     // wisps and edges, bright cores. 0 = the octaves above (with "Powder", which only that model uses).
     float cv2MsModel = 1.0f;              // 0 octaves, 1 delta-Eddington
     float cv2MsDiffG = 0.52f;             // the droplets' asymmetry g (delta-scaled: f = g^2) (was 0.85, 2026-11-10 bake)
-    float cv2MsDiffGain = 2.1f;           // x the diffuse field (1 ~ the octaves' energy in a thick cloud; ~1.6 = path traced) (was 1.0, 2026-11-10 bake)
+    float cv2MsDiffGain = 1.4f;           // x the diffuse field (1 ~ the octaves' energy in a thick cloud; ~1.6 = path traced) (was 2.1, 2026-11-15 bake)
     float cv2MsBackM = 370.0f;           // how far the march away from the light reaches (m) (was 1200.0, 2026-11-10 bake)
     // The droplet phase (2026-11-04, cloud_v2_march.comp cv2Micro*): each sample's droplet size from its height above its
     // cloud's base (adiabatic growth), ice above the glaciation height; the single scattering from the Mie table at that
@@ -5765,12 +5765,12 @@ private:
     // The sky's light on the clouds (2026-10-26): the hemispheres' mean radiance with multiple scattering
     // (cloud_v2_sunlut.comp layers 2-3); 0 = the zenith x "Sky ambient" with the twilight terms.
     float cv2SkyLightModel = 1.0f;        // 0 zenith, 1 hemispheres + multiple scattering
-    float cv2SkyLightGain = 2.0f;         // x the hemispheres' light (1 = physical) (was 1.0, 2026-11-10 bake)
+    float cv2SkyLightGain = 2.3f;         // x the hemispheres' light (1 = physical) (was 2.0, 2026-11-15 bake)
     float cv2SkyGroundAlbedo = 0.19f;     // the ground's albedo in the sky's multiple scattering and under the clouds (was 0.25, 2026-11-10 bake)
     // Cloud contrast (2026-11-04, cloud_v2_march.comp; clouds.md "Cloud contrast"): sky light diffused through cloud keeps the
     // sky's colour (cloud scattering is grey), and the diffuse field escapes a lobed cloud's sides before its shaded face.
     float cv2SkyLightHue = 0.7f;          // 0..1: 1 = the sky's light keeps its hue through cloud (0 = greyed with depth, as before) (was 1.0, 2026-11-10 bake)
-    float cv2MsSideEscape = 0.31f;        // the diffuse field's side escape, e^(-k t) (0.11: fitted to lobed clouds lit from the side; 0.05 = the 2026-10-26 fit, the A/B) (was 0.11, 2026-11-10 bake)
+    float cv2MsSideEscape = 0.33f;        // the diffuse field's side escape, e^(-k t) (0.11: fitted to lobed clouds lit from the side; 0.05 = the 2026-10-26 fit, the A/B) (was 0.31, 2026-11-15 bake)
     float cv2SkyMs = 1.0f;                // the SKY PASS's multiple scattering (sat_sky.frag, sky_ap.comp; 0 = single + the shadowed-air term)
     float cv2GroundOvercast = 1.0f;       // the ground's light under cloud (cloud_v2_lightning.comp's cv2Vt map; needs cv2SkyMs)
     // The tonemap (2026-10-26, sat_sky.frag): AgX (Sobotka's; Wrensch's fit) in place of 1 - e^-x per channel.
@@ -5922,7 +5922,7 @@ private:
     void recordExposureMeter(VkCommandBuffer cmd, VulkanContext &ctx, VkImage image);   // image in TRANSFER_SRC
     void readExposureMeter();
     float cv2BeamHaze = 1.6f;          // aerosol (haze, dust) in the beams' air scattering, x
-    float cv2BeamLight = 32.0f;        // beam light on cloud, x the physical irradiance (the night view's
+    float cv2BeamLight = 29.0f;        // (was 32.0, 2026-11-15 bake) beam light on cloud, x the physical irradiance (the night view's
                                        // moon is ~2400x physical; 1 = beams dim beside it)
     // Per-layer scales, so tuning the cumulus does not move the cirrus or the altocumulus (all three
     // used to read the shape volume at cv2ShapePeriodM).

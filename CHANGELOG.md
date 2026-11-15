@@ -555,6 +555,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - The cloud defaults are the author's 2026-11-10 tune (shapes, lighting, tonemap, storms, sky TAA weights): darker
   cloud bases from "Multi-scatter side escape" 0.31 (was 0.11), the light that leaves a cloud through its sides no
   longer reaching its base.
+- The cloud coverage and lighting defaults are the author's 2026-11-15 tune: density 0.5 (was 1.6) for white, puffy
+  clouds that still darken under storms; coverage 0.75 / overcast at 0.54; multi-scatter side escape 0.33, strength
+  0.34, extinction 0.13, diffuse gain 1.4; ground bounce 1.8; sky light 2.3; ambient 1.5; phase g 0.37.
 - Saved times now show a different local time of day (the clock is real UTC; about 5 h 15 min earlier for the
   same timestamp). The start time moved so the intro is unchanged.
 - "Storm strength" for the aurora is replaced by Kp (automatic by default).
