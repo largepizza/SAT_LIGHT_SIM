@@ -147,6 +147,17 @@ an aliased centre) and a blue anamorphic streak the sun doesn't have; both are g
   glareMeshDescLayout = 0 the glint list, 1 the grid (VERTEX | COMPUTE); glarePipeLayout / glareClusterPipeLayout =
   {descLayout, glareMeshDescLayout}. The viewer's glare (`glare_mesh.vert`, SatMeshRenderer) has no grid (gridW 0); the
   body is shared in include/glare_mesh_vert.glsl. Cost within noise (Reflect ring from 20 km: 9.7 vs 9.6 ms GPU).
+- **The glare is summed in float, then added once (2026-11-15, issue_20261115_131830 "Flare glare banding").**
+  `glare.frag` and `glare_mesh.frag` draw into `glareAccumImg` (full swap extent, RGBA16F, `glareAccumRenderPass`:
+  CLEAR -> SHADER_READ_ONLY, with external dependencies both ways), recorded in recordCompute right after the glare
+  clusters and always cleared while satellites are on; `flare_composite.frag` adds it (binding 1, `texelFetch` at the
+  fragment) after the bloom's soft knee, so the glare stays outside the bloom's ceiling as before. **Why:** the
+  sprites used to blend one by one into the 8-bit sRGB swapchain, and every add rounds there: where tens of sprites
+  overlap (a fresh launch train flaring), a halo tail under half a level vanished and one over it counted as a whole
+  level, so the pile summed into stepped rings with a dark-grey rim around the white (row profiles: 6-8 jumps of
+  6-15 levels with reversals, then 0). Measured at the report's view (`harness_runs/c01_repro` vs `c01_after`): in
+  the 132x126 area, seams (a 1-px step >= 4 levels and > 2x the steps either side) 707 -> 3; the area's light +5.5 %
+  (what the rounding dropped), the whole frame +0.6 %, a lone glare +0.2 %; GPU total 20.29 -> 20.24 ms (two launches).
 Photometry sliders "Glare gain / size (px) / threshold / falloff / spikes" (`photometry.glare_*`),
 plus "Glare near gain / near range (km)" (`photometry.glare_near_gain`, default 3.0, and
 `glare_near_range_km`, default 400). The five glare defaults are now the values tuned on screen for
