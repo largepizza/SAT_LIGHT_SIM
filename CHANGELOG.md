@@ -395,6 +395,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **W flies where you look.** WASD moves along the camera's own forward and right at any angle: look up and W
   climbs, look down and it descends (sliding along the ground when you reach it); Q / E still go straight up and down.
   It used to walk at a constant height whatever the camera pointed at.
+- **Q / E move along the screen's up in space.** Wherever the camera turns freely (above "Auto-level up to (km)",
+  1000 km by default, or with "Auto-level the horizon" off), Q / E (and the gamepad triggers) move along the camera's
+  own up, so from orbit looking down they slide you toward the top of the screen; below it they still go straight up
+  and down. The direction turns smoothly over the first quarter of the height above the auto-level limit.
 - **Camera: look straight down without a jolt, and roll in space.** Looking past 88 deg down (or up) no longer turns
   the whole view round. Below 1000 km the horizon stays level as before ("Auto-level the horizon" and "Auto-level up
   to (km)" in Settings > Controls); above it, or with auto-level off, the camera turns freely: look past straight

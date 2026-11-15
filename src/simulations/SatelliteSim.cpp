@@ -1636,7 +1636,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         {
             // FLY WHERE YOU LOOK (2026-11-14, camera revamp phase 4): W / S along the camera's own forward and A / D
             // along its right, in 3D, at any angle and roll — look up and W climbs, look down and it descends; Q / E
-            // stay the pure up / down below. Until then WASD walked the heading at a constant height (a lat / lon
+            // are up / down below (along the camera's up when the horizon is free). Until then WASD walked the heading at a constant height (a lat / lon
             // move), so pointing down and pressing W never brought anyone down: players stayed at one height.
             // The speed is the old arc rate on the Earth's radius (m/s), still scaled by the height above the ground,
             // so a dive slows as the ground nears (it never overshoots it) and a climb speeds up with height. The
@@ -1688,8 +1688,33 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             // ground, and never go below it.
             const float floorH = std::max(0.0f, moveGround);
             obsHeightOffset = std::max(obsHeightOffset, floorH);
-            obsHeightOffset += (raiseAmt - lowerAmt) * rate * dt;
-            obsHeightOffset = std::clamp(obsHeightOffset, floorH, kMaxObsHeightM);
+            // With the horizon free (auto-level off, or above its height) Q / E move along the CAMERA's up, like roll
+            // turns on there (the user's call, issue_20261115_133412: from orbit looking down, Q / E slid nothing
+            // across the screen, only zoomed the Earth). Auto-levelling, the pure altitude move as before. Between
+            // camLevelAltKm and kCamVertBlend x it the direction is a blend, so it turns continuously at the switch.
+            const double wFree = camVertFreeWeight();
+            if (wFree <= 0.0)
+            {
+                obsHeightOffset += (raiseAmt - lowerAmt) * rate * dt;
+                obsHeightOffset = std::clamp(obsHeightOffset, floorH, kMaxObsHeightM);
+            }
+            else
+            {
+                const glm::dvec3 U = camEyeDir;
+                glm::dvec3 dir = (1.0 - wFree) * U + wFree * camUp;
+                const double dl = glm::length(dir);
+                dir = dl > 1e-9 ? dir / dl : camUp;
+                // In double, as WASD's step; the ground is the same floor (a step into it keeps the part along it).
+                const double R = (double)kEarthRadius;
+                const glm::dvec3 np = U * (R + (double)obsHeightOffset) + dir * ((double)(raiseAmt - lowerAmt) * (double)rate * (double)dt);
+                const double r = glm::length(np);
+                const bool keepLook = inertialActive && inertialHold; // (held on the stars: only the eye moves, as inertialFly)
+                const glm::dvec3 heldLook = keepLook ? inertialCamDirEcef() : glm::dvec3(0.0);
+                camSetEyeDir(np / r); // (the look and up are carried to the new place)
+                if (keepLook)
+                    camSetLookDir(heldLook);
+                obsHeightOffset = (float)std::clamp(r - R, (double)floorH, (double)kMaxObsHeightM);
+            }
         }
 
         // Z / C: roll, only while the horizon is free (above the auto-level height, or auto-level off): below it the
