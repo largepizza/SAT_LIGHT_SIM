@@ -439,6 +439,36 @@ launches follow per-program cadences (no real manifest).
   (by design). Cost: twilight bookmark at T+10 min cloud_march 7.9 -> 7.8 (dispersal 0) / 8.0 (0.5) / 8.3-9.2 ms (1);
   beside a pad after it 6.5-6.7 -> 7.3-7.7 (0) / 8.2-8.6 ms (1), the budget then admitting wider, fainter Gaussians;
   CPU within noise. Open: a cost-aware budget (coverage, not count).
+  **The bell fades, it does not step (2026-11-14, issue_20261114_183827 "Trail fade out": "trails fade out in discrete
+  chunks", a twilight Starship's jellyfish seen from 20 km at 10x).** Four things took light out in one frame; each is
+  continuous now (SatelliteSimLaunches.cpp, launchFillVisuals): (1) **streak cross-section**: each ascent parcel's
+  streak share is spread over the knot intervals by the overlap of its emission interval [age, age + dt] (binned whole
+  by age, a segment stepped by one parcel's share every time a parcel crossed a knot: a 6-frame, 7-8% pulse of the bell
+  at 10x); (2) **streak knots** are clamped to the exhaust there is, ages aY (the youngest parcel, after the cut-off)
+  to aO (the oldest), coincident knots merged; a knot between the youngest parcel and the burning nozzle sits on that
+  chord. A knot outside the exhaust was dropped with its segment and the cross-section binned there (K x its pieces,
+  up to ~27 Gaussians in a frame). Re-spacing the 12 knots over aY .. streakEndS instead kept every segment after the
+  cut-off: ~50 more held Gaussians, taken from the other launches' plumes in view; (3) **the jellyfish's hold**
+  (`Cand::jellyW`, was a bool) fades over the last `kJellyHoldFadeS` (30 s) of the streak window and over 100-110 km,
+  inside the old hold (it never holds more): all-or-nothing, the bell's chords went out the frame their streak share
+  ended; (4) **the budget's fades are in eased priority**: a launch's reserved share fades between thresholds (the
+  priorities at ranks Re - 8 and Re, eased in log space 6% of the way a frame, `LBatch::resPriHiE / resPriLoE`; never
+  past rank Re + 16), not by rank: a few new candidates anywhere in a launch (a streak re-cut, a rim going from tube to
+  ring) shifted every rank, and the bell's widest Gaussians, the share's last ranks, lost 3/8 of their weight in a
+  frame (-31% of the frame's plume light at T+641 s). The fade near the global cut uses an eased cut
+  (`plumeCutEased`, toward the key `kPlumeCutHeadroom` = 40 ranks above the count limit, never under the hard cut;
+  the limit is 384 + 40, entries faded to 0 are not sent), not the key at the limit, which jumped 6-12% whenever a
+  Gaussian above it came or went. Measured (RTX 3070 Ti, 1600x900, the report's view at 10x for 240 s of sim, the
+  frame's plume light per frame, old vs new behaviour in one app from the same cached plume): drops > 5% in a frame
+  17 -> 0, > 2% 49 -> 15 (the rest are eased fades over ~20-50 frames), the largest 22.7% -> 3.7%, p99 of the per-frame
+  change 6.9% -> 2.8%; light 0.80-1.24x the old while the bell is bright, more in the tail (nothing cut). The streaks
+  now last their designed window after the cut-off (they fell off the exhaust within seconds before): the reporter's
+  shot 3 shows them where it showed a plain column (mean 0.63 levels, 3.4% of pixels). The reporter's shot-1 view:
+  mean 0.21 levels from the old, 0.01% of pixels. Cost at the bell's busiest (T+523 s): GPU 12.30 -> 12.23 ms (A/A
+  +-0.01), cloud_march 7.69 -> 7.58. A daytime trail 12 km from Starbase Louisiana: unchanged (same per-frame change,
+  within 1/255 of the old). Open: a whole plume still pops in when its build finishes after a jump or `report load`,
+  and the budget re-splits as other launches' builds land (-14% of a bell's light in a frame, ~6 s of sim after a
+  load); a -3.6% step at T+609 s in both modes is not explained.
 - **The second stage's jellyfish and hot staging (2026-10-30, issue 20261030_134020 "Second Stage Jellyfish").** The
   upper stage's vacuum exhaust used to be invisible: every parcel expanded at 2 km/s in every direction (~300 km wide
   3 min after leaving, optical depth ~2e-5), its young Gaussians lost the budget to the wide old bells, and the sim's

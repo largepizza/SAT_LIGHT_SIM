@@ -65,6 +65,10 @@ constexpr double kVacNightBoost = 5.0;
 constexpr double kVacExpandK = 0.3;
 constexpr double kStreakShare = 0.4;
 constexpr double kStreakAgeS = 240.0;
+// (2026-11-14, issue_20261114_183827) the young vacuum exhaust's hold on the plume budget (Cand::jellyW) fades over the
+// last this-many seconds of age before its streak share ends (it was dropped in one frame: chords of the bell went out
+// whole). Inside the old hold, so it never holds more of the budget than before.
+constexpr double kJellyHoldFadeS = 30.0;
 // each streak's offset from the plume's axis (x the exhaust's radius there, hashed per streak) and its width (x it):
 // the streaks' opening angle as they leave the stage and their widening along their length
 constexpr double kStreakOffMin = 1.0, kStreakOffMax = 1.8;
@@ -298,6 +302,8 @@ struct LBatch
     float plumeGrow = 1.0f; // "Plume growth" (launches.plume_growth) the parcels were / are being built with
     float plumeDisp = 1.0f; // launches.plume_dispersal, likewise
     double plumeResPri = 0.0; // (2026-10-26) last frame's weakest priority in its reserved share (0: all reserved)
+    // (2026-11-14) its reserved share's fade, in priority: full above resPriHiE, 0 below resPriLoE (eased; 0 = all held)
+    double resPriHiE = 0.0, resPriLoE = 0.0;
     std::vector<launch::Parcel> parcels;
     double tVisEnd = 0.0;
     int shifts = 0, rivals = 0; // pad deconfliction: passes skipped, candidates checked
@@ -718,6 +724,7 @@ struct SatelliteSim::LaunchState
     uint64_t buildGen = 0;
     uint32_t jobsRun = 0;
     double plumeCutPrev = 0.0;   // (2026-10-21b) last frame's plume priority cut (launchFillVisuals)
+    double plumeCutEased = 0.0;  // (2026-11-14) the cut the fade near it is drawn with (eased; >= the hard cut)
     double plumeResEased = 48.0; // (2026-10-26) each launch's reserved share of the plume budget, eased (ranks)
     uint32_t plumeSkipped = 0, plumeSkippedLast = 0;
     double lastJobMs = 0.0;
@@ -6698,7 +6705,9 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         int grp = -1;      // the launch (visList index) it belongs to
         double key = 0.0;  // what the budget sorts by: pri, boosted for each launch's reserved share (below)
         double res = 0.0;  // its weight as part of that share (0 .. 1: the share's last ranks fade)
-        bool jelly = false; // (2026-10-30) the upper stage's young vacuum exhaust: kept whatever the cut (below)
+        // (2026-10-30) the upper stage's young vacuum exhaust: kept whatever the cut (below); (2026-11-14) as a weight
+        // that fades (1 = held like a reserved share, 0 = by priority alone)
+        double jellyW = 0.0;
     };
     // (2026-10-26, issue 20261026_193912) each launch's count of candidates this frame, for the reserved share
     static std::vector<int> grpCount;
@@ -7669,6 +7678,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         // the shader's turbulent seed range, never a shell), 2 a streak of the vacuum plume (never a shell)
         int curKind = 0;
         bool curJelly = false; // (2026-10-30) a Gaussian of the young vacuum plume (the jellyfish's head and streaks)
+        double curJellyW = 0.0; // (2026-11-14) its hold on the budget, 0 .. 1 (Cand::jellyW)
         // (2026-10-30, the user: "from ~100 m the long plume Gaussians poke out of the FRONT of the ship") The burning
         // stage's nozzle and its direction of flight (Earth-fixed): no trail Gaussian may reach ahead of the nozzle.
         bool nozOn = false;
@@ -7741,7 +7751,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             // (2026-10-26, issue 20261026_210053) and not one its launch's reserved share could hold: those are drawn
             // whatever the cut (the share is the launch's strongest by priority, not the first emitted: skipping by
             // emission count dropped some of them for a frame and not the next).
-            if (!curJelly && pri < 0.25 * L.plumeCutPrev && curGrp >= 0 &&
+            if (!(curJellyW > 0.0) && pri < 0.25 * L.plumeCutPrev && curGrp >= 0 &&
                 pri < 0.25 * L.visList[(size_t)curGrp].second->plumeResPri)
             {
                 ++L.plumeSkipped;
@@ -7750,7 +7760,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             Cand c;
             c.pri = pri;
             c.grp = curGrp;
-            c.jelly = curJelly;
+            c.jellyW = curJellyW;
             if (curGrp >= 0 && (size_t)curGrp < L.plumeGrpDbg.size())
             {
                 L.plumeGrpDbg[(size_t)curGrp].cand++;
@@ -8050,6 +8060,17 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             curKind = pc.turb ? 1 : 0;
             // (2026-10-30) the upper stage's young vacuum exhaust: the streaks (below) carry kStreakShare of it
             const double strK = streakShareAt(pc, s);
+            // (2026-11-14, issue_20261114_183827 "trails fade out in discrete chunks") the young vacuum exhaust is held
+            // in the budget while it has a streak share and lets go over the last kJellyHoldFadeS of it (and over 100-110
+            // km of height): held all-or-nothing while strK > 0, every chord of the bell under the cut went out the
+            // frame its streak share ended, whole stretches of the bell at once after the cut-off.
+            if (pc.turb)
+                curJellyW = 1.0;
+            else if (isAscentVac(pc) && streakShare > 0.0 && s.ok)
+                curJellyW = glm::smoothstep(100000.0, 110000.0, glm::length(s.cE) - kR) *
+                            (1.0 - glm::smoothstep(std::max(streakEndS - kJellyHoldFadeS, 0.0), streakEndS, tau - pc.t0));
+            else
+                curJellyW = 0.0;
             curJelly = strK > 0.0 || pc.turb;
             if (pc.stream < 0 || prev < 0)
             {
@@ -8111,6 +8132,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         // chords gave up (streakShareAt), summed over the parcels between its knots.
         curKind = 2;
         curJelly = true;
+        curJellyW = 1.0;
         {
             int i0 = -1, i1 = -1;
             for (size_t pi = 0; pi < B.parcels.size(); ++pi)
@@ -8136,8 +8158,18 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 // the stage's path; sparse where they have diffused into the glow.
                 constexpr int nA = 13;
                 double kA[nA];
+                // (2026-11-14, issue_20261114_183827 "trails fade out in discrete chunks") Clamped to the exhaust that
+                // EXISTS: no younger than the youngest parcel (aY, growing after the cut-off), no older than the oldest
+                // (aO). A knot younger than aY sits on aY, so the young segment shrinks to nothing (its parcels' share
+                // moving on, below) and leaves empty; a knot outside the exhaust was dropped, with its segment and the
+                // cross-section binned there (K x its pieces, up to ~27 Gaussians, out of the image in one frame).
+                // (Not re-spaced over aY .. streakEndS: that kept all 12 segments after the cut-off, ~50 held
+                // Gaussians more, which took the budget from other launches' plumes.)
+                const bool burning = tau < B.t2;
+                const double aY = burning ? 0.0 : std::max(tau - B.parcels[(size_t)iy].t0, 0.0);
+                const double aO = std::max(tau - B.parcels[(size_t)i0].t0, aY);
                 for (int j = 0; j < nA; ++j)
-                    kA[j] = streakEndS * ((double)j / (nA - 1)) * ((double)j / (nA - 1));
+                    kA[j] = glm::clamp(streakEndS * ((double)j / (nA - 1)) * ((double)j / (nA - 1)), aY, aO);
                 struct SP
                 {
                     glm::dvec3 c{0.0};
@@ -8147,7 +8179,6 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 SP pt[nA];
                 // A knot at age a: the parcels' centre and radius interpolated in emission time; at age 0 the nozzle
                 // while the burn goes on (radius 0: every streak leaves the stage).
-                const bool burning = tau < B.t2;
                 for (int j = 0; j < nA; ++j)
                 {
                     const double t0 = tau - kA[j];
@@ -8158,7 +8189,20 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                         pt[0].ok = okN;
                         continue;
                     }
-                    if (t0 > B.parcels[(size_t)iy].t0 || t0 < B.parcels[(size_t)i0].t0)
+                    // (2026-11-14) between the youngest parcel and the burning nozzle: on the chord between them (it was
+                    // skipped, and the cross-section binned there with it, every time a new parcel was born)
+                    const double tY = B.parcels[(size_t)iy].t0, tO = B.parcels[(size_t)i0].t0;
+                    if (t0 > tY && burning)
+                    {
+                        if (!pt[0].ok || !ps[(size_t)iy].ok)
+                            continue;
+                        const double f = glm::clamp((t0 - tY) / std::max(tau - tY, 1e-6), 0.0, 1.0);
+                        pt[j].c = glm::mix(ps[(size_t)iy].cE, pt[0].c, f);
+                        pt[j].sig = (1.0 - f) * ps[(size_t)iy].sig;
+                        pt[j].ok = true;
+                        continue;
+                    }
+                    if (t0 > tY + 1e-6 || t0 < tO - 1e-6)
                         continue;
                     int lo = i0, hi = iy;
                     while (hi - lo > 1)
@@ -8178,24 +8222,44 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     pt[j].sig = glm::mix(a.sig, b.sig, f);
                     pt[j].ok = true;
                 }
+                // (2026-11-14) knots clamped onto the same age: one is kept (the oldest of those on aY, the youngest of
+                // those on aO), so no zero-length segment and no unset neighbour in the curve below
+                for (int j = 0; j < nA; ++j)
+                {
+                    const bool dupNext = j + 1 < nA && kA[j + 1] - kA[j] < 1e-6, dupPrev = j > 0 && kA[j] - kA[j - 1] < 1e-6;
+                    if (!(j == 0 && burning) && ((dupNext && kA[j] <= aY + 1e-6) || (dupPrev && kA[j] >= aO - 1e-6)))
+                        pt[j].ok = false;
+                }
                 // (the streaks never narrow again with age: where the older trail sits lower the air held its parcels
                 // smaller, and offsets following that radius drew a spindle back into the trail)
                 for (int j = 1; j < nA; ++j)
                     if (pt[j].ok && pt[j - 1].ok)
                         pt[j].sig = std::max(pt[j].sig, pt[j - 1].sig);
-                // The cross-section between consecutive knots (the share every parcel there gave up).
+                // The cross-section between consecutive knots (the share every parcel there gave up). (2026-11-14) A
+                // parcel stands for the exhaust of its emission interval, ages [age, age + dt]: it is shared between the
+                // segments by overlap, so its share slides from one segment to the next as it ages (binned whole by
+                // its age, a segment's cross-section stepped by a parcel's every time one crossed a knot: the streaks
+                // pulsed). Younger than the first knot -> the first segment, older than the last open one -> that one.
                 double segS[nA] = {};
+                int jLast = 0;
+                for (int j = 0; j + 1 < nA; ++j)
+                    if (kA[j + 1] > kA[j] + 1e-6)
+                        jLast = j;
                 for (int pi = i0; pi <= iy; ++pi)
                 {
                     const launch::Parcel &pc = B.parcels[(size_t)pi];
                     const double sh = streakShareAt(pc, ps[(size_t)pi]);
                     if (sh <= 0.0)
                         continue;
-                    const double age = tau - pc.t0;
-                    int j = 0;
-                    while (j + 2 < nA && age >= kA[j + 1])
-                        ++j;
-                    segS[j] += pc.kappa * pc.m * ps[(size_t)pi].cond * gain * sh;
+                    const double w = pc.kappa * pc.m * ps[(size_t)pi].cond * gain * sh;
+                    const double b0 = tau - pc.t0, b1 = b0 + std::max(pc.dt, 1e-3);
+                    for (int j = 0; j <= jLast; ++j)
+                    {
+                        const double lo = j == 0 ? -1e30 : kA[j], hi = j == jLast ? 1e30 : kA[j + 1];
+                        const double ov = std::min(b1, hi) - std::max(b0, lo);
+                        if (ov > 0.0)
+                            segS[j] += w * ov / (b1 - b0);
+                    }
                 }
                 // Each knot's frame round the plume's local axis (the chord through its neighbours: continuous along
                 // the curve), and each streak's point there: offset by fk x the spread x the radius.
@@ -8277,6 +8341,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         }
         curKind = 0;
         curJelly = false;
+        curJellyW = 0.0;
         // ── The steady orbital vent (2026-11-13, the user's photo of a Starship Starlink deployment from the ground at
         // twilight: a fan of ice opening from the ship, there the whole time it is in orbit; Vehicle::orbitVentKgS).
         // From a coasting ship a steady vent is a STEADY fan in the ship's frame, so it is not built as parcels (hours of
@@ -8361,7 +8426,10 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
     {
         // At most 384 plume Gaussians: a wide one covers much of the screen and costs every pixel it covers
         // (cloud_march.comp's loop), ~3 ms at 1000.
-        const uint32_t nMax = std::min<uint32_t>(kMaxDustClouds, n + 384u);
+        // (2026-11-14) + kPlumeCutHeadroom ranks that the eased fade cut (below) keeps at or near 0: a margin, so the
+        // count limit rarely cuts a Gaussian the fade still draws.
+        constexpr uint32_t kPlumeCutHeadroom = 40u;
+        const uint32_t nMax = std::min<uint32_t>(kMaxDustClouds, n + 384u + kPlumeCutHeadroom);
         // Only the drawn ones and the first past the cut need their order (2026-10-20, CPU: a full sort of thousands).
         const size_t nOrd = std::min(plumes.size(), (size_t)(nMax > n ? nMax - n : 0) + 1);
         // A fair share first (2026-10-26, issue 20261026_193912: "once more plumes occur, old ones pretty obviously
@@ -8372,7 +8440,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             int groups = 0;
             for (int gc : grpCount)
                 groups += gc > 0 ? 1 : 0;
-            const size_t room0 = nMax > n ? (size_t)(nMax - n) : 0;
+            const size_t room0 = nMax > n + kPlumeCutHeadroom ? (size_t)(nMax - n - kPlumeCutHeadroom) : 0;
             const int R = groups > 0 ? std::min<int>(48, (int)(room0 / 2) / groups) : 0;
             // (2026-10-26, issue 20261026_210053) The share is EASED (0.25 rank a frame) and its last 8 ranks fade
             // (c.res: the weight a reserved Gaussian is drawn with at least): when another launch started drawing, R
@@ -8391,31 +8459,68 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             std::sort(plumes.begin(), plumes.end(), [](const Cand &a, const Cand &b) {
                 return a.grp != b.grp ? a.grp < b.grp : a.pri > b.pri;
             });
-            int rank = 0, prevG = -2;
-            for (Cand &c : plumes)
+            // (2026-11-14, issue_20261114_183827 "trails fade out in discrete chunks") The share's fade is in PRIORITY,
+            // between eased thresholds (the priorities at ranks Re - 8 and Re: log-space, 6% of the way a frame), not
+            // by rank: a few new Gaussians anywhere in a launch (a streak re-cut into more pieces, a rim turning from a
+            // tube into a ring) shifted every rank under them, and the bell's widest Gaussians, the last ranks of the
+            // share, lost 3/8 of their weight in one frame (a third of the old bell's light, at once). Never past rank
+            // Re + 16 (a share that lags cannot hold the budget).
+            auto easeLog = [](double &E, double T) {
+                if (!(T > 0.0))
+                    E = E > 1e-30 ? E * 0.85 : 0.0;
+                else if (!(E > 0.0))
+                    E = T;
+                else
+                    E *= std::pow(T / E, 0.06);
+            };
+            for (size_t g0 = 0; g0 < plumes.size();)
             {
-                rank = c.grp == prevG ? rank + 1 : 0;
-                prevG = c.grp;
-                c.res = c.grp >= 0 ? glm::clamp((Re - (double)rank) / 8.0, 0.0, 1.0) : 0.0;
-                // (2026-10-30, issue 20261030_134020) the young vacuum plume (the stage's head and the streaks: a few
-                // dozen Gaussians, only while an upper stage burns above ~100 km and for 4 min after) is the
-                // jellyfish's defining part, yet little cross-section: by priority alone the wide old bells took the
-                // budget and it was never drawn. It is kept like a reserved share.
-                if (c.jelly)
-                    c.res = 1.0;
-                c.key = c.res > 0.0 ? c.pri * 1e12 + 1e-30 : c.pri;
-                // (the weakest of the share, for next frame's skip test; 0 = the launch has fewer than the share)
-                if (c.grp >= 0)
-                    L.visList[(size_t)c.grp].second->plumeResPri = 0.0;
-            }
-            rank = 0;
-            prevG = -2;
-            for (const Cand &c : plumes)
-            {
-                rank = c.grp == prevG ? rank + 1 : 0;
-                prevG = c.grp;
-                if (c.grp >= 0 && rank == (int)std::ceil(Re))
-                    L.visList[(size_t)c.grp].second->plumeResPri = c.pri;
+                size_t g1 = g0;
+                while (g1 < plumes.size() && plumes[g1].grp == plumes[g0].grp)
+                    ++g1;
+                const int grp = plumes[g0].grp;
+                const size_t m = g1 - g0;
+                if (grp >= 0)
+                {
+                    // the priority at a fractional rank (log-interpolated); 0 past the launch's last candidate
+                    auto priAt = [&](double r) {
+                        r = std::max(r, 0.0);
+                        const size_t k0 = (size_t)std::floor(r);
+                        if (k0 + 1 >= m)
+                            return (k0 + 1 == m && r == (double)k0) ? plumes[g0 + k0].pri : 0.0;
+                        const double pa = std::max(plumes[g0 + k0].pri, 1e-300), pb = std::max(plumes[g0 + k0 + 1].pri, 1e-300);
+                        return pa * std::pow(pb / pa, r - (double)k0);
+                    };
+                    LBatch &LB = *L.visList[(size_t)grp].second;
+                    const double tLo = priAt(Re), tHi = priAt(Re - 8.0);
+                    easeLog(LB.resPriLoE, tLo);
+                    easeLog(LB.resPriHiE, tHi);
+                    const double lo = LB.resPriLoE, hi = std::max(LB.resPriHiE, 1.05 * lo);
+                    for (size_t k = g0; k < g1; ++k)
+                    {
+                        Cand &c = plumes[k];
+                        const double rk = (double)(k - g0);
+                        const double rP = lo > 0.0 ? glm::clamp(std::log(std::max(c.pri, 1e-300) / lo) / std::log(hi / lo), 0.0, 1.0)
+                                                   : 1.0;
+                        c.res = std::min(rP, glm::clamp((Re + 16.0 - rk) / 8.0, 0.0, 1.0));
+                    }
+                    // (the weakest of the share, for next frame's skip test; 0 = the launch has fewer than the share)
+                    LB.plumeResPri = (tLo > 0.0 && lo > 0.0) ? std::min(tLo, lo) : 0.0;
+                }
+                else
+                    for (size_t k = g0; k < g1; ++k)
+                        plumes[k].res = 0.0;
+                for (size_t k = g0; k < g1; ++k)
+                {
+                    Cand &c = plumes[k];
+                    // (2026-10-30, issue 20261030_134020) the young vacuum plume (the stage's head and the streaks: a few
+                    // dozen Gaussians, only while an upper stage burns above ~100 km and for 4 min after) is the
+                    // jellyfish's defining part, yet little cross-section: by priority alone the wide old bells took the
+                    // budget and it was never drawn. It is kept like a reserved share.
+                    c.res = std::max(c.res, c.jellyW);
+                    c.key = c.res > 0.0 ? c.pri * 1e12 + 1e-30 : c.pri;
+                }
+                g0 = g1;
             }
         }
         std::partial_sort(plumes.begin(), plumes.begin() + nOrd, plumes.end(),
@@ -8424,6 +8529,23 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         // moves their ranks shift, and a hard cut switched pieces of a trail on and off (blocky in time warp).
         const size_t room = nMax > n ? (size_t)(nMax - n) : 0;
         const double cut = plumes.size() > room && room > 0 ? plumes[room].key : 0.0;
+        // (2026-11-14, issue_20261114_183827) ...by a cut EASED toward the key kPlumeCutHeadroom ranks above the count
+        // limit (log-space, 6% of the way a frame; never under the hard cut): the cut was the key at the limit itself,
+        // which jumped to its neighbour's whenever a Gaussian above it came or went (6-12% at once: every Gaussian near
+        // it stepped).
+        {
+            const size_t soft = room > kPlumeCutHeadroom ? room - kPlumeCutHeadroom : room;
+            const double tgt = plumes.size() > soft && soft > 0 ? plumes[soft].key : 0.0;
+            double &E = L.plumeCutEased;
+            if (!(tgt > 0.0))
+                E = E > 1e-300 ? E * 0.85 : 0.0;
+            else if (!(E > 0.0))
+                E = tgt;
+            else
+                E *= std::pow(tgt / E, 0.06);
+            E = std::max(E, cut);
+        }
+        const double cutW = L.plumeCutEased;
         // (the skip in addPlume is exact while this frame's cut stayed above its margin)
         const bool unsafe = L.plumeSkipped > 0 && (cut <= 0.0 || cut < 0.25 * L.plumeCutPrev);
         L.plumeCutPrev = unsafe ? 0.0 : cut;
@@ -8442,9 +8564,11 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             if (drop[ci++])
                 continue;
             out[n] = c.d;
-            if (cut > 0.0)
-                out[n].c.w *= (float)(c.key > 1e6 * cut ? std::max(c.res, glm::clamp((c.pri - cut) / (2.0 * cut), 0.0, 1.0))
-                                                         : glm::clamp((c.key - cut) / (2.0 * cut), 0.0, 1.0));
+            if (cutW > 0.0)
+                out[n].c.w *= (float)(c.key > 1e6 * cutW ? std::max(c.res, glm::clamp((c.pri - cutW) / (2.0 * cutW), 0.0, 1.0))
+                                                          : glm::clamp((c.key - cutW) / (2.0 * cutW), 0.0, 1.0));
+            if (!(out[n].c.w > 0.0f))
+                continue; // (faded to nothing: not sent)
             if (c.grp >= 0 && (size_t)c.grp < L.plumeGrpDbg.size())
             {
                 L.plumeGrpDbg[(size_t)c.grp].drawn++;
@@ -8455,7 +8579,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         }
     }
     else
-        L.plumeCutPrev = 0.0;
+        L.plumeCutPrev = L.plumeCutEased = 0.0;
     L.plumeSkippedLast = L.plumeSkipped;
     L.prof[11] += (std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sortT0).count() - L.prof[11]) / 30.0;
     uint32_t *fh = static_cast<uint32_t *>(kFireMapped);
