@@ -8032,13 +8032,10 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
     float alphaIn = glm::clamp((introElapsed - capStartT) / 0.8f, 0.0f, 1.0f);
     float tEnd = kIntroKeyframes[kIntroKeyframeCount - 1].t;
     float alphaOut = glm::clamp((tEnd - introElapsed) / 1.0f, 0.0f, 1.0f);
+    uint8_t textA = (uint8_t)(255.0f * std::min(alphaIn, alphaOut));
+
     bool isYearBeat = (introCaptionIndex == kIntroYearIndex);
     bool isTitleBeat = (introCaptionIndex == kIntroTitleIndex);
-    // The last narrative line fades out over the last second of the camera's move: the hold on the final framing
-    // (kIntroArriveIndex -> kIntroTitleIndex) is wordless, then the title card (issue_20261114_162721).
-    if (introCaptionIndex < kIntroTitleIndex)
-        alphaOut = std::min(alphaOut, glm::clamp((kIntroKeyframes[kIntroArriveIndex].t - introElapsed) / 1.0f, 0.0f, 1.0f));
-    uint8_t textA = (uint8_t)(255.0f * std::min(alphaIn, alphaOut));
     const char *text = kIntroKeyframes[introCaptionIndex].text;
 
     if (text && textA > 0)

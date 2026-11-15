@@ -1497,11 +1497,10 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         r["beat"] = introCaptionIndex;
         r["length_s"] = kIntroKeyframes[kIntroKeyframeCount - 1].t;
         r["utc"] = isoFromJ2000((double)simDayJ2000 * 86400.0 + simSecInDay);
-        // (2026-11-14) the ending: `phase` move / hold (still on the final framing) / title (the FOV zoom-out) / off,
-        // the hold's [start, end] s, and the camera as applied this frame (the rig's double look and eye).
-        const float tArr = kIntroKeyframes[kIntroArriveIndex].t, tTit = kIntroKeyframes[kIntroTitleIndex].t;
-        r["phase"] = !showIntro ? "off" : introElapsed < tArr ? "move" : introElapsed < tTit ? "hold" : "title";
-        r["hold_s"] = {tArr, tTit};
+        // (2026-11-14) the ending: `phase` move / still (arrived on the last key: still, the title's FOV zoom-out) / off,
+        // `arrive_s` (kIntroArriveT), and the camera as applied this frame (the rig's double look and eye).
+        r["phase"] = !showIntro ? "off" : introElapsed < kIntroArriveT ? "move" : "still";
+        r["arrive_s"] = kIntroArriveT;
         r["fov_deg"] = camera.fovYDeg;
         r["az_deg"] = camera.azDeg;
         r["el_deg"] = camElDeg();
