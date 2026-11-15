@@ -1497,6 +1497,20 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         r["beat"] = introCaptionIndex;
         r["length_s"] = kIntroKeyframes[kIntroKeyframeCount - 1].t;
         r["utc"] = isoFromJ2000((double)simDayJ2000 * 86400.0 + simSecInDay);
+        // (2026-11-14) the ending: `phase` move / hold (still on the final framing) / title (the FOV zoom-out) / off,
+        // the hold's [start, end] s, and the camera as applied this frame (the rig's double look and eye).
+        const float tArr = kIntroKeyframes[kIntroArriveIndex].t, tTit = kIntroKeyframes[kIntroTitleIndex].t;
+        r["phase"] = !showIntro ? "off" : introElapsed < tArr ? "move" : introElapsed < tTit ? "hold" : "title";
+        r["hold_s"] = {tArr, tTit};
+        r["fov_deg"] = camera.fovYDeg;
+        r["az_deg"] = camera.azDeg;
+        r["el_deg"] = camElDeg();
+        r["roll_deg"] = camRollDeg();
+        r["eye_dir_ecef"] = {camEyeDir.x, camEyeDir.y, camEyeDir.z};
+        r["fwd_ecef"] = {camFwd.x, camFwd.y, camFwd.z};
+        r["obs_height_m"] = obsHeightOffset;
+        r["time_paused"] = timePaused;
+        r["time_scale"] = kTimeLabels[std::clamp(timeScaleIdx, 0, kNumTimeScales - 1)];
         char buf[128];
         snprintf(buf, sizeof(buf), "intro %s, %.1f / %.1f s, beat %d", showIntro ? "playing" : "off", introElapsed,
                  kIntroKeyframes[kIntroKeyframeCount - 1].t, introCaptionIndex);

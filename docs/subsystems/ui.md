@@ -452,17 +452,32 @@ hand-tuned by the user, not derived): `kIntroYearIndex` (0) is a "2036" title ca
 like every other caption but at a larger font size (not centered — that was tried and reverted, it
 read as inconsistent with the rest of the captions); `kIntroHintRevealIndex` (1) is the first
 narrative line and also where the bottom-right skip hint first appears (not from frame 0 — see
-below); beats 0-2 are on the ground, 3-4 climb (2.6 km, 57 km), 5-7 are in orbit; `kIntroTitleIndex` (6) is the
-"SAT LIGHT SIM" reveal; beat 7 (the last key, text null) settles the final framing while the
-title fades, and the intro ends there (`kIntroBenchEndT` = its time: the whole intro feeds the UC1
-benchmark).
+below); beats 0-2 are on the ground, 3-4 climb (2.6 km, 57 km), 5-7 are in orbit, and beat 5's "We will come to
+miss the quiet sky" is the last narrative line (it stays through beat 6 and fades over the last second of the move).
+**The ending: arrive, hold, title + zoom-out** (2026-11-14, issue_20261114_162721: the camera still on the Sun-centred
+framing a beat before the title, the title with the old intro's FOV zoom-out). `kIntroArriveIndex` (7, 53.27 s) is
+the camera path's last key: the camera eases to a stop on the Sun centred on the limb (638 km). For one songbeat it
+HOLDS: pose and look exact (the arrival key re-applied each frame; auto-level has no roll to take out), the sim clock
+held too, so the Sun stays centred, no caption. `kIntroTitleIndex` (8, 60.88 s) is the "SAT LIGHT SIM" reveal and
+the start of the FOV zoom-out: 89.35 -> `kIntroTitleFovDeg` (105) over one songbeat, smoothstep in log FOV, so it
+is monotonic and still at both ends (the pre-2026-11 intro widened 80 -> 120 over its title beat, eased to a stop).
+Not 120: from this framing the Sun's halo fades past ~105 deg (full at 102, half at 114, gone at 118) — the sky's
+veiling glare follows the cloud composite sampled across the Sun's disc (`sat_sky.frag`, "cloudAtSun"), and at that
+scale the samples reach the limb's clouds; a zoom to 120 ended on a bare Sun. The title is one line
+(`CLAY_TEXT_WRAP_NONE`: it wrapped to "SAT LIGHT / SIM"). Over the same beat the clock's rate eases 0 -> 1x (smoothstep; 3.8 s of sim time), so
+`finishIntro`'s 1x carries on without a jolt in the satellites. The last row (9, 68.49 s: the intro's length) ends
+it; the title fades over its last second. Rows 8-9 copy the arrival pose (`kIntroEnd*` constants) and are applied
+by `updateIntroCinematic`, not splined: a same-pose key after the arrival would give it a two-sided tangent, and the
+camera would overshoot and come back. A skip (Space) in the hold or the zoom hands over the camera as it is (that
+FOV) with the clock running at 1x. `kIntroBenchEndT` (the arrival) bounds the UC1 benchmark: the still hold is not
+representative. The harness's `intro state` reports `phase` (move / hold / title / off) and the camera as applied.
 
 **The camera path is `cineEval`'s** (`Cinematic.cpp`, the Cinematics window's own spline), applied with
 `harnessApplyCam` as the Cinematics playback does: Catmull-Rom per channel, so velocity carries through every beat
 (the pre-2026-10 intro smoothstepped each segment and visibly stopped at every key); altitude and FOV in log space,
 so the climb from 55 m to 640 km takes each decade in its stride; azimuth unwrapped (keys 4 -> 5 cross +-180, which
 a raw spline would turn the long way round). Its end tangents are one-sided, so the first and last segments' clocks
-are remapped (`2u^2 - u^3`, `u + u^2 - u^3`): the "2036" card opens still and the hand-over frame is still, and
+are remapped (`2u^2 - u^3`, `u + u^2 - u^3`): the "2036" card opens still and the camera arrives on the final framing still, and
 every key is still reached on its beat. `harnessApplyCam` sets both `camera.azDeg` and `obsFacing`: outside the
 intro `buildUI` derives `camera.azDeg` from `obsFacing` every frame (search "Derive camera.azDeg from obsFacing"),
 and a stale one snapped the camera on the first post-intro frame.
