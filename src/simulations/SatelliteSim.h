@@ -6613,6 +6613,9 @@ private:
     float cv2FarKeyGain = 4.1f, cv2FarSkyGain = 0.6f;   // review 24b: the user's tuning (was 10 / 0.3)   // "Far cloud layer sunlight / sky light" (review 21: matched to the march's cloud radiance at 1460 km and its image at 3000-8000 km)
     float cv2FarLayerFullKm = 8900.0f;   // review 24b: the user's tuning (was 1500)
     float cv2FarLayerMinBlend = 0.004f;  // the far layer's share below which its pass is not run (cloudFarBlend)
+    // The sea's cloud reflection (2026-11-15, cloud_v2_searefl.comp): a quarter-res march of the field along the mirrored
+    // ray ("clouds_v2.sea_refl_march", 1 = on; 0 = the clear reflected sky, dimmed under cloud shadow).
+    float cv2SeaReflMarch = 1.0f;
     // The volumetric clouds are off (knockout 32768: Planetarium, Potato, or the Performance tab). Then nothing of
     // clouds v2 runs on the GPU — march, resolve, far layer, lightning, rain map — and every host consumer of
     // their outputs (lightning bolts, rain particles, thunder, the rain ambience, the Sun's cloud transmittance)
@@ -6706,6 +6709,12 @@ private:
     VkDeviceMemory cv2FarMem = VK_NULL_HANDLE;
     VkImageView cv2FarView = VK_NULL_HANDLE;
     VkPipeline cv2FarPipeline = VK_NULL_HANDLE;
+    // The sea's cloud reflection (cloud_v2_searefl.comp): two quarter-size regions of cv2FarImg written in turn (this
+    // frame's and the history), never while the far layer runs. cv2SeaReflMode = CloudV2Params.shade.w (0 = not run).
+    VkPipeline cv2SeaReflPipeline = VK_NULL_HANDLE;
+    float cv2SeaReflMode = 0.0f;
+    uint32_t cv2SeaReflRegion = 0;
+    bool cv2SeaReflRanLast = false;
     // Lightning (include/cloud_lightning.glsl): cloud_v2_lightning.comp writes this frame's flashes
     // into cv2FlashBuf (host-visible: the host reads them back next frame for thunder), bound as
     // binding 12 of the march set and 21 of cloud_march's.

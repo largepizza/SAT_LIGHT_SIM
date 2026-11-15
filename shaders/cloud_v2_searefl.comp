@@ -1,0 +1,317 @@
+#version 450
+#extension GL_EXT_control_flow_attributes : enable
+// ── The SEA'S CLOUD REFLECTION (2026-11-15, cluster c01 "seareflv2", issues 20261114_233558 / _234423) ────────────────
+// A low-resolution march of the cloud field along the MIRRORED ray, per quarter-resolution screen pixel: the view ray meets
+// the sea-level sphere (flat sea, no waves), is mirrored about the sphere's normal there, and the coarse field (cv2Field,
+// detailAmt -1: what the view march's coarse steps read; the clipmap's layer mask skips known-empty air) is read at
+// kSrSteps points along it, u^2-spaced from the shell entry to kSrReachM, jittered per frame and accumulated over frames
+// (the sea point is Earth-fixed, so its history reprojects exactly). Lit from structures that already exist, not a light
+// march: the Sun transmittance volume (cv2StvT) for the Sun's path, the delta-Eddington diffuse field of that depth
+// (as the march's cv2DiffuseField), the Sun / sky table's hemispheres, the cloud over the ground (cv2Vt) for the deck above
+// and the light reflected up from under the cloud, the Moon as key at night and city light from below.
+//   It replaces the screen-space lookup (sat_sky.frag, 2026-11-12/14: 5 altitudes along the reflected ray tested against the
+// half-res cloudTargetA distance), which drew reflected clouds as compressed, banded strips with hard outlines that changed
+// shape with the camera, and missed everything off screen or hidden behind nearer cloud.
+//   The result (rgb the clouds' light toward the sea point, a the share of the sky pass's clear reflected-sky march that is
+// still seen) lives in the far cloud layer's image (march set binding 21 / sky set 29), which the far layer uses only from
+// ~600 km up, where this pass does not run: two regions at its top-left, written in turn (this frame's and the history),
+// each a quarter-resolution grid over the frame plus kSrMargin past each edge. cv2.shade.w tells the sky pass: 0 = not run (its fallback), else 1 + 2 x the region written + 4 x history valid.
+// sat_sky.frag reads it at the direction the WAVY sea's reflected ray maps to on the flat sea (its normal's perturbation),
+// spread vertically by distance and roughness.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_v2_march.comp)
+    mat4  skyView;
+    float fovYRad;
+    float aspect;
+    float waveTime;
+    float obsEffH;
+    vec4  sunDirENU;
+    vec4  moonDirENU;
+    vec4  obsECEFDir;
+} pc;
+
+#define CLOUD_PARAMS_BINDING 0
+#include "cloud_params.glsl"
+#include "common.glsl"
+#define CV2_PARAMS_BINDING  1
+#define CV2_MORPH_BINDING   20
+#define CV2_WEATHER_BINDING 2
+#define CV2_SHAPE_BINDING   3
+#define CV2_DETAIL_BINDING  4
+#define CV2_MESO_BINDING    5
+#define CV2_ELEV_BINDING    25   // the elevation map: orographic clouds (clouds_v2.glsl cv2OroField)
+#define CV2_STORM_BINDING   26   // the storm objects' towers (cv2_storms.glsl)
+#include "clouds_v2.glsl"
+#include "atmosphere.glsl"
+#include "eclipse.glsl"
+#include "cv2_sunlut.glsl"
+layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
+layout(set = 0, binding = 6) uniform sampler2D sceneDepthTex;   // half-res, metres (kNoSurfaceT = sky)
+layout(set = 0, binding = 7) uniform sampler2D earthNightTex;
+#define CV2_FLASH_BINDING 12
+#define CV2_SUN_CASC_FN       // the STV lookups (need the cv2 UBO)
+#include "cloud_lightning.glsl"
+#define CV2_CDC_BINDING 23
+#include "cv2_cdc.glsl"
+layout(set = 0, binding = 14) uniform sampler2DArray cv2SunLutTex;   // 0 the Sun's colour, 1 the zenith, 2/3 the hemispheres
+layout(set = 0, binding = 21, rgba16f) uniform image2D outRefl;        // the far layer's image (regions, above)
+
+const int   kSrSteps  = 14;
+// The grid covers the frame and kSrMargin of it past each edge (== sat_sky.frag): a wave tilted toward the eye, or a frame
+// pitched up over the sea, maps its reflection below the frame's bottom; clamped to the edge, the sea read differently at
+// every camera pitch.
+const float kSrMargin = 0.25;
+const float kSrReachM = 160000.0;   // the march's reach along the reflected ray (the air weight is 2% there)
+const float kSrAirM   = 40000.0;    // the air in front of a reflected cloud: e^(-t / this) of it is the cloud's (sat_sky.frag's lean)
+const vec3  kMoonColor = vec3(0.92, 0.95, 1.0);   // == cloud_v2_march.comp
+const float kCityUpwellStrength = 0.004;
+const float kNightFloor = 0.002;
+const float kCityCompressK = 0.08;
+float cityBrightness(float lum) { float raw = max(0.0, lum - kNightFloor); return raw / (raw + kCityCompressK); }
+
+// == cloud_v2_march.comp's cv2DiffuseField (keep in step): the delta-Eddington slab's diffuse field along the light.
+float srDiffuseField(float tauT, float tauB, float cosK, float g)
+{
+    float f = g * g, gp = g / (1.0 + g);
+    float t  = (1.0 - f) * tauT, ts = t + (1.0 - f) * tauB;
+    float et = exp(-t);
+    float C1 = (5.0 - exp(-ts)) / ((1.0 - gp) * ts + 4.0 / 3.0);
+    float I1 = C1 - 3.0 * et;
+    float I0 = 5.0 - (2.0 / 3.0) * C1 - (1.0 - gp) * C1 * t - 3.0 * et;
+    float J  = max(I0 + 0.3 * g * cosK * I1, 0.0) + (1.0 - f) * max(1.0 + 3.0 * gp * cosK, 0.0) * max(et - exp(-tauT), 0.0);
+    return 1.6 * J * exp(-cv2.shade.y * t);
+}
+float srOctaves(float od)
+{
+    float ms = 0.0, a = 1.0, b = 1.0;
+    int   n  = int(cv2.mid3.y);
+    [[dont_unroll]] for (int k = 0; k < n; ++k) { a *= cv2.light.z; b *= cv2.light.w; ms += b * exp(-od * a); }
+    return ms;
+}
+float srHash(uvec2 p)
+{
+    uvec3 v = uvec3(p, 0x9E37u) * uvec3(1664525u, 22695477u, 2891336453u);
+    v ^= v >> 16u; v *= 0x45d9f3bu; v ^= v >> 16u;
+    return float((v.x ^ v.y ^ v.z) & 0xFFFFu) * (1.0 / 65536.0);
+}
+void enuOf(vec3 up, out mat3 m)
+{
+    vec3 z = normalize(up);
+    vec3 x = normalize(cross(vec3(0.0, 0.0, 1.0), z));
+    m = mat3(x, cross(z, x), z);
+}
+
+void main()
+{
+    int   mode  = int(cv2.shade.w + 0.5);
+    ivec2 qSize = (imageSize(outRefl) * 3 + 7) / 8;   // (1 + 2 x the margin) / 4 of the frame
+    ivec2 pix   = ivec2(gl_GlobalInvocationID.xy);
+    if (pix.x >= qSize.x || pix.y >= qSize.y || (mode & 1) == 0) return;
+    int   wReg  = (mode >> 1) & 1;
+    bool  histOk = (mode & 4) != 0 && cv2.frame.y > 0.5;
+
+    float tanHalfFov = tan(pc.fovYRad * 0.5);
+    mat3  camToENU   = mat3(transpose(pc.skyView));
+    vec2  ndc = (((vec2(pix) + 0.5) / vec2(qSize)) * (1.0 + 2.0 * kSrMargin) - kSrMargin) * 2.0 - 1.0;
+    vec3  dir = normalize(camToENU * vec3(ndc.x * tanHalfFov * pc.aspect, -ndc.y * tanHalfFov, -1.0));
+    vec3  enuZ = normalize(pc.obsECEFDir.xyz);
+    vec3  enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ));
+    vec3  enuY = cross(enuZ, enuX);
+    mat3  enuToEcef = mat3(enuX, enuY, enuZ);
+    float eyeH = terrainFrame.x + 2.0;
+    vec3  eye  = vec3(0.0, 0.0, R_EARTH + eyeH);
+    vec3  sunDir  = normalize(pc.sunDirENU.xyz);
+    vec3  moonDir = normalize(pc.moonDirENU.xyz);
+
+    // The sea point: the view ray on the sea-level sphere, mirrored about its normal. Past the limb (the rows just above the
+    // visible horizon, which a wave tilted toward the eye maps its reflection to: sat_sky.frag) the limb point in the ray's
+    // azimuth, and the ray itself continued: the field is even about the horizon, as a reflection is.
+    vec2  tS = raySphere(eye, dir, R_EARTH);
+    vec3  upE = normalize(eye);
+    vec3  sP, rd;
+    if (tS.x > 0.0) {
+        sP = eye + dir * tS.x;
+        vec3 upS = normalize(sP);
+        rd = dir - 2.0 * dot(dir, upS) * upS;
+    } else {
+        if (dot(dir, upE) > 0.2) { imageStore(outRefl, pix + ivec2(wReg * qSize.x, 0), vec4(0.0, 0.0, 0.0, 1.0)); return; }
+        vec3  hd   = normalize(dir - upE * dot(dir, upE));
+        float rE   = R_EARTH + eyeH;
+        float sinD = sqrt(max(1.0 - (R_EARTH / rE) * (R_EARTH / rE), 0.0));
+        sP = eye + (hd * sqrt(max(1.0 - sinD * sinD, 0.0)) - upE * sinD) * sqrt(max(rE * rE - R_EARTH * R_EARTH, 0.0));
+        rd = dir;
+    }
+    vec3  upS = normalize(sP);
+    if (dot(rd, upS) < 1e-3) rd = normalize(rd + upS * (1e-3 - dot(rd, upS)));
+    vec3  relS = sP - eye;                     // the sea point from the eye (ENU)
+
+    // The Sun's (or the Moon's) light and phase along this ray.
+    float sunUpE  = dot(normalize(eye), sunDir);
+    bool  moonKey = sunUpE < -0.12;            // the Sun well below at the eye: the Moon lights the clouds
+    vec3  keyDir  = moonKey ? moonDir : sunDir;
+    float cosK    = dot(rd, keyDir);
+    float pSS     = moonKey ? (0.8 * cv2HG(cosK, 0.6) + 0.2 * cv2HG(cosK, -0.2))
+                            : cv2.phase.y * cv2HG(cosK, cv2.phase.x) + cv2.phase.w * cv2HG(cosK, cv2.phase.z);
+    float pMS     = 0.85 * cv2HG(cosK, 0.2) + 0.15 * cv2HG(cosK, -0.4);
+
+    vec3  L = vec3(0.0);
+    float T = 1.0, B = 0.0;      // the clouds' transmittance along the ray; the clear reflection they hide (air-weighted)
+    float tFirst = -1.0;         // where the ray first meets cloud
+    vec2  seg0, seg1;
+    int   nSeg = cv2ShellSegments(sP, rd, seg0, seg1);
+    if (nSeg > 0 && cv2.look.x > 0.0) {
+        float a0 = seg0.x, a1 = min((nSeg > 1 ? seg1.y : seg0.y), kSrReachM);
+        float jit = fract(srHash(uvec2(pix)) + 0.6180339 * float(uint(cv2.frame.x) & 1023u));
+        float span = max(a1 - a0, 0.0);
+        float eyeR = R_EARTH + eyeH;
+        [[dont_unroll]] for (int k = 0; k < kSrSteps && span > 0.0; ++k) {
+            float u0 = float(k) / float(kSrSteps), u1 = float(k + 1) / float(kSrSteps);
+            float uj = (float(k) + jit) / float(kSrSteps);
+            float t  = a0 + span * uj * uj;
+            float ds = span * (u1 * u1 - u0 * u0);
+            if (nSeg > 1 && t > seg0.y && t < seg1.x) continue;   // (between the segments: under the shell's floor)
+            vec3  pW  = sP + rd * t;
+            vec3  rel = pW - eye;
+            uint  lm  = cv2CdcMask(rel, eyeR);
+            if (lm == 0u) continue;
+            gCv2LayMask = lm;
+            CV2Pos p = cv2Pos(rel, eyeH, enuToEcef);
+            float fp = clamp(0.25 * ds, 60.0, 3000.0);
+            CV2Field f = cv2Field(p, -1.0, fp);
+            gCv2LayMask = 0xFFFFu;
+            if (f.sigma <= 1e-6) continue;
+
+            vec3  up    = normalize(pW);
+            float sUp   = dot(up, sunDir);
+            vec3  uvL   = vec3(cv2SunLutUV(sUp, p.h), 0.0);
+            vec3  sunCol = textureLod(cv2SunLutTex, uvL, 0.0).rgb;
+            vec3  skyUpH, skyDnH;
+            if (cv2.amb.x > 0.5) {
+                uvL.z = 2.0; skyUpH = textureLod(cv2SunLutTex, uvL, 0.0).rgb;
+                uvL.z = 3.0; skyDnH = textureLod(cv2SunLutTex, uvL, 0.0).rgb;
+            } else {
+                uvL.z = 1.0; skyUpH = textureLod(cv2SunLutTex, uvL, 0.0).rgb * cv2.look.w; skyDnH = skyUpH * 0.3;
+            }
+            float rP     = R_EARTH + p.h;
+            float horizS = -sqrt(max(1.0 - (R_EARTH / rP) * (R_EARTH / rP), 0.0));
+            float sunVis = smoothstep(horizS - 0.004, horizS + 0.004, sUp);
+            float dayness = clamp((sUp + 0.2) / 0.5, 0.0, 1.0);
+            float nightK  = 1.0 - min(dayness * 3.0, 1.0);
+            vec3  sunLit = sunCol * sunVis * cv2.look2.y;
+            if (cloud.moonMisc.y > 0.5) {
+                sunLit *= eclipseSunVis(pW * 1e-3, sunDir, 0.0);
+                vec3 eC = eclipseSkyLight(pW * 1e-3, sunDir, p.h);
+                skyUpH *= eC; skyDnH *= eC;
+            }
+            vec3  keyCol = moonKey
+                         ? kMoonColor * pc.moonDirENU.w * cloud.moonGain * cv2.misc.y * nightK * smoothstep(-0.05, 0.1, dot(up, moonDir))
+                         : sunLit;
+            float muK = max(dot(up, keyDir), 0.0);
+
+            // The key light's path: the column to the cloud's top along the light, and the Sun transmittance volume. The
+            // volume's rays are the MEAN transmittance over their cells (gaps and cloud), so under a deck it lit the bases
+            // nearly twice as bright as the march does (the sea at 20 deg of reflection: 178 levels against the sky's 128);
+            // the column is the coarse field's, which over-darkens a broken field read at a coarse footprint (far
+            // reflections ~110 against the sky's ~150), so it gives way to the volume as the footprint grows past ~100 m.
+            float odC = f.sigma * max(f.topH - p.h, 0.0) / max(muK, 0.05);
+            float od  = odC;
+            if (!moonKey && cv2.stvH.z > 0.5) od = max(-log(max(cv2StvT(rel, p.h), 1e-6)), odC * (1.0 - smoothstep(100.0, 800.0, fp)));
+            // Away from the light: the cloud below the sample (its height fraction in its column), at most the march's reach.
+            float dzB = clamp(f.hf * max(f.topH - p.h, 0.0) / max(1.0 - f.hf, 0.05), 0.0, 20000.0);
+            float tauB = f.sigma * min(cv2.ms.w, dzB / max(muK, 0.2));
+            float msK = (cv2.ms.x > 0.5) ? cv2.ms.z * srDiffuseField(od, tauB, cosK, cv2.ms.y) : pMS * srOctaves(od);
+            vec3  keyS = keyCol * (pSS * exp(-od) + msK * f.msBright);
+
+            // The sky's light through the cloud above (as the march: the column to the top, and the deck above from the map).
+            float tauUp  = 0.6 * f.sigma * max(f.topH - p.h, 0.0);
+            float ambHue = mix(1.0 / (1.0 + 0.11 * tauUp), 1.0, cv2.shade.x);
+            float ambVis = mix(0.7, 1.0, f.hf) / (1.0 + 0.11 * tauUp);
+            float ambLow = 0.35 * (1.0 - f.hf) * (0.3 + 0.7 / (1.0 + 0.11 * tauUp));
+            vec3  hU = (0.5 * cv2.amb.y) * skyUpH, hD = (0.5 * cv2.amb.y) * skyDnH;
+            vec3  pE = enuToEcef * pW;
+            if (cv2.gnd.x > 0.5) {
+                float tdM  = cv2VtUpH(cv2VtUpCell(pE), max(f.topH, p.h));
+                float tauD = max((1.0 / max(tdM, 1e-3) - 1.0) / 0.11, 0.0);
+                if (tauD > 0.01) {
+                    float tdD = 1.0 / (1.0 + 0.11 * tauD), muS = max(sUp, 0.0);
+                    vec3  sDn = 2.0 * muS * max(min((0.5 + 0.75 * muS) * tdD, 1.0) - exp(-tauD / max(muS, 0.05)), 0.0) * sunLit;
+                    hU = hU * tdD + sDn;
+                    hD = hD * tdD + cv2.amb.z * sDn;
+                }
+            }
+            vec3  skyNgt = kMoonColor * pc.moonDirENU.w * cloud.moonGain * cv2.misc.y * nightK * 0.03 * max(dot(up, moonDir), 0.0)
+                         + kMoonColor * cloud.moonGain * cv2.misc.y * (0.2 * cloud.terrainErosion.z);
+            float lU = dot(hU, vec3(0.2126, 0.7152, 0.0722)), lD = dot(hD, vec3(0.2126, 0.7152, 0.0722));
+            vec3  ambS = (mix(vec3(lU), hU, ambHue) * ambVis + mix(vec3(lD), hD, ambHue) * (ambLow / 0.35)
+                       + skyNgt * (ambVis + ambLow)) * f.ambient;
+
+            // The Sun reflected up from under the cloud (the cloud over the ground's direct + diffuse share there).
+            vec3 bounceS = vec3(0.0);
+            if (!moonKey) {
+                vec3 keyB = sunLit;
+                if (cv2.gnd.x > 0.5) { vec4 vg = cv2VtAt4(pE); keyB *= min(vg.w + vg.y, 1.0); }
+                bounceS = keyB * max(sUp, 0.0) * 0.15 * cv2.look2.x * (1.0 - f.hf) * (1.0 - f.hf);
+            }
+            // City light from below at night.
+            vec3 nightS = vec3(0.0);
+            if (dayness < 0.9 && f.hf < 0.45) {
+                vec3  dE  = p.dirE;
+                vec2  uv  = vec2((atan(dE.y, dE.x) + PI) / (2.0 * PI), (0.5 * PI - asin(clamp(dE.z, -1.0, 1.0))) / PI);
+                vec3  cr  = textureLod(earthNightTex, uv, 3.0).rgb;
+                float lum = dot(cr, vec3(0.2126, 0.7152, 0.0722));
+                nightS = (cr / max(lum, 0.001)) * cityBrightness(lum) * smoothstep(0.45, 0.0, f.hf)
+                       * (1.0 - dayness) * kCityUpwellStrength * cloud.ambientGain;
+            }
+
+            float a  = 1.0 - exp(-f.sigma * ds);
+            if (tFirst < 0.0 && a > 0.02) tFirst = t;
+            float wA = exp(-t / kSrAirM);
+            L += T * a * wA * (keyS + ambS + bounceS + nightS);
+            B += T * a * wA;
+            T *= 1.0 - a;
+            if (T < 0.01) break;
+        }
+    }
+    // The clear reflection still seen: through the gaps, and the air in front of the clouds, which is in their shadow under
+    // a deck (the sea point's Sun transmittance through the clouds; sat_sky.frag dimmed the off-screen fallback alike).
+    // The air in front: its Sun shadow at two points along the ray before the first cloud (within 60 km).
+    float shK = 1.0;
+    if (cv2.stvH.z > 0.5 && !moonKey) {
+        float tc = tFirst > 0.0 ? min(tFirst, 60000.0) : 60000.0;
+        vec3  q1 = sP + rd * (0.25 * tc), q2 = sP + rd * (0.75 * tc);
+        shK = 0.5 * (cv2StvT(q1 - eye, length(q1) - R_EARTH) + cv2StvT(q2 - eye, length(q2) - R_EARTH));
+    }
+    float ovcK = mix(0.35, 1.0, clamp(shK, 0.0, 1.0));
+    float clr  = T + (1.0 - T - B) * mix(1.0, ovcK, 1.0 - T);
+    vec4  nowV = vec4(L, clr);
+
+    // Accumulate: the sea point is Earth-fixed, so last frame's pixel for it is exact geometry (the resolve's reprojection).
+    vec4 outV = nowV;
+    if (histOk) {
+        mat3 mNow, mPrev;
+        enuOf(pc.obsECEFDir.xyz, mNow);
+        enuOf(cv2.prevObs.xyz, mPrev);
+        vec3 vE  = mNow * relS + cv2.obsDelta.xyz;
+        vec3 cam = mat3(cv2.prevSkyView) * (transpose(mPrev) * vE);
+        if (cam.z < 0.0) {
+            vec2 uvP = vec2(cam.x / (-cam.z) / (cv2.prevObs.w * cv2.obsDelta.w), -cam.y / (-cam.z) / cv2.prevObs.w) * 0.5 + 0.5;
+            uvP = (uvP + kSrMargin) / (1.0 + 2.0 * kSrMargin);
+            vec2 hp  = uvP * vec2(qSize) - 0.5;
+            if (all(greaterThanEqual(hp, vec2(-0.5))) && all(lessThanEqual(hp, vec2(qSize) - 0.5))) {
+                ivec2 h0 = ivec2(floor(hp));
+                vec2  fh = hp - vec2(h0);
+                ivec2 o  = ivec2((1 - wReg) * qSize.x, 0);
+                ivec2 lo = ivec2(0), hi = qSize - 1;
+                vec4 h00 = imageLoad(outRefl, clamp(h0, lo, hi) + o);
+                vec4 h10 = imageLoad(outRefl, clamp(h0 + ivec2(1, 0), lo, hi) + o);
+                vec4 h01 = imageLoad(outRefl, clamp(h0 + ivec2(0, 1), lo, hi) + o);
+                vec4 h11 = imageLoad(outRefl, clamp(h0 + ivec2(1, 1), lo, hi) + o);
+                vec4 hist = mix(mix(h00, h10, fh.x), mix(h01, h11, fh.x), fh.y);
+                if (all(greaterThanEqual(hist, vec4(0.0))) && hist.a <= 1.0001)
+                    outV = mix(hist, nowV, 0.2);
+            }
+        }
+    }
+    imageStore(outRefl, pix + ivec2(wReg * qSize.x, 0), outV);
+}
