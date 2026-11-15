@@ -685,6 +685,7 @@ void main()
     vec3  enuY = cross(enuZ, enuX);
     mat3  enuToEcef = mat3(enuX, enuY, enuZ);
     float eyeH = terrainFrame.x + 2.0;               // == observerPos(obsEffH).z - R_EARTH
+    gCv2EyeH = eyeH;                                 // the fractus band's view test (clouds_v2.glsl)
     vec3  eye  = vec3(0.0, 0.0, R_EARTH + eyeH);
     vec3  sunDir = normalize(pc.sunDirENU.xyz);
 

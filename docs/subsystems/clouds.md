@@ -125,6 +125,17 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     region (-5 163, from 30 m) the band, 100-500 m up and within ~15 km, drew rows of flat-topped blue-grey blobs a degree
     or two over the horizon; a 6-15 km fade left them, 3-7 km removes them. Using `lift` for the ground test put the
     march at 249 registers; cv2Ground (the cached global) keeps 128.
+    Seen from below only (2026-11-15, issue_20261115_132950 "Odd rain clumps", branch qa/20261115b/rainclump): frK also
+    takes `smoothstep(0, 0.08, tan(elevation of the sample from the eye))`, the eye's altitude from `gCv2EyeH` (a global
+    the march and the CDC bake set from terrainFrame.x + 2 at the top of main: terrainFrame is declared after the
+    include). From 2.2 km beside a Cb whose base sat at the eye's height, the band (a slab a few hundred metres thick)
+    cut off by the 3-7 km ring drew detached, flat-topped pale lenses ~13 deg under the horizon, brighter than the rain
+    round them (rain light with msBright 0.85). Ablation at shot 1: fractus 0 and frK forced 0 both remove them; debug
+    view 7 puts them in the low field (red, incl. rain) at very low optical depth. Ground views (eye under the band):
+    unchanged against the A-A spread (mean |diff| 1.09 vs 0.83 levels, 0.77 vs 0.76-0.94). Cloud march 128 registers
+    either way; GPU total 17.43 -> 17.29 ms at shot 1, 19.27 -> 19.56 at shot 2 (rep spread +-0.3-0.45). With the
+    frK = 0 below the eye the rain curtains keep their vertical squeeze, so they read as continuous shafts to the
+    ground there. Evidence: qa/waves/20261115b/evidence/c02/ (untracked).
   - Mid-level wisps: `cv2MidSigma`'s low mode, 1.5-2.5 km + 0.8 ground, 260-460 m thick (>= 260: the CDC reads are 160 m
     apart), one shape fetch on its own anchor (`vert2.yzw`: anchorMid's, with the drifted frame's z squeezed x0.4, reduced
     in double on the CPU) -- the squeeze is a fixed linear map of the WORLD position, ~2.5x longer east-west than north-south at

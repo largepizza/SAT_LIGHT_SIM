@@ -595,6 +595,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- No more pale, flat-topped "clumps" floating under a storm's base when you fly level with it or above it
+  (issue_20261115_132950). They were the ragged scud band under a raining base, cut off by its 3-7 km fade ring and
+  seen from the side or from above. Scud now shows only where it is seen from below (more than ~0-5 degrees up), as
+  it was meant to; the rain curtains under the storm now reach the ground unbroken.
 - The red airglow no longer shows in front of nearby clouds (issue_20261115_015559). At dusk under a raining deck
   a red band with a hard bottom edge lay over the opaque cloud: the 630-nm band, 90-500 km up, was added after the
   clouds without their transmittance. Seen from under it, it is now hidden by the clouds in front as the aurora is.
