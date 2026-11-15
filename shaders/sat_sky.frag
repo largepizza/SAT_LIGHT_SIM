@@ -6905,21 +6905,13 @@ void main() {
                     reflColor = SUN_INTENSITY * (rpR * BETA_R * rAccR + vec3(rpM * BETA_M * rAccM)) + rMs;
                 }
 
-                // Screen-space occlusion lookup for the REFLECTED ray, shared by the aurora and
-                // Milky Way reflections below. Same technique as the satellite/sun lens-flare
-                // occlusion above: project reflDir with the same skyView transform and sample what
-                // the compute passes already wrote for that direction, rather than re-marching
-                // cloud density or terrain along reflDir here. Hoisted out of the aurora block
-                // when the Milky Way reflection was added — both want it, and it is one texture
-                // fetch each instead of two identical ones.
-                //
-                // reflCam.z only proves the direction is in FRONT of the camera, not inside the
-                // frustum; an off-screen reflDir clamps to an edge texel. Pre-existing limitation
-                // of this technique here, not introduced by the hoist.
+                // What the reflected ray's clouds and terrain hide of the aurora and Milky Way reflections below:
+                // reflCloudOccl the share of the clear reflected sky the sea's reflection pass leaves (below), reflTerrainOccl
+                // the scene depth at the mirrored direction on screen (an off-screen direction fades to unoccluded).
                 float reflCloudOccl   = 1.0;
                 float reflTerrainOccl = 1.0;
-                // Review 22: the clear march stands for the air IN FRONT of the reflected clouds and for any reflected
-                // sky off screen, but under an overcast that air and that sky are the deck's shadowed underside: the
+                // Review 22: the clear march stands for the air IN FRONT of the reflected clouds (and, without the reflection
+                // pass, for the whole reflected sky), but under an overcast that air and that sky are the deck's shadowed underside: the
                 // sea under a storm mirrored half a sunlit clear sky and was brighter than the sky over it (user snap 5:
                 // debug view 50 read full cloud shadow and a 0.48 clear-march weight). Where the sea is in cloud shadow
                 // (the shadow at this point) that share drops toward the light under a deck (~25%).
@@ -6930,213 +6922,67 @@ void main() {
                 // period-4-px energy 4.4x its neighbours' without the TAA, 5.0x with it, gone with the cloud shadow off).
                 float ovcK = mix(0.35, 1.0, clamp(cloudShadowT, 0.0, 1.0));
                 vec3  clearRefl = reflColor;
-                reflColor *= ovcK;   // off screen / behind the camera: the deck's underside, not the clear sky
+                reflColor *= ovcK;   // no reflection pass this frame: the deck's underside, not the clear sky
+                dbgReflUV.z = ovcK;
 #ifndef SKY_ENV
+                // 2026-11-15 (cluster c01, issues 20261114_233558 / _234423): the reflected clouds come from the sea's own
+                // reflection pass (cloud_v2_searefl.comp: a quarter-res march of the cloud field along the mirrored ray of
+                // the flat sea, accumulated over frames), not from the on-screen clouds. The screen-space lookup it replaces
+                // (2026-11-12/14: the reflected ray's crossings of five altitudes tested against cloudTargetA's distance)
+                // drew reflected clouds as a compressed, banded strip with hard wavy outlines that reshaped with camera
+                // motion (at a grazing angle one sea row maps to ~1/4 of a sky row), and missed every cloud off screen or
+                // hidden behind a nearer one. Here the wavy sea's reflected ray is mapped back to the flat sea's view ray
+                // whose mirror it is (its normal's perturbation, mirrored about the flat normal), that pixel of the pass is
+                // read (bilinear) and spread along the vertical by distance and roughness (a rough far sea is no mirror).
+                // The pass gives the clouds' light (rgb) and the share of the clear reflected sky still seen (a: through the
+                // gaps, and the air in front of the clouds, shadowed under a deck), weighted for the air in front.
+                int srMode = int(cv2.shade.w + 0.5);
+                if ((srMode & 1) != 0) {
+                    vec3  upF  = normalize(hitPt);
+                    vec3  mDir = reflDir - 2.0 * dot(reflDir, upF) * upF;
+                    // Its depression at least 0.8 x the view's own: a near facet tilted to mirror the horizon read the bright
+                    // horizon band of the pass's image (the far air), white speckle over the near sea that changed with
+                    // every wave (and every frame's wave phase). Upward tilts (the roughness' mean) are kept, and the far
+                    // sea, whose depression is ~0, keeps all of its facets.
+                    float dD   = -dot(dir, upF);
+                    float mD   = max(-dot(mDir, upF), max(0.8 * dD, 2e-3));
+                    vec3  mH   = mDir - upF * dot(mDir, upF);
+                    float mHl  = length(mH);
+                    if (mHl > 1e-4) mDir = mH * (sqrt(max(1.0 - mD * mD, 0.0)) / mHl) - upF * mD;
+                    vec3  mc   = mat3(pc.skyView) * mDir;
+                    float tHF  = tan(pc.fovYRad * 0.5);
+                    vec2  mUV  = vec2(mc.x / pc.aspect, -mc.y) / (-min(mc.z, -1e-3) * tHF * 2.0) + 0.5;
+                    ivec2 qS   = (imageSize(cloudFarImg) * 3 + 7) / 8;   // (cloud_v2_searefl.comp: the frame + 25% past each edge)
+                    ivec2 qO   = ivec2(((srMode >> 1) & 1) * qS.x, 0);
+                    ivec2 qHi  = qS - 1;
+                    float spr  = (0.006 + 0.04 * seaRough) * smoothstep(1500.0, 25000.0, dist);
+                    vec4  sr   = vec4(0.0);
+                    for (int k = -1; k <= 1; ++k) {
+                        vec2  q  = clamp((mUV + vec2(0.0, float(k) * spr) + 0.25) / 1.5, vec2(0.0), vec2(1.0)) * vec2(qS) - 0.5;
+                        ivec2 q0 = ivec2(floor(q));
+                        vec2  fq = q - vec2(q0);
+                        vec4  s00 = imageLoad(cloudFarImg, clamp(q0, ivec2(0), qHi) + qO);
+                        vec4  s10 = imageLoad(cloudFarImg, clamp(q0 + ivec2(1, 0), ivec2(0), qHi) + qO);
+                        vec4  s01 = imageLoad(cloudFarImg, clamp(q0 + ivec2(0, 1), ivec2(0), qHi) + qO);
+                        vec4  s11 = imageLoad(cloudFarImg, clamp(q0 + ivec2(1, 1), ivec2(0), qHi) + qO);
+                        sr += mix(mix(s00, s10, fq.x), mix(s01, s11, fq.x), fq.y) * (k == 0 ? 0.5 : 0.25);
+                    }
+                    sr.a = clamp(sr.a, 0.0, 1.0);
+                    reflColor     = clearRefl * sr.a + max(sr.rgb, vec3(0.0));
+                    reflCloudOccl = sr.a;
+                    dbgReflUV.z   = sr.a;
+                }
+                // The terrain in the mirrored DIRECTION (screen space, for the aurora and Milky Way reflections below).
                 vec3  reflCam = mat3(pc.skyView) * reflDir;
                 if (reflCam.z < -0.01) {
                     float tanHFRefl    = tan(pc.fovYRad * 0.5);
                     vec2  reflUV       = vec2(reflCam.x, -reflCam.y) / (-reflCam.z * tanHFRefl * 2.0);
                     vec2  reflScreenUV = vec2(reflUV.x / pc.aspect + 0.5, reflUV.y + 0.5);
-                    // Review 19: only where the mirrored direction is ON SCREEN, faded out over the last 8% toward
-                    // the edges. Off screen the lookup clamped to an edge texel: looking down from 8 km the sea's
-                    // reflection took whatever cloud lay along the frame's edge, except inside a disc around the nadir
-                    // where the test above failed — a hard blue disc on the sea (user snapshot, review 19).
-                    // Review 21: the fade lies just OUTSIDE the frame (the lookup clamped to the edge until then). Inside it,
-                    // looking at the horizon the mirrored direction shares the pixel's own column, so the last 8% of every
-                    // row lost its reflected clouds: bright vertical bands at both edges of the sea (user snapshot).
+                    // Review 19 / 21 / 22: only where the mirrored direction is on screen, faded out over 30% of the frame
+                    // past its edge (off screen the lookup clamps to an edge texel).
                     vec2  eM = min(reflScreenUV, 1.0 - reflScreenUV);
-                    // (Review 22: over 30% of the frame past the edge, not 8%: with the shadowed fallback below, the switch
-                    // to off screen drew dark wedges in the sea's lower corners under a sunset-lit deck.)
-                    float onS = smoothstep(-0.3, 0.0, min(eM.x, eM.y));
-                    float onSSky = onS;                                    // the mirrored DIRECTION's (terrain, below)
+                    float onSSky = smoothstep(-0.3, 0.0, min(eM.x, eM.y));
                     vec2  reflSkyUV = clamp(reflScreenUV, vec2(0.001), vec2(0.999));
-                    // 2026-11-12 (issues 20261112_220250 / _220359): the reflected clouds are found ALONG THE REFLECTED
-                    // RAY, not at its direction. The lookup at the mirrored direction assumed every cloud at infinity:
-                    // a cumulus 1-2 km up and 5-60 km away was read where the camera sees it, not where this sea point's
-                    // ray meets it, so its reflection sat at the wrong place on the sea (bright blobs in a band below the
-                    // horizon under no cloud), and slid and changed shape as the camera moved. The ray is now sampled where
-                    // it crosses five altitudes through the cloud layers (0.3-5 km), each sample projected into the camera
-                    // and tested against the composite's cloud distance there (cloudTargetA.a, km): the first sample at the
-                    // visible cloud's distance (within its depth, max(2.5 km, 30%)) is the cloud this ray meets, refined by
-                    // one bisection. No hit on screen = clear (the clear march); a ray that leaves the frame first fades to
-                    // the off-screen fallback. Cost at 220250 shot 1 (RTX 3070 Ti, 1920x1009): sky +0.23 ms, GPU +0.09 ms
-                    // (8 samples, two bisections and a transmittance fetch each cost +0.86 ms).
-                    float hitK = 0.0;
-                    {
-                        // Camera space throughout (the rotation keeps lengths): P(t) = relC + rdC t, uv = its projection.
-                        const float kReflAlt[5] = float[5](300.0, 900.0, 1600.0, 2600.0, 5000.0);
-                        vec3  relC  = mat3(pc.skyView) * (hitPt - obsPos);
-                        vec3  rdC   = reflCam;
-                        float rB    = dot(hitPt, reflDir), rL = length(hitPt);
-                        vec2  cSz   = vec2(textureSize(cloudTargetA, 0));
-                        vec2  uvK   = vec2(0.5 / pc.aspect, 0.5) / tanHFRefl;   // (x, -y) / -z  ->  uv - 0.5
-                        float tPrev = 0.0, tHit = -1.0, tBef = 0.0, hitW = 0.0;
-                        float onT   = 1.0;
-                        [[dont_unroll]] for (int k = 0; k < 5; ++k) {
-                            float rr = R_EARTH + kReflAlt[k];
-                            float tk = -rB + sqrt(max(rB * rB - (rL - rr) * (rL + rr), 0.0));
-                            if (tk <= tPrev) continue;
-                            vec3  Pc = relC + rdC * tk;
-                            if (Pc.z > -0.01 * length(Pc)) { onT = 0.0; break; }
-                            vec2  uk = vec2(Pc.x, -Pc.y) / -Pc.z * uvK + 0.5;
-                            vec2  ek = min(uk, 1.0 - uk);
-                            if (min(ek.x, ek.y) < 0.0) { onT = smoothstep(-0.3, 0.0, min(ek.x, ek.y)); break; }
-                            // 2026-11-14 (issue 20261114_112348): a SOFT hit. The test was yes/no on the nearest texel, and
-                            // near the horizon a sample's distance changes ~10% per sea row (it reaches its altitude ~a/angle
-                            // away), so the -2% / +30% window was a band a few rows deep whose edges followed each texel's
-                            // distance: reflected patches cut off flat, in stair steps of the composite's texels magnified by
-                            // the grazing reflection. Now the visible cloud's distance is interpolated over the four texels
-                            // (cloud texels only; their share is the cover), the window's edges ramp over 10% of that
-                            // distance, and the strongest sample wins (a full hit still stops the search).
-                            vec4  gK = abs(textureGather(cloudTargetA, uk, 3));   // (an engine light's texel: dropped by the emissive test below)
-                            vec2  fk = fract(uk * cSz - 0.5);
-                            vec4  wK = vec4((1.0 - fk.x) * fk.y, fk.x * fk.y, fk.x * (1.0 - fk.y), (1.0 - fk.x) * (1.0 - fk.y))
-                                     * vec4(lessThan(gK, vec4(50000.0)));
-                            float cov = wK.x + wK.y + wK.z + wK.w;
-                            if (cov > 1e-3) {
-                                float dc = dot(wK, gK) / cov * 1000.0;
-                                float df = length(Pc) - dc;
-                                float lo = max(200.0, 0.02 * dc), hi = max(2500.0, 0.3 * dc);
-                                float hk = cov * smoothstep(-lo - 0.1 * dc, -lo, df) * (1.0 - smoothstep(hi, hi + 0.1 * dc, df));
-                                if (hk > hitW) { hitW = hk; tHit = tk; tBef = tPrev; }
-                                if (hitW > 0.99) break;
-                            }
-                            tPrev = tk;
-                        }
-                        if (tHit > 0.0) {
-                            // one bisection between the sample before and the hit: the nearer crossing (blended, not picked)
-                            float tm = 0.5 * (tBef + tHit);
-                            vec3  Pm = relC + rdC * tm;
-                            vec2  um = clamp(vec2(Pm.x, -Pm.y) / -min(Pm.z, -1e-3) * uvK + 0.5, vec2(0.0), vec2(0.9999));
-                            vec4  gM = abs(textureGather(cloudTargetA, um, 3));
-                            vec2  fm = fract(um * cSz - 0.5);
-                            vec4  wM = vec4((1.0 - fm.x) * fm.y, fm.x * fm.y, fm.x * (1.0 - fm.y), (1.0 - fm.x) * (1.0 - fm.y))
-                                     * vec4(lessThan(gM, vec4(50000.0)));
-                            float cM = wM.x + wM.y + wM.z + wM.w;
-                            float dM = cM > 1e-3 ? dot(wM, gM) / cM * 1000.0 : 1e30;
-                            float hm = cM * smoothstep(-0.25 * dM, 0.0, length(Pm) - dM + max(200.0, 0.02 * dM));
-                            vec3  Ph = relC + rdC * mix(tHit, tm, hm);
-                            reflScreenUV = vec2(Ph.x, -Ph.y) / -min(Ph.z, -1e-3) * uvK + 0.5;
-                            hitK = hitW;
-                            onT  = 1.0;
-                        }
-                        onS = onT;
-                    }
-                    reflScreenUV = clamp(reflScreenUV, vec2(0.001), vec2(0.999));
-                    vec3 reflCloudT = mix(vec3(1.0), texture(cloudTargetB, reflScreenUV).rgb, onS * hitK);
-                    reflCloudOccl   = dot(reflCloudT, vec3(1.0 / 3.0));
-                    // The clouds in the reflection (2026-09-30): the march above is clear sky, so under an overcast
-                    // the sea mirrored a sunlit clear horizon. The composite's own (A, B) at the mirrored direction.
-                    // The target holds the clouds without the air in front of them (the sky pass adds that as
-                    // airFront): a far cloud is mostly that air, so it leans back to the clear march by its distance.
-                    vec4  rCA  = texture(cloudTargetA, reflScreenUV);
-                    // Review 22b: the far sea is no mirror — its slopes spread each reflected cloud along the view into a
-                    // vertical smear (a sun glitter path's shape). The reflected clouds are averaged over +-2 taps along
-                    // the screen's vertical, spread by distance and roughness; they read as a mirror finish out to the
-                    // horizon (user).
-                    {
-                        float spr = (0.006 + 0.04 * seaRough) * smoothstep(1500.0, 25000.0, dist);
-                        if (spr > 1e-4) {
-                            vec3 sA = rCA.rgb, sT = reflCloudT;
-                            for (int k = -2; k <= 2; ++k) {
-                                if (k == 0) continue;
-                                vec2 uvk = clamp(reflScreenUV + vec2(0.0, float(k) * spr), vec2(0.001), vec2(0.999));
-                                sA += texture(cloudTargetA, uvk).rgb;
-                                sT += mix(vec3(1.0), texture(cloudTargetB, uvk).rgb, onS * hitK);
-                            }
-                            rCA.rgb = sA * 0.2;
-                            reflCloudT = sT * 0.2;
-                        }
-                    }
-                    // Per texel, weighted by opacity (review 14): the filtered alpha blends a cloud's distance with the
-                    // no-cloud marker (-60000 km) at every edge, and the reflected clouds came out in hard blocks.
-                    float rKf, rHasCloud = 0.0, rEmitBad = 0.0;
-                    {
-                        vec4  gaRaw = textureGather(cloudTargetA, reflScreenUV, 3);
-                        vec4  ga = abs(gaRaw);
-                        vec4  gT = textureGather(cloudTargetB, reflScreenUV, 1);
-                        vec2  fq = fract(reflScreenUV * vec2(textureSize(cloudTargetA, 0)) - 0.5);
-                        vec4  wB = vec4((1.0 - fq.x) * fq.y, fq.x * fq.y, fq.x * (1.0 - fq.y), (1.0 - fq.x) * (1.0 - fq.y));
-                        // 2026-10-20 (issue 20261020_181339): the lookup at the mirrored DIRECTION assumes what it finds is
-                        // at infinity. A texel whose only content is emissive / plume light (flames, a rocket's lit exhaust,
-                        // re-entry trails: flagged, cloud_occlusion.glsl) carries that light's distance, and a near one does
-                        // not lie on this sea point's reflected ray at all: from 4.9 km a Starship 3 km away drew a glitter
-                        // path from the horizon down, where its mirror image is 74 deg below the horizon. Such texels drop out
-                        // when the reflected ray misses the light's position by more than a few degrees (seen from the sea);
-                        // the lights themselves are mirrored from where they are (the engine-light glint after the Sun glint, below). Real clouds
-                        // are not tested here (they are found along the reflected ray, above).
-                        vec4  emK = vec4(0.0);
-                        for (int k = 0; k < 4; ++k) {
-                            if (!cloudAlphaIsEmit(gaRaw[k])) continue;
-                            vec3  Ck  = reflDir * (ga[k] * 1000.0) - dir * dist;   // the light, from the sea point
-                            float al  = dot(Ck, reflDir);
-                            float mis = length(Ck - reflDir * al);
-                            float ang = al > 0.0 ? atan(mis, al) : 3.0;
-                            emK[k] = smoothstep(0.03, 0.10, ang);
-                        }
-                        rEmitBad = dot(wB, emK);
-                        // ...and texels that ALSO hold cloud (2026-10-20, the same issue's shot 2, "still broken"): a
-                        // flame in front of the horizon's cloud is composited into that cloud's texel, whose alpha is
-                        // the cloud's distance (unflagged), so the test above never saw it and the flame's light was
-                        // reflected at the mirrored DIRECTION: a glitter column from the horizon down under a booster
-                        // 3 km off whose mirror point is ~75 deg below the horizon. Where the mirrored direction looks
-                        // at an engine light's own place on screen (within the flame and its glow, seen from the eye)
-                        // while the reflected ray misses the light's real position seen from this sea point, the
-                        // texels there are dropped too. Real clouds right round a flame lose their reflection there.
-                        {
-                            uint nELr = min(selCount & 255u, kSkyEngineLightMax);
-                            vec3 Pr = dir * dist;
-                            [[dont_unroll]] for (uint li = 0u; li < nELr; ++li) {
-                                vec3  Lc  = selList[kSkyEngineLightBase + li].c.xyz;
-                                float dL  = length(Lc);
-                                if (dL < 1.0) continue;
-                                // its angular size from the eye: the flame and the glow round it (>= 3 deg, ~600 m)
-                                float rad = max(0.052, atan(600.0, dL));
-                                float angE = acos(clamp(dot(reflDir, Lc / dL), -1.0, 1.0));
-                                if (angE > 1.6 * rad) continue;
-                                vec3  Ck  = Lc - Pr;              // the light, from the sea point
-                                float al  = dot(Ck, reflDir);
-                                float mis = length(Ck - reflDir * al);
-                                float angS = al > 0.0 ? atan(mis, al) : 3.0;
-                                // Only where the flame DOMINATES the texel (2026-10-21): its composite against the cloud
-                                // just outside the disc round the light (four taps 2.5 x its radius out, the dimmest): a
-                                // cloud lit by the flame or by the Moon is smooth across the disc, a flame is a compact spot
-                                // many times brighter. Real clouds near a flame keep their reflection.
-                                float dom = 1.0;
-                                {
-                                    vec3  lc   = mat3(pc.skyView) * (Lc / dL);
-                                    float tHF  = tan(pc.fovYRad * 0.5);
-                                    vec2  lu   = vec2(lc.x, -lc.y) / (-min(lc.z, -1e-3) * tHF * 2.0);
-                                    vec2  lUV  = vec2(lu.x / pc.aspect + 0.5, lu.y + 0.5);
-                                    float off  = 2.5 * rad / (2.0 * tHF);
-                                    const vec3 kL = vec3(0.2126, 0.7152, 0.0722);
-                                    float ring = 1e30;
-                                    for (int q = 0; q < 4; ++q) {
-                                        vec2 o = (q < 2) ? vec2((q == 0 ? -off : off) / pc.aspect, 0.0) : vec2(0.0, q == 2 ? -off : off);
-                                        ring = min(ring, dot(texture(cloudTargetA, clamp(lUV + o, vec2(0.001), vec2(0.999))).rgb, kL));
-                                    }
-                                    dom = smoothstep(3.0, 10.0, dot(rCA.rgb, kL) / max(ring, 1e-12));
-                                }
-                                rEmitBad = max(rEmitBad, (1.0 - smoothstep(rad, 1.6 * rad, angE)) * smoothstep(0.03, 0.10, angS) * dom);
-                            }
-                        }
-                        vec4  wq = wB * (1.0 - emK)
-                                 * clamp(1.0 - gT, 0.0, 1.0) * vec4(lessThan(ga, vec4(50000.0)));
-                        float ws = wq.x + wq.y + wq.z + wq.w;
-                        rKf = (ws > 1e-6) ? dot(wq, vec4(1.0) - exp(-ga / 40.0)) / ws : 1.0;   // alpha: signed distance, km
-                        rHasCloud = clamp(ws * 3.0, 0.0, 1.0);
-                    }
-                    rCA.rgb   *= 1.0 - rEmitBad;                          // (the misplaced lights, above)
-                    reflCloudT = mix(reflCloudT, vec3(1.0), rEmitBad);
-                    rKf = mix(rKf, 1.0, 0.7 * seaRough);   // a rough sea blurs the clouds in it away
-                    rKf = mix(rKf, 1.0, 0.3 * smoothstep(3000.0, 30000.0, dist));   // review 22b: and far out, more of it
-                    rKf = mix(1.0, rKf, onS * hitK);       // no cloud met along the ray: the clear march
-                    rHasCloud *= hitK;
-                    dbgReflUV = vec3(fract(reflScreenUV * vec2(textureSize(cloudTargetA, 0))), rKf);
-                    // The air in front is dimmed where there is cloud in the reflection or it is off screen; a clear
-                    // on-screen reflection keeps the clear march (the sky there is known to be clear).
-                    float frontK = mix(1.0, ovcK, max(1.0 - onS, rHasCloud));
-                    reflColor  = clearRefl * (frontK * rKf + (1.0 - rKf) * reflCloudT) + rCA.rgb * (1.0 - rKf);
                     reflTerrainOccl = mix(1.0, (texture(sceneDepthTex, reflSkyUV).r >= kNoSurfaceT * 0.5) ? 1.0 : 0.0, onSSky);
                 }
 #endif

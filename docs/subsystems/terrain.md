@@ -839,36 +839,38 @@ the fix — see `docs/HARNESS.md`, *Gotchas* → `time sun`.
   a ~1000-km grazing path made the extinction far too high and the reflected horizon tan (streaks on every
   steep face — the "tan patches" were pre-existing). The on-screen clouds are composited into the reflection,
   leaning back to the clear march by the cloud's distance (the target lacks the air in front of it).
-- **The reflected clouds are found along the reflected RAY** (2026-11-12, issues 20261112_220250 / _220359). The
-  lookup at the mirrored DIRECTION assumed every cloud at infinity: a cumulus 1-2 km up and 5-60 km out was read
-  where the camera sees it, not where this sea point's ray meets it, so the sea drew bright blobs in a band just
-  below the horizon under no cloud, and they slid and changed shape with camera motion ("screen-space"). The ray is
-  sampled where it crosses 0.3 / 0.9 / 1.6 / 2.6 / 5 km, each sample projected into the camera and tested against
-  cloudTargetA.a (km) there: the first sample within [-max(200 m, 2%), +max(2.5 km, 30%)] of the visible cloud's
-  distance is the hit, refined by one bisection; the cloud reads (B, A, gather, smear, emissive tests) happen at the
-  hit's UV. No hit with the ray on screen = clear (the clear march); a ray that leaves the frame fades to the
-  off-screen fallback by where it left. The terrain test still reads the mirrored direction. Clouds hidden from the
-  camera behind nearer ones are not reflected. Measured (RTX 3070 Ti, 1920x1009, interleaved, 5 reps, 220250 shot 1):
-  sky +0.23 ms, GPU +0.09 ms (A-A spread +-0.24); a first cut with 8 samples, two bisections and a transmittance fetch
-  per sample cost +0.86 ms. Pitch test at shot 3 (exposure-normalised, the same sea seen at el -1.7 vs -16.7 deg):
-  mean |d| 11.8 -> 4.4 levels; vs +13.3 deg 2.2 -> 1.5. 220359 path, band below the horizon, 2-frame change
-  (16-px blur) 2.3 -> 1.3 levels. The reflections now stand under their clouds as columns, so the band's row contrast
-  is unchanged (s3 7.8 -> 8.9); the near sea that mirrored the frame-top cloud is bluer (s3 open sea -9%).
-- **The reflected ray's hit test is soft** (2026-11-14, issue 20261114_112348). Near the horizon a sample reaches its
-  altitude ~a/angle away, so its distance changes ~10% per sea row; a yes/no test on the nearest texel with a -2% /
-  +30% window made each hit a band a few rows deep whose edges followed the half-res texels' distances, magnified
-  ~4x vertically by the grazing reflection (the 300 m sample maps a sea row to ~1/4 of a sky row): reflected
-  patches cut off flat, in stair steps (debug view 50 with r = hitK read only 0 or 1). Now the visible cloud's
-  distance is interpolated over the four gathered texels (cloud texels only; their bilinear share is the cover),
-  the window's edges ramp over 10% of that distance (smoothstep), the strongest sample wins (a full hit still stops
-  the search), hitK is that weight, and the bisection blends its two candidates by a soft (25%-wide) version of its test.
-  Measured (RTX 3070 Ti, 1920x1009, interleaved, 3 reps, the issue's shot): GPU 22.98 -> 23.01 ms (+-0.3), sky
-  7.59 -> 7.67 ms, 168 registers either way. Hard flat cuts in the patch band (|dL/dy| > 10 in runs >= 6 px) 3186 ->
-  1877; 220250 pitch test 2.46 -> 2.40; 220359 path 2-frame change (blur16) 1.35 -> 1.53 (+0.1..0.2, run-to-run
-  noise ~0.15); the issue's own path 5.7 -> 5.2. Ramps of 25% / 50% soften the outlines more (flat cuts 1236 at 25%)
-  but add partial hits under the rough sea's per-pixel reflected directions (the hit map is wave noise there):
-  220359's path change +20-27%. Still open: a reflected cloud whose visible surface is nearer than every sample
-  (its inside, seen from the sea) is missed, so far-sea patches can show as outlines with clear sea inside.
+- **The reflected clouds come from a low-resolution march along the mirrored ray** (2026-11-15, cluster c01, issues
+  20261114_233558 / _234423; `cloud_v2_searefl.comp`, "clouds_v2.sea_refl_march" 1). Per quarter-resolution pixel of the
+  frame plus 25% past each edge, the view ray meets the sea-level sphere, is mirrored about its normal, and the coarse field
+  (`cv2Field`, detailAmt -1, footprint a quarter of the step; the clipmap's layer mask skips known-empty air) is read at 14
+  u^2-spaced, per-frame-jittered points from the shell entry to 160 km. Lighting comes from existing structures, not a light
+  march: the key light's optical depth is max(the Sun transmittance volume's, the sample's own column to its top along the
+  light), the column giving way to the volume as the footprint grows past 100-800 m (the volume's rays are cell MEANS: alone
+  it lit deck bases ~2x too bright, 178 vs the sky's 128 levels at 20 deg in a mirror-only render; the column alone darkened a
+  broken far field, ~110 vs ~150), its diffuse field as `cv2DiffuseField` (the depth away from the light = the cloud below
+  the sample), the Sun / sky table's hemispheres with the cloud-over-ground map's deck above (`cv2VtUpCell`) and bounce
+  (`cv2VtAt4`), the Moon as key below -0.12 Sun at the eye, city light from below. Each sample is weighted e^(-t / 40 km)
+  for the air in front (the old lean); the output is rgb = the clouds' light, a = the share of the sky pass's clear
+  reflected-sky march still seen: the gaps plus the air in front, which takes the Sun transmittance volume's shadow at 25%
+  / 75% of the way to the first cloud (an overcast's shadowed air). It accumulates over frames (weight 0.2), reprojected as
+  an Earth-fixed point (the resolve's geometry). Rows past the limb continue the ray from the limb point (even about the
+  horizon). It lives in the FAR LAYER's image (`cv2FarImg`, march set 21 / sky set 29): two regions written in turn, never
+  while the far layer runs (`CloudV2Params.shade.w` = 0 off, else 1 + 2 x region + 4 x history; off above 30 km, with clouds
+  v2 off, or the setting at 0, where the sea mirrors the clear march x the cloud-shadow dimming). sat_sky.frag maps the
+  WAVY sea's reflected ray back to the flat sea's view ray whose mirror it is (its depression at least 0.8 x the view's own:
+  near facets mirroring the horizon read its bright air band, white speckle that changed with every wave phase), reads it
+  bilinearly with +-1 vertical taps spread by distance and roughness, and composes clear x a + rgb. Nothing on screen is
+  read, so nothing off screen or hidden is missing; flames and engine lights are not in it (their own glint draws them).
+  Measured (RTX 3070 Ti, 1920x1009, 233558 shot 1, interleaved, 3 reps): the pass 0.52-0.55 ms; GPU 24.5 -> 21.7-22.2 ms
+  against the screen-space composite (its sky 10.6-11.0 ms vs 7.7-7.9; an earlier app measured that sky at 8.4 and the
+  difference at -0.1 ms with a pass of 0.32 ms before the margin); sat_sky 255 registers either way, -17.6 KB binary;
+  SKY_LITE SPIR-V byte-identical. Hard flat cuts in the patch band (|dG/dy| > 10 in runs >= 6 px, debug view 50, h+3..h+56)
+  4197 / 4982 -> 3098 / 2086 (shots 1 / 2), and after a 5x5 median (the wave speckle removed) 4171 / 3449 -> 257 / 21: no
+  outline left, the rest is +-10-level wave texture. The trail's 2-frame change (blur16) 6.92 -> 6.08 just below the horizon,
+  7.77 -> 3.93 below that. 220250 shot 3 pitch test (exposure held) 0.94 -> 1.15 against a same-pose 30-frame floor of 0.75
+  -> 1.05 (the pitch's own share 0.19 -> 0.10); with auto exposure 3.36 -> 4.39 (the exposure ratio 1.26 left in the AgX
+  curve, larger on the higher-contrast sea). Still open: lightning in clouds is not reflected; the near sea under an
+  overcast with a bright far gap glitters more than before (facets mirroring the gap).
 - **The satellite ocean-glint loop is skipped when its result is zero** (day, or above ~8 km): 512 entries x two
   texture fetches per ocean pixel cost 6 ms of the sky pass from orbit (the `water_map` knockout "saved" it only
   because it turns the sea into cheaper terrain).

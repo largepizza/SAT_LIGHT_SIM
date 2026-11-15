@@ -668,6 +668,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     }
     cv2TshPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_terrsun.comp.spv", cv2MarchPipeLayout);
     cv2FarPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_far.comp.spv", cv2MarchPipeLayout);
+    cv2SeaReflPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_searefl.comp.spv", cv2MarchPipeLayout);
     {   // The clipmap's two passes: specialization constant 2 = 0 check, 1 bake.
         const uint32_t spec0[3] = {0u, 0u, 0u}, spec1[3] = {0u, 0u, 1u};
         cv2CdcPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_cdc.comp.spv", cv2MarchPipeLayout, spec0, 3);
@@ -833,6 +834,7 @@ void SatelliteSim::createCloudsV2Targets(VulkanContext &ctx)
     frameSafeUpdateDescriptorSets(dev, (uint32_t)(sizeof(w) / sizeof(w[0])), w, 0, nullptr);
     cv2ScreenResetOnly = cv2ScreenResetOnly || cv2HistoryValid;   // the Sun shadow grids keep (recordCloudsV2 params)
     cv2HistoryValid = false;
+    cv2SeaReflRanLast = false;   // (the far layer's image is new: no reflection history in it)
 }
 
 void SatelliteSim::destroyCloudsV2Targets(VkDevice device)
@@ -989,6 +991,7 @@ std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::s
     swap(cv2TshPipeline, "shaders/cloud_v2_terrsun.comp.spv", cv2MarchPipeLayout, nullptr);
     cv2SunLutKey[0] = -1.0f;   // bake it again with the new shader
     swap(cv2FarPipeline, "shaders/cloud_v2_far.comp.spv", cv2MarchPipeLayout, nullptr);
+    swap(cv2SeaReflPipeline, "shaders/cloud_v2_searefl.comp.spv", cv2MarchPipeLayout, nullptr);
     if (cv2CombinePipeline)
         swap(cv2CombinePipeline, "shaders/cloud_v2_combine.comp.spv", cv2CombinePipeLayout, nullptr);
     for (int m = 0; m < 2; ++m)
@@ -1088,6 +1091,8 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     cv2TshPipeline = VK_NULL_HANDLE;
     if (cv2FarPipeline) vkDestroyPipeline(device, cv2FarPipeline, nullptr);
     cv2FarPipeline = VK_NULL_HANDLE;
+    if (cv2SeaReflPipeline) vkDestroyPipeline(device, cv2SeaReflPipeline, nullptr);
+    cv2SeaReflPipeline = VK_NULL_HANDLE;
     if (cv2CdcPipeline) vkDestroyPipeline(device, cv2CdcPipeline, nullptr);
     if (cv2CdcBakePipeline) vkDestroyPipeline(device, cv2CdcBakePipeline, nullptr);
     cv2CdcPipeline = cv2CdcBakePipeline = VK_NULL_HANDLE;
@@ -2292,6 +2297,16 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // the boot at rain_particles.vert's pipeline. clouds.md "Cumulus envelope".)
     p.shade = glm::vec4(std::clamp(cv2SkyLightHue, 0.0f, 1.0f), std::clamp(cv2MsSideEscape, 0.0f, 0.4f),
                         std::clamp(cv2CuEnvTowers, 0.0f, 0.9f), 0.0f);
+    {   // w: the sea's cloud reflection (cloud_v2_searefl.comp), 0 = not run this frame, else 1 + 2 x the region it writes
+        // + 4 x its history valid (it ran last frame into the other region). Not with the far layer (it owns the image
+        // then), from above 30 km (the reflected clouds are the ones under the eye), or with clouds v2 off.
+        const bool on = cv2SeaReflMarch > 0.5f && cv2SeaReflPipeline && cv2MarchPipeline && !cloudsV2Off()
+                        && cloudFarBlend() <= 0.0f && eyeH < 30000.0;
+        if (on) cv2SeaReflRegion ^= 1u;
+        cv2SeaReflMode = on ? 1.0f + 2.0f * (float)cv2SeaReflRegion + (cv2SeaReflRanLast ? 4.0f : 0.0f) : 0.0f;
+        cv2SeaReflRanLast = on;
+        p.shade.w = cv2SeaReflMode;
+    }
     // Fibrous cirrus (cirrus-hurr, 2026-11-05). (z / w and ciHu2.x: the hurricane CDO plate's top, retired 2026-11-08 with the plate.)
     p.ciHu  = glm::vec4(std::clamp(cv2CirrusFibres, 0.0f, 2.0f), std::clamp(cv2CirrusHooks, 0.0f, 2.0f), 0.0f, 0.0f);
     p.ciHu2 = glm::vec4(0.0f, std::clamp(cv2CuCore, 0.0f, 1.0f), std::clamp(cv2CuBubbleWarp, 0.0f, 400.0f), std::clamp(cv2CuHeadWidth, 0.0f, 1.0f));
@@ -3076,7 +3091,20 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     }
-    cv2PassStampTo(cmd, 1);   // Sun LUT + far layer
+    // The sea's cloud reflection (2026-11-15): quarter-res, into two regions of the far layer's image (it never runs with
+    // the far layer: cv2SeaReflMode), read by sat_sky.frag (imageLoad) this frame.
+    if (cv2SeaReflPipeline && cv2SeaReflMode > 0.5f)
+    {
+        memoryBarrier(cmd, VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_SHADER_WRITE_BIT,
+                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2SeaReflPipeline);
+        // (the frame + 25% past each edge at quarter resolution: (3 x size + 7) / 8, == the shader's)
+        const uint32_t qw = (3 * ctx.swapExtent.width + 7) / 8, qh = (3 * ctx.swapExtent.height + 7) / 8;
+        vkCmdDispatch(cmd, (qw + 7) / 8, (qh + 7) / 8, 1);
+        memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    }
+    cv2PassStampTo(cmd, 1);   // Sun LUT + far layer + the sea's cloud reflection
     // At full blend the layer is the clouds: no march, no resolve (cloud_march.comp fades their output out by
     // farBlend, so the stale resolved image is never seen). The history restarts on the way back down.
     if (farBlend >= 0.999f)

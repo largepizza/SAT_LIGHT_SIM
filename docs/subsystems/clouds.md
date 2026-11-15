@@ -2901,6 +2901,10 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   0.86 r 0.55, 0.19 / 0.61 r 0.59, 0.14 / 0.37 r 0.86). A diagnostic far shader that integrates cv2FieldLow down each
   ray (`harness_runs/iss173412/mkdiag.py`) checks the edge against the march at any "Detail" (mask IoU 0.78 / 0.95 / 0.69-0.75
   at 0.77 / 0 / 1.5).
+- **The far layer's image also holds the sea's cloud reflection** (2026-11-15, `cloud_v2_searefl.comp`; terrain.md "The
+  reflected clouds come from a low-resolution march"): two quarter-res regions at its top-left, written only on frames the
+  far layer does not run (`CloudV2Params.shade.w` says which; the dispatch sits with the far layer's, pass timer "lut_far").
+  Anything that makes the far layer run lower down must move the reflection out of this image first.
 - **The far-layer pass is skipped below a visible share** (`clouds_v2.far_layer_min_blend` 0.004; 2026-11-09, issue
   20261109_184851, commit c1bb3a8; 0 = the old behaviour). `cloudFarBlend()` returns 0 below the threshold and rescales
   above it (continuous, still reaches 1). With the user's range 600 .. 8900 km the share was 0.0008 at 733 km and 0.003

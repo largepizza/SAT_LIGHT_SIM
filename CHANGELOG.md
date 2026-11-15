@@ -357,7 +357,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   shadows, snow and rock, close-up ground textures; lakes at their own level and 10 m coastlines, beaches; the
   night side lit by the Moon and the night sky.
 - **The sea.** Seamless waves however far you travel, a sea state that follows the weather, whitecaps, breaking
-  surf, a physical Sun glitter path, sky and cloud reflections, a rougher, darker sea toward the horizon.
+  surf, a physical Sun glitter path, sky and cloud reflections, a rougher, darker sea toward the horizon. The clouds in
+  the sea are found by following each reflected ray up through the clouds, so storms and rain reflect as soft dark
+  patches under their clouds (no banded strips with hard outlines that reshape as you move), including clouds off
+  screen or hidden behind nearer ones.
 - **Procedural cities.** Street grids, lamp posts in sodium and LED colours, signs and traffic lights, real major
   roads, rooftops, yards and tree crowns by day, nine regional styles; distant cities glitter as fields of crisp
   points; cities stop at the foot of the mountains. **Farmland** in regional styles and **solar parks** at the
