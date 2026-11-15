@@ -1173,7 +1173,14 @@ void main()
             // CV2_FAINT_STRIDE steps. Haze this thin is lit without its own shadow and adds under 1% of opacity a step, but
             // a grazing ray took a fine step and a field read for each: from 6.5 km over a deck 22 of the 23 samples a ray
             // kept were faint. (The user: "haze is haze, so the look can be cheapened where it can".)
-            if (CV2_FAINT_STRIDE > 1.0 && fine && f.thin <= 0.5 && f.sigma * cv2.light.x < CV2_FAINT_OD) {
+            // NOT PAST THE VERTICAL CAP (2026-11-15, issue_20261115_015822, cluster c03 "faintcontour"): the strided step spans
+            // at most kMaxVertStep of altitude, like any step. A stride skips the position after the faint sample, and a thin
+            // dense sheet there (a cumulus skirt under its faint margin, opaque where a ray meets it) was met at half the rate:
+            // the haze's own weight doubles, a missed sheet's does not. Looking down from 7.7 km at density 0.22 the skirts were
+            // thinned and see-through along their outlines (dark contour lines on the sea), the view's mean cloud transmittance
+            // 174 vs 156 levels without the stride (28 vs 15 at 0.5). Grazing rays through haze (the stride's purpose) keep it.
+            if (CV2_FAINT_STRIDE > 1.0 && fine && f.thin <= 0.5 && f.sigma * cv2.light.x < CV2_FAINT_OD
+                && CV2_FAINT_STRIDE * stepF * dz <= kMaxVertStep) {
                 pathLen += (CV2_FAINT_STRIDE - 1.0) * stepF;
                 stepW = max(stepW, CV2_FAINT_STRIDE * stepF);
             }

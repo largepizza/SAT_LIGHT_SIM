@@ -837,6 +837,24 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     pixels; the floor in brackets): shot 5 0.50 / 0.22% (0.34 / 0.05%), overcast 6.5 km and dense 2 m at the floor, shot 1
     (733 km) 1.50 / 3.2% (0.73 / 0.4%): the faint veil between puffs changes grain. The user picks 2 or 3 from pairs
     (sent 2026-11-10); the user kept 2.
+    **The strided step stays under the vertical cap** (2026-11-15, issue_20261115_015822, cluster c03 "faintcontour"):
+    a stride is taken only while `CV2_FAINT_STRIDE x stepF x dz <= kMaxVertStep` (200 m of altitude, the cap every step
+    has). A stride skips the position after its faint sample, and what is skipped is not always faint: a thin, dense
+    sheet under a faint margin (a cumulus skirt at a low density, opaque where a ray meets it) was met at half the rate,
+    and the doubled weight of the haze sample does not stand in for an opaque sheet it missed. Looking down (el -71,
+    FOV 120) from 7.7 km over the Antarctic coast at the reporter's density 0.22 the skirts were thinned and see-through
+    along their outlines, dark contour lines on the sea, in the raw march as much as settled (cloudtrans mean 174 levels
+    with the stride, 156 without; at the 0.5 baked since, 28 vs 15; weighting the haze sample x1 instead of x2 gave 174
+    too: the haze's own opacity is not what moved). Tried: backing
+    up when the sample after a stride was no longer faint (only partly: 13.4 of 18.6 levels left; 255 registers);
+    deciding the stride from the PREVIOUS sample (unbiased for thin media, no help for an opaque sheet: hit rate, not
+    weight); striding only where density does not rise (255 registers). Gate thresholds (one step's altitude): 12-100 m
+    match the no-stride image at the report's view (|d| 1.3 levels = the A-vs-A floor), 150 m does not (15.5). Cloud
+    march (1920x1009, RTX 3070 Ti, interleaved x3, ms): the report's view 10.56 -> 11.00 (no stride at all: +0.39), at the
+    density-0.5 look 10.44 -> 10.68; Brisbane inside the mid layer (6 km, el -4) 11.62 -> 11.74 / 11.62 -> 11.97 at 0.5
+    (no stride: +1.32); cumulus from 4.5 km at el -45 (0.5) 9.39 -> 9.59; issue_20261109_184851 shot 5 (orbit, where the
+    stride saves ~5 ms) 24.62 -> 24.60. Elsewhere the image is at the A-vs-A floor (bk6, cumulus from 3 and 4.5 km: 0.3-0.5
+    vs 0.5-0.7 levels). 128 registers. harness_runs/c03 in the faintcontour worktree.
   - **No sky probe under a large pixel** (`CV2_PROBE_FP` 250.0 in cloud_v2_march.comp, lightAmbOD; 0 = always read). The
     light march's read 250 m above the sample (sigUp, the sky light's occlusion) is skipped where the sample's footprint
     is past 250-500 m (the threshold jittered per visit, so no ring round the nadir): from ~250 km up the read is inside
@@ -1806,6 +1824,10 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   base-vs-base floor at every view up to 1.0; 0.5 changed cumulus lobe rims seen from 3 km): from 6 km INSIDE the mid layer
   (Brisbane, -27.5 153.0 at 02:06 UTC, az 60 el -4; its haze was 25 of 34 ms) 33 -> 25.5 ms; matrix suite total -4.2 ms,
   every quality metric unchanged (harness_runs/mxc/on vs fo02).
+  At low densities (0.22-0.5, 2026-11-15) the lighting skip was A/B'd as the cause of the contour lines round thin cumulus
+  skirts (issue_20261115_015822): lighting faint samples fully (light march + diffuse field, the faint stride kept) left
+  them, and so did giving faint samples the diffuse field from a uniform-medium estimate; the cause was the faint STRIDE
+  (cluster c03; "Faint stride" above, "The strided step stays under the vertical cap").
 - **Storms between decks (2026-11-04, issue 20261104_020257 "Performance in storms": 4.85 km over KwaZulu-Natal at sunrise,
   the reporter's High settings, FOV 120, 1920x1009, RTX 3070 Ti; worktree storm-perf, `harness_runs/storm/`).** A storm view
   costs 2-3x an ordinary cloud view because its layers are TRANSLUCENT and STACKED, not because they are layers: the march is
