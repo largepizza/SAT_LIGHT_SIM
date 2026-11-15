@@ -5865,6 +5865,38 @@ void main() {
         // 5-km texels (user snapshot 5, Tokyo from 527 km).
         bool  cityLand   = tHit > 0.0 || (tSeaLvl > 0.0 && (waterPx == 0
                          || (waterPx < 0 && textureLod(earthSpecTex, uvTaa0, 0.0).r <= 0.5)));
+        // The NIGHT LIGHTS' land test, at the unjittered point like the pattern itself (issue_20261114_162442: city
+        // lights on a coast flickered, ~7x the inland frame-to-frame change from orbit). The pixel's own sea / land
+        // choice is made at the JITTERED sample (the march's waterPx, or the water map through textureGrad below), so a
+        // light within half a pixel of the shore was drawn in the phases whose sample fell on land and replaced by the
+        // sea in the others — and on a sea sample the resolve clips the history (sim time running) and caps a lone
+        // bright sample (moving): the light blinked. cityLand0 is the lights' land at uvTaa0; a lit pixel there takes
+        // the land path below whatever its sample hit, and a pixel whose unjittered point is water draws no lights.
+#ifndef SKY_LITE   // (Planetarium: no TAA, and its SPIR-V budget)
+        bool  cityLand0  = cityLand;
+        bool  cityCoastK = false;   // lit city land at the unjittered point: never the sea branch
+#endif
+#ifdef SKY_TAA
+        if (taaUnj && twilightFrac < 1.0 && cityLum > 1e-5 && tSeaLvl > 0.0) {
+            if (waterPx >= 0) {   // no march (waterPx -1): cityLand is already the water map's test at uvTaa0
+                // The march's own test (tdDemAt), only where the shore can lie between the two points: the water map's
+                // signed shore distance within the coves' reach (tdShoreOffset, 1.6 x 700 m) + the jitter's offset + 1 km
+                // of the field's own error. Farther out both points are on the same side and the march's decision stands:
+                // run on every city pixel within ~15 km of water (or wherever a launch coast patch is loaded, which is
+                // most of the US east coast) it cost +0.3 ms of the sky pass at Norfolk from 3 km. Not widened for a
+                // storm surge's or a coast patch's moved shore: there a light more than ~2 km from the map's shore keeps
+                // the jittered choice, as before.
+                float sd0 = (textureLod(earthSpecTex, uvTaa0, 0.0).r - 0.5) * 2.0 * kShoreSdfMaxM;
+                if (abs(sd0) < 1.6 * kTdShoreNoiseM + length(taaDn) + 1000.0) {
+                    vec3  q0 = (tHit > 0.0 ? terrainQ : vec3(0.0, 0.0, obsEffH + 2.0) + tSeaLvl * dir) - taaDn;
+                    float h0u, h3u;
+                    tdDemAt(earthElevTex, earthSpecTex, q0, enuX, enuY, enuZ, h0u, h3u);
+                    cityLand0 = h3u > kTdWaterMark && !seaLevelDayDunk(h0u, h3u, q0, enuX, enuY, enuZ);
+                }
+            }
+            cityCoastK = cityLand0;
+        }
+#endif
         // ── Solar PV parks (2026-10-02): the reflector targets of kind "solar" (fillSolarSites) ─────
         // Rows of glass over graded ground, at every distance (a park is a dark patch from orbit too). The
         // glass's specular lobe takes the Sun below and the Reflect beams in the ground-spot loop.
@@ -5905,7 +5937,7 @@ void main() {
         // Not gated on the terrain detail (2026-10-04): Low and Planetarium (SKY_LITE) draw the same city lights
         // as Medium. Without the pattern their cities were the night map's 5-km blobs; the pattern costs ~1 ms.
 #if !defined(SKY_ENV) && !defined(SKY_LITE)   // env / Planetarium: no procedural city
-        if (cityLand && cloud.cityLightsStrength > 0.0 && cityLum > 1e-5) {
+        if ((cityLand || cityCoastK) && cloud.cityLightsStrength > 0.0 && cityLum > 1e-5) {
             float cT = tHit > 0.0 ? tHit : tSeaLvl;
             cQ    = tHit > 0.0 ? terrainQ : vec3(0.0, 0.0, obsEffH + 2.0) + tSeaLvl * dir;
             cQ   -= taaDn;   // the pattern (layout, lamp lines, glitter) at the unjittered pixel (uvTaa0)
@@ -6335,6 +6367,9 @@ void main() {
         // layout, the ground textures) and follow its shading normal (terrain relief, detail, micro bump).
         vec3 cityPool = vec3(0.0);
         if (twilightFrac < 1.0) {
+#ifdef SKY_TAA
+            if (!cityLand0) cityLights = vec3(0.0);   // water at the lights' (unjittered) point: none
+#endif
             float cNUp = dot(shadingN, normalize(hitPt));
             // The procedural lights take the map's BRIGHTNESS only; their colour is the lamps'. The map's
             // blue base is not uniform, so its subtraction leaves pure-blue (or red) residue at a city's
@@ -6508,7 +6543,13 @@ void main() {
         // getNormal: central differences on seaMapDetail (5 octaves).
         // getSeaColor: kSeaBase refraction + atmosphere reflection + specular.
         float oceanMask = textureGrad(earthSpecTex, uvSurf, uvd_dx, uvd_dy).r;
+        // Not where the night lights' unjittered point is lit city land (cityCoastK): the sea there took a coastal light
+        // in some jitter phases only (issue_20261114_162442).
+#ifdef SKY_TAA
+        if ((waterPx >= 0 ? waterPx == 1 : oceanMask > 0.5) && tHit < 0.0 && !cityCoastK) {
+#else
         if ((waterPx >= 0 ? waterPx == 1 : oceanMask > 0.5) && tHit < 0.0) {
+#endif
             vec3  surfUp  = normalize(hitPt);
             float dist    = tSeaLvl;
             float seaTime = 1.0 + pc.waveTime * kSeaSpeed;

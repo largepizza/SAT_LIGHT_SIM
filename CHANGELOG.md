@@ -586,6 +586,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- City lights along a coast no longer flicker (issue_20261114_162442, most visible from orbit in the intro's last
+  shot). Each frame the temporal anti-aliasing samples a slightly different point inside every pixel, and a light
+  within half a pixel of the shore was drawn whenever that point fell on land and replaced by the sea whenever it fell
+  on the water. The lights now decide land or sea at the pixel's centre, as the rest of the city pattern already did.
 - Walking slowly near the ground now goes where you face, at the speed set. The observer's position was a
   single-precision vector: under ~10 m/s a step rounded away (2 m above the sea, holding W for 3 s moved 0.2 m of
   9), and up to ~30 m/s the rounding, not the heading, picked the direction (34 m on a bearing of 2.7 deg whether

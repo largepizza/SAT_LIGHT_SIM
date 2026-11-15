@@ -673,6 +673,24 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   test at that point) is a terrain hit there, and only water voids a hit (`hitWater`). Land can read 0 m
   (the Lena delta: DEM 0, the water map land), and whether the march landed on the sphere or passed it was
   step luck — terrain shading or the flat sea-level land path: rings about the nadir and z-fighting.
+- **City lights on a coast: land / sea at the UNJITTERED point (2026-11-14, issue_20261114_162442, sat_sky.frag
+  `cityLand0` / `cityCoastK`, SKY_TAA only).** The city pattern is evaluated at the unjittered pixel (uvTaa0, taaDn),
+  but the pixel's sea / land choice is made at its jittered sample (the march's `waterPx`, or past the march the water
+  map through `textureGrad` at uvSurf). A light within half a pixel of the shore was drawn in the phases whose sample
+  fell on land and replaced by the sea in the others, and on a sea sample the sky TAA clips the history (sim time
+  running) and caps a lone bright sample (moving): coast lights blinked ("z-fighting near the coast", the intro's last
+  beat from 638 km). Now the night lights' land test is made at the unjittered point too: past the march it is
+  `cityLand` itself (the water map at uvTaa0); inside it, `tdDemAt` at the unjittered point, only where the water map's
+  signed shore distance is within 1.6 x 700 m (the coves) + |taaDn| + 1 km (run on every city pixel near water it cost
+  +0.3 ms of the sky pass at Norfolk from 3 km, because a launch coast patch is loaded along the whole US east coast).
+  A pixel whose unjittered point is LIT city land (night, map light) never takes the sea branch; one whose unjittered
+  point is water draws no city lights. Measured at the shot (mean |frame-to-frame diff| of lit pixels, 0-255): coast
+  3.6 -> 0.04 time frozen, 6.2 -> 1.2 time running (inland 0.16 / 1.05); the reporter's 12-s trail 6.1 -> 1.2 (inland
+  1.1); area mean -0.9% (the smear of light along the shoreline is gone, the points unchanged); sky pass +0.05 ms at the
+  shot, +0.07 at Norfolk 3 km (GPU totals within the A-A spread). Not widened for a storm surge's or a coast patch's moved
+  shore. Planetarium (SKY_LITE) has no TAA and is unchanged (SPIR-V byte-identical). The far city flicker left at
+  Norfolk from 3 km (~4-6 levels, 20+ km out) is the grazing-angle case (|cos| < 0.2, the pattern jittered on purpose)
+  and is the same inland at that distance: not a coast effect.
 - **Ocean waves ride the world offset (review 9):** `seaMap` reads hitPt.xy + (cloud.pad1, pad2), the
   observer's cumulative east/north motion (CPU double, now from obsDir projected on the previous frame's
   east/north; it was the difference of float degrees, ~1 m steps). The old phase (float lat/lon x R,
