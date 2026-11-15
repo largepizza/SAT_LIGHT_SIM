@@ -262,17 +262,8 @@ void SatelliteSim::camLevelTick(float dt)
 {
     if (!camRigInit)
         camSync();
-    const bool on = camLevelActive();
-    // Crossing the auto-level height (or the setting): say so once, so roll's arrival is not a mystery.
-    if (camLevelWas >= 0 && (int)on != camLevelWas && camLevelEnabled && !showIntro && !cineActive() && !harnessRunner_)
-    {
-        snprintf(screenshotToastText, sizeof(screenshotToastText), on ? tx(Txt::ToastHorizonLevelOn) : tx(Txt::ToastHorizonFree),
-                 (double)camLevelAltKm);
-        screenshotToastTimer = 4.0f;
-        screenshotToastWarn = false;
-    }
-    camLevelWas = on ? 1 : 0;
-    if (!on)
+    // (No toast when the eye crosses the height: the user turned it down, 2026-11-14.)
+    if (!camLevelActive())
         return;
     const double k = levelWeight(camFwd, camEyeDir);
     if (k <= 0.0)

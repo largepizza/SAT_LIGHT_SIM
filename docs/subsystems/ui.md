@@ -370,7 +370,7 @@ the camera's right, stopping at +-89 deg, and `camLevelTick` eases any roll to l
 of the vertical where roll is the heading: 60 deg -> 51 in 3 frames -> 4.9 after 1 s). Off (above, or switched off):
 yaw / pitch about the camera's own axes, no pitch limit (pitching past the nadir comes out upside down, roll 180), and
 Z / C (`KB_ROLL_LEFT` / `RIGHT`, held, 45 deg/s, boost x2, fine x0.25; key layout 3 moved Reset Elevation Z -> X and
-dropped Toggle Cursor's C) roll. A toast names the switch when the eye crosses the height. Blending the yaw to the
+dropped Toggle Cursor's C) roll. No toast at the crossing (one was tried; the user turned it down). Blending the yaw to the
 camera's up near the nadir under auto-level was tried and dropped: a sideways drag at -89 slid the view to -79 and
 swung the heading 144 deg.
 
@@ -388,7 +388,20 @@ bearing of 2.7 deg at 10 m whether facing 0 or 45 deg (the rounding chose it), 7
 (exact). **The GPU still gets the float mirror** (`obsECEFDir`): the rendered eye moves in ~0.4 m steps, a
 camera-relative (hi / lo) eye in the shaders would remove that.
 
-**Still open.** WASD walks on the heading at constant height (fly-where-you-look is phase 4). Bookmarks and
+**Fly where you look** (phase 4). W / S move along `camFwd` and A / D along the camera's right, in 3D, at any angle
+and roll; Q / E stay the pure up / down. The speed is the old arc rate on the Earth's radius, still scaled by the height
+above the ground (a dive slows toward the ground, a climb speeds up), and the ground is a floor: a step into it keeps
+its part along the ground (W looking down slides). After each step the look is carried with the ground (`camSetEyeDir`),
+so W at el 0 holds the height (follows the Earth's curve). Measured (`harness_runs/cam_p4`, 2 s of W / D): looking up 30
+from 2 m climbs at 31 deg; down 30 from 1 km descends at -30.0; down 30 on the ground drops to the floor and slides;
+level at 45 deg holds 1000.0 m on bearing 45.00; up 89 climbs at 89; D looking up 60 strafes level; D rolled 90 at
+420 km goes straight down. Until then WASD walked the heading at a constant height (a lat / lon move): pointing down
+and pressing W never brought anyone down. Inertial hold's fly (`inertialFly`) was already this; its A / D now use the
+camera's right too (rolled 90 at 420 km, D goes straight down with the view held on the stars). Stars frame verified
+(`harness_runs/cam_stars`: held and actual view / eye equal to 0.0000 deg through time, W, drag and roll; `inertial
+state` -> `actual_view_off_deg`, `actual_eye_off_deg`, `roll_deg`).
+
+**Still open.** Bookmarks and
 cinematic keys store az / el only, so they restore level. Settings load restores the elevation and position but faces
 north: `camera.az_deg` is saved and never applied (as before the rig). The pad has no roll binding by default.
 

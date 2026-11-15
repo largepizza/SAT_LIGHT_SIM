@@ -1942,8 +1942,6 @@ UI_TEXT(NoteConstellationParametersAreDrawnFromPubli, "Constellation parameters 
 
 // -- SatelliteSim.cpp (by hand) --
 UI_TEXT(ToastLeftGoTo, "Left Go to: you stay here")
-UI_TEXT(ToastHorizonFree, "Above %.0f km: the horizon is free. Z / C roll")
-UI_TEXT(ToastHorizonLevelOn, "Below %.0f km: the horizon levels itself")
 UI_TEXT(ValNoMagnitudeSimpleType, "this type has no 3D model, so it has no true magnitude.")
 UI_TEXT(ValNoMagnitudeNoTargets, "this type aims at ground sites, and none are loaded.")
 UI_TEXT(ValKindRocketStage, "Rocket stage")

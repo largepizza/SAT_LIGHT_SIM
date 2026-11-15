@@ -10,10 +10,15 @@ move and turn goes through the `cam*` setters (`SatelliteSimCamera.cpp`), and a 
 log line. WASD moves at the set speed in the facing direction at any height (2 m above the sea, 3 m/s, W for 3 s moves
 9.1 m on bearing 0.00 deg). The GPU still gets the float direction (~0.4 m steps of the rendered eye).
 
+WASD flies where you look: W / S along the camera's forward and A / D along its right, in 3D, at any angle and roll
+(look up and W climbs; look down and it descends, sliding along the ground at the floor); Q / E stay the pure up /
+down. Speed: the old arc rate on the Earth's radius, scaled by the height above the ground. Level W holds the height
+(the look is carried along the Earth's curve).
+
 Horizon auto-level (Settings > Controls: "Auto-level the horizon" `camera.auto_level`, default on; "Auto-level up to
 (km)" `camera.auto_level_km`, default 100, 10-2000): below that height the mouse yaws about the local up, pitch stops
 at +-89 deg and a roll eases back to level (tau 0.3 s). Above it, or off, the camera turns about its own axes with no
-pitch limit, and Z / C roll it (Roll Left / Roll Right, held, 45 deg/s; boost x2, fine x0.25). A toast names the switch.
+pitch limit, and Z / C roll it (Roll Left / Roll Right, held, 45 deg/s; boost x2, fine x0.25). No toast at the switch.
 The view is built from the look and up vectors, so there is no snap near the zenith / nadir (the old view turned by
 the azimuth across |el| = 88 deg). Key layout 3: Reset Elevation Z -> X, Toggle Cursor has no key (pad Start).
 
@@ -22,7 +27,7 @@ the real code; `state` -> `camera.roll_deg`, `observer.eye_dir_ecef` (double), `
 `el_deg`, `roll_deg`, `level_active`, `level_enabled`, `level_km`, `eye_alt_m`, `adopted_writes`}.
 
 ## History
-2026-11-14, camera revamp phases 1-3 (phase 4: fly where you look). Before, `obsDir` was a float and canonical:
+2026-11-14, camera revamp phases 1-4. Before, WASD walked the heading at a constant height (a lat / lon move): pointing down and pressing W never brought anyone down. Also, `obsDir` was a float and canonical:
 walking under ~10 m/s rounded away (0.2 m of 9 in the test above) and up to ~30 m/s the rounding chose the direction
 (34 m on bearing 2.7 deg facing 0 or 45). The view was glm::lookAt from az / el with up = Up, switching to North past
 |el| 88: from 420 km, -87.9 -> -88.1 deg changed the frame by 40 levels (now 8.3). A roll audit (ground and orbit, day

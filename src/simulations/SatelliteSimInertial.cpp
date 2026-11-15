@@ -78,11 +78,10 @@ void SatelliteSim::inertialStart(bool hold)
 void SatelliteSim::inertialFly(float fwd, float right, float speedRadPerS, float dt)
 {
     const glm::dvec3 up = camEyeDir;
-    glm::dvec3 E, N;
-    enuBasis(up, E, N);
-    const double az = glm::radians((double)camera.azDeg);
     const glm::dvec3 f = inertialCamDirEcef();
-    const glm::dvec3 r = std::cos(az) * E - std::sin(az) * N; // the screen's right (horizontal), defined at any elevation
+    // The screen's right, rolled with the camera (the camera rig's; it was the horizontal right of the azimuth, which a
+    // rolled camera's D did not follow).
+    const glm::dvec3 r = glm::normalize(camRightEcef());
     const double R = satphot::kEarthRadiusM + (double)obsHeightOffset;
     const glm::dvec3 np = up * R + (f * (double)fwd + r * (double)right) * ((double)speedRadPerS * R * (double)dt);
     const double nr = std::clamp(glm::length(np), satphot::kEarthRadiusM + std::max(0.0, (double)obsTerrainH) + 2.0,
@@ -221,6 +220,17 @@ harness::Status SatelliteSim::harnessInertial(harness::Active &a)
         r["eye_ecl_lon_deg"] = std::fmod(glm::degrees(std::atan2(pe.y, pe.x)) + 360.0, 360.0);
         r["eye_ecl_lat_deg"] = glm::degrees(std::asin(std::clamp(pe.z / std::max(glm::length(pe), 1.0), -1.0, 1.0)));
         r["eye_alt_m"] = glm::length(p) - satphot::kEarthRadiusM;
+        // What the camera actually shows (the rig's look and eye, ECEF -> ECI at this moment): equal to the held
+        // view / eye while the lock works (2026-11-14).
+        const double th = earthRotationAngle(t);
+        const glm::dvec3 a = ecefToEci(camFwd, th);
+        const glm::dvec3 ae(a.x, a.y * std::cos(eps) + a.z * std::sin(eps), -a.y * std::sin(eps) + a.z * std::cos(eps));
+        r["actual_view_ecl_lon_deg"] = std::fmod(glm::degrees(std::atan2(ae.y, ae.x)) + 360.0, 360.0);
+        r["actual_view_ecl_lat_deg"] = glm::degrees(std::asin(std::clamp(ae.z, -1.0, 1.0)));
+        r["actual_view_off_deg"] = glm::degrees(std::acos(std::clamp(glm::dot(a, glm::normalize(v)), -1.0, 1.0)));
+        const glm::dvec3 ap = ecefToEci(camEyeDir, th);
+        r["actual_eye_off_deg"] = glm::degrees(std::acos(std::clamp(glm::dot(ap, glm::normalize(p)), -1.0, 1.0)));
+        r["roll_deg"] = camRollDeg();
     }
     r["camera"] = {{"az_deg", camera.azDeg}, {"el_deg", camera.elDeg}, {"fov_deg", camera.fovYDeg}};
     r["observer"] = {{"lat_deg", obsLatDeg}, {"lon_deg", obsLonDeg}, {"alt_m", obsHeightOffset}};

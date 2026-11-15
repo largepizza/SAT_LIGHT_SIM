@@ -1634,12 +1634,23 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             inertialFly(fwd, right, speed, dt); // the eye held in ECI: fly in the camera's frame (SatelliteSimInertial.cpp)
         else if (!followActive && (fwd != 0.0f || right != 0.0f)) // follow mode moves in updateFollow()
         {
+            // FLY WHERE YOU LOOK (2026-11-14, camera revamp phase 4): W / S along the camera's own forward and A / D
+            // along its right, in 3D, at any angle and roll — look up and W climbs, look down and it descends; Q / E
+            // stay the pure up / down below. Until then WASD walked the heading at a constant height (a lat / lon
+            // move), so pointing down and pressing W never brought anyone down: players stayed at one height.
+            // The speed is the old arc rate on the Earth's radius (m/s), still scaled by the height above the ground,
+            // so a dive slows as the ground nears (it never overshoots it) and a climb speeds up with height. The
+            // ground is a floor: a step into it keeps only its part along the ground (W looking down slides along it).
             // In double (the camera rig): a float unit vector could not take a step under ~0.4 m.
-            // right tangent = cross(facing, up)  (right-hand rule: forward × up = right)
-            const glm::dvec3 facing = camFacing();
-            const glm::dvec3 rightDir = glm::normalize(glm::cross(facing, camEyeDir));
-            // The heading is carried to the new place (projected onto its horizontal plane) and the elevation kept.
-            camSetEyeDir(camEyeDir + (double)speed * (double)dt * ((double)fwd * facing + (double)right * rightDir));
+            const double floorH = std::max(0.0, (double)moveGround);
+            const double h0 = std::max((double)obsHeightOffset, floorH);
+            const glm::dvec3 P = camEyeDir * ((double)kEarthRadius + h0);
+            const glm::dvec3 step = ((double)fwd * camFwd + (double)right * glm::normalize(camRightEcef())) *
+                                    ((double)speed * (double)dt * (double)kEarthRadius);
+            const glm::dvec3 np = P + step;
+            const double r = glm::length(np);
+            camSetEyeDir(np / r); // (the look and up are carried to the new place)
+            obsHeightOffset = (float)std::clamp(r - (double)kEarthRadius, floorH, (double)kMaxObsHeightM);
         }
 
         // Q/E: raise/lower observer relative to terrain; rate scales with height offset

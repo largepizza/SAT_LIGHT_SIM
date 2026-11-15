@@ -3055,7 +3055,6 @@ private:
     int camAdoptLogs = 0;                // outside writes adopted (logged; a missed setter conversion)
     bool camLevelEnabled = true;         // camera.auto_level: Settings > Controls "Auto-level the horizon"
     float camLevelAltKm = 100.0f;        // camera.auto_level_km: auto-level below this eye altitude (slot 625)
-    int camLevelWas = -1;                // camLevelActive() last frame (-1 = not yet): the toast on a change
     static constexpr double kCamRollDegS = 45.0;   // Z / C roll rate (boost x2, fine x0.25)
     static constexpr double kCamLevelTauS = 0.3;   // auto-level's ease of a roll back to level
     glm::dvec3 camFacing() const;        // the heading: the look on the horizontal plane (the screen's top near nadir)
@@ -3076,7 +3075,7 @@ private:
     void camPitch(double deg);   // + = look up (auto-level: stops at +-89)
     void camRoll(double deg);    // + = bank right
     void camSetRoll(double deg); // roll from level
-    void camLevelTick(float dt); // auto-level's ease to level, and the toast when it switches on / off
+    void camLevelTick(float dt); // auto-level's ease of a roll back to level
     void camPublish();
     void camSync();
     void buildTrackButton(const UIInput &inp, UIRenderer &ui, int idx);
