@@ -16,8 +16,8 @@
 // still seen) lives in the far cloud layer's image (march set binding 21 / sky set 29), which the far layer uses only from
 // ~600 km up, where this pass does not run: two regions at its top-left, written in turn (this frame's and the history),
 // each a quarter-resolution grid over the frame plus kSrMargin past each edge. cv2.shade.w tells the sky pass: 0 = not run (its fallback), else 1 + 2 x the region written + 4 x history valid.
-// sat_sky.frag reads it at the direction the WAVY sea's reflected ray maps to on the flat sea (its normal's perturbation),
-// spread vertically by distance and roughness.
+// sat_sky.frag reads it at the flat sea's mirror direction lifted as the waves' facets lift it on average, at a mip as wide
+// as their spread (the MIPS below; 2026-11-15 c01 reflflicker), spread vertically by distance and roughness.
 layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_v2_march.comp)
@@ -102,15 +102,9 @@ void enuOf(vec3 up, out mat3 m)
     m = mat3(x, cross(z, x), z);
 }
 
-void main()
+// One texel of the reflection (level 0), its history accumulated: what main() stores and reduces into the mips.
+vec4 srTexel(ivec2 pix, ivec2 qSize, int wReg, bool histOk)
 {
-    int   mode  = int(cv2.shade.w + 0.5);
-    ivec2 qSize = (imageSize(outRefl) * 3 + 7) / 8;   // (1 + 2 x the margin) / 4 of the frame
-    ivec2 pix   = ivec2(gl_GlobalInvocationID.xy);
-    if (pix.x >= qSize.x || pix.y >= qSize.y || (mode & 1) == 0) return;
-    int   wReg  = (mode >> 1) & 1;
-    bool  histOk = (mode & 4) != 0 && cv2.frame.y > 0.5;
-
     float tanHalfFov = tan(pc.fovYRad * 0.5);
     mat3  camToENU   = mat3(transpose(pc.skyView));
     vec2  ndc = (((vec2(pix) + 0.5) / vec2(qSize)) * (1.0 + 2.0 * kSrMargin) - kSrMargin) * 2.0 - 1.0;
@@ -135,7 +129,7 @@ void main()
         vec3 upS = normalize(sP);
         rd = dir - 2.0 * dot(dir, upS) * upS;
     } else {
-        if (dot(dir, upE) > 0.2) { imageStore(outRefl, pix + ivec2(wReg * qSize.x, 0), vec4(0.0, 0.0, 0.0, 1.0)); return; }
+        if (dot(dir, upE) > 0.2) return vec4(0.0, 0.0, 0.0, 1.0);
         vec3  hd   = normalize(dir - upE * dot(dir, upE));
         float rE   = R_EARTH + eyeH;
         float sinD = sqrt(max(1.0 - (R_EARTH / rE) * (R_EARTH / rE), 0.0));
@@ -313,5 +307,74 @@ void main()
             }
         }
     }
-    imageStore(outRefl, pix + ivec2(wReg * qSize.x, 0), outV);
+    return outV;
+}
+
+// 2026-11-15 (cluster c01 "reflflicker", issue 20261115_014814): the MIPS. sat_sky.frag reads this image where a wave facet's
+// reflection points, and the facets of the near sea mirror directions spread over tens of texels (a slope of ~10 deg turns
+// the reflection 20 deg); as the camera and the waves move, each pixel's facet changes from frame to frame. Read at that
+// point, every pixel drew a new sample of cloud or gap each frame: the near sea flickered bright and dark. sat_sky.frag
+// reads the facets' mean direction at a level as wide as their spread instead. Levels 1-3 (2, 4, 8 texels)
+// are each 8x8 workgroup's tile reduced in shared memory; levels 4-6 (16, 32, 64) the same reduction of level 3 in a
+// second, tiny dispatch (specialization constant 2 = 1, kSrMipPass). Each is the mean of the texels inside the grid,
+// stored in a row under this frame's region: level L at (region x + srMipX(L), qSize.y), (qSize + 2^L - 1) / 2^L texels
+// (== sat_sky.frag).
+layout(constant_id = 2) const uint kSrMipPass = 0u;
+shared vec4  sSum[64];
+shared float sWt[64];
+int srMipX(int L, int qx)
+{
+    int x = 0;
+    for (int l = 1; l < L; ++l) x += (qx + (1 << l) - 1) >> l;
+    return x;
+}
+// This thread's texel v (weight w) of level L0 at p: levels L0 + 1 .. L0 + 3 of the workgroup's 8x8 tile.
+void srReduce(vec4 v, float w, ivec2 p, int L0, ivec2 qSize, int wReg)
+{
+    ivec2 lp = ivec2(gl_LocalInvocationID.xy);
+    int   li = lp.y * 8 + lp.x;
+    sSum[li] = v * w;
+    sWt[li]  = w;
+    for (int k = 1; k <= 3; ++k) {
+        barrier();
+        int s = 1 << k, h = s >> 1;
+        bool parent = (lp.x & (s - 1)) == 0 && (lp.y & (s - 1)) == 0;
+        vec4  sum = vec4(0.0);
+        float wt  = 0.0;
+        if (parent) {   // its four children of the level below (weighted sums), in place: only it reads its own slot
+            int c1 = li + h, c2 = li + 8 * h, c3 = li + 8 * h + h;
+            sum = sSum[li] + sSum[c1] + sSum[c2] + sSum[c3];
+            wt  = sWt[li]  + sWt[c1]  + sWt[c2]  + sWt[c3];
+        }
+        barrier();
+        if (parent) {
+            sSum[li] = sum;
+            sWt[li]  = wt;
+            if (wt > 0.0)
+                imageStore(outRefl, ivec2(wReg * qSize.x + srMipX(L0 + k, qSize.x), qSize.y) + p / s, sum / wt);
+        }
+    }
+}
+void main()
+{
+    int   mode  = int(cv2.shade.w + 0.5);
+    if ((mode & 1) == 0) return;                      // (uniform: before any barrier)
+    ivec2 qSize = (imageSize(outRefl) * 3 + 7) / 8;   // (1 + 2 x the margin) / 4 of the frame
+    ivec2 pix   = ivec2(gl_GlobalInvocationID.xy);
+    int   wReg  = (mode >> 1) & 1;
+    if (kSrMipPass == 1u) {                           // levels 4-6 from level 3
+        ivec2 s3 = (qSize + 7) / 8;
+        bool  in3 = pix.x < s3.x && pix.y < s3.y;
+        vec4  v3  = in3 ? imageLoad(outRefl, ivec2(wReg * qSize.x + srMipX(3, qSize.x), qSize.y) + pix) : vec4(0.0);
+        srReduce(v3, in3 ? 1.0 : 0.0, pix, 3, qSize, wReg);
+        return;
+    }
+    bool  histOk = (mode & 4) != 0 && cv2.frame.y > 0.5;
+    bool  inside = pix.x < qSize.x && pix.y < qSize.y;
+    vec4  v = vec4(0.0);
+    if (inside) {
+        v = srTexel(pix, qSize, wReg, histOk);
+        imageStore(outRefl, pix + ivec2(wReg * qSize.x, 0), v);
+    }
+    srReduce(v, inside ? 1.0 : 0.0, pix, 0, qSize, wReg);
 }

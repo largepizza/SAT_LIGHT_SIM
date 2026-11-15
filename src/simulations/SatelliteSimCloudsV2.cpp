@@ -669,6 +669,10 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     cv2TshPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_terrsun.comp.spv", cv2MarchPipeLayout);
     cv2FarPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_far.comp.spv", cv2MarchPipeLayout);
     cv2SeaReflPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_searefl.comp.spv", cv2MarchPipeLayout);
+    {   // its coarse mips (specialization constant 2 = 1: levels 4-6 from level 3, a second tiny dispatch)
+        const uint32_t specM[3] = {0u, 0u, 1u};
+        cv2SeaReflMipPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_searefl.comp.spv", cv2MarchPipeLayout, specM, 3);
+    }
     {   // The clipmap's two passes: specialization constant 2 = 0 check, 1 bake.
         const uint32_t spec0[3] = {0u, 0u, 0u}, spec1[3] = {0u, 0u, 1u};
         cv2CdcPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_cdc.comp.spv", cv2MarchPipeLayout, spec0, 3);
@@ -992,6 +996,17 @@ std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::s
     cv2SunLutKey[0] = -1.0f;   // bake it again with the new shader
     swap(cv2FarPipeline, "shaders/cloud_v2_far.comp.spv", cv2MarchPipeLayout, nullptr);
     swap(cv2SeaReflPipeline, "shaders/cloud_v2_searefl.comp.spv", cv2MarchPipeLayout, nullptr);
+    try
+    {
+        const uint32_t specM[3] = {0u, 0u, 1u};
+        VkPipeline np = makeComputePipeline(ctx, "shaders/cloud_v2_searefl.comp.spv", cv2MarchPipeLayout, specM, 3);
+        if (cv2SeaReflMipPipeline) vkDestroyPipeline(ctx.device, cv2SeaReflMipPipeline, nullptr);
+        cv2SeaReflMipPipeline = np;
+    }
+    catch (const std::exception &e)
+    {
+        err += std::string(e.what()) + "; ";
+    }
     if (cv2CombinePipeline)
         swap(cv2CombinePipeline, "shaders/cloud_v2_combine.comp.spv", cv2CombinePipeLayout, nullptr);
     for (int m = 0; m < 2; ++m)
@@ -1093,6 +1108,8 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     cv2FarPipeline = VK_NULL_HANDLE;
     if (cv2SeaReflPipeline) vkDestroyPipeline(device, cv2SeaReflPipeline, nullptr);
     cv2SeaReflPipeline = VK_NULL_HANDLE;
+    if (cv2SeaReflMipPipeline) vkDestroyPipeline(device, cv2SeaReflMipPipeline, nullptr);
+    cv2SeaReflMipPipeline = VK_NULL_HANDLE;
     if (cv2CdcPipeline) vkDestroyPipeline(device, cv2CdcPipeline, nullptr);
     if (cv2CdcBakePipeline) vkDestroyPipeline(device, cv2CdcBakePipeline, nullptr);
     cv2CdcPipeline = cv2CdcBakePipeline = VK_NULL_HANDLE;
@@ -3101,6 +3118,14 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         // (the frame + 25% past each edge at quarter resolution: (3 x size + 7) / 8, == the shader's)
         const uint32_t qw = (3 * ctx.swapExtent.width + 7) / 8, qh = (3 * ctx.swapExtent.height + 7) / 8;
         vkCmdDispatch(cmd, (qw + 7) / 8, (qh + 7) / 8, 1);
+        // Its mips 4-6 from level 3 (the first dispatch wrote levels 0-3 per 8x8 tile): one 8x8 workgroup per 64x64 texels.
+        if (cv2SeaReflMipPipeline)
+        {
+            memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2SeaReflMipPipeline);
+            vkCmdDispatch(cmd, (qw + 63) / 64, (qh + 63) / 64, 1);
+        }
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     }

@@ -866,10 +866,8 @@ the fix — see `docs/HARNESS.md`, *Gotchas* → `time sun`.
   an Earth-fixed point (the resolve's geometry). Rows past the limb continue the ray from the limb point (even about the
   horizon). It lives in the FAR LAYER's image (`cv2FarImg`, march set 21 / sky set 29): two regions written in turn, never
   while the far layer runs (`CloudV2Params.shade.w` = 0 off, else 1 + 2 x region + 4 x history; off above 30 km, with clouds
-  v2 off, or the setting at 0, where the sea mirrors the clear march x the cloud-shadow dimming). sat_sky.frag maps the
-  WAVY sea's reflected ray back to the flat sea's view ray whose mirror it is (its depression at least 0.8 x the view's own:
-  near facets mirroring the horizon read its bright air band, white speckle that changed with every wave phase), reads it
-  bilinearly with +-1 vertical taps spread by distance and roughness, and composes clear x a + rgb. Nothing on screen is
+  v2 off, or the setting at 0, where the sea mirrors the clear march x the cloud-shadow dimming). sat_sky.frag reads it at
+  the facets' mean direction, blurred to their spread (next bullet), and composes clear x a + rgb. Nothing on screen is
   read, so nothing off screen or hidden is missing; flames and engine lights are not in it (their own glint draws them).
   Measured (RTX 3070 Ti, 1920x1009, 233558 shot 1, interleaved, 3 reps): the pass 0.52-0.55 ms; GPU 24.5 -> 21.7-22.2 ms
   against the screen-space composite (its sky 10.6-11.0 ms vs 7.7-7.9; an earlier app measured that sky at 8.4 and the
@@ -881,6 +879,27 @@ the fix — see `docs/HARNESS.md`, *Gotchas* → `time sun`.
   -> 1.05 (the pitch's own share 0.19 -> 0.10); with auto exposure 3.36 -> 4.39 (the exposure ratio 1.26 left in the AgX
   curve, larger on the higher-contrast sea). Still open: lightning in clouds is not reflected; the near sea under an
   overcast with a bright far gap glitters more than before (facets mirroring the gap).
+- **The sea reads its cloud reflection where the facets point on average, blurred to their spread** (2026-11-15, cluster c01
+  "reflflicker", issue 20261115_014814). Read where each pixel's own facet points (its reflected ray mapped back to the flat
+  sea), the near sea's facets read directions tens of texels apart (a 10-deg slope turns a reflection 20 deg), and from 43 m
+  in motion each pixel's facet changes every frame: each pixel drew a new sample of cloud or gap per frame, rapid bright /
+  dark flicker. Filtering that one point does not help (a mip as wide as the spread, read there: 17.5 -> 15.9): the read
+  itself has to stop jumping. sat_sky.frag reads at the flat sea's mirror direction lifted 3 x reflDir's roughness lift
+  (3 x 0.12 x seaRough: at a grazing angle the facets facing the eye tilt toward it, so the band under the horizon mirrors
+  cloud well above it; unlifted, that band's clear share was 175/255 against the facets' 51, x3 gives 46), one trilinear read at the
+  mip for a spread of 0.1 rad (kSrSpreadRad; ~level 4.3 at 1600x900, 60 deg). The facets still shape the sea through the
+  Fresnel term and the clear sky's reflection. The mips: `cloud_v2_searefl.comp` reduces each 8x8 workgroup's tile to
+  levels 1-3 in shared memory, and a second dispatch of the same shader (specialization constant 2 = 1,
+  `cv2SeaReflMipPipeline`, one workgroup per 64x64 texels) levels 4-6 from level 3; level L sits at (region x + the widths of
+  levels 1..L-1, qSize.y), a row under the region. Measured (RTX 3070 Ti, 1600x900, fresh app, 014814 trail frames
+  120-122, crop x0 y450 w707 h559 as imgtools crop pads it): frame-to-frame mean |d| 17.50 / 16.91 -> 12.42 / 12.40 (a
+  repeat 17.25 -> 12.34; the pass off 11.70); 233558 band (5x5 median flat cuts) 262 / 15 -> 0 / 0, its clear share in
+  h..h+160 50.7 -> 46.0 / 255 (reflected-cloud weight 0.80 -> 0.82); GPU at 014814 17.16 +-0.31 -> 17.01 +-0.18 ms
+  interleaved (sky 5.41 -> 5.38), the mip reduction +0.03 ms in the pass timer (`lut_far`); sat_sky 255 registers either
+  way, +2 KB binary; SKY_LITE SPIR-V byte-identical. Dead ends: a derivative-sized mip at the facet's point (levels to 3:
+  17.0; to 6: 15.9); capping the facet's shift (12.4-13.8, but the band's clear share 91-175: the band lost its clouds);
+  keeping 15-30% of the facet's shift (15.3-15.8). Measure flicker at the start of a fresh app: after a `report load` of
+  another issue the same 014814 batch read ~1 higher (settings that issue sets and 014814 does not reset).
 - **The satellite ocean-glint loop is skipped when its result is zero** (day, or above ~8 km): 512 entries x two
   texture fetches per ocean pixel cost 6 ms of the sky pass from orbit (the `water_map` knockout "saved" it only
   because it turns the sea into cheaper terrain).

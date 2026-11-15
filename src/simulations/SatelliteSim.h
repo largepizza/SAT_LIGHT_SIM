@@ -6712,6 +6712,7 @@ private:
     // The sea's cloud reflection (cloud_v2_searefl.comp): two quarter-size regions of cv2FarImg written in turn (this
     // frame's and the history), never while the far layer runs. cv2SeaReflMode = CloudV2Params.shade.w (0 = not run).
     VkPipeline cv2SeaReflPipeline = VK_NULL_HANDLE;
+    VkPipeline cv2SeaReflMipPipeline = VK_NULL_HANDLE;   // the same shader, specialization 2 = 1: its mips 4-6 from level 3
     float cv2SeaReflMode = 0.0f;
     uint32_t cv2SeaReflRegion = 0;
     bool cv2SeaReflRanLast = false;

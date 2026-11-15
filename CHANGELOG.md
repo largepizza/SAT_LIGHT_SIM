@@ -598,6 +598,11 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - The red airglow no longer shows in front of nearby clouds (issue_20261115_015559). At dusk under a raining deck
   a red band with a hard bottom edge lay over the opaque cloud: the 630-nm band, 90-500 km up, was added after the
   clouds without their transmittance. Seen from under it, it is now hidden by the clouds in front as the aurora is.
+- The near sea no longer flickers bright and dark in motion under broken cloud (issue_20261115_014814). Each wave
+  facet read the reflected clouds exactly where it pointed, and from low over the sea every pixel's facet changes from
+  one frame to the next, so each pixel showed cloud one frame and a gap the next. The sea now reflects the clouds where
+  its facets point on average, softened to their spread; the waves still show through their own glints and the
+  reflected sky.
 - An overcast seen from inside the rain under it no longer shows huge lit areas with straight edges and steps at
   sunset (issue_20261114_234423). The rain at your eye was taken for the inside of the cloud, so every part of the deck
   you saw through unbroken rain was lit like the inside of a cloud and every part seen through a gap in the rain like

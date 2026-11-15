@@ -6931,41 +6931,59 @@ void main() {
                 // (2026-11-12/14: the reflected ray's crossings of five altitudes tested against cloudTargetA's distance)
                 // drew reflected clouds as a compressed, banded strip with hard wavy outlines that reshaped with camera
                 // motion (at a grazing angle one sea row maps to ~1/4 of a sky row), and missed every cloud off screen or
-                // hidden behind a nearer one. Here the wavy sea's reflected ray is mapped back to the flat sea's view ray
-                // whose mirror it is (its normal's perturbation, mirrored about the flat normal), that pixel of the pass is
-                // read (bilinear) and spread along the vertical by distance and roughness (a rough far sea is no mirror).
-                // The pass gives the clouds' light (rgb) and the share of the clear reflected sky still seen (a: through the
-                // gaps, and the air in front of the clouds, shadowed under a deck), weighted for the air in front.
+                // hidden behind a nearer one. The pass gives the clouds' light (rgb) and the share of the clear reflected sky
+                // still seen (a: through the gaps, and the air in front of the clouds, shadowed under a deck), weighted for
+                // the air in front.
+                // 2026-11-15 (cluster c01 "reflflicker", issue 20261115_014814): it is read where the facets' reflections
+                // point ON AVERAGE, blurred to their spread, not where this pixel's facet points. Mapped back from each
+                // facet's own reflected ray, the near sea's facets (a slope of ~10 deg turns a reflection 20 deg) read
+                // directions tens of texels apart, and from 43 m in motion each pixel's facet changes from one frame to
+                // the next: every pixel drew a new sample of cloud or gap each frame and the sea flickered bright and dark
+                // (the triage's 3-frame |d| 17.5 against 11.6 with the pass off). No filter on that one point helps (a mip
+                // as wide as the spread left 15.9): the read itself has to stop jumping. So the direction is the flat
+                // sea's mirror lifted as the facets lift it on average (reflDir's roughness lift x kSrLift: at a grazing
+                // angle the facets that face the eye tilt toward it, and the band below the horizon mirrors cloud well
+                // above it; x3 keeps that band's cloud share, 0.80 -> 0.82 at 233558), at the pass's mip for a spread of
+                // kSrSpreadRad (cloud_v2_searefl.comp: levels 1-6, in a row under the region), trilinear. The facets still
+                // shape the sea through the Fresnel term and the clear sky's reflection (reflDir), as with the pass off.
                 int srMode = int(cv2.shade.w + 0.5);
                 if ((srMode & 1) != 0) {
+                    const float kSrLift      = 3.0;    // x reflDir's roughness lift (0.12 x seaRough)
+                    const float kSrSpreadRad = 0.1;    // the facets' spread of reflected directions (radians)
                     vec3  upF  = normalize(hitPt);
-                    vec3  mDir = reflDir - 2.0 * dot(reflDir, upF) * upF;
-                    // Its depression at least 0.8 x the view's own: a near facet tilted to mirror the horizon read the bright
-                    // horizon band of the pass's image (the far air), white speckle over the near sea that changed with
-                    // every wave (and every frame's wave phase). Upward tilts (the roughness' mean) are kept, and the far
-                    // sea, whose depression is ~0, keeps all of its facets.
-                    float dD   = -dot(dir, upF);
-                    float mD   = max(-dot(mDir, upF), max(0.8 * dD, 2e-3));
-                    vec3  mH   = mDir - upF * dot(mDir, upF);
-                    float mHl  = length(mH);
-                    if (mHl > 1e-4) mDir = mH * (sqrt(max(1.0 - mD * mD, 0.0)) / mHl) - upF * mD;
+                    vec3  mDir = normalize(dir - upF * (kSrLift * 0.12 * seaRough));   // (the mirror of the lifted reflection)
                     vec3  mc   = mat3(pc.skyView) * mDir;
                     float tHF  = tan(pc.fovYRad * 0.5);
                     vec2  mUV  = vec2(mc.x / pc.aspect, -mc.y) / (-min(mc.z, -1e-3) * tHF * 2.0) + 0.5;
                     ivec2 qS   = (imageSize(cloudFarImg) * 3 + 7) / 8;   // (cloud_v2_searefl.comp: the frame + 25% past each edge)
                     ivec2 qO   = ivec2(((srMode >> 1) & 1) * qS.x, 0);
-                    ivec2 qHi  = qS - 1;
-                    float spr  = (0.006 + 0.04 * seaRough) * smoothstep(1500.0, 25000.0, dist);
+                    // (texels per radian: qS.y texels over 1.5 x the frame's height, 2 tan(fov / 2) of it at the centre). The
+                    // spread (~16 texels at 1080p, 60 deg) is wider than the far sea's vertical smear by distance and roughness
+                    // (+-0.006-0.046 of the frame), which it replaces.
+                    float srLod = clamp(log2(kSrSpreadRad * float(qS.y) / (3.0 * tHF)), 0.0, 6.0);
+                    int   sl0  = int(srLod);
+                    float slF  = srLod - float(sl0);
+                    vec2  qk   = clamp((mUV + 0.25) / 1.5, vec2(0.0), vec2(1.0)) * vec2(qS);
                     vec4  sr   = vec4(0.0);
-                    for (int k = -1; k <= 1; ++k) {
-                        vec2  q  = clamp((mUV + vec2(0.0, float(k) * spr) + 0.25) / 1.5, vec2(0.0), vec2(1.0)) * vec2(qS) - 0.5;
+                    for (int j = 0; j < 2; ++j) {   // trilinear
+                        int   L  = min(sl0 + j, 6);
+                        float wL = j == 0 ? 1.0 - slF : slF;
+                        if (wL <= 0.0) continue;
+                        int   s  = 1 << L;
+                        ivec2 sz = (qS + s - 1) / s;
+                        // (level 0 is the region itself; level L >= 1 sits under it, after levels 1..L-1)
+                        int   mX = 0;
+                        for (int l = 1; l < L; ++l) mX += (qS.x + (1 << l) - 1) >> l;
+                        ivec2 org = L == 0 ? qO : ivec2(qO.x + mX, qS.y);
+                        vec2  q  = qk / float(s) - 0.5;
                         ivec2 q0 = ivec2(floor(q));
                         vec2  fq = q - vec2(q0);
-                        vec4  s00 = imageLoad(cloudFarImg, clamp(q0, ivec2(0), qHi) + qO);
-                        vec4  s10 = imageLoad(cloudFarImg, clamp(q0 + ivec2(1, 0), ivec2(0), qHi) + qO);
-                        vec4  s01 = imageLoad(cloudFarImg, clamp(q0 + ivec2(0, 1), ivec2(0), qHi) + qO);
-                        vec4  s11 = imageLoad(cloudFarImg, clamp(q0 + ivec2(1, 1), ivec2(0), qHi) + qO);
-                        sr += mix(mix(s00, s10, fq.x), mix(s01, s11, fq.x), fq.y) * (k == 0 ? 0.5 : 0.25);
+                        ivec2 hi = sz - 1;
+                        vec4  s00 = imageLoad(cloudFarImg, clamp(q0, ivec2(0), hi) + org);
+                        vec4  s10 = imageLoad(cloudFarImg, clamp(q0 + ivec2(1, 0), ivec2(0), hi) + org);
+                        vec4  s01 = imageLoad(cloudFarImg, clamp(q0 + ivec2(0, 1), ivec2(0), hi) + org);
+                        vec4  s11 = imageLoad(cloudFarImg, clamp(q0 + ivec2(1, 1), ivec2(0), hi) + org);
+                        sr += mix(mix(s00, s10, fq.x), mix(s01, s11, fq.x), fq.y) * wL;
                     }
                     sr.a = clamp(sr.a, 0.0, 1.0);
                     reflColor     = clearRefl * sr.a + max(sr.rgb, vec3(0.0));
