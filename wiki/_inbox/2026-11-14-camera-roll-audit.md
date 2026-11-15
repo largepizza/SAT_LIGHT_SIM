@@ -16,7 +16,7 @@ down. Speed: the old arc rate on the Earth's radius, scaled by the height above 
 (the look is carried along the Earth's curve).
 
 Horizon auto-level (Settings > Controls: "Auto-level the horizon" `camera.auto_level`, default on; "Auto-level up to
-(km)" `camera.auto_level_km`, default 100, 10-2000): below that height the mouse yaws about the local up, pitch stops
+(km)" `camera.auto_level_km`, default 1000, 10-2000): below that height the mouse yaws about the local up, pitch stops
 at +-89 deg and a roll eases back to level (tau 0.3 s). Above it, or off, the camera turns about its own axes with no
 pitch limit, and Z / C roll it (Roll Left / Roll Right, held, 45 deg/s; boost x2, fine x0.25). No toast at the switch.
 The view is built from the look and up vectors, so there is no snap near the zenith / nadir (the old view turned by

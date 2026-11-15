@@ -3054,7 +3054,8 @@ private:
     float camPubElDeg = 0.0f, camPubAzDeg = 0.0f;
     int camAdoptLogs = 0;                // outside writes adopted (logged; a missed setter conversion)
     bool camLevelEnabled = true;         // camera.auto_level: Settings > Controls "Auto-level the horizon"
-    float camLevelAltKm = 100.0f;        // camera.auto_level_km: auto-level below this eye altitude (slot 625)
+    float camLevelAltKm = 1000.0f;       // camera.auto_level_km: auto-level below this eye altitude (slot 625; 100 until
+                                         // the user's 2026-11-14 call: the satellite shells up to ~1000 km stay level)
     static constexpr double kCamRollDegS = 45.0;   // Z / C roll rate (boost x2, fine x0.25)
     static constexpr double kCamLevelTauS = 0.3;   // auto-level's ease of a roll back to level
     glm::dvec3 camFacing() const;        // the heading: the look on the horizontal plane (the screen's top near nadir)

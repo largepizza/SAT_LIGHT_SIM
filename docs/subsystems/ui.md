@@ -364,7 +364,8 @@ hold's fly keeps the look fixed in ECEF (the view stays on the stars). Sound pan
 source's direction against the camera's right, which rolls with it.
 
 **Horizon auto-level** (`camLevelActive()`: Settings > Controls "Auto-level the horizon" `camera.auto_level`, default
-on, and the eye below "Auto-level up to (km)" `camera.auto_level_km`, default 100, slot 625; Go to: the camera's
+on, and the eye below "Auto-level up to (km)" `camera.auto_level_km`, default 1000 (100 for its first hours: the user
+set 1000, above the satellite shells), slot 625; Go to: the camera's
 height). On: the mouse / stick yaw about the local up (looking straight down the ground turns under you), pitch about
 the camera's right, stopping at +-89 deg, and `camLevelTick` eases any roll to level (tau 0.3 s, faded within ~10 deg
 of the vertical where roll is the heading: 60 deg -> 51 in 3 frames -> 4.9 after 1 s). Off (above, or switched off):

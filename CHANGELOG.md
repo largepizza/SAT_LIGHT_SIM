@@ -393,7 +393,7 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   climbs, look down and it descends (sliding along the ground when you reach it); Q / E still go straight up and down.
   It used to walk at a constant height whatever the camera pointed at.
 - **Camera: look straight down without a jolt, and roll in space.** Looking past 88 deg down (or up) no longer turns
-  the whole view round. Below 100 km the horizon stays level as before ("Auto-level the horizon" and "Auto-level up
+  the whole view round. Below 1000 km the horizon stays level as before ("Auto-level the horizon" and "Auto-level up
   to (km)" in Settings > Controls); above it, or with auto-level off, the camera turns freely: look past straight
   down, and roll with Z / C. Reset Elevation moved from Z to X.
 - **New intro.** It opens on the ground in the Mississippi delta at twilight, under Starmind's trains, with Reflect
