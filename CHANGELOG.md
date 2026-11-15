@@ -587,6 +587,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- An overcast seen from inside the rain under it no longer shows huge lit areas with straight edges and steps at
+  sunset (issue_20261114_234423). The rain at your eye was taken for the inside of the cloud, so every part of the deck
+  you saw through unbroken rain was lit like the inside of a cloud and every part seen through a gap in the rain like
+  its underside: the lit area followed the rain's outline. The deck's underside is now lit as an underside everywhere.
 - City lights along a coast no longer flicker (issue_20261114_162442, most visible from orbit in the intro's last
   shot). Each frame the temporal anti-aliasing samples a slightly different point inside every pixel, and a light
   within half a pixel of the shore was drawn whenever that point fell on land and replaced by the sea whenever it fell

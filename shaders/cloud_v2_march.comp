@@ -896,6 +896,8 @@ void main()
     // there (cv2DiffuseField's leak through the face the eye looks at). From the eye, a ray that crossed one lobe, a gap
     // and then the next lobe's face took that face for the inside of a cloud: bright veins along every lobe's outline on
     // cloud bases.
+    // Set by RAIN ALONE (below a base) it is stored as -2 - T (<= -2): the cloud body met after the rain is a new cloud, see the
+    // set. (A flag beside it took the march to 255 registers.)
     float Tent = -1.0;
     float dAcc = 0.0, wAcc = 0.0, tHalf = -1.0;
     float ldA = 0.0;    // the light's luminance x depth, summed (the profile's light centroid, cv2Profile)
@@ -1197,17 +1199,28 @@ void main()
             // left only the sky ambient: a flat deep-navy volume inside every storm (issues 20261106_171931 shots 1-3,
             // 20261107_124812; 2026-11-10). As if the cloud went on ~20 optical depths behind the eye, faded out over 1-4
             // steps so a cloud surface passing the eye brightens over a few frames, not one.
-            if (Tent < 0.0) Tent = T * exp(20.0 * (1.0 - smoothstep(stepF, 4.0 * stepF, t)));
+            // RAIN IS NOT THE CLOUD (2026-11-15, issue_20261114_234423 shots 3-4, cluster c02 "sunsetedge"): rain alone under a
+            // base (or the scud in it) is another medium, and the cloud body a ray meets after it is entered at its FACE. Tent
+            // set by the rain at the eye carried the eye-inside rule (T / Tent = e^-20) through the shaft into the deck: every
+            // base reached through unbroken rain was shaded as the cloud's interior (hV = 1, the far side's column estimate,
+            // the Sun volume's diffuse own share), every base reached through a gap in the rain as a surface. The lit / shaded
+            // switch followed the rain region's outline: a huge orange area under an overcast at sunset bounded by long
+            // straight edges and steps (debug view cloudrad stepped, cloudtrans smooth).
+            if (Tent < 0.0 && (Tent > -1.5 || !rainAlone)) {
+                Tent = T * exp(20.0 * (1.0 - smoothstep(stepF, 4.0 * stepF, t)));
+                if (rainAlone) Tent = -2.0 - Tent;
+            }
+            float tE = (Tent < 0.0) ? -2.0 - Tent : Tent;
             // The multiple scattering's leak through the face the eye looks at (cv2DiffuseField): 1 - e^(-a x), x the view's
             // optical depth into this cloud, AVERAGED over the step as the step's light is (weight e^-x): a cloud's first
             // sample is often several optical depths thick, and taken at the step's start (x = 0) it got none at all.
             float aV = 1.0 - cv2.ms.y * cv2.ms.y, tS = f.sigma * stepW;
-            float hV = 1.0 - pow(max(T / Tent, 1e-6), aV)
+            float hV = 1.0 - pow(max(T / tE, 1e-6), aV)
                        * (1.0 - exp(-(1.0 + aV) * tS)) / ((1.0 + aV) * max(1.0 - exp(-tS), 1e-6));
             {
                 bool litG = f.thin <= 0.5 && f.sigma * cv2.light.x >= CV2_FAINT_OD;
                 int  bi   = litG ? nBl : kBatch - 1 - (nB - nBl);
-                bF[bi] = f; bT[bi] = t; bTr[bi] = T / Tent; bCov[bi] = covB; bW[bi] = w; bH[bi] = hV;
+                bF[bi] = f; bT[bi] = t; bTr[bi] = T / tE; bCov[bi] = covB; bW[bi] = w; bH[bi] = hV;
                 ++nB; if (litG) ++nBl;
                 if (tIce < 0.0 && f.thin > 0.0) tIce = t;
             }
