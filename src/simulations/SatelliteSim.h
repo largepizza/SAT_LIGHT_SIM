@@ -9686,8 +9686,9 @@ static constexpr int kNumTimeScales = 9;
 // busiest beam site, ~55 km east); rising, panning south onto a Starship climbing out of Starbase, Texas over
 // the Gulf with the sunset behind; out to orbit with the Sun setting on the limb, "SAT LIGHT SIM".
 // Its 8 keys sit one per songbeat (the cinematic had them 5 s apart; key k is beat k). Sim time runs at
-// kIntroSimRate so the sky at each key is the one the key was framed on. Two rows follow them (2026-11-14): a
-// songbeat's hold on the last key, then the title card's FOV zoom-out (kIntroArriveIndex / kIntroTitleIndex).
+// kIntroSimRate so the sky at each key is the one the key was framed on. The camera's progress along the path is
+// accelerated over the last beats so it ARRIVES on the last key at kIntroArriveT (the title) and is still under the
+// title while the FOV widens (2026-11-14, issue_20261114_162721).
 //
 // THE DATE was moved from the cinematic's (2036-11-21 23:19:46 UTC, a 16%-lit crescent) to the same scene four
 // days later, for a quarter-to-half Moon (the user: some ambient light at night, where the clouds look best):
@@ -9725,15 +9726,6 @@ struct IntroKeyframe
     const char *text;
 };
 static constexpr float songbeat = 7.61f; // beat timings below are synced to this (music tempo)
-// The final framing (the Sun centred on the limb, 638 km): key 7, where the camera stops, and the hold and title
-// rows after it, which keep the pose (a copy would drift from it).
-static constexpr double kIntroEndLatDeg = 37.45175640036591, kIntroEndLonDeg = -77.3299032926075;
-static constexpr float kIntroEndAltM = 638241.50f, kIntroEndAzDeg = -105.19f, kIntroEndElDeg = -8.56f, kIntroEndFovDeg = 89.35f;
-// The title card's FOV zoom-out ends here. The pre-2026-11 intro widened 80 -> 120 deg over its title beat; from this
-// framing, past ~105 deg the Sun's halo fades (the sky's veiling glare follows the cloud composite sampled across
-// the Sun's disc, which at that scale reaches the limb's clouds: measured 2026-11-14, halo full at 102 deg, dimmer
-// at 108, half at 114, gone at 118), and the zoom would end on a bare Sun.
-static constexpr float kIntroTitleFovDeg = 105.0f;
 static constexpr IntroKeyframe kIntroKeyframes[] = {
     // Beat 0 — "2036" title/date card. Ground, twilight, looking north up Starmind's train.
     {songbeat * 0.0f, 33.56354697522229, -91.28908090163594, 54.56f, 3.19f, 18.25f, 46.50f, "2036"},
@@ -9750,29 +9742,36 @@ static constexpr IntroKeyframe kIntroKeyframes[] = {
     // Beat 4 — 57 km, facing south: the Starship's plume over the Gulf, the sunset to the right.
     {songbeat * 4.0f, 33.56354697522229, -91.28908090163594, 56987.57f, 159.10f, 1.40f, 83.10f,
      "A promise to the markets above all else"},
-    // Beat 5 — out to orbit (277 km), drifting north-east with the pan. The last narrative line: it stays through
-    // beat 6 and fades out over the last second of the camera's move (buildIntroOverlay), so the hold is wordless.
+    // Beat 5 — out to orbit (277 km), drifting north-east with the pan.
     {songbeat * 5.0f, 34.627120828647875, -89.1136023191353, 277289.31f, -166.21f, -8.20f, 83.10f,
      "We will come to miss the quiet sky"},
-    // Beat 6 — arrival in orbit, the Sun setting on the limb.
-    {songbeat * 6.0f, 36.65105711070121, -84.1048559646296, 428441.09f, -133.47f, -6.28f, 89.35f, nullptr},
-    // Beat 7 — the camera eases to a stop on the final framing (the last key of the camera path).
-    {songbeat * 7.0f, kIntroEndLatDeg, kIntroEndLonDeg, kIntroEndAltM, kIntroEndAzDeg, kIntroEndElDeg, kIntroEndFovDeg, nullptr},
-    // Beat 8 — the hold is over (2026-11-14, issue_20261114_162721: "the camera still at this sun centered position a
-    // beat before the title card"): the camera and the clock held still for the songbeat since beat 7. Title reveal;
-    // the FOV widens from here (smoothstep in log FOV, still at both ends) ...
-    {songbeat * 8.0f, kIntroEndLatDeg, kIntroEndLonDeg, kIntroEndAltM, kIntroEndAzDeg, kIntroEndElDeg, kIntroEndFovDeg, "SAT LIGHT SIM"},
-    // Beat 9 — ... to kIntroTitleFovDeg, while the title fades over the last second (buildIntroOverlay's alphaOut);
-    // then finishIntro(false) hands over (the tutorial, SatelliteSimTutorial.cpp) at this FOV, the clock at 1x.
-    {songbeat * 9.0f, kIntroEndLatDeg, kIntroEndLonDeg, kIntroEndAltM, kIntroEndAzDeg, kIntroEndElDeg, kIntroTitleFovDeg, nullptr},
+    // Beat 6 — "SAT LIGHT SIM". The camera's travel is accelerated (updateIntroCinematic) so it has ARRIVED on beat
+    // 7's framing by now (kIntroArriveT): this key's pose is passed through on the way, not shown at the title.
+    {songbeat * 6.0f, 36.65105711070121, -84.1048559646296, 428441.09f, -133.47f, -6.28f, 89.35f, "SAT LIGHT SIM"},
+    // Beat 7 — the final framing, the Sun centred on the limb (638 km). The camera sits still on it from
+    // kIntroArriveT while the title shows and the FOV widens to kIntroTitleFovDeg; the title fades over the last
+    // second (buildIntroOverlay's alphaOut), then finishIntro(false) hands over (the tutorial, SatelliteSimTutorial.cpp).
+    {songbeat * 7.0f, 37.45175640036591, -77.3299032926075, 638241.50f, -105.19f, -8.56f, 89.35f, nullptr},
 };
 static constexpr int kIntroKeyframeCount = sizeof(kIntroKeyframes) / sizeof(kIntroKeyframes[0]);
 static constexpr int kIntroYearIndex = 0;       // "2036" title/date card
 static constexpr int kIntroHintRevealIndex = 1; // skip hint doesn't show before this beat is reached
-static constexpr int kIntroArriveIndex = 7;     // the camera path's last key: the camera stops, the hold begins
-static constexpr int kIntroTitleIndex = 8;      // "SAT LIGHT SIM" reveal after the hold; the FOV zoom-out to the end
-static_assert(kIntroTitleIndex == kIntroArriveIndex + 1 && kIntroKeyframeCount == kIntroTitleIndex + 2,
-              "the intro ends: arrive, hold one row, title + zoom one row");
-// The camera moves until the arrival key, so its whole path feeds the UC1 benchmark accumulator (not the still hold).
+static constexpr int kIntroTitleIndex = 6;      // "SAT LIGHT SIM" reveal, arrival in LEO
+// When the camera ARRIVES on the last key (2026-11-14, issue_20261114_162721: "the timing of the key frames was
+// fine, we just needed them to be accelerated in position so that the last beat would end on that final shot,
+// rather than being still moving towards it"). Key times are unchanged; the camera's progress along the path is
+// remapped over the one songbeat before this time (updateIntroCinematic): from the path's own speed to a stop on
+// the last key, covering what the path covers from there to its end. The default is the title (beat 6): the
+// camera is still for the whole last beat, under the title. songbeat * 7 is the old behaviour (arrive at the
+// hand-off); move it by a beat to taste. Keys before (this - songbeat) frame exactly what they did.
+static constexpr float kIntroArriveT = songbeat * 6.0f;
+static_assert(kIntroArriveT >= songbeat * 2.0f && kIntroArriveT <= songbeat * 7.0f, "arrival within the path");
+// The title's FOV zoom-out, from the arrival to the hand-off (still at both ends): the last key's 89.35 deg to this.
+// The pre-2026-11 intro widened 80 -> 120 deg over its title beat; from this framing, past ~105 deg the Sun's halo
+// fades (the sky's veiling glare follows the cloud composite sampled across the Sun's disc, which at that scale
+// reaches the limb's clouds: measured 2026-11-14, halo full at 102 deg, dimmer at 108, half at 114, gone at 118;
+// docs/rendering/FINDINGS.md #10), and the zoom would end on a bare Sun.
+static constexpr float kIntroTitleFovDeg = 105.0f;
+// The whole intro feeds the UC1 benchmark accumulator.
 static constexpr float kIntroBenchEndT = songbeat * 7.0f;
 static constexpr const char *kGraphicsPresetNames[] = {"Planetarium", "Low", "Medium", "High", "Ultra", "Custom", "Potato"};

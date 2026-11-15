@@ -8934,15 +8934,12 @@ void SatelliteSim::updateIntroCinematic(float dt)
     // The path is cineEval's (the Cinematics window's spline, what the user framed the keys with): Catmull-Rom
     // per channel, so velocity carries through every beat instead of stopping at it (the pre-2026-10 intro
     // smoothstepped each segment and stuttered at every key); log altitude, so the climb from 55 m to 640 km
-    // takes each decade in its stride; azimuth unwrapped. The path ends at kIntroArriveIndex: the rows after it
-    // (the hold, the title's zoom-out) keep its pose and are applied below, not splined (a key with the same pose
-    // after it would give the arrival a two-sided tangent, and the camera would overshoot and come back).
+    // takes each decade in its stride; azimuth unwrapped.
     static const std::vector<CineKey> keys = []
     {
         std::vector<CineKey> v;
-        for (int j = 0; j <= kIntroArriveIndex; ++j)
+        for (const IntroKeyframe &f : kIntroKeyframes)
         {
-            const IntroKeyframe &f = kIntroKeyframes[j];
             CineKey k;
             k.t = f.t;
             k.lat = f.latDeg;
@@ -8955,42 +8952,49 @@ void SatelliteSim::updateIntroCinematic(float dt)
         }
         return v;
     }();
-    // Its end tangents are one-sided: the camera would leave the first key and arrive at the last at speed.
-    // The first and last segments' clocks are remapped to start / stop gently (velocity 0 at the ends, the
-    // spline's own speed where they meet the next segment), so the "2036" card opens still and the camera
-    // arrives on the final framing still. Every key is still reached on its beat.
-    const double tArrive = kIntroKeyframes[kIntroArriveIndex].t, tTitle = kIntroKeyframes[kIntroTitleIndex].t;
-    double tCam = std::min((double)tClamped, tArrive);
+    // The camera's progress along the path (tCam, path seconds) against the intro's clock. Key times stay; only how
+    // fast the camera travels between them changes.
+    //  - The first segment eases in (2u^2 - u^3: velocity 0 at the start, the path's own at beat 1), so the "2036"
+    //    card opens still.
+    //  - Over the one songbeat before kIntroArriveT (SatelliteSim.h) the camera covers the rest of the path, from
+    //    there to the last key, and stops on it: a cubic Hermite from the path's own speed (1) to 0, so the velocity
+    //    is continuous where it starts and the arrival is an ease-out, not a snap (issue_20261114_162721: the camera
+    //    was still flying in under the title and stopped only on the hand-off frame). With the arrival at the title
+    //    (6 beats) it covers two beats of path in one, peaking at 2.8x the path's speed; at 7 beats it is the old
+    //    u + u^2 - u^3 ease of the last segment. From kIntroArriveT on the camera is still on the last key.
+    // cineEval's end tangents are one-sided: without these remaps the camera would leave the first key and arrive
+    // at the last at speed.
+    double tCam = tClamped;
     {
-        const double t1 = kIntroKeyframes[1].t, tN1 = kIntroKeyframes[kIntroArriveIndex - 1].t;
+        const double t1 = kIntroKeyframes[1].t, tArr = kIntroArriveT, tA0 = tArr - songbeat;
         if (tCam < t1)
         {
             const double u = tCam / t1;
             tCam = t1 * (2.0 * u * u - u * u * u);
         }
-        else if (tCam > tN1)
+        else if (tCam >= tArr)
+            tCam = tEnd;
+        else if (tCam > tA0)
         {
-            const double u = (tCam - tN1) / (tArrive - tN1);
-            tCam = tN1 + (tArrive - tN1) * (u + u * u - u * u * u);
+            const double T = tArr - tA0, D = (double)tEnd - tA0, u = (tCam - tA0) / T;
+            tCam = tA0 + T * (u * u * u - 2.0 * u * u + u) + D * (3.0 * u * u - 2.0 * u * u * u);
         }
     }
-    CineKey k = cineEval(keys, tCam); // past the arrival: exactly its key (cineEval holds the last key)
-    // Sim time on the un-eased clock, at the cinematic's rate: the sky at each key is the one it was framed on.
-    // The hold (issue_20261114_162721) holds the clock too, so the Sun stays where the arrival centred it. Over the
-    // title the clock's rate eases from 0 to 1x (smoothstep; its integral is u^3 - u^4/2), so finishIntro's 1x
-    // carries on without a jump in the satellites' motion: 3.8 s of sim time over the title beat.
+    CineKey k = cineEval(keys, tCam); // at tEnd: exactly the last key (cineEval holds it)
+    // Sim time on the un-eased clock, at the cinematic's rate: the sky at each key is the one it was framed on. It
+    // runs through the still part too (5 s of sim time over the last beat: the Sun moves ~0.02 deg), as before.
     k.hasSim = true;
-    k.simT = kIntroSimStartJ2000S + kIntroSimRate * (double)std::min((double)tClamped, tArrive);
-    if (tClamped > tTitle)
+    k.simT = kIntroSimStartJ2000S + kIntroSimRate * (double)tClamped;
+    if (tClamped > kIntroArriveT && tEnd > kIntroArriveT)
     {
-        // The title card's FOV zoom-out (the pre-2026-11 intro's: it widened 80 -> 120 deg over its title beat, eased
-        // to a stop): from the arrival's FOV to kIntroTitleFovDeg, smoothstep in log FOV — still at its start (the
-        // hold) and at its end (the hand-over), monotonic between. Pose, attitude and position stay the arrival's.
-        const double tEndD = tEnd, u = std::clamp(((double)tClamped - tTitle) / (tEndD - tTitle), 0.0, 1.0);
+        // The title's FOV zoom-out (the pre-2026-11 intro's shape: it widened 80 -> 120 deg over its title beat,
+        // eased to a stop): from the last key's FOV to kIntroTitleFovDeg between the arrival and the hand-off,
+        // smoothstep in log FOV, so it is monotonic and still at both ends (the arrival is still; the hand-off FOV is
+        // the zoom's end). Position and attitude stay the last key's.
+        const double u = std::clamp(((double)tClamped - kIntroArriveT) / ((double)tEnd - kIntroArriveT), 0.0, 1.0);
         const double s = u * u * (3.0 - 2.0 * u);
-        const double f0 = kIntroKeyframes[kIntroTitleIndex].fovDeg, f1 = kIntroKeyframes[kIntroKeyframeCount - 1].fovDeg;
+        const double f0 = kIntroKeyframes[kIntroKeyframeCount - 1].fovDeg, f1 = kIntroTitleFovDeg;
         k.fov = std::exp(std::log(f0) + (std::log(f1) - std::log(f0)) * s);
-        k.simT += (tEndD - tTitle) * (u * u * u - 0.5 * u * u * u * u);
     }
     // What the Cinematics playback applies (observer lat/lon/altitude, camera.azDeg AND obsFacing — outside the
     // intro buildUI derives camera.azDeg from obsFacing, so both must agree at the hand-over — FOV, sim time).
