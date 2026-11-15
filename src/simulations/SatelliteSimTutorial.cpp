@@ -271,9 +271,7 @@ void SatelliteSim::tutReturnNow()
     const double days = std::floor(tutRetT / 86400.0);
     simDayJ2000 = (int64_t)days;
     simSecInDay = tutRetT - days * 86400.0;
-    obsDir = glm::normalize(tutRetObsDir);
-    obsLatDeg = glm::degrees(asinf(glm::clamp(obsDir.z, -1.0f, 1.0f)));
-    obsLonDeg = glm::degrees(atan2f(obsDir.y, obsDir.x));
+    camSetEyeDir(glm::dvec3(tutRetObsDir));
     obsHeightOffset = tutRetHeight;
     camera.fovYDeg = tutRetFov;
     aimCameraAzEl(tutRetAz, tutRetEl);

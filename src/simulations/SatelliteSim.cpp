@@ -1554,13 +1554,10 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     }
 
     // ── WASD surface navigation ───────────────────────────────────────────────
-    // Pure 3D ECEF — no lat/lon arithmetic, no gimbal lock, works at any latitude.
-    //
-    // obsDir    : unit position vector on the Earth-fixed sphere.
-    // obsFacing : unit tangent vector (forward), always ⊥ obsDir.
-    //
-    // W/S move along obsFacing; A/D move along cross(obsFacing, obsDir) (right).
-    // After each step obsFacing is parallel-transported to stay tangent at newPos.
+    // Pure 3D ECEF on the camera rig (camEyeDir / camFwd, double; SatelliteSimCamera.cpp) — no lat/lon
+    // arithmetic, no gimbal lock, works at any latitude. W/S move along the heading; A/D along heading x up
+    // (right). After each step the heading is carried to the new place.
+    camSync(); // (adopts a mirror an unconverted write changed since the look block)
     if (showIntro)
     {
         // UC3: the cinematic camera path drives obsHeightOffset/camera.elDeg/fovYDeg/obsFacing
@@ -1635,18 +1632,12 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             inertialFly(fwd, right, speed, dt); // the eye held in ECI: fly in the camera's frame (SatelliteSimInertial.cpp)
         else if (!followActive && (fwd != 0.0f || right != 0.0f)) // follow mode moves in updateFollow()
         {
-            // right tangent = cross(obsFacing, obsDir)  (right-hand rule: forward × up = right)
-            glm::vec3 rightDir = glm::normalize(glm::cross(obsFacing, obsDir));
-            glm::vec3 newPos = glm::normalize(
-                obsDir + speed * dt * (fwd * obsFacing + right * rightDir));
-
-            // Parallel-transport obsFacing: project out any radial component at newPos.
-            obsFacing = glm::normalize(obsFacing - glm::dot(obsFacing, newPos) * newPos);
-            obsDir = newPos;
-
-            // Refresh display caches (atan2(0,0)==0 at poles — fine for display only)
-            obsLatDeg = glm::degrees(asinf(glm::clamp(obsDir.z, -1.0f, 1.0f)));
-            obsLonDeg = glm::degrees(atan2f(obsDir.y, obsDir.x));
+            // In double (the camera rig): a float unit vector could not take a step under ~0.4 m.
+            // right tangent = cross(facing, up)  (right-hand rule: forward × up = right)
+            const glm::dvec3 facing = camFacing();
+            const glm::dvec3 rightDir = glm::normalize(glm::cross(facing, camEyeDir));
+            // The heading is carried to the new place (projected onto its horizontal plane) and the elevation kept.
+            camSetEyeDir(camEyeDir + (double)speed * (double)dt * ((double)fwd * facing + (double)right * rightDir));
         }
 
         // Q/E: raise/lower observer relative to terrain; rate scales with height offset
@@ -6073,10 +6064,9 @@ void SatelliteSim::stopFollow(bool fly)
     followTrKey = 0;
     followLaunchOwner = 0;
     followHandD = glm::dvec3(0.0);
-    obsDir = followSavedObsDir;
-    obsFacing = followSavedFacing;
+    camSetEyeDir(glm::dvec3(followSavedObsDir));
+    camSetLook(glm::dvec3(followSavedFacing), followSavedEl);
     obsHeightOffset = followSavedHeight;
-    camera.elDeg = followSavedEl;
     camera.fovYDeg = followSavedFov;
 }
 
@@ -6100,15 +6090,9 @@ void SatelliteSim::stopFollowHere(const char *why)
     followFlightRel = false;
     if (r > 1.0)
     {
-        obsDir = glm::vec3(eye / r);
+        camSetEyeDir(eye / r); // (the heading is carried over, the elevation kept)
         obsHeightOffset = (float)std::min(std::max(r - (double)kEarthRadius - 2.0, 0.0), (double)kMaxObsHeightM);
-        obsLatDeg = glm::degrees(asinf(glm::clamp(obsDir.z, -1.0f, 1.0f)));
-        obsLonDeg = glm::degrees(atan2f(obsDir.y, obsDir.x));
     }
-    const glm::vec3 up = obsDir;
-    const glm::vec3 f = obsFacing - glm::dot(obsFacing, up) * up;
-    if (glm::length(f) > 1e-6f)
-        obsFacing = glm::normalize(f);
     // The temporal histories saw a camera that moved with the satellite; from here it is still.
     skyTaaHistValid = false;
     snprintf(screenshotToastText, sizeof(screenshotToastText), "%s", why ? why : tx(Txt::ToastLeftGoTo));
@@ -6634,31 +6618,28 @@ void SatelliteSim::updateFollow(float dt)
         }
     }
     followRadiusM = glm::length(followObsEcef);
-    obsDir = glm::vec3(followObsEcef / followRadiusM);
+    camSetEyeDir(followObsEcef / followRadiusM); // (the heading is carried to the new place, the elevation kept)
     // The sky shaders take max(ground, obsHeightOffset) as the observer's height above sea level,
     // so this puts their observer where followObsEcef is (+ their 2 m eye height).
     obsHeightOffset = (float)(followRadiusM - (double)kEarthRadius);
-    obsLatDeg = glm::degrees(asinf(glm::clamp(obsDir.z, -1.0f, 1.0f)));
-    obsLonDeg = glm::degrees(atan2f(obsDir.y, obsDir.x));
 
-    // Keep the heading tangent at the new position; aim at the satellite while locked (RMB look
-    // unlocks — the player took the camera).
+    // Aim at the satellite while locked (RMB look unlocks — the player took the camera).
     if (camera.captured)
         followAimLock = false;
-    const glm::vec3 upF = obsDir;
     // Sets the view direction. The facing is the view's horizontal part, which near the zenith or nadir is a tiny
     // vector of arbitrary direction: there the previous facing is kept (review 23, the "rapid flip").
-    auto setView = [&](glm::vec3 d) {
-        const glm::vec3 h = d - glm::dot(d, upF) * upF;
-        const float hl = glm::length(h);
-        glm::vec3 prev = obsFacing - glm::dot(obsFacing, upF) * upF;
-        if (hl > 1e-6f)
+    auto setView = [&](glm::vec3 dF) {
+        const glm::dvec3 d(dF), up = camEyeDir;
+        const glm::dvec3 h = d - glm::dot(d, up) * up;
+        const double hl = glm::length(h);
+        glm::dvec3 f = camFacing();
+        if (hl > 1e-6)
         {
-            const glm::vec3 m = glm::length(prev) > 1e-6f ? glm::mix(glm::normalize(prev), h / hl, glm::smoothstep(0.02f, 0.2f, hl)) : h / hl;
-            if (glm::length(m) > 1e-6f)
-                obsFacing = glm::normalize(m);
+            const glm::dvec3 m = glm::mix(f, h / hl, glm::smoothstep(0.02, 0.2, hl));
+            if (glm::length(m) > 1e-6)
+                f = glm::normalize(m);
         }
-        camera.elDeg = glm::clamp(glm::degrees(asinf(glm::clamp(glm::dot(d, upF), -1.0f, 1.0f))), -89.0f, 89.0f);
+        camSetLook(f, glm::degrees(std::asin(std::clamp(glm::dot(d, up), -1.0, 1.0))), 89.0);
     };
     // A zero offset puts the camera AT the satellite: there is no direction to aim along, and
     // normalize(0) made the elevation NaN — a NaN camera, and every pass drew black.
@@ -6678,10 +6659,8 @@ void SatelliteSim::updateFollow(float dt)
         }
         else
         {
-            glm::vec3 f = glm::mix(f0, followSavedFacing, k);
-            if (glm::length(f) > 1e-6f)
-                obsFacing = glm::normalize(f);
-            camera.elDeg = glm::mix(el0, followSavedEl, k);
+            const glm::vec3 f = glm::mix(f0, followSavedFacing, k);
+            camSetLook(glm::length(f) > 1e-6f ? glm::dvec3(f) : camFacing(), glm::mix(el0, followSavedEl, k));
         }
         camera.fovYDeg = glm::mix(50.0f, followSavedFov, k);
     }
@@ -6717,16 +6696,7 @@ void SatelliteSim::updateFollow(float dt)
     followBasisR = Rh;
     followBasisValid = true;
     followLastP = P;
-    obsFacing = glm::normalize(obsFacing - glm::dot(obsFacing, upF) * upF);
-    // camera.azDeg from obsFacing, as buildUI derives it (it runs before this, one frame behind).
-    {
-        const float sL = obsDir.z, cLH = sqrtf(obsDir.x * obsDir.x + obsDir.y * obsDir.y);
-        const float inv = cLH > 1e-7f ? 1.0f / cLH : 0.0f;
-        const float cLn = obsDir.x * inv, sLn = obsDir.y * inv;
-        const glm::vec3 eastEF = {-sLn, cLn, 0.0f};
-        const glm::vec3 northEF = {-sL * cLn, -sL * sLn, cLH};
-        camera.azDeg = glm::degrees(atan2f(glm::dot(obsFacing, eastEF), glm::dot(obsFacing, northEF)));
-    }
+    // (The heading stays on the horizontal plane and camera.azDeg follows it: the camera rig publishes both.)
     if (followLogOn_ && followLog_.size() < 2000000)
     {
         const double el = glm::radians((double)camera.elDeg);
@@ -6755,23 +6725,11 @@ void SatelliteSim::updateFollow(float dt)
 }
 
 // ─── Selection "Track" (the Track button in the selection panel / chip) ───────────────────────────
-// Point the camera at an azimuth/elevation in the observer's local ENU. obsFacing is the authority —
-// buildUI derives camera.azDeg from it every frame just below its look block — so both it and
-// camera.azDeg are set here, which is also what keeps the mouse-look math and WASD directions
-// coherent with what is on screen. (Same body the harness's own `camera az=`/`look`/`track` used
-// before this existed; it was `harnessSetLook`.)
+// Point the camera at an azimuth/elevation in the observer's local ENU (the camera rig, SatelliteSimCamera.cpp).
+// (Same body the harness's own `camera az=`/`look`/`track` used before this existed; it was `harnessSetLook`.)
 void SatelliteSim::aimCameraAzEl(float azDeg, float elDeg)
 {
-    const float sL = obsDir.z;
-    const float cLH = sqrtf(obsDir.x * obsDir.x + obsDir.y * obsDir.y);
-    const float inv = (cLH > 1e-7f) ? 1.0f / cLH : 0.0f;
-    const float cLn = cLH > 1e-7f ? obsDir.x * inv : 1.0f, sLn = cLH > 1e-7f ? obsDir.y * inv : 0.0f;
-    const glm::vec3 eastEF = {-sLn, cLn, 0.0f};
-    const glm::vec3 northEF = {-sL * cLn, -sL * sLn, cLH};
-    const float az = glm::radians(azDeg);
-    obsFacing = glm::normalize(cosf(az) * northEF + sinf(az) * eastEF);
-    camera.azDeg = azDeg;
-    camera.elDeg = glm::clamp(elDeg, -89.9f, 89.9f);
+    camAimAzEl(azDeg, elDeg);
 }
 
 void SatelliteSim::startTrack()

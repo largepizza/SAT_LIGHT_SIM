@@ -40,6 +40,8 @@ double obliquityR(double t) { return (23.439 - 0.0000004 * (t / 86400.0)) * (3.1
 
 glm::dvec3 SatelliteSim::inertialCamDirEcef() const
 {
+    if (camRigInit)
+        return camFwd; // (the camera rig's look direction, double)
     const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
     glm::dvec3 E, N;
     enuBasis(up, E, N);
@@ -56,7 +58,9 @@ void SatelliteSim::inertialStart(bool hold)
     const double th = earthRotationAngle(t);
     inertialActive = true;
     inertialHold = hold;
-    inertialEyeEci = ecefToEci(glm::normalize(glm::dvec3(obsDir)) * (satphot::kEarthRadiusM + (double)obsHeightOffset), th);
+    if (!camRigInit)
+        camSync();
+    inertialEyeEci = ecefToEci(camEyeDir * (satphot::kEarthRadiusM + (double)obsHeightOffset), th);
     inertialViewEci = ecefToEci(inertialCamDirEcef(), th);
     inertialLastTheta = th;
     inertialLastObsDir = obsDir;
@@ -73,7 +77,7 @@ void SatelliteSim::inertialStart(bool hold)
 // what you see: the Earth if you look down), sideways along the screen's right, at the usual height-scaled speed.
 void SatelliteSim::inertialFly(float fwd, float right, float speedRadPerS, float dt)
 {
-    const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
+    const glm::dvec3 up = camEyeDir;
     glm::dvec3 E, N;
     enuBasis(up, E, N);
     const double az = glm::radians((double)camera.azDeg);
@@ -83,11 +87,10 @@ void SatelliteSim::inertialFly(float fwd, float right, float speedRadPerS, float
     const glm::dvec3 np = up * R + (f * (double)fwd + r * (double)right) * ((double)speedRadPerS * R * (double)dt);
     const double nr = std::clamp(glm::length(np), satphot::kEarthRadiusM + std::max(0.0, (double)obsTerrainH) + 2.0,
                                  satphot::kEarthRadiusM + (double)kMaxObsHeightM);
-    const glm::dvec3 nu = glm::normalize(np);
-    obsDir = glm::vec3(nu);
+    // The view stays where it points (it is held on the stars): only the eye moves, so the local az / el change.
+    camSetEyeDir(np);
+    camSetLookDir(f);
     obsHeightOffset = (float)(nr - satphot::kEarthRadiusM);
-    obsLatDeg = glm::degrees(std::asin(glm::clamp(obsDir.z, -1.0f, 1.0f)));
-    obsLonDeg = glm::degrees(std::atan2(obsDir.y, obsDir.x));
 }
 
 void SatelliteSim::inertialStop() { inertialActive = false; }
@@ -107,7 +110,7 @@ void SatelliteSim::inertialTick()
     // that adopted only obsDir overwrote it with the held eye every frame (issue 20261029_180413: "can't change altitude").
     // Nothing else writes either between ticks, so an exact compare is safe (and keeps moves under 1e-7).
     if (obsDir != inertialLastObsDir || obsHeightOffset != inertialLastHeight)
-        inertialEyeEci = ecefToEci(glm::normalize(glm::dvec3(obsDir)) * (satphot::kEarthRadiusM + (double)obsHeightOffset), th0);
+        inertialEyeEci = ecefToEci(camEyeDir * (satphot::kEarthRadiusM + (double)obsHeightOffset), th0);
     if (std::abs(std::remainder(camera.azDeg - inertialLastAz, 360.0f)) > 0.01f || std::abs(camera.elDeg - inertialLastEl) > 0.01f)
         inertialViewEci = ecefToEci(inertialCamDirEcef(), th0);
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
@@ -116,12 +119,10 @@ void SatelliteSim::inertialTick()
     {
         const glm::dvec3 p = eciToEcef(inertialEyeEci, th);
         const double r = glm::length(p);
-        obsDir = glm::vec3(p / r);
+        camSetEyeDir(p / r);
         obsHeightOffset = (float)std::max(r - satphot::kEarthRadiusM, 0.0);
-        obsLatDeg = glm::degrees(std::asin(glm::clamp(obsDir.z, -1.0f, 1.0f)));
-        obsLonDeg = glm::degrees(std::atan2(obsDir.y, obsDir.x));
     }
-    const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
+    const glm::dvec3 up = camEyeDir;
     glm::dvec3 E, N;
     enuBasis(up, E, N);
     const glm::dvec3 v = eciToEcef(inertialViewEci, th);

@@ -579,6 +579,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- Walking slowly near the ground now goes where you face, at the speed set. The observer's position was a
+  single-precision vector: under ~10 m/s a step rounded away (2 m above the sea, holding W for 3 s moved 0.2 m of
+  9), and up to ~30 m/s the rounding, not the heading, picked the direction (34 m on a bearing of 2.7 deg whether
+  facing north or north-east). The camera now keeps its position and direction in double precision.
 - At night a cloud no longer shows a line at the horizon's height with the sky's glow over its upper half
   (issue_20261114_150555). The moonlit sky and the Moon's glow were added on top of everything, clouds included, and
   the glow stops at the horizon; they now show only through a cloud's thin parts and in the air in front of it.

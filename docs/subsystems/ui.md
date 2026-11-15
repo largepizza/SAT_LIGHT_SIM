@@ -343,6 +343,46 @@ Settings display, rebinding, hover state, and `keyDisplayName()` all work automa
 
 `keyDisplayName()` handles: letters, digits, Space, Tab, Enter, Esc, Bksp, modifier keys (LShift/RShift/LCtrl/RCtrl/LAlt/RAlt), F-keys (F1–F12), arrow keys, nav cluster (PgUp/PgDn/Home/End/Ins/Del), and common punctuation.
 
+## Camera rig (2026-11-14, camera revamp phases 1-2; `SatelliteSimCamera.cpp`)
+
+**State.** The camera is two DOUBLE unit vectors, Earth-fixed (ECEF): `camEyeDir` (the eye's direction from the
+Earth's centre; the height stays `obsHeightOffset`) and `camFwd` (the look direction). `obsDir`, `obsFacing`,
+`obsLatDeg` / `obsLonDeg` and `camera.azDeg` / `elDeg` are float MIRRORS written by `camPublish()` for their ~400
+readers. **Every write goes through a setter** — `camSetEyeDir` (the heading carried to the new place, projected onto
+its horizontal plane, the elevation kept: a WASD step and a teleport alike), `camSetLook` / `camSetLookDir` /
+`camAimAzEl` (`aimCameraAzEl` is a wrapper), `camYaw` / `camPitch` (mouse, cinematic look, gamepad) — and each
+publishes at once, so a reader later in the frame sees the change. `camSync()` runs before the look block (buildUI)
+and before the movement (recordCompute): it adopts any mirror changed since the last publish (a write that bypassed
+the setters) and logs `camera rig: adopted an outside write to ...` (state `camera_rig.adopted_writes`: 0 in the
+phase 2 runs). `SkyCamera::updateCapture` only captures / releases RMB; the turn is the rig's. Inertial hold's fly
+keeps the look direction fixed in ECEF (`camSetLookDir(f)` after the move: the view stays on the stars).
+`SkyCamera::viewMatrix()` still builds `skyView` (ENU -> camera) from the published az / el, so frames are as before
+(phase 2 A/B, `cam_p2_before` / `_after`: mean |difference| 0.005-0.015 levels, PSNR 65-70 dB; every camera state
+the same to 4 decimals).
+
+**Why double.** `obsDir` used to be canonical and float: a unit vector's ulp is ~6e-8 (~0.4 m on the surface), and
+WASD added `speed * dt * dir` a frame. Holding W 3 s over the sea moved 0.2 m of 9 at 2 m height (3 m/s), 34 m on a
+bearing of 2.7 deg at 10 m whether facing 0 or 45 deg (the rounding chose it), 75% of the distance at 30 m. In double:
+9.1 / 30.5 / 91 / 303 m (the wait's wall-clock slack) on bearings 0.00 / 45.00 deg, forward + 0.5 right at 71.57 deg
+(exact). **The GPU still gets the float mirror** (`obsECEFDir`): the rendered eye moves in ~0.4 m steps, a
+camera-relative (hi / lo) eye in the shaders would remove that.
+
+**Limits the next phases remove** (measured with `harness_runs/cam_phase1`, ground day / night, orbit day / night x
+roll 0 / 30 / 90 / 180):
+
+- **Roll renders correctly.** `camera.rollDeg` (harness `camera roll=`, no player control yet) banks `viewMatrix()`.
+  Each rolled frame equals the roll-0 frame turned about the screen centre: mean |difference| 0.1-0.4 levels in the
+  central disc (repeat-capture noise 0.01-1.9), total light within ~1%. The sky AP limb grid sizes itself from a cone
+  round the frustum (`skyApLimbFrame`), so it is roll-invariant. Open: orbit night at roll 90 carries +4% light in
+  its point sources (satellite shells), same points in the same places.
+- **The nadir snap.** `viewMatrix()` switches its up vector from Up to North past |el| = 88 deg: from 420 km, -87.9
+  -> -88.1 deg turns the whole image by the azimuth (45 deg there; mean change 35 levels vs 9 for 0.4 deg of pitch).
+  Pitch is clamped to +-89 (mouse, gamepad, Go to) or +-89.9 (aims).
+- CPU readers of az / el that would miss roll: the ambience / launch sound pan (left-right swap at 180), nothing that
+  projects (labels, glare, meteors and wildfire culling use `viewMatrix()` or a forward-only cone).
+- Settings load restores the elevation and position but faces north: `camera.az_deg` is saved and never applied
+  (as before the rig: the heading was re-derived from a north `obsFacing`).
+
 ---
 
 ## Subsystem: Intro Cinematic (UC3)

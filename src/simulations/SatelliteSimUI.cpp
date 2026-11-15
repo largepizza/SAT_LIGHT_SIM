@@ -403,10 +403,7 @@ void SatelliteSim::setLat(float newLatDeg)
         xy /= xyMag;
     else
         xy = {1.0f, 0.0f};
-    obsDir = {xy.x * cosL, xy.y * cosL, sinL};
-    obsFacing = glm::normalize(obsFacing - glm::dot(obsFacing, obsDir) * obsDir);
-    obsLatDeg = newLatDeg;
-    obsLonDeg = glm::degrees(atan2f(obsDir.y, obsDir.x));
+    camSetEyeDir(glm::dvec3(xy.x * cosL, xy.y * cosL, sinL)); // (the camera rig carries the heading over)
 }
 
 // adjustLon: rotates the observer around Earth's polar (Z) axis by deltaDeg — a
@@ -414,14 +411,15 @@ void SatelliteSim::setLat(float newLatDeg)
 // untouched), and obsFacing rotates identically so it stays tangent afterward.
 void SatelliteSim::adjustLon(float deltaDeg)
 {
-    float rad = glm::radians(deltaDeg);
-    float c = cosf(rad), s = sinf(rad);
-    auto rotZ = [&](const glm::vec3 &v)
-    { return glm::vec3(v.x * c - v.y * s, v.x * s + v.y * c, v.z); };
-    obsDir = rotZ(obsDir);
-    obsFacing = rotZ(obsFacing);
-    obsLatDeg = glm::degrees(asinf(glm::clamp(obsDir.z, -1.0f, 1.0f)));
-    obsLonDeg = glm::degrees(atan2f(obsDir.y, obsDir.x));
+    if (!camRigInit)
+        camSync();
+    const double rad = glm::radians((double)deltaDeg);
+    const double c = std::cos(rad), s = std::sin(rad);
+    auto rotZ = [&](const glm::dvec3 &v)
+    { return glm::dvec3(v.x * c - v.y * s, v.x * s + v.y * c, v.z); };
+    camEyeDir = rotZ(camEyeDir);
+    camFwd = rotZ(camFwd);
+    camPublish();
 }
 
 // ─── HUD text entry (2026-10-03) ─────────────────────────────────────────────
@@ -761,6 +759,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // camera.elDeg/obsFacing directly, and letting RMB-look run concurrently would fight it (and
     // would leave the cursor captured/hidden partway through a cutscene the user hasn't consented
     // to control yet).
+    camSync(); // the camera rig: adopts a mirror an unconverted write changed, then publishes (SatelliteSimCamera.cpp)
     if (win && !showIntro && !cineActive())
     {
         // Track lock: the aim above owns the camera's direction this frame, so every look input —
@@ -842,8 +841,8 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
 
         if (cinematic)
         {
-            // Let camera.update handle RMB capture/release without applying any rotation.
-            camera.update(win, 0.0f, 0.0f);
+            // RMB capture/release only; the rotation is applied below.
+            camera.updateCapture(win);
             const bool held = camera.captured || hDrag;
 
             if (held && cinematicMode)
@@ -880,28 +879,18 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
             // Apply this frame's rotation (rate x dt; identical math to the direct-control path).
             const float yawPx = cinematicYawVel * dtL, pitchPx = cinematicPitchVel * dtL;
             if (fabsf(yawPx) > 1.0e-6f)
-            {
-                float angle = glm::radians(-yawPx * camera.lookSens());
-                glm::vec3 leftDir = glm::cross(obsDir, obsFacing);
-                obsFacing = glm::normalize(cosf(angle) * obsFacing + sinf(angle) * leftDir);
-            }
-            camera.elDeg -= pitchPx * camera.lookSens();
-            camera.elDeg = glm::clamp(camera.elDeg, -89.0f, 89.0f);
+                camYaw(glm::radians(-(double)yawPx * camera.lookSens())); // (+ = left: look-right is a negative angle)
+            camPitch(-(double)pitchPx * camera.lookSens());
 
             cinematicActive = true;
         }
         else
         {
-            // Normal direct control: pitch via camera.update, yaw via Rodrigues.
-            camera.update(win, 0.0f, dmy);
-
+            // Normal direct control: the drag turns the camera rig (screen Y down: mouse up = negative dmy = look up).
+            if (camera.updateCapture(win))
+                camPitch(-(double)dmy * camera.lookSens());
             if (camera.captured && dmx != 0.0f)
-            {
-                // cross(obsDir, obsFacing) is the LEFT tangent, so negate angle for look-right.
-                float angle = glm::radians(-dmx * camera.lookSens());
-                glm::vec3 leftDir = glm::cross(obsDir, obsFacing);
-                obsFacing = glm::normalize(cosf(angle) * obsFacing + sinf(angle) * leftDir);
-            }
+                camYaw(glm::radians(-(double)dmx * camera.lookSens())); // (+ = left: look-right is a negative angle)
 
             // Kill any residual drift immediately when leaving cinematic mode.
             if (cinematicActive)
@@ -920,25 +909,10 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         if (gpLookYawDeg != 0.0f || gpLookPitchDeg != 0.0f)
         {
             const float gpScale = camera.lookSens() / camera.sens; // FOV scaling, as for the mouse
-            float angle = glm::radians(-gpLookYawDeg * gpScale);
-            glm::vec3 leftDir = glm::cross(obsDir, obsFacing);
-            obsFacing = glm::normalize(cosf(angle) * obsFacing + sinf(angle) * leftDir);
-            camera.elDeg = glm::clamp(camera.elDeg - gpLookPitchDeg * gpScale, -89.0f, 89.0f);
+            camYaw(glm::radians(-(double)gpLookYawDeg * gpScale));
+            camPitch(-(double)gpLookPitchDeg * gpScale);
         }
-
-        // Derive camera.azDeg from obsFacing projected into the local Earth-fixed ENU.
-        // Only used for the view matrix — never fed back into movement math.
-        {
-            float sL = obsDir.z;
-            float cLH = sqrtf(obsDir.x * obsDir.x + obsDir.y * obsDir.y);
-            float inv = (cLH > 1e-7f) ? 1.0f / cLH : 0.0f;
-            float cLn = obsDir.x * inv, sLn = obsDir.y * inv;
-            glm::vec3 eastEF = {-sLn, cLn, 0.0f};
-            glm::vec3 northEF = {-sL * cLn, -sL * sLn, cLH};
-            camera.azDeg = glm::degrees(atan2f(
-                glm::dot(obsFacing, eastEF),
-                glm::dot(obsFacing, northEF)));
-        }
+        // (camera.azDeg follows the heading: the camera rig publishes it with every change.)
     }
     dmx = dmy = 0.0f;
 
@@ -9524,8 +9498,11 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
     if (j.contains("camera"))
     {
         auto &c = j["camera"];
-        camera.azDeg = c.value("az_deg", camera.azDeg);
-        camera.elDeg = c.value("el_deg", camera.elDeg);
+        // The elevation, through the camera rig. camera.az_deg is not applied: the heading was always re-derived from
+        // obsFacing on the next frame, and the observer block below faces north (kept as it was, 2026-11-14).
+        if (!camRigInit)
+            camSync();
+        camSetLook(camFacing(), c.value("el_deg", camera.elDeg));
         camera.fovYDeg = c.value("fov_y_deg", camera.fovYDeg);
         moveSpeedPerHeight = c.value("move_speed_per_height", moveSpeedPerHeight);
     }
@@ -9534,12 +9511,12 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
     {
         float latDeg = j["observer"].value("lat_deg", obsLatDeg);
         float lonDeg = j["observer"].value("lon_deg", obsLonDeg);
-        float lat = glm::radians(latDeg);
-        float lon = glm::radians(lonDeg);
-        obsDir = {cosf(lat) * cosf(lon), cosf(lat) * sinf(lon), sinf(lat)};
-        obsFacing = {-sinf(lat) * cosf(lon), -sinf(lat) * sinf(lon), cosf(lat)};
-        obsLatDeg = latDeg;
-        obsLonDeg = lonDeg;
+        const double lat = glm::radians((double)latDeg);
+        const double lon = glm::radians((double)lonDeg);
+        camSetEyeDir(glm::dvec3(std::cos(lat) * std::cos(lon), std::cos(lat) * std::sin(lon), std::sin(lat)));
+        // Facing north (the saved camera.az_deg above does not survive this, as before the camera rig: camera.azDeg
+        // was always re-derived from this north facing on the next frame).
+        camSetLook(glm::dvec3(-std::sin(lat) * std::cos(lon), -std::sin(lat) * std::sin(lon), std::cos(lat)), camElDeg());
     }
 
     if (j.contains("time"))

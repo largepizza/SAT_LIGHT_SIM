@@ -2150,6 +2150,10 @@ struct SkyCamera
     float azDeg = 0.0f;    // azimuth of look direction (0=North, 90=East), degrees
     float elDeg = 30.0f;   // elevation of look direction, degrees
     float fovYDeg = 70.0f; // vertical field of view, degrees
+    // Roll about the look direction, degrees (+ = the camera banks right: the scene turns anticlockwise on screen).
+    // 2026-11-14 camera revamp phase 1: set only by the harness (`camera roll=`) to audit every pass under roll;
+    // 0 keeps viewMatrix() bit-identical to before.
+    float rollDeg = 0.0f;
     float sens = 0.12f;    // mouse sensitivity (degrees per pixel)
     bool captured = false;
 
@@ -2175,10 +2179,16 @@ struct SkyCamera
         glm::vec3 worldUp = (fabsf(elDeg) > 88.0f)
                                 ? glm::vec3{0.0f, 1.0f, 0.0f}  // North when near zenith
                                 : glm::vec3{0.0f, 0.0f, 1.0f}; // ENU Up otherwise
-        return glm::lookAt(glm::vec3(0.0f), fwd, worldUp);
+        const glm::mat4 view = glm::lookAt(glm::vec3(0.0f), fwd, worldUp);
+        if (rollDeg == 0.0f)
+            return view;
+        // Camera space is +X right, +Y up, -Z forward: banking right turns camera-space vectors anticlockwise about +Z.
+        return glm::rotate(glm::mat4(1.0f), glm::radians(rollDeg), glm::vec3(0.0f, 0.0f, 1.0f)) * view;
     }
 
-    void update(GLFWwindow *win, float dmx, float dmy)
+    // RMB captures the mouse and releasing it lets go. True when the drag turns the view this frame (held before this
+    // frame and still held); the turn itself is the camera rig's (SatelliteSim::camYaw / camPitch).
+    bool updateCapture(GLFWwindow *win)
     {
         if (!captured)
         {
@@ -2187,17 +2197,15 @@ struct SkyCamera
                 captured = true;
                 glfwSetInputMode(win, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
             }
-            return;
+            return false;
         }
         if (glfwGetMouseButton(win, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_RELEASE)
         {
             captured = false;
             glfwSetInputMode(win, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-            return;
+            return false;
         }
-        azDeg += dmx * lookSens();
-        elDeg -= dmy * lookSens(); // screen Y down → mouse up = negative dmy = increase el
-        elDeg = glm::clamp(elDeg, -89.0f, 89.0f);
+        return true;
     }
 };
 
@@ -3015,10 +3023,34 @@ private:
     void startTrack();
     void stopTrack();
     void updateTrack();
-    // Point the camera at an az/el in the observer's local ENU. obsFacing is the authority (buildUI
-    // derives camera.azDeg from it every frame), so this sets obsFacing and camera.azDeg/elDeg
-    // together; the harness's `camera az=`/`look`/`track` commands go through it as well.
+    // Point the camera at an az/el in the observer's local ENU (camAimAzEl); the harness's `camera az=` / `look` /
+    // `track` commands go through it as well.
     void aimCameraAzEl(float azDeg, float elDeg);
+
+    // ── Camera rig (2026-11-14, camera revamp phase 2; SatelliteSimCamera.cpp, docs/subsystems/ui.md "Camera rig") ──
+    // The eye's direction and the look direction, Earth-fixed (ECEF), in DOUBLE, are the camera's only state.
+    // obsDir, obsFacing, obsLatDeg / obsLonDeg and camera.azDeg / elDeg are MIRRORS written by camPublish() for their
+    // ~400 readers; every write goes through the cam* setters, which publish at once. A float obsDir could not move
+    // less than ~0.4 m a step: WASD stalled under ~10 m/s and went where the rounding pointed (phase 1 audit).
+    // camSync() is the net under that rule: a mirror changed since the last publish is adopted (and logged once).
+    glm::dvec3 camEyeDir{0.0, 0.0, 1.0}; // unit, the eye's direction from the Earth's centre
+    glm::dvec3 camFwd{1.0, 0.0, 0.0};    // unit, the look direction
+    bool camRigInit = false;             // false until the first camSync() adopts the startup mirrors
+    glm::vec3 camPubObsDir{0.0f}, camPubFacing{0.0f};
+    float camPubElDeg = 0.0f, camPubAzDeg = 0.0f;
+    int camAdoptLogs = 0;                // outside writes adopted (logged; a missed setter conversion)
+    glm::dvec3 camFacing() const;        // the look's heading: camFwd on the local horizontal plane (unit)
+    double camElDeg() const;             // the look's elevation above the local horizontal
+    // The eye moves; the heading is carried over (projected onto the new horizontal plane) and the elevation kept.
+    void camSetEyeDir(const glm::dvec3 &dir);
+    // Heading (any vector: projected onto the horizontal plane; a vertical one leaves the heading) and elevation.
+    void camSetLook(const glm::dvec3 &facing, double elDeg, double elClampDeg = 89.9);
+    void camSetLookDir(const glm::dvec3 &dir, double elClampDeg = 89.9); // a look direction (ECEF)
+    void camAimAzEl(double azDeg, double elDeg, double elClampDeg = 89.9);
+    void camYaw(double rad);                               // + = turn left (about the local up)
+    void camPitch(double deg, double elClampDeg = 89.0);   // + = look up
+    void camPublish();
+    void camSync();
     void buildTrackButton(const UIInput &inp, UIRenderer &ui, int idx);
 
     // ── Orbit pipeline buffers ────────────────────────────────────────────────

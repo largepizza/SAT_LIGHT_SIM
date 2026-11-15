@@ -206,7 +206,7 @@ json patchFor(const std::string &dotted, const json &value)
 const char *kHelp =
     "wait <frames> [maxs=2] | wait seconds <s> | wait settle [frames] [maxs=2] | wait settle auto [max=160] [min=40] [thr=0.1] [hold=4] [noise=1.5] [maxs=2]; "
     "time [set <iso>|add <s>|sun <el deg|noon|midnight> [rising|setting]|pause|play|scale <label>|reverse on/off]; "
-    "observer lat= lon= [agl=|alt=]; beams [list] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [clamp=on] [drift=intro|default]; report list [dir] | report info <issue dir> | report load <issue dir> [shot=1] [settings=on|off] [clamp=on] [trail=on|off] | report shot [note] [new=1] [title=] [bar=1] | report mark [issue] shot= [pin=x,y|off] [rect=x,y,w,h|off] | report export [issue]; drift [default] [phase=] [rate=]; intro [state|play|skip]; camera [az= el= fov=] | camera look|track <sun|moon|sel|planet name|off>; "
+    "observer lat= lon= [agl=|alt=]; beams [list] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [clamp=on] [drift=intro|default]; report list [dir] | report info <issue dir> | report load <issue dir> [shot=1] [settings=on|off] [clamp=on] [trail=on|off] | report shot [note] [new=1] [title=] [bar=1] | report mark [issue] shot= [pin=x,y|off] [rect=x,y,w,h|off] | report export [issue]; drift [default] [phase=] [rate=]; intro [state|play|skip]; camera [az= el= fov= roll=] | camera look|track <sun|moon|sel|planet name|off>; "
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select star <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "exposure [auto|hold|fast]; "
@@ -362,9 +362,7 @@ void SatelliteSim::harnessApplyCam(const HarnessCamKey &k)
     stopTrack(); // a scripted camera key is an explicit aim, so it releases the selection's Track lock
     const float lat = (float)glm::clamp(k.lat, -89.999, 89.999), lon = (float)k.lon;
     const float la = glm::radians(lat), lo = glm::radians(lon);
-    obsDir = {cosf(la) * cosf(lo), cosf(la) * sinf(lo), sinf(la)};
-    obsLatDeg = lat;
-    obsLonDeg = glm::degrees(atan2f(obsDir.y, obsDir.x));
+    camSetEyeDir(glm::dvec3(cosf(la) * cosf(lo), cosf(la) * sinf(lo), sinf(la)));
     obsHeightOffset = (float)std::max(0.0, k.alt);
     aimCameraAzEl((float)k.az, (float)k.el);
     camera.fovYDeg = glm::clamp((float)k.fov, SkyCamera::kMinFovDeg, SkyCamera::kMaxFovDeg);
@@ -406,6 +404,10 @@ json SatelliteSim::harnessStateJson()
                      {"height_offset_m", obsHeightOffset},
                      {"following", followActive}, {"follow_flight", followFlight},
                      {"follow_last", std::string(followLastLabel)}};
+    // The camera rig's double state (2026-11-14): the eye's direction (ECEF unit) and the look direction; lat_deg /
+    // lon_deg above are float caches (~0.2-1.6 m), too coarse to measure a slow walk.
+    j["observer"]["eye_dir_ecef"] = {camEyeDir.x, camEyeDir.y, camEyeDir.z};
+    j["camera_rig"] = {{"fwd_ecef", {camFwd.x, camFwd.y, camFwd.z}}, {"el_deg", camElDeg()}, {"adopted_writes", camAdoptLogs}};
     if (followActive)
     {
         j["observer"]["follow"] = {{"sat", followSatIndex},
@@ -426,7 +428,7 @@ json SatelliteSim::harnessStateJson()
                                                     {"tau_s", followTrCur.tau}};
     }
     j["camera"] = {{"az_deg", camera.azDeg}, {"el_deg", camera.elDeg}, {"fov_y_deg", camera.fovYDeg},
-                   {"tracking", trackActive}};
+                   {"roll_deg", camera.rollDeg}, {"tracking", trackActive}};
     {
         const float ls = camera.lookSens();
         j["camera"]["cinematic"] = {{"latched", cinematicLatched}, {"alt_mode", cinematicMode},
@@ -1086,16 +1088,14 @@ std::string SatelliteSim::harnessApplyViewRecord(const json &rec, bool applySett
     if (hasView)
     {
         const json &d = rec["view"]["obs_dir"];
-        obsDir = glm::normalize(glm::vec3(d[0].get<float>(), d[1].get<float>(), d[2].get<float>()));
+        camSetEyeDir(glm::dvec3(d[0].get<float>(), d[1].get<float>(), d[2].get<float>()));
     }
     else
     {
         const float la = glm::radians(ob.at("lat_deg").get<float>());
         const float lo = glm::radians(ob.at("lon_deg").get<float>());
-        obsDir = {cosf(la) * cosf(lo), cosf(la) * sinf(lo), sinf(la)};
+        camSetEyeDir(glm::dvec3(cosf(la) * cosf(lo), cosf(la) * sinf(lo), sinf(la)));
     }
-    obsLatDeg = glm::degrees(asinf(glm::clamp(obsDir.z, -1.0f, 1.0f)));
-    obsLonDeg = glm::degrees(atan2f(obsDir.y, obsDir.x));
     obsHeightOffset = ob.at("height_offset_m").get<float>();
     const json &cam = rec.at("camera");
     camera.fovYDeg = cam.at("fov_y_deg").get<float>();
@@ -1442,10 +1442,9 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             if (lat < -90.0f || lat > 90.0f)
                 fail("observer: lat must be in [-90, 90]");
             const float la = glm::radians(lat), lo = glm::radians(lon);
-            obsDir = {cosf(la) * cosf(lo), cosf(la) * sinf(lo), sinf(la)};
-            obsLatDeg = lat;
-            obsLonDeg = glm::degrees(atan2f(obsDir.y, obsDir.x));
-            aimCameraAzEl(camera.azDeg, camera.elDeg); // keep the view direction in the new local frame
+            const float az0 = camera.azDeg, el0 = camera.elDeg; // (before the move republishes them)
+            camSetEyeDir(glm::dvec3(cosf(la) * cosf(lo), cosf(la) * sinf(lo), sinf(la)));
+            aimCameraAzEl(az0, el0); // keep the view direction in the new local frame
             trailClearPending = true;
         }
         // obsHeightOffset is read by the sky shaders as an altitude ABOVE SEA LEVEL floored at the
@@ -1963,9 +1962,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                                           std::cos(dAng) - std::sin(p1) * std::sin(p2));
         if (followActive)
             stopFollow();
-        obsDir = {(float)(std::cos(p2) * std::cos(l2)), (float)(std::cos(p2) * std::sin(l2)), (float)std::sin(p2)};
-        obsLatDeg = (float)glm::degrees(p2);
-        obsLonDeg = glm::degrees(atan2f(obsDir.y, obsDir.x));
+        camSetEyeDir(glm::dvec3(std::cos(p2) * std::cos(l2), std::cos(p2) * std::sin(l2), std::sin(p2)));
         obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
         if (c.has("alt"))
             obsHeightOffset = std::max(0.0f, (float)c.num("alt", 0.0));
@@ -2058,9 +2055,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         }
         const double th = earthRotationAngle(t), c = std::cos(th), s = std::sin(th);
         const glm::dvec3 e(c * m.x + s * m.y, -s * m.x + c * m.y, m.z);
-        obsDir = glm::vec3(glm::normalize(e));
-        obsLatDeg = glm::degrees(std::asin((float)obsDir.z));
-        obsLonDeg = glm::degrees(std::atan2(obsDir.y, obsDir.x));
+        camSetEyeDir(e);
         obsHeightOffset = 2.0f;
         updatePositions(t, 0.0f);
         const glm::vec3 tgt = glm::vec3(moonDirENU);
@@ -2243,7 +2238,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             stopTrack(); // the player's Track lock and this explicit aim would fight for the camera
         }
         else if (!sub.empty())
-            fail("camera: unknown subcommand '" + sub + "' (look, track, or az= el= fov=)");
+            fail("camera: unknown subcommand '" + sub + "' (look, track, or az= el= fov= roll=)");
         if (c.has("az") || c.has("el"))
         {
             harnessTrack_ = 0;
@@ -2252,12 +2247,15 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         }
         if (c.has("fov"))
             camera.fovYDeg = glm::clamp((float)c.num("fov", camera.fovYDeg), SkyCamera::kMinFovDeg, SkyCamera::kMaxFovDeg);
+        if (c.has("roll"))
+            camera.rollDeg = (float)std::remainder(c.num("roll", camera.rollDeg), 360.0);
         r["az_deg"] = camera.azDeg;
         r["el_deg"] = camera.elDeg;
         r["fov_y_deg"] = camera.fovYDeg;
-        char buf[96];
-        snprintf(buf, sizeof(buf), "az %.2f el %.2f fov %.2f%s", camera.azDeg, camera.elDeg, camera.fovYDeg,
-                 harnessTrack_ ? " (tracking)" : "");
+        r["roll_deg"] = camera.rollDeg;
+        char buf[112];
+        snprintf(buf, sizeof(buf), "az %.2f el %.2f fov %.2f roll %.2f%s", camera.azDeg, camera.elDeg, camera.fovYDeg,
+                 camera.rollDeg, harnessTrack_ ? " (tracking)" : "");
         r["message"] = buf;
         return Status::Done;
     }
@@ -2574,13 +2572,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             if (lower(c.str("look")) == "observer")
             {
                 // Look away from the satellite, at the parked ground observer (down a Reflect beam to its site).
-                const glm::dvec3 d = glm::normalize(followHomeEcef() - followObsEcef);
-                const glm::dvec3 up = glm::dvec3(obsDir);
-                const glm::dvec3 h = d - glm::dot(d, up) * up;
-                if (glm::length(h) > 1e-9)
-                    obsFacing = glm::vec3(glm::normalize(h));
-                camera.elDeg = (float)glm::degrees(std::asin(std::clamp(glm::dot(d, up), -1.0, 1.0)));
-                camera.elDeg = std::clamp(camera.elDeg, -89.0f, 89.0f);
+                camSetLookDir(followHomeEcef() - followObsEcef, 89.0);
                 updateFollow(0.0f);
             }
         }
@@ -2593,12 +2585,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 fail("follow: aimat=<along>,<cross>,<radial> in metres");
             updateFollow(0.0f);
             const glm::dvec3 tgt = followLastP + x * followBasisT + y * followBasisN + z * followBasisR;
-            const glm::dvec3 d = glm::normalize(tgt - followObsEcef);
-            const glm::dvec3 up = glm::dvec3(obsDir);
-            const glm::dvec3 h = d - glm::dot(d, up) * up;
-            if (glm::length(h) > 1e-9)
-                obsFacing = glm::vec3(glm::normalize(h));
-            camera.elDeg = std::clamp((float)glm::degrees(std::asin(std::clamp(glm::dot(d, up), -1.0, 1.0))), -89.0f, 89.0f);
+            camSetLookDir(tgt - followObsEcef, 89.0);
             updateFollow(0.0f);
         }
         else if (c.has("aim") && lower(c.str("aim")) == "sat")
@@ -5093,9 +5080,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 altM = c.num("alt", 700.0);
             }
             if (followActive) stopFollow();
-            obsDir = glm::vec3(oe);
-            obsLatDeg = (float)glm::degrees(std::asin(std::clamp(oe.z, -1.0, 1.0)));
-            obsLonDeg = (float)glm::degrees(std::atan2(oe.y, oe.x));
+            camSetEyeDir(oe);
             obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
             obsHeightOffset = std::max(0.0f, std::max(obsTerrainH, 0.0f) + (float)altM);
             const glm::dvec3 oEast = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), oe)), oNorth = glm::cross(oe, oEast);
@@ -5253,9 +5238,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         me = glm::normalize(me - ce * glm::dot(me, ce));
         const glm::dvec3 oe = glm::normalize(ce + me * (c.num("dist_km", 28.0) * 1000.0 / 6371000.0));
         if (followActive) stopFollow();
-        obsDir = glm::vec3(oe);
-        obsLatDeg = (float)glm::degrees(std::asin(std::clamp(oe.z, -1.0, 1.0)));
-        obsLonDeg = (float)glm::degrees(std::atan2(oe.y, oe.x));
+        camSetEyeDir(oe);
         obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
         obsHeightOffset = std::max(0.0f, std::max(obsTerrainH, 0.0f) + (float)c.num("alt", 20.0));
         const glm::dvec3 oEast = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), oe)), oNorth = glm::cross(oe, oEast);
@@ -5583,9 +5566,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             const double ang = c.num("dist_km", 10.0) * 1000.0 / 6371000.0;
             const glm::dvec3 oe = glm::normalize(te * std::cos(ang) + (east * std::sin(b) + north * std::cos(b)) * std::sin(ang));
             if (followActive) stopFollow();
-            obsDir = glm::vec3(oe);
-            obsLatDeg = (float)glm::degrees(std::asin(std::clamp(oe.z, -1.0, 1.0)));
-            obsLonDeg = (float)glm::degrees(std::atan2(oe.y, oe.x));
+            camSetEyeDir(oe);
             obsHeightOffset = std::max(0.0f, (float)c.num("alt", 300.0));
             obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
             const glm::dvec3 oEast = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), oe)), oNorth = glm::cross(oe, oEast);
@@ -5744,9 +5725,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             const glm::dvec3 oe = glm::normalize(te * std::cos(ang) + (east * std::sin(b) + north * std::cos(b)) * std::sin(ang));
             if (followActive)
                 stopFollow();
-            obsDir = glm::vec3(oe);
-            obsLatDeg = (float)glm::degrees(std::asin(std::clamp(oe.z, -1.0, 1.0)));
-            obsLonDeg = (float)glm::degrees(std::atan2(oe.y, oe.x));
+            camSetEyeDir(oe);
             obsHeightOffset = std::max(0.0f, (float)c.num("alt", 1500.0));
             obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
             // Bearing from the observer to the tower (degrees from north, east positive).

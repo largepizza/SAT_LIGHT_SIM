@@ -295,9 +295,7 @@ void SatelliteSim::bookmarkGo(int i)
     const double days = std::floor(b.simT / 86400.0);
     simDayJ2000 = (int64_t)days;
     simSecInDay = b.simT - days * 86400.0;
-    obsDir = glm::normalize(glm::vec3(b.obsDir));
-    obsLatDeg = glm::degrees(asinf(glm::clamp(obsDir.z, -1.0f, 1.0f)));
-    obsLonDeg = glm::degrees(atan2f(obsDir.y, obsDir.x));
+    camSetEyeDir(glm::dvec3(b.obsDir));
     obsHeightOffset = b.heightM;
     camera.fovYDeg = glm::clamp(b.fov, SkyCamera::kMinFovDeg, SkyCamera::kMaxFovDeg);
     aimCameraAzEl(b.az, b.el);
