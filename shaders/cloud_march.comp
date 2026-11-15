@@ -1659,8 +1659,8 @@ vec3 auroraMarchCS(vec3 obsPos, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
 // free" and stay there — moving just them would mean duplicating a chunk of that loop here for
 // near-zero marginal win, since they already cost almost nothing riding samples that loop takes
 // anyway for other reasons (see the "does the atmosphere need full-res" discussion this session).
-// No cloud-suppression term — the original never had one (unlike aurora), just a plain additive
-// term, so this folds straight into B_total below with no extra logic.
+// Seen from under its shell it lies behind every cloud on the ray: the composite below takes it times
+// the clouds' transmittance (2026-11-15; it had no cloud term and drew in front of near cloud).
 const float kAirglowRedPeakM      = 275000.0;
 const float kAirglowRedHalfWidthM = 75000.0;
 const float kAirglowNoiseFreq     = 4.0;
@@ -2617,10 +2617,18 @@ void main() {
         }
     }
 
-    // Airglow red band (moved here this session — perf). No cloud-suppression term — the
-    // original never had one either, just a plain additive contribution.
-    if ((cloud.dbgDisableMask & 16u) == 0u) {
-        B_total += airglowRedMarchCS(obsPos, dir, enuX, enuY, enuZ, sunDirECEF, obsEffH, tScene);
+    // Airglow red band (moved here this session — perf). BEHIND the clouds and plumes seen from under its shell
+    // (2026-11-15, issue_20261115_015559 "Odd red glow from surface"): it was added on top of the composite with no
+    // transmittance, so at dusk from 1.6 km a red band with the horizon's hard bottom edge lay over an opaque rain
+    // cloud. From below 100 km the band starts where the ray leaves that shell and every cloud on the ray is nearer
+    // (they are under 20 km): it takes A_total (and its derivative, for the full-res combine). From above the shell
+    // (orbit) its march runs from the eye to the top of the air, in front of the clouds, and stays as it was.
+    // Not marched at all behind opaque cloud (the aurora's skip above).
+    const bool agUnder = obsEffH < 100000.0;   // (= airglowRedMarchCS's kAirglowInnerM)
+    if ((cloud.dbgDisableMask & 16u) == 0u && !(agUnder && max(A_total.r, max(A_total.g, A_total.b)) < 1e-3)) {
+        vec3 agRed = airglowRedMarchCS(obsPos, dir, enuX, enuY, enuZ, sunDirECEF, obsEffH, tScene);
+        B_total += agUnder ? agRed * A_total : agRed;
+        if (agUnder) gBA += agRed * gAA;
     }
 
     // ── Reflect-Orbital beam pointing ray — NAME IS STALE, THIS IS THE REAL BEAM (C12 follow-up
