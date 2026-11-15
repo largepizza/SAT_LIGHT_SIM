@@ -753,6 +753,16 @@ void SatelliteSim::updateStorms()
             for (const auto &h : cycHide)
                 if (h.first == tw.stormId) hideK = h.second;
         if (hideK > 0.0f) g.a.w = tw.strength * (1.0f - hideK);
+        // ...and what is left of it stands UNDER the CDO (2026-11-15, issue_20261115_154546 "Hurricane eyewall cloud poofs"):
+        // fading the strength did not lower it (the height saturates at strength 0.6), so at a partial "Hurricane eyewall" x
+        // "Storm mass" the ring's heads reached the lid and swelled through the CDO's plate as bright mounds seen from orbit.
+        // The march's copy is drawn to kCycWallCap of the Cb's height (cv2StormGeom's hK: no flared head, no overshooting
+        // swell; ~3 km under the lid in the tropics); seen from below and inside the eyewall the towers are still there.
+        if (tw.kind == wx::StormKind::Tropical && tw.role >= 0.99f)
+        {
+            constexpr double kCycWallCap = 0.8;
+            g.c.w = (float)(std::min(driftK, 3.99) + 4.0 * std::round((1.0 - kCycWallCap) * 1000.0));
+        }
         dst[i] = g;
         if (hideK >= 0.98f) return;
         if (tight)

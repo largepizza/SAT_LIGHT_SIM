@@ -154,6 +154,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   read from orbit as evenly spaced concentric rings with the sea between them: the outflow cirrus is now one thin
   canopy fanning out anticyclonically in nearly radial streaks with a lobed, frayed edge ("Hurricane outflow cirrus" /
   "Hurricane outflow streaks"). The minor swirls stay in the low cloud.
+- **No eyewall towers poking through a hurricane's top.** With "Hurricane eyewall" below 1, the eyewall's storm
+  towers no longer rise through the central dense overcast as big bright mounds round the eye seen from orbit: they
+  stand under the overcast, and from inside the eye or below they are still there.
 - **Small cumulus are heaps, not pucks.** Shallow fair-weather cumulus rise from their flat base in a dome instead of
   standing as wide, flat-walled discs with a cap on top, and are a little deeper (Clouds > Shallow cumulus heaps / depth).
 - **No bright ring in distant clouds.** Seen from altitude over a deep overcast, clouds beyond a few tens of km no

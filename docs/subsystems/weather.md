@@ -111,6 +111,15 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   The ring's tower objects (`Weather.cpp cycloneTowersAt`, role 1) fade out of the march's copy by the same share
   (`SatelliteSimWeather.cpp`, the GPU strength x (1 - k), unlisted at k >= 0.98); the bake's envelope copy keeps them,
   so their rain, stamp and lightning stay. Their columns stood in the wall as separate cylinders with flat heads.
+  What is left of a ring tower in the march is drawn to 0.8 of the Cb's height (`kCycWallCap`, the march copy's
+  `cv2TowerHeightCap` in c.w; 2026-11-15, issue_20261115_154546 "Hurricane eyewall cloud poofs"). This puts its top ~3 km
+  under the CDO's lid, with no flared head and no overshoot swell (cv2StormGeom's `full` is 0 at hK 0.8). Fading the strength
+  alone did not lower the tower, because the height saturates at strength 0.6. At a partial share (the reporter's eyewall 0.56
+  x storm mass 0.62 = k 0.34) the ring's heads reached the lid and swelled through the plate: four bright 20-40-km mounds
+  round the eye from 69 km (debug view 7: red, the low/storm layer, over the blue CDO). Measured at the shot (settled,
+  1920x1009): the mounds are gone. Outside them, at matched EV (auto-exposure moved -0.37 EV with the bright mounds gone),
+  the frame changes by mean |d| 1.70 (their long low-Sun shadows on the plate), against a 0.15 noise floor. GPU total is
+  27.2 -> 24.6 ms. The eyewall seen from inside the eye at 6 km changes by |d| 1.2. The bake's copy is unchanged.
   (3) THE SHEET'S EDGE AND SWIRL ("Hurricane sheet swirl" hurricane.x, slot 556; `cv2CdoShare`): on the bake's own main
   arms (same phase as stormStampFinish) the outline reaches out along each crest (u x 0.75, to ~1.45 CDO radii) and is
   notched between them (x 1.3); its outer ~40% frays into 3n + 1 streaks wound tighter (lr / 0.6 tanP), their phase moved
