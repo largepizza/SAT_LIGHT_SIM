@@ -49,6 +49,8 @@ layout(set = 0, binding = 7) uniform sampler2D fullDepthTex;
 // (2026-11-04) y: the pixel's resolved mean distance (m, 0 = none), reprojected with the age: the depth test below.
 layout(set = 0, binding = 9, rg32f) uniform writeonly image2D outAge;
 layout(set = 0, binding = 10) uniform sampler2D histAgeTex;
+// The scene depth (the march's binding 6: half-res, metres, kNoSurfaceT = sky; texel = c >> grid.z). See tSurf in main.
+layout(set = 0, binding = 11) uniform sampler2D sceneDepthTex;
 layout(std430, set = 0, binding = 8) readonly buffer TileBuf { uint tPad, tDispX, tDispY, tDispZ; uint tList[4096]; uint tFlag[4096]; };
 
 ivec2 gHalf, gQs;
@@ -376,6 +378,17 @@ void main()
     // small puff smeared into a streak behind itself and faded (the user's snapshot 2, 7.5 km over trade
     // cumulus: "small clouds get filtered out when moving or changing altitude").
     float ndR = nd.x > 0.0 ? nd.x : (dNear < 1e29 ? dNear : 0.0);
+    // TERRAIN BOUNDS THE PIXEL (issue_20261115_133245). The march stops at the ground, so nothing this pixel shows is
+    // farther than the surface's distance tSurf. A ground pixel with no cloud of its own reprojected at infinity (or at a
+    // far cloud's distance taken from the sky beyond the ridge, dNear), so its parallax was the 50-km floor's: "still" at
+    // walking pace 1 km from a hillside, the history taken unclamped (uK) at the still weight. As the eye moved, the
+    // clouds above the ridge reprojected down onto the hill and stayed: cloud blobs and stair-stepped bands over the
+    // dark hillside that a settle (a history reset) cleared. It reprojects at the ground now, and the parallax floors
+    // (capD) stop there too, so its history is clamped to its own new samples (clear) like any near pixel in motion.
+    float tSurf = texelFetch(sceneDepthTex, min(c >> int(cv2.grid.z), textureSize(sceneDepthTex, 0) - 1), 0).r;
+    bool  onSurf = tSurf > 0.0 && tSurf < 0.5 * kNoSurfaceT;
+    float ndCl  = ndR;   // the cloud's own distance (0 = none): the volumes' slide and the colour box's depth class keep it
+    if (onSurf) ndR = ndR > 0.0 ? min(ndR, tSurf) : tSurf;
     if (ndR > 0.0) {
         vec3 v = vE * ndR;
         // THE CYCLONE FLOW MAP (2026-11-10, flowmaps; clouds_v2.glsl cv2CycFlowAt): round a tropical cyclone the cloud texture
@@ -413,6 +426,7 @@ void main()
         // The eye-parallax floor's distance cap: 50 km near the ground, the eye's height x 2 above it (from orbit no
         // cloud is within 50 km, and the floor called a view with time running "moving").
         float capD = max(50000.0, 2.0 * pc.obsEffH);
+        if (onSurf) capD = min(capD, tSurf);   // (the ground bounds every distance below: see tSurf)
         vec4 hist = sampleHistory(uvPrev, vec2(halfSize));
         // New-sample weight: look2.w for a still view (low: an exponential blend at weight a keeps
         // sqrt(a / (2 - a)) of the per-sample noise — 38% at 0.25, which showed as grain on
@@ -425,7 +439,7 @@ void main()
         motionPx = (camInf.z < 0.0) ? length((uvPrev - uvInf) * vec2(halfSize)) : 8.0;
         // Plus the evolution the reprojection cannot follow (the noise volumes sliding against each
         // other — km per second under time warp), in pixels at this cloud's distance.
-        if (ndR > 0.0)
+        if (ndCl > 0.0)
             motionPx = max(motionPx, cv2.motion.x / (ndR * 2.0 * tanHalf / float(halfSize.y)));
         // Review 12: while the EYE moves, at least the parallax of a point 50 km away. A pixel's distance is
         // the opacity-weighted mean of what it shows; a near beam shaft (or haze) in front of a far deck
@@ -475,7 +489,7 @@ void main()
         float stillW = 1.0 - smoothstep(0.05, 0.5, mNb);
         // The wide neighbourhood is read in motion too (2026-10-13, issue 20261013_214939: the colour box below).
         vec3 cMn = mn.rgb, cMx = mx.rgb, rMnC = rMn, rMxC = rMx;
-        float dRef = ndR > 0.0 ? ndR : -1.0;
+        float dRef = ndCl > 0.0 ? ndR : -1.0;
         float dWide = 1e30;
         {
             vec4 mnW = mn, mxW = mx; vec3 rMnW = rMn, rMxW = rMx;
