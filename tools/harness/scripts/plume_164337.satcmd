@@ -1,0 +1,22 @@
+# issue_20261115_164337 "Plume particles": the reporter's night ascent (shot 1, 2.3 km) and 64-km trail (shot 4) at 1x.
+# Videos: s1run / s4run (900 frames each, fixed step). Captures: hull_on / hull_off at shot 1, time held.
+# Measure with ffmpeg frames + a frame-mean step series; compare against the same script on the base build.
+report load "C:/Code/Shader_Fun/user_data/reports/issue_20261115_164337" shot=1 trail=off
+time pause
+wait 120 maxs=0
+capture hull_on
+set launches.plume_gain 0
+wait 20 maxs=0
+capture hull_off
+report load "C:/Code/Shader_Fun/user_data/reports/issue_20261115_164337" shot=1 trail=off
+wait 120 maxs=0
+time play
+video start s1run
+wait 900 maxs=0
+video stop
+report load "C:/Code/Shader_Fun/user_data/reports/issue_20261115_164337" shot=4 trail=off
+wait 120 maxs=0
+time play
+video start s4run
+wait 900 maxs=0
+video stop

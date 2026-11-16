@@ -218,6 +218,13 @@ void cullDustForTile(vec3 cAxis, float tileHalfAngle)
                         pk = (packHalf2x16(vec2(max(sd.x, 1e-3), 0.0)) & 0xFFFFu) |
                              (uint(round(sqrt(clamp(sd.y / 0.5, 0.0, 1.0)) * 255.0)) << 16u) |
                              (uint(round(clamp(sd.z, 0.0, 1.0) * 255.0)) << 24u);
+                } else if (dust[i].col.w > 1.5) {
+                    // (2026-11-15, issue_20261115_164337) a plume Gaussian of a burning stage: its side slot holds the
+                    // nozzle's plane (launchFillVisuals' Cand::clip); flagged here, read per texel only for these few
+                    DustCloud sS = dust[1056u + i / 5u];
+                    uint sK = i % 5u;
+                    vec4 sd = sK == 0u ? sS.c : sK == 1u ? sS.ia : sK == 2u ? sS.ib : sK == 3u ? sS.col : sS.cone;
+                    if (dot(sd.xyz, sd.xyz) > 0.5) pk = 1u;
                 }
                 sSmSide[i] = pk;
             }
@@ -518,7 +525,38 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
             E0  = dustErf(-sq * tc);
             ET  = dustErf(sq * (T - tc));
         }
-        vec4 wSeg = (d.col.w > 0.5) ? dustSegW(tc, sq, T, pK, E0, ET) : vec4(0.0);
+        // (2026-11-15, issue_20261115_164337 "often within the craft models") A burning stage's exhaust is cut at its
+        // nozzle's plane (xyz the flight direction, w its offset from the eye along it): only t where t (dir . n) <= w
+        // is integrated (the same closed form over the shorter interval), and its light is taken inside that interval.
+        // The engine light falls as 1 / r^2 from the nozzle, so the faint forward tail of each young Gaussian was lit
+        // brighter than its core: an orange bell round the hull above the engines at night.
+        float tEnd = T;
+        if (sSmSide[i] != 0u && !((i - smF) < smN)) {
+            DustCloud sS = dust[1056u + i / 5u];
+            uint sK = i % 5u;
+            vec4 pl = sK == 0u ? sS.c : sK == 1u ? sS.ia : sK == 2u ? sS.ib : sK == 3u ? sS.col : sS.cone;
+            float dn = dot(dir, pl.xyz);
+            float t0c = 0.0;
+            if (abs(dn) > 1e-7) {
+                float tPl = pl.w / dn;
+                if (dn > 0.0) tEnd = min(T, tPl); else t0c = max(0.0, tPl);
+            } else if (pl.w < 0.0) {
+                continue;   // (the whole ray ahead of the nozzle)
+            }
+            if (tEnd <= t0c) continue;
+            E0  = dustErf(sq * (t0c - tc));
+            ET  = dustErf(sq * (tEnd - tc));
+            tau = d.ia.w * d.c.w * max(exp(-0.5 * min(e, 80.0)) * sqrt(PI / (2.0 * q)) * (ET - E0), 0.0);
+            // lit at the centroid of what is left (the truncated Gaussian's mean along the ray), not at the cut: clamped
+            // onto the plane, the light point of every cut Gaussian sat beside the engine light (1 / r^2) and the young
+            // exhaust lit up as a bright dome with a flat top at the nozzle
+            float sgt = inversesqrt(q);
+            float a0 = (t0c - tc) / sgt, a1 = (tEnd - tc) / sgt;
+            tc = clamp(tc + sgt * 0.39894228 * (exp(-0.5 * min(a0 * a0, 80.0)) - exp(-0.5 * min(a1 * a1, 80.0))) /
+                                max(0.5 * (ET - E0), 1e-6),
+                       t0c, tEnd);
+        }
+        vec4 wSeg = (d.col.w > 0.5) ? dustSegW(tc, sq, tEnd, pK, E0, ET) : vec4(0.0);
         // A plume that adds nothing to THIS texel is skipped before its lighting (2026-10-21): its optical depth here
         // under 1e-5 of dimming, and its light (the Sun / sky colour at the phase's peak with multiple scattering, x the
         // billows' and self-shadow's largest gains: 2.6 per unit optical depth, + the engine lights) under 2e-7 of
@@ -564,7 +602,7 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
             // Not wildfire smoke / haboob dust either (the aerosol range; 2026-10-27, issue 20261027_001835 shot 3): a pall is
             // hundreds of km wide and ~1-2 km thick, and from 747 m the eye stood inside it: thinned to 10%, every cloud
             // beyond showed through what should be a smoke-filled sky.
-            float eM = e + tc * tc * q;   // = o.M.o (e = o.M.o - q tc^2: both terms >= 0, so far views stay large)
+            float eM = dot(o, dustMul(d, o));   // = o.M.o (as e + q tc^2 at the unclipped closest approach; far views stay large)
             if (d.ib.w < 1024.0 && !((i - smF) < smN))
                 tau *= mix(0.1, 1.0, smoothstep(2.25, 9.0, eM));
             // Billows (2026-10-19): the optical depth through each Gaussian is modulated by two octaves of the
