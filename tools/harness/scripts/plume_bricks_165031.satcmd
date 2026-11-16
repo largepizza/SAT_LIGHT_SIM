@@ -1,0 +1,22 @@
+# issue_20261115_165031 "Staging billow cloud": the hot-staging cloud as a plume brick (on / lobes off / off).
+shaders reload
+report load "C:/Code/Shader_Fun/user_data/reports/issue_20261115_165031" shot=1 trail=off
+time pause
+wait 240 maxs=0
+capture brick_on
+capture brick_on_crop crop=330,220,700,340 scale=2
+launch state
+set launches.plume_brick_lobes 0
+wait 240 maxs=0
+capture brick_smooth_crop crop=330,220,700,340 scale=2
+set launches.plume_brick_lobes 1
+set launches.plume_bricks false
+wait 240 maxs=0
+capture brick_off
+capture brick_off_crop crop=330,220,700,340 scale=2
+set launches.plume_bricks true
+wait 240 maxs=0
+perf frames=120 name=bricks_on
+set launches.plume_bricks false
+wait 240 maxs=0
+perf frames=120 name=bricks_off

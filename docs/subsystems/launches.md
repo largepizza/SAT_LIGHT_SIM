@@ -505,6 +505,65 @@ launches follow per-program cadences (no real manifest).
   mean 45 -> 68 levels): the young exhaust now sits where the engine light is, not averaged over one long head
   Gaussian (`launches.engine_light_gain` is its slider). cloud_march 128 registers; cloud_march and the launches' CPU
   within run-to-run noise (that noise was 7 ms of cloud_march between two launches of the same view).
+- **Plume bricks: the staging cloud as a volume (2026-11-15, issue_20261115_165031 "Staging billow cloud";
+  .plans/PLUME_OVERHAUL_PLAN.md phase 2).** SatelliteSimPlumeBricks.cpp, shaders/plume_brick.comp, launchFillVisuals'
+  brick builder (before the budget), cloud_march.comp bindings 27 / 28. The Gaussian list's only structure is a noise
+  on each Gaussian's optical depth: it cannot have the cumulus look. **Membership**: the hot-staging lobes and the
+  exhaust of the staging region, a WEIGHT by emission time (`stagingAt`: the upper stage's from t1 - 20 .. -10 s up to
+  t1 + 80 .. 90 s, the booster's from t1 - 20 .. -10 s to its cut-off; never its boostback / landing burns, whose exhaust
+  falls toward the pad); a ladder piece is weighed at its own emission time (it slides through the parcels); jellyfish
+  streaks stay Gaussians. The lobes alone are optically thin (tau ~3e-4 across them two minutes on): the bright
+  "billow" at the end of the jellyfish's fan is the upper stage's first ~40-90 s of exhaust. A partial weight puts the
+  Gaussian in both (brick x w, list x (1 - w)): a hard window moved a young-cone piece from one renderer to the other in
+  a frame. **Brick**: one per launch (the nearest 4, at most 512 Gaussians), an ENU-aligned box over the Gaussians'
+  3-sigma extents; the staging cloud is ~150 km across two minutes after staging (half extent 77 km at the report's
+  view), hours-old ones thousands of km: those hand back to the list over 150-250 km of half extent (brick x wB).
+  **Splat** (mode 0): 64^3 per brick in an RGBA16F atlas (rgb sum of extinction x each Gaussian's light colour, a
+  extinction): each region keeps its own sunlight colour (with one mean colour the booster's reddened, half-shadowed
+  trail lit as bright as the sunlit ice). **March** (mode 1, cloud_march's grid, its push constants): 64 steps per
+  brick from a FIXED per-texel dither (varied per frame it shimmered at 2.6x the Gaussians' frame-to-frame noise; fixed:
+  0.21 vs 0.16 levels mean, p99 equal), the Sun's optical depth from the shadow atlas (below), the Earth's shadow per
+  sample, the plumes' ice phase + multiple scattering as two octaves on the SUN's depth (below). **Lobes** (`launches.plume_brick_lobes`, 1; 0 = the smooth splat): the
+  clouds' billow shape bake (cv2ShapeBillow, the WDAS-matched cauliflower) in LOG space on the splat normalised by the
+  brick's reference extinction (below): period 2x the Gaussians' mean sigma x kLobeScale 2, anchored at the STAGING POINT (Earth-fixed; on the box centre, which moves when knots thin, the billows
+  slid). **Iridescence** (`launches.plume_iridescence`, 1): each wavelength's Airy pattern (2 J1(x)/x)^2 at the scattering
+  angle for ice radii 0.25-0.75 um varying over 8 lobe periods (mip 3: patches, never speckle), luminance kept, at most
+  60% of the way to the pure colour, only within ~35 deg of the Sun (smoothstep cos 0.80-0.93) and in thin ice
+  (exp(-0.5 (tau + tauSun))): pastel pink / green on the staging cloud's thin edge seen toward a twilight Sun.
+  **Composite**: the march writes light pre-scaled by tau / (1 - exp(-tau)) (the composite's segment weight gives it
+  back), its optical depth and optical-depth-weighted distance; dustCloudsCS reads them (DustBuf header word 1 bit 31 =
+  any brick) as ONE more plume: its cloud-profile segment, the sky give-back (albedo 0.85), the air split, the distances.
+  Measured (RTX 3070 Ti, 1600x900, the report's view): GPU +0.4 ms with bricks (cloud_march 6.45 vs 6.59 ms: the 200+
+  wide Gaussians leave the per-texel list), composite at 128 registers. The splat sees the scene depth: on a resize the
+  brick set is rewritten LAST in recreateComputeScaledTargets (it named the destroyed depth view: sky rays read 0 and
+  missed every brick). Scripts: tools/harness/scripts/plume_bricks_165031.satcmd, plume_iridescence.satcmd,
+  plume_staging_window.satcmd, plume_bricks_motion.satcmd. `launch state` -> `plume_bricks` (range, half extents,
+  weight, Gaussians, reference extinction, lobe period, anchor), `plume_brick_candidates`, `plume_brick_group_half_km`.
+  Not yet: bricks for the low trail and the ground clouds (lift-off), engine light inside a brick, a churn of the lobes
+  with time.
+- **The staging billow: dense, compact, lit through its lobes (2026-11-15, the user's reference photo of a twilight
+  staging cloud: an opaque white-gold cumulus after the jellyfish's neck, lobes drawn across its whole face).** Light and
+  shade on lobes need lobes of optical depth >~ 1; at the first cut the brick was tau < 0.3 through, ~0.06 a lobe, and
+  ~100 lobes along a ray averaged away (only the outline showed lobes; no lighting model changes that). **Mass**: the
+  hot-staging lobes carry 40x the ship's 2.6 s burst (the booster's flip and boostback fire into the same cloud; Super
+  Heavy's boostback is ~35x the burst's propellant). **Growth**: their Richardson term richK 2 (was 25: sigma ~31 km in a
+  minute, an eddy dissipation ~500x the upper air's, against the code's own "a few km over the next minute"); now ~10 km
+  at 110 s, mostly their own motion (growK). **Own brick**: bricks are per launch AND kind (the lobes apart from the
+  upper stage's trail): in one ~350 km box the ~20-40 km billow had ~4 march samples and ~5 km voxels across it (soft
+  smoke); its own box is ~32 km (0.5 km voxels). **Density is mass-proportional**: extinction = the splat's x the lobe
+  factor exp(2 k n) / 1.2 x the crevice mask (smoothstep(-0.05, 0.25, n) x 2.6: ~40% of the volume, ~2.5x denser
+  lobes) x the shell smoothstep(0.10, 0.15) on s = (e / eRef) x the lobe factor. The reference only sets WHERE the edge
+  is: a profile capped relative to it ate a 10x mass raise (the heavy wide lobes pulled eRef down 14x). **Shadow atlas**
+  (mode 2, R16F, the atlas' layout, between splat and march): per voxel the Sun's optical depth out of the brick, 8
+  lobed steps over 2.5 lobes (quadratic spacing) + 6 smooth to the box edge; voxels below 0.4% of eRef skipped. The
+  march reads it with one fetch (the per-sample light march cost +2.1 ms with the billow filling a 12 deg view).
+  **Multiple scattering** on the Sun's depth, msG = 1 - exp(-0.7 (tS + the lobe's own tau)), x (1.0 HG(0.4) e^-0.6tS +
+  0.8 HG(0.15) e^-0.25tS): at 0.35 / 0.12 it filled the lobes' shade in. **Sky light** in the composite on the
+  sky-visible depth (outT.g: tau x the seen samples' mean exp(-0.6 x lobe tau)). Measured (RTX 3070 Ti, 1600x900,
+  interleaved on/off): report view +0.55 ms, a 12 deg telephoto filled by the billow +1.25 ms. Billow tau at the report
+  view: core 3-10, lobes 0.3-3. Judge brick looks in a telephoto on the billow (it is ~100 px in the report's view).
+  Scripts: plume_staging_billow.satcmd, plume_brick_light.satcmd; `shaders reload brick=<spv>` swaps the three passes;
+  `launch state` -> `plume_wide` (the widest Gaussians within 400 km: kind, age, sigma, cross-section, brick share).
 - **The second stage's jellyfish and hot staging (2026-10-30, issue 20261030_134020 "Second Stage Jellyfish").** The
   upper stage's vacuum exhaust used to be invisible: every parcel expanded at 2 km/s in every direction (~300 km wide
   3 min after leaving, optical depth ~2e-5), its young Gaussians lost the budget to the wide old bells, and the sim's

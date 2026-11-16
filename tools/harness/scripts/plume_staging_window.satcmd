@@ -1,0 +1,15 @@
+# A fresh twilight Starship hot staging, T+145 .. T+325 at 10x (the plume bricks' membership window and its edges).
+# No weather clouds in the way (coverage 0) and the observer at 12 km: the plume alone, not filmed through a deck.
+launch next vehicle=starship when=twilight
+set clouds_v2.coverage 0
+observer lat=30.03 lon=-91.74 agl=12000
+time add 175
+launch look stage=1
+camera fov=40
+wait 120 maxs=0
+time scale 10x
+time play
+video start stagewin
+wait 1080 maxs=0
+video stop
+launch state

@@ -1,0 +1,22 @@
+# Plume bricks in motion: the reporter's trail (path play), time running at 1x, and a fresh twilight hot staging.
+report load "C:/Code/Shader_Fun/user_data/reports/issue_20261115_165031" shot=1
+wait 240 maxs=0
+path goto 0
+path play video=trail
+report load "C:/Code/Shader_Fun/user_data/reports/issue_20261115_165031" shot=1 trail=off
+wait 240 maxs=0
+time play
+video start run1x
+wait 600 maxs=0
+video stop
+launch next vehicle=starship when=twilight
+time add 168
+launch look stage=1
+time play
+wait 240 maxs=0
+capture stage_t175 scale=0.5
+video start staging
+wait 900 maxs=0
+video stop
+capture stage_t190 scale=0.5
+launch state

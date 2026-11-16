@@ -589,6 +589,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     writeCloudsV2ConsumerDescriptors(ctx); // cloud_march 15-20 + beam_self_march 5-8, both sets exist now
     createCloudCombine(ctx);               // S9 full-res combine (its pipeline + set) ...
     createCloudCombineTargets(ctx);        // ... and its half images, cloud_march 5/6/24/25
+    createPlumeBricks(ctx);                // plume bricks (2026-11-15): cloud_march 27/28, the shape bake + scene depth
     computeCloudExtentBuilt = computeCloudExtent(ctx);
     createRainParticles(ctx);              // rain at the eye (SatelliteSimRain.cpp): needs the cloud UBOs, flash buffer, depth
     createLightningResources(ctx);         // lightning channels and glow (SatelliteSimLightning.cpp): the cloud targets
@@ -914,6 +915,13 @@ void SatelliteSim::recreateComputeScaledTargets(VulkanContext &ctx)
     writeLightningDescriptors(ctx);
     computeHalfExtentBuilt = computeHalfExtent(ctx);
     computeCloudExtentBuilt = computeCloudExtent(ctx);
+    // (2026-11-15) the plume bricks' outputs follow the half extent, and their set reads the scene depth just recreated
+    // above: last, so every view it names is the new one
+    if (brickDescSet)
+    {
+        destroyPlumeBrickTargets(ctx.device);
+        createPlumeBrickTargets(ctx);
+    }
 }
 
 void SatelliteSim::onResize(VulkanContext &ctx)
@@ -3647,6 +3655,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         }
         recordWildfireGround(cmd, ctx);   // the wildfires' points and flames onto the drawn ground (wildfire_ground.comp)
         recordCloudsV2(cmd, ctx, cpc);
+        recordPlumeBricks(cmd, ctx, cpc);   // the dense exhaust as volumes (plume_brick.comp), read by the composite below
         weatherTornadoFixTick();   // a tornado Go to's radar probe: out of the rain (SatelliteSimWeatherWindow.cpp)
         weatherRadarRecord(cmd);   // the Weather window's radar, a few times a second while it is shown
 
@@ -8385,6 +8394,7 @@ void SatelliteSim::cleanup(VkDevice device)
     kesslerDestroyFireballPass(device);
     cometsDestroy(device);
     launchDestroy(device);
+    destroyPlumeBricks(device);
     if (kDustBuf != VK_NULL_HANDLE)
     {
         vkDestroyBuffer(device, kDustBuf, nullptr);
@@ -11533,7 +11543,7 @@ void SatelliteSim::createCloudMarchResources(VulkanContext &ctx)
 // textures) — see init() ordering.
 void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
 {
-    VkDescriptorSetLayoutBinding bindings[27] = {};
+    VkDescriptorSetLayoutBinding bindings[29] = {};
     bindings[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bindings[2] = {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
@@ -11572,14 +11582,18 @@ void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
     // 26 (2026-10-26): the v2 march's per-ray cloud opacity profile (writeCloudsV2ConsumerDescriptors), so the plumes,
     // smoke and flames are composited by depth through the cloud.
     bindings[26] = {26, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    // 27 / 28 (2026-11-15): the plume bricks' light + optical depth and their distance (plume_brick.comp; written by
+    // writePlumeBrickDescriptors), read by dustCloudsCS as one more plume on the ray.
+    bindings[27] = {27, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    bindings[28] = {28, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
 
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 27;
+    li.bindingCount = 29;
     li.pBindings = bindings;
     vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &cloudMarchDescLayout);
 
     VkDescriptorPoolSize ps[4] = {
-        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 15},
+        {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 17},
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6}};

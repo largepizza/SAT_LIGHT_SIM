@@ -1,0 +1,47 @@
+# Plume brick lighting + cost (2026-11-15): issue_20261115_165031 view and a 12 deg telephoto on its billow, bricks on / off
+# interleaved, then a fresh twilight staging close from 12 km (no weather clouds).
+report load "C:/Code/Shader_Fun/user_data/reports/issue_20261115_165031" shot=1 trail=off
+time pause
+wait 240 maxs=0
+capture fin_rep crop=330,220,700,340 scale=2
+set launches.plume_bricks true
+wait 200 maxs=0
+perf frames=120 name=rep_on_r1
+set launches.plume_bricks false
+wait 200 maxs=0
+perf frames=120 name=rep_off_r1
+set launches.plume_bricks true
+wait 200 maxs=0
+perf frames=120 name=rep_on_r2
+set launches.plume_bricks false
+wait 200 maxs=0
+perf frames=120 name=rep_off_r2
+set launches.plume_bricks true
+camera az=185.7 el=22.4 fov=12
+wait 240 maxs=0
+capture fin_tele
+set launches.plume_bricks true
+wait 200 maxs=0
+perf frames=120 name=tele_on_r1
+set launches.plume_bricks false
+wait 200 maxs=0
+perf frames=120 name=tele_off_r1
+set launches.plume_bricks true
+wait 200 maxs=0
+perf frames=120 name=tele_on_r2
+set launches.plume_bricks false
+wait 200 maxs=0
+perf frames=120 name=tele_off_r2
+launch next vehicle=starship when=twilight
+set clouds_v2.coverage 0
+observer lat=30.03 lon=-91.74 agl=12000
+time add 230
+time pause
+launch look stage=1
+camera fov=10
+wait 240 maxs=0
+capture fin_close crop=400,150,800,600
+perf frames=120 name=close_on
+set launches.plume_bricks false
+wait 240 maxs=0
+perf frames=120 name=close_off

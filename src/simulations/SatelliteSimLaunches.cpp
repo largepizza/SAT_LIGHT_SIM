@@ -812,6 +812,7 @@ struct SatelliteSim::LaunchState
         double isoShare = -1.0;  // the share of it lit isotropically (the sky); < 0: none
         int kind = 0;            // (2026-10-30) 0 exhaust, 1 a hot-staging lobe, 2 a vacuum streak
         double pri = 0.0;        // its priority in the budget (launch state -> plume_vacuum, against plume_cut)
+        double brickW = 0.0;     // (2026-11-15) its share drawn in a plume brick (launch state -> plume_wide)
     };
     std::vector<PlumeDbg> plumeDbg;
     // (2026-10-26, issue 20261026_210053) per launch drawing plumes this frame: its candidates, how many were drawn,
@@ -4187,13 +4188,20 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
                 const glm::dvec3 dir = glm::normalize(rad + f * (-0.9 + 1.3 * h01(B.seed, 281 + k, 1)));
                 const double spd = 400.0 + 1000.0 * h01(B.seed, 282 + k, 2);
                 const double t0 = tS - 2.0 + 2.6 * h01(B.seed, 283 + k, 3);
-                const double m = vh.flow2 * 2.6 / N * (0.4 + 1.2 * h01(B.seed, 284 + k, 4));
+                // (2026-11-15, the user's reference photo of a staging cloud: an OPAQUE cumulus, its lobes drawn across
+                // its whole face by their own light and shade) x40: the staging region's ice is the ship's 2.6 s burst
+                // into the interstage AND the booster's flip and boostback, fired into the same cloud (Super Heavy's
+                // ~45 s boostback is ~35x the burst's propellant). At x1 the cloud was optically thin (tau < 0.3 through
+                // it, ~0.06 a lobe): its lobes averaged away along the line of sight and showed only on its outline.
+                const double m = 40.0 * vh.flow2 * 2.6 / N * (0.4 + 1.2 * h01(B.seed, 284 + k, 4));
                 launch::ParcelOpts O;
                 O.sig0 = 250.0 + 300.0 * h01(B.seed, 285 + k, 5); // (the burst out of the vents is already that big)
                 O.evapS = 300.0;
                 // (it billows out to a few km over the next minute: turbulence, as Richardson's law, and its own motion)
+                // (2026-11-15) richK 25 -> 2: at 25 Richardson's sigma^(1/3) law alone grew a lobe to sigma ~31 km in a
+                // minute (an eddy dissipation ~500x the upper air's), spreading its ice ~10x thinner than "a few km"
                 O.growK = 1.5 * (double)B.plumeGrow;
-                O.richK = 25.0 * (double)B.plumeGrow;
+                O.richK = 2.0 * (double)B.plumeGrow;
                 const glm::dvec3 p0 = pS + vS * (t0 - tS) + rad * 6.0;
                 B.parcels.push_back(launch::makeParcel(t0, p0, vS + spd * dir, m, kappaAt(hS) * 3.0, 0.85, dir, 0.6 * O.sig0,
                                                        kPlumeAgeLow, windDir, windGain, 300.0 + 300.0 * h01(B.seed, 286 + k, 6),
@@ -6660,6 +6668,10 @@ void SatelliteSim::launchSlotEndedSelection(uint32_t slot)
 }
 
 // ── Visuals: rockets, flames, plumes, re-entries ────────────────────────────────────────────────
+// (2026-11-15) the hot-staging lobe Gaussians that reached the plume bricks this frame (launch state)
+static int gBrickLobeCands = 0;
+static std::vector<float> gBrickGroupHalfKm; // (each lobe group's largest half extent, km, built or not)
+
 void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSky, double pixFull)
 {
     FPROF_SCOPE("launchFillVisuals");
@@ -6718,6 +6730,8 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         // w its offset along it from the eye); all 0 = none. Sent in the Gaussian's side slot: cloud_march.comp draws
         // none of its exhaust ahead of the nozzle (dustCloudsCS's clip)
         glm::vec4 clip{0.0f};
+        double brickW = 0.0; // (2026-11-15) its share drawn in a plume brick (below), the rest in the list
+        int kind = 0;        // (2026-11-15) 0 exhaust, 1 a hot-staging lobe, 2 a streak: the lobes get a brick of their own
     };
     // (2026-10-26, issue 20261026_193912) each launch's count of candidates this frame, for the reserved share
     static std::vector<int> grpCount;
@@ -7701,6 +7715,18 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         int curKind = 0;
         bool curJelly = false; // (2026-10-30) a Gaussian of the young vacuum plume (the jellyfish's head and streaks)
         double curJellyW = 0.0; // (2026-11-14) its hold on the budget, 0 .. 1 (Cand::jellyW)
+        // (2026-11-15) the exhaust of the staging region (emitted from 10 s before staging to 40 s after): with the
+        // hot-staging lobes it goes to the plume bricks (the "staging billow"; the lobes alone are optically thin)
+        double curStaging = 0.0;
+        // (the upper stage's first ~90 s and the booster's last ~10 before it: never the booster's later burns, whose
+        // boostback / landing exhaust falls back toward the pad, hundreds of km from the staging cloud). A WEIGHT by
+        // emission time, ramped over 10 s at each edge: a piece of the young cone crossing a hard edge moved from the
+        // brick to the list in one frame, and the two renderers differ.
+        auto stagingAt = [&](double t0, int stage) {
+            const double in = glm::smoothstep(vh.t1 - 20.0, vh.t1 - 10.0, t0);
+            return stage == 1 ? in * (1.0 - glm::smoothstep(vh.t1 + 80.0, vh.t1 + 90.0, t0))
+                              : (t0 <= vh.t1 + 0.5 ? in : 0.0);
+        };
         // (2026-10-30, the user: "from ~100 m the long plume Gaussians poke out of the FRONT of the ship") The burning
         // stage's nozzle and its direction of flight (Earth-fixed): no trail Gaussian may reach ahead of the nozzle.
         bool nozOn = false;
@@ -7774,7 +7800,10 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             // (2026-10-26, issue 20261026_210053) and not one its launch's reserved share could hold: those are drawn
             // whatever the cut (the share is the launch's strongest by priority, not the first emitted: skipping by
             // emission count dropped some of them for a frame and not the next).
-            if (!(curJellyW > 0.0) && pri < 0.25 * L.plumeCutPrev && curGrp >= 0 &&
+            // (2026-11-15) nor one bound for a plume brick (the lobes, the staging region): bricks are not in the list's
+            // budget, and skipped against a cut that their own leaving had moved they were built every other frame
+            const bool toBrick = plumeBricksOn && (curKind == 1 || (curKind == 0 && curStaging > 0.0));
+            if (!toBrick && !(curJellyW > 0.0) && pri < 0.25 * L.plumeCutPrev && curGrp >= 0 &&
                 pri < 0.25 * L.visList[(size_t)curGrp].second->plumeResPri)
             {
                 ++L.plumeSkipped;
@@ -7783,7 +7812,9 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             Cand c;
             c.pri = pri;
             c.grp = curGrp;
+            c.kind = curKind;
             c.jellyW = curJellyW;
+            c.brickW = !plumeBricksOn ? 0.0 : curKind == 1 ? 1.0 : curKind == 0 ? curStaging : 0.0;
             // (2026-11-15, issue_20261115_164337 "often within the craft models") The shrink above keeps a Gaussian's
             // 2.5-sigma extent behind the nozzle, but the engine light (~1 / r^2 from the nozzle) lit its faint forward
             // tail far brighter than its core: an orange bell round the hull above the engines at night. The shader cuts
@@ -7909,8 +7940,11 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             // (2026-11-15, issue_20261115_164337) eased in over height and radius: it switched on at h > 60 km and
             // sig > 2 km, and a young-cone piece at a fixed age (the knots above) crossed those over seconds, a whole
             // piece's light moving into its rim in one frame (a ring stepping round the young plume)
+            // (2026-11-15) less for exhaust bound for a plume brick, by its brick share: the volume needs no limb Gaussians,
+            // and with up to 9 rims a chord the staging region overran the brick's capacity
             const double shellK = curKind == 0 ? glm::smoothstep(55000.0, 65000.0, h) * glm::smoothstep(1500.0, 2500.0, sig) *
-                                                     std::max(0.45 * glm::smoothstep(0.3, 2.0, sweep), freeShell)
+                                                     std::max(0.45 * glm::smoothstep(0.3, 2.0, sweep), freeShell) *
+                                                     (plumeBricksOn ? 1.0 - curStaging : 1.0)
                                                : 0.0;
             if (shellK > 0.02)
             {
@@ -7968,7 +8002,9 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                         Cand cr;
                         cr.pri = pri * shellK * w / K;
                         cr.grp = c.grp;
+                        cr.kind = c.kind;
                         cr.clip = c.clip;
+                        cr.brickW = c.brickW;
                         GpuDustCloud &dr = cr.d;
                         const glm::dvec3 ce = toEnu(rel) + off;
                         dr.c = glm::vec4(glm::vec3(ce), (float)(Sigma * shellK * w / K));
@@ -7983,7 +8019,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             }
             if (L.plumeDbg.size() < 4000)
                 L.plumeDbg.push_back({range / 1000.0, h / 1000.0, sig / 1000.0, Sigma, tauPeak, age, tr * albedo, amb,
-                                      curGround, colOut, flameShare, curKind, pri});
+                                      curGround, colOut, flameShare, curKind, pri, c.brickW});
         };
         // Each parcel's state now (age >= 0: emitted; ok: still drawn).
         struct PState
@@ -8166,6 +8202,9 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 continue;
             const uint64_t rimSeed = B.seed ^ (uint64_t)(pc.t0 * 10.0);
             curGround = pc.ground;
+            // (and only exhaust 10-20 s old or more: the freshest, at a burning stage's engines, keeps the Gaussians' engine
+            // light and nozzle cut; in the brick a night view's glow round the engines went ~10% darker)
+            curStaging = pc.stream >= 0 ? stagingAt(pc.t0, pc.stage) * glm::smoothstep(10.0, 20.0, tau - pc.t0) : 0.0;
             curKind = pc.turb ? 1 : 0;
             // (2026-10-30) the upper stage's young vacuum exhaust: the streaks (below) carry kStreakShare of it
             const double strK = streakShareAt(pc, s);
@@ -8347,6 +8386,8 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     strK = streakShare * glm::smoothstep(100000.0, 150000.0, glm::length(cM) - kR) *
                            (1.0 - glm::smoothstep(0.35 * streakLenS, streakEndS, aM));
                 curGround = pl.ground;
+                // (at the piece's own emission time: it slides through them; not the freshest exhaust, as the chords')
+                curStaging = stagingAt(tau - aM, pl.stage) * glm::smoothstep(10.0, 20.0, aM);
                 curKind = 0;
                 curJellyW = (isAscentVac(pl) && streakShare > 0.0)
                                 ? glm::smoothstep(100000.0, 110000.0, glm::length(cM) - kR) *
@@ -8373,6 +8414,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         // from the nucleus at the plume's own spread angle and widens with it. Its cross-section is the share the
         // chords gave up (streakShareAt), summed over the parcels between its knots.
         curKind = 2;
+        curStaging = 0.0;
         curJelly = true;
         curJellyW = 1.0;
         {
@@ -8663,6 +8705,170 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
     L.prof[9] += (reMs - L.prof[9]) / 30.0;
     L.prof[10] += (buildMs - L.prof[10]) / 30.0;
     const auto sortT0 = std::chrono::steady_clock::now();
+    // ── Plume bricks (2026-11-15, .plans/PLUME_OVERHAUL_PLAN.md phase 2; issue_20261115_165031 "Staging billow cloud").
+    // A launch's hot-staging lobes leave the Gaussian list for a VOLUME (SatelliteSimPlumeBricks.cpp, plume_brick.comp):
+    // the same Gaussians splatted into a 64^3 grid round them, marched with the clouds' billow lobes (the cumulus look the
+    // list cannot have: its only structure is a noise on each Gaussian's optical depth) and a light march. One brick per
+    // launch, the nearest kMaxPlumeBricks. The grid only carries the smooth envelope (a sum of a few wide Gaussians); the
+    // lobes come from the shape volume at the march's samples, so a coarse grid is enough: the staging cloud is ~150 km
+    // across two minutes after staging. Hours-old lobes (thousands of km) hand back to the Gaussians over 150-250 km of
+    // half extent.
+    gBrickLobeCands = 0;
+    gBrickGroupHalfKm.clear();
+    if (!plumes.empty())
+    {
+        static std::vector<Cand> bc;
+        bc.clear();
+        size_t keep = 0;
+        // (a Gaussian with a partial share is in both: its brick share here, the rest stays in the list)
+        for (size_t k = 0; k < plumes.size(); ++k)
+        {
+            Cand c = plumes[k];
+            if (c.brickW > 0.0)
+            {
+                Cand b = c;
+                b.d.c.w *= (float)c.brickW;
+                b.pri *= c.brickW;
+                bc.push_back(b);
+            }
+            if (c.brickW < 1.0)
+            {
+                c.d.c.w *= (float)(1.0 - c.brickW);
+                c.pri *= 1.0 - c.brickW;
+                c.brickW = 0.0;
+                if (c.d.c.w > 0.0f)
+                    plumes[keep++] = c;
+            }
+        }
+        plumes.resize(keep);
+        gBrickLobeCands = (int)bc.size();
+        // (2026-11-15) one brick per launch AND kind: the hot-staging lobes (the billow, ~20-40 km across) apart from
+        // the upper stage's early exhaust (a trail hundreds of km long). In one box the billow had ~4 march samples
+        // and 64^3 voxels of ~5 km across it: its lobes came out as soft smoke, never a cauliflower edge.
+        auto bkey = [](const Cand &c) { return c.grp * 2 + (c.kind == 1 ? 1 : 0); };
+        std::sort(bc.begin(), bc.end(), [&](const Cand &a, const Cand &b) { return bkey(a) < bkey(b); });
+        struct BG
+        {
+            size_t a, b;
+            double range;
+        };
+        static std::vector<BG> groups;
+        groups.clear();
+        for (size_t a = 0; a < bc.size();)
+        {
+            size_t b = a;
+            double r = 1e30;
+            while (b < bc.size() && bkey(bc[b]) == bkey(bc[a]))
+            {
+                r = std::min(r, (double)glm::length(glm::vec3(bc[b].d.c)));
+                ++b;
+            }
+            groups.push_back({a, b, r});
+            a = b;
+        }
+        std::sort(groups.begin(), groups.end(), [](const BG &x, const BG &y) { return x.range < y.range; });
+        for (const BG &gr : groups)
+        {
+            // (over capacity: the strongest kept, by cross-section; the rest stay in the list)
+            if (gr.b - gr.a > kMaxBrickGaussians - std::min<size_t>(brickGauss_.size(), kMaxBrickGaussians))
+            {
+                std::sort(bc.begin() + (std::ptrdiff_t)gr.a, bc.begin() + (std::ptrdiff_t)gr.b,
+                          [](const Cand &x, const Cand &y) { return x.d.c.w > y.d.c.w; });
+                const size_t room = kMaxBrickGaussians - std::min<size_t>(brickGauss_.size(), kMaxBrickGaussians);
+                for (size_t k = gr.a + room; k < gr.b; ++k)
+                {
+                    Cand c = bc[k];
+                    c.brickW = 0.0;
+                    plumes.push_back(c);
+                }
+                const_cast<BG &>(gr).b = gr.a + room;
+            }
+            double sw = 0.0, alb = 0.0, eRef = 0.0, sigM = 0.0;
+            glm::dvec3 C(0.0), col(0.0), hx(0.0);
+            for (size_t k = gr.a; k < gr.b; ++k)
+            {
+                const GpuDustCloud &d = bc[k].d;
+                const double w = d.c.w;
+                C += w * glm::dvec3(d.c);
+                col += w * glm::dvec3(d.col);
+                alb += w * ((double)d.col.w - 2.0);
+                eRef += w * (double)d.c.w * (double)d.ia.w;
+                sw += w;
+            }
+            const bool slot = bricks_.size() < kMaxPlumeBricks && gr.b > gr.a;
+            double wB = 0.0;
+            if (sw > 0.0 && slot)
+            {
+                C /= sw;
+                for (size_t k = gr.a; k < gr.b; ++k)
+                {
+                    const GpuDustCloud &d = bc[k].d;
+                    const glm::dmat3 M(d.ia.x, d.ib.x, d.ib.y, d.ib.x, d.ia.y, d.ib.z, d.ib.y, d.ib.z, d.ia.z);
+                    const glm::dmat3 S = glm::inverse(M); // its covariance
+                    for (int a = 0; a < 3; ++a)
+                        hx[a] = std::max(hx[a], std::abs((double)d.c[a] - C[a]) + 3.0 * std::sqrt(std::max(S[a][a], 0.0)));
+                    sigM += (double)d.c.w * std::sqrt(std::max((S[0][0] + S[1][1] + S[2][2]) / 3.0, 1.0));
+                }
+                hx = glm::max(hx * 1.05, glm::dvec3(50.0));
+                gBrickGroupHalfKm.push_back((float)(std::max({hx.x, hx.y, hx.z}) / 1000.0));
+                wB = 1.0 - glm::smoothstep(150000.0, 250000.0, std::max({hx.x, hx.y, hx.z}));
+            }
+            // what the brick does not draw stays in the list (the hand-off; all of it with no brick slot)
+            if (wB < 1.0)
+                for (size_t k = gr.a; k < gr.b; ++k)
+                {
+                    Cand c = bc[k];
+                    c.d.c.w *= (float)(1.0 - wB);
+                    c.pri *= 1.0 - wB;
+                    c.brickW = 0.0;
+                    if (c.d.c.w > 0.0f)
+                        plumes.push_back(c);
+                }
+            if (wB <= 0.0)
+                continue;
+            GpuPlumeBrick B;
+            const double period = 2.0 * sigM / sw;   // the lobes ~ half a Gaussian's width (the billow volume's 4 cells / period)
+            B.c = glm::vec4(glm::vec3(C), (float)std::max(period, 50.0));
+            B.h = glm::vec4(glm::vec3(hx), (float)wB);
+            // The lobes' anchor (xyz, from the box centre): the staging point, Earth-fixed. The box centre moves whenever a
+            // trail's knots are thinned or merged, and the billows anchored to it slid through the cloud.
+            glm::dvec3 anchor = C;
+            {
+                const int gi = bc[gr.a].grp;
+                if (gi >= 0 && (size_t)gi < L.visList.size())
+                {
+                    const LBatch &LB = *L.visList[(size_t)gi].second;
+                    bool okA = false;
+                    const glm::dvec3 Pe = LaunchImpl::rocketEcef(L, LB, 0, L.cat.vehicles[LB.veh].t1, okA);
+                    if (okA)
+                    {
+                        const double eraA = earthRotationAngle(t);
+                        const glm::dvec3 Pi(Pe.x * std::cos(eraA) - Pe.y * std::sin(eraA), Pe.x * std::sin(eraA) + Pe.y * std::cos(eraA), Pe.z);
+                        anchor = toEnu(Pi - eye);
+                    }
+                }
+            }
+            B.sun = glm::vec4(glm::vec3(anchor - C), (float)(alb / sw));
+            B.iso = glm::vec4(plumeIridescence, 0.0f, 0.0f, plumeBrickLobes);
+            const int grp = bc[gr.a].grp;
+            const double seed = grp >= 0 && (size_t)grp < L.visList.size() ? launch::hash01(L.visList[(size_t)grp].first, 91 + (bc[gr.a].kind == 1 ? 7 : 0), 1) : 0.5;
+            B.misc = glm::vec4((float)brickGauss_.size(), (float)(gr.b - gr.a), (float)seed, (float)(eRef / sw));
+            for (size_t k = gr.a; k < gr.b; ++k)
+                brickGauss_.push_back(bc[k].d);
+            bricks_.push_back(B);
+        }
+        if (brickMapped)
+        {
+            char *p = static_cast<char *>(brickMapped);
+            const uint32_t hdr[4] = {(uint32_t)bricks_.size(), (uint32_t)brickGauss_.size(), 0u, 0u};
+            std::memcpy(p, hdr, 16);
+            if (!bricks_.empty())
+                std::memcpy(p + 16, bricks_.data(), sizeof(GpuPlumeBrick) * bricks_.size());
+            if (!brickGauss_.empty())
+                std::memcpy(p + 16 + sizeof(GpuPlumeBrick) * kMaxPlumeBricks, brickGauss_.data(),
+                            sizeof(GpuDustCloud) * brickGauss_.size());
+        }
+    }
     // The plumes: the brightest per pixel of sky first, as many as fit.
     if (!plumes.empty())
     {
@@ -9134,6 +9340,20 @@ nlohmann::json SatelliteSim::launchStateJson() const
                           {"pri", pv[i].pri}, {"drawn_col", {pv[i].drawn.x, pv[i].drawn.y, pv[i].drawn.z}}});
         j["plume_vacuum"] = va;
     }
+    // (2026-11-15) the widest exhaust within 400 km (which Gaussians make a big smooth bell, and their brick share)
+    {
+        std::vector<LaunchState::PlumeDbg> pw;
+        for (const auto &e : L.plumeDbg)
+            if (e.rangeKm < 400.0)
+                pw.push_back(e);
+        std::sort(pw.begin(), pw.end(), [](const auto &a, const auto &b) { return a.sigKm > b.sigKm; });
+        nlohmann::json wa = nlohmann::json::array();
+        for (size_t i = 0; i < pw.size() && i < 24; ++i)
+            wa.push_back({{"kind", pw[i].kind}, {"age_s", pw[i].age}, {"alt_km", pw[i].altKm}, {"range_km", pw[i].rangeKm},
+                          {"sigma_km", pw[i].sigKm}, {"tau_peak", pw[i].tauPeak}, {"cross_section_m2", pw[i].Sigma}, {"pri", pw[i].pri},
+                          {"brick_w", pw[i].brickW}, {"ground", pw[i].ground}});
+        j["plume_wide"] = wa;
+    }
     j["plume_parcels"] = pd.size();
     {
         nlohmann::json g = nlohmann::json::array();
@@ -9144,6 +9364,21 @@ nlohmann::json SatelliteSim::launchStateJson() const
                              {"sigma_cand", e.sigC}, {"sigma_drawn", e.sigD}, {"range_km", e.rangeKm}});
         j["plume_groups"] = g;
         j["plume_cut"] = L.plumeCutPrev;
+        {
+            // (2026-11-15) the plume bricks drawn this frame: centre range, half extents, weight, Gaussians, lobes
+            nlohmann::json pb = nlohmann::json::array();
+            for (const GpuPlumeBrick &B : bricks_)
+                pb.push_back({{"range_km", glm::length(glm::vec3(B.c)) / 1000.0f},
+                              {"half_km", {B.h.x / 1000.0f, B.h.y / 1000.0f, B.h.z / 1000.0f}},
+                              {"weight", B.h.w},
+                              {"gaussians", (int)B.misc.y},
+                              {"ext_ref", B.misc.w},
+                              {"lobe_period_m", B.c.w},
+                              {"anchor_km", {B.sun.x / 1000.0f, B.sun.y / 1000.0f, B.sun.z / 1000.0f}}});
+            j["plume_bricks"] = pb;
+            j["plume_brick_candidates"] = gBrickLobeCands;
+            j["plume_brick_group_half_km"] = gBrickGroupHalfKm;
+        }
     }
     // The ground clouds (2026-10-20): lift-off and landing parcels drawn, and the thickest of them.
     {
@@ -13377,7 +13612,8 @@ void SatelliteSim::engineLightsFlush()
         tail[i] = engineLights_[i];
         tail[i].cone = glm::vec4(0.0f);
     }
-    static_cast<uint32_t *>(kDustMapped)[1] = n | smokeHdrBits;   // bits 8-27: the wildfire smoke's range (smoke.glsl)
+    // bits 8-27: the wildfire smoke's range (smoke.glsl); bit 31: the plume bricks drew something (2026-11-15)
+    static_cast<uint32_t *>(kDustMapped)[1] = n | smokeHdrBits | (bricks_.empty() ? 0u : 0x80000000u);
     engineLightCount = n;
     engineLights_.clear();
 }
