@@ -1,0 +1,14 @@
+# The staging cloud of issue_20261115_165031 seen toward the twilight Sun (observer ~150 km ENE of it): iridescence.
+report load "C:/Code/Shader_Fun/user_data/reports/issue_20261115_165031" shot=1 trail=off
+time pause
+observer lat=29.85 lon=-89.91 agl=28700
+camera az=250 el=20 fov=60
+wait 240 maxs=0
+capture irid_1 scale=0.5
+state
+set launches.plume_iridescence 0
+wait 240 maxs=0
+capture irid_0 scale=0.5
+set launches.plume_iridescence 2
+wait 240 maxs=0
+capture irid_2 scale=0.5

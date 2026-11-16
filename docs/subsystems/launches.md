@@ -505,6 +505,44 @@ launches follow per-program cadences (no real manifest).
   mean 45 -> 68 levels): the young exhaust now sits where the engine light is, not averaged over one long head
   Gaussian (`launches.engine_light_gain` is its slider). cloud_march 128 registers; cloud_march and the launches' CPU
   within run-to-run noise (that noise was 7 ms of cloud_march between two launches of the same view).
+- **Plume bricks: the staging cloud as a volume (2026-11-15, issue_20261115_165031 "Staging billow cloud";
+  .plans/PLUME_OVERHAUL_PLAN.md phase 2).** SatelliteSimPlumeBricks.cpp, shaders/plume_brick.comp, launchFillVisuals'
+  brick builder (before the budget), cloud_march.comp bindings 27 / 28. The Gaussian list's only structure is a noise
+  on each Gaussian's optical depth: it cannot have the cumulus look. **Membership**: the hot-staging lobes and the
+  exhaust of the staging region, a WEIGHT by emission time (`stagingAt`: the upper stage's from t1 - 20 .. -10 s up to
+  t1 + 80 .. 90 s, the booster's from t1 - 20 .. -10 s to its cut-off; never its boostback / landing burns, whose exhaust
+  falls toward the pad); a ladder piece is weighed at its own emission time (it slides through the parcels); jellyfish
+  streaks stay Gaussians. The lobes alone are optically thin (tau ~3e-4 across them two minutes on): the bright
+  "billow" at the end of the jellyfish's fan is the upper stage's first ~40-90 s of exhaust. A partial weight puts the
+  Gaussian in both (brick x w, list x (1 - w)): a hard window moved a young-cone piece from one renderer to the other in
+  a frame. **Brick**: one per launch (the nearest 4, at most 512 Gaussians), an ENU-aligned box over the Gaussians'
+  3-sigma extents; the staging cloud is ~150 km across two minutes after staging (half extent 77 km at the report's
+  view), hours-old ones thousands of km: those hand back to the list over 150-250 km of half extent (brick x wB).
+  **Splat** (mode 0): 64^3 per brick in an RGBA16F atlas (rgb sum of extinction x each Gaussian's light colour, a
+  extinction): each region keeps its own sunlight colour (with one mean colour the booster's reddened, half-shadowed
+  trail lit as bright as the sunlit ice). **March** (mode 1, cloud_march's grid, its push constants): 64 steps per
+  brick from a FIXED per-texel dither (varied per frame it shimmered at 2.6x the Gaussians' frame-to-frame noise; fixed:
+  0.21 vs 0.16 levels mean, p99 equal), a 6-step light march toward the Sun inside the brick, the Earth's shadow per
+  sample, the plumes' ice phase + their multiple scattering (grows with the depth crossed: ~0 thin, ~albedo / pi thick;
+  octaves added ~75% to thin exhaust). **Lobes** (`launches.plume_brick_lobes`, 1; 0 = the smooth splat): the
+  clouds' billow shape bake (cv2ShapeBillow, the WDAS-matched cauliflower) in LOG space on the splat normalised by the
+  brick's reference extinction, then a soft threshold (flat interior, shell over 0.06-0.22): period 2x the Gaussians'
+  mean sigma, anchored at the STAGING POINT (Earth-fixed; on the box centre, which moves when knots thin, the billows
+  slid). **Iridescence** (`launches.plume_iridescence`, 1): each wavelength's Airy pattern (2 J1(x)/x)^2 at the scattering
+  angle for ice radii 0.25-0.75 um varying over 8 lobe periods (mip 3: patches, never speckle), luminance kept, at most
+  60% of the way to the pure colour, only within ~35 deg of the Sun (smoothstep cos 0.80-0.93) and in thin ice
+  (exp(-0.5 (tau + tauSun))): pastel pink / green on the staging cloud's thin edge seen toward a twilight Sun.
+  **Composite**: the march writes light pre-scaled by tau / (1 - exp(-tau)) (the composite's segment weight gives it
+  back), its optical depth and optical-depth-weighted distance; dustCloudsCS reads them (DustBuf header word 1 bit 31 =
+  any brick) as ONE more plume: its cloud-profile segment, the sky give-back (albedo 0.85), the air split, the distances.
+  Measured (RTX 3070 Ti, 1600x900, the report's view): GPU +0.4 ms with bricks (cloud_march 6.45 vs 6.59 ms: the 200+
+  wide Gaussians leave the per-texel list), composite at 128 registers. The splat sees the scene depth: on a resize the
+  brick set is rewritten LAST in recreateComputeScaledTargets (it named the destroyed depth view: sky rays read 0 and
+  missed every brick). Scripts: tools/harness/scripts/plume_bricks_165031.satcmd, plume_iridescence.satcmd,
+  plume_staging_window.satcmd, plume_bricks_motion.satcmd. `launch state` -> `plume_bricks` (range, half extents,
+  weight, Gaussians, reference extinction, lobe period, anchor), `plume_brick_candidates`, `plume_brick_group_half_km`.
+  Not yet: bricks for the low trail and the ground clouds (lift-off), engine light inside a brick, a churn of the lobes
+  with time.
 - **The second stage's jellyfish and hot staging (2026-10-30, issue 20261030_134020 "Second Stage Jellyfish").** The
   upper stage's vacuum exhaust used to be invisible: every parcel expanded at 2 km/s in every direction (~300 km wide
   3 min after leaving, optical depth ~2e-5), its young Gaussians lost the budget to the wide old bells, and the sim's

@@ -3325,6 +3325,44 @@ private:
     VkDeviceMemory kDustMem = VK_NULL_HANDLE;
     void *kDustMapped = nullptr;
     uint32_t kDustCount = 0; // drawn this frame (harness state)
+    // ── Plume bricks (2026-11-15, .plans/PLUME_OVERHAUL_PLAN.md phase 2; SatelliteSimPlumeBricks.cpp,
+    // shaders/plume_brick.comp). The dense exhaust (the hot-staging cloud) as small volumes: its Gaussians are splatted
+    // into a 64^3 grid per brick and marched with the billow lobes, a light march and multiple scattering; cloud_march's
+    // dustCloudsCS reads the result (bindings 27 / 28) as one more plume on the ray. DustBuf header word 1 bit 31 = any.
+    struct GpuPlumeBrick
+    {
+        glm::vec4 c;    // xyz centre relative to the eye (ENU, m); w the lobes' period (m)
+        glm::vec4 h;    // xyz half extents (m); w its weight (0..1, the hand-off to the Gaussians)
+        glm::vec4 sun;  // xyz the lobes' anchor (the staging point, Earth-fixed) from the centre (m); w albedo
+        glm::vec4 iso;  // x the iridescence's strength (near the Sun); w the lobes' strength
+        glm::vec4 misc; // x first Gaussian, y count, z seed (0..1), w the reference extinction (1/m)
+    };
+    static_assert(sizeof(GpuPlumeBrick) == 80); // plume_brick.comp Brick
+    static constexpr uint32_t kMaxPlumeBricks = 4, kMaxBrickGaussians = 512, kBrickRes = 64;
+    bool plumeBricksOn = true;      // launches.plume_bricks
+    float plumeBrickLobes = 1.0f;   // launches.plume_brick_lobes (0 = the smooth splat)
+    float plumeIridescence = 1.0f;  // launches.plume_iridescence (0 = none)
+    std::vector<GpuPlumeBrick> bricks_;          // this frame's (launchFillVisuals)
+    std::vector<GpuDustCloud> brickGauss_;       // their Gaussians, in brick order
+    VkBuffer brickBuf = VK_NULL_HANDLE;
+    VkDeviceMemory brickMem = VK_NULL_HANDLE;
+    void *brickMapped = nullptr;
+    VkImage brickVolImg = VK_NULL_HANDLE, brickLImg = VK_NULL_HANDLE, brickTImg = VK_NULL_HANDLE;
+    VkDeviceMemory brickVolMem = VK_NULL_HANDLE, brickLMem = VK_NULL_HANDLE, brickTMem = VK_NULL_HANDLE;
+    VkImageView brickVolView = VK_NULL_HANDLE, brickLView = VK_NULL_HANDLE, brickTView = VK_NULL_HANDLE;
+    VkExtent2D brickExt{0, 0};
+    VkDescriptorSetLayout brickDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool brickDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet brickDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout brickPipeLayout = VK_NULL_HANDLE;
+    VkPipeline brickSplatPipe = VK_NULL_HANDLE, brickMarchPipe = VK_NULL_HANDLE;
+    bool brickTargetsCleared = false;
+    void createPlumeBricks(VulkanContext &ctx);          // once, after createCloudMarchDescriptors
+    void createPlumeBrickTargets(VulkanContext &ctx);    // the half-res outputs (and on resize)
+    void destroyPlumeBrickTargets(VkDevice dev);
+    void writePlumeBrickDescriptors(VulkanContext &ctx); // its own set + cloud_march's 27 / 28
+    void recordPlumeBricks(VkCommandBuffer cmd, VulkanContext &ctx, const CloudMarchPC &cpc);
+    void destroyPlumeBricks(VkDevice dev);
     // The clouds drawn this frame (harness `kessler state` -> dust.clouds): event index, kind, dust kg, small
     // fragments, age (s), the rank's effective size sqrt(amp / priority) (km), its light (amp, before the sky units), cut fade.
     std::vector<std::array<double, 8>> kDustDbg;

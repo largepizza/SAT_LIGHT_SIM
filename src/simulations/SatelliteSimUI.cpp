@@ -9731,6 +9731,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         launchesEnabled = lj.value("enabled", launchesEnabled);
         launchLifeScale = settingClamp(lj.value("life_scale", launchLifeScale), 0.1f, 20.0f);
         launchPlumeGain = settingClamp(lj.value("plume_gain", launchPlumeGain), 0.0f, 100.0f);
+        plumeBricksOn = lj.value("plume_bricks", plumeBricksOn);
+        plumeBrickLobes = settingClamp(lj.value("plume_brick_lobes", plumeBrickLobes), 0.0f, 4.0f);
+        plumeIridescence = settingClamp(lj.value("plume_iridescence", plumeIridescence), 0.0f, 4.0f);
         launchRocketGain = settingClamp(lj.value("rocket_gain", launchRocketGain), 0.0f, 100.0f);
         engineLightGain = settingClamp(lj.value("engine_light_gain", engineLightGain), 0.0f, 100.0f);
         launchPlumeBright = settingClamp(lj.value("plume_brightness", launchPlumeBright), 0.0f, 100.0f);
@@ -11012,7 +11015,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
     // Launches (SatelliteSimLaunches.cpp).
     j["launches"] = {{"enabled", launchesEnabled},
                      {"life_scale", launchLifeScale},
-                     {"plume_gain", launchPlumeGain},
+                     {"plume_gain", launchPlumeGain}, {"plume_bricks", plumeBricksOn}, {"plume_brick_lobes", plumeBrickLobes}, {"plume_iridescence", plumeIridescence},
                      {"rocket_gain", launchRocketGain},
                      {"engine_light_gain", engineLightGain},
                      {"plume_brightness", launchPlumeBright},

@@ -160,6 +160,9 @@ layout(set = 0, binding = 23) readonly buffer DustBuf { uint dustCount; uint dus
 // (depths log2 m x 4094/27 in 12 bits, 0xFFF none; all ones = no cloud). The plumes, smoke and flames are composited
 // through the cloud by it.
 layout(std430, set = 0, binding = 26) readonly buffer CloudProfile { uvec2 cv2Profile[]; };
+// The plume bricks (2026-11-15, plume_brick.comp): rgb light (pre-scaled), a optical depth; r its distance (m).
+layout(set = 0, binding = 27) uniform sampler2D brickLTex;
+layout(set = 0, binding = 28) uniform sampler2D brickTTex;
 float cv2ProfileDepth(uint code) { return exp2(float(code & 0xFFFu) * (27.0 / 4094.0)); }
 // The depth the cloud's LIGHT comes from at this texel (the profile's luminance-weighted centroid; < 0 = no profile) and
 // its first / half / last contact: read again after dustCloudsCS (held across its loop, the composite left 128 registers).
@@ -445,7 +448,7 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
     tP = 0.0;
     aP = 0.0;
     uint n = min(dustCount, 1024u);
-    if (n == 0u)
+    if (n == 0u && (dustPad0 & 0x80000000u) == 0u)   // (bit 31: the plume bricks drew something this frame)
         return vec3(0.0);
     float cosT = dot(dir, sunDir);
     const float g = 0.7;
@@ -461,6 +464,35 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
     vec3 L = vec3(0.0);
     float wT = 0.0;
     float Ls = 0.0;
+    // The plume bricks (2026-11-15, plume_brick.comp: the hot-staging cloud as a volume with billow lobes): this texel's
+    // marched light (pre-scaled by tau / (1 - exp(-tau)): the composite's segment weight gives the march's own light
+    // back), optical depth and distance, taken as ONE more plume on the ray: through the cloud by its depth segment,
+    // dimming what is behind it, giving back the sky's light by an albedo of 0.85, and in the plumes' distances.
+    if ((dustPad0 & 0x80000000u) != 0u) {
+        vec2 buv = (vec2(gl_GlobalInvocationID.xy) + 0.5) / vec2(imageSize(targetA));
+        vec4 bL  = textureLod(brickLTex, buv, 0.0);
+
+        if (bL.a > 1e-5) {
+            float tb   = min(textureLod(brickTTex, buv, 0.0).r, T);
+            float tauB = bL.a;
+            vec4  wSB  = tb < pK.x ? vec4(1.0, 0.0, 0.0, 0.0) : tb < pK.y ? vec4(0.0, 1.0, 0.0, 0.0)
+                       : tb < pK.z ? vec4(0.0, 0.0, 1.0, 0.0) : vec4(0.0, 0.0, 0.0, 1.0);
+            sTau  += tauB * wSB;
+            sU    += tauB * wSB * 0.5;
+            sL[0] += bL.rgb * wSB.x; sL[1] += bL.rgb * wSB.y; sL[2] += bL.rgb * wSB.z; sL[3] += bL.rgb * wSB.w;
+            tauP  += tauB;
+            tauAir += tauB;
+            tP    += tauB * tb;
+            Ls    += tauB * 0.85;
+            gPlS1 += tauB * exp(-tb * (1.0 / 3000.0));
+            float wl = dot(bL.rgb, vec3(1.0 / 3.0)) + 1e-9 * tauB;
+            wPL += wl;
+            tPL += wl * tb;
+            float wf = frProf ? tauB * wSB.x : tauB;
+            wPF += wf;
+            tPF += wf * tb;
+        }
+    }
     // The engine lights (2026-10-20, SatelliteSim::engineLightAdd: the dust list's tail, count in dustPad0): the
     // burning engines and the pads' floodlights light the plumes (and the exhaust round the pad) at night.
     uint nEL = min(dustPad0 & 255u, 32u);
@@ -2523,7 +2555,7 @@ void main() {
     // the beam and aurora code took this shader from 128 to 249 registers.)
     float tSmD = kNoSurfaceT;
     bool  smokeBack = false;
-    if (dustCount > 0u) {
+    if (dustCount > 0u || (dustPad0 & 0x80000000u) != 0u) {   // (bit 31: the plume bricks, 2026-11-15)
         float oSmF = 0.0, oSmB = 0.0;    // the plumes' opacity as seen in front of / past the cloud's first contact
         // Extinction to the cloud, not to infinity: looking down from above the air, the path to infinity ends in
         // the ground through the whole atmosphere, and every cloud and fireball trail below the eye went dark.

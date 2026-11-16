@@ -1,0 +1,227 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+// Plume bricks (2026-11-15, .plans/PLUME_OVERHAUL_PLAN.md phase 2; issue_20261115_165031 "Staging billow cloud").
+// The dense part of a rocket's exhaust (today: the hot-staging cloud) drawn as a VOLUME instead of the sum of analytic
+// Gaussians cloud_march.comp's dustCloudsCS integrates in closed form: its Gaussians (launchFillVisuals, the same ones
+// the dust list would carry) are splatted into a small 3D grid per brick (mode 0), and each half-res texel marches the
+// bricks its ray crosses (mode 1): the extinction carved into lobes by the clouds' own billow shape volume
+// (cv2ShapeBillow, the WDAS-matched cauliflower), lit by the Sun through the brick (a light march), multiple scattering
+// as octaves, the sky light. The result (light, optical depth, optical-depth-weighted distance) is read by
+// dustCloudsCS as one more plume on the ray, so the bricks are composited through the clouds, dim the sky and give
+// back its light exactly as the Gaussians do.
+// Mode is specialization constant 0 (two pipelines from this SPV). Push constants: cloud_march.comp's CloudMarchPC,
+// so the rays are the composite's to the texel.
+
+layout(constant_id = 0) const int kMode = 0;   // 0 splat, 1 march
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+#include "common.glsl"
+
+layout(push_constant) uniform PC {
+    mat4  skyView;     // ENU -> camera space (rotation)
+    float fovYRad;
+    float aspect;
+    float waveTime;
+    float obsEffH;
+    vec4  sunDirENU;
+    vec4  moonDirENU;
+    vec4  obsECEFDir;  // xyz the observer's ECEF unit vector, w its height above sea level (m, CPU)
+} pc;
+
+struct DustCloud { vec4 c; vec4 ia; vec4 ib; vec4 col; vec4 cone; };   // as cloud_march.comp's (GpuDustCloud)
+// One brick: an ENU-axis-aligned box round a cluster of exhaust Gaussians (SatelliteSim::GpuPlumeBrick).
+struct Brick {
+    vec4 c;     // xyz centre relative to the eye (ENU, m); w the lobes' period (m)
+    vec4 h;     // xyz half extents (m); w its weight (0..1: the hand-off to the Gaussians)
+    vec4 sun;   // xyz the lobes' anchor (the staging point, Earth-fixed) from the centre (m); w albedo
+    vec4 iso;   // x the iridescence's strength; w the lobes' strength (0 = the smooth splat)
+    vec4 misc;  // x first Gaussian, y count, z seed (0..1), w the reference extinction (1/m: the splat's typical peak)
+};
+const uint kMaxBricks = 4u;
+const int  kRes = 64;   // voxels per axis per brick; the atlas stacks the bricks along z
+layout(std430, set = 0, binding = 0) readonly buffer BrickBuf { uvec4 hdr; Brick bricks[kMaxBricks]; DustCloud g[]; };
+layout(set = 0, binding = 1, rgba16f) uniform image3D volImg;   // mode 0 writes: rgb sum of extinction x colour, a extinction
+layout(set = 0, binding = 2) uniform sampler3D volTex;          // mode 1 reads (same image, GENERAL layout)
+layout(set = 0, binding = 3) uniform sampler3D lobeTex;         // the clouds' billow shape volume (repeat)
+layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D outL;   // rgb light (pre-scaled, below), a optical depth
+layout(set = 0, binding = 5, r32f) uniform writeonly image2D outT;      // optical-depth-weighted distance (m)
+layout(set = 0, binding = 6) uniform sampler2D sceneDepthTex;   // the composite's scene depth (same grid)
+
+vec3 dustMul(DustCloud d, vec3 v)
+{
+    return vec3(d.ia.x * v.x + d.ib.x * v.y + d.ib.y * v.z,
+                d.ib.x * v.x + d.ia.y * v.y + d.ib.z * v.z,
+                d.ib.y * v.x + d.ib.z * v.y + d.ia.z * v.z);
+}
+
+// Iridescence: thin sunlit ice of near-uniform size diffracts the sunlight into colours near the Sun (the pastel bands
+// of a twilight launch's staging cloud, like cloud iridescence). Each wavelength's Airy pattern (2 J1(x) / x)^2 at
+// x = 2 pi a sin(theta) / lambda, for 680 / 550 / 440 nm, normalised to keep the luminance: the colour depends on the
+// scattering angle and the particles' radius a, which varies across the cloud (younger, denser exhaust grows larger
+// ice), so the colours come in patches.
+float besselJ1(float x)
+{
+    if (x < 3.0) {
+        float x2 = x * x;
+        return x * (0.5 + x2 * (-0.0625 + x2 * (0.0026041667 + x2 * -0.0000542535)));
+    }
+    return sqrt(2.0 / (PI * x)) * cos(x - 2.35619449);
+}
+float airy(float x) { x = max(x, 1e-4); float j = 2.0 * besselJ1(x) / x; return j * j; }
+vec3 iridColour(float sinT, float aUm)
+{
+    vec3 x = 6.2831853 * aUm * sinT / vec3(0.68, 0.55, 0.44);
+    vec3 c = vec3(airy(x.r), airy(x.g), airy(x.b));
+    return c / max(dot(c, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
+}
+
+// Interleaved gradient noise: the march's start offset, decorrelated per texel.
+float ign(vec2 p) { return fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715)))); }
+
+// The atlas at brick-local position l (-1..1 per axis) of brick b (trilinear, kept inside the brick's own slab so a
+// neighbour never bleeds in): rgb the extinction-weighted sum of the Gaussians' light colours, a the extinction (1/m).
+vec4 volAt4(uint b, vec3 l)
+{
+    vec3 v = clamp(l * 0.5 + 0.5, vec3(0.5 / float(kRes)), vec3(1.0 - 0.5 / float(kRes)));
+    return textureLod(volTex, vec3(v.xy, (float(b) + v.z) / float(kMaxBricks)), 0.0);
+}
+float volAt(uint b, vec3 l) { return volAt4(b, l).a; }
+
+void splat()
+{
+    ivec3 v = ivec3(gl_GlobalInvocationID);
+    uint  b = uint(v.z) / uint(kRes);
+    if (v.x >= kRes || v.y >= kRes || b >= kMaxBricks) return;
+    float e = 0.0;
+    vec3  ce = vec3(0.0);   // (each Gaussian's own light colour: the Sun's light at its parcel, reddened or shadowed)
+    if (b < hdr.x) {
+        Brick B = bricks[b];
+        vec3 l = (vec3(v.x, v.y, v.z - int(b) * kRes) + 0.5) / float(kRes) * 2.0 - 1.0;
+        vec3 p = B.c.xyz + l * B.h.xyz;
+        uint i0 = uint(B.misc.x), n = uint(B.misc.y);
+        for (uint i = i0; i < i0 + n; ++i) {
+            vec3  r = p - g[i].c.xyz;
+            float q = dot(r, dustMul(g[i], r));
+            if (q < 40.0) {
+                float ei = g[i].c.w * g[i].ia.w * exp(-0.5 * q);   // cross-section x density: extinction (1/m)
+                e  += ei;
+                ce += ei * g[i].col.rgb;
+            }
+        }
+    }
+    imageStore(volImg, v, vec4(ce, e));
+}
+
+// The cumulus look: the splat's smooth extinction, normalised by the brick's reference, takes the billow lobes in LOG
+// space (a Gaussian's falloff is quadratic there, so the noise displaces its iso-surfaces by a fraction of its radius:
+// lumpy outlines, a mildly mottled interior), then a soft threshold gives the WDAS-like flat interior and sharp shell.
+float shaped(Brick B, uint b, vec3 l, vec3 p, float e)
+{
+    float k = B.iso.w;
+    if (k <= 0.0 || e <= 0.0) return e * B.h.w;
+    float eRef = max(B.misc.w, 1e-12);
+    vec3  q = (p - B.c.xyz - B.sun.xyz) / max(B.c.w, 1.0) + vec3(B.misc.z * 37.0, B.misc.z * 11.0, B.misc.z * 23.0);
+    float n1 = (textureLod(lobeTex, q, 0.0).g - 0.475) / 0.12;
+    float n2 = (textureLod(lobeTex, q * 2.31 + 0.37, 0.0).b - 0.479) / 0.119;
+    float s  = (e / eRef) * exp(k * (0.55 * n1 + 0.25 * n2));
+    // flat interior ~1, a shell over s 0.06 .. 0.22 (the splat's 1 / e^2 radius is s ~0.14)
+    float m  = smoothstep(0.06, 0.22, s) * (0.55 + 0.45 * min(s, 2.0));
+    return eRef * m * B.h.w;
+}
+
+void march()
+{
+    ivec2 size  = imageSize(outL);
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (coord.x >= size.x || coord.y >= size.y) return;
+    vec3  L = vec3(0.0);
+    float tau = 0.0, tW = 0.0;
+    uint  nB = min(hdr.x, kMaxBricks);
+    if (nB > 0u) {
+        float tanHalfFov = tan(pc.fovYRad * 0.5);
+        mat3  camToENU   = mat3(transpose(pc.skyView));
+        vec2  ndc = ((vec2(coord) + 0.5) / vec2(size)) * 2.0 - 1.0;
+        vec3  dir = normalize(camToENU * vec3(ndc.x * tanHalfFov * pc.aspect, -ndc.y * tanHalfFov, -1.0));
+        vec3  sunDir = normalize(pc.sunDirENU.xyz);
+        float tScene = min(texelFetch(sceneDepthTex, coord, 0).r, 1e12);
+        vec3  obsPos = vec3(0.0, 0.0, R_EARTH + pc.obsECEFDir.w);
+        float cosT = dot(dir, sunDir);
+        float sinT = sqrt(max(1.0 - cosT * cosT, 0.0));
+        const float gP = 0.8;
+        float phaseP = (0.45 * (1.0 - gP * gP) / pow(max(1.0 + gP * gP - 2.0 * gP * cosT, 1e-4), 1.5) + 0.55) * (1.0 / (4.0 * PI));
+        float T = 1.0;
+        // a FIXED offset per texel (a stable dither): varied per frame and left to the sky TAA, the brick shimmered at
+        // 2.6x the frame-to-frame noise of the Gaussians it replaces
+        float jit = ign(vec2(coord));
+        for (uint b = 0u; b < nB; ++b) {
+            Brick B = bricks[b];
+            // the ray through the box (slabs; the eye may be inside)
+            vec3  o  = -B.c.xyz;
+            vec3  id = 1.0 / (abs(dir) + 1e-12) * sign(dir + 1e-12);
+            vec3  ta = (-B.h.xyz - o) * id, tb = (B.h.xyz - o) * id;
+            vec3  tmin = min(ta, tb), tmax = max(ta, tb);
+            float t0 = max(max(max(tmin.x, tmin.y), tmin.z), 0.0);
+            float t1 = min(min(min(tmax.x, tmax.y), tmax.z), tScene);
+            if (t1 <= t0) continue;
+            const int N = 64;
+            float dt = (t1 - t0) / float(N);
+            // the light march's step: across the box toward the Sun in 6 steps
+            float dS = length(B.h.xyz) * 2.0 / 6.0;
+            // iridescence's strength here: the brick's (iso.x) within ~35 deg of the Sun (forward scattering)
+            float iridK = B.iso.x * smoothstep(0.80, 0.93, cosT);
+            for (int s = 0; s < N; ++s) {
+                float t = t0 + (float(s) + jit) * dt;
+                vec3  p = t * dir;
+                vec3  l = (p - B.c.xyz) / B.h.xyz;
+                vec4  v4 = volAt4(b, l);
+                float e = shaped(B, b, l, p, v4.a);
+                if (e * dt < 1e-6) continue;
+                // the Sun through the brick's own mass (the smooth splat: the lobes are below its resolution there)
+                float tS = 0.0;
+                for (int k = 1; k <= 6; ++k) {
+                    vec3 ls = ((p + sunDir * (float(k) - 0.5) * dS) - B.c.xyz) / B.h.xyz;
+                    if (any(greaterThan(abs(ls), vec3(1.0)))) break;
+                    tS += volAt(b, ls) * B.h.w * dS;
+                }
+                // the Earth's shadow at the sample (the plumes' own test)
+                vec3  P  = obsPos + p;
+                float sp = dot(P, sunDir);
+                float lit = sp > 0.0 ? 1.0 : smoothstep(R_EARTH * 0.9995, R_EARTH * 1.003, length(P - sp * sunDir));
+                // single scattering by ice (the plumes' phase, dustCloudsCS's phaseP) through the brick toward the Sun, and
+                // the plumes' multiple scattering per unit optical depth, which grows with the depth the light has crossed
+                // (the running depth along the view or toward the Sun): ~0 in thin exhaust, ~albedo / pi in a thick mass,
+                // whose shaded side is then not black
+                float xm = max(tau, tS);
+                float ms = 0.075 * (1.0 - exp(-0.6 * xm)) + 0.17 * (1.0 - exp(-0.25 * xm * xm));
+                vec3  ss = vec3(phaseP * exp(-tS));
+                if (iridK > 0.0) {
+                    // the particles' radius from the cloud's own slow structure (0.2-0.8 um), only in thin ice
+                    // (the size field 8 lobe periods across, its mip 3: smooth patches, never per-pixel speckle)
+                    vec3  qa = (p - B.c.xyz - B.sun.xyz) / max(8.0 * B.c.w, 1.0) + B.misc.z * 13.0;
+                    float aUm = mix(0.25, 0.75, clamp(textureLod(lobeTex, qa, 3.0).r * 2.0 - 0.5, 0.0, 1.0));
+                    // pastel: at most 60% of the way to the pure diffraction colour
+                    ss *= mix(vec3(1.0), iridColour(sinT, aUm), 0.6 * min(iridK, 1.5) * exp(-0.5 * (tau + tS)));
+                }
+                vec3  lightS = ss + vec3(ms * exp(-0.25 * tS));
+                float dTau = e * dt;
+                float sc = T * (1.0 - exp(-dTau));
+                vec3  sunC = v4.rgb / max(v4.a, 1e-30);   // this region's own light colour
+                L   += sc * (sunC * (lit * lightS));
+                T   *= exp(-dTau);
+                tau += dTau;
+                tW  += dTau * t;
+                if (T < 1e-3) break;
+            }
+        }
+    }
+    // dustCloudsCS weights a plume's light by (1 - exp(-tau)) / tau of its segment: handed over pre-scaled by the inverse,
+    // the march's own (self-attenuated) light comes back out
+    float k = tau > 1e-6 ? tau / max(1.0 - exp(-tau), 1e-6) : 1.0;
+    imageStore(outL, coord, vec4(L * k, tau));
+    imageStore(outT, coord, vec4(tau > 1e-6 ? tW / tau : 0.0));
+}
+
+void main()
+{
+    if (kMode == 0) splat(); else march();
+}
