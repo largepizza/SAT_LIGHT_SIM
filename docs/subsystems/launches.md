@@ -469,6 +469,42 @@ launches follow per-program cadences (no real manifest).
   within 1/255 of the old). Open: a whole plume still pops in when its build finishes after a jump or `report load`,
   and the budget re-splits as other launches' builds land (-14% of a bell's light in a frame, ~6 s of sim after a
   load); a -3.6% step at T+609 s in both modes is not explained.
+- **The young exhaust is drawn at fixed ages, cut at the nozzle, eased in (2026-11-15, issue_20261115_164337 "Plume
+  particles": "spawn in intermittently and often within the craft models", "weirdly animated and pulsey").**
+  SatelliteSimLaunches.cpp launchFillVisuals, `kYoungAges`; cloud_march.comp dustCloudsCS's clip.
+  (1) **Fixed-age knots.** A burn's parcels are 1-1.5 s apart and a chord takes the mean radius of its ends; at 60-65 km a
+  parcel is ~3 km wide 1.5 s after the nozzle, so the young cone was a chain of beads and a new bead grew out of the
+  nozzle every interval (the head, then the chord replacing it): a 0.67-Hz line in the frame's light, 3.8x the noise
+  floor at the report's 64-km view. Each stream's first 10 s of age (`kYoungAgeS`) are now knots at fixed ages behind
+  the nozzle (0, 0.02, 0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1, 1.5, 2, 3, 4, 5.5, 7.5, 10 s: dense at the nozzle, where
+  the exhaust is a cone from it; with a first knot at 0.25 s the first piece was ~200 m wide at the engines). A knot
+  is the trail interpolated in emission time between the two parcels bracketing it, both parcels' radius, condensed
+  share and sweep read AT THE KNOT'S AGE (their histories are tabulated for every age), and between the youngest
+  parcel and the nozzle the state blends toward the NEXT parcel to be emitted (its history is already built): read
+  from the youngest alone, every birth moved the near-nozzle pieces' state ~80% at once (up to 60% wider). Pieces carry
+  the cross-section by the mass rate (kappa m / dt) over their age span: exactly what the head and young chords they
+  replace carried. A stream keeps its knots after its cut-off, clamped to its youngest parcel's age (dropped there, the
+  cone turned back into chords in a frame at MECO); the piece to the first parcel past 10 s takes that parcel's
+  younger neighbour's seed and material, so it is the chord that replaces it. The rim (shell) is eased in over
+  55-65 km and 1.5-2.5 km of radius and blends tube / ring over |aP| 0.2-0.4 (hard switches stepped whole pieces).
+  The ozone (Chappuis) term counts the Sun's ray by its lowest point, fading over 25-35 km (was on / off at a grazing
+  ray: a piece crossing it changed colour 30-40% in a frame). (2) **The nozzle plane.** A burning stage's exhaust
+  Gaussians carry its nozzle plane in their side slot (`Cand::clip`, after the engine lights, as smoke's curved-sheet
+  data; flagged per tile in `sSmSide`): the shader integrates only the ray's part behind it (same erf form, the shorter
+  interval) and lights it at the truncated Gaussian's centroid. The CPU shrink alone left the forward tail, which the
+  engine light (1 / r^2 from the nozzle) lit brighter than the core: the orange bell round the hull at night
+  (knockouts: plumes off or engine light off removed it; the flame chain did not). (3) **Builds ease in**
+  (`LBatch::plumeAppear`, ~0.75 s) when they land with the launch already flying, and a rebuild for a changed
+  "Plume growth" / dispersal keeps the old parcels drawn until it lands (`plumeRebuild`; they were cleared: a
+  `report load` restores those keys and the plume blinked out). Measured (RTX 3070 Ti, 1600x900,
+  `tools/harness/scripts/plume_164337.satcmd` / `_verify.satcmd`, frame-mean series from the videos): shot 4 at 1x,
+  0.67-Hz line 3.8x -> 0.7x the floor, rms one-frame change 0.026 -> 0.017 levels, largest 0.17 -> 0.05; shot 1 plume
+  light above the nozzle 3.21 -> 0.25 levels mean (p95 21 -> 1); after `report load` the largest one-frame change 35% ->
+  3.8% (shot 1), 163% -> 0.4% (shot 4); issue_20261114_183827 at 10x for 240 s identical to before (the same four
+  >5% frames, pre-existing). Look change: at night the engine-lit exhaust just under the stage is ~50% brighter (crop
+  mean 45 -> 68 levels): the young exhaust now sits where the engine light is, not averaged over one long head
+  Gaussian (`launches.engine_light_gain` is its slider). cloud_march 128 registers; cloud_march and the launches' CPU
+  within run-to-run noise (that noise was 7 ms of cloud_march between two launches of the same view).
 - **The second stage's jellyfish and hot staging (2026-10-30, issue 20261030_134020 "Second Stage Jellyfish").** The
   upper stage's vacuum exhaust used to be invisible: every parcel expanded at 2 km/s in every direction (~300 km wide
   3 min after leaving, optical depth ~2e-5), its young Gaussians lost the budget to the wide old bells, and the sim's

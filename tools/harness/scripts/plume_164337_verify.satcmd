@@ -1,0 +1,34 @@
+# issue_20261115_164337 verification (run on the base and the fixed exe; compare with ffmpeg frames).
+# Pop-in right after a load (the build lands while time is held):
+report load "C:/Code/Shader_Fun/user_data/reports/issue_20261115_164337" shot=1 trail=off
+time pause
+video start load1
+wait 150 maxs=0
+video stop
+report load "C:/Code/Shader_Fun/user_data/reports/issue_20261115_164337" shot=4 trail=off
+time pause
+video start load4
+wait 150 maxs=0
+video stop
+# Regression: issue_20261114_183827's twilight jellyfish at 10x for 240 s of sim
+report load "C:/Code/Shader_Fun/user_data/reports/issue_20261114_183827" shot=1 trail=off
+wait 120 maxs=0
+time scale 10x
+time play
+video start r183
+wait 1440 maxs=0
+video stop
+# Perf, time held
+report load "C:/Code/Shader_Fun/user_data/reports/issue_20261115_164337" shot=1 trail=off
+time pause
+wait 160 maxs=0
+perf frames=120 name=s1
+report load "C:/Code/Shader_Fun/user_data/reports/issue_20261115_164337" shot=4 trail=off
+time pause
+wait 160 maxs=0
+perf frames=120 name=s4
+report load "C:/Code/Shader_Fun/user_data/reports/issue_20261114_183827" shot=1 trail=off
+time pause
+wait 160 maxs=0
+perf frames=120 name=r183
+launch state

@@ -301,6 +301,12 @@ struct LBatch
     bool parcelsBuilt = false;
     float plumeGrow = 1.0f; // "Plume growth" (launches.plume_growth) the parcels were / are being built with
     float plumeDisp = 1.0f; // launches.plume_dispersal, likewise
+    // (2026-11-15, issue_20261115_164337) A build that lands while its launch is already on screen (after a jump, a
+    // report load, a launch coming into range) eases in over ~0.75 s instead of appearing whole in one frame
+    // (0 .. 1, launchFillVisuals). A rebuild for a changed "Plume growth" / dispersal keeps drawing the old parcels
+    // until the new ones land (plumeRebuild): it used to clear them, so the plume blinked out for the build's frames.
+    float plumeAppear = 1.0f;
+    bool plumeRebuild = false;
     double plumeResPri = 0.0; // (2026-10-26) last frame's weakest priority in its reserved share (0: all reserved)
     // (2026-11-14) its reserved share's fade, in priority: full above resPriHiE, 0 below resPriLoE (eased; 0 = all held)
     double resPriHiE = 0.0, resPriLoE = 0.0;
@@ -6708,6 +6714,10 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         // (2026-10-30) the upper stage's young vacuum exhaust: kept whatever the cut (below); (2026-11-14) as a weight
         // that fades (1 = held like a reserved share, 0 = by priority alone)
         double jellyW = 0.0;
+        // (2026-11-15, issue_20261115_164337) the burning stage's nozzle plane (the eye's ENU: xyz the flight direction,
+        // w its offset along it from the eye); all 0 = none. Sent in the Gaussian's side slot: cloud_march.comp draws
+        // none of its exhaust ahead of the nozzle (dustCloudsCS's clip)
+        glm::vec4 clip{0.0f};
     };
     // (2026-10-26, issue 20261026_193912) each launch's count of candidates this frame, for the reserved share
     static std::vector<int> grpCount;
@@ -7603,12 +7613,10 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         // about an hour: building one costs a few ms, and at a day a second a dozen launches pass each second).
         // (2026-10-20) Built on a worker thread (LaunchState::parcelJobs), from up to 2 min before lift-off, so it is
         // ready when the rocket lifts off; a plume asked for later appears a few frames after it is first wanted.
-        // "Plume growth" changed since these parcels were built (2026-10-21): build them again.
-        if (B.parcelsBuilt && (B.plumeGrow != launchPlumeGrowth || B.plumeDisp != launchPlumeDispersal))
-        {
-            B.parcelsBuilt = false;
-            B.parcels.clear();
-        }
+        // "Plume growth" changed since these parcels were built (2026-10-21): build them again. (2026-11-15) The old
+        // parcels are drawn until the new ones land (they were cleared: the plume blinked out for the build's frames).
+        if (B.parcelsBuilt && !B.plumeRebuild && (B.plumeGrow != launchPlumeGrowth || B.plumeDisp != launchPlumeDispersal))
+            B.plumeRebuild = true;
         // Potato draws no plume (no cloud composite): no parcels either (2026-10-29).
         if (launchPlumeGain <= 0.0f || potatoSkyOn() || tau < -120.0 || (tau < 0.0 && B.parcelsBuilt))
             continue;
@@ -7618,9 +7626,11 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
             ~PlumeTimer() { acc += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(); }
         } plumeTimer{plumeMs};
-        if (!B.parcelsBuilt)
+        if (!B.parcelsBuilt || B.plumeRebuild)
         {
             FPROF_SCOPE("launch.plumeUnbuilt");
+            // (2026-11-15) a rebuild for a changed slider: the old parcels stay drawn while the new ones are built
+            const bool keepOld = B.plumeRebuild && B.parcelsBuilt;
             const bool fast = !timePaused && kTimeScales[timeScaleIdx] > 3600.0f;
             const glm::dvec3 padNow = ecefToEci(B.G0, t) * kR;
             const double eyeAlt = glm::length(eye) - kR;
@@ -7628,46 +7638,58 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             glm::dvec3 Pst;
             if (LaunchImpl::rocketPos(L, B, 1, tau, Pst))
                 dNear = std::min(dNear, glm::length(Pst - eye)); // (a stage venting half an orbit downrange)
-            if (fast || dNear > 4.5e6 + 2.0 * eyeAlt)
+            const bool farOrFast = fast || dNear > 4.5e6 + 2.0 * eyeAlt;
+            if (farOrFast && !keepOld)
                 continue;
-            const auto bt0 = std::chrono::steady_clock::now();
             // (2026-11-13) A stage venting in orbit draws its steady vent (below, not parcels) while the parcels are
             // built: B.parcels is empty until then, so the parcel passes draw nothing (the vent waited for the build:
             // after a time jump the ship showed no vent for the build's frames).
             const bool ventPending = launchOrbitVent > 0.0f && LaunchImpl::orbitVentOn(L, B, tau);
-            const uint64_t jobKey = L.visList[li].first;
-            L.parcelJobSeen[jobKey] = L.parcelFrame;
-            auto job = L.parcelJobs.find(jobKey);
-            if (job == L.parcelJobs.end())
+            if (!farOrFast)
             {
-                if (L.parcelJobs.size() < 4)
+                const auto bt0 = std::chrono::steady_clock::now();
+                const uint64_t jobKey = L.visList[li].first;
+                L.parcelJobSeen[jobKey] = L.parcelFrame;
+                auto job = L.parcelJobs.find(jobKey);
+                bool landed = false;
+                if (job == L.parcelJobs.end())
                 {
-                    const LaunchState *Lc = &L;
-                    B.plumeGrow = launchPlumeGrowth; // (the copy below carries it to the worker)
-                    B.plumeDisp = launchPlumeDispersal;
-                    L.parcelJobs.emplace(jobKey, std::async(std::launch::async, [Lc, Bc = B]() mutable {
-                                             LaunchImpl::buildParcels(*Lc, Bc);
-                                             return std::move(Bc.parcels);
-                                         }));
+                    if (L.parcelJobs.size() < 4)
+                    {
+                        const LaunchState *Lc = &L;
+                        B.plumeGrow = launchPlumeGrowth; // (the copy below carries it to the worker)
+                        B.plumeDisp = launchPlumeDispersal;
+                        // (the worker's copy without the old parcels: buildParcels starts from none)
+                        std::vector<launch::Parcel> keep;
+                        keep.swap(B.parcels);
+                        LBatch Bc = B;
+                        keep.swap(B.parcels);
+                        L.parcelJobs.emplace(jobKey, std::async(std::launch::async, [Lc, Bc = std::move(Bc)]() mutable {
+                                                 LaunchImpl::buildParcels(*Lc, Bc);
+                                                 return std::move(Bc.parcels);
+                                             }));
+                    }
+                }
+                else if (job->second.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
+                {
+                    B.parcels = job->second.get();
+                    // A first build that lands while the launch is already flying eases in (a rebuild replaces
+                    // what is drawn in place; a build ready before lift-off has nothing to pop)
+                    if (!keepOld && tau > 2.0)
+                        B.plumeAppear = 0.0f;
+                    B.parcelsBuilt = true;
+                    B.plumeRebuild = false;
+                    L.parcelJobs.erase(job);
+                    L.parcelJobSeen.erase(jobKey);
+                    landed = true;
                 }
                 buildMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - bt0).count();
-                if (!ventPending)
+                if (!landed && !keepOld && !ventPending)
                     continue;
-            }
-            else if (job->second.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
-            {
-                if (!ventPending)
-                    continue;
-            }
-            else
-            {
-            B.parcels = job->second.get();
-            B.parcelsBuilt = true;
-            L.parcelJobs.erase(job);
-            L.parcelJobSeen.erase(jobKey);
-            buildMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - bt0).count();
             }
         }
+        // (2026-11-15) the ease-in of a build that landed late: ~0.75 s at 60 frames a second
+        B.plumeAppear = std::min(1.0f, B.plumeAppear + 1.0f / 45.0f);
         if (tau < 0.0)
             continue;
         const double era = earthRotationAngle(t);
@@ -7706,6 +7728,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             // every Gaussian's radius (the same cross-section: a wider plume is thinner).
             if (curGround != 0)
                 Sigma *= (double)launchGroundCloudGain;
+            Sigma *= (double)B.plumeAppear; // (2026-11-15) a late build eases in
             sig *= (double)launchPlumeWidth;
             // Nothing ahead of the nozzle: the Gaussian's 2.5-sigma extent along the flight direction must stay behind
             // it, else it is shrunk about its centre (same cross-section: the head gets denser, not longer).
@@ -7761,6 +7784,15 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             c.pri = pri;
             c.grp = curGrp;
             c.jellyW = curJellyW;
+            // (2026-11-15, issue_20261115_164337 "often within the craft models") The shrink above keeps a Gaussian's
+            // 2.5-sigma extent behind the nozzle, but the engine light (~1 / r^2 from the nozzle) lit its faint forward
+            // tail far brighter than its core: an orange bell round the hull above the engines at night. The shader cuts
+            // each of the burning stage's exhaust Gaussians at the nozzle's plane instead (exact, in its closed form).
+            if (nozOn && curGround == 0 && curKind != 1)
+            {
+                const glm::dvec3 nE = glm::normalize(toEnu(rotE(nozF)));
+                c.clip = glm::vec4(glm::vec3(nE), (float)glm::dot(toEnu(rotE(nozP) - eye), nE));
+            }
             if (curGrp >= 0 && (size_t)curGrp < L.plumeGrpDbg.size())
             {
                 L.plumeGrpDbg[(size_t)curGrp].cand++;
@@ -7797,7 +7829,12 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 const double rO = kR + 25000.0, r = glm::length(C), cz = glm::dot(C, sunD) / r;
                 const double sin2 = (r / rO) * (r / rO) * (1.0 - cz * cz);
                 const double sec = 1.0 / std::sqrt(std::max(1.0 - sin2, 1e-3));
-                const double nX = r <= rO ? 1.0 : ((cz < 0.0 && sin2 < 1.0) ? 1.0 : 0.0);
+                // (2026-11-15, issue_20261115_164337) Counted where the Sun's ray passes within ~10 km above the shell
+                // (by the ray's lowest point: the point itself while the Sun is up there), fading over that band: the
+                // shell is ~20 km thick, not a surface. Switched on and off at a grazing ray (sin2 = 1), a young plume
+                // piece crossing it at twilight changed colour by 30-40% in one frame.
+                const double rLow = cz < 0.0 ? r * std::sqrt(std::max(1.0 - cz * cz, 0.0)) : r;
+                const double nX = 1.0 - glm::smoothstep(rO, rO + 10000.0, rLow);
                 const double odO[3] = {0.019, 0.027, 0.0016};
                 for (int ch = 0; ch < 3; ++ch)
                     tr[ch] *= std::exp(-odO[ch] * std::min(sec, 12.0) * nX);
@@ -7869,9 +7906,12 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             // shell too (not a Gaussian ball): the sharp, limb-brightened edges of the jellyfish's bell and the V of
             // the young plume behind the stage. Not a hot-staging lobe's or a streak's (their own shapes).
             const double freeShell = 0.5 * glm::smoothstep(90000.0, 140000.0, h);
-            const double shellK = (h > 60000.0 && sig > 2000.0 && curKind == 0)
-                                      ? std::max(0.45 * glm::smoothstep(0.3, 2.0, sweep), freeShell)
-                                      : 0.0;
+            // (2026-11-15, issue_20261115_164337) eased in over height and radius: it switched on at h > 60 km and
+            // sig > 2 km, and a young-cone piece at a fixed age (the knots above) crossed those over seconds, a whole
+            // piece's light moving into its rim in one frame (a ring stepping round the young plume)
+            const double shellK = curKind == 0 ? glm::smoothstep(55000.0, 65000.0, h) * glm::smoothstep(1500.0, 2500.0, sig) *
+                                                     std::max(0.45 * glm::smoothstep(0.3, 2.0, sweep), freeShell)
+                                               : 0.0;
             if (shellK > 0.02)
             {
                 const double coreShare = 1.0 - shellK;
@@ -7880,54 +7920,65 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 const glm::dvec3 vE = toEnu(rel) / range; // the line of sight
                 glm::dvec3 aP = a - glm::dot(a, vE) * vE;
                 const double aPl = glm::length(aP);
-                const bool tube = trail ? aPl > 0.3 : (aPl > 1e-3 && (sA * aPl) / sP > 1.6);
-                glm::dvec3 r1, r2;
-                if (tube)
-                {
-                    r1 = aP / aPl;
-                    r2 = glm::cross(vE, r1);
-                }
-                else
-                {
-                    r1 = glm::cross(vE, glm::dvec3(0, 0, 1));
-                    r1 = glm::length(r1) > 1e-6 ? glm::normalize(r1) : glm::dvec3(1, 0, 0);
-                    r2 = glm::cross(vE, r1);
-                }
-                const int K = tube ? 2 : 7;
+                // Tube or ring, by how far the segment is from end-on: (2026-11-15) blended over a band, both drawn
+                // there with their shares (a hard switch at 0.3 stepped a trail's rim as the view turned along it)
+                const double wTube = trail ? glm::smoothstep(0.2, 0.4, aPl)
+                                           : (aPl > 1e-3 ? glm::smoothstep(1.3, 1.9, (sA * aPl) / sP) : 0.0);
                 const double rr = 0.9 * sig, sr = std::max(0.42 * sig, sMin);
-                for (int k = 0; k < K; ++k)
+                for (int pass = 0; pass < 2; ++pass)
                 {
-                    glm::dvec3 nrm, tg;
-                    double sT;
+                    const bool tube = pass == 0;
+                    const double w = tube ? wTube : 1.0 - wTube;
+                    if (w < 1e-3)
+                        continue;
+                    glm::dvec3 r1, r2;
                     if (tube)
                     {
-                        nrm = k == 0 ? r2 : -r2;
-                        tg = r1;
-                        sT = std::max(std::sqrt(sig * sig + hl * hl * aPl * aPl), sMin);
+                        r1 = aP / aPl;
+                        r2 = glm::cross(vE, r1);
                     }
                     else
                     {
-                        const double ang = glm::two_pi<double>() * ((double)k + h01(rimSeed, (uint64_t)k, 31)) / K;
-                        nrm = std::cos(ang) * r1 + std::sin(ang) * r2;
-                        tg = -std::sin(ang) * r1 + std::cos(ang) * r2;
-                        sT = std::max(0.9 * sig, sMin);
+                        r1 = glm::cross(vE, glm::dvec3(0, 0, 1));
+                        r1 = glm::length(r1) > 1e-6 ? glm::normalize(r1) : glm::dvec3(1, 0, 0);
+                        r2 = glm::cross(vE, r1);
                     }
-                    const glm::dvec3 off = rr * nrm;
-                    const double sN = sr;
-                    const double iT = 1.0 / (sT * sT), iN = 1.0 / (sN * sN), iV = 1.0 / (sig * sig);
-                    auto Mr = [&](int p, int q) { return iT * tg[p] * tg[q] + iN * nrm[p] * nrm[q] + iV * vE[p] * vE[q]; };
-                    Cand cr;
-                    cr.pri = pri * shellK / K;
-                    cr.grp = c.grp;
-                    GpuDustCloud &dr = cr.d;
-                    const glm::dvec3 ce = toEnu(rel) + off;
-                    dr.c = glm::vec4(glm::vec3(ce), (float)(Sigma * shellK / K));
-                    dr.ia = glm::vec4((float)Mr(0, 0), (float)Mr(1, 1), (float)Mr(2, 2),
-                                      (float)(1.0 / (kTwoPi1p5 * sT * sN * sig)));
-                    dr.ib = glm::vec4((float)Mr(0, 1), (float)Mr(0, 2), (float)Mr(1, 2), d.ib.w + (float)(4 * (k + 1)));
-                    dr.col = d.col;
-                    dr.cone = coneOf(ce, 5.5 * std::max(sT, sig));
-                    plumes.push_back(cr);
+                    const int K = tube ? 2 : 7;
+                    for (int k = 0; k < K; ++k)
+                    {
+                        glm::dvec3 nrm, tg;
+                        double sT;
+                        if (tube)
+                        {
+                            nrm = k == 0 ? r2 : -r2;
+                            tg = r1;
+                            sT = std::max(std::sqrt(sig * sig + hl * hl * aPl * aPl), sMin);
+                        }
+                        else
+                        {
+                            const double ang = glm::two_pi<double>() * ((double)k + h01(rimSeed, (uint64_t)k, 31)) / K;
+                            nrm = std::cos(ang) * r1 + std::sin(ang) * r2;
+                            tg = -std::sin(ang) * r1 + std::cos(ang) * r2;
+                            sT = std::max(0.9 * sig, sMin);
+                        }
+                        const glm::dvec3 off = rr * nrm;
+                        const double sN = sr;
+                        const double iT = 1.0 / (sT * sT), iN = 1.0 / (sN * sN), iV = 1.0 / (sig * sig);
+                        auto Mr = [&](int p, int q) { return iT * tg[p] * tg[q] + iN * nrm[p] * nrm[q] + iV * vE[p] * vE[q]; };
+                        Cand cr;
+                        cr.pri = pri * shellK * w / K;
+                        cr.grp = c.grp;
+                        cr.clip = c.clip;
+                        GpuDustCloud &dr = cr.d;
+                        const glm::dvec3 ce = toEnu(rel) + off;
+                        dr.c = glm::vec4(glm::vec3(ce), (float)(Sigma * shellK * w / K));
+                        dr.ia = glm::vec4((float)Mr(0, 0), (float)Mr(1, 1), (float)Mr(2, 2),
+                                          (float)(1.0 / (kTwoPi1p5 * sT * sN * sig)));
+                        dr.ib = glm::vec4((float)Mr(0, 1), (float)Mr(0, 2), (float)Mr(1, 2), d.ib.w + (float)(4 * (k + 1)));
+                        dr.col = d.col;
+                        dr.cone = coneOf(ce, 5.5 * std::max(sT, sig));
+                        plumes.push_back(cr);
+                    }
                 }
             }
             if (L.plumeDbg.size() < 4000)
@@ -8039,12 +8090,70 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             q.cond = glm::mix(ps[pi].cond, 0.5 * (ps[ia].cond + ps[ib].cond), g);
             q.sweep = glm::mix(ps[pi].sweep, 0.5 * (ps[ia].sweep + ps[ib].sweep), g);
         }
+        // -- The young exhaust of a BURNING stream at fixed ages (2026-11-15, issue_20261115_164337 "spawn in
+        // intermittently", "weirdly animated and pulsey"). A burn's parcels are 1-1.5 s apart, and each chord took
+        // the mean radius of its two ends: at 60-65 km a parcel is ~3 km wide 1.5 s after it leaves the nozzle, so the
+        // young cone was drawn as a chain of beads, and a new bead grew out of the nozzle every interval (the head,
+        // then the chord that replaced it). Now its first kYoungAgeS of age are knots at FIXED ages behind the nozzle
+        // (kYoungAges), each the trail interpolated in emission time between the two parcels that bracket it, with
+        // both parcels' radius / condensed share / sweep taken AT THE KNOT'S AGE (their histories are tabulated
+        // for all ages): the cone is the same at every phase of the emission, so it no longer pulses; nothing is
+        // born at the head. The pieces between knots carry the exhaust's cross-section by its mass RATE (kappa x
+        // the parcels' m / dt) over their age span: the head and young chords they replace carried exactly rate x
+        // the age of the first parcel past them, so the light is unchanged on average. The parcel chords take over
+        // from the youngest parcel at or past kYoungAgeS (j1): its piece runs from the last knot to it.
+        // The knots are dense at the nozzle: the exhaust is a cone from it, and a piece is a Gaussian as wide as the
+        // mean of its ends (0 .. 0.25 s was ~200 m wide at the nozzle low down, ~40x the hull: lit by the engine and cut
+        // at the nozzle's plane, a bright fan with a straight top edge round the engines at night).
+        static constexpr double kYoungAges[] = {0.0, 0.02, 0.05, 0.1, 0.2, 0.35, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0, 5.5, 7.5, 10.0};
+        constexpr int kYoungN = (int)(sizeof(kYoungAges) / sizeof(kYoungAges[0]));
+        constexpr double kYoungAgeS = 10.0;
+        // A stream keeps its knots after its burn ends (an engine cut-off), clamped to the exhaust there is (from its
+        // youngest parcel's age aY): they shrink to nothing as aY passes kYoungAgeS, where the chords already are.
+        // (Dropped at the cut-off, the young cone turned back into the parcels' chords in one frame.)
+        struct LiveStream
+        {
+            int i0 = -1, iy = -1, j1 = -1; // its first parcel, youngest emitted, youngest at or past kYoungAgeS
+            bool burning = false;          // the burn goes on: the youngest knot is the nozzle
+        };
+        static std::vector<LiveStream> live;
+        static std::vector<uint8_t> youngSkip;
+        live.clear();
+        youngSkip.assign(B.parcels.size(), 0);
+        for (size_t pi = 0; pi < B.parcels.size(); ++pi)
+        {
+            const launch::Parcel &pc = B.parcels[pi];
+            if (pc.stream < 0 || pc.turb || pc.thin || !ps[pi].ok)
+                continue;
+            const bool nextSame = pi + 1 < B.parcels.size() && B.parcels[pi + 1].stream == pc.stream;
+            if (nextSame && ps[pi + 1].ok)
+                continue; // (not the youngest emitted of its stream)
+            LiveStream ls;
+            ls.burning = nextSame; // (its next parcel is not emitted yet)
+            if (!ls.burning && tau - pc.t0 >= kYoungAgeS)
+                continue;
+            ls.iy = (int)pi;
+            ls.i0 = (int)pi;
+            while (ls.i0 > 0 && B.parcels[(size_t)ls.i0 - 1].stream == pc.stream && ps[(size_t)ls.i0 - 1].ok)
+                --ls.i0;
+            for (int k = ls.iy; k >= ls.i0; --k)
+            {
+                if (tau - B.parcels[(size_t)k].t0 >= kYoungAgeS)
+                {
+                    ls.j1 = k;
+                    break;
+                }
+                if (k != ls.i0) // (the stream's first parcel keeps its own puff while the stream is younger than that)
+                    youngSkip[(size_t)k] = 1;
+            }
+            live.push_back(ls);
+        }
         int prev = -1;
         for (size_t pi = 0; pi < B.parcels.size(); ++pi)
         {
             const launch::Parcel &pc = B.parcels[pi];
             const PState &s = pb[pi];
-            if (!s.ok)
+            if (!s.ok || youngSkip[pi])
                 continue;
             const double age = tau - pc.t0;
             if (prev >= 0 && B.parcels[(size_t)prev].stream != pc.stream)
@@ -8099,9 +8208,10 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                          pc.albedo, age, rimSeed, true, pc.tint);
             }
             prev = (int)pi;
-            // The head: from the youngest knot to the nozzle, while the burn goes on.
+            // The head: from the youngest knot to the nozzle, while the burn goes on. (2026-11-15) Only for a stream the
+            // fixed-age knots below do not draw (a hot-staging burst's, a vent's): every other burning one is theirs.
             if (pc.stream >= 0 && pi + 1 < B.parcels.size() && B.parcels[pi + 1].stream == pc.stream &&
-                !ps[pi + 1].ok)
+                !ps[pi + 1].ok && (pc.turb || pc.thin))
             {
                 const launch::Parcel &nx = B.parcels[pi + 1];
                 const double f = (tau - pc.t0) / std::max(nx.t0 - pc.t0, 1e-3);
@@ -8119,6 +8229,138 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                     addPlume(0.5 * (nz + s.cE), axE, 0.35 * sl, 0.5 * (s.sig + 8.0),
                              nx.kappa * nx.m * f * condH * gain, 0.0, nx.albedo, 0.0, rimSeed ^ 0x5Aull, true, nx.tint);
                 }
+            }
+        }
+        for (const LiveStream &ls : live)
+        {
+            const launch::Parcel &py = B.parcels[(size_t)ls.iy];
+            bool okN = !ls.burning;
+            const glm::dvec3 nz = ls.burning ? LaunchImpl::rocketEcef(L, B, py.stage, tau, okN) : ps[(size_t)ls.iy].cE;
+            if (!okN)
+                continue;
+            const double aY = tau - py.t0, aO = tau - B.parcels[(size_t)ls.i0].t0;
+            const double aMin = ls.burning ? 0.0 : aY; // (after the cut-off: no exhaust younger than its last parcel)
+            const double aEnd = ls.j1 >= 0 ? tau - B.parcels[(size_t)ls.j1].t0 : aO;
+            struct Knot
+            {
+                glm::dvec3 c{0.0};
+                double sig = 0.0, cond = 0.0, sweep = 0.0, rate = 0.0, a = 0.0;
+                int lo = -1;
+                bool ok = false;
+            };
+            // A knot at age a: the trail now, interpolated in emission time between its bracketing parcels (the nozzle
+            // for the ages younger than the youngest parcel), their histories read at age a.
+            auto knotAt = [&](double a) {
+                Knot k;
+                k.a = a;
+                const double te = tau - a;
+                int lo, hi;
+                double f, fP = -1.0; // (fP: the position's share toward the nozzle, when it differs from f)
+                glm::dvec3 cHi;
+                if (a <= aY)
+                {
+                    // Between the youngest parcel and the nozzle: on that chord, but its STATE between the youngest
+                    // and the next parcel to be emitted (its history is already built), by emission time, so nothing
+                    // changes when that parcel is born. (From the youngest alone, the state jumped ~80% toward the
+                    // new parcel at each birth: a parcel 1.5 s higher expands faster, up to 60% wider at 0.25 s.)
+                    lo = ls.iy;
+                    hi = ls.burning && ls.iy + 1 < (int)B.parcels.size() ? ls.iy + 1 : ls.iy;
+                    const double tn = B.parcels[(size_t)hi].t0;
+                    f = tn > py.t0 ? (te - py.t0) / (tn - py.t0) : 1.0;
+                    fP = aY > 1e-9 ? (te - py.t0) / aY : 1.0;
+                    cHi = nz;
+                }
+                else
+                {
+                    lo = ls.i0;
+                    hi = ls.iy;
+                    while (hi - lo > 1)
+                    {
+                        const int mid = (lo + hi) / 2;
+                        if (B.parcels[(size_t)mid].t0 <= te)
+                            lo = mid;
+                        else
+                            hi = mid;
+                    }
+                    const double tl = B.parcels[(size_t)lo].t0, th = B.parcels[(size_t)hi].t0;
+                    f = th > tl ? (te - tl) / (th - tl) : 0.0;
+                    cHi = ps[(size_t)hi].cE;
+                }
+                f = glm::clamp(f, 0.0, 1.0);
+                glm::dvec3 cL, cH;
+                double sL, sH, kL, kH, wL = 0.0, wH = 0.0;
+                if (!B.parcels[(size_t)lo].at(a, cL, sL, kL, &wL) || !B.parcels[(size_t)hi].at(a, cH, sH, kH, &wH))
+                    return k;
+                const launch::Parcel &pl = B.parcels[(size_t)lo], &ph = B.parcels[(size_t)hi];
+                k.c = glm::mix(ps[(size_t)lo].cE, cHi, fP >= 0.0 ? glm::clamp(fP, 0.0, 1.0) : f);
+                k.sig = glm::mix(sL, sH, f);
+                k.cond = glm::mix(kL, kH, f);
+                k.sweep = glm::mix(wL, wH, f);
+                k.rate = glm::mix(pl.kappa * pl.m / std::max(pl.dt, 1e-3), ph.kappa * ph.m / std::max(ph.dt, 1e-3), f);
+                k.lo = lo;
+                k.ok = true;
+                return k;
+            };
+            Knot kn[kYoungN + 1];
+            int nk = 0;
+            for (int j = 0; j < kYoungN; ++j)
+            {
+                const double a = glm::clamp(kYoungAges[j], aMin, std::max(aEnd, aMin));
+                if (nk > 0 && a <= kn[nk - 1].a + 1e-6)
+                    continue;
+                kn[nk++] = knotAt(a);
+            }
+            // the last piece: to the first parcel past the knots (its own state, as its chord behind it sees it)
+            if (ls.j1 >= 0 && nk > 0 && aEnd > kn[nk - 1].a + 1e-6)
+            {
+                Knot k;
+                const PState &q = pb[(size_t)ls.j1];
+                const launch::Parcel &pj = B.parcels[(size_t)ls.j1];
+                k.c = q.cE;
+                k.sig = q.sig;
+                k.cond = q.cond;
+                k.sweep = q.sweep;
+                k.rate = pj.kappa * pj.m / std::max(pj.dt, 1e-3);
+                k.a = aEnd;
+                k.lo = ls.j1;
+                k.ok = q.ok;
+                kn[nk++] = k;
+            }
+            for (int j = 0; j + 1 < nk; ++j)
+            {
+                const Knot &k0 = kn[j], &k1 = kn[j + 1];
+                if (!k0.ok || !k1.ok)
+                    continue;
+                // The last piece, to j1, becomes the chord from j1 to its younger neighbour when that one passes
+                // kYoungAgeS: it takes that neighbour's material and billow seed, as that chord will (the same Gaussian
+                // at the hand-off; its own seed changed the billows on it in one frame)
+                const bool handOff = j + 2 == nk && k1.lo == ls.j1 && ls.j1 >= 0 && ls.j1 < ls.iy;
+                const launch::Parcel &pl = B.parcels[(size_t)(handOff ? ls.j1 + 1 : k1.lo)];
+                const double aM = 0.5 * (k0.a + k1.a);
+                const glm::dvec3 cM = 0.5 * (k0.c + k1.c);
+                const glm::dvec3 seg = k1.c - k0.c;
+                const double sl = glm::length(seg);
+                const glm::dvec3 axE = sl > 1e-3 ? seg / sl : pl.axis;
+                // the streaks' share and the jellyfish's hold, as a parcel of this age there would have them
+                double strK = 0.0;
+                if (isAscentVac(pl) && streakShare > 0.0)
+                    strK = streakShare * glm::smoothstep(100000.0, 150000.0, glm::length(cM) - kR) *
+                           (1.0 - glm::smoothstep(0.35 * streakLenS, streakEndS, aM));
+                curGround = pl.ground;
+                curKind = 0;
+                curJellyW = (isAscentVac(pl) && streakShare > 0.0)
+                                ? glm::smoothstep(100000.0, 110000.0, glm::length(cM) - kR) *
+                                      (1.0 - glm::smoothstep(std::max(streakEndS - kJellyHoldFadeS, 0.0), streakEndS, aM))
+                                : 0.0;
+                curJelly = strK > 0.0;
+                const double Sigma =
+                    0.5 * (k0.rate + k1.rate) * (k1.a - k0.a) * 0.5 * (k0.cond + k1.cond) * gain * (1.0 - strK);
+                const double cA = glm::mix(0.35, 0.5, glm::smoothstep(0.0, 3.0 * std::max(pl.dt, 0.5), aM));
+                // (a seed per knot interval: the young cone's billows ride with the stage, as its shape does)
+                const uint64_t seedY = handOff ? (B.seed ^ (uint64_t)(pl.t0 * 10.0))
+                                               : B.seed ^ (0x9E3779B97F4A7C15ull * (uint64_t)(j + 1 + 16 * (py.stream + 1)));
+                addPlume(cM, axE, cA * sl, 0.5 * (k0.sig + k1.sig), Sigma, 0.5 * (k0.sweep + k1.sweep), pl.albedo, aM,
+                         seedY, true, pl.tint);
             }
         }
         // ── The jellyfish's streaks (2026-10-30, issue 20261030_134020: "the multiple thrusters create multiple defined
@@ -8557,6 +8799,10 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             sel.push_back(plumes[k].d);
         dustCullInsignificant(sel.data(), (uint32_t)sel.size(), drop);
         size_t ci = 0;
+        // (2026-11-15) each plume Gaussian's side slot (after the engine lights, as wildfire smoke's curved-sheet data):
+        // its nozzle plane, or 0. Kessler's fill zeroes the slots every frame.
+        glm::vec4 *plumeSide = reinterpret_cast<glm::vec4 *>(reinterpret_cast<char *>(out) +
+                                                             sizeof(GpuDustCloud) * (kMaxDustClouds + kMaxEngineLights));
         for (const Cand &c : plumes)
         {
             if (n >= nMax || ci >= sel.size())
@@ -8564,6 +8810,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             if (drop[ci++])
                 continue;
             out[n] = c.d;
+            plumeSide[n] = c.clip;
             if (cutW > 0.0)
                 out[n].c.w *= (float)(c.key > 1e6 * cutW ? std::max(c.res, glm::clamp((c.pri - cutW) / (2.0 * cutW), 0.0, 1.0))
                                                           : glm::clamp((c.key - cutW) / (2.0 * cutW), 0.0, 1.0));
