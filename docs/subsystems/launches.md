@@ -585,6 +585,67 @@ launches follow per-program cadences (no real manifest).
   takes turbK = 0.5 x (1 - smoothstep(70, 100 km, height)) of the lobes (amplitude), crevices and sharp shell, so above
   ~100 km it is its splat, exactly the Gaussians it hands off to. The Gaussians' billows fade the same way for a stage's
   exhaust (not smoke, not the hot-staging seeds 192-255). The hot-staging ice is x60 (x40, then "a tad denser").
+- **Launch-made noctilucent clouds (2026-11-16, phase 3, issue_20261115_165612; the user: physical, "the launch rate
+  is the physics").** Ice at 83 km wherever the air is colder than the frost point of its water vapour. Physics in
+  src/simulations/Nlc.h (one place; tools/nlc_model.py prints the same answer standalone):
+  - Vapour = 5 ppmv background + every launch's exhaust water of the last 9 days (launchWaterDeposits, cached by batch
+    key, a pure function of the batch): the upper stage's burn and the booster's ascent where their tracks are at
+    80-115 km, x flow x the propellant's water share (hydrolox 0.95, methalox 0.44, kerolox / solids 0.30), at the
+    water-weighted centroid of the track (Starship: ~60 t). Each deposit drifts toward the SUMMER pole at 35 m/s x the
+    season (closed form in atanh(sin lat); the shuttle's plumes: Stevens 2003 / 2005), spreads by K = 4e5 m^2/s
+    (~260 km after a day), and photolyses with a 3-day lifetime; mixed into the air above ~78 km (0.12 kg/m^2).
+  - Temperature at 83 km = a climatology in x = sin(lat) x season (190 - 18x - 32 max(x,0)^3; season = clamp(1.5 cos
+    (day - 171.5), +-1)), fitted to the summer pole ~140 K, 69 N ~147, 41 N ~169 (Fort Collins 167), winter pole 208;
+    + the diurnal (12 K, equatorial) and semidiurnal (5 K) tides, phases ASSUMED; + gravity waves, 8 K rms, in the shader.
+  - Frost point: Murphy & Koop 2005 at 0.55 Pa (5 ppmv: 147.1 K).
+  - The map (nlc::kMapW x kMapH = 512 x 256, ~78 km a texel) is rebuilt on a worker each sim minute (58 ms; the
+    deposits' enumeration on the main thread ~2 ms, ~50 ms the first time after a load or jump, which builds ~500
+    batches) into a mirrored storage buffer (not a texture: sat_sky.frag is at the 16-sampled-image floor).
+  - shaders/nlc_shell.comp runs after the cloud composite (and the full-res combine) ON its targets: eye above the
+    layer B' = B Tn + Ln, below B' = B + A Ln, A' = A Tn (so the clouds and the ground hide it from below and it lies
+    over them from above); not in cloud_march.comp because of the 128-register cliff. Per crossing of the layer (a
+    Gaussian, half-width 1.5 km; the airglow line's closed-form path lengths): the map, the waves (two octaves of
+    value noise, 150 and 30 km cells drifting at 30 / 50 m/s, offsets wrapped by the 1024-cell period in double), the
+    ice = vapour above saturation, freeze-dried from 3 km of air into the layer (CALIBRATED: the natural layer, 5 ppmv
+    at ~140 K, then holds ~95 g/km^2 with a vertical optical depth ~3e-5 at 550 nm, SOFIE's bright-cloud ice water
+    content and CIPS's bright albedo; 8 km gave 10-50x the brightest real clouds, the user: "a tad too dense"), as a
+    BROAD lognormal of sizes (sigma 1.4, lidar / SOFIE; geometric radius from the mass at 100 / cm^3, 15-100 nm),
+    integrated by 3-point Gauss-Hermite over the plume Mie table's rows weighted by Qsca pi r^2 (the table's a; Rayleigh
+    r^6 below its 50 nm), which gives both the colour / phase and the mass extinction. A launch-loaded layer (20 ppmv)
+    is ~4e-4 vertical. The table's narrow rows alone were pure lambda^-4 blue at every angle and showed false coloured
+    rings at 0.1-0.15 um; the broad sizes keep the forward light blue and make the side and back light whiter. Lit
+    where the Sun's ray clears the Earth + 8-16 km with its Rayleigh, Mie and ozone path.
+  - Along the ray (2026-11-16, the user with ISS photographs: faint seen from above, a thin line at the limb): a crossing
+    averages the ice over the length of ray it spans (segL: w sqrt(pi) / cos Z, capped at half the grazing column; the
+    grazing ray above the shell: the whole ~250 km), up to 8 reads at one per ~15 km (a vertical ray: one), the mass
+    averaged and the size extinction-weighted ((sum rho r^3 / sum rho)^(1/3)). One read at the crossing showed the
+    field's patches one by one at the limb (stacked blobs); averaged, the limb is a smooth line, brightest where the ray
+    grazes (~95x the vertical column against ~10-30x for the layer seen from above), streaked where structure lies along
+    the sight line. +0.07 ms from orbit (the layer's whole cost there ~0.9 ms at 30 deg FOV over the limb), ~0 from the
+    ground.
+  - The fine structure (2026-11-16, the user: "way too blobby ... more fine grained fibers and noise distortion, similar to
+    our current cirrus noise"): nlc_shell.comp nlcStructure reads the clouds' baked Perlin volume (cv2ShapeTex .a, as
+    cv2IceFibres does) in a TRANSVERSE chart (lon / lat about ECEF x: its singular points on the equator, so fibres
+    keep their length at the poles), domain-warped (~200 / 50-km cells, +-40 / 10 km), in two band directions 70 deg
+    apart blended over ~800 km. Bands (ridged, ~50 km apart, ~400 long), billows (~8 km, crests across) and fibres
+    (~1.6 km wide, ~30 long). The waves are temperature (broad 7.2 K at ~160-km cells on the same warped chart, so the
+    patches' outlines are ragged; bands 2.5 K; billows 1 K) and corrugate the ice column (ridges x hair x billows,
+    mean ~1, ~0.2-4.6x: a diffuse veil under the bands; it was ~0.03-7.5x, combed hair on black). Sub-pixel reads fade to their means by LOD; the footprint is the geometric mean of the pixel's axes on
+    the layer (the long axis alone blurred the bands along the horizon). Drift 40 m/s along / 10 across, wrapped by
+    102400 km (every period divides it). launches.nlc_fibres (1; 0 = the smooth layer). Cost +0.1-0.2 ms over the
+    layer's.
+  - Old trails flatten (launchFillVisuals): at 72-106 km, from 2 to 10 min old, a Gaussian's across-trail radius in
+    the vertical is held to 1.2 km while the level one keeps growing (stable stratification against shear): the same
+    column from above, a thin bright sheet edge-on. Not the jellyfish. Both with launches.nlc (true).
+  - The model's answers (harness `state` -> nlc: sites, ice_chance / ice_chance_day vs natural_*, ice_area_*):
+    Starbase / Louisiana / the Cape never ice in either season (their water leaves within a day; the air is 176-206 K
+    against a frost point of 147-160). Where it goes does: 26 Nov 2036, 70 S ice 65% of the day (53% natural); 5 Jul,
+    70 N 95 W (north of the pads) 74% (53%), 55 N 95 W 28% (12%) at 20 ppmv, where the clouds are also far thicker
+    (extinction ~ ice^2). The Earth's iced share ~4.2% vs 4.1% natural.
+  - Cost: +0.0 ms from the ground, +0.1 ms from orbit (a polar-summer limb in view); 0 when no texel's mean is within
+    3 sigma of its frost point. From orbit the summer layer is a blue band above the limb, as in ISS photographs.
+  - Seen from the ground it is faint at the app's night exposure, though ~10-100x the twilight sky's radiance (layer
+    1e-4..1e-3 sky units at Sun -9 over Manitoba in July).
 - **The second stage's jellyfish and hot staging (2026-10-30, issue 20261030_134020 "Second Stage Jellyfish").** The
   upper stage's vacuum exhaust used to be invisible: every parcel expanded at 2 km/s in every direction (~300 km wide
   3 min after leaving, optical depth ~2e-5), its young Gaussians lost the budget to the wide old bells, and the sim's

@@ -16,6 +16,7 @@
 #include <chrono>
 #include "SatelliteSim.h"
 #include "Launches.h"
+#include "Nlc.h"
 #include "../Log.h"
 #include "../Paths.h"
 #include "../VulkanContext.h"
@@ -7834,14 +7835,28 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 ++grpCount[(size_t)curGrp];
             GpuDustCloud &d = c.d;
             const glm::dvec3 a = toEnu(ax);
-            glm::dvec3 b2 = glm::cross(a, glm::dvec3(0, 0, 1));
+            // b2 across the trail and level at the parcel (its own vertical, not the eye's), c2 across it and up
+            glm::dvec3 b2 = glm::cross(a, glm::normalize(toEnu(C)));
             b2 = glm::length(b2) > 1e-6 ? glm::normalize(b2) : glm::dvec3(1, 0, 0);
             const glm::dvec3 c2 = glm::cross(a, b2);
-            const double iA = 1.0 / (sA * sA), iP = 1.0 / (sP * sP);
-            auto Mx = [&](int p, int q) { return iA * a[p] * a[q] + iP * (b2[p] * b2[q] + c2[p] * c2[q]); };
+            // (2026-11-16, phase 3, issue_20261115_165612: the high trails "too poofy ... would need to flatten out into
+            // a layer") In the mesosphere an old trail stops growing in depth: the air is stably stratified (a buoyancy
+            // period of ~5 min) while the wind's shear keeps spreading it sideways, so from a few minutes old its depth
+            // stays ~1.2 km (the mesospheric ice layers' thickness) while its width goes on growing. The across-trail
+            // radius in the vertical (c2) is held there, the level one (b2) keeps the radius: the same column seen
+            // from above or below, a thin bright sheet seen edge-on. 72-106 km, not the jellyfish (a vacuum plume). With launches.nlc (the mesosphere's
+            // physics: this and the ice layer).
+            const double hFl = glm::length(C) - kR;
+            const double flat = (nlcOn && curGround == 0 && !(curJellyW > 0.0))
+                                    ? glm::smoothstep(72000.0, 80000.0, hFl) * (1.0 - glm::smoothstep(98000.0, 106000.0, hFl)) *
+                                          glm::smoothstep(120.0, 600.0, age)
+                                    : 0.0;
+            const double sV = glm::mix(sP, std::min(sP, 1200.0), flat);
+            const double iA = 1.0 / (sA * sA), iP = 1.0 / (sP * sP), iV = 1.0 / (sV * sV);
+            auto Mx = [&](int p, int q) { return iA * a[p] * a[q] + iP * b2[p] * b2[q] + iV * c2[p] * c2[q]; };
             d.c = glm::vec4(glm::vec3(toEnu(rel)), (float)Sigma);
             d.ia = glm::vec4((float)Mx(0, 0), (float)Mx(1, 1), (float)Mx(2, 2),
-                             (float)(1.0 / (kTwoPi1p5 * sA * sP * sP)));
+                             (float)(1.0 / (kTwoPi1p5 * sA * sP * sV)));
             // The Sun's colour at the parcel (its path through the air; the Earth's shadow is the shader's) x albedo.
             const double h = glm::length(C) - kR;
             glm::dvec3 tr(1.0);
@@ -9498,6 +9513,83 @@ nlohmann::json SatelliteSim::launchListJson(double hours) const
         arr.push_back(o);
     }
     return arr;
+}
+
+// (2026-11-16, phase 3: the launch-made noctilucent clouds, SatelliteSimNLC.cpp) Every launch lifting off in [t0, t1] as
+// its exhaust water at 80-115 km (nlc::Deposit, keyed by batch): the upper stage's burn and the booster's ascent where
+// their tracks are in that band, x their flow and propellant's water share, at the water-weighted centroid of the
+// track. A pure function of the batch, so cached by key (`known`: an entry with m 0 = no launch / no water); a batch
+// not in the launch cache is built here and not kept (as `launch list` would, ~0.15 ms each).
+void SatelliteSim::launchWaterDeposits(double t0, double t1, std::unordered_map<uint64_t, nlc::Deposit> &known)
+{
+    if (!launchState || !launchesEnabled)
+        return;
+    LaunchState &L = *launchState;
+    LaunchImpl::ensureCatalog(L);
+    if (!L.loaded)
+        return;
+    if (!L.planesBuilt)
+        LaunchImpl::buildPlanes(L, satOrbits, activeSatCount, constellations, launchLifeScale, launchDeployEra);
+    for (size_t pi = 0; pi < L.planes.size(); ++pi)
+    {
+        const LPlane &pl = L.planes[pi];
+        const launch::Program &pg = L.cat.programs[pl.prog];
+        const double life = progLifeS(pg, (double)launchLifeScale);
+        const double lo = t0 + (pg.raiseDays[0] - 0.5 - pg.earlyDays()) * kDay, hi = t1 + (pg.raiseDays[1] + 2.5) * kDay;
+        LaunchImpl::forBatches(L, pl, life, lo, hi, [&](int64_t k, int b) {
+            const uint64_t key = batchKey((int)pi, k, b);
+            if (known.count(key))
+                return;
+            const LBatch *Bp = nullptr;
+            LBatch nb;
+            auto it = L.batches.find(key);
+            if (it != L.batches.end())
+                Bp = &it->second;
+            else
+            {
+                nb.plane = (int)pi;
+                nb.k = k;
+                nb.b = b;
+                LaunchImpl::buildBatch(*this, L, nb, pl, life);
+                Bp = &nb;
+            }
+            const LBatch &B = *Bp;
+            nlc::Deposit d;
+            d.t = B.tL;
+            if (B.valid && B.veh >= 0)
+            {
+                const launch::Vehicle &vh = L.cat.vehicles[B.veh];
+                const Track &up = L.upperTrackFor(B.veh, L.cat.programs[B.prog].parkKm);
+                const Track &bt = LaunchImpl::boosterTr(L, B);
+                double W = 0.0, Wx = 0.0, Wxx = 0.0, Wt = 0.0;
+                auto take = [&](const Track &tr, uint8_t burn, double flow, double share) {
+                    for (size_t i = 0; i < tr.p.size(); ++i)
+                    {
+                        if (tr.burn[i] != burn || tr.p[i].y < 80000.0 || tr.p[i].y > 115000.0)
+                            continue;
+                        const double w = flow * tr.dt * share, x = tr.p[i].x;
+                        W += w;
+                        Wx += w * x;
+                        Wxx += w * x * x;
+                        Wt += w * (double)i * tr.dt;
+                    }
+                };
+                take(up, launch::BURN_UPPER, vh.flow2, nlc::waterShare(vh.vex2, vh.soot));
+                take(bt, launch::BURN_ASCENT, vh.flow1, nlc::waterShare(vh.vex1, vh.soot));
+                if (W > 0.0)
+                {
+                    const double xm = Wx / W;
+                    const glm::dvec3 u = glm::normalize(LaunchImpl::trackEcef(B, xm, 0.0));
+                    d.t = B.tL + Wt / W;
+                    d.lat = std::asin(glm::clamp(u.z, -1.0, 1.0));
+                    d.lon = std::atan2(u.y, u.x);
+                    d.m = W;
+                    d.sig0 = std::max(20000.0, std::sqrt(std::max(Wxx / W - xm * xm, 0.0)));
+                }
+            }
+            known.emplace(key, d);
+        });
+    }
 }
 
 // Why batches did not fly: every batch the cache holds after listing `hours`, counted by program and reason.
