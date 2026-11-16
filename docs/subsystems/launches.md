@@ -615,6 +615,14 @@ launches follow per-program cadences (no real manifest).
     is ~4e-4 vertical. The table's narrow rows alone were pure lambda^-4 blue at every angle and showed false coloured
     rings at 0.1-0.15 um; the broad sizes keep the forward light blue and make the side and back light whiter. Lit
     where the Sun's ray clears the Earth + 8-16 km with its Rayleigh, Mie and ozone path.
+  - Along the ray (2026-11-16, the user with ISS photographs: faint seen from above, a thin line at the limb): a crossing
+    averages the ice over the length of ray it spans (segL: w sqrt(pi) / cos Z, capped at half the grazing column; the
+    grazing ray above the shell: the whole ~250 km), up to 8 reads at one per ~15 km (a vertical ray: one), the mass
+    averaged and the size extinction-weighted ((sum rho r^3 / sum rho)^(1/3)). One read at the crossing showed the
+    field's patches one by one at the limb (stacked blobs); averaged, the limb is a smooth line, brightest where the ray
+    grazes (~95x the vertical column against ~10-30x for the layer seen from above), streaked where structure lies along
+    the sight line. +0.07 ms from orbit (the layer's whole cost there ~0.9 ms at 30 deg FOV over the limb), ~0 from the
+    ground.
   - The fine structure (2026-11-16, the user: "way too blobby ... more fine grained fibers and noise distortion, similar to
     our current cirrus noise"): nlc_shell.comp nlcStructure reads the clouds' baked Perlin volume (cv2ShapeTex .a, as
     cv2IceFibres does) in a TRANSVERSE chart (lon / lat about ECEF x: its singular points on the equator, so fibres

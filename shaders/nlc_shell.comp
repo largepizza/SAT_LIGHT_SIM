@@ -45,6 +45,7 @@ layout(set = 0, binding = 5) uniform sampler3D shapeTex;          // the clouds'
 const float kShellR = R_EARTH + 83000.0;
 const float kPAir   = 0.55;     // Pa at 83 km (Nlc.h)
 const float kRhoAir = 1.15e-5;  // kg/m^3 at 83 km
+const float kCollectM = 3000.0; // m of air whose excess vapour the layer holds (nlcCrossing: calibrated)
 
 vec3 nlcTexel(int x, int y)
 {
@@ -115,27 +116,47 @@ vec2 nlcStructure(vec3 uE, float fpM)
 
 // One crossing of the layer at P (ENU frame, Earth-centred), col metres of it at its peak density along the ray:
 // rgb the sunlight it scatters to the eye (the sky's units: SUN_INTENSITY x phaseR-normalised phase x optical depth),
-// w its optical depth (luminance).
-vec4 nlcCrossing(vec3 P, float col, vec3 dir, vec3 sunDir, mat3 enuToEcef, float fpM)
+// w its optical depth (luminance). segL: the length of ray the crossing spans (m).
+//
+// ALONG THE RAY (2026-11-16, the user with ISS photographs: the layer is faint seen from above and shows at the limb, a
+// thin line where the ray grazes it): a grazing ray runs ~100-250 km through the layer, so what it sees is the AVERAGE of
+// the ice over that path; read at one point, the limb showed the field's patches and fibres one by one, as blobs. Up to
+// 8 reads spread along segL (one per ~15 km; a vertical ray: one), their ice mass and size averaged: the limb a smooth,
+// bright line streaked where structure lies along the sight line, the layer seen from above as before.
+vec4 nlcCrossing(vec3 P, float col, vec3 dir, vec3 sunDir, mat3 enuToEcef, float fpM, float segL)
 {
-    vec3 uE = normalize(enuToEcef * P);
-    vec3 m = nlcMap(asin(clamp(uE.z, -1.0, 1.0)), atan(uE.y, uE.x));
     float sig = length(vec2(gw0.w, 2.7));   // (the broad octave and the bands' waves)
-    if (m.z < m.y - 3.0 * sig)
-        return vec4(0.0);                               // warmer than the frost point by 3 sigma of the waves: no ice
+    int   n   = clamp(int(ceil(segL / 15000.0)), 1, 8);
+    float S0 = 0.0, S1 = 0.0;               // sums of the ice density and of it x the size cubed
+    for (int i = 0; i < n; ++i) {
+        vec3 Pi = P + dir * (((float(i) + 0.5) / float(n) - 0.5) * segL);
+        vec3 uE = normalize(enuToEcef * Pi);
+        vec3 m  = nlcMap(asin(clamp(uE.z, -1.0, 1.0)), atan(uE.y, uE.x));
+        if (m.z < m.y - 3.0 * sig)
+            continue;                                   // warmer than the frost point by 3 sigma of the waves: no ice
+        // the gravity waves (nlcStructure): a broad wave (where the clouds are) + the bands and billows
+        vec2  st = nlcStructure(uE, fpM);
+        float T  = m.y + st.x;
+        float xs = exp(9.550426 - 5723.265 / T + 3.53068 * log(T) - 0.00728332 * T) * (1e6 / kPAir); // saturation, ppmv
+        float ice = m.x - xs;                           // the vapour above saturation freezes (ppmv)
+        if (ice <= 0.0)
+            continue;
+        float rho = ice * 1e-6 * (18.015 / 28.97) * kRhoAir * (kCollectM / (misc.z * 1.7725)) * st.y;
+        float rg  = clamp(pow(3.0 * rho / (4.0 * PI * 917.0 * 1e8), 1.0 / 3.0) * 0.844, 1.5e-8, 1.0e-7);
+        S0 += rho;
+        S1 += rho * rg * rg * rg;
+    }
+    if (S0 <= 0.0)
+        return vec4(0.0);
     // Sunlit: the Sun's ray from P must clear the Earth and its cloud-topped troposphere (~8-16 km, soft)
     float ps = dot(P, sunDir);
     float bS = sqrt(max(dot(P, P) - ps * ps, 0.0));
     float lit = ps >= 0.0 ? 1.0 : smoothstep(R_EARTH + 8000.0, R_EARTH + 16000.0, bS);
-    // the gravity waves (nlcStructure): a broad wave (where the clouds are) + the bands and billows
-    vec2 st = nlcStructure(uE, fpM);
-    float T = m.y + st.x;
-    float xs = exp(9.550426 - 5723.265 / T + 3.53068 * log(T) - 0.00728332 * T) * (1e6 / kPAir); // saturation, ppmv
-    float ice = m.x - xs;                                // the vapour above saturation freezes (ppmv)
-    if (ice <= 0.0)
-        return vec4(0.0);
+    // the path's mean ice (kg/m^3 in the layer) and its extinction-weighted size (the extinction goes ~ as r^3)
+    float iceRho = S0 / float(n);
+    float rG     = pow(S1 / S0, 1.0 / 3.0);
     // The ice. Freeze-drying (Rapp & Thomas 2006): the particles grow in the supersaturated air above the mesopause
-    // and fall, so the layer holds the excess water of ~8 km of air (kCollectM) in its ~2.7 km (w sqrt(pi)): a few
+    // and fall, so the layer holds the excess water of a few km of air (kCollectM) in its ~2.7 km (w sqrt(pi)): a few
     // ppmv gives ~50 ng/m^3, SOFIE's ice mass densities. Their size from that mass shared among ~100 particles per
     // cm^3 (the clouds' number densities, 50-200): ~50 nm for a few ppmv, 20-120 nm. Small next to the light's
     // wavelength, so Rayleigh-like: mass extinction 172 m^2/kg at 50 nm and 550 nm (2 x^4 |(m^2-1)/(m^2+2)|^2 /
@@ -151,13 +172,10 @@ vec4 nlcCrossing(vec3 P, float col, vec3 dir, vec3 sunDir, mat3 enuToEcef, float
     // at 550 nm). At 8 km the natural layer was ~2.5e-4 and a launch-loaded one (20 ppmv) ~2e-3: 10-50x the brightest
     // real clouds. A launch-loaded layer is now ~4e-4.
     // The sizes are a BROAD lognormal (sigma 1.4: lidar and SOFIE retrievals; Baumgarten et al. 2008), its geometric
-    // radius from the mass at 100 per cm^3, read by 3-point Gauss-Hermite quadrature over the table's rows, each
+    // radius from the mass at 100 per cm^3 (x 0.844 = 1 / exp(1.5 ln^2 1.4)), read by 3-point Gauss-Hermite quadrature over the table's rows, each
     // weighted by its cross-section (Qsca pi r^2: the a channel; below the table's 50 nm, Rayleigh's r^6). The table's
     // narrow rows alone gave a pure lambda^-4 blue at every angle, and at 0.1-0.15 um coloured rings: an iridescence that
     // a broad, slowly grown distribution washes out. Now the forward light stays blue and the side and back light whiter.
-    const float kCollectM = 3000.0;
-    float iceRho = ice * 1e-6 * (18.015 / 28.97) * kRhoAir * (kCollectM / (misc.z * 1.7725)) * st.y;   // kg/m^3 in the layer
-    float rG   = clamp(pow(3.0 * iceRho / (4.0 * PI * 917.0 * 1e8), 1.0 / 3.0) * 0.844, 1.5e-8, 1.0e-7);  // /exp(1.5 ln^2 1.4)
     float cosT = dot(dir, sunDir);
     vec3  phC;   // the phase (mean 1, the sky's units) x the spectral scattering relative to the luminance's
     float kExt;  // m^2 per kg of ice (luminance)
@@ -228,13 +246,13 @@ void main()
             float t = k == 0 ? tc - q : tc + q;
             if (t <= 0.0 || t >= tScene)
                 continue;
-            vec4 c = nlcCrossing(obsPos + dir * t, colX, dir, sunDir, enuToEcef, t * fpK);
+            vec4 c = nlcCrossing(obsPos + dir * t, colX, dir, sunDir, enuToEcef, t * fpK, colX);
             L = L * exp(-c.w) + c.rgb;   // (the far crossing first in effect: both thin, the order hardly matters)
             tauSum += c.w;
         }
     } else if (b < kShellR + 3.0 * w && tc > 0.0 && tc < tScene) {
         vec4 c = nlcCrossing(obsPos + dir * tc, colPeak * exp(-pow((b - kShellR) / w, 2.0)), dir, sunDir, enuToEcef,
-                             tc * 2.0 * tanHalfFov / float(size.y) / sqrt(0.05));
+                             tc * 2.0 * tanHalfFov / float(size.y) / sqrt(0.05), colPeak);
         L = c.rgb;
         tauSum = c.w;
     }

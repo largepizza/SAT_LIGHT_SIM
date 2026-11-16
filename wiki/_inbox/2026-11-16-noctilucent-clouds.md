@@ -10,7 +10,9 @@ at 80-115 km x flow x the propellant's water share; ~60 t for a Starship), drift
 (summer pole ~140 K, 41 N summer ~169 K, equator 190 K) plus tides and 8 K rms gravity waves. Ice = the vapour above
 saturation, freeze-dried from 3 km of air into a ~2.5 km layer (calibrated: the natural layer holds ~95 g/km^2,
 vertical optical depth ~3e-5, SOFIE / CIPS bright clouds), 100 particles/cm^3 in a broad lognormal (sigma 1.4), lit
-with the plume ice Mie table integrated over the sizes (blue forward, whiter to the side and back). A 512x256 map is rebuilt each sim minute on a worker; shaders/nlc_shell.comp adds it onto the cloud composite.
+with the plume ice Mie table integrated over the sizes (blue forward, whiter to the side and back). Each crossing
+averages the ice along the ray (up to 8 reads over up to ~250 km), so from space the layer is faint seen from above
+and a thin line where the ray grazes it at the limb. A 512x256 map is rebuilt each sim minute on a worker; shaders/nlc_shell.comp adds it onto the cloud composite.
 The layer is fibrous: bands, billows and ~1.6-km fibres from the clouds' baked Perlin volume, domain-warped, read in
 a transverse chart (no pole pinch), as temperature waves and a corrugation of the ice (launches.nlc_fibres, 1).
 Old high trails (72-106 km, 2-10 min) flatten to 1.2 km deep. Setting launches.nlc (true). Harness `state` -> nlc reports
