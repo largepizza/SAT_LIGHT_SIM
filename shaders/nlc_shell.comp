@@ -87,7 +87,9 @@ vec3 nlcBands(vec2 q, float fpM, float N)
     float band = mix(nlcRidge(nb, 1.1), 0.45, smoothstep(1.0, 3.0, lB));
     float hair = mix(nlcRidge(nh, 0.8), 0.35, smoothstep(0.5, 2.5, lH));
     float bil  = mix(clamp(0.5 + 0.35 * nw, 0.0, 1.0), 0.5, smoothstep(0.5, 2.5, lW));
-    float col  = (0.15 + 1.7 * band) * (0.25 + 1.5 * hair * hair) * (0.55 + 0.9 * bil) * 1.6;
+    // (2026-11-16, the user from the ground: "a sharp light blue with minimal smoothing": the column went ~0.03-7.5x
+    // the mean, so the layer read as combed hair on black; now ~0.2-4.6x over a diffuse veil, the bands carrying most)
+    float col  = (0.4 + 1.3 * band) * (0.55 + 1.0 * hair * hair) * (0.7 + 0.6 * bil) * 1.35;
     return vec3(2.5 * nb + 1.0 * nw * (1.0 - smoothstep(0.5, 2.5, lW)), col, 0.0);
 }
 vec2 nlcStructure(vec3 uE, float fpM)
@@ -142,17 +144,45 @@ vec4 nlcCrossing(vec3 P, float col, vec3 dir, vec3 sunDir, mat3 enuToEcef, float
     // plumes): at 50 nm close to lambda^-4, at 100 nm visibly less blue and more forward (a pure lambda^-4 made the
     // layer violet overhead and green where the reddened Sun lit it). Without the table: lambda^-4 (BETA_R_BASE's
     // ratio) and Rayleigh's phase.
-    const float kCollectM = 8000.0;
+    //
+    // CALIBRATED (2026-11-16, the user: "a tad too dense"): kCollectM 3 km makes the natural layer (5 ppmv, the summer
+    // pole's ~140 K) hold ~95 g/km^2 of ice with a vertical optical depth ~3e-5 at 550 nm: SOFIE's ice water content of
+    // bright clouds (~50-200 g/km^2, Hervig et al. 2009) and CIPS's bright albedo (~5e-5 sr^-1 at 265 nm, ~3e-5 in tau
+    // at 550 nm). At 8 km the natural layer was ~2.5e-4 and a launch-loaded one (20 ppmv) ~2e-3: 10-50x the brightest
+    // real clouds. A launch-loaded layer is now ~4e-4.
+    // The sizes are a BROAD lognormal (sigma 1.4: lidar and SOFIE retrievals; Baumgarten et al. 2008), its geometric
+    // radius from the mass at 100 per cm^3, read by 3-point Gauss-Hermite quadrature over the table's rows, each
+    // weighted by its cross-section (Qsca pi r^2: the a channel; below the table's 50 nm, Rayleigh's r^6). The table's
+    // narrow rows alone gave a pure lambda^-4 blue at every angle, and at 0.1-0.15 um coloured rings: an iridescence that
+    // a broad, slowly grown distribution washes out. Now the forward light stays blue and the side and back light whiter.
+    const float kCollectM = 3000.0;
     float iceRho = ice * 1e-6 * (18.015 / 28.97) * kRhoAir * (kCollectM / (misc.z * 1.7725)) * st.y;   // kg/m^3 in the layer
-    float rM   = clamp(pow(3.0 * iceRho / (4.0 * PI * 917.0 * 1e8), 1.0 / 3.0), 2e-8, 1.2e-7);
-    float kExt = 172.0 * pow(rM / 5e-8, 3.0);
-    float tau  = kExt * iceRho * col;
+    float rG   = clamp(pow(3.0 * iceRho / (4.0 * PI * 917.0 * 1e8), 1.0 / 3.0) * 0.844, 1.5e-8, 1.0e-7);  // /exp(1.5 ln^2 1.4)
     float cosT = dot(dir, sunDir);
     vec3  phC;   // the phase (mean 1, the sky's units) x the spectral scattering relative to the luminance's
-    if (misc.w > 0.5)
-        phC = plumeMiePhase(cosT, rM * 1e6) * (4.0 * PI);
-    else
-        phC = phaseR(cosT) * BETA_R_BASE / dot(BETA_R_BASE, vec3(0.2126, 0.7152, 0.0722));
+    float kExt;  // m^2 per kg of ice (luminance)
+    if (misc.w > 0.5) {
+        const float kX[3] = float[](0.558, 1.0, 1.792);           // exp(-+sqrt(3) ln 1.4)
+        const float kW[3] = float[](1.0 / 6.0, 2.0 / 3.0, 1.0 / 6.0);
+        float th = acos(clamp(cosT, -1.0, 1.0)) * (1.0 / PI);
+        vec3  num = vec3(0.0);
+        float cS = 0.0, mS = 0.0;
+        for (int i = 0; i < 3; ++i) {
+            float r  = rG * kX[i], rU = r * 1e6;
+            vec4  t  = textureLod(plumeMieTex, vec2(th, (plumeMieRow(rU) + 0.5) * (1.0 / 24.0)), 0.0);
+            float c  = kW[i] * t.a * (rU < 0.05 ? pow(rU * 20.0, 4.0) : 1.0) * r * r;   // number x Qsca x r^2
+            num += c * t.rgb;
+            cS  += c;
+            mS  += kW[i] * r * r * r;
+        }
+        phC  = num / max(cS, 1e-30) * 8.0;                         // (plumeMiePhase's x 8 / 4 pi, times 4 pi)
+        kExt = cS * PI / (mS * (4.0 / 3.0) * PI * 917.0);
+    } else {
+        float rM = rG * 1.185;
+        phC  = phaseR(cosT) * BETA_R_BASE / dot(BETA_R_BASE, vec3(0.2126, 0.7152, 0.0722));
+        kExt = 172.0 * pow(rM / 5e-8, 3.0) * 2.2;                  // (the broad distribution's ~2.2x the mean size's)
+    }
+    float tau  = kExt * iceRho * col;
     float r = length(P), cz = ps / r;
     vec3 tauS = BETA_R_BASE * (atmColumnInf(r, cz, H_R) * H_R) + BETA_M_BASE * 1.1 * (atmColumnInf(r, cz, H_M) * H_M)
               + atmOzoneTau(P, sunDir);

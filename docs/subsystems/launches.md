@@ -606,10 +606,15 @@ launches follow per-program cadences (no real manifest).
     over them from above); not in cloud_march.comp because of the 128-register cliff. Per crossing of the layer (a
     Gaussian, half-width 1.5 km; the airglow line's closed-form path lengths): the map, the waves (two octaves of
     value noise, 150 and 30 km cells drifting at 30 / 50 m/s, offsets wrapped by the 1024-cell period in double), the
-    ice = vapour above saturation, freeze-dried from 8 km of air into the layer (Rapp & Thomas 2006: a few ppmv ->
-    ~50 ng/m^3, SOFIE's values), shared among 100 particles / cm^3 (radius 20-120 nm), mass extinction 172 m^2/kg x
-    (r / 50 nm)^3 (so the extinction goes as the ice squared), colour and phase from the plume Mie table
-    (plume_mie.glsl), lit where the Sun's ray clears the Earth + 8-16 km with its Rayleigh, Mie and ozone path.
+    ice = vapour above saturation, freeze-dried from 3 km of air into the layer (CALIBRATED: the natural layer, 5 ppmv
+    at ~140 K, then holds ~95 g/km^2 with a vertical optical depth ~3e-5 at 550 nm, SOFIE's bright-cloud ice water
+    content and CIPS's bright albedo; 8 km gave 10-50x the brightest real clouds, the user: "a tad too dense"), as a
+    BROAD lognormal of sizes (sigma 1.4, lidar / SOFIE; geometric radius from the mass at 100 / cm^3, 15-100 nm),
+    integrated by 3-point Gauss-Hermite over the plume Mie table's rows weighted by Qsca pi r^2 (the table's a; Rayleigh
+    r^6 below its 50 nm), which gives both the colour / phase and the mass extinction. A launch-loaded layer (20 ppmv)
+    is ~4e-4 vertical. The table's narrow rows alone were pure lambda^-4 blue at every angle and showed false coloured
+    rings at 0.1-0.15 um; the broad sizes keep the forward light blue and make the side and back light whiter. Lit
+    where the Sun's ray clears the Earth + 8-16 km with its Rayleigh, Mie and ozone path.
   - The fine structure (2026-11-16, the user: "way too blobby ... more fine grained fibers and noise distortion, similar to
     our current cirrus noise"): nlc_shell.comp nlcStructure reads the clouds' baked Perlin volume (cv2ShapeTex .a, as
     cv2IceFibres does) in a TRANSVERSE chart (lon / lat about ECEF x: its singular points on the equator, so fibres
@@ -617,7 +622,7 @@ launches follow per-program cadences (no real manifest).
     apart blended over ~800 km. Bands (ridged, ~50 km apart, ~400 long), billows (~8 km, crests across) and fibres
     (~1.6 km wide, ~30 long). The waves are temperature (broad 7.2 K at ~160-km cells on the same warped chart, so the
     patches' outlines are ragged; bands 2.5 K; billows 1 K) and corrugate the ice column (ridges x hair x billows,
-    mean ~1). Sub-pixel reads fade to their means by LOD; the footprint is the geometric mean of the pixel's axes on
+    mean ~1, ~0.2-4.6x: a diffuse veil under the bands; it was ~0.03-7.5x, combed hair on black). Sub-pixel reads fade to their means by LOD; the footprint is the geometric mean of the pixel's axes on
     the layer (the long axis alone blurred the bands along the horizon). Drift 40 m/s along / 10 across, wrapped by
     102400 km (every period divides it). launches.nlc_fibres (1; 0 = the smooth layer). Cost +0.1-0.2 ms over the
     layer's.
