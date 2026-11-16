@@ -175,6 +175,11 @@ void App::initWindow()
         glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
         glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_FALSE);
     }
+    // (2026-11-15, the user: harness runs must not open on the primary monitor, where they work meanwhile) Under the
+    // harness the window is created hidden, moved onto a secondary monitor (--monitor N; default the first
+    // non-primary one, the primary when it is the only one) and only then shown: it never flashes on the primary.
+    if (harness::active())
+        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
     // macOS: render at logical (point) resolution, not the 2x Retina backing size. On the
     // integrated/older discrete GPUs these machines have, a maximized Retina framebuffer is
     // ~4x the pixels and the volumetric passes can't keep up. Also makes the fixed-bitmap
@@ -182,6 +187,25 @@ void App::initWindow()
     glfwWindowHint(GLFW_COCOA_RETINA_FRAMEBUFFER, GLFW_FALSE);
     window = glfwCreateWindow(fixedWindow ? harness::options().winW : WIN_W,
                               fixedWindow ? harness::options().winH : WIN_H, sim->name(), nullptr, nullptr);
+    if (harness::active() && window)
+    {
+        int nMon = 0;
+        GLFWmonitor **mons = glfwGetMonitors(&nMon); // [0] is the primary
+        int pick = harness::options().monitor;
+        if (pick < 0 || pick >= nMon)
+            pick = nMon > 1 ? 1 : 0;
+        if (mons && nMon > 0)
+        {
+            int wx = 0, wy = 0, ww = 0, wh = 0;
+            glfwGetMonitorWorkarea(mons[pick], &wx, &wy, &ww, &wh);
+            glfwSetWindowPos(window, wx + 40, wy + 40);
+            std::printf("[harness] window on monitor %d of %d (%s) at %d,%d\n", pick, nMon,
+                        pick == 0 ? "primary" : "secondary", wx + 40, wy + 40);
+        }
+        if (!fixedWindow)
+            glfwMaximizeWindow(window); // (maximized on the monitor it was moved to)
+        glfwShowWindow(window);
+    }
     glfwSetWindowUserPointer(window, this);
     glfwSetFramebufferSizeCallback(window, cbResize);
     glfwSetKeyCallback(window, cbKey);

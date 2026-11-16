@@ -37,7 +37,7 @@ command failed.
 | the **`~` console** in the app | a person typing the same commands | `` ` `` toggles; Enter runs, Up/Down history, Esc closes |
 | exe flags | anything else | `SAT_LIGHT_SIM_V_*.exe --script f.satcmd --out dir` (see below) |
 
-Exe flags: `--script <file>`, `--live <dir>`, `--out <dir>`, `--window WxH` (default 1600x900),
+Exe flags: `--script <file>`, `--live <dir>`, `--out <dir>`, `--window WxH` (default 1600x900), `--monitor N` (default: a secondary monitor when there is one; 0 = primary),
 `--settings <settings.json>` (start from these settings instead of the defaults), `--user-data`
 (use the normal user data folder, not the run folder), `--fixed-dt <s>` (default 1/60, 0 = real
 time), `--timeout <s>` (watchdog), `--stay` (keep running after the script), `--sound` (a real audio

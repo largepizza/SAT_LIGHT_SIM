@@ -103,6 +103,7 @@ std::string usage()
            "  --live <dir>        poll <dir>/inbox/*.satcmd, answer in <dir>/outbox/\n"
            "  --out <dir>         run folder (default harness_runs/<timestamp>)\n"
            "  --window WxH        fixed window size (default 1600x900 under the harness)\n"
+           "  --monitor N         monitor to open on (0 = primary; default: a secondary monitor if there is one)\n"
            "  --settings <file>   start from this settings.json (default: built-in defaults)\n"
            "  --user-data         use the normal user data dir instead of the run folder\n"
            "  --fixed-dt <s>      frame time fed to the sim (default 1/60; 0 = real time)\n"
@@ -159,6 +160,12 @@ bool parseArgs(int argc, char **argv, std::string &err)
                 err = "--window expects WxH, e.g. 1600x900";
                 return false;
             }
+        }
+        else if (a == "--monitor")
+        {
+            if (!(v = need(i, "--monitor")))
+                return false;
+            g_opts.monitor = atoi(v);
         }
         else if (a == "--fixed-dt")
         {

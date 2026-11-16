@@ -34,6 +34,8 @@ struct Options
     std::string settingsPath;   // --settings: settings.json copied into the run folder before init
     bool useUserData = false;   // --user-data: read/write the normal user data dir (default: the run folder)
     int winW = 0, winH = 0;     // --window WxH (0 = the app's normal maximized window)
+    int monitor = -1;           // --monitor N: the monitor the window opens on (0 = primary); -1 = the first
+                                // non-primary one when there is one (the user works on the primary meanwhile)
     bool mute = true;           // --sound turns it back on
     bool exitWhenDone = true;   // --stay keeps the app open when the script ends
     float fixedDt = 1.0f / 60.0f; // --fixed-dt <s>, 0 = real frame time
