@@ -3384,7 +3384,8 @@ private:
     // (nlc::kMapW x kMapH: vapour, mean temperature, frost point) built on a worker when sim time moves a minute; the pass
     // adds the gravity waves and lights the ice on the cloud composite's targets. launches.nlc.
     bool nlcOn = true;
-    static constexpr VkDeviceSize kNlcHeader = 64;
+    float nlcFibres = 1.0f;   // launches.nlc_fibres: the bands, billows and fibres (0 = the smooth layer)
+    static constexpr VkDeviceSize kNlcHeader = 80;
     VkBuffer nlcBuf = VK_NULL_HANDLE;
     VkDeviceMemory nlcMem = VK_NULL_HANDLE;
     void *nlcMapped = nullptr;

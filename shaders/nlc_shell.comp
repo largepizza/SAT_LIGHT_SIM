@@ -27,10 +27,11 @@ layout(push_constant) uniform PC {
 
 layout(std430, set = 0, binding = 0) readonly buffer NlcBuf {
     uvec4 hdr;   // x W, y H, z 1 = on, w 1 = some ice is possible somewhere (the map's mean T within 3 sigma of frost)
-    vec4  gw0;   // the gravity waves' octaves: xyz the noise's offset now (lattice cells, wrapped), w amplitude (K rms)
-    vec4  gw1;
-    vec4  misc;  // x, y the octaves' frequencies (cells per Earth radius), z the layer's half-width (m), w 1 = the
-                 // Mie table is loaded
+    vec4  gw0;   // w the gravity waves' broad wave (K rms); xyz unused
+    vec4  gw1;   // unused
+    vec4  misc;  // z the layer's half-width (m), w 1 = the Mie table is loaded; xy unused
+    vec4  fib;   // the fine structure: xy its drift along / across the bands (m, wrapped by 102400 km: every period below
+                 // divides it), z its strength (0 = the smooth layer)
     uvec2 tex[]; // W x H (rows from the north pole, columns from lon -180): x packHalf2x16(vapour ppmv, mean T K),
                  // y packHalf2x16(frost point K, 0)
 };
@@ -39,6 +40,7 @@ layout(set = 0, binding = 2, rgba16f) uniform image2D targetB;   // rgb the tran
 layout(set = 0, binding = 3) uniform sampler2D sceneDepthTex;     // the ground's distance (m)
 layout(set = 0, binding = 4) uniform sampler2D plumeMieTex;       // ice's Mie table (plume_mie.glsl; misc.w 1 = loaded)
 #include "plume_mie.glsl"
+layout(set = 0, binding = 5) uniform sampler3D shapeTex;          // the clouds' baked noise volume (cv2ShapeTex, repeat)
 
 const float kShellR = R_EARTH + 83000.0;
 const float kPAir   = 0.55;     // Pa at 83 km (Nlc.h)
@@ -63,42 +65,69 @@ vec3 nlcMap(float lat, float lon)
     return mix(mix(nlcTexel(xa, ya), nlcTexel(xb, ya), au), mix(nlcTexel(xa, yb), nlcTexel(xb, yb), au), av);
 }
 
-// Value noise on a 1024-cell periodic lattice (the CPU wraps the octaves' drift by it): rms 0.400 (lattice values
-// uniform in [-1, 1], quintic weights: (0.78355^3 / 3)^0.5).
-float nlcHash(ivec3 c)
+// ── The fine structure (2026-11-16, the user: "way too blobby ... more fine grained fibers and noise distortion, similar
+// to our current cirrus noise"). Noctilucent clouds show bands (gravity waves, tens of km apart, hundreds long),
+// billows across them (Kelvin-Helmholtz, ~5-10 km) and fine fibres (~1-2 km). Built as the clouds v2 cirrus fibres are
+// (clouds_v2.glsl cv2IceFibres: ridged reads of the baked Perlin fBm, a = 0.50 +- 0.057, in a frame stretched along
+// the fibres and bent by a domain warp), read here in a transverse chart: lon / lat about the ECEF x axis, whose two
+// singular points sit on the equator (lon 0 and 180), where this ice never forms, so the fibres keep their length at
+// the poles (a geographic chart's along-coordinate shrinks as cos lat). Two band directions, 70 deg apart, blend over
+// ~800-km regions. Returns x: a temperature wave (K: the bands and billows are waves), y: the ice column's corrugation
+// (mean ~1: the layer folded and thinned along the fibres).
+float nlcPerlin(vec3 p, float lod) { return (textureLod(shapeTex, p, max(lod, 0.0)).a - 0.5) * (1.0 / 0.057); }
+float nlcRidge(float n, float w) { return 1.0 - smoothstep(0.0, w, abs(n)); }
+vec3 nlcBands(vec2 q, float fpM, float N)
 {
-    uvec3 v = uvec3(c & 1023);
-    uint h = v.x * 73856093u ^ v.y * 19349663u ^ v.z * 83492791u;
-    h ^= h >> 13; h *= 0x5bd1e995u; h ^= h >> 15;
-    return float(h & 0xffffu) * (2.0 / 65535.0) - 1.0;
+    // (unit sizes in metres along x / across y; lod from the finer axis's texel; ridges fade to their area share as
+    // they go below a pixel, as the cirrus fibres do)
+    float lB = log2(fpM * N / 8.0e5),  lW = log2(fpM * N / 1.28e5), lH = log2(fpM * N / 2.56e4);
+    float nb = nlcPerlin(vec3(q.x / 6.4e6, q.y / 8.0e5, 0.13), lB);           // bands: ~50 km apart, ~400 km long
+    float nw = nlcPerlin(vec3(q.x / 1.28e5, q.y / 5.12e5, 0.53), lW);         // billows: ~8 km along, crests across
+    float nh = nlcPerlin(vec3(q.x / 5.12e5, q.y / 2.56e4 + 0.04 * nw, 0.29), lH); // fibres: ~1.6 km wide, ~30 long
+    float band = mix(nlcRidge(nb, 1.1), 0.45, smoothstep(1.0, 3.0, lB));
+    float hair = mix(nlcRidge(nh, 0.8), 0.35, smoothstep(0.5, 2.5, lH));
+    float bil  = mix(clamp(0.5 + 0.35 * nw, 0.0, 1.0), 0.5, smoothstep(0.5, 2.5, lW));
+    float col  = (0.15 + 1.7 * band) * (0.25 + 1.5 * hair * hair) * (0.55 + 0.9 * bil) * 1.6;
+    return vec3(2.5 * nb + 1.0 * nw * (1.0 - smoothstep(0.5, 2.5, lW)), col, 0.0);
 }
-float nlcNoise(vec3 p)
+vec2 nlcStructure(vec3 uE, float fpM)
 {
-    vec3 fl = floor(p), f = p - fl;
-    ivec3 i = ivec3(fl);
-    vec3 w = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
-    float a = mix(nlcHash(i), nlcHash(i + ivec3(1, 0, 0)), w.x);
-    float b = mix(nlcHash(i + ivec3(0, 1, 0)), nlcHash(i + ivec3(1, 1, 0)), w.x);
-    float c = mix(nlcHash(i + ivec3(0, 0, 1)), nlcHash(i + ivec3(1, 0, 1)), w.x);
-    float d = mix(nlcHash(i + ivec3(0, 1, 1)), nlcHash(i + ivec3(1, 1, 1)), w.x);
-    return mix(mix(a, b, w.y), mix(c, d, w.y), w.z);
+    float N = float(textureSize(shapeTex, 0).x);
+    vec2  c = vec2(atan(uE.z, uE.y), asin(clamp(uE.x, -1.0, 1.0))) * R_EARTH;
+    // the distortion: ~200-km and ~50-km cells, +-40 / 10 km (rms)
+    vec2  w = vec2(nlcPerlin(vec3(c / 3.2e6, 0.37), 0.0), nlcPerlin(vec3(c.yx / 3.2e6, 0.71), 0.0)) * 40000.0
+            + vec2(nlcPerlin(vec3(c / 8.0e5, 0.11), log2(fpM * N / 8.0e5)),
+                   nlcPerlin(vec3(c.yx / 8.0e5, 0.83), log2(fpM * N / 8.0e5))) * 10000.0;
+    vec2  cw = c + w;
+    float sel = smoothstep(-0.7, 0.7, nlcPerlin(vec3(c / 1.28e7, 0.61), 0.0));   // which band direction (~800 km)
+    vec3  a = vec3(0.0), b = vec3(0.0);
+    if (fib.z > 0.0) {
+        if (sel < 0.99) a = nlcBands(cw + fib.xy, fpM, N);
+        if (sel > 0.01) b = nlcBands(mat2(0.342, 0.940, -0.940, 0.342) * cw + fib.xy, fpM, N);
+    }
+    vec3  r = mix(a, b, sel);
+    // the broad wave (~160-km cells: where the clouds are), on the same warped chart so the patches' outlines are ragged
+    float broad = nlcPerlin(vec3((cw + 0.75 * fib.xy) / 2.56e6, 0.47), 0.0);
+    return vec3(gw0.w * broad + r.x * fib.z, mix(1.0, r.y, fib.z), 0.0).xy;
 }
 
 // One crossing of the layer at P (ENU frame, Earth-centred), col metres of it at its peak density along the ray:
 // rgb the sunlight it scatters to the eye (the sky's units: SUN_INTENSITY x phaseR-normalised phase x optical depth),
 // w its optical depth (luminance).
-vec4 nlcCrossing(vec3 P, float col, vec3 dir, vec3 sunDir, mat3 enuToEcef)
+vec4 nlcCrossing(vec3 P, float col, vec3 dir, vec3 sunDir, mat3 enuToEcef, float fpM)
 {
     vec3 uE = normalize(enuToEcef * P);
     vec3 m = nlcMap(asin(clamp(uE.z, -1.0, 1.0)), atan(uE.y, uE.x));
-    float sig = length(vec2(gw0.w, gw1.w));
+    float sig = length(vec2(gw0.w, 2.7));   // (the broad octave and the bands' waves)
     if (m.z < m.y - 3.0 * sig)
         return vec4(0.0);                               // warmer than the frost point by 3 sigma of the waves: no ice
     // Sunlit: the Sun's ray from P must clear the Earth and its cloud-topped troposphere (~8-16 km, soft)
     float ps = dot(P, sunDir);
     float bS = sqrt(max(dot(P, P) - ps * ps, 0.0));
     float lit = ps >= 0.0 ? 1.0 : smoothstep(R_EARTH + 8000.0, R_EARTH + 16000.0, bS);
-    float T = m.y + gw0.w * nlcNoise(uE * misc.x + gw0.xyz) * 2.5 + gw1.w * nlcNoise(uE * misc.y + gw1.xyz) * 2.5;
+    // the gravity waves (nlcStructure): a broad wave (where the clouds are) + the bands and billows
+    vec2 st = nlcStructure(uE, fpM);
+    float T = m.y + st.x;
     float xs = exp(9.550426 - 5723.265 / T + 3.53068 * log(T) - 0.00728332 * T) * (1e6 / kPAir); // saturation, ppmv
     float ice = m.x - xs;                                // the vapour above saturation freezes (ppmv)
     if (ice <= 0.0)
@@ -114,7 +143,7 @@ vec4 nlcCrossing(vec3 P, float col, vec3 dir, vec3 sunDir, mat3 enuToEcef)
     // layer violet overhead and green where the reddened Sun lit it). Without the table: lambda^-4 (BETA_R_BASE's
     // ratio) and Rayleigh's phase.
     const float kCollectM = 8000.0;
-    float iceRho = ice * 1e-6 * (18.015 / 28.97) * kRhoAir * (kCollectM / (misc.z * 1.7725));   // kg/m^3 in the layer
+    float iceRho = ice * 1e-6 * (18.015 / 28.97) * kRhoAir * (kCollectM / (misc.z * 1.7725)) * st.y;   // kg/m^3 in the layer
     float rM   = clamp(pow(3.0 * iceRho / (4.0 * PI * 917.0 * 1e8), 1.0 / 3.0), 2e-8, 1.2e-7);
     float kExt = 172.0 * pow(rM / 5e-8, 3.0);
     float tau  = kExt * iceRho * col;
@@ -162,16 +191,20 @@ void main()
         float q = sqrt(kShellR * kShellR - b * b);
         float cosZ = q / kShellR;
         float colX = min(w * 1.7725 / max(cosZ, 1e-4), 0.5 * colPeak);
+        // the pixel's footprint on the layer per metre of range: its long axis is 1 / cos Z, its short one 1; the geometric
+        // mean (an isotropic read at the long axis blurred away the bands that run along the horizon)
+        float fpK  = 2.0 * tanHalfFov / float(size.y) / sqrt(max(cosZ, 0.05));
         for (int k = 0; k < 2; ++k) {
             float t = k == 0 ? tc - q : tc + q;
             if (t <= 0.0 || t >= tScene)
                 continue;
-            vec4 c = nlcCrossing(obsPos + dir * t, colX, dir, sunDir, enuToEcef);
+            vec4 c = nlcCrossing(obsPos + dir * t, colX, dir, sunDir, enuToEcef, t * fpK);
             L = L * exp(-c.w) + c.rgb;   // (the far crossing first in effect: both thin, the order hardly matters)
             tauSum += c.w;
         }
     } else if (b < kShellR + 3.0 * w && tc > 0.0 && tc < tScene) {
-        vec4 c = nlcCrossing(obsPos + dir * tc, colPeak * exp(-pow((b - kShellR) / w, 2.0)), dir, sunDir, enuToEcef);
+        vec4 c = nlcCrossing(obsPos + dir * tc, colPeak * exp(-pow((b - kShellR) / w, 2.0)), dir, sunDir, enuToEcef,
+                             tc * 2.0 * tanHalfFov / float(size.y) / sqrt(0.05));
         L = c.rgb;
         tauSum = c.w;
     }

@@ -154,19 +154,19 @@ void SatelliteSim::createNlc(VulkanContext &ctx)
     const VkDevice dev = ctx.device;
     const VkDeviceSize sz = kNlcHeader + (VkDeviceSize)nlc::kMapW * nlc::kMapH * sizeof(glm::uvec2);
     nlcMapped = createMirrored(ctx, sz, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, nlcBuf, nlcMem, false, "nlc");
-    const VkDescriptorType kTypes[5] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+    const VkDescriptorType kTypes[6] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                         VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER};
-    VkDescriptorSetLayoutBinding b[5];
-    for (uint32_t i = 0; i < 5; ++i)
+                                        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER};
+    VkDescriptorSetLayoutBinding b[6];
+    for (uint32_t i = 0; i < 6; ++i)
         b[i] = {i, kTypes[i], 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 5;
+    li.bindingCount = 6;
     li.pBindings = b;
     vkCreateDescriptorSetLayout(dev, &li, nullptr, &nlcDescLayout);
     VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
                                   {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2},
-                                  {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2}};
+                                  {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.maxSets = 1;
     pi.poolSizeCount = 3;
@@ -217,22 +217,25 @@ std::string SatelliteSim::buildNlcPipeline(VulkanContext &ctx, const std::string
 
 void SatelliteSim::writeNlcDescriptors(VulkanContext &ctx)
 {
-    if (!nlcDescSet || !cloudMarchTargetAView || !sceneDepthView || !plumeMieView)
+    if (!nlcDescSet || !cloudMarchTargetAView || !sceneDepthView || !plumeMieView || !cv2ShapeView)
         return;
     VkDescriptorBufferInfo bufI{nlcBuf, 0, VK_WHOLE_SIZE};
     VkDescriptorImageInfo tA{VK_NULL_HANDLE, cloudMarchTargetAView, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo tB{VK_NULL_HANDLE, cloudMarchTargetBView, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo depth{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo mie{cv2ClampSampler, plumeMieView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};   // (a 1x1 stand-in when missing)
+    // the clouds' baked noise volume (the cirrus fibres' source): the fine structure
+    VkDescriptorImageInfo shape{cv2RepeatSampler, cv2ShapeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     auto W = [&](uint32_t bind, VkDescriptorType t, const VkDescriptorImageInfo *ii, const VkDescriptorBufferInfo *bi) {
         return VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, nlcDescSet, bind, 0, 1, t, ii, bi, nullptr};
     };
-    VkWriteDescriptorSet w[5] = {W(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &bufI),
+    VkWriteDescriptorSet w[6] = {W(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &bufI),
                                  W(1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &tA, nullptr),
                                  W(2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &tB, nullptr),
                                  W(3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &depth, nullptr),
-                                 W(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &mie, nullptr)};
-    frameSafeUpdateDescriptorSets(ctx.device, 5, w, 0, nullptr);
+                                 W(4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &mie, nullptr),
+                                 W(5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &shape, nullptr)};
+    frameSafeUpdateDescriptorSets(ctx.device, 6, w, 0, nullptr);
 }
 
 void SatelliteSim::nlcUpdate(VulkanContext &ctx)
@@ -280,23 +283,22 @@ void SatelliteSim::nlcUpdate(VulkanContext &ctx)
         job->th = std::thread([jp] { buildField(*jp); });
         nlcJob = std::move(job);
     }
-    // the header, every frame: the gravity waves drift (deterministic in sim time; offsets wrapped by the noise's
-    // 1024-cell period in double, so they never lose precision): ~150-km cells at 30 m/s, ~30-km cells at 50 m/s
-    const double fr0 = nlc::kR / 150000.0, fr1 = nlc::kR / 30000.0;
-    auto wrap = [](double v) { return (float)(v - 1024.0 * std::floor(v / 1024.0)); };
-    const double s0 = 30.0 * t / nlc::kR * fr0, s1 = 50.0 * t / nlc::kR * fr1;
-    float h[16];
+    // the header, every frame (the waves' drift is deterministic in sim time: nlc_shell.comp nlcStructure)
+    float h[20];
     std::memset(h, 0, sizeof(h));
     hdr[0] = nlc::kMapW;
     hdr[1] = nlc::kMapH;
     hdr[2] = on ? 1u : 0u;
     hdr[3] = (on && nlcField && nlcAnyIce) ? 1u : 0u;
-    // octave amplitudes: 6.5 and 4.7 K rms (8.0 K together, nlc::kGwRmsK)
-    h[4] = wrap(s0 * 0.96), h[5] = wrap(s0 * 0.28), h[6] = wrap(17.0), h[7] = 6.5f;
-    h[8] = wrap(-s1 * 0.37), h[9] = wrap(s1 * 0.93), h[10] = wrap(s1 * 0.05 + 131.0), h[11] = 4.7f;
-    h[12] = (float)fr0, h[13] = (float)fr1, h[14] = 1500.0f;   // the layer's half-width (m): ~2.5 km FWHM
-    h[15] = plumeMieReff.empty() ? 0.0f : 1.0f;                 // the ice's Mie table (plume_mie.glsl) loaded
-    std::memcpy(reinterpret_cast<char *>(nlcMapped) + 16, h + 4, 48);
+    // the broad wave 7.2 K rms; with the bands' (2.5) and billows' (1.0) waves, 7.7 K (nlc::kGwRmsK 8)
+    h[7] = 7.2f;
+    h[14] = 1500.0f;                                   // the layer's half-width (m): ~2.5 km FWHM
+    h[15] = plumeMieReff.empty() ? 0.0f : 1.0f;        // the ice's Mie table (plume_mie.glsl) loaded
+    // the fine structure drifts with the wind: 40 m/s along the bands, 10 across (wrapped by 102400 km, a multiple of every
+    // period it reads)
+    auto wrapM = [](double v) { return (float)(v - 1.024e8 * std::floor(v / 1.024e8)); };
+    h[16] = wrapM(40.0 * t), h[17] = wrapM(10.0 * t), h[18] = nlcFibres, h[19] = 0.0f;
+    std::memcpy(reinterpret_cast<char *>(nlcMapped) + 16, h + 4, 64);
     ctx.mirrorDirty(nlcMapped, 0, kNlcHeader);
 }
 

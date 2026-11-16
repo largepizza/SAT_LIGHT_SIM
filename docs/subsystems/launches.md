@@ -610,6 +610,17 @@ launches follow per-program cadences (no real manifest).
     ~50 ng/m^3, SOFIE's values), shared among 100 particles / cm^3 (radius 20-120 nm), mass extinction 172 m^2/kg x
     (r / 50 nm)^3 (so the extinction goes as the ice squared), colour and phase from the plume Mie table
     (plume_mie.glsl), lit where the Sun's ray clears the Earth + 8-16 km with its Rayleigh, Mie and ozone path.
+  - The fine structure (2026-11-16, the user: "way too blobby ... more fine grained fibers and noise distortion, similar to
+    our current cirrus noise"): nlc_shell.comp nlcStructure reads the clouds' baked Perlin volume (cv2ShapeTex .a, as
+    cv2IceFibres does) in a TRANSVERSE chart (lon / lat about ECEF x: its singular points on the equator, so fibres
+    keep their length at the poles), domain-warped (~200 / 50-km cells, +-40 / 10 km), in two band directions 70 deg
+    apart blended over ~800 km. Bands (ridged, ~50 km apart, ~400 long), billows (~8 km, crests across) and fibres
+    (~1.6 km wide, ~30 long). The waves are temperature (broad 7.2 K at ~160-km cells on the same warped chart, so the
+    patches' outlines are ragged; bands 2.5 K; billows 1 K) and corrugate the ice column (ridges x hair x billows,
+    mean ~1). Sub-pixel reads fade to their means by LOD; the footprint is the geometric mean of the pixel's axes on
+    the layer (the long axis alone blurred the bands along the horizon). Drift 40 m/s along / 10 across, wrapped by
+    102400 km (every period divides it). launches.nlc_fibres (1; 0 = the smooth layer). Cost +0.1-0.2 ms over the
+    layer's.
   - Old trails flatten (launchFillVisuals): at 72-106 km, from 2 to 10 min old, a Gaussian's across-trail radius in
     the vertical is held to 1.2 km while the level one keeps growing (stable stratification against shear): the same
     column from above, a thin bright sheet edge-on. Not the jellyfish. Both with launches.nlc (true).
