@@ -3342,6 +3342,14 @@ private:
     bool plumeBricksOn = true;      // launches.plume_bricks
     float plumeBrickLobes = 1.0f;   // launches.plume_brick_lobes (0 = the smooth splat)
     float plumeIridescence = 1.0f;  // launches.plume_iridescence (0 = none)
+    // (2026-11-15) the exhaust ice's Mie optics (tools/make_mie_lut.py --ice -> assets/textures/plume_mie.rgba16f):
+    // launches.plume_mie; drawn only when the table loaded (plumeMieReff not empty). cloud_march binding 29, brick 9.
+    bool plumeMieOn = true;
+    VkImage plumeMieImg = VK_NULL_HANDLE;
+    VkDeviceMemory plumeMieMem = VK_NULL_HANDLE;
+    VkImageView plumeMieView = VK_NULL_HANDLE;
+    std::vector<float> plumeMieReff;
+    bool plumeMieActive() const { return plumeMieOn && !plumeMieReff.empty(); }
     std::vector<GpuPlumeBrick> bricks_;          // this frame's (launchFillVisuals)
     std::vector<GpuDustCloud> brickGauss_;       // their Gaussians, in brick order
     VkBuffer brickBuf = VK_NULL_HANDLE;
@@ -6625,6 +6633,9 @@ private:
     VkImageView cv2MieView = VK_NULL_HANDLE;
     std::vector<float> cv2MieReff;
     void createCloudMie(VulkanContext &ctx);
+    // A Mie table (make_mie_lut.py's 'SLMI' file) as an NA x 2 NR RGBA16F image; missing: 1x1, reff left empty
+    void loadMieTable(VulkanContext &ctx, const char *path, VkImage &img, VkDeviceMemory &mem, VkImageView &view,
+                      std::vector<float> &reff);
     // The ice crystals' traced halo table (2026-11-10, tools/make_ice_optics.py -> assets/textures/ice_optics.rgba8): a 3D
     // RGBA8 texture (theta from the light x phi about it per crystal population x the light's elevation), march binding 28,
     // rain particles binding 6. cv2IceOpticsLoaded: the asset was found with the layout cv2_optics.glsl expects.

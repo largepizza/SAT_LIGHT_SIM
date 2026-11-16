@@ -564,6 +564,27 @@ launches follow per-program cadences (no real manifest).
   view: core 3-10, lobes 0.3-3. Judge brick looks in a telephoto on the billow (it is ~100 px in the report's view).
   Scripts: plume_staging_billow.satcmd, plume_brick_light.satcmd; `shaders reload brick=<spv>` swaps the three passes;
   `launch state` -> `plume_wide` (the widest Gaussians within 400 km: kind, age, sigma, cross-section, brick share).
+- **The exhaust ice's Mie optics (2026-11-15, the user: "work on Mie in plumes").** tools/make_mie_lut.py --ice ->
+  assets/textures/plume_mie.rgba16f (the clouds' file layout; loadMieTable loads both): ice spheres (Warren & Brandt
+  index, Cauchy fit), r_eff 0.05 x 60^(i/11) um (12 rows: shaders/include/plume_mie.glsl maps a radius to its row with
+  one log, so the init log warns and turns it off if the radii differ), effective variance 0.03 (frozen at once: narrow,
+  as iridescence needs). Its rgb is the SPECTRAL scattering (4 pi dC/dOmega over the luminance-weighted mean C_sca /
+  8), not each wavelength's phase normalised: the blue of sub-micron ice (0.05 um: red 0.55x, blue 2.3x) comes out of
+  it; rows 12-23 are each radius's sphere-mean colour (the multiply scattered light). Radius by height (plumeReffUm:
+  3 um to 15 km, 0.8 at 35, 0.25 at 60, 0.1 at 100, 0.06 above 150 km) and, in a brick, x the cube root of the local
+  splat density over the brick's reference (0.5-3x: the ice grows on the vapour about it), x the iridescence's size
+  patches (launches.plume_iridescence: x 0.55-1.8 at 1). Bricks: brick iso.y = 1; the Gaussians (dustCloudsCS): DustBuf
+  header word 1 bit 30, rocket exhaust only (col.w >= 2, not smoke, not a tornado), the phase fetched per Gaussian at
+  its closest-approach height where LiP is formed (held across the loop it would cost registers: the composite stays
+  at 128). The CPU's Angstrom-1.5 tint is skipped with it. launches.plume_mie (true). Measured: +0.13 ms at the
+  165031 view; brightness within +-9% of HG at four views; the low trail (164337 shot 4, 3 um) unchanged. The table's
+  corona colours are at 0.5-1 um, 10-30 deg from the Sun; by height the staging cloud's ice is 0.1-0.25 um, so toward
+  a twilight Sun it glows blue-white with little colour (the Airy model's pink patches assumed 0.25-0.75 um).
+- **Turbulence by height (2026-11-15, the user: the bluer trail after hot staging should run smoothly into the
+  jellyfish).** Brick iso.z = 1 marks the hot-staging billow's brick (turbulent throughout); a stage's exhaust brick
+  takes turbK = 0.5 x (1 - smoothstep(70, 100 km, height)) of the lobes (amplitude), crevices and sharp shell, so above
+  ~100 km it is its splat, exactly the Gaussians it hands off to. The Gaussians' billows fade the same way for a stage's
+  exhaust (not smoke, not the hot-staging seeds 192-255). The hot-staging ice is x60 (x40, then "a tad denser").
 - **The second stage's jellyfish and hot staging (2026-10-30, issue 20261030_134020 "Second Stage Jellyfish").** The
   upper stage's vacuum exhaust used to be invisible: every parcel expanded at 2 km/s in every direction (~300 km wide
   3 min after leaving, optical depth ~2e-5), its young Gaussians lost the budget to the wide old bells, and the sim's

@@ -4189,11 +4189,11 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
                 const double spd = 400.0 + 1000.0 * h01(B.seed, 282 + k, 2);
                 const double t0 = tS - 2.0 + 2.6 * h01(B.seed, 283 + k, 3);
                 // (2026-11-15, the user's reference photo of a staging cloud: an OPAQUE cumulus, its lobes drawn across
-                // its whole face by their own light and shade) x40: the staging region's ice is the ship's 2.6 s burst
+                // its whole face by their own light and shade) x60 (x40, then "a tad denser"): the staging region's ice is the ship's 2.6 s burst
                 // into the interstage AND the booster's flip and boostback, fired into the same cloud (Super Heavy's
                 // ~45 s boostback is ~35x the burst's propellant). At x1 the cloud was optically thin (tau < 0.3 through
                 // it, ~0.06 a lobe): its lobes averaged away along the line of sight and showed only on its outline.
-                const double m = 40.0 * vh.flow2 * 2.6 / N * (0.4 + 1.2 * h01(B.seed, 284 + k, 4));
+                const double m = 60.0 * vh.flow2 * 2.6 / N * (0.4 + 1.2 * h01(B.seed, 284 + k, 4));
                 launch::ParcelOpts O;
                 O.sig0 = 250.0 + 300.0 * h01(B.seed, 285 + k, 5); // (the burst out of the vents is already that big)
                 O.evapS = 300.0;
@@ -7873,6 +7873,9 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             // (2) high up the exhaust's ice is sub-micron: it scatters blue more than red (Angstrom exponent ~1.5,
             //     680 / 550 / 440 nm), normalised to keep the luminance; low down the droplets and soot are grey.
             //     The blue only where the sunlight still has its blue: ice lit by the reddened Sun is lit red.
+            // (2026-11-15) Not with the Mie optics (launches.plume_mie): the shaders take the ice's colour by size and
+            // angle from its table (plume_mie.glsl), this tint's sub-micron blue included.
+            if (!plumeMieActive())
             {
                 const double ice = glm::smoothstep(30000.0, 100000.0, h) * glm::clamp(tr[2] / std::max(tr[0], 1e-6), 0.0, 1.0);
                 const glm::dvec3 sp(0.727 / 0.9707, 1.0 / 0.9707, 1.398 / 0.9707);
@@ -8849,7 +8852,8 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 }
             }
             B.sun = glm::vec4(glm::vec3(anchor - C), (float)(alb / sw));
-            B.iso = glm::vec4(plumeIridescence, 0.0f, 0.0f, plumeBrickLobes);
+            // (z: the hot-staging billow, turbulent throughout; a stage's exhaust fades its lobes with height)
+            B.iso = glm::vec4(plumeIridescence, plumeMieActive() ? 1.0f : 0.0f, bc[gr.a].kind == 1 ? 1.0f : 0.0f, plumeBrickLobes);
             const int grp = bc[gr.a].grp;
             const double seed = grp >= 0 && (size_t)grp < L.visList.size() ? launch::hash01(L.visList[(size_t)grp].first, 91 + (bc[gr.a].kind == 1 ? 7 : 0), 1) : 0.5;
             B.misc = glm::vec4((float)brickGauss_.size(), (float)(gr.b - gr.a), (float)seed, (float)(eRef / sw));
@@ -13613,7 +13617,8 @@ void SatelliteSim::engineLightsFlush()
         tail[i].cone = glm::vec4(0.0f);
     }
     // bits 8-27: the wildfire smoke's range (smoke.glsl); bit 31: the plume bricks drew something (2026-11-15)
-    static_cast<uint32_t *>(kDustMapped)[1] = n | smokeHdrBits | (bricks_.empty() ? 0u : 0x80000000u);
+    static_cast<uint32_t *>(kDustMapped)[1] = n | smokeHdrBits | (bricks_.empty() ? 0u : 0x80000000u) |
+                                              (plumeMieActive() ? 0x40000000u : 0u);   // bit 30: the plumes' Mie optics
     engineLightCount = n;
     engineLights_.clear();
 }

@@ -59,21 +59,21 @@ void SatelliteSim::createPlumeBricks(VulkanContext &ctx)
         ctx.endOneTimeCommands(cmd);
     }
 
-    const VkDescriptorType kTypes[9] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                                        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                                        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-                                        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER};
-    VkDescriptorSetLayoutBinding b[9];
-    for (uint32_t i = 0; i < 9; ++i)
+    const VkDescriptorType kTypes[10] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                                         VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER};
+    VkDescriptorSetLayoutBinding b[10];
+    for (uint32_t i = 0; i < 10; ++i)
         b[i] = {i, kTypes[i], 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 9;
+    li.bindingCount = 10;
     li.pBindings = b;
     vkCreateDescriptorSetLayout(dev, &li, nullptr, &brickDescLayout);
     VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
                                   {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4},
-                                  {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4}};
+                                  {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 5}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.maxSets = 1;
     pi.poolSizeCount = 3;
@@ -191,11 +191,13 @@ void SatelliteSim::writePlumeBrickDescriptors(VulkanContext &ctx)
     VkDescriptorImageInfo cmT{cloudMarchSampler, brickTView, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo shW{VK_NULL_HANDLE, brickShadowView, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo shR{cloudMarchSampler, brickShadowView, VK_IMAGE_LAYOUT_GENERAL};
+    // the exhaust ice's Mie table (clamped, filtered: angle x radius row); the 1x1 stand-in when missing
+    VkDescriptorImageInfo mie{cv2ClampSampler, plumeMieView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     auto W = [](VkDescriptorSet s, uint32_t bind, VkDescriptorType t, const VkDescriptorImageInfo *ii,
                 const VkDescriptorBufferInfo *bi) {
         return VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s, bind, 0, 1, t, ii, bi, nullptr};
     };
-    VkWriteDescriptorSet w[11] = {
+    VkWriteDescriptorSet w[13] = {
         W(brickDescSet, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &bufI),
         W(brickDescSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &volW, nullptr),
         W(brickDescSet, 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &volR, nullptr),
@@ -205,9 +207,11 @@ void SatelliteSim::writePlumeBrickDescriptors(VulkanContext &ctx)
         W(brickDescSet, 6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &depth, nullptr),
         W(brickDescSet, 7, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &shW, nullptr),
         W(brickDescSet, 8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &shR, nullptr),
+        W(brickDescSet, 9, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &mie, nullptr),
+        W(cloudMarchDescSet, 29, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &mie, nullptr),
         W(cloudMarchDescSet, 27, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cmL, nullptr),
         W(cloudMarchDescSet, 28, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cmT, nullptr)};
-    frameSafeUpdateDescriptorSets(ctx.device, 11, w, 0, nullptr);
+    frameSafeUpdateDescriptorSets(ctx.device, 13, w, 0, nullptr);
 }
 
 void SatelliteSim::recordPlumeBricks(VkCommandBuffer cmd, VulkanContext &ctx, const CloudMarchPC &cpc)

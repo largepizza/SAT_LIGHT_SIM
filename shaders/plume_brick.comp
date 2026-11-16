@@ -34,7 +34,8 @@ struct Brick {
     vec4 c;     // xyz centre relative to the eye (ENU, m); w the lobes' period (m)
     vec4 h;     // xyz half extents (m); w its weight (0..1: the hand-off to the Gaussians)
     vec4 sun;   // xyz the lobes' anchor (the staging point, Earth-fixed) from the centre (m); w albedo
-    vec4 iso;   // x the iridescence's strength; w the lobes' strength (0 = the smooth splat)
+    vec4 iso;   // x the iridescence's strength; y 1 = the ice's Mie optics (plume_mie.glsl); z 1 = the hot-staging
+                // billow (turbulent throughout), 0 = a stage's exhaust (turbulence fading with height); w the lobes' strength
     vec4 misc;  // x first Gaussian, y count, z seed (0..1), w the reference extinction (1/m: the splat's typical peak)
 };
 const uint kMaxBricks = 4u;
@@ -48,6 +49,8 @@ layout(set = 0, binding = 5, rgba32f) uniform writeonly image2D outT;   // r opt
 layout(set = 0, binding = 6) uniform sampler2D sceneDepthTex;   // the composite's scene depth (same grid)
 layout(set = 0, binding = 7, r16f) uniform writeonly image3D shadowImg;   // mode 2 writes: the Sun's optical depth per voxel
 layout(set = 0, binding = 8) uniform sampler3D shadowTex;                 // mode 1 reads (same image, GENERAL layout)
+layout(set = 0, binding = 9) uniform sampler2D plumeMieTex;               // the exhaust ice's Mie table (plume_mie.glsl)
+#include "plume_mie.glsl"
 
 vec3 dustMul(DustCloud d, vec3 v)
 {
@@ -131,24 +134,37 @@ float shell(float s) { return smoothstep(0.10, 0.15, s); }
 // The cumulus look: the splat's extinction takes the billow lobes as a factor in LOG space (mean ~1: the mass kept; a
 // Gaussian's falloff is quadratic there, so the noise displaces its iso-surfaces by a fraction of its radius: lumpy
 // outlines), the shell above, and crevices where the lobe field is low, through the whole cloud.
+// How turbulent the exhaust is at p (0..1: the lobes', crevices' and sharp edge's share). The hot-staging billow: fully
+// (the burst out of the interstage). A stage's exhaust (the upper stage's trail after staging): half, fading out from 70
+// to 100 km: in the thin air up there the exhaust expands into it smoothly instead of mixing (the jellyfish's smooth
+// bell); at 0 the brick is its splat, exactly the Gaussians it hands its exhaust to. (2026-11-15, the user: the bluer
+// trail after hot staging should connect smoothly with the jellyfish, not billow like the staging cloud.)
+float turbK(Brick B, vec3 p)
+{
+    if (B.iso.z > 0.5) return 1.0;
+    float h = length(vec3(0.0, 0.0, R_EARTH + pc.obsECEFDir.w) + p) - R_EARTH;
+    return 0.5 * (1.0 - smoothstep(70000.0, 100000.0, h));
+}
+
 float shaped(Brick B, vec3 p, float e)
 {
-    float k = B.iso.w * kLobeAmp;
+    float kA = turbK(B, p);
+    float k = B.iso.w * kLobeAmp * kA;
     float eRef = max(B.misc.w, 1e-12);
-    if (k <= 0.0 || e <= 0.0) return e * shell(e / eRef) * B.h.w;
+    if (k <= 0.0 || e <= 0.0) return e * mix(1.0, shell(e / eRef), kA) * B.h.w;
     vec3  q = (p - B.c.xyz - B.sun.xyz) / max(B.c.w * kLobeScale, 1.0) + vec3(B.misc.z * 37.0, B.misc.z * 11.0, B.misc.z * 23.0);
     float n1 = (textureLod(lobeTex, q, 0.0).g - 0.475) / 0.12;
     float n2 = (textureLod(lobeTex, q * 2.31 + 0.37, 0.0).b - 0.479) / 0.119;
     float nn = 0.55 * n1 + 0.25 * n2;
-    float g  = exp(k * nn);
-    // (the crevices' mask has mean ~0.4: x 2.6, the mass kept, so the lobes are ~2.5x denser and optically thicker; exp(k nn)'s mean ~1.2: / it)
-    float cv = mix(1.0, smoothstep(-0.05, 0.25, nn) * 2.6, kCarve);
-    return e * (g * (1.0 / 1.2)) * shell((e / eRef) * g) * cv * B.h.w;
+    float g  = exp(k * nn) / mix(1.0, 1.2, kA);
+    // (the crevices' mask has mean ~0.4: x 2.6, the mass kept, so the lobes are ~2.5x denser and optically thicker)
+    float cv = mix(1.0, smoothstep(-0.05, 0.25, nn) * 2.6, kCarve * kA);
+    return e * g * mix(1.0, shell((e / eRef) * g), kA) * cv * B.h.w;
 }
 // Without the lobes (the far light march: the lobes there are below its step)
-float smoothExt(Brick B, float e)
+float smoothExt(Brick B, vec3 p, float e)
 {
-    return e * shell(e / max(B.misc.w, 1e-12)) * B.h.w;
+    return e * mix(1.0, shell(e / max(B.misc.w, 1e-12)), turbK(B, p)) * B.h.w;
 }
 
 // The atlas coordinate of brick-local position l (-1..1 per axis) of brick b (kept inside the brick's own slab)
@@ -183,7 +199,7 @@ float sunDepth(uint b, Brick B, vec3 p, vec3 sunDir)
         float dF = farL / 6.0;
         for (int k = 0; k < 6; ++k) {
             vec3 ps = p + sunDir * (nearL + (float(k) + 0.5) * dF);
-            tF += smoothExt(B, volAt(b, (ps - B.c.xyz) / B.h.xyz)) * dF;
+            tF += smoothExt(B, ps, volAt(b, (ps - B.c.xyz) / B.h.xyz)) * dF;
         }
     }
     return tN + tF;
@@ -271,8 +287,28 @@ void march()
                 // thin exhaust (single scattering only, as the Gaussians), full where the light or the lobe itself is thick.
                 float tLoc = e * P;   // this lobe's own optical depth
                 float msG  = kMS * (1.0 - exp(-0.7 * (tS + tLoc)));
-                vec3  ss = vec3(phaseP * exp(-tS));
-                if (iridK > 0.0) {
+                vec3  ss, msC = vec3(1.0);
+                if (B.iso.y > 0.5) {
+                    // Mie (2026-11-15): the ice's phase and spectral scattering at its radius, by height (plume_mie.glsl),
+                    // varied across the cloud in patches by the iridescence's strength (the size field 8 lobe periods
+                    // across, mip 3: smooth patches, never per-pixel speckle; x 0.55 .. 1.8 at strength 1): toward the
+                    // Sun the table's colours by angle and size are the iridescence, no tint added
+                    // The ice grows on the exhaust's vapour, its number set when it froze: with more vapour about each
+                    // particle the radius goes as the cube root of the local density (here the splat's, over the
+                    // brick's reference): the dense young core ~2x larger (whiter, coloured rings toward the Sun), the
+                    // thin edges ~0.5x (bluer). By height alone the staging cloud's 60-100 km ice was ~0.1-0.25 um,
+                    // too small for any colour by angle.
+                    float rU = plumeReffUm(length(obsPos + p) - R_EARTH) *
+                               clamp(pow(max(v4.a / max(B.misc.w, 1e-12), 1e-3), 1.0 / 3.0), 0.5, 3.0);
+                    if (B.iso.x > 0.0) {
+                        vec3 qa = (p - B.c.xyz - B.sun.xyz) / max(8.0 * B.c.w, 1.0) + B.misc.z * 13.0;
+                        rU *= exp(1.2 * B.iso.x * (clamp(textureLod(lobeTex, qa, 3.0).r * 2.0 - 0.5, 0.0, 1.0) - 0.5));
+                    }
+                    ss  = plumeMiePhase(cosT, rU) * exp(-tS);
+                    msC = plumeMieMean(rU);   // the multiply scattered light takes the ice's mean colour
+                } else
+                    ss = vec3(phaseP * exp(-tS));
+                if (B.iso.y <= 0.5 && iridK > 0.0) {
                     // the particles' radius from the cloud's own slow structure (0.2-0.8 um), only in thin ice
                     // (the size field 8 lobe periods across, its mip 3: smooth patches, never per-pixel speckle)
                     vec3  qa = (p - B.c.xyz - B.sun.xyz) / max(8.0 * B.c.w, 1.0) + B.misc.z * 13.0;
@@ -280,7 +316,7 @@ void march()
                     // pastel: at most 60% of the way to the pure diffraction colour
                     ss *= mix(vec3(1.0), iridColour(sinT, aUm), 0.6 * min(iridK, 1.5) * exp(-0.5 * (tLoc + tS)));
                 }
-                vec3  lightS = ss + vec3(msG * (1.0 * phM1 * exp(-0.6 * tS) + 0.8 * phM2 * exp(-0.25 * tS)));
+                vec3  lightS = ss + msC * (msG * (1.0 * phM1 * exp(-0.6 * tS) + 0.8 * phM2 * exp(-0.25 * tS)));
                 float dTau = e * dt;
                 float sc = T * (1.0 - exp(-dTau));
                 vec3  sunC = v4.rgb / max(v4.a, 1e-30);   // this region's own light colour
