@@ -5,14 +5,14 @@
 // Gaussians cloud_march.comp's dustCloudsCS integrates in closed form: its Gaussians (launchFillVisuals, the same ones
 // the dust list would carry) are splatted into a small 3D grid per brick (mode 0), and each half-res texel marches the
 // bricks its ray crosses (mode 1): the extinction carved into lobes by the clouds' own billow shape volume
-// (cv2ShapeBillow, the WDAS-matched cauliflower), lit by the Sun through the brick (a light march), multiple scattering
-// as octaves, the sky light. The result (light, optical depth, optical-depth-weighted distance) is read by
+// (cv2ShapeBillow, the WDAS-matched cauliflower), lit by the Sun through the brick (its optical depth toward the Sun
+// marched ONCE per voxel into a shadow atlas, mode 2, between the two), multiple scattering as octaves, the sky light. The result (light, optical depth, optical-depth-weighted distance) is read by
 // dustCloudsCS as one more plume on the ray, so the bricks are composited through the clouds, dim the sky and give
 // back its light exactly as the Gaussians do.
-// Mode is specialization constant 0 (two pipelines from this SPV). Push constants: cloud_march.comp's CloudMarchPC,
+// Mode is specialization constant 0 (three pipelines from this SPV). Push constants: cloud_march.comp's CloudMarchPC,
 // so the rays are the composite's to the texel.
 
-layout(constant_id = 0) const int kMode = 0;   // 0 splat, 1 march
+layout(constant_id = 0) const int kMode = 0;   // 0 splat, 1 march, 2 the Sun's optical depth per voxel
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 #include "common.glsl"
@@ -46,6 +46,8 @@ layout(set = 0, binding = 3) uniform sampler3D lobeTex;         // the clouds' b
 layout(set = 0, binding = 4, rgba16f) uniform writeonly image2D outL;   // rgb light (pre-scaled, below), a optical depth
 layout(set = 0, binding = 5, rgba32f) uniform writeonly image2D outT;   // r optical-depth-weighted distance (m), g the sky-lit depth
 layout(set = 0, binding = 6) uniform sampler2D sceneDepthTex;   // the composite's scene depth (same grid)
+layout(set = 0, binding = 7, r16f) uniform writeonly image3D shadowImg;   // mode 2 writes: the Sun's optical depth per voxel
+layout(set = 0, binding = 8) uniform sampler3D shadowTex;                 // mode 1 reads (same image, GENERAL layout)
 
 vec3 dustMul(DustCloud d, vec3 v)
 {
@@ -139,14 +141,70 @@ float shaped(Brick B, vec3 p, float e)
     float n2 = (textureLod(lobeTex, q * 2.31 + 0.37, 0.0).b - 0.479) / 0.119;
     float nn = 0.55 * n1 + 0.25 * n2;
     float g  = exp(k * nn);
-    // (the crevices' mask has mean ~0.6: x 1.6, the mass kept; exp(k nn)'s mean ~1.2: / it)
-    float cv = mix(1.0, smoothstep(-0.35, 0.05, nn) * 1.6, kCarve);
+    // (the crevices' mask has mean ~0.4: x 2.6, the mass kept, so the lobes are ~2.5x denser and optically thicker; exp(k nn)'s mean ~1.2: / it)
+    float cv = mix(1.0, smoothstep(-0.05, 0.25, nn) * 2.6, kCarve);
     return e * (g * (1.0 / 1.2)) * shell((e / eRef) * g) * cv * B.h.w;
 }
 // Without the lobes (the far light march: the lobes there are below its step)
 float smoothExt(Brick B, float e)
 {
     return e * shell(e / max(B.misc.w, 1e-12)) * B.h.w;
+}
+
+// The atlas coordinate of brick-local position l (-1..1 per axis) of brick b (kept inside the brick's own slab)
+vec3 atlasUV(uint b, vec3 l)
+{
+    vec3 v = clamp(l * 0.5 + 0.5, vec3(0.5 / float(kRes)), vec3(1.0 - 0.5 / float(kRes)));
+    return vec3(v.xy, (float(b) + v.z) / float(kMaxBricks));
+}
+
+// The Sun's optical depth from p (eye-relative ENU) out of brick b. Near p, over 2.5 lobes, through the LOBED extinction
+// in 8 steps (finer close to p): each lobe shades its own far side and the crevices behind its neighbours, the light and
+// shade that draw the billows inside the cloud as well as on its outline. Beyond, the smooth extinction to the box's edge
+// in 6 steps. Marched per voxel (mode 2), ~1M voxels at most against ~46M view samples: it can afford the steps.
+float sunDepth(uint b, Brick B, vec3 p, vec3 sunDir)
+{
+    vec3  idS = 1.0 / (abs(sunDir) + 1e-12) * sign(sunDir + 1e-12);
+    vec3  q0 = p - B.c.xyz;
+    vec3  ea = (B.h.xyz - q0) * idS, eb = (-B.h.xyz - q0) * idS;
+    float tEx = max(min(min(max(ea.x, eb.x), max(ea.y, eb.y)), max(ea.z, eb.z)), 0.0);
+    float P = max(B.c.w * kLobeScale, 1.0) * 0.25;   // one lobe
+    float nearL = min(2.5 * P, tEx);
+    float tN = 0.0, u0 = 0.0;
+    for (int k = 1; k <= 8; ++k) {
+        float u1 = float(k * k) / 64.0;               // quadratic spacing: 1/64 of the reach first, 15/64 last
+        vec3  ps = p + sunDir * (0.5 * (u0 + u1) * nearL);
+        tN += shaped(B, ps, volAt(b, (ps - B.c.xyz) / B.h.xyz)) * (u1 - u0) * nearL;
+        u0 = u1;
+    }
+    float tF = 0.0;
+    float farL = tEx - nearL;
+    if (farL > 0.0) {
+        float dF = farL / 6.0;
+        for (int k = 0; k < 6; ++k) {
+            vec3 ps = p + sunDir * (nearL + (float(k) + 0.5) * dF);
+            tF += smoothExt(B, volAt(b, (ps - B.c.xyz) / B.h.xyz)) * dF;
+        }
+    }
+    return tN + tF;
+}
+
+// Mode 2: the shadow atlas, one voxel a thread (after the splat; the march reads it)
+void shadow()
+{
+    ivec3 v = ivec3(gl_GlobalInvocationID);
+    uint  b = uint(v.z) / uint(kRes);
+    if (v.x >= kRes || v.y >= kRes || b >= kMaxBricks) return;
+    float tS = 0.0;
+    if (b < hdr.x) {
+        Brick B = bricks[b];
+        vec3 l = (vec3(v.x, v.y, v.z - int(b) * kRes) + 0.5) / float(kRes) * 2.0 - 1.0;
+        // empty air (most of a box) is skipped: below 0.4% of the reference no lobe (x <= ~16) lifts it to the shell
+        // (s 0.10), so the march never takes light there (its trilinear neighbours at an edge read 0: a lit rim)
+        if (volAt(b, l) * B.h.w > 0.004 * B.misc.w)
+            tS = sunDepth(b, B, B.c.xyz + l * B.h.xyz, normalize(pc.sunDirENU.xyz));
+    }
+    imageStore(shadowImg, v, vec4(min(tS, 60000.0)));
 }
 
 // Henyey-Greenstein, per steradian
@@ -178,8 +236,6 @@ void march()
         // a FIXED offset per texel (a stable dither): varied per frame and left to the sky TAA, the brick shimmered at
         // 2.6x the frame-to-frame noise of the Gaussians it replaces
         float jit = ign(vec2(coord));
-        // the Sun's way out of a box from a point: its slab exit
-        vec3  idS = 1.0 / (abs(sunDir) + 1e-12) * sign(sunDir + 1e-12);
         for (uint b = 0u; b < nB; ++b) {
             Brick B = bricks[b];
             // the ray through the box (slabs; the eye may be inside)
@@ -202,42 +258,16 @@ void march()
                 vec4  v4 = volAt4(b, l);
                 float e = shaped(B, p, v4.a);
                 if (e * dt < 1e-6) continue;
-                // (what this sample can still add to the eye: its light march is skipped when that is negligible, behind
-                // an opaque face or in a wisp; the optical depth is still taken)
-                if (T * (1.0 - exp(-e * dt)) < 2e-4) { T *= exp(-e * dt); tau += e * dt; tW += e * dt * t; if (T < 1e-3) break; continue; }
-                // The Sun through the brick's own mass. Near the sample, at the lobes' scale, through the LOBED extinction
-                // (3 steps over 2 lobes): each lobe shades its own far side and the crevices behind its neighbours, the
-                // light and shade that draw the billows inside the cloud as well as on its outline. Beyond, the smooth
-                // extinction to the box's edge (3 steps).
-                vec3  q0 = p - B.c.xyz;
-                vec3  ea = (B.h.xyz - q0) * idS, eb = (-B.h.xyz - q0) * idS;
-                float tEx = max(min(min(max(ea.x, eb.x), max(ea.y, eb.y)), max(ea.z, eb.z)), 0.0);
-                float nearL = min(2.0 * P, tEx);
-                float tN = 0.0;
-                for (int k = 0; k < 3; ++k) {
-                    // spans 0.2, 0.3, 0.5 of the near reach (finer close to the sample, where the lobe's own shade is)
-                    float u0 = k == 0 ? 0.0 : k == 1 ? 0.2 : 0.5;
-                    float u1 = k == 0 ? 0.2 : k == 1 ? 0.5 : 1.0;
-                    vec3  ps = p + sunDir * (0.5 * (u0 + u1) * nearL);
-                    tN += shaped(B, ps, volAt(b, (ps - B.c.xyz) / B.h.xyz)) * (u1 - u0) * nearL;
-                }
-                float tF = 0.0;
-                float farL = tEx - nearL;
-                if (farL > 0.0) {
-                    float dF = farL / 3.0;
-                    for (int k = 0; k < 3; ++k) {
-                        vec3 ps = p + sunDir * (nearL + (float(k) + 0.5) * dF);
-                        tF += smoothExt(B, volAt(b, (ps - B.c.xyz) / B.h.xyz)) * dF;
-                    }
-                }
-                float tS = tN + tF;
+                // The Sun through the brick's own mass: the shadow atlas (mode 2), lobes and all, trilinear
+                float tS = textureLod(shadowTex, atlasUV(b, l), 0.0).r;
                 // the Earth's shadow at the sample (the plumes' own test)
                 vec3  P3 = obsPos + p;
                 float sp = dot(P3, sunDir);
                 float lit = sp > 0.0 ? 1.0 : smoothstep(R_EARTH * 0.9995, R_EARTH * 1.003, length(P3 - sp * sunDir));
                 // Multiple scattering as octaves of the single (Wrenninge's: each bounce's light reaches deeper, less
                 // forward-peaked): it follows the depth the SUNLIGHT has crossed, not the view's, so a lobe's sunlit face
-                // and outline stay brighter than its shaded inside and the crevices. It needs a mass to bounce in: ~0 in
+                // and outline stay brighter than its shaded inside and the crevices. (Decaying at 0.35 / 0.12 per unit
+                // depth it filled the lobes' shade in: the billow read as smoke.) It needs a mass to bounce in: ~0 in
                 // thin exhaust (single scattering only, as the Gaussians), full where the light or the lobe itself is thick.
                 float tLoc = e * P;   // this lobe's own optical depth
                 float msG  = kMS * (1.0 - exp(-0.7 * (tS + tLoc)));
@@ -250,7 +280,7 @@ void march()
                     // pastel: at most 60% of the way to the pure diffraction colour
                     ss *= mix(vec3(1.0), iridColour(sinT, aUm), 0.6 * min(iridK, 1.5) * exp(-0.5 * (tLoc + tS)));
                 }
-                vec3  lightS = ss + vec3(msG * (1.5 * phM1 * exp(-0.35 * tS) + 1.2 * phM2 * exp(-0.12 * tS)));
+                vec3  lightS = ss + vec3(msG * (1.0 * phM1 * exp(-0.6 * tS) + 0.8 * phM2 * exp(-0.25 * tS)));
                 float dTau = e * dt;
                 float sc = T * (1.0 - exp(-dTau));
                 vec3  sunC = v4.rgb / max(v4.a, 1e-30);   // this region's own light colour
@@ -276,5 +306,5 @@ void march()
 
 void main()
 {
-    if (kMode == 0) splat(); else march();
+    if (kMode == 0) splat(); else if (kMode == 1) march(); else shadow();
 }

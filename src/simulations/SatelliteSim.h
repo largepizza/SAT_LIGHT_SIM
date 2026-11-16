@@ -3356,6 +3356,11 @@ private:
     VkDescriptorSet brickDescSet = VK_NULL_HANDLE;
     VkPipelineLayout brickPipeLayout = VK_NULL_HANDLE;
     VkPipeline brickSplatPipe = VK_NULL_HANDLE, brickMarchPipe = VK_NULL_HANDLE;
+    // (2026-11-15) the shadow atlas: per voxel the Sun's optical depth through the brick (plume_brick.comp mode 2), R16F
+    VkImage brickShadowImg = VK_NULL_HANDLE;
+    VkDeviceMemory brickShadowMem = VK_NULL_HANDLE;
+    VkImageView brickShadowView = VK_NULL_HANDLE;
+    VkPipeline brickShadowPipe = VK_NULL_HANDLE;
     bool brickTargetsCleared = false;
     void createPlumeBricks(VulkanContext &ctx);          // once, after createCloudMarchDescriptors
     void createPlumeBrickTargets(VulkanContext &ctx);    // the half-res outputs (and on resize)

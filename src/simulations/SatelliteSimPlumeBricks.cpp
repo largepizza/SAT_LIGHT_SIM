@@ -1,6 +1,7 @@
 // Plume bricks (2026-11-15, .plans/PLUME_OVERHAUL_PLAN.md phase 2; issue_20261115_165031 "Staging billow cloud").
 // The GPU side: the brick buffer (launchFillVisuals fills it), the 64^3-per-brick extinction atlas, the half-res
-// outputs cloud_march.comp reads (bindings 27 / 28), and the two passes of shaders/plume_brick.comp (splat, march).
+// outputs cloud_march.comp reads (bindings 27 / 28), and the three passes of shaders/plume_brick.comp (splat, the
+// Sun's optical depth per voxel, march).
 // Recorded by recordCompute right before the composite. docs/subsystems/launches.md "Plume bricks".
 
 #include "SatelliteSim.h"
@@ -45,27 +46,34 @@ void SatelliteSim::createPlumeBricks(VulkanContext &ctx)
     ctx.createImage(kBrickRes, kBrickRes, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                     brickVolImg, brickVolMem, 1, kBrickRes * kMaxPlumeBricks);
     brickVolView = brickView(dev, brickVolImg, VK_IMAGE_VIEW_TYPE_3D, VK_FORMAT_R16G16B16A16_SFLOAT);
+    // The shadow atlas (same layout): per voxel the Sun's optical depth through the brick, lobes and all (mode 2), so the
+    // march reads its light in one fetch a sample instead of a light march a sample.
+    ctx.createImage(kBrickRes, kBrickRes, VK_FORMAT_R16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    brickShadowImg, brickShadowMem, 1, kBrickRes * kMaxPlumeBricks);
+    brickShadowView = brickView(dev, brickShadowImg, VK_IMAGE_VIEW_TYPE_3D, VK_FORMAT_R16_SFLOAT);
     {
         VkCommandBuffer cmd = ctx.beginOneTimeCommands();
-        ctx.imageBarrier(cmd, brickVolImg, 0, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
-                         VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+        for (VkImage img : {brickVolImg, brickShadowImg})
+            ctx.imageBarrier(cmd, img, 0, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                             VK_IMAGE_LAYOUT_GENERAL, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
         ctx.endOneTimeCommands(cmd);
     }
 
-    const VkDescriptorType kTypes[7] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+    const VkDescriptorType kTypes[9] = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                                         VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,          VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                        VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                                         VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER};
-    VkDescriptorSetLayoutBinding b[7];
-    for (uint32_t i = 0; i < 7; ++i)
+    VkDescriptorSetLayoutBinding b[9];
+    for (uint32_t i = 0; i < 9; ++i)
         b[i] = {i, kTypes[i], 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 7;
+    li.bindingCount = 9;
     li.pBindings = b;
     vkCreateDescriptorSetLayout(dev, &li, nullptr, &brickDescLayout);
     VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
-                                  {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 3},
-                                  {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3}};
+                                  {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4},
+                                  {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.maxSets = 1;
     pi.poolSizeCount = 3;
@@ -89,8 +97,8 @@ void SatelliteSim::createPlumeBricks(VulkanContext &ctx)
     createPlumeBrickTargets(ctx);
 }
 
-// The splat and march pipelines (specialization constant 0) from an SPV: the shipped one ("") or a harness variant
-// (`shaders reload brick=<spv>`). Replaces the current pair only when both build; returns an error or "".
+// The splat, march and shadow pipelines (specialization constant 0: modes 0, 1, 2) from an SPV: the shipped one ("") or
+// a harness variant (`shaders reload brick=<spv>`). Replaces the current ones only when all build; returns an error or "".
 std::string SatelliteSim::buildPlumeBrickPipelines(VulkanContext &ctx, const std::string &spv)
 {
     VkDevice dev = ctx.device;
@@ -103,9 +111,9 @@ std::string SatelliteSim::buildPlumeBrickPipelines(VulkanContext &ctx, const std
     {
         return ex.what();
     }
-    VkPipeline np[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    VkPipeline np[3] = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};
     std::string err;
-    for (int mode = 0; mode < 2; ++mode)
+    for (int mode = 0; mode < 3; ++mode)
     {
         const int32_t m = mode;
         VkSpecializationMapEntry e{0, 0, 4};
@@ -128,8 +136,11 @@ std::string SatelliteSim::buildPlumeBrickPipelines(VulkanContext &ctx, const std
         vkDestroyPipeline(dev, brickSplatPipe, nullptr);
     if (brickMarchPipe != VK_NULL_HANDLE)
         vkDestroyPipeline(dev, brickMarchPipe, nullptr);
+    if (brickShadowPipe != VK_NULL_HANDLE)
+        vkDestroyPipeline(dev, brickShadowPipe, nullptr);
     brickSplatPipe = np[0];
     brickMarchPipe = np[1];
+    brickShadowPipe = np[2];
     return "";
 }
 
@@ -178,11 +189,13 @@ void SatelliteSim::writePlumeBrickDescriptors(VulkanContext &ctx)
     VkDescriptorImageInfo depth{sceneDepthSampler, sceneDepthView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorImageInfo cmL{cloudMarchSampler, brickLView, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo cmT{cloudMarchSampler, brickTView, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo shW{VK_NULL_HANDLE, brickShadowView, VK_IMAGE_LAYOUT_GENERAL};
+    VkDescriptorImageInfo shR{cloudMarchSampler, brickShadowView, VK_IMAGE_LAYOUT_GENERAL};
     auto W = [](VkDescriptorSet s, uint32_t bind, VkDescriptorType t, const VkDescriptorImageInfo *ii,
                 const VkDescriptorBufferInfo *bi) {
         return VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, s, bind, 0, 1, t, ii, bi, nullptr};
     };
-    VkWriteDescriptorSet w[9] = {
+    VkWriteDescriptorSet w[11] = {
         W(brickDescSet, 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &bufI),
         W(brickDescSet, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &volW, nullptr),
         W(brickDescSet, 2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &volR, nullptr),
@@ -190,9 +203,11 @@ void SatelliteSim::writePlumeBrickDescriptors(VulkanContext &ctx)
         W(brickDescSet, 4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &outL, nullptr),
         W(brickDescSet, 5, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &outT, nullptr),
         W(brickDescSet, 6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &depth, nullptr),
+        W(brickDescSet, 7, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &shW, nullptr),
+        W(brickDescSet, 8, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &shR, nullptr),
         W(cloudMarchDescSet, 27, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cmL, nullptr),
         W(cloudMarchDescSet, 28, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &cmT, nullptr)};
-    frameSafeUpdateDescriptorSets(ctx.device, 9, w, 0, nullptr);
+    frameSafeUpdateDescriptorSets(ctx.device, 11, w, 0, nullptr);
 }
 
 void SatelliteSim::recordPlumeBricks(VkCommandBuffer cmd, VulkanContext &ctx, const CloudMarchPC &cpc)
@@ -205,6 +220,10 @@ void SatelliteSim::recordPlumeBricks(VkCommandBuffer cmd, VulkanContext &ctx, co
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, brickPipeLayout, 0, 1, &brickDescSet, 0, nullptr);
     vkCmdPushConstants(cmd, brickPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(cpc), &cpc);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, brickSplatPipe);
+    vkCmdDispatch(cmd, kBrickRes / 8, kBrickRes / 8, kBrickRes * (uint32_t)bricks_.size());
+    computeBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+    // the Sun's optical depth per voxel (reads the splat)
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, brickShadowPipe);
     vkCmdDispatch(cmd, kBrickRes / 8, kBrickRes / 8, kBrickRes * (uint32_t)bricks_.size());
     computeBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, brickMarchPipe);
@@ -224,6 +243,18 @@ void SatelliteSim::destroyPlumeBricks(VkDevice dev)
     brickVolView = VK_NULL_HANDLE;
     brickVolImg = VK_NULL_HANDLE;
     brickVolMem = VK_NULL_HANDLE;
+    if (brickShadowView)
+        vkDestroyImageView(dev, brickShadowView, nullptr);
+    if (brickShadowImg)
+        vkDestroyImage(dev, brickShadowImg, nullptr);
+    if (brickShadowMem)
+        vkFreeMemory(dev, brickShadowMem, nullptr);
+    brickShadowView = VK_NULL_HANDLE;
+    brickShadowImg = VK_NULL_HANDLE;
+    brickShadowMem = VK_NULL_HANDLE;
+    if (brickShadowPipe)
+        vkDestroyPipeline(dev, brickShadowPipe, nullptr);
+    brickShadowPipe = VK_NULL_HANDLE;
     if (brickSplatPipe)
         vkDestroyPipeline(dev, brickSplatPipe, nullptr);
     if (brickMarchPipe)
