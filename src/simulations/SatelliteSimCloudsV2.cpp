@@ -1167,11 +1167,11 @@ void SatelliteSim::destroyCloudsV2(VkDevice device)
     cv2ParamsMem = VK_NULL_HANDLE;
     cv2ParamsMapped = nullptr;
     VkImageView *views[] = {&cv2WeatherView, &cv2ShapeView, &cv2DetailView, &cv2MesoView, &cv2MorphView, &cv2MieView,
-                            &cv2ShapeCapsView, &cv2ShapeBillowView, &cv2DetailBillowView, &cv2IceOpticsView};
+                            &cv2ShapeCapsView, &cv2ShapeBillowView, &cv2DetailBillowView, &cv2IceOpticsView, &plumeMieView};
     VkImage *imgs[] = {&cv2WeatherImg, &cv2ShapeImg, &cv2DetailImg, &cv2MesoImg, &cv2MorphImg, &cv2MieImg, &cv2ShapeCapsImg,
-                       &cv2ShapeBillowImg, &cv2DetailBillowImg, &cv2IceOpticsImg};
+                       &cv2ShapeBillowImg, &cv2DetailBillowImg, &cv2IceOpticsImg, &plumeMieImg};
     VkDeviceMemory *mems[] = {&cv2WeatherMem, &cv2ShapeMem, &cv2DetailMem, &cv2MesoMem, &cv2MorphMem, &cv2MieMem,
-                              &cv2ShapeCapsMem, &cv2ShapeBillowMem, &cv2DetailBillowMem, &cv2IceOpticsMem};
+                              &cv2ShapeCapsMem, &cv2ShapeBillowMem, &cv2DetailBillowMem, &cv2IceOpticsMem, &plumeMieMem};
     for (int i = 0; i < (int)(sizeof(views) / sizeof(views[0])); ++i)
     {
         if (*views[i]) vkDestroyImageView(device, *views[i], nullptr);
@@ -3327,11 +3327,42 @@ void SatelliteSim::cv2PassStampTo(VkCommandBuffer cmd, uint32_t id)
 // Missing: a 1x1 texel and no rows (the share is then forced to 0: Henyey-Greenstein as before).
 void SatelliteSim::createCloudMie(VulkanContext &ctx)
 {
+    loadMieTable(ctx, "assets/textures/cloud_mie.rgba16f", cv2MieImg, cv2MieMem, cv2MieView, cv2MieReff);
+    if (cv2MieReff.empty())
+        Log::line("init: cloud Mie table missing (tools/make_mie_lut.py): Henyey-Greenstein only");
+    else
+    {   // The droplet phase finds a radius's row by a fit to the table's radii (cloud_v2_march.comp cv2MicroRowV): say
+        // when the table no longer matches it (rows mis-picked: the phases stay plausible, the sizes do not).
+        float err = 0.0f;
+        for (size_t i = 0; i < cv2MieReff.size(); ++i)
+        {
+            const float L = std::log(std::max(cv2MieReff[i], 0.1f));
+            err = std::max(err, std::abs((-0.12333f * L + 6.15259f) * L - 8.45660f - (float)i));
+        }
+        if (err > 0.3f)
+            Log::line("init: WARNING cloud Mie table radii no longer match the droplet phase's row fit (off by "
+                      + std::to_string(err) + " rows): refit cv2MicroRowV");
+    }
+    // (2026-11-15) the rocket exhaust's ice (make_mie_lut.py --ice): plume_mie.glsl maps a radius to its row as
+    // 11 ln(r / 0.05) / ln 60, so the table must be those 12 radii
+    loadMieTable(ctx, "assets/textures/plume_mie.rgba16f", plumeMieImg, plumeMieMem, plumeMieView, plumeMieReff);
+    if (plumeMieReff.size() != 12 || std::abs(plumeMieReff.front() - 0.05f) > 1e-3f || std::abs(plumeMieReff.back() - 3.0f) > 1e-2f)
+    {
+        if (!plumeMieReff.empty())
+            Log::line("init: WARNING plume Mie table radii are not plume_mie.glsl's (0.05-3 um, 12 rows): Mie plumes off");
+        else
+            Log::line("init: plume Mie table missing (tools/make_mie_lut.py --ice): plumes keep their Henyey-Greenstein phase");
+        plumeMieReff.clear();
+    }
+}
+
+void SatelliteSim::loadMieTable(VulkanContext &ctx, const char *path, VkImage &img, VkDeviceMemory &mem, VkImageView &view,
+                                std::vector<float> &reffOut)
+{
     uint32_t na = 1, nr = 1;
     std::vector<uint16_t> data(4, 0);
-    cv2MieReff.clear();
+    reffOut.clear();
     {
-        const char *path = "assets/textures/cloud_mie.rgba16f";
         Log::line(std::string("init: texture: ") + path);
         if (FILE *f = std::fopen(path, "rb"))
         {
@@ -3348,25 +3379,10 @@ void SatelliteSim::createCloudMie(VulkanContext &ctx)
                     na = hdr[0];
                     nr = hdr[1] * 2;
                     data.swap(d);
-                    cv2MieReff = reff;
+                    reffOut = reff;
                 }
             }
             std::fclose(f);
-        }
-        if (cv2MieReff.empty())
-            Log::line("init: cloud Mie table missing (tools/make_mie_lut.py): Henyey-Greenstein only");
-        else
-        {   // The droplet phase finds a radius's row by a fit to the table's radii (cloud_v2_march.comp cv2MicroRowV): say
-            // when the table no longer matches it (rows mis-picked: the phases stay plausible, the sizes do not).
-            float err = 0.0f;
-            for (size_t i = 0; i < cv2MieReff.size(); ++i)
-            {
-                const float L = std::log(std::max(cv2MieReff[i], 0.1f));
-                err = std::max(err, std::abs((-0.12333f * L + 6.15259f) * L - 8.45660f - (float)i));
-            }
-            if (err > 0.3f)
-                Log::line("init: WARNING cloud Mie table radii no longer match the droplet phase's row fit (off by "
-                          + std::to_string(err) + " rows): refit cv2MicroRowV");
         }
     }
     const VkDeviceSize total = (VkDeviceSize)data.size() * 2;
@@ -3381,11 +3397,11 @@ void SatelliteSim::createCloudMie(VulkanContext &ctx)
         vkUnmapMemory(ctx.device, stageMem);
     }
     ctx.createImage(na, nr, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                    cv2MieImg, cv2MieMem, 1);
+                    img, mem, 1);
     VkCommandBuffer cmd = ctx.beginOneTimeCommands();
     VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    b.image = cv2MieImg;
+    b.image = img;
     b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -3394,7 +3410,7 @@ void SatelliteSim::createCloudMie(VulkanContext &ctx)
     VkBufferImageCopy region{};
     region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     region.imageExtent = {na, nr, 1};
-    vkCmdCopyBufferToImage(cmd, stageBuf, cv2MieImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+    vkCmdCopyBufferToImage(cmd, stageBuf, img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
     b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     b.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -3403,7 +3419,7 @@ void SatelliteSim::createCloudMie(VulkanContext &ctx)
     ctx.endOneTimeCommands(cmd);
     vkDestroyBuffer(ctx.device, stageBuf, nullptr);
     vkFreeMemory(ctx.device, stageMem, nullptr);
-    cv2MieView = makeView(ctx.device, cv2MieImg, VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_R16G16B16A16_SFLOAT, 0, 1, 1);
+    view = makeView(ctx.device, img, VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_R16G16B16A16_SFLOAT, 0, 1, 1);
 }
 
 // ─── The ice crystals' traced halo table (2026-11-10, optics, tools/make_ice_optics.py) ──────────────────────────────

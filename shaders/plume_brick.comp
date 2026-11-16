@@ -34,7 +34,7 @@ struct Brick {
     vec4 c;     // xyz centre relative to the eye (ENU, m); w the lobes' period (m)
     vec4 h;     // xyz half extents (m); w its weight (0..1: the hand-off to the Gaussians)
     vec4 sun;   // xyz the lobes' anchor (the staging point, Earth-fixed) from the centre (m); w albedo
-    vec4 iso;   // x the iridescence's strength; w the lobes' strength (0 = the smooth splat)
+    vec4 iso;   // x the iridescence's strength; y 1 = the ice's Mie optics (plume_mie.glsl); w the lobes' strength
     vec4 misc;  // x first Gaussian, y count, z seed (0..1), w the reference extinction (1/m: the splat's typical peak)
 };
 const uint kMaxBricks = 4u;
@@ -48,6 +48,8 @@ layout(set = 0, binding = 5, rgba32f) uniform writeonly image2D outT;   // r opt
 layout(set = 0, binding = 6) uniform sampler2D sceneDepthTex;   // the composite's scene depth (same grid)
 layout(set = 0, binding = 7, r16f) uniform writeonly image3D shadowImg;   // mode 2 writes: the Sun's optical depth per voxel
 layout(set = 0, binding = 8) uniform sampler3D shadowTex;                 // mode 1 reads (same image, GENERAL layout)
+layout(set = 0, binding = 9) uniform sampler2D plumeMieTex;               // the exhaust ice's Mie table (plume_mie.glsl)
+#include "plume_mie.glsl"
 
 vec3 dustMul(DustCloud d, vec3 v)
 {
@@ -271,8 +273,28 @@ void march()
                 // thin exhaust (single scattering only, as the Gaussians), full where the light or the lobe itself is thick.
                 float tLoc = e * P;   // this lobe's own optical depth
                 float msG  = kMS * (1.0 - exp(-0.7 * (tS + tLoc)));
-                vec3  ss = vec3(phaseP * exp(-tS));
-                if (iridK > 0.0) {
+                vec3  ss, msC = vec3(1.0);
+                if (B.iso.y > 0.5) {
+                    // Mie (2026-11-15): the ice's phase and spectral scattering at its radius, by height (plume_mie.glsl),
+                    // varied across the cloud in patches by the iridescence's strength (the size field 8 lobe periods
+                    // across, mip 3: smooth patches, never per-pixel speckle; x 0.55 .. 1.8 at strength 1): toward the
+                    // Sun the table's colours by angle and size are the iridescence, no tint added
+                    // The ice grows on the exhaust's vapour, its number set when it froze: with more vapour about each
+                    // particle the radius goes as the cube root of the local density (here the splat's, over the
+                    // brick's reference): the dense young core ~2x larger (whiter, coloured rings toward the Sun), the
+                    // thin edges ~0.5x (bluer). By height alone the staging cloud's 60-100 km ice was ~0.1-0.25 um,
+                    // too small for any colour by angle.
+                    float rU = plumeReffUm(length(obsPos + p) - R_EARTH) *
+                               clamp(pow(max(v4.a / max(B.misc.w, 1e-12), 1e-3), 1.0 / 3.0), 0.5, 3.0);
+                    if (B.iso.x > 0.0) {
+                        vec3 qa = (p - B.c.xyz - B.sun.xyz) / max(8.0 * B.c.w, 1.0) + B.misc.z * 13.0;
+                        rU *= exp(1.2 * B.iso.x * (clamp(textureLod(lobeTex, qa, 3.0).r * 2.0 - 0.5, 0.0, 1.0) - 0.5));
+                    }
+                    ss  = plumeMiePhase(cosT, rU) * exp(-tS);
+                    msC = plumeMieMean(rU);   // the multiply scattered light takes the ice's mean colour
+                } else
+                    ss = vec3(phaseP * exp(-tS));
+                if (B.iso.y <= 0.5 && iridK > 0.0) {
                     // the particles' radius from the cloud's own slow structure (0.2-0.8 um), only in thin ice
                     // (the size field 8 lobe periods across, its mip 3: smooth patches, never per-pixel speckle)
                     vec3  qa = (p - B.c.xyz - B.sun.xyz) / max(8.0 * B.c.w, 1.0) + B.misc.z * 13.0;
@@ -280,7 +302,7 @@ void march()
                     // pastel: at most 60% of the way to the pure diffraction colour
                     ss *= mix(vec3(1.0), iridColour(sinT, aUm), 0.6 * min(iridK, 1.5) * exp(-0.5 * (tLoc + tS)));
                 }
-                vec3  lightS = ss + vec3(msG * (1.0 * phM1 * exp(-0.6 * tS) + 0.8 * phM2 * exp(-0.25 * tS)));
+                vec3  lightS = ss + msC * (msG * (1.0 * phM1 * exp(-0.6 * tS) + 0.8 * phM2 * exp(-0.25 * tS)));
                 float dTau = e * dt;
                 float sc = T * (1.0 - exp(-dTau));
                 vec3  sunC = v4.rgb / max(v4.a, 1e-30);   // this region's own light colour

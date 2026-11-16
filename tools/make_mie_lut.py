@@ -21,6 +21,16 @@ Layout (raw, little-endian):
 
     python tools/make_mie_lut.py            # writes the table and tools/out/mie_preview.png
     python tools/make_mie_lut.py --check    # prints g, bow and glory positions, no file
+    python tools/make_mie_lut.py --ice      # the rocket exhaust's ice (assets/textures/plume_mie.rgba16f, below)
+
+--ice (2026-11-15, the plumes' Mie phase): sub-micron to few-micron ICE spheres (Warren & Brandt 2008's index, Cauchy
+fit 1.3194 / 1.3107 / 1.3070 at 400 / 550 / 700 nm), r_eff 0.05-3 um, effective variance 0.03 (it froze at
+once in one expansion: a narrow distribution, as the freshly formed droplets that make cloud iridescence). Its rgb keeps the SPECTRAL scattering: per
+wavelength the number-weighted dC_sca / dOmega over the luminance-weighted mean C_sca (not each wavelength's phase
+normalised to 1), so a channel's mean over the sphere is its scattering relative to the luminance's: the blue of
+sub-micron exhaust ice (~1.6x at 0.1 um) and its colours by angle (the corona / iridescence near the Sun) come out
+of the table. Same file layout; its a = Qsca (luminance-weighted). The second NR rows (the clouds' "structure") hold
+instead each radius's SPHERE-MEAN rgb (every texel, a = 1, not x 0.125): the colour its multiply scattered light takes.
 Standard library + numpy (+ Pillow for the preview).
 """
 import argparse, math, os, struct, sys
@@ -28,16 +38,25 @@ from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 
 NA = 2048                     # angles over 0..180 deg (0.088 deg: the corona's first ring at 20 um is ~1.6 deg)
-REFF = np.array([4.0, 5.0, 6.0, 7.0, 8.0, 10.0, 12.0, 14.0, 17.0, 20.0, 25.0, 30.0])   # um
+REFF_WATER = np.array([4.0, 5.0, 6.0, 7.0, 8.0, 10.0, 12.0, 14.0, 17.0, 20.0, 25.0, 30.0])   # um
+REFF_ICE = 0.05 * 60.0 ** (np.arange(12) / 11.0)   # um (the plumes' ice): geometric, row = 11 ln(r / 0.05) / ln 60
+REFF = REFF_WATER
 NR = len(REFF)
 VEFF = 0.1
+VEFF_ICE = 0.03   # the exhaust's ice froze at once in one expansion: a narrow distribution (iridescence needs one)
 SMOOTH_DEG = 8.0
 LAMBDA = np.arange(400.0, 701.0, 10.0)   # nm
-RADII = np.exp(np.linspace(np.log(0.6), np.log(80.0), 160))   # um: the distributions' common radius grid
+RADII_WATER = np.exp(np.linspace(np.log(0.6), np.log(80.0), 160))   # um: the distributions' common radius grid
+RADII_ICE = np.exp(np.linspace(np.log(0.004), np.log(9.0), 200))
+RADII = RADII_WATER
 
 def water_index(lam_nm):
     # Cauchy fit through n(400) = 1.3390, n(700) = 1.3310 (1.3334 at 550 nm); absorption is negligible here.
     return 1.3271 + 1900.0 / (lam_nm * lam_nm)
+
+def ice_index(lam_nm):
+    # Cauchy fit through Warren & Brandt (2008): n(400) = 1.3194, n(700) = 1.3070 (1.3107 at 550 nm); k ~1e-9: none.
+    return 1.3010 + 2945.0 / (lam_nm * lam_nm)
 
 def bhmie(x, m, mu):
     """Bohren & Huffman: S1, S2 at cos(theta) = mu, and Qsca, for size parameter x and relative index m."""
@@ -74,22 +93,30 @@ def bhmie(x, m, mu):
 
 def one(args):
     """For one wavelength: per radius, sigma_sca(r) x the (unnormalised) phase, and sigma_sca(r)."""
-    lam, mu = args
-    m = water_index(lam)
+    lam, mu, ice = args
+    m = ice_index(lam) if ice else water_index(lam)
+    radii = RADII_ICE if ice else RADII_WATER
     k = 2.0 * math.pi / (lam * 1e-3)                  # 1/um
-    rows = np.zeros((len(RADII), len(mu)))
-    csca = np.zeros(len(RADII))
-    for j, r in enumerate(RADII):
+    rows = np.zeros((len(radii), len(mu)))
+    csca = np.zeros(len(radii))
+    for j, r in enumerate(radii):
         S1, S2, q = bhmie(k * r, m, mu)
         i11 = 0.5 * (np.abs(S1) ** 2 + np.abs(S2) ** 2)          # unpolarised
         csca[j] = q * math.pi * r * r
         rows[j] = i11 / (k * k)                                  # = dC_sca / dOmega (um^2 / sr)
     return lam, rows, csca
 
-def gamma_weights(reff):
-    a, b = reff, VEFF
-    w = RADII ** ((1.0 - 3.0 * b) / b) * np.exp(-RADII / (a * b))
-    w *= np.gradient(RADII)                                       # dr on the log grid
+def radii_of(ice):
+    return RADII_ICE if ice else RADII_WATER
+
+def reffs_of(ice):
+    return REFF_ICE if ice else REFF_WATER
+
+def gamma_weights(reff, radii=None):
+    radii = RADII_WATER if radii is None else radii
+    a, b = reff, (VEFF_ICE if radii is RADII_ICE else VEFF)
+    w = radii ** ((1.0 - 3.0 * b) / b) * np.exp(-radii / (a * b))
+    w *= np.gradient(radii)                                       # dr on the log grid
     return w / w.sum()
 
 def cmf(lam):
@@ -106,44 +133,52 @@ def sun(lam):
     l = lam * 1e-9
     return 1.0 / (l ** 5 * (np.exp(6.62607e-34 * 2.99792e8 / (l * 1.380649e-23 * 5778.0)) - 1.0))
 
-def build():
+def build(ice=False):
     theta = (np.arange(NA) + 0.5) / NA * math.pi
     mu = np.cos(theta)
     with ProcessPoolExecutor(max_workers=max(1, (os.cpu_count() or 4) - 2)) as ex:
-        res = sorted(ex.map(one, [(l, mu) for l in LAMBDA]), key=lambda t: t[0])
+        res = sorted(ex.map(one, [(l, mu, ice) for l in LAMBDA]), key=lambda t: t[0])
     dcs = np.stack([r[1] for r in res])          # [L, R, A]
     cs = np.stack([r[2] for r in res])           # [L, R]
     xyz = cmf(LAMBDA) * sun(LAMBDA)[:, None]     # [L, 3]
     M = np.array([[3.2406, -1.5372, -0.4986], [-0.9689, 1.8758, 0.0415], [0.0557, -0.2040, 1.0570]])
     w_rgb = xyz @ M.T                            # [L, 3]: each wavelength's weight in linear sRGB
     w_rgb /= w_rgb.sum(0, keepdims=True)         # a flat spectrum -> (1, 1, 1)
-    out = np.zeros((NR, NA, 4), dtype=np.float32)
-    gs = np.zeros((NR, 3))
+    w_y = xyz[:, 1] / xyz[:, 1].sum()             # [L]: each wavelength's weight in the luminance
+    nr = len(reffs_of(ice))
+    out = np.zeros((nr, NA, 4), dtype=np.float32)
+    gs = np.zeros((nr, 3))
     dOm = 2.0 * math.pi * np.sin(theta) * (math.pi / NA)
-    for i, reff in enumerate(REFF):
-        w = gamma_weights(reff)
+    for i, reff in enumerate(reffs_of(ice)):
+        w = gamma_weights(reff, radii_of(ice))
         num = np.einsum('lra,r->la', dcs, w)          # [L, A]  (number-weighted dC/dOmega)
         den = cs @ w                                  # [L]     (number-weighted C_sca)
-        p = 4.0 * math.pi * num / den[:, None]        # 4 pi p, per wavelength (mean 1 over the sphere)
+        if ice:
+            # 4 pi dC/dOmega over the luminance-weighted mean C_sca: the spectral scattering kept (see --ice)
+            p = 4.0 * math.pi * num / float(w_y @ den)
+        else:
+            p = 4.0 * math.pi * num / den[:, None]    # 4 pi p, per wavelength (mean 1 over the sphere)
         rgb = np.einsum('la,lc->ac', p, w_rgb)
         out[i, :, :3] = np.maximum(rgb, 0.0)
         # Qsca, spectrally averaged (the area-weighted efficiency: ~2 for cloud droplets)
-        area = (math.pi * RADII ** 2) @ w
-        out[i, :, 3] = float(np.mean(den / area))
+        area = (math.pi * radii_of(ice) ** 2) @ w
+        out[i, :, 3] = float(w_y @ (den / area)) if ice else float(np.mean(den / area))
         for c in range(3):
             pc = out[i, :, c]
             gs[i, c] = np.sum(pc * mu * dOm) / np.sum(pc * dOm)
     return theta, out, gs
 
-def report(theta, out, gs):
+def report(theta, out, gs, reffs=None):
     deg = np.degrees(theta)
-    for i, reff in enumerate(REFF):
+    reffs = REFF_WATER if reffs is None else reffs
+    sw = np.sin(theta) / np.sin(theta).sum()   # the sphere's weights (solid angle)
+    for i, reff in enumerate(reffs):
         p = out[i, :, 1]
         sel = (deg > 125) & (deg < 150)
         bow = deg[sel][np.argmax(p[sel])]
-        print(f"r_eff {reff:5.1f} um  g(rgb) {gs[i,0]:.3f} {gs[i,1]:.3f} {gs[i,2]:.3f}  Qsca {out[i,0,3]:.3f}  "
+        print(f"r_eff {reff:5.2f} um  g(rgb) {gs[i,0]:.3f} {gs[i,1]:.3f} {gs[i,2]:.3f}  Qsca {out[i,0,3]:.3f}  "
               f"4pi p(0) {p[0]:9.1f}  p(90) {p[NA//2]:.4f}  cloudbow at {bow:.1f} deg ({180-bow:.1f} from antisolar)  "
-              f"glory 4pi p(180) {p[-1]:.3f}")
+              f"glory 4pi p(180) {p[-1]:.3f}  sphere-mean rgb {sw @ out[i,:,0]:.2f} {sw @ out[i,:,1]:.2f} {sw @ out[i,:,2]:.2f}")
 
 def preview(theta, out, path):
     try:
@@ -171,7 +206,7 @@ def structure(out):
     k = np.arange(-int(4 * sig), int(4 * sig) + 1)
     w = np.exp(-0.5 * (k / sig) ** 2); w /= w.sum()
     st = np.zeros_like(out)
-    for i in range(NR):
+    for i in range(out.shape[0]):
         for c in range(3):
             lp = np.log(np.maximum(out[i, :, c], 1e-6))
             pad = np.concatenate([lp[len(k) // 2:0:-1], lp, lp[-2:-len(k) // 2 - 2:-1]])   # reflect at 0 and 180
@@ -180,23 +215,38 @@ def structure(out):
         st[i, :, 3] = 1.0
     return st
 
-def write(path, theta, out, gs):
+def write(path, theta, out, gs, reffs=None, second=None):
+    reffs = REFF_WATER if reffs is None else reffs
+    nr = len(reffs)
     with open(path, 'wb') as f:
         f.write(b'SLMI')
-        f.write(struct.pack('<II', NA, NR))
-        f.write(struct.pack(f'<{NR}f', *REFF))
-        f.write(struct.pack(f'<{NR * 3}f', *gs.flatten()))
+        f.write(struct.pack('<II', NA, nr))
+        f.write(struct.pack(f'<{nr}f', *reffs))
+        f.write(struct.pack(f'<{nr * 3}f', *gs.flatten()))
         o = out.copy()
         o[..., :3] *= 0.125   # the 30-um forward peak passes half-float max
         f.write(o.astype(np.float16).tobytes())
-        f.write(structure(out).astype(np.float16).tobytes())
+        f.write((structure(out) if second is None else second).astype(np.float16).tobytes())
     print("wrote", path, os.path.getsize(path), "bytes")
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--check', action='store_true')
-    ap.add_argument('--out', default='assets/textures/cloud_mie.rgba16f')
+    ap.add_argument('--out', default=None)
+    ap.add_argument('--ice', action='store_true', help="the plumes' ice table (assets/textures/plume_mie.rgba16f)")
     a = ap.parse_args()
+    if a.ice:
+        theta, out, gs = build(ice=True)
+        report(theta, out, gs, REFF_ICE)
+        if not a.check:
+            sw = np.sin(theta) / np.sin(theta).sum()
+            mean = np.ones_like(out)
+            for i in range(out.shape[0]):
+                for c in range(3):
+                    mean[i, :, c] = sw @ out[i, :, c]
+            write(a.out or 'assets/textures/plume_mie.rgba16f', theta, out, gs, REFF_ICE, mean)
+        sys.exit(0)
+    a.out = a.out or 'assets/textures/cloud_mie.rgba16f'
     theta, out, gs = build()
     report(theta, out, gs)
     st = structure(out)

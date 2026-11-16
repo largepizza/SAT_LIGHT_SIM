@@ -35,6 +35,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **Billowing staging clouds.** A rocket's staging cloud is a dense, compact billow drawn as a volume with the same
   cauliflower lobes as the cumulus clouds, each lobe lit and shaded through its own mass (white where sunlit, gold
   where the light is reddened); seen toward a twilight Sun its thin edges show pastel iridescence.
+- **Rocket exhaust ice scatters light physically.** Plumes use Mie optics for ice particles whose size follows height
+  and density: the high exhaust's tiny ice glows blue, the dense young cloud is whiter, and the low trail's larger ice
+  is unchanged. Setting `launches.plume_mie` (on).
 - **Smooth exhaust at the engines.** A rocket's fresh exhaust flows continuously out of its engines instead of
   arriving in puffs every second or so, no exhaust glow wraps the hull above the engines at night, and a plume that
   comes into view after a jump fades in instead of appearing at once.

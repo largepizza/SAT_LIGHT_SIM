@@ -163,6 +163,9 @@ layout(std430, set = 0, binding = 26) readonly buffer CloudProfile { uvec2 cv2Pr
 // The plume bricks (2026-11-15, plume_brick.comp): rgb light (pre-scaled), a optical depth; r its distance (m).
 layout(set = 0, binding = 27) uniform sampler2D brickLTex;
 layout(set = 0, binding = 28) uniform sampler2D brickTTex;
+// 29 (2026-11-15): the exhaust ice's Mie table (tools/make_mie_lut.py --ice; DustBuf header word 1 bit 30 = use it)
+layout(set = 0, binding = 29) uniform sampler2D plumeMieTex;
+#include "plume_mie.glsl"
 float cv2ProfileDepth(uint code) { return exp2(float(code & 0xFFFu) * (27.0 / 4094.0)); }
 // The depth the cloud's LIGHT comes from at this texel (the profile's luminance-weighted centroid; < 0 = no profile) and
 // its first / half / last contact: read again after dustCloudsCS (held across its loop, the composite left 128 registers).
@@ -925,7 +928,16 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
             float xa   = tauP - tau, xb = tauP;   // (tauP already holds this Gaussian)
             float msI  = (xb * (0.075 * (1.0 - exp(-0.6 * xb)) + 0.17 * (1.0 - exp(-0.25 * xb * xb))) -
                           xa * (0.075 * (1.0 - exp(-0.6 * xa)) + 0.17 * (1.0 - exp(-0.25 * xa * xa)))) / max(tau, 1e-9);
-            vec3  LiP  = lpI * (phaseP + msI) + lfI * (1.0 / (4.0 * PI) + msI) + lpeI * (1.0 / (4.0 * PI) + msI0);
+            // (2026-11-15) a rocket's exhaust (col.w = 2 + albedo; not smoke, not a tornado) with the ice's Mie optics
+            // (header bit 30): its phase and spectral scattering at its radius by height (plume_mie.glsl), the multiply
+            // scattered sunlight in the ice's mean colour; the plume bricks use the same
+            vec3  phI = vec3(phaseP), msCI = vec3(1.0);
+            if ((dustPad0 & 0x40000000u) != 0u && !isSm && sk < 256.0 && d.col.w >= 2.0) {
+                float rU = plumeReffUm(length(obsPos + clamp(tc, 0.0, T) * dir) - R_EARTH);
+                phI  = plumeMiePhase(cosT, rU);
+                msCI = plumeMieMean(rU);
+            }
+            vec3  LiP  = lpI * (phI + msI * msCI) + lfI * (1.0 / (4.0 * PI) + msI) + lpeI * (1.0 / (4.0 * PI) + msI0);
             // The caller dims a segment's plume light by the cloud's opacity at the SEGMENT's middle (kSegXm); in rain the
             // segments are km long (half opacity a few hundred m out, the last contact tens of km), so a funnel 1 km away
             // was dimmed as if ~10 km deep in the shaft (2026-10-26, issue 20261026_191508: "transparent" funnels in

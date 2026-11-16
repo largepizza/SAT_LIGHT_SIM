@@ -7873,6 +7873,9 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             // (2) high up the exhaust's ice is sub-micron: it scatters blue more than red (Angstrom exponent ~1.5,
             //     680 / 550 / 440 nm), normalised to keep the luminance; low down the droplets and soot are grey.
             //     The blue only where the sunlight still has its blue: ice lit by the reddened Sun is lit red.
+            // (2026-11-15) Not with the Mie optics (launches.plume_mie): the shaders take the ice's colour by size and
+            // angle from its table (plume_mie.glsl), this tint's sub-micron blue included.
+            if (!plumeMieActive())
             {
                 const double ice = glm::smoothstep(30000.0, 100000.0, h) * glm::clamp(tr[2] / std::max(tr[0], 1e-6), 0.0, 1.0);
                 const glm::dvec3 sp(0.727 / 0.9707, 1.0 / 0.9707, 1.398 / 0.9707);
@@ -8849,7 +8852,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 }
             }
             B.sun = glm::vec4(glm::vec3(anchor - C), (float)(alb / sw));
-            B.iso = glm::vec4(plumeIridescence, 0.0f, 0.0f, plumeBrickLobes);
+            B.iso = glm::vec4(plumeIridescence, plumeMieActive() ? 1.0f : 0.0f, 0.0f, plumeBrickLobes);
             const int grp = bc[gr.a].grp;
             const double seed = grp >= 0 && (size_t)grp < L.visList.size() ? launch::hash01(L.visList[(size_t)grp].first, 91 + (bc[gr.a].kind == 1 ? 7 : 0), 1) : 0.5;
             B.misc = glm::vec4((float)brickGauss_.size(), (float)(gr.b - gr.a), (float)seed, (float)(eRef / sw));
@@ -13613,7 +13616,8 @@ void SatelliteSim::engineLightsFlush()
         tail[i].cone = glm::vec4(0.0f);
     }
     // bits 8-27: the wildfire smoke's range (smoke.glsl); bit 31: the plume bricks drew something (2026-11-15)
-    static_cast<uint32_t *>(kDustMapped)[1] = n | smokeHdrBits | (bricks_.empty() ? 0u : 0x80000000u);
+    static_cast<uint32_t *>(kDustMapped)[1] = n | smokeHdrBits | (bricks_.empty() ? 0u : 0x80000000u) |
+                                              (plumeMieActive() ? 0x40000000u : 0u);   // bit 30: the plumes' Mie optics
     engineLightCount = n;
     engineLights_.clear();
 }
