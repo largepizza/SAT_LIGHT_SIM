@@ -113,40 +113,40 @@ void splat()
 }
 
 // The lighting's knobs (named so a harness variant can substitute them: shader_variant.py --src shaders/plume_brick.comp)
-const float kCore   = 8.0;    // the dense core's soft cap, in the brick's reference extinction (was a hard 2: a flat core)
 const float kMS     = 1.0;    // the multiple scattering's strength
 const float kSkyAO  = 0.6;    // the sky light's occlusion per unit of the local lobe-scale optical depth
-const float kLobeScale = 3.0; // the lobes' period in the brick's (B.c.w): at 1 a lobe (4 per period, ~3 km at the report's
+const float kLobeScale = 2.0; // the lobes' period in the brick's (B.c.w): at 1 a lobe (4 per period, ~3 km at the report's
                               // view) was finer than the view march's step (~4-5 km) and the light march's: noise, not lobes
 const float kCarve  = 1.0;    // crevices between the lobes through the interior (0: the lobes only on the outline)
+const float kLobeAmp = 2.0;   // the lobes' strength per unit of launches.plume_brick_lobes
 
-// The splat's density s (in the brick's reference extinction) to the shaped extinction's profile: a soft shell over
-// s 0.06 .. 0.22 (the splat's 1 / e^2 radius is s ~0.14), then rising with s to a soft cap (the dense young exhaust
-// near the stage stays denser than the outer cloud: optically thick lobes there, thin ones at the rim).
-float profile(float s) { return smoothstep(0.06, 0.22, s) * (0.55 + 0.45 * s / (1.0 + s / kCore)); }
+// The outline: a shell over s 0.10 .. 0.15 of the brick's reference extinction (the splat's 1 / e^2 radius is
+// s ~0.14; at 0.06 .. 0.22 the edge was a gradient ~5 km deep, wider than a lobe: smoke, not a cumulus edge). The reference sets WHERE the edge is, never how dense the inside is: the extinction is the splat's own
+// (its mass), so a denser cloud is optically thicker. (A profile capped relative to the reference threw a 10x denser
+// staging cloud away: its wide lobes pulled the reference down 14x and the cap went with it.)
+float shell(float s) { return smoothstep(0.10, 0.15, s); }
 
-// The cumulus look: the splat's smooth extinction, normalised by the brick's reference, takes the billow lobes in LOG
-// space (a Gaussian's falloff is quadratic there, so the noise displaces its iso-surfaces by a fraction of its radius:
-// lumpy outlines, and through the dense interior the same lobes as a density contrast), then the profile above.
+// The cumulus look: the splat's extinction takes the billow lobes as a factor in LOG space (mean ~1: the mass kept; a
+// Gaussian's falloff is quadratic there, so the noise displaces its iso-surfaces by a fraction of its radius: lumpy
+// outlines), the shell above, and crevices where the lobe field is low, through the whole cloud.
 float shaped(Brick B, vec3 p, float e)
 {
-    float k = B.iso.w;
+    float k = B.iso.w * kLobeAmp;
     float eRef = max(B.misc.w, 1e-12);
-    if (k <= 0.0 || e <= 0.0) return eRef * profile(e / eRef) * B.h.w;
+    if (k <= 0.0 || e <= 0.0) return e * shell(e / eRef) * B.h.w;
     vec3  q = (p - B.c.xyz - B.sun.xyz) / max(B.c.w * kLobeScale, 1.0) + vec3(B.misc.z * 37.0, B.misc.z * 11.0, B.misc.z * 23.0);
     float n1 = (textureLod(lobeTex, q, 0.0).g - 0.475) / 0.12;
     float n2 = (textureLod(lobeTex, q * 2.31 + 0.37, 0.0).b - 0.479) / 0.119;
     float nn = 0.55 * n1 + 0.25 * n2;
-    float s  = (e / eRef) * exp(k * nn);
-    // the crevices: where the lobe field is low the lobes part, through the whole cloud (mass kept: / its mean ~0.7)
-    float cv = mix(1.0, smoothstep(-0.7, 0.3, nn) * 1.45, kCarve);
-    return eRef * profile(s) * cv * B.h.w;
+    float g  = exp(k * nn);
+    // (the crevices' mask has mean ~0.6: x 1.6, the mass kept; exp(k nn)'s mean ~1.2: / it)
+    float cv = mix(1.0, smoothstep(-0.35, 0.05, nn) * 1.6, kCarve);
+    return e * (g * (1.0 / 1.2)) * shell((e / eRef) * g) * cv * B.h.w;
 }
 // Without the lobes (the far light march: the lobes there are below its step)
 float smoothExt(Brick B, float e)
 {
-    float eRef = max(B.misc.w, 1e-12);
-    return eRef * profile(e / eRef) * B.h.w;
+    return e * shell(e / max(B.misc.w, 1e-12)) * B.h.w;
 }
 
 // Henyey-Greenstein, per steradian
@@ -202,27 +202,30 @@ void march()
                 vec4  v4 = volAt4(b, l);
                 float e = shaped(B, p, v4.a);
                 if (e * dt < 1e-6) continue;
+                // (what this sample can still add to the eye: its light march is skipped when that is negligible, behind
+                // an opaque face or in a wisp; the optical depth is still taken)
+                if (T * (1.0 - exp(-e * dt)) < 2e-4) { T *= exp(-e * dt); tau += e * dt; tW += e * dt * t; if (T < 1e-3) break; continue; }
                 // The Sun through the brick's own mass. Near the sample, at the lobes' scale, through the LOBED extinction
-                // (4 steps over 2 lobes): each lobe shades its own far side and the crevices behind its neighbours, the
+                // (3 steps over 2 lobes): each lobe shades its own far side and the crevices behind its neighbours, the
                 // light and shade that draw the billows inside the cloud as well as on its outline. Beyond, the smooth
-                // extinction to the box's edge (5 steps).
+                // extinction to the box's edge (3 steps).
                 vec3  q0 = p - B.c.xyz;
                 vec3  ea = (B.h.xyz - q0) * idS, eb = (-B.h.xyz - q0) * idS;
                 float tEx = max(min(min(max(ea.x, eb.x), max(ea.y, eb.y)), max(ea.z, eb.z)), 0.0);
                 float nearL = min(2.0 * P, tEx);
                 float tN = 0.0;
-                for (int k = 0; k < 4; ++k) {
-                    // spans 0.15, 0.25, 0.3, 0.3 of the near reach (finer close to the sample, where the lobe's own shade is)
-                    float u0 = k == 0 ? 0.0 : k == 1 ? 0.15 : k == 2 ? 0.40 : 0.70;
-                    float u1 = k == 0 ? 0.15 : k == 1 ? 0.40 : k == 2 ? 0.70 : 1.0;
+                for (int k = 0; k < 3; ++k) {
+                    // spans 0.2, 0.3, 0.5 of the near reach (finer close to the sample, where the lobe's own shade is)
+                    float u0 = k == 0 ? 0.0 : k == 1 ? 0.2 : 0.5;
+                    float u1 = k == 0 ? 0.2 : k == 1 ? 0.5 : 1.0;
                     vec3  ps = p + sunDir * (0.5 * (u0 + u1) * nearL);
                     tN += shaped(B, ps, volAt(b, (ps - B.c.xyz) / B.h.xyz)) * (u1 - u0) * nearL;
                 }
                 float tF = 0.0;
                 float farL = tEx - nearL;
                 if (farL > 0.0) {
-                    float dF = farL / 5.0;
-                    for (int k = 0; k < 5; ++k) {
+                    float dF = farL / 3.0;
+                    for (int k = 0; k < 3; ++k) {
                         vec3 ps = p + sunDir * (nearL + (float(k) + 0.5) * dF);
                         tF += smoothExt(B, volAt(b, (ps - B.c.xyz) / B.h.xyz)) * dF;
                     }

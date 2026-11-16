@@ -4188,13 +4188,20 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
                 const glm::dvec3 dir = glm::normalize(rad + f * (-0.9 + 1.3 * h01(B.seed, 281 + k, 1)));
                 const double spd = 400.0 + 1000.0 * h01(B.seed, 282 + k, 2);
                 const double t0 = tS - 2.0 + 2.6 * h01(B.seed, 283 + k, 3);
-                const double m = vh.flow2 * 2.6 / N * (0.4 + 1.2 * h01(B.seed, 284 + k, 4));
+                // (2026-11-15, the user's reference photo of a staging cloud: an OPAQUE cumulus, its lobes drawn across
+                // its whole face by their own light and shade) x40: the staging region's ice is the ship's 2.6 s burst
+                // into the interstage AND the booster's flip and boostback, fired into the same cloud (Super Heavy's
+                // ~45 s boostback is ~35x the burst's propellant). At x1 the cloud was optically thin (tau < 0.3 through
+                // it, ~0.06 a lobe): its lobes averaged away along the line of sight and showed only on its outline.
+                const double m = 40.0 * vh.flow2 * 2.6 / N * (0.4 + 1.2 * h01(B.seed, 284 + k, 4));
                 launch::ParcelOpts O;
                 O.sig0 = 250.0 + 300.0 * h01(B.seed, 285 + k, 5); // (the burst out of the vents is already that big)
                 O.evapS = 300.0;
                 // (it billows out to a few km over the next minute: turbulence, as Richardson's law, and its own motion)
+                // (2026-11-15) richK 25 -> 2: at 25 Richardson's sigma^(1/3) law alone grew a lobe to sigma ~31 km in a
+                // minute (an eddy dissipation ~500x the upper air's), spreading its ice ~10x thinner than "a few km"
                 O.growK = 1.5 * (double)B.plumeGrow;
-                O.richK = 25.0 * (double)B.plumeGrow;
+                O.richK = 2.0 * (double)B.plumeGrow;
                 const glm::dvec3 p0 = pS + vS * (t0 - tS) + rad * 6.0;
                 B.parcels.push_back(launch::makeParcel(t0, p0, vS + spd * dir, m, kappaAt(hS) * 3.0, 0.85, dir, 0.6 * O.sig0,
                                                        kPlumeAgeLow, windDir, windGain, 300.0 + 300.0 * h01(B.seed, 286 + k, 6),
@@ -6724,6 +6731,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         // none of its exhaust ahead of the nozzle (dustCloudsCS's clip)
         glm::vec4 clip{0.0f};
         double brickW = 0.0; // (2026-11-15) its share drawn in a plume brick (below), the rest in the list
+        int kind = 0;        // (2026-11-15) 0 exhaust, 1 a hot-staging lobe, 2 a streak: the lobes get a brick of their own
     };
     // (2026-10-26, issue 20261026_193912) each launch's count of candidates this frame, for the reserved share
     static std::vector<int> grpCount;
@@ -7804,6 +7812,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             Cand c;
             c.pri = pri;
             c.grp = curGrp;
+            c.kind = curKind;
             c.jellyW = curJellyW;
             c.brickW = !plumeBricksOn ? 0.0 : curKind == 1 ? 1.0 : curKind == 0 ? curStaging : 0.0;
             // (2026-11-15, issue_20261115_164337 "often within the craft models") The shrink above keeps a Gaussian's
@@ -7993,6 +8002,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                         Cand cr;
                         cr.pri = pri * shellK * w / K;
                         cr.grp = c.grp;
+                        cr.kind = c.kind;
                         cr.clip = c.clip;
                         cr.brickW = c.brickW;
                         GpuDustCloud &dr = cr.d;
@@ -8732,7 +8742,11 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         }
         plumes.resize(keep);
         gBrickLobeCands = (int)bc.size();
-        std::sort(bc.begin(), bc.end(), [](const Cand &a, const Cand &b) { return a.grp < b.grp; });
+        // (2026-11-15) one brick per launch AND kind: the hot-staging lobes (the billow, ~20-40 km across) apart from
+        // the upper stage's early exhaust (a trail hundreds of km long). In one box the billow had ~4 march samples
+        // and 64^3 voxels of ~5 km across it: its lobes came out as soft smoke, never a cauliflower edge.
+        auto bkey = [](const Cand &c) { return c.grp * 2 + (c.kind == 1 ? 1 : 0); };
+        std::sort(bc.begin(), bc.end(), [&](const Cand &a, const Cand &b) { return bkey(a) < bkey(b); });
         struct BG
         {
             size_t a, b;
@@ -8744,7 +8758,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         {
             size_t b = a;
             double r = 1e30;
-            while (b < bc.size() && bc[b].grp == bc[a].grp)
+            while (b < bc.size() && bkey(bc[b]) == bkey(bc[a]))
             {
                 r = std::min(r, (double)glm::length(glm::vec3(bc[b].d.c)));
                 ++b;
@@ -8837,7 +8851,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             B.sun = glm::vec4(glm::vec3(anchor - C), (float)(alb / sw));
             B.iso = glm::vec4(plumeIridescence, 0.0f, 0.0f, plumeBrickLobes);
             const int grp = bc[gr.a].grp;
-            const double seed = grp >= 0 && (size_t)grp < L.visList.size() ? launch::hash01(L.visList[(size_t)grp].first, 91, 1) : 0.5;
+            const double seed = grp >= 0 && (size_t)grp < L.visList.size() ? launch::hash01(L.visList[(size_t)grp].first, 91 + (bc[gr.a].kind == 1 ? 7 : 0), 1) : 0.5;
             B.misc = glm::vec4((float)brickGauss_.size(), (float)(gr.b - gr.a), (float)seed, (float)(eRef / sw));
             for (size_t k = gr.a; k < gr.b; ++k)
                 brickGauss_.push_back(bc[k].d);
@@ -9336,7 +9350,7 @@ nlohmann::json SatelliteSim::launchStateJson() const
         nlohmann::json wa = nlohmann::json::array();
         for (size_t i = 0; i < pw.size() && i < 24; ++i)
             wa.push_back({{"kind", pw[i].kind}, {"age_s", pw[i].age}, {"alt_km", pw[i].altKm}, {"range_km", pw[i].rangeKm},
-                          {"sigma_km", pw[i].sigKm}, {"tau_peak", pw[i].tauPeak}, {"pri", pw[i].pri},
+                          {"sigma_km", pw[i].sigKm}, {"tau_peak", pw[i].tauPeak}, {"cross_section_m2", pw[i].Sigma}, {"pri", pw[i].pri},
                           {"brick_w", pw[i].brickW}, {"ground", pw[i].ground}});
         j["plume_wide"] = wa;
     }

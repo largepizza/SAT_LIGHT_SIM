@@ -1,0 +1,23 @@
+# The staging billow (2026-11-15, the user's reference photo): issue_20261115_165031's view, a 12 deg telephoto on its billow
+# from there (bricks on / off), and a fresh twilight staging seen close from 12 km with no weather clouds.
+report load "C:/Code/Shader_Fun/user_data/reports/issue_20261115_165031" shot=1 trail=off
+time pause
+wait 240 maxs=0
+capture f_rep crop=330,220,700,340 scale=2
+camera az=185.7 el=22.4 fov=12
+wait 240 maxs=0
+capture f_tele
+perf frames=120 name=f_tele_on
+set launches.plume_bricks false
+wait 240 maxs=0
+capture f_tele_off
+set launches.plume_bricks true
+launch next vehicle=starship when=twilight
+set clouds_v2.coverage 0
+observer lat=30.03 lon=-91.74 agl=12000
+time add 230
+time pause
+launch look stage=1
+camera fov=10
+wait 240 maxs=0
+capture f_close crop=400,150,800,600
