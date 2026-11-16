@@ -812,6 +812,7 @@ struct SatelliteSim::LaunchState
         double isoShare = -1.0;  // the share of it lit isotropically (the sky); < 0: none
         int kind = 0;            // (2026-10-30) 0 exhaust, 1 a hot-staging lobe, 2 a vacuum streak
         double pri = 0.0;        // its priority in the budget (launch state -> plume_vacuum, against plume_cut)
+        double brickW = 0.0;     // (2026-11-15) its share drawn in a plume brick (launch state -> plume_wide)
     };
     std::vector<PlumeDbg> plumeDbg;
     // (2026-10-26, issue 20261026_210053) per launch drawing plumes this frame: its candidates, how many were drawn,
@@ -8008,7 +8009,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             }
             if (L.plumeDbg.size() < 4000)
                 L.plumeDbg.push_back({range / 1000.0, h / 1000.0, sig / 1000.0, Sigma, tauPeak, age, tr * albedo, amb,
-                                      curGround, colOut, flameShare, curKind, pri});
+                                      curGround, colOut, flameShare, curKind, pri, c.brickW});
         };
         // Each parcel's state now (age >= 0: emitted; ok: still drawn).
         struct PState
@@ -9324,6 +9325,20 @@ nlohmann::json SatelliteSim::launchStateJson() const
                           {"sigma_km", pv[i].sigKm}, {"cross_section_m2", pv[i].Sigma}, {"tau_peak", pv[i].tauPeak},
                           {"pri", pv[i].pri}, {"drawn_col", {pv[i].drawn.x, pv[i].drawn.y, pv[i].drawn.z}}});
         j["plume_vacuum"] = va;
+    }
+    // (2026-11-15) the widest exhaust within 400 km (which Gaussians make a big smooth bell, and their brick share)
+    {
+        std::vector<LaunchState::PlumeDbg> pw;
+        for (const auto &e : L.plumeDbg)
+            if (e.rangeKm < 400.0)
+                pw.push_back(e);
+        std::sort(pw.begin(), pw.end(), [](const auto &a, const auto &b) { return a.sigKm > b.sigKm; });
+        nlohmann::json wa = nlohmann::json::array();
+        for (size_t i = 0; i < pw.size() && i < 24; ++i)
+            wa.push_back({{"kind", pw[i].kind}, {"age_s", pw[i].age}, {"alt_km", pw[i].altKm}, {"range_km", pw[i].rangeKm},
+                          {"sigma_km", pw[i].sigKm}, {"tau_peak", pw[i].tauPeak}, {"pri", pw[i].pri},
+                          {"brick_w", pw[i].brickW}, {"ground", pw[i].ground}});
+        j["plume_wide"] = wa;
     }
     j["plume_parcels"] = pd.size();
     {

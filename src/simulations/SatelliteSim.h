@@ -3359,6 +3359,7 @@ private:
     bool brickTargetsCleared = false;
     void createPlumeBricks(VulkanContext &ctx);          // once, after createCloudMarchDescriptors
     void createPlumeBrickTargets(VulkanContext &ctx);    // the half-res outputs (and on resize)
+    std::string buildPlumeBrickPipelines(VulkanContext &ctx, const std::string &spv);   // "" = shipped; returns an error
     void destroyPlumeBrickTargets(VkDevice dev);
     void writePlumeBrickDescriptors(VulkanContext &ctx); // its own set + cloud_march's 27 / 28
     void recordPlumeBricks(VkCommandBuffer cmd, VulkanContext &ctx, const CloudMarchPC &cpc);

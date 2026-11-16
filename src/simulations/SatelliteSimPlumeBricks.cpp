@@ -84,7 +84,27 @@ void SatelliteSim::createPlumeBricks(VulkanContext &ctx)
     pli.pushConstantRangeCount = 1;
     pli.pPushConstantRanges = &pcr;
     vkCreatePipelineLayout(dev, &pli, nullptr, &brickPipeLayout);
-    VkShaderModule mod = ctx.loadShader("shaders/plume_brick.comp.spv");
+    if (!buildPlumeBrickPipelines(ctx, "").empty())
+        throw std::runtime_error("plume bricks: pipeline");
+    createPlumeBrickTargets(ctx);
+}
+
+// The splat and march pipelines (specialization constant 0) from an SPV: the shipped one ("") or a harness variant
+// (`shaders reload brick=<spv>`). Replaces the current pair only when both build; returns an error or "".
+std::string SatelliteSim::buildPlumeBrickPipelines(VulkanContext &ctx, const std::string &spv)
+{
+    VkDevice dev = ctx.device;
+    VkShaderModule mod = VK_NULL_HANDLE;
+    try
+    {
+        mod = ctx.loadShader(spv.empty() ? std::string("shaders/plume_brick.comp.spv") : spv);
+    }
+    catch (const std::exception &ex)
+    {
+        return ex.what();
+    }
+    VkPipeline np[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+    std::string err;
     for (int mode = 0; mode < 2; ++mode)
     {
         const int32_t m = mode;
@@ -93,12 +113,24 @@ void SatelliteSim::createPlumeBricks(VulkanContext &ctx)
         VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, mod, "main", &si};
         ci.layout = brickPipeLayout;
-        if (vkCreateComputePipelines(dev, ctx.pipelineCache, 1, &ci, nullptr, mode == 0 ? &brickSplatPipe : &brickMarchPipe) !=
-            VK_SUCCESS)
-            throw std::runtime_error("plume bricks: pipeline");
+        if (vkCreateComputePipelines(dev, ctx.pipelineCache, 1, &ci, nullptr, &np[mode]) != VK_SUCCESS)
+            err = "pipeline creation failed";
     }
     vkDestroyShaderModule(dev, mod, nullptr);
-    createPlumeBrickTargets(ctx);
+    if (!err.empty())
+    {
+        for (VkPipeline p : np)
+            if (p != VK_NULL_HANDLE)
+                vkDestroyPipeline(dev, p, nullptr);
+        return err;
+    }
+    if (brickSplatPipe != VK_NULL_HANDLE)
+        vkDestroyPipeline(dev, brickSplatPipe, nullptr);
+    if (brickMarchPipe != VK_NULL_HANDLE)
+        vkDestroyPipeline(dev, brickMarchPipe, nullptr);
+    brickSplatPipe = np[0];
+    brickMarchPipe = np[1];
+    return "";
 }
 
 void SatelliteSim::createPlumeBrickTargets(VulkanContext &ctx)
@@ -107,10 +139,10 @@ void SatelliteSim::createPlumeBrickTargets(VulkanContext &ctx)
     brickExt = e;
     ctx.createImage(e.width, e.height, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                     brickLImg, brickLMem);
-    ctx.createImage(e.width, e.height, VK_FORMAT_R32_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+    ctx.createImage(e.width, e.height, VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                     brickTImg, brickTMem);
     brickLView = brickView(ctx.device, brickLImg, VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_R16G16B16A16_SFLOAT);
-    brickTView = brickView(ctx.device, brickTImg, VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_R32_SFLOAT);
+    brickTView = brickView(ctx.device, brickTImg, VK_IMAGE_VIEW_TYPE_2D, VK_FORMAT_R32G32B32A32_SFLOAT);
     VkCommandBuffer cmd = ctx.beginOneTimeCommands();
     for (VkImage img : {brickLImg, brickTImg})
         ctx.imageBarrier(cmd, img, 0, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,

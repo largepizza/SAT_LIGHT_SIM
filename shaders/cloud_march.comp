@@ -467,13 +467,15 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
     // The plume bricks (2026-11-15, plume_brick.comp: the hot-staging cloud as a volume with billow lobes): this texel's
     // marched light (pre-scaled by tau / (1 - exp(-tau)): the composite's segment weight gives the march's own light
     // back), optical depth and distance, taken as ONE more plume on the ray: through the cloud by its depth segment,
-    // dimming what is behind it, giving back the sky's light by an albedo of 0.85, and in the plumes' distances.
+    // dimming what is behind it, giving back the sky's light by an albedo of 0.85 on the share the sky reaches (outT.g),
+    // and in the plumes' distances.
     if ((dustPad0 & 0x80000000u) != 0u) {
         vec2 buv = (vec2(gl_GlobalInvocationID.xy) + 0.5) / vec2(imageSize(targetA));
         vec4 bL  = textureLod(brickLTex, buv, 0.0);
 
         if (bL.a > 1e-5) {
-            float tb   = min(textureLod(brickTTex, buv, 0.0).r, T);
+            vec2  bT   = textureLod(brickTTex, buv, 0.0).rg;
+            float tb   = min(bT.r, T);
             float tauB = bL.a;
             vec4  wSB  = tb < pK.x ? vec4(1.0, 0.0, 0.0, 0.0) : tb < pK.y ? vec4(0.0, 1.0, 0.0, 0.0)
                        : tb < pK.z ? vec4(0.0, 0.0, 1.0, 0.0) : vec4(0.0, 0.0, 0.0, 1.0);
@@ -483,7 +485,7 @@ vec3 dustCloudsCS(vec3 obsPos, vec3 dir, vec3 sunDir, float tScene, vec3 pK, flo
             tauP  += tauB;
             tauAir += tauB;
             tP    += tauB * tb;
-            Ls    += tauB * 0.85;
+            Ls    += bT.g * 0.85;   // its optical depth seen by the sky (crevices and the buried core see less of it)
             gPlS1 += tauB * exp(-tb * (1.0 / 3000.0));
             float wl = dot(bL.rgb, vec3(1.0 / 3.0)) + 1e-9 * tauB;
             wPL += wl;
