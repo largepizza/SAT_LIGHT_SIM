@@ -580,6 +580,11 @@ launches follow per-program cadences (no real manifest).
   165031 view; brightness within +-9% of HG at four views; the low trail (164337 shot 4, 3 um) unchanged. The table's
   corona colours are at 0.5-1 um, 10-30 deg from the Sun; by height the staging cloud's ice is 0.1-0.25 um, so toward
   a twilight Sun it glows blue-white with little colour (the Airy model's pink patches assumed 0.25-0.75 um).
+- **Turbulence by height (2026-11-15, the user: the bluer trail after hot staging should run smoothly into the
+  jellyfish).** Brick iso.z = 1 marks the hot-staging billow's brick (turbulent throughout); a stage's exhaust brick
+  takes turbK = 0.5 x (1 - smoothstep(70, 100 km, height)) of the lobes (amplitude), crevices and sharp shell, so above
+  ~100 km it is its splat, exactly the Gaussians it hands off to. The Gaussians' billows fade the same way for a stage's
+  exhaust (not smoke, not the hot-staging seeds 192-255). The hot-staging ice is x60 (x40, then "a tad denser").
 - **The second stage's jellyfish and hot staging (2026-10-30, issue 20261030_134020 "Second Stage Jellyfish").** The
   upper stage's vacuum exhaust used to be invisible: every parcel expanded at 2 km/s in every direction (~300 km wide
   3 min after leaving, optical depth ~2e-5), its young Gaussians lost the budget to the wide old bells, and the sim's

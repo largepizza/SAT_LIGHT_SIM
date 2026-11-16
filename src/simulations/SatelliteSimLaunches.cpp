@@ -4189,11 +4189,11 @@ static void buildParcels(const SatelliteSim::LaunchState &L, LBatch &B)
                 const double spd = 400.0 + 1000.0 * h01(B.seed, 282 + k, 2);
                 const double t0 = tS - 2.0 + 2.6 * h01(B.seed, 283 + k, 3);
                 // (2026-11-15, the user's reference photo of a staging cloud: an OPAQUE cumulus, its lobes drawn across
-                // its whole face by their own light and shade) x40: the staging region's ice is the ship's 2.6 s burst
+                // its whole face by their own light and shade) x60 (x40, then "a tad denser"): the staging region's ice is the ship's 2.6 s burst
                 // into the interstage AND the booster's flip and boostback, fired into the same cloud (Super Heavy's
                 // ~45 s boostback is ~35x the burst's propellant). At x1 the cloud was optically thin (tau < 0.3 through
                 // it, ~0.06 a lobe): its lobes averaged away along the line of sight and showed only on its outline.
-                const double m = 40.0 * vh.flow2 * 2.6 / N * (0.4 + 1.2 * h01(B.seed, 284 + k, 4));
+                const double m = 60.0 * vh.flow2 * 2.6 / N * (0.4 + 1.2 * h01(B.seed, 284 + k, 4));
                 launch::ParcelOpts O;
                 O.sig0 = 250.0 + 300.0 * h01(B.seed, 285 + k, 5); // (the burst out of the vents is already that big)
                 O.evapS = 300.0;
@@ -8852,7 +8852,8 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 }
             }
             B.sun = glm::vec4(glm::vec3(anchor - C), (float)(alb / sw));
-            B.iso = glm::vec4(plumeIridescence, plumeMieActive() ? 1.0f : 0.0f, 0.0f, plumeBrickLobes);
+            // (z: the hot-staging billow, turbulent throughout; a stage's exhaust fades its lobes with height)
+            B.iso = glm::vec4(plumeIridescence, plumeMieActive() ? 1.0f : 0.0f, bc[gr.a].kind == 1 ? 1.0f : 0.0f, plumeBrickLobes);
             const int grp = bc[gr.a].grp;
             const double seed = grp >= 0 && (size_t)grp < L.visList.size() ? launch::hash01(L.visList[(size_t)grp].first, 91 + (bc[gr.a].kind == 1 ? 7 : 0), 1) : 0.5;
             B.misc = glm::vec4((float)brickGauss_.size(), (float)(gr.b - gr.a), (float)seed, (float)(eRef / sw));
