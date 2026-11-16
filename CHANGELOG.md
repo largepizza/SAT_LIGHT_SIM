@@ -38,6 +38,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **Rocket exhaust ice scatters light physically.** Plumes use Mie optics for ice particles whose size follows height
   and density: the high exhaust's tiny ice glows blue, the dense young cloud is whiter, and the low trail's larger ice
   is unchanged. Setting `launches.plume_mie` (on).
+- **Noctilucent clouds, natural and launch-made.** Ice forms at 83 km wherever the air is colder than the frost point
+  of its water vapour: the natural polar summer clouds, plus every launch's exhaust water, carried toward the summer
+  pole over days. Near the launch sites the air is too warm, so the clouds appear downwind: north of the Gulf pads in
+  July, over Antarctica in November. Old high trails flatten into thin sheets. Setting `launches.nlc` (on).
 - **Smooth exhaust at the engines.** A rocket's fresh exhaust flows continuously out of its engines instead of
   arriving in puffs every second or so, no exhaust glow wraps the hull above the engines at night, and a plume that
   comes into view after a jump fades in instead of appearing at once.

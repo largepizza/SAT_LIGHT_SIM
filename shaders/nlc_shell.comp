@@ -1,0 +1,194 @@
+#version 450
+// The noctilucent cloud layer (2026-11-16, .plans/PLUME_OVERHAUL_PLAN.md phase 3, issue_20261115_165612): ice at ~83 km
+// wherever the air is colder than the frost point of its water vapour (src/simulations/Nlc.h has the physics,
+// SatelliteSimNLC.cpp the field). The CPU writes a global map (NlcBuf: the vapour, rocket exhaust included, the mean
+// temperature with the tides, the frost point); here each ray's crossings of the layer add the gravity waves (two
+// octaves of noise, 8 K rms), take the ice as the vapour above saturation, and scatter the sunlight that reaches it.
+// Runs after the cloud composite (cloud_march.comp + the full-res combine) on the composite's own targets, so the
+// clouds and the ground hide it from below and it lies over them from above:
+//   eye above the layer: B' = B Tn + Ln,  eye below: B' = B + A Ln;  A' = A Tn  (sat_sky.frag: colour x A + B).
+// Its own pass: sat_sky.frag sits at the 16-sampled-image floor and cloud_march.comp at the 128-register cliff.
+// docs/subsystems/launches.md "Launch-made noctilucent clouds".
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+#include "common.glsl"
+#include "atmosphere.glsl"
+
+layout(push_constant) uniform PC {
+    mat4  skyView;     // ENU -> camera space (rotation)
+    float fovYRad;
+    float aspect;
+    float waveTime;
+    float obsEffH;
+    vec4  sunDirENU;
+    vec4  moonDirENU;
+    vec4  obsECEFDir;  // xyz the observer's ECEF unit vector, w its height above sea level (m, CPU)
+} pc;
+
+layout(std430, set = 0, binding = 0) readonly buffer NlcBuf {
+    uvec4 hdr;   // x W, y H, z 1 = on, w 1 = some ice is possible somewhere (the map's mean T within 3 sigma of frost)
+    vec4  gw0;   // the gravity waves' octaves: xyz the noise's offset now (lattice cells, wrapped), w amplitude (K rms)
+    vec4  gw1;
+    vec4  misc;  // x, y the octaves' frequencies (cells per Earth radius), z the layer's half-width (m), w 1 = the
+                 // Mie table is loaded
+    uvec2 tex[]; // W x H (rows from the north pole, columns from lon -180): x packHalf2x16(vapour ppmv, mean T K),
+                 // y packHalf2x16(frost point K, 0)
+};
+layout(set = 0, binding = 1, rgba16f) uniform image2D targetA;   // rgb the light in front (B_total), a occlusion
+layout(set = 0, binding = 2, rgba16f) uniform image2D targetB;   // rgb the transmittance (A_total), a terrain Sun
+layout(set = 0, binding = 3) uniform sampler2D sceneDepthTex;     // the ground's distance (m)
+layout(set = 0, binding = 4) uniform sampler2D plumeMieTex;       // ice's Mie table (plume_mie.glsl; misc.w 1 = loaded)
+#include "plume_mie.glsl"
+
+const float kShellR = R_EARTH + 83000.0;
+const float kPAir   = 0.55;     // Pa at 83 km (Nlc.h)
+const float kRhoAir = 1.15e-5;  // kg/m^3 at 83 km
+
+vec3 nlcTexel(int x, int y)
+{
+    uvec2 t = tex[y * int(hdr.x) + x];
+    return vec3(unpackHalf2x16(t.x), unpackHalf2x16(t.y).x);
+}
+// (vapour ppmv, mean T, frost point) at (lat, lon) rad, bilinear (longitude wraps)
+vec3 nlcMap(float lat, float lon)
+{
+    int W = int(hdr.x), H = int(hdr.y);
+    float u = (lon * (0.5 / PI) + 0.5) * float(W) - 0.5;
+    float v = (0.5 - lat * (1.0 / PI)) * float(H) - 0.5;
+    float fu = floor(u), fv = floor(v);
+    int x0 = int(fu), y0 = int(fv);
+    float au = u - fu, av = v - fv;
+    int xa = (x0 % W + W) % W, xb = ((x0 + 1) % W + W) % W;
+    int ya = clamp(y0, 0, H - 1), yb = clamp(y0 + 1, 0, H - 1);
+    return mix(mix(nlcTexel(xa, ya), nlcTexel(xb, ya), au), mix(nlcTexel(xa, yb), nlcTexel(xb, yb), au), av);
+}
+
+// Value noise on a 1024-cell periodic lattice (the CPU wraps the octaves' drift by it): rms 0.400 (lattice values
+// uniform in [-1, 1], quintic weights: (0.78355^3 / 3)^0.5).
+float nlcHash(ivec3 c)
+{
+    uvec3 v = uvec3(c & 1023);
+    uint h = v.x * 73856093u ^ v.y * 19349663u ^ v.z * 83492791u;
+    h ^= h >> 13; h *= 0x5bd1e995u; h ^= h >> 15;
+    return float(h & 0xffffu) * (2.0 / 65535.0) - 1.0;
+}
+float nlcNoise(vec3 p)
+{
+    vec3 fl = floor(p), f = p - fl;
+    ivec3 i = ivec3(fl);
+    vec3 w = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    float a = mix(nlcHash(i), nlcHash(i + ivec3(1, 0, 0)), w.x);
+    float b = mix(nlcHash(i + ivec3(0, 1, 0)), nlcHash(i + ivec3(1, 1, 0)), w.x);
+    float c = mix(nlcHash(i + ivec3(0, 0, 1)), nlcHash(i + ivec3(1, 0, 1)), w.x);
+    float d = mix(nlcHash(i + ivec3(0, 1, 1)), nlcHash(i + ivec3(1, 1, 1)), w.x);
+    return mix(mix(a, b, w.y), mix(c, d, w.y), w.z);
+}
+
+// One crossing of the layer at P (ENU frame, Earth-centred), col metres of it at its peak density along the ray:
+// rgb the sunlight it scatters to the eye (the sky's units: SUN_INTENSITY x phaseR-normalised phase x optical depth),
+// w its optical depth (luminance).
+vec4 nlcCrossing(vec3 P, float col, vec3 dir, vec3 sunDir, mat3 enuToEcef)
+{
+    vec3 uE = normalize(enuToEcef * P);
+    vec3 m = nlcMap(asin(clamp(uE.z, -1.0, 1.0)), atan(uE.y, uE.x));
+    float sig = length(vec2(gw0.w, gw1.w));
+    if (m.z < m.y - 3.0 * sig)
+        return vec4(0.0);                               // warmer than the frost point by 3 sigma of the waves: no ice
+    // Sunlit: the Sun's ray from P must clear the Earth and its cloud-topped troposphere (~8-16 km, soft)
+    float ps = dot(P, sunDir);
+    float bS = sqrt(max(dot(P, P) - ps * ps, 0.0));
+    float lit = ps >= 0.0 ? 1.0 : smoothstep(R_EARTH + 8000.0, R_EARTH + 16000.0, bS);
+    float T = m.y + gw0.w * nlcNoise(uE * misc.x + gw0.xyz) * 2.5 + gw1.w * nlcNoise(uE * misc.y + gw1.xyz) * 2.5;
+    float xs = exp(9.550426 - 5723.265 / T + 3.53068 * log(T) - 0.00728332 * T) * (1e6 / kPAir); // saturation, ppmv
+    float ice = m.x - xs;                                // the vapour above saturation freezes (ppmv)
+    if (ice <= 0.0)
+        return vec4(0.0);
+    // The ice. Freeze-drying (Rapp & Thomas 2006): the particles grow in the supersaturated air above the mesopause
+    // and fall, so the layer holds the excess water of ~8 km of air (kCollectM) in its ~2.7 km (w sqrt(pi)): a few
+    // ppmv gives ~50 ng/m^3, SOFIE's ice mass densities. Their size from that mass shared among ~100 particles per
+    // cm^3 (the clouds' number densities, 50-200): ~50 nm for a few ppmv, 20-120 nm. Small next to the light's
+    // wavelength, so Rayleigh-like: mass extinction 172 m^2/kg at 50 nm and 550 nm (2 x^4 |(m^2-1)/(m^2+2)|^2 /
+    // (r rho_ice), ice n 1.31; Mie's is within ~15% up to 100 nm), ~r^3 (so the extinction goes as the ice squared).
+    // Colour and phase from the exhaust ice's Mie table (plume_mie.glsl: ice spheres, spectral; the same optics as the
+    // plumes): at 50 nm close to lambda^-4, at 100 nm visibly less blue and more forward (a pure lambda^-4 made the
+    // layer violet overhead and green where the reddened Sun lit it). Without the table: lambda^-4 (BETA_R_BASE's
+    // ratio) and Rayleigh's phase.
+    const float kCollectM = 8000.0;
+    float iceRho = ice * 1e-6 * (18.015 / 28.97) * kRhoAir * (kCollectM / (misc.z * 1.7725));   // kg/m^3 in the layer
+    float rM   = clamp(pow(3.0 * iceRho / (4.0 * PI * 917.0 * 1e8), 1.0 / 3.0), 2e-8, 1.2e-7);
+    float kExt = 172.0 * pow(rM / 5e-8, 3.0);
+    float tau  = kExt * iceRho * col;
+    float cosT = dot(dir, sunDir);
+    vec3  phC;   // the phase (mean 1, the sky's units) x the spectral scattering relative to the luminance's
+    if (misc.w > 0.5)
+        phC = plumeMiePhase(cosT, rM * 1e6) * (4.0 * PI);
+    else
+        phC = phaseR(cosT) * BETA_R_BASE / dot(BETA_R_BASE, vec3(0.2126, 0.7152, 0.0722));
+    float r = length(P), cz = ps / r;
+    vec3 tauS = BETA_R_BASE * (atmColumnInf(r, cz, H_R) * H_R) + BETA_M_BASE * 1.1 * (atmColumnInf(r, cz, H_M) * H_M)
+              + atmOzoneTau(P, sunDir);
+    // (optically thin as a rule; a grazing ray's path through a loaded layer reaches tau ~0.1: 1 - e^-tau keeps it bounded)
+    return vec4(SUN_INTENSITY * lit * exp(-tauS) * phC * (1.0 - exp(-tau)), tau);
+}
+
+void main()
+{
+    ivec2 size  = imageSize(targetA);
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (coord.x >= size.x || coord.y >= size.y || hdr.z == 0u || hdr.w == 0u)
+        return;
+    float tanHalfFov = tan(pc.fovYRad * 0.5);
+    mat3  camToENU   = mat3(transpose(pc.skyView));
+    vec2  uv  = (vec2(coord) + 0.5) / vec2(size);
+    vec2  ndc = uv * 2.0 - 1.0;
+    vec3  dir = normalize(camToENU * vec3(ndc.x * tanHalfFov * pc.aspect, -ndc.y * tanHalfFov, -1.0));
+    vec3  sunDir = normalize(pc.sunDirENU.xyz);
+    vec3  obsPos = vec3(0.0, 0.0, R_EARTH + pc.obsECEFDir.w);
+    float tScene = min(textureLod(sceneDepthTex, uv, 0.0).r, 1e12);
+    vec3  enuZ = normalize(pc.obsECEFDir.xyz);
+    vec3  enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ));
+    mat3  enuToEcef = mat3(enuX, cross(enuZ, enuX), enuZ);
+
+    // The ray against the layer (a Gaussian in height round kShellR, half-width w): per crossing w sqrt(pi) / cos Z of
+    // it, a grazing ray at most 1.813 sqrt(2 r0 w) in all (the airglow line's closed form, sat_sky.frag)
+    float w = misc.z;
+    float tc = -dot(obsPos, dir);
+    float b  = length(obsPos + dir * tc);
+    float colPeak = 1.813 * sqrt(2.0 * kShellR * w);
+    bool  above = obsPos.z > kShellR;
+    vec3  L = vec3(0.0);
+    float tauSum = 0.0;
+    if (b < kShellR) {
+        float q = sqrt(kShellR * kShellR - b * b);
+        float cosZ = q / kShellR;
+        float colX = min(w * 1.7725 / max(cosZ, 1e-4), 0.5 * colPeak);
+        for (int k = 0; k < 2; ++k) {
+            float t = k == 0 ? tc - q : tc + q;
+            if (t <= 0.0 || t >= tScene)
+                continue;
+            vec4 c = nlcCrossing(obsPos + dir * t, colX, dir, sunDir, enuToEcef);
+            L = L * exp(-c.w) + c.rgb;   // (the far crossing first in effect: both thin, the order hardly matters)
+            tauSum += c.w;
+        }
+    } else if (b < kShellR + 3.0 * w && tc > 0.0 && tc < tScene) {
+        vec4 c = nlcCrossing(obsPos + dir * tc, colPeak * exp(-pow((b - kShellR) / w, 2.0)), dir, sunDir, enuToEcef);
+        L = c.rgb;
+        tauSum = c.w;
+    }
+    if (tauSum <= 0.0)
+        return;
+    // the air between the eye and the layer (none worth counting from above it)
+    if (!above) {
+        float r = obsPos.z, cz = dir.z;
+        L *= exp(-(BETA_R_BASE * (atmColumnInf(r, cz, H_R) * H_R) + BETA_M_BASE * 1.1 * (atmColumnInf(r, cz, H_M) * H_M)));
+    }
+    vec4 A = imageLoad(targetA, coord), B = imageLoad(targetB, coord);
+    float Tn = exp(-tauSum);
+    if (above)
+        A.rgb = A.rgb * Tn + L;
+    else
+        A.rgb = A.rgb + B.rgb * L;
+    B.rgb *= Tn;
+    imageStore(targetA, coord, A);
+    imageStore(targetB, coord, B);
+}

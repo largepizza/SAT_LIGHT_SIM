@@ -34,6 +34,7 @@ inline constexpr bool kHaboobsRetired = true;     // Weather v2: the one wind (2
 #include "LunarBases.h"   // the lunar bases' solar-array glints (2026-10-27)
 #include "Meteors.h"      // meteor showers and the sporadic background (2026-10-27)
 #include "Comets.h"       // comets: orbits, brightness, tails (2026-10-27)
+#include "Nlc.h"          // noctilucent clouds from launch exhaust (2026-11-16)
 #include <filesystem>
 #include <memory>
 
@@ -3377,6 +3378,35 @@ private:
     void writePlumeBrickDescriptors(VulkanContext &ctx); // its own set + cloud_march's 27 / 28
     void recordPlumeBricks(VkCommandBuffer cmd, VulkanContext &ctx, const CloudMarchPC &cpc);
     void destroyPlumeBricks(VkDevice dev);
+    // ── Noctilucent clouds (2026-11-16, .plans/PLUME_OVERHAUL_PLAN.md phase 3; SatelliteSimNLC.cpp, Nlc.h,
+    // shaders/nlc_shell.comp). Ice at 83 km wherever the air is colder than the frost point of its water vapour: the
+    // background's (natural polar summer clouds) plus every launch's exhaust water of the last 9 days. A global map
+    // (nlc::kMapW x kMapH: vapour, mean temperature, frost point) built on a worker when sim time moves a minute; the pass
+    // adds the gravity waves and lights the ice on the cloud composite's targets. launches.nlc.
+    bool nlcOn = true;
+    static constexpr VkDeviceSize kNlcHeader = 64;
+    VkBuffer nlcBuf = VK_NULL_HANDLE;
+    VkDeviceMemory nlcMem = VK_NULL_HANDLE;
+    void *nlcMapped = nullptr;
+    VkDescriptorSetLayout nlcDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool nlcDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet nlcDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout nlcPipeLayout = VK_NULL_HANDLE;
+    VkPipeline nlcPipe = VK_NULL_HANDLE;
+    std::unordered_map<uint64_t, nlc::Deposit> nlcDeposits;   // by launch batch (launchWaterDeposits; m 0 = no water)
+    std::shared_ptr<nlc::Job> nlcJob;                           // the map being built (a worker)
+    std::shared_ptr<nlc::Job> nlcField;                         // the map on the GPU (its CPU copy, for the state)
+    double nlcStartT = -1e300;                                // sim time of the last build started
+    bool nlcAnyIce = false;
+    void createNlc(VulkanContext &ctx);
+    std::string buildNlcPipeline(VulkanContext &ctx, const std::string &spv);   // "" = shipped; returns an error
+    void writeNlcDescriptors(VulkanContext &ctx);   // the cloud targets + scene depth (and after a resize)
+    void nlcUpdate(VulkanContext &ctx);             // each frame: collect / start a build, the waves' drift
+    void recordNlc(VkCommandBuffer cmd, const CloudMarchPC &cpc);
+    void destroyNlc(VkDevice dev);
+    nlohmann::json nlcStateJson() const;
+    // Every launch in [t0, t1] as its exhaust water at 80-115 km, added to `known` by batch key (SatelliteSimLaunches.cpp).
+    void launchWaterDeposits(double t0, double t1, std::unordered_map<uint64_t, nlc::Deposit> &known);
     // The clouds drawn this frame (harness `kessler state` -> dust.clouds): event index, kind, dust kg, small
     // fragments, age (s), the rank's effective size sqrt(amp / priority) (km), its light (amp, before the sky units), cut fade.
     std::vector<std::array<double, 8>> kDustDbg;
