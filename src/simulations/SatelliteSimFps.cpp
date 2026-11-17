@@ -23,14 +23,15 @@ namespace
 {
 const char *fpsWhyName(int w)
 {
-    static const char *k[] = {"tab", "right_click", "window", "focus", "harness", "settings"};
-    return (w >= 0 && w < 6) ? k[w] : "?";
+    static const char *k[] = {"tab", "right_click", "window", "focus", "harness", "settings", "intro"};
+    return (w >= 0 && w < 7) ? k[w] : "?";
 }
 } // namespace
 
 bool SatelliteSim::fpsLogicLive() const
 {
-    if (!fpsMode || showIntro || cineActive())
+    // (The opening is normal play: the mode is live from its first frame, the cursor captured for a player.)
+    if (!fpsMode || cineActive())
         return false;
     // An HQ photo never captures the cursor: a player gets menu mode meanwhile (the harness's FPS mode is logic only,
     // so it carries on there). A player's own video recording (F6) is their session: the mode stays live.

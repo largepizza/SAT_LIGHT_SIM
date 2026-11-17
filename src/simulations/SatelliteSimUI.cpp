@@ -755,16 +755,13 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // turning the camera after the mouse stops; releasing RMB zeroes it. Latched cinematic mode
     // (the Movement popup): while RMB is held the look rate follows the mouse rate, smoothed, and
     // on release the camera coasts at that rate (capped); with RMB up the mouse does not steer.
-    // UC3: skip during the intro cinematic — updateIntroCinematic() (recordCompute) drives
-    // camera.elDeg/obsFacing directly, and letting RMB-look run concurrently would fight it (and
-    // would leave the cursor captured/hidden partway through a cutscene the user hasn't consented
-    // to control yet).
+    // (Skipped while a cinematic plays, which drives the camera; the opening is normal play.)
     camSync(); // the camera rig: adopts a mirror an unconverted write changed, then publishes (SatelliteSimCamera.cpp)
     // The FPS mode (SatelliteSimFps.cpp): forced exits, the right press that leaves it, the OS cursor capture.
     fpsTick(ui.input(), dt);
     camera.sensMul = std::clamp(mouseSensMul, 0.05f, 10.0f);
     fpsLookedThisFrame_ = false;
-    if (win && !showIntro && !cineActive())
+    if (win && !cineActive())
     {
         // FPS mode: the mouse looks with no button held. Only a captured OS cursor's motion counts (under the harness,
         // or while it is not captured, a pointer crossing the window must not turn the camera), plus `mouse move`.
@@ -972,16 +969,12 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     if ((inp.lmbPressed && !vCursorActive) || inp.rmbPressed || inp.scrollY != 0.0f || camera.captured || fpsLookedThisFrame_)
         lastInputWasGamepad = false;
 
-    // UC3: the cinematic intro hides the entire normal HUD — no left/right panels, no
-    // settings/view-controls windows, no satellite/planet picking, no scroll-to-zoom — nothing
-    // but buildIntroOverlay's own caption + skip-hint. Checked ahead of uiVisible (and ahead of
-    // icon loading/scroll/click handling below) so none of that runs while the intro owns the
-    // camera, independent of whether the player has the rest of the UI toggled on or off.
-    if (showIntro)
-    {
-        buildIntroOverlay(inp, ui);
-        return;
-    }
+    // UC3, the opening: the corner toolbars (and their popups) stay hidden while the captions play until the player is
+    // first in menu mode (Tab, a right click, a forced exit), after this frame's fpsTick (the look block above);
+    // finishIntro shows them for good. Everything else is normal play.
+    if (showIntro && introBasisValid && !fpsMode)
+        introToolbarsShown = true;
+    const bool introHidesToolbars = showIntro && !introToolbarsShown;
     // Before the click handling below: a click on the tutorial's card must not also pick a satellite,
     // and its completion test reads this frame's look (the block above) and keys.
     fprof::mark("ui.seg3a_look");
@@ -1024,6 +1017,9 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     buildCineHud(inp, ui);         // a playing / exporting cinematic's progress and Stop, likewise
     buildVideoHud(inp, ui);        // the REC badge while recording a video, likewise
     buildFpsRing(ui);              // the FPS mode's centre ring after a click, likewise (SatelliteSimFps.cpp)
+    // The opening's captions, likewise (they drew over a hidden HUD before the opening was playable). Clear of the
+    // corner toolbars when those draw this frame.
+    buildIntroOverlay(inp, ui, uiVisible && !introHidesToolbars);
     fprof::mark("ui.seg3d_console_cine");
     bookmarkTick(ui);              // bookmarks: the list, thumbnail captures and uploads (window open or not)
     fprof::mark("ui.seg3e_bookmarks");
@@ -1038,10 +1034,13 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         return;
 
     fprof::mark("ui.seg3_look_pick");
-    buildLeftHudPanel(inp, ui);
-    buildRightHudPanel(inp, ui);
-    buildHudPopup(inp, ui, 0); // the Movement and View popups (SatelliteSimHudPopups.cpp)
-    buildHudPopup(inp, ui, 1);
+    if (!introHidesToolbars) // (the opening holds them back until the first menu mode: see above)
+    {
+        buildLeftHudPanel(inp, ui);
+        buildRightHudPanel(inp, ui);
+        buildHudPopup(inp, ui, 0); // the Movement and View popups (SatelliteSimHudPopups.cpp)
+        buildHudPopup(inp, ui, 1);
+    }
     buildSettingsWindow(inp, ui);
     buildViewControlsWindow(inp, ui);
     buildTraceWindow(inp, ui);
@@ -3383,7 +3382,7 @@ void SatelliteSim::buildFollowHud(const UIInput &inp, UIRenderer &ui)
         // (landing burn), T+423 s, 1 km up ... again" for a booster long since caught: dropped on a sim jump.)
         if (std::abs((double)simDayJ2000 * 86400.0 + simSecInDay - followAgainSimT) > 600.0)
             followAgainUntil = 0.0;
-        if (followAgainUntil <= glfwGetTime() || cineActive() || showIntro || (followLastIdx < 0 && !followLastIsTr))
+        if (followAgainUntil <= glfwGetTime() || cineActive() || (followLastIdx < 0 && !followLastIsTr))
             return;
         static char againBuf[200], againTip[96];
         snprintf(againBuf, sizeof(againBuf), tx(Txt::FmtGoToAgain), followLastLabel[0] ? labelNameLen(followLastLabel) : 15,
@@ -5113,8 +5112,9 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     uiToggleRow(inp, ui, "AskGfxMode", 0, tx(Txt::LblAskForGraphicsModeOnStartup), askGraphicsModeOnStartup);
     settingsButtonRow(searchActive(), CLAY_ID("DispStartupBtns"), [&]()
     {
-        if (uiButton(inp, ui, "ReplayIntroBtn", 0, tx(Txt::BtnReplayIntro), nullptr, false, !showIntro))
+        if (uiButton(inp, ui, "ReplayIntroBtn", 0, tx(Txt::BtnReplayIntro), nullptr))
         {
+            settingsChrome.open = false; // the opening plays over the view, not this window
             startIntroReplay();
         }
         if (uiButton(inp, ui, "ReplayTutorialBtn", 0, tx(Txt::BtnReplayTutorial), nullptr, false, !showIntro))
@@ -8106,19 +8106,14 @@ void SatelliteSim::buildCrashRecoveryNotice(float dt, const UIInput &inp, UIRend
 }
 
 // ─── buildIntroOverlay ───────────────────────────────────────────────────────
-// UC3: the cinematic camera path (updateIntroCinematic, recordCompute) IS the intro now — this
-// just overlays the current beat's caption, translucent so the flythrough stays visible under it.
-// Dismissal is intentionally narrow: only the literal Space bar (onKey) or gamepad Start
-// (pollGamepad) end it early. It used to be dismissible by any click or any keypress, which meant
-// an incidental click into the window (or just touching the keyboard) skipped it before most
-// players ever saw it play — the mouse capture rect below still exists to swallow clicks so they
-// don't leak through to satellite picking or camera look, but a click no longer skips anything.
-void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
+// UC3, the opening: the current beat's caption over the player's own view. It never takes input (no capture rect,
+// a passthrough band): the player looks, moves and clicks through it. Bottom-centred 90 px up, or higher when the
+// corner toolbars draw (clearToolbars): far enough to clear them (uiBottomClearance).
+void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui, bool clearToolbars)
 {
+    (void)ui;
     if (!showIntro)
         return;
-
-    ui.addMouseCaptureRect(0, 0, inp.screenW, inp.screenH);
 
     // Fade the current caption in over its first 0.8s; fade everything out over the last 1.0s of
     // the whole sequence so the final line doesn't just vanish at the auto-handoff.
@@ -8135,14 +8130,17 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
 
     if (text && textA > 0)
     {
+        const float bottomPad = clearToolbars ? std::max(90.0f, uiBottomClearance((float)inp.screenH)) : 90.0f;
         CLAY(CLAY_ID("IntroCaptionOuter"), {.layout = {
                                                 .sizing = {CLAY_SIZING_FIXED((float)inp.screenW),
                                                            CLAY_SIZING_FIXED((float)inp.screenH)},
-                                                .padding = {40, 40, 0, 90},
+                                                .padding = {40, 40, 0, (uint16_t)bottomPad},
                                                 .childAlignment = {.x = CLAY_ALIGN_X_CENTER,
                                                                    .y = CLAY_ALIGN_Y_BOTTOM},
                                                 .layoutDirection = CLAY_TOP_TO_BOTTOM},
-                                            .floating = {.zIndex = 30, .attachTo = CLAY_ATTACH_TO_ROOT}})
+                                            .floating = {.zIndex = 30,
+                                                         .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH,
+                                                         .attachTo = CLAY_ATTACH_TO_ROOT}})
         {
             // No background panel here (deliberately — a translucent rounded rectangle used to sit
             // behind this text; user testing found it read as UI clutter, especially since players
@@ -8182,28 +8180,6 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
                     CLAY_TEXT(txtStr, CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, (float)textA}, .fontSize = fs(19)}));
                 }
             }
-        }
-    }
-
-    // Skip hint, bottom-right corner, not faded with the caption above (needs to stay legible/
-    // discoverable regardless of which beat is showing). Only appears once the first real
-    // narrative line ("Satellite megaconstellations...") has been reached — not from frame 1 —
-    // so the opening "2036" title card reads as a clean establishing beat, and the hint (the only
-    // thing that reveals Space can skip at all) doesn't compete with it for attention immediately.
-    if (introCaptionIndex >= kIntroHintRevealIndex)
-    {
-        CLAY(CLAY_ID("IntroSkipHint"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
-                                                   .padding = {8, 8, 4, 4}},
-                                        .backgroundColor = {0, 0, 0, 130},
-                                        .cornerRadius = CLAY_CORNER_RADIUS(4),
-                                        .floating = {.offset = {-16, -16},
-                                                     .zIndex = 30,
-                                                     .attachPoints = {.element = CLAY_ATTACH_POINT_RIGHT_BOTTOM,
-                                                                      .parent = CLAY_ATTACH_POINT_RIGHT_BOTTOM},
-                                                     .attachTo = CLAY_ATTACH_TO_ROOT}})
-        {
-            CLAY_TEXT(txc(Txt::NotePressSpaceToSkip),
-                      CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(12)}));
         }
     }
 }
@@ -9642,7 +9618,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         if (!isPatch || d.contains("play_intro_on_startup"))
         {
             playIntroOnStartup = d.value("play_intro_on_startup", false);
-            showIntro = playIntroOnStartup;
+            if (!isPatch) // (a patch changes the preference; it never starts the opening mid-session)
+                showIntro = playIntroOnStartup;
         }
         // Absent (every settings.json before 2026-10-03) = not done: the tutorial is new, and the
         // players it is for are exactly the ones who already never found the controls.

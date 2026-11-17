@@ -938,7 +938,6 @@ UI_TEXT(NoteIntroSunlightGlint, "From the ground, we watch sunlight glint off th
 UI_TEXT(NoteIntroOrbitalNetwork, "They power an orbital network of communications and AI compute.")
 UI_TEXT(NoteIntroPromiseToMarkets, "A promise to the markets above all else")
 UI_TEXT(NoteIntroQuietSky, "We will come to miss the quiet sky")
-UI_TEXT(NotePressSpaceToSkip, "Press Space to skip")
 UI_TEXT(FmtCinematics, "Cinematics: %s")
 UI_TEXT(FmtShotS, "%s   |   %d shot%s, %.1f s")
 UI_TEXT(FmtFollows, "Follows %s #%d%s")

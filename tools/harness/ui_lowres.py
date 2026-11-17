@@ -83,11 +83,15 @@ def views():
         ("tut_missions", ["tutorial step missions", "ui open missions tab=upcoming", "wait 12"], ["ui close missions"]),
         ("tut_ongoing", ["tutorial step ongoing", "ui open missions tab=ongoing", "wait 12"], ["ui close missions"]),
         ("tut_settings", ["tutorial step settings", "wait 4"], ["tutorial skip", "wait 2"]),
-        # The intro's longest caption (beat 2, 15.2-22.8 s of intro time): the caption band (CineCaption) wraps
-        # inside the window and stays clear of the skip hint. Seeked to 17 s (full alpha from 16.0 s); `wait 30` is
-        # capped at 2 s. The intro moves the observer and the clock: restored after.
+        # The opening's longest caption (beat 2, 15.2-22.8 s of caption time): the caption band (CineCaption) wraps
+        # inside the window. Seeked to 17 s (full alpha from 16.0 s); `wait 30` is capped at 2 s. The opening moves
+        # the observer and the clock: restored after. intro_caption = FPS mode, the corner toolbars held back;
+        # intro_caption_menu = menu mode entered during the opening (Tab), so the toolbars are back and the band must
+        # sit clear of LeftPanel / RightPanel (uiBottomClearance).
         ("intro_caption", ["intro play at=17", "wait 30", "intro state"],
-         ["intro skip", "wait 5"] + SCENE + ["wait settle 20"]),
+         ["intro skip", "fps off", "wait 5"] + SCENE + ["wait settle 20"]),
+        ("intro_caption_menu", ["intro play at=17", "wait 3", "ui key tab", "wait 30", "intro state"],
+         ["intro skip", "fps off", "wait 5"] + SCENE + ["wait settle 20"]),
     ]
     return v
 

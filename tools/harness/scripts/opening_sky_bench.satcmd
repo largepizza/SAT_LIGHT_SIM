@@ -1,0 +1,73 @@
+# The opening's sky at 1x and the UC1 benchmark over the caption period (2026-11-16). Run after opening.satcmd's
+# checks (they can share a launch: append this file), with --fixed-dt 0.05:
+#   python tools/harness/run.py tools/harness/scripts/opening_sky_bench.satcmd --fixed-dt 0.05 --quiet
+# Sky: key 0's place, the opening's moment + 0 / 53 / 120 s, facing north (az 3), east (az 99) and south (az 159);
+#   sheet: imgtools.py sheet <run>/captures -o sheet.png
+# Bench: `intro play bench=1` per preset, the player panning (mouse move) for the whole 53.27 s caption period
+#   (1066 frames at 0.05 s); read res.py <run> -c intro -g bench (bench.last: mean_ms, from, to). The one wait here
+#   past 2 s is the benchmark itself: its subject is the caption period's duration.
+intro play
+wait 3
+intro skip
+fps off
+camera az=3.19 el=18.25 fov=46.5
+time set 2036-11-25T23:15:46.567Z
+time pause
+wait settle
+capture sky_t000_a003 scale=0.5
+camera az=99.1 el=28.16 fov=66.84
+wait settle
+capture sky_t000_a099 scale=0.5
+camera az=159.1 el=12 fov=83.1
+wait settle
+capture sky_t000_a159 scale=0.5
+time set 2036-11-25T23:16:39.567Z
+time pause
+camera az=3.19 el=18.25 fov=46.5
+wait settle
+capture sky_t053_a003 scale=0.5
+camera az=99.1 el=28.16 fov=66.84
+wait settle
+capture sky_t053_a099 scale=0.5
+camera az=159.1 el=12 fov=83.1
+wait settle
+capture sky_t053_a159 scale=0.5
+time set 2036-11-25T23:17:46.567Z
+time pause
+camera az=3.19 el=18.25 fov=46.5
+wait settle
+capture sky_t120_a003 scale=0.5
+camera az=99.1 el=28.16 fov=66.84
+wait settle
+capture sky_t120_a099 scale=0.5
+camera az=159.1 el=12 fov=83.1
+wait settle
+capture sky_t120_a159 scale=0.5
+# Bench: Medium, High, Low, Planetarium (a light preset)
+preset Medium
+wait settle
+intro play bench=1
+mouse move dx=1 dy=0 frames=1000
+wait 120 maxs=0
+intro state
+fps off
+preset High
+wait settle
+intro play bench=1
+mouse move dx=1 dy=0 frames=1000
+wait 120 maxs=0
+intro state
+fps off
+preset Low
+wait settle
+intro play bench=1
+mouse move dx=1 dy=0 frames=1000
+wait 120 maxs=0
+intro state
+fps off
+preset Planetarium
+wait settle
+intro play bench=1
+mouse move dx=1 dy=0 frames=1000
+wait 120 maxs=0
+intro state

@@ -265,7 +265,7 @@ void SatelliteSim::tutReturnNow()
 void SatelliteSim::updateTutorial(float dt)
 {
     FPROF_SCOPE("updateTutorial");
-    if (!tutAutoChecked)
+    if (!tutAutoChecked && !showIntro) // (the opening's end, finishIntro, starts it otherwise)
     {
         // The intro was off (finishIntro starts it otherwise): the first frame in the scene.
         tutAutoChecked = true;

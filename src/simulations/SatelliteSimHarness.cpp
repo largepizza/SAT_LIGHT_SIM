@@ -206,7 +206,7 @@ json patchFor(const std::string &dotted, const json &value)
 const char *kHelp =
     "wait <frames> [maxs=2] | wait seconds <s> | wait settle [frames] [maxs=2] | wait settle auto [max=160] [min=40] [thr=0.1] [hold=4] [noise=1.5] [maxs=2]; "
     "time [set <iso>|add <s>|sun <el deg|noon|midnight> [rising|setting]|pause|play|scale <label>|reverse on/off]; "
-    "observer lat= lon= [agl=|alt=]; beams [list] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [clamp=on] [drift=intro|default]; report list [dir] | report info <issue dir> | report load <issue dir> [shot=1] [settings=on|off] [clamp=on] [trail=on|off] | report shot [note] [new=1] [title=] [bar=1] | report mark [issue] shot= [pin=x,y|off] [rect=x,y,w,h|off] | report export [issue]; drift [default] [phase=] [rate=]; intro [state|play [at=<s>]|skip]; camera [az= el= fov= roll=] | camera look|track <sun|moon|sel|planet name|off>; "
+    "observer lat= lon= [agl=|alt=]; beams [list] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [clamp=on] [drift=intro|default]; report list [dir] | report info <issue dir> | report load <issue dir> [shot=1] [settings=on|off] [clamp=on] [trail=on|off] | report shot [note] [new=1] [title=] [bar=1] | report mark [issue] shot= [pin=x,y|off] [rect=x,y,w,h|off] | report export [issue]; drift [default] [phase=] [rate=]; intro [state|play [at=<s>] [bench=1]|skip]; camera [az= el= fov= roll=] | camera look|track <sun|moon|sel|planet name|off>; "
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select star <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "exposure [auto|hold|fast]; "
@@ -1486,40 +1486,52 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     }
 
     // ── intro ───────────────────────────────────────────────────────────────────
-    // `intro [state]`, `intro play [at=<s>]`, `intro skip` (2026-11-13): the intro cinematic. `play` = the Display tab's
-    // Replay Intro (from the top, at its own moment; no tutorial or benchmark after it under the harness); `skip`
-    // ends it as Space does. `state` = playing, elapsed, the caption beat, the sim time.
+    // `intro [state]`, `intro play [at=<s>] [bench=1]`, `intro skip` (2026-11-13; 2026-11-16 the opening): `play` = the
+    // Display tab's Replay Intro (from the top, at its own moment and place, FPS mode on: logic only here; no tutorial
+    // after it under the harness); `skip` ends the captions now (no benchmark). `state` = playing, elapsed, the caption
+    // beat, the toolbars, the FPS mode, the clock, the observer and the benchmark.
     if (n == "intro")
     {
         const std::string sub = lower(pos(0));
         if (sub == "play")
         {
             startIntroReplay();
-            // (2026-11-16) `at=<s>`: start there instead (the next frame poses the camera, the clock and the caption for
-            // that time; a caption is at full alpha 0.8 s after its key). The music is not seeked.
+            // (2026-11-16) `at=<s>`: the caption clock starts there (the next frame still sets the scene: the moment, key
+            // 0's place; a caption is at full alpha 0.8 s after its key). The music is not seeked.
             if (c.has("at"))
                 introElapsed = std::clamp((float)c.num("at", 0.0), 0.0f, kIntroKeyframes[kIntroKeyframeCount - 1].t - 0.5f);
+            // `bench=1`: this playback measures and decides the UC1 preset as a first run does (applies it, shows the
+            // notice); `intro state` -> bench.last after the end.
+            introBenchHarness_ = c.num("bench", 0.0) > 0.5;
         }
         else if (sub == "skip" && showIntro)
             finishIntro(true);
         r["playing"] = showIntro;
         r["elapsed_s"] = introElapsed;
         r["beat"] = introCaptionIndex;
+        r["caption_index"] = introCaptionIndex;
         r["length_s"] = kIntroKeyframes[kIntroKeyframeCount - 1].t;
+        r["scene_set"] = introBasisValid;
+        r["toolbars_shown"] = !showIntro || introToolbarsShown;
+        r["fps_mode"] = fpsMode;
+        r["fps_live"] = fpsLogicLive();
         r["utc"] = isoFromJ2000((double)simDayJ2000 * 86400.0 + simSecInDay);
-        // (2026-11-14) the ending: `phase` move / still (arrived on the last key: still, the title's FOV zoom-out) / off,
-        // `arrive_s` (kIntroArriveT), and the camera as applied this frame (the rig's double look and eye).
-        r["phase"] = !showIntro ? "off" : introElapsed < kIntroArriveT ? "move" : "still";
-        r["arrive_s"] = kIntroArriveT;
-        r["fov_deg"] = camera.fovYDeg;
-        r["az_deg"] = camera.azDeg;
-        r["el_deg"] = camElDeg();
-        r["roll_deg"] = camRollDeg();
-        r["eye_dir_ecef"] = {camEyeDir.x, camEyeDir.y, camEyeDir.z};
-        r["fwd_ecef"] = {camFwd.x, camFwd.y, camFwd.z};
-        r["obs_height_m"] = obsHeightOffset;
+        r["observer"] = {{"lat_deg", obsLatDeg}, {"lon_deg", obsLonDeg}, {"height_m", obsHeightOffset}};
+        r["camera"] = {{"az_deg", camera.azDeg}, {"el_deg", camElDeg()}, {"fov_deg", camera.fovYDeg}};
         r["time_paused"] = timePaused;
         r["time_scale"] = kTimeLabels[std::clamp(timeScaleIdx, 0, kNumTimeScales - 1)];
+        r["time_reverse"] = timeDir < 0.0f;
+        r["bench"] = {{"armed", showIntro && !crashRecoveryMode && (introBenchHarness_ || (!introIsReplay && bootChoiceMode < 0))},
+                      {"frames", introBenchFrames},
+                      {"mean_ms", introBenchFrames > 0 ? introBenchMsSum / (float)introBenchFrames : 0.0f},
+                      {"end_s", kIntroBenchEndT},
+                      {"preset", kGraphicsPresetNames[(int)graphicsPreset]},
+                      {"would_set", kGraphicsPresetNames[(int)introBenchDecision(
+                                        introBenchFrames > 0 ? introBenchMsSum / (float)introBenchFrames : 12.0f, graphicsPreset)]}};
+        if (introBenchLast_.valid)
+            r["bench"]["last"] = {{"mean_ms", introBenchLast_.meanMs}, {"frames", introBenchLast_.frames},
+                                  {"from", kGraphicsPresetNames[introBenchLast_.fromPreset]},
+                                  {"to", kGraphicsPresetNames[introBenchLast_.toPreset]}};
         char buf[128];
         snprintf(buf, sizeof(buf), "intro %s, %.1f / %.1f s, beat %d", showIntro ? "playing" : "off", introElapsed,
                  kIntroKeyframes[kIntroKeyframeCount - 1].t, introCaptionIndex);
@@ -4394,7 +4406,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 {"enter", GLFW_KEY_ENTER}, {"esc", GLFW_KEY_ESCAPE}, {"escape", GLFW_KEY_ESCAPE}, {"tab", GLFW_KEY_TAB},
                 {"backspace", GLFW_KEY_BACKSPACE}, {"delete", GLFW_KEY_DELETE}, {"left", GLFW_KEY_LEFT},
                 {"right", GLFW_KEY_RIGHT}, {"home", GLFW_KEY_HOME}, {"end", GLFW_KEY_END}, {"w", GLFW_KEY_W},
-                {"up", GLFW_KEY_UP}, {"down", GLFW_KEY_DOWN},
+                {"up", GLFW_KEY_UP}, {"down", GLFW_KEY_DOWN}, {"space", GLFW_KEY_SPACE}, // (2026-11-16: Pause in the opening)
                 // the screenshot / report keys (2026-10-19): f7 new issue shot, f9 shot, f10 screenshot with UI, f12 screenshot
                 {"f6", GLFW_KEY_F6}, {"f7", GLFW_KEY_F7}, {"f8", GLFW_KEY_F8}, {"f9", GLFW_KEY_F9}, {"f10", GLFW_KEY_F10}, {"f12", GLFW_KEY_F12},
                 // the mission milestone keys (2026-10-20)
@@ -6812,7 +6824,7 @@ bool SatelliteSim::consoleKey(int key, int action)
 {
     if (!consoleOpen_)
     {
-        if (key == GLFW_KEY_GRAVE_ACCENT && action == GLFW_PRESS && !showIntro)
+        if (key == GLFW_KEY_GRAVE_ACCENT && action == GLFW_PRESS)
         {
             consoleOpen_ = true;
             if (fpsMode)
