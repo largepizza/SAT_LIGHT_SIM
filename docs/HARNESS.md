@@ -796,6 +796,28 @@ and `harness_live/run_*` older than `--keep-days` (7) unless they are PINNED (`g
 `path play record=` frame sequences of kept runs older than `--slim-days` (1) to every 30th frame — most of
 the space. Pin a run you will want to compare against later before it ages out.
 
+## Run HUD (what the person watching sees)
+
+A harness launch (`run.py`, `live.py`, exe flags; not the in-app console) draws a small panel in the window's top
+left so the person watching can follow the run:
+
+```
+HARNESS  20261116_101500_track   [track.satcmd]
+cmd 14/37   errors 0   elapsed 0:42   app frame 2510
+> track.satcmd:15  wait settle   (frame 37, 0.6 s)
+last ok   track.satcmd:14  observer lat=36.3 lon=-121.9 agl=30   (1 fr, 3 ms)
+```
+
+Line 1 is the run folder and the script (`+ live` / `live` for a live app); line 2 the progress (statements run or
+running / all known, live statements are counted as they arrive); line 3 the statement executing now with its
+`file:line`, or `idle` / `script finished`; line 4 the last statement finished (red with its error on a failure).
+A statement that completes within one frame only ever appears as `last`.
+
+**It is never in a capture.** A clean `capture` (the default) leaves all UI out; on a `capture ui=on` frame, while a
+video is recorded with `ui=on`, and on a `ui dump` frame the HUD leaves itself out, so ui_lowres and layout checks
+do not see it. It also hides while the console is open (the console shows the same lines). There is no command for
+it: it is purely for a person, and nothing a script can read depends on it.
+
 ## Waits: the 2-second rule (2026-11-10)
 
 The user's rule: what the renderer has not drawn within ~2 s of arriving does not matter to standard play, so the

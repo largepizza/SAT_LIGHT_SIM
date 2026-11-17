@@ -269,6 +269,7 @@ public:
         layoutDumpReady_ = false;
     }
     bool layoutDumpReady() const { return layoutDumpReady_; }
+    bool layoutDumpPending() const { return layoutDumpPending_; } // the next record() dumps (the run HUD hides)
     const std::vector<LayoutItem> &layoutDump() const { return layoutDump_; }
 
 private:

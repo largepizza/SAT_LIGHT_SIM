@@ -8331,6 +8331,12 @@ private:
     bool consoleKey(int key, int action); // true = consumed
     void ensureConsoleRunner();
     void buildHarnessConsole(const UIInput &inp, UIRenderer &ui);
+    // The run HUD (top left, harness launches only): run folder, progress, the statement executing now and
+    // the last one finished, for the person watching a run. Never in a capture: clean shots skip all UI, and
+    // it hides itself on frames whose image or layout keeps the UI (ui=on shots, UI video, `ui dump`).
+    std::vector<std::string> harnessHudView_; // this frame's lines (Clay keeps raw pointers)
+    std::vector<int> harnessHudKind_;         // per line: 0 header, 1 info, 2 current, 3 last ok, 4 last error
+    void buildHarnessHud(const UIInput &inp, UIRenderer &ui);
     // (see harnessOverlays_)
     void harnessInit();
     void harnessTick();
