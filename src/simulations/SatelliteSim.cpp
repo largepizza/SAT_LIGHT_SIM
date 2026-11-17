@@ -460,7 +460,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     //              in the settings window). KB_CINEMATIC is left unbound by default since
     //              it's a mouse-drag-flavored feature (see dispatchKeyAction).
     keybindings = {
-        {"Toggle UI", GLFW_KEY_TAB, GLFW_GAMEPAD_BUTTON_BACK, false, false},                 // KB_TOGGLE_UI
+        {"Toggle UI", GLFW_KEY_U, GLFW_GAMEPAD_BUTTON_BACK, false, false},                   // KB_TOGGLE_UI — U since key layout 4 (Tab is the FPS mode)
         {"Pause/Resume", GLFW_KEY_SPACE, GLFW_GAMEPAD_BUTTON_X, false, false},               // KB_PAUSE — X since pad layout 2 (B is "back" in the selection navigation, pollGamepad)
         {"Slow Down", GLFW_KEY_COMMA, GLFW_GAMEPAD_BUTTON_DPAD_DOWN, false, false},          // KB_SLOWER — D-pad left/right choose a selection button (pad layout 2)
         {"Speed Up", GLFW_KEY_PERIOD, GLFW_GAMEPAD_BUTTON_DPAD_UP, false, false},            // KB_FASTER
@@ -476,7 +476,7 @@ void SatelliteSim::init(VulkanContext &ctx)
         {"Reset Zoom", GLFW_KEY_0, GLFW_GAMEPAD_BUTTON_RIGHT_THUMB, false, false},           // KB_ZOOM_RESET (event)
         {"Select Satellite", -1, GLFW_GAMEPAD_BUTTON_A, false, false},                       // KB_SELECT_SAT (event) — center-of-screen pick; no key since key layout 2 (T is Track; a click selects)
         {"Screenshot", GLFW_KEY_F12, -1, false, false},                                      // KB_SCREENSHOT (event) — no standard gamepad "capture" button to default to
-        {"Toggle Cursor", -1, GLFW_GAMEPAD_BUTTON_START, false, false},              // KB_TOGGLE_CURSOR (event) — UC5: gamepad virtual-cursor mode; no meaningful effect for KBM (mouse is always a free cursor), kept rebindable/listed for consistency
+        {"Toggle Cursor", GLFW_KEY_TAB, GLFW_GAMEPAD_BUTTON_START, false, false},            // KB_TOGGLE_CURSOR (event) — keyboard: the FPS mode (cursor hidden, mouse looks) on / off, Tab since key layout 4; pad: UC5's virtual cursor
         {"Star Trails", GLFW_KEY_F, -1, false, false},                                       // KB_TOGGLE_TRAILS (event) — long-exposure trail on/off (X went to Pause, pad layout 2)
         {"Save Snapshot", GLFW_KEY_F9, -1, false, false},                                    // KB_SAVE_SNAPSHOT (event) — how the user hands over a location
         {"HQ Photo", GLFW_KEY_F8, -1, false, false},                                         // KB_PHOTO (event) — supersampled screenshot (requestPhoto)
@@ -1271,7 +1271,7 @@ void SatelliteSim::pollGamepad(float dt)
             bool down = state.buttons[kb.gpButton] == GLFW_PRESS;
             bool wasDown = prevGpButtons[kb.gpButton] == GLFW_PRESS;
             if (down && !wasDown)
-                dispatchKeyAction((int)i);
+                dispatchKeyAction((int)i, true);
         }
     }
 
@@ -6732,8 +6732,9 @@ void SatelliteSim::updateFollow(float dt)
     // so this puts their observer where followObsEcef is (+ their 2 m eye height).
     obsHeightOffset = (float)(followRadiusM - (double)kEarthRadius);
 
-    // Aim at the satellite while locked (RMB look unlocks — the player took the camera).
-    if (camera.captured)
+    // Aim at the satellite while locked (RMB look, or turning the view in the FPS mode, unlocks — the player took the
+    // camera; the FPS mode looks with no button, so only an actual turn counts).
+    if (camera.captured || fpsLookedThisFrame_)
         followAimLock = false;
     // Sets the view direction. The facing is the view's horizontal part, which near the zenith or nadir is a tiny
     // vector of arbitrary direction: there the previous facing is kept (review 23, the "rapid flip").
@@ -9796,8 +9797,20 @@ bool SatelliteSim::trackShownOn() const { return followActive ? followAimLock : 
 // ─── onKey ────────────────────────────────────────────────────────────────────
 // Shared event-action dispatch — see declaration in SatelliteSim.h for why this is split
 // out of onKey (used by both the keyboard callback and pollGamepad's button edge-detect).
-void SatelliteSim::dispatchKeyAction(int bindIdx)
+void SatelliteSim::dispatchKeyAction(int bindIdx, bool fromPad)
 {
+    // A hotkey that opens a window or a text entry ends the FPS mode (the window wants the pointer).
+    const uint32_t windowsBefore = fpsWindowMask();
+    struct FpsWindowCheck
+    {
+        SatelliteSim *s;
+        uint32_t before;
+        ~FpsWindowCheck()
+        {
+            if (s->fpsMode && (s->fpsWindowMask() & ~before) != 0)
+                s->fpsSet(false, SatelliteSim::FpsWhy::Window);
+        }
+    } fpsWindowCheck{this, windowsBefore};
     switch (bindIdx)
     {
     case KB_TOGGLE_UI:
@@ -9821,7 +9834,7 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
     case KB_CINEMATIC:
         // Mouse-drag-flavored feature (RMB capture is required to mean anything); gated
         // the same way regardless of whether the press came from a key or a gamepad button.
-        if (camera.captured)
+        if (camera.captured || fpsLogicLive()) // (the FPS mode looks all the time, as a held right button does)
             cinematicMode = !cinematicMode;
         break;
     case KB_RESET_ELEV:
@@ -9832,14 +9845,9 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
         break;
     case KB_SELECT_SAT:
     {
-        // Center-of-screen equivalent of the mouse left-click pick in buildUI — same
-        // pickPlanetAt/pickSatelliteAt priority and selectedSatIndex/selectedPlanetIndex path,
-        // just at (screenW/2, screenH/2) instead of the cursor. ctx_ (set in init()) gives
-        // swapExtent without needing a UIInput here.
-        if (!ctx_)
-            break;
-        pickAndSelectAt((float)ctx_->swapExtent.width * 0.5f, (float)ctx_->swapExtent.height * 0.5f,
-                        (float)ctx_->swapExtent.width, (float)ctx_->swapExtent.height);
+        // Center-of-screen equivalent of the mouse left-click pick in buildUI — the same pick chain at the
+        // window's centre, in the mouse's coordinates (the FPS click shares it: pickAtScreenCentre).
+        pickAtScreenCentre();
         break;
     }
     case KB_SCREENSHOT:
@@ -9914,9 +9922,14 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
         }
         break;
     case KB_TOGGLE_CURSOR:
-        // UC5: effective activation also requires uiVisible && !showIntro (see pollGamepad's
-        // cursorActive computation) — this just flips the player-facing on/off state.
-        vCursorToggled = !vCursorToggled;
+        // Pad: UC5's virtual cursor — effective activation also requires uiVisible && !showIntro (see
+        // pollGamepad's cursorActive computation); this just flips the player-facing on/off state.
+        // Keyboard: the FPS mode on / off (onKey never gets here while a text field, the console or a
+        // rebind has the keyboard).
+        if (fromPad)
+            vCursorToggled = !vCursorToggled;
+        else
+            fpsSet(!fpsMode, FpsWhy::Tab);
         break;
     case KB_TOGGLE_TRAILS:
         // Single consolidated control (session follow-up) — same action the HUD "TrailsBtn" icon

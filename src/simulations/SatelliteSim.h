@@ -2160,7 +2160,11 @@ struct SkyCamera
     glm::mat3 viewEnu{1.0f};
     bool viewSet = false;
     float sens = 0.12f;    // mouse sensitivity (degrees per pixel)
-    bool captured = false;
+    float sensMul = 1.0f;  // Settings > Controls "Mouse sensitivity" (controls.mouse_sensitivity): x sens, both look modes
+    bool captured = false; // the right-drag look (menu mode) holds the cursor
+    // Set when the FPS mode ends on a right press (or is entered with the button held): the press must not start a
+    // right-drag look, so capture waits for the button to be released first.
+    bool blockUntilRelease = false;
 
     // Phase 4: zoom reaches telescope FOVs so a resolvable satellite (the ISS is ~0.014 deg from the
     // ground) can cover enough pixels to draw as a mesh. Zoom is multiplicative so each scroll notch
@@ -2170,7 +2174,8 @@ struct SkyCamera
     void zoomBy(float factor) { fovYDeg = glm::clamp(fovYDeg * factor, kMinFovDeg, kMaxFovDeg); }
     // Look sensitivity scaled with the FOV below 60 deg, so a pixel of mouse motion moves the view
     // by about the same number of screen pixels when zoomed in (unchanged at 60 deg and wider).
-    float lookSens() const { return sens * std::min(1.0f, fovYDeg / 60.0f); }
+    float fovLookScale() const { return std::min(1.0f, fovYDeg / 60.0f); }
+    float lookSens() const { return sens * sensMul * fovLookScale(); }
 
     // Returns a view matrix that transforms ENU directions into camera space.
     // Camera convention: +X=right, +Y=up, -Z=forward (standard OpenGL).
@@ -2199,6 +2204,12 @@ struct SkyCamera
     {
         if (!captured)
         {
+            if (blockUntilRelease)
+            {
+                if (glfwGetMouseButton(win, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_RELEASE)
+                    blockUntilRelease = false;
+                return false;
+            }
             if (glfwGetMouseButton(win, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS)
             {
                 captured = true;
@@ -8419,8 +8430,9 @@ private:
     // Dispatches the event-style action for keybindings[bindIdx] — shared by onKey()
     // (keyboard) and pollGamepad() (gamepad edge-detect) so the two input paths can never
     // drift apart. No-op for held bindings (MOVE_BOOST, RAISE/LOWER_ELEV, ZOOM_IN/OUT):
-    // those are polled directly, not dispatched.
-    void dispatchKeyAction(int bindIdx);
+    // those are polled directly, not dispatched. fromPad: a gamepad button (KB_TOGGLE_CURSOR is the virtual
+    // cursor on the pad, the FPS mode on the keyboard). A hotkey that opens a window ends the FPS mode.
+    void dispatchKeyAction(int bindIdx, bool fromPad = false);
 
     // Polled once per frame from recordCompute(). Scans for a connected gamepad, edge-detects
     // event-style button presses (dispatchKeyAction) and rebind capture (listeningPad), and
@@ -8432,6 +8444,8 @@ private:
     // UC4: reports the virtual cursor's screen position/click state (updated in pollGamepad);
     // see Simulation.h for the calling convention.
     bool virtualCursor(float &x, float &y, bool &lmb) const override;
+    bool uiPointerInert() const override; // the FPS mode (SatelliteSimFps.cpp)
+    void mouseButtonOverride(bool &lmb, bool &rmb) const override;
     // Harness `ui click` (docs/HARNESS.md): a scripted pointer that overrides the mouse for a few frames.
     bool  harnessPtrActive_ = false, harnessPtrDown_ = false;
     float harnessPtrX_ = 0.0f, harnessPtrY_ = 0.0f;
@@ -9033,6 +9047,61 @@ private:
     float harnessDragDx_ = 0.0f, harnessDragDy_ = 0.0f, harnessDragWarpX_ = 0.0f, harnessDragWarpY_ = 0.0f;
     bool harnessDragWarpPending_ = false;
 
+    // ── FPS camera mode (2026-11-16, SatelliteSimFps.cpp) ───────────────────────────────────────────────────────
+    // Two mouse modes. Menu mode: a free cursor, hold the right button and drag to look. FPS mode: the mouse looks
+    // with no button held, the OS cursor hidden and captured (raw motion when supported), a left click picks at the
+    // screen centre and the HUD stays drawn but inert. Tab (KB_TOGGLE_CURSOR on the keyboard) toggles; a right
+    // press also leaves FPS mode; opening a window or a text entry (console, report bar) and losing window focus
+    // force menu mode. fpsMode is the setting (camera.fps_mode, default on); the mode is LIVE only outside the
+    // intro and a playing cinematic, and for a player also outside an HQ photo and a video recording (menu mode
+    // meanwhile). The OS cursor is never captured under the harness (the mode is logic only there).
+    bool fpsMode = true;
+    bool fpsLive_ = false;       // this frame (fpsTick): the FPS mode is in effect
+    bool fpsOsCaptured_ = false; // the OS cursor is captured for it (GLFW_CURSOR_DISABLED + raw motion)
+    bool fpsFocusedPrev_ = false;
+    bool fpsKbCapturedPrev_ = false; // a text field or the console had the keyboard last frame
+    bool fpsLookedThisFrame_ = false; // the FPS look turned the camera this frame (Go to's aim unlock, tutorial)
+    float mouseSensMul = 1.0f;   // controls.mouse_sensitivity: Settings > Controls "Mouse sensitivity" (camera.sensMul)
+    float fpsRingT_ = 0.0f;      // the centre ring: seconds shown before its fade
+    float fpsRingFade_ = 0.0f;   // seconds of fade left (kFpsRingFadeS when the hold ends)
+    std::string fpsLastPick_;    // what the last centre click hit ("" = nothing)
+    // The centre ring's timing: each FPS click shows it for kFpsRingShowS and adds kFpsRingAddS of hold, capped
+    // at kFpsRingMaxS; then a kFpsRingFadeS fade. Its size is fs(kFpsRingDiamPx), its stroke kFpsRingStroke of that.
+    static constexpr float kFpsRingShowS = 0.6f;
+    static constexpr float kFpsRingAddS = 1.0f;
+    static constexpr float kFpsRingMaxS = 4.0f;
+    static constexpr float kFpsRingFadeS = 0.3f;
+    static constexpr int kFpsRingDiamPx = 26;
+    static constexpr float kFpsRingStroke = 0.07f; // x the diameter (fs() floors at 8 px: too thick for a stroke)
+    // Sticky facts for a later hint scheduler (not persisted; nothing reads them yet but harness `fps state`).
+    struct FpsFacts
+    {
+        bool leftByTab = false;         // left FPS mode with Tab
+        bool leftByRightClick = false;  // left FPS mode with a right click
+        bool enteredFromMenu = false;   // entered FPS mode from menu mode (Tab)
+        int clicks = 0;                 // FPS-mode left clicks
+        double firstClickS = -1.0, lastClickS = -1.0; // glfwGetTime() of the first / last of them
+        double lookDeg = 0.0;           // degrees of mouse look turned, either mode
+        bool rightDragUsed = false;     // a right-drag look turned the camera in menu mode
+    } fpsFacts_;
+    enum class FpsWhy { Tab, RightClick, Window, Focus, Harness, Settings };
+    FpsWhy fpsLastWhy_ = FpsWhy::Settings;
+    void fpsSet(bool on, FpsWhy why); // the one place the mode changes
+    bool fpsLogicLive() const;        // the mode applies this frame (before fpsTick publishes fpsLive_)
+    void fpsTick(const UIInput &inp, float dt); // buildUI, before the look block: forced exits, capture, ring
+    void fpsApplyCapture();           // the OS cursor follows the mode (never under the harness)
+    void fpsCentreClick();            // an FPS-mode left click: the centre pick + the ring
+    std::string pickAtScreenCentre(); // KB_SELECT_SAT and the FPS click: one coordinate convention (window size)
+    uint32_t fpsWindowMask() const;   // the open windows / bars, for "a hotkey opened one"
+    void buildFpsRing(UIRenderer &ui);
+    // harness `mouse move dx= dy= frames=` (deltas the FPS look consumes) / `mouse click left|right`
+    int harnessMouseFrames_ = 0;
+    float harnessMouseDx_ = 0.0f, harnessMouseDy_ = 0.0f;
+    int harnessMouseBtn_ = 0; // 1 left, 2 right: held for one frame (mouseButtonOverride)
+    harness::Status harnessFps(harness::Active &a);
+    harness::Status harnessMouse(harness::Active &a);
+    nlohmann::json fpsStateJson() const;
+
     // Fine (slow) movement mode — flipped by KB_MOVE_FINE (dispatchKeyAction). A toggle rather
     // than a held modifier (unlike KB_MOVE_BOOST): holding a stick-click down while also using
     // that same stick to move is uncomfortable, so a single press latches slow movement on/off.
@@ -9124,7 +9193,7 @@ private:
     bool draggingPhoto[56] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 626;   // 625 (2026-11-14): auto-level up to (km) (Controls); was 625; 624 (2026-11-14): Starship orbital vent (Launches); was 624; 616-623 (2026-11-12 wave, reserved per cluster): 616-619 ocean reflections, 620-621 model glare, 622-623 storm shape; was 616; 608-615 (2026-11-11 wave, reserved per cluster): 608-611 hurricane look, 612-613 smalls, 614-615 hurricane perf; was 608; 560-607 (2026-11-10 wave, reserved per cluster): 560-567 flowmaps, 568-575 storms, 576-579 horizon, 580-583 grain, 584-591 optics, 592-595 smalls, 596-599 rainperf, 600-607 hurricane shape; was 560; 549-550 (2026-11-08, pucks): shallow cumulus heaps / depth; 544-548 (2026-11-08): single-storm anvils, storm complex spacing, cirrus flow window, (547 free: the retired CDO plate), storm mass; 522-524 free (the CDO plate's top sliders, retired 2026-11-08); 553-555 (2026-11-05): cumulus core, bubble warp, head width; 552 (2026-11-05, envelope): cumulus tower spread (552-559 reserved); 544-551 (2026-11-05, storm-above): reserved, none used; 536-538 (2026-11-05, light3): AgX range, white balance from cloud sunlight, auto exposure target; 528-535 (2026-11-05, vertical): cloud base LCL / cell / regional spread, fractus, mid wisps, orographic amount / wind / direction; 496-498 (2026-11-05, shape2): bubble hierarchy / size / base; 504-511 (2026-11-05, storm3): anvil fibres, storm bubbles, anvil erosion; 512-513 (2026-11-05, light2): white balance reference / hold; 520-524 (2026-11-05, cirrus-hurr): cirrus fibres / hooks, hurricane top smoothing / streaks / density; 496-527: the 2026-11-05 night wave; 494-495 (2026-11-04): cumulus bubbles;   // 440-441 (2026-11-03): turbulence cell size / speed; 450-452: anvil formation / decay time, tower growth time; 455-461: hurricane shape; was 435;   // 428-434 (2026-10-30): the second stage's jellyfish (streaks, nucleus, staging cloud); was 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
+    static constexpr int kCloudSliderSlots = 627;   // 626 (2026-11-16): mouse sensitivity (Controls); was 626; 625 (2026-11-14): auto-level up to (km) (Controls); was 625; 624 (2026-11-14): Starship orbital vent (Launches); was 624; 616-623 (2026-11-12 wave, reserved per cluster): 616-619 ocean reflections, 620-621 model glare, 622-623 storm shape; was 616; 608-615 (2026-11-11 wave, reserved per cluster): 608-611 hurricane look, 612-613 smalls, 614-615 hurricane perf; was 608; 560-607 (2026-11-10 wave, reserved per cluster): 560-567 flowmaps, 568-575 storms, 576-579 horizon, 580-583 grain, 584-591 optics, 592-595 smalls, 596-599 rainperf, 600-607 hurricane shape; was 560; 549-550 (2026-11-08, pucks): shallow cumulus heaps / depth; 544-548 (2026-11-08): single-storm anvils, storm complex spacing, cirrus flow window, (547 free: the retired CDO plate), storm mass; 522-524 free (the CDO plate's top sliders, retired 2026-11-08); 553-555 (2026-11-05): cumulus core, bubble warp, head width; 552 (2026-11-05, envelope): cumulus tower spread (552-559 reserved); 544-551 (2026-11-05, storm-above): reserved, none used; 536-538 (2026-11-05, light3): AgX range, white balance from cloud sunlight, auto exposure target; 528-535 (2026-11-05, vertical): cloud base LCL / cell / regional spread, fractus, mid wisps, orographic amount / wind / direction; 496-498 (2026-11-05, shape2): bubble hierarchy / size / base; 504-511 (2026-11-05, storm3): anvil fibres, storm bubbles, anvil erosion; 512-513 (2026-11-05, light2): white balance reference / hold; 520-524 (2026-11-05, cirrus-hurr): cirrus fibres / hooks, hurricane top smoothing / streaks / density; 496-527: the 2026-11-05 night wave; 494-495 (2026-11-04): cumulus bubbles;   // 440-441 (2026-11-03): turbulence cell size / speed; 450-452: anvil formation / decay time, tower growth time; 455-461: hurricane shape; was 435;   // 428-434 (2026-10-30): the second stage's jellyfish (streaks, nucleus, staging cloud); was 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
     // gust fronts, drop persistence); 326: "Tropical cyclones (x)"; 325: "Storm complexes"; 321-324 (2026-10-23): storm
     // objects (frequency, life, cloud field, moat);
     // was 321: 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);
@@ -9744,7 +9813,9 @@ private:
     // Keyboard layout of the saved bindings (controls.key_layout). 2 (2026-10-28, issue 20261028_223530): T is Track,
     // I Info, G Go to / leave; "Select Satellite" lost its T (a saved T is dropped once), and "Leave Go To Here" was
     // renamed "Go To / Leave Here" (a saved key under the old name carries over).
-    static constexpr int kKeyLayoutVersion = 3; // 3 (2026-11-14): Z / C roll; Reset Elevation Z -> X, Toggle Cursor off C
+    // 3 (2026-11-14): Z / C roll; Reset Elevation Z -> X, Toggle Cursor off C. 4 (2026-11-16): Tab toggles the FPS
+    // mode (Toggle Cursor), Toggle UI moves to U (a saved default Tab on Toggle UI migrates; see loadSettings).
+    static constexpr int kKeyLayoutVersion = 4;
     void trackToggle();          // Track (key T, the panel's button); during Go to it is the aim lock
     bool trackShownOn() const;   // the Track button lit
     bool selectionKeyAction(int bindIdx); // KB_INFO / KB_TRACK / KB_FOLLOW_STAY on the selection; false = nothing to do

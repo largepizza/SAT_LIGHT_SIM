@@ -382,6 +382,8 @@ bool SatelliteSim::reportTakeShot(bool newIssue, bool openBar)
     // A NEW issue opens the Issue reports window on it: its title, description and the shot's note are all
     // there (nothing is focused, so movement keys keep working). With the HUD hidden the bar stands in.
     const bool openWindow = isNew && openBar && !showIntro && uiVisible;
+    if (openBar && !showIntro && fpsMode)
+        fpsSet(false, FpsWhy::Window); // the report window / note bar wants the pointer: menu mode
     if (openWindow)
     {
         rpChrome.open = true;

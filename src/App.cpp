@@ -917,6 +917,10 @@ void App::drawFrame()
         my = vy;
         lmb = vClick;
     }
+    // FPS camera mode: the UI gets no pointer (off the window), only the buttons.
+    if (sim->uiPointerInert())
+        mx = my = -1.0e5;
+    sim->mouseButtonOverride(lmb, rmb);
 
     // Prepare Clay layout for this frame — simulation may call CLAY() in buildUI()
     {

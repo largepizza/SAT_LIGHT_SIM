@@ -327,7 +327,7 @@ void SatelliteSim::updateTutorial(float dt)
     const bool climbing = key(keybindings[KB_RAISE_ELEV].key) || key(keybindings[KB_LOWER_ELEV].key) ||
                           (live && (gpElevRaise > 0.0f || gpElevLower > 0.0f));
     const bool boost = key(keybindings[KB_MOVE_BOOST].key) || (live && gpHeld(KB_MOVE_BOOST));
-    const bool looking = live && (camera.captured || gpLookYawDeg != 0.0f || gpLookPitchDeg != 0.0f);
+    const bool looking = live && (camera.captured || fpsLookedThisFrame_ || gpLookYawDeg != 0.0f || gpLookPitchDeg != 0.0f);
 
     switch (tutStep)
     {

@@ -760,8 +760,27 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // would leave the cursor captured/hidden partway through a cutscene the user hasn't consented
     // to control yet).
     camSync(); // the camera rig: adopts a mirror an unconverted write changed, then publishes (SatelliteSimCamera.cpp)
+    // The FPS mode (SatelliteSimFps.cpp): forced exits, the right press that leaves it, the OS cursor capture.
+    fpsTick(ui.input(), dt);
+    camera.sensMul = std::clamp(mouseSensMul, 0.05f, 10.0f);
+    fpsLookedThisFrame_ = false;
     if (win && !showIntro && !cineActive())
     {
+        // FPS mode: the mouse looks with no button held. Only a captured OS cursor's motion counts (under the harness,
+        // or while it is not captured, a pointer crossing the window must not turn the camera), plus `mouse move`.
+        const bool fpsHeld = fpsLive_;
+        if (fpsHeld && !fpsOsCaptured_)
+            dmx = dmy = 0.0f;
+        if (harnessMouseFrames_ > 0)
+        {
+            if (fpsHeld)
+            {
+                dmx += harnessMouseDx_;
+                dmy += harnessMouseDy_;
+            }
+            --harnessMouseFrames_;
+        }
+
         // Track lock: the aim above owns the camera's direction this frame, so every look input —
         // mouse deltas, their cinematic-drift velocities, the gamepad stick — is dropped rather than
         // allowed to overwrite it and fight it frame by frame. Zoom is not look input: the wheel's FOV
@@ -800,7 +819,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         // restores the press position: a delta of minus the whole drag), and in cinematic mode that jump was taken as
         // a flick (issue 20261030_142354: the camera flung off at ~200 deg/s on releasing RMB or switching the mode on).
         {
-            const bool heldNow = camera.captured || hDrag;
+            const bool heldNow = camera.captured || hDrag || fpsHeld;
             if (heldNow != lookHeldPrev_ || cinematicLatched != cineLatchedPrev_)
                 lookSkipFrames_ = kLookSkipFrames;
             if (cinematicLatched != cineLatchedPrev_)
@@ -818,14 +837,14 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
 
         // Clear cinematic mode as soon as RMB is released — the toggle only lives
         // while a pan is active, so it resets automatically for the next drag.
-        if (!camera.captured && !hDrag && cinematicMode)
+        if (!camera.captured && !hDrag && !fpsHeld && cinematicMode)
         {
             cinematicMode = false;
             cinematicYawVel = 0.0f;
             cinematicPitchVel = 0.0f;
         }
 
-        bool cinematic = ((camera.captured || hDrag) && cinematicMode) || cinematicLatched;
+        bool cinematic = ((camera.captured || hDrag || fpsHeld) && cinematicMode) || cinematicLatched;
         const float dtL = std::clamp(dt, 1.0e-3f, 0.1f);
         // Caps the look rate (mouse px/s) so it turns the view at most maxDegS; returns the rate in deg/s.
         auto capRate = [&](float maxDegS) {
@@ -841,9 +860,10 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
 
         if (cinematic)
         {
-            // RMB capture/release only; the rotation is applied below.
-            camera.updateCapture(win);
-            const bool held = camera.captured || hDrag;
+            // RMB capture/release only (not in the FPS mode, where a right press leaves it); the rotation is applied below.
+            if (!fpsHeld)
+                camera.updateCapture(win);
+            const bool held = camera.captured || hDrag || fpsHeld;
 
             if (held && cinematicMode)
             {
@@ -878,6 +898,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
 
             // Apply this frame's rotation (rate x dt; identical math to the direct-control path).
             const float yawPx = cinematicYawVel * dtL, pitchPx = cinematicPitchVel * dtL;
+            fpsFacts_.lookDeg += std::sqrt((double)yawPx * yawPx + (double)pitchPx * pitchPx) * camera.lookSens();
             if (fabsf(yawPx) > 1.0e-6f)
                 camYaw(glm::radians(-(double)yawPx * camera.lookSens())); // (+ = left: look-right is a negative angle)
             camPitch(-(double)pitchPx * camera.lookSens());
@@ -886,11 +907,19 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         }
         else
         {
-            // Normal direct control: the drag turns the camera rig (screen Y down: mouse up = negative dmy = look up).
-            if (camera.updateCapture(win))
+            // Normal direct control: the drag (or the FPS mode, no button) turns the camera rig (screen Y down: mouse up =
+            // negative dmy = look up).
+            const bool turning = fpsHeld ? true : camera.updateCapture(win);
+            if (turning)
                 camPitch(-(double)dmy * camera.lookSens());
-            if (camera.captured && dmx != 0.0f)
+            if ((camera.captured || fpsHeld) && dmx != 0.0f)
                 camYaw(glm::radians(-(double)dmx * camera.lookSens())); // (+ = left: look-right is a negative angle)
+            if ((turning || camera.captured || fpsHeld) && (dmx != 0.0f || dmy != 0.0f))
+            {
+                fpsFacts_.lookDeg += std::sqrt((double)dmx * dmx + (double)dmy * dmy) * camera.lookSens();
+                if (!fpsHeld && camera.captured)
+                    fpsFacts_.rightDragUsed = true;
+            }
 
             // Kill any residual drift immediately when leaving cinematic mode.
             if (cinematicActive)
@@ -901,14 +930,15 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
                 cineCoastDegS_ = 0.0f;
             }
         }
-        lookHeldPrev_ = camera.captured || hDrag;
+        lookHeldPrev_ = camera.captured || hDrag || fpsHeld;
+        fpsLookedThisFrame_ = fpsHeld && (dmx != 0.0f || dmy != 0.0f);
 
         // Gamepad look (right stick): applied unconditionally, independent of the mouse/RMB
         // capture logic above — a controller has no cursor to capture, so it always drives
         // the camera when deflected. Filled by pollGamepad() in the previous recordCompute.
         if (gpLookYawDeg != 0.0f || gpLookPitchDeg != 0.0f)
         {
-            const float gpScale = camera.lookSens() / camera.sens; // FOV scaling, as for the mouse
+            const float gpScale = camera.fovLookScale(); // FOV scaling, as for the mouse (not its sensitivity)
             camYaw(glm::radians(-(double)gpLookYawDeg * gpScale));
             camPitch(-(double)gpLookPitchDeg * gpScale);
         }
@@ -939,7 +969,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // "L stick / WASD") every time A was pressed with the cursor up. vCursorActive here is exactly
     // the same value App.cpp consulted to decide whether to override lmb this frame, so it
     // correctly distinguishes a real mouse click from a relayed gamepad one.
-    if ((inp.lmbPressed && !vCursorActive) || inp.rmbPressed || inp.scrollY != 0.0f || camera.captured)
+    if ((inp.lmbPressed && !vCursorActive) || inp.rmbPressed || inp.scrollY != 0.0f || camera.captured || fpsLookedThisFrame_)
         lastInputWasGamepad = false;
 
     // UC3: the cinematic intro hides the entire normal HUD — no left/right panels, no
@@ -977,7 +1007,13 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // left mouse button is otherwise unused for scene interaction (RMB drives camera look).
     // Planets get priority on an exact overlap (pickPlanetAt tried first, only 6 candidates) —
     // they're rare and the more interesting selection; mutually exclusive with satellite selection.
-    if (inp.lmbPressed && !ui.mouseOverUI())
+    // FPS mode: the click picks at the screen centre (the UI gets no pointer, so nothing is "over the UI").
+    if (fpsLive_)
+    {
+        if (inp.lmbPressed && !vCursorActive)
+            fpsCentreClick();
+    }
+    else if (inp.lmbPressed && !ui.mouseOverUI())
         pickAndSelectAt(inp.mouseX, inp.mouseY, inp.screenW, inp.screenH);
     hudPopupsTick(inp, ui); // an unpinned Movement / View popup closes on a click in the sim
 
@@ -987,6 +1023,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     buildHarnessOverlays(inp, ui); // harness `overlay` titles/labels, likewise (docs/HARNESS.md)
     buildCineHud(inp, ui);         // a playing / exporting cinematic's progress and Stop, likewise
     buildVideoHud(inp, ui);        // the REC badge while recording a video, likewise
+    buildFpsRing(ui);              // the FPS mode's centre ring after a click, likewise (SatelliteSimFps.cpp)
     fprof::mark("ui.seg3d_console_cine");
     bookmarkTick(ui);              // bookmarks: the list, thumbnail captures and uploads (window open or not)
     fprof::mark("ui.seg3e_bookmarks");
@@ -4801,9 +4838,15 @@ void SatelliteSim::buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui)
 
     // ── MOUSE: the two inputs that are not bindings (the old Camera tab) ──────────────────────────────────
     uiSection("CtrlSec", 2, tx(Txt::SecMouse));
-    uiKV("CtrlMouseKV", 0, tx(Txt::LblLookAround), tx(Txt::ValRightDrag), 130 * cs);
+    uiKV("CtrlMouseKV", 0, tx(Txt::LblLookAround),
+         uiKitStr(tx(Txt::FmtLookAroundModes), keyDisplayName(keybindings[KB_TOGGLE_CURSOR].key)), 130 * cs);
     uiKV("CtrlMouseKV", 1, tx(Txt::LblZoom), tx(Txt::ValScrollWheel), 130 * cs);
-    uiKV("CtrlMouseKV", 2, tx(Txt::LblSelect), tx(Txt::ValLeftClick), 130 * cs);
+    uiKV("CtrlMouseKV", 2, tx(Txt::LblSelect), tx(Txt::ValLeftClickFps), 130 * cs);
+    {
+        // Mouse sensitivity: x the 0.12 deg / px look rate, both look modes (camera.sensMul).
+        CloudSlider ms[] = {{tx(Txt::SldMouseSensitivity), &mouseSensMul, 0.1f, 4.0f, 0.05f, "%.2f", 626}};
+        buildCloudSliderRows(inp, ui, ms, 1, false);
+    }
 
     // ── INVERT LOOK: applied where the mouse and right-stick look deltas are consumed (buildUI's look block) ──
     uiSection("CtrlSec", 3, tx(Txt::SecInvertLook));
@@ -9615,6 +9658,11 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         moveSpeedPerHeight = c.value("move_speed_per_height", moveSpeedPerHeight);
         camLevelEnabled = c.value("auto_level", camLevelEnabled);
         camLevelAltKm = settingClamp(c.value("auto_level_km", camLevelAltKm), 10.0f, 2000.0f);
+        // The FPS mode (absent = on, the compiled default), from the settings file only: a patch (a cinematic shot's
+        // look, a snapshot, harness `set`) never changes the mode, and a harness run keeps it off (harnessInit) whatever
+        // its settings file says: only `fps on` turns it on there.
+        if (!isPatch && !harness::active())
+            fpsSet(c.value("fps_mode", fpsMode), FpsWhy::Settings);
     }
 
     if (j.contains("observer"))
@@ -9642,6 +9690,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         invertMouseY = ctl.value("invert_mouse_y", invertMouseY);
         invertPadX = ctl.value("invert_pad_x", invertPadX);
         invertPadY = ctl.value("invert_pad_y", invertPadY);
+        mouseSensMul = settingClamp(ctl.value("mouse_sensitivity", mouseSensMul), 0.1f, 4.0f);
     }
 
     if (j.contains("controls") && j["controls"].contains("keybindings"))
@@ -9673,8 +9722,32 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
                     k = GLFW_KEY_X; // Z / C roll since key layout 3
                 if (keyLayoutSaved < 3 && act == "Toggle Cursor" && k == GLFW_KEY_C)
                     k = -1;
+                // Key layout 4: Tab toggles the FPS mode (Toggle Cursor) and Toggle UI moves to U. Only the old
+                // defaults move (a Tab on Toggle UI, no key on Toggle Cursor); the free-key check below follows.
+                if (keyLayoutSaved < 4 && act == "Toggle UI" && k == GLFW_KEY_TAB)
+                    k = GLFW_KEY_U;
+                if (keyLayoutSaved < 4 && act == "Toggle Cursor" && k < 0)
+                    k = GLFW_KEY_TAB;
                 actionKey[act] = {k, kb.value("gp_button", -1), kb.contains("gp_button")};
             }
+        if (keyLayoutSaved < 4)
+        {
+            // A migrated default key that another saved binding already uses is dropped (the player's own
+            // bindings win): Tab for Toggle Cursor, U for Toggle UI.
+            auto migratedClash = [&](const char *act, int key) {
+                auto it = actionKey.find(act);
+                if (it == actionKey.end() || it->second.key != key)
+                    return;
+                for (const auto &kv : actionKey)
+                    if (kv.first != act && kv.second.key == key)
+                    {
+                        it->second.key = -1;
+                        return;
+                    }
+            };
+            migratedClash("Toggle Cursor", GLFW_KEY_TAB);
+            migratedClash("Toggle UI", GLFW_KEY_U);
+        }
         for (auto &kb : keybindings)
         {
             auto it = actionKey.find(kb.action);
@@ -10578,7 +10651,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"fov_y_deg", followActive ? followSavedFov : camera.fovYDeg},
         {"move_speed_per_height", moveSpeedPerHeight},
         {"auto_level", camLevelEnabled},
-        {"auto_level_km", camLevelAltKm}};
+        {"auto_level_km", camLevelAltKm},
+        {"fps_mode", fpsMode}};
 
     j["observer"] = {{"lat_deg", glm::degrees(asinf(glm::clamp(saveObsDir.z, -1.0f, 1.0f)))},
                      {"lon_deg", glm::degrees(atan2f(saveObsDir.y, saveObsDir.x))}};
@@ -11063,6 +11137,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
     j["controls"]["invert_mouse_y"] = invertMouseY;
     j["controls"]["invert_pad_x"] = invertPadX;
     j["controls"]["invert_pad_y"] = invertPadY;
+    j["controls"]["mouse_sensitivity"] = mouseSensMul;
 
     nlohmann::json constArr = nlohmann::json::array();
     for (const auto &c : constellations)
