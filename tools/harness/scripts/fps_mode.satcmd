@@ -1,6 +1,6 @@
-# The FPS camera mode (2026-11-16, SatelliteSimFps.cpp). Run with the old key layout's settings:
-#   python tools/harness/run.py tools/harness/scripts/fps_mode.satcmd --settings tools/harness/scripts/fps_mode_old_keys.json
-# Read: python tools/harness/res.py <run> -c fps -g fps.mode -g fps.last_change ...; res.py <run> -c mouse
+# The FPS camera mode (2026-11-16, SatelliteSimFps.cpp). One launch, the old key layout's settings, 20 sim steps / s:
+#   python tools/harness/run.py tools/harness/scripts/fps_mode.satcmd --settings tools/harness/scripts/fps_mode_old_keys.json --fixed-dt 0.05
+# Read: python tools/harness/res.py <run> -c fps -g fps.mode -g fps.last_change -g fps.ring.hold_s; res.py <run> -c mouse
 #   0  key layout 3 -> 4: Tab on Toggle UI moves to U, Toggle Cursor gets Tab (get controls)
 #   1  a harness run starts in menu mode; Tab toggles; `mouse move` turns 0.12 deg/px in FPS mode, nothing in menu mode
 #   2  a right click leaves FPS mode without turning the camera or holding a right-drag
@@ -8,7 +8,10 @@
 #   4  a window hotkey (M, Missions) from FPS mode lands in menu mode
 #   5  sensitivity 2 doubles the turn
 #   6  the centre click: aimed at a satellite it selects it and stays FPS; empty sky selects nothing
-#   7  the ring: 0.6 s + 1 s per click, at most 4 s, then a 0.3 s fade; a ui=on crop of it
+#   7  the ring: a lone click 0.6 s; a click while it holds adds 1 s, at most 4 s; then a 0.3 s fade; a ui=on crop
+#   8  the first-run tutorial card appearing forces menu mode (Tab back in with it open is allowed)
+#   9  layout 3 with Toggle UI moved to F1: it keeps F1; Toggle Cursor gets Tab when Tab is free, nothing when not
+# Waits are frames at 0.05 s each (40 frames = 2 s of ring time).
 time set 2036-11-22T02:06:22Z
 time pause
 camera az=0 el=30 fov=70
@@ -65,7 +68,7 @@ mouse click left
 fps state
 # 7
 camera az=0 el=30 fov=70
-wait 300 maxs=0
+wait 40
 fps state
 mouse click left
 fps state
@@ -75,13 +78,27 @@ mouse click left
 mouse click left
 mouse click left
 fps state
-wait 120 maxs=0
+wait 40
 fps state
-wait 120 maxs=0
+wait 40
 fps state
-wait 10 maxs=0
+wait 3
 fps state
-wait 20 maxs=0
+wait 6
 fps state
+# 8
+tutorial start
+wait 2
+fps state
+ui key tab
+wait 2
+fps state
+tutorial skip
+wait 2
+# 9 (last: record b leaves Toggle Cursor without a key)
+snapshot tools/harness/scripts/fps_mode_rebound_keys.jsonl index=0
+get controls
+snapshot tools/harness/scripts/fps_mode_rebound_keys.jsonl index=1
+get controls
 fps off
 state

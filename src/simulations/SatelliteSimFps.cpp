@@ -32,9 +32,9 @@ bool SatelliteSim::fpsLogicLive() const
 {
     if (!fpsMode || showIntro || cineActive())
         return false;
-    // An HQ photo or a video recording never captures the cursor: a player gets menu mode meanwhile (the harness's
-    // FPS mode is logic only, so it carries on there).
-    if (!harness::active() && (photoState != 0 || video_.recording()))
+    // An HQ photo never captures the cursor: a player gets menu mode meanwhile (the harness's FPS mode is logic only,
+    // so it carries on there). A player's own video recording (F6) is their session: the mode stays live.
+    if (!harness::active() && photoState != 0)
         return false;
     return true;
 }
@@ -57,7 +57,8 @@ uint32_t SatelliteSim::fpsWindowMask() const
 {
     const bool open[] = {settingsChrome.open, viewControlsChrome.open, infoChrome.open, viewerChrome.open,
                          traceChrome.open,    msChrome.open,           skChrome.open,   wxChrome.open,
-                         cineChrome.open,     bmChrome.open,           rpChrome.open,   reportBarOpen_};
+                         cineChrome.open,     bmChrome.open,           rpChrome.open,   reportBarOpen_,
+                         tutActive}; // (the first-run tutorial's card has buttons: it needs the pointer like a window)
     uint32_t m = 0;
     for (size_t i = 0; i < sizeof(open) / sizeof(open[0]); ++i)
         if (open[i])
@@ -142,6 +143,12 @@ void SatelliteSim::fpsTick(const UIInput &inp, float dt)
     if (kb && !fpsKbCapturedPrev_ && fpsMode)
         fpsSet(false, FpsWhy::Window);
     fpsKbCapturedPrev_ = kb;
+    // A window, the note bar or the tutorial card appearing (whoever opened it: a hotkey, a report shot, the first-run
+    // tutorial) wants the pointer: menu mode. Only the appearance counts: Tab back into FPS mode with it open works.
+    const uint32_t mask = fpsWindowMask();
+    if (fpsMode && (mask & ~fpsMaskPrev_) != 0)
+        fpsSet(false, FpsWhy::Window);
+    fpsMaskPrev_ = mask;
     // A right press (a real one, or `mouse click right`) leaves the FPS mode.
     if (fpsLogicLive() && inp.rmbPressed && !vCursorActive)
         fpsSet(false, FpsWhy::RightClick);
@@ -190,8 +197,9 @@ void SatelliteSim::fpsCentreClick()
     if (fpsFacts_.firstClickS < 0.0)
         fpsFacts_.firstClickS = t;
     fpsFacts_.lastClickS = t;
-    // The ring: each click shows it for kFpsRingShowS and adds kFpsRingAddS, kFpsRingMaxS at most, then the fade.
-    fpsRingT_ = std::min(std::max(fpsRingT_, kFpsRingShowS) + kFpsRingAddS, kFpsRingMaxS);
+    // The ring: a lone click shows it for kFpsRingShowS; a click while it still holds adds kFpsRingAddS to what is
+    // left, kFpsRingMaxS at most; then the fade.
+    fpsRingT_ = fpsRingT_ > 0.0f ? std::min(fpsRingT_ + kFpsRingAddS, kFpsRingMaxS) : kFpsRingShowS;
     fpsRingFade_ = 0.0f;
 }
 

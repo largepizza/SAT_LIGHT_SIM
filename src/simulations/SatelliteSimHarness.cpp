@@ -1593,7 +1593,15 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     // only at 5e-8 rad/s, ~300 m per 10 minutes) or the compiled default (drift=default).
     if (n == "snapshot")
     {
-        std::ifstream in(pos(0));
+        // A relative path that is not next to the exe is read from where the run was launched (the repo, for run.py).
+        std::string snapPath = pos(0);
+        {
+            std::error_code ec;
+            if (!snapPath.empty() && fs::path(snapPath).is_relative() && !fs::exists(snapPath, ec) &&
+                !harness::options().launchCwd.empty())
+                snapPath = (fs::path(harness::options().launchCwd) / snapPath).string();
+        }
+        std::ifstream in(snapPath);
         if (pos(0).empty() || !in)
             fail("snapshot: cannot open '" + pos(0) + "' (a perf_profiles/profile_log.jsonl)");
         std::vector<json> recs;

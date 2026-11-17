@@ -9053,20 +9053,20 @@ private:
     // screen centre and the HUD stays drawn but inert. Tab (KB_TOGGLE_CURSOR on the keyboard) toggles; a right
     // press also leaves FPS mode; opening a window or a text entry (console, report bar) and losing window focus
     // force menu mode. fpsMode is the setting (camera.fps_mode, default on); the mode is LIVE only outside the
-    // intro and a playing cinematic, and for a player also outside an HQ photo and a video recording (menu mode
-    // meanwhile). The OS cursor is never captured under the harness (the mode is logic only there).
+    // intro and a playing cinematic, and for a player also outside an HQ photo (menu mode meanwhile). The OS cursor is never captured under the harness (the mode is logic only there).
     bool fpsMode = true;
     bool fpsLive_ = false;       // this frame (fpsTick): the FPS mode is in effect
     bool fpsOsCaptured_ = false; // the OS cursor is captured for it (GLFW_CURSOR_DISABLED + raw motion)
     bool fpsFocusedPrev_ = false;
     bool fpsKbCapturedPrev_ = false; // a text field or the console had the keyboard last frame
+    uint32_t fpsMaskPrev_ = 0;       // fpsWindowMask() last frame (a window appearing forces menu mode)
     bool fpsLookedThisFrame_ = false; // the FPS look turned the camera this frame (Go to's aim unlock, tutorial)
     float mouseSensMul = 1.0f;   // controls.mouse_sensitivity: Settings > Controls "Mouse sensitivity" (camera.sensMul)
     float fpsRingT_ = 0.0f;      // the centre ring: seconds shown before its fade
     float fpsRingFade_ = 0.0f;   // seconds of fade left (kFpsRingFadeS when the hold ends)
     std::string fpsLastPick_;    // what the last centre click hit ("" = nothing)
-    // The centre ring's timing: each FPS click shows it for kFpsRingShowS and adds kFpsRingAddS of hold, capped
-    // at kFpsRingMaxS; then a kFpsRingFadeS fade. Its size is fs(kFpsRingDiamPx), its stroke kFpsRingStroke of that.
+    // The centre ring's timing: a lone FPS click shows it for kFpsRingShowS; a click while it still holds adds
+    // kFpsRingAddS to the hold left, capped at kFpsRingMaxS; then a kFpsRingFadeS fade. Its size is fs(kFpsRingDiamPx), its stroke kFpsRingStroke of that.
     static constexpr float kFpsRingShowS = 0.6f;
     static constexpr float kFpsRingAddS = 1.0f;
     static constexpr float kFpsRingMaxS = 4.0f;
@@ -9092,7 +9092,7 @@ private:
     void fpsApplyCapture();           // the OS cursor follows the mode (never under the harness)
     void fpsCentreClick();            // an FPS-mode left click: the centre pick + the ring
     std::string pickAtScreenCentre(); // KB_SELECT_SAT and the FPS click: one coordinate convention (window size)
-    uint32_t fpsWindowMask() const;   // the open windows / bars, for "a hotkey opened one"
+    uint32_t fpsWindowMask() const;   // the open windows, the note bar, the tutorial card: one appearing forces menu mode
     void buildFpsRing(UIRenderer &ui);
     // harness `mouse move dx= dy= frames=` (deltas the FPS look consumes) / `mouse click left|right`
     int harnessMouseFrames_ = 0;

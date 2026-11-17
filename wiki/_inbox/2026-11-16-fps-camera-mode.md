@@ -6,11 +6,11 @@ code: [src/simulations/SatelliteSimFps.cpp, src/simulations/SatelliteSimUI.cpp, 
 Two mouse modes. Menu mode: free cursor, hold the right button and drag to look. FPS mode (Tab, the "Toggle
 Cursor" binding on the keyboard; the pad's Start is still the virtual cursor): the OS cursor is hidden and captured
 (GLFW raw motion when supported), the mouse looks with no button, a left click picks at the window centre (shared
-with the pad's "Select Satellite": window coordinates, not the framebuffer's) and flashes a ring there (0.6 s + 1 s
-per click, capped at 4 s, then a 0.3 s fade), and the HUD stays drawn but receives no pointer. Tab or a right click
-(which never starts a right-drag) leave it; so do a hotkey that opens a window, the console or a text entry, a report
-shot's bar / window, and losing window focus. Setting `camera.fps_mode`, default on (absent = on). Not live during
-the intro, a playing cinematic, an HQ photo or a video recording (menu mode meanwhile). "Toggle UI" moved from Tab to
+with the pad's "Select Satellite": window coordinates, not the framebuffer's) and flashes a ring there (a lone click 0.6 s; a
+click while it shows adds 1 s, capped at 4 s; then a 0.3 s fade), and the HUD stays drawn but receives no pointer. Tab or a right click
+(which never starts a right-drag) leave it; so do any window, the note bar or the first-run tutorial card appearing,
+the console or a text entry, and losing window focus. Setting `camera.fps_mode`, default on (absent = on). Not live during
+the intro, a playing cinematic or an HQ photo (menu mode meanwhile); live during the player's own video recording. "Toggle UI" moved from Tab to
 U (key layout 4 migrates a saved Tab). New "Mouse sensitivity" slider (Controls > MOUSE, `controls.mouse_sensitivity`,
 0.1-4, default 1) multiplies the 0.12 deg/px look rate in both modes; the pad's look rate is unaffected. Harness:
 `fps on|off|state`, `mouse move dx= dy= [frames=]`, `mouse click left|right`; a harness run starts in menu mode, never

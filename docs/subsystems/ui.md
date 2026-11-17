@@ -307,15 +307,22 @@ button), and Alt's cinematic pan (`KB_CINEMATIC` toggles while `camera.captured 
   rebind has the keyboard (`onKey`'s order), so it does nothing to the mode there.
 - **The one writer** is `fpsSet(on, why)`. Into FPS mode: Tab (and harness `fps on`). Out: Tab, a right press (it
   sets `camera.blockUntilRelease`, so the same press never starts a right-drag), and the forced exits: a hotkey
-  that opens a window (`dispatchKeyAction` compares `fpsWindowMask()` before and after: Settings, controls,
-  info, viewer, trace, Missions, Sky events, Weather, cinematics, Bookmarks, Issue reports, the note bar), the
-  console opening, a text field or rebind taking the keyboard (rising edge in `fpsTick`), a report shot opening
-  the bar / window, and the window losing focus. Nothing re-enters FPS mode when that window closes. The cursor
+  that opens a window (`dispatchKeyAction` compares `fpsWindowMask()` before and after), any window, the note
+  bar or the first-run tutorial card APPEARING by whatever means (the same mask, rising edge per frame in
+  `fpsTick`: Settings, controls, info, viewer, trace, Missions, Sky events, Weather, cinematics, Bookmarks, Issue
+  reports, the note bar, `tutActive`), the console opening, a text field or rebind taking the keyboard, and the
+  window losing focus. Tab back into FPS mode with one open is allowed (only the appearance counts). Unopened
+  UI that needs no pointer: the crash-recovery and graphics notices and the Kessler banner (text, timed or
+  passthrough), the screenshot toast, the selection panel and chip (I / G / T), the Go to chips and "Go to ...
+  again" (T / G / H / [ ]), the REC badge. Nothing re-enters FPS mode when that window closes. The cursor
   is put back at the window centre on every exit.
 - **Live vs set**: `fpsMode` is the setting (`camera.fps_mode`, compiled default and absent key = on), read from
   the settings file only (a patch: a cinematic shot's look, a snapshot, harness `set`, never changes the mode).
-  `fpsLogicLive()` is false during the intro and a playing cinematic, and for a player during an HQ photo or a
-  video recording: menu mode meanwhile (cursor free, right-drag works), FPS again after. The OS cursor is never
+  `fpsLogicLive()` is false during the intro and a playing cinematic, and for a player during an HQ photo: menu
+  mode meanwhile (cursor free, right-drag works), FPS again after. A player's own video recording (F6) keeps it
+  live. Nothing captures before the scene runs: the loading screen and the boot chooser run before `init()`
+  returns, App's key / cursor callbacks reach the sim only once `simInited`, `win` is first set by them, and only
+  `buildUI` (`fpsTick`) and `fpsSet` capture, both needing `win`. The OS cursor is never
   captured under the harness: there FPS mode is logic only and only `mouse move` turns the view; `harnessInit`
   starts a run in menu mode and a loaded settings file never turns it on (only `fps on`).
 - **UI inert**: `Simulation::uiPointerInert()` makes App hand the UI a pointer at (-1e5, -1e5) with the real
@@ -326,8 +333,9 @@ button), and Alt's cinematic pan (`KB_CINEMATIC` toggles while `camera.captured 
   mouse's coordinates (`glfwGetWindowSize`), shared with `KB_SELECT_SAT` (which used the framebuffer's
   `swapExtent`: wrong under display scaling). A miss clears the selection, as a menu click on empty sky does. The
   mode stays FPS. Each click flashes a ring at the centre (`buildFpsRing`, a `fs(26)` circle, passthrough, drawn
-  with the harness overlays so clean shots skip it): `kFpsRingShowS` 0.6 s + `kFpsRingAddS` 1 s per click, capped
-  at `kFpsRingMaxS` 4 s, then a `kFpsRingFadeS` 0.3 s fade.
+  with the harness overlays so clean shots skip it): a lone click shows it `kFpsRingShowS` 0.6 s, a click while it
+  still holds adds `kFpsRingAddS` 1 s to what is left, capped at `kFpsRingMaxS` 4 s, then a `kFpsRingFadeS` 0.3 s
+  fade (the owner: "briefly show a circle marker" that "should stay a while if you click a lot").
 - **Mouse sensitivity** (Controls > MOUSE, slider slot 626, `controls.mouse_sensitivity`, 0.1-4, default 1)
   multiplies the 0.12 deg/px rate in both modes (`SkyCamera::sensMul`); the pad's look keeps its own rate (it
   scales by `fovLookScale()` only).
