@@ -432,11 +432,13 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   the whole view round. Below 1000 km the horizon stays level as before ("Auto-level the horizon" and "Auto-level up
   to (km)" in Settings > Controls); above it, or with auto-level off, the camera turns freely: look past straight
   down, and roll with Z / C. Reset Elevation moved from Z to X.
-- **New intro.** It opens on the ground in the Mississippi delta at twilight, under Starmind's trains, with Reflect
-  mirrors flaring and a beam on the horizon. It rises over a Starship launch from Starbase with the sunset behind it,
-  then pulls out to orbit as the Sun sets on the limb. It plays on 2036-11-25 under a first-quarter Moon, and
-  "Replay Intro" always returns to that moment. At the end the camera arrives on the Sun on the limb as
-  the title appears and holds still there while the view slowly widens, then hands over to you.
+- **A playable opening.** The first launch starts you on the ground in the Mississippi delta at twilight, 2036-11-25 under a first-quarter
+  Moon, looking up Starmind's trains, with Reflect mirrors flaring, a beam on the eastern horizon and a Starship
+  climbing out of Starbase to the south. The intro's captions and title play over the first minute while you are
+  already in control: look with the mouse (FPS mode is on), fly anywhere (all the way to orbit), click what you see,
+  pause with Space. The corner toolbars appear the first time you bring the cursor back (Tab or right click), or
+  when the captions end. There is nothing to skip; "Play intro on startup" (Settings > Display) turns it off and
+  "Replay Intro" plays it again from that moment and place. The first-run graphics check now measures while you play.
 - **Missions window** (the rocket button, or M): the next launches, pinned twilight and crewed launches, the Sun's
   Fury countdown; what is flying now (crew transfers, stations, launches, trains, retirees, build-out); and the
   Kessler tab. Every row has one **Watch** button that lands on the event as it happens.

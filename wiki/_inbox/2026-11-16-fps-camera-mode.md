@@ -9,8 +9,8 @@ Cursor" binding on the keyboard; the pad's Start is still the virtual cursor): t
 with the pad's "Select Satellite": window coordinates, not the framebuffer's) and flashes a small ring there (12 px at UI scale 1, a 1-px stroke; a lone click 0.9 s; a
 click while it shows adds 1 s, capped at 5 s; then a 0.3 s fade), and the HUD stays drawn but receives no pointer. Tab or a right click
 (which never starts a right-drag) leave it; so do any window, the note bar or the first-run tutorial card appearing,
-the console or a text entry, and losing window focus. Setting `camera.fps_mode`, default on (absent = on). Not live during
-the intro, a playing cinematic or an HQ photo (menu mode meanwhile); live during the player's own video recording. "Toggle UI" moved from Tab to
+the console or a text entry, and losing window focus. Setting `camera.fps_mode`, default on (absent = on). Live during the opening (it switches the mode on); not live during
+a playing cinematic or an HQ photo (menu mode meanwhile); live during the player's own video recording. "Toggle UI" moved from Tab to
 U (key layout 4 migrates a saved Tab). New "Mouse sensitivity" slider (Controls > MOUSE, `controls.mouse_sensitivity`,
 0.1-4, default 1) multiplies the 0.12 deg/px look rate in both modes; the pad's look rate is unaffected. Harness:
 `fps on|off|state`, `mouse move dx= dy= [frames=]`, `mouse click left|right`; a harness run starts in menu mode, never
