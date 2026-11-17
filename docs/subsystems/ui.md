@@ -291,6 +291,53 @@ where no saved binding uses them. An unbound key is -1 (`onKey` ignores GLFW_KEY
 "-"). The selection buttons' tooltips name their keys ("Info (I)"), and so do the tutorial's cards. Harness
 `ui key <letter>`.
 
+### FPS camera mode (2026-11-16, `SatelliteSimFps.cpp`)
+
+Two mouse modes. **Menu mode** is the old behaviour: a free cursor, hold the right button and drag to look.
+**FPS mode** looks with the mouse and no button: the OS cursor is hidden and captured (`GLFW_CURSOR_DISABLED`,
+plus `GLFW_RAW_MOUSE_MOTION` when supported, only while FPS mode holds the cursor; the right-drag keeps the OS's
+accelerated motion). The look is the same code as the right-drag (buildUI's look block): `camYaw` / `camPitch`,
+the FOV scaling, invert X / Y, Track's zeroing, the capture-change two-frame skip (`fpsLive_` counts as the held
+button), and Alt's cinematic pan (`KB_CINEMATIC` toggles while `camera.captured || fpsLogicLive()`).
+
+- **Toggle**: `KB_TOGGLE_CURSOR` ("Toggle Cursor") is Tab on the keyboard (FPS mode) and Start on the pad (UC5's
+  virtual cursor, unchanged): `dispatchKeyAction(idx, fromPad)` tells them apart. `KB_TOGGLE_UI` is U (pad View).
+  Key layout 4 migrates a saved Tab on Toggle UI to U and an unbound Toggle Cursor to Tab, each dropped again when
+  another saved binding already has that key. Tab never reaches the dispatch while a text field, the console or a
+  rebind has the keyboard (`onKey`'s order), so it does nothing to the mode there.
+- **The one writer** is `fpsSet(on, why)`. Into FPS mode: Tab (and harness `fps on`). Out: Tab, a right press (it
+  sets `camera.blockUntilRelease`, so the same press never starts a right-drag), and the forced exits: a hotkey
+  that opens a window (`dispatchKeyAction` compares `fpsWindowMask()` before and after: Settings, controls,
+  info, viewer, trace, Missions, Sky events, Weather, cinematics, Bookmarks, Issue reports, the note bar), the
+  console opening, a text field or rebind taking the keyboard (rising edge in `fpsTick`), a report shot opening
+  the bar / window, and the window losing focus. Nothing re-enters FPS mode when that window closes. The cursor
+  is put back at the window centre on every exit.
+- **Live vs set**: `fpsMode` is the setting (`camera.fps_mode`, compiled default and absent key = on), read from
+  the settings file only (a patch: a cinematic shot's look, a snapshot, harness `set`, never changes the mode).
+  `fpsLogicLive()` is false during the intro and a playing cinematic, and for a player during an HQ photo or a
+  video recording: menu mode meanwhile (cursor free, right-drag works), FPS again after. The OS cursor is never
+  captured under the harness: there FPS mode is logic only and only `mouse move` turns the view; `harnessInit`
+  starts a run in menu mode and a loaded settings file never turns it on (only `fps on`).
+- **UI inert**: `Simulation::uiPointerInert()` makes App hand the UI a pointer at (-1e5, -1e5) with the real
+  buttons, so no hover or click reaches an element from the frozen hidden cursor and `mouseOverUI()` is false for
+  the centre click and the wheel zoom. A scripted pointer (`ui click`) and the pad's virtual cursor still count as
+  pointers.
+- **Centre click**: an FPS left click runs `pickAtScreenCentre()`, the pick chain at the window centre in the
+  mouse's coordinates (`glfwGetWindowSize`), shared with `KB_SELECT_SAT` (which used the framebuffer's
+  `swapExtent`: wrong under display scaling). A miss clears the selection, as a menu click on empty sky does. The
+  mode stays FPS. Each click flashes a ring at the centre (`buildFpsRing`, a `fs(26)` circle, passthrough, drawn
+  with the harness overlays so clean shots skip it): `kFpsRingShowS` 0.6 s + `kFpsRingAddS` 1 s per click, capped
+  at `kFpsRingMaxS` 4 s, then a `kFpsRingFadeS` 0.3 s fade.
+- **Mouse sensitivity** (Controls > MOUSE, slider slot 626, `controls.mouse_sensitivity`, 0.1-4, default 1)
+  multiplies the 0.12 deg/px rate in both modes (`SkyCamera::sensMul`); the pad's look keeps its own rate (it
+  scales by `fovLookScale()` only).
+- `camera.captured` readers: Go to's aim unlock and the tutorial's look step also count `fpsLookedThisFrame_`
+  (an actual FPS turn, not the mode), the report bar's "busy hands" sees FPS mode already left.
+- `fpsFacts_` keeps sticky facts for a later hint scheduler (left by Tab / right click, entered from menu mode,
+  click count and times, degrees of mouse look either mode, right-drag used); harness `fps state` reports them.
+  Harness: `fps on|off|state`, `mouse move dx= dy= frames=`, `mouse click left|right`
+  (`tools/harness/scripts/fps_mode.satcmd`).
+
 ### Gamepad layout 2 and the selection's focus (2026-10-03)
 
 Default pad bindings: A select (centre pick) · B back · X pause · Y reverse · D-pad up/down faster/slower ·
@@ -317,19 +364,10 @@ struct KeyBinding {
 ```
 
 ### `KB` enum (canonical indices)
-```cpp
-enum KB {
-    KB_TOGGLE_UI  = 0,   // Tab    — event
-    KB_PAUSE      = 1,   // Space  — event
-    KB_SLOWER     = 2,   // ,      — event
-    KB_FASTER     = 3,   // .      — event
-    KB_REVERSE    = 4,   // R      — event
-    KB_MOVE_BOOST = 5,   // LShift — held
-    KB_MOVE_FINE  = 6,   // LCtrl  — held
-    KB_CINEMATIC  = 7,   // LAlt   — event (toggle cinematic pan mode while RMB held)
-    KB_COUNT      = 8,
-};
-```
+The enum is in `SatelliteSim.h` (`KB_TOGGLE_UI = 0` .. `KB_ROLL_RIGHT = 33`, `KB_COUNT = 34`) and the
+`keybindings` initializer in `SatelliteSim::init()` lists the same order with each default key / pad button
+(`static_assert(KB_COUNT == 34)`). Read those two rather than a copy here: an 8-entry listing that stood here
+went stale at KB_COUNT 8.
 
 ### Adding a new control (complete checklist)
 1. Add `KB_NEWNAME` before `KB_COUNT` in the enum
