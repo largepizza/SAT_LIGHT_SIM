@@ -3641,6 +3641,10 @@ private:
     float launchStreakCount = 0.0f, launchStreakBright = 1.0f, launchStreakSpread = 0.909502268f, launchStreakLengthS = 54.76923f;
     float launchStreakDiffusion = 0.5882353f, launchNucleusBright = 1.040724f, launchStagingCloud = 1.90045261f;
     float launchPlumeDispersal = 3.93665171f; // launches.plume_dispersal (2026-10-26): old exhaust's widening with age x (no UI)
+    // launches.plume_cover_max (2026-11-16, plume overhaul phase 4; no UI): the plume budget's coverage, in screens of
+    // dustCloudsCS's per-texel work, above which no Gaussians are added past the old 384 (SatelliteSimLaunches.cpp
+    // launchFillVisuals); 0 = the old count budget alone
+    float launchPlumeCoverMax = 16.0f;
     float launchOrbitVent = 0.29f; // launches.orbit_vent (2026-11-13): the steady orbital vent's density x (0 = off; slider 624; 0.29 = the user's look, 2026-11-14)
     float launchGroundCloudGain = 1.0f; // launches.ground_cloud_gain: lift-off steam / landing dust & spray density x
     // Rocket light on clouds, haze, plumes and the ground (2026-10-20, launches.engine_light_gain): the burning

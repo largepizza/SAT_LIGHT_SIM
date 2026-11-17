@@ -438,7 +438,19 @@ launches follow per-program cadences (no real manifest).
   1 min/s 0.264 / 1.48 -> 0.244 / 0.60 (the max now at the H.264 keyframes); the T+62-min bell is already faint there
   (by design). Cost: twilight bookmark at T+10 min cloud_march 7.9 -> 7.8 (dispersal 0) / 8.0 (0.5) / 8.3-9.2 ms (1);
   beside a pad after it 6.5-6.7 -> 7.3-7.7 (0) / 8.2-8.6 ms (1), the budget then admitting wider, fainter Gaussians;
-  CPU within noise. Open: a cost-aware budget (coverage, not count).
+  CPU within noise. The count budget is now topped up by coverage (below, 2026-11-16).
+  **The budget counts coverage (2026-11-16, plume overhaul phase 4).** launchFillVisuals: dustCloudsCS costs a Gaussian
+  the tiles its cone covers (~70 us per screen of coverage, RTX 3070 Ti 1600x900, measured by drawing 676 instead of 381
+  at the 193912 view: +17 screens, +1.2 ms) plus a cone test per tile, so the room is how many of the best-ranked fit
+  `launches.plume_cover_max` (key only, default 16) screens of coverage (each Gaussian's cone projected on the frame,
+  + 0.002), NEVER FEWER than the old 384, up to the list less 256 (tornadoes, haboobs, wildfire smoke fill it after the
+  launches) and the 40 ranks of cut headroom. Near a wide bell the top 384 are past the budget already (175808's view
+  50 screens, 210053's 121): the old draw, the old cost. Far plumes, a few pixels each, get the room: 193912's view
+  (five launches, ~1200 candidates) 382 -> 413 Gaussians at 16 screens (569 at 24, 676 unbounded). The room is eased
+  (3% a frame, snapped past 1.5x the budget), last frame's used. `launch state` -> `plume_cover`, `plume_room`,
+  `plume_room_target`; `set launches.plume_cover_max 0` = the count budget alone. Re-measured then (today's build):
+  193912's hour-old bell fades over ~30 s of sim (no pop: the frame-change curve at 10x has no spikes), its candidates
+  ending with their parcels' lifetime as 210053's do (cut 0 there: the budget is not involved).
   **The bell fades, it does not step (2026-11-14, issue_20261114_183827 "Trail fade out": "trails fade out in discrete
   chunks", a twilight Starship's jellyfish seen from 20 km at 10x).** Four things took light out in one frame; each is
   continuous now (SatelliteSimLaunches.cpp, launchFillVisuals): (1) **streak cross-section**: each ascent parcel's
@@ -564,6 +576,22 @@ launches follow per-program cadences (no real manifest).
   view: core 3-10, lobes 0.3-3. Judge brick looks in a telephoto on the billow (it is ~100 px in the report's view).
   Scripts: plume_staging_billow.satcmd, plume_brick_light.satcmd; `shaders reload brick=<spv>` swaps the three passes;
   `launch state` -> `plume_wide` (the widest Gaussians within 400 km: kind, age, sigma, cross-section, brick share).
+- **Which groups get a brick (2026-11-16, issue_20261116_175048 "Plume pop in": orbiting a staging cloud from 126 km it
+  switched between its lobed brick and the Gaussians; "only one plume can have the detail hotstage cloud?").** The
+  kMaxPlumeBricks (4) slots went to the NEAREST groups: three launches' old upper-stage exhaust (~200 km half extents,
+  half handed back already) outranked the 30-km staging billow whenever the eye's distances reordered them. Now
+  (launchFillVisuals, `LaunchState::brickEase`): score = (2 for hot-staging lobes, else 1) x the share its size leaves
+  in a brick (1 - smoothstep(150, 250 km)) / (1 + range / 500 km), x 1.3 for a group holding a slot; holders are placed
+  first (wanted, then leaving), so a leaving group fades out in its slot; each group's brick weight is eased 0.05 a
+  frame (~1/3 s) toward its share or 0, the Gaussians taking the rest. The reporter's four shots: the same four groups
+  (30 / 60 / 170 / 164 km) at every angle.
+- **The billow's outline is warped (2026-11-16, issue_20261116_175808 "Circular hotstage cloud crop": "this noise has
+  too hard of an edge").** The envelope (a few wide Gaussians) has a spherical shell; the lobes, a few km, could not
+  move it: in log density e^(+-2) shifts a dense cloud's rim ~5 km, where its envelope falls by orders of magnitude.
+  plume_brick.comp `warpL`: the hot-staging brick's envelope is read at a warped position (march, shadow atlas, light
+  march): the lobe field's g at mip 3, three offset reads, cells 0.4 of the brick's largest half extent, displacement
+  0.05 of it x n (unit rms, clamped 2.5). Mip 0 tore it into speckles across its box; 0.07-0.18 shredded it into wisps.
+  Cost within noise (175808's view, interleaved).
 - **The exhaust ice's Mie optics (2026-11-15, the user: "work on Mie in plumes").** tools/make_mie_lut.py --ice ->
   assets/textures/plume_mie.rgba16f (the clouds' file layout; loadMieTable loads both): ice spheres (Warren & Brandt
   index, Cauchy fit), r_eff 0.05 x 60^(i/11) um (12 rows: shaders/include/plume_mie.glsl maps a radius to its row with

@@ -146,6 +146,29 @@ float turbK(Brick B, vec3 p)
     return 0.5 * (1.0 - smoothstep(70000.0, 100000.0, h));
 }
 
+// The outline's big lobes (2026-11-16, issue_20261116_175808 "Circular hotstage cloud crop": "this noise has too hard
+// of an edge"). The envelope is a few wide Gaussians, so its shell is a sphere, and the lobes (a few km) only roughened
+// it: a 100-km billow read as a textured disc with a clean circular rim. A cumulus outline has lobes on every scale, the
+// largest a third of the cloud. In log density (as the small lobes) they could not move it: at the shell a dense
+// cloud's envelope falls by orders of magnitude within a few km, so e^(+-2) shifted the rim by ~5 km. So the envelope is
+// read at a WARPED position, in the march, the shadow atlas and the light march alike: a smooth vector field (the lobe
+// field's g, three offset reads at mip 3) in cells ~0.4 of the brick's largest half extent, anchored as the lobes,
+// kWarp x n x that extent (n ~ unit rms, clamped at 2.5). Tried: mip 0 tore the billow into speckles over its whole box;
+// 0.18 / 0.07-0.1 of the extent shredded it into wisps; 0.05 keeps one cloud with a cauliflower outline.
+const float kBigScale = 0.4, kWarp = 0.05, kWarpMip = 3.0, kWarpSd = 0.06;
+vec3 warpL(Brick B, vec3 p)
+{
+    vec3 l = (p - B.c.xyz) / B.h.xyz;
+    if (B.iso.z < 0.5 || B.iso.w <= 0.0) return l;   // (the hot-staging billow only; a trail's exhaust stays smooth)
+    float hM = max(max(B.h.x, B.h.y), B.h.z);
+    vec3  q  = (p - B.c.xyz - B.sun.xyz) / max(hM * kBigScale, 1.0) + vec3(B.misc.z * 19.0, B.misc.z * 41.0, B.misc.z * 7.0);
+    // (three reads of the lobe field's g at a coarse mip, offset: a smooth vector field; at mip 0 the warp tore the
+    // billow into speckles filling its whole box)
+    vec3  n  = clamp((vec3(textureLod(lobeTex, q, kWarpMip).g, textureLod(lobeTex, q + vec3(0.37, 0.11, 0.73), kWarpMip).g,
+                           textureLod(lobeTex, q + vec3(0.61, 0.83, 0.29), kWarpMip).g) - 0.475) / kWarpSd, -2.5, 2.5);
+    return l + n * (kWarp * min(B.iso.w, 1.5) * hM) / B.h.xyz;
+}
+
 float shaped(Brick B, vec3 p, float e)
 {
     float kA = turbK(B, p);
@@ -190,7 +213,7 @@ float sunDepth(uint b, Brick B, vec3 p, vec3 sunDir)
     for (int k = 1; k <= 8; ++k) {
         float u1 = float(k * k) / 64.0;               // quadratic spacing: 1/64 of the reach first, 15/64 last
         vec3  ps = p + sunDir * (0.5 * (u0 + u1) * nearL);
-        tN += shaped(B, ps, volAt(b, (ps - B.c.xyz) / B.h.xyz)) * (u1 - u0) * nearL;
+        tN += shaped(B, ps, volAt(b, warpL(B, ps))) * (u1 - u0) * nearL;
         u0 = u1;
     }
     float tF = 0.0;
@@ -199,7 +222,7 @@ float sunDepth(uint b, Brick B, vec3 p, vec3 sunDir)
         float dF = farL / 6.0;
         for (int k = 0; k < 6; ++k) {
             vec3 ps = p + sunDir * (nearL + (float(k) + 0.5) * dF);
-            tF += smoothExt(B, ps, volAt(b, (ps - B.c.xyz) / B.h.xyz)) * dF;
+            tF += smoothExt(B, ps, volAt(b, warpL(B, ps))) * dF;
         }
     }
     return tN + tF;
@@ -217,7 +240,7 @@ void shadow()
         vec3 l = (vec3(v.x, v.y, v.z - int(b) * kRes) + 0.5) / float(kRes) * 2.0 - 1.0;
         // empty air (most of a box) is skipped: below 0.4% of the reference no lobe (x <= ~16) lifts it to the shell
         // (s 0.10), so the march never takes light there (its trilinear neighbours at an edge read 0: a lit rim)
-        if (volAt(b, l) * B.h.w > 0.004 * B.misc.w)
+        if (volAt(b, warpL(B, B.c.xyz + l * B.h.xyz)) * B.h.w > 0.004 * B.misc.w)
             tS = sunDepth(b, B, B.c.xyz + l * B.h.xyz, normalize(pc.sunDirENU.xyz));
     }
     imageStore(shadowImg, v, vec4(min(tS, 60000.0)));
@@ -271,7 +294,7 @@ void march()
                 float t = t0 + (float(s) + jit) * dt;
                 vec3  p = t * dir;
                 vec3  l = (p - B.c.xyz) / B.h.xyz;
-                vec4  v4 = volAt4(b, l);
+                vec4  v4 = volAt4(b, warpL(B, p));
                 float e = shaped(B, p, v4.a);
                 if (e * dt < 1e-6) continue;
                 // The Sun through the brick's own mass: the shadow atlas (mode 2), lobes and all, trilinear
