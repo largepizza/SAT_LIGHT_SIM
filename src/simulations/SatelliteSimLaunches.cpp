@@ -736,6 +736,10 @@ struct SatelliteSim::LaunchState
     // (2026-11-16, plume overhaul phase 4) the plume budget's room (ranks), eased toward what fits the coverage budget,
     // and the drawn set's coverage (screens) and the room it asked for (harness `launch state`)
     double plumeRoomEased = 384.0;
+    // (2026-11-16, issue_20261116_175048 "Plume pop in") each brick group's eased weight (key: the launch's key x 2 + 1 for
+    // the hot-staging lobes) and the frame it was last seen
+    std::unordered_map<uint64_t, std::pair<double, uint32_t>> brickEase;
+    uint32_t brickFrame = 0;
     double plumeCoverDrawn = 0.0, plumeRoomTarget = 0.0;
     uint32_t plumeSkipped = 0, plumeSkippedLast = 0;
     double lastJobMs = 0.0;
@@ -8773,6 +8777,9 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         {
             size_t a, b;
             double range;
+            uint64_t key = 0;
+            double wT = 0.0, score = 0.0;  // the hand-off weight its size allows; its claim on a slot
+            int cls = 3;                   // 0 holding a slot and wanted, 1 holding one and leaving, 2 wanted, 3 not
         };
         static std::vector<BG> groups;
         groups.clear();
@@ -8788,7 +8795,64 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             groups.push_back({a, b, r});
             a = b;
         }
-        std::sort(groups.begin(), groups.end(), [](const BG &x, const BG &y) { return x.range < y.range; });
+        // WHICH GROUPS GET A BRICK (2026-11-16, issue_20261116_175048 "Plume pop in": orbiting a staging cloud from 126 km,
+        // it switched between its lobed brick and the smooth Gaussians as the view turned; "only one plume can have the
+        // detail hotstage cloud?"). The kMaxPlumeBricks slots went to the NEAREST groups, and three launches' old upper-
+        // stage exhaust (~200 km half extents, already half handed back to the Gaussians) outranked a 30-km staging
+        // billow whenever the eye's distances reordered them. Now: the hot-staging lobes first and compact groups before
+        // wide ones (the share their size leaves in a brick), the range only as a tie-break; a group holding a slot
+        // keeps it (x1.3) and keeps drawing while it fades out; a group's brick weight is EASED (0.05 a frame: ~1/3 s),
+        // so a slot changing hands cross-fades the brick and the Gaussians instead of swapping them in a frame.
+        ++L.brickFrame;
+        for (BG &gr : groups)
+        {
+            const int gi = bc[gr.a].grp;
+            const uint64_t lk = gi >= 0 && (size_t)gi < L.visList.size() ? L.visList[(size_t)gi].first : (uint64_t)gi;
+            gr.key = lk * 2u + (bc[gr.a].kind == 1 ? 1u : 0u);
+            double sw = 0.0;
+            glm::dvec3 C(0.0), hx(0.0);
+            for (size_t k = gr.a; k < gr.b; ++k)
+            {
+                sw += bc[k].d.c.w;
+                C += (double)bc[k].d.c.w * glm::dvec3(bc[k].d.c);
+            }
+            if (sw > 0.0)
+            {
+                C /= sw;
+                for (size_t k = gr.a; k < gr.b; ++k)
+                {
+                    const GpuDustCloud &d = bc[k].d;
+                    const glm::dmat3 M(d.ia.x, d.ib.x, d.ib.y, d.ib.x, d.ia.y, d.ib.z, d.ib.y, d.ib.z, d.ia.z);
+                    const glm::dmat3 S = glm::inverse(M);
+                    for (int a = 0; a < 3; ++a)
+                        hx[a] = std::max(hx[a], std::abs((double)d.c[a] - C[a]) + 3.0 * std::sqrt(std::max(S[a][a], 0.0)));
+                }
+                gr.wT = 1.0 - glm::smoothstep(150000.0, 250000.0, 1.05 * std::max({hx.x, hx.y, hx.z}));
+            }
+            auto it = L.brickEase.find(gr.key);
+            const bool holds = it != L.brickEase.end() && it->second.first > 0.0;
+            gr.score = (bc[gr.a].kind == 1 ? 2.0 : 1.0) * gr.wT / (1.0 + gr.range / 500000.0) * (holds ? 1.3 : 1.0);
+        }
+        {
+            static std::vector<size_t> ord;
+            ord.resize(groups.size());
+            for (size_t i = 0; i < ord.size(); ++i)
+                ord[i] = i;
+            std::sort(ord.begin(), ord.end(), [&](size_t x, size_t y) { return groups[x].score > groups[y].score; });
+            size_t wanted = 0;
+            for (size_t i : ord)
+            {
+                BG &gr = groups[i];
+                const bool want = gr.wT > 0.0 && wanted < kMaxPlumeBricks;
+                wanted += want ? 1 : 0;
+                auto it = L.brickEase.find(gr.key);
+                const bool holds = it != L.brickEase.end() && it->second.first > 0.0;
+                gr.cls = holds ? (want ? 0 : 1) : (want ? 2 : 3);
+            }
+            std::stable_sort(groups.begin(), groups.end(), [](const BG &x, const BG &y) {
+                return x.cls != y.cls ? x.cls < y.cls : x.score > y.score;
+            });
+        }
         for (const BG &gr : groups)
         {
             // (over capacity: the strongest kept, by cross-section; the rest stay in the list)
@@ -8835,6 +8899,14 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 gBrickGroupHalfKm.push_back((float)(std::max({hx.x, hx.y, hx.z}) / 1000.0));
                 wB = 1.0 - glm::smoothstep(150000.0, 250000.0, std::max({hx.x, hx.y, hx.z}));
             }
+            // (the eased weight: toward its size's share while wanted, toward 0 while leaving; without a slot, 0)
+            {
+                auto &E = L.brickEase[gr.key];
+                const double tgt = (gr.cls == 0 || gr.cls == 2) ? wB : 0.0;
+                E.first = (sw > 0.0 && slot) ? glm::clamp(tgt, E.first - 0.05, E.first + 0.05) : 0.0;
+                E.second = L.brickFrame;
+                wB = std::min(wB, E.first);
+            }
             // what the brick does not draw stays in the list (the hand-off; all of it with no brick slot)
             if (wB < 1.0)
                 for (size_t k = gr.a; k < gr.b; ++k)
@@ -8880,6 +8952,8 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 brickGauss_.push_back(bc[k].d);
             bricks_.push_back(B);
         }
+        for (auto it = L.brickEase.begin(); it != L.brickEase.end();)
+            it = it->second.second + 120u < L.brickFrame ? L.brickEase.erase(it) : std::next(it);
         if (brickMapped)
         {
             char *p = static_cast<char *>(brickMapped);
