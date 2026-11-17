@@ -43,7 +43,10 @@ bool SatelliteSim::fpsLogicLive() const
 bool SatelliteSim::uiPointerInert() const
 {
     // A scripted pointer (`ui click` / `ui hover`) or the gamepad's virtual cursor is a pointer: the UI takes it.
-    return fpsLogicLive() && !harnessPtrActive_ && !vCursorActive;
+    // A harness run never takes the REAL cursor (2026-11-16): the harness window sits on a monitor the developer's
+    // mouse also rests on, and a hover there raised a tooltip that failed ui_lowres.py at the one window size
+    // whose button lay under it. Only the scripted pointer reaches the UI in a harness run.
+    return (fpsLogicLive() || harness::active()) && !harnessPtrActive_ && !vCursorActive;
 }
 
 void SatelliteSim::mouseButtonOverride(bool &lmb, bool &rmb) const
