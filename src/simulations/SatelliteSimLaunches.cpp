@@ -8969,14 +8969,16 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
     // The plumes: the brightest per pixel of sky first, as many as fit.
     if (!plumes.empty())
     {
-        // THE BUDGET IS COVERAGE, NOT COUNT (2026-11-16, .plans/PLUME_OVERHAUL_PLAN.md phase 4; issue 20261026_193912
-        // re-measured: five launches in view, ~1200 candidates, the count limit of 384 drew an hour-old bell with 13 of
-        // its 44 Gaussians while launches 1000-2000 km away, a few pixels each, took the rest). dustCloudsCS costs a
-        // Gaussian the tiles its cone covers (the per-tile cull) plus a cone test per tile: a far trail piece costs ~0,
-        // a bell round the eye a whole screen. So the room is how many of the best-ranked fit kPlumeCoverMax screens of
-        // coverage (+ kPlumeFixedCost each), up to the list's room less what the weather's lists after it need. The room
-        // is eased (3% a frame up and down, snapped down past 1.5x the budget) so turning the camera never cuts at once;
-        // last frame's room is used, this frame's sets the next.
+        // THE BUDGET COUNTS COVERAGE, NOT ONLY GAUSSIANS (2026-11-16, .plans/PLUME_OVERHAUL_PLAN.md phase 4; issue
+        // 20261026_193912 re-measured: five launches in view, ~1200 candidates, the count limit of 384 drew an hour-old
+        // bell with 13 of its 44 Gaussians while launches 1000-2000 km away, a few pixels each, took the rest).
+        // dustCloudsCS costs a Gaussian the tiles its cone covers (the per-tile cull) plus a cone test per tile: a far
+        // trail piece costs ~0, a bell round the eye a whole screen (measured ~70 us per screen of coverage, RTX 3070 Ti,
+        // 1600x900). So the room is how many of the best-ranked fit kPlumeCoverMax screens of coverage (+ kPlumeFixedCost
+        // each), never fewer than the old 384 (near a wide bell the top 384 are past the budget already: the old draw and
+        // cost), up to the list's room less what the weather's lists after it need. The room is eased (3% a frame up and
+        // down, snapped to the target past 1.5x the budget) so turning the camera never cuts at once; last frame's room is
+        // used, this frame's sets the next.
         // (2026-11-14) + kPlumeCutHeadroom ranks that the eased fade cut (below) keeps at or near 0: a margin, so the
         // count limit rarely cuts a Gaussian the fade still draws.
         constexpr uint32_t kPlumeCutHeadroom = 40u;
@@ -9125,14 +9127,16 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             if (k == SIZE_MAX)
                 k = walk;
             // (all candidates fit: the room stays where it is, up to the list's room, so a new launch finds it there)
-            const double tgt = k >= plumes.size() ? std::max((double)k, L.plumeRoomEased) : (double)k;
+            // (never under the old count, 384: the coverage only ADDS room where the Gaussians are cheap; near a wide bell
+            // the top 384 already pass the budget and the draw is the old one)
+            const double tgt = std::max(k >= plumes.size() ? std::max((double)k, L.plumeRoomEased) : (double)k, 384.0);
             // (the current room over 1.5x the budget: cut down at once, a pop beats a frame-rate collapse)
             double &Re = L.plumeRoomEased;
             if (costRoom > 1.5 * kPlumeCoverMax)
                 Re = tgt;
             else
                 Re = tgt > Re ? std::min(tgt, Re * 1.03 + 1.0) : std::max(tgt, Re * 0.97 - 1.0);
-            Re = glm::clamp(Re, 64.0, (double)std::max<uint32_t>(roomMaxAll, 64u));
+            Re = std::min(std::max(Re, 384.0), (double)roomMaxAll);
             L.plumeRoomTarget = (double)k;
         }
         // Near the cut a Gaussian fades by its priority (to 0 at the cut, full at 3x it): as plumes age and the view

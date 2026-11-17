@@ -38,6 +38,11 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **Rocket exhaust ice scatters light physically.** Plumes use Mie optics for ice particles whose size follows height
   and density: the high exhaust's tiny ice glows blue, the dense young cloud is whiter, and the low trail's larger ice
   is unchanged. Setting `launches.plume_mie` (on).
+- **Staging clouds keep their detail from every angle.** Circling a hot-staging cloud no longer swaps its lobed volume
+  for the smooth fallback as the view turns, up to four staging clouds show the detail at once, and a cloud that gains
+  or loses it cross-fades. Its outline bulges like a cumulus instead of ending in a clean circle.
+- **More of the distant plumes are drawn.** With several launches in view, far plumes that cover only a few pixels no
+  longer crowd each other out; near a large plume the drawing and its cost are unchanged.
 - **Noctilucent clouds, natural and launch-made.** Ice forms at 83 km wherever the air is colder than the frost point
   of its water vapour: the natural polar summer clouds, plus every launch's exhaust water, carried toward the summer
   pole over days. Near the launch sites the air is too warm, so the clouds appear downwind: north of the Gulf pads in
