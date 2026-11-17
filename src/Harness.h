@@ -115,6 +115,18 @@ public:
     int commandCount() const { return executed_; }
     uint64_t frame() const { return frame_; }
     const Active *current() const { return active_ ? &*active_ : nullptr; }
+    // For the on-screen run HUD (SatelliteSim::buildHarnessHud): what is waiting, when the run began,
+    // and the last statement that finished.
+    size_t queued() const { return queue_.size(); }
+    double startWall() const { return startWall_; }
+    struct Finished
+    {
+        std::string text, source, error;
+        bool ok = true;
+        int frames = 0;
+        double wallMs = 0.0;
+    };
+    const Finished *lastFinished() const { return executed_ > 0 ? &last_ : nullptr; }
 
     // Recent result lines, for the console window.
     const std::deque<std::string> &consoleLines() const { return console_; }
@@ -135,6 +147,8 @@ private:
     int errors_ = 0;
     int executed_ = 0;
     uint64_t frame_ = 0;
+    double startWall_ = 0.0; // set by the first tick
+    Finished last_;
     double lastLivePoll_ = 0.0;
     double lastStatus_ = 0.0;
     std::deque<std::string> console_;

@@ -983,6 +983,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
 
     fprof::mark("ui.seg3c_icons_pick");
     buildHarnessConsole(inp, ui);  // the ~ console draws even with the HUD hidden
+    buildHarnessHud(inp, ui);      // a harness launch's run info, top left (never captured), likewise
     buildHarnessOverlays(inp, ui); // harness `overlay` titles/labels, likewise (docs/HARNESS.md)
     buildCineHud(inp, ui);         // a playing / exporting cinematic's progress and Stop, likewise
     buildVideoHud(inp, ui);        // the REC badge while recording a video, likewise
@@ -8902,6 +8903,107 @@ void SatelliteSim::buildHarnessConsole(const UIInput &inp, UIRenderer &ui)
                                     : Clay_Color{200, 200, 200, 255};
             Clay_String s{false, (int32_t)l.size(), l.c_str()};
             CLAY_TEXT(s, CLAY_TEXT_CONFIG({.textColor = col, .fontSize = fs(12), .wrapMode = CLAY_TEXT_WRAP_NONE}));
+        }
+    }
+}
+
+// ─── Harness run HUD (docs/HARNESS.md "Run HUD") ─────────────────────────────
+// What a harness launch is doing, for the person watching it: the run folder and script, progress, the
+// statement executing now (with its file:line) and the last one finished. Built after harnessTick, so a
+// statement that finished within this frame shows as "last". Drawn only on frames nobody records: a clean
+// capture skips the whole UI (App), and here it leaves out a ui=on shot, a video taken with the UI and a
+// `ui dump` frame (so ui_lowres / selftest layout checks never see it). Hidden while the console is open
+// (the console shows the same lines) and outside harness launches (the console's lazy runner).
+void SatelliteSim::buildHarnessHud(const UIInput &inp, UIRenderer &ui)
+{
+    (void)inp;
+    if (!harnessRunner_ || !harness::active() || consoleOpen_)
+        return;
+    if ((screenshotRequested && screenshotIncludeUI) || (video_.recording() && video_.options().ui) ||
+        ui.layoutDumpPending())
+        return;
+    const harness::Runner &run = *harnessRunner_;
+    const harness::Options &opt = harness::options();
+    auto clip = [](std::string t, size_t n) {
+        for (char &ch : t)
+            if (ch == '\n' || ch == '\r' || ch == '\t')
+                ch = ' ';
+        if (t.size() > n)
+            t = t.substr(0, n - 3) + "...";
+        return t;
+    };
+    auto clock = [](double s) {
+        char b[32];
+        const int t = (int)std::max(0.0, s);
+        if (t >= 3600)
+            snprintf(b, sizeof(b), "%d:%02d:%02d", t / 3600, t / 60 % 60, t % 60);
+        else
+            snprintf(b, sizeof(b), "%d:%02d", t / 60, t % 60);
+        return std::string(b);
+    };
+    harnessHudView_.clear();
+    harnessHudKind_.clear();
+    auto add = [&](std::string l, int kind) {
+        harnessHudView_.push_back(std::move(l));
+        harnessHudKind_.push_back(kind);
+    };
+
+    const std::string runName = std::filesystem::path(run.runDir()).filename().string();
+    std::string mode = !opt.scriptPath.empty() ? std::filesystem::path(opt.scriptPath).filename().string() : "";
+    if (run.liveActive())
+        mode += mode.empty() ? "live" : " + live";
+    add("HARNESS  " + clip(runName, 70) + (mode.empty() ? "" : "   [" + clip(mode, 40) + "]"), 0);
+
+    const harness::Active *cur = run.current();
+    const int done = run.commandCount();
+    const size_t total = (size_t)done + run.queued() + (cur ? 1 : 0);
+    char info[160];
+    snprintf(info, sizeof(info), "cmd %d/%zu   errors %d   elapsed %s   app frame %llu", done + (cur ? 1 : 0), total,
+             run.errorCount(), clock(harness::nowS() - run.startWall()).c_str(), (unsigned long long)run.frame());
+    add(info, 1);
+
+    if (cur)
+    {
+        char t[64];
+        snprintf(t, sizeof(t), "   (frame %d, %.1f s)", cur->frame, harness::nowS() - cur->startWall);
+        add("> " + cur->cmd.source + "  " + clip(cur->cmd.text, 110) + t, 2);
+    }
+    else
+        add(run.scriptFinished() ? "> script finished" : run.liveActive() ? "> idle, waiting for live commands" : "> idle", 2);
+
+    if (const harness::Runner::Finished *last = run.lastFinished())
+    {
+        char t[64];
+        snprintf(t, sizeof(t), "   (%d fr, %.0f ms)", last->frames, last->wallMs);
+        add(std::string(last->ok ? "last ok   " : "last ERR  ") + last->source + "  " + clip(last->text, 90) + t,
+            last->ok ? 3 : 4);
+        if (!last->ok)
+            add("          " + clip(last->error, 120), 4);
+    }
+
+    const uint16_t size = fs(12);
+    CLAY(CLAY_ID("HarnessHud"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
+                                            .padding = {8, 8, 5, 5},
+                                            .childGap = 2,
+                                            .layoutDirection = CLAY_TOP_TO_BOTTOM},
+                                 .backgroundColor = {6, 8, 10, 190},
+                                 .cornerRadius = CLAY_CORNER_RADIUS(4),
+                                 .floating = {.offset = {6, 6},
+                                              .zIndex = 61,
+                                              .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH,
+                                              .attachTo = CLAY_ATTACH_TO_ROOT}})
+    {
+        for (size_t i = 0; i < harnessHudView_.size(); ++i)
+        {
+            const std::string &l = harnessHudView_[i];
+            static const Clay_Color kCol[] = {{255, 200, 90, 255},  // header: amber, reads as "automation"
+                                              {190, 190, 190, 255}, // info
+                                              {255, 255, 255, 255}, // executing now
+                                              {150, 200, 255, 255}, // last ok
+                                              {255, 110, 100, 255}}; // last error
+            Clay_String s{false, (int32_t)l.size(), l.c_str()};
+            CLAY_TEXT(s, CLAY_TEXT_CONFIG({.textColor = kCol[harnessHudKind_[i]], .fontSize = size,
+                                           .wrapMode = CLAY_TEXT_WRAP_NONE}));
         }
     }
 }

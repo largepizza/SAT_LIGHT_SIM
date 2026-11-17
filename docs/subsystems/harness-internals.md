@@ -59,5 +59,11 @@ User guide and command reference: **docs/HARNESS.md** (keep its table in step wi
   second reload of a run killed the app with no message (`.worktrees/hq-ambient/harness_runs/hq-ambient-diag`, crash
   witness; the first survived, likely by the driver reusing the freed allocations). The boot chooser's on-demand full
   sky (`ensureFullSkyPipelines`) had the same hole. A new consumer of the sky TAA images goes in that function's tail.
+- **The run HUD** (`buildHarnessHud`, SatelliteSimUI.cpp; docs/HARNESS.md "Run HUD") reads the `Runner`
+  (`current()`, `lastFinished()`, `queued()`, `startWall()`), built after `harnessTick` so a one-frame statement shows
+  as the last one. It must never reach an image: App skips the whole UI on a clean shot, and the HUD returns early on
+  every frame whose post-UI image or layout is kept (`screenshotIncludeUI`, `video_.recording() && options().ui`,
+  `UIRenderer::layoutDumpPending()`). A new way of keeping the UI in a capture needs adding to that test. Drawn only
+  when `harness::active()` (not for the console's lazy runner in a normal session).
 - **The loading screen runs in harness launches too** (its frames precede the script).
   `run.py --boot-capture` writes them to `captures/boot_NN.png`; see *Loading screen* below.

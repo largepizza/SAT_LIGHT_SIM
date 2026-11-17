@@ -482,6 +482,8 @@ void Runner::tick(const ExecFn &exec)
 {
     ++frame_;
     double now = nowS();
+    if (startWall_ == 0.0)
+        startWall_ = now;
     if (liveActive() && now - lastLivePoll_ > 0.2)
     {
         lastLivePoll_ = now;
@@ -552,6 +554,8 @@ void Runner::finish(Active &a, Status st)
     }
     else
         consoleEcho("  ERROR: " + j["error"].get<std::string>());
+    last_ = Finished{a.cmd.text, a.cmd.source, ok ? std::string() : j["error"].get<std::string>(), ok, a.frame,
+                     j["wall_ms"].get<double>()};
     fprintf(stderr, "[harness] %s %s%s\n", ok ? "ok " : "ERR", a.cmd.text.c_str(),
             ok ? "" : (" -> " + j["error"].get<std::string>()).c_str());
 
