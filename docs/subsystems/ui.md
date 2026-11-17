@@ -345,10 +345,11 @@ button), and Alt's cinematic pan (`KB_CINEMATIC` toggles while `camera.captured 
 - **Centre click**: an FPS left click runs `pickAtScreenCentre()`, the pick chain at the window centre in the
   mouse's coordinates (`glfwGetWindowSize`), shared with `KB_SELECT_SAT` (which used the framebuffer's
   `swapExtent`: wrong under display scaling). A miss clears the selection, as a menu click on empty sky does. The
-  mode stays FPS. Each click flashes a ring at the centre (`buildFpsRing`, a `fs(26)` circle, passthrough, drawn
-  with the harness overlays so clean shots skip it): a lone click shows it `kFpsRingShowS` 0.6 s, a click while it
-  still holds adds `kFpsRingAddS` 1 s to what is left, capped at `kFpsRingMaxS` 4 s, then a `kFpsRingFadeS` 0.3 s
-  fade (the owner: "briefly show a circle marker" that "should stay a while if you click a lot").
+  mode stays FPS. Each click flashes a ring at the centre (`buildFpsRing`, a `fs(12)` circle with a 1-px stroke at UI
+  scale 1 and 1.5, passthrough, drawn with the harness overlays so clean shots skip it): a lone click shows it
+  `kFpsRingShowS` 0.9 s, a click while it still holds adds `kFpsRingAddS` 1 s to what is left, capped at
+  `kFpsRingMaxS` 5 s, then a `kFpsRingFadeS` 0.3 s fade (the owner: "briefly show a circle marker" that "should stay
+  a while if you click a lot"; the first cut, 26 px for 0.6 s, was far too big and a little too brief).
 - **Mouse sensitivity** (Controls > MOUSE, slider slot 626, `controls.mouse_sensitivity`, 0.1-4, default 1)
   multiplies the 0.12 deg/px rate in both modes (`SkyCamera::sensMul`); the pad's look keeps its own rate (it
   scales by `fovLookScale()` only).

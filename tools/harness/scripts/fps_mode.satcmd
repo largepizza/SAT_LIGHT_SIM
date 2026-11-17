@@ -8,7 +8,8 @@
 #   4  a window hotkey (M, Missions) from FPS mode lands in menu mode
 #   5  sensitivity 2 doubles the turn
 #   6  the centre click: aimed at a satellite it selects it and stays FPS; empty sky selects nothing
-#   7  the ring: a lone click 0.6 s; a click while it holds adds 1 s, at most 4 s; then a 0.3 s fade; a ui=on crop
+#   7  the ring: a lone click 0.9 s; a click while it holds adds 1 s, at most 5 s; then a 0.3 s fade; a ui=on crop
+#      at UI scale 1 and 1.5 (a 12 px circle, fs(12), with a 1 px stroke)
 #   8  the first-run tutorial card appearing forces menu mode (Tab back in with it open is allowed)
 #   9  layout 3 with Toggle UI moved to F1: it keeps F1; Toggle Cursor gets Tab when Tab is free, nothing when not
 # Waits are frames at 0.05 s each (40 frames = 2 s of ring time).
@@ -72,7 +73,13 @@ wait 40
 fps state
 mouse click left
 fps state
-capture ring ui=on crop=720,370,160,160 scale=2
+capture ring ui=on crop=760,410,80,80 scale=4
+set display.ui_scale 1.5
+wait 2
+mouse click left
+capture ring_s15 ui=on crop=760,410,80,80 scale=4
+set display.ui_scale 1
+mouse click left
 mouse click left
 mouse click left
 mouse click left
@@ -81,6 +88,8 @@ fps state
 wait 40
 fps state
 wait 40
+fps state
+wait 20
 fps state
 wait 3
 fps state

@@ -6,8 +6,8 @@ code: [src/simulations/SatelliteSimFps.cpp, src/simulations/SatelliteSimUI.cpp, 
 Two mouse modes. Menu mode: free cursor, hold the right button and drag to look. FPS mode (Tab, the "Toggle
 Cursor" binding on the keyboard; the pad's Start is still the virtual cursor): the OS cursor is hidden and captured
 (GLFW raw motion when supported), the mouse looks with no button, a left click picks at the window centre (shared
-with the pad's "Select Satellite": window coordinates, not the framebuffer's) and flashes a ring there (a lone click 0.6 s; a
-click while it shows adds 1 s, capped at 4 s; then a 0.3 s fade), and the HUD stays drawn but receives no pointer. Tab or a right click
+with the pad's "Select Satellite": window coordinates, not the framebuffer's) and flashes a small ring there (12 px at UI scale 1, a 1-px stroke; a lone click 0.9 s; a
+click while it shows adds 1 s, capped at 5 s; then a 0.3 s fade), and the HUD stays drawn but receives no pointer. Tab or a right click
 (which never starts a right-drag) leave it; so do any window, the note bar or the first-run tutorial card appearing,
 the console or a text entry, and losing window focus. Setting `camera.fps_mode`, default on (absent = on). Not live during
 the intro, a playing cinematic or an HQ photo (menu mode meanwhile); live during the player's own video recording. "Toggle UI" moved from Tab to
@@ -18,4 +18,5 @@ captures the OS cursor, and a loaded settings file never turns the mode on.
 
 ## History
 Before 2026-11-16 the only look was the right-drag, and `KB_TOGGLE_CURSOR` had no keyboard meaning. The centre pick
-used `swapExtent` (framebuffer pixels) while the mouse pick used window coordinates.
+used `swapExtent` (framebuffer pixels) while the mouse pick used window coordinates. The first cut's ring was 26 px,
+0.6 s for a lone click, capped at 4 s (the owner's feel pass: far too big, a little too brief).

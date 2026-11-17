@@ -9094,11 +9094,11 @@ private:
     std::string fpsLastPick_;    // what the last centre click hit ("" = nothing)
     // The centre ring's timing: a lone FPS click shows it for kFpsRingShowS; a click while it still holds adds
     // kFpsRingAddS to the hold left, capped at kFpsRingMaxS; then a kFpsRingFadeS fade. Its size is fs(kFpsRingDiamPx), its stroke kFpsRingStroke of that.
-    static constexpr float kFpsRingShowS = 0.6f;
+    static constexpr float kFpsRingShowS = 0.9f;
     static constexpr float kFpsRingAddS = 1.0f;
-    static constexpr float kFpsRingMaxS = 4.0f;
+    static constexpr float kFpsRingMaxS = 5.0f;
     static constexpr float kFpsRingFadeS = 0.3f;
-    static constexpr int kFpsRingDiamPx = 26;
+    static constexpr int kFpsRingDiamPx = 12;
     static constexpr float kFpsRingStroke = 0.07f; // x the diameter (fs() floors at 8 px: too thick for a stroke)
     // Sticky facts for a later hint scheduler (not persisted; nothing reads them yet but harness `fps state`).
     struct FpsFacts
