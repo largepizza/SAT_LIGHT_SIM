@@ -9067,7 +9067,7 @@ void SatelliteSim::updateIntroCinematic(float dt)
 
     // Track the most recently reached non-null caption (see IntroKeyframe's text field doc).
     for (int k = 0; k <= i; ++k)
-        if (kIntroKeyframes[k].text)
+        if (kIntroKeyframes[k].text != kIntroNoCaption)
             introCaptionIndex = k;
 
     // UC1 mechanism 2: accumulate GPU frame time across the camera-motion beats for the

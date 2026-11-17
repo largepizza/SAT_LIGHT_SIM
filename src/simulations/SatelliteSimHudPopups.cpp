@@ -96,13 +96,9 @@ void SatelliteSim::buildHudPopup(const UIInput &inp, UIRenderer &ui, int which)
     fl.attachPoints = {.element = CLAY_ATTACH_POINT_LEFT_TOP, .parent = CLAY_ATTACH_POINT_LEFT_TOP};
     fl.attachTo = CLAY_ATTACH_TO_ROOT;
 
-    CLAY(panelId, {.layout = {.sizing = {CLAY_SIZING_FIXED((float)fs(270)), CLAY_SIZING_FIT(0)},
-                              .padding = {10, 10, 8, 8},
-                              .childGap = 3,
-                              .layoutDirection = CLAY_TOP_TO_BOTTOM},
-                   .backgroundColor = Pal::panelBg,
-                   .cornerRadius = CLAY_CORNER_RADIUS(Style::panelCornerRadius),
-                   .floating = fl})
+    Clay_ElementDeclaration panel = uiHudPanel(fl);
+    panel.layout.sizing.width = CLAY_SIZING_FIXED((float)fs(270));
+    CLAY(panelId, panel)
     {
         // ── Title row: the name (the drag handle once pinned) and the pin, a small rounded button top right ──
         CLAY(titleId, {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},

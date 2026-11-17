@@ -204,6 +204,19 @@ SatelliteSim.cpp / SatelliteSimLaunches.cpp, some report and bookmark messages).
   member. Formatted labels go through `uiKitStr` (a per-frame ring; Clay keeps the pointers). Used by the info,
   trace and Bookmarks windows and the Display, Performance, Controls, Sound, Constellations and Photometry tabs;
   the slider rows are still `buildCloudSliderRows`.
+- **HUD pieces in the kit (2026-11-16, for the hint popup and caption band):** `uiHudPanel(fl, childGap = 3)` returns
+  the black rounded HUD panel's declaration (Pal::panelBg, Style::panelCornerRadius, padding {10,10,8,8}, FIT x FIT,
+  top to bottom, no border, floating by `fl`; adjust the layout after). LeftPanel, SelSatPanel and HudPopupPanel use
+  it; RightPanel (a fixed 38-px row) and TutCard (bordered, 14-px padding) differ and keep their own. `uiKeycap` is
+  the tutorial's keycap / pad button (`target` amber pulsing, `down` green). `actionLabel(kb[, gamepad])` returns a
+  KB_ action's key or pad label by value (`.s`, "-" unbound; by `lastInputWasGamepad` without the flag), so
+  keyDisplayName's 4-slot letter pool cannot overwrite it; copy `.s` into member storage before handing it to Clay.
+  `uiBottomClearance(screenH)` is how far above the bottom a bottom-centred card sits to clear LeftPanel and
+  RightPanel (last frame's boxes, 12 px gap, at least 24): the tutorial card uses it.
+- **Intro caption band:** the caption's container is `CineCaption`, capped at min(W - 24, fs(19) x 40) wide; a line
+  wraps by words inside it (the title is WRAP_NONE). It draws nothing, so `ui dump` lists it as kind `box`
+  (UIRenderer's layout-only list), and `ui_lowres.py` checks it with the HUD ids (view `intro_caption`). The
+  caption strings are `Txt::NoteIntro*` (keyframe `text` is a Txt; `kIntroNoCaption` = none).
 - **HUD text entry (2026-10-03):** the time bar's clock and the right panel's latitude, longitude and altitude are
   `inlineTextField`s (a readout until clicked; the box starts with an edit form — signed decimal degrees, the
   altitude in the HUD's unit). `setSimTimeFromText` takes "2036-11-22 02:06[:30]", ISO with T/Z, or "HH:MM[:SS]"

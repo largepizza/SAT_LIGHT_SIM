@@ -34,11 +34,7 @@ namespace
 {
 // The HUD's palette (UIPalette.h): grey panels, the red accent for "this one" and "held".
 // Its colours follow the UI theme: Pal::tutHot / tutHeld / tutTargetDim..Lit, the graphics' body Pal::fieldBg.
-Clay_Color mixColor(Clay_Color a, Clay_Color b, float t)
-{
-    return {a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t, a.a + (b.a - a.a) * t};
-}
-
+// The keycaps and pad buttons are the UI kit's uiKeycap (SatelliteSimUI.cpp).
 constexpr int16_t kZCard = 40;      // above the notices (25) and the selection panel (6)
 constexpr float kDoneHoldS = 1.1f;  // a finished step's "Done" before the next card
 constexpr float kLastHoldS = 3.0f;  // the last card's closing line
@@ -53,32 +49,6 @@ const char *const kTitles[] = {
     tx(Txt::OptMissionsWhatsNext), tx(Txt::OptMissionsUnderWay), tx(Txt::OptMenus), tx(Txt::OptGraphics)};
 
 Clay_String clayStr(const char *s) { return Clay_String{false, (int32_t)strlen(s), s}; }
-
-// One keycap or pad button: `target` = this step wants it (amber, pulsing), `down` = held now (green).
-// `fl` places it as a floating child of the element being built (the gamepad's sticks and buttons).
-void tutCap(Clay_ElementId id, float w, float h, Clay_CornerRadius rad, const char *label, uint16_t fsz,
-            bool target, bool down, float pulse, const Clay_FloatingElementConfig *fl = nullptr)
-{
-    const Clay_Color bg = down     ? Pal::tutHeld
-                          : target ? mixColor(Pal::tutTargetDim, Pal::tutTargetLit, pulse)
-                                   : Pal::btnIdle;
-    const Clay_Color bc = (target || down) ? Clay_Color{Pal::tutHot.r, Pal::tutHot.g, Pal::tutHot.b, 140.0f + 115.0f * pulse}
-                                           : Clay_Color{Pal::textPrimary.r, Pal::textPrimary.g, Pal::textPrimary.b, 40};
-    const uint16_t bw = target ? 2 : 1;
-    Clay_ElementDeclaration d{};
-    d.layout.sizing = {CLAY_SIZING_FIXED(w), CLAY_SIZING_FIXED(h)};
-    d.layout.childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER};
-    d.backgroundColor = bg;
-    d.cornerRadius = rad;
-    if (fl)
-        d.floating = *fl;
-    d.border = {.color = bc, .width = {bw, bw, bw, bw, 0}};
-    CLAY(id, d)
-    {
-        if (label && label[0])
-            CLAY_TEXT(clayStr(label), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fsz, .wrapMode = CLAY_TEXT_WRAP_NONE}));
-    }
-}
 
 Clay_FloatingElementConfig childAt(float x, float y)
 {
@@ -439,21 +409,21 @@ void SatelliteSim::buildTutKeyboard(int step)
     {
         CLAY(CLAY_ID("TutKbdRow0"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)}, .childGap = (uint16_t)gap}})
         {
-            tutCap(CLAY_ID("TutKeyQ"), k, k, r, tutKeyLabel[0], fsz, tAlt, down(keybindings[KB_RAISE_ELEV].key), pulse);
-            tutCap(CLAY_ID("TutKeyW"), k, k, r, "W", fsz, tMove, down(GLFW_KEY_W), pulse);
-            tutCap(CLAY_ID("TutKeyE"), k, k, r, tutKeyLabel[1], fsz, tAlt, down(keybindings[KB_LOWER_ELEV].key), pulse);
+            uiKeycap(CLAY_ID("TutKeyQ"), k, k, r, tutKeyLabel[0], fsz, tAlt, down(keybindings[KB_RAISE_ELEV].key), pulse);
+            uiKeycap(CLAY_ID("TutKeyW"), k, k, r, "W", fsz, tMove, down(GLFW_KEY_W), pulse);
+            uiKeycap(CLAY_ID("TutKeyE"), k, k, r, tutKeyLabel[1], fsz, tAlt, down(keybindings[KB_LOWER_ELEV].key), pulse);
         }
         CLAY(CLAY_ID("TutKbdRow1"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
                                                 .padding = {(uint16_t)(k * 0.35f), 0, 0, 0},
                                                 .childGap = (uint16_t)gap}})
         {
-            tutCap(CLAY_ID("TutKeyA"), k, k, r, "A", fsz, tMove, down(GLFW_KEY_A), pulse);
-            tutCap(CLAY_ID("TutKeyS"), k, k, r, "S", fsz, tMove, down(GLFW_KEY_S), pulse);
-            tutCap(CLAY_ID("TutKeyD"), k, k, r, "D", fsz, tMove, down(GLFW_KEY_D), pulse);
+            uiKeycap(CLAY_ID("TutKeyA"), k, k, r, "A", fsz, tMove, down(GLFW_KEY_A), pulse);
+            uiKeycap(CLAY_ID("TutKeyS"), k, k, r, "S", fsz, tMove, down(GLFW_KEY_S), pulse);
+            uiKeycap(CLAY_ID("TutKeyD"), k, k, r, "D", fsz, tMove, down(GLFW_KEY_D), pulse);
         }
         CLAY(CLAY_ID("TutKbdRow2"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)}}})
         {
-            tutCap(CLAY_ID("TutKeyShift"), k * 2.4f, k, r, tutKeyLabel[2], fsz, tBoost, down(keybindings[KB_MOVE_BOOST].key), pulse);
+            uiKeycap(CLAY_ID("TutKeyShift"), k * 2.4f, k, r, tutKeyLabel[2], fsz, tBoost, down(keybindings[KB_MOVE_BOOST].key), pulse);
         }
     }
 }
@@ -471,14 +441,14 @@ void SatelliteSim::buildTutMouse(int step, const UIInput &inp)
     {
         CLAY(CLAY_ID("TutMouseTop"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)}, .childGap = 2}})
         {
-            tutCap(CLAY_ID("TutMouseL"), w * 0.5f - 1.0f, hb, {rr, 2, 2, 2}, "", fs(11), tL, inp.lmbDown, pulse);
-            tutCap(CLAY_ID("TutMouseR"), w * 0.5f - 1.0f, hb, {2, rr, 2, 2}, "", fs(11), tR, inp.rmbDown || camera.captured, pulse);
+            uiKeycap(CLAY_ID("TutMouseL"), w * 0.5f - 1.0f, hb, {rr, 2, 2, 2}, "", fs(11), tL, inp.lmbDown, pulse);
+            uiKeycap(CLAY_ID("TutMouseR"), w * 0.5f - 1.0f, hb, {2, rr, 2, 2}, "", fs(11), tR, inp.rmbDown || camera.captured, pulse);
             Clay_FloatingElementConfig wheel = childAt(0.0f, 0.0f);
             wheel.attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_CENTER, .parent = CLAY_ATTACH_POINT_CENTER_CENTER};
-            tutCap(CLAY_ID("TutMouseWheel"), w * 0.13f, hb * 0.42f, CLAY_CORNER_RADIUS(w * 0.06f), "", fs(11), false,
+            uiKeycap(CLAY_ID("TutMouseWheel"), w * 0.13f, hb * 0.42f, CLAY_CORNER_RADIUS(w * 0.06f), "", fs(11), false,
                    inp.scrollY != 0.0f, pulse, &wheel);
         }
-        tutCap(CLAY_ID("TutMouseBody"), w, hBody, {2, 2, rr, rr}, "", fs(11), false, false, pulse);
+        uiKeycap(CLAY_ID("TutMouseBody"), w, hBody, {2, 2, rr, rr}, "", fs(11), false, false, pulse);
     }
 }
 
@@ -505,11 +475,11 @@ void SatelliteSim::buildTutGamepad(int step)
                                                      .childGap = 3}})
         {
             const Clay_CornerRadius top = {u * 0.7f, u * 0.7f, 2, 2};
-            tutCap(CLAY_ID("TutPadLT"), u * 2.8f, u * 1.5f, top, "LT", fsz, step == TUT_ALTITUDE, gpElevLower > 0.0f, pulse);
-            tutCap(CLAY_ID("TutPadLB"), u * 2.8f, u * 1.5f, top, "LB", fsz, false, btn(GLFW_GAMEPAD_BUTTON_LEFT_BUMPER), pulse);
+            uiKeycap(CLAY_ID("TutPadLT"), u * 2.8f, u * 1.5f, top, "LT", fsz, step == TUT_ALTITUDE, gpElevLower > 0.0f, pulse);
+            uiKeycap(CLAY_ID("TutPadLB"), u * 2.8f, u * 1.5f, top, "LB", fsz, false, btn(GLFW_GAMEPAD_BUTTON_LEFT_BUMPER), pulse);
             CLAY(CLAY_ID("TutPadShoulderGap"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIXED(1)}}}) {}
-            tutCap(CLAY_ID("TutPadRB"), u * 2.8f, u * 1.5f, top, "RB", fsz, false, btn(GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER), pulse);
-            tutCap(CLAY_ID("TutPadRT"), u * 2.8f, u * 1.5f, top, "RT", fsz, step == TUT_ALTITUDE, gpElevRaise > 0.0f, pulse);
+            uiKeycap(CLAY_ID("TutPadRB"), u * 2.8f, u * 1.5f, top, "RB", fsz, false, btn(GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER), pulse);
+            uiKeycap(CLAY_ID("TutPadRT"), u * 2.8f, u * 1.5f, top, "RT", fsz, step == TUT_ALTITUDE, gpElevRaise > 0.0f, pulse);
         }
         CLAY(CLAY_ID("TutPadBody"), {.layout = {.sizing = {CLAY_SIZING_FIXED(W), CLAY_SIZING_FIXED(H)}},
                                      .backgroundColor = Pal::fieldBg,
@@ -519,11 +489,11 @@ void SatelliteSim::buildTutGamepad(int step)
             const float ds = u * 3.0f; // stick
             const Clay_CornerRadius round = CLAY_CORNER_RADIUS(ds * 0.5f);
             Clay_FloatingElementConfig f = childAt(u * 1.8f, u * 0.9f);
-            tutCap(CLAY_ID("TutPadLS"), ds, ds, round, "L", fsz, step == TUT_MOVE || step == TUT_BOOST, dLS, pulse, &f);
+            uiKeycap(CLAY_ID("TutPadLS"), ds, ds, round, "L", fsz, step == TUT_MOVE || step == TUT_BOOST, dLS, pulse, &f);
             f = childAt(W * 0.56f, H - ds - u * 0.6f);
-            tutCap(CLAY_ID("TutPadRS"), ds, ds, round, "R", fsz, step == TUT_LOOK, dRS, pulse, &f);
+            uiKeycap(CLAY_ID("TutPadRS"), ds, ds, round, "R", fsz, step == TUT_LOOK, dRS, pulse, &f);
             f = childAt(W * 0.27f, H - u * 3.2f);
-            tutCap(CLAY_ID("TutPadDpad"), u * 2.4f, u * 2.4f, CLAY_CORNER_RADIUS(3), "+", fs(13), false,
+            uiKeycap(CLAY_ID("TutPadDpad"), u * 2.4f, u * 2.4f, CLAY_CORNER_RADIUS(3), "+", fs(13), false,
                    btn(GLFW_GAMEPAD_BUTTON_DPAD_UP) || btn(GLFW_GAMEPAD_BUTTON_DPAD_DOWN) ||
                        btn(GLFW_GAMEPAD_BUTTON_DPAD_LEFT) || btn(GLFW_GAMEPAD_BUTTON_DPAD_RIGHT),
                    pulse, &f);
@@ -541,7 +511,7 @@ void SatelliteSim::buildTutGamepad(int step)
             for (int i = 0; i < 4; ++i)
             {
                 f = childAt(cx + faces[i].dx * db - db * 0.5f, cy + faces[i].dy * db - db * 0.5f);
-                tutCap(CLAY_SIDI(CLAY_STRING("TutPadFace"), i), db, db, br, gamepadButtonDisplayName(faces[i].b), fsz,
+                uiKeycap(CLAY_SIDI(CLAY_STRING("TutPadFace"), i), db, db, br, gamepadButtonDisplayName(faces[i].b), fsz,
                        face(faces[i].b), btn(faces[i].b), pulse, &f);
             }
         }
@@ -673,45 +643,42 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
     }
 
     // ── The text, from the live bindings ──
-    auto K = [&](int kb) { return keyDisplayName(keybindings[kb].key); };
-    auto P = [&](int kb)
-    {
-        const int b = keybindings[kb].gpButton;
-        return b < 0 ? "-" : gamepadButtonDisplayName(b);
-    };
+    // The kit's actionLabel: a copy per call, "-" when unbound (K = the key, P = the pad button, chosen by `pad`).
+    auto K = [&](int kb) { return actionLabel(kb, false); };
+    auto P = [&](int kb) { return actionLabel(kb, true); };
     char k1[16], k2[16], k3[16], k4[16];
     switch (step)
     {
     case TUT_LOOK:
         snprintf(tutBodyBuf, sizeof(tutBodyBuf), pad ? tx(Txt::FmtPushTheRightStickToLook)
                                                       : tx(Txt::FmtHoldTheRightMouseButtonAnd),
-                 P(KB_ZOOM_OUT), P(KB_ZOOM_IN));
+                 P(KB_ZOOM_OUT).s, P(KB_ZOOM_IN).s);
         break;
     case TUT_MOVE:
         snprintf(tutBodyBuf, sizeof(tutBodyBuf), "%s", pad ? tx(Txt::TxtTheLeftStickMovesYouOver)
                                                            : tx(Txt::TxtWASDMoveYou));
         break;
     case TUT_ALTITUDE:
-        snprintf(k1, sizeof(k1), "%s", K(KB_RAISE_ELEV));
-        snprintf(k2, sizeof(k2), "%s", K(KB_LOWER_ELEV));
+        snprintf(k1, sizeof(k1), "%s", K(KB_RAISE_ELEV).s);
+        snprintf(k2, sizeof(k2), "%s", K(KB_LOWER_ELEV).s);
         if (pad)
             snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtRtClimbsAndLtDescendsFrom));
         else
             snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtClimbsAndDescendsFromTheGround), k1, k2);
         break;
     case TUT_BOOST:
-        snprintf(k1, sizeof(k1), "%s", K(KB_MOVE_BOOST));
-        snprintf(k2, sizeof(k2), "%s", K(KB_MOVE_FINE));
+        snprintf(k1, sizeof(k1), "%s", K(KB_MOVE_BOOST).s);
+        snprintf(k2, sizeof(k2), "%s", K(KB_MOVE_FINE).s);
         if (pad)
             snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtClickAndHoldTheLeftStick),
-                     P(KB_MOVE_BOOST));
+                     P(KB_MOVE_BOOST).s);
         else
             snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtHoldWhileMovingOrClimbingTo), k1, k2);
         break;
     case TUT_SELECT:
-        snprintf(k1, sizeof(k1), "%s", K(KB_SELECT_SAT));
+        snprintf(k1, sizeof(k1), "%s", K(KB_SELECT_SAT).s);
         if (pad)
-            snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtPutASatelliteNearTheMiddle), P(KB_SELECT_SAT));
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtPutASatelliteNearTheMiddle), P(KB_SELECT_SAT).s);
         else if (keybindings[KB_SELECT_SAT].key >= 0)
             snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtLeftClickASatelliteAnyMoving2), k1);
         else
@@ -732,19 +699,19 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
         }
         else if (step == TUT_INFO)
         {
-            snprintf(k1, sizeof(k1), "%s", K(KB_INFO));
+            snprintf(k1, sizeof(k1), "%s", K(KB_INFO).s);
             snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtInfoTheIOpensItsWindow),
                      pad ? "" : tx(Txt::TxtOr), pad ? "" : k1, pad ? tx(Txt::TxtDPadLeftRightPicksA) : "");
         }
         else if (step == TUT_GOTO && !followActive)
         {
-            snprintf(k1, sizeof(k1), "%s", K(KB_FOLLOW_STAY));
+            snprintf(k1, sizeof(k1), "%s", K(KB_FOLLOW_STAY).s);
             snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtGoToTheEyeFliesYou),
                      pad ? "" : tx(Txt::TxtOr), pad ? "" : k1, pad ? tx(Txt::TxtDPadToTheEyeThen) : "");
         }
         else if (step == TUT_GOTO)
         {
-            snprintf(k1, sizeof(k1), "%s", K(KB_FOLLOW_STAY));
+            snprintf(k1, sizeof(k1), "%s", K(KB_FOLLOW_STAY).s);
             if (pad)
                 snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtYouAreRidingAlongMoveAround));
             else
@@ -753,7 +720,7 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
         }
         else
         {
-            snprintf(k1, sizeof(k1), "%s", K(KB_TRACK));
+            snprintf(k1, sizeof(k1), "%s", K(KB_TRACK).s);
             snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtTracePassPlotsItsBrightnessOver),
                      pad ? "" : " (", pad ? "" : k1, pad ? "" : ")");
         }
@@ -761,26 +728,26 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
     case TUT_TIME:
         if (pad)
             snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtSpeedTimeUpOrSlowIt),
-                     P(KB_FASTER), P(KB_SLOWER), P(KB_PAUSE), P(KB_REVERSE));
+                     P(KB_FASTER).s, P(KB_SLOWER).s, P(KB_PAUSE).s, P(KB_REVERSE).s);
         else
         {
-            snprintf(k1, sizeof(k1), "%s", K(KB_SLOWER));
-            snprintf(k2, sizeof(k2), "%s", K(KB_PAUSE));
-            snprintf(k3, sizeof(k3), "%s", K(KB_FASTER));
-            snprintf(k4, sizeof(k4), "%s", K(KB_REVERSE));
+            snprintf(k1, sizeof(k1), "%s", K(KB_SLOWER).s);
+            snprintf(k2, sizeof(k2), "%s", K(KB_PAUSE).s);
+            snprintf(k3, sizeof(k3), "%s", K(KB_FASTER).s);
+            snprintf(k4, sizeof(k4), "%s", K(KB_REVERSE).s);
             snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtSlowDownPauseSpeedUpOr),
                      k1, k2, k3, k4);
         }
         break;
     case TUT_CAPTURE:
-        snprintf(k1, sizeof(k1), "%s", K(KB_SCREENSHOT));
-        snprintf(k2, sizeof(k2), "%s", K(KB_PHOTO));
-        snprintf(k3, sizeof(k3), "%s", K(KB_TOGGLE_TRAILS));
+        snprintf(k1, sizeof(k1), "%s", K(KB_SCREENSHOT).s);
+        snprintf(k2, sizeof(k2), "%s", K(KB_PHOTO).s);
+        snprintf(k3, sizeof(k3), "%s", K(KB_TOGGLE_TRAILS).s);
         snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtScreenshotHqPhotoForASharper),
                  k1, k2, k3, pad ? tx(Txt::TxtOnAControllerAfterTheTutorial) : "");
         break;
     case TUT_MISSIONS:
-        snprintf(k1, sizeof(k1), "%s", K(KB_MISSIONS));
+        snprintf(k1, sizeof(k1), "%s", K(KB_MISSIONS).s);
         if (!msChrome.open)
             snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtMissionsTheRocketButtonOrLists),
                      k1);
@@ -791,7 +758,7 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
         break;
     case TUT_ONGOING:
         if (!msChrome.open)
-            snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtOpenMissionsAgainTheRocketButton), K(KB_MISSIONS));
+            snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtOpenMissionsAgainTheRocketButton), K(KB_MISSIONS).s);
         else if (msTab != 1)
             snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtNowOpenTheOngoingTab));
         else
@@ -800,9 +767,9 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
             snprintf(tutBodyBuf + strlen(tutBodyBuf), sizeof(tutBodyBuf) - strlen(tutBodyBuf), tx(Txt::FmtTheButtonBelowTakesYouBack));
         break;
     case TUT_SETTINGS:
-        snprintf(k1, sizeof(k1), "%s", K(KB_TOGGLE_UI));
+        snprintf(k1, sizeof(k1), "%s", K(KB_TOGGLE_UI).s);
         snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtBookmarksSaveAPlaceAndTime),
-                 pad ? P(KB_TOGGLE_UI) : k1, pad ? tx(Txt::TxtAfterTheTutorialStartGivesA) : "");
+                 pad ? P(KB_TOGGLE_UI).s : k1, pad ? tx(Txt::TxtAfterTheTutorialStartGivesA) : "");
         break;
     case TUT_GRAPHICS:
         snprintf(tutBodyBuf, sizeof(tutBodyBuf), tx(Txt::FmtGraphicsAreOnTheFastestPreset),
@@ -835,10 +802,7 @@ void SatelliteSim::buildTutorial(const UIInput &inp, UIRenderer &ui)
     else
     {
         // Above both corner panels (last frame's boxes): at 1600 px the card's width reached the right one.
-        float clear = 24.0f;
-        for (const Clay_ElementId id : {CLAY_ID("LeftPanel"), CLAY_ID("RightPanel")})
-            if (const Clay_ElementData d = Clay_GetElementData(id); d.found && d.boundingBox.height > 0.0f)
-                clear = std::max(clear, inp.screenH - d.boundingBox.y + 12.0f);
+        const float clear = uiBottomClearance((float)inp.screenH);
         fl.offset = {0.0f, -clear};
         fl.attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_BOTTOM, .parent = CLAY_ATTACH_POINT_CENTER_BOTTOM};
         fl.attachTo = CLAY_ATTACH_TO_ROOT;

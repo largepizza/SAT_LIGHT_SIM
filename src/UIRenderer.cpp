@@ -1367,6 +1367,24 @@ void UIRenderer::record(VkCommandBuffer cmd, VulkanContext& ctx) {
             }
             layoutDump_.push_back(std::move(it));
         }
+        // Layout-only elements (no background, so no render command) that a layout check still needs: kind "box".
+        // CineCaption = the intro's caption band (SatelliteSimUI.cpp buildIntroOverlay; tools/harness/ui_lowres.py).
+        for (const char* name : {"CineCaption"}) {
+            const Clay_String s{false, (int32_t)strlen(name), name};
+            const Clay_LayoutElementHashMapItem* m = Clay__GetHashMapItem(Clay_GetElementId(s).id);
+            // Built this frame only (Clay keeps an element's entry for a while after it stops being declared).
+            if (m == &Clay_LayoutElementHashMapItem_DEFAULT || m->generation <= Clay_GetCurrentContext()->generation ||
+                m->boundingBox.width <= 0.0f)
+                continue;
+            const Clay_BoundingBox& b = m->boundingBox;
+            LayoutItem it{};
+            it.kind = "box";
+            it.x = b.x; it.y = b.y; it.w = b.width; it.h = b.height;
+            it.clip[0] = 0.0f; it.clip[1] = 0.0f;
+            it.clip[2] = (float)ctx.swapExtent.width; it.clip[3] = (float)ctx.swapExtent.height;
+            it.id = name;
+            layoutDump_.push_back(std::move(it));
+        }
         layoutDumpPending_ = false;
         layoutDumpReady_ = true;
     }
