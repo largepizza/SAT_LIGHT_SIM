@@ -84,10 +84,9 @@ def views():
         ("tut_ongoing", ["tutorial step ongoing", "ui open missions tab=ongoing", "wait 12"], ["ui close missions"]),
         ("tut_settings", ["tutorial step settings", "wait 4"], ["tutorial skip", "wait 2"]),
         # The intro's longest caption (beat 2, 15.2-22.8 s of intro time): the caption band (CineCaption) wraps
-        # inside the window and stays clear of the skip hint. Intro time runs behind the wall clock (measured
-        # 14.3-17.6 s after 18 s, slow frames capped), so the wait is 20 s. The intro moves the observer and the
-        # clock: restored after.
-        ("intro_caption", ["intro play", "wait seconds 20", "intro state"],
+        # inside the window and stays clear of the skip hint. Seeked to 17 s (full alpha from 16.0 s); `wait 30` is
+        # capped at 2 s. The intro moves the observer and the clock: restored after.
+        ("intro_caption", ["intro play at=17", "wait 30", "intro state"],
          ["intro skip", "wait 5"] + SCENE + ["wait settle 20"]),
     ]
     return v
