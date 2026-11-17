@@ -8087,7 +8087,8 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
 
     bool isYearBeat = (introCaptionIndex == kIntroYearIndex);
     bool isTitleBeat = (introCaptionIndex == kIntroTitleIndex);
-    const char *text = kIntroKeyframes[introCaptionIndex].text;
+    const Txt capId = kIntroKeyframes[introCaptionIndex].text;
+    const char *text = capId == kIntroNoCaption ? nullptr : tx(capId);
 
     if (text && textA > 0)
     {
@@ -8109,8 +8110,12 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
             // (most obviously "2036"'s 3/6) once scaled up from the bake. The atlas is an SDF since
             // 2026-10-21 (crisp edges at caption sizes), so a second face could be tried again;
             // the regular UI font is still the only font.
-            CLAY(CLAY_ID("IntroCaptionPanel"), {.layout = {
-                                                    .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
+            // The caption band (2026-11-16): a stable id for layout checks (ui_lowres.py, `ui dump` lists it as a
+            // "box": it draws nothing) and a width cap, so a long line wraps by words inside a small window instead
+            // of running to its edges. The title stays one line (WRAP_NONE below).
+            const float capMaxW = std::min((float)inp.screenW - 24.0f, (float)fs(19) * 40.0f);
+            CLAY(CLAY_ID("CineCaption"), {.layout = {
+                                                    .sizing = {CLAY_SIZING_FIT(0, capMaxW), CLAY_SIZING_FIT(0)},
                                                     .padding = {24, 24, 16, 16},
                                                     .childGap = 4,
                                                     .childAlignment = {.x = CLAY_ALIGN_X_CENTER},
@@ -8118,7 +8123,7 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
             {
                 if (isYearBeat)
                 {
-                    CLAY_TEXT(CLAY_STRING("2036"),
+                    CLAY_TEXT(txc(Txt::NoteIntroYear),
                               CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, (float)textA}, .fontSize = fs(48)}));
                 }
                 else if (isTitleBeat)

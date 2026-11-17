@@ -9860,7 +9860,7 @@ static constexpr float kIntroCloudDriftRate = 6.55e-6f;
 // ── UC3 intro cinematic beat sheet (RELEASE_v1_1_PLAN.md) ─────────────────────
 // Shared between SatelliteSim.cpp (updateIntroCinematic/finishIntro, the playback) and
 // SatelliteSimUI.cpp (buildIntroOverlay, the caption text) — header-scope so both translation
-// units see the identical table without a getter. `text == nullptr` means "no new caption at
+// units see the identical table without a getter. `text == kIntroNoCaption` means "no new caption at
 // this keyframe" (introCaptionIndex just holds whatever the last non-null one was).
 // The path between keys is cineEval's (Cinematic.cpp, the Cinematics window's own spline): Catmull-Rom per
 // channel, altitude and FOV in log space, azimuth unwrapped (keys 4 -> 5 cross +-180). Each channel is
@@ -9871,35 +9871,36 @@ struct IntroKeyframe
     double latDeg, lonDeg;
     float altM;        // metres above sea level (the cinematic's alt; floored at the ground)
     float azDeg, elDeg, fovDeg;
-    const char *text;
+    Txt text;          // the caption (src/text/ui_text_en.inc); kIntroNoCaption = none at this key
 };
+static constexpr Txt kIntroNoCaption = Txt::Count;
 static constexpr float songbeat = 7.61f; // beat timings below are synced to this (music tempo)
 static constexpr IntroKeyframe kIntroKeyframes[] = {
     // Beat 0 — "2036" title/date card. Ground, twilight, looking north up Starmind's train.
-    {songbeat * 0.0f, 33.56354697522229, -91.28908090163594, 54.56f, 3.19f, 18.25f, 46.50f, "2036"},
+    {songbeat * 0.0f, 33.56354697522229, -91.28908090163594, 54.56f, 3.19f, 18.25f, 46.50f, Txt::NoteIntroYear},
     // Beat 1 — first narrative line. The skip hint (buildIntroOverlay) only appears once this beat is
     // reached — see kIntroHintRevealIndex. Panning right along the train.
     {songbeat * 1.0f, 33.56354697522229, -91.28908090163594, 54.56f, 35.62f, 36.08f, 62.16f,
-     "Satellite megaconstellations dominate the night sky"},
+     Txt::NoteIntroMegaconstellations},
     // Beat 2 — east: the mirrors' flares, the beam on the horizon.
     {songbeat * 2.0f, 33.56354697522229, -91.28908090163594, 54.56f, 99.10f, 28.16f, 66.84f,
-     "From the ground, we watch sunlight glint off their solar arrays"},
+     Txt::NoteIntroSunlightGlint},
     // Beat 3 — rising (2.6 km), panning south-east toward the Gulf.
     {songbeat * 3.0f, 33.56354697522229, -91.28908090163594, 2614.49f, 131.26f, 17.00f, 66.84f,
-     "They power an orbital network of communications and AI compute."},
+     Txt::NoteIntroOrbitalNetwork},
     // Beat 4 — 57 km, facing south: the Starship's plume over the Gulf, the sunset to the right.
     {songbeat * 4.0f, 33.56354697522229, -91.28908090163594, 56987.57f, 159.10f, 1.40f, 83.10f,
-     "A promise to the markets above all else"},
+     Txt::NoteIntroPromiseToMarkets},
     // Beat 5 — out to orbit (277 km), drifting north-east with the pan.
     {songbeat * 5.0f, 34.627120828647875, -89.1136023191353, 277289.31f, -166.21f, -8.20f, 83.10f,
-     "We will come to miss the quiet sky"},
+     Txt::NoteIntroQuietSky},
     // Beat 6 — "SAT LIGHT SIM". The camera's travel is accelerated (updateIntroCinematic) so it has ARRIVED on beat
     // 7's framing by now (kIntroArriveT): this key's pose is passed through on the way, not shown at the title.
-    {songbeat * 6.0f, 36.65105711070121, -84.1048559646296, 428441.09f, -133.47f, -6.28f, 89.35f, "SAT LIGHT SIM"},
+    {songbeat * 6.0f, 36.65105711070121, -84.1048559646296, 428441.09f, -133.47f, -6.28f, 89.35f, Txt::NoteSatLightSim},
     // Beat 7 — the final framing, the Sun centred on the limb (638 km). The camera sits still on it from
     // kIntroArriveT while the title shows and the FOV widens to kIntroTitleFovDeg; the title fades over the last
     // second (buildIntroOverlay's alphaOut), then finishIntro(false) hands over (the tutorial, SatelliteSimTutorial.cpp).
-    {songbeat * 7.0f, 37.45175640036591, -77.3299032926075, 638241.50f, -105.19f, -8.56f, 89.35f, nullptr},
+    {songbeat * 7.0f, 37.45175640036591, -77.3299032926075, 638241.50f, -105.19f, -8.56f, 89.35f, kIntroNoCaption},
 };
 static constexpr int kIntroKeyframeCount = sizeof(kIntroKeyframes) / sizeof(kIntroKeyframes[0]);
 static constexpr int kIntroYearIndex = 0;       // "2036" title/date card
