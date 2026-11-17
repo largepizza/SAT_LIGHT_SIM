@@ -1128,14 +1128,7 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
              timeDir < 0.0f ? "REV " : "", kTimeLabels[timeScaleIdx]);
 
     const float kMargin = 12.0f;
-    CLAY(CLAY_ID("LeftPanel"), {.layout = {
-                                    .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
-                                    .padding = {10, 10, 8, 8},
-                                    .childGap = 6,
-                                    .layoutDirection = CLAY_TOP_TO_BOTTOM},
-                                .backgroundColor = Pal::panelBg,
-                                .cornerRadius = CLAY_CORNER_RADIUS(Style::panelCornerRadius),
-                                .floating = {.offset = {kMargin, -kMargin}, .zIndex = 5, .attachPoints = {.element = CLAY_ATTACH_POINT_LEFT_BOTTOM, .parent = CLAY_ATTACH_POINT_LEFT_BOTTOM}, .attachTo = CLAY_ATTACH_TO_ROOT}})
+    CLAY(CLAY_ID("LeftPanel"), uiHudPanel({.offset = {kMargin, -kMargin}, .zIndex = 5, .attachPoints = {.element = CLAY_ATTACH_POINT_LEFT_BOTTOM, .parent = CLAY_ATTACH_POINT_LEFT_BOTTOM}, .attachTo = CLAY_ATTACH_TO_ROOT}, 6))
     {
         // UTC time + speed indicator in one row
         CLAY(CLAY_ID("TimeHeaderRow"), {.layout = {
@@ -1859,14 +1852,7 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
     }
 
     const float kOffsetX = 18.0f, kOffsetY = -8.0f; // nudge off the point itself
-    CLAY(CLAY_ID("SelSatPanel"), {.layout = {
-                                      .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
-                                      .padding = {10, 10, 8, 8},
-                                      .childGap = 3,
-                                      .layoutDirection = CLAY_TOP_TO_BOTTOM},
-                                  .backgroundColor = Pal::panelBg,
-                                  .cornerRadius = CLAY_CORNER_RADIUS(Style::panelCornerRadius),
-                                  .floating = {.offset = {sx + kOffsetX, sy + kOffsetY}, .zIndex = 6, .attachTo = CLAY_ATTACH_TO_ROOT}})
+    CLAY(CLAY_ID("SelSatPanel"), uiHudPanel({.offset = {sx + kOffsetX, sy + kOffsetY}, .zIndex = 6, .attachTo = CLAY_ATTACH_TO_ROOT}))
     {
         Clay_String headStr{false, (int32_t)strlen(infoLines[0]), infoLines[0]};
         CLAY_TEXT(headStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(13)}));
@@ -5647,6 +5633,70 @@ bool SatelliteSim::uiHovRoll(uint32_t id, bool nowHov)
     sndRollover(nowHov, prev);
     prev = nowHov;
     return nowHov;
+}
+
+Clay_ElementDeclaration SatelliteSim::uiHudPanel(const Clay_FloatingElementConfig &fl, uint16_t childGap)
+{
+    Clay_ElementDeclaration d{};
+    d.layout.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)};
+    d.layout.padding = {10, 10, 8, 8};
+    d.layout.childGap = childGap;
+    d.layout.layoutDirection = CLAY_TOP_TO_BOTTOM;
+    d.backgroundColor = Pal::panelBg;
+    d.cornerRadius = CLAY_CORNER_RADIUS(Style::panelCornerRadius);
+    d.floating = fl;
+    return d;
+}
+
+void SatelliteSim::uiKeycap(Clay_ElementId id, float w, float h, Clay_CornerRadius rad, const char *label, uint16_t fsz,
+                            bool target, bool down, float pulse, const Clay_FloatingElementConfig *fl)
+{
+    auto mix = [](Clay_Color a, Clay_Color b, float t) -> Clay_Color
+    { return {a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t, a.a + (b.a - a.a) * t}; };
+    const Clay_Color bg = down     ? Pal::tutHeld
+                          : target ? mix(Pal::tutTargetDim, Pal::tutTargetLit, pulse)
+                                   : Pal::btnIdle;
+    const Clay_Color bc = (target || down) ? Clay_Color{Pal::tutHot.r, Pal::tutHot.g, Pal::tutHot.b, 140.0f + 115.0f * pulse}
+                                           : Clay_Color{Pal::textPrimary.r, Pal::textPrimary.g, Pal::textPrimary.b, 40};
+    const uint16_t bw = target ? 2 : 1;
+    Clay_ElementDeclaration d{};
+    d.layout.sizing = {CLAY_SIZING_FIXED(w), CLAY_SIZING_FIXED(h)};
+    d.layout.childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER};
+    d.backgroundColor = bg;
+    d.cornerRadius = rad;
+    if (fl)
+        d.floating = *fl;
+    d.border = {.color = bc, .width = {bw, bw, bw, bw, 0}};
+    CLAY(id, d)
+    {
+        if (label && label[0])
+            CLAY_TEXT(kitStr(label), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fsz, .wrapMode = CLAY_TEXT_WRAP_NONE}));
+    }
+}
+
+SatelliteSim::ActionLabel SatelliteSim::actionLabel(int kb, bool gamepad) const
+{
+    ActionLabel l{};
+    const char *s = "-"; // unbound, or no such action
+    if (kb >= 0 && kb < (int)keybindings.size())
+    {
+        const KeyBinding &b = keybindings[kb];
+        if (gamepad)
+            s = b.gpButton < 0 ? "-" : gamepadButtonDisplayName(b.gpButton);
+        else
+            s = keyDisplayName(b.key); // "-" for an unbound key
+    }
+    snprintf(l.s, sizeof(l.s), "%s", s);
+    return l;
+}
+
+float SatelliteSim::uiBottomClearance(float screenH, float minClear, float gap)
+{
+    float clear = minClear;
+    for (const Clay_ElementId id : {CLAY_ID("LeftPanel"), CLAY_ID("RightPanel")})
+        if (const Clay_ElementData d = Clay_GetElementData(id); d.found && d.boundingBox.height > 0.0f)
+            clear = std::max(clear, screenH - d.boundingBox.y + gap);
+    return clear;
 }
 
 // ─── Settings search (2026-10-28, issue 20261028_222345) ─────────────────────────────────────────────────

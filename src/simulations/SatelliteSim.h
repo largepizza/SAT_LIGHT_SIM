@@ -83,6 +83,11 @@ bool settingsTabIsAdvanced(int i);   // behind Display > "Show advanced settings
 #include <mutex>
 #include <chrono>
 
+// The UI kit's Clay types (clay.h itself is included by the .cpp files that build UI).
+struct Clay_ElementDeclaration;
+struct Clay_FloatingElementConfig;
+struct Clay_CornerRadius;
+
 // ── Maximum satellites per frame ──────────────────────────────────────────────
 static constexpr uint32_t MAX_SATELLITES = 10'000'000;
 
@@ -8541,6 +8546,28 @@ private:
     int  uiChoiceRow(const UIInput &inp, UIRenderer &ui, const char *key, int idx, const char *label,
                      const char *const *options, int count, int current, const char *tip = nullptr);
     bool uiHovRoll(uint32_t id, bool nowHov);   // rollover sound + the hover memory; returns nowHov
+    // The HUD's black rounded panel (2026-11-16): Pal::panelBg, Style::panelCornerRadius, padding {10,10,8,8}, FIT x FIT,
+    // top to bottom, no border, floating by `fl`. The caller may change the layout after (HudPopupPanel's fixed width).
+    // LeftPanel, SelSatPanel and HudPopupPanel are built on it; RightPanel (38-px row) and TutCard (bordered) are not.
+    static Clay_ElementDeclaration uiHudPanel(const Clay_FloatingElementConfig &fl, uint16_t childGap = 3);
+    // A keycap or pad button (the tutorial's graphics, 2026-11-16 moved from SatelliteSimTutorial.cpp): `target` = the
+    // input to use (amber, pulsing by `pulse` 0..1), `down` = held now (green); `fl` floats it on the element being
+    // built. `label` must outlive the frame (Clay reads it after buildUI): a literal, tx(), or caller-owned storage.
+    static void uiKeycap(Clay_ElementId id, float w, float h, Clay_CornerRadius rad, const char *label, uint16_t fsz,
+                         bool target, bool down, float pulse, const Clay_FloatingElementConfig *fl = nullptr);
+    // The label of a KB_ action's binding: its key (keyDisplayName) or, with `gamepad`, its pad button
+    // (gamepadButtonDisplayName); "-" when unbound. Returned by value, so keyDisplayName's rotating letter pool cannot
+    // overwrite it; to hand it to Clay, copy `.s` into storage that lives past buildUI.
+    struct ActionLabel
+    {
+        char s[24];
+        const char *c_str() const { return s; }
+    };
+    ActionLabel actionLabel(int kb, bool gamepad) const;
+    ActionLabel actionLabel(int kb) const { return actionLabel(kb, lastInputWasGamepad); } // by the last input used
+    // How far above the screen's bottom a bottom-centred card must sit to clear both corner panels (LeftPanel,
+    // RightPanel; last frame's boxes): max(minClear, screenH - panel top + gap). The tutorial card; the hint popup.
+    static float uiBottomClearance(float screenH, float minClear = 24.0f, float gap = 12.0f);
     std::unordered_map<uint32_t, bool> uiHov_;
     std::unordered_map<uint32_t, bool> uiFoldOpen_; // uiFold: open sections (view state, not persisted)
 
