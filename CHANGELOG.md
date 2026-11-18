@@ -104,6 +104,11 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   late cascade the rings of a shell overlap into a faint band of dust across the sky); re-entry fireballs with a
   breakup flash, fragment trains and material colours (aluminium white, copper green, sodium yellow, lithium
   crimson); and once the cascade runs, many small meteor-like streaks.
+- **The storm's sunspot group is abnormally large:** about 12,000 millionths of the solar hemisphere (twice the
+  largest group on record, April 1947), a complex of five umbrae in one ragged penumbra with large followers.
+  It rotates onto the Sun's east limb on 7 July 2037, is near the disc's centre during the 13 July eclipse and
+  at the flare, and leaves over the west limb on 21 July. Plain to see through the new eclipse glasses, and
+  by eye whenever the Sun is dim enough near the horizon. The size is `refraction.fury_spot_msh` in settings.json.
 - **Collisions up close:** the projectile flies in on its real approach line and can be selected; the satellites a
   collision kills stay whole in their own attitude until the instant of impact; the impact is a flash at its peak in
   the frame that holds it at any time warp (white-hot and brief: it no longer lingers as a brown glow over a nearby
@@ -364,6 +369,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   horizon. Three sliders under Sky > Seeing: Turbulence strength, cell size and speed (they replace "Star twinkle
   rate" and "Turbulence warp").
 - **Inertial camera lock:** keep the view fixed on the stars while the Earth turns beneath, with a Sun occulter.
+- **Eclipse glasses** (View popup, under Coronagraph): the Sun's disc at its true size as through a solar filter,
+  with its sunspots, its darker edge and the Moon's bite during an eclipse, and no glare or lens flare. Only the
+  Sun is filtered: the sky, clouds, ground, satellites and stars keep their exposure. A low Sun stays flattened and
+  red; the corona still shows at totality. Switching it on turns the coronagraph off, and the other way round.
 
 ### Sky, sea, terrain and cities
 

@@ -3735,10 +3735,10 @@ vec3 refrTau(vec4 c, vec3 BR, float BM, float hazeK)
 //
 // Eclipse glasses (2026-11-17, the View popup / hud.right_panel.eclipse_glasses -> refrSpotInfo.w): the disc at its true
 // radius, as through a solar filter — limb darkening, spots, the Moon's bite in black — at a display level of its own
-// (kGlassesGain x the tint x the disc's transmittance, the air's loss partly given back), with no glare, aureole or lens
+// (kGlassesGain x the tint x the disc's transmittance / the centre's air transmittance), with no glare, aureole or lens
 // flare. NOT physics: real glasses darken everything else to black; here the rest of the frame keeps its exposure.
-const float kGlassesGain = 1.4;
-const vec3  kGlassesTint = vec3(1.0, 0.66, 0.32);   // the orange of black-polymer eclipse glasses
+const float kGlassesGain = 1.8;
+const vec3  kGlassesTint = vec3(1.0, 0.5, 0.18);    // the orange of black-polymer eclipse glasses
 uint spHashU(uint x)
 {
     x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
@@ -8452,10 +8452,11 @@ void main() {
                 vec3  L  = exposure * 2.3e5 * (tabOn ? refrInfo.w : 1.0) * T * ld * sp;
                 dLight = (vec3(1.0) - exp(-L / 250.0)) * cov3;
                 // Through the glasses: the same transmittance (its colour: a low Sun stays red), limb darkening and spots,
-                // at a display level of its own; the light lost to the air is given back as (luminance)^-0.7 so a horizon
-                // Sun stays visible. The Moon in front is black (its coverage, anti-aliased).
-                float lcA = max(dot(TcAir, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
-                dGlass = (vec3(1.0) - exp(-kGlassesGain * kGlassesTint * T * cloud.sunCloudT * ld * sp / pow(lcA, 0.7)))
+                // at a display level of its own: the air's loss at the centre is divided out by its brightest channel, so
+                // a horizon Sun is as bright as a high one in red. Cloud in front still dims it. The Moon in front is
+                // black (its coverage, anti-aliased).
+                float mA = max(max(TcAir.r, TcAir.g), max(TcAir.b, 1e-6));
+                dGlass = (vec3(1.0) - exp(-kGlassesGain * kGlassesTint * T * cloud.sunCloudT * ld * sp / mA))
                        * (1.0 - moonCovTaa);
             }
             // The AUREOLE of the cloud in front of the Sun (2026-10-27, issue 20261027_182140): cloud droplets send about
@@ -8490,8 +8491,10 @@ void main() {
             float veilT = min(dot(cloudAtSun, vec3(1.0 / 3.0)), cloud.sunCloudT);
             // The glasses replace what is behind the disc (the filter passes only the Sun) and draw no glare or aureole;
             // the corona (totality) is added on top as without them.
+            // (At totality the whole Moon is black: it overhangs the true-radius disc, and a sky-lit ring round a black
+            // disc read as a drawing error.)
             if (glasses)
-                color = mix(color, dGlass, covD);
+                color = mix(color, dGlass, max(covD, vec3(moonCovTaa * tot)));
             else
                 color += dLight
                        + (glareA * visS * gCol * obsSunF * gs + coronA * visS * gCol * 0.12 * obsSunF * gs) * veilT;
