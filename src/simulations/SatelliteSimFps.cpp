@@ -26,6 +26,12 @@ const char *fpsWhyName(int w)
     static const char *k[] = {"tab", "right_click", "window", "focus", "harness", "settings", "intro"};
     return (w >= 0 && w < 7) ? k[w] : "?";
 }
+// fpsCentreBtn_ / a popup button's slot as the harness names it.
+const char *fpsPopupName(int k)
+{
+    static const char *n[] = {"info", "goto", "trace", "track"};
+    return k >= 0 && k < 4 ? n[k] : (k == -1 ? "panel" : "");
+}
 } // namespace
 
 bool SatelliteSim::fpsLogicLive() const
@@ -176,7 +182,7 @@ void SatelliteSim::fpsTick(const UIInput &inp, float dt)
         fpsRingFade_ = std::max(0.0f, fpsRingFade_ - dt);
 }
 
-std::string SatelliteSim::pickAtScreenCentre()
+bool SatelliteSim::fpsCentrePx(float &x, float &y) const
 {
     // The mouse's coordinates (window size, glfwGetWindowSize: what UIInput and the virtual cursor use), not the
     // framebuffer's: under display scaling the two differ, and the pick's pixel tolerances are in the mouse's.
@@ -189,19 +195,62 @@ std::string SatelliteSim::pickAtScreenCentre()
         wh = (int)ctx_->swapExtent.height;
     }
     if (ww <= 0 || wh <= 0)
+        return false;
+    x = (float)ww * 0.5f;
+    y = (float)wh * 0.5f;
+    return true;
+}
+
+std::string SatelliteSim::pickAtScreenCentre()
+{
+    float cx = 0.0f, cy = 0.0f;
+    if (!fpsCentrePx(cx, cy))
         return "";
-    return pickAndSelectAt((float)ww * 0.5f, (float)wh * 0.5f, (float)ww, (float)wh);
+    return pickAndSelectAt(cx, cy, cx * 2.0f, cy * 2.0f);
+}
+
+// The selection popup (SelSatPanel, anchored to the satellite on screen) under the screen centre, in the boxes of the
+// frame whose drawn bits are `drawn` (Clay keeps stale boxes: only what that frame drew counts). Only that popup:
+// the toolbars, windows and every other HUD element stay inert in FPS mode.
+int SatelliteSim::fpsCentreSelBtn(uint32_t drawn) const
+{
+    if (!fpsLogicLive() || !(drawn & kFpsSelPanelBit))
+        return -2;
+    float cx = 0.0f, cy = 0.0f;
+    if (!fpsCentrePx(cx, cy))
+        return -2;
+    auto under = [&](Clay_ElementId id)
+    {
+        const Clay_ElementData d = Clay_GetElementData(id);
+        return d.found && cx >= d.boundingBox.x && cx < d.boundingBox.x + d.boundingBox.width && cy >= d.boundingBox.y &&
+               cy < d.boundingBox.y + d.boundingBox.height;
+    };
+    for (int k = 0; k < 4; ++k)
+        if ((drawn & (1u << k)) && under(Clay_GetElementIdWithIndex(CLAY_STRING("SelActBtn"), (uint32_t)(4 + k))))
+            return k;
+    return under(CLAY_ID("SelSatPanel")) ? -1 : -2;
 }
 
 void SatelliteSim::fpsCentreClick()
 {
-    // The pick chain at the centre (a miss selects nothing, as a click on empty sky does); the mode stays FPS.
-    fpsLastPick_ = pickAtScreenCentre();
+    // On the selection popup: its button under the centre takes the press (buildSelActionButton), and a press between
+    // its buttons does nothing, as a menu-mode click on the panel does. Elsewhere: the pick chain at the centre (a miss
+    // selects nothing, as a click on empty sky does). The mode stays FPS either way (a button opening a window leaves
+    // it through fpsTick's window rule).
+    if (fpsCentreBtn_ != -2)
+        fpsLastPopupPress_ = "panel"; // (the button's press names itself)
+    else
+        fpsLastPick_ = pickAtScreenCentre();
     ++fpsFacts_.clicks;
     const double t = glfwGetTime();
     if (fpsFacts_.firstClickS < 0.0)
         fpsFacts_.firstClickS = t;
     fpsFacts_.lastClickS = t;
+    fpsRingFlash();
+}
+
+void SatelliteSim::fpsRingFlash()
+{
     // The ring: a lone click shows it for kFpsRingShowS; a click while it still holds adds kFpsRingAddS to what is
     // left, kFpsRingMaxS at most; then the fade.
     fpsRingT_ = fpsRingT_ > 0.0f ? std::min(fpsRingT_ + kFpsRingAddS, kFpsRingMaxS) : kFpsRingShowS;
@@ -211,6 +260,24 @@ void SatelliteSim::fpsCentreClick()
 void SatelliteSim::buildFpsRing(UIRenderer &ui)
 {
     (void)ui;
+    // The centre dot while the selection popup is on screen in FPS mode (last frame's: the popup builds later): what
+    // the centre aims at. Steady, filled, smaller than the ring, with a 1-px dark rim so it reads on a hovered (light)
+    // button as on the sky; above everything, the button's tooltip included (its corner sits on the centre).
+    if (fpsLive_ && (fpsSelDrawnPrev_ & kFpsSelPanelBit))
+    {
+        const float dd = std::max(2.0f, std::round((float)fs(kFpsRingDiamPx) * (float)kFpsDotDiamPx / (float)kFpsRingDiamPx));
+        CLAY(CLAY_ID("FpsDot"), {.layout = {.sizing = {CLAY_SIZING_FIXED(dd), CLAY_SIZING_FIXED(dd)}},
+                                 .backgroundColor = Pal::textBright,
+                                 .cornerRadius = CLAY_CORNER_RADIUS(dd * 0.5f),
+                                 .floating = {.zIndex = 101,
+                                              .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_CENTER,
+                                                               .parent = CLAY_ATTACH_POINT_CENTER_CENTER},
+                                              .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH,
+                                              .attachTo = CLAY_ATTACH_TO_ROOT},
+                                 .border = {.color = Pal::panelBg, .width = CLAY_BORDER_OUTSIDE(1)}})
+        {
+        }
+    }
     const float a = fpsRingT_ > 0.0f ? 1.0f : (fpsRingFade_ > 0.0f ? fpsRingFade_ / kFpsRingFadeS : 0.0f);
     if (a <= 0.0f)
         return;
@@ -242,6 +309,8 @@ nlohmann::json SatelliteSim::fpsStateJson() const
             {"last_change", fpsWhyName((int)fpsLastWhy_)},
             {"last_pick", fpsLastPick_},
             {"selected_sat", selectedSatIndex},
+            {"centre_popup", fpsPopupName(fpsCentreBtn_)},
+            {"centre_dot", fpsLive_ && (fpsSelDrawnPrev_ & kFpsSelPanelBit) != 0},
             {"ring", {{"hold_s", fpsRingT_}, {"fade_s", fpsRingFade_}, {"alpha", ringA},
                       {"show_s", kFpsRingShowS}, {"add_s", kFpsRingAddS}, {"max_s", kFpsRingMaxS}, {"fade_total_s", kFpsRingFadeS}}},
             {"mouse_sensitivity", mouseSensMul},
@@ -321,6 +390,7 @@ harness::Status SatelliteSim::harnessMouse(harness::Active &a)
         {
             a.scratch["fps_before"] = fpsMode;
             a.scratch["clicks0"] = fpsFacts_.clicks;
+            fpsLastPopupPress_.clear();
             harnessMouseBtn_ = b == "left" ? 1 : 2; // down on the next frame App reads the buttons
             return harness::Status::Pending;
         }
@@ -334,6 +404,7 @@ harness::Status SatelliteSim::harnessMouse(harness::Active &a)
         r["fps_after"] = fpsMode;
         r["centre_click"] = fpsFacts_.clicks != a.scratch["clicks0"].get<int>();
         r["picked"] = fpsLastPick_;
+        r["popup"] = fpsLastPopupPress_; // the selection popup took the press: its button ("goto" ...), "panel" between them
         r["selected_sat"] = selectedSatIndex;
         r["ring_hold_s"] = fpsRingT_;
         r["right_drag_held"] = camera.captured;
@@ -355,6 +426,87 @@ harness::Status SatelliteSim::harnessMouse(harness::Active &a)
         r["message"] = "mouse scroll: fov " + std::to_string(camera.fovYDeg).substr(0, 6) + " deg";
         return harness::Status::Done;
     }
-    a.error = "mouse move dx= dy= [frames=1] | mouse click left|right | mouse scroll dy=";
+    if (sub == "aim")
+    {
+        // mouse aim <ElementId>[:index] [tol=2] [frames=120] (2026-11-17): FPS-mode mouse motion, one `mouse move`
+        // frame every 3 frames (Clay's boxes are last frame's layout), until the screen centre is within tol px of the
+        // element's centre: how a player turns the view onto a button of the popup anchored to the satellite.
+        if (!fpsLogicLive())
+        {
+            a.error = "mouse aim: FPS mode is not live (fps on)";
+            return harness::Status::Error;
+        }
+        std::string idStr = c.pos.size() > 1 ? c.pos[1] : std::string();
+        int index = -1;
+        const size_t colon = idStr.rfind(':');
+        if (colon != std::string::npos)
+        {
+            index = std::atoi(idStr.c_str() + colon + 1);
+            idStr = idStr.substr(0, colon);
+        }
+        const Clay_String cs{false, (int32_t)idStr.size(), idStr.c_str()};
+        const Clay_ElementData d =
+            Clay_GetElementData(index >= 0 ? Clay_GetElementIdWithIndex(cs, (uint32_t)index) : Clay_GetElementId(cs));
+        float cx = 0.0f, cy = 0.0f;
+        if (idStr.empty() || !d.found || !fpsCentrePx(cx, cy))
+        {
+            a.error = "mouse aim <ElementId>[:index]: no element '" + idStr + "' in the last frame's layout";
+            return harness::Status::Error;
+        }
+        const float ex = d.boundingBox.x + d.boundingBox.width * 0.5f - cx;
+        const float ey = d.boundingBox.y + d.boundingBox.height * 0.5f - cy;
+        const double focal = (double)cy / std::tan(glm::radians((double)camera.fovYDeg) * 0.5);
+        if (a.frame == 0)
+        {
+            a.scratch["az0"] = camera.azDeg;
+            a.scratch["el0"] = camera.elDeg;
+            a.scratch["ex0"] = ex;
+            a.scratch["ey0"] = ey;
+            a.scratch["deg0"] = glm::degrees(std::atan(std::sqrt((double)ex * ex + (double)ey * ey) / focal));
+            a.scratch["px"] = 0.0;
+            a.scratch["moves"] = 0;
+        }
+        const float tol = (float)c.num("tol", 2.0);
+        const bool there = std::abs(ex) <= tol && std::abs(ey) <= tol;
+        if (there || a.frame >= (int)c.num("frames", 120.0))
+        {
+            double dAz = (double)camera.azDeg - a.scratch["az0"].get<double>();
+            dAz -= 360.0 * std::round(dAz / 360.0);
+            r["element"] = c.pos[1];
+            r["box"] = {d.boundingBox.x, d.boundingBox.y, d.boundingBox.width, d.boundingBox.height};
+            r["start_offset_px"] = {a.scratch["ex0"], a.scratch["ey0"]};
+            r["start_offset_deg"] = a.scratch["deg0"];
+            r["offset_px"] = {ex, ey};
+            r["moves"] = a.scratch["moves"];
+            r["mouse_px"] = a.scratch["px"];
+            r["d_az_deg"] = dAz;
+            r["d_el_deg"] = (double)camera.elDeg - a.scratch["el0"].get<double>();
+            r["centre_popup"] = fpsPopupName(fpsCentreSelBtn(fpsSelDrawn_));
+            r["message"] = std::string("mouse aim ") + c.pos[1] + (there ? "" : ": did not reach it");
+            if (!there)
+            {
+                a.error = "mouse aim: the centre is still " + std::to_string((int)ex) + ", " + std::to_string((int)ey) + " px off";
+                return harness::Status::Error;
+            }
+            return harness::Status::Done;
+        }
+        if (a.frame % 3 == 0)
+        {
+            // Look right (+dx) moves the scene left, look down (+dy) moves it up: the offset's angle in look pixels.
+            const double s = std::max(1e-6, (double)camera.lookSens());
+            double dx = glm::degrees(std::atan((double)ex / focal)) / s, dy = glm::degrees(std::atan((double)ey / focal)) / s;
+            if (invertMouseX)
+                dx = -dx;
+            if (invertMouseY)
+                dy = -dy;
+            harnessMouseDx_ = (float)std::clamp(dx, -500.0, 500.0);
+            harnessMouseDy_ = (float)std::clamp(dy, -500.0, 500.0);
+            harnessMouseFrames_ = 1;
+            a.scratch["moves"] = a.scratch["moves"].get<int>() + 1;
+            a.scratch["px"] = a.scratch["px"].get<double>() + std::sqrt(dx * dx + dy * dy);
+        }
+        return harness::Status::Pending;
+    }
+    a.error = "mouse move dx= dy= [frames=1] | mouse click left|right | mouse scroll dy= | mouse aim <ElementId>[:index]";
     return harness::Status::Error;
 }

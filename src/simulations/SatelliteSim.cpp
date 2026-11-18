@@ -1394,6 +1394,12 @@ bool SatelliteSim::padContextButton(int b, bool cursorActive)
             padFocusStep(b == GLFW_GAMEPAD_BUTTON_DPAD_LEFT ? -1 : 1);
             return true;
         }
+        if (b == GLFW_GAMEPAD_BUTTON_A && fpsCentreSelBtn(fpsSelDrawn_) >= 0)
+        {
+            fpsPadPressPending_ = true; // FPS mode: the popup button under the centre, not the pad's focus
+            fpsRingFlash();
+            return true;
+        }
         if (b == GLFW_GAMEPAD_BUTTON_A && selActionAvailMask() != 0)
         {
             padActivatePending = true;
@@ -9791,8 +9797,15 @@ void SatelliteSim::dispatchKeyAction(int bindIdx, bool fromPad)
     case KB_SELECT_SAT:
     {
         // Center-of-screen equivalent of the mouse left-click pick in buildUI — the same pick chain at the
-        // window's centre, in the mouse's coordinates (the FPS click shares it: pickAtScreenCentre).
-        pickAtScreenCentre();
+        // window's centre, in the mouse's coordinates (the FPS click shares it: pickAtScreenCentre). In FPS mode with the
+        // centre on a button of the selection popup, that button is pressed instead (as the FPS click does).
+        if (fpsCentreSelBtn(fpsSelDrawn_) >= 0)
+        {
+            fpsPadPressPending_ = true;
+            fpsRingFlash();
+        }
+        else
+            pickAtScreenCentre();
         break;
     }
     case KB_SCREENSHOT:

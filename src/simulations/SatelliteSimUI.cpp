@@ -1003,7 +1003,11 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // left mouse button is otherwise unused for scene interaction (RMB drives camera look).
     // Planets get priority on an exact overlap (pickPlanetAt tried first, only 6 candidates) —
     // they're rare and the more interesting selection; mutually exclusive with satellite selection.
-    // FPS mode: the click picks at the screen centre (the UI gets no pointer, so nothing is "over the UI").
+    // FPS mode: the click picks at the screen centre (the UI gets no pointer, so nothing is "over the UI"), except on
+    // the selection popup, whose pointer the centre is (fpsCentreSelBtn: last frame's boxes; its button presses).
+    fpsSelDrawnPrev_ = fpsSelDrawn_;
+    fpsSelDrawn_ = 0;
+    fpsCentreBtn_ = fpsLive_ ? fpsCentreSelBtn(fpsSelDrawnPrev_) : -2;
     if (fpsLive_)
     {
         if (inp.lmbPressed && !vCursorActive)
@@ -1727,6 +1731,8 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
     // A press from the pad lands on this frame's buttons only (a selection gone meanwhile drops it).
     padActivateNow = padActivatePending;
     padActivatePending = false;
+    fpsPadPressNow_ = fpsPadPressPending_; // (the pad's select on the popup button under the FPS centre)
+    fpsPadPressPending_ = false;
     if (selectedSatIndex != padFocusSat)
     {
         padFocusSat = selectedSatIndex;
@@ -1952,6 +1958,7 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
     // Panel size isn't known until Clay lays it out this frame — this is a rough estimate for
     // capture purposes only, same approximation the corner HUD panels' capture rects already use.
     captureLaidOut(ui, CLAY_ID("SelSatPanel"), sx + kOffsetX, sy + kOffsetY, 240.0f, 110.0f);
+    fpsSelDrawn_ |= kFpsSelPanelBit; // (FPS mode: the centre is this popup's pointer)
 }
 
 // ─── buildTraceWindow (benchmarking M9) ──────────────────────────────────────
@@ -3243,6 +3250,14 @@ bool SatelliteSim::buildSelActionButton(const UIInput &inp, UIRenderer &ui, int 
 {
     bool clicked = false;
     selBtnDrawnMask |= 1u << id; // the tutorial outlines the buttons drawn this frame (Clay keeps stale boxes)
+    // FPS mode: the screen centre is the pointer of the popup by the satellite (ids 4-7), and of nothing else: its
+    // button there hovers (with its tooltip at the centre) and takes the click or the pad's select.
+    const bool fpsHere = id >= 4 && id < 8 && fpsLive_ && !vCursorActive && fpsCentreBtn_ == id - 4;
+    if (id >= 4 && id < 8)
+        fpsSelDrawn_ |= 1u << (id - 4);
+    UIInput fpsInp = inp;
+    if (fpsHere)
+        fpsCentrePx(fpsInp.mouseX, fpsInp.mouseY);
     // The gamepad's focus (pollGamepad): a ring while the pad is in use, and A clicks it here, through
     // the same path as the mouse.
     const bool focused = padFocusVisible() && (id % 4) == padFocus;
@@ -3261,19 +3276,24 @@ bool SatelliteSim::buildSelActionButton(const UIInput &inp, UIRenderer &ui, int 
     CLAY(CLAY_SIDI(CLAY_STRING("SelActBtn"), id),
          {.layout = {.sizing = {CLAY_SIZING_FIXED(sz), CLAY_SIZING_FIXED(sz)},
                      .childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER}},
-          .backgroundColor = (hov || focused) ? (on ? Pal::btnAccentHv : Pal::btnHover) : (on ? Pal::btnAccent : Pal::btnIdle),
+          .backgroundColor = (hov || focused || fpsHere) ? (on ? Pal::btnAccentHv : Pal::btnHover) : (on ? Pal::btnAccent : Pal::btnIdle),
           .cornerRadius = CLAY_CORNER_RADIUS(4),
           .border = {.color = Pal::listenKey, .width = {ring, ring, ring, ring, 0}}})
     {
-        bool n = Clay_Hovered();
+        bool n = Clay_Hovered() || fpsHere;
         sndRollover(n, hov);
-        sndClick(n, inp.lmbPressed);
+        sndClick(n, inp.lmbPressed || (fpsHere && fpsPadPressNow_));
         hov = n;
-        clicked = clicked || (n && inp.lmbPressed);
+        clicked = clicked || (n && inp.lmbPressed) || (fpsHere && fpsPadPressNow_);
+        if (fpsHere && (inp.lmbPressed || fpsPadPressNow_))
+        {
+            static const char *kSlot[] = {"info", "goto", "trace", "track"};
+            fpsLastPopupPress_ = kSlot[id - 4]; // (harness `mouse click`'s popup)
+        }
         // The tooltip is the button's name and its key (2026-10-28): I Info, G Go to, T Track.
         const int kb = (id % 4) == 0 ? (int)KB_INFO : (id % 4) == 1 ? (int)KB_FOLLOW_STAY : (id % 4) == 3 ? (int)KB_TRACK : -1;
         const char *tip = (kb >= 0 && keybindings[kb].key >= 0) ? uiKitStr("%s (%s)", name, keyDisplayName(keybindings[kb].key)) : name;
-        ui.tooltip(inp, n, tip, fs(11));
+        ui.tooltip(fpsInp, n, tip, fs(11));
         CLAY(CLAY_SIDI(CLAY_STRING("SelActIcon"), id),
              {.layout = {.sizing = {CLAY_SIZING_FIXED(isz), CLAY_SIZING_FIXED(isz)}},
               .image = {.imageData = (void *)(intptr_t)(iconIdx + 1)}}) {}
