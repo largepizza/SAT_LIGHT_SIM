@@ -979,20 +979,23 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // and its completion test reads this frame's look (the block above) and keys.
     fprof::mark("ui.seg3a_look");
     updateTutorial(dt);
+    hintsTick(inp, dt); // the first run's hints: gates, signals, the scheduler (SatelliteSimHints.cpp)
     fprof::mark("ui.seg3b_tutorial");
 
     // ── Lazy icon loading (first buildUI call after init) ─────────────────────
     loadUiIcons(ui); // (normally already done by prepareUI at load)
 
     // ── Scroll wheel → FOV zoom (when not hovering over UI panels) ───────────
-    if (inp.scrollY != 0.0f && !ui.mouseOverUI())
-    {
+    // (+ harness `mouse scroll dy=`: notches for this frame, through the same path)
+    const float scrollY = inp.scrollY + harnessScrollY_;
+    harnessScrollY_ = 0.0f;
+    if (scrollY != 0.0f && !ui.mouseOverUI())
     {
         if (cinematicLatched)
-            cineScrollZoom += inp.scrollY * logf(0.93f); // cinematic mode: the wheel adds to a pending zoom that eases in (recordCompute)
+            cineScrollZoom += scrollY * logf(0.93f); // cinematic mode: the wheel adds to a pending zoom that eases in (recordCompute)
         else
-            camera.zoomBy(powf(0.93f, inp.scrollY)); // ~5 deg per notch at 70 deg, ~0.04 deg at 0.5 deg
-    }
+            camera.zoomBy(powf(0.93f, scrollY)); // ~5 deg per notch at 70 deg, ~0.04 deg at 0.5 deg
+        hintZoomIn_ = true;
     }
 
     // ── Left-click → satellite/planet pick/select ─────────────────────────────
@@ -1109,6 +1112,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     buildKesslerBanner(ui);
     if (!hideShotChrome)
         buildScreenshotToast(dt, inp, ui);
+    buildHints(inp, ui);    // the first run's hint popup, clear of every HUD element above (SatelliteSimHints.cpp)
     buildTutorial(inp, ui); // after every panel it points at: their boxes are last frame's layout
 
     // UC4: draw the virtual cursor itself — inp.mouseX/Y IS vCursorX/Y here (App overrode the
@@ -5692,15 +5696,19 @@ Clay_ElementDeclaration SatelliteSim::uiHudPanel(const Clay_FloatingElementConfi
 }
 
 void SatelliteSim::uiKeycap(Clay_ElementId id, float w, float h, Clay_CornerRadius rad, const char *label, uint16_t fsz,
-                            bool target, bool down, float pulse, const Clay_FloatingElementConfig *fl)
+                            bool target, bool down, float pulse, const Clay_FloatingElementConfig *fl, float alpha)
 {
     auto mix = [](Clay_Color a, Clay_Color b, float t) -> Clay_Color
     { return {a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t, a.a + (b.a - a.a) * t}; };
-    const Clay_Color bg = down     ? Pal::tutHeld
-                          : target ? mix(Pal::tutTargetDim, Pal::tutTargetLit, pulse)
-                                   : Pal::btnIdle;
-    const Clay_Color bc = (target || down) ? Clay_Color{Pal::tutHot.r, Pal::tutHot.g, Pal::tutHot.b, 140.0f + 115.0f * pulse}
-                                           : Clay_Color{Pal::textPrimary.r, Pal::textPrimary.g, Pal::textPrimary.b, 40};
+    Clay_Color bg = down     ? Pal::tutHeld
+                    : target ? mix(Pal::tutTargetDim, Pal::tutTargetLit, pulse)
+                             : Pal::btnIdle;
+    Clay_Color bc = (target || down) ? Clay_Color{Pal::tutHot.r, Pal::tutHot.g, Pal::tutHot.b, 140.0f + 115.0f * pulse}
+                                     : Clay_Color{Pal::textPrimary.r, Pal::textPrimary.g, Pal::textPrimary.b, 40};
+    Clay_Color lc = Pal::btnLabel;
+    bg.a *= alpha;
+    bc.a *= alpha;
+    lc.a *= alpha;
     const uint16_t bw = target ? 2 : 1;
     Clay_ElementDeclaration d{};
     d.layout.sizing = {CLAY_SIZING_FIXED(w), CLAY_SIZING_FIXED(h)};
@@ -5713,7 +5721,7 @@ void SatelliteSim::uiKeycap(Clay_ElementId id, float w, float h, Clay_CornerRadi
     CLAY(id, d)
     {
         if (label && label[0])
-            CLAY_TEXT(kitStr(label), CLAY_TEXT_CONFIG({.textColor = Pal::btnLabel, .fontSize = fsz, .wrapMode = CLAY_TEXT_WRAP_NONE}));
+            CLAY_TEXT(kitStr(label), CLAY_TEXT_CONFIG({.textColor = lc, .fontSize = fsz, .wrapMode = CLAY_TEXT_WRAP_NONE}));
     }
 }
 
@@ -8112,6 +8120,7 @@ void SatelliteSim::buildCrashRecoveryNotice(float dt, const UIInput &inp, UIRend
 void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui, bool clearToolbars)
 {
     (void)ui;
+    introCaptionBuilt_ = false; // (buildHints attaches its popup to the band when it is declared)
     if (!showIntro)
         return;
 
@@ -8155,6 +8164,7 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui, bool cl
             // "box": it draws nothing) and a width cap, so a long line wraps by words inside a small window instead
             // of running to its edges. The title stays one line (WRAP_NONE below).
             const float capMaxW = std::min((float)inp.screenW - 24.0f, (float)fs(19) * 40.0f);
+            introCaptionBuilt_ = true;
             CLAY(CLAY_ID("CineCaption"), {.layout = {
                                                     .sizing = {CLAY_SIZING_FIT(0, capMaxW), CLAY_SIZING_FIT(0)},
                                                     .padding = {24, 24, 16, 16},

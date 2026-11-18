@@ -8,9 +8,8 @@
 //                                         lights the input to use (amber) and what is held (green)
 //   the satellite's buttons, time,       — outlines on the HUD's own controls; finished by using one
 //   pictures, menus                        of them, or Next
-// It follows the intro (finishIntro), or the first frame when the intro is off, once: Skip or Finish
-// sets display.tutorial_done. Settings > Display > Replay Tutorial runs it again. A harness run never
-// starts it on its own (`tutorial start [step]` does).
+// Since 2026-11-17 it never starts on its own: the first run's hints (SatelliteSimHints.cpp) replaced its
+// teaching. Settings > Display > Replay Tutorial runs it; so does harness `tutorial start [step]`.
 #include "../FrameProfile.h"
 #include "SatelliteSim.h"
 #include "../UIRenderer.h"
@@ -265,13 +264,9 @@ void SatelliteSim::tutReturnNow()
 void SatelliteSim::updateTutorial(float dt)
 {
     FPROF_SCOPE("updateTutorial");
-    if (!tutAutoChecked && !showIntro) // (the opening's end, finishIntro, starts it otherwise)
-    {
-        // The intro was off (finishIntro starts it otherwise): the first frame in the scene.
-        tutAutoChecked = true;
-        if (!tutorialDone && !tutActive && !harnessRunner_)
-            startTutorial();
-    }
+    // (2026-11-17) It no longer starts on its own, after the opening or on the first frame: the hints teach the
+    // controls (SatelliteSimHints.cpp). Settings > Display > Replay Tutorial and harness `tutorial start` still show it.
+    tutAutoChecked = true;
     if (!tutActive)
         return;
     tutClock += dt;

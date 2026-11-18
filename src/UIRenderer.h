@@ -8,6 +8,7 @@
 
 struct VulkanContext;   // forward declare
 struct Clay_Color;      // forward declare (SatelliteSim.h text fields)
+struct Clay_BoundingBox; // forward declare (declaredThisFrame)
 struct Clay_ElementId;  // forward declare (full definition in clay.h, included by UIRenderer.cpp
                         // and by any .cpp that calls scrollbar())
 
@@ -144,6 +145,9 @@ public:
     // boot screen and the sim set it without holding the renderer.
     static void setColorFilter(bool nightRed) { s_nightFilter = nightRed; }
     static bool colorFilter() { return s_nightFilter; }
+    // While a frame's layout is being declared: was this element declared in it so far, and its box from the last
+    // layout (Clay keeps an element's entry, and its stale box, for frames after it stops being declared).
+    static bool declaredThisFrame(Clay_ElementId id, Clay_BoundingBox *lastBox = nullptr);
     // The width pushText gives `len` characters at `fontSize`, and the height of a line (for callers that lay
     // text out themselves: UITextBlock).
     float textAdvance(const char* text, int len, float fontSize) const;

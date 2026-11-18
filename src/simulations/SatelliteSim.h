@@ -8576,7 +8576,8 @@ private:
     // input to use (amber, pulsing by `pulse` 0..1), `down` = held now (green); `fl` floats it on the element being
     // built. `label` must outlive the frame (Clay reads it after buildUI): a literal, tx(), or caller-owned storage.
     static void uiKeycap(Clay_ElementId id, float w, float h, Clay_CornerRadius rad, const char *label, uint16_t fsz,
-                         bool target, bool down, float pulse, const Clay_FloatingElementConfig *fl = nullptr);
+                         bool target, bool down, float pulse, const Clay_FloatingElementConfig *fl = nullptr,
+                         float alpha = 1.0f); // alpha: x every colour (the hint popup's fade)
     // The label of a KB_ action's binding: its key (keyDisplayName) or, with `gamepad`, its pad button
     // (gamepadButtonDisplayName); "-" when unbound. Returned by value, so keyDisplayName's rotating letter pool cannot
     // overwrite it; to hand it to Clay, copy `.s` into storage that lives past buildUI.
@@ -9108,7 +9109,7 @@ private:
     static constexpr float kFpsRingFadeS = 0.3f;
     static constexpr int kFpsRingDiamPx = 12;
     static constexpr float kFpsRingStroke = 0.07f; // x the diameter (fs() floors at 8 px: too thick for a stroke)
-    // Sticky facts for a later hint scheduler (not persisted; nothing reads them yet but harness `fps state`).
+    // Sticky facts (not persisted): harness `fps state`; hintsTick reads `clicks` and `lookDeg` as running counters.
     struct FpsFacts
     {
         bool leftByTab = false;         // left FPS mode with Tab
@@ -9136,6 +9137,114 @@ private:
     harness::Status harnessFps(harness::Active &a);
     harness::Status harnessMouse(harness::Active &a);
     nlohmann::json fpsStateJson() const;
+
+    // ── Hints (2026-11-17, SatelliteSimHints.cpp; docs/subsystems/ui.md "Hints") ─────────────────────────────────
+    // The first run's teaching: one small hint at a time (HintPopup), chosen from what the player has and has not done.
+    // The gates are sticky facts since the pass began (an opening's first frame, `hints on|reset`); hintsTick decides
+    // (one function), hint_ holds the state (one struct). Every clock is frame time, as the caption clock. A pass runs
+    // on a genuine first run (display.tutorial_done false) and after a Replay Intro; it completes (and saves
+    // tutorial_done) when the captions have ended, a satellite is selected, the player has moved and hints 9 and 10
+    // are done; after that hints 3, 4, 5 and 8 may each fire once more that session. Never under the harness unless
+    // `hints on`; never over a playing cinematic, an HQ photo, the old tutorial card or a hidden HUD.
+    static constexpr int kHintCount = 10;          // hints 1..10 (index 0 = none)
+    static constexpr float kHintFadeS = 0.3f;      // fade in, fade out
+    static constexpr float kHintGapS = 3.0f;       // at least this long between one hint gone and the next
+    static constexpr float kHintLingerS = 2.0f;    // a hint fades this long after its gate is met
+    static constexpr float kHintIgnoredS = 20.0f;  // a hint ignored this long fades ...
+    static constexpr float kHintRestS = 30.0f;     // ... and rests this long
+    static constexpr int kHintMaxOffers = 2;       // offered at most this often (not in a never-time-out case)
+    static constexpr float kHintMenuShowS = 8.0f;  // hints 9 and 10: done after this long on screen
+    static constexpr double kHintLookDeg = 30.0;   // `looked`: degrees of view turned in total
+    static constexpr float kHintMoveS = 1.0f;      // `moved`: seconds of movement input in total
+    static constexpr float kHintClimbM = 100.0f;   // `climbed`: metres of height changed by elevation input
+    static constexpr float kHintStreakS = 4.0f;    // hint 4: moving this long without a break
+    static constexpr float kHintMoveGraceS = 1.0f; // hint 4 stays up through a pause this short
+    static constexpr float kHintStillS = 2.0f;     // hint 5: the view nearly still this long ...
+    static constexpr float kHintStillDegS = 3.0f;  // ... turning slower than this (deg/s)
+    static constexpr float kHintCentrePx = 24.0f;  // hint 5: a drawn satellite within this of the centre (or its size)
+    static constexpr float kHintIdleS = 6.0f;      // hint 6: no input this long
+    static constexpr float kHintClickWinS = 5.0f;  // hint 6: two FPS clicks within this
+    static constexpr float kHintMenuIdleS = 10.0f; // hint 8: no input this long in menu mode
+    static constexpr int kHintBeat = 2;            // nothing before this caption beat begins (15.22 s)
+    static constexpr int16_t kHintZ = 27;          // over the windows (10) and notices (25), under the caption (30)
+    struct HintGates
+    {
+        bool looked = false, moved = false, climbed = false, boosted = false, zoomed = false, clicked = false;
+        bool leftByTab = false, leftByRightClick = false, returned = false, dragLooked = false, selected = false;
+        bool timeBarShown = false, menuBarShown = false; // hints 9 / 10 done
+    };
+    struct HintLogEntry
+    {
+        int n;
+        float shownS, goneS; // hint clock
+        float gateAtS;       // hint clock when its gate was met while it showed (-1 = not)
+        const char *how;     // gate | timeout | condition | shown | preempted | suppressed | reset
+    };
+    struct HintRun
+    {
+        HintGates g;
+        double lookDeg = 0.0; // view turned (the mouse in either mode, the pad's stick)
+        float moveS = 0.0f;   // movement input held, in total
+        float climbM = 0.0f;  // height changed by elevation input, in total
+        float clock = 0.0f;   // since the pass began
+        float movingS = 0.0f; // moving now: seconds without a break (0 = not moving)
+        float sinceMoveS = 1e9f;
+        float idleS = 0.0f, menuIdleS = 0.0f, stillS = 0.0f;
+        bool everMenu = false; // in menu mode at some point of the pass
+        float clickAt[8] = {};
+        int clickN = 0;        // recent FPS clicks (ring of hint-clock times)
+        // last frame's values, for edges (primed = they hold a frame)
+        bool primed = false;
+        int fpsClicksPrev = 0, selPrev = -1, timeIdxPrev = 0;
+        double lookFactsPrev = 0.0;
+        bool pausedPrev = false, reversePrev = false, padMenuPrev = false;
+        bool winPrev[4] = {};
+        float azPrev = 0.0f, elPrev = 0.0f;
+        // the slot
+        int cur = 0;           // the hint on screen (0 = none)
+        float curS = 0.0f;     // seconds up
+        float alpha = 0.0f;
+        bool leaving = false;  // fading out
+        const char *leaveHow = "";
+        float gateS = -1.0f;   // seconds since its gate was met while up (-1 = not met)
+        bool forced = false;   // `hints force`: pinned, full alpha, no rules
+        int preempt = 0;       // shown as soon as the slot is free, no gap (hint 6 answering two clicks)
+        float freeAt = -1e9f;  // hint clock when the slot last emptied
+        int offers[kHintCount + 1] = {};
+        float restUntil[kHintCount + 1] = {};
+        bool retired[kHintCount + 1] = {}; // its gate met before it ever showed
+        bool postFired[kHintCount + 1] = {};
+        float upS[kHintCount + 1] = {};    // seconds on screen in total (hints 9 / 10: done at kHintMenuShowS)
+        int place = 0;         // 0 bottom centre, 1 above the caption, 2 above LeftPanel, 3 above RightPanel
+        std::string seen;      // the hints shown, in order: "1,6,7"
+        std::vector<HintLogEntry> log;
+    } hint_;
+    bool hintsHarnessOn_ = false; // `hints on` (a harness run keeps hints off otherwise)
+    int hintsPass_ = -1;          // -1 undecided (first frame), 0 none, 1 a pass running, 2 complete
+    // Signals the movement block (recordCompute) and the input paths leave for hintsTick.
+    bool hintMoveIn_ = false, hintBoostIn_ = false, hintZoomIn_ = false, hintInputIn_ = false;
+    float hintClimbM_ = 0.0f;
+    float harnessScrollY_ = 0.0f;   // harness `mouse scroll dy=`: wheel notches for the next frame's zoom
+    bool introCaptionBuilt_ = false; // buildIntroOverlay declared CineCaption this frame
+    bool hintDrawnPrev_ = false;     // HintPopup declared last frame (its Clay box is that layout's)
+    int hintDrawnPrevN_ = 0;
+    char hintKeyBuf_[4][24] = {};    // this frame's keycap labels (Clay reads them after buildUI)
+    struct HintPart
+    {
+        const char *s;
+        bool key;
+    };
+    void hintsReset();                       // a new pass (an opening's first frame, `hints reset|on`)
+    void hintsPrime();                       // the edges' last-frame values from now
+    void hintsNoteFps(bool on, FpsWhy why);  // fpsSet: the mode's edges (left by Tab / right click, returned)
+    void hintsTick(const UIInput &inp, float dt); // buildUI, after the look block: gates, signals, the scheduler
+    void buildHints(const UIInput &inp, UIRenderer &ui);
+    bool hintMenuMode() const;               // menu mode as the hints see it (a pad player: the virtual cursor)
+    bool hintSatAtCentre() const;
+    int hintParts(int n, bool pad, bool menu, HintPart *out, char (*keys)[24]) const; // keycaps and text
+    std::string hintText(int n, bool pad, bool menu) const;
+    nlohmann::json hintsStateJson() const;
+    harness::Status harnessHints(harness::Active &a);
 
     // Fine (slow) movement mode — flipped by KB_MOVE_FINE (dispatchKeyAction). A toggle rather
     // than a held modifier (unlike KB_MOVE_BOOST): holding a stick-click down while also using

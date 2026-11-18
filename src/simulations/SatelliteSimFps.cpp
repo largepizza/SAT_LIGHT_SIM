@@ -76,6 +76,7 @@ void SatelliteSim::fpsSet(bool on, FpsWhy why)
         return;
     fpsMode = on;
     fpsLastWhy_ = why;
+    hintsNoteFps(on, why); // the hints' gates: left by Tab / a right click, back to FPS mode (SatelliteSimHints.cpp)
     if (on)
     {
         if (why == FpsWhy::Tab)
@@ -272,7 +273,7 @@ harness::Status SatelliteSim::harnessFps(harness::Active &a)
     return harness::Status::Done;
 }
 
-// ── Harness: mouse move dx= dy= [frames=1] | mouse click left|right ───────────────────────────────────────────
+// ── Harness: mouse move dx= dy= [frames=1] | mouse click left|right | mouse scroll dy= ──────────────────────────
 // move: dx / dy pixels a frame for `frames` frames, consumed by the FPS look (menu mode: by nothing, as a free
 // cursor's motion). click: the button down for one frame and up the next, through App's button state, so the
 // press reaches the same code a real one does in the current mode (FPS: the centre pick / the exit; menu: the UI
@@ -339,6 +340,21 @@ harness::Status SatelliteSim::harnessMouse(harness::Active &a)
         r["message"] = "mouse click " + b + (fpsMode ? " (fps)" : " (menu)");
         return harness::Status::Done;
     }
-    a.error = "mouse move dx= dy= [frames=1] | mouse click left|right";
+    if (sub == "scroll")
+    {
+        // Wheel notches (+ = away from you: zoom in) for the next frame's FOV zoom, through buildUI's wheel path (the
+        // pointer over the UI eats it, as a real wheel; FPS mode's pointer is never over it).
+        if (a.frame == 0)
+        {
+            a.scratch["fov0"] = camera.fovYDeg;
+            harnessScrollY_ = (float)c.num("dy", 1.0);
+            return harness::Status::Pending;
+        }
+        r["fov_before_deg"] = a.scratch["fov0"];
+        r["fov_deg"] = camera.fovYDeg;
+        r["message"] = "mouse scroll: fov " + std::to_string(camera.fovYDeg).substr(0, 6) + " deg";
+        return harness::Status::Done;
+    }
+    a.error = "mouse move dx= dy= [frames=1] | mouse click left|right | mouse scroll dy=";
     return harness::Status::Error;
 }

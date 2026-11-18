@@ -1564,6 +1564,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         updateIntro(dt);
     }
     boostHeldNow = false;
+    hintMoveIn_ = hintBoostIn_ = false; // (the hints' movement signals: levels, set below while the input is held)
     if (win && !consoleOpen_ && !textEditing() && !cineActive())
     {
         bool boost = (win && glfwGetKey(win, keybindings[KB_MOVE_BOOST].key) == GLFW_PRESS) || gpHeld(KB_MOVE_BOOST) ||
@@ -1597,6 +1598,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         right = glm::clamp(right + gpMoveRight, -1.0f, 1.0f);
         fwd = glm::clamp(fwd + harnessMove_.x, -1.0f, 1.0f); // (harness: held input through the real movement code)
         right = glm::clamp(right + harnessMove_.y, -1.0f, 1.0f);
+        hintMoveIn_ = fwd != 0.0f || right != 0.0f; // the merged input (keys, the stick, the harness): the hints' `moved`
         // Cinematic mode (latched): the input is EASED, so movement starts and stops gradually (a camera operator's
         // dolly, not a switch). Time constants: ~0.9 s up to speed, ~0.6 s to rest. Off: the raw input, as always.
         auto cineEase = [&](float &sm, float target, float tauUp = 0.9f, float tauDown = 0.6f)
@@ -1659,6 +1661,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         float lowerAmt = std::max((glfwGetKey(win, keybindings[KB_LOWER_ELEV].key) == GLFW_PRESS || gpHeld(KB_LOWER_ELEV)) ? 1.0f : 0.0f, gpElevLower);
         raiseAmt = std::max(raiseAmt, std::max(harnessMove_.z, 0.0f));
         lowerAmt = std::max(lowerAmt, std::max(-harnessMove_.z, 0.0f));
+        hintBoostIn_ = boost && (hintMoveIn_ || raiseAmt > 0.0f || lowerAmt > 0.0f); // the hints' `boosted`
         {
             const float vert = cineMomentum(cineSmVert, raiseAmt - lowerAmt); // (cinematic mode: momentum like WASD)
             raiseAmt = std::max(vert, 0.0f);
@@ -1685,6 +1688,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             // ground, and never go below it.
             const float floorH = std::max(0.0f, moveGround);
             obsHeightOffset = std::max(obsHeightOffset, floorH);
+            const float hintH0 = obsHeightOffset; // (the hints' `climbed`: height changed by this input)
             // With the horizon free (auto-level off, or above its height) Q / E move along the CAMERA's up, like roll
             // turns on there (the user's call, issue_20261115_133412: from orbit looking down, Q / E slid nothing
             // across the screen, only zoomed the Earth). Auto-levelling, the pure altitude move as before. Between
@@ -1712,6 +1716,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                     camSetLookDir(heldLook);
                 obsHeightOffset = (float)std::clamp(r - R, (double)floorH, (double)kMaxObsHeightM);
             }
+            hintClimbM_ += std::fabs(obsHeightOffset - hintH0);
         }
 
         // Z / C: roll, only while the horizon is free (above the auto-level height, or auto-level off): below it the
@@ -1728,6 +1733,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // those are movement-speed modifiers, not a zoom concept.
         bool zoomIn = (glfwGetKey(win, keybindings[KB_ZOOM_IN].key) == GLFW_PRESS) || gpHeld(KB_ZOOM_IN);
         bool zoomOut = (glfwGetKey(win, keybindings[KB_ZOOM_OUT].key) == GLFW_PRESS) || gpHeld(KB_ZOOM_OUT);
+        hintZoomIn_ = hintZoomIn_ || zoomIn || zoomOut; // (the hints' `zoomed`; the wheel sets it in buildUI)
         if (zoomIn || zoomOut || (cinematicLatched && cineSmZoom != 0.0f))
         {
             constexpr float kZoomRatePerSec = 0.6f; // e-folds/s: ~40 deg/s at 70 deg, as before
@@ -8986,6 +8992,7 @@ void SatelliteSim::updateIntro(float dt)
         // window has the focus; under the harness the mode is logic only), its hint facts from zero.
         fpsFacts_ = FpsFacts{};
         fpsSet(true, FpsWhy::Intro);
+        hintsReset(); // the hints' gates from zero: every opening (a first run's, a Replay Intro) runs a pass
         introToolbarsShown = false;
         introBasisValid = true;
     }
@@ -9064,10 +9071,8 @@ void SatelliteSim::finishIntro(bool cutShort)
 {
     showIntro = false;
     introToolbarsShown = true;
-    // The controls are taught by the tutorial (SatelliteSimTutorial.cpp), once; a replay of the intro
-    // does not re-run it (the Display tab has its own Replay Tutorial).
-    if (!tutorialDone && !tutActive && !introIsReplay && !harnessRunner_)
-        startTutorial();
+    // The controls are taught by the hints (SatelliteSimHints.cpp), which run on through the captions' end; the old
+    // card tutorial no longer starts on its own (Settings > Display > Replay Tutorial still shows it).
     tutAutoChecked = true;
 
     // UC1 mechanisms 2+3: only decide anything when the captions played to the end (cut short = no full caption
@@ -9738,6 +9743,7 @@ bool SatelliteSim::trackShownOn() const { return followActive ? followAimLock : 
 // out of onKey (used by both the keyboard callback and pollGamepad's button edge-detect).
 void SatelliteSim::dispatchKeyAction(int bindIdx, bool fromPad)
 {
+    hintInputIn_ = true; // (the hints' idle clock: a key or a pad button)
     // A hotkey that opens a window or a text entry ends the FPS mode (the window wants the pointer).
     const uint32_t windowsBefore = fpsWindowMask();
     struct FpsWindowCheck
@@ -9902,6 +9908,7 @@ void SatelliteSim::onKey(GLFWwindow *w, int key, int action)
         return;
 
     lastInputWasGamepad = false; // UC4: any keypress means the player is at the keyboard
+    hintInputIn_ = true;         // (the hints' idle clock)
 
     // F11: toggle fullscreen. Unlike every other key, not folded into the keybindings dispatch table
     // (a player stuck in a badly scaled/positioned window must always be able to fix it).

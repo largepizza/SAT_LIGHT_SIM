@@ -16,7 +16,7 @@ Checks, per dump:
   * no drawn text is cut sideways by its scissor (a cut at a scroll view's top / bottom edge is allowed), lies off
     the screen, or overlaps other text under the same scissor (`ui dump`'s own checks);
   * the HUD elements in HUD_IDS (bottom panels, selection chip, follow bar, "Go to again" chip, the intro's caption
-    band) do not overlap each other and stay on screen.
+    band, the first run's hint popup) do not overlap each other and stay on screen.
 Standard library only, except `sheets`.
 """
 import argparse
@@ -38,7 +38,7 @@ WIN_NAMES = {0: "settings", 1: "controls", 2: "trace", 3: "viewer", 4: "info", 5
 # HUD elements that must not overlap each other (the bottom panels, the out-of-view selection chip, follow mode's bar,
 # the "Go to ... again" chip, the cinematic bar)
 HUD_IDS = ("LeftPanel", "RightPanel", "HudPopupPanel", "SelSatChip", "FollowAgainBtn", "FollowHud", "CineHud",
-           "CineCaption")
+           "CineCaption", "HintPopup")
 # The view's starting moment (gen_script's header), restored after a view that moves the observer (the intro).
 SCENE = ["observer lat=34.05 lon=-118.25 agl=10", "time set 2036-11-22T02:30:00Z", "time pause",
          "camera az=270 el=15 fov=70"]
@@ -92,6 +92,19 @@ def views():
          ["intro skip", "fps off", "wait 5"] + SCENE + ["wait settle 20"]),
         ("intro_caption_menu", ["intro play at=17", "wait 3", "ui key tab", "wait 30", "intro state"],
          ["intro skip", "fps off", "wait 5"] + SCENE + ["wait settle 20"]),
+        # The first run's hints (2026-11-17, HintPopup; pinned with `hints force`): the longest bottom hint (1 in menu
+        # mode) over the longest caption with the toolbars back; 6 over it in FPS mode (toolbars held back); 9 / 10
+        # above their toolbars with the outline, also with a caption showing (9 may give way to the caption stack);
+        # a pad hint's keycaps (4: Hold [LS]).
+        ("hint_caption_menu", ["hints on", "intro play at=17", "wait 3", "ui key tab", "hints force 1", "wait 30", "hints state"],
+         ["hints off", "intro skip", "fps off", "wait 5"] + SCENE + ["wait settle 20"]),
+        ("hint_caption", ["hints on", "intro play at=17", "wait 3", "hints force 6", "wait 30", "hints state"],
+         ["hints off", "intro skip", "fps off", "wait 5"] + SCENE + ["wait settle 20"]),
+        ("hint_9_caption", ["hints on", "intro play at=17", "wait 3", "ui key tab", "hints force 9", "wait 30", "hints state"],
+         ["hints off", "intro skip", "fps off", "wait 5"] + SCENE + ["wait settle 20"]),
+        ("hint_9", ["hints on", "hints force 9", "wait 4", "hints state"], ["hints off"]),
+        ("hint_10", ["hints on", "hints force 10", "wait 4", "hints state"], ["hints off"]),
+        ("hint_pad", ["hints on pad=1", "hints force 4", "wait 4", "hints state"], ["hints off pad=0"]),
     ]
     return v
 

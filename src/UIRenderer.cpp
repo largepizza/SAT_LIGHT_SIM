@@ -28,6 +28,17 @@
 #include <vector>
 #include <string>
 
+// An element declared in the frame being built gets generation = context generation + 1 (Clay__OpenElement); one
+// not declared yet this frame keeps an older one. The box is the last layout's (this frame's is computed at the end).
+bool UIRenderer::declaredThisFrame(Clay_ElementId id, Clay_BoundingBox* lastBox) {
+    const Clay_LayoutElementHashMapItem* m = Clay__GetHashMapItem(id.id);
+    if (m == &Clay_LayoutElementHashMapItem_DEFAULT || m->generation <= Clay_GetCurrentContext()->generation)
+        return false;
+    if (lastBox)
+        *lastBox = m->boundingBox;
+    return true;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // init
 // ─────────────────────────────────────────────────────────────────────────────
