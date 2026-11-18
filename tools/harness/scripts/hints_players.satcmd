@@ -1,22 +1,34 @@
-# The first run's hints (2026-11-17, SatelliteSimHints.cpp; docs/subsystems/ui.md "Hints"): six scripted players, one
-# launch, 20 sim steps / s (the hint clocks are frame time, as the caption clock):
+# The hints (2026-11-17, SatelliteSimHints.cpp; docs/subsystems/ui.md "Hints"): scripted players, one launch,
+# 20 sim steps / s (the hint clocks are frame time, as the caption clock):
 #   python tools/harness/run.py tools/harness/scripts/hints_players.satcmd --fixed-dt 0.05 --quiet
 # Read: res.py <run> --errors (the expects); res.py <run> -c hints -g hints.seen -g hints.showing_n -g hints.log
-# Each player starts a pass with `intro play` (a Replay Intro: the gates from zero) and asserts the order of the hints
-# seen (`state.hints.seen`) at checkpoints placed well after the step they wait for (a `wait 40` is 2 s of hint time
-# when the app draws 20 frames a second or more; the 2-s wall cap only shortens it on a slower one).
+# Each player starts a pass with `intro play` (a Replay Intro: the gates from zero, the contextual ones too) and
+# asserts the order of the hints seen (`state.hints.seen`) at checkpoints placed well after the step they wait for
+# (a `wait 40` is 2 s of hint time when the app draws 20 frames a second or more; the 2-s wall cap only shortens it
+# on a slower one).
 #   1 Still      does nothing: 1 (times out after 20 s), then 6 (no input 6 s), still up when the captions end
-#                (never times out then); Tab: 7; a selection: 9, 10, 8; Tab: 2 (stays past 20 s); movement: complete
-#   2 Explorer   looks and flies before beat 2: no 1 or 2; 3, then (after climbing) 4 from the 4-s streak; boost; flying
-#                on to the captions' end: 6; Tab: 7; a selection: 9, 10, 8
+#                (never times out then); Tab: 11 (right-drag, times out), then 7; a selection: 9, 10, 8; Tab: 2
+#                (stays past 20 s); movement: complete, then 4 (boost) 1 s after 2 leaves
+#   2 Explorer   looks and flies before beat 2: no 1 or 2; 4 (boost) at beat 2; boost: 3; climbing, flying on to the
+#                captions' end: 6; Tab: 11; a right-drag: 7; a selection: 9, 10, 8
 #   3 Clicker    looks, then two FPS clicks on empty sky within 5 s after beat 2: 6 on the second click (it takes the
 #                slot from 2, which showed at beat 2)
+#   8 Mover      looks before beat 2: 2; moves: 4 kHintHandoffS after 2 leaves; boosts: 3. Again ignoring 4: it times
+#                out, then 3
+#   7 Each hint  1 left by looking; with no opening 6, 11, 7, 9 (Pause), 10 (Missions), 8, 2, then 4, 3 and 5 (the
+#                wheel) once more after completion; gates met first retire 5 and 9
 #   4 Veteran    looks, moves, Tab and a selection before beat 2: none of 1, 2, 6, 7; 9, 10, 8
-#   5 Returning  display.tutorial_done true, `hints on`, no replay: no hint at all
+#   5 Returning  display.tutorial_done true and every contextual gate met, `hints on`, no replay: no hint at all
+#   9 Contextual a returning player never taught the contextual hints (pass off): 13 Go to (held back by an open
+#                window, gone with display.hints off), 12 roll above the auto-level height, 15 star lock past GEO,
+#                14 coronagraph after staring at the Sun (by the View popup's toggle), then one per song gap: 16 Sky
+#                events (a real gap: `audio music end`), 17 Missions (ignored: times out), 18 Weather, 19 the picture
+#                keys (F12), 17 again; then nothing (all done)
 #   6 Gamepad    the pad's labels (pad=1) in every hint's text; Start = menu mode (the virtual cursor)
-#   7 Each hint  1 left by looking; with no opening 6, 7, 9 (Pause), 10 (Missions), 8, 2, then 3 and 5 (the wheel)
-#                once more after completion; gates met first retire 5 and 9
-# Waits are frames at 0.05 s each.
+# Waits are frames at 0.05 s each. A small window and the Low preset keep the app above 20 frames a second (a wait
+# capped at 2 s of wall time would shorten the hint clock and break the checkpoints).
+window 960x540
+preset Low
 time set 2036-11-22T02:30:00Z
 wait 5
 expect state.hints.enabled false
@@ -42,23 +54,30 @@ expect state.hints.showing_n 6
 hints state
 ui key tab
 wait 40; wait 40; wait 40; wait 40
+# (menu mode for the first time: the right-drag look before 7)
 hints state
-expect state.hints.seen 1,6,7
+expect state.hints.seen 1,6,11
+expect state.hints.showing_n 11
+expect state.hints.showing.text "Hold the right mouse button and drag to look around"
+wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40
+# (11 ignored: out after 20 s, 3 s gap, then 7, which never times out)
+hints state
+expect state.hints.seen 1,6,11,7
 expect state.hints.showing_n 7
 select const "Starlink Gen1"
 wait 40; wait 40; wait 40; wait 40
-expect state.hints.seen 1,6,7,9
+expect state.hints.seen 1,6,11,7,9
 expect state.hints.showing_n 9
 wait 40; wait 40; wait 40; wait 40; wait 40; wait 40
-expect state.hints.seen 1,6,7,9,10
+expect state.hints.seen 1,6,11,7,9,10
 expect state.hints.showing_n 10
 wait 40; wait 40; wait 40; wait 40; wait 40; wait 40
 hints state
-expect state.hints.seen 1,6,7,9,10,8
+expect state.hints.seen 1,6,11,7,9,10,8
 expect state.hints.showing_n 8
 ui key tab
 wait 40; wait 40; wait 40; wait 40
-expect state.hints.seen 1,6,7,9,10,8,2
+expect state.hints.seen 1,6,11,7,9,10,8,2
 expect state.hints.showing_n 2
 wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40
 # (2 in case c never times out: still up after 24 s)
@@ -73,8 +92,10 @@ hints state
 expect state.hints.complete true
 expect display.tutorial_done true
 wait 40; wait 40
+# (moved: 2 fades 2 s after, then boost kHintHandoffS later, once more after completion)
 hints state
-expect state.hints.showing_n 0
+expect state.hints.seen 1,6,11,7,9,10,8,2,4
+expect state.hints.showing_n 4
 
 # ── 2 Explorer ──────────────────────────────────────────────────────────────────────────────────────────────
 set display.tutorial_done false
@@ -89,36 +110,44 @@ wait 40
 expect state.hints.gates.looked true
 expect state.hints.gates.moved true
 wait 40; wait 40; wait 40
-# (beat 2 at 15.22 s: moving now, 3)
+# (beat 2 at 15.22 s: moved, so boost first)
 hints state
-expect state.hints.seen 3
-inertial move fwd=1 up=1
-wait 40; wait 40; wait 40
-expect state.hints.gates.climbed true
-inertial move fwd=1
-wait 40; wait 40; wait 40
-hints state
-expect state.hints.seen 3,4
+expect state.hints.seen 4
 expect state.hints.showing_n 4
 inertial move fwd=1 boost=1
 wait 20
 inertial move fwd=1
 expect state.hints.gates.boosted true
+wait 40; wait 40; wait 40
+# (boosted: 4 out 2 s after, 3 s gap, then rise / descend)
+hints state
+expect state.hints.seen 4,3
+expect state.hints.showing_n 3
+inertial move fwd=1 up=1
+wait 40; wait 40; wait 40
+expect state.hints.gates.climbed true
+inertial move fwd=1
 wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40
 wait 40; wait 40; wait 40
 # (flying on: nothing until the captions end at 53.27 s, then 6)
 hints state
 expect state.hints.live.captions_ended true
-expect state.hints.seen 3,4,6
+expect state.hints.seen 4,3,6
 inertial move
 ui key tab
 wait 40; wait 40; wait 40; wait 40
-expect state.hints.seen 3,4,6,7
+expect state.hints.seen 4,3,6,11
+expect state.hints.showing_n 11
+inertial drag dx=8 dy=0 frames=20
+wait 40; wait 40; wait 40; wait 40
+expect state.hints.gates.drag_looked true
+expect state.hints.seen 4,3,6,11,7
+expect state.hints.showing_n 7
 select const "Starlink Gen1"
 wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40
 wait 40; wait 40; wait 40; wait 40
 hints state
-expect state.hints.seen 3,4,6,7,9,10,8
+expect state.hints.seen 4,3,6,11,7,9,10,8
 expect state.hints.complete true
 
 # ── 3 Clicker ───────────────────────────────────────────────────────────────────────────────────────────────
@@ -145,6 +174,50 @@ hints state
 expect state.hints.showing_n 6
 expect state.hints.seen 2,6
 
+# ── 8 Mover: 2, then boost 1 s after 2 leaves, then rise / descend ─────────────────────────────────────────────
+set display.tutorial_done false
+select none
+intro play at=13
+wait 3
+camera az=270 el=15
+mouse move dx=30 dy=0 frames=20
+wait 40
+# (beat 2 at 15.22 s: looked, not moved: 2)
+expect state.hints.seen 2
+expect state.hints.showing_n 2
+inertial move fwd=1
+wait 30
+inertial move
+wait 40; wait 40
+hints state
+expect state.hints.gates.moved true
+expect state.hints.seen 2,4
+expect state.hints.showing_n 4
+expect state.hints.log.0.how gate
+inertial move fwd=1 boost=1
+wait 10
+inertial move
+wait 40; wait 40; wait 40
+hints state
+expect state.hints.seen 2,4,3
+expect state.hints.showing_n 3
+# 8b ignoring boost: 4 times out, then 3 (its hint had its turn)
+set display.tutorial_done false
+intro play at=13
+wait 3
+mouse move dx=30 dy=0 frames=20
+wait 40
+inertial move fwd=1
+wait 30
+inertial move
+wait 40; wait 40
+expect state.hints.seen 2,4
+wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40
+hints state
+expect state.hints.log.1.how timeout
+expect state.hints.seen 2,4,3
+expect state.hints.showing_n 3
+
 # ── 7 Each hint: shown when eligible, gone 2 s + the fade after its gate, retired when its gate came first ─────
 # 7a hint 1 left by looking (an opening again)
 set display.tutorial_done false
@@ -157,14 +230,19 @@ wait 40; wait 40
 expect state.hints.gates.looked true
 expect state.hints.showing_n 0
 expect state.hints.log.0.how gate
-# 7b no opening (the captions count as ended): 6, 7, 9 (left by Pause), 10 (left by opening Missions), 8, 2, then
-#    the pass completes and 3 / 5 fire once more (5 left by the wheel)
+# 7b no opening (the captions count as ended): 6, 11 (left by a right-drag), 7, 9 (left by Pause), 10 (left by
+#    opening Missions), 8, 2, then the pass completes and 4 / 3 / 5 fire once more (5 left by the wheel)
 intro skip
 hints reset
 wait 3
 expect state.hints.showing_n 6
 ui key tab
-wait 40; wait 40; wait 40
+wait 40; wait 40; wait 40; wait 40
+# (6 met by Tab: out 2 s after, 3 s gap, then 11)
+expect state.hints.showing_n 11
+inertial drag dx=8 dy=0 frames=20
+wait 40; wait 40; wait 40; wait 40
+expect state.hints.log.1.how gate
 expect state.hints.showing_n 7
 select const "Starlink Gen1"
 wait 40; wait 40; wait 40
@@ -173,13 +251,13 @@ ui key space
 wait 3
 ui key space
 wait 40; wait 40; wait 40
-expect state.hints.log.2.how gate
+expect state.hints.log.3.how gate
 expect state.hints.showing_n 10
 ui key m
 wait 3
 ui close missions
 wait 40; wait 40; wait 40
-expect state.hints.log.3.how gate
+expect state.hints.log.4.how gate
 expect state.hints.showing_n 8
 ui key tab
 wait 40; wait 40; wait 40
@@ -189,7 +267,10 @@ wait 30
 inertial move
 expect state.hints.complete true
 wait 40; wait 40; wait 40
-# (complete: 3, 4, 5 and 8 may fire once more; moved, so 3 comes first)
+# (complete: 3, 4, 5 and 8 may fire once more; moved, so boost comes first, then 3)
+expect state.hints.showing_n 4
+hints set boosted
+wait 40; wait 40; wait 40
 expect state.hints.showing_n 3
 hints set climbed
 wait 40; wait 40; wait 40
@@ -199,7 +280,7 @@ wait 40; wait 40
 expect state.hints.gates.zoomed true
 expect state.hints.showing_n 0
 hints state
-expect state.hints.seen 6,7,9,10,8,2,3,5
+expect state.hints.seen 6,11,7,9,10,8,2,4,3,5
 # 7c gates met before their hint: retired, never shown
 hints reset
 mouse scroll dy=1
@@ -231,16 +312,167 @@ hints state
 expect state.hints.seen 9,10,8
 expect state.hints.retired [1,2,6,7]
 
-# ── 5 Returning ─────────────────────────────────────────────────────────────────────────────────────────────
+# ── 5 Returning (every contextual gate met: nothing at all) ─────────────────────────────────────────────────
 ui key tab
 intro skip
 set display.tutorial_done true
+hints set rolled
+hints set gone_to
+hints set coronagraph
+hints set star_lock
+hints set sky_events
+hints set missions
+hints set weather
+hints set screenshot
 hints on
 wait 40; wait 40; wait 40; wait 40; wait 40
 hints state
 expect state.hints.pass off
+expect state.hints.saved.all_done true
 expect state.hints.showing_n 0
 expect state.hints.log []
+
+# ── 9 Contextual: a returning player never taught them (pass off; `hints reset` = untaught) ───────────────────
+fps off
+hints reset
+hints on
+expect state.hints.pass off
+expect state.hints.saved.all_done false
+# 9a Go to: held back while a window is open, gone with display.hints off, back with it on, left by G
+select const "International Space Station"
+ui open settings
+wait 40; wait 40
+expect state.hints.live.window_open true
+expect state.hints.showing_n 0
+ui close settings
+wait 20
+expect state.hints.showing_n 13
+expect state.hints.showing.text "[G] to go to it"
+set display.hints false
+wait 3
+expect state.hints.enabled false
+expect state.hints.showing_n 0
+set display.hints true
+wait 20
+expect state.hints.showing_n 13
+ui key g
+wait 40; wait 40
+hints state
+expect state.hints.saved.gates.gone_to true
+expect display.hint_gates.gone_to true
+expect state.hints.showing_n 0
+follow off
+select none
+wait 5
+# 9b roll: the horizon free above the auto-level height (1000 km)
+observer lat=34.05 lon=-118.25 alt=1500000
+camera az=270 el=15
+wait 40; wait 40
+expect state.hints.live.level_active false
+expect state.hints.showing_n 12
+expect state.hints.showing.text "[Z] / [C] to roll"
+inertial move roll=1
+wait 10
+inertial move
+wait 40; wait 40
+expect state.hints.saved.gates.rolled true
+expect state.hints.showing_n 0
+# 9c the star lock past GEO (outlines the Movement button)
+observer lat=34.05 lon=-118.25 alt=40000000
+camera az=270 el=15
+wait 40; wait 40
+expect state.hints.live.above_geo true
+expect state.hints.showing_n 15
+hints state
+inertial on
+wait 40; wait 40
+expect state.hints.saved.gates.star_lock true
+expect state.hints.showing_n 0
+inertial off
+# 9d the coronagraph: the Sun within 10 deg of the centre for 4 s (outlines the View button; left by its toggle)
+observer lat=34.05 lon=-118.25 agl=10
+time set 2036-11-22T20:00:00Z
+camera look sun
+wait 40
+expect state.hints.live.sun_deg 0 tol=1
+wait 40; wait 40
+expect state.hints.showing_n 14
+hints state
+ui click HudViewBtn
+wait 3
+ui click HudCoronagraph:0
+wait 40; wait 40
+expect state.hints.saved.gates.coronagraph true
+expect state.hints.showing_n 0
+ui click HudCoronagraph:0
+wait 3
+ui click HudViewBtn
+time set 2036-11-22T02:30:00Z
+camera az=270 el=15
+wait 40; wait 40
+# 9e one per song gap: a real one first (the track ended), then forced ones (`hints gap`)
+audio music state
+hints state
+expect state.hints.live.music_audible true
+audio music end
+wait 5
+hints state
+expect state.hints.live.song_gap true
+expect state.hints.showing_n 16
+ui open skyevents
+wait 40; wait 40
+expect state.hints.saved.gates.sky_events true
+ui close skyevents
+wait 40; wait 40
+# (the gap's one hint has been offered: nothing more in it)
+expect state.hints.showing_n 0
+hints gap
+wait 5
+expect state.hints.showing_n 17
+wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40
+# (17 ignored: out after 20 s)
+hints state
+expect state.hints.showing_n 0
+hints gap
+wait 40
+expect state.hints.showing_n 18
+ui open weather
+wait 40; wait 40
+expect state.hints.saved.gates.weather true
+ui close weather
+wait 40; wait 40
+hints gap
+wait 5
+expect state.hints.showing_n 19
+expect state.hints.showing.text "[F12] for a screenshot, [F8] for a high-resolution photo"
+hints state
+ui key f12
+wait 40; wait 40
+expect state.hints.saved.gates.screenshot true
+expect state.hints.showing_n 0
+# (17 rests 30 s after its timeout)
+wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40; wait 40
+hints gap
+wait 5
+# (17 again: its second and last offer)
+expect state.hints.showing_n 17
+ui open missions
+wait 40; wait 40
+expect state.hints.saved.gates.missions true
+ui close missions
+wait 40; wait 40
+hints gap
+wait 40
+expect state.hints.showing_n 0
+expect state.hints.saved.all_done true
+hints state
+expect state.hints.seen 13,13,12,15,14,16,17,18,19,17
+# 9f no audible music: the silence clock runs (a "gap" every kHintNoMusicS)
+audio music pause
+wait 40
+expect state.hints.live.music_audible false
+expect state.hints.live.silent_s 2 tol=0.5
+audio music play
 
 # ── 6 Gamepad ───────────────────────────────────────────────────────────────────────────────────────────────
 set display.tutorial_done false
@@ -252,6 +484,9 @@ expect state.hints.texts.4 "Hold [LS] to go faster"
 expect state.hints.texts.5 "[LB] / [RB] to zoom"
 expect state.hints.texts.6 "[Start] for the cursor"
 expect state.hints.texts.8 "[Start] to look around again"
+# (no pad binding for roll, Go to or the picture keys by default: the keyboard's keys)
+expect state.hints.texts.12 "[Z] / [C] to roll"
+expect state.hints.texts.13 "[G] to go to it"
 expect state.hints.live.mode fps
 pad start
 wait 3
