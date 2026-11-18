@@ -2512,6 +2512,21 @@ nlohmann::json SatelliteSim::wildfiresJson(bool world)
                         {"palls", smokePalls.size()},       {"on", smokeLayerAny},
                         {"max_tau", smokeLayerMaxTau},      {"top_m", smokeLayerTopM},
                         {"half_km", smokeLayerHalfM / 1e3}, {"build_ms", smokeLayerBuildMs}};
+    {
+        // the layer over the eye: its column (550 nm), the part above the eye, its mid height and sigma (m), and the Sun's
+        // transmittance to the eye through it (direct + scattered on, as the streaks are lit)
+        const glm::dvec3 eyeE = glm::normalize(glm::dvec3(obsDir)) * (double)obsEyeRadiusM();
+        const glm::dvec3 lay = smokeLayerColumnCpu(eyeE);
+        const glm::dvec3 si = sunDirEciAt(t);
+        const double gr = earthRotationAngle(t);
+        const glm::dvec3 sunE = glm::normalize(glm::dvec3(si.x * std::cos(gr) + si.y * std::sin(gr),
+                                                          -si.x * std::sin(gr) + si.y * std::cos(gr), si.z));
+        double colA = 0.0;
+        const glm::dvec3 Ts = smokeLayerSunTransmitCpu(eyeE, sunE, std::max((double)wildfireSmokeSpectral, 0.0) / 0.6, &colA);
+        o["smoke_layer"]["eye"] = {{"column", lay.x}, {"above", colA}, {"mid_m", lay.y}, {"sigma_m", lay.z},
+                                   {"sun_elev_deg", glm::degrees(std::asin(std::clamp(glm::dot(glm::normalize(eyeE), sunE), -1.0, 1.0)))},
+                                   {"sun_T_rgb", {Ts.x, Ts.y, Ts.z}}};
+    }
     o["ground_snap"] = fireGroundPipe != VK_NULL_HANDLE;
     nlohmann::json a = nlohmann::json::array();
     for (size_t i = 0; i < firesNow.size() && i < 12; ++i)

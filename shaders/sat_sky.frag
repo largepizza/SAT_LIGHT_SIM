@@ -382,7 +382,7 @@ const uint kSkySmokePallBase = 1024u + 32u + 205u;
 // The Sun's light at a point under wildfire smoke (2026-10-23): the smoke Gaussians' columns toward the Sun, spectral.
 // p and the Gaussians' centres are relative to the eye (the list's frame). The first 96 of the range (the CPU lists the
 // nearest fires first).
-vec3 smokeSunTransmit(vec3 pRel, vec3 sunDir)
+vec3 smokeSunTransmit(vec3 pRel, vec3 sunDir, float muS)
 {
     uint f = smokeFirst(selCount), n = min(smokeCount(selCount), 96u);
     float tau = 0.0;
@@ -396,8 +396,9 @@ vec3 smokeSunTransmit(vec3 pRel, vec3 sunDir)
         if (dot(cx, cx) > 12.5 * s2) continue;
         tau += smokeColumn(x, sunDir, d.ia, d.ib, d.ia.w * d.c.w);
     }
-    // the smoke layer's palls (2026-11-17, SatelliteSimSmokeLayer.cpp): not in the drawn list, after its side slots;
+    // the smoke layer's pieces (2026-11-17, SatelliteSimSmokeLayer.cpp): not in the drawn list, after its side slots;
     // the first slot's c.x is their count
+    float tauL = 0.0;
     uint np = min(uint(selList[kSkySmokePallBase].c.x), 31u);
     for (uint i = 1u; i <= np; ++i) {
         SkyEngineLight d = selList[kSkySmokePallBase + i];
@@ -406,13 +407,23 @@ vec3 smokeSunTransmit(vec3 pRel, vec3 sunDir)
         vec3  cx  = x + max(tcl, 0.0) * sunDir;
         float s2  = 2.0 / max(min(d.ia.x, min(d.ia.y, d.ia.z)), 1e-30);
         if (dot(cx, cx) > 12.5 * s2) continue;
-        tau += smokeColumn(x, sunDir, d.ia, d.ib, d.ia.w * d.c.w);
+        tauL += smokeColumn(x, sunDir, d.ia, d.ib, d.ia.w * d.c.w);
     }
 #ifdef SKY_SUN_SHADOW
-    return exp(-tau * smokeSpecK(cv2.gnd.y));
+    vec3 Ts = exp(-tau * smokeSpecK(cv2.gnd.y));
 #else
-    return exp(-tau * kSmokeSpec);
+    vec3 Ts = exp(-tau * kSmokeSpec);
 #endif
+    // The layer: its direct beam at the physical Angstrom exponent (smoke_layer.comp) + the light it scatters on down to
+    // the ground: what it took out of the beam x the albedo (aged smoke, blue absorbed: 0.93 / 0.90 / 0.86) x a two-stream
+    // diffuse transmission 1 / (1 + 0.75 (1 - g) tau) (g 0.6; tau between the vertical column and the slant one, their
+    // geometric mean: a low Sun's light is scattered up more). The direct beam alone took a low Sun out of every field
+    // under a haze of ~0.5: black ground at dusk under a grey sky.
+    vec3  tLs = tauL * kSmokeSpec;
+    vec3  dir0 = exp(-tLs);
+    float tauD = tauL * sqrt(max(muS, 0.05));
+    vec3  Tl = dir0 + (vec3(1.0) - dir0) * vec3(0.93, 0.90, 0.86) / (1.0 + 0.3 * tauD);
+    return Ts * Tl;
 }
 const uint kSkyEngineLightBase = 1024u;   // == SatelliteSim::kMaxDustClouds
 const uint kSkyEngineLightMax  = 32u;     // == SatelliteSim::kMaxEngineLights
@@ -6191,7 +6202,7 @@ void main() {
         // (not at night: 1 ms from orbit; not under full cloud shadow: every use of sunSpecTint is x cloudShadowT)
         if ((smokeCount(selCount) > 0u || selList[kSkySmokePallBase].c.x > 0.5) && cloudShadowT > 1e-4 &&
             dot(hitPt, sunDirLocal) > -0.05 * length(hitPt)) {
-            vec3 smT = smokeSunTransmit(hitPt - obsPos, sunDirLocal);
+            vec3 smT = smokeSunTransmit(hitPt - obsPos, sunDirLocal, dot(normalize(hitPt), sunDirLocal));
             sunSpecTint *= smT;
         }
 #endif

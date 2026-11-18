@@ -22,11 +22,12 @@ namespace
 constexpr double kReL = 6371000.0;
 constexpr double kPiL = 3.14159265358979323846;
 // The layer's light (smoke_layer.comp SmokeLayerBuf.opt): aged smoke scatters most of what it intercepts (single-scattering
-// albedo ~0.9 at 550 nm, AERONET over aged boreal / Californian smoke) with a moderate forward peak (HG g ~0.6); the sky's
-// light and the smoke's own multiple scattering are a grey share of the Sun's, which keeps it grey away from the Sun.
+// albedo ~0.9 at 550 nm, AERONET over aged boreal / Californian smoke; less in the blue, smoke_layer.comp kSsaSpec) with a
+// moderate forward peak (HG g ~0.6). The clear sky's light on it is 0.18 of the Sun's (the streaks' share), through the
+// smoke above; the Sun's light the smoke above scattered down is the shader's own term.
 constexpr float kLayerAlbedo = 0.9f;
 constexpr float kLayerG = 0.6f;
-constexpr float kLayerSkyShare = 0.35f;
+constexpr float kLayerSkyShare = 0.18f;
 // Its colour through it: "Smoke spectral" scales the Angstrom exponent, whose default 0.6 keeps the streaks from turning
 // every cloud behind them tan; the layer takes x 1 / 0.6 of it, the physical ~1.6 at the default (aged smoke's 1.4-2):
 // the Sun and the sunset seen through the haze redden as they do through real smoke.
@@ -62,12 +63,17 @@ glm::dvec3 cpuLayerAt(const glm::dvec3 &P)
         const size_t i = (size_t)y * M.W + x;
         const double bt = b * M.tau[i];
         t += bt;
-        z += (bt + b * 1e-6) * M.zm[i];
-        s += (bt + b * 1e-6) * M.sz[i];
-        w += bt + b * 1e-6;
+        z += (bt + b * 1e-9) * M.zm[i];
+        s += (bt + b * 1e-9) * M.sz[i];
+        w += bt + b * 1e-9;
     }
     return glm::dvec3(t, z / w, std::max(s / w, 100.0));
 }
+}
+
+glm::dvec3 smokeLayerColumnCpu(const glm::dvec3 &P)
+{
+    return cpuLayerAt(P);
 }
 
 glm::dvec3 smokeLayerSunTransmitCpu(const glm::dvec3 &P, const glm::dvec3 &sunE, double specS, double *colAbove)
@@ -88,17 +94,21 @@ glm::dvec3 smokeLayerSunTransmitCpu(const glm::dvec3 &P, const glm::dvec3 &sunE,
     const double above = 0.5 * std::erfc((h - layS.y) / (1.41421356 * layS.z));
     const double tauS = layS.x * above / std::sqrt(muE * muE + 4.0 * layS.z / kReL);
     const glm::dvec3 spec(std::pow(0.765, specS), 1.0, std::pow(1.378, specS));   // (smoke.glsl kSmokeSpec ^ s)
-    // + the light the haze scatters on into itself (smoke_layer.comp's two octaves, x the share its own column scatters):
-    // the direct beam alone left a streak in the haze at a low Sun lit by the blue sky only, lavender
+    // + the light the haze scatters on into itself (smoke_layer.comp's two octaves, x the share its own column scatters, and
+    // the Sun's light the smoke above scattered down; the albedo spectral, kSsaSpec): the direct beam alone left a streak
+    // in the haze at a low Sun lit by the blue sky only, lavender
     const glm::dvec3 tS = tauS * spec;
     const double ms = 1.0 - std::exp(-lay.x);
-    return glm::min(glm::exp(-tS) + ms * (0.5 * glm::exp(-0.25 * tS) + 0.25 * glm::exp(-0.0625 * tS)), glm::dvec3(1.0));
+    const glm::dvec3 ssa = (double)kLayerAlbedo * glm::dvec3(1.033, 1.0, 0.956);
+    const glm::dvec3 T = glm::exp(-tS) + ms * ssa * (0.5 * glm::exp(-0.25 * tS) + 0.25 * ssa * glm::exp(-0.0625 * tS)) +
+                         ssa * (glm::dvec3(1.0) - glm::exp(-tS)) * 0.5;
+    return glm::min(T, glm::dvec3(1.0));
 }
 
 void SatelliteSim::createSmokeLayer(VulkanContext &ctx)
 {
     const VkDevice dev = ctx.device;
-    const VkDeviceSize sz = kSmokeLayerHeader + (VkDeviceSize)kSmokeLayerRes * kSmokeLayerRes * sizeof(uint32_t);
+    const VkDeviceSize sz = kSmokeLayerHeader + (VkDeviceSize)kSmokeLayerRes * kSmokeLayerRes * sizeof(glm::uvec2);
     smokeLayerMapped = createMirrored(ctx, sz, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, smokeLayerBuf, smokeLayerMem, false, "smokeLayer");
     if (smokeLayerMapped)
         std::memset(smokeLayerMapped, 0, (size_t)sz);
@@ -278,6 +288,15 @@ void SatelliteSim::smokeLayerBuild(const glm::dvec3 &upIn)
     half = std::min(half, 4000e3);
     const int W = (int)kSmokeLayerRes;
     const double tx = 2.0 * half / W;
+    // Nothing narrower than 2 texels (its mass kept): the trail's young pieces (~20 km) on 20-60 km texels were a peak
+    // one texel wide, which the shader's bilinear read draws as a hard-edged DIAMOND (report shot 2, from 153 km)
+    for (PP &q : pp)
+    {
+        const double a0 = q.sA, b0 = q.sB;
+        q.sA = std::max(q.sA, 2.0 * tx);
+        q.sB = std::max(q.sB, 2.0 * tx);
+        q.peak *= (a0 * b0) / (q.sA * q.sB);
+    }
     static thread_local std::vector<float> sT, sZ1, sZ2;
     sT.assign((size_t)W * W, 0.0f);
     sZ1.assign((size_t)W * W, 0.0f);
@@ -306,7 +325,10 @@ void SatelliteSim::smokeLayerBuild(const glm::dvec3 &upIn)
                 sZ2[k] += (float)(w * z2);
             }
     }
-    uint32_t *tex = reinterpret_cast<uint32_t *>(static_cast<char *>(smokeLayerMapped) + kSmokeLayerHeader);
+    // (two half floats a texel: the column and its mid height, then its thickness. The heights were 8 bits of 40 / 20 m:
+    // a grazing ray through a 2-km layer turns a 40-m step of its middle into a step of the horizon band, which showed
+    // as stair-stepped contours in the haze near the horizon)
+    glm::uvec2 *tex = reinterpret_cast<glm::uvec2 *>(static_cast<char *>(smokeLayerMapped) + kSmokeLayerHeader);
     double top = 0.0, maxTau = 0.0;
     gMap.E = E, gMap.N = N, gMap.U = up, gMap.half = half, gMap.W = W;
     gMap.tau.assign((size_t)W * W, 0.0f);
@@ -317,18 +339,16 @@ void SatelliteSim::smokeLayerBuild(const glm::dvec3 &upIn)
         const double t = sT[k];
         if (!(t > 1e-5))
         {
-            tex[k] = 0u;
+            tex[k] = glm::uvec2(0u);
             continue;
         }
-        const double zm = sZ1[k] / t;
-        const double sz = std::sqrt(std::max(sZ2[k] / t - zm * zm, 150.0 * 150.0));
-        const uint32_t h = glm::packHalf1x16((float)std::min(t, 6.0e4));
-        const uint32_t zq = (uint32_t)std::clamp(std::lround(zm / 40.0), 0l, 255l);
-        const uint32_t sq = (uint32_t)std::clamp(std::lround(sz / 20.0), 5l, 255l);
-        tex[k] = h | (zq << 16u) | (sq << 24u);
-        gMap.tau[k] = (float)t, gMap.zm[k] = (float)(zq * 40.0), gMap.sz[k] = (float)std::max(sq * 20.0, 100.0);
+        const double zm = std::clamp((double)sZ1[k] / t, 0.0, 20000.0);
+        const double sz = std::clamp(std::sqrt(std::max((double)sZ2[k] / t - zm * zm, 150.0 * 150.0)), 150.0, 8000.0);
+        tex[k] = glm::uvec2(glm::packHalf2x16(glm::vec2((float)std::min(t, 6.0e4), (float)zm)),
+                            glm::packHalf2x16(glm::vec2((float)sz, 0.0f)));
+        gMap.tau[k] = (float)t, gMap.zm[k] = (float)zm, gMap.sz[k] = (float)sz;
         maxTau = std::max(maxTau, t);
-        if (t > 1e-3) top = std::max(top, zq * 40.0 + 3.0 * sq * 20.0);
+        if (t > 1e-3) top = std::max(top, zm + 3.0 * sz);
     }
     smokeLayerAny = maxTau > 1e-3;
     gMap.on = smokeLayerAny;
@@ -346,7 +366,7 @@ void SatelliteSim::smokeLayerBuild(const glm::dvec3 &upIn)
     hf[11] = kLayerSkyShare;
     hf[12] = std::max(wildfireSmokeBright, 0.0f);
     hf[13] = hf[14] = hf[15] = 0.0f;
-    if (ctx_) ctx_->mirrorDirty(smokeLayerMapped, 0, kSmokeLayerHeader + (VkDeviceSize)W * W * sizeof(uint32_t));
+    if (ctx_) ctx_->mirrorDirty(smokeLayerMapped, 0, kSmokeLayerHeader + (VkDeviceSize)W * W * sizeof(glm::uvec2));
     smokeLayerBuildMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 

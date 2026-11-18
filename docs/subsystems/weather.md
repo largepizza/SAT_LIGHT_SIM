@@ -883,43 +883,76 @@ lists its sections and topics with line numbers. New notes go next to the sectio
     the haze now (and no longer takes the list: the report's views 105-399 -> 26-215 smoke Gaussians). Its optical depth is
     x 3 the streaks' cross-section (`kSmokeLayerOpticalK`: secondary organic aerosol adds ~1.5-2x the primary mass within
     hours, aged smoke's mass extinction ~4.5 against fresh ~3 m^2/g; at x 1 the report fire's haze peaked at a column of
-    ~0.15, invisible from the ground). All of it is summed into a 128 x 128 map of the
-    layer's column (tau at 550 nm), column-weighted mid height and thickness (the mixture's spread) in the EYE's tangent
-    plane (gnomonic: a point at ENU P maps to R P.xy / P.z; half-size = the farthest pall + 3.5 sigma, 300-4000 km),
-    rebuilt each frame (SatelliteSimSmokeLayer.cpp smokeLayerBuild; a mirrored storage buffer). `shaders/smoke_layer.comp`
-    runs after the noctilucent pass on the cloud composite's targets: the ray inside the shell from sea level to the
-    layer's top (the highest texel's mid + 3 sigma), cut by the scene depth and, the eye in the layer, by an opaque
-    cloud; one step per ~25 km (2-16), the vertical Gaussian integrated EXACTLY over each step (erf between its end
-    heights: a grazing ray through a 2-km layer gets its deep horizon band with a handful of steps); spectral
-    extinction at the PHYSICAL Angstrom exponent (smokeSpecK of "Smoke spectral" / 0.6: ~1.6 at the default, where the
-    streaks keep 0.6 x it so the clouds behind them do not turn tan): the Sun, its glare (sat_sky.frag reads the
-    composite's spectral transmittance at the Sun's place, hueC) and the sunset through the haze redden; light = albedo
-    0.9 x (the Sun through the air, as the noctilucent layer's, and through the layer's column above the point along
-    its slant, read where the Sun's ray reaches the layer's middle, x HG g 0.6, + two octaves of multiple scattering:
-    half the energy, a quarter of the depth, half the asymmetry each, x 1 - e^-(the local column) so a thin haze has
-    none; single scattering alone left a layer lit through its own top by a low Sun black from above) + a grey sky
-    share 0.35 x 0.5 (the streaks' 0.18). The streaks and the smoke at the flames are lit by the same Sun through the
-    layer (sunLightAt x smokeLayerSunTransmitCpu, SmokeLayerCpu.h: last frame's map on the CPU, direct + the two
-    octaves): at the report's sunset the column was white-yellow inside a haze that reddened everything else; with the
-    direct beam alone it was lit by the blue sky only, lavender x "Smoke brightness", x the
-    air's transmittance from the eye. Composite as nlc_shell.comp: the eye below the layer's top B' = B T + L, above
-    it B' = B + A L; A' = A T. Where no opaque cloud holds the air split (A.a < 0, no emissive flag) it is moved to
-    the haze's light-weighted distance by smokeAirSplitM (the cloud's share of the texel's opacity): the air beyond
-    the haze is dimmed by it. The palls also go to the dust buffer's tail (after the side slots, `kSmokeShadowSlots`
+    ~0.15, invisible from the ground). All of it is summed into a 128 x 128 map of the layer's column (tau at 550 nm),
+    column-weighted mid height and thickness (the mixture's spread; two half floats a texel: 8-bit heights of 40 m
+    stepped the horizon band) in the EYE's tangent plane (gnomonic: a point at ENU P maps to R P.xy / P.z; half-size =
+    the farthest piece + 3.5 sigma, 300-4000 km; no piece narrower than 2 texels, its mass kept), rebuilt each frame
+    (SatelliteSimSmokeLayer.cpp smokeLayerBuild; a mirrored storage buffer). `shaders/smoke_layer.comp` runs after the noctilucent pass on the cloud composite's
+    targets, over the ray inside the shell from sea level to the layer's top (the highest texel's mid + 3 sigma), cut
+    at the surface (scene depth, sea-level sphere, else 2000 km):
+    - Steps on a FIXED GRID from the ray's entry (25 km; L / 16 past 400 km of ray), the last one ending at the pixel's
+      depth, so neighbouring pixels share their steps; the vertical Gaussian integrated EXACTLY over each step (erf
+      between its end heights: a grazing ray through a 2-km layer gets its deep horizon band with a handful of steps).
+    - Spectral extinction at the PHYSICAL Angstrom exponent (smokeSpecK of "Smoke spectral" / 0.6: ~1.6 at the
+      default, where the streaks keep 0.6 x it so the clouds behind them do not turn tan): the Sun, its glare
+      (sat_sky.frag reads the composite's spectral transmittance at the Sun's place, hueC) and the sunset redden.
+    - Light: a spectral albedo 0.9 x (1.033, 1, 0.956) (aged smoke absorbs blue: brown carbon), once a scattering, x
+      (the Sun through the air, as the noctilucent layer's, and through the layer along the Sun's own ray: 4 steps to
+      where it leaves the layer's top, at most 600 km, the vertical profile exact over each; it was the column above
+      read at one point toward the Sun x a slab's slant, which near the terminator jumped hundreds of km with the Sun's
+      height; x HG g 0.6, + two octaves of multiple scattering:
+      half the energy, a quarter of the depth, half the asymmetry, one more albedo each, x 1 - e^-(the local column) so
+      a thin haze has none; + the Sun's light the smoke above has scattered down, x 0.5; + the clear sky's light, 0.18
+      of the Sun's, through the smoke above, e^-(1.7 x its column)) x "Smoke brightness", x the air's transmittance
+      from the eye. The light from above was a fixed grey-blue sky share (0.35 x 0.5 of the Sun's, no smoke in its
+      way): at the report's sunset, with the direct Sun gone through the haze, it was most of the layer's light and
+      turned the whole view mauve. A step's light is taken at the mean height of the smoke between its end heights (a
+      truncated normal's), not the step's middle.
+    - Composite, the ray split at the texel's cloud distance tC (|a|, never past the surface): the smoke in front of
+      it in front of the clouds' light, the smoke past it behind their transmittance: B' = B Tf + Lf + A Tf Lb,
+      A' = A Tf Tb (continuous: with no cloud, A = 1 and B = 0, the two halves are one ray). It was in front or behind
+      by the eye's height alone and cut at an opaque cloud: a translucent cloud edge took the whole ray's haze in
+      front of it, a dark halo round every cloud from 4 km (report shot 3).
+    - The sky pass's air split, where no opaque cloud holds it (a < 0), moves toward the haze's light-weighted
+      distance by its share of the texel's opacity (lySplitM: smokeAirSplitM's, 22 halvings): the air beyond the haze
+      is dimmed by it. A texel without a cloud carries -60000 km; solved toward there with 14 halvings (a 3.7-km grid)
+      the split over the ground ran past 100 km except on rings where the grid landed short: the dark ARCS across shot
+      3's ground (debugview cloudairsplit). The far end is now the surface. Texels flagged emissive (an emissive
+      Gaussian's distance: the flames', the plumes', cloudAlphaIsEmit) move too, their flag kept: skipped, their region
+      kept the flames' distance while the haze dimmed the air past it, a hard-edged tan diamond round the fire from
+      153 km (report shot 2).
+    The layer's pieces (the 12 heaviest) also go to the dust buffer's tail (after the side slots, `kSmokeShadowSlots`
     32: slot 0's c.x the count) as Gaussians NOT in the drawn list, which sat_sky.frag smokeSunTransmit adds to the
-    ground's Sun (shade + reddening, as before). `clouds_v2.wildfire_smoke_layer` (1, no UI) x its optical depth, 0 =
-    the palls as Gaussians (A/B). Harness `fires` -> `smoke_layer` (palls, max_tau, top_m, half_km, build_ms);
+    ground's Sun: the direct beam at the physical Angstrom exponent + what the haze took out of it x the albedo
+    (0.93 / 0.90 / 0.86) x a two-stream diffuse transmission 1 / (1 + 0.3 tau), tau the geometric mean of the vertical
+    and the slant column. The direct beam alone took a low Sun out of every field under a column of ~0.5 (fields near
+    black at the report's dusk). The streaks and the smoke at the flames are lit by the same Sun through the layer
+    (sunLightAt x smokeLayerSunTransmitCpu, SmokeLayerCpu.h: last frame's map on the CPU, the same direct + octaves +
+    scattered-down light), and their sky light under it is the haze's (the Sun's colour through it) by 1 - e^-(2 x the
+    column above): with the direct beam and the blue sky alone the dimmed column read lavender.
+    `clouds_v2.wildfire_smoke_layer` (1, no UI) x its optical depth; 0 = no layer: the aged trail and the palls are
+    Gaussians again, lit as before (no layer in their light, the blue sky's), the ground's Sun shaded by the list only,
+    exactly the smoke of before. It does NOT undo the dust list's share-out (`wildfire_dust_share` 0 does: both 0 =
+    the old build). Harness `fires` -> `smoke_layer` (pieces, max_tau, top_m, half_km, build_ms, `eye`: the column over
+    the eye, the part above it, its mid height and sigma, the Sun's transmittance to the eye);
     `shaders reload smoke_layer=<spv>`. Off on Potato.
     - Measured (RTX 3070 Ti, 1920x1009, the report's shots 1 / 3 / 5, one live app, 3 interleaved reps of 90 frames,
-      GPU total ms, old = `wildfire_dust_share 0` + `wildfire_smoke_layer 0`, run twice): shot 1 (370 km) 38.4 / 38.8
-      -> 37.9 (noise); shot 3 (4 km, inside the old trail) 35.8 / 35.5 -> 31.4 (the trail's ~130 Gaussians are the
-      layer now); shot 5 (2 km beside the fire) 32.2 / 31.3 -> 33.9, where the old draw had NO smoke (the bug); the
-      share-out alone with the old trail Gaussians was 36.4 there. The sky pass +0.5-0.9 ms at shot 5 (ground shading
-      by the layer's pieces: 12 of them, 31 cost ~+0.6 more). CPU +0.2-0.3 ms (the map 0.1-0.3 ms). The layer's map
-      peaks at a column of ~0.53 for the report's fire. harness_runs/smoke_ab (worktree, untracked).
+      GPU total ms, old = `wildfire_dust_share 0` + `wildfire_smoke_layer 0`, run twice; the build of 2026-11-18): shot
+      1 (370 km) 37.4 / 37.2 -> 36.6 (noise); shot 3 (4 km, inside the old trail) 33.0 / 33.3 -> 29.3 (the trail's ~130
+      Gaussians are the layer now); shot 5 (2 km beside the fire) 30.1 / 30.2 -> 34.1, where the old draw had NO smoke
+      (the bug); the share-out alone with the old trail Gaussians was 34.9 there. The sky pass +0.2-0.8 ms at shot 5
+      (ground shading by the layer's 12 heaviest pieces; all 31 cost ~+0.6 more). CPU +0.1-0.4 ms (the map 0.1-0.3
+      ms). The layer over the eye at the report's views: column 0.36 at shot 3 (0.13 above the eye, 4 km up), 0.35
+      at shot 4 (0.31 above), 0.17 at shots 5-8 (all of it above, 2.1-2.4 km up); the map's largest 0.53; the Sun
+      2.4-4.8 deg up, its light at the eye through the layer (direct + scattered on) 0.45-0.75. harness_runs/smoke_ab,
+      harness_runs/qa-smoke-a2 (worktree, untracked).
     - Along the reporter's last seconds (shots 4 and 8, `path goto` 0-10 s then `path play`): 0 segments in view lost
       at every pose; with the old split the smoke range was empty after shot 4's path and 27-41 segments were lost
-      along shot 8's.
+      along shot 8's. Moving vs settled along shot 8's path (tstab's measure, 5 frames): mean 1.65 levels with the
+      layer, 1.81 without (floor 0.53); p99 22 against 11 and 1.4% of pixels past 16 levels against 0.1%, at the
+      clouds' edges at the top of the frame (the layer's split follows the clouds' unsettled distance there). Time
+      warp over the fire from 153 km at 60x / 300x: the smoke drawn throughout (0 lost), no patches; at 3600x the
+      Sun sets and the haze goes dark with the sky.
   - **The flame band** (2026-10-27, issue 20261027_212337 "Flame particles": "the sprites seem to disappear when up close
     and are just dots"; `clouds_v2.wildfire_flame_band` 1, no UI, 0 = the old tongues below). Two causes: the close-up
     flames, their share of the points and the glow were gated on the range to the IGNITION point (a fire burning for

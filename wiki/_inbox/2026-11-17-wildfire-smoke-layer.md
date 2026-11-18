@@ -9,11 +9,15 @@ LAYER: its mass (x 3 for aged smoke's higher extinction: secondary aerosol and g
 further 60 km, `clouds_v2.wildfire_smoke_layer_spread_km`; the trail by 25 km x sqrt(age in h)) and summed into a
 128 x 128 map of column optical depth, mid height and thickness on the eye's tangent plane, rebuilt each frame.
 `shaders/smoke_layer.comp` integrates each pixel's ray through it in curved coordinates after the cloud composite (as
-the noctilucent layer is): exact vertical integration per ~25-km step, extinction at the physical Angstrom exponent
-(~1.6), light = albedo 0.9 x (the Sun through air and the smoke above, HG g 0.6 + two multiple-scattering octaves) +
-a grey sky share. It forms a deep haze band toward the horizon, greys the sky, dims and reddens the Sun, its glare and
-the sunset seen through it, and shades the ground's sunlight (the layer's pieces go to sat_sky.frag smokeSunTransmit
-as undrawn Gaussians). `clouds_v2.wildfire_smoke_layer` (1, no UI) scales it; 0 = the old trail and pall Gaussians.
+the noctilucent layer is): exact vertical integration over 25-km steps on a fixed grid along the ray, extinction at
+the physical Angstrom exponent (~1.6), light = a spectral albedo (0.93 / 0.90 / 0.86: aged smoke absorbs blue) x (the
+Sun through air and the smoke above, HG g 0.6 + two multiple-scattering octaves + the Sun's light the smoke above
+scattered down + the clear sky's light through the smoke above). The ray is split at the texel's cloud distance (the
+smoke in front of the clouds' light, the rest behind their transmittance). It forms a deep haze band toward the
+horizon, greys and warms the sky, dims and reddens the Sun, its glare and the sunset seen through it, and shades the
+ground's sunlight (direct beam + a two-stream diffuse share; the layer's pieces go to sat_sky.frag smokeSunTransmit as
+undrawn Gaussians). `clouds_v2.wildfire_smoke_layer` (1, no UI) scales it; 0 = the old trail and pall Gaussians, lit
+as before (the share-out below stays).
 
 The dust list is shared out: the launches (first) leave what the weather asked for last frame (tornadoes, haboobs,
 the smoke's demand, the flame band's 256 floor; at least 256, never below the plumes' 384), and the smoke may use the
