@@ -23,6 +23,7 @@
 // the front (the dust list, after the smoke's range). The nearest fires' glow lights the smoke, the cloud and the ground
 // (engine lights, eye-adapted), fading out with range.
 #include "SatelliteSim.h"
+#include "SmokeLayerCpu.h"
 #include "FrameProfile.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -90,6 +91,8 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
 {
     FPROF_SCOPE("weatherFillWildfires");
     smokeHdrBits = 0;
+    smokeDemandLast = 0;
+    smokePalls.clear();
     firesNow.clear();
     firePointsLast = 0;
     fireFlamesLast = 0;
@@ -272,27 +275,51 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                                                       -si.x * std::sin(gr) + si.y * std::cos(gr), si.z));
     // The Sun's light at a point (its colour through the air; the per-pixel Earth shadow is cloud_march.comp's) and the
     // blue sky's on it (relative, 1 = a clear day), as the rocket plumes'.
+    // (skyTintAt: the colour of the sky's light there, set by sunLightAt: the clear sky's blue, or under the smoke layer
+    // the haze's own light, the Sun's colour through it)
+    glm::dvec3 skyTintAt(0.66, 0.82, 1.08);
     auto sunLightAt = [&](const glm::dvec3 &C, glm::dvec3 &sunC, double &amb) {
         const double r = glm::length(C), h = r - kReF;
         const double sinE = glm::dot(C / r, sunE);
         const double dip = -std::sqrt(2.0 * std::max(h, 0.0) / kReF);
         const double dayK = glm::smoothstep(dip - 0.03, dip + 0.02, sinE);
         sunC = glm::dvec3(0.0);
+        skyTintAt = glm::dvec3(0.66, 0.82, 1.08);
         if (dayK > 0.0)
         {
             const double ext1 = atmExtinctionMag(C, sunE, 0.0, 1.0);
             const double kc[3] = {0.11, 0.2, 0.42};
             for (int ch = 0; ch < 3; ++ch)
                 sunC[ch] = dayK * std::pow(10.0, -0.4 * std::min(kc[ch] * ext1, 30.0));
+            // and through the smoke layer above it (2026-11-17, issue_20261117_195951 "Lighting effect should be
+            // redder here": the column at a sunset fire lit white-yellow inside a haze that reddens everything else;
+            // last frame's map, the layer's own Angstrom exponent, SatelliteSimSmokeLayer.cpp). Its sky light is then
+            // the haze's (the Sun's colour through it, the clear sky's luminance) by the haze's share above: the blue
+            // sky's alone lit the dimmed column lavender.
+            if (wildfireSmokeLayer > 0.0f)
+            {
+                double colA = 0.0;
+                sunC *= smokeLayerSunTransmitCpu(C, sunE, std::max((double)wildfireSmokeSpectral, 0.0) / 0.6, &colA);
+                const double lS = 0.2126 * sunC.x + 0.7152 * sunC.y + 0.0722 * sunC.z;
+                if (colA > 1e-4 && lS > 1e-6)
+                    skyTintAt = glm::mix(skyTintAt, sunC * (0.8 / lS), 1.0 - std::exp(-2.0 * colA));
+            }
         }
         amb = glm::smoothstep(-0.1, 0.25, sinE) * std::exp(-std::max(h, 0.0) / 15000.0);
     };
 
     const double kTwoPi15 = 15.749609945722419;
     const uint32_t first = n;
-    // (640: the trail pieces below; at least 96 left for the flames after the smoke)
+    // The smoke's room: up to 576 past what is already listed, less a FLOOR kept for the flames after it (they take what
+    // is left, up to kFlameBudget). It was the list's first 1024 - 512 entries with the flame band, an absolute index:
+    // since the launches' coverage budget (2026-11-16) the plumes alone reach ~730 entries with a launch in view, and the
+    // smoke then had NO room at all, its range empty (issue_20261117_195951 "Smoke trails or bust": smoke popping in and
+    // out between near-identical views as the plumes' eased room crossed 512 - n; harness `fires` ->
+    // smoke_segments_in_view_lost, `state` -> launches.plume_room). The launches now also leave what the weather asked
+    // for last frame (weatherDustWant, launchFillVisuals).
     const uint32_t kFlameBudget = wildfireFlameBand != 0 ? 512u : 96u;
-    const uint32_t capAll = std::max<uint32_t>(n, std::min<uint32_t>(kMaxDustClouds > kFlameBudget ? kMaxDustClouds - kFlameBudget : kMaxDustClouds, n + 576u));
+    const uint32_t kFlameFloor = wildfireDustShare == 0 ? kFlameBudget : (wildfireFlameBand != 0 ? kWildfireFlameFloor : 96u);
+    const uint32_t capAll = std::max<uint32_t>(n, std::min<uint32_t>(kMaxDustClouds - kFlameFloor, n + 576u));
     // (the streaks leave room for the smoke at the flames, near the eye)
     const uint32_t cap = std::max<uint32_t>(n, capAll > nearReserve ? capAll - nearReserve : n);
     // A smoke Gaussian's curved-sheet data (2026-10-29, issue 20261029_084627; cloud_march.comp smokeCurvedInt), from its
@@ -847,6 +874,15 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
     const glm::dvec3 tintMul(1.0 + 0.10 * tintK, 1.0 + 0.01 * tintK, 1.0 - 0.14 * tintK);
     const glm::dvec3 kSkyBlue(0.66, 0.82, 1.08);
     const double bright = std::max((double)wildfireSmokeBright, 0.0);
+    // the smoke layer (SatelliteSimSmokeLayer.cpp): the palls and the aged trail go to it
+    const bool layerOn = wildfireSmokeLayer > 0.0f;
+    // (the trail's age at which half its mass has gone to the layer: 1 h; the hand-over runs 0.5-1.5 h)
+    constexpr double kSmokeLayerHandS = 3600.0;
+    // The layer's optical depth per unit of the streaks' cross-section: x 3. Aged smoke extinguishes more per unit of
+    // what was emitted: secondary organic aerosol adds ~1.5-2x the primary mass within hours and the grown particles'
+    // mass extinction efficiency rises from ~3 to ~4.5 m^2/g (fresh -> aged smoke, field campaigns); at x 1 the haze of
+    // the report's fire was a column of ~0.15 at most, invisible but for a faint brown smear (the user's "visible haze").
+    constexpr double kSmokeLayerOpticalK = 3.0;
     // Segments still to emit (each takes at least one Gaussian; the trail pieces share what is left of the cap).
     int64_t segLeft = 0;
     for (const FirePlan &pl : plans)
@@ -872,6 +908,15 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
     for (int pass = 0; pass < 2; ++pass)
     {
         size_t segCounter = 0;
+        if (pass == 1)
+        {
+            // What the smoke asks of the list (the launches leave it next frame: weatherDustWant): every segment in view
+            // with the pieces it wants, a quarter of those off screen, the palls, the smoke at the flames
+            int64_t want = (int64_t)pallsPlanned + nearReserve, off = 0;
+            for (const SegPlan &q : segPlans)
+                if (q.alive) (q.vis ? want += q.want : ++off);
+            smokeDemandLast = (uint32_t)std::min<int64_t>(want + off / 4, 576);
+        }
         if (pass == 1 && wildfireSmokeAlloc != 0)
         {
             // The budget: what is left of the cap less one Gaussian for each pall.
@@ -1098,8 +1143,32 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                     const double cUp = std::fabs(glm::dot(c, glm::normalize(P0)));
                     const double sC = glm::mix(0.5 * (A.thin + B.thin), szv, cUp);
                     const double endK = 1.0 - glm::smoothstep(0.8 * pl.tauMax, pl.tauMax, B.age);
-                    const double Sigma = 0.5 * (A.rate + B.rate) * (B.age - A.age) * std::exp(-tm / (2.0 * 86400.0)) * endK;
+                    const double SigmaAll = 0.5 * (A.rate + B.rate) * (B.age - A.age) * std::exp(-tm / (2.0 * 86400.0)) * endK;
                     const glm::dvec3 Cc = 0.5 * (P0 + P1);
+                    // THE LAYER takes the trail as it ages (2026-11-17, issue_20261117_195951: "more broad diffusion in a
+                    // layer"): a segment's mass moves from its Gaussians to the smoke layer over kSmokeLayerHandH x
+                    // (0.5 .. 1.5) of age (the fresh column stays particles), spread there by its age (~25 km x sqrt(h),
+                    // at most the layer's spread): the trail diffuses into the regional haze instead of riding as a chain
+                    // of puffs for 2-14 h.
+                    const double kL = layerOn ? glm::smoothstep(0.5 * kSmokeLayerHandS, 1.5 * kSmokeLayerHandS, tm) : 0.0;
+                    const double Sigma = SigmaAll * (1.0 - kL);
+                    if (pass == 1 && kL > 0.0 && SigmaAll * kL > 1.0 && !(wildfireDebug & 32))
+                    {
+                        const double Ls = std::min(25e3 * std::sqrt(tm / 3600.0), 1e3 * std::max((double)wildfireSmokeLayerSpreadKm, 0.0));
+                        const glm::dvec3 upC = glm::normalize(Cc);
+                        glm::dvec3 ah = a - upC * glm::dot(a, upC);
+                        ah = glm::length(ah) > 1e-6 ? glm::normalize(ah) : eE;
+                        SmokePall P;
+                        P.c = upC;
+                        P.a = ah;
+                        P.b = glm::cross(upC, ah);
+                        P.sA = std::sqrt(len * len / 12.0 + sb * sb + Ls * Ls);
+                        P.sB = std::sqrt(sb * sb + Ls * Ls);
+                        P.Sigma = SigmaAll * kL * kSmokeLayerOpticalK * (double)wildfireSmokeLayer * fn.reachK;
+                        P.zM = glm::length(Cc) - kReF;
+                        P.sZ = std::max(szv, 300.0);
+                        smokePalls.push_back(P);
+                    }
                     const size_t segId = segCounter++;
                     if (pass == 0)
                     {
@@ -1143,7 +1212,7 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                     double amb;
                     sunLightAt(Cc, sunC, amb);
                     const glm::dvec3 sunL = bright * 4.0 * kPiF * alb * tint * sunC;
-                    const glm::dvec3 skyL = bright * 4.0 * kPiF * alb * tint * (0.18 * amb) * kSkyBlue;
+                    const glm::dvec3 skyL = bright * 4.0 * kPiF * alb * tint * (0.18 * amb) * skyTintAt;
                     // Pieces (2026-10-27, issue 20261027_000414 "Smoke trail geometry": from 165 km the trail was a chain of
                     // huge stretched ovals whose ends swung as the knots moved). The knots stand on a nested time grid whose
                     // spacing doubles down the trail, so a segment was 15-30x as long as the smoke is wide at every age: ONE
@@ -1331,7 +1400,7 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
             }
             if (pass == 0)
             {
-                ++pallsPlanned;
+                if (!(wildfireSmokeLayer > 0.0f)) ++pallsPlanned;   // (the layer's palls are not in the list)
                 continue;
             }
             // The pall: the smoke older than the streaks, spread wide and flat, at the mass-weighted mean of its parcels'
@@ -1389,7 +1458,28 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                 if (smokeSegDbg.size() < 256)
                     smokeSegDbg.push_back({(float)(fi * 10 + 9), (float)older, (float)ps.size(), (float)sAlong, (float)sh,
                                            (float)sPz, (float)Sigma, (float)tauTop, (float)zP});
-                if (tauTop > 0.002 && !(wildfireDebug & 32) && emit(Cp, ap, bp, upP, sAlong, sh, sPz, Sigma,
+                if (wildfireSmokeLayer > 0.0f)
+                {
+                    // THE LAYER (2026-11-17, issue_20261117_195951: "a greyer effect with more broad diffusion in a layer"):
+                    // the pall goes to the smoke layer's map (SatelliteSimSmokeLayer.cpp, smoke_layer.comp), spread a
+                    // further wildfire_smoke_layer_spread_km (its mass kept), at its mid height above sea level with its
+                    // own thickness (not the pixel floor: the layer is integrated per ray in curved coordinates)
+                    if (!(wildfireDebug & 32) && Sigma > 1.0)
+                    {
+                        const double Ls = 1e3 * std::max((double)wildfireSmokeLayerSpreadKm, 0.0);
+                        SmokePall P;
+                        P.c = upP;
+                        P.a = ap;
+                        P.b = bp;
+                        P.sA = std::sqrt(sAlong * sAlong + Ls * Ls);
+                        P.sB = std::sqrt(sh * sh + Ls * Ls);
+                        P.Sigma = Sigma * kSmokeLayerOpticalK * (double)wildfireSmokeLayer * fn.reachK;
+                        P.zM = ground + zP;
+                        P.sZ = 0.35 * pl.cur.H + 400.0;
+                        smokePalls.push_back(P);
+                    }
+                }
+                else if (tauTop > 0.002 && !(wildfireDebug & 32) && emit(Cp, ap, bp, upP, sAlong, sh, sPz, Sigma,
                                           bright * 4.0 * kPiF * albP * tintP * sunC,
                                           bright * 4.0 * kPiF * albP * tintP * (0.18 * amb) * kSkyBlue, albP,
                                           f.id ^ 0xFA11ull, cap, -1.0))
@@ -1527,7 +1617,7 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                         double amb;
                         sunLightAt(C, sunC, amb);
                         if (emit(C, T, upP, Nh, sA, sV, sH, Sigma, bright2 * 4.0 * kPiF * alb * tint * sunC,
-                                 bright2 * 4.0 * kPiF * alb * tint * (0.18 * amb) * glm::dvec3(0.66, 0.82, 1.08), alb, hc, capN, -1.0))
+                                 bright2 * 4.0 * kPiF * alb * tint * (0.18 * amb) * skyTintAt, alb, hc, capN, -1.0))
                             ++nearSmokeLast;
                     }
                 }
@@ -2415,6 +2505,28 @@ nlohmann::json SatelliteSim::wildfiresJson(bool world)
     o["smoke_piece_gaussians"] = smokePiecesLast;          // Gaussians of segments cut into pieces
     o["smoke_segments_off_view_dropped"] = smokeOffViewLast;
     o["smoke_segments_in_view_lost"] = smokeLostLast;      // in view but past the budget (should be 0)
+    o["smoke_demand"] = smokeDemandLast;                   // Gaussians the smoke asked for this frame
+    o["weather_dust_want"] = weatherDustWant;              // what the launches leave the weather next frame (eased)
+    // the smoke layer (SatelliteSimSmokeLayer.cpp): its palls, the map's largest column, its top, half-size, build time
+    o["smoke_layer"] = {{"gain", wildfireSmokeLayer},        {"spread_km", wildfireSmokeLayerSpreadKm},
+                        {"palls", smokePalls.size()},       {"on", smokeLayerAny},
+                        {"max_tau", smokeLayerMaxTau},      {"top_m", smokeLayerTopM},
+                        {"half_km", smokeLayerHalfM / 1e3}, {"build_ms", smokeLayerBuildMs}};
+    {
+        // the layer over the eye: its column (550 nm), the part above the eye, its mid height and sigma (m), and the Sun's
+        // transmittance to the eye through it (direct + scattered on, as the streaks are lit)
+        const glm::dvec3 eyeE = glm::normalize(glm::dvec3(obsDir)) * (double)obsEyeRadiusM();
+        const glm::dvec3 lay = smokeLayerColumnCpu(eyeE);
+        const glm::dvec3 si = sunDirEciAt(t);
+        const double gr = earthRotationAngle(t);
+        const glm::dvec3 sunE = glm::normalize(glm::dvec3(si.x * std::cos(gr) + si.y * std::sin(gr),
+                                                          -si.x * std::sin(gr) + si.y * std::cos(gr), si.z));
+        double colA = 0.0;
+        const glm::dvec3 Ts = smokeLayerSunTransmitCpu(eyeE, sunE, std::max((double)wildfireSmokeSpectral, 0.0) / 0.6, &colA);
+        o["smoke_layer"]["eye"] = {{"column", lay.x}, {"above", colA}, {"mid_m", lay.y}, {"sigma_m", lay.z},
+                                   {"sun_elev_deg", glm::degrees(std::asin(std::clamp(glm::dot(glm::normalize(eyeE), sunE), -1.0, 1.0)))},
+                                   {"sun_T_rgb", {Ts.x, Ts.y, Ts.z}}};
+    }
     o["ground_snap"] = fireGroundPipe != VK_NULL_HANDLE;
     nlohmann::json a = nlohmann::json::array();
     for (size_t i = 0; i < firesNow.size() && i < 12; ++i)

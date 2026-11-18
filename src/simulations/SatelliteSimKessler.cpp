@@ -3235,9 +3235,19 @@ void SatelliteSim::kesslerFillDust(float pixelAngle)
                 // Booked as launches, not as the cascade (this runs inside the dust fill's kessler timer).
                 const auto l0 = std::chrono::steady_clock::now();
                 s->launchFillVisuals(out, n, toSky, pixFull); // rockets, flames, plumes, the retirees' re-entries
+                const uint32_t nWx0 = n;
                 s->weatherFillTornadoes(out, n);              // tornadoes and waterspouts (SatelliteSimWeather.cpp)
                 s->weatherFillHaboobs(out, n);                // haboob dust walls (SatelliteSimHaboob.cpp)
+                const uint32_t nWx1 = n;
                 s->weatherFillWildfires(out, n, pixFull);              // wildfire smoke + fronts (SatelliteSimWildfire.cpp)
+                s->smokeLayerBuild(glm::dvec3(s->obsDir));             // the palls as the smoke layer (SatelliteSimSmokeLayer.cpp)
+                {
+                    // what the weather asks of the list (the launches leave it free next frame; 2026-11-17,
+                    // issue_20261117_195951): eased down 3% a frame so the plumes' room does not follow every turn
+                    const uint32_t flameFloor = s->flamesWantedLast > 0 ? std::min<uint32_t>(s->flamesWantedLast, s->wildfireFlameBand != 0 ? SatelliteSim::kWildfireFlameFloor : 96u) : 0u;
+                    const uint32_t want = (nWx1 - nWx0) + s->smokeDemandLast + flameFloor;
+                    s->weatherDustWant = std::max(want, (uint32_t)(0.97 * (double)s->weatherDustWant));
+                }
                 s->moonBasesFill();                                    // the lunar bases' glints (SatelliteSimMoonBases.cpp)
                 s->cometsFillHeads();                                  // the comets' heads (SatelliteSimComets.cpp)
                 s->supernovaFill();                                    // the 2037 Betelgeuse supernova (SatelliteSimStars.cpp)

@@ -6475,7 +6475,15 @@ private:
     bool flameOverflow = false, flameTight = false;   // this frame: the tongues did not fit / fitted only with fewer flames each
     int flameMaxSubLast = 4;             // this frame: the most flames a resolved tongue was given (harness `fires`)
     uint32_t flamesWantedLast = 0;
-    int wildfireDebug = 0;               // clouds_v2.wildfire_debug (no UI, harness): bits 1 no flames, 2 no points, 4 no smoke, 8 no smoke at the flames, 16 no embers
+    // The dust list's share-out between the launches and the weather after them (2026-11-17, issue_20261117_195951):
+    // the smoke's demand this frame (Gaussians: segments in view with their pieces, the palls, the smoke at the flames),
+    // what the weather asked of the list (tornadoes + haboobs + that demand + the flames' floor; eased down 3% a frame),
+    // which launchFillVisuals leaves free next frame, and the floor the smoke leaves the flame band.
+    uint32_t smokeDemandLast = 0;
+    uint32_t weatherDustWant = 0;
+    static constexpr uint32_t kWildfireFlameFloor = 256;
+    int wildfireDustShare = 1;   // clouds_v2.wildfire_dust_share (no UI): 1 = the share-out above, 0 = the old fixed split (A/B)
+    int wildfireDebug = 0;              // clouds_v2.wildfire_debug (no UI, harness): bits 1 no flames, 2 no points, 4 no smoke, 8 no smoke at the flames, 16 no embers
     int wildfireSmokeCurtain = 1;        // clouds_v2.wildfire_smoke_curtain (no UI): 1 = smoke Gaussians from the smoke's own spread
                                          // (curtains along the front, nested nodes along a segment, 2026-10-28), 0 = the old pieces (A/B)
     bool wildfireScars = true;           // clouds_v2.wildfire_scars (no UI): the burn scars on the ground (off: isolate the smoke)
@@ -6483,6 +6491,40 @@ private:
     float wildfireSmokeSpread = 1.0f;   // clouds_v2.wildfire_smoke_spread: x the plumes' width (same mass: thinner)
     float wildfireSmokeSpectral = 0.6f; // clouds_v2.wildfire_smoke_spectral: x the Angstrom exponent (1 = ~1.6: the
                                         // Sun / sky through smoke reddened and its thin parts blue; 0 = grey)
+    // The smoke LAYER (2026-11-17, issue_20261117_195951; SatelliteSimSmokeLayer.cpp, shaders/smoke_layer.comp): the smoke
+    // older than ~1 h (the aged trail and each fire's pall) as a regional haze in curved coordinates, not Gaussians.
+    float wildfireSmokeLayer = 1.0f;            // clouds_v2.wildfire_smoke_layer (no UI): x its optical depth; 0 = the trail and palls as Gaussians (A/B)
+    float wildfireSmokeLayerSpreadKm = 60.0f;   // clouds_v2.wildfire_smoke_layer_spread_km (no UI): its spread past the pall's own width
+    // The layer's map (eye-centred tangent plane, rebuilt each frame from the palls in reach) and its pass
+    struct SmokePall
+    {
+        glm::dvec3 c{0.0}, a{0.0}, b{0.0};   // centre (unit ECEF), its axes (unit ECEF, tangent there)
+        double sA = 0.0, sB = 0.0;            // the horizontal sigmas (m), the layer's spread included
+        double Sigma = 0.0;                   // its cross-section (m^2): the column x the area
+        double zM = 0.0, sZ = 0.0;            // mid height above sea level, vertical sigma (m)
+    };
+    std::vector<SmokePall> smokePalls;
+    static constexpr uint32_t kSmokeLayerRes = 128;    // map texels a side
+    static constexpr uint32_t kSmokeLayerHeader = 64;  // bytes before the texels (smoke_layer.comp SmokeLayerBuf)
+    static constexpr uint32_t kSmokeShadowSlots = 32;  // the palls as Gaussians for smokeSunTransmit (dust buffer tail)
+    static_assert(kMaxDustClouds + kMaxEngineLights + kDustSideSlots == 1261u, "sat_sky.frag kSkySmokePallBase");
+    void *smokeLayerMapped = nullptr;
+    VkBuffer smokeLayerBuf = VK_NULL_HANDLE;
+    VkDeviceMemory smokeLayerMem = VK_NULL_HANDLE;
+    VkDescriptorSetLayout smokeLayerDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool smokeLayerDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet smokeLayerDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout smokeLayerPipeLayout = VK_NULL_HANDLE;
+    VkPipeline smokeLayerPipe = VK_NULL_HANDLE;
+    bool smokeLayerAny = false;      // this frame's map holds smoke
+    float smokeLayerMaxTau = 0.0f, smokeLayerTopM = 0.0f, smokeLayerHalfM = 0.0f;
+    double smokeLayerBuildMs = 0.0;
+    void createSmokeLayer(VulkanContext &ctx);
+    std::string buildSmokeLayerPipeline(VulkanContext &ctx, const std::string &spv);
+    void writeSmokeLayerDescriptors(VulkanContext &ctx);
+    void smokeLayerBuild(const glm::dvec3 &up);            // the map from smokePalls (weatherFillWildfires)
+    void recordSmokeLayer(VkCommandBuffer cmd, const CloudMarchPC &cpc);
+    void destroySmokeLayer(VkDevice dev);
     // Smoke trajectories (2026-10-26, SatelliteSimWildfire.cpp): each parcel advected from its emission through the wind
     // at its own place and time, cached and only extended (a pure function of its emission time).
     struct SmokeEmit
