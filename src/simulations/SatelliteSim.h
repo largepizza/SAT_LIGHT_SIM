@@ -9376,7 +9376,9 @@ private:
         float prevDir = 1.0f;
         double lastT = 0.0;          // the clock after last frame's advance
         bool lastValid = false;
-        EvOcc watched;               // shown by a Watch: the running clock crossing it next is the same showing
+        // Shown with the clock before their moment (a Watch's landing, a backward crossing, the second of a queued pair,
+        // a share's snap back over one): the running clock crossing one of them next is the same showing.
+        std::vector<EvOcc> watched;
         // The Kessler state events: the first collision's time (a scan of the event log), the share destroyed (a sliced
         // walk of the roster's dead seconds).
         size_t colScan = 0;
@@ -9391,6 +9393,7 @@ private:
         double walkPrevFrac = 0.0;
         double destroyedFrac = -1.0; // the last finished walk's share (-1 none yet)
         std::vector<std::string> log; // "<id> <how> <utc>" per showing (harness)
+        std::vector<EvOcc> recent;    // the last 16 shown (a share's snap back over one of them: not shown again)
         int shown = 0;
         std::string lastHow;
         int lastChoice = 0;
