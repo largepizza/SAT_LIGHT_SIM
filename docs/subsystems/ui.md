@@ -1,4 +1,4 @@
-# UI, HUD, controls, settings window, intro, tutorial
+# UI, HUD, controls, settings window, intro, hints, tutorial
 
 HUD popups, UIRenderer / Clay rules and kit, icon + font atlases, controls and keybindings, the settings window's layout and search, the opening (the intro's captions), the first-run tutorial.
 
@@ -356,8 +356,9 @@ button), and Alt's cinematic pan (`KB_CINEMATIC` toggles while `camera.captured 
   scales by `fovLookScale()` only).
 - `camera.captured` readers: Go to's aim unlock and the tutorial's look step also count `fpsLookedThisFrame_`
   (an actual FPS turn, not the mode), the report bar's "busy hands" sees FPS mode already left.
-- `fpsFacts_` keeps sticky facts for a later hint scheduler (left by Tab / right click, entered from menu mode,
-  click count and times, degrees of mouse look either mode, right-drag used); harness `fps state` reports them.
+- `fpsFacts_` keeps sticky facts (left by Tab / right click, entered from menu mode, click count and times, degrees
+  of mouse look either mode, right-drag used); harness `fps state` reports them, and the hints read `clicks` and
+  `lookDeg` as running counters (their own gates come from `fpsSet`'s `hintsNoteFps`).
   Harness: `fps on|off|state`, `mouse move dx= dy= frames=`, `mouse click left|right`
   (`tools/harness/scripts/fps_mode.satcmd`).
 
@@ -539,9 +540,9 @@ Everything else (the selection panel and chip, the follow bar, windows opened by
 console, issue shots and the note bar, the ring) behaves as in normal play.
 
 **The end** (`finishIntro(false)` at the last key): `showIntro` off, the toolbars show, the ambience bus returns;
-no camera or FOV change. The first-run tutorial starts there (not on a replay, not under the harness;
-`updateTutorial`'s own first-frame start waits for `!showIntro`). `finishIntro(true)` (only the harness's
-`intro skip`) ends the captions without the benchmark.
+no camera or FOV change. Nothing else starts there: the first run's hints (below, "Hints") run on through the
+end; the old card tutorial no longer starts on its own. `finishIntro(true)` (only the harness's `intro skip`) ends
+the captions without the benchmark.
 
 **UC1 benchmark.** `updateIntro` adds `gpuMsTotalSmoothed` every frame while `introElapsed <= kIntroBenchEndT`
 (the whole caption period: the player on the ground, steering). `finishIntro` decides with
@@ -552,7 +553,7 @@ boot-chooser pick. The harness's `intro play bench=1` measures and decides as a 
 `bench` {frames, mean_ms, would_set, last}.
 
 **Other readers of `showIntro`:** the ambience (above), the toolbar hold and the overlay (`buildUI`), the
-tutorial's start, `loadSettings` (a full load arms it from `playIntroOnStartup`; a settings patch never starts it
+hints (the beat-2 hold, "captions ended"), `loadSettings` (a full load arms it from `playIntroOnStartup`; a settings patch never starts it
 mid-session), the harness (`harnessInit` and `snapshot` keep it off). The Display tab's "Replay Intro" closes
 Settings and starts it (allowed during the opening too); "Replay tutorial" waits for the captions' end.
 
@@ -571,6 +572,83 @@ reaches that line and keeps the compiled-in `true`. Turning it off resumes where
 
 **History.** Until 2026-11-16 the intro was a camera flight along intro2's eight keys to orbit (the HUD and all
 input locked, sim time driven at 5 s per beat, skippable with Space / pad Start); its times and captions remain.
+
+---
+
+## Subsystem: Hints (2026-11-17, `SatelliteSimHints.cpp`)
+
+The first run's teaching: **one small hint at a time** (`HintPopup`: keycaps, then one line), chosen from what the
+player has and has not done. It replaced the card tutorial's teaching (that card no longer starts on its own).
+`hintsTick` (buildUI, after the look block and `updateTutorial`) measures and decides; `hint_` (`HintRun`) holds
+every bit of state; `buildHints` (just before `buildTutorial`, after every HUD element it avoids) draws.
+
+**Gates** (`HintGates`, sticky since the pass began): `looked` (30 deg of view turned in total: `fpsFacts_.lookDeg`'s
+growth in either mode + the pad's stick x `fovLookScale`), `moved` (1 s of movement input in total), `climbed`
+(100 m of height changed by elevation input: `hintClimbM_`, summed in the Q / E block), `boosted` (boost held while
+moving or climbing), `zoomed` (the wheel's zoom in buildUI or the zoom keys), `clicked` (an FPS centre click),
+`leftByTab` / `leftByRightClick` / `returned` (`fpsSet` -> `hintsNoteFps`; `returned` = any entry but the opening's
+and the harness's own; a pad player: the virtual cursor's on / off edges), `dragLooked`, `selected` (a CHANGE to a
+satellite: a selection standing when the pass began does not count), `timeBarShown` (a time control used, or
+hint 9's 8 s), `menuBarShown` (Missions / Weather / Sky events / Settings opened, or hint 10's 8 s). Movement is
+read from the movement block's MERGED input (`hintMoveIn_`, `hintBoostIn_`: W A S D + the left stick + harness
+`inertial move`), one recordCompute behind.
+**Live signals:** the mode (`hintMenuMode()`: `!fpsMode`, or for a pad player `vCursorToggled && uiVisible`),
+moving now and the streak without a break, seconds since any input (keys, pad buttons, clicks, wheel, look,
+movement, the mode, the time bar, the windows), menu-mode idle, the view held still (< 3 deg/s), FPS clicks in the
+last 5 s (a ring of 8 times), the caption beat and the captions' end (`!showIntro`: no opening counts as ended),
+whether a window is open.
+
+| # | Text (`ui_text_en.inc` `Hint*`) | Offered when (gate unmet) | Holds while up |
+|---|---|---|---|
+| 1 | Move the mouse / Hold the right mouse button and drag / Move the right stick ... to look around | always | always |
+| 2 | [W][A][S][D] to move / Left stick to move | `looked` (or case c) | always |
+| 3 | [Q] / [E] (pad [RT] / [LT]) to rise and descend | moving now or `moved` | the same |
+| 4 | Hold [Shift] ([LS]) to go faster | moving 4 s without a break | moving, or stopped < 1 s |
+| 5 | Scroll to zoom / [LB] / [RB] to zoom | view still 2 s, and a selection or a drawn mesh satellite within max(24 px, its size) of the centre | that satellite |
+| 6 | [Tab] or right click for the cursor / [Start] for the cursor | FPS mode, never in menu mode, and 6 s idle, or 2 FPS clicks in 5 s, or the captions ended | FPS mode, never in menu mode |
+| 7 | Click a satellite | menu mode | menu mode |
+| 9 | Time: slow down, pause, speed up | menu mode, `selected` | the same |
+| 10 | Missions, Weather, Sky events and Settings | menu mode, 9 done | menu mode |
+| 8 | [Tab] / [Start] to look around again | menu mode, 9 and 10 done (or 10 s idle in menu mode) | menu mode |
+
+Keycap labels come from `actionLabel` (live bindings; W A S D and the pad's RT / LT are literal).
+
+**The scheduler** (constants `kHint*` in SatelliteSim.h, one block): nothing before beat 2 begins (15.22 s of
+captions; `kHintBeat`); one hint at a time, 3 s from one gone to the next (`kHintGapS`), 0.3 s fades; a hint fades
+2 s after its gate (`kHintLingerS`; gone 2.30-2.35 s after at 20 steps / s), and at once when its "holds" column
+fails (`how` = condition); a gate met before its hint ever showed retires it; ignored 20 s -> fades and rests 30 s,
+two offers at most (9 and 10 instead leave after 8 s up, counted as done). The order when the slot is free:
+a. captions ended: 6 if never in menu mode, else 7 in menu mode without a selection (both never time out);
+b. menu mode with a selection: 9, then 10; c. a selection and 9 + 10 done: 8 in menu mode, then 2 if not moved
+(never times out); d. 1; e. moving now: 3 (not climbed), else 4; f. 6 on idle / two clicks; g. 7 in menu mode;
+h. 2, 3, 5, then 8 on menu idle. **Two FPS clicks within 5 s take the slot for 6 at once** (`preempted`: the hint
+up gives way, gets its offer back, no 3-s gap) unless the hint up is in a never-time-out case: without it the
+clicker would see 2 (on at beat 2 for anyone who looked) and wait. **Complete** = captions ended + `selected` +
+`moved` + 9 and 10 done (retired by use counts): `tutorialDone` set and `saveSettings()`; then 3, 4, 5 and 8 may
+fire once more that session (`postFired`).
+
+**When:** `hintsPass_` is decided on the first frame (`!tutorialDone` = a pass), and every opening's first frame
+(`updateIntro`, a first run's or a Replay Intro's) starts a pass from zero (`hintsReset`, which also primes the
+edges). Never shown during a playing cinematic, an HQ photo, the old card, or with the HUD hidden (`how` =
+suppressed); a harness run keeps them off (`harnessInit`) until `hints on`.
+
+**The popup** (z 27: over windows 10 and notices 25, under the caption 30; passthrough; width <= W - 24; fs(13);
+keycaps fs(13) x 1.6 tall). While a caption is declared (`introCaptionBuilt_`) it is attached to `CineCaption`'s
+top edge, 8 px up (Clay places it the same frame, so it rises when the caption wraps); between two captions (the
+next one's first frame draws none) it stays where it was. Else bottom centre, above both toolbars (12 px) and
+anything else in its way. 9 / 10 go above `LeftPanel` / `RightPanel` (left / right aligned, clear of a 4-px
+outline, `HintOutline`), unless that would cover the caption or another element: then the bottom stack, with the
+outline still marking the toolbar. Avoided (only if declared this frame: `UIRenderer::declaredThisFrame`, Clay
+keeps stale boxes): LeftPanel, RightPanel, HudPopupPanel 0 / 1, SelSatChip, FollowHud, FollowAgainBtn, CineHud,
+FpsRing, CineCaption. Its own size is last frame's box (an estimate on a new hint's first frame, at alpha 0).
+`ui_lowres.py` has six hint views (`hint_caption_menu`: the longest hint, 1 in menu mode, over beat 2; `hint_caption`,
+`hint_9`, `hint_9_caption`, `hint_10`, `hint_pad`) and `HintPopup` in `HUD_IDS`: all pass at the five sizes.
+
+**Harness:** `hints on|off|reset|state|set <gate> [0|1]|force <n> [pad=0|1]`, `state` -> `hints` (gates, live,
+showing, offers, retired, texts, `seen` "1,6,7", `log` with shown / gate-met / gone times and `how`), `mouse scroll
+dy=`. `tools/harness/scripts/hints_players.satcmd` (`--fixed-dt 0.05`, one launch, ~165 s): Still 1,6,7,9,10,8,2
+then complete; Explorer 3,4,6,7,9,10,8; Clicker 2,6 (6 on the second click); Veteran 9,10,8 (1, 2, 6, 7 retired);
+Returning none; Gamepad labels; each hint's exits, and retirement.
 
 ---
 
@@ -601,10 +679,10 @@ The Missions cards sit above the left panel while the window (docked top right) 
 it is closed. **The Missions step's jump has a way back:** entering it saves the time, place, camera, clock and cloud
 drift (`tutSaveReturn`; not again once a jump happened); after the jump every later card shows **"Back to <UTC>"**
 (`TutReturn`, `tutReturnNow`: bookmarkGo's cut) until used. A finished step shows "Done!" for 1.1 s and moves on.
-- **Starts** from `finishIntro` at the opening's end (not on a replay of the intro), or on the first frame in the
-  scene when the intro is off (`updateTutorial`, `tutAutoChecked`), once: Skip and Finish both set
-  `display.tutorial_done` (absent = not done, so existing installs see it once). Settings > Display >
-  STARTUP > Replay tutorial runs it again. A harness run never starts it on its own.
+- **Never starts on its own** (2026-11-17): the first run's hints replaced its teaching (`finishIntro` and
+  `updateTutorial` no longer start it). Settings > Display > STARTUP > Replay tutorial runs it, and harness
+  `tutorial start`; Skip and Finish set `display.tutorial_done`, as the hints' completion does. While the card is up
+  the hints hold back.
 - **Detection** (`updateTutorial`, in buildUI right after the look block and before the click pick) reads
   the keys and gamepad values itself; it does not hook the movement code.
 - **Clay keeps stale boxes** for elements not drawn this frame, so the selection buttons' outline uses only

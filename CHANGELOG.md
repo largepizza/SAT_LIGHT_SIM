@@ -461,6 +461,12 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **HQ photo** (F8), screenshots with or without the UI (F10 always with), star trails.
 - **UI themes** (Classic, Navy, Night red, Midnight by default) and window opacity; one shared style for every
   window and settings tab; grouped settings tabs with advanced ones behind "Show advanced settings".
+- **First-run hints.** One short hint at a time teaches the controls while you play, picked from what you have
+  not done yet: look, move, rise and descend, go faster, zoom, the cursor (Tab or right click), clicking a satellite,
+  the time controls and the menu buttons (each outlined), and Tab to look around again. A hint goes away a moment
+  after you do what it says, never shows for something you already did, and the labels follow your key bindings
+  or the gamepad. They stop once you have selected a satellite, moved and seen the time and menu hints; Replay Intro
+  runs them again. The first-run tutorial card no longer starts on its own (Settings > Display > Replay Tutorial).
 - **First-run tutorial** (keyboard, mouse or gamepad), **loading screen** with progress, and a **startup graphics
   chooser** (Full graphics, Planetarium or Potato) before anything heavy loads, stepping down a tier on its own if
   the first frames are very slow.
