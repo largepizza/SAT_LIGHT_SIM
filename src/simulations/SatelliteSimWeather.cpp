@@ -405,6 +405,15 @@ void SatelliteSim::createStormBuffer(VulkanContext &ctx)
         // Frames in flight: device-local, written from a shadow by the ranges its writers mark (ctx.mirrorDirty).
         stormMapped = createMirrored(ctx, kStormBufBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, stormBuf, stormMem, false,
                                      "storms");
+        // The device copy zeroed NOW (2026-11-17): the shadow's zeros reach it only with the first frame's mirror
+        // flush, and the boot's weather-cube bake (createCloudsV2) reads the storm env table before that. It read
+        // whatever an earlier process left in that VRAM: a garbage tower count looped the bake past the 8-s TDR
+        // (device lost, "vkQueueSubmit failed" at the next boot frame; five launches in a row on 2026-11-17).
+        {
+            VkCommandBuffer cmd = ctx.beginOneTimeCommands();
+            vkCmdFillBuffer(cmd, stormBuf, 0, VK_WHOLE_SIZE, 0u);
+            ctx.endOneTimeCommands(cmd);
+        }
         stormTable.assign(kStormTableSize, glm::uvec2(0u));
         stormEnvTable.assign(kStormEnvTableSize, glm::uvec2(0u));
         Log::line(std::string("weather: storm buffer (") + std::to_string(kStormBufBytes >> 10) +

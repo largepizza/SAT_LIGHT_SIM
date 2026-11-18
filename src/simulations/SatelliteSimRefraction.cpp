@@ -114,6 +114,16 @@ refr::Profile SatelliteSim::refrProfileAt(double simT) const
 void SatelliteSim::updateRefraction()
 {
     FPROF_SCOPE("refraction");
+    // Eclipse glasses and the coronagraph are exclusive (both change how the Sun is drawn): the one switched on last
+    // wins, whichever control switched it (View popup, Settings, the Sky events window, a harness `set` / `inertial`).
+    if (eclipseGlasses && inertialOcculter)
+    {
+        if (eclipseGlassesPrev_)
+            eclipseGlasses = false;
+        else
+            inertialOcculter = false;
+    }
+    eclipseGlassesPrev_ = eclipseGlasses;
     const double simT = (double)simDayJ2000 * 86400.0 + simSecInDay;
     const double h0 = (double)obsEyeRadiusM(obsHeightOffset) - (double)satphot::kEarthRadiusM;
     bool took = false;
@@ -224,8 +234,15 @@ void SatelliteSim::fillSunspots(double simT)
             const double lat = glm::radians(14.0);
             const double lonCM = omegaSyn(lat) * dt;
             const double env = smooth01(-16.0 * kDay, -9.0 * kDay, dt) * (1.0 - smooth01(9.0 * kDay, 20.0 * kDay, dt));
+            // Its size (2026-11-17, "it should look scary"): furySpotMsh = the group's spotted area (umbrae + penumbrae)
+            // in millionths of the solar hemisphere, refraction.fury_spot_msh (default 12000: ~2x the largest group on
+            // record, April 1947's ~6100; Carrington's 1859 group ~2300). The shader's complex (cx 2: five umbrae in the
+            // leader, larger followers) covers 5250 MSH at half-length E 0.24 (a numpy port of sunspotFactor, the
+            // penumbra edge at 0.9 of the photosphere); every spot scales with E, so the area as E^2. It was E 0.24 with
+            // the ordinary delta look (2 umbrae): 3970 MSH.
+            const double E = 0.24 * std::sqrt(std::max((double)furySpotMsh, 100.0) / 5250.0);
             if (std::abs(lonCM) < glm::radians(100.0) && env > 0.03)
-                gs[n++] = {glm::vec4((float)lat, (float)lonCM, 0.24f, 7777.0f), glm::vec4(glm::radians(9.0f), (float)env, 1.0f, 1.0f), 10.0};
+                gs[n++] = {glm::vec4((float)lat, (float)lonCM, (float)E, 7777.0f), glm::vec4(glm::radians(9.0f), (float)env, 2.0f, 1.0f), 10.0};
         }
     }
     std::sort(gs, gs + n, [](const G &p, const G &q) { return p.rank > q.rank; });
@@ -239,7 +256,8 @@ void SatelliteSim::fillSunspots(double simT)
         if (refrEnabled && refractEnu(a, ao, sc))
             moonR = std::asin(std::clamp(a.z, -1.0f, 1.0f)) - std::asin(std::clamp(m.z, -1.0f, 1.0f));
     }
-    g.spotInfo = glm::vec4((float)n, (float)act, moonR, 0.0f);
+    // w: eclipse glasses (sat_sky.frag: the disc as through a solar filter, no glare).
+    g.spotInfo = glm::vec4((float)n, (float)act, moonR, eclipseGlasses ? 1.0f : 0.0f);
     for (int i = 0; i < n; ++i)
     {
         g.spots[2 * i] = gs[i].a;
@@ -465,9 +483,11 @@ nlohmann::json SatelliteSim::refractionJson() const
         {
             const glm::vec4 a = refrGpu.spots[2 * i], b = refrGpu.spots[2 * i + 1];
             sg.push_back({{"lat_deg", glm::degrees(a.x)}, {"lon_cm_deg", glm::degrees(a.y)}, {"half_len", a.z},
-                          {"env", b.y}, {"complex", b.z}, {"size", b.w}});
+                          {"env", b.y}, {"complex", b.z}, {"size", b.w}, {"fury", b.z > 1.5f}});
         }
         j["sunspot_groups"] = sg;
+        j["fury_spot_msh"] = furySpotMsh;
+        j["eclipse_glasses"] = eclipseGlasses;
         j["solar_cycle"] = refrGpu.spotInfo.y;
     }
     auto at = [&](double eDeg) {

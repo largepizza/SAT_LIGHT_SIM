@@ -324,6 +324,32 @@ air did to it: "a half faded fuzzball" low down.
   auto, 0 none), `force_inversion_dt` / `_dz`. Harness `refraction [rebuild]` (profile, horizon, Sun refraction and share,
   samples, the app -> true map), `state` -> `refraction`. Views + videos: `harness_runs/refr/v2.satcmd`, `v3.satcmd`
   (gitignored; the report's place at 10x, an inversion under a 97-m eye).
+- **Eclipse glasses** (2026-11-17; View popup and Settings > Photometry > EXPOSURE, under Coronagraph;
+  `eclipseGlasses`, settings `hud.right_panel.eclipse_glasses`, default off; `GpuRefraction::spotInfo.w` ->
+  sat_sky.frag `refrSpotInfo.w`). A DISPLAY CHOICE, NOT PHYSICS: real glasses (ND ~5) leave only the Sun; here only the
+  Sun is filtered and the rest of the frame keeps its exposure. The disc takes its TRUE radius (`kSunAngR`, not the
+  1.5x drawn one) and REPLACES what lies behind it (`mix(color, dGlass, covD)`, the filter passes only the Sun):
+  1 - e^(-kGlassesGain x kGlassesTint x T x sunCloudT x limb darkening x sunspots / max channel of TcAir), gain 1.8,
+  tint (1, 0.5, 0.18) (black-polymer orange). T is the disc pixel's own bent-path transmittance x the cloud composite,
+  so a low Sun keeps the table's flattening, mirage and colour; dividing by the centre's air transmittance (its
+  brightest channel) makes a horizon Sun as bright as a high one, in orange-red, with its spots (a cloud in front still
+  dims it). The Moon in front is black (1 - its anti-aliased coverage `moonCovTaa`): the bite of a partial phase; near
+  totality (`tot`) the whole Moon is black (it overhangs the true-radius disc: a sky-lit ring round a black disc read
+  as an error), the corona (`solarCoronaDyn`, unchanged) added on top. No glare / corona halo, aureole, lens flare
+  (`refrSpotInfo.w < 0.5` on its branch) or bloom seed (`FlareSourcePC::sunRefIntensity` 0). Kept as without them: the
+  sky glare's dimming of the stars (`skyGlareEased`), the comet composite's glare background, the auto exposure (it
+  meters the displayed frame; measured below). Exclusive with the coronagraph (`updateRefraction`: the one switched on
+  last wins, whichever control: View popup, Settings, Sky events, `set`, `inertial occult=`). Full variants only:
+  SKY_LITE's SPIR-V is byte-identical (230,312 B; its disc stays the hand-tinted one, the glasses only drop the bloom
+  seed there). Planets are point sources drawn after the sky: a transit is not drawn on the disc.
+  **Measured** (2026-11-17, RTX 3070 Ti, 1600x900, clouds_v2.coverage 0, glasses off / on at the same pose; runs
+  `harness_runs/eg/live3`, gitignored): with auto exposure off the frame's outer corners (4 x 20% x 25%) differ by 0.01
+  levels mean (p99 <= 1) in a high Sun, a horizon Sun and a partial eclipse; the whole frame 0.12-0.55 (the glare's
+  region: 1.5-4.8% of pixels change by > 2 levels). With auto exposure on, an off / on / off sequence (16 s of settles
+  each) gave sky exposure 1.367 / 1.369 / 1.336 (partial phase): the glasses' effect is inside the meter's own drift.
+  Sky pass (interleaved, 3 reps, glasses off): high Sun 2.30 / 2.29 ms old vs 2.20 new; sunset 9.64 / 9.74 vs 9.18;
+  zoomed on the disc 2.64 / 2.60 vs 2.64; with glasses on 2.06 / 9.75 / 2.35. SKY_TAA 168 registers both, binary
+  1,057,792 -> 1,059,328 B.
 - **Cost** (RTX 3070 Ti, 1920x1009, the report's shot 2 view, old vs new SKY_TAA SPV interleaved with `shaders reload
   sky_taa=`): sky pass 21.42 / 21.34 -> 21.44 / 21.40 ms (+0.05), 168 registers both, binary 871 -> 885 KB; the table
   7-13 ms on a worker. SKY_LITE unchanged (230024 B).

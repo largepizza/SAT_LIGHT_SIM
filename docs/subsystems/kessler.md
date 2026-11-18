@@ -24,6 +24,22 @@ x1 = physical), avoidance (`avoidance`, 0.9), horizon (`horizon_years`, 20), dus
 (`dust_gain`, x100), "Watch the next re-entry", live counts.
 Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night, 1x).
 
+- **The flare's sunspot group** (`SatelliteSimRefraction.cpp` fillSunspots, the block after the 48 hashed slots; drawn
+  by sat_sky.frag `sunspotFactor`, complexity `cx` 2): heliographic latitude +14 deg (in the ecliptic-pole frame the
+  spots use), crossing the central meridian at the flare (2037-07-14 09:30 UTC), carried by the differential rotation
+  (13.58 deg/day synodic at 14 deg): over the east limb 2037-07-07 ~18 UTC, 17 deg east of the central meridian at the
+  2037-07-13 eclipse (~03 UTC), over the west limb 2037-07-21 ~01 UTC; grown from flare - 16 d to - 9 d, decaying from
+  + 9 d (so full size the whole time it is on the disc). Its size is `refraction.fury_spot_msh` (`furySpotMsh`, default
+  12000 millionths of the solar hemisphere, umbrae + penumbrae; clamp 100-40000): the half-length E = 0.24 sqrt(MSH /
+  5250), every spot scaling with E. The shader draws it as a complex: the leader a merged penumbra holding five umbrae
+  (0.40-0.65 of the leader radius, spread over 0.85 of it), followers 0.85 / 0.45 x the leader (ordinary groups 0.70 /
+  0.34, two umbrae). At the default: E 0.363, leader radius 0.111 R, umbrae ~3200 MSH, the group 0.54 x 0.25 R (510" x 230"
+  on the true 944"-radius July disc, 780" x 360" on the 1.5x drawn one; the leader 210" across on the true disc). For scale: Carrington's 1859 group ~2300 MSH, April 1947's (the
+  largest recorded) ~6100. Measured with a numpy port of `sunspotFactor` (spotted = the photosphere under 0.9 of its
+  level); until 2026-11-17 the group was E 0.24 with the ordinary delta look: 3970 MSH (umbrae 860), leader radius
+  0.074 R, the group 0.32 x 0.15 R (305" x 140" true, 466" x 215" drawn). Visible through the eclipse glasses (sky-bodies.md "The Sun as an object") and by eye wherever the disc
+  is dim enough to leave the saturation (a low Sun).
+
 - **Everything is a pure function of sim time:** an append-only EVENT LOG (`kessler::Event`: kill, bump,
   collision, explosion, ASAT; origin engine / seed / user) with born / dead / end SECONDS since the epoch. Going
   back before an event just stops drawing its debris and brings the satellites back. Random numbers come from

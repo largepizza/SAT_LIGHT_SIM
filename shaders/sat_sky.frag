@@ -3730,6 +3730,15 @@ vec3 refrTau(vec4 c, vec3 BR, float BM, float hazeK)
 // the equator), a follower or a cluster of followers, and a scatter of PORES: pinprick dots with no penumbra. Only
 // spots past ~2500 km have an umbra inside a ragged, filamented penumbra; a complex (delta) group has umbrae sharing
 // one penumbra. Faculae brighten the groups toward the limb. Sizes are in the sphere's radius (the DRAWN disc).
+// The Sun's Fury's region (2026-11-17) is flagged by complexity cx = 2 (CPU: kFurySpotMsh / refraction.fury_spot_msh
+// sets its size): its leader is a COMPLEX of five umbrae with their penumbrae merged, its followers larger.
+//
+// Eclipse glasses (2026-11-17, the View popup / hud.right_panel.eclipse_glasses -> refrSpotInfo.w): the disc at its true
+// radius, as through a solar filter — limb darkening, spots, the Moon's bite in black — at a display level of its own
+// (kGlassesGain x the tint x the disc's transmittance / the centre's air transmittance), with no glare, aureole or lens
+// flare. NOT physics: real glasses darken everything else to black; here the rest of the frame keeps its exposure.
+const float kGlassesGain = 1.8;
+const vec3  kGlassesTint = vec3(1.0, 0.5, 0.18);    // the orange of black-polymer eclipse glasses
 uint spHashU(uint x)
 {
     x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
@@ -3799,12 +3808,15 @@ float sunspotFactor(vec3 p, float mu, vec3 sunD, float pxS)
         // the leader, a little west of the axis' middle
         vec2  cL  = vec2(0.42 * E, 0.08 * E * (spH(sd, 11u) - 0.5));
         f = min(f, spotProfile(uv - cL, rL, aa, sd * 31u + 1u, 1.0));
-        // a delta group: two more umbrae inside the leader's penumbra
-        if (cx > 0.5) {
-            for (int k = 0; k < 2; ++k) {
-                vec2 o = rL * 0.55 * vec2(spH(sd, 20u + uint(k)) - 0.5, spH(sd, 22u + uint(k)) - 0.5) * 2.0;
-                f = min(f, spotProfile(uv - cL - o, rL * 0.55, aa, sd * 31u + 5u + uint(k), 1.0));
-            }
+        // a delta group: two more umbrae inside the leader's penumbra; the Fury's (cx 2): five, spread wider, of mixed sizes
+        bool  mon = cx > 1.5;
+        int   nD  = mon ? 5 : (cx > 0.5 ? 2 : 0);
+        for (int k = 0; k < 5; ++k) {
+            if (k >= nD) break;
+            uint  ix = (k < 2) ? 20u + uint(k) : 150u + uint(k), iy = (k < 2) ? 22u + uint(k) : 160u + uint(k);
+            vec2  o  = rL * (mon ? 0.85 : 0.55) * vec2(spH(sd, ix) - 0.5, spH(sd, iy) - 0.5) * 2.0;
+            float rk = rL * (mon ? 0.40 + 0.25 * spH(sd, 170u + uint(k)) : 0.55);
+            f = min(f, spotProfile(uv - cL - o, rk, aa, sd * 31u + 5u + uint(k), 1.0));
         }
         // the followers: one spot, or a cluster in larger groups
         int nFol = 1 + int(3.0 * big + 0.5);
@@ -3814,7 +3826,7 @@ float sunspotFactor(vec3 p, float mu, vec3 sunD, float pxS)
             // the main follower behind the axis' middle; the others strung between it and the leader
             vec2  cF = (k == 0) ? vec2(-0.40 * E + 0.15 * E * (hk - 0.5), 0.25 * E * (spH(sd, 34u + uint(k)) - 0.5))
                                 : vec2((-0.55 + 0.8 * hk) * E, 0.35 * E * (spH(sd, 34u + uint(k)) - 0.5));
-            float rF = rL * (k == 0 ? 0.70 : 0.34) * (0.6 + 0.7 * spH(sd, 38u + uint(k)));
+            float rF = rL * (k == 0 ? (mon ? 0.85 : 0.70) : (mon ? 0.45 : 0.34)) * (0.6 + 0.7 * spH(sd, 38u + uint(k)));
             f = min(f, spotProfile(uv - cF, rF, aa, sd * 31u + 9u + uint(k), 1.0));
         }
         // pores: pinpricks, crowded near the two poles of the group, a few between
@@ -8310,7 +8322,9 @@ void main() {
             // the whole picture boils through one field, on real time.)
             vec3  pu   = upO - dJ * cz;
             pu = dot(pu, pu) > 1e-12 ? normalize(pu) : vec3(0.0);
-            float rD   = r0;                                    // the drawn radius (1.5x true; the true one near the Moon)
+            // Eclipse glasses (refrSpotInfo.w, the View popup; the header note at kGlassesGain): the disc at its TRUE radius.
+            bool  glasses = refrSpotInfo.w > 0.5;
+            float rD   = glasses ? mix(kSunAngR, r0, ek) : r0;  // the drawn radius (1.5x true; the true one near the Moon)
             float pxA  = pc.fovYRad / cloud.skyScreenH;
             vec3  ang3;
             vec3  dTg  = dJ;
@@ -8349,7 +8363,8 @@ void main() {
             }
             float cloudKnown = smoothstep(0.02, 0.1, dot(cloudTs, vec3(1.0 / 3.0)));   // 0 = the march stopped: optically thick
             gateR *= cloudKnown;
-            vec3  cov3 = (vec3(1.0) - smoothstep(vec3(rD - pxA), vec3(rD + pxA), ang3)) * onS * gateR * (moonDiscHit ? 0.0 : 1.0);
+            vec3  covD = (vec3(1.0) - smoothstep(vec3(rD - pxA), vec3(rD + pxA), ang3)) * onS * gateR;   // the Moon not counted
+            vec3  cov3 = covD * (moonDiscHit ? 0.0 : 1.0);
             // The haze near clouds (the sky loop's 2.5-km aerosol) toward the Sun, from the weather ~80 km that way.
             float hazeK = 0.0;
             if (cv2.mid3.w > 0.0) {
@@ -8417,7 +8432,9 @@ void main() {
             float gs   = 1.0 - exp(-60.0 * lc);                  // veiling glare follows the light that arrives
             vec3  hueC = Tc / max(max(Tc.r, max(Tc.g, Tc.b)), 1e-6);
             vec3  dLight = vec3(0.0);
-            if (max(cov3.r, max(cov3.g, cov3.b)) > 0.0) {
+            vec3  dGlass = vec3(0.0);
+            vec3  covU = glasses ? covD : cov3;
+            if (max(covU.r, max(covU.g, covU.b)) > 0.0) {
                 vec3  T  = (cols.x >= 0.0 ? exp(-refrTau(cols, BETA_R, BETA_M, hazeK))
                                           : exp(-sunPathTauExact(obsPos, dJ, BETA_R, BETA_M) - hzH / max(cz, 0.05))) * cloudTs;
                 // disc coordinates (green's true direction), in drawn radii
@@ -8434,6 +8451,13 @@ void main() {
                 // 4 pi / Omega_sun / (1 - u/3) = 2.3e5: the disc centre in the sky's units (pi L / E with mean-1 phases)
                 vec3  L  = exposure * 2.3e5 * (tabOn ? refrInfo.w : 1.0) * T * ld * sp;
                 dLight = (vec3(1.0) - exp(-L / 250.0)) * cov3;
+                // Through the glasses: the same transmittance (its colour: a low Sun stays red), limb darkening and spots,
+                // at a display level of its own: the air's loss at the centre is divided out by its brightest channel, so
+                // a horizon Sun is as bright as a high one in red. Cloud in front still dims it. The Moon in front is
+                // black (its coverage, anti-aliased).
+                float mA = max(max(TcAir.r, TcAir.g), max(TcAir.b, 1e-6));
+                dGlass = (vec3(1.0) - exp(-kGlassesGain * kGlassesTint * T * cloud.sunCloudT * ld * sp / mA))
+                       * (1.0 - moonCovTaa);
             }
             // The AUREOLE of the cloud in front of the Sun (2026-10-27, issue 20261027_182140): cloud droplets send about
             // half of what they scatter into a diffraction peak ~1 deg wide, which the march's broad phase lobes (HG 0.8-0.92,
@@ -8465,9 +8489,16 @@ void main() {
             float visS = tabOn ? clamp(refrSun.y, 0.0, 1.0) : geomFade;
             vec3  gCol = mix(sunCol, 1.5 * hueC, 0.8);
             float veilT = min(dot(cloudAtSun, vec3(1.0 / 3.0)), cloud.sunCloudT);
-            color += dLight
-                   + (glareA * visS * gCol * obsSunF * gs + coronA * visS * gCol * 0.12 * obsSunF * gs) * veilT
-                   + solarCorona * geomFade * min(cloudBlock, corInfo.w > 0.5 ? 1.0 : cloud.sunCloudT);
+            // The glasses replace what is behind the disc (the filter passes only the Sun) and draw no glare or aureole;
+            // the corona (totality) is added on top as without them.
+            // (At totality the whole Moon is black: it overhangs the true-radius disc, and a sky-lit ring round a black
+            // disc read as a drawing error.)
+            if (glasses)
+                color = mix(color, dGlass, max(covD, vec3(moonCovTaa * tot)));
+            else
+                color += dLight
+                       + (glareA * visS * gCol * obsSunF * gs + coronA * visS * gCol * 0.12 * obsSunF * gs) * veilT;
+            color += solarCorona * geomFade * min(cloudBlock, corInfo.w > 0.5 ? 1.0 : cloud.sunCloudT);
         }
 #else
         color += (discVis * geomFade * sunCol
@@ -8513,7 +8544,11 @@ void main() {
         // Gate on limbZ (sin of geometric limb depression, already accounts for observer
         // altitude) so the flare correctly persists when the sun is visible past the
         // curved Earth from orbit — not just when sunDirENU.w > 0.
+#ifdef SKY_SUN_SHADOW
+        if (pc.sunDirENU.w > limbZ - 0.05 && refrSpotInfo.w < 0.5) {   // (eclipse glasses: no lens flare)
+#else
         if (pc.sunDirENU.w > limbZ - 0.05) {
+#endif
             float above        = pc.sunDirENU.w - limbZ;
             float sunIntensity = 10.0 * clamp(above / 0.5, 0.0, 1.0);
             vec3 sunCam = mat3(pc.skyView) * normalize(pc.sunDirENU.xyz);
