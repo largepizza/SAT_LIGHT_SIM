@@ -75,7 +75,7 @@ One file per area in `docs/subsystems/` (sizes as of 2026-11-03). Outline it, th
 | Photometry conventions, point sources, bloom and glare, sky glow | `photometry.md` (19) |
 | Launches, rockets, plumes, pads, droneships, crew / cargo, deployment era, mission ops | `launches.md` (169) |
 | Kessler: the Sun's Fury, debris, engine, rollback, prebake, memory | `kessler.md` (53) |
-| UI / Clay / UI kit, HUD popups, controls + keybindings, Settings window + search, intro, tutorial | `ui.md` (48) |
+| UI / Clay / UI kit, HUD popups, controls + keybindings, Settings window + search, intro, first-run hints, tutorial | `ui.md` (48) |
 | Video export, HQ photo, cinematics, issue reports, bookmarks | `capture.md` (29) |
 | Ambient sound, music, tonality | `sound.md` (23) |
 | GPU / CPU profiling, knockouts, hitches, every perf pass | `perf.md` (56) |

@@ -1,0 +1,11 @@
+{
+  "controls": {
+    "key_layout": 3,
+    "pad_layout": 2,
+    "keybindings": [
+      {"action": "Toggle UI", "key": 258, "gp_button": 6},
+      {"action": "Pause/Resume", "key": 32, "gp_button": 2},
+      {"action": "Toggle Cursor", "key": -1, "gp_button": 7}
+    ]
+  }
+}

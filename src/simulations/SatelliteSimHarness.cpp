@@ -206,12 +206,12 @@ json patchFor(const std::string &dotted, const json &value)
 const char *kHelp =
     "wait <frames> [maxs=2] | wait seconds <s> | wait settle [frames] [maxs=2] | wait settle auto [max=160] [min=40] [thr=0.1] [hold=4] [noise=1.5] [maxs=2]; "
     "time [set <iso>|add <s>|sun <el deg|noon|midnight> [rising|setting]|pause|play|scale <label>|reverse on/off]; "
-    "observer lat= lon= [agl=|alt=]; beams [list] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [clamp=on] [drift=intro|default]; report list [dir] | report info <issue dir> | report load <issue dir> [shot=1] [settings=on|off] [clamp=on] [trail=on|off] | report shot [note] [new=1] [title=] [bar=1] | report mark [issue] shot= [pin=x,y|off] [rect=x,y,w,h|off] | report export [issue]; drift [default] [phase=] [rate=]; intro [state|play|skip]; camera [az= el= fov= roll=] | camera look|track <sun|moon|sel|planet name|off>; "
+    "observer lat= lon= [agl=|alt=]; beams [list] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [clamp=on] [drift=intro|default]; report list [dir] | report info <issue dir> | report load <issue dir> [shot=1] [settings=on|off] [clamp=on] [trail=on|off] | report shot [note] [new=1] [title=] [bar=1] | report mark [issue] shot= [pin=x,y|off] [rect=x,y,w,h|off] | report export [issue]; drift [default] [phase=] [rate=]; intro [state|play [at=<s>] [bench=1]|skip]; camera [az= el= fov= roll=] | camera look|track <sun|moon|sel|planet name|off>; "
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select star <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "exposure [auto|hold|fast]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s] [wait=1]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [cdc=<spv>] [brick=<spv>] [nlc=<spv>] [sky=<spv>] [sky_taa=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; skyevents [state]|events|list <kind>|watch <solar|lunar|conjunction|occultation|moonglint|meteors|comet|supernova|cme|cometstorm|row|special <0-3>|aurora [t=]> [n=]|spaceweather; stars [state]|find <name>|select <name>; moonbase [state]|windows [days=] [limit=] [jitter=]|base <i> [lean=] [jitter=]; meteors [state]|count [minutes=] [lm=] [shower=]|force [kind=meteor|fireball|bolide] [shower=] [mag=] [az=] [el=] [v=] [delay=]|go [shower=]; comets [state]|list [days=]|watch [k|great] [days=] [sun_max=] [orbit=1]; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|pick|return|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|preview <file> [shot=] [scale=] [fps=]|save|load|state|stop; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [cdc=<spv>] [brick=<spv>] [nlc=<spv>] [sky=<spv>] [sky_taa=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; skyevents [state]|events|list <kind>|watch <solar|lunar|conjunction|occultation|moonglint|meteors|comet|supernova|cme|cometstorm|row|special <0-3>|aurora [t=]> [n=]|spaceweather; stars [state]|find <name>|select <name>; moonbase [state]|windows [days=] [limit=] [jitter=]|base <i> [lean=] [jitter=]; meteors [state]|count [minutes=] [lm=] [shower=]|force [kind=meteor|fireball|bolide] [shower=] [mag=] [az=] [el=] [v=] [delay=]|go [shower=]; comets [state]|list [days=]|watch [k|great] [days=] [sun_max=] [orbit=1]; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|pick|return|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; fps on|off|state; mouse move dx= dy= [frames=] | mouse click left|right | mouse scroll dy=; hints on|off|reset|state|set <gate> [0|1]|force <n> [pad=0|1]; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|preview <file> [shot=] [scale=] [fps=]|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=] [frames=] [video=]; video start [name] [fps=] [scale=] [ui=on] [sound=all|ambience|off]|stop|state; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
@@ -249,7 +249,9 @@ void SatelliteSim::harnessInit()
     // A harness run starts in the scene, not the cinematic, and without first-run notices that would
     // otherwise sit in every UI capture for their first eight seconds.
     showIntro = false;
+    fpsMode = false;       // menu mode, as every script before the FPS mode assumes (`fps on` turns it on; logic only)
     tutAutoChecked = true; // nor the first-run tutorial (`tutorial start` shows it)
+    hintsHarnessOn_ = false; // nor the first run's hints (`hints on`; then `intro play` runs a pass as a first run)
     graphicsAutoNoticeTimer = 0.0f;
     crashRecoveryNoticeTimer = 0.0f;
     harnessRunner_ = new harness::Runner();
@@ -439,6 +441,8 @@ json SatelliteSim::harnessStateJson()
                                     {"coast_deg_s", cineCoastDegS_}, {"held", camera.captured || harnessDragFrames_ > 0},
                                     {"skip_frames", lookSkipFrames_}};
     }
+    j["camera"]["fps_mode"] = fpsMode; // the FPS camera mode's setting (`fps state` has the rest)
+    j["camera"]["fps_live"] = fpsLive_;
     const glm::vec3 sun(sunDirENU), moon(moonDirENU);
     j["sun"] = {{"az_deg", azDegOf(sun)}, {"el_deg", elDegOf(sun)}};
     // The global exposure (SatelliteSim.h): the user's EV, the metered auto offset and the meter's
@@ -1053,6 +1057,7 @@ json SatelliteSim::harnessStateJson()
         }
     }
     j["build"] = {{"version", APP_VERSION}, {"commit", APP_GIT_COMMIT}, {"config", cfg}, {"gpu", gpu}};
+    j["hints"] = hintsStateJson(); // (`expect state.hints.seen 9,10,8`)
     j["harness_frame"] = harnessRunner_ ? harnessRunner_->frame() : 0;
     j["state_ms"]["total"] = (harness::nowS() - tS0) * 1000.0;
     return j;
@@ -1483,34 +1488,52 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     }
 
     // ── intro ───────────────────────────────────────────────────────────────────
-    // `intro [state]`, `intro play`, `intro skip` (2026-11-13): the intro cinematic. `play` = the Display tab's
-    // Replay Intro (from the top, at its own moment; no tutorial or benchmark after it under the harness); `skip`
-    // ends it as Space does. `state` = playing, elapsed, the caption beat, the sim time.
+    // `intro [state]`, `intro play [at=<s>] [bench=1]`, `intro skip` (2026-11-13; 2026-11-16 the opening): `play` = the
+    // Display tab's Replay Intro (from the top, at its own moment and place, FPS mode on: logic only here; no tutorial
+    // after it under the harness); `skip` ends the captions now (no benchmark). `state` = playing, elapsed, the caption
+    // beat, the toolbars, the FPS mode, the clock, the observer and the benchmark.
     if (n == "intro")
     {
         const std::string sub = lower(pos(0));
         if (sub == "play")
+        {
             startIntroReplay();
+            // (2026-11-16) `at=<s>`: the caption clock starts there (the next frame still sets the scene: the moment, key
+            // 0's place; a caption is at full alpha 0.8 s after its key). The music is not seeked.
+            if (c.has("at"))
+                introElapsed = std::clamp((float)c.num("at", 0.0), 0.0f, kIntroKeyframes[kIntroKeyframeCount - 1].t - 0.5f);
+            // `bench=1`: this playback measures and decides the UC1 preset as a first run does (applies it, shows the
+            // notice); `intro state` -> bench.last after the end.
+            introBenchHarness_ = c.num("bench", 0.0) > 0.5;
+        }
         else if (sub == "skip" && showIntro)
             finishIntro(true);
         r["playing"] = showIntro;
         r["elapsed_s"] = introElapsed;
         r["beat"] = introCaptionIndex;
+        r["caption_index"] = introCaptionIndex;
         r["length_s"] = kIntroKeyframes[kIntroKeyframeCount - 1].t;
+        r["scene_set"] = introBasisValid;
+        r["toolbars_shown"] = !showIntro || introToolbarsShown;
+        r["fps_mode"] = fpsMode;
+        r["fps_live"] = fpsLogicLive();
         r["utc"] = isoFromJ2000((double)simDayJ2000 * 86400.0 + simSecInDay);
-        // (2026-11-14) the ending: `phase` move / still (arrived on the last key: still, the title's FOV zoom-out) / off,
-        // `arrive_s` (kIntroArriveT), and the camera as applied this frame (the rig's double look and eye).
-        r["phase"] = !showIntro ? "off" : introElapsed < kIntroArriveT ? "move" : "still";
-        r["arrive_s"] = kIntroArriveT;
-        r["fov_deg"] = camera.fovYDeg;
-        r["az_deg"] = camera.azDeg;
-        r["el_deg"] = camElDeg();
-        r["roll_deg"] = camRollDeg();
-        r["eye_dir_ecef"] = {camEyeDir.x, camEyeDir.y, camEyeDir.z};
-        r["fwd_ecef"] = {camFwd.x, camFwd.y, camFwd.z};
-        r["obs_height_m"] = obsHeightOffset;
+        r["observer"] = {{"lat_deg", obsLatDeg}, {"lon_deg", obsLonDeg}, {"height_m", obsHeightOffset}};
+        r["camera"] = {{"az_deg", camera.azDeg}, {"el_deg", camElDeg()}, {"fov_deg", camera.fovYDeg}};
         r["time_paused"] = timePaused;
         r["time_scale"] = kTimeLabels[std::clamp(timeScaleIdx, 0, kNumTimeScales - 1)];
+        r["time_reverse"] = timeDir < 0.0f;
+        r["bench"] = {{"armed", showIntro && !crashRecoveryMode && (introBenchHarness_ || (!introIsReplay && bootChoiceMode < 0))},
+                      {"frames", introBenchFrames},
+                      {"mean_ms", introBenchFrames > 0 ? introBenchMsSum / (float)introBenchFrames : 0.0f},
+                      {"end_s", kIntroBenchEndT},
+                      {"preset", kGraphicsPresetNames[(int)graphicsPreset]},
+                      {"would_set", kGraphicsPresetNames[(int)introBenchDecision(
+                                        introBenchFrames > 0 ? introBenchMsSum / (float)introBenchFrames : 12.0f, graphicsPreset)]}};
+        if (introBenchLast_.valid)
+            r["bench"]["last"] = {{"mean_ms", introBenchLast_.meanMs}, {"frames", introBenchLast_.frames},
+                                  {"from", kGraphicsPresetNames[introBenchLast_.fromPreset]},
+                                  {"to", kGraphicsPresetNames[introBenchLast_.toPreset]}};
         char buf[128];
         snprintf(buf, sizeof(buf), "intro %s, %.1f / %.1f s, beat %d", showIntro ? "playing" : "off", introElapsed,
                  kIntroKeyframes[kIntroKeyframeCount - 1].t, introCaptionIndex);
@@ -1590,7 +1613,15 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     // only at 5e-8 rad/s, ~300 m per 10 minutes) or the compiled default (drift=default).
     if (n == "snapshot")
     {
-        std::ifstream in(pos(0));
+        // A relative path that is not next to the exe is read from where the run was launched (the repo, for run.py).
+        std::string snapPath = pos(0);
+        {
+            std::error_code ec;
+            if (!snapPath.empty() && fs::path(snapPath).is_relative() && !fs::exists(snapPath, ec) &&
+                !harness::options().launchCwd.empty())
+                snapPath = (fs::path(harness::options().launchCwd) / snapPath).string();
+        }
+        std::ifstream in(snapPath);
         if (pos(0).empty() || !in)
             fail("snapshot: cannot open '" + pos(0) + "' (a perf_profiles/profile_log.jsonl)");
         std::vector<json> recs;
@@ -2042,6 +2073,12 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         return harnessComets(a); // the comets (SatelliteSimComets.cpp)
     if (n == "inertial")
         return harnessInertial(a); // the inertial camera lock (SatelliteSimInertial.cpp)
+    if (n == "fps")
+        return harnessFps(a); // the FPS camera mode (SatelliteSimFps.cpp)
+    if (n == "mouse")
+        return harnessMouse(a); // synthetic mouse motion / clicks / wheel (SatelliteSimFps.cpp)
+    if (n == "hints")
+        return harnessHints(a); // the first run's hints (SatelliteSimHints.cpp)
     if (n == "stars")
         return harnessStars(a); // the star catalogue, the faint-star limit, the supernova (SatelliteSimStars.cpp)
     if (n == "eclipse")
@@ -2931,7 +2968,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             for (size_t i = 0; i < keybindings.size(); ++i)
                 if (!keybindings[i].held && keybindings[i].gpButton == b)
                 {
-                    dispatchKeyAction((int)i);
+                    dispatchKeyAction((int)i, true);
                     fired = keybindings[i].action;
                 }
         r["button"] = name;
@@ -4373,7 +4410,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 {"enter", GLFW_KEY_ENTER}, {"esc", GLFW_KEY_ESCAPE}, {"escape", GLFW_KEY_ESCAPE}, {"tab", GLFW_KEY_TAB},
                 {"backspace", GLFW_KEY_BACKSPACE}, {"delete", GLFW_KEY_DELETE}, {"left", GLFW_KEY_LEFT},
                 {"right", GLFW_KEY_RIGHT}, {"home", GLFW_KEY_HOME}, {"end", GLFW_KEY_END}, {"w", GLFW_KEY_W},
-                {"up", GLFW_KEY_UP}, {"down", GLFW_KEY_DOWN},
+                {"up", GLFW_KEY_UP}, {"down", GLFW_KEY_DOWN}, {"space", GLFW_KEY_SPACE}, // (2026-11-16: Pause in the opening)
                 // the screenshot / report keys (2026-10-19): f7 new issue shot, f9 shot, f10 screenshot with UI, f12 screenshot
                 {"f6", GLFW_KEY_F6}, {"f7", GLFW_KEY_F7}, {"f8", GLFW_KEY_F8}, {"f9", GLFW_KEY_F9}, {"f10", GLFW_KEY_F10}, {"f12", GLFW_KEY_F12},
                 // the mission milestone keys (2026-10-20)
@@ -6791,9 +6828,11 @@ bool SatelliteSim::consoleKey(int key, int action)
 {
     if (!consoleOpen_)
     {
-        if (key == GLFW_KEY_GRAVE_ACCENT && action == GLFW_PRESS && !showIntro)
+        if (key == GLFW_KEY_GRAVE_ACCENT && action == GLFW_PRESS)
         {
             consoleOpen_ = true;
+            if (fpsMode)
+                fpsSet(false, FpsWhy::Window); // a text entry wants the pointer: menu mode
             ensureConsoleRunner();
             return true;
         }

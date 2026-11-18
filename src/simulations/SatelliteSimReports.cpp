@@ -381,7 +381,9 @@ bool SatelliteSim::reportTakeShot(bool newIssue, bool openBar)
 
     // A NEW issue opens the Issue reports window on it: its title, description and the shot's note are all
     // there (nothing is focused, so movement keys keep working). With the HUD hidden the bar stands in.
-    const bool openWindow = isNew && openBar && !showIntro && uiVisible;
+    const bool openWindow = isNew && openBar && uiVisible;
+    if (openBar && fpsMode)
+        fpsSet(false, FpsWhy::Window); // the report window / note bar wants the pointer: menu mode
     if (openWindow)
     {
         rpChrome.open = true;
@@ -391,7 +393,7 @@ bool SatelliteSim::reportTakeShot(bool newIssue, bool openBar)
         reportBarOpen_ = false;
         reportsLoad(); // (reportTick runs before any layout)
     }
-    if (openBar && !showIntro && !openWindow)
+    if (openBar && !openWindow)
     {
         // Moving or looking when the key was pressed: the bar opens WITHOUT the keyboard (the held W would
         // type into it and movement would stop). Enter or a click focuses the note.

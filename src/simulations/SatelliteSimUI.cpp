@@ -755,13 +755,29 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // turning the camera after the mouse stops; releasing RMB zeroes it. Latched cinematic mode
     // (the Movement popup): while RMB is held the look rate follows the mouse rate, smoothed, and
     // on release the camera coasts at that rate (capped); with RMB up the mouse does not steer.
-    // UC3: skip during the intro cinematic — updateIntroCinematic() (recordCompute) drives
-    // camera.elDeg/obsFacing directly, and letting RMB-look run concurrently would fight it (and
-    // would leave the cursor captured/hidden partway through a cutscene the user hasn't consented
-    // to control yet).
+    // (Skipped while a cinematic plays, which drives the camera; the opening is normal play.)
     camSync(); // the camera rig: adopts a mirror an unconverted write changed, then publishes (SatelliteSimCamera.cpp)
-    if (win && !showIntro && !cineActive())
+    // The FPS mode (SatelliteSimFps.cpp): forced exits, the right press that leaves it, the OS cursor capture.
+    fpsTick(ui.input(), dt);
+    camera.sensMul = std::clamp(mouseSensMul, 0.05f, 10.0f);
+    fpsLookedThisFrame_ = false;
+    if (win && !cineActive())
     {
+        // FPS mode: the mouse looks with no button held. Only a captured OS cursor's motion counts (under the harness,
+        // or while it is not captured, a pointer crossing the window must not turn the camera), plus `mouse move`.
+        const bool fpsHeld = fpsLive_;
+        if (fpsHeld && !fpsOsCaptured_)
+            dmx = dmy = 0.0f;
+        if (harnessMouseFrames_ > 0)
+        {
+            if (fpsHeld)
+            {
+                dmx += harnessMouseDx_;
+                dmy += harnessMouseDy_;
+            }
+            --harnessMouseFrames_;
+        }
+
         // Track lock: the aim above owns the camera's direction this frame, so every look input —
         // mouse deltas, their cinematic-drift velocities, the gamepad stick — is dropped rather than
         // allowed to overwrite it and fight it frame by frame. Zoom is not look input: the wheel's FOV
@@ -800,7 +816,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         // restores the press position: a delta of minus the whole drag), and in cinematic mode that jump was taken as
         // a flick (issue 20261030_142354: the camera flung off at ~200 deg/s on releasing RMB or switching the mode on).
         {
-            const bool heldNow = camera.captured || hDrag;
+            const bool heldNow = camera.captured || hDrag || fpsHeld;
             if (heldNow != lookHeldPrev_ || cinematicLatched != cineLatchedPrev_)
                 lookSkipFrames_ = kLookSkipFrames;
             if (cinematicLatched != cineLatchedPrev_)
@@ -818,14 +834,14 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
 
         // Clear cinematic mode as soon as RMB is released — the toggle only lives
         // while a pan is active, so it resets automatically for the next drag.
-        if (!camera.captured && !hDrag && cinematicMode)
+        if (!camera.captured && !hDrag && !fpsHeld && cinematicMode)
         {
             cinematicMode = false;
             cinematicYawVel = 0.0f;
             cinematicPitchVel = 0.0f;
         }
 
-        bool cinematic = ((camera.captured || hDrag) && cinematicMode) || cinematicLatched;
+        bool cinematic = ((camera.captured || hDrag || fpsHeld) && cinematicMode) || cinematicLatched;
         const float dtL = std::clamp(dt, 1.0e-3f, 0.1f);
         // Caps the look rate (mouse px/s) so it turns the view at most maxDegS; returns the rate in deg/s.
         auto capRate = [&](float maxDegS) {
@@ -841,9 +857,10 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
 
         if (cinematic)
         {
-            // RMB capture/release only; the rotation is applied below.
-            camera.updateCapture(win);
-            const bool held = camera.captured || hDrag;
+            // RMB capture/release only (not in the FPS mode, where a right press leaves it); the rotation is applied below.
+            if (!fpsHeld)
+                camera.updateCapture(win);
+            const bool held = camera.captured || hDrag || fpsHeld;
 
             if (held && cinematicMode)
             {
@@ -878,6 +895,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
 
             // Apply this frame's rotation (rate x dt; identical math to the direct-control path).
             const float yawPx = cinematicYawVel * dtL, pitchPx = cinematicPitchVel * dtL;
+            fpsFacts_.lookDeg += std::sqrt((double)yawPx * yawPx + (double)pitchPx * pitchPx) * camera.lookSens();
             if (fabsf(yawPx) > 1.0e-6f)
                 camYaw(glm::radians(-(double)yawPx * camera.lookSens())); // (+ = left: look-right is a negative angle)
             camPitch(-(double)pitchPx * camera.lookSens());
@@ -886,11 +904,19 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         }
         else
         {
-            // Normal direct control: the drag turns the camera rig (screen Y down: mouse up = negative dmy = look up).
-            if (camera.updateCapture(win))
+            // Normal direct control: the drag (or the FPS mode, no button) turns the camera rig (screen Y down: mouse up =
+            // negative dmy = look up).
+            const bool turning = fpsHeld ? true : camera.updateCapture(win);
+            if (turning)
                 camPitch(-(double)dmy * camera.lookSens());
-            if (camera.captured && dmx != 0.0f)
+            if ((camera.captured || fpsHeld) && dmx != 0.0f)
                 camYaw(glm::radians(-(double)dmx * camera.lookSens())); // (+ = left: look-right is a negative angle)
+            if ((turning || camera.captured || fpsHeld) && (dmx != 0.0f || dmy != 0.0f))
+            {
+                fpsFacts_.lookDeg += std::sqrt((double)dmx * dmx + (double)dmy * dmy) * camera.lookSens();
+                if (!fpsHeld && camera.captured)
+                    fpsFacts_.rightDragUsed = true;
+            }
 
             // Kill any residual drift immediately when leaving cinematic mode.
             if (cinematicActive)
@@ -901,14 +927,15 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
                 cineCoastDegS_ = 0.0f;
             }
         }
-        lookHeldPrev_ = camera.captured || hDrag;
+        lookHeldPrev_ = camera.captured || hDrag || fpsHeld;
+        fpsLookedThisFrame_ = fpsHeld && (dmx != 0.0f || dmy != 0.0f);
 
         // Gamepad look (right stick): applied unconditionally, independent of the mouse/RMB
         // capture logic above — a controller has no cursor to capture, so it always drives
         // the camera when deflected. Filled by pollGamepad() in the previous recordCompute.
         if (gpLookYawDeg != 0.0f || gpLookPitchDeg != 0.0f)
         {
-            const float gpScale = camera.lookSens() / camera.sens; // FOV scaling, as for the mouse
+            const float gpScale = camera.fovLookScale(); // FOV scaling, as for the mouse (not its sensitivity)
             camYaw(glm::radians(-(double)gpLookYawDeg * gpScale));
             camPitch(-(double)gpLookPitchDeg * gpScale);
         }
@@ -939,37 +966,36 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // "L stick / WASD") every time A was pressed with the cursor up. vCursorActive here is exactly
     // the same value App.cpp consulted to decide whether to override lmb this frame, so it
     // correctly distinguishes a real mouse click from a relayed gamepad one.
-    if ((inp.lmbPressed && !vCursorActive) || inp.rmbPressed || inp.scrollY != 0.0f || camera.captured)
+    if ((inp.lmbPressed && !vCursorActive) || inp.rmbPressed || inp.scrollY != 0.0f || camera.captured || fpsLookedThisFrame_)
         lastInputWasGamepad = false;
 
-    // UC3: the cinematic intro hides the entire normal HUD — no left/right panels, no
-    // settings/view-controls windows, no satellite/planet picking, no scroll-to-zoom — nothing
-    // but buildIntroOverlay's own caption + skip-hint. Checked ahead of uiVisible (and ahead of
-    // icon loading/scroll/click handling below) so none of that runs while the intro owns the
-    // camera, independent of whether the player has the rest of the UI toggled on or off.
-    if (showIntro)
-    {
-        buildIntroOverlay(inp, ui);
-        return;
-    }
+    // UC3, the opening: the corner toolbars (and their popups) stay hidden while the captions play until the player is
+    // first in menu mode (Tab, a right click, a forced exit), after this frame's fpsTick (the look block above);
+    // finishIntro shows them for good. Everything else is normal play.
+    if (showIntro && introBasisValid && !fpsMode)
+        introToolbarsShown = true;
+    const bool introHidesToolbars = showIntro && !introToolbarsShown;
     // Before the click handling below: a click on the tutorial's card must not also pick a satellite,
     // and its completion test reads this frame's look (the block above) and keys.
     fprof::mark("ui.seg3a_look");
     updateTutorial(dt);
+    hintsTick(inp, dt); // the first run's hints: gates, signals, the scheduler (SatelliteSimHints.cpp)
     fprof::mark("ui.seg3b_tutorial");
 
     // ── Lazy icon loading (first buildUI call after init) ─────────────────────
     loadUiIcons(ui); // (normally already done by prepareUI at load)
 
     // ── Scroll wheel → FOV zoom (when not hovering over UI panels) ───────────
-    if (inp.scrollY != 0.0f && !ui.mouseOverUI())
-    {
+    // (+ harness `mouse scroll dy=`: notches for this frame, through the same path)
+    const float scrollY = inp.scrollY + harnessScrollY_;
+    harnessScrollY_ = 0.0f;
+    if (scrollY != 0.0f && !ui.mouseOverUI())
     {
         if (cinematicLatched)
-            cineScrollZoom += inp.scrollY * logf(0.93f); // cinematic mode: the wheel adds to a pending zoom that eases in (recordCompute)
+            cineScrollZoom += scrollY * logf(0.93f); // cinematic mode: the wheel adds to a pending zoom that eases in (recordCompute)
         else
-            camera.zoomBy(powf(0.93f, inp.scrollY)); // ~5 deg per notch at 70 deg, ~0.04 deg at 0.5 deg
-    }
+            camera.zoomBy(powf(0.93f, scrollY)); // ~5 deg per notch at 70 deg, ~0.04 deg at 0.5 deg
+        hintZoomIn_ = true;
     }
 
     // ── Left-click → satellite/planet pick/select ─────────────────────────────
@@ -977,7 +1003,13 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // left mouse button is otherwise unused for scene interaction (RMB drives camera look).
     // Planets get priority on an exact overlap (pickPlanetAt tried first, only 6 candidates) —
     // they're rare and the more interesting selection; mutually exclusive with satellite selection.
-    if (inp.lmbPressed && !ui.mouseOverUI())
+    // FPS mode: the click picks at the screen centre (the UI gets no pointer, so nothing is "over the UI").
+    if (fpsLive_)
+    {
+        if (inp.lmbPressed && !vCursorActive)
+            fpsCentreClick();
+    }
+    else if (inp.lmbPressed && !ui.mouseOverUI())
         pickAndSelectAt(inp.mouseX, inp.mouseY, inp.screenW, inp.screenH);
     hudPopupsTick(inp, ui); // an unpinned Movement / View popup closes on a click in the sim
 
@@ -987,6 +1019,10 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     buildHarnessOverlays(inp, ui); // harness `overlay` titles/labels, likewise (docs/HARNESS.md)
     buildCineHud(inp, ui);         // a playing / exporting cinematic's progress and Stop, likewise
     buildVideoHud(inp, ui);        // the REC badge while recording a video, likewise
+    buildFpsRing(ui);              // the FPS mode's centre ring after a click, likewise (SatelliteSimFps.cpp)
+    // The opening's captions, likewise (they drew over a hidden HUD before the opening was playable). Clear of the
+    // corner toolbars when those draw this frame.
+    buildIntroOverlay(inp, ui, uiVisible && !introHidesToolbars);
     fprof::mark("ui.seg3d_console_cine");
     bookmarkTick(ui);              // bookmarks: the list, thumbnail captures and uploads (window open or not)
     fprof::mark("ui.seg3e_bookmarks");
@@ -1001,10 +1037,13 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         return;
 
     fprof::mark("ui.seg3_look_pick");
-    buildLeftHudPanel(inp, ui);
-    buildRightHudPanel(inp, ui);
-    buildHudPopup(inp, ui, 0); // the Movement and View popups (SatelliteSimHudPopups.cpp)
-    buildHudPopup(inp, ui, 1);
+    if (!introHidesToolbars) // (the opening holds them back until the first menu mode: see above)
+    {
+        buildLeftHudPanel(inp, ui);
+        buildRightHudPanel(inp, ui);
+        buildHudPopup(inp, ui, 0); // the Movement and View popups (SatelliteSimHudPopups.cpp)
+        buildHudPopup(inp, ui, 1);
+    }
     buildSettingsWindow(inp, ui);
     buildViewControlsWindow(inp, ui);
     buildTraceWindow(inp, ui);
@@ -1073,6 +1112,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     buildKesslerBanner(ui);
     if (!hideShotChrome)
         buildScreenshotToast(dt, inp, ui);
+    buildHints(inp, ui);    // the first run's hint popup, clear of every HUD element above (SatelliteSimHints.cpp)
     buildTutorial(inp, ui); // after every panel it points at: their boxes are last frame's layout
 
     // UC4: draw the virtual cursor itself — inp.mouseX/Y IS vCursorX/Y here (App overrode the
@@ -1128,14 +1168,7 @@ void SatelliteSim::buildLeftHudPanel(const UIInput &inp, UIRenderer &ui)
              timeDir < 0.0f ? "REV " : "", kTimeLabels[timeScaleIdx]);
 
     const float kMargin = 12.0f;
-    CLAY(CLAY_ID("LeftPanel"), {.layout = {
-                                    .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
-                                    .padding = {10, 10, 8, 8},
-                                    .childGap = 6,
-                                    .layoutDirection = CLAY_TOP_TO_BOTTOM},
-                                .backgroundColor = Pal::panelBg,
-                                .cornerRadius = CLAY_CORNER_RADIUS(Style::panelCornerRadius),
-                                .floating = {.offset = {kMargin, -kMargin}, .zIndex = 5, .attachPoints = {.element = CLAY_ATTACH_POINT_LEFT_BOTTOM, .parent = CLAY_ATTACH_POINT_LEFT_BOTTOM}, .attachTo = CLAY_ATTACH_TO_ROOT}})
+    CLAY(CLAY_ID("LeftPanel"), uiHudPanel({.offset = {kMargin, -kMargin}, .zIndex = 5, .attachPoints = {.element = CLAY_ATTACH_POINT_LEFT_BOTTOM, .parent = CLAY_ATTACH_POINT_LEFT_BOTTOM}, .attachTo = CLAY_ATTACH_TO_ROOT}, 6))
     {
         // UTC time + speed indicator in one row
         CLAY(CLAY_ID("TimeHeaderRow"), {.layout = {
@@ -1859,14 +1892,7 @@ void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
     }
 
     const float kOffsetX = 18.0f, kOffsetY = -8.0f; // nudge off the point itself
-    CLAY(CLAY_ID("SelSatPanel"), {.layout = {
-                                      .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
-                                      .padding = {10, 10, 8, 8},
-                                      .childGap = 3,
-                                      .layoutDirection = CLAY_TOP_TO_BOTTOM},
-                                  .backgroundColor = Pal::panelBg,
-                                  .cornerRadius = CLAY_CORNER_RADIUS(Style::panelCornerRadius),
-                                  .floating = {.offset = {sx + kOffsetX, sy + kOffsetY}, .zIndex = 6, .attachTo = CLAY_ATTACH_TO_ROOT}})
+    CLAY(CLAY_ID("SelSatPanel"), uiHudPanel({.offset = {sx + kOffsetX, sy + kOffsetY}, .zIndex = 6, .attachTo = CLAY_ATTACH_TO_ROOT}))
     {
         Clay_String headStr{false, (int32_t)strlen(infoLines[0]), infoLines[0]};
         CLAY_TEXT(headStr, CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(13)}));
@@ -3360,7 +3386,7 @@ void SatelliteSim::buildFollowHud(const UIInput &inp, UIRenderer &ui)
         // (landing burn), T+423 s, 1 km up ... again" for a booster long since caught: dropped on a sim jump.)
         if (std::abs((double)simDayJ2000 * 86400.0 + simSecInDay - followAgainSimT) > 600.0)
             followAgainUntil = 0.0;
-        if (followAgainUntil <= glfwGetTime() || cineActive() || showIntro || (followLastIdx < 0 && !followLastIsTr))
+        if (followAgainUntil <= glfwGetTime() || cineActive() || (followLastIdx < 0 && !followLastIsTr))
             return;
         static char againBuf[200], againTip[96];
         snprintf(againBuf, sizeof(againBuf), tx(Txt::FmtGoToAgain), followLastLabel[0] ? labelNameLen(followLastLabel) : 15,
@@ -4801,9 +4827,15 @@ void SatelliteSim::buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui)
 
     // ── MOUSE: the two inputs that are not bindings (the old Camera tab) ──────────────────────────────────
     uiSection("CtrlSec", 2, tx(Txt::SecMouse));
-    uiKV("CtrlMouseKV", 0, tx(Txt::LblLookAround), tx(Txt::ValRightDrag), 130 * cs);
+    uiKV("CtrlMouseKV", 0, tx(Txt::LblLookAround),
+         uiKitStr(tx(Txt::FmtLookAroundModes), keyDisplayName(keybindings[KB_TOGGLE_CURSOR].key)), 130 * cs);
     uiKV("CtrlMouseKV", 1, tx(Txt::LblZoom), tx(Txt::ValScrollWheel), 130 * cs);
-    uiKV("CtrlMouseKV", 2, tx(Txt::LblSelect), tx(Txt::ValLeftClick), 130 * cs);
+    uiKV("CtrlMouseKV", 2, tx(Txt::LblSelect), tx(Txt::ValLeftClickFps), 130 * cs);
+    {
+        // Mouse sensitivity: x the 0.12 deg / px look rate, both look modes (camera.sensMul).
+        CloudSlider ms[] = {{tx(Txt::SldMouseSensitivity), &mouseSensMul, 0.1f, 4.0f, 0.05f, "%.2f", 626}};
+        buildCloudSliderRows(inp, ui, ms, 1, false);
+    }
 
     // ── INVERT LOOK: applied where the mouse and right-stick look deltas are consumed (buildUI's look block) ──
     uiSection("CtrlSec", 3, tx(Txt::SecInvertLook));
@@ -5084,8 +5116,9 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     uiToggleRow(inp, ui, "AskGfxMode", 0, tx(Txt::LblAskForGraphicsModeOnStartup), askGraphicsModeOnStartup);
     settingsButtonRow(searchActive(), CLAY_ID("DispStartupBtns"), [&]()
     {
-        if (uiButton(inp, ui, "ReplayIntroBtn", 0, tx(Txt::BtnReplayIntro), nullptr, false, !showIntro))
+        if (uiButton(inp, ui, "ReplayIntroBtn", 0, tx(Txt::BtnReplayIntro), nullptr))
         {
+            settingsChrome.open = false; // the opening plays over the view, not this window
             startIntroReplay();
         }
         if (uiButton(inp, ui, "ReplayTutorialBtn", 0, tx(Txt::BtnReplayTutorial), nullptr, false, !showIntro))
@@ -5647,6 +5680,74 @@ bool SatelliteSim::uiHovRoll(uint32_t id, bool nowHov)
     sndRollover(nowHov, prev);
     prev = nowHov;
     return nowHov;
+}
+
+Clay_ElementDeclaration SatelliteSim::uiHudPanel(const Clay_FloatingElementConfig &fl, uint16_t childGap)
+{
+    Clay_ElementDeclaration d{};
+    d.layout.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)};
+    d.layout.padding = {10, 10, 8, 8};
+    d.layout.childGap = childGap;
+    d.layout.layoutDirection = CLAY_TOP_TO_BOTTOM;
+    d.backgroundColor = Pal::panelBg;
+    d.cornerRadius = CLAY_CORNER_RADIUS(Style::panelCornerRadius);
+    d.floating = fl;
+    return d;
+}
+
+void SatelliteSim::uiKeycap(Clay_ElementId id, float w, float h, Clay_CornerRadius rad, const char *label, uint16_t fsz,
+                            bool target, bool down, float pulse, const Clay_FloatingElementConfig *fl, float alpha)
+{
+    auto mix = [](Clay_Color a, Clay_Color b, float t) -> Clay_Color
+    { return {a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t, a.a + (b.a - a.a) * t}; };
+    Clay_Color bg = down     ? Pal::tutHeld
+                    : target ? mix(Pal::tutTargetDim, Pal::tutTargetLit, pulse)
+                             : Pal::btnIdle;
+    Clay_Color bc = (target || down) ? Clay_Color{Pal::tutHot.r, Pal::tutHot.g, Pal::tutHot.b, 140.0f + 115.0f * pulse}
+                                     : Clay_Color{Pal::textPrimary.r, Pal::textPrimary.g, Pal::textPrimary.b, 40};
+    Clay_Color lc = Pal::btnLabel;
+    bg.a *= alpha;
+    bc.a *= alpha;
+    lc.a *= alpha;
+    const uint16_t bw = target ? 2 : 1;
+    Clay_ElementDeclaration d{};
+    d.layout.sizing = {CLAY_SIZING_FIXED(w), CLAY_SIZING_FIXED(h)};
+    d.layout.childAlignment = {.x = CLAY_ALIGN_X_CENTER, .y = CLAY_ALIGN_Y_CENTER};
+    d.backgroundColor = bg;
+    d.cornerRadius = rad;
+    if (fl)
+        d.floating = *fl;
+    d.border = {.color = bc, .width = {bw, bw, bw, bw, 0}};
+    CLAY(id, d)
+    {
+        if (label && label[0])
+            CLAY_TEXT(kitStr(label), CLAY_TEXT_CONFIG({.textColor = lc, .fontSize = fsz, .wrapMode = CLAY_TEXT_WRAP_NONE}));
+    }
+}
+
+SatelliteSim::ActionLabel SatelliteSim::actionLabel(int kb, bool gamepad) const
+{
+    ActionLabel l{};
+    const char *s = "-"; // unbound, or no such action
+    if (kb >= 0 && kb < (int)keybindings.size())
+    {
+        const KeyBinding &b = keybindings[kb];
+        if (gamepad)
+            s = b.gpButton < 0 ? "-" : gamepadButtonDisplayName(b.gpButton);
+        else
+            s = keyDisplayName(b.key); // "-" for an unbound key
+    }
+    snprintf(l.s, sizeof(l.s), "%s", s);
+    return l;
+}
+
+float SatelliteSim::uiBottomClearance(float screenH, float minClear, float gap)
+{
+    float clear = minClear;
+    for (const Clay_ElementId id : {CLAY_ID("LeftPanel"), CLAY_ID("RightPanel")})
+        if (const Clay_ElementData d = Clay_GetElementData(id); d.found && d.boundingBox.height > 0.0f)
+            clear = std::max(clear, screenH - d.boundingBox.y + gap);
+    return clear;
 }
 
 // ─── Settings search (2026-10-28, issue 20261028_222345) ─────────────────────────────────────────────────
@@ -8013,19 +8114,15 @@ void SatelliteSim::buildCrashRecoveryNotice(float dt, const UIInput &inp, UIRend
 }
 
 // ─── buildIntroOverlay ───────────────────────────────────────────────────────
-// UC3: the cinematic camera path (updateIntroCinematic, recordCompute) IS the intro now — this
-// just overlays the current beat's caption, translucent so the flythrough stays visible under it.
-// Dismissal is intentionally narrow: only the literal Space bar (onKey) or gamepad Start
-// (pollGamepad) end it early. It used to be dismissible by any click or any keypress, which meant
-// an incidental click into the window (or just touching the keyboard) skipped it before most
-// players ever saw it play — the mouse capture rect below still exists to swallow clicks so they
-// don't leak through to satellite picking or camera look, but a click no longer skips anything.
-void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
+// UC3, the opening: the current beat's caption over the player's own view. It never takes input (no capture rect,
+// a passthrough band): the player looks, moves and clicks through it. Bottom-centred 90 px up, or higher when the
+// corner toolbars draw (clearToolbars): far enough to clear them (uiBottomClearance).
+void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui, bool clearToolbars)
 {
+    (void)ui;
+    introCaptionBuilt_ = false; // (buildHints attaches its popup to the band when it is declared)
     if (!showIntro)
         return;
-
-    ui.addMouseCaptureRect(0, 0, inp.screenW, inp.screenH);
 
     // Fade the current caption in over its first 0.8s; fade everything out over the last 1.0s of
     // the whole sequence so the final line doesn't just vanish at the auto-handoff.
@@ -8037,18 +8134,22 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
 
     bool isYearBeat = (introCaptionIndex == kIntroYearIndex);
     bool isTitleBeat = (introCaptionIndex == kIntroTitleIndex);
-    const char *text = kIntroKeyframes[introCaptionIndex].text;
+    const Txt capId = kIntroKeyframes[introCaptionIndex].text;
+    const char *text = capId == kIntroNoCaption ? nullptr : tx(capId);
 
     if (text && textA > 0)
     {
+        const float bottomPad = clearToolbars ? std::max(90.0f, uiBottomClearance((float)inp.screenH)) : 90.0f;
         CLAY(CLAY_ID("IntroCaptionOuter"), {.layout = {
                                                 .sizing = {CLAY_SIZING_FIXED((float)inp.screenW),
                                                            CLAY_SIZING_FIXED((float)inp.screenH)},
-                                                .padding = {40, 40, 0, 90},
+                                                .padding = {40, 40, 0, (uint16_t)bottomPad},
                                                 .childAlignment = {.x = CLAY_ALIGN_X_CENTER,
                                                                    .y = CLAY_ALIGN_Y_BOTTOM},
                                                 .layoutDirection = CLAY_TOP_TO_BOTTOM},
-                                            .floating = {.zIndex = 30, .attachTo = CLAY_ATTACH_TO_ROOT}})
+                                            .floating = {.zIndex = 30,
+                                                         .pointerCaptureMode = CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH,
+                                                         .attachTo = CLAY_ATTACH_TO_ROOT}})
         {
             // No background panel here (deliberately — a translucent rounded rectangle used to sit
             // behind this text; user testing found it read as UI clutter, especially since players
@@ -8059,8 +8160,13 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
             // (most obviously "2036"'s 3/6) once scaled up from the bake. The atlas is an SDF since
             // 2026-10-21 (crisp edges at caption sizes), so a second face could be tried again;
             // the regular UI font is still the only font.
-            CLAY(CLAY_ID("IntroCaptionPanel"), {.layout = {
-                                                    .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
+            // The caption band (2026-11-16): a stable id for layout checks (ui_lowres.py, `ui dump` lists it as a
+            // "box": it draws nothing) and a width cap, so a long line wraps by words inside a small window instead
+            // of running to its edges. The title stays one line (WRAP_NONE below).
+            const float capMaxW = std::min((float)inp.screenW - 24.0f, (float)fs(19) * 40.0f);
+            introCaptionBuilt_ = true;
+            CLAY(CLAY_ID("CineCaption"), {.layout = {
+                                                    .sizing = {CLAY_SIZING_FIT(0, capMaxW), CLAY_SIZING_FIT(0)},
                                                     .padding = {24, 24, 16, 16},
                                                     .childGap = 4,
                                                     .childAlignment = {.x = CLAY_ALIGN_X_CENTER},
@@ -8068,7 +8174,7 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
             {
                 if (isYearBeat)
                 {
-                    CLAY_TEXT(CLAY_STRING("2036"),
+                    CLAY_TEXT(txc(Txt::NoteIntroYear),
                               CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, (float)textA}, .fontSize = fs(48)}));
                 }
                 else if (isTitleBeat)
@@ -8084,28 +8190,6 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui)
                     CLAY_TEXT(txtStr, CLAY_TEXT_CONFIG({.textColor = {255, 255, 255, (float)textA}, .fontSize = fs(19)}));
                 }
             }
-        }
-    }
-
-    // Skip hint, bottom-right corner, not faded with the caption above (needs to stay legible/
-    // discoverable regardless of which beat is showing). Only appears once the first real
-    // narrative line ("Satellite megaconstellations...") has been reached — not from frame 1 —
-    // so the opening "2036" title card reads as a clean establishing beat, and the hint (the only
-    // thing that reveals Space can skip at all) doesn't compete with it for attention immediately.
-    if (introCaptionIndex >= kIntroHintRevealIndex)
-    {
-        CLAY(CLAY_ID("IntroSkipHint"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
-                                                   .padding = {8, 8, 4, 4}},
-                                        .backgroundColor = {0, 0, 0, 130},
-                                        .cornerRadius = CLAY_CORNER_RADIUS(4),
-                                        .floating = {.offset = {-16, -16},
-                                                     .zIndex = 30,
-                                                     .attachPoints = {.element = CLAY_ATTACH_POINT_RIGHT_BOTTOM,
-                                                                      .parent = CLAY_ATTACH_POINT_RIGHT_BOTTOM},
-                                                     .attachTo = CLAY_ATTACH_TO_ROOT}})
-        {
-            CLAY_TEXT(txc(Txt::NotePressSpaceToSkip),
-                      CLAY_TEXT_CONFIG({.textColor = Pal::textHint, .fontSize = fs(12)}));
         }
     }
 }
@@ -9544,7 +9628,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         if (!isPatch || d.contains("play_intro_on_startup"))
         {
             playIntroOnStartup = d.value("play_intro_on_startup", false);
-            showIntro = playIntroOnStartup;
+            if (!isPatch) // (a patch changes the preference; it never starts the opening mid-session)
+                showIntro = playIntroOnStartup;
         }
         // Absent (every settings.json before 2026-10-03) = not done: the tutorial is new, and the
         // players it is for are exactly the ones who already never found the controls.
@@ -9615,6 +9700,11 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         moveSpeedPerHeight = c.value("move_speed_per_height", moveSpeedPerHeight);
         camLevelEnabled = c.value("auto_level", camLevelEnabled);
         camLevelAltKm = settingClamp(c.value("auto_level_km", camLevelAltKm), 10.0f, 2000.0f);
+        // The FPS mode (absent = on, the compiled default), from the settings file only: a patch (a cinematic shot's
+        // look, a snapshot, harness `set`) never changes the mode, and a harness run keeps it off (harnessInit) whatever
+        // its settings file says: only `fps on` turns it on there.
+        if (!isPatch && !harness::active())
+            fpsSet(c.value("fps_mode", fpsMode), FpsWhy::Settings);
     }
 
     if (j.contains("observer"))
@@ -9642,6 +9732,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         invertMouseY = ctl.value("invert_mouse_y", invertMouseY);
         invertPadX = ctl.value("invert_pad_x", invertPadX);
         invertPadY = ctl.value("invert_pad_y", invertPadY);
+        mouseSensMul = settingClamp(ctl.value("mouse_sensitivity", mouseSensMul), 0.1f, 4.0f);
     }
 
     if (j.contains("controls") && j["controls"].contains("keybindings"))
@@ -9673,8 +9764,32 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
                     k = GLFW_KEY_X; // Z / C roll since key layout 3
                 if (keyLayoutSaved < 3 && act == "Toggle Cursor" && k == GLFW_KEY_C)
                     k = -1;
+                // Key layout 4: Tab toggles the FPS mode (Toggle Cursor) and Toggle UI moves to U. Only the old
+                // defaults move (a Tab on Toggle UI, no key on Toggle Cursor); the free-key check below follows.
+                if (keyLayoutSaved < 4 && act == "Toggle UI" && k == GLFW_KEY_TAB)
+                    k = GLFW_KEY_U;
+                if (keyLayoutSaved < 4 && act == "Toggle Cursor" && k < 0)
+                    k = GLFW_KEY_TAB;
                 actionKey[act] = {k, kb.value("gp_button", -1), kb.contains("gp_button")};
             }
+        if (keyLayoutSaved < 4)
+        {
+            // A migrated default key that another saved binding already uses is dropped (the player's own
+            // bindings win): Tab for Toggle Cursor, U for Toggle UI.
+            auto migratedClash = [&](const char *act, int key) {
+                auto it = actionKey.find(act);
+                if (it == actionKey.end() || it->second.key != key)
+                    return;
+                for (const auto &kv : actionKey)
+                    if (kv.first != act && kv.second.key == key)
+                    {
+                        it->second.key = -1;
+                        return;
+                    }
+            };
+            migratedClash("Toggle Cursor", GLFW_KEY_TAB);
+            migratedClash("Toggle UI", GLFW_KEY_U);
+        }
         for (auto &kb : keybindings)
         {
             auto it = actionKey.find(kb.action);
@@ -10578,7 +10693,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"fov_y_deg", followActive ? followSavedFov : camera.fovYDeg},
         {"move_speed_per_height", moveSpeedPerHeight},
         {"auto_level", camLevelEnabled},
-        {"auto_level_km", camLevelAltKm}};
+        {"auto_level_km", camLevelAltKm},
+        {"fps_mode", fpsMode}};
 
     j["observer"] = {{"lat_deg", glm::degrees(asinf(glm::clamp(saveObsDir.z, -1.0f, 1.0f)))},
                      {"lon_deg", glm::degrees(atan2f(saveObsDir.y, saveObsDir.x))}};
@@ -11063,6 +11179,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
     j["controls"]["invert_mouse_y"] = invertMouseY;
     j["controls"]["invert_pad_x"] = invertPadX;
     j["controls"]["invert_pad_y"] = invertPadY;
+    j["controls"]["mouse_sensitivity"] = mouseSensMul;
 
     nlohmann::json constArr = nlohmann::json::array();
     for (const auto &c : constellations)

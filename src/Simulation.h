@@ -143,6 +143,12 @@ public:
     // Clay_Hovered()/click handler works unmodified. Default: no override (mouse/touch-only
     // simulations ignore this).
     virtual bool virtualCursor(float& x, float& y, bool& lmb) const { return false; }
+    // A mode with no pointer (SatelliteSim's FPS camera mode): App moves the UI's pointer off the window, so no hover
+    // or click reaches any UI element from the hidden, frozen cursor; the buttons still arrive in UIInput (the sim's
+    // own centre click reads them). Called after virtualCursor().
+    virtual bool uiPointerInert() const { return false; }
+    // Scripted button presses (the harness's `mouse click`): may set lmb / rmb before the UI sees them.
+    virtual void mouseButtonOverride(bool& lmb, bool& rmb) const { (void)lmb; (void)rmb; }
 
     // ── UC6: screenshots (RELEASE_v1_1_PLAN.md) ────────────────────────────────
     // True for exactly one frame — the frame a screenshot was requested and should be captured

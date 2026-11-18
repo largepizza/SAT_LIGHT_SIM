@@ -460,7 +460,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     //              in the settings window). KB_CINEMATIC is left unbound by default since
     //              it's a mouse-drag-flavored feature (see dispatchKeyAction).
     keybindings = {
-        {"Toggle UI", GLFW_KEY_TAB, GLFW_GAMEPAD_BUTTON_BACK, false, false},                 // KB_TOGGLE_UI
+        {"Toggle UI", GLFW_KEY_U, GLFW_GAMEPAD_BUTTON_BACK, false, false},                   // KB_TOGGLE_UI — U since key layout 4 (Tab is the FPS mode)
         {"Pause/Resume", GLFW_KEY_SPACE, GLFW_GAMEPAD_BUTTON_X, false, false},               // KB_PAUSE — X since pad layout 2 (B is "back" in the selection navigation, pollGamepad)
         {"Slow Down", GLFW_KEY_COMMA, GLFW_GAMEPAD_BUTTON_DPAD_DOWN, false, false},          // KB_SLOWER — D-pad left/right choose a selection button (pad layout 2)
         {"Speed Up", GLFW_KEY_PERIOD, GLFW_GAMEPAD_BUTTON_DPAD_UP, false, false},            // KB_FASTER
@@ -476,7 +476,7 @@ void SatelliteSim::init(VulkanContext &ctx)
         {"Reset Zoom", GLFW_KEY_0, GLFW_GAMEPAD_BUTTON_RIGHT_THUMB, false, false},           // KB_ZOOM_RESET (event)
         {"Select Satellite", -1, GLFW_GAMEPAD_BUTTON_A, false, false},                       // KB_SELECT_SAT (event) — center-of-screen pick; no key since key layout 2 (T is Track; a click selects)
         {"Screenshot", GLFW_KEY_F12, -1, false, false},                                      // KB_SCREENSHOT (event) — no standard gamepad "capture" button to default to
-        {"Toggle Cursor", -1, GLFW_GAMEPAD_BUTTON_START, false, false},              // KB_TOGGLE_CURSOR (event) — UC5: gamepad virtual-cursor mode; no meaningful effect for KBM (mouse is always a free cursor), kept rebindable/listed for consistency
+        {"Toggle Cursor", GLFW_KEY_TAB, GLFW_GAMEPAD_BUTTON_START, false, false},            // KB_TOGGLE_CURSOR (event) — keyboard: the FPS mode (cursor hidden, mouse looks) on / off, Tab since key layout 4; pad: UC5's virtual cursor
         {"Star Trails", GLFW_KEY_F, -1, false, false},                                       // KB_TOGGLE_TRAILS (event) — long-exposure trail on/off (X went to Pause, pad layout 2)
         {"Save Snapshot", GLFW_KEY_F9, -1, false, false},                                    // KB_SAVE_SNAPSHOT (event) — how the user hands over a location
         {"HQ Photo", GLFW_KEY_F8, -1, false, false},                                         // KB_PHOTO (event) — supersampled screenshot (requestPhoto)
@@ -1169,24 +1169,7 @@ void SatelliteSim::pollGamepad(float dt)
     if (!glfwGetGamepadState(gamepadId, &state))
         return;
 
-    // UC3/UC4: a controller has no Space bar, so Start is its one defined skip button — mirrors
-    // onKey()'s single-key Space rule (see its comment) rather than the old "any newly-pressed
-    // button" behavior, which was just as easy to trigger by accident as a stray keypress/click.
-    // Kept live for the whole intro, same as Space.
-    if (showIntro)
-    {
-        if (state.buttons[GLFW_GAMEPAD_BUTTON_START] == GLFW_PRESS &&
-            prevGpButtons[GLFW_GAMEPAD_BUTTON_START] != GLFW_PRESS)
-            finishIntro(true);
-
-        // Rebind capture, edge-triggered button actions, movement, look and the virtual cursor stay
-        // cinematic-locked for the whole intro, mirroring onKey()'s Space-only gate.
-        memcpy(prevGpButtons, state.buttons, sizeof(prevGpButtons));
-        gpState = state;
-        return;
-    }
-
-    if (!showIntro)
+    // (The opening is normal play for the pad too: every button keeps its action, Start included.)
     {
         // Rebind capture: if a binding is waiting for a pad button, claim the first newly-pressed
         // one and stop — mirrors onKey()'s keyboard capture, including consuming this poll so the
@@ -1271,7 +1254,7 @@ void SatelliteSim::pollGamepad(float dt)
             bool down = state.buttons[kb.gpButton] == GLFW_PRESS;
             bool wasDown = prevGpButtons[kb.gpButton] == GLFW_PRESS;
             if (down && !wasDown)
-                dispatchKeyAction((int)i);
+                dispatchKeyAction((int)i, true);
         }
     }
 
@@ -1389,7 +1372,7 @@ void SatelliteSim::pollGamepad(float dt)
 //    too small for the virtual cursor to be how a controller reaches what a satellite can do.
 bool SatelliteSim::padContextButton(int b, bool cursorActive)
 {
-    if (cursorActive || !uiVisible || showIntro)
+    if (cursorActive || !uiVisible)
         return false;
     if (tutActive)
     {
@@ -1576,15 +1559,16 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     camSync(); // (adopts a mirror an unconverted write changed since the look block)
     if (showIntro)
     {
-        // UC3: the cinematic camera path drives obsHeightOffset/camera.elDeg/fovYDeg/obsFacing
-        // directly this frame — skip normal WASD/zoom input entirely so they can't fight it. Also
-        // advances introElapsed/introCaptionIndex and eventually calls finishIntro().
-        updateIntroCinematic(dt);
+        // UC3, the opening: its first frame sets the scene (key 0's place and look, the moment, FPS mode, 1x); after
+        // that only the caption clock runs. The movement below runs as in normal play from that first frame.
+        updateIntro(dt);
     }
     boostHeldNow = false;
-    if (!showIntro && win && !consoleOpen_ && !textEditing() && !cineActive())
+    hintMoveIn_ = hintBoostIn_ = false; // (the hints' movement signals: levels, set below while the input is held)
+    if (win && !consoleOpen_ && !textEditing() && !cineActive())
     {
-        bool boost = (win && glfwGetKey(win, keybindings[KB_MOVE_BOOST].key) == GLFW_PRESS) || gpHeld(KB_MOVE_BOOST);
+        bool boost = (win && glfwGetKey(win, keybindings[KB_MOVE_BOOST].key) == GLFW_PRESS) || gpHeld(KB_MOVE_BOOST) ||
+                     harnessMoveBoost_; // (harness `inertial move boost=1`)
         boostHeldNow = boost;   // review 22: the clouds' fast-flight LOD
         // Sprinting cancels fine/slow mode outright (untoggles it, so it stays off after boost is
         // released). Reaching for boost is the clearest possible "I want to move faster now"
@@ -1614,6 +1598,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         right = glm::clamp(right + gpMoveRight, -1.0f, 1.0f);
         fwd = glm::clamp(fwd + harnessMove_.x, -1.0f, 1.0f); // (harness: held input through the real movement code)
         right = glm::clamp(right + harnessMove_.y, -1.0f, 1.0f);
+        hintMoveIn_ = fwd != 0.0f || right != 0.0f; // the merged input (keys, the stick, the harness): the hints' `moved`
         // Cinematic mode (latched): the input is EASED, so movement starts and stops gradually (a camera operator's
         // dolly, not a switch). Time constants: ~0.9 s up to speed, ~0.6 s to rest. Off: the raw input, as always.
         auto cineEase = [&](float &sm, float target, float tauUp = 0.9f, float tauDown = 0.6f)
@@ -1676,6 +1661,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         float lowerAmt = std::max((glfwGetKey(win, keybindings[KB_LOWER_ELEV].key) == GLFW_PRESS || gpHeld(KB_LOWER_ELEV)) ? 1.0f : 0.0f, gpElevLower);
         raiseAmt = std::max(raiseAmt, std::max(harnessMove_.z, 0.0f));
         lowerAmt = std::max(lowerAmt, std::max(-harnessMove_.z, 0.0f));
+        hintBoostIn_ = boost && (hintMoveIn_ || raiseAmt > 0.0f || lowerAmt > 0.0f); // the hints' `boosted`
         {
             const float vert = cineMomentum(cineSmVert, raiseAmt - lowerAmt); // (cinematic mode: momentum like WASD)
             raiseAmt = std::max(vert, 0.0f);
@@ -1702,6 +1688,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             // ground, and never go below it.
             const float floorH = std::max(0.0f, moveGround);
             obsHeightOffset = std::max(obsHeightOffset, floorH);
+            const float hintH0 = obsHeightOffset; // (the hints' `climbed`: height changed by this input)
             // With the horizon free (auto-level off, or above its height) Q / E move along the CAMERA's up, like roll
             // turns on there (the user's call, issue_20261115_133412: from orbit looking down, Q / E slid nothing
             // across the screen, only zoomed the Earth). Auto-levelling, the pure altitude move as before. Between
@@ -1729,6 +1716,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                     camSetLookDir(heldLook);
                 obsHeightOffset = (float)std::clamp(r - R, (double)floorH, (double)kMaxObsHeightM);
             }
+            hintClimbM_ += std::fabs(obsHeightOffset - hintH0);
         }
 
         // Z / C: roll, only while the horizon is free (above the auto-level height, or auto-level off): below it the
@@ -1745,6 +1733,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // those are movement-speed modifiers, not a zoom concept.
         bool zoomIn = (glfwGetKey(win, keybindings[KB_ZOOM_IN].key) == GLFW_PRESS) || gpHeld(KB_ZOOM_IN);
         bool zoomOut = (glfwGetKey(win, keybindings[KB_ZOOM_OUT].key) == GLFW_PRESS) || gpHeld(KB_ZOOM_OUT);
+        hintZoomIn_ = hintZoomIn_ || zoomIn || zoomOut; // (the hints' `zoomed`; the wheel sets it in buildUI)
         if (zoomIn || zoomOut || (cinematicLatched && cineSmZoom != 0.0f))
         {
             constexpr float kZoomRatePerSec = 0.6f; // e-folds/s: ~40 deg/s at 70 deg, as before
@@ -6732,8 +6721,9 @@ void SatelliteSim::updateFollow(float dt)
     // so this puts their observer where followObsEcef is (+ their 2 m eye height).
     obsHeightOffset = (float)(followRadiusM - (double)kEarthRadius);
 
-    // Aim at the satellite while locked (RMB look unlocks — the player took the camera).
-    if (camera.captured)
+    // Aim at the satellite while locked (RMB look, or turning the view in the FPS mode, unlocks — the player took the
+    // camera; the FPS mode looks with no button, so only an actual turn counts).
+    if (camera.captured || fpsLookedThisFrame_)
         followAimLock = false;
     // Sets the view direction. The facing is the view's horizontal part, which near the zenith or nadir is a tiny
     // vector of arbitrary direction: there the previous facing is kept (review 23, the "rapid flip").
@@ -8951,26 +8941,26 @@ void SatelliteSim::cleanup(VkDevice device)
         glfwSetInputMode(win, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
 }
 
-// ─── updateIntroCinematic ───────────────────────────────────────────────────
-// UC3: drives the intro's fixed beat sheet (kIntroKeyframes, SatelliteSim.h). obsDir/obsFacing's
-// tangent basis is captured once (introEastEF/introNorthEF) since the intro never changes lat/lon
-// after its one-time init below — only altitude, look elevation/FOV, and a facing-azimuth
-// rotation change, so azDeg(t) can be turned into obsFacing directly every frame instead of
-// accumulating incremental rotations.
-void SatelliteSim::updateIntroCinematic(float dt)
+// ─── updateIntro ─────────────────────────────────────────────────────────────
+// UC3, the opening (2026-11-16; docs/subsystems/ui.md "Subsystem: The opening (UC3)"). Its first frame sets the scene;
+// from then on nothing here touches the camera, the observer or the clock: the player has them (movement, look,
+// zoom, picking, the clock's controls), and this only runs the caption clock, the benchmark and the end.
+void SatelliteSim::updateIntro(float dt)
 {
     if (!introBasisValid)
     {
         // The intro's moment (kIntroSimStartJ2000S, SatelliteSim.h), every playback — a replay from the Display
         // tab included, whatever time and place the player has since moved to: the launch, the beams and the
-        // Moon the beat sheet was framed on exist only then. The intro drives the clock itself (below), paused
-        // like the Cinematics window's playback; finishIntro hands it back running at 1x.
+        // Moon the opening was framed on exist only then. The clock runs at plain 1x from here, the player's.
+        if (cineActive())
+            cineStop("Stopped (opening)");
         if (followActive)
             stopFollow();
         stopTrack();
+        inertialStop(); // (a lock to the stars would hold the old view)
         timeScaleIdx = 0;
         timeDir = 1.0f;
-        timePaused = true;
+        timePaused = false;
         {
             const double days = std::floor(kIntroSimStartJ2000S / 86400.0);
             simDayJ2000 = (int64_t)days;
@@ -8978,99 +8968,44 @@ void SatelliteSim::updateIntroCinematic(float dt)
         }
         trailClearPending = true; // the boot / last time is days away: no trails across the jump
 
-        // The cloud map's phase at the intro's start (kIntroCloudPhase: clear over the vantage). Only this
+        // The cloud map's phase at the opening's start (kIntroCloudPhase: clear over the vantage). Only this
         // session's phase offset is set; the map keeps drifting at the player's rate from there. Until
         // 2026-09-28 the intro FORCED the drift rate, which settings.json then saved: every intro rewrote it.
         cloudDriftPhaseOffset = std::fmod(kIntroCloudPhase - (double)cloudDriftRate * (kIntroSimStartJ2000S - kCloudDriftEpochS),
                                           glm::two_pi<double>());
+
+        // The place and the look: intro2's first key (the observer on the ground, north up Starmind's train), applied
+        // as the Cinematics playback applies a key (observer, camera.azDeg AND obsFacing, FOV). Once: no floor,
+        // clamp or reset of the observer follows (the movement block's own ground floor is normal play's).
+        HarnessCamKey k;
+        k.lat = kIntroStartLatDeg;
+        k.lon = kIntroStartLonDeg;
+        k.alt = kIntroStartAltM;
+        k.az = kIntroStartAzDeg;
+        k.el = kIntroStartElDeg;
+        k.fov = kIntroStartFovDeg;
+        k.hasSim = false;
+        harnessApplyCam(k);
+        obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
+
+        // The mouse looks from the first frame: FPS mode on (a player's OS cursor is captured by fpsTick once the
+        // window has the focus; under the harness the mode is logic only), its hint facts from zero.
+        fpsFacts_ = FpsFacts{};
+        fpsSet(true, FpsWhy::Intro);
+        hintsReset(); // the hints' gates from zero: every opening (a first run's, a Replay Intro) runs a pass
+        introToolbarsShown = false;
         introBasisValid = true;
     }
 
+    // The caption clock: real frame time (it stays with the music, which was cut to it).
     introElapsed += dt;
     const float tEnd = kIntroKeyframes[kIntroKeyframeCount - 1].t;
-    const float tClamped = std::min(introElapsed, tEnd);
+    for (int i = 0; i < kIntroKeyframeCount - 1; ++i)
+        if (kIntroKeyframes[i].t <= introElapsed && kIntroKeyframes[i].text != kIntroNoCaption)
+            introCaptionIndex = i;
 
-    int i = 0;
-    while (i < kIntroKeyframeCount - 2 && kIntroKeyframes[i + 1].t <= tClamped)
-        ++i;
-
-    // The path is cineEval's (the Cinematics window's spline, what the user framed the keys with): Catmull-Rom
-    // per channel, so velocity carries through every beat instead of stopping at it (the pre-2026-10 intro
-    // smoothstepped each segment and stuttered at every key); log altitude, so the climb from 55 m to 640 km
-    // takes each decade in its stride; azimuth unwrapped.
-    static const std::vector<CineKey> keys = []
-    {
-        std::vector<CineKey> v;
-        for (const IntroKeyframe &f : kIntroKeyframes)
-        {
-            CineKey k;
-            k.t = f.t;
-            k.lat = f.latDeg;
-            k.lon = f.lonDeg;
-            k.alt = f.altM;
-            k.az = f.azDeg;
-            k.el = f.elDeg;
-            k.fov = f.fovDeg;
-            v.push_back(k);
-        }
-        return v;
-    }();
-    // The camera's progress along the path (tCam, path seconds) against the intro's clock. Key times stay; only how
-    // fast the camera travels between them changes.
-    //  - The first segment eases in (2u^2 - u^3: velocity 0 at the start, the path's own at beat 1), so the "2036"
-    //    card opens still.
-    //  - Over the one songbeat before kIntroArriveT (SatelliteSim.h) the camera covers the rest of the path, from
-    //    there to the last key, and stops on it: a cubic Hermite from the path's own speed (1) to 0, so the velocity
-    //    is continuous where it starts and the arrival is an ease-out, not a snap (issue_20261114_162721: the camera
-    //    was still flying in under the title and stopped only on the hand-off frame). With the arrival at the title
-    //    (6 beats) it covers two beats of path in one, peaking at 2.8x the path's speed; at 7 beats it is the old
-    //    u + u^2 - u^3 ease of the last segment. From kIntroArriveT on the camera is still on the last key.
-    // cineEval's end tangents are one-sided: without these remaps the camera would leave the first key and arrive
-    // at the last at speed.
-    double tCam = tClamped;
-    {
-        const double t1 = kIntroKeyframes[1].t, tArr = kIntroArriveT, tA0 = tArr - songbeat;
-        if (tCam < t1)
-        {
-            const double u = tCam / t1;
-            tCam = t1 * (2.0 * u * u - u * u * u);
-        }
-        else if (tCam >= tArr)
-            tCam = tEnd;
-        else if (tCam > tA0)
-        {
-            const double T = tArr - tA0, D = (double)tEnd - tA0, u = (tCam - tA0) / T;
-            tCam = tA0 + T * (u * u * u - 2.0 * u * u + u) + D * (3.0 * u * u - 2.0 * u * u * u);
-        }
-    }
-    CineKey k = cineEval(keys, tCam); // at tEnd: exactly the last key (cineEval holds it)
-    // Sim time on the un-eased clock, at the cinematic's rate: the sky at each key is the one it was framed on. It
-    // runs through the still part too (5 s of sim time over the last beat: the Sun moves ~0.02 deg), as before.
-    k.hasSim = true;
-    k.simT = kIntroSimStartJ2000S + kIntroSimRate * (double)tClamped;
-    if (tClamped > kIntroArriveT && tEnd > kIntroArriveT)
-    {
-        // The title's FOV zoom-out (the pre-2026-11 intro's shape: it widened 80 -> 120 deg over its title beat,
-        // eased to a stop): from the last key's FOV to kIntroTitleFovDeg between the arrival and the hand-off,
-        // smoothstep in log FOV, so it is monotonic and still at both ends (the arrival is still; the hand-off FOV is
-        // the zoom's end). Position and attitude stay the last key's.
-        const double u = std::clamp(((double)tClamped - kIntroArriveT) / ((double)tEnd - kIntroArriveT), 0.0, 1.0);
-        const double s = u * u * (3.0 - 2.0 * u);
-        const double f0 = kIntroKeyframes[kIntroKeyframeCount - 1].fovDeg, f1 = kIntroTitleFovDeg;
-        k.fov = std::exp(std::log(f0) + (std::log(f1) - std::log(f0)) * s);
-    }
-    // What the Cinematics playback applies (observer lat/lon/altitude, camera.azDeg AND obsFacing — outside the
-    // intro buildUI derives camera.azDeg from obsFacing, so both must agree at the hand-over — FOV, sim time).
-    harnessApplyCam(k);
-    obsTerrainH = cpuTerrainHeightM(obsLatDeg, obsLonDeg);
-
-    // Track the most recently reached non-null caption (see IntroKeyframe's text field doc).
-    for (int k = 0; k <= i; ++k)
-        if (kIntroKeyframes[k].text)
-            introCaptionIndex = k;
-
-    // UC1 mechanism 2: accumulate GPU frame time across the camera-motion beats for the
-    // end-of-intro preset promote/demote in finishIntro().
+    // UC1 mechanism 2: accumulate GPU frame time over the caption period (the player on the ground, steering) for the
+    // end-of-opening preset promote/demote in finishIntro().
     if (introElapsed <= kIntroBenchEndT)
     {
         introBenchMsSum += gpuMsTotalSmoothed;
@@ -9082,65 +9017,74 @@ void SatelliteSim::updateIntroCinematic(float dt)
 }
 
 // ─── startIntroReplay ────────────────────────────────────────────────────────
-// The Display tab's "Replay Intro" (and the harness's `intro play`): from the top, at the intro's own moment.
-// introIsReplay suppresses the UC1 benchmark however this playthrough ends (see finishIntro).
+// The Display tab's "Replay Intro" (and the harness's `intro play`): from the top, at the opening's own moment and
+// place (the next updateIntro sets them). introIsReplay suppresses the UC1 benchmark however this playback ends.
 void SatelliteSim::startIntroReplay()
 {
     showIntro = true;
     introElapsed = 0.0f;
     introCaptionIndex = 0;
     introBasisValid = false;
+    introToolbarsShown = false;
     introBenchMsSum = 0.0f;
     introBenchFrames = 0;
     introIsReplay = true;
-    if (audio_) // the intro is cut to the first track
+    introBenchHarness_ = false;
+    if (audio_) // the opening is cut to the first track
     {
         audio_->setMusicPaused(false);
         audio_->playTrack(0);
     }
 }
 
+// ─── introBenchDecision ──────────────────────────────────────────────────────
+// UC1 mechanism 2's rule, unchanged since RELEASE_v1_1_PLAN.md: a 12 ms target (~3 tiers of headroom); over 1.5x
+// it steps down a tier (Medium -> Low -> Planetarium -> Potato), under 0.4x it steps up (Potato -> Planetarium,
+// Low -> Medium -> High). High, Ultra and Custom are never moved.
+GraphicsPreset SatelliteSim::introBenchDecision(float avgMs, GraphicsPreset from)
+{
+    constexpr float kTargetMs = 12.0f;
+    GraphicsPreset to = from;
+    if (avgMs > kTargetMs * 1.5f)
+    {
+        if (from == GraphicsPreset::Medium)
+            to = GraphicsPreset::Low;
+        else if (from == GraphicsPreset::Low)
+            to = GraphicsPreset::Planetarium;
+        else if (from == GraphicsPreset::Planetarium)
+            to = GraphicsPreset::Potato;
+    }
+    else if (avgMs < kTargetMs * 0.4f)
+    {
+        if (from == GraphicsPreset::Potato)
+            to = GraphicsPreset::Planetarium;
+        else if (from == GraphicsPreset::Low)
+            to = GraphicsPreset::Medium;
+        else if (from == GraphicsPreset::Medium)
+            to = GraphicsPreset::High;
+    }
+    return to;
+}
+
 // ─── finishIntro ─────────────────────────────────────────────────────────────
-void SatelliteSim::finishIntro(bool wasSkipped)
+void SatelliteSim::finishIntro(bool cutShort)
 {
     showIntro = false;
-    introSkipped = wasSkipped;
-    // The intro drove the clock while paused (updateIntroCinematic); the player gets it running at 1x.
-    timePaused = false;
-    // The controls are taught by the tutorial (SatelliteSimTutorial.cpp), once; a replay of the intro
-    // does not re-run it (the Display tab has its own Replay Tutorial).
-    if (!tutorialDone && !tutActive && !introIsReplay && !harnessRunner_)
-        startTutorial();
+    introToolbarsShown = true;
+    // The controls are taught by the hints (SatelliteSimHints.cpp), which run on through the captions' end; the old
+    // card tutorial no longer starts on its own (Settings > Display > Replay Tutorial still shows it).
     tutAutoChecked = true;
 
-    // UC1 mechanisms 2+3: only decide anything when the intro played to completion (a skip
-    // means no representative frame-time average was collected) and never during crash recovery
-    // (that launch already forced Planetarium for an unrelated reason — see init()).
-    // Not after an explicit pick on the startup graphics chooser either: the player has just decided.
-    if (!wasSkipped && !crashRecoveryMode && !introIsReplay && introBenchFrames > 0 && bootChoiceMode < 0)
+    // UC1 mechanisms 2+3: only decide anything when the captions played to the end (cut short = no full caption
+    // period measured) and never during crash recovery (that launch already forced Planetarium for an unrelated
+    // reason — see init()). Not on a replay, nor after an explicit pick on the startup graphics chooser either: the
+    // player has just decided. The harness's `intro play bench=1` measures and decides as a first run.
+    const bool firstRun = !introIsReplay && bootChoiceMode < 0;
+    if (!cutShort && !crashRecoveryMode && (firstRun || introBenchHarness_) && introBenchFrames > 0)
     {
-        float avgMs = introBenchMsSum / (float)introBenchFrames;
-        constexpr float kTargetMs = 12.0f; // ~3 tiers of headroom, per RELEASE_v1_1_PLAN.md UC1
-        GraphicsPreset newPreset = graphicsPreset;
-        if (avgMs > kTargetMs * 1.5f)
-        {
-            if (graphicsPreset == GraphicsPreset::Medium)
-                newPreset = GraphicsPreset::Low;
-            else if (graphicsPreset == GraphicsPreset::Low)
-                newPreset = GraphicsPreset::Planetarium;
-            else if (graphicsPreset == GraphicsPreset::Planetarium)
-                newPreset = GraphicsPreset::Potato;
-        }
-        else if (avgMs < kTargetMs * 0.4f)
-        {
-            if (graphicsPreset == GraphicsPreset::Potato)
-                newPreset = GraphicsPreset::Planetarium;
-            else if (graphicsPreset == GraphicsPreset::Low)
-                newPreset = GraphicsPreset::Medium;
-            else if (graphicsPreset == GraphicsPreset::Medium)
-                newPreset = GraphicsPreset::High;
-        }
-
+        const float avgMs = introBenchMsSum / (float)introBenchFrames;
+        const GraphicsPreset from = graphicsPreset, newPreset = introBenchDecision(avgMs, from);
+        introBenchLast_ = {true, avgMs, introBenchFrames, (int)from, (int)newPreset};
         if (newPreset != graphicsPreset)
             applyGraphicsPreset(newPreset);
 
@@ -9154,6 +9098,7 @@ void SatelliteSim::finishIntro(bool wasSkipped)
     introBenchMsSum = 0.0f;
     introBenchFrames = 0;
     introIsReplay = false;
+    introBenchHarness_ = false;
 }
 
 // The observer's terrain height from the CPU copy of the DEM (nearest texel). Also the harness's
@@ -9796,8 +9741,21 @@ bool SatelliteSim::trackShownOn() const { return followActive ? followAimLock : 
 // ─── onKey ────────────────────────────────────────────────────────────────────
 // Shared event-action dispatch — see declaration in SatelliteSim.h for why this is split
 // out of onKey (used by both the keyboard callback and pollGamepad's button edge-detect).
-void SatelliteSim::dispatchKeyAction(int bindIdx)
+void SatelliteSim::dispatchKeyAction(int bindIdx, bool fromPad)
 {
+    hintInputIn_ = true; // (the hints' idle clock: a key or a pad button)
+    // A hotkey that opens a window or a text entry ends the FPS mode (the window wants the pointer).
+    const uint32_t windowsBefore = fpsWindowMask();
+    struct FpsWindowCheck
+    {
+        SatelliteSim *s;
+        uint32_t before;
+        ~FpsWindowCheck()
+        {
+            if (s->fpsMode && (s->fpsWindowMask() & ~before) != 0)
+                s->fpsSet(false, SatelliteSim::FpsWhy::Window);
+        }
+    } fpsWindowCheck{this, windowsBefore};
     switch (bindIdx)
     {
     case KB_TOGGLE_UI:
@@ -9821,7 +9779,7 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
     case KB_CINEMATIC:
         // Mouse-drag-flavored feature (RMB capture is required to mean anything); gated
         // the same way regardless of whether the press came from a key or a gamepad button.
-        if (camera.captured)
+        if (camera.captured || fpsLogicLive()) // (the FPS mode looks all the time, as a held right button does)
             cinematicMode = !cinematicMode;
         break;
     case KB_RESET_ELEV:
@@ -9832,14 +9790,9 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
         break;
     case KB_SELECT_SAT:
     {
-        // Center-of-screen equivalent of the mouse left-click pick in buildUI — same
-        // pickPlanetAt/pickSatelliteAt priority and selectedSatIndex/selectedPlanetIndex path,
-        // just at (screenW/2, screenH/2) instead of the cursor. ctx_ (set in init()) gives
-        // swapExtent without needing a UIInput here.
-        if (!ctx_)
-            break;
-        pickAndSelectAt((float)ctx_->swapExtent.width * 0.5f, (float)ctx_->swapExtent.height * 0.5f,
-                        (float)ctx_->swapExtent.width, (float)ctx_->swapExtent.height);
+        // Center-of-screen equivalent of the mouse left-click pick in buildUI — the same pick chain at the
+        // window's centre, in the mouse's coordinates (the FPS click shares it: pickAtScreenCentre).
+        pickAtScreenCentre();
         break;
     }
     case KB_SCREENSHOT:
@@ -9914,9 +9867,14 @@ void SatelliteSim::dispatchKeyAction(int bindIdx)
         }
         break;
     case KB_TOGGLE_CURSOR:
-        // UC5: effective activation also requires uiVisible && !showIntro (see pollGamepad's
-        // cursorActive computation) — this just flips the player-facing on/off state.
-        vCursorToggled = !vCursorToggled;
+        // Pad: UC5's virtual cursor — effective activation also requires uiVisible (see
+        // pollGamepad's cursorActive computation); this just flips the player-facing on/off state.
+        // Keyboard: the FPS mode on / off (onKey never gets here while a text field, the console or a
+        // rebind has the keyboard).
+        if (fromPad)
+            vCursorToggled = !vCursorToggled;
+        else
+            fpsSet(!fpsMode, FpsWhy::Tab);
         break;
     case KB_TOGGLE_TRAILS:
         // Single consolidated control (session follow-up) — same action the HUD "TrailsBtn" icon
@@ -9950,11 +9908,10 @@ void SatelliteSim::onKey(GLFWwindow *w, int key, int action)
         return;
 
     lastInputWasGamepad = false; // UC4: any keypress means the player is at the keyboard
+    hintInputIn_ = true;         // (the hints' idle clock)
 
-    // F11: toggle fullscreen. Checked before the showIntro early-return below (and unlike every
-    // other key, not folded into the keybindings dispatch table) — a player stuck in a badly
-    // scaled/positioned window needs to be able to fix that without first having to sit through
-    // or skip the cinematic to reach it.
+    // F11: toggle fullscreen. Unlike every other key, not folded into the keybindings dispatch table
+    // (a player stuck in a badly scaled/positioned window must always be able to fix it).
     if (key == GLFW_KEY_F11)
     {
         bool isFs = glfwGetWindowMonitor(win) != nullptr;
@@ -9970,19 +9927,6 @@ void SatelliteSim::onKey(GLFWwindow *w, int key, int action)
         {
             glfwSetWindowMonitor(win, nullptr, windowedX, windowedY, windowedW, windowedH, 0);
         }
-        return;
-    }
-
-    if (showIntro)
-    {
-        // A defined single skip key, not "any key": the intro used to be dismissed by literally
-        // any keypress (or a click — see buildIntroOverlay), which meant an incidental tap or a
-        // click into the window skipped it before anyone had a chance to see it. Space is the
-        // one deliberate escape — chosen as a literal key rather than whatever KB_PAUSE is
-        // currently bound to, since the intro isn't "pausing" anything and shouldn't move if the
-        // player has rebound Pause/Resume elsewhere.
-        if (key == GLFW_KEY_SPACE)
-            finishIntro(true);
         return;
     }
 

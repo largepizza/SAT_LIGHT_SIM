@@ -83,6 +83,11 @@ bool settingsTabIsAdvanced(int i);   // behind Display > "Show advanced settings
 #include <mutex>
 #include <chrono>
 
+// The UI kit's Clay types (clay.h itself is included by the .cpp files that build UI).
+struct Clay_ElementDeclaration;
+struct Clay_FloatingElementConfig;
+struct Clay_CornerRadius;
+
 // ── Maximum satellites per frame ──────────────────────────────────────────────
 static constexpr uint32_t MAX_SATELLITES = 10'000'000;
 
@@ -2160,7 +2165,11 @@ struct SkyCamera
     glm::mat3 viewEnu{1.0f};
     bool viewSet = false;
     float sens = 0.12f;    // mouse sensitivity (degrees per pixel)
-    bool captured = false;
+    float sensMul = 1.0f;  // Settings > Controls "Mouse sensitivity" (controls.mouse_sensitivity): x sens, both look modes
+    bool captured = false; // the right-drag look (menu mode) holds the cursor
+    // Set when the FPS mode ends on a right press (or is entered with the button held): the press must not start a
+    // right-drag look, so capture waits for the button to be released first.
+    bool blockUntilRelease = false;
 
     // Phase 4: zoom reaches telescope FOVs so a resolvable satellite (the ISS is ~0.014 deg from the
     // ground) can cover enough pixels to draw as a mesh. Zoom is multiplicative so each scroll notch
@@ -2170,7 +2179,8 @@ struct SkyCamera
     void zoomBy(float factor) { fovYDeg = glm::clamp(fovYDeg * factor, kMinFovDeg, kMaxFovDeg); }
     // Look sensitivity scaled with the FOV below 60 deg, so a pixel of mouse motion moves the view
     // by about the same number of screen pixels when zoomed in (unchanged at 60 deg and wider).
-    float lookSens() const { return sens * std::min(1.0f, fovYDeg / 60.0f); }
+    float fovLookScale() const { return std::min(1.0f, fovYDeg / 60.0f); }
+    float lookSens() const { return sens * sensMul * fovLookScale(); }
 
     // Returns a view matrix that transforms ENU directions into camera space.
     // Camera convention: +X=right, +Y=up, -Z=forward (standard OpenGL).
@@ -2199,6 +2209,12 @@ struct SkyCamera
     {
         if (!captured)
         {
+            if (blockUntilRelease)
+            {
+                if (glfwGetMouseButton(win, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_RELEASE)
+                    blockUntilRelease = false;
+                return false;
+            }
             if (glfwGetMouseButton(win, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS)
             {
                 captured = true;
@@ -7328,8 +7344,8 @@ private:
     // defaults true (compiled-in default), and the "no settings.json at all" branch of
     // loadSettings() never touches it, so a genuine first run always shows it; any existing
     // settings.json (even pre-UC3) loads a persisted value that defaults to false so upgrading
-    // users don't suddenly get a cinematic that didn't exist before. Replayable via the Display
-    // tab's "Replay Intro" button, which just sets this back to true.
+    // users don't suddenly get an opening that didn't exist before. Replayable via the Display
+    // tab's "Replay Intro" button (startIntroReplay). True while the opening's captions play.
     bool showIntro = true;
     bool uiVisible = true;
     bool iconsLoaded = false;
@@ -8096,20 +8112,28 @@ private:
                                            // so a crash-recovery launch never runs the UC1 benchmark promote/
                                            // demote (that launch already forced Planetarium for a different reason)
 
-    // ── UC3: cinematic intro camera path (folds in UC1 mechanism 2, the first-run benchmark) ──
-    // updateIntroCinematic drives the observer (lat/lon/altitude), the camera and the sim clock along
-    // kIntroKeyframes. introBasisValid = "this playback's one-time setup ran" (the moment, the cloud phase,
-    // time paused for the intro to drive); the Display tab's "Replay Intro" clears it, so a replay starts
-    // from the same moment wherever the player has since gone.
+    // ── UC3: the opening (2026-11-16; folds in UC1 mechanism 2, the first-run benchmark) ──
+    // showIntro = the opening's captions are playing. updateIntro sets the scene on its first frame (introBasisValid:
+    // the moment, the cloud phase, key 0's place and look, FPS mode on, 1x running) and from then on only runs the
+    // caption clock; the player has the camera and the clock throughout. The Display tab's "Replay Intro" clears
+    // introBasisValid, so a replay starts from the same moment wherever the player has since gone.
     bool introBasisValid = false;
-    float introElapsed = 0.0f;    // seconds since the intro cinematic started
+    float introElapsed = 0.0f;    // seconds of captions played (real frame time: it stays with the music)
     int introCaptionIndex = 0;    // index into kIntroKeyframes of the most recently reached caption
-    bool introSkipped = false;    // true if dismissed early (Space/gamepad Start) — gates the benchmark below
+    bool introToolbarsShown = false; // the corner toolbars are back (first menu mode, or the captions' end); sticks
     bool introIsReplay = false;   // set by the Display tab's "Replay Intro" button; suppresses the
                                   // benchmark regardless of how the replay ends (see finishIntro) —
                                   // it's a one-shot first-run decision, not something a replay should redo
-    float introBenchMsSum = 0.0f; // accumulates gpuMsTotalSmoothed across the camera-motion beats (see updateIntroCinematic)
+    bool introBenchHarness_ = false; // harness `intro play bench=1`: this playback measures and decides as a first run
+    float introBenchMsSum = 0.0f; // accumulates gpuMsTotalSmoothed over the caption period (see updateIntro)
     int introBenchFrames = 0;
+    struct IntroBenchResult       // the last decision finishIntro took (harness `intro state` -> bench.last)
+    {
+        bool valid = false;
+        float meanMs = 0.0f;
+        int frames = 0;
+        int fromPreset = -1, toPreset = -1;
+    } introBenchLast_;
 
     // Post-intro "graphics set to X" notice (UC1 mechanism 3: always tell the user, never
     // silently re-decide) — same dismissible-banner pattern as buildCrashRecoveryNotice, separate
@@ -8419,8 +8443,9 @@ private:
     // Dispatches the event-style action for keybindings[bindIdx] — shared by onKey()
     // (keyboard) and pollGamepad() (gamepad edge-detect) so the two input paths can never
     // drift apart. No-op for held bindings (MOVE_BOOST, RAISE/LOWER_ELEV, ZOOM_IN/OUT):
-    // those are polled directly, not dispatched.
-    void dispatchKeyAction(int bindIdx);
+    // those are polled directly, not dispatched. fromPad: a gamepad button (KB_TOGGLE_CURSOR is the virtual
+    // cursor on the pad, the FPS mode on the keyboard). A hotkey that opens a window ends the FPS mode.
+    void dispatchKeyAction(int bindIdx, bool fromPad = false);
 
     // Polled once per frame from recordCompute(). Scans for a connected gamepad, edge-detects
     // event-style button presses (dispatchKeyAction) and rebind capture (listeningPad), and
@@ -8432,6 +8457,8 @@ private:
     // UC4: reports the virtual cursor's screen position/click state (updated in pollGamepad);
     // see Simulation.h for the calling convention.
     bool virtualCursor(float &x, float &y, bool &lmb) const override;
+    bool uiPointerInert() const override; // the FPS mode (SatelliteSimFps.cpp)
+    void mouseButtonOverride(bool &lmb, bool &rmb) const override;
     // Harness `ui click` (docs/HARNESS.md): a scripted pointer that overrides the mouse for a few frames.
     bool  harnessPtrActive_ = false, harnessPtrDown_ = false;
     float harnessPtrX_ = 0.0f, harnessPtrY_ = 0.0f;
@@ -8541,6 +8568,29 @@ private:
     int  uiChoiceRow(const UIInput &inp, UIRenderer &ui, const char *key, int idx, const char *label,
                      const char *const *options, int count, int current, const char *tip = nullptr);
     bool uiHovRoll(uint32_t id, bool nowHov);   // rollover sound + the hover memory; returns nowHov
+    // The HUD's black rounded panel (2026-11-16): Pal::panelBg, Style::panelCornerRadius, padding {10,10,8,8}, FIT x FIT,
+    // top to bottom, no border, floating by `fl`. The caller may change the layout after (HudPopupPanel's fixed width).
+    // LeftPanel, SelSatPanel and HudPopupPanel are built on it; RightPanel (38-px row) and TutCard (bordered) are not.
+    static Clay_ElementDeclaration uiHudPanel(const Clay_FloatingElementConfig &fl, uint16_t childGap = 3);
+    // A keycap or pad button (the tutorial's graphics, 2026-11-16 moved from SatelliteSimTutorial.cpp): `target` = the
+    // input to use (amber, pulsing by `pulse` 0..1), `down` = held now (green); `fl` floats it on the element being
+    // built. `label` must outlive the frame (Clay reads it after buildUI): a literal, tx(), or caller-owned storage.
+    static void uiKeycap(Clay_ElementId id, float w, float h, Clay_CornerRadius rad, const char *label, uint16_t fsz,
+                         bool target, bool down, float pulse, const Clay_FloatingElementConfig *fl = nullptr,
+                         float alpha = 1.0f); // alpha: x every colour (the hint popup's fade)
+    // The label of a KB_ action's binding: its key (keyDisplayName) or, with `gamepad`, its pad button
+    // (gamepadButtonDisplayName); "-" when unbound. Returned by value, so keyDisplayName's rotating letter pool cannot
+    // overwrite it; to hand it to Clay, copy `.s` into storage that lives past buildUI.
+    struct ActionLabel
+    {
+        char s[24];
+        const char *c_str() const { return s; }
+    };
+    ActionLabel actionLabel(int kb, bool gamepad) const;
+    ActionLabel actionLabel(int kb) const { return actionLabel(kb, lastInputWasGamepad); } // by the last input used
+    // How far above the screen's bottom a bottom-centred card must sit to clear both corner panels (LeftPanel,
+    // RightPanel; last frame's boxes): max(minClear, screenH - panel top + gap). The tutorial card; the hint popup.
+    static float uiBottomClearance(float screenH, float minClear = 24.0f, float gap = 12.0f);
     std::unordered_map<uint32_t, bool> uiHov_;
     std::unordered_map<uint32_t, bool> uiFoldOpen_; // uiFold: open sections (view state, not persisted)
 
@@ -8995,7 +9045,7 @@ private:
     // positioned" sentinel; first activation centers on screen.
     float vCursorX = -1.0f, vCursorY = -1.0f;
     bool vCursorToggled = false; // player-facing on/off state, flipped by KB_TOGGLE_CURSOR
-    bool vCursorActive = false;  // this-frame effective state = vCursorToggled && uiVisible && !showIntro
+    bool vCursorActive = false;  // this-frame effective state = vCursorToggled && uiVisible
     bool vCursorClick = false;   // A button currently held (level state, like the real lmb App.cpp
                                  // reads from GLFW) — UIRenderer::beginFrame() does its own frame-to-
                                  // frame edge detection into UIInput::lmbPressed, same as the mouse path
@@ -9032,6 +9082,169 @@ private:
     int harnessDragFrames_ = 0;
     float harnessDragDx_ = 0.0f, harnessDragDy_ = 0.0f, harnessDragWarpX_ = 0.0f, harnessDragWarpY_ = 0.0f;
     bool harnessDragWarpPending_ = false;
+
+    // ── FPS camera mode (2026-11-16, SatelliteSimFps.cpp) ───────────────────────────────────────────────────────
+    // Two mouse modes. Menu mode: a free cursor, hold the right button and drag to look. FPS mode: the mouse looks
+    // with no button held, the OS cursor hidden and captured (raw motion when supported), a left click picks at the
+    // screen centre and the HUD stays drawn but inert. Tab (KB_TOGGLE_CURSOR on the keyboard) toggles; a right
+    // press also leaves FPS mode; opening a window or a text entry (console, report bar) and losing window focus
+    // force menu mode. fpsMode is the setting (camera.fps_mode, default on); the mode is LIVE outside a playing
+    // cinematic (the opening included), and for a player also outside an HQ photo (menu mode meanwhile). The OS cursor is never captured under the harness (the mode is logic only there).
+    bool fpsMode = true;
+    bool fpsLive_ = false;       // this frame (fpsTick): the FPS mode is in effect
+    bool fpsOsCaptured_ = false; // the OS cursor is captured for it (GLFW_CURSOR_DISABLED + raw motion)
+    bool fpsFocusedPrev_ = false;
+    bool fpsKbCapturedPrev_ = false; // a text field or the console had the keyboard last frame
+    uint32_t fpsMaskPrev_ = 0;       // fpsWindowMask() last frame (a window appearing forces menu mode)
+    bool fpsLookedThisFrame_ = false; // the FPS look turned the camera this frame (Go to's aim unlock, tutorial)
+    float mouseSensMul = 1.0f;   // controls.mouse_sensitivity: Settings > Controls "Mouse sensitivity" (camera.sensMul)
+    float fpsRingT_ = 0.0f;      // the centre ring: seconds shown before its fade
+    float fpsRingFade_ = 0.0f;   // seconds of fade left (kFpsRingFadeS when the hold ends)
+    std::string fpsLastPick_;    // what the last centre click hit ("" = nothing)
+    // The centre ring's timing: a lone FPS click shows it for kFpsRingShowS; a click while it still holds adds
+    // kFpsRingAddS to the hold left, capped at kFpsRingMaxS; then a kFpsRingFadeS fade. Its size is fs(kFpsRingDiamPx), its stroke kFpsRingStroke of that.
+    static constexpr float kFpsRingShowS = 0.9f;
+    static constexpr float kFpsRingAddS = 1.0f;
+    static constexpr float kFpsRingMaxS = 5.0f;
+    static constexpr float kFpsRingFadeS = 0.3f;
+    static constexpr int kFpsRingDiamPx = 12;
+    static constexpr float kFpsRingStroke = 0.07f; // x the diameter (fs() floors at 8 px: too thick for a stroke)
+    // Sticky facts (not persisted): harness `fps state`; hintsTick reads `clicks` and `lookDeg` as running counters.
+    struct FpsFacts
+    {
+        bool leftByTab = false;         // left FPS mode with Tab
+        bool leftByRightClick = false;  // left FPS mode with a right click
+        bool enteredFromMenu = false;   // entered FPS mode from menu mode (Tab)
+        int clicks = 0;                 // FPS-mode left clicks
+        double firstClickS = -1.0, lastClickS = -1.0; // glfwGetTime() of the first / last of them
+        double lookDeg = 0.0;           // degrees of mouse look turned, either mode
+        bool rightDragUsed = false;     // a right-drag look turned the camera in menu mode
+    } fpsFacts_;
+    enum class FpsWhy { Tab, RightClick, Window, Focus, Harness, Settings, Intro };
+    FpsWhy fpsLastWhy_ = FpsWhy::Settings;
+    void fpsSet(bool on, FpsWhy why); // the one place the mode changes
+    bool fpsLogicLive() const;        // the mode applies this frame (before fpsTick publishes fpsLive_)
+    void fpsTick(const UIInput &inp, float dt); // buildUI, before the look block: forced exits, capture, ring
+    void fpsApplyCapture();           // the OS cursor follows the mode (never under the harness)
+    void fpsCentreClick();            // an FPS-mode left click: the centre pick + the ring
+    std::string pickAtScreenCentre(); // KB_SELECT_SAT and the FPS click: one coordinate convention (window size)
+    uint32_t fpsWindowMask() const;   // the open windows, the note bar, the tutorial card: one appearing forces menu mode
+    void buildFpsRing(UIRenderer &ui);
+    // harness `mouse move dx= dy= frames=` (deltas the FPS look consumes) / `mouse click left|right`
+    int harnessMouseFrames_ = 0;
+    float harnessMouseDx_ = 0.0f, harnessMouseDy_ = 0.0f;
+    int harnessMouseBtn_ = 0; // 1 left, 2 right: held for one frame (mouseButtonOverride)
+    harness::Status harnessFps(harness::Active &a);
+    harness::Status harnessMouse(harness::Active &a);
+    nlohmann::json fpsStateJson() const;
+
+    // ── Hints (2026-11-17, SatelliteSimHints.cpp; docs/subsystems/ui.md "Hints") ─────────────────────────────────
+    // The first run's teaching: one small hint at a time (HintPopup), chosen from what the player has and has not done.
+    // The gates are sticky facts since the pass began (an opening's first frame, `hints on|reset`); hintsTick decides
+    // (one function), hint_ holds the state (one struct). Every clock is frame time, as the caption clock. A pass runs
+    // on a genuine first run (display.tutorial_done false) and after a Replay Intro; it completes (and saves
+    // tutorial_done) when the captions have ended, a satellite is selected, the player has moved and hints 9 and 10
+    // are done; after that hints 3, 4, 5 and 8 may each fire once more that session. Never under the harness unless
+    // `hints on`; never over a playing cinematic, an HQ photo, the old tutorial card or a hidden HUD.
+    static constexpr int kHintCount = 10;          // hints 1..10 (index 0 = none)
+    static constexpr float kHintFadeS = 0.3f;      // fade in, fade out
+    static constexpr float kHintGapS = 3.0f;       // at least this long between one hint gone and the next
+    static constexpr float kHintLingerS = 2.0f;    // a hint fades this long after its gate is met
+    static constexpr float kHintIgnoredS = 20.0f;  // a hint ignored this long fades ...
+    static constexpr float kHintRestS = 30.0f;     // ... and rests this long
+    static constexpr int kHintMaxOffers = 2;       // offered at most this often (not in a never-time-out case)
+    static constexpr float kHintMenuShowS = 8.0f;  // hints 9 and 10: done after this long on screen
+    static constexpr double kHintLookDeg = 30.0;   // `looked`: degrees of view turned in total
+    static constexpr float kHintMoveS = 1.0f;      // `moved`: seconds of movement input in total
+    static constexpr float kHintClimbM = 100.0f;   // `climbed`: metres of height changed by elevation input
+    static constexpr float kHintStreakS = 4.0f;    // hint 4: moving this long without a break
+    static constexpr float kHintMoveGraceS = 1.0f; // hint 4 stays up through a pause this short
+    static constexpr float kHintStillS = 2.0f;     // hint 5: the view nearly still this long ...
+    static constexpr float kHintStillDegS = 3.0f;  // ... turning slower than this (deg/s)
+    static constexpr float kHintCentrePx = 24.0f;  // hint 5: a drawn satellite within this of the centre (or its size)
+    static constexpr float kHintIdleS = 6.0f;      // hint 6: no input this long
+    static constexpr float kHintClickWinS = 5.0f;  // hint 6: two FPS clicks within this
+    static constexpr float kHintMenuIdleS = 10.0f; // hint 8: no input this long in menu mode
+    static constexpr int kHintBeat = 2;            // nothing before this caption beat begins (15.22 s)
+    static constexpr int16_t kHintZ = 27;          // over the windows (10) and notices (25), under the caption (30)
+    struct HintGates
+    {
+        bool looked = false, moved = false, climbed = false, boosted = false, zoomed = false, clicked = false;
+        bool leftByTab = false, leftByRightClick = false, returned = false, dragLooked = false, selected = false;
+        bool timeBarShown = false, menuBarShown = false; // hints 9 / 10 done
+    };
+    struct HintLogEntry
+    {
+        int n;
+        float shownS, goneS; // hint clock
+        float gateAtS;       // hint clock when its gate was met while it showed (-1 = not)
+        const char *how;     // gate | timeout | condition | shown | preempted | suppressed | reset
+    };
+    struct HintRun
+    {
+        HintGates g;
+        double lookDeg = 0.0; // view turned (the mouse in either mode, the pad's stick)
+        float moveS = 0.0f;   // movement input held, in total
+        float climbM = 0.0f;  // height changed by elevation input, in total
+        float clock = 0.0f;   // since the pass began
+        float movingS = 0.0f; // moving now: seconds without a break (0 = not moving)
+        float sinceMoveS = 1e9f;
+        float idleS = 0.0f, menuIdleS = 0.0f, stillS = 0.0f;
+        bool everMenu = false; // in menu mode at some point of the pass
+        float clickAt[8] = {};
+        int clickN = 0;        // recent FPS clicks (ring of hint-clock times)
+        // last frame's values, for edges (primed = they hold a frame)
+        bool primed = false;
+        int fpsClicksPrev = 0, selPrev = -1, timeIdxPrev = 0;
+        double lookFactsPrev = 0.0;
+        bool pausedPrev = false, reversePrev = false, padMenuPrev = false;
+        bool winPrev[4] = {};
+        float azPrev = 0.0f, elPrev = 0.0f;
+        // the slot
+        int cur = 0;           // the hint on screen (0 = none)
+        float curS = 0.0f;     // seconds up
+        float alpha = 0.0f;
+        bool leaving = false;  // fading out
+        const char *leaveHow = "";
+        float gateS = -1.0f;   // seconds since its gate was met while up (-1 = not met)
+        bool forced = false;   // `hints force`: pinned, full alpha, no rules
+        int preempt = 0;       // shown as soon as the slot is free, no gap (hint 6 answering two clicks)
+        float freeAt = -1e9f;  // hint clock when the slot last emptied
+        int offers[kHintCount + 1] = {};
+        float restUntil[kHintCount + 1] = {};
+        bool retired[kHintCount + 1] = {}; // its gate met before it ever showed
+        bool postFired[kHintCount + 1] = {};
+        float upS[kHintCount + 1] = {};    // seconds on screen in total (hints 9 / 10: done at kHintMenuShowS)
+        int place = 0;         // 0 bottom centre, 1 above the caption, 2 above LeftPanel, 3 above RightPanel
+        std::string seen;      // the hints shown, in order: "1,6,7"
+        std::vector<HintLogEntry> log;
+    } hint_;
+    bool hintsHarnessOn_ = false; // `hints on` (a harness run keeps hints off otherwise)
+    int hintsPass_ = -1;          // -1 undecided (first frame), 0 none, 1 a pass running, 2 complete
+    // Signals the movement block (recordCompute) and the input paths leave for hintsTick.
+    bool hintMoveIn_ = false, hintBoostIn_ = false, hintZoomIn_ = false, hintInputIn_ = false;
+    float hintClimbM_ = 0.0f;
+    float harnessScrollY_ = 0.0f;   // harness `mouse scroll dy=`: wheel notches for the next frame's zoom
+    bool introCaptionBuilt_ = false; // buildIntroOverlay declared CineCaption this frame
+    bool hintDrawnPrev_ = false;     // HintPopup declared last frame (its Clay box is that layout's)
+    int hintDrawnPrevN_ = 0;
+    char hintKeyBuf_[4][24] = {};    // this frame's keycap labels (Clay reads them after buildUI)
+    struct HintPart
+    {
+        const char *s;
+        bool key;
+    };
+    void hintsReset();                       // a new pass (an opening's first frame, `hints reset|on`)
+    void hintsPrime();                       // the edges' last-frame values from now
+    void hintsNoteFps(bool on, FpsWhy why);  // fpsSet: the mode's edges (left by Tab / right click, returned)
+    void hintsTick(const UIInput &inp, float dt); // buildUI, after the look block: gates, signals, the scheduler
+    void buildHints(const UIInput &inp, UIRenderer &ui);
+    bool hintMenuMode() const;               // menu mode as the hints see it (a pad player: the virtual cursor)
+    bool hintSatAtCentre() const;
+    int hintParts(int n, bool pad, bool menu, HintPart *out, char (*keys)[24]) const; // keycaps and text
+    std::string hintText(int n, bool pad, bool menu) const;
+    nlohmann::json hintsStateJson() const;
+    harness::Status harnessHints(harness::Active &a);
 
     // Fine (slow) movement mode — flipped by KB_MOVE_FINE (dispatchKeyAction). A toggle rather
     // than a held modifier (unlike KB_MOVE_BOOST): holding a stick-click down while also using
@@ -9124,7 +9337,7 @@ private:
     bool draggingPhoto[56] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 626;   // 625 (2026-11-14): auto-level up to (km) (Controls); was 625; 624 (2026-11-14): Starship orbital vent (Launches); was 624; 616-623 (2026-11-12 wave, reserved per cluster): 616-619 ocean reflections, 620-621 model glare, 622-623 storm shape; was 616; 608-615 (2026-11-11 wave, reserved per cluster): 608-611 hurricane look, 612-613 smalls, 614-615 hurricane perf; was 608; 560-607 (2026-11-10 wave, reserved per cluster): 560-567 flowmaps, 568-575 storms, 576-579 horizon, 580-583 grain, 584-591 optics, 592-595 smalls, 596-599 rainperf, 600-607 hurricane shape; was 560; 549-550 (2026-11-08, pucks): shallow cumulus heaps / depth; 544-548 (2026-11-08): single-storm anvils, storm complex spacing, cirrus flow window, (547 free: the retired CDO plate), storm mass; 522-524 free (the CDO plate's top sliders, retired 2026-11-08); 553-555 (2026-11-05): cumulus core, bubble warp, head width; 552 (2026-11-05, envelope): cumulus tower spread (552-559 reserved); 544-551 (2026-11-05, storm-above): reserved, none used; 536-538 (2026-11-05, light3): AgX range, white balance from cloud sunlight, auto exposure target; 528-535 (2026-11-05, vertical): cloud base LCL / cell / regional spread, fractus, mid wisps, orographic amount / wind / direction; 496-498 (2026-11-05, shape2): bubble hierarchy / size / base; 504-511 (2026-11-05, storm3): anvil fibres, storm bubbles, anvil erosion; 512-513 (2026-11-05, light2): white balance reference / hold; 520-524 (2026-11-05, cirrus-hurr): cirrus fibres / hooks, hurricane top smoothing / streaks / density; 496-527: the 2026-11-05 night wave; 494-495 (2026-11-04): cumulus bubbles;   // 440-441 (2026-11-03): turbulence cell size / speed; 450-452: anvil formation / decay time, tower growth time; 455-461: hurricane shape; was 435;   // 428-434 (2026-10-30): the second stage's jellyfish (streaks, nucleus, staging cloud); was 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
+    static constexpr int kCloudSliderSlots = 627;   // 626 (2026-11-16): mouse sensitivity (Controls); was 626; 625 (2026-11-14): auto-level up to (km) (Controls); was 625; 624 (2026-11-14): Starship orbital vent (Launches); was 624; 616-623 (2026-11-12 wave, reserved per cluster): 616-619 ocean reflections, 620-621 model glare, 622-623 storm shape; was 616; 608-615 (2026-11-11 wave, reserved per cluster): 608-611 hurricane look, 612-613 smalls, 614-615 hurricane perf; was 608; 560-607 (2026-11-10 wave, reserved per cluster): 560-567 flowmaps, 568-575 storms, 576-579 horizon, 580-583 grain, 584-591 optics, 592-595 smalls, 596-599 rainperf, 600-607 hurricane shape; was 560; 549-550 (2026-11-08, pucks): shallow cumulus heaps / depth; 544-548 (2026-11-08): single-storm anvils, storm complex spacing, cirrus flow window, (547 free: the retired CDO plate), storm mass; 522-524 free (the CDO plate's top sliders, retired 2026-11-08); 553-555 (2026-11-05): cumulus core, bubble warp, head width; 552 (2026-11-05, envelope): cumulus tower spread (552-559 reserved); 544-551 (2026-11-05, storm-above): reserved, none used; 536-538 (2026-11-05, light3): AgX range, white balance from cloud sunlight, auto exposure target; 528-535 (2026-11-05, vertical): cloud base LCL / cell / regional spread, fractus, mid wisps, orographic amount / wind / direction; 496-498 (2026-11-05, shape2): bubble hierarchy / size / base; 504-511 (2026-11-05, storm3): anvil fibres, storm bubbles, anvil erosion; 512-513 (2026-11-05, light2): white balance reference / hold; 520-524 (2026-11-05, cirrus-hurr): cirrus fibres / hooks, hurricane top smoothing / streaks / density; 496-527: the 2026-11-05 night wave; 494-495 (2026-11-04): cumulus bubbles;   // 440-441 (2026-11-03): turbulence cell size / speed; 450-452: anvil formation / decay time, tower growth time; 455-461: hurricane shape; was 435;   // 428-434 (2026-10-30): the second stage's jellyfish (streaks, nucleus, staging cloud); was 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
     // gust fronts, drop persistence); 326: "Tropical cyclones (x)"; 325: "Storm complexes"; 321-324 (2026-10-23): storm
     // objects (frequency, life, cloud field, moat);
     // was 321: 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);
@@ -9192,6 +9405,7 @@ private:
     void inertialFly(float fwd, float right, float speedRadPerS, float dt); // WASD with the eye held in ECI
     float inertialLastHeight = 0.0f;
     glm::vec3 harnessMove_{0.0f};       // harness `inertial move fwd= right= up=`: held movement input (forward, right, up), -1..1
+    bool harnessMoveBoost_ = false;     // harness `inertial move boost=1`: the boost key held with it
     float harnessRoll_ = 0.0f;          // harness `inertial move roll=`: held roll input (-1 = Z, +1 = C)
 
     // ── NEW-7: frame limiter ────────────────────────────────────────────────
@@ -9676,7 +9890,7 @@ private:
                                   int base = 0);
     void buildViewControlsWindow(const UIInput &inp, UIRenderer &ui);
     void buildViewControlsBody(const UIInput &inp, UIRenderer &ui);
-    void buildIntroOverlay(const UIInput &inp, UIRenderer &ui);
+    void buildIntroOverlay(const UIInput &inp, UIRenderer &ui, bool clearToolbars); // the opening's captions
     void buildCrashRecoveryNotice(float dt, const UIInput &inp, UIRenderer &ui); // NEW-3
     void buildGraphicsAutoNotice(float dt, const UIInput &inp, UIRenderer &ui);  // UC1 mechanism 3
     // ── First-run tutorial (2026-10-03, SatelliteSimTutorial.cpp) ────────────────────────────────
@@ -9744,7 +9958,9 @@ private:
     // Keyboard layout of the saved bindings (controls.key_layout). 2 (2026-10-28, issue 20261028_223530): T is Track,
     // I Info, G Go to / leave; "Select Satellite" lost its T (a saved T is dropped once), and "Leave Go To Here" was
     // renamed "Go To / Leave Here" (a saved key under the old name carries over).
-    static constexpr int kKeyLayoutVersion = 3; // 3 (2026-11-14): Z / C roll; Reset Elevation Z -> X, Toggle Cursor off C
+    // 3 (2026-11-14): Z / C roll; Reset Elevation Z -> X, Toggle Cursor off C. 4 (2026-11-16): Tab toggles the FPS
+    // mode (Toggle Cursor), Toggle UI moves to U (a saved default Tab on Toggle UI migrates; see loadSettings).
+    static constexpr int kKeyLayoutVersion = 4;
     void trackToggle();          // Track (key T, the panel's button); during Go to it is the aim lock
     bool trackShownOn() const;   // the Track button lit
     bool selectionKeyAction(int bindIdx); // KB_INFO / KB_TRACK / KB_FOLLOW_STAY on the selection; false = nothing to do
@@ -9776,18 +9992,17 @@ private:
     void buildTutGamepad(int step);
     bool tutGamepadView() const { return lastInputWasGamepad; }
     void buildScreenshotToast(float dt, const UIInput &inp, UIRenderer &ui);     // UC6 confirmation toast
-    // UC3: advances introElapsed and drives obsHeightOffset/camera.elDeg/fovYDeg/obsFacing from
-    // kIntroKeyframes; called from recordCompute() in place of the normal WASD/zoom block while
-    // showIntro is true. Also accumulates the UC1 benchmark and auto-ends the intro at the last
-    // keyframe (calling finishIntro(false)).
-    void updateIntroCinematic(float dt);
+    // UC3, the opening: on its first frame sets the scene (the moment, the cloud phase, key 0's pose, FPS mode on,
+    // 1x running), then only advances introElapsed / introCaptionIndex, accumulates the UC1 benchmark and ends the
+    // captions after the last key (finishIntro(false)). Called from recordCompute() ahead of the movement block,
+    // which runs as in normal play.
+    void updateIntro(float dt);
     void startIntroReplay(); // Display tab "Replay Intro" / harness `intro play`
-    // Ends the intro (showIntro=false). wasSkipped=true means the user dismissed early (click/key/
-    // pad) — no representative frame-time average was collected, so the benchmark promote/demote
-    // is skipped entirely and whatever preset was already active (the device-type seed, or a prior
-    // session's saved preset) stands, per RELEASE_v1_1_PLAN.md UC3: "do not run the benchmark
-    // during the skip path."
-    void finishIntro(bool wasSkipped);
+    // Ends the captions (showIntro=false). cutShort=true (only the harness's `intro skip`) means no full caption
+    // period was measured, so the benchmark promote/demote is skipped and the active preset stands.
+    void finishIntro(bool cutShort);
+    // UC1's promote / demote rule on a mean GPU frame time (finishIntro): the preset it would move `from` to.
+    static GraphicsPreset introBenchDecision(float meanMs, GraphicsPreset from);
     void setLat(float newLatDeg);   // moves observer to a new latitude; used by the right panel's lat display scroll-adjust
     void adjustLon(float deltaDeg); // rotates observer around Earth's polar axis; right panel's lon display scroll-adjust
                                     // dt = simulated seconds elapsed this frame (0 when paused);
@@ -9800,99 +10015,63 @@ static constexpr float kTimeScales[] = {1.0f, 10.0f, 60.0f, 300.0f, 3600.0f,
 static constexpr const char *kTimeLabels[] = {"1x", "10x", "1m", "5m", "1h", "1d", "1w", "1mo", "1yr"};
 static constexpr int kNumTimeScales = 9;
 
-// ── UC3 intro cinematic: the moment and the path (2026-11-13, "intro2") ───────
-// The intro is the user's saved cinematic "intro2" (made in the Cinematics window; the source file was
-// <user data>/cinematics/intro2.json): from the ground in the Mississippi delta (Arkansas) at twilight,
-// Starmind's trains overhead, Reflect Orbital mirrors flaring and their beam on the eastern horizon (the
-// busiest beam site, ~55 km east); rising, panning south onto a Starship climbing out of Starbase, Texas over
-// the Gulf with the sunset behind; out to orbit with the Sun setting on the limb, "SAT LIGHT SIM".
-// Its 8 keys sit one per songbeat (the cinematic had them 5 s apart; key k is beat k). Sim time runs at
-// kIntroSimRate so the sky at each key is the one the key was framed on. The camera's progress along the path is
-// accelerated over the last beats so it ARRIVES on the last key at kIntroArriveT (the title) and is still under the
-// title while the FOV widens (2026-11-14, issue_20261114_162721).
+// ── UC3 the opening: the moment and the place (2026-11-13 "intro2"; 2026-11-16 the opening) ───────
+// The opening plays the intro's captions over the player's own first minute in the scene. It starts where the user's
+// saved cinematic "intro2" opened (made in the Cinematics window; the source file was <user data>/cinematics/intro2.json):
+// on the ground in the Mississippi delta (Arkansas) at twilight, looking north up Starmind's train, with Reflect
+// Orbital mirrors flaring and their beam on the eastern horizon (the busiest beam site, ~55 km east) and a Starship
+// climbing out of Starbase, Texas over the Gulf to the south. From the first frame the player has the camera and the
+// clock (1x, running); until 2026-11-16 the intro flew the cinematic's path to orbit while the HUD was locked.
 //
 // THE DATE was moved from the cinematic's (2036-11-21 23:19:46 UTC, a 16%-lit crescent) to the same scene four
 // days later, for a quarter-to-half Moon (the user: some ambient light at night, where the clouds look best):
 // 2036-11-25 23:15:46.57 UTC, the Moon 50% lit (first quarter), ~42 deg up in the south at dusk. It is the same
 // launch geometry: a Starship from Starbase, Texas lifts off eastward at 23:10:16 (the cinematic's at 23:14:16),
-// with the Sun ~4.5 deg up at the pad; the intro opens 330.6 s after lift-off, as the cinematic did, and the
+// with the Sun ~4.5 deg up at the pad; the opening starts 330.6 s after lift-off, as the cinematic did, and the
 // observer's Sun is -4.1 deg (the cinematic's -4.8). Found with `launch list` over Nov 23-27 (Nov 24's
 // 41% Moon has an earlier, brighter twilight launch from a Boca Chica sea platform).
 // Launches, beams and satellites are pure functions of sim time, so this moment is the same on every machine.
 static constexpr double kIntroSimStartJ2000S = 1164539746.5667517; // 2036-11-25T23:15:46.567Z
-static constexpr double kIntroSimRate = 5.0 / 7.61;                 // sim s per intro s: the cinematic's 5 s per key over a songbeat
-// The cloud map's phase at the intro's start (`drift phase=` in the harness). The cinematic was framed on the
+// The cloud map's phase at the opening's start (`drift phase=` in the harness). The cinematic was framed on the
 // default map (2.774 at its own time); at Nov 25 that phase puts a cloud bank over the opening train and the
-// horizon beam, and a sweep of 9 phases found 2.356 clear over the vantage with the beam showing, and the Gulf's
-// clouds lit by the sunset from orbit. Session state, like a bookmark's drift: the player's drift RATE is kept.
+// horizon beam, and a sweep of 9 phases found 2.356 clear over the vantage with the beam showing. Session state,
+// like a bookmark's drift: the player's drift RATE is kept.
 static constexpr double kIntroCloudPhase = 2.356;
 // The OLD intro's cloud layout as a rate (phase = rate x (time since J2000)); only the harness's
 // `snapshot drift=intro` still reads it, to rebuild the map of a snapshot taken in a session that played that intro.
 static constexpr float kIntroCloudDriftRate = 6.55e-6f;
+// Where the opening puts the player (intro2's first key): the observer (metres above sea level, floored at the
+// ground) and the look (az / el / vertical FOV, degrees), facing north up Starmind's train.
+static constexpr double kIntroStartLatDeg = 33.56354697522229, kIntroStartLonDeg = -91.28908090163594;
+static constexpr float kIntroStartAltM = 54.56f;
+static constexpr float kIntroStartAzDeg = 3.19f, kIntroStartElDeg = 18.25f, kIntroStartFovDeg = 46.50f;
 
-// ── UC3 intro cinematic beat sheet (RELEASE_v1_1_PLAN.md) ─────────────────────
-// Shared between SatelliteSim.cpp (updateIntroCinematic/finishIntro, the playback) and
-// SatelliteSimUI.cpp (buildIntroOverlay, the caption text) — header-scope so both translation
-// units see the identical table without a getter. `text == nullptr` means "no new caption at
-// this keyframe" (introCaptionIndex just holds whatever the last non-null one was).
-// The path between keys is cineEval's (Cinematic.cpp, the Cinematics window's own spline): Catmull-Rom per
-// channel, altitude and FOV in log space, azimuth unwrapped (keys 4 -> 5 cross +-180). Each channel is
-// exactly as the cinematic stored it.
+// ── UC3 the opening's captions (RELEASE_v1_1_PLAN.md) ─────────────────────
+// Shared between SatelliteSim.cpp (updateIntro / finishIntro) and SatelliteSimUI.cpp (buildIntroOverlay, the
+// caption text): header-scope so both translation units see the identical table without a getter.
+// `text == kIntroNoCaption` means "no new caption at this key" (introCaptionIndex holds the last non-null one).
+// One key per songbeat (the cinematic's keys, which were 5 s apart, one per beat); the last key (no caption) is the
+// end: the title fades over the second before it, then finishIntro(false).
 struct IntroKeyframe
 {
-    float t;           // seconds from intro start
-    double latDeg, lonDeg;
-    float altM;        // metres above sea level (the cinematic's alt; floored at the ground)
-    float azDeg, elDeg, fovDeg;
-    const char *text;
+    float t;  // seconds from the opening's start (caption-clock seconds)
+    Txt text; // the caption (src/text/ui_text_en.inc); kIntroNoCaption = none at this key
 };
+static constexpr Txt kIntroNoCaption = Txt::Count;
 static constexpr float songbeat = 7.61f; // beat timings below are synced to this (music tempo)
 static constexpr IntroKeyframe kIntroKeyframes[] = {
-    // Beat 0 — "2036" title/date card. Ground, twilight, looking north up Starmind's train.
-    {songbeat * 0.0f, 33.56354697522229, -91.28908090163594, 54.56f, 3.19f, 18.25f, 46.50f, "2036"},
-    // Beat 1 — first narrative line. The skip hint (buildIntroOverlay) only appears once this beat is
-    // reached — see kIntroHintRevealIndex. Panning right along the train.
-    {songbeat * 1.0f, 33.56354697522229, -91.28908090163594, 54.56f, 35.62f, 36.08f, 62.16f,
-     "Satellite megaconstellations dominate the night sky"},
-    // Beat 2 — east: the mirrors' flares, the beam on the horizon.
-    {songbeat * 2.0f, 33.56354697522229, -91.28908090163594, 54.56f, 99.10f, 28.16f, 66.84f,
-     "From the ground, we watch sunlight glint off their solar arrays"},
-    // Beat 3 — rising (2.6 km), panning south-east toward the Gulf.
-    {songbeat * 3.0f, 33.56354697522229, -91.28908090163594, 2614.49f, 131.26f, 17.00f, 66.84f,
-     "They power an orbital network of communications and AI compute."},
-    // Beat 4 — 57 km, facing south: the Starship's plume over the Gulf, the sunset to the right.
-    {songbeat * 4.0f, 33.56354697522229, -91.28908090163594, 56987.57f, 159.10f, 1.40f, 83.10f,
-     "A promise to the markets above all else"},
-    // Beat 5 — out to orbit (277 km), drifting north-east with the pan.
-    {songbeat * 5.0f, 34.627120828647875, -89.1136023191353, 277289.31f, -166.21f, -8.20f, 83.10f,
-     "We will come to miss the quiet sky"},
-    // Beat 6 — "SAT LIGHT SIM". The camera's travel is accelerated (updateIntroCinematic) so it has ARRIVED on beat
-    // 7's framing by now (kIntroArriveT): this key's pose is passed through on the way, not shown at the title.
-    {songbeat * 6.0f, 36.65105711070121, -84.1048559646296, 428441.09f, -133.47f, -6.28f, 89.35f, "SAT LIGHT SIM"},
-    // Beat 7 — the final framing, the Sun centred on the limb (638 km). The camera sits still on it from
-    // kIntroArriveT while the title shows and the FOV widens to kIntroTitleFovDeg; the title fades over the last
-    // second (buildIntroOverlay's alphaOut), then finishIntro(false) hands over (the tutorial, SatelliteSimTutorial.cpp).
-    {songbeat * 7.0f, 37.45175640036591, -77.3299032926075, 638241.50f, -105.19f, -8.56f, 89.35f, nullptr},
+    {songbeat * 0.0f, Txt::NoteIntroYear},                // "2036" title/date card
+    {songbeat * 1.0f, Txt::NoteIntroMegaconstellations},  // the first narrative line
+    {songbeat * 2.0f, Txt::NoteIntroSunlightGlint},
+    {songbeat * 3.0f, Txt::NoteIntroOrbitalNetwork},
+    {songbeat * 4.0f, Txt::NoteIntroPromiseToMarkets},
+    {songbeat * 5.0f, Txt::NoteIntroQuietSky},
+    {songbeat * 6.0f, Txt::NoteSatLightSim},              // "SAT LIGHT SIM"
+    {songbeat * 7.0f, kIntroNoCaption},                   // the end (53.27 s)
 };
 static constexpr int kIntroKeyframeCount = sizeof(kIntroKeyframes) / sizeof(kIntroKeyframes[0]);
-static constexpr int kIntroYearIndex = 0;       // "2036" title/date card
-static constexpr int kIntroHintRevealIndex = 1; // skip hint doesn't show before this beat is reached
-static constexpr int kIntroTitleIndex = 6;      // "SAT LIGHT SIM" reveal, arrival in LEO
-// When the camera ARRIVES on the last key (2026-11-14, issue_20261114_162721: "the timing of the key frames was
-// fine, we just needed them to be accelerated in position so that the last beat would end on that final shot,
-// rather than being still moving towards it"). Key times are unchanged; the camera's progress along the path is
-// remapped over the one songbeat before this time (updateIntroCinematic): from the path's own speed to a stop on
-// the last key, covering what the path covers from there to its end. The default is the title (beat 6): the
-// camera is still for the whole last beat, under the title. songbeat * 7 is the old behaviour (arrive at the
-// hand-off); move it by a beat to taste. Keys before (this - songbeat) frame exactly what they did.
-static constexpr float kIntroArriveT = songbeat * 6.0f;
-static_assert(kIntroArriveT >= songbeat * 2.0f && kIntroArriveT <= songbeat * 7.0f, "arrival within the path");
-// The title's FOV zoom-out, from the arrival to the hand-off (still at both ends): the last key's 89.35 deg to this.
-// The pre-2026-11 intro widened 80 -> 120 deg over its title beat; from this framing, past ~105 deg the Sun's halo
-// fades (the sky's veiling glare follows the cloud composite sampled across the Sun's disc, which at that scale
-// reaches the limb's clouds: measured 2026-11-14, halo full at 102 deg, dimmer at 108, half at 114, gone at 118;
-// docs/rendering/FINDINGS.md #10), and the zoom would end on a bare Sun.
-static constexpr float kIntroTitleFovDeg = 105.0f;
-// The whole intro feeds the UC1 benchmark accumulator.
+static constexpr int kIntroYearIndex = 0;  // "2036" title/date card
+static constexpr int kIntroTitleIndex = 6; // "SAT LIGHT SIM"
+// The UC1 benchmark measures over the whole caption period (the player on the ground, steering).
 static constexpr float kIntroBenchEndT = songbeat * 7.0f;
 static constexpr const char *kGraphicsPresetNames[] = {"Planetarium", "Low", "Medium", "High", "Ultra", "Custom", "Potato"};

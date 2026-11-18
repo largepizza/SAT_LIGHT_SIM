@@ -1,6 +1,6 @@
-# UI, HUD, controls, settings window, intro, tutorial
+# UI, HUD, controls, settings window, intro, hints, tutorial
 
-HUD popups, UIRenderer / Clay rules and kit, icon + font atlases, controls and keybindings, the settings window's layout and search, the intro cinematic, the first-run tutorial.
+HUD popups, UIRenderer / Clay rules and kit, icon + font atlases, controls and keybindings, the settings window's layout and search, the opening (the intro's captions), the first-run tutorial.
 
 Part of the subsystem notes (`docs/subsystems/`, map in `AGENTS.md` §4). Moved verbatim from
 `CLAUDE.md` on 2026-11-03. Do not read this file whole: `python tools/outline.py docs/subsystems/ui.md`
@@ -204,6 +204,20 @@ SatelliteSim.cpp / SatelliteSimLaunches.cpp, some report and bookmark messages).
   member. Formatted labels go through `uiKitStr` (a per-frame ring; Clay keeps the pointers). Used by the info,
   trace and Bookmarks windows and the Display, Performance, Controls, Sound, Constellations and Photometry tabs;
   the slider rows are still `buildCloudSliderRows`.
+- **HUD pieces in the kit (2026-11-16, for the hint popup and caption band):** `uiHudPanel(fl, childGap = 3)` returns
+  the black rounded HUD panel's declaration (Pal::panelBg, Style::panelCornerRadius, padding {10,10,8,8}, FIT x FIT,
+  top to bottom, no border, floating by `fl`; adjust the layout after). LeftPanel, SelSatPanel and HudPopupPanel use
+  it; RightPanel (a fixed 38-px row) and TutCard (bordered, 14-px padding) differ and keep their own. `uiKeycap` is
+  the tutorial's keycap / pad button (`target` amber pulsing, `down` green). `actionLabel(kb[, gamepad])` returns a
+  KB_ action's key or pad label by value (`.s`, "-" unbound; by `lastInputWasGamepad` without the flag), so
+  keyDisplayName's 4-slot letter pool cannot overwrite it; copy `.s` into member storage before handing it to Clay.
+  `uiBottomClearance(screenH)` is how far above the bottom a bottom-centred card sits to clear LeftPanel and
+  RightPanel (last frame's boxes, 12 px gap, at least 24): the tutorial card uses it.
+- **The opening's caption band:** the caption's container is `CineCaption`, capped at min(W - 24, fs(19) x 40) wide; a line
+  wraps by words inside it (the title is WRAP_NONE). It draws nothing, so `ui dump` lists it as kind `box`
+  (UIRenderer's layout-only list), and `ui_lowres.py` checks it with the HUD ids (views `intro_caption`, toolbars held
+  back, and `intro_caption_menu`, menu mode during the opening: the band clear of LeftPanel / RightPanel). The
+  caption strings are `Txt::NoteIntro*` (keyframe `text` is a Txt; `kIntroNoCaption` = none).
 - **HUD text entry (2026-10-03):** the time bar's clock and the right panel's latitude, longitude and altitude are
   `inlineTextField`s (a readout until clicked; the box starts with an edit form — signed decimal degrees, the
   altitude in the HUD's unit). `setSimTimeFromText` takes "2036-11-22 02:06[:30]", ISO with T/Z, or "HH:MM[:SS]"
@@ -291,6 +305,63 @@ where no saved binding uses them. An unbound key is -1 (`onKey` ignores GLFW_KEY
 "-"). The selection buttons' tooltips name their keys ("Info (I)"), and so do the tutorial's cards. Harness
 `ui key <letter>`.
 
+### FPS camera mode (2026-11-16, `SatelliteSimFps.cpp`)
+
+Two mouse modes. **Menu mode** is the old behaviour: a free cursor, hold the right button and drag to look.
+**FPS mode** looks with the mouse and no button: the OS cursor is hidden and captured (`GLFW_CURSOR_DISABLED`,
+plus `GLFW_RAW_MOUSE_MOTION` when supported, only while FPS mode holds the cursor; the right-drag keeps the OS's
+accelerated motion). The look is the same code as the right-drag (buildUI's look block): `camYaw` / `camPitch`,
+the FOV scaling, invert X / Y, Track's zeroing, the capture-change two-frame skip (`fpsLive_` counts as the held
+button), and Alt's cinematic pan (`KB_CINEMATIC` toggles while `camera.captured || fpsLogicLive()`).
+
+- **Toggle**: `KB_TOGGLE_CURSOR` ("Toggle Cursor") is Tab on the keyboard (FPS mode) and Start on the pad (UC5's
+  virtual cursor, unchanged): `dispatchKeyAction(idx, fromPad)` tells them apart. `KB_TOGGLE_UI` is U (pad View).
+  Key layout 4 migrates a saved Tab on Toggle UI to U and an unbound Toggle Cursor to Tab, each dropped again when
+  another saved binding already has that key. Tab never reaches the dispatch while a text field, the console or a
+  rebind has the keyboard (`onKey`'s order), so it does nothing to the mode there.
+- **The one writer** is `fpsSet(on, why)`. Into FPS mode: Tab (and harness `fps on`). Out: Tab, a right press (it
+  sets `camera.blockUntilRelease`, so the same press never starts a right-drag), and the forced exits: a hotkey
+  that opens a window (`dispatchKeyAction` compares `fpsWindowMask()` before and after), any window, the note
+  bar or the first-run tutorial card APPEARING by whatever means (the same mask, rising edge per frame in
+  `fpsTick`: Settings, controls, info, viewer, trace, Missions, Sky events, Weather, cinematics, Bookmarks, Issue
+  reports, the note bar, `tutActive`), the console opening, a text field or rebind taking the keyboard, and the
+  window losing focus. Tab back into FPS mode with one open is allowed (only the appearance counts). Unopened
+  UI that needs no pointer: the crash-recovery and graphics notices and the Kessler banner (text, timed or
+  passthrough), the screenshot toast, the selection panel and chip (I / G / T), the Go to chips and "Go to ...
+  again" (T / G / H / [ ]), the REC badge. Nothing re-enters FPS mode when that window closes. The cursor
+  is put back at the window centre on every exit.
+- **Live vs set**: `fpsMode` is the setting (`camera.fps_mode`, compiled default and absent key = on), read from
+  the settings file only (a patch: a cinematic shot's look, a snapshot, harness `set`, never changes the mode).
+  `fpsLogicLive()` is false during a playing cinematic (the opening is live: it turns FPS mode on), and for a player during an HQ photo: menu
+  mode meanwhile (cursor free, right-drag works), FPS again after. A player's own video recording (F6) keeps it
+  live. Nothing captures before the scene runs: the loading screen and the boot chooser run before `init()`
+  returns, App's key / cursor callbacks reach the sim only once `simInited`, `win` is first set by them, and only
+  `buildUI` (`fpsTick`) and `fpsSet` capture, both needing `win`. The OS cursor is never
+  captured under the harness: there FPS mode is logic only and only `mouse move` turns the view; `harnessInit`
+  starts a run in menu mode and a loaded settings file never turns it on (only `fps on`).
+- **UI inert**: `Simulation::uiPointerInert()` makes App hand the UI a pointer at (-1e5, -1e5) with the real
+  buttons, so no hover or click reaches an element from the frozen hidden cursor and `mouseOverUI()` is false for
+  the centre click and the wheel zoom. A scripted pointer (`ui click`) and the pad's virtual cursor still count as
+  pointers.
+- **Centre click**: an FPS left click runs `pickAtScreenCentre()`, the pick chain at the window centre in the
+  mouse's coordinates (`glfwGetWindowSize`), shared with `KB_SELECT_SAT` (which used the framebuffer's
+  `swapExtent`: wrong under display scaling). A miss clears the selection, as a menu click on empty sky does. The
+  mode stays FPS. Each click flashes a ring at the centre (`buildFpsRing`, a `fs(12)` circle with a 1-px stroke at UI
+  scale 1 and 1.5, passthrough, drawn with the harness overlays so clean shots skip it): a lone click shows it
+  `kFpsRingShowS` 0.9 s, a click while it still holds adds `kFpsRingAddS` 1 s to what is left, capped at
+  `kFpsRingMaxS` 5 s, then a `kFpsRingFadeS` 0.3 s fade (the owner: "briefly show a circle marker" that "should stay
+  a while if you click a lot"; the first cut, 26 px for 0.6 s, was far too big and a little too brief).
+- **Mouse sensitivity** (Controls > MOUSE, slider slot 626, `controls.mouse_sensitivity`, 0.1-4, default 1)
+  multiplies the 0.12 deg/px rate in both modes (`SkyCamera::sensMul`); the pad's look keeps its own rate (it
+  scales by `fovLookScale()` only).
+- `camera.captured` readers: Go to's aim unlock and the tutorial's look step also count `fpsLookedThisFrame_`
+  (an actual FPS turn, not the mode), the report bar's "busy hands" sees FPS mode already left.
+- `fpsFacts_` keeps sticky facts (left by Tab / right click, entered from menu mode, click count and times, degrees
+  of mouse look either mode, right-drag used); harness `fps state` reports them, and the hints read `clicks` and
+  `lookDeg` as running counters (their own gates come from `fpsSet`'s `hintsNoteFps`).
+  Harness: `fps on|off|state`, `mouse move dx= dy= frames=`, `mouse click left|right`
+  (`tools/harness/scripts/fps_mode.satcmd`).
+
 ### Gamepad layout 2 and the selection's focus (2026-10-03)
 
 Default pad bindings: A select (centre pick) · B back · X pause · Y reverse · D-pad up/down faster/slower ·
@@ -317,19 +388,10 @@ struct KeyBinding {
 ```
 
 ### `KB` enum (canonical indices)
-```cpp
-enum KB {
-    KB_TOGGLE_UI  = 0,   // Tab    — event
-    KB_PAUSE      = 1,   // Space  — event
-    KB_SLOWER     = 2,   // ,      — event
-    KB_FASTER     = 3,   // .      — event
-    KB_REVERSE    = 4,   // R      — event
-    KB_MOVE_BOOST = 5,   // LShift — held
-    KB_MOVE_FINE  = 6,   // LCtrl  — held
-    KB_CINEMATIC  = 7,   // LAlt   — event (toggle cinematic pan mode while RMB held)
-    KB_COUNT      = 8,
-};
-```
+The enum is in `SatelliteSim.h` (`KB_TOGGLE_UI = 0` .. `KB_ROLL_RIGHT = 33`, `KB_COUNT = 34`) and the
+`keybindings` initializer in `SatelliteSim::init()` lists the same order with each default key / pad button
+(`static_assert(KB_COUNT == 34)`). Read those two rather than a copy here: an 8-entry listing that stood here
+went stale at KB_COUNT 8.
 
 ### Adding a new control (complete checklist)
 1. Add `KB_NEWNAME` before `KB_COUNT` in the enum
@@ -417,123 +479,176 @@ north: `camera.az_deg` is saved and never applied (as before the rig). The pad h
 
 ---
 
-## Subsystem: Intro Cinematic (UC3)
+## Subsystem: The opening (UC3)
 
-`showIntro` drives `updateIntroCinematic()` (`SatelliteSim.cpp`, called from `recordCompute()` in
-place of normal WASD/zoom input) through a fixed beat sheet, `kIntroKeyframes[]`
-(`SatelliteSim.h`). `buildIntroOverlay()` (`SatelliteSimUI.cpp`) only draws the caption/skip-hint
-text on top — the camera path itself *is* the cinematic. Whether it plays on launch is a real
-persisted toggle, `playIntroOnStartup` (Display tab "Play intro on startup") — see the persistence
-note near the bottom of this section; it is no longer forced on every launch.
+The opening is the intro's captions played over the player's own first minute in the scene. `showIntro` = the
+captions are playing. `updateIntro()` (`SatelliteSim.cpp`, called from `recordCompute()` ahead of the movement
+block) sets the scene on its first frame (`!introBasisValid`) and from then on runs only the caption clock, the
+UC1 benchmark and the end; nothing in it touches the camera, the observer or the clock after that first frame.
+`buildIntroOverlay()` (`SatelliteSimUI.cpp`) draws the caption. Whether it plays on launch is the persisted
+`playIntroOnStartup` (Display tab "Play intro on startup"; see the persistence note below).
 
 **Window boots maximized** (`App::initWindow`, `glfwWindowHint(GLFW_MAXIMIZED, ...)` before
 `glfwCreateWindow`) — windowed, not exclusive fullscreen, but full monitor work-area size by
-default rather than the fixed `WIN_W`x`WIN_H` (1280x720). A small window the player has to
-manually enlarge undercut the cinematic's impact and invited resizing instead of watching it.
-`WIN_W`/`WIN_H` are still passed as the restore size for whenever the player un-maximizes later.
+default rather than the fixed `WIN_W`x`WIN_H` (1280x720). `WIN_W`/`WIN_H` are still passed as the restore size
+for whenever the player un-maximizes later.
 
-**A fixed moment, locked every playback (2026-11-13: "intro2").** The intro is the user's saved cinematic
-`intro2` (made in the Cinematics window), its 8 keys copied into `kIntroKeyframes[]` (`SatelliteSim.h`: lat/lon,
-altitude above sea level, az/el/FOV, caption) one per beat: the Mississippi delta (Arkansas) at twilight, Starmind's
-trains overhead, the Reflect mirrors' flares and the busiest beam site (~55 km east) on the horizon; rising and
-panning south onto a Starship climbing out of Starbase, Texas over the Gulf, the sunset behind it; out to orbit with
-the Sun on the limb for the title. `updateIntroCinematic`'s one-time init (`!introBasisValid`) sets the sim time to
-`kIntroSimStartJ2000S` (2036-11-25 23:15:46.57 UTC), the cloud map's phase to `kIntroCloudPhase` (2.356 rad: the
-offset only, the player's drift rate is kept), 1x, and PAUSES the clock: the intro drives sim time itself, at
-`kIntroSimRate` = 5 s / songbeat, so the sky at each key is the one the cinematic framed it on (its keys were 5 s
-apart). `finishIntro` hands the clock back running at 1x. The Display tab's "Replay Intro" (`startIntroReplay`,
-also the harness's `intro play`) clears `introBasisValid`, so a replay returns to the same moment and place.
+**The first frame.** The moment `kIntroSimStartJ2000S` (2036-11-25 23:15:46.57 UTC), the cloud map's phase
+`kIntroCloudPhase` (2.356 rad: the offset only, the player's drift rate is kept), any playing cinematic stopped,
+follow, Track and the inertial lock off, the clock at plain 1x running forward. The place and the look are the
+user's cinematic `intro2`'s first key (`kIntroStart*`, `SatelliteSim.h`): the Mississippi delta (Arkansas) at
+33.564 N, 91.289 W, 54.56 m above sea level (floored at the ground), az 3.19 / el 18.25 / FOV 46.5, facing north up
+Starmind's train at twilight, the Reflect mirrors' busiest beam site ~55 km east, a Starship climbing out of
+Starbase, Texas to the south. Applied once with `harnessApplyCam` (as the Cinematics playback applies a key: it
+sets `camera.azDeg` AND `obsFacing`, which `buildUI` derives the azimuth from). Then FPS mode on
+(`fpsSet(true, FpsWhy::Intro)`) with `fpsFacts_` reset, so the mouse looks from the first frame
+(`fpsLogicLive()` is true during the opening: the OS cursor is captured for a player once the window has focus;
+logic only under the harness). A replay from the Display tab returns to the same moment and place, wherever the
+player has since gone (`startIntroReplay` clears `introBasisValid`).
 
-**Why that date.** The cinematic was framed on 2036-11-21 23:19:46 UTC, under a 16%-lit crescent. The user wanted
-a quarter-to-half Moon, for some ambient light at night (where the clouds look best). `launch list` over Nov 23-27
+**Why that date.** intro2 was framed on 2036-11-21 23:19:46 UTC, under a 16%-lit crescent. The user wanted a
+quarter-to-half Moon, for some ambient light at night (where the clouds look best). `launch list` over Nov 23-27
 found the same scene four days later: a Starship from Starbase, Texas lifting off eastward at 23:10:16 (the
-cinematic's at 23:14:16) with the Sun ~4.5 deg up at the pad; the intro opens 330.6 s after lift-off as the
-cinematic did, the observer's Sun at -4.1 deg (was -4.8), the Moon 50% lit, ~42 deg up in the south. Launches,
-beams and satellites are pure functions of sim time, so the moment is identical on every machine. The cinematic's
-own cloud phase (the default map, 2.774) put a bank over the opening train and the beam at Nov 25; a sweep of 9
-phases picked 2.356 (clear over the vantage, the beam showing, the Gulf's clouds sunset-lit from orbit). Under the
-brighter Moon the train reads dimmer than on the crescent night: that is the trade for the moonlight.
-`kInitWholeSec` (the boot time, 2036-11-22 02:06:22, the first intro's California twilight) is unchanged: harness
-runs start there and baselines assume it.
+cinematic's at 23:14:16) with the Sun ~4.5 deg up at the pad; the opening starts 330.6 s after lift-off as the
+cinematic did, the observer's Sun at -4.1 deg, the Moon 50% lit, ~42 deg up in the south. Launches, beams and
+satellites are pure functions of sim time, so the moment is identical on every machine. The default cloud phase
+put a bank over the train and the beam at Nov 25; a sweep of 9 phases picked 2.356 (clear over the vantage, the
+beam showing). `kInitWholeSec` (the boot time, 2036-11-22 02:06:22) is unchanged: harness runs start there.
 
-**Beat sheet** (`kIntroKeyframes[]`, timings synced to `songbeat` = 7.61s, a music-tempo unit —
-hand-tuned by the user, not derived): `kIntroYearIndex` (0) is a "2036" title card, bottom-anchored
-like every other caption but at a larger font size (not centered — that was tried and reverted, it
-read as inconsistent with the rest of the captions); `kIntroHintRevealIndex` (1) is the first
-narrative line and also where the bottom-right skip hint first appears (not from frame 0 — see
-below); beats 0-2 are on the ground, 3-4 climb (2.6 km, 57 km), 5-7 are in orbit; `kIntroTitleIndex` (6, 45.66 s)
-is the "SAT LIGHT SIM" reveal; beat 7 (the last key, text null, 53.27 s) is the hand-over, the title fading over its
-last second (`kIntroBenchEndT` = its time: the whole intro feeds the UC1 benchmark).
+**The player has control throughout.** Movement (WASD along the look in 3D, Q / E, boost, all the way to orbit),
+look, zoom, picking (the FPS centre click and its ring, or a menu-mode click), the clock's keys (Space is Pause)
+and the pad (Start keeps its action) all work as in normal play from the first frame: the movement block in
+`recordCompute`, the look block in `buildUI`, `onKey`, `pollGamepad` and `padContextButton` have no opening gate.
+There is no skip: the captions run their 53.27 s (Settings > Display > "Play intro on startup" is the off switch).
 
-**The ending: the camera arrives on the final shot at the title** (2026-11-14, issue_20261114_162721; the user: "the
-timing of the key frames was fine, we just needed them to be accelerated in position so that the last beat would end
-on that final shot, rather than being still moving towards it"). Until then the title showed while the camera was
-still flying in (~2 deg of look and 40-57 km of travel per 0.5 s) and it stopped only on the hand-over frame. Key times
-are unchanged; the camera's progress along the path is remapped. Over the one songbeat before `kIntroArriveT` (38.05 ->
-45.66 s) it covers the path from beat 5 to the last key: a cubic Hermite in path time from the path's own speed (1, so
-no velocity jump where it starts) to 0 (an ease-out onto the last key, no snap), peaking at 2.8x the path's speed.
-Beats 0-5 frame exactly what they did at their captions; beat 6's pose is passed through on the way. From
-`kIntroArriveT` to the hand-over the camera is still on the Sun centred on the limb (638 km; the last key re-applied
-each frame, auto-level has no roll to take out) and only the FOV moves: 89.35 -> `kIntroTitleFovDeg` (105), smoothstep
-in log FOV, monotonic and still at both ends (the pre-2026-11 intro widened 80 -> 120 over its title beat, eased to a
-stop); the hand-over keeps that FOV. Not 120: from this framing the Sun's halo fades past ~105 deg (full at 102, half
-at 114, gone at 118) — the sky's veiling glare follows the cloud composite sampled across the Sun's disc
-(`sat_sky.frag`, "cloudAtSun"), and at that scale the samples reach the limb's clouds (`docs/rendering/FINDINGS.md`
-#10). `kIntroArriveT` is one constant (default `songbeat * 6`, the title); `songbeat * 7` gives back the old ending
-(the remap then reduces to the old last-segment ease, `u + u^2 - u^3`). The sim clock runs at `kIntroSimRate`
-throughout, the still part included (5 s of sim time: the Sun moves ~0.02 deg); `finishIntro` hands it back at 1x. A
-skip (Space) during the still part hands over the camera as it is (that FOV), clock 1x. The title is one line
-(`CLAY_TEXT_WRAP_NONE`: it wrapped to "SAT LIGHT / SIM"). The harness's `intro state` reports `phase` (move / still /
-off), `arrive_s` and the camera as applied. (A first answer to the issue, 136a85b, added a still songbeat after the
-last key and a title beat after that, 68.5 s in all; the user wanted the original timing.)
+**Captions** (`kIntroKeyframes[]`: a time and a `Txt` per key, `kIntroNoCaption` = none; timings are multiples
+of `songbeat` = 7.61 s, a music-tempo unit hand-tuned by the user): `kIntroYearIndex` (0) is the "2036" card, a
+larger font, bottom-anchored like the rest; beats 1-5 the narrative lines; `kIntroTitleIndex` (6, 45.66 s) "SAT
+LIGHT SIM", one line (`CLAY_TEXT_WRAP_NONE`: it wrapped to "SAT LIGHT / SIM"); the last key (7, 53.27 s, no
+caption) is the end. A caption fades in over 0.8 s from its key; everything fades out over the last second. The
+caption clock `introElapsed` advances by the frame's dt (it stays with the music, which `startIntroReplay` cuts to
+track 0; ambience: the `intro` driver, the upwell stem muted and the bus at 0.5 while `showIntro`,
+`SatelliteSimAmbience.cpp`). The band (`CineCaption`, inside the full-screen `IntroCaptionOuter`) never takes
+input: no capture rect, `CLAY_POINTER_CAPTURE_MODE_PASSTHROUGH`. Its bottom offset is 90 px, or
+`max(90, uiBottomClearance(H))` when the corner toolbars draw that frame, so it sits clear of them. The overlay is
+drawn with the harness overlays, before the `uiVisible` check (it shows with the HUD hidden).
 
-**The camera path is `cineEval`'s** (`Cinematic.cpp`, the Cinematics window's own spline), applied with
-`harnessApplyCam` as the Cinematics playback does: Catmull-Rom per channel, so velocity carries through every beat
-(the pre-2026-10 intro smoothstepped each segment and visibly stopped at every key); altitude and FOV in log space,
-so the climb from 55 m to 640 km takes each decade in its stride; azimuth unwrapped (keys 4 -> 5 cross +-180, which
-a raw spline would turn the long way round). Its end tangents are one-sided, so the first segment's clock is
-remapped (`2u^2 - u^3`: the "2036" card opens still) and the last stretch's by the arrival remap above. `harnessApplyCam` sets both `camera.azDeg` and `obsFacing`: outside the
-intro `buildUI` derives `camera.azDeg` from `obsFacing` every frame (search "Derive camera.azDeg from obsFacing"),
-and a stale one snapped the camera on the first post-intro frame.
+**The corner toolbars** (`LeftPanel`, `RightPanel` and their Movement / View popups) are held back while the
+captions play until the player is first in menu mode (Tab, a right click, or any forced exit: `!fpsMode` after
+`fpsTick`, checked in `buildUI` once the scene is set), or the captions end; then `introToolbarsShown` sticks.
+Everything else (the selection panel and chip, the follow bar, windows opened by hotkey, toasts, notices, the
+console, issue shots and the note bar, the ring) behaves as in normal play.
 
-**No controls in the intro (2026-10-03).** Beat 7 used to be a "WASD to move / Q-E / click a
-satellite" caption that unlocked movement and look (`kIntroControlsIndex`) while clicking stayed
-disabled until the intro ended — and the post-intro "Click to select any satellite" hint
-(`buildSelectHint`) then said it again. Both are gone: input is live only once `showIntro` is
-false, and `finishIntro` starts the first-run tutorial (below).
+**The end** (`finishIntro(false)` at the last key): `showIntro` off, the toolbars show, the ambience bus returns;
+no camera or FOV change. Nothing else starts there: the first run's hints (below, "Hints") run on through the
+end; the old card tutorial no longer starts on its own. `finishIntro(true)` (only the harness's `intro skip`) ends
+the captions without the benchmark.
 
-**Dismissal is a single defined key, not "any key."** `onKey()` only calls `finishIntro(true)` for
-literal `GLFW_KEY_SPACE` (independent of whatever `Pause/Resume` is currently rebound to);
-`pollGamepad()` only responds to `GLFW_GAMEPAD_BUTTON_START`. Mouse clicks do NOT skip —
-`buildIntroOverlay` still covers the screen with a mouse-capture rect so a click doesn't leak
-through to satellite picking, but it no longer calls `finishIntro`. This was a real usability
-issue in the previous "any key/click" version: almost no one saw the cinematic play out, because
-touching the keyboard or clicking into the window to focus it immediately skipped it.
+**UC1 benchmark.** `updateIntro` adds `gpuMsTotalSmoothed` every frame while `introElapsed <= kIntroBenchEndT`
+(the whole caption period: the player on the ground, steering). `finishIntro` decides with
+`introBenchDecision(mean, preset)`: target 12 ms; over 18 ms steps down (Medium -> Low -> Planetarium -> Potato),
+under 4.8 ms steps up (Potato -> Planetarium, Low -> Medium -> High); High, Ultra and Custom are never moved; the
+"graphics set to X" notice shows either way. Not on a cut-short end, a replay, a crash-recovery launch or after a
+boot-chooser pick. The harness's `intro play bench=1` measures and decides as a first run; `intro state` ->
+`bench` {frames, mean_ms, would_set, last}.
 
-**The intro hides the entire normal HUD**, not just its own overlay — `buildUI()` checks
-`showIntro` before icon loading/scroll-zoom/satellite-picking and before the `uiVisible` check, so
-none of the left/right HUD panels, settings/view-controls windows, or scene-interaction input run
-while the cinematic owns the camera, regardless of whether the player has the rest of the UI
-toggled on or off.
+**Other readers of `showIntro`:** the ambience (above), the toolbar hold and the overlay (`buildUI`), the
+hints (the beat-2 hold, "captions ended"), `loadSettings` (a full load arms it from `playIntroOnStartup`; a settings patch never starts it
+mid-session), the harness (`harnessInit` and `snapshot` keep it off). The Display tab's "Replay Intro" closes
+Settings and starts it (allowed during the opening too); "Replay tutorial" waits for the captions' end.
 
-**`timeScaleIdx`'s compiled-in default was `1` ("10x"), not `0` ("1x")** — a real bug, now fixed.
-`loadSettings()` overrides it from `settings.json`'s `time.scale_idx` when present, which is why it
-looked "sometimes" wrong: a genuine first run (or any state where that key was never written)
-booted at 10x. The intro's one-time init above also force-sets it defensively, since a replay runs
-on live state that loadSettings() never touches again.
+**`timeScaleIdx`'s compiled-in default was `1` ("10x"), not `0` ("1x")** — a real bug, fixed 2026-10:
+`loadSettings()` overrides it from `settings.json`'s `time.scale_idx` when present, so a genuine first run
+booted at 10x. The opening's first frame also sets 1x, since a replay runs on live state.
 
-**Persistence: `playIntroOnStartup`, not a raw `showIntro` save.** `showIntro` is runtime
-play-state (flips false the moment the cinematic ends), so persisting it directly conflated "did
-today's playthrough finish" with "should it play again next launch." `playIntroOnStartup` (Display
-tab checkbox, next to "Replay Intro") is the actual user preference, saved every close and applied
-to `showIntro` at load time: `playIntroOnStartup = d.value("play_intro_on_startup", false)` inside
-the `"display"` block. Absent-key default is `false` there (not the compiled-in `true`) so a
-player upgrading from a build that predates this key doesn't suddenly get a cinematic that didn't
-exist in their version — a genuine first run (no settings.json at all) never reaches that line, so
-it still keeps the compiled-in `true` default from the "no file" early-return branch. Disabling it
-does not need to separately handle "resume at last known location" — `obsDir`/`camera` are always
-restored from settings.json's own `"observer"`/`"camera"` blocks regardless of `showIntro`, so
-turning the intro off just resumes wherever the player last was.
+**Persistence: `playIntroOnStartup`, not a raw `showIntro` save.** `showIntro` is runtime play-state, so
+persisting it conflated "did today's playthrough finish" with "should it play again next launch."
+`playIntroOnStartup` (Display tab checkbox, next to "Replay Intro") is the preference, saved every close and
+applied to `showIntro` at a full load: `playIntroOnStartup = d.value("play_intro_on_startup", false)` inside the
+`"display"` block. Absent-key default is `false` there (not the compiled-in `true`) so a player upgrading from a
+build that predates the key does not suddenly get it — a genuine first run (no settings.json at all) never
+reaches that line and keeps the compiled-in `true`. Turning it off resumes wherever the player last was:
+`obsDir` / `camera` are restored from settings.json's `"observer"` / `"camera"` blocks regardless.
+
+**History.** Until 2026-11-16 the intro was a camera flight along intro2's eight keys to orbit (the HUD and all
+input locked, sim time driven at 5 s per beat, skippable with Space / pad Start); its times and captions remain.
+
+---
+
+## Subsystem: Hints (2026-11-17, `SatelliteSimHints.cpp`)
+
+The first run's teaching: **one small hint at a time** (`HintPopup`: keycaps, then one line), chosen from what the
+player has and has not done. It replaced the card tutorial's teaching (that card no longer starts on its own).
+`hintsTick` (buildUI, after the look block and `updateTutorial`) measures and decides; `hint_` (`HintRun`) holds
+every bit of state; `buildHints` (just before `buildTutorial`, after every HUD element it avoids) draws.
+
+**Gates** (`HintGates`, sticky since the pass began): `looked` (30 deg of view turned in total: `fpsFacts_.lookDeg`'s
+growth in either mode + the pad's stick x `fovLookScale`), `moved` (1 s of movement input in total), `climbed`
+(100 m of height changed by elevation input: `hintClimbM_`, summed in the Q / E block), `boosted` (boost held while
+moving or climbing), `zoomed` (the wheel's zoom in buildUI or the zoom keys), `clicked` (an FPS centre click),
+`leftByTab` / `leftByRightClick` / `returned` (`fpsSet` -> `hintsNoteFps`; `returned` = any entry but the opening's
+and the harness's own; a pad player: the virtual cursor's on / off edges), `dragLooked`, `selected` (a CHANGE to a
+satellite: a selection standing when the pass began does not count), `timeBarShown` (a time control used, or
+hint 9's 8 s), `menuBarShown` (Missions / Weather / Sky events / Settings opened, or hint 10's 8 s). Movement is
+read from the movement block's MERGED input (`hintMoveIn_`, `hintBoostIn_`: W A S D + the left stick + harness
+`inertial move`), one recordCompute behind.
+**Live signals:** the mode (`hintMenuMode()`: `!fpsMode`, or for a pad player `vCursorToggled && uiVisible`),
+moving now and the streak without a break, seconds since any input (keys, pad buttons, clicks, wheel, look,
+movement, the mode, the time bar, the windows), menu-mode idle, the view held still (< 3 deg/s), FPS clicks in the
+last 5 s (a ring of 8 times), the caption beat and the captions' end (`!showIntro`: no opening counts as ended),
+whether a window is open.
+
+| # | Text (`ui_text_en.inc` `Hint*`) | Offered when (gate unmet) | Holds while up |
+|---|---|---|---|
+| 1 | Move the mouse / Hold the right mouse button and drag / Move the right stick ... to look around | always | always |
+| 2 | [W][A][S][D] to move / Left stick to move | `looked` (or case c) | always |
+| 3 | [Q] / [E] (pad [RT] / [LT]) to rise and descend | moving now or `moved` | the same |
+| 4 | Hold [Shift] ([LS]) to go faster | moving 4 s without a break | moving, or stopped < 1 s |
+| 5 | Scroll to zoom / [LB] / [RB] to zoom | view still 2 s, and a selection or a drawn mesh satellite within max(24 px, its size) of the centre | that satellite |
+| 6 | [Tab] or right click for the cursor / [Start] for the cursor | FPS mode, never in menu mode, and 6 s idle, or 2 FPS clicks in 5 s, or the captions ended | FPS mode, never in menu mode |
+| 7 | Click a satellite | menu mode | menu mode |
+| 9 | Time: slow down, pause, speed up | menu mode, `selected` | the same |
+| 10 | Missions, Weather, Sky events and Settings | menu mode, 9 done | menu mode |
+| 8 | [Tab] / [Start] to look around again | menu mode, 9 and 10 done (or 10 s idle in menu mode) | menu mode |
+
+Keycap labels come from `actionLabel` (live bindings; W A S D and the pad's RT / LT are literal).
+
+**The scheduler** (constants `kHint*` in SatelliteSim.h, one block): nothing before beat 2 begins (15.22 s of
+captions; `kHintBeat`); one hint at a time, 3 s from one gone to the next (`kHintGapS`), 0.3 s fades; a hint fades
+2 s after its gate (`kHintLingerS`; gone 2.30-2.35 s after at 20 steps / s), and at once when its "holds" column
+fails (`how` = condition); a gate met before its hint ever showed retires it; ignored 20 s -> fades and rests 30 s,
+two offers at most (9 and 10 instead leave after 8 s up, counted as done). The order when the slot is free:
+a. captions ended: 6 if never in menu mode, else 7 in menu mode without a selection (both never time out);
+b. menu mode with a selection: 9, then 10; c. a selection and 9 + 10 done: 8 in menu mode, then 2 if not moved
+(never times out); d. 1; e. moving now: 3 (not climbed), else 4; f. 6 on idle / two clicks; g. 7 in menu mode;
+h. 2, 3, 5, then 8 on menu idle. **Two FPS clicks within 5 s take the slot for 6 at once** (`preempted`: the hint
+up gives way, gets its offer back, no 3-s gap) unless the hint up is in a never-time-out case: without it the
+clicker would see 2 (on at beat 2 for anyone who looked) and wait. **Complete** = captions ended + `selected` +
+`moved` + 9 and 10 done (retired by use counts): `tutorialDone` set and `saveSettings()`; then 3, 4, 5 and 8 may
+fire once more that session (`postFired`).
+
+**When:** `hintsPass_` is decided on the first frame (`!tutorialDone` = a pass), and every opening's first frame
+(`updateIntro`, a first run's or a Replay Intro's) starts a pass from zero (`hintsReset`, which also primes the
+edges). Never shown during a playing cinematic, an HQ photo, the old card, or with the HUD hidden (`how` =
+suppressed); a harness run keeps them off (`harnessInit`) until `hints on`.
+
+**The popup** (z 27: over windows 10 and notices 25, under the caption 30; passthrough; width <= W - 24; fs(13);
+keycaps fs(13) x 1.6 tall). While a caption is declared (`introCaptionBuilt_`) it is attached to `CineCaption`'s
+top edge, 8 px up (Clay places it the same frame, so it rises when the caption wraps); between two captions (the
+next one's first frame draws none) it stays where it was. Else bottom centre, above both toolbars (12 px) and
+anything else in its way. 9 / 10 go above `LeftPanel` / `RightPanel` (left / right aligned, clear of a 4-px
+outline, `HintOutline`), unless that would cover the caption or another element: then the bottom stack, with the
+outline still marking the toolbar. Avoided (only if declared this frame: `UIRenderer::declaredThisFrame`, Clay
+keeps stale boxes): LeftPanel, RightPanel, HudPopupPanel 0 / 1, SelSatChip, FollowHud, FollowAgainBtn, CineHud,
+FpsRing, CineCaption. Its own size is last frame's box (an estimate on a new hint's first frame, at alpha 0).
+`ui_lowres.py` has six hint views (`hint_caption_menu`: the longest hint, 1 in menu mode, over beat 2; `hint_caption`,
+`hint_9`, `hint_9_caption`, `hint_10`, `hint_pad`) and `HintPopup` in `HUD_IDS`: all pass at the five sizes.
+
+**Harness:** `hints on|off|reset|state|set <gate> [0|1]|force <n> [pad=0|1]`, `state` -> `hints` (gates, live,
+showing, offers, retired, texts, `seen` "1,6,7", `log` with shown / gate-met / gone times and `how`), `mouse scroll
+dy=`. `tools/harness/scripts/hints_players.satcmd` (`--fixed-dt 0.05`, one launch, ~165 s): Still 1,6,7,9,10,8,2
+then complete; Explorer 3,4,6,7,9,10,8; Clicker 2,6 (6 on the second click); Veteran 9,10,8 (1, 2, 6, 7 retired);
+Returning none; Gamepad labels; each hint's exits, and retirement.
 
 ---
 
@@ -564,10 +679,10 @@ The Missions cards sit above the left panel while the window (docked top right) 
 it is closed. **The Missions step's jump has a way back:** entering it saves the time, place, camera, clock and cloud
 drift (`tutSaveReturn`; not again once a jump happened); after the jump every later card shows **"Back to <UTC>"**
 (`TutReturn`, `tutReturnNow`: bookmarkGo's cut) until used. A finished step shows "Done!" for 1.1 s and moves on.
-- **Starts** from `finishIntro` (not on a replay of the intro), or on the first frame in the scene when
-  the intro is off (`updateTutorial`, `tutAutoChecked`), once: Skip and Finish both set
-  `display.tutorial_done` (absent = not done, so existing installs see it once). Settings > Display >
-  STARTUP > Replay tutorial runs it again. A harness run never starts it on its own.
+- **Never starts on its own** (2026-11-17): the first run's hints replaced its teaching (`finishIntro` and
+  `updateTutorial` no longer start it). Settings > Display > STARTUP > Replay tutorial runs it, and harness
+  `tutorial start`; Skip and Finish set `display.tutorial_done`, as the hints' completion does. While the card is up
+  the hints hold back.
 - **Detection** (`updateTutorial`, in buildUI right after the look block and before the click pick) reads
   the keys and gamepad values itself; it does not hook the movement code.
 - **Clay keeps stale boxes** for elements not drawn this frame, so the selection buttons' outline uses only

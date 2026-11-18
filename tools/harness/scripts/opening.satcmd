@@ -1,0 +1,110 @@
+# The opening (2026-11-16, docs/subsystems/ui.md "Subsystem: The opening (UC3)"). One launch, 20 sim steps / s (the
+# caption clock is frame time, so 20 frames = 1 s of captions):
+#   python tools/harness/run.py tools/harness/scripts/opening.satcmd --fixed-dt 0.05 --quiet
+# Read: res.py <run> -c intro -g playing -g caption_index -g toolbars_shown -g fps_mode -g observer -g time_paused
+#       res.py <run> -c inertial -g observer;  grep -l LeftPanel <run>/ui_op_*.json (the dumps)
+#   1  `intro play`: key 0's place and look, FPS mode on, 1x running, caption 0, toolbars held back (dump op_start)
+#   2  during captions: `mouse move` turns the view; `inertial move` moves the observer; a centre click selects
+#   3  Space pauses (and resumes): the captions play on
+#   4  caption beats at their times (7.61 s apart): 7.55 s -> beat 0, 7.65 s -> beat 1, 15.25 s -> beat 2
+#   5  Tab (menu mode) brings the toolbars back for good (dump op_tab; Tab back in, still shown)
+#   6  the captions end without Tab: toolbars back (dumps op_preend / op_end), normal play
+#   7  flight in FPS mode: W pitched up 45 deg climbs and travels, Q + boost climbs past 100 km: during the captions,
+#      after them, and outside the opening
+# Waits are frames at 0.05 s each.
+wait 5
+# 1
+intro play
+wait 3
+intro state
+ui dump op_start
+# 2
+mouse move dx=20 dy=0 frames=10
+inertial move right=1
+wait 10
+inertial move
+intro state
+select const "Starlink Gen1"
+camera look sel
+wait 5
+select none
+mouse click left
+fps state
+# 3
+ui key space
+wait 3
+intro state
+ui key space
+wait 3
+intro state
+# 4
+intro play at=7.5
+wait 1
+intro state
+wait 2
+intro state
+intro play at=15.2
+wait 1
+intro state
+# 5
+intro play at=20
+wait 3
+ui key tab
+wait 3
+intro state
+ui dump op_tab
+ui key tab
+wait 3
+intro state
+# 7a during the captions (key 0's place, FPS mode)
+intro play at=21
+wait 3
+camera el=45
+wait 2
+intro state
+inertial move fwd=1 boost=1
+wait 40
+inertial move
+intro state
+inertial move up=1 boost=1
+wait 40
+inertial move
+intro state
+# 6 (the end: 53.27 s)
+intro play at=52
+wait 3
+intro state
+ui dump op_preend
+wait 40
+intro state
+ui dump op_end
+fps state
+# 7b after the captions (back at key 0's place first: the opening's own place)
+observer lat=33.56354697522229 lon=-91.28908090163594 agl=2
+camera az=3 el=45 fov=46.5
+wait 3
+intro state
+inertial move fwd=1 boost=1
+wait 40
+inertial move
+intro state
+inertial move up=1 boost=1
+wait 40
+inertial move
+intro state
+# 7c outside the opening entirely (Los Angeles, FPS mode switched on as a player has it)
+time set 2036-11-22T02:30:00Z
+observer lat=34.05 lon=-118.25 agl=2
+fps on
+camera az=270 el=45 fov=70
+wait 3
+intro state
+inertial move fwd=1 boost=1
+wait 40
+inertial move
+intro state
+inertial move up=1 boost=1
+wait 40
+inertial move
+intro state
+fps state

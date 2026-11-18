@@ -149,7 +149,10 @@ harness::Status SatelliteSim::harnessInertial(harness::Active &a)
         // held movement input through the real WASD / Q-E code (sticks until the next `inertial move`; no args = stop)
         harnessMove_ = glm::vec3((float)c.num("fwd", 0.0), (float)c.num("right", 0.0), (float)c.num("up", 0.0));
         harnessRoll_ = (float)c.num("roll", 0.0); // (2026-11-14) held Z (-1) / C (+1), through the real roll code
+        harnessMoveBoost_ = c.num("boost", 0.0) > 0.5; // (2026-11-16) the boost key held with it
         r["move"] = {harnessMove_.x, harnessMove_.y, harnessMove_.z};
+        r["boost"] = harnessMoveBoost_;
+        r["fps_live"] = fpsLogicLive();
         r["observer"] = {{"lat_deg", obsLatDeg}, {"lon_deg", obsLonDeg}, {"alt_m", obsHeightOffset}};
         return harness::Status::Done;
     }

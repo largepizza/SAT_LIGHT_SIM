@@ -415,6 +415,12 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### UI
 
+- **Mouse look without holding a button (FPS mode, Tab).** Tab hides the cursor and the mouse turns the view
+  directly; a left click selects what is at the centre of the screen (a ring flashes there) and keeps you looking.
+  Tab or a right click brings the cursor back (at the centre of the window), and so does opening a window, the
+  console or a text entry, or switching to another program. FPS mode is on by default and remembered; hold right
+  mouse and drag to look, as before, with the cursor showing. **Toggle UI moves from Tab to U** (a saved Tab moves
+  with it). New "Mouse sensitivity" slider in Settings > Controls (both ways of looking). The gamepad is unchanged.
 - **W flies where you look.** WASD moves along the camera's own forward and right at any angle: look up and W
   climbs, look down and it descends (sliding along the ground when you reach it); Q / E still go straight up and down.
   It used to walk at a constant height whatever the camera pointed at.
@@ -426,11 +432,13 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   the whole view round. Below 1000 km the horizon stays level as before ("Auto-level the horizon" and "Auto-level up
   to (km)" in Settings > Controls); above it, or with auto-level off, the camera turns freely: look past straight
   down, and roll with Z / C. Reset Elevation moved from Z to X.
-- **New intro.** It opens on the ground in the Mississippi delta at twilight, under Starmind's trains, with Reflect
-  mirrors flaring and a beam on the horizon. It rises over a Starship launch from Starbase with the sunset behind it,
-  then pulls out to orbit as the Sun sets on the limb. It plays on 2036-11-25 under a first-quarter Moon, and
-  "Replay Intro" always returns to that moment. At the end the camera arrives on the Sun on the limb as
-  the title appears and holds still there while the view slowly widens, then hands over to you.
+- **A playable opening.** The first launch starts you on the ground in the Mississippi delta at twilight, 2036-11-25 under a first-quarter
+  Moon, looking up Starmind's trains, with Reflect mirrors flaring, a beam on the eastern horizon and a Starship
+  climbing out of Starbase to the south. The intro's captions and title play over the first minute while you are
+  already in control: look with the mouse (FPS mode is on), fly anywhere (all the way to orbit), click what you see,
+  pause with Space. The corner toolbars appear the first time you bring the cursor back (Tab or right click), or
+  when the captions end. There is nothing to skip; "Play intro on startup" (Settings > Display) turns it off and
+  "Replay Intro" plays it again from that moment and place. The first-run graphics check now measures while you play.
 - **Missions window** (the rocket button, or M): the next launches, pinned twilight and crewed launches, the Sun's
   Fury countdown; what is flying now (crew transfers, stations, launches, trains, retirees, build-out); and the
   Kessler tab. Every row has one **Watch** button that lands on the event as it happens.
@@ -453,6 +461,12 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **HQ photo** (F8), screenshots with or without the UI (F10 always with), star trails.
 - **UI themes** (Classic, Navy, Night red, Midnight by default) and window opacity; one shared style for every
   window and settings tab; grouped settings tabs with advanced ones behind "Show advanced settings".
+- **First-run hints.** One short hint at a time teaches the controls while you play, picked from what you have
+  not done yet: look, move, rise and descend, go faster, zoom, the cursor (Tab or right click), clicking a satellite,
+  the time controls and the menu buttons (each outlined), and Tab to look around again. A hint goes away a moment
+  after you do what it says, never shows for something you already did, and the labels follow your key bindings
+  or the gamepad. They stop once you have selected a satellite, moved and seen the time and menu hints; Replay Intro
+  runs them again. The first-run tutorial card no longer starts on its own (Settings > Display > Replay Tutorial).
 - **First-run tutorial** (keyboard, mouse or gamepad), **loading screen** with progress, and a **startup graphics
   chooser** (Full graphics, Planetarium or Potato) before anything heavy loads, stepping down a tier on its own if
   the first frames are very slow.
