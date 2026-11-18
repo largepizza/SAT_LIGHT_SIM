@@ -1368,7 +1368,6 @@ void SatelliteSim::pollGamepad(float dt)
 // ─── padContextButton ────────────────────────────────────────────────────────
 // A gamepad button whose meaning depends on what is on screen, ahead of the bindings (pollGamepad; the
 // harness's `pad` command). True = used here, so the button's binding does not also fire.
-//  - the tutorial's card: Start = Next / Finish, View = Skip (no cursor needed for it)
 //  - a selected satellite (pad layout 2): D-pad left/right move the focus over its buttons, A presses
 //    the focused one (buildSelActionButton), B goes back one layer (padBack). The windows' controls are
 //    too small for the virtual cursor to be how a controller reaches what a satellite can do.
@@ -1376,19 +1375,6 @@ bool SatelliteSim::padContextButton(int b, bool cursorActive)
 {
     if (cursorActive || !uiVisible)
         return false;
-    if (tutActive)
-    {
-        if (b == GLFW_GAMEPAD_BUTTON_START)
-        {
-            setTutorialStep(tutStep + 1);
-            return true;
-        }
-        if (b == GLFW_GAMEPAD_BUTTON_BACK)
-        {
-            endTutorial(false);
-            return true;
-        }
-    }
     if (selectedSatIndex >= 0)
     {
         if (b == GLFW_GAMEPAD_BUTTON_DPAD_LEFT || b == GLFW_GAMEPAD_BUTTON_DPAD_RIGHT)
@@ -9091,17 +9077,17 @@ void SatelliteSim::finishIntro(bool cutShort)
 {
     showIntro = false;
     introToolbarsShown = true;
-    // The controls are taught by the hints (SatelliteSimHints.cpp), which run on through the captions' end; the old
-    // card tutorial no longer starts on its own (Settings > Display > Replay Tutorial still shows it).
-    tutAutoChecked = true;
+    // The controls are taught by the hints (SatelliteSimHints.cpp), which run on through the captions' end.
 
     // UC1 mechanisms 2+3: only decide anything when the captions played to the end (cut short = no full caption
     // period measured) and never during crash recovery (that launch already forced Planetarium for an unrelated
     // reason — see init()). Not on a replay, nor after an explicit pick on the startup graphics chooser either: the
     // player has just decided. The harness's `intro play bench=1` measures and decides as a first run.
     const bool firstRun = !introIsReplay && bootChoiceMode < 0;
+    bool benchDecided = false;
     if (!cutShort && !crashRecoveryMode && (firstRun || introBenchHarness_) && introBenchFrames > 0)
     {
+        benchDecided = true;
         const float avgMs = introBenchMsSum / (float)introBenchFrames;
         const GraphicsPreset from = graphicsPreset, newPreset = introBenchDecision(avgMs, from);
         introBenchLast_ = {true, avgMs, introBenchFrames, (int)from, (int)newPreset};
@@ -9115,10 +9101,25 @@ void SatelliteSim::finishIntro(bool cutShort)
                  kGraphicsPresetNames[(int)graphicsPreset]);
         graphicsAutoNoticeTimer = 8.0f;
     }
+    // The light presets (Planetarium, Potato) draw no clouds and a simpler terrain, sky and sea. A first run's opening
+    // that ends on one says so and where to change it, once a session (2026-11-18: what the card tutorial's last
+    // card said), whatever put it there: the benchmark above, the startup chooser, crash recovery or the hardware
+    // default. A replay is not a first run; `intro play first=1` / `bench=1` are (the harness).
+    const bool firstOpening = (!introIsReplay || introBenchHarness_ || introFirstHarness_) && !firstRunDone;
+    const bool lightPreset = graphicsPreset == GraphicsPreset::Planetarium || graphicsPreset == GraphicsPreset::Potato;
+    if (firstOpening && lightPreset && !lightPresetNoticed_)
+    {
+        lightPresetNoticed_ = true;
+        snprintf(graphicsAutoNoticeText, sizeof(graphicsAutoNoticeText),
+                 benchDecided ? tx(Txt::FmtGraphicsSetToALightPreset) : tx(Txt::FmtGraphicsAreOnTheFastestPreset),
+                 kGraphicsPresetNames[(int)graphicsPreset]);
+        graphicsAutoNoticeTimer = kLightPresetNoticeS;
+    }
     introBenchMsSum = 0.0f;
     introBenchFrames = 0;
     introIsReplay = false;
     introBenchHarness_ = false;
+    introFirstHarness_ = false;
 }
 
 // The observer's terrain height from the CPU copy of the DEM (nearest texel). Also the harness's

@@ -13,8 +13,8 @@
 // holding), a gate met before its hint showed retires it, an ignored hint rests; the order of the brief's table.
 // buildHints draws it: above the opening's caption band while one shows, else bottom centre clear of the toolbars;
 // 9 and 10 above the toolbar they describe, with an outline around it. Every clock is frame time (the caption
-// clock's), so `--fixed-dt` runs are exact. Replaces the first-run card tutorial's teaching (that card no longer
-// starts on its own; SatelliteSimTutorial.cpp).
+// clock's), so `--fixed-dt` runs are exact. The only teaching path (the first-run card tutorial it replaced was
+// deleted 2026-11-18).
 #include "../AudioSystem.h"
 #include "../Harness.h"
 #include "../UIRenderer.h"
@@ -364,7 +364,7 @@ const char *hintTextId(int n, bool pad, bool menu)
 void SatelliteSim::hintsTick(const UIInput &inp, float dt)
 {
     if (hintsPass_ < 0)
-        hintsPass_ = tutorialDone ? 0 : 1; // the first frame: a genuine first run, or not
+        hintsPass_ = firstRunDone ? 0 : 1; // the first frame: a genuine first run, or not
     HintRun &h = hint_;
     HintGates &g = h.g;
     hintsCtxGates();
@@ -523,13 +523,12 @@ void SatelliteSim::hintsTick(const UIInput &inp, float dt)
     if (hintsPass_ == 1 && captionsEnded && g.selected && g.moved && g.timeBarShown && g.menuBarShown)
     {
         hintsPass_ = 2;
-        tutorialDone = true; // display.tutorial_done: no hints (and no card) on later runs
-        tutAutoChecked = true;
+        firstRunDone = true; // display.tutorial_done: no pass on later runs
         saveSettings();
     }
 
     // ── Conditions ──
-    const bool suppressed = cineActive() || photoState != 0 || tutActive || !uiVisible;
+    const bool suppressed = cineActive() || photoState != 0 || !uiVisible;
     const bool beforeBeat = showIntro && introElapsed < kIntroKeyframes[kHintBeat].t;
     const bool fpsH = !menu;
     int satRefMemo = -1; // a satellite to zoom on: one selected, or a drawn one at the centre (asked only when needed)
@@ -1132,7 +1131,7 @@ nlohmann::json SatelliteSim::hintsStateJson() const
     j["harness_on"] = hintsHarnessOn_;
     j["pass"] = hintsPass_ < 0 ? "undecided" : hintsPass_ == 0 ? "off" : hintsPass_ == 1 ? "running" : "complete";
     j["complete"] = hintsPass_ == 2;
-    j["tutorial_done"] = tutorialDone;
+    j["tutorial_done"] = firstRunDone;
     j["gates"] = {{"looked", g.looked}, {"moved", g.moved}, {"climbed", g.climbed}, {"boosted", g.boosted},
                   {"zoomed", g.zoomed}, {"clicked", g.clicked}, {"left_by_tab", g.leftByTab},
                   {"left_by_right_click", g.leftByRightClick}, {"returned", g.returned}, {"drag_looked", g.dragLooked},
@@ -1154,7 +1153,7 @@ nlohmann::json SatelliteSim::hintsStateJson() const
                  {"before_beat", showIntro && introElapsed < kIntroKeyframes[kHintBeat].t},
                  {"window_open", fpsWindowMask() != 0},
                  {"ever_menu", h.everMenu},
-                 {"suppressed", cineActive() || photoState != 0 || tutActive || !uiVisible},
+                 {"suppressed", cineActive() || photoState != 0 || !uiVisible},
                  {"clock_s", h.clock},
                  {"look_deg", h.lookDeg},
                  {"move_s", h.moveS},
@@ -1233,7 +1232,7 @@ harness::Status SatelliteSim::harnessHints(harness::Active &a)
         // returning player: their saved gates and counts are kept).
         hintsHarnessOn_ = true;
         hintsReset();
-        hintsPass_ = tutorialDone ? 0 : 1;
+        hintsPass_ = firstRunDone ? 0 : 1;
     }
     else if (sub == "off")
     {

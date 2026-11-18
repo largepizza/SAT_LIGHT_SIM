@@ -1,6 +1,6 @@
-# UI, HUD, controls, settings window, intro, hints, tutorial
+# UI, HUD, controls, settings window, intro, hints
 
-HUD popups, UIRenderer / Clay rules and kit, icon + font atlases, controls and keybindings, the settings window's layout and search, the opening (the intro's captions), the first-run tutorial.
+HUD popups, UIRenderer / Clay rules and kit, icon + font atlases, controls and keybindings, the settings window's layout and search, the opening (the intro's captions), the first-run hints.
 
 Part of the subsystem notes (`docs/subsystems/`, map in `AGENTS.md` §4). Moved verbatim from
 `CLAUDE.md` on 2026-11-03. Do not read this file whole: `python tools/outline.py docs/subsystems/ui.md`
@@ -35,7 +35,7 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   debug / A/B / perf internals (`clouds_v2.cdc_*`, `weather_*`, `storm_index_tight`, `storm_shield_bins_ab`,
   `wildfire_debug/_alloc/_smoke_curtain/_flame_band`, `full_res_moving_mode`, `debug_view`, `sky_taa_debug/_gpu_eye/
   _parallax_floor_m`, `refraction.force_*`, `comets.particles_sync`), state (`time`, `camera`, `hud`, keybindings,
-  `tutorial_done`) and the retired `clouds.aurora_ground_gain`. **"Show advanced settings"** is a card at the top of the
+  `tutorial_done`: the hints' first-run flag) and the retired `clouds.aurora_ground_gain`. **"Show advanced settings"** is a card at the top of the
   Display tab. **Search**: a box over the tab strip (`SettingsSearch`); with >= 2 typed characters the body builds every
   tab (`buildSettingsSearchBody` -> `buildSettingsTabBody`) with `search_.on`, and each row asks `searchRow(id, label)`
   (match: every word in the label, or the section title's). The kit does it itself (`uiToggleRow`, `uiChoiceRow`, `uiKV`
@@ -157,7 +157,7 @@ SatelliteSim.cpp / SatelliteSimLaunches.cpp, some report and bookmark messages).
   must use the SAME zIndex as the window (they were 11 / 12, so they drew over any later window covering them).
   So does `ui.scrollbar(id, zIndex = 10)`'s thumb (2026-10-21, issue 20261021_175415: at 20 every window's thumb drew
   over every window); a scroll container in another root passes that root's z (the note bar's `textArea(...,
-  layerZ = 44)`). Tooltips (100) and root overlays (toasts, banners, tutorial outlines) are above windows on purpose.
+  layerZ = 44)`). Tooltips (100) and root overlays (toasts, banners, the hints' popup and outline) are above windows on purpose.
 - **Low resolutions (2026-10-21; the user: "the Missions window occupies the entire screen basically"):**
   - **The UI scale is the setting x the window's height.** `uiScaleUser` = "Text scale" (`display.ui_scale`, 1.5);
     `uiScale`, which every builder reads, = it x `uiAutoScaleFactor(screenH)` = clamp(H / 1000, 0.7, 1) when "Scale
@@ -207,12 +207,12 @@ SatelliteSim.cpp / SatelliteSimLaunches.cpp, some report and bookmark messages).
 - **HUD pieces in the kit (2026-11-16, for the hint popup and caption band):** `uiHudPanel(fl, childGap = 3)` returns
   the black rounded HUD panel's declaration (Pal::panelBg, Style::panelCornerRadius, padding {10,10,8,8}, FIT x FIT,
   top to bottom, no border, floating by `fl`; adjust the layout after). LeftPanel, SelSatPanel and HudPopupPanel use
-  it; RightPanel (a fixed 38-px row) and TutCard (bordered, 14-px padding) differ and keep their own. `uiKeycap` is
-  the tutorial's keycap / pad button (`target` amber pulsing, `down` green). `actionLabel(kb[, gamepad])` returns a
+  it; RightPanel (a fixed 38-px row) differs and keeps its own. `uiKeycap` is
+  the hints' keycap / pad button (`target` amber pulsing, `down` green). `actionLabel(kb[, gamepad])` returns a
   KB_ action's key or pad label by value (`.s`, "-" unbound; by `lastInputWasGamepad` without the flag), so
   keyDisplayName's 4-slot letter pool cannot overwrite it; copy `.s` into member storage before handing it to Clay.
   `uiBottomClearance(screenH)` is how far above the bottom a bottom-centred card sits to clear LeftPanel and
-  RightPanel (last frame's boxes, 12 px gap, at least 24): the tutorial card uses it.
+  RightPanel (last frame's boxes, 12 px gap, at least 24): the caption band uses it.
 - **The opening's caption band:** the caption's container is `CineCaption`, capped at min(W - 24, fs(19) x 40) wide; a line
   wraps by words inside it (the title is WRAP_NONE). It draws nothing, so `ui dump` lists it as kind `box`
   (UIRenderer's layout-only list), and `ui_lowres.py` checks it with the HUD ids (views `intro_caption`, toolbars held
@@ -233,8 +233,8 @@ SatelliteSim.cpp / SatelliteSimLaunches.cpp, some report and bookmark messages).
   (Screenshot, HQ photo, Star trails); the bottom-right panel ends in the MENU buttons — Missions, Bookmarks,
   Cinematics, Issue reports, Settings (`menuBtn` in `buildRightHudPanel`: lit while the window is open; the Issue
   reports flag sits immediately left of Settings since 2026-10-21). Their ids kept the `Time` prefix
-  (`TimeMissionsBtn`, `TimeBookmarkBtn`, `TimeCineBtn`, `TimeReportBtn`) for scripts. The tutorial's Missions steps
-  outline the rocket; its "Menus" step outlines Bookmarks .. Settings.
+  (`TimeMissionsBtn`, `TimeBookmarkBtn`, `TimeCineBtn`, `TimeReportBtn`) for scripts. Hints 16-19 outline the
+  Sky events, Missions, Weather and picture buttons.
 
 ### Icon Atlas
 - `ui.loadIcons(ctx, paths, count)` — loads PNGs, packs into RGBA GPU atlas, rebinds descriptor. Call once on first frame (lazy init). Store `VulkanContext*` in your sim.
@@ -302,7 +302,7 @@ off (`KB_TRACK`); `selectionKeyAction`. **During Go to, Track is Go to's aim loc
 still; a click selects). Saved bindings migrate by `controls.key_layout` (`kKeyLayoutVersion` 2): a saved T on
 "Select Satellite" is dropped once, the old action name carries its key over, and I / T keep their defaults only
 where no saved binding uses them. An unbound key is -1 (`onKey` ignores GLFW_KEY_UNKNOWN; `keyDisplayName` shows
-"-"). The selection buttons' tooltips name their keys ("Info (I)"), and so do the tutorial's cards. Harness
+"-"). The selection buttons' tooltips name their keys ("Info (I)"), and so do the hints' keycaps. Harness
 `ui key <letter>`.
 
 ### FPS camera mode (2026-11-16, `SatelliteSimFps.cpp`)
@@ -322,9 +322,9 @@ button), and Alt's cinematic pan (`KB_CINEMATIC` toggles while `camera.captured 
 - **The one writer** is `fpsSet(on, why)`. Into FPS mode: Tab (and harness `fps on`). Out: Tab, a right press (it
   sets `camera.blockUntilRelease`, so the same press never starts a right-drag), and the forced exits: a hotkey
   that opens a window (`dispatchKeyAction` compares `fpsWindowMask()` before and after), any window, the note
-  bar or the first-run tutorial card APPEARING by whatever means (the same mask, rising edge per frame in
+  bar or an event window APPEARING by whatever means (the same mask, rising edge per frame in
   `fpsTick`: Settings, controls, info, viewer, trace, Missions, Sky events, Weather, cinematics, Bookmarks, Issue
-  reports, the note bar, `tutActive`), the console opening, a text field or rebind taking the keyboard, and the
+  reports, the note bar, the event window), the console opening, a text field or rebind taking the keyboard, and the
   window losing focus. Tab back into FPS mode with one open is allowed (only the appearance counts). Unopened
   UI that needs no pointer: the crash-recovery and graphics notices and the Kessler banner (text, timed or
   passthrough), the screenshot toast, the selection panel and chip (I / G / T), the Go to chips and "Go to ...
@@ -373,7 +373,7 @@ button), and Alt's cinematic pan (`KB_CINEMATIC` toggles while `camera.captured 
 - **Mouse sensitivity** (Controls > MOUSE, slider slot 626, `controls.mouse_sensitivity`, 0.1-4, default 1)
   multiplies the 0.12 deg/px rate in both modes (`SkyCamera::sensMul`); the pad's look keeps its own rate (it
   scales by `fovLookScale()` only).
-- `camera.captured` readers: Go to's aim unlock and the tutorial's look step also count `fpsLookedThisFrame_`
+- `camera.captured` readers: Go to's aim unlock also counts `fpsLookedThisFrame_`
   (an actual FPS turn, not the mode), the report bar's "busy hands" sees FPS mode already left.
 - `fpsFacts_` keeps sticky facts (left by Tab / right click, entered from menu mode, click count and times, degrees
   of mouse look either mode, right-drag used); harness `fps state` reports them, and the hints read `clicks` and
@@ -560,21 +560,21 @@ console, issue shots and the note bar, the ring) behaves as in normal play.
 
 **The end** (`finishIntro(false)` at the last key): `showIntro` off, the toolbars show, the ambience bus returns;
 no camera or FOV change. Nothing else starts there: the first run's hints (below, "Hints") run on through the
-end; the old card tutorial no longer starts on its own. `finishIntro(true)` (only the harness's `intro skip`) ends
+end, and on a light preset the graphics notice explains it ("The light-preset notice", below). `finishIntro(true)` (only the harness's `intro skip`) ends
 the captions without the benchmark.
 
 **UC1 benchmark.** `updateIntro` adds `gpuMsTotalSmoothed` every frame while `introElapsed <= kIntroBenchEndT`
 (the whole caption period: the player on the ground, steering). `finishIntro` decides with
 `introBenchDecision(mean, preset)`: target 12 ms; over 18 ms steps down (Medium -> Low -> Planetarium -> Potato),
 under 4.8 ms steps up (Potato -> Planetarium, Low -> Medium -> High); High, Ultra and Custom are never moved; the
-"graphics set to X" notice shows either way. Not on a cut-short end, a replay, a crash-recovery launch or after a
+"graphics set to X" notice shows either way (on Planetarium / Potato the light-preset notice, below, in its place). Not on a cut-short end, a replay, a crash-recovery launch or after a
 boot-chooser pick. The harness's `intro play bench=1` measures and decides as a first run; `intro state` ->
 `bench` {frames, mean_ms, would_set, last}.
 
 **Other readers of `showIntro`:** the ambience (above), the toolbar hold and the overlay (`buildUI`), the
 hints (the beat-2 hold, "captions ended"), `loadSettings` (a full load arms it from `playIntroOnStartup`; a settings patch never starts it
 mid-session), the harness (`harnessInit` and `snapshot` keep it off). The Display tab's "Replay Intro" closes
-Settings and starts it (allowed during the opening too); "Replay tutorial" waits for the captions' end.
+Settings and starts it (allowed during the opening too).
 
 **`timeScaleIdx`'s compiled-in default was `1` ("10x"), not `0` ("1x")** — a real bug, fixed 2026-10:
 `loadSettings()` overrides it from `settings.json`'s `time.scale_idx` when present, so a genuine first run
@@ -597,11 +597,11 @@ input locked, sim time driven at 5 s per beat, skippable with Space / pad Start)
 ## Subsystem: Hints (2026-11-17, `SatelliteSimHints.cpp`)
 
 The first run's teaching: **one small hint at a time** (`HintPopup`: keycaps, then one line), chosen from what the
-player has and has not done. It replaced the card tutorial's teaching (that card no longer starts on its own).
+player has and has not done: the only teaching path (the card tutorial it replaced was deleted 2026-11-18).
 Hints 1-11 are the first run's **pass**; 12-19 are **contextual** (round 2, 2026-11-17): they outlive the pass and
 fire when their moment comes, in any later session, until used.
-`hintsTick` (buildUI, after the look block and `updateTutorial`) measures and decides; `hint_` (`HintRun`) holds
-every bit of state; `buildHints` (just before `buildTutorial`, after every HUD element it avoids) draws.
+`hintsTick` (buildUI, after the look block, before the click pick) measures and decides; `hint_` (`HintRun`) holds
+every bit of state; `buildHints` (late in buildUI, after every HUD element it avoids) draws.
 
 **Gates** (`HintGates`, sticky since the pass began): `looked` (30 deg of view turned in total: `fpsFacts_.lookDeg`'s
 growth in either mode + the pad's stick x `fovLookScale`), `moved` (1 s of movement input in total), `climbed`
@@ -676,15 +676,15 @@ h. 2, 3, 5, then 8 on menu idle; in a and g, 11 comes before 7 (the first time i
 hints. **Two FPS clicks within 5 s take the slot for 6 at once** (`preempted`: the hint
 up gives way, gets its offer back, no 3-s gap) unless the hint up is in a never-time-out case: without it the
 clicker would see 2 (on at beat 2 for anyone who looked) and wait. **Complete** = captions ended + `selected` +
-`moved` + 9 and 10 done (retired by use counts): `tutorialDone` set and `saveSettings()`; then 3, 4, 5 and 8 may
+`moved` + 9 and 10 done (retired by use counts): `firstRunDone` (`display.tutorial_done`) set and `saveSettings()`; then 3, 4, 5 and 8 may
 fire once more that session (`postFired`).
 
-**When:** `hintsPass_` is decided on the first frame (`!tutorialDone` = a pass), and every opening's first frame
+**When:** `hintsPass_` is decided on the first frame (`!firstRunDone` = a pass), and every opening's first frame
 (`updateIntro`, a first run's or a Replay Intro's) starts a pass from zero (`hintsReset`, which also primes the
 edges); a Replay Intro (`introIsReplay`) also forgets the contextual gates and counts (`hintsReset(true)`). Without a
 pass (a returning player, `hintsPass_` 0) the scheduler still runs, for the contextual hints only: one whose gates
 are all met or spent sees nothing. `display.hints` (Settings > Display > Startup "Show hints", default on) turns
-every hint off; Replay Intro keeps that choice. Never shown during a playing cinematic, an HQ photo, the old card, or with the HUD hidden (`how` =
+every hint off; Replay Intro keeps that choice. Never shown during a playing cinematic, an HQ photo, or with the HUD hidden (`how` =
 suppressed); a harness run keeps them off (`harnessInit`) until `hints on`.
 
 **The popup** (z 27: over windows 10 and notices 25, under the caption 30; passthrough; width <= W - 24; fs(13);
@@ -718,43 +718,22 @@ menu-mode click during and after the captions, by the pad's A at its virtual cur
 
 ---
 
-## Subsystem: First-run tutorial (2026-10-03, `SatelliteSimTutorial.cpp`)
+## Subsystem: The light-preset notice (2026-11-18, `finishIntro`)
 
-One card at a time (`buildTutorial`, z 40) — a low, wide strip, the graphic beside the text, in the HUD's
-palette (`Pal` / `Style`, `UIPalette.h`; wanted input pulses in the red accent, held input is solid red). Thirteen
-steps (`TutStep`; a fourteenth, Graphics, only on the light presets: "no clouds", the preset to try, done by opening
-Settings or changing the preset; `tutStepCount()`):
-1. look, 2. move, 3. climb, 4. boost, 5. select — finished by DOING it, with a keyboard (Q W E / A S D / Shift, labels
-   from the live bindings), mouse or gamepad graphic (`buildTutKeyboard/Mouse/Gamepad`; the pad's when
-   `lastInputWasGamepad`), plus a progress bar;
-6. **Info** (opening the info window on the selection, `tutInfoOn`), 7. **Go to** (the eye; once riding, the follow
-   HUD's Stay here and Exit are outlined and explained; finished by leaving: Exit's flight home or Stay here),
-   8. **Trace and Track** (either) — split 2026-10-21 from one "selection buttons" step any of the four finished. Each
-   outlines only its own `SelActBtn` (id % 4). With nothing suitable selected (`tutNeedsPick`: Info / Go to need a
-   geometry model) the card asks for a selection and offers **"Pick one for me"** (`TutPick`, `tutPickSatellite`: a
-   sunlit, > 12 deg up station or Starlink with a model, else anything > 5 deg; the camera is aimed at it). Not on the
-   pad view (no cursor; A selects at the centre);
-9. time, 10. pictures — outlined HUD controls, finished by using one (a change from `tutBase*`) or Next;
-11. **Missions: what's next** — the rocket button (or M) outlined until the window opens, then Upcoming's first launch's
-   Watch and the Sun's Fury's (two outline boxes, `TutOutline:<g>`; one button each since 2026-10-24); finished by any of those
-   (`msUpcomingActs_`, counted after a successful action in buildMissionsWindow);
-12. **Missions: under way** — the Ongoing tab outlined; 5 s on it (progress bar) or any of its buttons
-   (`msOngoingActs_`) finish it;
-13. menus (Bookmarks, Cinematics, Issue reports, Settings).
-The Missions cards sit above the left panel while the window (docked top right) is open, above the right panel while
-it is closed. **The Missions step's jump has a way back:** entering it saves the time, place, camera, clock and cloud
-drift (`tutSaveReturn`; not again once a jump happened); after the jump every later card shows **"Back to <UTC>"**
-(`TutReturn`, `tutReturnNow`: bookmarkGo's cut) until used. A finished step shows "Done!" for 1.1 s and moves on.
-- **Never starts on its own** (2026-11-17): the first run's hints replaced its teaching (`finishIntro` and
-  `updateTutorial` no longer start it). Settings > Display > STARTUP > Replay tutorial runs it, and harness
-  `tutorial start`; Skip and Finish set `display.tutorial_done`, as the hints' completion does. While the card is up
-  the hints hold back.
-- **Detection** (`updateTutorial`, in buildUI right after the look block and before the click pick) reads
-  the keys and gamepad values itself; it does not hook the movement code.
-- **Clay keeps stale boxes** for elements not drawn this frame, so the selection buttons' outline uses only
-  the `SelActBtn` ids `buildSelActionButton` drew this frame (`selBtnDrawnMask`).
-- `keyDisplayName` / `gamepadButtonDisplayName` (SatelliteSimUI.cpp) are no longer file-static; keyDisplayName's
-  letters rotate through a 4-slot pool, so keycap labels are copied (`tutKeyLabel`).
-- A controller moves through the card with **Start = Next / Finish, View = Skip** (`padContextButton`).
-- Harness: `tutorial start [step] [pad=1] | step <n> | next | back | skip | state`;
-  `tools/harness/scripts/tutorial.satcmd` captures every card and clicks through the HUD steps.
+The hints are the only teaching path. The card tutorial (2026-10-03 to 2026-11-18, `SatelliteSimTutorial.cpp`)
+is deleted; its one card that was not about the controls, the light presets' "Graphics" card, lives on as a notice.
+When a **first run's opening ends** (`finishIntro`, cut short or not) on **Planetarium or Potato**, the
+`GraphicsAutoNotice` band (top centre, 16 px down, z 25, `Pal::toastInfo`) says what the preset leaves out and
+where to change it, for `kLightPresetNoticeS` (20 s), once a session (`lightPresetNoticed_`):
+- after the benchmark decided (`introBenchDecision`, which also writes the band): `FmtGraphicsSetToALightPreset`
+  ("Graphics set to %s for this computer, a light preset: there are no clouds, and the terrain, sky and sea are
+  simpler. If it runs smoothly, try Low in Settings > Display > Preset: it brings back the clouds and every effect,
+  at half resolution."), replacing the benchmark's one-line "Graphics set to %s" text;
+- otherwise (the startup chooser's pick, crash recovery's forced Planetarium, the hardware default with the opening
+  cut short): `FmtGraphicsAreOnTheFastestPreset` ("Graphics are on %s, a light preset: ...", the card's own text).
+A first run = not a Replay Intro and `display.tutorial_done` false (`firstRunDone`: the key keeps the card
+tutorial's name so existing settings files keep working); the harness's `intro play first=1` (no benchmark) and
+`bench=1` count as one and re-arm the once-a-session flag. The band is capped at min(W - 32, fs(13) x 46) wide and
+wraps; it sits at the top, clear of the caption band and the hint popup (bottom). `intro state` -> `notice`
+{text, remaining_s, light_preset_noticed}. `ui_lowres.py` view `light_notice` (Planetarium, `intro play first=1
+at=52.7`, hint 7 forced): `GraphicsAutoNotice` is in `HUD_IDS`.

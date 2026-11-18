@@ -223,7 +223,7 @@ static const Txt kSettingsStripHeadingText[] = {Txt::SecTabsGeneral, Txt::SecTab
 const char *settingsTabName(int i) { return (i >= 0 && i < kSettingsTabCount) ? tx(kSettingsTabText[i]) : ""; }
 
 // Helper: short display name for a GLFW key code (used in settings window + tooltips).
-const char *keyDisplayName(int key) // also SatelliteSimTutorial.cpp
+const char *keyDisplayName(int key) // also the reports, the video HUD (extern there)
 {
     if (key < 0)
         return "-"; // unbound
@@ -339,7 +339,7 @@ const char *keyDisplayName(int key) // also SatelliteSimTutorial.cpp
 
 // Helper: short display name for a GLFW gamepad button code (used in settings window).
 // -1 (unbound) is handled by the caller, not here.
-const char *gamepadButtonDisplayName(int button) // also SatelliteSimTutorial.cpp
+const char *gamepadButtonDisplayName(int button)
 {
     switch (button)
     {
@@ -976,12 +976,10 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     if (showIntro && introBasisValid && !fpsMode)
         introToolbarsShown = true;
     const bool introHidesToolbars = showIntro && !introToolbarsShown;
-    // Before the click handling below: a click on the tutorial's card must not also pick a satellite,
-    // and its completion test reads this frame's look (the block above) and keys.
+    // The hints read this frame's look (the block above) and keys, before the click handling below.
     fprof::mark("ui.seg3a_look");
-    updateTutorial(dt);
     hintsTick(inp, dt); // the first run's hints: gates, signals, the scheduler (SatelliteSimHints.cpp)
-    fprof::mark("ui.seg3b_tutorial");
+    fprof::mark("ui.seg3b_hints");
 
     // ── Lazy icon loading (first buildUI call after init) ─────────────────────
     loadUiIcons(ui); // (normally already done by prepareUI at load)
@@ -1122,8 +1120,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     buildKesslerBanner(ui);
     if (!hideShotChrome)
         buildScreenshotToast(dt, inp, ui);
-    buildHints(inp, ui);    // the first run's hint popup, clear of every HUD element above (SatelliteSimHints.cpp)
-    buildTutorial(inp, ui); // after every panel it points at: their boxes are last frame's layout
+    buildHints(inp, ui); // the first run's hint popup, clear of every HUD element above (SatelliteSimHints.cpp)
 
     // UC4: draw the virtual cursor itself — inp.mouseX/Y IS vCursorX/Y here (App overrode the
     // real mouse position before this frame's ui.beginFrame()), so no separate position plumbing
@@ -1732,7 +1729,6 @@ static void captureLaidOut(UIRenderer &ui, Clay_ElementId id, float x, float y, 
 
 void SatelliteSim::buildSelectedSatPanel(const UIInput &inp, UIRenderer &ui)
 {
-    selBtnDrawnMask = 0;
     padHintBuf[0] = '\0';
     // A press from the pad lands on this frame's buttons only (a selection gone meanwhile drops it).
     padActivateNow = padActivatePending;
@@ -3267,7 +3263,6 @@ bool SatelliteSim::buildSelActionButton(const UIInput &inp, UIRenderer &ui, int 
                                         bool on, bool &hov)
 {
     bool clicked = false;
-    selBtnDrawnMask |= 1u << id; // the tutorial outlines the buttons drawn this frame (Clay keeps stale boxes)
     // FPS mode: the screen centre is the pointer of the popup by the satellite (ids 4-7), and of nothing else: its
     // button there hovers (with its tooltip at the centre) and takes the click or the pad's select.
     const bool fpsHere = id >= 4 && id < 8 && fpsLive_ && !vCursorActive && fpsCentreBtn_ == id - 4;
@@ -4897,7 +4892,7 @@ void SatelliteSim::buildSettingsControlsTab(const UIInput &inp, UIRenderer &ui)
     }
 }
 
-// A row of buttons (Replay intro / Replay tutorial ...): searching, the buttons are rows of their own (each matched by
+// A row of buttons (Replay intro ...): searching, the buttons are rows of their own (each matched by
 // its label), so the row container is left out and a heading never lands inside it.
 template <class F>
 static void settingsButtonRow(bool flat, Clay_ElementId id, F &&body)
@@ -5162,11 +5157,6 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
         {
             settingsChrome.open = false; // the opening plays over the view, not this window
             startIntroReplay();
-        }
-        if (uiButton(inp, ui, "ReplayTutorialBtn", 0, tx(Txt::BtnReplayTutorial), nullptr, false, !showIntro))
-        {
-            settingsChrome.open = false; // the tutorial starts with the view, not this window
-            startTutorial();
         }
     });
 
@@ -8243,16 +8233,18 @@ void SatelliteSim::buildIntroOverlay(const UIInput &inp, UIRenderer &ui, bool cl
 // buildCrashRecoveryNotice, kept as its own timer/text pair since the two notices are triggered
 // by unrelated events and can in principle both be live (though crashRecoveryMode suppresses the
 // benchmark that feeds this one — see finishIntro()).
+// (2026-11-18) Also the light-preset notice (finishIntro): a paragraph, so the band is capped in width and wraps.
 void SatelliteSim::buildGraphicsAutoNotice(float dt, const UIInput &inp, UIRenderer &ui)
 {
-    (void)inp;
+    (void)ui;
     if (graphicsAutoNoticeTimer <= 0.0f)
         return;
     graphicsAutoNoticeTimer -= dt;
 
     Clay_String msgStr{false, (int32_t)strlen(graphicsAutoNoticeText), graphicsAutoNoticeText};
+    const float maxW = std::max(120.0f, std::min((float)inp.screenW - 32.0f, (float)fs(13) * 46.0f));
     CLAY(CLAY_ID("GraphicsAutoNotice"), {.layout = {
-                                             .sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)},
+                                             .sizing = {CLAY_SIZING_FIT(0, maxW), CLAY_SIZING_FIT(0)},
                                              .padding = {16, 16, 10, 10},
                                              .childAlignment = {.x = CLAY_ALIGN_X_CENTER}},
                                          .backgroundColor = Pal::toastInfo,
@@ -9243,8 +9235,8 @@ GraphicsPreset SatelliteSim::recommendedPresetForDevice(VkPhysicalDevice pd, std
     else
     {
         // Planetarium, the "everything off" tier (no volumetric clouds), since 2026-10-04: Low became Medium's
-        // effects at a 50% render scale, too heavy to start an unknown laptop on. The tutorial's graphics card
-        // says so and points at the preset (TutStep::Graphics).
+        // effects at a 50% render scale, too heavy to start an unknown laptop on. The light-preset notice at the
+        // first run's opening end says so and points at the preset (finishIntro).
         p = GraphicsPreset::Planetarium;
         reason = tx(Txt::ValIntegratedCpuVirtualGpu);
     }
@@ -9674,9 +9666,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
             if (!isPatch) // (a patch changes the preference; it never starts the opening mid-session)
                 showIntro = playIntroOnStartup;
         }
-        // Absent (every settings.json before 2026-10-03) = not done: the tutorial is new, and the
-        // players it is for are exactly the ones who already never found the controls.
-        tutorialDone = d.value("tutorial_done", isPatch ? tutorialDone : false);
+        // The first run is over (the key's name is the card tutorial's, which the hints replaced). Absent (every
+        // settings.json before 2026-10-03) = not done: those players are the ones who never found the controls.
+        firstRunDone = d.value("tutorial_done", isPatch ? firstRunDone : false);
         // The hints (SatelliteSimHints.cpp): on unless switched off; the contextual hints' gates and offer counts.
         hintsEnabled = d.value("hints", hintsEnabled);
         hintsLoadSaved(d);
@@ -10696,7 +10688,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"ui_theme", kUiThemeKeys[std::clamp(uiTheme, 0, (int)UiTheme::Count - 1)]},
         {"window_opacity", windowOpacity},
         {"play_intro_on_startup", playIntroOnStartup},
-        {"tutorial_done", tutorialDone},
+        {"tutorial_done", firstRunDone},
         {"hints", hintsEnabled},
         {"hint_gates", hintsSavedGatesJson()},
         {"hint_offers", hintsSavedOffersJson()},

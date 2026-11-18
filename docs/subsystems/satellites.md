@@ -509,9 +509,8 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     - **The observer is wherever the player is: the camera while following** (2026-10-28, issue 20261028_223234;
       `readoutObsEcef()` / `readoutObsEci(t)`). Go to MOVES the observer (followObsEcef, which updatePositions already
       took as the eye); only the last ground position is remembered (`followSavedObsDir` / `followSavedHeight`: Exit's
-      and Return's flight home, settings.json, the tutorial's way back). The selection panel's "Mag", the Info
-      window's SKY POSITION / BRIGHTNESS, the "you" marker and Observer preset, `pickViewerSatellite` and the
-      tutorial's pick all use it (the panel takes the dispatch's own eye, `parityPending.obsECI`, so the evaluation
+      and Return's flight home, settings.json). The selection panel's "Mag", the Info
+      window's SKY POSITION / BRIGHTNESS, the "you" marker and Observer preset, `pickViewerSatellite` all use it (the panel takes the dispatch's own eye, `parityPending.obsECI`, so the evaluation
       and the GPU see one observer). Until then they used the parked ground position (a "ghost" observer): a
       satellite 34 m from the camera read "Mag: below your horizon". The trace already used the camera's Earth-fixed
       place (obsDir / obsEyeRadiusM). `showYouMarker` hides the marker when the camera is within four model radii

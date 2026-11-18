@@ -68,7 +68,6 @@ uint32_t SatelliteSim::fpsWindowMask() const
     const bool open[] = {settingsChrome.open, viewControlsChrome.open, infoChrome.open, viewerChrome.open,
                          traceChrome.open,    msChrome.open,           skChrome.open,   wxChrome.open,
                          cineChrome.open,     bmChrome.open,           rpChrome.open,   reportBarOpen_,
-                         tutActive,           // (the first-run tutorial's card has buttons: it needs the pointer like a window)
                          evw_.open};          // an event window / the explode warning (SatelliteSimEventWindows.cpp)
     uint32_t m = 0;
     for (size_t i = 0; i < sizeof(open) / sizeof(open[0]); ++i)
@@ -155,8 +154,8 @@ void SatelliteSim::fpsTick(const UIInput &inp, float dt)
     if (kb && !fpsKbCapturedPrev_ && fpsMode)
         fpsSet(false, FpsWhy::Window);
     fpsKbCapturedPrev_ = kb;
-    // A window, the note bar or the tutorial card appearing (whoever opened it: a hotkey, a report shot, the first-run
-    // tutorial) wants the pointer: menu mode. Only the appearance counts: Tab back into FPS mode with it open works.
+    // A window, the note bar or an event window appearing (whoever opened it: a hotkey, a report shot, the story's
+    // clock) wants the pointer: menu mode. Only the appearance counts: Tab back into FPS mode with it open works.
     const uint32_t mask = fpsWindowMask();
     if (fpsMode && (mask & ~fpsMaskPrev_) != 0)
         fpsSet(false, FpsWhy::Window);

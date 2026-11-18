@@ -606,7 +606,7 @@ void App::buildBootChooserUI(float s, int wh)
     Clay_String titleStr{false, (int32_t)std::strlen(sim->name()), sim->name()};
     const auto str = [](const std::string &t)
     { return Clay_String{false, (int32_t)t.size(), t.c_str()}; };
-    // The HUD's palette (UIPalette.h: the settings windows, the tutorial card) — the red accent, near-black
+    // The HUD's palette (UIPalette.h: the settings windows, the hints) — the red accent, near-black
     // panels with the faint white border. The first cut had its own soft blue theme.
     const Clay_Color accent = Pal::btnAccent, accentHv = Pal::btnAccentHv;
     const Clay_Color cardBg = Pal::panelSolid, cardHov = Pal::btnIdle;

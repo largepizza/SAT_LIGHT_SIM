@@ -1,6 +1,6 @@
 # UI text: where it lives and how to add it
 
-Every string the player reads (window titles, buttons, tooltips, settings labels and notes, toasts, the tutorial,
+Every string the player reads (window titles, buttons, tooltips, settings labels and notes, toasts, the hints,
 the boot chooser, card and panel text) belongs in one table: **`src/text/ui_text_en.inc`**, one line per string:
 
 ```cpp
@@ -15,7 +15,7 @@ Code asks for it by id:
 uiButton(inp, ui, "TrackBtn", 0, tx(Txt::BtnTrack), tx(Txt::TipTrack));
 snprintf(buf, sizeof(buf), tx(Txt::FmtFollowDistKm), d / 1000.0);
 const char *s = uiKitStr(tx(Txt::FmtSatCount), n);     // per-frame ring, safe for Clay
-CLAY_TEXT(txc(Txt::NoteSkipTutorial), ...);            // UiTextClay.h: a Clay_String
+CLAY_TEXT(txc(Txt::NoteSatLightSim), ...);             // UiTextClay.h: a Clay_String
 ```
 
 There is one language (English) for now. The table exists so a later pass can add a language: a second `.inc` with
@@ -27,7 +27,7 @@ change then.
 - **Ids** say what kind of text it is, then a few words of it: `Btn` button, `Tip` tooltip, `Lbl` a row's label,
   `Val` a value or a note in a readout row, `Sec` a section heading, `Ttl` a window title, `Opt` one choice of a
   list, `Sld` a slider's label, `Note` a free line of text, `Toast` a toast or banner, `Fmt` a printf format,
-  `Tut` tutorial text. An id never changes when its text is reworded (search the code for the id, not the words).
+  `Hint` a hint's text. An id never changes when its text is reworded (search the code for the id, not the words).
   Identical text shares one id.
 - **Formats** keep printf placeholders in the table. A translation may move words around a placeholder but must
   keep every placeholder in the same order (`%1$s` is not portable in MSVC's printf). Key names come in as `%s`

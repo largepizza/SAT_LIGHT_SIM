@@ -3967,7 +3967,6 @@ private:
     WindowChrome msChrome;
     bool hovMsClose = false, hovTimeMissions = false;
     int msTab = 0;                       // 0 upcoming, 1 ongoing, 2 the Kessler tracker (was Controls until 2026-10-21)
-    int msUpcomingActs_ = 0, msOngoingActs_ = 0; // Go to / Watch / Fury on Upcoming, any button on Ongoing (the tutorial)
     int msBuildOutOpen = -1;             // Ongoing's BUILD-OUT list: -1 = auto (collapsed once every cohort is complete)
     double msNextWall = -1e300, msNextSim = -1e300; // when the next-launches rows were made (wall clock, sim time)
     double msPinWall = -1e300, msPinSim = -1e300;   // ... the pinned twilight / crewed rows
@@ -8172,6 +8171,7 @@ private:
                                   // benchmark regardless of how the replay ends (see finishIntro) —
                                   // it's a one-shot first-run decision, not something a replay should redo
     bool introBenchHarness_ = false; // harness `intro play bench=1`: this playback measures and decides as a first run
+    bool introFirstHarness_ = false; // harness `intro play first=1`: this playback ends as a first run's (no benchmark)
     float introBenchMsSum = 0.0f; // accumulates gpuMsTotalSmoothed over the caption period (see updateIntro)
     int introBenchFrames = 0;
     struct IntroBenchResult       // the last decision finishIntro took (harness `intro state` -> bench.last)
@@ -8185,8 +8185,12 @@ private:
     // Post-intro "graphics set to X" notice (UC1 mechanism 3: always tell the user, never
     // silently re-decide) — same dismissible-banner pattern as buildCrashRecoveryNotice, separate
     // timer/text since the two can in principle be showing different things.
+    // (2026-11-18) Also the light-preset notice: a first run's opening that ends on Planetarium or Potato says what the
+    // preset leaves out and where to change it (finishIntro), once a session, held kLightPresetNoticeS.
     float graphicsAutoNoticeTimer = 0.0f;
-    char graphicsAutoNoticeText[192] = {};
+    char graphicsAutoNoticeText[400] = {};
+    bool lightPresetNoticed_ = false;
+    static constexpr float kLightPresetNoticeS = 20.0f;
 
     // ── UC6: screenshots ────────────────────────────────────────────────────────
     // See Simulation.h's wantsCleanScreenshot/recordScreenshotCopy/finalizeScreenshot doc
@@ -8617,9 +8621,9 @@ private:
     bool uiHovRoll(uint32_t id, bool nowHov);   // rollover sound + the hover memory; returns nowHov
     // The HUD's black rounded panel (2026-11-16): Pal::panelBg, Style::panelCornerRadius, padding {10,10,8,8}, FIT x FIT,
     // top to bottom, no border, floating by `fl`. The caller may change the layout after (HudPopupPanel's fixed width).
-    // LeftPanel, SelSatPanel and HudPopupPanel are built on it; RightPanel (38-px row) and TutCard (bordered) are not.
+    // LeftPanel, SelSatPanel and HudPopupPanel are built on it; RightPanel (38-px row) is not.
     static Clay_ElementDeclaration uiHudPanel(const Clay_FloatingElementConfig &fl, uint16_t childGap = 3);
-    // A keycap or pad button (the tutorial's graphics, 2026-11-16 moved from SatelliteSimTutorial.cpp): `target` = the
+    // A keycap or pad button (the hints' keys, 2026-11-16): `target` = the
     // input to use (amber, pulsing by `pulse` 0..1), `down` = held now (green); `fl` floats it on the element being
     // built. `label` must outlive the frame (Clay reads it after buildUI): a literal, tx(), or caller-owned storage.
     static void uiKeycap(Clay_ElementId id, float w, float h, Clay_CornerRadius rad, const char *label, uint16_t fsz,
@@ -8636,7 +8640,7 @@ private:
     ActionLabel actionLabel(int kb, bool gamepad) const;
     ActionLabel actionLabel(int kb) const { return actionLabel(kb, lastInputWasGamepad); } // by the last input used
     // How far above the screen's bottom a bottom-centred card must sit to clear both corner panels (LeftPanel,
-    // RightPanel; last frame's boxes): max(minClear, screenH - panel top + gap). The tutorial card; the hint popup.
+    // RightPanel; last frame's boxes): max(minClear, screenH - panel top + gap). The caption band; the hint popup.
     static float uiBottomClearance(float screenH, float minClear = 24.0f, float gap = 12.0f);
     std::unordered_map<uint32_t, bool> uiHov_;
     std::unordered_map<uint32_t, bool> uiFoldOpen_; // uiFold: open sections (view state, not persisted)
@@ -9144,7 +9148,7 @@ private:
     bool fpsFocusedPrev_ = false;
     bool fpsKbCapturedPrev_ = false; // a text field or the console had the keyboard last frame
     uint32_t fpsMaskPrev_ = 0;       // fpsWindowMask() last frame (a window appearing forces menu mode)
-    bool fpsLookedThisFrame_ = false; // the FPS look turned the camera this frame (Go to's aim unlock, tutorial)
+    bool fpsLookedThisFrame_ = false; // the FPS look turned the camera this frame (Go to's aim unlock)
     float mouseSensMul = 1.0f;   // controls.mouse_sensitivity: Settings > Controls "Mouse sensitivity" (camera.sensMul)
     float fpsRingT_ = 0.0f;      // the centre ring: seconds shown before its fade
     float fpsRingFade_ = 0.0f;   // seconds of fade left (kFpsRingFadeS when the hold ends)
@@ -9191,7 +9195,7 @@ private:
     void fpsApplyCapture();           // the OS cursor follows the mode (never under the harness)
     void fpsCentreClick();            // an FPS-mode left click: the centre pick + the ring
     std::string pickAtScreenCentre(); // KB_SELECT_SAT and the FPS click: one coordinate convention (window size)
-    uint32_t fpsWindowMask() const;   // the open windows, the note bar, the tutorial card: one appearing forces menu mode
+    uint32_t fpsWindowMask() const;   // the open windows, the note bar, an event window: one appearing forces menu mode
     void buildFpsRing(UIRenderer &ui);
     // harness `mouse move dx= dy= frames=` (deltas the FPS look consumes) / `mouse click left|right`
     int harnessMouseFrames_ = 0;
@@ -9202,13 +9206,16 @@ private:
     nlohmann::json fpsStateJson() const;
 
     // ── Hints (2026-11-17, SatelliteSimHints.cpp; docs/subsystems/ui.md "Hints") ─────────────────────────────────
+    // The first run is over (persisted as display.tutorial_done, the key's name from the card tutorial the hints
+    // replaced: existing settings files keep it): set when the first run's hint pass completes.
+    bool firstRunDone = false;
     // The first run's teaching: one small hint at a time (HintPopup), chosen from what the player has and has not done.
     // The gates are sticky facts since the pass began (an opening's first frame, `hints on|reset`); hintsTick decides
     // (one function), hint_ holds the state (one struct). Every clock is frame time, as the caption clock. A pass runs
     // on a genuine first run (display.tutorial_done false) and after a Replay Intro; it completes (and saves
     // tutorial_done) when the captions have ended, a satellite is selected, the player has moved and hints 9 and 10
     // are done; after that hints 3, 4, 5 and 8 may each fire once more that session. Never under the harness unless
-    // `hints on`; never over a playing cinematic, an HQ photo, the old tutorial card or a hidden HUD.
+    // `hints on`; never over a playing cinematic, an HQ photo or a hidden HUD.
     // CONTEXTUAL hints (12..19, 2026-11-17 round 2) outlive the pass: each stays armed in every session until its gate
     // is met or it has been offered kHintMaxOffers times, both persisted (hintSaved_: display.hint_gates /
     // display.hint_offers); they take the slot only when no pass hint wants it, after the captions, with no window
@@ -10075,62 +10082,6 @@ private:
     void buildIntroOverlay(const UIInput &inp, UIRenderer &ui, bool clearToolbars); // the opening's captions
     void buildCrashRecoveryNotice(float dt, const UIInput &inp, UIRenderer &ui); // NEW-3
     void buildGraphicsAutoNotice(float dt, const UIInput &inp, UIRenderer &ui);  // UC1 mechanism 3
-    // ── First-run tutorial (2026-10-03, SatelliteSimTutorial.cpp) ────────────────────────────────
-    // Replaced the intro's "WASD to move / Q-E / click a satellite" beat (shown while clicking was still
-    // disabled) and the post-intro "Click to select any satellite" hint (review 17). One card at a time,
-    // each step finished by DOING it (the keys / buttons light on the graphic as they are pressed), then
-    // the HUD's own controls pointed at with outlines. Runs after the intro, once (display.tutorial_done).
-    enum TutStep
-    {
-        TUT_LOOK = 0,
-        TUT_MOVE,
-        TUT_ALTITUDE,
-        TUT_BOOST,
-        TUT_SELECT,
-        TUT_INFO,       // the selection's Info (2026-10-21: the four buttons had one step, any of them finished it)
-        TUT_GOTO,       // Go to, then leave it again (Exit flies home, Stay here stays)
-        TUT_TRACE,      // Trace pass or Track
-        TUT_TIME,
-        TUT_CAPTURE,
-        TUT_MISSIONS,   // open the Missions window; Upcoming: Go to / Watch a launch (or the Sun's Fury)
-        TUT_ONGOING,    // the Ongoing tab (a few seconds on it, or any of its buttons); "Back to <time>" offered
-        TUT_SETTINGS,
-        TUT_GRAPHICS,   // only when the tutorial starts on a light preset (tutGraphicsCard): no clouds there
-        TUT_COUNT,
-    };
-    // The light presets (Planetarium, Potato) draw no clouds; a first run on an integrated GPU starts on
-    // Planetarium, and the tutorial ends with a card that says so and where to change it (2026-10-04).
-    bool tutGraphicsCard = false;
-    int tutBasePreset = 0;
-    int tutStepCount() const { return tutGraphicsCard ? (int)TUT_COUNT : (int)TUT_GRAPHICS; }
-    bool tutActive = false;
-    bool tutorialDone = false;      // persisted (display.tutorial_done); Skip or Finish sets it
-    bool tutAutoChecked = false;    // the once-per-session auto start has been considered
-    int tutStep = 0;
-    float tutClock = 0.0f;          // drives the highlight pulse
-    float tutProgress = 0.0f;       // 0..1 toward finishing the current step's action
-    float tutDoneT = -1.0f;         // >= 0: the step is done, its "Done" shows this long before the next
-    float tutLastAz = 0.0f, tutLastEl = 0.0f;
-    // The state a step started from (Time / Capture / Settings / Actions finish on a CHANGE of it).
-    int tutBaseTimeIdx = 0;
-    bool tutBasePaused = false, tutBaseReverse = false, tutBaseTrails = false, tutBaseCine = false, tutBaseBookmarks = false;
-    bool tutBaseSettings = false, tutBaseReports = false;
-    bool tutBaseInfo = false, tutBaseTrace = false, tutBaseTrack = false, tutGoSeen = false;
-    int tutBaseMsUpcoming = 0, tutBaseMsOngoing = 0;
-    float tutOngoingS = 0.0f;       // seconds on the Missions window's Ongoing tab (TUT_ONGOING)
-    // Where the player was before the Missions step's Go to / Watch moved the clock and the place (2026-10-21):
-    // every later card offers "Back to <time>" until it is used (tutReturnNow), so nobody is left days ahead.
-    bool tutRetSaved = false, tutRetValid = false;
-    double tutRetT = 0.0, tutRetDriftPhaseOff = 0.0;
-    glm::vec3 tutRetObsDir{0.0f, 0.0f, 1.0f};
-    float tutRetHeight = 0.0f, tutRetAz = 0.0f, tutRetEl = 0.0f, tutRetFov = 70.0f, tutRetDir = 1.0f, tutRetDriftRate = 0.0f;
-    int tutRetTimeIdx = 0;
-    bool tutRetPaused = false;
-    char tutRetLabel[64] = {};
-    char tutPickMsg[96] = {};       // "Pick one for me"'s result when it found nothing
-    char tutKeyLabel[3][16] = {};   // rebindable keycap labels (keyDisplayName's letters rotate through a pool)
-    bool hovTutNext = false, hovTutBack = false, hovTutSkip = false, hovReplayTutorial = false, hovTutPick = false,
-         hovTutReturn = false;
     // ── Gamepad navigation of the selection (2026-10-03, pollGamepad) ──
     // With a satellite selected and no virtual cursor: D-pad left/right move a focus ring across its
     // buttons (Info, Go to, Trace pass, Track = SelActBtn id % 4), A presses the focused one (the
@@ -10156,23 +10107,6 @@ private:
     bool padBack();                 // true if B did something (closed / left / released / deselected)
     bool padContextButton(int glfwPadButton, bool cursorActive); // true = used (the binding does not fire)
     bool padFocusVisible() const { return lastInputWasGamepad && !vCursorActive; }
-    uint32_t selBtnDrawnMask = 0;   // SelActBtn ids drawn this frame (buildSelActionButton; reset by buildSelectedSatPanel)
-    char tutBodyBuf[400] = {};
-    char tutHeadBuf[48] = {};
-    void startTutorial(int step = 0);
-    void endTutorial(bool finished);
-    void setTutorialStep(int step);
-    void updateTutorial(float dt); // completion detection, every frame after the look block
-    bool tutInfoOn() const;        // the info window open on the selection
-    bool tutNeedsPick(int step) const; // Select / Info / Go to / Trace: no (suitable) selection yet
-    bool tutPickSatellite();       // "Pick one for me": a sunlit satellite with a model, high in the sky; aims at it
-    void tutSaveReturn();
-    void tutReturnNow();
-    void buildTutorial(const UIInput &inp, UIRenderer &ui);
-    void buildTutKeyboard(int step);  // the key cluster graphic (Q W E / A S D / Shift)
-    void buildTutMouse(int step, const UIInput &inp);
-    void buildTutGamepad(int step);
-    bool tutGamepadView() const { return lastInputWasGamepad; }
     void buildScreenshotToast(float dt, const UIInput &inp, UIRenderer &ui);     // UC6 confirmation toast
     // UC3, the opening: on its first frame sets the scene (the moment, the cloud phase, key 0's pose, FPS mode on,
     // 1x running), then only advances introElapsed / introCaptionIndex, accumulates the UC1 benchmark and ends the

@@ -16,7 +16,7 @@ Checks, per dump:
   * no drawn text is cut sideways by its scissor (a cut at a scroll view's top / bottom edge is allowed), lies off
     the screen, or overlaps other text under the same scissor (`ui dump`'s own checks);
   * the HUD elements in HUD_IDS (bottom panels, selection chip, follow bar, "Go to again" chip, the intro's caption
-    band, the first run's hint popup) do not overlap each other and stay on screen.
+    band, the first run's hint popup, the graphics / light-preset notice) do not overlap each other and stay on screen.
 Standard library only, except `sheets`.
 """
 import argparse
@@ -38,7 +38,7 @@ WIN_NAMES = {0: "settings", 1: "controls", 2: "trace", 3: "viewer", 4: "info", 5
 # HUD elements that must not overlap each other (the bottom panels, the out-of-view selection chip, follow mode's bar,
 # the "Go to ... again" chip, the cinematic bar)
 HUD_IDS = ("LeftPanel", "RightPanel", "HudPopupPanel", "SelSatChip", "FollowAgainBtn", "FollowHud", "CineHud",
-           "CineCaption", "HintPopup")
+           "CineCaption", "HintPopup", "GraphicsAutoNotice")
 # The view's starting moment (gen_script's header), restored after a view that moves the observer (the intro).
 SCENE = ["observer lat=34.05 lon=-118.25 agl=10", "time set 2036-11-22T02:30:00Z", "time pause",
          "camera az=270 el=15 fov=70"]
@@ -74,15 +74,6 @@ def views():
         ("reports", ["ui open reports", "wait 4"], ["ui close reports"]),
         ("viewcontrols", ["ui open viewcontrols", "wait 4"], ["ui close viewcontrols"]),
         ("follow", [ISS, "follow", "wait 20"], ["follow off", "wait 5"]),
-        ("tut_look", ["tutorial start 1", "wait 4"], []),
-        ("tut_select", ["tutorial step select", "wait 4"], []),
-        ("tut_info", [ISS, "tutorial step info", "wait 4"], []),
-        ("tut_goto", [ISS, "tutorial step goto", "follow", "wait 20"], ["follow off", "wait 5"]),
-        ("tut_trace", [ISS, "tutorial step trace", "wait 4"], []),
-        ("tut_time", ["tutorial step time", "wait 4"], []),
-        ("tut_missions", ["tutorial step missions", "ui open missions tab=upcoming", "wait 12"], ["ui close missions"]),
-        ("tut_ongoing", ["tutorial step ongoing", "ui open missions tab=ongoing", "wait 12"], ["ui close missions"]),
-        ("tut_settings", ["tutorial step settings", "wait 4"], ["tutorial skip", "wait 2"]),
         # The opening's longest caption (beat 2, 15.2-22.8 s of caption time): the caption band (CineCaption) wraps
         # inside the window. Seeked to 17 s (full alpha from 16.0 s); `wait 30` is capped at 2 s. The opening moves
         # the observer and the clock: restored after. intro_caption = FPS mode, the corner toolbars held back;
@@ -114,6 +105,11 @@ def views():
     ]
     # The second round (2026-11-17): 11 the right-drag (menu mode), the contextual hints 12-19; 14-19 outline a
     # toolbar button (HintOutline: on screen, never under the popup), 14 also with the View popup open over it.
+    # The light-preset notice (2026-11-18, finishIntro): a first run's opening ending on Planetarium (`first=1`: no
+    # benchmark), its paragraph wrapped at the top, with the select hint (7) up at the bottom; then back to High.
+    v.append(("light_notice", ["preset Planetarium", "hints on", "intro play first=1 at=52.7", "wait 60", "intro state",
+                               "hints force 7", "wait 4", "hints state"],
+              ["hints off", "fps off", "preset High", "wait 5"] + SCENE + ["wait settle 20"]))
     for n in (11, 12, 14, 15, 16, 17, 18, 19):
         v.append((f"hint_{n}", ["hints on", f"hints force {n}", "wait 4", "hints state"], ["hints off"]))
     v.append(("hint_13", [ISS, "wait 3", "hints on", "hints force 13", "wait 4", "hints state"], ["hints off", "select none"]))

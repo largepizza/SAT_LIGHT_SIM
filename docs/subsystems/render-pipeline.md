@@ -281,9 +281,9 @@ see the last bullets), `recordPrePass` → `recordSkyTaa`:
   R9 M370X is DISCRETE, 2 GB), **Planetarium** for integrated / CPU / virtual GPUs and discrete ones with
   <= ~2 GB of VRAM, **High** for discrete GPUs with >= 5.5 GiB of device-local memory (2026-10-20: a 6-8 GB card;
   High is the compiled defaults, the author's tuned look), else Medium — logged as `graphics: recommended preset ...`. Crash recovery steps the preset
-  down one tier (`crashRecoveryPreset`: full -> Planetarium -> Potato; it always forced Planetarium). The tutorial then ends with a "Graphics" card
-  (`TUT_GRAPHICS`, shown only when it starts on Planetarium or Potato) saying there are no clouds and pointing at
-  Settings > Display > Preset.
+  down one tier (`crashRecoveryPreset`: full -> Planetarium -> Potato; it always forced Planetarium). A first run's opening that
+  ends on Planetarium or Potato shows the light-preset notice (ui.md "The light-preset notice"): no clouds, a simpler
+  terrain, sky and sea, and Settings > Display > Preset.
 - **Automatic render scale (2026-10-04, `updateDynamicResolution`, Display "Automatic render scale", keys
   `display.dynamic_resolution` (off) / `dynamic_target_fps` (60) / `dynamic_min_scale` (0.5)):** keeps the GPU frame
   under 0.9 x 1000 / fps by 5% steps (down as far as a 30% fixed + 70% x scale^2 model says, after 0.75 s; up one step

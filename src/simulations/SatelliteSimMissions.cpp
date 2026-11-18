@@ -783,15 +783,13 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
     };
     if (const MissionLaunch *m = launchOf(watchLaunch))
     {
-        if (launchWatchKey(m->key, (m->twilight || watchLaunch == 100) ? kWatchTwilightS : kWatchLiftoffS, msg))
-            ++msUpcomingActs_; // the tutorial's Missions step (SatelliteSimTutorial.cpp)
+        launchWatchKey(m->key, (m->twilight || watchLaunch == 100) ? kWatchTwilightS : kWatchLiftoffS, msg);
         msStatus = msg;
         msNextWall = msPinWall = -1e300; // rebuilt next frame (Clay still holds this frame's strings)
     }
     if (furyGo >= 0)
     {
-        if (missionsGoToFury(furyGo, msg))
-            ++msUpcomingActs_;
+        missionsGoToFury(furyGo, msg);
         msStatus = msg;
         msNextWall = msPinWall = -1e300; // rebuilt next frame (Clay still holds this frame's strings)
     }
@@ -800,8 +798,6 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
         settingsChrome.open = true;
         settingsActiveTab = 15;
     }
-    if (ongoingGo >= 0 || watchReentry || stationGo >= 0)
-        ++msOngoingActs_; // the tutorial's Ongoing step
     if (ongoingGo >= 0 && ongoingGo < (int)msOngoing.size())
     {
         missionsOngoingAct(ongoingGo, true, msg);
