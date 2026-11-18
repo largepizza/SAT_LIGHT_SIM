@@ -17,7 +17,9 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   uploads the towers alive (`GpuStormTower` = `CV2Tower`, 48 B; strength = the lifecycle, a weaker tower is SHORTER)
   and an open-addressed hash of 256-per-face cube bins (each tower listed in every bin its reach touches — only those, since
   2026-10-27: `clouds_v2.storm_index_tight`, see "Weather perf pass" under GPU Performance Profiling) into
-  `stormBuf` (device-local host-visible): march binding 26, beam occlusion 10, lightning, cdc. `cv2ColumnSigma` loops
+  `stormBuf` (device-local host-visible; with frames in flight device-local and mirrored, its device copy zeroed by a
+  `vkCmdFillBuffer` at creation: the boot's weather-cube bake reads it before the first mirror flush, and VRAM left by an
+  earlier process once looped that bake past the 8-s TDR, 2026-11-17): march binding 26, beam occlusion 10, lightning, cdc. `cv2ColumnSigma` loops
   over its point's bin; lightning flashes only from them. Settings `clouds_v2.storm_objects / storm_frequency /
   storm_life` (Weather tab "Storm objects"); harness `storms`, `storms go`, `state` -> `weather`; `tools/weather_tool`.
   **A storm brings its own cloud into the weather cube** (2026-10-23, issue 20261022_233857: a supercell in near-clear
