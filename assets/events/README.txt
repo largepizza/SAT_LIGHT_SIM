@@ -18,5 +18,12 @@ placeholder. The folder ships with the app (assets/ is copied next to the exe an
     betelgeuse_fades.png        the supernova fades below the star it was
     explode_warning.png         the warning before the first breakup before the Sun's Fury
 
+The shipped files are PLACEHOLDERS (2026-11-18): one in-app capture of each event's own scene (HUD hidden), cropped
+to its centre 3:1 and scaled to 960 x 320, no text. Replace any of them with art of the same name. To regenerate them
+(one harness launch, then the crop):
+
+    python tools/harness/run.py tools/harness/scripts/event_banners.satcmd --quiet --out harness_runs/event_banners
+    tools/harness/.venv/Scripts/python tools/make_event_banners.py harness_runs/event_banners
+
 A new file shows the next time that window opens (no rebuild needed in the exe's own assets/events folder; in the
 source tree a build copies it there).

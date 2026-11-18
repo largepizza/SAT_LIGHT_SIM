@@ -429,7 +429,8 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
     instant. Live sampling past the prebake: ~1.1 s a day.
 - **The explode warning (2026-11-17, `explodeWarnNeeded`, SatelliteSimEventWindows.cpp).** The info window's Explode
   (`infoExplodeSelected`) first opens the event window as a warning ("WARNING / Exploding satellites disrupts the
-  space-time continuum. Are you sure?", 1) Yes, 2) No, 3) PRAISE BE TO THE SUN in the danger colour) when **the sim
+  space-time continuum. Are you sure?", 1) Yes, 2) No, 3) PRAISE BE TO THE SUN in the danger colour; no sub-line
+  since 2026-11-18, and its banner is `assets/events/explode_warning.png`) when **the sim
   clock is before the CME's arrival (`kesslerEpoch()`) and no player breakup before it is in `kUserEvents`**: such a
   breakup moves the world's start to its own step (`kesslerRestart`'s startT), so no cache or prebake matches and the whole
   cascade is computed live. A breakup after the CME only cuts the prebake from its step on: no warning. Yes = the

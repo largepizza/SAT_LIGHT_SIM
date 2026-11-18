@@ -4408,7 +4408,9 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 // the screenshot / report keys (2026-10-19): f7 new issue shot, f9 shot, f10 screenshot with UI, f12 screenshot
                 {"f6", GLFW_KEY_F6}, {"f7", GLFW_KEY_F7}, {"f8", GLFW_KEY_F8}, {"f9", GLFW_KEY_F9}, {"f10", GLFW_KEY_F10}, {"f12", GLFW_KEY_F12},
                 // the mission milestone keys (2026-10-20)
-                {"]", GLFW_KEY_RIGHT_BRACKET}, {"[", GLFW_KEY_LEFT_BRACKET}};
+                {"]", GLFW_KEY_RIGHT_BRACKET}, {"[", GLFW_KEY_LEFT_BRACKET},
+                // the time keys' defaults (2026-11-18: a key changing the rate while an event window is open)
+                {".", GLFW_KEY_PERIOD}, {",", GLFW_KEY_COMMA}};
             int code = -1;
             for (const auto &e : keys)
                 if (k == e.first)

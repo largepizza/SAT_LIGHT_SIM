@@ -1,0 +1,115 @@
+# Placeholder banners for the event windows (2026-11-18; docs/subsystems/sky-events.md "Event windows"): one frame of
+# each event's own scene, HUD hidden, no event window open (a harness run keeps them off: no `events on` here).
+#   python tools/harness/run.py tools/harness/scripts/event_banners.satcmd --quiet --out harness_runs/event_banners
+#   tools/harness/.venv/Scripts/python tools/make_event_banners.py harness_runs/event_banners
+# make_event_banners.py crops each capture to its centre 3:1 and writes assets/events/<id>.png at 960 x 320: the
+# subject sits in the middle third of the frame's height (what the crop keeps). Placeholders, not art: one try each.
+window 1600x900
+wait 5
+
+# -- the Great Comet: crossing Mars's orbit (far: a faint head among the planets), surviving perihelion (low over the
+#    sea at dusk, 2 days on), passing the Earth (huge across the night sky) --
+time set 2037-01-20T00:00:00Z
+time pause
+comets watch great days=-52
+camera fov=10
+wait settle
+capture comet_inner_planets
+comets watch great days=2 sun_max=-3
+wait settle
+capture comet_perihelion
+set clouds_v2.coverage 0
+comets watch great days=27.2
+wait 60
+capture comet_passes_earth
+set clouds_v2.coverage 0.75
+
+# -- the comet's meteor storm: the Sky events row "Comet meteor storm" (upcoming row 1 on 2037-03-16) --
+time set 2037-03-16T00:00:00Z
+skyevents events
+skyevents watch 1
+wait settle
+capture comet_meteor_storm
+
+# -- the total lunar eclipse 2037-01-31 (the Moon in the umbra, zoomed) --
+time set 2037-01-25T00:00:00Z
+skyevents events
+skyevents watch lunar
+camera look moon
+camera fov=3
+wait settle
+capture lunar_eclipse
+
+# -- the Australasian eclipse 2037-07-13 (the corona, zoomed; the clouds off: it rains there that day) --
+time set 2037-07-10T00:00:00Z
+set clouds_v2.coverage 0
+skyevents events
+skyevents watch solar
+camera look sun
+camera fov=4
+wait 60
+capture australasian_eclipse
+set clouds_v2.coverage 0.75
+
+# -- the Sun's Fury: the storm night (aurora over Monument Valley) --
+missions go fury_night
+wait settle
+capture suns_fury
+
+# -- Betelgeuse explodes (2037-12-25, at its peak) and fades (2040-01-12): Orion's shoulder --
+time set 2037-12-24T00:00:00Z
+skyevents events
+skyevents watch supernova
+camera look Betelgeuse
+camera fov=20
+wait settle
+capture betelgeuse_explodes
+time set 2040-01-10T00:00:00Z
+skyevents events
+skyevents watch supernova
+observer agl=420000
+camera look Betelgeuse
+camera fov=30
+wait settle
+capture betelgeuse_fades
+
+# -- the cascade (the prebake): the first collision (the Kessler tracker's Watch of the newest breakup, 2037-07-15
+#    03:37), 10% destroyed (a dead satellite over the Earth, 09-14), 50% (the night limb from 450 km, 11-05) --
+# (`kessler wait` after each set: the mirror of the cascade at the new time is published over a few frames)
+time pause
+# (from 2040 straight to 03:40 the mirror showed 3 fragments and the tracker none: a stop before the CME first)
+time set 2037-07-01T06:00:00Z
+wait 10 maxs=0
+time set 2037-07-15T03:40:00Z
+kessler wait days=1
+wait 30 maxs=0
+missions tab kessler
+wait 90 maxs=0
+missions state
+wait 30 maxs=0
+missions watch 0
+ui close all
+wait settle
+capture first_collision
+time set 2037-09-14T04:00:00Z
+kessler wait days=61
+wait 10 maxs=0
+kessler select dead
+follow offset=-30,0,10
+wait settle
+capture destroyed_10
+follow off
+time set 2037-11-05T06:00:00Z
+kessler wait days=115
+wait 10 maxs=0
+observer lat=35 lon=-110 agl=450000
+camera az=0 el=-12 fov=70
+wait settle
+capture destroyed_50
+
+# -- the explode warning: a satellite close up --
+time set 2037-07-01T06:00:00Z
+select const "Starlink Gen1"
+follow offset=-30,0,10
+wait settle
+capture explode_warning

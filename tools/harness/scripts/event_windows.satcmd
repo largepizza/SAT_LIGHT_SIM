@@ -35,6 +35,7 @@ wait 30 maxs=0
 expect state.events.open true
 expect state.events.id comet_perihelion
 expect state.events.time_paused true
+expect state.events.time_scale 1x
 events state
 capture ev_cross_fwd ui=on scale=0.5
 events ack
@@ -55,6 +56,10 @@ events state
 events ack
 expect state.events.time_scale 1x
 expect state.events.time_paused false
+expect state.events.time_reverse false
+# (resumed forward from a millisecond before the moment: the same showing, not a second window)
+wait 20 maxs=0
+expect state.events.open false
 
 # -- 4 set past --
 time set 2037-02-17T22:00:00Z
@@ -246,6 +251,164 @@ capture 1600x900_ev_explode_warning ui=on
 events ack choice=2
 time pause
 
+# -- 9 the card sets 1x; the clock at the event (2026-11-18) --
+# The comet's perihelion + 6 h crossed at 1d / 1w / 1mo / 1yr, forward and backward: the window opens with the clock
+# at the moment (+-1 ms) and the time bar at 1x forward; acknowledged by the real button (or `events ack`), 60 frames
+# (3 s) later the clock is 3 s past the moment at 1x, and no second window has opened. A speed-up / reverse key while
+# the card is up does not stick. Then a queued pair (the comet passes the Earth, its meteor storm 1 s later) and a Watch.
+time set 2037-02-17T18:00:00Z
+time scale 1d
+time reverse off
+time play
+wait 10 maxs=0
+expect state.events.id comet_perihelion
+expect state.events.clock_from_moment_s 0 tol=0.01
+expect state.events.time_scale 1x
+events state
+ui click EventWinBtn:0
+wait 60 maxs=0
+expect state.events.open false
+expect state.events.clock_from_moment_s 3.05 tol=0.05
+expect state.events.time_scale 1x
+events state
+time pause
+time set 2037-02-17T00:00:00Z
+time scale 1w
+time play
+wait 10 maxs=0
+expect state.events.id comet_perihelion
+expect state.events.clock_from_moment_s 0 tol=0.01
+events state
+events ack
+wait 60 maxs=0
+expect state.events.open false
+expect state.events.clock_from_moment_s 3 tol=0.05
+events state
+time pause
+time set 2037-02-10T00:00:00Z
+time scale 1mo
+time play
+wait 10 maxs=0
+expect state.events.id comet_perihelion
+expect state.events.clock_from_moment_s 0 tol=0.01
+ui key .
+ui key .
+ui key r
+wait 2
+expect state.events.open true
+expect state.events.time_scale 1x
+expect state.events.time_reverse false
+events state
+ui click EventWinBtn:0
+wait 60 maxs=0
+expect state.events.open false
+expect state.events.clock_from_moment_s 3.05 tol=0.05
+expect state.events.time_scale 1x
+expect state.events.time_reverse false
+events state
+time pause
+time set 2037-02-01T00:00:00Z
+time scale 1yr
+time play
+wait 10 maxs=0
+expect state.events.id comet_perihelion
+expect state.events.clock_from_moment_s 0 tol=0.01
+events state
+ui click EventWinBtn:0
+wait 60 maxs=0
+expect state.events.open false
+expect state.events.clock_from_moment_s 3.05 tol=0.05
+events state
+time pause
+time set 2037-02-18T03:00:00Z
+time scale 1d
+time reverse on
+time play
+wait 10 maxs=0
+expect state.events.id comet_perihelion
+expect state.events.how "crossed backward"
+expect state.events.clock_from_moment_s 0 tol=0.01
+expect state.events.time_scale 1x
+expect state.events.time_reverse false
+events state
+ui click EventWinBtn:0
+wait 60 maxs=0
+expect state.events.open false
+expect state.events.clock_from_moment_s 3.05 tol=0.05
+events state
+time pause
+time set 2037-02-18T22:00:00Z
+time scale 1w
+time reverse on
+time play
+wait 10 maxs=0
+expect state.events.how "crossed backward"
+expect state.events.clock_from_moment_s 0 tol=0.01
+events state
+events ack
+wait 60 maxs=0
+expect state.events.open false
+expect state.events.clock_from_moment_s 3 tol=0.05
+events state
+time pause
+time set 2037-02-25T00:00:00Z
+time scale 1mo
+time reverse on
+time play
+wait 10 maxs=0
+expect state.events.how "crossed backward"
+expect state.events.clock_from_moment_s 0 tol=0.01
+events state
+ui click EventWinBtn:0
+wait 60 maxs=0
+expect state.events.open false
+expect state.events.clock_from_moment_s 3.05 tol=0.05
+events state
+time pause
+time set 2037-03-15T00:00:00Z
+time scale 1yr
+time reverse on
+time play
+wait 10 maxs=0
+expect state.events.how "crossed backward"
+expect state.events.clock_from_moment_s 0 tol=0.01
+events state
+ui click EventWinBtn:0
+wait 60 maxs=0
+expect state.events.open false
+expect state.events.clock_from_moment_s 3.05 tol=0.05
+events state
+time pause
+time reverse off
+time set 2037-03-16T00:00:00Z
+time scale 1w
+time play
+wait 10 maxs=0
+expect state.events.id comet_passes_earth
+expect state.events.queued 1
+ui click EventWinBtn:0
+wait 2
+expect state.events.id comet_meteor_storm
+expect state.events.how queued
+ui click EventWinBtn:0
+wait 60 maxs=0
+expect state.events.open false
+events state
+time pause
+time set 2037-01-25T00:00:00Z
+time scale 1yr
+skyevents events
+skyevents watch lunar
+expect state.events.id lunar_eclipse
+expect state.events.time_scale 1x
+wait 2
+ui click EventWinBtn:0
+wait 60 maxs=0
+expect state.events.open false
+expect state.events.clock_from_moment_s 3.06 tol=0.05
+events state
+time pause
+
 # -- 7 the Sun's Fury and the cascade (the prebake) --
 kessler wait days=60
 time pause
@@ -318,6 +481,57 @@ events state
 time set 2040-07-01T00:00:00Z
 wait 20
 events state
+
+# -- 10 the shares at fast rates: the clock back to the share's own second (2026-11-18) --
+# 1 mo/s from 2037-08-20: 10% opens with the clock at its second (the walk lags ~7 frames = ~10 days; it used to open
+# there, 2037-09-22). Then 1 yr/s on from there (the baseline: 10%): the walk is still
+# running when the clock meets Betelgeuse (12-25: its window first); the walk that ends under that window keeps its
+# baseline (it used to take 68% as the new baseline: the 50% window never opened), so after it the next walk finds 50%
+# passed and the clock goes back to its second; then at 1 mo/s through 12-25 again: Betelgeuse is not shown again.
+time pause
+time set 2037-08-20T00:00:00Z
+# (back from 2040: the cascade is replayed from the prebake, from the next frame on, and the clock is held at its
+# frontier: wait until it is past 10%)
+wait 5 maxs=0
+kessler wait days=70
+time scale 1mo
+time play
+wait 40 maxs=0
+expect state.events.id destroyed_10
+expect state.events.how "share crossed"
+expect state.events.clock_from_moment_s 0 tol=0.01
+expect state.events.time_scale 1x
+events state
+ui click EventWinBtn:0
+wait 60 maxs=0
+expect state.events.open false
+expect state.events.time_scale 1x
+events state
+# (a step back past the Kessler mirror's kept history replays the cascade from the prebake, ~3 s, and the clock is held
+# at the replay's frontier meanwhile: wait for it before running fast)
+kessler wait days=170
+time scale 1yr
+wait 40 maxs=0
+expect state.events.id betelgeuse_explodes
+events state
+ui click EventWinBtn:0
+wait 30 maxs=0
+expect state.events.id destroyed_50
+expect state.events.how "share crossed"
+expect state.events.clock_from_moment_s 0 tol=0.01
+events state
+ui click EventWinBtn:0
+wait 60 maxs=0
+expect state.events.open false
+expect state.events.time_scale 1x
+events state
+kessler wait days=200
+time scale 1mo
+wait 60 maxs=0
+expect state.events.open false
+events state
+events ack soft=1
+time pause
 
 # -- 8 the explode warning --
 window 1600x900

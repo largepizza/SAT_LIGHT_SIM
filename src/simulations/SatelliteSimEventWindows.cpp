@@ -2,8 +2,8 @@
 // The story's events as one modal window in the centre (docs/subsystems/sky-events.md "Event windows"): a banner
 // (assets/events/<id>.png, 960 x 320, or a labelled placeholder), the date, a title, a short text and one button.
 // A window opens when the RUNNING clock crosses an event's moment, forward or backward, at any rate (the state events:
-// forward only), or when a Watch takes the player to it; a clock that is SET past an event shows nothing. While it is
-// open sim time is paused; its button runs the clock on at 1x. The explode warning (the first player breakup before
+// forward only), or when a Watch takes the player to it; a clock that is SET past an event shows nothing. As it opens
+// the clock goes to 1x forward, paused while it is open; its button runs the clock on at 1x. The explode warning (the first player breakup before
 // the Sun's Fury, docs/subsystems/kessler.md "The explode warning") is the same window with three buttons.
 //
 // The rows are kEventWinDefs below: an id (the banner's file name and the harness id), the text, the Sky events kind
@@ -251,7 +251,7 @@ void SatelliteSim::eventWinAdvance(double tBefore, double tAfter)
     evw_.lastValid = true;
     if (!running)
     {
-        evw_.watched = EvOcc{};
+        evw_.watched.clear();
         evw_.walkPrevValid = false;
         evw_.walkActive = false;
     }
@@ -281,15 +281,22 @@ void SatelliteSim::eventWinAdvance(double tBefore, double tAfter)
     for (const EvOcc &o : hit)
         t1 = fwd ? std::min(t1, o.t) : std::max(t1, o.t);
     std::vector<EvOcc> now;
+    auto same = [](const EvOcc &a, const EvOcc &b) { return a.def == b.def && std::abs(a.t - b.t) < kSameMomentS; };
     for (const EvOcc &o : hit)
         if (std::abs(o.t - t1) < kSameMomentS)
         {
-            // (a Watch that landed before it showed this one already)
-            if (evw_.watched.def == o.def && std::abs(evw_.watched.t - o.t) < kSameMomentS)
+            // (shown already with the clock before it: a Watch's landing, a backward crossing resumed forward at 1x,
+            // the second of a queued pair)
+            if (std::any_of(evw_.watched.begin(), evw_.watched.end(), [&](const EvOcc &w) { return same(w, o); }))
                 continue;
             now.push_back(o);
         }
-    evw_.watched = EvOcc{};
+    // (the ones the clock ran through are behind it now: dropped)
+    evw_.watched.erase(std::remove_if(evw_.watched.begin(), evw_.watched.end(),
+                                      [&](const EvOcc &w) {
+                                          return std::any_of(hit.begin(), hit.end(), [&](const EvOcc &h) { return same(w, h); });
+                                      }),
+                       evw_.watched.end());
     if (now.empty())
         return;
     // The clock back to the moment (at 1 week/s a frame is a day: the thing would be over), then the window. A
@@ -312,7 +319,14 @@ void SatelliteSim::eventWinAdvance(double tBefore, double tAfter)
 // running forward all the while.
 void SatelliteSim::eventWinKesslerTick(double now, bool forward)
 {
-    if (!kesslerEnabled || kEvents.src == nullptr)
+    if (kesslerEnabled && kEvents.src == nullptr)
+    {
+        // A cascade replay under way (a step back past the mirror's kept history): no log to read yet. The share
+        // baseline stays (it was dropped here, and the replay's first walks then re-crossed 10% under a 50% window).
+        evw_.walkActive = false;
+        return;
+    }
+    if (!kesslerEnabled)
     {
         evw_.firstColT = 1e300;
         evw_.colScan = 0;
@@ -377,16 +391,77 @@ void SatelliteSim::eventWinKesslerTick(double now, bool forward)
     if (evw_.walkI < nRoster)
         return;
     evw_.walkActive = false;
-    const double frac = evw_.walkN0 ? (double)evw_.walkDead / (double)evw_.walkN0 : 0.0;
+    double frac = evw_.walkN0 ?(double)evw_.walkDead / (double)evw_.walkN0 : 0.0;
     evw_.destroyedFrac = frac;
+    // A walk that ends under an open window (another event's, met while this walk lagged) keeps the last baseline: the
+    // next walk, once the clock runs on, still sees the share passed (it was lost: the 50% window at 1 yr/s never opened).
+    if (evw_.open && evw_.walkPrevValid && eventWinLive())
+        return;
     if (evw_.walkPrevValid && !evw_.open && eventWinLive())
+    {
+        // The walk lags the clock (~7 frames: at 1 yr/s that is ~2 months), and the share was passed somewhere between
+        // the last walk's second and this one's. Its own second is the k-th earliest death among the counted satellites
+        // (k = ceil(share x N0)): one pass over the roster and an nth_element, once per crossing. The clock goes back to
+        // it, as for a crossed moment, so the window and the 1x after it are at the event, not months past it.
+        std::vector<int32_t> deaths;
+        double tFirst = 1e300;
+        std::vector<EvOcc> crossed;
         for (int d = 0; d < evRowCount; ++d)
         {
             const EventWinDef &row = kEventWinDefs[d];
-            if (row.trig == kTrigShare && evw_.walkPrevFrac < row.share && frac >= row.share)
-                eventWinOpen(EvOcc{d, now, 0}, "share crossed");
+            if (row.trig != kTrigShare || !(evw_.walkPrevFrac < row.share && frac >= row.share))
+                continue;
+            if (deaths.empty())
+            {
+                deaths.reserve(evw_.walkDead);
+                for (size_t i = 0; i < nRoster; ++i)
+                {
+                    if (2 * i + 1 < rosterLife.size() && (0 < rosterLife[2 * i] || 0 >= rosterLife[2 * i + 1]))
+                        continue;
+                    if (evw_.walkSec >= kRosterWords[2 * i])
+                        deaths.push_back((int32_t)kRosterWords[2 * i]);
+                }
+            }
+            const size_t k = (size_t)std::ceil(row.share * (double)evw_.walkN0);
+            double t = now;
+            if (k >= 1 && k <= deaths.size())
+            {
+                std::nth_element(deaths.begin(), deaths.begin() + (k - 1), deaths.end());
+                t = std::min(now, epoch + (double)deaths[k - 1] + 0.5); // (half a second in: the walk's floor sees it)
+            }
+            crossed.push_back(EvOcc{d, t, 0});
+            tFirst = std::min(tFirst, t);
         }
-    evw_.walkPrevFrac = frac;
+        if (!crossed.empty())
+        {
+            // Only the first share passed opens (both in one walk at 1 yr/s): the clock is at ITS second, so the next
+            // share is still ahead and opens when the running clock passes it (the baseline is the first share).
+            const EvOcc first = *std::min_element(crossed.begin(), crossed.end(),
+                                                  [](const EvOcc &a, const EvOcc &b) { return a.t < b.t; });
+            crossed.assign(1, first);
+            frac = kEventWinDefs[first.def].share;
+            if (tFirst < now)
+            {
+                const double back = now - tFirst;
+                const double days = std::floor(tFirst / kDayS);
+                simDayJ2000 = (int64_t)days;
+                simSecInDay = tFirst - days * kDayS;
+                cv2SimAdvanceAcc -= back; // (the clouds' history: a step back, not a jump)
+                evw_.lastT = tFirst;
+                evw_.walkSec = (int32_t)std::floor(tFirst - epoch);
+                // (a window shown meanwhile, now ahead of the clock again: the clock running through it is that showing)
+                for (const EvOcc &r : evw_.recent)
+                    if (r.t > tFirst && r.t <= now)
+                        evw_.watched.push_back(r);
+            }
+            for (const EvOcc &o : crossed)
+                eventWinOpen(o, "share crossed");
+        }
+    }
+    // The share only grows with a clock running forward: a lower walk is the mirror not there yet (a cascade replay after
+    // a step back, the window's own snap back included, republishes the dead seconds from the start), so the baseline
+    // never drops while the clock runs forward (it did: 10% opened a second time ~20 s after the 50% window's replay).
+    evw_.walkPrevFrac = evw_.walkPrevValid ? std::max(evw_.walkPrevFrac, frac) : frac;
     evw_.walkPrevValid = true;
 }
 
@@ -411,7 +486,6 @@ void SatelliteSim::eventWinTakenTo(const char *id, double tNear)
             pick = &o;
     if (!pick)
         pick = &*std::min_element(occ.begin(), occ.end(), [](const EvOcc &a, const EvOcc &b) { return a.t < b.t; });
-    evw_.watched = *pick;
     eventWinOpen(*pick, "watch");
 }
 
@@ -448,7 +522,6 @@ void SatelliteSim::eventWinOnSkyWatch(const sky::Event &e)
     evw_.lastValid = true;
     if (!pick || !eventWinLive())
         return;
-    evw_.watched = best;
     eventWinOpen(best, "watch");
 }
 
@@ -468,10 +541,24 @@ void SatelliteSim::eventWinOpen(const EvOcc &o, const char *how)
     evw_.prevScale = timeScaleIdx;
     evw_.prevDir = timeDir;
     timePaused = true;
+    if (o.def != kEvWarn)
+    {
+        // An event's card sets the clock to 1x forward as it opens (2026-11-18, the user: "so when it resumes we aren't
+        // speeding away from it"): the time bar reads 1x while the card is up, and nothing can resume the old rate.
+        timeScaleIdx = 0;
+        timeDir = 1.0f;
+    }
     if (audio_)
         audio_->playSfx("assets/sound/ui/event.wav"); // (the sfx bus: the master and effects volumes)
     if (o.def != kEvWarn)
     {
+        // Shown with the clock before its moment (a Watch's landing, a backward crossing, which resumes forward, the
+        // second of a queued pair): the running clock then crossing it is this same showing (eventWinAdvance).
+        if (o.t > (double)simDayJ2000 * kDayS + simSecInDay)
+            evw_.watched.push_back(o);
+        evw_.recent.push_back(o);
+        if (evw_.recent.size() > 16)
+            evw_.recent.erase(evw_.recent.begin());
         ++evw_.shown;
         evw_.log.push_back(std::string(evIdOf(o.def)) + " " + how + " " + fmtUtcReadable(o.t));
         if (evw_.log.size() > 64)
@@ -653,6 +740,11 @@ void SatelliteSim::buildEventWindow(const UIInput &inp, UIRenderer &ui)
     FPROF_SCOPE("buildEventWindow");
     timePaused = true; // (held while it is open, whatever a key did)
     const bool warn = evw_.cur.def == kEvWarn;
+    if (!warn)
+    {
+        timeScaleIdx = 0; // (an event's card holds 1x forward too: a speed-up / reverse key meanwhile does not stick)
+        timeDir = 1.0f;
+    }
     const EventWinDef *def = warn ? nullptr : &kEventWinDefs[evw_.cur.def];
     const char *id = evIdOf(evw_.cur.def);
     if (evBannerFor_ != id)
@@ -722,9 +814,6 @@ void SatelliteSim::buildEventWindow(const UIInput &inp, UIRenderer &ui)
                                                       .wrapMode = CLAY_TEXT_WRAP_WORDS}));
             CLAY_TEXT(evStr(text), CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(13),
                                                      .wrapMode = CLAY_TEXT_WRAP_WORDS}));
-            if (warn)
-                CLAY_TEXT(evStr(tx(Txt::EvNoteWarn)), CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11),
-                                                                        .wrapMode = CLAY_TEXT_WRAP_WORDS}));
         }
         int pick = 0;
         CLAY(CLAY_ID("EventBtns"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
@@ -778,6 +867,12 @@ nlohmann::json SatelliteSim::eventWinStateJson() const
     j["destroyed_share"] = evw_.destroyedFrac;
     j["time_paused"] = timePaused;
     j["time_scale"] = kTimeLabels[std::clamp(timeScaleIdx, 0, kNumTimeScales - 1)];
+    j["time_reverse"] = timeDir < 0.0f;
+    // The clock against the moment of the event window open now, else the last one shown (the warning has none).
+    const double now = (double)simDayJ2000 * kDayS + simSecInDay;
+    j["now_utc"] = fmtUtcReadable(now);
+    if (evw_.cur.def != kEvWarn && evw_.cur.def >= 0 && evw_.cur.t > 0.0)
+        j["clock_from_moment_s"] = now - evw_.cur.t;
     return j;
 }
 
