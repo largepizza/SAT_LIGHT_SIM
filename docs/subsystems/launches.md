@@ -651,6 +651,19 @@ launches follow per-program cadences (no real manifest).
     grazes (~95x the vertical column against ~10-30x for the layer seen from above), streaked where structure lies along
     the sight line. +0.07 ms from orbit (the layer's whole cost there ~0.9 ms at 30 deg FOV over the limb), ~0 from the
     ground.
+  - **The size sum is in units of 100 nm** (2026-11-17, issue_20261117_200907 "Black specs", 501 km over 70 N 94 E,
+    2037-07-20). In metres, rho r^3 is ~1e-15 x 3e-24 kg/m^3 m^3 where the air is barely past saturation (a patch's
+    edge), under the smallest normal float: the GPU flushed it to 0, rG = 0, the Mie sums 0 and kExt 0 / 0. The NaN in
+    the cloud targets reached the sky pass, and the sky TAA's non-finite guard (and the swapchain) drew it black: 1x2-px
+    specks fixed in the frame over the disc, a cluster on the limb's bright line (23 near-black pixels at the shot,
+    126 over 15 frames of its trail, 6 / 30 / 2 at three other 500-km limb views; 0 after, same views, the rest of the
+    image unchanged: 0.008% of pixels differ, all specks). Now S1 sums rho x (r / 100 nm)^3 and rG is held within the
+    per-read clamp (15-100 nm), so no underflow can zero it. Attributed by elimination: specks gone with
+    `launches.nlc false`, and also with `clouds_v2.full_res 0` or the march knocked out (why: not verified); unchanged
+    with the resolved cloud colour forced to clear, the air split or the cloud alpha bypassed in sat_sky.frag; a
+    marker in nlc_shell.comp for Tn < 0.05 never fired (the value was NaN). **An `isnan()` test added to this shader
+    made the NaN vanish** (the driver compiled the arithmetic differently): test a NaN here by its comparisons
+    failing, not with isnan. Cost: GPU 24.18 +-0.09 -> 24.11 +-0.05 ms at the shot (3 interleaved reps).
   - The fine structure (2026-11-16, the user: "way too blobby ... more fine grained fibers and noise distortion, similar to
     our current cirrus noise"): nlc_shell.comp nlcStructure reads the clouds' baked Perlin volume (cv2ShapeTex .a, as
     cv2IceFibres does) in a TRANSVERSE chart (lon / lat about ECEF x: its singular points on the equator, so fibres

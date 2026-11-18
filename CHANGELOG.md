@@ -636,6 +636,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- No more black specks on the Earth and along the limb from orbit over the summer pole (issue_20261117_200907).
+  Where the noctilucent cloud layer was only just forming, a size average fell below the smallest number the GPU
+  keeps, and the layer's brightness came out as not-a-number, drawn as black 1x2-pixel dots that stayed put. The
+  average is now taken in units that cannot underflow; the layer looks the same everywhere else.
 - Wildfire flames close up no longer flicker into a new shape every frame at 1x (issue_20261115_133156). Each
   flame's height, sway and flicker pulsed at a rate that followed the fire's heat. That rate drifted very slightly
   with time, and multiplied by the sim clock it jumped the animation many cycles per frame. The rate now comes from

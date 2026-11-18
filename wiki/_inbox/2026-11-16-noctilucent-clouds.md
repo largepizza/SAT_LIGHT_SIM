@@ -25,3 +25,7 @@ the launch sites' mesopause (176-206 K) is far above the loaded frost point (~15
 the water goes (poleward into the summer mesopause), as the shuttle's plumes did (Stevens et al. 2003, 2005).
 First cut collected 8 km of air with one particle size: 10-50x the brightest real clouds and a saturated lambda^-4 blue
 (the user from the ground: "a tad too dense ... a sharp light blue with minimal smoothing"); recalibrated 2026-11-16.
+2026-11-17 (issue_20261117_200907 "Black specs", 500 km over Siberia in July): the size average summed rho x r^3 in
+metres (~1e-15 x 3e-24 where the air is barely past saturation, under the smallest normal float), flushed to 0 and
+made the extinction 0 / 0; the NaN drew black 1x2-px specks over the disc and on the limb. The sum now takes r in
+units of 100 nm and the mean size is held within the 15-100 nm clamp; the image is otherwise unchanged.
