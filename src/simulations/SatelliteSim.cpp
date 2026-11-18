@@ -1732,7 +1732,10 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                            (glfwGetKey(win, keybindings[KB_ROLL_LEFT].key) == GLFW_PRESS || gpHeld(KB_ROLL_LEFT) ? 1.0f : 0.0f);
             rollIn = glm::clamp(rollIn + harnessRoll_, -1.0f, 1.0f);
             if (rollIn != 0.0f && !camLevelActive())
+            {
                 camRoll((double)rollIn * kCamRollDegS * (boost ? 2.0 : fine ? 0.25 : 1.0) * (double)std::min(dt, 0.25f));
+                hintRollIn_ = true; // (the hints' `rolled` gate: hint 12 is done)
+            }
         }
 
         // Zoom in/out (held): narrows/widens FOV at a fixed rate. Independent of boost/fine —
@@ -9002,7 +9005,9 @@ void SatelliteSim::updateIntro(float dt)
         // window has the focus; under the harness the mode is logic only), its hint facts from zero.
         fpsFacts_ = FpsFacts{};
         fpsSet(true, FpsWhy::Intro);
-        hintsReset(); // the hints' gates from zero: every opening (a first run's, a Replay Intro) runs a pass
+        // The hints' gates from zero: every opening (a first run's, a Replay Intro) runs a pass; a Replay Intro also
+        // forgets the contextual hints' saved gates and counts (they teach again).
+        hintsReset(introIsReplay);
         introToolbarsShown = false;
         introBasisValid = true;
     }
@@ -9604,6 +9609,7 @@ void SatelliteSim::requestScreenshot(bool withUi)
     screenshotIncludeUI = withUi;
     screenshotHideOverlays_ = withUi;
     screenshotRequested = true;
+    hintShotIn_ = true; // (the hints' `screenshot` gate: hint 19 is done)
 }
 
 // ─── HQ photo (review 13) ─────────────────────────────────────────────────────
@@ -9643,6 +9649,7 @@ void SatelliteSim::requestPhoto()
     photoScaleActive = (uint32_t)s;
     photoState = 1;
     photoFrame = 0;
+    hintShotIn_ = true; // (the hints' `screenshot` gate: hint 19 is done)
 }
 
 void SatelliteSim::updatePhoto(VulkanContext &ctx)

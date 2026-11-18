@@ -9161,7 +9161,19 @@ private:
     // tutorial_done) when the captions have ended, a satellite is selected, the player has moved and hints 9 and 10
     // are done; after that hints 3, 4, 5 and 8 may each fire once more that session. Never under the harness unless
     // `hints on`; never over a playing cinematic, an HQ photo, the old tutorial card or a hidden HUD.
-    static constexpr int kHintCount = 10;          // hints 1..10 (index 0 = none)
+    // CONTEXTUAL hints (12..19, 2026-11-17 round 2) outlive the pass: each stays armed in every session until its gate
+    // is met or it has been offered kHintMaxOffers times, both persisted (hintSaved_: display.hint_gates /
+    // display.hint_offers); they take the slot only when no pass hint wants it, after the captions, with no window
+    // open and no text entry. Replay Intro (and `hints reset`) clears them; display.hints (Settings > Display) turns
+    // every hint off.
+    static constexpr int kHintCount = 19;          // hints 1..19 (index 0 = none); 1-11 the pass, 12-19 contextual
+    static constexpr int kHintFirstCtx = 12;       // 12 roll, 13 Go to, 14 coronagraph, 15 star lock, 16-19 song gaps
+    static constexpr float kHintHandoffS = 1.0f;   // hint 4 (boost) follows hint 2's exit this soon (not kHintGapS)
+    static constexpr float kHintSunDeg = 10.0f;    // hint 14: the Sun within this of the view centre ...
+    static constexpr float kHintSunS = 4.0f;       // ... this long in total (frame time, this session)
+    static constexpr double kHintGeoKm = 35786.0;  // hint 15: the eye above this altitude (GEO)
+    static constexpr float kHintNoMusicS = 240.0f; // hints 16-19 with no audible music: one "gap" this often
+    static constexpr float kHintGapWindowS = 30.0f; // ... lasting this long (a song gap lasts musicGapS)
     static constexpr float kHintFadeS = 0.3f;      // fade in, fade out
     static constexpr float kHintGapS = 3.0f;       // at least this long between one hint gone and the next
     static constexpr float kHintLingerS = 2.0f;    // a hint fades this long after its gate is met
@@ -9172,8 +9184,6 @@ private:
     static constexpr double kHintLookDeg = 30.0;   // `looked`: degrees of view turned in total
     static constexpr float kHintMoveS = 1.0f;      // `moved`: seconds of movement input in total
     static constexpr float kHintClimbM = 100.0f;   // `climbed`: metres of height changed by elevation input
-    static constexpr float kHintStreakS = 4.0f;    // hint 4: moving this long without a break
-    static constexpr float kHintMoveGraceS = 1.0f; // hint 4 stays up through a pause this short
     static constexpr float kHintStillS = 2.0f;     // hint 5: the view nearly still this long ...
     static constexpr float kHintStillDegS = 3.0f;  // ... turning slower than this (deg/s)
     static constexpr float kHintCentrePx = 24.0f;  // hint 5: a drawn satellite within this of the centre (or its size)
@@ -9233,11 +9243,29 @@ private:
         int place = 0;         // 0 bottom centre, 1 above the caption, 2 above LeftPanel, 3 above RightPanel
         std::string seen;      // the hints shown, in order: "1,6,7"
         std::vector<HintLogEntry> log;
+        // contextual (12-19): this session's clocks
+        float sunS = 0.0f;     // hint 14: seconds with the Sun near the view centre
+        float silentS = 0.0f;  // hints 16-19: seconds without audible music (a "gap" at kHintNoMusicS)
+        float fakeGapS = 0.0f; // a timer gap's (or `hints gap`'s) seconds left
+        bool gapPrev = false;  // a gap open last frame (its start is an edge)
+        bool gapUsed = false;  // this gap has offered its one hint
+        float sunDeg = 180.0f; // last tick: the Sun's angle from the view centre (180 = down / behind the Earth)
+        bool audible = false, songGap = false, gapOpen = false; // last tick: music audible, between two tracks, a gap
     } hint_;
+    // Contextual hints' persisted state (display.hint_gates / display.hint_offers, by name: kHintCtxNames).
+    struct HintSaved
+    {
+        bool met[kHintCount + 1] = {};
+        int offers[kHintCount + 1] = {};
+    } hintSaved_;
+    bool hintsEnabled = true;     // display.hints: Settings > Display "Show hints"
+    bool hintSaveDirty_ = false;  // a saved gate or count changed: saveSettings at the end of hintsTick
     bool hintsHarnessOn_ = false; // `hints on` (a harness run keeps hints off otherwise)
     int hintsPass_ = -1;          // -1 undecided (first frame), 0 none, 1 a pass running, 2 complete
     // Signals the movement block (recordCompute) and the input paths leave for hintsTick.
     bool hintMoveIn_ = false, hintBoostIn_ = false, hintZoomIn_ = false, hintInputIn_ = false;
+    bool hintRollIn_ = false;     // Z / C rolled the camera (the horizon free)
+    bool hintShotIn_ = false;     // a screenshot or an HQ photo was taken (requestScreenshot / requestPhoto)
     float hintClimbM_ = 0.0f;
     float harnessScrollY_ = 0.0f;   // harness `mouse scroll dy=`: wheel notches for the next frame's zoom
     bool introCaptionBuilt_ = false; // buildIntroOverlay declared CineCaption this frame
@@ -9249,7 +9277,12 @@ private:
         const char *s;
         bool key;
     };
-    void hintsReset();                       // a new pass (an opening's first frame, `hints reset|on`)
+    void hintsReset(bool all = false);       // a new pass (an opening's first frame, `hints reset|on`); all: the
+                                             // contextual hints' saved gates and counts too (Replay Intro)
+    void hintsCtxGates();                    // the contextual gates (every frame, hints on or off)
+    void hintsLoadSaved(const nlohmann::json &d); // display.hint_gates / hint_offers
+    nlohmann::json hintsSavedGatesJson() const;
+    nlohmann::json hintsSavedOffersJson() const;
     void hintsPrime();                       // the edges' last-frame values from now
     void hintsNoteFps(bool on, FpsWhy why);  // fpsSet: the mode's edges (left by Tab / right click, returned)
     void hintsTick(const UIInput &inp, float dt); // buildUI, after the look block: gates, signals, the scheduler

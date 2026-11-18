@@ -1,8 +1,12 @@
 // SatelliteSimHints.cpp — the first run's hints (2026-11-17; docs/subsystems/ui.md "Hints").
 //
 // One small hint at a time (HintPopup: keycaps, then one line), chosen from what the player has and has not done:
-//   1 look   2 move   3 rise / descend   4 go faster   5 zoom   6 the cursor (leave FPS mode)   7 click a satellite
-//   9 the time bar   10 the menu buttons   8 back to looking around (FPS mode again)
+//   1 look   2 move   4 go faster   3 rise / descend   5 zoom   6 the cursor (leave FPS mode)   11 right-drag to look
+//   7 click a satellite   9 the time bar   10 the menu buttons   8 back to looking around (FPS mode again)
+// and, outliving that first-run pass (round 2), the contextual hints, armed in every session until used (their gates
+// and offer counts kept in settings): 12 roll (the horizon free), 13 Go to (a selection), 14 the coronagraph (the
+// Sun stared at), 15 the star lock (past GEO), and one per silence between music tracks: 16 Sky events, 17 Missions,
+// 18 Weather, 19 the picture keys.
 // Gates (HintGates) are sticky facts since the pass began; hintsTick measures them, keeps the live signals (the mode,
 // movement now, idle time, recent FPS clicks, the captions) and runs the scheduler: one hint on screen, faded in and
 // out, at least kHintGapS between two, gone kHintLingerS after its gate is met (at once when its condition stops
@@ -11,6 +15,7 @@
 // 9 and 10 above the toolbar they describe, with an outline around it. Every clock is frame time (the caption
 // clock's), so `--fixed-dt` runs are exact. Replaces the first-run card tutorial's teaching (that card no longer
 // starts on its own; SatelliteSimTutorial.cpp).
+#include "../AudioSystem.h"
 #include "../Harness.h"
 #include "../UIRenderer.h"
 #include "../UiText.h"
@@ -47,16 +52,77 @@ bool hDrawn(Clay_ElementId id, HBox &b)
     return true;
 }
 const char *const kPlaceNames[] = {"bottom", "caption", "left_panel", "right_panel"};
+// The contextual hints 12..19, by their gate's name (settings display.hint_gates / hint_offers, harness `hints set`).
+const char *const kHintCtxNames[] = {"rolled",   "gone_to",  "coronagraph", "star_lock",
+                                     "sky_events", "missions", "weather",     "screenshot"};
+constexpr int kHintCtxN = (int)(sizeof(kHintCtxNames) / sizeof(kHintCtxNames[0]));
 } // namespace
 
 // ─── State ────────────────────────────────────────────────────────────────────────────────────────
-void SatelliteSim::hintsReset()
+void SatelliteSim::hintsReset(bool all)
 {
     hint_ = HintRun{};
     hintsPass_ = 1;
     hintMoveIn_ = hintBoostIn_ = hintZoomIn_ = hintInputIn_ = false;
+    hintRollIn_ = hintShotIn_ = false;
     hintClimbM_ = 0.0f;
+    if (all) // (Replay Intro, `hints reset`: the contextual hints teach again)
+    {
+        hintSaved_ = HintSaved{};
+        hintSaveDirty_ = true;
+    }
     hintsPrime(); // (now: an edge in the same frame, a harness command after `hints on`, is not swallowed)
+}
+
+// The contextual hints' gates: facts, measured every frame whether hints show or not, and kept (display.hint_gates).
+void SatelliteSim::hintsCtxGates()
+{
+    auto meet = [&](int n, bool v)
+    {
+        if (v && !hintSaved_.met[n])
+        {
+            hintSaved_.met[n] = true;
+            hintSaveDirty_ = true;
+        }
+    };
+    meet(12, hintRollIn_);                    // Z / C rolled the view (the horizon free)
+    meet(13, followActive && !cineActive());  // a Go to (G, the selection panel's button, a Watch...)
+    meet(14, inertialOcculter);               // the coronagraph on
+    meet(15, inertialActive);                 // the view locked to the stars
+    meet(16, skChrome.open);
+    meet(17, msChrome.open);
+    meet(18, wxChrome.open);
+    meet(19, hintShotIn_);                    // a screenshot (either key, the button) or an HQ photo
+    hintRollIn_ = hintShotIn_ = false;
+}
+
+void SatelliteSim::hintsLoadSaved(const nlohmann::json &d)
+{
+    static_assert(kHintFirstCtx + kHintCtxN - 1 == kHintCount, "a name per contextual hint");
+    for (int i = 0; i < kHintCtxN; ++i)
+    {
+        const int n = kHintFirstCtx + i;
+        if (d.contains("hint_gates") && d["hint_gates"].is_object())
+            hintSaved_.met[n] = d["hint_gates"].value(kHintCtxNames[i], hintSaved_.met[n]);
+        if (d.contains("hint_offers") && d["hint_offers"].is_object())
+            hintSaved_.offers[n] = std::max(0, d["hint_offers"].value(kHintCtxNames[i], hintSaved_.offers[n]));
+    }
+}
+
+nlohmann::json SatelliteSim::hintsSavedGatesJson() const
+{
+    nlohmann::json j = nlohmann::json::object();
+    for (int i = 0; i < kHintCtxN; ++i)
+        j[kHintCtxNames[i]] = hintSaved_.met[kHintFirstCtx + i];
+    return j;
+}
+
+nlohmann::json SatelliteSim::hintsSavedOffersJson() const
+{
+    nlohmann::json j = nlohmann::json::object();
+    for (int i = 0; i < kHintCtxN; ++i)
+        j[kHintCtxNames[i]] = hintSaved_.offers[kHintFirstCtx + i];
+    return j;
 }
 
 // Last frame's values for the edges (the selection, the clock's controls, the windows, the pad's mode, the view).
@@ -138,6 +204,9 @@ int SatelliteSim::hintParts(int n, bool pad, bool menu, HintPart *o, char (*keys
         o[k++] = {keys[nk], true};
         nk = std::min(nk + 1, 3);
     };
+    // The contextual hints' keys: the pad's button when one is bound, else the keyboard's (no pad default for roll,
+    // Go to or the picture keys).
+    auto keyAny = [&](int kb) { key(kb, pad && kb >= 0 && kb < (int)keybindings.size() && keybindings[kb].gpButton >= 0); };
     switch (n)
     {
     case 1:
@@ -203,6 +272,40 @@ int SatelliteSim::hintParts(int n, bool pad, bool menu, HintPart *o, char (*keys
     case 10:
         text(tx(Txt::HintMenuBar));
         break;
+    case 11:
+        text(tx(Txt::HintLookDrag));
+        break;
+    case 12:
+        keyAny(KB_ROLL_LEFT);
+        text("/");
+        keyAny(KB_ROLL_RIGHT);
+        text(tx(Txt::HintToRoll));
+        break;
+    case 13:
+        keyAny(KB_FOLLOW_STAY);
+        text(tx(Txt::HintGoTo));
+        break;
+    case 14:
+        text(tx(Txt::HintCoronagraph));
+        break;
+    case 15:
+        text(tx(Txt::HintStarLock));
+        break;
+    case 16:
+        text(tx(Txt::HintSkyEvents));
+        break;
+    case 17:
+        text(tx(Txt::HintMissions));
+        break;
+    case 18:
+        text(tx(Txt::HintWeather));
+        break;
+    case 19:
+        keyAny(KB_SCREENSHOT);
+        text(tx(Txt::HintScreenshot));
+        keyAny(KB_PHOTO);
+        text(tx(Txt::HintHqPhoto));
+        break;
     default:
         break;
     }
@@ -241,6 +344,15 @@ const char *hintTextId(int n, bool pad, bool menu)
     case 8: return "HintLookAgain";
     case 9: return "HintTimeBar";
     case 10: return "HintMenuBar";
+    case 11: return "HintLookDrag";
+    case 12: return "HintToRoll";
+    case 13: return "HintGoTo";
+    case 14: return "HintCoronagraph";
+    case 15: return "HintStarLock";
+    case 16: return "HintSkyEvents";
+    case 17: return "HintMissions";
+    case 18: return "HintWeather";
+    case 19: return "HintScreenshot";
     default: return "";
     }
 }
@@ -255,7 +367,10 @@ void SatelliteSim::hintsTick(const UIInput &inp, float dt)
         hintsPass_ = tutorialDone ? 0 : 1; // the first frame: a genuine first run, or not
     HintRun &h = hint_;
     HintGates &g = h.g;
-    if (hintsPass_ <= 0 || (harness::active() && !hintsHarnessOn_))
+    hintsCtxGates();
+    // Off: the setting, or a harness run without `hints on`. A finished (or never started) pass still runs the
+    // contextual hints (12-19).
+    if (!hintsEnabled || (harness::active() && !hintsHarnessOn_))
     {
         h.cur = 0;
         h.alpha = 0.0f;
@@ -283,7 +398,8 @@ void SatelliteSim::hintsTick(const UIInput &inp, float dt)
     {
         input = true;
         h.lookDeg += dLook;
-        if (camera.captured && !fpsLive_)
+        // (a right-drag in menu mode; harness `inertial drag` holds the same button)
+        if ((camera.captured || harnessDragFrames_ > 0 || harnessDragWarpPending_) && !fpsLive_)
             g.dragLooked = true;
     }
     if (h.lookDeg >= kHintLookDeg)
@@ -395,10 +511,11 @@ void SatelliteSim::hintsTick(const UIInput &inp, float dt)
         case 8: return g.returned;
         case 9: return g.timeBarShown;
         case 10: return g.menuBarShown;
-        default: return false;
+        case 11: return g.dragLooked;
+        default: return n >= kHintFirstCtx && n <= kHintCount && hintSaved_.met[n]; // contextual: kept across sessions
         }
     };
-    for (int n = 1; n <= kHintCount; ++n) // a gate met before its hint ever showed retires it (silently)
+    for (int n = 1; n < kHintFirstCtx; ++n) // a gate met before its hint ever showed retires it (silently)
         if (h.offers[n] == 0 && h.cur != n && gate(n))
             h.retired[n] = true;
 
@@ -440,37 +557,43 @@ void SatelliteSim::hintsTick(const UIInput &inp, float dt)
         {
         case 1: return true;
         case 2: return g.looked || neverTO(2);
-        case 3: return hintMoveIn_ || g.moved;
-        case 4: return h.movingS >= kHintStreakS;
+        // 4 then 3 (2026-11-17 round 2): near dark ground the move reads as going nowhere until boost shows, so boost
+        // comes as soon as `moved` is met (kHintHandoffS after 2 leaves), and rise / descend once boost was used or
+        // its hint had its turn.
+        case 3: return g.moved && (g.boosted || h.offers[4] > 0);
+        case 4: return g.moved;
         case 5: return h.stillS >= kHintStillS && satRef();
         case 6: return fpsH && !h.everMenu && (h.idleS >= kHintIdleS || clicks5 >= 2 || captionsEnded);
         case 7: return menu;
         case 8: return menu && ((g.timeBarShown && g.menuBarShown) || h.menuIdleS >= kHintMenuIdleS);
         case 9: return menu && g.selected;
         case 10: return menu && g.timeBarShown;
+        case 11: return menu && !lastInputWasGamepad && !g.selected; // (the pad's stick looks in either mode)
         default: return false;
         }
     };
-    // Holds while it shows (else it fades at once). 4 and 5 hold on less than they need to be offered: the streak
-    // and the still view are what call for them, not what they are about.
+    // Holds while it shows (else it fades at once). 5 holds on less than it needs to be offered: the still view is
+    // what calls for it, not what it is about.
     auto holds = [&](int n) -> bool
     {
         switch (n)
         {
         case 3: return hintMoveIn_ || g.moved;
-        case 4: return h.sinceMoveS < kHintMoveGraceS;
         case 5: return satRef();
         case 6: return fpsH && !h.everMenu;
         case 7:
         case 8:
         case 10: return menu;
         case 9: return menu && g.selected;
+        case 11: return menu && !g.selected;
         default: return true;
         }
     };
     auto allowed = [&](int n) -> bool
     {
         if (gate(n))
+            return false;
+        if (hintsPass_ <= 0) // no pass (a returning player): the contextual hints only
             return false;
         if (hintsPass_ == 2) // complete: 3, 4, 5 and 8 once more each this session
             return (n == 3 || n == 4 || n == 5 || n == 8) && !h.postFired[n];
@@ -495,8 +618,13 @@ void SatelliteSim::hintsTick(const UIInput &inp, float dt)
                 if (offerable(6, true) && offerCond(6))
                     return 6;
             }
-            else if (menu && !g.selected && offerable(7, true))
-                return 7;
+            else if (menu && !g.selected)
+            {
+                if (ok(11)) // the first time in menu mode: the right-drag look, then 7
+                    return 11;
+                if (offerable(7, true))
+                    return 7;
+            }
         }
         if (menu && g.selected) // b
         {
@@ -514,23 +642,119 @@ void SatelliteSim::hintsTick(const UIInput &inp, float dt)
         }
         if (!g.looked && ok(1)) // d
             return 1;
-        if (hintMoveIn_) // e
+        if (g.moved) // e: boost first, then rise / descend
         {
-            if (!g.climbed && ok(3))
-                return 3;
             if (ok(4))
                 return 4;
+            if (!g.climbed && ok(3))
+                return 3;
         }
         if ((h.idleS >= kHintIdleS || clicks5 >= 2) && ok(6)) // f
             return 6;
-        if (menu && !g.selected && ok(7)) // g
-            return 7;
+        if (menu && !g.selected) // g
+        {
+            if (ok(11))
+                return 11;
+            if (ok(7))
+                return 7;
+        }
         for (int n : {2, 3, 5}) // h
             if (ok(n))
                 return n;
         if (menu && h.menuIdleS >= kHintMenuIdleS && ok(8))
             return 8;
         return 0;
+    };
+
+    // ── Contextual hints (12-19): their live signals ──
+    // The Sun near the view centre, up and not behind the Earth (the glare's own limb test, SatelliteSim.cpp).
+    float sunDeg = 180.0f;
+    {
+        constexpr float kEarthR = 6'371'000.0f; // (SatelliteSim.cpp's kEarthRadius, file-local there)
+        const float obsR = glm::length(obsECI);
+        const float limbZ = obsR > kEarthR ? -sqrtf(std::max(0.0f, 1.0f - (kEarthR / obsR) * (kEarthR / obsR))) : 0.0f;
+        const glm::vec3 s(sunDirENU);
+        if (sunDirENU.w >= limbZ && glm::length(s) > 0.5f)
+        {
+            const float az = glm::radians(camera.azDeg), el = glm::radians(camera.elDeg);
+            const glm::vec3 v(cosf(el) * sinf(az), cosf(el) * cosf(az), sinf(el)); // ENU, az from north toward east
+            sunDeg = glm::degrees(acosf(std::clamp(glm::dot(v, glm::normalize(s)), -1.0f, 1.0f)));
+        }
+        if (sunDeg <= kHintSunDeg && !inertialOcculter)
+            h.sunS += dt;
+    }
+    const bool aboveGeo = camEyeAltM() > kHintGeoKm * 1000.0;
+    // The silence between two music tracks (or, with no music audible, one "gap" every kHintNoMusicS).
+    bool audible = false, songGap = false;
+    if (audio_)
+    {
+        audible = audio_->musicOn() && !audio_->musicPaused() &&
+                  audio_->getMasterVolume() * audio_->getMusicVolume() * musicAltFade > 0.03f;
+        songGap = audible && !audio_->trackPlaying() && audio_->gapRemaining() > 0.0f;
+    }
+    h.silentS = audible ? 0.0f : h.silentS + dt;
+    if (h.silentS >= kHintNoMusicS)
+    {
+        h.silentS = 0.0f;
+        h.fakeGapS = kHintGapWindowS;
+    }
+    const bool gapOpen = songGap || h.fakeGapS > 0.0f;
+    h.fakeGapS = std::max(0.0f, h.fakeGapS - dt);
+    if (gapOpen && !h.gapPrev)
+        h.gapUsed = false; // each gap offers one hint
+    h.gapPrev = gapOpen;
+    h.sunDeg = sunDeg;
+    h.audible = audible;
+    h.songGap = songGap;
+    h.gapOpen = gapOpen;
+    const bool satWithMesh = selectedSatIndex >= 0 && selectedSatIndex < (int)satOrbits.size() &&
+                             meshRenderer.typeMesh((int)satOrbits[selectedSatIndex].typeIdx) != nullptr;
+    // Never over the captions, an open window or text entry (and only when no pass hint wants the slot: pickCtx is
+    // asked after pick).
+    const bool ctxFree = captionsEnded && fpsWindowMask() == 0 && !textEditing();
+    auto ctxCond = [&](int n) -> bool
+    {
+        switch (n)
+        {
+        case 12: return !camLevelActive();
+        case 13: return satWithMesh && !followActive && !cineActive();
+        case 14: return h.sunS >= kHintSunS;
+        case 15: return aboveGeo && !inertialActive;
+        case 18: return !weatherUnavailable();
+        default: return true; // 16, 17, 19: a gap (pickCtx)
+        }
+    };
+    auto ctxHolds = [&](int n) -> bool
+    {
+        if (!ctxFree)
+            return false;
+        switch (n)
+        {
+        case 12: return !camLevelActive();
+        case 13: return satWithMesh && !followActive;
+        case 15: return aboveGeo;
+        default: return true;
+        }
+    };
+    auto ctxOk = [&](int n) -> bool
+    {
+        return !hintSaved_.met[n] && hintSaved_.offers[n] < kHintMaxOffers && h.clock >= h.restUntil[n] && ctxCond(n);
+    };
+    auto pickCtx = [&]() -> int
+    {
+        if (!ctxFree)
+            return 0;
+        for (int n : {12, 15, 14, 13})
+            if (ctxOk(n))
+                return n;
+        // A gap: the first of Sky events, Missions, Weather, the picture keys not done yet, the least offered first (so
+        // an ignored one waits until the others had their turn).
+        int best = 0;
+        if (gapOpen && !h.gapUsed)
+            for (int n = 16; n <= 19; ++n)
+                if (ctxOk(n) && (best == 0 || hintSaved_.offers[n] < hintSaved_.offers[best]))
+                    best = n;
+        return best;
     };
 
     // ── The slot ──
@@ -564,7 +788,7 @@ void SatelliteSim::hintsTick(const UIInput &inp, float dt)
                 if (h.gateS >= kHintLingerS)
                     leave("gate");
             }
-            else if (!holds(n))
+            else if (n >= kHintFirstCtx ? !ctxHolds(n) : !holds(n))
                 leave("condition");
             else if ((n == 9 || n == 10) && h.upS[n] >= kHintMenuShowS)
             {
@@ -575,6 +799,8 @@ void SatelliteSim::hintsTick(const UIInput &inp, float dt)
             {
                 leave("timeout");
                 h.restUntil[n] = h.clock + kHintFadeS + kHintRestS;
+                if (n == 14)
+                    h.sunS = 0.0f; // (its second offer needs the Sun stared at again)
             }
             else if (newClick && n != 6 && !neverTO(n) && clicks5 >= 2 && ok(6))
             {
@@ -582,7 +808,21 @@ void SatelliteSim::hintsTick(const UIInput &inp, float dt)
                 // gets its offer back).
                 leave("preempted");
                 h.offers[n] = std::max(0, h.offers[n] - 1);
+                if (n >= kHintFirstCtx)
+                {
+                    hintSaved_.offers[n] = std::max(0, hintSaved_.offers[n] - 1);
+                    hintSaveDirty_ = true;
+                }
                 h.preempt = 6;
+            }
+            else if (n >= kHintFirstCtx && pick() != 0)
+            {
+                // A pass hint wants the slot (the player Tabbed, selected...): the contextual one gives way and gets
+                // its offer back.
+                leave("yield");
+                h.offers[n] = std::max(0, h.offers[n] - 1);
+                hintSaved_.offers[n] = std::max(0, hintSaved_.offers[n] - 1);
+                hintSaveDirty_ = true;
             }
         }
         h.alpha = h.leaving ? std::max(0.0f, h.alpha - dt / kHintFadeS) : std::min(1.0f, h.alpha + dt / kHintFadeS);
@@ -603,10 +843,18 @@ void SatelliteSim::hintsTick(const UIInput &inp, float dt)
     if (!h.cur && !suppressed && !beforeBeat)
     {
         int n = 0;
+        const float freeS = h.clock - h.freeAt;
         if (h.preempt && ok(h.preempt))
             n = h.preempt;
-        else if (h.clock - h.freeAt >= kHintGapS)
-            n = pick();
+        else if (freeS >= kHintHandoffS)
+        {
+            // The pass first; a contextual hint only when no pass hint wants the slot. Boost (4) follows sooner.
+            int c = pick();
+            if (c == 0)
+                c = pickCtx();
+            if (c && (freeS >= kHintGapS || c == 4))
+                n = c;
+        }
         h.preempt = 0;
         if (n)
         {
@@ -617,6 +865,13 @@ void SatelliteSim::hintsTick(const UIInput &inp, float dt)
             h.gateS = -1.0f;
             h.forced = false;
             ++h.offers[n];
+            if (n >= kHintFirstCtx)
+            {
+                ++hintSaved_.offers[n]; // (kept: a returning player is not offered it again past kHintMaxOffers)
+                hintSaveDirty_ = true;
+                if (n >= 16)
+                    h.gapUsed = true;
+            }
             if (hintsPass_ == 2)
                 h.postFired[n] = true;
             if (!h.seen.empty())
@@ -624,6 +879,11 @@ void SatelliteSim::hintsTick(const UIInput &inp, float dt)
             h.seen += std::to_string(n);
             h.log.push_back({n, h.clock, -1.0f, -1.0f, ""});
         }
+    }
+    if (hintSaveDirty_)
+    {
+        hintSaveDirty_ = false;
+        saveSettings(); // (rare: a contextual gate met, an offer counted, a reset)
     }
 }
 
@@ -712,20 +972,60 @@ void SatelliteSim::buildHints(const UIInput &inp, UIRenderer &ui)
         clampXY(x, y);
     };
 
+    // What it points at (an outline round it, the popup above it): 9 / 10 a whole toolbar, 14-19 a button on one.
+    HBox tgt{};
+    bool haveTgt = false;
+    const char *tgtId = nullptr;
+    switch (h.cur)
+    {
+    case 9:
+        haveTgt = haveLeft;
+        tgt = left;
+        break;
+    case 10:
+        haveTgt = haveRight;
+        tgt = right;
+        break;
+    case 14: tgtId = "HudViewBtn"; break;
+    case 15: tgtId = "HudMoveBtn"; break;
+    case 16: tgtId = "TimeSkyBtn"; break;
+    case 17: tgtId = "TimeMissionsBtn"; break;
+    case 18: tgtId = "TimeWeatherBtn"; break;
+    case 19: // the screenshot and HQ photo buttons, side by side
+        if ((haveTgt = hDrawn(CLAY_ID("TimeScreenshotBtn"), tgt)))
+        {
+            HBox b{};
+            if (hDrawn(CLAY_ID("TimePhotoBtn"), b))
+            {
+                const float x1 = std::max(tgt.x + tgt.w, b.x + b.w), y1 = std::max(tgt.y + tgt.h, b.y + b.h);
+                tgt.x = std::min(tgt.x, b.x);
+                tgt.y = std::min(tgt.y, b.y);
+                tgt.w = x1 - tgt.x;
+                tgt.h = y1 - tgt.y;
+            }
+        }
+        break;
+    default: break;
+    }
+    if (tgtId)
+        haveTgt = hDrawn(Clay_GetElementId(hintStr(tgtId)), tgt);
+    const bool tgtPanel = h.cur == 9 || h.cur == 10;
+    const bool tgtRight = haveTgt && tgt.x + tgt.w * 0.5f > W * 0.5f;
+
     float x = 0.0f, y = 0.0f;
     bool attachCap = false, placed = false;
     int place = 0;
-    // 9 and 10: above the toolbar they describe, unless that would cover the caption or another HUD element.
-    if ((h.cur == 9 && haveLeft) || (h.cur == 10 && haveRight))
+    // Above what it points at (a toolbar: aligned to its outer edge; a button: centred on it, then clear of its
+    // toolbar), unless that would cover the caption or another HUD element.
+    if (haveTgt)
     {
-        const HBox &p = h.cur == 9 ? left : right;
-        x = h.cur == 9 ? p.x : p.x + p.w - w;
-        y = p.y - 4.0f - gap - hh; // (clear of its outline, 4 px out)
+        x = tgtPanel ? (tgtRight ? tgt.x + tgt.w - w : tgt.x) : tgt.x + tgt.w * 0.5f - w * 0.5f;
+        y = tgt.y - 4.0f - gap - hh; // (clear of its outline, 4 px out)
         avoid(x, y);
         if (!hitsAny({x, y, w, hh}, true))
         {
             placed = true;
-            place = h.cur == 9 ? 2 : 3;
+            place = tgtRight ? 3 : 2;
         }
     }
     if (!placed && capNow)
@@ -800,10 +1100,10 @@ void SatelliteSim::buildHints(const UIInput &inp, UIRenderer &ui)
     hintDrawnPrev_ = true;
     hintDrawnPrevN_ = h.cur;
 
-    // 9 and 10: an outline around the toolbar (also when the popup had to go elsewhere).
-    if ((h.cur == 9 && haveLeft) || (h.cur == 10 && haveRight))
+    // An outline around what it points at (also when the popup had to go elsewhere).
+    if (haveTgt)
     {
-        const HBox &p = h.cur == 9 ? left : right;
+        const HBox &p = tgt;
         const float m = 4.0f, pulse = 0.5f + 0.5f * sinf(h.clock * 4.5f);
         CLAY(CLAY_ID("HintOutline"),
              {.layout = {.sizing = {CLAY_SIZING_FIXED(p.w + 2.0f * m), CLAY_SIZING_FIXED(p.h + 2.0f * m)}},
@@ -827,7 +1127,8 @@ nlohmann::json SatelliteSim::hintsStateJson() const
     const HintGates &g = h.g;
     const bool pad = lastInputWasGamepad, menu = hintMenuMode();
     nlohmann::json j;
-    j["enabled"] = hintsPass_ > 0 && (!harness::active() || hintsHarnessOn_);
+    j["enabled"] = hintsEnabled && (!harness::active() || hintsHarnessOn_);
+    j["setting"] = hintsEnabled; // display.hints
     j["harness_on"] = hintsHarnessOn_;
     j["pass"] = hintsPass_ < 0 ? "undecided" : hintsPass_ == 0 ? "off" : hintsPass_ == 1 ? "running" : "complete";
     j["complete"] = hintsPass_ == 2;
@@ -857,7 +1158,27 @@ nlohmann::json SatelliteSim::hintsStateJson() const
                  {"clock_s", h.clock},
                  {"look_deg", h.lookDeg},
                  {"move_s", h.moveS},
-                 {"climb_m", h.climbM}};
+                 {"climb_m", h.climbM},
+                 // the contextual hints' signals
+                 {"level_active", camLevelActive()},
+                 {"eye_alt_km", camEyeAltM() / 1000.0},
+                 {"above_geo", camEyeAltM() > kHintGeoKm * 1000.0},
+                 {"sun_deg", h.sunDeg},
+                 {"sun_s", h.sunS},
+                 {"music_audible", h.audible},
+                 {"song_gap", h.songGap},
+                 {"gap_open", h.gapOpen},
+                 {"gap_used", h.gapUsed},
+                 {"silent_s", h.silentS},
+                 {"text_entry", textEditing()}};
+    nlohmann::json saved = {{"gates", hintsSavedGatesJson()}, {"offers", hintsSavedOffersJson()}};
+    {
+        int done = 0;
+        for (int n = kHintFirstCtx; n <= kHintCount; ++n)
+            done += (hintSaved_.met[n] || hintSaved_.offers[n] >= kHintMaxOffers) ? 1 : 0;
+        saved["all_done"] = done == kHintCtxN; // (a returning player with all done sees nothing)
+    }
+    j["saved"] = saved;
     if (h.cur)
     {
         nlohmann::json s = {{"n", h.cur},
@@ -908,7 +1229,8 @@ harness::Status SatelliteSim::harnessHints(harness::Active &a)
         lastInputWasGamepad = c.num("pad", 0.0) > 0.5; // the pad's labels and mode (the harness has no controller)
     if (sub == "on")
     {
-        // As a session starts: a first run's pass unless display.tutorial_done (then nothing, as a returning player).
+        // As a session starts: a first run's pass unless display.tutorial_done (then the contextual hints only, as a
+        // returning player: their saved gates and counts are kept).
         hintsHarnessOn_ = true;
         hintsReset();
         hintsPass_ = tutorialDone ? 0 : 1;
@@ -920,11 +1242,25 @@ harness::Status SatelliteSim::harnessHints(harness::Active &a)
         hint_.alpha = 0.0f;
     }
     else if (sub == "reset")
-        hintsReset(); // a new pass, as an opening's first frame starts one
+        hintsReset(true); // a new pass and the contextual hints untaught, as a Replay Intro's first frame
+    else if (sub == "gap")
+    {
+        // A song gap now (as the silence between two tracks: one contextual hint 16-19 may show), whatever the music.
+        hint_.fakeGapS = c.num("s", (double)kHintGapWindowS);
+        hint_.gapUsed = false;
+    }
     else if (sub == "set")
     {
         const std::string gname = c.pos.size() > 1 ? c.pos[1] : std::string();
         const bool v = c.pos.size() > 2 ? c.pos[2] != "0" : true;
+        for (int i = 0; i < kHintCtxN; ++i) // a contextual gate (kept in settings)
+            if (gname == kHintCtxNames[i])
+            {
+                hintSaved_.met[kHintFirstCtx + i] = v;
+                hintSaveDirty_ = true;
+                a.result["hints"] = hintsStateJson();
+                return harness::Status::Done;
+            }
         HintGates &g = hint_.g;
         bool *p = gname == "looked"                ? &g.looked
                   : gname == "moved"               ? &g.moved
@@ -943,7 +1279,8 @@ harness::Status SatelliteSim::harnessHints(harness::Active &a)
         if (!p)
         {
             a.error = "hints set <looked|moved|climbed|boosted|zoomed|clicked|left_by_tab|left_by_right_click|returned|"
-                      "drag_looked|selected|time_bar_shown|menu_bar_shown> [0|1]";
+                      "drag_looked|selected|time_bar_shown|menu_bar_shown|rolled|gone_to|coronagraph|star_lock|"
+                      "sky_events|missions|weather|screenshot> [0|1]";
             return harness::Status::Error;
         }
         *p = v;
@@ -953,7 +1290,7 @@ harness::Status SatelliteSim::harnessHints(harness::Active &a)
         const int n = c.pos.size() > 1 ? std::atoi(c.pos[1].c_str()) : 0;
         if (n < 0 || n > kHintCount)
         {
-            a.error = "hints force <1-10> (0 = let go)";
+            a.error = "hints force <1-19> (0 = let go)";
             return harness::Status::Error;
         }
         // Pinned at full alpha, no rules (layout checks); 0 lets the scheduler have the slot back.
@@ -967,7 +1304,7 @@ harness::Status SatelliteSim::harnessHints(harness::Active &a)
     }
     else if (sub != "state")
     {
-        a.error = "hints on | off | reset | state | set <gate> [0|1] | force <n> [pad=0|1]";
+        a.error = "hints on | off | reset | state | set <gate> [0|1] | force <n> | gap [s=] [pad=0|1]";
         return harness::Status::Error;
     }
     a.result["hints"] = hintsStateJson();

@@ -112,6 +112,13 @@ def views():
         ("event_lunar", ["events on", "events fire lunar_eclipse total=1", "wait 4"], ["events ack", "events off", "time pause"]),
         ("event_warn", ["events on", "events fire explode_warning", "wait 4"], ["events ack choice=2", "events off", "time pause"]),
     ]
+    # The second round (2026-11-17): 11 the right-drag (menu mode), the contextual hints 12-19; 14-19 outline a
+    # toolbar button (HintOutline: on screen, never under the popup), 14 also with the View popup open over it.
+    for n in (11, 12, 14, 15, 16, 17, 18, 19):
+        v.append((f"hint_{n}", ["hints on", f"hints force {n}", "wait 4", "hints state"], ["hints off"]))
+    v.append(("hint_13", [ISS, "wait 3", "hints on", "hints force 13", "wait 4", "hints state"], ["hints off", "select none"]))
+    v.append(("hint_14_pop", ["ui click HudViewBtn", "wait 3", "hints on", "hints force 14", "wait 4", "hints state"],
+              ["hints off", "ui click HudViewBtn", "wait 2"]))
     return v
 
 
@@ -223,6 +230,13 @@ def check_dump(path):
     for k in ks:
         if k in boxes and not rect_in(boxes[k], [0, 0, W, H]):
             out["fail"].append(f"HUD {k} {[round(x) for x in boxes[k]]} is off screen")
+    # A hint's outline (round the toolbar or button it points at): on screen, and the popup never covers it.
+    outl = [it["box"] for it in d["items"] if it.get("id") == "HintOutline" and it["kind"] == "rect"]
+    for b in outl[:1]:
+        if not rect_in(b, [0, 0, W, H], tol=5.0):  # (its 4-px margin may touch the window's edge)
+            out["fail"].append(f"HintOutline {[round(x) for x in b]} is off screen")
+        if "HintPopup" in boxes and overlap(b, boxes["HintPopup"]):
+            out["fail"].append("HintPopup overlaps its HintOutline")
     return out
 
 
