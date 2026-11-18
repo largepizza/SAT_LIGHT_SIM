@@ -722,9 +722,6 @@ void SatelliteSim::buildEventWindow(const UIInput &inp, UIRenderer &ui)
                                                       .wrapMode = CLAY_TEXT_WRAP_WORDS}));
             CLAY_TEXT(evStr(text), CLAY_TEXT_CONFIG({.textColor = Pal::textPrimary, .fontSize = fs(13),
                                                      .wrapMode = CLAY_TEXT_WRAP_WORDS}));
-            if (warn)
-                CLAY_TEXT(evStr(tx(Txt::EvNoteWarn)), CLAY_TEXT_CONFIG({.textColor = Pal::textDim, .fontSize = fs(11),
-                                                                        .wrapMode = CLAY_TEXT_WRAP_WORDS}));
         }
         int pick = 0;
         CLAY(CLAY_ID("EventBtns"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},

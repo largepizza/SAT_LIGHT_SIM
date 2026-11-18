@@ -2247,7 +2247,6 @@ UI_TEXT(EvTextNovaFade, "Two years on, the supernova is fainter than the star it
 UI_TEXT(EvBtnNovaFade, "Continue")
 UI_TEXT(EvTitleWarn, "WARNING")
 UI_TEXT(EvTextWarn, "Exploding satellites disrupts the space-time continuum. Are you sure?")
-UI_TEXT(EvNoteWarn, "The Sun's Fury is precomputed. A breakup before it means the whole cascade is computed live from then on.")
 UI_TEXT(EvBtnWarnYes, "1) Yes")
 UI_TEXT(EvBtnWarnNo, "2) No")
 UI_TEXT(EvBtnWarnSun, "3) PRAISE BE TO THE SUN")
