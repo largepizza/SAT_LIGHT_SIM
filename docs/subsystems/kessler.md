@@ -411,6 +411,17 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
     2038-06-01 652 -> 62 s; 2039-01-01 901 -> 93 s; 1 week/s from the CME: 95 days reached in 3 min (held all the way)
     -> sim time never held to day ~1100 (frame mean 35 -> 27 ms). The Sun's Fury bookmark (day 0.15) was already
     instant. Live sampling past the prebake: ~1.1 s a day.
+- **The explode warning (2026-11-17, `explodeWarnNeeded`, SatelliteSimEventWindows.cpp).** The info window's Explode
+  (`infoExplodeSelected`) first opens the event window as a warning ("WARNING / Exploding satellites disrupts the
+  space-time continuum. Are you sure?", 1) Yes, 2) No, 3) PRAISE BE TO THE SUN in the danger colour) when **the sim
+  clock is before the CME's arrival (`kesslerEpoch()`) and no player breakup before it is in `kUserEvents`**: such a
+  breakup moves the world's start to its own step (`kesslerRestart`'s startT), so no cache or prebake matches and the whole
+  cascade is computed live. A breakup after the CME only cuts the prebake from its step on: no warning. Yes = the
+  breakup (`infoExplodeNow`), after which the condition is false (no more warnings) until "Undo my breakups" empties
+  `kUserEvents`; No = nothing; 3 = the Sun's Fury's own Watch (`missionsGoToFury(1)`, its event window). The warning
+  gives the clock back as it found it. Off in a harness run until `events on`; `kessler breakup` and every other
+  breakup path never ask. The Sun's Fury's event windows (the Fury, the first collision, 10% / 50% of the satellites
+  destroyed) are sky-events.md "Event windows".
 - **Memory (2026-10-28, the memory audit; harness `kessler mem` = bytes by structure + working set / private bytes).**
   The 10-35 GB working sets of a long replay were the ROLLBACK JOURNAL: its cap (1M entries, ~200 B each) was checked only
   at the next checkpoint, and when the player's time jumped ahead of the frontier the last checkpoint stayed behind, so

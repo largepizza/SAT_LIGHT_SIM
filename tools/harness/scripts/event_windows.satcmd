@@ -1,0 +1,367 @@
+# The event windows and the explode warning (2026-11-17, SatelliteSimEventWindows.cpp; docs/subsystems/sky-events.md
+# "Event windows", kessler.md "The explode warning"). One launch, 20 sim steps / s:
+#   python tools/harness/run.py tools/harness/scripts/event_windows.satcmd --fixed-dt 0.05 --quiet
+# Read: res.py <run> --errors (the expects); res.py <run> -c events -g events_state.log -g events_state.id
+#       res.py <run> -c "events list" -g events; tools/harness/ui_lowres.py check <run> (the ev_* dumps)
+#   1  off in a harness run until `events on`; `events list` = the table with every moment
+#   2  the running clock crosses the comet's perihelion + 6 h FORWARD at 1 h/s: its window, the clock paused at the
+#      moment; `events ack` = 1x, running
+#   3  the same moment crossed BACKWARD (reverse, 1 h/s): the window again; ack = 1x forward
+#   4  the clock SET past it (running and paused): nothing
+#   5  a Watch (the 2037-01-31 total lunar eclipse): its window
+#   6  every window fired at 1024x768 and 1600x900: dumps (ui_lowres check) and captures (the contact sheet)
+#   7  the Sun's Fury crossed forward at 1 d/s (30 min after a `time set`: the first frame after a set counts); then
+#      1 w/s on: the first collision, then every window acknowledged as it comes (10%: read the log); the share
+#      destroyed sampled at later dates (`events state` -> destroyed_share)
+#   8  Explode before the Fury: the warning; No leaves the satellite; PRAISE BE TO THE SUN lands at the Fury (its
+#      window); Yes breaks it up; a second Explode after it: no warning
+# Waits are frames at 0.05 s each.
+time set 2037-01-10T00:00:00Z
+time pause
+observer lat=-31 lon=24 agl=2
+camera az=90 el=20 fov=70
+wait 5
+expect state.events.live false
+events on
+expect state.events.live true
+wait 10
+events list
+
+# -- 2 forward --
+time set 2037-02-17T22:00:00Z
+time scale 1h
+time play
+wait 30 maxs=0
+expect state.events.open true
+expect state.events.id comet_perihelion
+expect state.events.time_paused true
+events state
+capture ev_cross_fwd ui=on scale=0.5
+events ack
+expect state.events.open false
+expect state.events.time_scale 1x
+expect state.events.time_paused false
+
+# -- 3 backward --
+time pause
+time set 2037-02-17T23:40:00Z
+time scale 1h
+time reverse on
+time play
+wait 30 maxs=0
+expect state.events.open true
+expect state.events.id comet_perihelion
+events state
+events ack
+expect state.events.time_scale 1x
+expect state.events.time_paused false
+
+# -- 4 set past --
+time set 2037-02-17T22:00:00Z
+wait 2
+time set 2037-02-18T03:00:00Z
+wait 10
+expect state.events.open false
+time pause
+time set 2037-02-17T20:00:00Z
+time set 2037-02-18T03:00:00Z
+time play
+wait 10
+expect state.events.open false
+events state
+
+# -- 5 a Watch --
+time pause
+time set 2037-01-25T00:00:00Z
+skyevents events
+skyevents watch lunar
+expect state.events.open true
+expect state.events.id lunar_eclipse
+events state
+capture ev_watch_lunar ui=on scale=0.5
+events ack
+time pause
+
+# -- 6 every window at 1024x768 --
+window 1024x768
+wait 10
+events fire lunar_eclipse total=1
+wait 3
+ui dump 1024x768_ev_lunar_eclipse
+capture 1024x768_ev_lunar_eclipse ui=on
+events ack
+time pause
+events fire comet_inner_planets
+wait 3
+ui dump 1024x768_ev_comet_inner_planets
+capture 1024x768_ev_comet_inner_planets ui=on
+events ack
+time pause
+events fire comet_perihelion
+wait 3
+ui dump 1024x768_ev_comet_perihelion
+capture 1024x768_ev_comet_perihelion ui=on
+events ack
+time pause
+events fire comet_passes_earth
+wait 3
+ui dump 1024x768_ev_comet_passes_earth
+capture 1024x768_ev_comet_passes_earth ui=on
+events ack
+time pause
+events fire comet_meteor_storm
+wait 3
+ui dump 1024x768_ev_comet_meteor_storm
+capture 1024x768_ev_comet_meteor_storm ui=on
+events ack
+time pause
+events fire australasian_eclipse
+wait 3
+ui dump 1024x768_ev_australasian_eclipse
+capture 1024x768_ev_australasian_eclipse ui=on
+events ack
+time pause
+events fire suns_fury
+wait 3
+ui dump 1024x768_ev_suns_fury
+capture 1024x768_ev_suns_fury ui=on
+events ack
+time pause
+events fire first_collision
+wait 3
+ui dump 1024x768_ev_first_collision
+capture 1024x768_ev_first_collision ui=on
+events ack
+time pause
+events fire destroyed_10
+wait 3
+ui dump 1024x768_ev_destroyed_10
+capture 1024x768_ev_destroyed_10 ui=on
+events ack
+time pause
+events fire destroyed_50
+wait 3
+ui dump 1024x768_ev_destroyed_50
+capture 1024x768_ev_destroyed_50 ui=on
+events ack
+time pause
+events fire betelgeuse_explodes
+wait 3
+ui dump 1024x768_ev_betelgeuse_explodes
+capture 1024x768_ev_betelgeuse_explodes ui=on
+events ack
+time pause
+events fire betelgeuse_fades
+wait 3
+ui dump 1024x768_ev_betelgeuse_fades
+capture 1024x768_ev_betelgeuse_fades ui=on
+events ack
+time pause
+events fire explode_warning
+wait 3
+ui dump 1024x768_ev_explode_warning
+capture 1024x768_ev_explode_warning ui=on
+events ack choice=2
+time pause
+
+# -- 6 every window at 1600x900 --
+window 1600x900
+wait 10
+events fire lunar_eclipse total=1
+wait 3
+ui dump 1600x900_ev_lunar_eclipse
+capture 1600x900_ev_lunar_eclipse ui=on
+events ack
+time pause
+events fire comet_inner_planets
+wait 3
+ui dump 1600x900_ev_comet_inner_planets
+capture 1600x900_ev_comet_inner_planets ui=on
+events ack
+time pause
+events fire comet_perihelion
+wait 3
+ui dump 1600x900_ev_comet_perihelion
+capture 1600x900_ev_comet_perihelion ui=on
+events ack
+time pause
+events fire comet_passes_earth
+wait 3
+ui dump 1600x900_ev_comet_passes_earth
+capture 1600x900_ev_comet_passes_earth ui=on
+events ack
+time pause
+events fire comet_meteor_storm
+wait 3
+ui dump 1600x900_ev_comet_meteor_storm
+capture 1600x900_ev_comet_meteor_storm ui=on
+events ack
+time pause
+events fire australasian_eclipse
+wait 3
+ui dump 1600x900_ev_australasian_eclipse
+capture 1600x900_ev_australasian_eclipse ui=on
+events ack
+time pause
+events fire suns_fury
+wait 3
+ui dump 1600x900_ev_suns_fury
+capture 1600x900_ev_suns_fury ui=on
+events ack
+time pause
+events fire first_collision
+wait 3
+ui dump 1600x900_ev_first_collision
+capture 1600x900_ev_first_collision ui=on
+events ack
+time pause
+events fire destroyed_10
+wait 3
+ui dump 1600x900_ev_destroyed_10
+capture 1600x900_ev_destroyed_10 ui=on
+events ack
+time pause
+events fire destroyed_50
+wait 3
+ui dump 1600x900_ev_destroyed_50
+capture 1600x900_ev_destroyed_50 ui=on
+events ack
+time pause
+events fire betelgeuse_explodes
+wait 3
+ui dump 1600x900_ev_betelgeuse_explodes
+capture 1600x900_ev_betelgeuse_explodes ui=on
+events ack
+time pause
+events fire betelgeuse_fades
+wait 3
+ui dump 1600x900_ev_betelgeuse_fades
+capture 1600x900_ev_betelgeuse_fades ui=on
+events ack
+time pause
+events fire explode_warning
+wait 3
+ui dump 1600x900_ev_explode_warning
+capture 1600x900_ev_explode_warning ui=on
+events ack choice=2
+time pause
+
+# -- 7 the Sun's Fury and the cascade (the prebake) --
+kessler wait days=60
+time pause
+time set 2037-07-15T02:30:00Z
+time scale 1d
+time play
+wait 20 maxs=0
+expect state.events.open true
+expect state.events.id suns_fury
+events state
+events ack
+time scale 1w
+wait 3
+expect state.events.open true
+expect state.events.id first_collision
+events ack
+time scale 1w
+wait 40
+events ack soft=1
+time scale 1w
+wait 40
+events ack soft=1
+time scale 1w
+wait 40
+events ack soft=1
+time scale 1w
+wait 40
+events ack soft=1
+time scale 1w
+wait 40
+events ack soft=1
+time scale 1w
+wait 40
+events ack soft=1
+time scale 1w
+wait 40
+events ack soft=1
+time scale 1w
+wait 40
+events ack soft=1
+time scale 1w
+wait 40
+events ack soft=1
+time scale 1w
+wait 40
+events ack soft=1
+events state
+events list
+time pause
+# the share destroyed at later dates (the cascade replayed from the prebake; a paused clock walks it in ~7 frames)
+kessler wait days=1100
+time set 2037-12-01T00:00:00Z
+wait 20
+events state
+time set 2038-03-01T00:00:00Z
+wait 20
+events state
+time set 2038-07-01T00:00:00Z
+wait 20
+events state
+time set 2038-12-01T00:00:00Z
+wait 20
+events state
+time set 2039-06-01T00:00:00Z
+wait 20
+events state
+time set 2040-01-01T00:00:00Z
+wait 20
+events state
+time set 2040-07-01T00:00:00Z
+wait 20
+events state
+
+# -- 8 the explode warning --
+window 1600x900
+time set 2037-07-01T06:00:00Z
+wait 5
+select const "Starlink Gen1"
+ui open info
+wait 10
+expect state.events.warn_needed true
+ui click InfoBreakBtn:0
+wait 2
+expect state.events.open true
+expect state.events.id explode_warning
+capture ev_warn ui=on scale=0.5
+events ack choice=2
+wait 2
+expect state.events.open false
+expect state.events.warn_needed true
+kessler state
+ui click InfoBreakBtn:0
+wait 2
+expect state.events.id explode_warning
+events ack choice=3
+wait 5
+expect state.events.open true
+expect state.events.id suns_fury
+events state
+events ack
+time pause
+time set 2037-07-01T06:00:00Z
+wait 5
+select const "Starlink Gen1"
+wait 5
+ui click InfoBreakBtn:0
+wait 2
+expect state.events.id explode_warning
+events ack choice=1
+wait 10
+expect state.events.warn_needed false
+kessler state
+select const "Starlink Gen1" n=7
+wait 5
+ui click InfoBreakBtn:0
+wait 10
+expect state.events.open false
+kessler state
+events state

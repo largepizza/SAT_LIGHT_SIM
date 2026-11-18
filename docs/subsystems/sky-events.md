@@ -85,6 +85,68 @@ The crescent-Moon button `TimeSkyBtn` beside Weather on the right HUD panel (`pi
   up, FOV 90) and NEXT STORMS (the next five `cme` events, each one Watch). Harness `skyevents aurora [t=]`, `skyevents special
   <0-3> [watch=1]`; `skyevents state` -> `special`, `ongoing`, `space_weather`. Script `scripts/sky_space_weather.satcmd`.
 
+## Subsystem: Event windows (2026-11-17)
+
+`SatelliteSimEventWindows.cpp` (the table, the triggers, the window, the harness), `evw_` / `EvOcc` / `EvMoments` in
+SatelliteSim.h. The story's events as ONE modal window in the centre, Paradox-style: a banner, the date (UTC), a title, a
+short text, one button. The explode warning (kessler.md "The explode warning") is the same window with three buttons.
+- **The table** (`kEventWinDefs`, one row per event, in story order): id (the banner's file name and the harness id),
+  title / text (and an alternative pair: the lunar eclipse when total), the button's words (all in `ui_text_en.inc`
+  `Ev*`), the Sky events kind whose Watch lands on it, the trigger (a moment either way; a moment forward only; a share
+  of satellites destroyed), what it needs (the Sun's Fury on, the supernova on) and its accent (the frame and title).
+  **To add an event:** a row, its `EvRow`, its moments in `eventWinMomentsOf`, its text. The moments: lunar eclipses =
+  every umbral one (partial and total, `findEclipse`; recurring: each one fires) over [now - 2 y, now + 4 y] on a worker
+  (`evMomentsJob_`, re-run when the clock nears an end); the Australasian eclipse = `findEclipse(solar)` from
+  2037-07-10 (greatest eclipse, 2037-07-13); the Great Comet entering the inner planets = crossing Mars's orbit (1.5237
+  AU) inbound (bisection on `comet::stateAt`); surviving perihelion = perihelion + 6 h (out of the corona); passing Earth =
+  its least distance to `skyEarthHelioAt` (6-h scan + golden section); the meteor storm = `cometStorm().tPeak` (the
+  same closest approach within minutes: shown one after the other when the clock crosses both in one frame); the Sun's
+  Fury = `kesslerEpoch()` (the CME's arrival, when the satellites die; the flare is 17.5 h before); the first collision =
+  the earliest engine collision or bump in the event log (a sliced scan, re-run when the log is rebuilt); Betelgeuse
+  explodes = `kSupernovaT0` (the breakout), fades = `supernovaEndT()` (below the star it was, +0.5). `events list`
+  prints them all. In order (UTC): the comet crosses Mars's orbit 2036-12-27 20:17; the total lunar eclipse 2037-01-31 13:59; the comet survives perihelion 2037-02-17 22:49; it passes the Earth 2037-03-17 03:29:59 and its meteor storm peaks 03:30:00; the Australasian eclipse 2037-07-13 02:43; the Sun's Fury 2037-07-15 03:00; the first collision 2037-07-15 03:37 (the default history: a background engine collision 37 min after the arrival); the partial lunar eclipse 2037-07-27 04:09; 10% destroyed ~2037-09-13 (the window at 09-13 19:45 at 1 w/s, a walk's lag late; 15% on 09-24); 50% between 2037-09-24 and 12-01 (68% on 12-01, 70.6% on 2040-07-01: the default history's share levels off); Betelgeuse explodes 2037-12-25 03:00; it fades 2040-01-12 07:31; lunar eclipses go on (2039-06-06, ...; none umbral in 2038).
+- **Running vs set: one place.** `eventWinAdvance(tBefore, tAfter)` runs in recordCompute after the clock's advance and
+  the Kessler frontier hold: a moment is looked for only in what the clock RAN through this frame, (tBefore, tAfter]
+  going forward or [tAfter, tBefore) going back, at any rate. Anything between two frames that moved the clock (a Watch,
+  a bookmark, a snapshot, a Kessler rollback, harness `time set`, the time field) SET it: the jump is never looked at
+  (this frame starts somewhere else than the last one ended, `evw_.lastT`), and it drops the share baseline; the frame
+  after it counts from where it landed (a first cut skipped that frame too, and at 1 d/s missed the Sun's Fury 30 min
+  after a `time set`); the first one met in the direction of travel wins and **the clock goes
+  back to that moment** (at 1 w/s a frame is a third of a day: the eclipse would be over), with `cv2SimAdvanceAcc` taken
+  back by the same step (the clouds see a step, not a jump); every other event within 1 s of it is queued and opens when
+  the first is acknowledged. A Watch's own landing is no crossing (`eventWinTakenTo` / `eventWinOnSkyWatch` set
+  `lastT`), and the one it showed (`evw_.watched`) is not shown again when the clock then runs through its moment.
+- **Taken to it**: `skyEventWatch` -> `eventWinOnSkyWatch` (the rows of that kind whose moment lies in the watched
+  event's window +-2 days, the Great Comet's by its label; the latest one reached by the landing + 6 h, else the
+  earliest); every Sun's Fury Watch (the Sky events row, the Missions buttons, harness `missions go fury`, the warning's
+  third option) goes through `missionsGoToFury`, which calls `eventWinTakenTo("suns_fury")`. Start / End (`skyJumpTo`)
+  are sets: Start lands before the moment, so the running clock then opens it.
+- **The shares** (10%, 50%): a sliced walk of `kRosterWords` (200k satellites a frame, ~7 frames for the 1.4M roster)
+  counts the roster satellites there at the CME (`rosterLife` at second 0) dead by the walk's second; a share row opens
+  when it passes its share between two walks with the clock running forward all the while (a set or a step back makes
+  the next walk a new baseline). No snap: the window opens a few frames after the crossing.
+- **While open**: sim time is held paused (every frame, whatever a key did); the button runs the clock on at **1x
+  forward** (also after a backward crossing), so the thing can be watched. The window is in `fpsWindowMask` (it forces
+  menu mode). A cue plays as it opens: `assets/sound/ui/event.wav` on the UI effects bus (`playSfx`: master and effects
+  volumes), a 3.2-s synthesized placeholder (`tools/make_event_sound.py`: a struck A1 gong under a swelling fifth).
+- **Never** over the opening's captions (`showIntro`), a cinematic, a video export or an HQ photo (`eventWinLive`); a
+  crossing then is dropped, not kept for later. Settings > Sky > EVENTS "Event windows" (`sky_events.windows`, default
+  on). **A harness run keeps them off** (and the explode warning) until `events on` (scripts that warp across an event
+  keep running); `events list|state|on|off|fire <id>|ack` (docs/HARNESS.md), `state` -> `events`.
+- **The window** (`buildEventWindow`, built in buildUI before the hidden-HUD return, so it shows with the HUD hidden):
+  a full-screen scrim (black, alpha 120, z 40, takes the pointer: nothing behind is hovered or clicked) and the HUD's
+  black panel (`uiHudPanel`, `Pal::panelSolid`, a 2-px frame in the accent, z 41) centred, min(W - 32, clamp(46 x fs(13),
+  380, 860)) wide: the banner box (3:1, at most 32% of the screen's height), the date (fs 11), the title (fs 20, the
+  accent), the text (fs 13), the buttons (`EventWinBtn:0..2`).
+- **Banners**: `assets/events/<id>.png`, **960 x 320** (3:1); another size is scaled (bilinear, stretched) to it. One
+  RGBA8 sRGB image (the 8th UI image slot), re-read at every opening (art dropped in meanwhile shows); a missing file
+  draws the placeholder "Banner art: assets/events/<id>.png (960 x 320)". `assets/` ships whole (POST_BUILD copy,
+  `sat_sync_runtime_sources`, `PackageRelease.cmake`, which release.bat and release.yml both drive), so the folder
+  needs nothing of its own; `assets/events/README.txt` lists the ids.
+- Checked: `tools/harness/scripts/event_windows.satcmd` (forward / backward crossings, a set past, a Watch, every window at
+  two sizes, the Fury crossed and the cascade's windows, the explode warning); `ui_lowres.py` views `event_fury`,
+  `event_comet`, `event_lunar`, `event_warn` (`EventWin` counts as a window there: its text is layered over the HUD).
+
 ## Subsystem: Moon-base glints (2026-10-27)
 
 `LunarBases.h/.cpp` (app-independent: the bases, the Moon's IAU body frame as a pure function of t, the array's

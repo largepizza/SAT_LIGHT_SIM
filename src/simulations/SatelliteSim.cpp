@@ -1814,6 +1814,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             }
         }
     }
+    // The event windows (SatelliteSimEventWindows.cpp): this frame's clock against last frame's tells a RUNNING clock
+    // (crossings show their window, the clock back to the moment) from a SET one (nothing shows).
+    eventWinAdvance(tBeforeAdvance, (double)simDayJ2000 * 86400.0 + simSecInDay);
     kesslerRecordUploads(cmd);
     kesslerTrackerRecordUpload(cmd); // the Kessler tracker's globe (SatelliteSimKesslerTracker.cpp), when re-rastered
     spaceWeatherRecordUpload(cmd);   // the Sky events window's space-weather raster (SatelliteSimSpaceWeather.cpp)
@@ -8433,6 +8436,7 @@ void SatelliteSim::cleanup(VkDevice device)
     bookmarksDestroy(device); // the bookmark thumbnails' atlas (SatelliteSimBookmarks.cpp)
     kesslerTrackerDestroy(device); // the Kessler tracker's globe image
     spaceWeatherDestroy(device);
+    eventWinDestroy(device);       // the event windows' banner (SatelliteSimEventWindows.cpp)
     weatherRadarDestroy(device);   // the Weather window's radar (SatelliteSimWeatherWindow.cpp)
     if (wxFireJob.valid())          // (its worker reads biomeMap, which is destroyed before the future)
         wxFireJob.wait();

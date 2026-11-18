@@ -120,6 +120,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   "Watch the next re-entry". Launches stand down after the storm (or resume three weeks later).
 - **The default cascade ships prebaked** (three years after the storm), so jumping into it is quick instead of
   minutes of "Computing the debris cascade". A player's own breakups are computed live.
+- **A warning before the first Explode before the storm**: a breakup then means the whole cascade is computed live,
+  so the satellite window asks first (Yes, No, or PRAISE BE TO THE SUN, which takes you to the Sun's Fury).
 - **The Kessler tab** of the Missions window: live counts, a globe of the debris shells with the collision risk,
   collisions per day and the latest breakups, each with Watch.
 
@@ -337,6 +339,13 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **Sky events window** (the crescent button, or K): solar and lunar eclipses, planetary conjunctions, lunar
   occultations, Moon-base glints, meteor showers and comets for the next two years, each with one Watch that puts
   you where and when to see it.
+- **Event windows.** The story's events open a window in the centre with a banner, a short text and a button, and
+  pause time: every lunar eclipse, the Great Comet entering the inner planets, surviving perihelion, passing the
+  Earth and its meteor storm, the Great Australasian Eclipse, the Sun's Fury, the cascade's first collision, 10% and
+  half of the satellites destroyed, and Betelgeuse exploding and fading. They open when time runs into the event,
+  forward or backward at any speed, or when a Watch takes you there (jumping past one shows nothing); Continue runs
+  the clock on at 1x. A sound plays as one opens. Settings > Sky > Events turns them off. Banner art goes in
+  `assets/events/` (960 x 320 PNGs, one per event; a placeholder until then).
 - **Real stars.** The HYG catalogue to magnitude 8.5 (about 62,000 stars, 417 with names): faint stars appear only
   under dark skies, stars are selectable with name, type, distance and colour, and twinkle with the air's real
   scintillation.

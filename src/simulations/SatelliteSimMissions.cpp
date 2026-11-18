@@ -218,6 +218,7 @@ bool SatelliteSim::missionsGoToFury(int which, std::string &msg)
     cv2HistoryValid = false;
     msg = which == 0 ? tx(Txt::ValTheSunsFuryTheCmeArrives)
                      : tx(Txt::ValTheSunsFuryTheStormNight);
+    eventWinTakenTo("suns_fury", t); // every Fury Watch lands here: its event window (SatelliteSimEventWindows.cpp)
     return true;
 }
 
