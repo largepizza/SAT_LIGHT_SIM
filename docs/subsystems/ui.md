@@ -723,7 +723,8 @@ menu-mode click during and after the captions, by the pad's A at its virtual cur
 The hints are the only teaching path. The card tutorial (2026-10-03 to 2026-11-18, `SatelliteSimTutorial.cpp`)
 is deleted; its one card that was not about the controls, the light presets' "Graphics" card, lives on as a notice.
 When a **first run's opening ends** (`finishIntro`, cut short or not) on **Planetarium or Potato**, the
-`GraphicsAutoNotice` band (top centre, 16 px down, z 25, `Pal::toastInfo`) says what the preset leaves out and
+`GraphicsAutoNotice` band (top centre, 16 px down or 8 px below whatever already sits at the top across its width:
+`SelSatChip`, `FollowHud`, `FollowAgainBtn`, `CineHud`; z 25, `Pal::toastInfo`) says what the preset leaves out and
 where to change it, for `kLightPresetNoticeS` (20 s), once a session (`lightPresetNoticed_`):
 - after the benchmark decided (`introBenchDecision`, which also writes the band): `FmtGraphicsSetToALightPreset`
   ("Graphics set to %s for this computer, a light preset: there are no clouds, and the terrain, sky and sea are
@@ -735,5 +736,5 @@ A first run = not a Replay Intro and `display.tutorial_done` false (`firstRunDon
 tutorial's name so existing settings files keep working); the harness's `intro play first=1` (no benchmark) and
 `bench=1` count as one and re-arm the once-a-session flag. The band is capped at min(W - 32, fs(13) x 46) wide and
 wraps; it sits at the top, clear of the caption band and the hint popup (bottom). `intro state` -> `notice`
-{text, remaining_s, light_preset_noticed}. `ui_lowres.py` view `light_notice` (Planetarium, `intro play first=1
-at=52.7`, hint 7 forced): `GraphicsAutoNotice` is in `HUD_IDS`.
+{text, remaining_s, light_preset_noticed}. `ui_lowres.py` view `light_notice` (the ISS selected and out of view, Planetarium, `intro play first=1
+at=52.7`, hint 7 forced; `intro notice off` after): `GraphicsAutoNotice` is in `HUD_IDS`.

@@ -206,7 +206,7 @@ json patchFor(const std::string &dotted, const json &value)
 const char *kHelp =
     "wait <frames> [maxs=2] | wait seconds <s> | wait settle [frames] [maxs=2] | wait settle auto [max=160] [min=40] [thr=0.1] [hold=4] [noise=1.5] [maxs=2]; "
     "time [set <iso>|add <s>|sun <el deg|noon|midnight> [rising|setting]|pause|play|scale <label>|reverse on/off]; "
-    "observer lat= lon= [agl=|alt=]; beams [list] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [clamp=on] [drift=intro|default]; report list [dir] | report info <issue dir> | report load <issue dir> [shot=1] [settings=on|off] [clamp=on] [trail=on|off] | report shot [note] [new=1] [title=] [bar=1] | report mark [issue] shot= [pin=x,y|off] [rect=x,y,w,h|off] | report export [issue]; drift [default] [phase=] [rate=]; intro [state|play [at=<s>] [bench=1] [first=1]|skip]; camera [az= el= fov= roll=] | camera look|track <sun|moon|sel|planet name|off>; "
+    "observer lat= lon= [agl=|alt=]; beams [list] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [clamp=on] [drift=intro|default]; report list [dir] | report info <issue dir> | report load <issue dir> [shot=1] [settings=on|off] [clamp=on] [trail=on|off] | report shot [note] [new=1] [title=] [bar=1] | report mark [issue] shot= [pin=x,y|off] [rect=x,y,w,h|off] | report export [issue]; drift [default] [phase=] [rate=]; intro [state|play [at=<s>] [bench=1] [first=1]|skip|notice off]; camera [az= el= fov= roll=] | camera look|track <sun|moon|sel|planet name|off>; "
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select star <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "exposure [auto|hold|fast]; "
@@ -1514,6 +1514,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         }
         else if (sub == "skip" && showIntro)
             finishIntro(true);
+        else if (sub == "notice" && lower(pos(1)) == "off")
+            graphicsAutoNoticeTimer = 0.0f; // (2026-11-18) the graphics / light-preset notice gone now (layout checks)
         r["playing"] = showIntro;
         r["elapsed_s"] = introElapsed;
         r["notice"] = {{"text", graphicsAutoNoticeTimer > 0.0f ? graphicsAutoNoticeText : ""},

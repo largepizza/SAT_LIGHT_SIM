@@ -8243,13 +8243,29 @@ void SatelliteSim::buildGraphicsAutoNotice(float dt, const UIInput &inp, UIRende
 
     Clay_String msgStr{false, (int32_t)strlen(graphicsAutoNoticeText), graphicsAutoNoticeText};
     const float maxW = std::max(120.0f, std::min((float)inp.screenW - 32.0f, (float)fs(13) * 46.0f));
+    // Below whatever already sits at the top across its width (the selection's out-of-view chip, follow mode's bar,
+    // "Go to ... again", the cinematic bar: declared earlier this frame, last frame's boxes), 16 px down otherwise.
+    float w = maxW;
+    {
+        const Clay_ElementData me = Clay_GetElementData(CLAY_ID("GraphicsAutoNotice"));
+        if (me.found && me.boundingBox.width > 0.0f)
+            w = std::min(maxW, me.boundingBox.width);
+    }
+    const float x0 = ((float)inp.screenW - w) * 0.5f, x1 = x0 + w;
+    float top = 16.0f;
+    for (const Clay_ElementId id : {CLAY_ID("SelSatChip"), CLAY_ID("FollowHud"), CLAY_ID("FollowAgainBtn"), CLAY_ID("CineHud")})
+    {
+        Clay_BoundingBox bb{};
+        if (UIRenderer::declaredThisFrame(id, &bb) && bb.y < (float)inp.screenH * 0.3f && bb.x < x1 && bb.x + bb.width > x0)
+            top = std::max(top, bb.y + bb.height + 8.0f);
+    }
     CLAY(CLAY_ID("GraphicsAutoNotice"), {.layout = {
                                              .sizing = {CLAY_SIZING_FIT(0, maxW), CLAY_SIZING_FIT(0)},
                                              .padding = {16, 16, 10, 10},
                                              .childAlignment = {.x = CLAY_ALIGN_X_CENTER}},
                                          .backgroundColor = Pal::toastInfo,
                                          .cornerRadius = CLAY_CORNER_RADIUS(6),
-                                         .floating = {.offset = {0, 16}, .zIndex = 25, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_TOP, .parent = CLAY_ATTACH_POINT_CENTER_TOP}, .attachTo = CLAY_ATTACH_TO_ROOT}})
+                                         .floating = {.offset = {0, top}, .zIndex = 25, .attachPoints = {.element = CLAY_ATTACH_POINT_CENTER_TOP, .parent = CLAY_ATTACH_POINT_CENTER_TOP}, .attachTo = CLAY_ATTACH_TO_ROOT}})
     {
         CLAY_TEXT(msgStr, CLAY_TEXT_CONFIG({.textColor = Pal::textBright, .fontSize = fs(13)}));
     }

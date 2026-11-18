@@ -106,10 +106,11 @@ def views():
     # The second round (2026-11-17): 11 the right-drag (menu mode), the contextual hints 12-19; 14-19 outline a
     # toolbar button (HintOutline: on screen, never under the popup), 14 also with the View popup open over it.
     # The light-preset notice (2026-11-18, finishIntro): a first run's opening ending on Planetarium (`first=1`: no
-    # benchmark), its paragraph wrapped at the top, with the select hint (7) up at the bottom; then back to High.
-    v.append(("light_notice", ["preset Planetarium", "hints on", "intro play first=1 at=52.7", "wait 60", "intro state",
+    # benchmark), its paragraph wrapped at the top (below the out-of-view selection chip: ISS selected), with the select
+    # hint (7) up at the bottom; then the notice off, back to High.
+    v.append(("light_notice", [ISS, "preset Planetarium", "hints on", "intro play first=1 at=52.7", "wait 60", "intro state",
                                "hints force 7", "wait 4", "hints state"],
-              ["hints off", "fps off", "preset High", "wait 5"] + SCENE + ["wait settle 20"]))
+              ["hints off", "intro notice off", "select none", "fps off", "preset High", "wait 5"] + SCENE + ["wait settle 20"]))
     for n in (11, 12, 14, 15, 16, 17, 18, 19):
         v.append((f"hint_{n}", ["hints on", f"hints force {n}", "wait 4", "hints state"], ["hints off"]))
     v.append(("hint_13", [ISS, "wait 3", "hints on", "hints force 13", "wait 4", "hints state"], ["hints off", "select none"]))
