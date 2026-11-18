@@ -8985,7 +8985,12 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         const double kPlumeCoverMax = std::max(0.0, (double)launchPlumeCoverMax); // (launches.plume_cover_max; 0 = count)
         const bool countBudget = !(kPlumeCoverMax > 0.0);
         constexpr double kPlumeFixedCost = 0.002;
-        constexpr uint32_t kPlumeListSpare = 256u; // (tornadoes, haboobs, wildfire smoke, after the launches)
+        // The list's room left for the weather after the launches (tornadoes, haboobs, wildfire smoke and the flames' floor):
+        // at least 256, what the weather asked for last frame (weatherDustWant, 2026-11-17, issue_20261117_195951: with the
+        // coverage budget the plumes took ~730 entries and the smoke, listed after them, none), never so much that the
+        // plumes lose their old count of 384.
+        const uint32_t kPlumeListSpare = std::max<uint32_t>(
+            256u, std::min<uint32_t>(wildfireDustShare != 0 ? weatherDustWant : 0u, kMaxDustClouds > n + kPlumeCutHeadroom + 384u ? kMaxDustClouds - n - kPlumeCutHeadroom - 384u : 0u));
         const uint32_t listCap = kMaxDustClouds - kPlumeListSpare;
         const uint32_t roomMaxAll = listCap > n + kPlumeCutHeadroom ? listCap - n - kPlumeCutHeadroom : 0u;
         if (countBudget)

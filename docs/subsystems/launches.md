@@ -443,8 +443,10 @@ launches follow per-program cadences (no real manifest).
   the tiles its cone covers (~70 us per screen of coverage, RTX 3070 Ti 1600x900, measured by drawing 676 instead of 381
   at the 193912 view: +17 screens, +1.2 ms) plus a cone test per tile, so the room is how many of the best-ranked fit
   `launches.plume_cover_max` (key only, default 16) screens of coverage (each Gaussian's cone projected on the frame,
-  + 0.002), NEVER FEWER than the old 384, up to the list less 256 (tornadoes, haboobs, wildfire smoke fill it after the
-  launches) and the 40 ranks of cut headroom. Near a wide bell the top 384 are past the budget already (175808's view
+  + 0.002), NEVER FEWER than the old 384, up to the list less what the weather after the launches asked for last frame
+  (tornadoes, haboobs, the wildfire smoke's demand and the flame band's floor: `weatherDustWant`, at least 256, eased
+  down 3% a frame; 2026-11-17, issue_20261117_195951, see weather.md "The dust list's share-out") and the 40 ranks of cut
+  headroom. Near a wide bell the top 384 are past the budget already (175808's view
   50 screens, 210053's 121): the old draw, the old cost. Far plumes, a few pixels each, get the room: 193912's view
   (five launches, ~1200 candidates) 382 -> 413 Gaussians at 16 screens (569 at 24, 676 unbounded). The room is eased
   (3% a frame, snapped past 1.5x the budget), last frame's used. `launch state` -> `plume_cover`, `plume_room`,

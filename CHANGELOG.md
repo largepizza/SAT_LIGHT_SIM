@@ -636,6 +636,16 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- Wildfire smoke no longer vanishes and pops back between near-identical views when a rocket launch is in sight
+  (issue_20261117_195951). The launches' plumes and the weather share one list of smoke and exhaust puffs; since the
+  plumes' budget grew with screen coverage they could fill it before the smoke's turn, and the smoke then got no
+  room at all. The launches now leave what the weather asked for, and the smoke is no longer held to the list's
+  first half.
+- Wildfire smoke diffuses into a broad grey haze LAYER over the region (issue_20261117_195951): the fresh column
+  over the fire stays as billowing smoke, and within an hour or two its trail spreads into a haze that lies on the
+  curved Earth for hundreds of km downwind (it was a chain of oval puffs for half a day, then one big oval). The
+  haze thickens into a deep band toward the horizon, greys the sky, dims and reddens the Sun, its glare and the
+  sunset seen through it, and shades the ground below.
 - Wildfire flames close up no longer flicker into a new shape every frame at 1x (issue_20261115_133156). Each
   flame's height, sway and flicker pulsed at a rate that followed the fire's heat. That rate drifted very slightly
   with time, and multiplied by the sim clock it jumped the animation many cycles per frame. The rate now comes from

@@ -1,0 +1,208 @@
+#version 450
+#extension GL_EXT_control_flow_attributes : enable
+// The wildfire smoke LAYER (2026-11-17, issue_20261117_195951 "Smoke trails or bust": "a greyer effect with more broad
+// diffusion in a layer ... This layer needs to make sunsets redder, and be a visible haze on the horizon"). The smoke older
+// than the streaks (each fire's mass-conserving pall, SatelliteSimWildfire.cpp) is no longer one flat Gaussian in the dust
+// list: the CPU spreads every pall in reach into a map of the layer's column (optical depth at 550 nm), its mid height and
+// thickness (SmokeLayerBuf, in the eye's own tangent plane: gnomonic, ~25-60 km a texel), and this pass integrates each
+// ray through it in curved coordinates (height above the sphere, so a 1000-km haze lies on the Earth, not on a plane):
+//   - the haze along the ray: the vertical profile integrated EXACTLY over each step (erf between the step's end heights),
+//     so a grazing ray through a 2-km layer reads a deep horizon band with a handful of steps;
+//   - its light: the Sun through the air (as the noctilucent layer's) and through the smoke above the point (the layer's
+//     column above it along the Sun's slant), single-scattered by an aged-smoke phase + two octaves of multiple
+//     scattering, + a grey sky share; attenuated by the air between the eye and the point;
+//   - spectral extinction (Angstrom: smoke.glsl kSmokeSpec ^ s): the Sun, the sky and everything seen through it redden.
+// Runs after the cloud composite (and after the noctilucent layer) on the composite's targets, as nlc_shell.comp does:
+//   eye in or below the layer top: B' = B T + L (the smoke in front; an opaque cloud cuts the ray), A' = A T
+//   eye above it:                  B' = B + A L (the smoke under the clouds), A' = A T
+// and moves the sky pass's air split to the haze where no opaque cloud holds it (smokeAirSplitM), so the air beyond the
+// haze is dimmed by it. docs/subsystems/weather.md "The smoke layer".
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+#include "common.glsl"
+#include "atmosphere.glsl"
+#include "smoke.glsl"
+#include "cloud_occlusion.glsl"
+
+layout(push_constant) uniform PC {
+    mat4  skyView;     // ENU -> camera space (rotation)
+    float fovYRad;
+    float aspect;
+    float waveTime;
+    float obsEffH;
+    vec4  sunDirENU;
+    vec4  moonDirENU;
+    vec4  obsECEFDir;  // xyz the observer's ECEF unit vector, w its height above sea level (m, CPU)
+} pc;
+
+layout(std430, set = 0, binding = 0) readonly buffer SmokeLayerBuf {
+    uvec4 hdr;   // x W, y H, z 1 = on, w unused
+    vec4  geo;   // x the map's half-size (m, tangent-plane), y the layer's top (m above sea level), z the largest column, w unused
+    vec4  opt;   // x single-scattering albedo, y Angstrom scale (smokeSpecK), z the phase's asymmetry g, w the sky / multiple-scattering share
+    vec4  opt2;  // x brightness gain ("Smoke brightness"), yzw unused
+    uint  tex[]; // W x H, row-major from (-x, -y): bits 0-15 the column (half float, tau at 550 nm), 16-23 the mid height
+                 // (x 40 m above sea level), 24-31 the vertical sigma (x 20 m)
+};
+layout(set = 0, binding = 1, rgba16f) uniform image2D targetA;   // rgb the light in front (B_total), a the air split (km, signed)
+layout(set = 0, binding = 2, rgba16f) uniform image2D targetB;   // rgb the transmittance (A_total), a terrain Sun
+layout(set = 0, binding = 3) uniform sampler2D sceneDepthTex;     // the ground's distance (m)
+
+// The map at a point (eye-ENU, Earth-centred): x the column, y the mid height (m), z the vertical sigma (m)
+vec3 layerTexel(int x, int y)
+{
+    int W = int(hdr.x), H = int(hdr.y);
+    if (x < 0 || y < 0 || x >= W || y >= H)
+        return vec3(0.0, 2000.0, 800.0);
+    uint v = tex[y * W + x];
+    return vec3(unpackHalf2x16(v & 0xFFFFu).x, float((v >> 16u) & 255u) * 40.0, max(float(v >> 24u) * 20.0, 100.0));
+}
+vec3 layerAt(vec3 P)
+{
+    if (P.z <= 1.0)
+        return vec3(0.0, 2000.0, 800.0);
+    vec2 g = P.xy * (R_EARTH / P.z);                    // gnomonic, on the eye's tangent plane
+    vec2 u = (g / geo.x * 0.5 + 0.5) * vec2(hdr.xy) - 0.5;
+    ivec2 i = ivec2(floor(u));
+    vec2 f = u - vec2(i);
+    vec3 a = layerTexel(i.x, i.y), b = layerTexel(i.x + 1, i.y), c = layerTexel(i.x, i.y + 1), d = layerTexel(i.x + 1, i.y + 1);
+    vec4 w = vec4((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y);
+    float tau = dot(w, vec4(a.x, b.x, c.x, d.x));
+    vec4 wt = w * vec4(a.x, b.x, c.x, d.x) + w * 1e-6;  // (the heights blended by column: a texel without smoke has none)
+    float s = 1.0 / (wt.x + wt.y + wt.z + wt.w);
+    return vec3(tau, dot(wt, vec4(a.y, b.y, c.y, d.y)) * s, dot(wt, vec4(a.z, b.z, c.z, d.z)) * s);
+}
+// erf (the plumes' approximation, smoke.glsl smokeColumn)
+float lyErf(float z)
+{
+    float z2 = z * z;
+    return sign(z) * sqrt(max(1.0 - exp(-z2 * (1.2732395 + 0.147 * z2) / (1.0 + 0.147 * z2)), 0.0));
+}
+// Henyey-Greenstein, mean 1 over the sphere (the sky's units)
+float lyHG(float g, float c)
+{
+    return (1.0 - g * g) / pow(max(1.0 + g * g - 2.0 * g * c, 1e-4), 1.5);
+}
+// the share of a Gaussian layer (mid zc, sigma s) between heights h0 and h1, per metre of height
+float lyShare(float h0, float h1, float zc, float s)
+{
+    float k = 0.70710678 / s;
+    return 0.5 * (lyErf((h1 - zc) * k) - lyErf((h0 - zc) * k));
+}
+
+void main()
+{
+    ivec2 size  = imageSize(targetA);
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (coord.x >= size.x || coord.y >= size.y || hdr.z == 0u)
+        return;
+    float tanHalfFov = tan(pc.fovYRad * 0.5);
+    mat3  camToENU   = mat3(transpose(pc.skyView));
+    vec2  uv  = (vec2(coord) + 0.5) / vec2(size);
+    vec2  ndc = uv * 2.0 - 1.0;
+    vec3  dir = normalize(camToENU * vec3(ndc.x * tanHalfFov * pc.aspect, -ndc.y * tanHalfFov, -1.0));
+    vec3  sunDir = normalize(pc.sunDirENU.xyz);
+    vec3  obsPos = vec3(0.0, 0.0, R_EARTH + pc.obsECEFDir.w);
+
+    // The ray inside the layer's shell (the sea-level sphere to its top)
+    float rTop = R_EARTH + geo.y;
+    vec2  hT = raySphere(obsPos, dir, rTop);
+    if (hT.y <= 0.0)
+        return;
+    float t0 = max(hT.x, 0.0), t1 = hT.y;
+    vec2  hG = raySphere(obsPos, dir, R_EARTH);
+    if (hG.x > 0.0)
+        t1 = min(t1, hG.x);
+    t1 = min(t1, min(textureLod(sceneDepthTex, uv, 0.0).r, 1e12));
+    vec4 A = imageLoad(targetA, coord), B = imageLoad(targetB, coord);
+    bool above = obsPos.z > rTop;
+    bool emit  = cloudAlphaIsEmit(A.a);
+    // an opaque cloud on the ray hides the smoke behind it (the eye in the layer; from above the clouds lie over it)
+    if (!above && A.a >= 0.0 && !emit)
+        t1 = min(t1, A.a * 1000.0);
+    // (the map is a tangent plane: nothing past ~80 deg of arc)
+    if (t1 <= t0 + 1.0)
+        return;
+
+    vec3  spec = smokeSpecK(opt.y);
+    float g    = opt.z, g2 = g * g;
+    float cosT = dot(dir, sunDir);
+    float ph   = lyHG(g, cosT), ph2 = lyHG(0.5 * g, cosT), ph4 = lyHG(0.25 * g, cosT);
+    // the sky's light on the smoke (grey-blue, the smoke's own multiple scattering folded in): x the day; at the default
+    // share 0.35 it is 0.175 of the Sun's, as the streaks' sky light (SatelliteSimWildfire.cpp: 0.18 x the ambient)
+    const vec3 kSkyGrey = vec3(0.80, 0.88, 1.0);
+    // Steps: ~one per 25 km of the ray in the layer (the map's texels are 25-60 km), 2-16
+    float L  = t1 - t0;
+    int   nS = clamp(int(ceil(L / 25000.0)), 2, 16);
+    float dt = L / float(nS);
+    vec3  T   = vec3(1.0);
+    vec3  Lin = vec3(0.0);
+    float tW = 0.0, wS = 0.0;   // the haze's light-weighted distance (the air split)
+    float hPrev = length(obsPos + dir * t0) - R_EARTH;
+    for (int k = 0; k < nS; ++k) {
+        float ta = t0 + dt * float(k), tb = ta + dt, tm = ta + 0.5 * dt;
+        vec3  Pm = obsPos + dir * tm;
+        float hb = length(obsPos + dir * tb) - R_EARTH;
+        float hm = length(Pm) - R_EARTH;
+        vec3  lay = layerAt(Pm);
+        if (lay.x <= 1e-5) { hPrev = hb; continue; }
+        // the column's share along this step: exact for a height linear in t over the step
+        float dh = hb - hPrev;
+        float sh = abs(dh) > 1.0 ? lyShare(min(hPrev, hb), max(hPrev, hb), lay.y, lay.z) * dt / abs(dh)
+                                 : dt * 0.39894228 / lay.z * exp(-0.5 * (hm - lay.y) * (hm - lay.y) / (lay.z * lay.z));
+        hPrev = hb;
+        float dTau = lay.x * sh;
+        if (dTau <= 1e-6) continue;
+        vec3  dT = exp(-dTau * spec);
+        // The light at the step's middle. The Sun: lit (it clears the Earth), through the air (Rayleigh, Mie, ozone) and the
+        // smoke above the point along its slant (the column above, read where the Sun's ray crosses the layer's middle)
+        float r  = length(Pm), mu = dot(Pm, sunDir) / r;
+        float bS = sqrt(max(r * r - dot(Pm, sunDir) * dot(Pm, sunDir), 0.0));
+        float lit = mu >= 0.0 ? 1.0 : smoothstep(R_EARTH - 2000.0, R_EARTH + 6000.0, bS);
+        vec3  sunL = vec3(0.0);
+        if (lit > 0.0) {
+            vec3 tauA = BETA_R_BASE * (atmColumnInf(r, mu, H_R) * H_R) + BETA_M_BASE * 1.1 * (atmColumnInf(r, mu, H_M) * H_M)
+                      + atmOzoneTau(Pm, sunDir);
+            float muE = max(mu, 0.0);
+            float dS  = clamp((max(lay.y - hm, 0.0) + lay.z) / max(muE, 0.03), 0.0, 400000.0);
+            vec3  layS = layerAt(Pm + sunDir * dS);
+            float above1 = 0.5 * (1.0 - lyErf((hm - layS.y) * 0.70710678 / layS.z));   // the share of its column above
+            float tauS = layS.x * above1 / sqrt(muE * muE + 4.0 * layS.z / R_EARTH);     // (a slab's slant, capped at grazing)
+            vec3  tS = tauS * spec;
+            // single scattering + two octaves of multiple scattering (each half the energy, a quarter of the depth, half the
+            // phase's asymmetry): single scattering alone left a layer lit by a low Sun through its own top black from above
+            sunL = SUN_INTENSITY * lit * exp(-tauA) *
+                   (exp(-tS) * ph + 0.5 * exp(-0.25 * tS) * ph2 + 0.25 * exp(-0.0625 * tS) * ph4);
+        }
+        float day = smoothstep(-0.1, 0.25, mu);
+        // the air between the eye and the point
+        vec3 tauE = BETA_R_BASE * (atmColumn(obsPos, dir, tm, H_R) * H_R) + BETA_M_BASE * 1.1 * (atmColumn(obsPos, dir, tm, H_M) * H_M);
+        vec3 J = opt.x * opt2.x * (sunL + opt.w * day * kSkyGrey * 0.5 * SUN_INTENSITY);
+        vec3 dL = T * (vec3(1.0) - dT) * J * exp(-tauE);
+        Lin += dL;
+        float wl = dot(T * (vec3(1.0) - dT), vec3(0.2126, 0.7152, 0.0722));
+        tW += wl * tm;
+        wS += wl;
+        T  *= dT;
+    }
+    if (wS <= 1e-5)
+        return;
+    if (above) {
+        A.rgb = A.rgb + B.rgb * Lin;
+    } else {
+        A.rgb = A.rgb * T + Lin;
+    }
+    float aB = dot(B.rgb, vec3(0.2126, 0.7152, 0.0722));
+    float aS = 1.0 - dot(T, vec3(0.2126, 0.7152, 0.0722));
+    B.rgb *= T;
+    // The air split (sat_sky.frag adds the air to |a| in front, undimmed, and the air beyond x A): where no opaque cloud
+    // holds it, moved toward the haze by its share of the texel's opacity (cloud_occlusion.glsl smokeAirSplitM)
+    if (A.a < 0.0 && !emit && !above) {
+        float tS = tW / wS;
+        float tC = -A.a * 1000.0;
+        float oC = 1.0 - aB;
+        float tSplit = smokeAirSplitM(obsPos, dir, tS, tC, oC / max(oC + aS, 1e-4));
+        A.a = cloudAlphaFlag(-tSplit * 0.001, false);
+    }
+    imageStore(targetA, coord, A);
+    imageStore(targetB, coord, B);
+}

@@ -860,6 +860,52 @@ lists its sections and topics with line numbers. New notes go next to the sectio
     band std 8.7 -> 2.8 (no wildfire: 2.7), shot 2 band px > 15 below the median 298 -> 0. Composite 128 registers;
     GPU within contended noise of HEAD with the march unchanged (interleaved, RTX 3070 Ti shared with two other apps).
     Seen changing elsewhere: a pall seen from high above (issue 20261027_004019) +1.4 levels hazier (the slower brightness).
+  - **The dust list's share-out** (2026-11-17, issue_20261117_195951 "Smoke trails or bust": smoke "popping in and out"
+    between near-identical views from 2-4 km and 150-370 km near the start vantage, a Starship launch in sight). The
+    launches fill the list first (launchFillVisuals), then tornadoes, haboobs and the smoke, then the flames. The smoke's
+    room was the list's first 1024 - 512 entries with the flame band (an absolute index); since the plumes' coverage
+    budget (2026-11-16, launches.md) their room reaches ~730 entries, and the smoke's range was then EMPTY: the report's
+    shots 4 / 5 measured plume_room 724 / 629, `fires` -> smoke_range [0, 0], 14 / 54 segments in view lost; shot 7
+    79 Gaussians with 20 lost, shot 8 (10 s later, the plumes' eased room lower) 151 with none lost. Now: the smoke may
+    reach the list's end less a floor kept for the flames (`kWildfireFlameFloor` 256 with the band, 96 without; the
+    flames take what is left, up to 512), and the smoke reports its demand (`smokeDemandLast`: the segments in view with
+    the pieces they want, a quarter of those off screen, the palls in the list, the 80 at the flames; <= 576), which
+    with the tornadoes', haboobs' and the flames' floor is `weatherDustWant` (eased down 3% a frame): the launches leave
+    that much free next frame (at least 256, never below their 384). `clouds_v2.wildfire_dust_share` 0 (no UI) = the old
+    split (A/B). Harness `fires` -> `smoke_demand`, `weather_dust_want`, `smoke_segments_in_view_lost`.
+  - **The smoke layer** (2026-11-17, same issue: "a greyer effect with more broad diffusion in a layer (see launch site
+    noct cloud implementation). This layer needs to make sunsets redder, and be a visible haze on the horizon"). What
+    goes to it: (1) the pall (the smoke older than the streaks), no longer a Gaussian in the list: each fire's pall (its
+    mass, centre, axes, mid height `ground + zP`, thickness 0.35 H + 400 m) spread a further
+    `clouds_v2.wildfire_smoke_layer_spread_km` (60, no UI; the mass kept); (2) the TRAIL as it ages: a segment's mass
+    moves from its Gaussians to the layer over 0.5-1.5 h of age (`kSmokeLayerHandS` 1 h, smoothstep), spread by its age
+    (25 km x sqrt(h), at most the spread above). The fresh column stays particles; the 2-14 h chain of puffs downwind is
+    the haze now (and no longer takes the list: the report's views 105-399 -> 26-215 smoke Gaussians). Its optical depth is
+    x 3 the streaks' cross-section (`kSmokeLayerOpticalK`: secondary organic aerosol adds ~1.5-2x the primary mass within
+    hours, aged smoke's mass extinction ~4.5 against fresh ~3 m^2/g; at x 1 the report fire's haze peaked at a column of
+    ~0.15, invisible from the ground). All of it is summed into a 128 x 128 map of the
+    layer's column (tau at 550 nm), column-weighted mid height and thickness (the mixture's spread) in the EYE's tangent
+    plane (gnomonic: a point at ENU P maps to R P.xy / P.z; half-size = the farthest pall + 3.5 sigma, 300-4000 km),
+    rebuilt each frame (SatelliteSimSmokeLayer.cpp smokeLayerBuild; a mirrored storage buffer). `shaders/smoke_layer.comp`
+    runs after the noctilucent pass on the cloud composite's targets: the ray inside the shell from sea level to the
+    layer's top (the highest texel's mid + 3 sigma), cut by the scene depth and, the eye in the layer, by an opaque
+    cloud; one step per ~25 km (2-16), the vertical Gaussian integrated EXACTLY over each step (erf between its end
+    heights: a grazing ray through a 2-km layer gets its deep horizon band with a handful of steps); spectral
+    extinction at the PHYSICAL Angstrom exponent (smokeSpecK of "Smoke spectral" / 0.6: ~1.6 at the default, where the
+    streaks keep 0.6 x it so the clouds behind them do not turn tan): the Sun, its glare (sat_sky.frag reads the
+    composite's spectral transmittance at the Sun's place, hueC) and the sunset through the haze redden; light = albedo
+    0.9 x (the Sun through the air, as the noctilucent layer's, and through the layer's column above the point along
+    its slant, read where the Sun's ray reaches the layer's middle, x HG g 0.6, + two octaves of multiple scattering:
+    half the energy, a quarter of the depth, half the asymmetry each; single scattering alone left a layer lit through
+    its own top by a low Sun black from above) + a grey sky share 0.35 x 0.5 (the streaks' 0.18) x "Smoke brightness", x the
+    air's transmittance from the eye. Composite as nlc_shell.comp: the eye below the layer's top B' = B T + L, above
+    it B' = B + A L; A' = A T. Where no opaque cloud holds the air split (A.a < 0, no emissive flag) it is moved to
+    the haze's light-weighted distance by smokeAirSplitM (the cloud's share of the texel's opacity): the air beyond
+    the haze is dimmed by it. The palls also go to the dust buffer's tail (after the side slots, `kSmokeShadowSlots`
+    32: slot 0's c.x the count) as Gaussians NOT in the drawn list, which sat_sky.frag smokeSunTransmit adds to the
+    ground's Sun (shade + reddening, as before). `clouds_v2.wildfire_smoke_layer` (1, no UI) x its optical depth, 0 =
+    the palls as Gaussians (A/B). Harness `fires` -> `smoke_layer` (palls, max_tau, top_m, half_km, build_ms);
+    `shaders reload smoke_layer=<spv>`. Off on Potato.
   - **The flame band** (2026-10-27, issue 20261027_212337 "Flame particles": "the sprites seem to disappear when up close
     and are just dots"; `clouds_v2.wildfire_flame_band` 1, no UI, 0 = the old tongues below). Two causes: the close-up
     flames, their share of the points and the glow were gated on the range to the IGNITION point (a fire burning for

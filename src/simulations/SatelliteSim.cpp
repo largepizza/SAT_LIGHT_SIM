@@ -591,6 +591,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     createCloudCombineTargets(ctx);        // ... and its half images, cloud_march 5/6/24/25
     createPlumeBricks(ctx);                // plume bricks (2026-11-15): cloud_march 27/28, the shape bake + scene depth
     createNlc(ctx);                        // noctilucent clouds (2026-11-16): the cloud targets + scene depth
+    createSmokeLayer(ctx);                 // the wildfire smoke layer (2026-11-17): the same targets
     computeCloudExtentBuilt = computeCloudExtent(ctx);
     createRainParticles(ctx);              // rain at the eye (SatelliteSimRain.cpp): needs the cloud UBOs, flash buffer, depth
     createLightningResources(ctx);         // lightning channels and glow (SatelliteSimLightning.cpp): the cloud targets
@@ -924,6 +925,7 @@ void SatelliteSim::recreateComputeScaledTargets(VulkanContext &ctx)
         createPlumeBrickTargets(ctx);
     }
     writeNlcDescriptors(ctx);   // (2026-11-16) the noctilucent pass writes the cloud targets just recreated
+    writeSmokeLayerDescriptors(ctx);   // (2026-11-17) and the wildfire smoke layer's
 }
 
 void SatelliteSim::onResize(VulkanContext &ctx)
@@ -3672,6 +3674,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         vkCmdDispatch(cmd, (halfW + 15) / 16, (halfH + 15) / 16, 1);
         recordCloudCombine(cmd, ctx, cpc);   // S9 full-res clouds: the final targets at full res (else nothing)
         recordNlc(cmd, cpc);   // (2026-11-16) the noctilucent cloud layer onto those targets (nlc_shell.comp)
+        recordSmokeLayer(cmd, cpc);   // (2026-11-17) the wildfire smoke layer onto them (smoke_layer.comp)
         if (cv2PassStampNext < kCv2PassStamps)
             cv2PassStampTo(cmd, kCv2PassStamps - 1);   // cloud_march.comp (the half-res composite) + the combine
 
@@ -8390,6 +8393,7 @@ void SatelliteSim::cleanup(VkDevice device)
     launchDestroy(device);
     destroyPlumeBricks(device);
     destroyNlc(device);
+    destroySmokeLayer(device);
     if (kDustBuf != VK_NULL_HANDLE)
     {
         vkDestroyBuffer(device, kDustBuf, nullptr);
@@ -11555,7 +11559,8 @@ void SatelliteSim::createCloudMarchDescriptors(VulkanContext &ctx)
     vkCreateDescriptorPool(ctx.device, &pi, nullptr, &cloudMarchDescPool);
     if (kDustBuf == VK_NULL_HANDLE)
     {
-        kDustMapped = createMirrored(ctx, 16 + sizeof(GpuDustCloud) * (kMaxDustClouds + kMaxEngineLights + kDustSideSlots),
+        // (+ kSmokeShadowSlots: the smoke layer's palls as Gaussians for sat_sky.frag smokeSunTransmit, not drawn)
+        kDustMapped = createMirrored(ctx, 16 + sizeof(GpuDustCloud) * (kMaxDustClouds + kMaxEngineLights + kDustSideSlots + kSmokeShadowSlots),
                                      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, kDustBuf, kDustMem, true, "dustList");
     }
 

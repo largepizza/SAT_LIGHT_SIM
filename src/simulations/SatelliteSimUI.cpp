@@ -10075,6 +10075,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         wildfireSmokeCurtain = c.value("wildfire_smoke_curtain", wildfireSmokeCurtain);
         wildfireFlameBand = c.value("wildfire_flame_band", wildfireFlameBand);
         wildfireSmokeSpectral = settingClamp(c.value("wildfire_smoke_spectral", wildfireSmokeSpectral), 0.0f, 2.0f);
+        wildfireDustShare = c.value("wildfire_dust_share", wildfireDustShare);
+        wildfireSmokeLayer = settingClamp(c.value("wildfire_smoke_layer", wildfireSmokeLayer), 0.0f, 5.0f);
+        wildfireSmokeLayerSpreadKm = settingClamp(c.value("wildfire_smoke_layer_spread_km", wildfireSmokeLayerSpreadKm), 0.0f, 1000.0f);
         haboobGain = settingClamp(c.value("haboobs", haboobGain), 0.0f, 5.0f);
         haboobField = c.value("haboob_field", haboobField);
         stormComplexes = settingClamp(c.value("storm_complexes", stormComplexes), 0.0f, 10.0f);
@@ -10898,6 +10901,9 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"wildfire_smoke_curtain", wildfireSmokeCurtain},
         {"wildfire_flame_band", wildfireFlameBand},
         {"wildfire_smoke_spectral", wildfireSmokeSpectral},
+        {"wildfire_dust_share", wildfireDustShare},
+        {"wildfire_smoke_layer", wildfireSmokeLayer},
+        {"wildfire_smoke_layer_spread_km", wildfireSmokeLayerSpreadKm},
         {"haboobs", haboobGain},
         {"haboob_field", haboobField},
         {"storm_complexes", stormComplexes},
