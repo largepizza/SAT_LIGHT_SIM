@@ -1,6 +1,6 @@
 // UIPalette.h — the HUD's colours and panel shape, shared by every SatelliteSim UI file and the boot
-// screen (App.cpp). Moved out of SatelliteSimUI.cpp 2026-10-03 so the tutorial could match the rest of
-// the sim instead of keeping its own palette.
+// screen (App.cpp). Moved out of SatelliteSimUI.cpp 2026-10-03 so the (since deleted) card tutorial could
+// match the rest of the sim; the `tut*` colours are the hints' keycaps and outlines now.
 //
 // UI THEMES (2026-10-14): every colour is one row of UI_PALETTE below, with a column per theme —
 // Classic (enum Default: near-black, red accent — the look before themes), Navy (blue-black, azure
@@ -90,7 +90,7 @@ inline constexpr const char *kUiThemeKeys[] = {"classic", "navy", "night", "midn
     X(plotBg, UIC(12, 14, 18, 255), UIC(3, 5, 12, 255), UIC(3, 0, 0, 255), UIC(2, 2, 3, 255))                                    \
     X(popupBg, UIC(10, 10, 12, 230), UIC(4, 6, 14, 230), UIC(3, 0, 0, 230), UIC(1, 1, 2, 235))        /* HUD strips */            \
     X(popupBorder, UIC(60, 60, 66, 255), UIC(24, 34, 64, 255), UIC(30, 0, 0, 255), UIC(34, 34, 38, 255))                            \
-    /* The tutorial's keycaps and outlines: the input a step wants pulses dim -> lit, held is solid */          X(tutHot, UIC(215, 45, 45, 255), UIC(60, 130, 235, 255), UIC(210, 0, 0, 255), UIC(215, 45, 45, 255))                                X(tutHeld, UIC(190, 32, 32, 250), UIC(20, 70, 170, 250), UIC(60, 0, 0, 250), UIC(190, 32, 32, 250))                               X(tutTargetDim, UIC(70, 22, 22, 235), UIC(8, 18, 44, 235), UIC(20, 0, 0, 235), UIC(70, 22, 22, 235))                                X(tutTargetLit, UIC(120, 22, 22, 235), UIC(16, 40, 100, 235), UIC(45, 0, 0, 235), UIC(120, 22, 22, 235))                             /* Toasts */                                                                                               \
+    /* The keycaps and outlines (uiKeycap, the hints): the input wanted pulses dim -> lit, held is solid */          X(tutHot, UIC(215, 45, 45, 255), UIC(60, 130, 235, 255), UIC(210, 0, 0, 255), UIC(215, 45, 45, 255))                                X(tutHeld, UIC(190, 32, 32, 250), UIC(20, 70, 170, 250), UIC(60, 0, 0, 250), UIC(190, 32, 32, 250))                               X(tutTargetDim, UIC(70, 22, 22, 235), UIC(8, 18, 44, 235), UIC(20, 0, 0, 235), UIC(70, 22, 22, 235))                                X(tutTargetLit, UIC(120, 22, 22, 235), UIC(16, 40, 100, 235), UIC(45, 0, 0, 235), UIC(120, 22, 22, 235))                             /* Toasts */                                                                                               \
     X(toastInfo, UIC(20, 40, 70, 235), UIC(8, 20, 52, 235), UIC(24, 0, 0, 235), UIC(20, 40, 70, 235))                               \
     X(toastOk, UIC(20, 60, 30, 235), UIC(20, 62, 40, 235), UIC(24, 0, 0, 235), UIC(20, 60, 30, 235))                                 \
     X(toastWarn, UIC(70, 45, 12, 235), UIC(72, 48, 14, 235), UIC(40, 0, 0, 235), UIC(70, 45, 12, 235))                               \

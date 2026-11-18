@@ -68,7 +68,6 @@ uint32_t SatelliteSim::fpsWindowMask() const
     const bool open[] = {settingsChrome.open, viewControlsChrome.open, infoChrome.open, viewerChrome.open,
                          traceChrome.open,    msChrome.open,           skChrome.open,   wxChrome.open,
                          cineChrome.open,     bmChrome.open,           rpChrome.open,   reportBarOpen_,
-                         tutActive,           // (the first-run tutorial's card has buttons: it needs the pointer like a window)
                          evw_.open};          // an event window / the explode warning (SatelliteSimEventWindows.cpp)
     uint32_t m = 0;
     for (size_t i = 0; i < sizeof(open) / sizeof(open[0]); ++i)
@@ -155,8 +154,8 @@ void SatelliteSim::fpsTick(const UIInput &inp, float dt)
     if (kb && !fpsKbCapturedPrev_ && fpsMode)
         fpsSet(false, FpsWhy::Window);
     fpsKbCapturedPrev_ = kb;
-    // A window, the note bar or the tutorial card appearing (whoever opened it: a hotkey, a report shot, the first-run
-    // tutorial) wants the pointer: menu mode. Only the appearance counts: Tab back into FPS mode with it open works.
+    // A window, the note bar or an event window appearing (whoever opened it: a hotkey, a report shot, the story's
+    // clock) wants the pointer: menu mode. Only the appearance counts: Tab back into FPS mode with it open works.
     const uint32_t mask = fpsWindowMask();
     if (fpsMode && (mask & ~fpsMaskPrev_) != 0)
         fpsSet(false, FpsWhy::Window);
@@ -387,11 +386,22 @@ harness::Status SatelliteSim::harnessMouse(harness::Active &a)
             a.error = "mouse click left|right";
             return harness::Status::Error;
         }
+        // x= y= (2026-11-18): the scripted pointer at that frame pixel (top-left origin) for the click, as a player's
+        // cursor in menu mode (without it a harness run's menu-mode pointer is off the window: the click picks nothing).
+        const bool at = c.has("x") || c.has("y");
         if (a.frame == 0)
         {
             a.scratch["fps_before"] = fpsMode;
             a.scratch["clicks0"] = fpsFacts_.clicks;
+            a.scratch["sel0"] = selectedSatIndex;
             fpsLastPopupPress_.clear();
+            if (at)
+            {
+                harnessPtrX_ = (float)c.num("x", 0.0);
+                harnessPtrY_ = (float)c.num("y", 0.0);
+                harnessPtrActive_ = true;
+                harnessPtrDown_ = false;
+            }
             harnessMouseBtn_ = b == "left" ? 1 : 2; // down on the next frame App reads the buttons
             return harness::Status::Pending;
         }
@@ -400,6 +410,13 @@ harness::Status SatelliteSim::harnessMouse(harness::Active &a)
             harnessMouseBtn_ = 0; // (App read it down for this frame; up on the next)
             return harness::Status::Pending;
         }
+        if (at)
+        {
+            harnessPtrActive_ = false;
+            r["x"] = harnessPtrX_;
+            r["y"] = harnessPtrY_;
+        }
+        r["selected_before"] = a.scratch["sel0"];
         r["button"] = b;
         r["fps_before"] = a.scratch["fps_before"];
         r["fps_after"] = fpsMode;

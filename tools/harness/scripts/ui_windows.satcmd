@@ -4,7 +4,6 @@
 #   i*  the info window (ISS), every section open;  t*  the trace window
 #   h*  HUD text entry: time, latitude, longitude ("lat, lon" in one field), altitude (MSL), bad input ignored
 #   b*  bookmarks: two added with thumbnails, the window, Go back to the first, rename, delete
-#   u*  the tutorial's Pictures (left panel) and Menus (right panel) steps
 preset High
 observer lat=34.05 lon=-118.25 agl=10
 time set 2036-11-22T02:30:00Z
@@ -190,13 +189,3 @@ wait 3
 bookmark list
 ui dump b2_after_delete
 capture b2_after_delete ui=on scale=0.5
-# ── tutorial: the picture buttons (left) and the menus (right, 2026-10-03) ──
-ui close all
-tutorial start capture
-wait 3
-capture u7_tutorial_pictures ui=on scale=0.5
-tutorial step settings
-wait 3
-ui dump u8_tutorial_menus
-capture u8_tutorial_menus ui=on scale=0.5
-tutorial skip

@@ -492,8 +492,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   coronagraph after you stare at the Sun, locking the view to the stars past GEO, and, in the quiet between two
   music tracks, the Sky events, Missions and Weather windows and the screenshot / HQ photo keys. Each is offered at
   most twice and never again once used. Settings > Display "Show hints" turns them off; Replay Intro runs them all
-  again. The first-run tutorial card no longer starts on its own (Settings > Display > Replay Tutorial).
-- **First-run tutorial** (keyboard, mouse or gamepad), **loading screen** with progress, and a **startup graphics
+  again. The hints are the only teaching: the old card tutorial (and Settings > Display > Replay Tutorial) is gone.
+  A first run that ends its opening on Planetarium or Potato is told what that preset leaves out (no clouds, a
+  simpler terrain, sky and sea) and that Settings > Display > Preset has Low, which brings them back.
+- A **loading screen** with progress, and a **startup graphics
   chooser** (Full graphics, Planetarium or Potato) before anything heavy loads, stepping down a tier on its own if
   the first frames are very slow.
 - **Type instead of drag** for slider values, the clock, latitude, longitude and altitude; **gamepad layout 2**;

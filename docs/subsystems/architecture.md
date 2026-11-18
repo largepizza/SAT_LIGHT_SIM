@@ -299,8 +299,8 @@ pre-select; returns whether to show it) and `setBootChoice(option, askAgain)`.
   `--boot-chooser N`), which scripts it in four frames; `--boot-capture` captures them. `state` -> `render.boot_choice
   / full_sky_deferred / full_sky_pipeline / ask_graphics_mode`; `tools/harness/scripts/boot_chooser.satcmd`.
   `SATLIGHTSIM_BOOT_CHOOSER=0` hides it, `=1` shows it whatever the setting.
-- The tutorial's Graphics card (`TUT_GRAPHICS`) still appears on Planetarium / Potato: it explains there are no
-  clouds and where the preset is.
+- A first run's opening that ends on Planetarium / Potato (a chooser pick included) shows the light-preset notice
+  (ui.md "The light-preset notice"): there are no clouds, and where the preset is.
 
 ---
 

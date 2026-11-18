@@ -15,7 +15,7 @@ lists its sections and topics with line numbers. New notes go next to the sectio
 | `clouds.md` | The cloud field, shapes, layers, rain particles, march, resolve, lighting, perf passes, reviews. Storms / weather objects are in weather.md. |
 | `weather.md` | Storm objects (towers, shields, squall lines, MCSs, cyclones, tornadoes, surge), biome map + wildfires, haboobs, the Weather window, lightning + thunder, weather-cube evolution. |
 | `sky-events.md` | The Sky events window and its event kinds, the lunar bases' glints, meteor showers, comets and their tails, the inertial camera lock. |
-| `ui.md` | HUD popups, UIRenderer / Clay rules and kit, icon + font atlases, controls and keybindings, the settings window's layout and search, the intro cinematic, the first-run tutorial. |
+| `ui.md` | HUD popups, UIRenderer / Clay rules and kit, icon + font atlases, controls and keybindings, the settings window's layout and search, the intro cinematic, the first-run hints, the light-preset notice. |
 | `harness-internals.md` | How the harness is wired into the app (the user manual is docs/HARNESS.md). |
 | `capture.md` | Everything that records, exports or saves a view. |
 | `sound.md` | The ambience layer table, drivers, synth voices, tonality, music player, offline audio. |
@@ -96,7 +96,7 @@ samples, the tonality that follows the soundtrack (`MusicAnalysis`), the harness
 mode and the mix rule).
 
 **State, profiling, cinematics, terrain** — *Persistent Settings* · *Fixed Simulation State* · *Video export* · *GPU
-Performance Profiling* · *Intro Cinematic (UC3)* · *First-run tutorial* · *Bookmarks* · *Controls / Keybinding Pipeline* · *Active
+Performance Profiling* · *Intro Cinematic (UC3)* · *Hints* · *The light-preset notice* · *Bookmarks* · *Controls / Keybinding Pipeline* · *Active
 Development: Earth / Terrain Rendering* (read **Elevation texture encoding** before touching terrain
 code).
 

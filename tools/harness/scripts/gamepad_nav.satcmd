@@ -1,5 +1,4 @@
-# Gamepad navigation (pad layout 2) and the tutorial card in both input modes, without a controller:
-# `pad <button>` runs pollGamepad's handling. n1: focus ring + hint on Trace pass; n2: A opened the trace
+# Gamepad navigation (pad layout 2), without a controller: `pad <button>` runs pollGamepad's handling. n1: focus ring + hint on Trace pass; n2: A opened the trace
 # window; B closes it, then (after A on Info) closes the info window and deselects; n5: up/X/Y = faster/
 # pause/reverse.
 preset High
@@ -8,30 +7,9 @@ time sun -6 setting
 time pause
 wait settle
 camera az=-106 el=20 fov=70
-tutorial start
-wait 5
-ui dump c1_look
-capture c1_look ui=on scale=0.5
-tutorial step move
-wait 3
-capture c2_move ui=on scale=0.5
-tutorial step altitude pad=1
-wait 3
-ui dump c3_pad
-capture c3_pad ui=on scale=0.5
-tutorial step select pad=1
-wait 3
-capture c5_pad ui=on scale=0.5
-pad start
-wait 2
-tutorial state
 select const "Starlink Gen1"
 camera look sel
 wait 3
-tutorial step actions pad=1
-wait 3
-capture c6_pad ui=on scale=0.5
-tutorial skip
 pad right
 wait 2
 pad right
