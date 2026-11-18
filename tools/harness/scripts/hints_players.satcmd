@@ -24,6 +24,9 @@
 #                14 coronagraph after staring at the Sun (by the View popup's toggle), then one per song gap: 16 Sky
 #                events (a real gap: `audio music end`), 17 Missions (ignored: times out), 18 Weather, 19 the picture
 #                keys (F12), 17 again; then nothing (all done)
+#  10 Selector  (2026-11-18) every way of selecting meets `selected`: a real mouse click on a satellite in menu
+#                mode (Tab) during the captions, and after them with 7 up (7 leaves by its gate, then 9); the pad's
+#                A at its virtual cursor (Start; FPS mode stays on) with 7 up; the `select` command
 #   6 Gamepad    the pad's labels (pad=1) in every hint's text; Start = menu mode (the virtual cursor)
 # Waits are frames at 0.05 s each. A small window and the Low preset keep the app above 20 frames a second (a wait
 # capped at 2 s of wall time would shorten the hint clock and break the checkpoints).
@@ -473,6 +476,89 @@ wait 40
 expect state.hints.live.music_audible false
 expect state.hints.live.silent_s 2 tol=0.5
 audio music play
+
+# ── 10 Selector: a selection by any path meets the gate (the user, 2026-11-18: only an FPS-mode one did) ────────
+# The satellite is put at the screen centre (960x540: 480, 270) by `select const` + `camera look sel`; that selection
+# is undone (`select none`, `hints set selected 0`) so the click is what selects.
+fps off
+set display.tutorial_done false
+select none
+# 10a during the captions: Tab, then a real left click through the picker (mouse click x= y=)
+intro play at=20
+wait 3
+mouse move dx=30 dy=0 frames=20
+ui key tab
+wait 3
+inertial drag dx=8 dy=0 frames=20
+wait 3
+select const "Starlink Gen1"
+camera look sel
+select none
+hints set selected 0
+wait 2
+expect state.hints.gates.selected false
+expect state.hints.live.mode menu
+expect state.hints.live.captions_ended false
+mouse click left x=480 y=270
+wait 2
+expect state.hints.gates.selected true
+expect state.camera.fps_mode false
+# 10b after the captions, hint 7 up ("Click a satellite"): the click meets it; 7 leaves by its gate, then 9
+select none
+intro play at=50
+wait 3
+mouse move dx=30 dy=0 frames=20
+ui key tab
+wait 3
+inertial drag dx=8 dy=0 frames=20
+wait 40; wait 40; wait 40; wait 40
+hints state
+expect state.hints.live.captions_ended true
+expect state.hints.showing_n 7
+select const "Starlink Gen1"
+camera look sel
+select none
+hints set selected 0
+wait 2
+expect state.hints.showing_n 7
+mouse click left x=480 y=270
+wait 2
+expect state.hints.gates.selected true
+wait 40; wait 40; wait 40
+hints state
+expect state.hints.showing_n 9
+# 10c a pad player: Start = the virtual cursor (their menu mode; FPS mode stays on), 7 up; A on the satellite
+select none
+intro play at=50
+wait 3
+mouse move dx=30 dy=0 frames=20
+pad start
+wait 40; wait 40; wait 40; wait 40
+hints state
+expect state.hints.live.pad true
+expect state.hints.live.mode menu
+expect state.hints.showing_n 7
+select const "Starlink Gen1"
+camera look sel
+select none
+hints set selected 0
+wait 2
+pad a x=480 y=270
+wait 2
+expect state.hints.gates.selected true
+expect state.camera.fps_mode true
+pad start
+wait 3
+# 10d the `select` command alone
+hints set selected 0
+select none
+wait 2
+select const "Starlink Gen1"
+wait 2
+expect state.hints.gates.selected true
+select none
+hints off pad=0
+hints on
 
 # ── 6 Gamepad ───────────────────────────────────────────────────────────────────────────────────────────────
 set display.tutorial_done false

@@ -609,7 +609,8 @@ growth in either mode + the pad's stick x `fovLookScale`), `moved` (1 s of movem
 moving or climbing), `zoomed` (the wheel's zoom in buildUI or the zoom keys), `clicked` (an FPS centre click),
 `leftByTab` / `leftByRightClick` / `returned` (`fpsSet` -> `hintsNoteFps`; `returned` = any entry but the opening's
 and the harness's own; a pad player: the virtual cursor's on / off edges), `dragLooked`, `selected` (a CHANGE to a
-satellite: a selection standing when the pass began does not count), `timeBarShown` (a time control used, or
+satellite by any path: the FPS click, a menu-mode click, the pad's A at the centre or at its virtual cursor, a window
+or list, the harness's `select`; a selection standing when the pass began does not count), `timeBarShown` (a time control used, or
 hint 9's 8 s), `menuBarShown` (Missions / Weather / Sky events / Settings opened, or hint 10's 8 s); `dragLooked`
 (a right-drag turn in menu mode: `camera.captured` while not in FPS mode) is hint 11's. Movement is
 read from the movement block's MERGED input (`hintMoveIn_`, `hintBoostIn_`: W A S D + the left stick + harness
@@ -705,10 +706,15 @@ contextual state, `reset` clears it; `set` takes the contextual gate names too; 
 -> `hints` (gates, live incl. `sun_deg`, `sun_s`, `level_active`, `above_geo`, `music_audible`, `song_gap`,
 `gap_open`, `gap_used`, `silent_s`; `saved` {gates, offers, all_done}; showing, offers, retired, texts, `seen`
 "1,6,7", `log` with shown / gate-met / gone times and `how`), `mouse scroll dy=`, `audio music end` (a real gap).
+**A pad player's menu mode is the virtual cursor with the FPS mode left on**, so buildUI's pick takes the centre
+(`fpsCentreClick`) only while no virtual cursor is up (`fpsLive_ && !vCursorActive`); with it up, A (App's lmb) picks
+at the cursor as a mouse click does. Until 2026-11-18 the FPS branch swallowed that press: A on a satellite under the
+cursor selected nothing, and hint 7 could only be met by A without the cursor (the centre pick).
 `tools/harness/scripts/hints_players.satcmd` (`--fixed-dt 0.05`, one launch): Still 1,6,11,7,9,10,8,2 then complete
 and 4; Explorer 4,3,6,11,7,9,10,8; Clicker 2,6 (6 on the second click); Mover 2,4,3 (4 one second after 2 leaves) and
 2,4,3 with 4 timed out; each hint 6,11,7,9,10,8,2,4,3,5; Veteran 9,10,8 (1, 2, 6, 7 retired); Returning with every
-gate met: none; Contextual 13,13,12,15,14,16,17,18,19,17 then none (all done); Gamepad labels.
+gate met: none; Contextual 13,13,12,15,14,16,17,18,19,17 then none (all done); Selector (`selected` met by a real
+menu-mode click during and after the captions, by the pad's A at its virtual cursor, by `select`); Gamepad labels.
 
 ---
 

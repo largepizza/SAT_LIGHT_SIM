@@ -1006,12 +1006,16 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     // they're rare and the more interesting selection; mutually exclusive with satellite selection.
     // FPS mode: the click picks at the screen centre (the UI gets no pointer, so nothing is "over the UI"), except on
     // the selection popup, whose pointer the centre is (fpsCentreSelBtn: last frame's boxes; its button presses).
+    // A pad player's virtual cursor (Start: their menu mode, the FPS mode left on) is a pointer like the mouse's: its A
+    // (App's lmb) picks where it points. (Until 2026-11-18 the FPS branch swallowed that press: A on a satellite under
+    // the cursor selected nothing, so the "Click a satellite" hint passed only by A without the cursor, at the centre.)
     fpsSelDrawnPrev_ = fpsSelDrawn_;
     fpsSelDrawn_ = 0;
-    fpsCentreBtn_ = fpsLive_ ? fpsCentreSelBtn(fpsSelDrawnPrev_) : -2;
-    if (fpsLive_)
+    const bool centrePick = fpsLive_ && !vCursorActive;
+    fpsCentreBtn_ = centrePick ? fpsCentreSelBtn(fpsSelDrawnPrev_) : -2;
+    if (centrePick)
     {
-        if (inp.lmbPressed && !vCursorActive)
+        if (inp.lmbPressed)
             fpsCentreClick();
     }
     else if (inp.lmbPressed && !ui.mouseOverUI())

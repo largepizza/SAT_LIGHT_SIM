@@ -211,7 +211,7 @@ const char *kHelp =
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "exposure [auto|hold|fast]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s] [wait=1]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [cdc=<spv>] [brick=<spv>] [nlc=<spv>] [smoke_layer=<spv>] [sky=<spv>] [sky_taa=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; skyevents [state]|events|list <kind>|watch <solar|lunar|conjunction|occultation|moonglint|meteors|comet|supernova|cme|cometstorm|row|special <0-3>|aurora [t=]> [n=]|spaceweather; stars [state]|find <name>|select <name>; moonbase [state]|windows [days=] [limit=] [jitter=]|base <i> [lean=] [jitter=]; meteors [state]|count [minutes=] [lm=] [shower=]|force [kind=meteor|fireball|bolide] [shower=] [mag=] [az=] [el=] [v=] [delay=]|go [shower=]; comets [state]|list [days=]|watch [k|great] [days=] [sun_max=] [orbit=1]; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|pick|return|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...>; fps on|off|state; mouse move dx= dy= [frames=] | mouse click left|right | mouse scroll dy= | mouse aim <Id>[:i] [tol=] [frames=]; hints on|off|reset|state|set <gate> [0|1]|force <n>|gap [s=] [pad=0|1]; events list|state|on|off|fire <id> [total=0|1]|ack [choice=1|2|3] [soft=1]; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|preview <file> [shot=] [scale=] [fps=]|save|load|state|stop; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [cdc=<spv>] [brick=<spv>] [nlc=<spv>] [smoke_layer=<spv>] [sky=<spv>] [sky_taa=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; skyevents [state]|events|list <kind>|watch <solar|lunar|conjunction|occultation|moonglint|meteors|comet|supernova|cme|cometstorm|row|special <0-3>|aurora [t=]> [n=]|spaceweather; stars [state]|find <name>|select <name>; moonbase [state]|windows [days=] [limit=] [jitter=]|base <i> [lean=] [jitter=]; meteors [state]|count [minutes=] [lm=] [shower=]|force [kind=meteor|fireball|bolide] [shower=] [mag=] [az=] [el=] [v=] [delay=]|go [shower=]; comets [state]|list [days=]|watch [k|great] [days=] [sun_max=] [orbit=1]; aurora [next <kp>|substorm|kp <v>|auto]; tutorial [start [step]|next|back|skip|pick|return|state]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...> [x= y=]; fps on|off|state; mouse move dx= dy= [frames=] | mouse click left|right [x= y=] | mouse scroll dy= | mouse aim <Id>[:i] [tol=] [frames=]; hints on|off|reset|state|set <gate> [0|1]|force <n>|gap [s=] [pad=0|1]; events list|state|on|off|fire <id> [total=0|1]|ack [choice=1|2|3] [soft=1]; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|preview <file> [shot=] [scale=] [fps=]|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=] [frames=] [video=]; video start [name] [fps=] [scale=] [ui=on] [sound=all|ambience|off]|stop|state; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
@@ -2965,6 +2965,48 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         if (b < 0)
             fail("pad: a|b|x|y|lb|rb|view|start|ls|rs|up|down|left|right");
         lastInputWasGamepad = true;
+        // (2026-11-18) The virtual cursor (Start) with no pad connected: pollGamepad returns before it keeps
+        // vCursorActive, so this command keeps it as pollGamepad would (toggled and the UI shown; first shown at the
+        // window centre). A with the cursor up clicks where it points, as App's lmb: pollGamepad's vCursorClick, held
+        // for one frame (KB_SELECT_SAT is skipped, as pollGamepad skips it). `x= y=`: the cursor moves there first.
+        const bool emuCursor = gamepadId < 0;
+        auto emuCursorSync = [&]()
+        {
+            if (!emuCursor)
+                return;
+            vCursorActive = vCursorToggled && uiVisible;
+            if (vCursorActive && (vCursorX < 0.0f || c.has("x") || c.has("y")))
+            {
+                int ww = 0, wh = 0;
+                if (win)
+                    glfwGetWindowSize(win, &ww, &wh);
+                vCursorX = (float)c.num("x", vCursorX < 0.0f ? ww * 0.5 : (double)vCursorX);
+                vCursorY = (float)c.num("y", vCursorY < 0.0f ? wh * 0.5 : (double)vCursorY);
+            }
+        };
+        auto cursorJson = [&]() { return nlohmann::json{{"active", vCursorActive}, {"x", vCursorX}, {"y", vCursorY}}; };
+        if (b == GLFW_GAMEPAD_BUTTON_A && emuCursor && vCursorToggled && uiVisible)
+        {
+            if (a.frame == 0)
+            {
+                emuCursorSync();
+                a.scratch["sel0"] = selectedSatIndex;
+                vCursorClick = true; // App reads it as the left button on the next frame
+                return Status::Pending;
+            }
+            if (a.frame == 1)
+            {
+                vCursorClick = false;
+                return Status::Pending;
+            }
+            r["button"] = name;
+            r["action"] = "cursor click";
+            r["cursor"] = cursorJson();
+            r["selected_before"] = a.scratch["sel0"];
+            r["selection"] = selectedSatIndex;
+            r["message"] = "pad a -> cursor click at " + std::to_string((int)vCursorX) + ", " + std::to_string((int)vCursorY);
+            return Status::Done;
+        }
         bool used = padContextButton(b, vCursorToggled && uiVisible);
         std::string fired = used ? "context" : "";
         if (!used)
@@ -2974,9 +3016,11 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                     dispatchKeyAction((int)i, true);
                     fired = keybindings[i].action;
                 }
+        emuCursorSync();
         r["button"] = name;
         r["action"] = fired;
         r["pad_focus"] = padFocus;
+        r["cursor"] = cursorJson();
         r["selection"] = selectedSatIndex;
         r["message"] = "pad " + name + " -> " + (fired.empty() ? std::string("nothing") : fired);
         return Status::Done;
