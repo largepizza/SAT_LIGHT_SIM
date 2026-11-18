@@ -565,7 +565,7 @@ the captions without the benchmark.
 
 **UC1 benchmark.** `updateIntro` adds `gpuMsTotalSmoothed` every frame while `introElapsed <= kIntroBenchEndT`
 (the whole caption period: the player on the ground, steering). `finishIntro` decides with
-`introBenchDecision(mean, preset)`: target 12 ms; over 18 ms steps down (Medium -> Low -> Planetarium -> Potato),
+`introBenchDecision(mean, preset)`: over 33 ms (under ~30 FPS) steps down (Medium -> Low -> Planetarium -> Potato),
 under 4.8 ms steps up (Potato -> Planetarium, Low -> Medium -> High); High, Ultra and Custom are never moved; the
 "graphics set to X" notice shows either way. Not on a cut-short end, a replay, a crash-recovery launch or after a
 boot-chooser pick. The harness's `intro play bench=1` measures and decides as a first run; `intro state` ->

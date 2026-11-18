@@ -9058,14 +9058,15 @@ void SatelliteSim::startIntroReplay()
 }
 
 // ─── introBenchDecision ──────────────────────────────────────────────────────
-// UC1 mechanism 2's rule, unchanged since RELEASE_v1_1_PLAN.md: a 12 ms target (~3 tiers of headroom); over 1.5x
-// it steps down a tier (Medium -> Low -> Planetarium -> Potato), under 0.4x it steps up (Potato -> Planetarium,
-// Low -> Medium -> High). High, Ultra and Custom are never moved.
+// UC1 mechanism 2's rule: over 33 ms (under ~30 FPS) it steps down a tier (Medium -> Low -> Planetarium -> Potato),
+// under 4.8 ms (0.4x the 12 ms target of RELEASE_v1_1_PLAN.md) it steps up (Potato -> Planetarium, Low -> Medium ->
+// High). High, Ultra and Custom are never moved. The step-down line was 18 ms (1.5x the target) until 2026-11-18:
+// Medium measures 17.3 ms at 1600x900 on the dev machine, and most players are meant to stay in Medium.
 GraphicsPreset SatelliteSim::introBenchDecision(float avgMs, GraphicsPreset from)
 {
-    constexpr float kTargetMs = 12.0f;
+    constexpr float kTargetMs = 12.0f, kStepDownMs = 33.0f;
     GraphicsPreset to = from;
-    if (avgMs > kTargetMs * 1.5f)
+    if (avgMs > kStepDownMs)
     {
         if (from == GraphicsPreset::Medium)
             to = GraphicsPreset::Low;
