@@ -4313,6 +4313,11 @@ private:
     bool inertialHold = false;               // the eye held fixed in ECI too (from orbit the Earth turns beneath)
     bool inertialTickApplyNow_ = false;
     bool inertialOcculter = false;           // a coronagraph: the Sun's disc, glare and bloom hidden while locked
+    // Eclipse glasses (2026-11-17, the View popup, hud.right_panel.eclipse_glasses): the Sun's disc as through a solar
+    // filter (true radius, limb darkening, spots, the Moon's bite), its glare / lens flare / bloom gone, the rest of the
+    // frame as without them (a display choice, not physics). Exclusive with inertialOcculter (updateRefraction).
+    bool eclipseGlasses = false;
+    bool eclipseGlassesPrev_ = false;
     glm::dvec3 inertialEyeEci{0.0};          // m, geocentric ECI
     glm::dvec3 inertialViewEci{0.0, 0.0, 1.0};
     glm::vec3 inertialLastObsDir{0.0f};
@@ -8865,6 +8870,7 @@ private:
     float refrTurbulence = 1.0f;    // refraction.turbulence: x Cn^2 (shimmer, the stars' twinkle and jitter)
     float refrDispersion = 1.0f;    // refraction.dispersion: x the physical dispersion (the green rim)
     float sunDiscGain = 1.0f;       // refraction.sun_disc_gain: x the Sun disc's physical radiance
+    float furySpotMsh = 12000.0f;   // refraction.fury_spot_msh: the Sun's Fury's sunspot group, millionths of the hemisphere (fillSunspots)
     float refrForceDt = -100.0f;    // refraction.force_sea_air_dt: < -50 = from place and time (K)
     float refrForceInvZ = -1.0f;    // refraction.force_inversion_m: < 0 from place and time, 0 none, > 0 its height (m)
     float refrForceInvDT = 2.0f;    // refraction.force_inversion_dt (K, with force_inversion_m > 0)

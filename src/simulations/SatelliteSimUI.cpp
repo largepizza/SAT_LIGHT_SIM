@@ -5475,6 +5475,7 @@ void SatelliteSim::buildSettingsPhotometryRows(const UIInput &inp, UIRenderer &u
         {
             buildCloudSliderRows(inp, ui, secExposure, (int)(sizeof(secExposure) / sizeof(secExposure[0])));
             uiToggleRow(inp, ui, "PhotoCoronagraph", 0, tx(Txt::LblCoronagraph), inertialOcculter, tx(Txt::TipCoronagraph));
+            uiToggleRow(inp, ui, "PhotoEclipseGlasses", 0, tx(Txt::LblEclipseGlasses), eclipseGlasses, tx(Txt::TipEclipseGlasses));
         }
     }
     // 2026-10-03: grouped by what they act on (each row keeps its idx: PhotoVal:<idx> etc.).
@@ -9647,6 +9648,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         altModeSeaLevel = rp.value("alt_mode_sea_level", altModeSeaLevel);
         cinematicLatched = rp.value("cinematic_mode", cinematicLatched); // the Movement popup's cinematic mode (latched)
         inertialOcculter = rp.value("coronagraph", inertialOcculter);    // the View popup's coronagraph
+        eclipseGlasses = rp.value("eclipse_glasses", eclipseGlasses);    // the View popup's eclipse glasses
     }
     if (j.contains("hud") && j["hud"].is_object())
         for (int w = 0; w < 2; ++w)
@@ -9876,6 +9878,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         turbCellSize = settingClamp(rj.value("cell_size", turbCellSize), 0.25f, 4.0f);
         turbSpeed = settingClamp(rj.value("speed", turbSpeed), 0.0f, 4.0f);
         sunDiscGain = settingClamp(rj.value("sun_disc_gain", sunDiscGain), 0.0f, 10.0f);
+        furySpotMsh = settingClamp(rj.value("fury_spot_msh", furySpotMsh), 100.0f, 40000.0f);
         refrForceDt = rj.value("force_sea_air_dt", refrForceDt);
         refrForceInvZ = rj.value("force_inversion_m", refrForceInvZ);
         refrForceInvDT = rj.value("force_inversion_dt", refrForceInvDT);
@@ -10664,7 +10667,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
 
     // Left/right HUD panels are corner-anchored, not persisted — only the right
     // panel's altitude display mode survives.
-    j["hud"]["right_panel"] = {{"alt_mode_sea_level", altModeSeaLevel}, {"cinematic_mode", cinematicLatched}, {"coronagraph", inertialOcculter}};
+    j["hud"]["right_panel"] = {{"alt_mode_sea_level", altModeSeaLevel}, {"cinematic_mode", cinematicLatched}, {"coronagraph", inertialOcculter},
+                                {"eclipse_glasses", eclipseGlasses}};
     j["hud"]["movement_panel"] = {{"open", hudMove.open && hudMove.pinned}, {"pinned", hudMove.pinned}, {"x", hudMove.x}, {"y", hudMove.y}};
     j["hud"]["view_panel"] = {{"open", hudView.open && hudView.pinned}, {"pinned", hudView.pinned}, {"x", hudView.x}, {"y", hudView.y}};
 
@@ -11222,6 +11226,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
                        {"cell_size", turbCellSize},
                        {"speed", turbSpeed},
                        {"sun_disc_gain", sunDiscGain},
+                       {"fury_spot_msh", furySpotMsh},
                        {"force_sea_air_dt", refrForceDt},
                        {"force_inversion_m", refrForceInvZ},
                        {"force_inversion_dt", refrForceInvDT},

@@ -214,6 +214,7 @@ void SatelliteSim::buildHudPopup(const UIInput &inp, UIRenderer &ui, int which)
                 }
             }
             uiToggleRow(inp, ui, "HudCoronagraph", 0, tx(Txt::LblCoronagraph), inertialOcculter, tx(Txt::TipCoronagraph));
+            uiToggleRow(inp, ui, "HudEclipseGlasses", 0, tx(Txt::LblEclipseGlasses), eclipseGlasses, tx(Txt::TipEclipseGlasses));
             uiToggleRow(inp, ui, "HudPrecip", 0, tx(Txt::LblPrecipitation), precipParticles, tx(Txt::TipPrecipitationParticles));
         }
     }

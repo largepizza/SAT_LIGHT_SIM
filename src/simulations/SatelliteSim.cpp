@@ -3898,7 +3898,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         std::memcpy(&fpc.satCeilingBits, &satCeiling, sizeof(float));
         // x the share of the Sun the observer sees past the Moon: the Sun's bloom stayed on at totality.
         // (Not sat_flare.comp's copy: there it is every satellite's soft ceiling, and 0 would zero them.)
-        fpc.sunRefIntensity = sunFlareRefIntensity * sunCloudTEased * moonEclipseSolarObs;
+        // Eclipse glasses: no bloom from the Sun (the satellites keep theirs).
+        fpc.sunRefIntensity = eclipseGlasses ? 0.0f : sunFlareRefIntensity * sunCloudTEased * moonEclipseSolarObs;
         fpc.sunDirENU = sunDirENU;
         fpc.screenSizePx = glm::vec2((float)flareExtent.width, (float)flareExtent.height);
         fpc.resScale = (float)flareExtent.width / (float)ctx.swapExtent.width;
