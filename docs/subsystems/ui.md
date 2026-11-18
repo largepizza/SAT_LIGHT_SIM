@@ -351,6 +351,25 @@ button), and Alt's cinematic pan (`KB_CINEMATIC` toggles while `camera.captured 
   `kFpsRingShowS` 0.9 s, a click while it still holds adds `kFpsRingAddS` 1 s to what is left, capped at
   `kFpsRingMaxS` 5 s, then a `kFpsRingFadeS` 0.3 s fade (the owner: "briefly show a circle marker" that "should stay
   a while if you click a lot"; the first cut, 26 px for 0.6 s, was far too big and a little too brief).
+- **The selection popup** (2026-11-17, the owner: the actions "often the next thing after clicking a
+  satellite ... the tooltip is right there and center"): in FPS mode the screen centre is the pointer of the
+  popup by the selected object (`SelSatPanel`), and of nothing else. `fpsCentreSelBtn(drawn)` tests the centre
+  against last frame's boxes of the popup and its Info / Go to / Trace / Track buttons (`SelActBtn` 4-7), counting
+  only what that frame drew (`fpsSelDrawn_` / `fpsSelDrawnPrev_`: Clay keeps stale boxes, and a hidden HUD draws
+  none); buildUI stores the answer in `fpsCentreBtn_` before the click. The button under the centre hovers (its
+  colour, rollover sound and tooltip, the tooltip placed at the centre through a copy of `UIInput`), and a left
+  click presses it instead of picking; a click on the popup between its buttons does nothing (a menu-mode click on
+  the panel is captured too); the ring flashes either way and the click counts in `fpsFacts_.clicks`. The pad's
+  A (with a selection, ahead of the pad focus) and `KB_SELECT_SAT` press the centre's button the same way
+  (`fpsPadPressPending_`, consumed by the next panel build). Off the popup the click is the pick as before. The
+  popup is anchored to the object on screen (offset 18, -8 px), so turning moves the centre across it, and an
+  object picked at the centre leaves the buttons a turn away, below and right of the crosshair. Info and Trace
+  open a window: menu mode through the window rule; Go to and Track keep FPS mode. While Track holds, the mouse
+  look is dropped, so the popup cannot be aimed at (T untracks). While the popup is drawn in FPS mode a steady
+  filled dot marks the centre (`FpsDot`, `kFpsDotDiamPx` 4 scaled as the ring: 4 px at UI scale 1, 6 at 1.5,
+  white with a 1-px `Pal::panelBg` rim so it reads on a hovered light button; z 101, above the button's tooltip,
+  whose corner sits on the centre), with the overlays (not in clean shots). Harness: `mouse aim <ElementId>[:index]` turns the view
+  onto an element through FPS mouse moves; `fps state`'s `centre_popup` / `centre_dot`, `mouse click`'s `popup`.
 - **Mouse sensitivity** (Controls > MOUSE, slider slot 626, `controls.mouse_sensitivity`, 0.1-4, default 1)
   multiplies the 0.12 deg/px rate in both modes (`SkyCamera::sensMul`); the pad's look keeps its own rate (it
   scales by `fovLookScale()` only).

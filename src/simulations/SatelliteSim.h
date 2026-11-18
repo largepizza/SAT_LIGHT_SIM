@@ -9109,6 +9109,21 @@ private:
     static constexpr float kFpsRingFadeS = 0.3f;
     static constexpr int kFpsRingDiamPx = 12;
     static constexpr float kFpsRingStroke = 0.07f; // x the diameter (fs() floors at 8 px: too thick for a stroke)
+    // The selection popup in FPS mode (2026-11-17): the screen centre is its pointer, and only its. A steady dot of
+    // kFpsDotDiamPx (scaled as the ring: fs(kFpsRingDiamPx) x kFpsDotDiamPx / kFpsRingDiamPx) marks the centre while
+    // the popup is drawn. fpsSelDrawn_ bits 0-3: the popup's Info / Go to / Trace / Track buttons drawn this frame
+    // (buildSelActionButton, ids 4-7), kFpsSelPanelBit: the popup itself; fpsSelDrawnPrev_ is last frame's (Clay's
+    // boxes are last frame's layout). fpsCentreBtn_: this frame's centre, -2 off the popup, -1 on it between buttons,
+    // 0-3 the button (buildUI, before the click).
+    static constexpr int kFpsDotDiamPx = 4;
+    static constexpr uint32_t kFpsSelPanelBit = 1u << 4;
+    uint32_t fpsSelDrawn_ = 0, fpsSelDrawnPrev_ = 0;
+    int fpsCentreBtn_ = -2;
+    bool fpsPadPressPending_ = false, fpsPadPressNow_ = false; // the pad's select (A / KB_SELECT_SAT) on a popup button
+    std::string fpsLastPopupPress_; // what the last FPS click / select pressed on the popup ("" none, "panel", "goto" ...)
+    int fpsCentreSelBtn(uint32_t drawn) const; // the centre against the popup boxes of a frame (see fpsCentreBtn_)
+    bool fpsCentrePx(float &x, float &y) const; // the window centre in the mouse's coordinates
+    void fpsRingFlash();
     // Sticky facts (not persisted): harness `fps state`; hintsTick reads `clicks` and `lookDeg` as running counters.
     struct FpsFacts
     {

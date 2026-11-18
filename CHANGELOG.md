@@ -421,6 +421,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   console or a text entry, or switching to another program. FPS mode is on by default and remembered; hold right
   mouse and drag to look, as before, with the cursor showing. **Toggle UI moves from Tab to U** (a saved Tab moves
   with it). New "Mouse sensitivity" slider in Settings > Controls (both ways of looking). The gamepad is unchanged.
+- **Satellite actions in FPS mode.** The Info, Go to, Trace and Track buttons by a selected satellite work without
+  leaving FPS mode: turn the view so the centre of the screen is on one (it lights up, and a small dot marks the
+  centre while the panel is showing) and click. Go to and Track keep you in FPS mode; Info and Trace open their
+  window and bring the cursor back. The rest of the HUD stays out of the way of the centre, as before.
 - **W flies where you look.** WASD moves along the camera's own forward and right at any angle: look up and W
   climbs, look down and it descends (sliding along the ground when you reach it); Q / E still go straight up and down.
   It used to walk at a constant height whatever the camera pointed at.
