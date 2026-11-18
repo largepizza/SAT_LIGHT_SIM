@@ -913,14 +913,20 @@ lists its sections and topics with line numbers. New notes go next to the sectio
       A' = A Tf Tb (continuous: with no cloud, A = 1 and B = 0, the two halves are one ray). It was in front or behind
       by the eye's height alone and cut at an opaque cloud: a translucent cloud edge took the whole ray's haze in
       front of it, a dark halo round every cloud from 4 km (report shot 3).
-    - The sky pass's air split, where no opaque cloud holds it (a < 0), moves toward the haze's light-weighted
-      distance by its share of the texel's opacity (lySplitM: smokeAirSplitM's, 22 halvings): the air beyond the haze
-      is dimmed by it. A texel without a cloud carries -60000 km; solved toward there with 14 halvings (a 3.7-km grid)
-      the split over the ground ran past 100 km except on rings where the grid landed short: the dark ARCS across shot
-      3's ground (debugview cloudairsplit). The far end is now the surface. Texels flagged emissive (an emissive
-      Gaussian's distance: the flames', the plumes', cloudAlphaIsEmit) move too, their flag kept: skipped, their region
-      kept the flames' distance while the haze dimmed the air past it, a hard-edged tan diamond round the fire from
-      153 km (report shot 2).
+    - The sky pass's air split moves from the texel's distance toward the haze's light-weighted distance by the
+      haze's share of the opacity (lySplitM: smokeAirSplitM's, 22 halvings): the air beyond the haze is dimmed by it.
+      ONE rule for every texel, so it is continuous in the opacity: opaque texels keep their sign (cloud_march stores
+      its own merged split there too), emissive-flagged ones their flag. A texel without a cloud carries -60000 km;
+      solved toward there with 14 halvings (a 3.7-km grid) the split over the ground ran past 100 km except on rings
+      where the grid landed short: the dark ARCS across shot 3's ground (debugview cloudairsplit). The far end is now
+      the surface. cloud_march flags (cloudAlphaIsEmit) a texel with no cloud whose distance is the plumes' / the
+      emissive light's, and clears the flag where its march found any cloud, however thin, at the same merged
+      distance; the flag's edge is the clouds' half-res mask, wider than anything visible. Branching on it (the flagged
+      texels split toward the surface) put the split ~30 km out beside ~3 km inside the mask, where the eye sat in the
+      young smoke (opacity ~0.8, 1.6 km off): a dark tan skirt round every cloud ending in a staircase (round-2 review,
+      shots 5/7/8; the step of (layer) - (no layer pass) across the mask's edge, p50 30 -> 3-6 levels, p95 ~45 -> 8-12,
+      the sky elsewhere 11-20). Skipping them instead left a hard-edged tan diamond round the fire from 153 km
+      (report shot 2): the flames' distance kept while the haze dimmed the air past it.
     The layer's pieces (the 12 heaviest) also go to the dust buffer's tail (after the side slots, `kSmokeShadowSlots`
     32: slot 0's c.x the count) as Gaussians NOT in the drawn list, which sat_sky.frag smokeSunTransmit adds to the
     ground's Sun: the direct beam at the physical Angstrom exponent + what the haze took out of it x the albedo

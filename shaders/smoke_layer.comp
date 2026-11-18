@@ -259,9 +259,14 @@ void main()
         return;
     vec4 A = imageLoad(targetA, coord), B = imageLoad(targetB, coord);
     bool emit = cloudAlphaIsEmit(A.a);
-    // the clouds' distance on this texel (their opacity's; an emissive texel's is the plume light's, kept in front), never
-    // past the surface: a texel without a cloud carries -60000 km, and its split was solved toward there
-    float tC = emit ? t1 : min(abs(A.a) * 1000.0, tEnd);
+    // The distance of the texel's opacity, never past the surface (a texel with nothing on it carries -60000 km, and its
+    // split was solved toward there). The SAME for every texel, flagged emissive or not: cloud_march flags a texel with no
+    // cloud whose distance is the plumes' / emissive light's (the young smoke's, round a fire), and clears the flag where
+    // its march found any cloud, however thin, at the same merged distance. Taking t1 / tEnd for the flagged ones put
+    // their split ~30 km out (the young smoke's air in front of it, undimmed) beside ~3 km on the unflagged: every cloud
+    // wore a dark tan skirt as wide as the march's cloud mask, ending in its half-res staircase (round-2 review, shots
+    // 5/7/8). The sky pass's own split never reads the flag.
+    float tC = min(abs(A.a) * 1000.0, tEnd);
 
     gSpec = smokeSpecK(opt.y);
     gSsa  = opt.x * kSsaSpec;
@@ -279,16 +284,16 @@ void main()
     A.rgb = A.rgb * Tf + Lf + B.rgb * Tf * Lb;
     B.rgb *= Tf * Tb;
     float aS = 1.0 - dot(Tf * Tb, vec3(0.2126, 0.7152, 0.0722));
-    // The air split (sat_sky.frag adds the air to |a| in front, undimmed, and the air beyond x A): where no opaque cloud
-    // holds it, moved toward the haze by its share of the texel's opacity (lySplitM). Texels whose distance is an emissive
-    // Gaussian's (the flames, the plumes: cloudAlphaIsEmit) too, keeping their flag: skipped, their region kept the
-    // emissive's distance while the haze dimmed the air past it, a hard-edged tan patch round a fire's flames (report
-    // shot 2, from 153 km).
-    if (A.a < 0.0) {
+    // The air split (sat_sky.frag adds the air to |a| in front, undimmed, and the air beyond x A): moved toward the haze by
+    // its share of the texel's opacity (lySplitM), on every texel by one formula, continuous in the opacity: emissive-
+    // flagged texels too, keeping their flag (skipped, their region kept the flames' distance while the haze dimmed the
+    // air past it: a hard-edged tan patch round a fire from 153 km, report shot 2), and opaque ones, keeping their sign
+    // (cloud_march stores its own merged split there too; skipped, the split jumped at the half-opacity contour).
+    {
         float tS = tW / wS;
         float oC = 1.0 - aB;
-        float tSplit = lySplitM(gObs, gDir, tS, emit ? tEnd : tC, oC / max(oC + aS, 1e-4));
-        A.a = cloudAlphaFlag(-tSplit * 0.001, emit);
+        float tSplit = lySplitM(gObs, gDir, tS, tC, oC / max(oC + aS, 1e-4));
+        A.a = cloudAlphaFlag((A.a >= 0.0 ? tSplit : -tSplit) * 0.001, emit);
     }
     imageStore(targetA, coord, A);
     imageStore(targetB, coord, B);
