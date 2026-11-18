@@ -127,7 +127,11 @@ vec4 nlcCrossing(vec3 P, float col, vec3 dir, vec3 sunDir, mat3 enuToEcef, float
 {
     float sig = length(vec2(gw0.w, 2.7));   // (the broad octave and the bands' waves)
     int   n   = clamp(int(ceil(segL / 15000.0)), 1, 8);
-    float S0 = 0.0, S1 = 0.0;               // sums of the ice density and of it x the size cubed
+    // Sums of the ice density and of it x the size cubed, the size in units of the clamp's 100 nm (issue_20261117_200907
+    // "Black specs"): in metres, rho x rg^3 is ~1e-15 x 3e-24 at the edge of a patch, where the air is a hair past
+    // saturation: below the smallest normal float, flushed to 0. S1 = 0 with S0 > 0 made rG 0, the Mie sums 0 and the
+    // extinction 0 / 0: a NaN that the sky pass and its TAA drew as black 1x2-px specks across the disc and on the limb.
+    float S0 = 0.0, S1 = 0.0;
     for (int i = 0; i < n; ++i) {
         vec3 Pi = P + dir * (((float(i) + 0.5) / float(n) - 0.5) * segL);
         vec3 uE = normalize(enuToEcef * Pi);
@@ -142,7 +146,7 @@ vec4 nlcCrossing(vec3 P, float col, vec3 dir, vec3 sunDir, mat3 enuToEcef, float
         if (ice <= 0.0)
             continue;
         float rho = ice * 1e-6 * (18.015 / 28.97) * kRhoAir * (kCollectM / (misc.z * 1.7725)) * st.y;
-        float rg  = clamp(pow(3.0 * rho / (4.0 * PI * 917.0 * 1e8), 1.0 / 3.0) * 0.844, 1.5e-8, 1.0e-7);
+        float rg  = clamp(pow(3.0 * rho / (4.0 * PI * 917.0 * 1e8), 1.0 / 3.0) * 0.844, 1.5e-8, 1.0e-7) * 1e7; // (/ 100 nm)
         S0 += rho;
         S1 += rho * rg * rg * rg;
     }
@@ -154,7 +158,8 @@ vec4 nlcCrossing(vec3 P, float col, vec3 dir, vec3 sunDir, mat3 enuToEcef, float
     float lit = ps >= 0.0 ? 1.0 : smoothstep(R_EARTH + 8000.0, R_EARTH + 16000.0, bS);
     // the path's mean ice (kg/m^3 in the layer) and its extinction-weighted size (the extinction goes ~ as r^3)
     float iceRho = S0 / float(n);
-    float rG     = pow(S1 / S0, 1.0 / 3.0);
+    // (a mean of sizes within the clamp: held there, so an S1 that still underflows cannot take it to 0)
+    float rG     = clamp(pow(S1 / S0, 1.0 / 3.0), 0.15, 1.0) * 1e-7;
     // The ice. Freeze-drying (Rapp & Thomas 2006): the particles grow in the supersaturated air above the mesopause
     // and fall, so the layer holds the excess water of a few km of air (kCollectM) in its ~2.7 km (w sqrt(pi)): a few
     // ppmv gives ~50 ng/m^3, SOFIE's ice mass densities. Their size from that mass shared among ~100 particles per

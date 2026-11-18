@@ -271,6 +271,8 @@ see the last bullets), `recordPrePass` → `recordSkyTaa`:
   timestamp, so restoring a shader from a backup does NOT rebuild it (touch it) — identical-to-the-digit results
   across a change mean it did not build. The harness is bit-deterministic run to run. `cloud_v2_resolve.comp` writes
   "no cloud" for a non-finite result (user snapshot: black squares at the limb after a fast climb; not reproduced).
+  A pass that writes the cloud targets AFTER the resolve is not covered by it: the noctilucent layer's NaN
+  (nlc_shell.comp, launches.md "The size sum is in units of 100 nm") reached the sky pass and drew black specks.
 - **Presets (2026-10-04, the user):** Medium renders at 67%, Low is Medium's settings at 50% with every effect on
   (aurora, beams, fog, terrain detail); Planetarium is the "everything off" tier. Measured (RTX 3070 Ti, 1600x900, the
   user's snapshots): Low 12.3 / 13.8 / 9.9 / 7.9 ms, Medium 17.8 / 18.2 / 13.8 / 11.2 (orbit storm, anvils, Dushanbe,
