@@ -1031,6 +1031,7 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
     const bool hideShotChrome = shotHidesOverlays();
     if (!hideShotChrome)
         buildReportBar(inp, ui);   // the note bar after an issue snapshot, likewise
+    buildEventWindow(inp, ui);     // an event window / the explode warning, likewise (SatelliteSimEventWindows.cpp)
 
     // ── Tab: skip all UI when hidden ─────────────────────────────────────────
     if (!uiVisible)
@@ -2596,8 +2597,20 @@ void SatelliteSim::buildViewTitleIcons(const UIInput &inp, UIRenderer &ui, bool 
 // player breakup from this window: swap the Kessler entry point here. The result goes to the toast.
 void SatelliteSim::infoExplodeSelected(uint8_t kind)
 {
+    // The first breakup before the Sun's Fury voids its prebake: the warning first (SatelliteSimEventWindows.cpp).
+    if (explodeWarnNeeded() && !evw_.open)
+    {
+        evw_.warnSat = viewerSatIndex;
+        evw_.warnKind = kind;
+        eventWinOpen(EvOcc{kEvWarn, 0.0, 0}, "explode");
+        return;
+    }
+    infoExplodeNow(viewerSatIndex, kind);
+}
+void SatelliteSim::infoExplodeNow(int sat, uint8_t kind)
+{
     kUiMsg[0] = '\0';
-    kesslerBreakupFromUi(viewerSatIndex, kind); // writes kUiMsg: "<what>: <satellite>" or "Not now: <why>"
+    kesslerBreakupFromUi(sat, kind); // writes kUiMsg: "<what>: <satellite>" or "Not now: <why>"
     const bool failed = !kUiMsg[0] || strncmp(kUiMsg, "Not now", 7) == 0 || strncmp(kUiMsg, "No ", 3) == 0;
     snprintf(screenshotToastText, sizeof(screenshotToastText), "%s", kUiMsg[0] ? kUiMsg : "Breakup refused");
     screenshotToastTimer = failed ? 5.0f : 3.0f;
@@ -4000,6 +4013,8 @@ void SatelliteSim::buildSettingsLaunchesTab(const UIInput &inp, UIRenderer &ui)
 // the shared slider arrays.
 void SatelliteSim::buildSettingsSkyTab(const UIInput &inp, UIRenderer &ui)
 {
+    if (uiFold(inp, "SkySec", 9, tx(Txt::SecEvents)))
+        uiToggleRow(inp, ui, "SkyEventWins", 0, tx(Txt::LblEventWindows), eventWinEnabled, tx(Txt::TipEventWindows));
     if (uiFold(inp, "SkySec", 0, tx(Txt::SecStars)))
     {
         uiToggleRow(inp, ui, "SkyStarLimit", 0, tx(Txt::LblFaintStarsOnlyUnderDarkSkies), starSkyLimit,
@@ -9941,6 +9956,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         betelgeuseVariable = sj.value("betelgeuse_variable", betelgeuseVariable);
         if (sn0 != supernovaEnabled) skScanBase = -1e300;
     }
+    if (j.contains("sky_events") && j["sky_events"].is_object())
+        eventWinEnabled = j["sky_events"].value("windows", eventWinEnabled); // the event windows (SatelliteSimEventWindows.cpp)
 
     if (j.contains("launches") && j["launches"].is_object())
     {
@@ -11235,6 +11252,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
                        {"timelapse_exposure_s", meteorTimelapseExposureS}, {"timelapse_head_cap", meteorTimelapseHeadCap}};
     j["stars"] = {{"sky_limit", starSkyLimit}, {"limit_boost", starLimitBoost}, {"dark_sky_extra", starDarkExtraMag}, {"supernova", supernovaEnabled},
                   {"betelgeuse_variable", betelgeuseVariable}};
+    j["sky_events"] = {{"windows", eventWinEnabled}};
     // Launches (SatelliteSimLaunches.cpp).
     j["launches"] = {{"enabled", launchesEnabled},
                      {"life_scale", launchLifeScale},

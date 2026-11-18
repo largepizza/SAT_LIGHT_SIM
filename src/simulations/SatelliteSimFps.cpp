@@ -62,7 +62,8 @@ uint32_t SatelliteSim::fpsWindowMask() const
     const bool open[] = {settingsChrome.open, viewControlsChrome.open, infoChrome.open, viewerChrome.open,
                          traceChrome.open,    msChrome.open,           skChrome.open,   wxChrome.open,
                          cineChrome.open,     bmChrome.open,           rpChrome.open,   reportBarOpen_,
-                         tutActive}; // (the first-run tutorial's card has buttons: it needs the pointer like a window)
+                         tutActive,           // (the first-run tutorial's card has buttons: it needs the pointer like a window)
+                         evw_.open};          // an event window / the explode warning (SatelliteSimEventWindows.cpp)
     uint32_t m = 0;
     for (size_t i = 0; i < sizeof(open) / sizeof(open[0]); ++i)
         if (open[i])

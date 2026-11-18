@@ -9246,6 +9246,92 @@ private:
     nlohmann::json hintsStateJson() const;
     harness::Status harnessHints(harness::Active &a);
 
+    // ── Event windows (2026-11-17, SatelliteSimEventWindows.cpp; docs/subsystems/sky-events.md "Event windows") ──────
+    // One modal window in the centre (a banner, a title, a short text, one button) when the RUNNING clock crosses a story
+    // event's moment (either way; the state events forward only), or a Watch takes the player to it. A clock that is SET
+    // past an event shows nothing: eventWinAdvance tells the two apart in one place (the clock after last frame's
+    // advance vs before this one's). The explode warning (the first breakup before the Sun's Fury) is the same window
+    // with three buttons. The rows are kEventWinDefs (the .cpp): adding an event is a row.
+    struct EvOcc
+    {
+        int def = -1;     // the row of kEventWinDefs, or kEvWarn (the explode warning)
+        double t = 0.0;   // its moment (J2000 s)
+        int flag = 0;     // lunar eclipse: 1 = total
+    };
+    static constexpr int kEvWarn = 1000;
+    struct EvMoments
+    {
+        double lo = 0.0, hi = 0.0;        // the range the lunar eclipses cover
+        std::vector<double> lunarT;
+        std::vector<uint8_t> lunarTotal;
+        double solarT = -1.0;             // the 2037-07-13 total solar eclipse (greatest eclipse)
+        double cometInT = -1.0;           // the Great Comet crosses Mars's orbit inbound
+        double cometEarthT = -1.0;        // its closest approach to the Earth
+    };
+    struct EventWinRun
+    {
+        bool open = false;
+        EvOcc cur;
+        std::vector<EvOcc> queue;    // events at the same moment as the open one, shown after it
+        int warnSat = -1;            // the explode warning: the satellite and the breakup kind
+        uint8_t warnKind = 0;
+        bool prevPaused = false;     // the warning restores the clock it found
+        int prevScale = 0;
+        float prevDir = 1.0f;
+        double lastT = 0.0;          // the clock after last frame's advance
+        bool lastValid = false;
+        EvOcc watched;               // shown by a Watch: the running clock crossing it next is the same showing
+        // The Kessler state events: the first collision's time (a scan of the event log), the share destroyed (a sliced
+        // walk of the roster's dead seconds).
+        size_t colScan = 0;
+        uint32_t colRev = 0xFFFFFFFFu;
+        const void *colSrc = nullptr;
+        double firstColT = 1e300;
+        size_t walkI = 0;
+        bool walkActive = false;
+        int32_t walkSec = 0;
+        size_t walkN0 = 0, walkDead = 0;
+        bool walkPrevValid = false;  // the last finished walk, with the clock running forward since it
+        double walkPrevFrac = 0.0;
+        double destroyedFrac = -1.0; // the last finished walk's share (-1 none yet)
+        std::vector<std::string> log; // "<id> <how> <utc>" per showing (harness)
+        int shown = 0;
+        std::string lastHow;
+        int lastChoice = 0;
+    } evw_;
+    bool eventWinEnabled = true;      // Settings > Sky > EVENTS "Event windows" (sky_events.windows)
+    bool eventWinHarnessOn_ = false;  // a harness run keeps the windows and the explode warning off until `events on`
+    std::future<EvMoments> evMomentsJob_;
+    EvMoments evMoments_;
+    bool evMomentsValid_ = false;
+    // The banner (one 960 x 320 image, re-filled from assets/events/<id>.png when a window opens).
+    static constexpr int kEvBannerW = 960, kEvBannerH = 320;
+    VkImage evBannerImg_ = VK_NULL_HANDLE;
+    VkDeviceMemory evBannerMem_ = VK_NULL_HANDLE;
+    VkImageView evBannerView_ = VK_NULL_HANDLE;
+    VkSampler evBannerSampler_ = VK_NULL_HANDLE;
+    uint32_t evBannerUiId_ = 0;
+    bool evBannerFailed_ = false;
+    bool evBannerHas_ = false;        // the open window's art is loaded (else the placeholder)
+    std::string evBannerFor_;         // the id whose art is in the image
+    UIImage evBannerEl_;
+    bool eventWinLive() const;                          // on, and nothing suppresses it (opening, cinematic, video, photo)
+    void eventWinAdvance(double tBefore, double tAfter); // recordCompute, after the clock moved: crossings, state events
+    void eventWinOnSkyWatch(const sky::Event &e);       // skyEventWatch: the Watch landed on an event
+    void eventWinTakenTo(const char *id, double tNear); // a Watch / the warning's third option landed on row `id`
+    void eventWinOpen(const EvOcc &o, const char *how);
+    void eventWinChoose(int choice);                    // the button (1 = acknowledge / Yes, 2 = No, 3 = the Sun)
+    void eventWinMomentsOf(int def, std::vector<EvOcc> &out) const; // every known moment of a row
+    void eventWinMomentsTick(double now);               // the moments' worker (lunar eclipses by range)
+    void eventWinKesslerTick(double now, bool forward); // the state events
+    bool explodeWarnNeeded() const;                     // this breakup would be the first one before the Sun's Fury
+    void infoExplodeNow(int sat, uint8_t kind);         // the breakup itself (infoExplodeSelected after the warning)
+    bool eventWinBanner(UIRenderer &ui, const char *id); // fills the banner from assets/events/<id>.png (false: placeholder)
+    void eventWinDestroy(VkDevice device);
+    void buildEventWindow(const UIInput &inp, UIRenderer &ui);
+    nlohmann::json eventWinStateJson() const;
+    harness::Status harnessEvents(harness::Active &a);
+
     // Fine (slow) movement mode — flipped by KB_MOVE_FINE (dispatchKeyAction). A toggle rather
     // than a held modifier (unlike KB_MOVE_BOOST): holding a stick-click down while also using
     // that same stick to move is uncomfortable, so a single press latches slow movement on/off.

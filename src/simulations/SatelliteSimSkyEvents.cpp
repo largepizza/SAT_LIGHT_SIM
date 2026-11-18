@@ -1252,6 +1252,7 @@ bool SatelliteSim::skyEventWatch(const sky::Event &e, std::string &msg)
         screenshotToastTimer = 4.0f;
         screenshotToastWarn = false;
         skUpcomingWall = -1e300;
+        eventWinOnSkyWatch(copy); // taken to a story event: its window (SatelliteSimEventWindows.cpp)
     }
     return ok;
 }

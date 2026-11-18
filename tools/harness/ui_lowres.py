@@ -105,6 +105,12 @@ def views():
         ("hint_9", ["hints on", "hints force 9", "wait 4", "hints state"], ["hints off"]),
         ("hint_10", ["hints on", "hints force 10", "wait 4", "hints state"], ["hints off"]),
         ("hint_pad", ["hints on pad=1", "hints force 4", "wait 4", "hints state"], ["hints off pad=0"]),
+        # The event windows (2026-11-17, EventWin): the longest text (the Sun's Fury), the longest title (the comet
+        # entering the inner planets), the total lunar eclipse and the explode warning's three buttons.
+        ("event_fury", ["events on", "events fire suns_fury", "wait 4", "events state"], ["events ack", "events off", "time pause"]),
+        ("event_comet", ["events on", "events fire comet_inner_planets", "wait 4"], ["events ack", "events off", "time pause"]),
+        ("event_lunar", ["events on", "events fire lunar_eclipse total=1", "wait 4"], ["events ack", "events off", "time pause"]),
+        ("event_warn", ["events on", "events fire explode_warning", "wait 4"], ["events ack choice=2", "events off", "time pause"]),
     ]
     return v
 
@@ -186,7 +192,11 @@ def check_dump(path):
         if not allowed(name, e["text"]):
             out["fail"].append(f"text offscreen: '{e['text'][:60]}' {[round(x) for x in e['box']]}")
     # which window (if any) a text belongs to: the last window rect drawn before it that contains it
-    wins = [(it["i"], it["box"]) for it in d["items"] if it.get("id") == "GenWin" and it["kind"] == "rect"]
+    # (EventWin: the event window's panel, a modal over everything: its texts are layered over the HUD, not overlapping)
+    wins = [(it["i"], it["box"]) for it in d["items"] if it.get("id") in ("GenWin", "EventWin") and it["kind"] == "rect"]
+    for it in d["items"]:
+        if it.get("id") == "EventWin" and it["kind"] == "rect" and not rect_in(it["box"], [0, 0, W, H]):
+            out["fail"].append(f"event window {[round(x) for x in it['box']]} exceeds the {int(W)}x{int(H)} screen")
     idx = {(it.get("text"), tuple(round(x) for x in it["box"])): it["i"] for it in d["items"] if it["kind"] == "text"}
 
     def owner(text, box):
