@@ -275,12 +275,16 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                                                       -si.x * std::sin(gr) + si.y * std::cos(gr), si.z));
     // The Sun's light at a point (its colour through the air; the per-pixel Earth shadow is cloud_march.comp's) and the
     // blue sky's on it (relative, 1 = a clear day), as the rocket plumes'.
+    // (skyTintAt: the colour of the sky's light there, set by sunLightAt: the clear sky's blue, or under the smoke layer
+    // the haze's own light, the Sun's colour through it)
+    glm::dvec3 skyTintAt(0.66, 0.82, 1.08);
     auto sunLightAt = [&](const glm::dvec3 &C, glm::dvec3 &sunC, double &amb) {
         const double r = glm::length(C), h = r - kReF;
         const double sinE = glm::dot(C / r, sunE);
         const double dip = -std::sqrt(2.0 * std::max(h, 0.0) / kReF);
         const double dayK = glm::smoothstep(dip - 0.03, dip + 0.02, sinE);
         sunC = glm::dvec3(0.0);
+        skyTintAt = glm::dvec3(0.66, 0.82, 1.08);
         if (dayK > 0.0)
         {
             const double ext1 = atmExtinctionMag(C, sunE, 0.0, 1.0);
@@ -289,9 +293,17 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                 sunC[ch] = dayK * std::pow(10.0, -0.4 * std::min(kc[ch] * ext1, 30.0));
             // and through the smoke layer above it (2026-11-17, issue_20261117_195951 "Lighting effect should be
             // redder here": the column at a sunset fire lit white-yellow inside a haze that reddens everything else;
-            // last frame's map, the layer's own Angstrom exponent, SatelliteSimSmokeLayer.cpp)
+            // last frame's map, the layer's own Angstrom exponent, SatelliteSimSmokeLayer.cpp). Its sky light is then
+            // the haze's (the Sun's colour through it, the clear sky's luminance) by the haze's share above: the blue
+            // sky's alone lit the dimmed column lavender.
             if (wildfireSmokeLayer > 0.0f)
-                sunC *= smokeLayerSunTransmitCpu(C, sunE, std::max((double)wildfireSmokeSpectral, 0.0) / 0.6);
+            {
+                double colA = 0.0;
+                sunC *= smokeLayerSunTransmitCpu(C, sunE, std::max((double)wildfireSmokeSpectral, 0.0) / 0.6, &colA);
+                const double lS = 0.2126 * sunC.x + 0.7152 * sunC.y + 0.0722 * sunC.z;
+                if (colA > 1e-4 && lS > 1e-6)
+                    skyTintAt = glm::mix(skyTintAt, sunC * (0.8 / lS), 1.0 - std::exp(-2.0 * colA));
+            }
         }
         amb = glm::smoothstep(-0.1, 0.25, sinE) * std::exp(-std::max(h, 0.0) / 15000.0);
     };
@@ -1200,7 +1212,7 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                     double amb;
                     sunLightAt(Cc, sunC, amb);
                     const glm::dvec3 sunL = bright * 4.0 * kPiF * alb * tint * sunC;
-                    const glm::dvec3 skyL = bright * 4.0 * kPiF * alb * tint * (0.18 * amb) * kSkyBlue;
+                    const glm::dvec3 skyL = bright * 4.0 * kPiF * alb * tint * (0.18 * amb) * skyTintAt;
                     // Pieces (2026-10-27, issue 20261027_000414 "Smoke trail geometry": from 165 km the trail was a chain of
                     // huge stretched ovals whose ends swung as the knots moved). The knots stand on a nested time grid whose
                     // spacing doubles down the trail, so a segment was 15-30x as long as the smoke is wide at every age: ONE
@@ -1605,7 +1617,7 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
                         double amb;
                         sunLightAt(C, sunC, amb);
                         if (emit(C, T, upP, Nh, sA, sV, sH, Sigma, bright2 * 4.0 * kPiF * alb * tint * sunC,
-                                 bright2 * 4.0 * kPiF * alb * tint * (0.18 * amb) * glm::dvec3(0.66, 0.82, 1.08), alb, hc, capN, -1.0))
+                                 bright2 * 4.0 * kPiF * alb * tint * (0.18 * amb) * skyTintAt, alb, hc, capN, -1.0))
                             ++nearSmokeLast;
                     }
                 }

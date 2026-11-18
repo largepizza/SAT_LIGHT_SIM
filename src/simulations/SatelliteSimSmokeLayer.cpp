@@ -70,14 +70,16 @@ glm::dvec3 cpuLayerAt(const glm::dvec3 &P)
 }
 }
 
-glm::dvec3 smokeLayerSunTransmitCpu(const glm::dvec3 &P, const glm::dvec3 &sunE, double specS)
+glm::dvec3 smokeLayerSunTransmitCpu(const glm::dvec3 &P, const glm::dvec3 &sunE, double specS, double *colAbove)
 {
+    if (colAbove) *colAbove = 0.0;
     if (!gMap.on) return glm::dvec3(1.0);
     const double r = glm::length(P);
     const double h = r - kReL;
     const double mu = glm::dot(P, sunE) / std::max(r, 1.0);
     const glm::dvec3 lay = cpuLayerAt(P);
     if (!(lay.x > 1e-5)) return glm::dvec3(1.0);
+    if (colAbove) *colAbove = lay.x * 0.5 * std::erfc((h - lay.y) / (1.41421356 * lay.z));
     // (as smoke_layer.comp: the column above the point, read where the Sun's ray reaches the layer's middle, along a
     // slab's slant capped at grazing)
     const double muE = std::max(mu, 0.0);
@@ -86,7 +88,11 @@ glm::dvec3 smokeLayerSunTransmitCpu(const glm::dvec3 &P, const glm::dvec3 &sunE,
     const double above = 0.5 * std::erfc((h - layS.y) / (1.41421356 * layS.z));
     const double tauS = layS.x * above / std::sqrt(muE * muE + 4.0 * layS.z / kReL);
     const glm::dvec3 spec(std::pow(0.765, specS), 1.0, std::pow(1.378, specS));   // (smoke.glsl kSmokeSpec ^ s)
-    return glm::exp(-tauS * spec);
+    // + the light the haze scatters on into itself (smoke_layer.comp's two octaves, x the share its own column scatters):
+    // the direct beam alone left a streak in the haze at a low Sun lit by the blue sky only, lavender
+    const glm::dvec3 tS = tauS * spec;
+    const double ms = 1.0 - std::exp(-lay.x);
+    return glm::min(glm::exp(-tS) + ms * (0.5 * glm::exp(-0.25 * tS) + 0.25 * glm::exp(-0.0625 * tS)), glm::dvec3(1.0));
 }
 
 void SatelliteSim::createSmokeLayer(VulkanContext &ctx)

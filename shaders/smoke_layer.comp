@@ -169,9 +169,11 @@ void main()
             float tauS = layS.x * above1 / sqrt(muE * muE + 4.0 * layS.z / R_EARTH);     // (a slab's slant, capped at grazing)
             vec3  tS = tauS * spec;
             // single scattering + two octaves of multiple scattering (each half the energy, a quarter of the depth, half the
-            // phase's asymmetry): single scattering alone left a layer lit by a low Sun through its own top black from above
+            // phase's asymmetry), the octaves x the share the layer's own column scatters (none in a thin haze): single
+            // scattering alone left a layer lit by a low Sun through its own top black from above
+            float ms = 1.0 - exp(-lay.x);
             sunL = SUN_INTENSITY * lit * exp(-tauA) *
-                   (exp(-tS) * ph + 0.5 * exp(-0.25 * tS) * ph2 + 0.25 * exp(-0.0625 * tS) * ph4);
+                   (exp(-tS) * ph + ms * (0.5 * exp(-0.25 * tS) * ph2 + 0.25 * exp(-0.0625 * tS) * ph4));
         }
         float day = smoothstep(-0.1, 0.25, mu);
         // the air between the eye and the point

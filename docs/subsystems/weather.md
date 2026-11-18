@@ -896,8 +896,12 @@ lists its sections and topics with line numbers. New notes go next to the sectio
     composite's spectral transmittance at the Sun's place, hueC) and the sunset through the haze redden; light = albedo
     0.9 x (the Sun through the air, as the noctilucent layer's, and through the layer's column above the point along
     its slant, read where the Sun's ray reaches the layer's middle, x HG g 0.6, + two octaves of multiple scattering:
-    half the energy, a quarter of the depth, half the asymmetry each; single scattering alone left a layer lit through
-    its own top by a low Sun black from above) + a grey sky share 0.35 x 0.5 (the streaks' 0.18) x "Smoke brightness", x the
+    half the energy, a quarter of the depth, half the asymmetry each, x 1 - e^-(the local column) so a thin haze has
+    none; single scattering alone left a layer lit through its own top by a low Sun black from above) + a grey sky
+    share 0.35 x 0.5 (the streaks' 0.18). The streaks and the smoke at the flames are lit by the same Sun through the
+    layer (sunLightAt x smokeLayerSunTransmitCpu, SmokeLayerCpu.h: last frame's map on the CPU, direct + the two
+    octaves): at the report's sunset the column was white-yellow inside a haze that reddened everything else; with the
+    direct beam alone it was lit by the blue sky only, lavender x "Smoke brightness", x the
     air's transmittance from the eye. Composite as nlc_shell.comp: the eye below the layer's top B' = B T + L, above
     it B' = B + A L; A' = A T. Where no opaque cloud holds the air split (A.a < 0, no emissive flag) it is moved to
     the haze's light-weighted distance by smokeAirSplitM (the cloud's share of the texel's opacity): the air beyond
@@ -906,6 +910,16 @@ lists its sections and topics with line numbers. New notes go next to the sectio
     ground's Sun (shade + reddening, as before). `clouds_v2.wildfire_smoke_layer` (1, no UI) x its optical depth, 0 =
     the palls as Gaussians (A/B). Harness `fires` -> `smoke_layer` (palls, max_tau, top_m, half_km, build_ms);
     `shaders reload smoke_layer=<spv>`. Off on Potato.
+    - Measured (RTX 3070 Ti, 1920x1009, the report's shots 1 / 3 / 5, one live app, 3 interleaved reps of 90 frames,
+      GPU total ms, old = `wildfire_dust_share 0` + `wildfire_smoke_layer 0`, run twice): shot 1 (370 km) 38.4 / 38.8
+      -> 37.9 (noise); shot 3 (4 km, inside the old trail) 35.8 / 35.5 -> 31.4 (the trail's ~130 Gaussians are the
+      layer now); shot 5 (2 km beside the fire) 32.2 / 31.3 -> 33.9, where the old draw had NO smoke (the bug); the
+      share-out alone with the old trail Gaussians was 36.4 there. The sky pass +0.5-0.9 ms at shot 5 (ground shading
+      by the layer's pieces: 12 of them, 31 cost ~+0.6 more). CPU +0.2-0.3 ms (the map 0.1-0.3 ms). The layer's map
+      peaks at a column of ~0.53 for the report's fire. harness_runs/smoke_ab (worktree, untracked).
+    - Along the reporter's last seconds (shots 4 and 8, `path goto` 0-10 s then `path play`): 0 segments in view lost
+      at every pose; with the old split the smoke range was empty after shot 4's path and 27-41 segments were lost
+      along shot 8's.
   - **The flame band** (2026-10-27, issue 20261027_212337 "Flame particles": "the sprites seem to disappear when up close
     and are just dots"; `clouds_v2.wildfire_flame_band` 1, no UI, 0 = the old tongues below). Two causes: the close-up
     flames, their share of the points and the glow were gated on the range to the IGNITION point (a fire burning for

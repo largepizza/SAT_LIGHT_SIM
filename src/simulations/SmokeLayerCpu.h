@@ -6,5 +6,6 @@
 #include <glm/glm.hpp>
 
 // P: a point (ECEF, m); sunE: the Sun's direction (ECEF, unit); specS: the Angstrom scale (smoke.glsl smokeSpecK's s).
-// Returns the transmittance per channel (650 / 550 / 450 nm); 1 where the map holds no smoke.
-glm::dvec3 smokeLayerSunTransmitCpu(const glm::dvec3 &P, const glm::dvec3 &sunE, double specS);
+// Returns the transmittance per channel (650 / 550 / 450 nm); 1 where the map holds no smoke. colAbove (optional): the
+// layer's vertical optical depth above P (550 nm).
+glm::dvec3 smokeLayerSunTransmitCpu(const glm::dvec3 &P, const glm::dvec3 &sunE, double specS, double *colAbove = nullptr);
