@@ -579,6 +579,8 @@ input locked, sim time driven at 5 s per beat, skippable with Space / pad Start)
 
 The first run's teaching: **one small hint at a time** (`HintPopup`: keycaps, then one line), chosen from what the
 player has and has not done. It replaced the card tutorial's teaching (that card no longer starts on its own).
+Hints 1-11 are the first run's **pass**; 12-19 are **contextual** (round 2, 2026-11-17): they outlive the pass and
+fire when their moment comes, in any later session, until used.
 `hintsTick` (buildUI, after the look block and `updateTutorial`) measures and decides; `hint_` (`HintRun`) holds
 every bit of state; `buildHints` (just before `buildTutorial`, after every HUD element it avoids) draws.
 
@@ -589,7 +591,8 @@ moving or climbing), `zoomed` (the wheel's zoom in buildUI or the zoom keys), `c
 `leftByTab` / `leftByRightClick` / `returned` (`fpsSet` -> `hintsNoteFps`; `returned` = any entry but the opening's
 and the harness's own; a pad player: the virtual cursor's on / off edges), `dragLooked`, `selected` (a CHANGE to a
 satellite: a selection standing when the pass began does not count), `timeBarShown` (a time control used, or
-hint 9's 8 s), `menuBarShown` (Missions / Weather / Sky events / Settings opened, or hint 10's 8 s). Movement is
+hint 9's 8 s), `menuBarShown` (Missions / Weather / Sky events / Settings opened, or hint 10's 8 s); `dragLooked`
+(a right-drag turn in menu mode: `camera.captured` while not in FPS mode) is hint 11's. Movement is
 read from the movement block's MERGED input (`hintMoveIn_`, `hintBoostIn_`: W A S D + the left stick + harness
 `inertial move`), one recordCompute behind.
 **Live signals:** the mode (`hintMenuMode()`: `!fpsMode`, or for a pad player `vCursorToggled && uiVisible`),
@@ -602,16 +605,44 @@ whether a window is open.
 |---|---|---|---|
 | 1 | Move the mouse / Hold the right mouse button and drag / Move the right stick ... to look around | always | always |
 | 2 | [W][A][S][D] to move / Left stick to move | `looked` (or case c) | always |
-| 3 | [Q] / [E] (pad [RT] / [LT]) to rise and descend | moving now or `moved` | the same |
-| 4 | Hold [Shift] ([LS]) to go faster | moving 4 s without a break | moving, or stopped < 1 s |
+| 4 | Hold [Shift] ([LS]) to go faster | `moved` | always |
+| 3 | [Q] / [E] (pad [RT] / [LT]) to rise and descend | `moved`, and `boosted` or 4 offered once | moving now or `moved` |
 | 5 | Scroll to zoom / [LB] / [RB] to zoom | view still 2 s, and a selection or a drawn mesh satellite within max(24 px, its size) of the centre | that satellite |
 | 6 | [Tab] or right click for the cursor / [Start] for the cursor | FPS mode, never in menu mode, and 6 s idle, or 2 FPS clicks in 5 s, or the captions ended | FPS mode, never in menu mode |
+| 11 | Hold the right mouse button and drag to look around (`HintLookDrag`) | menu mode, no selection, not a pad player (the stick looks in either mode) | menu mode, no selection |
 | 7 | Click a satellite | menu mode | menu mode |
 | 9 | Time: slow down, pause, speed up | menu mode, `selected` | the same |
 | 10 | Missions, Weather, Sky events and Settings | menu mode, 9 done | menu mode |
 | 8 | [Tab] / [Start] to look around again | menu mode, 9 and 10 done (or 10 s idle in menu mode) | menu mode |
 
-Keycap labels come from `actionLabel` (live bindings; W A S D and the pad's RT / LT are literal).
+Keycap labels come from `actionLabel` (live bindings; W A S D and the pad's RT / LT are literal). 4 before 3
+(round 2, the user: near a near-black ground "it genuinely seems like you are going nowhere until the Boost hint
+shows up"): boost is offered as soon as `moved` is met, `kHintHandoffS` (1 s) after hint 2 leaves instead of the
+3-s gap, and rise / descend once boost was used or its hint had its turn (shown once, whatever its exit).
+
+**Contextual hints** (12-19; gate = the fact, kept in settings): offered only when no pass hint wants the slot, after
+the captions, with no window open (`fpsWindowMask()`) and no text entry; a pass hint that comes to want the slot
+takes it (`how` = yield: the contextual one gets its offer back). Same popup, timings and `kHintMaxOffers`, but the
+offer counts persist, so a returning player is offered each at most twice ever.
+
+| # | Text | Offered when | Holds | Gate (`display.hint_gates` name) | Outlines |
+|---|---|---|---|---|---|
+| 12 | [Z] / [C] to roll | horizon free (`!camLevelActive()`: above `camLevelAltKm`, or auto-level off) | the same | Z / C rolled the view (`rolled`) | - |
+| 13 | [G] to go to it | a selection with a mesh, not following, no cinematic | selection, not following | `followActive` outside a cinematic (`gone_to`) | - |
+| 14 | Hide the Sun's glare: View panel > Coronagraph | the Sun (above the Earth's limb, the glare's own test) within `kHintSunDeg` 10 deg of the view centre for `kHintSunS` 4 s in total this session (reset by its timeout) | always | `inertialOcculter` (`coronagraph`) | HudViewBtn |
+| 15 | Lock the view to the stars: Movement panel > Reference frame > Stars | eye above `kHintGeoKm` 35,786 km, not locked | above it | `inertialActive` (`star_lock`) | HudMoveBtn |
+| 16 | Sky events: eclipses, meteor showers, comets and aurora | a song gap | always | Sky events opened (`sky_events`) | TimeSkyBtn |
+| 17 | Missions: rocket launches to watch, live and coming up | a song gap | always | Missions opened (`missions`) | TimeMissionsBtn |
+| 18 | Weather: storms, cyclones and wildfires around the world | a song gap, weather available | always | Weather opened (`weather`) | TimeWeatherBtn |
+| 19 | [F12] for a screenshot, [F8] for a high-resolution photo | a song gap | always | a screenshot or HQ photo taken (`requestScreenshot` / `requestPhoto`; `screenshot`) | TimeScreenshotBtn + TimePhotoBtn |
+
+Order when free: 12, 15, 14, 13, then in a gap the not-done one of 16-19 offered least (ties in that order: Sky
+events, Missions, Weather, the picture keys), **one per gap** (`gapUsed`). A song gap = the music audible (playing,
+not paused, master x music volume x the altitude fade > 0.03) and between two tracks (`!trackPlaying()`,
+`gapRemaining() > 0`: `musicGapS`, 30 s); with no audible music (off, paused, muted, high orbit) a "gap" of
+`kHintGapWindowS` 30 s opens every `kHintNoMusicS` 240 s of silence. Their keys use the pad's binding when one is
+bound, else the keyboard's (roll, Go to and the picture keys have no pad default). The gates are measured every frame
+(`hintsCtxGates`, hints on or off) and saved at once (`hintSaveDirty_` -> `saveSettings`).
 
 **The scheduler** (constants `kHint*` in SatelliteSim.h, one block): nothing before beat 2 begins (15.22 s of
 captions; `kHintBeat`); one hint at a time, 3 s from one gone to the next (`kHintGapS`), 0.3 s fades; a hint fades
@@ -620,8 +651,9 @@ fails (`how` = condition); a gate met before its hint ever showed retires it; ig
 two offers at most (9 and 10 instead leave after 8 s up, counted as done). The order when the slot is free:
 a. captions ended: 6 if never in menu mode, else 7 in menu mode without a selection (both never time out);
 b. menu mode with a selection: 9, then 10; c. a selection and 9 + 10 done: 8 in menu mode, then 2 if not moved
-(never times out); d. 1; e. moving now: 3 (not climbed), else 4; f. 6 on idle / two clicks; g. 7 in menu mode;
-h. 2, 3, 5, then 8 on menu idle. **Two FPS clicks within 5 s take the slot for 6 at once** (`preempted`: the hint
+(never times out); d. 1; e. `moved`: 4, then 3 (not climbed); f. 6 on idle / two clicks; g. 7 in menu mode;
+h. 2, 3, 5, then 8 on menu idle; in a and g, 11 comes before 7 (the first time in menu mode); then the contextual
+hints. **Two FPS clicks within 5 s take the slot for 6 at once** (`preempted`: the hint
 up gives way, gets its offer back, no 3-s gap) unless the hint up is in a never-time-out case: without it the
 clicker would see 2 (on at beat 2 for anyone who looked) and wait. **Complete** = captions ended + `selected` +
 `moved` + 9 and 10 done (retired by use counts): `tutorialDone` set and `saveSettings()`; then 3, 4, 5 and 8 may
@@ -629,7 +661,10 @@ fire once more that session (`postFired`).
 
 **When:** `hintsPass_` is decided on the first frame (`!tutorialDone` = a pass), and every opening's first frame
 (`updateIntro`, a first run's or a Replay Intro's) starts a pass from zero (`hintsReset`, which also primes the
-edges). Never shown during a playing cinematic, an HQ photo, the old card, or with the HUD hidden (`how` =
+edges); a Replay Intro (`introIsReplay`) also forgets the contextual gates and counts (`hintsReset(true)`). Without a
+pass (a returning player, `hintsPass_` 0) the scheduler still runs, for the contextual hints only: one whose gates
+are all met or spent sees nothing. `display.hints` (Settings > Display > Startup "Show hints", default on) turns
+every hint off; Replay Intro keeps that choice. Never shown during a playing cinematic, an HQ photo, the old card, or with the HUD hidden (`how` =
 suppressed); a harness run keeps them off (`harnessInit`) until `hints on`.
 
 **The popup** (z 27: over windows 10 and notices 25, under the caption 30; passthrough; width <= W - 24; fs(13);
@@ -637,18 +672,24 @@ keycaps fs(13) x 1.6 tall). While a caption is declared (`introCaptionBuilt_`) i
 top edge, 8 px up (Clay places it the same frame, so it rises when the caption wraps); between two captions (the
 next one's first frame draws none) it stays where it was. Else bottom centre, above both toolbars (12 px) and
 anything else in its way. 9 / 10 go above `LeftPanel` / `RightPanel` (left / right aligned, clear of a 4-px
-outline, `HintOutline`), unless that would cover the caption or another element: then the bottom stack, with the
-outline still marking the toolbar. Avoided (only if declared this frame: `UIRenderer::declaredThisFrame`, Clay
+outline, `HintOutline`), 14-19 above their button's toolbar, centred on the button (the outline round the button),
+unless that would cover the caption or another element: then the bottom stack, with the outline still marking the
+toolbar or button. Avoided (only if declared this frame: `UIRenderer::declaredThisFrame`, Clay
 keeps stale boxes): LeftPanel, RightPanel, HudPopupPanel 0 / 1, SelSatChip, FollowHud, FollowAgainBtn, CineHud,
 FpsRing, CineCaption. Its own size is last frame's box (an estimate on a new hint's first frame, at alpha 0).
-`ui_lowres.py` has six hint views (`hint_caption_menu`: the longest hint, 1 in menu mode, over beat 2; `hint_caption`,
-`hint_9`, `hint_9_caption`, `hint_10`, `hint_pad`) and `HintPopup` in `HUD_IDS`: all pass at the five sizes.
+`ui_lowres.py` has sixteen hint views (`hint_caption_menu`: the longest pass hint, 1 in menu mode, over beat 2;
+`hint_caption`, `hint_9`, `hint_9_caption`, `hint_10`, `hint_pad`, `hint_11` ... `hint_19`, `hint_14_pop` with the
+View popup open) and `HintPopup` in `HUD_IDS`; `HintOutline` must be on screen and never under the popup.
 
-**Harness:** `hints on|off|reset|state|set <gate> [0|1]|force <n> [pad=0|1]`, `state` -> `hints` (gates, live,
-showing, offers, retired, texts, `seen` "1,6,7", `log` with shown / gate-met / gone times and `how`), `mouse scroll
-dy=`. `tools/harness/scripts/hints_players.satcmd` (`--fixed-dt 0.05`, one launch, ~165 s): Still 1,6,7,9,10,8,2
-then complete; Explorer 3,4,6,7,9,10,8; Clicker 2,6 (6 on the second click); Veteran 9,10,8 (1, 2, 6, 7 retired);
-Returning none; Gamepad labels; each hint's exits, and retirement.
+**Harness:** `hints on|off|reset|state|set <gate> [0|1]|force <n>|gap [s=] [pad=0|1]` (`on` keeps the saved
+contextual state, `reset` clears it; `set` takes the contextual gate names too; `gap` opens a song gap now), `state`
+-> `hints` (gates, live incl. `sun_deg`, `sun_s`, `level_active`, `above_geo`, `music_audible`, `song_gap`,
+`gap_open`, `gap_used`, `silent_s`; `saved` {gates, offers, all_done}; showing, offers, retired, texts, `seen`
+"1,6,7", `log` with shown / gate-met / gone times and `how`), `mouse scroll dy=`, `audio music end` (a real gap).
+`tools/harness/scripts/hints_players.satcmd` (`--fixed-dt 0.05`, one launch): Still 1,6,11,7,9,10,8,2 then complete
+and 4; Explorer 4,3,6,11,7,9,10,8; Clicker 2,6 (6 on the second click); Mover 2,4,3 (4 one second after 2 leaves) and
+2,4,3 with 4 timed out; each hint 6,11,7,9,10,8,2,4,3,5; Veteran 9,10,8 (1, 2, 6, 7 retired); Returning with every
+gate met: none; Contextual 13,13,12,15,14,16,17,18,19,17 then none (all done); Gamepad labels.
 
 ---
 
