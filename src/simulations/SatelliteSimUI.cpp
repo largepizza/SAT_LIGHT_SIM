@@ -906,15 +906,16 @@ void SatelliteSim::buildUI(float dt, UIRenderer &ui)
         {
             // Normal direct control: the drag (or the FPS mode, no button) turns the camera rig (screen Y down: mouse up =
             // negative dmy = look up).
-            const bool turning = fpsHeld ? true : camera.updateCapture(win);
+            // (hDrag: harness `inertial drag`, a held right button: it turns here as a real drag does, 2026-11-17)
+            const bool turning = (fpsHeld || hDrag) ? true : camera.updateCapture(win);
             if (turning)
                 camPitch(-(double)dmy * camera.lookSens());
-            if ((camera.captured || fpsHeld) && dmx != 0.0f)
+            if ((camera.captured || fpsHeld || hDrag) && dmx != 0.0f)
                 camYaw(glm::radians(-(double)dmx * camera.lookSens())); // (+ = left: look-right is a negative angle)
             if ((turning || camera.captured || fpsHeld) && (dmx != 0.0f || dmy != 0.0f))
             {
                 fpsFacts_.lookDeg += std::sqrt((double)dmx * dmx + (double)dmy * dmy) * camera.lookSens();
-                if (!fpsHeld && camera.captured)
+                if (!fpsHeld && (camera.captured || hDrag))
                     fpsFacts_.rightDragUsed = true;
             }
 
@@ -5114,6 +5115,8 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     // The startup graphics chooser (SatelliteSimBootChooser.cpp): asked on the loading screen, before
     // anything heavy loads. A crashed last session shows it regardless.
     uiToggleRow(inp, ui, "AskGfxMode", 0, tx(Txt::LblAskForGraphicsModeOnStartup), askGraphicsModeOnStartup);
+    // The hints (SatelliteSimHints.cpp): the first run's and the contextual ones. Replay Intro teaches them again.
+    uiToggleRow(inp, ui, "ShowHints", 0, tx(Txt::LblShowHints), hintsEnabled, tx(Txt::TipShowHints));
     settingsButtonRow(searchActive(), CLAY_ID("DispStartupBtns"), [&]()
     {
         if (uiButton(inp, ui, "ReplayIntroBtn", 0, tx(Txt::BtnReplayIntro), nullptr))
@@ -9634,6 +9637,9 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         // Absent (every settings.json before 2026-10-03) = not done: the tutorial is new, and the
         // players it is for are exactly the ones who already never found the controls.
         tutorialDone = d.value("tutorial_done", isPatch ? tutorialDone : false);
+        // The hints (SatelliteSimHints.cpp): on unless switched off; the contextual hints' gates and offer counts.
+        hintsEnabled = d.value("hints", hintsEnabled);
+        hintsLoadSaved(d);
         // The startup graphics chooser. Absent = ask (it is the safety net for a machine that cannot run
         // the full renderer, so an upgrading player sees it once and can untick it there).
         askGraphicsModeOnStartup = d.value("ask_graphics_mode", isPatch ? askGraphicsModeOnStartup : true);
@@ -10644,6 +10650,9 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"window_opacity", windowOpacity},
         {"play_intro_on_startup", playIntroOnStartup},
         {"tutorial_done", tutorialDone},
+        {"hints", hintsEnabled},
+        {"hint_gates", hintsSavedGatesJson()},
+        {"hint_offers", hintsSavedOffersJson()},
         {"ask_graphics_mode", askGraphicsModeOnStartup},
         {"photo_scale", photoScaleSetting},
         {"screenshot_ui", screenshotUiSetting},
