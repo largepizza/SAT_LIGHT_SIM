@@ -1357,7 +1357,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2CirrusFibres, cv2CirrusHooks,
                     cv2AnvilFibres, cv2AnvilFibreAlongKm, cv2AnvilFibreAcrossM, cv2StormBubbles, cv2AnvilErosion,
                     cv2AnvilLidLobes, cv2AnvilUnderLobes,
-                    cv2BaseLcl, cv2BaseCellM, cv2BaseRegional, cv2Fractus, cv2MidWisps, cv2OroAmount, cv2OroWindMps,
+                    cv2BaseLcl, cv2BaseCellM, cv2BaseRegional, cv2MidWisps, cv2OroAmount, cv2OroWindMps,
                     cv2OroWindDirDeg, cv2OroMoist})
         mix(v);
     for (const GpuCloudV2Type &t : cv2Types)
@@ -1712,9 +1712,9 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     {
         p.types[i] = cv2Types[i];
         // cv2BaseShift lowers a base by up to 1.5 x alt.w x "Cloud base regional spread" + 600 m x "condensation level"
-        // (sea + rain; clamped to >= 150 m over the ground) and fractus hangs up to 500 m under it.
+        // (sea + rain; clamped to >= 150 m over the ground).
         lo = std::min(lo, cv2Types[i].alt.x - std::max(cv2Types[i].alt.w * 1.5f * std::clamp(cv2BaseRegional, 0.0f, 2.0f), cv2Types[i].alt.w)
-                              - 600.0f * std::clamp(cv2BaseLcl, 0.0f, 2.0f) - (cv2Fractus > 0.0f ? 500.0f : 0.0f));
+                              - 600.0f * std::clamp(cv2BaseLcl, 0.0f, 2.0f));
         hi = std::max(hi, cv2Types[i].alt.x + (cv2Types[i].alt.y - cv2Types[i].alt.x) * 1.35f);
     }
     // (storm-above, 2026-11-05) An overshooting dome stands "Cb overshoot" + 600 m (cv2StormGeom kCv2DomeU) over the anvil's
@@ -2410,9 +2410,9 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // (2026-11-12, storms) "Storm billow lobes" (clouds_v2.glsl cv2FieldLow).
     p.storms2 = glm::vec4(std::clamp(stormBillowLobes, 0.0f, 4.0f), 0.0f, 0.0f, 0.0f);
     p.cloudflip = glm::vec4(std::clamp(cv2ZeroCoverFade, 0.0f, 0.5f), 0.75f, 2.7f, 0.0f);   // (clouds_v2.glsl cv2ZeroCoverLift)
-    // Vertical variation (vertical, 2026-11-05): cv2BaseShift's strengths, fractus, mid-level wisps.
+    // Vertical variation (vertical, 2026-11-05): cv2BaseShift's strengths, mid-level wisps (w spare: "Fractus" removed 2026-11-18).
     p.vert  = glm::vec4(std::clamp(cv2BaseLcl, 0.0f, 2.0f), std::clamp(cv2BaseCellM, 0.0f, 400.0f),
-                        std::clamp(cv2BaseRegional, 0.0f, 2.0f), std::clamp(cv2Fractus, 0.0f, 2.0f));
+                        std::clamp(cv2BaseRegional, 0.0f, 2.0f), 0.0f);
     {
         // yzw: the wisps' own anchor, on anchorMid's period with the drifted frame's z squeezed x0.4 (cv2MidSigma). The squeeze
         // is a fixed linear map of the WORLD position (z is the Earth's axis, which the drift turns about), so it is reduced here

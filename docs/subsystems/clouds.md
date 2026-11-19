@@ -104,8 +104,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   terrain does not); the tropopause it used to hold is a function of latitude (`cv2Tropo`). Low bases rise
   by 0.6 (decks) .. 0.9 (convective) x the ground, tops with them but capped at the Cb top; the mid layer by
   0.8x. Until then every base was above SEA level and the Andes/Tibet stood inside the cloud.
-- **Varied bases, fractus, mid-level wisps, orographic lenses** (2026-11-05, night wave "vertical"; `clouds_v2.glsl`
-  `cv2BaseShift`, `cv2LowA`, `cv2FarColumn`, `cv2MidSigma`, `cv2OroField`; UBO block `vert / vert2 / oro0 / oro1`; slots 528-535).
+- **Varied bases, mid-level wisps, orographic lenses** (2026-11-05, night wave "vertical"; `clouds_v2.glsl`
+  `cv2BaseShift`, `cv2LowA`, `cv2FarColumn`, `cv2MidSigma`, `cv2OroField`; UBO block `vert / vert2 / oro0 / oro1`; slots 528-535, 531 free).
   - The low base = type base + lift + `cv2BaseShift` (regional spread + condensation-level proxy) + per-cell offset - deck
     variation, clamped to [lift + 150, top - 400]. The regional term normalises the cluster Perlin like the fog / mid layer
     (`clamp((cl.a-0.5)*8.8, ±1.5) * alt.w`): the old `(cl.a-0.5)*2*alt.w` moved a 300 m setting by ±34 m (cl.a is 0.50 ± 0.057).
@@ -113,29 +113,22 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     dry land (~20 km cover < 0.02-0.35, no rain) by day, +300 m over any land by day; decks -150 m sea, -150 m rain. The top
     rises by half a positive shift (desert cumulus are high AND tall); `anvil3.zw` carries +900 m x "condensation level".
     `cv2FarColumn` takes the same `cv2BaseShift` (no per-cell term), so bases agree at the near/far placement boundary.
-  - Shell: `lo` widens by 1.5 alt.w x regional + 600 m x LCL + 500 m (fractus); with rain on (default) shell.x is 0 anyway.
-  - Fractus: in the rain branch, from the shaft's own texel `sr` (a second fetch there put the march at 249 registers):
-    through a band 60 m .. 250-550 m (rate) under a raining base the curtains' vertical squeeze (0.85) eases off, so the
-    texel is round noise, thresholded into ragged shreds whose band edges move +-120 m with it. Thresholding the
-    squeezed curtain texel drew a row of flat-topped dark blocks. Cloud, not rain (its share leaves `f.rain`, the bows
-    keep the rain's); fades out by fpM 600-1500 m.
-    Integration fix (2026-11-05, branch vertical2): fractus fades out 3-7 km from the eye (length(q.rSeaE)), stays 80-250 m
-    off the ground, sigma 0.006 (0.012 put a dark veil over a view from under a raining edge), band edges +-250 m, and it
-    exists only where CV2_FRACTUS is defined (cloud_v2_march.comp, cloud_v2_cdc.comp). Under the low sea bases of the towers
-    region (-5 163, from 30 m) the band, 100-500 m up and within ~15 km, drew rows of flat-topped blue-grey blobs a degree
-    or two over the horizon; a 6-15 km fade left them, 3-7 km removes them. Using `lift` for the ground test put the
-    march at 249 registers; cv2Ground (the cached global) keeps 128.
-    Seen from below only (2026-11-15, issue_20261115_132950 "Odd rain clumps", branch qa/20261115b/rainclump): frK also
-    takes `smoothstep(0, 0.08, tan(elevation of the sample from the eye))`, the eye's altitude from `gCv2EyeH` (a global
-    the march and the CDC bake set from terrainFrame.x + 2 at the top of main: terrainFrame is declared after the
-    include). From 2.2 km beside a Cb whose base sat at the eye's height, the band (a slab a few hundred metres thick)
-    cut off by the 3-7 km ring drew detached, flat-topped pale lenses ~13 deg under the horizon, brighter than the rain
-    round them (rain light with msBright 0.85). Ablation at shot 1: fractus 0 and frK forced 0 both remove them; debug
-    view 7 puts them in the low field (red, incl. rain) at very low optical depth. Ground views (eye under the band):
-    unchanged against the A-A spread (mean |diff| 1.09 vs 0.83 levels, 0.77 vs 0.76-0.94). Cloud march 128 registers
-    either way; GPU total 17.43 -> 17.29 ms at shot 1, 19.27 -> 19.56 at shot 2 (rep spread +-0.3-0.45). With the
-    frK = 0 below the eye the rain curtains keep their vertical squeeze, so they read as continuous shafts to the
-    ground there. Evidence: qa/waves/20261115b/evidence/c02/ (untracked).
+  - Shell: `lo` widens by 1.5 alt.w x regional + 600 m x LCL; with rain on (default) shell.x is 0 anyway.
+  - There is no fractus (scud) under raining bases: below a raining base the rain branch draws only the rain shafts
+    (curtains squeezed 0.85 along the wind everywhere, `f.rain` 1). `vert.w` is spare; slider slot 531 is free; an old
+    settings file's `clouds_v2.fractus` is ignored on load.
+    History: fractus (2026-11-05, night wave "vertical"; "Fractus (ragged scud)", `cv2Fractus`, `CV2_FRACTUS` in the
+    march and the clipmap bake) was a band 60 m .. 250-550 m under a raining base where the curtains' squeeze eased
+    off and the shaft texel was thresholded into ragged shreds (sigma 0.006, 3-7 km from the eye, 80-250 m off the
+    ground, seen from below only after issue_20261115_132950). Its integration fixes (flat-topped blue-grey blobs on
+    the horizon, pale lenses from level with the band, a dark veil at 0.012) are in git history before 2026-11-18.
+    Removed 2026-11-18 at the user's request (issue_20261118_210125 "Cloud wisps in rain": "these small little clouds
+    that form at the top of rain columns aren't up to the look of the sim"): from under the base (Gulf of
+    Tehuantepec, 20 m) it drew a grainy, speckled ragged layer under the raining base. Knockout (fractus 0) at the
+    three shots removed it and nothing else; away from rain (cumulus from the ground at Sydney and from 3 km at Melbourne)
+    the image is unchanged within the two-capture spread (0.58 / 0.98 levels vs 0.69 / 2.2). Cloud march 128 registers
+    before and after (binary 703,872 -> 699,392 B); time unchanged within the A-A spread (shot 3 10.07 -> 10.23 ms, A-A
+    0.25; shot 1 10.57 -> 10.66, A-A 0.17; 1920x1009, 3 interleaved reps). Evidence: qa/waves/20261118/evidence/c05/.
   - Mid-level wisps: `cv2MidSigma`'s low mode, 1.5-2.5 km + 0.8 ground, 260-460 m thick (>= 260: the CDC reads are 160 m
     apart), one shape fetch on its own anchor (`vert2.yzw`: anchorMid's, with the drifted frame's z squeezed x0.4, reduced
     in double on the CPU) -- the squeeze is a fixed linear map of the WORLD position, ~2.5x longer east-west than north-south at
@@ -217,7 +210,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     lift.py beside them models the lift field offline from the R8 DEM.
   - Test views: qa/waves/20261105/evidence/vertical/*.satcmd (Fuji from Yamanakako az 245 el 12 fov 40 with cover_clear
     0.9; Rainier, Aconcagua, Andes 12 km / orbit; trade cumulus ground / 900 m / 10 km; inland Darwin; a storm via
-    `weather go 0` then the ground 35 km toward it for fractus).
+    `weather go 0` then the ground 35 km toward it).
 - **Erosion detail fades with distance toward its MEAN, at full strength** (`df = mix(0.45, fetched,
   detailAmt)`). It used to fade the erosion toward NONE and then switch to the mean where detailAmt hit 0: a
   band of uneroded cloud just inside 4 x `detail_lod_start_m`, seen from orbit as a ring (~220 km out).
