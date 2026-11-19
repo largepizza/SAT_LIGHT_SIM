@@ -56,6 +56,7 @@ namespace harness
 {
 class Runner;
 struct Active;
+struct Command;
 enum class Status;
 } // namespace harness
 
@@ -3149,6 +3150,14 @@ private:
         std::unique_ptr<KesslerWorker, KesslerWorkerDelete> wk;
         uint64_t hash = 0;
         double cacheFrontier = 0.0;
+        // (2026-11-18) Where the replayed history came from ("prebake", "user", "" = none / kept), the prebakes shipped
+        // next to the exe (hashes) and whether one is this world's (to which frontier).
+        std::string cacheSource;
+        std::vector<std::string> prebakeShipped;
+        bool prebakeMatches = false;
+        bool prebakeChecked = false;
+        double prebakeFrontier = 0.0;
+        double replayUntil = 0.0; // the history replayed (the cache or the kept events), not computed live
         // (2026-10-29) Restored from a world snapshot (SatelliteSimKessler.cpp, "Snapshots"): the mirror is rebuilt from
         // the world at install, with these streams (made before the snapshot, windows still to come).
         bool fromSnap = false;
@@ -3314,6 +3323,13 @@ private:
     double kCacheFrontier = 0.0;          // the loaded cache's frontier: a cache is only ever rewritten longer
     bool kWorkerDone = false;
     uint64_t kHash = 0;                   // the world's inputs (cache key)
+    // (2026-11-18) The staleness check (kesslerRestartInstall): where the history came from, the shipped prebakes' hashes,
+    // whether one is this world's and to which frontier; `kessler state` -> world_hash, prebake_*, cache_source.
+    std::string kCacheSource;
+    std::vector<std::string> kPrebakeShipped;
+    bool kPrebakeMatches = false, kPrebakeChecked = false;
+    double kPrebakeFrontier = 0.0;
+    double kReplayUntil = 0.0; // this world's history is replayed (not computed) up to here (J2000 s)
     int kDebrisConst = -1;                // the "Collision debris" pseudo-constellation (fragments)
     uint32_t kDebrisType = 0;
     int kDebrisKit[3][3] = {{-1, -1, -1}, {-1, -1, -1}, {-1, -1, -1}}; // [kind: array, radiator, structure][S, M, L]
@@ -8421,6 +8437,10 @@ private:
     void harnessInit();
     void harnessTick();
     harness::Status harnessExec(harness::Active &a);
+    // The stall guard (2026-11-18): a command's wall budget (maxs=, its own default, else the script's) and the undo
+    // of one failed over it.
+    double harnessCmdBudgetS(const harness::Command &c, double scriptDefault) const;
+    void harnessAbortCmd(harness::Active &a);
     bool harnessLookDir(int track, int planet, glm::vec3 &enuDir); // false if unavailable
     nlohmann::json harnessStateJson();
     nlohmann::json auroraStateJson() const; // SatelliteSimHarness.cpp: the aurora activity (SpaceWeather.h)

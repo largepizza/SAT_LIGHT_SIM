@@ -1202,6 +1202,36 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
         buildWorld(*this, wk->w, satOrbits, activeSatCount, constellations, satTypes, raanAnchorT, kFuryArriveT,
                    kesslerRateMult, kesslerAvoidance, kesslerHorizonYears, kDebrisType, kDebrisConst, kDebrisKit);
         out.hash = worldHash(wk->w);
+        const std::filesystem::path ex = std::filesystem::path(Paths::exeDir()) / "kessler_prebake";
+        // (2026-11-18, h01) The staleness check: which prebakes ship next to the exe, whether one is this world's
+        // (a stale one made every Sun's Fury past the user's own cache compute live, ~1 s per simulated day).
+        {
+            std::error_code ec;
+            out.prebakeChecked = true;
+            out.prebakeShipped.clear();
+            for (const auto &de : std::filesystem::directory_iterator(ex, ec))
+            {
+                const std::string fn = de.path().filename().string();
+                if (fn.rfind("suns_fury_", 0) == 0 && de.path().extension() == ".pak" && fn.size() == 30)
+                    out.prebakeShipped.push_back(fn.substr(10, 16));
+            }
+            std::sort(out.prebakeShipped.begin(), out.prebakeShipped.end());
+            KesslerCacheHead ph;
+            out.prebakeMatches = readCacheHead(ex / cacheName(out.hash), out.hash, ph);
+            out.prebakeFrontier = out.prebakeMatches ? ph.frontier : 0.0;
+            static std::atomic<uint64_t> warnedFor{0}; // (once per world, not at every restart)
+            if (!out.prebakeMatches && warnedFor.exchange(out.hash) != out.hash)
+            {
+                std::string sh;
+                for (const std::string &s : out.prebakeShipped)
+                    sh += (sh.empty() ? "" : ", ") + s;
+                Log::line("kessler: WARNING the shipped prebake (kessler_prebake/: " + (sh.empty() ? std::string("none") : sh) +
+                          ") is not this world's (" + cacheName(out.hash) +
+                          "): past the user cache the Sun's Fury is computed live (~1 s per day). Settings that "
+                          "differ from the defaults do this; at the defaults the prebake is stale: "
+                          "tools/make_kessler_prebake.py");
+            }
+        }
         if (const char *e = std::getenv("SATLIGHTSIM_KESSLER_PARALLEL"))
             wk->w.parallelApply = std::atoi(e) != 0;
         if (const char *e = std::getenv("SATLIGHTSIM_KESSLER_PREP"))
@@ -1237,11 +1267,14 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
         {
             KesslerCacheHead best, h;
             const std::filesystem::path ud = std::filesystem::path(Paths::userDataDir()) / "kessler";
-            const std::filesystem::path ex = std::filesystem::path(Paths::exeDir()) / "kessler_prebake";
+            int bestSrc = 0; // 1 user cache, 2 shipped prebake
             for (const std::filesystem::path &c : {ud / cacheName(out.hash), ex / cacheName(out.hash),
                                                    ud / cacheName(out.hash, ".bin")})
                 if (readCacheHead(c, out.hash, h) && h.frontier > best.frontier)
+                {
                     best = h;
+                    bestSrc = c.parent_path() == ex ? 2 : 1;
+                }
             double cap = 1e300;
             for (const kessler::Event &e : userEvents)
                 cap = std::min(cap, wk->w.stepStart(e.t));
@@ -1265,6 +1298,7 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
                 }
                 Log::line("kessler: cache " + best.path.string() + ": " + std::to_string((int)((best.frontier - kFuryArriveT) / 86400.0)) +
                           " days");
+                out.cacheSource = bestSrc == 2 ? "prebake" : "user";
             }
             else if (keepEngineBefore < 0.0)
                 Log::line("kessler: no cache " + cacheName(out.hash) + " - simulating from the storm");
@@ -1383,6 +1417,7 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
             }
         }
         out.cacheFrontier = (keepEngineBefore >= 0.0 && !usedCache) ? kFuryArriveT : replayUntil;
+        out.replayUntil = replayUntil; // (2026-11-18) replayed, not computed: the cache's or the kept events' end
         wk->wantUntil = startT < kFuryArriveT ? tNow + 86400.0 : std::max(kFuryArriveT + 2.0 * 86400.0, tNow + 86400.0);
         wk->simNow = tNow;
         {
@@ -1431,6 +1466,15 @@ void SatelliteSim::kesslerRestartInstall(RestartOut &out)
 {
     kHash = out.hash;
     kCacheFrontier = out.cacheFrontier;
+    kCacheSource = out.cacheSource;
+    kReplayUntil = out.replayUntil;
+    if (out.prebakeChecked)
+    {
+        kPrebakeShipped = out.prebakeShipped;
+        kPrebakeMatches = out.prebakeMatches;
+        kPrebakeFrontier = out.prebakeFrontier;
+        kPrebakeChecked = true;
+    }
     kWorker = std::move(out.wk);
     kEvents.src = &kWorker->w.events;
     if (out.fromSnap)
@@ -4754,6 +4798,20 @@ nlohmann::json SatelliteSim::kesslerStateJsonImpl(bool full) const
     j["done"] = kWorkerDone;
     j["events"] = kEvents.size();
     j["user_events"] = kUserEvents.size();
+    {
+        // (2026-11-18, h01) The staleness check: this world's hash (the cache key), the prebakes shipped next to the exe,
+        // whether one is this world's (prebake_matches; null before the first world is built) and how far it reaches,
+        // and where the replayed history came from ("prebake", "user" cache, "" = none: computed live).
+        char hb[24];
+        snprintf(hb, sizeof(hb), "%016llx", (unsigned long long)kHash);
+        j["world_hash"] = kHash ? std::string(hb) : std::string();
+        j["prebake_shipped"] = kPrebakeShipped;
+        j["prebake_matches"] = kPrebakeChecked ? nlohmann::json(kPrebakeMatches) : nlohmann::json();
+        j["prebake_days"] = kPrebakeMatches ? (kPrebakeFrontier - kFuryArriveT) / 86400.0 : 0.0;
+        j["cache_source"] = kCacheSource;
+        j["cache_days"] = kCacheFrontier > kFuryArriveT ? (kCacheFrontier - kFuryArriveT) / 86400.0 : 0.0;
+        j["replay_days"] = kReplayUntil > kFuryArriveT ? (kReplayUntil - kFuryArriveT) / 86400.0 : 0.0; // replayed, not computed
+    }
     {
         // (2026-10-30) the pair collisions drawn up close this frame (kesslerFillCollisions): the projectile's stand-in
         // before the impact, the flash after it

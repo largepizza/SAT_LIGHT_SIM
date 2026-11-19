@@ -1,6 +1,7 @@
 # The event windows and the explode warning (2026-11-17, SatelliteSimEventWindows.cpp; docs/subsystems/sky-events.md
 # "Event windows", kessler.md "The explode warning"). One launch, 20 sim steps / s:
-#   python tools/harness/run.py tools/harness/scripts/event_windows.satcmd --fixed-dt 0.05 --quiet
+#   python tools/harness/run.py tools/harness/scripts/event_windows.satcmd --fixed-dt 0.05 --quiet --timeout 600
+# (~5 min with a current prebake, 2026-11-18: about half of it the 1100-day prebake replay in section 7)
 # Read: res.py <run> --errors (the expects); res.py <run> -c events -g events_state.log -g events_state.id
 #       res.py <run> -c "events list" -g events; tools/harness/ui_lowres.py check <run> (the ev_* dumps)
 #   1  off in a harness run until `events on`; `events list` = the table with every moment
@@ -436,6 +437,10 @@ events state
 time pause
 
 # -- 7 the Sun's Fury and the cascade (the prebake) --
+# The shipped prebake must be this world's (2026-11-18, h01): a stale one computes the cascade live (~1 s a simulated
+# day) and the 1100-day wait below sat 16 min. These fail in seconds instead (rebuild: tools/make_kessler_prebake.py).
+kessler prebake require=1
+expect state.kessler.cache_source prebake
 kessler wait days=60
 time pause
 time set 2037-07-15T02:30:00Z
@@ -484,8 +489,9 @@ events ack soft=1
 events state
 events list
 time pause
-# the share destroyed at later dates (the cascade replayed from the prebake; a paused clock walks it in ~7 frames)
-kessler wait days=1100
+# the share destroyed at later dates (the cascade replayed from the prebake: ~2 min for 1100 days, applies-bound,
+# measured 2026-11-18; a stale prebake fails at the top of section 7 in seconds instead of computing it live for 16 min)
+kessler wait days=1100 maxs=240
 time set 2037-12-01T00:00:00Z
 wait 20
 events state

@@ -400,11 +400,27 @@ Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night
   (the hash covers the roster, types, settings, the kit and `kCacheVersion`), written longer only, never while the player
   has breakups; **the default history is SHIPPED**: `data/kessler/suns_fury_<hash>.pak` -> `<exe dir>/kessler_prebake/`
   (CMakeLists POST_BUILD + sync, `PackageRelease.cmake`; its own folder so the user cache's "keep 3 newest" prune never
-  deletes it), 1102 days past the CME (to 2040-07-21), 31.3M engine events, 45 MB. `kesslerRestart` takes the longest
+  deletes it), 1101 days past the CME (to 2040-07-20), 22.0M engine events, 33.6 MB (2026-11-18 bake, world 984125cb: 13.5 min
+  end to end, the 1100-day `kessler wait` 773 s at 0.70 s a day). `kesslerRestart` takes the longest
   of user `.pak`, shipped `.pak`, old user `.bin` whose header hash matches (no player events; with them only up to the
   first one's step; a pre-CME breakup: none); the worker opens it on its own thread (25 ms). **Rebuild it with
   `python tools/make_kessler_prebake.py [--days 1100]` after anything that moves the hash** (~20 min; the log says
   "no cache suns_fury_<hash>.pak" when it no longer matches).
+  - **Staleness check** (2026-11-18, h01): `kesslerRestart` lists `<exe>/kessler_prebake/suns_fury_*.pak` right after
+    the hash and records whether one is this world's (`RestartOut::prebakeMatches` -> `kPrebakeMatches`); the app logs
+    `kessler: WARNING the shipped prebake (...) is not this world's` once per world, `kessler state` carries
+    `world_hash`, `prebake_shipped`, `prebake_matches`, `prebake_days`, `cache_source` (`prebake` / `user` / empty) and
+    `cache_days`, and harness `kessler prebake require=1` fails unless it matches: `tools/harness/selftest.py`
+    (`launches_schedule_and_phasing`, built-in defaults, no extra launch) runs it, so a commit that moves the hash
+    fails the self-test instead of a script 16 minutes in. Why: the 2026-11-04 prebake (36752c04) went stale the same
+    day — the Reflect Orbital changes 5bbfa392 (mirror geometry: the type's mesh area), 90e775b6 (Starship, 300 kg,
+    25 a ship, model scale: mass, area and the deployment era's born seconds) and 59bf9104 (release spacing: born
+    seconds) moved it to 984125cb (every harness log from 11-08 on) — and for two weeks every Sun's Fury past the
+    user's own 115-day cache was computed live (measured: 0.33-0.46 s a day over days 0-60, ~1 s a day later;
+    event_windows.satcmd's `kessler wait days=1100` 989 s). `kessler wait` now reports `prebake_hit` / `eta_s` and
+    refuses a live computation it cannot finish in its budget (docs/HARNESS.md "Stall guard"); the bake itself passes
+    `maxs=0`. Any data change to a roster type's model, mass or launch cadence moves the hash: rebake in the same
+    change.
   - **Format** (`packEngineEvents` / `EngineEventReader`, Kessler.cpp; magic "KSF3"): per 6-h step the grid hits'
     targets (sorted, Rice-coded gaps, ~1.36 B a hit) and the pairs (varint); time, seed and sampleDt are rebuilt by
     `engineEventOf` (the sampling loop's own function), a grid hit's speed and mass at replay by `World::fillGridHits`
