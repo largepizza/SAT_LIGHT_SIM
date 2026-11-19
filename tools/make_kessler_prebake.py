@@ -40,7 +40,9 @@ def main():
         "wait 30",
         "time pause",
         f"time j2000 {cme + a.days * 86400.0:.0f}",
-        f"kessler wait days={a.days:g}",
+        # maxs=0: the bake is the one wait that legitimately runs past the stall guard (~1 s per simulated day)
+        f"kessler wait days={a.days:g} maxs=0",
+        "kessler prebake",
         "kessler savecache out=" + dest.replace("\\", "/"),
         "",
     ])

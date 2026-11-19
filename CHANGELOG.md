@@ -617,6 +617,11 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - Generators for rocket, crew vehicle, ship, pad, station, GEO and debris models, the launch-site coasts, the
   GEO belt, icons, ambience, water map, roads, terrain materials and cloud morphology.
 - **Project wiki** (`wiki/`, MkDocs) as the maintained reference.
+- **Harness stall guard.** Every harness command has a wall-clock budget (120 s, `maxs=` on the command, `limit cmd=`
+  for a script; longer own defaults for photos, videos, paths, cinematics, sweeps and perf): one that is still waiting
+  past it fails, naming itself and its progress, instead of stalling the run. `kessler wait` estimates a live
+  computation and refuses one it cannot finish in time, and `kessler prebake` / the self-test catch a shipped
+  Sun's Fury prebake that no longer matches the world (rebuilt for the current roster).
 
 ### Changed defaults and behaviour
 

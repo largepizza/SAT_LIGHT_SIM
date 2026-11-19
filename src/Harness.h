@@ -89,9 +89,19 @@ struct Active
     nlohmann::json result = nlohmann::json::object();
     std::string error;
     std::string liveFile; // non-empty: this command came from a live inbox file
+    // The stall guard (2026-11-18, h01): the most wall seconds this command may stay Pending, 0 = no limit. Set when it
+    // becomes active (the Runner's BudgetFn: `maxs=`, the command's own default, else the script's `limit cmd=`); past
+    // it the Runner fails the command, naming it, its wall time and `progress` (a string the command may keep current
+    // in scratch["progress"]), instead of letting it eat the run's --timeout.
+    double budgetS = 0.0;
 };
 
 using ExecFn = std::function<Status(Active &)>;
+// The budget of a command about to start (seconds, 0 = none), given the script's default (`limit cmd=`).
+using BudgetFn = std::function<double(const Command &, double scriptDefault)>;
+// Called once for a command the Runner fails over its budget (undo what a half-run command holds: a settle's pause...).
+using AbortFn = std::function<void(Active &)>;
+constexpr double kDefaultCmdBudgetS = 120.0;
 
 class Runner
 {
@@ -100,6 +110,16 @@ public:
     bool begin(std::string &err);
     // Once per frame. Runs queued statements until one is Pending, or the queue is empty.
     void tick(const ExecFn &exec);
+    // The stall guard: how a command's budget is chosen and what undoes a failed one (SatelliteSimHarness.cpp).
+    void setBudgetFns(BudgetFn budget, AbortFn abort)
+    {
+        budgetFn_ = std::move(budget);
+        abortFn_ = std::move(abort);
+    }
+    // `limit cmd=<s>`: the budget of the commands after it that have no own default and no `maxs=` (0 = none).
+    void setDefaultBudget(double s) { defaultBudgetS_ = s; }
+    double defaultBudget() const { return defaultBudgetS_; }
+    int budgetFailures() const { return budgetFailures_; }
     void enqueue(const std::vector<Command> &cmds, const std::string &liveFile = "");
     // A statement typed into the console; the parse error (if any) is returned instead of queued.
     bool enqueueText(const std::string &text, const std::string &source, std::string &err);
@@ -142,6 +162,10 @@ private:
     std::string runDir_;
     std::deque<Active> queue_; // pending (cmd only)
     std::unique_ptr<Active> active_;
+    BudgetFn budgetFn_;
+    AbortFn abortFn_;
+    double defaultBudgetS_ = kDefaultCmdBudgetS;
+    int budgetFailures_ = 0;
     bool scriptLoaded_ = false;
     bool quit_ = false;
     int errors_ = 0;

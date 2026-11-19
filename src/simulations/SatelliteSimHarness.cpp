@@ -214,7 +214,10 @@ const char *kHelp =
     "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [cdc=<spv>] [brick=<spv>] [nlc=<spv>] [smoke_layer=<spv>] [sky=<spv>] [sky_taa=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; skyevents [state]|events|list <kind>|watch <solar|lunar|conjunction|occultation|moonglint|meteors|comet|supernova|cme|cometstorm|row|special <0-3>|aurora [t=]> [n=]|spaceweather; stars [state]|find <name>|select <name>; moonbase [state]|windows [days=] [limit=] [jitter=]|base <i> [lean=] [jitter=]; meteors [state]|count [minutes=] [lm=] [shower=]|force [kind=meteor|fireball|bolide] [shower=] [mag=] [az=] [el=] [v=] [delay=]|go [shower=]; comets [state]|list [days=]|watch [k|great] [days=] [sun_max=] [orbit=1]; aurora [next <kp>|substorm|kp <v>|auto]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...> [x= y=]; fps on|off|state; mouse move dx= dy= [frames=] | mouse click left|right [x= y=] | mouse scroll dy= | mouse aim <Id>[:i] [tol=] [frames=]; hints on|off|reset|state|set <gate> [0|1]|force <n>|gap [s=] [pad=0|1]; events list|state|on|off|fire <id> [total=0|1]|ack [choice=1|2|3] [soft=1]; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|preview <file> [shot=] [scale=] [fps=]|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=] [frames=] [video=]; video start [name] [fps=] [scale=] [ui=on] [sound=all|ambience|off]|stop|state; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
-    "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; log <text>; quit";
+    "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; "
+    "kessler [state] | wait days=<d> [done] [maxs=] (fails at once when live computation cannot finish in budget; prebake_hit, world_hash, eta_s) | breakup | collide | savecache [out=] ...; "
+    "limit [cmd=<s>] (the stall guard: a command still pending past its budget fails; maxs=<s> on any command = its budget, 0 = none; "
+    "default 120 s, own defaults: photo/video stop 600, path play/bulkexport/sweep 1800, cine play/export 3600, perf 30+0.5/frame); log <text>; quit";
 } // namespace
 
 // ─── Lifecycle ────────────────────────────────────────────────────────────────────────────────────
@@ -263,7 +266,80 @@ void SatelliteSim::harnessInit()
         harnessQuit_ = true;
         return;
     }
+    harnessRunner_->setBudgetFns([this](const harness::Command &c, double def) { return harnessCmdBudgetS(c, def); },
+                                 [this](harness::Active &a) { harnessAbortCmd(a); });
     harness::startWatchdog(harnessRunner_);
+}
+
+// ── The stall guard (2026-11-18, h01) ────────────────────────────────────────────────────────────
+// Every command has a wall budget; one still Pending past it fails (Runner::tick) instead of eating the run's --timeout
+// (event_windows.satcmd sat 989 s in one `kessler wait days=1100` with a stale prebake). `maxs=<s>` on a command is its
+// budget (0 = none). Without it: the long ones below have their own default; everything else the script's `limit cmd=`
+// (default harness::kDefaultCmdBudgetS = 120 s). `wait` / `settle` already end themselves at their `maxs=` (Done,
+// `capped`): their budget is that plus a grace, a backstop only.
+double SatelliteSim::harnessCmdBudgetS(const harness::Command &c, double scriptDefault) const
+{
+    const std::string &n = c.name;
+    const std::string sub = c.pos.empty() ? std::string() : lower(c.pos[0]);
+    if (n == "limit")
+        return 0.0;
+    if (n == "wait" || n == "settle")
+    {
+        const bool seconds = n == "wait" && (sub == "seconds" || sub == "s");
+        if (!seconds && c.has("maxs"))
+        {
+            const double m = c.num("maxs", 2.0);
+            return m > 0.0 ? m + 5.0 : 0.0;
+        }
+        return c.has("maxs") ? std::max(0.0, c.num("maxs", 0.0)) : scriptDefault;
+    }
+    if (c.has("maxs"))
+        return std::max(0.0, c.num("maxs", 0.0));
+    // Own defaults: the commands whose normal run is long.
+    if (n == "photo")
+        return 600.0; // the HQ photo: scale 4 and 240 settle frames on a slow view
+    if (n == "video" && sub == "stop")
+        return 600.0; // the encoder finishing
+    if (n == "path" && sub == "play")
+        return 1800.0; // a recorded / video path: every frame encoded
+    if (n == "cine" && (sub == "play" || sub == "export"))
+        return 3600.0; // an HQ export
+    if (n == "bulkexport" || n == "sweep")
+        return 1800.0;
+    if (n == "perf")
+    {
+        double frames = 60.0;
+        try
+        {
+            frames = c.num("frames", c.pos.empty() ? 60.0 : std::atof(c.pos[0].c_str()));
+        }
+        catch (const std::exception &)
+        {
+        }
+        return std::max(scriptDefault, 30.0 + 0.5 * frames); // 2 fps worst case
+    }
+    return scriptDefault;
+}
+
+void SatelliteSim::harnessAbortCmd(harness::Active &a)
+{
+    const std::string &n = a.cmd.name;
+    Log::line("harness: budget: " + a.error);
+    if ((n == "wait" || n == "settle") && harnessSettleFrames_ > 0)
+    {
+        harnessSettleFrames_ = 0;
+        settleProbeWanted_ = false;
+        timePaused = harnessSettleSavedPaused_;
+    }
+    if (n == "path" && a.scratch.is_object() && a.scratch.contains("pausedBefore"))
+    {
+        harnessFixedDtOverride_ = 0.0f;
+        timePaused = a.scratch["pausedBefore"].get<bool>();
+        if (video_.recording())
+            video_.stop();
+    }
+    if (n == "cine" && cineActive())
+        cineStop("harness budget");
 }
 
 float SatelliteSim::frameDt(float realDt)
@@ -1181,6 +1257,20 @@ Status SatelliteSim::harnessExec(harness::Active &a)
     }
     if (n == "quit" || n == "exit")
         return Status::Done; // the Runner sees the name and stops after recording it
+    if (n == "limit")
+    {
+        // limit [cmd=<s>] (2026-11-18): the wall budget of the commands after it that have neither maxs= nor an own
+        // default (harnessCmdBudgetS); 0 = none. Without cmd= it reports the current one.
+        if (c.has("cmd"))
+            harnessRunner_->setDefaultBudget(std::max(0.0, c.num("cmd", harness::kDefaultCmdBudgetS)));
+        else if (!c.pos.empty())
+            fail("limit: cmd=<s> (0 = no limit)");
+        r["cmd_s"] = harnessRunner_->defaultBudget();
+        r["message"] = "command budget " + (harnessRunner_->defaultBudget() > 0.0
+                                                ? std::to_string((int)harnessRunner_->defaultBudget()) + " s"
+                                                : std::string("none"));
+        return Status::Done;
+    }
     if (n == "wait" || n == "settle")
     {
         const std::string mode = n == "settle" ? "settle" : lower(pos(0));
@@ -3307,10 +3397,77 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             // Until the worker has simulated `days` past the CME (or finished, with `done`).
             const bool all = lower(pos(1)) == "done" || c.has("done");
             const double days = c.num("days", 0.0);
-            kesslerWant(all ? 1e18 : kesslerEpoch() + days * 86400.0);
-            const bool ok = kWorkerDone || (!all && kFrontier >= kesslerEpoch() + days * 86400.0);
+            const double target = all ? 1e18 : kesslerEpoch() + days * 86400.0;
+            kesslerWant(target);
+            const bool ok = kWorkerDone || (!all && kFrontier >= target);
+            // (2026-11-18, h01) What the wait costs: a cache (the shipped prebake, or the user's own) replays its days in
+            // a few frames; past it the worker simulates live, ~1 s per day. prebake_hit = the replayed history (the
+            // loaded cache, or the events kept across a restart) reaches the request (to an hour). Once the live part has run a few seconds its rate gives an ETA, and a wait that cannot
+            // finish in its budget fails now, saying why, instead of sitting out the budget.
+            const double now = harness::nowS();
+            char hb[24];
+            snprintf(hb, sizeof(hb), "%016llx", (unsigned long long)kHash);
+            const double replayed = std::max(kCacheFrontier, kReplayUntil);
+            const bool hit = !all && replayed + 3600.0 >= target;
+            std::string shipped;
+            for (const std::string &s : kPrebakeShipped)
+                shipped += (shipped.empty() ? "" : ", ") + s;
+            if (shipped.empty())
+                shipped = "none";
+            r["world_hash"] = kHash ? std::string(hb) : std::string();
+            r["prebake_hit"] = hit;
+            r["prebake_matches"] = kPrebakeMatches;
+            r["cache_source"] = kCacheSource;
+            r["cache_days"] = kCacheFrontier > kesslerEpoch() ? (kCacheFrontier - kesslerEpoch()) / 86400.0 : 0.0;
+            r["replay_days"] = replayed > kesslerEpoch() ? (replayed - kesslerEpoch()) / 86400.0 : 0.0;
+            if (a.frame == 0)
+                a.scratch["liveT0"] = -1.0;
+            const double fDays = (kFrontier - kesslerEpoch()) / 86400.0;
             if (!ok)
+            {
+                // The live part: from the first frame the frontier is past the cache (no world being rebuilt).
+                const bool live = !kRestartBusy && kHash != 0 && kFrontier > replayed;
+                double liveT0 = a.scratch["liveT0"].get<double>();
+                if (!live || (liveT0 >= 0.0 && kFrontier < a.scratch["liveF0"].get<double>()))
+                    liveT0 = -1.0; // (a restart: measure again)
+                else if (liveT0 < 0.0)
+                {
+                    liveT0 = now;
+                    a.scratch["liveF0"] = kFrontier;
+                }
+                a.scratch["liveT0"] = liveT0;
+                char prog[160];
+                snprintf(prog, sizeof(prog), "frontier day %.1f of %s%s", fDays,
+                         all ? "the end" : std::to_string((int)std::ceil(days)).c_str(),
+                         live ? " (computing live)" : (kRestartBusy ? " (building the world)" : " (replaying the cache)"));
+                a.scratch["progress"] = prog;
+                const double ranS = liveT0 >= 0.0 ? now - liveT0 : 0.0;
+                const double gainS = liveT0 >= 0.0 ? kFrontier - a.scratch["liveF0"].get<double>() : 0.0;
+                if (!all && ranS >= 4.0 && gainS > 0.0)
+                {
+                    const double sPerDay = ranS / (gainS / 86400.0);
+                    const double eta = (target - kFrontier) / 86400.0 * sPerDay;
+                    r["eta_s"] = eta;
+                    r["live_s_per_day"] = sPerDay;
+                    const double left = a.budgetS > 0.0 ? a.budgetS - (now - a.startWall) : 1e300;
+                    if (eta > left)
+                    {
+                        char m[400];
+                        const std::string what =
+                            kPrebakeMatches ? "the prebake for world " + std::string(hb) + " reaches day " +
+                                                  std::to_string((int)((kPrebakeFrontier - kesslerEpoch()) / 86400.0))
+                                            : "no prebake for world " + std::string(hb) + " (shipped: " + shipped + ")";
+                        snprintf(m, sizeof(m),
+                                 ": computing live at %.2f s/day from day %.1f, %.0f days ~ %.1f min (budget left %.0f s); "
+                                 "rebuild with tools/make_kessler_prebake.py or pass maxs=<s> (0 = no limit)",
+                                 sPerDay, fDays, (target - kFrontier) / 86400.0, eta / 60.0, left);
+                        fail("kessler wait days=" + c.str("days", "?") + ": " + what + m);
+                    }
+                }
                 return Status::Pending;
+            }
+            r["eta_s"] = 0.0;
+            r["wait_s"] = now - a.startWall;
         }
         else if (sub == "reentry")
         {
@@ -3454,10 +3611,40 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["day"] = (t - kesslerEpoch()) / 86400.0;
             r["frontier_days"] = (kFrontier - kesslerEpoch()) / 86400.0;
         }
+        else if (sub == "prebake")
+        {
+            // kessler prebake [require=1] (2026-11-18, h01): the staleness check. Pending until the world is built (its
+            // hash known), then this world's hash against the prebakes shipped next to the exe; require=1 fails unless
+            // one is this world's (tools/harness/selftest.py runs it at the built-in defaults: a code or data change that
+            // moved the hash fails there, not 16 minutes into a script).
+            if (kHash == 0 || !kPrebakeChecked || kRestartBusy)
+            {
+                a.scratch["progress"] = "the world is being built";
+                return Status::Pending;
+            }
+            char hb[24];
+            snprintf(hb, sizeof(hb), "%016llx", (unsigned long long)kHash);
+            std::string shipped;
+            for (const std::string &s : kPrebakeShipped)
+                shipped += (shipped.empty() ? "" : ", ") + s;
+            r["world_hash"] = std::string(hb);
+            r["prebake_shipped"] = kPrebakeShipped;
+            r["prebake_matches"] = kPrebakeMatches;
+            r["prebake_days"] = kPrebakeMatches ? (kPrebakeFrontier - kesslerEpoch()) / 86400.0 : 0.0;
+            if (c.flag("require", false) && !kPrebakeMatches)
+                fail("kessler prebake: STALE - no shipped prebake for world " + std::string(hb) + " (kessler_prebake/: " +
+                     (shipped.empty() ? std::string("none") : shipped) +
+                     "); at the built-in defaults rebuild it: python tools/make_kessler_prebake.py");
+            r["message"] = kPrebakeMatches ? "prebake " + std::string(hb) + " matches (" +
+                                                 std::to_string((int)r["prebake_days"].get<double>()) + " days)"
+                                           : "no prebake for world " + std::string(hb) + " (shipped: " +
+                                                 (shipped.empty() ? std::string("none") : shipped) + ")";
+            return Status::Done;
+        }
         else if (sub == "mem")
             r["mem"] = kesslerMemJson();
         else if (!sub.empty() && sub != "state")
-            fail("kessler: state | breakup <sat> [kind=explosion|asat] | collide <a> <b> | wait [days=] [done] | select [k=] | fingerprint");
+            fail("kessler: state | breakup <sat> [kind=explosion|asat] | collide <a> <b> | wait [days=] [done] [maxs=] | select [k=] | fingerprint | prebake [require=1] | savecache [out=] | mem");
         r["kessler"] = kesslerStateJson();
         const nlohmann::json &kj = r["kessler"];
         char msg[200];

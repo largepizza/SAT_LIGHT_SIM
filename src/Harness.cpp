@@ -504,7 +504,25 @@ void Runner::tick(const ExecFn &exec)
                 return;
             active_ = std::make_unique<Active>(std::move(queue_.front()));
             queue_.pop_front();
-            active_->startWall = now;
+            // Its own start, not the tick's (2026-11-18): a command run after a slow one in the same frame reported the
+            // slow one's wall time as its own (event_windows: `skyevents events` took 3.4 s, the 4 commands after it
+            // in that frame "took" 3.4-3.5 s each).
+            active_->startWall = nowS();
+            // The stall guard (2026-11-18, h01: one `kessler wait` sat Pending 989 s of a 16-minute run, the clock
+            // paused, nothing noticing): every command gets a wall budget when it starts.
+            double b = defaultBudgetS_;
+            try
+            {
+                if (budgetFn_)
+                    b = budgetFn_(active_->cmd, defaultBudgetS_);
+                else if (active_->cmd.has("maxs"))
+                    b = active_->cmd.num("maxs", defaultBudgetS_);
+            }
+            catch (const std::exception &)
+            {
+                // (a bad maxs= is the command's own error to report)
+            }
+            active_->budgetS = b > 0.0 ? b : 0.0;
             consoleEcho("> " + active_->cmd.text);
         }
         Status st;
@@ -519,7 +537,38 @@ void Runner::tick(const ExecFn &exec)
         }
         ++active_->frame;
         if (st == Status::Pending)
-            return;
+        {
+            const double took = nowS() - active_->startWall;
+            if (active_->budgetS <= 0.0 || took < active_->budgetS)
+                return;
+            // Over budget: fail it here, naming the command, its wall time and its progress, and run on.
+            Active &a = *active_;
+            std::string prog;
+            if (a.scratch.is_object() && a.scratch.contains("progress") && a.scratch["progress"].is_string())
+                prog = a.scratch["progress"].get<std::string>();
+            char buf[160];
+            snprintf(buf, sizeof(buf), "still pending after %.1f s (budget %.0f s, %d frames)", took, a.budgetS,
+                     a.frame);
+            a.error = "'" + a.cmd.text + "' " + buf + (prog.empty() ? std::string() : ": " + prog) +
+                      " - pass maxs=<s> on the command (0 = no limit) or `limit cmd=<s>` before it";
+            a.result["budget_exceeded"] = true;
+            a.result["budget_s"] = a.budgetS;
+            a.result["wall_s"] = took;
+            if (!prog.empty())
+                a.result["progress"] = prog;
+            ++budgetFailures_;
+            if (abortFn_)
+            {
+                try
+                {
+                    abortFn_(a);
+                }
+                catch (const std::exception &)
+                {
+                }
+            }
+            st = Status::Error;
+        }
         finish(*active_, st);
         active_.reset();
     }
@@ -648,6 +697,7 @@ void Runner::writeSummary(const char *status, const std::string &message)
     nlohmann::json j{{"status", status},
                      {"executed", executed_},
                      {"errors", errors_},
+                     {"budget_failures", budgetFailures_}, // commands failed by the stall guard (in `errors`)
                      {"queued_unrun", queue_.size() + (active_ ? 1 : 0)},
                      {"frames", frame_},
                      {"app_version", APP_VERSION},

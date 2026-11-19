@@ -189,8 +189,20 @@ set clouds.not_a_key 3
 set clouds.coverage banana
 get nope.nope
 frobnicate
+wait seconds 30 maxs=2
+limit cmd=1
+wait seconds 30
+limit cmd=120
+wait 3
 """, expect_ok=False)
-    assert summ["status"] == "errors" and summ["errors"] == 4, summ
+    assert summ["status"] == "errors" and summ["errors"] == 6 and summ.get("budget_failures") == 2, summ
+    # (2026-11-18) the stall guard: a command still pending past its budget (maxs=, or the script's `limit cmd=`)
+    # fails, naming itself, and the script runs on
+    for cmd, budget in (("wait seconds 30 maxs=2", 2), ("wait seconds 30", 1)):
+        r = [x for x in res if x["cmd"] == cmd][0]
+        assert not r["ok"] and r["result"]["budget_exceeded"] and "still pending" in r["error"], r
+        assert budget <= r["wall_ms"] / 1000.0 < budget + 1.0, r
+    assert result(res, "wait 3")["ok"]
     assert abs(result(res, "get clouds.coverage")["result"]["value"] - 0.2) < 1e-6
     r = result(res, "set photometry.extinction_coeff")["result"]
     assert abs(r["photometry.extinction_coeff"] - 0.25) < 1e-6 and abs(r["clouds.density"] - 0.5) < 1e-6
@@ -389,7 +401,7 @@ def launches_schedule_and_phasing():
     # starts every retiree on its own, and the schedule is a pure function of time (a day forward and back again).
     # (Batches are built at most ~100 a frame (buildCap) and the deployment era's window holds ~5000: the waits let the
     # whole window build. 30 frames left the first state at ~4000 of its 16,422 train satellites, 2026-10-21.)
-    out, res, _ = run("launches", """
+    out, res, summ = run("launches", """
 wait 150 maxs=0
 launch list hours=24
 launch check
@@ -400,7 +412,14 @@ time add -86400
 wait 150 maxs=0
 launch list hours=24
 launch state
-""")
+kessler prebake require=1
+""", expect_ok=False)
+    # (2026-11-18, h01) The staleness check, in this launch (no extra one): at the built-in defaults the shipped
+    # prebake must be this world's, else every Sun's Fury past the user's cache computes live (~1 s per simulated day;
+    # event_windows.satcmd sat 16 min in one `kessler wait`). Rebuild: python tools/make_kessler_prebake.py.
+    pb = result(res, "kessler prebake")
+    assert pb["ok"], "STALE PREBAKE: " + pb.get("error", "?")
+    assert summ.get("status") == "ok", f"launches run status {summ.get('status')}"
     lists = [r["result"]["launches"] for r in res if r["cmd"].startswith("launch list")]
     assert len(lists[0]) >= 3, f"only {len(lists[0])} launches in 24 h"
     key = lambda l: [(o["utc"], o["site"], o["vehicle"], o["payload"]) for o in l]
