@@ -3,6 +3,7 @@
 #define GLFW_INCLUDE_NONE // see VulkanContext.h — must be repeated at every raw glfw3.h include site
 #include "Cinematic.h"
 #include <array>
+#include <cstddef>   // offsetof (GpuCloudParams offset asserts)
 #include <GLFW/glfw3.h>
 
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
@@ -2047,7 +2048,7 @@ struct GpuCloudParams
     // Storm surge (11104 -> 11184, 2026-10-23, weatherFillSeaParams; terrain_detail.glsl tdSurgeAt), per seaCyc* entry.
     glm::vec4 surgeA[2];    // xyz the motion (Earth-fixed unit tangent), w the peak rise at the coast (m; 0 = none)
     glm::vec4 surgeB[2];    // xyz the surge side (right of the motion in the north, left in the south), w cos(reach)
-    glm::vec4 surgeInfo;    // x 1 = any surge, y the largest peak (m), z the Sun's sea glitter gain
+    glm::vec4 surgeInfo;    // x 1 = any surge, y the largest peak (m), z the Sun's sea glitter gain, w the Sun's DRAWN angular radius (rad: sunAngRTrue x "Sun size")
     // Wildfire burn scars (11184 -> 12224, 2026-10-24, SatelliteSimWildfire.cpp weatherFillFireParams): the nearest
     // kMaxFiresGpu fires' burnt ellipses in the q frame (cloud_params.glsl for the fields).
     glm::vec4 fireInfo;                    // x count
@@ -2082,6 +2083,9 @@ struct GpuCloudParams
     glm::vec4 wbRef;
 };
 static_assert(sizeof(GpuCloudParams) == 12352, "GpuCloudParams layout mismatch");
+// sat_sky_minimal.frag declares only these two at their offsets (its SPIR-V budget): keep its CloudParamsSun in step.
+static_assert(offsetof(GpuCloudParams, skyScreenH) == 528, "sat_sky_minimal.frag CloudParamsSun.skyScreenH offset");
+static_assert(offsetof(GpuCloudParams, surgeInfo) == 11168, "sat_sky_minimal.frag CloudParamsSun.surgeInfo offset");
 
 // ── Push constants for sat_orbit.comp ────────────────────────────────────────
 // Offsets verified against the push_constant block in sat_orbit.comp.
@@ -8076,6 +8080,7 @@ private:
     float orbitGrade = 1.0f;
     // The Moon as a body (updatePositions): true topocentric position and size, eclipses.
     float moonSizeScale = 1.0f;             // "Moon size (x real)" (slot 220; the old disc was 3x). 1 = true size by default since 2026-10-27 (conjunctions, occultations, eclipses as they are); review 16 had 2.5
+    float sunSizeScale = 1.0f;              // "Sun size (x real)" (slot 627, clouds.sun_size; 2026-11-18): the drawn disc is this x the true radius (UBO surgeInfo.w = sunAngRTrue x it). It was a fixed 0.007 rad, ~1.5x
     // The farthest the player's eye may climb above sea level (review 16: Q/E boost reached the Moon). Past GEO
     // and the full-disc views the high-orbit ambience is built for, a quarter of the way to the Moon.
     static constexpr float kMaxObsHeightM = 1.0e8f;
@@ -9529,7 +9534,7 @@ private:
     bool draggingPhoto[56] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 627;   // 626 (2026-11-16): mouse sensitivity (Controls); was 626; 625 (2026-11-14): auto-level up to (km) (Controls); was 625; 624 (2026-11-14): Starship orbital vent (Launches); was 624; 616-623 (2026-11-12 wave, reserved per cluster): 616-619 ocean reflections, 620-621 model glare, 622-623 storm shape; was 616; 608-615 (2026-11-11 wave, reserved per cluster): 608-611 hurricane look, 612-613 smalls, 614-615 hurricane perf; was 608; 560-607 (2026-11-10 wave, reserved per cluster): 560-567 flowmaps, 568-575 storms, 576-579 horizon, 580-583 grain, 584-591 optics, 592-595 smalls, 596-599 rainperf, 600-607 hurricane shape; was 560; 549-550 (2026-11-08, pucks): shallow cumulus heaps / depth; 544-548 (2026-11-08): single-storm anvils, storm complex spacing, cirrus flow window, (547 free: the retired CDO plate), storm mass; 522-524 free (the CDO plate's top sliders, retired 2026-11-08); 553-555 (2026-11-05): cumulus core, bubble warp, head width; 552 (2026-11-05, envelope): cumulus tower spread (552-559 reserved); 544-551 (2026-11-05, storm-above): reserved, none used; 536-538 (2026-11-05, light3): AgX range, white balance from cloud sunlight, auto exposure target; 528-535 (2026-11-05, vertical): cloud base LCL / cell / regional spread, fractus, mid wisps, orographic amount / wind / direction; 496-498 (2026-11-05, shape2): bubble hierarchy / size / base; 504-511 (2026-11-05, storm3): anvil fibres, storm bubbles, anvil erosion; 512-513 (2026-11-05, light2): white balance reference / hold; 520-524 (2026-11-05, cirrus-hurr): cirrus fibres / hooks, hurricane top smoothing / streaks / density; 496-527: the 2026-11-05 night wave; 494-495 (2026-11-04): cumulus bubbles;   // 440-441 (2026-11-03): turbulence cell size / speed; 450-452: anvil formation / decay time, tower growth time; 455-461: hurricane shape; was 435;   // 428-434 (2026-10-30): the second stage's jellyfish (streaks, nucleus, staging cloud); was 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
+    static constexpr int kCloudSliderSlots = 628;   // 627 (2026-11-18): Sun size (x real) (Sky tab); was 627; 626 (2026-11-16): mouse sensitivity (Controls); was 626; 625 (2026-11-14): auto-level up to (km) (Controls); was 625; 624 (2026-11-14): Starship orbital vent (Launches); was 624; 616-623 (2026-11-12 wave, reserved per cluster): 616-619 ocean reflections, 620-621 model glare, 622-623 storm shape; was 616; 608-615 (2026-11-11 wave, reserved per cluster): 608-611 hurricane look, 612-613 smalls, 614-615 hurricane perf; was 608; 560-607 (2026-11-10 wave, reserved per cluster): 560-567 flowmaps, 568-575 storms, 576-579 horizon, 580-583 grain, 584-591 optics, 592-595 smalls, 596-599 rainperf, 600-607 hurricane shape; was 560; 549-550 (2026-11-08, pucks): shallow cumulus heaps / depth; 544-548 (2026-11-08): single-storm anvils, storm complex spacing, cirrus flow window, (547 free: the retired CDO plate), storm mass; 522-524 free (the CDO plate's top sliders, retired 2026-11-08); 553-555 (2026-11-05): cumulus core, bubble warp, head width; 552 (2026-11-05, envelope): cumulus tower spread (552-559 reserved); 544-551 (2026-11-05, storm-above): reserved, none used; 536-538 (2026-11-05, light3): AgX range, white balance from cloud sunlight, auto exposure target; 528-535 (2026-11-05, vertical): cloud base LCL / cell / regional spread, fractus, mid wisps, orographic amount / wind / direction; 496-498 (2026-11-05, shape2): bubble hierarchy / size / base; 504-511 (2026-11-05, storm3): anvil fibres, storm bubbles, anvil erosion; 512-513 (2026-11-05, light2): white balance reference / hold; 520-524 (2026-11-05, cirrus-hurr): cirrus fibres / hooks, hurricane top smoothing / streaks / density; 496-527: the 2026-11-05 night wave; 494-495 (2026-11-04): cumulus bubbles;   // 440-441 (2026-11-03): turbulence cell size / speed; 450-452: anvil formation / decay time, tower growth time; 455-461: hurricane shape; was 435;   // 428-434 (2026-10-30): the second stage's jellyfish (streaks, nucleus, staging cloud); was 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
     // gust fronts, drop persistence); 326: "Tropical cyclones (x)"; 325: "Storm complexes"; 321-324 (2026-10-23): storm
     // objects (frequency, life, cloud field, moat);
     // was 321: 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);

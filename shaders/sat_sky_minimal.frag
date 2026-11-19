@@ -25,6 +25,14 @@
                          // SUN_INTENSITY, phaseR, phaseM
 #include "terrain.glsl"  // observerEffHeight, observerPos, enuBasis, posToUV
 #include "depth.glsl"    // unified scene depth (gl_FragDepth)
+// Two fields of the frame's CloudParams UBO (binding 9, sat_sky.frag's cloud_params.glsl; 2026-11-18): the Sun's drawn
+// radius ("Sun size (x real)") and the target's height for a pixel's angle. Declared at their offsets, not by including
+// the header: its ~400 member names and decorations would cost ~10 KB of this tier's 46-KB SPIR-V budget. The offsets
+// are static_assert'ed against GpuCloudParams (SatelliteSim.h): keep the two in step.
+layout(set = 0, binding = 9, std140) uniform CloudParamsSun {
+    layout(offset = 528)   float skyScreenH;
+    layout(offset = 11168) vec4  surgeInfo;   // w = the Sun's drawn angular radius (rad)
+} cloud;
 
 // NOTE: the Milky Way was tried here (Sept 2026) and dropped for good. Textured panorama → 2 FPS
 // (atan/asin equirect projection + a texture fetch are the occupancy killers on this GCN1/MoltenVK
@@ -394,10 +402,17 @@ void main() {
         // close to the disc — without this bridge the hard disc reads as "punched out" with a dark
         // ring before the flare glow starts. This part IS atmospheric scatter (cloud/earth
         // occludable), so it stays in the sky branch; lensFlare (a lens artifact) overlays all.
-        float cosSun   = dot(dir, normalize(sunDirENU.xyz));
+        vec3  sunN     = normalize(sunDirENU.xyz);
+        float cosSun   = dot(dir, sunN);
         float sunAbove = smoothstep(limbZ - 0.05, limbZ + 0.02, sunSinEl);
         float g = max(cosSun, 0.0);
-        color += vec3(1.0, 0.96, 0.88) * smoothstep(0.99988, 0.99997, cosSun);          // disc
+        // The disc at the main tier's drawn radius (cloud.surgeInfo.w, the true radius x "Sun size"; 2026-11-18), its
+        // edge +-3% of it or a pixel. The chord, not acos(cosSun): a float's cos near 1 resolves only ~0.0003 rad.
+        // (It was smoothstep(0.99988, 0.99997, cosSun): 0.008-0.016 rad, ~2.6x the true radius.)
+        float sunR     = cloud.surgeInfo.w;
+        float sunE     = max(0.03 * sunR, pc.fovYRad / cloud.skyScreenH);
+        float sunAng   = length(dir - sunN);
+        color += vec3(1.0, 0.96, 0.88) * (1.0 - smoothstep(sunR - sunE, sunR + sunE, sunAng));  // disc
         color += vec3(1.0, 0.94, 0.82) * (pow(g, 1800.0) * 0.85 + pow(g, 320.0) * 0.13
                                           + pow(g, 55.0) * 0.025) * sunAbove;            // corona bridge
 

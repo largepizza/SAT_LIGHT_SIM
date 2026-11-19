@@ -8277,15 +8277,22 @@ void main() {
             }
         }
 #endif
-        // Solar eclipse (2026-09-30): near the Moon the disc takes its TRUE radius (it is drawn ~2x large for
-        // the glare) and is hidden where the Moon is; the glare and corona dim with the share of the Sun the
+        // Solar eclipse (2026-09-30): near the Moon the disc takes its TRUE radius (it may be drawn larger, "Sun size")
+        // and is hidden where the Moon is; the glare and corona dim with the share of the Sun the
         // observer still sees, and at totality the solar corona shows round the Moon's black disc.
+        // The drawn radius (2026-11-18, issue 20261118_182727): cloud.surgeInfo.w = the true radius x "Sun size (x real)",
+        // 1 by default like the Moon's. It was a fixed 0.007 rad (r0; 0.010 r1), ~1.5x true: "Sun size" 1.5 is the old disc.
         float sepSM      = acos(clamp(dot(normalize(moonDirENU.xyz), sunDir), -1.0, 1.0));
         float ek         = 1.0 - smoothstep(0.02, 0.035, sepSM);
         float obsSunF    = mix(1.0, cloud.moonMisc.x, ek);
-        float r0 = mix(0.007, kSunAngR * 0.97, ek), r1 = mix(0.010, kSunAngR * 1.03, ek);
-        // Disc pixel: hard-clipped by terrain/ocean/opaque-cloud hit for this fragment direction.
-        float discVis    = (1.0 - smoothstep(r0, r1, angle)) * sunGate * (moonDiscHit ? 0.0 : 1.0);
+#ifndef SKY_SUN_SHADOW   // (the full variants draw the disc in the refraction block below, at rD)
+        // Disc pixel: hard-clipped by terrain/ocean/opaque-cloud hit for this fragment direction. Its edge +-3% of the
+        // radius (the eclipse's, at the true radius) plus a pixel away from the Moon (a true-size disc is ~5 px across).
+        // (discVis holds the radius first: a named local costs SKY_LITE's SPIR-V budget bytes, render-pipeline.md.)
+        float discVis    = mix(cloud.surgeInfo.w, kSunAngR, ek);
+        discVis          = (1.0 - smoothstep(0.97 * discVis, 1.03 * discVis + (1.0 - ek) * pc.fovYRad / cloud.skyScreenH, angle))
+                         * sunGate * (moonDiscHit ? 0.0 : 1.0);
+#endif
         // Sunset shift: redden and widen corona as sun approaches the limb.
         float sunsetT    = clamp(1.0 - (sunDirENU.w - limbZ) / 0.15, 0.0, 1.0);
         vec3  sunCol     = mix(vec3(1.5, 1.3, 1.0), vec3(1.8, 0.7, 0.2), sunsetT * 0.7);
@@ -8350,7 +8357,7 @@ void main() {
             pu = dot(pu, pu) > 1e-12 ? normalize(pu) : vec3(0.0);
             // Eclipse glasses (refrSpotInfo.w, the View popup; the header note at kGlassesGain): the disc at its TRUE radius.
             bool  glasses = refrSpotInfo.w > 0.5;
-            float rD   = glasses ? mix(kSunAngR, r0, ek) : r0;  // the drawn radius (1.5x true; the true one near the Moon)
+            float rD   = mix(glasses ? kSunAngR : cloud.surgeInfo.w, kSunAngR * 0.97, ek);  // the drawn radius (x "Sun size"; true near the Moon)
             float pxA  = pc.fovYRad / cloud.skyScreenH;
             vec3  ang3;
             vec3  dTg  = dJ;

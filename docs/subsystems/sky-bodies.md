@@ -482,6 +482,18 @@ EXPOSURE AND MOON section since 2026-10-06, key
 - **The Sun's angular radius is its TRUE one** (`sunAngRTrue` from `satphot::sunDistAuAt`, 0.2624 deg in July ..
   0.2711 in January; `cloud.taaJitter.w`, `kSunAngR` in sat_sky.frag): it decides total vs annular. It was a
   fixed 0.2667 deg.
+- **The Sun's DRAWN radius is the true one x "Sun size (x real)"** (`sunSizeScale`, slot 627, `clouds.sun_size`,
+  0.25-4, default 1 like the Moon's; issue 20261118_182727). The UBO carries it as `cloud.surgeInfo.w` (rad); every
+  tier reads it: the full sky's refraction block (`rD`, edge +-1 px), SKY_LITE / SKY_ENV's `discVis` (+-3% of the
+  radius, plus a pixel outward away from the Moon) and Potato's `sat_sky_minimal.frag` (the chord `length(dir - sun)`,
+  not acos: a float's cos near 1 resolves only ~0.0003 rad; edge +-max(3%, 1 px)). Potato declares just
+  `skyScreenH` and `surgeInfo` at their offsets (`CloudParamsSun`; static_assert'ed in SatelliteSim.h), since the
+  whole header's member decorations would cost ~10 KB of its SPIR-V budget. `SatelliteSimRefraction.cpp`'s disc share
+  (the visible fraction through refraction and the glare's columns) integrates over the same radius. Near the Moon
+  (`ek`) the disc still eases to the true radius whatever the slider, so eclipses are the same at any size. Until
+  2026-11-18 the disc was a fixed 0.007 rad (r0; 0.010 r1), ~1.5x true ("Sun size" 1.5 reproduces it), and
+  Potato's ~0.008-0.016 rad (~2.6x). The glare lobes (sigma 0.024 / 0.056 / 0.135 rad) are far wider than either disc,
+  so the glare bridge round the edge is the same at 1x.
 - **Solar eclipses**: near the Moon the Sun disc takes its TRUE radius (it is drawn ~2x large for the glare
   otherwise) and is hidden where the Moon is; glare, halo and the sky dim with the Sun the observer sees
   (`moonMisc.x`, CPU `discOverlapFrac`); a corona at totality; the Moon's shadow on the ground per pixel

@@ -4172,6 +4172,9 @@ void SatelliteSim::buildSettingsSkyTab(const UIInput &inp, UIRenderer &ui)
                 // (411, the turbulence's strength, moved to the "Seeing" fold with its size and speed, 2026-11-03.)
                 {tx(Txt::SldDispersionGreenRimX), &refrDispersion, 0.0f, 10.0f, 0.1f, "%.1f", 412},
                 {tx(Txt::SldSunDiscBrightnessX), &sunDiscGain, 0.0f, 10.0f, 0.05f, "%.2f", 413},
+                // The disc's drawn size, x its true radius (2026-11-18, issue 20261118_182727: 1 by default, like the
+                // Moon's; it was a fixed ~1.5x). Near the Moon it is always the true size, so eclipses are right.
+                {tx(Txt::SldSunSizeXReal), &sunSizeScale, 0.25f, 4.0f, 0.05f, "%.2f", 627},
             };
             buildCloudSliderRows(inp, ui, rf, (int)(sizeof(rf) / sizeof(rf[0])), false);
         }
@@ -10494,6 +10497,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         auroraSheetGain = c.value("aurora_sheets", auroraSheetGain);
         orbitGrade = c.value("orbit_grade", orbitGrade);
         moonSizeScale = c.value("moon_size", moonSizeScale);
+        sunSizeScale = settingClamp(c.value("sun_size", sunSizeScale), 0.25f, 4.0f);
         moonRelief = c.value("moon_relief", moonRelief);
         moonShadows = c.value("moon_shadows", moonShadows);
         auroraSheetSpacingDeg = c.value("aurora_sheet_spacing_deg", auroraSheetSpacingDeg);
@@ -10830,6 +10834,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"aurora_sheets", auroraSheetGain},
         {"orbit_grade", orbitGrade},
         {"moon_size", moonSizeScale},
+        {"sun_size", sunSizeScale},
         {"moon_relief", moonRelief},
         {"moon_shadows", moonShadows},
         {"aurora_sheet_spacing_deg", auroraSheetSpacingDeg},

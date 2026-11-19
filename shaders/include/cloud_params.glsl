@@ -513,7 +513,8 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     // cyclone k of seaCyc*, surgeA xyz its motion (Earth-fixed unit tangent at the centre), w the peak rise of the sea at
     // the coast (m, 0 = none); surgeB xyz the surge side (right of the motion north of the equator, left south), w cos
     // of the field's angular reach. surgeInfo x 1 = any surge (the uniform gate), y the largest peak (m), z the Sun's sea glitter gain
-    // (2026-10-27, 'Sea glitter (Sun)', sat_sky.frag), w unused.
+    // (2026-10-27, 'Sea glitter (Sun)', sat_sky.frag), w the Sun's DRAWN angular radius (rad; 2026-11-18, the true radius
+    // x 'Sun size (x real)', sat_sky.frag and sat_sky_minimal.frag; SatelliteSimRefraction.cpp's disc share mirrors it).
     vec4  surgeA[2];
     vec4  surgeB[2];
     vec4  surgeInfo;
