@@ -347,9 +347,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **Event windows.** The story's events open a window in the centre with a banner, a short text and a button, and
   pause time: every lunar eclipse, the Great Comet entering the inner planets, surviving perihelion, passing the
   Earth and its meteor storm, the Great Australasian Eclipse, the Sun's Fury, the cascade's first collision, 10% and
-  half of the satellites destroyed, and Betelgeuse exploding and fading. They open when time runs into the event,
-  forward or backward at any speed, or when a Watch takes you there (jumping past one shows nothing); Continue runs
-  the clock on at 1x. A window sets the clock to 1x the moment it opens, with the clock at the event's own moment
+  half of the satellites destroyed, and Betelgeuse exploding and fading. They open when time runs forward into the
+  event at any speed, or when a Watch takes you there; jumping or rewinding past one shows nothing (time can be
+  rewound back past an event, and its window shows when time next runs forward through it). Continue runs the clock
+  on at 1x. A window sets the clock to 1x the moment it opens, with the clock at the event's own moment
   (also the 10% and 50% windows, which used to open days to months late at fast speeds), and shows once per crossing.
   A sound plays as one opens. Settings > Sky > Events turns them off. Each event has a placeholder banner (a
   screenshot of its scene) in `assets/events/` (960 x 320 PNGs, one per event) until the art replaces it.

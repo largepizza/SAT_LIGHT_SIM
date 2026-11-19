@@ -6,7 +6,9 @@
 #   1  off in a harness run until `events on`; `events list` = the table with every moment
 #   2  the running clock crosses the comet's perihelion + 6 h FORWARD at 1 h/s: its window, the clock paused at the
 #      moment; `events ack` = 1x, running
-#   3  the same moment crossed BACKWARD (reverse, 1 h/s): the window again; ack = 1x forward
+#   3  the same moment crossed BACKWARD (reverse, 1 h/s): nothing, the clock runs on back at 1 h/s; forward again
+#      through it: its window once (2026-11-18, issue_20261118_181440: a backward card resumed forward, so a rewind
+#      could never get past the moment)
 #   4  the clock SET past it (running and paused): nothing
 #   5  a Watch (the 2037-01-31 total lunar eclipse): its window
 #   6  every window fired at 1024x768 and 1600x900: dumps (ui_lowres check) and captures (the contact sheet)
@@ -44,20 +46,29 @@ expect state.events.time_scale 1x
 expect state.events.time_paused false
 
 # -- 3 backward --
+# (2 h back at 1 h/s = 40 frames, from 1 h 40 min past the moment: ends 20 min before it)
 time pause
 time set 2037-02-17T23:40:00Z
 time scale 1h
 time reverse on
 time play
+wait 40 maxs=0
+expect state.events.open false
+expect state.events.time_reverse true
+expect state.events.time_scale 1h
+expect state.events.time_paused false
+events state
+# (forward again from there, without a set: the running clock meets it, once)
+time reverse off
 wait 30 maxs=0
 expect state.events.open true
 expect state.events.id comet_perihelion
+expect state.events.how "crossed forward"
+expect state.events.clock_from_moment_s 0 tol=0.01
 events state
 events ack
 expect state.events.time_scale 1x
-expect state.events.time_paused false
 expect state.events.time_reverse false
-# (resumed forward from a millisecond before the moment: the same showing, not a second window)
 wait 20 maxs=0
 expect state.events.open false
 
@@ -252,10 +263,12 @@ events ack choice=2
 time pause
 
 # -- 9 the card sets 1x; the clock at the event (2026-11-18) --
-# The comet's perihelion + 6 h crossed at 1d / 1w / 1mo / 1yr, forward and backward: the window opens with the clock
-# at the moment (+-1 ms) and the time bar at 1x forward; acknowledged by the real button (or `events ack`), 60 frames
-# (3 s) later the clock is 3 s past the moment at 1x, and no second window has opened. A speed-up / reverse key while
-# the card is up does not stick. Then a queued pair (the comet passes the Earth, its meteor storm 1 s later) and a Watch.
+# The comet's perihelion + 6 h crossed forward at 1d / 1w / 1mo / 1yr: the window opens with the clock at the moment
+# (+-1 ms) and the time bar at 1x forward; acknowledged by the real button (or `events ack`), 60 frames (3 s) later the
+# clock is 3 s past the moment at 1x, and no second window has opened. A speed-up / reverse key while the card is up
+# does not stick. Crossed BACKWARD at 1d / 1w / 1mo / 1yr: no window, the clock runs on back at the same rate (read
+# `events state` -> clock_from_moment_s, well below 0; issue_20261118_181440). Then a queued pair (the comet passes the
+# Earth, its meteor storm 1 s later), a Watch, and the Watch's landing rewound and run forward again (its window again).
 time set 2037-02-17T18:00:00Z
 time scale 1d
 time reverse off
@@ -324,31 +337,21 @@ time set 2037-02-18T03:00:00Z
 time scale 1d
 time reverse on
 time play
-wait 10 maxs=0
-expect state.events.id comet_perihelion
-expect state.events.how "crossed backward"
-expect state.events.clock_from_moment_s 0 tol=0.01
-expect state.events.time_scale 1x
-expect state.events.time_reverse false
-events state
-ui click EventWinBtn:0
-wait 60 maxs=0
+wait 40 maxs=0
 expect state.events.open false
-expect state.events.clock_from_moment_s 3.05 tol=0.05
+expect state.events.time_reverse true
+expect state.events.time_scale 1d
+expect state.events.time_paused false
 events state
 time pause
 time set 2037-02-18T22:00:00Z
 time scale 1w
 time reverse on
 time play
-wait 10 maxs=0
-expect state.events.how "crossed backward"
-expect state.events.clock_from_moment_s 0 tol=0.01
-events state
-events ack
-wait 60 maxs=0
+wait 20 maxs=0
 expect state.events.open false
-expect state.events.clock_from_moment_s 3 tol=0.05
+expect state.events.time_reverse true
+expect state.events.time_scale 1w
 events state
 time pause
 time set 2037-02-25T00:00:00Z
@@ -356,27 +359,19 @@ time scale 1mo
 time reverse on
 time play
 wait 10 maxs=0
-expect state.events.how "crossed backward"
-expect state.events.clock_from_moment_s 0 tol=0.01
-events state
-ui click EventWinBtn:0
-wait 60 maxs=0
 expect state.events.open false
-expect state.events.clock_from_moment_s 3.05 tol=0.05
+expect state.events.time_reverse true
+expect state.events.time_scale 1mo
 events state
 time pause
 time set 2037-03-15T00:00:00Z
 time scale 1yr
 time reverse on
 time play
-wait 10 maxs=0
-expect state.events.how "crossed backward"
-expect state.events.clock_from_moment_s 0 tol=0.01
-events state
-ui click EventWinBtn:0
-wait 60 maxs=0
+wait 3 maxs=0
 expect state.events.open false
-expect state.events.clock_from_moment_s 3.05 tol=0.05
+expect state.events.time_reverse true
+expect state.events.time_scale 1yr
 events state
 time pause
 time reverse off
@@ -392,6 +387,37 @@ expect state.events.id comet_meteor_storm
 expect state.events.how queued
 ui click EventWinBtn:0
 wait 60 maxs=0
+expect state.events.open false
+events state
+# (the pair again, the second rewound before its moment: shown with the clock 1 s before it, then rewound an hour
+# and run forward through both: both windows again, the queued one too)
+time pause
+time set 2037-03-16T00:00:00Z
+time scale 1w
+time play
+wait 10 maxs=0
+expect state.events.id comet_passes_earth
+ui click EventWinBtn:0
+wait 2
+expect state.events.id comet_meteor_storm
+ui click EventWinBtn:0
+time scale 1h
+time reverse on
+wait 20 maxs=0
+expect state.events.open false
+expect state.events.time_reverse true
+# (forward at 1 d/s: at 1 h/s a whole number of frames from 1 s before the storm ends each frame between the two)
+time scale 1d
+time reverse off
+wait 10 maxs=0
+expect state.events.id comet_passes_earth
+expect state.events.how "crossed forward"
+expect state.events.queued 1
+ui click EventWinBtn:0
+wait 2
+expect state.events.id comet_meteor_storm
+ui click EventWinBtn:0
+wait 30 maxs=0
 expect state.events.open false
 events state
 time pause

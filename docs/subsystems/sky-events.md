@@ -92,8 +92,7 @@ SatelliteSim.h. The story's events as ONE modal window in the centre, Paradox-st
 short text, one button. The explode warning (kessler.md "The explode warning") is the same window with three buttons.
 - **The table** (`kEventWinDefs`, one row per event, in story order): id (the banner's file name and the harness id),
   title / text (and an alternative pair: the lunar eclipse when total), the button's words (all in `ui_text_en.inc`
-  `Ev*`), the Sky events kind whose Watch lands on it, the trigger (a moment either way; a moment forward only; a share
-  of satellites destroyed), what it needs (the Sun's Fury on, the supernova on) and its accent (the frame and title).
+  `Ev*`), the Sky events kind whose Watch lands on it, the trigger (a moment; a share of satellites destroyed), what it needs (the Sun's Fury on, the supernova on) and its accent (the frame and title).
   **To add an event:** a row, its `EvRow`, its moments in `eventWinMomentsOf`, its text. The moments: lunar eclipses =
   every umbral one (partial and total, `findEclipse`; recurring: each one fires) over [now - 2 y, now + 4 y] on a worker
   (`evMomentsJob_`, re-run when the clock nears an end); the Australasian eclipse = `findEclipse(solar)` from
@@ -106,22 +105,26 @@ short text, one button. The explode warning (kessler.md "The explode warning") i
   explodes = `kSupernovaT0` (the breakout), fades = `supernovaEndT()` (below the star it was, +0.5). `events list`
   prints them all. In order (UTC): the comet crosses Mars's orbit 2036-12-27 20:17; the total lunar eclipse 2037-01-31 13:59; the comet survives perihelion 2037-02-17 22:49; it passes the Earth 2037-03-17 03:29:59 and its meteor storm peaks 03:30:00; the Australasian eclipse 2037-07-13 02:43; the Sun's Fury 2037-07-15 03:00; the first collision 2037-07-15 03:37 (the default history: a background engine collision 37 min after the arrival); the partial lunar eclipse 2037-07-27 04:09; 10% destroyed 2037-09-10 04:41:08 (its own second, where the window puts the clock; 15% on 09-24); 50% between 2037-09-24 and 12-01 (68% on 12-01, 70.6% on 2040-07-01: the default history's share levels off); Betelgeuse explodes 2037-12-25 03:00; it fades 2040-01-12 07:31; lunar eclipses go on (2039-06-06, ...; none umbral in 2038).
 - **Running vs set: one place.** `eventWinAdvance(tBefore, tAfter)` runs in recordCompute after the clock's advance and
-  the Kessler frontier hold: a moment is looked for only in what the clock RAN through this frame, (tBefore, tAfter]
-  going forward or [tAfter, tBefore) going back, at any rate. Anything between two frames that moved the clock (a Watch,
+  the Kessler frontier hold: a moment is looked for only in what the clock RAN FORWARD through this frame,
+  (tBefore, tAfter], at any rate. **A clock running back opens nothing**: rewinding is navigation, and the card shows
+  when the clock next runs forward through the moment (2026-11-18, issue_20261118_181440, the user's decision: a card on
+  a backward crossing set the clock 1 ms before the moment and resumed 1x forward, so a rewind could never get past
+  it). Anything between two frames that moved the clock (a Watch,
   a bookmark, a snapshot, a Kessler rollback, harness `time set`, the time field) SET it: the jump is never looked at
   (this frame starts somewhere else than the last one ended, `evw_.lastT`), and it drops the share baseline; the frame
   after it counts from where it landed (a first cut skipped that frame too, and at 1 d/s missed the Sun's Fury 30 min
-  after a `time set`); the first one met in the direction of travel wins and **the clock goes
+  after a `time set`); the first one met wins and **the clock goes
   back to that moment** (at 1 w/s a frame is a third of a day: the eclipse would be over), with `cv2SimAdvanceAcc` taken
   back by the same step (the clouds see a step, not a jump); every other event within 1 s of it is queued and opens when
   the first is acknowledged. A Watch's own landing is no crossing (`eventWinTakenTo` / `eventWinOnSkyWatch` set
-  `lastT`). **One showing per crossing:** every window shown with the clock before its moment (a Watch's landing; a
-  backward crossing, which leaves the clock 1 ms before it and resumes FORWARD; the second of a queued pair, 1 s apart;
-  a share's snap back over a window shown meanwhile) goes into `evw_.watched`, and the running clock then crossing it
-  is that same showing (a set clears the list). Without it a backward crossing showed its window twice (acknowledged,
-  the 1x forward clock crossed the moment again 1 ms later), and the comet's meteor storm twice after the queued pair.
-  Measured (event_windows.satcmd section 9, fixed dt 0.05 s): at 1 d / 1 w / 1 mo / 1 yr, forward and backward, the
-  window opens with the clock within 1 ms of the moment and 60 frames after the button it is 3.05 s past it at 1x.
+  `lastT`). **One showing per forward crossing:** every window shown with the clock before its moment (a Watch's
+  landing; the second of a queued pair, 1 s apart; a share's snap back over a window shown meanwhile) goes into
+  `evw_.watched`, and the running clock then crossing it is that same showing. A set clears the list, and so does a
+  frame running back (the rewind leaves that showing behind: the next forward crossing shows it again). Without it the
+  comet's meteor storm showed twice after the queued pair. Measured (event_windows.satcmd section 9, fixed dt 0.05 s):
+  forward at 1 d / 1 w / 1 mo / 1 yr the window opens with the clock within 1 ms of the moment and 60 frames after the
+  button it is 3.05 s past it at 1x; backward at the same rates from after perihelion + 6 h, no window opens and the
+  clock runs on back at the same rate, past the moment.
 - **Taken to it**: `skyEventWatch` -> `eventWinOnSkyWatch` (the rows of that kind whose moment lies in the watched
   event's window +-2 days, the Great Comet's by its label; the latest one reached by the landing + 6 h, else the
   earliest); every Sun's Fury Watch (the Sky events row, the Missions buttons, harness `missions go fury`, the warning's
@@ -144,8 +147,8 @@ short text, one button. The explode warning (kessler.md "The explode warning") i
   second time ~20 s after the 50% window's replay and snapped the clock back again).
 - **While open**: sim time is held paused, and an event's window holds **1x forward** (set as it opens, so the time
   bar reads 1x, and held every frame: a speed-up or reverse key meanwhile does not stick; the user, 2026-11-18: "so when
-  it resumes we aren't speeding away from it"); the button runs the clock on at 1x forward (also after a backward
-  crossing), so the thing can be watched. The explode warning is not an event: it holds only the pause and gives the
+  it resumes we aren't speeding away from it"); the button runs the clock on at 1x forward (also after a Watch from a
+  reversed clock), so the thing can be watched. The explode warning is not an event: it holds only the pause and gives the
   clock back as it found it. The window is in `fpsWindowMask` (it forces
   menu mode). A cue plays as it opens: `assets/sound/ui/event.wav` on the UI effects bus (`playSfx`: master and effects
   volumes), a 3.2-s synthesized placeholder (`tools/make_event_sound.py`: a struck A1 gong under a swelling fifth).
@@ -171,9 +174,10 @@ short text, one button. The explode warning (kessler.md "The explode warning") i
   collision = the Kessler tracker's Watch of the newest breakup at 03:40; 10% = a dead satellite over the Earth
   (09-14); 50% = the night limb from 450 km (11-05); Betelgeuse at its peak (FOV 20) and faded, from orbit (FOV 30);
   the warning = a Starlink close up.
-- Checked: `tools/harness/scripts/event_windows.satcmd` (forward / backward crossings, a set past, a Watch, every window at
-  two sizes, the Fury crossed and the cascade's windows, the explode warning; section 9: the clock at the moment and
-  1x after it at every fast rate both ways, keys under the card, the queued pair, a Watch; section 10: the shares at
+- Checked: `tools/harness/scripts/event_windows.satcmd` (a forward crossing, a backward one opening nothing then forward
+  again opening it once, a set past, a Watch, every window at two sizes, the Fury crossed and the cascade's windows, the
+  explode warning; section 9: the clock at the moment and 1x after it at every fast rate forward, no window at every
+  fast rate backward, keys under the card, the queued pair (and again after rewinding the second), a Watch; section 10: the shares at
   1 mo/s and 1 yr/s); `state` -> `events` carries `clock_from_moment_s` (the clock less the open or last window's
   moment), `now_utc`, `time_reverse`; `ui_lowres.py` views `event_fury`,
   `event_comet`, `event_lunar`, `event_warn` (`EventWin` counts as a window there: its text is layered over the HUD).

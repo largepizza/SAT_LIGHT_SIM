@@ -1,8 +1,8 @@
 // ─── Event windows (2026-11-17) ──────────────────────────────────────────────────────────────────────────────────────
 // The story's events as one modal window in the centre (docs/subsystems/sky-events.md "Event windows"): a banner
 // (assets/events/<id>.png, 960 x 320, or a labelled placeholder), the date, a title, a short text and one button.
-// A window opens when the RUNNING clock crosses an event's moment, forward or backward, at any rate (the state events:
-// forward only), or when a Watch takes the player to it; a clock that is SET past an event shows nothing. As it opens
+// A window opens when the RUNNING clock crosses an event's moment going forward, at any rate, or when a Watch takes the
+// player to it; a clock running back or SET past an event shows nothing (rewinding is navigation). As it opens
 // the clock goes to 1x forward, paused while it is open; its button runs the clock on at 1x. The explode warning (the first player breakup before
 // the Sun's Fury, docs/subsystems/kessler.md "The explode warning") is the same window with three buttons.
 //
@@ -58,9 +58,8 @@ enum EvRow
 
 enum EvTrig : uint8_t
 {
-    kTrigMoment = 0,  // the running clock crosses its moment, either way
-    kTrigForward = 1, // the same, forward only (the first collision: a fact of the cascade's history)
-    kTrigShare = 2,   // the share of satellites destroyed crosses `share` while the clock runs forward
+    kTrigMoment = 0, // the running clock crosses its moment going forward
+    kTrigShare = 1,  // the share of satellites destroyed crosses `share` while the clock runs forward
 };
 enum EvNeeds : uint8_t
 {
@@ -98,7 +97,7 @@ const EventWinDef kEventWinDefs[evRowCount] = {
     {"suns_fury", Txt::EvTitleFury, Txt::EvTextFury, Txt::EvTitleFury, Txt::EvTextFury, Txt::EvBtnFury, -1, kTrigMoment,
      kNeedFury, 0.0, &Pal::furyBorder},
     {"first_collision", Txt::EvTitleFirstCollision, Txt::EvTextFirstCollision, Txt::EvTitleFirstCollision,
-     Txt::EvTextFirstCollision, Txt::EvBtnFirstCollision, -1, kTrigForward, kNeedFury, 0.0, &Pal::furyBorder},
+     Txt::EvTextFirstCollision, Txt::EvBtnFirstCollision, -1, kTrigMoment, kNeedFury, 0.0, &Pal::furyBorder},
     {"destroyed_10", Txt::EvTitleTenPercent, Txt::EvTextTenPercent, Txt::EvTitleTenPercent, Txt::EvTextTenPercent,
      Txt::EvBtnTenPercent, -1, kTrigShare, kNeedFury, 0.10, &Pal::furyBorder},
     {"destroyed_50", Txt::EvTitleHalf, Txt::EvTextHalf, Txt::EvTitleHalf, Txt::EvTextHalf, Txt::EvBtnHalf, -1, kTrigShare,
@@ -256,37 +255,41 @@ void SatelliteSim::eventWinAdvance(double tBefore, double tAfter)
         evw_.walkActive = false;
     }
     if (tAfter < tBefore)
+    {
+        // A clock running back opens nothing (2026-11-18, issue_20261118_181440: a card on a backward crossing resumed
+        // 1x forward, so a rewind could never get past the moment). Rewinding is navigation: the card shows when the
+        // clock next runs forward through the moment. A showing with the clock before its moment (a Watch's landing,
+        // the second of a queued pair) is left behind by the rewind, so that next forward crossing shows it again.
         evw_.walkPrevValid = false; // (a share crossed going back is not shown; the next walk is a new baseline)
+        evw_.watched.clear();
+    }
     eventWinKesslerTick(tAfter, running && tAfter >= tBefore);
     // The crossing is this frame's own advance (tBefore, tAfter]: a set happened before tBefore and is never looked at,
     // so the first frame after a `time set` still counts what the clock ran through from there.
-    if (tAfter == tBefore || evw_.open || !eventWinLive())
+    if (tAfter <= tBefore || evw_.open || !eventWinLive())
         return;
-    const bool fwd = tAfter > tBefore;
     std::vector<EvOcc> occ, hit;
     for (int d = 0; d < evRowCount; ++d)
     {
-        const EventWinDef &row = kEventWinDefs[d];
-        if (row.trig == kTrigShare || (row.trig == kTrigForward && !fwd))
+        if (kEventWinDefs[d].trig == kTrigShare)
             continue;
         eventWinMomentsOf(d, occ);
         for (const EvOcc &o : occ)
-            if (fwd ? (o.t > tBefore && o.t <= tAfter) : (o.t >= tAfter && o.t < tBefore))
+            if (o.t > tBefore && o.t <= tAfter)
                 hit.push_back(o);
     }
     if (hit.empty())
         return;
-    // The first one met in the direction of travel, and every event at that same moment (shown one after another).
+    // The first one met, and every event at that same moment (shown one after another).
     double t1 = hit[0].t;
     for (const EvOcc &o : hit)
-        t1 = fwd ? std::min(t1, o.t) : std::max(t1, o.t);
+        t1 = std::min(t1, o.t);
     std::vector<EvOcc> now;
     auto same = [](const EvOcc &a, const EvOcc &b) { return a.def == b.def && std::abs(a.t - b.t) < kSameMomentS; };
     for (const EvOcc &o : hit)
         if (std::abs(o.t - t1) < kSameMomentS)
         {
-            // (shown already with the clock before it: a Watch's landing, a backward crossing resumed forward at 1x,
-            // the second of a queued pair)
+            // (shown already with the clock before it: a Watch's landing, the second of a queued pair)
             if (std::any_of(evw_.watched.begin(), evw_.watched.end(), [&](const EvOcc &w) { return same(w, o); }))
                 continue;
             now.push_back(o);
@@ -300,8 +303,8 @@ void SatelliteSim::eventWinAdvance(double tBefore, double tAfter)
     if (now.empty())
         return;
     // The clock back to the moment (at 1 week/s a frame is a day: the thing would be over), then the window. A
-    // millisecond past it in the direction of travel, so the next frame's interval cannot meet it again.
-    const double tAt = t1 + (fwd ? 1e-3 : -1e-3);
+    // millisecond past it, so the next frame's interval cannot meet it again.
+    const double tAt = t1 + 1e-3;
     const double back = tAfter - tAt;
     const double days = std::floor(tAt / kDayS);
     simDayJ2000 = (int64_t)days;
@@ -309,7 +312,7 @@ void SatelliteSim::eventWinAdvance(double tBefore, double tAfter)
     cv2SimAdvanceAcc -= back; // (the clouds' history: a step back, not a jump)
     evw_.lastT = (double)simDayJ2000 * kDayS + simSecInDay;
     for (const EvOcc &o : now)
-        eventWinOpen(o, fwd ? "crossed forward" : "crossed backward");
+        eventWinOpen(o, "crossed forward");
 }
 
 // The state events. The first collision: the earliest engine collision or bump in the mirror's event log (a sliced scan
@@ -552,8 +555,8 @@ void SatelliteSim::eventWinOpen(const EvOcc &o, const char *how)
         audio_->playSfx("assets/sound/ui/event.wav"); // (the sfx bus: the master and effects volumes)
     if (o.def != kEvWarn)
     {
-        // Shown with the clock before its moment (a Watch's landing, a backward crossing, which resumes forward, the
-        // second of a queued pair): the running clock then crossing it is this same showing (eventWinAdvance).
+        // Shown with the clock before its moment (a Watch's landing, the second of a queued pair): the running clock
+        // then crossing it is this same showing (eventWinAdvance; a rewind first drops it).
         if (o.t > (double)simDayJ2000 * kDayS + simSecInDay)
             evw_.watched.push_back(o);
         evw_.recent.push_back(o);
@@ -895,7 +898,7 @@ harness::Status SatelliteSim::harnessEvents(harness::Active &a)
             nlohmann::json r;
             r["id"] = row.id;
             r["title"] = tx(row.title);
-            r["trigger"] = row.trig == kTrigMoment ? "moment" : row.trig == kTrigForward ? "moment, forward only" : "share destroyed";
+            r["trigger"] = row.trig == kTrigMoment ? "moment" : "share destroyed";
             if (row.trig == kTrigShare)
                 r["share"] = row.share;
             nlohmann::json ts = nlohmann::json::array();
