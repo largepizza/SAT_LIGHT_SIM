@@ -36,7 +36,6 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_v2_march.com
 #define CV2_DETAIL_BINDING  4
 #define CV2_MESO_BINDING    5
 #define CV2_ELEV_BINDING    25   // the elevation map: orographic clouds (clouds_v2.glsl cv2OroField)
-#define CV2_FRACTUS              // fractus under raining bases (clouds_v2.glsl): only the march and the clipmap bake
 #define CV2_STORM_BINDING   26   // the storm objects' towers (cv2_storms.glsl)
 #define CV2_LAYER_HITS            // cv2Field reports the layers each read needed (gCv2LayHit): the cells' layer masks
 #define CV2_FLOW_POINT_DITHER     // the cyclone flow map's phases chosen per bake point (clouds_v2.glsl cv2CycFlowAt): a cell covers both
@@ -107,7 +106,6 @@ void bakePass(uint ti)
     vec3  enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ));
     mat3  enuToEcef = mat3(enuX, cross(enuZ, enuX), enuZ);
     float eyeH = terrainFrame.x + 2.0;               // == cloud_v2_march.comp's
-    gCv2EyeH = eyeH;                                 // the fractus band's view test (clouds_v2.glsl)
     vec3  eyeP = vec3(0.0, 0.0, R_EARTH + eyeH);
     vec2  uc   = (vec2(c.xy) + 0.5) * cell;          // the cell centre on the plane (m)
     float zc   = (float(c.z) + 0.5) * kCv2CdcDZ;

@@ -247,9 +247,10 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // x the anvil plate's share of the Cb erosion (1 = all of it), y its lid's lobes (x the storm lobes), z its underside's,
     // w spare
     vec4  storm3b;
-    // -- vertical (2026-11-05, night wave agent E): varied cloud bases, fractus, mid-level wisps, orographic clouds --
+    // -- vertical (2026-11-05, night wave agent E): varied cloud bases, mid-level wisps, orographic clouds --
     // vert: x "Cloud base condensation level" (cv2BaseShift's LCL proxy, x1), y "Cloud base cell spread" (m, per cumulus
-    // cell), z "Cloud base regional spread" (x the type's alt.w at the cluster scale), w "Fractus" (ragged scud under wet bases)
+    // cell), z "Cloud base regional spread" (x the type's alt.w at the cluster scale), w spare (was "Fractus", the scud under
+    // raining bases, removed 2026-11-18 at the user's request)
     // vert2: x "Mid-level wisps" (the mid layer's low thin mode), yzw their anchor (anchorMid's, the drifted z x0.4)
     // oro0: x "Orographic clouds" (0 = off), y the lee wavelength (m, 2 pi U / N), zw the wind's (east, north) unit vector (the
     // way it blows); oro1: x lens moisture (0..1), y x the dryness (faster wind lifts more), zw the regional moisture phase
@@ -867,12 +868,6 @@ bool gCv2NoFar = false;
 // cv2FieldLow's rain shafts (cv2Field calls them in that order): a core under the tower's base, drawn out downwind
 // under the anvil. The map's precipitation alone put the heaviest rain anywhere its regions said, in stripes.
 float gCv2RainCore = 0.0;
-#ifdef CV2_FRACTUS
-// The eye's altitude above sea level (m), for the fractus band's view test (2026-11-15, issue_20261115_132950): set at the
-// top of main by the two shaders that define CV2_FRACTUS (the march, the clipmap bake), whose terrainFrame is declared
-// after this include.
-float gCv2EyeH = 0.0;
-#endif
 // The low field's shape, folded into the scalars the shape fetch and the erosion read (2026-11-04, storms through the
 // cumulus field): cv2LowA computes them from the weather map and the cells (the cumulus), a storm object's margin
 // (cv2StormGeom) supplies its own, and cv2FieldLow carves the blend of the two with ONE set of fetches.
@@ -1303,30 +1298,7 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, float stormI
         if (rate <= 0.0 && below) return false;
         if (rate > 0.0) {
         vec3  rr = rS + eastW * ((base - q.h) * 0.25);
-#if !defined(SKY_LITE) && defined(CV2_FRACTUS)
-        // (Fractus, below: through its band the curtains' vertical squeeze eases off. Only in the march and the occupancy
-        // clipmap's bake (CV2_FRACTUS): in the coarse volumes that also read cv2Field -- the froxels, the aerial-perspective
-        // volume, the Sun volume -- the thin band under every raining base became blue-grey rectangles low on the horizon,
-        // 2026-11-05 integration check.)
-        float fDep = mix(250.0, 550.0, clamp(rate * 2.0, 0.0, 1.0));
-        float frK  = cv2.vert.w > 0.0 ? smoothstep(base - fDep - 150.0, base - fDep + 50.0, q.h) * (1.0 - smoothstep(base - 60.0, base, q.h))
-                                        * (1.0 - smoothstep(600.0, 1500.0, fpM))
-                                        * (1.0 - smoothstep(3000.0, 7000.0, length(q.rSeaE)))
-                                        // ... and only seen from BELOW (2026-11-15, issue_20261115_132950 "Odd rain clumps",
-                                        // from 2.2 km beside a storm whose base was at the eye's height): from level with the
-                                        // band or above it, the band (a slab a few hundred metres thick) cut off by the
-                                        // 3-7 km ring drew detached, flat-topped pale lenses under the base, lit brighter
-                                        // than the rain round them. Scud is a detail overhead: the band fades in between
-                                        // ~0 and 4.6 deg of elevation from the eye (tan 0 .. 0.08).
-                                        * smoothstep(0.0, 0.08, (q.h - gCv2EyeH)
-                                                     * inversesqrt(max(dot(q.rSeaE, q.rSeaE) - q.h * q.h, 1.0))) : 0.0;
-        // (... and only within ~3-7 km of the eye, 2026-11-05 integration fix: further out the band under low (sea) bases,
-        // 100-500 m up and seen nearly edge-on from the ground, drew rows of flat-topped blue-grey blobs a degree or two
-        // over the horizon (towers region -5 163, all within ~15 km: a 6-15 km fade left them). Scud is a detail overhead.)
-        rr -= wd * (dot(rr, wd) * 0.85 * (1.0 - frK));
-#else
         rr -= wd * (dot(rr, wd) * 0.85);
-#endif
         // The curtains read 1.5 mips coarser with a softer threshold (review 22): at the shape period's finest
         // octaves and x4 they were a striped on/off pattern a still observer saw repeat ("perliny").
         vec4  sr = textureLod(cv2ShapeTex, cv2.anchorShape.xyz + rr * cv2.anchorShape.w,
@@ -1341,24 +1313,6 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, float stormI
         f.ambient  = 0.8;
         f.rain     = 1.0;
         f.topH     = base;
-#if !defined(SKY_LITE) && defined(CV2_FRACTUS)
-        // Fractus / scud (2026-11-05, vertical; "Fractus", vert.w): ragged cloud fragments in the saturated air under a
-        // raining base, in a band hanging 60 m to ~250-550 m under it (deeper in heavier rain), fading with the footprint
-        // (sub-pixel scraps would only grey the rain). From the shaft's own texel (a second fetch here put the march at 249
-        // registers): through the band the shaft's vertical compression eases off (frK above), so the texel there is
-        // round noise, not curtains (thresholded, curtains drew a row of flat-topped blocks); its band edges move +-250 m
-        // with the texel. Cloud, not rain: its share leaves f.rain (the bows keep the rain's).
-        if (frK > 0.0) {
-            float hJ    = q.h + 500.0 * (sr.a - 0.5);   // (+-250 m: at +-120 the band's flat top and base showed)
-            float band  = smoothstep(base - fDep, base - 0.55 * fDep, hJ) * (1.0 - smoothstep(base - 160.0, base - 60.0, hJ));
-            float rag   = smoothstep(0.56, 0.8, sr.r * 0.5 + sr.g * 0.3 + sr.b * 0.2 + 0.15 * min(rate * 2.0, 1.0)) * band
-                        * frK * min(rate * 4.0, 1.0) * smoothstep(80.0, 250.0, q.h - cv2Ground(q.dirE));   // (not a ground fog)
-            float sFr   = 0.006 * cv2.vert.w * rag;   // (0.012: from under a raining edge, a dark veil over the whole view)
-            f.rain      = f.sigma / max(f.sigma + sFr, 1e-9);
-            f.msBright  = mix(0.6, 0.85, 1.0 - f.rain);
-            f.sigma    += sFr;
-        }
-#endif
         if (below) return false;
         }
     }
@@ -1617,7 +1571,7 @@ bool cv2LowA(CV2Pos q, float detailAmt, float fpM, float stormProx, float stormI
                  * (1.0 - 0.8 * hW);   // ("Hurricane smoothing": inside a hurricane's reach the erosion bites less)
     float erBase = mix(1.0, 1.0 - 0.7 * cv2.high2.w, ty.look.z);
     // "Cumulus wisps" (cu2.y): where a cloud is evaporating its edge is ragged and soft, where it grows it is hard.
-    // Small, weak clouds (fractus) are wispy all round; a formed cloud on the parts the shape volume's Perlin
+    // Small, weak clouds are wispy all round; a formed cloud on the parts the shape volume's Perlin
     // channel picks (hundreds of metres to a km: one flank, a trailing shelf). There the erosion is 1.7x and the
     // edge sharpening is let go, so the detail noise tears the surface into shreds instead of dimpling it.
     float wispE  = cv2.cu2.y * (1.0 - smoothstep(0.05, 0.3, e)) * (1.0 - deep);

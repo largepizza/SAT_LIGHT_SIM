@@ -49,7 +49,6 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_march.comp)
 #define CV2_MESO_BINDING    5
 #define CV2_ICE_OPTICS_BINDING 28   // the ice crystals' traced halo table (cv2_optics.glsl cv2IceOptics, 2026-11-10)
 #define CV2_ELEV_BINDING    25   // the elevation map: orographic clouds (clouds_v2.glsl cv2OroField)
-#define CV2_FRACTUS              // fractus under raining bases (clouds_v2.glsl): only the march and the clipmap bake
 #define CV2_ORO_EXTERNAL         // ... added at the main sample only (below), not in every inlined cv2Field (registers)
 #define CV2_STORM_BINDING   26   // the storm objects' towers (cv2_storms.glsl)
 #define CV2_FLOW_DITHER          // the cyclone flow map's phases dithered per ray (clouds_v2.glsl cv2CycFlowAt): the march only
@@ -685,7 +684,6 @@ void main()
     vec3  enuY = cross(enuZ, enuX);
     mat3  enuToEcef = mat3(enuX, enuY, enuZ);
     float eyeH = terrainFrame.x + 2.0;               // == observerPos(obsEffH).z - R_EARTH
-    gCv2EyeH = eyeH;                                 // the fractus band's view test (clouds_v2.glsl)
     vec3  eye  = vec3(0.0, 0.0, R_EARTH + eyeH);
     vec3  sunDir = normalize(pc.sunDirENU.xyz);
 
@@ -1071,7 +1069,7 @@ void main()
             // whose top was within ~4 steps of its base: a see-through line round every raining field's thin margin (where
             // the top falls into the floor), and a thinned, grainy margin elsewhere. Below the base the stride is as before.
             // 2026-11-07 (issue_20261107_163713 "awful performance ... something up with sampling?", under a snowing deck from
-            // 500 m): the FRACTUS band under a raining base (cv2.vert.w) lowers the rain's share of a sample, and at > 0.9 every
+            // 500 m): the FRACTUS band under a raining base (removed 2026-11-18) lowered the rain's share of a sample, and at > 0.9 every
             // ray from an eye under the deck took fine steps and full light marches through ~250-550 m of scud for 3-7 km:
             // 18 of 41 ms of cloud march (fractus 0: 23 ms). Below the base, rain with scud strides like rain (> 0.2): 40.4 ->
             // 32.9 ms, mean 2.5 levels (the scud slightly softer).
