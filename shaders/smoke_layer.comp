@@ -157,8 +157,9 @@ float sunPathTau(vec3 P, float rTop)
 float gPh, gPh2, gPh4;
 
 // One stretch [ta, tb] of the ray, on the step grid from tg of spacing dt: its light Lo and transmittance To (spectral),
-// and the light-weighted distance sums (tW, wS)
-void marchSeg(float tg, float dt, float ta, float tb, out vec3 Lo, out vec3 To, inout float tW, inout float wS)
+// and the light-weighted distance sums (tW, wS), each step's weight x wK (the share of it the eye sees past what lies
+// in front of the stretch)
+void marchSeg(float tg, float dt, float ta, float tb, float wK, out vec3 Lo, out vec3 To, inout float tW, inout float wS)
 {
     Lo = vec3(0.0);
     To = vec3(1.0);
@@ -223,7 +224,7 @@ void marchSeg(float tg, float dt, float ta, float tb, out vec3 Lo, out vec3 To, 
         // the air between the eye and the point
         vec3 tauE = BETA_R_BASE * (atmColumn(gObs, gDir, sm, H_R) * H_R) + BETA_M_BASE * 1.1 * (atmColumn(gObs, gDir, sm, H_M) * H_M);
         Lo += To * (vec3(1.0) - dT) * J * exp(-tauE);
-        float wl = dot(To * (vec3(1.0) - dT), vec3(0.2126, 0.7152, 0.0722));
+        float wl = wK * dot(To * (vec3(1.0) - dT), vec3(0.2126, 0.7152, 0.0722));
         tW += wl * sm;
         wS += wl;
         To *= dT;
@@ -276,21 +277,27 @@ void main()
     float dt = max(25000.0, (t1 - t0) / 16.0);
     vec3  Lf, Tf, Lb, Tb;
     float tW = 0.0, wS = 0.0;
-    marchSeg(t0, dt, t0, min(t1, tC), Lf, Tf, tW, wS);
-    marchSeg(t0, dt, max(t0, tC), t1, Lb, Tb, tW, wS);
-    if (wS <= 1e-5)
-        return;
+    // The haze past the cloud counts for the split and the haze's opacity only as far as it is SEEN: x the cloud's
+    // transmittance (and the haze's in front). Counted whole, an opaque cloud's split went to the haze behind it, and the
+    // ray past a cloud ends at the sea below the horizon (~110 km from 1 km up) but at the layer's top above it (hundreds
+    // of km): the split, and the air the sky pass puts in front of the cloud, jumped at the horizon line, a hard-edged
+    // pale band across every cloud standing over it (issue_20261118_210334, "clipping on clouds").
     float aB = dot(B.rgb, vec3(0.2126, 0.7152, 0.0722));
+    marchSeg(t0, dt, t0, min(t1, tC), 1.0, Lf, Tf, tW, wS);
+    marchSeg(t0, dt, max(t0, tC), t1, aB * dot(Tf, vec3(0.2126, 0.7152, 0.0722)), Lb, Tb, tW, wS);
+    if (dot(Tf * Tb, vec3(0.2126, 0.7152, 0.0722)) >= 1.0 - 1e-5)
+        return;   // (no haze on the ray)
     A.rgb = A.rgb * Tf + Lf + B.rgb * Tf * Lb;
     B.rgb *= Tf * Tb;
-    float aS = 1.0 - dot(Tf * Tb, vec3(0.2126, 0.7152, 0.0722));
+    // the haze's opacity as seen: in front, + behind the cloud x its transmittance (no cloud: 1 - Tf Tb, as it was)
+    float aS = 1.0 - dot(Tf * (vec3(1.0) - aB * (vec3(1.0) - Tb)), vec3(0.2126, 0.7152, 0.0722));
     // The air split (sat_sky.frag adds the air to |a| in front, undimmed, and the air beyond x A): moved toward the haze by
     // its share of the texel's opacity (lySplitM), on every texel by one formula, continuous in the opacity: emissive-
     // flagged texels too, keeping their flag (skipped, their region kept the flames' distance while the haze dimmed the
     // air past it: a hard-edged tan patch round a fire from 153 km, report shot 2), and opaque ones, keeping their sign
     // (cloud_march stores its own merged split there too; skipped, the split jumped at the half-opacity contour).
     {
-        float tS = tW / wS;
+        float tS = wS > 1e-7 ? tW / wS : tC;   // (all of it hidden behind an opaque cloud: the split stays at the cloud)
         float oC = 1.0 - aB;
         float tSplit = lySplitM(gObs, gDir, tS, tC, oC / max(oC + aS, 1e-4));
         A.a = cloudAlphaFlag((A.a >= 0.0 ? tSplit : -tSplit) * 0.001, emit);

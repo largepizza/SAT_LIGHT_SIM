@@ -673,6 +673,11 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- No more pale band with a hard edge on the horizon across clouds in wildfire haze (issue_20261118_210334). The haze
+  hidden behind a cloud was still counted in how much air the sky put in front of it, and behind a cloud the view
+  ends at the sea below the horizon but runs on through the haze above it: the cloud changed brightness in a straight
+  line along the horizon. A cloud now gets only the haze in front of it (and the haze behind as far as it shows
+  through); the clear sky, the horizon haze band and the reddened Sun are unchanged.
 - No more dark seam along the terrain's silhouette in the Reflect beams (issue_20261118_181806). Where a ridge met a
   sky lit by the beams, the clouds' temporal filter mixed the crest's samples (a few km of lit haze) into the sky's
   (tens of km), drawing a dark, stair-stepped line along the ridge, deepest just after moving. The filter now keeps
