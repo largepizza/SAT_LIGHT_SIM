@@ -1905,6 +1905,7 @@ UI_TEXT(NoteConstellationParametersAreDrawnFromPubli, "Constellation parameters 
 
 // -- SatelliteSim.cpp (by hand) --
 UI_TEXT(ToastLeftGoTo, "Left Go to: you stay here")
+UI_TEXT(ToastLeftGoToFar, "Left Go to: over 100 km from it, you stay here")
 UI_TEXT(ValNoMagnitudeSimpleType, "this type has no 3D model, so it has no true magnitude.")
 UI_TEXT(ValNoMagnitudeNoTargets, "this type aims at ground sites, and none are loaded.")
 UI_TEXT(ValKindRocketStage, "Rocket stage")

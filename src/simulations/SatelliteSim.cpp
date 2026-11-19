@@ -6553,6 +6553,14 @@ void SatelliteSim::updateFollow(float dt)
             const double offLen = glm::length(followOffset);   // the same reach as kMaxObsHeightM (review 16)
             if (offLen > (double)kMaxObsHeightM)
                 followOffset *= (double)kMaxObsHeightM / offLen;
+            // Flown more than 100 km from the object: Go to ends there, as the G key would (2026-11-18, the user:
+            // "going far (100km) from a satellite will end the goto, emulating a G key press at that point").
+            // Only the player's own movement does it; a cinematic, a flight or a harness offset never does.
+            if (offLen > kFollowLeaveM)
+            {
+                stopFollowHere(tx(Txt::ToastLeftGoToFar));
+                return;
+            }
         }
     }
 

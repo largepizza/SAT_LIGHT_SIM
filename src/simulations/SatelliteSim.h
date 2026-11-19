@@ -2924,6 +2924,7 @@ private:
     int followSatIndex = -1;
     bool followAimLock = true;
     glm::dvec3 followOffset{0.0};
+    static constexpr double kFollowLeaveM = 100000.0; // flying farther than this from Go to's object ends Go to there (as G)
     glm::dvec3 followObsEcef{0.0};
     double followRadiusM = 0.0;
     glm::vec3 followSavedObsDir{0.0f}, followSavedFacing{0.0f};
@@ -6467,11 +6468,11 @@ private:
     // dryness; smoke as plume Gaussians (a contiguous range of the dust list, spectral: smoke.glsl), the front as point
     // sprites (kFireBuf) and its light as engine lights.
     float wildfireRate = 1.0f;     // clouds_v2.wildfires: x the calibrated fire rate (0 = none)
-    float wildfireSmoke = 1.0f;    // clouds_v2.wildfire_smoke: x the smoke's optical depth
+    float wildfireSmoke = 1.1f;    // clouds_v2.wildfire_smoke (the user's look, baked 2026-11-18): x the smoke's optical depth
     float wildfireLight = 1.0f;    // clouds_v2.wildfire_light: x the fire front's light (points and the glow)
     // The smoke's look (2026-10-26, issues 20261026_204045 / _204239: "too beige", "do we have any controls for smoke?"):
-    float wildfireSmokeBright = 1.0f;   // clouds_v2.wildfire_smoke_brightness: x the light the smoke scatters
-    float wildfireSmokeTint = 0.0f;     // clouds_v2.wildfire_smoke_tint: -1 blue-grey .. 0 neutral grey .. +1 brown
+    float wildfireSmokeBright = 0.70f;  // clouds_v2.wildfire_smoke_brightness (baked 2026-11-18): x the light the smoke scatters
+    float wildfireSmokeTint = -0.52f;   // clouds_v2.wildfire_smoke_tint (baked 2026-11-18): -1 blue-grey .. 0 neutral grey .. +1 brown
     int wildfireFlameBand = 1;           // clouds_v2.wildfire_flame_band (no UI): 1 = the close-up flames as a band of tongues on screen, 0 = the old sparse tongues (A/B)
     float flameLodScale = 1.0f;          // x the close-up flames' spacing on screen: widened when they overflow their budget
     float flameNearScale = 1.0f;         // x the close-up flames' spacing floor near the eye (1.2 x the flame height): likewise
@@ -6492,7 +6493,7 @@ private:
     bool wildfireScars = true;           // clouds_v2.wildfire_scars (no UI): the burn scars on the ground (off: isolate the smoke)
     int wildfireSmokeAlloc = 1;          // clouds_v2.wildfire_smoke_alloc (no UI): 1 = trail pieces shared by what is on screen, 0 = the old fair share (A/B)
     float wildfireSmokeSpread = 1.0f;   // clouds_v2.wildfire_smoke_spread: x the plumes' width (same mass: thinner)
-    float wildfireSmokeSpectral = 0.6f; // clouds_v2.wildfire_smoke_spectral: x the Angstrom exponent (1 = ~1.6: the
+    float wildfireSmokeSpectral = 0.72f; // clouds_v2.wildfire_smoke_spectral (baked 2026-11-18): x the Angstrom exponent (1 = ~1.6: the
                                         // Sun / sky through smoke reddened and its thin parts blue; 0 = grey)
     // The smoke LAYER (2026-11-17, issue_20261117_195951; SatelliteSimSmokeLayer.cpp, shaders/smoke_layer.comp): the smoke
     // older than ~1 h (the aged trail and each fire's pall) as a regional haze in curved coordinates, not Gaussians.

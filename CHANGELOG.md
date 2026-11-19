@@ -641,6 +641,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   settings are in Settings > Launches.
 - Go to moves you: magnitudes and sky positions are read from where the camera is. With a satellite selected,
   I opens its Info window, G is Go to and T is Track.
+- Flying more than 100 km away from the object you went to ends Go to where you are, as pressing G would.
+- Wildfire smoke defaults to a denser, dimmer, blue-grey look (smoke x1.1, brightness 0.70, tint -0.52,
+  spectral 0.72).
 - "Moon size" defaults to 1 (the true size).
 - **The Sun is drawn at its true size by default**, like the Moon: a new "Sun size (x real)" slider (Settings > Sky >
   Refraction and mirages, 0.25-4, key `clouds.sun_size`) sets it; 1.5 is the old, larger disc. On every graphics
