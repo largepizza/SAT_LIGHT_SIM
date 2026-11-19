@@ -666,6 +666,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- No more dark seam along the terrain's silhouette in the Reflect beams (issue_20261118_181806). Where a ridge met a
+  sky lit by the beams, the clouds' temporal filter mixed the crest's samples (a few km of lit haze) into the sky's
+  (tens of km), drawing a dark, stair-stepped line along the ridge, deepest just after moving. The filter now keeps
+  the two sides apart; the ridge meets the sky cleanly, still or moving.
 - No more black specks on the Earth and along the limb from orbit over the summer pole (issue_20261117_200907).
   Where the noctilucent cloud layer was only just forming, a size average fell below the smallest number the GPU
   keeps, and the layer's brightness came out as not-a-number, drawn as black 1x2-pixel dots that stayed put. The
