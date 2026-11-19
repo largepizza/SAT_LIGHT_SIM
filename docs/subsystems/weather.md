@@ -929,6 +929,18 @@ lists its sections and topics with line numbers. New notes go next to the sectio
       shots 5/7/8; the step of (layer) - (no layer pass) across the mask's edge, p50 30 -> 3-6 levels, p95 ~45 -> 8-12,
       the sky elsewhere 11-20). Skipping them instead left a hard-edged tan diamond round the fire from 153 km
       (report shot 2): the flames' distance kept while the haze dimmed the air past it.
+      The haze past the cloud counts toward the split's distance and the haze's opacity only as SEEN: each step's
+      weight behind tC x the cloud's transmittance x the haze's in front (aS = 1 - Tf (1 - aB (1 - Tb)), = 1 - Tf Tb
+      with no cloud, so a clear texel is unchanged). Counted whole, an opaque cloud's split went to the haze hidden
+      behind it, and that ray ends at the sea below the horizon (~110 km from 1 km up) but at the layer's top above it
+      (hundreds of km): the split, and the air the sky pass puts in front of the cloud, jumped at the horizon, a
+      hard-edged pale band across every cloud over the horizon (issue_20261118_210334, "clipping on clouds"). Measured
+      at that shot (1920x1009, held exposure): the step across the horizon row (3 rows below - 3 above, 128-px column
+      bands) over the cloud -14 to -24 levels -> -1.5 to +4.0, the layer off -1.3 to +4.9 there (the cloud's own); the
+      clear sea's bands unchanged (within 0.5). Cloud texels with haze behind them read a little darker than before
+      (less air in front): the 2026-11-17 report's shots 2 / 3 / 5 mean +0.4-0.9 levels past the A-vs-A floor, p99 6-12;
+      the clear sky, the horizon band and the Sun identical. Pass cost unchanged (3 interleaved reps, GPU total 16.70 /
+      16.65 / 16.65 ms base / fixed / base again).
     The layer's pieces (the 12 heaviest) also go to the dust buffer's tail (after the side slots, `kSmokeShadowSlots`
     32: slot 0's c.x the count) as Gaussians NOT in the drawn list, which sat_sky.frag smokeSunTransmit adds to the
     ground's Sun: the direct beam at the physical Angstrom exponent + what the haze took out of it x the albedo
