@@ -2195,7 +2195,7 @@ UI_TEXT(EvBtnWarnSun, "3) PRAISE BE TO THE SUN")
 UI_TEXT(TipEvWarnSun, "Take me to the Sun's Fury")
 UI_TEXT(FmtEvBannerPlaceholder, "Banner art: assets/events/%s.png (%d x %d)")
 UI_TEXT(LblEventWindows, "Event windows")
-UI_TEXT(TipEventWindows, "A window in the centre when time runs into a story event (eclipses, the Great Comet, the Sun's Fury, the supernova) or a Watch takes you to one. It pauses time; its button runs the clock on at 1x. Jumping past an event shows nothing.")
+UI_TEXT(TipEventWindows, "A window in the centre when time runs forward into a story event (eclipses, the Great Comet, the Sun's Fury, the supernova) or a Watch takes you to one. It pauses time; its button runs the clock on at 1x. Jumping or rewinding past an event shows nothing.")
 // The contextual hints (2026-11-17 round 2): armed until used, across sessions.
 UI_TEXT(HintToRoll, "to roll")
 UI_TEXT(HintGoTo, "to go to it")
