@@ -70,6 +70,31 @@ const float kWideColorDepthTol = 0.25;   // ... at this pixel's distance +-25%
 const float kWideColorPx0      = 1.0;    // ... faded out over 1-3 px a frame of the neighbourhood's parallax
 const float kWideColorPx1      = 3.0;
 bool  gAdaptive = false;
+// THE SURFACE CLASS (2026-11-18, issue_20261118_181806 "Dark seam on terrain within reflect lights"). A new sample's ray
+// ended at the terrain (or the sea, or a mesh) or went on into the sky: the scene depth at its pixel says which. Along a
+// ridge against the sky the two classes hold different light — the sky's samples a beam's lit haze tens of km deep, the
+// crest's only the few km to the ground — and every spatial estimate below (the 3x3 box, the 7x7 ring, the bilinear and
+// tent estimates between rays) mixed them: the sky pixels within a sample or two of the ridge took the crest's darker
+// samples, and in motion their history (the hillside, disoccluded) passed a clamp box that held the crest's samples too.
+// A dark, sparse-grid-stepped band on the sky side of every silhouette in the beams (shot 3: 21-28 levels after a walk).
+// Where the 3x3 holds both classes (`cls`), a pixel takes only its own class's samples.
+int   gGZ = 1, gKB = 2;
+ivec2 gOff = ivec2(0);
+bool  gPerPix = false;
+// The half-res pixel a sample was marched at: sample q of the sparse grid sits at q * K + off; at full / half rate and
+// in an adaptive full-rate tile the sample is the pixel's own.
+ivec2 cv2SamplePix(ivec2 q, bool own) { return own ? q : q * gKB + gOff; }
+// The class is the surface's distance: the sky, or a surface within a factor of ~1.65 of this pixel's (a near hill
+// against a far ridge holds as different a light as a ridge against the sky: shot 1's far ridge).
+const float kClsLogTol = 0.5;
+float gClsLogT = 0.0;   // this pixel's log surface distance (< 0: the sky)
+float cv2LogSurf(float t) { return (t > 0.0 && t < 0.5 * kNoSurfaceT) ? log(max(t, 1.0)) : -1.0; }
+bool  cv2SameClass(ivec2 p)
+{
+    ivec2 ds = textureSize(sceneDepthTex, 0);
+    float l  = cv2LogSurf(texelFetch(sceneDepthTex, min(clamp(p, ivec2(0), gHalf - 1) >> gGZ, ds - 1), 0).r);
+    return (l < 0.0) ? gClsLogT < 0.0 : (gClsLogT >= 0.0 && abs(l - gClsLogT) < kClsLogTol);
+}
 // Review 20: the history is read Catmull-Rom (9 bilinear taps, sky_taa.comp's form), not bilinear. Rising or
 // sliding slowly, far clouds move a fraction of a pixel a frame and keep the still weight (95% history), and a
 // bilinear read at a fractional offset is a small blur that compounds every frame: horizon clouds went soft and
@@ -250,9 +275,32 @@ void main()
     float dNear = 1e30;   // the nearest cloud distance among the new samples (review 19, below)
     vec3  rMn = vec3(1e30), rMx = vec3(-1e30);   // the same box in plain radiance (review 20b, below)
     float dW = 0.0, dWs = 0.0;                    // the box's opacity-weighted mean distance (review 20c, below)
+    // The surface class (see cv2SameClass): this pixel's, and whether its 3x3 of new samples holds both classes. A pixel
+    // there takes its box, ring, distance and estimates from its own class's samples only, per pixel (not the block's).
+    gGZ = int(cv2.grid.z); gKB = kB; gOff = off; gPerPix = full || halfR;
+    vec2  sd0    = texelFetch(sceneDepthTex, min(c >> gGZ, textureSize(sceneDepthTex, 0) - 1), 0).rg;
+    float tSurf  = sd0.r;
+    bool  onSurf = tSurf > 0.0 && tSurf < 0.5 * kNoSurfaceT;
+    gClsLogT = cv2LogSurf(tSurf);
+    bool  cls    = false;
+    {
+        int nSame = 0, nOther = 0;
+        for (int k = 0; k < 9; ++k) {
+            ivec2 o  = ivec2(k % 3, k / 3) - 1;
+            ivec2 pq = clamp(b + o, ivec2(0), qs - 1);
+            if (halfR && ((pq.x + pq.y + par) & 1) != 0) continue;
+            if (cv2SameClass(tFull ? c + o : cv2SamplePix(pq, gPerPix))) ++nSame; else ++nOther;
+        }
+        // (Not on a MESH pixel, scene_depth.comp .g 3: cloud_march.comp drops the cloud behind a hull by the resolved
+        // distance, which its edge texels take from the samples beside it in motion -- see "MESH texels only" there.)
+        cls = nSame > 0 && nOther > 0 && sd0.g < 2.5;
+    }
+    vec4  clsT = vec4(0.0);   // (cls) the own-class samples' tent round this pixel
+    float clsW = 0.0;
+    vec2  posS = (full || halfR || tFull) ? vec2(c) : (vec2(c) - vec2(off)) / float(kB);
     // (On the sparse grid the block's, from shared memory: see sBox.)
     int r3 = 1;
-    if (sharedRing && !tFull) {
+    if (sharedRing && !tFull && !cls) {
         uint ob = ((uint((c.y & 15) >> 1) << 3u) + uint((c.x & 15) >> 1)) * kBoxF;
         mn = vec4(sBox[ob], sBox[ob + 1u], sBox[ob + 2u], sBox[ob + 3u]);
         mx = vec4(sBox[ob + 4u], sBox[ob + 5u], sBox[ob + 6u], sBox[ob + 7u]);
@@ -269,11 +317,17 @@ void main()
     for (int dx = -r3; dx <= r3; ++dx) {
         ivec2 pq = clamp(b + ivec2(dx, dy), ivec2(0), qs - 1);
         if (halfR && ((pq.x + pq.y + par) & 1) != 0) continue;
+        if (cls && !cv2SameClass(tFull ? c + ivec2(dx, dy) : cv2SamplePix(pq, gPerPix))) continue;
         vec4 s = tFull ? freshAt(c + ivec2(dx, dy)) : texelFetch(newColorTex, pq, 0);
         float dq = tFull ? texelFetch(fullDepthTex, clamp(c + ivec2(dx, dy), ivec2(0), gHalf - 1), 0).x
                          : texelFetch(newDepthTex, pq, 0).x;
         if (dq > 0.0) { dNear = min(dNear, dq); float op = 1.0 - s.a; dW += op * dq; dWs += op; }
         if ((dx == 0) != (dy == 0)) ax += s;   // the four axial neighbours (the sparse grid's smoothing)
+        if (cls) {
+            vec2  dd = abs((tFull ? vec2(c + ivec2(dx, dy)) : vec2(pq)) - posS);
+            float wk = max(1.0 - dd.x / 1.5, 0.0) * max(1.0 - dd.y / 1.5, 0.0);
+            clsT += wk * s; clsW += wk;
+        }
         rMn = min(rMn, s.rgb); rMx = max(rMx, s.rgb);
         s = cv2ToMean(s);
         mn = min(mn, s); mx = max(mx, s);
@@ -353,6 +407,13 @@ void main()
         blur = 0.25 * (textureLod(newColorTex, (tqPos + vec2(-0.5, -0.5)) * tqIq, 0.0) + textureLod(newColorTex, (tqPos + vec2(0.5, -0.5)) * tqIq, 0.0) +
                        textureLod(newColorTex, (tqPos + vec2(-0.5,  0.5)) * tqIq, 0.0) + textureLod(newColorTex, (tqPos + vec2(0.5,  0.5)) * tqIq, 0.0));
     }
+    // Across a surface edge the estimates between rays are the own-class tent (the bilinear and [1 2 1] taps above mix
+    // the classes): a pixel's own ray keeps half its share, as the sparse grid's axial mix does.
+    if (cls && clsW > 0.0) {
+        vec4 ct = clsT / clsW;
+        blur = ct;
+        if (!(full || tFull)) spatial = isNew ? mix(nc, ct, 0.5) : ct;
+    }
 
     // Reproject.
     float tanHalf = tan(pc.fovYRad * 0.5);
@@ -385,8 +446,7 @@ void main()
     // clouds above the ridge reprojected down onto the hill and stayed: cloud blobs and stair-stepped bands over the
     // dark hillside that a settle (a history reset) cleared. It reprojects at the ground now, and the parallax floors
     // (capD) stop there too, so its history is clamped to its own new samples (clear) like any near pixel in motion.
-    float tSurf = texelFetch(sceneDepthTex, min(c >> int(cv2.grid.z), textureSize(sceneDepthTex, 0) - 1), 0).r;
-    bool  onSurf = tSurf > 0.0 && tSurf < 0.5 * kNoSurfaceT;
+    // (tSurf / onSurf: read above, with the surface class.)
     float ndCl  = ndR;   // the cloud's own distance (0 = none): the volumes' slide and the colour box's depth class keep it
     if (onSurf) ndR = ndR > 0.0 ? min(ndR, tSurf) : tSurf;
     if (ndR > 0.0) {
@@ -495,7 +555,7 @@ void main()
             vec4 mnW = mn, mxW = mx; vec3 rMnW = rMn, rMxW = rMx;
             // On the sparse grid the ring's boxes are the block's (shared, above); elsewhere the ring, per pixel.
             int rR = 3;
-            if (sharedRing && !tFull) {
+            if (sharedRing && !tFull && !cls) {
                 uint o = (((uint((c.y & 15) >> 1) << 3u) + uint((c.x & 15) >> 1)) << 2u) * kRingF;
                 mnW  = min(mnW, vec4(sRing[o], sRing[o + 1], sRing[o + 2], sRing[o + 3]));
                 mxW  = max(mxW, vec4(sRing[o + 4], sRing[o + 5], sRing[o + 6], sRing[o + 7]));
@@ -513,6 +573,7 @@ void main()
                 if (abs(dx) < 2 && abs(dy) < 2) continue;
                 ivec2 pq = clamp(b + ivec2(dx, dy), ivec2(0), qs - 1);
                 if (halfR && ((pq.x + pq.y + par) & 1) != 0) continue;
+                if (cls && !cv2SameClass(tFull ? c + ivec2(dx, dy) : cv2SamplePix(pq, gPerPix))) continue;
                 vec4 s = tFull ? freshAt(c + ivec2(dx, dy)) : texelFetch(newColorTex, pq, 0);
                 float dq = tFull ? texelFetch(fullDepthTex, clamp(c + ivec2(dx, dy), ivec2(0), gHalf - 1), 0).x
                                  : texelFetch(newDepthTex, pq, 0).x;
@@ -631,7 +692,7 @@ void main()
         float mf0 = smoothstep(6.0, 24.0, motionPx); float mf = mf0 * (1.0 - hConf);
         // S9: with no usable history the quarter grid's [1 2 1] tent still let the blue-noise tile's all-or-nothing rays
         // through as blotches (fast flight inside cloud): there the estimate widens to ~4x4 samples.
-        if (tentQ && mf > 0.0) {
+        if (tentQ && mf > 0.0 && !cls) {
             vec4 wide = 0.25 * (textureLod(newColorTex, (tqPos + vec2(-1.5, -1.5)) * tqIq, 0.0) + textureLod(newColorTex, (tqPos + vec2(1.5, -1.5)) * tqIq, 0.0) +
                                 textureLod(newColorTex, (tqPos + vec2(-1.5,  1.5)) * tqIq, 0.0) + textureLod(newColorTex, (tqPos + vec2(1.5,  1.5)) * tqIq, 0.0));
             blur = mix(blur, 0.5 * (blur + wide), mf);

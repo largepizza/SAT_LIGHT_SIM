@@ -330,6 +330,28 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     any near pixel's: a little more of the godrays' grain on hazy slopes under the Sun while moving (`harness_runs/qa-c04/ab`).
     The composite's own behind-the-surface drop (cloud_march.comp `cv2Behind`) stays mesh-only: it acts on the resolved
     distance, which on terrain is the neighbourhood's mean, not this history's.
+  - **The surface class: estimates do not cross a silhouette** (`cloud_v2_resolve.comp` `cv2SameClass` / `cls`,
+    issue_20261118_181806 "Dark seam on terrain within reflect lights"). A new sample's class is its pixel's scene depth:
+    the sky, or a surface within a factor of ~1.65 (`kClsLogTol` 0.5 in log distance) of this pixel's. Where a pixel's 3x3
+    of new samples holds both classes, its 3x3 box, 7x7 ring, opacity-weighted distance (`dW`), `dNear`, and the
+    estimates between rays (`spatial` / `blur`, an own-class tent; the S9 wide tent is skipped) take its own class's
+    samples only, per pixel (the shared block box and ring are skipped there). Not on mesh pixels (depth `.g` 3): the
+    hull drop in cloud_march.comp relies on their mixed distance. Why: along a ridge against the sky the classes hold
+    different light -- in the Reflect beams the sky's samples carry tens of km of lit haze, the crest's a few km -- and
+    the bilinear / tent estimates and the clamp box mixed them, so sky pixels within one or two samples of the ridge
+    took the crest's darker samples, and in motion their disoccluded history (the hillside) passed a box that held the
+    crest's samples too: a dark band on the sky side of every silhouette in the beams, stepped in the sparse grid's
+    blocks, deepest after a walk and decaying over ~250 still frames. Knockouts (shot 3, crop 800,340 400x160, dip = sky
+    row mean minus the darkest pixel within 16 px above the edge): `beam_light 0` / knockout `reflect_beams_glow_and_spot`
+    / `volumetric_cloud_march` remove it (the beams are the sky's light there); `fog_layer`, `dust_amount 0`, render
+    scale 1, sky TAA off, full-res terrain shadows, `sky_ap 0`, `haze_aloft 0`, the cirrus march, the beam pointing rays
+    and the beam self-march do not (4.2-5.0 vs 4.3-5.5); `history_weight 1` halves it, `sparse_block_still 2` and
+    `full_res 0` deepen it (wider blocks). Measured (RTX 3070 Ti, 1920x1009, render scale 0.67): shot 3 after the
+    report's trail 21.3 -> 0.7-1.0 levels (the reporter's frame 27.8), 250 frames later 7.3 -> 0.2, loaded settled
+    4.2 -> 0.2; shot 1's near ridge against the far ridge 39.6 -> 1.8 after the trail, 15.5 -> 1.3 still; beams off
+    and at night no change (0.3 / 0.5 -> 0.3 / 0.1, no halo); a snow ridge at noon without beams mean |diff| 4.1 vs an
+    A-vs-A floor of 4.4. Cost: the resolve 0.78 -> 0.90 ms (the 9 depth reads that find `cls` on every pixel), GPU
+    total 19.53 / 19.79 (A, A') vs 19.76 ms, within the A-vs-A spread.
 - **Far field (orbit)**: a fractal presence from the cluster Perlin at 1x and 4x (3-90 km, `fz`), thresholded
   to the map's coverage (area ~ cov), replaces the sub-pixel cells' uniform haze as the cells stop resolving
   (`farK`), and clusters the near field a little (0.08) so orbit and ground agree on where the holes are.
