@@ -2930,6 +2930,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         launchFillPadParams(cp); // the launch pads on the ground (SatelliteSimLaunches.cpp)
         weatherFillSeaParams(cp); // tropical cyclones' winds on the sea (SatelliteSimWeather.cpp)
         cp.surgeInfo.z = oceanSunGlitter; // the Sun's sea glitter gain (surgeInfo.z was unused; sat_sky.frag)
+        cp.surgeInfo.w = sunAngRTrue * std::clamp(sunSizeScale, 0.25f, 4.0f); // the Sun's drawn radius (rad, "Sun size")
         weatherFillFireParams(cp); // the wildfires' burn scars on the ground (SatelliteSimWildfire.cpp)
         cp.moonCenter = glm::vec4(moonCenterENUkm, moonAngR);
         cp.moonPole = glm::vec4(moonPoleENU, std::max(moonRelief, 0.0f));

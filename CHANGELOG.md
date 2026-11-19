@@ -642,6 +642,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - Go to moves you: magnitudes and sky positions are read from where the camera is. With a satellite selected,
   I opens its Info window, G is Go to and T is Track.
 - "Moon size" defaults to 1 (the true size).
+- **The Sun is drawn at its true size by default**, like the Moon: a new "Sun size (x real)" slider (Settings > Sky >
+  Refraction and mirages, 0.25-4, key `clouds.sun_size`) sets it; 1.5 is the old, larger disc. On every graphics
+  tier, Potato included (its disc was ~2.6x). Near the Moon the disc is always its true size, so eclipses are unchanged.
 - Exposure, auto exposure, highlight roll-off, white balance and the Moon's size are in a new **Exposure and
   Moon** section of the Photometry tab (settings keys unchanged). The "City light blur LOD" slider is gone.
 - The disabled legacy-lighting Starlink Gen2 comparison shell was removed from the roster.

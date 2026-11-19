@@ -443,7 +443,8 @@ json SatelliteSim::harnessStateJson()
     j["camera"]["fps_mode"] = fpsMode; // the FPS camera mode's setting (`fps state` has the rest)
     j["camera"]["fps_live"] = fpsLive_;
     const glm::vec3 sun(sunDirENU), moon(moonDirENU);
-    j["sun"] = {{"az_deg", azDegOf(sun)}, {"el_deg", elDegOf(sun)}};
+    j["sun"] = {{"az_deg", azDegOf(sun)}, {"el_deg", elDegOf(sun)}, {"size_x", sunSizeScale},
+                {"drawn_radius_deg", glm::degrees(sunAngRTrue * std::clamp(sunSizeScale, 0.25f, 4.0f))}};
     // The global exposure (SatelliteSim.h): the user's EV, the metered auto offset and the meter's
     // last reading of the displayed frame (linear mean, fraction clipped white).
     j["exposure"] = {{"ev", cv2ExposureEV}, {"auto_ev", autoExposureEV}, {"global_ev", globalExposureEV()},

@@ -46,7 +46,6 @@ double smooth01(double a, double b, double x)
     return t * t * (3 - 2 * t);
 }
 constexpr double kTwoPi = 6.283185307179586;
-constexpr double kSunDrawnR = 0.007;   // the Sun as drawn (sat_sky.frag r0, 1.5x the true radius)
 } // namespace
 
 refr::Profile SatelliteSim::refrProfileAt(double simT) const
@@ -316,7 +315,7 @@ void SatelliteSim::refrDerive()
     // The Sun: its centre's refraction (the primary image) and the share of its disc the eye sees through every
     // image (an inferior mirage adds the inverted one; ducting removes stripes).
     const double eS = std::asin(std::clamp((double)sunDirENU.w, -1.0, 1.0));
-    const double r = kSunDrawnR;
+    const double r = (double)sunAngRTrue * std::clamp((double)sunSizeScale, 0.25, 4.0);   // the Sun as drawn (UBO surgeInfo.w)
     double area = 0.0;
     const double eTop = t.eAt(refr::kTableN - 1);
     // The air columns the Sun's VISIBLE disc is seen through (2026-10-27, issue 20261027_001448 shots 2-3: "at a certain
