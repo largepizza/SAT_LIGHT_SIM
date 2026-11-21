@@ -678,6 +678,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- WASD is no longer slow high above the Earth (issue_20261121_120639). Its speed follows the height above the ground
+  at every height now (Move speed x height per second, boost x6.25): it used to stop growing at 510 km/s (3,200 km/s
+  boosted) above 510 km, so at 50,000 km Q/E climbed 50-80 times faster than W flew. A dive from orbit still slows
+  toward the ground and cannot overshoot it, and the Stars frame's held flight moves at the same speed.
 - No more pale band with a hard edge on the horizon across clouds in wildfire haze (issue_20261118_210334). The haze
   hidden behind a cloud was still counted in how much air the sky put in front of it, and behind a cloud the view
   ends at the sea below the horizon but runs on through the haze above it: the cloud changed brightness in a straight

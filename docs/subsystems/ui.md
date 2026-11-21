@@ -287,10 +287,15 @@ Clay does not expose element positions post-layout. Compute absolute positions f
 
 **All interactive keys go through the `keybindings` vector.** The settings window and rebind UI are driven entirely from this vector — no extra wiring needed.
 
-**Movement speed near the ground (review 6):** WASD's arc rate is capped at `moveSpeedPerHeight`
+**Movement speed (review 6):** WASD moves `moveSpeedPerHeight`
 ("Move speed (x height per s)", Controls tab, slot 210, `camera.move_speed_per_height`, default 1) x the
-height above the ground per second, never below 3 m/s and never above the old 0.08 rad/s (~510 km/s, so
-orbit is unchanged); boost and fine scale it the same way. A fixed 510 km/s crossed a cloud in a frame.
+height above the ground per second at every height, never below 3 m/s; boost x6.25 and fine x1/16 of it.
+A fixed 510 km/s crossed a cloud in a frame. There is no cap above: until 2026-11-21 it stopped at the old
+0.08 rad/s (510 km/s, boost 3.2 Mm/s) above 510 km, where Q/E (also x height, uncapped) ran 49-78x faster at
+50,000 km (issue_20261121_120639). A frame's step toward the Earth goes at most half the height above the
+ground (the ground fly and `inertialFly`), so a long frame from orbit cannot dive past the ground or through
+the centre; `inertialFly` steps on the Earth's radius like the ground fly (it used the eye's radius: 8.8x
+faster at 50,000 km).
 Q/E follow the same setting (review 7): `moveSpeedPerHeight` x (10 m/s + 0.5 x the height above the
 ground), boost x10, fine x0.1 — it was 100 m/s + 0.5 x the height above SEA LEVEL.
 
@@ -480,8 +485,8 @@ bearing of 2.7 deg at 10 m whether facing 0 or 45 deg (the rounding chose it), 7
 camera-relative (hi / lo) eye in the shaders would remove that.
 
 **Fly where you look** (phase 4). W / S move along `camFwd` and A / D along the camera's right, in 3D, at any angle
-and roll; Q / E are the pure up / down while auto-levelling (along the camera's up when free, above). The speed is the old arc rate on the Earth's radius, still scaled by the height
-above the ground (a dive slows toward the ground, a climb speeds up), and the ground is a floor: a step into it keeps
+and roll; Q / E are the pure up / down while auto-levelling (along the camera's up when free, above). The speed is the arc rate on the Earth's radius, scaled by the height
+above the ground at every height (a dive slows toward the ground, a climb speeds up; "Movement speed" above), and the ground is a floor: a step into it keeps
 its part along the ground (W looking down slides). After each step the look is carried with the ground (`camSetEyeDir`),
 so W at el 0 holds the height (follows the Earth's curve). Measured (`harness_runs/cam_p4`, 2 s of W / D): looking up 30
 from 2 m climbs at 31 deg; down 30 from 1 km descends at -30.0; down 30 on the ground drops to the floor and slides;

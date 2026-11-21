@@ -5997,8 +5997,8 @@ private:
     float cv2IceOpticsColumns = 0.5f;
     float cv2IceOpticsParry = 0.2f;
     float cv2RainStreaks = 3.1f;       // the rain particles' visibility (x their real coverage; "Drops at the eye")
-    float moveSpeedPerHeight = 1.0f;   // WASD: this many times the height above the ground per second (capped
-                                       // at the old fixed 0.08 rad/s, ~510 km/s): slow near the surface
+    float moveSpeedPerHeight = 1.0f;   // WASD: this many times the height above the ground per second (at every
+                                       // height since 2026-11-21; was capped at 0.08 rad/s): slow near the surface
     float cv2DropDistM = 33.0f;        // the rain particles' reach (m; each doubling is one more level, at most 64)
     float cv2RainParticlesK = 16.0f;   // drops in the nearest box, thousands (each farther level holds twice as many)
     float cv2RainShutterMs = 33.0f;    // a drop's streak: how far it falls in this time (ms)

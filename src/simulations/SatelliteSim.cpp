@@ -1572,16 +1572,17 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         bool fine = fineMoveToggled; // latched by KB_MOVE_FINE (dispatchKeyAction), not held
         float speed = boost ? 0.5f : fine ? 0.005f
                                           : 0.08f; // boost = fast, fine = slow, default = normal
-        // Near the ground the speed follows the height above it (review 6): "Move speed" x height per
-        // second, capped at the orbital speed above. A fixed ~510 km/s crossed a cloud in a frame —
-        // nothing small could be approached, and the clouds' history was useless in motion (every
-        // frame a new view). Boost and fine scale it the same way.
+        // The speed follows the height above the ground at every height (review 6): "Move speed" x height
+        // per second (at least 3 m/s), boost x6.25 and fine x1/16 of it. A fixed ~510 km/s crossed a cloud
+        // in a frame — nothing small could be approached, and the clouds' history was useless in motion.
+        // Until 2026-11-21 it was also capped at that 0.08 rad/s (510 km/s, boost 3.2 Mm/s) above 510 km,
+        // where Q/E (below, also x height, uncapped) ran 49-78x faster at 50,000 km (issue_20261121_120639).
         const float moveGround = (terrainFrameMapped && (debugDisableMask & 1024u) == 0) ? terrainFrameMapped[1] : obsTerrainH;
         const float moveAgl = std::max(obsHeightOffset - moveGround, 2.0f);
         {
             const float agl = moveAgl;
             const float nearRad = std::max(moveSpeedPerHeight, 0.01f) * agl / 6371000.0f;   // rad/s
-            speed *= std::min(1.0f, std::max(nearRad, 3.0f / 6371000.0f) / 0.08f);
+            speed *= std::max(nearRad, 3.0f / 6371000.0f) / 0.08f;
         }
 
         float fwd = (glfwGetKey(win, GLFW_KEY_W) == GLFW_PRESS ? 1.0f : 0.0f) - (glfwGetKey(win, GLFW_KEY_S) == GLFW_PRESS ? 1.0f : 0.0f);
@@ -1638,8 +1639,15 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             const double floorH = std::max(0.0, (double)moveGround);
             const double h0 = std::max((double)obsHeightOffset, floorH);
             const glm::dvec3 P = camEyeDir * ((double)kEarthRadius + h0);
-            const glm::dvec3 step = ((double)fwd * camFwd + (double)right * glm::normalize(camRightEcef())) *
-                                    ((double)speed * (double)dt * (double)kEarthRadius);
+            glm::dvec3 step = ((double)fwd * camFwd + (double)right * glm::normalize(camRightEcef())) *
+                              ((double)speed * (double)dt * (double)kEarthRadius);
+            // A frame's step toward the Earth goes at most half the height above the ground: the speed is x height,
+            // so a long frame (a hitch, a high "Move speed" with boost) could otherwise carry a dive from orbit past
+            // the ground, or through the Earth's centre. The part along the ground is kept (W looking down slides).
+            const double inward = -glm::dot(step, camEyeDir);
+            const double maxIn = 0.5 * std::max(h0 - floorH, 2.0);
+            if (inward > maxIn)
+                step += camEyeDir * (inward - maxIn);
             const glm::dvec3 np = P + step;
             const double r = glm::length(np);
             camSetEyeDir(np / r); // (the look and up are carried to the new place)
