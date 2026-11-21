@@ -83,7 +83,16 @@ void SatelliteSim::inertialFly(float fwd, float right, float speedRadPerS, float
     // rolled camera's D did not follow).
     const glm::dvec3 r = glm::normalize(camRightEcef());
     const double R = satphot::kEarthRadiusM + (double)obsHeightOffset;
-    const glm::dvec3 np = up * R + (f * (double)fwd + r * (double)right) * ((double)speedRadPerS * R * (double)dt);
+    // The step's length is the ground fly's (the arc rate on the Earth's radius, x the height above the ground: see
+    // recordCompute's WASD), so W moves as fast held in ECI as not; on R it ran (R / Earth radius) faster (8.8x at
+    // 50,000 km). A frame's step toward the Earth goes at most half the height above the ground (a long frame from
+    // orbit cannot dive past it or through the centre).
+    glm::dvec3 step = (f * (double)fwd + r * (double)right) * ((double)speedRadPerS * satphot::kEarthRadiusM * (double)dt);
+    const double inward = -glm::dot(step, up);
+    const double maxIn = 0.5 * std::max((double)obsHeightOffset - std::max(0.0, (double)obsTerrainH), 2.0);
+    if (inward > maxIn)
+        step += up * (inward - maxIn);
+    const glm::dvec3 np = up * R + step;
     const double nr = std::clamp(glm::length(np), satphot::kEarthRadiusM + std::max(0.0, (double)obsTerrainH) + 2.0,
                                  satphot::kEarthRadiusM + (double)kMaxObsHeightM);
     // The view stays where it points (it is held on the stars): only the eye moves, so the local az / el change.
