@@ -767,6 +767,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   (issue_20261114_183827). Its streaks dropped whole segments as the exhaust aged and pulsed as exhaust moved between
   segments, and the plume budget dimmed the bell's widest parts in single steps whenever another part of the plume came
   or went; all of these now fade continuously, at no extra cost.
+- A high upper stage's exhaust no longer blinks when seen up close (issue_20261121_120035). The streaks fanning out
+  of the engines (the jellyfish's chevron) only reached the stage for about half a second after each puff of exhaust
+  was released, about once a second, and started a few kilometres behind it the rest of the time, so riding beside
+  the stage the chevron flashed on and off. They now leave the engines continuously, at the old average brightness.
 - Rocket plumes no longer vanish for the rest of a session after you jump between launches or fly away from one
   (issue_20261111_211610). Plume builds for launches that left view kept their worker slots, and after four of them
   no plume was built again; finished builds nobody collects are now dropped and rebuilt when needed.

@@ -8555,21 +8555,64 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                 for (int j = 0; j + 1 < nA; ++j)
                     if (kA[j + 1] > kA[j] + 1e-6)
                         jLast = j;
-                for (int pi = i0; pi <= iy; ++pi)
-                {
-                    const launch::Parcel &pc = B.parcels[(size_t)pi];
-                    const double sh = streakShareAt(pc, ps[(size_t)pi]);
-                    if (sh <= 0.0)
-                        continue;
-                    const double w = pc.kappa * pc.m * ps[(size_t)pi].cond * gain * sh;
-                    const double b0 = tau - pc.t0, b1 = b0 + std::max(pc.dt, 1e-3);
+                // (2026-11-21, issue_20261121_120035 "Blinking rocket exhaust": up close, the chevron the streaks draw from
+                // the stage came and went at 1 Hz, the parcel rate) The segments younger than the youngest parcel had no
+                // cross-section: a parcel stands for ages [age, age + dt], so the exhaust emitted since the youngest one,
+                // ages [0, tau - tY], had none. For ~0.5 s after a birth the young segments held the new parcel's share,
+                // then they emptied and the streaks started ~2.5 km behind the stage until the next birth. That exhaust is
+                // the NEXT parcel's emission interval [tN - dtN, tN] (its history is already built): the part of it
+                // already emitted is shared out too. And a parcel's condensed share was read at its own age for its whole
+                // interval, so a segment's light still followed the emission phase; each overlap now reads the parcel's
+                // history at the overlap's ages, its condensed share averaged over the phases the old read saw (the
+                // parcel standing for age a was born 0 .. dt before it): the old light's mean over a cycle, without the
+                // cycle, so nothing steps when a parcel is born.
+                auto addSpan = [&](const launch::Parcel &pc, double b0, double b1, double dtP) {
                     for (int j = 0; j <= jLast; ++j)
                     {
                         const double lo = j == 0 ? -1e30 : kA[j], hi = j == jLast ? 1e30 : kA[j + 1];
-                        const double ov = std::min(b1, hi) - std::max(b0, lo);
-                        if (ov > 0.0)
-                            segS[j] += w * ov / (b1 - b0);
+                        const double x0 = std::max(b0, lo), x1 = std::min(b1, hi);
+                        if (!(x1 > x0))
+                            continue;
+                        const double am = 0.5 * (x0 + x1);
+                        const double shA = 1.0 - glm::smoothstep(0.35 * streakLenS, streakEndS, am);
+                        if (!(shA > 0.0))
+                            continue;
+                        glm::dvec3 cA;
+                        double sA = 0.0, kA2 = 0.0;
+                        if (!pc.at(std::max(am, 0.0), cA, sA, kA2))
+                            continue;
+                        // the condensed share the exhaust at age am had on average over a parcel interval (the parcel
+                        // standing for it was born 0 .. dt before it: younger than that, none yet), so the light along
+                        // the streaks is the old one's mean over the emission phase, without the phase
+                        double cnd = 0.0;
+                        for (int q = 0; q < 4; ++q)
+                        {
+                            const double sq = am - dtP * (q + 0.5) / 4.0;
+                            glm::dvec3 cQ;
+                            double sQ = 0.0, kQ = 0.0;
+                            if (sq >= 0.0 && pc.at(sq, cQ, sQ, kQ))
+                                cnd += 0.25 * kQ;
+                        }
+                        const double sh = streakShare * glm::smoothstep(100000.0, 150000.0, glm::length(cA) - kR) * shA;
+                        segS[j] += pc.kappa * pc.m * cnd * gain * sh * (x1 - x0) / dtP;
                     }
+                };
+                for (int pi = i0; pi <= iy; ++pi)
+                {
+                    const launch::Parcel &pc = B.parcels[(size_t)pi];
+                    if (!ps[(size_t)pi].ok || !isAscentVac(pc))
+                        continue;
+                    const double dtP = std::max(pc.dt, 1e-3), b0 = tau - pc.t0;
+                    addSpan(pc, b0, b0 + dtP, dtP);
+                }
+                if (burning && iy + 1 < (int)B.parcels.size() && B.parcels[(size_t)iy + 1].stream == B.parcels[(size_t)iy].stream &&
+                    !ps[(size_t)iy + 1].ok && isAscentVac(B.parcels[(size_t)iy + 1]))
+                {
+                    const launch::Parcel &pn = B.parcels[(size_t)iy + 1];
+                    const double dtN = std::max(pn.dt, 1e-3);
+                    const double e = glm::clamp(tau - (pn.t0 - dtN), 0.0, dtN);
+                    if (e > 0.0)
+                        addSpan(pn, 0.0, e, dtN);
                 }
                 // Each knot's frame round the plume's local axis (the chord through its neighbours: continuous along
                 // the curve), and each streak's point there: offset by fk x the spread x the radius.

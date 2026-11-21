@@ -519,6 +519,28 @@ launches follow per-program cadences (no real manifest).
   mean 45 -> 68 levels): the young exhaust now sits where the engine light is, not averaged over one long head
   Gaussian (`launches.engine_light_gain` is its slider). cloud_march 128 registers; cloud_march and the launches' CPU
   within run-to-run noise (that noise was 7 ms of cloud_march between two launches of the same view).
+- **The streaks reach the engines at every phase (2026-11-21, issue_20261121_120035 "Blinking rocket exhaust": "rocket
+  exhaust blinks when up close", a Starship upper stage at 349 km seen from ~0.5 km beside it).** launchFillVisuals, the
+  jellyfish streaks' segment cross-section (`addSpan`). A parcel stands for ages [age, age + dt], so once the youngest
+  parcel was older than the first knots (~0.5 s after its birth) the young segments had no cross-section: the streaks
+  left the nozzle for ~0.5 s and started ~2.5 km behind it for the rest of each ~1 s parcel cycle. Up close their near
+  part spans most of the frame (the chevron of the reporter's shot 1), so it flashed at 1 Hz. Singled out on the
+  reporter's path by knockout (`plume_cover_max` 0, `plume_bricks` off, `engine_light_gain` 0: the 1-Hz steps unchanged;
+  `jelly_streak_brightness` 0: gone) and by `launch state` -> `plume_vacuum` per frame (kind 2: 48 Gaussians from age
+  0.08 s vs 44 from 0.66 s, alternating each second, the image's bright and dim phases with them). Now the exhaust
+  emitted since the youngest parcel is the NEXT parcel's interval [tN - dtN, tN] (built ahead), its emitted part shared
+  out too; and each overlap reads the parcel's history at the overlap's ages, the condensed share averaged over the
+  emission phase (the parcel standing for age a was born 0 .. dt before it). Reading it at the overlap's own age instead
+  (no average) held the chevron +8 levels brighter than any phase of the old light: the old read lagged the gas by
+  0 .. dt, and the average keeps the old light's mean over a cycle. Measured (RTX 3070 Ti, 1600x900, the reporter's
+  shot-1 path at 60 fps, a plume box of the frame): largest one-frame change 10.7% -> 2.3% (the rest is the reporter's
+  camera turns: 2.4% with the streaks off), camera-steady frames 6.6% -> 0.4%, a steady window's range 20.6% -> 1.7%;
+  the frame change's 1-Hz power 1.19 -> 0.53, its 2-Hz harmonic 4.4x -> 1.0x the local floor; shot-2 path 7.8% -> 2.3%.
+  Shot-1 view: plume box 204 levels against the old cycle's 189-218 (mean 201; shot 1 caught 209). GPU at shot 1
+  13.79 vs 13.73 ms (A/A +-0.12), launches CPU 2.08 vs 2.09 ms; the 164337 / 183827 views and 175048's four bricks
+  unchanged (interleaved in one app). The reporter's shot-2 trail holds a 1-s gap (the shot-1 screenshot stall: sim
+  12.154 -> 12.171 s over 1 s of wall time, then +1.03 s in one key): its replay swings the camera and drops one frame
+  to black there in every build, a replay artefact.
 - **Plume bricks: the staging cloud as a volume (2026-11-15, issue_20261115_165031 "Staging billow cloud";
   .plans/PLUME_OVERHAUL_PLAN.md phase 2).** SatelliteSimPlumeBricks.cpp, shaders/plume_brick.comp, launchFillVisuals'
   brick builder (before the budget), cloud_march.comp bindings 27 / 28. The Gaussian list's only structure is a noise
