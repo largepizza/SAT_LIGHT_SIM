@@ -12194,7 +12194,10 @@ std::vector<int> SatelliteSim::launchMeshJobs(double pixAngle, const glm::dvec3 
     // The pads' static meshes (2026-10-19): those over ~1.4 px, nearest first, each kept in its reserved slot while
     // it stays. Ground-fixed: the state is the pad's at t with the Earth's rotation, the "velocity" axis its heading
     // (the model's +X), so the tower stands where the ground pattern draws its base.
-    if (launchPadGraphics)
+    // Not on Planetarium (2026-11-21, the meshes it draws since then): SKY_LITE draws neither the pad's ground pattern
+    // nor the relief (its ground is the sea-level sphere), so a tower at its pad's real height would hang in the air
+    // over the day map (Jiuquan ~1 km up). The rockets, like their points and plumes before, fly from the real height.
+    if (launchPadGraphics && !lightSkyOn())
     {
         LaunchImpl::ensureCatalog(L);
         const glm::dvec3 omega(0.0, 0.0, 7.2921159e-5);

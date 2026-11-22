@@ -539,7 +539,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   render scale; render scale can scale the clouds too; optional automatic render scale.
 - **Presets:** Potato and Planetarium (the light v1.1 skies, with the 1.2 ground features compiled out and no
   volumetric clouds), Low, Medium, High and Ultra. First runs start on High for discrete GPUs with 6 GB or more,
-  Planetarium on integrated GPUs, Potato on old Macs.
+  Planetarium on integrated GPUs, Potato on old Macs. Planetarium draws the 3D models of satellites, stations and
+  rockets up close like the full presets (without their sky reflections); Potato keeps them as points.
 - Large performance work across the cloud march, the sky pass, the terrain depth pyramid, the satellite pipeline
   (about 1.4 million satellites in the default roster), the launch system (plume builds and batch builds off the
   main thread, culled exhaust), close-up station shadows (from 30-60 ms to about 1 ms) and frame hitches after

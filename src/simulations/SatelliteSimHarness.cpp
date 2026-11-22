@@ -607,6 +607,9 @@ json SatelliteSim::harnessStateJson()
                        // the mesh hand-off: the fade-in size (raised past the kMaxMeshInstances largest) and how many
                        // satellites were mesh-sized candidates last frame
                        {"mesh_fade_px", meshFadePx}, {"mesh_candidates", meshCandTotal},
+                       // (2026-11-21) the models drawn as meshes in the last frame's scene pass (satellites, stations,
+                       // rockets, pads): 0 under Potato or the sat_meshes knockout, > 0 on Planetarium beside a model
+                       {"meshes_drawn", meshDrawn.size()},
                        {"peak_magnitude", peakMagnitude}};
     if (glowMapped)
     {
