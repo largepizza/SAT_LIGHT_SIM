@@ -1,0 +1,114 @@
+#version 450
+#extension GL_EXT_control_flow_attributes : enable
+// ── Clouds v2: the cloud's optical depth around a lightning flash's emitters (2026-11-21, include/flash_volume.glsl) ──
+// Four workgroups per emitter to bake this frame (the host's list, set 1: at most kFvJobs a frame, only emitters that
+// are new or have moved): each of their 1024 threads marches one direction (32 azimuths x 32 elevations in the flash's
+// own frame; workgroup s takes every fourth azimuth, so each holds a sample of the whole sphere) outward from the emitter through the cloud field and writes the running optical depth at the kFvR distances
+// into the emitter's slot of the volume. The field is read coarse (a footprint of a third of the step, 120-500 m) and
+// counted as the Sun transmittance volume's bake counts it (the thin high layer delta-scaled, rain at 15%).
+// Same descriptor set 0 and push constants as cloud_v2_march.comp; set 1 = the jobs and the volume. Not dispatched in a
+// frame with nothing to bake: no flash, no cost.
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_v2_march.comp)
+    mat4  skyView;
+    float fovYRad;
+    float aspect;
+    float waveTime;
+    float obsEffH;
+    vec4  sunDirENU;
+    vec4  moonDirENU;
+    vec4  obsECEFDir;
+} pc;
+
+#define CLOUD_PARAMS_BINDING 0
+#include "cloud_params.glsl"
+#include "common.glsl"
+#define CV2_PARAMS_BINDING  1
+#define CV2_WEATHER_BINDING 2
+#define CV2_SHAPE_BINDING   3
+#define CV2_MESO_BINDING    5
+#define CV2_ELEV_BINDING    25
+#define CV2_MORPH_BINDING   20
+#define CV2_STORM_BINDING   26
+#include "clouds_v2.glsl"
+layout(std430, set = 0, binding = 8) readonly buffer TerrainFrame { vec4 terrainFrame; };
+#include "flash_volume.glsl"
+
+struct FvJob {
+    vec4 c;    // xyz the emitter (ENU about the eye, m), w its slot
+    vec4 t1;   // the flash's frame (ENU): xyz; w the diffuse field's side escape (lightning_draw.glsl bl.tune.x)
+    vec4 t2;   // w 1 - g^2 of the diffuse field (bl.ms.y)
+    vec4 up;
+};
+shared float sFvW[256];   // each direction's solid angle, and x what its own cloud lets out (the reduction for N)
+shared float sFvT[256];
+layout(std430, set = 1, binding = 0) readonly buffer FvJobs { uvec4 fvHead; FvJob fvJob[]; };   // fvHead.x = jobs
+layout(set = 1, binding = 1, rgba16f) uniform writeonly image3D fvImg;
+
+void main()
+{
+    uint job = gl_WorkGroupID.x / 4u, sub = gl_WorkGroupID.x % 4u;
+    if (job >= fvHead.x) return;
+    FvJob J  = fvJob[job];
+    uint  li = gl_LocalInvocationIndex;
+    uint  ray = li * 4u + sub;
+    int   ia = int(ray) % kFvA, ie = int(ray) / kFvA;
+    float az = (float(ia) + 0.5) * (6.2831853 / float(kFvA));
+    float el = ((float(ie) + 0.5) / float(kFvE) - 0.5) * 3.14159265;
+    vec3  dl = vec3(cos(el) * cos(az), cos(el) * sin(az), sin(el));
+    vec3  d  = J.t1.xyz * dl.x + J.t2.xyz * dl.y + J.up.xyz * dl.z;
+    vec3  enuZ = normalize(pc.obsECEFDir.xyz);
+    vec3  enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ));
+    mat3  enuToEcef = mat3(enuX, cross(enuZ, enuX), enuZ);
+    float eyeH = terrainFrame.x + 2.0;
+    int   slot = int(J.c.w + 0.5);
+    // A fixed jitter per direction (not per frame): an emitter baked twice gives the same volume.
+    float jit = float(cv2Pcg3(uvec3(ray, 77u, 5u)).x & 0xFFFFu) / 65536.0;
+    float tau = 0.0, rP = 0.0;
+    // The emitter's OWN cloud along this direction: the depth up to the first clear stretch past 600 m (a pocket nearer
+    // than that is still inside it); 0 for an emitter in clear air.
+    float tauOwn = 0.0;
+    bool  own = true;
+    float taus[kFvR];
+    [[dont_unroll]] for (int k = 0; k < kFvR; ++k) {
+        float u1  = (float(k) + 0.5) / float(kFvR);
+        float r1  = kFvRmax * u1 * u1;
+        float len = r1 - rP;
+        int   n   = len > 600.0 ? 2 : 1;
+        float st  = len / float(n);
+        float dk  = 0.0;
+        [[dont_unroll]] for (int m = 0; m < n; ++m) {
+            float  r = rP + st * (float(m) + fract(jit + 0.6180340 * float(2 * k + m)));
+            CV2Pos q = cv2Pos(J.c.xyz + d * r, eyeH, enuToEcef);
+            if (q.h > -300.0 && q.h < cv2.shell.y + 2500.0) {
+                CV2Field f = cv2Field(q, 0.0, clamp(0.33 * st, 120.0, 500.0));
+                dk += f.sigma * max(1.0 - 0.8 * f.thin, 0.0) * mix(1.0, 0.15, clamp(f.rain, 0.0, 1.0)) * st;
+            }
+        }
+        tau += dk;
+        if (own) {
+            if (dk < 0.02 && r1 > 600.0) own = false;
+            else tauOwn += dk;
+        }
+        rP = r1;
+        taus[k] = tau;
+    }
+    // N: a flash inside a cloud loses no light by being inside it. What reaches the cloud's surface along a direction
+    // falls with the depth to it as the slab's far face does (1 / (1 + 0.11 tau), x the side escape), but the light
+    // turned back goes on scattering in the same cloud and leaves it elsewhere: over all directions the cloud lets
+    // out all of it. N = 1 / the mean of that fall-off over the sphere (1 for an emitter in clear air), so the thin
+    // sides of a flash's own cloud are brighter than the bare inverse square and its thick sides dimmer, at one total.
+    float wS = cos(el);
+    sFvW[li] = wS;
+    sFvT[li] = wS * exp(-J.t1.w * J.t2.w * tauOwn) / (1.0 + 0.11 * tauOwn);
+    barrier();
+    for (uint sStep = 128u; sStep > 0u; sStep >>= 1u) {
+        if (li < sStep) { sFvW[li] += sFvW[li + sStep]; sFvT[li] += sFvT[li + sStep]; }
+        barrier();
+    }
+    // (This workgroup's own 256 directions, a sample of the whole sphere; the first workgroup's is the one kept: fvN.)
+    float N = sFvW[0] / max(sFvT[0], 1e-6);
+    for (int k = 0; k < kFvR; ++k)
+        imageStore(fvImg, ivec3(ia, ie, slot * kFvR + k), vec4(taus[k], tauOwn, 0.0, sub == 0u ? min(N, 1000.0) : 0.0));
+}

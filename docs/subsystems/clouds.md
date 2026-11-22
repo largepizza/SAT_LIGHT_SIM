@@ -2651,6 +2651,59 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   looking up through rain, review 3). A ray that runs out of budget (`misc.x`,
   presets 160-640) is FILLED with the path's mean extinction and the cloud's mean colour, not left
   transparent (that was the horizon "seeing through" the clouds).
+- **Lightning as LIGHT (2026-11-21, issue_20261121_163317; `include/flash_volume.glsl`, `cloud_v2_flashvol.comp`,
+  `lightning.frag` boltLightAt, `SatelliteSim::boltLightAssign`).** A flash lights the cloud through the cloud around
+  it, by the formula the march gives a cloud sample under a reflector beam (`beamFinish`): E (ph e^-od + ms D), with E the
+  flash's irradiance by distance (`boltGlow`), od the optical depth from the emitter to the cloud point, ph the cloud's
+  two-lobe phase (`cv2.phase`) at the angle between the light's path and the view, D the slab's diffuse field
+  (`cv2DiffuseField`, copied as `boltDiffuse`: keep in step). It is NOT in the march: the light is added after the sky
+  TAA, at full resolution, to the resolved composite (the march's output is accumulated over frames: a 35-ms stroke in
+  it smears and lags, why the flash left the march on 2026-10-05; and the march sits on the 128-register cliff). What
+  the composite lacks, the cloud between a flash and what it lights, is a small VOLUME per emitter: 32 azimuths x 32
+  elevations (the flash's own frame; 16 x 16 drew its cells on cloud close to the light) x 16 distances (r = 24 km x
+  ((k + 0.5) / 16)^2: ~25 m to 24 km), the running optical depth outward from the emitter, one of 16 slots of a 32 x
+  32 x 256 RGBA16F image (2 MB). `cloud_v2_flashvol.comp` bakes a slot in four workgroups (1,024 directions x 28 field
+  reads at a 120-500 m footprint, counted as the Sun volume's bake counts them) when its emitter is new or has moved
+  600 m (a spider's fronts), at most 4 a frame, nothing in a frame without a flash; the host hands the slots to the
+  nearest emitters (`boltLightAssign`; an emitter without one keeps the glow by distance alone). `lightning.frag` takes
+  the pixel's cloud as one place (the composite's opacity-weighted distance), reads od there, and weights the single
+  scattering by the pixel's opacity and the diffuse field by wD = the march's face leak 1 - e^-(1 - f) x summed over
+  that opacity (op - (1 - (1 - op)^(1 + a)) / (1 + a), a = 1 - g^2: 0.217 for an opaque pixel, ~op^2 for a wisp).
+  What differs from a beam, each for a reason. **N**: a flash inside a cloud loses no light by being inside it; what
+  the slab turns back goes on scattering in the same cloud and leaves it elsewhere. The bake also finds, per direction,
+  the depth of the emitter's OWN cloud (up to the first clear stretch past 600 m) and N = 1 / the mean over the sphere
+  of the slab's far-face fall-off through it (1 / (1 + 0.11 tau) x the side escape), kept in the alpha of the slot's
+  first texel: the diffuse term is x min(N, `boltLightNCap` 40), so a flash deep in a storm lights it like a lantern,
+  brighter than the bare inverse square through its thin sides and dimmer through its thick ones, and an emitter in
+  clear air has N = 1. **The side escape** is the flash's own (0.03 per unit of scaled depth, not `ms_side_escape`: it
+  radiates all round). **The far side** (the slab's depth beyond the point) is the pixel's own cloud: -ln(1 - op) x
+  (1 - cosB) / 2 (the point is the first cloud the eye meets: nothing beyond it with the light behind it, the view's
+  depth with the light on the eye's side); read from the volume 1200 m further out it stepped at the volume's
+  distances and drew rings round every flash seen through cloud. **The emitters are where the light is**: a ground
+  stroke gets two more on its descent below the cloud (40% and 80% of the way down), which light the base, the rain
+  and the flanks from outside. The forward lobe is as wide as the emitter (1.5 km of channel seen from the point). The
+  level (`boltLightTune.w` 1.2) puts a storm lit from inside at about the old glow's mean. `clouds_v2.lightning_light`
+  (settings.json, 1; 0 = the glow by distance alone, the A/B; no slider); harness `lightning light [side=] [single=]
+  [src_m=] [level=] [ncap=]` changes the tunables live, `lightning` lists `light_slots` / `light_bakes`.
+  Measured (RTX 3070 Ti, the report's shot 3 with in-cloud flashes placed 6, 12 and 25 km along the view, 1600x900,
+  the flash alone = capture - the same view without it, linear light): the spread of the flash's light inside the lit cloud (p90 / p10) 2.1-2.2 by distance alone -> 3.6 (the flash 6 km off, in the
+  near flank) and 11.6 (12 km off, deep in the tower); a flash 25 km off, on the far side of the tower, lights the near
+  flank at 0.6% of what the glow by distance gave it, and what little shows is the outline (edges 288 x the body; 0.95 x
+  before). With the flash INSIDE the tower the outline against the sky is not what lights up (edge / body 0.27 -> 0.02
+  and 0.48 -> 0.46): the cloud nearest the flash glows, shaded by its own lobes. Mean level against the old glow 145%
+  (6 km) and 18% (12 km); the report's own flash at shot 3, a spider under the base seen from above the storm, is hidden.
+  Cost (interleaved in one app, `clouds_v2.lightning_light` 0 / 1): a flash held at shot 3, 6 reps a side, GPU 29.81 +- 0.56 -> 29.86 +- 0.71 ms (the main
+  pass's bucket with the draw 0.38 -> 0.41 ms); time running over the flash's life (its fronts re-baked as they spread)
+  32.05 +- 0.30 -> 32.28 +- 0.36; from 300 km over the storm 36.25 -> 36.18; no flash 28.28 +- 2.09 -> 27.44 +- 1.48, the
+  same setting twice in that slot 26.93 / 25.48 (the run's own drift). The cloud march is not touched: 128
+  registers and the same binary with and without it (699,392 B on 55be2fb0; 720,128 B and 128 registers on 99194955,
+  with the curved-path air column of the same day; there a flash held at shot 3 costs 30.13 +- 0.28 -> 30.39 +- 0.31 ms
+  and a frame without one 27.93 -> 27.93).
+  Options weighed and not built: the flash as a point light inside the march (3 field taps toward it per lit sample, as
+  the beams' occlusion march: estimated +2-5 ms where a flash lights cloud on screen, a second light loop in a shader
+  on the register cliff, and the history's smear); its cheap form (the view ray's own depth + one tap toward the flash:
+  one tap cannot see a tower 5-20 km away, same cliff, same smear); a screen-space shadow of the glow (only what is on
+  screen occludes, and the composite has no depth of the cloud).
 - **Key light**: the Sun, or at night the Moon through the same light march (`misc.y` x `moonGain`);
   sky ambient is occluded by the cloud above and by the sample's own density (detail on shaded sides).
   **Night (review 5):** the ambient carries the terrain's moonless "Night sky light" (`terrainErosion.z`,

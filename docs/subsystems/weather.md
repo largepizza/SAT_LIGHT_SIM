@@ -1265,27 +1265,84 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   the DRAWN cloud's base and top; none, or under 1.5 km deep, and it does not flash — the Cb type's heights put
   flashes in clear air above the capped cumulus away from towers (user snap 1). Measured: snap 1 (9.9 km) 27 flashes
   a minute out to ~360 km; snap 2 (609 km) ~10/s over the visible disc. Deterministic in sim time (`cv2FlashIntensity`: a 50-ms stepped leader, then
-  1-4 return strokes ~35 ms over a continuing current; in-cloud flashes 2-6 softer pulses). Record (`CV2Flash`, 64 B,
+  1-4 return strokes ~35 ms over a continuing current; in-cloud flashes 2-6 softer pulses). Record (`CV2Flash`, 96 B,
   `kCv2FlashMax` 128): origin, ground point, KIND (0 in cloud, 1 cloud-to-ground ~30% where strong, 2 red sprite, 3
-  spider lightning just under the base), seed, age, the cloud's base/top, strength, duration. Ground strokes leave the
-  cloud's flank and land 1.5-9 km aside (slanted). HOW they look is the host's: `updateLightningBolts` reads the
-  previous frame's list (only a list the pass wrote last frame: `cv2LightningObsDirValid`, one-shot, with the observer
-  direction it was written in) and builds each new flash's CHANNEL once as geometry (`buildBoltTree`, a fractal tree
-  from its seed: midpoint displacement down to ~3 px at its distance; a ground stroke's in-cloud wander, exit and long
-  slanted descent, branches every ~260 m / "Lightning tendrils" (`lightning_tendrils`, slot 268), twigs and many dim
-  tendrils, upward streamers at the strike point; a spider's 3-6 near-level arms 6-30 km with a web of twigs and
-  drooping tendrils; a sprite's 20-45 forking tendrils and rising streamers), cached by id, and uploads the flashes'
-  frames + state (`GpuBoltFlash`: revealed arc — the leader working down, a spider spreading at 150 km/s — the
-  branches' share, which fades ~0.12 s after the first stroke, 4 cloud-glow emitters) and the segments (`GpuBoltSeg`,
-  32 B, up to 128k). Drawn in the main pass AFTER the sky TAA at full resolution, SCREEN-blended (src + dst(1 - src):
+  spider lightning just under the base), seed, age, the cloud's base/top, strength, duration; and the origin and the
+  strike point once more EARTH-FIXED (`e`, `f`: a unit direction + an altitude, computed from the flash's hashes
+  alone, the same bits whoever looks; the first two are floats about the Earth's centre in the observer's frame, 0.5 m
+  steps that differ from place to place). Ground strokes leave the cloud's flank and land 1.5-9 km aside (slanted), on
+  the DEM (`cv2StrikeGround`, ~4 km footprint; it was the weather cube's ground, smoothed over ~20 km: strokes ended
+  hundreds of metres over a valley or inside a hillside).
+  **The channel (rebuilt 2026-11-21, issue_20261121_163317; LightningBolt.cpp / .h, namespace `bolt`).** HOW a flash
+  looks is the host's: `updateLightningBolts` reads the previous frame's list (only a list the pass wrote last frame:
+  `cv2LightningObsDirValid`, one-shot) and builds each new flash's CHANNEL once (`buildBoltTree` -> `bolt::build`), **a
+  pure function of the flash's own record**: seed, id, kind, the cloud's base and top and the strike point in the
+  flash's Earth-fixed frame (from `e` / `f`). Nothing about the observer enters it, so the same flash is the same tree
+  from every viewpoint and in every run (`lightning` -> `trees[].hash`; the report's spider: one hash and one set of
+  Earth-fixed vertices, 0.000 m apart, from 1.1, 23, 33 and 298 km, rebuilt at each). It is built at FULL detail (pieces
+  of 5-20 m, <= ~9,000 vertices) as paths of midpoint displacement whose vertices carry the subdivision LEVEL that made
+  them, every random number drawn from a counter keyed by (path, vertex): no shared stream, so one decision cannot
+  shift another. **Level of detail is a choice of vertices to draw**, per path and per frame (`boltDrawSegs`: the level
+  whose pieces are ~2.5 px at the path's own distance from the eye), never another shape. Before, the tree was built for the distance and the field of view its
+  ORIGIN was first seen at (pieces of 3 px there, from one random stream) and cached: another place, zoom or session
+  gave another tree for the same flash, and the reporter's spider, first seen with its origin 23 km off, drew an arm
+  passing ~1 km from the eye in straight pieces of ~140 m. **The channel is fitted to the DRAWN ground**
+  (`bolt_ground.comp`, `bolt::fitTerrain`; the CPU has no such ground: its DEM copy is 18 km a texel): the host sends
+  each new tree's vertices once (their places from the observer's sea-level point), the pass answers each with its
+  height over the DEM + the procedural detail at full detail, and two frames later a ground stroke's descent is scaled
+  so its last vertex is ON the ground, lifted over a ridge in its way, a branch that reaches the ground ends there,
+  the streamers are rooted on it, and a sheet rides over the relief with 120 m of clearance. The fit is repeated
+  (twice more at most) while it moves a kept vertex more than 1 m: the tree's z is the origin's up, not the up where the
+  vertex is, so a vertex moved far in z has slid across the ground it was measured on (a stroke the harness places 2 km
+  off the ground ended 3 m off it after one fit). "On the ground" is 5 cm over it (the ground is measured in the
+  observer's frame, float noise of a centimetre or two). Measured (`lightning check`: the fitted vertices measured
+  again; 207 harness ground strokes at 10 places, the Alps, the Himalaya, the Andes, the Rockies, Tibet, Norway's
+  fjords, Kansas, the Sahara, Hawaii, Big Sur, each placed on the EYE's ground so the fit has up to 1,990 m to make
+  up): no vertex below the ground (least height over it 0.039 m), last vertices 0.048-0.050 m over it. The tree
+  stands where the flash STARTED: the flash rides the weather map, which drifts ~40 m/s at the equator, so the
+  record's place is turned back by the drift since (`cloudDriftRate` x age) and is the same whether the host first
+  sees the flash at its start or arrives in the middle of it (0.8-1.1 m over a flash's life; it was 19 m per 0.45 s).
+  The record's 32 more bytes move every later member of the flash buffer: the offsets sat_sky.frag's SKY_LITE variant
+  hard-codes (`CV2FlashLite`: cv2SkyPsi 27,607,344, cv2GroundSky 27,623,728) moved with it (SatelliteSim.h asserts them). A sheet's paths wander sideways,
+  hardly up and down (`across`' vz 0.22): thrown freely, a 30-km arm's midpoint went kilometres up or down, the
+  report's bolt that "clips into terrain and passes through". Trees are cached by id while the flash lives (a tree
+  built again is the same tree; one thunder source a flash) and each frame the flashes' frames + state
+  (`GpuBoltFlash`: revealed arc — the leader working down, a spider spreading at 150 km/s — the branches' share, which
+  fades ~0.12 s after the first stroke, 4 cloud-glow emitters) and this frame's pieces (`GpuBoltSeg`, 32 B, up to
+  128k) are uploaded. The thunder reads `BoltTree::segs`, the channel in ~30-m pieces, the same from anywhere (it read
+  the draw's pieces: their number followed the distance the flash was first seen from). `BoltTool`
+  (tools/bolt_tool: `stats`, `dump`, sheet.py) runs the generator without the app.
+  **Shapes (2026-11-21, the same issue: "not a lot of tendrils or tree like structures").** A path's roughness follows
+  its pieces' scale (`roughAt`: the long sweeps 0.15 of a piece's length, the stepped leader's 30-400 m steps 0.24, the
+  last metres soft), so a channel turns at several scales. A ground stroke: the in-cloud wander, the exit and the long
+  slanted descent; the branches its stepped leader left are placed stratified along the descent (4-13 x sqrt("Lightning
+  tendrils", `lightning_tendrils`, slot 268): one in each equal part, jittered, so no bolt is bare), leave it DOWNWARD
+  (between the channel's trend and the vertical, turned 14-48 deg off that), run up to 3 km but end in the air (at most
+  0.82 of the height they start at; the terrain fit ends one on the ground only where relief meets it), fork again
+  (order 2) and carry fine tendrils (order 3), tapering to 30% and dimmer by order; a couple more inside the cloud;
+  upward streamers at the strike point. Spider lightning is a crawling, forking sheet: 3-6 arms that shed shorter side
+  branches and FORK at their ends into two (sometimes three) arms 0.5-0.9 as long, down to ~400 m (a river delta seen
+  from below); an in-cloud flash is a channel between two charge layers 1.2-4.5 km apart with such a sheet in each. A
+  sprite's 20-45 forking tendrils and rising streamers as before. Until then (the rules of 2026-10-05) branches were
+  drawn per metre of parent from the top with one vertex budget: bushy clumps near the cloud and a bare lower channel,
+  and a sheet was 3-6 unforked arms with a web round the origin. Measured (`BoltTool stats`, 300 seeds a kind; the
+  harness sheet of 4 seeds x 3 kinds at 6 and 25 km, harness_runs/c08): ground strokes carry 9.1 side branches on
+  average (min 4; the sheet's 7-11), sheets 20-27 (min 4); the longest run of a main channel within 2% of a straight
+  line is 0.4% of the channel (max 0.9%; 31-49 m of ~10 km on the sheet); vertices 6,700 a ground stroke, 8,600-8,900 a
+  sheet (budget 9,000); drawn pieces at the sheet's views, before -> after: ground strokes 10.4-12.0k -> 2.4-6.2k,
+  sheets 1.7-11.7k -> 2.0-6.9k; the report's spider 8,656 pieces from 1.1 km, 2,044 from 23 km, 352 from 298 km.
+  Drawn in the main pass AFTER the sky TAA at full resolution, SCREEN-blended (src + dst(1 - src):
   exactly the sky tonemap 1 - exp(-x) of the summed light, so overlaps saturate instead of clipping): channels as
   antialiased capsules at their TRUE luminous width (3 m main, 1.2 / 0.6 / 0.35 m; sprites 120-380 m) — thinner than a
   pixel they are a pixel wide with their energy kept, never fatter — plus a halo (light scattered by rain and air: 70 m
   main, 22 m branches), hidden by the cloud composite in front (`cloudPointVisibilityAt`; rain shafts included), faded by
-  the air COLUMN between eye and point (`boltAir`: a flat haze length left ~5% from orbit); then the cloud lit around
-  the flashes in ONE full-screen pass looping over the emitters (per texel of the half-res composite, `boltGlow`: a
-  ~4-km diffusion core floored at ~3.5 km and a faint 15-km tail, windowed to 45 km — from orbit a flash is a soft
-  10-20 km patch). The lightning pass's thread 1 adds the flashes' light to the rain at the eye (`cv2RainAmb`): drops
+  the air COLUMN between eye and point (`boltAir`: a flat haze length left ~5% from orbit); then the cloud lit by
+  the flashes in ONE full-screen pass looping over the emitters, per texel of the half-res composite: through the cloud
+  around each emitter (2026-11-21: its optical-depth volume, the cloud's phase and the slab's diffuse field; clouds.md
+  "Lightning as LIGHT"), so a flash behind thick cloud does not light its near side and a flash inside a cloud shows
+  where the cloud toward it is thin; an emitter without a volume (the 17th nearest and beyond) keeps the glow by
+  distance alone (`boltGlow`: a ~4-km diffusion core floored at ~3.5 km and a faint 15-km tail, windowed to 45 km),
+  which was every flash's light until then: an unoccluded brightening within a radius. The lightning pass's thread 1 adds the flashes' light to the rain at the eye (`cv2RainAmb`): drops
   light up in a close strike. **Thunder is streamed from sound shells (2026-10-10, `addThunderSource` / `thunderStep`,
   SatelliteSimAmbience.cpp):** each flash's channel is kept as a source (pieces in Earth-fixed axes, up to 96 flashes, 150 s);
   its front travels at 343 m/s in sim time, and a playhead per source (2026-11-21, sound.md "Thunder is played by a
@@ -1300,11 +1357,12 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   is listed only when there is thunder. It replaced an envelope precomputed at the flash for the listener's position
   then (`queueThunder`), whose brown noise under a 100-360 Hz cutoff was sub-bass only and whose layer was always
   "playing" (user: "displays as playing, but I don't really hear it"; at that snapshot the nearest flash was 27 km off).
-  `audio record` advances the shells on its own clock (`thunderRecordTick`). Harness: `lightning` (flashes with kind / segments, `trees`, drawn counts,
-  thunder queue), `lightning spawn kind=cg|ic|spider|sprite dist_km= az= [seed=] [base_m=] [top_m=] [ground_km=]`
+  `audio record` advances the shells on its own clock (`thunderRecordTick`). Harness: `lightning` (flashes with kind / segments, `trees` with hash / fit / level-of-detail
+  counts, thunder queue), `lightning check` / `lightning rebuild` (the terrain fit measured again; the trees dropped and
+  built again where the eye is), `lightning spawn kind=cg|ic|spider|sprite dist_km= az= [seed=] [base_m=] [top_m=] [ground_km=]`
   (heights above the eye's ground; injected flashes run the same channels, glow and thunder), scripts in
-  harness_runs/lightning (spawn2: a clear desert night; t5: orbit + aircraft at 5 N 90 W). Cost ~0.3 ms for the
-  lightning draw. It REPLACED (2026-09-29 .. 10-04) `lightningCS` / `spriteCS` in cloud_march.comp: a 14-vertex channel
+  harness_runs/lightning (spawn2: a clear desert night; t5: orbit + aircraft at 5 N 90 W). Cost: six bolts held at
+  their first stroke (6-10 km, 1600x900) 0.11 ms of the main pass for 21.7k pieces (0.12 ms for 50.4k before 2026-11-21). It REPLACED (2026-09-29 .. 10-04) `lightningCS` / `spriteCS` in cloud_march.comp: a 14-vertex channel
   with fixed branches and the glow, per pixel inside the half-res composite (smeared by the sky TAA, a 3-m minimum
   width = pudgy), and only dominant towers flashed (a map-typed storm without anvil towers had none: user snapshot 43).
 - **Weather evolution (2026-09-29, decision A):** the weather cube is re-baked as sim time moves

@@ -10368,6 +10368,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2GustFronts = c.value("gust_fronts", cv2GustFronts);
         cv2LightningStormRate = c.value("lightning_storm_rate_per_area", cv2LightningStormRate);
         cv2LightningTendrils = c.value("lightning_tendrils", cv2LightningTendrils);
+        cv2LightningLight = c.value("lightning_light", cv2LightningLight);
         cv2RainWindGain = c.value("surface_wind_gain", cv2RainWindGain);
         cv2RainStormWind = c.value("storm_outflow_mps", cv2RainStormWind);
         cv2RainGusts = c.value("wind_turbulence", cv2RainGusts);
@@ -11195,6 +11196,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"gust_fronts", cv2GustFronts},
         {"lightning_storm_rate_per_area", cv2LightningStormRate},
         {"lightning_tendrils", cv2LightningTendrils},
+        {"lightning_light", cv2LightningLight},
         {"surface_wind_gain", cv2RainWindGain},
         {"storm_outflow_mps", cv2RainStormWind},
         {"wind_turbulence", cv2RainGusts},

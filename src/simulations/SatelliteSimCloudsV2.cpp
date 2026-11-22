@@ -3190,6 +3190,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         cv2LightningObsDirS[ctx.frameSlot] = glm::dvec3(cpc.obsECEFDir); // the frame its flash list is in
         cv2LightningObsDirValidS[ctx.frameSlot] = true;
     }
+    recordFlashVolumes(cmd, ctx);   // the cloud around this frame's new flash emitters (cloud_v2_flashvol.comp)
     cv2PassStampTo(cmd, 2);   // lightning: flashes, rain map, the Sun transmittance volume
     // The terrain Sun-horizon map (2026-10-22): one thread per line, 4 x 128 x 128; after the lightning pass (it reads the
     // volume's axes, cv2SunProf), before the froxels, the sky pass and the fog march, which read it.

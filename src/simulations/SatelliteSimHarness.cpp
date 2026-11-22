@@ -211,7 +211,7 @@ const char *kHelp =
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "exposure [auto|hold|fast]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s] [wait=1]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [cdc=<spv>] [brick=<spv>] [nlc=<spv>] [smoke_layer=<spv>] [sky=<spv>] [sky_taa=<spv>] [wg=<X>x<Y>]; lightning [spawn kind= dist_km= az= ...] | lightning thunder log on|off|clear | state [name] | save <name> | load <file> | sim [name] [dt_ms=] [seconds=] [speed=] [hold_at=] [hold_s=] [jitter=]; eclipse solar|lunar; skyevents [state]|events|list <kind>|watch <solar|lunar|conjunction|occultation|moonglint|meteors|comet|supernova|cme|cometstorm|row|special <0-3>|aurora [t=]> [n=]|spaceweather; stars [state]|find <name>|select <name>; moonbase [state]|windows [days=] [limit=] [jitter=]|base <i> [lean=] [jitter=]; meteors [state]|count [minutes=] [lm=] [shower=]|force [kind=meteor|fireball|bolide] [shower=] [mag=] [az=] [el=] [v=] [delay=]|go [shower=]; comets [state]|list [days=]|watch [k|great] [days=] [sun_max=] [orbit=1]; aurora [next <kp>|substorm|kp <v>|auto]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...> [x= y=]; fps on|off|state; mouse move dx= dy= [frames=] | mouse click left|right [x= y=] | mouse scroll dy= | mouse aim <Id>[:i] [tol=] [frames=]; hints on|off|reset|state|set <gate> [0|1]|force <n>|gap [s=] [pad=0|1]; events list|state|on|off|fire <id> [total=0|1]|ack [choice=1|2|3] [soft=1]; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|preview <file> [shot=] [scale=] [fps=]|save|load|state|stop; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [cdc=<spv>] [brick=<spv>] [nlc=<spv>] [smoke_layer=<spv>] [sky=<spv>] [sky_taa=<spv>] [wg=<X>x<Y>]; lightning [spawn kind= dist_km= az= ...|check [off]|rebuild|light [side=] [single=] [src_m=] [level=] [ncap=]] | lightning thunder log on|off|clear | state [name] | save <name> | load <file> | sim [name] [dt_ms=] [seconds=] [speed=] [hold_at=] [hold_s=] [jitter=]; eclipse solar|lunar; skyevents [state]|events|list <kind>|watch <solar|lunar|conjunction|occultation|moonglint|meteors|comet|supernova|cme|cometstorm|row|special <0-3>|aurora [t=]> [n=]|spaceweather; stars [state]|find <name>|select <name>; moonbase [state]|windows [days=] [limit=] [jitter=]|base <i> [lean=] [jitter=]; meteors [state]|count [minutes=] [lm=] [shower=]|force [kind=meteor|fireball|bolide] [shower=] [mag=] [az=] [el=] [v=] [delay=]|go [shower=]; comets [state]|list [days=]|watch [k|great] [days=] [sun_max=] [orbit=1]; aurora [next <kp>|substorm|kp <v>|auto]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...> [x= y=]; fps on|off|state; mouse move dx= dy= [frames=] | mouse click left|right [x= y=] | mouse scroll dy= | mouse aim <Id>[:i] [tol=] [frames=]; hints on|off|reset|state|set <gate> [0|1]|force <n>|gap [s=] [pad=0|1]; events list|state|on|off|fire <id> [total=0|1]|ack [choice=1|2|3] [soft=1]; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|preview <file> [shot=] [scale=] [fps=]|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=] [frames=] [video=]; video start [name] [fps=] [scale=] [ui=on] [sound=all|ambience|off]|stop|state; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=<layer>[+<layer>]] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; "
@@ -6026,8 +6026,15 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             q.id = 0xF0000000u | (++boltInjectSerial_);
             q.seed = (uint32_t)c.num("seed", (double)(boltInjectSerial_ * 2654435761u % 100000u));
             q.kind = kind;
-            q.origin = at(oe, on, oAlt);
-            q.ground = kind == 1 ? at(oe + gOff * std::sin(gAz), on + gOff * std::cos(gAz), ground) : q.origin;
+            // (Snapped to what a float direction + altitude holds, the flash list's own form: the record the channel is
+            // built from is then the same bits from wherever it is looked at.)
+            auto snap = [](const glm::dvec3 &p) {
+                const glm::vec3 d = glm::vec3(glm::normalize(p));
+                const float h = (float)(glm::length(p) - 6371000.0);
+                return glm::normalize(glm::dvec3(d)) * (6371000.0 + (double)h);
+            };
+            q.origin = snap(at(oe, on, oAlt));
+            q.ground = kind == 1 ? snap(at(oe + gOff * std::sin(gAz), on + gOff * std::cos(gAz), ground)) : q.origin;
             q.base = base;
             q.top = top;
             q.strength = 0.8f;
@@ -6036,6 +6043,43 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             boltInjected_.push_back(q);
             r["id"] = q.id;
             r["message"] = "spawned kind " + std::to_string(kind) + " at " + std::to_string(dist / 1000.0) + " km";
+            return Status::Done;
+        }
+        // `lightning check [off]`: every fitted tree's vertices are measured once more against the drawn ground
+        // (bolt_ground.comp); `trees` then carries check_min_clear_m / check_tip_m (fit 4).
+        if (lower(pos(0)) == "check")
+        {
+            boltCheckAll_ = lower(pos(1)) != "off";
+            r["check"] = boltCheckAll_;
+            r["message"] = boltCheckAll_ ? "fitted trees are measured against the drawn ground" : "check off";
+            return Status::Done;
+        }
+        // `lightning light [side=] [single=] [src_m=] [level=] [ncap=]`: the flash light's tunables (boltLightTune), live.
+        if (lower(pos(0)) == "light")
+        {
+            boltLightTune.x = (float)c.num("side", boltLightTune.x);
+            boltLightTune.y = (float)c.num("single", boltLightTune.y);
+            boltLightTune.z = (float)c.num("src_m", boltLightTune.z);
+            boltLightTune.w = (float)c.num("level", boltLightTune.w);
+            boltLightNCap = (float)c.num("ncap", boltLightNCap);
+            if (c.has("side"))   // (the bakes hold the side escape in N: bake again)
+                for (BoltLightSlot &sl : boltLightSlots_)
+                    sl.baked = false;
+            r["ncap"] = boltLightNCap;
+            r["side"] = boltLightTune.x;
+            r["single"] = boltLightTune.y;
+            r["src_m"] = boltLightTune.z;
+            r["level"] = boltLightTune.w;
+            r["message"] = "flash light tunables";
+            return Status::Done;
+        }
+        // `lightning rebuild`: drop the cached trees; each flash on the list is built again from its record, where the
+        // eye is now (the same tree: the determinism check).
+        if (lower(pos(0)) == "rebuild")
+        {
+            r["dropped"] = boltTrees_.size();
+            boltTrees_.clear();
+            r["message"] = "trees dropped: rebuilt from the flash list next frame";
             return Status::Done;
         }
         json list = json::array();
@@ -6047,7 +6091,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             cnt = std::min(hdr[0], kCv2FlashMax);
             for (uint32_t i = 0; i < cnt; ++i)
             {
-                const float *e = f + i * 16;
+                const float *e = f + i * kCv2FlashFloats;
                 uint32_t id;
                 std::memcpy(&id, &e[8], 4);
                 const int kind = (int)(e[7] + 0.5f);
@@ -6090,11 +6134,49 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             int ord[4] = {0, 0, 0, 0};
             for (const BoltSegC &sg : t.segs)
                 ++ord[(sg.packed >> 7) & 3u];
+            // The tree as built (the same from every viewpoint: `hash`), its terrain fit, and a few of its vertices in
+            // Earth-fixed metres (the main channel's ends and quarter points) for a comparison across runs.
+            const bolt::Stats st = bolt::stats(t.tree);
+            char hb[20], hf[20];
+            snprintf(hb, sizeof(hb), "%016llx", (unsigned long long)t.hashBuilt);
+            snprintf(hf, sizeof(hf), "%016llx", (unsigned long long)bolt::hashVerts(t.tree));
+            json sample = json::array();
+            for (const bolt::Path &pth : t.tree.paths)
+            {
+                if (pth.order != 0 || pth.count < 2)
+                    continue;
+                for (int k = 0; k <= 4; ++k)
+                {
+                    const glm::vec3 lp = t.tree.verts[pth.first + (size_t)(pth.count - 1) * (size_t)k / 4].p;
+                    const glm::dvec3 w = t.originEcef + t.t1 * (double)lp.x + t.t2 * (double)lp.y + t.up * (double)lp.z;
+                    sample.push_back({w.x, w.y, w.z});
+                }
+                if (sample.size() >= 15)
+                    break;
+            }
             trees.push_back({{"id", t.id}, {"kind", t.kind}, {"ground_local_m", {t.groundLocal.x, t.groundLocal.y, t.groundLocal.z}},
                              {"base_local_z_m", t.baseLocalZ}, {"segments_by_order", {ord[0], ord[1], ord[2], ord[3]}},
-                             {"main_arc_m", t.mainArc}, {"max_arc_m", t.maxArc}});
+                             {"main_arc_m", t.mainArc}, {"max_arc_m", t.maxArc},
+                             {"hash", hb}, {"hash_fitted", hf}, {"verts", st.verts}, {"paths_by_order", {st.paths[0], st.paths[1], st.paths[2], st.paths[3]}},
+                             {"side_branches", st.sideBranches}, {"main_len_m", st.mainLen}, {"longest_straight_m", st.maxStraight},
+                             {"draw_segments", t.draw.size()}, {"fit", t.fit}, {"fit_min_clear_m", t.fitMinClear},
+                             {"fit_tip_move_m", t.fitTipMove}, {"check_min_clear_m", t.checkMinClear}, {"check_tip_m", t.checkTip},
+                             {"origin_ecef_m", {t.originEcef.x, t.originEcef.y, t.originEcef.z}}, {"sample_ecef_m", sample}});
         }
         r["trees"] = trees;
+        {
+            // The flashes' light volumes (flash_volume.glsl): which emitters hold a slot, and the bakes so far.
+            json slots = json::array();
+            for (uint32_t k = 0; k < kFvSlots; ++k)
+                if (boltLightSlots_[k].usedFrame + 1 >= boltFrame && boltLightSlots_[k].emitter >= 0)
+                    slots.push_back({{"slot", k}, {"id", boltLightSlots_[k].flashId}, {"emitter", boltLightSlots_[k].emitter},
+                                     {"baked", boltLightSlots_[k].baked}});
+            r["light_slots"] = slots;
+            r["light_bakes"] = fvBakes_;
+            r["light_jobs_this_frame"] = fvJobCount;
+        }
+        r["trees_built"] = boltTreesBuilt_;
+        r["draw_rebuilds"] = boltDrawRebuilds_;
         r["drawn_flashes"] = boltFlashCount;
         r["drawn_segments"] = boltSegCount;
         r["message"] = std::to_string(cnt) + " flash(es) in progress";
