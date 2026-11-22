@@ -392,6 +392,41 @@ paid for by `MARCH_OUT` (sat_sky.frag, at `tHit`'s declaration): the twelve vari
 could never run; glslc runs without `-O`, and a runtime `if (tHit > 0.0)` is kept whole). The full, env, refl and TAA
 variants compile to the same bytes as before. The same trick is there for the next feature that needs room: a value
 that is fixed in SKY_LITE should be a `const` there, not a variable that happens never to change.
+**Planetarium's light is the full sky's (2026-11-21, issue_20261121_160405 shot 4 "our atmosphere shader pre
+ozone").** SKY_LITE ran the scattering and the tonemap from before the 2026-10-26 lighting work: `1 - e^-x` (the full
+sky: AgX), `optDepth`'s Sun path without ozone, and the zenith sky standing in for the shadowed air (the full sky:
+multiple scattering). At the report's twilight (10 km, Sun -3.5 deg) its sky was grey-green over an orange band
+where Medium's is blue-violet: the three boxes below read 12-27% / 52-66% / 164-200% off per channel. Medium with
+`clouds_v2.tonemap 0` + `sky_multiple_scattering 0` reproduces the old Planetarium frame within ~10% (the knockout
+that named the cause). SKY_LITE now takes, in `sat_sky.frag`:
+- **AgX** (`include/sky_agx.glsl`, the full sky's `skyAgX` moved to a header unchanged; `clouds_v2.tonemap` 0 still
+  gives the old curve on both);
+- **the Sun's exact path with ozone** per step (`sunPathCols` + `atmOzoneTau`, in place of `optDepth`), and
+  `sunPathTauExact` for the ground's Sun;
+- **the air's multiple scattering** per step, `(sigma_R + sigma_M) x Psi` (its own copy of `cv2SkyPsiAt`), for the
+  ray and for the air in front of the cloud composite; ALWAYS on there: the stand-in it replaced (the shadowed air's
+  sky light, `skyZenithSky`) is compiled out, which is what paid for all of this, so `sky_multiple_scattering` 0 has
+  no old path on this tier;
+- **the ground's sky light** from the Sun table's sea-level row (`cv2GroundSky`, the full sky's `cv2GroundSkyAt` at
+  h = 0: Planetarium's Earth is flat), in place of its 2-step zenith integral, which had no twilight and no ozone.
+It keeps the one-point step form (no `atmStepAttn`), its own white balance reference (the full sky's, tried, cost
+1.5 KB and moved the day sky 2-5% further from Medium) and its 4-10 view samples. **The blocks by offset:** it
+declares `cv2.tone` and the two tables as blocks of their own with `layout(offset = ...)` (`CloudsV2Lite`, binding 31,
+offset 1776; `CV2FlashLite`, binding 30, offsets 27603248 / 27619632): the whole blocks' declarations cost 10.8 KB of
+SPIR-V (names and decorations), these 0.7 KB. `SatelliteSim.h` static_asserts the three offsets. **The Sun table's
+bake runs on Planetarium too** (`recordCloudsV2`, before the knockout-32768 return; not on Potato): an app started
+on that tier never ran it and the tables would be zeros. Measured (RTX 3070 Ti, 1920x1009, the report's shot 4,
+Medium with the clouds, the aurora and the red band knocked out as the reference; mean display colour of three boxes,
+largest per-channel difference): horizon band 27% -> 4%, 10 deg up 66% -> 7%, 30 deg up 200% -> 21%. With the airglow
+gain 0 on both tiers (the atmosphere alone): 3.8% / 9.9% / 48%, the last in the RED alone (24.7 against 16.7 levels;
+green 1%, blue 5%). **That red is the one-point step** (SKY_LITE takes the Sun's transmittance at the middle of a
+step's lit part, 4-10 steps a ray): with the full sky's `atmStepAttn` in SKY_LITE it is 19% (and 5% at 10 deg), for
++9.2 KB of SPIR-V and +0.26 ms of sky pass; with more view samples instead, 6/16: 32% (+0.36 ms), 8/24: 21%
+(+0.87 ms), 12/48: 19% (+1.95 ms). Neither fits the tier (its budget, the 0.3 ms): left open. The day sky has the
+same cause: zenith-ish (Sun 45 deg, out of frame) 48-74% brighter than Medium before, 29-55% now; toward the horizon
+4-15% -> 1-5%. The sunset limb from 572 km: 3-41% over the frame -> 1-10% (one night-side cell 11% -> 14%). GPU frame
+at the report's shots 2 / 3 / 4, base and new interleaved in one app, 3 reps: 4.23 / 3.79 / 4.39 -> 4.35 / 3.54 /
+4.42 ms (run-to-run 0.1-0.4); sky pass 1.15 / 1.38 / 1.40 -> 1.25 / 1.36 / 1.40. SPIR-V 230,364 -> 227,412 bytes.
 `tools/harness/scripts/low_tiers.satcmd` is the check: Potato / Planetarium / Low at a day, night-city, orbit and
 storm view, perf + captures, and run once with `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`. First run
 (RTX 3070 Ti, 1600x900, GPU frame): Potato 0.8-1.0 ms, Planetarium 1.4-3.0 ms, Low 4.8-6.7 ms (coverage forced

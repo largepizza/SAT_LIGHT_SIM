@@ -107,9 +107,6 @@ vec2 optDepth(vec3 p, vec3 d, float segTotal) {
 // layer from 15 to 35 km). Ozone takes the orange and
 // yellow out of the long twilight paths: it is why the twilight zenith is deep blue (without it, olive or grey). The
 // same model as the clouds' Sun (cloud_v2_sunlut.comp sunTransmit). The caller tests the Earth's shadow.
-#ifdef SKY_LITE
-vec3 sunPathTauExact(vec3 p, vec3 d, vec3 BR, float BM) { return vec3(0.0); }   // (never taken there)
-#else
 vec3 sunPathTauExact(vec3 p, vec3 d, vec3 BR, float BM)
 {
     float r = length(p), cz = dot(p, d) / r;
@@ -122,7 +119,6 @@ vec2 sunPathCols(vec3 p, vec3 d)
     float r = length(p), cz = dot(p, d) / r;
     return vec2(atmColumnInf(r, cz, H_R) * H_R, atmColumnInf(r, cz, H_M) * H_M);
 }
-#endif
 
 // ── A step's sunlight to the eye, integrated over the step (2026-11-04) ──────────────────────────────────────────────
 // The single-scattering loops (sat_sky.frag's N_VIEW loop, sky_ap.comp) took the Sun's path and the eye's column at ONE

@@ -335,38 +335,7 @@ layout(location = 1) out float outDepthCopy;
 #define CV2_FLASH_BINDING 30
 #define CV2_SUN_CASC_FN
 #include "cloud_lightning.glsl"
-// AgX (2026-10-26; Troy Sobotka's, in Benjamin Wrensch's polynomial fit): the tonemap. 1 - e^-x per channel saturates
-// each channel on its own: bright orange skewed yellow, every sunlit cloud flattened to paper white (the physical
-// multiple scattering put lit cloud past that). AgX maps scene light to a log curve in a wider gamut (an inset of the
-// primaries), so highlights roll off to white and keep their hue on the way. Mid grey 0.18 -> ~0.18 (the old curve gives
-// 0.165 there), so the exposure means what it did. Look: power (contrast) and saturation on the display-encoded curve.
-// Out: display-linear (the swapchain encodes sRGB).
-vec3 skyAgX(vec3 v)
-{
-    const mat3 kIn  = mat3(0.842479062253094, 0.0423282422610123, 0.0423756549057051,
-                           0.0784335999999992, 0.878468636469772, 0.0784336,
-                           0.0792237451477643, 0.0791661274605434, 0.879142973793104);
-    const mat3 kOut = mat3(1.19687900512017, -0.0528968517574562, -0.0529716355144438,
-                           -0.0980208811401368, 1.15190312990417, -0.0980434501171241,
-                           -0.0990297440797205, -0.0989611768448433, 1.15107367264116);
-    const float minEv = -12.47393, maxEv = 4.026069;
-    // "AgX range" (cv2.tone.w, light3 2026-11-05): the scene's log contrast about mid grey x w before the curve, i.e. the
-    // curve spans 16.5 EV / w of scene light. AgX's 16.5 EV is a camera's whole latitude; a sunset cumulus's lit / shaded
-    // 4.5 EV sat in its flat middle, so the shaded faces read khaki and the lit ones cream (3.2 : 1 on screen against
-    // 23.6 : 1 in the scene). Mid grey stays put, so the exposure means what it did. Below mid grey the extra contrast
-    // saturates 1.5 EV down (tanh: the curve stays smooth): at 1.4 x everywhere the ground at a low Sun went black.
-    const float kMidEv = -2.473931;   // log2(0.18)
-    vec3 dEv = log2(max(kIn * v, vec3(1e-10))) - kMidEv;
-    dEv += (cv2.tone.w - 1.0) * mix(1.5 * tanh(dEv / 1.5), dEv, step(0.0, dEv));
-    v = clamp(kMidEv + dEv, minEv, maxEv);
-    v = (v - minEv) / (maxEv - minEv);
-    vec3 v2 = v * v, v4 = v2 * v2;
-    v = 15.5 * v4 * v2 - 40.14 * v4 * v + 31.96 * v4 - 6.868 * v2 * v + 0.4298 * v2 + 0.1191 * v - 0.00232;
-    float l = dot(v, vec3(0.2126, 0.7152, 0.0722));
-    v = pow(max(v, vec3(0.0)), vec3(cv2.tone.z));
-    v = vec3(pow(max(l, 0.0), cv2.tone.z)) + cv2.tone.y * (v - vec3(pow(max(l, 0.0), cv2.tone.z)));
-    return pow(clamp(kOut * v, 0.0, 1.0), vec3(2.2));
-}
+#include "sky_agx.glsl"   // skyAgX: the tonemap (AgX)
 // The aerial-perspective volume (2026-10-25, sky_ap.comp): the atmosphere loop below, once per screen tile.
 #define SKY_AP_BINDING 33
 #include "sky_ap.glsl"
@@ -428,6 +397,30 @@ vec3 smokeSunTransmit(vec3 pRel, vec3 sunDir, float muS)
 const uint kSkyEngineLightBase = 1024u;   // == SatelliteSim::kMaxDustClouds
 const uint kSkyEngineLightMax  = 32u;     // == SatelliteSim::kMaxEngineLights
 #include "cloud_occlusion.glsl"           // cloudAlphaIsEmit, cloudPointVisibilityAt
+#endif
+#ifdef SKY_LITE
+// Planetarium takes the full sky's tonemap and its twilight (2026-11-21, issue_20261121_160405): AgX, the Sun's exact
+// path with ozone, the air's multiple scattering and the ground's sky light. It reads one member of the clouds v2 UBO
+// and two tables of the flash buffer, declared here by OFFSET alone: the whole blocks' declarations cost ~11 KB of the
+// tier's SPIR-V budget (names and decorations), these ~0.7 KB. The offsets are static_asserted in SatelliteSim.h
+// (GpuCloudV2Params tone, kCv2SkyPsiOffset, kCv2GroundSkyOffset); the host fills them on this tier too
+// (fillCloudsV2Params; the Sun table's bake in recordCloudsV2).
+layout(std140, set = 0, binding = 31) uniform CloudsV2Lite { layout(offset = 1776) vec4 tone; } cv2;
+layout(std430, set = 0, binding = 30) readonly buffer CV2FlashLite {
+    layout(offset = 27603248) vec4 cv2SkyPsi[32 * 32];
+    layout(offset = 27619632) vec4 cv2GroundSky[64];   // (its sea-level row: Planetarium's Earth is flat)
+};
+// (cloud_lightning.glsl cv2SkyPsiAt, kCv2SkyPsiN 32: the multiple-scattering function Psi at a point)
+vec3 cv2SkyPsiAt(float mu, float h)
+{
+    vec2  xy = clamp(vec2(mu * 0.5 + 0.5, sqrt(clamp(h / (R_ATMOS - R_EARTH), 0.0, 1.0))) * 32.0 - 0.5, 0.0, 31.0);
+    ivec2 i0 = ivec2(floor(xy));
+    ivec2 i1 = min(i0 + 1, ivec2(31));
+    vec2  f  = xy - vec2(i0);
+    return mix(mix(cv2SkyPsi[i0.y * 32 + i0.x].rgb, cv2SkyPsi[i0.y * 32 + i1.x].rgb, f.x),
+               mix(cv2SkyPsi[i1.y * 32 + i0.x].rgb, cv2SkyPsi[i1.y * 32 + i1.x].rgb, f.x), f.y);
+}
+#include "sky_agx.glsl"
 #endif
 #include "eclipse.glsl"  // the Moon's shadow per point (solar eclipses)     // unified scene depth (gl_FragDepth)
 
@@ -4652,9 +4645,15 @@ void main() {
     // per step, to the eye (msS) and for the air in front of the clouds (msSF). It replaces the shadowed air's sky light
     // (review 7, below), which stood in for it: air in a shadow, lit by the rest of the sky, is multiple scattering.
     vec3  msS = vec3(0.0), msSF = vec3(0.0);
+#ifdef SKY_LITE
+    // (Planetarium, 2026-11-21: always. The shadowed air's stand-in below, skyZenithSky and optDepth's Sun path are what
+    //  paid for it in the tier's SPIR-V budget, so "sky_multiple_scattering" 0 has no old path to fall back to there.)
+    const bool skyMsOn = true;
+#else
     bool  skyMsOn = false;
 #ifdef SKY_SUN_SHADOW
     skyMsOn = cv2.amb.w > 0.5;
+#endif
 #endif
     float odR_cam = 0.0;
     float odM_cam = 0.0;
@@ -4930,8 +4929,23 @@ void main() {
             vec3 psF = fPart ? cv2SkyPsiAt(dot(normalize(sp), sunDir), hPF) * eclK : ps;
             msSF += aM * aFK * (BETA_R * (densR0 * fRK) + BETA_M * (densM0 * fMK)) * (fwC * psF);
         }
+#elif defined(SKY_LITE)
+        // Planetarium (2026-11-21): the same multiple scattering, Psi at the step's middle (the piece in front too), and
+        // the eclipse's old pair once a step for it and for the sunlight below.
+        vec3 eclK = vec3(1.0);
+        if (cloud.moonMisc.y > 0.5) {
+            float vD = eclipseSunVis(sp * 1e-3, sunDir, 0.0);
+            eclK = vec3(vD) + (1.0 - vD) * kEclipseMultiScatter * eclipseSkyLight(sp * 1e-3, sunDir, h);
+        }
+        {
+            vec3 ps = exp(-(BETA_R * (odR_cam - 0.5 * densR0) + BETA_M * 1.1 * (odM_cam - 0.5 * densM0)))
+                    * cv2SkyPsiAt(dot(normalize(sp), sunDir), h) * eclK;
+            msS  += ps * (BETA_R * densR0 + BETA_M * densM0);
+            msSF += ps * aFK * (BETA_R * (densR0 * fRK) + BETA_M * (densM0 * fMK)) * fwC;
+        }
 #endif
         if (litF < 1.0) {
+#ifndef SKY_LITE   // (there the multiple scattering is always on: no stand-in)
             // Review 7: shadowed air, lit by the twilight sky below (see shadowSky after the loop).
             float shF = 1.0 - litF;
             vec3 aC = exp(-(BETA_R * (odR_cam - 0.5 * densR0) + BETA_M * 1.1 * (odM_cam - 0.5 * densM0)));
@@ -4939,6 +4953,7 @@ void main() {
             shRF += aC * aFK * densR0 * fRK * (1.0 - litFF) * fwC; shMF += dot(aC * aFK, vec3(1.0 / 3.0)) * densM0 * fMK * (1.0 - litFF) * fwC;
             shT += densR * shF * (tS0 + 0.5 * segLen);
             shD += densR * shF;
+#endif
             if (litF <= 0.0) continue;
         }
         // The lit part's own middle for the Sun path (the midpoint may be in the shadow); the step's in-scatter below
@@ -4956,10 +4971,11 @@ void main() {
         densM *= litF;
 
 #ifdef SKY_LITE
-        // (SKY_LITE, at its SPIR-V budget and without volumetric clouds: the step's lit middle alone, as before.)
-        vec2 tSun  = raySphere(spL, sunDir, R_ATMOS);
-        vec2 sunOD = (tSun.y > 0.0) ? optDepth(spL, sunDir, tSun.y) : vec2(0.0);
-        vec3 attn  = exp(-(BETA_R * (odR_cam - 0.5 * densR0 + sunOD.x) + BETA_M * 1.1 * (odM_cam - 0.5 * densM0 + sunOD.y)));
+        // (SKY_LITE, at its SPIR-V budget and without volumetric clouds: the step's lit middle alone, as before; since
+        //  2026-11-21 with the Sun's exact columns and the ozone, as the full sky's: sunPathCols, atmOzoneTau.)
+        vec2 sunOD = sunPathCols(spL, sunDir);
+        vec3 attn  = exp(-(BETA_R * (odR_cam - 0.5 * densR0 + sunOD.x) + BETA_M * 1.1 * (odM_cam - 0.5 * densM0 + sunOD.y)
+                           + atmOzoneTau(spL, sunDir)));
         const float mieK = 1.0, mieKF = 1.0;
         vec3  pieceK = aFK;
 #else
@@ -5106,9 +5122,9 @@ void main() {
         // the sunlit air around it. The whole sky used to be dimmed by the Sun the EYE saw: from inside the umbra the
         // horizon was as dark as the zenith (no orange ring), and from space the air over the shadow stayed blue-lit,
         // blurring the shadow on the ground.
-#ifdef SKY_SUN_SHADOW
+#if defined(SKY_SUN_SHADOW) || defined(SKY_LITE)   // (SKY_LITE: its eclK above is the old pair)
         attn *= eclK; attnPre *= eclK;
-#else   // (SKY_LITE's size budget: the old pair)
+#else   // (SKY_ENV: the old pair)
         if (cloud.moonMisc.y > 0.5) {
             vec3  spK = sp * 1e-3;
             float vD  = eclipseSunVis(spK, sunDir, 0.0);
@@ -5176,6 +5192,7 @@ void main() {
     // front of a cloud. Ground and aircraft only: from orbit the terminator gate owns the twilight air.
     vec3 skyShadowF = apShadowF + msSF;
     color += msS;
+#ifndef SKY_LITE
     if (!skyMsOn && shD > 0.0 && atmTermSpace < 1.0) {
         vec3  pm  = obsPos + dir * (shT / shD);
         float rm  = max(length(pm), R_EARTH);
@@ -5189,6 +5206,7 @@ void main() {
         // dark lines along the horizon at the band's edges (issue 20261025_184550, "odd horizon band").
         skyShadowF += (1.0 - atmTermSpace) * 0.5 * sky * (BETA_R * shRF + vec3(BETA_M * shMF));
     }
+#endif
     // The air in front of the clouds, at every distance (the march has none of its own since review 8b).
     vec3 airFront = SUN_INTENSITY * (pR * BETA_R * accumRF + vec3(pM * BETA_M * accumMF)) + skyShadowF;
 
@@ -6270,6 +6288,17 @@ void main() {
             skyAmbGate = 1.0;
         } else
 #endif
+#ifdef SKY_LITE
+        // Planetarium (2026-11-21): the same table's sea-level row (cloud_lightning.glsl cv2GroundSkyAt at h = 0: its
+        // Earth is flat), in place of the zenith integral below, which had no twilight and no ozone.
+        {
+            float x  = clamp((0.5 + 0.5 * sign(geoSunDot) * pow(abs(geoSunDot), 1.0 / 3.0)) * 64.0 - 0.125, 0.0, 63.0);
+            int   i0 = int(x);
+            skyAmbientTerrain = mix(cv2GroundSky[i0].rgb, cv2GroundSky[min(i0 + 1, 63)].rgb, x - float(i0)) * (1.0 / 3.2);
+            if (cloud.moonMisc.y > 0.5) skyAmbientTerrain *= eclipseSkyLight(hitPt * 1e-3, sunDir, length(hitPt) - R_EARTH);
+            skyAmbGate = 1.0;
+        }
+#else
         {
             vec3  zenT = normalize(hitPt);  // terrain zenith (radially outward)
             vec2  tSAT = raySphere(hitPt, zenT, R_ATMOS);
@@ -6313,6 +6342,7 @@ void main() {
                 if (cloud.moonMisc.y > 0.5) skyAmbientTerrain *= eclipseSkyLight(hitPt * 1e-3, sunDir, length(hitPt) - R_EARTH);
             }
         }
+#endif
 
         // ── Moonlight at terrain hit ────────────────────────────────────────────
         // Mirrors the sun's own direct-light pattern above (shadingN·dir Lambertian +
@@ -7757,10 +7787,8 @@ void main() {
 #endif
     {
         vec3 xe = exposure * color;
-#ifdef SKY_SUN_SHADOW
-        if (cv2.tone.x > 0.5) color = skyAgX(xe);
+        if (cv2.tone.x > 0.5) color = skyAgX(xe);   // (SKY_LITE too since 2026-11-21: Planetarium's light is the full sky's)
         else
-#endif
         color = mix(vec3(1.0) - exp(-xe), vec3(1.0) - 1.0 / (vec3(1.0) + xe + 0.5 * xe * xe),
                     cloud.highlightRolloff);
     }

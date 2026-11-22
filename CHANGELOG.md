@@ -545,6 +545,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   volumetric clouds), Low, Medium, High and Ultra. First runs start on High for discrete GPUs with 6 GB or more,
   Planetarium on integrated GPUs, Potato on old Macs. Planetarium draws the 3D models of satellites, stations and
   rockets up close like the full presets (without their sky reflections); Potato keeps them as points.
+- **Planetarium's sky is lit like the full sky:** the same tonemap (AgX), ozone and multiple scattering, so
+  twilight is the blue hour over an orange horizon instead of grey-green, at the same frame time.
 - **No wildfire smoke on Planetarium or Potato:** those presets draw the fire itself (its front, flames and glow)
   and no smoke haze or trails.
 - **Potato draws the cities as the night-lights map alone:** the tiled city detail texture (squares of street
