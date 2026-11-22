@@ -41,10 +41,17 @@ glm::vec3 across(Rng &r, glm::vec3 d, float vz)
     return l2 > 1e-4f ? v / l2 : glm::vec3(1.0f, 0.0f, 0.0f);
 }
 
-// The midpoint's throw as a share of the piece's length (x a path's roughK).
-float roughAt(float)
+// The midpoint's throw as a share of the piece's length, by the piece's scale: the channel's long sweeps are
+// gentle, the stepped leader's steps (tens to a few hundred metres) turn sharply, the last metres are soft.
+float roughAt(float len)
 {
-    return 0.2f;
+    if (len > 1500.0f)
+        return 0.15f;
+    if (len > 400.0f)
+        return glm::mix(0.24f, 0.15f, (len - 400.0f) / 1100.0f);
+    if (len > 30.0f)
+        return 0.24f;
+    return glm::mix(0.14f, 0.24f, len / 30.0f);
 }
 
 struct PathOpt
@@ -140,70 +147,77 @@ uint32_t candStride(const Path &p, float spacingM)
     return std::max<uint32_t>(1u, N >> lc);
 }
 
-// ── Side branches off a path (the rules of 2026-10-05): per metre of the parent `perM` of them, each `lenScale`
-// long at most, an order finer; twigs and tendrils off each in turn. A ground stroke's head down and out, shorter the
-// lower they start; a sheet's run sideways, nearly level, the finest drooping a little. ──
-void sideBranches(Tree &t, uint32_t pi, const Params &P, uint32_t key, int order, float perM, float wgt, float lenScale,
-                  size_t budget)
+// ── Cloud-to-ground: the branches a stepped leader leaves behind. They leave the channel downward at a shallow
+// angle to it, wander like it, fork again, taper and dim, and end in the air (the terrain fit ends one that would
+// reach the ground on it). `expect` = how many this path should carry, order = theirs. ──
+void groundBranches(Tree &t, uint32_t pi, const Params &P, uint32_t key, int order, float expect, float wgt,
+                    float lenCap, size_t budget)
 {
-    if (order > 3 || t.verts.size() > budget)
+    if (order > 3 || expect <= 0.0f || t.verts.size() > budget)
         return;
     const Path par = t.paths[pi];   // (a copy: the vectors grow)
     if (par.count < 5)
         return;
     const uint32_t N = par.count - 1;
-    const uint32_t sc = candStride(par, 25.0f);
-    const bool ground = P.kind == 1;
-    for (uint32_t i = sc; i + sc <= N; i += sc)
+    const float spacing = order >= 3 ? std::max(par.length / 40.0f, 12.0f) : std::max(par.length / 48.0f, 20.0f);
+    const uint32_t sc = candStride(par, spacing);
+    if (N < 2 * sc)
+        return;
+    const bool trunk = (par.flags & kTrunk) != 0;
+    // Stratified along the path (one in each of n equal parts, jittered): a count near `expect` on every bolt, not
+    // a few bolts bare and a few bushy. Along the trunk: from just under the cloud to ~93% of the way down; along a
+    // branch: past its root (a fork right at the root reads as a second branch).
+    Rng r0(mix2(key, 0xB0u));
+    const int n = (int)std::floor(expect + r0.u());
+    const float fLo = trunk ? 0.02f : (order >= 3 ? 0.05f : 0.14f), fHi = trunk ? 0.93f : 0.97f;
+    for (int k = 0; k < n; ++k)
     {
         if (t.verts.size() > budget)
             return;
-        Rng r(mix2(key, 0xB0000u + i));
+        Rng r(mix2(key, 0xB0000u + (uint32_t)k));
+        const float f = fLo + (fHi - fLo) * ((float)k + r.u()) / (float)n;
+        const uint32_t i = std::clamp((uint32_t)std::lround((double)f * N / sc) * sc, sc, N - sc);
         const Vert vp = t.verts[par.first + i];
-        const float pl = vp.arc - t.verts[par.first + i - sc].arc;
-        if (r.u() > perM * pl)
+        const float hAbove = vp.p.z - P.ground.z;
+        if (hAbove < 80.0f)
             continue;
-        const glm::vec3 d = trend(t, par, i, 30.0f);
-        glm::vec3 dir;
-        float len;
-        if (ground)
+        // It heads DOWN, between the channel's own trend and the vertical, turned 14-48 degrees off that.
+        const glm::vec3 T = trend(t, par, i, order >= 3 ? 60.0f : 180.0f);
+        const glm::vec3 d0 = glm::normalize(glm::mix(T, glm::vec3(0.0f, 0.0f, -1.0f), order >= 3 ? 0.3f : 0.55f) + glm::vec3(0.0f, 0.0f, -1e-3f));
+        const float th = glm::radians(order >= 3 ? 25.0f + 50.0f * r.u() : 14.0f + 34.0f * r.u());
+        glm::vec3 dir = glm::normalize(d0 * std::cos(th) + across(r, d0, 1.0f) * std::sin(th));
+        if (dir.z > -0.3f)   // never upward: a leader's branches work their way down
         {
-            const float h = std::max(vp.p.z - P.ground.z, 50.0f);
-            const glm::vec3 out = across(r, d, 1.0f);
-            dir = glm::normalize(d * (0.3f + 0.4f * r.u()) + out * (0.5f + 0.7f * r.u()) + glm::vec3(0.0f, 0.0f, -0.6f * r.u()));
-            if (dir.z > -0.15f)
-                dir = glm::normalize(dir + glm::vec3(0.0f, 0.0f, -0.4f));
-            len = std::min(h * (0.12f + 0.45f * r.u()), lenScale * (0.4f + r.u()));
+            dir.z = -0.3f - 0.3f * r.u();
+            dir = glm::normalize(dir);
         }
-        else
-        {
-            glm::vec3 out = across(r, d, 1.0f);
-            out.z *= 0.25f;
-            dir = glm::normalize(d * 0.35f + glm::normalize(out + glm::vec3(1e-4f)) + glm::vec3(0.0f, 0.0f, order >= 3 ? -0.35f : 0.0f));
-            len = lenScale * (0.4f + r.u());
-        }
-        if (len < 12.0f)
+        const float u = r.u();
+        const float lMax = std::min(lenCap, 0.82f * hAbove / std::max(-dir.z, 0.25f));
+        const float len = lMax * (order >= 3 ? 0.35f + 0.65f * u : 0.25f + 0.75f * u * std::sqrt(u));
+        if (len < (order >= 3 ? 25.0f : 60.0f))
             continue;
         PathOpt o;
-        o.minSeg = ground ? (order == 1 ? 6.0f : 8.0f) : (order == 1 ? 16.0f : 20.0f);
+        o.minSeg = order == 1 ? 6.0f : 8.0f;
         o.maxLevels = order == 1 ? 9 : (order == 2 ? 7 : 5);
-        o.roughK = (order >= 3 ? 0.3f : 0.24f) / 0.2f;
-        o.vz = ground ? 1.0f : 0.22f;
+        o.roughK = order >= 3 ? 1.2f : 1.05f;
         o.order = (uint8_t)order;
-        o.flags = ground ? (uint8_t)0 : (uint8_t)kLevel;
         o.parent = (int)pi;
         o.parentVert = i;
         o.arc0 = vp.arc;
-        o.w0 = wgt;
-        o.w1 = wgt * 0.35f;
-        const uint32_t ck = mix2(key, 0xC0000u + i);
+        o.w0 = wgt * (0.7f + 0.3f * r.u());
+        o.w1 = o.w0 * 0.3f;
+        const uint32_t ck = mix2(key, 0xC0000u + (uint32_t)k);
         const uint32_t ci = addPath(t, ck, vp.p, vp.p + dir * len, o);
-        if (order == 1 && (!ground || (par.flags & kTrunk)))
+        if (order == 1 && trunk)
             ++t.sideBranches;
-        const float childScale = len * (ground ? 0.45f : 0.5f);
-        if (order + 1 <= 3)
-            sideBranches(t, ci, P, ck, order + 1, perM * (order + 1 == 3 ? 3.0f : 1.6f), wgt * 0.5f,
-                         order + 1 == 3 ? std::min(childScale, 260.0f) : childScale, budget);
+        if (order < 3)
+        {
+            // Its own forks (fewer, shorter), and the fine tendrils along it.
+            groundBranches(t, ci, P, ck ^ 0x51u, order + 1, (0.7f + 1.9f * std::min(len / 1500.0f, 1.0f)) * P.tendrils, wgt * 0.5f,
+                           len * 0.55f, budget);
+            groundBranches(t, ci, P, ck ^ 0x93u, 3, std::min(len / 260.0f, 5.0f) * P.tendrils, wgt * 0.26f, std::min(len * 0.4f, 240.0f),
+                           budget);
+        }
     }
 }
 
@@ -239,12 +253,13 @@ void buildGround(const Params &P, Tree &t, uint32_t key)
     t.exitLocal = X;
     const size_t budget = 9000;
     const float dens = std::clamp(P.tendrils, 0.0f, 4.0f);
-    // Branches: the stepped leader's; then twigs and tendrils.
-    // (a share of the vertex budget each, the descent below the cloud the largest: taken in order from the top with
-    // one budget, the cloud's part used it up and the visible channel was bare.)
-    sideBranches(t, a, P, key ^ 0x44u, 1, dens / 260.0f, 0.32f, 3000.0f, t.verts.size() + budget / 6);
-    sideBranches(t, b, P, key ^ 0x45u, 1, dens / 260.0f, 0.32f, 3000.0f, t.verts.size() + budget / 6);
-    sideBranches(t, c, P, key ^ 0x46u, 1, dens / 260.0f, 0.32f, 3000.0f, budget);
+    const float trunkLen = t.paths[c].length;
+    // The stepped leader's branches below the cloud; a couple inside it (seen only where the cloud is thin).
+    groundBranches(t, c, P, key ^ 0x44u, 1, std::clamp(trunkLen / 620.0f, 4.0f, 13.0f) * std::sqrt(dens), 0.34f, 3000.0f, budget);
+    groundBranches(t, b, P, key ^ 0x55u, 1, 1.5f * dens, 0.3f, 1800.0f, budget);
+    groundBranches(t, a, P, key ^ 0x66u, 1, 1.0f * dens, 0.3f, 1500.0f, budget);
+    // The fine tendrils along the trunk itself.
+    groundBranches(t, c, P, key ^ 0x77u, 3, std::min(trunkLen / 300.0f, 14.0f) * dens, 0.09f, 220.0f, budget);
     // Upward streamers from the ground near the strike (the ones the leader did not meet).
     const int nUp = 2 + (int)(r.u() * 4.0f);
     for (int k = 0; k < nUp; ++k)
@@ -264,39 +279,138 @@ void buildGround(const Params &P, Tree &t, uint32_t key)
     }
 }
 
-// ── In the cloud (kind 0) or just under its base (kind 3, spider lightning): 3-6 arms spreading out nearly level
-// for 6-30 km, branching into a web of twigs and drooping tendrils. The paths wander sideways, hardly up and down
-// (across()'s vz): thrown freely, a 30 km arm's midpoint went kilometres up or down, through the ground
-// (issue_20261121_163317 shot 1). ──
+// ── A crawling, forking sheet (spider lightning under the base; a flash's branches inside the cloud): an arm
+// runs near-level, sheds shorter side branches, and forks at its end into two (sometimes three) arms that do
+// the same, each shorter: a river delta seen from below. ──
+void grow(Tree &t, uint32_t key, glm::vec3 a, glm::vec2 dirH, float len, int order, float w, float arc0, int depth,
+          int parent, uint32_t parentVert, const Params &P, bool lineage, float droop, size_t budget)
+{
+    if (t.verts.size() > budget || len < 120.0f)
+        return;
+    Rng r(mix2(key, 0xD1u));
+    const float dz = std::clamp(0.05f * len, 0.0f, 260.0f) * r.s1() - droop * len;
+    const glm::vec3 e = a + glm::vec3(dirH * len, dz);
+    PathOpt o;
+    o.minSeg = order == 0 ? 14.0f : (order == 1 ? 16.0f : 20.0f);
+    o.maxLevels = 9;
+    o.vz = 0.22f;
+    o.order = (uint8_t)std::min(order, 3);
+    o.flags = kLevel;
+    o.parent = parent;
+    o.parentVert = parentVert;
+    o.arc0 = arc0;
+    o.w0 = w;
+    o.w1 = w * 0.8f;
+    const uint32_t pi = addPath(t, key, a, e, o);
+    if (lineage)
+        t.arms.push_back(pi);
+    const Path self = t.paths[pi];
+    const uint32_t N = self.count - 1;
+    const float dens = std::clamp(P.tendrils, 0.0f, 4.0f);
+    if (order == 1)
+        ++t.sideBranches;
+    // Side branches: off to one side, shorter, an order finer; the finest droop a little.
+    if (order < 3)
+    {
+        const uint32_t sc = candStride(self, std::max(self.length / 24.0f, 40.0f));
+        const uint32_t nCand = std::max<uint32_t>(1u, N / sc - 1u);
+        const float expect = std::clamp(len / 1100.0f, 0.8f, 5.0f) * dens;
+        for (uint32_t i = sc; i < N; i += sc)
+        {
+            Rng q(mix2(key, 0xE0000u + i));
+            if (q.u() >= expect / (float)nCand)
+                continue;
+            const Vert vp = t.verts[self.first + i];
+            const glm::vec3 T = trend(t, self, i, 200.0f);
+            glm::vec2 th(T.x, T.y);
+            const float tl = glm::length(th);
+            th = tl > 1e-3f ? th / tl : dirH;
+            const float ang = glm::radians(28.0f + 46.0f * q.u()) * (q.u() < 0.5f ? -1.0f : 1.0f);
+            const glm::vec2 d2(th.x * std::cos(ang) - th.y * std::sin(ang), th.x * std::sin(ang) + th.y * std::cos(ang));
+            const float sl = len * (0.14f + 0.3f * q.u()) * (order >= 2 ? 0.8f : 1.0f);
+            grow(t, mix2(key, 0xE8000u + i), vp.p, d2, sl, order + 1, vp.w * 0.55f, vp.arc, depth + 2, (int)pi, i, P, false,
+                 order + 1 >= 3 ? 0.12f : 0.0f, budget);
+        }
+    }
+    // The fork at its end.
+    if (len * 0.62f > 420.0f && depth < 5)
+    {
+        const float u = r.u();
+        const int nC = u < 0.1f ? 1 : (u < 0.86f ? 2 : 3);
+        const float half = glm::radians(13.0f + 22.0f * r.u());
+        const Vert ve = t.verts[self.first + N];
+        const glm::vec3 T = trend(t, self, N, 250.0f);
+        glm::vec2 th(T.x, T.y);
+        const float tl = glm::length(th);
+        th = tl > 1e-3f ? th / tl : dirH;
+        for (int k = 0; k < nC; ++k)
+        {
+            Rng q(mix2(key, 0xF000u + (uint32_t)k));
+            const float ang = (nC == 1 ? 0.5f * q.s1() : ((float)k - 0.5f * (float)(nC - 1)) * 2.0f / (float)(nC - 1) + 0.25f * q.s1()) * half;
+            const glm::vec2 d2(th.x * std::cos(ang) - th.y * std::sin(ang), th.x * std::sin(ang) + th.y * std::cos(ang));
+            const bool lead = k == 0;
+            const float cl = len * (lead ? 0.66f + 0.24f * q.u() : 0.48f + 0.3f * q.u());
+            const int co = order + ((lead && depth < 2) ? 0 : 1);
+            grow(t, mix2(key, 0xF800u + (uint32_t)k), ve.p, d2, cl, co, ve.w * (lead ? 0.92f : 0.7f), ve.arc, depth + 1, (int)pi, N, P,
+                 lineage && lead, 0.0f, budget);
+        }
+    }
+}
+
 void buildSheet(const Params &P, Tree &t, uint32_t key)
 {
     Rng r(mix2(key, 0x5Bu));
     const size_t budget = 9000;
-    const float dens = std::clamp(P.tendrils, 0.0f, 4.0f);
-    const int nA = 3 + (int)(r.u() * 4.0f);
     const float reach = 6000.0f + 24000.0f * r.u() * (0.5f + 0.5f * P.strength);
     const float a0 = 6.2831853f * r.u();
-    for (int k = 0; k < nA; ++k)
+    if (P.kind == 3)
     {
-        Rng q(mix2(key, 0x3300u + (uint32_t)k));
-        const float a = a0 + 6.2831853f * ((float)k + 0.35f * q.s1()) / (float)nA;
-        const float ln = reach * (0.45f + 0.55f * q.u());
-        const glm::vec3 e(std::cos(a) * ln, std::sin(a) * ln, 350.0f * q.s1() + (P.kind == 3 ? 150.0f * q.u() : 0.0f));
+        // Spider lightning just under the base: 3-6 arms spreading out from the origin.
+        const int nA = 3 + (int)(r.u() * 4.0f);
+        for (int k = 0; k < nA; ++k)
+        {
+            Rng q(mix2(key, 0x3300u + (uint32_t)k));
+            const float a = a0 + 6.2831853f * ((float)k + 0.35f * q.s1()) / (float)nA;
+            const float l0 = reach * (0.45f + 0.55f * q.u()) / 2.6f;   // the forks carry it on to ~reach
+            t.armStart.push_back((uint32_t)t.arms.size());
+            grow(t, mix2(key, 0x3400u + (uint32_t)k), glm::vec3(0.0f, 0.0f, 150.0f * q.u()), glm::vec2(std::cos(a), std::sin(a)), l0, 0,
+                 0.5f, 0.0f, 0, -1, 0, P, true, 0.0f, budget * (size_t)(k + 1) / (size_t)nA);
+        }
+        t.armStart.push_back((uint32_t)t.arms.size());
+    }
+    else
+    {
+        // In the cloud: a channel between two charge layers (up from a low origin, down from a high one, kept inside
+        // the cloud), and a sheet of arms spreading through each layer.
+        const float room = std::max(P.topZ - P.baseZ, 1500.0f);
+        const float span = std::clamp(0.32f * room, 1200.0f, 4500.0f) * (0.7f + 0.5f * r.u());
+        const float upRoom = P.topZ - 500.0f, dnRoom = P.baseZ + 300.0f;
+        float dz = (upRoom > -dnRoom) ? std::min(span, std::max(upRoom, 300.0f)) : -std::min(span, std::max(-dnRoom, 300.0f));
+        const glm::vec3 e(900.0f * r.s1(), 900.0f * r.s1(), dz);
         PathOpt o;
         o.order = 0;
-        o.minSeg = 14.0f;
+        o.minSeg = 10.0f;
         o.maxLevels = 9;
-        o.vz = 0.22f;
         o.flags = kLevel;
-        o.w0 = 0.5f;   // fainter than a return stroke
-        o.w1 = 0.25f;
-        const uint32_t pk = mix2(key, 0x3400u + (uint32_t)k);
-        const uint32_t pi = addPath(t, pk, glm::vec3(0.0f), e, o);
+        o.w0 = 0.55f;
+        o.w1 = 0.5f;
+        const uint32_t tr = addPath(t, key ^ 0x71u, glm::vec3(0.0f), e, o);
+        const float arcE = t.verts.back().arc;
+        const uint32_t trN = t.paths[tr].count - 1;
+        const int nLo = 2 + (int)(r.u() * 2.0f), nHi = 2 + (int)(r.u() * 2.0f);
+        for (int k = 0; k < nLo + nHi; ++k)
+        {
+            Rng q(mix2(key, 0x7300u + (uint32_t)k));
+            const bool hi = k >= nLo;
+            const int nL = hi ? nHi : nLo, kk = hi ? k - nLo : k;
+            const float a = a0 + (hi ? 1.3f : 0.0f) + 6.2831853f * ((float)kk + 0.35f * q.s1()) / (float)nL;
+            const float l0 = reach * 0.7f * (0.45f + 0.55f * q.u()) / 2.6f;
+            t.armStart.push_back((uint32_t)t.arms.size());
+            grow(t, mix2(key, 0x7400u + (uint32_t)k), hi ? e : glm::vec3(0.0f), glm::vec2(std::cos(a), std::sin(a)), l0, 0, 0.5f,
+                 hi ? arcE : 0.0f, 0, hi ? (int)tr : -1, hi ? trN : 0u, P, true, 0.0f, budget * (size_t)(k + 1) / (size_t)(nLo + nHi));
+        }
         t.armStart.push_back((uint32_t)t.arms.size());
-        t.arms.push_back(pi);
-        sideBranches(t, pi, P, pk, 1, dens / 1500.0f, 0.4f, ln * 0.3f, budget * (size_t)(k + 1) / (size_t)nA);
     }
-    t.armStart.push_back((uint32_t)t.arms.size());
     t.mainArc = t.maxArc;
 }
 

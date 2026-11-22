@@ -1301,10 +1301,25 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   128k) are uploaded. The thunder reads `BoltTree::segs`, the channel in ~30-m pieces, the same from anywhere (it read
   the draw's pieces: their number followed the distance the flash was first seen from). `BoltTool`
   (tools/bolt_tool: `stats`, `dump`, sheet.py) runs the generator without the app.
-  Shapes: a ground stroke's in-cloud wander, exit and long slanted descent, branches every ~260 m x "Lightning tendrils"
-  (`lightning_tendrils`, slot 268), twigs and many dim tendrils, upward streamers at the strike point; a spider's or an
-  in-cloud flash's 3-6 near-level arms 6-30 km with a web of twigs and drooping tendrils; a sprite's 20-45 forking
-  tendrils and rising streamers.
+  **Shapes (2026-11-21, the same issue: "not a lot of tendrils or tree like structures").** A path's roughness follows
+  its pieces' scale (`roughAt`: the long sweeps 0.15 of a piece's length, the stepped leader's 30-400 m steps 0.24, the
+  last metres soft), so a channel turns at several scales. A ground stroke: the in-cloud wander, the exit and the long
+  slanted descent; the branches its stepped leader left are placed stratified along the descent (4-13 x sqrt("Lightning
+  tendrils", `lightning_tendrils`, slot 268): one in each equal part, jittered, so no bolt is bare), leave it DOWNWARD
+  (between the channel's trend and the vertical, turned 14-48 deg off that), run up to 3 km but end in the air (at most
+  0.82 of the height they start at; the terrain fit ends one on the ground only where relief meets it), fork again
+  (order 2) and carry fine tendrils (order 3), tapering to 30% and dimmer by order; a couple more inside the cloud;
+  upward streamers at the strike point. Spider lightning is a crawling, forking sheet: 3-6 arms that shed shorter side
+  branches and FORK at their ends into two (sometimes three) arms 0.5-0.9 as long, down to ~400 m (a river delta seen
+  from below); an in-cloud flash is a channel between two charge layers 1.2-4.5 km apart with such a sheet in each. A
+  sprite's 20-45 forking tendrils and rising streamers as before. Until then (the rules of 2026-10-05) branches were
+  drawn per metre of parent from the top with one vertex budget: bushy clumps near the cloud and a bare lower channel,
+  and a sheet was 3-6 unforked arms with a web round the origin. Measured (`BoltTool stats`, 300 seeds a kind; the
+  harness sheet of 4 seeds x 3 kinds at 6 and 25 km, harness_runs/c08): ground strokes carry 9.1 side branches on
+  average (min 4; the sheet's 7-11), sheets 20-27 (min 4); the longest run of a main channel within 2% of a straight
+  line is 0.4% of the channel (max 0.9%; 31-49 m of ~10 km on the sheet); vertices 6,700 a ground stroke, 8,600-8,900 a
+  sheet (budget 9,000); drawn pieces at the sheet's views, before -> after: ground strokes 10.4-12.0k -> 2.4-6.2k,
+  sheets 1.7-11.7k -> 2.0-6.9k; the report's spider 8,656 pieces from 1.1 km, 2,044 from 23 km, 352 from 298 km.
   Drawn in the main pass AFTER the sky TAA at full resolution, SCREEN-blended (src + dst(1 - src):
   exactly the sky tonemap 1 - exp(-x) of the summed light, so overlaps saturate instead of clipping): channels as
   antialiased capsules at their TRUE luminous width (3 m main, 1.2 / 0.6 / 0.35 m; sprites 120-380 m) — thinner than a
@@ -1332,8 +1347,8 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   counts, thunder queue), `lightning check` / `lightning rebuild` (the terrain fit measured again; the trees dropped and
   built again where the eye is), `lightning spawn kind=cg|ic|spider|sprite dist_km= az= [seed=] [base_m=] [top_m=] [ground_km=]`
   (heights above the eye's ground; injected flashes run the same channels, glow and thunder), scripts in
-  harness_runs/lightning (spawn2: a clear desert night; t5: orbit + aircraft at 5 N 90 W). Cost ~0.3 ms for the
-  lightning draw. It REPLACED (2026-09-29 .. 10-04) `lightningCS` / `spriteCS` in cloud_march.comp: a 14-vertex channel
+  harness_runs/lightning (spawn2: a clear desert night; t5: orbit + aircraft at 5 N 90 W). Cost: six bolts held at
+  their first stroke (6-10 km, 1600x900) 0.11 ms of the main pass for 21.7k pieces (0.12 ms for 50.4k before 2026-11-21). It REPLACED (2026-09-29 .. 10-04) `lightningCS` / `spriteCS` in cloud_march.comp: a 14-vertex channel
   with fixed branches and the glow, per pixel inside the half-res composite (smeared by the sky TAA, a 3-m minimum
   width = pudgy), and only dominant towers flashed (a map-typed storm without anvil towers had none: user snapshot 43).
 - **Weather evolution (2026-09-29, decision A):** the weather cube is re-baked as sim time moves
