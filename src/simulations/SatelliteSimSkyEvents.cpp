@@ -1231,15 +1231,25 @@ bool SatelliteSim::skyWatchCometStorm(const sky::Event &e, std::string &msg)
 // the Sun nor the Earth's shadow on the Moon), so those two Watches are disabled there with the reason.
 static uint32_t skyKindNeeds(int kind)
 {
-    if (kind == sky::kCme) return 2u; // kNeedAurora: the storm night is the aurora
+    if (kind == sky::kCme) return 2u; // kNeedAurora: a geomagnetic storm's Watch lands on the aurora, nothing else
     return (kind == sky::kSolarEclipse || kind == sky::kLunarEclipse) ? 4u : 0u; // SatelliteSim::kNeedEclipse (private: the members below pass it to tierNeedReason)
+}
+// One event's needs. The Sun's Fury (the scripted CME, a == 1) needs nothing of the graphics mode (2026-11-21,
+// issue_20261121_160405: "Planetarium mode disables suns fury"): the cascade it starts is simulated on every tier
+// (the same prebake, the same events), and its night is more than the aurora: the dead satellites tumbling, the first
+// collisions' flashes and debris, the dust (not on Potato) and the re-entries are points and Gaussians the light
+// tiers draw. Its Watch was the one thing a light tier switched off, and it read as the storm itself being off.
+static uint32_t skyEventNeeds(const sky::Event &e)
+{
+    if (e.kind == sky::kCme && e.a == 1) return 0u;
+    return skyKindNeeds(e.kind);
 }
 
 bool SatelliteSim::skyEventWatch(const sky::Event &e, std::string &msg)
 {
     FPROF_SCOPE("skyEventWatch");
     if (e.kind < 0 || e.kind >= sky::kKindCount) return false;
-    if (const char *why = tierNeedReason(skyKindNeeds(e.kind)))
+    if (const char *why = tierNeedReason(skyEventNeeds(e)))
     {
         msg = why;
         return false;
@@ -1624,7 +1634,7 @@ void SatelliteSim::buildSkyEventsWindow(const UIInput &inp, UIRenderer &ui)
                                 rs.keepD2 = true;
                             }
                             rs.btnMask = under ? 7 : 4;
-                            const char *why = tierNeedReason(skyKindNeeds(e.kind));
+                            const char *why = tierNeedReason(skyEventNeeds(e));
                             rs.watchOk = !over && !why;
                             rs.tip = why ? why : K.tip;
                             const int a = skyEventRow(inp, ui, rs);
@@ -1653,7 +1663,7 @@ void SatelliteSim::buildSkyEventsWindow(const UIInput &inp, UIRenderer &ui)
                             rs.d1 = skStr(tx(Txt::FmtLeftIn), inText(e.t1 - now) + 3);
                             rs.d2 = l2;
                             rs.btnMask = 7;
-                            const char *why = tierNeedReason(skyKindNeeds(e.kind));
+                            const char *why = tierNeedReason(skyEventNeeds(e));
                             rs.watchOk = !why;
                             rs.tip = why ? why : K.tip;
                             const int a = skyEventRow(inp, ui, rs);
@@ -1688,7 +1698,7 @@ void SatelliteSim::buildSkyEventsWindow(const UIInput &inp, UIRenderer &ui)
                                 rs.status = st;
                                 rs.d1 = l1;
                                 rs.d2 = l2;
-                                const char *why = tierNeedReason(skyKindNeeds(k));
+                                const char *why = tierNeedReason(e ? skyEventNeeds(*e) : skyKindNeeds(k));
                                 rs.watchOk = e != nullptr && !why;
                                 rs.tip = why ? why : K.tip;
                                 if (skyEventRow(inp, ui, rs) & 4) skPendingKind = k;
@@ -1712,7 +1722,7 @@ void SatelliteSim::buildSkyEventsWindow(const UIInput &inp, UIRenderer &ui)
                             rs.status = e ? (now >= e->t0 ? tx(Txt::TxtNowShort) : inText(e->t0 - now)) : "";
                             rs.d2 = e ? skStr("%s", fmtUtcReadable(e->t).c_str()) : "";
                             rs.btnMask = 4;
-                            const char *why = e ? tierNeedReason(skyKindNeeds(e->kind)) : nullptr;
+                            const char *why = e ? tierNeedReason(skyEventNeeds(*e)) : nullptr;
                             rs.watchOk = e != nullptr && !why;
                             rs.tip = why ? why : e ? kSkyKinds[e->kind].tip : "";
                             if (skyEventRow(inp, ui, rs) & 4) skPendingRow = i;

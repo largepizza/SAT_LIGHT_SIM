@@ -303,7 +303,8 @@ endforeach()
 
 # Second compile of sat_sky.frag with -DSKY_LITE — a Planetarium-tier variant that #ifdef's out
 # the heaviest subsystems (Milky Way, 64-bin sky-glow loop, beam ground-spot, cirrus/high cloud
-# layers, and every v1.2 ground feature: terrain march, procedural city, sea reflection march, meshes)
+# layers, and every v1.2 ground feature: terrain march, procedural city, sea reflection march; it composites the
+# satellite meshes since 2026-11-21)
 # for GPUs where the full shader collapses fragment-shader occupancy. Size-checked (SKY_LITE_MAX_BYTES). Selected at runtime
 # by a debugDisableMask bit, exactly like sat_sky_minimal.frag. See SKY_OPTIMIZATION_PLAN.md.
 set(SKY_LITE_SPV "${SHADER_OUT_DIR}/sat_sky_lite.frag.spv")

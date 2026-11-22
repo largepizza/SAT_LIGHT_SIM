@@ -5162,9 +5162,10 @@ void SatelliteSim::writeMeshSceneDescriptors(VulkanContext &ctx)
 // SatelliteSim.h for how probes are shared out and scheduled.
 bool SatelliteSim::envActive() const
 {
-    // Not under Potato or Planetarium (the weak-hardware tiers) or with the mesh pass knocked out.
+    // Not under Potato or Planetarium (the weak-hardware tiers: a probe is the full sky shader's render) or with the
+    // mesh pass knocked out. Planetarium draws the meshes themselves, lit by the analytic fallback (kNoEnvBits).
     return envReflections && meshRendererInit && envProbes.ready() &&
-           (debugDisableMask & kNoMeshBits) == 0u;
+           (debugDisableMask & kNoEnvBits) == 0u;
 }
 
 SatDrawPC SatelliteSim::envSkyPC(const glm::dvec3 &posEcef, const glm::dmat3 &camToEcef, float fovYRad,
@@ -5457,7 +5458,7 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
         float kept = 1.0f;          // the share of the unresolved point's displayed flux its sprite kept
     };
     std::vector<Job> jobs;
-    const bool skip = (debugDisableMask & kNoMeshBits) != 0u; // knockout / Potato / Planetarium sky
+    const bool skip = (debugDisableMask & kNoMeshBits) != 0u; // knockout / Potato sky (Planetarium draws them)
     if (!skip)
     {
         if (followActive)

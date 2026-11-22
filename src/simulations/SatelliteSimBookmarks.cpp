@@ -276,7 +276,9 @@ uint32_t SatelliteSim::defaultBookmarkNeeds(const std::string &id)
 {
     if (id == "default_beam_snow_antarctica" || id == "default_rainbow_venezuela" || id == "default_typhoon_luzon")
         return kNeedClouds;
-    if (id == "default_aurora_orbit" || id == "default_suns_fury")
+    // (Not "default_suns_fury", 2026-11-21: the cascade is simulated and drawn on every tier; SatelliteSimSkyEvents.cpp
+    // skyEventNeeds.)
+    if (id == "default_aurora_orbit")
         return kNeedAurora;
     if (id == "default_eclipse_solar_2037" || id == "default_blood_moon_anchorage")
         return kNeedEclipse;

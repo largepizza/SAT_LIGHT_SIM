@@ -3978,17 +3978,28 @@ void main() {
 
     // March for rays that could plausibly intersect terrain (up to ~44° above horizon).
     // Beyond that angle no terrain on Earth is geometrically reachable from any altitude.
-    float tHit      = -1.0;
+    // MARCH_OUT (2026-11-21): the terrain march is not compiled into SKY_LITE (below), so nothing there ever assigns
+    // what it writes. Declared const in that variant, glslang folds the tests on them at compile time (the build runs
+    // glslc without -O, which keeps every `if (tHit > 0.0)` block otherwise): 1.5 KB of SPIR-V that could never run,
+    // which pays for the mesh composite there (+0.77 KB: 230,364 -> 229,584 B in all; CMakeLists SKY_LITE_MAX_BYTES
+    // 230,400). The full, env and TAA variants compile to the same bytes as before. A new assignment to one of
+    // them must sit inside `#ifndef SKY_LITE` (the SKY_LITE compile fails on it otherwise).
+#ifdef SKY_LITE
+#define MARCH_OUT const
+#else
+#define MARCH_OUT
+#endif
+    MARCH_OUT float tHit      = -1.0;
     float tSeaLvl   = (tBase.x > 0.0) ? tBase.x : -1.0;
     // Terrain v2 P2: a LAKE hit (the march met a water body's flat surface above sea level, see
     // terrain.glsl waterAdjustHeight) takes the ocean path at its own level: tSeaLvl becomes the
     // hit's distance and the wave code measures heights from waterLevelM instead of sea level.
-    float waterLevelM = 0.0;
+    MARCH_OUT float waterLevelM = 0.0;
     // Is the surface pixel water? 1 / 0 once the march decided (its shoreline has the coves the
     // raw map lacks, tdShoreOffset), -1 = not known here (no march): the water map's own test.
-    int   waterPx = -1;
-    vec2  hitUV     = vec2(0.0);
-    vec3  terrainNorm = vec3(0.0, 0.0, 1.0); // overwritten on terrain hit
+    MARCH_OUT int   waterPx = -1;
+    MARCH_OUT vec2  hitUV     = vec2(0.0);
+    MARCH_OUT vec3  terrainNorm = vec3(0.0, 0.0, 1.0); // overwritten on terrain hit
 
     // Procedural detail state at the hit, kept for the material/AO/shadow terms and debug views.
     vec3     terrainDebugColor = vec3(0.0);
@@ -3999,16 +4010,16 @@ void main() {
     // the beauty frame there. Caught 2026-09-25 by diffing the capture against t_beauty: 159 867 of
     // 160 200 sampled pixels byte-identical, the other 333 differing by <= 3/255 (PNG rounding).
     bool     terrainDebugActive = false;
-    int      terrainSteps  = 0;
+    MARCH_OUT int      terrainSteps  = 0;
     TdSample terrainDet;
     terrainDet.h = 0.0; terrainDet.grad = vec3(0.0); terrainDet.rough = 0.0; terrainDet.amp = 0.0;
     terrainDet.hEro = 0.0; terrainDet.hC3 = 0.0;
-    float    terrainH0     = 0.0;   // DEM height at the hit
-    vec3     tmRatio       = vec3(1.0); // close-up material albedo ratio (terrain v2 P3), 1 = none
-    float    tmAO          = 1.0;
-    float    tmFade        = 0.0;
-    vec3     terrainQ      = vec3(0.0); // hit, observer-relative (terrain_detail.glsl's q)
-    vec3     terrainUpE    = vec3(0.0, 0.0, 1.0);
+    MARCH_OUT float    terrainH0     = 0.0;   // DEM height at the hit
+    MARCH_OUT vec3     tmRatio       = vec3(1.0); // close-up material albedo ratio (terrain v2 P3), 1 = none
+    MARCH_OUT float    tmAO          = 1.0;
+    MARCH_OUT float    tmFade        = 0.0;
+    MARCH_OUT vec3     terrainQ      = vec3(0.0); // hit, observer-relative (terrain_detail.glsl's q)
+    MARCH_OUT vec3     terrainUpE    = vec3(0.0, 0.0, 1.0);
     float    pixAngle      = pc.fovYRad / max(cloud.skyLodScreenH, 1.0); // the output pixel while upscaling
 #if defined(SKY_ENV) && !defined(SKY_REFL)
     // This render's own pixel (skyLodScreenH is the MAIN view's): the city lights' close-up mean below.
@@ -4292,15 +4303,21 @@ void main() {
     // every term gated on tSurface — sun and moon discs, Milky Way, stars via depth — is hidden
     // behind it, exactly as behind terrain. Indexed through normalized screen UV so the renderScale
     // prepass (a smaller target) reads the same texel.
-#if defined(SKY_ENV) || defined(SKY_LITE)
-    // The mesh targets are the main view's (a probe sees no meshes); Planetarium draws none (kNoMeshBits).
+#ifdef SKY_ENV
     const bool meshHit = false; // the mesh targets are the main view's; a probe sees no meshes
     const float tMesh  = 0.0;
     const ivec2 meshPx = ivec2(0);
 #else
+#ifdef SKY_LITE
+    // Planetarium draws the meshes too (2026-11-21, issue_20261121_160405; no env probes or sharp reflections there,
+    // SatelliteSim::kNoEnvBits). SKY_LITE only ever draws straight into the swapchain at render scale 1 (the
+    // low-res prepass has no lite variant), where the mesh targets are this pass's own size: the pixel itself.
+    ivec2 meshPx  = ivec2(gl_FragCoord.xy);
+#else
     ivec2 meshTexSize = imageSize(meshDistImg);
     ivec2 meshPx  = min(ivec2(gl_FragCoord.xy / vec2(cloud.skyScreenW, cloud.skyScreenH) * vec2(meshTexSize)),
                         meshTexSize - 1);
+#endif
     float tMesh   = imageLoad(meshDistImg, meshPx).r;
     bool  meshHit = tMesh > 0.0 && (tSurface <= 0.0 || tMesh < tSurface);
     if (meshHit)

@@ -374,7 +374,7 @@ Two stand-in fragment shaders, both bound through **`skyBgPipeLayout` / `skyDesc
 | Tier | Bit | Pipeline | Shader | Notes |
 |---|---|---|---|---|
 | **Potato** | `262144` | `skyBgMinimalPipeline` | `shaders/sat_sky_minimal.frag` (own file, ~370 lines; the Sept-2026 shader + only what today's bindings and depth require: the weather cube at binding 7, the unified depth, and its own DEM-only eye height, `minimalEyeHeight`) | closed-form analytic atmosphere (Kasten-Young airmass, one 32-tap arithmetic loop — no raymarch), day/night + city-detail textures, one flat drifting cloud shell w/ terminator lighting, cheap ocean (1 noise-tap slope + Fresnel + Blinn glint), textured moon, verbatim `lensFlare()`. **~60 FPS.** No Milky Way / volumetric clouds / aurora / airglow / real ocean waves — those don't fit the GCN1 occupancy ceiling (~31–32 KB SPV; the Milky Way's `atan2`/`asin` + panorama fetch is the specific thing that broke it). |
-| **SKY_LITE** | `524288` | `skyBgLitePipeline` | `sat_sky.frag` **recompiled with `-DSKY_LITE`** → `sat_sky_lite.frag.spv` (2nd `add_custom_command` in CMakeLists) | `#ifdef SKY_LITE` cuts inside the real shader: (2026-10-06) every v1.2 ground feature — the terrain march (`dbgSkipTerrain()` is constant true), close-up materials and terrain debug views, the sea's sky-reflection march (`dbgSkipOceanRefl()` constant true) and shore, the beam ground spots, the whole procedural city (layout, glitter, roads, farms, beaches, roof PV, solar parks: the night map + the tiled city detail textures carry the cities, as in v1.1) and the mesh composite (the CPU draws no meshes or env probes there, `kNoMeshBits`); and since 2026-09: Milky Way block, 64-bin satellite sky-glow loop, cloud layer loop `3→0` becomes `1→0`, the 3×3 `cloudTargetA/B` rgb blur → single tap, aurora surface glow (`auroraGlowAt` on terrain+ocean), zenith-ambient `N_ZT` 4→2, and the per-atmosphere-step **green/sodium airglow** (two `warpPerlin3` masks/step — the dominant cost) — city-glow upwelling KEPT but only on the first 3 march steps (since 2026-10-21 the green band comes back in CLOSED FORM, after the loop: the column along the ray from the tangent height / zenith angle at the shell, no noise — the night limb's horizon line from orbit, +3 KB of SPIR-V; a ray down onto the Earth keeps its crossing only near the limb, cos Z at the shell 0.18-0.32: the whole night disc read faintly green from orbit). **2 FPS → ~55 FPS** on the target. |
+| **SKY_LITE** | `524288` | `skyBgLitePipeline` | `sat_sky.frag` **recompiled with `-DSKY_LITE`** → `sat_sky_lite.frag.spv` (2nd `add_custom_command` in CMakeLists) | `#ifdef SKY_LITE` cuts inside the real shader: (2026-10-06) every v1.2 ground feature — the terrain march (`dbgSkipTerrain()` is constant true), close-up materials and terrain debug views, the sea's sky-reflection march (`dbgSkipOceanRefl()` constant true) and shore, the beam ground spots, the whole procedural city (layout, glitter, roads, farms, beaches, roof PV, solar parks: the night map + the tiled city detail textures carry the cities, as in v1.1); the satellite meshes ARE composited since 2026-11-21 (issue_20261121_160405; satellites.md "Meshes on Planetarium": no env probes, sharp reflections or pad structures there, `kNoEnvBits`); and since 2026-09: Milky Way block, 64-bin satellite sky-glow loop, cloud layer loop `3→0` becomes `1→0`, the 3×3 `cloudTargetA/B` rgb blur → single tap, aurora surface glow (`auroraGlowAt` on terrain+ocean), zenith-ambient `N_ZT` 4→2, and the per-atmosphere-step **green/sodium airglow** (two `warpPerlin3` masks/step — the dominant cost) — city-glow upwelling KEPT but only on the first 3 march steps (since 2026-10-21 the green band comes back in CLOSED FORM, after the loop: the column along the ray from the tangent height / zenith angle at the shell, no noise — the night limb's horizon line from orbit, +3 KB of SPIR-V; a ray down onto the Earth keeps its crossing only near the limb, cos Z at the shell 0.18-0.32: the whole night disc read faintly green from orbit). **2 FPS → ~55 FPS** on the target. |
 
 **Keep these tiers protected (2026-10-06).** `sat_sky_lite.frag.spv` had grown 142 KB (v1.1.0) → 567 KB and
 the minimal shader had taken on terrain v2's water code, unnoticed, because each new feature was gated by a
@@ -385,6 +385,13 @@ The build enforces it: `cmake/CheckSpvSize.cmake` runs after both compiles and f
 (225 KB) / `SKY_MINIMAL_MAX_BYTES` (46 KB) in CMakeLists.txt — ~10% over the trimmed 199 / 41 KB (glslc versions
 differ by a few percent). As of 2026-10-21 they are ~212 / ~41 KB (SKY_LITE grew with the UBO's pad/coast blocks and
 the closed-form airglow limb): ~13 KB of SKY_LITE headroom left. Raise a budget only with a measurement on the target hardware.
+**2026-11-21: SKY_LITE is 229,584 B of 230,400** (it stood at 230,364, 36 B under, before the mesh composite went in). The
+composite costs +768 B (one `imageLoad` of the mesh distance a pixel, the colour's on a hit, the tests on `meshHit`); it is
+paid for by `MARCH_OUT` (sat_sky.frag, at `tHit`'s declaration): the twelve variables only the terrain march writes are
+`const` in SKY_LITE, which has no march, so glslang folds every branch on them when it parses (-1,548 B of code that
+could never run; glslc runs without `-O`, and a runtime `if (tHit > 0.0)` is kept whole). The full, env, refl and TAA
+variants compile to the same bytes as before. The same trick is there for the next feature that needs room: a value
+that is fixed in SKY_LITE should be a `const` there, not a variable that happens never to change.
 `tools/harness/scripts/low_tiers.satcmd` is the check: Potato / Planetarium / Low at a day, night-city, orbit and
 storm view, perf + captures, and run once with `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`. First run
 (RTX 3070 Ti, 1600x900, GPU frame): Potato 0.8-1.0 ms, Planetarium 1.4-3.0 ms, Low 4.8-6.7 ms (coverage forced
@@ -420,11 +427,24 @@ those presets force `renderScale = 1.0`, so the prepass never runs for them.
 - **Weather** (`weatherUnavailable()` = `cloudsV2Off()`): the HUD button is dimmed, the window shows only a notice and
   runs nothing (no radar, no storm search), the Settings Weather tab's label is dimmed with a notice on top.
 - **Bookmarks** (`defaultBookmarkNeeds(id)`, by the shipped ids so seeded copies are gated too): Beam-lit Snow,
-  Rainbow, Typhoon need clouds; Solar Storm and The Sun's Fury need the aurora; on Potato the Great Australian
+  Rainbow, Typhoon need clouds; Solar Storm needs the aurora; on Potato the Great Australian
   Eclipse and the Blood Moon (sat_sky_minimal.frag draws neither the Moon over the Sun nor the Earth's shadow on it).
   Harness `bookmark go` fails with the same reason.
-- **Sky events**: solar and lunar eclipse Watches on Potato (`skyKindNeeds`; `skyEventWatch` refuses too).
-- **Missions**: the Sun's Fury card's Watch (the storm night is the aurora).
+- **Sky events**: solar and lunar eclipse Watches on Potato (`skyKindNeeds`; `skyEventWatch` refuses too); a
+  geomagnetic storm's Watch (`sky::kCme` with `a == 0`, the cards and the space-weather tab's storm rows) and "Watch the
+  aurora" need the aurora.
+- **The Sun's Fury is offered on every tier (2026-11-21, issue_20261121_160405: "Planetarium mode disables suns
+  fury"; this reverses the 2026-10-29 line "the Sun's Fury card's Watch: the storm night is the aurora").** Its Watch
+  (the Sky events card, the storm row, the default bookmark, harness `skyevents watch cme` / `bookmark go`) needs
+  nothing of the tier (`skyEventNeeds`: `kCme` with `a == 1`; `defaultBookmarkNeeds`). The gate was the only thing a
+  light tier switched off about the storm, and it read as the storm itself being off: **the tiers gate drawing, never
+  the simulation** (kessler.md "Nor is it a graphics setting": the same prebake, fingerprints and counts on
+  Planetarium, Potato and Medium, no restart on a preset switch; the event windows have no tier branch and the Sun's
+  Fury's opens on Planetarium as the running clock crosses the arrival). What the
+  storm night shows there (Monument Valley, 3.5 h after the arrival: 12,848 satellites dead, the first 5 collisions,
+  164 fragments): the satellites and the dead ones' tumbling flashes, collision flashes, debris and re-entry
+  fireballs as points on both light tiers, the dust Gaussians on Planetarium; not the aurora (`harness_runs/
+  c05_after_planetarium`, `qa/waves/20261121/evidence/c05/fury_night_*`).
 - **Potato draws the point sources again**: its recordCompute branch now runs `kesslerFillDust` (the CPU fill of
   kFireBuf: rockets, re-entry fireballs, meteor heads, comet heads, Moon-base glints, the supernova). It skipped it
   with cloud_march.comp, so those Watches showed an empty sky and Betelgeuse went dark at its supernova. The Gaussians

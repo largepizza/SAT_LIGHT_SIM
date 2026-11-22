@@ -699,6 +699,38 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
   - **Positions** are CPU double (`evalSatPhotometry` for litFactor/earthshine, `evalGroupPoses`),
     camera-relative. The camera rotation is ENU(obsDir) × `SkyCamera`, the same basis the sky uses.
     Not drawn under Potato (`sat_sky_minimal.frag` has no composite) or knockout bit 2097152.
+  - **Meshes on Planetarium (2026-11-21, issue_20261121_160405: "3D models are a necessary include to this mode").**
+    `kNoMeshBits` is the `sat_meshes` knockout and Potato (262144); Planetarium's SKY_LITE (524288) draws the scene
+    pass like a full tier: the same candidates and fades, the sprite hand-off, shadow rays, local lights, bloom and
+    glare seeds, the fold into the scene depth, picking, follow mode, and the resolved-point factor of sat_flare.comp
+    (a model 1-3 px wide reads at its surface brightness; `GpuSatTypeHeader::meshPixelAngle` is no longer 0 there).
+    `recordMeshScene` already recorded its pass on every tier (it clears the targets the frame reads), so the tier
+    gains no pass or barrier. In `sat_sky_lite` the composite is the full shader's: `meshHit` makes the mesh the
+    pixel's surface (the atmosphere march stops at it, discs and the ground hide behind it, `gl_FragDepth` carries
+    it), its radiance is added through the air in front, and a nearer mesh wins over the plume / dust composite;
+    the mesh texel is the fragment's own (`ivec2(gl_FragCoord.xy)`: SKY_LITE only ever draws at render scale 1).
+    What Planetarium leaves out:
+    - **environment probes and sharp reflections** (`kNoEnvBits` = `kNoMeshBits` | 524288, `envActive()`): each is a
+      render of the FULL sky shader from the satellite (SKY_ENV / SKY_REFL), which the tier exists not to run. A
+      model takes the Sun, the Moon, the local lights and the analytic Earth of `earth_env.glsl`: the lighting a
+      full tier shows with "Environment reflections" off, or in the frames before a probe is made. A mirror shows
+      no sky or Earth image, only its Sun glint;
+    - **the launch pads' structures** (`launchMeshJobs`): SKY_LITE draws neither the pad's ground pattern nor the
+      relief, so a tower at its pad's real height would hang over the flat day map (Jiuquan ~1 km up). Rockets,
+      like their points and plumes before, fly from the real height;
+    - **the Sun's veil over a backlit model** (sat_sky.frag `veilGate`, 2026-10-21) and the **lattice dither**
+      (`marker0`: no sky TAA on the tier, so a sub-pixel truss is a fixed coverage threshold).
+    SPIR-V: render-pipeline.md "Weak-Hardware Sky Tiers" (229,584 of 230,400 B: the composite is paid for by
+    `MARCH_OUT`). Harness: `state` -> `satellites.meshes_drawn`.
+    Cost (RTX 3070 Ti, 1600x900, uncapped, `qa/waves/20261121/evidence/c05/numbers.md`; `sat_meshes` knocked out
+    against not, interleaved in one app): with no model on screen
+    (shot 6's view from 1,024 km, 405k points) 4.32 against 4.40 ms of GPU frame over 6 pairs: nothing listed, nothing
+    drawn, no cost (the composite's one `imageLoad` a pixel: the sky bucket 0.60 -> 0.61 ms against the build before
+    it); following the ISS from 62 m (the station across the frame, 4 models drawn) 3.82 against 3.55 ms over 7 pairs,
+    +0.28 ms: the scene pass's bucket 0.08 -> 0.91 ms, the sky's 1.08 -> 0.95 (the pixels the station covers stop their
+    atmosphere march). For scale, Medium at that view: the scene pass's bucket 0.56 -> 1.37 ms and the sky's 2.98 ->
+    4.67 ms with the models drawn (its probes and sharp reflections are sky renders). Not measured on an integrated
+    GPU, where a station filling the frame (sat_mesh.frag's shadow rays on every covered pixel) is the case to check.
   - **Follow mode:** "Follow" beside "Trace pass". `followObsEcef` (double) =
     satellite + `followOffset` in its along/cross/radial frame. `obsDir`/`obsHeightOffset` are
     derived from it (the sky shaders read `max(ground, obsHeightOffset)` as altitude, so it is set

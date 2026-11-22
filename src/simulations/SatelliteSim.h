@@ -5295,9 +5295,12 @@ private:
     uint32_t debugDisableMask = 0;
     static constexpr uint32_t kDebugBitSatOcclusion = 1048576u;
     static constexpr uint32_t kDebugBitMeshes = 2097152u; // Phase 4c: no satellite meshes in the scene
-    // No meshes, env probes or sharp reflections: the knockout, Potato (262144) and Planetarium / SKY_LITE (524288,
-    // whose sky shader has the mesh composite compiled out).
-    static constexpr uint32_t kNoMeshBits = kDebugBitMeshes | 262144u | 524288u;
+    // No meshes: the knockout and Potato (262144: sat_sky_minimal.frag has no mesh composite). Planetarium / SKY_LITE
+    // (524288) draws them since 2026-11-21 (issue_20261121_160405: its sky shader composites the mesh targets), but
+    // without env probes or sharp reflections (kNoEnvBits: each is a render of the FULL sky shader from the
+    // satellite, which that tier exists to avoid; the models take the analytic Earth light of earth_env.glsl).
+    static constexpr uint32_t kNoMeshBits = kDebugBitMeshes | 262144u;
+    static constexpr uint32_t kNoEnvBits = kNoMeshBits | 524288u;
     // Occlusion between satellite parts is OFF by default (Photometry tab "Satellite part
     // occlusion", persisted as photometry.sat_part_occlusion): it costs ~10x the orbit dispatch at
     // 10M satellites for a subtle effect, so no preset or first run turns it on. The knockout bit
@@ -6803,7 +6806,7 @@ private:
     bool weatherUnavailable() const { return cloudsV2Off(); }
     // The Potato sky (knockout 262144): no meshes, no cloud composite, no dust / plume list.
     bool potatoSkyOn() const { return (debugDisableMask & 262144u) != 0u; }
-    // Planetarium's SKY_LITE or Potato: no meshes (kNoMeshBits), no procedural ground.
+    // Planetarium's SKY_LITE or Potato: no env probes (kNoEnvBits), no procedural ground.
     bool lightSkyOn() const { return (debugDisableMask & (262144u | 524288u)) != 0u; }
     // What a Watch / Go needs to land on something visible. tierNeedReason = nullptr when this graphics mode draws
     // it, else a short line for the disabled button's tooltip (SatelliteSimBookmarks.cpp, SatelliteSimSkyEvents.cpp,
