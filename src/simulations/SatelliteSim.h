@@ -6900,6 +6900,15 @@ private:
     // Planetarium or Potato (2026-11-21, issue_20261121_160405 shot 8). The fires themselves (points, flames, embers,
     // their light) are: none of them reads the smoke.
     bool wildfireSmokeDrawn() const { return !lightSkyOn(); }
+    // Launch plumes (the exhaust parcels and their Gaussians, the plume bricks, the launches' noctilucent clouds) are
+    // built and drawn: not on Planetarium or Potato (2026-11-22, issue_20261121_160405: near a twilight launch the
+    // plume pass was 9.9 ms of Planetarium's 13.5-ms frame). The rocket's point, its 3D model, its flame's Gaussians and
+    // its engine light are drawn there: none of them reads the plume.
+    bool launchPlumesDrawn() const { return !lightSkyOn(); }
+    // No cloud of any kind is drawn (2026-11-22): Planetarium's SKY_LITE with the volumetric clouds knocked out. It
+    // compiles no flat cloud layer (sat_sky.frag evalCloudLayer), so no cloud setting draws anything there. Not Potato
+    // (sat_sky_minimal.frag keeps its flat deck) and not the full shader with the march knocked out (its flat stand-in).
+    bool cloudsNotDrawn() const { return cloudsV2Off() && (debugDisableMask & 524288u) != 0u && !potatoSkyOn(); }
     // What a Watch / Go needs to land on something visible. tierNeedReason = nullptr when this graphics mode draws
     // it, else a short line for the disabled button's tooltip (SatelliteSimBookmarks.cpp, SatelliteSimSkyEvents.cpp,
     // SatelliteSimMissions.cpp).
@@ -9932,6 +9941,7 @@ private:
     // pipelines from them (the same destroy + create as ensureFullSkyPipelines); stats = the TAA pipeline's (else the plain
     // one's) driver statistics.
     std::string skyFragSpvOverride, skyTaaFragSpvOverride;
+    std::string skyLiteFragSpvOverride;   // harness `shaders reload sky_lite=<spv>`: Planetarium's SKY_LITE variant (2026-11-22)
     std::string reloadSkyShaders(VulkanContext &ctx, const std::string &skySpv, const std::string &skyTaaSpv, std::string &stats);
     // The march's workgroup size (specialization constants): it bounds the driver's registers per
     // thread (65536 / the group's threads), i.e. the march's occupancy. Harness `shaders reload wg=`.

@@ -1068,6 +1068,9 @@ std::string SatelliteSim::reloadSkyShaders(VulkanContext &ctx, const std::string
         return std::string(e.what());
     }
     stats = pipelineStatsLine(ctx, skyTaaPipeline ? skyTaaPipeline : skyBgPipeline);
+    // Planetarium's SKY_LITE pipeline too (2026-11-22: `sky_lite=` variants are timed against each other).
+    if (const std::string ls = pipelineStatsLine(ctx, skyBgLitePipeline); !ls.empty())
+        stats += "; lite: " + ls;
     return "";
 }
 

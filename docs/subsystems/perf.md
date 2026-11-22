@@ -773,4 +773,23 @@ Tried and dropped: the fill / mass loops out of the light march's cv2Field copy 
   (39.3). Settings differ from 11-10 (the baked look), and single runs carry the two speed regimes (~20%): read a
   row-level change under ~2 ms as noise.
 
+- **Planetarium's CPU frame is the launch plumes' CPU, where plumes are built (2026-11-22, issue_20261121_160405; the
+  "+0.7 ms of 2026-11-21").** `harness_runs/perf_1122` put Planetarium's ground cell (Shanghai, 0 m, paused; the High and
+  Medium cells run first in the same app) at wall 2.93 -> 3.77 ms, CPU 1.39 -> 2.28, `launches` 1.19 -> 1.95 between
+  55be2fb0 and fe9604ad, one run each. The same script again with 3 reps and the mean frame's sections (`hitches
+  threshold 1; hitches clear; wait 400; hitches bysum=1 list=0`): 55be2fb0 wall 4.66 / CPU 2.62, 37293e99 wall 3.78 /
+  CPU 2.32: the order reversed, so it is not a build difference. In both the CPU frame is `launchFillVisuals`, and in
+  it `launch.plumeAt` + `launch.plumeEmit` (the walk of every built launch's parcels and the Gaussians made from them:
+  0.84 + 0.55 and 1.30 + 0.86 ms a frame; `launch state` -> `cpu_split_ms.plumes` 1.55 and 2.55) for IDENTICAL work
+  (10 parcels drawn, 35 Gaussians, `plume_room` 384 in both; SatelliteSimLaunches.cpp's plume code did not change
+  between the two). What moved it is the machine: every unrelated main-thread section of the slower run was 1.2-1.6x
+  slower too (other agents' compiles), and at the launch cell of the same two runs the plume CPU differs by 9%
+  (1.76 / 1.93). The cost itself follows what was BUILT: with the app started on Planetarium the same cell has 5
+  parcels and `plumes` 0.43 ms (wall 2.96). Since 2026-11-22 Planetarium builds and walks no plume
+  (`launchPlumesDrawn()`, launches.md): the ground cell after the High and Medium cells is wall 3.05 ms, CPU 0.46,
+  `launchFillVisuals` 0.15 ms a frame, and near the twilight launch `cpu_split_ms.visuals` 2.64 -> 0.36. **Open, full
+  tiers:** 1.5-2.5 ms of main-thread CPU for ten far parcels is the per-launch walk (`B.parcels[pi].at()` over every
+  parcel of every built launch in the window, then the young exhaust's knots), paid on Medium and High wherever a
+  plume is within range; not looked at here.
+
 ---

@@ -14137,7 +14137,7 @@ void SatelliteSim::createSkyBgPipeline(VulkanContext &ctx)
         vkDestroyShaderModule(ctx.device, minFrag, nullptr);
 
         // Planetarium-tier variant — sat_sky.frag built with -DSKY_LITE (bit 524288).
-        VkShaderModule liteFrag = ctx.loadShader("shaders/sat_sky_lite.frag.spv");
+        VkShaderModule liteFrag = ctx.loadShader(skyLiteFragSpvOverride.empty() ? "shaders/sat_sky_lite.frag.spv" : skyLiteFragSpvOverride.c_str());
         VkPipelineShaderStageCreateInfo liteStages[2] = {stages[0], stages[1]};
         liteStages[1].module = liteFrag;
         VkGraphicsPipelineCreateInfo liteCi = ci;

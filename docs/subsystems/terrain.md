@@ -536,6 +536,18 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   from 1.5 km (RTX 3070 Ti). Farmland and beaches still follow the terrain detail. **Planetarium no longer does
   (2026-10-06):** the pattern is compiled out of SKY_LITE with the rest of the v1.2 ground features (the tier is
   for GPUs where the compiled size is the cost); its cities are the night map + the tiled detail textures again.
+  **Planetarium's night cities are the night map alone under the city light sprites (2026-11-22, issue_20261121_160405,
+  the user: "Planetarium already has city light sprites, we do not need the detail texture as having both on looks
+  bad"):** the tiled NIGHT detail texture (`cityNightDetailTex`, binding 15) is not compiled into SKY_LITE (-388 B of
+  SPIR-V); the tiled DAY detail texture (`cityDayDetailTex`) stays, with the city mask it shares. The sprites do draw
+  there (the dispatch is skipped only on Potato): over LA from 2 km at midnight, `clouds.city_sprite_gain` 4 against
+  0 changes 2.3% of the frame's pixels (7.2% before, on the darker textured ground). What that view is now: the night
+  map's own texels, a smooth cream sheet over a dense city (LA from 2 km is inside two or three 5-km texels) with the
+  sprites as points on it, where the texture drew bright street blocks with dark gaps; from 420 km the frame is
+  byte-identical (the texture faded out by 300 km of range and the sprites by 100-150 km of eye altitude). Not
+  changed, measured for the decision: cutting the DAY texture too would free 7,804 B more and leave a city by day as
+  the day map's flat 5-km texels (LA from 2 km and 12 km: 59% / 75% of the frame's pixels change, mean 15 / 13
+  levels: the street pattern is all the detail that view has). Evidence: `qa/waves/20261122/evidence/c10/city_*`.
   **Day side (phase 2, 2026-09-29):** the same layout (`cityLayout()`, a `CityLayout` struct computed
   ONCE per pixel before the material block and reused by the night) drives `cityDayAlbedo()`: asphalt
   streets (12 m, arterials 24 m, exact box-filter coverage `cityBoxCover`), each base block split into

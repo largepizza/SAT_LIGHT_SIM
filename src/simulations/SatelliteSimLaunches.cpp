@@ -7640,8 +7640,10 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         // parcels are drawn until the new ones land (they were cleared: the plume blinked out for the build's frames).
         if (B.parcelsBuilt && !B.plumeRebuild && (B.plumeGrow != launchPlumeGrowth || B.plumeDisp != launchPlumeDispersal))
             B.plumeRebuild = true;
-        // Potato draws no plume (no cloud composite): no parcels either (2026-10-29).
-        if (launchPlumeGain <= 0.0f || potatoSkyOn() || tau < -120.0 || (tau < 0.0 && B.parcelsBuilt))
+        // Potato draws no plume (no cloud composite): no parcels either (2026-10-29). Nor does Planetarium (2026-11-22,
+        // launchPlumesDrawn): no parcels built, no Gaussians listed, so no plume bricks and nothing for the composite
+        // to march but the flames above.
+        if (launchPlumeGain <= 0.0f || !launchPlumesDrawn() || tau < -120.0 || (tau < 0.0 && B.parcelsBuilt))
             continue;
         struct PlumeTimer
         {

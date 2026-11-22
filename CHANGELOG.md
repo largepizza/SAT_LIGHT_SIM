@@ -570,6 +570,18 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   twilight is the blue hour over an orange horizon instead of grey-green, at the same frame time.
 - **No wildfire smoke on Planetarium or Potato:** those presets draw the fire itself (its front, flames and glow)
   and no smoke haze or trails.
+- **Planetarium's twilight sky matches the full sky high up, with fainter rings round the zenith:** 30 degrees up
+  it was 24% too red against Medium and is within 2% now, and the brightness steps that ringed the zenith at twilight
+  are a third as strong (the preset's sky step minimum is 5, was 4). It costs 0.3-0.5 ms at twilight and about 0.1 ms
+  or less elsewhere.
+- **No rocket plumes on Planetarium or Potato:** a launch there is the rocket itself (its point, and on Planetarium
+  its 3D model), its engine flame and its light. The exhaust trail, the staging cloud, the twilight "jellyfish" and
+  the launch-made noctilucent clouds are drawn from Low up. Near a twilight launch Planetarium's plume pass was
+  about 10 ms of a 13.5 ms frame; it is 0.4 ms now. Settings > Launches says so on those presets.
+- **Planetarium draws night cities as the night-lights map under the city light points:** the tiled street-pattern
+  texture is no longer blended in at night (by day it still is).
+- **Planetarium has no cloud layer at all:** its preset never drew one, and its sky shader no longer carries the flat
+  layer; Settings > Clouds says that no cloud setting draws anything there.
 - **Potato draws the cities as the night-lights map alone:** the tiled city detail texture (squares of street
   pattern with soft halos from the air) is no longer blended in.
 - Large performance work across the cloud march, the sky pass, the terrain depth pyramid, the satellite pipeline
