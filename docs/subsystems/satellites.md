@@ -731,6 +731,37 @@ also now owns the attitude types (`AttTarget`/`AttLaw`/`JointMode`/`AttitudeGrou
     atmosphere march). For scale, Medium at that view: the scene pass's bucket 0.56 -> 1.37 ms and the sky's 2.98 ->
     4.67 ms with the models drawn (its probes and sharp reflections are sky renders). Not measured on an integrated
     GPU, where a station filling the frame (sat_mesh.frag's shadow rays on every covered pixel) is the case to check.
+  - **Steady while the camera rides with a model (2026-11-21, issue_20261121_154126 "jitter on models, especially
+    trusses").** Riding 62 m from the ISS the camera is fixed against it (`follow log`: 3e-11 of the offset a frame),
+    yet the truss changed every frame. Two causes, both the sky TAA meeting a model it has no history for (the
+    resolve reprojects a static world; a model the camera rides with moves 100+ m a frame against it):
+    - **A mesh sample stands at its pixel's centre.** Under temporal upscaling (render scale < 100%) `sat_sky.frag`
+      reads the mesh targets at the input pixel's centre (`meshPx`), not along the jittered ray, but `sky_taa.comp`
+      placed every sample at its jittered position: the whole mesh image was laid down displaced by the frame's Halton
+      offset (up to 0.75 output px at 67%). The truss moved 0.67 px mean / 1.07 max between frames at 67% (0.06 at
+      100%, 0.004 with the TAA off: the knockouts that named it). Now a mesh pixel carries its own marker (colour
+      alpha 0.90625, inside the resolve's 0.85-0.95 "moves on its own" range), and where the 3x3 holds one the
+      resolve places every sample at the full-resolution texel under its centre: 0.003 px mean / 0.005 max. Where the
+      history does hold (the clock paused beside the station; a pad from the ground) the same offsets had blurred the
+      model by up to 0.75 px and still moved it at the default weights; it is now as sharp as its input samples (the
+      paused truss crop: mean gradient 16.5 -> 18.3 levels a px, frame-to-frame change 4.6 -> 0.04 levels).
+    - **An open lattice's threshold steps only where the TAA averages it.** The truss is a lattice material: its
+      members are kept against a per-pixel threshold that steps by the golden ratio each frame while the sky TAA runs
+      ("Depth pre-pass" above; made for a catch tower seen from the ground). With no history, each frame showed another
+      draw: every member edge and sub-pixel member flickered (the crop's edges and gaps changed 24 levels mean a frame
+      at 100%, 1.2 with the TAA off). An instance that moves more than 0.25 px a frame against the static world now
+      keeps the fixed hash (`GpuMeshInstance::trans[2].w`, from its Earth-fixed velocity x the frame's sim seconds,
+      at least the frame's real time, / range: `evalInstance`). The real-time floor keeps the class through a pause:
+      the history does hold then, but the default still weight (0.42) keeps ~2 frames, so half the flicker would be
+      back the moment the clock stops. A pad or a catch tower (Earth-fixed velocity 0) keeps the stepped threshold.
+    Measured at the report's view and settings (render scale 0.67, TAA weights 0.42 / 0.49, 1920x1009, the truss crop,
+    32 consecutive captures while riding): mean |frame - previous| 9.4 -> 0.36 levels (the members' edges and the
+    gaps between them 23.0 -> 0.77; what is left is the cloud deck drifting behind); at 100% 6.1 -> 0.26; with the
+    clock paused 0.04. GPU unchanged (interleaved A/B in one app, the sky shader without / with the marker: 23.9 /
+    24.1 ms, the same shader twice 24.1 / 24.3). `qa/waves/20261121/evidence/c03/`.
+  - **A point close to the camera takes the CPU's vector** (2026-11-21, issue_20261121_160405): orbits.md,
+    "Close-range positions". The followed satellite and the nearest 128 within 20 km are placed in double, so a point
+    no longer jumps round its mesh (or, where no mesh is drawn: Potato, a type with no model, round the place it is).
   - **Follow mode:** "Follow" beside "Trace pass". `followObsEcef` (double) =
     satellite + `followOffset` in its along/cross/radial frame. `obsDir`/`obsHeightOffset` are
     derived from it (the sky shaders read `max(ground, obsHeightOffset)` as altitude, so it is set

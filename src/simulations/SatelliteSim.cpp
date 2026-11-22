@@ -2719,6 +2719,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // Phase 4d: the satellites sat_flare.comp handed to the mesh renderer last frame.
         meshCandidates.assign(hdr->meshCand, hdr->meshCand + std::min<uint32_t>(hdr->meshCandCount, kMaxMeshCandidates));
         meshCandTotal = hdr->meshCandCount;
+        // ...and the satellites sat_orbit.comp found within nearRadiusM of the eye (close-range positions, below).
+        nearCandLast.assign(hdr->nearCand, hdr->nearCand + std::min<uint32_t>(hdr->nearCandCount, kMaxNearCand));
+        nearCandTotal = hdr->nearCandCount;
         if (selectedSatIndex >= 0)
         {
             lastPickedSkyDir = hdr->selected.skyDir;
@@ -3150,10 +3153,24 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         parityPending.tAbs = simTimeAbs;
         parityPending.sunDirECI = sunDirECI;
         parityPending.obsECI = obsECI;
+        {
+            // The eye in double, as recordMeshScene takes it (the close-range positions below are relative to it).
+            const double thE = earthRotationAngle(simTimeAbs), cE = std::cos(thE), sE = std::sin(thE);
+            const glm::dvec3 eyeEcef = followActive ? followObsEcef
+                                                    : glm::normalize(glm::dvec3(obsDir)) * (double)obsEyeRadiusM();
+            parityPending.eyeEci = glm::dvec3(cE * eyeEcef.x - sE * eyeEcef.y, sE * eyeEcef.x + cE * eyeEcef.y, eyeEcef.z);
+            parityPending.enuX = glm::vec3(eci2enuX);
+            parityPending.enuY = glm::vec3(eci2enuY);
+            parityPending.enuZ = glm::vec3(eci2enuZ);
+        }
         parityPending.flareTiltRad = orbitPc.flareMitigationTiltRad;
         parityPending.brightnessScale = brightnessScale;
         parityPending.mirrorBoost = mirrorBoost;
         parityPending.occlusionOn = satOcclusionActive();
+        if (++parityFrameId == 0u)
+            parityFrameId = 1u; // (0 = an untagged header)
+        parityPending.frameId = parityFrameId;
+        parityRing[parityFrameId & 7u] = parityPending;
     }
 
     // ── Phase 4c: satellite meshes (before scene_depth, which folds their distance in) ────────────
@@ -3431,7 +3448,69 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         GpuSatListHeader reset{};
         reset.dispatchY = reset.dispatchZ = 1;
         reset.drawInstanceCount = 1;
+        reset.selectedPad = parityFrameId; // this dispatch's tag (parityRing): which inputs its readback belongs to
         vkCmdUpdateBuffer(cmd, satListBuf, 0, offsetof(GpuSatListHeader, meshCand), &reset);
+
+        // Close-range positions (GpuSatListHeader::nearCand ...; issue_20261121_160405): the satellites last frame's
+        // dispatch found near the eye, and always the one the camera rides with, evaluated HERE in double at this
+        // frame's time, relative to the eye the meshes are drawn from (recordMeshScene's obsEcef: followObsEcef
+        // while following). The shader's own satECI - obsECI is two floats of 7e6 m: 1-3 m of rounding that changes
+        // every frame, which at 11 m threw the followed satellite's point ~60 px a frame (where no mesh is drawn).
+        {
+            struct NearTable
+            {
+                uint32_t count;
+                float radiusM;
+                uint32_t pad[2];
+                uint32_t sat[kMaxNearExact];
+                glm::vec4 rel[kMaxNearExact];
+            } tbl{};
+            static_assert(sizeof(NearTable) == sizeof(GpuSatListHeader) - offsetof(GpuSatListHeader, nearExactCount),
+                          "NearTable must match GpuSatListHeader's tail");
+            // More inside the radius than the list holds: which of them it holds is the append order's accident, so
+            // the radius comes in until all fit, and relaxes back (the nearest are the ones whose rounding shows).
+            if (nearCandTotal > (uint32_t)kMaxNearCand * 3u / 4u)
+                nearRadiusM *= 0.8f;
+            else if (nearCandTotal < (uint32_t)kMaxNearCand / 3u)
+                nearRadiusM = std::min(nearRadiusM * 1.05f, kNearRadiusMaxM);
+            nearRadiusM = std::max(nearRadiusM, 50.0f);
+            tbl.radiusM = nearRadiusM;
+            const double tN = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            const glm::dvec3 eyeEci = parityPending.eyeEci; // (this frame's, set where SatOrbitPC is built)
+            struct Near
+            {
+                double d2;
+                uint32_t sat;
+                glm::dvec3 rel;
+            };
+            std::vector<Near> near;
+            near.reserve(nearCandLast.size() + 1);
+            auto add = [&](uint32_t sat, bool first) {
+                if (sat >= (uint32_t)satOrbits.size())
+                    return;
+                const glm::dvec3 rel = satOrbitStateAt(orbitElemsOf(satOrbits[sat]), tN).posEci - eyeEci;
+                const double d2 = glm::dot(rel, rel);
+                if (std::isfinite(d2))
+                    near.push_back({first ? -1.0 : d2, sat, rel});
+            };
+            // (not a rocket / ship / capsule: those are drawn by the CPU alone and have no record in the dispatch)
+            if (followActive && followSatIndex >= 0 && !followIsTransient())
+                add((uint32_t)followSatIndex, true); // never waits for the list (nor depends on it)
+            for (uint32_t sat : nearCandLast)
+                if (!(followActive && (int)sat == followSatIndex))
+                    add(sat, false);
+            std::sort(near.begin(), near.end(), [](const Near &a, const Near &b) {
+                return a.d2 != b.d2 ? a.d2 < b.d2 : a.sat < b.sat;
+            });
+            tbl.count = (uint32_t)std::min<size_t>(near.size(), (size_t)kMaxNearExact);
+            for (uint32_t k = 0; k < tbl.count; ++k)
+            {
+                tbl.sat[k] = near[k].sat;
+                tbl.rel[k] = glm::vec4(glm::vec3(near[k].rel), 0.0f);
+            }
+            nearExactUsed = tbl.count;
+            vkCmdUpdateBuffer(cmd, satListBuf, offsetof(GpuSatListHeader, nearExactCount), sizeof(tbl), &tbl);
+        }
 
         VkBufferMemoryBarrier bmb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
         bmb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -5401,6 +5480,10 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
     const double theta = earthRotationAngle(tNow);
     const double ct = std::cos(theta), st = std::sin(theta);
     auto eciToEcef = [&](glm::dvec3 v) { return glm::dvec3(ct * v.x + st * v.y, -st * v.x + ct * v.y, v.z); };
+    // The sim seconds since the last frame's meshes (from the sim time itself: a cinematic or `path play` sets it
+    // while timePaused holds), for the instances' motion against the static world (trans[2].w below).
+    const double meshSimStepS = meshScenePrevSimT < 0.0 ? 0.0 : std::min(std::abs(tNow - meshScenePrevSimT), 3600.0);
+    meshScenePrevSimT = tNow;
 
     // Observer (double). In follow mode followObsEcef is authoritative; otherwise obsDir + radius.
     const double obsRadius = followActive ? followRadiusM
@@ -5564,6 +5647,17 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
             inst.trans[g] = glm::vec4(glm::vec3(gp.t), 0.0f);
         }
         inst.trans[0].w = meshBuildCode(tNow); // a station built module by module (instCompAbsent)
+        // Does it move against the static world the sky TAA reprojects (more than a quarter of a pixel a frame)? Then
+        // nothing averages a per-frame dither on it: sat_mesh.frag holds its open lattices' threshold fixed
+        // (issue_20261121_154126: riding beside the ISS the truss flickered frame to frame; a pad or a catch tower,
+        // fixed to the ground, keeps the stepped threshold the TAA averages). Over at least the frame's real time, so
+        // pausing the clock beside a station does not switch its truss to the stepped threshold (the history holds
+        // then, but at the default still weight, 0.42, it keeps ~2 frames: half the flicker would be back).
+        {
+            const glm::dvec3 vEcef = eciToEcef(r.orbit.velEci) - glm::cross(glm::dvec3(0.0, 0.0, satphot::kOmegaEarth), satEcef);
+            const double movePx = glm::length(vEcef) * std::max(meshSimStepS, (double)std::max(dt, 0.0f)) / (range * pixAngle);
+            inst.trans[2].w = movePx > 0.25 ? 1.0f : 0.0f;
+        }
         const double rOverD = satphot::kEarthRadiusM / glm::length(satEcef);
         const double alphaE = rOverD / (1.0 + std::sqrt(std::max(0.0, 1.0 - rOverD * rOverD)));
         // Penumbral reddening, as sat_orbit.comp tints the sprite.
@@ -5922,6 +6016,8 @@ void SatelliteSim::recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, floa
     frame.params = glm::vec4(1.0f, 1.0f, 1.0f, 2.0f); // shadows, reflections, detail, SCENE output
     // Open lattices' coverage threshold (sat_mesh.frag): a golden-ratio step per frame while the sky TAA runs, so it
     // averages a sub-pixel truss to its mean coverage (2026-10-20). marker0 is the viewer's; unused in the scene.
+    // (2026-11-21, issue_20261121_154126) Not for an instance that moves against the static world the TAA reprojects:
+    // GpuMeshInstance::trans[2].w, evalInstance above.
     frame.marker0 = skyTaaWanted() ? glm::vec4(std::fmod(0.61803399f * (float)(skyTaaFrame % 1024u), 1.0f), 1.0f, 0.0f, 0.0f)
                                    : glm::vec4(0.0f);
     // Local lights (2026-10-21, sat_mesh.frag): last frame's engine / flood lights (SatelliteSim::MeshLocalLight, made
@@ -7687,6 +7783,7 @@ void SatelliteSim::updateSelectedPhotometry()
         line[0] = '\0';
     selParityWarn = false;
     selParityValid = false;
+    selGpuDirErrValid = false;
     if (parityLogCooldown > 0)
         --parityLogCooldown;
     if (selectedSatIndex < 0 || selectedSatIndex >= (int)satOrbits.size())
@@ -7700,7 +7797,7 @@ void SatelliteSim::updateSelectedPhotometry()
     const double tNowSel = (double)simDayJ2000 * 86400.0 + simSecInDay;
     glm::dvec3 obsG = followActive ? glm::dvec3(obsECI) : readoutObsEci(tNowSel);
     if (followActive && !selIsTransient() && parityPending.valid && parityPending.satIdx == selectedSatIndex)
-        obsG = glm::dvec3(parityPending.obsECI);
+        obsG = parityPending.eyeEci;
     auto hiddenFrom = [&](const glm::dvec3 &pos, glm::dvec3 &d, double &range) {
         const glm::dvec3 rel = pos - obsG;
         range = std::max(glm::length(rel), 1.0);
@@ -7750,7 +7847,9 @@ void SatelliteSim::updateSelectedPhotometry()
                      m + atmExtinctionMag(obsG, d, range, (double)extinctionCoeff));
         return;
     }
-    const ParityInputs &pin = parityPending;
+    // The inputs of the dispatch whose header was read back (its tag), else the last dispatch's.
+    const uint32_t hdrTag = static_cast<const GpuSatListHeader *>(pickedVisibleMapped)->selectedPad;
+    const ParityInputs &pin = (hdrTag != 0u && parityRing[hdrTag & 7u].frameId == hdrTag) ? parityRing[hdrTag & 7u] : parityPending;
     if (!pin.valid || pin.satIdx != selectedSatIndex)
     {
         snprintf(selPhotLine[0], sizeof(selPhotLine[0]), tx(Txt::FmtPhotometryMeasuring));
@@ -7765,7 +7864,8 @@ void SatelliteSim::updateSelectedPhotometry()
 
     SatPhotInputs in;
     in.sunDirEci = glm::dvec3(pin.sunDirECI);
-    in.obsEci = glm::dvec3(pin.obsECI);
+    in.obsEci = pin.eyeEci; // the eye in double: the dispatch's own for a satellite close by (its listed vector), and
+                            // within a metre of its float eye (pin.obsECI) for the rest
     in.flareTiltRad = pin.flareTiltRad;
     in.mirrorBoost = pin.mirrorBoost;
     if (type.isModel() && attUsesGroundSite(type.groups))
@@ -7839,6 +7939,18 @@ void SatelliteSim::updateSelectedPhotometry()
         return;
     if (!hdr->selectedFound) // not in view: nothing on the GPU side to compare against
         return;
+    {
+        // Where the GPU drew it against where it is, from the same eye (see selGpuDirErrDeg).
+        const glm::dvec3 rel = r.orbit.posEci - pin.eyeEci;
+        const glm::dvec3 c = glm::normalize(glm::dvec3(glm::dot(rel, glm::dvec3(pin.enuX)), glm::dot(rel, glm::dvec3(pin.enuY)),
+                                                       glm::dot(rel, glm::dvec3(pin.enuZ))));
+        const glm::dvec3 g(hdr->selected.skyDir);
+        if (glm::length(g) > 0.5 && glm::length(rel) > 1e-3)
+        {
+            selGpuDirErrDeg = glm::degrees(std::atan2(glm::length(glm::cross(c, glm::normalize(g))), glm::dot(c, glm::normalize(g))));
+            selGpuDirErrValid = true;
+        }
+    }
     {
         // A satellite just released from its payload stack (launches, 2026-10-20): the CPU poses it in the stack's
         // attitude, the GPU's point keeps its law — not a parity error.
@@ -10955,6 +11067,8 @@ void SatelliteSim::rebuildRoster(VulkanContext &ctx)
     meshSceneSatIdx = -1;
     padFocusSat = -1;
     parityPending = ParityInputs{};
+    for (ParityInputs &pi : parityRing)
+        pi = ParityInputs{};
     selParityValid = false;
     for (EnvProbeSlot &s : envSlots)
         s = EnvProbeSlot{};
@@ -10965,6 +11079,8 @@ void SatelliteSim::rebuildRoster(VulkanContext &ctx)
     // Last frame's list header names satellites by their old indices (mesh candidates, the selection).
     meshCandidates.clear();
     meshCandTotal = 0;
+    nearCandLast.clear();
+    nearCandTotal = 0;
     if (pickedVisibleMapped)
         memset(pickedVisibleMapped, 0, sizeof(GpuSatListHeader));
 

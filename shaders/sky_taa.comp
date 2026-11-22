@@ -119,12 +119,27 @@ void main() {
         // turning or moving (Low; 2026-10-29). confWide is the nearest sample's weight under a kernel 0.6 INPUT px
         // wide (= the old one at 100%); still views keep conf (the sharp accumulation of the jittered phases).
         const float sW2 = 2.0 * 0.36 * max(k2o.x * k2o.x, 1.0);
+        // A MESH sample (sat_sky.frag's marker 0.90625; 2026-11-21, issue_20261121_154126 "jitter on models") was not
+        // taken along the jittered ray: it is the full-resolution mesh target's texel under the input pixel's CENTRE,
+        // and whether a sample beside it is mesh or background was decided there too. Placed at the jittered positions
+        // like the rest, the whole mesh image was laid down displaced by the frame's jitter (up to 0.75 output px a
+        // frame at 67%), and a model the camera rides with has no history to average that (it moves 100+ m a frame
+        // against the static world this resolve reprojects): every model wobbled, 0.67 px mean / 1.07 max frame to
+        // frame on the ISS truss. So where the 3x3 holds a mesh sample, every sample is placed at the centre texel it
+        // stands for (the background between a truss's members is smooth: its own jitter is worth nothing there).
+        vec4 cs9[9];
+        bool meshNb = false;
+        for (int k = 0; k < 9; ++k) {
+            cs9[k] = texelFetch(curColor, clamp(c + ivec2(k % 3 - 1, k / 3 - 1), ivec2(0), isz - 1), 0);
+            meshNb = meshNb || (cs9[k].a > 0.89 && cs9[k].a < 0.95);
+        }
         for (int k = 0; k < 9; ++k) {
             ivec2 q  = clamp(c + ivec2(k % 3 - 1, k / 3 - 1), ivec2(0), isz - 1);
-            vec4  cq4 = texelFetch(curColor, q, 0);
+            vec4  cq4 = cs9[k];
             vec3  cq = fin(cq4.rgb);
             dynNb = dynNb || (cq4.a > 0.85 && cq4.a < 0.95);
-            vec2  dO = (vec2(q) + 0.5 + jit - ip) * k2o;      // sample -> pixel, OUTPUT px
+            vec2  dO = meshNb ? floor((vec2(q) + 0.5) * k2o) + 0.5 - (vec2(p) + 0.5)
+                              : (vec2(q) + 0.5 + jit - ip) * k2o;      // sample -> pixel, OUTPUT px
             float w  = exp(-dot(dO, dO) * (1.0 / (2.0 * 0.6 * 0.6)));
             acc += cq * w; ws += w; wMax = max(wMax, w);
             wMaxW = max(wMaxW, exp(-dot(dO, dO) / sW2));

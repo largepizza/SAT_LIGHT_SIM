@@ -544,8 +544,12 @@ void main()
         // stepped by the golden ratio each frame (marker0.x), so the TAA averages a sub-pixel truss to its mean coverage
         // (a catch tower from ~1 km, a booster's grid fins): with one fixed per-pixel hash the drawn pixels were a fixed
         // speckle that swam and shimmered as the view moved. Elsewhere (the viewer's MSAA, TAA off) the fixed hash.
+        // Not for an instance that moves against the static world (inst.trans[2].w = 1, set by the CPU past 0.25 px a
+        // frame; 2026-11-21, issue_20261121_154126 "especially see trusses"): the TAA reprojects a static world, so such
+        // a model has no history to average the stepped threshold, and each frame showed another draw of it — riding
+        // beside the ISS, every truss member's edge and every sub-pixel member flickered frame to frame.
         float thr;
-        if (frame.params.w > 1.5 && frame.marker0.y > 0.5)
+        if (frame.params.w > 1.5 && frame.marker0.y > 0.5 && inst.trans[2].w < 0.5)
             thr = fract(fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) + frame.marker0.x);
         else
             thr = float(hashU(uvec3(uvec2(gl_FragCoord.xy), 977u)) & 0xFFFFu) / 65536.0;

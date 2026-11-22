@@ -553,7 +553,8 @@ struct GpuSatListHeader
     // draws them in double precision). meshCandCount is the atomic counter, so it can exceed the
     // list: the CPU then raises the nomination size until the list holds them all again.
     uint32_t meshCandCount;
-    uint32_t meshCandPad[3];
+    uint32_t nearCandCount; // offset 84 — sat_orbit.comp's atomic counter of the satellites within nearRadiusM (below)
+    uint32_t meshCandPad[2];
     struct MeshCandidate
     {
         uint32_t sat;      // satellite index
@@ -562,7 +563,22 @@ struct GpuSatListHeader
         uint32_t sizeKept; // packHalf2x16(its sprite's size (px) before the fade, log2 of the share of the unresolved
                            // point's displayed flux it kept: sat_flare.comp's resolved-object factor)
     } meshCand[1024];
+    // Close-range positions (2026-11-21, issue_20261121_160405 "satellites jitter around when you are up close").
+    // sat_orbit.comp places a satellite in float: ~1-3 m of rounding at 7e6 m that changes every frame, i.e. degrees
+    // of jitter for a point 11 m from the camera and a pixel at 2 km. It lists every satellite within nearRadiusM of
+    // the eye (nearCand, atomic append); next frame the CPU evaluates the nearest kMaxNearExact of them (and always
+    // the followed satellite) in double, relative to the eye the meshes are drawn from, and hands the vectors back
+    // (nearSat / nearRel, written with vkCmdUpdateBuffer before the dispatch); the shader takes a listed satellite's
+    // vector in place of its own subtraction. One frame of lag in WHICH satellites, none in WHERE.
+    uint32_t nearCand[256];    // offset 96 + 16 * 1024
+    uint32_t nearExactCount;   // entries of nearSat / nearRel in use
+    float nearRadiusM;         // the listing radius (the CPU shrinks it while more than the list holds are inside)
+    uint32_t nearPad[2];
+    uint32_t nearSat[128];     // satellite index
+    glm::vec4 nearRel[128];    // xyz: satellite - eye, ECI, metres
 };
+static constexpr int kMaxNearCand = 256;  // = sat_orbit.comp NEAR_CAND_MAX
+static constexpr int kMaxNearExact = 128; // = sat_orbit.comp NEAR_EXACT_MAX
 // The GPU's candidate list, and how many of them the CPU draws as meshes. Until 2026-09-25 both were
 // 64 and the list was filled in atomic-append (random) order: in the AI ring ~250 satellites are
 // mesh-sized at once, so WHICH 64 got a mesh changed every frame and neighbours flickered between
@@ -585,7 +601,12 @@ struct GpuMeshKeepList
     // direction (review 28: octahedral, packSnorm2x16, observer ENU; 0 = the satellite's centre).
     glm::uvec4 entries[kMaxMeshInstances + 1];
 };
-static_assert(sizeof(GpuSatListHeader) == 96 + 16 * kMaxMeshCandidates, "GpuSatListHeader layout mismatch");
+static_assert(offsetof(GpuSatListHeader, nearCand) == 96 + 16 * kMaxMeshCandidates, "GpuSatListHeader layout mismatch");
+static_assert(offsetof(GpuSatListHeader, nearExactCount) == 96 + 16 * kMaxMeshCandidates + 4 * kMaxNearCand, "near list offset");
+static_assert(offsetof(GpuSatListHeader, nearRel) == offsetof(GpuSatListHeader, nearExactCount) + 16 + 4 * kMaxNearExact &&
+              offsetof(GpuSatListHeader, nearRel) % 16 == 0, "near vectors offset (std430 vec4 alignment)");
+static_assert(sizeof(GpuSatListHeader) == offsetof(GpuSatListHeader, nearRel) + 16 * kMaxNearExact, "GpuSatListHeader size");
+static_assert(offsetof(GpuSatListHeader, nearCandCount) == 84, "near counter offset (inside the per-frame reset)");
 static_assert(offsetof(GpuSatListHeader, meshCandCount) == 80, "mesh candidate offset");
 static_assert(offsetof(GpuSatListHeader, dispatchX) == 4, "dispatch args offset");
 static_assert(offsetof(GpuSatListHeader, drawVertexCount) == 16, "draw args offset");
@@ -2523,15 +2544,31 @@ private:
     {
         bool valid = false;
         int satIdx = -1;
+        uint32_t frameId = 0; // that dispatch's tag (GpuSatListHeader::selectedPad), see parityRing
         double tAbs = 0.0; // sim time of that dispatch, seconds since J2000
         glm::vec3 sunDirECI{0.0f};
         glm::vec3 obsECI{0.0f};
+        // The eye in double (the meshes' eye: followObsEcef while following) and that dispatch's ENU basis: what the
+        // close-range positions are relative to (GpuSatListHeader::nearRel), and the frame of the GPU's skyDir.
+        glm::dvec3 eyeEci{0.0};
+        glm::vec3 enuX{1.0f, 0.0f, 0.0f}, enuY{0.0f, 1.0f, 0.0f}, enuZ{0.0f, 0.0f, 1.0f};
         float flareTiltRad = 0.0f;
         float brightnessScale = 1.0f;
         float mirrorBoost = 1000.0f;
         bool occlusionOn = true;
     };
     ParityInputs parityPending;
+    // The header read back is not always the last dispatch's (it is a slotted readback: two frames old with two frames
+    // in flight), so each dispatch tags its header (selectedPad = parityFrameId) and its inputs are kept here by tag:
+    // the CPU side of the parity check is evaluated at the instant of the header it is compared with. Paired by "the
+    // previous frame", the range and direction gaps read one frame of the satellite's motion (120 m at 1x, km in warp).
+    ParityInputs parityRing[8];
+    uint32_t parityFrameId = 0;
+    // The angle between the selection's direction as the GPU drew it (GpuSatListHeader::selected.skyDir) and the CPU
+    // evaluator's from the same eye at the same instant (harness `state` -> selection.gpu_dir_err_deg): the float
+    // rounding of a satellite's place, as seen. Degrees at 11 m before the close-range positions, ~1e-5 with them.
+    double selGpuDirErrDeg = 0.0;
+    bool selGpuDirErrValid = false;
     // The magnitude readout the selection panel shows ("Mag -1.23  (1000 km -1.10)"). It used to be
     // three lines (magnitude / range+phase / the GPU-vs-CPU parity text) — the range and phase moved
     // to the info window's OBSERVER box, and the parity LINE was dropped from the UI (2026-09-24) with
@@ -2860,6 +2897,15 @@ private:
     float meshSceneFade = 0.0f;   // its fade
     void recordMeshScene(VkCommandBuffer cmd, VulkanContext &ctx, float dt);
     uint32_t meshCandTotal = 0; // last frame's meshCandCount: past kMaxMeshCandidates = the list overflowed
+    // Close-range positions (GpuSatListHeader::nearCand / nearSat / nearRel): last frame's listed satellites, the
+    // counter (past kMaxNearCand = the list overflowed) and the listing radius, which shrinks while more satellites
+    // than the list holds are inside it and relaxes back to kNearRadiusMaxM.
+    static constexpr float kNearRadiusMaxM = 20000.0f; // the float floor (~1.3 m) is 0.07 px there at a 50-degree view
+    std::vector<uint32_t> nearCandLast;
+    uint32_t nearCandTotal = 0;
+    float nearRadiusM = kNearRadiusMaxM;
+    uint32_t nearExactUsed = 0;      // entries handed to this frame's dispatch (harness `state`)
+    double meshScenePrevSimT = -1.0; // recordMeshScene: last frame's sim time (the instances' own motion a frame)
 
     // ── Environment probes: full-renderer reflections + ambient on meshes (2026-09-24) ───────────
     // SatEnvProbes renders sat_sky.frag (-DSKY_ENV) as six cube faces around a satellite: the mesh
