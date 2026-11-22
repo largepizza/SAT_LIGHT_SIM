@@ -1009,7 +1009,8 @@ launches follow per-program cadences (no real manifest).
   retarded time, Earth-fixed (the air carries it), level ~ sqrt(flow) / distance, thinning with the air at the rocket.
   The retarded time is the LATEST emission tau with (T - tau) = |P(tau) - eye| / 343, found by a scan back over 440 s
   (150 km of sound) in 2-s steps for a sign change either way (a booster's supersonic descent arrives in reverse
-  order), then bisected; nothing arriving = silence. (2026-10-19, issue 20261019_175639: a fixed-point iteration that
+  order), then bisected; nothing arriving = silence. The travel time is capped at 3 s unless the Sound tab's
+  "Distant sounds arrive within 3 s" is off (2026-11-21, sound.md "Thunder is played by a playhead per flash"). (2026-10-19, issue 20261019_175639: a fixed-point iteration that
   did not converge for a fast, distant stage alternated between the stage and the pad, so an upper stage 1200 km
   downrange was heard "burning" at full level 300 m from its pad minutes after it left.) Rocket voices are their
   own kind in the thunder synth (pushEvent's 5th value = 1, `rocketTick`): a low roar (brown + pink noise

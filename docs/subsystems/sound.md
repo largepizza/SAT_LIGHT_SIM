@@ -192,6 +192,38 @@ Location- and context-aware ambience on its own bus under the music (Settings â†
   -29.5; 256 km gain 0.032, cutoff 1.7 kHz, LUFS -56.6; ground 579 km gain 0.54, cutoff 249 Hz, centroid 52 Hz,
   LUFS -33.8. Harness `kessler state` -> `collision_sounds`, `collision_sound_preview`. Offline (muted harness), a hit
   pushed between recordings waits in the synth's queue and plays at the start of the next `audio record`.
+- **Thunder is played by a playhead per flash (2026-11-21, issue_20261121_163317; `thunderStep`, `thunderInsertSource`
+  in SatelliteSimAmbience.cpp).** Each flash's channel is a source (`addThunderSource`: its pieces in Earth-fixed axes)
+  whose front leaves at the return stroke at 343 m/s of sim time. Per source the step keeps `play`: the path
+  difference, in metres behind the channel's nearest piece for the listener NOW, that has been heard. The front is at
+  w = 343 (t - t0) - min(the nearest piece's distance, the cap); the roll starts when w reaches 0 by a genuine arrival
+  (the front was still ahead on the last step, or the source is new and that close), then `play` follows w: never
+  back, and at most 3 x 343 m per sim second. What arrives in a step is the pieces whose path difference `play`
+  crossed (length x weight / r^2, more across the line of sight) as power per sim second, eased 15 ms up / 80 ms down;
+  level = 270 sqrt(power) x energy, fading out between 20 and 40 km. So a roll whose front reaches the listener is
+  heard once and whole at any frame time; a listener flying in faster than sound hears it compressed at most 3x; one
+  outrunning it hears it when the front catches up; with time held `play` holds and goes on at release; a jump (> 5 km,
+  > 20 s) or a flight in from beyond 45 km behind a front that already passed is silent.
+  **The delay is capped at 3 s by default**: Sound tab "Distant sounds arrive within 3 s" (`audio.sound_quick`, on;
+  `kSoundQuickS`): the front counts as arrived after min(distance, 1029 m), so a flash 20 km off rolls from 3 s after
+  it, with its distance's level and cutoff; a strike inside 1 km keeps its exact flash-to-bang time. Off = the full
+  3 s per km. The same cap is on the rockets' retarded time (`launchSounds`). Why a cap: in the report's storm the
+  flashes were ~20 km off (thunder 60-85 s later, weak) and the reporter flew at 1.1-2.1 km/s with time often held,
+  so the thunder of a flash was almost never heard near it; with the listener still, the old model dropped nothing
+  there. Voices: a flash keeps its voice (8 in the synth), a new one takes a free voice, and with none free it joins
+  the voice nearest in distance (powers add): nothing is dropped, no voice changes hands mid-roll. Sources:
+  `kThunderMaxSources` 96; at the cap the one that matters least leaves (heard or passed, else the farthest). Layer
+  `thunder`: fade-in 0.1 s; its driver is up from ~2 s before a front arrives, through a roll (a hold too), to 4 s
+  after. It REPLACED the per-frame zero crossing of g = distance - 343 (t - t0) (2026-10-10): a roll was whatever
+  pieces changed sign in a frame, the 48-source list dropped its OLDEST (in a wide storm the far flashes evicted the
+  near ones before their sound came), and a new flash took the voice "silent longest" or, with all 8 sounding, was
+  dropped for the frame. Measured with the same kept flashes before / after (`lightning thunder sim`): 80 flashes in
+  24 s, 0.4-25 km around a still listener: heard 50 of 80 before (19 evicted by the cap unheard, 11 never given a
+  voice, 85 voice steals), 80 of 80 after, the same at 30 ms and 8 ms steps, at 100 m/s (80 of 80; before 46) and
+  across a 5-s hold; no source delivered under half its energy (before: 22). At the reporter's flying speed (1 km/s)
+  the report's storm gave 0.0 s of thunder in 60 s before and 42.6 s after (0.0 s with the full delay). Harness: `lightning thunder log on|off|clear`, `state [name]`, `save <name>` / `load <file>`,
+  `sim [name] [dt_ms=] [seconds=] [speed=] [hold_at=] [hold_s=] [jitter=]` (docs/HARNESS.md); with the log off the
+  instrument costs nothing.
 - **Every synth output is high-passed** (wind 45 Hz, surf 55 Hz, disk 60 Hz, hum 32 Hz, saw 40 Hz, pad
   110 Hz, bass 28 Hz) and the
   sample beds per source in `make_ambience.py`: the first wind was a sub-bass wall (brown noise
@@ -223,7 +255,9 @@ Location- and context-aware ambience on its own bus under the music (Settings â†
   `AudioSystem::setMusicFade`, a multiplier under the user's music volume): full to 1500 km, half at
   5000 km, silent from 35786 km (GEO/HEO), linear in log altitude, slewed 1/4 per second â€” the high
   orbits belong to `vlf_earth` / `firmament`. The intro tops out at 300 km, so it is unaffected.
-- **Sound tab**: under "Ambience now", the key line (`tonalityLine()`: key, chord, root, source).
+- **Sound tab**: under "Ambience now", the key line (`tonalityLine()`: key, chord, root, source), and the toggle
+  "Distant sounds arrive within 3 s" (`audio.sound_quick`, on: thunder and rocket noise never later than 3 s; off:
+  the full speed-of-sound delay; "Thunder is played by a playhead" above).
   **Advanced**: "Key follows the music" (on), music gap, fade in/out multipliers, tonal root (used only
   with the key not following), six group gains â€”
   `buildCloudSliderRows(..., marksPreset=false)` at slot idx 99-108 (the slot arrays are 112 now;

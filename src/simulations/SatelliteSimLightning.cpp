@@ -693,7 +693,5 @@ void SatelliteSim::addThunderSource(const BoltTree &t, double flashStartS)
     }
     if (s.pts.empty())
         return;
-    if (thunderSources_.size() >= 48)
-        thunderSources_.erase(thunderSources_.begin());
-    thunderSources_.push_back(std::move(s));
+    thunderInsertSource(std::move(s), t.kind);
 }

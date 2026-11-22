@@ -121,6 +121,10 @@ public:
     int layerCount() const { return (int)layers_.size(); }
     int layerIndex(const std::string &id) const;
     int layerVoice(int layer) const { return layers_[layer].voice; }
+    float layerCurrent(int layer) const { return layers_[layer].current; }   // the gain it plays at now
+    float layerGain(int layer) const { return layers_[layer].gain; }         // the table's gain (the fades' full scale)
+    float layerFadeInS(int layer) const { return layers_[layer].fadeInS * fadeInScale_; }
+    float layerFadeOutS(int layer) const { return layers_[layer].fadeOutS * fadeOutScale_; }
     nlohmann::json stateJson() const;
 
 private:

@@ -7474,10 +7474,26 @@ private:
         std::vector<glm::vec4> pts;      // xyz a channel piece's midpoint from the origin (ECEF axes, m), w its power weight
         std::vector<glm::vec4> dirh;     // xyz its direction, w its half-length (m)
         bool heard = false;
+        // The roll's playhead (2026-11-21, issue_20261121_163317): metres of path difference behind the channel's
+        // nearest piece heard so far (< 0: not started). It follows the front, never back, at most 3x sound.
+        double play = -1.0;
+        float pw = 0.0f;                 // the arriving power per second, eased (15 ms up, 80 ms down)
+        float lastKm = 0.0f, lastPan = 0.0f, lastDM = 0.0f; // what last arrived: its mean distance and pan; the centre's distance
+        bool done = false;               // the whole roll was heard
+        bool passed = false;             // the front was already past the listener when first met (a jump): silent
+        bool seen = false;               // met by a step at least once
+        bool before = false;             // on the last step the front had not reached the listener
+        int kind = 0;
     };
     static constexpr int kThunderVoices = 8;      // == ThunderSynth::kVoices
+    static constexpr size_t kThunderMaxSources = 96;
     std::vector<ThunderSource> thunderSources_;
-    struct ThunderVoice { uint32_t id = 0; bool used = false; float level = 0.0f; double lastSoundT = 0.0; } thunderVoice_[kThunderVoices];
+    struct ThunderVoice { uint32_t id = 0; bool used = false; float level = 0.0f; double lastSoundT = 0.0; bool rocket = false; float km = 5.0f; } thunderVoice_[kThunderVoices];
+    // Sound tab "Distant sounds arrive within 3 s" (audio.sound_quick, default on): thunder and rocket noise arrive
+    // after distance / 343 m/s but never later than kSoundQuickS; off = the full delay (a flash 20 km off is heard a
+    // minute later, if the listener is still there).
+    bool ambSoundQuick = true;
+    static constexpr double kSoundQuickS = 3.0;
     double thunderPrevS_ = 0.0, thunderRealT_ = 0.0;
     glm::dvec3 thunderPrevEye_{0.0};
     bool thunderPrevValid_ = false;
@@ -7489,6 +7505,38 @@ private:
     void thunderRecordTick(float dt);             // harness `audio record`: the render's own clock carries the sound
     double thunderRecordS_ = 0.0;
     bool thunderRecording_ = false;
+    // Instrumentation (2026-11-21, issue_20261121_163317; harness `lightning thunder log|sim|state`): with the log on,
+    // every source made is kept (thunderRec_) and gets a row of what became of it (thunderStats_: what arrived at the
+    // listener against what was sent to the synth). `sim` runs the kept sources again through thunderStep on a virtual
+    // clock (any frame time, a moving listener, a hold) into a private synth, so the same flashes are compared.
+    struct ThunderStat
+    {
+        uint32_t id = 0;
+        int kind = 0;
+        double t0 = 0.0, addS = 0.0;                     // the return stroke; when the source was made (sim s)
+        float d0Km = 0.0f, extentKm = 0.0f, dFirstKm = 0.0f;
+        uint32_t pieces = 0;
+        double firstS = -1.0, lastS = -1.0;              // sim time of the first / last step something arrived
+        uint32_t fArrive = 0, fPushed = 0, fMerged = 0, fNoVoice = 0, fNoSynth = 0, fQueueFull = 0, fMuted = 0;
+        double eArrive = 0.0, ePushed = 0.0;             // sum level^2 x real dt: arriving / sent (x the layer's gain^2)
+        float peak = 0.0f;
+        uint8_t end = 0;                                 // 0 live, 1 expired, 2 evicted by the cap unheard, 3 evicted after
+    };
+    bool thunderLogOn_ = false;
+    std::vector<ThunderStat> thunderStats_;
+    std::vector<ThunderSource> thunderRec_;
+    std::vector<double> thunderRecAddS_;
+    std::vector<int> thunderRecKind_;
+    double thunderLogStartS_ = 0.0;
+    glm::dvec3 thunderLogEye_{0.0};
+    uint32_t thunderSteals_ = 0;                  // a sounding flash's voice taken by another (log on)
+    class AmbientSynth *thunderSink_ = nullptr;   // `sim`: the synth the events go to instead of the layer's
+    bool thunderSimulating_ = false;
+    float thunderSimGain_ = 1.0f;                 // `sim`: the layer's gain as emulated
+    ThunderStat *thunderStat(uint32_t id);
+    void thunderInsertSource(ThunderSource &&s, int kind);
+    nlohmann::json thunderStatsJson() const;
+    harness::Status harnessThunder(harness::Active &a);
     struct AmbienceDrivers
     {
         int altM = -1, aglM = -1, groundM = -1, latDeg = -1, lonDeg = -1, sunElDeg = -1, oceanNear = -1, oceanWide = -1,

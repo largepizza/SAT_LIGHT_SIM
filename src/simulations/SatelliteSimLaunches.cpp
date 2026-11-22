@@ -11084,6 +11084,7 @@ std::vector<SatelliteSim::LaunchSound> SatelliteSim::launchSounds(double now, co
     if (!L.loaded)
         return out;
     constexpr double kC = 343.0;
+    const double capS = ambSoundQuick ? kSoundQuickS : 1e18; // the delay is capped ("Distant sounds arrive within 3 s")
     for (uint64_t key : L.live)
     {
         auto it = L.batches.find(key);
@@ -11113,7 +11114,7 @@ std::vector<SatelliteSim::LaunchSound> SatelliteSim::launchSounds(double now, co
             auto g = [&](double tau, bool &ok) {
                 glm::dvec3 E;
                 ok = posE(tau, E, nullptr);
-                return ok ? (T - tau) - glm::length(E - eyeEcef) / kC : -1e9;
+                return ok ? (T - tau) - std::min(glm::length(E - eyeEcef) / kC, capS) : -1e9;
             };
             double hi = T, lo = -1.0;
             bool okHi = false;
