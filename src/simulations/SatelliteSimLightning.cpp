@@ -117,7 +117,7 @@ void SatelliteSim::createLightningResources(VulkanContext &ctx)
                                    boltSegMem, false, "boltSegments");
 
     const VkShaderStageFlags st = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    VkDescriptorSetLayoutBinding b[7] = {
+    VkDescriptorSetLayoutBinding b[9] = {
         {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, st, nullptr},          // the flashes (frames, state, glow emitters)
         {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, st, nullptr},          // the channel segments
         {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},  // the cloud composite A (distance, km)
@@ -125,17 +125,19 @@ void SatelliteSim::createLightningResources(VulkanContext &ctx)
         {4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},  // the half-res scene depth (m; engine lights)
         {5, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, st, nullptr},          // the dust list + the engine lights in its tail
         {6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, st, nullptr},           // the meshes' distance (lit by sat_mesh.frag)
+        {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},  // the flashes' light volumes (flash_volume.glsl)
+        {8, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, st, nullptr},          // the cloud lighting's numbers (BoltLight)
     };
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 7;
+    li.bindingCount = 9;
     li.pBindings = b;
     if (vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &boltDescLayout) != VK_SUCCESS)
         throw std::runtime_error("SatelliteSim: lightning descriptor layout");
-    VkDescriptorPoolSize ps[3] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3},
-                                  {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}};
+    VkDescriptorPoolSize ps[4] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4},
+                                  {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.maxSets = 1;
-    pi.poolSizeCount = 3;
+    pi.poolSizeCount = 4;
     pi.pPoolSizes = ps;
     if (vkCreateDescriptorPool(ctx.device, &pi, nullptr, &boltDescPool) != VK_SUCCESS)
         throw std::runtime_error("SatelliteSim: lightning descriptor pool");
@@ -153,6 +155,7 @@ void SatelliteSim::createLightningResources(VulkanContext &ctx)
     pl.pPushConstantRanges = &pcr;
     if (vkCreatePipelineLayout(ctx.device, &pl, nullptr, &boltPipeLayout) != VK_SUCCESS)
         throw std::runtime_error("SatelliteSim: lightning pipeline layout");
+    createFlashVolumes(ctx);   // (before the descriptors: bindings 7 and 8)
     createLightningPipeline(ctx);
     writeLightningDescriptors(ctx);
     createBoltGround(ctx);
@@ -251,6 +254,15 @@ void SatelliteSim::writeLightningDescriptors(VulkanContext &ctx)
     w[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     w[5].pBufferInfo = &du;
     frameSafeUpdateDescriptorSets(ctx.device, 6, w, 0, nullptr);
+    if (fvView && boltLightBuf)
+    {
+        VkDescriptorImageInfo fv{fvSampler, fvView, VK_IMAGE_LAYOUT_GENERAL};
+        VkDescriptorBufferInfo lb{boltLightBuf, 0, sizeof(GpuBoltLight)};
+        VkWriteDescriptorSet w2[2] = {};
+        w2[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, boltDescSet, 7, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &fv, nullptr, nullptr};
+        w2[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, boltDescSet, 8, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &lb, nullptr};
+        frameSafeUpdateDescriptorSets(ctx.device, 2, w2, 0, nullptr);
+    }
     if (meshRendererInit)
         writeLightningMeshDescriptor(ctx);
 }
@@ -274,6 +286,7 @@ void SatelliteSim::writeLightningMeshDescriptor(VulkanContext &ctx)
 void SatelliteSim::destroyLightningResources(VkDevice device)
 {
     destroyBoltGround(device);
+    destroyFlashVolumes(device);
     if (boltPipeline) vkDestroyPipeline(device, boltPipeline, nullptr);
     if (boltPipeLayout) vkDestroyPipelineLayout(device, boltPipeLayout, nullptr);
     if (boltDescPool) vkDestroyDescriptorPool(device, boltDescPool, nullptr);
@@ -303,6 +316,8 @@ void SatelliteSim::updateLightningBolts()
     boltFlashCount = 0;
     boltSegCount = 0;
     boltProbeCount = 0;
+    fvJobCount = 0;
+    boltLightWants_.clear();
     ++boltFrame;
     boltGroundCollect();   // the ground under the trees asked two frames ago: fit them
     // Only a list the lightning pass wrote LAST frame: otherwise it is stale (clouds off, from far orbit) and its
@@ -408,20 +423,45 @@ void SatelliteSim::updateLightningBolts()
         }
         else if (kind != 2)
             reveal = 150000.0f * std::max(age - kLeader + 0.03f, 0.0f);
-        F.m = glm::vec4(reveal, brMul, leader, 0.0f);
+        F.m = glm::vec4(reveal, brMul, leader, 65535.0f);   // (w: no light volume yet; boltLightAssign)
         // Where the cloud glows: the origin, and where the channel leaves the cloud (a ground stroke) or the spreading
         // fronts of three arms (a spider: the light moves through the cloud with it).
         glm::vec4 em[4] = {glm::vec4(o, 1.0f), glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f)};
         auto local = [&](glm::vec3 L) { return o + a1 * L.x + a2 * L.y + u * L.z; };
         if (kind == 1)
+        {
             em[1] = glm::vec4(local(t.exitLocal), 0.6f);
+            // Lit through the cloud around it (flash_volume.glsl), the light must come from where the channel is: most
+            // of a ground stroke's is its descent BELOW the cloud, which lights the base, the rain and the flanks from
+            // outside. (The glow by distance alone had no cloud in its way: the two emitters in and at the cloud stood
+            // in for it.) Two more, 40% and 80% of the way down; the ones in and at the cloud a little less.
+            if (cv2LightningLight > 0.5f)
+                for (const bolt::Path &pth : t.tree.paths)
+                    if ((pth.flags & bolt::kTrunk) && pth.count >= 5)
+                    {
+                        em[0].w = 0.7f;
+                        em[1].w = 0.5f;
+                        em[2] = glm::vec4(local(t.tree.verts[pth.first + (size_t)(pth.count - 1) * 2 / 5].p), 1.0f);
+                        em[3] = glm::vec4(local(t.tree.verts[pth.first + (size_t)(pth.count - 1) * 4 / 5].p), 0.7f);
+                        break;
+                    }
+        }
         else if (kind == 2)
             em[0] = glm::vec4(local(glm::vec3(0.0f, 0.0f, 5000.0f)), 1.0f);
         else
             for (size_t k = 0; k + 1 < t.tree.armStart.size() && k < 3; ++k)
                 em[1 + k] = glm::vec4(local(bolt::armFront(t.tree, k, reveal)), 0.7f);
         for (int k = 0; k < 4; ++k)
+        {
             F.e[k] = em[k];
+            // An emitter that lights cloud (not a sprite's head) asks for a light volume: the nearest get them.
+            if (kind != 2 && em[k].w > 0.0f)
+            {
+                const glm::vec3 pe(em[k]);
+                boltLightWants_.push_back({slot, k, id, eye + E * (double)pe.x + N * (double)pe.y + up * (double)pe.z, pe,
+                                           (double)glm::length(pe)});
+            }
+        }
         for (const GpuBoltSeg &s : t.draw)
         {
             GpuBoltSeg &d = outS[boltSegCount++];
@@ -495,6 +535,213 @@ void SatelliteSim::updateLightningBolts()
         it = (boltFrame - it->second.lastFrame > 120) ? boltTrees_.erase(it) : std::next(it);
     // The drawn ground under the new trees (answered two frames on: boltGroundCollect).
     boltGroundAsk(up * 6371000.0, E, N, up);
+    // The cloud around the nearest emitters (this frame's bakes: recordFlashVolumes, inside recordCloudsV2).
+    boltLightAssign(outF, eye);
+}
+
+// ── The flashes' light volumes (flash_volume.glsl; the members' note in SatelliteSim.h) ─────────────────────────────
+// Hands the kFvSlots slots to the nearest emitters (an emitter keeps its slot while its flash lives), lists up to
+// kFvJobsMax to bake this frame (new ones first, then those that have moved), and writes each flash's slot codes.
+void SatelliteSim::boltLightAssign(GpuBoltFlash *flashes, const glm::dvec3 &eye)
+{
+    (void)eye;
+    const bool on = cv2LightningLight > 0.5f && fvPipeline && fvJobMapped && cloudsV2LightningActive();
+    if (!on || boltLightWants_.empty())
+        return;
+    std::sort(boltLightWants_.begin(), boltLightWants_.end(), [](const BoltLightWant &a, const BoltLightWant &b) { return a.dist < b.dist; });
+    if (boltLightWants_.size() > kFvSlots)
+        boltLightWants_.resize(kFvSlots);
+    int slotOf[kFvSlots];
+    // The ones that hold a slot already keep it.
+    for (size_t i = 0; i < boltLightWants_.size(); ++i)
+    {
+        slotOf[i] = -1;
+        for (uint32_t s = 0; s < kFvSlots; ++s)
+            if (boltLightSlots_[s].emitter == boltLightWants_[i].emitter && boltLightSlots_[s].flashId == boltLightWants_[i].id &&
+                boltLightSlots_[s].usedFrame + 1 >= boltFrame)
+            {
+                slotOf[i] = (int)s;
+                boltLightSlots_[s].usedFrame = boltFrame;
+                break;
+            }
+    }
+    // The others take the slots nobody used this frame.
+    for (size_t i = 0; i < boltLightWants_.size(); ++i)
+    {
+        if (slotOf[i] >= 0)
+            continue;
+        for (uint32_t s = 0; s < kFvSlots; ++s)
+            if (boltLightSlots_[s].usedFrame != boltFrame)
+            {
+                boltLightSlots_[s] = BoltLightSlot{boltLightWants_[i].id, boltLightWants_[i].emitter, glm::dvec3(0.0), false, boltFrame};
+                slotOf[i] = (int)s;
+                break;
+            }
+    }
+    // This frame's bakes: never baked first (nearest first: the list's order), then moved ones.
+    GpuFvJob *jobs = (GpuFvJob *)((char *)fvJobMapped + 16);
+    for (int pass = 0; pass < 2 && fvJobCount < kFvJobsMax; ++pass)
+        for (size_t i = 0; i < boltLightWants_.size() && fvJobCount < kFvJobsMax; ++i)
+        {
+            if (slotOf[i] < 0)
+                continue;
+            BoltLightSlot &sl = boltLightSlots_[slotOf[i]];
+            const BoltLightWant &w = boltLightWants_[i];
+            const bool want = pass == 0 ? !sl.baked : (sl.baked && sl.usedFrame == boltFrame && glm::length(w.ecef - sl.bakedAt) > kFvRebakeM);
+            if (!want)
+                continue;
+            const GpuBoltFlash &F = flashes[w.flashSlot];
+            GpuFvJob &j = jobs[fvJobCount++];
+            j.c = glm::vec4(w.enu, (float)slotOf[i]);
+            const float gMs = cv2ParamsMapped ? ((const GpuCloudV2Params *)cv2ParamsMapped)->ms.y : 0.85f;
+            j.t1 = glm::vec4(glm::vec3(F.t1), boltLightTune.x);       // w: the side escape (N's fall-off)
+            j.t2 = glm::vec4(glm::vec3(F.t2), 1.0f - gMs * gMs);
+            j.up = glm::vec4(glm::vec3(F.u), 0.0f);
+            sl.baked = true;
+            sl.bakedAt = w.ecef;
+            ++fvBakes_;
+        }
+    ((uint32_t *)fvJobMapped)[0] = fvJobCount;
+    if (fvJobCount > 0)
+        ctx_->mirrorDirty(fvJobMapped, 0, 16 + sizeof(GpuFvJob) * fvJobCount);
+    // The flashes' codes: 4 bits an emitter, its slot once baked (this frame's bakes run before the draw).
+    for (size_t i = 0; i < boltLightWants_.size(); ++i)
+    {
+        if (slotOf[i] < 0 || !boltLightSlots_[slotOf[i]].baked)
+            continue;
+        GpuBoltFlash &F = flashes[boltLightWants_[i].flashSlot];
+        uint32_t codes = (uint32_t)(F.m.w + 0.5f);
+        codes = (codes & ~(15u << (4 * boltLightWants_[i].emitter))) | ((uint32_t)slotOf[i] << (4 * boltLightWants_[i].emitter));
+        F.m.w = (float)codes;
+    }
+}
+
+void SatelliteSim::createFlashVolumes(VulkanContext &ctx)
+{
+    if (fvImg)
+        return;
+    // RGBA16F: a storage format every device has, linearly filtered (r = the optical depth).
+    ctx.createImage(kFvA, kFvE, VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, fvImg, fvMem,
+                    1, kFvR * kFvSlots);
+    {
+        VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+        vci.image = fvImg;
+        vci.viewType = VK_IMAGE_VIEW_TYPE_3D;
+        vci.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+        vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCreateImageView(ctx.device, &vci, nullptr, &fvView);
+        VkSamplerCreateInfo sci{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+        sci.magFilter = sci.minFilter = VK_FILTER_LINEAR;
+        sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;          // the azimuth wraps
+        sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        vkCreateSampler(ctx.device, &sci, nullptr, &fvSampler);
+        // Compute writes it and the fragment stage samples it: GENERAL throughout.
+        VkCommandBuffer cmd = ctx.beginOneTimeCommands();
+        VkImageMemoryBarrier ib{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        ib.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        ib.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        ib.srcQueueFamilyIndex = ib.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        ib.image = fvImg;
+        ib.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        ib.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                             0, 0, nullptr, 0, nullptr, 1, &ib);
+        ctx.endOneTimeCommands(cmd);
+    }
+    fvJobMapped = createMirrored(ctx, 16 + sizeof(GpuFvJob) * kFvJobsMax, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, fvJobBuf, fvJobMem, false,
+                                 "flashVolJobs");
+    boltLightMapped = createMirrored(ctx, sizeof(GpuBoltLight), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, boltLightBuf, boltLightMem, true,
+                                     "boltLight");
+    if (!cv2MarchDescLayout)
+        return;   // (clouds v2 not created: the glow by distance alone)
+    VkDescriptorSetLayoutBinding b[2] = {};
+    b[0] = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    b[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+    VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    li.bindingCount = 2;
+    li.pBindings = b;
+    vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &fvSetLayout);
+    VkDescriptorPoolSize ps[2] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}, {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}};
+    VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    pi.maxSets = 1;
+    pi.poolSizeCount = 2;
+    pi.pPoolSizes = ps;
+    vkCreateDescriptorPool(ctx.device, &pi, nullptr, &fvPool);
+    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    ai.descriptorPool = fvPool;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts = &fvSetLayout;
+    vkAllocateDescriptorSets(ctx.device, &ai, &fvSet);
+    VkDescriptorBufferInfo jb{fvJobBuf, 0, VK_WHOLE_SIZE};
+    VkDescriptorImageInfo im{VK_NULL_HANDLE, fvView, VK_IMAGE_LAYOUT_GENERAL};
+    VkWriteDescriptorSet w[2] = {};
+    w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, fvSet, 0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &jb, nullptr};
+    w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, fvSet, 1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &im, nullptr, nullptr};
+    vkUpdateDescriptorSets(ctx.device, 2, w, 0, nullptr);
+    // The march's set 0 and push constants + set 1 (as the aerial-perspective volume's pass).
+    VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(CloudMarchPC)};
+    VkDescriptorSetLayout lays[2] = {cv2MarchDescLayout, fvSetLayout};
+    VkPipelineLayoutCreateInfo pli{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    pli.setLayoutCount = 2;
+    pli.pSetLayouts = lays;
+    pli.pushConstantRangeCount = 1;
+    pli.pPushConstantRanges = &pcr;
+    vkCreatePipelineLayout(ctx.device, &pli, nullptr, &fvPipeLayout);
+    VkShaderModule mod = ctx.loadShader("shaders/cloud_v2_flashvol.comp.spv");
+    VkComputePipelineCreateInfo ci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    ci.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, mod, "main", nullptr};
+    ci.layout = fvPipeLayout;
+    if (vkCreateComputePipelines(ctx.device, ctx.pipelineCache, 1, &ci, nullptr, &fvPipeline) != VK_SUCCESS)
+        fvPipeline = VK_NULL_HANDLE;   // (the glow by distance alone)
+    vkDestroyShaderModule(ctx.device, mod, nullptr);
+}
+
+void SatelliteSim::destroyFlashVolumes(VkDevice device)
+{
+    if (fvPipeline) vkDestroyPipeline(device, fvPipeline, nullptr);
+    if (fvPipeLayout) vkDestroyPipelineLayout(device, fvPipeLayout, nullptr);
+    if (fvPool) vkDestroyDescriptorPool(device, fvPool, nullptr);
+    if (fvSetLayout) vkDestroyDescriptorSetLayout(device, fvSetLayout, nullptr);
+    if (ctx_ && fvJobMapped) ctx_->mirrorForget(fvJobMapped);
+    if (ctx_ && boltLightMapped) ctx_->mirrorForget(boltLightMapped);
+    if (fvJobBuf) vkDestroyBuffer(device, fvJobBuf, nullptr);
+    if (fvJobMem) vkFreeMemory(device, fvJobMem, nullptr);
+    if (boltLightBuf) vkDestroyBuffer(device, boltLightBuf, nullptr);
+    if (boltLightMem) vkFreeMemory(device, boltLightMem, nullptr);
+    if (fvSampler) vkDestroySampler(device, fvSampler, nullptr);
+    if (fvView) vkDestroyImageView(device, fvView, nullptr);
+    if (fvImg) vkDestroyImage(device, fvImg, nullptr);
+    if (fvMem) vkFreeMemory(device, fvMem, nullptr);
+    fvPipeline = VK_NULL_HANDLE;
+    fvPipeLayout = VK_NULL_HANDLE;
+    fvPool = VK_NULL_HANDLE;
+    fvSet = VK_NULL_HANDLE;
+    fvSetLayout = VK_NULL_HANDLE;
+    fvJobMapped = boltLightMapped = nullptr;
+    fvJobBuf = boltLightBuf = VK_NULL_HANDLE;
+    fvJobMem = boltLightMem = VK_NULL_HANDLE;
+    fvSampler = VK_NULL_HANDLE;
+    fvView = VK_NULL_HANDLE;
+    fvImg = VK_NULL_HANDLE;
+    fvMem = VK_NULL_HANDLE;
+}
+
+// Inside recordCloudsV2, after the lightning pass (the march's set 0 and push constants are bound).
+void SatelliteSim::recordFlashVolumes(VkCommandBuffer cmd, VulkanContext &ctx)
+{
+    (void)ctx;
+    if (fvJobCount == 0 || !fvPipeline)
+        return;
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, fvPipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, fvPipeLayout, 1, 1, &fvSet, 0, nullptr);
+    vkCmdDispatch(cmd, fvJobCount * 4, 1, 1);   // four workgroups an emitter (cloud_v2_flashvol.comp)
+    VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    mb.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    mb.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                         0, 1, &mb, 0, nullptr, 0, nullptr);
 }
 
 // ── The drawn ground under the channels (bolt_ground.comp; the members' note in SatelliteSim.h) ──────────────────
@@ -715,6 +962,23 @@ void SatelliteSim::recordLightning(VkCommandBuffer cmd, VulkanContext &ctx)
     if (!boltPipeline || (boltFlashCount == 0 && engineLightCount == 0))
         return;
     ctx.mirrorDirty(boltFlashMapped, 0, sizeof(GpuBoltFlash) * boltFlashCount);
+    if (boltLightMapped)
+    {
+        // The cloud lighting's own numbers (the march's CloudV2Params, this frame's).
+        GpuBoltLight L{};
+        L.phase = glm::vec4(0.8f, 0.6f, -0.25f, 0.4f);
+        L.ms = glm::vec4(0.0f, 0.85f, 1.0f, 1200.0f);
+        if (cv2ParamsMapped)
+        {
+            const GpuCloudV2Params *cp = (const GpuCloudV2Params *)cv2ParamsMapped;
+            L.phase = cp->phase;
+            L.ms = glm::vec4(cv2LightningLight > 0.5f ? 1.0f : 0.0f, cp->ms.y, cp->ms.z, cp->ms.w);
+        }
+        L.tune = boltLightTune;
+        L.tune2 = glm::vec4(boltLightNCap, 0.0f, 0.0f, 0.0f);
+        std::memcpy(boltLightMapped, &L, sizeof(L));
+        ctx.mirrorDirtyAll(boltLightMapped);
+    }
     ctx.mirrorDirty(boltSegMapped, 0, sizeof(GpuBoltSeg) * boltSegCount);
     BoltDrawPC pc{};
     pc.skyView = camera.viewMatrix();

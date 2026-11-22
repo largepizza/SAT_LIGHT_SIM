@@ -15,6 +15,54 @@ layout(location = 0) out vec4 outColor;
 // engine lights in sat_mesh.frag (with its own normals), not by the ground term here (2026-10-21).
 layout(set = 0, binding = 6, r32f) uniform readonly image2D meshDistImg;
 
+// ── A flash's light on the cloud a pixel shows (2026-11-21, issue_20261121_163317) ──
+// As cloud_v2_march.comp lights a cloud sample under a reflector beam (beamFinish): E (ph e^-od + ms D), with the
+// irradiance E the flash's by distance (boltGlow), od the cloud's optical depth from the emitter to the cloud point
+// (the emitter's volume, flash_volume.glsl), ph the cloud's two-lobe phase at the angle between the light's path and
+// the view, and D the slab's diffuse field (cv2DiffuseField: keep the two in step) with od toward the light and the
+// pixel's own depth away from it, x N (the flash's own cloud lets all of its light out somewhere: flash_volume.glsl). So a flash behind thick cloud does not light its near side, a thin edge in front
+// of a flash lights up (the forward lobe), and a flash inside a cloud shows where the cloud toward it is thin.
+float boltHG(float c, float g)
+{
+    float g2 = g * g;
+    return (1.0 - g2) / pow(max(1.0 + g2 - 2.0 * g * c, 1e-4), 1.5);
+}
+// == cv2DiffuseField (cloud_v2_march.comp) without its hV (the caller's wD) and with the side escape passed in: a
+// flash radiates all round, so less of its light leaves the line from it to the point than leaves a beam's.
+float boltDiffuse(float tauT, float tauB, float cosK, float g, float side)
+{
+    float f = g * g, gp = g / (1.0 + g);
+    float t  = (1.0 - f) * tauT, ts = t + (1.0 - f) * tauB;
+    float et = exp(-t);
+    float C1 = (5.0 - exp(-ts)) / ((1.0 - gp) * ts + 4.0 / 3.0);
+    float I1 = C1 - 3.0 * et;
+    float I0 = 5.0 - (2.0 / 3.0) * C1 - (1.0 - gp) * C1 * t - 3.0 * et;
+    float J  = max(I0 + 0.3 * g * cosK * I1, 0.0) + (1.0 - f) * max(1.0 + 3.0 * gp * cosK, 0.0) * max(et - exp(-tauT), 0.0);
+    return 1.6 * J * exp(-side * t);
+}
+// The cloud point C (ENU about the eye) seen along dir with opacity op; wD = the diffuse light's share of that opacity
+// (the march's hV, 1 - e^-(1 - f) x over the view's depth x into the cloud, summed over the opacity).
+float boltLightAt(uint slot, BoltFlash F, vec3 em, vec3 C, vec3 dir, float op, float wD)
+{
+    vec3  v  = C - em;
+    float r  = max(length(v), 1.0);
+    vec3  vl = vec3(dot(v, F.t1.xyz), dot(v, F.t2.xyz), dot(v, F.u.xyz));
+    float od = fvAt(slot, vl, r).x;
+    float N  = min(fvN(slot), bl.tune2.x);
+    float cosB = -dot(v, dir) / r;
+    // The far side (the slab's depth beyond the point, away from the light): the pixel's own cloud. The point is the
+    // first cloud the eye meets, so with the light behind it (cosB 1) nothing lies beyond it, and with the light on the
+    // eye's side (cosB -1) the view's own depth does. (Read from the volume 1200 m further out, the depth stepped at the
+    // volume's distances: rings round every flash seen through cloud.)
+    float ob = -log(max(1.0 - op, 1e-3)) * (0.5 - 0.5 * cosB);
+    // The emitter is a stretch of channel bl.tune.z across, seen from the cloud point under an angle: the forward
+    // lobe's peak is that wide at least.
+    float s2   = bl.tune.z * bl.tune.z / (r * r + bl.tune.z * bl.tune.z);
+    float cosS = max(cosB - 0.5 * s2, -1.0);
+    float ph   = bl.phase.y * boltHG(cosS, bl.phase.x) + bl.phase.w * boltHG(cosS, bl.phase.z);
+    return boltGlow(r) * bl.tune.w * (bl.tune.y * op * ph * exp(-od) + N * bl.ms.z * wD * boltDiffuse(od, ob, cosB, bl.ms.y, bl.tune.x));
+}
+
 void main()
 {
     vec2 uv = gl_FragCoord.xy / vec2(pc.screenW, pc.screenH);
@@ -193,6 +241,15 @@ void main()
             air4[k] = ok ? boltAir(dir * tC4[k], tC4[k]) : 0.0;
             any = any || ok;
         }
+        // The cloud this pixel shows, as one place: its opacity, and its distance and air weighted by it.
+        float opS = 0.0, tS = 0.0, airS = 0.0;
+        for (int k = 0; k < 4; ++k) { opS += op4[k]; tS += op4[k] * tC4[k]; airS += op4[k] * air4[k]; }
+        bool  phys = bl.ms.x > 0.5 && opS > 1e-4;
+        float opP  = clamp(opS, 0.0, 1.0);
+        float aF   = 1.0 - bl.ms.y * bl.ms.y;
+        float wD   = opP - (1.0 - pow(1.0 - opP, 1.0 + aF)) / (1.0 + aF);
+        vec3  Cm   = phys ? dir * (tS / opS) : vec3(0.0);
+        float airM = phys ? airS / opS : 0.0;
         x = vec3(0.0);
         uint n = uint(pc.params2.y + 0.5);
         for (uint fi = 0u; fi < n; ++fi) {
@@ -219,8 +276,12 @@ void main()
                 float rE = length(em.xyz);
                 if (rE > kBoltGlowR && dot(dir, em.xyz) < rE * sqrt(1.0 - (kBoltGlowR * kBoltGlowR) / (rE * rE))) continue;
                 float g = 0.0;
-                for (int k = 0; k < 4; ++k)
-                    g += op4[k] * air4[k] * boltGlow(length(dir * tC4[k] - em.xyz));
+                uint  sl = (uint(F.m.w + 0.5) >> uint(4 * e)) & 15u;
+                if (phys && sl < 15u)
+                    g = airM * boltLightAt(sl, F, em.xyz, Cm, dir, opP, wD);
+                else
+                    for (int k = 0; k < 4; ++k)
+                        g += op4[k] * air4[k] * boltGlow(length(dir * tC4[k] - em.xyz));
                 x += vec3(0.80, 0.86, 1.0) * (pc.params.x * pc.params.z * 2.0 * F.o.w * em.w * g);
             }
         }

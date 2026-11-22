@@ -282,7 +282,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   channel's shape, delayed by distance. A flash is the same bolt from wherever you look at it: hold time, fly to
   it, and the channel you saw from afar is the one you find, drawn finer as you close in. Ground strokes end on
   the terrain, and no channel runs through a hillside. Strokes carry the branches of their stepped leader,
-  heading down and forking as they go; spider lightning crawls and forks under the cloud base.
+  heading down and forking as they go; spider lightning crawls and forks under the cloud base. A flash lights
+  the clouds through the cloud around it: a flash inside a storm glows through its thin sides and edges, a
+  stroke under the base lights the base and the rain, and a flash behind a tower no longer lights the side you see.
 - **Rainbows, halos and ice optics** for the Sun or the Moon: rainbows at storms, 22-degree halos, sundogs, the
   circumzenithal arc, sun pillars.
 - **Ice halos are ray-traced through real crystals.** The halos of cirrus, snow and diamond dust come from a table

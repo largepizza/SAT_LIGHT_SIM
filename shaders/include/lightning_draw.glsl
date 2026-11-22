@@ -14,7 +14,8 @@ struct BoltFlash {     // == GpuBoltFlash (SatelliteSim.h)
     vec4 u;            // xyz up, w age (s)
     vec4 t1;           // xyz, w kind: 0 in cloud, 1 to ground, 2 red sprite, 3 spider under the base
     vec4 t2;           // xyz, w the tree's longest arc (m)
-    vec4 m;            // x revealed arc (m), y the branches' share, z 1 during the stepped leader
+    vec4 m;            // x revealed arc (m), y the branches' share, z 1 during the stepped leader, w its emitters' light
+                       // volumes: 4 bits each, emitter e in bits 4e .. 4e+3 (a slot of flash_volume.glsl, 15 = none)
     vec4 e[4];         // glow emitters: xyz (ENU about the eye), w weight
 };
 struct BoltSeg { vec3 p0; float w; vec3 p1; uint packed; };
@@ -32,6 +33,19 @@ struct EngineLight { vec4 c; vec4 ia; vec4 ib; vec4 col; vec4 cone; };
 layout(set = 0, binding = 4) uniform sampler2D sceneDepthTex;
 layout(std430, set = 0, binding = 5) readonly buffer EngineLightBuf { uint elDustCount; uint elCount; uint elPad0, elPad1; EngineLight elList[]; };
 const uint kEngineLightBase = 1024u;   // == SatelliteSim::kMaxDustClouds
+// The flashes' light on the cloud (2026-11-21, issue_20261121_163317; include/flash_volume.glsl): the cloud's optical
+// depth around each emitter, and the cloud lighting's own numbers (the march's, copied by the host each frame).
+layout(set = 0, binding = 7) uniform sampler3D boltFvTex;
+layout(std140, set = 0, binding = 8) uniform BoltLight {
+    vec4 phase;   // == cv2.phase: x / y the forward lobe's g / weight, z / w the backward lobe's
+    vec4 ms;      // x 1 = the flashes light the cloud through the volumes (0 = the glow by distance alone, the A/B),
+                  // y the diffuse field's g (cv2.ms.y), z its gain (cv2.ms.z), w spare (cv2.ms.w)
+    vec4 tune;    // x the diffuse field's side escape per unit of scaled depth, y the single scattering's gain,
+                  // z the emitter's own radius (m: a stretch of channel, not a point), w the level (1 / a lit thick face)
+    vec4 tune2;   // x the most N may be (flash_volume.glsl: a flash deep in a cloud shows through its thinnest side)
+} bl;
+#define FV_SAMPLER boltFvTex
+#include "flash_volume.glsl"
 // Fades a light out over the outer 40% of its reach (a hard cut drew its reach as a circle from orbit).
 float reachWin(float r2, float reach2) { return 1.0 - smoothstep(0.36 * reach2, reach2, r2); }
 

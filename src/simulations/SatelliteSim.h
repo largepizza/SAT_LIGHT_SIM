@@ -6092,6 +6092,7 @@ private:
     float cv2RainShutterMs = 33.0f;    // a drop's streak: how far it falls in this time (ms)
     float cv2LightningStormRate = 0.53f;   // flashes / min per 20 x 20 km of storm at full strength (whole storms flash)
     float cv2LightningTendrils = 1.23f;    // the channels' branching (x the branch and tendril counts)
+    float cv2LightningLight = 1.0f;        // 1 = a flash lights the cloud through the cloud around it (flash_volume.glsl), 0 = by distance alone
     // The rain / snow particles' motion (2026-10-23 rework, SatelliteSimRain.cpp): new keys, so a settings file tuned
     // against the old model (fall x10 to hide the lumped far drops' slow drift) does not carry over.
     float cv2RainFallSpeed = 1.0f;      // x the drops' terminal velocities (1 = physical; heavier rain falls faster too)
@@ -10054,6 +10055,48 @@ private:
     uint32_t boltProbeCopyS[VulkanContext::kMaxFramesInFlight] = {};  // points the slot's frame copied back
     std::vector<BoltProbeJob> boltProbeJobsS[VulkanContext::kMaxFramesInFlight];
     bool boltCheckAll_ = false;          // harness `lightning check`: measure every fitted tree again
+    // The flashes' light on the clouds (2026-11-21; shaders/include/flash_volume.glsl): each emitter of the nearest
+    // flashes holds a slot of a small 3D image, the cloud's optical depth outward from it (cloud_v2_flashvol.comp,
+    // baked when the emitter is new or has moved kFvRebakeM; at most kFvJobsMax a frame, none without a flash), and
+    // lightning.frag lights the cloud through it as the march lights a cloud under a reflector beam. An emitter without
+    // a slot (the 17th nearest, or one not baked yet) keeps the glow by distance alone.
+    static constexpr uint32_t kFvSlots = 16, kFvJobsMax = 4, kFvA = 32, kFvE = 32, kFvR = 16;   // == flash_volume.glsl
+    static constexpr double kFvRebakeM = 600.0;
+    struct BoltLightSlot
+    {
+        uint32_t flashId = 0;
+        int emitter = -1;
+        glm::dvec3 bakedAt{0.0};   // where its volume was baked (Earth-fixed)
+        bool baked = false;
+        uint64_t usedFrame = 0;
+    };
+    struct GpuFvJob { glm::vec4 c, t1, t2, up; };
+    struct GpuBoltLight { glm::vec4 phase, ms, tune, tune2; };   // == BoltLight (lightning_draw.glsl), std140
+    BoltLightSlot boltLightSlots_[kFvSlots];
+    struct BoltLightWant { uint32_t flashSlot; int emitter; uint32_t id; glm::dvec3 ecef; glm::vec3 enu; double dist; };
+    std::vector<BoltLightWant> boltLightWants_;
+    void boltLightAssign(GpuBoltFlash *flashes, const glm::dvec3 &eye);
+    void createFlashVolumes(VulkanContext &ctx);
+    void destroyFlashVolumes(VkDevice device);
+    void recordFlashVolumes(VkCommandBuffer cmd, VulkanContext &ctx);
+    VkImage fvImg = VK_NULL_HANDLE;
+    VkDeviceMemory fvMem = VK_NULL_HANDLE;
+    VkImageView fvView = VK_NULL_HANDLE;
+    VkSampler fvSampler = VK_NULL_HANDLE;
+    VkBuffer fvJobBuf = VK_NULL_HANDLE, boltLightBuf = VK_NULL_HANDLE;
+    VkDeviceMemory fvJobMem = VK_NULL_HANDLE, boltLightMem = VK_NULL_HANDLE;
+    void *fvJobMapped = nullptr, *boltLightMapped = nullptr;
+    VkDescriptorSetLayout fvSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool fvPool = VK_NULL_HANDLE;
+    VkDescriptorSet fvSet = VK_NULL_HANDLE;
+    VkPipelineLayout fvPipeLayout = VK_NULL_HANDLE;
+    VkPipeline fvPipeline = VK_NULL_HANDLE;
+    uint32_t fvJobCount = 0;
+    uint64_t fvBakes_ = 0;
+    // x the diffuse field's side escape for a flash, y the single scattering's gain, z the emitter's radius (m), w the
+    // level: a thick cloud's lit face reads as the glow by distance did (harness `lightning light` changes them live).
+    glm::vec4 boltLightTune{0.03f, 0.2f, 1500.0f, 1.2f};
+    float boltLightNCap = 40.0f;   // the most the own-cloud factor N may be
     uint64_t boltTreesBuilt_ = 0, boltDrawRebuilds_ = 0;
     // Per frame slot: the observer direction the slot's frame ran the lightning pass with, and whether it ran.
     glm::dvec3 cv2LightningObsDirS[VulkanContext::kMaxFramesInFlight] = {{0.0, 0.0, 1.0}, {0.0, 0.0, 1.0}};

@@ -1336,10 +1336,13 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   antialiased capsules at their TRUE luminous width (3 m main, 1.2 / 0.6 / 0.35 m; sprites 120-380 m) — thinner than a
   pixel they are a pixel wide with their energy kept, never fatter — plus a halo (light scattered by rain and air: 70 m
   main, 22 m branches), hidden by the cloud composite in front (`cloudPointVisibilityAt`; rain shafts included), faded by
-  the air COLUMN between eye and point (`boltAir`: a flat haze length left ~5% from orbit); then the cloud lit around
-  the flashes in ONE full-screen pass looping over the emitters (per texel of the half-res composite, `boltGlow`: a
-  ~4-km diffusion core floored at ~3.5 km and a faint 15-km tail, windowed to 45 km — from orbit a flash is a soft
-  10-20 km patch). The lightning pass's thread 1 adds the flashes' light to the rain at the eye (`cv2RainAmb`): drops
+  the air COLUMN between eye and point (`boltAir`: a flat haze length left ~5% from orbit); then the cloud lit by
+  the flashes in ONE full-screen pass looping over the emitters, per texel of the half-res composite: through the cloud
+  around each emitter (2026-11-21: its optical-depth volume, the cloud's phase and the slab's diffuse field; clouds.md
+  "Lightning as LIGHT"), so a flash behind thick cloud does not light its near side and a flash inside a cloud shows
+  where the cloud toward it is thin; an emitter without a volume (the 17th nearest and beyond) keeps the glow by
+  distance alone (`boltGlow`: a ~4-km diffusion core floored at ~3.5 km and a faint 15-km tail, windowed to 45 km),
+  which was every flash's light until then: an unoccluded brightening within a radius. The lightning pass's thread 1 adds the flashes' light to the rain at the eye (`cv2RainAmb`): drops
   light up in a close strike. **Thunder is streamed from sound shells (2026-10-10, `addThunderSource` / `thunderStep`,
   SatelliteSimAmbience.cpp):** each flash's channel is kept as a source (pieces in Earth-fixed axes, up to 96 flashes, 150 s);
   its front travels at 343 m/s in sim time, and a playhead per source (2026-11-21, sound.md "Thunder is played by a

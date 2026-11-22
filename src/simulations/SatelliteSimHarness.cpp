@@ -211,7 +211,7 @@ const char *kHelp =
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "exposure [auto|hold|fast]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s] [wait=1]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [cdc=<spv>] [brick=<spv>] [nlc=<spv>] [smoke_layer=<spv>] [sky=<spv>] [sky_taa=<spv>] [wg=<X>x<Y>]; lightning [spawn kind= dist_km= az= ...|check [off]|rebuild] | lightning thunder log on|off|clear | state [name] | save <name> | load <file> | sim [name] [dt_ms=] [seconds=] [speed=] [hold_at=] [hold_s=] [jitter=]; eclipse solar|lunar; skyevents [state]|events|list <kind>|watch <solar|lunar|conjunction|occultation|moonglint|meteors|comet|supernova|cme|cometstorm|row|special <0-3>|aurora [t=]> [n=]|spaceweather; stars [state]|find <name>|select <name>; moonbase [state]|windows [days=] [limit=] [jitter=]|base <i> [lean=] [jitter=]; meteors [state]|count [minutes=] [lm=] [shower=]|force [kind=meteor|fireball|bolide] [shower=] [mag=] [az=] [el=] [v=] [delay=]|go [shower=]; comets [state]|list [days=]|watch [k|great] [days=] [sun_max=] [orbit=1]; aurora [next <kp>|substorm|kp <v>|auto]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...> [x= y=]; fps on|off|state; mouse move dx= dy= [frames=] | mouse click left|right [x= y=] | mouse scroll dy= | mouse aim <Id>[:i] [tol=] [frames=]; hints on|off|reset|state|set <gate> [0|1]|force <n>|gap [s=] [pad=0|1]; events list|state|on|off|fire <id> [total=0|1]|ack [choice=1|2|3] [soft=1]; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|preview <file> [shot=] [scale=] [fps=]|save|load|state|stop; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [cdc=<spv>] [brick=<spv>] [nlc=<spv>] [smoke_layer=<spv>] [sky=<spv>] [sky_taa=<spv>] [wg=<X>x<Y>]; lightning [spawn kind= dist_km= az= ...|check [off]|rebuild|light [side=] [single=] [src_m=] [level=] [ncap=]] | lightning thunder log on|off|clear | state [name] | save <name> | load <file> | sim [name] [dt_ms=] [seconds=] [speed=] [hold_at=] [hold_s=] [jitter=]; eclipse solar|lunar; skyevents [state]|events|list <kind>|watch <solar|lunar|conjunction|occultation|moonglint|meteors|comet|supernova|cme|cometstorm|row|special <0-3>|aurora [t=]> [n=]|spaceweather; stars [state]|find <name>|select <name>; moonbase [state]|windows [days=] [limit=] [jitter=]|base <i> [lean=] [jitter=]; meteors [state]|count [minutes=] [lm=] [shower=]|force [kind=meteor|fireball|bolide] [shower=] [mag=] [az=] [el=] [v=] [delay=]|go [shower=]; comets [state]|list [days=]|watch [k|great] [days=] [sun_max=] [orbit=1]; aurora [next <kp>|substorm|kp <v>|auto]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...> [x= y=]; fps on|off|state; mouse move dx= dy= [frames=] | mouse click left|right [x= y=] | mouse scroll dy= | mouse aim <Id>[:i] [tol=] [frames=]; hints on|off|reset|state|set <gate> [0|1]|force <n>|gap [s=] [pad=0|1]; events list|state|on|off|fire <id> [total=0|1]|ack [choice=1|2|3] [soft=1]; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|preview <file> [shot=] [scale=] [fps=]|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=] [frames=] [video=]; video start [name] [fps=] [scale=] [ui=on] [sound=all|ambience|off]|stop|state; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=<layer>[+<layer>]] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; "
@@ -6054,6 +6054,25 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["message"] = boltCheckAll_ ? "fitted trees are measured against the drawn ground" : "check off";
             return Status::Done;
         }
+        // `lightning light [side=] [single=] [src_m=] [level=] [ncap=]`: the flash light's tunables (boltLightTune), live.
+        if (lower(pos(0)) == "light")
+        {
+            boltLightTune.x = (float)c.num("side", boltLightTune.x);
+            boltLightTune.y = (float)c.num("single", boltLightTune.y);
+            boltLightTune.z = (float)c.num("src_m", boltLightTune.z);
+            boltLightTune.w = (float)c.num("level", boltLightTune.w);
+            boltLightNCap = (float)c.num("ncap", boltLightNCap);
+            if (c.has("side"))   // (the bakes hold the side escape in N: bake again)
+                for (BoltLightSlot &sl : boltLightSlots_)
+                    sl.baked = false;
+            r["ncap"] = boltLightNCap;
+            r["side"] = boltLightTune.x;
+            r["single"] = boltLightTune.y;
+            r["src_m"] = boltLightTune.z;
+            r["level"] = boltLightTune.w;
+            r["message"] = "flash light tunables";
+            return Status::Done;
+        }
         // `lightning rebuild`: drop the cached trees; each flash on the list is built again from its record, where the
         // eye is now (the same tree: the determinism check).
         if (lower(pos(0)) == "rebuild")
@@ -6145,6 +6164,17 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                              {"origin_ecef_m", {t.originEcef.x, t.originEcef.y, t.originEcef.z}}, {"sample_ecef_m", sample}});
         }
         r["trees"] = trees;
+        {
+            // The flashes' light volumes (flash_volume.glsl): which emitters hold a slot, and the bakes so far.
+            json slots = json::array();
+            for (uint32_t k = 0; k < kFvSlots; ++k)
+                if (boltLightSlots_[k].usedFrame + 1 >= boltFrame && boltLightSlots_[k].emitter >= 0)
+                    slots.push_back({{"slot", k}, {"id", boltLightSlots_[k].flashId}, {"emitter", boltLightSlots_[k].emitter},
+                                     {"baked", boltLightSlots_[k].baked}});
+            r["light_slots"] = slots;
+            r["light_bakes"] = fvBakes_;
+            r["light_jobs_this_frame"] = fvJobCount;
+        }
         r["trees_built"] = boltTreesBuilt_;
         r["draw_rebuilds"] = boltDrawRebuilds_;
         r["drawn_flashes"] = boltFlashCount;
