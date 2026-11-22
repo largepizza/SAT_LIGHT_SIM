@@ -7460,6 +7460,7 @@ void SatelliteSim::buildSettingsWeatherTab(const UIInput &inp, UIRenderer &ui)
         {tx(Txt::SldLightningRateCbTowersMinEach), &cv2LightningRate, 0.0f, 30.0f, 0.1f, "%.1f", 179},
         {tx(Txt::SldLightningGlow), &cv2LightningGlow, 0.0f, 5.0f, 0.05f, "%.2f", 180},
         {tx(Txt::SldLightningBolts), &cv2LightningBolt, 0.0f, 5.0f, 0.05f, "%.2f", 181},
+        {tx(Txt::SldLightningGlowColour), &cv2LightningColour, 0.0f, 2.0f, 0.05f, "%.2f", 628},
         {tx(Txt::SldLightningTendrils), &cv2LightningTendrils, 0.0f, 4.0f, 0.05f, "%.2f", 268},
         {tx(Txt::SldLightningSpritesChance), &cv2LightningSprites, 0.0f, 1.0f, 0.02f, "%.2f", 191},
     };
@@ -10369,6 +10370,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2LightningStormRate = c.value("lightning_storm_rate_per_area", cv2LightningStormRate);
         cv2LightningTendrils = c.value("lightning_tendrils", cv2LightningTendrils);
         cv2LightningLight = c.value("lightning_light", cv2LightningLight);
+        cv2LightningColour = c.value("lightning_colour", cv2LightningColour);
         cv2RainWindGain = c.value("surface_wind_gain", cv2RainWindGain);
         cv2RainStormWind = c.value("storm_outflow_mps", cv2RainStormWind);
         cv2RainGusts = c.value("wind_turbulence", cv2RainGusts);
@@ -11197,6 +11199,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"lightning_storm_rate_per_area", cv2LightningStormRate},
         {"lightning_tendrils", cv2LightningTendrils},
         {"lightning_light", cv2LightningLight},
+        {"lightning_colour", cv2LightningColour},
         {"surface_wind_gain", cv2RainWindGain},
         {"storm_outflow_mps", cv2RainStormWind},
         {"wind_turbulence", cv2RainGusts},

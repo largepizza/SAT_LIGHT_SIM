@@ -81,4 +81,32 @@ vec3 boltTonemap(vec3 x)
 {
     return mix(vec3(1.0) - exp(-x), vec3(1.0) - 1.0 / (vec3(1.0) + x + 0.5 * x * x), pc.params2.x);
 }
+
+// ── The colour of a stroke (2026-11-22; SatelliteSim::boltColourFill, harness `lightning color`) ──
+// What a photograph shows around a bolt, by where the light comes from. The return stroke's channel is ~30,000 K
+// plasma: singly ionised nitrogen's lines in the blue-violet (399.5, 444.7, 463.0, 500.5, 568.0 nm) over a continuum,
+// and H-alpha: blue-violet, and white only where the image clips (boltTonemap works per channel: a near trunk goes
+// to white, a thin or far piece keeps its hue). Round the channel, and along leaders and branches, a cold corona
+// sheath a few metres across glows in molecular nitrogen's violet bands (N2 second positive, N2+ first negative
+// 391 / 428 nm): most of a leader's or a twig's light, a few percent of a trunk's. The air scatters the stroke's
+// light: the irradiance round a line of emitters falls as 1 / distance (each piece's as 1 / distance^2, summed),
+// Rayleigh's lambda^-4 leaves the violet lines (indigo), rain and cloud in the way scatter all of it (neutral,
+// wider). The air between the stroke and the eye takes the blue first. Every colour here arrives mixed by the host
+// from the look of 2026-11-21 (gain 0: these are that look's constants and every new term is 0) to the physical one
+// (gain 1) and past it, at the luminance of the colour it replaces.
+layout(std140, set = 0, binding = 12) uniform BoltColour {
+    vec4 core;      // rgb the channel's colour; a the gain ("Lightning glow colour")
+    vec4 halo;      // rgb the Gaussian halo of 2026-10-05 (x 1 - gain: the scattered glow replaces it); a spare
+    vec4 sheath;    // rgb the corona sheath's colour (the core's luminance); a its radius round a main channel (m)
+    vec4 sheathK;   // x its share of a main channel's light (x gain), y x this per branch order, z a stepped leader's
+                    // share (x gain), w its radius x this per branch order
+    vec4 glow;      // rgb the scattered glow in clear air x its share (the halo's luminance and energy); a spare
+    vec4 glowWet;   // rgb the same through rain / cloud x its share; a how many times wider its core is
+    vec4 wet;       // x the wet share of the glow anywhere, y + this x the share of the stroke's light the cloud
+                    // composite in front of it takes (rain shafts included); zw spare
+    vec4 air;       // rgb the air's optical depth per channel over the grey one's (boltAir), - 1, x gain; a spare
+    vec4 cloud;     // rgb the flash's light on the cloud (mode 1); a spare
+} bc;
+// What the air leaves of each channel, over boltAir's grey transmittance `air` (1 at gain 0).
+vec3 boltAirTint(float air) { return pow(vec3(max(air, 1e-6)), bc.air.rgb); }
 #endif

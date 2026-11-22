@@ -115,9 +115,11 @@ void SatelliteSim::createLightningResources(VulkanContext &ctx)
                                      boltFlashBuf, boltFlashMem, false, "boltFlashes");
     boltSegMapped = createMirrored(ctx, sizeof(GpuBoltSeg) * kBoltMaxSegs, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, boltSegBuf,
                                    boltSegMem, false, "boltSegments");
+    boltColourMapped = createMirrored(ctx, sizeof(GpuBoltColour), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, boltColourBuf, boltColourMem,
+                                      true, "boltColour");
 
     const VkShaderStageFlags st = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
-    VkDescriptorSetLayoutBinding b[9] = {
+    VkDescriptorSetLayoutBinding b[10] = {
         {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, st, nullptr},          // the flashes (frames, state, glow emitters)
         {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, st, nullptr},          // the channel segments
         {2, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},  // the cloud composite A (distance, km)
@@ -127,14 +129,15 @@ void SatelliteSim::createLightningResources(VulkanContext &ctx)
         {6, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, st, nullptr},           // the meshes' distance (lit by sat_mesh.frag)
         {7, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, st, nullptr},  // the flashes' light volumes (flash_volume.glsl)
         {8, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, st, nullptr},          // the cloud lighting's numbers (BoltLight)
+        {12, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, st, nullptr},         // the stroke's colours (BoltColour, 2026-11-22)
     };
     VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    li.bindingCount = 9;
+    li.bindingCount = 10;
     li.pBindings = b;
     if (vkCreateDescriptorSetLayout(ctx.device, &li, nullptr, &boltDescLayout) != VK_SUCCESS)
         throw std::runtime_error("SatelliteSim: lightning descriptor layout");
     VkDescriptorPoolSize ps[4] = {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4},
-                                  {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}};
+                                  {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}, {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2}};
     VkDescriptorPoolCreateInfo pi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     pi.maxSets = 1;
     pi.poolSizeCount = 4;
@@ -263,6 +266,12 @@ void SatelliteSim::writeLightningDescriptors(VulkanContext &ctx)
         w2[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, boltDescSet, 8, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &lb, nullptr};
         frameSafeUpdateDescriptorSets(ctx.device, 2, w2, 0, nullptr);
     }
+    if (boltColourBuf)
+    {
+        VkDescriptorBufferInfo cb{boltColourBuf, 0, sizeof(GpuBoltColour)};
+        VkWriteDescriptorSet wc{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, boltDescSet, 12, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &cb, nullptr};
+        frameSafeUpdateDescriptorSets(ctx.device, 1, &wc, 0, nullptr);
+    }
     if (meshRendererInit)
         writeLightningMeshDescriptor(ctx);
 }
@@ -293,6 +302,12 @@ void SatelliteSim::destroyLightningResources(VkDevice device)
     if (boltDescLayout) vkDestroyDescriptorSetLayout(device, boltDescLayout, nullptr);
     if (ctx_ && boltFlashMapped) ctx_->mirrorForget(boltFlashMapped);
     if (ctx_ && boltSegMapped) ctx_->mirrorForget(boltSegMapped);
+    if (ctx_ && boltColourMapped) ctx_->mirrorForget(boltColourMapped);
+    if (boltColourBuf) vkDestroyBuffer(device, boltColourBuf, nullptr);
+    if (boltColourMem) vkFreeMemory(device, boltColourMem, nullptr);
+    boltColourBuf = VK_NULL_HANDLE;
+    boltColourMem = VK_NULL_HANDLE;
+    boltColourMapped = nullptr;
     if (boltFlashBuf) vkDestroyBuffer(device, boltFlashBuf, nullptr);
     if (boltFlashMem) vkFreeMemory(device, boltFlashMem, nullptr);
     if (boltSegBuf) vkDestroyBuffer(device, boltSegBuf, nullptr);
@@ -956,6 +971,36 @@ void SatelliteSim::recordBoltGround(VkCommandBuffer cmd, VulkanContext &ctx)
     // (recordFrameReadbacks' barrier covers the copy into the slot's readback.)
 }
 
+// The stroke's colours as the shaders take them (lightning_draw.glsl BoltColour): each hue at the luminance of the
+// colour of 2026-11-21 it replaces, mixed from that one by the gain g ("Lightning glow colour"). g = 0 is that look
+// to the bit (its constants, every new term 0); g = 1 the physical colours; past 1 the hues go on along the same line
+// (more saturated at the same luminance), the corona sheath's share and the air's reddening grow, and the scattered
+// glow stays where it is (it has replaced the Gaussian halo by 1).
+SatelliteSim::GpuBoltColour SatelliteSim::boltColourFill() const
+{
+    const BoltColourTune &t = boltColourTune;
+    const float g = std::clamp(cv2LightningColour, 0.0f, 4.0f), g1 = std::min(g, 1.0f);
+    const glm::vec3 lumW(0.2126f, 0.7152f, 0.0722f);
+    const glm::vec3 core0(0.90f, 0.93f, 1.0f), halo0(0.66f, 0.70f, 1.0f), cloud0(0.80f, 0.86f, 1.0f);   // 2026-11-21
+    auto at = [&](const glm::vec3 &hue, const glm::vec3 &was) {   // the hue at the luminance of the colour it replaces
+        const glm::vec3 h = glm::max(hue, glm::vec3(0.0f));
+        return h * (glm::dot(was, lumW) / std::max(glm::dot(h, lumW), 1e-3f));
+    };
+    auto mixTo = [&](const glm::vec3 &hue, const glm::vec3 &was) { return glm::max(glm::mix(was, at(hue, was), g), glm::vec3(0.0f)); };
+    GpuBoltColour C{};
+    C.core = glm::vec4(mixTo(t.core, core0), g);
+    C.halo = glm::vec4(halo0 * (1.0f - g1), 0.0f);
+    C.sheath = glm::vec4(at(t.sheath, core0), std::max(t.sheathM, 0.1f));
+    C.sheathK = glm::vec4(std::max(t.sheathShare, 0.0f) * g, std::max(t.sheathOrder, 0.01f), std::max(t.sheathLeader, 0.0f) * g,
+                          std::clamp(t.sheathTaper, 0.05f, 4.0f));
+    C.glow = glm::vec4(mixTo(t.glow, halo0) * (std::max(t.glowShare, 0.0f) * g1), 0.0f);
+    C.glowWet = glm::vec4(mixTo(t.glowWet, halo0) * (std::max(t.wetShare, 0.0f) * g1), std::clamp(t.wetWide, 1.0f, 20.0f));
+    C.wet = glm::vec4(std::clamp(t.wetFloor, 0.0f, 1.0f), std::max(t.wetGain, 0.0f), 0.0f, 0.0f);
+    C.air = glm::vec4((glm::max(t.air, glm::vec3(0.0f)) - glm::vec3(1.0f)) * g, 0.0f);
+    C.cloud = glm::vec4(mixTo(t.cloud, cloud0), 0.0f);
+    return C;
+}
+
 // Inside the main render pass, after the scene and before the rain (recordDraw).
 void SatelliteSim::recordLightning(VkCommandBuffer cmd, VulkanContext &ctx)
 {
@@ -978,6 +1023,12 @@ void SatelliteSim::recordLightning(VkCommandBuffer cmd, VulkanContext &ctx)
         L.tune2 = glm::vec4(boltLightNCap, 0.0f, 0.0f, 0.0f);
         std::memcpy(boltLightMapped, &L, sizeof(L));
         ctx.mirrorDirtyAll(boltLightMapped);
+    }
+    if (boltColourMapped)
+    {
+        const GpuBoltColour C = boltColourFill();
+        std::memcpy(boltColourMapped, &C, sizeof(C));
+        ctx.mirrorDirtyAll(boltColourMapped);
     }
     ctx.mirrorDirty(boltSegMapped, 0, sizeof(GpuBoltSeg) * boltSegCount);
     BoltDrawPC pc{};

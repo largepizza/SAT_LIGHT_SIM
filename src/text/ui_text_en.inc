@@ -741,6 +741,7 @@ UI_TEXT(SldLightningRateCbTowersMinEach, "Lightning rate: Cb towers (/min each)"
 UI_TEXT(SldLightningGlow, "Lightning glow")
 UI_TEXT(SldLightningBolts, "Lightning bolts")
 UI_TEXT(SldLightningTendrils, "Lightning tendrils")
+UI_TEXT(SldLightningGlowColour, "Lightning glow colour")
 UI_TEXT(SldLightningSpritesChance, "Lightning sprites (chance)")
 UI_TEXT(SldRain, "Rain")
 UI_TEXT(SldDropsAtTheEyeVisibility, "Drops at the eye (visibility)")

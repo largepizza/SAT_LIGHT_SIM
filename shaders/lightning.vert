@@ -15,9 +15,19 @@ layout(location = 0) out vec2 vLocal;          // px: x along the segment from i
 layout(location = 1) flat out vec4 vCore;      // rgb the core's energy (x exposure, pre-tonemap), a its width (px)
 layout(location = 2) flat out vec4 vHalo;      // rgb the halo's, a its width (px)
 layout(location = 3) flat out vec4 vSeg;       // x length (px), y range (m), z mode, w kind
-layout(location = 4) flat out vec4 vGlow;      // glow: xyz the emitter (ENU about the eye), w intensity x weight
+layout(location = 4) flat out vec4 vGlow;      // a channel's corona sheath: rgb its energy, a 1 / its width^2 (px)
+layout(location = 5) flat out vec4 vScat;      // the scattered glow in clear air: rgb its energy, a its core radius^2 (px)
+layout(location = 6) flat out vec4 vScatW;     // the same through rain / cloud
+layout(location = 7) flat out vec4 vScatK;     // x 1 / the segment's length (px), y / z the clear / wet glow at the quad's edge
 
-void cullV() { gl_Position = vec4(0.0, 0.0, 2.0, 1.0); vLocal = vec2(0.0); vCore = vec4(0.0); vHalo = vec4(0.0); vSeg = vec4(0.0); vGlow = vec4(0.0); }
+void cullV()
+{
+    gl_Position = vec4(0.0, 0.0, 2.0, 1.0); vLocal = vec2(0.0); vCore = vec4(0.0); vHalo = vec4(0.0); vSeg = vec4(0.0); vGlow = vec4(0.0);
+    vScat = vec4(0.0); vScatW = vec4(0.0); vScatK = vec4(0.0);
+}
+// The scattered glow of one piece of channel L px long, seen D px from it: the integral along the piece of
+// 1 / distance^2 (L / D^2 from afar, pi / D beside a long one). Summed over a channel's pieces: pi / D.
+float glowK(float D, float L) { return 1.0 / (D * D / L + D * 0.31831); }
 
 vec3 toCam(vec3 p) { return (pc.skyView * vec4(p, 0.0)).xyz; }
 vec2 toPx(vec3 c, float tanH, vec2 scr)
@@ -40,6 +50,7 @@ void main()
         vLocal = vec2(0.0); vCore = vec4(0.0); vHalo = vec4(0.0);
         vSeg  = vec4(0.0, 0.0, pc.params.w, 0.0);   // 1 the flashes' glow, 2 the engine lights
         vGlow = vec4(0.0);
+        vScat = vec4(0.0); vScatW = vec4(0.0); vScatK = vec4(0.0);
         return;
     }
 
@@ -89,21 +100,44 @@ void main()
     float air = boltAir(0.5 * (p0 + p1), range);
     vec3  col;
     float x;
+    // The stroke's colour (2026-11-22, lightning_draw.glsl BoltColour; a sprite keeps its own): `red` what the air
+    // leaves of each channel (the blue goes first: a far stroke is warmer), `shS` the corona sheath's share of this
+    // piece's light (a main channel a few percent, more per branch order, most of a stepped leader's).
+    vec3  red = vec3(1.0);
+    float shS = 0.0;
     if (sprite) {
         col = mix(vec3(1.0, 0.06, 0.10), vec3(0.55, 0.08, 0.95), f * f * f);
         x = E * pc.params.y * 1.2 * b * ef * air;
     } else {
-        col = vec3(0.90, 0.93, 1.0);
+        col = bc.core.rgb;
         x = E * pc.params.y * 1.4 * b * ef * air;
+        red = boltAirTint(air);
+        shS = (kind > 0.5 && kind < 1.5 && F.m.z > 0.5) ? bc.sheathK.z : bc.sheathK.x * pow(bc.sheathK.y, float(order));
+        shS = clamp(shS, 0.0, 0.9);
     }
     // The halo: the stroke's light scattered by the rain and air around it (a broad violet-white glow about the
     // main channel, a tight one about the branches). Its energy is a share of the core's, spread over its area.
     float hM  = order == 0u ? 70.0 : (order == 1u ? 22.0 : 8.0);
     float hPx = sprite ? 0.0 : clamp(hM / mpp, 1.5, 22.0);
     float hK  = sprite ? 0.0 : (order == 0u ? 0.35 : 0.2) * wD / max(hPx, 1.0);
-    vCore = vec4(col * x, wD);
-    vHalo = vec4(vec3(0.66, 0.70, 1.0) * x * hK, hPx);
+    vCore = vec4(col * x * red * (1.0 - shS), wD);
+    vHalo = vec4(bc.halo.rgb * x * hK * red, hPx);
     float Lpx = length(P1 - P0);
+    // The corona sheath: a Gaussian sPx wide hugging the core, with the share of the core's light it took (a row of
+    // pieces shorter than it is wide overlaps: the sum along the channel is kept).
+    float sPx = max(bc.sheath.a * pow(bc.sheathK.w, float(order)) / mpp, 0.75);
+    vGlow = vec4(bc.sheath.rgb * red * (x * shS * wD * min(1.0 / (sPx * 1.7725), Lpx / (sPx * sPx * 3.1416))), 1.0 / (sPx * sPx));
+    // The scattered glow: the halo's energy (its Gaussian over this piece's capsule: pi h^2 + L h sqrt(pi)), spread as
+    // glowK from the sheath's radius out to the quad's edge, where it is taken to 0 (2 pi int K r dr = pi L (ln(1 +
+    // R^2 / s^2) - 1) about a short piece). Through rain and cloud its core is wider.
+    {
+        float R   = 2.5 * hPx, L = max(Lpx, 0.05);
+        float eH  = x * hK * (3.1416 * hPx * hPx + L * hPx * 1.7725);
+        float s2  = sPx * sPx, s2w = s2 * bc.glowWet.a * bc.glowWet.a;
+        vScat  = vec4(bc.glow.rgb * red * (eH / (3.1416 * L * max(log(1.0 + R * R / s2) - 1.0, 0.5))), s2);
+        vScatW = vec4(bc.glowWet.rgb * red * (eH / (3.1416 * L * max(log(1.0 + R * R / s2w) - 1.0, 0.5))), s2w);
+        vScatK = vec4(1.0 / L, glowK(sqrt(R * R + s2), L), glowK(sqrt(R * R + s2w), L), 0.0);
+    }
     vec2  ax  = (Lpx > 1e-3) ? (P1 - P0) / Lpx : vec2(1.0, 0.0);
     vec2  ay  = vec2(-ax.y, ax.x);
     float hw  = max(0.5 * wD + 1.0, 2.5 * hPx);
@@ -113,5 +147,4 @@ void main()
     gl_Position = vec4(px / scr * 2.0 - 1.0, sceneDepthFromDistance(range), 1.0);
     vLocal = vec2(u, w);
     vSeg   = vec4(Lpx, range, 0.0, kind);
-    vGlow  = vec4(0.0);
 }
