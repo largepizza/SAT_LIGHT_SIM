@@ -545,6 +545,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   volumetric clouds), Low, Medium, High and Ultra. First runs start on High for discrete GPUs with 6 GB or more,
   Planetarium on integrated GPUs, Potato on old Macs. Planetarium draws the 3D models of satellites, stations and
   rockets up close like the full presets (without their sky reflections); Potato keeps them as points.
+- **Potato draws the cities as the night-lights map alone:** the tiled city detail texture (squares of street
+  pattern with soft halos from the air) is no longer blended in.
 - Large performance work across the cloud march, the sky pass, the terrain depth pyramid, the satellite pipeline
   (about 1.4 million satellites in the default roster), the launch system (plume builds and batch builds off the
   main thread, culled exhaust), close-up station shadows (from 30-60 ms to about 1 ms) and frame hitches after

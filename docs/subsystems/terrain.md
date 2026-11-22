@@ -433,7 +433,14 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   full Moon overhead: the relief reads, dark). The sky ambient takes a sky-view factor (0.5 + 0.5 n.up)
   and a gain ("Terrain sky light", `clouds.terrain_sky_light`, 1). Both ride in `terrainErosion.zw`.
   Only the terrain emission changed: the dome, ambience and cloud city glow read the night map with
-  their own response curves; Potato (`sat_sky_minimal.frag`) still draws the raw night map. Harness:
+  their own response curves; Potato (`sat_sky_minimal.frag`) still draws the raw night map, and nothing else for the
+  cities (2026-11-21, issue_20261121_160405 shot 10 "Just remove the city detail texture in Potato mode"): it blended
+  the tiled city detail textures (`cityDayDetailTex` / `cityNightDetailTex`, 20-km tiles) over every night-map texel
+  brighter than 0.01 within 300 km, which drew each lit 5-km texel as a square of street pattern with a soft square
+  halo (the mask is the bilinear night map). The blend, its constants and the two samplers are gone from the shader
+  (42,688 -> 41,060 bytes of SPIR-V, budget 47,104). Against the old shader with the blend's range set to zero (the
+  night-map-only reference), at the report's view (31.7 km), from 5 km and from 300 km: mean |difference|
+  0.0 / 0.0 / 0.00002 levels (before: 39.9 / 153.8 / 0.00003; at 300 km the old frame already had no blend). Harness:
   `debugview nightsky` / `citylights`, `scripts/terrain_night.satcmd`. **`clouds.coverage` is the
   retired v1's — clear the volumetric clouds with `clouds_v2.coverage 0`** (a night LA view "without
   lights" was an overcast).
