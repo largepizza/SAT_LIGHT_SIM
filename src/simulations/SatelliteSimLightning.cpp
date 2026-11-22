@@ -349,7 +349,14 @@ void SatelliteSim::updateLightningBolts()
             BoltTree t;
             t.id = id;
             t.kind = kind;
-            t.up = glm::normalize(glm::dvec3(e[16], e[17], e[18]));
+            // The flash rides the weather map, which drifts (~40 m/s at the equator): the tree stands where the flash
+            // STARTED, the record's place turned back by the drift since (its age), so it is the same place whether the
+            // host first sees the flash at its start or arrives in the middle of it. (A harness-placed flash is
+            // Earth-fixed already.)
+            const double dA = id >= 0xF0000000u ? 0.0 : (double)cloudDriftRate * (double)std::max(age, 0.0f);
+            const double dC = std::cos(dA), dS = std::sin(dA);
+            auto atStart = [&](const glm::dvec3 &d) { return glm::dvec3(d.x * dC - d.y * dS, d.x * dS + d.y * dC, d.z); };
+            t.up = atStart(glm::normalize(glm::dvec3(e[16], e[17], e[18])));
             t.originEcef = t.up * (6371000.0 + (double)e[19]);
             t.t1 = glm::normalize(glm::cross(glm::dvec3(0.0, 0.0, 1.0), t.up));
             t.t2 = glm::cross(t.up, t.t1);
@@ -358,7 +365,7 @@ void SatelliteSim::updateLightningBolts()
             t.strength = e[14];
             if (kind == 1)
             {
-                const glm::dvec3 g = glm::normalize(glm::dvec3(e[20], e[21], e[22])) * (6371000.0 + (double)e[23]) - t.originEcef;
+                const glm::dvec3 g = atStart(glm::normalize(glm::dvec3(e[20], e[21], e[22]))) * (6371000.0 + (double)e[23]) - t.originEcef;
                 t.groundLocal = glm::vec3((float)glm::dot(g, t.t1), (float)glm::dot(g, t.t2), (float)glm::dot(g, t.up));
             }
             buildBoltTree(t, seed);
@@ -633,8 +640,13 @@ void SatelliteSim::boltGroundCollect()
             }
             const float tipZ = tip >= 0 ? t.tree.verts[(size_t)tip].p.z : 0.0f;
             t.fitMinClear = bolt::fitTerrain(t.tree, terr);
-            t.fitTipMove = tip >= 0 ? t.tree.verts[(size_t)tip].p.z - tipZ : 0.0f;
-            t.fit = 2;
+            const float move = tip >= 0 ? t.tree.verts[(size_t)tip].p.z - tipZ : 0.0f;
+            t.fitTipMove += move;
+            ++t.fitRounds;
+            // A ground stroke the fit moved far is fitted once more: the tree's z is the origin's up, not the strike
+            // point's (up to 9 km away), so a vertex moved 2 km in z has slid ~3 m across the ground it was measured on
+            // (the harness's strokes over mountains, placed on the eye's ground: last vertices -3.3 .. +3.8 m off).
+            t.fit = (t.kind == 1 && t.fitRounds < 2 && std::fabs(move) > 2.0f) ? 0 : 2;
             t.drawLevels.clear();   // (its pieces are rebuilt from the fitted vertices)
         }
         else

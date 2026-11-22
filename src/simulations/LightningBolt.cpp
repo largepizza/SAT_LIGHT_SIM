@@ -609,6 +609,9 @@ glm::vec3 armFront(const Tree &t, size_t k, float reveal)
 
 float fitTerrain(Tree &t, const std::vector<float> &terr)
 {
+    // "On the ground" = 5 cm over it: the ground is measured in the observer's frame (float noise of a centimetre or
+    // two), and a vertex exactly on it would measure below it half the time.
+    const float kTouch = 0.05f;
     if (terr.size() < t.verts.size())
         return 0.0f;
     std::vector<float> lift(t.verts.size(), 0.0f);
@@ -665,9 +668,9 @@ float fitTerrain(Tree &t, const std::vector<float> &terr)
         if (p.flags & kStreamer)
         {
             // Rooted on the ground: moved whole, then kept above it.
-            const float dz = tr[0] - v[0].p.z;
+            const float dz = tr[0] + kTouch - v[0].p.z;
             for (uint32_t i = 0; i <= N; ++i)
-                v[i].p.z = std::max(v[i].p.z + dz, tr[i] + (i == 0 ? 0.0f : 0.5f));
+                v[i].p.z = std::max(v[i].p.z + dz, tr[i] + (i == 0 ? kTouch : 0.5f));
             continue;
         }
         if (p.flags & kTrunk)
@@ -679,7 +682,7 @@ float fitTerrain(Tree &t, const std::vector<float> &terr)
                 const float c = std::min(10.0f, 0.3f * (arcEnd - v[i].arc));
                 lf[i] = std::max(0.0f, tr[i] + c - v[i].p.z);
             }
-            lf[N] = tr[N] - v[N].p.z;   // exactly on the ground
+            lf[N] = tr[N] + kTouch - v[N].p.z;   // on the ground
             for (uint32_t i = 1; i < N; ++i)
                 lf[i] = std::max(lf[i], lf[i - 1] - 0.6f * (v[i].arc - v[i - 1].arc));
             for (uint32_t i = N - 1; i > 0; --i)
@@ -715,7 +718,7 @@ float fitTerrain(Tree &t, const std::vector<float> &terr)
         for (uint32_t i = 1; i <= N; ++i)
             if (v[i].p.z < tr[i] + 3.0f)
             {
-                v[i].p.z = tr[i];
+                v[i].p.z = tr[i] + kTouch;
                 lf[i] = 0.0f;
                 p.count = i + 1;
                 p.length = std::max(v[i].arc - v[0].arc, 1e-3f);

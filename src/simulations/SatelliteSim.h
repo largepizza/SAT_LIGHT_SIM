@@ -9996,6 +9996,7 @@ private:
         // The terrain fit (bolt_ground.comp, recordBoltGround): 0 not asked yet, 1 asked (the answer comes two
         // frames later), 2 fitted, 3 the fitted vertices asked again (harness `lightning check`), 4 checked.
         int fit = 0;
+        int fitRounds = 0;            // fits done (a ground stroke moved far by its first is asked and fitted once more)
         float fitMinClear = 0.0f;     // the least height over the ground the fit left (m)
         float checkMinClear = 0.0f;   // ... measured again on the fitted vertices (state 4)
         float checkTip = 0.0f;        // a ground stroke's last vertex over the ground (m, state 4)
