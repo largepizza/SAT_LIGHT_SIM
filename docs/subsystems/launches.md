@@ -995,6 +995,8 @@ launches follow per-program cadences (no real manifest).
     (SLC-37 at night: `drift phase=2.86` broken cumulus, `5.2` overcast, `clouds_v2.coverage 1.6`; air, orbit,
     `launch landing booster=1`). Open: no cloud-surface orientation, no in-cloud diffusion for a light inside a cloud
     (lightning's boltGlow does that), no terrain shadowing, the half-res outline can still show where the light is strong.
+    (2026-11-22: a light with a slot of the flashes' volume is shaded through the cloud between, "Rocket light through
+    the light volume" below; the text above is the light WITHOUT one.)
   - **The sea mirrors them from where they are** (2026-10-20, issue 20261020_181339 "Rocket Ocean Flare"; sky set binding
     32 = `kDustBuf`, written by `writeCloudsV2ConsumerDescriptors`): sat_sky.frag, after the Sun glint, takes each engine
     / floodlight / ship light through the same Beckmann lobe with its direction FROM THE SEA POINT and its irradiance
@@ -1017,6 +1019,146 @@ launches follow per-program cadences (no real manifest).
     the engines) and the faint column to the pad (the low trail lit by the engine light; gone with "Rocket light on
     clouds" Off) are the exhaust, not reflections. Open: lightning.frag's ground term lights the sea as a 0.15-albedo
     diffuser (water's body reflectance is ~0.02-0.05).
+  - **Rocket light through the light volume (2026-11-22, issue_20261122_105107 "Rocket launch cloud lighting";
+    `lightning.frag` engineLightAt / boltCloudShade, `SatelliteSim::engineLightVolumes`, `flash_volume.glsl` fvOdFine,
+    `cloud_v2_flashvol.comp`).** On cloud, an engine light that holds a slot of the flashes' volume image (clouds.md
+    "Lightning as LIGHT") is shaded by the flashes' formula, one function with two callers (`boltCloudShade`):
+    I / (r^2 + r0^2) x level x (single x op x ph e^-od + N ms D), the light's colour, intensity, reach window (the
+    outer 40%), night adaptation (`engineAdaptEased`) and the skip of plume-flagged texels as before. A light without a
+    slot keeps 0.85 op^1.5 / (r^2 + r0^2) (x 0.35 from the far side by height): by distance alone, no cloud between,
+    which drew a rocket in a deck as an even blob over every cloud in line of sight. `launches.engine_light_volume`
+    (settings.json, 1; 0 = every light by distance alone, the A/B; no slider). The ground term of mode 2 is as it
+    was. The HAZE term of a light with a volume is x e^-od, od the volume's depth from the light to the ray's nearest
+    point to it (one more read per light and pixel; most of the closed-form integral is there): without it a rocket
+    under a deck still drew its glow in the air above the deck and one above a deck in the air under it, 7-19% of the
+    old cloud light, all that was left there once the cloud itself was shaded.
+    - **What differs from a flash, each for a reason.** (1) *The read.* A flash is inside its cloud; an engine light
+      mostly stands OUTSIDE the cloud it lights and lights faces turned to it. The depth from the light to such a face
+      is its own skin, one free path (tens of metres), which neither the volume (distance steps of 0.2-2.8 km, the field
+      read at a 120 m footprint) nor the composite's distance resolves: read at the face (`fvAt`), the volume's steps
+      and directions drew rings and a spoked flower on a deck lit from below, and a mottle on shadowed lobes. So the
+      volume answers only for the cloud that stands BETWEEN: it is read `engineVolTune.z` (200 m; half the way for a
+      point nearer than 400 m) short of the lit point, and the point's own cloud is the pixel's (3, below).
+      `fvOdFine` reads an engine light's slot, which holds, beside the depth (red, as a flash's), the TRANSMITTANCE
+      e^-depth (green) and where along each distance step the step's depth is centred (blue); an engine light's bake
+      (job `up.w` 1) reads each step at 6 places, not 1-2, without the per-direction jitter, and a flash's slot is
+      written as it was (green its own cloud's depth, blue 0). Texel k is the end of step k, r = 24 km x ((k + 0.5) /
+      16)^2. Over the directions the transmittances are blended, not the depths (directions are 5.6 / 11 deg apart:
+      with a light 1 km above a deck, the mean depth of a direction that passes over the deck and one that has been
+      inside it for kilometres is a shadow that is not there; from 300 km the lit patch ended in a dark band 9-13 km
+      out), by a cubic B-spline (four filtered taps a slice, eight a read): weighted bilinearly, the blend had a crease
+      along every line between two directions' centres, and a steady light drew them (straight wedges and patch
+      outlines on a deck lit through from the other side; a 0.2-s flash never showed its volume's cells). Along the
+      distance the depth rises from the step's start to its end over the stretch about the step's centre of depth,
+      eased in where the cloud begins inside the step and out where it ends there. (2) *Two distances.* Where a
+      pixel's texels differ in distance (a lobe's outline over farther cloud) the smoothed distance mode 2 lights the
+      cloud at is a point in the clear air between: read there, every shadowed lobe had a lit outline. The volume is
+      read at the two points that have the texels' mean, spread and skew (exactly the lobe and the cloud behind, each
+      with its share; their nearest / farthest stepped at every texel) and the two shadings mixed. (3) *The pixel's
+      own depth is FLAT over the composite's last few per cent of transmittance.* Those are not a depth (where the
+      march stopped, which tile it ran in), and -ln of them is 3 .. 6.9: under a steady light every level line of that
+      residue was a dark contour on the shadowed lobes, like a relief map, and a march tile's edge a straight one (the
+      first hand-off's artifacts; knocked out one by one: the same with the volume read 0, 200, 600 m or half the way
+      short, with N capped at 1, without the single scattering; gone with the side escape at 0.03; the depth view
+      `e_od` put the whole region under 7, i.e. on the pixel's own depth alone). `engineTauBetween` (the cloud between
+      with the light BEHIND the pixel's cloud: all of the pixel's depth x (1 + cosB) / 2) is -ln(1 - op) up to an
+      opacity of 0.75, eased to an opaque pixel's 6.9 by 0.95 and flat past it; `engineTauFar` (the slab's far side
+      for a face the light is in front of, `boltCloudShade`'s tauP) is -ln(1 - op) up to 0.93, rounded off to 2.945 by
+      0.97 and flat (eased to 6.9 like the first it counted a half-transparent cloud as a thick slab and lit it 1.8x:
+      from 300 km a launch's lit patch had a bright core). A flash keeps the plain logarithm (0.2 s, side escape 0.03:
+      neither shows). (4) *The side escape* is the cloud look's own (`clouds_v2.ms_side_escape`; `engineVolTune.x` <
+      0), not the flashes' 0.03: a light outside the lobes it lights is to them what the Sun and a beam are, and a
+      lobe lets light out of its sides before its far face. (5) *N* (the light's own cloud lets all its light out
+      somewhere) is baked with the flashes' side escape (inside a cloud what leaves one direction's column enters the
+      next) and applies only to light that crossed cloud, mix(1, N, 1 - e^-od): a stage half out of a deck had N
+      1.2-2 on every top it lit through clear air. (6) *The level* is 0.85 / the formula's own value for a thick
+      face with the light behind the eye and nothing between, worked out by the host each frame from the cloud look's
+      phase and diffuse-field numbers (`recordLightning`): that face reads as it did by distance alone whatever the
+      look's sliders say.
+    - **What the formula gives** (the user's look: side escape 0.33, diffuse g 0.52, gain 1.39; an opaque pixel;
+      against the thick face lit from the eye's side with nothing between = 1): with 1 / 3 / 10 / 30 optical depths
+      of cloud between in the volume 1.20 / 0.80 / 0.09 / 0.000; a face lit side-on 0.59, and 0.43 / 0.22 / 0.025
+      behind those depths; a lobe with the light behind it 0.13, and 0.09 / 0.05 / 0.006. Cloud of a few optical
+      depths passes most of the light (the diffuse field's transmission, as for a flash and a beam): it is NOT dark
+      at 3 depths; it is from about 10.
+    - **Slots.** The image keeps its 16 slots (2 MB). A flash comes first: it takes a free slot, else an engine
+      light's (the one with the least to show, its fading-out volume before its current one; `fvSteals_`), and its
+      bakes are listed before the engine lights' in the 4-a-frame budget. Flashes use slots 0-14 (a flash's code for
+      "none" is 15: an emitter handed slot 15 never read its volume), engine lights fill from 15 down, at most 6
+      lights in at most 8 slots, ranked by I / (d^2 + (300 m)^2) x min(1, reach / distance to the eye)^2, d = the
+      light's height outside the cloud layer (`cv2.shell`: 0 inside it), x 1.5 for one that holds a slot. No slot for a
+      light whose reach does not touch the layer or that is more than 24 km (the volume's reach) from it.
+    - **A moving light.** The list carries no identity: each light is followed from frame to frame by its place
+      (`EngineVolTrack`: the nearest light to where the track would be by now, 150 m + half its step). A volume is
+      looked up from where it was BAKED (the cloud's shadows stay with the cloud while the light moves on). A light on
+      the move (> 20 m/s) has its next volume baked AHEAD of it, one re-bake distance along its way (0.15 x d, 100 ..
+      600 m), in a second slot, and the two are mixed by how far along the way from the one's place to the other's
+      the light is: the light on the cloud follows the rocket's own motion and is exactly the new volume's as it
+      passes its place; then the old slot is free and the next is baked. (Baked where the light was and faded in over
+      0.3 s, the lit deck changed 4% a frame for 0.3 s after each bake of a stage climbing through cloud, then stood
+      still.) A light that stands (a pad, a ship, a fire) bakes again where it is once the cloud map has drifted the
+      re-bake distance past it, and that volume fades in over 0.3 s. At most one such second bake a frame, after the
+      flashes' jobs. A time jump (> 2 s) starts every track again.
+    - **Hand-over.** Each light carries the volume model's share of its cloud light (`BoltLight::elVol.w`), one number
+      for the whole frame: no place on screen where the model changes, so no ring. It is 1 from the frame a light
+      appears if its volume is baked that frame (a new light has nothing to fade from), eases at 1 / 0.3 s for a light
+      that waited for a slot or lost its rank, falls 1 -> 0 between 14.4 and 24 km from the cloud layer (a stage
+      climbing away), and drops at once only when a flash takes the slot. Past the volume's 24 km the depth stays
+      what it was there. From orbit the lights keep their volumes (as the flashes do).
+    - **Potato / Planetarium**: mode 2 draws the ground and haze terms there, and no cloud term (the composite is
+      cleared); the volumes need the clouds v2 lightning pass (`cloudsV2LightningActive()`, not Potato): unchanged.
+    - Harness: `launch state` -> `engine_light_volumes` (per light: slot, slot_new, fade, share, priority, stale),
+      `engine_light_volume_bakes`, `_bake_log`, `_steals`, `engine_light_cloud_layer_m`; `lightning` -> `light_slots`
+      with the engine lights' (`engine` = the track's id); `lightning light e_side= e_single= e_skin_m= e_level=` the
+      tunables, `e_od=<depth>` a view of where the strongest light's depth to the pixel's cloud is at least that,
+      `e_view=1..6` a grey of one of the cloud term's inputs (the cloud's distance, its opacity, the depth in the
+      volume, cosB, where the read is at two distances, N). `bands.py` (untracked, with the wave's evidence:
+      `qa/waves/20261122/evidence/c12/scripts/`) measures the lines: the light alone minus its own blur, and the
+      longest straight run of edge pixels.
+    - Measured (RTX 3070 Ti, 1600x900, the report's settings and place: 28.26 N 80.30 W at night, a Starship from
+      the sea platform cape_p2 climbing through a broken deck, base ~1 km, tops ~2.1 km; the light alone = a capture
+      minus the same view with `engine_light_gain` 0, in linear light; against `engine_light_volume` 0; depths below
+      are the cloud between in the volume + the pixel's own, the harness view `e_od`):
+      *The report's shot* (the eye 2.4 km up, 1.5 km off, the flame at the deck's top, the clock held): the lit deck's
+      mean 0.77 x; the lobes between the eye and the flame and the hollows are shaded (48% of the lit region has 3-10
+      depths between, lit at 0.59 x), the tops the flame sees are as they were (1.01 x). The spread over the whole
+      lit region (p90 / p10) is 6.6 -> 4.9, NOT wider: most of what the eye sees from there are tops in the flame's
+      plain sight, and the inverse square is what spreads them. Pixels clipped by the light (>= 250 in every channel)
+      1440 -> 1187 (-18%), in red alone 17,087 -> 13,211. *Lines* (`bands.py`; the lobes' outlines, where the
+      texels' distances differ, `e_view=5`, left out of both: 15% of the region): the light alone minus its own 9-px
+      Gaussian blur, RMS x 255: 0.223 by distance, 0.227 through the volume (1.02 x; the first hand-off's frame with
+      its contours 0.321, 1.44 x); pixels with a step over 4 levels to the next row or column: 1 by distance, 528 of
+      610,701 through the volume, the longest straight run 17 px (the rim of one shadowed pocket; first hand-off 38
+      px, the march tile's edge).
+      *The rocket 0.5 km up under the deck, seen from above it* (the light x5 to clear the capture's noise): the deck
+      over it is lit at 0.14 x where 3 or more depths lie between (0.68 x at 3-10, 0.040 x at 10-30). *1 km above the
+      tops, seen from the ground*: 0.57 x at 3 or more (0.69 x at 3-10, which is 79% of that base: a thin, broken
+      deck; 0.18 x at 10-30): light under a thin deck stays, as it does under a thin overcast. *Inside the deck (1.55
+      km), seen from above*: mean 0.27 x, the median pixel 0.055 x: bright round the rocket, dark beyond its own
+      lobes. *Under the deck from below* 0.84 x, the base lit and falling off, no rings; *above the deck from above*
+      1.08 x. A pad's floods under the deck (the gain x3 so they reach it): 1.02 x.
+      *Motion*: 12 s at 1x as the stage climbs 1.3 -> ~3.1 km through the deck (30 frames a second, the eye fixed): 19
+      second volumes baked ahead of it (every ~0.6 s; the standing lights 10), the lit deck's mean changes by at most
+      2.5% of the light between consecutive frames at any of them and 2.6% over the whole recording (0.8-0.9% with the
+      volumes off: the rest is the light itself growing as the stage nears the top). *A flash* placed 6 km off with
+      the rocket burning: 4 emitters in slots 0-3, 6 engine lights in 10-15, no slot taken from a light, the flash's
+      own light 98.9% of the flash alone. *From 300 km over the launch* (the gain as set and x3, the reach 19 and 34
+      km): the ratio to the light by distance falls smoothly outward, 1.07, 0.93, 0.87, 0.82 .. 0.60, then 0.70 by 22
+      km; the largest step between 8-px (0.9 km) rings is 14% (the two at the patch's centre) and under 9% outside
+      them, nothing at the volume's 24 km. *Cost*, the volumes off / on interleaved A B B A in one app, 4 reps a
+      side: GPU total 26.75 +- 0.26 -> 26.82 +- 0.20 ms (+0.07), the bucket that holds the draw 0.61 -> 0.74 ms
+      (+0.13); the same code path twice, no light at all: 25.92 +- 0.19 / 25.86 +- 0.18. (Read A then B each time the
+      second of a pair came out +0.2 ms with identical code.) No engine light and no flash: no bake, no dispatch, no
+      slot. `cloud_v2_march.comp.spv` is byte-identical to 37293e99's (128 registers). `engine_light_volume` 0
+      against 37293e99's frame at the shot: mean difference 0.27 level (two frames of one build: 0.17).
+    - Open. A deck of under ~10 optical depths passes most of the light (above); `e_side` and `e_level` are the
+      levers if the user wants it darker. Above a deck seen from above the tops carry more fine relief than by
+      distance (the light alone's high-pass RMS 1.6 x there): bumps shaded by their own depth, no lines seen. The
+      plumes' own engine light (cloud_march.comp `dustCloudsCS`), the sea's mirror of the lights and the ground term
+      do not see the volume. The slots were not tried against a real storm at a pad (one placed flash only): a storm
+      with more than two flashes at once beside six engine lights would take slots from the lights (a pop to the
+      light by distance alone, `engine_light_volume_steals`). A wildfire's lights hold volumes (3 lights, share 1)
+      but no view with cloud inside their reach was found to look at (also tried with the coverage raised to 1.6).
 - **A hull inside its own exhaust shows no cloud from behind it** (2026-11-10, issue_20261110_184611 "Odd transparency on
   rockets", a Starship at 58 km at sunset, the eye inside the plume). cloud_march.comp drops a resolved cloud whose
   distance is past the texel's surface (2026-10-21); with full-res clouds cloud_v2_combine.comp then added each pixel's

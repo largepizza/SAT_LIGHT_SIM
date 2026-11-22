@@ -30,6 +30,46 @@ vec3 fvAt(uint slot, vec3 v, float r)
     float s = clamp(sqrt(min(r / kFvRmax, 1.0)) * float(kFvR), 0.5, float(kFvR) - 0.5);
     return textureLod(FV_SAMPLER, vec3(u, e, (float(slot) * float(kFvR) + s) / float(kFvSlots * kFvR)), 0.0).rgb;
 }
+// An engine light's read (2026-11-22, issue_20261122_105107; lightning.frag engineLightAt). Its slots hold, beside the
+// depth (r), the TRANSMITTANCE e^-depth (g) and where along each distance step the step's depth is centred (b, 0 .. 1);
+// texel k is the end of step k, r = kFvRmax ((k + 0.5) / kFvR)^2 (cloud_v2_flashvol.comp's u1).
+//   Over the directions the transmittances are blended, not the depths (the depth returned is -ln of the blend): the
+// directions are 5.6 / 11 deg apart, and where one passes over a deck and the next has been inside it for kilometres
+// (a light 1 km above a deck, the deck 10 km off) the mean of their depths is a shadow that is not there (from 300 km
+// the lit patch ended in a dark band 9-13 km out), while the light that reaches the point is the share of the
+// directions that are open. The blend is a cubic B-spline (four filtered taps a slice): with the four nearest
+// directions weighted bilinearly the blend had a crease along every line between two directions' centres, and a steady
+// light drew them, straight wedges and patch outlines on a deck lit through from the other side.
+//   Along the distance the depth rises from the step's start to its end over the stretch about its centre (the whole
+// step for 0.5, its last fifth for 0.9), eased in where the cloud begins inside the step and out where it ends there.
+float fvOdFine(uint slot, vec3 v, float r)
+{
+    vec3  d  = v / max(length(v), 1.0);   // (r may be short of |v|: the caller's)
+    vec2  p  = vec2(fract(atan(d.y, d.x) * (1.0 / 6.2831853)) * float(kFvA),
+                    clamp((asin(clamp(d.z, -1.0, 1.0)) * (1.0 / 3.14159265) + 0.5) * float(kFvE), 0.5, float(kFvE) - 0.5));
+    vec2  tc = floor(p - 0.5) + 0.5, f = p - tc, f2 = f * f, f3 = f2 * f;
+    vec2  w1 = (4.0 - 6.0 * f2 + 3.0 * f3) * (1.0 / 6.0), w3 = f3 * (1.0 / 6.0);
+    vec2  g0 = (1.0 - 3.0 * f + 3.0 * f2 - f3) * (1.0 / 6.0) + w1, g1 = 1.0 - g0;
+    vec2  h0 = (tc - 1.0 + w1 / g0) / vec2(float(kFvA), float(kFvE)), h1 = (tc + 1.0 + w3 / g1) / vec2(float(kFvA), float(kFvE));
+    float sb = sqrt(min(r / kFvRmax, 1.0)) * float(kFvR);
+    int   k  = clamp(int(sb + 0.5), 0, kFvR - 1);
+    float zn = 1.0 / float(kFvSlots * kFvR), z1 = (float(int(slot) * kFvR + k) + 0.5) * zn;
+    vec2  a  = g0.x * g0.y * textureLod(FV_SAMPLER, vec3(h0.x, h0.y, z1), 0.0).gb + g1.x * g0.y * textureLod(FV_SAMPLER, vec3(h1.x, h0.y, z1), 0.0).gb +
+               g0.x * g1.y * textureLod(FV_SAMPLER, vec3(h0.x, h1.y, z1), 0.0).gb + g1.x * g1.y * textureLod(FV_SAMPLER, vec3(h1.x, h1.y, z1), 0.0).gb;
+    float t0 = 1.0;
+    if (k > 0) {
+        float z0 = z1 - zn;
+        t0 = g0.x * g0.y * textureLod(FV_SAMPLER, vec3(h0.x, h0.y, z0), 0.0).g + g1.x * g0.y * textureLod(FV_SAMPLER, vec3(h1.x, h0.y, z0), 0.0).g +
+             g0.x * g1.y * textureLod(FV_SAMPLER, vec3(h0.x, h1.y, z0), 0.0).g + g1.x * g1.y * textureLod(FV_SAMPLER, vec3(h1.x, h1.y, z0), 0.0).g;
+    }
+    float od0 = -log(clamp(t0, 1e-7, 1.0)), od1 = max(-log(clamp(a.x, 1e-7, 1.0)), od0);
+    float uA = max(float(k) - 0.5, 0.0) / float(kFvR), uB = (float(k) + 0.5) / float(kFvR);
+    float x  = clamp((r - kFvRmax * uA * uA) / (kFvRmax * (uB * uB - uA * uA)), 0.0, 1.0);
+    float xa = max(2.0 * a.y - 1.0, 0.0), xb = min(2.0 * a.y, 1.0);
+    float xn = clamp((x - xa) / max(xb - xa, 0.05), 0.0, 1.0);
+    float pr = mix(mix(xn, xn * xn * (2.0 - xn), smoothstep(0.5, 0.6, a.y)), xn * (1.0 + xn - xn * xn), smoothstep(0.5, 0.4, a.y));
+    return od0 + (od1 - od0) * pr;
+}
 // The emitter's N (cloud_v2_flashvol.comp writes it to the alpha of its slot's first texel).
 float fvN(uint slot)
 {

@@ -43,6 +43,25 @@ float boltDiffuse(float tauT, float tauB, float cosK, float g, float side)
     float J  = max(I0 + 0.3 * g * cosK * I1, 0.0) + (1.0 - f) * max(1.0 + 3.0 * gp * cosK, 0.0) * max(et - exp(-tauT), 0.0);
     return 1.6 * J * exp(-side * t);
 }
+// ph e^-od + ms D for a light r from a cloud point seen with opacity op (ONE formula: a flash's emitter, boltLightAt, and
+// an engine light, engineLightAt). od = the cloud's optical depth from the light to the point, N the light's own-cloud
+// factor, cosB the cosine between the light's path to the point and the view, tauP the depth of the pixel's own cloud
+// (its caller's reading of the opacity), wD the diffuse light's share of the opacity, src the light's own radius (m),
+// single / side the single scattering's gain and the diffuse field's side escape.
+float boltCloudShade(float od, float N, float cosB, float r, float op, float tauP, float wD, float src, float single, float side)
+{
+    // The far side (the slab's depth beyond the point, away from the light): the pixel's own cloud. The point is the
+    // first cloud the eye meets, so with the light behind it (cosB 1) nothing lies beyond it, and with the light on the
+    // eye's side (cosB -1) the view's own depth does. (Read from the volume 1200 m further out, the depth stepped at the
+    // volume's distances: rings round every flash seen through cloud.)
+    float ob = tauP * (0.5 - 0.5 * cosB);
+    // The light is src across (a stretch of channel, a flame), seen from the cloud point under an angle: the forward
+    // lobe's peak is that wide at least.
+    float s2   = src * src / (r * r + src * src);
+    float cosS = max(cosB - 0.5 * s2, -1.0);
+    float ph   = bl.phase.y * boltHG(cosS, bl.phase.x) + bl.phase.w * boltHG(cosS, bl.phase.z);
+    return single * op * ph * exp(-od) + N * bl.ms.z * wD * boltDiffuse(od, ob, cosB, bl.ms.y, side);
+}
 // The cloud point C (ENU about the eye) seen along dir with opacity op; wD = the diffuse light's share of that opacity
 // (the march's hV, 1 - e^-(1 - f) x over the view's depth x into the cloud, summed over the opacity).
 float boltLightAt(uint slot, BoltFlash F, vec3 em, vec3 C, vec3 dir, float op, float wD)
@@ -53,17 +72,67 @@ float boltLightAt(uint slot, BoltFlash F, vec3 em, vec3 C, vec3 dir, float op, f
     float od = fvAt(slot, vl, r).x;
     float N  = min(fvN(slot), bl.tune2.x);
     float cosB = -dot(v, dir) / r;
-    // The far side (the slab's depth beyond the point, away from the light): the pixel's own cloud. The point is the
-    // first cloud the eye meets, so with the light behind it (cosB 1) nothing lies beyond it, and with the light on the
-    // eye's side (cosB -1) the view's own depth does. (Read from the volume 1200 m further out, the depth stepped at the
-    // volume's distances: rings round every flash seen through cloud.)
-    float ob = -log(max(1.0 - op, 1e-3)) * (0.5 - 0.5 * cosB);
-    // The emitter is a stretch of channel bl.tune.z across, seen from the cloud point under an angle: the forward
-    // lobe's peak is that wide at least.
-    float s2   = bl.tune.z * bl.tune.z / (r * r + bl.tune.z * bl.tune.z);
-    float cosS = max(cosB - 0.5 * s2, -1.0);
-    float ph   = bl.phase.y * boltHG(cosS, bl.phase.x) + bl.phase.w * boltHG(cosS, bl.phase.z);
-    return boltGlow(r) * bl.tune.w * (bl.tune.y * op * ph * exp(-od) + N * bl.ms.z * wD * boltDiffuse(od, ob, cosB, bl.ms.y, bl.tune.x));
+    return boltGlow(r) * bl.tune.w * boltCloudShade(od, N, cosB, r, op, -log(max(1.0 - op, 1e-3)), wD, bl.tune.z, bl.tune.y, bl.tune.x);
+}
+// ── An engine light's light on the cloud a pixel shows, through its volume (2026-11-22, issue_20261122_105107) ──
+// The same formula per unit of the light's irradiance at the point (the caller's I / (r^2 + r0^2)): Lp the light now,
+// C the cloud point. The depth is read from where the volume was BAKED (bl.fvPos: the light moves
+// on between bakes, the cloud's shadows stay where the cloud is), and a light's next volume is mixed in over its
+// current one (ev.y, ev.z: baked ahead of a moving light and weighted by how far along it is; no step at a bake).
+// What differs from a flash's read, for a reason: an engine light mostly stands OUTSIDE the cloud it lights, and lights
+// faces turned to it. The depth from the light to such a face is that of its own skin, a few tens of metres of cloud
+// (one free path), which neither the volume (steps of 0.4-2 km, filled to 120 m) nor the composite's distance resolves:
+// read at the face, the volume's steps and directions drew rings and spokes on a deck lit from below. So the volume
+// answers only for the cloud that stands BETWEEN (read bl.elTune.z m short of the point, toward where it was baked),
+// and the point's own cloud is the pixel's: its depth (engineTauBetween), all of it between with the light behind it
+// (cosB 1), none with the light on the eye's side (the complement of boltCloudShade's far side).
+float engineOd(uint s, vec3 C)
+{
+    vec3  v  = C - bl.fvPos[s].xyz;
+    float rv = length(v);
+    vec3  t1 = bl.fvT1[s].xyz, t2 = bl.fvT2[s].xyz;
+    // (short by elTune.z, by half the way for a point nearer than twice that: the cloud round a light inside one counts)
+    return fvOdFine(s, vec3(dot(v, t1), dot(v, t2), dot(v, cross(t1, t2))), rv - min(bl.elTune.z, 0.5 * rv));
+}
+// The depth of the pixel's own cloud for an engine light, FLAT over the composite's last few per cent of
+// transmittance. Those are not a depth (where the march stopped, which tile it ran in), and -ln of them is 3 .. 6.9:
+// under a steady light with the lobed look's side escape (e^-0.24 a unit of depth) every level line of that residue
+// was a dark contour on the shadowed lobes, and a march tile's edge a straight one (2026-11-22; a 0.2-s flash with
+// its side escape of 0.03 shows neither: boltLightAt keeps the plain logarithm). Two readings:
+//   engineTauBetween, the cloud between the light and the point with the light BEHIND the pixel's cloud: -ln(1 - op)
+// up to an opacity of 0.75, eased to an opaque pixel's 6.9 (= -ln 1e-3, the flashes' cap) by 0.95, flat past it;
+//   engineTauFar, the slab's far side for a face the light is in front of: -ln(1 - op) up to 0.93, rounded off to
+// 2.945 by 0.97 (a parabola: the slope carried over, zero at the end), flat past it. (Eased to 6.9 like the first, a
+// half-transparent cloud counted as a thick slab and was lit 1.8x: from 300 km a launch's lit patch had a bright core.)
+// SatelliteSim::recordLightning's level takes the same 2.945 for its thick face.
+float engineTauBetween(float op)
+{
+    return mix(-log(1.0 - min(op, 0.95)), 6.9, smoothstep(0.75, 0.95, op));
+}
+float engineTauFar(float op)
+{
+    float u = 0.97 - clamp(op, 0.93, 0.97);
+    return op < 0.93 ? -log(1.0 - op) : 2.945 - 178.57 * u * u;
+}
+vec3 gEngView = vec3(0.0);   // (harness views: the last read's depth in the volume, cosB, N)
+float engineLightAt(vec4 ev, vec3 Lp, vec3 C, vec3 dir, float op, float wD, float r0, out float od)
+{
+    float r  = max(length(C - Lp), 1.0);
+    uint  sA = uint(ev.x + 0.5);
+    od = engineOd(sA, C);
+    float N  = fvN(sA);
+    if (ev.z > 0.0) {
+        uint  sB = uint(ev.y + 0.5);
+        od = mix(od, engineOd(sB, C), ev.z);
+        N  = mix(N, fvN(sB), ev.z);
+    }
+    float cosB = -dot(C - Lp, dir) / r;
+    // N (the light's own cloud lets all of its light out somewhere) only on light that crossed cloud: a face the light
+    // sees through clear air has its light by distance already (a stage half out of a deck: N 1.2-2 on every lit top).
+    N   = mix(1.0, min(N, bl.tune2.x), 1.0 - exp(-od));
+    gEngView = vec3(od, cosB, N);
+    od += engineTauBetween(op) * (0.5 + 0.5 * cosB);
+    return bl.elTune.w * boltCloudShade(od, N, cosB, r, op, engineTauFar(op), wD, r0, bl.elTune.y, bl.elTune.x);
 }
 
 void main()
@@ -121,6 +190,8 @@ void main()
         // distances step from texel to texel (the sparse march's blocks, a near cloud's edge over a far one): taken per
         // gathered texel, a lit deck's outline and every gap in it were drawn as a staircase of 4-8 px steps.
         float tLs = 0.0, wLs = 0.0;
+        // (and the same texels' second and third moments, about the first one's distance: tLn / tLf below)
+        float tRef = -1.0, dM1 = 0.0, dM2 = 0.0, dM3 = 0.0;
         {
             vec2 hT2 = 0.5 / vec2(textureSize(cloudTargetA, 0));
             for (int j = 0; j < 4; ++j) {
@@ -130,16 +201,43 @@ void main()
                 for (int k = 0; k < 4; ++k) {
                     float op = 1.0 - clamp(t4[k], 0.0, 1.0);
                     if (op < 0.005 || abs(a4[k]) >= 5000.0 || cloudAlphaIsEmit(a4[k])) continue;
-                    tLs += op * abs(a4[k]) * 1000.0;
+                    float tk = abs(a4[k]) * 1000.0;
+                    tLs += op * tk;
                     wLs += op;
+                    if (tRef < 0.0) tRef = max(tk, 1.0);
+                    float dk = tk / tRef - 1.0;
+                    dM1 += op * dk;
+                    dM2 += op * dk * dk;
+                    dM3 += op * dk * dk * dk;
                 }
             }
             tLs = wLs > 0.0 ? tLs / wLs : 0.0;
         }
         float airLs = wLs > 0.0 ? boltAir(dir * tLs, tLs) : 0.0;
+        // Where the texels' distances differ (a lobe's outline over farther cloud), the smoothed distance is a point in
+        // the clear air between the two: no cloud between it and a light, so with an engine light's volume read there
+        // every shadowed lobe had a lit outline. The volume is read at TWO distances instead, the two points (tLn, tLf,
+        // the far one's weight wLf) that have the texels' mean, spread and skew: for a lobe over farther cloud exactly
+        // the two, each with its share, and as smooth from pixel to pixel as the mean is (their nearest and farthest
+        // stepped at every texel: a staircase along each shadow's edge). One read where the spread is under 1%.
+        float tLn = tLs, tLf = tLs, wLf = -1.0;
+        if (wLs > 0.0) {
+            dM1 /= wLs; dM2 /= wLs; dM3 /= wLs;
+            float var = max(dM2 - dM1 * dM1, 0.0), sd = sqrt(var);
+            if (sd * tRef > 0.01 * tLs + 3.0) {
+                float gam = clamp((dM3 - 3.0 * dM1 * dM2 + 2.0 * dM1 * dM1 * dM1) / (var * sd), -8.0, 8.0);
+                float rho = 0.5 * (sqrt(gam * gam + 4.0) - gam);
+                tLn = max(tRef * (1.0 + dM1 - sd * rho), 1.0);
+                tLf = tRef * (1.0 + dM1 + sd / rho);
+                wLf = rho * rho / (1.0 + rho * rho);
+            }
+        }
         // (No surface orientation: the screen derivatives of the half-res distance drew a 2-px crosshatch. The relief
         // that shows comes from the opacity: thin edges and wisps take less of the light, as the cloud's own does.)
         float opK = opF * sqrt(opF);
+        // (the diffuse light's share of the opacity, as the flashes': boltLightAt's wD)
+        float aFe = 1.0 - bl.ms.y * bl.ms.y;
+        float wDe = opF - (1.0 - pow(max(1.0 - opF, 0.0), 1.0 + aFe)) / (1.0 + aFe);
         float trBar = dot(tr4, w4);
         // The haze is lit up to the ground, and in the cloud's share of the pixel only up to the cloud (a threshold on
         // the opacity drew the cloud's half-res outline into the haze as a staircase).
@@ -164,6 +262,8 @@ void main()
         float tEndC = min(tGround, 4.0e5);
         float tEndK = min(tEndC, tCbar > 0.0 ? tCbar : tEndC);
         x = vec3(0.0);
+        float odDbg = 0.0;
+        vec3  viewDbg = vec3(0.0);
         uint n = min(uint(pc.params2.z + 0.5), 32u);
         for (uint i = 0u; i < n; ++i) {
             EngineLight L = elList[kEngineLightBase + i];
@@ -182,7 +282,25 @@ void main()
                 if (r2 <= reach2) {
                     float hC  = length(C + ctr) - RE;
                     float far = (hL - hC) * (hE - hC) < 0.0 ? smoothstep(150.0, 800.0, min(abs(hL - hC), abs(hE - hC))) : 0.0;
-                    g += kMesh * opK * airLs * 0.85 * mix(1.0, 0.35, far) * reachWin(r2, reach2) / (r2 + r02);
+                    // A light that holds a volume (bl.elVol.w its share: launches.engine_light_volume, the host's
+                    // engineLightVolumes) lights the cloud through the cloud between, as a flash does; one without
+                    // (too many lights, none near cloud, the setting off) by distance alone.
+                    vec4 ev = bl.elVol[i];
+                    if (ev.w > 0.0) {
+                        float odN, odF = 0.0;
+                        float gv = wLf < 0.0 ? engineLightAt(ev, Lp, C, dir, opF, wDe, L.ia.w, odN)
+                                             : mix(engineLightAt(ev, Lp, dir * tLn, dir, opF, wDe, L.ia.w, odN),
+                                                   engineLightAt(ev, Lp, dir * tLf, dir, opF, wDe, L.ia.w, odF), wLf);
+                        g += kMesh * airLs * mix(opK * 0.85 * mix(1.0, 0.35, far), gv, ev.w) * reachWin(r2, reach2) / (r2 + r02);
+                        // (harness "lightning light e_od= e_od_light=": where that light's cloud depth to the pixel's
+                        // cloud is at least e_od, drawn green in place of the lights)
+                        if (bl.tune2.y != 0.0 && i == uint(bl.tune2.z + 0.5)) {
+                            odDbg = (wLf < 0.0 ? odN : mix(odN, odF, wLf)) >= bl.tune2.y ? opF : 0.0;
+                            viewDbg = gEngView;
+                        }
+                    }
+                    else
+                        g += kMesh * opK * airLs * 0.85 * mix(1.0, 0.35, far) * reachWin(r2, reach2) / (r2 + r02);
                 }
             }
             // The ground (and the sea), behind the clouds' transmittance. Not on a mesh (the pad's, a ship's, a
@@ -216,13 +334,39 @@ void main()
                     float a0  = atan(-t0 / d);
                     float ang = mix(atan((tEndC - t0) / d), atan((tEndK - t0) / d), opF) - a0;
                     float tc  = clamp(t0, 0.0, tEndC);
-                    g += 0.25 * sig * max(ang, 0.0) / d * boltAir(dir * tc, tc) * (tc > tCmin ? trBar : 1.0) *
-                         reachWin(d * d, reach2);
+                    float gH = 0.25 * sig * max(ang, 0.0) / d * boltAir(dir * tc, tc) * (tc > tCmin ? trBar : 1.0) *
+                               reachWin(d * d, reach2);
+                    // The cloud between the light and the lit haze (2026-11-22): a light that holds a volume lights
+                    // the air along the ray through the cloud depth to the ray's nearest point to it (where most of
+                    // the integral is). Without it a rocket under a deck still drew its glow in the air above the
+                    // deck, and one above a deck in the air under it: 7-19% of the old cloud light there, all that
+                    // was left once the cloud itself was shaded through the volume.
+                    vec4 evH = bl.elVol[i];
+                    if (evH.w > 0.0) {
+                        vec3  Ph  = dir * clamp(t0, 0.0, tEndC);
+                        float odH = engineOd(uint(evH.x + 0.5), Ph);
+                        if (evH.z > 0.0) odH = mix(odH, engineOd(uint(evH.y + 0.5), Ph), evH.z);
+                        gH *= mix(1.0, exp(-odH), evH.w);
+                    }
+                    g += gH;
                 }
             }
             x += L.ia.rgb * (L.c.w * g);
         }
         x *= pc.params.x;
+        if (bl.tune2.y > 0.0) x = vec3(0.0, 4.0 * odDbg, 0.0);
+        // (harness `lightning light e_view=<n>`: in place of the lights, a grey of what the cloud term is made from: 1 the
+        // cloud's distance (log2, 100 m .. 25.6 km), 2 its opacity, 3 the strongest light's depth in the volume / 16,
+        // 4 its cosB (0.5 + 0.5 c), 5 the two-distance read's far weight (black: one read), 6 its N / 8)
+        if (bl.tune2.y < -0.5) {
+            int   vw = int(0.5 - bl.tune2.y);
+            float v  = vw == 1 ? (wLs > 0.0 ? log2(max(tLs, 100.0) / 100.0) / 8.0 : 0.0) :
+                       vw == 2 ? opF :
+                       vw == 3 ? viewDbg.x / 16.0 :
+                       vw == 4 ? 0.5 + 0.5 * viewDbg.y :
+                       vw == 5 ? (wLf < 0.0 ? 0.0 : 0.25 + 0.75 * wLf) : viewDbg.z / 8.0;
+            x = vec3(-log(1.0 - 0.98 * clamp(v, 0.0, 1.0)));
+        }
         if (max(x.r, max(x.g, x.b)) < 1e-4) discard;
     } else if (vSeg.z > 0.5) {
         // The ray through this pixel, and the cloud composite's four texels about it (own distance and opacity each,

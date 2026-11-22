@@ -36,16 +36,28 @@ const uint kEngineLightBase = 1024u;   // == SatelliteSim::kMaxDustClouds
 // The flashes' light on the cloud (2026-11-21, issue_20261121_163317; include/flash_volume.glsl): the cloud's optical
 // depth around each emitter, and the cloud lighting's own numbers (the march's, copied by the host each frame).
 layout(set = 0, binding = 7) uniform sampler3D boltFvTex;
+#define FV_SAMPLER boltFvTex
+#include "flash_volume.glsl"
 layout(std140, set = 0, binding = 8) uniform BoltLight {
     vec4 phase;   // == cv2.phase: x / y the forward lobe's g / weight, z / w the backward lobe's
     vec4 ms;      // x 1 = the flashes light the cloud through the volumes (0 = the glow by distance alone, the A/B),
                   // y the diffuse field's g (cv2.ms.y), z its gain (cv2.ms.z), w spare (cv2.ms.w)
     vec4 tune;    // x the diffuse field's side escape per unit of scaled depth, y the single scattering's gain,
                   // z the emitter's own radius (m: a stretch of channel, not a point), w the level (1 / a lit thick face)
-    vec4 tune2;   // x the most N may be (flash_volume.glsl: a flash deep in a cloud shows through its thinnest side)
+    vec4 tune2;   // x the most N may be (flash_volume.glsl: a flash deep in a cloud shows through its thinnest side),
+                  // y, z a harness view (0 = off): engine light z's cloud depth to the pixel's cloud >= y, drawn green
+    // The engine lights' share of the volumes (2026-11-22, issue_20261122_105107; SatelliteSim::engineLightVolumes):
+    vec4 elTune;  // as tune, for an engine light: x the side escape (the cloud look's own, cv2.shade.y: a light outside
+                  // the lobes it lights, as the Sun and a beam are), y the single scattering's gain, z how far short of
+                  // the lit point its volume is read (m: engineLightAt), w the level: 0.85 / the formula's value for a thick face
+                  // with the light behind the eye and no cloud between (so that face reads as it did by distance alone,
+                  // whatever the cloud look's phase and diffuse-field numbers are; the host works it out each frame)
+    vec4 elVol[32];          // per engine light (elList's order): x its volume's slot, y the slot fading in over it (= x:
+                             // none), z that one's weight, w the volume model's share of its cloud light (0 = by distance)
+    vec4 fvPos[kFvSlots];    // per slot an engine light holds: where it was baked (ENU about the eye, m) ...
+    vec4 fvT1[kFvSlots];     // ... and its frame there (east, north; up = their cross product)
+    vec4 fvT2[kFvSlots];
 } bl;
-#define FV_SAMPLER boltFvTex
-#include "flash_volume.glsl"
 // Fades a light out over the outer 40% of its reach (a hard cut drew its reach as a circle from orbit).
 float reachWin(float r2, float reach2) { return 1.0 - smoothstep(0.36 * reach2, reach2, r2); }
 

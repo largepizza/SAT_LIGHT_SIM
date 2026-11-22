@@ -10075,14 +10075,21 @@ private:
     static constexpr double kFvRebakeM = 600.0;
     struct BoltLightSlot
     {
-        uint32_t flashId = 0;
-        int emitter = -1;
+        uint32_t flashId = 0;      // (an engine light's volume baked ahead: where along the way the light was, x 1e6)
+        int emitter = -1;          // (an engine light's: -2 = baked ahead of a moving light, engineLightVolumes)
         glm::dvec3 bakedAt{0.0};   // where its volume was baked (Earth-fixed)
         bool baked = false;
         uint64_t usedFrame = 0;
+        uint32_t engine = 0;       // the engine light that holds it (an EngineVolTrack's id; 0 = a flash's, or free)
+        double bakedT = 0.0;       // an engine light's: the sim time of its bake (the cloud drifts on under a fixed light)
     };
     struct GpuFvJob { glm::vec4 c, t1, t2, up; };
-    struct GpuBoltLight { glm::vec4 phase, ms, tune, tune2; };   // == BoltLight (lightning_draw.glsl), std140
+    struct GpuBoltLight   // == BoltLight (lightning_draw.glsl), std140
+    {
+        glm::vec4 phase, ms, tune, tune2, elTune;
+        glm::vec4 elVol[kMaxEngineLights];
+        glm::vec4 fvPos[kFvSlots], fvT1[kFvSlots], fvT2[kFvSlots];
+    };
     BoltLightSlot boltLightSlots_[kFvSlots];
     struct BoltLightWant { uint32_t flashSlot; int emitter; uint32_t id; glm::dvec3 ecef; glm::vec3 enu; double dist; };
     std::vector<BoltLightWant> boltLightWants_;
@@ -10104,6 +10111,56 @@ private:
     VkPipeline fvPipeline = VK_NULL_HANDLE;
     uint32_t fvJobCount = 0;
     uint64_t fvBakes_ = 0;
+    // The ENGINE LIGHTS' share of the volumes (2026-11-22, issue_20261122_105107; launches.md "Rocket light through the
+    // light volume"): a burning stage, a pad's floods, a ship's, a wildfire's glow light the cloud through the cloud
+    // between as a flash does (lightning.frag engineLightAt), each from a slot of the same image. A flash comes first (it
+    // takes any slot it needs, an engine light's too, lowest priority first: fvSteals_); the engine lights rank by their
+    // irradiance at the nearest cloud x the share of the view their lit region fills, at most kFvEngineLightsMax of them
+    // in kFvEngineSlotsMax slots. A light is followed from frame to frame by its place (EngineVolTrack: the list carries
+    // no identity). A volume is read from where it was baked (the cloud's shadows stay with the cloud while the light
+    // moves on). A light on the move has its next volume baked AHEAD of it in a second slot, one re-bake distance along
+    // its way (kFvEngineMoveK of the distance to the cloud layer, kFvEngineMoveMinM .. kFvRebakeM), and the two are
+    // mixed by how far along the light is (no step at a bake, no lag behind the rocket); a light that stands bakes
+    // again where it is once the cloud map has drifted that far, and that volume fades in over kFvEngineFadeS. Then the
+    // old slot is free. At most one such second bake a frame, after the flashes' jobs (a flash never waits).
+    // launches.engine_light_volume 0 = the light by distance alone.
+    float engineLightVolume = 1.0f;
+    static constexpr uint32_t kFvEngineSlotsMax = 8, kFvEngineLightsMax = 6;
+    static constexpr double kFvEngineMoveK = 0.15, kFvEngineMoveMinM = 100.0, kFvEngineFadeS = 0.3;
+    struct EngineVolTrack
+    {
+        uint32_t id = 0;
+        glm::dvec3 pos{0.0}, vel{0.0};   // Earth-fixed: m, m per sim second
+        uint64_t firstFrame = 0;
+        int light = -1;                  // its index in this frame's list
+        int slot = -1, slotNew = -1;     // its volume, and the one fading in over it
+        float fade = 0.0f;               // slotNew's weight
+        float share = 0.0f;              // the volume model's share of its cloud light (0 = by distance alone)
+        float farK = 0.0f;               // 1 near the cloud layer -> 0 at the volume's reach from it
+        float prio = 0.0f;               // 0 = lights no cloud
+        float stale = 0.0f;              // its move since the bake / the move that asks for a new one
+        float dShell = 0.0f;             // m to the cloud layer (0 inside it)
+        bool in = false;                 // among the kFvEngineLightsMax that may hold a volume
+    };
+    std::vector<EngineVolTrack> engineVolTracks_;
+    uint32_t engineVolNextId_ = 1;
+    double engineVolPrevT_ = -1e30;
+    glm::vec4 engineVolGpu_[kMaxEngineLights] = {};                                        // this frame's BoltLight::elVol
+    glm::vec4 fvSlotPos_[kFvSlots] = {}, fvSlotT1_[kFvSlots] = {}, fvSlotT2_[kFvSlots] = {};   // ... fvPos, fvT1, fvT2
+    uint64_t fvEngineBakes_ = 0, fvSteals_ = 0;
+    struct EngineVolBake { double simT; uint32_t id; int slot; bool again; };
+    std::vector<EngineVolBake> engineVolBakeLog_;   // the last 64 bakes (harness `launch state`)
+    // as boltLightTune for an engine light: x the side escape (< 0 = the cloud look's own, clouds_v2.ms_side_escape: an
+    // engine light stands outside the lobes it lights, as the Sun and a beam do, and a lobe lets light out of its sides
+    // before the far face; a flash is inside its cloud), y the single scattering's gain, z how far short of the lit
+    // point the volume is read (m: lightning.frag engineLightAt), w the level against the light by distance alone: 1 = a
+    // thick face with the light behind the eye and no cloud between reads 0.85 I / r^2 as it did (recordLightning
+    // divides by the formula's own value for that face, with this frame's cloud phase and diffuse-field numbers).
+    glm::vec4 engineVolTune{-1.0f, 0.2f, 200.0f, 1.0f};
+    float engineVolSide() const { return engineVolTune.x < 0.0f ? cv2MsSideEscape : engineVolTune.x; }
+    float engineVolSideBaked_ = -1.0f;   // the side escape the slots' N were baked with (a change bakes them again)
+    glm::vec2 engineVolDebug{0.0f, 0.0f};   // harness "lightning light e_od= e_od_light=" (BoltLight::tune2.yz)
+    void engineLightVolumes(const GpuDustCloud *lights, uint32_t n);
     // x the diffuse field's side escape for a flash, y the single scattering's gain, z the emitter's radius (m), w the
     // level: a thick cloud's lit face reads as the glow by distance did (harness `lightning light` changes them live).
     glm::vec4 boltLightTune{0.03f, 0.2f, 1500.0f, 1.2f};
