@@ -426,7 +426,12 @@ step's lit part, 4-10 steps a ray): with the full sky's `atmStepAttn` in SKY_LIT
 same cause: zenith-ish (Sun 45 deg, out of frame) 48-74% brighter than Medium before, 29-55% now; toward the horizon
 4-15% -> 1-5%. The sunset limb from 572 km: 3-41% over the frame -> 1-10% (one night-side cell 11% -> 14%). GPU frame
 at the report's shots 2 / 3 / 4, base and new interleaved in one app, 3 reps: 4.23 / 3.79 / 4.39 -> 4.35 / 3.54 /
-4.42 ms (run-to-run 0.1-0.4); sky pass 1.15 / 1.38 / 1.40 -> 1.25 / 1.36 / 1.40. SPIR-V 230,364 -> 227,412 bytes.
+4.42 ms (run-to-run 0.1-0.4); sky pass 1.15 / 1.38 / 1.40 -> 1.25 / 1.36 / 1.40. **SPIR-V, on the tree with the mesh
+composite (229,584 B, above): 226,632 B with this change, 229,140 B with the airglow rewrite on top (terrain.md
+"Airglow in Planetarium"): 1,260 B free.** What each piece costs there, for the next change: AgX 2.2 KB, the Psi
+lookup 1.7 KB + 0.7 KB of block declarations, the exact Sun path + ozone ~2.9 KB, the airglow rewrite +2.5 KB over
+the old block; what paid: `skyZenithSky` and the shadowed-air sums ~5.2 KB, the ground's zenith integral with its
+`earthShadowSpan` / `earthShadowLit` / `optDepth` calls ~4.1 KB.
 `tools/harness/scripts/low_tiers.satcmd` is the check: Potato / Planetarium / Low at a day, night-city, orbit and
 storm view, perf + captures, and run once with `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`. First run
 (RTX 3070 Ti, 1600x900, GPU frame): Potato 0.8-1.0 ms, Planetarium 1.4-3.0 ms, Low 4.8-6.7 ms (coverage forced

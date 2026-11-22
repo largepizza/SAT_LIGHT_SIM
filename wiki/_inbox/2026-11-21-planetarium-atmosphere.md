@@ -13,5 +13,6 @@ multiple scattering is always on there (`clouds_v2.sky_multiple_scattering` 0 ha
 ## History
 Until 2026-11-21 SKY_LITE kept the pre-2026-10-26 atmosphere: `1 - e^-x`, no ozone, single scattering with the
 zenith sky standing in for shadowed air. At twilight its sky was grey-green over an orange band where the full sky is
-blue-violet (issue_20261121_160405 shot 4): 200% off per channel 30 degrees up, red 59%, green 2%, blue 7% now (airglow off
-on both). GPU frame unchanged (4.23 / 3.79 / 4.39 -> 4.35 / 3.54 / 4.42 (run-to-run 0.1-0.4) ms at the report's three views).
+blue-violet (issue_20261121_160405 shot 4): up to 200% off per channel 30 degrees up; now 1-5% in green and blue
+and 48% in the red there (the one-point step: open), 4% at the horizon band and 10% ten degrees up (airglow off on
+both). GPU frame unchanged (4.23 / 3.79 / 4.39 -> 4.35 / 3.54 / 4.42 (run-to-run 0.1-0.4) ms at the report's three views).
