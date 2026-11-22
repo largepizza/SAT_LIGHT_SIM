@@ -88,7 +88,16 @@ ivec2 cv2SamplePix(ivec2 q, bool own) { return own ? q : q * gKB + gOff; }
 // against a far ridge holds as different a light as a ridge against the sky: shot 1's far ridge).
 const float kClsLogTol = 0.5;
 float gClsLogT = 0.0;   // this pixel's log surface distance (< 0: the sky)
-float cv2LogSurf(float t) { return (t > 0.0 && t < 0.5 * kNoSurfaceT) ? log(max(t, 1.0)) : -1.0; }
+// The SKY's class distance is where this pixel's ray leaves the cloud shell (gSkyLogT, main; < 0: the ray misses the
+// shell), not "infinity" (2026-11-21, issue_20261121_154506): a sky sample holds cloud only as far as that, so a surface
+// within the same factor of it holds the same light and is the same class. That is the Earth's limb seen from a few
+// tens of km up and higher: from 428 km the sea is 2340 km out and the sky's shell ends ~2800 km out. Kept apart
+// there, the pixels either side of the half-res depth's staircase along the limb each took their own side's samples
+// only: the sky side read the thinner cloud above it and showed the limb's haze through it, the ground side the
+// thicker cloud below, a row of white dashes over a dark line along the whole limb, in the depth texels' steps. A
+// ridge against the sky from the ground (a surface a few km out, the shell's exit hundreds) stays two classes.
+float gSkyLogT = -1.0;
+float cv2LogSurf(float t) { return (t > 0.0 && t < 0.5 * kNoSurfaceT) ? log(max(t, 1.0)) : gSkyLogT; }
 bool  cv2SameClass(ivec2 p)
 {
     ivec2 ds = textureSize(sceneDepthTex, 0);
@@ -281,6 +290,13 @@ void main()
     vec2  sd0    = texelFetch(sceneDepthTex, min(c >> gGZ, textureSize(sceneDepthTex, 0) - 1), 0).rg;
     float tSurf  = sd0.r;
     bool  onSurf = tSurf > 0.0 && tSurf < 0.5 * kNoSurfaceT;
+    {   // (the sky's class distance: see gSkyLogT)
+        float thC = tan(pc.fovYRad * 0.5);
+        vec2  ndC = ((vec2(c) + 0.5) / vec2(halfSize)) * 2.0 - 1.0;
+        vec3  dC  = normalize(mat3(transpose(pc.skyView)) * vec3(ndC.x * thC * pc.aspect, -ndC.y * thC, -1.0));
+        float tX  = raySphere(vec3(0.0, 0.0, R_EARTH + pc.obsEffH), dC, R_EARTH + cv2.shell.y).y;
+        gSkyLogT  = (tX > 0.0) ? log(max(tX, 1.0)) : -1.0;
+    }
     gClsLogT = cv2LogSurf(tSurf);
     bool  cls    = false;
     {

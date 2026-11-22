@@ -561,12 +561,18 @@ float beamColumn(float h0, float h1, float len, float H)
 }
 
 // The air's optical depth (per channel: Rayleigh + aerosol, the attenuation's own mix) from the eye to distance t along
-// dir, on the straight line between the two heights (2026-11-08, issue_20261108_172203): the per-sample estimate the
-// march's light and air split take (main, after the march), corrected to the exact path at the split.
+// dir (2026-11-08, issue_20261108_172203): the per-sample estimate the march's light and air split take (main, after
+// the march), corrected to the 12-step path (optDepth) at the split.
+// The column is the curved one (atmosphere.glsl atmColumn, Chapman; 2026-11-21, issue_20261121_154506): it was the
+// straight line between the two HEIGHTS (beamColumn(eyeH, h, t)), right near the ground, but from orbit the height
+// along a limb ray is not linear in distance: 428 km up it gave a sample at the tangent point 0.63 of optical depth
+// where the path has 4.3, and LESS air to a sample past the tangent point than to one at it. The air split solved on
+// it (main) then sat short of clouds lying on both sides of the tangent point (10-35% of their haze missing: the band
+// under the limb stayed darker than the clear limb beside it). eyeH is unused since.
 vec3 cv2AirOD(vec3 eye, vec3 dir, float eyeH, float t, vec3 betaR, float betaM)
 {
-    float h = length(eye + dir * t) - R_EARTH;
-    return betaR * beamColumn(eyeH, h, t, H_R) + vec3(betaM * 1.1 * beamColumn(eyeH, h, t, H_M));
+    t = max(t, 1.0);   // (atmColumn reads L <= 0 as "to infinity")
+    return betaR * (H_R * atmColumn(eye, dir, t, H_R)) + vec3(betaM * 1.1 * H_M * atmColumn(eye, dir, t, H_M));
 }
 
 // The shafts in clear air, per view ray: the stretch of the ray INSIDE each beam's column (a ray -
@@ -1897,13 +1903,30 @@ void main()
         // 30-60 km out: one split at the mean distance gave the rain the far cloud's ~30 km of haze (bright patches) and
         // the far cloud's light no air at all, the pattern of the far cloud's broken half-res shapes along the horizon.
         // Each sample's light now takes the air in front of it (cv2AirOD), and the sky pass's airFront x (1 - T) at this
-        // split is the samples' airlight if airlight ~ (1 - air transmittance) along the ray. The split is solved with the
-        // air's optical depth linear in distance (exact for a level ray); one cloud (samples within its depth) keeps ~its
-        // mean distance. (The issue's blocks were mostly a wildfire pall behind the rain taking the rain's split, fixed in
-        // cloud_march.comp: docs/subsystems/clouds.md "Rain curtain air split", weather.md "Smoke behind a cloud".)
+        // split is the samples' airlight if airlight ~ (1 - air transmittance) along the ray. One cloud (samples within
+        // its depth) keeps ~its mean distance. (The issue's blocks were mostly a wildfire pall behind the rain taking the
+        // rain's split, fixed in cloud_march.comp: docs/subsystems/clouds.md "Rain curtain air split", weather.md "Smoke
+        // behind a cloud".)
+        // The split is SOLVED on cv2AirOD itself, by bisection (2026-11-21, issue_20261121_154506 "Odd horizon darking
+        // and pixelation"): the distance where the same estimate the samples took equals their mean. It was
+        // meanT x odS / odM, the optical depth taken linear in distance: exact for a level ray, but from orbit a limb
+        // ray's air is all in its last ~200 km (cv2AirOD ~ exp(-h(t) / H)), so samples spread over a few hundred km of
+        // the shell put the split hundreds of km short of the nearest of them, at 4-20 km of altitude: the cloud lost
+        // half to all of the haze in front of it and its light most of its attenuation. From 428 km that was a band of
+        // dark purple and brown streaks under the limb, in the march texels' blocks (the split is per texel). On a
+        // level ray the column is linear in distance and the split is the one that formula gave. 12 halvings:
+        // meanT / 4096, 0.6 km at the limb.
         float odM = dot(cv2AirOD(eye, dir, eyeH, meanT, BETA_R, BETA_M), vec3(1.0 / 3.0));
         float odS = -log(clamp(aAcc / wAcc, 1e-6, 1.0));
-        float tSp = (odM > 1e-6) ? clamp(meanT * odS / odM, 0.0, meanT) : meanT;
+        float tSp = meanT;
+        if (odS < odM) {
+            float tLo = 0.0;
+            [[dont_unroll]] for (int k = 0; k < 12; ++k) {
+                float tm = 0.5 * (tLo + tSp);
+                if (dot(cv2AirOD(eye, dir, eyeH, tm, BETA_R, BETA_M), vec3(1.0 / 3.0)) < odS) tLo = tm; else tSp = tm;
+            }
+            tSp = 0.5 * (tLo + tSp);
+        }
         vec3  aSp = exp(-cv2AirOD(eye, dir, eyeH, tSp, BETA_R, BETA_M));
         meanT = tSp;
         // Aerial perspective between the eye and the cloud (v1's camPathInscatter, same physics),

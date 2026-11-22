@@ -345,6 +345,33 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     and at night no change (0.3 / 0.5 -> 0.3 / 0.1, no halo); a snow ridge at noon without beams mean |diff| 4.1 vs an
     A-vs-A floor of 4.4. Cost: the resolve 0.78 -> 0.90 ms (the 9 depth reads that find `cls` on every pixel), GPU
     total 19.53 / 19.79 (A, A') vs 19.76 ms, within the A-vs-A spread.
+    **The sky's class distance is where the pixel's ray leaves the cloud shell** (`gSkyLogT`, 2026-11-21,
+    issue_20261121_154506 "Odd horizon darking and pixelation"), compared like a surface's (the same factor 1.65); a ray
+    that misses the shell keeps "the sky" as a class of its own. A sky sample holds cloud only as far as that exit, so
+    a surface about as far out holds the same light. That is the Earth's limb seen from a few tens of km up and
+    higher: from 428 km the sea is 2340 km out and the sky's shell ends ~2800 km out (factor 1.2). With the sky at
+    infinity the limb was a silhouette: the pixels either side of the half-res depth's staircase along it took their
+    own side's samples only, so on the sparse 3x3 grid the sky side read the thinner cloud above it and showed the
+    limb's haze through it, the ground side the thicker cloud below: a row of white dashes over a dark line along the
+    whole limb, in the depth texels' 3-px steps (hidden under the air split's dark band until that was fixed, "The air
+    split from orbit" below). **Named by knockouts at the issue's shot 4** (428 km, 50-deg field; pixels more than 6
+    levels over their 11x11 median in the shot's area, where that median is above 205; `band_metrics.py dashes`):
+    449 as shipped; knockout `scene_depth_pass` 40 and the classes off (`cv2SameClass` true) 84; the limb volume off 388,
+    the aerial volume off 387, sky TAA off 504, render scale 1.0 526, the 2x2 rate 216, `full_res 0` 576, the far layer /
+    cirrus / fog / terrain march / ocean reflection off 436-459, the march without S9's depth parallax 442, the march
+    with no depth cut at all 510, the sky pass without its joint-bilateral cloud read 501. **After:** 438 -> 86, 425 ->
+    80 and 433 -> 84 on three launches (the last on the committed build); the transmittance's hard staircase at the limb is a smooth edge. Unchanged: a ridge
+    against the sky from the ground (the classes' own issue, shot 3: largest difference 1 level), mesh edges
+    (issue_20261021_174219 shots 1-2: 4-7 levels, no pixel over 8), the limb lines of issue_20261110_180445 shot 1 (3
+    levels) and issue_20261111_170539 shots 1-2 (0.05% of the pixels change), limb cloud contrast in turned views
+    (luminance std 32.35 -> 32.39, 32.53 -> 32.57). Cost: one ray-sphere a pixel; GPU 15.36 / 15.27 (base twice) vs
+    15.23 ms at shot 4, 19.73 / 19.78 vs 19.75 at the ridge view (5 interleaved reps). **Not this, open:** the white
+    band under the limb at that issue's shot 1 (1.23-deg field, ~24 px tall, +20 levels, only under opaque cloud, +5
+    with `clouds_v2.sky_ap_limb 0`). It is the limb volume read at the cloud's slice between its last two ground rows,
+    23 px apart at that field (96 rows over the atmosphere's 2.5 deg at any field of view): it peaks mid-way between
+    the rows and is the same with a row put on the limb itself (tried: the two rows either side of the limb snapped
+    onto it, `qa/waves/20261121/evidence/c04/not_committed_limb_row_snap.patch`, no difference at any of 13 views), so it is the
+    interpolation between rows, not the hold at the limb.
 - **Far field (orbit)**: a fractal presence from the cluster Perlin at 1x and 4x (3-90 km, `fz`), thresholded
   to the map's coverage (area ~ cov), replaces the sub-pixel cells' uniform haze as the cells stop resolving
   (`farK`), and clusters the near field a little (0.08) so orbit and ground agree on where the holes are.
@@ -2663,9 +2690,9 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
 - **Rain curtain air split (2026-11-08, issue_20261108_172203, branches qa/20261108/rainart + airsplit).** One air split
   per pixel serves a ray that meets rain a few hundred metres out AND cloud or smoke far out only approximately (the
   eye in or beside a rain curtain, looking at the horizon). The march attenuates each lit sample's light by the air
-  between the eye and it (`cv2AirOD`, a straight-line column between the two heights, two `exp` per sample) and puts the
-  split where the air transmittance equals the samples' light-weighted mean (`aAcc`; the optical depth taken linear
-  along the ray, then the exact `optDepth` ratio at the split). The row of jagged blocks the reporter saw (29.99 S
+  between the eye and it (`cv2AirOD`: the curved path's column, `atmColumn`, since 2026-11-21; see "The air split from
+  orbit" below) and puts the split where the air transmittance equals the samples' light-weighted mean (`aAcc`; solved
+  on `cv2AirOD` by bisection, then the `optDepth` ratio at the split). The row of jagged blocks the reporter saw (29.99 S
   146.04 E, 452 m) was NOT the clouds: it was a wildfire pall at the horizon behind the rain, which took the rain's
   split (weather.md "Smoke behind a cloud takes its own air"); knocked out by `clouds_v2.wildfires 0` or the
   composite's plume block. Horizon band luminance std (12 rows above the horizon, 9-px horizontal median against the
@@ -2679,6 +2706,46 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   the 3x3 distances. Harness gotcha: each `shaders reload` reloads EVERY cloud shader, the ones it does not name from
   the build's SPVs, and the combine pass has no slot: swap its SPV on disk between batches
   (`qa/waves/20261108/evidence/airsplit/ab_driver.py`).
+- **The air split from orbit (2026-11-21, issue_20261121_154506 "Odd horizon darking and pixelation", branch
+  qa/20261121/limbsmudge).** `cv2AirOD` is the CURVED path's column (`atmColumn`, the Chapman column of
+  atmosphere.glsl, x H for metres of sea-level air), and the split is the distance where `cv2AirOD` equals the
+  samples' mean optical depth, found by bisection between the eye and the mean distance (12 halvings, after the march:
+  once a ray). Both replaced estimates that hold only near the ground. The column was the straight line between the
+  eye's height and the sample's (`beamColumn(eyeH, h, t)`): from 428 km a limb ray's height is nowhere near linear in
+  distance, so a sample at the tangent point (2 km up, 2369 km out) got 0.63 of optical depth where the path has 4.3,
+  and a sample PAST the tangent point less air than one at it. The split was `meanT x odS / odM`, the optical depth
+  taken linear in distance: all of a limb ray's air is in its last ~200 km, so samples spread over a few hundred km
+  of the shell put the split hundreds of km short of the nearest of them, at 4-20 km of altitude. The sky pass then
+  gave the cloud none to about half of the haze its samples have in front of them (the formulas offline, a ray 1 km
+  over the limb: two samples 250 and 20 km before the tangent point got 0.45 of the saturated airlight where they
+  have 0.79; one 300 km before and one 100 km past it 0.07 against 0.89), and the march attenuated its light by the
+  split's thin air. Seen from orbit at the limb: a band of dark purple and brown streaks
+  where clouds overlap in depth, in the march texels' blocks (the split is one number a texel), over the white haze
+  of single clouds. **Named by knockouts at the issue's shot 1** (4.51 S 124.47 E, 428 km, field of view 1.23 deg,
+  render scale 0.67): `volumetric_cloud_march` removes the band; the limb volume, the aerial volume, the far layer,
+  the Sun volume, the per-pixel cloud shadow, the self-shadow cone, cirrus, fog, sky TAA, render scale 1.0 and the
+  2x2 rate do not (the last two thin it);
+  the cloud's radiance and transmittance (`debugview cloudrad` / `cloudtrans`, `knockout atmosphere_loop`) are smooth
+  where the streaks are, and a variant with the split at the mean distance has none. **Measured** (shot 1's area, row
+  means of luminance, the band's rows against the line through the 10 rows above and below;
+  `qa/waves/20261121/evidence/c04/band_metrics.py`): deepest dip 7.5 -> 1.0 levels, worst 64-px column 24.0 -> 4.8,
+  horizontal pixel steps of 3 levels or more 188 -> 4, largest row-to-row step 23.7 -> 9.7 (a cloud's lower edge).
+  The band is now brighter than the clear limb beside it, as lit cloud behind haze is: (185, 190, 199) against
+  (167, 181, 193) with the clouds knocked out; it was (175, 178, 186). Turned 90 degrees at a 16.8-deg field the limb
+  clouds' contrast is unchanged (luminance std 32.25 -> 32.33 and 32.53 -> 32.53). In motion the band changes less
+  from frame to frame (largest mean change in the area, a slow pan: 0.91 -> 0.53 levels; the reporter's zoom-out:
+  6.2 -> 5.4). The rain-curtain view above is unchanged (its band std 3.3 -> 3.1; signed mean difference under 0.1
+  level, the rest is the rain's animation). **Cost** (RTX 3070 Ti, 5 interleaved reps, the base run twice): the march
+  stays at 128 registers; GPU at shot 1 18.61 / 18.68 (base) against 18.90 ms, the cloud bucket 12.74 / 12.79 against
+  12.99 (reps within +-0.5); at the 50-deg orbit view (shot 4) 16.24 / 16.01 against 16.23, cloud 10.99 / 10.66
+  against 10.91. **Dead end:** bisection on the straight-line column alone. It removes the dark streaks, but that
+  column falls past the tangent point, so clouds on both sides of it keep a split too near: the band stayed under
+  the clear limb's level in green and blue ((177, 179, 186) against (167, 181, 193)). **Not the split**: the white line on the
+  sea-level limb that the dark band partly covered. At 4-50 deg fields it was the resolve's surface classes (white
+  dashes, fixed: "The surface class" above, the sky's class distance); at the 1.23-deg field it is a band ~24 px tall
+  from the limb volume (open, same paragraph). At the issue's shot 3 (16.8 deg) the band's dip is 7.2 -> 4.1 levels: what is left is the clear gap
+  between a thin upper layer and the main band (transmittance 0.85-0.97 at shot 1's zoom, equal to the clouds-off
+  frame within 2 levels).
 - **Review 14 (2026-09-30):** **no dust or ice fog under the ground** in the fog march (`pp.h < cv2Ground - 30`;
   their height terms come back clamped at 0, so a sample below the surface read the densest value). Past the
   detailed terrain march's range the scene depth lands below the real surface, and from 180 km over the Ronne
