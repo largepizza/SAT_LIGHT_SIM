@@ -8682,6 +8682,10 @@ void main() {
         vec4 gE = textureGather(cloudTargetA, cloudUV, 3);
         if (meshHit || cloudAlphaIsEmit(gE.x) || cloudAlphaIsEmit(gE.y) || cloudAlphaIsEmit(gE.z) || cloudAlphaIsEmit(gE.w))
             outColor.a = 0.875;
+        // 0.90625 = a MESH pixel (2026-11-21, issue_20261121_154126 "jitter on models"; still inside sky_taa.comp's
+        // 0.85-0.95 range): the mesh targets were read at meshPx, this pixel's CENTRE, not along the jittered ray, so
+        // when upscaling the resolve places this sample there and not at the jittered position.
+        if (meshHit) outColor.a = 0.90625;
     }
     // 0.975 = the Moon's disc (2026-10-28, issue 20261028_191038): with the view still, sky_taa.comp keeps its history
     // there (no flash rule: a crater rim's or the limb's jittered samples reset it every frame, the flicker).

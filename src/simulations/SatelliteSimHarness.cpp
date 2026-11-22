@@ -610,6 +610,9 @@ json SatelliteSim::harnessStateJson()
                        // (2026-11-21) the models drawn as meshes in the last frame's scene pass (satellites, stations,
                        // rockets, pads): 0 under Potato or the sat_meshes knockout, > 0 on Planetarium beside a model
                        {"meshes_drawn", meshDrawn.size()},
+                       // close-range positions (2026-11-21): the satellites the GPU listed within near_radius_m of the
+                       // eye last frame, and how many the CPU placed in double for this frame's dispatch
+                       {"near_listed", nearCandTotal}, {"near_exact", nearExactUsed}, {"near_radius_m", nearRadiusM},
                        {"peak_magnitude", peakMagnitude}};
     if (glowMapped)
     {
@@ -779,6 +782,9 @@ json SatelliteSim::harnessStateJson()
             sel["parity"] = {{"dmag", selParityDmag},
                              {"range_gpu_m", selParityRangeGpuM},
                              {"range_cpu_m", selParityRangeCpuM}};
+        // (2026-11-21) where the GPU drew the selection against where the CPU puts it, same eye and instant, degrees
+        if (selGpuDirErrValid)
+            sel["gpu_dir_err_deg"] = selGpuDirErrDeg;
         // (2026-10-22) The selection's FINAL visible record as sat_flare.comp wrote it (last frame): the displayed
         // effectFlare its point, bloom and glare read, its sprite size, the point-like glare value, and the raw flux.
         if (pickedVisibleMapped)

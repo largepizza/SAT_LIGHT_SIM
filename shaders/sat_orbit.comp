@@ -282,6 +282,9 @@ layout(set = 0, binding = 6) writeonly buffer SatVisibleIdxBuf {
 // zeros}. The dispatch/draw args are maintained with atomicMax on each workgroup's append END:
 // slots are handed out contiguously from 0, so the largest end IS the final count — no separate
 // args-building pass needed.
+const uint MESH_CAND_MAX  = 1024u;  // = kMaxMeshCandidates
+const uint NEAR_CAND_MAX  = 256u;   // = kMaxNearCand
+const uint NEAR_EXACT_MAX = 128u;   // = kMaxNearExact
 layout(set = 0, binding = 7) buffer SatListBuf {
     uint listCount;           // append counter
     uint dispatchX;           // VkDispatchIndirectCommand for sat_flare.comp (local_size 64)
@@ -296,6 +299,19 @@ layout(set = 0, binding = 7) buffer SatListBuf {
     float selectedRangeM;
     uint  selectedFound;
     uint  selectedPad;
+    uint  meshCandCount;      // sat_flare.comp's (Phase 4d mesh candidates)
+    uint  nearCandCount;      // append counter of nearCand (reset with the header)
+    uint  meshCandPad0, meshCandPad1;
+    uvec4 meshCand[MESH_CAND_MAX];   // sat_flare.comp's
+    // Close-range positions (2026-11-21, issue_20261121_160405; GpuSatListHeader). nearCand: the satellites this
+    // dispatch finds within nearRadiusM of the eye, for the CPU. nearSat / nearRel: the nearest of LAST frame's
+    // list (and the followed satellite), evaluated by the CPU in double at this frame's time: satellite - eye, ECI.
+    uint  nearCand[NEAR_CAND_MAX];
+    uint  nearExactCount;
+    float nearRadiusM;
+    uint  nearPad0, nearPad1;
+    uint  nearSat[NEAR_EXACT_MAX];
+    vec4  nearRel[NEAR_EXACT_MAX];
 };
 
 // Workgroup-aggregated append: one global atomicAdd per 64 satellites instead of one per
@@ -1431,6 +1447,31 @@ bool processSatellite(uint i, out SatVisible rec)
     }
     }
     vec3 relPos = satECI - pc.obsECI;
+
+    // ── Close range: the CPU's vector (double) in place of the subtraction above ───────────────────────────────────
+    // satECI and obsECI are floats of ~7e6 m: the phase, its sine and cosine and the products each round to ~0.5 m,
+    // differently every frame, so the difference carries 1-3 m of noise whatever the range: nothing at 500 km, a
+    // pixel at 2 km, and ~60 px a frame for the satellite the camera rides 11 m from (issue_20261121_160405, taken
+    // when Planetarium drew no meshes: wherever no mesh stands in for the point). A satellite within nearRadiusM is
+    // listed for the CPU, which evaluates the nearest of the list in double next frame (and the followed one
+    // always) relative to the eye the meshes are drawn from. Taken only when it agrees with the float result to
+    // 20 m: a launch record the CPU flies off its written Kepler orbit keeps its record's place (launches.md,
+    // "never draws from the written record").
+    {
+        float d2n = dot(relPos, relPos);
+        if (d2n < nearRadiusM * nearRadiusM) {
+            uint ns = atomicAdd(nearCandCount, 1u);
+            if (ns < NEAR_CAND_MAX) nearCand[ns] = i;
+            uint ne = min(nearExactCount, NEAR_EXACT_MAX);
+            for (uint k = 0u; k < ne; ++k) {
+                if (nearSat[k] == i) {
+                    vec3 dv = nearRel[k].xyz - relPos;
+                    if (dot(dv, dv) < 400.0) relPos = nearRel[k].xyz;
+                    break;
+                }
+            }
+        }
+    }
 
     // ── Earth occultation cull ────────────────────────────────────────────────
     // When sinEl < elevCutoff the infinite line of sight passes through Earth

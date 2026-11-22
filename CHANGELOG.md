@@ -800,6 +800,14 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   of the engines (the jellyfish's chevron) only reached the stage for about half a second after each puff of exhaust
   was released, about once a second, and started a few kilometres behind it the rest of the time, so riding beside
   the stage the chevron flashed on and off. They now leave the engines continuously, at the old average brightness.
+- 3D models no longer jitter while you ride along with them (issue_20261121_154126). Below 100% render scale every
+  model shifted by up to a pixel from frame to frame, and an open truss (the ISS's, a grid fin) redrew its
+  members' edges every frame; both came from temporal AA, which has nothing to average for a model that moves with
+  the camera. Models now hold still, at any render scale, with the clock running or paused.
+- A satellite you fly right up to no longer jumps around the screen (issue_20261121_160405). Close to the camera a
+  satellite's point was placed with about a metre of rounding that changed every frame: invisible from the ground,
+  but tens of pixels at ten metres, most obvious wherever a point is drawn instead of a 3D model (the Potato preset,
+  or Planetarium before it drew models). The satellite you ride with and those within 20 km are now placed exactly.
 - Rocket plumes no longer vanish for the rest of a session after you jump between launches or fly away from one
   (issue_20261111_211610). Plume builds for launches that left view kept their worker slots, and after four of them
   no plume was built again; finished builds nobody collects are now dropped and rebuilt when needed.

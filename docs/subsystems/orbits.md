@@ -282,7 +282,7 @@ at least `highlightFlare`; until 2026-09-24 it skipped the lighting and drew eve
 was a `vec3`; packing it freed the slot for `rangeM`, which the point draws write as their depth
 (see "Unified scene depth").
 
-### GpuSatListHeader layout (80 bytes) — `satListBuf`
+### GpuSatListHeader layout (80 bytes + the mesh candidates and the close-range lists) — `satListBuf`
 ```
 [ 0] count                                        — append counter = list length
 [ 4] dispatchX, dispatchY, dispatchZ              — VkDispatchIndirectCommand (sat_flare)
@@ -305,6 +305,46 @@ their own display units. The gap is float-vs-double arithmetic. Until Phase 4 it
 ~9 m max from float32 rounding of the final angle and position.
 Mirrored as `SatListBuf` in both `sat_orbit.comp` and `sat_flare.comp`; `offsetof` static_asserts
 guard the C++ side.
+
+**Close-range positions (2026-11-21, issue_20261121_160405 "satellites jitter around when you are up close").**
+`sat_orbit.comp` forms a satellite's place relative to the eye as `satECI - pc.obsECI`: two floats of ~7e6 m, so the
+difference carries the float floor above (1.1 m median, 9 m max), drawn anew every frame, whatever the range. That is
+nothing at 500 km, a pixel at 2 km, and several degrees for the satellite the camera rides 11 m from: on a tier
+that draws no mesh in its place (Planetarium when the report was taken, Potato since) the followed satellite's
+point jumped 59 px mean / 149 max between frames over a 175 x 108 px patch (the report's view, 50-degree field,
+1009 px high; range 10.6-11.4 m on the GPU against 11.255 m). The camera itself is steady against the object (`follow log`: the offset changes 3e-11 of
+itself a frame, the view 2e-6 deg). So the header's tail carries the CPU's answer:
+```
+[84]    nearCandCount                 — atomic counter (reset with the header: it replaced a pad word)
+[96 + 16 x 1024]  nearCand[256]       — the satellites this dispatch found within nearRadiusM of the eye
+[...]   nearExactCount, nearRadiusM, pad x 2
+[...]   nearSat[128], nearRel[128]    — satellite index; satellite - eye, ECI, metres (vec4)
+```
+Every satellite within `nearRadiusM` (20 km: the float floor is 0.07 px there at a 50-degree field) is appended to
+`nearCand`. Next frame, where `SatOrbitPC` is built, the CPU evaluates the nearest 128 of that list, and always the
+followed satellite (it never waits for the list), with `satOrbitStateAt(orbitElemsOf(...))` at THIS frame's time,
+relative to the eye the meshes are drawn from (`parityPending.eyeEci`: `followObsEcef` while following, else
+`normalize(obsDir) x obsEyeRadiusM()`, in double), and writes the vectors with `vkCmdUpdateBuffer` before the
+dispatch. The shader takes a listed satellite's vector in place of its own subtraction: one frame of lag in WHICH
+satellites, none in WHERE, the mesh hand-off's rule. Taken only when it agrees with the float result to 20 m, so a
+launch record the CPU flies off its written Kepler orbit (launches.md, "never draws from the written record") keeps
+its record's place. When more than 192 satellites are inside the radius the CPU shrinks it by 20% a frame (which 256
+the list holds would be the append order's accident) and relaxes it back at 5% a frame under 85. The followed
+satellite's point now stays put in the same view (0.00 px between frames on Potato, at 1x and 10x; the GPU's
+direction 1.3e-6 deg = 4e-5 px from the CPU's; `qa/waves/20261121/evidence/c03/`), and a point and its mesh agree
+to the float precision of the relative vector (~1e-6 m at 11 m) instead of ~1 m. A stationary observer tracking a
+satellite 588 km away sees no change (the list is empty there): 0.0001 px mean between frames at 1x, 0.005 at 10x.
+The report's tier, Planetarium, has drawn the models themselves since the same day (satellites.md, "Meshes on
+Planetarium"), which the CPU always placed; the points this serves are those with no mesh: Potato, a type with no
+model, a model still under the mesh fade-in size (a 3 m satellite at 2 km was a pixel of jitter).
+The parity check's CPU side takes the same eye (`in.obsEci = pin.eyeEci`; with the float eye it read 0.03 mag off
+at 11 m) and the inputs of the dispatch whose header was read back: every dispatch tags its header
+(`selectedPad` = `parityFrameId`) and `parityRing[8]` keeps the inputs by tag. The readback is slotted (two frames
+old with two frames in flight); paired with "the last dispatch", the ranges and directions differed by a frame of
+the satellite's motion (0.012 deg at 1x for a pass at 588 km, ten times that at 10x).
+Harness: `state` -> `satellites.near_listed` / `near_exact` / `near_radius_m`, and `selection.gpu_dir_err_deg` (the
+angle between the GPU's drawn direction of the selection and the CPU's, same eye and instant; for a satellite drawn
+as a mesh the GPU's direction is its sprite's, moved to the Sun's glint on the model, so it reads that offset).
 `static_assert(sizeof(GpuSatVisible) == 32)`
 
 ### Push constants

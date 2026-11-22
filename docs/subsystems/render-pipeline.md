@@ -296,6 +296,11 @@ see the last bullets), `recordPrePass` → `recordSkyTaa`:
   frame knows where they were, and wherever the 3x3 or the history's 2x2 holds one (`dynNb`) the still view's
   exemptions are off: no unclipped history, no widened depth test. A descending ship from below was a translucent,
   dotted ghost: its history (the sky) passed the widened test and was kept unclipped at the still weight.
+  **A mesh pixel's marker is 0.90625 (2026-11-21, issue_20261121_154126), the emissive composite's stays 0.875:** the
+  mesh targets are read at the input pixel's centre, not along the jittered ray, so when upscaling the resolve places
+  every sample of a 3x3 that holds a mesh sample at the full-resolution texel under its centre (`meshNb`). Placed
+  jittered, a model with no usable history (one the camera rides with) wobbled by the frame's jitter, up to 0.75
+  output px at 67% (satellites.md, "Steady while the camera rides with a model").
 - Run with `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation` after touching any of this; the harness run's
   `app_stdout.txt` holds the messages. `scripts/sky_taa.satcmd` (set `display.sky_taa` with `true`/`false`).
 
