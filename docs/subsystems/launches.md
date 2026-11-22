@@ -384,8 +384,10 @@ launches follow per-program cadences (no real manifest).
   Gaussians and the bricks), the main thread's `launchFillVisuals` 2.64 -> 0.36 ms (`cpu_split_ms.visuals`; perf.md
   "Planetarium's CPU frame"). High and Medium at the same cell: the capture differs from the build before by 0.23 /
   0.20 levels mean (their plumes are untouched; the same build twice in one run: 0.004). Settings > Launches carries a
-  note on those tiers (`NoteLaunchPlumesOff`): the plume rows still edit the settings. The Missions window's twilight
-  launch ("jellyfish") Watch is still offered there and lands on the rocket without its plume.
+  note on those tiers (`NoteLaunchPlumesOff`): the plume rows still edit the settings. The Missions window's pinned
+  twilight launch ("jellyfish") Watch frames the sunlit exhaust, so it is disabled there with its reason
+  (`TipTierNeedPlumes`, `missionsWatch("twilight")` refuses with the same line); a twilight launch among the next five
+  takes the lift-off Watch there (`kWatchLiftoffS`), like any other.
 - **Plumes** (`buildParcels`, `launch::makeParcel`): parcels of exhaust every 1-1.5 s of each burn, integrated once per
   launch (only for launches within ~4500 km of the eye and not past 1 h/s of warp) with entrainment: the gas expands
   at ~2 km/s while it outweighs the air it has taken in, then diffuses (above ~80 km the coupling to the air falls to

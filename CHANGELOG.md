@@ -577,9 +577,11 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **No rocket plumes on Planetarium or Potato:** a launch there is the rocket itself (its point, and on Planetarium
   its 3D model), its engine flame and its light. The exhaust trail, the staging cloud, the twilight "jellyfish" and
   the launch-made noctilucent clouds are drawn from Low up. Near a twilight launch Planetarium's plume pass was
-  about 10 ms of a 13.5 ms frame; it is 0.4 ms now. Settings > Launches says so on those presets.
-- **Planetarium draws night cities as the night-lights map under the city light points:** the tiled street-pattern
-  texture is no longer blended in at night (by day it still is).
+  about 10 ms of a 13.5 ms frame; it is 0.4 ms now. Settings > Launches says so on those presets, and the Missions
+  window's twilight-launch Watch (which frames the plume) is off there.
+- **Planetarium draws night cities as light points over a dim glow:** the tiled street-pattern texture is no longer
+  blended in at night (by day it still is); the ground under the points keeps a faint, smooth glow of the
+  night-lights map. From orbit the cities are unchanged.
 - **Planetarium has no cloud layer at all:** its preset never drew one, and its sky shader no longer carries the flat
   layer; Settings > Clouds says that no cloud setting draws anything there.
 - **Potato draws the cities as the night-lights map alone:** the tiled city detail texture (squares of street

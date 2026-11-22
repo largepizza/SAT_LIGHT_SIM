@@ -5804,7 +5804,8 @@ void main() {
         // attenuated by the cloud composite like everything behind it. cloud.cityLightBlurLod is unread.
         // SKY_LITE (Planetarium): the night map alone at night (2026-11-22, issue_20261121_160405: "Planetarium already
         // has city light sprites, we do not need the detail texture as having both on looks bad" — the tiled NIGHT
-        // detail texture is not compiled in there; city_sprites.comp carries the lights), the tiled DAY detail texture
+        // detail texture is not compiled in there; city_sprites.comp carries the lights and the map under them is
+        // dimmed to a glow, LITE_CITY_GLOW below), the tiled DAY detail texture
         // by day, none of the procedural city pattern, roads, farms, beaches, solar parks or close-up materials
         // (compiled out below).
 #ifdef SKY_LITE
@@ -6526,6 +6527,24 @@ void main() {
                            * (1.0 - smoothstep(0.75 * cloud.cityParams.z, cloud.cityParams.z, tSurface));
                 cityLights *= mix(1.0, cloud.cityParams.y, sprW);
             }
+#ifdef SKY_LITE
+            // Planetarium's ground under the city light sprites: a smooth dim glow (2026-11-22, issue_20261121_160405).
+            // The tiled night detail texture this variant no longer compiles also stood in for the map's light (it
+            // averaged ~0.1 of the map in a city's core: a city up close is mostly dark between its lights, the same
+            // mean cityLightPattern keeps on the full tiers, 0.12), so with it cut the 5-km night map drew at full
+            // strength: a flat cream sheet over a dense city from 2 km, brighter than the sprites on it. The map keeps
+            // kLiteCityGlow of its light wherever the sprites are drawn: at every range inside their reach
+            // (cityParams.z; no start footprint: nearer than the sprites begin there is no light to hand over to
+            // either), fading out with them from 100 to 150 km of eye altitude (SatelliteSim::citySpriteGainAt), so
+            // from orbit, and with the sprites switched off (reach 0), the map is whole as before.
+            // LITE_CITY_GLOW: the one number to nudge (a compile-time constant: -DLITE_CITY_GLOW=x for a variant).
+#ifndef LITE_CITY_GLOW
+#define LITE_CITY_GLOW 0.04
+#endif
+            if (cloud.cityParams.z > 0.0)
+                cityLights *= mix(1.0, LITE_CITY_GLOW, (1.0 - smoothstep(100000.0, 150000.0, obsEffH))
+                                                       * (1.0 - smoothstep(0.75 * cloud.cityParams.z, cloud.cityParams.z, tSurface)));
+#endif
         }
         // Pools on the albedo: relative to a mid grey (0.12), x the face's up-facing (the lamps are
         // overhead: relief and bumps shade), x the detail AO. Its BRIGHTNESS only: the lamps' colour is
