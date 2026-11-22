@@ -271,7 +271,14 @@ bool SatelliteSim::missionsWatch(const std::string &what, std::string &msg)
         msg = "no such launch (an index into the next launches, twilight, crew, fury)";
         return false;
     }
-    return launchWatchKey(m->key, (m->twilight || what == "twilight") ? kWatchTwilightS : kWatchLiftoffS, msg);
+    // The twilight Watch frames the sunlit exhaust: not offered where no plume is drawn (Planetarium, Potato;
+    // 2026-11-22). A twilight launch among the next ones is watched at lift-off there, like any other.
+    if (what == "twilight" && !launchPlumesDrawn())
+    {
+        msg = tx(Txt::TipTierNeedPlumes);
+        return false;
+    }
+    return launchWatchKey(m->key, ((m->twilight || what == "twilight") && launchPlumesDrawn()) ? kWatchTwilightS : kWatchLiftoffS, msg);
 }
 
 bool SatelliteSim::missionsOngoingAct(int row, bool go, std::string &msg)
@@ -474,9 +481,11 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                                                           .childGap = 4,
                                                           .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                 {
+                    // (the pinned twilight row's Watch is the plume: disabled with its reason where none is drawn)
+                    const char *twWhy = (id == 100 && !launchPlumesDrawn()) ? tx(Txt::TipTierNeedPlumes) : nullptr;
                     if (uiButton(inp, ui, "MsWatch", id, tx(Txt::BtnWatch),
-                                 (m.twilight || id == 100) ? tx(Txt::TipItsExhaustHighUpLitBy)
-                                            : tx(Txt::TipTheRocketLiftingOffFromBeside)))
+                                 twWhy ? twWhy : ((m.twilight || id == 100) && launchPlumesDrawn()) ? tx(Txt::TipItsExhaustHighUpLitBy)
+                                            : tx(Txt::TipTheRocketLiftingOffFromBeside), false, twWhy == nullptr))
                         watchLaunch = id;
                 }
             }
@@ -783,7 +792,7 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
     };
     if (const MissionLaunch *m = launchOf(watchLaunch))
     {
-        launchWatchKey(m->key, (m->twilight || watchLaunch == 100) ? kWatchTwilightS : kWatchLiftoffS, msg);
+        launchWatchKey(m->key, ((m->twilight || watchLaunch == 100) && launchPlumesDrawn()) ? kWatchTwilightS : kWatchLiftoffS, msg);
         msStatus = msg;
         msNextWall = msPinWall = -1e300; // rebuilt next frame (Clay still holds this frame's strings)
     }

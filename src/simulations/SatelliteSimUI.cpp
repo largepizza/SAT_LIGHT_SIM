@@ -3912,7 +3912,9 @@ void SatelliteSim::buildSettingsTabbedBody(const UIInput &inp, UIRenderer &ui)
                 }
                 hovTab[ti] = n;
                 Clay_String tabStr{false, (int32_t)strlen(settingsTabName(ti)), settingsTabName(ti)};
-                const bool offTab = ti == 12 && weatherUnavailable(); // greyed: nothing in it draws on this tier
+                // greyed: nothing in it draws on this tier (Weather; and Clouds, 2026-11-22: Planetarium has no flat
+                // cloud layer any more, so no cloud setting draws anything without the volumetric clouds)
+                const bool offTab = (ti == 12 && weatherUnavailable()) || (ti == 6 && cloudsNotDrawn());
                 CLAY_TEXT(tabStr, CLAY_TEXT_CONFIG({.textColor = active ? Pal::textPrimary : offTab ? Pal::textHint : Pal::volLabel,
                                                     .fontSize = fs(12)}));
             }
@@ -3964,6 +3966,19 @@ void SatelliteSim::buildSettingsTabBody(const UIInput &inp, UIRenderer &ui, int 
         buildSettingsPhotometryTab(inp, ui);
         break;
     case 6:
+        if (cloudsNotDrawn() && !searchActive())
+        {
+            // Planetarium: no cloud is drawn without the volumetric clouds (the rows still edit settings). Not on
+            // Potato, whose own shader keeps a flat deck.
+            CLAY(CLAY_ID("CloudsTabOffNote"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                          .padding = {8, 8, 6, 6}},
+                                               .backgroundColor = Pal::rowHighlight,
+                                               .cornerRadius = CLAY_CORNER_RADIUS(4)})
+            {
+                CLAY_TEXT(txc(Txt::NoteCloudsTabOff),
+                          CLAY_TEXT_CONFIG({.textColor = Pal::textWarn, .fontSize = fs(12), .wrapMode = CLAY_TEXT_WRAP_WORDS}));
+            }
+        }
         buildSettingsCloudsTab(inp, ui);
         break;
     case 7:
@@ -4020,6 +4035,18 @@ void SatelliteSim::buildSettingsLaunchesTab(const UIInput &inp, UIRenderer &ui)
 {
     // The graphics first (the issue: "primarily the graphics related settings"; the exhaust sliders are what gets
     // tuned), then what happens.
+    if (!launchPlumesDrawn() && !searchActive())
+    {
+        // Planetarium / Potato (2026-11-22): no exhaust plume is built or drawn there (the rows still edit settings).
+        CLAY(CLAY_ID("LaunchPlumesOffNote"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)},
+                                                         .padding = {8, 8, 6, 6}},
+                                              .backgroundColor = Pal::rowHighlight,
+                                              .cornerRadius = CLAY_CORNER_RADIUS(4)})
+        {
+            CLAY_TEXT(txc(Txt::NoteLaunchPlumesOff),
+                      CLAY_TEXT_CONFIG({.textColor = Pal::textWarn, .fontSize = fs(12), .wrapMode = CLAY_TEXT_WRAP_WORDS}));
+        }
+    }
     buildLaunchGraphicsSection(inp, ui);
     buildKesslerGraphicsSection(inp, ui);
     buildLaunchSettingsSection(inp, ui);
@@ -9383,9 +9410,15 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
         // that can run it. Phase 2: atmosphere march viewSamplesMin/Max 6/48 -> 4/10, and the two
         // volumetric-cloud compute kernels knocked out (kBitCloudMarch/kBitCirrusMarch — coverage
         // is 0 at this tier so they march nothing but still cost a dispatch + the sample below).
+        // 2026-11-22 (issue_20261121_160405, the user: "due to the sky step min budget, there are some appreciable
+        // banding near the zenith at twilight. We can raise that up a tad"): viewSamplesMin 4 -> 5, the max stays 10.
+        // The step count is a whole number that follows the ray's length (4 looking up, +1 every ~25 km of path), and
+        // each change of it was a ring round the zenith: with SKY_LITE's step integral (sat_sky.frag atmStepAttn, the
+        // same day) the largest ring at twilight is under half of what it was at 5, not yet at 4
+        // (render-pipeline.md "Planetarium's twilight"). Rays below ~30 deg of elevation are at the max either way.
         v = {kBitTerrain | kBitOceanRefl | kBitAirglowRed | kBitAurora | kBitBeams | kBitCloudShadow |
                  kBitBeamBlock | kBitFog | kBitLiteSky | kBitCloudMarch | kBitCirrusMarch,
-             1.0f, 0.0f, 160.0f, 3.0f, 0.025f, 4.0f, 10.0f, 2.0f, 3.0f, 5.0f, 3.0f, 50000.0f, 100000.0f, 5000.0f, 10000.0f};
+             1.0f, 0.0f, 160.0f, 3.0f, 0.025f, 5.0f, 10.0f, 2.0f, 3.0f, 5.0f, 3.0f, 50000.0f, 100000.0f, 5000.0f, 10000.0f};
         break;
     case GraphicsPreset::Low:
         // Terrain stays on (a bare sea-level sphere with no relief reads as more "wrong" than

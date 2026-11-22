@@ -379,7 +379,7 @@ Two stand-in fragment shaders, both bound through **`skyBgPipeLayout` / `skyDesc
 | Tier | Bit | Pipeline | Shader | Notes |
 |---|---|---|---|---|
 | **Potato** | `262144` | `skyBgMinimalPipeline` | `shaders/sat_sky_minimal.frag` (own file, ~370 lines; the Sept-2026 shader + only what today's bindings and depth require: the weather cube at binding 7, the unified depth, and its own DEM-only eye height, `minimalEyeHeight`) | closed-form analytic atmosphere (Kasten-Young airmass, one 32-tap arithmetic loop — no raymarch), day/night textures (the cities are the night map alone since 2026-11-21: no city-detail textures, terrain.md), one flat drifting cloud shell w/ terminator lighting, cheap ocean (1 noise-tap slope + Fresnel + Blinn glint), textured moon, verbatim `lensFlare()`. **~60 FPS.** No Milky Way / volumetric clouds / aurora / airglow / real ocean waves — those don't fit the GCN1 occupancy ceiling (~31–32 KB SPV; the Milky Way's `atan2`/`asin` + panorama fetch is the specific thing that broke it). |
-| **SKY_LITE** | `524288` | `skyBgLitePipeline` | `sat_sky.frag` **recompiled with `-DSKY_LITE`** → `sat_sky_lite.frag.spv` (2nd `add_custom_command` in CMakeLists) | `#ifdef SKY_LITE` cuts inside the real shader: (2026-10-06) every v1.2 ground feature — the terrain march (`dbgSkipTerrain()` is constant true), close-up materials and terrain debug views, the sea's sky-reflection march (`dbgSkipOceanRefl()` constant true) and shore, the beam ground spots, the whole procedural city (layout, glitter, roads, farms, beaches, roof PV, solar parks: the night map + the tiled city detail textures carry the cities, as in v1.1); the satellite meshes ARE composited since 2026-11-21 (issue_20261121_160405; satellites.md "Meshes on Planetarium": no env probes, sharp reflections or pad structures there, `kNoEnvBits`); and since 2026-09: Milky Way block, 64-bin satellite sky-glow loop, cloud layer loop `3→0` becomes `1→0`, the 3×3 `cloudTargetA/B` rgb blur → single tap, aurora surface glow (`auroraGlowAt` on terrain+ocean), zenith-ambient `N_ZT` 4→2, and the per-atmosphere-step **green/sodium airglow** (two `warpPerlin3` masks/step — the dominant cost) — city-glow upwelling KEPT but only on the first 3 march steps (since 2026-10-21 the bands come back in CLOSED FORM, after the loop, since 2026-11-21 at the full sky's mean level, green + sodium: terrain.md "Airglow in Planetarium"; the column along the ray from the tangent height / zenith angle at the shell, no noise — the night limb's horizon line from orbit, +3 KB of SPIR-V; a ray down onto the Earth keeps its crossing only near the limb, cos Z at the shell 0.18-0.32: the whole night disc read faintly green from orbit). **2 FPS → ~55 FPS** on the target. |
+| **SKY_LITE** | `524288` | `skyBgLitePipeline` | `sat_sky.frag` **recompiled with `-DSKY_LITE`** → `sat_sky_lite.frag.spv` (2nd `add_custom_command` in CMakeLists) | `#ifdef SKY_LITE` cuts inside the real shader: (2026-10-06) every v1.2 ground feature — the terrain march (`dbgSkipTerrain()` is constant true), close-up materials and terrain debug views, the sea's sky-reflection march (`dbgSkipOceanRefl()` constant true) and shore, the beam ground spots, the whole procedural city (layout, glitter, roads, farms, beaches, roof PV, solar parks: the city light sprites carry the cities at night over a dim glow of the night map (`LITE_CITY_GLOW`), and the tiled DAY detail texture by day; the tiled NIGHT detail texture is not compiled in since 2026-11-22); the satellite meshes ARE composited since 2026-11-21 (issue_20261121_160405; satellites.md "Meshes on Planetarium": no env probes, sharp reflections or pad structures there, `kNoEnvBits`); and since 2026-09: Milky Way block, 64-bin satellite sky-glow loop, the flat cloud layers (`evalCloudLayer` and its loop: `1→0` until 2026-11-22, none since: the preset's coverage is 0), the 3×3 `cloudTargetA/B` rgb blur → single tap, aurora surface glow (`auroraGlowAt` on terrain+ocean), zenith-ambient `N_ZT` 4→2, and the per-atmosphere-step **green/sodium airglow** (two `warpPerlin3` masks/step — the dominant cost) — city-glow upwelling KEPT but only on the first 3 march steps (since 2026-10-21 the bands come back in CLOSED FORM, after the loop, since 2026-11-21 at the full sky's mean level, green + sodium: terrain.md "Airglow in Planetarium"; the column along the ray from the tangent height / zenith angle at the shell, no noise — the night limb's horizon line from orbit, +3 KB of SPIR-V; a ray down onto the Earth keeps its crossing only near the limb, cos Z at the shell 0.18-0.32: the whole night disc read faintly green from orbit). **2 FPS → ~55 FPS** on the target. |
 
 **Keep these tiers protected (2026-10-06).** `sat_sky_lite.frag.spv` had grown 142 KB (v1.1.0) → 567 KB and
 the minimal shader had taken on terrain v2's water code, unnoticed, because each new feature was gated by a
@@ -414,8 +414,9 @@ that named the cause). SKY_LITE now takes, in `sat_sky.frag`:
   no old path on this tier;
 - **the ground's sky light** from the Sun table's sea-level row (`cv2GroundSky`, the full sky's `cv2GroundSkyAt` at
   h = 0: Planetarium's Earth is flat), in place of its 2-step zenith integral, which had no twilight and no ozone.
-It keeps the one-point step form (no `atmStepAttn`), its own white balance reference (the full sky's, tried, cost
-1.5 KB and moved the day sky 2-5% further from Medium) and its 4-10 view samples. **The blocks by offset:** it
+It keeps its own white balance reference (the full sky's, tried, cost 1.5 KB and moved the day sky 2-5% further from
+Medium); the one-point step form and the 4-10 view samples it also kept on 2026-11-21 are gone since 2026-11-22
+("Planetarium's twilight", below: `atmStepAttn` for whole steps, 5-10 view samples). **The blocks by offset:** it
 declares `cv2.tone` and the two tables as blocks of their own with `layout(offset = ...)` (`CloudsV2Lite`, binding 31,
 offset 1776; `CV2FlashLite`, binding 30, offsets 27603248 / 27619632): the whole blocks' declarations cost 10.8 KB of
 SPIR-V (names and decorations), these 0.7 KB. `SatelliteSim.h` static_asserts the three offsets. **The Sun table's
@@ -427,7 +428,9 @@ gain 0 on both tiers (the atmosphere alone): 3.8% / 9.9% / 48%, the last in the 
 green 1%, blue 5%). **That red is the one-point step** (SKY_LITE takes the Sun's transmittance at the middle of a
 step's lit part, 4-10 steps a ray): with the full sky's `atmStepAttn` in SKY_LITE it is 19% (and 5% at 10 deg), for
 +9.2 KB of SPIR-V and +0.26 ms of sky pass; with more view samples instead, 6/16: 32% (+0.36 ms), 8/24: 21%
-(+0.87 ms), 12/48: 19% (+1.95 ms). Neither fits the tier (its budget, the 0.3 ms): left open. The day sky has the
+(+0.87 ms), 12/48: 19% (+1.95 ms). Neither fitted the tier that day (its budget, the 0.3 ms); the step integral is
+in since 2026-11-22, and these percentages were against a reference that read a stale volume ("Planetarium's
+twilight", below: 24% before, 1.3% now). The day sky has the
 same cause: zenith-ish (Sun 45 deg, out of frame) 48-74% brighter than Medium before, 29-55% now; toward the horizon
 4-15% -> 1-5%. The sunset limb from 572 km: 3-41% over the frame -> 1-10% (one night-side cell 11% -> 14%). GPU frame
 at the report's shots 2 / 3 / 4, base and new interleaved in one app, 3 reps: 4.23 / 3.79 / 4.39 -> 4.35 / 3.54 /
@@ -441,6 +444,57 @@ the old block; what paid: `skyZenithSky` and the shadowed-air sums ~5.2 KB, the 
 storm view, perf + captures, and run once with `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation`. First run
 (RTX 3070 Ti, 1600x900, GPU frame): Potato 0.8-1.0 ms, Planetarium 1.4-3.0 ms, Low 4.8-6.7 ms (coverage forced
 1.6 in its views); no validation errors (3 pre-existing `ShaderOutputNotConsumed` warnings at pipeline creation).
+**Planetarium's twilight: the step integral, 5-10 view samples, and what SKY_LITE no longer compiles (2026-11-22,
+issue_20261121_160405, the user's decisions on the open items above: "There aren't any clouds in planetarium mode by
+design", "appreciable banding near the zenith at twilight. We can raise that up a tad", "we do not need the detail
+texture").** Three changes in `sat_sky.frag`, the full, env, refl, TAA and clip variants byte-identical to before:
+- **No flat cloud layer in SKY_LITE.** `evalCloudLayer` and its loop are `#ifndef SKY_LITE` (they were the stand-in for
+  the knocked-out march, and drew nothing at the preset's coverage 0): **-21,704 B**, the largest single piece the
+  tier carried. A hand-raised coverage draws nothing there ("What the light tiers offer").
+- **No night city detail texture in SKY_LITE** (`cityNightDetailTex`; terrain.md "Planetarium's night cities"): -388 B;
+  the ground under the sprites keeps `LITE_CITY_GLOW` (0.04) of the night map's light in its place: +448 B.
+  The day texture and the mask it shares stay (cutting them too: -7,804 B more, and a city by day is the day map's
+  flat texels).
+- **The full sky's step integral for whole steps** (`atmStepAttn`, nodes 1: three nodes where the Sun's transmittance
+  changes over a step, inside the atmosphere only, as on the full tiers): +10,040 B. The piece in front of the
+  clouds keeps the step's own (`pieceK = aFK`: no volumetric clouds there). `skyMsOn` is a constant in SKY_LITE, so
+  the `optDepth` branch of the shared code folds away.
+**SPIR-V: 229,140 -> 207,436 -> 207,048 -> 217,088 -> 217,536 B (the ground glow) of 230,400: 12,864 B free.** The
+driver's fragment program (`shaders reload sky_lite=`, `lite:` in `sky_stats`; before the ground glow): 167 -> 162
+registers, 165,760 -> 159,744 B.
+`applyGraphicsPreset`: `viewSamplesMin` 4 -> 5 (max 10 as before; a named preset is re-derived at load, so existing
+Planetarium installs take it).
+**Measured (RTX 3070 Ti, 1920x1009, the report's shot 4: 10 km, Sun -3.5 deg; airglow gain 0 on both tiers; mean
+display colour of the three boxes, largest per-channel difference from Medium):** horizon band 3.5% -> 4.5% (blue
+81.0 -> 80.2 against 83.9: 0.8 of a level the wrong way), 10 deg up 7.8% -> 2.5%, **30 deg up 23.8% -> 1.3%** (red
+24.9 -> 20.2 against 20.1). **The reference matters:** "Medium with the clouds, the aurora and the red band knocked
+out" still READS the clouds' Sun transmittance volume (`stvOn` does not test `cloudsV2Off()`, so `cv2.stvH.z` stays 1
+at a Sun above -5.7 deg) while knockout 32768 stops FILLING it: knocked out before the volume was ever filled at that
+place the frame is nearly black (horizon band 35 / 46 / 66 against 170 / 126 / 84), and a volume left from another
+place shadows part of the sky. The 2026-11-21 figures (48%, and 19% with the integral) were against such a frame
+(red 16.7 at 30 deg). The reference here adds `clouds_v2.sun_volume 0` (the sky then reads no volume) and is the same
+whether the knockout comes at once or after six seconds of Medium (`qa/waves/20261122/evidence/c10/medi_ref.satcmd`).
+Open, full tiers: the knocked-out state itself (with the cloud march knocked out in the Performance tab, the sky
+within ~6 deg of sunrise or sunset is shadowed by whatever the volume last held, wherever the eye has moved since).
+**The rings round the zenith** (the step count is a whole number that follows the ray's length: 4 looking up, +1 per
+25 km of path, and each change of it is a step in brightness; `zenith_profile.py`: the largest step between adjacent
+rows of a 40-px-wide column through the zenith, 8-bit levels, camera at 89.9 deg with a 110-deg field): from 10 km
+3.26 -> 1.25 levels, from the ground 4.18 -> 1.04, the ground view 45 deg up 4.18 -> 1.03, 12 deg up 2.26 -> 0.99
+(Medium, 6-96 samples: 0.69 from 10 km). By part: the integral alone at 4-10 samples 1.95 / 0.98 (10 km / ground),
+5-10 samples alone without it 1.67 / 1.70, 6-14 with it 0.85 / 0.82. 5 is the smallest minimum that halves both.
+**Cost** (the sky pass, the four SPVs interleaved in one app, 3 reps: 37293e99 -> the two cuts -> + the integral ->
++ 5 samples): shot 2 (572 km, night limb) 1.18 -> 1.12 -> 1.14 -> 1.20 ms, shot 3 (132 m, dusk) 1.29 -> 1.20 -> 1.67 ->
+1.75, shot 4 1.33 -> 1.27 -> 1.56 -> 1.64, 500 km by night 1.22 -> 1.14 -> 1.18 -> 1.24, the ground by night 1.14 ->
+1.07 -> 1.23 -> 1.28; the GPU frame +0.08 / +0.46 / +0.34 / +0.07 / +0.13 ms. The cuts give 0.06-0.09 ms back
+everywhere; the integral costs where the Sun is low and the eye inside the air (its three nodes run on most steps at
+twilight), nothing from orbit or with the Sun high. At the twilight launch cell (launches.md "No plumes on Planetarium
+or Potato") the sky pass is 1.19 -> 1.58 ms and the frame's GPU 13.29 -> 4.38 ms (3.9 with the cuts alone).
+**Measured and not taken:** a lower maximum gives the twilight cost back (launch cell sky 1.57 -> 1.42 at 5-8, 1.33
+at 5-7; shot 4 1.64 -> 1.47 / 1.37) with FEWER rings (the ground's zenith 1.04 -> 0.29 at 5-7: the count stops
+changing sooner) and the three boxes within 4.3 / 3.5 / 7.7% (5-8) and 4.8 / 5.2 / 3.7% (5-7); but from orbit the
+loop is one-point by design (`obsR < R_ATMOS` gates the nodes) and the limb's long chords take the maximum, and the
+day sky was not measured at it. A two-node integral for SKY_LITE (both species density-weighted at the Rayleigh
+nodes): -0.04..-0.07 ms only. `harness_runs/c10_sky_cost` (the worktree's), `qa/waves/20261122/evidence/c10/`.
 
 **The CPU side of the tiers (2026-10-06).** Knockout 32768 (both tiers set it) switches off ALL of clouds v2
 host-side: `recordCloudsV2` records only the weather evolution (the flat decks read the cube) — no march,
@@ -458,7 +512,7 @@ is also the instrument for `potato-mode-intermittent-slow-start` (see memory).
 
 **Preset wiring** (`applyGraphicsPreset`, `SatelliteSimUI.cpp`): **Potato** sets `kBitMinimalSky`
 plus every compute-side knockout; **Planetarium** sets `kBitLiteSky` + `kBitCloudMarch |
-kBitCirrusMarch` (coverage 0 at that tier) + `viewSamplesMin/Max 4/10`. Medium and up keep the full
+kBitCirrusMarch` (coverage 0 at that tier) + `viewSamplesMin/Max 5/10` (4/10 until 2026-11-22). Medium and up keep the full
 shader unchanged. `GraphicsPreset::Potato` is enum value 6 (appended after `Custom` to preserve
 persisted int indices); `kGraphicsPresetNames` and the preset-row UI list it first.
 
@@ -494,8 +548,25 @@ those presets force `renderScale = 1.0`, so the prepass never runs for them.
   kFireBuf: rockets, re-entry fireballs, meteor heads, comet heads, Moon-base glints, the supernova). It skipped it
   with cloud_march.comp, so those Watches showed an empty sky and Betelgeuse went dark at its supernova. The Gaussians
   it also lists (plumes, streaks, dust) are not drawn on Potato; launch plume parcels are not built there.
+- **No launch plumes on Planetarium either (2026-11-22, issue_20261121_160405; launches.md "No plumes on Planetarium
+  or Potato").** A launch on Planetarium is the rocket's point, its 3D model, its flame and its engine light: no
+  exhaust trail, staging cloud, jellyfish, vent spiral or launch-made noctilucent cloud is built or drawn
+  (`launchPlumesDrawn()`), and Settings > Launches says so. The Missions window's pinned twilight-launch Watch (the
+  "jellyfish": 300 s after lift-off, framed on the sunlit exhaust) is disabled there with its reason
+  (`TipTierNeedPlumes`; harness `missions launch twilight` fails with it), and a twilight launch among the next five
+  is watched at lift-off like any other. The Sun's Fury's dust stays on Planetarium: at the report's shot 6 (day 57 of the cascade from 1024 km, 547
+  dust Gaussians in the list) it is 1.17 ms of GPU (the composite's bucket 1.29 against 0.12 ms with `kessler.dust_gain`
+  0, interleaved, 3 reps) and ~1.0 ms of main-thread CPU, and on the storm night (3.5 h after the arrival, no dust
+  cloud in view yet) nothing; the plumes it is compared with were 9.6 ms near a launch.
+- **No clouds on Planetarium at all (2026-11-22).** SKY_LITE no longer compiles the flat cloud layer (below), so a
+  Planetarium user who raises "Cirrus coverage" (`clouds.coverage`; the preset sets 0) or any other cloud setting by
+  hand gets no cloud: the capture with `clouds.coverage` 1 and `clouds_v2.coverage` 1.6 is byte-identical to the one
+  at 0. The Settings Clouds tab says so on Planetarium, like the Weather tab: its label is dimmed and a note sits on
+  top (`NoteCloudsTabOff`, `SatelliteSim::cloudsNotDrawn()`; the rows still edit the settings). Not on Potato, whose
+  own shader keeps its flat deck (`sat_sky_minimal.frag`, `flatClouds`: unchanged), nor on the full shader with the
+  march knocked out (its flat stand-in).
 - Everything else draws: comets (tails included), conjunctions, occultations, Moon glints, meteors (heads),
-  launches (points, + plumes and flames on Planetarium), re-entries, the twilight launch, Starmind; Planetarium draws
+  launches (points; + models and flames on Planetarium), re-entries, the twilight launch, Starmind; Planetarium draws
   both eclipses. The validation layer is clean on both tiers through all of them.
 
 **Preset benchmark** (2026-10-29, RTX 3070 Ti, uncapped, one app alone on the GPU; `harness_runs/tiers/bench2`, script

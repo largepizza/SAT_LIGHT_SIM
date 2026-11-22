@@ -100,7 +100,9 @@ layout(set = 0, binding = 7) uniform samplerCube earthCloudsCube;
 // Blended onto dayColor/nightColor near cities (bright earthNightTex pixels) within a fixed
 // distance of the observer — see the terrain block in main() below.
 layout(set = 0, binding = 14) uniform sampler2D cityDayDetailTex;
+#ifndef SKY_LITE   // (Planetarium draws the night map alone under the city light sprites, 2026-11-22)
 layout(set = 0, binding = 15) uniform sampler2D cityNightDetailTex;
+#endif
 
 // Aurora 3D noise volume (binding 16): 1024x16x256 RGBA8, baked by aurora_noise.comp at init.
 // R = curtain fold base, G/B = column-window colA/colB. See that file's header comment for the
@@ -2986,6 +2988,10 @@ float oceanSeaState(vec3 dE) {
 // Lighting uses dot(normalize(cloudPointECEF), sunDirECEF) — the sun angle at the
 // cloud's own geographic location, NOT the observer's sun elevation.  This ensures
 // clouds on the dark side of Earth are dark regardless of where the observer is.
+// Not in SKY_LITE (2026-11-22, issue_20261121_160405: "There aren't any clouds in planetarium mode by design"): the
+// preset's coverage is 0, so the flat stand-in drew nothing there and cost 21.7 KB of its SPIR-V budget
+// (render-pipeline.md). A Planetarium user who raises the coverage by hand gets no cloud.
+#ifndef SKY_LITE
 void evalCloudLayer(
     vec3  obsPos,  vec3 dir,  float tSurface,
     vec3  enuX,    vec3 enuY, vec3  enuZ,
@@ -3276,6 +3282,7 @@ void evalCloudLayer(
     vec3 cloudSeen  = cloudColor * attn + airlight + groundLeak * (1.0 - attn) * (1.0 - alpha);
     color = mix(color, cloudSeen, alpha);
 }
+#endif // !SKY_LITE
 
 // (cloudDensity lived here — dead since the cloud march moved to cloud_march.comp, removed in
 //  the pipeline-unification pass. Worth knowing if you go looking for it: this copy blended only
@@ -4970,17 +4977,12 @@ void main() {
         densR *= litF;
         densM *= litF;
 
-#ifdef SKY_LITE
-        // (SKY_LITE, at its SPIR-V budget and without volumetric clouds: the step's lit middle alone, as before; since
-        //  2026-11-21 with the Sun's exact columns and the ozone, as the full sky's: sunPathCols, atmOzoneTau.)
-        vec2 sunOD = sunPathCols(spL, sunDir);
-        vec3 attn  = exp(-(BETA_R * (odR_cam - 0.5 * densR0 + sunOD.x) + BETA_M * 1.1 * (odM_cam - 0.5 * densM0 + sunOD.y)
-                           + atmOzoneTau(spL, sunDir)));
-        const float mieK = 1.0, mieKF = 1.0;
-        vec3  pieceK = aFK;
-#else
         // The Sun's Rayleigh / Mie columns from the lit part's middle (with the sky's multiple scattering exact, with
         // its ozone: sunPathCols; else optDepth's midpoints to the atmosphere's top).
+        // (SKY_LITE takes the whole step's integral below too since 2026-11-22, issue_20261121_160405: the flat cloud
+        //  layer it no longer compiles paid for it. Its one-point form, the Sun's transmittance at the middle of the
+        //  step's lit part with 4-10 steps a ray, left the twilight sky 30 deg up 24% too red against Medium. skyMsOn
+        //  is a constant there: the optDepth branch folds away.)
         vec2 sunC  = vec2(0.0);
         vec3 sunOz = vec3(0.0);
         if (skyMsOn) {
@@ -5008,6 +5010,11 @@ void main() {
             mieK = a.w / max(dot(a.xyz, vec3(1.0 / 3.0)), 1e-30);
         }
         // The piece in front of the clouds (fPart): its own lit stretch, always integrated, as a factor on the step's.
+        // (SKY_LITE: the step's own, as before: no volumetric clouds there, and the piece's nodes are not worth its bytes.)
+#ifdef SKY_LITE
+        vec3  pieceK = aFK;
+        float mieKF  = mieK;
+#else
         vec3  pieceK = vec3(1.0);
         float mieKF  = mieK;
         if (fPart) {
@@ -5795,8 +5802,12 @@ void main() {
         // really diffuses through a deck spreads over about its thickness (a few km, under one map texel),
         // and the clouds carry the cities' glow themselves (the march's city upwelling). The lights are
         // attenuated by the cloud composite like everything behind it. cloud.cityLightBlurLod is unread.
-        // SKY_LITE (Planetarium): the v1.1 city look — the night map + the tiled city detail textures, none of the
-        // procedural city pattern, roads, farms, beaches, solar parks or close-up materials (compiled out below).
+        // SKY_LITE (Planetarium): the night map alone at night (2026-11-22, issue_20261121_160405: "Planetarium already
+        // has city light sprites, we do not need the detail texture as having both on looks bad" — the tiled NIGHT
+        // detail texture is not compiled in there; city_sprites.comp carries the lights and the map under them is
+        // dimmed to a glow, LITE_CITY_GLOW below), the tiled DAY detail texture
+        // by day, none of the procedural city pattern, roads, farms, beaches, solar parks or close-up materials
+        // (compiled out below).
 #ifdef SKY_LITE
         const float cityPatStrength = 0.0;
 #else
@@ -5904,7 +5915,9 @@ void main() {
                     vec2 duv_dx = dFdx(detailUV);
                     vec2 duv_dy = dFdy(detailUV);
                     vec3 dayDetail   = textureGrad(cityDayDetailTex,   detailUV, duv_dx, duv_dy).rgb;
+#ifndef SKY_LITE
                     vec3 nightDetail = textureGrad(cityNightDetailTex, detailUV, duv_dx, duv_dy).rgb;
+#endif
                     // Review 7: the day side keeps the texture where the procedural streets no longer resolve
                     // (lots average out below ~20 m a pixel, streets by ~100 m: over 30-120 m). Switched off
                     // at every distance whenever
@@ -5914,7 +5927,9 @@ void main() {
                     float dFoot  = pixAngle * tSurface / max(abs(dot(dir, shadingN)), 0.2);
                     float dayTex = 1.0 - cityPatStrength * (1.0 - smoothstep(30.0, 120.0, dFoot));
                     dayColor   = mix(dayColor,   dayDetail,   cityMask * clamp(dayTex, 0.0, 1.0));
+#ifndef SKY_LITE
                     nightColor = mix(nightColor, nightDetail, cityMask * (1.0 - cityPatStrength));
+#endif
                 }
             }
         }
@@ -6512,6 +6527,24 @@ void main() {
                            * (1.0 - smoothstep(0.75 * cloud.cityParams.z, cloud.cityParams.z, tSurface));
                 cityLights *= mix(1.0, cloud.cityParams.y, sprW);
             }
+#ifdef SKY_LITE
+            // Planetarium's ground under the city light sprites: a smooth dim glow (2026-11-22, issue_20261121_160405).
+            // The tiled night detail texture this variant no longer compiles also stood in for the map's light (it
+            // averaged ~0.1 of the map in a city's core: a city up close is mostly dark between its lights, the same
+            // mean cityLightPattern keeps on the full tiers, 0.12), so with it cut the 5-km night map drew at full
+            // strength: a flat cream sheet over a dense city from 2 km, brighter than the sprites on it. The map keeps
+            // kLiteCityGlow of its light wherever the sprites are drawn: at every range inside their reach
+            // (cityParams.z; no start footprint: nearer than the sprites begin there is no light to hand over to
+            // either), fading out with them from 100 to 150 km of eye altitude (SatelliteSim::citySpriteGainAt), so
+            // from orbit, and with the sprites switched off (reach 0), the map is whole as before.
+            // LITE_CITY_GLOW: the one number to nudge (a compile-time constant: -DLITE_CITY_GLOW=x for a variant).
+#ifndef LITE_CITY_GLOW
+#define LITE_CITY_GLOW 0.04
+#endif
+            if (cloud.cityParams.z > 0.0)
+                cityLights *= mix(1.0, LITE_CITY_GLOW, (1.0 - smoothstep(100000.0, 150000.0, obsEffH))
+                                                       * (1.0 - smoothstep(0.75 * cloud.cityParams.z, cloud.cityParams.z, tSurface)));
+#endif
         }
         // Pools on the albedo: relative to a mid grey (0.12), x the face's up-facing (the lamps are
         // overhead: relief and bumps shade), x the detail AO. Its BRIGHTNESS only: the lamps' colour is
@@ -7613,6 +7646,8 @@ void main() {
     // airglow, moon disc/corona) with no ground/terrain/ocean surface light yet, since that was
     // just added immediately above. See evalCloudLayer's own comment for why this needs to be
     // kept separate from the ground-inclusive `color`.
+    // (No flat cloud layers in SKY_LITE, 2026-11-22: evalCloudLayer is not compiled in there.)
+#ifndef SKY_LITE
     vec3 skyOnlyColor = color;
 
     // ── Cloud layers (C3/C4 unified: thin-shell 2D overlays) ─────────────────
@@ -7627,11 +7662,7 @@ void main() {
     // so the farthest-from-a-ground-observer shell must be drawn FIRST (as background) and the
     // nearest drawn LAST (on top) for correct back-to-front compositing — ascending-index order
     // had this backwards (cirrus drew over the low deck regardless of which was actually nearer).
-#ifdef SKY_LITE
-    for (int li = 1; li >= 0; --li) {   // Planetarium-tier: low/mid deck only, drop cirrus + high layers
-#else
     for (int li = 3; li >= 0; --li) {
-#endif
         if (cloud.layers[li].enabled < 0.5) continue;
 #ifndef SKY_ENV
         // The volumetric clouds draw the low/mid clouds at every distance, so no flat stand-in —
@@ -7671,6 +7702,7 @@ void main() {
             skyOnlyColor,
             color);
     }
+#endif // !SKY_LITE
 
     // ── Half-resolution cloud composite (C15-perf) ───────────────────────────────
     // cirrusMarch/cloudMarch ran in shaders/cloud_march.comp at half resolution; sample the

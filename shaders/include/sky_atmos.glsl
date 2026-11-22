@@ -140,7 +140,8 @@ vec2 sunPathCols(vec3 p, vec3 d)
 // oo / b2: the ray's closed form r^2 = oo + t (b2 + t); tS / hS / eS (exp(-hS / H_R, H_M)) / odS: the step's start and
 // the eye's columns there; odMid: the eye's columns to the step's middle; mK: the step's Mie column over the pure Mie
 // one (the haze near clouds rides it). One loop over the nodes, not unrolled (the sky pass's speed follows its code
-// size). Not in SKY_LITE (its SPIR-V budget): it keeps the one-point form.
+// size). In SKY_LITE since 2026-11-22 for whole steps (the flat cloud layer it no longer compiles paid for it); the
+// piece in front of the clouds keeps the step's own there.
 // Whole steps: 1 = 3 nodes where the Sun's transmittance changes over them, 0 = the middle alone. The callers use 1 only
 // with the eye inside the atmosphere: from orbit the one-point loop is already within ~0.1 level of a 512-step one, and
 // the band there (the whole limb ring) paid +0.3-0.5 ms for the nodes. The piece in front of the clouds always takes them.

@@ -536,6 +536,34 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   from 1.5 km (RTX 3070 Ti). Farmland and beaches still follow the terrain detail. **Planetarium no longer does
   (2026-10-06):** the pattern is compiled out of SKY_LITE with the rest of the v1.2 ground features (the tier is
   for GPUs where the compiled size is the cost); its cities are the night map + the tiled detail textures again.
+  **Planetarium's night cities are the night map alone under the city light sprites (2026-11-22, issue_20261121_160405,
+  the user: "Planetarium already has city light sprites, we do not need the detail texture as having both on looks
+  bad"):** the tiled NIGHT detail texture (`cityNightDetailTex`, binding 15) is not compiled into SKY_LITE (-388 B of
+  SPIR-V); the tiled DAY detail texture (`cityDayDetailTex`) stays, with the city mask it shares. The sprites do draw
+  there (the dispatch is skipped only on Potato): over LA from 2 km at midnight, `clouds.city_sprite_gain` 4 against
+  0 changes 2.3% of the frame's pixels with the map at full strength (7.2% before, on the darker textured ground).
+  **The ground under the sprites is a smooth dim glow (`LITE_CITY_GLOW` 0.04, a compile-time constant in
+  `sat_sky.frag` beside the sprite hand-off; `-DLITE_CITY_GLOW=x` compiles a variant).** The texture had also stood in
+  for the map's LIGHT: it replaced the map in a city's core with a pattern averaging ~0.1 of it (a city up close is
+  mostly dark between its lights: the mean `cityLightPattern` keeps on the full tiers, 0.12). With it cut and nothing
+  in its place the 5-km map drew at full strength: a flat cream sheet over LA from 2 km (frame mean 178 levels against
+  69 with the texture), brighter than the sprites on it, and the lit ground at the twilight launch cell twice as
+  bright (mean RGB 51 21 4 -> 107 67 10; Medium there 4 4 6). SKY_LITE now keeps `LITE_CITY_GLOW` of the map's light
+  wherever the sprites are drawn: at every range inside their reach (`cityParams.z`), with no start footprint (nearer
+  than the sprites begin there is no light to hand over to either), fading out with them from 100 to 150 km of eye
+  altitude (the constants of `citySpriteGainAt`), so from orbit, and with "City light sprites" at 0 (reach 0), the map
+  is whole. The full tiers' own share (`cityParams.y`, "Ground glitter under sprites") still multiplies it. Measured
+  (display luminance, 8-bit; `ground_measure.py`): LA from 2 km, frame mean 69.4 (texture) / 177.8 (flat map) / 76.6 /
+  60.5 / 50.5 / **38.4** / 31.5 at 0.12 / 0.08 / 0.06 / **0.04** / 0.03; the launch cell's ground 25.9 / 71.2 / 8.6 /
+  5.1 / 3.7 / **2.4** / 2.2. 0.04 is ~half of the textured frame's mean over LA (the ground between the points 34,
+  RGB 38 35 15, the points' mean 114 and peak 255 as before) with no pattern (largest step between adjacent row /
+  column means 0.36 / 0.63 levels; 9.7 / 4.3 with the texture); one constant cannot hold both views at the same
+  share of before (the texture replaced the map where it was bright and only mixed with it where it was faint), and
+  at the launch cell the ground is as dark as Medium's. From 420 km the frame is byte-identical to before (the texture
+  had faded out by 300 km of range, the sprites and the glow by 150 km of eye altitude); +448 B of SPIR-V. Not
+  changed, measured for the decision: cutting the DAY texture too would free 7,804 B more and leave a city by day as
+  the day map's flat 5-km texels (LA from 2 km and 12 km: 59% / 75% of the frame's pixels change, mean 15 / 13
+  levels: the street pattern is all the detail that view has). Evidence: `qa/waves/20261122/evidence/c10/city_*`.
   **Day side (phase 2, 2026-09-29):** the same layout (`cityLayout()`, a `CityLayout` struct computed
   ONCE per pixel before the material block and reused by the night) drives `cityDayAlbedo()`: asphalt
   streets (12 m, arterials 24 m, exact box-filter coverage `cityBoxCover`), each base block split into

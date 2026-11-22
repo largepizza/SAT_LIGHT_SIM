@@ -365,6 +365,29 @@ launches follow per-program cadences (no real manifest).
   six `launch next` jumps then the report's view (parcels 0); now a FINISHED build not asked for in 4 frames is dropped (its
   future does not block) and rebuilt on demand: parcels 500, the jellyfish drawn. CPU only; the shaders were not involved
   (the report's view on the pre- and post-tornado composites differs by 0.04 levels).
+- **No plumes on Planetarium or Potato (2026-11-22, issue_20261121_160405, the user: "Unless we can really work down the
+  shader, I don't think plumes in planetarium mode are necessary"; `SatelliteSim::launchPlumesDrawn()` = `!lightSkyOn()`).**
+  On those tiers `launchFillVisuals` takes the `continue` ahead of the plume block for every launch (Potato did since
+  2026-10-29): no parcels are built (no worker job), none are walked (`launch.plumeAt` / `launch.plumeEmit`), and no
+  exhaust, ground-cloud, staging-lobe, jellyfish or orbit-vent Gaussian is listed, so no plume brick is made (`bricks_`
+  stays empty and `recordPlumeBricks` returns before its three dispatches) and `cloud_march.comp`'s dust block has
+  only the flames to integrate; the launch-made noctilucent clouds collect no deposits, build no map and dispatch
+  nothing (`nlcUpdate`'s `on`, `recordNlc`). Parcels built on a full tier stay in the batch (a switch back draws them
+  at once) but are not walked. **What a launch is there:** the rocket's point (`kFireBuf`, the point passes), its 3D
+  model (Planetarium; satellites.md "Meshes on Planetarium"), the flame's four Gaussians (core, flame, tail and the
+  exhaust the flame lights: the block above the gate) and the engine light. The flame stays because its pass is cheap:
+  the composite's bucket is 0.40 ms at the twilight launch cell with the flame 87 km away, 0.36 ms on the Missions
+  Watch (three burning stages from 5 km, 12 flame Gaussians) and 0.35 ms from 400 m beside a burning stage, against
+  0.13-0.23 ms with an empty list. Measured (RTX 3070 Ti, 1920x1009, the user's settings, `harness_runs/perf_1122/
+  short.satcmd`'s twilight launch cell reached as it is there, after the High and Medium cells in the same app; 3
+  reps): the `cloud_march` bucket 9.77 -> 0.40 ms (nothing else marches on this tier: it was the plume pass, 371
+  Gaussians and the bricks), the main thread's `launchFillVisuals` 2.64 -> 0.36 ms (`cpu_split_ms.visuals`; perf.md
+  "Planetarium's CPU frame"). High and Medium at the same cell: the capture differs from the build before by 0.23 /
+  0.20 levels mean (their plumes are untouched; the same build twice in one run: 0.004). Settings > Launches carries a
+  note on those tiers (`NoteLaunchPlumesOff`): the plume rows still edit the settings. The Missions window's pinned
+  twilight launch ("jellyfish") Watch frames the sunlit exhaust, so it is disabled there with its reason
+  (`TipTierNeedPlumes`, `missionsWatch("twilight")` refuses with the same line); a twilight launch among the next five
+  takes the lift-off Watch there (`kWatchLiftoffS`), like any other.
 - **Plumes** (`buildParcels`, `launch::makeParcel`): parcels of exhaust every 1-1.5 s of each burn, integrated once per
   launch (only for launches within ~4500 km of the eye and not past 1 h/s of warp) with entrainment: the gas expands
   at ~2 km/s while it outweighs the air it has taken in, then diffuses (above ~80 km the coupling to the air falls to

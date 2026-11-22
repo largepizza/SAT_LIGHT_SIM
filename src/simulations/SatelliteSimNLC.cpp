@@ -245,7 +245,8 @@ void SatelliteSim::nlcUpdate(VulkanContext &ctx)
     FPROF_SCOPE("nlc.update");
     const double t = (double)simDayJ2000 * 86400.0 + simSecInDay;
     uint32_t *hdr = reinterpret_cast<uint32_t *>(nlcMapped);
-    const bool on = nlcOn && launchesEnabled && nlcPipe != VK_NULL_HANDLE;
+    // (not on the light tiers, launchPlumesDrawn: no deposits collected, no map built, nothing dispatched)
+    const bool on = nlcOn && launchesEnabled && nlcPipe != VK_NULL_HANDLE && launchPlumesDrawn();
     // a finished build: its texels to the GPU
     if (nlcJob && nlcJob->done.load(std::memory_order_acquire))
     {
@@ -304,7 +305,7 @@ void SatelliteSim::nlcUpdate(VulkanContext &ctx)
 
 void SatelliteSim::recordNlc(VkCommandBuffer cmd, const CloudMarchPC &cpc)
 {
-    if (!nlcPipe || !nlcOn || !launchesEnabled || !nlcField || !nlcAnyIce || potatoSkyOn())
+    if (!nlcPipe || !nlcOn || !launchesEnabled || !nlcField || !nlcAnyIce || !launchPlumesDrawn())
         return;
     FPROF_SCOPE("nlc.record");
     VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
