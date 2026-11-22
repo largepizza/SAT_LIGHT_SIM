@@ -10056,6 +10056,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         nlcFibres = settingClamp(lj.value("nlc_fibres", nlcFibres), 0.0f, 2.0f);
         launchRocketGain = settingClamp(lj.value("rocket_gain", launchRocketGain), 0.0f, 100.0f);
         engineLightGain = settingClamp(lj.value("engine_light_gain", engineLightGain), 0.0f, 100.0f);
+        engineLightVolume = lj.value("engine_light_volume", engineLightVolume);
         launchPlumeBright = settingClamp(lj.value("plume_brightness", launchPlumeBright), 0.0f, 100.0f);
         launchPlumeWidth = settingClamp(lj.value("plume_width", launchPlumeWidth), 0.05f, 20.0f);
         launchPlumeBillows = settingClamp(lj.value("plume_billows", launchPlumeBillows), 0.0f, 10.0f);
@@ -11361,6 +11362,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
                      {"plume_gain", launchPlumeGain}, {"plume_bricks", plumeBricksOn}, {"plume_brick_lobes", plumeBrickLobes}, {"plume_iridescence", plumeIridescence}, {"plume_mie", plumeMieOn}, {"nlc", nlcOn}, {"nlc_fibres", nlcFibres},
                      {"rocket_gain", launchRocketGain},
                      {"engine_light_gain", engineLightGain},
+                     {"engine_light_volume", engineLightVolume},
                      {"plume_brightness", launchPlumeBright},
                      {"plume_width", launchPlumeWidth},
                      {"plume_billows", launchPlumeBillows},

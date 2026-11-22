@@ -39,7 +39,7 @@ struct FvJob {
     vec4 c;    // xyz the emitter (ENU about the eye, m), w its slot
     vec4 t1;   // the flash's frame (ENU): xyz; w the diffuse field's side escape (lightning_draw.glsl bl.tune.x)
     vec4 t2;   // w 1 - g^2 of the diffuse field (bl.ms.y)
-    vec4 up;
+    vec4 up;   // w 1 = an engine light's (SatelliteSim::engineLightVolumes): each distance step read at 6 places, not 1-2
 };
 shared float sFvW[256];   // each direction's solid angle, and x what its own cloud lets out (the reduction for N)
 shared float sFvT[256];
@@ -63,29 +63,43 @@ void main()
     mat3  enuToEcef = mat3(enuX, cross(enuZ, enuX), enuZ);
     float eyeH = terrainFrame.x + 2.0;
     int   slot = int(J.c.w + 0.5);
-    // A fixed jitter per direction (not per frame): an emitter baked twice gives the same volume.
+    // A fixed jitter per direction (not per frame): an emitter baked twice gives the same volume. (None for an engine
+    // light's job: its volume shades faces that stand in the open, where a depth that differs from one direction to
+    // the next by where its samples fell drew the directions as a mottle on every shadowed lobe.)
     float jit = float(cv2Pcg3(uvec3(ray, 77u, 5u)).x & 0xFFFFu) / 65536.0;
+    if (J.up.w > 0.5) jit = 0.5;
     float tau = 0.0, rP = 0.0;
     // The emitter's OWN cloud along this direction: the depth up to the first clear stretch past 600 m (a pocket nearer
     // than that is still inside it); 0 for an emitter in clear air.
     float tauOwn = 0.0;
     bool  own = true;
     float taus[kFvR];
+    // Where in each step its cloud is (the depth's centre along the step, 0 .. 1; 0.5 = all along it or none):
+    // fvOdFine reads the depth inside a step from it (flash_volume.glsl). An engine light's job reads each step at 6
+    // places: its light falls on cloud faces from outside, where a step's depth spread evenly along it shadowed the
+    // face it ended in. (The centre, not the first sample with cloud: that one is the same sample over whole patches
+    // of directions, so the cloud began on spheres about the light and its lit faces carried their rings.)
+    float begins[kFvR];
+    bool  fine = J.up.w > 0.5;
     [[dont_unroll]] for (int k = 0; k < kFvR; ++k) {
         float u1  = (float(k) + 0.5) / float(kFvR);
         float r1  = kFvRmax * u1 * u1;
         float len = r1 - rP;
-        int   n   = len > 600.0 ? 2 : 1;
+        int   n   = fine ? 6 : (len > 600.0 ? 2 : 1);
         float st  = len / float(n);
         float dk  = 0.0;
+        float bg  = 0.0;
         [[dont_unroll]] for (int m = 0; m < n; ++m) {
-            float  r = rP + st * (float(m) + fract(jit + 0.6180340 * float(2 * k + m)));
+            float  r = rP + st * (float(m) + (fine ? 0.5 : fract(jit + 0.6180340 * float(2 * k + m))));
             CV2Pos q = cv2Pos(J.c.xyz + d * r, eyeH, enuToEcef);
             if (q.h > -300.0 && q.h < cv2.shell.y + 2500.0) {
                 CV2Field f = cv2Field(q, 0.0, clamp(0.33 * st, 120.0, 500.0));
-                dk += f.sigma * max(1.0 - 0.8 * f.thin, 0.0) * mix(1.0, 0.15, clamp(f.rain, 0.0, 1.0)) * st;
+                float dm = f.sigma * max(1.0 - 0.8 * f.thin, 0.0) * mix(1.0, 0.15, clamp(f.rain, 0.0, 1.0)) * st;
+                bg += dm * (float(m) + 0.5) / float(n);
+                dk += dm;
             }
         }
+        begins[k] = dk > 1e-4 ? bg / dk : 0.5;
         tau += dk;
         if (own) {
             if (dk < 0.02 && r1 > 600.0) own = false;
@@ -110,5 +124,8 @@ void main()
     // (This workgroup's own 256 directions, a sample of the whole sphere; the first workgroup's is the one kept: fvN.)
     float N = sFvW[0] / max(sFvT[0], 1e-6);
     for (int k = 0; k < kFvR; ++k)
-        imageStore(fvImg, ivec3(ia, ie, slot * kFvR + k), vec4(taus[k], tauOwn, 0.0, sub == 0u ? min(N, 1000.0) : 0.0));
+        // (g, b: a flash's slot holds its own cloud's depth and nothing; an engine light's the transmittance to the
+        // step's end and the centre of the step's depth, for fvOdFine)
+        imageStore(fvImg, ivec3(ia, ie, slot * kFvR + k),
+                   vec4(taus[k], fine ? exp(-min(taus[k], 30.0)) : tauOwn, fine ? begins[k] : 0.0, sub == 0u ? min(N, 1000.0) : 0.0));
 }

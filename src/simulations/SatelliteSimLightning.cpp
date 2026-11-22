@@ -580,18 +580,45 @@ void SatelliteSim::boltLightAssign(GpuBoltFlash *flashes, const glm::dvec3 &eye)
                 break;
             }
     }
-    // The others take the slots nobody used this frame.
+    // The others take the slots nobody used this frame: one no engine light holds, else an engine light's (a flash is
+    // brief and bright and comes first; the engine light with the least to show gives way, its fading-out volume before
+    // its current one, and is lit by distance alone until it has a slot again: engineLightVolumes). Slots 0 .. 14: a
+    // flash's code for "none" is 15 (GpuBoltFlash::m.w), so the last slot is an engine light's alone.
     for (size_t i = 0; i < boltLightWants_.size(); ++i)
     {
         if (slotOf[i] >= 0)
             continue;
-        for (uint32_t s = 0; s < kFvSlots; ++s)
-            if (boltLightSlots_[s].usedFrame != boltFrame)
+        int pick = -1;
+        for (uint32_t s = 0; s + 1 < kFvSlots; ++s)
+            if (boltLightSlots_[s].usedFrame != boltFrame && boltLightSlots_[s].engine == 0)
             {
-                boltLightSlots_[s] = BoltLightSlot{boltLightWants_[i].id, boltLightWants_[i].emitter, glm::dvec3(0.0), false, boltFrame};
-                slotOf[i] = (int)s;
+                pick = (int)s;
                 break;
             }
+        if (pick < 0)
+        {
+            float least = 1e30f;
+            for (uint32_t s = 0; s + 1 < kFvSlots; ++s)
+            {
+                if (boltLightSlots_[s].usedFrame == boltFrame || boltLightSlots_[s].engine == 0)
+                    continue;
+                float p = 0.0f;
+                for (const EngineVolTrack &t : engineVolTracks_)
+                    if (t.id == boltLightSlots_[s].engine)
+                        p = t.prio * ((t.slotNew >= 0 && t.slot == (int)s) ? 0.5f : 1.0f);
+                if (p < least)
+                {
+                    least = p;
+                    pick = (int)s;
+                }
+            }
+            if (pick >= 0)
+                ++fvSteals_;
+        }
+        if (pick < 0)
+            continue;
+        boltLightSlots_[pick] = BoltLightSlot{boltLightWants_[i].id, boltLightWants_[i].emitter, glm::dvec3(0.0), false, boltFrame};
+        slotOf[i] = pick;
     }
     // This frame's bakes: never baked first (nearest first: the list's order), then moved ones.
     GpuFvJob *jobs = (GpuFvJob *)((char *)fvJobMapped + 16);
@@ -628,6 +655,338 @@ void SatelliteSim::boltLightAssign(GpuBoltFlash *flashes, const glm::dvec3 &eye)
         uint32_t codes = (uint32_t)(F.m.w + 0.5f);
         codes = (codes & ~(15u << (4 * boltLightWants_[i].emitter))) | ((uint32_t)slotOf[i] << (4 * boltLightWants_[i].emitter));
         F.m.w = (float)codes;
+    }
+}
+
+// ── The engine lights' volumes (the members' note in SatelliteSim.h; launches.md "Rocket light through the light
+// volume") ──────────────────────────────────────────────────────────────────────────────────────────────────────────
+// From engineLightsFlush, with the list as uploaded: after this frame's boltLightAssign (the flashes have their slots
+// and their jobs) and before recordFlashVolumes (this frame's bakes run before the draw). Follows each light from the
+// last frame, ranks them, hands out slots, lists the bakes and writes what lightning.frag reads (engineVolGpu_,
+// fvSlotPos_ / T1_ / T2_: recordLightning copies them into the BoltLight block).
+void SatelliteSim::engineLightVolumes(const GpuDustCloud *lights, uint32_t n)
+{
+    for (glm::vec4 &v : engineVolGpu_)
+        v = glm::vec4(-1.0f, -1.0f, 0.0f, 0.0f);
+    auto release = [&](int &s, uint32_t id) {
+        if (s >= 0 && boltLightSlots_[s].engine == id)
+            boltLightSlots_[s] = BoltLightSlot{};
+        s = -1;
+    };
+    auto dropAll = [&]() {
+        for (EngineVolTrack &t : engineVolTracks_)
+        {
+            release(t.slot, t.id);
+            release(t.slotNew, t.id);
+        }
+        engineVolTracks_.clear();
+    };
+    const double simT = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const double dtSim = simT - engineVolPrevT_;
+    engineVolPrevT_ = simT;
+    // (the bakes run inside recordCloudsV2, after the lightning pass: only in a frame that has one)
+    const bool on = engineLightVolume > 0.5f && fvPipeline && fvJobMapped && cv2ParamsMapped && lights && n > 0 &&
+                    cloudsV2LightningActive() && !potatoSkyOn();
+    // A cut (a time jump: the lights are elsewhere and so is the cloud): start again, the new volumes at full share.
+    if (!on || std::abs(dtSim) > 2.0)
+        dropAll();
+    if (!on)
+        return;
+    // This frame's eye and ENU (as updateLightningBolts').
+    const float ground = (terrainFrameMapped && (debugDisableMask & 1024u) == 0) ? terrainFrameMapped[1] : obsTerrainH;
+    const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
+    const glm::dvec3 eye = up * (6371000.0 + std::max((double)ground + 2.0, (double)obsHeightOffset));
+    const glm::dvec3 E = glm::normalize(glm::cross(glm::dvec3(0.0, 0.0, 1.0), up));
+    const glm::dvec3 N = glm::cross(up, E);
+    auto toEnu = [&](const glm::dvec3 &v) { return glm::vec3((float)glm::dot(v, E), (float)glm::dot(v, N), (float)glm::dot(v, up)); };
+    // A light's own frame (east, north, up where it stands; Earth-fixed, so a volume reads the same from every eye).
+    auto frameAt = [](const glm::dvec3 &Pw, glm::dvec3 &e, glm::dvec3 &nn, glm::dvec3 &u) {
+        u = glm::normalize(Pw);
+        e = glm::cross(glm::dvec3(0.0, 0.0, 1.0), u);
+        e = glm::length(e) > 1e-6 ? glm::normalize(e) : glm::dvec3(1.0, 0.0, 0.0);
+        nn = glm::cross(u, e);
+    };
+    n = std::min(n, kMaxEngineLights);
+    glm::dvec3 P[kMaxEngineLights];
+    bool taken[kMaxEngineLights] = {};
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        const glm::dvec3 c(glm::vec3(lights[i].c));
+        P[i] = eye + E * c.x + N * c.y + up * c.z;
+    }
+    // Each track goes on with the light nearest where it would be by now (within reach of that); a track without one
+    // is over (an engine cut off, a pad out of range), a light without one is new.
+    {
+        std::vector<EngineVolTrack> kept;
+        kept.reserve(n);
+        for (EngineVolTrack &t : engineVolTracks_)
+        {
+            const glm::dvec3 stepV = t.vel * dtSim;
+            const glm::dvec3 pred = t.pos + stepV;
+            const double tol = 150.0 + 0.5 * glm::length(stepV);
+            double best = tol;
+            int bi = -1;
+            for (uint32_t i = 0; i < n; ++i)
+            {
+                const double d = glm::length(P[i] - pred);
+                if (!taken[i] && d < best)
+                {
+                    best = d;
+                    bi = (int)i;
+                }
+            }
+            if (bi < 0)
+            {
+                release(t.slot, t.id);
+                release(t.slotNew, t.id);
+                continue;
+            }
+            taken[bi] = true;
+            if (std::abs(dtSim) > 1e-4)
+                t.vel = (P[bi] - t.pos) / dtSim;
+            t.pos = P[bi];
+            t.light = bi;
+            kept.push_back(t);
+        }
+        for (uint32_t i = 0; i < n; ++i)
+            if (!taken[i])
+            {
+                EngineVolTrack t;
+                t.id = engineVolNextId_++;
+                if (engineVolNextId_ == 0)
+                    engineVolNextId_ = 1;
+                t.pos = P[i];
+                t.firstFrame = boltFrame;
+                t.light = (int)i;
+                kept.push_back(t);
+            }
+        engineVolTracks_.swap(kept);
+    }
+    // A slot a flash took (boltLightAssign) is gone: the volume fading in becomes the light's own, else it has none.
+    for (EngineVolTrack &t : engineVolTracks_)
+    {
+        if (t.slotNew >= 0 && boltLightSlots_[t.slotNew].engine != t.id)
+        {
+            t.slotNew = -1;
+            t.fade = 0.0f;
+        }
+        if (t.slot >= 0 && boltLightSlots_[t.slot].engine != t.id)
+        {
+            t.slot = t.slotNew;
+            t.slotNew = -1;
+            t.fade = 0.0f;
+        }
+        if (t.slot < 0)
+            t.share = 0.0f;
+    }
+    // (the bakes hold the flashes' side escape in N: a new one bakes the engine lights' slots again)
+    if (boltLightTune.x != engineVolSideBaked_)
+    {
+        engineVolSideBaked_ = boltLightTune.x;
+        for (BoltLightSlot &sl : boltLightSlots_)
+            if (sl.engine != 0)
+                sl.baked = false;
+    }
+    // Which lights light cloud, and how much of it the eye sees: the irradiance at the cloud layer x the share of the
+    // view the lit region fills (a pad's floods 40 km off fill a few pixels).
+    const GpuCloudV2Params *cp = (const GpuCloudV2Params *)cv2ParamsMapped;
+    const double base = (double)cp->shell.x, top = (double)cp->shell.y;
+    for (EngineVolTrack &t : engineVolTracks_)
+    {
+        const GpuDustCloud &L = lights[t.light];
+        const double alt = glm::length(t.pos) - 6371000.0;
+        const double dS = alt < base ? base - alt : alt > top ? alt - top : 0.0;
+        const double reach = (double)L.col.z, dist = (double)glm::length(glm::vec3(L.c));
+        t.dShell = (float)dS;
+        t.farK = 1.0f - glm::smoothstep(0.6f * 24000.0f, 24000.0f, (float)dS);   // (kFvRmax, flash_volume.glsl)
+        const double seen = std::min(1.0, reach / std::max(dist, 1.0));
+        t.prio = (dS < reach && t.farK > 0.0f) ? (float)((double)L.c.w / (dS * dS + 9.0e4) * seen * seen) : 0.0f;
+        if (t.slot >= 0)
+            t.prio *= 1.5f;   // (a light that has a volume keeps it over a near equal)
+        t.in = false;
+        t.stale = 0.0f;
+        if (t.slot >= 0 && boltLightSlots_[t.slot].baked)
+        {
+            const BoltLightSlot &sl = boltLightSlots_[t.slot];
+            // The light's move since the bake, and the cloud's under it (the map's drift, eastward).
+            const double drift = (double)cloudDriftRate * glm::length(glm::dvec2(t.pos)) * std::abs(simT - sl.bakedT);
+            const double need = glm::clamp(kFvEngineMoveK * dS, kFvEngineMoveMinM, kFvRebakeM);
+            t.stale = (float)((glm::length(t.pos - sl.bakedAt) + drift) / need);
+        }
+    }
+    std::vector<int> order(engineVolTracks_.size());
+    for (size_t k = 0; k < order.size(); ++k)
+        order[k] = (int)k;
+    std::sort(order.begin(), order.end(), [&](int a, int b) { return engineVolTracks_[a].prio > engineVolTracks_[b].prio; });
+    for (size_t k = 0; k < order.size() && k < kFvEngineLightsMax; ++k)
+        engineVolTracks_[order[k]].in = engineVolTracks_[order[k]].prio > 0.0f;
+    // The fades: a new volume over the old one, and the share (a light that lost its place fades to the light by
+    // distance alone before it gives its slot up).
+    const float step = (float)(glm::clamp((double)skyTaaFrameDt, 0.004, 0.1) / kFvEngineFadeS);
+    for (EngineVolTrack &t : engineVolTracks_)
+    {
+        if (t.slotNew >= 0)
+        {
+            // A MOVING light's new volume was baked AHEAD of it (emitter -2, below): its weight is how far along the
+            // way from the old one's place to the new one's the light is, so the light on the cloud follows the
+            // rocket's own motion and is exactly the new volume's as it passes its place (faded in over a fixed time
+            // after a bake where the light was, the lit deck changed 4% a frame for 0.3 s after each bake of a stage
+            // climbing through cloud, then stood still). A light that stands (a pad, a fire: the cloud has drifted)
+            // fades over kFvEngineFadeS.
+            const glm::dvec3 a = boltLightSlots_[t.slot].bakedAt, ab = boltLightSlots_[t.slotNew].bakedAt - a;
+            const double seg2 = glm::dot(ab, ab);
+            // (a light that has left the way to the volume ahead, a turn or the clock reversed: that one fades in as a
+            // standing light's does)
+            if (glm::dot(t.pos - a, t.pos - a) > 6.25 * seg2)
+                boltLightSlots_[t.slotNew].emitter = -1;
+            if (boltLightSlots_[t.slotNew].emitter == -2 && seg2 > 1.0)
+            {
+                // (from where along the way the light was when the new volume was baked: flashId holds it, x 1e6;
+                // counted from the old volume's place the weight began with a frame or two's worth at once)
+                const double p0 = (double)boltLightSlots_[t.slotNew].flashId * 1.0e-6;
+                const double pr = glm::clamp((glm::dot(t.pos - a, ab) / seg2 - p0) / (1.0 - p0), 0.0, 1.0);
+                t.fade = std::min(std::max(t.fade, (float)pr), t.fade + 0.2f);
+            }
+            else
+                t.fade += step;
+            if (t.fade >= 1.0f)
+            {
+                release(t.slot, t.id);
+                t.slot = t.slotNew;
+                t.slotNew = -1;
+                t.fade = 0.0f;
+                t.stale = 0.0f;
+            }
+        }
+        if (!t.in)
+        {
+            t.share = std::max(t.share - step, 0.0f);
+            if (t.share <= 0.0f)
+            {
+                release(t.slot, t.id);
+                release(t.slotNew, t.id);
+            }
+        }
+    }
+    // Slots and bakes. A free slot: no engine light's, and no flash's this frame or the last; from the top (the
+    // flashes take theirs from the bottom).
+    uint32_t held = 0;
+    for (uint32_t s = 0; s < kFvSlots; ++s)
+        held += boltLightSlots_[s].engine != 0 ? 1u : 0u;
+    auto freeSlot = [&]() {
+        if (held >= kFvEngineSlotsMax)
+            return -1;
+        for (int s = (int)kFvSlots - 1; s >= 0; --s)
+            if (boltLightSlots_[s].engine == 0 && boltLightSlots_[s].usedFrame + 1 < boltFrame)
+                return s;
+        return -1;
+    };
+    GpuFvJob *jobs = (GpuFvJob *)((char *)fvJobMapped + 16);
+    const uint32_t jobs0 = fvJobCount;
+    const float gMs = cp->ms.y;
+    auto bake = [&](EngineVolTrack &t, int s, const glm::dvec3 &at, bool ahead) {
+        glm::dvec3 e, nn, u;
+        frameAt(at, e, nn, u);
+        GpuFvJob &j = jobs[fvJobCount++];
+        j.c = glm::vec4(toEnu(at - eye), (float)s);
+        // w: the side escape of N's fall-off, the flashes' (a light INSIDE a cloud radiates all round in it: what leaves
+        // one direction's column sideways enters its neighbours'; the lobed look's own, engineVolSide, is for the cloud
+        // that stands between an outside light and a face, in the draw)
+        j.t1 = glm::vec4(toEnu(e), boltLightTune.x);
+        j.t2 = glm::vec4(toEnu(nn), 1.0f - gMs * gMs);
+        j.up = glm::vec4(toEnu(u), 1.0f);              // w: an engine light's (each step read at 6 places)
+        BoltLightSlot &sl = boltLightSlots_[s];
+        if (sl.engine == 0)
+            ++held;
+        sl = BoltLightSlot{};
+        sl.engine = t.id;
+        sl.baked = true;
+        sl.emitter = ahead ? -2 : -1;   // (-2: baked ahead of a moving light, the fades above)
+        sl.bakedAt = at;
+        sl.bakedT = simT;
+        ++fvBakes_;
+        ++fvEngineBakes_;
+        if (engineVolBakeLog_.size() >= 64)
+            engineVolBakeLog_.erase(engineVolBakeLog_.begin());
+        engineVolBakeLog_.push_back({simT, t.id, s, t.slot >= 0 && t.slot != s});
+    };
+    // First volumes (and ones asked again: harness `lightning light e_side=`), the lights with the most to show first.
+    for (size_t k = 0; k < order.size() && fvJobCount < kFvJobsMax; ++k)
+    {
+        EngineVolTrack &t = engineVolTracks_[order[k]];
+        if (!t.in)
+            continue;
+        if (t.slot >= 0 && boltLightSlots_[t.slot].baked)
+            continue;
+        const int s = t.slot >= 0 ? t.slot : freeSlot();
+        if (s < 0)
+            break;
+        bake(t, s, t.pos, false);
+        t.slot = s;
+        // (a light first seen now starts through its volume: no frame by distance alone, nothing to fade from)
+        if (boltFrame - t.firstFrame <= 8)
+            t.share = t.farK;
+    }
+    // One second volume a frame, fading in over the first: for a light on the move (faster than 20 m/s) as soon as
+    // it has none, baked one re-bake distance AHEAD along its way; for one that stands, where it is, once the cloud
+    // has drifted that far past it (the one furthest past its mark first).
+    if (fvJobCount < kFvJobsMax)
+    {
+        EngineVolTrack *worst = nullptr;
+        float worstK = 0.0f;
+        for (EngineVolTrack &t : engineVolTracks_)
+        {
+            if (!t.in || t.slot < 0 || t.slotNew >= 0 || !boltLightSlots_[t.slot].baked)
+                continue;
+            const float k = glm::length(t.vel) > 20.0 ? 2.0f + t.stale : t.stale;
+            if (k > 1.0f && k > worstK)
+            {
+                worst = &t;
+                worstK = k;
+            }
+        }
+        const int s = worst ? freeSlot() : -1;
+        if (s >= 0)
+        {
+            const double speed = glm::length(worst->vel);
+            const bool ahead = speed > 20.0;
+            const double need = glm::clamp(kFvEngineMoveK * (double)worst->dShell, kFvEngineMoveMinM, kFvRebakeM);
+            // (vel is per second of sim time: with the clock running backwards the light's way is against it)
+            bake(*worst, s, ahead ? worst->pos + worst->vel * ((dtSim < 0.0 ? -need : need) / speed) : worst->pos, ahead);
+            if (ahead)
+            {
+                const glm::dvec3 a = boltLightSlots_[worst->slot].bakedAt, ab = boltLightSlots_[s].bakedAt - a;
+                const double p0 = glm::clamp(glm::dot(worst->pos - a, ab) / std::max(glm::dot(ab, ab), 1.0), 0.0, 0.9);
+                boltLightSlots_[s].flashId = (uint32_t)(p0 * 1.0e6);
+            }
+            worst->slotNew = s;
+            worst->fade = 0.0f;
+        }
+    }
+    if (fvJobCount != jobs0)
+    {
+        ((uint32_t *)fvJobMapped)[0] = fvJobCount;
+        ctx_->mirrorDirty(fvJobMapped, 0, 16 + sizeof(GpuFvJob) * fvJobCount);
+    }
+    // What the draw reads: each light's slots, fade and share; each held slot's place and frame about this eye.
+    for (EngineVolTrack &t : engineVolTracks_)
+    {
+        if (t.in && t.slot >= 0)
+            t.share = t.share < t.farK ? std::min(t.share + step, t.farK) : t.farK;
+        for (int s : {t.slot, t.slotNew})
+            if (s >= 0)
+            {
+                BoltLightSlot &sl = boltLightSlots_[s];
+                sl.usedFrame = boltFrame;
+                glm::dvec3 e, nn, u;
+                frameAt(sl.bakedAt, e, nn, u);
+                fvSlotPos_[s] = glm::vec4(toEnu(sl.bakedAt - eye), 0.0f);
+                fvSlotT1_[s] = glm::vec4(toEnu(e), 0.0f);
+                fvSlotT2_[s] = glm::vec4(toEnu(nn), 0.0f);
+            }
+        if (t.slot >= 0 && t.share > 0.0f)
+            engineVolGpu_[t.light] = glm::vec4((float)t.slot, (float)(t.slotNew >= 0 ? t.slotNew : t.slot),
+                                               t.slotNew >= 0 ? t.fade : 0.0f, t.share);
     }
 }
 
@@ -1020,7 +1379,36 @@ void SatelliteSim::recordLightning(VkCommandBuffer cmd, VulkanContext &ctx)
             L.ms = glm::vec4(cv2LightningLight > 0.5f ? 1.0f : 0.0f, cp->ms.y, cp->ms.z, cp->ms.w);
         }
         L.tune = boltLightTune;
-        L.tune2 = glm::vec4(boltLightNCap, 0.0f, 0.0f, 0.0f);
+        float dbgLight = engineVolDebug.y;
+        if (dbgLight < 0.0f && kDustMapped)   // (the harness view's default: the strongest light)
+        {
+            const GpuDustCloud *tail = reinterpret_cast<const GpuDustCloud *>(static_cast<const char *>(kDustMapped) + 16) + kMaxDustClouds;
+            dbgLight = 0.0f;
+            for (uint32_t i = 1; i < engineLightCount; ++i)
+                if (tail[i].c.w > tail[(uint32_t)dbgLight].c.w)
+                    dbgLight = (float)i;
+        }
+        L.tune2 = glm::vec4(boltLightNCap, engineVolDebug.x, std::max(dbgLight, 0.0f), 0.0f);
+        // The engine lights' volumes (engineLightVolumes, this frame's). Their level: against lightning.frag's
+        // boltCloudShade for an opaque face, the light behind the eye (cosB -1), no cloud between, N 1, far from the
+        // light: single x ph(-1) + ms.z x wD x boltDiffuse(0, engineTauFar(1), -1) (keep in step with the shader).
+        L.elTune = engineVolTune;
+        L.elTune.x = engineVolSide();
+        {
+            auto hg = [](double c, double g) { return (1.0 - g * g) / std::pow(std::max(1.0 + g * g - 2.0 * g * c, 1e-4), 1.5); };
+            const double g = L.ms.y, f = g * g, gp = g / (1.0 + g);
+            const double wD = 1.0 - 1.0 / (2.0 - f);
+            const double ts = (1.0 - f) * 2.945;       // (the far side of an opaque pixel: lightning.frag engineTauFar)
+            const double C1 = (5.0 - std::exp(-ts)) / ((1.0 - gp) * ts + 4.0 / 3.0);
+            const double J = std::max(5.0 - (2.0 / 3.0) * C1 - 3.0 - 0.3 * g * (C1 - 3.0), 0.0);
+            const double ref = (double)engineVolTune.y * ((double)L.phase.y * hg(-1.0, L.phase.x) + (double)L.phase.w * hg(-1.0, L.phase.z)) +
+                               (double)L.ms.z * wD * 1.6 * J;
+            L.elTune.w = (float)((double)engineVolTune.w * 0.85 / std::max(ref, 1e-3));
+        }
+        std::memcpy(L.elVol, engineVolGpu_, sizeof(L.elVol));
+        std::memcpy(L.fvPos, fvSlotPos_, sizeof(L.fvPos));
+        std::memcpy(L.fvT1, fvSlotT1_, sizeof(L.fvT1));
+        std::memcpy(L.fvT2, fvSlotT2_, sizeof(L.fvT2));
         std::memcpy(boltLightMapped, &L, sizeof(L));
         ctx.mirrorDirtyAll(boltLightMapped);
     }

@@ -2704,6 +2704,17 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   on the register cliff, and the history's smear); its cheap form (the view ray's own depth + one tap toward the flash:
   one tap cannot see a tower 5-20 km away, same cliff, same smear); a screen-space shadow of the glow (only what is on
   screen occludes, and the composite has no depth of the cloud).
+  **The slots are shared with the engine lights** (2026-11-22, issue_20261122_105107; launches.md "Rocket light
+  through the light volume"): a burning stage, a pad's floods and a fire's glow light the cloud by the same formula
+  (`boltCloudShade`, one function: `boltLightAt` for a flash, `engineLightAt` for an engine light) from slots of the
+  same image. A flash comes first: it takes a free slot among 0-14 (its code for "none" is 15, so an emitter handed
+  slot 15 never read its volume), else the least engine light's, and its bakes are listed first in the 4-a-frame
+  budget; the engine lights fill from slot 15 down (`SatelliteSim::engineLightVolumes`, at most 6 lights in 8 slots).
+  A flash's slot is written as it was (red the depth, green its own cloud's depth, blue 0; `fvAt` unchanged). An
+  engine light's job (`up.w` 1) reads each step at 6 places without the per-direction jitter and writes green = the
+  transmittance e^-depth and blue = where along each distance step the step's depth is centred: `fvOdFine` blends the
+  transmittances over the directions by a cubic B-spline (a steady light shows a bilinear blend's creases, a 0.2-s
+  flash does not) and reads the depth inside a step from the centre.
 - **Key light**: the Sun, or at night the Moon through the same light march (`misc.y` x `moonGain`);
   sky ambient is occluded by the cloud above and by the sample's own density (detail on shaded sides).
   **Night (review 5):** the ambient carries the terrain's moonless "Night sky light" (`terrainErosion.z`,

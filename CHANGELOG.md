@@ -32,6 +32,11 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   bells high above a dark ground; steam and exhaust clouds rolling off the pad at lift-off; dust or spray at
   landing; engine-sized flames; fuel-dump spirals. At night the engines light the clouds, haze, exhaust, sea and
   ground around them. The rockets' roar arrives at the speed of sound.
+- **A rocket's light is shaped by the clouds it shines through.** At night a burning stage, a pad's floodlights
+  and a wildfire's glow light the clouds through the cloud around them, the way lightning does: the lobes turned
+  to the flame are lit, the ones behind them and the hollows between stay dark, a rocket under a thick deck no
+  longer lights the tops above it as if nothing were between, and a rocket inside a deck glows through it like a
+  lantern. The light follows the rocket smoothly as it climbs.
 - **Billowing staging clouds.** A rocket's staging cloud is a dense, compact billow drawn as a volume with the same
   cauliflower lobes as the cumulus clouds, each lobe lit and shaded through its own mass (white where sunlit, gold
   where the light is reddened); seen toward a twilight Sun its thin edges show pastel iridescence.

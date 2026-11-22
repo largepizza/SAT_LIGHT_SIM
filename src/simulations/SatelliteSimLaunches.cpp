@@ -9276,6 +9276,8 @@ nlohmann::json SatelliteSim::launchStateJson() const
             for (uint32_t i = 0; i < engineLightCount; ++i)
                 el.push_back({{"dist_km", glm::length(glm::vec3(tail[i].c)) / 1000.0f},
                               {"up_km", tail[i].c.z / 1000.0f},
+                              {"east_km", tail[i].c.x / 1000.0f},
+                              {"north_km", tail[i].c.y / 1000.0f},
                               {"intensity_suns_m2", tail[i].c.w},
                               {"r0_m", tail[i].ia.w},
                               {"reach_km", tail[i].col.z / 1000.0f},
@@ -9284,6 +9286,27 @@ nlohmann::json SatelliteSim::launchStateJson() const
         j["engine_light_gain"] = engineLightGain;
         j["engine_light_adapt"] = engineAdaptEased; // the eye's adaptation to the lights at night (1 = none)
         j["engine_lights"] = el;
+        // The lights' volumes (engineLightVolumes; launches.engine_light_volume): per light followed, its index in
+        // engine_lights, its slot(s) of the flash volume image, the new volume's weight, the volume model's share.
+        nlohmann::json ev = nlohmann::json::array();
+        for (const EngineVolTrack &t : engineVolTracks_)
+            ev.push_back({{"light", t.light}, {"id", t.id}, {"slot", t.slot}, {"slot_new", t.slotNew}, {"fade", t.fade},
+                          {"share", t.share}, {"in", t.in}, {"priority", t.prio}, {"stale", t.stale},
+                          {"to_cloud_layer_m", t.dShell}, {"speed_ms", glm::length(t.vel)}});
+        if (cv2ParamsMapped) // the cloud layer the lights are ranked against: its lowest base and highest top (m)
+            j["engine_light_cloud_layer_m"] = {((const GpuCloudV2Params *)cv2ParamsMapped)->shell.x,
+                                               ((const GpuCloudV2Params *)cv2ParamsMapped)->shell.y};
+        j["engine_light_volume"] = engineLightVolume;
+        j["engine_light_volumes"] = ev;
+        j["engine_light_volume_bakes"] = fvEngineBakes_;
+        {
+            // the last bakes: sim time (UTC s of the day; J2000 days begin at noon), the light's id, the slot, again = a moved light's new volume
+            nlohmann::json bl = nlohmann::json::array();
+            for (const EngineVolBake &b : engineVolBakeLog_)
+                bl.push_back({{"t_s", std::fmod(b.simT + 43200.0, 86400.0)}, {"id", b.id}, {"slot", b.slot}, {"again", b.again}});
+            j["engine_light_volume_bake_log"] = bl;
+        }
+        j["engine_light_volume_steals"] = fvSteals_; // slots a flash took from an engine light
     }
     if (!launchState)
         return j;
@@ -14069,6 +14092,7 @@ void SatelliteSim::engineLightsFlush()
     if (!kDustMapped)
     {
         engineLights_.clear();
+        engineLightVolumes(nullptr, 0);
         return;
     }
     // The eye adapts to the lights (2026-10-20, QA: following a Starship 310 m off at night the whole view was a
@@ -14129,6 +14153,7 @@ void SatelliteSim::engineLightsFlush()
                                               (plumeMieActive() ? 0x40000000u : 0u);   // bit 30: the plumes' Mie optics
     engineLightCount = n;
     engineLights_.clear();
+    engineLightVolumes(tail, n);   // the cloud round the lights that light cloud (SatelliteSimLightning.cpp)
 }
 
 // The plume Gaussians that cannot show, dropped from the list cloud_march.comp walks (2026-10-21). Every texel tests
