@@ -699,6 +699,13 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- No more band of dark, blocky purple-grey streaks just under the Earth's limb from orbit (issue_20261121_154506).
+  The haze drawn in front of a cloud was placed by an estimate that took the air to thicken evenly along the line
+  of sight. That holds near the ground; from orbit nearly all the air on a line to the limb lies in its last
+  200 km, so clouds spread along such a line got the haze of a point hundreds of km short of them, almost none,
+  and showed dark in blocks the size of the cloud rendering's pixels. The air to each part of a cloud now follows
+  the curved path through the atmosphere, and the haze in front is placed where that air matches; clouds at the
+  limb sit in the same haze as the clear horizon beside them. Views from the ground are unchanged.
 - Thunder no longer goes missing or comes in bursts (issue_20261121_163317). Each flash's roll is now played from
   its start to its end once its sound has reached you, however fast you fly and whatever the frame rate; pausing
   holds it and it carries on afterwards. A busy storm no longer drops flashes: in a test of 80 flashes in 24 seconds
