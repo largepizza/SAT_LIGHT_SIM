@@ -285,6 +285,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   heading down and forking as they go; spider lightning crawls and forks under the cloud base. A flash lights
   the clouds through the cloud around it: a flash inside a storm glows through its thin sides and edges, a
   stroke under the base lights the base and the rain, and a flash behind a tower no longer lights the side you see.
+  Strokes have the colours of a photograph: a core that is white only where it is brightest, a violet sheath that
+  makes branches and leaders purple, an indigo glow in the air around the channel, and far strokes warmed by the
+  air between. "Lightning glow colour" (Settings > Weather > Lightning) runs from the earlier near-white stroke (0)
+  through the physical colours (1) to stronger ones (2).
 - **Rainbows, halos and ice optics** for the Sun or the Moon: rainbows at storms, 22-degree halos, sundogs, the
   circumzenithal arc, sun pillars.
 - **Ice halos are ray-traced through real crystals.** The halos of cirrus, snow and diamond dust come from a table

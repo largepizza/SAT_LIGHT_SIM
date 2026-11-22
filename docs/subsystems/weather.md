@@ -1343,7 +1343,56 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   where the cloud toward it is thin; an emitter without a volume (the 17th nearest and beyond) keeps the glow by
   distance alone (`boltGlow`: a ~4-km diffusion core floored at ~3.5 km and a faint 15-km tail, windowed to 45 km),
   which was every flash's light until then: an unoccluded brightening within a radius. The lightning pass's thread 1 adds the flashes' light to the rain at the eye (`cv2RainAmb`): drops
-  light up in a close strike. **Thunder is streamed from sound shells (2026-10-10, `addThunderSource` / `thunderStep`,
+  light up in a close strike.
+  **The colour of a stroke (2026-11-22, follow-up to issue_20261121_163317; `lightning_draw.glsl` `BoltColour`,
+  `SatelliteSim::boltColourFill`, lightning.vert / .frag mode 0).** A stroke is drawn in the colours a photograph
+  shows, by where each part of its light comes from. (1) The CORE is the return stroke's plasma (~30,000 K: singly
+  ionised nitrogen's lines at 399.5-568 nm over a continuum, H-alpha), hue (0.68, 0.62, 1.0). It is white only where
+  the frame clips: `boltTonemap` works per channel, so a near trunk goes to white and a thin or far piece keeps its hue.
+  (2) The CORONA SHEATH, the cold glow of the charge the leader left (N2 second positive, N2+ first negative 391 / 428
+  nm): a Gaussian 6 m wide (x 0.7 per branch order, never under 0.75 px) hugging the channel, violet (0.55, 0.18, 1.0),
+  taking 5% of a main channel's light, x 2.2 per branch order (11 / 24 / 53%) and 60% of a stepped leader's: branches
+  and leaders are purple, the trunk white. (3) The SCATTERED GLOW replaces the Gaussian halo. Each piece adds the
+  integral along itself of 1 / distance^2 (`glowK`: L / D^2 from afar, pi / D beside a long piece), which summed over a
+  channel's pieces is pi / D, the irradiance round a line of emitters, from the sheath's radius out to the old halo's
+  quad edge (2.5 x the halo's width: the same quads, the same fill), where it is taken to 0. It carries the old halo's
+  energy piece by piece (the Gaussian's integral over the capsule, pi h^2 + L h sqrt(pi)): the brightness model is
+  the halo's. In clear air it is indigo (0.30, 0.13, 1.0: Rayleigh's lambda^-4 leaves the violet lines); where rain or
+  cloud stands in front of the stroke (the share of its light the composite takes, `cloudPointVisibilityAt`: per
+  pixel, no march) it goes to the stroke's own colour (0.74, 0.72, 1.0) with twice the energy and a core three times
+  wider. (4) THE AIR takes the blue first: `boltAir`'s grey transmittance to the powers (0.58, 0.99, 2.0) per channel
+  (Rayleigh at 680 / 550 / 440 nm, 5.8 / 13.5 / 33.1 x 10^-6 /m, + a grey 5 x 10^-6 /m of aerosol, over the grey 1.9 x
+  10^-5 /m), on the channel and on the flash-lit cloud. (5) The flash's light on the cloud (mode 1) is (0.68, 0.64,
+  1.0) where it was (0.80, 0.86, 1.0). **Every hue is given the luminance of the colour of 2026-11-21 it replaces**
+  (core and sheath: (0.90, 0.93, 1.0); glow: (0.66, 0.70, 1.0); cloud: (0.80, 0.86, 1.0)) and is mixed from that
+  colour by ONE gain, "Lightning glow colour" (`clouds_v2.lightning_colour`, slot 628, 0-2, default 1): 0 is the look
+  of 2026-11-21 (its constants; the sheath, the glow and the reddening are 0), 1 the above, past 1 the hues go on
+  along the same line (more saturated at the same luminance), the sheath's share and the reddening grow, and the glow
+  stays (it has replaced the halo by 1). The hues, shares and radii are live in the harness (`lightning color`), not
+  settings; they reach the shaders in a uniform block of their own (binding 12 of the lightning set). Sprites keep
+  their red-violet ramp and mode 2 (the engine lights) reads none of it. Planetarium and Potato draw no strokes (no
+  lightning pass without the volumetric march). Not modelled: the pinker channel of a stroke in heavy rain (H-alpha;
+  the wet share is per pixel, the core's colour per piece), and the glow's reach is the old halo's quad (70 / 22 / 8 m
+  x 2.5), short of a real one's.
+  Measured (RTX 3070 Ti, 1600x900, a clear night at 32 N 106 W, ground stroke seed 21 held at its first stroke, the
+  37293e99 exe -> gain 1; qa/waves/20261122/evidence/c11): 5 km off, the trunk's centre clips (255 on every channel
+  in every row) and the ring 2-6 core widths out goes from (220, 222, 235), saturation 0.07, red < green, to (174,
+  144, 218), saturation 0.34, red > green; branch pixels' saturation 0.09 -> 0.27 against the trunk centre's 0.00; the
+  blue / red of the unclipped glow is 1.57 at 5 km, 1.27 at 15 km and 0.96 at 45 km (1.18-1.19 at all three before);
+  the mean luminance of the stroke's box is 97.5% / 99.2% / 105% of the old at 5 / 15 / 45 km, the flash-lit cloud's
+  (the report's shot 3, a flash in the near flank) 99.8%. Gain 0 is the 37293e99 frame: mean difference 0.000 / 0.13
+  / 0.13 levels at the three distances, 0.40 on shot 3's lit cloud, 0.40 / 0.45 under the storm in rain (shot 1's
+  place, a stroke 0.7 and 8 km off); two runs of this exe differ by 0.000 / 0.13 / 0.11, 0.32, and under the storm by
+  as much or by 23-25 levels: the lit cloud base at shot 1's replay comes up at one of two levels from run to run, on
+  the 37293e99 exe too (two of five runs at the lower one). A sprite at gain 1: 0.006-0.011 levels from the old (two
+  runs of one exe: 0.008). Cost, gain 0 / 1 interleaved in one app, 4 reps a side, three sessions: one stroke held
+  18.05 +- 0.11 -> 18.01 +- 0.23, 18.04 +- 0.14 -> 18.06 +- 0.08 and 17.89 +- 0.15 -> 17.95 +- 0.05 ms (mean +0.01);
+  six bolts 17.92 +- 0.07 -> 17.95 +- 0.26, 18.01 +- 0.20 -> 18.10 +- 0.09 and 17.87 +- 0.03 -> 17.86 +- 0.08 (mean
+  +0.04); the main pass's bucket 0.61 -> 0.61 and 1.02 -> 1.02: nothing outside the reps' spread. Not timed: this
+  build at gain 0 against the 37293e99 exe (two exes cannot interleave; a fragment costs two square roots, an
+  exponential and two divisions more at any gain). cloud_v2_march.comp and what it includes are not touched (the same
+  SPIR-V bytes).
+  **Thunder is streamed from sound shells (2026-10-10, `addThunderSource` / `thunderStep`,
   SatelliteSimAmbience.cpp):** each flash's channel is kept as a source (pieces in Earth-fixed axes, up to 96 flashes, 150 s);
   its front travels at 343 m/s in sim time, and a playhead per source (2026-11-21, sound.md "Thunder is played by a
   playhead per flash") plays the pieces by their path difference behind the nearest piece once the front has reached

@@ -10,6 +10,9 @@ layout(location = 1) flat in vec4 vCore;
 layout(location = 2) flat in vec4 vHalo;
 layout(location = 3) flat in vec4 vSeg;
 layout(location = 4) flat in vec4 vGlow;
+layout(location = 5) flat in vec4 vScat;
+layout(location = 6) flat in vec4 vScatW;
+layout(location = 7) flat in vec4 vScatK;
 layout(location = 0) out vec4 outColor;
 // The meshes' distance (m, 0 = none; SatMeshRenderer's scene target, full resolution): a mesh pixel is lit by the
 // engine lights in sat_mesh.frag (with its own normals), not by the ground term here (2026-10-21).
@@ -250,6 +253,8 @@ void main()
         float wD   = opP - (1.0 - pow(1.0 - opP, 1.0 + aF)) / (1.0 + aF);
         vec3  Cm   = phys ? dir * (tS / opS) : vec3(0.0);
         float airM = phys ? airS / opS : 0.0;
+        // The flash's colour on the cloud (2026-11-22, BoltColour), less the blue the air to that cloud takes.
+        vec3  cTint = bc.cloud.rgb * boltAirTint(opS > 1e-4 ? airS / opS : 1.0);
         x = vec3(0.0);
         uint n = uint(pc.params2.y + 0.5);
         for (uint fi = 0u; fi < n; ++fi) {
@@ -282,7 +287,7 @@ void main()
                 else
                     for (int k = 0; k < 4; ++k)
                         g += op4[k] * air4[k] * boltGlow(length(dir * tC4[k] - em.xyz));
-                x += vec3(0.80, 0.86, 1.0) * (pc.params.x * pc.params.z * 2.0 * F.o.w * em.w * g);
+                x += cTint * (pc.params.x * pc.params.z * 2.0 * F.o.w * em.w * g);
             }
         }
         if (max(x.r, max(x.g, x.b)) < 1e-4) discard;
@@ -291,10 +296,20 @@ void main()
         float d    = length(vec2(vLocal.x - s, vLocal.y));
         float core = clamp(0.5 * vCore.a + 0.5 - d, 0.0, 1.0);
         float halo = vHalo.a > 0.0 ? exp(-(d * d) / (vHalo.a * vHalo.a)) : 0.0;
-        x = vCore.rgb * core + vHalo.rgb * halo;
-        if (max(x.r, max(x.g, x.b)) < 1e-4) discard;
+        // The stroke's colour (2026-11-22, lightning_draw.glsl BoltColour; all 0 at gain 0): the violet corona sheath
+        // hugging the channel, and the light the air scatters, each piece's integral of 1 / distance^2 along itself
+        // (1 / distance round the channel, not a Gaussian), 0 at the quad's edge: indigo in clear air, neutral and
+        // with a wider core where rain or cloud stands in front of the stroke.
+        float d2 = d * d;
+        float Dc = sqrt(d2 + vScat.a), Dw = sqrt(d2 + vScatW.a);
+        vec3  gc = vScat.rgb * max(1.0 / (Dc * Dc * vScatK.x + Dc * 0.31831) - vScatK.y, 0.0);
+        vec3  gw = vScatW.rgb * max(1.0 / (Dw * Dw * vScatK.x + Dw * 0.31831) - vScatK.z, 0.0);
+        x = vCore.rgb * core + vHalo.rgb * halo + vGlow.rgb * exp(-d2 * vGlow.a);
+        vec3  xm = x + max(gc, gw);
+        if (max(xm.r, max(xm.g, xm.b)) < 1e-4) discard;
         // Hidden by the cloud (and rain) in front of it; inside a cloud it shows only through the glow.
-        x *= cloudPointVisibilityAt(cloudTargetA, cloudTargetB, uv, vSeg.y, 1.0);
+        float vis = cloudPointVisibilityAt(cloudTargetA, cloudTargetB, uv, vSeg.y, 1.0);
+        x = (x + mix(gc, gw, clamp(bc.wet.x + bc.wet.y * (1.0 - vis), 0.0, 1.0))) * vis;
     }
     outColor = vec4(boltTonemap(x), 0.0);
 }
