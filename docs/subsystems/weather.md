@@ -956,6 +956,17 @@ lists its sections and topics with line numbers. New notes go next to the sectio
     the old build). Harness `fires` -> `smoke_layer` (pieces, max_tau, top_m, half_km, build_ms, `eye`: the column over
     the eye, the part above it, its mid height and sigma, the Sun's transmittance to the eye);
     `shaders reload smoke_layer=<spv>`. Off on Potato.
+    - **No wildfire smoke on Planetarium or Potato** (2026-11-21, issue_20261121_160405 shot 8 "Wildfire smoke should
+      not exist in this mode": from 229 km the smoke layer's composite over the flat Planetarium ground was a grey
+      haze with an orange-brown wedge and a straight edge). `SatelliteSim::wildfireSmokeDrawn()` = not `lightSkyOn()`:
+      `weatherFillWildfires` sees "Smoke" and the layer's gain as 0 there (locals shadowing the members, which keep
+      the user's values), so no streak plans, no smoke at the flames, no palls: the dust list holds no smoke, the
+      layer's map is empty (`smoke_layer.on` false) and `recordSmokeLayer` returns before its barrier and dispatch
+      (it did so on Potato only). The fire points, flames, embers and their light are built as before (none reads the
+      smoke; the points' Sun takes no layer). At the report's view: the frame against the same view with "Smoke" 0,
+      mean |difference| 2.38 levels before, 0.23 after; `fires` -> 116 smoke
+      Gaussians and a layer of max tau 1.01 before, 0 and off after; Medium at the same view still
+      draws the smoke.
     - Measured (RTX 3070 Ti, 1920x1009, the report's shots 1 / 3 / 5, one live app, 3 interleaved reps of 90 frames,
       GPU total ms, old = `wildfire_dust_share 0` + `wildfire_smoke_layer 0`, run twice; the build of 2026-11-18): shot
       1 (370 km) 37.4 / 37.2 -> 36.6 (noise); shot 3 (4 km, inside the old trail) 33.0 / 33.3 -> 29.3 (the trail's ~130

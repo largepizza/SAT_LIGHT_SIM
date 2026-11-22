@@ -6808,6 +6808,10 @@ private:
     bool potatoSkyOn() const { return (debugDisableMask & 262144u) != 0u; }
     // Planetarium's SKY_LITE or Potato: no env probes (kNoEnvBits), no procedural ground.
     bool lightSkyOn() const { return (debugDisableMask & (262144u | 524288u)) != 0u; }
+    // Wildfire smoke (the streaks, the smoke at the flames, the palls and the smoke layer) is built and drawn: not on
+    // Planetarium or Potato (2026-11-21, issue_20261121_160405 shot 8). The fires themselves (points, flames, embers,
+    // their light) are: none of them reads the smoke.
+    bool wildfireSmokeDrawn() const { return !lightSkyOn(); }
     // What a Watch / Go needs to land on something visible. tierNeedReason = nullptr when this graphics mode draws
     // it, else a short line for the disabled button's tooltip (SatelliteSimBookmarks.cpp, SatelliteSimSkyEvents.cpp,
     // SatelliteSimMissions.cpp).

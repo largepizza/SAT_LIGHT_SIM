@@ -104,6 +104,11 @@ void SatelliteSim::weatherFillWildfires(GpuDustCloud *out, uint32_t &n, double p
     firePtCount = 0;
     flameCount = 0;
     if (!out) return;
+    // No smoke on the light tiers (wildfireSmokeDrawn): this fill sees both gains as 0 there, exactly the fires of
+    // "Smoke" 0 (no streak plans, no smoke at the flames, no palls, so the smoke layer's map is empty and its pass is
+    // not recorded; the fires' light takes no layer). The members keep the user's values.
+    const float wildfireSmoke = wildfireSmokeDrawn() ? this->wildfireSmoke : 0.0f;
+    const float wildfireSmokeLayer = wildfireSmokeDrawn() ? this->wildfireSmokeLayer : 0.0f;
     if (wildfireRate <= 0.0f || !biomeMap.ready())
     {
         if (n > aerosolFirst) smokeHdrBits = (aerosolFirst << 8u) | ((n - aerosolFirst) << 18u);
