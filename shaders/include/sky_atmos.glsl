@@ -107,9 +107,6 @@ vec2 optDepth(vec3 p, vec3 d, float segTotal) {
 // layer from 15 to 35 km). Ozone takes the orange and
 // yellow out of the long twilight paths: it is why the twilight zenith is deep blue (without it, olive or grey). The
 // same model as the clouds' Sun (cloud_v2_sunlut.comp sunTransmit). The caller tests the Earth's shadow.
-#ifdef SKY_LITE
-vec3 sunPathTauExact(vec3 p, vec3 d, vec3 BR, float BM) { return vec3(0.0); }   // (never taken there)
-#else
 vec3 sunPathTauExact(vec3 p, vec3 d, vec3 BR, float BM)
 {
     float r = length(p), cz = dot(p, d) / r;
@@ -122,7 +119,6 @@ vec2 sunPathCols(vec3 p, vec3 d)
     float r = length(p), cz = dot(p, d) / r;
     return vec2(atmColumnInf(r, cz, H_R) * H_R, atmColumnInf(r, cz, H_M) * H_M);
 }
-#endif
 
 // ── A step's sunlight to the eye, integrated over the step (2026-11-04) ──────────────────────────────────────────────
 // The single-scattering loops (sat_sky.frag's N_VIEW loop, sky_ap.comp) took the Sun's path and the eye's column at ONE
@@ -353,5 +349,27 @@ float airglowCoverageMask(vec3 dirECEF, float t, vec3 seedOffset) {
     float n = warpPerlin3(dirECEF * (kAirglowNoiseFreq * 0.5)
                           + 0.6 * airglowTimeOfs(t) + seedOffset);
     return smoothstep(-0.2, 0.5, n);
+}
+#endif
+#ifdef SKY_LITE
+// Planetarium's green / sodium bands (sat_sky.frag, after the N_VIEW loop): one band's column along a ray in closed
+// form. The shell at radius r0, Gaussian half-width w: a ray grazing over it at the impact parameter bL holds
+// 1.813 sqrt(2 r0 w) exp(-((bL - r0) / w)^2) of it (the integral of exp(-u^4)); a ray crossing it at the zenith angle Z
+// (at the shell: sin Z = bL / r0) holds w sqrt(pi) / cos Z per crossing: one from under the shell (none if that ray
+// ends on the Earth), two from above it and out again, and for a ray from above down onto the Earth one, kept only
+// near the limb (cos Z 0.18-0.32: the whole night disc read faintly green from orbit, 2026-10-21).
+// bL = the LINE's distance from the Earth's centre, tc = the distance along the ray to that point (< 0: behind the
+// eye), ro = the eye's radius. (Until 2026-11-21 cos Z came from the RAY's nearest point, which for a ray going up from
+// the ground is the eye: every such ray took the horizon's slant, 5.8 vertical columns, and the whole sky from the
+// ground was one flat green: issue_20261121_160405 shot 3.)
+float airglowShellCol(float r0, float w, float bL, float tc, float ro, bool hitsEarth)
+{
+    float colPeak  = 1.813 * sqrt(2.0 * r0 * w);
+    float cosZ     = sqrt(max(1.0 - (bL / r0) * (bL / r0), 0.0));
+    float perCross = min(w * 1.7725 / max(cosZ, 1e-3), colPeak);
+    if (bL >= r0)  return tc > 0.0 ? colPeak * exp(-pow((bL - r0) / w, 2.0)) : 0.0;
+    if (ro < r0)   return hitsEarth ? 0.0 : perCross;
+    if (tc <= 0.0) return 0.0;
+    return hitsEarth ? perCross * (1.0 - smoothstep(0.18, 0.32, cosZ)) : min(2.0 * perCross, colPeak);
 }
 #endif

@@ -47,7 +47,8 @@ Read it at the start of any terrain-related session before making changes.
   red 0.66 + 2.06 e^(-t/2) x (1 + 1.5 x the equatorial anomaly: |geomagnetic lat| ~15 deg +- 6, gone by 3-7 h
   after sunset). Above the air (40 -> 100 km) the bands are x the Sun's glare gate (`skyGlareVisibility`, the
   Milky Way's): with the Sun on screen from orbit the limb line stayed full beside its disc (39 levels -> 2).
-  Not in SKY_LITE (its SPIR-V was 72 bytes under budget; the helpers are `#ifndef SKY_LITE`). Sky pass
+  SKY_LITE has the gate and the curve's two large terms since 2026-11-21 ("Airglow in Planetarium" below; the
+  noise helpers stay `#ifndef SKY_LITE`). Sky pass
   A/B at a night horizon (Atacama, 4 reps interleaved): 8.68 vs 8.84 ms without, GPU 16.64 vs 16.54, noise.
   Defaults since 2026-11-12 are the user's: gain 0.77 (was 0.066: from the ground the bands were < 1 level,
   invisible), red 0.005, sodium 0.095, coverage 0.47. Physical line ratios at a mid-latitude zenith are green
@@ -63,6 +64,29 @@ Read it at the start of any terrain-related session before making changes.
   rain cloud. At that view, over pixels with cloud transmittance < 0.05: red on - off 2.0 -> 0.13 levels; the clear
   sky's red share unchanged (0.72 vs 0.69). The aurora already took `A_total` cubed. Above 600 km the far cloud layer
   is composited behind the whole half-res composite (aurora and airglow in front of it), which is right there.
+- **Airglow in Planetarium (SKY_LITE, 2026-11-21, issue_20261121_160405 shots 2-3 "Airglow is too intense in this
+  mode", "makes the entire night sky green").** SKY_LITE has no per-step bands; after the N_VIEW loop it adds them in
+  closed form, once a pixel, no noise (`sky_atmos.glsl` `airglowShellCol`: a shell at r0 with Gaussian half-width w
+  holds 1.813 sqrt(2 r0 w) e^(-((b - r0) / w)^2) along a ray grazing over it at impact parameter b, and
+  w sqrt(pi) / cos Z per crossing, sin Z = b / r0: one from under the shell, two from above and out again, one near
+  the limb only (cos Z 0.18-0.32) for a ray from above down onto the Earth). It is the full sky's airglow at its MEAN
+  level: both bands (green + sodium: the limb is olive, as the full sky's), x 0.6 (the patches' mean) x
+  (1 - 0.727 x "Airglow coverage") (the mask's mean is 0.273; Monte Carlo of `warpPerlin3`), the green x 0.73 (the
+  share of its Gaussian under R_ATMOS, where the full loop stops), x the night curve's two large terms (the evening
+  decay e^(-0.4 h) as e^(1.5 sin of the Sun's height at the point); the sodium's winter maximum as it stands), x the
+  Sun's glare gate above the air; night and those terms at the point the light comes from (the tangent point, else
+  the shell crossing). The patches themselves are not drawn (the full noise + `airglowNightK` version measured the
+  same at the report's views, 0.81 / 0.98 of Medium against 0.78 / 1.02, and cost 5.9 KB the tier does not have).
+  What was wrong: (1) the block's level was set when "Airglow" was 0.066 and under the old tonemap; the default went
+  to 0.77 on 2026-11-12 for AgX's toe, which SKY_LITE did not have (render-pipeline.md "Planetarium's light is the
+  full sky's"); (2) it had the green band alone, with none of the loop's factors; (3) cos Z came from the RAY's
+  nearest point to the Earth's centre, which for a ray going up from the ground is the eye itself, so every such ray
+  took the horizon's slant (5.8 vertical columns): one flat green over the whole sky. Measured (RTX 3070 Ti,
+  1920x1009, the report's views, against Medium with clouds, aurora and the red band knocked out, as Planetarium has
+  them; linear luminance of the box, stars trimmed): the limb band from 572 km 3.31 x Medium -> 0.83
+  (G/R 1.73 -> 1.04, Medium 1.06); the sky from the ground (Sun -5.8 deg) 7.10 x ->
+  1.03, G/R 1.60 -> 1.06 (Medium 1.04), G/B 1.79 -> 0.74 (Medium
+  0.71). Sky pass cost within noise (render-pipeline.md).
 - **Raymarch-from-inside-a-volume fix (session 22):** `raySphere` reformulates `c = dot(ro,ro)-r*r`
   as `c = (|ro|-r)*(|ro|+r)` — the naive form catastrophically cancels at R_EARTH scale (~1e13
   float32 magnitude) exactly at grazing/near-tangent rays, i.e. every horizon, across all 29 call
@@ -433,7 +457,14 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   full Moon overhead: the relief reads, dark). The sky ambient takes a sky-view factor (0.5 + 0.5 n.up)
   and a gain ("Terrain sky light", `clouds.terrain_sky_light`, 1). Both ride in `terrainErosion.zw`.
   Only the terrain emission changed: the dome, ambience and cloud city glow read the night map with
-  their own response curves; Potato (`sat_sky_minimal.frag`) still draws the raw night map. Harness:
+  their own response curves; Potato (`sat_sky_minimal.frag`) still draws the raw night map, and nothing else for the
+  cities (2026-11-21, issue_20261121_160405 shot 10 "Just remove the city detail texture in Potato mode"): it blended
+  the tiled city detail textures (`cityDayDetailTex` / `cityNightDetailTex`, 20-km tiles) over every night-map texel
+  brighter than 0.01 within 300 km, which drew each lit 5-km texel as a square of street pattern with a soft square
+  halo (the mask is the bilinear night map). The blend, its constants and the two samplers are gone from the shader
+  (42,688 -> 41,060 bytes of SPIR-V, budget 47,104). Against the old shader with the blend's range set to zero (the
+  night-map-only reference), at the report's view (31.7 km), from 5 km and from 300 km: mean |difference|
+  0.0 / 0.0 / 0.00002 levels (before: 39.9 / 153.8 / 0.00003; at 300 km the old frame already had no blend). Harness:
   `debugview nightsky` / `citylights`, `scripts/terrain_night.satcmd`. **`clouds.coverage` is the
   retired v1's — clear the volumetric clouds with `clouds_v2.coverage 0`** (a night LA view "without
   lights" was an overcast).

@@ -54,10 +54,6 @@ const vec3  kCloudDayColor   = vec3(1.00, 0.98, 0.95);  // lit cloud, sun well u
 const vec3  kCloudDuskColor  = vec3(0.78, 0.36, 0.15);  // warm band straddling the terminator
 const vec3  kCloudNightColor = vec3(0.008, 0.011, 0.020); // unlit cloud, past the terminator
 
-const float kCityDetailTileM = 20000.0;  // metres per detail-texture tile repeat
-const float kCityFadeNearM   = 30000.0;  // full city detail strength inside this range
-const float kCityFadeFarM    = 300000.0; // city detail fully gone beyond this range
-
 const float kOceanWaveScale  = 0.0016; // wave-noise frequency (1/metres)
 const float kOceanWaveStr    = 0.20;   // normal-perturbation strength (0 = mirror flat)
 const float kOceanGlintExp   = 180.0;  // sun-glint tightness (higher = smaller, sharper)
@@ -78,8 +74,6 @@ layout(set = 0, binding = 5)  uniform sampler2D earthElevTex;
 layout(set = 0, binding = 6)  uniform sampler2D earthSpecTex;layout(set = 0, binding = 7)  uniform samplerCube earthCloudsCube;   // the v2 weather cube (sat_sky.frag)
 layout(set = 0, binding = 1)  uniform sampler2D noiseTex;            // RGBA white noise, REPEAT
 layout(set = 0, binding = 2)  uniform sampler2D moonTex;            // lunar albedo, equirect-ish
-layout(set = 0, binding = 14) uniform sampler2D cityDayDetailTex;
-layout(set = 0, binding = 15) uniform sampler2D cityNightDetailTex;
 
 layout(push_constant) uniform PC {
     mat4  skyView;
@@ -338,28 +332,9 @@ void main() {
         vec3 dayC   = texture(earthDayTex, uv).rgb;
         vec3 nightC = texture(earthNightTex, uv).rgb;
 
-        // ── City-detail texture blend ────────────────────────────────────────
-        // Tile a hi-freq detail texture over bright night-texture pixels (cities) within range of
-        // the observer. Over dark terrain, or past kCityFadeFarM, this is a no-op. Simplified from
-        // sat_sky.frag (no edge-noise disguise, no cloud blur), but the UV is now Earth-fixed:
-        // cosine-corrected equirectangular metres, a pure function of the ECEF hit point, so the
-        // pattern is glued to the terrain with zero swim. One seam at longitude ±180° (the fract
-        // wrap in posToUV) — 113° from the 67°W spawn, never in frame at ground level.
-        {
-            float cityFade = 1.0 - smoothstep(kCityFadeNearM, kCityFadeFarM, tGround);
-            if (cityFade > 0.001) {
-                float cityLum  = dot(nightC, vec3(0.2126, 0.7152, 0.0722));
-                float cityMask = smoothstep(0.01, 0.3, cityLum) * cityFade;
-                if (cityMask > 0.001) {
-                    float latC   = (0.5 - uv.y) * PI;
-                    vec2  worldM = vec2(uv.x * (2.0 * PI * R_EARTH) * cos(latC),
-                                        uv.y * (PI * R_EARTH));
-                    vec2  duv = worldM / kCityDetailTileM;
-                    dayC   = mix(dayC,   texture(cityDayDetailTex,   duv).rgb, cityMask);
-                    nightC = mix(nightC, texture(cityNightDetailTex, duv).rgb, cityMask);
-                }
-            }
-        }
+        // The cities are the night map alone, at every height (2026-11-21, issue_20261121_160405 shot 10: the tiled
+        // city detail textures that were blended in within 300 km drew each lit texel of the map as a 20-km square
+        // of street pattern with a soft halo). No detail texture is bound or read on this tier.
 
         float localSun = dot(normalize(pECEF), sunDirECEF);       // local terminator, [-1, 1]
         float lit      = smoothstep(-0.10, 0.18, localSun);

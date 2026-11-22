@@ -1049,6 +1049,8 @@ static_assert(offsetof(GpuCloudV2Params, skyAp) == 288 + 48 * kCloudV2Types + 12
 static_assert(offsetof(GpuCloudV2Params, ms) == 288 + 48 * kCloudV2Types + 1216, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, amb) == 288 + 48 * kCloudV2Types + 1232, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, tone) == 288 + 48 * kCloudV2Types + 1248, "GpuCloudV2Params layout");
+// sat_sky.frag's SKY_LITE variant declares only `tone`, by this offset (its CloudsV2Lite block).
+static_assert(offsetof(GpuCloudV2Params, tone) == 1776, "sat_sky.frag SKY_LITE: CloudsV2Lite's layout(offset = 1776) of tone");
 static_assert(offsetof(GpuCloudV2Params, gnd) == 288 + 48 * kCloudV2Types + 1264, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, micro) == 288 + 48 * kCloudV2Types + 1280, "GpuCloudV2Params layout");
 static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1872, "GpuCloudV2Params layout");   // +16: cloudflip; +16: storms2; +16: hurrlook; +16: hurrperf; +32: storms (stormsA, stormsB); +64: flowmaps (flowP, flowA, flowB, flowC); +16: grain; +16: optics; +16: hurricane; +16: pucks; +32: wind0, wind1; +32: cellA, cellB; +32: cirrus-hurr (ciHu, ciHu2); +32: storm3 (storm3a, storm3b); +64: vertical (vert, vert2, oro0, oro1); +80: shapeB
@@ -6808,6 +6810,10 @@ private:
     bool potatoSkyOn() const { return (debugDisableMask & 262144u) != 0u; }
     // Planetarium's SKY_LITE or Potato: no env probes (kNoEnvBits), no procedural ground.
     bool lightSkyOn() const { return (debugDisableMask & (262144u | 524288u)) != 0u; }
+    // Wildfire smoke (the streaks, the smoke at the flames, the palls and the smoke layer) is built and drawn: not on
+    // Planetarium or Potato (2026-11-21, issue_20261121_160405 shot 8). The fires themselves (points, flames, embers,
+    // their light) are: none of them reads the smoke.
+    bool wildfireSmokeDrawn() const { return !lightSkyOn(); }
     // What a Watch / Go needs to land on something visible. tierNeedReason = nullptr when this graphics mode draws
     // it, else a short line for the disabled button's tooltip (SatelliteSimBookmarks.cpp, SatelliteSimSkyEvents.cpp,
     // SatelliteSimMissions.cpp).
@@ -7020,6 +7026,9 @@ private:
     static constexpr VkDeviceSize kCv2TshBytes = 4ull * 128 * 128 * 4;                                 // 4 levels of 128^2 rays, one float
     static constexpr VkDeviceSize kCv2SkyPsiOffset = kCv2TshOffset + kCv2TshBytes;                     // cv2SkyPsi (the sky's multiple scattering)
     static constexpr VkDeviceSize kCv2GroundSkyOffset = kCv2SkyPsiOffset + 32ull * 32 * 16;             // cv2GroundSky (the ground's sky light)
+    // sat_sky.frag's SKY_LITE variant declares only these two tables, by offset (its CV2FlashLite block).
+    static_assert(kCv2SkyPsiOffset == 27603248ull && kCv2GroundSkyOffset == 27619632ull,
+                  "sat_sky.frag SKY_LITE: CV2FlashLite's layout(offset = ...) of cv2SkyPsi / cv2GroundSky");
     static constexpr VkDeviceSize kCv2VtOffset = kCv2GroundSkyOffset + 64ull * 16 * 16;                // cv2VtHdr + cv2Vt (the cloud over the ground)
     static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2VtOffset + 5ull * 4 * 16 + 2ull * 5 * 32 * 32 * 16 + 5ull * 32 * 32 * 4; // + ... cv2GroundSky, cv2VtHdr, cv2Vt, cv2VtUp, cv2VtStamp
     VkDescriptorSetLayout cloudMarchDescLayout = VK_NULL_HANDLE;

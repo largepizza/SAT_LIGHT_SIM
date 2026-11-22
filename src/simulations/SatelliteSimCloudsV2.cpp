@@ -3052,34 +3052,13 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     recordWeatherEvolution(cmd);
     if (!cv2MarchPipeline)
         return;
-    // Knockout 32768 (Planetarium, Potato): nothing else of clouds v2 is recorded — no march, resolve, far layer,
-    // lightning (so no bolts, rain particles, thunder or rain sound: they key on cv2LightningRanThisFrame /
-    // cloudsV2LightningActive()), no tiles, and no barriers (each one restarts the compute encoder on MoltenVK).
-    // cloud_march.comp ignores the stale resolved images under the same bit, and the history restarts after.
-    if (cloudsV2Off())
-    {
-        cv2HistoryValid = false;
-        cv2ScreenResetOnly = false;   // the Sun shadow grids are not baked meanwhile
-        return;
-    }
-    if (cv2PassQuery)
-    {
-        vkCmdResetQueryPool(cmd, cv2PassQuery, passBase, kCv2PassStamps);
-        cv2PassStampNext = 0;
-        cv2PassStampTo(cmd, 0);   // start
-    }
-
-    // scene_depth.comp wrote terrainFrameBuf (the eye height) this frame.
-    memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
-                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
-
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2MarchPipeLayout, 0, 1, &cv2MarchDescSet, 0, nullptr);
-    vkCmdPushConstants(cmd, cv2MarchPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(cpc), &cpc);
     // The Sun / sky colour table: a function of the scattering gains alone, baked when one changes (and on the
-    // first frame). The march, below, samples it.
-    if (cv2SunLutPipeline &&
+    // first frame). The march samples it; the sky pass reads its multiple-scattering function and ground sky light
+    // out of the flash buffer (cv2SkyPsi, cv2GroundSky), the SKY_LITE variant too (2026-11-21: Planetarium's twilight).
+    const bool sunLutStale = cv2SunLutPipeline &&
         (cv2SunLutKey[0] != cv2CloudSunRayleigh || cv2SunLutKey[1] != atmosRayleighGain || cv2SunLutKey[2] != atmosMieGain
-         || cv2SunLutKey[3] != cv2SkyGroundAlbedo))
+         || cv2SunLutKey[3] != cv2SkyGroundAlbedo);
+    auto bakeSunLut = [&]()
     {
         // Three passes (the dispatch's z count is the pass, cloud_v2_sunlut.comp): the multiple-scattering function, then
         // the Sun, the zenith and the upper hemisphere (which read it), then the lower hemisphere (which reads the upper).
@@ -3097,7 +3076,44 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         cv2SunLutKey[0] = cv2CloudSunRayleigh;
         cv2SunLutKey[1] = atmosRayleighGain;
         cv2SunLutKey[2] = atmosMieGain;
+    };
+    // Knockout 32768 (Planetarium, Potato): nothing else of clouds v2 is recorded — no march, resolve, far layer,
+    // lightning (so no bolts, rain particles, thunder or rain sound: they key on cv2LightningRanThisFrame /
+    // cloudsV2LightningActive()), no tiles, and no barriers (each one restarts the compute encoder on MoltenVK).
+    // cloud_march.comp ignores the stale resolved images under the same bit, and the history restarts after.
+    if (cloudsV2Off())
+    {
+        // ... but for the Sun table's bake, on the frames a scattering gain changed (the first one): Planetarium's sky
+        // reads its multiple scattering and ground sky light (SKY_LITE; an app started on that tier never ran the bake,
+        // and the tables would be zeros: no twilight). Not on Potato, whose sky reads neither.
+        if (sunLutStale && !potatoSkyOn())
+        {
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2MarchPipeLayout, 0, 1, &cv2MarchDescSet, 0, nullptr);
+            vkCmdPushConstants(cmd, cv2MarchPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(cpc), &cpc);
+            bakeSunLut();
+            memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        }
+        cv2HistoryValid = false;
+        cv2ScreenResetOnly = false;   // the Sun shadow grids are not baked meanwhile
+        return;
     }
+    if (cv2PassQuery)
+    {
+        vkCmdResetQueryPool(cmd, cv2PassQuery, passBase, kCv2PassStamps);
+        cv2PassStampNext = 0;
+        cv2PassStampTo(cmd, 0);   // start
+    }
+
+    // scene_depth.comp wrote terrainFrameBuf (the eye height) this frame.
+    memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2MarchPipeLayout, 0, 1, &cv2MarchDescSet, 0, nullptr);
+    vkCmdPushConstants(cmd, cv2MarchPipeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(cpc), &cpc);
+    // The Sun / sky colour table (bakeSunLut above). The march, below, samples it.
+    if (sunLutStale)
+        bakeSunLut();
     // The far cloud layer (review 18): full resolution, read by sat_sky.frag (imageLoad) this frame, after
     // the previous frame's fragment reads of it.
     const float farBlend = cloudFarBlend();

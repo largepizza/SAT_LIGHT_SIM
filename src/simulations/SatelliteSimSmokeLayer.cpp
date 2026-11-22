@@ -372,7 +372,7 @@ void SatelliteSim::smokeLayerBuild(const glm::dvec3 &upIn)
 
 void SatelliteSim::recordSmokeLayer(VkCommandBuffer cmd, const CloudMarchPC &cpc)
 {
-    if (!smokeLayerPipe || !smokeLayerAny || wildfireSmokeLayer <= 0.0f || potatoSkyOn())
+    if (!smokeLayerPipe || !smokeLayerAny || wildfireSmokeLayer <= 0.0f || !wildfireSmokeDrawn())
         return;
     FPROF_SCOPE("smokeLayer.record");
     VkMemoryBarrier mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
