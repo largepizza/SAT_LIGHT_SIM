@@ -125,6 +125,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   "Watch the next re-entry". Launches stand down after the storm (or resume three weeks later).
 - **The default cascade ships prebaked** (three years after the storm), so jumping into it is quick instead of
   minutes of "Computing the debris cascade". A player's own breakups are computed live.
+- **The same on every graphics preset.** A preset changes what is drawn, never what is simulated: the storm, its
+  collisions and the prebaked cascade are the same on Potato and Planetarium as on the full presets, and switching presets
+  restarts nothing. The Sun's Fury's Watch and its bookmark are offered on the two light presets too (they show the
+  storm night without the aurora); only what lands on the aurora alone stays off there.
 - **A warning before the first Explode before the storm**: a breakup then means the whole cascade is computed live,
   so the satellite window asks first (Yes, No, or PRAISE BE TO THE SUN, which takes you to the Sun's Fury).
 - **The Kessler tab** of the Missions window: live counts, a globe of the debris shells with the collision risk,

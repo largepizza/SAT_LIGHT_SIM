@@ -304,8 +304,11 @@ void SatelliteSim::buildSkySpaceWeatherTab(const UIInput &inp, UIRenderer &ui, f
         rs.status = "";
         rs.d1 = skStr("%s  -  %s", u.c_str(), when);
         rs.btnMask = 4;
-        rs.watchOk = tierNeedReason(2u) == nullptr;
-        rs.tip = tx(Txt::TipWatchAuroraStorm);
+        // A geomagnetic storm's Watch lands on the aurora (kNeedAurora: off on Planetarium / Potato, with the reason);
+        // the Sun's Fury's own lands on its cascade, which every tier simulates and draws (skyEventNeeds, 2026-11-21).
+        const char *offWhy = fury ? nullptr : tierNeedReason(2u);
+        rs.watchOk = offWhy == nullptr;
+        rs.tip = offWhy ? offWhy : tx(Txt::TipWatchAuroraStorm);
         if (skyEventRow(inp, ui, rs) & 4)
             skPendingSpecial = 200 + (int)(&e - &skFound[sky::kCme][0]); // (a storm row's Watch: acted on after the layout)
         ++shown;

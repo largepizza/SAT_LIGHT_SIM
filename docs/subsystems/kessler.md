@@ -24,6 +24,27 @@ x1 = physical), avoidance (`avoidance`, 0.9), horizon (`horizon_years`, 20), dus
 (`dust_gain`, x100), "Watch the next re-entry", live counts.
 Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night, 1x).
 
+**Nor is it a graphics setting (2026-11-21, issue_20261121_160405 "Planetarium mode disables suns fury").** Nothing
+of the scenario reads the graphics tier: the engine, the worker, the mirror, the world hash, the prebake lookup, the
+scripted storm, the event windows and the tracker have no branch on `debugDisableMask` or the preset, and a preset
+switch restarts nothing (a world is rebuilt only by the four `kessler.*` simulation settings, the player's breakups
+and their undo, a roster rebuild and a new deployment-era table). Every tier branch in the app is a draw or a UI gate (the list: render-pipeline.md "What the
+light tiers offer"). Measured at 55be2fb0, before any change (harness, `qa/waves/20261121/evidence/c05/numbers.md`): the
+jump from 2037-07-14 to 2037-09-10 04:51:51 (day 57.08) on Planetarium and on Medium ends with the same `kessler
+fingerprint` (pool b63881e2, 399,570 records; roster 78f02b54, 147,676 changed; events 2e53465b), 451,277 records and
+139,280 events mirrored, `cache_source` prebake on both; Medium -> Planetarium -> Medium there leaves the fingerprint
+as it was. What a light tier DID switch off until that day was the Sun's Fury's own Watch (the Sky events card and
+storm row, the default bookmark: `kNeedAurora`, "the storm night is the aurora"), which read as the storm being off;
+it needs nothing of the tier now (`skyEventNeeds`, SatelliteSimSkyEvents.cpp; `defaultBookmarkNeeds`): the night's
+dead satellites, collisions, debris and re-entries are points every tier draws, the dust Gaussians every tier but
+Potato. A geomagnetic storm's Watch and "Watch the aurora" still need the aurora. **The wait after a jump is the
+prebake's replay, on every tier**: sim time holds at the mirrored frontier with the banner "Computing the debris
+cascade: day N of M" while the worker replays the shipped events (no sampling): 2.3-3.0 s to day 57, 24-31 s from
+there to the Betelgeuse Watch's day 170, Planetarium and Medium alike (two runs each, before and after the Watch
+change; Planetarium 2.76 / 2.33 and 24.5 / 26.9 s, Medium 2.28 / 3.00 and 27.8 / 31.0 s on a machine shared with six
+other agents). After the change the fingerprint above is also what Potato shows in a Medium -> Planetarium -> Potato
+-> Medium walk at day 57.
+
 - **The flare's sunspot group** (`SatelliteSimRefraction.cpp` fillSunspots, the block after the 48 hashed slots; drawn
   by sat_sky.frag `sunspotFactor`, complexity `cx` 2): heliographic latitude +14 deg (in the ecliptic-pole frame the
   spots use), crossing the central meridian at the flare (2037-07-14 09:30 UTC), carried by the differential rotation

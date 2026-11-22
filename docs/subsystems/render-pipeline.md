@@ -427,11 +427,24 @@ those presets force `renderScale = 1.0`, so the prepass never runs for them.
 - **Weather** (`weatherUnavailable()` = `cloudsV2Off()`): the HUD button is dimmed, the window shows only a notice and
   runs nothing (no radar, no storm search), the Settings Weather tab's label is dimmed with a notice on top.
 - **Bookmarks** (`defaultBookmarkNeeds(id)`, by the shipped ids so seeded copies are gated too): Beam-lit Snow,
-  Rainbow, Typhoon need clouds; Solar Storm and The Sun's Fury need the aurora; on Potato the Great Australian
+  Rainbow, Typhoon need clouds; Solar Storm needs the aurora; on Potato the Great Australian
   Eclipse and the Blood Moon (sat_sky_minimal.frag draws neither the Moon over the Sun nor the Earth's shadow on it).
   Harness `bookmark go` fails with the same reason.
-- **Sky events**: solar and lunar eclipse Watches on Potato (`skyKindNeeds`; `skyEventWatch` refuses too).
-- **Missions**: the Sun's Fury card's Watch (the storm night is the aurora).
+- **Sky events**: solar and lunar eclipse Watches on Potato (`skyKindNeeds`; `skyEventWatch` refuses too); a
+  geomagnetic storm's Watch (`sky::kCme` with `a == 0`, the cards and the space-weather tab's storm rows) and "Watch the
+  aurora" need the aurora.
+- **The Sun's Fury is offered on every tier (2026-11-21, issue_20261121_160405: "Planetarium mode disables suns
+  fury"; this reverses the 2026-10-29 line "the Sun's Fury card's Watch: the storm night is the aurora").** Its Watch
+  (the Sky events card, the storm row, the default bookmark, harness `skyevents watch cme` / `bookmark go`) needs
+  nothing of the tier (`skyEventNeeds`: `kCme` with `a == 1`; `defaultBookmarkNeeds`). The gate was the only thing a
+  light tier switched off about the storm, and it read as the storm itself being off: **the tiers gate drawing, never
+  the simulation** (kessler.md "Nor is it a graphics setting": the same prebake, fingerprints and counts on
+  Planetarium, Potato and Medium, no restart on a preset switch; the event windows have no tier branch and the Sun's
+  Fury's opens on Planetarium as the running clock crosses the arrival). What the
+  storm night shows there (Monument Valley, 3.5 h after the arrival: 12,848 satellites dead, the first 5 collisions,
+  164 fragments): the satellites and the dead ones' tumbling flashes, collision flashes, debris and re-entry
+  fireballs as points on both light tiers, the dust Gaussians on Planetarium; not the aurora (`harness_runs/
+  c05_after_planetarium`, `qa/waves/20261121/evidence/c05/fury_night_*`).
 - **Potato draws the point sources again**: its recordCompute branch now runs `kesslerFillDust` (the CPU fill of
   kFireBuf: rockets, re-entry fireballs, meteor heads, comet heads, Moon-base glints, the supernova). It skipped it
   with cloud_march.comp, so those Watches showed an empty sky and Betelgeuse went dark at its supernova. The Gaussians
