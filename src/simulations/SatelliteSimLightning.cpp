@@ -639,14 +639,23 @@ void SatelliteSim::boltGroundCollect()
                 terr[i] = t.tree.verts[i].p.z - c;
             }
             const float tipZ = tip >= 0 ? t.tree.verts[(size_t)tip].p.z : 0.0f;
+            static thread_local std::vector<float> zWas;
+            zWas.resize(j.count);
+            for (uint32_t i = 0; i < j.count; ++i)
+                zWas[i] = t.tree.verts[i].p.z;
             t.fitMinClear = bolt::fitTerrain(t.tree, terr);
-            const float move = tip >= 0 ? t.tree.verts[(size_t)tip].p.z - tipZ : 0.0f;
-            t.fitTipMove += move;
+            const float tipMove = tip >= 0 ? t.tree.verts[(size_t)tip].p.z - tipZ : 0.0f;
+            float move = 0.0f;   // the farthest the fit moved any vertex it kept
+            for (const bolt::Path &p : t.tree.paths)
+                for (uint32_t k = 0; k < p.count; ++k)
+                    move = std::max(move, std::fabs(t.tree.verts[p.first + k].p.z - zWas[p.first + k]));
+            t.fitTipMove += tipMove;
             ++t.fitRounds;
-            // A ground stroke the fit moved far is fitted once more: the tree's z is the origin's up, not the strike
-            // point's (up to 9 km away), so a vertex moved 2 km in z has slid ~3 m across the ground it was measured on
-            // (the harness's strokes over mountains, placed on the eye's ground: last vertices -3.3 .. +3.8 m off).
-            t.fit = (t.kind == 1 && t.fitRounds < 2 && std::fabs(move) > 2.0f) ? 0 : 2;
+            // A tree the fit moved far is fitted again (twice more at most): the tree's z is the origin's up, not the
+            // up where the vertex is (up to 30 km away), so a vertex moved 2 km in z has slid ~3 m across the ground it
+            // was measured on (the harness's strokes over mountains, placed on the eye's ground: last vertices -3.3 ..
+            // +3.8 m off after one fit; a stroke lifted over a ridge, its last vertex right, was 0.8 m into the ridge).
+            t.fit = (t.fitRounds < 3 && move > 1.0f) ? 0 : 2;
             t.drawLevels.clear();   // (its pieces are rebuilt from the fitted vertices)
         }
         else
