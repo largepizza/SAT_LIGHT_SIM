@@ -49,6 +49,8 @@
 #include "SatelliteSim.h"
 
 #include "Ambience.h"
+#include "AmbientSynth.h"
+#include "Harness.h"
 #include "AudioSystem.h"
 #include "Log.h"
 #include "MusicAnalysis.h"
@@ -61,6 +63,7 @@
 #include <cctype>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 
 namespace
 {
@@ -168,6 +171,7 @@ void SatelliteSim::initAmbience()
     ambD_.rainDriven = a.registerDriver("rain_driven");
     ambD_.tornado = a.registerDriver("tornado");
     ambD_.impact = a.registerDriver("impact");
+    ambD_.rocket = a.registerDriver("rocket");
 
     std::string err;
     if (!a.load(kAmbiencePath, err))
@@ -810,20 +814,24 @@ void SatelliteSim::updateAmbience(float dt)
 }
 
 // ── Thunder ────────────────────────────────────────────────────────────────────────────────────────
-// Each flash's channel is a sound source (SatelliteSimLightning.cpp addThunderSource) whose sound left it at t0
-// and travels at 343 m/s in SIM time. A piece of channel at distance d from the listener is heard when
-// g = d - 343 (t - t0) crosses zero, so each frame the pieces whose g changed sign between the last frame's
-// listener and time and this frame's are what arrives NOW — whatever moved g: time passing, or the listener.
+// Each flash's channel is a sound source (SatelliteSimLightning.cpp addThunderSource) whose front left it at t0
+// and travels at 343 m/s in SIM time. A piece of channel at distance d from the listener is due when the front has
+// gone that far; the roll is played by a PLAYHEAD per source (2026-11-21, thunderStep): the path difference behind
+// the channel's nearest piece heard so far, which starts when the front reaches the listener, follows it, never
+// runs back and never goes faster than 3x sound.
 //   * standing still, the roll is the channel's geometry (near pieces first: a clap for a channel seen
-//     broadside, a long rumble for one running away), as before;
-//   * flying toward the storm the sound comes sooner and compressed; outrunning it (the player moves at many
-//     times the speed of sound) it never comes, and stopping lets it catch up; flying out through a shell that
-//     already passed plays it again — all of it what a listener there would hear;
-//   * paused nothing arrives; time warp plays it faster; a jump (a teleport, > 20 s of sim time in a frame)
-//     arrives silently.
+//     broadside, a long rumble for one running away);
+//   * flying toward the storm the sound comes sooner, compressed at most 3x; outrunning it (the player moves at
+//     many times the speed of sound) it waits, and plays when the front catches up; a roll is heard once;
+//   * paused nothing arrives and the roll goes on at release; time warp plays it faster; a jump (a teleport, > 20 s
+//     of sim time in a frame) arrives silently;
+//   * the delay is capped at 3 s unless "Distant sounds arrive within 3 s" (Sound tab) is off.
+// (Until 2026-11-21 a roll was the pieces whose g = d - 343 (t - t0) changed sign between two frames: a listener
+// faster than sound got a blip or nothing, and in a busy storm flashes were dropped: docs/subsystems/sound.md.)
 // A piece's power is its length x weight / d^2, more across the line of sight (a tortuous channel radiates
-// mostly sideways); the level sent to the synth is sqrt(power per second), so it needs no knowledge of the
-// roll's peak. One synth voice per sounding flash (AmbientSynth thunder, pushEvent).
+// mostly sideways); the level sent to the synth is sqrt(power per second, eased), so it needs no knowledge of the
+// roll's peak. A synth voice per sounding flash, shared when there are more flashes than voices (AmbientSynth
+// thunder, pushEvent).
 void SatelliteSim::updateThunder(float dt)
 {
     if (!ambience_)
@@ -854,168 +862,322 @@ void SatelliteSim::thunderStep(double now, const glm::dvec3 &eye, float realDt)
     FPROF_SCOPE("thunderStep");
     constexpr double kC = 343.0;
     constexpr float kGain = 270.0f;   // sqrt(m of channel / m^2 / s) -> the synth's level (~4 for a strike 1 km off)
+    // The delay: distance / 343 m/s, and with "Distant sounds arrive within 3 s" (the default) never more than that:
+    // the front counts as arrived once it has gone min(distance, 3 s of sound).
+    const double capM = ambSoundQuick ? kSoundQuickS * kC : 1e18;
     thunderRealT_ += std::max((double)realDt, 0.0);
     const bool resync = !thunderPrevValid_ || std::abs(now - thunderPrevS_) > 20.0 ||
                         glm::length(eye - thunderPrevEye_) > 5000.0;
     const double nowP = resync ? now : thunderPrevS_;
-    const glm::dvec3 eyeP = resync ? eye : thunderPrevEye_;
     thunderPrevS_ = now;
     thunderPrevEye_ = eye;
     thunderPrevValid_ = true;
     const double dS = now - nowP;
-    const double move = glm::length(eye - eyeP);
-    impactStep(nowP, now, realDt); // satellite collisions (their own layer: heard in orbit too)
+    const glm::dvec3 camR = camRightEcef(); // left / right = the screen's right (rolls with the camera; 2026-11-14)
+    if (!thunderSimulating_)
+    {
+        // Satellite collisions and the launches' thumps (their own layer: heard in orbit too), then the rockets.
+        impactStep(nowP, now, realDt, eye, camR, resync);
+        rocketStep(now, eye, camR, realDt);
+    }
 
     // A source is done once its shell is ~50 km out (thunder is not heard that far), or time went back past it.
     for (size_t i = 0; i < thunderSources_.size();)
     {
         const double age = now - thunderSources_[i].t0;
         if (age < -1.0 || age > 150.0)
+        {
+            if (thunderLogOn_)
+                if (ThunderStat *st = thunderStat(thunderSources_[i].id))
+                    st->end = 1;
             thunderSources_.erase(thunderSources_.begin() + (long)i);
+        }
         else
             ++i;
     }
 
     const int li = ambience_ ? ambience_->layerIndex("thunder") : -1;
     const int vi = (li >= 0) ? ambience_->layerVoice(li) : -1;
-    AmbientSynth *syn = (audio_ && vi >= 0) ? audio_->voiceSynth(vi) : nullptr;
-    const glm::dvec3 camR = camRightEcef(); // left / right = the screen's right (rolls with the camera; 2026-11-14)
+    AmbientSynth *syn = thunderSink_ ? thunderSink_ : (audio_ && vi >= 0) ? audio_->voiceSynth(vi) : nullptr;
+    const float layerGain = thunderSimulating_ ? thunderSimGain_ : (li >= 0 ? ambience_->layerCurrent(li) : 0.0f);
 
     bool sounded[kThunderVoices] = {};
     bool near = false;
     thunderLevelNow_ = 0.0f;
+
+    // Thunder. Each source's roll is played by a PLAYHEAD (2026-11-21): the path difference, in metres behind the
+    // channel's nearest piece, that has been heard so far. It follows the front (w = 343 (t - t0) - the nearest
+    // piece's distance from the listener NOW), never runs back, and never faster than 3x sound, so every roll whose
+    // front reaches the listener is heard once and whole, whatever the frame time and however the listener moved.
+    struct Sounding
+    {
+        ThunderSource *s;
+        float level, dKm, pan;
+        int voice;
+    };
+    static thread_local std::vector<Sounding> snd;
+    static thread_local std::vector<float> dist;
+    snd.clear();
+    const float kAtt = 1.0f - std::exp(-std::max(realDt, 0.0f) / 0.015f), kRel = 1.0f - std::exp(-std::max(realDt, 0.0f) / 0.08f);
     for (ThunderSource &s : thunderSources_)
     {
-        const glm::dvec3 relN = s.origin - eye, relP = s.origin - eyeP;
-        const double RN = kC * (now - s.t0), RP = kC * (nowP - s.t0);
-        const double gN = glm::length(relN) - RN, gP = glm::length(relP) - RP;
-        const double ext = (double)s.extentM;
-        // Arriving within ~2 s, or passing (the `thunder` driver: the layer is up before the first clap).
-        if (gN - ext < 700.0 && gN + ext > 0.0 && glm::length(relN) < 45000.0)
-            near = true;
-        if (dS == 0.0 || std::min(gN, gP) > ext + 1.0 || std::max(gN, gP) < -ext - 1.0)
+        if (s.done)
             continue;
-
-        const float span = (float)(std::abs(RN - RP) + move);   // the most any piece's g can have moved
-        const glm::vec3 rN(relN), rP(relP);
-        const float fRN = (float)RN, fRP = (float)RP;
+        const glm::dvec3 rel = s.origin - eye;
+        const double dC = glm::length(rel), ext = (double)s.extentM;
+        const double R = kC * (now - s.t0);
+        s.lastDM = (float)dC;
+        if (s.play < 0.0)
+        {
+            // Not arriving within ~2 s, or out of hearing: the centre's bound is enough. `before`: the front has
+            // certainly not reached the listener yet (the roll starts only when it then does: a genuine arrival).
+            if (R < std::min(dC - ext, capM) - 700.0)
+            {
+                s.before = s.seen = true;
+                continue;
+            }
+            if (dC - ext > 45000.0)
+            {
+                s.before = R < std::min(dC - ext, capM);
+                s.seen = true;
+                continue;
+            }
+        }
+        // The pieces' distances from the listener now: the nearest is where the roll starts.
+        const glm::vec3 r(rel);
+        const size_t n = s.pts.size();
+        dist.resize(n);
+        float dMinF = 1e30f, dMaxF = 0.0f;
+        size_t iMinPiece = 0;
+        for (size_t i = 0; i < n; ++i)
+        {
+            const float d = glm::length(r + glm::vec3(s.pts[i]));
+            dist[i] = d;
+            if (d < dMinF)
+            {
+                dMinF = d;
+                iMinPiece = i;
+            }
+            dMaxF = std::max(dMaxF, d);
+        }
+        const double dMin = dMinF, span = (double)dMaxF - dMin;
+        const size_t iMin = iMinPiece;
+        const double w = R - std::min(dMin, capM); // how far the front is past the nearest piece (or past the cap)
+        if (s.play < 0.0)
+        {
+            if (w < 0.0)
+            {
+                near = near || (w > -700.0 && dMin < 45000.0); // the layer is up before the first clap
+                s.before = s.seen = true;
+                s.passed = false;
+                continue;
+            }
+            // The front is past the nearest piece and nothing of it was heard. It starts if it arrived just now (it
+            // was still ahead on the last step, or the source is new and the strike that close). Otherwise a jump (a
+            // teleport, a time jump) or a flight in from out of hearing put the listener behind it: it passed
+            // silently, unless the listener gets ahead of it again.
+            const bool arrived = s.before || (!s.seen && w <= span + 60.0);
+            s.seen = true;
+            if (resync || !arrived)
+            {
+                s.before = false;
+                s.passed = true;
+                continue;
+            }
+            if (dS <= 0.0)
+            {
+                near = s.before = true; // time held with the front at the listener: it starts when time runs
+                continue;
+            }
+            s.before = s.passed = false;
+            s.play = 0.0;
+        }
+        // The strike (2026-11-21): as the front of a channel within 8 km arrives (the roll starts), its snap, crackle
+        // and boom, once (the synth shapes them by the distance; farther off the roll alone is the thunder).
+        if (!s.struck && s.play == 0.0)
+        {
+            s.struck = true;
+            if (dMin < 8000.0 && syn)
+            {
+                const glm::dvec3 toMin = glm::dvec3(r + glm::vec3(s.pts[iMin])) / std::max(dMin, 1.0);
+                const float ev[5] = {0.0f, s.energy, (float)(dMin / 1000.0), (float)glm::dot(toMin, camR), 2.0f};
+                syn->pushEvent(ev, 5);
+                ++thunderStrikes_;
+            }
+        }
+        if (resync)
+        {
+            s.play = std::max(s.play, w); // what the jump skipped is gone
+            s.pw = 0.0f;
+        }
         double P = 0.0, sumD = 0.0;
         glm::dvec3 sumDir(0.0);
-        for (size_t i = 0; i < s.pts.size(); ++i)
+        const double step = dS > 0.0 ? std::min(w - s.play, 3.0 * kC * dS) : 0.0;
+        if (step > 0.0)
         {
-            const glm::vec3 wN = rN + glm::vec3(s.pts[i]);
-            const float dn = glm::length(wN);
-            const float gn = dn - fRN;
-            const float hl = s.dirh[i].w;
-            if (std::abs(gn) > span + hl + 3.0f)
-                continue;
-            const float gp = glm::length(rP + glm::vec3(s.pts[i])) - fRP;
-            const float r = std::max(dn, 30.0f);
-            const float c = glm::dot(glm::vec3(s.dirh[i]), wN) / r;
-            // The piece spans +-h in arrival distance (its length along the line to the listener).
-            const float h = std::max(hl * std::abs(c), 3.0f);
-            const float ov = std::min(std::max(gp, gn), h) - std::max(std::min(gp, gn), -h);
-            if (ov <= 0.0f)
-                continue;
-            const float a2 = s.pts[i].w * (0.25f + 0.75f * (1.0f - std::min(c * c, 1.0f))) / (r * r) * (ov / (2.0f * h));
-            P += (double)a2;
-            sumD += (double)(a2 * r);
-            sumDir += glm::dvec3(wN / r) * (double)a2;
+            const float u0 = (float)s.play, u1 = (float)(s.play + step);
+            for (size_t i = 0; i < n; ++i)
+            {
+                const float u = dist[i] - dMinF, hl = s.dirh[i].w;
+                if (u + hl + 3.0f < u0 || u - hl - 3.0f > u1)
+                    continue;
+                const float rr = std::max(dist[i], 30.0f);
+                const glm::vec3 wN = r + glm::vec3(s.pts[i]);
+                const float c = glm::dot(glm::vec3(s.dirh[i]), wN) / rr;
+                // The piece spans +-h in arrival distance (its length along the line to the listener).
+                const float h = std::max(hl * std::abs(c), 3.0f);
+                const float ov = std::min(u1, u + h) - std::max(u0, u - h);
+                if (ov <= 0.0f)
+                    continue;
+                const float a2 = s.pts[i].w * (0.25f + 0.75f * (1.0f - std::min(c * c, 1.0f))) / (rr * rr) * (ov / (2.0f * h));
+                P += (double)a2;
+                sumD += (double)(a2 * rr);
+                sumDir += glm::dvec3(wN / rr) * (double)a2;
+            }
+            s.play += step;
         }
-        if (P <= 0.0)
-            continue;
-        // Per second of arrival: the frame's sim time, or — the listener closing on the shell faster than
-        // sound — the crossing itself, compressed at most 3x (a pass at Mach 50 is a clap, not a blast).
-        const double T = std::max({std::abs(dS), std::abs(gN - gP) / (3.0 * kC), 1.0 / 240.0});
-        const float d = (float)(sumD / P);
-        const float level = kGain * (float)std::sqrt(P / T) * s.energy * (1.0f - glm::smoothstep(20000.0f, 40000.0f, d));
+        if (dS > 0.0)
+        {
+            // Power per second of sim time (a front caught up at 3x is that much denser, as a listener closing on it
+            // hears), eased: 15 ms up, 80 ms down, so the steps of the frame rate and the gaps between pieces are not
+            // steps in the sound.
+            const float rate = (float)(P / std::max(dS, 1.0 / 240.0));
+            s.pw += (rate - s.pw) * (rate > s.pw ? kAtt : kRel);
+        }
+        if (P > 0.0)
+        {
+            s.lastKm = (float)(sumD / P) / 1000.0f;
+            const glm::dvec3 dir = sumDir / std::max(glm::length(sumDir), 1e-12);
+            // Left/right: what is arriving against the screen's right (a level camera: the bearing against the
+            // heading, times the horizontal share; overhead = centre).
+            s.lastPan = (float)glm::dot(dir, camR);
+        }
+        else if (s.lastKm <= 0.0f)
+            s.lastKm = (float)dMin / 1000.0f;
+        if (s.play >= span + 60.0 && s.pw < 1e-9f)
+            s.done = true;
+        const float level = dS > 0.0 ? kGain * std::sqrt(std::max(s.pw, 0.0f)) * s.energy *
+                                           (1.0f - glm::smoothstep(20.0f, 40.0f, s.lastKm))
+                                     : 0.0f;
+        if (!s.done)
+            near = true; // a roll in progress keeps the layer up (through a hold too)
         if (level <= 1e-4f)
             continue;
-        // Left/right: what is arriving against the screen's right (a level camera: the bearing against the heading,
-        // times the horizontal share; overhead = centre).
-        const glm::dvec3 dir = sumDir / std::max(glm::length(sumDir), 1e-12);
-        const float pan = (float)glm::dot(dir, camR);
+        snd.push_back(Sounding{&s, level, s.lastKm, s.lastPan, -1});
+    }
 
-        int v = -1;
+    // Voices: a flash keeps the voice it has; a new one takes a free voice; with none free it joins the flash's
+    // voice nearest in distance (powers add), so nothing that arrives is dropped and no voice changes hands mid-roll.
+    struct Mix
+    {
+        double pw = 0.0, km = 0.0, pan = 0.0;
+    } mix[kThunderVoices];
+    for (Sounding &q : snd)
         for (int k = 0; k < kThunderVoices; ++k)
-            if (thunderVoice_[k].used && thunderVoice_[k].id == s.id)
-                v = k;
-        if (v < 0)
+            if (thunderVoice_[k].used && thunderVoice_[k].id == q.s->id)
+                q.voice = k;
+    std::stable_sort(snd.begin(), snd.end(), [](const Sounding &a, const Sounding &b) { return (a.voice >= 0) != (b.voice >= 0) ? a.voice >= 0 : a.level > b.level; });
+    for (Sounding &q : snd)
+    {
+        bool merged = false;
+        if (q.voice < 0)
         {
-            // A free voice, else the one silent longest (never one sounding this frame).
-            for (int k = 0; k < kThunderVoices; ++k)
-            {
-                if (sounded[k])
-                    continue;
+            for (int k = 0; k < kThunderVoices && q.voice < 0; ++k)
                 if (!thunderVoice_[k].used)
-                {
-                    v = k;
-                    break;
-                }
-                if (v < 0 || thunderVoice_[k].lastSoundT < thunderVoice_[v].lastSoundT)
-                    v = k;
+                    q.voice = k;
+            if (q.voice >= 0)
+            {
+                thunderVoice_[q.voice] = ThunderVoice{};
+                thunderVoice_[q.voice].id = q.s->id;
+                thunderVoice_[q.voice].used = true;
+                thunderVoice_[q.voice].km = q.dKm;
             }
-            if (v < 0)
-                continue;
-            thunderVoice_[v] = ThunderVoice{};
-            thunderVoice_[v].id = s.id;
-            thunderVoice_[v].used = true;
+            else
+            {
+                float best = 1e30f;
+                for (int k = 0; k < kThunderVoices; ++k)
+                {
+                    const float e = std::abs(std::log(std::max(thunderVoice_[k].km, 0.05f) / std::max(q.dKm, 0.05f)));
+                    if (e < best)
+                    {
+                        best = e;
+                        q.voice = k;
+                    }
+                }
+                merged = q.voice >= 0;
+            }
         }
-        sounded[v] = true;
-        thunderVoice_[v].level = level;
-        thunderVoice_[v].lastSoundT = thunderRealT_;
-        thunderLevelNow_ = std::max(thunderLevelNow_, level);
-        if (!s.heard)
+        ThunderStat *stt = thunderLogOn_ ? thunderStat(q.s->id) : nullptr;
+        if (stt)
         {
-            s.heard = true;
+            if (stt->firstS < 0.0)
+            {
+                stt->firstS = now;
+                stt->dFirstKm = q.dKm;
+            }
+            stt->lastS = now;
+            ++stt->fArrive;
+            stt->eArrive += (double)q.level * q.level * std::max((double)realDt, 0.0);
+            stt->peak = std::max(stt->peak, q.level);
+            if (merged)
+                ++stt->fMerged;
+            if (q.voice < 0)
+                ++stt->fNoVoice;
+        }
+        if (!q.s->heard)
+        {
+            q.s->heard = true;
             ++thunderRolls_;
         }
-        if (syn)
-        {
-            const float ev[4] = {(float)v, level, d / 1000.0f, pan};
-            syn->pushEvent(ev, 4);
-        }
+        if (q.voice < 0)
+            continue;
+        Mix &m = mix[q.voice];
+        const double p2 = (double)q.level * q.level;
+        m.pw += p2;
+        m.km += p2 * q.dKm;
+        m.pan += p2 * q.pan;
     }
-    // Launches (SatelliteSimLaunches.cpp): each audible rocket's roar, as it left the rocket a few seconds ago (the
-    // retarded time), on a voice of its own like a roll of thunder.
-    for (const LaunchSound &ls : launchSounds(now, eye, camR))
+    bool sent[kThunderVoices] = {};
+    for (int k = 0; k < kThunderVoices; ++k)
     {
-        int v = -1;
-        for (int k = 0; k < kThunderVoices; ++k)
-            if (thunderVoice_[k].used && thunderVoice_[k].id == ls.id)
-                v = k;
-        if (v < 0)
-        {
-            for (int k = 0; k < kThunderVoices; ++k)
-            {
-                if (sounded[k])
-                    continue;
-                if (!thunderVoice_[k].used)
-                {
-                    v = k;
-                    break;
-                }
-                if (v < 0 || thunderVoice_[k].lastSoundT < thunderVoice_[v].lastSoundT)
-                    v = k;
-            }
-            if (v < 0)
-                continue;
-            thunderVoice_[v] = ThunderVoice{};
-            thunderVoice_[v].id = ls.id;
-            thunderVoice_[v].used = true;
-        }
-        sounded[v] = true;
-        thunderVoice_[v].level = ls.level;
-        thunderVoice_[v].lastSoundT = thunderRealT_;
-        thunderLevelNow_ = std::max(thunderLevelNow_, ls.level);
+        if (mix[k].pw <= 0.0)
+            continue;
+        ThunderVoice &tv = thunderVoice_[k];
+        const float level = (float)std::sqrt(mix[k].pw);
+        tv.km = (float)(mix[k].km / mix[k].pw);
+        sounded[k] = true;
+        tv.level = level;
+        tv.lastSoundT = thunderRealT_;
+        thunderLevelNow_ = std::max(thunderLevelNow_, level);
         if (syn)
         {
-            const float ev[5] = {(float)v, ls.level, ls.km, ls.pan, 1.0f}; // 1: a rocket's roar, not thunder
-            syn->pushEvent(ev, 5);
+            const float ev[4] = {(float)k, level, tv.km, (float)(mix[k].pan / mix[k].pw)};
+            sent[k] = syn->pushEvent(ev, 4);
         }
     }
-    // A voice whose flash had nothing arrive this frame is told so (the gaps between pieces are the roll's
-    // texture); it is free again after 2 s of that.
+    if (thunderLogOn_)
+        for (const Sounding &q : snd)
+            if (ThunderStat *stt = thunderStat(q.s->id))
+            {
+                if (q.voice < 0)
+                    continue;
+                // (A muted harness run has no device pulling the synth: its queue fills, which is not a loss in play.)
+                const bool offlineFull = !sent[q.voice] && syn && !thunderSink_ && audio_ && audio_->isOffline();
+                if (!syn)
+                    ++stt->fNoSynth;
+                else if (!sent[q.voice] && !offlineFull)
+                    ++stt->fQueueFull;
+                else if (layerGain <= 1e-4f)
+                    ++stt->fMuted;
+                else
+                {
+                    ++stt->fPushed;
+                    stt->ePushed += (double)q.level * q.level * std::max((double)realDt, 0.0) * (double)layerGain * layerGain;
+                }
+            }
+
+    // A voice with nothing arriving this step is told so; it is free again after 0.6 s of that (the synth's own
+    // release is under 0.4 s).
     for (int k = 0; k < kThunderVoices; ++k)
     {
         ThunderVoice &tv = thunderVoice_[k];
@@ -1023,11 +1185,11 @@ void SatelliteSim::thunderStep(double now, const glm::dvec3 &eye, float realDt)
             continue;
         if (tv.level > 0.0f && syn)
         {
-            const float ev[4] = {(float)k, 0.0f, 5.0f, 0.0f};
+            const float ev[4] = {(float)k, 0.0f, std::max(tv.km, 0.05f), 0.0f};
             syn->pushEvent(ev, 4);
         }
         tv.level = 0.0f;
-        if (thunderRealT_ - tv.lastSoundT > 2.0)
+        if (thunderRealT_ - tv.lastSoundT > 0.6)
             tv.used = false;
     }
     // The layer's driver: up while thunder is arriving, about to, or rolled within the last 4 s.
@@ -1035,8 +1197,500 @@ void SatelliteSim::thunderStep(double now, const glm::dvec3 &eye, float realDt)
     for (const ThunderVoice &tv : thunderVoice_)
         any = any || (tv.used && tv.level > 0.0f);
     thunderHoldS_ = any ? 4.0f : std::max(thunderHoldS_ - std::max(realDt, 0.0f), 0.0f);
-    if (ambience_)
+    if (ambience_ && !thunderSimulating_)
         ambience_->set(ambD_.thunder, thunderHoldS_ > 0.0f ? 1.0f : 0.0f);
+}
+
+SatelliteSim::ThunderStat *SatelliteSim::thunderStat(uint32_t id)
+{
+    for (size_t i = thunderStats_.size(); i-- > 0;)
+        if (thunderStats_[i].id == id)
+            return &thunderStats_[i];
+    return nullptr;
+}
+
+// A new source takes its place in the list, and with the log on its row and a kept copy. At the cap the one that
+// matters least goes: a roll already heard or passed, else the source farthest from the listener (until 2026-11-21
+// the OLDEST went, at 48: in a wide storm the flashes on the horizon pushed out the near ones before their sound
+// had arrived).
+void SatelliteSim::thunderInsertSource(ThunderSource &&s, int kind)
+{
+    s.kind = kind;
+    if (thunderLogOn_)
+    {
+        const double now = thunderSimulating_ ? thunderPrevS_ : (double)simDayJ2000 * 86400.0 + simSecInDay;
+        const glm::dvec3 eye = thunderPrevValid_ ? thunderPrevEye_ : thunderLogEye_;
+        if (!thunderSimulating_ && thunderRec_.size() < 4000)
+        {
+            thunderRec_.push_back(s);
+            thunderRecAddS_.push_back(now);
+            thunderRecKind_.push_back(kind);
+        }
+        if (thunderStats_.size() < 8000)
+        {
+            ThunderStat st;
+            st.id = s.id;
+            st.kind = kind;
+            st.t0 = s.t0;
+            st.addS = now;
+            st.d0Km = (float)(glm::length(s.origin - eye) / 1000.0);
+            st.extentKm = s.extentM / 1000.0f;
+            st.pieces = (uint32_t)s.pts.size();
+            thunderStats_.push_back(st);
+        }
+    }
+    if (thunderPrevValid_)
+        s.lastDM = (float)glm::length(s.origin - thunderPrevEye_);
+    if (thunderSources_.size() >= kThunderMaxSources)
+    {
+        size_t worst = 0;
+        float worstKey = -1.0f;
+        for (size_t i = 0; i < thunderSources_.size(); ++i)
+        {
+            const ThunderSource &o = thunderSources_[i];
+            const float key = (o.done || o.passed) ? 1e12f : o.play >= 0.0 ? -1.0f : o.lastDM - o.extentM;
+            if (key > worstKey)
+            {
+                worstKey = key;
+                worst = i;
+            }
+        }
+        if (worstKey < s.lastDM - s.extentM)
+        {
+            // The new one is the farthest of all, and every other is still to be heard: it is the one left out.
+            if (thunderLogOn_)
+                if (ThunderStat *st = thunderStat(s.id))
+                    st->end = 2;
+            return;
+        }
+        if (thunderLogOn_)
+            if (ThunderStat *st = thunderStat(thunderSources_[worst].id))
+                st->end = thunderSources_[worst].heard ? 3 : 2;
+        thunderSources_.erase(thunderSources_.begin() + (long)worst);
+    }
+    thunderSources_.push_back(std::move(s));
+}
+
+// ── Harness: lightning thunder ... (2026-11-21, issue_20261121_163317) ──────────────────────────────────────
+// What became of each flash's sound: `log on|off|clear` keeps every source made and a row per source (what arrived at
+// the listener against what was sent to the synth); `state [name]` reports them (rows in captures/<name>.thunder.json);
+// `save <name>` / `load <file>` write / read the kept sources (captures/<name>.thundersrc), so two builds are compared
+// on the same flashes; `sim [name] [dt_ms=30] [seconds=60] [speed=0] [hold_at=] [hold_s=] [tail=6]` runs the kept
+// sources again through thunderStep on a virtual clock: steps of dt_ms, the listener moving east at `speed` m/s, sim
+// time held for hold_s real seconds at hold_at, the layer's gate and fades emulated, the events sent to a private
+// thunder synth rendered into captures/<name>.wav. Each row also carries when the first wavefront should arrive
+// (closed form for the listener's path) and the nearest piece's distance then: the reference a miss is counted against.
+namespace
+{
+bool writeWavStereo16(const std::string &path, const std::vector<float> &lr, uint32_t sr)
+{
+    std::ofstream f(path, std::ios::binary);
+    if (!f)
+        return false;
+    const uint32_t dataBytes = (uint32_t)(lr.size() * 2);
+    auto u32 = [&](uint32_t v) { f.write((const char *)&v, 4); };
+    auto u16 = [&](uint16_t v) { f.write((const char *)&v, 2); };
+    f.write("RIFF", 4);
+    u32(36 + dataBytes);
+    f.write("WAVEfmt ", 8);
+    u32(16);
+    u16(1);
+    u16(2);
+    u32(sr);
+    u32(sr * 4);
+    u16(4);
+    u16(16);
+    f.write("data", 4);
+    u32(dataBytes);
+    for (float s : lr)
+    {
+        const int16_t q = (int16_t)std::lround(std::clamp(s, -1.0f, 1.0f) * 32767.0f);
+        f.write((const char *)&q, 2);
+    }
+    return (bool)f;
+}
+} // namespace
+
+nlohmann::json SatelliteSim::thunderStatsJson() const
+{
+    nlohmann::json rows = nlohmann::json::array();
+    for (const ThunderStat &s : thunderStats_)
+        rows.push_back({{"id", s.id}, {"kind", s.kind}, {"t0_s", s.t0 - thunderLogStartS_}, {"add_s", s.addS - thunderLogStartS_},
+                        {"d0_km", s.d0Km}, {"extent_km", s.extentKm}, {"pieces", s.pieces},
+                        {"first_s", s.firstS < 0.0 ? -1.0 : s.firstS - thunderLogStartS_},
+                        {"last_s", s.lastS < 0.0 ? -1.0 : s.lastS - thunderLogStartS_}, {"d_first_km", s.dFirstKm},
+                        {"f_arrive", s.fArrive}, {"f_pushed", s.fPushed}, {"f_merged", s.fMerged}, {"f_no_voice", s.fNoVoice}, {"f_no_synth", s.fNoSynth},
+                        {"f_queue_full", s.fQueueFull}, {"f_muted", s.fMuted}, {"e_arrive", s.eArrive}, {"e_pushed", s.ePushed},
+                        {"peak", s.peak}, {"end", s.end}});
+    return rows;
+}
+
+harness::Status SatelliteSim::harnessThunder(harness::Active &a)
+{
+    using nlohmann::json;
+    const harness::Command &c = a.cmd;
+    json &r = a.result;
+    const std::string sub = c.pos.size() > 1 ? c.pos[1] : std::string("state");
+    const std::string arg = c.pos.size() > 2 ? c.pos[2] : std::string();
+    constexpr double kC = 343.0;
+    auto nowS = [&] { return (double)simDayJ2000 * 86400.0 + simSecInDay; };
+    auto eyeNow = [&] {
+        const float ground = (terrainFrameMapped && (debugDisableMask & 1024u) == 0) ? terrainFrameMapped[1] : obsTerrainH;
+        return glm::normalize(glm::dvec3(obsDir)) * (6371000.0 + std::max((double)ground + 2.0, (double)obsHeightOffset));
+    };
+    // When the first wavefront of a kept source reaches a listener at eye0 + vel (t - start), and the nearest piece's
+    // distance then (the listener slower than sound: one crossing, by bisection).
+    auto arrival = [&](const ThunderSource &s, const glm::dvec3 &eye0, const glm::dvec3 &vel, double start, double &dMinM) {
+        auto f = [&](double t, double &dm) {
+            const glm::vec3 rel(s.origin - (eye0 + vel * (t - start)));
+            float best = 1e30f;
+            for (const glm::vec4 &p : s.pts)
+            {
+                const glm::vec3 w = rel + glm::vec3(p);
+                best = std::min(best, glm::dot(w, w));
+            }
+            dm = std::sqrt((double)best);
+            return std::min(dm, ambSoundQuick ? kSoundQuickS * kC : 1e18) - kC * (t - s.t0);
+        };
+        double lo = s.t0, hi = s.t0 + 200.0, dm = 0.0;
+        if (f(lo, dm) <= 0.0)
+        {
+            dMinM = dm;
+            return lo;
+        }
+        if (f(hi, dm) > 0.0)
+        {
+            dMinM = dm;
+            return -1.0;
+        }
+        for (int i = 0; i < 40; ++i)
+        {
+            const double mid = 0.5 * (lo + hi);
+            if (f(mid, dm) > 0.0)
+                lo = mid;
+            else
+                hi = mid;
+        }
+        f(hi, dMinM);
+        return hi;
+    };
+    auto truthRows = [&](json rows, const glm::dvec3 &eye0, const glm::dvec3 &vel, double start) {
+        for (json &row : rows)
+        {
+            const uint32_t id = row["id"].get<uint32_t>();
+            for (const ThunderSource &s : thunderRec_)
+                if (s.id == id)
+                {
+                    double dm = 0.0;
+                    const double ta = arrival(s, eye0, vel, start, dm);
+                    row["arrive_s"] = ta < 0.0 ? -1.0 : ta - start;
+                    row["dmin_km"] = dm / 1000.0;
+                    break;
+                }
+        }
+        return rows;
+    };
+    auto summarise = [&](const json &rows, double seconds, json &out) {
+        int should = 0, heard = 0, missed = 0, noVoice = 0, noSynth = 0, muted = 0, queue = 0, evicted = 0, never = 0;
+        for (const json &row : rows)
+        {
+            const double ta = row.value("arrive_s", -1.0);
+            if (ta < 0.0 || ta > seconds - 0.5 || row.value("dmin_km", 1e9) > 30.0)
+                continue;
+            ++should;
+            if (row["f_pushed"].get<int>() > 0)
+            {
+                ++heard;
+                continue;
+            }
+            ++missed;
+            if (row["end"].get<int>() == 2)
+                ++evicted;
+            else if (row["f_arrive"].get<int>() == 0)
+                ++never;
+            else if (row["f_no_voice"].get<int>() > 0)
+                ++noVoice;
+            else if (row["f_no_synth"].get<int>() > 0)
+                ++noSynth;
+            else if (row["f_queue_full"].get<int>() > 0)
+                ++queue;
+            else if (row["f_muted"].get<int>() > 0)
+                ++muted;
+        }
+        out["sources"] = rows.size();
+        out["should_hear"] = should;   // first wavefront arrives in the window, nearest piece within 30 km
+        out["heard"] = heard;
+        out["missed"] = missed;
+        out["missed_by"] = {{"evicted_by_cap", evicted}, {"nothing_arrived", never}, {"no_voice", noVoice}, {"no_synth", noSynth},
+                            {"queue_full", queue}, {"layer_muted", muted}};
+        out["voice_steals"] = thunderSteals_;
+    };
+
+    if (sub == "log")
+    {
+        if (arg == "on" || arg == "clear")
+        {
+            thunderStats_.clear();
+            thunderRec_.clear();
+            thunderRecAddS_.clear();
+            thunderRecKind_.clear();
+            thunderSteals_ = 0;
+            thunderLogStartS_ = nowS();
+            thunderLogEye_ = eyeNow();
+            if (arg == "on")
+                thunderLogOn_ = true;
+        }
+        else if (arg == "off")
+            thunderLogOn_ = false;
+        else
+        {
+            a.error = "lightning thunder log on|off|clear";
+            return harness::Status::Error;
+        }
+        r["message"] = std::string("thunder log ") + (thunderLogOn_ ? "on" : "off");
+        return harness::Status::Done;
+    }
+    if (sub == "state")
+    {
+        const double seconds = nowS() - thunderLogStartS_;
+        const json rows = truthRows(thunderStatsJson(), thunderLogEye_, glm::dvec3(0.0), thunderLogStartS_);
+        summarise(rows, seconds, r);
+        r["log"] = thunderLogOn_;
+        r["seconds"] = seconds;
+        r["kept_sources"] = thunderRec_.size();
+        if (!arg.empty())
+        {
+            const std::string path = harnessRunner_->capturePath(arg, ".thunder.json");
+            std::ofstream(path) << json{{"summary", r}, {"rows", rows}}.dump(1) << '\n';
+            r["file"] = path;
+        }
+        return harness::Status::Done;
+    }
+    if (sub == "save" || sub == "load")
+    {
+        const std::string path = sub == "save" ? harnessRunner_->capturePath(arg.empty() ? "thunder" : arg, ".thundersrc") : arg;
+        if (sub == "save")
+        {
+            std::ofstream f(path, std::ios::binary);
+            const uint32_t magic = 0x52444854u, n = (uint32_t)thunderRec_.size(); // 'THDR'
+            f.write((const char *)&magic, 4);
+            f.write((const char *)&n, 4);
+            f.write((const char *)&thunderLogStartS_, 8);
+            f.write((const char *)&thunderLogEye_, 24);
+            for (size_t i = 0; i < thunderRec_.size(); ++i)
+            {
+                const ThunderSource &s = thunderRec_[i];
+                const uint32_t np = (uint32_t)s.pts.size();
+                const int32_t kind = thunderRecKind_[i];
+                f.write((const char *)&s.id, 4);
+                f.write((const char *)&kind, 4);
+                f.write((const char *)&s.t0, 8);
+                f.write((const char *)&thunderRecAddS_[i], 8);
+                f.write((const char *)&s.origin, 24);
+                f.write((const char *)&s.extentM, 4);
+                f.write((const char *)&s.energy, 4);
+                f.write((const char *)&np, 4);
+                f.write((const char *)s.pts.data(), (std::streamsize)np * 16);
+                f.write((const char *)s.dirh.data(), (std::streamsize)np * 16);
+            }
+            if (!f)
+            {
+                a.error = "could not write " + path;
+                return harness::Status::Error;
+            }
+        }
+        else
+        {
+            std::ifstream f(path, std::ios::binary);
+            uint32_t magic = 0, n = 0;
+            f.read((char *)&magic, 4);
+            f.read((char *)&n, 4);
+            if (!f || magic != 0x52444854u || n > 4000)
+            {
+                a.error = "not a thunder source file: " + path;
+                return harness::Status::Error;
+            }
+            thunderRec_.clear();
+            thunderRecAddS_.clear();
+            thunderRecKind_.clear();
+            f.read((char *)&thunderLogStartS_, 8);
+            f.read((char *)&thunderLogEye_, 24);
+            for (uint32_t i = 0; i < n && f; ++i)
+            {
+                ThunderSource s;
+                uint32_t np = 0;
+                int32_t kind = 0;
+                double addS = 0.0;
+                f.read((char *)&s.id, 4);
+                f.read((char *)&kind, 4);
+                f.read((char *)&s.t0, 8);
+                f.read((char *)&addS, 8);
+                f.read((char *)&s.origin, 24);
+                f.read((char *)&s.extentM, 4);
+                f.read((char *)&s.energy, 4);
+                f.read((char *)&np, 4);
+                if (!f || np > 2000000)
+                    break;
+                s.pts.resize(np);
+                s.dirh.resize(np);
+                f.read((char *)s.pts.data(), (std::streamsize)np * 16);
+                f.read((char *)s.dirh.data(), (std::streamsize)np * 16);
+                thunderRec_.push_back(std::move(s));
+                thunderRecAddS_.push_back(addS);
+                thunderRecKind_.push_back(kind);
+            }
+        }
+        r["file"] = path;
+        r["kept_sources"] = thunderRec_.size();
+        r["message"] = sub + " " + std::to_string(thunderRec_.size()) + " thunder sources";
+        return harness::Status::Done;
+    }
+    if (sub == "sim")
+    {
+        if (thunderRec_.empty())
+        {
+            a.error = "no kept thunder sources: `lightning thunder log on`, let flashes happen, or `lightning thunder load <file>`";
+            return harness::Status::Error;
+        }
+        const std::string name = arg.empty() ? std::string("thundersim") : arg;
+        const double dt = std::clamp(c.num("dt_ms", 30.0), 1.0, 500.0) / 1000.0;
+        const double seconds = std::clamp(c.num("seconds", 60.0), 1.0, 600.0), tail = std::clamp(c.num("tail", 6.0), 0.0, 60.0);
+        const double speed = c.num("speed", 0.0), holdAt = c.num("hold_at", -1.0), holdS = c.num("hold_s", 0.0);
+        const double jitter = std::clamp(c.num("jitter", 0.0), 0.0, 0.9); // +- this share of dt, a frame at a time
+        const uint32_t sr = 48000;
+        std::unique_ptr<AmbientSynth> syn = AmbientSynth::create("thunder", sr, 12345u);
+        const int li = ambience_ ? ambience_->layerIndex("thunder") : -1;
+        const float g0 = li >= 0 ? ambience_->layerGain(li) : 0.9f;
+        const float fadeIn = li >= 0 ? ambience_->layerFadeInS(li) : 0.5f, fadeOut = li >= 0 ? ambience_->layerFadeOutS(li) : 3.0f;
+
+        // The live state steps aside.
+        std::vector<ThunderSource> keepSrc = std::move(thunderSources_);
+        std::vector<ThunderStat> keepStats = std::move(thunderStats_);
+        ThunderVoice keepVoice[kThunderVoices];
+        std::copy(std::begin(thunderVoice_), std::end(thunderVoice_), keepVoice);
+        const double keepPrevS = thunderPrevS_, keepRealT = thunderRealT_;
+        const glm::dvec3 keepPrevEye = thunderPrevEye_;
+        const bool keepValid = thunderPrevValid_, keepLog = thunderLogOn_;
+        const float keepHold = thunderHoldS_, keepLevel = thunderLevelNow_;
+        const uint32_t keepRolls = thunderRolls_, keepSteals = thunderSteals_;
+        thunderSources_.clear();
+        thunderStats_.clear();
+        for (ThunderVoice &v : thunderVoice_)
+            v = ThunderVoice{};
+        thunderPrevValid_ = false;
+        thunderHoldS_ = 0.0f;
+        thunderSteals_ = 0;
+        thunderLogOn_ = true;
+        thunderSimulating_ = true;
+        thunderSink_ = syn.get();
+
+        const glm::dvec3 eye0 = thunderLogEye_, up = glm::normalize(eye0);
+        const glm::dvec3 east = glm::normalize(glm::cross(glm::dvec3(0.0, 0.0, 1.0), up));
+        const glm::dvec3 vel = east * speed;
+        const double start = thunderLogStartS_;
+        double simT = start, realT = 0.0, sampleAcc = 0.0;
+        float gain = 0.0f;
+        bool driver = false;
+        size_t next = 0;
+        std::vector<float> lr, buf;
+        lr.reserve((size_t)((seconds + tail) * sr) * 2);
+        json trace = json::array();
+        uint32_t rng = 2463534242u;
+        int steps = 0, mutedSteps = 0;
+        while (realT < seconds + tail + holdS)
+        {
+            rng ^= rng << 13;
+            rng ^= rng >> 17;
+            rng ^= rng << 5;
+            const double d = dt * (1.0 + jitter * ((double)(rng >> 8) / 8388608.0 - 1.0));
+            realT += d;
+            const bool held = holdS > 0.0 && realT >= holdAt && realT < holdAt + holdS;
+            if (!held)
+                simT += d;
+            // The layer, as Ambience::update (which runs before the thunder step: on the last step's driver).
+            const float prevGain = gain;
+            const float target = driver ? g0 : 0.0f, stepG = (float)d * g0;
+            gain = gain < target ? std::min(target, gain + stepG / std::max(fadeIn, 1e-3f)) : std::max(target, gain - stepG / std::max(fadeOut, 1e-3f));
+            thunderSimGain_ = gain;
+            while (next < thunderRec_.size() && thunderRecAddS_[next] <= simT && simT <= start + seconds)
+            {
+                ThunderSource s = thunderRec_[next];
+                s.heard = s.done = s.passed = s.seen = s.before = false;
+                s.play = -1.0;
+                s.pw = 0.0f;
+                s.lastKm = 0.0f;
+                thunderInsertSource(std::move(s), thunderRecKind_[next]);
+                ++next;
+            }
+            const glm::dvec3 eye = eye0 + vel * (simT - start);
+            thunderStep(simT, eye, (float)d);
+            driver = thunderHoldS_ > 0.0f;
+            // What the device would play of it: the voice runs only while its gain is up (a stopped voice is frozen).
+            sampleAcc += d * sr;
+            const uint32_t n = (uint32_t)sampleAcc;
+            sampleAcc -= n;
+            const size_t at = lr.size();
+            lr.resize(at + (size_t)n * 2, 0.0f);
+            if (gain > 1e-4f || prevGain > 1e-4f)
+            {
+                syn->render(lr.data() + at, n);
+                for (uint32_t i = 0; i < n; ++i)
+                {
+                    const float g = prevGain + (gain - prevGain) * ((float)(i + 1) / (float)n);
+                    lr[at + 2 * i] *= g;
+                    lr[at + 2 * i + 1] *= g;
+                }
+            }
+            else
+                ++mutedSteps;
+            json lv = json::array();
+            for (const ThunderVoice &v : thunderVoice_)
+                lv.push_back(v.used ? std::round(v.level * 1000.0f) / 1000.0f : -1.0f);
+            trace.push_back({std::round(realT * 1e4) / 1e4, std::round((simT - start) * 1e4) / 1e4, std::round(gain * 1000.0f) / 1000.0f, lv});
+            ++steps;
+        }
+        const json rows = truthRows(thunderStatsJson(), eye0, vel, start);
+        summarise(rows, seconds, r);
+
+        thunderSink_ = nullptr;
+        thunderSimulating_ = false;
+        thunderSimGain_ = 1.0f;
+        thunderSources_ = std::move(keepSrc);
+        thunderStats_ = std::move(keepStats);
+        std::copy(std::begin(keepVoice), std::end(keepVoice), thunderVoice_);
+        thunderPrevS_ = keepPrevS;
+        thunderRealT_ = keepRealT;
+        thunderPrevEye_ = keepPrevEye;
+        thunderPrevValid_ = keepValid;
+        thunderLogOn_ = keepLog;
+        thunderHoldS_ = keepHold;
+        thunderLevelNow_ = keepLevel;
+        thunderRolls_ = keepRolls;
+        thunderSteals_ = keepSteals;
+
+        const std::string wav = harnessRunner_->capturePath(name, ".wav");
+        if (!writeWavStereo16(wav, lr, sr))
+        {
+            a.error = "could not write " + wav;
+            return harness::Status::Error;
+        }
+        r["dt_ms"] = dt * 1000.0;
+        r["seconds"] = seconds;
+        r["speed_mps"] = speed;
+        r["steps"] = steps;
+        r["muted_steps"] = mutedSteps;
+        r["fade_in_s"] = fadeIn;
+        r["fade_out_s"] = fadeOut;
+        r["kept_sources"] = thunderRec_.size();
+        r["wav"] = wav;
+        const std::string path = harnessRunner_->capturePath(name, ".thunder.json");
+        std::ofstream(path) << json{{"summary", r}, {"rows", rows}, {"trace_columns", "real_s, sim_s, layer_gain, [voice levels, -1 = free]"}, {"trace", trace}}.dump() << '\n';
+        r["file"] = path;
+        return harness::Status::Done;
+    }
+    a.error = "lightning thunder log on|off|clear | state [name] | save <name> | load <file> | sim [name] [dt_ms=30] [seconds=60] "
+              "[speed=0] [hold_at=] [hold_s=] [jitter=0] [tail=6]";
+    return harness::Status::Error;
 }
 
 // ── Collision sounds (2026-11-03, issue_20261030_180204) ───────────────────────────────────────────────
@@ -1063,11 +1717,27 @@ bool SatelliteSim::impactParams(const KCollVis &c, const glm::dvec3 &eye, Impact
     s.ground = glm::length(eye) - 6371000.0 < 100000.0;
     const double e01 = std::clamp((std::log10(std::max(s.energyJ, 1.0)) - 6.0) / 6.0, 0.0, 1.0);
     const double m01 = std::clamp((std::log10(std::max(s.massKg, 1.0)) - 1.0) / 3.5, 0.0, 1.0);
-    const double close = std::pow(1.0 + d / (s.ground ? 300000.0 : 2000.0), -0.75);
+    impactShape(e01, std::clamp(0.6 * e01 + 0.4 * m01, 0.0, 1.0), d, s.ground, s);
+    // Left / right: the impact's direction against the screen's right (as thunder's), the right taken from the view
+    // (ENU) onto this frame's ENU axes in ECI.
+    const glm::dvec3 ex(eci2enuX), ey(eci2enuY), ez(eci2enuZ);
+    const glm::dvec3 rel = c.pos - eye;
+    const glm::mat3 &V = camera.viewEnu; // rows: right, up, back (ENU components)
+    const glm::dvec3 rightEci = (double)V[0][0] * ex + (double)V[1][0] * ey + (double)V[2][0] * ez;
+    s.pan = (float)(glm::dot(rel, rightEci) / std::max(glm::length(rel), 1e-9));
+    return s.gain > 0.004f;
+}
+
+// (2026-11-21) The shape, shared with the launches' distant booms (launchThumps): gain, bass, cutoff, attack, decay,
+// reverb and crack from the hit's size e01, its bass, the distance and where the listener is.
+void SatelliteSim::impactShape(double e01, double bass, double d, bool ground, ImpactSound &s)
+{
+    const double close = std::pow(1.0 + d / (ground ? 300000.0 : 2000.0), -0.75);
+    s.ground = ground;
     s.gain = (float)((0.35 + 1.0 * e01) * close);
-    s.bass = (float)std::clamp(0.6 * e01 + 0.4 * m01, 0.0, 1.0);
+    s.bass = (float)bass;
     s.thumpHz = (float)(80.0 - 50.0 * s.bass);
-    if (s.ground)
+    if (ground)
     {
         s.cutoffHz = (float)(180.0 + 80.0 * e01);
         s.attackS = 0.08f;
@@ -1083,17 +1753,9 @@ bool SatelliteSim::impactParams(const KCollVis &c, const glm::dvec3 &eye, Impact
         s.reverb = (float)std::clamp(0.6 * close * (0.6 + 0.4 * e01), 0.0, 1.0);
         s.crack = (float)std::clamp(close * (0.4 + 0.6 * e01), 0.0, 1.0);
     }
-    // Left / right: the impact's direction against the screen's right (as thunder's), the right taken from the view
-    // (ENU) onto this frame's ENU axes in ECI.
-    const glm::dvec3 ex(eci2enuX), ey(eci2enuY), ez(eci2enuZ);
-    const glm::dvec3 rel = c.pos - eye;
-    const glm::mat3 &V = camera.viewEnu; // rows: right, up, back (ENU components)
-    const glm::dvec3 rightEci = (double)V[0][0] * ex + (double)V[1][0] * ey + (double)V[2][0] * ez;
-    s.pan = (float)(glm::dot(rel, rightEci) / std::max(glm::length(rel), 1e-9));
-    return s.gain > 0.004f;
 }
 
-void SatelliteSim::impactStep(double nowP, double now, float realDt)
+void SatelliteSim::impactStep(double nowP, double now, float realDt, const glm::dvec3 &eyeEcef, const glm::dvec3 &camR, bool resync)
 {
     FPROF_SCOPE("impactStep");
     if (!ambience_)
@@ -1123,8 +1785,106 @@ void SatelliteSim::impactStep(double nowP, double now, float realDt)
         if (impactSounds_.size() > 8)
             impactSounds_.erase(impactSounds_.begin());
     }
+    // The launches' thumps (2026-11-21, issue_20261121_164722): ignition, staging and the booster's relights, each one
+    // hit on this synth: the bang through the air where the air carries it, and the collisions' own distant boom
+    // from far off or from above the air.
+    bool soon = false;
+    for (LaunchThump &t : launchThumps(nowP, now, eyeEcef, camR, resync, soon))
+    {
+        if (syn)
+        {
+            const float ev[9] = {t.gain, t.bass, t.cutoffHz, t.reverb, t.attackS, t.decayS, t.pan, t.thumpHz, t.crack};
+            t.sent = syn->pushEvent(ev, 9);
+        }
+        near = true;
+        launchThumpLog_.push_back(t);
+        if (launchThumpLog_.size() > 16)
+            launchThumpLog_.erase(launchThumpLog_.begin());
+    }
+    launchThumpSoon_ = soon;
+    near = near || soon;
     impactHoldS_ = near ? 6.0f : std::max(impactHoldS_ - std::max(realDt, 0.0f), 0.0f);
     ambience_->set(ambD_.impact, impactHoldS_ > 0.0f ? 1.0f : 0.0f);
+}
+
+// ── Rockets (2026-11-21, issue_20261121_164722) ─────────────────────────────────────────────────────────
+// The rockets' own layer (`rocket`: a thunder synth whose voices are all rockets; driver `rocket`). Each burning
+// stage is one voice carrying two things (launchSounds): the ROAR as it arrives through the air (the retarded time,
+// 1 / distance, thinning with the air at the rocket and at the listener), and the FAR RUMBLE of the stage as it burns
+// now (the film's convention, the collisions' distance law: heard hundreds of km off and from above the air). The
+// layer is up from 3 s before an ignition's sound arrives to 6 s after the last sound. Until this date the rockets
+// shared the thunder layer and its 8 voices: gated off above 25 km with the thunder, silent beyond ~100 km.
+void SatelliteSim::rocketStep(double now, const glm::dvec3 &eye, const glm::dvec3 &camR, float realDt)
+{
+    FPROF_SCOPE("rocketStep");
+    if (!ambience_)
+        return;
+    const int li = ambience_->layerIndex("rocket");
+    const int vi = (li >= 0) ? ambience_->layerVoice(li) : -1;
+    AmbientSynth *syn = (audio_ && vi >= 0) ? audio_->voiceSynth(vi) : nullptr;
+    bool sounded[kThunderVoices] = {};
+    rocketLevelNow_ = 0.0f;
+    std::vector<LaunchSound> ls = launchSounds(now, eye, camR);
+    // (more stages than voices: the loudest are served first, and take the quietest other voice)
+    std::stable_sort(ls.begin(), ls.end(), [](const LaunchSound &a, const LaunchSound &b) { return a.level + a.rumble > b.level + b.rumble; });
+    for (const LaunchSound &s : ls)
+    {
+        int v = -1;
+        for (int k = 0; k < kThunderVoices; ++k)
+            if (rocketVoice_[k].used && rocketVoice_[k].id == s.id)
+                v = k;
+        if (v < 0)
+        {
+            for (int k = 0; k < kThunderVoices; ++k)
+            {
+                if (sounded[k])
+                    continue;
+                if (!rocketVoice_[k].used)
+                {
+                    v = k;
+                    break;
+                }
+                if (v < 0 || rocketVoice_[k].level < rocketVoice_[v].level)
+                    v = k;
+            }
+            if (v < 0)
+                continue;
+            rocketVoice_[v] = ThunderVoice{};
+            rocketVoice_[v].id = s.id;
+            rocketVoice_[v].used = true;
+        }
+        sounded[v] = true;
+        rocketVoice_[v].level = s.level + s.rumble;
+        rocketVoice_[v].lastSoundT = thunderRealT_;
+        rocketLevelNow_ = std::max(rocketLevelNow_, s.level + s.rumble);
+        if (syn)
+        {
+            const float ev[6] = {(float)v, s.level, s.km, s.pan, 1.0f, s.rumble}; // 1: a rocket
+            syn->pushEvent(ev, 6);
+        }
+    }
+    bool any = launchThumpSoon_;
+    for (int k = 0; k < kThunderVoices; ++k)
+    {
+        ThunderVoice &tv = rocketVoice_[k];
+        if (!tv.used)
+            continue;
+        if (sounded[k])
+        {
+            any = true;
+            continue;
+        }
+        if (tv.level > 0.0f && syn)
+        {
+            const float ev[6] = {(float)k, 0.0f, 5.0f, 0.0f, 1.0f, 0.0f};
+            syn->pushEvent(ev, 6);
+        }
+        tv.level = 0.0f;
+        if (thunderRealT_ - tv.lastSoundT > 2.0)
+            tv.used = false;
+    }
+    rocketHoldS_ = any ? 6.0f : std::max(rocketHoldS_ - std::max(realDt, 0.0f), 0.0f);
+    ambience_->set(ambD_.rocket, rocketHoldS_ > 0.0f ? 1.0f : 0.0f);
 }
 
 // ── Tonality ──────────────────────────────────────────────────────────────────────────────────────

@@ -9456,10 +9456,20 @@ nlohmann::json SatelliteSim::launchStateJson() const
         const std::vector<LaunchSound> ls = launchSounds(now, eyeE, camRightEcef());
         nlohmann::json sa = nlohmann::json::array();
         for (const LaunchSound &x : ls)
-            sa.push_back({{"level", x.level}, {"km", x.km}, {"pan", x.pan}, {"stage", x.stage}, {"burn", x.burn},
+            sa.push_back({{"level", x.level}, {"rumble", x.rumble}, {"km", x.km}, {"pan", x.pan}, {"stage", x.stage}, {"burn", x.burn},
                           {"t_plus_s", x.tau}, {"alt_km", x.altKm}});
         j["sounds"] = sa;
         j["thunder_level_now"] = thunderLevelNow_;
+        j["rocket_level_now"] = rocketLevelNow_;
+        // The thumps sent lately (ignition, staging, relights: launchThumps), newest last.
+        nlohmann::json th = nlohmann::json::array();
+        static const char *kThumpKind[4] = {"ignition", "staging", "relight", "landing_burn"};
+        for (const LaunchThump &t : launchThumpLog_)
+            th.push_back({{"kind", kThumpKind[std::clamp(t.kind, 0, 3)]}, {"far", t.far}, {"t_plus_s", t.tPlusS}, {"dist_km", t.distKm},
+                          {"gain", t.gain}, {"bass", t.bass}, {"cutoff_hz", t.cutoffHz}, {"reverb", t.reverb}, {"attack_s", t.attackS},
+                          {"decay_s", t.decayS}, {"pan", t.pan}, {"thump_hz", t.thumpHz}, {"crack", t.crack}, {"sent", t.sent}});
+        j["thumps"] = th;
+        j["thump_soon"] = launchThumpSoon_;
     }
     {
         // The upper stages flying now: their timeline, in seconds from now (deployment, the turn, the deorbit burn,
@@ -11072,9 +11082,41 @@ void SatelliteSim::buildLaunchGraphicsSection(const UIInput &inp, UIRenderer &ui
     }
 }
 
-// The rockets' roar at the listener (eye: ECI-like Earth-centred position the thunder uses, Earth-fixed axes): for
-// each burning rocket within 150 km, the sound arriving now left it at the retarded time tau (tau + r(tau) / c = now);
-// loudness as the flow's square root over the distance, thinning with the air at the rocket. Pure function of time.
+const std::vector<uint64_t> &SatelliteSim::launchSoundCandidates(double now, const glm::dvec3 &eyeEcef) const
+{
+    const LaunchState &L = *launchState;
+    if (std::abs(now - launchSoundCandNow_) < 1.0 && glm::length(eyeEcef - launchSoundCandEye_) < 10000.0 &&
+        L.live.size() == launchSoundCandLive_)
+        return launchSoundCands_;
+    launchSoundCandNow_ = now;
+    launchSoundCandEye_ = eyeEcef;
+    launchSoundCandLive_ = L.live.size();
+    launchSoundCands_.clear();
+    for (uint64_t key : L.live)
+    {
+        auto it = L.batches.find(key);
+        if (it == L.batches.end())
+            continue;
+        const LBatch &B = it->second;
+        if (now < B.tL - 32.0 || now > B.tL + 1502.0)
+            continue;
+        if (glm::length(B.G0 * kR - eyeEcef) > 3.0e6 + 10000.0)
+            continue;
+        launchSoundCands_.push_back(key);
+    }
+    return launchSoundCands_;
+}
+
+// The rockets' sound at the listener (eye: the Earth-centred position the thunder uses, Earth-fixed axes), per burning
+// stage (2026-11-21 rework, issue_20261121_164722):
+//   * the ROAR through the air: the sound arriving now left the stage at the retarded time tau (tau + r(tau) / c =
+//     now, the travel time capped at 3 s unless "Distant sounds arrive within 3 s" is off), within 150 km: level 9 sqrt(flow / 2500) x 1 km / r (capped
+//     at 16: Starship inside 1.6 km), thinning with the air at the rocket (20-km scale) and at the listener (gone
+//     between 12 and 25 km up: until this date the thunder layer's gate did that);
+//   * the FAR RUMBLE of the stage as it burns NOW (no delay: the film's convention, as the collisions' distant boom):
+//     2.2 (flow / 2500)^0.25 x (1 + r / 300 km)^-0.75 (the collisions' ground law), faded in between 8 and 40 km
+//     (nearer, the air carries the real thing) or wherever the listener is above the air, and out by 2000 km.
+// Pure function of time.
 std::vector<SatelliteSim::LaunchSound> SatelliteSim::launchSounds(double now, const glm::dvec3 &eyeEcef, const glm::dvec3 &camRightEcef) const
 {
     std::vector<LaunchSound> out;
@@ -11084,7 +11126,10 @@ std::vector<SatelliteSim::LaunchSound> SatelliteSim::launchSounds(double now, co
     if (!L.loaded)
         return out;
     constexpr double kC = 343.0;
-    for (uint64_t key : L.live)
+    const double capS = ambSoundQuick ? kSoundQuickS : 1e18; // the delay is capped ("Distant sounds arrive within 3 s")
+    const double hEye = glm::length(eyeEcef) - kR;
+    const double airEar = 1.0 - glm::smoothstep(12000.0, 25000.0, hEye);
+    for (uint64_t key : launchSoundCandidates(now, eyeEcef))
     {
         auto it = L.batches.find(key);
         if (it == L.batches.end())
@@ -11093,16 +11138,11 @@ std::vector<SatelliteSim::LaunchSound> SatelliteSim::launchSounds(double now, co
         if (now < B.tL || now > B.tL + 1200.0)
             continue;
         const launch::Vehicle &vh = L.cat.vehicles[B.veh];
-        if (glm::length(B.G0 * kR - eyeEcef) > 2.0e6)
+        if (glm::length(B.G0 * kR - eyeEcef) > 3.0e6)
             continue; // nothing of it is ever within hearing
         const double T = now - B.tL;
         for (int stage = 0; stage < 2; ++stage)
         {
-            // The retarded time (Earth-fixed positions: the air carries the sound): the latest emission tau whose
-            // sound reaches the listener now, g(tau) = (T - tau) - |P(tau) - eye| / c = 0. g(T) < 0 (no time to travel);
-            // scan back over the last 440 s (150 km of sound) for the latest sign change, then bisect. (Until 2026-10-19 a fixed-point iteration
-            // that did not converge for a fast, distant stage: it alternated between the stage and the pad, and an upper
-            // stage 1200 km downrange was heard burning 300 m away, at full level, minutes after it left.)
             auto posE = [&](double tau, glm::dvec3 &E, uint8_t *b) {
                 glm::dvec3 Pe;
                 if (!LaunchImpl::rocketPos(L, B, stage, tau, Pe, b))
@@ -11110,72 +11150,237 @@ std::vector<SatelliteSim::LaunchSound> SatelliteSim::launchSounds(double now, co
                 E = eciToEcef(Pe, B.tL + tau);
                 return true;
             };
-            auto g = [&](double tau, bool &ok) {
-                glm::dvec3 E;
-                ok = posE(tau, E, nullptr);
-                return ok ? (T - tau) - glm::length(E - eyeEcef) / kC : -1e9;
-            };
-            double hi = T, lo = -1.0;
-            bool okHi = false;
-            double gHi = g(hi, okHi);
-            for (double tau = T - 2.0; tau >= std::max(0.0, T - 440.0) - 1e-9; tau -= 2.0)
-            {
-                bool okT = false;
-                const double gT = g(tau, okT);
-                // A crossing either way: g falls with tau while the stage recedes or climbs slower than sound, and
-                // rises while it closes faster than sound (a booster's supersonic descent to its landing pad).
-                if (okT && okHi && (gT >= 0.0) != (gHi >= 0.0))
-                {
-                    lo = tau;
-                    break;
-                }
-                hi = tau;
-                gHi = gT;
-                okHi = okT;
-            }
-            if (lo < 0.0)
-                continue; // nothing it emitted is arriving now (not arrived yet, gone, or out of hearing)
-            {
-                bool okL = false;
-                const bool posLo = g(lo, okL) >= 0.0;
-                for (int i = 0; i < 12; ++i)
-                {
-                    const double mid = 0.5 * (lo + hi);
-                    bool okM = false;
-                    const double gM = g(mid, okM);
-                    if (okM && (gM >= 0.0) == posLo)
-                        lo = mid;
-                    else
-                        hi = mid;
-                }
-            }
-            double tau = lo;
-            glm::dvec3 P;
-            uint8_t burn = 0;
-            if (!posE(tau, P, &burn) || burn == launch::BURN_NONE)
-                continue;
-            if (stage == 1 && tau < vh.t1)
-                continue; // one vehicle before staging (the booster carries the roar)
-            const double r = std::max(glm::length(P - eyeEcef), 200.0);
-            if (r > 150000.0)
-                continue;
-            const double h = glm::length(P) - kR;
-            const double flow = stage == 0 ? vh.flow1 * (burn == launch::BURN_ASCENT ? 1.0 : 0.3) : vh.flow2;
-            const double lvl = 9.0 * std::sqrt(flow / 2500.0) * (1000.0 / r) * std::exp(-std::max(h, 0.0) / 20000.0) *
-                               (1.0 - glm::smoothstep(80000.0, 150000.0, r));
-            if (lvl < 1e-3)
-                continue;
-            const glm::dvec3 dir = (P - eyeEcef) / r;
-            LaunchSound s;
+            LaunchSound s{};
             s.id = 0xA0000000u | (uint32_t)((key * 2 + (uint64_t)stage) & 0x0FFFFFFFu);
-            s.level = (float)std::min(lvl, 8.0);
-            s.km = (float)(r / 1000.0);
-            s.pan = (float)glm::dot(dir, camRightEcef); // (the screen's right: rolls with the camera)
+            s.level = s.km = s.pan = 0.0f;
             s.stage = stage;
-            s.burn = burn;
-            s.tau = (float)tau;
-            s.altKm = (float)(h / 1000.0);
-            out.push_back(s);
+            // The roar through the air. The retarded time (Earth-fixed positions: the air carries the sound): the
+            // latest emission tau whose sound reaches the listener now, g(tau) = (T - tau) - |P(tau) - eye| / c = 0.
+            // g(T) < 0 (no time to travel); scan back over the last 440 s (150 km of sound) for the latest sign change,
+            // then bisect. (Until 2026-10-19 a fixed-point iteration that did not converge for a fast, distant stage:
+            // it alternated between the stage and the pad, and an upper stage 1200 km downrange was heard burning
+            // 300 m away, at full level, minutes after it left.)
+            auto roar = [&]() {
+                if (airEar <= 0.0)
+                    return;
+                auto g = [&](double tau, bool &ok) {
+                    glm::dvec3 E;
+                    ok = posE(tau, E, nullptr);
+                    return ok ? (T - tau) - std::min(glm::length(E - eyeEcef) / kC, capS) : -1e9;
+                };
+                double hi = T, lo = -1.0;
+                bool okHi = false;
+                double gHi = g(hi, okHi);
+                for (double tau = T - 2.0; tau >= std::max(0.0, T - 440.0) - 1e-9; tau -= 2.0)
+                {
+                    bool okT = false;
+                    const double gT = g(tau, okT);
+                    // A crossing either way: g falls with tau while the stage recedes or climbs slower than sound, and
+                    // rises while it closes faster than sound (a booster's supersonic descent to its landing pad).
+                    if (okT && okHi && (gT >= 0.0) != (gHi >= 0.0))
+                    {
+                        lo = tau;
+                        break;
+                    }
+                    hi = tau;
+                    gHi = gT;
+                    okHi = okT;
+                }
+                if (lo < 0.0)
+                    return; // nothing it emitted is arriving now (not arrived yet, gone, or out of hearing)
+                {
+                    bool okL = false;
+                    const bool posLo = g(lo, okL) >= 0.0;
+                    for (int i = 0; i < 12; ++i)
+                    {
+                        const double mid = 0.5 * (lo + hi);
+                        bool okM = false;
+                        const double gM = g(mid, okM);
+                        if (okM && (gM >= 0.0) == posLo)
+                            lo = mid;
+                        else
+                            hi = mid;
+                    }
+                }
+                const double tau = lo;
+                glm::dvec3 P;
+                uint8_t burn = 0;
+                if (!posE(tau, P, &burn) || burn == launch::BURN_NONE)
+                    return;
+                if (stage == 1 && tau < vh.t1)
+                    return; // one vehicle before staging (the booster carries the roar)
+                const double r = std::max(glm::length(P - eyeEcef), 200.0);
+                if (r > 150000.0)
+                    return;
+                const double h = glm::length(P) - kR;
+                const double flow = stage == 0 ? vh.flow1 * (burn == launch::BURN_ASCENT ? 1.0 : 0.3) : vh.flow2;
+                const double lvl = 9.0 * std::sqrt(flow / 2500.0) * (1000.0 / r) * std::exp(-std::max(h, 0.0) / 20000.0) *
+                                   (1.0 - glm::smoothstep(80000.0, 150000.0, r)) * airEar;
+                if (lvl < 1e-3)
+                    return;
+                const glm::dvec3 dir = (P - eyeEcef) / r;
+                s.level = (float)std::min(lvl, 16.0);
+                s.km = (float)(r / 1000.0);
+                s.pan = (float)glm::dot(dir, camRightEcef); // (the screen's right: rolls with the camera)
+                s.burn = burn;
+                s.tau = (float)tau;
+                s.altKm = (float)(h / 1000.0);
+            };
+            roar();
+            // The far rumble: the stage as it burns now.
+            {
+                glm::dvec3 P;
+                uint8_t burn = 0;
+                if (posE(T, P, &burn) && burn != launch::BURN_NONE && !(stage == 1 && T < vh.t1))
+                {
+                    const double r = std::max(glm::length(P - eyeEcef), 200.0);
+                    const double wFar = std::max(glm::smoothstep(8000.0, 40000.0, r), 1.0 - airEar);
+                    const double flow = stage == 0 ? vh.flow1 * (burn == launch::BURN_ASCENT ? 1.0 : 0.3) : vh.flow2;
+                    const double far = 2.2 * std::pow(std::max(flow, 1.0) / 2500.0, 0.25) * std::pow(1.0 + r / 300000.0, -0.75) * wFar *
+                                       (1.0 - glm::smoothstep(1.0e6, 2.0e6, r));
+                    if (far >= 1e-3)
+                    {
+                        s.rumble = (float)far;
+                        if (s.level <= 0.0f)
+                        {
+                            s.km = (float)(r / 1000.0);
+                            s.pan = (float)glm::dot((P - eyeEcef) / r, camRightEcef);
+                            s.burn = burn;
+                            s.tau = (float)T;
+                            s.altKm = (float)((glm::length(P) - kR) / 1000.0);
+                        }
+                    }
+                }
+            }
+            if (s.level > 0.0f || s.rumble > 0.0f)
+                out.push_back(s);
+        }
+    }
+    return out;
+}
+
+// Ignition, staging and the booster's relights as sound events (2026-11-21, issue_20261121_164722: "Stage separation
+// and rocket ignition need distinct thumps"; "at a distance they should be very similar to the satellite collision
+// sounds"). Each event of a live launch within 2500 km is heard at most twice, one hit each on the `impact` synth:
+//   * the BANG through the air (kind near): when its sound reaches the listener (event time + distance / 343 m/s;
+//     at most 3 s unless "Distant sounds arrive within 3 s" is off), within 150 km, where the air carries it: gain (0.20 +
+//     0.25 k) / (1 + r / 1.5 km), thinning with the air at the event and at the listener; a crack and a bright body
+//     up close;
+//   * the distant BOOM (kind far): at the event, the collisions' own shape (impactShape: (0.35 + e01) (1 + r / 300 km)
+//     ^-0.75 low-passed at ~250 Hz from under 100 km; from orbit their near law) at 0.12 of a collision's level and with a 30-ms attack (a thump) (e01 =
+//     0.45 + 0.55 k: a lift-off is no 1e11-J breakup), faded in between 8 and 40 km or wherever the listener is above
+//     the air.
+// k = log(flow1 / 300) / log(70) (Starship 1, Falcon 9 0.51); staging counts 0.8, a relight 0.6 of an ignition.
+// An event is sent when the step crosses its time (never across a jump, and not on the step a launch is first met).
+std::vector<SatelliteSim::LaunchThump> SatelliteSim::launchThumps(double nowP, double now, const glm::dvec3 &eyeEcef,
+                                                                 const glm::dvec3 &camRightEcef, bool resync, bool &soon)
+{
+    (void)nowP;
+    std::vector<LaunchThump> out;
+    soon = false;
+    if (!launchState || !launchesEnabled)
+        return out;
+    const LaunchState &L = *launchState;
+    if (!L.loaded)
+        return out;
+    constexpr double kC = 343.0;
+    const double hEye = glm::length(eyeEcef) - kR;
+    const double airEar = 1.0 - glm::smoothstep(12000.0, 25000.0, hEye);
+    const bool ground = hEye < 100000.0;
+    if (launchThumpEvts_.size() > 96)
+        launchThumpEvts_.clear();
+    for (uint64_t key : launchSoundCandidates(now, eyeEcef))
+    {
+        auto it = L.batches.find(key);
+        if (it == L.batches.end())
+            continue;
+        const LBatch &B = it->second;
+        if (now < B.tL - 30.0 || now > B.tL + 1500.0)
+            continue;
+        if (glm::length(B.G0 * kR - eyeEcef) > 2.5e6)
+            continue;
+        const launch::Vehicle &vh = L.cat.vehicles[B.veh];
+        auto ev = launchThumpEvts_.find(key);
+        if (ev == launchThumpEvts_.end())
+        {
+            std::vector<LaunchThumpEvt> list;
+            auto add = [&](double tau, int kind) {
+                glm::dvec3 Pe;
+                if (!LaunchImpl::rocketPos(L, B, 0, tau, Pe, nullptr))
+                    return;
+                LaunchThumpEvt e;
+                e.tau = tau;
+                e.kind = kind;
+                e.pos = eciToEcef(Pe, B.tL + tau);
+                list.push_back(e);
+            };
+            add(0.0, 0);
+            add(vh.t1, 1);
+            const Track &tr = LaunchImpl::boosterTr(L, B);
+            uint8_t prev = launch::BURN_NONE;
+            for (size_t i = 0; i < tr.burn.size(); ++i)
+            {
+                const double tau = (double)i * tr.dt;
+                const uint8_t b = tr.burn[i];
+                if (tau > vh.t1 + 0.5 && b != prev && b != launch::BURN_NONE)
+                    add(tau, b == launch::BURN_LANDING ? 3 : 2);
+                prev = b;
+            }
+            ev = launchThumpEvts_.emplace(key, std::move(list)).first;
+        }
+        const double k = std::clamp(std::log10(std::max(vh.flow1, 300.0) / 300.0) / std::log10(70.0), 0.0, 1.0);
+        for (LaunchThumpEvt &e : ev->second)
+        {
+            const double te = B.tL + e.tau;
+            const glm::dvec3 rel = e.pos - eyeEcef;
+            const double r = std::max(glm::length(rel), 50.0), h = glm::length(e.pos) - kR;
+            const double ta = te + std::min(r / kC, ambSoundQuick ? kSoundQuickS : 1e18);
+            const double scale = e.kind == 0 ? 1.0 : e.kind == 1 ? 0.8 : 0.6;
+            const double wFar = std::max(glm::smoothstep(8000.0, 40000.0, r), 1.0 - airEar);
+            const double bass = 0.55 + 0.45 * k;
+            const float pan = (float)(glm::dot(rel, camRightEcef) / r);
+            // What each would be sent as, here and now.
+            LaunchThump nearT, farT;
+            {
+                const double cN = 1.0 / (1.0 + r / 1500.0);
+                nearT.kind = e.kind;
+                nearT.far = false;
+                nearT.gain = r < 150000.0 ? (float)((0.20 + 0.25 * k) * scale * cN * std::exp(-std::max(h, 0.0) / 20000.0) * airEar * (1.0 - wFar)) : 0.0f;
+                nearT.bass = (float)bass;
+                nearT.thumpHz = (float)(80.0 - 50.0 * bass);
+                nearT.cutoffHz = (float)(500.0 + 3500.0 * cN);
+                nearT.attackS = (float)(0.004 + 0.03 * (1.0 - cN));
+                nearT.decayS = (float)(0.5 + 0.8 * bass);
+                nearT.reverb = 0.5f;
+                nearT.crack = (float)(0.6 * cN);
+                ImpactSound sh;
+                impactShape((0.45 + 0.55 * k) * scale, bass, r, ground, sh);
+                farT.kind = e.kind;
+                farT.far = true;
+                farT.gain = (float)(sh.gain * 0.12 * wFar);
+                farT.bass = sh.bass;
+                farT.thumpHz = sh.thumpHz;
+                farT.cutoffHz = sh.cutoffHz;
+                farT.attackS = std::min(sh.attackS, 0.03f); // (a thump, not the collisions' slow swell)
+                farT.decayS = sh.decayS;
+                farT.reverb = sh.reverb;
+                farT.crack = sh.crack;
+                nearT.pan = farT.pan = pan;
+                nearT.distKm = farT.distKm = r / 1000.0;
+                nearT.tPlusS = farT.tPlusS = e.tau;
+            }
+            const bool aftFar = now >= te, aftNear = now >= ta;
+            const bool fireFar = aftFar && !e.aftFar && e.init && !resync && now - te < 5.0 && farT.gain > 0.004f;
+            const bool fireNear = aftNear && !e.aftNear && e.init && !resync && now - ta < 5.0 && nearT.gain > 0.004f;
+            e.aftFar = aftFar;
+            e.aftNear = aftNear;
+            e.init = true;
+            if ((farT.gain > 0.004f && te > now && te - now < 3.0) || (nearT.gain > 0.004f && ta > now && ta - now < 3.0))
+                soon = true;
+            if (fireNear)
+                out.push_back(nearT);
+            if (fireFar)
+                out.push_back(farT);
         }
     }
     return out;

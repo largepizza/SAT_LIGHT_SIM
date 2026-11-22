@@ -512,6 +512,14 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 - **Ambient sound.** Location-aware ambience under the music: winds, surf and gulls, crickets and birds, jungle
   day and night, city traffic, rain, thunder, rocket roar, and drones and pads in orbit, all in the music's key.
+- **Close lightning cracks and booms.** A strike within a few kilometres opens with a sharp snap and crackle and
+  a low boom, then rolls away; the snap fades fastest with distance and the boom carries. Distant rolls are unchanged.
+- **Launches sound like launches** (issue_20261121_164722). Up close the roar is louder and has more bass. Far
+  away, and from high above the air, a burning rocket is a low rumble. Ignition, staging and the booster's relights
+  are distinct thumps: a bang through the air nearby, a distant boom like a satellite collision's from far off.
+- **Distant sounds arrive within 3 s** (Settings > Sound, on by default). Thunder and rocket noise still take
+  their distance at the speed of sound to reach you, but never longer than 3 seconds, so a flash 20 km away is heard
+  while you are still looking at it. Turn it off for the full delay (3 s per km).
 - **Music.** A player with previous / pause / next and a gap between tracks; new tracks LEO Motif and BIOS, each
   with an "upwell" stem that rises when Reflect Orbital flares fill the screen. The music fades out toward
   geostationary altitude.
@@ -691,6 +699,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- Thunder no longer goes missing or comes in bursts (issue_20261121_163317). Each flash's roll is now played from
+  its start to its end once its sound has reached you, however fast you fly and whatever the frame rate; pausing
+  holds it and it carries on afterwards. A busy storm no longer drops flashes: in a test of 80 flashes in 24 seconds
+  50 were heard before and all 80 now. Flying at 1 km/s past the report's storm used to give no thunder at all.
 - WASD is no longer slow high above the Earth (issue_20261121_120639). Its speed follows the height above the ground
   at every height now (Move speed x height per second, boost x6.25): it used to stop growing at 510 km/s (3,200 km/s
   boosted) above 510 km, so at 50,000 km Q/E climbed 50-80 times faster than W flew. A dive from orbit still slows

@@ -146,6 +146,7 @@ public:
     // between 1/60 s chunks so event layers keep scheduling while the render runs.
     bool renderWav(const std::string& path, double seconds, uint32_t busMask, int soloVoice,
                    const std::function<void(float)>& perChunk, RenderStats& stats, std::string& err);
+    void setSolo2(int voice) { solo2_ = voice; } // before renderWav; it clears it
 
     // ── Video sound capture (VideoRecorder's AAC track) ──────────────────────
     // Every bus reaches the speakers through one tap node (music, sfx, ambience in; their sum out). While a capture
@@ -203,6 +204,7 @@ private:
     std::vector<Voice>   voices_;
     std::vector<OneShot> oneShots_;
     int  solo_ = -1;            // renderWav's solo voice, -1 = none
+    int  solo2_ = -1;           // ... and a second one heard with it (harness `audio record solo=a+b`)
 
     std::vector<std::string> tracks_;
     std::vector<std::string> upwells_;   // parallel to tracks_; empty = none

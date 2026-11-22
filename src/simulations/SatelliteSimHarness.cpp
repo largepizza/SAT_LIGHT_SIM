@@ -211,9 +211,9 @@ const char *kHelp =
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "exposure [auto|hold|fast]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s] [wait=1]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [cdc=<spv>] [brick=<spv>] [nlc=<spv>] [smoke_layer=<spv>] [sky=<spv>] [sky_taa=<spv>] [wg=<X>x<Y>]; lightning; eclipse solar|lunar; skyevents [state]|events|list <kind>|watch <solar|lunar|conjunction|occultation|moonglint|meteors|comet|supernova|cme|cometstorm|row|special <0-3>|aurora [t=]> [n=]|spaceweather; stars [state]|find <name>|select <name>; moonbase [state]|windows [days=] [limit=] [jitter=]|base <i> [lean=] [jitter=]; meteors [state]|count [minutes=] [lm=] [shower=]|force [kind=meteor|fireball|bolide] [shower=] [mag=] [az=] [el=] [v=] [delay=]|go [shower=]; comets [state]|list [days=]|watch [k|great] [days=] [sun_max=] [orbit=1]; aurora [next <kp>|substorm|kp <v>|auto]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...> [x= y=]; fps on|off|state; mouse move dx= dy= [frames=] | mouse click left|right [x= y=] | mouse scroll dy= | mouse aim <Id>[:i] [tol=] [frames=]; hints on|off|reset|state|set <gate> [0|1]|force <n>|gap [s=] [pad=0|1]; events list|state|on|off|fire <id> [total=0|1]|ack [choice=1|2|3] [soft=1]; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|preview <file> [shot=] [scale=] [fps=]|save|load|state|stop; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [cdc=<spv>] [brick=<spv>] [nlc=<spv>] [smoke_layer=<spv>] [sky=<spv>] [sky_taa=<spv>] [wg=<X>x<Y>]; lightning [spawn kind= dist_km= az= ...] | lightning thunder log on|off|clear | state [name] | save <name> | load <file> | sim [name] [dt_ms=] [seconds=] [speed=] [hold_at=] [hold_s=] [jitter=]; eclipse solar|lunar; skyevents [state]|events|list <kind>|watch <solar|lunar|conjunction|occultation|moonglint|meteors|comet|supernova|cme|cometstorm|row|special <0-3>|aurora [t=]> [n=]|spaceweather; stars [state]|find <name>|select <name>; moonbase [state]|windows [days=] [limit=] [jitter=]|base <i> [lean=] [jitter=]; meteors [state]|count [minutes=] [lm=] [shower=]|force [kind=meteor|fireball|bolide] [shower=] [mag=] [az=] [el=] [v=] [delay=]|go [shower=]; comets [state]|list [days=]|watch [k|great] [days=] [sun_max=] [orbit=1]; aurora [next <kp>|substorm|kp <v>|auto]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...> [x= y=]; fps on|off|state; mouse move dx= dy= [frames=] | mouse click left|right [x= y=] | mouse scroll dy= | mouse aim <Id>[:i] [tol=] [frames=]; hints on|off|reset|state|set <gate> [0|1]|force <n>|gap [s=] [pad=0|1]; events list|state|on|off|fire <id> [total=0|1]|ack [choice=1|2|3] [soft=1]; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|preview <file> [shot=] [scale=] [fps=]|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=] [frames=] [video=]; video start [name] [fps=] [scale=] [ui=on] [sound=all|ambience|off]|stop|state; overlay text|label|clear ...; "
-    "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=] | audio expect <layers> [absent=] | "
+    "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=<layer>[+<layer>]] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; "
     "kessler [state] | wait days=<d> [done] [maxs=] (fails at once when live computation cannot finish in budget; prebake_hit, world_hash, eta_s) | breakup | collide | savecache [out=] ...; "
     "limit [cmd=<s>] (the stall guard: a command still pending past its budget fails; maxs=<s> on any command = its budget, 0 = none; "
@@ -5996,6 +5996,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         // `lightning spawn kind=cg|ic|spider|sprite dist_km= az= [seed=] [base_m=1500] [top_m=10000] [ground_km=4]
         // [ground_az=<az + 90>] [dur=]`: a flash placed by hand (SatelliteSimLightning.cpp). base_m / top_m are above
         // the eye's ground.
+        if (lower(pos(0)) == "thunder")
+            return harnessThunder(a); // the sound sources' log and simulator (SatelliteSimAmbience.cpp)
         if (lower(pos(0)) == "spawn")
         {
             const std::string k = lower(c.str("kind").empty() ? std::string("cg") : c.str("kind"));
@@ -6065,13 +6067,16 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 pending += s.heard ? 0 : 1;
                 const double d = glm::length(s.origin - eye);
                 src.push_back({{"id", s.id}, {"age_s", nowS - s.t0}, {"dist_km", d / 1000.0}, {"extent_km", s.extentM / 1000.0f},
-                               {"arrives_in_s", (d - s.extentM) / 343.0 - (nowS - s.t0)}, {"pieces", s.pts.size()}, {"heard", s.heard}});
+                               {"arrives_in_s", std::min((d - s.extentM) / 343.0, ambSoundQuick ? kSoundQuickS : 1e18) - (nowS - s.t0)}, {"pieces", s.pts.size()},
+                               {"heard", s.heard}, {"state", s.done ? "done" : s.passed ? "passed" : s.play >= 0.0 ? "playing" : "pending"},
+                               {"played_m", s.play}});
             }
             r["thunder_sources"] = src;
             r["thunder_pending"] = pending;
             r["thunder_level"] = thunderLevelNow_;
         }
         r["thunder_rolls"] = thunderRolls_;
+        r["thunder_strikes"] = thunderStrikes_;
         json trees = json::array();
         for (const auto &kv : boltTrees_)
         {
@@ -6749,21 +6754,41 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 a.error = "bus= must name music, sfx, ambience (joined by +) or all";
                 return Status::Error;
             }
+            // solo=<layer> or solo=<a>+<b> (2026-11-21: two layers heard together, e.g. rocket+impact).
             int solo = -1;
             if (c.has("solo"))
             {
-                const int li = ambience_->layerIndex(c.str("solo"));
-                if (li < 0)
+                std::string names = c.str("solo"), second;
+                const size_t plus = names.find('+');
+                if (plus != std::string::npos)
                 {
-                    a.error = "no ambience layer '" + c.str("solo") + "'";
-                    return Status::Error;
+                    second = names.substr(plus + 1);
+                    names = names.substr(0, plus);
                 }
-                solo = ambience_->layerVoice(li);
-                if (solo < 0)
-                {
-                    a.error = "layer '" + c.str("solo") + "' has no voice here (silent, events-only, or failed); "
-                              "`audio force " + c.str("solo") + " 1` first";
+                auto voiceOf = [&](const std::string &id, int &voice) {
+                    const int li = ambience_->layerIndex(id);
+                    if (li < 0)
+                    {
+                        a.error = "no ambience layer '" + id + "'";
+                        return false;
+                    }
+                    voice = ambience_->layerVoice(li);
+                    if (voice < 0)
+                    {
+                        a.error = "layer '" + id + "' has no voice here (silent, events-only, or failed); "
+                                  "`audio force " + id + " 1` first";
+                        return false;
+                    }
+                    return true;
+                };
+                if (!voiceOf(names, solo))
                     return Status::Error;
+                if (!second.empty())
+                {
+                    int solo2 = -1;
+                    if (!voiceOf(second, solo2))
+                        return Status::Error;
+                    audio_->setSolo2(solo2);
                 }
             }
             const std::string path = harnessRunner_->capturePath(name, ".wav");
@@ -6799,7 +6824,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["message"] = buf;
             return Status::Done;
         }
-        a.error = "audio [state [name]] | record <name> [seconds=] [bus=] [solo=] | expect <layers> [absent=<layers>] "
+        a.error = "audio [state [name]] | record <name> [seconds=] [bus=] [solo=<layer>[+<layer>]] | expect <layers> [absent=<layers>] "
                   "[min=] | force <layer> <gain|off> | force off | music [...] | tonality [wait]";
         return Status::Error;
     }

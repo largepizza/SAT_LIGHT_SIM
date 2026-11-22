@@ -1287,13 +1287,16 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   ~4-km diffusion core floored at ~3.5 km and a faint 15-km tail, windowed to 45 km — from orbit a flash is a soft
   10-20 km patch). The lightning pass's thread 1 adds the flashes' light to the rain at the eye (`cv2RainAmb`): drops
   light up in a close strike. **Thunder is streamed from sound shells (2026-10-10, `addThunderSource` / `thunderStep`,
-  SatelliteSimAmbience.cpp):** each flash's channel is kept as a source (pieces in Earth-fixed axes, 48 flashes, 150 s);
-  its sound travels at 343 m/s in sim time, and each frame the pieces whose g = distance - 343 (t - t0) changed sign
-  between the last frame's listener/time and this one's are what arrives: level = 270 x sqrt(length x weight / r^2 per
-  second) per flash, with mean distance and pan, pushed to one of the synth's 8 voices (`pushEvent`, [voice, level, km,
-  pan]; pink + brown noise, cutoff 5000 / (1 + km / 1.5) Hz, crackle within 4 km, a shared ~2-s rumble). So it follows
-  the listener (toward a storm: sooner, compressed at most 3x; outrun: never; paused: nothing; a > 5 km or > 20 s jump:
-  silent) and time warp. Driver `thunder` (arriving within ~2 s, sounding, or within 4 s after) gates the layer, so it
+  SatelliteSimAmbience.cpp):** each flash's channel is kept as a source (pieces in Earth-fixed axes, up to 96 flashes, 150 s);
+  its front travels at 343 m/s in sim time, and a playhead per source (2026-11-21, sound.md "Thunder is played by a
+  playhead per flash") plays the pieces by their path difference behind the nearest piece once the front has reached
+  the listener: level = 270 x sqrt(length x weight / r^2 per second) per flash, with mean distance and pan, pushed to
+  one of the synth's 8 voices (`pushEvent`, [voice, level, km, pan]; pink + brown noise, cutoff 5000 / (1 + km / 1.5)
+  Hz, crackle within 4 km, a shared ~2-s rumble). The delay is capped at 3 s unless the Sound tab's "Distant sounds
+  arrive within 3 s" is off. A channel within 8 km also sends its STRIKE once, as the roll starts: a snap, a
+  crackle and a boom shaped by the distance, and a loud roll is scaled by its own peak instead of being clamped (2026-11-21,
+  sound.md "A close strike has a snap, a crackle and a boom"). So it follows the listener (toward a storm: sooner, compressed at most 3x; outrun: when
+  the front catches up; paused: nothing, and it goes on at release; a > 5 km or > 20 s jump: silent) and time warp. Driver `thunder` (arriving within ~2 s, sounding, or within 4 s after) gates the layer, so it
   is listed only when there is thunder. It replaced an envelope precomputed at the flash for the listener's position
   then (`queueThunder`), whose brown noise under a 100-360 Hz cutoff was sub-bass only and whose layer was always
   "playing" (user: "displays as playing, but I don't really hear it"; at that snapshot the nearest flash was 27 km off).

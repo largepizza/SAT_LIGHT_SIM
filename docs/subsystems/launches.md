@@ -1005,20 +1005,22 @@ launches follow per-program cadences (no real manifest).
   -> 58..118 (sd 15), the patches gone in every frame of the reporter's trail. What remains is physical in the sim's
   terms: the hull veiled evenly by the exhaust it sits in, as the sky around it is (`plume_gain` decides how much).
   Only texels the 2026-10-21 guard already empties change (a cloud behind a mesh or a ridge); cost a branch.
-- **Sound**: each burning rocket within 150 km on a thunder voice (`launchSounds`, called from `thunderStep`): the
+- **Sound** (reworked 2026-11-21, issue_20261121_164722: sound.md "Rockets have their own layer, a far rumble and
+  thumps"): the rockets have their own layer (`rocket`: `rocketStep`), each burning stage a voice with its roar
+  through the air and its far rumble, and ignition, staging and the booster's relights are thumps on the `impact`
+  synth (`launchThumps`). The roar (`launchSounds`): each burning rocket within 150 km, the
   retarded time, Earth-fixed (the air carries it), level ~ sqrt(flow) / distance, thinning with the air at the rocket.
   The retarded time is the LATEST emission tau with (T - tau) = |P(tau) - eye| / 343, found by a scan back over 440 s
   (150 km of sound) in 2-s steps for a sign change either way (a booster's supersonic descent arrives in reverse
-  order), then bisected; nothing arriving = silence. (2026-10-19, issue 20261019_175639: a fixed-point iteration that
+  order), then bisected; nothing arriving = silence. The travel time is capped at 3 s unless the Sound tab's
+  "Distant sounds arrive within 3 s" is off (2026-11-21, sound.md "Thunder is played by a playhead per flash"). (2026-10-19, issue 20261019_175639: a fixed-point iteration that
   did not converge for a fast, distant stage alternated between the stage and the pad, so an upper stage 1200 km
   downrange was heard "burning" at full level 300 m from its pad minutes after it left.) Rocket voices are their
-  own kind in the thunder synth (pushEvent's 5th value = 1, `rocketTick`): a low roar (brown + pink noise
-  low-passed at 2200 / (1 + km / 1.8) Hz, under a 62-Hz sub layer), Mach-wave crackle (one-sided spikes, 350 Hz-9 kHz,
-  fading out by 40 km), a punch when the roar first arrives (x3 over ~1.4 s with a 25-ms attack, a burst of crackle,
-  a thump falling from ~70 to 30 Hz) and a send into an FDN echo (t60 3.4 s: the roar off the ground and landscape).
-  Measured offline (harness `audio record ... solo=thunder`, `harness_runs/rk` on the kessler branch): 300 m from the
-  pad ~-23 dBFS while the roar lasts, 25 km ~-31, sub band dominant (centroid ~35-40 Hz). How it sounds is the
-  user's to judge.
+  own kind in the thunder synth (pushEvent's 5th value = 1, a 6th = the far rumble; `rocketTick`): a low roar (brown +
+  pink noise low-passed at 2200 / (1 + km / 1.8) Hz, over a 62-Hz layer and a ~36-Hz band), Mach-wave crackle
+  (one-sided spikes, 350 Hz-9 kHz, fading out by 40 km), a ~3-s build-up when the roar first arrives, the far rumble
+  (brown noise under ~115 Hz) and a send into an FDN echo (t60 3.4 s: the roar off the ground and landscape).
+  Levels, the thumps and the measurements are in sound.md. How it sounds is the user's to judge.
 - **Selectable** (2026-10-19): rocket stages, Starship's ship coming home and every re-entry fireball (retirees, upper
   stages, the Kessler re-entries, small fragments) are TRANSIENTS, not records: the code that draws their heads lists
   them each frame (`SelTransient`, `addSelTransient`: a stable key, ECI position / velocity / acceleration, the ENU

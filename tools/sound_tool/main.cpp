@@ -8,6 +8,10 @@
 //       Renders one AmbientSynth voice to a 16-bit stereo WAV and prints its RMS and peak. A param spec
 //       is a constant (voices=4), a linear ramp over the render (voices=0:12) or keyframes
 //       (voices=0/0,1/2,4/2,5/0 — time/value pairs, linear between them, held past the ends).
+//       --event <t>:<v0,v1,...> (repeatable, 2026-11-21) sends pushEvent(v...) at t seconds: a thunder strike
+//       (--event 0.5:0,1,0.3,0,2), a collision / thump (impact: --event 0.5:1,0.8,250,0.45,0.08,1.6,0,40,0).
+//       --hold <t>:<v0,...>:<until> repeats one every 1/60 s from t to `until` (a streamed level, as the app sends
+//       it each frame: a rocket's roar --hold 1:0,8,0.3,0,1,0:20), then sends it once more with v1 (and v5) = 0.
 //       Measure loudness with: tools/harness/.venv/Scripts/python tools/harness/imgtools.py audio <wav>
 //
 // Build: cmake --build build --target SoundTool (EXCLUDE_FROM_ALL).
@@ -178,8 +182,51 @@ int render(int argc, char **argv)
     float seconds = 10.0f;
     uint32_t sr = 48000, seed = 1;
     std::vector<ParamSpec> specs;
+    struct Event
+    {
+        float t, until; // until < 0: once
+        std::vector<float> v;
+    };
+    std::vector<Event> events;
+    auto parseEvent = [&](const std::string &a, bool hold) {
+        Event e{0.0f, -1.0f, {}};
+        const size_t c1 = a.find(':');
+        if (c1 == std::string::npos)
+            return false;
+        e.t = std::stof(a.substr(0, c1));
+        std::string vals = a.substr(c1 + 1);
+        if (hold)
+        {
+            const size_t c2 = vals.rfind(':');
+            if (c2 == std::string::npos)
+                return false;
+            e.until = std::stof(vals.substr(c2 + 1));
+            vals = vals.substr(0, c2);
+        }
+        size_t b = 0;
+        while (b <= vals.size())
+        {
+            const size_t e2 = vals.find(',', b);
+            e.v.push_back(std::stof(vals.substr(b, e2 == std::string::npos ? std::string::npos : e2 - b)));
+            if (e2 == std::string::npos)
+                break;
+            b = e2 + 1;
+        }
+        events.push_back(e);
+        return true;
+    };
     for (int i = 3; i < argc; ++i)
     {
+        if ((!strcmp(argv[i], "--event") || !strcmp(argv[i], "--hold")) && i + 1 < argc)
+        {
+            const bool hold = !strcmp(argv[i], "--hold");
+            if (!parseEvent(argv[++i], hold))
+            {
+                fprintf(stderr, "bad event '%s'\n", argv[i]);
+                return 2;
+            }
+            continue;
+        }
         if (!strcmp(argv[i], "--out") && i + 1 < argc)
             out = argv[++i];
         else if (!strcmp(argv[i], "--seconds") && i + 1 < argc)
@@ -227,6 +274,20 @@ int render(int argc, char **argv)
         for (const ParamSpec &p : specs)
             synth->setParam(p.idx, evalSpec(p, t, seconds));
         const uint32_t n = std::min(chunk, total - done);
+        const float t1 = (float)(done + n) / (float)sr;
+        for (Event &e : events)
+        {
+            if (e.until < 0.0f ? (e.t >= t && e.t < t1) : (t >= e.t && t < e.until))
+                synth->pushEvent(e.v.data(), (int)e.v.size());
+            else if (e.until >= 0.0f && e.until >= t && e.until < t1 && e.v.size() >= 2)
+            {
+                std::vector<float> off = e.v; // the stream ends: the level goes to 0 (thunder / rocket voices)
+                off[1] = 0.0f;
+                if (off.size() >= 6)
+                    off[5] = 0.0f;
+                synth->pushEvent(off.data(), (int)off.size());
+            }
+        }
         synth->render(lr.data() + (size_t)done * 2, n);
         done += n;
     }
@@ -253,6 +314,7 @@ int main(int argc, char **argv)
     if (argc >= 2 && !strcmp(argv[1], "--render"))
         return render(argc, argv);
     fprintf(stderr, "usage:\n  SoundTool --analyze <track> [...] [--out <dir>]\n"
-                    "  SoundTool --render <synth> --out <wav> [--seconds S] [name=v | name=a:b | name=t/v,t/v ...]\n");
+                    "  SoundTool --render <synth> --out <wav> [--seconds S] [name=v | name=a:b | name=t/v,t/v ...]\n"
+                    "            [--event t:v0,v1,...] [--hold t:v0,v1,...:until]\n");
     return 2;
 }

@@ -110,10 +110,20 @@
       "group": "water",
       "synth": "thunder",
       "gain": 0.9,
-      "fade_in_s": 0.5,
+      "fade_in_s": 0.1,
       "fade_out_s": 3.0,
       "_note": "Thunder: the sim streams each flash's sound to the synth as its shell (343 m/s, sim time) crosses the listener, wherever the listener is by then (SatelliteSimAmbience.cpp thunderStep). Driver `thunder` is 1 while a roll is arriving, about to (~2 s) or just ended, so the layer is listed only when there is thunder to hear. Not heard from high altitude.",
       "when": { "agl_m": [25000, 12000], "thunder": [0.0, 0.5] }
+    },
+    {
+      "id": "rocket",
+      "group": "space",
+      "synth": "thunder",
+      "gain": 0.9,
+      "fade_in_s": 0.1,
+      "fade_out_s": 3.0,
+      "_note": "Rockets (2026-11-21, issue_20261121_164722; SatelliteSimAmbience.cpp rocketStep, launchSounds): a thunder synth whose voices are all rockets, one a burning stage: the roar as it arrives through the air (delayed by the distance, louder and bassier up close) and the far rumble of the stage as it burns now (the film's convention, the collisions' distance law: heard hundreds of km off and from orbit). Ignition, staging and relights are hits on the impact layer. Driver `rocket` is 1 from ~3 s before a sound arrives to 6 s after the last.",
+      "when": { "rocket": [0.0, 0.5] }
     },
     {
       "id": "impact",
