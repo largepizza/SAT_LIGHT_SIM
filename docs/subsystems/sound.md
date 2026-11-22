@@ -187,7 +187,9 @@ Location- and context-aware ambience on its own bus under the music (Settings â†
   (1 + d / 300 km)^-0.75 with the eye under 100 km; gain (0.35 + e01) x closeness; bass 0.6 e01 + 0.4 (log10 mass - 1)
   / 3.5 (a sine falling an octave onto 80 - 50 bass Hz); orbit: cutoff 1.5-9 kHz, attack 2-30 ms, a 15-ms crack and a
   reverb send 0.6 x closeness, t60 0.4 + 0.8 bass; ground: cutoff ~250 Hz, attack 80 ms, decay 1 + bass s, no crack,
-  t60 1.4 + bass. The impact synth is NOT high-passed (its thump is the point). Measured (`audio record ... solo=impact`,
+  t60 1.4 + bass. The impact synth is NOT high-passed (its thump is the point); since 2026-11-21 its output limit is bent onto 0.98
+  above 0.8 (a big hit close by passed full scale), `impactShape` holds the shape shared with the launches' distant
+  booms, and the launches' thumps are hits on this synth ("Rockets have their own layer" below). Measured (`audio record ... solo=impact`,
   the report's Starmind pair, 1.4e11 J, mass 5000 kg): 0.3 km gain 1.09, crack 0.82, cutoff 8.3 kHz, reverb 0.51, LUFS
   -29.5; 256 km gain 0.032, cutoff 1.7 kHz, LUFS -56.6; ground 579 km gain 0.54, cutoff 249 Hz, centroid 52 Hz,
   LUFS -33.8. Harness `kessler state` -> `collision_sounds`, `collision_sound_preview`. Offline (muted harness), a hit
@@ -224,6 +226,56 @@ Location- and context-aware ambience on its own bus under the music (Settings â†
   the report's storm gave 0.0 s of thunder in 60 s before and 42.6 s after (0.0 s with the full delay). Harness: `lightning thunder log on|off|clear`, `state [name]`, `save <name>` / `load <file>`,
   `sim [name] [dt_ms=] [seconds=] [speed=] [hold_at=] [hold_s=] [jitter=]` (docs/HARNESS.md); with the log off the
   instrument costs nothing.
+- **A close strike has a snap, a crackle and a boom (2026-11-21, issue_20261121_163317; `ThunderSynth::startStrike` /
+  `strikeTick`; `thunderStep` sends it once, as a roll starts, for a channel whose nearest piece is within 8 km:
+  pushEvent [_, energy, km, pan, 2]).** The snap: bright noise (700 Hz to 9 kHz / (1 + km / 0.4)), 0.3 ms up, 12 + 70 ms
+  down, level 1 / (1 + km / 0.35), gone by 6 km; the crackle: sharp ticks (1.8-8 kHz), ~400 a second thinning to 25
+  over half a second, 1 / (1 + (km / 0.5)^2); the boom: a sine falling 75 -> 34 Hz with brown noise under 240 Hz, attack
+  6 ms + 12 ms per km, decay 0.45 s + 0.12 s per km, 1 / (1 + km / 2.5), faded out between 4 and 8 km: so the snap's
+  band and level fall fastest with distance and the boom carries, as outdoors. **A loud roll keeps its shape**: per
+  voice `pk` follows the roll's largest level (falling back over ~1.5 s) and the whole roll is scaled so that peak
+  plays at 2.5 + 0.45 log2(pk / 2.5); a roll that never passes 2.5 (a strike beyond ~10 km) is untouched. Until then
+  the level was clamped at 8 and the limiter did the rest: a strike within ~3 km was 6-10 s of noise held flat at the
+  limiter, with no onset to hear as a snap and nothing after it to hear as a boom. The thunder and impact synths'
+  output limit is x / (1 + |x| / 2) as before up to 0.8 and then bent onto 0.98 (the old ceiling was 2). Measured
+  (`lightning thunder sim`, one ground stroke, the same channel before / after; all five distances and the published
+  references in qa/waves/20261121/resolutions/c09.md): at 0.3 km the first 250 ms against 1.0-1.25 s later
+  -1.9 -> +4.9 dB, the 2-8 kHz band in the first 100 ms against 300-800 ms later +0.3 -> +7.5 dB, the band under 80 Hz
+  at its peak in the first 500 ms against 1.5-2.5 s later +1.7 -> +5.3 dB; at 30 km -36.9 -> -37.5 LUFS, bands within
+  1.8 dB. How it sounds is the user's to judge.
+- **Rockets have their own layer, a far rumble and thumps (2026-11-21, issue_20261121_164722; `rocketStep`,
+  `impactStep` in SatelliteSimAmbience.cpp, `launchSounds`, `launchThumps` in SatelliteSimLaunches.cpp).** Layer
+  `rocket` (group space, a thunder synth whose voices are rockets, driver `rocket`: up from 3 s before a sound to 6 s
+  after) replaces the thunder layer's voices: it is heard from any height (the thunder layer is gated off above
+  12-25 km) and never competes with the flashes. One voice a burning stage carries (a) the ROAR through the air: the
+  retarded time (travel time capped at 3 s by default), level 9 sqrt(flow / 2500) x 1 km / r capped at 16 (it was 8),
+  thinning with the air at the rocket (20-km scale) and at the listener (gone between 12 and 25 km up); in the synth
+  brown + pink noise low-passed by distance over a 62-Hz layer and a ~36-Hz band (`rocketTick`: gain 0.0082, sub
+  2.4, deep 2.4), Mach-wave crackle, built up over ~3 s when it first arrives; and (b) the FAR RUMBLE of the stage as
+  it burns now (no delay: the film's convention, as for the collisions): 2.2 (flow / 2500)^0.25 (1 + r / 300 km)^-0.75
+  (the collisions' ground law), faded in between 8 and 40 km (nearer, the air carries the real thing) or wherever
+  the listener is above the air, out by 2000 km; brown noise under ~115 Hz in slow swells. Both feed the echo.
+  **Thumps**: ignition, staging, and the booster's relights (boostback, entry, landing burn) are each one hit on the
+  `impact` synth, the collisions' own: the BANG through the air when its sound arrives (within 150 km; gain (0.20 +
+  0.25 k) / (1 + r / 1.5 km), k = log(flow1 / 300) / log(70): Starship 1, Falcon 9 0.51; staging x0.8, a relight
+  x0.6; a crack and a bright body up close), and the distant BOOM at the event itself: `impactShape`, the collisions'
+  own distance law, cutoff, decay and reverb (from under 100 km the low-passed ground variant) at 0.12 of a
+  collision's level with a 30-ms attack, faded in like the rumble. The old "punch" (the roar x3 with a falling thump
+  inside the same voice) is gone. Measured (`audio record ... solo=rocket+impact`, a Starship lift-off, master 0.4 /
+  ambience 0.7, the layers at their play gain; before = the thunder layer at its play gain): the roar 300 m from the
+  pad -21.8 -> -15.0 dBFS RMS (-26.9 -> -19.4 LUFS), under 80 Hz -22.1 -> -15.3 dBFS, true peak -8.6 dBFS; 5 km
+  -25.6 -> -23.5; 25 km -39.5 -> -30.9; 100 km -55.2 -> -36.6 dBFS (-60.5 -> -41.2 LUFS, centroid 54 Hz). Ignition at
+  300 m: a 50-ms level of -14.5 dBFS out of silence, the roar -15.3 dBFS 2-4 s later; staging heard from the pad's
+  5 km: -20.4 dBFS, 11.8 dB over the second before, risen in 8 ms; ignition from 100 km: -21.0 dBFS,
+  +36.9 dB in 6 ms. The whole ambience during the lift-off 300 m away totals -19.2 LUFS against the music's
+  -30.1 (the levels rule's 10 dB under the music holds from ~100 km out: -28.2 at 5 km, -38.6 at 100 km). Harness:
+  `launch state` -> `sounds[]` (`level`, `rumble`), `thumps[]` (kind, far, t_plus_s, dist_km, gain, ...), `thump_soon`.
+  `launchSounds` and `launchThumps` walk one list of the launches that can be heard at all (`launchSoundCandidates`:
+  lift-off within -30 .. +1500 s, the pad within 3000 km, refreshed once a second): L.live holds thousands of batches
+  and the lookups alone were ~0.15 ms a frame for each. CPU of the whole ambience step with both 2026-11-21 changes
+  (`hitches threshold 1` / `bysum=1`, mean per frame): updateAmbience 0.241 -> 0.125 ms in the report's storm,
+  0.712 -> 0.552 ms with 40 flashes spawned in 12 s (thunderStep, which holds the rockets and the thumps: 0.19 -> 0.06 and
+  0.67 -> 0.48 ms).
 - **Every synth output is high-passed** (wind 45 Hz, surf 55 Hz, disk 60 Hz, hum 32 Hz, saw 40 Hz, pad
   110 Hz, bass 28 Hz) and the
   sample beds per source in `make_ambience.py`: the first wind was a sub-bass wall (brown noise

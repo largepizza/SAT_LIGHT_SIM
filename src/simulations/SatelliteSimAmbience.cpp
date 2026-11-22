@@ -171,6 +171,7 @@ void SatelliteSim::initAmbience()
     ambD_.rainDriven = a.registerDriver("rain_driven");
     ambD_.tornado = a.registerDriver("tornado");
     ambD_.impact = a.registerDriver("impact");
+    ambD_.rocket = a.registerDriver("rocket");
 
     std::string err;
     if (!a.load(kAmbiencePath, err))
@@ -872,8 +873,13 @@ void SatelliteSim::thunderStep(double now, const glm::dvec3 &eye, float realDt)
     thunderPrevEye_ = eye;
     thunderPrevValid_ = true;
     const double dS = now - nowP;
+    const glm::dvec3 camR = camRightEcef(); // left / right = the screen's right (rolls with the camera; 2026-11-14)
     if (!thunderSimulating_)
-        impactStep(nowP, now, realDt); // satellite collisions (their own layer: heard in orbit too)
+    {
+        // Satellite collisions and the launches' thumps (their own layer: heard in orbit too), then the rockets.
+        impactStep(nowP, now, realDt, eye, camR, resync);
+        rocketStep(now, eye, camR, realDt);
+    }
 
     // A source is done once its shell is ~50 km out (thunder is not heard that far), or time went back past it.
     for (size_t i = 0; i < thunderSources_.size();)
@@ -894,53 +900,10 @@ void SatelliteSim::thunderStep(double now, const glm::dvec3 &eye, float realDt)
     const int vi = (li >= 0) ? ambience_->layerVoice(li) : -1;
     AmbientSynth *syn = thunderSink_ ? thunderSink_ : (audio_ && vi >= 0) ? audio_->voiceSynth(vi) : nullptr;
     const float layerGain = thunderSimulating_ ? thunderSimGain_ : (li >= 0 ? ambience_->layerCurrent(li) : 0.0f);
-    const glm::dvec3 camR = camRightEcef(); // left / right = the screen's right (rolls with the camera; 2026-11-14)
 
     bool sounded[kThunderVoices] = {};
     bool near = false;
     thunderLevelNow_ = 0.0f;
-
-    // Launches (SatelliteSimLaunches.cpp): each audible rocket's roar, as it left the rocket a few seconds ago (the
-    // retarded time), on a voice of its own. They take their voices first: a roar is never shared.
-    if (!thunderSimulating_)
-        for (const LaunchSound &ls : launchSounds(now, eye, camR))
-        {
-            int v = -1;
-            for (int k = 0; k < kThunderVoices; ++k)
-                if (thunderVoice_[k].used && thunderVoice_[k].id == ls.id)
-                    v = k;
-            if (v < 0)
-            {
-                // A free voice, else the quietest flash's (its sound joins another flash's voice below).
-                for (int k = 0; k < kThunderVoices; ++k)
-                {
-                    if (sounded[k] || (thunderVoice_[k].used && thunderVoice_[k].rocket))
-                        continue;
-                    if (!thunderVoice_[k].used)
-                    {
-                        v = k;
-                        break;
-                    }
-                    if (v < 0 || thunderVoice_[k].level < thunderVoice_[v].level)
-                        v = k;
-                }
-                if (v < 0)
-                    continue;
-                thunderVoice_[v] = ThunderVoice{};
-                thunderVoice_[v].id = ls.id;
-                thunderVoice_[v].used = true;
-                thunderVoice_[v].rocket = true;
-            }
-            sounded[v] = true;
-            thunderVoice_[v].level = ls.level;
-            thunderVoice_[v].lastSoundT = thunderRealT_;
-            thunderLevelNow_ = std::max(thunderLevelNow_, ls.level);
-            if (syn)
-            {
-                const float ev[5] = {(float)v, ls.level, ls.km, ls.pan, 1.0f}; // 1: a rocket's roar, not thunder
-                syn->pushEvent(ev, 5);
-            }
-        }
 
     // Thunder. Each source's roll is played by a PLAYHEAD (2026-11-21): the path difference, in metres behind the
     // channel's nearest piece, that has been heard so far. It follows the front (w = 343 (t - t0) - the nearest
@@ -985,14 +948,20 @@ void SatelliteSim::thunderStep(double now, const glm::dvec3 &eye, float realDt)
         const size_t n = s.pts.size();
         dist.resize(n);
         float dMinF = 1e30f, dMaxF = 0.0f;
+        size_t iMinPiece = 0;
         for (size_t i = 0; i < n; ++i)
         {
             const float d = glm::length(r + glm::vec3(s.pts[i]));
             dist[i] = d;
-            dMinF = std::min(dMinF, d);
+            if (d < dMinF)
+            {
+                dMinF = d;
+                iMinPiece = i;
+            }
             dMaxF = std::max(dMaxF, d);
         }
         const double dMin = dMinF, span = (double)dMaxF - dMin;
+        const size_t iMin = iMinPiece;
         const double w = R - std::min(dMin, capM); // how far the front is past the nearest piece (or past the cap)
         if (s.play < 0.0)
         {
@@ -1022,6 +991,19 @@ void SatelliteSim::thunderStep(double now, const glm::dvec3 &eye, float realDt)
             }
             s.before = s.passed = false;
             s.play = 0.0;
+        }
+        // The strike (2026-11-21): as the front of a channel within 8 km arrives (the roll starts), its snap, crackle
+        // and boom, once (the synth shapes them by the distance; farther off the roll alone is the thunder).
+        if (!s.struck && s.play == 0.0)
+        {
+            s.struck = true;
+            if (dMin < 8000.0 && syn)
+            {
+                const glm::dvec3 toMin = glm::dvec3(r + glm::vec3(s.pts[iMin])) / std::max(dMin, 1.0);
+                const float ev[5] = {0.0f, s.energy, (float)(dMin / 1000.0), (float)glm::dot(toMin, camR), 2.0f};
+                syn->pushEvent(ev, 5);
+                ++thunderStrikes_;
+            }
         }
         if (resync)
         {
@@ -1092,7 +1074,7 @@ void SatelliteSim::thunderStep(double now, const glm::dvec3 &eye, float realDt)
     } mix[kThunderVoices];
     for (Sounding &q : snd)
         for (int k = 0; k < kThunderVoices; ++k)
-            if (thunderVoice_[k].used && !thunderVoice_[k].rocket && thunderVoice_[k].id == q.s->id)
+            if (thunderVoice_[k].used && thunderVoice_[k].id == q.s->id)
                 q.voice = k;
     std::stable_sort(snd.begin(), snd.end(), [](const Sounding &a, const Sounding &b) { return (a.voice >= 0) != (b.voice >= 0) ? a.voice >= 0 : a.level > b.level; });
     for (Sounding &q : snd)
@@ -1115,8 +1097,6 @@ void SatelliteSim::thunderStep(double now, const glm::dvec3 &eye, float realDt)
                 float best = 1e30f;
                 for (int k = 0; k < kThunderVoices; ++k)
                 {
-                    if (thunderVoice_[k].rocket)
-                        continue;
                     const float e = std::abs(std::log(std::max(thunderVoice_[k].km, 0.05f) / std::max(q.dKm, 0.05f)));
                     if (e < best)
                     {
@@ -1150,7 +1130,7 @@ void SatelliteSim::thunderStep(double now, const glm::dvec3 &eye, float realDt)
             ++thunderRolls_;
         }
         if (q.voice < 0)
-            continue; // (every voice a rocket's)
+            continue;
         Mix &m = mix[q.voice];
         const double p2 = (double)q.level * q.level;
         m.pw += p2;
@@ -1205,11 +1185,11 @@ void SatelliteSim::thunderStep(double now, const glm::dvec3 &eye, float realDt)
             continue;
         if (tv.level > 0.0f && syn)
         {
-            const float ev[5] = {(float)k, 0.0f, tv.rocket ? 5.0f : std::max(tv.km, 0.05f), 0.0f, tv.rocket ? 1.0f : 0.0f};
-            syn->pushEvent(ev, 5);
+            const float ev[4] = {(float)k, 0.0f, std::max(tv.km, 0.05f), 0.0f};
+            syn->pushEvent(ev, 4);
         }
         tv.level = 0.0f;
-        if (thunderRealT_ - tv.lastSoundT > (tv.rocket ? 2.0 : 0.6))
+        if (thunderRealT_ - tv.lastSoundT > 0.6)
             tv.used = false;
     }
     // The layer's driver: up while thunder is arriving, about to, or rolled within the last 4 s.
@@ -1737,11 +1717,27 @@ bool SatelliteSim::impactParams(const KCollVis &c, const glm::dvec3 &eye, Impact
     s.ground = glm::length(eye) - 6371000.0 < 100000.0;
     const double e01 = std::clamp((std::log10(std::max(s.energyJ, 1.0)) - 6.0) / 6.0, 0.0, 1.0);
     const double m01 = std::clamp((std::log10(std::max(s.massKg, 1.0)) - 1.0) / 3.5, 0.0, 1.0);
-    const double close = std::pow(1.0 + d / (s.ground ? 300000.0 : 2000.0), -0.75);
+    impactShape(e01, std::clamp(0.6 * e01 + 0.4 * m01, 0.0, 1.0), d, s.ground, s);
+    // Left / right: the impact's direction against the screen's right (as thunder's), the right taken from the view
+    // (ENU) onto this frame's ENU axes in ECI.
+    const glm::dvec3 ex(eci2enuX), ey(eci2enuY), ez(eci2enuZ);
+    const glm::dvec3 rel = c.pos - eye;
+    const glm::mat3 &V = camera.viewEnu; // rows: right, up, back (ENU components)
+    const glm::dvec3 rightEci = (double)V[0][0] * ex + (double)V[1][0] * ey + (double)V[2][0] * ez;
+    s.pan = (float)(glm::dot(rel, rightEci) / std::max(glm::length(rel), 1e-9));
+    return s.gain > 0.004f;
+}
+
+// (2026-11-21) The shape, shared with the launches' distant booms (launchThumps): gain, bass, cutoff, attack, decay,
+// reverb and crack from the hit's size e01, its bass, the distance and where the listener is.
+void SatelliteSim::impactShape(double e01, double bass, double d, bool ground, ImpactSound &s)
+{
+    const double close = std::pow(1.0 + d / (ground ? 300000.0 : 2000.0), -0.75);
+    s.ground = ground;
     s.gain = (float)((0.35 + 1.0 * e01) * close);
-    s.bass = (float)std::clamp(0.6 * e01 + 0.4 * m01, 0.0, 1.0);
+    s.bass = (float)bass;
     s.thumpHz = (float)(80.0 - 50.0 * s.bass);
-    if (s.ground)
+    if (ground)
     {
         s.cutoffHz = (float)(180.0 + 80.0 * e01);
         s.attackS = 0.08f;
@@ -1757,17 +1753,9 @@ bool SatelliteSim::impactParams(const KCollVis &c, const glm::dvec3 &eye, Impact
         s.reverb = (float)std::clamp(0.6 * close * (0.6 + 0.4 * e01), 0.0, 1.0);
         s.crack = (float)std::clamp(close * (0.4 + 0.6 * e01), 0.0, 1.0);
     }
-    // Left / right: the impact's direction against the screen's right (as thunder's), the right taken from the view
-    // (ENU) onto this frame's ENU axes in ECI.
-    const glm::dvec3 ex(eci2enuX), ey(eci2enuY), ez(eci2enuZ);
-    const glm::dvec3 rel = c.pos - eye;
-    const glm::mat3 &V = camera.viewEnu; // rows: right, up, back (ENU components)
-    const glm::dvec3 rightEci = (double)V[0][0] * ex + (double)V[1][0] * ey + (double)V[2][0] * ez;
-    s.pan = (float)(glm::dot(rel, rightEci) / std::max(glm::length(rel), 1e-9));
-    return s.gain > 0.004f;
 }
 
-void SatelliteSim::impactStep(double nowP, double now, float realDt)
+void SatelliteSim::impactStep(double nowP, double now, float realDt, const glm::dvec3 &eyeEcef, const glm::dvec3 &camR, bool resync)
 {
     FPROF_SCOPE("impactStep");
     if (!ambience_)
@@ -1797,8 +1785,106 @@ void SatelliteSim::impactStep(double nowP, double now, float realDt)
         if (impactSounds_.size() > 8)
             impactSounds_.erase(impactSounds_.begin());
     }
+    // The launches' thumps (2026-11-21, issue_20261121_164722): ignition, staging and the booster's relights, each one
+    // hit on this synth: the bang through the air where the air carries it, and the collisions' own distant boom
+    // from far off or from above the air.
+    bool soon = false;
+    for (LaunchThump &t : launchThumps(nowP, now, eyeEcef, camR, resync, soon))
+    {
+        if (syn)
+        {
+            const float ev[9] = {t.gain, t.bass, t.cutoffHz, t.reverb, t.attackS, t.decayS, t.pan, t.thumpHz, t.crack};
+            t.sent = syn->pushEvent(ev, 9);
+        }
+        near = true;
+        launchThumpLog_.push_back(t);
+        if (launchThumpLog_.size() > 16)
+            launchThumpLog_.erase(launchThumpLog_.begin());
+    }
+    launchThumpSoon_ = soon;
+    near = near || soon;
     impactHoldS_ = near ? 6.0f : std::max(impactHoldS_ - std::max(realDt, 0.0f), 0.0f);
     ambience_->set(ambD_.impact, impactHoldS_ > 0.0f ? 1.0f : 0.0f);
+}
+
+// ── Rockets (2026-11-21, issue_20261121_164722) ─────────────────────────────────────────────────────────
+// The rockets' own layer (`rocket`: a thunder synth whose voices are all rockets; driver `rocket`). Each burning
+// stage is one voice carrying two things (launchSounds): the ROAR as it arrives through the air (the retarded time,
+// 1 / distance, thinning with the air at the rocket and at the listener), and the FAR RUMBLE of the stage as it burns
+// now (the film's convention, the collisions' distance law: heard hundreds of km off and from above the air). The
+// layer is up from 3 s before an ignition's sound arrives to 6 s after the last sound. Until this date the rockets
+// shared the thunder layer and its 8 voices: gated off above 25 km with the thunder, silent beyond ~100 km.
+void SatelliteSim::rocketStep(double now, const glm::dvec3 &eye, const glm::dvec3 &camR, float realDt)
+{
+    FPROF_SCOPE("rocketStep");
+    if (!ambience_)
+        return;
+    const int li = ambience_->layerIndex("rocket");
+    const int vi = (li >= 0) ? ambience_->layerVoice(li) : -1;
+    AmbientSynth *syn = (audio_ && vi >= 0) ? audio_->voiceSynth(vi) : nullptr;
+    bool sounded[kThunderVoices] = {};
+    rocketLevelNow_ = 0.0f;
+    std::vector<LaunchSound> ls = launchSounds(now, eye, camR);
+    // (more stages than voices: the loudest are served first, and take the quietest other voice)
+    std::stable_sort(ls.begin(), ls.end(), [](const LaunchSound &a, const LaunchSound &b) { return a.level + a.rumble > b.level + b.rumble; });
+    for (const LaunchSound &s : ls)
+    {
+        int v = -1;
+        for (int k = 0; k < kThunderVoices; ++k)
+            if (rocketVoice_[k].used && rocketVoice_[k].id == s.id)
+                v = k;
+        if (v < 0)
+        {
+            for (int k = 0; k < kThunderVoices; ++k)
+            {
+                if (sounded[k])
+                    continue;
+                if (!rocketVoice_[k].used)
+                {
+                    v = k;
+                    break;
+                }
+                if (v < 0 || rocketVoice_[k].level < rocketVoice_[v].level)
+                    v = k;
+            }
+            if (v < 0)
+                continue;
+            rocketVoice_[v] = ThunderVoice{};
+            rocketVoice_[v].id = s.id;
+            rocketVoice_[v].used = true;
+        }
+        sounded[v] = true;
+        rocketVoice_[v].level = s.level + s.rumble;
+        rocketVoice_[v].lastSoundT = thunderRealT_;
+        rocketLevelNow_ = std::max(rocketLevelNow_, s.level + s.rumble);
+        if (syn)
+        {
+            const float ev[6] = {(float)v, s.level, s.km, s.pan, 1.0f, s.rumble}; // 1: a rocket
+            syn->pushEvent(ev, 6);
+        }
+    }
+    bool any = launchThumpSoon_;
+    for (int k = 0; k < kThunderVoices; ++k)
+    {
+        ThunderVoice &tv = rocketVoice_[k];
+        if (!tv.used)
+            continue;
+        if (sounded[k])
+        {
+            any = true;
+            continue;
+        }
+        if (tv.level > 0.0f && syn)
+        {
+            const float ev[6] = {(float)k, 0.0f, 5.0f, 0.0f, 1.0f, 0.0f};
+            syn->pushEvent(ev, 6);
+        }
+        tv.level = 0.0f;
+        if (thunderRealT_ - tv.lastSoundT > 2.0)
+            tv.used = false;
+    }
+    rocketHoldS_ = any ? 6.0f : std::max(rocketHoldS_ - std::max(realDt, 0.0f), 0.0f);
+    ambience_->set(ambD_.rocket, rocketHoldS_ > 0.0f ? 1.0f : 0.0f);
 }
 
 // ── Tonality ──────────────────────────────────────────────────────────────────────────────────────

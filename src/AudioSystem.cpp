@@ -659,7 +659,7 @@ void AudioSystem::applyVoiceVolume(int i)
     Voice& v = voices_[i];
     if (v.pending && !adoptVoice(v, false)) return; // not made yet: it takes the gain when it is
     if (!v.sound) return;                           // the worker could not make it
-    const float g = (solo_ < 0 || solo_ == i) ? v.gain : 0.0f;
+    const float g = (solo_ < 0 || solo_ == i || solo2_ == i) ? v.gain : 0.0f;
     ma_sound_set_volume(v.sound, g);
     // Start/stop on the voice's own gain (not the solo-muted one), so a solo render does not
     // restart the other voices when it ends. A stopped voice costs nothing.
@@ -897,6 +897,7 @@ bool AudioSystem::renderWav(const std::string& path, double seconds, uint32_t bu
     }
 
     solo_ = -1;
+    solo2_ = -1;
     for (int i = 0; i < (int)voices_.size(); ++i) applyVoiceVolume(i);
     groupVol(musicGroup_, musicVol_ * musicFade_);
     groupVol(sfxGroup_, sfxVol_);

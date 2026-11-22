@@ -116,6 +116,16 @@
       "when": { "agl_m": [25000, 12000], "thunder": [0.0, 0.5] }
     },
     {
+      "id": "rocket",
+      "group": "space",
+      "synth": "thunder",
+      "gain": 0.9,
+      "fade_in_s": 0.1,
+      "fade_out_s": 3.0,
+      "_note": "Rockets (2026-11-21, issue_20261121_164722; SatelliteSimAmbience.cpp rocketStep, launchSounds): a thunder synth whose voices are all rockets, one a burning stage: the roar as it arrives through the air (delayed by the distance, louder and bassier up close) and the far rumble of the stage as it burns now (the film's convention, the collisions' distance law: heard hundreds of km off and from orbit). Ignition, staging and relights are hits on the impact layer. Driver `rocket` is 1 from ~3 s before a sound arrives to 6 s after the last.",
+      "when": { "rocket": [0.0, 0.5] }
+    },
+    {
       "id": "impact",
       "group": "space",
       "synth": "impact",

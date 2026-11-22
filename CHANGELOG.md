@@ -512,6 +512,11 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 - **Ambient sound.** Location-aware ambience under the music: winds, surf and gulls, crickets and birds, jungle
   day and night, city traffic, rain, thunder, rocket roar, and drones and pads in orbit, all in the music's key.
+- **Close lightning cracks and booms.** A strike within a few kilometres opens with a sharp snap and crackle and
+  a low boom, then rolls away; the snap fades fastest with distance and the boom carries. Distant rolls are unchanged.
+- **Launches sound like launches** (issue_20261121_164722). Up close the roar is louder and has more bass. Far
+  away, and from high above the air, a burning rocket is a low rumble. Ignition, staging and the booster's relights
+  are distinct thumps: a bang through the air nearby, a distant boom like a satellite collision's from far off.
 - **Distant sounds arrive within 3 s** (Settings > Sound, on by default). Thunder and rocket noise still take
   their distance at the speed of sound to reach you, but never longer than 3 seconds, so a flash 20 km away is heard
   while you are still looking at it. Turn it off for the full delay (3 s per km).

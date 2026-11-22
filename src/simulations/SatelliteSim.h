@@ -3840,11 +3840,43 @@ private:
     struct LaunchSound
     {
         uint32_t id;
-        float level, km, pan; // the thunder synth's event (SatelliteSimAmbience.cpp thunderStep)
+        float level, km, pan; // the rocket synth's event (SatelliteSimAmbience.cpp rocketStep): the roar through the air
         int stage = 0, burn = 0;  // readouts (harness `launch state`): the stage, its burn and T+ as heard now
         float tau = 0.0f, altKm = 0.0f;
+        float rumble = 0.0f;  // the far rumble's level (the stage as it burns NOW: the film's convention, no delay)
     };
+    // Ignition, staging and the booster's relights as sound events (2026-11-21, issue_20261121_164722): one hit each
+    // on the `impact` layer's synth, the collisions' own (launchThumps, SatelliteSimLaunches.cpp).
+    struct LaunchThump
+    {
+        int kind = 0;      // 0 ignition, 1 staging, 2 a booster relight (boostback, entry), 3 the landing burn
+        bool far = false;  // the distant boom (with the event, like a collision's) / the bang through the air (delayed)
+        double tPlusS = 0.0, distKm = 0.0;
+        float gain = 0.0f, bass = 0.0f, cutoffHz = 0.0f, reverb = 0.0f, attackS = 0.0f, decayS = 0.0f, pan = 0.0f,
+              thumpHz = 0.0f, crack = 0.0f;
+        bool sent = false;
+    };
+    struct LaunchThumpEvt
+    {
+        double tau = 0.0;
+        int kind = 0;
+        glm::dvec3 pos{0.0};   // ECEF, where it happens
+        bool init = false, aftFar = false, aftNear = false;
+    };
+    std::unordered_map<uint64_t, std::vector<LaunchThumpEvt>> launchThumpEvts_;
+    std::vector<LaunchThump> launchThumpLog_;   // the latest (at most 16; harness `launch state` -> thumps)
+    bool launchThumpSoon_ = false;              // one arrives within 3 s (the layers are up before it)
+    std::vector<LaunchThump> launchThumps(double nowP, double now, const glm::dvec3 &eyeEcef, const glm::dvec3 &camRightEcef,
+                                          bool resync, bool &soon);
     std::vector<LaunchSound> launchSounds(double now, const glm::dvec3 &eye, const glm::dvec3 &camRightEcef) const;
+    // The live launches that can be heard at all (lift-off within -30 s .. +1500 s of now, the pad within 3000 km):
+    // the list launchSounds and launchThumps walk, refreshed once a second (L.live holds thousands of batches; the
+    // lookups alone were 0.15 ms a frame for each of the two).
+    const std::vector<uint64_t> &launchSoundCandidates(double now, const glm::dvec3 &eyeEcef) const;
+    mutable std::vector<uint64_t> launchSoundCands_;
+    mutable double launchSoundCandNow_ = -1e30;
+    mutable glm::dvec3 launchSoundCandEye_{0.0};
+    mutable size_t launchSoundCandLive_ = 0;
     nlohmann::json launchCheckJson() const;
     nlohmann::json launchJitterJson(int maxBatches); // harness `launch jitter`
     // Mission-operations suite (2026-10-20, harness `launch trace` / `launch formation`; tools/harness/mission_ops.py):
@@ -7481,6 +7513,7 @@ private:
         float lastKm = 0.0f, lastPan = 0.0f, lastDM = 0.0f; // what last arrived: its mean distance and pan; the centre's distance
         bool done = false;               // the whole roll was heard
         bool passed = false;             // the front was already past the listener when first met (a jump): silent
+        bool struck = false;             // its strike (the snap, crackle and boom of a channel within 8 km) was sent
         bool seen = false;               // met by a step at least once
         bool before = false;             // on the last step the front had not reached the listener
         int kind = 0;
@@ -7488,7 +7521,12 @@ private:
     static constexpr int kThunderVoices = 8;      // == ThunderSynth::kVoices
     static constexpr size_t kThunderMaxSources = 96;
     std::vector<ThunderSource> thunderSources_;
-    struct ThunderVoice { uint32_t id = 0; bool used = false; float level = 0.0f; double lastSoundT = 0.0; bool rocket = false; float km = 5.0f; } thunderVoice_[kThunderVoices];
+    struct ThunderVoice { uint32_t id = 0; bool used = false; float level = 0.0f; double lastSoundT = 0.0; float km = 5.0f; } thunderVoice_[kThunderVoices];
+    // Rockets (2026-11-21): their own layer (`rocket`, a thunder synth whose voices are rockets; driver `rocket`),
+    // one voice a burning stage: heard from any height, never fighting the flashes for a voice.
+    ThunderVoice rocketVoice_[kThunderVoices];
+    float rocketHoldS_ = 0.0f, rocketLevelNow_ = 0.0f;
+    void rocketStep(double nowS, const glm::dvec3 &eye, const glm::dvec3 &camR, float realDt);
     // Sound tab "Distant sounds arrive within 3 s" (audio.sound_quick, default on): thunder and rocket noise arrive
     // after distance / 343 m/s but never later than kSoundQuickS; off = the full delay (a flash 20 km off is heard a
     // minute later, if the listener is still there).
@@ -7500,6 +7538,7 @@ private:
     float thunderHoldS_ = 0.0f;                   // the `thunder` driver: arriving or sounding within the last seconds
     float thunderLevelNow_ = 0.0f;                // the loudest voice's level this frame (harness `lightning`)
     uint32_t thunderRolls_ = 0;                   // flashes heard so far (harness `lightning`)
+    uint32_t thunderStrikes_ = 0;                 // strikes sent (a channel within 8 km: the snap, crackle and boom)
     void updateThunder(float dt);
     void thunderStep(double nowS, const glm::dvec3 &eye, float realDt);
     void thunderRecordTick(float dt);             // harness `audio record`: the render's own clock carries the sound
@@ -7543,7 +7582,7 @@ private:
             urban = -1, beam = -1, aurora = -1, wind = -1, cloud = -1, timeScale = -1, following = -1, intro = -1, veg = -1,
             forest = -1, desert = -1, ice = -1, speed = -1, eas = -1, glareN = -1, glareSum = -1, beamSite = -1, musicGap = -1, rain = -1,
             thunder = -1, rocketMag = -1, stageMag = -1, fireballMag = -1, dustMag = -1, gust = -1, surfaceWind = -1,
-            rainDriven = -1, tornado = -1, impact = -1;
+            rainDriven = -1, tornado = -1, impact = -1, rocket = -1;
     } ambD_;
     // Collision sounds (2026-11-03, issue_20261030_180204; SatelliteSimAmbience.cpp impactStep): one hit on the "impact"
     // layer's synth per pair collision drawn up close (kCollVis) whose impact falls in the step's sim interval. The
@@ -7558,8 +7597,11 @@ private:
     };
     std::vector<ImpactSound> impactSounds_; // the latest (at most 8)
     float impactHoldS_ = 0.0f;              // the `impact` driver: a collision about to happen near the eye, or just done
-    void impactStep(double nowP, double now, float realDt);
+    void impactStep(double nowP, double now, float realDt, const glm::dvec3 &eyeEcef, const glm::dvec3 &camR, bool resync);
     bool impactParams(const KCollVis &c, const glm::dvec3 &eye, ImpactSound &s) const;
+    // The hit's shape from its size (e01), bass, distance and where the listener is: shared by the collisions and the
+    // launches' distant booms, so the two families sound alike.
+    static void impactShape(double e01, double bass, double distM, bool ground, ImpactSound &s);
     // The upwell's other sources (2026-10-21, issue 20261021_002542 "Upwells": the stem should rise during launches,
     // near firing engines, by collision dust and re-entries). The code that DRAWS each source lists it here every frame
     // (ambUpwellSource: its direction from the eye in ENU, range, and apparent magnitude as seen from the camera, with
