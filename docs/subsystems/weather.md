@@ -1291,8 +1291,19 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   each new tree's vertices once (their places from the observer's sea-level point), the pass answers each with its
   height over the DEM + the procedural detail at full detail, and two frames later a ground stroke's descent is scaled
   so its last vertex is ON the ground, lifted over a ridge in its way, a branch that reaches the ground ends there,
-  the streamers are rooted on it, and a sheet rides over the relief with 120 m of clearance (`lightning check`
-  measures the fitted vertices again: `check_min_clear_m` >= 0, `check_tip_m` 0). A sheet's paths wander sideways,
+  the streamers are rooted on it, and a sheet rides over the relief with 120 m of clearance. The fit is repeated
+  (twice more at most) while it moves a kept vertex more than 1 m: the tree's z is the origin's up, not the up where the
+  vertex is, so a vertex moved far in z has slid across the ground it was measured on (a stroke the harness places 2 km
+  off the ground ended 3 m off it after one fit). "On the ground" is 5 cm over it (the ground is measured in the
+  observer's frame, float noise of a centimetre or two). Measured (`lightning check`: the fitted vertices measured
+  again; 207 harness ground strokes at 10 places, the Alps, the Himalaya, the Andes, the Rockies, Tibet, Norway's
+  fjords, Kansas, the Sahara, Hawaii, Big Sur, each placed on the EYE's ground so the fit has up to 1,990 m to make
+  up): no vertex below the ground (least height over it 0.039 m), last vertices 0.048-0.050 m over it. The tree
+  stands where the flash STARTED: the flash rides the weather map, which drifts ~40 m/s at the equator, so the
+  record's place is turned back by the drift since (`cloudDriftRate` x age) and is the same whether the host first
+  sees the flash at its start or arrives in the middle of it (0.8-1.1 m over a flash's life; it was 19 m per 0.45 s).
+  The record's 32 more bytes move every later member of the flash buffer: the offsets sat_sky.frag's SKY_LITE variant
+  hard-codes (`CV2FlashLite`: cv2SkyPsi 27,607,344, cv2GroundSky 27,623,728) moved with it (SatelliteSim.h asserts them). A sheet's paths wander sideways,
   hardly up and down (`across`' vz 0.22): thrown freely, a 30-km arm's midpoint went kilometres up or down, the
   report's bolt that "clips into terrain and passes through". Trees are cached by id while the flash lives (a tree
   built again is the same tree; one thunder source a flash) and each frame the flashes' frames + state
