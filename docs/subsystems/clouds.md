@@ -268,19 +268,57 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
       300-1500 m over the point (the foehn gap) takes up to -0.35. Land only, `kWxOroK` (a constant: the bake's push
       constants are full). Frame cost: none (the bake's); the march's follows the cloud it adds (Andes from 350 km +2.8,
       Alps -0.4 ms, single runs).
-    - The Sun volume in time-lapse (2026-11-08, `sun_volume_max_step_s` 1 s): off while a frame advances sim time by more
-      than this (the sim step: a path's sim channel or a cinematic runs time without the time-scale setting). Diagnosed with
-      artifacts.py on the ITCZ report at 5 min/s: ghostT 29% with everything, 0% with storm objects off, 1.8% with the Sun
-      volume off, unchanged with the evolution frozen or the storms' weather stamp off -- the volume's rays, baked over rounds,
-      trailed the growing, moving towers as grey shadow blobs. With the cap: 5 min/s ghostT 27.5 -> 12.7%, worst tile 72 -> 41
-      levels; 1 min/s 17 -> 18%, worst 77 -> 37. Cost: the light march lights the clouds there (~+0.8 ms); block excess on
-      the image +0.2-0.4 levels, running grain +0.2-0.3 levels (below visible). Also tried, no gain: weather-v2's evoK history
-      (a3aa2ad) and the volume's lattice following the noise wind.
+    - **The Sun volume stays on in time-lapse** (2026-11-21, issue_20261121_162947 "the sun can pierce through huge storm
+      clouds"; `sun_volume_max_step_s` 1 s; fillCloudsV2Params, `stvJump`). Time RUNNING never switches the volume off, at
+      any rate and on any tier. Only a JUMP of the clock restarts it: the part of a frame's sim step that the time scale
+      did not run (`clockJumpS`: a time set, a scrub, a bookmark's or a report's time) when it drops the screen history
+      too (`history_time_jump_s`, 30 s), is past the limit AND past 4 x the frame before's -- a camera path's or a
+      cinematic's sim channel steps the clock every frame without the time scale, and that is time running (no restart
+      at 1 min/s or 5 min/s; faster, one where it starts). Ultra's 1e6 = no restart below the 600-s rule. Past 600 s
+      of sim a frame (1 day/s; 1 h/s under 6 fps) every cloud history restarts each frame and the volume is off: at
+      1 day/s the Sun moves 12 degrees a frame and there is no shadow to hold. Below that it lags by its rounds (32
+      frames level 0, 64 the others; 16 for levels 0-1 while catching up): about 2 s of real time at any rate, which at
+      1 h/s is 2 hours of sim and 30 degrees of Sun -- there the shadow is present but late (four runs of one 1 h/s
+      view: the ground under a storm read shadowed in three, 0.85-0.92 x settled, and sunlit in one, 1.55 x, at the
+      same instant; every level's valid share 1.0).
+      `sun_volume_timelapse 0` (no UI) brings the cut-off back for an A/B in one app.
+      *Why:* from 2026-11-08 (31527ceb) to 11-21 the volume was off while ANY frame advanced sim time by more than the
+      limit, i.e. at 1 min/s from 30 fps down (2 s a frame; every tier but Ultra, a8677fa6). It is THE Sun shadow, so
+      the ground's cloud shadow read 1, the god rays went and every cloud beyond its own light march was sunlit: under
+      a storm at sunset the ground and the undersides turned orange with the Sun's glow on the horizon, grey again the
+      moment time was held (the report's shots 2 / 3; the report's own state at shot 3: `sun_volume.on` false, frames 0).
+      Reproduced at shot 3's view (a 1/30 s fixed step, mean luminance of a ground box / a cloud-underside box, ground
+      R): 1x settled 27.9 / 43.4, R 37; 1 min/s 37.6-39.7 / 58-66, R 71-75 (= `sun_volume 0` with time held: 37.8 /
+      59.0, R 75); with the volume kept 28.6-33.2 / 45-50, R 38-44, and no Sun glow (0.81-0.97 / 0.89-0.97 x the settled
+      frame of each instant: the light under the storm rises 27 -> 41 levels over those 35 s of sim).
+      *The cut-off's reason does not hold:* it was for storm shadows trailing growing towers at 5 min/s, read off
+      artifacts.py, whose still scenarios key the path as `path key 0` + `path key T simadd=X` -- the sim channel on the
+      second key alone, so the clock JUMPS X s on the first frame and stands still (probed: `path goto 1` of 4 gives
+      +240 s; with `simadd=0` on the first key +60 s). With time really running (the same tool with that key fixed,
+      `harness_runs/c07/artifacts_tl.py`; the ITCZ report, 1920x1009, 16 frames after 30, two runs each; cut off -> kept):
+      1 min/s lag 10.3 -> 8.1 levels, lag16 17.8 -> 14.3%, ghostT 29.1 -> 25.4%, lagT max 127 -> 60; 5 min/s 12.3 -> 6.4,
+      17.7 -> 9.4%, 26.9 -> 17.8%, 134 -> 27; 1 h/s 6.9 -> 5.6, 3.5 -> 2.6%, 5.5 -> 2.4%, 15.4 -> 13.2 (rev12 6.7 -> 5.5%).
+      Cost at 1 min/s under the storm (RTX 3070 Ti alone, 1920x1009, three interleaved reps, `sun_volume_timelapse` 0 ->
+      1): GPU 37.7 -> 32.0 ms, cloud march 23.8 -> 18.2 (without the volume the light march lights every sample
+      itself); at 1x nothing changes (28.4 / 27.7 ms, the floor +-1.0; no shader change: the SPVs are the same bytes).
+      *Tried, not kept:* dropping only the levels whose rays "cannot keep up" (a limit of 1 s x 4^level, the bake's 13
+      workgroups dealt to the levels left: rounds of 5-16 frames). It holds the storm's shadow as well as the whole
+      volume does (the boxes within 2% of it at 1 min/s and 5 min/s) but coarse levels alone shade a tower differently
+      from the settled image: ITCZ ghostT 31.9% at 1 min/s, 44.8% at 5 min/s, 6.5% at 1 h/s with level 3 alone and
+      20% with levels 2-3 -- worse than both the cut-off and the whole volume at every rate.
+      *Not the volume's:* a time-lapse frame at sunset trails its own settled image whatever the Sun shadow does. The
+      same view with NO volume in the run or in its reference: the ground box 0.78-1.66 x settled at 1 min/s, 0.59-1.46
+      at 5 min/s; with the volume 0.67-2.8 x at 1 min/s, the 2.8 where the Sun is 0.1 degree up and the storm's shadow
+      sweeps the box 54 -> 16 levels in two minutes of sim (every level forced on, as Ultra: the same within 6%). At 13 degrees of Sun: 0.81-1.27 (cut
+      off: 1.2-1.95). The light of a paused frame arrives over ~30-130 frames after a hold.
+      Also tried on 2026-11-08, no gain: weather-v2's evoK history (a3aa2ad) and the volume's lattice following the
+      noise wind.
     - **Ultra keeps the light shafts in time-lapse** (2026-11-10, issue_20261110_190018 "Light rays under timewarp"). The
       shafts the user sees through a deck's gaps are the light march reading the occupancy clipmap's light (`cdc_light`):
       knocked out paused (`cdc_light` 0 or `cdc_skip` 0) the deck reads flat, with the Sun volume off they stay. The
       clipmap is off past `cdc_max_rate` x real time (4), so 10x already lost them (the report's shot 1), and the Sun
-      volume past `sun_volume_max_step_s`. Both are in the graphics-preset table now: Ultra 1e6 / 1e6 (no cut-off), every
+      volume went past `sun_volume_max_step_s` (until 2026-11-21: the note above; the key is the clock-JUMP limit
+      now). Both are in the graphics-preset table: Ultra 1e6 / 1e6 (no cut-off, no restart), every
       other tier 4 / 1 (High = the defaults); a settings file saved at Ultra takes them at load (the named preset
       re-derives its row). artifacts.py on the ITCZ report at Ultra, cut-offs -> kept: 5 min/s ghostT 25.8 -> 20.0%,
       lagT max 72 -> 30 levels; 1 min/s 19.0 -> 11.0%, 71 -> 37 (the settled reference is lit by the clipmap and the
@@ -995,7 +1033,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     The screen history drops on such a step too (`history_time_jump_s` 30, no UI, 0 = the 600-s rule only): the part of
     the frame's sim-time step the time warp did not run (`cv2SimAdvanceAcc`, the sim's dt x time scale, less a Kessler
     hold; a hitch under warp is not a jump). Without it the still frames after a step blend the old clouds out at the
-    still weight with the wide box. The Sun shadow volume already restarts on any step over `sun_volume_max_step_s` (1 s).
+    still weight with the wide box. The Sun shadow volume restarts on the same jump (past `sun_volume_max_step_s` too; not while time runs, 2026-11-21).
     **The march's field must be the bake's** (2026-11-11, issue_20261111_165715): a cell is conservative only for the field
     the bake reads. The cyclone flow map's displacement held for 1 km of a ray (the march's only per-ray cache of a field
     input) made the march read cloud the bake never saw, and the skip cut it at the cells' faces: blocks in every hurricane
@@ -1309,6 +1347,16 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     without its light march) and the clipmap's motion guard (`cdc_motion_guard 0`: mean 4.30 -> 3.02, 16-px 3.59 ->
     2.35; S2 off on top of it 3.13). The moving image's remaining error at the anvil is the march's and the resolve's
     (grain on the translucent haze, the edges), see "Quality in motion" above.
+    **A Sun within ~2 degrees of the horizon glows through a tower (OPEN, 2026-11-21, issue_20261121_162947 shot 1):** an
+    anvil storm from 4.6 km, ~100 km off, the Sun 1.07 degrees under the horizon behind it, time held, the volume on and
+    settled (1621 frames in the report's state): the flank facing the eye carries a speckled orange glow at its base where
+    the Sun stands behind it, and the tops of the deck in front are lit orange. With the march compiled with
+    `-DCV2_SUN_REF` (the brute-force shadow above) both are gone and the flank is a flat grey wall (frame mean 98.9 ->
+    92.0 levels, `harness_live/run_20261121_190522` K_s1_*); `rain_amount 0` changes nothing (not the rain's forward
+    lobe) and the Sun's disc is out (`sun_cloud_t` 0). So it is this volume's knots by HEIGHT again (one knot spans
+    340 m / sin(elevation) along a ray, ~19 km at 1 degree, T linear across it: light bleeds that far into a tower's
+    shadow), read where the light march ends and multiplied by the forward lobe toward the Sun. Not the time rate (the
+    note "The Sun volume stays on in time-lapse"). A fix needs knots along the ray, or a second read, at a low Sun.
   - **Cloud regression suite** (`tools/harness/cloud_suite.py`, docs/HARNESS.md): 11 daytime scenes at ordinary angles
     (cumulus from the ground / 3 km / cloud height, broken and overcast decks, sea, tropical towers, cumulus shadows on
     land at a 34 deg Sun from 3 km / 800 m / the ground, an overcast at 33 deg), each settled, time paused for 1200
