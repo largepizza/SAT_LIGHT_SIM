@@ -104,11 +104,15 @@ FetchContent_MakeAvailable(glm)
 # Disable all example targets so Clay doesn't pull in SDL2, raylib, etc.
 set(CLAY_INCLUDE_ALL_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(CLAY_INCLUDE_DEMOS        OFF CACHE BOOL "" FORCE)
+# Pinned to a commit (clay and stb publish no release tags to pin to). A branch name here makes
+# every reconfigure fetch and rebase the checkout onto wherever upstream has moved, which fails
+# on a shallow clone and breaks the build tree for a change nobody asked for. A full hash needs
+# no network once it is checked out. No GIT_SHALLOW: a shallow clone cannot reach a commit that
+# is no longer a branch tip. To update: put the new hash here, deliberately, and rebuild.
 FetchContent_Declare(
     clay
     GIT_REPOSITORY https://github.com/nicbarker/clay.git
-    GIT_TAG main
-    GIT_SHALLOW TRUE
+    GIT_TAG e6cc36941ab2af5d81107617039d6f527a1c660b   # main, 2026-05-20
 )
 FetchContent_MakeAvailable(clay)
 
@@ -116,8 +120,7 @@ FetchContent_MakeAvailable(clay)
 FetchContent_Declare(
     stb
     GIT_REPOSITORY https://github.com/nothings/stb.git
-    GIT_TAG master
-    GIT_SHALLOW TRUE
+    GIT_TAG 6b5799bae8a1fe3792691ef4b72ae26434c3e799   # master, 2026-11-19
 )
 FetchContent_MakeAvailable(stb)
 
