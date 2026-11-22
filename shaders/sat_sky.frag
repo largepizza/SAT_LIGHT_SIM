@@ -5246,44 +5246,47 @@ void main() {
     // ── Airglow (C15) ─────────────────────────────────────────────────────────
     // Green + sodium bands (accumAirglow) rode the N_VIEW loop above for free.
 #ifdef SKY_LITE
-    // Planetarium (2026-10-21 QA: at night over the ocean, from orbit, the Earth had no visible horizon): the green
-    // band's column along the ray in closed form, no noise — the limb's airglow line. The shell at r0 = R + 96 km,
-    // Gaussian half-width w: a ray grazing it at tangent height hT holds ~1.813 sqrt(2 r0 w) of it (the integral of
-    // exp(-u^4)); a ray crossing it at the local zenith angle Z holds w sqrt(pi) / cos Z per crossing (two if it
-    // passes below the shell and out again, one if it ends on the Earth or starts inside). Night at the point the
-    // ray is nearest the Earth (the tangent point, or the crossing).
+    // Planetarium (2026-10-21 QA: at night over the ocean, from orbit, the Earth had no visible horizon): the bands'
+    // columns along the ray in closed form (sky_atmos.glsl airglowShellCol), once a pixel instead of per step, no noise.
+    // 2026-11-21 (issue_20261121_160405 shots 2-3: "too intense", "the entire night sky green"): it is the full sky's
+    // airglow at its MEAN level now, not a green line of its own:
+    //  - both bands (it had the green alone: the full sky's limb is olive, green + sodium);
+    //  - x the means of what the full loop gives each sample: its patches 0.6 (0.6 + 0.4 x a zero-mean noise) and its
+    //    coverage mask 1 - 0.727 x "Airglow coverage" (the mask's mean is 0.273); the patches themselves are not drawn;
+    //  - the green x 0.73, the share of its Gaussian (96 +- 9 km) under the top of the air, where the full loop stops
+    //    (R_ATMOS, 100 km; the sodium's 90 +- 6.5 km is all under it);
+    //  - the night curve's two large terms (airglowNightK itself is 2 KB of the tier's budget): the evening decay
+    //    e^(-0.4 h since sunset) as e^(1.5 sin of the Sun's height at the point) (within ~0.05 of the green's factor
+    //    at low latitudes), and the sodium's winter maximum as it stands;
+    //  - the Sun's glare gate above the air, as the full sky's below.
+    // Night, and those terms, at the point the light comes from (the tangent point of a ray grazing over the green
+    // shell, else its crossing: the near one from above, the one ahead from below; it was the eye's own place for a
+    // ray going up).
     {
-        const float r0 = R_EARTH + kAirglowGreenPeakM, w = kAirglowGreenHalfWidthM;
         float tc = -dot(obsPos, dir);
-        float b = length(obsPos + dir * max(tc, 0.0));        // nearest distance to the Earth's centre on the ray
-        float hT = b - R_EARTH;
-        bool hitsEarth = tc > 0.0 && b < R_EARTH;
-        float colPeak = 1.813 * sqrt(2.0 * r0 * w);
-        float cosZ = sqrt(max(1.0 - (b / r0) * (b / r0), 0.0)); // at the shell, for the ray's impact parameter
-        float perCross = min(w * 1.7725 / max(cosZ, 1e-3), colPeak);
+        float bL = length(obsPos + dir * tc);                  // the line's distance from the Earth's centre
         float ro = length(obsPos);
-        float col;
-        if (b >= r0 || tc <= 0.0)                              // grazing above the shell, or heading away
-            col = (ro < r0 ? perCross : 0.0) + colPeak * exp(-pow((hT - kAirglowGreenPeakM) / w, 2.0)) * step(0.0, tc);
-        else if (hitsEarth)                                    // down through the shell onto the Earth: only near
-            col = ro > r0 ? perCross * (1.0 - smoothstep(0.18, 0.32, cosZ)) : 0.0; // the limb (2026-10-21: the whole
-                                                               // night disc read faintly green from orbit)
-        else
-            col = (ro > r0 ? 2.0 : 1.0) * perCross;            // under the shell and out again
-        col = min(col, colPeak);
-        vec3 pN = normalize(obsPos + dir * max(tc, 0.0));
-        float night = 1.0 - clamp((dot(pN, sunDir) + 0.15) / 0.3, 0.0, 1.0);
-        accumAirglow += kAirglowGreenColor * cloud.airglowGreenGain * col * night;
+        bool  hitsEarth = tc > 0.0 && bL < R_EARTH;
+        const float r0 = R_EARTH + kAirglowGreenPeakM;
+        vec3  pA = normalize(obsPos + dir * (tc + (ro < r0 ? 1.0 : -1.0) * sqrt(max(r0 * r0 - bL * bL, 0.0))));
+        float sA = dot(pA, sunDir);
+        float ev = exp(1.5 * min(sA, 0.0));
+        vec3  ax = vec3(enuX.z, enuY.z, enuZ.z);               // the Earth's axis in this frame
+        accumAirglow += (kAirglowGreenColor * (cloud.airglowGreenGain * (0.85 + 0.4 * ev) * 0.73
+                             * airglowShellCol(r0, kAirglowGreenHalfWidthM, bL, tc, ro, hitsEarth))
+                       + kAirglowSodiumColor * (cloud.airglowSodiumGain * (0.9 + 0.2 * ev)
+                             * (1.0 - 0.45 * clamp(dot(pA, ax) * dot(sunDir, ax) * 3.6, -1.0, 1.0))
+                             * airglowShellCol(R_EARTH + kAirglowSodiumPeakM, kAirglowSodiumHalfWidthM, bL, tc, ro, hitsEarth)))
+                      * ((1.0 - clamp((sA + 0.15) / 0.3, 0.0, 1.0)) * 0.6 * (1.0 - 0.727 * clamp(cloud.airglowCoverageGain, 0.0, 1.0))
+                         * mix(cloud.skyGlareVisibility, 1.0, 1.0 - clamp((obsEffH - 40000.0) / 60000.0, 0.0, 1.0)));
     }
-#endif
+    color += accumAirglow * kAirglowScale * cloud.airglowGain;
+#else
     // The Sun's glare gate above the air (2026-11-12), the Milky Way's and the zodiacal light's: with the Sun on screen
     // from orbit (or the eye sunlit, sunlitBgVisibility) the limb's airglow line stayed at full brightness beside the
     // Sun's disc, which no camera or eye exposing for the Sun shows (the line is ~19 mag/arcsec^2). In the air it is 1:
-    // there the bands are only ever lit where the SAMPLE is in night (the Sun under ~8.6 deg there). Not in SKY_LITE:
-    // its SPIR-V was 72 bytes under the build-enforced budget (its limb line stays ungated).
-#ifdef SKY_LITE
-    color += accumAirglow * kAirglowScale * cloud.airglowGain;
-#else
+    // there the bands are only ever lit where the SAMPLE is in night (the Sun under ~8.6 deg there). (SKY_LITE: the
+    // same gate, in its block above.)
     {
         float agAtm = 1.0 - clamp((obsEffH - 40000.0) / 60000.0, 0.0, 1.0);
 #ifdef SKY_ENV
