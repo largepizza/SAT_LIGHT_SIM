@@ -92,6 +92,15 @@ vec3 cv2UndriftL(vec3 v)
 {
     return vec3(v.x * cv2.cover.z + v.y * cv2.cover.w, -v.x * cv2.cover.w + v.y * cv2.cover.z, v.z);
 }
+// The DEM's height at an Earth-fixed direction (m above sea level; terrain.glsl's decode, ~4 km footprint): a ground
+// stroke's strike point. cv2Ground is the weather cube's ground, smoothed over ~20 km: a stroke placed on it ended
+// hundreds of metres above a valley floor or inside a hillside (issue_20261121_163317).
+float cv2StrikeGround(vec3 dE)
+{
+    float lat = asin(clamp(dE.z, -1.0, 1.0)), lon = atan(dE.y, dE.x);
+    vec2  uv  = vec2((lon + PI) / (2.0 * PI), (0.5 * PI - lat) / PI);
+    return max(textureLod(cv2ElevTex, uv, 1.0).r * 9000.0 - 15.0 / 255.0 * 9000.0, 0.0);
+}
 
 void main()
 {
@@ -527,13 +536,15 @@ void main()
                                      : base + (topC - base) * (0.3 + 0.45 * (jg.y + 0.5));
                     vec3  aPos = oE * (R_EARTH + oAlt);
                     vec3  bPos = aPos;
+                    vec4  gFix = vec4(0.0);
                     if (cg) {
                         // The ground point: 1.5-9 km aside from the origin: a stroke leaves the cloud's flank and
                         // comes down slanted, sometimes well clear of the rain (a bolt from the blue).
                         vec2  gd = normalize(jg + vec2(1e-3)) * (1500.0 + 7500.0 * pow(float(ph.y >> 24u) / 255.0, 1.5));
                         vec3  gD = normalize(oD + (t1 * gd.x + t2 * gd.y) / R_EARTH);
                         vec3  gE = cv2UndriftL(gD);
-                        bPos = (ecefToEnu * gE) * (R_EARTH + cv2Ground(gE));
+                        gFix = vec4(gE, cv2StrikeGround(gE));
+                        bPos = (ecefToEnu * gE) * (R_EARTH + gFix.w);
                     }
                     uint slot = atomicAdd(sFlashN, 1u);
                     if (slot < kCv2FlashMax) {
@@ -542,6 +553,8 @@ void main()
                         cv2Flashes[slot].c = vec4(uintBitsToFloat(cellH ^ (uint(int(sl) + 1000000) * 0x2545F491u) ^ (uint(m) * 0x9E3779B9u)),
                                                   uintBitsToFloat(ph.z ^ fh.z), age, length(aPos - eye));
                         cv2Flashes[slot].d = vec4(base, topC, fStr, dur);
+                        cv2Flashes[slot].e = vec4(cv2UndriftL(oD), oAlt);
+                        cv2Flashes[slot].f = gFix;
                     }
                     // Now and then a strong ground stroke sets off a RED SPRITE ~75 km up a few ms later (kind 2; silent).
                     if (cg && cv2.misc2.x > 0.0) {
@@ -559,6 +572,8 @@ void main()
                                 cv2Flashes[s2].c = vec4(uintBitsToFloat(sh.z ^ 0x5B17E5u), uintBitsToFloat(sh.z),
                                                         sAge, length(sP - eye));
                                 cv2Flashes[s2].d = vec4(50000.0, 90000.0, 1.0, 0.3);
+                                cv2Flashes[s2].e = vec4(cv2UndriftL(sD), 75000.0);
+                                cv2Flashes[s2].f = vec4(0.0);
                             }
                         }
                     }

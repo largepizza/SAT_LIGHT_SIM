@@ -16,6 +16,13 @@ struct CV2Flash {
               // 1 cloud-to-ground, 2 a red sprite (a.xyz its centre ~75 km up), 3 spider lightning under the base
     vec4 c;   // x id (uint bits), y the shape seed (uint bits), z age (s, from the leader's start), w distance (m)
     vec4 d;   // x the cloud's base, y its top (m above sea level), z the storm's strength, w the flash's duration (s)
+    // The same places EARTH-FIXED (2026-11-21, issue_20261121_163317): what the host builds the channel from. a / b are
+    // floats about the Earth's centre in the OBSERVER's frame (0.5 m steps, and other steps from another place), so a
+    // channel built from them was not the same tree from two viewpoints. These are computed from the flash's hashes
+    // alone: the same bits whoever looks.
+    vec4 e;   // xyz the origin's direction from the Earth's centre (unit, Earth-fixed), w its altitude (m above sea level)
+    vec4 f;   // xyz a ground stroke's strike point likewise, w the DEM's height there (m; the host fits the channel
+              // to the drawn ground, bolt_ground.comp); 0 otherwise
 };
 const float kCv2FlashSlot = 2.0;     // the schedule's time slot (s of sim time)
 const float kCv2LeaderS   = 0.05;    // the stepped leader before the first return stroke (s)

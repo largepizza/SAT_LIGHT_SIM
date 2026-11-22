@@ -224,6 +224,16 @@ target_include_directories(WeatherTool PRIVATE src/simulations)
 target_link_libraries(WeatherTool PRIVATE glm::glm Threads::Threads)
 sat_strict_warnings(WeatherTool)
 
+# BoltTool (lightning channels, issue_20261121_163317): the channel generator (LightningBolt.cpp) without the app:
+# branch counts, vertex counts per level of detail, straightness, determinism, the terrain fit; `dump` writes a
+# tree's pieces as JSON for tools/bolt_tool/sheet.py (a contact sheet):
+#   cmake --build build --config Release --target BoltTool
+#   build/Release/BoltTool.exe stats n=200
+add_executable(BoltTool EXCLUDE_FROM_ALL tools/bolt_tool/main.cpp src/simulations/LightningBolt.cpp)
+target_include_directories(BoltTool PRIVATE src/simulations)
+target_link_libraries(BoltTool PRIVATE glm::glm)
+sat_strict_warnings(BoltTool)
+
 # Photometric accuracy gate (benchmarking milestone M11):
 #   cmake --build <build-dir> [--config Release] --target accuracy-gate
 # Builds SatModelTool and runs cmake/AccuracyGate.cmake — the one list of model selftests and

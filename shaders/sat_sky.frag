@@ -407,8 +407,8 @@ const uint kSkyEngineLightMax  = 32u;     // == SatelliteSim::kMaxEngineLights
 // (fillCloudsV2Params; the Sun table's bake in recordCloudsV2).
 layout(std140, set = 0, binding = 31) uniform CloudsV2Lite { layout(offset = 1776) vec4 tone; } cv2;
 layout(std430, set = 0, binding = 30) readonly buffer CV2FlashLite {
-    layout(offset = 27603248) vec4 cv2SkyPsi[32 * 32];
-    layout(offset = 27619632) vec4 cv2GroundSky[64];   // (its sea-level row: Planetarium's Earth is flat)
+    layout(offset = 27607344) vec4 cv2SkyPsi[32 * 32];
+    layout(offset = 27623728) vec4 cv2GroundSky[64];   // (its sea-level row: Planetarium's Earth is flat)
 };
 // (cloud_lightning.glsl cv2SkyPsiAt, kCv2SkyPsiN 32: the multiple-scattering function Psi at a point)
 vec3 cv2SkyPsiAt(float mu, float h)

@@ -36,6 +36,7 @@ inline constexpr bool kHaboobsRetired = true;     // Weather v2: the one wind (2
 #include "Meteors.h"      // meteor showers and the sporadic background (2026-10-27)
 #include "Comets.h"       // comets: orbits, brightness, tails (2026-10-27)
 #include "Nlc.h"          // noctilucent clouds from launch exhaust (2026-11-16)
+#include "LightningBolt.h" // a lightning flash's channel as geometry (2026-11-21)
 #include <filesystem>
 #include <memory>
 
@@ -7097,7 +7098,8 @@ private:
     VkDeviceMemory cv2BlueNoiseMem = VK_NULL_HANDLE;
     static constexpr uint32_t kCv2FlashMax = 128;             // == kCv2FlashMax in cloud_lightning.glsl
     // + review 22's rain map (cloud_lightning.glsl): 4 workgroup maxima and 32 x 32 rain rates after the flashes.
-    static constexpr VkDeviceSize kCv2RainMapOffset = 16 + kCv2FlashMax * 64 + 16 + 80;   // + review 22b's Sun profile
+    static constexpr uint32_t kCv2FlashFloats = 24;           // one CV2Flash: 6 vec4 (96 B since 2026-11-21: + e, f)
+    static constexpr VkDeviceSize kCv2RainMapOffset = 16 + kCv2FlashMax * (kCv2FlashFloats * 4) + 16 + 80;   // + review 22b's Sun profile
     static constexpr VkDeviceSize kCv2RainLightOffset = kCv2RainMapOffset + 1024 * 4;   // cv2RainKey .. cv2RainMisc
     static constexpr VkDeviceSize kCv2EvalCountOffset = kCv2RainLightOffset + 4 * 16;                 // cv2EvalCount
     static constexpr VkDeviceSize kCv2FlashHeadBytes = kCv2EvalCountOffset + 32 * 4;                  // what the host reads
@@ -7110,7 +7112,8 @@ private:
     static constexpr VkDeviceSize kCv2SkyPsiOffset = kCv2TshOffset + kCv2TshBytes;                     // cv2SkyPsi (the sky's multiple scattering)
     static constexpr VkDeviceSize kCv2GroundSkyOffset = kCv2SkyPsiOffset + 32ull * 32 * 16;             // cv2GroundSky (the ground's sky light)
     // sat_sky.frag's SKY_LITE variant declares only these two tables, by offset (its CV2FlashLite block).
-    static_assert(kCv2SkyPsiOffset == 27603248ull && kCv2GroundSkyOffset == 27619632ull,
+    // (+ 4096 since 2026-11-21: CV2Flash is 96 B, kCv2FlashFloats.)
+    static_assert(kCv2SkyPsiOffset == 27607344ull && kCv2GroundSkyOffset == 27623728ull,
                   "sat_sky.frag SKY_LITE: CV2FlashLite's layout(offset = ...) of cv2SkyPsi / cv2GroundSky");
     static constexpr VkDeviceSize kCv2VtOffset = kCv2GroundSkyOffset + 64ull * 16 * 16;                // cv2VtHdr + cv2Vt (the cloud over the ground)
     static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2VtOffset + 5ull * 4 * 16 + 2ull * 5 * 32 * 32 * 16 + 5ull * 32 * 32 * 4; // + ... cv2GroundSky, cv2VtHdr, cv2Vt, cv2VtUp, cv2VtStamp
@@ -9974,15 +9977,29 @@ private:
     void createStarPipeline(VulkanContext &ctx);
     // Lightning channels, glow and thunder (SatelliteSimLightning.cpp, 2026-10-05).
     struct BoltSegC : GpuBoltSeg { float arc = 0.0f, f = 0.0f; };
+    // One flash's channel (2026-11-21, issue_20261121_163317: a pure function of the flash's own record, built at
+    // full detail in LightningBolt.cpp; nothing about the observer enters it). `tree` is the geometry; `segs` its
+    // pieces of ~30 m with their order packed (what the THUNDER reads: addThunderSource), the same from anywhere;
+    // `draw` this frame's level of detail (pieces of 2-3 px at each path's distance from the eye).
     struct BoltTree
     {
         uint32_t id = 0;
         int kind = 0;
         glm::dvec3 originEcef{0.0}, up{0.0}, t1{0.0}, t2{0.0};
         glm::vec3 groundLocal{0.0f}, exitLocal{0.0f};
-        float baseLocalZ = -1000.0f, strength = 0.5f, maxArc = 1.0f, mainArc = 1.0f;
+        float baseLocalZ = -1000.0f, topLocalZ = 3000.0f, strength = 0.5f, maxArc = 1.0f, mainArc = 1.0f;
         std::vector<BoltSegC> segs;
-        std::vector<std::vector<glm::vec4>> arms;   // a spider's arms: xyz local, w arc
+        bolt::Tree tree;
+        std::vector<GpuBoltSeg> draw;
+        std::vector<int8_t> drawLevels;
+        uint64_t hashBuilt = 0;     // of the vertices as built (before the terrain fit): the same from every viewpoint
+        // The terrain fit (bolt_ground.comp, recordBoltGround): 0 not asked yet, 1 asked (the answer comes two
+        // frames later), 2 fitted, 3 the fitted vertices asked again (harness `lightning check`), 4 checked.
+        int fit = 0;
+        float fitMinClear = 0.0f;     // the least height over the ground the fit left (m)
+        float checkMinClear = 0.0f;   // ... measured again on the fitted vertices (state 4)
+        float checkTip = 0.0f;        // a ground stroke's last vertex over the ground (m, state 4)
+        float fitTipMove = 0.0f;      // how far the fit moved a ground stroke's last vertex (m)
         uint64_t lastFrame = 0;
     };
     static constexpr uint32_t kBoltMaxFlashes = 128;
@@ -9994,7 +10011,8 @@ private:
     void destroyLightningResources(VkDevice device);
     void updateLightningBolts();
     void recordLightning(VkCommandBuffer cmd, VulkanContext &ctx);
-    void buildBoltTree(BoltTree &t, uint32_t seed, float distM);
+    void buildBoltTree(BoltTree &t, uint32_t seed);
+    void boltDrawSegs(BoltTree &t, const glm::dvec3 &eye, float pixAng);
     void addThunderSource(const BoltTree &t, double flashStartS);
     std::unordered_map<uint32_t, BoltTree> boltTrees_;
     VkBuffer boltFlashBuf = VK_NULL_HANDLE, boltSegBuf = VK_NULL_HANDLE;
@@ -10007,6 +10025,35 @@ private:
     VkPipeline boltPipeline = VK_NULL_HANDLE;
     uint32_t boltFlashCount = 0, boltSegCount = 0;
     uint64_t boltFrame = 0;
+    // The drawn ground under the channels (bolt_ground.comp, 2026-11-21): the host sends the vertices of the trees not
+    // yet fitted (their places from the observer's sea-level point), the pass answers each with its height over the
+    // ground the sky pass draws (the DEM + the procedural detail at full detail), and the answer is read two frames
+    // later (a per-slot readback): bolt::fitTerrain then ends a ground stroke ON the ground, ends the branches that
+    // reach it, roots the streamers and lifts a sheet over a ridge. The CPU has no such ground: its DEM copy is 18 km
+    // a texel and the weather cube's (the flash list's ground point) is smoothed over ~20 km.
+    static constexpr uint32_t kBoltProbeMax = 1u << 15;
+    struct BoltProbeJob { uint32_t id, first, count; bool check; };
+    void createBoltGround(VulkanContext &ctx);
+    void destroyBoltGround(VkDevice device);
+    void recordBoltGround(VkCommandBuffer cmd, VulkanContext &ctx);
+    void boltGroundCollect();    // last answers -> fits
+    void boltGroundAsk(const glm::dvec3 &seaPoint, const glm::dvec3 &E, const glm::dvec3 &N, const glm::dvec3 &up);
+    VkBuffer boltProbeBuf = VK_NULL_HANDLE;
+    VkDeviceMemory boltProbeMem = VK_NULL_HANDLE;
+    void *boltProbeMapped = nullptr;     // the host's queries (mirrored)
+    void *boltProbeRead = nullptr;       // the slot's answers (readback)
+    int rbBoltProbe = -1;
+    VkDescriptorSetLayout boltProbeDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool boltProbeDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet boltProbeDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout boltProbePipeLayout = VK_NULL_HANDLE;
+    VkPipeline boltProbePipeline = VK_NULL_HANDLE;
+    std::array<uint64_t, 4> boltProbeBound_{};
+    uint32_t boltProbeCount = 0;                                      // points asked this frame
+    uint32_t boltProbeCopyS[VulkanContext::kMaxFramesInFlight] = {};  // points the slot's frame copied back
+    std::vector<BoltProbeJob> boltProbeJobsS[VulkanContext::kMaxFramesInFlight];
+    bool boltCheckAll_ = false;          // harness `lightning check`: measure every fitted tree again
+    uint64_t boltTreesBuilt_ = 0, boltDrawRebuilds_ = 0;
     // Per frame slot: the observer direction the slot's frame ran the lightning pass with, and whether it ran.
     glm::dvec3 cv2LightningObsDirS[VulkanContext::kMaxFramesInFlight] = {{0.0, 0.0, 1.0}, {0.0, 0.0, 1.0}};
     bool cv2LightningObsDirValidS[VulkanContext::kMaxFramesInFlight] = {};

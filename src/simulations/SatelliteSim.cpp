@@ -3692,6 +3692,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         }
         // The flash list is not refreshed: no bolts from a stale one (the rain keys on the lightning pass too).
         updateLightningBolts();
+        recordBoltGround(cmd, ctx);
         // The point sources the fill lists in kFireBuf (rockets, re-entry fireballs, meteor heads, comet heads, the
         // supernova, Moon-base glints) are drawn by the point passes, which Potato keeps; the Gaussians it also lists
         // (plumes, streaks, dust) are not drawn here. Without it every Watch of those landed on an empty sky and
@@ -3729,6 +3730,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // resolve, whose result this dispatch composites. Inside this timestamp bucket, so the
         // "cloud_march" figure is the clouds plus everything else here (cirrus, fog, aurora, beams).
         updateLightningBolts();   // the previous frame's flash list -> channels (SatelliteSimLightning.cpp)
+        recordBoltGround(cmd, ctx);   // the drawn ground under the new channels' vertices (bolt_ground.comp)
         {
             CpuTimer kesslerDustTimer(cpuAccumMs[CPU_KESSLER]);
             kesslerFillDust(glm::radians(camera.fovYDeg) / (float)std::max<uint32_t>(halfH, 1)); // the breakups' dust clouds (binding 23)
@@ -10185,6 +10187,13 @@ void SatelliteSim::recordFrameReadbacks(VkCommandBuffer cmd, VulkanContext &ctx)
     {
         const VkBufferCopy c{0, 0, kCv2FlashHeadBytes};
         vkCmdCopyBuffer(cmd, cv2FlashBuf, cv2FlashHeadBuf, 1, &c);
+    }
+    // The ground under the lightning channels' vertices asked this frame (recordBoltGround): read two frames on.
+    if (boltProbeCount > 0 && boltProbeBuf && boltProbePipeline && rbBoltProbe >= 0 && ctx.readbackBuffer(rbBoltProbe))
+    {
+        const VkBufferCopy c{0, 0, (VkDeviceSize)boltProbeCount * sizeof(glm::vec4)};
+        vkCmdCopyBuffer(cmd, boltProbeBuf, ctx.readbackBuffer(rbBoltProbe), 1, &c);
+        boltProbeCopyS[ctx.frameSlot] = boltProbeCount;
     }
 }
 

@@ -1,0 +1,42 @@
+#version 450
+#extension GL_EXT_control_flow_attributes : require // [[dont_unroll]] in terrain_detail.glsl
+
+// ── bolt_ground.comp — the DRAWN ground under the lightning channels' vertices (2026-11-21, issue_20261121_163317) ──
+// A flash's channel is geometry the host builds (LightningBolt.cpp). The host has no ground to end it on: its DEM
+// copy is 18 km a texel, and the flash list's ground point is the weather cube's ground, smoothed over ~20 km, so a
+// ground stroke ended in the air over a valley, ran on under a hillside, and a sheet under a low base passed through a
+// ridge. The ground the sky pass draws is the DEM + the procedural detail (terrain_detail.glsl), a function only the
+// GPU evaluates. So the host sends each new tree's vertices here once (SatelliteSim::boltGroundAsk: their places from
+// the observer's sea-level point, ENU), each is answered with its height over that ground at FULL detail (lodM 0: the
+// same answer at any distance, up to the float noise of the observer-relative frame), and the host fits the tree two
+// frames later (bolt::fitTerrain). Dispatched only in a frame with a tree to fit.
+layout(local_size_x = 64) in;
+
+layout(push_constant) uniform PC {
+    vec4  obsECEFDir;  // as everywhere (xyz the observer's direction: the frame the points are in)
+    uvec4 n;           // x = points
+} pc;
+
+layout(set = 0, binding = 0) uniform sampler2D earthElevTex;
+layout(set = 0, binding = 1) uniform sampler2D earthSpecTex;
+#define CLOUD_PARAMS_BINDING 2
+#include "cloud_params.glsl"
+// in: xyz a vertex from the observer's sea-level point (ENU, m). out: w its height over the drawn ground (m).
+layout(std430, set = 0, binding = 3) buffer Pts { vec4 pt[]; };
+
+#include "common.glsl"
+#include "terrain.glsl"
+#include "terrain_detail.glsl"
+
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.n.x) return;
+    vec3 enuX, enuY, enuZ;
+    enuBasis(pc.obsECEFDir.xyz, enuX, enuY, enuZ);
+    vec3  q  = pt[i].xyz;
+    vec3  qs = tdSphereOffset(q);   // the point on the sea-level sphere under it
+    float h0;
+    float h  = terrainHeightDetailed(earthElevTex, earthSpecTex, qs, enuX, enuY, enuZ, 0.0, kTdOctaves, h0);
+    pt[i].w = tdAltitude(q) - max(h, 0.0);
+}
