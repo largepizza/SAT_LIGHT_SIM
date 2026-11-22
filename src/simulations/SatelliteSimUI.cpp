@@ -9459,9 +9459,10 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
     // The light shafts in time-lapse (2026-11-10, issue_20261110_190018 "Light rays under timewarp": "at least have those
     // rays on for Ultra"). The shafts through a deck's gaps are the light march reading the occupancy clipmap's light
     // (cdc_light; with it off, or with the clipmap off, the deck reads flat), and the clipmap is off past cdc_max_rate x
-    // real time (4: 10x already lost them); the Sun volume (the clouds' shadow on the sea and the air's god rays) is off
-    // past a 1-s sim step (1 min/s at 30 fps). Ultra keeps both at any time rate (+~3-6 ms there, contended); the other
-    // tiers keep the compiled-in values (High = the defaults). A settings file saved at Ultra takes these at load (the
+    // real time (4: 10x already lost them); the Sun volume (the clouds' shadow on the sea and the air's god rays) restarts
+    // on a clock jump (since 2026-11-21 time running never switches it off, on any tier: SatelliteSim.h
+    // cv2SunVolumeMaxStepS). Ultra keeps the clipmap at any time rate and the volume through jumps (+~3-6 ms there,
+    // contended); the other tiers keep the compiled-in values (High = the defaults). A settings file saved at Ultra takes these at load (the
     // named preset re-derives its row in applySettingsJson); Custom keeps what it was saved with.
     cv2CdcMaxRate = (p == GraphicsPreset::Ultra) ? 1.0e6f : 4.0f;
     cv2SunVolumeMaxStepS = (p == GraphicsPreset::Ultra) ? 1.0e6f : 1.0f;
@@ -10205,6 +10206,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2EyeHeightNow = c.value("eye_height_now", cv2EyeHeightNow);
         cv2SunVolumeOn = c.value("sun_volume", cv2SunVolumeOn);
         cv2SunVolumeMaxStepS = settingClamp(c.value("sun_volume_max_step_s", cv2SunVolumeMaxStepS), 0.01f, 1e6f);
+        cv2SunVolumeTimelapse = c.value("sun_volume_timelapse", cv2SunVolumeTimelapse);
         cv2ReprojWindVertical = settingClamp(c.value("reproj_wind_vertical", cv2ReprojWindVertical), 0.0f, 1.0f);
         cv2CdcLight = c.value("cdc_light", cv2CdcLight);
         cv2CdcLightLevels = c.value("cdc_light_levels", cv2CdcLightLevels);
@@ -11036,6 +11038,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"eye_height_now", cv2EyeHeightNow},
         {"sun_volume", cv2SunVolumeOn},
         {"sun_volume_max_step_s", cv2SunVolumeMaxStepS},
+        {"sun_volume_timelapse", cv2SunVolumeTimelapse},
         {"reproj_wind_vertical", cv2ReprojWindVertical},
         {"cdc_light", cv2CdcLight},
         {"cdc_light_levels", cv2CdcLightLevels},

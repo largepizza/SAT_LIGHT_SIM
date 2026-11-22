@@ -1766,9 +1766,23 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         // out, as the resolve's obsDelta), so a ray baked rounds ago still stands where its clouds are while the eye flies
         // and under time warp. A level starting to fill (or a new cell / knot range) is cleared first, so its slots read
         // invalid until baked and the next level out stands in. On while the march draws clouds.
+        // A JUMP of the clock restarts it (cv2SunVolumeMaxStepS: its rays stand for the clouds and the Sun of before the step);
+        // time RUNNING does not, at any rate (2026-11-21, issue_20261121_162947 "the sun can pierce through huge storm
+        // clouds"). From 2026-11-08 the volume was off while ANY frame advanced sim time by more than that second: at
+        // 1 min/s at 30 fps (2 s a frame) the ground, the god rays and every cloud beyond its own light march lost the
+        // Sun's shadow, and the underside of a storm and the ground under it lit up orange. A jump = what drops the screen
+        // history too (clockJump: the part of the step the time scale did not run -- a time set, a scrub, a bookmark's or a
+        // report's time -- past history_time_jump_s, 30 s), past the limit AND past 4 x the frame before's: a camera
+        // path's or a cinematic's sim channel steps the clock every frame without the time scale, which is time running
+        // (at 1 min/s or 5 min/s no restart at all; faster, one where it starts). Off past 600 s of sim a frame (1 day/s
+        // and up: the history rule, nearPrev -- every level would restart each frame and hold nothing).
         {
+            const bool stvJump = clockJump && clockJumpS > std::max((double)cv2SunVolumeMaxStepS, 4.0 * cv2StvPrevJumpS);
+            cv2StvPrevJumpS = clockJumpS;
+            // (sun_volume_timelapse 0: the cut-off of 2026-11-08 .. 11-21, for an A/B in one app)
+            const bool stvCut = cv2SunVolumeTimelapse < 0.5f && std::fabs(dSimT) > (double)cv2SunVolumeMaxStepS;
             const bool stvOn = sinE > -0.1 && cloudFarBlend() < 0.999f && cv2SunVolumeOn > 0.5f   // (sun_volume 0: a diagnostic)
-                               && std::fabs(dSimT) <= (double)cv2SunVolumeMaxStepS;              // (time-lapse: see cv2SunVolumeMaxStepS)
+                               && !stvJump && !stvCut && std::fabs(dSimT) < 600.0;
             const double hHi = (double)hi + 1000.0;
             const glm::dvec3 dEye = rotD(eye, cDD, sDD) - cv2PrevEye;
             glm::vec4 lat[4];

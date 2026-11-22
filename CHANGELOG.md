@@ -152,6 +152,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **No clouds left on hillsides after moving.** Flying low over a ridge and dropping into a valley, the clouds that had
   been above the ridge no longer stay painted on the hill as blobs and striped bands until the view settles.
 - **Fewer shadow trails in time-lapse.** At 1 min/s and faster, storm shadows no longer trail behind growing towers as grey blobs.
+- **Storms keep their shadow in time-lapse.** At 1 min/s and faster the Sun no longer shines through a storm: the
+  ground under it and its underside stay dark as they are at 1x, instead of lighting up orange until time is paused.
 - **Billows in time-lapse.** At 1 min/s and faster, a cloud deck keeps its billows instead of turning into a flat,
   grainy sheet until time is paused.
 - **Billowy storms.** Thunderstorm towers are big rounded billows instead of a pitted, eroded crust.

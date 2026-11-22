@@ -5879,13 +5879,17 @@ private:
     float cv2AnvilErosion = 0.23f;          // "Anvil erosion" (clouds_v2.anvil_erosion): the plate's share of the Cb erosion (was 0.2, 2026-11-10 bake)
     float cv2AnvilLidLobes = 0.1f;         // clouds_v2.anvil_lid_lobes: the plate lid's share of the storm lobes
     float cv2AnvilUnderLobes = 0.7f;       // clouds_v2.anvil_under_lobes: the plate underside's share
-    // 2026-11-08: ... and only while a frame advances sim time by at most this (s; clouds_v2.sun_volume_max_step_s: 1 s is ~30x
-    // real time at 30 fps -- the sim step, not the time-scale setting: a path's sim channel or a cinematic runs time too).
-    // Its rays are baked over rounds;
-    // in time-lapse the storm towers grow and move faster than it refills, and their shadows trailed as grey blobs (artifacts.py,
-    // ITCZ report at 5 min/s: 29% of the 32-px tiles off the settled image by > 10 levels; without the volume 1.8%). Past
-    // it the light march lights the clouds (~+0.8 ms there).
+    // clouds_v2.sun_volume_max_step_s: a JUMP of the clock past this many seconds restarts the Sun transmittance volume (a
+    // time set, a scrub, a bookmark's time: the part of a frame's step the time scale did not run, when the screen history
+    // drops for it too (history_time_jump_s, 30 s) and it is more than 4x the frame before's; Ultra 1e6 = never under
+    // the 600-s rule). Time RUNNING never switches it off (2026-11-21,
+    // issue_20261121_162947): from 2026-11-08 any frame advancing sim time by more than this did, so at 1 min/s at 30 fps
+    // a storm lost its Sun shadow (the ground under it and its underside lit orange). That cut-off was for shadows
+    // trailing growing towers at 5 min/s; measured again with time really running (the ITCZ report, 32-px tiles off the
+    // settled image by > 10 levels): cut off 27%, volume kept 18% at 5 min/s; 29 / 25% at 1 min/s; 5.5 / 2.4% at 1 h/s.
     float cv2SunVolumeMaxStepS = 1.0f;
+    float cv2SunVolumeTimelapse = 1.0f;    // diagnostic (clouds_v2.sun_volume_timelapse, no UI): 0 = the cut-off of 2026-11-08 .. 11-21
+                                           // (the volume off while a frame's sim step is past sun_volume_max_step_s): the A/B
     float cv2SunVolumeOn = 1.0f;           // diagnostic (r1022): 0 = no Sun transmittance volume (clouds lit by the light march alone)
     // 2026-11-08 (tlbillows, issue_20261108_171948): the share of the noise slide's VERTICAL part the resolve reprojects
     // (clouds_v2.reproj_wind_vertical; 0 = horizontal only, the default; 1 = the old full 3D slide). The noise slides along a
@@ -6187,6 +6191,7 @@ private:
     float  cv2StvCellUsed[4] = {};
     double cv2StvHUsed = 0.0;
     bool   cv2StvOnNow = false;
+    double cv2StvPrevJumpS = 0.0;                  // last frame's clock step that the time scale did not run (s): a jump is > 4x it
     glm::dvec3 cv2CdcAnchor{0.0, 0.0, 1.0};        // the clipmap plane's anchor (a unit vector in the DRIFTED frame)
     bool   cv2CdcAnchorSet = false;
     int    cv2StvBoost = 0;                        // frames left of levels 0-1's second bake (catching up)
