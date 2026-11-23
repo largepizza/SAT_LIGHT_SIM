@@ -306,6 +306,22 @@ see the last bullets), `recordPrePass` → `recordSkyTaa`:
   sample toward its world-down neighbour by 1 - that, before the neighbourhood statistics, in both the 100% and the
   upscaling paths. The Moon's range (0.975) narrowed to 0.96-0.978 to make room; its crop at the limb is at the
   reload-to-reload floor (mean 0.12-0.21 levels either way).
+- **A sky sample's opaque-cloud depth is taken per texel (2026-11-23, wave c28):** `tCloudOcclude` (the depth a
+  sample that hits no surface writes when cloud is opaque in front, alpha 0.8) was the FILTERED alpha of the half-res
+  cloud target at the pixel centre. At the horizon a jittered sample that misses the ground sits over texels marched
+  to the ground; in a downpour those are opaque at the rain light's mean distance (a few hundred m), so that sample
+  wrote a near depth and the main pass depth-tested the rain particles (the near rain's whole veil) away there:
+  1-px dark dashes along the far horizon, moving with the jitter, worst in whiteout rain (the sky TAA off: none, its
+  pixel centres never miss over ground texels). Knockout: sky samples writing sky depth removed every dash; the
+  alpha markers (cloud 0.8, edge 0.98-0.995) made no difference, and the dashes predate the edge samples. Now the
+  joint-bilateral's depth-matched texels give the distance at an edge (each texel's gathered alpha, opaque where
+  > 1 m; opaque if those hold half the weight, at their weighted distance), and elsewhere the four gathered texels
+  the same way (the filtered alpha also mixed +d with the -60000 no-cloud marker into a near "opaque" value at plain
+  cloud edges). Madagascar supercell from inside its rain (issue_20261122_154502 shot 1's settings, 2036-11-27
+  13:16Z, -18.6623 47.582 agl 60, az 90 el 8): dark pixels (< 90 luma) in a 1920x300 horizon crop 860-1600 ->
+  0-19 per frame; the TAA off 0. GPU +0.08 ms at Chamonix (noise; 168 registers either way, +768 B binary), tstab
+  at the c26 ridge walk 1.21 -> 1.07, pitch 1.34 -> 1.05, c26's three edge views at the A-vs-A floor. A few 1x2
+  specks remain per frame (a sky-depth texel itself opaque at a near distance): not chased.
 - Run with `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation` after touching any of this; the harness run's
   `app_stdout.txt` holds the messages. `scripts/sky_taa.satcmd` (set `display.sky_taa` with `true`/`false`).
 

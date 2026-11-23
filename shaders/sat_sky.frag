@@ -4376,6 +4376,9 @@ void main() {
     vec3  cloudARgb = vec3(0.0);
     vec3  cloudBRgb = vec3(0.0);
     bool  meshTexelTested = false;   // the mesh's depth test already applied per texel (the joint-bilateral below)
+#ifndef SKY_LITE
+    float tCloudOccEdge   = -2.0;    // the opaque cloud's distance (km, -1 none) from the joint-bilateral's texels; -2 unset
+#endif
 #ifdef SKY_LITE
     // The 3x3 rgb blur below exists only to de-jag a beam's glow riding inside cloudA.rgb where a
     // cloud silhouette crosses it — and SKY_LITE cuts beams. Single tap: −16 texture samples on
@@ -4423,7 +4426,7 @@ void main() {
         if (dMax - dMin > 0.1 || lF - dMax > 0.1 || meshHit) {
             ivec2 cs = textureSize(cloudTargetA, 0);
             vec3  sa = vec3(0.0), sb = vec3(0.0);
-            float sw = 0.0;
+            float sw = 0.0, so = 0.0, sd = 0.0;   // + the opaque share and its distance (tCloudOcclude, below)
             [[dont_unroll]] for (int k = 0; k < 25; ++k) {
                 ivec2 o  = ivec2(k % 5, k / 5) - 2;
                 ivec2 tq = clamp(i0 + o, ivec2(0), ds - 1);
@@ -4446,11 +4449,18 @@ void main() {
                 sa += w * ak;
                 sb += w * bk;
                 sw += w;
+                // The cloud's opaque distance from the same texels (per texel: a filtered alpha is no distance).
+                vec4  gk = textureGather(cloudTargetA, uq, 3);
+                vec4  ok = vec4(greaterThan(gk, vec4(0.001)));
+                float nk = ok.x + ok.y + ok.z + ok.w;
+                so += w * 0.25 * nk;
+                sd += w * 0.25 * dot(ok, gk);
             }
             if (sw > 0.0) {
                 cloudARgb = sa / sw;
                 cloudBRgb = sb / sw;
                 meshTexelTested = meshHit;
+                tCloudOccEdge = (so >= 0.5 * sw) ? sd / max(so, 1e-9) : -1.0;
             }
         }
     }
@@ -4474,6 +4484,28 @@ void main() {
 #endif
     // Target A's alpha is a signed distance in km (include/cloud_occlusion.glsl): >= 0 opaque.
     float tCloudOcclude  = (cloudA.a >= 0.0) ? cloudA.a * 1000.0 : -1.0;
+#if !defined(SKY_ENV) && !defined(SKY_LITE)
+    // PER TEXEL, not the filtered alpha (2026-11-23, wave c28 "dark dashes along the horizon in heavy rain"): at a
+    // texel boundary where an opaque texel (+d km) meets one that is not (-its mean distance, or -60000 with no
+    // cloud), the bilinear alpha lands anywhere between, often just >= 0: an "opaque cloud" a few metres from the
+    // eye. On a sky sample that became this pixel's depth, so everything the main pass depth-tests (the rain
+    // particles: the near rain's whole veil in a downpour) was hidden there: 1-px dark dashes along the far
+    // horizon, where the half-res texels change from marched-to-the-ground to marched-to-the-sky, moving with the
+    // sky TAA's jitter. (The same blend was fixed for the air split, review 8b/9, and point sources, review 12.)
+    // Opaque where the opaque texels (> 1 m: a resolve-blended 0 is no distance) hold at least half of the bilinear
+    // weight, at their weighted distance. Where a surface edge crosses the grid the joint-bilateral's texels decide
+    // instead (tCloudOccEdge: those whose depth matches this sample's surface — the jittered sample that missed the
+    // ground over ground-marched texels was the dash; with only the four texels' rule ~1% of them were left).
+    {
+        vec4  gA = textureGather(cloudTargetA, cloudUV, 3);
+        vec2  fA = fract(cloudUV * vec2(textureSize(cloudTargetA, 0)) - 0.5);
+        vec4  wA = vec4((1.0 - fA.x) * fA.y, fA.x * fA.y, fA.x * (1.0 - fA.y), (1.0 - fA.x) * (1.0 - fA.y))
+                 * vec4(greaterThan(gA, vec4(0.001)));
+        float sA = wA.x + wA.y + wA.z + wA.w;
+        tCloudOcclude = (sA >= 0.5) ? dot(wA, gA) / sA * 1000.0 : -1.0;
+    }
+    if (tCloudOccEdge > -1.5) tCloudOcclude = (tCloudOccEdge >= 0.0) ? tCloudOccEdge * 1000.0 : -1.0;
+#endif
     // cloudB.a used to carry tEnterCombined, the fused entry distance this shader compared
     // against tSurface to suppress the whole composite. Every volumetric layer is now clamped to
     // the shared scene depth inside cloud_march.comp instead, so there is nothing to test here.
