@@ -864,7 +864,7 @@ json SatelliteSim::harnessStateJson()
     j["planets"] = planetsJson();
     // The v2 march's rate this frame: sparse (1 pixel in 4), full, half (checkerboard) or adaptive.
     j["clouds_v2"] = {{"rate", cv2AdaptiveNow ? "adaptive" : cv2HalfRateNow ? "half" : cv2FullRateNow ? "full" : cv2FullResHeldNow ? "sparse held" : "sparse"},
-                      {"still_frames", cv2StillFrames}, {"eye_still_frames", cv2EyeStillFrames}, {"history_valid", cv2HistoryValid}, {"cdc_active", cv2CdcActive}, {"orbit_block", cv2OrbitBlockNow}, {"orbit_gate", {{"on", cv2OrbitGate > 0.5f}, {"turn_px", cv2OrbitTurnPxNow}, {"debt_px", cv2OrbitDebtPx}, {"over", cv2OrbitOver}, {"still_frames", cv2OrbitStillFrames}, {"still_s", cv2OrbitStillS}, {"since_jump_frames", cv2OrbitSinceJumpFrames}, {"since_zoom_frames", cv2OrbitSinceZoomFrames}, {"turn_load", cv2OrbitTurnLoad}, {"accum_now", cv2OrbitAccumNow}}}, {"sparse_block_now", cv2SparseBlockNow}, {"smooth_tiles_now", cv2SmoothNow}, {"sparse_block_now", cv2SparseBlockNow}, {"cdc_slow_frames", cv2CdcSlowFrames}, {"cdc_epoch", cv2CdcEpoch},
+                      {"still_frames", cv2StillFrames}, {"eye_still_frames", cv2EyeStillFrames}, {"history_valid", cv2HistoryValid}, {"cdc_active", cv2CdcActive}, {"orbit_block", cv2OrbitBlockNow}, {"orbit_gate", {{"on", cv2OrbitGate > 0.5f}, {"turn_px", cv2OrbitTurnPxNow}, {"debt_px", cv2OrbitDebtPx}, {"over", cv2OrbitOver}, {"still_frames", cv2OrbitStillFrames}, {"still_s", cv2OrbitStillS}, {"since_jump_frames", cv2OrbitSinceJumpFrames}, {"since_jump_s", cv2OrbitSinceJumpS}, {"since_zoom_frames", cv2OrbitSinceZoomFrames}, {"turn_load", cv2OrbitTurnLoad}, {"accum_now", cv2OrbitAccumNow}}}, {"sparse_block_now", cv2SparseBlockNow}, {"smooth_tiles_now", cv2SmoothNow}, {"sparse_block_now", cv2SparseBlockNow}, {"cdc_slow_frames", cv2CdcSlowFrames}, {"cdc_epoch", cv2CdcEpoch},
                       {"sun_cloud_t", sunCloudTEased}, {"fast_lod", cv2FastLodNow},
                       {"shape_frame", cv2ShapeFrame}};   // review 22: the Sun disc's cloud transmittance
     // The Sun transmittance volume (S3, cloud_lightning.glsl cv2Stv): each level's fill frames, cell and lattice, the knots'
@@ -1937,6 +1937,22 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 r["trail_seconds"] = cineKeys().back().t;
             r["message"] = "report " + rep.value("id", std::string()) + " shot " + std::to_string(idx + 1) + "/" + std::to_string(count) +
                            ": " + sh.value("note", std::string()) + (keys >= 2 ? "  (trail loaded: path play)" : "");
+            // The shot's frame size against this window's (2026-11-22, issue_20261122_190752): the GPU cost goes with the
+            // pixel count, and the harness's default 1600x900 is 74% of the 1920x1009 a maximized 1080p window has. Replayed
+            // there, the report's view read 37.7 ms where the reporter's window runs it at 49.
+            if (sh.contains("capture") && sh["capture"].is_object() && ctx_)
+            {
+                const unsigned sw = sh["capture"].value("image_width", 0u), shh = sh["capture"].value("image_height", 0u);
+                const unsigned ww = ctx_->swapExtent.width, wh = ctx_->swapExtent.height;
+                r["shot_size"] = {sw, shh};
+                r["window_size"] = {ww, wh};
+                r["window_matches_shot"] = sw == 0 || (sw == ww && shh == wh);
+                if (sw != 0 && (sw != ww || shh != wh))
+                    r["message"] = r["message"].get<std::string>() + "  (WINDOW " + std::to_string(ww) + "x" + std::to_string(wh) +
+                                   " but the shot was " + std::to_string(sw) + "x" + std::to_string(shh) +
+                                   ": GPU ms will not match the report; relaunch with --window " + std::to_string(sw) + "x" +
+                                   std::to_string(shh) + ")";
+            }
             return Status::Done;
         }
         if (sub == "export")

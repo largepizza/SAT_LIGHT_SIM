@@ -5857,7 +5857,8 @@ private:
     float cv2OrbitBurstPx = 64.0f;       // "orbit_burst_px": pixels turned above that limit before the block is off
     float cv2OrbitWaitS = 0.8f;          // "orbit_wait_s": then no turn for this long ...
     float cv2OrbitWaitFrames = 16.0f;    // "orbit_wait_frames": ... and this many frames (8 of the held pixel + two rounds of the 2 x 2 grid)
-    float cv2OrbitJumpFrames = 64.0f;    // "orbit_jump_frames": frames after a jump or an eye step (the count of before)
+    float cv2OrbitJumpFrames = 64.0f;    // "orbit_jump_frames": frames after a jump or an eye step (the count of before) ...
+    float cv2OrbitJumpS = 1.0f;          // "orbit_jump_s": ... or this many seconds and orbit_wait_frames frames, if sooner (0 = frames only)
     float cv2OrbitZoomFrames = 32.0f;    // "orbit_zoom_frames": frames after a zoom (and orbit_wait_s)
     float cv2OrbitTurnAccum = 8.0f;      // "orbit_turn_accum": the resolve's accumulation cap while the block turns (0 = the still cap)
     float cv2HistoryJumpFrac = 0.0f;   // "history_jump_frac": an eye step is a jump past this share of the eye's height (0 = 20 km)
@@ -6260,6 +6261,7 @@ private:
     int   cv2OrbitStillFrames = 0;     // frames / seconds in a row without a turn
     float cv2OrbitStillS = 0.0f;
     int   cv2OrbitSinceJumpFrames = 0; // frames since a jump or an eye step (above full_rate_above_km)
+    float cv2OrbitSinceJumpS = 0.0f;   // ... and seconds (frame dt, capped at 0.1 s a frame)
     int   cv2OrbitSinceZoomFrames = 100000;   // frames / seconds since a zoom
     float cv2OrbitSinceZoomS = 1000.0f;
     float cv2OrbitTurnLoad = 0.0f;     // turning frames, forgotten over 32 (the accumulation cap follows it)
