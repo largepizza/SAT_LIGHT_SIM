@@ -159,8 +159,20 @@ glm::dvec3 SatelliteSim::weatherMapToEarth(const glm::dvec3 &d, double t) const
 }
 
 // ── The storms ──────────────────────────────────────────────────────────────────────────────────────────────────
+// The lightning pass's factors per storm kind (== cloud_v2_lightning.comp kCv2KindRate; weather.md "Lightning rates").
+float SatelliteSim::lightningKindRate(int kind)
+{
+    static const float k[6] = {1.0f, 2.0f, 12.0f, 3.0f, 3.0f, 0.35f};
+    return k[std::clamp(kind, 0, 5)];
+}
+float SatelliteSim::lightningKindArea(int kind)
+{
+    static const float k[6] = {0.15f, 0.3f, 1.0f, 1.0f, 1.0f, 0.3f};   // == kCv2KindArea
+    return k[std::clamp(kind, 0, 5)];
+}
+
 // A storm's state at t: the strongest tower now, its stage, the lightning estimate, the moment worth watching.
-void SatelliteSim::weatherStormState(const wx::Storm &st, double t, float lightningRate, WxStormRow &r)
+void SatelliteSim::weatherStormState(const wx::Storm &st, double t, float lightningRate, float stormRate, WxStormRow &r)
 {
     r.id = st.id;
     r.kind = (int)st.kind;
@@ -171,7 +183,8 @@ void SatelliteSim::weatherStormState(const wx::Storm &st, double t, float lightn
     int bestK = -1, domK = -1;
     float domPeak = -1.0f;
     r.towersAlive = 0;
-    r.flashesPerMin = 0.0f;
+    r.flashesPerMin = r.flashesTowers = r.flashesRegion = 0.0f;
+    float regionAct = 0.0f;
     const double age = t - st.t0;
     float bestAge = 0.0f, bestLife = 0.0f;
     for (int k = 0; k < (int)st.towerCount; ++k)   // (towerCount: up to 16 since the line systems)
@@ -182,6 +195,12 @@ void SatelliteSim::weatherStormState(const wx::Storm &st, double t, float lightn
         wx::Catalog::towerCycleAt(ts, age, s, cAge, cLife, sd, shift);   // (a plain tower: its own strength and age)
         if (s > 0.0f)
             ++r.towersAlive;
+        {
+            // ... and the storm REGIONS flash where a tower's deep cloud stands (any role), by the nearest tower's
+            // smoothstep(0.2, 0.6, strength).
+            const float q = std::clamp((s - 0.2f) / 0.4f, 0.0f, 1.0f);
+            regionAct += q * q * (3.0f - 2.0f * q);
+        }
         if (s > best)
         {
             best = s;
@@ -191,9 +210,10 @@ void SatelliteSim::weatherStormState(const wx::Storm &st, double t, float lightn
         }
         if (ts.role >= 1.0f)
         {
-            // cloud_v2_lightning.comp: a dominant tower flashes at "Lightning rate" x smoothstep(0.35, 0.75, strength).
+            // cloud_v2_lightning.comp: a dominant tower flashes at "Lightning rate" x its kind's factor x
+            // smoothstep(0.35, 0.75, strength).
             const float a = std::clamp((s - 0.35f) / 0.4f, 0.0f, 1.0f);
-            r.flashesPerMin += lightningRate * a * a * (3.0f - 2.0f * a);
+            r.flashesTowers += lightningRate * lightningKindRate((int)st.kind) * a * a * (3.0f - 2.0f * a);
             if (ts.peak > domPeak)
             {
                 domPeak = ts.peak;
@@ -202,6 +222,11 @@ void SatelliteSim::weatherStormState(const wx::Storm &st, double t, float lightn
         }
     }
     r.strength = best;
+    // The regions' flashes are not derived but MEASURED: the deep cloud a tower stands in holds ~1.9 of the rate's
+    // 20 x 20 km cells (2026-11-22: 22.3 a minute per unit rate at a squall line of 12 towers, 6.5 at an MCS of 4, 3.8
+    // at a supercell of 3, 1.2 / 0.17 at a multicell of 2 and an air-mass cell through their kinds' shares).
+    r.flashesRegion = stormRate * lightningKindArea((int)st.kind) * 1.9f * regionAct;
+    r.flashesPerMin = r.flashesTowers + r.flashesRegion;
     const bool line = wx::isLineSystem(st.kind);
     if (line && domK >= 0)
     {
@@ -248,7 +273,7 @@ bool SatelliteSim::weatherStormNow(uint64_t id, double t, WxStormRow &out)
     for (const wx::Storm *st : v)
         if (st->id == id)
         {
-            weatherStormState(*st, t, cv2LightningRate, out);
+            weatherStormState(*st, t, cv2LightningRate, cv2LightningStormRate, out);
             out.e = weatherMapToEarth(st->centreAt(t), t);
             const glm::dvec3 oe = glm::normalize(glm::dvec3(obsDir));
             out.distKm = std::acos(std::clamp(glm::dot(out.e, oe), -1.0, 1.0)) * kRe / 1000.0;
@@ -285,7 +310,7 @@ void SatelliteSim::weatherRefreshRows(bool force)
     for (const wx::Storm *st : v)
     {
         WxStormRow r;
-        weatherStormState(*st, now, cv2LightningRate, r);
+        weatherStormState(*st, now, cv2LightningRate, cv2LightningStormRate, r);
         if (r.towersAlive == 0 && r.stage != 0)
             continue;
         r.e = weatherMapToEarth(st->centreAt(now), now);
@@ -2155,6 +2180,7 @@ nlohmann::json SatelliteSim::weatherWindowJson()
                               {"lat_deg", glm::degrees(std::asin(std::clamp(r.e.z, -1.0, 1.0)))},
                               {"lon_deg", glm::degrees(std::atan2(r.e.y, r.e.x))}, {"strength", r.strength},
                               {"towers_alive", r.towersAlive}, {"towers", r.towerCount}, {"flashes_per_min", r.flashesPerMin},
+                              {"flashes_towers", r.flashesTowers}, {"flashes_region", r.flashesRegion},
                               {"tornado_in_min", r.tTorn0 > 0.0 ? nlohmann::json((r.tTorn0 - now) / 60.0) : nlohmann::json()},
                               {"tornado_min", r.tTorn0 > 0.0 ? nlohmann::json((r.tTorn1 - r.tTorn0) / 60.0) : nlohmann::json()},
                               {"passage_in_min", r.tPass > 0.0 ? nlohmann::json((r.tPass - now) / 60.0) : nlohmann::json()}};
@@ -2164,6 +2190,37 @@ nlohmann::json SatelliteSim::weatherWindowJson()
         n.push_back(rowJ(r));
     for (const WxStormRow &r : wxWorld)
         w.push_back(rowJ(r));
+    {   // The whole catalog's flashes as the rows estimate them (2026-11-22): per kind the storms alive, those flashing,
+        // their flashes a minute; `per_s` the world's total (LIS / OTD: ~45 a second).
+        static const char *kK[6] = {"air_mass", "multicell", "supercell", "squall_line", "mcs", "other"};
+        int alive[6] = {}, flashing[6] = {};
+        double fl[6] = {};
+        if (stormCatalog && stormObjects)
+        {
+            const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            std::vector<const wx::Storm *> v;
+            stormCatalog->stormsAt(now, v);
+            for (const wx::Storm *st : v)
+            {
+                WxStormRow r;
+                weatherStormState(*st, now, cv2LightningRate, cv2LightningStormRate, r);
+                const int k = std::clamp(r.kind, 0, 5);
+                if (r.towersAlive > 0)
+                    ++alive[k];
+                if (r.flashesPerMin > 0.0f)
+                    ++flashing[k];
+                fl[k] += (double)r.flashesPerMin;
+            }
+        }
+        nlohmann::json kinds;
+        double total = 0.0;
+        for (int k = 0; k < 6; ++k)
+        {
+            kinds[kK[k]] = {{"storms", alive[k]}, {"flashing", flashing[k]}, {"flashes_per_min", fl[k]}};
+            total += fl[k];
+        }
+        j["world_flashes"] = {{"per_s", total / 60.0}, {"per_min", total}, {"kinds", kinds}};
+    }
     j["near"] = n;
     j["world"] = w;
     nlohmann::json ns = nlohmann::json::array();

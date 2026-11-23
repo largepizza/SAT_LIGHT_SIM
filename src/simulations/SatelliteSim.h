@@ -928,7 +928,7 @@ struct GpuCloudV2Params
                              // top variation, w Cb fill
     glm::vec4 lightning;     // x flashes / min / tower, y cloud glow gain, z bolt gain, w sim time (s, wrapped)
     glm::vec4 lightVol;      // x first level baked this frame, y half-extent (m), z top (m), w godrays
-    glm::vec4 misc2;         // x red-sprite chance per ground stroke, y sprite brightness, z fast motion (0/1), w adaptive parallax (px)
+    glm::vec4 misc2;         // x red-sprite chance per ground stroke, y "Cloud-to-ground share" (the lightning pass; 2026-11-22), z fast motion (0/1), w adaptive parallax (px)
     glm::vec4 fog;           // x fog amount, y fog depth (m), z fog extinction (1/m), w dust amount
     glm::vec4 fog2;          // x dust scale height (m), y dust extinction (1/m), zw free
     glm::vec4 sunE;          // xyz the Sun, Earth-fixed
@@ -4470,7 +4470,8 @@ private:
         float strength = 0.0f;           // the strongest tower now
         int towersAlive = 0, towerCount = 0;
         int stage = 0;                   // 0 forming, 1 growing, 2 mature, 3 decaying
-        float flashesPerMin = 0.0f;      // estimate: lightning rate x the dominant towers' activity (cloud_v2_lightning.comp)
+        float flashesPerMin = 0.0f;      // estimate: the towers' + the storm regions' flashes, as cloud_v2_lightning.comp makes them
+        float flashesTowers = 0.0f, flashesRegion = 0.0f;   // its two parts
         float score = 0.0f;
         // Milestones (2026-10-23): its tornado's touchdown / lift (0 none: SatelliteSim::tornadoOf), and when a line
         // system's convective line passes over the observer where they stand now (0 none within its life).
@@ -4481,7 +4482,12 @@ private:
     int wxStormsAlive = 0;
     double wxRowsWall = -1e300, wxRowsSim = -1e300;
     void weatherRefreshRows(bool force);
-    static void weatherStormState(const wx::Storm &st, double t, float lightningRate, WxStormRow &r);
+    static void weatherStormState(const wx::Storm &st, double t, float lightningRate, float stormRate, WxStormRow &r);
+    // The lightning pass's factors per storm kind (wx::StormKind; cloud_v2_lightning.comp kCv2KindRate, kCv2KindArea: keep in
+    // step): x "Lightning rate: Cb towers" for a dominant tower, and the share of the storm REGIONS' candidates kept
+    // round a storm of that kind (weather.md "Lightning rates").
+    static float lightningKindRate(int kind);
+    static float lightningKindArea(int kind);
     bool weatherStormRowCached(uint64_t id, WxStormRow &out);           // this refresh's row, else computed now
     bool wxWorldAllKinds = false;        // the worldwide list: organised storms only (off) or every cell
     uint64_t wxSelStorm = 0;             // the storm picked on the radar / in the list (highlighted)
@@ -5783,7 +5789,10 @@ private:
     float cv2ShaftTempC = 15.0f;          // the air 500 m over the ground under the eye (deg C): the shafts' rain / snow
     float cv2SeaTempC = 15.0f;            // the sea-level air temperature under the eye (deg C; the droplet phase's glaciation)
     float cv2EyeTempC = 15.0f;            // the air temperature at the eye (deg C; rain / sleet / snow), per frame
-    float cv2LightningRate = 1.1f;       // flashes per minute of a full-strength (anvil-reaching) tower; 0 = off
+    // Flashes per minute of an ORDINARY cell's full-strength (anvil-reaching) tower; 0 = off. x its storm's kind in the
+    // lightning pass (kCv2KindRate: multicell 2, supercell 12, line systems 3, a cyclone's towers 0.35). 3.0 since
+    // 2026-11-22 (it was 1.1 for every kind: a supercell flashed once a minute); weather.md "Lightning rates".
+    float cv2LightningRate = 3.0f;
     float cv2LightningGlow = 0.088f;      // the flash's light in the cloud
     float cv2LightningBolt = 1.25f;        // the cloud-to-ground channels
     float cv2LightningSprites = 0.013f;    // chance a ground stroke sets off a red sprite 50-90 km up (0 = never)
@@ -6100,7 +6109,10 @@ private:
     float cv2DropDistM = 33.0f;        // the rain particles' reach (m; each doubling is one more level, at most 64)
     float cv2RainParticlesK = 16.0f;   // drops in the nearest box, thousands (each farther level holds twice as many)
     float cv2RainShutterMs = 33.0f;    // a drop's streak: how far it falls in this time (ms)
-    float cv2LightningStormRate = 0.53f;   // flashes / min per 20 x 20 km of storm at full strength (whole storms flash)
+    float cv2LightningStormRate = 1.0f;    // flashes / min per 20 x 20 km of a storm's deep cloud away from its towers (x its kind's share, kCv2KindArea; 0.53 until 2026-11-22, when no region flashed at all)
+    // "Cloud-to-ground share" (clouds_v2.lightning_cg_share, slot 629, 2026-11-22): the share of an ordinary storm's
+    // flashes that reach the ground (x 0.4 in a supercell: cloud_v2_lightning.comp kCv2KindCg); cv2.misc2.y.
+    float cv2LightningCgShare = 0.30f;
     float cv2LightningTendrils = 1.23f;    // the channels' branching (x the branch and tendril counts)
     float cv2LightningLight = 1.0f;        // 1 = a flash lights the cloud through the cloud around it (flash_volume.glsl), 0 = by distance alone
     float cv2LightningColour = 1.0f;       // "Lightning glow colour": 0 = the near-white stroke of 2026-11-21, 1 = the physical colours (BoltColour)
@@ -9741,7 +9753,7 @@ private:
     bool draggingPhoto[56] = {};
     // One slot count for all four per-slider arrays (and cloudBufs in buildCloudSliderRows), so they
     // cannot drift apart again. 112-151: the clouds v2 sliders (2026-09-27).
-    static constexpr int kCloudSliderSlots = 629;   // 628 (2026-11-22): lightning glow colour; was 628; 531 FREE (2026-11-18: "Fractus" removed, issue_20261118_210125; not renumbered); 627 (2026-11-18): Sun size (x real) (Sky tab); was 627; 626 (2026-11-16): mouse sensitivity (Controls); was 626; 625 (2026-11-14): auto-level up to (km) (Controls); was 625; 624 (2026-11-14): Starship orbital vent (Launches); was 624; 616-623 (2026-11-12 wave, reserved per cluster): 616-619 ocean reflections, 620-621 model glare, 622-623 storm shape; was 616; 608-615 (2026-11-11 wave, reserved per cluster): 608-611 hurricane look, 612-613 smalls, 614-615 hurricane perf; was 608; 560-607 (2026-11-10 wave, reserved per cluster): 560-567 flowmaps, 568-575 storms, 576-579 horizon, 580-583 grain, 584-591 optics, 592-595 smalls, 596-599 rainperf, 600-607 hurricane shape; was 560; 549-550 (2026-11-08, pucks): shallow cumulus heaps / depth; 544-548 (2026-11-08): single-storm anvils, storm complex spacing, cirrus flow window, (547 free: the retired CDO plate), storm mass; 522-524 free (the CDO plate's top sliders, retired 2026-11-08); 553-555 (2026-11-05): cumulus core, bubble warp, head width; 552 (2026-11-05, envelope): cumulus tower spread (552-559 reserved); 544-551 (2026-11-05, storm-above): reserved, none used; 536-538 (2026-11-05, light3): AgX range, white balance from cloud sunlight, auto exposure target; 528-535 (2026-11-05, vertical): cloud base LCL / cell / regional spread, fractus, mid wisps, orographic amount / wind / direction; 496-498 (2026-11-05, shape2): bubble hierarchy / size / base; 504-511 (2026-11-05, storm3): anvil fibres, storm bubbles, anvil erosion; 512-513 (2026-11-05, light2): white balance reference / hold; 520-524 (2026-11-05, cirrus-hurr): cirrus fibres / hooks, hurricane top smoothing / streaks / density; 496-527: the 2026-11-05 night wave; 494-495 (2026-11-04): cumulus bubbles;   // 440-441 (2026-11-03): turbulence cell size / speed; 450-452: anvil formation / decay time, tower growth time; 455-461: hurricane shape; was 435;   // 428-434 (2026-10-30): the second stage's jellyfish (streaks, nucleus, staging cloud); was 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
+    static constexpr int kCloudSliderSlots = 630;   // 629 (2026-11-22): cloud-to-ground share (Weather > Lightning); was 629; 628 (2026-11-22): lightning glow colour; was 628; 531 FREE (2026-11-18: "Fractus" removed, issue_20261118_210125; not renumbered); 627 (2026-11-18): Sun size (x real) (Sky tab); was 627; 626 (2026-11-16): mouse sensitivity (Controls); was 626; 625 (2026-11-14): auto-level up to (km) (Controls); was 625; 624 (2026-11-14): Starship orbital vent (Launches); was 624; 616-623 (2026-11-12 wave, reserved per cluster): 616-619 ocean reflections, 620-621 model glare, 622-623 storm shape; was 616; 608-615 (2026-11-11 wave, reserved per cluster): 608-611 hurricane look, 612-613 smalls, 614-615 hurricane perf; was 608; 560-607 (2026-11-10 wave, reserved per cluster): 560-567 flowmaps, 568-575 storms, 576-579 horizon, 580-583 grain, 584-591 optics, 592-595 smalls, 596-599 rainperf, 600-607 hurricane shape; was 560; 549-550 (2026-11-08, pucks): shallow cumulus heaps / depth; 544-548 (2026-11-08): single-storm anvils, storm complex spacing, cirrus flow window, (547 free: the retired CDO plate), storm mass; 522-524 free (the CDO plate's top sliders, retired 2026-11-08); 553-555 (2026-11-05): cumulus core, bubble warp, head width; 552 (2026-11-05, envelope): cumulus tower spread (552-559 reserved); 544-551 (2026-11-05, storm-above): reserved, none used; 536-538 (2026-11-05, light3): AgX range, white balance from cloud sunlight, auto exposure target; 528-535 (2026-11-05, vertical): cloud base LCL / cell / regional spread, fractus, mid wisps, orographic amount / wind / direction; 496-498 (2026-11-05, shape2): bubble hierarchy / size / base; 504-511 (2026-11-05, storm3): anvil fibres, storm bubbles, anvil erosion; 512-513 (2026-11-05, light2): white balance reference / hold; 520-524 (2026-11-05, cirrus-hurr): cirrus fibres / hooks, hurricane top smoothing / streaks / density; 496-527: the 2026-11-05 night wave; 494-495 (2026-11-04): cumulus bubbles;   // 440-441 (2026-11-03): turbulence cell size / speed; 450-452: anvil formation / decay time, tower growth time; 455-461: hurricane shape; was 435;   // 428-434 (2026-10-30): the second stage's jellyfish (streaks, nucleus, staging cloud); was 428;   // 400-427 (2026-10-28): the settings round-up (Sky tab, Weather fires / haboobs, ocean motion filter, plume dispersal, TAA weights); was 357;   // 355-356 (2026-10-27): Moon relief / shadows; 354 (2026-10-27): the Sun's sea glitter; 353 (2026-10-26): the ground's light under cloud; 352 (2026-10-26): the sky's multiple scattering; 349-351 (2026-10-26): the tonemap; 346-348 (2026-10-26): the sky's light on the clouds; 342-345 (2026-10-26): delta-Eddington multiple scattering; 341: terrain shadows at half res; 339-340 (2026-10-25): smooth tiles; 330-334 (2026-10-23): rain / snow motion (fall, surface wind, storm outflow,
     // gust fronts, drop persistence); 326: "Tropical cyclones (x)"; 325: "Storm complexes"; 321-324 (2026-10-23): storm
     // objects (frequency, life, cloud field, moat);
     // was 321: 313-320 (2026-10-21, merged 10-22): the exhaust sliders (Launches);
@@ -10213,6 +10225,31 @@ private:
     void *boltColourMapped = nullptr;
     GpuBoltColour boltColourFill() const;
     uint64_t boltTreesBuilt_ = 0, boltDrawRebuilds_ = 0;
+    // Harness `lightning stats` (2026-11-22, the lightning-rate request): every flash the list showed since
+    // `lightning stats on`, counted once (by id), with the storm it belongs to and what of a ground stroke's descent
+    // was on screen. Off (the default): nothing is kept, nothing is computed.
+    struct BoltStat
+    {
+        uint32_t id = 0;
+        int kind = 0, stormKind = -1;
+        uint64_t stormId = 0;
+        double startS = 0.0;                    // J2000 s: the leader's start
+        float dur = 0.0f, strength = 0.0f, base = 0.0f, top = 0.0f;
+        float towerKm = -1.0f;                  // the origin's distance from the nearest tower's axis
+        float distKm = 0.0f;                    // from the eye when first seen
+        glm::dvec3 originEcef{0.0}, groundEcef{0.0};
+        int frames = 0, litFrames = 0;          // frames on the list / with intensity >= 0.05
+        float litS = 0.0f;                      // sim seconds with intensity >= 0.05
+        float peakI = 0.0f;
+        float trunkPx = 0.0f;                   // a ground stroke's descent below the cloud: the most of its projected length inside the frame (px)
+        float trunkPxAll = 0.0f;                // ... in front of the camera, the frame's edges ignored (px)
+    };
+    bool boltStatsOn_ = false;
+    double boltStatsLast_ = -1.0, boltStatsSimS_ = 0.0;
+    uint64_t boltStatsFrames_ = 0, boltStatsCapFrames_ = 0, boltStatsSegDropFrames_ = 0;
+    uint32_t boltStatsMaxList_ = 0, boltStatsMaxSegs_ = 0, boltStatsMaxWants_ = 0, boltStatsMaxThunder_ = 0;
+    std::unordered_map<uint32_t, BoltStat> boltStats_;
+    void boltStatNote(const float *rec, const BoltTree &t, double now, float dtS, const glm::dvec3 &eye);
     // Per frame slot: the observer direction the slot's frame ran the lightning pass with, and whether it ran.
     glm::dvec3 cv2LightningObsDirS[VulkanContext::kMaxFramesInFlight] = {{0.0, 0.0, 1.0}, {0.0, 0.0, 1.0}};
     bool cv2LightningObsDirValidS[VulkanContext::kMaxFramesInFlight] = {};

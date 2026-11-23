@@ -1171,8 +1171,10 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   (organised only unless "Include single cells"), from `wx::Catalog::stormsAt` (rows copied: its pointers die on the next
   call; at most twice a second): kind (an unknown `StormKind` is "Storm"; every loop goes to `towerCount`), stage from
   the strongest tower's lifecycle (forming / growing / mature / decaying), age, time left, distance / bearing, strength,
-  flashes a minute ESTIMATED as the lightning pass does (rate x smoothstep(0.35, 0.75, strength) of each dominant
-  tower). Go to = the harness `storms go`'s placement (1.5 km ASL, 50 km upwind of its strongest tower against the
+  flashes a minute ESTIMATED as the lightning pass makes them (`weatherStormState`: the towers' rate x the kind's factor
+  x smoothstep(0.35, 0.75, strength) of each dominant tower, + the regions' rate x the kind's share x 1.9 measured cells
+  of deep cloud a tower x smoothstep(0.2, 0.6, strength) of every tower; "Lightning rates and kinds" under Lightning;
+  harness `weather state` -> each row's `flashes_towers` / `flashes_region` and `world_flashes`, the catalog's total). Go to = the harness `storms go`'s placement (1.5 km ASL, 50 km upwind of its strongest tower against the
   anvil's shear, looking at it 8 deg up); Watch = its mature moment (dominant tower grown + 30 min, before it decays) at
   1x, then Go to ("Replay" once it is past). **Controls**: storm objects, frequency, lifetime, cloud field, moat, both
   lightning rates (own rows: the settings' slider rows are tied to the settings window) + "All weather settings".
@@ -1255,8 +1257,9 @@ lists its sections and topics with line numbers. New notes go next to the sectio
 - **Lightning + thunder (rebuilt 2026-10-05; `cloud_v2_lightning.comp`, `SatelliteSimLightning.cpp`,
   `lightning.vert/.frag`, `include/lightning_draw.glsl`):** WHICH flashes happen is the GPU's: one workgroup walks two
   lattices around the observer out to the cloud tops' horizon — the Cb TOWERS (dominant, anvil-reaching: "Lightning
-  (flashes/min/tower)" `lightning_rate`) and STORM REGIONS over every deep-convective, raining region of the weather
-  cube ("Lightning rate: storms (/min per 20 km)" `lightning_storm_rate_per_area` 0.5, slot 267, `cv2.lightning2.x`) —
+  (flashes/min/tower)" `lightning_rate`) and STORM REGIONS round the storm objects ("Lightning rate: storms (/min per
+  20 km)" `lightning_storm_rate_per_area` 1.0, slot 267, `cv2.lightning2.x`; how often and what kind: "Lightning rates
+  and kinds" below) —
   so whole storms flash, not only their towers. The regions are a FIXED 64 x 64 equal-angle lattice on all six cube
   faces (~156 km, the same at any eye altitude: the first cut's cells grew with altitude, so descending with time
   paused reshuffled every flash); each draws candidates at the full rate at random points and keeps each with the
@@ -1266,13 +1269,76 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   flashes in clear air above the capped cumulus away from towers (user snap 1). Measured: snap 1 (9.9 km) 27 flashes
   a minute out to ~360 km; snap 2 (609 km) ~10/s over the visible disc. Deterministic in sim time (`cv2FlashIntensity`: a 50-ms stepped leader, then
   1-4 return strokes ~35 ms over a continuing current; in-cloud flashes 2-6 softer pulses). Record (`CV2Flash`, 96 B,
-  `kCv2FlashMax` 128): origin, ground point, KIND (0 in cloud, 1 cloud-to-ground ~30% where strong, 2 red sprite, 3
+  `kCv2FlashMax` 128): origin, ground point, KIND (0 in cloud, 1 cloud-to-ground: "Cloud-to-ground share", 2 red sprite, 3
   spider lightning just under the base), seed, age, the cloud's base/top, strength, duration; and the origin and the
   strike point once more EARTH-FIXED (`e`, `f`: a unit direction + an altitude, computed from the flash's hashes
   alone, the same bits whoever looks; the first two are floats about the Earth's centre in the observer's frame, 0.5 m
   steps that differ from place to place). Ground strokes leave the cloud's flank and land 1.5-9 km aside (slanted), on
   the DEM (`cv2StrikeGround`, ~4 km footprint; it was the weather cube's ground, smoothed over ~20 km: strokes ended
   hundreds of metres over a valley or inside a hillside).
+  **Lightning rates and kinds (2026-11-22, the user's lightning-rate request, a follow-up to issue_20261121_163317;
+  `cloud_v2_lightning.comp` `kCv2KindRate` / `kCv2KindCg` / `kCv2KindArea`, `SatelliteSim::lightningKindRate` /
+  `lightningKindArea`).** A storm flashes as often as a real storm of its KIND. (1) **Towers.** "Lightning rate: Cb
+  towers" (`lightning_rate`, 3.0, slider 0-30) is the flashes a minute of an ORDINARY cell's full-strength dominant
+  tower; a dominant tower flashes at that x smoothstep(0.35, 0.75, strength) x its storm's kind: air-mass 1, multicell
+  2, supercell 12, squall line and MCS 3 (per tower: a line has 3-16), a tropical cyclone's towers 0.35; up to 8 flashes
+  a 2-s slot (240 a minute from one tower; it was 3). The kind reaches the pass in the tower's own record: its reach
+  (`c.x`) is rounded UP to a multiple of 8 m and the kind (`wx::StormKind`, 0..5) added (`updateStorms`), so `int(c.x) &
+  7` is the kind and the reach is at most 13 m longer; the cloud shaders read `c.x` as the reach it is (no shared
+  include is touched: cloud_v2_march.comp's SPIR-V is byte-identical). (2) **Storm regions.** "Lightning rate: storms"
+  (`lightning_storm_rate_per_area`, 1.0, slider 0-10) is the flashes a minute per 20 x 20 km of a storm's deep cloud
+  away from its dominant towers (flanking towers, the thick anvil near the core, a line's cells between its towers), kept with the
+  kind's share (air-mass 0.15, multicell 0.3, supercell / squall line / MCS 1, tropical 0.3). A candidate's storm is
+  the storm OBJECT: the strongest tower whose reach holds it (smoothstep(0.2, 0.6, strength) x a taper from 0.3 to 1 of
+  the reach) x the map's cover there, and it flashes only in ONE run of drawn cloud at least 1.5 km deep whose top is
+  over 0.55 of the cumulonimbus' height (the mixed-phase heights: not the storm's congestus field, not a cumulus under an
+  anvil with clear air between). Until this date the candidate's strength was the weather MAP's: smoothstep(0.55, 0.8,
+  type) x cover x (0.3 + 0.7 rain); since the storm objects (2026-10-23) the map's type stops at congestus (0.62, a
+  storm's stamp 0.55-0.72) and its rain is cleared inside a storm's envelope, so the product was ~0.03 and **no
+  region flashed at all**: measured 0 flashes in 1.0-1.5 sim min at rate 5 (ten times the default) round a supercell,
+  a multicell, a squall line and an MCS. The slider did nothing for a month, and every flash stood within ~10 km of a
+  dominant tower's axis. (3) **Cloud-to-ground share.** "Cloud-to-ground share" (`lightning_cg_share`, slot 629, 0-1,
+  default 0.30, `cv2.misc2.y`, which was a constant 1 no shader read) is the share of an ordinary storm's flashes that
+  reach the ground, x 0.4 in a supercell (12%); of the rest, as before, 4 in 7 crawl under the base (spider) and 3 in 7
+  stay in the cloud. It was 0.3 x smoothstep(0.3, 0.6, strength), the same number for a tower above strength 0.6.
+  **Sources.** Flash rates: the most likely peak of Florida's many small storms is 1-10 a minute and no severe storm
+  peaked under 60 (Williams et al. 1999, total lightning by LDAR; severe peaks to over 500); the fifth power of the
+  cloud top's height (Williams 1985; Price and Rind 1992: F = 3.44e-5 H^4.9 a minute over land, 2.7 at 10 km, 14 at 14
+  km, 49 at 18 km); mesoscale convective complexes sustain over 1000 GROUND flashes an hour (Goodman and MacGorman 1986,
+  as cited; not read in the original). The world: 44 +- 5 flashes a second (Christian et al. 2003, OTD), 46 (Cecil et al.
+  2014, LIS / OTD). The share to ground: IC : CG 2.64-2.94 over the contiguous United States (25-27% to ground), s.d.
+  1.1-1.3, from ~1 over the Rockies and the Appalachians to 8-9 over the central and upper Great Plains (11%), with
+  little evidence of a trend with latitude and the storm's type and organisation named as the likelier cause (Boccippio
+  et al. 2001): so no latitude term here, and the supercell's factor. A ground flash: 3-5 return strokes typically,
+  ~60 ms apart (Rakov and Uman 2003; Shindo and Uman 1989: 65 ms), ~250 ms from first to last, a continuing current
+  over 40 ms in 30-50% of them: `cv2FlashIntensity`'s 1-4 strokes over 0.25-0.85 s are in that range and are not changed.
+  **Measured (2026-11-22; RTX 3070 Ti, 1600x900; five storms at 2036-07-10 05:30 UTC, night; `lightning stats` over
+  2.5-9 sim min at 10x, each flash counted once and given to the storm whose tower stands nearest; the f365069e
+  lightning SPV at 1.1 / 0.53 -> this one at 3.0 / 1.0 / 0.30; qa/waves/20261122/evidence/c14/rates.txt).** Flashes a
+  minute (to ground): air-mass cell (9 N, strength 0.63-0.85) 1.0 (0.3) -> 3.3 (0.9, 27%); multicell (34 N, 2 towers)
+  1.8 (0.3) -> 13.1 (4.5, 33-35%); supercell (35 N) 1.2 (0.2) -> 37.6 (5.5, 15%); squall line (25 N, 12 towers) 3.8
+  (1.5) -> 40.8 (14.9, 37%); MCS (27.5 N, 4 towers) 2.6 (1.1) -> 22.9 (7.1, 31%). The towers alone at rate 3: 3.7 /
+  10.6 / 31.5 / 27.9 / 16.9; the regions alone per unit of their rate: 0.17 / 1.2 / 3.8 / 22.3 / 6.5 (~1.9 cells of
+  deep cloud a tower). The Weather window's estimate against these: 3.0 / 12.0 / 40.1 / 43.6 / 22.3, within 10%. The
+  whole catalog (`weather state` -> `world_flashes`, ~180 storms alive, ~100 flashing): 18.6 flashes a second at that
+  moment (2.0 before), against the world's 44-46: the catalog holds a tenth of the world's ~2000 storms, weighted to
+  the organised kinds, so physical rates per storm do not reach the world's total. Budgets (the squall line's view,
+  76.7 flashes a minute in reach): the list's high-water mark 6 of 128; the cost, the thunder mix and the hitch check
+  at these rates are NOT measured. **What a viewer sees of the ground strokes (`lightning goto` + a capture with and
+  without the channel; a stroke is SEEN at >= 200 px over 12 levels brighter, 32 or 64 where rain at the eye
+  flickers).** The supercell from 20 km (1 km outside its rain's edge: the rain at the eye is 1.0 at 13-14 km from the
+  tower, 0.56 / 0.32 / 0.12 / 0.05 / 0.001 at 15-19 km, 0 at 20): before, 1 ground stroke in 5.3 min, 66 px drawn; now
+  12 in 2.5 min, 1 seen (0.4 a minute), 11 faint (4-77 px), though 11 of the 12 have 84-352 px of their descent inside
+  the frame. The multicell from 12 km: 0 of 1 -> 0 of 12 (7 faint, 4 hidden). From under either base, in the rain 5 km
+  from the tower: 0 seen before and now. A ground stroke is lit 0.46-0.54 s (28-33 frames at 60 fps) above 5% of its
+  peak. So the rates are physical and the strokes are generated, but **rain hides them**: a tower's strokes start
+  within ~10 km of its axis and land 1.5-9 km aside, inside a rain footprint ~19 km in radius. Tried and NOT kept (same
+  views, 12 strokes each): strike points heading away from the tower's axis, and strike points preferring ground where
+  the rain is thin within 21.6 km: 1 of 12 seen at the supercell and 0 of 12 at the multicell with either. Open: a
+  hand-placed stroke 3, 5, 8 and 12 km in front of that eye draws 79 / 46 / 25 / 43 px (over 32 levels), at 3 km only
+  in the horizon's rows; whether 1-2 km of light rain (rate 0.05-0.12) should take the whole channel in the cloud
+  composite (`cloudPointVisibilityAt`) is not established. Harness: `lightning stats`, `lightning goto`
+  (docs/HARNESS.md); the scripts and rows in qa/waves/20261122/evidence/c14/.
   **The channel (rebuilt 2026-11-21, issue_20261121_163317; LightningBolt.cpp / .h, namespace `bolt`).** HOW a flash
   looks is the host's: `updateLightningBolts` reads the previous frame's list (only a list the pass wrote last frame:
   `cv2LightningObsDirValid`, one-shot) and builds each new flash's CHANNEL once (`buildBoltTree` -> `bolt::build`), **a

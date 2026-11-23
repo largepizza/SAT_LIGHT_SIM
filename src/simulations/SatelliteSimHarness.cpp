@@ -211,7 +211,7 @@ const char *kHelp =
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "exposure [auto|hold|fast]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s] [wait=1]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [cdc=<spv>] [brick=<spv>] [nlc=<spv>] [smoke_layer=<spv>] [sky=<spv>] [sky_taa=<spv>] [sky_lite=<spv>] [wg=<X>x<Y>]; lightning [spawn kind= dist_km= az= ...|check [off]|rebuild|light [side=] [single=] [src_m=] [level=] [ncap=] [e_side=] [e_single=] [e_skin_m=] [e_level=] [e_od=] [e_od_light=] [e_view=]|color [gain=] [core=r,g,b] [sheath=r,g,b] [sheath_share=] [sheath_order=] [sheath_leader=] [sheath_m=] [sheath_taper=] [glow=r,g,b] [glow_share=] [wet=r,g,b] [wet_share=] [wet_wide=] [wet_floor=] [wet_gain=] [air=r,g,b] [cloud=r,g,b] [reset=1]] | lightning thunder log on|off|clear | state [name] | save <name> | load <file> | sim [name] [dt_ms=] [seconds=] [speed=] [hold_at=] [hold_s=] [jitter=]; eclipse solar|lunar; skyevents [state]|events|list <kind>|watch <solar|lunar|conjunction|occultation|moonglint|meteors|comet|supernova|cme|cometstorm|row|special <0-3>|aurora [t=]> [n=]|spaceweather; stars [state]|find <name>|select <name>; moonbase [state]|windows [days=] [limit=] [jitter=]|base <i> [lean=] [jitter=]; meteors [state]|count [minutes=] [lm=] [shower=]|force [kind=meteor|fireball|bolide] [shower=] [mag=] [az=] [el=] [v=] [delay=]|go [shower=]; comets [state]|list [days=]|watch [k|great] [days=] [sun_max=] [orbit=1]; aurora [next <kp>|substorm|kp <v>|auto]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...> [x= y=]; fps on|off|state; mouse move dx= dy= [frames=] | mouse click left|right [x= y=] | mouse scroll dy= | mouse aim <Id>[:i] [tol=] [frames=]; hints on|off|reset|state|set <gate> [0|1]|force <n>|gap [s=] [pad=0|1]; events list|state|on|off|fire <id> [total=0|1]|ack [choice=1|2|3] [soft=1]; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|preview <file> [shot=] [scale=] [fps=]|save|load|state|stop; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [cdc=<spv>] [brick=<spv>] [nlc=<spv>] [smoke_layer=<spv>] [sky=<spv>] [sky_taa=<spv>] [sky_lite=<spv>] [wg=<X>x<Y>]; lightning [spawn kind= dist_km= az= ...|check [off]|rebuild|light [side=] [single=] [src_m=] [level=] [ncap=] [e_side=] [e_single=] [e_skin_m=] [e_level=] [e_od=] [e_od_light=] [e_view=]|color [gain=] [core=r,g,b] [sheath=r,g,b] [sheath_share=] [sheath_order=] [sheath_leader=] [sheath_m=] [sheath_taper=] [glow=r,g,b] [glow_share=] [wet=r,g,b] [wet_share=] [wet_wide=] [wet_floor=] [wet_gain=] [air=r,g,b] [cloud=r,g,b] [reset=1]|stats on|off|reset|[name]|goto id=|t= [at=] [sync=1]] | lightning thunder log on|off|clear | state [name] | save <name> | load <file> | sim [name] [dt_ms=] [seconds=] [speed=] [hold_at=] [hold_s=] [jitter=]; eclipse solar|lunar; skyevents [state]|events|list <kind>|watch <solar|lunar|conjunction|occultation|moonglint|meteors|comet|supernova|cme|cometstorm|row|special <0-3>|aurora [t=]> [n=]|spaceweather; stars [state]|find <name>|select <name>; moonbase [state]|windows [days=] [limit=] [jitter=]|base <i> [lean=] [jitter=]; meteors [state]|count [minutes=] [lm=] [shower=]|force [kind=meteor|fireball|bolide] [shower=] [mag=] [az=] [el=] [v=] [delay=]|go [shower=]; comets [state]|list [days=]|watch [k|great] [days=] [sun_max=] [orbit=1]; aurora [next <kp>|substorm|kp <v>|auto]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...> [x= y=]; fps on|off|state; mouse move dx= dy= [frames=] | mouse click left|right [x= y=] | mouse scroll dy= | mouse aim <Id>[:i] [tol=] [frames=]; hints on|off|reset|state|set <gate> [0|1]|force <n>|gap [s=] [pad=0|1]; events list|state|on|off|fire <id> [total=0|1]|ack [choice=1|2|3] [soft=1]; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|preview <file> [shot=] [scale=] [fps=]|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=] [frames=] [video=]; video start [name] [fps=] [scale=] [ui=on] [sound=all|ambience|off]|stop|state; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=<layer>[+<layer>]] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; "
@@ -6153,6 +6153,163 @@ Status SatelliteSim::harnessExec(harness::Active &a)
             r["dropped"] = boltTrees_.size();
             boltTrees_.clear();
             r["message"] = "trees dropped: rebuilt from the flash list next frame";
+            return Status::Done;
+        }
+        // `lightning stats on|off|reset` / `lightning stats [name] [rows=0]`: every flash the list showed since `on`
+        // (or `reset`), counted once: by kind, by storm (the storm whose tower stands nearest the flash's origin), a
+        // minute of sim time each; the budgets' high-water marks. With a name the rows go to
+        // captures/<name>.boltstats.json (id, kind, start, storm, where, lit time, a ground stroke's descent on screen).
+        // `lightning goto id=<id> [at=0.062]`: sim time to that counted flash's start + `at` s (0.05 = its first
+        // return stroke), for a paused look at one stroke.
+        if (lower(pos(0)) == "goto")
+        {
+            // sync=1 (with id=, time held): the flash is on the list now, so its age is exact (a held clock: the list's
+            // frame and this one are the same moment): shift sim time so the age is `at`. After a coarse goto and a few
+            // frames; a counted start is a frame's step uncertain.
+            if (c.num("sync", 0.0) > 0.5)
+            {
+                const uint32_t want = (uint32_t)c.num("id", 0.0);
+                const uint32_t *hdr = (const uint32_t *)cv2FlashMapped;
+                const float *f = cv2FlashMapped ? (const float *)((const char *)cv2FlashMapped + 16) : nullptr;
+                const uint32_t cnt = cv2FlashMapped ? std::min(hdr[0], kCv2FlashMax) : 0u;
+                for (uint32_t i = 0; i < cnt; ++i)
+                {
+                    uint32_t id;
+                    std::memcpy(&id, &f[i * kCv2FlashFloats + 8], 4);
+                    if (id != want)
+                        continue;
+                    const double age = (double)f[i * kCv2FlashFloats + 10];
+                    const double tt = (double)simDayJ2000 * 86400.0 + simSecInDay + (c.num("at", 0.062) - age);
+                    simDayJ2000 = (int64_t)std::floor(tt / 86400.0);
+                    simSecInDay = tt - (double)simDayJ2000 * 86400.0;
+                    r["age_was_s"] = age;
+                    r["message"] = "synced: the flash's age was " + std::to_string(age) + " s";
+                    return Status::Done;
+                }
+                fail("lightning goto sync: that flash is not on the list now (goto t= first, hold time, wait a few frames)");
+            }
+            // (t=<start_s>: a row's own start, J2000 s, from a saved file: the counts may have been reset since.)
+            double t0 = c.num("t", -1.0);
+            if (t0 < 0.0)
+            {
+                const auto it = boltStats_.find((uint32_t)c.num("id", 0.0));
+                if (it == boltStats_.end())
+                    fail("lightning goto: no counted flash with that id (lightning stats on, let time run, then goto; or t=<start_s>)");
+                t0 = it->second.startS;
+            }
+            const double tt = t0 + c.num("at", 0.062);
+            simDayJ2000 = (int64_t)std::floor(tt / 86400.0);
+            simSecInDay = tt - (double)simDayJ2000 * 86400.0;
+            r["message"] = "sim time at a flash's start + " + std::to_string(c.num("at", 0.062)) + " s";
+            return Status::Done;
+        }
+        if (lower(pos(0)) == "stats")
+        {
+            const std::string sub = lower(pos(1));
+            if (sub == "on" || sub == "reset" || sub == "off")
+            {
+                boltStatsOn_ = sub != "off";
+                if (sub != "off")
+                {
+                    boltStats_.clear();
+                    boltStatsLast_ = -1.0;
+                    boltStatsSimS_ = 0.0;
+                    boltStatsFrames_ = boltStatsCapFrames_ = boltStatsSegDropFrames_ = 0;
+                    boltStatsMaxList_ = boltStatsMaxSegs_ = boltStatsMaxWants_ = boltStatsMaxThunder_ = 0;
+                }
+                r["on"] = boltStatsOn_;
+                r["message"] = boltStatsOn_ ? "counting flashes" : "lightning stats off (the rows are kept until the next on)";
+                return Status::Done;
+            }
+            static const char *kKinds[4] = {"in_cloud", "cloud_to_ground", "sprite", "spider"};
+            const double minutes = std::max(boltStatsSimS_, 1e-6) / 60.0;
+            struct Acc { int n[4] = {0, 0, 0, 0}; int stormKind = -1; int cgOn = 0, cg200 = 0; double litS = 0.0; int litF = 0; };
+            Acc tot;
+            std::map<uint64_t, Acc> by;
+            json rows = json::array();
+            const bool wantRows = !pos(1).empty();
+            const glm::dvec3 oe = glm::normalize(glm::dvec3(obsDir));
+            for (const auto &kv : boltStats_)
+            {
+                const BoltStat &s = kv.second;
+                const int k = std::clamp(s.kind, 0, 3);
+                Acc &a = by[s.stormId];
+                a.stormKind = s.stormKind;
+                for (Acc *q : {&tot, &a})
+                {
+                    ++q->n[k];
+                    if (k == 1)
+                    {
+                        q->cgOn += s.trunkPx > 0.0f ? 1 : 0;
+                        q->cg200 += s.trunkPx >= 200.0f ? 1 : 0;
+                        q->litS += (double)s.litS;
+                        q->litF += s.litFrames;
+                    }
+                }
+                if (wantRows)
+                {
+                    const glm::dvec3 od = glm::normalize(s.originEcef), gd = glm::normalize(s.groundEcef);
+                    rows.push_back({{"id", s.id}, {"kind", kKinds[k]}, {"start_s", s.startS}, {"start_utc", isoFromJ2000(s.startS)},
+                                    {"dur_s", s.dur}, {"strength", s.strength}, {"base_m", s.base}, {"top_m", s.top},
+                                    {"storm_id", std::to_string(s.stormId)},
+                                    {"storm_kind", s.stormKind < 0 ? "none" : wx::stormKindName((wx::StormKind)s.stormKind)},
+                                    {"tower_km", s.towerKm}, {"first_dist_km", s.distKm},
+                                    {"lat_deg", glm::degrees(std::asin(std::clamp(od.z, -1.0, 1.0)))},
+                                    {"lon_deg", glm::degrees(std::atan2(od.y, od.x))},
+                                    {"ground_lat_deg", glm::degrees(std::asin(std::clamp(gd.z, -1.0, 1.0)))},
+                                    {"ground_lon_deg", glm::degrees(std::atan2(gd.y, gd.x))},
+                                    {"ground_eye_km", std::acos(std::clamp(glm::dot(gd, oe), -1.0, 1.0)) * 6371.0},
+                                    {"frames", s.frames}, {"lit_frames", s.litFrames}, {"lit_s", s.litS}, {"peak", s.peakI},
+                                    {"trunk_px", s.trunkPx}, {"trunk_px_unclipped", s.trunkPxAll}});
+                }
+            }
+            auto accJson = [&](const Acc &a) {
+                const int n = a.n[0] + a.n[1] + a.n[3];
+                json j = {{"flashes", n}, {"in_cloud", a.n[0]}, {"cloud_to_ground", a.n[1]}, {"spider", a.n[3]}, {"sprites", a.n[2]},
+                          {"per_min", n / minutes}, {"cg_per_min", a.n[1] / minutes},
+                          {"cg_share", n > 0 ? (double)a.n[1] / n : 0.0},
+                          {"cg_in_frame", a.cgOn}, {"cg_in_frame_200px", a.cg200}, {"cg_in_frame_200px_per_min", a.cg200 / minutes},
+                          {"cg_lit_s_mean", a.n[1] > 0 ? a.litS / a.n[1] : 0.0},
+                          {"cg_lit_frames_mean", a.n[1] > 0 ? (double)a.litF / a.n[1] : 0.0}};
+                return j;
+            };
+            json storms = json::array();
+            for (const auto &kv : by)
+            {
+                json j = accJson(kv.second);
+                j["storm_id"] = std::to_string(kv.first);
+                j["storm_kind"] = kv.second.stormKind < 0 ? "none" : wx::stormKindName((wx::StormKind)kv.second.stormKind);
+                storms.push_back(j);
+            }
+            std::sort(storms.begin(), storms.end(), [](const json &a, const json &b) {
+                return a["flashes"].get<int>() > b["flashes"].get<int>();
+            });
+            if (storms.size() > 24)
+                storms.erase(storms.begin() + 24, storms.end());
+            r["on"] = boltStatsOn_;
+            r["sim_s"] = boltStatsSimS_;
+            r["frames"] = boltStatsFrames_;
+            r["total"] = accJson(tot);
+            r["storms"] = storms;
+            r["storms_flashing"] = by.size();
+            r["budget"] = {{"list_max", boltStatsMaxList_}, {"list_cap", kCv2FlashMax}, {"frames_at_cap", boltStatsCapFrames_},
+                           {"segments_max", boltStatsMaxSegs_}, {"segments_cap", kBoltMaxSegs},
+                           {"frames_segments_dropped", boltStatsSegDropFrames_},
+                           {"light_emitters_max", boltStatsMaxWants_}, {"light_slots", kFvSlots},
+                           {"thunder_sources_max", boltStatsMaxThunder_}, {"thunder_sources_cap", kThunderMaxSources}};
+            if (wantRows)
+            {
+                const std::string path = harnessRunner_->capturePath(pos(1), ".boltstats.json");
+                std::ofstream out(path);
+                json doc = r;
+                doc["rows"] = rows;
+                out << doc.dump(1);
+                r["file"] = path;
+            }
+            char buf[200];
+            snprintf(buf, sizeof(buf), "%d flashes in %.1f sim s (%.1f / min), %d to ground", tot.n[0] + tot.n[1] + tot.n[3],
+                     boltStatsSimS_, (tot.n[0] + tot.n[1] + tot.n[3]) / minutes, tot.n[1]);
+            r["message"] = buf;
             return Status::Done;
         }
         json list = json::array();

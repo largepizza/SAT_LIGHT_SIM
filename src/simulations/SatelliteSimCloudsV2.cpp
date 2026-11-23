@@ -1684,7 +1684,8 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // blue noise (cloud_v2_march.comp). It was over 150 m (fast flight) until review 7: at a walking or
     // hover speed the moving history weight (0.7, the user's 1.0) let IGN's regular structure through as
     // a dotted honeycomb over lit cloud tops (user snapshot 4).
-    p.misc2 = glm::vec4(std::clamp(cv2LightningSprites, 0.0f, 1.0f), 1.0f,
+    // (y: "Cloud-to-ground share", 2026-11-22; it was a constant 1 no shader read. Only cloud_v2_lightning.comp reads it.)
+    p.misc2 = glm::vec4(std::clamp(cv2LightningSprites, 0.0f, 1.0f), std::clamp(cv2LightningCgShare, 0.0f, 1.0f),
                         glm::length(eye - cv2PrevEye) > 1.0 ? 1.0f : 0.0f, 0.0f);
     p.lightning = glm::vec4(std::max(cv2LightningRate, 0.0f), std::max(cv2LightningGlow, 0.0f),
                             std::max(cv2LightningBolt, 0.0f), (float)std::fmod((double)simDayJ2000 * 86400.0 + simSecInDay, 100000.0));

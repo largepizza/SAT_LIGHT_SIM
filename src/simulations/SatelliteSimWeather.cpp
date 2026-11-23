@@ -730,6 +730,12 @@ void SatelliteSim::updateStorms()
                 reach = std::max(reach, 1.06 * (1.15 * Rc + std::max(cuReach, 0.5 * Rc) + std::clamp((double)stormMoatWidthKm, 0.0, 60.0) * 1000.0)
                                         + 1000.0);
         }
+        // The storm's KIND rides in the reach (2026-11-22, the lightning-rate request): the reach is rounded UP to a
+        // multiple of 8 m and the kind (wx::StormKind, 0..5) added, so int(c.x) & 7 is the kind and the reach is at most
+        // 13 m longer (it only has to cover the tower; the bins below are listed with the same number). Only the
+        // lightning pass reads it (cloud_v2_lightning.comp: a kind's flash rate and cloud-to-ground share); the cloud
+        // shaders take c.x as the reach it is.
+        reach = 8.0 * std::ceil(reach / 8.0) + (double)std::min((int)tw.kind, 7);
         GpuStormTower g;
         g.a = glm::vec4(glm::vec3(d), tw.strength);
         // The overshooting top PULSES (issue 20261105_201719): an overshooting core (overshoot > 0.6, cv2StormGeom's swell)
