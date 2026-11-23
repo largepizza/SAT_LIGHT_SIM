@@ -211,7 +211,7 @@ const char *kHelp =
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "exposure [auto|hold|fast]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s] [wait=1]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [cdc=<spv>] [brick=<spv>] [nlc=<spv>] [smoke_layer=<spv>] [sky=<spv>] [sky_taa=<spv>] [sky_lite=<spv>] [wg=<X>x<Y>]; lightning [spawn kind= dist_km= az= ...|check [off]|rebuild|light [side=] [single=] [src_m=] [level=] [ncap=] [e_side=] [e_single=] [e_skin_m=] [e_level=] [e_od=] [e_od_light=] [e_view=]|color [gain=] [core=r,g,b] [sheath=r,g,b] [sheath_share=] [sheath_order=] [sheath_leader=] [sheath_m=] [sheath_taper=] [glow=r,g,b] [glow_share=] [wet=r,g,b] [wet_share=] [wet_wide=] [wet_floor=] [wet_gain=] [air=r,g,b] [cloud=r,g,b] [reset=1]|stats on|off|reset|[name]|goto id=|t= [at=] [sync=1]] | lightning thunder log on|off|clear | state [name] | save <name> | load <file> | sim [name] [dt_ms=] [seconds=] [speed=] [hold_at=] [hold_s=] [jitter=]; eclipse solar|lunar; skyevents [state]|events|list <kind>|watch <solar|lunar|conjunction|occultation|moonglint|meteors|comet|supernova|cme|cometstorm|row|special <0-3>|aurora [t=]> [n=]|spaceweather; stars [state]|find <name>|select <name>; moonbase [state]|windows [days=] [limit=] [jitter=]|base <i> [lean=] [jitter=]; meteors [state]|count [minutes=] [lm=] [shower=]|force [kind=meteor|fireball|bolide] [shower=] [mag=] [az=] [el=] [v=] [delay=]|go [shower=]; comets [state]|list [days=]|watch [k|great] [days=] [sun_max=] [orbit=1]; aurora [next <kp>|substorm|kp <v>|auto]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...> [x= y=]; fps on|off|state; mouse move dx= dy= [frames=] | mouse click left|right [x= y=] | mouse scroll dy= | mouse aim <Id>[:i] [tol=] [frames=]; hints on|off|reset|state|set <gate> [0|1]|force <n>|gap [s=] [pad=0|1]; events list|state|on|off|fire <id> [total=0|1]|ack [choice=1|2|3] [soft=1]; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|preview <file> [shot=] [scale=] [fps=]|save|load|state|stop; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [cdc=<spv>] [brick=<spv>] [nlc=<spv>] [smoke_layer=<spv>] [sky=<spv>] [sky_taa=<spv>] [sky_lite=<spv>] [wg=<X>x<Y>]; lightning [spawn kind= dist_km= az= ...|check [off]|rebuild|light [side=] [single=] [src_m=] [level=] [ncap=] [e_side=] [e_single=] [e_skin_m=] [e_level=] [e_od=] [e_od_light=] [e_view=]|color [gain=] [core=r,g,b] [sheath=r,g,b] [sheath_share=] [sheath_order=] [sheath_leader=] [sheath_m=] [sheath_taper=] [glow=r,g,b] [glow_share=] [wet=r,g,b] [wet_share=] [wet_wide=] [wet_floor=] [wet_gain=] [air=r,g,b] [cloud=r,g,b] [reset=1]|stats on|off|reset|[name]|goto id=|t= [at=] [sync=1]|map [minutes=5] [range=] [rows=] [open=1] [strikes=0|1] [clear=1]] | lightning thunder log on|off|clear | state [name] | save <name> | load <file> | sim [name] [dt_ms=] [seconds=] [speed=] [hold_at=] [hold_s=] [jitter=]; eclipse solar|lunar; skyevents [state]|events|list <kind>|watch <solar|lunar|conjunction|occultation|moonglint|meteors|comet|supernova|cme|cometstorm|row|special <0-3>|aurora [t=]> [n=]|spaceweather; stars [state]|find <name>|select <name>; moonbase [state]|windows [days=] [limit=] [jitter=]|base <i> [lean=] [jitter=]; meteors [state]|count [minutes=] [lm=] [shower=]|force [kind=meteor|fireball|bolide] [shower=] [mag=] [az=] [el=] [v=] [delay=]|go [shower=]; comets [state]|list [days=]|watch [k|great] [days=] [sun_max=] [orbit=1]; aurora [next <kp>|substorm|kp <v>|auto]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...> [x= y=]; fps on|off|state; mouse move dx= dy= [frames=] | mouse click left|right [x= y=] | mouse scroll dy= | mouse aim <Id>[:i] [tol=] [frames=]; hints on|off|reset|state|set <gate> [0|1]|force <n>|gap [s=] [pad=0|1]; events list|state|on|off|fire <id> [total=0|1]|ack [choice=1|2|3] [soft=1]; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|preview <file> [shot=] [scale=] [fps=]|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=] [frames=] [video=]; video start [name] [fps=] [scale=] [ui=on] [sound=all|ambience|off]|stop|state; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=<layer>[+<layer>]] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; "
@@ -6161,6 +6161,36 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         // captures/<name>.boltstats.json (id, kind, start, storm, where, lit time, a ground stroke's descent on screen).
         // `lightning goto id=<id> [at=0.062]`: sim time to that counted flash's start + `at` s (0.05 = its first
         // return stroke), for a paused look at one stroke.
+        // `lightning map [minutes=5] [range=<km>] [rows=0] [open=1]`: the strike map (the radar's lightning marks: every
+        // flash the list showed, kept always): counts by kind, by distance from the nearest tower and by the radar's rain
+        // under each point (weather.md "The strike map"). open=1 opens the Weather window's radar (range= sets its
+        // radius) so a later `capture ... ui=on` shows the marks; the rain needs a radar frame (a second after open).
+        if (lower(pos(0)) == "map")
+        {
+            if (c.num("open", 0.0) > 0.5)
+            {
+                wxChrome.open = true;
+                uiVisible = true;
+                wxTab = 0;
+                wxShowStrikes = true;
+                if (c.has("range"))
+                {
+                    const double km = c.num("range", 150.0);
+                    wxRangeIdx = km <= 90.0 ? 0 : km <= 250.0 ? 1 : 2;
+                }
+            }
+            if (c.has("strikes"))
+                wxShowStrikes = c.num("strikes", 1.0) != 0.0;
+            if (c.num("clear", 0.0) > 0.5)
+            {
+                // (Forget every mark, so a variant run over the same sim time marks its own flashes.)
+                strikeRing_.clear();
+                strikeSeen_.clear();
+                strikeSinceS_ = (double)simDayJ2000 * 86400.0 + simSecInDay;
+            }
+            r = strikeMapJson(c.num("minutes", 5.0), c.num("range", -1.0), (int)c.num("rows", 0.0));
+            return Status::Done;
+        }
         if (lower(pos(0)) == "goto")
         {
             // sync=1 (with id=, time held): the flash is on the list now, so its age is exact (a held clock: the list's

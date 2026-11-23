@@ -4566,6 +4566,8 @@ private:
     glm::dvec3 wxStormLastTE{0, 0, 1}, wxStormLastUp{0, 0, 1};   // weatherGoToStorm's target and the side it stood on
     void weatherTornadoFixTick();
     float weatherProbeRainAt(const glm::dvec3 &e) const;
+    float weatherShownRainAt(const glm::dvec3 &e) const;   // the same on the radar shown (wxShown): harness `lightning map`
+    float weatherFrameRainAt(const WxRadarFrame &f, const glm::dvec3 &e) const;
     // The image (a CPU raster uploaded in recordCompute, as the Kessler tracker's globe).
     VkImage wxImg = VK_NULL_HANDLE;
     VkDeviceMemory wxImgMem = VK_NULL_HANDLE;
@@ -10255,6 +10257,27 @@ private:
     uint32_t boltStatsMaxList_ = 0, boltStatsMaxSegs_ = 0, boltStatsMaxWants_ = 0, boltStatsMaxThunder_ = 0;
     std::unordered_map<uint32_t, BoltStat> boltStats_;
     void boltStatNote(const float *rec, const BoltTree &t, double now, float dtS, const glm::dvec3 &eye);
+    // The strike map (2026-11-22, wave 20261122 c16): every flash the list showed, once (by id), in a ring of the last
+    // kStrikeRingMax, always kept (a few hundred bytes a flash, nothing on the GPU). Drawn on the Weather window's
+    // radar (the last kStrikeShowS of sim time, fading) and read by the harness `lightning map`.
+    struct StrikeMark
+    {
+        glm::dvec3 earth{0.0, 0.0, 1.0};   // Earth-fixed unit direction at the flash's start: the strike point (to ground) or the origin
+        glm::dvec3 map{0.0, 0.0, 1.0};     // ... the same point in the weather map's frame (it drifts with the storms)
+        double startS = 0.0;               // J2000 s
+        uint32_t id = 0;
+        int kind = 0;                      // 0 in cloud, 1 to ground, 2 sprite, 3 spider
+        float strength = 0.0f;
+    };
+    static constexpr size_t kStrikeRingMax = 4096;
+    static constexpr double kStrikeShowS = 300.0;
+    std::deque<StrikeMark> strikeRing_;
+    std::unordered_map<uint32_t, double> strikeSeen_;   // id -> start (s): a flash's tree built twice is one mark
+    double strikeSinceS_ = -1.0;                         // sim time the marks start (the first one, or `lightning map clear=1`)
+    bool wxShowStrikes = true;                           // the radar's Strikes toggle
+    int wxStrikeCount[2] = {0, 0};                       // on the radar now: to ground, in cloud (sprites / spiders with in cloud)
+    void strikeNote(const BoltTree &t, double startS);
+    nlohmann::json strikeMapJson(double minutes, double rangeKm, int rowsWanted);   // harness `lightning map`
     // Per frame slot: the observer direction the slot's frame ran the lightning pass with, and whether it ran.
     glm::dvec3 cv2LightningObsDirS[VulkanContext::kMaxFramesInFlight] = {{0.0, 0.0, 1.0}, {0.0, 0.0, 1.0}};
     bool cv2LightningObsDirValidS[VulkanContext::kMaxFramesInFlight] = {};

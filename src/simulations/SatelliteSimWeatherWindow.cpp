@@ -611,7 +611,14 @@ bool SatelliteSim::weatherWatchTornadoOf(const wx::Storm &stIn, int mode, std::s
 // The probe frame's rain at an Earth-fixed direction (its 3x3 cells' mean; -1 off the frame).
 float SatelliteSim::weatherProbeRainAt(const glm::dvec3 &e) const
 {
-    const WxRadarFrame &f = wxProbeFrame;
+    return weatherFrameRainAt(wxProbeFrame, e);
+}
+float SatelliteSim::weatherShownRainAt(const glm::dvec3 &e) const
+{
+    return weatherFrameRainAt(wxShown, e);
+}
+float SatelliteSim::weatherFrameRainAt(const WxRadarFrame &f, const glm::dvec3 &e) const
+{
     if (!f.valid || f.cellM <= 0.0f)
         return -1.0f;
     const glm::dvec3 o = f.obs;
@@ -1556,7 +1563,7 @@ void SatelliteSim::buildWeatherRadarTab(const UIInput &inp, UIRenderer &ui, floa
     }
 
     const bool haveImg = weatherRadarEnsureImage(ui);
-    const float G = std::floor(std::clamp(std::min(bodyW - 8.0f, bodyH - (float)fs(11) * 17.0f), 160.0f, 640.0f));
+    const float G = std::floor(std::clamp(std::min(bodyW - 8.0f, bodyH - (float)fs(11) * (wxShowStrikes ? 18.0f : 17.0f)), 160.0f, 640.0f));
     const float radiusKm = kWxRangesKm[std::clamp(wxRangeIdx, 0, 2)];
 
     // The markers: the storms' strongest towers on the shown frame's map (by the storm list's rank near you).
@@ -1743,6 +1750,54 @@ void SatelliteSim::buildWeatherRadarTab(const UIInput &inp, UIRenderer &ui, floa
                 }
             }
         }
+        // Lightning of the last 5 minutes of sim time (strikeRing_, SatelliteSimLightning.cpp strikeNote): where it was,
+        // Earth-fixed (a storm drifts away from its old strikes, as on a real strike map), fading with age. Ground
+        // strokes a yellow cross at the strike point, the rest (in cloud, spider, sprite) a small blue dot at the origin;
+        // the dots first, the crosses over them.
+        wxStrikeCount[0] = wxStrikeCount[1] = 0;
+        if (wxShowStrikes && showF->valid && !looping)
+        {
+            const glm::dvec3 up = showF->obs;
+            const glm::dvec3 E = glm::normalize(glm::cross(glm::dvec3(0, 0, 1), up) + glm::dvec3(1e-12, 0, 0));
+            const glm::dvec3 Nn = glm::cross(up, E);
+            const double halfM = showF->cellM * kWxN * 0.5;
+            const double cosMax = std::cos(halfM * 1.42 / kRe);
+            const glm::vec4 dark(0.0f, 0.0f, 0.0f, 0.75f);
+            for (int pass = 0; pass < 2; ++pass)
+                for (const StrikeMark &m : strikeRing_)
+                {
+                    const double age = now - m.startS;
+                    const bool cg = m.kind == 1;
+                    if (age < 0.0 || age > kStrikeShowS || cg != (pass == 1))
+                        continue;
+                    const double cd = glm::dot(m.earth, up);
+                    if (cd < cosMax)
+                        continue;
+                    const double d = std::acos(std::clamp(cd, -1.0, 1.0)) * kRe;
+                    const glm::dvec3 to = m.earth - up * cd;
+                    const double b = glm::length(to) > 0.0 ? std::atan2(glm::dot(to, E), glm::dot(to, Nn)) : 0.0;
+                    const float x = (float)(0.5 + 0.5 * d * std::sin(b) / halfM) * G;
+                    const float y = (float)(0.5 - 0.5 * d * std::cos(b) / halfM) * G;
+                    if (x < 0.0f || x > G || y < 0.0f || y > G)
+                        continue;
+                    ++wxStrikeCount[cg ? 0 : 1];
+                    const float a = 1.0f - 0.75f * (float)(age / kStrikeShowS);
+                    if (cg)
+                    {
+                        const glm::vec4 col(1.0f, 0.86f, 0.15f, a);
+                        const glm::vec4 edge(0.0f, 0.0f, 0.0f, 0.75f * a);
+                        wxQuads.push_back({x - 5.0f, y - 2.0f, 10.0f, 4.0f, edge});
+                        wxQuads.push_back({x - 2.0f, y - 5.0f, 4.0f, 10.0f, edge});
+                        wxQuads.push_back({x - 4.0f, y - 1.0f, 8.0f, 2.0f, col});
+                        wxQuads.push_back({x - 1.0f, y - 4.0f, 2.0f, 8.0f, col});
+                    }
+                    else
+                    {
+                        wxQuads.push_back({x - 2.0f, y - 2.0f, 4.0f, 4.0f, glm::vec4(dark.r, dark.g, dark.b, dark.a * a)});
+                        wxQuads.push_back({x - 1.0f, y - 1.0f, 2.0f, 2.0f, glm::vec4(0.55f, 0.82f, 1.0f, a)});
+                    }
+                }
+        }
         // You: a cyan cross at the centre.
         const float c = 0.5f * G;
         const glm::vec4 you = palV(Pal::trkYou, 1.0f);
@@ -1882,10 +1937,14 @@ void SatelliteSim::buildWeatherRadarTab(const UIInput &inp, UIRenderer &ui, floa
                      tx(Txt::TipPlayTheFramesTakenWhileThe),
                      wxLoop, wxLoopFrames.size() >= 2 || wxLoop))
             wxLoop = !wxLoop;
+        if (uiButton(inp, ui, "WxStrikes", 0, tx(Txt::BtnStrikes), tx(Txt::TipStrikesOnTheRadar), wxShowStrikes))
+            wxShowStrikes = !wxShowStrikes;
         CLAY(CLAY_ID("WxTogGap"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}}) {}
         if (wxStats.maxDbz > 0.0f)
             text(wxStr(tx(Txt::FmtMaxDbz), wxStats.maxDbz), Pal::textDim, 10);
     }
+    if (wxShowStrikes && !(wxLoop && wxLoopFrames.size() >= 2))
+        text(wxStr(tx(Txt::FmtStrikesLastMin), wxStrikeCount[0], wxStrikeCount[1]), Pal::textDim, 10);
     // The selected storm (a click on its marker).
     WxStormRow sel;
     if (wxSelStorm != 0 && weatherStormRowCached(wxSelStorm, sel))
@@ -2164,6 +2223,124 @@ void SatelliteSim::buildWeatherControlsTab(const UIInput &inp, UIRenderer &ui)
 }
 
 // ── Harness ─────────────────────────────────────────────────────────────────────────────────────────────────────
+// `lightning map [minutes=5] [range=<km>] [rows=0]`: the strike map's marks of the last `minutes` of sim time within
+// `range` km of the eye (default the radar's radius): counts by kind, by the distance from the nearest storm tower's
+// axis (both in the weather map's frame: the storm has drifted since, its strikes with it) and by the radar's rain
+// under the point now (wxShown, at the point drifted to the radar frame's time: the rain the stroke fell in).
+nlohmann::json SatelliteSim::strikeMapJson(double minutes, double rangeKm, int rowsWanted)
+{
+    using nlohmann::json;
+    const double now = (double)simDayJ2000 * 86400.0 + simSecInDay;
+    const double winS = std::max(minutes, 0.01) * 60.0;
+    if (rangeKm <= 0.0)
+        rangeKm = kWxRangesKm[std::clamp(wxRangeIdx, 0, 2)];
+    const glm::dvec3 up = glm::normalize(glm::dvec3(obsDir));
+    static const char *kKinds[4] = {"in_cloud", "cloud_to_ground", "sprite", "spider"};
+    static const char *kTowBins[5] = {"0-5", "5-10", "10-20", "20-40", "40+"};
+    static const char *kRainBins[5] = {"none", "light", "moderate", "heavy", "off_radar"};
+    const float rr8 = rainForDbz(kDbzMin), rr30 = rainForDbz(30.0f), rr45 = rainForDbz(45.0f);
+    int nKind[4] = {0, 0, 0, 0}, towAll[5] = {}, towCg[5] = {}, rainAll[5] = {}, rainCg[5] = {};
+    std::map<std::string, std::array<int, 4>> byStorm;   // storm kind -> kinds
+    json rows = json::array();
+    double oldest = now;
+    for (const StrikeMark &m : strikeRing_)
+    {
+        const double age = now - m.startS;
+        if (age < 0.0 || age > winS)
+            continue;
+        const double dKm = std::acos(std::clamp(glm::dot(m.earth, up), -1.0, 1.0)) * kRe / 1000.0;
+        if (dKm > rangeKm)
+            continue;
+        oldest = std::min(oldest, m.startS);
+        const int k = std::clamp(m.kind, 0, 3);
+        ++nKind[k];
+        // The nearest live tower (map frame).
+        double best = -2.0;
+        int sk = -1;
+        for (const wx::Tower &tw : stormTowers)
+        {
+            if (tw.strength <= 0.0f)
+                continue;
+            const double d = glm::dot(tw.dir, m.map);
+            if (d > best)
+            {
+                best = d;
+                sk = (int)tw.kind;
+            }
+        }
+        const double towKm = best > -1.5 ? std::acos(std::clamp(best, -1.0, 1.0)) * kRe / 1000.0 : 1e9;
+        const int tb = towKm < 5.0 ? 0 : towKm < 10.0 ? 1 : towKm < 20.0 ? 2 : towKm < 40.0 ? 3 : 4;
+        float rr = -1.0f;
+        if (wxShown.valid)
+            rr = weatherShownRainAt(weatherMapToEarth(m.map, wxShown.simT));
+        const int rb = rr < 0.0f ? 4 : rr < rr8 ? 0 : rr < rr30 ? 1 : rr < rr45 ? 2 : 3;
+        ++towAll[tb];
+        ++rainAll[rb];
+        if (k == 1)
+        {
+            ++towCg[tb];
+            ++rainCg[rb];
+        }
+        const std::string skn = sk < 0 || towKm > 60.0 ? std::string("none") : std::string(wx::stormKindName((wx::StormKind)sk));
+        auto &bs = byStorm[skn];
+        ++bs[(size_t)k];
+        if ((int)rows.size() < rowsWanted)
+            rows.push_back({{"id", m.id}, {"kind", kKinds[k]}, {"age_s", age}, {"eye_km", dKm}, {"tower_km", towKm},
+                            {"storm_kind", skn}, {"rain", rr}, {"dbz", rr > 0.0f ? rainDbz(rr) : 0.0f},
+                            {"lat_deg", glm::degrees(std::asin(std::clamp(m.earth.z, -1.0, 1.0)))},
+                            {"lon_deg", glm::degrees(std::atan2(m.earth.y, m.earth.x))}});
+    }
+    json j;
+    j["window_s"] = winS;
+    j["covered_s"] = now - oldest;   // the oldest mark counted (the ring, or the time since the app or the jump)
+    j["range_km"] = rangeKm;
+    j["ring_size"] = strikeRing_.size();
+    j["radar_valid"] = wxShown.valid;
+    j["radar_age_s"] = wxShown.valid ? now - wxShown.simT : -1.0;
+    j["radar_shown"] = {{"ground", wxStrikeCount[0]}, {"in_cloud", wxStrikeCount[1]}};
+    // (Per minute of the sim time the marks cover: since the first mark or the clear, at most the window.)
+    const double effS = strikeSinceS_ >= 0.0 ? std::clamp(now - strikeSinceS_, 1.0, winS) : winS;
+    j["effective_window_s"] = effS;
+    const double perMin = 60.0 / effS;
+    json kinds, tA, tC, rA, rC, bs;
+    for (int k = 0; k < 4; ++k)
+        kinds[kKinds[k]] = nKind[k];
+    for (int b = 0; b < 5; ++b)
+    {
+        tA[kTowBins[b]] = towAll[b];
+        tC[kTowBins[b]] = towCg[b];
+        rA[kRainBins[b]] = rainAll[b];
+        rC[kRainBins[b]] = rainCg[b];
+    }
+    for (const auto &kv : byStorm)
+        bs[kv.first] = {{"in_cloud", kv.second[0]}, {"cloud_to_ground", kv.second[1]}, {"sprite", kv.second[2]},
+                        {"spider", kv.second[3]}};
+    const int total = nKind[0] + nKind[1] + nKind[2] + nKind[3];
+    j["total"] = total;
+    j["per_min"] = total * perMin;
+    j["cg_per_min"] = nKind[1] * perMin;
+    j["kinds"] = kinds;
+    j["tower_km_all"] = tA;
+    j["tower_km_cg"] = tC;
+    j["rain_all"] = rA;   // none < 8 dBZ, light 8-30, moderate 30-45, heavy >= 45, off_radar: outside the radar's square
+    j["rain_cg"] = rC;
+    const int cgOn = nKind[1] - rainCg[4];
+    j["cg_dry_share"] = cgOn > 0 ? (double)(rainCg[0] + rainCg[1]) / (double)cgOn : -1.0;   // none or light, of those on the radar
+    j["by_storm_kind"] = bs;
+    if (rowsWanted > 0)
+        j["rows"] = rows;
+    // Where the radar sits on screen (for `capture ... crop=`).
+    const Clay_ElementData rd = Clay_GetElementData(CLAY_ID("WxRadarImg"));
+    if (rd.found)
+        j["radar_box"] = {rd.boundingBox.x, rd.boundingBox.y, rd.boundingBox.width, rd.boundingBox.height};
+    char msg[200];
+    snprintf(msg, sizeof(msg), "%d flashes in %.1f min within %.0f km: %d to ground (%.1f/min), %d in cloud, %d spider, %d sprite; ground on light/no rain %.0f%%",
+             total, effS / 60.0, rangeKm, nKind[1], nKind[1] * perMin, nKind[0], nKind[3], nKind[2],
+             cgOn > 0 ? 100.0 * (rainCg[0] + rainCg[1]) / cgOn : -1.0);
+    j["message"] = msg;
+    return j;
+}
+
 nlohmann::json SatelliteSim::weatherWindowJson()
 {
     weatherRefreshRows(true);
