@@ -6140,8 +6140,9 @@ private:
     // 20 x 20 km of the weather map's heavy rain outside the storms' envelopes, in deep cloud only (cloud_v2_lightning.comp
     // lattice 2; cv2.storms2.y). No storm objects: the user asked for more lightning without their cost.
     // Since wave c32 (2026-11-23) the rate is per 20 x 20 km of the pre-marked lightning ZONES (cv2RainZone: the storm
-    // bins whose raining column passed the deep gate); 4.5 about doubles the globe's flashes (storms alone x 2.1).
-    float cv2LightningRainRate = 4.5f;
+    // bins whose raining column passed the deep gate); 4.5 about doubled the globe's flashes (storms alone x 2.1). Rain
+    // only since 2026-11-23 (no zone where the radar shows snow / a mix): 4.5 gave x 1.74, so 6.0 for about x 2.
+    float cv2LightningRainRate = 6.0f;
     float cv2LightningTendrils = 1.23f;    // the channels' branching (x the branch and tendril counts)
     float cv2LightningLight = 1.0f;        // 1 = a flash lights the cloud through the cloud around it (flash_volume.glsl), 0 = by distance alone
     float cv2LightningColour = 1.0f;       // "Lightning glow colour": 0 = the near-white stroke of 2026-11-21, 1 = the physical colours (BoltColour)

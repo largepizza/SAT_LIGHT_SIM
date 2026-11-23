@@ -1324,7 +1324,13 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   (noise). The whole GPU frame there gains 0.6-1.1 ms at 4.5 (18.5 -> 19.3 mean; satellite_star_draw +0.3, orbit
   compute +0.15: the cost of drawing twice the flashes, not of the zones); worst frames of 120 29.3 / 24.1 vs 30.8 /
   29.4 ms (no hitch: every frame builds the same 16th). The Weather window's world estimate does not include this
-  source: the zone map covers only the reach of the eye, not the globe. Deterministic in sim time (`cv2FlashIntensity`: a 50-ms stepped leader, then
+  source: the zone map covers only the reach of the eye, not the globe. **Rain only** (2026-11-23, the user): a bin
+  whose air 500 m over the ground is under 2.5 C, the Weather window radar's own climate rule for its snow / mixed
+  colours (latitude, season from the Sun's declination, lapse 6.5 C/km; `cv2RainZoneProbe`'s first test, before any
+  field read), holds no zone. Within 400 km of 12 S 74 W at 4.5: 2127 -> 1131 flashes in the same 145 sim s, the
+  altiplano's snow bare, the rain side unchanged. With time running the globe went x 1.74 at 4.5, so **the default is
+  6.0** (2319 -> 4583, x 1.98); the lightning pass over the Andes at 3780 km 1.45 -> 1.72 ms (rate 0 -> 6, 2 reps),
+  the GPU frame +0.26 / +0.41. Deterministic in sim time (`cv2FlashIntensity`: a 50-ms stepped leader, then
   1-4 return strokes ~35 ms over a continuing current; in-cloud flashes 2-6 softer pulses). Record (`CV2Flash`, 96 B,
   `kCv2FlashMax` 128): origin, ground point, KIND (0 in cloud, 1 cloud-to-ground: "Cloud-to-ground share", 2 red sprite, 3
   spider lightning just under the base), seed, age, the cloud's base/top, strength, duration; and the origin and the

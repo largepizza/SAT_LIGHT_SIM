@@ -142,8 +142,17 @@ const float kCv2KindAnvilCg[8] = float[8](0.15, 0.25, 0.45, 0.4, 0.4, 0.0, 0.0, 
 // top must reach (most map rain is a deck under 2-3 km: most columns stop there).
 uint cv2RainZoneProbe(vec3 d, float rb, mat3 ecefToEnu, mat3 enuToEcef, vec3 eye, float eyeH)
 {
-    vec3  oE   = ecefToEnu * cv2UndriftL(d);
-    float gnd  = cv2Ground(cv2UndriftL(d));
+    vec3  dE   = cv2UndriftL(d);
+    vec3  oE   = ecefToEnu * dE;
+    float gnd  = cv2Ground(dE);
+    // RAIN only (2026-11-23): no zone where the radar shows snow or a mix (the high Andes plateau had strike carpets on
+    // blue). The Weather window radar's climate (SatelliteSimWeatherWindow.cpp, the reflectivity colours): the air 500 m
+    // over the ground, by latitude and season (the Sun's declination); under 2.5 C it draws mixed / snow.
+    float latR = asin(clamp(dE.z, -1.0, 1.0)), latD = degrees(latR);
+    float sDec = asin(clamp((enuToEcef * pc.sunDirENU.xyz).z, -1.0, 1.0));
+    float seas = sDec / radians(23.44) * (latD >= 0.0 ? 1.0 : -1.0);
+    float tC   = -18.0 + 45.0 * pow(cos(latR), 1.5) + min(0.25 * abs(latD), 15.0) * seas - 0.0065 * (gnd + 500.0);
+    if (tC < 2.5) return 0u;
     float hHi  = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * cv2Tropo(d) + 1500.0;
     float hR   = gnd + 0.25 * (hHi - 1500.0 - gnd);
     float kR   = clamp(ceil((hR - gnd - 150.0) / max(hHi - gnd - 150.0, 1.0) * 16.0 - 0.5), 0.0, 15.0);
