@@ -1338,7 +1338,7 @@ void main()
                         if (qR.h > cv2.shell.y + 2500.0) break;
                         if (qR.h < -300.0) { odR = 1e4; break; }
                         CV2Field fR = cv2Field(qR, 0.0, 50.0);
-                        odR += fR.sigma * max(1.0 - 0.8 * fR.thin - cv2.mid2.z * max(fR.soft, 0.0), 0.0) * mix(1.0, 0.15, clamp(fR.rain, 0.0, 1.0)) * dsR;
+                        odR += fR.sigma * max(1.0 - 0.8 * fR.thin - cv2.mid2.z * max(fR.soft, 0.0), 0.0) * dsR;
                         sR += dsR;
                     }
                     keyCol *= exp(-odR);
@@ -1365,7 +1365,15 @@ void main()
                     // on (applied to every sample it relit every shaded tower face and base, ~4 levels over a storm view).
                     float tOwn = min(f.sigma * max(f.topH - hS, 0.0) / max(dot(up, sunDir), 0.1), tauS)
                                * smoothstep(14.0, 18.0, -log(max(T, 1e-30)));
-                    keyCol *= exp(tOwn - tauS) / (1.0 + 0.11 * tOwn);
+                    // The diffused share carries the Sun's FLUX on the cloud's top (wave 20261122 c20, issue_20261122_214014):
+                    // 1 / (1 + 0.11 tau) is the Eddington thick-slab transmission (2 + 3 mu0) / (4 + 3 (1 - g) tau), g = 0.85,
+                    // at mu0 = 2/3, per unit normal flux; the flux into the top is mu0 times that. Without mu0 the rising Sun
+                    // (+1 deg) lit a storm's underside at 12% of the full Sun through a path of optical depth ~66: the whole
+                    // base flat orange. Normalised to 1 at mu0 >= 2/3 (the daytime interiors as tuned); 0.013 at +1 deg.
+                    float mu0 = max(sunUp, 0.0);
+                    float fMu = min(mu0 * (2.0 + 3.0 * mu0) * 0.375, 1.0);
+                    float eO  = exp(-tOwn);
+                    keyCol *= exp(tOwn - tauS) * (eO + (1.0 / (1.0 + 0.11 * tOwn) - eO) * fMu);
                 }
 #endif
             } else if (nightK > 0.0) {
@@ -2001,6 +2009,63 @@ void main()
     else if (dbg == 7) outRgb = (vec3(1.0) - exp(-odLayer.xyz) + vec3(0.6) * (1.0 - exp(-odLayer.w))) * 0.05;
     // (Debug view 11, the adaptive tiles, is the resolve's overlay: the CPU sends the march view 0. An
     // exemption here, (dbg != 0 && dbg != 11), flipped this shader to ~224 registers: +19%.)
+#ifdef CV2_SUN_PROBE
+    // MEASUREMENT (compiled by hand, -DCV2_SUN_PROBE=1|2; wave 20261122 c20): at the point where the ray's transmittance
+    // crossed 0.5 (the surface the eye sees), the Sun's path beyond the light march (2 x cv2.light.x sunward) marched
+    // through the full field in 50 m + 0.5% steps, 25 m footprint, to the shell top + 2.5 km. Written opaque as
+    // log2(1 + x) / 8, Reinhard-inverted for `debugview 48` (cloudA x 20 / (1 + x 20)); pixels x < 48 carry 0.5.
+    //   1: r the cloud's optical depth (rain left out, thin layers weighted as the bakes weight them), g the rain's (full
+    //      extinction), b the path through rain (km; samples whose rain share > 0.5 and sigma > 2e-5 /m)
+    //   2: r the Sun volume's optical depth there (what the key light reads), g the reference with rain at 15%, b the
+    //      distance to the first non-rain cloud (sigma (1 - rain) > 1e-4 /m) along the Sun (km)
+    //   3: r the rain's optical depth read fine (25 m), g the same path's rain read at a 4-km footprint (the Sun volume's
+    //      coarsest level reads 4 km), b the cloud's at 4 km
+    {
+        vec3 pr = vec3(0.0);
+        if (tHalf > 0.0) {
+            vec3  rel = dir * tHalf;
+            vec3  upP = normalize(eye + rel);
+            float lL  = 2.0 * cv2.light.x;
+            vec3  oR  = rel + sunDir * lL;
+            float odC = 0.0, odR = 0.0, odR15 = 0.0, rKm = 0.0, dFirst = -1.0, sR = 0.0;
+            for (int i = 0; i < 3000; ++i) {
+                float dsR = 50.0 + 0.005 * sR;
+                CV2Pos qR = cv2Pos(oR + sunDir * (sR + 0.5 * dsR), eyeH, enuToEcef);
+                if (qR.h > cv2.shell.y + 2500.0) break;
+                if (qR.h < -300.0) { odC += 1e3; break; }
+                CV2Field fR = cv2Field(qR, 0.0, 25.0);
+                float rn = clamp(fR.rain, 0.0, 1.0);
+                float wT = max(1.0 - 0.8 * fR.thin - cv2.mid2.z * max(fR.soft, 0.0), 0.0);
+                odC   += fR.sigma * (1.0 - rn) * wT * dsR;
+                odR   += fR.sigma * rn * dsR;
+                odR15 += fR.sigma * wT * mix(1.0, 0.15, rn) * dsR;
+                if (rn > 0.5 && fR.sigma > 2e-5) rKm += dsR * 1e-3;
+                if (dFirst < 0.0 && fR.sigma * (1.0 - rn) > 1e-4) dFirst = (lL + sR) * 1e-3;
+#if CV2_SUN_PROBE == 3
+                CV2Field fC = cv2Field(qR, 0.0, 4000.0);
+                float rC = clamp(fC.rain, 0.0, 1.0);
+                odR15 += fC.sigma * rC * dsR - fR.sigma * wT * mix(1.0, 0.15, rn) * dsR;   // (odR15: the coarse read's rain)
+                dFirst = 0.0;
+                rKm   += fC.sigma * (1.0 - rC) * dsR * 1e3 - ((rn > 0.5 && fR.sigma > 2e-5) ? dsR : 0.0);  // (the coarse cloud, x1e-3 below)
+#endif
+                sR += dsR;
+            }
+            float hS  = length(eye + oR) - R_EARTH;
+            float tauV = -log(max(cv2StvT(oR, hS + 0.5 * (cv2.stvH.y - cv2.stvH.x) / float(kCv2StvK - 1)), 1e-30));
+#if CV2_SUN_PROBE == 1
+            pr = vec3(odC, odR, rKm);
+#elif CV2_SUN_PROBE == 3
+            pr = vec3(odR, odR15, rKm * 1e-3);   // the rain read fine / at a 4-km footprint, the cloud at 4 km
+#else
+            pr = vec3(tauV, odR15, max(dFirst, 0.0));
+#endif
+        }
+        vec3 c = clamp(log2(1.0 + pr) / 8.0, 0.0, 0.95);
+        if (pix.x < 48) c = vec3(0.5);
+        outRgb = c / (20.0 * (1.0 - c));
+        dbg = 1;
+    }
+#endif
     float Tout = (dbg != 0) ? 0.0 : T * godT;
 
     vec4 oD = vec4(meanT, (T < 0.1 && tHalf > 0.0) ? tHalf : -1.0, 0.0, 0.0);
