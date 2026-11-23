@@ -2054,6 +2054,27 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   ~60% of that frame (thin margins over rain fill in, the gap shrinks). Motion (tstab walk / pitch at that view): 4.43 /
   1.81 -> 3.97 / 1.50 (floor 1.43). Cost within the A-A spread (contended GPU, 3 reps): from the ground under the rain
   28.1 / 29.5 (A, A) vs 28.4 ms, the reporter's view 30.9 / 29.9 vs 29.7. 128 registers.
+- **A tower's rain core is set up to its DRAWN base** (2026-11-22, issue_20261122_154502 "Rain gap below supercells", branch
+  qa/20261122/raingap). `gCv2RainCore` (cv2StormGeom, cv2ColumnSigma) is set up to `kCv2RainCoreUpM` (6000 m) over the
+  cumulonimbus TYPE's base (types[4].alt.x + 0.9 x the ground: all the tower search knows); cv2LowA's rain branch ends the
+  rain (its floor, kCv2RainIntoM over the field's base). It was set only below the type's base (`hb < 0`), while a tower
+  has been drawn on the low field's own base since 2026-11-08 (`gCv2BaseLow`: + the regional spread, the condensation
+  level, the cell offset and the regional ground's full lift, hundreds of metres higher over land by day): the core's rain
+  stopped at the type's base and the cloud began at the field's, a slab of clear air under every such tower. At the
+  report's column (18.55 S 47.69 E, smoothed ground 1829 m): rain to 2572 m, the field's base 2902 m, cloud from ~2960 m,
+  the eye at 2604 m in the slab; along 16 km of the shot's heading the clear stretch between rain and cloud was 387 m
+  (median; every raining column over 50 m) and is 0 m (median and p90; 2% of the columns over 50 m, max 65 m: a hole of
+  the curtain pattern at the core's faint edge). Measured on VERTICAL SLICES of the field (a march variant drawing
+  cv2Field over 16 km x 6 km in debug view 3, decoded against a black reference: `qa/waves/20261122/evidence/c15/tools/`,
+  `sl4_*_subs.txt` + `slice_gap2.py`). Other storms, old -> new, share of raining columns with a clear stretch over 50 m:
+  the same supercell's other tower 32% -> 0, Ethiopian highlands 0 (9% counting only rain > 0.0003 /m) -> 0, Colombian
+  lowlands 5.5% -> 0, New South Wales 0 (4.7%) -> 0, a multicell 0 (2.4%) -> 0, a squall line and an MCS over the sea 0 -> 0
+  (there the field's base is BELOW the type's and the core already reached it). The map's rain under decks and showers
+  never had the slab (its floor follows the field's base) and is unchanged. A constant in the same comparison: the march
+  stays at 128 registers. COST, OPEN: the rain that now fills the slab carries the storm's height fraction (`sg.hf`, counted
+  from the type's base: > 0 there), so the march does not take it for rain alone (`f.hf <= 0`) and gives every sample fine
+  steps and a full light march: the reporter's view (the eye now IN that rain) 24.5 -> 33.6 ms GPU (cloud march 16.0 ->
+  25.2; 4 interleaved reps, +-0.3), under the rain looking out 25.5 -> 27.3, issue_20261110_181505's shot 28.3 -> 28.3.
 - **A ray's first long stride is hashed** (2026-11-14, cluster c03 "zenith rings": the user's "concentric ring lighting
   glitch right above you at 67, 67 on harness starts"). The march's start jitter spans TWO steps (`t += 2 x step x jitter`);
   rain alone strides a fixed FOUR. A ray whose first sample is rain (the eye under a raining deck) therefore met the base at

@@ -868,6 +868,16 @@ bool gCv2NoFar = false;
 // cv2FieldLow's rain shafts (cv2Field calls them in that order): a core under the tower's base, drawn out downwind
 // under the anvil. The map's precipitation alone put the heaviest rain anywhere its regions said, in stripes.
 float gCv2RainCore = 0.0;
+// HOW HIGH THE CORE IS SET (2026-11-22, issue_20261122_154502 "Rain gap below supercells"): up to this far over the
+// cumulonimbus TYPE's base (types[4].alt.x + 0.9 x the ground), which is all the tower search knows. The base a tower is
+// DRAWN on is the low field's own at that column (gCv2BaseLow, since 2026-11-08): the type's + the regional spread, the
+// condensation level, the cell's offset and the regional ground's full lift, hundreds of metres to km higher over land by
+// day. Set only below the type's base (hb < 0), the core's rain stopped there and the tower's cloud began at the field's:
+// a slab of clear air between them (125 m at the report's column, 18.55 S 47.69 E: rain to 2575 m, cloud from 2700 m; the
+// reporter's eye at 2604 m stood in it). cv2LowA's rain branch is what ends the rain (its floor, kCv2RainIntoM over the
+// field's base); this is only a bound on where it may ask: the sliders' largest base shifts together are under 6 km.
+// (A constant in the same comparison: the march stays at 128 registers.)
+const float kCv2RainCoreUpM = 6000.0;
 // The low field's shape, folded into the scalars the shape fetch and the erosion read (2026-11-04, storms through the
 // cumulus field): cv2LowA computes them from the weather map and the cells (the cumulus), a storm object's margin
 // (cv2StormGeom) supplies its own, and cv2FieldLow carves the blend of the two with ONE set of fetches.
@@ -2767,7 +2777,7 @@ CV2Col cv2ColumnSigma(CV2Pos q, float detailAmt, float fpM)
         // It was an ellipse 2.5x longer downwind, out under the anvil where no cloud stood below it: a sheet of rain
         // hanging from nothing (issue 20261022_233857). The forward flank's rain now falls from the deck the weather
         // cube puts there (cloud_v2_weather.comp stormStamp).
-        if (cv2.rain.x > 0.0 && hb < 0.0) {
+        if (cv2.rain.x > 0.0 && hb < kCv2RainCoreUpM) {
             float dom = smoothstep(0.8, 1.0, smoothstep(0.02, 0.6, str) * role) * smoothstep(0.1, 0.5, str);
             float al  = dot(dh, eastW);
             float dR  = length(vec2(length(dh - eastW * al), al > 0.0 ? al * 0.8 : al));
@@ -3286,7 +3296,7 @@ CV2Storm cv2StormGeom(CV2Pos q, float fpM)
             // there cv2LowA takes the storm's own cumulus ("Storm tower height", fullness, overhang, puffiness), and only the
             // outer half of the reach band, the cumulus round the storm, keeps "Storm cumulus top".)
             inner = max(inner, 1.0 - smoothstep(1.1 * Rc + 0.5 * cuReach, 1.1 * Rc + cuReach, dhL));
-            if (cv2.rain.x > 0.0 && hb < 0.0) {
+            if (cv2.rain.x > 0.0 && hb < kCv2RainCoreUpM) {
                 float dom = smoothstep(0.8, 1.0, smoothstep(0.02, 0.6, str) * role) * smoothstep(0.1, 0.5, str);
                 float al  = dot(dh, eastW);
                 float dR  = length(vec2(length(dh - eastW * al), al > 0.0 ? al * 0.8 : al));
