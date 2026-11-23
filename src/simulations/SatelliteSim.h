@@ -9983,6 +9983,7 @@ private:
     // pipelines from them (the same destroy + create as ensureFullSkyPipelines); stats = the TAA pipeline's (else the plain
     // one's) driver statistics.
     std::string skyFragSpvOverride, skyTaaFragSpvOverride;
+    std::string boltFragSpvOverride;      // harness `shaders reload bolt=<spv>`: lightning.frag variant (2026-11-23)
     std::string skyLiteFragSpvOverride;   // harness `shaders reload sky_lite=<spv>`: Planetarium's SKY_LITE variant (2026-11-22)
     std::string reloadSkyShaders(VulkanContext &ctx, const std::string &skySpv, const std::string &skyTaaSpv, std::string &stats);
     // The march's workgroup size (specialization constants): it bounds the driver's registers per

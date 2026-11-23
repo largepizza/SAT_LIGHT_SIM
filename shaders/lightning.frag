@@ -4,6 +4,7 @@
 // inverse square — lightning_draw.glsl's boltGlow), or a red sprite's head glowing in the thin air.
 #include "lightning_draw.glsl"
 #include "cloud_occlusion.glsl"
+#include "depth.glsl"
 
 layout(location = 0) in vec2 vLocal;
 layout(location = 1) flat in vec4 vCore;
@@ -141,6 +142,7 @@ float engineLightAt(vec4 ev, vec3 Lp, vec3 C, vec3 dir, float op, float wD, floa
 void main()
 {
     vec2 uv = gl_FragCoord.xy / vec2(pc.screenW, pc.screenH);
+    gl_FragDepth = gl_FragCoord.z;   // (the flashes' light at a surface edge writes its cloud's depth: below)
     vec3 x;
     if (vSeg.z > 1.5) {
         // ── The engine lights (2026-10-20): burning rocket engines, a ship's entry glow, the pads' floodlights ──
@@ -381,16 +383,73 @@ void main()
         vec4  gt = textureGather(cloudTargetB, uv, 1);
         vec2  fw = fract(uv * vec2(textureSize(cloudTargetA, 0)) - 0.5);
         vec4  w4 = vec4((1.0 - fw.x) * fw.y, fw.x * fw.y, fw.x * (1.0 - fw.y), (1.0 - fw.x) * (1.0 - fw.y));
+        // A SURFACE EDGE across the four texels (2026-11-23, TERRAIN_EDGES_PLAN phase 1.2: "lightning flashes show a
+        // hard, pixelated boundary between the lit sky and the ground"). A texel marched to the ground carries only the
+        // cloud in front of the ground, one marched to the sky the cloud behind the ridge; blended bilinearly, the flash
+        // lit cloud bled onto the ridge's pixels and the sky pixels above it came out darker, both on the half-res grid:
+        // a 2-px staircase drawn after the sky TAA (nothing smooths it). Where the texels hold both classes, the light is
+        // the sky texels' alone (their weights renormalised), drawn just past the ground those texels hit so the main
+        // pass's FULL-RES depth (the per-pixel march's own silhouette) cuts it off every ground pixel. Measured
+        // (Chamonix, a ridge against flash-lit cloud, 1920 x 1009): the lit edge follows the daylight silhouette's
+        // 1-px steps (was 2 rows x 6-8 px on even rows); +0.08 ms in the pass while a flash is up.
+        vec4  wC = w4;
+        bool  edgeCut = false;
+        float tGndMax = 0.0;
+        {
+            // Each cloud texel's class from the scene depth under its centre (the two grids differ by a texel's
+            // rounding at least), and the farthest ground among them (the cut below).
+            vec2  cS = vec2(textureSize(cloudTargetA, 0));
+            ivec2 dS = textureSize(sceneDepthTex, 0);
+            vec2  b0 = floor(uv * cS - 0.5);
+            vec4  skyE;
+            float nSky = 0.0;
+            bool  moved = false;
+            // The block itself, then (all four ground) its eight neighbours one texel over: the depth passes count a
+            // near miss of a crest as a hit, so the half-res ground stands a texel proud of the full-res silhouette and
+            // the sky pixels just over the ridge had only ground texels round them (no light: the 2-px steps). The
+            // nearest block holding a sky texel lends its light; the depth cut keeps it off the ground's pixels.
+            for (int j = 0; j < 9; ++j) {
+                vec2 bo = j == 0 ? vec2(0.0) : vec2(j == 3 || j == 5 || j == 6 ? -1.0 : (j == 4 || j == 7 || j == 8 ? 1.0 : 0.0),
+                                                    j == 1 || j == 5 || j == 7 ? -1.0 : (j == 2 || j == 6 || j == 8 ? 1.0 : 0.0));
+                nSky = 0.0;
+                for (int k = 0; k < 4; ++k) {
+                    vec2  ok = vec2(k == 1 || k == 2 ? 1.0 : 0.0, k < 2 ? 1.0 : 0.0);   // textureGather's texel order
+                    ivec2 dp = clamp(ivec2((b0 + bo + ok + 0.5) / cS * vec2(dS)), ivec2(0), dS - 1);
+                    float dk = texelFetch(sceneDepthTex, dp, 0).r;
+                    skyE[k]  = dk >= 1e29 ? 1.0 : 0.0;
+                    nSky    += skyE[k];
+                    if (dk < 1e29) tGndMax = max(tGndMax, dk);
+                }
+                if (nSky > 0.5) {
+                    if (j > 0) {
+                        moved = true;
+                        ga = textureGather(cloudTargetA, uv + bo / cS, 3);
+                        gt = textureGather(cloudTargetB, uv + bo / cS, 1);
+                    }
+                    break;
+                }
+            }
+            float wSky = dot(skyE, w4);
+            if (nSky > 0.5 && (nSky < 3.5 || moved)) {
+                edgeCut = true;
+                wC = wSky > 1e-4 ? skyE * w4 / wSky : skyE * 0.25 * (4.0 / nSky);
+            }
+        }
         vec4  op4, tC4, air4;
         bool  any = false;
+        float tCutMin = 1e30;
         for (int k = 0; k < 4; ++k) {
             op4[k]  = 1.0 - clamp(gt[k], 0.0, 1.0);
-            bool ok = op4[k] >= 0.005 && abs(ga[k]) < 5000.0 && !cloudAlphaIsEmit(ga[k]);
-            op4[k] *= ok ? w4[k] : 0.0;
+            bool ok = op4[k] >= 0.005 && abs(ga[k]) < 5000.0 && !cloudAlphaIsEmit(ga[k]) && wC[k] > 0.0;
+            op4[k] *= ok ? wC[k] : 0.0;
             tC4[k]  = abs(ga[k]) * 1000.0;
             air4[k] = ok ? boltAir(dir * tC4[k], tC4[k]) : 0.0;
             any = any || ok;
+            if (ok) tCutMin = min(tCutMin, tC4[k]);
         }
+        // The cut: just past the ground those texels hit (a ground pixel there is at most that far, give or take the
+        // slope across a texel), and in front of the cloud the light is on (a sky pixel's depth is its opaque cloud's).
+        if (edgeCut && tCutMin < 1e29) gl_FragDepth = sceneDepthFromDistance(min(1.1 * tGndMax, 0.95 * tCutMin));
         // The cloud this pixel shows, as one place: its opacity, and its distance and air weighted by it.
         float opS = 0.0, tS = 0.0, airS = 0.0;
         for (int k = 0; k < 4; ++k) { opS += op4[k]; tS += op4[k] * tC4[k]; airS += op4[k] * air4[k]; }
