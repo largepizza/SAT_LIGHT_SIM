@@ -22,6 +22,13 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   earlier process once looped that bake past the 8-s TDR, 2026-11-17): march binding 26, beam occlusion 10, lightning, cdc. `cv2ColumnSigma` loops
   over its point's bin; lightning flashes only from them. Settings `clouds_v2.storm_objects / storm_frequency /
   storm_life` (Weather tab "Storm objects"); harness `storms`, `storms go`, `state` -> `weather`; `tools/weather_tool`.
+  **How many storms, and what they cost (2026-11-22, wave c23).** `storm_frequency` 0.18 (the default) keeps 177 storms
+  alive worldwide and 18.6 flashes a second (`weather state` -> `world_flashes.per_s`, 2036-07-10 05:30 UTC); 0.30 gives
+  268 and 28.8; 0.45 gives 403 and 42.8, the world's rate (44-46 a second, ~2000 thunderstorms at once). The cost grows
+  with the count, almost all of it in the cloud bucket: live GPU at 1920x1009, defaults, 2 interleaved reps a side, from
+  0.18 to 0.30 / 0.45: on the ground under a supercell region 39.99 -> 40.78 / 42.06 ms, at 10 km 30.45 -> 31.09 /
+  31.41, at 540 km over New Guinea at 14:30 local 49.94 -> 51.25 / 53.23 (+0.6-1.3 and +1.0-3.3 ms). Over the +0.5 ms
+  budget everywhere, so the default stays 0.18 (sheet: `qa/waves/20261122/evidence/c23/storm_frequency_sheet.png`).
   **A storm brings its own cloud into the weather cube** (2026-10-23, issue 20261022_233857: a supercell in near-clear
   map air rained from nothing under its anvil; from above, anvils on bare ground). `cloud_v2_weather.comp`
   `stormStamp` (binding 4 = `stormBuf`): within each tower's ENVELOPE (`cv2StormEnvRadius` = reach + max(40 km, 0.8
@@ -1496,6 +1503,23 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   build at gain 0 against the 37293e99 exe (two exes cannot interleave; a fragment costs two square roots, an
   exponential and two divisions more at any gain). cloud_v2_march.comp and what it includes are not touched (the same
   SPIR-V bytes).
+  **What hides a ground stroke near a storm (2026-11-22, wave c23; harness `lightning color knock=`).** A channel piece is
+  hidden by the depth attachment (terrain, sea, meshes, and an opaque cloud's distance) and by the cloud composite in
+  front of it (`cloudPointVisibilityAt`: 0 behind an opaque texel's distance, the composite's transmittance behind a
+  translucent one's). The composite's alpha for an opaque ray is the air split (cloud_march.comp `occKm` = `tAirM`), not the
+  march's half-transmittance distance (`tHalf`, the resolved depth's y), but for cloud and rain near the eye the two agree
+  within a few per cent (read along strokes at 3 and 6 km: 0.26-1.77 x the range either way), so the test is against the
+  right place. Strokes placed by hand at 3 / 6 / 12 km at 1920x1009: in clear air the whole channel is drawn (44,000 /
+  14,700 / 3,200 px over 32 levels at 3 / 6 / 12 km, the frame's top down to the ground; the rows under the strike
+  point are the halo's quad behind the terrain). Five km from a supercell (2036-07-10 05:30 UTC, 35.127 N 89.539 W, az
+  120), outside its rain at the eye, the composite is opaque 0.8-2 km out along every ray up to the base (transmittance
+  at the end 0.004-0.01: the forward flank's rain curtain and the storm's cloud), so strokes 3-12 km out are hidden
+  (52-61 / 24 / 23 px); with both the depth test and the composite knocked out they draw 2,700 / 3,100 / 10,800 px. Under
+  the storm in rain (35.062 N 89.397 W, radar `centre_rain` 4: extinction 4 x 0.0012 / m = 4.8 / km, Marshall-Palmer
+  ~57 mm/h) the composite is opaque 30-90 m from the eye (transmittance 0.003): 4.8 / km over 3 km is an optical depth
+  of 14, so nothing is drawn of any stroke and that is the rain. The flash's own light on the cloud behind a stroke
+  also lifts the frame to 235-252 of 255 (glow 0.088), so a channel in front of it can add 13-37 levels at most.
+  Scripts and the readout's decoder: `qa/waves/20261122/evidence/c23/scripts/` (`mk_strokes.py`, `px.py`, `decode8.py`).
   **Thunder is streamed from sound shells (2026-10-10, `addThunderSource` / `thunderStep`,
   SatelliteSimAmbience.cpp):** each flash's channel is kept as a source (pieces in Earth-fixed axes, up to 96 flashes, 150 s);
   its front travels at 343 m/s in sim time, and a playhead per source (2026-11-21, sound.md "Thunder is played by a

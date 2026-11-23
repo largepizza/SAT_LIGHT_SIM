@@ -456,6 +456,20 @@ void main()
         if (max(xm.r, max(xm.g, xm.b)) < 1e-4) discard;
         // Hidden by the cloud (and rain) in front of it; inside a cloud it shows only through the glow.
         float vis = cloudPointVisibilityAt(cloudTargetA, cloudTargetB, uv, vSeg.y, 1.0);
+        // (harness `lightning color knock=`, SatelliteSimLightning.cpp g_boltKnock: 2 nothing in front, 4 the core and
+        // halo at a fixed level, 8 the core as a readout of the composite in front of it: r the nearest opaque texel's
+        // distance / the stroke's range / 2, g the gathered transmittance, b the share of the four texels that are opaque)
+        int knock = int(bc.wet.z + 0.5);
+        if ((knock & 2) != 0) vis = 1.0;
+        if ((knock & 4) != 0) x = vec3(4.0) * max(core, halo);
+        if ((knock & 8) != 0) {
+            if (core < 0.5) discard;
+            vec4 ga = textureGather(cloudTargetA, uv, 3), gt = textureGather(cloudTargetB, uv, 1);
+            float tO = 1e9, nO = 0.0;
+            for (int k = 0; k < 4; ++k) if (ga[k] >= 0.0) { tO = min(tO, ga[k] * 1000.0); nO += 0.25; }
+            outColor = vec4(clamp(tO / vSeg.y * 0.5, 0.0, 1.0), clamp(dot(gt, vec4(0.25)), 0.0, 1.0), nO, 0.0);
+            return;
+        }
         x = (x + mix(gc, gw, clamp(bc.wet.x + bc.wet.y * (1.0 - vis), 0.0, 1.0))) * vis;
     }
     outColor = vec4(boltTonemap(x), 0.0);
