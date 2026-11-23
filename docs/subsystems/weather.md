@@ -1284,7 +1284,34 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   flow, the weather map and the table, and from high orbit the reach is the whole visible cap (~7000 regions at
   3780 km, ~28 a thread in series): the pass ("lightning" pass timer) was 8.4-8.5 ms there, 4.9 with the mask (RTX 3070
   Ti, 1920x1009, interleaved, 3 reps); with the lattice off 0.6. What is left there (~4 ms) is the live candidates'
-  16-sample column probes, one thread each. Deterministic in sim time (`cv2FlashIntensity`: a 50-ms stepped leader, then
+  16-sample column probes, one thread each.
+  **Lattice 2: lightning in HEAVY RAIN, no storm object (2026-11-23, wave c31, the user: "more lightning" without the
+  storms' cost).** The same 64 x 64 regions draw a second set of candidates over the weather map's rain outside the
+  storms ("Lightning rate: heavy rain (/min per 20 km)", `clouds_v2.lightning_rain_rate`, slot 630, `cv2.storms2.y`):
+  candidates at the rate x the region's area, kept with clamp((map B at logical mip 2 - 0.08) / 0.22) (none below 0.08,
+  all at 0.3; outside an envelope the map's rain is the stratiform rule's, at most ~0.45), dropped inside any listed
+  tower's reach (`cv2StormBin`: the storm's own sources own its rain), kind 0 (an ordinary storm's cloud-to-ground
+  share), up to 128 tries a slot (the storm regions' 48); a candidate reads the map once (hardware filtered, the flow
+  taken once at its region's centre) and then ONE sample of the column probe, the first at or over the height its run
+  must reach (below), before the other 15 (most map rain is a low deck: with all 16 for each the pass was 13 ms at rate
+  20 from 3780 km over the monsoon, 3.5 with the one). Its own mask (`sRainMask`): every region inside the reach reads
+  the map's B at 4 points (logical mip 3, the flow at its centre) and is walked only when one is over 0.05. **The
+  deep-cloud gate is the rain column's**: the storm regions' test (one run of CLOUD at least 1.5 km deep, top over 0.55
+  of the Cb height) passed 0 of ~33 live candidates over the rain of the 3780-km view, and of ~1000 candidates in map rain
+  (four 3780-km caps) 30 held a run of cloud alone over 1 km deep: the field draws the map's rain as a ~1-km deck with
+  its rain under it, mostly under 2-3 km. So the run counts cloud AND rain (cf.sigma x (1 - thin)), at least 2 km deep,
+  with cloud in it and its top over 0.25 of the Cb height (~3-4 km), and the flash's base is the run's lowest CLOUD
+  sample, not its rain. Clear air, a shallow deck, a mid-level layer alone do not flash. Where it flashes (2026-11-25
+  23:20-23:45 UTC sim): the tropical and monsoon rain (Indian Ocean, Mexico / E Pacific, the Andes at 21 S); the 50 N
+  Atlantic's frontal rain none (its decks stay low). Counts (flashes on the list at paused moments over 3780-km caps,
+  linear in the rate): +85 on the storms' 199 at rate 20 (12 moments, 4 caps), +374 on 119 (15 moments, 5 caps, the
+  Andes' included): the gain swings with how much deep raining cloud the hour holds. **Cost** (the "lightning" pass,
+  RTX 3070 Ti, paused, 3 reps): from 3780 km 1.4 ms at rate 0, the Andes cap 2.6 (rate 5) / 8.9 (rate 20), the monsoon
+  cap 1.7-2.0 / 2.3 / 3.8; on the ground in the Andes rain 0.3-0.55 at any rate (noise). Linear in the rate from orbit
+  (~0.37 ms a unit at the worst cap), so the default is **2.0** (~+0.5 ms there, the orbit budget); "roughly double the
+  globe's flashes" (the brief) would take rate ~7-45 depending on the hour, +2-16 ms from orbit: the slider (0-10) is
+  the user's trade. What the cost is: the candidates that pass the map's rain and the one-sample test run the full
+  probe, one thread each (where the ground is high, the Andes' 4 km, the one sample passes often). Deterministic in sim time (`cv2FlashIntensity`: a 50-ms stepped leader, then
   1-4 return strokes ~35 ms over a continuing current; in-cloud flashes 2-6 softer pulses). Record (`CV2Flash`, 96 B,
   `kCv2FlashMax` 128): origin, ground point, KIND (0 in cloud, 1 cloud-to-ground: "Cloud-to-ground share", 2 red sprite, 3
   spider lightning just under the base), seed, age, the cloud's base/top, strength, duration; and the origin and the
