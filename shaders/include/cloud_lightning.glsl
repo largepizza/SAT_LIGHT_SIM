@@ -134,6 +134,14 @@ buffer CV2FlashBuf {
     vec4     cv2VtUp[kCv2VtL * kCv2VtN * kCv2VtN];
     // Each slot's stamp (2026-10-27, cloud_v2_lightning.comp): the window cell it holds, the anchor's epoch, a visit count.
     uint     cv2VtStamp[kCv2VtL * kCv2VtN * kCv2VtN];
+#ifdef CV2_RAIN_ZONES
+    // The heavy rain's LIGHTNING ZONES (2026-11-23, wave c32; cloud_v2_lightning.comp, its last workgroups, a 16th of
+    // the globe a frame): per storm bin (6 x 256 x 256, ~39 km) 0 = none, else the raining column that passed the deep
+    // gate there: bits 0-9 its cloud's base, 10-19 its top (64-m units), 20-27 the map's rain (x 255). Per region
+    // (6 x 64 x 64) the mask of its 4 x 4 bins that are zones. Only the lightning pass declares these.
+    uint     cv2RainZone[6 * 256 * 256];
+    uint     cv2RainZoneReg[6 * 64 * 64];
+#endif
 };
 // Psi at a point (bilinear): the radiance of the light the air scattered twice or more reaching it, as if isotropic,
 // in the sky's units; the in-scatter it gives is (sigma_R + sigma_M) x Psi (the phase's mean, 1).

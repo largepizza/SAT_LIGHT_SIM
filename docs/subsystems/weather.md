@@ -1286,32 +1286,45 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   Ti, 1920x1009, interleaved, 3 reps); with the lattice off 0.6. What is left there (~4 ms) is the live candidates'
   16-sample column probes, one thread each.
   **Lattice 2: lightning in HEAVY RAIN, no storm object (2026-11-23, wave c31, the user: "more lightning" without the
-  storms' cost).** The same 64 x 64 regions draw a second set of candidates over the weather map's rain outside the
-  storms ("Lightning rate: heavy rain (/min per 20 km)", `clouds_v2.lightning_rain_rate`, slot 630, `cv2.storms2.y`):
-  candidates at the rate x the region's area, kept with clamp((map B at logical mip 2 - 0.08) / 0.22) (none below 0.08,
-  all at 0.3; outside an envelope the map's rain is the stratiform rule's, at most ~0.45), dropped inside any listed
-  tower's reach (`cv2StormBin`: the storm's own sources own its rain), kind 0 (an ordinary storm's cloud-to-ground
-  share), up to 128 tries a slot (the storm regions' 48); a candidate reads the map once (hardware filtered, the flow
-  taken once at its region's centre) and then ONE sample of the column probe, the first at or over the height its run
-  must reach (below), before the other 15 (most map rain is a low deck: with all 16 for each the pass was 13 ms at rate
-  20 from 3780 km over the monsoon, 3.5 with the one). Its own mask (`sRainMask`): every region inside the reach reads
-  the map's B at 4 points (logical mip 3, the flow at its centre) and is walked only when one is over 0.05. **The
-  deep-cloud gate is the rain column's**: the storm regions' test (one run of CLOUD at least 1.5 km deep, top over 0.55
-  of the Cb height) passed 0 of ~33 live candidates over the rain of the 3780-km view, and of ~1000 candidates in map rain
-  (four 3780-km caps) 30 held a run of cloud alone over 1 km deep: the field draws the map's rain as a ~1-km deck with
-  its rain under it, mostly under 2-3 km. So the run counts cloud AND rain (cf.sigma x (1 - thin)), at least 2 km deep,
-  with cloud in it and its top over 0.25 of the Cb height (~3-4 km), and the flash's base is the run's lowest CLOUD
-  sample, not its rain. Clear air, a shallow deck, a mid-level layer alone do not flash. Where it flashes (2026-11-25
-  23:20-23:45 UTC sim): the tropical and monsoon rain (Indian Ocean, Mexico / E Pacific, the Andes at 21 S); the 50 N
-  Atlantic's frontal rain none (its decks stay low). Counts (flashes on the list at paused moments over 3780-km caps,
-  linear in the rate): +85 on the storms' 199 at rate 20 (12 moments, 4 caps), +374 on 119 (15 moments, 5 caps, the
-  Andes' included): the gain swings with how much deep raining cloud the hour holds. **Cost** (the "lightning" pass,
-  RTX 3070 Ti, paused, 3 reps): from 3780 km 1.4 ms at rate 0, the Andes cap 2.6 (rate 5) / 8.9 (rate 20), the monsoon
-  cap 1.7-2.0 / 2.3 / 3.8; on the ground in the Andes rain 0.3-0.55 at any rate (noise). Linear in the rate from orbit
-  (~0.37 ms a unit at the worst cap), so the default is **2.0** (~+0.5 ms there, the orbit budget); "roughly double the
-  globe's flashes" (the brief) would take rate ~7-45 depending on the hour, +2-16 ms from orbit: the slider (0-10) is
-  the user's trade. What the cost is: the candidates that pass the map's rain and the one-sample test run the full
-  probe, one thread each (where the ground is high, the Andes' 4 km, the one sample passes often). Deterministic in sim time (`cv2FlashIntensity`: a 50-ms stepped leader, then
+  storms' cost; pre-marked ZONES since wave c32).** The same 64 x 64 regions draw a second set of candidates outside the
+  storms ("Lightning rate: heavy rain (/min per 20 km)", `clouds_v2.lightning_rain_rate`, slot 630, `cv2.storms2.y`),
+  only inside the **lightning zones** and at the rate per ZONE area: kind 0 (an ordinary storm's cloud-to-ground
+  share), dropped inside any listed tower's reach (`cv2StormBin`: the storm's own sources own its rain), up to 128
+  tries a slot (the storm regions' 48). **The zone map** (`cv2RainZone`, one uint per storm bin, 6 x 256 x 256, ~39 km,
+  4 x 4 bins a region; `cv2RainZoneReg`, each region's 16-bit mask of its zone bins; appended to the flash buffer and
+  declared by the lightning pass alone, `CV2_RAIN_ZONES`, so the march's SPIR-V is unchanged) is built by the lightning
+  dispatch's last 96 workgroups (`kCv2RzG`, after the cloud over the ground's 4), a 16th of the globe a frame (16
+  regions x their 16 bins a workgroup, the whole map in 16 frames): a bin inside the reach is probed at up to 4 points
+  (2 x 2) where the map's B at logical mip 2 is over 0.08, and holds the first column that passes **the deep gate**
+  (`cv2RainZoneProbe`), packed: the run's cloud base and top (64-m units) and the map's rain; a bin outside the reach,
+  or with no passing column, holds 0 (also every bin while the rate is 0). The flash workgroup marks a region walked
+  (`sRainMask`) when its mask is non-zero; a candidate picks one of the region's zone bins (`bitCount` of the mask x the
+  region's area / 16 is its share of the rate), a point in it, and reads ONE field sample in its own column half way up
+  the bin's run (cloud or rain there, else no flash); the flash takes the bin's base and top. **The deep gate is the
+  rain column's**: the storm regions' test (one run of CLOUD at least 1.5 km deep, top over 0.55 of the Cb height)
+  passed 0 of ~33 live candidates over the rain of the 3780-km view, and of ~1000 candidates in map rain (four 3780-km
+  caps) 30 held a run of cloud alone over 1 km deep: the field draws the map's rain as a ~1-km deck with its rain under
+  it, mostly under 2-3 km. So the run counts cloud AND rain (cf.sigma x (1 - thin)), at least 2 km deep, with cloud in
+  it and its top over 0.25 of the Cb height (~3-4 km), and the flash's base is the run's lowest CLOUD sample, not its
+  rain (one sample at that top height first: most columns stop there). Clear air, a shallow deck, a mid-level layer
+  alone do not flash. **Why zones** (wave c32): c31 drew candidates over all the map's rain (kept with clamp((B -
+  0.08) / 0.22)) and probed each one's column; nearly all failed, ~0.37 ms per unit of rate from 3780 km over the
+  Andes, so doubling the globe's flashes would have cost 3-16 ms. Probing ~39-km bins once per 16 frames and drawing
+  only where a column passed moves the probe out of the per-candidate path. **Counts** (flashes on the list at 15 paused
+  moments, c31's five 3780-km caps 50N 30W, 5N 90E, 40S 150E, 20N 100W, 21S 70W, 2036-11-25 23:40 UTC + 29-s steps):
+  storms alone 119; + rain at rate 5 260, 10 388, 20 694 (c31's per-candidate source: +374 at rate 20). With time
+  running (10x, ~340 sim s over the same caps, `lightning stats`): 2395 -> 5067 flashes at **4.5, the default** (x 2.1).
+  Where they land (rate 4.5): the added flashes are 20 S - 10 S (194 -> 2165: the Peruvian Andes and coast, 15-10 S
+  75-70 W) and 10 N - 30 N (100 -> 739: the E Pacific near 25-30 N 150 W, Mexico); 5N 90E's monsoon gains a few at the
+  paused moments, 50 N none (its decks stay low). Within 400 km of 12 S 74 W: 0 flashes in 145 sim s at rate 0, 2127
+  (875 / min) at 4.5, many of them over the radar's SNOW (blue) on the altiplano: the gate does not know the
+  precipitation type. **Cost** (the "lightning" pass, `state` clouds_v2.pass_ms_raw.lightning, RTX 3070 Ti, paused,
+  interleaved, 3 reps): 3780 km over the Andes cap, c31's shader 1.57 ms at rate 0 / 2.02 at rate 2; this one 1.47 at
+  rate 0, 1.76 at 4.5, 1.75 at 10, 1.99 at 20 (+0.3-0.5); on the ground in the Andes rain 0.35-0.38 at either rate
+  (noise). The whole GPU frame there gains 0.6-1.1 ms at 4.5 (18.5 -> 19.3 mean; satellite_star_draw +0.3, orbit
+  compute +0.15: the cost of drawing twice the flashes, not of the zones); worst frames of 120 29.3 / 24.1 vs 30.8 /
+  29.4 ms (no hitch: every frame builds the same 16th). The Weather window's world estimate does not include this
+  source: the zone map covers only the reach of the eye, not the globe. Deterministic in sim time (`cv2FlashIntensity`: a 50-ms stepped leader, then
   1-4 return strokes ~35 ms over a continuing current; in-cloud flashes 2-6 softer pulses). Record (`CV2Flash`, 96 B,
   `kCv2FlashMax` 128): origin, ground point, KIND (0 in cloud, 1 cloud-to-ground: "Cloud-to-ground share", 2 red sprite, 3
   spider lightning just under the base), seed, age, the cloud's base/top, strength, duration; and the origin and the

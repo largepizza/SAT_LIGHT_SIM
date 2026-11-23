@@ -6139,7 +6139,9 @@ private:
     // "Lightning rate: heavy rain" (clouds_v2.lightning_rain_rate, slot 630, 2026-11-23, wave c31): flashes / min per
     // 20 x 20 km of the weather map's heavy rain outside the storms' envelopes, in deep cloud only (cloud_v2_lightning.comp
     // lattice 2; cv2.storms2.y). No storm objects: the user asked for more lightning without their cost.
-    float cv2LightningRainRate = 2.0f;
+    // Since wave c32 (2026-11-23) the rate is per 20 x 20 km of the pre-marked lightning ZONES (cv2RainZone: the storm
+    // bins whose raining column passed the deep gate); 4.5 about doubles the globe's flashes (storms alone x 2.1).
+    float cv2LightningRainRate = 4.5f;
     float cv2LightningTendrils = 1.23f;    // the channels' branching (x the branch and tendril counts)
     float cv2LightningLight = 1.0f;        // 1 = a flash lights the cloud through the cloud around it (flash_volume.glsl), 0 = by distance alone
     float cv2LightningColour = 1.0f;       // "Lightning glow colour": 0 = the near-white stroke of 2026-11-21, 1 = the physical colours (BoltColour)
@@ -7190,7 +7192,10 @@ private:
     static_assert(kCv2SkyPsiOffset == 27607344ull && kCv2GroundSkyOffset == 27623728ull,
                   "sat_sky.frag SKY_LITE: CV2FlashLite's layout(offset = ...) of cv2SkyPsi / cv2GroundSky");
     static constexpr VkDeviceSize kCv2VtOffset = kCv2GroundSkyOffset + 64ull * 16 * 16;                // cv2VtHdr + cv2Vt (the cloud over the ground)
-    static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2VtOffset + 5ull * 4 * 16 + 2ull * 5 * 32 * 32 * 16 + 5ull * 32 * 32 * 4; // + ... cv2GroundSky, cv2VtHdr, cv2Vt, cv2VtUp, cv2VtStamp
+    // + the heavy rain's lightning zones (wave c32, declared by cloud_v2_lightning.comp alone): cv2RainZone (6 x 256^2
+    // storm bins) and cv2RainZoneReg (6 x 64^2 regions), one uint each.
+    static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2VtOffset + 5ull * 4 * 16 + 2ull * 5 * 32 * 32 * 16 + 5ull * 32 * 32 * 4
+                                                    + 6ull * 256 * 256 * 4 + 6ull * 64 * 64 * 4; // + ... cv2GroundSky, cv2VtHdr, cv2Vt, cv2VtUp, cv2VtStamp, cv2RainZone(Reg)
     VkDescriptorSetLayout cloudMarchDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool cloudMarchDescPool = VK_NULL_HANDLE;
     VkDescriptorSet cloudMarchDescSet = VK_NULL_HANDLE;

@@ -36,6 +36,7 @@ layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_v2_march.com
 layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
 #define CV2_FLASH_BINDING 12
 #define CV2_FLASH_WRITE
+#define CV2_RAIN_ZONES        // cv2RainZone / cv2RainZoneReg (the heavy rain's lightning zones: this pass alone)
 #define CV2_SUN_CASC_FN       // cv2StvLat (the Sun transmittance volume's bake)
 #include "cloud_lightning.glsl"
 #include "atmosphere.glsl"
@@ -86,16 +87,21 @@ shared float sRainMax[256];
 shared uint sRegMask[6u * 64u * 64u / 32u];
 // The regions holding heavy map rain (the third source, 2026-11-23: lightning in heavy rain away from the storms), likewise.
 shared uint sRainMask[6u * 64u * 64u / 32u];
-// The rain source's map rain (the weather cube's B, logical mip 2): none below kCv2RainLtB0, all of the rate at kCv2RainLtB1
-// (outside a storm's envelope the map's rain is the stratiform rule's, at most ~0.45: cloud_v2_weather.comp precip), and a
-// region is walked when any of four mip-3 reads in it exceeds kCv2RainLtMask.
-const float kCv2RainLtB0 = 0.08, kCv2RainLtB1 = 0.3, kCv2RainLtMask = 0.05;
+// The rain source's map rain (the weather cube's B, logical mip 2): a zone bin's column is probed only where it is over
+// kCv2RainLtB0 (outside a storm's envelope the map's rain is the stratiform rule's, at most ~0.45: cloud_v2_weather.comp
+// precip). (c31's candidates were kept with clamp((B - 0.08) / (0.3 - 0.08)); since c32 the rate is per zone area.)
+const float kCv2RainLtB0 = 0.08;
 // The Sun transmittance volume's bake (workgroups >= 5): kCv2StvG threads per ray, each marching kCv2StvK / kCv2StvG
 // consecutive knots of it, their optical depths joined by a prefix over the ray's threads (sStvOd). It was one thread
 // per ray, 2-4 sub-rays x 48 knots x up to 4 field reads one after another on 13 workgroups: ~0.9 ms of latency with
 // most of the GPU idle (2026-10-23, perf). The dispatch is 5 + 13 x kCv2StvG (SatelliteSimCloudsV2.cpp: keep in step).
 const uint kCv2StvG = 8u;
 shared float sStvOd[256];
+// The heavy rain's lightning ZONES (2026-11-23, wave c32): kCv2RzG workgroups after the cloud over the ground's 4 build a
+// kCv2RzF-th of the globe's zone map a frame (16 regions x their 16 storm bins a workgroup), so the whole map in kCv2RzF
+// frames. The dispatch is 5 + 13 x kCv2StvG + 4 + kCv2RzG (SatelliteSimCloudsV2.cpp: keep in step).
+const uint kCv2RzG = 96u, kCv2RzF = 16u, kCv2RzWg0 = 5u + 13u * kCv2StvG + 4u;
+shared uint sZoneReg[16];
 
 vec3 cv2UndriftL(vec3 v)
 {
@@ -129,9 +135,98 @@ const float kCv2KindArea[8] = float[8](0.15, 0.3, 1.0, 1.0, 1.0, 0.3, 0.15, 0.15
 // the rain core does not hide them): air-mass, multicell, supercell, squall line, MCS, tropical.
 const float kCv2KindAnvilCg[8] = float[8](0.15, 0.25, 0.45, 0.4, 0.4, 0.0, 0.0, 0.0);
 
+// The heavy rain's deep-column gate (wave c31) at one column d of the drifted sphere, with the map's rain rb there: the
+// packed zone (cv2RainZone: the run's cloud base, its top, the rain) or 0. The raining COLUMN (cloud + its rain falling
+// through it) at least 2 km deep with cloud in it, its top over 0.25 of the cumulonimbus' height (~3-4 km); the base is
+// the run's lowest CLOUD sample. 16 samples from the ground to above the tropopause, after ONE at the height the run's
+// top must reach (most map rain is a deck under 2-3 km: most columns stop there).
+uint cv2RainZoneProbe(vec3 d, float rb, mat3 ecefToEnu, mat3 enuToEcef, vec3 eye, float eyeH)
+{
+    vec3  oE   = ecefToEnu * cv2UndriftL(d);
+    float gnd  = cv2Ground(cv2UndriftL(d));
+    float hHi  = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * cv2Tropo(d) + 1500.0;
+    float hR   = gnd + 0.25 * (hHi - 1500.0 - gnd);
+    float kR   = clamp(ceil((hR - gnd - 150.0) / max(hHi - gnd - 150.0, 1.0) * 16.0 - 0.5), 0.0, 15.0);
+    float h0   = mix(gnd + 150.0, hHi, (kR + 0.5) / 16.0);
+    CV2_CNT(12);
+    CV2Field c0 = cv2Field(cv2Pos(oE * (R_EARTH + h0) - eye, eyeH, enuToEcef), -1.0, 400.0);
+    if (c0.sigma * max(1.0 - c0.thin, 0.0) <= 4e-4) return 0u;
+    float runB = -1.0, runCB = -1.0, topC = -1.0;
+    bool  prevC = false;
+    [[dont_unroll]] for (int k = 0; k < 16; ++k) {
+        float h  = mix(gnd + 150.0, hHi, (float(k) + 0.5) / 16.0);
+        CV2_CNT(12);
+        CV2Field cf = cv2Field(cv2Pos(oE * (R_EARTH + h) - eye, eyeH, enuToEcef), -1.0, 400.0);
+        float sc = cf.sigma * max(1.0 - cf.thin - cf.rain, 0.0);
+        bool  cl = cf.sigma * max(1.0 - cf.thin, 0.0) > 4e-4;
+        if (cl) {
+            if (!prevC) { runB = h; runCB = -1.0; }   // (the base of the run this sample is in)
+            if (runCB < 0.0 && sc > 4e-4) runCB = h;  // (... and of the cloud in it, not its rain)
+            topC = h;
+        }
+        prevC = cl;
+    }
+    if (runCB < 0.0 || topC - runB < 2000.0 || topC < hR) return 0u;
+    uint b = uint(clamp(round(runCB / 64.0), 1.0, 1023.0)), t = uint(clamp(round(topC / 64.0), 1.0, 1023.0));
+    return b | (t << 10u) | (uint(clamp(rb, 0.0, 1.0) * 255.0) << 20u);
+}
+
 void main()
 {
     uint li = gl_LocalInvocationIndex;
+    // The heavy rain's LIGHTNING ZONES (2026-11-23, wave c32; the last kCv2RzG workgroups): c31's source drew its candidates
+    // over all the map's rain and probed each one's column, and nearly all failed (the map's rain is mostly a ~1-km deck):
+    // ~0.37 ms per unit of its rate from 3780 km over the Andes. Here each storm bin (4 x 4 a region, ~39 km) of the
+    // regions inside the reach is probed at up to 4 points (2 x 2) where the map's rain is over kCv2RainLtB0, and holds the
+    // first column that passes the deep gate (cv2RainZoneProbe); a bin outside the reach or without one holds 0. A 16th of
+    // the globe a frame (the whole map in kCv2RzF frames): no frame builds more. The flash workgroup (0, below) draws its
+    // rain candidates only in zone bins, at the rate per ZONE area, and tests one sample of each.
+    if (gl_WorkGroupID.x >= kCv2RzWg0) {
+        uint slice = (uint(cv2.frame.x) % kCv2RzF) * kCv2RzG + (gl_WorkGroupID.x - kCv2RzWg0);
+        uint reg   = slice * 16u + li / 16u;     // (6 x 64 x 64 regions = kCv2RzF x kCv2RzG x 16)
+        uint sub   = li & 15u;
+        if (li < 16u) sZoneReg[li] = 0u;
+        barrier();
+        const int   kNRz = 64;
+        const float cRz  = 1.5707963 / float(kNRz), cBz = 0.25 * cRz;
+        int   f  = int(reg) / (kNRz * kNRz);
+        int   r  = int(reg) - f * kNRz * kNRz;
+        ivec2 bi = ivec2(r % kNRz, r / kNRz) * 4 + ivec2(int(sub & 3u), int(sub >> 2u));
+        uint  zd = 0u;
+        if (cv2.storms2.y > 0.0 && cv2.rain.x > 0.0) {
+            vec3  enuZ = normalize(pc.obsECEFDir.xyz);
+            vec3  enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ));
+            mat3  enuToEcef = mat3(enuX, cross(enuZ, enuX), enuZ);
+            mat3  ecefToEnu = transpose(enuToEcef);
+            float eyeH = terrainFrame.x + 2.0;
+            vec3  eye  = vec3(0.0, 0.0, R_EARTH + eyeH);
+            float reachH = sqrt(2.0 * R_EARTH * max(eyeH, 0.0)) + sqrt(2.0 * R_EARTH * 12000.0);
+            vec3  wdO = cv2Drift(enuZ);
+            int   a   = f >> 1;
+            float sg  = ((f & 1) == 0) ? 1.0 : -1.0;
+            vec3  mAx = (a == 0) ? vec3(sg, 0.0, 0.0) : ((a == 1) ? vec3(0.0, sg, 0.0) : vec3(0.0, 0.0, sg));
+            vec3  mE1 = (a == 0) ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+            vec3  mE2 = (a == 2) ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0);
+            vec2  bA0 = (vec2(bi) - 0.5 * float(4 * kNRz)) * cBz;
+            vec2  tc  = tan(bA0 + 0.5 * cBz);
+            vec3  c   = normalize(mAx + tc.x * mE1 + tc.y * mE2);
+            if (dot(c, wdO) >= cos(min(reachH / R_EARTH + cRz, PI))) {
+                vec3 fl = cv2FlowDisp(c, c);
+                [[dont_unroll]] for (int q = 0; q < 4 && zd == 0u; ++q) {
+                    vec2  tq = tan(bA0 + cBz * vec2(0.25 + 0.5 * float(q & 1), 0.25 + 0.5 * float(q >> 1)));
+                    vec3  d  = normalize(mAx + tq.x * mE1 + tq.y * mE2);
+                    float rb = textureLod(cv2WeatherTex, cv2FlowWeatherDir(d, fl), CV2_WX_LOD(2.0)).b;
+                    if (rb < kCv2RainLtB0) continue;
+                    zd = cv2RainZoneProbe(d, rb, ecefToEnu, enuToEcef, eye, eyeH);
+                }
+            }
+        }
+        cv2RainZone[uint(f) * 65536u + uint(bi.y) * 256u + uint(bi.x)] = zd;
+        if (zd != 0u) atomicOr(sZoneReg[li / 16u], 1u << sub);
+        barrier();
+        if (li < 16u) cv2RainZoneReg[slice * 16u + li] = sZoneReg[li];
+        return;
+    }
     // The cloud over the ground (2026-10-26, cloud_lightning.glsl cv2Vt; the last 4 workgroups): one of the kCv2VtL levels a
     // frame; per cell two columns a visit at jittered points (R2 by the frame), from the sea-level sphere to 14 km in 20
     // steps crowded low ((k / 20)^1.6: ~380 m under 3 km), the field read at an eighth of the cell (>= 100 m); each column's
@@ -478,45 +573,28 @@ void main()
         }
         // Lattice 2: HEAVY RAIN (2026-11-23, wave c31): the same regions draw candidates over the weather map's heavy rain
         // outside the storms' envelopes (embedded convection in frontal and monsoon rain: "Lightning rate: heavy rain",
-        // cv2.storms2.y, flashes / min / 20 x 20 km at full rain), kept with the map's rain over a threshold and only in a
-        // deep cloud the field draws there (the deep-run test below). No storm object, no cloud added. Its mask: a region is
-        // walked only if a coarse read of the map's rain in it is over kCv2RainLtMask (the storm mask's reason: from orbit
-        // the walk is the cost).
+        // cv2.storms2.y, flashes / min / 20 x 20 km of lightning ZONE since wave c32), only inside the zone bins the last
+        // workgroups mark (a deep raining column the field draws there: cv2RainZoneProbe). No storm object, no cloud added.
+        // Its mask: a region is walked only if it holds a zone bin (the storm mask's reason: from orbit the walk is the cost).
         bool  rainOn = cv2.storms2.y > 0.0 && cv2.rain.x > 0.0;
         int   nRr = rainOn ? 6 * kNR * kNR : 0;
         if (rainOn) {
             for (uint i = li; i < 6u * 64u * 64u / 32u; i += 256u) sRainMask[i] = 0u;
             barrier();
-            [[dont_unroll]] for (int j = int(li); j < 6 * kNR * kNR; j += 256) {
-                int   f  = j / (kNR * kNR);
-                int   r  = j - f * kNR * kNR;
-                vec2  rA = (vec2(float(r % kNR), float(r / kNR)) - 0.5 * float(kNR)) * cR;
-                int   a  = f >> 1;
-                float sg = ((f & 1) == 0) ? 1.0 : -1.0;
-                vec3  mAx = (a == 0) ? vec3(sg, 0.0, 0.0) : ((a == 1) ? vec3(0.0, sg, 0.0) : vec3(0.0, 0.0, sg));
-                vec3  mE1 = (a == 0) ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
-                vec3  mE2 = (a == 2) ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0);
-                vec2  tc = tan(rA + 0.5 * cR);
-                vec3  rc = normalize(mAx + tc.x * mE1 + tc.y * mE2);
-                if (dot(rc, wdO) < cosReach) continue;
-                vec3  fl = cv2FlowDisp(rc, rc);
-                float mx = 0.0;
-                [[dont_unroll]] for (int k = 0; k < 4; ++k) {
-                    vec2 tq = tan(rA + cR * vec2(0.25 + 0.5 * float(k & 1), 0.25 + 0.5 * float(k >> 1)));
-                    mx = max(mx, textureLod(cv2WeatherTex, cv2FlowWeatherDir(normalize(mAx + tq.x * mE1 + tq.y * mE2), fl), CV2_WX_LOD(3.0)).b);
-                }
-                if (mx > kCv2RainLtMask) atomicOr(sRainMask[uint(j) >> 5u], 1u << (uint(j) & 31u));
-            }
+            // (Since wave c32 the zone map's regions: a region holding a zone bin. It was 4 coarse map reads a region in
+            // reach, > 0.05.)
+            [[dont_unroll]] for (int j = int(li); j < 6 * kNR * kNR; j += 256)
+                if ((cv2RainZoneReg[j] & 0xFFFFu) != 0u) atomicOr(sRainMask[uint(j) >> 5u], 1u << (uint(j) & 31u));
             barrier();
         }
 
         for (int idx = int(li); idx < nT + nR + nRr; idx += 256) {
             bool  tower = idx < nT;
             bool  rainS = idx >= nT + nR;   // (the heavy-rain lattice)
-            vec3  up, rAx = vec3(0.0), rE1 = vec3(0.0), rE2 = vec3(0.0), rFl = vec3(0.0);
+            vec3  up, rAx = vec3(0.0), rE1 = vec3(0.0), rE2 = vec3(0.0);
             vec2  rA0 = vec2(0.0);
             float str = 0.0, act = 0.0, spread = 0.0, pSlot, shearB = 0.0, reachT = 0.0;
-            uint  cellH;
+            uint  cellH, zm = 0u, zBase = 0u;   // (heavy rain: the region's zone bins, its first bin's index)
             int   nM, kd = 0;
             if (tower) {
                 CV2Tower tw = cv2Towers[idx];
@@ -559,13 +637,16 @@ void main()
                 float s2  = 1.0 + tc.x * tc.x + tc.y * tc.y;
                 float J   = (1.0 + tc.x * tc.x) * (1.0 + tc.y * tc.y) / (s2 * sqrt(s2));
                 float lam = (rainS ? cv2.storms2.y : cv2.lightning2.x) / 60.0 * kCv2FlashSlot * J * (cR * R_EARTH) * (cR * R_EARTH) / (20000.0 * 20000.0);
-                nM    = int(clamp(ceil(2.0 * lam + 2.0), 3.0, rainS ? 128.0 : 48.0));   // (heavy rain: most candidates fail the deep-run test)
+                // (Heavy rain: the rate is per ZONE area, the region's zone bins' share of it.)
+                if (rainS) {
+                    zm    = cv2RainZoneReg[j] & 0xFFFFu;
+                    zBase = uint(f) * 65536u + uint(ri.y * 4) * 256u + uint(ri.x * 4);
+                    lam  *= float(bitCount(zm)) / 16.0;
+                }
+                nM    = int(clamp(ceil(2.0 * lam + 2.0), 3.0, rainS ? 128.0 : 48.0));
                 pSlot = lam / float(nM);
                 uvec3 hv = cv2Pcg3(uvec3(uvec2(ri) + 8192u, uint(f) + (rainS ? 211u : 101u)));
                 cellH = hv.x ^ (hv.y * 0x9E3779B9u) ^ (hv.z * 0x85EBCA6Bu);
-                // (Heavy rain: the flow once, at the region's centre, and one hardware read of the map a candidate: most
-                // of the rain lattice's cost was its candidates' map reads, the flow's eight waves and four fetches each.)
-                if (rainS) rFl = cv2FlowDisp(up, up);
             }
             for (int ds = 0; ds <= 1; ++ds) {
                 float sl = sNow - float(ds);
@@ -579,22 +660,32 @@ void main()
                     vec3  fUp = up;
                     float fStr = str, fAct = act;
                     int   fKd = kd;
+                    uint  zd  = 0u;   // (heavy rain: the zone bin's packed column)
                     if (!tower) {
                         // The candidate's point in the region, and the storm there: a deep-convective, raining
                         // region of the weather map (the type at ~20 km, its cover, the rain).
                         uvec3 qh = cv2Pcg3(fh ^ uvec3(0x2F6B1C3Du, 0x9A1E5B77u, 0x4C8E2D19u));
-                        vec2  tp = tan(rA0 + cR * vec2(qh.xy & 0xFFFFu) / 65535.0);
+                        vec2  qu = vec2(qh.xy & 0xFFFFu) / 65535.0;
+                        uint  zi = 0u;
+                        if (rainS) {
+                            // Heavy rain: a point in one of the region's zone bins (the kq-th set bit of its mask).
+                            uint kq = (qh.z >> 16u) % uint(bitCount(zm)), s = 0u;
+                            uint mz = zm;
+                            for (uint n = 0u; n < kq; ++n) mz &= mz - 1u;
+                            s = uint(findLSB(mz));
+                            zi = zBase + (s >> 2u) * 256u + (s & 3u);
+                            qu = (vec2(float(s & 3u), float(s >> 2u)) + qu) * 0.25;
+                        }
+                        vec2  tp = tan(rA0 + cR * qu);
                         fUp = normalize(rAx + tp.x * rE1 + tp.y * rE2);
                         if (acos(clamp(dot(fUp, wdO), -1.0, 1.0)) * R_EARTH > reachH) continue;
-                        vec4  wk;
-                        if (rainS) wk = textureLod(cv2WeatherTex, cv2FlowWeatherDir(fUp, rFl), CV2_WX_LOD(2.0));
-                        else       wk = cv2WeatherBilinear(cv2FlowWeatherDir(fUp, cv2FlowDisp(fUp, fUp)), 2.0);
                         if (rainS) {
-                            // Heavy rain: kept with the map's rain over the threshold (the rate rises with it), outside
+                            // Heavy rain: in a zone bin (its packed column: the cloud's base, top, the map's rain), outside
                             // every listed storm tower's reach (round a storm its own sources flash), an ordinary storm's
                             // cloud-to-ground share (kind 0).
-                            float rw = clamp((wk.b - kCv2RainLtB0) / (kCv2RainLtB1 - kCv2RainLtB0), 0.0, 1.0);
-                            if (float(qh.z & 0xFFFFu) / 65535.0 >= rw) continue;
+                            zd = cv2RainZone[zi];
+                            if (zd == 0u) continue;   // (rebuilt since the region's mask was read)
+                            float rw = float((zd >> 20u) & 255u) / 255.0;
                             uvec2 sb = cv2StormBin(fUp);
                             bool  inStorm = false;
                             for (uint si = 0u; si < sb.y && !inStorm; ++si) {
@@ -606,6 +697,7 @@ void main()
                             fAct = rw;
                             fKd  = 0;
                         } else {
+                        vec4  wk = cv2WeatherBilinear(cv2FlowWeatherDir(fUp, cv2FlowDisp(fUp, fUp)), 2.0);
                         float ck = clamp((wk.r * cv2.look.x - cv2.cover.x) / max(cv2.cover.y - cv2.cover.x, 1e-3), 0.0, 1.0);
                         // (It was x smoothstep(0.55, 0.8, the map's type) x (0.3 + 0.7 x its rain): since the storm objects
                         // (2026-10-23) the map's type stops at congestus (0.62; a storm's stamp 0.55-0.72) and its rain is
@@ -685,19 +777,18 @@ void main()
                         gnd  = cv2Ground(cv2UndriftL(oD));
                         hHi  = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * cv2Tropo(oD) + 1500.0;
                         base = -1.0; topC = -1.0;
-                        // Heavy rain's candidates first read ONE sample of the probe's: the first at or over the height its
-                        // run must reach (below). Most map rain is a deck under 2-3 km, so most stop here: with the 16
-                        // samples for each, the pass was 13 ms at rate 20 from 3780 km over the monsoon (1.5 without).
-                        // (A run that starts above that height without rain under it is skipped: rain falls below a deck.)
+                        // Heavy rain (wave c32): its zone bin's column passed the deep gate (cv2RainZoneProbe); the
+                        // candidate's own column reads ONE sample, half way up that run: cloud or rain there, and the flash
+                        // takes the bin's base and top (no 16-sample probe a candidate: c31's cost).
                         if (rainS) {
-                            float hR = gnd + 0.25 * (hHi - 1500.0 - gnd);
-                            float kR = clamp(ceil((hR - gnd - 150.0) / max(hHi - gnd - 150.0, 1.0) * 16.0 - 0.5), 0.0, 15.0);
-                            float h  = mix(gnd + 150.0, hHi, (kR + 0.5) / 16.0);
+                            float zB = float(zd & 1023u) * 64.0, zT = float((zd >> 10u) & 1023u) * 64.0;
                             CV2_CNT(12);
-                            CV2Field cf = cv2Field(cv2Pos(oE * (R_EARTH + h) - eye, eyeH, enuToEcef), -1.0, 400.0);
-                            if (cf.sigma * max(1.0 - cf.thin, 0.0) <= 4e-4) continue;
+                            CV2Field cf = cv2Field(cv2Pos(oE * (R_EARTH + 0.5 * (zB + zT)) - eye, eyeH, enuToEcef), -1.0, 400.0);
+                            if (cf.sigma * max(1.0 - cf.thin, 0.0) <= 4e-4) break;
+                            base = zB; topC = zT; okC = true;
+                            break;
                         }
-                        float runB = -1.0, runCB = -1.0;
+                        float runB = -1.0;
                         bool  prevC = false;
                         [[dont_unroll]] for (int k = 0; k < 16; ++k) {
                             float h  = mix(gnd + 150.0, hHi, (float(k) + 0.5) / 16.0);
@@ -705,14 +796,10 @@ void main()
                             CV2Field cf = cv2Field(cv2Pos(oE * (R_EARTH + h) - eye, eyeH, enuToEcef), -1.0, 400.0);
                             // (Under the anvil its plate counts as cloud: the thin high layer's share is the anvil's there.)
                             float sc = cf.sigma * max(1.0 - (anvil ? 0.0 : cf.thin) - cf.rain, 0.0);
-                            // Heavy rain's run is the raining column: its cloud and the rain falling through it (a raining
-                            // deck drawn ~1 km thick reads as one sample of cloud over rain: 2026-11-23, of ~1000 live
-                            // candidates in map rain from 3780 km, 30 held a run of cloud alone over 1 km deep).
-                            bool  cl = (rainS ? cf.sigma * max(1.0 - cf.thin, 0.0) : sc) > 4e-4;
+                            bool  cl = sc > 4e-4;
                             if (cl) {
                                 if (base < 0.0) base = h;
-                                if (!prevC) { runB = h; runCB = -1.0; }   // (the base of the run of cloud this sample is in)
-                                if (runCB < 0.0 && sc > 4e-4) runCB = h;  // (... and of the cloud in it, not its rain)
+                                if (!prevC) runB = h;   // (the base of the run of cloud this sample is in)
                                 topC = h;
                             }
                             prevC = cl;
@@ -720,19 +807,14 @@ void main()
                         // A storm region's flash is in ONE deep cloud that reaches the mixed-phase heights (over half the
                         // cumulonimbus' height): the run of cloud under the column's top, not a cumulus under an anvil with
                         // clear air between (its origin would hang in that air), nor the storm's congestus field.
-                        // Heavy rain's flash (lattice 2): the cloud the map draws there is a raining deck, not a tower (no
-                        // storm object): one raining column (cloud + its rain) at least 2.5 km deep with cloud in it, whose
-                        // top passes 0.35 of the cumulonimbus' height (~4.5 km: above the -10 C level, where the charge
-                        // separates): a thick nimbostratus flashes; a shallow deck, a mid-level layer or clear air does not.
-                        // The flash's base is its cloud's (not the rain's). (With a storm region's test, 0.55 and cloud
-                        // alone, none did: 0 of ~33 live candidates over the rain of the 3780-km view, 2026-11-23.)
+                        // (Heavy rain's gate, lattice 2, is the raining column's: cv2RainZoneProbe. With a storm region's
+                        // test, cloud alone and 0.55, none passed: 0 of ~33 live candidates over the rain of a 3780-km view.)
                         if (!tower || anvil) {
-                            if (rainS && (runCB < 0.0 || topC - runB < 2000.0)) continue;
-                            base = rainS ? runCB : runB;
-                            if (topC < gnd + (rainS ? 0.25 : 0.55) * (hHi - 1500.0 - gnd)) continue;
+                            base = runB;
+                            if (topC < gnd + 0.55 * (hHi - 1500.0 - gnd)) continue;
                         }
                         // (An anvil plate is 1-3 km deep: one or two of the 16 ~1-km samples.)
-                        if (base < 0.0 || topC - base < (anvil || rainS ? 0.0 : 1500.0)) continue;
+                        if (base < 0.0 || topC - base < (anvil ? 0.0 : 1500.0)) continue;
                         okC = true;
                     }
                     if (!okC) continue;

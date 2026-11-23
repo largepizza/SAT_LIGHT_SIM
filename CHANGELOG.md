@@ -305,7 +305,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   set them back there.
   Lightning also flashes in heavy rain away from the storms (embedded thunderstorms in monsoon and tropical rain),
   wherever the raining cloud is deep enough, with no extra storm or cloud to draw: "Lightning rate: heavy rain"
-  (Settings > Weather > Lightning; 0 turns it off).
+  (Settings > Weather > Lightning; 0 turns it off). The places it can flash are now found ahead of time, a slice
+  of the globe each frame, so it costs far less: it defaults to 4.5, about twice the lightning the storms alone
+  make, most of it over the tropical Andes and the eastern Pacific. If yours is set to 2, raise it to 4.5 to see this.
 - **Lightning on the radar.** The Weather window's radar marks the lightning of the last five minutes: a yellow
   cross where a stroke reached the ground, a small blue dot where a flash stayed in the cloud, fading with age, with
   the count under the radar ("ground 23 / in cloud 61"). The "Strikes" button hides them. Works at every range.
