@@ -41,23 +41,20 @@ message(STATUS "Building ${EXE_BASENAME}")
 
 # Git commit + build date for diagnostics/bug reports (NEW-1). "unknown" for
 # source-zip builds with no .git directory so this never fails a from-scratch
-# build. Only updates when CMake re-configures, not on every incremental build.
+# build. Stamped at BUILD time (cmake/BuildStamp.cmake -> generated/build_stamp.cpp,
+# the sat_build_stamp target below), "-dirty" when tracked files differ from the
+# commit; version.h only declares the accessors.
 find_package(Git QUIET)
-set(GIT_COMMIT "unknown")
-if(GIT_FOUND AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
-    execute_process(
-        COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
-        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-        OUTPUT_VARIABLE GIT_COMMIT_OUT
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET
-        RESULT_VARIABLE GIT_RESULT
-    )
-    if(GIT_RESULT EQUAL 0 AND NOT GIT_COMMIT_OUT STREQUAL "")
-        set(GIT_COMMIT "${GIT_COMMIT_OUT}")
-    endif()
-endif()
-string(TIMESTAMP BUILD_DATE "%Y-%m-%d" UTC)
+set(SAT_BUILD_STAMP_CPP "${CMAKE_CURRENT_BINARY_DIR}/generated/build_stamp.cpp")
+set(SAT_BUILD_STAMP_CMD ${CMAKE_COMMAND} "-DGIT=${GIT_EXECUTABLE}" "-DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+    "-DOUT=${SAT_BUILD_STAMP_CPP}" -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/BuildStamp.cmake")
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
+execute_process(COMMAND ${SAT_BUILD_STAMP_CMD})   # so the source exists for the first build
+add_custom_target(sat_build_stamp
+    COMMAND ${SAT_BUILD_STAMP_CMD}
+    BYPRODUCTS "${SAT_BUILD_STAMP_CPP}"
+    COMMENT "Build stamp (git commit + date)"
+    VERBATIM)
 
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/src/version.h.in"
@@ -149,6 +146,8 @@ file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "src/*.cpp")
 add_executable(SatLightSim ${SOURCES})
 set_target_properties(SatLightSim PROPERTIES OUTPUT_NAME "${EXE_BASENAME}")
 target_include_directories(SatLightSim PRIVATE src ${clay_SOURCE_DIR} ${stb_SOURCE_DIR} ${miniaudio_SOURCE_DIR} "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_sources(SatLightSim PRIVATE "${SAT_BUILD_STAMP_CPP}")
+add_dependencies(SatLightSim sat_build_stamp)
 
 # MSVC accepts a narrowing conversion in a braced initializer (e.g. a float literal where the
 # aggregate member is an int) with only a warning, while GCC/Clang reject it outright — so this
@@ -436,6 +435,8 @@ if(SAT_BUILD_FRESH_TARGET)
     target_compile_definitions(SatLightSimFresh PRIVATE SAT_FRESH_SETTINGS)
     sat_strict_warnings(SatLightSimFresh)
     target_include_directories(SatLightSimFresh PRIVATE src ${clay_SOURCE_DIR} ${stb_SOURCE_DIR} ${miniaudio_SOURCE_DIR} "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    target_sources(SatLightSimFresh PRIVATE "${SAT_BUILD_STAMP_CPP}")
+    add_dependencies(SatLightSimFresh sat_build_stamp)
     target_link_libraries(SatLightSimFresh PRIVATE Vulkan::Vulkan glfw glm::glm nlohmann_json::nlohmann_json Threads::Threads)
     if(WIN32)
         target_link_libraries(SatLightSimFresh PRIVATE mfplat mfreadwrite mfuuid ole32)

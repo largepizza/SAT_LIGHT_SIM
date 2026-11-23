@@ -134,11 +134,14 @@ def find_exe():
 
 
 def build_stamp(exe):
-    """(commit, date) the exe was configured with, from the build tree's generated/version.h - the same
-    pair a run log's first line carries. It is stamped when CMake runs, not when the exe was linked."""
+    """(commit, date) the exe was built at, from the build tree's generated/build_stamp.cpp (rewritten on every
+    build since 2026-11-22; older trees: generated/version.h, stamped when CMake ran) - the pair a run log's
+    first line carries."""
     d = os.path.dirname(os.path.abspath(exe))
     for _ in range(3):
-        h = os.path.join(d, "generated", "version.h")
+        h = os.path.join(d, "generated", "build_stamp.cpp")   # since 2026-11-22 (build-time stamp)
+        if not os.path.exists(h):
+            h = os.path.join(d, "generated", "version.h")       # older build trees
         if os.path.exists(h):
             commit = date = "?"
             with open(h, encoding="utf-8", errors="replace") as f:
