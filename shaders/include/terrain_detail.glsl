@@ -947,6 +947,74 @@ TdSample terrainDetailLinEro(vec3 q, vec3 enuX, vec3 enuY, vec3 enuZ, float lodM
     return s;
 }
 
+// ── Edge coverage (TERRAIN_EDGES_PLAN phase 1.1, 2026-11-23) ──────────────────────────────────────
+// TD_EDGE_AA (sat_sky.frag's SKY_TAA variants): how closely a ray that did NOT hit a near crest passed over it, in pixel
+// footprints (e = the smallest true gap / (pixAngle * t)). The crest is the nearest surface the half-res depth found
+// round this pixel (sat_sky.frag's seed, tNear): next to a silhouette that is the ridge the pixel below hits. A ray one
+// pixel above a hit passes within ~1-2 footprints of what that hit: the march counts a pass within ONE footprint as a
+// hit, so its silhouette is the e = 1 line, and sat_sky.frag marks e - 1 < 1; sky_taa.comp blends those pixels toward
+// the world-down neighbour by 2 - e (a 1-px ramp from the geometry itself, continuous with the march's silhouette).
+// The true gap along the ray is bumpy at the footprint's scale (the detail octaves down to the geometry LOD), so a
+// search from a bracket's ends (halving, a golden section) settled on side bumps: 2-7 footprints next to the edge. And
+// the march's own samples are no help: up to 1.5% of t apart, and their gaps are mostly lower bounds that subtract the
+// detail's whole amplitude (a candidate taken from them was a different bump; both measured on view b, 2026-11-23).
+// So: TD_EDGE_SCAN points two footprints apart from just before tNear (the depth pass's envelope stops early, never
+// late), then a golden section on the two intervals round the best; the smallest of all. The window matters most:
+// tNear is the nearest of four half-res texels (one can hit the face rows below, nearer) and the envelope stops up to
+// tens of metres short, so the crest lies tens of footprints past it. Measured on view b's ridge, the pixel above
+// the silhouette: window 20 footprints, median e 1.67 (30% < 1); 44: 1.44; 64: 1.26 (86% < 2), the pixel two
+// above 2.4 -- one footprint per row, as it should be. Every number is a true gap
+// at some point of the ray, never below the real closest approach: an error only weakens the blend.
+// ONE call site of the height, inside the loop: the sky pass's speed follows its code size (render-pipeline.md).
+#ifdef TD_EDGE_AA
+#ifndef TD_EDGE_SCAN
+#define TD_EDGE_SCAN 32
+#endif
+#ifndef TD_EDGE_GOLD
+#define TD_EDGE_GOLD 6
+#endif
+float tdEdgeCoverage(sampler2D elevTex, sampler2D specTex, float hEye, vec3 dir, vec3 enuX, vec3 enuY, vec3 enuZ,
+                     float tNear, float pixAngle) {
+    const float kR = 0.381966;
+    float dS = 2.0 * pixAngle * tNear;                 // two footprints
+    float a  = max(tNear - 2.0 * dS, 1.0);
+    float c  = 0.0;
+    float gBest = 1e30, tBest = a;
+    float x1 = 0.0, x2 = 0.0, f1 = 0.0, f2 = 0.0;
+    bool  at1 = true;                                  // golden section: the point to evaluate next, x1 else x2
+    for (int k = 0; k < TD_EDGE_SCAN + TD_EDGE_GOLD; ++k) {
+        if (k == TD_EDGE_SCAN) {                       // the scan intervals either side of the best
+            a = tBest - dS; c = tBest + dS;
+            x1 = a + kR * (c - a); x2 = c - kR * (c - a);
+        }
+        float tt = (k < TD_EDGE_SCAN) ? a + float(k) * dS : (at1 ? x1 : x2);
+        vec3  q  = vec3(0.0, 0.0, hEye) + tt * dir;
+        float h0, hMip3;
+        tdDemAt(elevTex, specTex, q, enuX, enuY, enuZ, h0, hMip3);
+        float g = tdAltitude(q) - h0;
+        if (tdEnabled()) {
+            float lod = tdGeomLodM(tt, pixAngle);
+            TdState st = tdBegin(q, enuX, enuY, enuZ, h0, hMip3);
+#ifdef TD_CLIPMAP
+            tdClipErosion(elevTex, st, q, enuX, enuY, enuZ, lod);
+            g -= tdClipH(q, enuX, enuY, enuZ, lod) + st.hEro;
+#else
+            tdOctaves(elevTex, st, lod, kTdOctaves, true);
+            g -= st.h;
+#endif
+        }
+        float gF = g / max(pixAngle * tt, 1e-6);       // in footprints
+        if (gF < gBest) { gBest = gF; if (k < TD_EDGE_SCAN) tBest = tt; }
+        if (k < TD_EDGE_SCAN) continue;
+        if (at1) f1 = gF; else f2 = gF;
+        if (k == TD_EDGE_SCAN) { at1 = false; continue; }
+        if (f1 < f2) { c = x2; x2 = x1; f2 = f1; x1 = a + kR * (c - a); at1 = true; }
+        else         { a = x1; x1 = x2; f1 = f2; x2 = c - kR * (c - a); at1 = false; }
+    }
+    return max(gBest, 0.0);
+}
+#endif
+
 // ── The march ─────────────────────────────────────────────────────────────────────────────────
 // Returns the distance to the first terrain hit along dir, or -1. hEye = observer height above
 // the sea-level sphere (obsEffH + 2). tExit bounds the search (sea-level hit, shell exit, reach).
