@@ -556,6 +556,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Performance
 
+- **About 3 ms faster beside a venting Starship in orbit.** Up close, the vent's fan no longer draws the edge
+  Gaussians that only matter from far away; the fan looks the same (Starmind deploy view 21.9 -> 19.1 ms).
 - **Faster from high orbit over the night side.** Picking which lightning flashes happen walked every storm region
   on the visible half of the Earth, storms or not; it now skips the regions with no storm (the same flashes): ~3.5 ms
   less at 3780 km, ~2 ms at 540 km. Moonlit clouds' lighting runs in step across neighbouring pixels: ~2.5 ms less at

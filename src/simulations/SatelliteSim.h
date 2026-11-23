@@ -3731,6 +3731,7 @@ private:
     // dustCloudsCS's per-texel work, above which no Gaussians are added past the old 384 (SatelliteSimLaunches.cpp
     // launchFillVisuals); 0 = the old count budget alone
     float launchPlumeCoverMax = 16.0f;
+    bool launchVentRimLod = true;  // launches.vent_rim_lod (2026-11-22): the orbital vent's rims fade out within ~4-9 sigma of the eye
     float launchOrbitVent = 0.29f; // launches.orbit_vent (2026-11-13): the steady orbital vent's density x (0 = off; slider 624; 0.29 = the user's look, 2026-11-14)
     float launchGroundCloudGain = 1.0f; // launches.ground_cloud_gain: lift-off steam / landing dust & spray density x
     // Rocket light on clouds, haze, plumes and the ground (2026-10-20, launches.engine_light_gain): the burning
