@@ -446,6 +446,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **Smoother mountain silhouettes.** With the sky TAA on, a ridge against the sky or a farther ridge is anti-aliased
   from the terrain's own geometry on every frame, also while moving, turning or during a lightning flash (before, the
   edges only smoothed once the view had been still for a moment). Costs ~0.2 ms.
+- **No dark dashes on the horizon in heavy rain.** Standing in a downpour with the sky TAA on, a broken line of dark
+  1-px dashes no longer runs along the far horizon: the rain in front of it is drawn there like everywhere else.
 
 ### Satellites and photometry
 
