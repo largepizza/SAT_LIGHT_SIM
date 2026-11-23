@@ -303,6 +303,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   Lightning) sets it. Flashes away from the towers are back (the "Lightning rate: storms" slider had stopped
   doing anything). The two rate sliders now default to 3.0 and 1.0; if yours were raised to see more lightning,
   set them back there.
+  Lightning also flashes in heavy rain away from the storms (embedded thunderstorms in monsoon and tropical rain),
+  wherever the raining cloud is deep enough, with no extra storm or cloud to draw: "Lightning rate: heavy rain"
+  (Settings > Weather > Lightning; 0 turns it off).
 - **Lightning on the radar.** The Weather window's radar marks the lightning of the last five minutes: a yellow
   cross where a stroke reached the ground, a small blue dot where a flash stayed in the cloud, fading with age, with
   the count under the radar ("ground 23 / in cloud 61"). The "Strikes" button hides them. Works at every range.
