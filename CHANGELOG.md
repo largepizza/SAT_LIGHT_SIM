@@ -549,6 +549,12 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Performance
 
+- **About 2 ms faster from low orbit above ~900 km.** The far cloud layer (the flat layer that takes over from the
+  volumetric clouds from high orbit) now starts at ~1450 km instead of ~905: below that its share of the image was under
+  a level while its pass cost ~2 ms (35.4 -> 33.5 ms at 1037 km, the image unchanged).
+- **Less cloud upkeep from orbit while time runs.** The cloud occupancy map re-checked its finest cells every second or
+  so even where a whole cell is a fraction of a pixel; from afar they now wait until the clouds could have moved half a
+  pixel: its share halves from 1000 km (0.8 -> 0.4 ms), ~0.25 ms less at 420 km, the image unchanged.
 - **Faster in hurricanes:** the cloud march is back to its fast register budget on NVIDIA (128, was 255), and a sample
   deep inside an opaque cloud reuses the light path of the sample in front of it instead of marching its own. Over a
   hurricane's eye from 24 km the clouds cost ~20-23% less (67 -> 52 ms still; 63-65 -> 48 ms flying the reporter's path at
@@ -742,6 +748,11 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- No more slab of clear air between a storm tower's base and the top of its rain (issue_20261122_154502). The heavy
+  rain under a tower stopped at the storm type's nominal base, while the tower's cloud is drawn on the base of the
+  clouds around it, which sits hundreds of metres higher over land by day: from just under the base you looked
+  through the gap at the sunlit clouds beyond. The rain now reaches the base it falls from, for under 1 ms more
+  with your eye in it, and the storm's base seen from outside stays as dark as before.
 - No more band of dark, blocky purple-grey streaks just under the Earth's limb from orbit (issue_20261121_154506).
   The haze drawn in front of a cloud was placed by an estimate that took the air to thicken evenly along the line
   of sight. That holds near the ground; from orbit nearly all the air on a line to the limb lies in its last

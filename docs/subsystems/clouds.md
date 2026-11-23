@@ -1012,6 +1012,17 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     Two passes (check + list, then a 4-lane bake: a one-pass bake serialised one lane per warp, 5-12 ms). 6 levels used;
     off above 4x time. -4..-9 ms below orbit at full rate, ~0 from orbit, images at the noise floor, motion (tstab) equal.
     Coarse-footprint bakes are NOT conservative (more misses); jumping to cell exits gained nothing.
+    **Expiry from afar** (2026-11-22, c17 perfpass; `cdc_far_expiry` 1, no slider, 0 = the old expiry): a level's cells
+    expire after half a cell of 40-m/s wind slide OR half a pixel's footprint at the nearest cloud (the motion guard's
+    distance: height over the shell + 20 km), whichever is longer, in powers of two (`cv2CdcStretchExp`, 0.25 of
+    hysteresis; a change re-stamps the affected levels once, a refill). Below ~100 km nothing changes (the exponent is
+    0 there at an 80-deg field of view: half a pixel at the shell + 20 km is under 50 m). From orbit the fine levels'
+    re-bakes were all cost: at issue_20261122_114811 shot 1 (1037 km, time
+    1x) the clipmap's bake took 0.81 ms of `layer_map` for no march saving (march_a 17.23 ms with the clipmap, 17.27
+    without). Measured (RTX 3070 Ti, 1920x1009, time at 1x, interleaved, 3 reps): 1037 km `layer_map` 0.83 -> 0.42 ms,
+    GPU 35.72 -> 34.39; 420 km 1.01 -> 0.77, GPU 34.43 -> 33.70 (+-0.4); march unchanged; image diff mean 0.47 / 0.87
+    against 0.62 / 1.45 between two captures of the old expiry (time running). What is left at 1037 km (~0.4 ms) is the
+    check pass over 6 levels and the coarse levels' bakes.
     **Low in the shell** (2026-11-04, issue 20261104_020257; `cdc_motion_low_frac` 0.05, `cdc_motion_low_epoch` 4,
     `cdc_motion_low_max_m` 6000, no UI; frac 0 = the old guard): with the eye below 6 km (and the shell top + 2 km) the motion
     guard tolerates 5% of its 20-km scale a frame (1 km: 30 km/s at 30 fps) instead of 0.4%, takes a new epoch after 4x the
@@ -2054,6 +2065,39 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   ~60% of that frame (thin margins over rain fill in, the gap shrinks). Motion (tstab walk / pitch at that view): 4.43 /
   1.81 -> 3.97 / 1.50 (floor 1.43). Cost within the A-A spread (contended GPU, 3 reps): from the ground under the rain
   28.1 / 29.5 (A, A) vs 28.4 ms, the reporter's view 30.9 / 29.9 vs 29.7. 128 registers.
+- **A tower's rain core is set up to its DRAWN base** (2026-11-22, issue_20261122_154502 "Rain gap below supercells", branch
+  qa/20261122/raingap). `gCv2RainCore` (cv2StormGeom, cv2ColumnSigma) is set up to `kCv2RainCoreUpM` (6000 m) over the
+  cumulonimbus TYPE's base (types[4].alt.x + 0.9 x the ground: all the tower search knows); cv2LowA's rain branch ends the
+  rain (its floor, kCv2RainIntoM over the field's base). It was set only below the type's base (`hb < 0`), while a tower
+  has been drawn on the low field's own base since 2026-11-08 (`gCv2BaseLow`: + the regional spread, the condensation
+  level, the cell offset and the regional ground's full lift, hundreds of metres higher over land by day): the core's rain
+  stopped at the type's base and the cloud began at the field's, a slab of clear air under every such tower. At the
+  report's column (18.55 S 47.69 E, smoothed ground 1829 m): rain to 2572 m, the field's base 2902 m, cloud from ~2960 m,
+  the eye at 2604 m in the slab; along 16 km of the shot's heading the clear stretch between rain and cloud was 387 m
+  (median; every raining column over 50 m) and is 0 m (median and p90; 2% of the columns over 50 m, max 65 m: a hole of
+  the curtain pattern at the core's faint edge). Measured on VERTICAL SLICES of the field (a march variant drawing
+  cv2Field over 16 km x 6 km in debug view 3, decoded against a black reference: `qa/waves/20261122/evidence/c15/tools/`,
+  `sl4_*_subs.txt` + `slice_gap2.py`). Other storms, old -> new, share of raining columns with a clear stretch over 50 m:
+  the same supercell's other tower 32% -> 0, Ethiopian highlands 0 (9% counting only rain > 0.0003 /m) -> 0, Colombian
+  lowlands 5.5% -> 0, New South Wales 0 (4.7%) -> 0, a multicell 0 (2.4%) -> 0, a squall line and an MCS over the sea 0 -> 0
+  (there the field's base is BELOW the type's and the core already reached it). The map's rain under decks and showers
+  never had the slab (its floor follows the field's base) and is unchanged. A constant in the same comparison: the march
+  stays at 128 registers.
+- **A storm's height fraction counts from its DRAWN base, carried negated below it** (2026-11-22, same issue, branch
+  qa/20261122/perfpass). cv2FieldLow sets `f.hf = mix(f.hf, c.hb > 0 ? sg.hf : -sg.hf, wS)` (`c.hb`: height over the drawn,
+  unbumped base); the cloud body takes it back at its density (`f.hf = abs(f.hf)`, after `f.rain`), and the march and
+  cloud_v2_searefl.comp clamp it to >= 0 after reading the field (the march after its `rainAlone` test). Why each part:
+  `sg.hf` counts from the cumulonimbus TYPE's base, so the rain filling the slab up to the drawn base carried hf > 0 and
+  the march took it for cloud (`rainAlone` is `f.rain > 0 && f.hf <= 0`): fine steps and a full light march per rain
+  sample, 24.5 -> 33.6 ms GPU at the reporter's view. Zeroing it below the drawn base fixed that, but the storm's body
+  hangs down to 2.2 x baseAmp (440 m) below the unbumped base in its bumps, and those bumps carry the rain floor's share
+  (`f.rain > 0`): with hf 0 they were RAIN-LIT (no light march, the Sun volume read at the sample, `odL` from the rain's
+  uniform model), and the storm's base seen from outside on its sunward side turned bright cream (8 / 20 km from the
+  report's supercell at base height, and from 1900 m looking up). Negated, rain alone still reads <= 0 and the bumps
+  get their old height fraction back exactly. Measured (RTX 3070 Ti, 1920x1009, the report's settings, interleaved, 3
+  reps, GPU ms): reporter's view 21.43 -> 21.86 (+0.4; cloud march 13.39 -> 13.70), under the rain looking out 21.87 ->
+  21.99 (+0.1), against the build before the rain fix (the same without the march's clamp: +0.8 / +0.1); the three outside views match it (no cream; the thin bright line of the
+  old gap at the base is gone); cloud_v2_march.comp 128 registers. Evidence `qa/waves/20261122/evidence/c17/`.
 - **A ray's first long stride is hashed** (2026-11-14, cluster c03 "zenith rings": the user's "concentric ring lighting
   glitch right above you at 67, 67 on harness starts"). The march's start jitter spans TWO steps (`t += 2 x step x jitter`);
   rain alone strides a fixed FOUR. A ray whose first sample is rain (the eye under a raining deck) therefore met the base at
@@ -3236,11 +3280,15 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   reflected clouds come from a low-resolution march"): two quarter-res regions at its top-left, written only on frames the
   far layer does not run (`CloudV2Params.shade.w` says which; the dispatch sits with the far layer's, pass timer "lut_far").
   Anything that makes the far layer run lower down must move the reflection out of this image first.
-- **The far-layer pass is skipped below a visible share** (`clouds_v2.far_layer_min_blend` 0.004; 2026-11-09, issue
-  20261109_184851, commit c1bb3a8; 0 = the old behaviour). `cloudFarBlend()` returns 0 below the threshold and rescales
-  above it (continuous, still reaches 1). With the user's range 600 .. 8900 km the share was 0.0008 at 733 km and 0.003
-  at 850 km while cloud_v2_far.comp ran at full resolution: 2.1-3.1 ms (pass timer `lut_far`) at the report's shots 1, 2
-  and 4, for a layer nobody could see. The pass now starts at ~905 km.
+- **The far-layer pass is skipped below a visible share** (`clouds_v2.far_layer_min_share` 0.03; 0 = the pass from "from"
+  up). `cloudFarBlend()` returns 0 below the threshold and rescales above it (continuous, still reaches 1), so the pass
+  starts at ~1450 km with the user's range 600 .. 8900 km. The far layer is cross-faded with the march, which draws the
+  same clouds: at a share s the image moves by s x (far - march), under a level below a few percent. Measured at
+  issue_20261122_114811 shot 1 (1037 km, the share there 0.004; RTX 3070 Ti, 1920x1009, interleaved, 3 reps): 35.40 ->
+  33.52 ms GPU (`lut_far` 1.65 -> 0), image diff mean 0.26 against 0.35 between two captures of the old setting.
+  History: 2026-11-09 (issue 20261109_184851, commit c1bb3a8) the threshold was 0.004 (`far_layer_min_blend`, pass from
+  ~905 km: at 733-850 km the share was 0.0008-0.003 while cloud_v2_far.comp cost 2.1-3.1 ms); raised and renamed
+  2026-11-22 (c17 perfpass; the new key so saved settings, which carry the old one, take the new value).
 - **Review 25 (2026-10-02, records 10-12):** **a straight line across the sky in the clouds** (from under / inside a deck
   at 65 S) was review 22b's Sun-path darkening, applied only for cosSun > 0: with samples within ~2 km it was full on one
   side of the great circle 90 deg from the Sun and off on the other (debug view cloudrad stepped; transmittance and the

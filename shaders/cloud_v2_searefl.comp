@@ -175,6 +175,7 @@ vec4 srTexel(ivec2 pix, ivec2 qSize, int wReg, bool histOk)
             CV2Field f = cv2Field(p, -1.0, fp);
             gCv2LayMask = 0xFFFFu;
             if (f.sigma <= 1e-6) continue;
+            f.hf = max(f.hf, 0.0);   // (a storm's rain under its drawn base carries its height fraction negated: cv2FieldLow)
 
             vec3  up    = normalize(pW);
             float sUp   = dot(up, sunDir);
