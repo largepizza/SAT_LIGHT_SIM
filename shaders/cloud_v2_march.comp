@@ -1083,6 +1083,7 @@ void main()
             // (> 0: the scud band too) strides like rain and takes RAIN LIGHT (below): the scud's fine steps and full light
             // marches and the shafts' light marches were ~8 of ~10 ms that rain added to the cloud march there.
             bool rainAlone  = f.rain > 0.0 && f.hf <= 0.0;
+            f.hf = max(f.hf, 0.0);   // (a storm's rain under its drawn base carries its height fraction negated: cv2FieldLow)
             bool coarseThin = !fine && f.sigma > 0.0 && (f.thin > 0.9 || rainAlone || (f.soft > 0.9 && f.deck > 0.5));
             if (!fine && !coarseThin) {
                 // Back two steps and on to a JITTERED fine lattice: the start jitter covers only the

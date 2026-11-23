@@ -1743,7 +1743,15 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
         c.tur    *= 1.0 - wS;
         c.bub     = mix(c.bub, bubS, wS);
         c.thk     = mix(c.thk, 4000.0, wS);
-        f.hf       = mix(f.hf, sg.hf, wS);
+        // (The storm's height fraction counts from the base it is DRAWN on, c.hb above: 0 below the field's base, as the
+        // cumulus' own (cv2LowA's z). cv2StormGeom's counts from the cumulonimbus type's base, which lies under the
+        // field's over land by day: the rain between the two (issue_20261122_154502) carried a height fraction > 0, so
+        // the march did not take it for rain alone -- fine steps and a full light march per rain sample.)
+        // Below that base it is carried NEGATED: <= 0, rain alone to the march (CV2_RAIN_LIT), and the cloud body, which
+        // hangs up to 2.2 baseAmp (440 m) below the unbumped base in its bumps, takes it back (abs, at its density below).
+        // Zeroed there, the bumps that carry the rain floor's share (f.rain > 0) were lit as rain: no light march, the Sun
+        // volume read at the sample -- the storm's base seen from outside on its sunward side turned bright cream.
+        f.hf       = mix(f.hf, c.hb > 0.0 ? sg.hf : -sg.hf, wS);
         f.topH     = mix(f.topH, sg.top, wS);
         f.msBright = mix(cu ? f.msBright : 1.0, cv2.types[3].look.x, wS);
         f.ambient  = mix(cu ? f.ambient : 1.0, cv2.types[3].look.y, wS);
@@ -1988,6 +1996,7 @@ CV2Field cv2FieldLow(CV2Pos q, float detailAmt, float fpM, float stormProx, CV2S
     // own surface (deep). (Here, not in cv2LowA's sigK: there it put the march at 248 registers.)
     f.sigma    = d * sigK * (1.0 + cv2.cu4.x * 2.0 * (1.0 - deep) * pow(max(hb, 0.0) * 0.001, 0.6667)) + sigR;
     f.rain     = sigR / max(f.sigma, 1e-9);
+    f.hf       = abs(f.hf);   // (a storm's body below its drawn base: the height fraction carried negated, above)
     // "Lobe occlusion" (mid3.z): the sky light by where the sample sits in the lobe noise: the creases between
     // lobes (low) see a narrow cone of sky, the tips (high) most of it; mean ~1. The probe 250 m up and the depth
     // under the column's top cannot tell a crease from a tip.

@@ -2071,10 +2071,22 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   lowlands 5.5% -> 0, New South Wales 0 (4.7%) -> 0, a multicell 0 (2.4%) -> 0, a squall line and an MCS over the sea 0 -> 0
   (there the field's base is BELOW the type's and the core already reached it). The map's rain under decks and showers
   never had the slab (its floor follows the field's base) and is unchanged. A constant in the same comparison: the march
-  stays at 128 registers. COST, OPEN: the rain that now fills the slab carries the storm's height fraction (`sg.hf`, counted
-  from the type's base: > 0 there), so the march does not take it for rain alone (`f.hf <= 0`) and gives every sample fine
-  steps and a full light march: the reporter's view (the eye now IN that rain) 24.5 -> 33.6 ms GPU (cloud march 16.0 ->
-  25.2; 4 interleaved reps, +-0.3), under the rain looking out 25.5 -> 27.3, issue_20261110_181505's shot 28.3 -> 28.3.
+  stays at 128 registers.
+- **A storm's height fraction counts from its DRAWN base, carried negated below it** (2026-11-22, same issue, branch
+  qa/20261122/perfpass). cv2FieldLow sets `f.hf = mix(f.hf, c.hb > 0 ? sg.hf : -sg.hf, wS)` (`c.hb`: height over the drawn,
+  unbumped base); the cloud body takes it back at its density (`f.hf = abs(f.hf)`, after `f.rain`), and the march and
+  cloud_v2_searefl.comp clamp it to >= 0 after reading the field (the march after its `rainAlone` test). Why each part:
+  `sg.hf` counts from the cumulonimbus TYPE's base, so the rain filling the slab up to the drawn base carried hf > 0 and
+  the march took it for cloud (`rainAlone` is `f.rain > 0 && f.hf <= 0`): fine steps and a full light march per rain
+  sample, 24.5 -> 33.6 ms GPU at the reporter's view. Zeroing it below the drawn base fixed that, but the storm's body
+  hangs down to 2.2 x baseAmp (440 m) below the unbumped base in its bumps, and those bumps carry the rain floor's share
+  (`f.rain > 0`): with hf 0 they were RAIN-LIT (no light march, the Sun volume read at the sample, `odL` from the rain's
+  uniform model), and the storm's base seen from outside on its sunward side turned bright cream (8 / 20 km from the
+  report's supercell at base height, and from 1900 m looking up). Negated, rain alone still reads <= 0 and the bumps
+  get their old height fraction back exactly. Measured (RTX 3070 Ti, 1920x1009, the report's settings, interleaved, 3
+  reps, GPU ms): reporter's view 21.43 -> 21.86 (+0.4; cloud march 13.39 -> 13.70), under the rain looking out 21.87 ->
+  21.99 (+0.1), against the build before the rain fix (the same without the march's clamp: +0.8 / +0.1); the three outside views match it (no cream; the thin bright line of the
+  old gap at the base is gone); cloud_v2_march.comp 128 registers. Evidence `qa/waves/20261122/evidence/c17/`.
 - **A ray's first long stride is hashed** (2026-11-14, cluster c03 "zenith rings": the user's "concentric ring lighting
   glitch right above you at 67, 67 on harness starts"). The march's start jitter spans TWO steps (`t += 2 x step x jitter`);
   rain alone strides a fixed FOUR. A ray whose first sample is rain (the eye under a raining deck) therefore met the base at

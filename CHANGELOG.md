@@ -745,7 +745,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - No more slab of clear air between a storm tower's base and the top of its rain (issue_20261122_154502). The heavy
   rain under a tower stopped at the storm type's nominal base, while the tower's cloud is drawn on the base of the
   clouds around it, which sits hundreds of metres higher over land by day: from just under the base you looked
-  through the gap at the sunlit clouds beyond. The rain now reaches the base it falls from.
+  through the gap at the sunlit clouds beyond. The rain now reaches the base it falls from, for under 1 ms more
+  with your eye in it, and the storm's base seen from outside stays as dark as before.
 - No more band of dark, blocky purple-grey streaks just under the Earth's limb from orbit (issue_20261121_154506).
   The haze drawn in front of a cloud was placed by an estimate that took the air to thicken evenly along the line
   of sight. That holds near the ground; from orbit nearly all the air on a line to the limb lies in its last
