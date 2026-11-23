@@ -7726,6 +7726,7 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
         int curKind = 0;
         bool curJelly = false; // (2026-10-30) a Gaussian of the young vacuum plume (the jellyfish's head and streaks)
         double curJellyW = 0.0; // (2026-11-14) its hold on the budget, 0 .. 1 (Cand::jellyW)
+        bool curVent = false;   // (2026-11-22) a Gaussian of the steady orbital vent (the rim fade near the eye, below)
         // (2026-11-15) the exhaust of the staging region (emitted from 10 s before staging to 40 s after): with the
         // hot-staging lobes it goes to the plume bricks (the "staging billow"; the lobes alone are optically thin)
         double curStaging = 0.0;
@@ -7970,9 +7971,18 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
             // piece's light moving into its rim in one frame (a ring stepping round the young plume)
             // (2026-11-15) less for exhaust bound for a plume brick, by its brick share: the volume needs no limb Gaussians,
             // and with up to 9 rims a chord the staging region overran the brick's capacity
+            // (2026-11-22, wave 20261122 c22) the orbital vent's rims fade out round the eye: a rim is a limb, the shell seen
+            // edge-on beside the line of sight, and from within a few sigma of the centre there is no edge to see. Each
+            // rim Gaussian within ~5.5 sigma of the eye covers every direction (its view cone), so following a venting
+            // ship (Starmind's deploy view) the ~16 knots x (2 tube or 7 ring) rims were ~3/4 of the 95 Gaussians every
+            // texel walked. Their Sigma goes back to the core (the same mass, a rounder fan up close).
+            // launches.vent_rim_lod false = the rims everywhere (the A/B).
+            const double ventNear = (curVent && launchVentRimLod)
+                                        ? glm::smoothstep(4.0, 9.0, range / std::max(std::max(sA, sP), 1.0))
+                                        : 1.0;
             const double shellK = curKind == 0 ? glm::smoothstep(55000.0, 65000.0, h) * glm::smoothstep(1500.0, 2500.0, sig) *
                                                      std::max(0.45 * glm::smoothstep(0.3, 2.0, sweep), freeShell) *
-                                                     (plumeBricksOn ? 1.0 - curStaging : 1.0)
+                                                     (plumeBricksOn ? 1.0 - curStaging : 1.0) * ventNear
                                                : 0.0;
             if (shellK > 0.02)
             {
@@ -8765,9 +8775,11 @@ void SatelliteSim::launchFillVisuals(GpuDustCloud *out, uint32_t &n, double toSk
                         continue;
                     const double Sigma = kVentKappa * vh.orbitVentKgS * (ka[j + 1] - ka[j]) * 0.5 *
                                          (condAt(ka[j]) + condAt(ka[j + 1])) * gain * (double)launchOrbitVent;
+                    curVent = true;
                     addPlume(0.5 * (kc[j] + kc[j + 1]), seg / sl, 0.45 * sl, 0.5 * (sigAt(ka[j]) + sigAt(ka[j + 1])), Sigma,
                              0.0, 0.98, 0.5 * (ka[j] + ka[j + 1]), B.seed ^ (0x0F1E7ull * (uint64_t)(j + 1)), true,
                              glm::vec3(1.0f));
+                    curVent = false;
                 }
             }
         }

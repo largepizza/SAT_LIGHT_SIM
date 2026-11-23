@@ -299,6 +299,19 @@ launches follow per-program cadences (no real manifest).
   build (`ventPending`: the loop falls through with no parcels; after a time jump the ship had no vent for the build's
   frames). `launches.orbit_vent` (Settings > Launches "Starship orbital vent (x)", slot 624, 0-4, default 0.29 = the user's tuned look, i.e. ~1.45 kg/s at plume opacity 1.0, 0 = off) scales it. Cost (RTX 3070 Ti, 1600x900, the fan filling
   a 40-deg view from the ground 440 km away, interleaved): GPU 7.81 -> 8.48 ms (cloud composite), CPU +0.06 ms.
+  - **Its rims fade out round the eye (2026-11-22, wave 20261122 c22).** In orbit `addPlume`'s free-expansion shell
+    gives every vent chord a rim (2 tube or 7 ring Gaussians, half the Sigma). Within ~5.5 sigma of the eye a
+    Gaussian's view cone covers every direction, so following a venting ship every texel of the composite walked the
+    ship's whole fan. At Starmind's deploy view (`launch deploy filter=Starmind`, eye 300 m from the ship) that was 95 of
+    284 list Gaussians, ~4.2 ms of a 4.95-ms composite. A rim is a limb, the shell seen edge-on beside the line of
+    sight; from a few sigma of the centre there is none to see. So for the vent only (`curVent`), shellK is scaled by
+    smoothstep(4, 9, range / max(sA, sP)) and its Sigma goes back to the core (the same mass). Measured (RTX 3070 Ti,
+    1920x1009, the user's settings, interleaved, 3 reps): Starmind GPU 21.94 -> 19.11 ms paused, 26.79 -> 23.94 with
+    time running (composite 4.95 -> 1.93); 202 list Gaussians, 16 covering every direction. The image is at the
+    A-vs-A floor: old vs new mean 0.074 / max 18 levels, old vs old 0.111 / 19. The twilight launch cell is unchanged
+    (33.6 vs 33.2, within its spread). `launches.vent_rim_lod false` restores the rims everywhere (the A/B).
+  - Dead end (same session): ten times the composite's per-texel faint skip (tau 1e-5 -> 1e-4, light 2e-7 -> 2e-6 of
+    white) saved nothing at the launch cell (32.65 vs 32.70 ms) and ~0.3 ms at Starmind, within the spread.
 - **Attitude** (`stageNose`, 2026-10-19): the booster's nose is a pitch angle in its trajectory's vertical plane
   (`boosterPitchRaw`: along the velocity on the way up, engines first after staging, along the thrust in its burns,
   upright for landing; branch [-90, 270) deg so nothing wraps), smoothed by `boosterPsi`: a causal Hann window
@@ -632,6 +645,15 @@ launches follow per-program cadences (no real manifest).
   first (wanted, then leaving), so a leaving group fades out in its slot; each group's brick weight is eased 0.05 a
   frame (~1/3 s) toward its share or 0, the Gaussians taking the rest. The reporter's four shots: the same four groups
   (30 / 60 / 170 / 164 km) at every angle.
+  - **The slots depend on history, so the cost does (2026-11-22, wave 20261122 c22).** The x1.3 hold keeps whichever
+    groups took the slots first. The p01 launch cell (twilight launch, `time add 330` then `-40`, user settings,
+    1920x1009) keeps the four groups chosen at T+330 (126 / 93 / 125 / 118 km half extents, 161-255 km away):
+    composite 8.1 / 8.8 ms. Toggle `launches.plume_bricks` off and on (the holds are gone), and a fresh pick by score
+    gives a 17-km and a 91-km group a slot instead of the two farthest: composite 11.3 / 11.7 ms, still after 600
+    paused frames. Same candidates (1004 / 1005, 567 for bricks), same 371 list Gaussians; the list's coverage reads
+    17.4 then 26.5 screens. This is no pool or budget that fails to shrink. Both are valid picks, and the cheap one is the
+    stale one: a deterministic pick would read 11 ms. Choosing slots by their screen cost would change which plume
+    gets lobes (a look decision), so it is left for the user. Bricks off: 19.8 ms (they save ~8-11 ms here).
 - **The billow's outline is warped (2026-11-16, issue_20261116_175808 "Circular hotstage cloud crop": "this noise has
   too hard of an edge").** The envelope (a few wide Gaussians) has a spherical shell; the lobes, a few km, could not
   move it: in log density e^(+-2) shifts a dense cloud's rim ~5 km, where its envelope falls by orders of magnitude.

@@ -10065,6 +10065,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         launchPlumeDispersal = settingClamp(lj.value("plume_dispersal", launchPlumeDispersal), 0.0f, 20.0f);
         launchPlumeCoverMax = settingClamp(lj.value("plume_cover_max", launchPlumeCoverMax), 0.0f, 1000.0f);
         launchOrbitVent = settingClamp(lj.value("orbit_vent", launchOrbitVent), 0.0f, 20.0f);
+        launchVentRimLod = lj.value("vent_rim_lod", launchVentRimLod);
         launchStreakCount = settingClamp(lj.value("jelly_streak_count", launchStreakCount), 0.0f, 12.0f);
         launchStreakBright = settingClamp(lj.value("jelly_streak_brightness", launchStreakBright), 0.0f, 5.0f);
         launchStreakSpread = settingClamp(lj.value("jelly_streak_spread", launchStreakSpread), 0.0f, 5.0f);
@@ -11395,6 +11396,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
                      {"plume_dispersal", launchPlumeDispersal},
                      {"plume_cover_max", launchPlumeCoverMax},
                      {"orbit_vent", launchOrbitVent},
+                     {"vent_rim_lod", launchVentRimLod},
                      {"jelly_streak_count", launchStreakCount},
                      {"jelly_streak_brightness", launchStreakBright},
                      {"jelly_streak_spread", launchStreakSpread},
