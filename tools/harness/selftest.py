@@ -132,7 +132,22 @@ capture full
 capture half scale=0.5
 capture zoom crop=100,200,50,40 scale=4
 capture withui ui=on scale=0.25
+set display.sky_taa false
+wait 4
+set display.sky_taa true
+preset Planetarium
+wait 4
+preset Low
+set display.sky_taa false
+wait 4
+set display.sky_taa true
+preset Ultra
+wait 4
 """)
+    # (wave 20261122 c29) the sky TAA off at a render scale < 100% draws with the low-res sky pass; a preset in the
+    # frame it comes back on used to destroy that pass under the frame still in flight (a silent abort). run()
+    # fails on the crash; the run must reach its last command.
+    assert result(res, "preset Ultra")["ok"]
     cap = os.path.join(out, "captures")
     assert png_size(os.path.join(cap, "full.png")) == (1600, 900)
     assert png_size(os.path.join(cap, "half.png")) == (800, 450)

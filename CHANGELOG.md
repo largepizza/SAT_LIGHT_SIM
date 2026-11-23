@@ -772,6 +772,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- Changing the graphics preset or the Render scale right after turning Temporal anti-aliasing back on (with a
+  render scale below 100%) no longer can close the app without a message. The old low-resolution sky target was
+  freed while the previous frame was still drawing with it.
 - A lightning flash behind a mountain no longer draws a jagged, blocky edge where the lit clouds meet the ridge.
   The flash's light on the clouds was spread from a half-resolution image over the ridge line; it now stops at the
   ridge's own full-resolution outline.

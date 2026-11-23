@@ -5031,6 +5031,7 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
     {
         renderScale = std::round(renderScale * 100.0f) / 100.0f;
         graphicsPreset = GraphicsPreset::Custom; // the preset table owns renderScale: a named preset re-derives it on load
+        ctx_->drainFrames(); // (frames in flight: the previous frame may still use the low-res sky pass)
         destroySkyLowResResources(ctx_->device);
         createSkyLowResResources(*ctx_);
     }
@@ -9521,6 +9522,10 @@ void SatelliteSim::applyGraphicsPreset(GraphicsPreset p)
 
     if (ctx_)
     {
+        // Frames in flight: the previous frame may still be drawing with the low-res sky pass (render scale < 100%
+        // with the sky TAA off). Destroying its pipeline / framebuffer / image under it aborted the app silently
+        // (wave 20261122 c29: TAA off, TAA on + `preset Planetarium` in one frame).
+        ctx_->drainFrames();
         destroySkyLowResResources(ctx_->device);
         createSkyLowResResources(*ctx_);
     }
