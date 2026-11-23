@@ -549,6 +549,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Performance
 
+- **About 2 ms faster from low orbit above ~900 km.** The far cloud layer (the flat layer that takes over from the
+  volumetric clouds from high orbit) now starts at ~1450 km instead of ~905: below that its share of the image was under
+  a level while its pass cost ~2 ms (35.4 -> 33.5 ms at 1037 km, the image unchanged).
 - **Faster in hurricanes:** the cloud march is back to its fast register budget on NVIDIA (128, was 255), and a sample
   deep inside an opaque cloud reuses the light path of the sample in front of it instead of marching its own. Over a
   hurricane's eye from 24 km the clouds cost ~20-23% less (67 -> 52 ms still; 63-65 -> 48 ms flying the reporter's path at

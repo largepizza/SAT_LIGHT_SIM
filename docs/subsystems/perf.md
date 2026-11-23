@@ -612,7 +612,7 @@ depth pass, so its variants interleave like the sky's and the clouds'.
   along a ray under a 2-deg Sun).
 - **Clouds and sky pass, 2026-11-09/10 (issue_20261109_184851; branch perf/20261109/cloudsky; evidence
   `harness_runs/cloudsky/`).** RTX 3070 Ti, 1920x1009, the user's settings.json. Kept, all ON with an off switch each
-  (clouds.md): lit samples first, the faint stride (`CV2_FAINT_STRIDE`), the far-layer threshold (`far_layer_min_blend`),
+  (clouds.md): lit samples first, the faint stride (`CV2_FAINT_STRIDE`), the far-layer threshold (`far_layer_min_share`),
   the orbit block (`sparse_block_orbit`, "Amortization"), the limb volume (`sky_ap_limb`, render-pipeline.md "THE LIMB
   VOLUME"). Tool: `tools/harness/cloudsky_matrix.py` (docs/HARNESS.md "Clouds-and-sky matrix").
   - **The matrix** (57 cells: 9 sites x 6 altitudes (2 m, 1.5 km, 6.5 km, 11 km, 300 km, 850 km) + night_3km + 2 Reflect-beam

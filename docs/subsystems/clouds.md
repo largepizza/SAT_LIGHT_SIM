@@ -3269,11 +3269,15 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   reflected clouds come from a low-resolution march"): two quarter-res regions at its top-left, written only on frames the
   far layer does not run (`CloudV2Params.shade.w` says which; the dispatch sits with the far layer's, pass timer "lut_far").
   Anything that makes the far layer run lower down must move the reflection out of this image first.
-- **The far-layer pass is skipped below a visible share** (`clouds_v2.far_layer_min_blend` 0.004; 2026-11-09, issue
-  20261109_184851, commit c1bb3a8; 0 = the old behaviour). `cloudFarBlend()` returns 0 below the threshold and rescales
-  above it (continuous, still reaches 1). With the user's range 600 .. 8900 km the share was 0.0008 at 733 km and 0.003
-  at 850 km while cloud_v2_far.comp ran at full resolution: 2.1-3.1 ms (pass timer `lut_far`) at the report's shots 1, 2
-  and 4, for a layer nobody could see. The pass now starts at ~905 km.
+- **The far-layer pass is skipped below a visible share** (`clouds_v2.far_layer_min_share` 0.03; 0 = the pass from "from"
+  up). `cloudFarBlend()` returns 0 below the threshold and rescales above it (continuous, still reaches 1), so the pass
+  starts at ~1450 km with the user's range 600 .. 8900 km. The far layer is cross-faded with the march, which draws the
+  same clouds: at a share s the image moves by s x (far - march), under a level below a few percent. Measured at
+  issue_20261122_114811 shot 1 (1037 km, the share there 0.004; RTX 3070 Ti, 1920x1009, interleaved, 3 reps): 35.40 ->
+  33.52 ms GPU (`lut_far` 1.65 -> 0), image diff mean 0.26 against 0.35 between two captures of the old setting.
+  History: 2026-11-09 (issue 20261109_184851, commit c1bb3a8) the threshold was 0.004 (`far_layer_min_blend`, pass from
+  ~905 km: at 733-850 km the share was 0.0008-0.003 while cloud_v2_far.comp cost 2.1-3.1 ms); raised and renamed
+  2026-11-22 (c17 perfpass; the new key so saved settings, which carry the old one, take the new value).
 - **Review 25 (2026-10-02, records 10-12):** **a straight line across the sky in the clouds** (from under / inside a deck
   at 65 S) was review 22b's Sun-path darkening, applied only for cosSun > 0: with samples within ~2 km it was full on one
   side of the great circle 90 deg from the Sun and off on the other (debug view cloudrad stepped; transmittance and the

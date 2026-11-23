@@ -6912,7 +6912,7 @@ private:
     float cv2FarLowSun = 0.38f;   // slot 255: the far layer's key light goes as mu0^(1 / (1 + this)) (0 = a flat slab)
     float cv2FarKeyGain = 4.1f, cv2FarSkyGain = 0.6f;   // review 24b: the user's tuning (was 10 / 0.3)   // "Far cloud layer sunlight / sky light" (review 21: matched to the march's cloud radiance at 1460 km and its image at 3000-8000 km)
     float cv2FarLayerFullKm = 8900.0f;   // review 24b: the user's tuning (was 1500)
-    float cv2FarLayerMinBlend = 0.004f;  // the far layer's share below which its pass is not run (cloudFarBlend)
+    float cv2FarLayerMinBlend = 0.03f;   // the far layer's share below which its pass is not run (cloudFarBlend)
     // The sea's cloud reflection (2026-11-15, cloud_v2_searefl.comp): a quarter-res march of the field along the mirrored
     // ray ("clouds_v2.sea_refl_march", 1 = on; 0 = the clear reflected sky, dimmed under cloud shadow).
     float cv2SeaReflMarch = 1.0f;
@@ -6975,7 +6975,10 @@ private:
         // 0.0008 at 733 km and 0.003 at 850 km -- under one 8-bit level of the far layer's own radiance -- while its
         // full-resolution pass (cloud_v2_far.comp) cost 2-3 ms of every frame from 600 km up. Below kFarBlendMin the
         // share is 0 (no pass); above it the share is rescaled, so it is continuous and still reaches 1.
-        // ("far_layer_min_blend", no slider; 0 = the old behaviour, the pass from "from" up.)
+        // ("far_layer_min_share", no slider; 0 = the old behaviour, the pass from "from" up.)
+        // 0.03 since 2026-11-22 (was 0.004, key "far_layer_min_blend", left behind in saved settings): the pass from ~1450 km,
+        // not ~905. At 1037 km (issue_20261122_114811) the share was 0.004 -- under one 8-bit level of the far layer over
+        // the march drawing the same clouds -- for the pass's full-resolution 2-3 ms.
         const double kFarBlendMin = std::clamp((double)cv2FarLayerMinBlend, 0.0, 0.5);
         const double s = x * x * (3.0 - 2.0 * x);
         return s <= kFarBlendMin ? 0.0f : (float)((s - kFarBlendMin) / (1.0 - kFarBlendMin));
