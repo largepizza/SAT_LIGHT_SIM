@@ -3297,8 +3297,10 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         // levels 1-3, 10-17 catch-up), each split over kCv2StvG = 8 physical workgroups of 32 rays x 8 threads
         // (cloud_v2_lightning.comp, 2026-10-23: keep the two in step).
         constexpr uint32_t kCv2StvG = 8;
-        // + 4: the cloud over the ground (cv2Vt, one of its 5 levels a frame: 1024 columns).
-        vkCmdDispatch(cmd, 5 + 13 * kCv2StvG + 4, 1, 1);
+        // + 4: the cloud over the ground (cv2Vt, one of its 5 levels a frame: 1024 columns); + kCv2RzG (96): the heavy
+        // rain's lightning zones, a 16th of the globe's storm bins a frame (cv2RainZone, wave c32).
+        constexpr uint32_t kCv2RzG = 96;
+        vkCmdDispatch(cmd, 5 + 13 * kCv2StvG + 4 + kCv2RzG, 1, 1);
         // The rain particles (main pass, vertex stage) read the rain map and the light at the eye it just wrote.
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT);
