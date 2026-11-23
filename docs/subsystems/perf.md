@@ -729,6 +729,13 @@ depth pass, so its variants interleave like the sky's and the clouds'.
     user's decision from a clip): a step is a jump only past this share of the eye's height. At 0.1 the history
     survives the flight: stA_850km boosted 36.3 -> 35.7 ms alone, 26.6 ms with the moving block (cloud bucket 27.8 ->
     18.0), and the clouds smear along the flight direction where today they are crisp and grainy.
+    THE ORBIT BLOCK THROUGH TURNS (2026-11-22, issue_20261122_114811, `clouds_v2.orbit_gate` 1; clouds.md "THE ORBIT
+    BLOCK'S GATE: the turn budget"): the block is no longer lost to a turn under 480 cloud-grid px/s and 16 px a frame,
+    nor to a nudge, and is back 16 frames / 0.8 s after a fast pan instead of 64 frames. The report's view (1037 km,
+    High, 1920x1009, time at 1x, first-person mode, RTX 3070 Ti, 3 interleaved reps, `orbit_gate` 0 -> 1): settled
+    48.3 -> 48.4 ms, a 1-px mouse move every 30 frames 62.0 -> 48.0, a 5 deg/s pan (20 fps path) 56.1 -> 43.9; Medium
+    settled 27.0 -> 27.7, the mouse 35.2 -> 27.5, a 5 deg/s pan 34.1 -> 26.3. A 90 deg/s pan and the 64 frames after a
+    jump keep the 2x2 grid (unchanged cost).
 
 
 **The hurricane march pass (2026-11-11, hurrperf; issue_20261111_164105 "Hurricane performance", the eye from 24 km; RTX 3070

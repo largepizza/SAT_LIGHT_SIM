@@ -5837,6 +5837,16 @@ private:
     // pixel a frame. See fillCloudsV2Params.
     float cv2SparseBlockOrbit = 3.0f;
     float cv2SparseBlockOrbitMoving = 0.0f;   // 1 = the orbit block also in motion ("sparse_block_orbit_moving"; the user's to judge)
+    // The orbit block's gate (2026-11-22, issue_20261122_114811; fillCloudsV2Params "THE TURN BUDGET"; no sliders).
+    float cv2OrbitGate = 1.0f;           // "orbit_gate": 1 = the turn budget, 0 = the gate of before (64 quiet frames, any turn resets)
+    float cv2OrbitTurnPxS = 480.0f;      // "orbit_turn_px_s": the turn the block rides through, cloud-grid pixels a second ...
+    float cv2OrbitTurnPxFrame = 16.0f;   // "orbit_turn_px_frame": ... and a frame (what governs under 30 fps)
+    float cv2OrbitBurstPx = 64.0f;       // "orbit_burst_px": pixels turned above that limit before the block is off
+    float cv2OrbitWaitS = 0.8f;          // "orbit_wait_s": then no turn for this long ...
+    float cv2OrbitWaitFrames = 16.0f;    // "orbit_wait_frames": ... and this many frames (8 of the held pixel + two rounds of the 2 x 2 grid)
+    float cv2OrbitJumpFrames = 64.0f;    // "orbit_jump_frames": frames after a jump or an eye step (the count of before)
+    float cv2OrbitZoomFrames = 32.0f;    // "orbit_zoom_frames": frames after a zoom (and orbit_wait_s)
+    float cv2OrbitTurnAccum = 8.0f;      // "orbit_turn_accum": the resolve's accumulation cap while the block turns (0 = the still cap)
     float cv2HistoryJumpFrac = 0.0f;   // "history_jump_frac": an eye step is a jump past this share of the eye's height (0 = 20 km)
     float cv2HistoryTimeJumpS = 30.0f;   // "history_time_jump_s": a step of the clock past what the time warp ran is a jump past this many s (0 = only 600 s)
     double cv2SimAdvanceAcc = 0.0;       // sim seconds the clock RAN (dt x time scale) since fillCloudsV2Params last read it
@@ -6228,6 +6238,16 @@ private:
     bool cv2FullRateNow = false;       // this frame's march covers every half-res pixel
     int cv2OrbitQuietFrames = 0;       // frames in a row the orbit block's conditions held (cv2SparseBlockOrbit)
     bool cv2OrbitBlockNow = false;     // this frame marches the orbit block (harness `state`)
+    float cv2OrbitDebtPx = 0.0f;       // the orbit gate (cv2OrbitGate): pixels turned above the limit, draining at it
+    float cv2OrbitTurnPxNow = 0.0f;    // this frame's turn, cloud-grid pixels
+    bool  cv2OrbitOver = false;        // the debt passed the burst: off until the view has not turned for the wait
+    int   cv2OrbitStillFrames = 0;     // frames / seconds in a row without a turn
+    float cv2OrbitStillS = 0.0f;
+    int   cv2OrbitSinceJumpFrames = 0; // frames since a jump or an eye step (above full_rate_above_km)
+    int   cv2OrbitSinceZoomFrames = 100000;   // frames / seconds since a zoom
+    float cv2OrbitSinceZoomS = 1000.0f;
+    float cv2OrbitTurnLoad = 0.0f;     // turning frames, forgotten over 32 (the accumulation cap follows it)
+    float cv2OrbitAccumNow = 0.0f;     // this frame's accumulation cap (cv2.samp.x)
     uint32_t cv2SparseBlockNow = 2;    // this frame's sparse block (K x K pixels a ray; "sparse_block" on the full-res grid's sparse march)
     bool cv2FullResHeldNow = false;    // this frame's full-res sparse sample is held at one pixel of each block (cv2FullResMovingMode 1)
     bool cv2HalfRateNow = false;       // ... or, "Half rate while moving", half of them (a checkerboard)

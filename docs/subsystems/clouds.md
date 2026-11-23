@@ -1266,7 +1266,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     0.77 (0.78), 2.61 (3.35); shot 2's crops show slightly less grain in the deck's speckled patch. A still view with time
     running refreshes each pixel every 9 frames: slow evolution lags a little more in the history.
   - **THE ORBIT BLOCK: one ray per 3x3 from orbit while the view is quiet** (`clouds_v2.sparse_block_orbit` 3; 2 = off;
-    2026-11-09, issue_20261109_184851, commit dc8cad8). **Gate** (SatelliteSimCloudsV2.cpp `fillCloudsV2Params`, "FROM
+    2026-11-09, issue_20261109_184851, commit dc8cad8). **Gate of 2026-11-09** (`clouds_v2.orbit_gate` 0; the default
+    gate is "THE ORBIT BLOCK'S GATE: the turn budget" below; SatelliteSimCloudsV2.cpp `fillCloudsV2Params`, "FROM
     ORBIT"): the eye above `full_rate_above_km` (30 km), the history valid, the eye's step plus the volumes' slide under
     time warp under 0.1 cloud-grid pixel a frame (over the nearest a cloud can be), NOT turning or zooming, for 64
     frames. Real orbital speed and 1 min/s pass; boosted flight, 1 h/s, a pan and the first second after a jump do not
@@ -1297,6 +1298,75 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     30.8, dense_850km 46.2 -> 29.1, stA_850km 50.3 -> 24.9); a 90 deg/s pan keeps most of base's cost (brk_300km 25.3 ->
     23.4, ovc_300km 34.2 -> 28.8, stA_300km 30.7 -> 27.6, sunset_300km 31.7 -> 27.5); time warp started from a settled
     view keeps the block (brk_300km 27.0 -> 20.7, dense_300km 35.5 -> 24.7, stA_300km 39.6 -> 24.0).
+  - **THE ORBIT BLOCK'S GATE: the turn budget** (`clouds_v2.orbit_gate` 1; 0 = the gate of 2026-11-09 above, exactly;
+    2026-11-22, issue_20261122_114811; SatelliteSimCloudsV2.cpp `fillCloudsV2Params`, "THE TURN BUDGET"; settings.json
+    keys, no sliders; harness `state` -> `clouds_v2.orbit_gate`: `turn_px`, `debt_px`, `over`, `still_frames`, `still_s`,
+    `since_jump_frames`, `since_zoom_frames`, `turn_load`, `accum_now`). The 11-09 gate counts 64 quiet FRAMES and a
+    turn past 0.3 cloud-grid pixel a frame, or any zoom, zeroes the count. In the first-person camera (2026-11-17)
+    every mouse motion turns the view and one mouse pixel is 1.9 cloud-grid pixels at a 46.5 deg field: any touch cost
+    the 2x2 grid for 64 frames, 3.7 s at 17 fps (the report: 57.4 ms, march 44.5, taken 29 frames after the camera
+    stopped; settled 3x3 44.4). The gate sorts motion by what the history loses to it. Every number below is the
+    report's view (1037 km, looking down, High, 1920x1009, RTX 3070 Ti) unless a cell is named; evidence, generators
+    and tables: `qa/waves/20261122/evidence/c13/`.
+    **A turn** reprojects exactly, so the block rides it: up to `orbit_turn_px_s` 480 cloud-grid pixels a second and
+    `orbit_turn_px_frame` 16 a frame (the turn = the view rotation's angle over a pixel's angle; at 46.5 deg on a
+    1009-px grid a pixel is 0.049 deg: 23 deg/s at 60 fps, 16 deg/s at 20 fps). Pixels turned above the limit are a
+    debt that drains at the limit; past `orbit_burst_px` 64 the block is off (the 2x2 grid's held pixel, as before)
+    until the view has not turned (0.3 pixel a frame) for `orbit_wait_frames` 16 frames and `orbit_wait_s` 0.8 s. A
+    nudge or a flick under the burst costs nothing. The limit has a per-second and a per-frame part because the error
+    has both: the strip a turn uncovers takes nine frames to fill, so its width is nine FRAMES' turn (at 46 and
+    92 px a frame with the block held on, +0.3 to +0.6 levels against the 2x2 grid; at 20 px a frame nothing over the
+    slow turns), while the softening below grows with the number of frames turned.
+    **The accumulation cap while the block turns** (`orbit_turn_accum` 8; 0 = off): `cv2.samp.x` ("sampler_accumulation",
+    32) comes down to 8 on the frames that turn, in octaves over a load of 2 to 8 turning frames (the load forgets over
+    32 frames: one nudge leaves the cap at 32), and a still frame has the still cap again (a pixel's age grows back by
+    itself). WHY: on the block a pixel's own ray comes every ninth frame and weighs 1 / (cap + 1) = 3%; the eight
+    Catmull-Rom resamples of the history between two rays then compound over ~300 frames, and the block held through a
+    turn at the still cap (`sparse_block_orbit_moving` 1) is softer the longer the turn lasts, whatever its rate: last
+    frame of a 2-s pan against the settled view, mean |diff| above the 2x2 grid's, at 20 fps (40 frames) +0.20 to
+    +0.27 from 0.5 to 20 deg/s, at 60 fps (120 frames) +0.6 at 2 and 5 deg/s (1.65 against 1.00; 0.67% of pixels past
+    16 levels against 0.10%; signed negative: small puffs lost). With the cap (2 / 5 deg/s at 60 fps, same run): 16
+    +0.35 / +0.35, 8 +0.04 / +0.16, 4 +0.08 / +0.19; at 20 fps 8 +0.10 / +0.22. The settled image is not involved:
+    the cap is 32 on every frame that does not turn, and the frames after a stop converge on the same reference.
+    **A jump** (no history), **an eye step or a time-warp slide** past the 11-09 tenth of a pixel a frame (per frame,
+    as before): `orbit_jump_frames` 64 frames, the 11-09 count. Not shortened: the Sun volume and the clipmap refill
+    under the history after a jump, and frames 60 after identical jumps (20 fps, 9 trials a kind) are 1.35 to 3.2
+    levels from settled in two modes; waits of 32 and 20 frames were in the worse mode more often than 64 (+60 mean
+    over 6 trials: 1.96 / 2.22 / 2.50). The report's own arrival was a go-to (70-km steps a frame, i.e. jumps): its
+    wait is still 64 frames (3.9 s at 16.6 fps).
+    **A zoom** resamples the history at another scale: `orbit_zoom_frames` 32 and `orbit_wait_s` (after a 1.5x zoom
+    in, 120 frames on, the frame is 0.94 from settled with a 48-frame wait, 0.98 with 32, 1.05 with 16, 1.14 with none).
+    **The wait after a fast pan** (1 s at 90 deg/s, then still, 20 fps; error against settled at +4 / +20 / +40 / +80
+    / +120 frames): the 11-09 gate 0.88 / 0.70 / 0.64 / 0.56 / 0.51; block back after 48 frames 0.99 / 0.78 / 0.67 /
+    0.57 / 0.54, 32 0.97 / 0.76 / 0.68 / 0.59 / 0.56, 16 1.01 / 0.80 / 0.68 / 0.61 / 0.58, 9 1.01 / 0.86 / 0.76 /
+    0.67 / 0.64, never off 1.37 / 1.06 / 0.90 / 0.78 / 0.72: 16 frames (8 of the held pixel + two rounds of the 2x2
+    grid) is as good as 48 within 0.05, 9 is not. What the earlier block costs is the tail: the 3x3 grid converges
+    2.25x slower, and 80 to 100 frames after a stop the new gate's frame is 0.05 (fast pan), 0.10 (zoom) and 0.13 (a 5 deg/s
+    turn ridden on the block) further from settled than the 11-09 gate's (0.54-0.65 against a floor of 0.22).
+    **No pop at the switch:** frame-to-frame mean change of the cloud region after a pan stops (half-size frames,
+    median 0.07, an 8-frame beat of 0.11-0.13 on both gates): the block comes on at +16 / +17 with steps 0.08 / 0.12 /
+    0.09, on the 11-09 gate at +64 / +65 with 0.07 / 0.08 / 0.07; the largest step after the stop is 0.20 on both.
+    **Turn table** (last frame of a 2-s pan ending at the view's pose against its settled frame, matrix way: 0.5x, 3x3
+    median; mean |diff| / % past 16 levels; path GPU ms; 11-09 gate | new gate | `sparse_block_orbit_moving` 1).
+    The view at 20 fps (settled 44.4 ms): 0.5 deg/s 0.86 / 0.06 57.5 | 0.89 / 0.06 44.6 | 1.11 / 0.12 44.5; 2 0.91 /
+    0.04 57.5 | 1.00 / 0.10 44.4 | 1.17 / 0.18 45.3; 5 0.89 / 0.03 56.1 | 0.97 / 0.11 43.9 | 1.25 / 0.17 43.7; 10 0.88
+    / 0.02 54.4 | 0.99 / 0.12 43.6 | 1.16 / 0.15 44.8; 20 (20.5 px a frame: off after the burst) 0.90 / 0.01 52.3 |
+    0.96 / 0.02 49.3 | 1.24 / 0.21 37.5; 45 1.01 / 0.02 41.9 | 0.95 / 0.02 45.4 | 1.31 / 0.28 36.5; 90 1.09 / 0.07
+    39.1 | 1.07 / 0.07 33.4 | 1.53 / 0.50 31.0. At 60 fps: 0.5 (under the 11-09 threshold: all three on the block)
+    1.25 / 0.12 38.7 | 1.33 / 0.13 37.2 | 1.48 / 0.14 37.6; 2 1.08 / 0.11 48.6 | 1.12 / 0.17 37.2 | 1.69 / 0.70 37.0;
+    5 1.08 / 0.08 49.2 | 1.21 / 0.13 37.1 | 1.59 / 0.51 37.5; 10 1.07 / 0.08 46.0 | 1.21 / 0.22 37.8 | 1.66 / 0.48
+    37.3; 20 1.04 / 0.05 46.0 | 1.16 / 0.14 37.2 | 1.45 / 0.32 36.4; 45 (15 px a frame: off) 1.02 / 0.04 41.2 | 1.07
+    / 0.05 41.5 | 1.41 / 0.30 35.3; 90 1.05 / 0.04 36.0 | 1.00 / 0.03 35.9 | 1.38 / 0.31 32.8. Matrix cells at 60
+    fps, user settings: sunset_300km (settled 28.5 ms) 2 deg/s 0.68 37.0 | 0.59 28.8 | 0.81 28.5; 5 0.70 37.4 | 0.72
+    28.9 | 0.83 28.6; 20 0.68 38.0 | 0.68 28.3 | 0.76 28.0; 90 0.73 40.3 | 0.71 40.7 | 0.77 30.8; ovc_850km (settled
+    39.4) 2 deg/s 1.41 49.9 | 1.29 34.5 | 0.93 36.7; 5 1.48 46.6 | 1.07 32.7 | 0.79 33.6; 20 1.37 43.7 | 1.51 30.3 |
+    1.15 31.5; 90 1.57 39.9 | 1.65 42.9 | 1.22 28.0 (over the deck the 2x2 grid's held pixel is the worse image, signed
+    +1.5; path GPU means also follow what the pan sweeps over, and repeat within ~3 ms).
+    **Cost** (time at 1x, real frame time, first-person mode, 3 interleaved reps): settled 48.3 ms (11-09 gate) /
+    48.4 (new); a 1-px mouse move every 30 frames 62.0 +- 0.1 / 48.0 +- 0.3. Preset Medium at the same view: settled
+    27.0 / 27.7, the mouse 35.2 / 27.5, a 5 deg/s pan 34.1 / 26.3. After a 1-s 90 deg/s pan the block is on 16 frames
+    after the stop (0.96 s at 16.6 fps) instead of 64 (4.1 s). Below `full_rate_above_km` the gate only resets its
+    counters (stA_2m 22.9 / 22.7 ms, ovc_11km 26.8 / 26.7; captures differ by their own A-vs-A).
   - **Smooth tiles while moving** (`smooth_moving` 0.5, no slider; 2026-11-04, perf.md "Moving marched every sparse
     slot"): the smooth tiles (cloud_v2_tiles.comp kMode 1 / 2, march pass F: a 32x32 tile whose last resolved frame
     varies by less than `smooth_tile_threshold` 30 levels in every 4x4 window is marched at a quarter of the sparse

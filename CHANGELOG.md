@@ -557,6 +557,12 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   report went from 46-70 ms to 30-38 ms of GPU frame (RTX 3070 Ti, 1920x1009). The cloud layer is drawn from one pixel in
   nine while nothing moves, the sky's horizon band is cheaper, and haze-thin cloud is marched in longer steps. Views below
   about 30 km changed little.
+- **Looking around from orbit no longer costs the fast cloud grid:** touching the mouse in the first-person camera
+  dropped the clouds back to the slower grid for 64 frames (almost 4 s at 17 fps). Slow turns, nudges and small flicks
+  now keep it, and after a fast pan it is back in under a second. A low-orbit view on High with the mouse resting in
+  the hand: 62 -> 48 ms of GPU frame (RTX 3070 Ti, 1920x1009), the same as with the mouse untouched; on Medium
+  35 -> 28 ms. After a jump to another place the wait is unchanged. "clouds_v2.orbit_gate" 0 in settings.json is the
+  old rule (issue_20261122_114811).
 - **Ground views render 5-7 ms faster a frame:** the terrain's fine relief is baked into textures round the observer
   instead of being computed again at every step of three ray marches a frame (clear desert 21 -> 16 ms, the Alps from
   the ground 29 -> 21 ms of GPU frame, RTX 3070 Ti, 1920x1009). The terrain looks the same; "clouds.terrain_clipmap" 0
