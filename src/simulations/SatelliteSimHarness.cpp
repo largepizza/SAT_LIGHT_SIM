@@ -633,6 +633,9 @@ json SatelliteSim::harnessStateJson()
                    {"ui_night_filter", UIRenderer::colorFilter()},
                    {"knockouts", ko},
                    {"render_scale", renderScale},
+                   {"render_scale_now", renderScaleNow},              // what this frame renders at (the orbit render scale)
+                   {"clouds_follow_now", computeFollowsNow},
+                   {"orbit_render_scale_active", orbitScaleLatched},
                    {"dynamic_resolution", dynResEnabled},
                    {"sky_taa_used", skyTaaUsedThisFrame},
                    {"full_sky_deferred", fullSkyDeferred},

@@ -170,7 +170,7 @@ void SatelliteSim::applyBootChoice(VulkanContext &ctx, bool crashDetected)
 // below render scale 100%: it has no lite / minimal variant) and the sky TAA (full tier only).
 bool SatelliteSim::fullSkyNeeded() const
 {
-    return (debugDisableMask & (kBitMinimalSkyB | kBitLiteSkyB)) == 0u || renderScale < 0.999f;
+    return (debugDisableMask & (kBitMinimalSkyB | kBitLiteSkyB)) == 0u || renderScaleNow < 0.999f;
 }
 
 // Called at the top of recordCompute, before anything is recorded: the previous frame is finished (single

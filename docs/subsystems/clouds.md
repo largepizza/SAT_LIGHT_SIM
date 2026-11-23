@@ -1286,7 +1286,12 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     0.77 (0.78), 2.61 (3.35); shot 2's crops show slightly less grain in the deck's speckled patch. A still view with time
     running refreshes each pixel every 9 frames: slow evolution lags a little more in the history.
   - **THE ORBIT BLOCK: one ray per 3x3 from orbit while the view is quiet** (`clouds_v2.sparse_block_orbit` 3; 2 = off;
-    2026-11-09, issue_20261109_184851, commit dc8cad8). **Gate of 2026-11-09** (`clouds_v2.orbit_gate` 0; the default
+    2026-11-09, issue_20261109_184851, commit dc8cad8). **Defaults since 2026-11-23** (wave 20261122 c30, the user's pick
+    of the first-ascent option A, perf.md "The first-ascent views"): `sparse_block_orbit` 4 (one ray per 4 x 4) and
+    `sparse_block_orbit_moving` 1 (the block in motion too, 8 frames after the history is valid), with the orbit render
+    scale (render-pipeline.md "The orbit render scale"): settled 48.6 -> 29.8 ms at 1517 km, 46.0 -> 28.8 at 540 km.
+    Both act only above `full_rate_above_km` (the `high` / `eyeH >` tests in "FROM ORBIT"): the ground view is
+    untouched. Softer from orbit, by the user's choice (crop `qa/waves/20261122/evidence/c30/`). **Gate of 2026-11-09** (`clouds_v2.orbit_gate` 0; the default
     gate is "THE ORBIT BLOCK'S GATE: the turn budget" below; SatelliteSimCloudsV2.cpp `fillCloudsV2Params`, "FROM
     ORBIT"): the eye above `full_rate_above_km` (30 km), the history valid, the eye's step plus the volumes' slide under
     time warp under 0.1 cloud-grid pixel a frame (over the nearest a cloud can be), NOT turning or zooming, for 64
