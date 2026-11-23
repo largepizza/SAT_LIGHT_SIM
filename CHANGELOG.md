@@ -301,6 +301,11 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   Lightning) sets it. Flashes away from the towers are back (the "Lightning rate: storms" slider had stopped
   doing anything). The two rate sliders now default to 3.0 and 1.0; if yours were raised to see more lightning,
   set them back there.
+- **Lightning on the radar.** The Weather window's radar marks the lightning of the last five minutes: a yellow
+  cross where a stroke reached the ground, a small blue dot where a flash stayed in the cloud, fading with age, with
+  the count under the radar ("ground 23 / in cloud 61"). The "Strikes" button hides them. Works at every range.
+  Some ground strokes now come down from a storm's anvil, out in its forward flank or a squall line's trailing
+  rain, as real ones do, instead of all striking inside the heaviest rain round the tower.
 - **Rainbows, halos and ice optics** for the Sun or the Moon: rainbows at storms, 22-degree halos, sundogs, the
   circumzenithal arc, sun pillars.
 - **Ice halos are ray-traced through real crystals.** The halos of cirrus, snow and diamond dust come from a table

@@ -1339,6 +1339,34 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   in the horizon's rows; whether 1-2 km of light rain (rate 0.05-0.12) should take the whole channel in the cloud
   composite (`cloudPointVisibilityAt`) is not established. Harness: `lightning stats`, `lightning goto`
   (docs/HARNESS.md); the scripts and rows in qa/waves/20261122/evidence/c14/.
+  **The strike map (2026-11-22, wave c16, the user's "better tools for checking their spawn distribution";
+  `SatelliteSim::strikeNote` in SatelliteSimLightning.cpp, the radar overlay in SatelliteSimWeatherWindow.cpp).** Every
+  flash the list shows is marked ONCE (by id, when its tree is first built; `strikeSeen_` keeps a tree built twice to
+  one mark) in a CPU ring `strikeRing_` of 4096 marks, always on (no GPU work, no readback beyond the list the bolts
+  already read): the strike point of a ground stroke, the origin of any other flash, Earth-fixed at the flash's start
+  and in the weather map's frame. The radar draws the last 5 minutes of sim time (`kStrikeShowS`), Earth-fixed (a
+  storm drifts away from its old strikes, as on a real strike map), alpha 1 -> 0.25 with age: a yellow cross for a
+  ground stroke, a 2-px blue dot for the rest; the line "lightning, last 5 min: ground N / in cloud M" under the
+  toggles, the "Strikes" toggle (`wxShowStrikes`, not persisted, on). Not on the loop's past frames. Coverage: the
+  list holds what the lightning pass walks (out to the cloud tops' horizon, clouds v2 on, not from far orbit), so the
+  map holds the flashes in reach; a flash is on the list ~0.6 s of sim time or more, so at 10x (0.2-0.3 s a frame)
+  every flash is caught and at 60x and above the short ones fall between frames (the flashes stay deterministic in
+  sim time: the list only samples them). Harness: `lightning map` (counts by kind, by distance from the nearest tower,
+  by the radar's dBZ under each point; `clear=1` for a variant run over the same sim time). **What it showed
+  (2036-07-10 05:30 UTC, c14's outside views, 10x for 30 s wall = 1.8-2.6 sim min (the frame rate, not 10x, set the
+  sim time); qa/waves/20261122/evidence/c16/):** the supercell 92 flashes (36 a minute: 13 ground, 42 in cloud, 37
+  spider), the ground strokes 0-5 / 5-10 / 10-20 / 20-40 km from the tower's axis 3 / 4 / 5 / 1, under >= 45 dBZ 10
+  of 13, 30-45 dBZ 2, no rain 1 (8% on light or no rain); the squall line (150 km) 57 flashes, 21 ground: 15 under
+  >= 45 dBZ, 6 under 30-45, none dry; the MCS 58, 15 ground: 9 / 6, none dry; the Amazon at night (deep cumulus rain
+  bands of 30-40 dBZ out to 400 km, no storm object near): 0 flashes in 2.9 sim min. **Anvil ground strokes** (the
+  same date; `kCv2KindAnvilCg`): a share of a dominant tower's ground strokes (air-mass 0.15, multicell 0.25,
+  supercell 0.45, squall line / MCS 0.4) start in its ANVIL downshear (the tower's shear bearing `b.w` +- 26 deg,
+  0.25-0.6 of its reach out, at least 6 km), the column there probed as a storm region's with the anvil plate counted
+  as cloud (`cf.thin` is the anvil's share there: without that, and with the 1.5-km depth test, nearly every one fell
+  back) and a plate of one ~1-km sample deep enough; none, and the stroke comes from the tower as before, so the
+  rates, the kinds and every other flash are unchanged (the same ids, the same records). The forward flank under a
+  storm's anvil RAINS in this model (`stormStamp`'s stratiform deck), so these strokes land in 30-45 dBZ instead of
+  the core's 60-66, not in the dry. Measured over the same sim time (`lightning map clear=1`, the before / after SPVs in one app): the supercell's ground strokes under >= 45 dBZ 10 of 13 -> 8 of 14, on light or no rain 1 -> 3 (8% -> 21%), 20-40 km from the tower 1 -> 4; the squall line's 15 of 21 -> 12 of 21 (none dry before or after); the MCS's 9 of 15 -> 7 of 15. The lightning pass 1.44 -> 1.43 ms (squall line, 3 reps a side; the frame 41.2 +- 0.7 -> 41.6 +- 0.3 ms, noise from other agents' builds), the cloud march's SPIR-V untouched. From c14's outside view of the supercell (20 km upwind, NW) the strokes seen (>= 200 px over 12 levels) stay 2 of 12 in 2.5 min: the anvil lies on the far side of the storm from there, and the one stroke that moved draws 70 -> 14 px. Tried first and dropped: 0.3-0.8 of the reach with the anvil's thin share excluded and the 1.5-km depth test (almost every anvil stroke fell back: no change at all). The open question stays c14's: strokes 3-12 km in front of an eye draw 25-79 px.
   **The channel (rebuilt 2026-11-21, issue_20261121_163317; LightningBolt.cpp / .h, namespace `bolt`).** HOW a flash
   looks is the host's: `updateLightningBolts` reads the previous frame's list (only a list the pass wrote last frame:
   `cv2LightningObsDirValid`, one-shot) and builds each new flash's CHANNEL once (`buildBoltTree` -> `bolt::build`), **a

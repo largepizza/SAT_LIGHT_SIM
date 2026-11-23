@@ -116,6 +116,10 @@ const float kCv2KindCg[8]   = float[8](1.0, 1.0, 0.4, 1.0, 1.0, 1.0, 1.0, 1.0);
 // The share of the storm REGIONS' candidates kept round a storm of each kind ("Lightning rate: storms", cv2.lightning2.x,
 // is the densest: a supercell's or a line system's flashes per minute per 20 x 20 km of deep cloud away from its towers).
 const float kCv2KindArea[8] = float[8](0.15, 0.3, 1.0, 1.0, 1.0, 0.3, 0.15, 0.15);
+// The share of a dominant tower's GROUND strokes that come from its anvil downshear (2026-11-22, wave c16: the forward
+// flank / anvil of a supercell, the trailing stratiform region of a line or an MCS, where real ones also strike and
+// the rain core does not hide them): air-mass, multicell, supercell, squall line, MCS, tropical.
+const float kCv2KindAnvilCg[8] = float[8](0.15, 0.25, 0.45, 0.4, 0.4, 0.0, 0.0, 0.0);
 
 void main()
 {
@@ -438,7 +442,7 @@ void main()
             bool  tower = idx < nT;
             vec3  up, rAx = vec3(0.0), rE1 = vec3(0.0), rE2 = vec3(0.0);
             vec2  rA0 = vec2(0.0);
-            float str = 0.0, act = 0.0, spread = 0.0, pSlot;
+            float str = 0.0, act = 0.0, spread = 0.0, pSlot, shearB = 0.0, reachT = 0.0;
             uint  cellH;
             int   nM, kd = 0;
             if (tower) {
@@ -455,6 +459,8 @@ void main()
                 // up to 8 a slot: 240 a minute from one tower. (It was 3 tries: 90 a minute.)
                 nM     = clamp(int(ceil(pSlot)), 1, 8);
                 spread = Rb * mix(0.7, 1.3, tw.b.y);
+                shearB = tw.b.w;
+                reachT = tw.c.x;
                 uint sd = floatBitsToUint(tw.c.y);
                 cellH  = cv2StormHash(sd) ^ (sd * 0x9E3779B9u);
             } else {
@@ -542,36 +548,69 @@ void main()
                     vec3  t2 = cross(fUp, t1);
                     vec2  jv = vec2(float(ph.x & 0xFFFFu), float(ph.x >> 16u)) / 65535.0 - 0.5;
                     vec2  jg = vec2(float(ph.y & 0xFFFFu), float((ph.y >> 16u) & 0xFFu) * 257.0) / 65535.0 - 0.5;
-                    vec3  oD = normalize(fUp + (t1 * jv.x + t2 * jv.y) * (spread / R_EARTH));
-                    vec3  oE = ecefToEnu * cv2UndriftL(oD);
-                    // The cloud that is DRAWN there (2026-10-05, user snap 1): the column's lowest and highest cloud
-                    // (not rain, not the thin high layer) in 16 samples from the ground to above the tropopause.
-                    // The type's base and top put storm-cell flashes kilometres above the cumulus drawn away from the
-                    // towers: bolts on top of the weather. No deep cloud there, no flash.
-                    float gnd  = cv2Ground(cv2UndriftL(oD));
-                    float hHi  = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * cv2Tropo(oD) + 1500.0;
-                    float base = -1.0, topC = -1.0, runB = -1.0;
-                    bool  prevC = false;
-                    [[dont_unroll]] for (int k = 0; k < 16; ++k) {
-                        float h  = mix(gnd + 150.0, hHi, (float(k) + 0.5) / 16.0);
-                        CV2_CNT(12);
-                        CV2Field cf = cv2Field(cv2Pos(oE * (R_EARTH + h) - eye, eyeH, enuToEcef), -1.0, 400.0);
-                        bool  cl = cf.sigma * max(1.0 - cf.thin - cf.rain, 0.0) > 4e-4;
-                        if (cl) {
-                            if (base < 0.0) base = h;
-                            if (!prevC) runB = h;      // (the base of the run of cloud this sample is in)
-                            topC = h;
+                    vec3  oD0 = normalize(fUp + (t1 * jv.x + t2 * jv.y) * (spread / R_EARTH));
+                    vec3  oD = oD0;
+                    // A share of a dominant tower's ground strokes (kCv2KindAnvilCg) start in its ANVIL downshear (the
+                    // shear's bearing b.w, +-26 deg; 0.25-0.6 of its reach out, at least 6 km) and land round there: the
+                    // forward flank of a supercell, a line's or an MCS's trailing stratiform region, where the rain core
+                    // does not stand between. The column there is probed as a storm region's (one deep run of cloud);
+                    // none, and the stroke comes from the tower as before, so the rate and the share stay as they were.
+                    bool  anvil = false;
+                    if (cg && tower) {
+                        uvec3 ah = cv2Pcg3(ph ^ uvec3(0x3C6EF372u, 0xA54FF53Au, 0x1F83D9ABu));
+                        if (float(ah.x & 0xFFFFu) / 65535.0 < kCv2KindAnvilCg[fKd]) {
+                            vec3  eL = normalize(cross(vec3(0.0, 0.0, 1.0), fUp) + vec3(1e-7, 0.0, 0.0));
+                            vec3  nL = cross(fUp, eL);
+                            float bb = shearB + 0.9 * (float(ah.y & 0xFFFFu) / 65535.0 - 0.5);
+                            float dA = max(mix(0.25, 0.6, float(ah.y >> 16u) / 65535.0) * reachT, 6000.0);
+                            oD = normalize(fUp + (eL * cos(bb) + nL * sin(bb)) * (dA / R_EARTH));
+                            anvil = true;
                         }
-                        prevC = cl;
                     }
-                    // A storm region's flash is in ONE deep cloud that reaches the mixed-phase heights (over half the
-                    // cumulonimbus' height): the run of cloud under the column's top, not a cumulus under an anvil with
-                    // clear air between (its origin would hang in that air), nor the storm's congestus field.
-                    if (!tower) {
-                        base = runB;
-                        if (topC < gnd + 0.55 * (hHi - 1500.0 - gnd)) continue;
+                    vec3  oE = vec3(0.0);
+                    float gnd = 0.0, hHi = 0.0, base = -1.0, topC = -1.0;
+                    bool  okC = false;
+                    for (int tryI = 0; tryI < 2 && !okC; ++tryI) {
+                        if (tryI == 1) {
+                            if (!anvil) break;
+                            anvil = false;
+                            oD = oD0;
+                        }
+                        // The cloud that is DRAWN there (2026-10-05, user snap 1): the column's lowest and highest cloud
+                        // (not rain, not the thin high layer) in 16 samples from the ground to above the tropopause.
+                        // The type's base and top put storm-cell flashes kilometres above the cumulus drawn away from the
+                        // towers: bolts on top of the weather. No deep cloud there, no flash.
+                        oE   = ecefToEnu * cv2UndriftL(oD);
+                        gnd  = cv2Ground(cv2UndriftL(oD));
+                        hHi  = cv2.types[4].alt.x + (cv2.types[4].alt.y - cv2.types[4].alt.x) * cv2Tropo(oD) + 1500.0;
+                        base = -1.0; topC = -1.0;
+                        float runB = -1.0;
+                        bool  prevC = false;
+                        [[dont_unroll]] for (int k = 0; k < 16; ++k) {
+                            float h  = mix(gnd + 150.0, hHi, (float(k) + 0.5) / 16.0);
+                            CV2_CNT(12);
+                            CV2Field cf = cv2Field(cv2Pos(oE * (R_EARTH + h) - eye, eyeH, enuToEcef), -1.0, 400.0);
+                            // (Under the anvil its plate counts as cloud: the thin high layer's share is the anvil's there.)
+                            bool  cl = cf.sigma * max(1.0 - (anvil ? 0.0 : cf.thin) - cf.rain, 0.0) > 4e-4;
+                            if (cl) {
+                                if (base < 0.0) base = h;
+                                if (!prevC) runB = h;      // (the base of the run of cloud this sample is in)
+                                topC = h;
+                            }
+                            prevC = cl;
+                        }
+                        // A storm region's flash is in ONE deep cloud that reaches the mixed-phase heights (over half the
+                        // cumulonimbus' height): the run of cloud under the column's top, not a cumulus under an anvil with
+                        // clear air between (its origin would hang in that air), nor the storm's congestus field.
+                        if (!tower || anvil) {
+                            base = runB;
+                            if (topC < gnd + 0.55 * (hHi - 1500.0 - gnd)) continue;
+                        }
+                        // (An anvil plate is 1-3 km deep: one or two of the 16 ~1-km samples.)
+                        if (base < 0.0 || topC - base < (anvil ? 0.0 : 1500.0)) continue;
+                        okC = true;
                     }
-                    if (base < 0.0 || topC - base < 1500.0) continue;
+                    if (!okC) continue;
                     float oAlt = cg ? base + (topC - base) * (0.25 + 0.2 * (jg.x + 0.5))
                                : low ? base - 150.0
                                      : base + (topC - base) * (0.3 + 0.45 * (jg.y + 0.5));

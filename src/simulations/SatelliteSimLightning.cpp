@@ -420,6 +420,8 @@ void SatelliteSim::updateLightningBolts()
                 sounded = sounded || ts.id == id;
             if (!sounded)
                 addThunderSource(t, now - (double)age);
+            if (id < 0xF0000000u)   // (not a harness-placed flash)
+                strikeNote(t, now - (double)age);
             it = boltTrees_.emplace(id, std::move(t)).first;
         }
         BoltTree &t = it->second;
@@ -579,6 +581,36 @@ void SatelliteSim::updateLightningBolts()
         if (segDropped)
             ++boltStatsSegDropFrames_;
     }
+}
+
+// The strike map: a flash seen for the first time (its tree just built) gets a mark: where a ground stroke struck (the
+// tree's own strike point), where any other flash started. Earth-fixed at its start, and in the weather map's frame.
+void SatelliteSim::strikeNote(const BoltTree &t, double startS)
+{
+    if (strikeSeen_.count(t.id))
+        return;
+    StrikeMark m;
+    m.id = t.id;
+    m.kind = t.kind;
+    m.startS = startS;
+    m.strength = t.strength;
+    const glm::dvec3 p = t.kind == 1 ? t.originEcef + t.t1 * (double)t.groundLocal.x + t.t2 * (double)t.groundLocal.y +
+                                           t.up * (double)t.groundLocal.z
+                                     : t.originEcef;
+    m.earth = glm::normalize(p);
+    // (The inverse of weatherMapToEarth at the start.)
+    const double ph = (double)cloudDriftRate * (startS - kCloudDriftEpochS) + cloudDriftPhaseOffset;
+    const double c = std::cos(ph), s = std::sin(ph);
+    m.map = glm::dvec3(m.earth.x * c - m.earth.y * s, m.earth.x * s + m.earth.y * c, m.earth.z);
+    strikeRing_.push_back(m);
+    if (strikeSinceS_ < 0.0)
+        strikeSinceS_ = startS;
+    while (strikeRing_.size() > kStrikeRingMax)
+        strikeRing_.pop_front();
+    strikeSeen_[t.id] = startS;
+    if (strikeSeen_.size() > 2 * kStrikeRingMax)
+        for (auto it = strikeSeen_.begin(); it != strikeSeen_.end();)
+            it = std::abs(it->second - startS) > 900.0 ? strikeSeen_.erase(it) : std::next(it);
 }
 
 // Harness `lightning stats`: one flash of this frame's list. New ids get a row (the storm whose tower stands nearest
