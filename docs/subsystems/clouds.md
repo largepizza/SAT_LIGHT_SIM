@@ -1354,6 +1354,20 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     levels from settled in two modes; waits of 32 and 20 frames were in the worse mode more often than 64 (+60 mean
     over 6 trials: 1.96 / 2.22 / 2.50). The report's own arrival was a go-to (70-km steps a frame, i.e. jumps): its
     wait is still 64 frames (3.9 s at 16.6 fps).
+    **The jump's wait in seconds** (`orbit_jump_s` 1.0; 0 = frames only; 2026-11-22, issue_20261122_213304 /
+    _190752): the block is also back once `orbit_wait_frames` 16 frames AND `orbit_jump_s` seconds have passed since
+    the jump, if that comes before the 64 frames: 60 fps keeps ~60-64 frames, 17 fps waits 17 frames (1 s) instead of
+    64 (3.8 s). WHY: a player climbs from orbit in bursts (Q / E boosted: 35-190 km a frame, every frame a jump past
+    the 20-km history step) and stops to look; both reports' trails (`trail` in report.json) show it, and their state
+    was taken 17 and 40 frames after the last climb step (`eye_still_frames` = the frames since that step exactly;
+    `hints.live.still_s` counts only turns of the view, not the climb). Played back as the user plays (their trail with
+    `path play fps=17`, 1920x1009, their settings) the frames after a stop ran the 2x2 grid for ~3 s: 61-63 ms at
+    540 km, 67 at 1517 km, then 43 / 49 on the block. With the 1-s wait, the 64 frames from the report's moment on
+    (interleaved in one app, 3 reps High / 2 Medium): 540 km High 53.9 -> 44.7 ms, Medium 31.6 -> 27.2; 1517 km
+    (already 40 frames past its step) High 53.2 -> 48.6, Medium 30.6 -> 27.7; the 64 frames after unchanged. COST: the frames 1-4 s after a stop are further from settled
+    (the 3x3 grid converges 2.25x slower): at 540 km +20 frames 2.9 against 1.8 levels, +60 2.2 against 1.3 (half-size
+    captures; the two settled references differ by 1.2 there: lightning), at 1517 km +20 1.3 / 1.0, +60 1.1 / 0.8.
+    Measurements and sheets: `qa/waves/20261122/evidence/c21/`.
     **A zoom** resamples the history at another scale: `orbit_zoom_frames` 32 and `orbit_wait_s` (after a 1.5x zoom
     in, 120 frames on, the frame is 0.94 from settled with a 48-frame wait, 0.98 with 32, 1.05 with 16, 1.14 with none).
     **The wait after a fast pan** (1 s at 90 deg/s, then still, 20 fps; error against settled at +4 / +20 / +40 / +80

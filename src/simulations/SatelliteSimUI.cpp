@@ -10260,6 +10260,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2OrbitWaitS = std::clamp(c.value("orbit_wait_s", cv2OrbitWaitS), 0.0f, 30.0f);
         cv2OrbitWaitFrames = std::clamp(c.value("orbit_wait_frames", cv2OrbitWaitFrames), 1.0f, 1000.0f);
         cv2OrbitJumpFrames = std::clamp(c.value("orbit_jump_frames", cv2OrbitJumpFrames), 1.0f, 1000.0f);
+        cv2OrbitJumpS = std::clamp(c.value("orbit_jump_s", cv2OrbitJumpS), 0.0f, 30.0f);
         cv2OrbitZoomFrames = std::clamp(c.value("orbit_zoom_frames", cv2OrbitZoomFrames), 1.0f, 1000.0f);
         cv2OrbitTurnAccum = std::clamp(c.value("orbit_turn_accum", cv2OrbitTurnAccum), 0.0f, 256.0f);
         cv2HistoryJumpFrac = std::clamp(c.value("history_jump_frac", cv2HistoryJumpFrac), 0.0f, 1.0f);
@@ -11105,6 +11106,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"orbit_wait_s", cv2OrbitWaitS},
         {"orbit_wait_frames", cv2OrbitWaitFrames},
         {"orbit_jump_frames", cv2OrbitJumpFrames},
+        {"orbit_jump_s", cv2OrbitJumpS},
         {"orbit_zoom_frames", cv2OrbitZoomFrames},
         {"orbit_turn_accum", cv2OrbitTurnAccum},
         {"history_jump_frac", cv2HistoryJumpFrac},

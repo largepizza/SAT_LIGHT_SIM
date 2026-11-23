@@ -587,6 +587,12 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   the hand: 62 -> 48 ms of GPU frame (RTX 3070 Ti, 1920x1009), the same as with the mouse untouched; on Medium
   35 -> 28 ms. After a jump to another place the wait is unchanged. "clouds_v2.orbit_gate" 0 in settings.json is the
   old rule (issue_20261122_114811).
+- **Climbing in orbit no longer leaves the clouds on the slow grid for seconds after you stop:** every frame of a
+  boosted climb counts as a jump, and the fast cloud grid waited 64 frames after one, almost 4 s at 17 fps. It now
+  waits 1 s (or the 64 frames, if sooner). The first ~4 s after a climb stops, on High: 54 -> 45 ms of GPU frame at
+  540 km, 53 -> 49 ms at 1517 km; Medium 32 -> 27 and 31 -> 28 (RTX 3070 Ti, 1920x1009). The clouds sharpen a little
+  more slowly in those seconds. "clouds_v2.orbit_jump_s" 0 in settings.json is the old rule
+  (issue_20261122_213304, issue_20261122_190752).
 - **Ground views render 5-7 ms faster a frame:** the terrain's fine relief is baked into textures round the observer
   instead of being computed again at every step of three ray marches a frame (clear desert 21 -> 16 ms, the Alps from
   the ground 29 -> 21 ms of GPU frame, RTX 3070 Ti, 1920x1009). The terrain looks the same; "clouds.terrain_clipmap" 0

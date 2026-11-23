@@ -2286,6 +2286,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                 if (!hist || !high || quietPx >= 0.1)
                 {
                     cv2OrbitSinceJumpFrames = 0;
+                    cv2OrbitSinceJumpS = 0.0f;
                     cv2OrbitSinceZoomFrames = 100000;
                     cv2OrbitSinceZoomS = 1000.0f;
                     cv2OrbitDebtPx = 0.0f;
@@ -2297,6 +2298,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                 else
                 {
                     cv2OrbitSinceJumpFrames = std::min(cv2OrbitSinceJumpFrames + 1, 100000);
+                    cv2OrbitSinceJumpS = std::min(cv2OrbitSinceJumpS + (float)dtG, 1000.0f);
                     cv2OrbitSinceZoomFrames = zoom ? 0 : std::min(cv2OrbitSinceZoomFrames + 1, 100000);
                     cv2OrbitSinceZoomS = zoom ? 0.0f : std::min(cv2OrbitSinceZoomS + (float)dtG, 1000.0f);
                     cv2OrbitDebtPx = (float)std::max((double)cv2OrbitDebtPx + turnPx - lim, 0.0);
@@ -2312,8 +2314,17 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     cv2OrbitTurnLoad = cv2OrbitTurnLoad * (1.0f - 1.0f / 32.0f) + (turnNow ? 1.0f : 0.0f);
                 }
                 cv2OrbitTurnPxNow = (float)turnPx;
-                const bool settled = hist && high && quietPx < 0.1 && !zoom && !cv2OrbitOver &&
-                                     cv2OrbitSinceJumpFrames >= (int)std::lround(cv2OrbitJumpFrames) &&
+                // The jump's wait in SECONDS too (2026-11-22, issues 20261122_213304 / _190752, "orbit_jump_s" 1): 64 frames
+                // are 1.1 s at 60 fps but 3.8 s at the 17 fps the 2 x 2 grid then runs at, and a player climbing from orbit
+                // (Q / E: 35-190 km a frame, each frame a jump) stops, looks, climbs again: the report's views were taken 17
+                // and 40 frames after the last climb step, both on the 2 x 2 grid (58 / 66 ms; 41-44 / 49 on the block). Now
+                // the block is back after orbit_jump_frames frames, or orbit_wait_frames frames and orbit_jump_s seconds if
+                // that comes first: unchanged at 60 fps, 17 frames instead of 64 at 17 fps. The cost is the 3 x 3 grid's
+                // slower convergence over the first seconds after the stop (clouds.md "THE ORBIT BLOCK'S GATE").
+                const bool jumpWaited = cv2OrbitSinceJumpFrames >= (int)std::lround(cv2OrbitJumpFrames) ||
+                                        (cv2OrbitJumpS > 0.0f && cv2OrbitSinceJumpS >= cv2OrbitJumpS &&
+                                         cv2OrbitSinceJumpFrames >= (int)std::lround(cv2OrbitWaitFrames));
+                const bool settled = hist && high && quietPx < 0.1 && !zoom && !cv2OrbitOver && jumpWaited &&
                                      cv2OrbitSinceZoomFrames >= (int)std::lround(cv2OrbitZoomFrames) &&
                                      (double)cv2OrbitSinceZoomS >= waitS;
                 cv2OrbitQuietFrames = (hist && high) ? std::min(cv2OrbitQuietFrames + 1, 1000) : 0;
