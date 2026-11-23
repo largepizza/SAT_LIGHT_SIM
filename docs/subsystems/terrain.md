@@ -447,6 +447,12 @@ terrain_detail.glsl first; invariants and the reasons behind them:
 - **Known limits**: the ground within ~20 m is soft (it would need real texture maps); silhouettes
   are not antialiased; value noise shapes; the DEM itself is 2.67 km / 8-bit (the Everest region is a
   smooth plateau in it); SKY_LITE and SKY_ENV draw the plain DEM (`tdEnabled()`).
+  Silhouette steps measured (2026-11-23, wave c24, .plans/TERRAIN_EDGES_PLAN.md phase 0; Chamonix, 1920 x 1009, the
+  user's settings, `qa/waves/20261122/evidence/c24/`): a sunlit ridge against cloud or sky and a near ridge over a
+  farther one step at 1 px (the march's one ray per pixel), the same with the volumetric clouds, the AP volume
+  (`clouds_v2.sky_ap 0`) or the fog knocked out; the sky TAA softens them to 1-px ramps while the history holds. No
+  coarse layer prints its grid there. The 2-px steps along a ridge against flash-lit cloud were the flashes' light
+  (clouds.md "Lightning as LIGHT", "At a ridge").
 - **Night and ambient light (terrain v2 P1, 2026-09-29, `.plans/TERRAIN_V2_PLAN.md`):** the night map
   is a Black Marble composite with a BLUE base under every texel (land sRGB ~(12,13,25)); used as the
   terrain's emission it out-shone full-moon ground and made the night side a flat blue 5 km texture.

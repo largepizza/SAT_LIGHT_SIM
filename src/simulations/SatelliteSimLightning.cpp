@@ -175,7 +175,7 @@ void SatelliteSim::createLightningResources(VulkanContext &ctx)
 void SatelliteSim::createLightningPipeline(VulkanContext &ctx)
 {
     VkShaderModule vert = ctx.loadShader("shaders/lightning.vert.spv");
-    VkShaderModule frag = ctx.loadShader("shaders/lightning.frag.spv");
+    VkShaderModule frag = ctx.loadShader(boltFragSpvOverride.empty() ? "shaders/lightning.frag.spv" : boltFragSpvOverride.c_str());
     VkPipelineShaderStageCreateInfo stages[2] = {};
     stages[0] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_VERTEX_BIT, vert, "main", nullptr};
     stages[1] = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_FRAGMENT_BIT, frag, "main", nullptr};

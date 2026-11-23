@@ -2879,6 +2879,29 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   fronts re-baked, time running, 40 frames, 3 reps a side, `clouds_v2.lightning_light` 1 / 0 in one app, report
   issue_20261122_213848's view) 1.50 / 1.24 ms, i.e. the bakes +0.27 ms in a frame with a spreading flash (not
   measured against the old bake); a frame without a flash bakes nothing. The cloud march is not touched.
+  **At a ridge** (2026-11-23, wave c24, .plans/TERRAIN_EDGES_PLAN.md phase 1.2; the user: "lightning flashes show a
+  hard, pixelated boundary between the lit sky and the ground"): the flashes' light on the cloud is drawn by
+  lightning.frag (mode 1, a full-screen quad after the sky TAA, nothing smooths it) from the half-res cloud composite.
+  A composite texel marched to the ground holds only the cloud in front of the ground; one marched to the sky the
+  lit cloud behind the ridge. Blended bilinearly, the light bled onto the ridge's pixels and the sky pixels over it
+  were dimmed: a 2-px staircase along every ridge against flash-lit cloud (phase 0: steps 2 px tall with the TAA on,
+  off and on the flash's first frame; gone with mode 1 discarded; a sunlit ridge against the same cloud shows only
+  the march's own 1-px aliasing, which the TAA softens). The pixel columns showed the light ENDING early: the depth
+  passes count a crest's near miss as a hit, so the half-res ground stands a texel proud of the full-res silhouette
+  and the sky pixels just over the ridge had only ground texels round them. Now each of the four texels is classed
+  by the scene depth under its centre (texelFetch of sceneDepthTex; the two grids differ by a texel's rounding).
+  Where all four are ground, the eight blocks one texel over are tried and the first holding a sky texel lends its
+  gathers. Where both classes meet (or a block was borrowed) the light is the SKY texels' alone (their bilinear
+  weights renormalised), drawn with `gl_FragDepth` at min(1.1 x the farthest ground those texels hit, 0.95 x the
+  nearest lit cloud), so the main pass's full-res depth (the per-pixel march's silhouette, restored from the sky
+  TAA's copy) cuts it off every ground pixel and passes it on sky and opaque-cloud pixels. Elsewhere gl_FragDepth =
+  gl_FragCoord.z (the quad's 0): unchanged. Measured (Chamonix 45.924N 6.869E, az 180 el 14, a cg flash 18 km out,
+  `qa/waves/20261122/evidence/c24/`): the lit edge's row per column matches the same camera's daylight silhouette to
+  a pixel (was 2 rows x 6-8 px on even rows; without the cut it reaches one row onto the ground); three frames
+  differ by at most 1 px at a few columns (the restored depth is the jittered frame's). Cost with a flash up, 3
+  interleaved reps, `shaders reload bolt=`: the main-pass overlays bucket 0.59 -> 0.67 ms, GPU total 29.39 -> 29.61
+  (+-0.7). Limits: a ground pixel farther than 1.1 x the ground its texels hit (a far slope just under a near
+  ridge) still takes the sky's light; the cloud in front of the ground within a texel of a ridge loses its light.
 - **Key light**: the Sun, or at night the Moon through the same light march (`misc.y` x `moonGain`);
   sky ambient is occluded by the cloud above and by the sample's own density (detail on shaded sides).
   **Night (review 5):** the ambient carries the terrain's moonless "Night sky light" (`terrainErosion.z`,
