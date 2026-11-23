@@ -346,6 +346,16 @@ survives — same attachment formats, so the same `ctx.framebuffers` stay compat
   half-res `sceneDepthTex` (`PointDrawPC::manualTerrainTest` = 1).
 At exactly 100% with TAA off the prepass does nothing and the code path is the original one.
 
+**Recreating the low-res target drains the frames in flight first.** `destroySkyLowResResources` frees the plain
+path's pipeline, render pass, framebuffer and image, which the previous frame (two in flight) may still be drawing
+with whenever it rendered TAA-off below 100%. Every runtime recreate (`applyGraphicsPreset`, the Render scale stepper,
+recordCompute's size check, the harness `set`, `reloadSkyShaders`, `ensureFullSkyPipelines`) waits for the device
+first. `applyGraphicsPreset` and the stepper did not until wave 20261122 c29: TAA off at a scaled preset, then TAA on
+plus a preset change in one frame, aborted the app with no message right after "sky pipeline: LITE" (the validation
+layer: vkDestroyPipeline / Framebuffer / Image / RenderPass "currently in use by VkCommandBuffer"). To see this class
+of bug in a Release run, launch with `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation` and
+`VK_KHRONOS_VALIDATION_LOG_FILENAME=<file>` in the environment (run.py passes it through).
+
 **`gl_FragCoord` gotcha — read this before adding any new `gl_FragCoord`-based lookup to
 `sat_sky.frag`.** `gl_FragCoord.xy` is relative to whatever framebuffer the CURRENT draw call
 targets, not always the full swapchain — a real bug shipped and was fixed same-session: the cloud

@@ -15117,7 +15117,8 @@ void SatelliteSim::createFlareResources(VulkanContext &ctx)
         if (vkCreateRenderPass(ctx.device, &grp, nullptr, &glareAccumRenderPass) != VK_SUCCESS)
             throw std::runtime_error("SatelliteSim: failed to create glare accumulation render pass");
         ctx.createImage(ctx.swapExtent.width, ctx.swapExtent.height, VK_FORMAT_R16G16B16A16_SFLOAT,
-                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, glareAccumImg, glareAccumMem);
+                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                        glareAccumImg, glareAccumMem); // TRANSFER_DST: the clear below
         vci.image = glareAccumImg;
         vkCreateImageView(ctx.device, &vci, nullptr, &glareAccumView);
         // The composite may sample it before the first glare pass has run (the layout it expects).
