@@ -1267,7 +1267,17 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   (16 `cv2Field` samples, ground to tropopause + 1.5 km, cloud without rain or the thin high layer > 4e-4/m) and takes
   the DRAWN cloud's base and top; none, or under 1.5 km deep, and it does not flash — the Cb type's heights put
   flashes in clear air above the capped cumulus away from towers (user snap 1). Measured: snap 1 (9.9 km) 27 flashes
-  a minute out to ~360 km; snap 2 (609 km) ~10/s over the visible disc. Deterministic in sim time (`cv2FlashIntensity`: a 50-ms stepped leader, then
+  a minute out to ~360 km; snap 2 (609 km) ~10/s over the visible disc. **The regions' storm mask** (2026-11-22, c19
+  orbitperf, issue_20261122_213341): a candidate flashes only where `cv2StormBin` lists a tower (else its activity is 0),
+  and the storm bins (256 a face side) nest 4 x 4 in a region on the same cube faces and angles, so workgroup 0 first scans
+  the bin table once (`sRegMask`, a bit a region, each listed bin marking its region and the regions a bin away) and the
+  region loop skips an unmarked region before drawing its candidates (face-border regions are always walked: a point on
+  a face edge may round onto the next face). The flash list is the same (6 paused moments at 3780 and 1517 km: the same
+  flashes, every field equal). Why: at the default rate a region draws ~3.4 candidates a slot pair, each reading the
+  flow, the weather map and the table, and from high orbit the reach is the whole visible cap (~7000 regions at
+  3780 km, ~28 a thread in series): the pass ("lightning" pass timer) was 8.4-8.5 ms there, 4.9 with the mask (RTX 3070
+  Ti, 1920x1009, interleaved, 3 reps); with the lattice off 0.6. What is left there (~4 ms) is the live candidates'
+  16-sample column probes, one thread each. Deterministic in sim time (`cv2FlashIntensity`: a 50-ms stepped leader, then
   1-4 return strokes ~35 ms over a continuing current; in-cloud flashes 2-6 softer pulses). Record (`CV2Flash`, 96 B,
   `kCv2FlashMax` 128): origin, ground point, KIND (0 in cloud, 1 cloud-to-ground: "Cloud-to-ground share", 2 red sprite, 3
   spider lightning just under the base), seed, age, the cloud's base/top, strength, duration; and the origin and the

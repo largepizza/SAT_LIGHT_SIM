@@ -82,6 +82,8 @@ vec3 rlSkyZenithAt(vec3 p, vec3 sunDir, vec3 betaR, float betaM) {
 
 shared uint sFlashN;
 shared float sRainMax[256];
+// The storm regions that can flash (workgroup 0, below): one bit per region of the 6 x 64 x 64 lattice.
+shared uint sRegMask[6u * 64u * 64u / 32u];
 // The Sun transmittance volume's bake (workgroups >= 5): kCv2StvG threads per ray, each marching kCv2StvK / kCv2StvG
 // consecutive knots of it, their optical depths joined by a prefix over the ray's threads (sStvOd). It was one thread
 // per ray, 2-4 sub-rays x 48 knots x up to 4 field reads one after another on 13 workgroups: ~0.9 ms of latency with
@@ -437,6 +439,35 @@ void main()
         float cosReach = cos(min(reachH / R_EARTH + cR, PI));
         int   nT = towersOn ? int(min(cv2StormHead.x, kCv2StormMaxTowers)) : 0;
         int   nR = cellsOn ? 6 * kNR * kNR : 0;
+        // THE REGIONS' STORM MASK (2026-11-22, c19 orbitperf; issue_20261122_213341 "14 FPS Here", 3780 km over the night
+        // side). A region's candidate flashes need a storm tower listed at their point (cv2StormBin, below: none, and
+        // nearT = 0, fAct = 0, the candidate is dropped). The candidates are drawn before that test, ~3.4 a region a slot
+        // pair at the default rate, each reading the flow, the weather map and the storm table; from high orbit the
+        // reach is the whole visible cap (~7000 regions at 3780 km), one thread walking ~28 of them in series: the pass
+        // was 8.5-9 ms there (0.2-1.1 with the region lattice off). The storm bins (256 a face side) nest 4 x 4 in a
+        // region (64 a side) on the same cube faces and angles, so one scan of the bin table marks every region holding
+        // a listed bin, widened by a bin each way (a candidate on a region's edge may round into the next bin); the
+        // regions on a face's border are always walked (a point there may round onto the next face). A region left
+        // unmarked has no listed bin under any of its candidates: the flash list is the same.
+        if (cellsOn) {
+            for (uint i = li; i < 6u * 64u * 64u / 32u; i += 256u) sRegMask[i] = 0u;
+            barrier();
+            if (cv2StormHead.x > 0u) {
+                [[dont_unroll]] for (uint h = li; h < kCv2StormTableSize; h += 256u) {
+                    uvec2 e = cv2StormTable[h];
+                    if (e.x == 0u || (e.y & 31u) == 0u) continue;
+                    uint k = e.x - 1u, face = k / (kCv2StormBinsPerFace * kCv2StormBinsPerFace);
+                    if (face > 5u) continue;
+                    int bn = int(kCv2StormBinsPerFace), bx = int(k % kCv2StormBinsPerFace), by = int((k / kCv2StormBinsPerFace) % kCv2StormBinsPerFace);
+                    for (int dy = -1; dy <= 1; ++dy)
+                        for (int dx = -1; dx <= 1; ++dx) {
+                            uint rb = face * uint(kNR * kNR) + uint((clamp(by + dy, 0, bn - 1) * kNR / bn) * kNR + clamp(bx + dx, 0, bn - 1) * kNR / bn);
+                            atomicOr(sRegMask[rb >> 5u], 1u << (rb & 31u));
+                        }
+                }
+            }
+            barrier();
+        }
 
         for (int idx = int(li); idx < nT + nR; idx += 256) {
             bool  tower = idx < nT;
@@ -468,6 +499,9 @@ void main()
                 int   f  = j / (kNR * kNR);
                 int   r  = j - f * kNR * kNR;
                 ivec2 ri = ivec2(r % kNR, r / kNR);
+                // (The storm mask, above: no listed bin under this region, no flash from it.)
+                if (ri.x > 0 && ri.y > 0 && ri.x < kNR - 1 && ri.y < kNR - 1 && (sRegMask[uint(j) >> 5u] & (1u << (uint(j) & 31u))) == 0u)
+                    continue;
                 int   a  = f >> 1;
                 float sg = ((f & 1) == 0) ? 1.0 : -1.0;
                 rAx = (a == 0) ? vec3(sg, 0.0, 0.0) : ((a == 1) ? vec3(0.0, sg, 0.0) : vec3(0.0, 0.0, sg));
