@@ -742,7 +742,13 @@ void main()
     // pass split the air in front of the haze tens of km too near, and along distant cloud edges dark 2x2 blocks
     // came and went (user snapshot 2, walking at 11 km). This frame's samples: nothing to reproject (review 15).
     if (nd.x > 0.0 && dWs > 1e-3) nd.x = dW / dWs;   // and into the still history below: the same noise, slower
-    if (motionPx < 0.5 && shiftPx < 0.5) {
+    // Still also ALONG the ray (2026-11-22, issue_20261122_213657): the parallax is the eye's move across the ray, 0 at
+    // the point the eye flies toward, so in fast flight the texels round the screen centre kept 90% of a distance the
+    // eye had since closed by ~1 km a frame (~9 km behind at 60 km/s): the flashes' light (lightning.frag) read the
+    // cloud there kilometres deep in the tower, a black disc at the screen centre on every flash-lit cloud. The eye's
+    // move along the ray now has to be under 0.1% of the distance (60 m/s at 1 km) for the distance to keep a history.
+    float alongM = abs(dot(cv2.obsDelta.xyz, vE0));
+    if (motionPx < 0.5 && shiftPx < 0.5 && alongM < 1e-3 * max(imageLoad(outDepth, c).x, nd.x)) {
         vec2  hd = imageLoad(outDepth, c).xy;
         float wD = 0.1;
         if (hd.x > 0.0 && nd.x > 0.0) nd.x = mix(hd.x, nd.x, wD);

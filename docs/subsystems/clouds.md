@@ -2833,11 +2833,23 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   same image. A flash comes first: it takes a free slot among 0-14 (its code for "none" is 15, so an emitter handed
   slot 15 never read its volume), else the least engine light's, and its bakes are listed first in the 4-a-frame
   budget; the engine lights fill from slot 15 down (`SatelliteSim::engineLightVolumes`, at most 6 lights in 8 slots).
-  A flash's slot is written as it was (red the depth, green its own cloud's depth, blue 0; `fvAt` unchanged). An
-  engine light's job (`up.w` 1) reads each step at 6 places without the per-direction jitter and writes green = the
-  transmittance e^-depth and blue = where along each distance step the step's depth is centred: `fvOdFine` blends the
-  transmittances over the directions by a cubic B-spline (a steady light shows a bilinear blend's creases, a 0.2-s
-  flash does not) and reads the depth inside a step from the centre.
+  Every slot, a flash's and an engine light's, is baked alike: each distance step read at 6 places without a
+  per-direction jitter, red = the depth, green = the transmittance e^-depth, blue = where along each distance step the
+  step's depth is centred; `fvOdFine` blends over the directions by a cubic B-spline and reads the depth inside a step
+  from the centre, for both callers: an engine light (`engineOd`) blends the transmittances, a flash (`boltLightAt`,
+  `meanDepth`) the depths, linear in sqrt(r) between the steps' ends, as its bilinear read did. (Blended as
+  transmittances, a flash inside a tower read the open directions round it and lit the whole tower near white: the
+  light's level, which the user had judged, is the mean depth's; eased about each step's centre of depth, the steps'
+  ends drew concentric rings round an emitter seen through its own cloud.) **Why the flashes too**
+  (2026-11-22, issue_20261122_213848, a spider lighting a Cb seen from 1.2 km under it): a flash's slot had a fixed
+  jitter per direction and 1-2 reads a step, read by `fvAt`'s bilinear blend of the DEPTHS; the depth differed from
+  one direction to the next by where its samples fell and the blend creased along the directions' lines, and a
+  spider's fronts hold the light long enough to see it: faceted polygon patches over the lit tower and a starburst of
+  spokes round each emitter. (`fvAt` is deleted; the alpha of a slot's first texel still holds N.) Cost: a flash's
+  bake reads 96 field samples a direction (was ~28); the clouds' lightning pass bucket while a spider spreads (its
+  fronts re-baked, time running, 40 frames, 3 reps a side, `clouds_v2.lightning_light` 1 / 0 in one app, report
+  issue_20261122_213848's view) 1.50 / 1.24 ms, i.e. the bakes +0.27 ms in a frame with a spreading flash (not
+  measured against the old bake); a frame without a flash bakes nothing. The cloud march is not touched.
 - **Key light**: the Sun, or at night the Moon through the same light march (`misc.y` x `moonGain`);
   sky ambient is occluded by the cloud above and by the sample's own density (detail on shaded sides).
   **Night (review 5):** the ambient carries the terrain's moonless "Night sky light" (`terrainErosion.z`,
@@ -3139,6 +3151,13 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   `path play record=` shows it — transmittance and radiance were smooth). Still, the same noise left a thin dark
   stair-stepped line there and blocks in the horizon band (snapshot 1). Still-view flicker (420 km limb, 2000 km
   nadir) identical; review 15's set 1.21 -> 1.18.
+  **Still along the ray too** (2026-11-22, issue_20261122_213657, `cloud_v2_resolve.comp` end of main): the distance
+  history is kept only while the eye's move ALONG the texel's ray is under 0.1% of the distance (60 m/s at 1 km), beside
+  the parallax and shift gates. The parallax is the eye's move ACROSS the ray, 0 at the point the eye flies toward: in
+  fast flight (40-65 km/s, ~1 km a frame) the texels round the screen centre kept 90% of a distance the eye had since
+  closed, ~9 km too far, and the flashes' light (lightning.frag, the composite's distance) read the cloud there
+  kilometres inside the tower: a black disc 10-30 px wide at the screen centre on every flash-lit cloud, grey with
+  `clouds_v2.lightning_light 0`. A still view and a walk are unchanged (cm a frame against km).
 - **Review 21 (2026-10-01):** **Sunset ground shadows** (`cloudGroundShadowV2`): the low stretch takes as many steps as
   keep them <= 2.5 km (20-60, read at 1.2x the step, <= 3 km). At a 0.3 deg Sun the stretch is ~200 km and a 1-km cloud's
   height band holds the ray for ~190 km: at 20 steps of ~10 km each step that landed on a small cumulus drew its own disc,
