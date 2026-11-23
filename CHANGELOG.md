@@ -294,6 +294,13 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   makes branches and leaders purple, an indigo glow in the air around the channel, and far strokes warmed by the
   air between. "Lightning glow colour" (Settings > Weather > Lightning) runs from the earlier near-white stroke (0)
   through the physical colours (1) to stronger ones (2).
+  Storms flash as often as real ones of their kind: an ordinary cell a few times a minute, a multicell cluster
+  about ten, a supercell thirty-odd, a squall line or a storm complex tens across the whole system (every tower
+  used to flash about once a minute whatever its storm). About 30% of an ordinary storm's flashes reach the
+  ground, 12% of a supercell's (still several strokes a minute): "Cloud-to-ground share" (Settings > Weather >
+  Lightning) sets it. Flashes away from the towers are back (the "Lightning rate: storms" slider had stopped
+  doing anything). The two rate sliders now default to 3.0 and 1.0; if yours were raised to see more lightning,
+  set them back there.
 - **Rainbows, halos and ice optics** for the Sun or the Moon: rainbows at storms, 22-degree halos, sundogs, the
   circumzenithal arc, sun pillars.
 - **Ice halos are ray-traced through real crystals.** The halos of cirrus, snow and diamond dust come from a table

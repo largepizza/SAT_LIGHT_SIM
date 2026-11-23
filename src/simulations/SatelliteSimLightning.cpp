@@ -361,6 +361,20 @@ void SatelliteSim::updateLightningBolts()
     GpuBoltFlash *outF = (GpuBoltFlash *)boltFlashMapped;
     GpuBoltSeg *outS = (GpuBoltSeg *)boltSegMapped;
     std::vector<std::vector<float>> injectedRecs;
+    // Harness `lightning stats`: the sim time this frame added (a jump is not counted).
+    float statDt = 0.0f;
+    bool segDropped = false;
+    if (boltStatsOn_)
+    {
+        const double d = boltStatsLast_ >= 0.0 ? now - boltStatsLast_ : 0.0;
+        statDt = (d > 0.0 && d < 5.0) ? (float)d : 0.0f;
+        boltStatsLast_ = now;
+        boltStatsSimS_ += (double)statDt;
+        ++boltStatsFrames_;
+        boltStatsMaxList_ = std::max(boltStatsMaxList_, n);
+        if (n >= kCv2FlashMax)
+            ++boltStatsCapFrames_;
+    }
     auto addFlash = [&](const float *e) {
         if (boltFlashCount >= kBoltMaxFlashes)
             return;
@@ -411,8 +425,13 @@ void SatelliteSim::updateLightningBolts()
         BoltTree &t = it->second;
         t.lastFrame = boltFrame;
         boltDrawSegs(t, eye, pixAng);
+        if (boltStatsOn_ && id < 0xF0000000u)
+            boltStatNote(e, t, now, statDt, eye);
         if (boltSegCount + (uint32_t)t.draw.size() > kBoltMaxSegs)
+        {
+            segDropped = true;
             return;
+        }
 
         const uint32_t slot = boltFlashCount++;
         GpuBoltFlash &F = outF[slot];
@@ -552,6 +571,108 @@ void SatelliteSim::updateLightningBolts()
     boltGroundAsk(up * 6371000.0, E, N, up);
     // The cloud around the nearest emitters (this frame's bakes: recordFlashVolumes, inside recordCloudsV2).
     boltLightAssign(outF, eye);
+    if (boltStatsOn_)
+    {
+        boltStatsMaxSegs_ = std::max(boltStatsMaxSegs_, boltSegCount);
+        boltStatsMaxWants_ = std::max(boltStatsMaxWants_, (uint32_t)boltLightWants_.size());
+        boltStatsMaxThunder_ = std::max(boltStatsMaxThunder_, (uint32_t)thunderSources_.size());
+        if (segDropped)
+            ++boltStatsSegDropFrames_;
+    }
+}
+
+// Harness `lightning stats`: one flash of this frame's list. New ids get a row (the storm whose tower stands nearest
+// its origin, the record's own numbers); every frame adds what was lit and, for a ground stroke, how much of its
+// descent below the cloud projects inside the frame (the channel's vertices through the camera: nothing of the rain or
+// the cloud in front, which only a capture shows).
+void SatelliteSim::boltStatNote(const float *e, const BoltTree &t, double now, float dtS, const glm::dvec3 &eye)
+{
+    auto it = boltStats_.find(t.id);
+    if (it == boltStats_.end())
+    {
+        if (boltStats_.size() >= 100000)
+            return;
+        BoltStat s;
+        s.id = t.id;
+        s.kind = t.kind;
+        // (The list is the PREVIOUS frame's: its ages were taken at that frame's sim time, this frame's less its step;
+        // at 10x a frame is 0.2-0.3 s of sim time, a stroke's length. `lightning goto ... sync=1` makes it exact.)
+        s.startS = now - (double)dtS - (double)e[10];
+        s.dur = e[15];
+        s.strength = e[14];
+        s.base = e[12];
+        s.top = e[13];
+        s.distKm = e[11] / 1000.0f;
+        s.originEcef = glm::normalize(glm::dvec3(e[16], e[17], e[18])) * (6371000.0 + (double)e[19]);
+        s.groundEcef = t.kind == 1 ? glm::normalize(glm::dvec3(e[20], e[21], e[22])) * (6371000.0 + (double)e[23]) : s.originEcef;
+        // The storm: the tower (map frame, turned to Earth-fixed by the drift now) nearest the origin.
+        const double ph = cloudDriftPhase(), c = std::cos(ph), sn = std::sin(ph);
+        const glm::dvec3 od = glm::normalize(s.originEcef);
+        double best = -2.0;
+        for (const wx::Tower &tw : stormTowers)
+        {
+            if (tw.strength <= 0.0f)
+                continue;
+            const glm::dvec3 d = tw.dir;
+            const double dot = (d.x * c + d.y * sn) * od.x + (-d.x * sn + d.y * c) * od.y + d.z * od.z;
+            if (dot > best)
+            {
+                best = dot;
+                s.stormId = tw.stormId;
+                s.stormKind = (int)tw.kind;
+            }
+        }
+        if (best > -1.5)
+            s.towerKm = (float)(std::acos(std::clamp(best, -1.0, 1.0)) * 6371.0);
+        it = boltStats_.emplace(t.id, s).first;
+    }
+    BoltStat &s = it->second;
+    ++s.frames;
+    const float I = e[3];
+    s.peakI = std::max(s.peakI, I);
+    if (I >= 0.05f)
+    {
+        ++s.litFrames;
+        s.litS += dtS;
+    }
+    // (The projection on every frame of the flash, lit or not: at 10x a stroke's lit frames can fall between frames.)
+    if (t.kind != 1 || !ctx_)
+        return;
+    const glm::dvec3 up = glm::normalize(eye);
+    const glm::dvec3 E = glm::normalize(glm::cross(glm::dvec3(0.0, 0.0, 1.0), up)), N = glm::cross(up, E);
+    const float W = (float)ctx_->swapExtent.width, H = (float)ctx_->swapExtent.height;
+    float in = 0.0f, all = 0.0f;
+    for (const bolt::Path &pth : t.tree.paths)
+    {
+        if (!(pth.flags & bolt::kTrunk) || pth.count < 2)
+            continue;
+        // (Every 4th vertex: pieces of ~20-80 m, a pixel or two from a few km.)
+        bool have = false;
+        float px = 0.0f, py = 0.0f;
+        for (uint32_t k = 0; k < pth.count; k += (k + 4 < pth.count ? 4 : 1))
+        {
+            const glm::vec3 lp = t.tree.verts[pth.first + k].p;
+            const glm::dvec3 w = t.originEcef + t.t1 * (double)lp.x + t.t2 * (double)lp.y + t.up * (double)lp.z - eye;
+            const glm::vec3 enu((float)glm::dot(w, E), (float)glm::dot(w, N), (float)glm::dot(w, up));
+            float x = 0.0f, y = 0.0f;
+            const bool ok = projectSkyDirToScreen(enu, W, H, x, y);
+            if (ok && have)
+            {
+                const float len = std::hypot(x - px, y - py);
+                all += len;
+                const float mx = 0.5f * (x + px), my = 0.5f * (y + py);
+                if (mx >= 0.0f && mx < W && my >= 0.0f && my < H)
+                    in += len;
+            }
+            have = ok;
+            px = x;
+            py = y;
+            if (k + 1 >= pth.count)
+                break;
+        }
+    }
+    s.trunkPx = std::max(s.trunkPx, in);
+    s.trunkPxAll = std::max(s.trunkPxAll, all);
 }
 
 // ── The flashes' light volumes (flash_volume.glsl; the members' note in SatelliteSim.h) ─────────────────────────────
