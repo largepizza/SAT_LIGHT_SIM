@@ -453,6 +453,29 @@ terrain_detail.glsl first; invariants and the reasons behind them:
   (`clouds_v2.sky_ap 0`) or the fog knocked out; the sky TAA softens them to 1-px ramps while the history holds. No
   coarse layer prints its grid there. The 2-px steps along a ridge against flash-lit cloud were the flashes' light
   (clouds.md "Lightning as LIGHT", "At a ridge").
+- **Edge coverage (TERRAIN_EDGES_PLAN phase 1.1, 2026-11-23, wave c26):** with the sky TAA on, every silhouette pixel
+  carries the march's own coverage, so an edge is a 1-px ramp on EVERY frame (no history: motion, a flash, the first
+  frame), not only once the TAA has accumulated jitter. `sat_sky.frag -DSKY_TAA` (both march variants), for a ray that
+  missed, or hit something 15% farther than the nearest surface round it (`tNear`, the seed's half-res minimum): how
+  closely it passed over that surface (`tdEdgeCoverage`, terrain_detail.glsl: the smallest TRUE gap / footprint along
+  the ray past tNear; 32 points two footprints apart, then a 6-step golden section round the best, one inlined
+  height call). The march counts a pass within one footprint as a hit, so its silhouette is the e = 1 line and the
+  pixel stores e - 1 (in this render's pixels when upscaling) in the colour alpha, 0.98-0.995, where it is < 1.
+  `sky_taa.comp` (`edgeBlend`, both the 100% and the upscaling path) blends such a sample toward its world-down
+  neighbour (the camera's ENU up projected at that pixel, nearest of eight) by 1 - e. The shared march is unchanged.
+  Measured (Chamonix, 1920 x 1009, the user's settings): the pixel above view b's ridge, median e 1.26 with the
+  64-footprint window (86% under 2), the pixel above that 2.4: one footprint per row. Whole-frame mean |diff| against
+  the shipped build is at the A-vs-A floor (b 0.88 vs 1.10, c 2.00 vs 2.59, d 0.76 vs 0.80); `tstab.py` walk 0.99 ->
+  1.01, pitch 1.04 -> 1.02. Cost (GPU frame, 3 interleaved reps, RTX 3070 Ti): ground view b 28.66 -> 28.82 ms (sky
+  pass +0.06), 10 km view d 36.22 -> 36.47; the sky TAA fragment went from 255 to 168 registers with it (view c, a
+  grazing slope, 29.40 -> 28.07: that is the allocation, not the feature). Dead ends: candidates taken from the march's samples (they are up to 1.5% of t apart and
+  mostly LOWER BOUNDS that subtract the detail's amplitude, so the "closest pass" was another bump: 75% of the
+  silhouette unmarked); halving / golden searches from the bracket's ends (the gap is bumpy at the footprint's scale:
+  2-7 footprints next to the edge); a 20-footprint window (the crest lies tens of footprints past tNear: median 1.67);
+  refining inside the march's two step sites (+23% code, +10 ms: keep it one call site after the march); every grazing
+  bump on a slope counted (blurred the whole slope one pixel: hence the 15% rule). Not covered: TAA off (the plain
+  `sat_sky.frag` draws straight to the screen, no pass reads a neighbour) and Planetarium (SKY_LITE has no terrain
+  march: its Earth is the flat textured sphere).
 - **Night and ambient light (terrain v2 P1, 2026-09-29, `.plans/TERRAIN_V2_PLAN.md`):** the night map
   is a Black Marble composite with a BLUE base under every texel (land sRGB ~(12,13,25)); used as the
   terrain's emission it out-shone full-moon ground and made the night side a flat blue 5 km texture.

@@ -443,6 +443,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   roads, rooftops, yards and tree crowns by day, nine regional styles; distant cities glitter as fields of crisp
   points; cities stop at the foot of the mountains. **Farmland** in regional styles and **solar parks** at the
   Reflect Orbital target sites (glinting the Sun and the beams).
+- **Smoother mountain silhouettes.** With the sky TAA on, a ridge against the sky or a farther ridge is anti-aliased
+  from the terrain's own geometry on every frame, also while moving, turning or during a lightning flash (before, the
+  edges only smoothed once the view had been still for a moment). Costs ~0.2 ms.
 
 ### Satellites and photometry
 

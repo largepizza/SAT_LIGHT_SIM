@@ -322,6 +322,9 @@ layout(location = 1) out float outDepthCopy;
 // the shared header now. terrain.glsl brings the DEM decode + observer-frame helpers.
 #include "common.glsl"
 #include "terrain.glsl"
+#if defined(SKY_TAA) && !defined(SKY_ENV)
+#define TD_EDGE_AA   // a near crest's coverage of this pixel, for sky_taa.comp (terrain_detail.glsl tdEdgeCoverage)
+#endif
 #include "terrain_detail.glsl" // procedural 3D terrain detail + the shared march
 #include "atmosphere.glsl" // line-of-sight extinction (atmExtinctionMag)
 #include "darksky.glsl"   // dark-sky exposure gate (Milky Way / zodiacal)
@@ -3990,6 +3993,9 @@ void main() {
 #define MARCH_OUT
 #endif
     MARCH_OUT float tHit      = -1.0;
+#ifdef TD_EDGE_AA
+    float edgeE = 1e30;   // terrain edge coverage: the closest crest pass, in pixel footprints (terrain_detail.glsl)
+#endif
     float tSeaLvl   = (tBase.x > 0.0) ? tBase.x : -1.0;
     // Terrain v2 P2: a LAKE hit (the march met a water body's flat surface above sea level, see
     // terrain.glsl waterAdjustHeight) takes the ocean path at its own level: tSeaLvl becomes the
@@ -4080,6 +4086,19 @@ void main() {
             tHit = terrainMarchDetailed(earthElevTex, earthSpecTex, hEye, dir, enuX, enuY, enuZ,
                                         tSeed, tExit, pixAngle, kTerrainMaxSteps, 1.0, false,
                                         kTdCoarseOctaves, terrainSteps);
+#ifdef TD_EDGE_AA
+            // Only where what this ray met lies well beyond the nearest surface round it (sky, sea, or terrain 15%
+            // farther; tNear: the seed's half-res minimum, undone). On a slope seen at a grazing angle every bump is
+            // a crest the ray passes just before hitting the slope behind it: blending there blurred the whole slope
+            // one pixel down (view c, mean |diff| 3.1 over the slope, 2026-11-23).
+            float tNear = (tSeed + 0.5) / 0.995;
+            if (tSeed > 2.0 && (tHit < 0.0 || tHit > 1.15 * tNear))
+                // (e - 1: the march's silhouette is the e = 1 line, a pass within one footprint being a hit; then in
+                // THIS render's pixels, which sky_taa.comp's neighbour is one of: larger than pixAngle's output
+                // pixel when upscaling)
+                edgeE = max(tdEdgeCoverage(earthElevTex, earthSpecTex, hEye, dir, enuX, enuY, enuZ, tNear, pixAngle) - 1.0, 0.0)
+                      * pixAngle / max(pc.fovYRad / max(cloud.skyScreenH, 1.0), 1e-9);
+#endif
             // Review 9: a ray that ends ON the sea sphere over LAND is a terrain hit there. Land can read
             // 0 m (the Lena delta: DEM 0 where the water map says land), and whether the march landed on the
             // sphere or passed it was step-size luck — terrain shading on some pixels, the flat sea-level
@@ -8743,6 +8762,13 @@ void main() {
     // under a deck were on these pixels, not on sky-depth ones).
     // (0.875, the moving-object marker above, wins: sky_taa.comp's ranges are 0.77-0.83 and 0.85-0.95.)
     if (tHit < 0.0 && tSeaLvl < 0.0 && !meshHit && tCloudOcclude >= 0.0 && !terrainDebugActive && outColor.a != 0.875) outColor.a = 0.8;
+#ifdef TD_EDGE_AA
+    // 0.98-0.995 = a terrain EDGE pixel (TERRAIN_EDGES_PLAN 1.1): this ray passed the nearest crest round it within
+    // e < 1 pixel of the march's silhouette (edgeE, terrain_detail.glsl tdEdgeCoverage); sky_taa.comp blends it toward
+    // its world-down neighbour, which sees that crest, by 1 - e. Only on otherwise unmarked pixels (alpha 1).
+    if (outColor.a == 1.0 && edgeE < 1.0 && !terrainDebugActive)
+        outColor.a = 0.98 + 0.015 * edgeE;
+#endif
 #endif
 #endif
 }

@@ -301,6 +301,11 @@ see the last bullets), `recordPrePass` → `recordSkyTaa`:
   every sample of a 3x3 that holds a mesh sample at the full-resolution texel under its centre (`meshNb`). Placed
   jittered, a model with no usable history (one the camera rides with) wobbled by the frame's jitter, up to 0.75
   output px at 67% (satellites.md, "Steady while the camera rides with a model").
+- **Terrain edge samples (2026-11-23, wave c26):** alpha 0.98-0.995 marks a pixel a terrain silhouette crosses,
+  (a - 0.98) / 0.015 = its distance to the silhouette in pixels (terrain.md "Edge coverage"); `edgeBlend` mixes the
+  sample toward its world-down neighbour by 1 - that, before the neighbourhood statistics, in both the 100% and the
+  upscaling paths. The Moon's range (0.975) narrowed to 0.96-0.978 to make room; its crop at the limb is at the
+  reload-to-reload floor (mean 0.12-0.21 levels either way).
 - Run with `VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation` after touching any of this; the harness run's
   `app_stdout.txt` holds the messages. `scripts/sky_taa.satcmd` (set `display.sky_taa` with `true`/`false`).
 
