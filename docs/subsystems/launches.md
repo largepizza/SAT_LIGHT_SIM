@@ -1041,8 +1041,8 @@ launches follow per-program cadences (no real manifest).
       point nearer than 400 m) short of the lit point, and the point's own cloud is the pixel's (3, below).
       `fvOdFine` reads an engine light's slot, which holds, beside the depth (red, as a flash's), the TRANSMITTANCE
       e^-depth (green) and where along each distance step the step's depth is centred (blue); an engine light's bake
-      (job `up.w` 1) reads each step at 6 places, not 1-2, without the per-direction jitter, and a flash's slot is
-      written as it was (green its own cloud's depth, blue 0). Texel k is the end of step k, r = 24 km x ((k + 0.5) /
+      (job `up.w` 1) reads each step at 6 places, not 1-2, without the per-direction jitter (since 2026-11-22 a flash's
+      slot is baked and read the same way: clouds.md "Lightning as LIGHT", issue_20261122_213848). Texel k is the end of step k, r = 24 km x ((k + 0.5) /
       16)^2. Over the directions the transmittances are blended, not the depths (directions are 5.6 / 11 deg apart:
       with a light 1 km above a deck, the mean depth of a direction that passes over the deck and one that has been
       inside it for kilometres is a shadow that is not there; from 300 km the lit patch ended in a dark band 9-13 km

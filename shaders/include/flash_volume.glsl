@@ -20,20 +20,16 @@ const int   kFvSlots = 16;        // emitters with a volume
 const float kFvRmax  = 24000.0;   // m: beyond it the depth stays what it was there
 
 #ifdef FV_SAMPLER
-// x the optical depth from slot's emitter to the point v from it (v in the flash's frame: x t1, y t2, z up; r = |v|),
-// y the depth of the emitter's own cloud along that direction. (The emitter's N: fvN.)
-vec3 fvAt(uint slot, vec3 v, float r)
-{
-    vec3  d = v / max(r, 1.0);
-    float u = atan(d.y, d.x) * (1.0 / 6.2831853);                                   // (the sampler wraps it)
-    float e = clamp(asin(clamp(d.z, -1.0, 1.0)) * (1.0 / 3.14159265) + 0.5, 0.5 / float(kFvE), 1.0 - 0.5 / float(kFvE));
-    float s = clamp(sqrt(min(r / kFvRmax, 1.0)) * float(kFvR), 0.5, float(kFvR) - 0.5);
-    return textureLod(FV_SAMPLER, vec3(u, e, (float(slot) * float(kFvR) + s) / float(kFvSlots * kFvR)), 0.0).rgb;
-}
-// An engine light's read (2026-11-22, issue_20261122_105107; lightning.frag engineLightAt). Its slots hold, beside the
-// depth (r), the TRANSMITTANCE e^-depth (g) and where along each distance step the step's depth is centred (b, 0 .. 1);
+// The optical depth from slot's emitter to the point v from it (v in the light's frame: x t1, y t2, z up; r the
+// distance to read at). One read for both kinds of light (2026-11-22: an engine light's, issue_20261122_105107,
+// lightning.frag engineLightAt; a flash's since issue_20261122_213848, boltLightAt, which read the depth bilinearly and
+// drew the directions as facets and a starburst round the emitter). Every slot holds, beside the depth (r), the
+// TRANSMITTANCE e^-depth (g) and where along each distance step the step's depth is centred (b, 0 .. 1);
 // texel k is the end of step k, r = kFvRmax ((k + 0.5) / kFvR)^2 (cloud_v2_flashvol.comp's u1).
-//   Over the directions the transmittances are blended, not the depths (the depth returned is -ln of the blend): the
+//   meanDepth (a flash's read) blends the DEPTHS over the directions, linear in sqrt(r) between the steps' ends, as
+// its bilinear read did (blended as transmittances, a flash inside a tower read the open directions round it and lit
+// the whole tower near white).
+//   Otherwise (an engine light's) the transmittances are blended, not the depths (the depth returned is -ln of the blend): the
 // directions are 5.6 / 11 deg apart, and where one passes over a deck and the next has been inside it for kilometres
 // (a light 1 km above a deck, the deck 10 km off) the mean of their depths is a shadow that is not there (from 300 km
 // the lit patch ended in a dark band 9-13 km out), while the light that reaches the point is the share of the
@@ -42,7 +38,7 @@ vec3 fvAt(uint slot, vec3 v, float r)
 // light drew them, straight wedges and patch outlines on a deck lit through from the other side.
 //   Along the distance the depth rises from the step's start to its end over the stretch about its centre (the whole
 // step for 0.5, its last fifth for 0.9), eased in where the cloud begins inside the step and out where it ends there.
-float fvOdFine(uint slot, vec3 v, float r)
+float fvOdFine(uint slot, vec3 v, float r, bool meanDepth)
 {
     vec3  d  = v / max(length(v), 1.0);   // (r may be short of |v|: the caller's)
     vec2  p  = vec2(fract(atan(d.y, d.x) * (1.0 / 6.2831853)) * float(kFvA),
@@ -54,20 +50,26 @@ float fvOdFine(uint slot, vec3 v, float r)
     float sb = sqrt(min(r / kFvRmax, 1.0)) * float(kFvR);
     int   k  = clamp(int(sb + 0.5), 0, kFvR - 1);
     float zn = 1.0 / float(kFvSlots * kFvR), z1 = (float(int(slot) * kFvR + k) + 0.5) * zn;
-    vec2  a  = g0.x * g0.y * textureLod(FV_SAMPLER, vec3(h0.x, h0.y, z1), 0.0).gb + g1.x * g0.y * textureLod(FV_SAMPLER, vec3(h1.x, h0.y, z1), 0.0).gb +
-               g0.x * g1.y * textureLod(FV_SAMPLER, vec3(h0.x, h1.y, z1), 0.0).gb + g1.x * g1.y * textureLod(FV_SAMPLER, vec3(h1.x, h1.y, z1), 0.0).gb;
-    float t0 = 1.0;
+    vec4  q  = g0.x * g0.y * textureLod(FV_SAMPLER, vec3(h0.x, h0.y, z1), 0.0) + g1.x * g0.y * textureLod(FV_SAMPLER, vec3(h1.x, h0.y, z1), 0.0) +
+               g0.x * g1.y * textureLod(FV_SAMPLER, vec3(h0.x, h1.y, z1), 0.0) + g1.x * g1.y * textureLod(FV_SAMPLER, vec3(h1.x, h1.y, z1), 0.0);
+    vec2  a  = vec2(meanDepth ? q.r : q.g, q.b);
+    float t0 = meanDepth ? 0.0 : 1.0;
     if (k > 0) {
         float z0 = z1 - zn;
-        t0 = g0.x * g0.y * textureLod(FV_SAMPLER, vec3(h0.x, h0.y, z0), 0.0).g + g1.x * g0.y * textureLod(FV_SAMPLER, vec3(h1.x, h0.y, z0), 0.0).g +
-             g0.x * g1.y * textureLod(FV_SAMPLER, vec3(h0.x, h1.y, z0), 0.0).g + g1.x * g1.y * textureLod(FV_SAMPLER, vec3(h1.x, h1.y, z0), 0.0).g;
+        vec4  q0 = g0.x * g0.y * textureLod(FV_SAMPLER, vec3(h0.x, h0.y, z0), 0.0) + g1.x * g0.y * textureLod(FV_SAMPLER, vec3(h1.x, h0.y, z0), 0.0) +
+                   g0.x * g1.y * textureLod(FV_SAMPLER, vec3(h0.x, h1.y, z0), 0.0) + g1.x * g1.y * textureLod(FV_SAMPLER, vec3(h1.x, h1.y, z0), 0.0);
+        t0 = meanDepth ? q0.r : q0.g;
     }
-    float od0 = -log(clamp(t0, 1e-7, 1.0)), od1 = max(-log(clamp(a.x, 1e-7, 1.0)), od0);
+    float od0 = meanDepth ? t0 : -log(clamp(t0, 1e-7, 1.0));
+    float od1 = max(meanDepth ? a.x : -log(clamp(a.x, 1e-7, 1.0)), od0);
     float uA = max(float(k) - 0.5, 0.0) / float(kFvR), uB = (float(k) + 0.5) / float(kFvR);
     float x  = clamp((r - kFvRmax * uA * uA) / (kFvRmax * (uB * uB - uA * uA)), 0.0, 1.0);
     float xa = max(2.0 * a.y - 1.0, 0.0), xb = min(2.0 * a.y, 1.0);
     float xn = clamp((x - xa) / max(xb - xa, 0.05), 0.0, 1.0);
     float pr = mix(mix(xn, xn * xn * (2.0 - xn), smoothstep(0.5, 0.6, a.y)), xn * (1.0 + xn - xn * xn), smoothstep(0.5, 0.4, a.y));
+    // (a flash: linear in sqrt(r) between the steps' ends, as its bilinear read was; eased about the step's centre of
+    // depth, the steps' ends drew rings round an emitter seen through its own cloud)
+    if (meanDepth) pr = clamp(sb - float(k) + 0.5, 0.0, 1.0);
     return od0 + (od1 - od0) * pr;
 }
 // The emitter's N (cloud_v2_flashvol.comp writes it to the alpha of its slot's first texel).

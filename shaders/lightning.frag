@@ -69,7 +69,10 @@ float boltLightAt(uint slot, BoltFlash F, vec3 em, vec3 C, vec3 dir, float op, f
     vec3  v  = C - em;
     float r  = max(length(v), 1.0);
     vec3  vl = vec3(dot(v, F.t1.xyz), dot(v, F.t2.xyz), dot(v, F.u.xyz));
-    float od = fvAt(slot, vl, r).x;
+    // (the depths blended over the directions by a cubic B-spline, eased inside each distance step: fvAt's bilinear
+    // blend of a jittered bake drew the volume's 32 x 32 directions as facets and a starburst round the emitter,
+    // issue_20261122_213848)
+    float od = fvOdFine(slot, vl, r, true);
     float N  = min(fvN(slot), bl.tune2.x);
     float cosB = -dot(v, dir) / r;
     return boltGlow(r) * bl.tune.w * boltCloudShade(od, N, cosB, r, op, -log(max(1.0 - op, 1e-3)), wD, bl.tune.z, bl.tune.y, bl.tune.x);
@@ -92,7 +95,7 @@ float engineOd(uint s, vec3 C)
     float rv = length(v);
     vec3  t1 = bl.fvT1[s].xyz, t2 = bl.fvT2[s].xyz;
     // (short by elTune.z, by half the way for a point nearer than twice that: the cloud round a light inside one counts)
-    return fvOdFine(s, vec3(dot(v, t1), dot(v, t2), dot(v, cross(t1, t2))), rv - min(bl.elTune.z, 0.5 * rv));
+    return fvOdFine(s, vec3(dot(v, t1), dot(v, t2), dot(v, cross(t1, t2))), rv - min(bl.elTune.z, 0.5 * rv), false);
 }
 // The depth of the pixel's own cloud for an engine light, FLAT over the composite's last few per cent of
 // transmittance. Those are not a depth (where the march stopped, which tile it ran in), and -ln of them is 3 .. 6.9:

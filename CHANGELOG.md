@@ -290,6 +290,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   heading down and forking as they go; spider lightning crawls and forks under the cloud base. A flash lights
   the clouds through the cloud around it: a flash inside a storm glows through its thin sides and edges, a
   stroke under the base lights the base and the rain, and a flash behind a tower no longer lights the side you see.
+  The light on the cloud is smooth (no faceted patches or starburst round a spider's fronts), and flying fast at a
+  storm no longer shows a black disc at the screen centre during a flash.
   Strokes have the colours of a photograph: a core that is white only where it is brightest, a violet sheath that
   makes branches and leaders purple, an indigo glow in the air around the channel, and far strokes warmed by the
   air between. "Lightning glow colour" (Settings > Weather > Lightning) runs from the earlier near-white stroke (0)
