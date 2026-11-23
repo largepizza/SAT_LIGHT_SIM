@@ -2213,6 +2213,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         // 2 x 2 grid's held pixel, as before.
         constexpr int kOrbitQuietFrames = 64;
         bool orbitBlock = false;
+        bool orbitTurnCap = false;   // the turn budget's block: the accumulation cap follows the turn (below)
         {
             const int    blkOrbit = std::clamp((int)std::lround(cv2SparseBlockOrbit), 2, 4);
             const float  pixAngC  = 2.0f * tanHalf / (float)std::max(cv2HalfH, 1u);
@@ -2229,13 +2230,100 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             // moves, turns or zooms, 8 frames after the history became valid. Softer in motion (above), ~-10 ms in boosted flight.
             const bool   moving   = cv2SparseBlockOrbitMoving > 0.5f && valid && cv2HistoryValid
                                     && eyeH > (double)cv2FullRateAboveKm * 1000.0;
+            // THE TURN BUDGET (2026-11-22, issue_20261122_114811; "orbit_gate" 1, 0 = the gate above exactly). The gate above
+            // counts FRAMES and any turn past 0.3 pixel a frame zeroes the count: in the first-person camera one mouse pixel
+            // (1.9 cloud-grid pixels at a 46 deg field) cost the 2 x 2 grid for 64 frames, 3.7 s at the 17 fps it then ran
+            // at (+13 ms a frame). Three kinds of motion, by what the history loses to them (measured at the issue's view,
+            // qa/waves/20261122/evidence/c13, clouds.md "THE ORBIT BLOCK"):
+            //  A TURN reprojects exactly. Up to orbit_turn_px_s cloud-grid pixels a second and orbit_turn_px_frame a frame
+            //   the block stays on (the strip a turn uncovers takes nine frames to fill: its width is nine frames' turn).
+            //   What a turn above that owes is counted in pixels and drains at the limit; past orbit_burst_px the block is
+            //   off (the 2 x 2 grid's held pixel, as before) until the view has not turned for orbit_wait_frames frames
+            //   and orbit_wait_s seconds. A nudge or a flick under the burst costs nothing.
+            //  While it turns with the block on, the resolve's accumulation cap (cv2.samp.x) comes down to
+            //   orbit_turn_accum: a pixel's own ray comes every ninth frame, and at the still cap (32: 3% of a ray) the
+            //   eight Catmull-Rom resamples between them compounded over ~300 frames -- 0.6 levels softer than the 2 x 2
+            //   grid after 2 s of a 2 deg/s turn at 60 fps; at 8 it is +0.04. One nudge does not bring it down (the load
+            //   below: turning frames, forgotten over 32), and a still frame has the still cap: a pixel's age grows back by itself.
+            //  A JUMP (no history), an eye step or a time-warp slide past the old tenth of a pixel a frame: the history is
+            //   not this view's, and the Sun volume and the clipmap refill under it. orbit_jump_frames frames (64, the old
+            //   count: frames after identical jumps are 1.4 to 3.2 levels from settled at +60, in two modes, whatever the
+            //   block does; no shorter wait could be shown to be as good).
+            //  A ZOOM resamples the history at another scale: orbit_zoom_frames frames and orbit_wait_s seconds (after a
+            //   1.5x zoom in, 120 frames on: 16 frames' wait +0.11 levels against 48, 32 +0.04).
+            if (cv2OrbitGate > 0.5f)
+            {
+                const bool   high  = eyeH > (double)cv2FullRateAboveKm * 1000.0;
+                const bool   hist  = valid && cv2HistoryValid;
+                double fro2 = 0.0;   // |R - R'|_F = 2 sqrt(2) sin(angle / 2)
+                for (int c = 0; c < 3; ++c)
+                    for (int r = 0; r < 3; ++r)
+                    {
+                        const double d = (double)cpc.skyView[c][r] - (double)cv2PrevSkyView[c][r];
+                        fro2 += d * d;
+                    }
+                const double turnPx   = 2.0 * std::asin(std::min(1.0, std::sqrt(fro2 / 8.0))) / (double)pixAngC;
+                const bool   turnNow  = turnPx > 0.3;   // (the old gate's "turning": under it the history resamples nearly in place)
+                const bool   zoom     = std::abs(tanHalf - cv2PrevTanHalf) > 1e-5f;
+                const double dtG      = std::clamp((double)skyTaaFrameDt, 0.0, 0.1);   // (a hitch is not a second of settling)
+                const double waitS    = std::max((double)cv2OrbitWaitS, 0.0);
+                const double lim      = std::min((double)cv2OrbitTurnPxS * dtG, (double)cv2OrbitTurnPxFrame);
+                if (!hist || !high || quietPx >= 0.1)
+                {
+                    cv2OrbitSinceJumpFrames = 0;
+                    cv2OrbitSinceZoomFrames = 100000;
+                    cv2OrbitSinceZoomS = 1000.0f;
+                    cv2OrbitDebtPx = 0.0f;
+                    cv2OrbitOver = false;
+                    cv2OrbitStillFrames = 0;
+                    cv2OrbitStillS = 0.0f;
+                    cv2OrbitTurnLoad = 0.0f;
+                }
+                else
+                {
+                    cv2OrbitSinceJumpFrames = std::min(cv2OrbitSinceJumpFrames + 1, 100000);
+                    cv2OrbitSinceZoomFrames = zoom ? 0 : std::min(cv2OrbitSinceZoomFrames + 1, 100000);
+                    cv2OrbitSinceZoomS = zoom ? 0.0f : std::min(cv2OrbitSinceZoomS + (float)dtG, 1000.0f);
+                    cv2OrbitDebtPx = (float)std::max((double)cv2OrbitDebtPx + turnPx - lim, 0.0);
+                    if ((double)cv2OrbitDebtPx > (double)cv2OrbitBurstPx)
+                        cv2OrbitOver = true;
+                    cv2OrbitStillFrames = turnNow ? 0 : std::min(cv2OrbitStillFrames + 1, 100000);
+                    cv2OrbitStillS = turnNow ? 0.0f : std::min(cv2OrbitStillS + (float)dtG, 1000.0f);
+                    if (cv2OrbitOver && cv2OrbitStillFrames >= (int)std::lround(cv2OrbitWaitFrames) && (double)cv2OrbitStillS >= waitS)
+                    {
+                        cv2OrbitOver = false;
+                        cv2OrbitDebtPx = 0.0f;
+                    }
+                    cv2OrbitTurnLoad = cv2OrbitTurnLoad * (1.0f - 1.0f / 32.0f) + (turnNow ? 1.0f : 0.0f);
+                }
+                cv2OrbitTurnPxNow = (float)turnPx;
+                const bool settled = hist && high && quietPx < 0.1 && !zoom && !cv2OrbitOver &&
+                                     cv2OrbitSinceJumpFrames >= (int)std::lround(cv2OrbitJumpFrames) &&
+                                     cv2OrbitSinceZoomFrames >= (int)std::lround(cv2OrbitZoomFrames) &&
+                                     (double)cv2OrbitSinceZoomS >= waitS;
+                cv2OrbitQuietFrames = (hist && high) ? std::min(cv2OrbitQuietFrames + 1, 1000) : 0;
+                if (blkOrbit > blk && (settled || (moving && cv2OrbitQuietFrames >= 8))) { blk = blkOrbit; orbitBlock = true; stillBlock = false; }
+                orbitTurnCap = settled && turnNow;   // (only on a turning frame: once still, a pixel's age grows back by itself)
+            }
+            else
+            {
             cv2OrbitQuietFrames = (quiet || moving) ? std::min(cv2OrbitQuietFrames + 1, 1000) : 0;
             if (blkOrbit > blk && cv2OrbitQuietFrames >= (moving ? 8 : kOrbitQuietFrames)) { blk = blkOrbit; orbitBlock = true; stillBlock = false; }
+            }
         }
         cv2SparseBlockNow = (cv2FullResActive() && !cv2FullRateNow && !cv2HalfRateNow && !cv2AdaptiveNow) ? (uint32_t)blk : 2u;
         stillBlock = stillBlock && cv2SparseBlockNow > 2;
         orbitBlock = orbitBlock && cv2SparseBlockNow > 2;
         cv2OrbitBlockNow = orbitBlock;
+        // The turning block's accumulation cap (above): from the still cap at a load of 2 turning frames to
+        // orbit_turn_accum at 8, in octaves; on turning frames only.
+        cv2OrbitAccumNow = p.samp.x;
+        if (orbitBlock && orbitTurnCap && cv2OrbitTurnAccum > 0.0f && p.samp.x > cv2OrbitTurnAccum)
+        {
+            const float k = std::clamp((cv2OrbitTurnLoad - 2.0f) / 6.0f, 0.0f, 1.0f);
+            p.samp.x = p.samp.x * std::pow(cv2OrbitTurnAccum / p.samp.x, k);
+            cv2OrbitAccumNow = p.samp.x;
+        }
     }
     // Smooth tiles (2026-10-25): with full-res clouds on the sparse grid, the tiles whose last resolved frame is smooth are
     // marched at a quarter of its density (cloud_v2_tiles.comp). Needs a history (it is classified from it), the 16x16

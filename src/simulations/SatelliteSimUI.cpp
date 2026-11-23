@@ -10252,6 +10252,15 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2SparseBlockStill = std::clamp(c.value("sparse_block_still", cv2SparseBlockStill), 2.0f, 4.0f);
         cv2SparseBlockOrbit = std::clamp(c.value("sparse_block_orbit", cv2SparseBlockOrbit), 2.0f, 4.0f);
         cv2SparseBlockOrbitMoving = std::clamp(c.value("sparse_block_orbit_moving", cv2SparseBlockOrbitMoving), 0.0f, 1.0f);
+        cv2OrbitGate = std::clamp(c.value("orbit_gate", cv2OrbitGate), 0.0f, 1.0f);
+        cv2OrbitTurnPxS = std::clamp(c.value("orbit_turn_px_s", cv2OrbitTurnPxS), 0.0f, 100000.0f);
+        cv2OrbitTurnPxFrame = std::clamp(c.value("orbit_turn_px_frame", cv2OrbitTurnPxFrame), 0.0f, 10000.0f);
+        cv2OrbitBurstPx = std::clamp(c.value("orbit_burst_px", cv2OrbitBurstPx), 0.0f, 10000.0f);
+        cv2OrbitWaitS = std::clamp(c.value("orbit_wait_s", cv2OrbitWaitS), 0.0f, 30.0f);
+        cv2OrbitWaitFrames = std::clamp(c.value("orbit_wait_frames", cv2OrbitWaitFrames), 1.0f, 1000.0f);
+        cv2OrbitJumpFrames = std::clamp(c.value("orbit_jump_frames", cv2OrbitJumpFrames), 1.0f, 1000.0f);
+        cv2OrbitZoomFrames = std::clamp(c.value("orbit_zoom_frames", cv2OrbitZoomFrames), 1.0f, 1000.0f);
+        cv2OrbitTurnAccum = std::clamp(c.value("orbit_turn_accum", cv2OrbitTurnAccum), 0.0f, 256.0f);
         cv2HistoryJumpFrac = std::clamp(c.value("history_jump_frac", cv2HistoryJumpFrac), 0.0f, 1.0f);
         cv2HistoryTimeJumpS = std::clamp(c.value("history_time_jump_s", cv2HistoryTimeJumpS), 0.0f, 600.0f);
         cv2FarLayerMinBlend = std::clamp(c.value("far_layer_min_blend", cv2FarLayerMinBlend), 0.0f, 0.5f);
@@ -11086,6 +11095,15 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"sparse_block_still", cv2SparseBlockStill},
         {"sparse_block_orbit", cv2SparseBlockOrbit},
         {"sparse_block_orbit_moving", cv2SparseBlockOrbitMoving},
+        {"orbit_gate", cv2OrbitGate},
+        {"orbit_turn_px_s", cv2OrbitTurnPxS},
+        {"orbit_turn_px_frame", cv2OrbitTurnPxFrame},
+        {"orbit_burst_px", cv2OrbitBurstPx},
+        {"orbit_wait_s", cv2OrbitWaitS},
+        {"orbit_wait_frames", cv2OrbitWaitFrames},
+        {"orbit_jump_frames", cv2OrbitJumpFrames},
+        {"orbit_zoom_frames", cv2OrbitZoomFrames},
+        {"orbit_turn_accum", cv2OrbitTurnAccum},
         {"history_jump_frac", cv2HistoryJumpFrac},
         {"history_time_jump_s", cv2HistoryTimeJumpS},
         {"far_layer_min_blend", cv2FarLayerMinBlend},
