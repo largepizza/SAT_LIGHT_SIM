@@ -779,6 +779,25 @@ Tried and dropped: the fill / mass loops out of the light march's cv2Field copy 
   (eclipse) .. 36.7 ms (500 km), the worst rows 500 km with time running (1x 45.4, 1 min/s 44.6) and storm_15km at 1 h/s
   (39.3). Settings differ from 11-10 (the baked look), and single runs carry the two speed regimes (~20%): read a
   row-level change under ~2 ms as noise.
+- **The first-ascent views and what each look option buys (2026-11-23, wave 20261122 c25; issue_20261122_190752 shot
+  1, 1517 km, and issue_20261122_213304 shot 1, 540 km; RTX 3070 Ti, 1920x1009, the shot's settings, the report's trail
+  played at 17 fps, clock 1x, 2-3 reps; evidence `qa/waves/20261122/evidence/c25/table.txt`, gitignored):** settled
+  GPU 48.9 / 44.5 ms (cloud bucket 34 / 32: march_a 25.5 / 22.7, composite 2.3 / 3.3, lightning pass 1.7 / 2.5, lut_far
+  2.0 / 0, resolve 1.9; sky pass 10.8 / 8.0). Settled savings at 1517 / 540 km: render scale 0.8 alone -3.6 / -2.5
+  (High keeps `clouds_follow_render_scale` off, so the clouds stay at full size); with the clouds following -12.6 /
+  -11.2; the 4 x 4 orbit block -9.2 / -7.8; high layer off -5.8 / -4.6 (`high_amount` 0.65: -1.2 / -1.0); light steps
+  7 -> 4 -4.2 / -2.4 (its crop within the capture floor); coverage 0.42 -6.0 / -4.2; `far_layer_min_share` 0.1 -2.8 at
+  1517 km, nothing at 540 (the pass is already off); `near_cirrus_stride` and `sparse_block_orbit_moving` nothing
+  settled. Combinations: render 0.8 + clouds following + the 4 x 4 block 29.6 / 27.9 ms; + light steps 4 28.5 / 27.3;
+  render 0.8 + following + high layer off 31.9 / 29.8; render 0.8 + following + light steps 4 33.8 / 32.2.
+  Dynamic resolution at a 30 fps target (clouds following) sits at render scale 0.55: 24.1 / 23.4 ms.
+  **The climb itself** (every frame past the 20-km history jump, ~30 km a frame at 17 fps) runs on the 2 x 2 grid at
+  63 / 61 ms whatever the cloud option: the block, the moving block and `history_jump_frac` 0.1 change it by under 2 ms.
+  Only the pixel count moves it: render 0.8 + clouds following 45 / 44 ms, dynamic resolution 34-37. The moving block
+  (`sparse_block_orbit_moving` 1) buys the first second after the stop (frames 1-16: 60.6 -> 53.4 ms at 1517 km).
+  **Harness caveat:** run.py / live.py feed a fixed dt of 1/60 a frame unless `--fixed-dt 0`, so the orbit gate's
+  seconds (c21's 1-s jump wait, `orbit_wait_s`) count 60 frames there: after a climb the 2 x 2 grid held 48-64 frames
+  at fixed dt and 16-19 frames in real time. Time the seconds after a stop with `--fixed-dt 0`.
 
 - **Planetarium's CPU frame is the launch plumes' CPU, where plumes are built (2026-11-22, issue_20261121_160405; the
   "+0.7 ms of 2026-11-21").** `harness_runs/perf_1122` put Planetarium's ground cell (Shanghai, 0 m, paused; the High and
