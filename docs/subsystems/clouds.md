@@ -936,6 +936,15 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     lighting loop ran to the highest slot any ray had. Measured (user's settings x2): shot 1 70.8 -> 63.3, shot 3
     62.3 -> 59.2, shot 5 37.7 -> 34.9, overcast deck from 6.5 km 27.0 -> 24.6, dense cumulus 2 m 17.8 -> 17.2. Images at
     the A-vs-A floor at every view.
+    **Moonlit samples go to the front too** (2026-11-22, c19 orbitperf, issue_20261122_213341: 3780 km over the night
+    side, a half Moon up): under the Moon no sample is faint (the faint path reads the Sun's transmittance volume), so
+    every moonlit sample runs its light march, and the guess (`litG`: sigma x light length >= `CV2_FAINT_OD`) put the
+    faint ones at the back of the batch, out of step with their neighbours' marches. `litG` also takes a sample whose
+    Sun is 0.06 below its horizon (past Earth's shadow edge: the Moon is its key). GPU 49.6 -> 47.1 ms at the issue's
+    view (3 interleaved reps, +-0.2), the 540-km day view unchanged, image at the A-vs-A floor (mean |diff| 0.14 / 0.23
+    against 0.21 between two captures of the old shader), 128 registers. On that view the moonlit night clouds' lighting
+    is ~11 ms of the frame (all night-side samples without a light march: 51 -> 40 ms, but the moonlit clouds change):
+    the next candidate, a look change for the user to judge.
   - **Faint stride** (`CV2_FAINT_STRIDE` 2.0 in cloud_v2_march.comp, commit 9721a8a; 1.0 = off, `-D CV2_FAINT_STRIDE=1.0`
     for an A/B; a look change, user-approved in principle). A FINE sample that is faint (sigma x light-march length under
     `CV2_FAINT_OD` 0.2: it runs no light march) stands for 2 steps. 3.0 measured within noise of 2 at most views. Measured

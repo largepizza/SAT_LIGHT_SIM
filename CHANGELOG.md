@@ -554,6 +554,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Performance
 
+- **Faster from high orbit over the night side.** Picking which lightning flashes happen walked every storm region
+  on the visible half of the Earth, storms or not; it now skips the regions with no storm (the same flashes): ~3.5 ms
+  less at 3780 km, ~2 ms at 540 km. Moonlit clouds' lighting runs in step across neighbouring pixels: ~2.5 ms less at
+  3780 km over a moonlit night side, the image unchanged. 3780 km night view 49.7 -> 43.6 ms.
 - **About 2 ms faster from low orbit above ~900 km.** The far cloud layer (the flat layer that takes over from the
   volumetric clouds from high orbit) now starts at ~1450 km instead of ~905: below that its share of the image was under
   a level while its pass cost ~2 ms (35.4 -> 33.5 ms at 1037 km, the image unchanged).

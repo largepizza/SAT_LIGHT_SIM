@@ -1231,7 +1231,12 @@ void main()
             float hV = 1.0 - pow(max(T / tE, 1e-6), aV)
                        * (1.0 - exp(-(1.0 + aV) * tS)) / ((1.0 + aV) * max(1.0 - exp(-tS), 1e-6));
             {
-                bool litG = f.thin <= 0.5 && f.sigma * cv2.light.x >= CV2_FAINT_OD;
+                // (MOONLIT SAMPLES TOO, 2026-11-22, c19 orbitperf; issue_20261122_213341, 3780 km over a half-Moon-lit night
+                // side: under the Moon no sample is faint (the faint path reads the Sun's volume), so every moonlit sample
+                // runs its light march, and the faint ones sat at the back of the batch, out of step with their
+                // neighbours'. Sun 0.06 below the sample's horizon: past Earth's shadow edge, the Moon's. GPU 49.6 -> 47.1 ms
+                // at the issue's view, a day view at 540 km unchanged, image at the A-vs-A floor, 128 registers.)
+                bool litG = f.thin <= 0.5 && (f.sigma * cv2.light.x >= CV2_FAINT_OD || dot(normalize(eye + rel), sunDir) < -0.06);
                 int  bi   = litG ? nBl : kBatch - 1 - (nB - nBl);
                 bF[bi] = f; bT[bi] = t; bTr[bi] = T / tE; bCov[bi] = covB; bW[bi] = w; bH[bi] = hV;
                 ++nB; if (litG) ++nBl;
