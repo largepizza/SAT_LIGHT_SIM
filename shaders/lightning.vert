@@ -144,7 +144,8 @@ void main()
     float u   = (vi & 1) != 0 ? Lpx + hw : -hw;
     float w   = (vi & 2) != 0 ? hw : -hw;
     vec2  px  = P0 + ax * u + ay * w;
-    gl_Position = vec4(px / scr * 2.0 - 1.0, sceneDepthFromDistance(range), 1.0);
+    // (harness `lightning color knock=1`: no depth test, the quad at depth 0)
+    gl_Position = vec4(px / scr * 2.0 - 1.0, (int(bc.wet.z + 0.5) & 1) != 0 ? 0.0 : sceneDepthFromDistance(range), 1.0);
     vLocal = vec2(u, w);
     vSeg   = vec4(Lpx, range, 0.0, kind);
 }

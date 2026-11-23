@@ -25,6 +25,14 @@
 #include <functional>
 #include <stdexcept>
 
+// Harness `lightning color knock=<bits>` (2026-11-22, wave c23): knockouts of a channel's draw, to name what hides a
+// stroke: 1 no depth test (lightning.vert draws the quad at depth 0), 2 nothing in front (the composite's visibility 1),
+// 4 the core at a fixed bright level, 8 the core drawn as a readout of what the composite says in front of it
+// (lightning.frag: r the nearest opaque texel's distance / the stroke's range / 2, g the transmittance, b the opaque
+// share; screen-blended on the sRGB target, read against the same frame without the channel). 0 = the shipped draw.
+// Not saved.
+int g_boltKnock = 0;
+
 // Pack: bits 0-6 the flash's slot, 7-8 the order (0 main .. 3 tendril), 9-20 the arc (fraction of the tree's
 // longest arc, 12 bits), 21-30 f (where along its own branch, 10 bits; a sprite's tendril: top 0 .. tip 1).
 static uint32_t boltPack(uint32_t order, float arcFrac, float f)
@@ -1507,7 +1515,7 @@ SatelliteSim::GpuBoltColour SatelliteSim::boltColourFill() const
                           std::clamp(t.sheathTaper, 0.05f, 4.0f));
     C.glow = glm::vec4(mixTo(t.glow, halo0) * (std::max(t.glowShare, 0.0f) * g1), 0.0f);
     C.glowWet = glm::vec4(mixTo(t.glowWet, halo0) * (std::max(t.wetShare, 0.0f) * g1), std::clamp(t.wetWide, 1.0f, 20.0f));
-    C.wet = glm::vec4(std::clamp(t.wetFloor, 0.0f, 1.0f), std::max(t.wetGain, 0.0f), 0.0f, 0.0f);
+    C.wet = glm::vec4(std::clamp(t.wetFloor, 0.0f, 1.0f), std::max(t.wetGain, 0.0f), (float)g_boltKnock, 0.0f);
     C.air = glm::vec4((glm::max(t.air, glm::vec3(0.0f)) - glm::vec3(1.0f)) * g, 0.0f);
     C.cloud = glm::vec4(mixTo(t.cloud, cloud0), 0.0f);
     return C;
