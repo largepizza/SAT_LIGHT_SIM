@@ -1435,8 +1435,15 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     Windows centred on the eye, or from above mid-shell at mid-shell under it (the cascade's rule: from orbit the clouds
     below sat hundreds of km off across a low Sun). Bake: from the top of the shell DOWN each ray, steps ~2 cells growing
     1.2% with distance (<= 4 an interval), the field at a quarter cell (>= 150 m), 2 sub-rays (4 on a leading edge),
-    running mean of 4; thin layers as the light march counts them (1 - 0.8 thin - mid2.z soft), rain at 15% (as the old
-    ground shadow; full rain blacked out the sea under curtains at a low Sun). Level 0: 512 rays a frame (32-frame
+    running mean of 4; thin layers as the light march counts them (1 - 0.8 thin - mid2.z soft), rain at its full extinction
+    (since wave 20261122 c20; it was 15%, inherited from review 8's ground shadow, whose coarse reads made the curtains their
+    0.45 mean under the map's whole rain area. Physically rain is ~0.36 /km at 1 mm/h, 1.6 at 10, 4.3 at 50 (Marshall-Palmer
+    drops, Q_ext 2; visibility 11 / 2.5 / 0.9 km), so tens of km of curtains in front of a low Sun are dark. Measured from a
+    storm base at sunrise, issue_20261122_214014: along the Sun the rain read at 4 km carries LESS optical depth than the fine
+    read (10.3 vs 13.0 at the view's centre, 10.6 vs 13.5 overhead, 6.9 vs 11.0 at 30 deg toward the Sun), no coarse overcount; from 180 km at +4.4 deg the
+    change is 1.1 levels mean). The march's `-DCV2_SUN_REF` reference counts rain the same way; `-DCV2_SUN_PROBE=1|2|3`
+    (a measurement build of the march, read with `debugview 48`) writes the Sun path's cloud / rain optical depth, the rain
+    path, the volume's tau and the coarse-read rain at the surface each pixel sees. Level 0: 512 rays a frame (32-frame
     round), levels 1-3: 256 (64); levels 0-1 four times more while catching up (`stvV.z`: > 0.5 level-0 cells a frame,
     the 128 frames after, a fill's first 64). The lookup takes the finest level reaching the point, blended over 48-56
     cells; the key light reads it where the light march ends, half a knot up. **Measured against a brute-force reference**
@@ -2349,7 +2356,15 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   plate's under-lobes, and its rim a taper). THE INSIDE OF A STORM (cloud_v2_march.comp): a ray whose first dense sample lies
   within 1-4 steps of the eye enters with `Tent = T e^20` (faded over the steps): the diffuse field's face leak hV is ~1 there,
   and on such rays (T < e^-14) the share of the Sun shadow volume's optical depth that is the sample's own cloud (its path to its
-  own top along the Sun, capped by the volume's tau) reaches it as diffuse transmission 1 / (1 + 0.11 tau), not e^-tau. Measured
+  own top along the Sun, capped by the volume's tau) reaches it as diffuse transmission 1 / (1 + 0.11 tau), not e^-tau,
+  x the Sun's FLUX on the cloud's top: that expression is Eddington's thick-slab transmission (2 + 3 mu0) / (4 + 3 (1 - g) tau)
+  at g = 0.85 and mu0 = 2/3, and the flux into the top is mu0 times it, so the diffused part is weighted by
+  fMu = min(mu0 (2 + 3 mu0) 0.375, 1) (1 at mu0 >= 2/3: the daytime interiors below unchanged; 0.013 at +1 deg; between e^-tau
+  and the full diffusion as e^-tau + (1/(1 + 0.11 tau) - e^-tau) fMu). Without it (wave 20261122 c20,
+  issue_20261122_214014) a sea-level eye in the rain under a storm (the rain at the eye sets the inside rule) saw the whole
+  underside at sunrise (+0.95 deg) lit at 12% of the full Sun, flat orange, through a Sun path of tau 63-72 (the Sun volume,
+  measured at the base) / > 190 (a 50-m march of the field): view luminance 76 -> 41, at +15 min 107 -> 71 (the beige diffused
+  Sun gone, sky light left), 10 min before and 88 min after within 3.4 levels; 128 registers before and after. Measured
   (mean RGB of the view, 1600x900): issue 124812 at 4.3 km inside a tower 0.1/0.2/0.5 -> 98/98/100 (black/navy -> grey);
   171931 trail inside the tower top at 11 km under the shield 54/80/122 -> 68/93/133 (still blue: the Sun is behind the
   ANVIL there, another cloud, which keeps Beer's law; the sky light at "Sky light gain" 2 with its hue kept dominates).

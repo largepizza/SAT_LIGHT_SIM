@@ -765,6 +765,11 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- A storm's underside is dark at sunrise and sunset, no longer lit flat orange (issue_20261122_214014). Seen from
+  the rain under a storm, the clouds took the low Sun's light as if it soaked down through the cloud from its top at
+  full strength. A Sun on the horizon puts very little light on a cloud's top, so that light is now scaled by how
+  high the Sun stands (unchanged with the Sun above about 40 degrees). Rain also blocks the Sun at its real
+  strength now, not 15% of it.
 - No more slab of clear air between a storm tower's base and the top of its rain (issue_20261122_154502). The heavy
   rain under a tower stopped at the storm type's nominal base, while the tower's cloud is drawn on the base of the
   clouds around it, which sits hundreds of metres higher over land by day: from just under the base you looked
