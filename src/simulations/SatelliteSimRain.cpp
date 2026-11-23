@@ -258,7 +258,7 @@ void SatelliteSim::recordRainParticles(VkCommandBuffer cmd, VulkanContext &ctx, 
         pc.eyeVel = glm::vec4(glm::vec3(v), std::clamp(cv2RainShutterMs, 1.0f, 100.0f) * 1e-3f);
     }
     pc.params = glm::vec4((float)n0, (float)levels, cv2RainStreaks, skyExposure());
-    const bool manualDepth = renderScale < 0.999f && (debugDisableMask & 1024u) == 0u && !skyTaaUsedThisFrame;
+    const bool manualDepth = renderScaleNow < 0.999f && (debugDisableMask & 1024u) == 0u && !skyTaaUsedThisFrame;
     // Mode bits (rain_particles.frag): 1 diamond dust, 2 the manual depth test, 4 the background floor is
     // available — the sky TAA resolved this frame, so the frame the particles are drawn over is in
     // skyTaaHistColor[skyTaaHist] — and 8 which of the two history images that is.

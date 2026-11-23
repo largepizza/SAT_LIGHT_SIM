@@ -2392,7 +2392,7 @@ public:
     // renderPassLoad when the background was drawn before the pass (renderScale < 1, or the sky TAA path).
     VkRenderPass activeRenderPass(VulkanContext &ctx) override
     {
-        return (renderScale < 0.999f || skyTaaUsedThisFrame) ? ctx.renderPassLoad : ctx.renderPass;
+        return (renderScaleNow < 0.999f || skyTaaUsedThisFrame) ? ctx.renderPassLoad : ctx.renderPass;
     }
     void recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float dt) override;
     void buildUI(float dt, UIRenderer &ui) override;
@@ -5006,6 +5006,21 @@ private:
     // Off = the old behaviour (always half the swap extent). Settings > Display, key
     // display.clouds_follow_render_scale. computeHalfExtent() is the ONE sizing rule for all of them.
     bool computeFollowsRenderScale = false;
+    // THE ORBIT RENDER SCALE (2026-11-23, wave 20261122 c30; issues 20261122_190752 / _213304, the first ascent): above
+    // kOrbitScaleOnKm of eye altitude (off again below kOrbitScaleOffKm: a hover at the line does not flip it) the frame
+    // renders at min(renderScale, orbitRenderScale) with the clouds following it, whatever computeFollowsRenderScale
+    // says; below, exactly the user's. renderScale stays the user's (what Settings shows and saves); renderScaleNow /
+    // computeFollowsNow are what this frame renders at (every runtime read). With the automatic render scale on, it
+    // wins: orbitRenderScale is then its ceiling. Off during the HQ photo and on the light tiers. Keys display.orbit_render_scale_on /
+    // display.orbit_render_scale (1 = off as well). updateOrbitRenderScale (SatelliteSim.cpp).
+    bool orbitRenderScaleOn = true;
+    float orbitRenderScale = 0.8f;
+    bool orbitScaleLatched = false;          // above the line (with hysteresis), the feature wanted
+    static constexpr double kOrbitScaleOnKm = 30.0, kOrbitScaleOffKm = 25.0;
+    float renderScaleNow = 1.0f;
+    bool computeFollowsNow = false;
+    void refreshRenderScaleNow();            // renderScaleNow / computeFollowsNow from the latch + the user's values
+    void updateOrbitRenderScale();           // the latch, once a frame (after updateDynamicResolution)
     VkExtent2D computeHalfExtent(const VulkanContext &ctx) const;
     VkExtent2D computeHalfExtentBuilt{0, 0}; // what the targets were last created at
     // S9 (2026-10-22, "Full-resolution clouds", clouds_v2.full_res): the CLOUD grid — the v2 march / resolve images
@@ -5849,8 +5864,10 @@ private:
     // ... and from ORBIT (2026-11-09, issue_20261109_184851; 2 = off): above full_rate_above_km, while what the history cannot
     // reproject (the eye's parallax over the cloud layer, the volumes' slide under time warp) stays a small fraction of a
     // pixel a frame. See fillCloudsV2Params.
-    float cv2SparseBlockOrbit = 3.0f;
-    float cv2SparseBlockOrbitMoving = 0.0f;   // 1 = the orbit block also in motion ("sparse_block_orbit_moving"; the user's to judge)
+    // 4 x 4 and in motion too since 2026-11-23 (wave 20261122 c30, the user's pick of the first-ascent option A, with the
+    // orbit render scale: perf.md "The first-ascent views"); both act only above full_rate_above_km.
+    float cv2SparseBlockOrbit = 4.0f;
+    float cv2SparseBlockOrbitMoving = 1.0f;   // 1 = the orbit block also in motion ("sparse_block_orbit_moving")
     // The orbit block's gate (2026-11-22, issue_20261122_114811; fillCloudsV2Params "THE TURN BUDGET"; no sliders).
     float cv2OrbitGate = 1.0f;           // "orbit_gate": 1 = the turn budget, 0 = the gate of before (64 quiet frames, any turn resets)
     float cv2OrbitTurnPxS = 480.0f;      // "orbit_turn_px_s": the turn the block rides through, cloud-grid pixels a second ...

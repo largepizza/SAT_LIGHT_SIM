@@ -296,7 +296,7 @@ bool SatelliteSim::reportTakeShot(bool newIssue, bool openBar)
                            {"cloud_history_valid", cv2HistoryValid},
                            {"sky_taa_history_valid", skyTaaHistValid},
                            {"auto_exposure_ev", autoExposureEV},
-                           {"render_scale_now", renderScale},
+                           {"render_scale_now", renderScaleNow},
                            {"ui_visible", uiVisible},
                            {"eye_speed_mps", speed},
                            {"view_turn_deg_per_s", turn}};

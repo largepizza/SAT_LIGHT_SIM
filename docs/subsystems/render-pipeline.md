@@ -289,6 +289,27 @@ see the last bullets), `recordPrePass` → `recordSkyTaa`:
   under 0.9 x 1000 / fps by 5% steps (down as far as a 30% fixed + 70% x scale^2 model says, after 0.75 s; up one step
   when predicted under 85% of the budget, after 1.5 s). The clouds' history is BLITTED across a resize
   (`recreateComputeScaledTargets`), so a step does not restart them. The orbit storm snapshot settled at 55% (13.8 ms).
+- **The orbit render scale (2026-11-23, wave 20261122 c30; issues 20261122_190752 / _213304, the first ascent; the
+  user's pick of option A in perf.md "The first-ascent views"; `updateOrbitRenderScale`, Display "Lower render scale in
+  orbit" + "Orbit render scale", keys `display.orbit_render_scale_on` (true) / `display.orbit_render_scale` (0.8; 1 =
+  off too)):** above 30 km of eye altitude (`camEyeAltM`; off again below 25 km, so a hover at the line does not flip
+  it) the frame renders at min(`render_scale`, 0.8) and the clouds follow it whatever `clouds_follow_render_scale`
+  says; below, exactly the user's scale. `renderScale` stays the user's (the Settings row and settings.json);
+  every runtime read takes `renderScaleNow` / `computeFollowsNow`, set once a frame after `updateDynamicResolution`
+  and again in `createSkyLowResResources` (a stepper, a preset or the harness moving the scale mid-frame). The
+  Settings row reads "Orbit render scale (in use)" while it applies; `state` -> `render.render_scale_now`,
+  `orbit_render_scale_active`. With the automatic render scale on, that wins: the orbit scale is its ceiling there
+  (capped at once on the crossing, then its usual steps). Off during the HQ photo and on the light tiers (cloud march
+  or full sky knocked out: Potato / Planetarium, where the < 100% path's extra pass costs more than it saves).
+  The flip recreates the scaled targets the way the stepper does (`rc.scaledTargets`, frames in flight drained first;
+  the cloud history is blitted across): one frame of ~80 ms on each crossing at the reports' settings (the
+  recreate section 45-51 ms, most of it waiting out the frame in flight; a 10 -> 80 -> 10 km climb at 17 fps, 3 reps:
+  frame max 79-83 ms against 38-39 with it off). Measured with the orbit block's new defaults (4 x 4, in motion too,
+  clouds.md "THE ORBIT BLOCK"), RTX 3070 Ti, 1920x1009, the user's settings + the shot's, trail played at 17 fps,
+  clock 1x, 3 reps interleaved in one app (evidence `qa/waves/20261122/evidence/c30/`, gitignored): settled GPU
+  48.6 -> 29.8 ms at 1517 km, 46.0 -> 28.8 at 540 km (cloud bucket 34.4 -> 19.1 / 33.5 -> 19.1, sky pass 10.3 -> 6.6 /
+  7.9 -> 5.3); the first 4 s after the trail 49.2 -> 30.3 / 46.2 -> 29.5. A ground view (10 m, paused) is unchanged:
+  GPU 32.3-33.8 -> 32.3-32.4 ms, image diff 0.49 / 0.68 levels against an A-vs-A floor of 0.49-0.68.
 - **Things that move on their own (2026-10-21, issue 20261021_174219: "crazy trails on all models" with TAA on).** The
   resolve reprojects a static world; meshes (satellites, rockets, pads) and the plume / flame light have no motion
   vectors. `sat_sky.frag -DSKY_TAA` marks them in the colour's alpha (0.875: a mesh pixel, or a composite texel with

@@ -5035,6 +5035,16 @@ void SatelliteSim::buildSettingsDisplayTab(const UIInput &inp, UIRenderer &ui)
         destroySkyLowResResources(ctx_->device);
         createSkyLowResResources(*ctx_);
     }
+    // The orbit render scale (2026-11-23, SatelliteSim.h "THE ORBIT RENDER SCALE"): the row above stays the user's
+    // ground scale; this one says when it is the one in use. The switch itself is updateOrbitRenderScale's, next frame.
+    uiToggleRow(inp, ui, "OrbitScaleOn", 0, tx(Txt::LblOrbitRenderScaleOn), orbitRenderScaleOn,
+                tx(Txt::TipOrbitRenderScaleOn));
+    if (orbitRenderScaleOn)
+    {
+        if (stepper("OrbitScale", orbitScaleLatched ? tx(Txt::LblOrbitRenderScaleInUse) : tx(Txt::LblOrbitRenderScale),
+                    orbitRenderScale, 0.5f, 1.0f, 0.05f, "%.0f%%", 100.0f, tx(Txt::TipOrbitRenderScale)))
+            orbitRenderScale = std::round(orbitRenderScale * 100.0f) / 100.0f;
+    }
     uiToggleRow(inp, ui, "DynRes", 0, tx(Txt::LblAutomaticRenderScale), dynResEnabled,
                 tx(Txt::TipLowersTheRenderScale5Teps));
     if (dynResEnabled)
@@ -9671,6 +9681,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
             uiScaleAuto = d.value("ui_auto_scale", uiScaleAuto);
             renderScale = d.value("render_scale", renderScale);
             computeFollowsRenderScale = d.value("clouds_follow_render_scale", computeFollowsRenderScale);
+            orbitRenderScaleOn = d.value("orbit_render_scale_on", orbitRenderScaleOn);
+            orbitRenderScale = settingClamp(d.value("orbit_render_scale", orbitRenderScale), 0.5f, 1.0f);
             dynResEnabled = d.value("dynamic_resolution", dynResEnabled);
             dynResTargetFps = settingClamp(d.value("dynamic_target_fps", dynResTargetFps), 20.0f, 240.0f);
             dynResMinScale = settingClamp(d.value("dynamic_min_scale", dynResMinScale), 0.5f, 1.0f);
@@ -10751,6 +10763,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"ui_auto_scale", uiScaleAuto},
         {"render_scale", renderScale},
         {"clouds_follow_render_scale", computeFollowsRenderScale},
+        {"orbit_render_scale_on", orbitRenderScaleOn},
+        {"orbit_render_scale", orbitRenderScale},
         {"dynamic_resolution", dynResEnabled},
         {"dynamic_target_fps", dynResTargetFps},
         {"dynamic_min_scale", dynResMinScale},
@@ -11534,6 +11548,7 @@ nlohmann::json SatelliteSim::buildPerfSnapshotJson(float cpuDt)
         // (clouds_follow_render_scale, since 2026-10-04) so do scene_depth and the cloud targets.
         // Two snapshots at different render scales are not comparable even at identical resolution.
         {"render_scale", renderScale},
+        {"render_scale_now", renderScaleNow},   // the orbit render scale (above 30 km) or the user's
         {"clouds_follow_render_scale", computeFollowsRenderScale},
         {"cloud_march_budget", cv2MaxIters},
         {"cloud_light_steps", cv2LightSteps},

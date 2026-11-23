@@ -713,10 +713,20 @@ void SatelliteSim::updateDynamicResolution()
     const float ms = gpuMsRawTotal;
     dynResGpuMs = dynResGpuMs > 0.0f ? glm::mix(dynResGpuMs, ms, 0.1f) : ms;
     const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    const float minS = std::clamp(dynResMinScale, 0.5f, 1.0f);
+    // Above the orbit line the orbit render scale is its ceiling (updateOrbitRenderScale): down to it at once.
+    const float maxS = orbitScaleLatched ? std::max(std::min(orbitRenderScale, 1.0f), minS) : 1.0f;
+    if (renderScale > maxS + 1e-3f)
+    {
+        const float sCap = std::round(maxS * 100.0f) / 100.0f;
+        dynResGpuMs *= 0.3f + 0.7f * (sCap * sCap) / (renderScale * renderScale);
+        renderScale = sCap;
+        dynResNextChangeS = now + 0.75;
+        return;
+    }
     if (now < dynResNextChangeS)
         return;
     const float budget = 0.9f * 1000.0f / std::clamp(dynResTargetFps, 20.0f, 240.0f);
-    const float minS = std::clamp(dynResMinScale, 0.5f, 1.0f);
     const float s = renderScale;
     auto cost = [&](float sNew) { return dynResGpuMs * (0.3f + 0.7f * (sNew * sNew) / (s * s)); };
     float sNew = s;
@@ -728,9 +738,9 @@ void SatelliteSim::updateDynamicResolution()
         sNew = std::clamp(std::min(sNew, s - 0.05f), minS, 1.0f);
         dynResNextChangeS = now + 0.75;
     }
-    else if (s < 0.999f && cost(std::min(s + 0.05f, 1.0f)) < 0.85f * budget)
+    else if (s < maxS - 1e-3f && cost(std::min(s + 0.05f, maxS)) < 0.85f * budget)
     {
-        sNew = std::min(s + 0.05f, 1.0f);
+        sNew = std::min(s + 0.05f, maxS);
         dynResNextChangeS = now + 1.5;
     }
     if (std::abs(sNew - s) < 1e-3f)
@@ -739,9 +749,42 @@ void SatelliteSim::updateDynamicResolution()
     renderScale = std::round(sNew * 100.0f) / 100.0f;
 }
 
+// The orbit render scale (SatelliteSim.h, "THE ORBIT RENDER SCALE"). The latch, once a frame before the scaled
+// targets are checked: on above kOrbitScaleOnKm of eye altitude, off below kOrbitScaleOffKm. The recreate on a flip
+// is the render-scale stepper's (rc.scaledTargets below: the cloud targets drain the frames in flight first).
+void SatelliteSim::updateOrbitRenderScale()
+{
+    // Not on the light tiers (the cloud march, or the full sky, knocked out: Potato, Planetarium): what it buys is the
+    // clouds' pixels, and there the < 100% path's extra pass costs more than it saves (applyGraphicsPreset, Potato).
+    const bool lightTier = (debugDisableMask & (32768u | 262144u | 524288u)) != 0u;
+    const bool want = orbitRenderScaleOn && orbitRenderScale < 0.999f && photoScaleActive == 0u && !lightTier;
+    if (!want)
+        orbitScaleLatched = false;
+    else
+    {
+        const double altM = camEyeAltM();
+        if (altM > kOrbitScaleOnKm * 1000.0)
+            orbitScaleLatched = true;
+        else if (altM < kOrbitScaleOffKm * 1000.0)
+            orbitScaleLatched = false;
+    }
+    refreshRenderScaleNow();
+}
+
+void SatelliteSim::refreshRenderScaleNow()
+{
+    renderScaleNow = renderScale;
+    computeFollowsNow = computeFollowsRenderScale;
+    if (orbitScaleLatched)
+    {
+        renderScaleNow = std::min(renderScale, std::round(std::clamp(orbitRenderScale, 0.5f, 1.0f) * 100.0f) / 100.0f);
+        computeFollowsNow = true;
+    }
+}
+
 VkExtent2D SatelliteSim::computeHalfExtent(const VulkanContext &ctx) const
 {
-    const float s = computeFollowsRenderScale ? std::clamp(renderScale, 0.25f, 1.0f) : 1.0f;
+    const float s = computeFollowsNow ? std::clamp(renderScaleNow, 0.25f, 1.0f) : 1.0f;
     const uint32_t w = std::max(1u, (uint32_t)std::ceil(ctx.swapExtent.width * s * 0.5f));
     const uint32_t h = std::max(1u, (uint32_t)std::ceil(ctx.swapExtent.height * s * 0.5f));
     return {w, h};
@@ -1496,6 +1539,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
     pollGamepad(dt);
 
     updateDynamicResolution();
+    updateOrbitRenderScale();
     fprof::mark("rc.seg1_pre");
     // A light tier deferred the full sky pipelines (startup graphics chooser): build them the first frame
     // a preset, the render scale or a knockout change needs them — before recordPrePass / recordDraw.
@@ -1523,9 +1567,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         if (e.width != computeHalfExtentBuilt.width || e.height != computeHalfExtentBuilt.height ||
             ec.width != computeCloudExtentBuilt.width || ec.height != computeCloudExtentBuilt.height)
             recreateComputeScaledTargets(ctx);
-        const VkExtent2D lo{std::max(1u, (uint32_t)(ctx.swapExtent.width * renderScale)),
-                            std::max(1u, (uint32_t)(ctx.swapExtent.height * renderScale))};
-        if (renderScale < 0.999f && !skyTaaWanted() &&
+        const VkExtent2D lo{std::max(1u, (uint32_t)(ctx.swapExtent.width * renderScaleNow)),
+                            std::max(1u, (uint32_t)(ctx.swapExtent.height * renderScaleNow))};
+        if (renderScaleNow < 0.999f && !skyTaaWanted() &&
             (lo.width != skyLowResExtent.width || lo.height != skyLowResExtent.height))
         {
             ctx.drainFrames(); // (frames in flight: the previous frame may still use them)
@@ -2884,8 +2928,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // sat_sky.frag's render target: the low-res prepass extent when renderScale<1 (recordPrePass
         // draws the sky there and recordDraw's Pass 1 is skipped), else the full swap extent. The
         // point shaders don't read these — they carry their own always-full-res screenSizePx.
-        cp.skyScreenW = (renderScale < 0.999f) ? (float)skyLowResExtent.width : (float)ctx.swapExtent.width;
-        cp.skyScreenH = (renderScale < 0.999f) ? (float)skyLowResExtent.height : (float)ctx.swapExtent.height;
+        cp.skyScreenW = (renderScaleNow < 0.999f) ? (float)skyLowResExtent.width : (float)ctx.swapExtent.width;
+        cp.skyScreenH = (renderScaleNow < 0.999f) ? (float)skyLowResExtent.height : (float)ctx.swapExtent.height;
         cp.skyLodScreenH = cp.skyScreenH;
         if (skyTaaWanted()) // the upscaler's input rectangle (== the swap extent at 100%)
         {
@@ -2960,7 +3004,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                 return r;
             };
             // 16 phases when upscaling: each output pixel needs ~1/scale^2 more input positions.
-            const uint32_t hi = (skyTaaFrame++ % (renderScale < 0.999f ? 16u : 8u)) + 1u;
+            const uint32_t hi = (skyTaaFrame++ % (renderScaleNow < 0.999f ? 16u : 8u)) + 1u;
             cp.taaJitter = skyTaaWanted() ? glm::vec4(halton(hi, 2) - 0.5f, halton(hi, 3) - 0.5f, 0.0f, 0.0f) : glm::vec4(0.0f);
             skyTaaJitterNow = glm::vec2(cp.taaJitter);
             const double altG = followActive ? followRadiusM - 6371000.0 : (double)obsHeightOffset;
@@ -8054,7 +8098,7 @@ PointDrawPC SatelliteSim::buildPointDrawPC(VulkanContext &ctx)
     // scene_depth.comp runs regardless of renderScale, so the buffer is always valid; if its
     // knockout (bit 1024) is set the buffer is all kNoSurfaceT and the test is a safe no-op anyway,
     // but skip the fetch entirely then.
-    bool scaledPrepass = renderScale < 0.999f;
+    bool scaledPrepass = renderScaleNow < 0.999f;
     bool sceneDepthLive = (debugDisableMask & 1024u) == 0u;
     pc.manualTerrainTest = (scaledPrepass && sceneDepthLive && !skyTaaUsedThisFrame) ? 1.0f : 0.0f;
     return pc;
@@ -8066,7 +8110,7 @@ void SatelliteSim::recordPrePass(VkCommandBuffer cmd, VulkanContext &ctx, float 
     // does not run, full res draws inline in recordDraw's Pass 1 and a reduced scale takes the
     // low-res blit below.
     const bool taa = recordSkyTaa(cmd, ctx, imgIdx);
-    if (taa || renderScale >= 0.999f)
+    if (taa || renderScaleNow >= 0.999f)
         return;
 
     SatDrawPC pc = buildSkyDrawPC(ctx); // low-res target size rides in the CloudParams UBO (skyScreenW/H)
@@ -8150,7 +8194,7 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float dt)
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, skyTaaRestorePipeLayout, 0, 1, &skyTaaRestoreSet[1 - skyTaaHist], 0, nullptr);
         vkCmdDraw(cmd, 3, 1, 0, 0);
     }
-    else if (renderScale >= 0.999f)
+    else if (renderScaleNow >= 0.999f)
     {
         if (!dbgEnv("SATLIGHTSIM_SKIP_SKYBG")) // diagnostic: drop the fullscreen sky/ground draw
         {
@@ -8175,14 +8219,14 @@ void SatelliteSim::recordDraw(VkCommandBuffer cmd, VulkanContext &ctx, float dt)
                                           : (skyPipe == skyBgLitePipeline)  ? "LITE (SKY_LITE)"
                                                                             : "FULL sat_sky.frag") +
                               " (mask " + std::to_string(debugDisableMask) +
-                              ", renderScale " + std::to_string(renderScale) + ")");
+                              ", renderScale " + std::to_string(renderScaleNow) + ")");
                     lastSkyPipe = skyPipe;
                     lastSkyMask = debugDisableMask;
                 }
                 static uint64_t dbgSkyFrame = 0;
                 if (dbgEnv("SATLIGHTSIM_FRAME_TRACE") && (dbgSkyFrame++ % 60 == 0))
                     fprintf(stderr, "[sky] mask=%u rs=%.3f minimalBit=%d pipe=%s(%p) full=%p min=%p\n",
-                            debugDisableMask, renderScale, (debugDisableMask & 262144u) ? 1 : 0,
+                            debugDisableMask, renderScaleNow, (debugDisableMask & 262144u) ? 1 : 0,
                             (skyPipe == skyBgMinimalPipeline) ? "MIN" : "FULL", (void *)skyPipe,
                             (void *)skyBgPipeline, (void *)skyBgMinimalPipeline);
             }
@@ -14159,8 +14203,9 @@ void SatelliteSim::createSkyBgPipeline(VulkanContext &ctx)
 // finalLayout TRANSFER_SRC_OPTIMAL so recordPrePass's blit needs no extra barrier on this side.
 void SatelliteSim::createSkyLowResResources(VulkanContext &ctx)
 {
-    skyLowResExtent.width = std::max(1u, (uint32_t)(ctx.swapExtent.width * renderScale));
-    skyLowResExtent.height = std::max(1u, (uint32_t)(ctx.swapExtent.height * renderScale));
+    refreshRenderScaleNow();   // (a stepper, a preset, the harness or the settings load just moved renderScale)
+    skyLowResExtent.width = std::max(1u, (uint32_t)(ctx.swapExtent.width * renderScaleNow));
+    skyLowResExtent.height = std::max(1u, (uint32_t)(ctx.swapExtent.height * renderScaleNow));
 
     // ── Render pass: single color attachment, CLEAR -> TRANSFER_SRC_OPTIMAL ──────────────────
     VkAttachmentDescription color{};
@@ -14307,9 +14352,9 @@ void SatelliteSim::destroySkyLowResResources(VkDevice device)
 // temporal UPSCALER: the sky renders into the top-left skyTaaInExtent() and the resolve outputs full size.
 VkExtent2D SatelliteSim::skyTaaInExtent(const VulkanContext &ctx) const
 {
-    if (renderScale >= 0.999f) return ctx.swapExtent;
-    return {std::max(1u, (uint32_t)(ctx.swapExtent.width * renderScale)),
-            std::max(1u, (uint32_t)(ctx.swapExtent.height * renderScale))};
+    if (renderScaleNow >= 0.999f) return ctx.swapExtent;
+    return {std::max(1u, (uint32_t)(ctx.swapExtent.width * renderScaleNow)),
+            std::max(1u, (uint32_t)(ctx.swapExtent.height * renderScaleNow))};
 }
 
 bool SatelliteSim::skyTaaWanted() const

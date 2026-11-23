@@ -693,6 +693,11 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   10 fps: 77 -> 72 ms; storm trail at 12 km, 60 fps: 36 -> 32.5), the image within the run-to-run noise. Setting (no
   UI): `clouds_v2.smooth_moving` (0.5; 0 = the previous behaviour, 1 = more savings, slightly blockier edges at low
   frame rates).
+- **Faster from orbit.** Above 30 km the view renders at 80% resolution with the clouds following it, and the clouds'
+  sparse march takes one ray in 16 instead of 9, in motion too: the first climb to orbit runs about 40% faster (1517
+  km 48.6 -> 29.8 ms, 540 km 46.0 -> 28.8; RTX 3070 Ti, 1920x1009, High), slightly softer clouds from orbit. The
+  ground view keeps your render scale. Settings > Display "Lower render scale in orbit" and "Orbit render scale"
+  (80%).
 - **Clouds skip absent layers.** The empty-space map also records which cloud layers (storm towers, low, mid,
   high, anvils) each cell can hold, and the cloud march computes only those there: about 10% less cloud time in
   storms and over cumulus (storm at 4.8 km 14.2 -> 12.6 ms, flying through it 21.4 -> 19.1, cumulus 9.3 -> 8.4;
