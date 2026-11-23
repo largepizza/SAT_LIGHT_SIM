@@ -5832,6 +5832,8 @@ private:
     int   cv2CdcShapeFrameUsed = -1;       // the low shape volume's frame (cv2ShapeFrame) the cells were baked under
     float cv2CdcDustKeyUsed = -1.0f;   // the haboob field the clipmap's cells were baked with (dust on, gain, cloud form)
     float cv2CdcMaxRate = 4.0f;           // ... used only up to this time rate (x real time)
+    float cv2CdcFarExpiry = 1.0f;         // ... "cdc_far_expiry" (no slider): 1 = cells expire after half a pixel's footprint from afar, 0 = the old
+    int   cv2CdcStretchExp = 0;           // ... its cells' expiry stretched 2^this from afar (fillCloudsV2Params: half a pixel)
     float cv2CdcLight = 1.0f;             // S2 (2026-10-22): the light march reads the clipmap's mean beyond its first 2 steps
     float cv2CdcLightUsed = -1.0f;
     float cv2CdcLightLevels = 3.0f, cv2CdcLightLevelsUsed = -1.0f;   // ... on levels below this (cells to 400 m)

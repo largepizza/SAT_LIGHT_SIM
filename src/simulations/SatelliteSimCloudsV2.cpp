@@ -2040,9 +2040,23 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             p.cdcA = glm::vec4((float)ue, (float)ve, (float)cdcCell0, cv2CdcActive ? std::round(cv2CdcSkip) : 0.0f);
             p.cdcB = glm::vec4((float)(cv2CdcEpoch & 7u), (cv2CdcFp < 0.0f ? std::clamp(cv2CdcFp, -8.0f, -0.05f) : std::clamp(cv2CdcFp, 0.05f, 8.0f)), std::max(cv2CdcBudget, 0.0f),
                                std::clamp(cv2CdcMaxLevel, 0.0f, 8.0f));
+            // THE EXPIRY FROM AFAR (2026-11-22, c17 perfpass): a level's cells expire after half a cell of 40-m/s wind slide OR
+            // half a pixel's footprint at the nearest cloud (cdcS as the motion guard's), whichever is longer, in powers of two.
+            // From 1037 km (issue_20261122_114811 shot 1, time at 1x) the fine levels re-baked every 1.25-5 s cost 0.8 ms of
+            // bake for no march saving (march_a 17.23 ms with the clipmap, 17.27 without): a 100-m cell there is a tenth of a
+            // pixel. Exponent with 0.25 of hysteresis (a change re-stamps that level's cells once: a refill, like an epoch).
+            {
+                const double cdcSx  = std::max(eyeH - (double)hi, 0.0) + 20000.0;
+                const double halfPx = 0.5 * cdcSx * 2.0 * (double)tanHalf / (double)std::max(1u, ctx.swapExtent.height);
+                const double eRaw   = std::log2(std::max(halfPx / (0.5 * cdcCell0), 1.0));
+                if (eRaw > cv2CdcStretchExp + 1.25 || eRaw < cv2CdcStretchExp - 0.25)
+                    cv2CdcStretchExp = std::clamp((int)std::floor(eRaw), 0, 12);
+                if (cv2CdcFarExpiry < 0.5f)
+                    cv2CdcStretchExp = 0;
+            }
             float ph[8];
             for (int k = 0; k < 8; ++k)
-                ph[k] = (float)std::fmod(simT / (0.5 * cdcCell0 * std::ldexp(1.0, k) / cdcWind), 4096.0);
+                ph[k] = (float)std::fmod(simT / (0.5 * cdcCell0 * std::ldexp(1.0, std::max(k, cv2CdcStretchExp)) / cdcWind), 4096.0);
             p.cdcP0 = glm::vec4(ph[0], ph[1], ph[2], ph[3]);
             p.cdcC = glm::vec4(cv2CdcActive && cv2CdcLight > 0.5f ? 1.0f : 0.0f, std::clamp(cv2CdcLightLevels, 0.0f, 8.0f),
                                std::max(cv2CdcNearM, 0.0f), cdcBracket);

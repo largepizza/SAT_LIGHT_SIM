@@ -10265,6 +10265,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2HistoryJumpFrac = std::clamp(c.value("history_jump_frac", cv2HistoryJumpFrac), 0.0f, 1.0f);
         cv2HistoryTimeJumpS = std::clamp(c.value("history_time_jump_s", cv2HistoryTimeJumpS), 0.0f, 600.0f);
         cv2FarLayerMinBlend = std::clamp(c.value("far_layer_min_share", cv2FarLayerMinBlend), 0.0f, 0.5f);
+        cv2CdcFarExpiry = std::clamp(c.value("cdc_far_expiry", cv2CdcFarExpiry), 0.0f, 1.0f);
         cv2SeaReflMarch = std::clamp(c.value("sea_refl_march", cv2SeaReflMarch), 0.0f, 1.0f);
         cv2SmoothMoving = std::clamp(c.value("smooth_moving", cv2SmoothMoving), 0.0f, 2.0f);
         cv2HistDepthTest = std::clamp(c.value("history_depth_test", cv2HistDepthTest), 0.0f, 1.0f);
@@ -11109,6 +11110,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"history_jump_frac", cv2HistoryJumpFrac},
         {"history_time_jump_s", cv2HistoryTimeJumpS},
         {"far_layer_min_share", cv2FarLayerMinBlend},
+        {"cdc_far_expiry", cv2CdcFarExpiry},
         {"sea_refl_march", cv2SeaReflMarch},
         {"smooth_moving", cv2SmoothMoving},
         {"history_depth_test", cv2HistDepthTest},

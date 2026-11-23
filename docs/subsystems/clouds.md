@@ -1012,6 +1012,17 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     Two passes (check + list, then a 4-lane bake: a one-pass bake serialised one lane per warp, 5-12 ms). 6 levels used;
     off above 4x time. -4..-9 ms below orbit at full rate, ~0 from orbit, images at the noise floor, motion (tstab) equal.
     Coarse-footprint bakes are NOT conservative (more misses); jumping to cell exits gained nothing.
+    **Expiry from afar** (2026-11-22, c17 perfpass; `cdc_far_expiry` 1, no slider, 0 = the old expiry): a level's cells
+    expire after half a cell of 40-m/s wind slide OR half a pixel's footprint at the nearest cloud (the motion guard's
+    distance: height over the shell + 20 km), whichever is longer, in powers of two (`cv2CdcStretchExp`, 0.25 of
+    hysteresis; a change re-stamps the affected levels once, a refill). Below ~100 km nothing changes (the exponent is
+    0 there at an 80-deg field of view: half a pixel at the shell + 20 km is under 50 m). From orbit the fine levels'
+    re-bakes were all cost: at issue_20261122_114811 shot 1 (1037 km, time
+    1x) the clipmap's bake took 0.81 ms of `layer_map` for no march saving (march_a 17.23 ms with the clipmap, 17.27
+    without). Measured (RTX 3070 Ti, 1920x1009, time at 1x, interleaved, 3 reps): 1037 km `layer_map` 0.83 -> 0.42 ms,
+    GPU 35.72 -> 34.39; 420 km 1.01 -> 0.77, GPU 34.43 -> 33.70 (+-0.4); march unchanged; image diff mean 0.47 / 0.87
+    against 0.62 / 1.45 between two captures of the old expiry (time running). What is left at 1037 km (~0.4 ms) is the
+    check pass over 6 levels and the coarse levels' bakes.
     **Low in the shell** (2026-11-04, issue 20261104_020257; `cdc_motion_low_frac` 0.05, `cdc_motion_low_epoch` 4,
     `cdc_motion_low_max_m` 6000, no UI; frac 0 = the old guard): with the eye below 6 km (and the shell top + 2 km) the motion
     guard tolerates 5% of its 20-km scale a frame (1 km: 30 km/s at 30 fps) instead of 0.4%, takes a new epoch after 4x the
