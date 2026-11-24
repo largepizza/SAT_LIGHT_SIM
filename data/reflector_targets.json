@@ -229,10 +229,11 @@
     },
     {
       "name": "Mississippi Delta Farmland (agrivoltaics, representative)",
-      "kind": "agriculture",
+      "kind": "solar",
       "lat": 33.5,
       "lon": -90.7,
-      "capacity_mw": 0
+      "capacity_mw": 0,
+      "area_km2": 6
     },
     {
       "name": "Crazy Ass Casa Grande Super Farm",

@@ -470,10 +470,13 @@ on demand, for whichever instant it needs (see below).
 
 ### Target kinds and solar PV parks (2026-10-02)
 
-Every target carries a `"kind"`: `solar` (58 PV parks, Casa Grande included), `agriculture` (the two
-agrivoltaics points), `daylight` (the seven "polar illumination" towns) or `none` (the spawn pin);
+Every target carries a `"kind"`: `solar` (59 PV parks, Casa Grande included), `agriculture` (the Iowa
+agrivoltaics point), `daylight` (the seven "polar illumination" towns) or `none` (the spawn pin);
 `reflectorKind[]`. A file without it is inferred from the name and `capacity_mw`, so old and modded
 lists still load. Only `solar` changes anything so far: the park is drawn on the terrain.
+- **The Mississippi Delta point is `solar`** (`area_km2` 6, no capacity; 2026-11-24): it is the busiest beam
+  site ~55 km east of the opening's vantage (`kIntroStart*`), the first reflector site a player sees, so its
+  beam lands on panels. Its name still says agrivoltaics: panels over farmland.
 - **Data:** area = `capacity_mw` x 2.2 ha/MW (or `"area_km2"`), mount = single-axis N-S trackers in the
   Americas, India and Australia, fixed tilt facing the equator elsewhere (or `"mount"`). Ivanpah, Noor
   Ouarzazate and Cerro Dominador carry `"tech": "csp"` and are still drawn as PV.
