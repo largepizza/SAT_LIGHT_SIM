@@ -44,6 +44,7 @@ layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
 #define CV2_FLASH_BINDING 12
 #define CV2_FLASH_WRITE
 #include "cloud_lightning.glsl"   // cv2BvGround / cv2BvHdr (kMode 4)
+#include "atmosphere.glsl"        // atmColumn (kMode 3)
 
 layout(set = 0, binding = 29, rgba16f) uniform writeonly image3D bvLightImg;
 layout(set = 0, binding = 31, r32f)    uniform writeonly image3D bvDensImg;
@@ -127,8 +128,9 @@ void main()
 
     if (bvSiteCount == 0u) return;
     if (kMode == 3u) {
-        // ── SHAFTS ── (one thread a screen tile's column: front to back through the light volume, two samples a depth slice;
-        // the cloud along the VIEW is the march's, which reads this at its transmittance checkpoints)
+        // ── SHAFTS ── (one thread a screen tile's column: front to back over the depth slices, sampling only where the view
+        // ray is inside a site's box (slab test per box), up to 8 steps of >= 750 m a slice and box; the cloud along the VIEW
+        // is the march's, which reads this at its transmittance checkpoints)
         uint col = gl_WorkGroupID.x * 64u + gl_LocalInvocationIndex;
         if (col >= uint(kBvShX * kBvShY)) return;
         ivec2 g = ivec2(int(col) % kBvShX, int(col) / kBvShX);
@@ -138,33 +140,96 @@ void main()
         vec3  eye = vec3(0.0, 0.0, R_EARTH + eyeH);
         vec3  BETA_R = BETA_R_BASE * cloud.atmosRayleighGain;
         float BETA_M = BETA_M_BASE * cloud.atmosMieGain;
-        vec3  acc = vec3(0.0), tau = vec3(0.0);
+        // Each box's interval along the ray.
+        vec2 iv[kBvSites];
+        for (uint q = 0u; q < kBvSites; ++q) {
+            iv[q] = vec2(1e30, -1e30);
+            if (q >= bvSiteCount || bvSites[q].o.w < 0.5) continue;
+            vec3 v  = -bvSites[q].o.xyz;
+            vec3 r0 = vec3(dot(v, bvSites[q].ax.xyz), dot(v, bvSites[q].ay.xyz), dot(v, bvSites[q].az.xyz));
+            vec3 rd = vec3(dot(dir, bvSites[q].ax.xyz), dot(dir, bvSites[q].ay.xyz), dot(dir, bvSites[q].az.xyz));
+            vec3 inv = 1.0 / (rd + vec3(1e-9));
+            vec3 ta = (vec3(-kBvHalf, -kBvHalf, kBvZ0) - r0) * inv, tb = (vec3(kBvHalf, kBvHalf, kBvZ1) - r0) * inv;
+            vec3 tn = min(ta, tb), tf = max(ta, tb);
+            float t0 = max(max(tn.x, tn.y), max(tn.z, 0.0)), t1 = min(min(tf.x, tf.y), tf.z);
+            if (t1 > t0) iv[q] = vec2(t0, t1);
+        }
+        // ABOVE the boxes (no cloud there): each merged beam light's column from the box's top to 60 km, in closed form
+        // (the old per-pixel shafts' integral, clipped below at kBvZ1), deposited at its light-weighted mean depth. Seen
+        // from orbit the beams' air above 15 km is most of their streak.
+        vec3  U = vec3(0.0);
+        float tU = 0.0, wU = 0.0;
+        float pixAng = 2.0 * th / float(kBvShY);
+        for (uint li = 0u; li < min(beamLightCount, kMaxCloudBeamLights); ++li) {
+            if (beamLights[li].intensity <= 0.0) continue;
+            vec3  lp = beamLights[li].posENU, S = beamLights[li].dirToSource;
+            float R  = max(beamLights[li].footprintRadM, 100.0);
+            float b  = dot(dir, S), eL = dot(lp, S);
+            vec3  a  = dir - S * b, c0 = -lp + S * eL;
+            float A = dot(a, a), B = dot(a, c0), C = dot(c0, c0);
+            float tC = (A > 1e-8) ? max(-B / A, 0.0) : 0.0;
+            float d2 = (A > 1e-8) ? max(C - B * B / A, 0.0) : C;
+            float Ro = R + max(max(0.02 * R, 40.0), 1.5 * tC * pixAng);
+            if (d2 > Ro * Ro) continue;
+            float t0 = 0.0, t1 = 1e9;
+            if (A > 1e-8) { float hw = sqrt((Ro * Ro - d2) / A); t0 = max(-B / A - hw, 0.0); t1 = -B / A + hw; }
+            float sinE = max(dot(S, normalize(eye + lp)), 0.1);
+            float sLo = kBvZ1 / sinE, sTop = 60000.0 / sinE;
+            if (b > 1e-6)       { t0 = max(t0, (sLo + eL) / b); t1 = min(t1, (sTop + eL) / b); }
+            else if (b < -1e-6) { t1 = min(t1, (sLo + eL) / b); t0 = max(t0, (sTop + eL) / b); }
+            else continue;
+            t1 = min(t1, t0 + 80000.0);
+            if (t1 <= t0) continue;
+            float h0 = length(eye + dir * t0) - R_EARTH, h1 = length(eye + dir * t1) - R_EARTH;
+            float tq = 0.5 * (t0 + t1), len = t1 - t0;
+            vec3  X  = eye + dir * tq;
+            float dayP = clamp((dot(normalize(X), pc.sunDirENU.xyz) + 0.2) / 0.5, 0.0, 1.0);
+            float ca = exp(-max(h0, 0.0) / H_R), cb = exp(-max(h1, 0.0) / H_R), dh = (h1 - h0) / H_R;
+            float colR = abs(dh) < 1e-3 ? len * 0.5 * (ca + cb) : len * (ca - cb) / dh;
+            ca = exp(-max(h0, 0.0) / H_M); cb = exp(-max(h1, 0.0) / H_M); dh = (h1 - h0) / H_M;
+            float colM = abs(dh) < 1e-3 ? len * 0.5 * (ca + cb) : len * (ca - cb) / dh;
+            vec3  sc = BETA_R * colR * phaseR(b) + vec3(BETA_M * cv2.beam.y * colM * phaseM(b));
+            vec3  tau = BETA_R * (H_R * atmColumn(eye, dir, tq, H_R)) + vec3(BETA_M * 1.1 * H_M * atmColumn(eye, dir, tq, H_M));
+            vec3  add = (beamLights[li].intensity * cv2.beam.w / (PI * R * R)) * (R * R) / (Ro * Ro) * sc * (1.0 - dayP) * exp(-tau) * kBvScale;
+            U += add;
+            float wl = dot(add, vec3(0.33));
+            tU += wl * tq; wU += wl;
+        }
+        tU = (wU > 0.0) ? tU / wU : -1.0;
+
+        vec3  acc = vec3(0.0);
         float tP = 0.0;
         for (int k = 0; k < kBvShZ; ++k) {
             float t1 = kBvShT0 * exp(float(k + 1) * kBvShC), tm = kBvShT0 * exp((float(k) + 0.5) * kBvShC);
             vec3  mid = acc;
-            [[unroll]] for (int j = 0; j < 2; ++j) {
-                float ta = mix(tP, t1, 0.25 + 0.5 * float(j)), len = 0.5 * (t1 - tP);
-                vec3  X = eye + dir * ta;
-                float h = length(X) - R_EARTH;
-                if (h < -500.0 || h > 60000.0) continue;
-                float rR = exp(-max(h, 0.0) / H_R), rM = exp(-max(h, 0.0) / H_M);
-                vec3  dTau = (BETA_R * rR + vec3(BETA_M * 1.1 * rM)) * len;
-                vec3  L;
-                int   s = bvSiteAt(X - eye, L);
-                if (s >= 0) {
-                    vec4  v = textureLod(bvLightTex, bvUVW(uint(s), L), 0.0);
-                    if (v.y > 0.0) {
-                        vec3  dB = bvOctDec(v.zw);
-                        vec3  dS = bvSites[s].ax.xyz * dB.x + bvSites[s].ay.xyz * dB.y + bvSites[s].az.xyz * dB.z;
-                        float c  = dot(dir, dS);
-                        float dayP = clamp((dot(normalize(X), pc.sunDirENU.xyz) + 0.2) / 0.5, 0.0, 1.0);
-                        vec3  sc = (BETA_R * rR * phaseR(c) + vec3(BETA_M * cv2.beam.y * rM * phaseM(c))) * len;
-                        acc += v.y * (1.0 - dayP) * sc * exp(-(tau + 0.5 * dTau));
-                    }
+            if (tU >= tP && tU < t1) { acc += U; if (tU < tm) mid += U; }
+            for (uint q = 0u; q < kBvSites; ++q) {
+                float a0 = max(tP, iv[q].x), a1 = min(t1, iv[q].y);
+                if (a1 <= a0) continue;
+                int   n = clamp(int(ceil((a1 - a0) / 750.0)), 1, 8);
+                float len = (a1 - a0) / float(n);
+                for (int j = 0; j < n; ++j) {
+                    float ta = a0 + (float(j) + 0.5) * len;
+                    vec3  X = eye + dir * ta;
+                    float h = length(X) - R_EARTH;
+                    if (h < -500.0) continue;
+                    float rR = exp(-max(h, 0.0) / H_R), rM = exp(-max(h, 0.0) / H_M);
+                    vec3  v = X - eye - bvSites[q].o.xyz;
+                    vec3  L = vec3(dot(v, bvSites[q].ax.xyz), dot(v, bvSites[q].ay.xyz), dot(v, bvSites[q].az.xyz));
+                    vec4  w = textureLod(bvLightTex, bvUVW(q, L), 0.0);
+                    if (w.y <= 0.0) continue;
+                    vec3  dB = bvOctDec(w.zw);
+                    vec3  dS = bvSites[q].ax.xyz * dB.x + bvSites[q].ay.xyz * dB.y + bvSites[q].az.xyz * dB.z;
+                    float c  = dot(dir, dS);
+                    float dayP = clamp((dot(normalize(X), pc.sunDirENU.xyz) + 0.2) / 0.5, 0.0, 1.0);
+                    vec3  sc = (BETA_R * rR * phaseR(c) + vec3(BETA_M * cv2.beam.y * rM * phaseM(c))) * len;
+                    // The air between the eye and the sample (straight, as the march's estimate: atmColumn's curved column
+                    // matters only past the limb, where these boxes are not).
+                    vec3  tau = BETA_R * (H_R * atmColumn(eye, dir, ta, H_R)) + vec3(BETA_M * 1.1 * H_M * atmColumn(eye, dir, ta, H_M));
+                    vec3  add = w.y * (1.0 - dayP) * sc * exp(-tau);
+                    acc += add;
+                    if (ta < tm) mid += add;
                 }
-                tau += dTau;
-                if (j == 0) mid = acc;
             }
             tP = t1;
             imageStore(bvShaftImg, ivec3(g, k), vec4(mid, 0.0));

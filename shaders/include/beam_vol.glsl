@@ -20,8 +20,8 @@ const float kBvDiskCut = 1.15;                        // == kBeamDiskCut
 // texel the beams' light scattered toward the eye by the air between the eye and the texel's depth (integrated, the air's
 // extinction included), rgb x kBvScale, before the shafts' gains.
 const int   kBvShX = 160, kBvShY = 90, kBvShZ = 64;   // == SatelliteSim.h
-const float kBvShT0 = 50.0, kBvShT1 = 400000.0;
-const float kBvShC = 0.140430;                        // ln(kBvShT1 / kBvShT0) / kBvShZ
+const float kBvShT0 = 50.0, kBvShT1 = 3000000.0;    // (to 3000 km: a site seen from orbit)
+const float kBvShC = 0.171908;                        // ln(kBvShT1 / kBvShT0) / kBvShZ
 float bvShaftU(float t) { return clamp(log(max(t, kBvShT0) / kBvShT0) / kBvShC, 0.0, float(kBvShZ)) / float(kBvShZ); }
 
 // A box-frame point -> the site's texel coordinates in the stacked texture (normalised), z clamped inside its slab.
