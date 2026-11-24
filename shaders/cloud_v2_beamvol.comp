@@ -57,6 +57,16 @@ const uint kBvRayN = uint(kBvRays * kBvRays);   // rays a beam (a knot pair's ra
                                                 // the gather's bilinear reads share lines)
 
 // The site a beam belongs to (the sites' beam ranges are contiguous).
+// The terrain's height (m above sea level) under an observer-relative point: the elevation map (terrain.glsl's encoding:
+// 15/255 of 9000 m is sea level), ~2.7 km pixels: the ranges, not single peaks.
+float bvTerrainH(vec3 rel, float eyeH, mat3 enuToEcef)
+{
+    vec3  d   = cv2Pos(rel, eyeH, enuToEcef).dirE;
+    float lat = asin(clamp(d.z, -1.0, 1.0)), lon = atan(d.y, d.x);
+    vec2  uv  = vec2((lon + PI) / (2.0 * PI), (0.5 * PI - lat) / PI);
+    return max(textureLod(cv2ElevTex, uv, 0.0).r * 9000.0 - 15.0 / 255.0 * 9000.0, 0.0);
+}
+
 uint bvSiteOfBeam(uint b)
 {
     for (uint s = 0u; s < kBvSites; ++s)
@@ -120,7 +130,7 @@ void main()
         vec2  xy  = (vec2(float(cI % uint(kBvNX)), float(cI / uint(kBvNX))) + 0.5) * kBvCellXY - kBvHalf;
         vec3  rel = bvSites[s].o.xyz + bvSites[s].ax.xyz * xy.x + bvSites[s].ay.xyz * xy.y;
         float h0  = length(rel + vec3(0.0, 0.0, R_EARTH + eyeH)) - R_EARTH;   // the box's z = 0 here, above sea level
-        float gH  = max(cv2Ground(cv2Pos(rel, eyeH, enuToEcef).dirE), 0.0);   // the terrain (the sea: 0)
+        float gH  = bvTerrainH(rel, eyeH, enuToEcef);   // the terrain (the sea: 0)
         vec4  v   = textureLod(bvLightTex, bvUVW(s, vec3(xy, gH - h0 + 30.0)), 0.0);
         cv2BvGround[id] = uvec2(packHalf2x16(vec2(v.y, v.z)), packHalf2x16(vec2(v.w, 0.0)));
         return;
@@ -276,12 +286,19 @@ void main()
         float len = kBvCellZ / dzs;   // the ray's length through one z level
         float od = 0.0, odPrev = 0.0;
         uint  base = b * kBvRayN * uint(kBvNZ / 2) + r;
+        bool  rock = false;   // the ray has gone into the terrain: everything below is in its shadow (2026-11-24)
         for (int k = kBvNZ - 1; k >= 0; --k) {
             float zk = kBvZ0 + (float(k) + 0.5) * kBvCellZ;
             vec3  P  = r0 + d * ((zk - r0.z) / dzs);
             float sg = 0.0;
             if (abs(P.x) < kBvHalf && abs(P.y) < kBvHalf)
                 sg = textureLod(bvDensTex, bvUVW(s, P), 0.0).r;
+            if (!rock && zk < 9000.0) {
+                vec3  relP = bvSites[s].o.xyz + bvSites[s].ax.xyz * P.x + bvSites[s].ay.xyz * P.y + bvSites[s].az.xyz * P.z;
+                float hP = length(relP + vec3(0.0, 0.0, R_EARTH + eyeH)) - R_EARTH;
+                rock = hP < 9000.0 && hP < bvTerrainH(relP, eyeH, enuToEcef) - 350.0;   // (a level under it: the ground does not shade itself)
+            }
+            if (rock) sg = max(sg, 0.05);   // ~opaque: 14 per 281 m level
             float odHere = od + 0.5 * sg * len;   // to the level's middle
             od += sg * len;
             if ((k & 1) == 1) odPrev = odHere;    // (k odd is read first: pack (even, odd) once k is even)
