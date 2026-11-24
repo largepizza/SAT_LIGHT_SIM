@@ -438,6 +438,21 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   1600x900): lit tiles +4-6 levels from above, -1..-6 toward the satellites; 128 registers both; march +0.1/+0.5 ms
   inside the A-vs-A spread (+-0.6-1.2). Brightness against the Moon: the beam is physical x `beam.z` 30, the night
   view's Moon ~2400x physical, and Betelgeuse rides the Moon's key light (`nightKeyLightENU`), so it is lit as the Moon is.
+  What the beams' occlusion costs (2026-11-23, harness_runs/beamceil): a march with the beam field reads removed
+  (lightAmbOD's k = nL+2..4) and beam-lit samples allowed the faint / deep shortcuts (`!wantB` lifted) against the
+  shipped one, issue_20261113_183043 (80 converged beams), 3 interleaved reps, 128 registers both: shot 1 29.85 / 30.67
+  (A-vs-A) -> 29.26 ms, shot 2 33.17 / 33.20 -> 31.85 ms. ~1.3 ms at most there: the ceiling of replacing the reads with
+  a baked per-beam profile.
+  Tried and NOT kept (2026-11-23, `harness_runs/beamceil/`, patch `beamvol_grid_attempt.patch` there): (a) the beam's
+  shadow read along its AXIS (one 150-m read at the sample, then reads up the axis to ~21 km; a look prototype): the axis
+  is up to 2.5 km sideways from a sample, so it measured another cloud: shot 1's deck 2-3x brighter, shot 2's near deck
+  dark. (b) Per-light transmittance GRIDS baked like the Sun volume (16 slots x 16 x 16 rays across the disk x 24 knots,
+  rebaked each frame in the lightning pass, `volSlot` in BeamCloudLight): any grid read in beamGather beside the 150-m
+  read, the per-beam block altitude or the column-top floor put the march at 255 registers (a read per light, one read for
+  the brightest light, guard branches, nearest-knot reads: all 255). Only grids ALONE gave 128, and then (i) no frame
+  time won: shot 1 29.31 -> 29.55 ms, shot 2 32.00 -> 31.83, p90 +1.2 ms (the bakes cost what the march saved), and
+  (ii) the deck under the beams went flat white: without the 150-m read no grid this coarse (400-m cells, 650-m knots)
+  gives a lobe's top any depth toward the satellites. The three reads up the beam stay.
 - **Rain / sleet / snow / diamond dust at the eye are PARTICLES** (2026-10-04, `rain_particles.vert/.frag`,
   `SatelliteSimRain.cpp`): one instanced draw in the main pass after everything else, i.e. AFTER the sky TAA,
   at full resolution, premultiplied over the tonemapped frame (ONE / ONE_MINUS_SRC_ALPHA: a drop dimmer than the
