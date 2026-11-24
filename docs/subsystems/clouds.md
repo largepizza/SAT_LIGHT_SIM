@@ -515,6 +515,11 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   band, the sum of a site's beams does not, because each beam's shadow of a cloud 1 km up lands 1.2-5.7 km away in its
   own direction (cot of 10-40 deg); the Anchorage cumulus is a thin layer at ~1.0-1.5 km. A debug field probe in the
   march agreed with the density bake (on a LOG display a trace of density reads as full: compare bakes linearly).
+  **The air past a box is each beam's chord wherever the VIEW RAY is outside the box** (the box interval along the ray
+  subtracted, up to two stretches per beam, `bvColumnLight`), complementing the volume exactly. Starting it where the
+  beam's AXIS left the box drew a step along the box top (the Arkansas report's upper edge, ~4 levels in 6 px): a low
+  beam's slanted cylinder is ~10 km thick vertically, so above the top half of it was nobody's and below half was
+  counted twice. Found by rendering the two parts alone and moving the hand-off to 8 km (the step moved with it).
   **Terrain shadow on the clouds' sunlight (2026-11-23, step 5 of the lighting audit):** the Sun's key light at a cloud
   sample is x `cv2TerrSunT(rel)` (the terrain Sun-horizon map the air, fog and god rays read; on with the Sun up at the
   eye, below 60 km, terrain in reach), below 20 deg of Sun at the sample only (`sunUp < 0.34`). 128 registers (binary

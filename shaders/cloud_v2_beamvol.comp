@@ -119,6 +119,25 @@ uint bvCullBlock(uint s, vec3 Lb, float rb)
     return min(sBeamN, kBvListMax);
 }
 
+// The beams' air along a stretch [t0, t1] of a view ray in closed form (per unit irradiance): Rayleigh + aerosol, each
+// integrated over the height along the stretch (exact for a height linear in t), at the beam's angle to the view
+// (cosine b), x the night share and the air's extinction to the stretch's middle (tq, returned).
+vec3 bvColumnLight(vec3 eye, vec3 dir, float t0, float t1, float b, vec3 BETA_R, float BETA_M, out float tq)
+{
+    float h0 = length(eye + dir * t0) - R_EARTH, h1 = length(eye + dir * t1) - R_EARTH;
+    float len = t1 - t0;
+    tq = 0.5 * (t0 + t1);
+    vec3  X  = eye + dir * tq;
+    float dayP = clamp((dot(normalize(X), pc.sunDirENU.xyz) + 0.2) / 0.5, 0.0, 1.0);
+    float ca = exp(-max(h0, 0.0) / H_R), cb = exp(-max(h1, 0.0) / H_R), dh = (h1 - h0) / H_R;
+    float colR = abs(dh) < 1e-3 ? len * 0.5 * (ca + cb) : len * (ca - cb) / dh;
+    ca = exp(-max(h0, 0.0) / H_M); cb = exp(-max(h1, 0.0) / H_M); dh = (h1 - h0) / H_M;
+    float colM = abs(dh) < 1e-3 ? len * 0.5 * (ca + cb) : len * (ca - cb) / dh;
+    vec3  sc = BETA_R * colR * phaseR(b) + vec3(BETA_M * cv2.beam.y * colM * phaseM(b));
+    vec3  tau = BETA_R * (H_R * atmColumn(eye, dir, tq, H_R)) + vec3(BETA_M * 1.1 * H_M * atmColumn(eye, dir, tq, H_M));
+    return sc * (1.0 - dayP) * exp(-tau);
+}
+
 // The clouds' reference phase for plane 1's y (the march's two HG lobes, cv2.phase; beamFinish scales its own phase at
 // the mean direction by this sum over the beams / this at the mean direction).
 float bvCloudPhase(float c) { return cv2.phase.y * cv2HG(c, cv2.phase.x) + cv2.phase.w * cv2HG(c, cv2.phase.z); }
@@ -182,8 +201,8 @@ void main()
             float t0 = max(max(tn.x, tn.y), max(tn.z, 0.0)), t1 = min(min(tf.x, tf.y), tf.z);
             if (t1 > t0) iv[q] = vec2(t0, t1);
         }
-        // PAST the boxes (no cloud there, or none the volume holds): each beam's column from where its axis leaves its box
-        // (the top, or a wall for a low beam) to 60 km, in closed form, deposited at the light-weighted mean depth. Seen
+        // PAST the boxes (no cloud there, or none the volume holds): each beam's column wherever the view ray is outside
+        // its box (above the top, past a wall), up to 60 km, in closed form, deposited at the light-weighted mean depth. Seen
         // from orbit the beams' air above 15 km is most of their streak. (Until round 2 this was the merged cluster lights
         // from the box's TOP: a low beam's air between a wall and the top was nobody's, and the clusters' sum was not the
         // volume's: the box's outline in the sky, issue_20261124_085028.)
@@ -207,32 +226,28 @@ void main()
                 if (d2 > Ro * Ro) continue;
                 float t0 = 0.0, t1 = 1e9;
                 if (A > 1e-8) { float hw = sqrt((Ro * Ro - d2) / A); t0 = max(-B / A - hw, 0.0); t1 = -B / A + hw; }
-                // Where the axis leaves the box (beam parameter from the ground point), and 60 km up.
-                vec3  dB = bd.xyz;
-                float exX = abs(dB.x) > 1e-6 ? (sign(dB.x) * kBvInner - bg.x) / dB.x : 1e30;
-                float exY = abs(dB.y) > 1e-6 ? (sign(dB.y) * kBvInner - bg.y) / dB.y : 1e30;
-                float sLo = max(min(min(exX, exY), (kBvZ1 - bg.z) / max(dB.z, 1e-3)), 0.0);
-                float sTop = (60000.0 - bg.z) / max(dB.z, 1e-3);
-                if (sTop <= sLo) continue;
-                if (b > 1e-6)       { t0 = max(t0, (sLo + eL) / b); t1 = min(t1, (sTop + eL) / b); }
-                else if (b < -1e-6) { t1 = min(t1, (sLo + eL) / b); t0 = max(t0, (sTop + eL) / b); }
+                // The beam from its ground point (s >= 0) to 60 km up, and only where the VIEW RAY is outside the box: the
+                // volume holds the rest. (Until 2026-11-24 the column started where the beam's AXIS left the box: a low
+                // beam's slanted cylinder is ~10 km thick vertically, so just above the box top half of it was nobody's and
+                // just below half was counted twice: a step along the top, issue_20261124_085028's upper edge.)
+                float sTop = (60000.0 - bg.z) / max(bd.z, 1e-3);
+                if (b > 1e-6)       { t0 = max(t0, eL / b); t1 = min(t1, (sTop + eL) / b); }
+                else if (b < -1e-6) { t1 = min(t1, eL / b); t0 = max(t0, (sTop + eL) / b); }
                 else continue;
-                t1 = min(t1, t0 + 80000.0);
-                if (t1 <= t0) continue;
-                float h0 = length(eye + dir * t0) - R_EARTH, h1 = length(eye + dir * t1) - R_EARTH;
-                float tq = 0.5 * (t0 + t1), len = t1 - t0;
-                vec3  X  = eye + dir * tq;
-                float dayP = clamp((dot(normalize(X), pc.sunDirENU.xyz) + 0.2) / 0.5, 0.0, 1.0);
-                float ca = exp(-max(h0, 0.0) / H_R), cb = exp(-max(h1, 0.0) / H_R), dh = (h1 - h0) / H_R;
-                float colR = abs(dh) < 1e-3 ? len * 0.5 * (ca + cb) : len * (ca - cb) / dh;
-                ca = exp(-max(h0, 0.0) / H_M); cb = exp(-max(h1, 0.0) / H_M); dh = (h1 - h0) / H_M;
-                float colM = abs(dh) < 1e-3 ? len * 0.5 * (ca + cb) : len * (ca - cb) / dh;
-                vec3  sc = BETA_R * colR * phaseR(b) + vec3(BETA_M * cv2.beam.y * colM * phaseM(b));
-                vec3  tau = BETA_R * (H_R * atmColumn(eye, dir, tq, H_R)) + vec3(BETA_M * 1.1 * H_M * atmColumn(eye, dir, tq, H_M));
-                vec3  add = bg.w * (R * R) / (Ro * Ro) * sc * (1.0 - dayP) * exp(-tau) * kBvScale;
+                vec2  segA = vec2(t0, min(t1, iv[q].x)), segB = vec2(max(t0, iv[q].y), t1);
+                if (iv[q].y <= iv[q].x) { segA = vec2(t0, t1); segB = vec2(0.0); }
+                vec3  add = vec3(0.0);
+                for (int sgI = 0; sgI < 2; ++sgI) {
+                    vec2 sgT = (sgI == 0) ? segA : segB;
+                    sgT.y = min(sgT.y, sgT.x + 80000.0);
+                    if (sgT.y <= sgT.x) continue;
+                    float tqS;
+                    vec3  aS = bvColumnLight(eye, dir, sgT.x, sgT.y, b, BETA_R, BETA_M, tqS) * (bg.w * (R * R) / (Ro * Ro) * kBvScale);
+                    float wS = dot(aS, vec3(0.33));
+                    tU += wS * tqS; wU += wS;
+                    add += aS;
+                }
                 U += add;
-                float wl = dot(add, vec3(0.33));
-                tU += wl * tq; wU += wl;
             }
         }
         // Busy sites without a box (past kBvSites): their merged cluster lights from 15.5 km up, as before round 2.
