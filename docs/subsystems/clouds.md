@@ -453,6 +453,16 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   time won: shot 1 29.31 -> 29.55 ms, shot 2 32.00 -> 31.83, p90 +1.2 ms (the bakes cost what the march saved), and
   (ii) the deck under the beams went flat white: without the 150-m read no grid this coarse (400-m cells, 650-m knots)
   gives a lobe's top any depth toward the satellites. The three reads up the beam stay.
+  **Terrain shadow on the clouds' sunlight (2026-11-23, step 5 of the lighting audit):** the Sun's key light at a cloud
+  sample is x `cv2TerrSunT(rel)` (the terrain Sun-horizon map the air, fog and god rays read; on with the Sun up at the
+  eye, below 60 km, terrain in reach), below 20 deg of Sun at the sample only (`sunUp < 0.34`). 128 registers (binary
+  732 KB). Measured (3 interleaved reps, GPU ms): over the Alps from 4 km at noon 25.84 -> 25.99 with the gate (26.43
+  ungated); at sunrise (+3 deg) 33.59 -> ~34.3 (the lookup runs: +0.6-0.9). Image: Everest region from 5.5 km, Sun
+  +4 deg rising, looking toward it: the sunlit glow and rays on cloud beyond the eastern ridges are gone (3.3% of pixels
+  past 8 levels against a 0.01% floor); Chamonix from 4 km at +3 deg: no change past the floor (the deck sits above the
+  ridges' shadow; that view's capture floor is 2.6-4.3 levels with snow falling). A debug variant that tints the
+  shadowed share red (harness_runs/terrshadow/find.satcmd, `v_tdbg`) shows where it acts. The Moon is not shadowed by
+  terrain (the map is the Sun's and is off at night).
   **City light from below (2026-11-23, step 4 of the lighting audit; issue_20261123_192207 "City cloud ambient light":
   "looks very basic and not like it includes mie, phase"):** the night term in cloud_v2_march.comp ("CITY LIGHT FROM
   BELOW") was a flat (cr / lum) x cityBrightness x 0.004 on the lower 45% of every column. Now the city's light enters

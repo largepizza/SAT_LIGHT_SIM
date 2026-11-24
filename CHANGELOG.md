@@ -573,6 +573,8 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   on the visible half of the Earth, storms or not; it now skips the regions with no storm (the same flashes): ~3.5 ms
   less at 3780 km, ~2 ms at 540 km. Moonlit clouds' lighting runs in step across neighbouring pixels: ~2.5 ms less at
   3780 km over a moonlit night side, the image unchanged. 3780 km night view 49.7 -> 43.6 ms.
+- **Mountains shadow clouds at sunrise and sunset.** Clouds behind a ridge from a low Sun no longer catch sunlight
+  the mountains block. Below 20 degrees of Sun only; no cost with the Sun higher.
 - **City light lights clouds from below.** City-lit cloud is brightest at its base and fades up through the cloud,
   glows through when seen from above, and changes with the angle you see it from, instead of a flat orange wash on
   every cloud's lower half. Same overall level, same cost.

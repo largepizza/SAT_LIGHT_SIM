@@ -1338,6 +1338,11 @@ void main()
                 // A solar eclipse: the Moon's shadow on THIS sample's sunlight (eclipse.glsl; 2026-10-03). It was the
                 // Sun the eye saw, on every cloud in view: no lit clouds beyond the umbra, no orange horizon.
                 if (cloud.moonMisc.y > 0.5) keyCol *= eclipseSunVis((eye + rel) * 1e-3, sunDir, 0.0);
+                // The terrain's shadow (2026-11-23, step 5 of the lighting audit): the terrain Sun-horizon map the air, the fog and
+                // the god rays read (cv2TerrSunT; on with the Sun up at the eye, below 60 km, terrain in reach: 1 otherwise). A
+                // cloud in a ridge's shadow at a low Sun was lit as if the mountains were not there. Below 20 deg of Sun only (a
+                // higher Sun clears the ridges for cloud; ungated the lookup cost +0.6 ms at noon over the Alps).
+                if (sunUp < 0.34) keyCol *= cv2TerrSunT(rel);
 #ifdef CV2_SUN_REF
                 // REFERENCE (S3 validation, compiled by hand with -DCV2_SUN_REF): the Sun's transmittance beyond where the
                 // light march ends, marched through the field to the shell's top in fine growing steps (100 m + 1% of
