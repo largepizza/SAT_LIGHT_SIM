@@ -578,10 +578,15 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **City light lights clouds from below.** City-lit cloud is brightest at its base and fades up through the cloud,
   glows through when seen from above, and changes with the angle you see it from, instead of a flat orange wash on
   every cloud's lower half. Same overall level, same cost.
+- **No more boxes around reflector beams.** The beams' light no longer ends at a square around each site: low beams
+  carry on across the sky and the cloud deck to where they really go (the box reaches 200 km, its cells finest at the
+  site). Clouds toward the satellites now get a bright silver lining from each mirror's own direction, instead of
+  one averaged glow over the whole deck.
 - **Under a reflector beam it looks like day, and beams cost less.** The ground and the sea under the beams are lit
   as the Sun lights them: the terrain's own colours and relief, blue water with its waves and a lit shoreline, instead
-  of a flat grey added on top. Every beam casts its own cloud shadows, on the clouds, on the ground and in the air:
-  the shafts are god rays now, broken by the clouds in their way, and mountain ranges shadow low beams. About 2-2.5 ms faster in the busiest beam views
+  of a flat grey added on top. Every beam casts its own cloud shadows, on the clouds, on the ground and in the air,
+  and mountain ranges shadow low beams. A site is lit by 100-200 mirrors from all over the sky, so the shadows they add
+  up to are soft, as under a bright overcast, not crisp like the Sun's. About 2-2.5 ms faster in the busiest beam views
   (33.5 -> 31.3 and 36.7 -> 34.2 ms in the bench report), 2.6 ms from orbit over the beam sites, daytime unchanged.
   `clouds_v2.beam_volume` 0 restores the old beams.
 - **Reflector beams and lightning light clouds the way the Sun does.** Beam-lit and flash-lit cloud scatter with the

@@ -536,10 +536,11 @@ void VulkanContext::logDeviceLimits(const VkPhysicalDeviceLimits &lim)
         // The limit counts every binding of the pipeline LAYOUT visible to the stage, not only what a shader reads.
         // sat_sky.frag's set has 4 (the mesh colour and distance targets, the sharp-reflection G-buffer, the far
         // cloud layer); the clouds v2 march set (cv2MarchDescLayout, shared by the march, tiles, lightning, froxel,
-        // far-layer and clipmap passes) has 6: the march's colour / depth at sparse and full rate, the far layer and
-        // the Sun / sky colour table's bake target. That is 2 past the guaranteed minimum of 4; this check said 4
-        // until the v1.2 release audit (2026-10-29). Desktop GPUs report thousands, MoltenVK at least 8.
-        {"per-stage storage images (the clouds v2 march set binds 6)", 6,
+        // far-layer and clipmap passes) has 8: the march's colour / depth at sparse and full rate, the far layer,
+        // the Sun / sky colour table's bake target, and the beam light volume and its shafts (2026-11-24). That is 4
+        // past the guaranteed minimum of 4; this check said 4 until the v1.2 release audit (2026-10-29), 6 until the
+        // beam light volume. Desktop GPUs report thousands, MoltenVK at least 8: the set is AT that.
+        {"per-stage storage images (the clouds v2 march set binds 8)", 8,
          lim.maxPerStageDescriptorStorageImages},
     };
 

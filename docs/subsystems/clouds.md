@@ -459,18 +459,24 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   The CPU (`SatelliteSim.cpp`, after the cloud-light emit) keeps up to 4 sites (`bvSlotTarget`: the beams' summed
   irradiance / (1 + (distance / 150 km)^2); a site keeps its slot while among the best 8) and sends every converged
   on-site beam of them (up to 512: ground point and direction in the site's frame, mean irradiance, footprint R) after
-  the cloud lights in `BeamCloudLightBuf`. Each site is a box fixed in its frame (east / north / up at the target): +-40
-  km, -2.5 .. 15.5 km, 128 x 128 x 64 cells (625 x 625 x 281 m), stacked by slot in one 3D texture. The bake (after the
-  lightning pass; timed in the `sun_horizon` stamp): kMode 0 the density (the field at the cell's footprint, a quarter
-  of the z levels a frame, skipped in blocks no beam reaches), 1 a ray map per beam (20 x 20 rays parallel to the beam
+  the cloud lights in `BeamCloudLightBuf`. Each site is a box fixed in its frame (east / north / up at the target): +-200
+  km, -2.5 .. 15.5 km, 128 x 128 x 64 cells, x / y asinh-warped (`beam_vol_warp.glsl`: 0.58 km at the site, 1.3 km 20 km
+  out, ~10 km at the walls; z 281 m), stacked by slot in one rgba16f 3D texture of two planes side by side in x (plane 0
+  the light below, plane 1 the per-beam phase sums and the density bake). The bake (after the
+  lightning pass; timed in the `sun_horizon` stamp): kMode 0 the density (the field at the cell's footprint with
+  `gCv2NoFar`, x 1000 into plane 1's z, a quarter of the z levels a frame, skipped in blocks no beam reaches), 1 a ray map per beam (20 x 20 rays parallel to the beam
   across its disk, marched down through the density: the optical depth above each z level), 2 the gather (half the z
-  blocks a frame; a 4 x 4 x 4 block culls the site's beams into shared memory, each cell sums disk x e^-od per beam:
-  x = with only the cloud beyond kBvNearM 1.95 km up each beam, y = with all of it, zw = the direction, octahedral),
+  blocks a frame; a 4 x 4 x 4 block culls the site's beams into shared memory (up to 256), each cell sums disk x e^-od
+  per beam: x = with only the cloud beyond kBvNearM 1.95 km up each beam, y = with all of it, zw = the direction,
+  octahedral; plane 1: x = sum of y's terms x phaseM at each beam's own angle to the eye's line to the cell, y = sum of
+  x's terms x the march's two HG lobes likewise),
   4 the ground (the volume at the terrain's height, `cv2Ground`, per column, into the flash buffer: `cv2BvGround` /
   `cv2BvHdr`, the sky set having no sampled image left), 3 the shafts (160 x 90 screen tiles x 64 log depths over the boxes' range: from 50 m near a box, else 0.7 x
-  the nearest one's distance, to 200 km past the farthest; slot 0 / 1's md.w: per tile the air's light toward the eye integrated front to back, sampled only inside the boxes; above them each
-  merged light's column to 60 km in closed form). Consumers: the march's `beamGather` reads x at the sample (the three
-  reads up the beams and the column floor take the near cloud, as the Sun's light march and its volume split the path);
+  the nearest one's distance, to 200 km past the farthest; slot 0 / 1's md.w: per tile the air's light toward the eye integrated front to back, sampled only inside the boxes (a column short of the walls, `kBvInner`); past them each beam's column from where its
+  axis leaves its box, top or wall, to 60 km in closed form; the merged cluster lights only for sites without a box). Consumers: the march's `beamGather` reads x at the sample (the three
+  reads up the beams and the column floor take the near cloud, as the Sun's light march and its volume split the path)
+  and plane 1's y: the HG lobes as summed (`phSum`), the droplet phase at the mean direction x (that sum / the lobes at the
+  mean direction), at most 16, under the Moon's cap;
   `beamShafts` reads the shaft volume at the ray's transmittance checkpoints; sat_sky.frag's `bvGroundLight` lights the
   terrain (albedo x E x cos + 0.12 of it from the lit air) and the sea (`seaE`, + a faint blue reflection) at the clouds'
   scale (`cv2.beam.z`). The 256-beam ground-spot loop now runs only for solar parks' glints (or with the volume off).
@@ -482,7 +488,7 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   old site's cloud). A busy site beyond the 4 boxes keeps the old ground spot (the CPU sorts its
   beams to the front of the ground list, `pad1` their count; the loop runs over all of them only on a solar park, for
   the panels' glints) and the merged lights' upper shafts; its clouds are lit only by the far layer (from high orbit).
-  More slots cost ~17 MB of video memory each (light + density) and ~0.2 ms of bake while a site holds them.
+  More slots cost ~17 MB of video memory each (both planes) and ~0.2 ms of bake while a site holds them.
   Measured (3070 Ti, 1600x900, user settings, interleaved reps; 128 registers): the report's shot 1 GPU 33.51 -> 31.31 ms
   (p90 39.5 -> 35.5), shot 2 36.74 -> 34.20 (43.4 -> 39.3), time running 35.91 -> 34.09, orbit 400 km over Alaska's 5
   sites 22.57 -> 19.93 (sky -2.9: the spot loop over every ground pixel), Alps noon (no beams) 18.72 -> 18.67, image at
@@ -494,6 +500,21 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   2 km up the mean direction: samples beside a slanted beam took its light (lit cloud bases); the full-attenuation value
   for faint / deep samples: 255 registers. With fixed 50 m - 3000 km depth slices (80 km deep at 460 km) the beams'
   streak seen from orbit smeared into the deck; over the boxes' range it reads as the old per-pixel shafts drew it.
+  **Round 2 (2026-11-24, issue_20261124_085028 "Reflect box visibility", _085151 "Box glitches"):** the +-40 km boxes
+  were visible as rectangles in the air and on the deck: the beams come from all over the sky (`beams vol`: 120-210
+  beams a site at ~1% of its light each, half the light more than 20-35 deg from the mean direction), and a 5-25 deg
+  beam is 46-126 km from its site at 3 km and 126-177 km at 10 km. The box became +-200 km with warped columns (the
+  same texel count), the shafts past a box continue each beam from its own exit point (the clusters' columns started at
+  the top only, and their sum was not the volume's: the top and side faces drew), and the single mean direction gave way
+  to per-beam phase sums toward the eye (plane 1): with the lobes at the mean direction a satellite's silver lining was
+  spread over the whole deck; now the clouds toward the satellite train rim-light. The r32f density image folded into
+  plane 1, so the march set's layout is back to 8 storage images (MoltenVK's 8; it was 9). Cost (3070 Ti, 1920x1009,
+  user settings, knockout delta, A-vs-A < 0.3 ms): the report's shot 1 / 2 3.8 / 4.1 ms, Arkansas 1.3, Fairbanks 2.1;
+  march 128 registers. **Shadows and shafts are soft by physics, not resolution** (measured with `debugview beamground`
+  and march debug view 8, the light on a level with no cloud in the way): a single beam's light has its clouds' shadow
+  band, the sum of a site's beams does not, because each beam's shadow of a cloud 1 km up lands 1.2-5.7 km away in its
+  own direction (cot of 10-40 deg); the Anchorage cumulus is a thin layer at ~1.0-1.5 km. A debug field probe in the
+  march agreed with the density bake (on a LOG display a trace of density reads as full: compare bakes linearly).
   **Terrain shadow on the clouds' sunlight (2026-11-23, step 5 of the lighting audit):** the Sun's key light at a cloud
   sample is x `cv2TerrSunT(rel)` (the terrain Sun-horizon map the air, fog and god rays read; on with the Sun up at the
   eye, below 60 km, terrain in reach), below 20 deg of Sun at the sample only (`sunUp < 0.34`). 128 registers (binary
@@ -639,7 +660,9 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   column (clipped to the eye, the scene depth, the ground point and 60 km), with the air integrated along it;
   the column's edge widens to 1.5 pixel footprints (energy kept). The closest-point chord it replaced turned
   with the camera when standing inside a beam (billboarding). The light cull reaches 60 km, not the cloud top.
-  Debug view 8: r the tile's lights, g the beams a ray's interval found, b the shaft radiance (log).
+  Debug view 8 (`clouds_v2.debug_view 8`, since 2026-11-24): the beam light volume on a level 200 m under the eye (300 m
+  above sea level from above 2.5 km), no cloud in the way: r all the light, g the clouds' share, b the density bake
+  (linear, 1 = 20 /km); 1 = 3e-3 Suns.
 - **Pass 11 (2026-09-28):** the user's cloud settings are the compiled defaults (clouds_v2 only; the presets' 
   max_iters/light_steps/step_growth and the perf-heavy full_rate_above_km 0 were left out). **Flow** (anchorFlow, 
   flow.x, sliders "Flow warp" / "Flow scale"): the mesoscale reads, and half as much the weather lookup, are 

@@ -342,8 +342,9 @@ layout(location = 1) out float outDepthCopy;
 #include "cloud_lightning.glsl"
 // The Reflect-Orbital beams' light on the ground (2026-11-24): the beam light volume (cloud_v2_beamvol.comp) at the terrain's
 // height, per busy site's box (cv2BvGround / cv2BvHdr, kMode 4), bilinear: the irradiance (Suns) with every beam's own
-// cloud shadow, and the direction toward the satellites (observer ENU). rel = the point - the eye. Box: +-40 km in 128
-// columns of 625 m (== beam_vol.glsl kBvHalf / kBvNX).
+// cloud shadow, and the direction toward the satellites (observer ENU). rel = the point - the eye. Box: 128 x 128
+// asinh-warped columns (beam_vol_warp.glsl: +-200 km, 0.58 km at the site).
+#include "beam_vol_warp.glsl"
 bool bvGroundLight(vec3 rel, out float E, out vec3 L)
 {
     E = 0.0; L = vec3(0.0, 0.0, 1.0);
@@ -351,7 +352,7 @@ bool bvGroundLight(vec3 rel, out float E, out vec3 L)
         vec4 o = cv2BvHdr[s * 4];
         if (o.w < 0.5) continue;
         vec3 v = rel - o.xyz;
-        vec2 f = (vec2(dot(v, cv2BvHdr[s * 4 + 1].xyz), dot(v, cv2BvHdr[s * 4 + 2].xyz)) + 40000.0) / 625.0 - 0.5;
+        vec2 f = bvColF(vec2(dot(v, cv2BvHdr[s * 4 + 1].xyz), dot(v, cv2BvHdr[s * 4 + 2].xyz))) - 0.5;
         if (any(lessThan(f, vec2(0.0))) || any(greaterThan(f, vec2(126.99)))) continue;
         ivec2 i0 = ivec2(floor(f));
         vec2  w  = f - vec2(i0);
@@ -6663,6 +6664,15 @@ void main() {
             if ((cloud.dbgDisableMask & 128u) == 0u && bvGroundLight(hitPt - obsPos, bvE, bvL))
                 surfColor += dayColor * vec3(1.0, 0.97, 0.92) * (bvE * cv2.beam.z * (1.0 - dayFrac))
                            * (max(dot(shadingN, bvL), 0.0) + 0.12 * skyView * terrainAO);
+#ifndef SKY_NO_DEBUG_VIEWS
+            // harness `debugview beamground` (51): the beams' irradiance on the ground with every beam's cloud shadow,
+            // linear, 1 = 3e-3 Suns (red past it)
+            if (int(cloud.terrainDebugView + 0.5) == 51) {
+                float q = ((cloud.dbgDisableMask & 128u) == 0u && bvGroundLight(hitPt - obsPos, bvE, bvL)) ? bvE / 3e-3 : 0.0;
+                terrainDebugColor = vec3(min(q, 1.0) + max(q - 1.0, 0.0), min(q, 1.0), min(q, 1.0));
+                terrainDebugActive = true;
+            }
+#endif
         }
 #endif
         // Flooded paddies (review 8): open water between the rice reflects the sky (Schlick, n = 1.33) and
@@ -7336,6 +7346,13 @@ void main() {
                 float bvE; vec3 bvL;
                 if ((cloud.dbgDisableMask & 128u) == 0u && bvGroundLight(hitPt - obsPos, bvE, bvL))
                     bvSea = vec3(1.0, 0.97, 0.92) * (bvE * cv2.beam.z * (1.0 - dayFrac)) * (max(dot(surfUp, bvL), 0.0) + 0.12);
+#ifndef SKY_NO_DEBUG_VIEWS
+                if (int(cloud.terrainDebugView + 0.5) == 51) {   // debugview beamground (the terrain's twin above)
+                    float q = ((cloud.dbgDisableMask & 128u) == 0u && bvGroundLight(hitPt - obsPos, bvE, bvL)) ? bvE / 3e-3 : 0.0;
+                    terrainDebugColor = vec3(min(q, 1.0) + max(q - 1.0, 0.0), min(q, 1.0), min(q, 1.0));
+                    terrainDebugActive = true;
+                }
+#endif
             }
 #endif
             vec3 seaE = (sunSpecTint * sunTransMax * directSun * max(dot(surfUp, sunDir), 0.0)

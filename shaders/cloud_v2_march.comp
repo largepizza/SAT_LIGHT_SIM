@@ -482,13 +482,15 @@ bool beamGather(vec3 pW, float h, vec3 dir, vec3 eye, out float Esum, out vec3 d
     vec3 L;
     int  s = bvSiteAt(pW - eye, L);
     if (s < 0) return false;
-    vec4 t = textureLod(bvLightTex, bvUVW(uint(s), L), 0.0);
+    vec4 t = textureLod(bvLightTex, bvUVWp(uint(s), L, 0), 0.0);
     if (t.x <= 1e-6 * kBvScale) return false;
     Esum = t.x * (1.0 / kBvScale);
     vec3 dB = bvOctDec(t.zw);
     dirSOut = bvSites[s].ax.xyz * dB.x + bvSites[s].ay.xyz * dB.y + bvSites[s].az.xyz * dB.z;
-    float cosB = dot(dir, dirSOut);
-    phSum = Esum * (cv2.phase.y * cv2HG(cosB, cv2.phase.x) + cv2.phase.w * cv2HG(cosB, cv2.phase.z));
+    // Round 2: the two HG lobes summed over the beams, each at its own angle to the eye's line (plane 1's y): the beams
+    // come from all over the sky (half a site's light > 20-35 deg from their mean), and the lobes at the mean direction
+    // spread a satellite's silver lining over the whole deck.
+    phSum = textureLod(bvLightTex, bvUVWp(uint(s), L, 1), 0.0).y * (1.0 / kBvScale);
     return true;
 }
 
@@ -502,6 +504,8 @@ vec3 beamFinish(vec3 pW, float h, vec3 dir, CV2Field f, float dayness, float og,
     else od = max(odMarch, 0.5 * f.sigma * max(f.topH - h, 0.0) / max(dot(normalize(pW), dirS), 0.15));
     float cosB = dot(dir, dirS);
     vec3  ph   = vec3(phSum / Esum);
+    // The beams' spread: the per-beam lobes (phSum) over the lobes at the mean direction scale the droplet phase below.
+    float phK  = clamp(ph.x / max(cv2.phase.y * cv2HG(cosB, cv2.phase.x) + cv2.phase.w * cv2HG(cosB, cv2.phase.z), 1e-3), 0.0, 16.0);
     // THE DROPLET PHASE (2026-11-23, step 3 of the lighting audit): the beams' light scatters as the Sun's and the Moon's
     // does (the key light's cv2.micro path): the Mie table at the sample's droplet size (or the ice lobe), the low orders,
     // the diffuse field at the droplets' mean cosine. Its forward peak is capped as the Moon's (kCv2MoonMieCap): the beams
@@ -512,7 +516,7 @@ vec3 beamFinish(vec3 pW, float h, vec3 dir, CV2Field f, float dayness, float og,
         float reff = cv2MicroReff(f.hf, f.topH, h), ice = cv2MicroIce(h);
         shB = cv2MicroShape(reff, ice);
         vec3 pWm = 8.0 * textureLod(cv2MieTex, vec2(acos(clamp(cosB, -1.0, 1.0)) * (1.0 / PI), cv2MicroRowV(reff)), 0.0).rgb;
-        ph = min(mix(pWm, vec3(0.45 * cv2HG(cosB, 0.995) + 0.55 * cv2HG(cosB, 0.55)), ice), vec3(kCv2MoonMieCap));
+        ph = min(mix(pWm, vec3(0.45 * cv2HG(cosB, 0.995) + 0.55 * cv2HG(cosB, 0.55)), ice) * phK, vec3(kCv2MoonMieCap));
     }
     // The ice's and the snow's halos round the satellites at one geometry (cv2IceOptics2, 2026-11-11: one frame, each table
     // row once; two calls here, inside the light loop, were one of the three loads of the merged march's 255 registers).
@@ -594,7 +598,7 @@ vec3 cv2AirOD(vec3 eye, vec3 dir, float eyeH, float t, vec3 betaR, float betaM)
 // the chord 2 sqrt(R^2 - d^2) / sin(angle): standing INSIDE a beam, that chord and point depend only on
 // the view angle, so the shaft turned with the camera like a billboard.
 int gShaftHits = 0;   // (debug view 8: unused since the shafts moved to the volume)
-layout(set = 0, binding = 35) uniform sampler3D bvShaftTex;   // the shafts' volume (cloud_v2_beamvol.comp kMode 3)
+layout(set = 0, binding = 33) uniform sampler3D bvShaftTex;   // the shafts' volume (cloud_v2_beamvol.comp kMode 3)
 // The shafts (2026-11-24): the shaft volume's integral from the eye, read at the ray's cloud transmittance checkpoints and
 // weighted by the transmittance between them (cv2TAt's bands), up to the scene's depth. The volume holds the air's light
 // from every beam, each attenuated by the cloud along its own path (god rays with the clouds' shadows in them). Until
@@ -1996,14 +2000,22 @@ void main()
     // 10: the godrays' shadowed share of the airlight (1 - godT), x4.
     else if (dbg == 10) outRgb = vec3(clamp((1.0 - godT) * 4.0, 0.0, 1.0)) * 0.05;
     else if (dbg == 5) outRgb = vec3(1.0 - exp(-odRain), 0.0, (wAcc > 1e-4) ? 0.3 : 0.0) * 0.05;
-    // 8: the beam shafts — r the tile's light count / 64 (1 = overflow, all lights), g the beams this
-    // ray's interval found / 8, b the shaft radiance (log scale), plus a faint grey when any light exists.
+    // 8: the beam light volume on a level 200 m under the eye, or at 300 m above sea level from above 2.5 km (no cloud in
+    // the way: the shadows' pattern): r all the light
+    // (plane 0 y, every beam with its own cloud shadow), g the clouds' share (x, the cloud past 1.95 km up each beam),
+    // b the density bake (cloud extinction, 1 = 20 /km); 1 = 3e-3 Suns. Black off the level or outside every box.
     else if (dbg == 8) {
-        float nL = float(bvSiteCount) / 4.0;
-        float lum = dot(shaftRgb, vec3(0.33));
-        outRgb = vec3(nL, float(gShaftHits) / 8.0,
-                      clamp((log2(max(lum, 1e-12)) + 30.0) / 30.0, 0.0, 1.0)) * 0.05
-               + ((beamLightCount > 0u) ? vec3(0.004) : vec3(0.0));
+        outRgb = vec3(0.0);
+        float hP = (eyeH > 2500.0) ? 300.0 : eyeH - 200.0, b0 = dot(eye, dir), c0 = dot(eye, eye) - (R_EARTH + hP) * (R_EARTH + hP), dq = b0 * b0 - c0;
+        if (dq > 0.0 && -b0 - sqrt(dq) > 0.0) {
+            vec3 L;
+            int  sI = bvSiteAt(dir * (-b0 - sqrt(dq)), L);
+            if (sI >= 0) {
+                vec4 v0 = textureLod(bvLightTex, bvUVWp(uint(sI), L, 0), 0.0);
+                vec4 v1 = textureLod(bvLightTex, bvUVWp(uint(sI), L, 1), 0.0);
+                outRgb = clamp(vec3(v0.y / (3e-3 * kBvScale), v0.x / (3e-3 * kBvScale), v1.z / 20.0), 0.0, 1.0) * 0.05;
+            }
+        }
     }
     // 7: which layer: red = low (incl. rain), green = mid, blue = anvil + Cb columns, white = high.
     else if (dbg == 7) outRgb = (vec3(1.0) - exp(-odLayer.xyz) + vec3(0.6) * (1.0 - exp(-odLayer.w))) * 0.05;

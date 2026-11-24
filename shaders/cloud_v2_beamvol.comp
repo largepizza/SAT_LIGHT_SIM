@@ -1,16 +1,20 @@
 #version 450
 #extension GL_EXT_control_flow_attributes : enable
 // ── The beam light volume's bake (2026-11-24; include/beam_vol.glsl) ──────────────────────────────────────────────────
-// Three dispatches a frame, after the lightning pass, before the march (same descriptor set and push constants):
+// Five dispatches a frame, after the lightning pass, before the march (same descriptor set and push constants):
 //   kMode 0  DENSITY: the cloud's extinction at each cell of each site's box (the field at the cell's footprint: the
-//            cloud's mean over ~600 m, what a shadow that coarse needs), a quarter of the boxes' z slabs a frame.
+//            cloud's mean over the cell, what a shadow that coarse needs), a quarter of the boxes' z slabs a frame, into
+//            plane 1's z.
 //   kMode 1  RAY MAPS: each beam's own shadow. kBvRays x kBvRays rays parallel to the beam across its disk, each marched
 //            DOWN the beam (from the box's top toward the ground) through the density, keeping the optical depth above
 //            each of the box's z levels. A beam from 30 deg elevation and one from 70 deg see different cloud.
 //   kMode 2  GATHER: each cell sums the beams whose disk covers it (a workgroup culls the site's beams to its block
-//            first): the disk's irradiance x e^-(that beam's optical depth at the cell), and the irradiance-weighted
-//            direction toward the satellites. Written to the light volume the march (clouds), the froxels (shafts) and
-//            the sky pass (ground, sea) read.
+//            first): the disk's irradiance x e^-(that beam's optical depth at the cell), the irradiance-weighted direction
+//            toward the satellites, and (plane 1) the in-scatter toward the EYE with each beam at its own angle (the air's
+//            Mie lobe, the clouds' two HG lobes). Written to the light volume the march (clouds), the shafts and the sky
+//            pass (ground, sea) read.
+//   kMode 4  GROUND: the volume at the terrain's height, per box column, for the sky pass (flash buffer).
+//   kMode 3  SHAFTS: the beams' air along the view, a screen-tile x log-depth volume the march reads.
 layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
 layout(constant_id = 2) const uint kMode = 0u;
 
@@ -45,18 +49,17 @@ layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
 #define CV2_FLASH_WRITE
 #include "cloud_lightning.glsl"   // cv2BvGround / cv2BvHdr (kMode 4)
 #include "atmosphere.glsl"        // atmColumn (kMode 3)
+#include "cv2_optics.glsl"        // cv2HG (kMode 2)
 
-layout(set = 0, binding = 29, rgba16f) uniform writeonly image3D bvLightImg;
-layout(set = 0, binding = 31, r32f)    uniform writeonly image3D bvDensImg;
-layout(set = 0, binding = 32) uniform sampler3D bvDensTex;
+// The light volume: 2 x kBvNX wide (plane 0 | plane 1, beam_vol.glsl), kBvNY, kBvNZ x kBvSites deep.
+layout(set = 0, binding = 29, rgba16f) uniform image3D bvLightImg;
 layout(set = 0, binding = 30) uniform sampler3D bvLightTex;
-layout(set = 0, binding = 34, rgba16f) uniform writeonly image3D bvShaftImg;
-layout(std430, set = 0, binding = 33) buffer BvMapBuf { uint bvMap[]; };   // [beam][kBvNZ / 2][ray] packHalf2x16
+layout(std430, set = 0, binding = 31) buffer BvMapBuf { uint bvMap[]; };   // [beam][kBvNZ / 2][ray] packHalf2x16
+layout(set = 0, binding = 32, rgba16f) uniform writeonly image3D bvShaftImg;
 
 const uint kBvRayN = uint(kBvRays * kBvRays);   // rays a beam (a knot pair's rays are adjacent: coalesced writes, and
                                                 // the gather's bilinear reads share lines)
 
-// The site a beam belongs to (the sites' beam ranges are contiguous).
 // The terrain's height (m above sea level) under an observer-relative point: the elevation map (terrain.glsl's encoding:
 // 15/255 of 9000 m is sea level), ~2.7 km pixels: the ranges, not single peaks.
 float bvTerrainH(vec3 rel, float eyeH, mat3 enuToEcef)
@@ -67,6 +70,7 @@ float bvTerrainH(vec3 rel, float eyeH, mat3 enuToEcef)
     return max(textureLod(cv2ElevTex, uv, 0.0).r * 9000.0 - 15.0 / 255.0 * 9000.0, 0.0);
 }
 
+// The site a beam belongs to (the sites' beam ranges are contiguous).
 uint bvSiteOfBeam(uint b)
 {
     for (uint s = 0u; s < kBvSites; ++s)
@@ -74,19 +78,27 @@ uint bvSiteOfBeam(uint b)
     return 0u;
 }
 
-const uint kBvListMax = 128u;   // beams a 4 x 4 x 4 block keeps (past it, the weakest are not dropped: the rest are)
+// A 4 x 4 block of columns (block index bxy): its centre and half diagonal in the box's x / y (the columns are warped).
+void bvBlockXY(uvec2 bxy, out vec2 cen, out float rad)
+{
+    vec2 lo = vec2(bvUnwarp(float(bxy.x * 4u) / float(kBvNX)), bvUnwarp(float(bxy.y * 4u) / float(kBvNY)));
+    vec2 hi = vec2(bvUnwarp(float(bxy.x * 4u + 4u) / float(kBvNX)), bvUnwarp(float(bxy.y * 4u + 4u) / float(kBvNY)));
+    cen = 0.5 * (lo + hi);
+    rad = 0.5 * length(hi - lo);
+}
+
+const uint kBvListMax = 256u;   // beams a 4 x 4 x 4 block keeps (past it, the rest are dropped; 12 KB of shared memory)
 shared uint sBeamN;
 shared vec4 sBg[kBvListMax];    // xyz ground point, w irradiance
 shared vec4 sBd[kBvListMax];    // xyz direction, w R
 shared vec4 sBe1[kBvListMax];   // xyz across-beam basis 1, w the beam's index
 
-// The site's beams whose disk can reach this 4 x 4 x 4 block (its centre Lb) into shared memory; returns their count.
-uint bvCullBlock(uint s, vec3 Lb)
+// The site's beams whose disk can reach this block (centre Lb, radius rb) into shared memory; returns their count.
+uint bvCullBlock(uint s, vec3 Lb, float rb)
 {
     uint b0 = uint(bvSites[s].ax.w), nb = min(uint(bvSites[s].ay.w), kBvMaxBeams);
     if (gl_LocalInvocationIndex == 0u) sBeamN = 0u;
     barrier();
-    float rb = length(vec3(2.0 * kBvCellXY, 2.0 * kBvCellXY, 2.0 * kBvCellZ));
     for (uint i = gl_LocalInvocationIndex; i < nb; i += 64u) {
         uint  b = b0 + i;
         vec3  g = bvBeams[b].g.xyz, d = bvBeams[b].d.xyz;
@@ -106,6 +118,10 @@ uint bvCullBlock(uint s, vec3 Lb)
     barrier();
     return min(sBeamN, kBvListMax);
 }
+
+// The clouds' reference phase for plane 1's y (the march's two HG lobes, cv2.phase; beamFinish scales its own phase at
+// the mean direction by this sum over the beams / this at the mean direction).
+float bvCloudPhase(float c) { return cv2.phase.y * cv2HG(c, cv2.phase.x) + cv2.phase.w * cv2HG(c, cv2.phase.z); }
 
 void main()
 {
@@ -127,7 +143,7 @@ void main()
             cv2BvHdr[s * 4u + 3u] = vec4(bvSites[s].az.xyz, 0.0);
         }
         if (s >= bvSiteCount || bvSites[s].o.w < 0.5) { cv2BvGround[id] = uvec2(0u); return; }
-        vec2  xy  = (vec2(float(cI % uint(kBvNX)), float(cI / uint(kBvNX))) + 0.5) * kBvCellXY - kBvHalf;
+        vec2  xy  = bvColCentre(vec2(float(cI % uint(kBvNX)), float(cI / uint(kBvNX))));
         vec3  rel = bvSites[s].o.xyz + bvSites[s].ax.xyz * xy.x + bvSites[s].ay.xyz * xy.y;
         float h0  = length(rel + vec3(0.0, 0.0, R_EARTH + eyeH)) - R_EARTH;   // the box's z = 0 here, above sea level
         float gH  = bvTerrainH(rel, eyeH, enuToEcef);   // the terrain (the sea: 0)
@@ -151,7 +167,8 @@ void main()
         vec3  eye = vec3(0.0, 0.0, R_EARTH + eyeH);
         vec3  BETA_R = BETA_R_BASE * cloud.atmosRayleighGain;
         float BETA_M = BETA_M_BASE * cloud.atmosMieGain;
-        // Each box's interval along the ray.
+        float pixAng = 2.0 * th / float(kBvShY);
+        // Each box's interval along the ray (its walls a column in: where the volume's light ends).
         vec2 iv[kBvSites];
         for (uint q = 0u; q < kBvSites; ++q) {
             iv[q] = vec2(1e30, -1e30);
@@ -160,20 +177,70 @@ void main()
             vec3 r0 = vec3(dot(v, bvSites[q].ax.xyz), dot(v, bvSites[q].ay.xyz), dot(v, bvSites[q].az.xyz));
             vec3 rd = vec3(dot(dir, bvSites[q].ax.xyz), dot(dir, bvSites[q].ay.xyz), dot(dir, bvSites[q].az.xyz));
             vec3 inv = 1.0 / (rd + vec3(1e-9));
-            vec3 ta = (vec3(-kBvHalf, -kBvHalf, kBvZ0) - r0) * inv, tb = (vec3(kBvHalf, kBvHalf, kBvZ1) - r0) * inv;
+            vec3 ta = (vec3(-kBvInner, -kBvInner, kBvZ0) - r0) * inv, tb = (vec3(kBvInner, kBvInner, kBvZ1) - r0) * inv;
             vec3 tn = min(ta, tb), tf = max(ta, tb);
             float t0 = max(max(tn.x, tn.y), max(tn.z, 0.0)), t1 = min(min(tf.x, tf.y), tf.z);
             if (t1 > t0) iv[q] = vec2(t0, t1);
         }
-        // ABOVE the boxes (no cloud there): each merged beam light's column from the box's top to 60 km, in closed form
-        // (the old per-pixel shafts' integral, clipped below at kBvZ1), deposited at its light-weighted mean depth. Seen
-        // from orbit the beams' air above 15 km is most of their streak.
+        // PAST the boxes (no cloud there, or none the volume holds): each beam's column from where its axis leaves its box
+        // (the top, or a wall for a low beam) to 60 km, in closed form, deposited at the light-weighted mean depth. Seen
+        // from orbit the beams' air above 15 km is most of their streak. (Until round 2 this was the merged cluster lights
+        // from the box's TOP: a low beam's air between a wall and the top was nobody's, and the clusters' sum was not the
+        // volume's: the box's outline in the sky, issue_20261124_085028.)
         vec3  U = vec3(0.0);
         float tU = 0.0, wU = 0.0;
-        float pixAng = 2.0 * th / float(kBvShY);
+        for (uint q = 0u; q < kBvSites; ++q) {
+            if (q >= bvSiteCount || bvSites[q].o.w < 0.5) continue;
+            uint b0 = uint(bvSites[q].ax.w), nb = uint(bvSites[q].ay.w);
+            for (uint bi = b0; bi < min(b0 + nb, kBvMaxBeams); ++bi) {
+                vec4  bg = bvBeams[bi].g, bd = bvBeams[bi].d;
+                if (bg.w <= 0.0) continue;
+                vec3  lp = bvSites[q].o.xyz + bvSites[q].ax.xyz * bg.x + bvSites[q].ay.xyz * bg.y + bvSites[q].az.xyz * bg.z;
+                vec3  S  = bvSites[q].ax.xyz * bd.x + bvSites[q].ay.xyz * bd.y + bvSites[q].az.xyz * bd.z;
+                float R  = max(bd.w, 100.0);
+                float b  = dot(dir, S), eL = dot(lp, S);
+                vec3  a  = dir - S * b, c0 = -lp + S * eL;
+                float A = dot(a, a), B = dot(a, c0), C = dot(c0, c0);
+                float tC = (A > 1e-8) ? max(-B / A, 0.0) : 0.0;
+                float d2 = (A > 1e-8) ? max(C - B * B / A, 0.0) : C;
+                float Ro = R + max(max(0.02 * R, 40.0), 1.5 * tC * pixAng);
+                if (d2 > Ro * Ro) continue;
+                float t0 = 0.0, t1 = 1e9;
+                if (A > 1e-8) { float hw = sqrt((Ro * Ro - d2) / A); t0 = max(-B / A - hw, 0.0); t1 = -B / A + hw; }
+                // Where the axis leaves the box (beam parameter from the ground point), and 60 km up.
+                vec3  dB = bd.xyz;
+                float exX = abs(dB.x) > 1e-6 ? (sign(dB.x) * kBvInner - bg.x) / dB.x : 1e30;
+                float exY = abs(dB.y) > 1e-6 ? (sign(dB.y) * kBvInner - bg.y) / dB.y : 1e30;
+                float sLo = max(min(min(exX, exY), (kBvZ1 - bg.z) / max(dB.z, 1e-3)), 0.0);
+                float sTop = (60000.0 - bg.z) / max(dB.z, 1e-3);
+                if (sTop <= sLo) continue;
+                if (b > 1e-6)       { t0 = max(t0, (sLo + eL) / b); t1 = min(t1, (sTop + eL) / b); }
+                else if (b < -1e-6) { t1 = min(t1, (sLo + eL) / b); t0 = max(t0, (sTop + eL) / b); }
+                else continue;
+                t1 = min(t1, t0 + 80000.0);
+                if (t1 <= t0) continue;
+                float h0 = length(eye + dir * t0) - R_EARTH, h1 = length(eye + dir * t1) - R_EARTH;
+                float tq = 0.5 * (t0 + t1), len = t1 - t0;
+                vec3  X  = eye + dir * tq;
+                float dayP = clamp((dot(normalize(X), pc.sunDirENU.xyz) + 0.2) / 0.5, 0.0, 1.0);
+                float ca = exp(-max(h0, 0.0) / H_R), cb = exp(-max(h1, 0.0) / H_R), dh = (h1 - h0) / H_R;
+                float colR = abs(dh) < 1e-3 ? len * 0.5 * (ca + cb) : len * (ca - cb) / dh;
+                ca = exp(-max(h0, 0.0) / H_M); cb = exp(-max(h1, 0.0) / H_M); dh = (h1 - h0) / H_M;
+                float colM = abs(dh) < 1e-3 ? len * 0.5 * (ca + cb) : len * (ca - cb) / dh;
+                vec3  sc = BETA_R * colR * phaseR(b) + vec3(BETA_M * cv2.beam.y * colM * phaseM(b));
+                vec3  tau = BETA_R * (H_R * atmColumn(eye, dir, tq, H_R)) + vec3(BETA_M * 1.1 * H_M * atmColumn(eye, dir, tq, H_M));
+                vec3  add = bg.w * (R * R) / (Ro * Ro) * sc * (1.0 - dayP) * exp(-tau) * kBvScale;
+                U += add;
+                float wl = dot(add, vec3(0.33));
+                tU += wl * tq; wU += wl;
+            }
+        }
+        // Busy sites without a box (past kBvSites): their merged cluster lights from 15.5 km up, as before round 2.
         for (uint li = 0u; li < min(beamLightCount, kMaxCloudBeamLights); ++li) {
             if (beamLights[li].intensity <= 0.0) continue;
             vec3  lp = beamLights[li].posENU, S = beamLights[li].dirToSource;
+            vec3  Lq;
+            if (bvSiteAt(lp + S * 500.0, Lq) >= 0) continue;   // a boxed site's light: its beams are above
             float R  = max(beamLights[li].footprintRadM, 100.0);
             float b  = dot(dir, S), eL = dot(lp, S);
             vec3  a  = dir - S * b, c0 = -lp + S * eL;
@@ -206,7 +273,7 @@ void main()
             float wl = dot(add, vec3(0.33));
             tU += wl * tq; wU += wl;
         }
-        tU = (wU > 0.0) ? tU / wU : -1.0;
+        tU = (wU > 0.0) ? min(tU / wU, 0.999 * bvShT1()) : -1.0;
 
         vec3  acc = vec3(0.0);
         float tP = 0.0, shT0 = bvShT0(), shC = bvShC();
@@ -227,17 +294,18 @@ void main()
                     float rR = exp(-max(h, 0.0) / H_R), rM = exp(-max(h, 0.0) / H_M);
                     vec3  v = X - eye - bvSites[q].o.xyz;
                     vec3  L = vec3(dot(v, bvSites[q].ax.xyz), dot(v, bvSites[q].ay.xyz), dot(v, bvSites[q].az.xyz));
-                    vec4  w = textureLod(bvLightTex, bvUVW(q, L), 0.0);
+                    vec4  w = textureLod(bvLightTex, bvUVWp(q, L, 0), 0.0);
                     if (w.y <= 0.0) continue;
+                    float pM = textureLod(bvLightTex, bvUVWp(q, L, 1), 0.0).x;   // each beam's Mie at its own angle
                     vec3  dB = bvOctDec(w.zw);
                     vec3  dS = bvSites[q].ax.xyz * dB.x + bvSites[q].ay.xyz * dB.y + bvSites[q].az.xyz * dB.z;
                     float c  = dot(dir, dS);
                     float dayP = clamp((dot(normalize(X), pc.sunDirENU.xyz) + 0.2) / 0.5, 0.0, 1.0);
-                    vec3  sc = (BETA_R * rR * phaseR(c) + vec3(BETA_M * cv2.beam.y * rM * phaseM(c))) * len;
+                    vec3  sc = (BETA_R * (rR * phaseR(c) * w.y) + vec3(BETA_M * cv2.beam.y * rM * pM)) * len;
                     // The air between the eye and the sample (straight, as the march's estimate: atmColumn's curved column
                     // matters only past the limb, where these boxes are not).
                     vec3  tau = BETA_R * (H_R * atmColumn(eye, dir, ta, H_R)) + vec3(BETA_M * 1.1 * H_M * atmColumn(eye, dir, ta, H_M));
-                    vec3  add = w.y * (1.0 - dayP) * sc * exp(-tau);
+                    vec3  add = (1.0 - dayP) * sc * exp(-tau);
                     acc += add;
                     if (ta < tm) mid += add;
                 }
@@ -249,26 +317,33 @@ void main()
     }
 
     if (kMode == 0u) {
-        // ── DENSITY ── (z slabs of 16, one of four a frame per site: the whole box every 4 frames)
+        // ── DENSITY ── (z slabs of 16, one of four a frame per site: the whole box every 4 frames; plane 1's z)
         // (bvPad0 1: a slot changed hands, the whole box this frame: kBvNZ levels a slot, not 16)
         ivec3 c = ivec3(gl_GlobalInvocationID);
         uint  per = (bvPad0 != 0u) ? uint(kBvNZ) : 16u;
         uint  s = uint(c.z) / per;
         if (s >= min(bvSiteCount, kBvSites)) return;
         int   z = (bvPad0 != 0u) ? (c.z - int(s * per)) : int((bvFrame & 3u) * 16u) + (c.z & 15);
-        vec3  L = vec3((vec2(c.xy) + 0.5) * kBvCellXY - kBvHalf, kBvZ0 + (float(z) + 0.5) * kBvCellZ);
+        vec2  xy = bvColCentre(vec2(c.xy));
+        vec3  L = vec3(xy, kBvZ0 + (float(z) + 0.5) * kBvCellZ);
+        ivec3 tx = ivec3(c.x + kBvNX, c.y, z + int(s) * kBvNZ);
+        vec4  old = imageLoad(bvLightImg, tx);
         // Only where a beam passes (most of the box is outside every beam: the field is not read there).
-        vec3  Lb = vec3((vec2(gl_WorkGroupID.xy * 4u) + 2.0) * kBvCellXY - kBvHalf,
-                        kBvZ0 + (float(uint(z) & ~3u) + 2.0) * kBvCellZ);
-        if (bvCullBlock(s, Lb) == 0u) { imageStore(bvDensImg, ivec3(c.xy, z + int(s) * kBvNZ), vec4(0.0)); return; }
+        vec2  bc; float br;
+        bvBlockXY(gl_WorkGroupID.xy, bc, br);
+        vec3  Lb = vec3(bc, kBvZ0 + (float(uint(z) & ~3u) + 2.0) * kBvCellZ);
+        if (bvCullBlock(s, Lb, length(vec2(br, 2.0 * kBvCellZ))) == 0u) { imageStore(bvLightImg, tx, vec4(old.xy, 0.0, old.w)); return; }
         vec3  rel = bvSites[s].o.xyz + bvSites[s].ax.xyz * L.x + bvSites[s].ay.xyz * L.y + bvSites[s].az.xyz * L.z;
         float h = length(rel + vec3(0.0, 0.0, R_EARTH + eyeH)) - R_EARTH;
         float sg = 0.0;
         if (h > 0.0 && h < 20000.0) {
-            CV2Field f = cv2Field(cv2Pos(rel, eyeH, enuToEcef), 0.0, kBvCellXY);
+            // (The cell's footprint, the mean erosion; gCv2NoFar as the ground shadow's read: a coarse cell takes the small
+            // cells' sub-pixel average, not the far field's km-scale blobs.)
+            gCv2NoFar = true;
+            CV2Field f = cv2Field(cv2Pos(rel, eyeH, enuToEcef), 0.0, min(max(bvCellW(abs(xy.x)), bvCellW(abs(xy.y))), 4000.0));
             sg = f.sigma * (1.0 - 0.8 * f.thin);   // thin layers as the light march counts them
         }
-        imageStore(bvDensImg, ivec3(c.xy, z + int(s) * kBvNZ), vec4(sg));
+        imageStore(bvLightImg, tx, vec4(old.xy, sg * 1000.0, old.w));
         return;
     }
 
@@ -295,11 +370,11 @@ void main()
             vec3  P  = r0 + d * ((zk - r0.z) / dzs);
             float sg = 0.0;
             if (abs(P.x) < kBvHalf && abs(P.y) < kBvHalf)
-                sg = textureLod(bvDensTex, bvUVW(s, P), 0.0).r;
-            if (!rock && zk < 9000.0 && abs(P.x) < kBvHalf - kBvCellXY && abs(P.y) < kBvHalf - kBvCellXY) {
+                sg = textureLod(bvLightTex, bvUVWp(s, P, 1), 0.0).z * 0.001;
+            if (!rock && zk < 9000.0 && abs(P.x) < kBvInner && abs(P.y) < kBvInner) {
                 // The terrain's height in the box's z at P (the ground pass's last frame, bilinear): a level under it is
                 // rock (the ground does not shade itself).
-                vec2  fT = (P.xy + kBvHalf) / kBvCellXY - 0.5;
+                vec2  fT = clamp(bvColF(P.xy) - 0.5, vec2(0.0), vec2(float(kBvNX) - 2.001));
                 ivec2 iT = ivec2(floor(fT));
                 vec2  wT = fT - vec2(iT);
                 int   bT = int(s) * kBvNX * kBvNY + iT.y * kBvNX + iT.x;
@@ -322,10 +397,15 @@ void main()
     if (s >= min(bvSiteCount, kBvSites)) return;
     uint  bz = (gl_WorkGroupID.z - s * uint(kBvNZ / 8)) * 2u + (bvFrame & 1u);   // the block's z index in the site
     ivec3 c = ivec3(gl_GlobalInvocationID.xy, int(bz * 4u + gl_LocalInvocationID.z));
-    vec3  L = vec3((vec2(c.xy) + 0.5) * kBvCellXY - kBvHalf, kBvZ0 + (float(c.z) + 0.5) * kBvCellZ);
-    vec3  Lb = vec3((vec2(gl_WorkGroupID.xy * 4u) + 2.0) * kBvCellXY - kBvHalf, kBvZ0 + (float(bz * 4u) + 2.0) * kBvCellZ);
-    uint  n = bvCullBlock(s, Lb);
-    float E = 0.0, Ef = 0.0;
+    vec3  L = vec3(bvColCentre(vec2(c.xy)), kBvZ0 + (float(c.z) + 0.5) * kBvCellZ);
+    vec2  bc; float br;
+    bvBlockXY(gl_WorkGroupID.xy, bc, br);
+    vec3  Lb = vec3(bc, kBvZ0 + (float(bz * 4u) + 2.0) * kBvCellZ);
+    uint  n = bvCullBlock(s, Lb, length(vec2(br, 2.0 * kBvCellZ)));
+    // The eye's line to the cell (box frame): each beam's phase toward the eye at its own angle (plane 1).
+    vec3  vO = -bvSites[s].o.xyz;
+    vec3  V  = normalize(L - vec3(dot(vO, bvSites[s].ax.xyz), dot(vO, bvSites[s].ay.xyz), dot(vO, bvSites[s].az.xyz)));
+    float E = 0.0, Ef = 0.0, PM = 0.0, PC = 0.0;
     vec3  D = vec3(0.0);
     uint  kw = uint(c.z) >> 1;
     bool  hi = (c.z & 1) == 1;
@@ -361,10 +441,16 @@ void main()
                      : mix(mix(fa.x, fb.x, w.x), mix(fc.x, fd.x, w.x), w.y);
         }
         float e0 = sBg[i].w * bvDisk(d2, R);
-        float e = e0 * exp(-od);
-        E += e;
-        Ef += e0 * exp(-odF);
-        D += e0 * d;
+        float e = e0 * exp(-od), eF = e0 * exp(-odF);
+        float cV = dot(V, d);
+        E  += e;
+        Ef += eF;
+        PM += e * phaseM(cV);
+        PC += eF * bvCloudPhase(cV);
+        D  += e0 * d;
     }
     imageStore(bvLightImg, ivec3(c.xy, c.z + int(s) * kBvNZ), vec4(Ef * kBvScale, E * kBvScale, bvOctEnc(D)));
+    ivec3 t1 = ivec3(c.x + kBvNX, c.y, c.z + int(s) * kBvNZ);
+    float dens = imageLoad(bvLightImg, t1).z;
+    imageStore(bvLightImg, t1, vec4(PM * kBvScale, PC * kBvScale, dens, 0.0));
 }

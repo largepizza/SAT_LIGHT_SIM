@@ -588,18 +588,16 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         ctx.endOneTimeCommands(cmd);
     }
 
-    // ── The beam light volume (2026-11-24, cloud_v2_beamvol.comp): light rgba16f + density r32f, 128 x 128 x (64 x 4 sites),
-    // GENERAL for good, cleared to 0; the beams' ray maps (512 beams x 400 rays x 32 uints). ──
+    // ── The beam light volume (2026-11-24, cloud_v2_beamvol.comp): rgba16f, two planes side by side (light | per-beam
+    // phase + the density bake), 2 x 128 x 128 x (64 x 4 sites), GENERAL for good, cleared to 0; the beams' ray maps (512
+    // beams x 400 rays x 32 uints). (Round 2 folded the r32f density image into plane 1: the march set's layout had 9
+    // storage images, past MoltenVK's 8.) ──
     {
         const uint32_t nz = (uint32_t)(kBvNZ * kBvSites);
-        ctx.createImage(kBvNX, kBvNY, VK_FORMAT_R16G16B16A16_SFLOAT,
+        ctx.createImage(2 * kBvNX, kBvNY, VK_FORMAT_R16G16B16A16_SFLOAT,
                         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                         cv2BvLightImg, cv2BvLightMem, 1, nz);
         cv2BvLightView = makeView(dev, cv2BvLightImg, VK_IMAGE_VIEW_TYPE_3D, VK_FORMAT_R16G16B16A16_SFLOAT, 0, 1, 1);
-        ctx.createImage(kBvNX, kBvNY, VK_FORMAT_R32_SFLOAT,
-                        VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                        cv2BvDensImg, cv2BvDensMem, 1, nz);
-        cv2BvDensView = makeView(dev, cv2BvDensImg, VK_IMAGE_VIEW_TYPE_3D, VK_FORMAT_R32_SFLOAT, 0, 1, 1);
         ctx.createImage(kBvShX, kBvShY, VK_FORMAT_R16G16B16A16_SFLOAT,
                         VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                         cv2BvShaftImg, cv2BvShaftMem, 1, kBvShZ);
@@ -607,7 +605,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         ctx.createBuffer((VkDeviceSize)kBvMaxBeams * kBvRays * kBvRays * (kBvNZ / 2) * 4,
                          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, cv2BvMapBuf, cv2BvMapMem);
         VkCommandBuffer cmd = ctx.beginOneTimeCommands();
-        const VkImage bvImgs[3] = {cv2BvLightImg, cv2BvDensImg, cv2BvShaftImg};
+        const VkImage bvImgs[2] = {cv2BvLightImg, cv2BvShaftImg};
         for (VkImage im : bvImgs)
         {
             VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
@@ -650,7 +648,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
     // 28 the ice crystals' traced halo table (2026-11-10, cv2_optics.glsl cv2IceOptics, tools/make_ice_optics.py)
     cv2MarchDescLayout = makeSetLayout(dev, {UBO, UBO, TEX, TEX, TEX, TEX, TEX, TEX, SSBO, SSBO, IMG, IMG, SSBO, IMG, TEX, SSBO,
                                              TEX, IMG, IMG, SSBO, TEX, IMG, SSBO, SSBO, TEX, TEX, SSBO, TEX, TEX,
-                                             IMG, TEX, IMG, TEX, SSBO, IMG, TEX});   // 29-35: the beam light volume (2026-11-24)
+                                             IMG, TEX, SSBO, IMG, TEX});   // 29-33: the beam light volume (2026-11-24)
     // cloud_v2_resolve.comp: 0 CloudV2Params, 1 new color, 2 new depth, 3 history, 4 out color, 5 out depth,
     // 6/7 the full-rate tiles' color/depth, 8 the tile list
     // 9 / 10 the sample ages (out, history)
@@ -755,19 +753,15 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
                                     earthElevView ? earthElevView : noiseTexView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo bvLW{VK_NULL_HANDLE, cv2BvLightView, VK_IMAGE_LAYOUT_GENERAL};
         VkDescriptorImageInfo bvLR{cv2ClampSampler, cv2BvLightView, VK_IMAGE_LAYOUT_GENERAL};
-        VkDescriptorImageInfo bvDW{VK_NULL_HANDLE, cv2BvDensView, VK_IMAGE_LAYOUT_GENERAL};
-        VkDescriptorImageInfo bvDR{cv2ClampSampler, cv2BvDensView, VK_IMAGE_LAYOUT_GENERAL};
         VkDescriptorBufferInfo bvMap{cv2BvMapBuf, 0, VK_WHOLE_SIZE};
         VkDescriptorImageInfo bvSW{VK_NULL_HANDLE, cv2BvShaftView, VK_IMAGE_LAYOUT_GENERAL};
         VkDescriptorImageInfo bvSR{cv2ClampSampler, cv2BvShaftView, VK_IMAGE_LAYOUT_GENERAL};
         VkWriteDescriptorSet w[] = {
-            imageWrite(cv2MarchDescSet, 34, IMG, &bvSW),
-            imageWrite(cv2MarchDescSet, 35, TEX, &bvSR),
+            imageWrite(cv2MarchDescSet, 32, IMG, &bvSW),
+            imageWrite(cv2MarchDescSet, 33, TEX, &bvSR),
             imageWrite(cv2MarchDescSet, 29, IMG, &bvLW),
             imageWrite(cv2MarchDescSet, 30, TEX, &bvLR),
-            imageWrite(cv2MarchDescSet, 31, IMG, &bvDW),
-            imageWrite(cv2MarchDescSet, 32, TEX, &bvDR),
-            bufferWrite(cv2MarchDescSet, 33, SSBO, &bvMap),
+            bufferWrite(cv2MarchDescSet, 31, SSBO, &bvMap),
             imageWrite(cv2MarchDescSet, 25, TEX, &elevI),
             bufferWrite(cv2MarchDescSet, 15, SSBO, &blueNoise),
             bufferWrite(cv2MarchDescSet, 19, SSBO, &tiles),
@@ -3465,7 +3459,8 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         cv2BvHdrLive = true;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2BvPipelines[0]);
         vkCmdDispatch(cmd, kBvNX / 4, kBvNY / 4, (cv2BvFullBakeNow ? (uint32_t)kBvNZ : 16u) / 4u * cv2BvSites);
-        memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+        // (READ | WRITE: the gather rewrites plane 1's texels the density pass just wrote, keeping their density)
+        memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
         if (cv2BvBeams > 0)
         {

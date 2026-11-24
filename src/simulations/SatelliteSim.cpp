@@ -2796,7 +2796,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                 S.md = glm::vec4(glm::length(mdE) > 1e-12f ? glm::normalize(mdE) : glm::vec3(0.0f, 0.0f, 1.0f), 0.0f);
             }
             // The shafts' depth range (beam_vol.glsl bvShT0 / bvShT1, in slot 0's / 1's md.w): from 50 m when near a box,
-            // else from 0.7 x the nearest box's distance; to 200 km past the farthest (the beams' air above the boxes).
+            // else from 0.7 x the nearest box's distance; to 400 km past the farthest (the beams' air past the boxes).
             {
                 double tN = 1e30, tF = 0.0;
                 for (int k = 0; k < kBvSites; ++k)
@@ -2804,8 +2804,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                     const GpuBeamVolSite &S = cloudLights.bvSites[k];
                     if (S.o.w < 0.5f) continue;
                     double d = glm::length(glm::dvec3(S.o) + glm::dvec3(S.az) * 6500.0);
-                    tN = std::min(tN, d - 60000.0);
-                    tF = std::max(tF, d + 200000.0);
+                    tN = std::min(tN, d - 290000.0);   // (the box's half diagonal, +-200 km: round 2)
+                    tF = std::max(tF, d + 400000.0);   // (a low beam's air past its box, to 60 km up)
                 }
                 const double T0 = std::max(50.0, 0.7 * tN);
                 cloudLights.bvSites[0].md.w = (float)T0;

@@ -206,7 +206,7 @@ json patchFor(const std::string &dotted, const json &value)
 const char *kHelp =
     "wait <frames> [maxs=2] | wait seconds <s> | wait settle [frames] [maxs=2] | wait settle auto [max=160] [min=40] [thr=0.1] [hold=4] [noise=1.5] [maxs=2]; "
     "time [set <iso>|add <s>|sun <el deg|noon|midnight> [rising|setting]|pause|play|scale <label>|reverse on/off]; "
-    "observer lat= lon= [agl=|alt=]; beams [list] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [clamp=on] [drift=intro|default]; report list [dir] | report info <issue dir> | report load <issue dir> [shot=1] [settings=on|off] [clamp=on] [trail=on|off] | report shot [note] [new=1] [title=] [bar=1] | report mark [issue] shot= [pin=x,y|off] [rect=x,y,w,h|off] | report export [issue]; drift [default] [phase=] [rate=]; intro [state|play [at=<s>] [bench=1] [first=1]|skip|notice off]; camera [az= el= fov= roll=] | camera look|track <sun|moon|sel|planet name|off>; "
+    "observer lat= lon= [agl=|alt=]; beams [list|vol] | beams go [rank=] [dist_km=] [bearing=] [agl=|alt=] [look=site|up|none]; snapshot <profile_log.jsonl> [index=-1] [settings=on|off] [clamp=on] [drift=intro|default]; report list [dir] | report info <issue dir> | report load <issue dir> [shot=1] [settings=on|off] [clamp=on] [trail=on|off] | report shot [note] [new=1] [title=] [bar=1] | report mark [issue] shot= [pin=x,y|off] [rect=x,y,w,h|off] | report export [issue]; drift [default] [phase=] [rate=]; intro [state|play [at=<s>] [bench=1] [first=1]|skip|notice off]; camera [az= el= fov= roll=] | camera look|track <sun|moon|sel|planet name|off>; "
     "select sat <i> | select const <name> [n=<k>] | select planet <name> | select star <name> | select none; follow [off] [offset=x,y,z]; track [on|off]; viewer [aim=free|observer|toward|sun] [light=live|studio] [glare=on|off] [shadows=on|off] [dist=<radii>]; "
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "exposure [auto|hold|fast]; "
@@ -2123,8 +2123,56 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                            ", nearest to the observer first";
             return Status::Done;
         }
+        if (sub == "vol")
+        {
+            // (2026-11-24) The beam light volume's site slots as uploaded this frame: per slot the site's beams sorted
+            // by irradiance (E in Suns, spot radius R, elevation of the direction toward the satellite, the ground
+            // offset of the beam's axis from the site, and how far from the site it is at 3 / 10 km height).
+            const auto *cl = static_cast<const GpuBeamCloudLights *>(beamCloudLightMapped);
+            if (!cl)
+                fail("beams vol: no beam light buffer");
+            const int nTop = (int)c.num("n", 24.0);
+            nlohmann::json slots = nlohmann::json::array();
+            for (int k = 0; k < kBvSites; ++k)
+            {
+                const GpuBeamVolSite &S = cl->bvSites[k];
+                if (S.o.w < 0.5f)
+                    continue;
+                const uint32_t b0 = (uint32_t)S.ax.w, cnt = (uint32_t)S.ay.w;
+                std::vector<const GpuBeamVolBeam *> bs;
+                for (uint32_t i = b0; i < b0 + cnt && i < (uint32_t)kBvMaxBeams; ++i)
+                    bs.push_back(&cl->bvBeams[i]);
+                std::sort(bs.begin(), bs.end(), [](auto *x, auto *y) { return x->g.w > y->g.w; });
+                nlohmann::json beams = nlohmann::json::array();
+                double maxReach3 = 0.0, maxReach10 = 0.0;
+                for (const GpuBeamVolBeam *B : bs)
+                {
+                    const glm::vec3 d(B->d);
+                    const float el = glm::degrees(std::asin(std::clamp(d.z, -1.0f, 1.0f)));
+                    auto reachAt = [&](float h)
+                    {
+                        const glm::vec3 p = glm::vec3(B->g) + d * ((h - B->g.z) / std::max(d.z, 1e-3f));
+                        return (double)std::max(std::fabs(p.x), std::fabs(p.y)) + 1.15 * B->d.w;
+                    };
+                    maxReach3 = std::max(maxReach3, reachAt(3000.0f));
+                    maxReach10 = std::max(maxReach10, reachAt(10000.0f));
+                    if ((int)beams.size() < nTop)
+                        beams.push_back({{"E", B->g.w}, {"R_km", B->d.w / 1000.0}, {"el_deg", el},
+                                         {"az_deg", glm::degrees(std::atan2(d.x, d.y))},
+                                         {"off_km", glm::length(glm::vec2(B->g)) / 1000.0},
+                                         {"reach3_km", reachAt(3000.0f) / 1000.0}, {"reach10_km", reachAt(10000.0f) / 1000.0}});
+                }
+                slots.push_back({{"slot", k}, {"beams", cnt}, {"E_sum", S.az.w},
+                                 {"dist_km", glm::length(glm::vec3(S.o)) / 1000.0},
+                                 {"max_reach3_km", maxReach3 / 1000.0}, {"max_reach10_km", maxReach10 / 1000.0},
+                                 {"top", beams}});
+            }
+            r["slots"] = slots;
+            r["message"] = std::to_string(slots.size()) + " light volume slots";
+            return Status::Done;
+        }
         if (sub != "go")
-            fail("beams: unknown subcommand '" + sub + "' (list, go, sats)");
+            fail("beams: unknown subcommand '" + sub + "' (list, go, sats, vol)");
         const int rank = std::max(1, (int)c.num("rank", 1.0));
         if ((int)order.size() < rank)
             fail("beams go: only " + std::to_string(order.size()) + " sites have converged beams now");
@@ -6591,13 +6639,13 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 idx = i;
         // Ocean views (sat_sky.frag, 2026-09-30) sit at 40..45.
         static const char *kOceanViews[] = {"oceanrefl", "oceanfresnel", "oceanstate", "oceansurf", "oceannormal", "oceanshore",
-                                            "cloudairsplit", "cloudtrans", "cloudrad", "cloudalpha", "oceanshadow"};
-        for (int i = 0; i < 11; ++i)
+                                            "cloudairsplit", "cloudtrans", "cloudrad", "cloudalpha", "oceanshadow", "beamground"};
+        for (int i = 0; i < 12; ++i)
             if (v == kOceanViews[i])
                 idx = 40 + i;
         if (idx < 0 && !v.empty() && isdigit((unsigned char)v[0]))
             idx = (int)parseNum(v, "debugview");
-        if (idx < 0 || (idx >= viewCount && (idx < 40 || idx > 50)))
+        if (idx < 0 || (idx >= viewCount && (idx < 40 || idx > 51)))
             fail("debugview: off | normals | detail | steps | albedo | shadow | rough | elevzebra | distzebra | erosion | "
                  "terms | direct | skyamb | night | moon | aurora | gates | factors | skyambraw | suntint | aofactors | "
                  "day | nightmap | geodot | sunvis | nightsky | citylights | solar "

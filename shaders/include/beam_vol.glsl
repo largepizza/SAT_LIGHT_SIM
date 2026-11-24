@@ -5,12 +5,17 @@
 // looping over the beams: per box cell, the irradiance of every beam whose disk covers it, each beam attenuated by the
 // cloud along ITS OWN path toward its satellite (a ray map per beam, marched through the box's density bake), and the
 // irradiance-weighted direction toward the satellites. A box per site (up to kBvSites), fixed in the site's frame
-// (east / north / up at the target, origin at its ground point), stacked along z in one 3D texture.
+// (east / north / up at the target, origin at its ground point), stacked along z in one 3D texture, its x asinh-warped
+// (beam_vol_warp.glsl: +-200 km, 0.58-km columns at the site).
+// The texture is two PLANES side by side in x (128 columns each; a lookup is clamped inside its plane):
+//   plane 0  x the irradiance past kBvNearM (the clouds'), y all of it (the air's, the ground's), zw the direction
+//   plane 1  x the air's Mie in-scatter toward the eye (sum over the beams of their irradiance x phaseM at their own angle
+//            to the eye's line), y the clouds' (the far irradiance x the march's two HG lobes, each beam at its own
+//            angle), z the cloud's extinction x 1000 (/km: the density bake, kMode 0), w spare.
 // Needs beam_cloud_lights.glsl (the sites and beams).
+#include "beam_vol_warp.glsl"
 const int   kBvNX = 128, kBvNY = 128, kBvNZ = 64;     // == SatelliteSim.h kBvNX / kBvNY / kBvNZ
-const float kBvHalf = 40000.0;                        // the box's half width (m): +-40 km about the site
 const float kBvZ0 = -2500.0, kBvZ1 = 15500.0;         // its height range above the site's ground (m)
-const float kBvCellXY = 2.0 * kBvHalf / float(kBvNX); // 625 m
 const float kBvCellZ = (kBvZ1 - kBvZ0) / float(kBvNZ); // 281.25 m
 const float kBvScale = 1024.0;                        // the stored irradiance's scale (Suns x kBvScale: half-float range)
 const int   kBvRays = 20;                             // a beam's ray map: kBvRays x kBvRays across its disk (1.15 R)
@@ -27,13 +32,18 @@ float bvShT1() { return max(bvSites[1].md.w, 4.0 * bvShT0()); }
 float bvShC()  { return log(bvShT1() / bvShT0()) / float(kBvShZ); }
 float bvShaftU(float t) { return clamp(log(max(t, bvShT0()) / bvShT0()) / bvShC(), 0.0, float(kBvShZ)) / float(kBvShZ); }
 
-// A box-frame point -> the site's texel coordinates in the stacked texture (normalised), z clamped inside its slab.
-vec3 bvUVW(uint s, vec3 L)
+// A box-frame point -> the site's texel coordinates in the stacked texture (normalised) in plane 0 or 1, clamped inside
+// the site's slab and the plane (a bilinear read never mixes two planes or two sites).
+vec3 bvUVWp(uint s, vec3 L, int plane)
 {
     float zc = clamp((L.z - kBvZ0) / kBvCellZ, 0.5, float(kBvNZ) - 0.5) + float(s) * float(kBvNZ);
-    return vec3(L.xy / (2.0 * kBvHalf) + 0.5, zc / float(kBvNZ * int(kBvSites)));
+    vec2  c  = clamp(bvColF(L.xy), vec2(0.5), vec2(float(kBvNX) - 0.5));
+    return vec3((c.x + float(plane * kBvNX)) / float(2 * kBvNX), c.y / float(kBvNY), zc / float(kBvNZ * int(kBvSites)));
 }
+vec3 bvUVW(uint s, vec3 L) { return bvUVWp(s, L, 0); }
 
+// Inside a box: a column short of its walls (the light ends there; past it the shafts' per-beam integral, kMode 3).
+const float kBvInner = 188800.0;   // bvUnwarp(1 - 1 / 128)
 // The site whose box holds this observer-relative point (pR = world - eye), and the point in its frame; -1 = none.
 int bvSiteAt(vec3 pR, out vec3 L)
 {
@@ -41,7 +51,7 @@ int bvSiteAt(vec3 pR, out vec3 L)
     for (uint s = 0u; s < min(bvSiteCount, kBvSites); ++s) {
         vec3 v = pR - bvSites[s].o.xyz;
         vec3 q = vec3(dot(v, bvSites[s].ax.xyz), dot(v, bvSites[s].ay.xyz), dot(v, bvSites[s].az.xyz));
-        if (abs(q.x) < kBvHalf - kBvCellXY && abs(q.y) < kBvHalf - kBvCellXY && q.z > kBvZ0 && q.z < kBvZ1) {
+        if (abs(q.x) < kBvInner && abs(q.y) < kBvInner && q.z > kBvZ0 && q.z < kBvZ1) {
             L = q;
             return int(s);
         }
