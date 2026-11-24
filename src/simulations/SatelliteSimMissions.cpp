@@ -548,11 +548,13 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                                                     .childAlignment = {.y = CLAY_ALIGN_Y_CENTER},
                                                     .layoutDirection = CLAY_LEFT_TO_RIGHT}})
                 {
-                    static const char *kTabs[] = {tx(Txt::OptUpcoming), tx(Txt::OptOngoing), tx(Txt::OptKessler)};
+                    static const char *kTabs[] = {tx(Txt::OptUpcoming), tx(Txt::OptOngoing), tx(Txt::OptKessler),
+                                                  tx(Txt::OptMsTabReflectors)};
                     static const char *kTips[] = {tx(Txt::OptTheNextLaunchesTheNextTwilight),
                                                   tx(Txt::TipMsTabOngoing),
-                                                  tx(Txt::TipMsTabKessler)};
-                    for (int i = 0; i < 3; ++i)
+                                                  tx(Txt::TipMsTabKessler),
+                                                  tx(Txt::TipMsTabReflectors)};
+                    for (int i = 0; i < 4; ++i)
                         if (uiButton(inp, ui, "MsTab", i, kTabs[i], kTips[i], msTab == i))
                             msTab = i;
                     CLAY(CLAY_ID("MsTabsGap"), {.layout = {.sizing = {CLAY_SIZING_GROW(0), CLAY_SIZING_FIT(0)}}}) {}
@@ -769,6 +771,11 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
                             }
                         }
                     }
+                    else if (msTab == 3)
+                    {
+                        // ── Reflectors (2026-11-24, SatelliteSimReflectorSites.cpp): the sites lit now, worldwide ──
+                        buildReflectorSitesTab(inp, ui);
+                    }
                     else
                     {
                         // ── The Kessler tracker (2026-10-21; the Controls tab's settings: Settings > Launches) ──
@@ -795,6 +802,12 @@ void SatelliteSim::buildMissionsWindow(const UIInput &inp, UIRenderer &ui)
         launchWatchKey(m->key, ((m->twilight || watchLaunch == 100) && launchPlumesDrawn()) ? kWatchTwilightS : kWatchLiftoffS, msg);
         msStatus = msg;
         msNextWall = msPinWall = -1e300; // rebuilt next frame (Clay still holds this frame's strings)
+    }
+    if (rsWatchPending >= 0)
+    {
+        reflectorSiteWatch(rsWatchPending, msg);
+        msStatus = msg;
+        rsWatchPending = -1;
     }
     if (furyGo >= 0)
     {

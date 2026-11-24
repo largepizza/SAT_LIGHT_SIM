@@ -578,6 +578,7 @@ void SatelliteSim::init(VulkanContext &ctx)
     createComputePipeline(ctx);
     createOrbitDescriptors(ctx);
     createOrbitPipeline(ctx);
+    createReflectorCensus(ctx); // the Reflectors tab's census: the orbit set + its own (SatelliteSimReflectorSites.cpp)
     createCloudMarchDescriptors(ctx); // needs cloudParamsBuf from createGlowResources above
     createCloudMarchPipeline(ctx);
     createTerrainClip(ctx);           // the height clipmap: its set layout joins the depth and sky pipeline layouts
@@ -3707,6 +3708,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                        0, sizeof(orbitPc), &orbitPc);
     vkCmdDispatch(cmd, (poolIdx0() + kPoolGpu + 63) / 64, 1, 1);
     fprof::mark("rc.seg6_orbit");
+    recordReflectorCensus(cmd, ctx, orbitPc); // only while asked (the Missions window's Reflectors tab, the harness)
 
     // Barrier: sat_orbit.comp appended the compact visible list (records + slot→satellite index +
     // header/indirect args) → sat_flare.comp finishes the records in place (READ|WRITE), and the
@@ -8681,6 +8683,7 @@ void SatelliteSim::cleanup(VkDevice device)
     }
 
     // ── Orbit pipeline ─────────────────────────────────────────────────────────
+    destroyReflectorCensus(device); // (its pipeline layout holds orbitDescLayout)
     vkDestroyPipeline(device, orbitPipeline, nullptr);
     vkDestroyPipelineLayout(device, orbitPipeLayout, nullptr);
     vkDestroyDescriptorPool(device, orbitDescPool, nullptr);
@@ -10355,6 +10358,8 @@ void SatelliteSim::recordFrameReadbacks(VkCommandBuffer cmd, VulkanContext &ctx)
     copy(glowBuf, rbGlow, sizeof(GpuGlowBuf));
     copy(reflectBeamsBuf, rbReflectBeams, sizeof(GpuReflectBeams));
     copy(beamGlowDomeBuf, rbBeamGlowDome, sizeof(float) * kNumBeamGlowSectors);
+    if (censusRanS[ctx.frameSlot])
+        copy(censusBuf, rbCensus, sizeof(GpuReflectorCensus)); // the reflector-site census (SatelliteSimReflectorSites.cpp)
     // The head of the clouds' flash buffer (the lightning pass's flash list, rain map, light at the eye, tornado
     // columns; the eval counters): the host reads the slot's copy.
     if (cv2FlashBuf && cv2FlashHeadBuf)
@@ -18847,6 +18852,7 @@ void SatelliteSim::loadReflectorTargets()
                 fprintf(stderr, "[SatelliteSim] reflector target '%s': unknown kind '%s' (solar, agriculture, "
                                 "daylight, none) - treated as none.\n", name.c_str(), kind.c_str());
             reflectorKind[count] = k;
+            reflectorName[count] = name;
             // A PV park: ~2.2 ha per MW (utility trackers and fixed tilt alike; Bhadla's 2245 MW is ~56 km2),
             // at least 1 km2 so a solar site with no capacity still shows.
             reflectorSolarAreaM2[count] = jt.contains("area_km2")

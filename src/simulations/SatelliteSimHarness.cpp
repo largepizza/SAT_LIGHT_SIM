@@ -211,7 +211,7 @@ const char *kHelp =
     "const <name|all> on|off [highlight=on|off] | const list; set <section.key> <value>; get [section[.key]]; expect <key|cine.path> <value> [tol=]; "
     "exposure [auto|hold|fast]; "
     "preset <name>; knockout <none|mask|+key|-key ...> | knockout list; capture <name> [ui=on] [crop=x,y,w,h] [scale=s] [wait=1]; photo <name> [scale=1-4] [frames=N]; "
-    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [cdc=<spv>] [brick=<spv>] [nlc=<spv>] [smoke_layer=<spv>] [bolt=<spv>] [sky=<spv>] [sky_taa=<spv>] [sky_lite=<spv>] [wg=<X>x<Y>]; lightning [spawn kind= dist_km= az= ...|check [off]|rebuild|light [side=] [single=] [src_m=] [level=] [ncap=] [e_side=] [e_single=] [e_skin_m=] [e_level=] [e_od=] [e_od_light=] [e_view=]|color [gain=] [core=r,g,b] [sheath=r,g,b] [sheath_share=] [sheath_order=] [sheath_leader=] [sheath_m=] [sheath_taper=] [glow=r,g,b] [glow_share=] [wet=r,g,b] [wet_share=] [wet_wide=] [wet_floor=] [wet_gain=] [air=r,g,b] [cloud=r,g,b] [reset=1] [knock=<bits>]|stats on|off|reset|[name]|goto id=|t= [at=] [sync=1]|map [minutes=5] [range=] [rows=] [open=1] [strikes=0|1] [clear=1]] | lightning thunder log on|off|clear | state [name] | save <name> | load <file> | sim [name] [dt_ms=] [seconds=] [speed=] [hold_at=] [hold_s=] [jitter=]; eclipse solar|lunar; skyevents [state]|events|list <kind>|watch <solar|lunar|conjunction|occultation|moonglint|meteors|comet|supernova|cme|cometstorm|row|special <0-3>|aurora [t=]> [n=]|spaceweather; stars [state]|find <name>|select <name>; moonbase [state]|windows [days=] [limit=] [jitter=]|base <i> [lean=] [jitter=]; meteors [state]|count [minutes=] [lm=] [shower=]|force [kind=meteor|fireball|bolide] [shower=] [mag=] [az=] [el=] [v=] [delay=]|go [shower=]; comets [state]|list [days=]|watch [k|great] [days=] [sun_max=] [orbit=1]; aurora [next <kp>|substorm|kp <v>|auto]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...> [x= y=]; fps on|off|state; mouse move dx= dy= [frames=] | mouse click left|right [x= y=] | mouse scroll dy= | mouse aim <Id>[:i] [tol=] [frames=]; hints on|off|reset|state|set <gate> [0|1]|force <n>|gap [s=] [pad=0|1]; events list|state|on|off|fire <id> [total=0|1]|ack [choice=1|2|3] [soft=1]; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|preview <file> [shot=] [scale=] [fps=]|save|load|state|stop; "
+    "state [name]; probe <x> <y>; perf [frames=N] [name=]; hitches [clear|threshold <ms>] [top=] [list=]; sweep; shaders reload [march=<spv>] [composite=<spv>] [cdc=<spv>] [brick=<spv>] [nlc=<spv>] [smoke_layer=<spv>] [bolt=<spv>] [sky=<spv>] [sky_taa=<spv>] [sky_lite=<spv>] [wg=<X>x<Y>]; lightning [spawn kind= dist_km= az= ...|check [off]|rebuild|light [side=] [single=] [src_m=] [level=] [ncap=] [e_side=] [e_single=] [e_skin_m=] [e_level=] [e_od=] [e_od_light=] [e_view=]|color [gain=] [core=r,g,b] [sheath=r,g,b] [sheath_share=] [sheath_order=] [sheath_leader=] [sheath_m=] [sheath_taper=] [glow=r,g,b] [glow_share=] [wet=r,g,b] [wet_share=] [wet_wide=] [wet_floor=] [wet_gain=] [air=r,g,b] [cloud=r,g,b] [reset=1] [knock=<bits>]|stats on|off|reset|[name]|goto id=|t= [at=] [sync=1]|map [minutes=5] [range=] [rows=] [open=1] [strikes=0|1] [clear=1]] | lightning thunder log on|off|clear | state [name] | save <name> | load <file> | sim [name] [dt_ms=] [seconds=] [speed=] [hold_at=] [hold_s=] [jitter=]; eclipse solar|lunar; skyevents [state]|events|list <kind>|watch <solar|lunar|conjunction|occultation|moonglint|meteors|comet|supernova|cme|cometstorm|row|special <0-3>|aurora [t=]> [n=]|spaceweather; stars [state]|find <name>|select <name>; moonbase [state]|windows [days=] [limit=] [jitter=]|base <i> [lean=] [jitter=]; meteors [state]|count [minutes=] [lm=] [shower=]|force [kind=meteor|fireball|bolide] [shower=] [mag=] [az=] [el=] [v=] [delay=]|go [shower=]; comets [state]|list [days=]|watch [k|great] [days=] [sun_max=] [orbit=1]; aurora [next <kp>|substorm|kp <v>|auto]; missions [state]|go <i|twilight|crew|fury|fury_night> [watch=1]|reflectors [row=<i>]|tab <name>; weather [state]|radar [range=50|150|400] [clouds=] [labels=] [loop=]|go <k> [list=near|world]|watch <k>|cyclones [basin=]|cyclone <name> [go=near|orbit|eye|landfall] [watch=1] [milestone=]|tab <name>; launch [state]|list [hours=]|next [when=any|twilight|day|night]|look [stage=]|select [kind=]|reentry|vent|ship|check|padstats [hours=]; deploy [state]|stats [from=] [to=] [step=]; bookmark add [name] [id=] [scale=] [paused=]|go <n>|update <n>|rename <n> <name>|delete <n>|restore|list; pad <a|b|x|y|start|view|up|down|left|right|...> [x= y=]; fps on|off|state; mouse move dx= dy= [frames=] | mouse click left|right [x= y=] | mouse scroll dy= | mouse aim <Id>[:i] [tol=] [frames=]; hints on|off|reset|state|set <gate> [0|1]|force <n>|gap [s=] [pad=0|1]; events list|state|on|off|fire <id> [total=0|1]|ack [choice=1|2|3] [soft=1]; debugview <off|normals|detail|steps|albedo|shadow|rough|elevzebra|distzebra|oceanrefl..|cloudairsplit..>; ui show|hide|scale <x>|open <win> [tab=]|close <win|all>|click <Id>[:i]|hover <Id>[:i]|off|type <text>|key <name>; cine new|name|shot|key|play|export|preview <file> [shot=] [scale=] [fps=]|save|load|state|stop; "
     "window <W>x<H>; path clear|key <t> ...|goto <t>|play [fps=] [record=] [frames=] [video=]; video start [name] [fps=] [scale=] [ui=on] [sound=all|ambience|off]|stop|state; overlay text|label|clear ...; "
     "audio [state [name]] | audio record <name> [seconds=] [bus=] [solo=<layer>[+<layer>]] | audio expect <layers> [absent=] | "
     "audio force <layer> <gain|off> | audio music [next|prev|pause|play|end] | audio tonality [wait]; "
@@ -3845,13 +3845,45 @@ Status SatelliteSim::harnessExec(harness::Active &a)
         if (sub == "tab")
         {
             const std::string t = lower(pos(1));
-            msTab = t == "ongoing" ? 1 : (t == "kessler" || t == "tracker" || t == "controls") ? 2 : 0;
+            msTab = t == "ongoing" ? 1 : (t == "kessler" || t == "tracker" || t == "controls") ? 2
+                  : (t == "reflectors" || t == "reflector" || t == "sites") ? 3 : 0;
             msChrome.open = true;
             uiVisible = true;
             return Status::Done;
         }
+        if (sub == "reflectors" || sub == "sites")
+        {
+            // missions reflectors [row=<i>] (2026-11-24, SatelliteSimReflectorSites.cpp): the Reflectors tab's rows from
+            // a census run for this command (waits for it: two frames or so); row= also clicks that row's Watch.
+            if (a.frame == 0)
+                a.scratch["gen"] = rsGen;
+            reflectorCensusWant(4);
+            if (rsGen == a.scratch["gen"].get<uint64_t>() && a.frame < 120)
+                return Status::Pending;
+            r["reflectors"] = reflectorSitesJson();
+            if (c.has("row"))
+            {
+                const int row = (int)c.num("row", 0.0);
+                if (row < 0 || row >= (int)rsRows.size())
+                    fail("missions reflectors: row " + std::to_string(row) + " of " + std::to_string(rsRows.size()));
+                std::string msg;
+                if (!reflectorSiteWatch(rsRows[(size_t)row].site, msg))
+                    fail("missions reflectors: " + msg);
+                msStatus = msg;
+                r["message"] = msg;
+                r["lat_deg"] = obsLatDeg;
+                r["lon_deg"] = obsLonDeg;
+                r["az_deg"] = camera.azDeg;
+                r["el_deg"] = camera.elDeg;
+                return Status::Done;
+            }
+            r["message"] = std::to_string(rsRows.size()) + " sites lit, " + std::to_string(rsLit) + " of " +
+                           std::to_string(rsMirrors) + " mirrors";
+            return Status::Done;
+        }
         fail("missions: state | go <index|twilight|crew|fury|fury_night> [watch=1] | ongoing <row> [go=1] | "
-             "milestone [list|next|prev|<i>] [row=<ongoing row>] | tab upcoming|ongoing|kessler");
+             "milestone [list|next|prev|<i>] [row=<ongoing row>] | reflectors [row=<i>] | "
+             "tab upcoming|ongoing|kessler|reflectors");
     }
     if (n == "deploy")
     {
@@ -4733,7 +4765,8 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                     if (c.has("tab"))
                     {
                         const std::string t = lower(c.str("tab"));
-                        msTab = t == "ongoing" ? 1 : (t == "kessler" || t == "tracker" || t == "controls") ? 2 : 0;
+                        msTab = t == "ongoing" ? 1 : (t == "kessler" || t == "tracker" || t == "controls") ? 2
+                  : (t == "reflectors" || t == "reflector" || t == "sites") ? 3 : 0;
                     }
                 }
                 if (ch == &skChrome && c.has("tab"))

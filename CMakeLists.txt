@@ -343,6 +343,18 @@ add_custom_command(
 )
 list(APPEND SPV_FILES ${SKY_ENV_SPV})
 
+# Second compile of sat_orbit.comp with -DSAT_CENSUS: the reflector-site census (the Missions window's Reflectors
+# tab): every Reflect mirror's current target, worldwide. See the SAT_CENSUS block at the end of sat_orbit.comp.
+set(SAT_CENSUS_SPV "${SHADER_OUT_DIR}/sat_orbit_census.comp.spv")
+add_custom_command(
+    OUTPUT ${SAT_CENSUS_SPV}
+    COMMAND ${GLSLC} -I "${SHADER_INC_DIR}" -DSAT_CENSUS "${SHADER_SRC_DIR}/sat_orbit.comp" -o ${SAT_CENSUS_SPV}
+    DEPENDS "${SHADER_SRC_DIR}/sat_orbit.comp" ${SHADER_HEADERS}
+    COMMENT "Compiling shader: sat_orbit.comp (SAT_CENSUS variant)"
+    VERBATIM
+)
+list(APPEND SPV_FILES ${SAT_CENSUS_SPV})
+
 # And -DSKY_ENV -DSKY_REFL: the env renderer along the reflected rays of mirror-smooth mesh pixels, at
 # screen resolution (SatMeshRenderer::recordReflections) — exact reflections in a flat mirror.
 set(SKY_REFL_SPV "${SHADER_OUT_DIR}/sat_sky_refl.frag.spv")

@@ -519,6 +519,26 @@ lists still load. Only `solar` changes anything so far: the park is drawn on the
   past it. The ground spot and the cloud lights now intersect the sphere of the target's own radius
   (`reflectorTargetsRadiusM` minus its 75-m margin). The sky shafts still end at R_EARTH.
 
+### The reflector-site census (2026-11-24)
+The main orbit dispatch resolves a mirror's target only for satellites past the observer-horizon cull, so `beamSiteConverged`
+(the beam readback) counts the LOCAL beams. The Missions window's Reflectors tab needs every lit site on Earth, so
+`sat_orbit.comp` is compiled a second time with `-DSAT_CENSUS` (`sat_orbit_census.comp.spv`, CMakeLists.txt; the normal
+SPV is byte-identical). Its `main` walks the roster range holding site-aiming types (`censusFirst..censusEnd`, found on
+the CPU with `attUsesGroundSite`), skips dead / unflown / disabled mirrors exactly as `processSatellite` does, runs
+`findWinner` at the mirror's own lock-window start, drops mirrors in the umbra (the beam's `litFactor > 0`), and
+`atomicAdd`s per site the count and the site->mirror ECEF direction x1024. Set 0 is `orbitDescSet` as bound for the
+orbit dispatch, set 1 the census buffer; same push constants (`recordReflectorCensus`, right after the orbit dispatch).
+It runs only while asked (`reflectorCensusWant`: the tab drawn, `missions reflectors`) and is read back by the
+frames-in-flight readback two frames later (`reflectorCensusCollect` -> `rsRows`, busiest first, with the mean beam's
+azimuth / elevation from the site and the Sun's elevation there).
+- **Exact:** at the Arkansas report view (2036-11-25T23:15:48Z) the census counts 126 mirrors at the Mississippi
+  Delta site and `beams` 126 converged there; after a Watch to Cerro Dominador both say 163. Sites far from the
+  observer count more in the census than in `beams` (their mirrors are below the observer's horizon), the point of it.
+- **Cost:** 5000 mirrors x 201 targets: not measurable (3070 Ti, 1600x900: GPU 27.70 +- 0.33 ms tab closed vs
+  27.78 +- 0.23 open, 3 reps, the window's own drawing included).
+- **The Watch** (one button per row, `reflectorSiteWatch`): 1x, the observer on the ground 15 km from the site,
+  side-on to the mean beam (bearing = beam azimuth + 90 deg), looking at the air 1.5 km over the site, FOV >= 60.
+
 ### Per-satellite selection (GPU, sat_orbit.comp) — deterministic lock windows
 Target IDENTITY is chosen per fixed-width **sim-time window**
 (`SatOrbitPC::reflectorLockWindowS`, default 90s, settings-window "Target lock window (s)"), not by

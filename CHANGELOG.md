@@ -483,6 +483,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### UI
 
+- **Missions > Reflectors lists every site the Reflect Orbital mirrors are lighting right now**, anywhere on Earth,
+  busiest first: how many mirrors, where the beams come from, and the Sun at the site. Each row's Watch stands you
+  on the ground beside the site at 1x, looking at its beams.
 - **Mouse look without holding a button (FPS mode, Tab).** Tab hides the cursor and the mouse turns the view
   directly; a left click selects what is at the centre of the screen (a ring flashes there) and keeps you looking.
   Tab or a right click brings the cursor back (at the centre of the window), and so does opening a window, the

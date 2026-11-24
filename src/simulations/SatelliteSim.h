@@ -4097,7 +4097,7 @@ private:
 
     WindowChrome msChrome;
     bool hovMsClose = false, hovTimeMissions = false;
-    int msTab = 0;                       // 0 upcoming, 1 ongoing, 2 the Kessler tracker (was Controls until 2026-10-21)
+    int msTab = 0;                       // 0 upcoming, 1 ongoing, 2 the Kessler tracker (was Controls until 2026-10-21), 3 reflectors
     int msBuildOutOpen = -1;             // Ongoing's BUILD-OUT list: -1 = auto (collapsed once every cohort is complete)
     double msNextWall = -1e300, msNextSim = -1e300; // when the next-launches rows were made (wall clock, sim time)
     double msPinWall = -1e300, msPinSim = -1e300;   // ... the pinned twilight / crewed rows
@@ -9328,6 +9328,57 @@ private:
     bool   reflectorSolarTracker[kNumReflectorTargets]{};  // single-axis N-S trackers, else fixed tilt
     float  reflectorTrackerAngle[kNumReflectorTargets]{};  // eased tracker angle (rad, + = toward east)
     bool   solarArraysEnabled = true;                      // settings: terrain.solar_arrays
+    std::string reflectorName[kNumReflectorTargets];       // reflector_targets.json "name" (the Reflectors tab)
+
+    // ── The reflector-site census (2026-11-24, SatelliteSimReflectorSites.cpp) ─────────────────────────────────
+    // The main orbit dispatch resolves a mirror's target only for satellites above the observer's horizon, so the
+    // beams the CPU reads back are the local ones. The census (sat_orbit_census.comp.spv: sat_orbit.comp compiled with
+    // -DSAT_CENSUS) runs the same target choice for every live roster mirror and counts, per site, the sunlit mirrors
+    // aimed at it, with their summed directions. It runs only while asked (the Missions window's Reflectors tab, the
+    // harness): ~5000 mirrors x 201 targets, one small dispatch after the orbit one; read back two frames later.
+    struct GpuReflectorCensus
+    {
+        uint32_t first, end, mirrors, lit;
+        uint32_t site[kNumReflectorTargets];
+        int32_t dir[3 * kNumReflectorTargets]; // ECEF site->mirror unit vectors x 1024
+    };
+    VkBuffer censusBuf = VK_NULL_HANDLE;
+    VkDeviceMemory censusMem = VK_NULL_HANDLE;
+    VkDescriptorSetLayout censusDescLayout = VK_NULL_HANDLE;
+    VkDescriptorPool censusDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet censusDescSet = VK_NULL_HANDLE;
+    VkPipelineLayout censusPipeLayout = VK_NULL_HANDLE;
+    VkPipeline censusPipeline = VK_NULL_HANDLE;
+    int rbCensus = -1;
+    void *censusMapped = nullptr;
+    bool censusRanS[VulkanContext::kMaxFramesInFlight] = {};    // the slot's frame ran the census (copied it back)
+    double censusSimTS[VulkanContext::kMaxFramesInFlight] = {}; // ... at this sim time (J2000 s)
+    uint32_t censusFirst = 0, censusEnd = 0; // the roster index range holding site-aiming types
+    size_t censusRangeOf = SIZE_MAX;         // satOrbits.size() the range was found for
+    uint64_t censusWantFrame = 0;            // run while frameIndex <= this
+    void createReflectorCensus(VulkanContext &ctx);
+    void destroyReflectorCensus(VkDevice device);
+    void recordReflectorCensus(VkCommandBuffer cmd, VulkanContext &ctx, const SatOrbitPC &pc); // after the orbit dispatch
+    void reflectorCensusCollect(VulkanContext &ctx);
+    // The rows (busiest first) of the last census read back.
+    struct ReflectorSiteRow
+    {
+        int site = -1;
+        int mirrors = 0;
+        float fromAzDeg = 0.0f, fromElDeg = 0.0f; // the mean beam's direction seen from the site (where it comes from)
+        float spreadDeg = 0.0f;                   // ~ how far the beams scatter round it (acos of the mean's length)
+        float sunElDeg = 0.0f;                    // the Sun at the site
+    };
+    std::vector<ReflectorSiteRow> rsRows;
+    int rsMirrors = 0, rsLit = 0;  // live mirrors; of them sunlit with a target
+    double rsSimT = -1e300;        // the census's sim time (J2000 s); -1e300 = none yet
+    uint64_t rsGen = 0;            // censuses collected (the harness waits for a new one)
+    bool rsHaveMirrors = true;     // the roster holds site-aiming mirrors at all
+    int rsWatchPending = -1;       // a row's Watch clicked this frame (the site), applied after the layout
+    void reflectorCensusWant(int frames); // keep the census running for the next `frames` frames
+    bool reflectorSiteWatch(int site, std::string &msg); // the row's Watch
+    nlohmann::json reflectorSitesJson();
+    void buildReflectorSitesTab(const UIInput &inp, UIRenderer &ui);
 
     // Mirror slew rate for TargetedReflector: maximum degrees the mirror normal
     // may rotate per real second.  Prevents instant snapping when the nearest
