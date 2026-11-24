@@ -467,8 +467,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   blocks a frame; a 4 x 4 x 4 block culls the site's beams into shared memory, each cell sums disk x e^-od per beam:
   x = with only the cloud beyond kBvNearM 1.95 km up each beam, y = with all of it, zw = the direction, octahedral),
   4 the ground (the volume at the terrain's height, `cv2Ground`, per column, into the flash buffer: `cv2BvGround` /
-  `cv2BvHdr`, the sky set having no sampled image left), 3 the shafts (160 x 90 screen tiles x 64 depths, 50 m - 3000 km
-  log: per tile the air's light toward the eye integrated front to back, sampled only inside the boxes; above them each
+  `cv2BvHdr`, the sky set having no sampled image left), 3 the shafts (160 x 90 screen tiles x 64 log depths over the boxes' range: from 50 m near a box, else 0.7 x
+  the nearest one's distance, to 200 km past the farthest; slot 0 / 1's md.w: per tile the air's light toward the eye integrated front to back, sampled only inside the boxes; above them each
   merged light's column to 60 km in closed form). Consumers: the march's `beamGather` reads x at the sample (the three
   reads up the beams and the column floor take the near cloud, as the Sun's light march and its volume split the path);
   `beamShafts` reads the shaft volume at the ray's transmittance checkpoints; sat_sky.frag's `bvGroundLight` lights the
@@ -489,8 +489,8 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   (the old clusters' fades popped). What failed on the way: one 150-m read + the volume read AT the sample (the near
   cloud in 625-m cells): a flat, over-bright deck (shot 2 deck mean 188 -> 225 levels, std 40 -> 32); the volume read
   2 km up the mean direction: samples beside a slanted beam took its light (lit cloud bases); the full-attenuation value
-  for faint / deep samples: 255 registers. The shaft volume is coarse far away (80-km depth slices at 460 km): from orbit
-  the beams' streak is fainter than the old per-pixel shafts drew it.
+  for faint / deep samples: 255 registers. With fixed 50 m - 3000 km depth slices (80 km deep at 460 km) the beams'
+  streak seen from orbit smeared into the deck; over the boxes' range it reads as the old per-pixel shafts drew it.
   **Terrain shadow on the clouds' sunlight (2026-11-23, step 5 of the lighting audit):** the Sun's key light at a cloud
   sample is x `cv2TerrSunT(rel)` (the terrain Sun-horizon map the air, fog and god rays read; on with the Sun up at the
   eye, below 60 km, terrain in reach), below 20 deg of Sun at the sample only (`sunUp < 0.34`). 128 registers (binary
