@@ -2752,7 +2752,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                 for (int k = 0; k < kBvSites; ++k) have = have || bvSlotTarget[k] == ti;
                 if (have) continue;
                 for (int k = 0; k < kBvSites; ++k)
-                    if (bvSlotTarget[k] < 0) { bvSlotTarget[k] = ti; break; }
+                    if (bvSlotTarget[k] < 0) { bvSlotTarget[k] = ti; cv2BvFullBake = true; break; }
             }
             // Slots in order; an empty slot between two sites keeps its index (the boxes are stacked by slot).
             uint32_t nb = 0, ns = 0;
@@ -2795,6 +2795,11 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             cloudLights.bvSiteCount = ns;
             cloudLights.bvBeamCount = nb;
             cloudLights.bvFrame = ++cv2BvFrame;
+            // A slot that changed hands: this frame's density bake is the whole box (bvPad0 1), not a quarter of it,
+            // or the new site would be shaded by the old one's cloud for up to 4 frames.
+            cloudLights.bvPad0 = cv2BvFullBake ? 1u : 0u;
+            cv2BvFullBakeNow = cv2BvFullBake;
+            cv2BvFullBake = false;
             cv2BvSites = ns;
             cv2BvBeams = nb;
         }

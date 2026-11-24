@@ -3464,7 +3464,7 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     {
         cv2BvHdrLive = true;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2BvPipelines[0]);
-        vkCmdDispatch(cmd, kBvNX / 4, kBvNY / 4, 16u / 4u * cv2BvSites);
+        vkCmdDispatch(cmd, kBvNX / 4, kBvNY / 4, (cv2BvFullBakeNow ? (uint32_t)kBvNZ : 16u) / 4u * cv2BvSites);
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
         if (cv2BvBeams > 0)

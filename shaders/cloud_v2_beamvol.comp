@@ -250,14 +250,16 @@ void main()
 
     if (kMode == 0u) {
         // ── DENSITY ── (z slabs of 16, one of four a frame per site: the whole box every 4 frames)
+        // (bvPad0 1: a slot changed hands, the whole box this frame: kBvNZ levels a slot, not 16)
         ivec3 c = ivec3(gl_GlobalInvocationID);
-        uint  s = uint(c.z) / 16u;
+        uint  per = (bvPad0 != 0u) ? uint(kBvNZ) : 16u;
+        uint  s = uint(c.z) / per;
         if (s >= min(bvSiteCount, kBvSites)) return;
-        int   z = int((bvFrame & 3u) * 16u) + (c.z & 15);
+        int   z = (bvPad0 != 0u) ? (c.z - int(s * per)) : int((bvFrame & 3u) * 16u) + (c.z & 15);
         vec3  L = vec3((vec2(c.xy) + 0.5) * kBvCellXY - kBvHalf, kBvZ0 + (float(z) + 0.5) * kBvCellZ);
         // Only where a beam passes (most of the box is outside every beam: the field is not read there).
         vec3  Lb = vec3((vec2(gl_WorkGroupID.xy * 4u) + 2.0) * kBvCellXY - kBvHalf,
-                        kBvZ0 + (float((bvFrame & 3u) * 16u + (gl_WorkGroupID.z * 4u & 15u)) + 2.0) * kBvCellZ);
+                        kBvZ0 + (float(uint(z) & ~3u) + 2.0) * kBvCellZ);
         if (bvCullBlock(s, Lb) == 0u) { imageStore(bvDensImg, ivec3(c.xy, z + int(s) * kBvNZ), vec4(0.0)); return; }
         vec3  rel = bvSites[s].o.xyz + bvSites[s].ax.xyz * L.x + bvSites[s].ay.xyz * L.y + bvSites[s].az.xyz * L.z;
         float h = length(rel + vec3(0.0, 0.0, R_EARTH + eyeH)) - R_EARTH;

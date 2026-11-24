@@ -7181,7 +7181,8 @@ private:
     uint32_t cv2BvSites = 0, cv2BvBeams = 0, cv2BvFrame = 0;   // this frame's fill (the dispatches' sizes)
     int bvSlotTarget[kBvSites] = {-1, -1, -1, -1};             // the reflector target each box slot holds (-1 = none)
     float cv2BeamVolOn = 1.0f;                                 // settings: clouds_v2.beam_volume
-    bool cv2BvHdrLive = false;                                 // the ground's site headers (flash buffer) hold a site
+    bool cv2BvHdrLive = false;
+    bool cv2BvFullBake = false, cv2BvFullBakeNow = false;     // a box slot changed hands: bake its whole density this frame                                 // the ground's site headers (flash buffer) hold a site
     VkPipeline cv2SunLutPipeline = VK_NULL_HANDLE;
     VkImage cv2SunLutImg = VK_NULL_HANDLE;
     VkDeviceMemory cv2SunLutMem = VK_NULL_HANDLE;
