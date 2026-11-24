@@ -75,6 +75,8 @@ layout(set = 0, binding = 7) uniform sampler2D earthNightTex;
 layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
 #define BEAM_CLOUD_LIGHTS_BINDING 9
 #include "beam_cloud_lights.glsl"
+#include "beam_vol.glsl"
+layout(set = 0, binding = 30) uniform sampler3D bvLightTex;   // the beam light volume (cloud_v2_beamvol.comp)
 // The Sun transmittance volume (cv2Stv, S3) and the flash list, written by cloud_v2_lightning.comp before this pass.
 #define CV2_FLASH_BINDING 12
 #define CV2_SUN_CASC_FN       // the STV / froxel lookups (need the cv2 UBO)
@@ -460,45 +462,38 @@ float beamIrradiance(uint bli, float R)
     return beamLights[bli].intensity * cv2.beam.w / (PI * R * R);
 }
 
-// The beams' light at a cloud sample. The lights are summed first (irradiance, its mean direction and
-// the cloud phase), then ONE occlusion march toward the satellites along that mean direction: the
-// beams converged on a site come from within a few degrees of each other. The first cut marched
-// three field samples PER BEAM: dozens of beams over a busy site cost dozens x 3 field evaluations
-// per cloud sample (350 ms frames over Anchorage).
-// Split in two around the occlusion march (it runs in lightAmbOD, the shader's one field call site for
-// lighting): beamGather sums the lights, beamFinish shades with the optical depth marched along dirS.
+// The beams' light at a cloud sample (2026-11-24): ONE read of the beam light volume (cloud_v2_beamvol.comp), which holds,
+// per cell of each busy site's box, every covering beam's disk irradiance attenuated by the cloud along that beam's OWN
+// path toward its satellite (a ray map per beam), and their irradiance-weighted direction. Read half a cell up: the
+// sample's own cell is the light march's (the 150-m read up the beams, lightAmbOD). Until 2026-11-24 a loop over the
+// tile's culled lights (clusters of converged beams, each one light at its mean direction) and three reads up their
+// mean direction (150, 450, 1350 m) to the column's top: no shadow from cloud beyond 2 km, the same shadow for every
+// beam of a cluster, and ~3.4 ms of the march at issue_20261124_000411's two views.
+// The volume's x: each beam attenuated only by the cloud BEYOND the three reads up the beams (150, 450, 1350 m: lightAmbOD's
+// kBvNearM), along its own path: the near cloud is the reads' (and the column's, beamFinish's floor), the far cloud the
+// volume's, as the Sun's light march and its volume split the path. With the near cloud in the volume and one 150-m read,
+// its 625-m cells smeared each lobe's shadow over its neighbours: a flat, over-bright deck (issue_20261124_000411 shot 2:
+// deck mean 188 -> 225 levels). Read 2 km up-beam instead, a sample beside a slanted beam took that beam's light.
 bool beamGather(vec3 pW, float h, vec3 dir, vec3 eye, out float Esum, out vec3 dirSOut, out float phSum)
 {
     Esum = 0.0; phSum = 0.0; dirSOut = vec3(0.0, 0.0, 1.0);
-    if ((cloud.dbgDisableMask & 128u) != 0u || cv2.beam.z <= 0.0 || beamLightCount == 0u)
+    if ((cloud.dbgDisableMask & 128u) != 0u || cv2.beam.z <= 0.0 || bvSiteCount == 0u)
         return false;
-    bool ovf = (sTileLightOverflow != 0u);
-    uint n = ovf ? min(beamLightCount, kMaxCloudBeamLights) : min(sTileLightCount, kTileCloudLightMax);
-    vec3  dSum = vec3(0.0);
-    for (uint li = 0u; li < n; ++li) {
-        uint  bli  = ovf ? li : sTileLightIdx[li];
-        vec3  dirS = beamLights[bli].dirToSource;
-        vec3  toP  = pW - (eye + beamLights[bli].posENU);
-        vec3  perp = toP - dirS * dot(toP, dirS);
-        float R    = max(beamLights[bli].footprintRadM, 100.0);
-        float d2   = dot(perp, perp);
-        if (d2 > R * R * (kBeamDiskCut * kBeamDiskCut)) continue;
-        float E = beamIrradiance(bli, R) * beamDisk(d2, R)
-                * mix(1.0, smoothstep(beamLights[bli].blockAltM - 500.0, beamLights[bli].blockAltM, h),
-                      beamLights[bli].blockOpacity);
-        if (E <= 0.0) continue;
-        float cosB = dot(dir, dirS);
-        Esum  += E;
-        dSum  += E * dirS;
-        phSum += E * (cv2.phase.y * cv2HG(cosB, cv2.phase.x) + cv2.phase.w * cv2HG(cosB, cv2.phase.z));
-    }
-    if (Esum <= 0.0) return false;
-    dirSOut = normalize(dSum);
+    vec3 L;
+    int  s = bvSiteAt(pW - eye, L);
+    if (s < 0) return false;
+    vec4 t = textureLod(bvLightTex, bvUVW(uint(s), L), 0.0);
+    if (t.x <= 1e-6 * kBvScale) return false;
+    Esum = t.x * (1.0 / kBvScale);
+    vec3 dB = bvOctDec(t.zw);
+    dirSOut = bvSites[s].ax.xyz * dB.x + bvSites[s].ay.xyz * dB.y + bvSites[s].az.xyz * dB.z;
+    float cosB = dot(dir, dirSOut);
+    phSum = Esum * (cv2.phase.y * cv2HG(cosB, cv2.phase.x) + cv2.phase.w * cv2HG(cosB, cv2.phase.z));
     return true;
 }
 
-// odMarch: the cloud between this sample and the satellites, three coarse steps up the beam (150, 450,
-// 1350 m, lightAmbOD), with the depth to the column's top as a floor (a deck lit from above).
+// odMarch: the cloud between this sample and the satellites, three coarse steps up the beam (150, 450, 1350 m,
+// lightAmbOD), with the depth to the column's top as a floor (a deck lit from above); beyond, the volume's (beamGather).
 vec3 beamFinish(vec3 pW, float h, vec3 dir, CV2Field f, float dayness, float og, vec4 hab,
                 float Esum, vec3 dirS, float phSum, float odMarch, float hV)
 {
@@ -598,64 +593,28 @@ vec3 cv2AirOD(vec3 eye, vec3 dir, float eyeH, float t, vec3 betaR, float betaM)
 // The first cut evaluated everything at the closest point of the view ray to the beam's axis, with
 // the chord 2 sqrt(R^2 - d^2) / sin(angle): standing INSIDE a beam, that chord and point depend only on
 // the view angle, so the shaft turned with the camera like a billboard.
-int gShaftHits = 0;   // debug view 8: beams this ray's interval found
-vec3 beamShafts(vec3 eye, vec3 dir, float tMax, vec4 tq, vec3 sunDir, vec3 BETA_R, float BETA_M, float pixAng,
-                out float tShaft)
+int gShaftHits = 0;   // (debug view 8: unused since the shafts moved to the volume)
+layout(set = 0, binding = 35) uniform sampler3D bvShaftTex;   // the shafts' volume (cloud_v2_beamvol.comp kMode 3)
+// The shafts (2026-11-24): the shaft volume's integral from the eye, read at the ray's cloud transmittance checkpoints and
+// weighted by the transmittance between them (cv2TAt's bands), up to the scene's depth. The volume holds the air's light
+// from every beam, each attenuated by the cloud along its own path (god rays with the clouds' shadows in them). Until
+// 2026-11-24 a ray-cylinder integral per culled beam per pixel, shadowed only by each beam's 50% block altitude: ~2.5 ms of
+// the march at issue_20261124_000411.
+vec3 beamShafts(vec2 uv, float tMax, vec4 tq, out float tShaft)
 {
-    bool ovf = (sTileLightOverflow != 0u);
-    uint n = ovf ? min(beamLightCount, kMaxCloudBeamLights) : min(sTileLightCount, kTileCloudLightMax);
-    vec3 acc = vec3(0.0);
-    float wT = 0.0, wSum = 0.0;
-    for (uint li = 0u; li < n; ++li) {
-        uint  bli = ovf ? li : sTileLightIdx[li];
-        vec3  lp  = beamLights[bli].posENU;       // the beam's ground point, observer-relative
-        vec3  S   = beamLights[bli].dirToSource;
-        float R   = max(beamLights[bli].footprintRadM, 100.0);
-        // Distance from the axis along the ray: |t a + c0|, a = dir - S b, c0 = -lp + S (lp . S).
-        float b   = dot(dir, S);
-        float eL  = dot(lp, S);
-        vec3  a   = dir - S * b;
-        vec3  c0  = -lp + S * eL;
-        float A   = dot(a, a), B = dot(a, c0), C = dot(c0, c0);
-        float tC  = (A > 1e-8) ? max(-B / A, 0.0) : 0.0;
-        float d2  = (A > 1e-8) ? max(C - B * B / A, 0.0) : C;
-        float Ro  = R + max(max(0.02 * R, 40.0), 1.5 * tC * pixAng);
-        if (d2 > Ro * Ro) continue;
-        float t0 = 0.0, t1 = tMax;
-        if (A > 1e-8) {
-            float hw = sqrt((Ro * Ro - d2) / A);
-            t0 = max(-B / A - hw, 0.0);
-            t1 = min(-B / A + hw, tMax);
-        }
-        // Above the ground point only (s = t b - eL >= 0), and below ~60 km of altitude.
-        float sTop = 60000.0 / max(dot(S, normalize(eye + lp)), 0.1);
-        if (b > 1e-6)       { t0 = max(t0, eL / b); t1 = min(t1, (sTop + eL) / b); }
-        else if (b < -1e-6) { t1 = min(t1, eL / b); t0 = max(t0, (sTop + eL) / b); }
-        else if (eL > 0.0) continue;
-        t1 = min(t1, t0 + 80000.0);
-        if (t1 <= t0) continue;
-        ++gShaftHits;
-        float h0  = length(eye + dir * t0) - R_EARTH;
-        float h1  = length(eye + dir * t1) - R_EARTH;
-        float tm  = 0.5 * (t0 + t1);
-        vec3  X   = eye + dir * tm;
-        float h   = length(X) - R_EARTH;
-        float lit = mix(1.0, smoothstep(beamLights[bli].blockAltM - 500.0, beamLights[bli].blockAltM, h),
-                        beamLights[bli].blockOpacity);
-        float dayP = clamp((dot(normalize(X), sunDir) + 0.2) / 0.5, 0.0, 1.0);
-        float len  = t1 - t0;
-        vec3  sc   = BETA_R * beamColumn(h0, h1, len, H_R) * phaseR(b)
-                   + vec3(BETA_M * cv2.beam.y * beamColumn(h0, h1, len, H_M) * phaseM(b));
-        vec3  tAir = exp(-(BETA_R * (atmColumn(eye, dir, tm, H_R) * H_R)
-                          + BETA_M * 1.1 * (atmColumn(eye, dir, tm, H_M) * H_M)));
-        // (R / Ro)^2: the widened column carries the beam's own power.
-        vec3 add = beamIrradiance(bli, R) * (R * R) / (Ro * Ro) * sc * lit * (1.0 - dayP) * tAir * cv2TAt(tm, tq);
-        acc += add;
-        float wl = dot(add, vec3(0.33));
-        wT += wl * tm; wSum += wl;
+    tShaft = 0.0;
+    float tE = min(tMax, kBvShT1);
+    vec3  s0 = textureLod(bvShaftTex, vec3(uv, bvShaftU(min(tq.x, tE))), 0.0).rgb;
+    vec3  acc = s0;
+    if (tq.x < tE) {
+        vec3 s1 = textureLod(bvShaftTex, vec3(uv, bvShaftU(min(tq.y, tE))), 0.0).rgb;
+        vec3 s2 = textureLod(bvShaftTex, vec3(uv, bvShaftU(min(tq.z, tE))), 0.0).rgb;
+        vec3 s3 = textureLod(bvShaftTex, vec3(uv, bvShaftU(min(tq.w, tE))), 0.0).rgb;
+        vec3 s4 = textureLod(bvShaftTex, vec3(uv, bvShaftU(tE)), 0.0).rgb;
+        acc += (s1 - s0) * 0.65 + (s2 - s1) * 0.35 + (s3 - s2) * 0.125 + (s4 - s3) * 0.05;
     }
-    tShaft = (wSum > 0.0) ? wT / wSum : 0.0;
-    return acc * vec3(1.0, 0.97, 0.92) * SUN_INTENSITY * cv2.beam.x * cv2.beam.z;
+    if (dot(acc, vec3(1.0)) > 0.0) tShaft = min(tq.x, tE) * 0.5;
+    return acc * (1.0 / kBvScale) * vec3(1.0, 0.97, 0.92) * SUN_INTENSITY * cv2.beam.x * cv2.beam.z;
 }
 
 void main()
@@ -726,7 +685,7 @@ void main()
         float ch = min(min(dot(ax, d00), dot(ax, d10)), min(dot(ax, d01), dot(ax, d11)));
         // Up to 60 km, not the cloud shell's top: the shafts (beamShafts) reach that high, and a beam
         // seen above ~15 km was culled away in whole tiles.
-        cullCloudLightsForTile(ax, acos(clamp(ch, -1.0, 1.0)), eye, R_EARTH + max(cv2.shell.y, 60000.0));
+        // (The beams' tile cull, cullCloudLightsForTile, is gone since 2026-11-24: the beam light volume needs none.)
     }
     // (The rain rate at the eye for the host's rain ambience was written here into terrainFrame.w until review 22:
     // the host now reads the rain map around the eye, cloud_v2_lightning.comp, from the flash buffer.)
@@ -1450,7 +1409,7 @@ void main()
                 jL = fract((float((cv2BlueNoise[bj >> 2u] >> (8u * (bj & 3u))) & 0xFFu) + 0.5) / 256.0
                            + 0.5385973 * (cv2.misc2.z > 0.5 ? cv2.frame.x : vL));
             }
-            bool skipL = thin || (CV2_FAINT_MODE == 0 && faint && !wantB);
+            bool skipL = thin || (CV2_FAINT_MODE == 0 && faint);
             // RAIN LIGHT (2026-11-10, issue_20261110_181505 "FPS within storms"; CV2_RAIN_LIT): a sample below a base with any rain
             // share (a shaft, the scud in it) runs no light march and no march away from the light, only the sky probe. Its key light is the Sun
             // transmittance volume read AT the sample (the deck above, the storm beyond: cv2Stv), and its own rain over the light
@@ -1468,10 +1427,10 @@ void main()
             // at the eye view (mean |diff| 1.91 vs 1.67-1.96 between two captures of the same shader).
             // (Any key light since 2026-11-23, nightvol: the borrowed depth is the light march's, not the volume's. Gated on the
             // night volume, (!moonIsKey || keyVol) here and at lOdL below, the march went to 255 registers.)
-            bool deepL = T < cv2.hurrperf.x && lOdL >= 0.0 && !rainL && !wantB && !faint;
+            bool deepL = T < cv2.hurrperf.x && lOdL >= 0.0 && !rainL && !faint;
             if (!skipL)
                 lightAmbOD(rel, keyDir, up, eyeH, enuToEcef, nL, lSeg0,
-                           jL, detailAmt, fp, wantL && !rainL && !deepL, odL, sigUp, wantB, bDir, odB, lodL || faint, wantBk && !faint && !rainL, odBk);
+                           jL, detailAmt, fp, wantL && !rainL && !deepL, odL, sigUp, wantB && !deepL, bDir, odB, lodL || faint, wantBk && !faint && !rainL, odBk);
             if (deepL) odL = lOdL + f.sigma * max(lH - p.h, 0.0) / max(dot(up, keyDir), 0.1);
             else if (!skipL && !rainL && !faint) { lOdL = odL; lH = p.h; }
             if (rainL) odL = f.sigma * cv2.light.x;
@@ -2017,8 +1976,8 @@ void main()
     vec3 shaftRgb = vec3(0.0);
     float tShaft = 0.0;
     if (cv2.beam.x > 0.0 && cloud.showBeamDebugRays != 0u && (cloud.dbgDisableMask & 128u) == 0u
-        && cv2.beam.z > 0.0 && beamLightCount > 0u)
-        shaftRgb = beamShafts(eye, dir, tScene, tq, sunDir, BETA_R, BETA_M, pixAng, tShaft);
+        && cv2.beam.z > 0.0 && bvSiteCount > 0u)
+        shaftRgb = beamShafts((vec2(pix) + subPx) / vec2(halfSize), tScene, tq, tShaft);
     outRgb += shaftRgb;
     // A shaft in clear sky reprojects at ITS distance, not at infinity: the resolve's parallax at the
     // pixel's depth is what keeps a moving camera's history on the shaft (it smeared while walking).
@@ -2040,7 +1999,7 @@ void main()
     // 8: the beam shafts — r the tile's light count / 64 (1 = overflow, all lights), g the beams this
     // ray's interval found / 8, b the shaft radiance (log scale), plus a faint grey when any light exists.
     else if (dbg == 8) {
-        float nL = (sTileLightOverflow != 0u) ? 1.0 : float(sTileLightCount) / 64.0;
+        float nL = float(bvSiteCount) / 4.0;
         float lum = dot(shaftRgb, vec3(0.33));
         outRgb = vec3(nL, float(gShaftHits) / 8.0,
                       clamp((log2(max(lum, 1e-12)) + 30.0) / 30.0, 0.0, 1.0)) * 0.05

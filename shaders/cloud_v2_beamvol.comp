@@ -1,0 +1,254 @@
+#version 450
+#extension GL_EXT_control_flow_attributes : enable
+// ── The beam light volume's bake (2026-11-24; include/beam_vol.glsl) ──────────────────────────────────────────────────
+// Three dispatches a frame, after the lightning pass, before the march (same descriptor set and push constants):
+//   kMode 0  DENSITY: the cloud's extinction at each cell of each site's box (the field at the cell's footprint: the
+//            cloud's mean over ~600 m, what a shadow that coarse needs), a quarter of the boxes' z slabs a frame.
+//   kMode 1  RAY MAPS: each beam's own shadow. kBvRays x kBvRays rays parallel to the beam across its disk, each marched
+//            DOWN the beam (from the box's top toward the ground) through the density, keeping the optical depth above
+//            each of the box's z levels. A beam from 30 deg elevation and one from 70 deg see different cloud.
+//   kMode 2  GATHER: each cell sums the beams whose disk covers it (a workgroup culls the site's beams to its block
+//            first): the disk's irradiance x e^-(that beam's optical depth at the cell), and the irradiance-weighted
+//            direction toward the satellites. Written to the light volume the march (clouds), the froxels (shafts) and
+//            the sky pass (ground, sea) read.
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+layout(constant_id = 2) const uint kMode = 0u;
+
+layout(push_constant) uniform PC {        // == CloudMarchPC (cloud_v2_march.comp)
+    mat4  skyView;
+    float fovYRad;
+    float aspect;
+    float waveTime;
+    float obsEffH;
+    vec4  sunDirENU;
+    vec4  moonDirENU;
+    vec4  obsECEFDir;
+} pc;
+
+#define CLOUD_PARAMS_BINDING 0
+#include "cloud_params.glsl"
+#include "common.glsl"
+#define CV2_PARAMS_BINDING  1
+#define CV2_MORPH_BINDING   20
+#define CV2_WEATHER_BINDING 2
+#define CV2_SHAPE_BINDING   3
+#define CV2_DETAIL_BINDING  4
+#define CV2_MESO_BINDING    5
+#define CV2_ELEV_BINDING    25
+#define CV2_STORM_BINDING   26
+#include "clouds_v2.glsl"
+layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
+#define BEAM_CLOUD_LIGHTS_BINDING 9
+#include "beam_cloud_lights.glsl"
+#include "beam_vol.glsl"
+
+layout(set = 0, binding = 29, rgba16f) uniform writeonly image3D bvLightImg;
+layout(set = 0, binding = 31, r32f)    uniform writeonly image3D bvDensImg;
+layout(set = 0, binding = 32) uniform sampler3D bvDensTex;
+layout(set = 0, binding = 30) uniform sampler3D bvLightTex;
+layout(set = 0, binding = 34, rgba16f) uniform writeonly image3D bvShaftImg;
+layout(std430, set = 0, binding = 33) buffer BvMapBuf { uint bvMap[]; };   // [beam][kBvNZ / 2][ray] packHalf2x16
+
+const uint kBvRayN = uint(kBvRays * kBvRays);   // rays a beam (a knot pair's rays are adjacent: coalesced writes, and
+                                                // the gather's bilinear reads share lines)
+
+// The site a beam belongs to (the sites' beam ranges are contiguous).
+uint bvSiteOfBeam(uint b)
+{
+    for (uint s = 0u; s < kBvSites; ++s)
+        if (b >= uint(bvSites[s].ax.w) && b < uint(bvSites[s].ax.w) + uint(bvSites[s].ay.w)) return s;
+    return 0u;
+}
+
+const uint kBvListMax = 128u;   // beams a 4 x 4 x 4 block keeps (past it, the weakest are not dropped: the rest are)
+shared uint sBeamN;
+shared vec4 sBg[kBvListMax];    // xyz ground point, w irradiance
+shared vec4 sBd[kBvListMax];    // xyz direction, w R
+shared vec4 sBe1[kBvListMax];   // xyz across-beam basis 1, w the beam's index
+
+// The site's beams whose disk can reach this 4 x 4 x 4 block (its centre Lb) into shared memory; returns their count.
+uint bvCullBlock(uint s, vec3 Lb)
+{
+    uint b0 = uint(bvSites[s].ax.w), nb = min(uint(bvSites[s].ay.w), kBvMaxBeams);
+    if (gl_LocalInvocationIndex == 0u) sBeamN = 0u;
+    barrier();
+    float rb = length(vec3(2.0 * kBvCellXY, 2.0 * kBvCellXY, 2.0 * kBvCellZ));
+    for (uint i = gl_LocalInvocationIndex; i < nb; i += 64u) {
+        uint  b = b0 + i;
+        vec3  g = bvBeams[b].g.xyz, d = bvBeams[b].d.xyz;
+        vec3  rel = Lb - g;
+        vec3  perp = rel - d * dot(rel, d);
+        float R = max(bvBeams[b].d.w, 100.0);
+        float cut = kBvDiskCut * R + rb;
+        if (dot(perp, perp) < cut * cut && bvBeams[b].g.w > 0.0) {
+            uint slot = atomicAdd(sBeamN, 1u);
+            if (slot < kBvListMax) {
+                vec3 e1, e2;
+                bvBasis(d, e1, e2);
+                sBg[slot] = bvBeams[b].g; sBd[slot] = vec4(d, R); sBe1[slot] = vec4(e1, float(b));
+            }
+        }
+    }
+    barrier();
+    return min(sBeamN, kBvListMax);
+}
+
+void main()
+{
+    if (bvSiteCount == 0u) return;
+    vec3  enuZ = normalize(pc.obsECEFDir.xyz);
+    vec3  enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ));
+    mat3  enuToEcef = mat3(enuX, cross(enuZ, enuX), enuZ);
+    float eyeH = terrainFrame.x + 2.0;
+
+    if (kMode == 3u) {
+        // ── SHAFTS ── (one thread a screen tile's column: front to back through the light volume, two samples a depth slice;
+        // the cloud along the VIEW is the march's, which reads this at its transmittance checkpoints)
+        uint col = gl_WorkGroupID.x * 64u + gl_LocalInvocationIndex;
+        if (col >= uint(kBvShX * kBvShY)) return;
+        ivec2 g = ivec2(int(col) % kBvShX, int(col) / kBvShX);
+        vec2  ndc = (vec2(g) + 0.5) / vec2(kBvShX, kBvShY) * 2.0 - 1.0;
+        float th  = tan(pc.fovYRad * 0.5);
+        vec3  dir = normalize(mat3(transpose(pc.skyView)) * vec3(ndc.x * th * pc.aspect, -ndc.y * th, -1.0));
+        vec3  eye = vec3(0.0, 0.0, R_EARTH + eyeH);
+        vec3  BETA_R = BETA_R_BASE * cloud.atmosRayleighGain;
+        float BETA_M = BETA_M_BASE * cloud.atmosMieGain;
+        vec3  acc = vec3(0.0), tau = vec3(0.0);
+        float tP = 0.0;
+        for (int k = 0; k < kBvShZ; ++k) {
+            float t1 = kBvShT0 * exp(float(k + 1) * kBvShC), tm = kBvShT0 * exp((float(k) + 0.5) * kBvShC);
+            vec3  mid = acc;
+            [[unroll]] for (int j = 0; j < 2; ++j) {
+                float ta = mix(tP, t1, 0.25 + 0.5 * float(j)), len = 0.5 * (t1 - tP);
+                vec3  X = eye + dir * ta;
+                float h = length(X) - R_EARTH;
+                if (h < -500.0 || h > 60000.0) continue;
+                float rR = exp(-max(h, 0.0) / H_R), rM = exp(-max(h, 0.0) / H_M);
+                vec3  dTau = (BETA_R * rR + vec3(BETA_M * 1.1 * rM)) * len;
+                vec3  L;
+                int   s = bvSiteAt(X - eye, L);
+                if (s >= 0) {
+                    vec4  v = textureLod(bvLightTex, bvUVW(uint(s), L), 0.0);
+                    if (v.y > 0.0) {
+                        vec3  dB = bvOctDec(v.zw);
+                        vec3  dS = bvSites[s].ax.xyz * dB.x + bvSites[s].ay.xyz * dB.y + bvSites[s].az.xyz * dB.z;
+                        float c  = dot(dir, dS);
+                        float dayP = clamp((dot(normalize(X), pc.sunDirENU.xyz) + 0.2) / 0.5, 0.0, 1.0);
+                        vec3  sc = (BETA_R * rR * phaseR(c) + vec3(BETA_M * cv2.beam.y * rM * phaseM(c))) * len;
+                        acc += v.y * (1.0 - dayP) * sc * exp(-(tau + 0.5 * dTau));
+                    }
+                }
+                tau += dTau;
+                if (j == 0) mid = acc;
+            }
+            tP = t1;
+            imageStore(bvShaftImg, ivec3(g, k), vec4(mid, 0.0));
+        }
+        return;
+    }
+
+    if (kMode == 0u) {
+        // ── DENSITY ── (z slabs of 16, one of four a frame per site: the whole box every 4 frames)
+        ivec3 c = ivec3(gl_GlobalInvocationID);
+        uint  s = uint(c.z) / 16u;
+        if (s >= min(bvSiteCount, kBvSites)) return;
+        int   z = int((bvFrame & 3u) * 16u) + (c.z & 15);
+        vec3  L = vec3((vec2(c.xy) + 0.5) * kBvCellXY - kBvHalf, kBvZ0 + (float(z) + 0.5) * kBvCellZ);
+        // Only where a beam passes (most of the box is outside every beam: the field is not read there).
+        vec3  Lb = vec3((vec2(gl_WorkGroupID.xy * 4u) + 2.0) * kBvCellXY - kBvHalf,
+                        kBvZ0 + (float((bvFrame & 3u) * 16u + (gl_WorkGroupID.z * 4u & 15u)) + 2.0) * kBvCellZ);
+        if (bvCullBlock(s, Lb) == 0u) { imageStore(bvDensImg, ivec3(c.xy, z + int(s) * kBvNZ), vec4(0.0)); return; }
+        vec3  rel = bvSites[s].o.xyz + bvSites[s].ax.xyz * L.x + bvSites[s].ay.xyz * L.y + bvSites[s].az.xyz * L.z;
+        float h = length(rel + vec3(0.0, 0.0, R_EARTH + eyeH)) - R_EARTH;
+        float sg = 0.0;
+        if (h > 0.0 && h < 20000.0) {
+            CV2Field f = cv2Field(cv2Pos(rel, eyeH, enuToEcef), 0.0, kBvCellXY);
+            sg = f.sigma * (1.0 - 0.8 * f.thin);   // thin layers as the light march counts them
+        }
+        imageStore(bvDensImg, ivec3(c.xy, z + int(s) * kBvNZ), vec4(sg));
+        return;
+    }
+
+    if (kMode == 1u) {
+        // ── RAY MAPS ── (one thread a ray: gl_GlobalInvocationID flattened)
+        uint gid = gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * 4u * gl_NumWorkGroups.x
+                 + gl_GlobalInvocationID.z * 16u * gl_NumWorkGroups.x * gl_NumWorkGroups.y;
+        uint b = gid / uint(kBvRays * kBvRays), r = gid - b * uint(kBvRays * kBvRays);
+        if (b >= min(bvBeamCount, kBvMaxBeams)) return;
+        uint  s = bvSiteOfBeam(b);
+        vec3  g = bvBeams[b].g.xyz, d = bvBeams[b].d.xyz;
+        float R = max(bvBeams[b].d.w, 100.0);
+        vec3  e1, e2;
+        bvBasis(d, e1, e2);
+        vec2  uv = ((vec2(float(r % uint(kBvRays)), float(r / uint(kBvRays))) + 0.5) / float(kBvRays) * 2.0 - 1.0) * (kBvDiskCut * R);
+        vec3  r0 = g + e1 * uv.x + e2 * uv.y;
+        float dzs = max(d.z, 0.05);
+        float len = kBvCellZ / dzs;   // the ray's length through one z level
+        float od = 0.0, odPrev = 0.0;
+        uint  base = b * kBvRayN * uint(kBvNZ / 2) + r;
+        for (int k = kBvNZ - 1; k >= 0; --k) {
+            float zk = kBvZ0 + (float(k) + 0.5) * kBvCellZ;
+            vec3  P  = r0 + d * ((zk - r0.z) / dzs);
+            float sg = 0.0;
+            if (abs(P.x) < kBvHalf && abs(P.y) < kBvHalf)
+                sg = textureLod(bvDensTex, bvUVW(s, P), 0.0).r;
+            float odHere = od + 0.5 * sg * len;   // to the level's middle
+            od += sg * len;
+            if ((k & 1) == 1) odPrev = odHere;    // (k odd is read first: pack (even, odd) once k is even)
+            else bvMap[base + uint(k >> 1) * kBvRayN] = packHalf2x16(vec2(min(odHere, 60000.0), min(odPrev, 60000.0)));
+        }
+        return;
+    }
+
+    // ── GATHER ── (a 4 x 4 x 4 block per workgroup: its beams culled into shared memory; half the blocks a frame,
+    // alternate z blocks: each cell's light is at most a frame old, ~0.25 ms saved)
+    uint  s = gl_WorkGroupID.z / uint(kBvNZ / 8);
+    if (s >= min(bvSiteCount, kBvSites)) return;
+    uint  bz = (gl_WorkGroupID.z - s * uint(kBvNZ / 8)) * 2u + (bvFrame & 1u);   // the block's z index in the site
+    ivec3 c = ivec3(gl_GlobalInvocationID.xy, int(bz * 4u + gl_LocalInvocationID.z));
+    vec3  L = vec3((vec2(c.xy) + 0.5) * kBvCellXY - kBvHalf, kBvZ0 + (float(c.z) + 0.5) * kBvCellZ);
+    vec3  Lb = vec3((vec2(gl_WorkGroupID.xy * 4u) + 2.0) * kBvCellXY - kBvHalf, kBvZ0 + (float(bz * 4u) + 2.0) * kBvCellZ);
+    uint  n = bvCullBlock(s, Lb);
+    float E = 0.0, Ef = 0.0;
+    vec3  D = vec3(0.0);
+    uint  kw = uint(c.z) >> 1;
+    bool  hi = (c.z & 1) == 1;
+    for (uint i = 0u; i < n; ++i) {
+        vec3  d = sBd[i].xyz;
+        float R = sBd[i].w;
+        vec3  rel = L - sBg[i].xyz;
+        vec3  perp = rel - d * dot(rel, d);
+        float d2 = dot(perp, perp);
+        if (d2 > R * R * (kBvDiskCut * kBvDiskCut)) continue;
+        // The ray map at this cell: the rays through the cell's projection across the beam, at the cell's z level.
+        vec2  f  = (vec2(dot(perp, sBe1[i].xyz), dot(perp, cross(d, sBe1[i].xyz))) / (kBvDiskCut * R) * 0.5 + 0.5) * float(kBvRays) - 0.5;
+        f = clamp(f, vec2(0.0), vec2(float(kBvRays) - 1.001));
+        ivec2 i0 = ivec2(floor(f));
+        vec2  w  = f - vec2(i0);
+        uint  rb0 = uint(sBe1[i].w) * kBvRayN * uint(kBvNZ / 2) + uint(i0.y * kBvRays + i0.x);
+        uint  base = rb0 + kw * kBvRayN;
+        vec2  a  = unpackHalf2x16(bvMap[base]);
+        vec2  bq = unpackHalf2x16(bvMap[base + 1u]);
+        vec2  cq = unpackHalf2x16(bvMap[base + uint(kBvRays)]);
+        vec2  dq = unpackHalf2x16(bvMap[base + uint(kBvRays) + 1u]);
+        float od = hi ? mix(mix(a.y, bq.y, w.x), mix(cq.y, dq.y, w.x), w.y)
+                      : mix(mix(a.x, bq.x, w.x), mix(cq.x, dq.x, w.x), w.y);
+        // The same ray kBvNearM further up (the ray is parallel to the beam: the same map column, a higher level).
+        int   kf = c.z + int(kBvNearM * d.z / kBvCellZ + 0.5);
+        float odF = 0.0;
+        if (kf < kBvNZ) {
+            uint  bf = rb0 + uint(kf >> 1) * kBvRayN;
+            bool  hf = (kf & 1) == 1;
+            vec2  fa = unpackHalf2x16(bvMap[bf]), fb = unpackHalf2x16(bvMap[bf + 1u]);
+            vec2  fc = unpackHalf2x16(bvMap[bf + uint(kBvRays)]), fd = unpackHalf2x16(bvMap[bf + uint(kBvRays) + 1u]);
+            odF = hf ? mix(mix(fa.y, fb.y, w.x), mix(fc.y, fd.y, w.x), w.y)
+                     : mix(mix(fa.x, fb.x, w.x), mix(fc.x, fd.x, w.x), w.y);
+        }
+        float e0 = sBg[i].w * bvDisk(d2, R);
+        float e = e0 * exp(-od);
+        E += e;
+        Ef += e0 * exp(-odF);
+        D += e0 * d;
+    }
+    imageStore(bvLightImg, ivec3(c.xy, c.z + int(s) * kBvNZ), vec4(Ef * kBvScale, E * kBvScale, bvOctEnc(D)));
+}

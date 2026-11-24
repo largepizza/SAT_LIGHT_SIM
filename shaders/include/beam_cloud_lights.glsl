@@ -46,10 +46,28 @@ struct BeamCloudLight {
     float blockOpacity; // 0 = clear column, 1 = fully opaque
     float pad0, pad1;   // std430 array-of-vec4-pairs alignment
 };
+// The beam light volume's sites and their beams (2026-11-24, include/beam_vol.glsl; GpuBeamVolSite / GpuBeamVolBeam in
+// SatelliteSim.h, filled by the CPU each frame after the cloud lights).
+const uint kBvSites = 4u;
+const uint kBvMaxBeams = 512u;
+struct BeamVolSite {
+    vec4 o;    // xyz: the site's box origin, observer-relative ENU (m, as posENU); w: 1 = this slot holds a site
+    vec4 ax;   // xyz: the box's x axis (the site's east) in observer ENU; w: the site's first beam (index into bvBeams)
+    vec4 ay;   // xyz: the box's y axis (north); w: the site's beam count
+    vec4 az;   // xyz: the box's z axis (the site's up); w: the site's total mean irradiance (Suns, the beams' sum)
+    vec4 md;   // xyz: the beams' irradiance-weighted mean direction toward the satellites, observer ENU; w: unused
+};
+struct BeamVolBeam {
+    vec4 g;    // xyz: the beam's ground point in the SITE's box frame (m); w: its mean irradiance over the disk (Suns)
+    vec4 d;    // xyz: ground -> satellite in the box frame (unit); w: the footprint radius R (m)
+};
 layout(std430, set = 0, binding = BEAM_CLOUD_LIGHTS_BINDING) readonly buffer BeamCloudLightBuf {
     uint            beamLightCount;
     uint            beamLightPad0, beamLightPad1, beamLightPad2;
     BeamCloudLight  beamLights[kMaxCloudBeamLights];
+    uint            bvSiteCount, bvBeamCount, bvFrame, bvPad0;
+    BeamVolSite     bvSites[kBvSites];
+    BeamVolBeam     bvBeams[kBvMaxBeams];
 };
 
 // Perf: fixed-sigma cutoff BEFORE the exp() call — see the retired version's own comment for

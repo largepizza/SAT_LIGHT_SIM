@@ -10261,6 +10261,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         cv2EyeHeightNow = c.value("eye_height_now", cv2EyeHeightNow);
         cv2SunVolumeOn = c.value("sun_volume", cv2SunVolumeOn);
         cv2NightVolumeOn = c.value("night_volume", cv2NightVolumeOn);
+        cv2BeamVolOn = c.value("beam_volume", cv2BeamVolOn);
         cv2SunVolumeMaxStepS = settingClamp(c.value("sun_volume_max_step_s", cv2SunVolumeMaxStepS), 0.01f, 1e6f);
         cv2SunVolumeTimelapse = c.value("sun_volume_timelapse", cv2SunVolumeTimelapse);
         cv2ReprojWindVertical = settingClamp(c.value("reproj_wind_vertical", cv2ReprojWindVertical), 0.0f, 1.0f);
@@ -11111,6 +11112,7 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"eye_height_now", cv2EyeHeightNow},
         {"sun_volume", cv2SunVolumeOn},
         {"night_volume", cv2NightVolumeOn},
+        {"beam_volume", cv2BeamVolOn},
         {"sun_volume_max_step_s", cv2SunVolumeMaxStepS},
         {"sun_volume_timelapse", cv2SunVolumeTimelapse},
         {"reproj_wind_vertical", cv2ReprojWindVertical},

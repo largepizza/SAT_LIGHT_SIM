@@ -1151,13 +1151,36 @@ struct GpuBeamCloudLight
 };
 static_assert(sizeof(GpuBeamCloudLight) == 48, "GpuBeamCloudLight layout mismatch");
 
+// The beam light volume (2026-11-24, shaders/include/beam_vol.glsl, cloud_v2_beamvol.comp): up to kBvSites busy sites,
+// each a box fixed in the site's frame, and every converged on-site beam of those sites. Must match BeamVolSite /
+// BeamVolBeam in beam_cloud_lights.glsl.
+static constexpr int kBvSites = 4, kBvMaxBeams = 512;
+static constexpr int kBvNX = 128, kBvNY = 128, kBvNZ = 64, kBvRays = 20;   // == beam_vol.glsl
+static constexpr int kBvShX = 160, kBvShY = 90, kBvShZ = 64;               // the shafts' volume (== beam_vol.glsl)
+struct GpuBeamVolSite
+{
+    glm::vec4 o;    // xyz: box origin (the site's ground point), observer-relative ENU; w: 1 = valid
+    glm::vec4 ax;   // xyz: box x (site east) in observer ENU; w: first beam index
+    glm::vec4 ay;   // xyz: box y (site north); w: beam count
+    glm::vec4 az;   // xyz: box z (site up); w: the beams' summed mean irradiance (Suns)
+    glm::vec4 md;   // xyz: irradiance-weighted direction toward the satellites (observer ENU); w: unused
+};
+struct GpuBeamVolBeam
+{
+    glm::vec4 g;    // xyz: ground point in the site's box frame (m); w: mean irradiance over the disk (Suns)
+    glm::vec4 d;    // xyz: ground -> satellite, box frame; w: footprint radius (m)
+};
 struct GpuBeamCloudLights
 {
     uint32_t count;
     uint32_t pad0, pad1, pad2;
     GpuBeamCloudLight entries[kMaxCloudBeamLights];
+    uint32_t bvSiteCount, bvBeamCount, bvFrame, bvPad0;
+    GpuBeamVolSite bvSites[kBvSites];
+    GpuBeamVolBeam bvBeams[kBvMaxBeams];
 };
-static_assert(sizeof(GpuBeamCloudLights) == 16 + kMaxCloudBeamLights * 48, "GpuBeamCloudLights layout mismatch");
+static_assert(sizeof(GpuBeamCloudLights) == 16 + kMaxCloudBeamLights * 48 + 16 + kBvSites * 80 + kBvMaxBeams * 32,
+              "GpuBeamCloudLights layout mismatch");
 
 // ── TrackedBeamLight: persistent, cross-frame cloud-light identity (2026-08-12) ────────────────
 // CPU-only — this is the state the GPU-facing GpuBeamCloudLights above is DERIVED from each frame,
@@ -7144,6 +7167,20 @@ private:
     // (cv2SunLutKey); march set bindings 13 (storage, the bake) and 14 (sampled, the march). It took the
     // bindings of the light volume (cloud_v2_lightvol.comp, 2026-09-29: unbaked since the god rays moved to
     // the Sun shadow cascade, deleted 2026-10-13).
+    // The beam light volume (2026-11-24, cloud_v2_beamvol.comp / include/beam_vol.glsl): march set bindings 29 (light,
+    // storage), 30 (light, sampled), 31 (density, storage), 32 (density, sampled), 33 (the beams' ray maps).
+    VkPipeline cv2BvPipelines[4] = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};   // density, ray maps, gather, shafts
+    VkImage cv2BvLightImg = VK_NULL_HANDLE, cv2BvDensImg = VK_NULL_HANDLE;
+    VkDeviceMemory cv2BvLightMem = VK_NULL_HANDLE, cv2BvDensMem = VK_NULL_HANDLE;
+    VkImageView cv2BvLightView = VK_NULL_HANDLE, cv2BvDensView = VK_NULL_HANDLE;
+    VkBuffer cv2BvMapBuf = VK_NULL_HANDLE;
+    VkImage cv2BvShaftImg = VK_NULL_HANDLE;        // the shafts (kMode 3): march set bindings 34 (storage), 35 (sampled)
+    VkDeviceMemory cv2BvShaftMem = VK_NULL_HANDLE;
+    VkImageView cv2BvShaftView = VK_NULL_HANDLE;
+    VkDeviceMemory cv2BvMapMem = VK_NULL_HANDLE;
+    uint32_t cv2BvSites = 0, cv2BvBeams = 0, cv2BvFrame = 0;   // this frame's fill (the dispatches' sizes)
+    int bvSlotTarget[kBvSites] = {-1, -1, -1, -1};             // the reflector target each box slot holds (-1 = none)
+    float cv2BeamVolOn = 1.0f;                                 // settings: clouds_v2.beam_volume
     VkPipeline cv2SunLutPipeline = VK_NULL_HANDLE;
     VkImage cv2SunLutImg = VK_NULL_HANDLE;
     VkDeviceMemory cv2SunLutMem = VK_NULL_HANDLE;

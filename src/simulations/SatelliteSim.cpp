@@ -2087,6 +2087,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // tolerance every CPU aggregation in this loop already has); beam_self_march.comp's own
         // push-constant fill later this frame computes the identical obsEffH the same way.
         GpuBeamCloudLights cloudLights{};
+        // The beam light volume's beams (2026-11-24): every converged on-site beam, its own geometry (not clustered).
+        struct BvRec { int ti; glm::dvec3 g, d; float R, I; };
+        std::vector<BvRec> bvRecs;
         glm::vec3 obsPosLocalForLights(0.0f, 0.0f, followActive ? (float)followRadiusM : obsEyeRadiusM());
 
         TopK groundTopK;
@@ -2534,6 +2537,9 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                         if (!converged || onSite <= 0.0f)
                             continue;
                         intensity *= onSite;
+                        if (beamsIn[s].targetIdx >= 0 && (int)beamsIn[s].targetIdx < reflectorTargetCount)
+                            bvRecs.push_back({(int)beamsIn[s].targetIdx, enuPosToEcef(groundPosENU),
+                                              enuDirToEcef(dirToSourceCand), beamsIn[s].footprintRadM, intensity});
 
                         // Geometry into Earth-fixed ECEF once, here — everything downstream (the
                         // direction bucket, the accumulators, the stored state) works in that
@@ -2711,6 +2717,87 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             cv2BeamEyeDir = glm::length(dS) > 1e-30 ? glm::vec3(glm::normalize(dS)) : glm::vec3(0.0f, 0.0f, 1.0f);
         }
 
+        // ── The beam light volume's sites (2026-11-24, cloud_v2_beamvol.comp) ──────────────────────────────────────────
+        // Up to kBvSites busy sites, by their beams' summed irradiance over (1 + (distance / 150 km)^2). A site keeps its
+        // slot while it stays among the 8 best (its box's density bake is spread over 4 frames: a slot that changed hands
+        // shows unshadowed light until it is baked again).
+        {
+            const double invW = beamGain > 0.0f ? 1.0 / (1361.0 * (double)beamGain) : 0.0;
+            std::unordered_map<int, double> siteE;
+            for (const BvRec &r : bvRecs)
+                siteE[r.ti] += (double)r.I * invW / (3.14159265358979 * std::max((double)r.R, 100.0) * std::max((double)r.R, 100.0)) * 1.0;
+            std::vector<std::pair<double, int>> cand;
+            for (const auto &kv : siteE)
+            {
+                const int ti = kv.first;
+                glm::dvec3 sEcef = glm::dvec3(reflectorTargetsECEF[ti]) * (double)reflectorTargetsRadiusM[ti];
+                double dist = glm::length(glm::dvec3(ecefPosToEnu(sEcef)));
+                cand.push_back({kv.second / (1.0 + (dist / 150000.0) * (dist / 150000.0)), ti});
+            }
+            std::sort(cand.begin(), cand.end(), [](const auto &x, const auto &y) { return x.first > y.first; });
+            auto inTop = [&](int ti, size_t n)
+            {
+                for (size_t i = 0; i < std::min(n, cand.size()); ++i)
+                    if (cand[i].second == ti) return true;
+                return false;
+            };
+            const bool bvOn = cv2BeamVolOn > 0.5f && !(debugDisableMask & 128u);
+            for (int k = 0; k < kBvSites; ++k)
+                if (!bvOn || (bvSlotTarget[k] >= 0 && !inTop(bvSlotTarget[k], 8)))
+                    bvSlotTarget[k] = -1;
+            for (size_t i = 0; bvOn && i < cand.size(); ++i)
+            {
+                int ti = cand[i].second;
+                bool have = false;
+                for (int k = 0; k < kBvSites; ++k) have = have || bvSlotTarget[k] == ti;
+                if (have) continue;
+                for (int k = 0; k < kBvSites; ++k)
+                    if (bvSlotTarget[k] < 0) { bvSlotTarget[k] = ti; break; }
+            }
+            // Slots in order; an empty slot between two sites keeps its index (the boxes are stacked by slot).
+            uint32_t nb = 0, ns = 0;
+            for (int k = 0; k < kBvSites; ++k)
+            {
+                GpuBeamVolSite &S = cloudLights.bvSites[k];
+                S = GpuBeamVolSite{};
+                const int ti = bvSlotTarget[k];
+                if (ti < 0) continue;
+                ns = (uint32_t)k + 1;
+                const glm::dvec3 oE = glm::dvec3(reflectorTargetsECEF[ti]) * (double)reflectorTargetsRadiusM[ti];
+                const glm::dvec3 X(reflectorSiteEnuX[ti]), Y(reflectorSiteEnuY[ti]), Z(reflectorSiteEnuZ[ti]);
+                S.o = glm::vec4(ecefPosToEnu(oE), 1.0f);
+                S.ax = glm::vec4(ecefDirToEnu(X), (float)nb);
+                S.ay = glm::vec4(ecefDirToEnu(Y), 0.0f);
+                S.az = glm::vec4(ecefDirToEnu(Z), 0.0f);
+                glm::dvec3 md(0.0);
+                double Esum = 0.0;
+                uint32_t cnt = 0;
+                for (const BvRec &r : bvRecs)
+                {
+                    if (r.ti != ti || nb >= (uint32_t)kBvMaxBeams) continue;
+                    const double R = std::max((double)r.R, 100.0);
+                    const double E = (double)r.I * invW / (3.14159265358979 * R * R);
+                    if (E <= 0.0) continue;
+                    const glm::dvec3 gl = r.g - oE;
+                    GpuBeamVolBeam &B = cloudLights.bvBeams[nb++];
+                    B.g = glm::vec4((float)glm::dot(gl, X), (float)glm::dot(gl, Y), (float)glm::dot(gl, Z), (float)E);
+                    B.d = glm::vec4(glm::normalize(glm::vec3((float)glm::dot(r.d, X), (float)glm::dot(r.d, Y),
+                                                             (float)glm::dot(r.d, Z))), (float)R);
+                    md += E * r.d;
+                    Esum += E;
+                    ++cnt;
+                }
+                S.ay.w = (float)cnt;
+                S.az.w = (float)Esum;
+                glm::vec3 mdE = ecefDirToEnu(md);
+                S.md = glm::vec4(glm::length(mdE) > 1e-12f ? glm::normalize(mdE) : glm::vec3(0.0f, 0.0f, 1.0f), 0.0f);
+            }
+            cloudLights.bvSiteCount = ns;
+            cloudLights.bvBeamCount = nb;
+            cloudLights.bvFrame = ++cv2BvFrame;
+            cv2BvSites = ns;
+            cv2BvBeams = nb;
+        }
         fillSolarSites(groundBeams, solarBeamHits, dt);
         groundBeams.refr = refrGpu;   // the refraction table (SatelliteSimRefraction.cpp)
         std::memcpy(groundBeamsMapped, &groundBeams, sizeof(GpuGroundBeams));
