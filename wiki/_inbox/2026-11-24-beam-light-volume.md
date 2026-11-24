@@ -9,7 +9,8 @@ shadow: 20 x 20 rays along its own direction through a density bake of the box. 
 sample (plus three short reads up the beams for their own lobes), the air's shafts are a 160 x 90 x 64 screen-depth
 volume integrated from it (god rays broken by the clouds), and the ground and sea are lit from it as the Sun lights
 them (albedo x irradiance x cosine, the sea's water light and a faint sky reflection), at the same scale as the clouds
-("Beam light on cloud"). Setting `clouds_v2.beam_volume` (default 1; 0 = the old clustered lights and the grey spot).
+("Beam light on cloud"). Mountain ranges shadow low beams (the rays stop in the terrain, ~2.7 km elevation pixels).
+Setting `clouds_v2.beam_volume` (default 1; 0 = the old clustered lights and the grey spot).
 Measured (RTX 3070 Ti, 1600x900): the bench report's views 33.5 -> 31.3 and 36.7 -> 34.2 ms, orbit over the sites
 22.6 -> 19.9 ms, daytime unchanged.
 
