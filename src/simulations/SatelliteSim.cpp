@@ -2090,6 +2090,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         // The beam light volume's beams (2026-11-24): every converged on-site beam, its own geometry (not clustered).
         struct BvRec { int ti; glm::dvec3 g, d; float R, I; };
         std::vector<BvRec> bvRecs;
+        int gbTarget[kMaxGroundBeams];   // each ground-beam entry's reflector target (the volume's sites skip their spot)
+        std::fill(std::begin(gbTarget), std::end(gbTarget), -1);
         glm::vec3 obsPosLocalForLights(0.0f, 0.0f, followActive ? (float)followRadiusM : obsEyeRadiusM());
 
         TopK groundTopK;
@@ -2484,6 +2486,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                     // membership stays a function of intensity alone and doesn't churn.
                     gb.intensity = intensity; // ranking key only — see GpuGroundBeam's comment
                     groundBeams.entries[insertIdx] = gb;
+                    gbTarget[insertIdx] = (int)beamsIn[s].targetIdx;
                 }
             }
 
@@ -2818,6 +2821,25 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             cv2BvFullBake = false;
             cv2BvSites = ns;
             cv2BvBeams = nb;
+        }
+        // The ground spots of beams whose site has a light volume box are lit by the volume (sat_sky.frag bvGroundLight):
+        // those entries go to the back; pad1 = how many precede them (the spot loop's count where no solar park needs
+        // every beam's glint). A busy site beyond the boxes keeps the old spot.
+        {
+            uint32_t n = std::min(groundBeams.count, (uint32_t)kMaxGroundBeams), front = 0;
+            auto covered = [&](uint32_t i)
+            {
+                for (int k = 0; k < kBvSites; ++k)
+                    if (bvSlotTarget[k] >= 0 && bvSlotTarget[k] == gbTarget[i]) return true;
+                return false;
+            };
+            for (uint32_t i = 0; i < n; ++i)
+                if (!covered(i))
+                {
+                    if (i != front) { std::swap(groundBeams.entries[i], groundBeams.entries[front]); std::swap(gbTarget[i], gbTarget[front]); }
+                    ++front;
+                }
+            groundBeams.pad1 = (cv2BvSites > 0) ? front : n;
         }
         fillSolarSites(groundBeams, solarBeamHits, dt);
         groundBeams.refr = refrGpu;   // the refraction table (SatelliteSimRefraction.cpp)

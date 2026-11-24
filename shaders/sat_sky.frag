@@ -159,7 +159,7 @@ struct SolarSite {
 layout(std430, set = 0, binding = 21) readonly buffer GroundBeamsBuf {
     uint        groundBeamCount;
     uint        solarSiteCount;
-    uint        groundBeamPad1, groundBeamPad2;
+    uint        groundBeamPad1, groundBeamPad2;   // pad1 (2026-11-24): the entries before the light volume's sites' beams
     GroundBeam  groundBeams[GROUND_BEAM_MAX];
     SolarSite   solarSites[SOLAR_SITE_MAX];
 #if !defined(SKY_LITE) && !defined(SKY_ENV)
@@ -7693,7 +7693,7 @@ void main() {
         // (2026-11-24: with the beam light volume the beams light the ground above (bvGroundLight); this loop then runs only
         // for a solar park's panels, whose glint is per beam.)
         bool bvOn = bvAnySite();
-        if ((cloud.dbgDisableMask & 128u) == 0u && (!bvOn || solarCov > 0.0)) {
+        if ((cloud.dbgDisableMask & 128u) == 0u) {
             const float kBeamGroundScale = 4e-8;
             // Normalized against the slider's default (0.05, see SatelliteSim.h) so existing
             // footprint brightness is unchanged at default gain, while still scaling together
@@ -7723,6 +7723,10 @@ void main() {
             // are actually inside a footprint. Working in squared distance also drops the
             // length() sqrt the old reject needed.
             int activeBeamCount = int(min(groundBeamCount, GROUND_BEAM_MAX));
+            // With the volume: only the beams of sites beyond its boxes (first groundBeamPad1 entries, the CPU sorts them
+            // there), unless a solar park's panels need every beam's glint.
+            int nUncov = bvOn ? int(min(groundBeamPad1, GROUND_BEAM_MAX)) : activeBeamCount;
+            if (solarCov <= 0.0) activeBeamCount = nUncov;
             for (int bi = 0; bi < activeBeamCount; ++bi) {
                 vec2  d  = hitPt.xy - groundBeams[bi].groundHitXY;
                 float d2 = dot(d, d);
@@ -7743,7 +7747,7 @@ void main() {
                 // solar park's dark glass takes its share), plus the panels' glass mirroring the satellite:
                 // the beam's light comes from one point, so the glint is a sharp path across the rows.
                 float bE = kBeamGroundScale * w * 2.0 * disk * skyGlowNorm;
-                if (!bvOn) surfColor += vec3(bE * solarDiffK);
+                if (bi < nUncov) surfColor += vec3(bE * solarDiffK);
                 if (solarCov > 0.0)
                     surfColor += vec3(bE * solarCov * solarGlint(solarN, -dir, solarOctDecode(groundBeams[bi].dirOct), solarS2));
             }
