@@ -377,6 +377,10 @@ void main()
         vec3  r0 = g + e1 * uv.x + e2 * uv.y;
         float dzs = max(d.z, 0.05);
         float len = kBvCellZ / dzs;   // the ray's length through one z level
+        float fpRay = clamp(0.5 * 2.0 * kBvDiskCut * R / float(kBvRays), 100.0, 500.0);   // half the rays' spacing
+        // (only for a site within 150 km of the eye: a far site's breaks are sub-pixel, and the reads cost ~1.7 ms with
+        // a site 417 km away holding 210 beams; past it the coarse bake)
+        bool  fineOn = dot(bvSites[s].o.xyz, bvSites[s].o.xyz) < 150000.0 * 150000.0;
         float od = 0.0, odPrev = 0.0;
         uint  base = b * kBvRayN * uint(kBvNZ / 2) + r;
         bool  rock = false;   // the ray has gone into the terrain: everything below is in its shadow (2026-11-24)
@@ -386,6 +390,20 @@ void main()
             float sg = 0.0;
             if (abs(P.x) < kBvHalf && abs(P.y) < kBvHalf)
                 sg = textureLod(bvLightTex, bvUVWp(s, P, 1), 0.0).z * 0.001;
+            // Where the coarse bake has cloud, the field itself on this ray's line (2026-11-24): a cell's MEAN density
+            // closes every break smaller than the cell (a half-open 1-km cell kept an optical depth ~10 through a deck),
+            // so no beam came through a gap in an overcast as a column. Each ray is a point sample; their spacing
+            // (2.3 R / 20, ~0.6 km) is the columns' resolution, and the rays' mean is the right mean transmittance.
+            // Cost (3070 Ti): bake +1.7 ms at issue_20261124_000411 shot 1 for every site; gated to near sites below.
+            if (sg > 1e-6 && fineOn && od < 12.0) {   // (past an optical depth of 12 the ray is dark: the coarse bake)
+                vec3  relP = bvSites[s].o.xyz + bvSites[s].ax.xyz * P.x + bvSites[s].ay.xyz * P.y + bvSites[s].az.xyz * P.z;
+                float hP = length(relP + vec3(0.0, 0.0, R_EARTH + eyeH)) - R_EARTH;
+                sg = 0.0;
+                if (hP > 0.0 && hP < 20000.0) {
+                    CV2Field fr = cv2Field(cv2Pos(relP, eyeH, enuToEcef), 0.0, fpRay);
+                    sg = fr.sigma * (1.0 - 0.8 * fr.thin);
+                }
+            }
             if (!rock && zk < 9000.0 && abs(P.x) < kBvInner && abs(P.y) < kBvInner) {
                 // The terrain's height in the box's z at P (the ground pass's last frame, bilinear): a level under it is
                 // rock (the ground does not shade itself).

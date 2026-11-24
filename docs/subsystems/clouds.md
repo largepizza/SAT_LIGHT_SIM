@@ -520,6 +520,17 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   beam's AXIS left the box drew a step along the box top (the Arkansas report's upper edge, ~4 levels in 6 px): a low
   beam's slanted cylinder is ~10 km thick vertically, so above the top half of it was nobody's and below half was
   counted twice. Found by rendering the two parts alone and moving the hand-off to 8 km (the step moved with it).
+  **The ray maps read the field on their own line inside cloud** (where the coarse bake has any): a cell's MEAN density
+  closes every break smaller than the cell (a half-open 1-km cell kept an optical depth ~10 through a deck), so no beam
+  came through a gap. Each ray is a point sample (footprint half the rays' spacing, 100-500 m), only for sites within
+  150 km of the eye and only until the ray's optical depth reaches 12. Cost (3070 Ti, 1920x1009, interleaved, A-vs-A
+  +-0.45): +0.7 ms at issue_20261124_000411 shot 1, +0.8 at issue_20261124_085151 (ungated +1.4: a site 417 km away
+  held 210 beams). A single beam's shadow pattern on a level is visibly crisper; the summed one too. Fairbanks
+  (issue_20261124_085151, site 62): the overcast is ~0.8-1.8 km and the beams arrive at ~22 deg, so a break must be
+  ~2.2 km wide along the beam to pass light; only one spot in ~25 km passes the full beam (`debug_view 8` at 300 m),
+  and its lit air is a low slanted slab under the deck, not a column. Beam direction spread (`beams vol`) at the US
+  sites at both new reports' times: 20-200 beams a site, half the light 12-37 deg from the mean: no site is lit from
+  one angle there.
   **Terrain shadow on the clouds' sunlight (2026-11-23, step 5 of the lighting audit):** the Sun's key light at a cloud
   sample is x `cv2TerrSunT(rel)` (the terrain Sun-horizon map the air, fog and god rays read; on with the Sun up at the
   eye, below 60 km, terrain in reach), below 20 deg of Sun at the sample only (`sunUp < 0.34`). 128 registers (binary
