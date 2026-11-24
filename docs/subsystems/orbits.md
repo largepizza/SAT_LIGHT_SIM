@@ -508,6 +508,9 @@ lists still load. Only `solar` changes anything so far: the park is drawn on the
   (normal ~15 deg toward the equator, +-8 deg per roof; a broad lobe when unresolved). Reference: the
   user's Odessa snapshot (Roadrunner's coordinates sit on the city; the real plant is in Upton County).
   Cost within noise there.
+- **The ground under the beams (2026-11-24):** lit from the beam light volume (`docs/subsystems/clouds.md`, "The beam
+  light volume"), as the Sun lights it; the spot loop below now runs only for solar parks' panel glints, or with
+  `clouds_v2.beam_volume` 0.
 - **Ground spots land on the target's ground (fixed the same day):** the CPU traced every beam to the
   sea-level sphere, so a beam arriving at 11-20 deg on a site 1.7 km up (Villanueva) lit the ground ~5 km
   past it. The ground spot and the cloud lights now intersect the sphere of the target's own radius

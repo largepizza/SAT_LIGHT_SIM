@@ -453,6 +453,38 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   time won: shot 1 29.31 -> 29.55 ms, shot 2 32.00 -> 31.83, p90 +1.2 ms (the bakes cost what the march saved), and
   (ii) the deck under the beams went flat white: without the 150-m read no grid this coarse (400-m cells, 650-m knots)
   gives a lobe's top any depth toward the satellites. The three reads up the beam stay.
+  **The beam light volume (2026-11-24, `cloud_v2_beamvol.comp`, `include/beam_vol.glsl`; issue_20261124_000411 "Reflect
+  beam lighting bench points"; setting `clouds_v2.beam_volume`, default 1):** the beams' light is baked once a frame per
+  busy site, each beam with ITS OWN cloud shadow, and every consumer reads it instead of looping over the clustered lights.
+  The CPU (`SatelliteSim.cpp`, after the cloud-light emit) keeps up to 4 sites (`bvSlotTarget`: the beams' summed
+  irradiance / (1 + (distance / 150 km)^2); a site keeps its slot while among the best 8) and sends every converged
+  on-site beam of them (up to 512: ground point and direction in the site's frame, mean irradiance, footprint R) after
+  the cloud lights in `BeamCloudLightBuf`. Each site is a box fixed in its frame (east / north / up at the target): +-40
+  km, -2.5 .. 15.5 km, 128 x 128 x 64 cells (625 x 625 x 281 m), stacked by slot in one 3D texture. The bake (after the
+  lightning pass; timed in the `sun_horizon` stamp): kMode 0 the density (the field at the cell's footprint, a quarter
+  of the z levels a frame, skipped in blocks no beam reaches), 1 a ray map per beam (20 x 20 rays parallel to the beam
+  across its disk, marched down through the density: the optical depth above each z level), 2 the gather (half the z
+  blocks a frame; a 4 x 4 x 4 block culls the site's beams into shared memory, each cell sums disk x e^-od per beam:
+  x = with only the cloud beyond kBvNearM 1.95 km up each beam, y = with all of it, zw = the direction, octahedral),
+  4 the ground (the volume at the terrain's height, `cv2Ground`, per column, into the flash buffer: `cv2BvGround` /
+  `cv2BvHdr`, the sky set having no sampled image left), 3 the shafts (160 x 90 screen tiles x 64 depths, 50 m - 3000 km
+  log: per tile the air's light toward the eye integrated front to back, sampled only inside the boxes; above them each
+  merged light's column to 60 km in closed form). Consumers: the march's `beamGather` reads x at the sample (the three
+  reads up the beams and the column floor take the near cloud, as the Sun's light march and its volume split the path);
+  `beamShafts` reads the shaft volume at the ray's transmittance checkpoints; sat_sky.frag's `bvGroundLight` lights the
+  terrain (albedo x E x cos + 0.12 of it from the lit air) and the sea (`seaE`, + a faint blue reflection) at the clouds'
+  scale (`cv2.beam.z`). The 256-beam ground-spot loop now runs only for solar parks' glints (or with the volume off).
+  Beam-lit samples may take the faint / deep shortcuts. What the bake does not do: terrain does not shadow the beams;
+  beyond the 4 boxes only the far layer and the merged lights' upper shafts remain.
+  Measured (3070 Ti, 1600x900, user settings, interleaved reps; 128 registers): the report's shot 1 GPU 33.51 -> 31.31 ms
+  (p90 39.5 -> 35.5), shot 2 36.74 -> 34.20 (43.4 -> 39.3), time running 35.91 -> 34.09, orbit 400 km over Alaska's 5
+  sites 22.57 -> 19.93 (sky -2.9: the spot loop over every ground pixel), Alps noon (no beams) 18.72 -> 18.67, image at
+  the floor. Bake 0.45 ms with 2 sites, ~1.1 with 4. Frame-to-frame change at 60x time 5.9-8.2 -> 4.6-5.0 levels
+  (the old clusters' fades popped). What failed on the way: one 150-m read + the volume read AT the sample (the near
+  cloud in 625-m cells): a flat, over-bright deck (shot 2 deck mean 188 -> 225 levels, std 40 -> 32); the volume read
+  2 km up the mean direction: samples beside a slanted beam took its light (lit cloud bases); the full-attenuation value
+  for faint / deep samples: 255 registers. The shaft volume is coarse far away (80-km depth slices at 460 km): from orbit
+  the beams' streak is fainter than the old per-pixel shafts drew it.
   **Terrain shadow on the clouds' sunlight (2026-11-23, step 5 of the lighting audit):** the Sun's key light at a cloud
   sample is x `cv2TerrSunT(rel)` (the terrain Sun-horizon map the air, fog and god rays read; on with the Sun up at the
   eye, below 60 km, terrain in reach), below 20 deg of Sun at the sample only (`sunUp < 0.34`). 128 registers (binary
