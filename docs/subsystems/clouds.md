@@ -474,12 +474,18 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   `beamShafts` reads the shaft volume at the ray's transmittance checkpoints; sat_sky.frag's `bvGroundLight` lights the
   terrain (albedo x E x cos + 0.12 of it from the lit air) and the sea (`seaE`, + a faint blue reflection) at the clouds'
   scale (`cv2.beam.z`). The 256-beam ground-spot loop now runs only for solar parks' glints (or with the volume off).
-  Beam-lit samples may take the faint / deep shortcuts. What the bake does not do: terrain does not shadow the beams;
-  beyond the 4 boxes only the far layer and the merged lights' upper shafts remain.
+  Beam-lit samples may take the faint / deep shortcuts (they save 1.6 ms at shot 1; barring beam-lit samples from them
+  changed no pixel statistic). Terrain shadows the beams: a ray-map ray more than 350 m (a level) under the terrain is
+  opaque from there down; the height is the ground pass's (the elevation map, ~2.7 km pixels, stored in its free half
+  as the box's z, read by the next frame's ray maps). Without the 350-m margin the ground shaded itself (Fairbanks' whole
+  foreground dark). A slot that changes hands bakes its whole density that frame (`bvPad0`; else up to 4 frames of the
+  old site's cloud). Beyond the 4 boxes only the far layer and the merged lights' upper shafts remain.
   Measured (3070 Ti, 1600x900, user settings, interleaved reps; 128 registers): the report's shot 1 GPU 33.51 -> 31.31 ms
   (p90 39.5 -> 35.5), shot 2 36.74 -> 34.20 (43.4 -> 39.3), time running 35.91 -> 34.09, orbit 400 km over Alaska's 5
   sites 22.57 -> 19.93 (sky -2.9: the spot loop over every ground pixel), Alps noon (no beams) 18.72 -> 18.67, image at
-  the floor. Bake 0.45 ms with 2 sites, ~1.1 with 4. Frame-to-frame change at 60x time 5.9-8.2 -> 4.6-5.0 levels
+  the floor; at the user's window (1920x1009) after replaying each shot's trail: 41.57 -> 39.16 / 47.23 -> 44.12 ms
+  (p90 46.7 -> 43.6 / 57.4 -> 52.1). Bake ~0.9-1.0 ms at shot 1 (ray maps ~0.3, gather ~0.3, shafts ~0.15-0.2, density
+  ~0.1). Beams' remaining cost there (knockout): ~2.9 / 2.55 ms GPU, was ~5.2 / 5.1. Frame-to-frame change at 60x time 5.9-8.2 -> 4.6-5.0 levels
   (the old clusters' fades popped). What failed on the way: one 150-m read + the volume read AT the sample (the near
   cloud in 625-m cells): a flat, over-bright deck (shot 2 deck mean 188 -> 225 levels, std 40 -> 32); the volume read
   2 km up the mean direction: samples beside a slanted beam took its light (lit cloud bases); the full-attenuation value
