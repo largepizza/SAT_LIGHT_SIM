@@ -603,7 +603,7 @@ layout(set = 0, binding = 35) uniform sampler3D bvShaftTex;   // the shafts' vol
 vec3 beamShafts(vec2 uv, float tMax, vec4 tq, out float tShaft)
 {
     tShaft = 0.0;
-    float tE = min(tMax, kBvShT1);
+    float tE = min(tMax, bvShT1());
     vec3  s0 = textureLod(bvShaftTex, vec3(uv, bvShaftU(min(tq.x, tE))), 0.0).rgb;
     vec3  acc = s0;
     if (tq.x < tE) {

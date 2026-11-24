@@ -16,13 +16,16 @@ const float kBvScale = 1024.0;                        // the stored irradiance's
 const int   kBvRays = 20;                             // a beam's ray map: kBvRays x kBvRays across its disk (1.15 R)
 const float kBvDiskCut = 1.15;                        // == kBeamDiskCut
 
-// The shafts' volume (kMode 3): kBvShX x kBvShY screen tiles x kBvShZ log-spaced depths from kBvShT0 to kBvShT1, each
+// The shafts' volume (kMode 3): kBvShX x kBvShY screen tiles x kBvShZ log-spaced depths from bvShT0() to bvShT1(), each
 // texel the beams' light scattered toward the eye by the air between the eye and the texel's depth (integrated, the air's
-// extinction included), rgb x kBvScale, before the shafts' gains.
+// extinction included), rgb x kBvScale, before the shafts' gains. The depth range is the boxes' (the CPU: bvSites[0].md.w
+// / [1].md.w): 50 m .. ~200 km past the farthest box near the sites, only their range from orbit (it was a fixed 50 m -
+// 3000 km: 80-km slices at a site 460 km away, the beams' streak smeared into the deck behind it).
 const int   kBvShX = 160, kBvShY = 90, kBvShZ = 64;   // == SatelliteSim.h
-const float kBvShT0 = 50.0, kBvShT1 = 3000000.0;    // (to 3000 km: a site seen from orbit)
-const float kBvShC = 0.171908;                        // ln(kBvShT1 / kBvShT0) / kBvShZ
-float bvShaftU(float t) { return clamp(log(max(t, kBvShT0) / kBvShT0) / kBvShC, 0.0, float(kBvShZ)) / float(kBvShZ); }
+float bvShT0() { return max(bvSites[0].md.w, 50.0); }
+float bvShT1() { return max(bvSites[1].md.w, 4.0 * bvShT0()); }
+float bvShC()  { return log(bvShT1() / bvShT0()) / float(kBvShZ); }
+float bvShaftU(float t) { return clamp(log(max(t, bvShT0()) / bvShT0()) / bvShC(), 0.0, float(kBvShZ)) / float(kBvShZ); }
 
 // A box-frame point -> the site's texel coordinates in the stacked texture (normalised), z clamped inside its slab.
 vec3 bvUVW(uint s, vec3 L)

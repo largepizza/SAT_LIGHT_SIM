@@ -209,9 +209,9 @@ void main()
         tU = (wU > 0.0) ? tU / wU : -1.0;
 
         vec3  acc = vec3(0.0);
-        float tP = 0.0;
+        float tP = 0.0, shT0 = bvShT0(), shC = bvShC();
         for (int k = 0; k < kBvShZ; ++k) {
-            float t1 = kBvShT0 * exp(float(k + 1) * kBvShC), tm = kBvShT0 * exp((float(k) + 0.5) * kBvShC);
+            float t1 = shT0 * exp(float(k + 1) * shC), tm = shT0 * exp((float(k) + 0.5) * shC);
             vec3  mid = acc;
             if (tU >= tP && tU < t1) { acc += U; if (tU < tm) mid += U; }
             for (uint q = 0u; q < kBvSites; ++q) {
