@@ -1041,6 +1041,10 @@ struct GpuCloudV2Params
     // which the low field's threshold falls from 1 + y to its own: no cloud at zero coverage, continuously), y the threshold's lift,
     // z the margin's (x the same fade: cv2LowA's m0, past the lobes' reach); w unused
     glm::vec4 cloudflip;
+    // (2026-11-23, nightvol) The transmittance volume's light (cloud_lightning.glsl cv2Stv): xyz its direction (Earth-fixed,
+    // unit; the Sun by day, else the brighter of the Moon and the 2037 supernova), w 1 = the volume is on for the NIGHT key
+    // (stvH.z stays the Sun's flag: every Sun consumer keeps reading only that).
+    glm::vec4 stvKey;
 };
 static_assert(offsetof(GpuCloudV2Params, prevObs) == 64, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, frame) == 160, "GpuCloudV2Params layout");
@@ -1075,7 +1079,7 @@ static_assert(offsetof(GpuCloudV2Params, tone) == 288 + 48 * kCloudV2Types + 124
 static_assert(offsetof(GpuCloudV2Params, tone) == 1776, "sat_sky.frag SKY_LITE: CloudsV2Lite's layout(offset = 1776) of tone");
 static_assert(offsetof(GpuCloudV2Params, gnd) == 288 + 48 * kCloudV2Types + 1264, "GpuCloudV2Params layout");
 static_assert(offsetof(GpuCloudV2Params, micro) == 288 + 48 * kCloudV2Types + 1280, "GpuCloudV2Params layout");
-static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1872, "GpuCloudV2Params layout");   // +16: cloudflip; +16: storms2; +16: hurrlook; +16: hurrperf; +32: storms (stormsA, stormsB); +64: flowmaps (flowP, flowA, flowB, flowC); +16: grain; +16: optics; +16: hurricane; +16: pucks; +32: wind0, wind1; +32: cellA, cellB; +32: cirrus-hurr (ciHu, ciHu2); +32: storm3 (storm3a, storm3b); +64: vertical (vert, vert2, oro0, oro1); +80: shapeB
+static_assert(sizeof(GpuCloudV2Params) == 288 + 48 * kCloudV2Types + 1888, "GpuCloudV2Params layout");   // +16: stvKey; +16: cloudflip; +16: storms2; +16: hurrlook; +16: hurrperf; +32: storms (stormsA, stormsB); +64: flowmaps (flowP, flowA, flowB, flowC); +16: grain; +16: optics; +16: hurricane; +16: pucks; +32: wind0, wind1; +32: cellA, cellB; +32: cirrus-hurr (ciHu, ciHu2); +32: storm3 (storm3a, storm3b); +64: vertical (vert, vert2, oro0, oro1); +80: shapeB
 static_assert(offsetof(GpuCloudV2Params, cu3) == 288 + 48 * kCloudV2Types + 1312, "GpuCloudV2Params layout");
 
 // ── Reflect-Orbital beam->cloud light sources (host-visible) ─────────────────────────────────
@@ -5934,6 +5938,11 @@ private:
     float cv2SunVolumeTimelapse = 1.0f;    // diagnostic (clouds_v2.sun_volume_timelapse, no UI): 0 = the cut-off of 2026-11-08 .. 11-21
                                            // (the volume off while a frame's sim step is past sun_volume_max_step_s): the A/B
     float cv2SunVolumeOn = 1.0f;           // diagnostic (r1022): 0 = no Sun transmittance volume (clouds lit by the light march alone)
+    // 2026-11-23 (nightvol): with the Sun down at the eye, the transmittance volume is baked along the night key light (the
+    // brighter of the Moon and the 2037 supernova): far cloud shadows by moonlight, on moonlit ground, and the faint / rain /
+    // deep light paths for moonlit samples (clouds_v2.night_volume; 0 = the Moon by its light march alone, the A/B).
+    float cv2NightVolumeOn = 1.0f;
+    int   cv2StvKeyUsed = -1;              // which light the volume holds: 0 the Sun, 1 the Moon, 2 the supernova (-1 none)
     // 2026-11-08 (tlbillows, issue_20261108_171948): the share of the noise slide's VERTICAL part the resolve reprojects
     // (clouds_v2.reproj_wind_vertical; 0 = horizontal only, the default; 1 = the old full 3D slide). The noise slides along a
     // fixed ECEF windDir, up to ~45% vertical by place, but the layers' height profile does not move: a deck's top stays

@@ -333,14 +333,16 @@ void main()
         vec3  enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ));
         mat3  enuToEcef = mat3(enuX, cross(enuZ, enuX), enuZ);
         float eyeH = terrainFrame.x + 2.0;
-        vec3  sunENU = transpose(enuToEcef) * cv2.sunE.xyz;
+        // The volume's light (2026-11-23, nightvol: cv2.stvKey, the Sun by day, else the night key). Named sunENU below: the
+        // bake is the same for either light.
+        vec3  sunENU = transpose(enuToEcef) * cv2.stvKey.xyz;
         // The Sun transmittance VOLUME (S3, 2026-10-22; cloud_lightning.glsl cv2Stv): workgroups 5-6 bake level 0 (512
         // rays a frame, all in 32 frames), 7-9 levels 1-3 (256 a frame, all in 64). A ray is marched from the top of the
         // shell DOWN its sunward side (where the Sun is above the local horizon), recording the transmittance beyond the
         // point at each knot height; between knots the steps follow the cell and grow with the distance from the eye
         // (a far blocker's shadow is no sharper than the Sun's disc makes it). Thin layers count as in the light march.
         {
-            if (cv2.stvH.z < 0.5) return;
+            if (cv2.stvH.z < 0.5 && cv2.stvKey.w < 0.5) return;
             // The logical bake workgroup (5..17) and ray (0..255) this thread works on, and its share of the ray's knots.
             uint wgL = 5u + (gl_WorkGroupID.x - 5u) / kCv2StvG;
             uint liR = ((gl_WorkGroupID.x - 5u) % kCv2StvG) * (256u / kCv2StvG) + li / kCv2StvG;
@@ -901,9 +903,9 @@ void main()
         // eye had been low (another observer's ENU frame, another Sun): the cascade mapped each cloud sample to a
         // wrong ray and knot, and a sharp-edged trapezoid of black, ray-streaked cloud stood under the eye (zero after
         // a fresh load at altitude: the cascade then silently did nothing from orbit).
-        {
+        {   // (the volume's light's axes: the Sun's, or by night the night key's, cv2.stvKey; the terrain map runs only by day)
             vec3 ga, gb;
-            cv2SunGridAxes(sunENU, ga, gb);
+            cv2SunGridAxes(transpose(enuToEcef) * cv2.stvKey.xyz, ga, gb);
             cv2SunProf[2] = ga.x; cv2SunProf[3] = ga.y; cv2SunProf[4] = ga.z;
             cv2SunProf[5] = gb.x; cv2SunProf[6] = gb.y; cv2SunProf[7] = gb.z;
         }

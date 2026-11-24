@@ -305,6 +305,9 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     vec4  storms2;
     // (2026-11-14, cloudflip) x "zero_cover_fade", y the threshold's and z the margin's lift at zero coverage (cv2ZeroCoverLift), w unused
     vec4  cloudflip;
+    // (2026-11-23, nightvol) the transmittance volume's light: xyz its direction (Earth-fixed; the Sun by day, else the night
+    // key: the brighter of the Moon and the supernova), w 1 = on for the night key (stvH.z stays the Sun's flag)
+    vec4  stvKey;
 } cv2;
 #include "wind_field.glsl"
 

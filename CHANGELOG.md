@@ -573,6 +573,11 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   on the visible half of the Earth, storms or not; it now skips the regions with no storm (the same flashes): ~3.5 ms
   less at 3780 km, ~2 ms at 540 km. Moonlit clouds' lighting runs in step across neighbouring pixels: ~2.5 ms less at
   3780 km over a moonlit night side, the image unchanged. 3780 km night view 49.7 -> 43.6 ms.
+- **Moonlit clouds cast real shadows, and cost less.** At night the clouds' long-range shadow volume, which only the
+  Sun had, follows the Moon (or the 2037 supernova when it outshines the Moon): clouds shade moonlit clouds beyond
+  their own few kilometres, and their shadows fall on moonlit ground. Moonlit thin haze and rain now take the same
+  shortcuts sunlit ones do: ~2 ms less at night (22.4 -> 20.3 ms under a moonlit deck from 1.3 km, 37.9 -> 35.7 ms at
+  3780 km over the night side), daytime unchanged. `clouds_v2.night_volume` 0 turns it off.
 - **About 2 ms faster from low orbit above ~900 km.** The far cloud layer (the flat layer that takes over from the
   volumetric clouds from high orbit) now starts at ~1450 km instead of ~905: below that its share of the image was under
   a level while its pass cost ~2 ms (35.4 -> 33.5 ms at 1037 km, the image unchanged).

@@ -6426,6 +6426,11 @@ void main() {
         float moonHorizonGate  = smoothstep(-0.03, 0.02, geoMoonDot);
         float moonLitTerrain   = max(0.0, moonDot) * moonHorizonGate * NK(nkT).w;
         vec3  moonContribTerrain = dayColor * vec3(0.92, 0.95, 1.0) * moonLitTerrain * cloud.moonGain;
+#if !defined(SKY_ENV) && !defined(SKY_LITE)
+        // The clouds' shadow on moonlit ground (2026-11-23, nightvol): by night the transmittance volume holds the night key's
+        // light and cloud_march.comp writes ITS shadow to the ground's channel (cloudShadowT), only where the Sun is down.
+        if (cv2.stvKey.w > 0.5) moonContribTerrain *= cloudShadowT;
+#endif
 
         // Aurora ground glow removed 2026-09-30 (the user: "looks green and bad"). A real aurora's light on the
         // ground is ~a full Moon at most and colourless to the eye; the sky's own light already reaches the ground

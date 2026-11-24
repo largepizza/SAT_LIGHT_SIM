@@ -107,9 +107,9 @@ const float kBounceOpen    = CV2_BOUNCE_OPEN;
 #endif
 // Rain-alone samples lit without a light march (RAIN LIGHT, main(); -D CV2_RAIN_LIT_OFF = the old light march, the A/B).
 #ifdef CV2_RAIN_LIT_OFF
-#define CV2_RAIN_LIT(f) false
+#define CV2_RAIN_LIT(f, kv) false
 #else
-#define CV2_RAIN_LIT(f) ((f).rain > 0.0 && (f).hf <= 0.0 && cv2.stvH.z > 0.5)
+#define CV2_RAIN_LIT(f, kv) ((f).rain > 0.0 && (f).hf <= 0.0 && (kv))   // kv: the volume holds the key light
 #endif
 // A faint FINE sample's stride in steps (the view march, "FAINT STRIDE"; 1.0 = off, the A/B: -D CV2_FAINT_STRIDE=1.0).
 #ifndef CV2_PROBE_FP
@@ -1236,7 +1236,8 @@ void main()
                 // runs its light march, and the faint ones sat at the back of the batch, out of step with their
                 // neighbours'. Sun 0.06 below the sample's horizon: past Earth's shadow edge, the Moon's. GPU 49.6 -> 47.1 ms
                 // at the issue's view, a day view at 540 km unchanged, image at the A-vs-A floor, 128 registers.)
-                bool litG = f.thin <= 0.5 && (f.sigma * cv2.light.x >= CV2_FAINT_OD || dot(normalize(eye + rel), sunDir) < -0.06);
+                bool litG = f.thin <= 0.5 && (f.sigma * cv2.light.x >= CV2_FAINT_OD
+                                              || (cv2.stvKey.w < 0.5 && dot(normalize(eye + rel), sunDir) < -0.06));
                 int  bi   = litG ? nBl : kBatch - 1 - (nB - nBl);
                 bF[bi] = f; bT[bi] = t; bTr[bi] = T / tE; bCov[bi] = covB; bW[bi] = w; bH[bi] = hV;
                 ++nB; if (litG) ++nBl;
@@ -1343,50 +1344,54 @@ void main()
                     }
                     keyCol *= exp(-odR);
                 }
-#else
-                // The Sun's shadow beyond the light march (S3, 2026-10-22): the Sun transmittance volume (cv2Stv, baked by
-                // cloud_v2_lightning.comp), read where this sample's light march ENDS (~2 x cv2.light.x sunward) and half a
-                // knot up (the knot holds the sample's own cloud). Thin ice is read at the MIDDLE of its layer (at a jittered
-                // height in it a grazing Sun's shadow speckled). It replaced four structures that each covered part of the
-                // range (the fine grid, the shaft rings, the cascade, the layer map; .plans/CLOUD_REBUILD_PLAN.md).
-                if (cv2.stvH.z > 0.5) {
-                    float hT = (f.thin > 0.5) ? (f.topH - p.h) * (1.0 - 0.5 / max(1.0 - f.hf, 0.15)) : 0.0;
-                    float lL = ((CV2_FAINT_MODE == 0 && f.sigma * cv2.light.x < CV2_FAINT_OD) || CV2_RAIN_LIT(f)) ? 0.0 : 2.0 * cv2.light.x * (1.0 - f.thin);
-                    float hS  = p.h + hT + dot(up, sunDir) * lL;
-                    float tauS = -log(max(cv2StvT(rel + up * hT + sunDir * lL, hS + 0.5 * (cv2.stvH.y - cv2.stvH.x) / float(kCv2StvK - 1)), 1e-30));
-                    // The share of that shadow that is the sample's OWN cloud (the path to its own top along the Sun) reaches it
-                    // DIFFUSED, 1 / (1 + 0.11 tau) as the sky light through cloud above (below), not by Beer's law: deep in a
-                    // tower, kilometres under its top, e^-tau left the Sun nothing and the interior took the blue sky light
-                    // alone -- a flat deep-navy volume seen from inside a storm (issues 20261106_171931, 20261107_124812;
-                    // 2026-11-10). Another cloud's share (a deck or an anvil above the sample's own top) keeps Beer's law: its
-                    // diffuse light is the "deck above" term's (cv2.gnd.x).
-                    // Only on a ray from INSIDE the cloud (T, the transmittance within the cloud the ray is in, starts ~e^-20
-                    // there, see Tent): from outside the eye sees the surface, whose light the march and the octaves were tuned
-                    // on (applied to every sample it relit every shaded tower face and base, ~4 levels over a storm view).
-                    float tOwn = min(f.sigma * max(f.topH - hS, 0.0) / max(dot(up, sunDir), 0.1), tauS)
-                               * smoothstep(14.0, 18.0, -log(max(T, 1e-30)));
-                    // The diffused share carries the Sun's FLUX on the cloud's top (wave 20261122 c20, issue_20261122_214014):
-                    // 1 / (1 + 0.11 tau) is the Eddington thick-slab transmission (2 + 3 mu0) / (4 + 3 (1 - g) tau), g = 0.85,
-                    // at mu0 = 2/3, per unit normal flux; the flux into the top is mu0 times that. Without mu0 the rising Sun
-                    // (+1 deg) lit a storm's underside at 12% of the full Sun through a path of optical depth ~66: the whole
-                    // base flat orange. Normalised to 1 at mu0 >= 2/3 (the daytime interiors as tuned); 0.013 at +1 deg.
-                    float mu0 = max(sunUp, 0.0);
-                    float fMu = min(mu0 * (2.0 + 3.0 * mu0) * 0.375, 1.0);
-                    float eO  = exp(-tOwn);
-                    keyCol *= exp(tOwn - tauS) * (eO + (1.0 / (1.0 + 0.11 * tOwn) - eO) * fMu);
-                }
 #endif
             } else if (nightK > 0.0) {
                 float moonUp = dot(up, moonDir);
                 keyCol = moonKey * nightK * smoothstep(-0.05, 0.1, moonUp);
                 keyDir = moonDir; pSS = phMoonSS; pMS = phMoonMS; cosK = cosMoon; moonIsKey = true;
             }
+            // The volume holds the Sun's light by day and, with the Sun down at the eye, the night key's (2026-11-23,
+            // nightvol; cv2.stvKey.w): its shadow applies to whichever key light this sample took, if the volume holds it.
+            bool keyVol = (moonIsKey ? cv2.stvKey.w : cv2.stvH.z) > 0.5;
+#ifndef CV2_SUN_REF
+            // The Sun's shadow beyond the light march (S3, 2026-10-22): the Sun transmittance volume (cv2Stv, baked by
+            // cloud_v2_lightning.comp), read where this sample's light march ENDS (~2 x cv2.light.x sunward) and half a
+            // knot up (the knot holds the sample's own cloud). Thin ice is read at the MIDDLE of its layer (at a jittered
+            // height in it a grazing Sun's shadow speckled). It replaced four structures that each covered part of the
+            // range (the fine grid, the shaft rings, the cascade, the layer map; .plans/CLOUD_REBUILD_PLAN.md).
+            if (keyVol && dot(keyCol, keyCol) > 0.0) {
+                float hT = (f.thin > 0.5) ? (f.topH - p.h) * (1.0 - 0.5 / max(1.0 - f.hf, 0.15)) : 0.0;
+                float lL = ((CV2_FAINT_MODE == 0 && f.sigma * cv2.light.x < CV2_FAINT_OD) || CV2_RAIN_LIT(f, keyVol)) ? 0.0 : 2.0 * cv2.light.x * (1.0 - f.thin);
+                float hS  = p.h + hT + dot(up, keyDir) * lL;
+                float tauS = -log(max(cv2StvT(rel + up * hT + keyDir * lL, hS + 0.5 * (cv2.stvH.y - cv2.stvH.x) / float(kCv2StvK - 1)), 1e-30));
+                // The share of that shadow that is the sample's OWN cloud (the path to its own top along the Sun) reaches it
+                // DIFFUSED, 1 / (1 + 0.11 tau) as the sky light through cloud above (below), not by Beer's law: deep in a
+                // tower, kilometres under its top, e^-tau left the Sun nothing and the interior took the blue sky light
+                // alone -- a flat deep-navy volume seen from inside a storm (issues 20261106_171931, 20261107_124812;
+                // 2026-11-10). Another cloud's share (a deck or an anvil above the sample's own top) keeps Beer's law: its
+                // diffuse light is the "deck above" term's (cv2.gnd.x).
+                // Only on a ray from INSIDE the cloud (T, the transmittance within the cloud the ray is in, starts ~e^-20
+                // there, see Tent): from outside the eye sees the surface, whose light the march and the octaves were tuned
+                // on (applied to every sample it relit every shaded tower face and base, ~4 levels over a storm view).
+                float tOwn = min(f.sigma * max(f.topH - hS, 0.0) / max(dot(up, keyDir), 0.1), tauS)
+                           * smoothstep(14.0, 18.0, -log(max(T, 1e-30)));
+                // The diffused share carries the Sun's FLUX on the cloud's top (wave 20261122 c20, issue_20261122_214014):
+                // 1 / (1 + 0.11 tau) is the Eddington thick-slab transmission (2 + 3 mu0) / (4 + 3 (1 - g) tau), g = 0.85,
+                // at mu0 = 2/3, per unit normal flux; the flux into the top is mu0 times that. Without mu0 the rising Sun
+                // (+1 deg) lit a storm's underside at 12% of the full Sun through a path of optical depth ~66: the whole
+                // base flat orange. Normalised to 1 at mu0 >= 2/3 (the daytime interiors as tuned); 0.013 at +1 deg.
+                float mu0 = max(dot(up, keyDir), 0.0);
+                float fMu = min(mu0 * (2.0 + 3.0 * mu0) * 0.375, 1.0);
+                float eO  = exp(-tOwn);
+                keyCol *= exp(tOwn - tauS) * (eO + (1.0 / (1.0 + 0.11 * tOwn) - eO) * fMu);
+            }
+#endif
             // The high layer is optically thin ice: a light march through it buys nothing, and it
             // spans the whole sky, so every sample there paid seven field evaluations. Its
             // self-shadow is its own density over a few hundred metres; its sky light is unoccluded.
             bool thin = f.thin > 0.5;
-            // (Faint: see CV2_FAINT_OD. By the Sun only: the volume is the Sun's.)
-            bool faint = !thin && !moonIsKey && f.sigma * cv2.light.x < CV2_FAINT_OD;
+            // (Faint: see CV2_FAINT_OD. By the Sun, or by the night key where the volume holds it: the path reads the volume.)
+            bool faint = !thin && (!moonIsKey || keyVol) && f.sigma * cv2.light.x < CV2_FAINT_OD;
             vec3 keyS = vec3(0.0);
             bool  wantL = dot(keyCol, keyCol) > 0.0;
             float odL = 0.0, sigUp = 0.0, odB = 0.0;
@@ -1434,7 +1439,7 @@ void main()
             // set by the cloud over it: in the base, a rain sample's light march measured 8-38 km of its own density (the deck),
             // its far side ~2 km. From 4.4 km inside a snowing deck (81.5 S 26.2 E) ~11 rain samples a ray were lit, each with
             // ~11 field reads.
-            bool rainL = CV2_RAIN_LIT(f) && !moonIsKey;   // (the Moon has no transmittance volume)
+            bool rainL = CV2_RAIN_LIT(f, keyVol);   // (the Moon only with the night volume)
             // DEEP LIGHT (2026-11-11, hurrperf; issue_20261111_164105 "Hurricane performance", cv2.hurrperf.x "cloud_deep_light_t"):
             // a sample the eye sees through more than ~2.3 optical depths of its own cloud (T, within the cloud, < 0.1) runs no
             // light march: its optical depth toward the light is the previous lit sample's (the batch's front is in ray
@@ -1442,12 +1447,14 @@ void main()
             // carry < 10% of the pixel, yet in a hurricane's opaque walls and CDO they were 29% of the lit samples and their
             // light marches (2 steps + far + probe) ~9% of the field reads. The sky probe still runs. Image at the A-vs-A floor
             // at the eye view (mean |diff| 1.91 vs 1.67-1.96 between two captures of the same shader).
-            bool deepL = T < cv2.hurrperf.x && lOdL >= 0.0 && !rainL && !wantB && !moonIsKey && !faint;
+            // (Any key light since 2026-11-23, nightvol: the borrowed depth is the light march's, not the volume's. Gated on the
+            // night volume, (!moonIsKey || keyVol) here and at lOdL below, the march went to 255 registers.)
+            bool deepL = T < cv2.hurrperf.x && lOdL >= 0.0 && !rainL && !wantB && !faint;
             if (!skipL)
                 lightAmbOD(rel, keyDir, up, eyeH, enuToEcef, nL, lSeg0,
                            jL, detailAmt, fp, wantL && !rainL && !deepL, odL, sigUp, wantB, bDir, odB, lodL || faint, wantBk && !faint && !rainL, odBk);
             if (deepL) odL = lOdL + f.sigma * max(lH - p.h, 0.0) / max(dot(up, keyDir), 0.1);
-            else if (!skipL && !rainL && !faint && !moonIsKey) { lOdL = odL; lH = p.h; }
+            else if (!skipL && !rainL && !faint) { lOdL = odL; lH = p.h; }
             if (rainL) odL = f.sigma * cv2.light.x;
             // (And for an orographic lens, f.deck < -0.5: the march away from the light does not see it either, gCv2Oro being the
             // main sample's alone. With ~0 depth on its far side the diffuse field took it for a wisp: grey-blue, luminance

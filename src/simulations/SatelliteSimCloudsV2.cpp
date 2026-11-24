@@ -1747,8 +1747,29 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
         const glm::dvec3 s = glm::normalize(glm::dvec3(p.sunE));
         const double sinE = glm::dot(s, up);
         const glm::dvec3 east = glm::normalize(glm::cross(glm::dvec3(0.0, 0.0, 1.0), up));
-        const glm::dvec3 ga = glm::normalize(glm::cross(s, std::abs(sinE) > 0.99 ? east : up));   // = cv2SunGridAxes
-        const glm::dvec3 gb = glm::cross(s, ga);
+        // The transmittance volume's LIGHT (2026-11-23, nightvol): the Sun while it is up at the eye (as before), else the
+        // night key: the brighter of the Moon and the 2037 supernova, each by its light x its horizon gate (as
+        // nightKeyLightENU weighs them). NOT their merged direction: a volume baked between the two shadows along neither.
+        // Below 1% of the full Moon (a new Moon, the Moon down) there is no night volume.
+        int    stvKeyNow = 0;
+        glm::dvec3 kd = s;
+        {
+            auto gate = [](double z) { const double x = std::clamp((z + 0.10) / 0.15, 0.0, 1.0); return x * x * (3.0 - 2.0 * x); };
+            const glm::dvec3 north = glm::cross(up, east);
+            const glm::dvec3 dm = glm::normalize(glm::dvec3(moonDirENU));
+            const double am = std::max((double)moonDirENU.w, 0.0) * gate(dm.z);
+            const glm::dvec3 ds = glm::normalize(glm::dvec3(snEnu));
+            const double as = snLightK > 0.0f ? (double)snLightK * gate(ds.z) : 0.0;
+            if (!(sinE > -0.1) && cv2NightVolumeOn > 0.5f && std::max(am, as) > 0.01)
+            {
+                const glm::dvec3 n = (as > am) ? ds : dm;
+                stvKeyNow = (as > am) ? 2 : 1;
+                kd = glm::normalize(east * n.x + north * n.y + up * n.z);
+            }
+        }
+        const double sinK = glm::dot(kd, up);
+        const glm::dvec3 ga = glm::normalize(glm::cross(kd, std::abs(sinK) > 0.99 ? east : up));   // = cv2SunGridAxes
+        const glm::dvec3 gb = glm::cross(kd, ga);
         auto modP = [](double v, double m) { v = std::fmod(v, m); return (float)(v < 0.0 ? v + m : v); };
         // From orbit the sky's air keeps no cloud shadow (the god rays: not measured above 60 km).
         if (eyeH >= 60000.0) p.lightVol.w = 0.0f;
@@ -1785,8 +1806,15 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             cv2StvPrevJumpS = clockJumpS;
             // (sun_volume_timelapse 0: the cut-off of 2026-11-08 .. 11-21, for an A/B in one app)
             const bool stvCut = cv2SunVolumeTimelapse < 0.5f && std::fabs(dSimT) > (double)cv2SunVolumeMaxStepS;
-            const bool stvOn = sinE > -0.1 && cloudFarBlend() < 0.999f && cv2SunVolumeOn > 0.5f   // (sun_volume 0: a diagnostic)
+            const bool volOk = cloudFarBlend() < 0.999f && cv2SunVolumeOn > 0.5f   // (sun_volume 0: a diagnostic)
                                && !stvJump && !stvCut && std::fabs(dSimT) < 600.0;
+            const bool stvOn   = volOk && sinE > -0.1;                         // the Sun's (stvH.z: every Sun consumer)
+            const bool nightOn = volOk && stvKeyNow > 0 && sinK > -0.1;        // the night key's (stvKey.w)
+            const bool volOn   = stvOn || nightOn;
+            // A change of light restarts the volume (its rays stand for another direction).
+            if (!volOn || stvKeyNow != cv2StvKeyUsed)
+                for (int lv = 0; lv < 4; ++lv) cv2StvFrames[lv] = 0;
+            cv2StvKeyUsed = volOn ? stvKeyNow : -1;
             const double hHi = (double)hi + 1000.0;
             const glm::dvec3 dEye = rotD(eye, cDD, sDD) - cv2PrevEye;
             glm::vec4 lat[4];
@@ -1795,7 +1823,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                 const double cellL = cell1 * std::pow(4.0, lv);
                 if (cv2StvCellUsed[lv] != (float)cellL || std::abs(hHi - cv2StvHUsed) > 0.01 * hHi)
                     cv2StvFrames[lv] = 0;
-                if (!stvOn || !lightValid)
+                if (!volOn || !lightValid)
                     cv2StvFrames[lv] = 0;
                 else
                 {
@@ -1810,19 +1838,20 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                     ++cv2StvFrames[lv];
                 }
                 // In over its first round (level 0: 32 frames, the others 64).
-                const float fill = stvOn ? std::clamp((float)cv2StvFrames[lv] / (lv == 0 ? 16.0f : 32.0f), 0.0f, 1.0f) : 0.0f;
+                const float fill = volOn ? std::clamp((float)cv2StvFrames[lv] / (lv == 0 ? 16.0f : 32.0f), 0.0f, 1.0f) : 0.0f;
                 lat[lv] = glm::vec4(modP(cv2StvLatA[lv], 1024.0), modP(cv2StvLatB[lv], 1024.0), (float)cellL, fill);
             }
-            if (stvOn) cv2StvHUsed = hHi;
+            if (volOn) cv2StvHUsed = hHi;
             p.stvL0 = lat[0]; p.stvL1 = lat[1]; p.stvL2 = lat[2]; p.stvL3 = lat[3];
             // The windows' centre (m across the Sun from the eye): the eye, or from above mid-shell the point under it there.
             const double hC = std::min(eyeH, 0.5 * hHi);
             const float wcA = (float)((hC - eyeH) * glm::dot(up, ga)), wcB = (float)((hC - eyeH) * glm::dot(up, gb));
             p.stvH = glm::vec4(0.0f, (float)hHi, stvOn ? 1.0f : 0.0f, wcA);
+            p.stvKey = glm::vec4(glm::vec3(kd), nightOn ? 1.0f : 0.0f);
             // z: levels 0-1 baked twice (lightning workgroups 10-17) while they catch up: moving over half a level-0 cell a
             // frame, the 128 frames after, and the first 64 frames of a fill.
             const glm::vec2 v0((float)(glm::dot(dEye, ga) / cell1), (float)(glm::dot(dEye, gb) / cell1));
-            cv2StvBoost = (stvOn && (glm::length(v0) > 0.5f || cv2StvFrames[0] < 64 || cv2StvFrames[1] < 64))
+            cv2StvBoost = (volOn && (glm::length(v0) > 0.5f || cv2StvFrames[0] < 64 || cv2StvFrames[1] < 64))
                               ? 128 : std::max(cv2StvBoost - 1, 0);
             // z's fraction: the smallest weight a ray's running mean gives a new bake once it has three. The bakes are
             // jittered, and at a fixed 1/4 the stored shadow kept swinging by a bake's noise forever: with time PAUSED the
@@ -1832,7 +1861,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
             const double roundShift = 20.0 * std::abs(dSimT) * 32.0;
             const float wMin = (float)std::clamp(1.0 / 32.0 + 2.0 * roundShift / cell1, 1.0 / 32.0, 0.25);
             p.stvV = glm::vec4(v0.x, v0.y, (cv2StvBoost > 0 ? 1.0f : 0.0f) + std::min(wMin, 0.25f), wcB);
-            cv2StvOnNow = stvOn;
+            cv2StvOnNow = volOn;
         }
         {
             // The terrain Sun-horizon map (cloud_v2_terrsun.comp, cloud_lightning.glsl cv2TerrSunT): 4 levels of 128 x 128

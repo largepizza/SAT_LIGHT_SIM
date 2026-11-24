@@ -3042,6 +3042,12 @@ void main() {
             // The Sun transmittance volume at the ground point (S3: the same shadow the clouds and the air take; it
             // replaced a 32-72-sample march through the field from every ground pixel, cloudGroundShadowV2).
             float gs = (cv2.stvH.z > 0.5) ? cv2StvT(tScene * dir, length(hitENU) - R_EARTH) : 1.0;
+            // By night the volume holds the night key's light (2026-11-23, nightvol; cv2.stvKey.w): the clouds' shadow on
+            // MOONLIT ground (sat_sky.frag takes it on the Moon's direct light). Only where the Sun is below the ground's own
+            // horizon, so that sunlit ground seen from a night-side eye in orbit never takes the Moon's shadow on its sunlight.
+            if (cv2.stvKey.w > 0.5)
+                gs = mix(1.0, cv2StvT(tScene * dir, length(hitENU) - R_EARTH),
+                         1.0 - smoothstep(-0.1, -0.02, dot(normalize(hitENU), sunDir)));
             terrainSunT = mix(1.0, gs, shadowFade);
         }
     }

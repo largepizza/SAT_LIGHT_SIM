@@ -1500,6 +1500,29 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     340 m / sin(elevation) along a ray, ~19 km at 1 degree, T linear across it: light bleeds that far into a tower's
     shadow), read where the light march ends and multiplied by the forward lobe toward the Sun. Not the time rate (the
     note "The Sun volume stays on in time-lapse"). A fix needs knots along the ray, or a second read, at a low Sun.
+  - **The volume at night holds the night key (2026-11-23, nightvol; `clouds_v2.night_volume`, default 1).** With the Sun
+    below -5.7 deg at the eye the volume was off. It is now baked along the NIGHT key: the brighter of the Moon and the
+    2037 supernova, each by its light x its horizon gate as `nightKeyLightENU` weighs them, never their merged direction
+    (a volume baked between them shadows along neither; the light march keeps the merged light). Below 1% of the full
+    Moon there is none. `cv2.stvKey` (appended to the cv2 UBO): xyz the volume's direction (Earth-fixed, the Sun by day),
+    w 1 = on for the night key. `stvH.z` stays the SUN's flag, so every Sun consumer (god rays, froxels, fog and dust, the
+    sea reflection, plumes, the terrain map) reads nothing at night, as before. The CPU (`fillCloudsV2Params`) picks the
+    key, builds the lattice axes from it and restarts the levels when the light changes (`cv2StvKeyUsed`; harness
+    `state` -> `clouds_v2.sun_volume.key`: 0 Sun, 1 Moon, 2 supernova). The bake (`cloud_v2_lightning.comp`) and the
+    lookup axes (`cv2SunProf[2..7]`) take `stvKey.xyz`. In the march the volume block runs after the key is chosen, for
+    whichever key the volume holds (`keyVol`), and moonlit samples take the faint and rain-light paths when it does.
+    Ground: `cloud_march.comp` writes the volume's shadow to the ground channel where the Sun is below that ground's
+    horizon, and `sat_sky.frag` takes it on `moonContribTerrain` (not SKY_ENV / SKY_LITE).
+    Deep light (`cv2.hurrperf.x`) runs for ANY key: gated on the night volume, `(!moonIsKey || keyVol)` in deepL and in
+    the lOdL update, the march went from 128 to 255 registers; ungated it is 128 (binary 720,896 B vs 720,768 at
+    a4bfb2c6). At the terminator a moonlit deep sample can borrow a sunlit sample's depth (T < 0.1, under 10% of the pixel).
+    Measured (RTX 3070 Ti, 1600x900, user settings, one live app, 3 interleaved reps, GPU ms; harness_runs/nightvol/gen2.py):
+    issue_20261123_194608 "Moon shadows?" (1.3 km, moonlit cumulus over land) a4bfb2c6 march 22.42 +-0.68, new with the
+    volume 20.33 +-0.43 / 20.14 +-0.47 (A-vs-A), without 22.05; issue_20261122_213341 (3780 km, moonlit night side)
+    37.94 +-0.20 -> 35.70 +-0.17 / 35.93, without 37.59; daytime at the first view's place 19.44 -> 19.13 (2 reps), image
+    mean |diff| 3.5 levels against 5.1 between two captures of the old march. The night view changes on 36% of pixels:
+    the overcast's shadow on the ground, bases shaded by cloud beyond the light march's ~2 km. Not checked: the dusk
+    handover in motion (the Sun's volume stops at -5.7 deg as before; the night one fills over 16-32 frames).
   - **Cloud regression suite** (`tools/harness/cloud_suite.py`, docs/HARNESS.md): 11 daytime scenes at ordinary angles
     (cumulus from the ground / 3 km / cloud height, broken and overcast decks, sea, tropical towers, cumulus shadows on
     land at a 34 deg Sun from 3 km / 800 m / the ground, an overcast at 33 deg), each settled, time paused for 1200

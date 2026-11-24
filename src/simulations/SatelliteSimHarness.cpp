@@ -875,7 +875,7 @@ json SatelliteSim::harnessStateJson()
     {
         const GpuCloudV2Params *pp = (const GpuCloudV2Params *)cv2ParamsMapped;
         auto v4 = [](const glm::vec4 &v) { return json::array({v.x, v.y, v.z, v.w}); };
-        json sv = {{"on", cv2StvOnNow}, {"frames", {cv2StvFrames[0], cv2StvFrames[1], cv2StvFrames[2], cv2StvFrames[3]}},
+        json sv = {{"on", cv2StvOnNow}, {"key", cv2StvKeyUsed}, {"frames", {cv2StvFrames[0], cv2StvFrames[1], cv2StvFrames[2], cv2StvFrames[3]}},
                    {"boost", cv2StvBoost}, {"terrain_frame_x", terrainFrameMapped ? terrainFrameMapped[0] : -1.0f},
                    {"terrain_sun_map", cv2TshOnNow}, {"land_near", tshLandNear_}};
         if (pp)
