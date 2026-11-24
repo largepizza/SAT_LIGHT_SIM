@@ -453,6 +453,16 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   time won: shot 1 29.31 -> 29.55 ms, shot 2 32.00 -> 31.83, p90 +1.2 ms (the bakes cost what the march saved), and
   (ii) the deck under the beams went flat white: without the 150-m read no grid this coarse (400-m cells, 650-m knots)
   gives a lobe's top any depth toward the satellites. The three reads up the beam stay.
+  **The droplet phase on beams (2026-11-23, step 3 of the lighting audit):** `beamFinish` scatters the beams' light as the
+  key light's `cv2.micro` path does: the Mie table at the sample's droplet size (`cv2MicroReff` / `cv2MicroIce`), the
+  low orders (`cv2MicroOrders`), the diffuse field at the droplets' mean cosine with the chord factor and `cv2.micro.w`,
+  the forward peak capped at `kCv2MoonMieCap` (the beams carry the night view's lift as the Moon does). The two HG lobes
+  (`phSum`) remain only with the droplet phase off; the ice / snow / rain optics are mixed on top as before. 128
+  registers (binary 720,896 -> 725,120 B). Measured (issue_20261113_183043, 3 interleaved reps, GPU ms): shot 1 31.01 /
+  30.89 (A-vs-A) -> 32.04, shot 2 33.13 / 33.13 -> 33.94: +0.8-1.0 ms where beams light cloud, nothing elsewhere. The
+  beam-lit deck gains the lobes' relief (bright cores, dark wisps) and is brighter: display levels in the lit region
+  14 -> 50 (shot 1) and 15.5 -> 31 (shot 2). The user kept that level (no retune of `beam_light`); the light march's
+  grain shows on the brighter lobes as it does on moonlit ones.
 - **Rain / sleet / snow / diamond dust at the eye are PARTICLES** (2026-10-04, `rain_particles.vert/.frag`,
   `SatelliteSimRain.cpp`): one instanced draw in the main pass after everything else, i.e. AFTER the sky TAA,
   at full resolution, premultiplied over the tonemapped frame (ONE / ONE_MINUS_SRC_ALPHA: a drop dimmer than the
@@ -2894,6 +2904,14 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   registers and the same binary with and without it (699,392 B on 55be2fb0; 720,128 B and 128 registers on 99194955,
   with the curved-path air column of the same day; there a flash held at shot 3 costs 30.13 +- 0.28 -> 30.39 +- 0.31 ms
   and a frame without one 27.93 -> 27.93).
+  **The droplet phase (2026-11-23, step 3 of the lighting audit):** `boltCloudShade`'s single scattering is
+  `boltDropPhase`, the march's droplet fit (Jendersie & d'Eon HG + Draine) analytically, r_eff 10 um x `cv2.micro.x`
+  (this pass has no Mie table and no droplet size per pixel), the ice lobe above the glaciation band at the lit point's
+  height (`BoltLight.drop.y` = `cv2.micro.y`, the eye's altitude `pc.spare.x`), capped at 40; the two HG lobes with
+  `drop.x` 0. Flashes and engine lights alike; the host's engine-light level reference (`elTune.w`,
+  `recordLightning`) takes the same phase at -1 (water). The diffuse field is unchanged. A flash 6 km into the report's
+  storm (shot 3): 4.5% of pixels past 8 levels, mean 1.9: the side faces across the flash's path a little dimmer
+  (less side scattering), the core as before. Cost not measured (a few ALU ops a lit pixel in a post-TAA pass).
   Options weighed and not built: the flash as a point light inside the march (3 field taps toward it per lit sample, as
   the beams' occlusion march: estimated +2-5 ms where a flash lights cloud on screen, a second light loop in a shader
   on the register cliff, and the history's smear); its cheap form (the view ray's own depth + one tap toward the flash:

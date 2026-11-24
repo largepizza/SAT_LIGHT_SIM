@@ -10165,7 +10165,7 @@ private:
     struct GpuFvJob { glm::vec4 c, t1, t2, up; };
     struct GpuBoltLight   // == BoltLight (lightning_draw.glsl), std140
     {
-        glm::vec4 phase, ms, tune, tune2, elTune;
+        glm::vec4 phase, ms, tune, tune2, elTune, drop;
         glm::vec4 elVol[kMaxEngineLights];
         glm::vec4 fvPos[kFvSlots], fvT1[kFvSlots], fvT2[kFvSlots];
     };

@@ -31,6 +31,22 @@ float boltHG(float c, float g)
     float g2 = g * g;
     return (1.0 - g2) / pow(max(1.0 + g2 - 2.0 * g * c, 1e-4), 1.5);
 }
+// THE DROPLET PHASE (2026-11-23, step 3 of the lighting audit): the single scattering of the cloud a flash or an engine light
+// lights, as the march's key light and beams scatter (cv2MicroShape's fit, Jendersie & d'Eon 2023: HG + Draine, droplet
+// diameter d = 2 r_eff), analytic: this pass has no Mie table and no droplet size per pixel. r_eff 10 um x the march's
+// droplet size (a storm's cloud a few km up), the ice lobe above the glaciation band at the lit point's height (the march's
+// cv2MicroIce), the forward peak capped as the Moon's and the beams' (40: the night view's lift). Normalised to a mean of 1.
+float boltDropPhase(float c, float h)
+{
+    float d   = 2.0 * clamp(10.0 * bl.drop.x, 4.0, 30.0);
+    float wD  = exp(-0.599085 / (d - 0.641583) - 0.665888);
+    float gHG = exp(-0.0990567 / (d - 1.67154));
+    float gD  = exp(-2.20679 / (d + 3.91029) - 0.428934);
+    float a   = exp(3.62489 - 8.29288 / (d + 5.52825));
+    float pW  = (1.0 - wD) * boltHG(c, gHG) + wD * boltHG(c, gD) * (1.0 + a * c * c) / (1.0 + a * (1.0 + 2.0 * gD * gD) / 3.0);
+    float ice = 1.0 - smoothstep(-35.0, -10.0, bl.drop.y - 0.0065 * h);
+    return min(mix(pW, 0.45 * boltHG(c, 0.995) + 0.55 * boltHG(c, 0.55), ice), 40.0);
+}
 // == cv2DiffuseField (cloud_v2_march.comp) without its hV (the caller's wD) and with the side escape passed in: a
 // flash radiates all round, so less of its light leaves the line from it to the point than leaves a beam's.
 float boltDiffuse(float tauT, float tauB, float cosK, float g, float side)
@@ -49,7 +65,7 @@ float boltDiffuse(float tauT, float tauB, float cosK, float g, float side)
 // factor, cosB the cosine between the light's path to the point and the view, tauP the depth of the pixel's own cloud
 // (its caller's reading of the opacity), wD the diffuse light's share of the opacity, src the light's own radius (m),
 // single / side the single scattering's gain and the diffuse field's side escape.
-float boltCloudShade(float od, float N, float cosB, float r, float op, float tauP, float wD, float src, float single, float side)
+float boltCloudShade(float od, float N, float cosB, float r, float op, float tauP, float wD, float src, float single, float side, float h)
 {
     // The far side (the slab's depth beyond the point, away from the light): the pixel's own cloud. The point is the
     // first cloud the eye meets, so with the light behind it (cosB 1) nothing lies beyond it, and with the light on the
@@ -60,7 +76,8 @@ float boltCloudShade(float od, float N, float cosB, float r, float op, float tau
     // lobe's peak is that wide at least.
     float s2   = src * src / (r * r + src * src);
     float cosS = max(cosB - 0.5 * s2, -1.0);
-    float ph   = bl.phase.y * boltHG(cosS, bl.phase.x) + bl.phase.w * boltHG(cosS, bl.phase.z);
+    float ph   = (bl.drop.x > 0.0) ? boltDropPhase(cosS, h)   // (h: the lit point's height, m)
+               : bl.phase.y * boltHG(cosS, bl.phase.x) + bl.phase.w * boltHG(cosS, bl.phase.z);
     return single * op * ph * exp(-od) + N * bl.ms.z * wD * boltDiffuse(od, ob, cosB, bl.ms.y, side);
 }
 // The cloud point C (ENU about the eye) seen along dir with opacity op; wD = the diffuse light's share of that opacity
@@ -76,7 +93,8 @@ float boltLightAt(uint slot, BoltFlash F, vec3 em, vec3 C, vec3 dir, float op, f
     float od = fvOdFine(slot, vl, r, true);
     float N  = min(fvN(slot), bl.tune2.x);
     float cosB = -dot(v, dir) / r;
-    return boltGlow(r) * bl.tune.w * boltCloudShade(od, N, cosB, r, op, -log(max(1.0 - op, 1e-3)), wD, bl.tune.z, bl.tune.y, bl.tune.x);
+    return boltGlow(r) * bl.tune.w * boltCloudShade(od, N, cosB, r, op, -log(max(1.0 - op, 1e-3)), wD, bl.tune.z, bl.tune.y, bl.tune.x,
+                                                  length(C + vec3(0.0, 0.0, 6371000.0 + pc.spare.x)) - 6371000.0);
 }
 // ── An engine light's light on the cloud a pixel shows, through its volume (2026-11-22, issue_20261122_105107) ──
 // The same formula per unit of the light's irradiance at the point (the caller's I / (r^2 + r0^2)): Lp the light now,
@@ -136,7 +154,8 @@ float engineLightAt(vec4 ev, vec3 Lp, vec3 C, vec3 dir, float op, float wD, floa
     N   = mix(1.0, min(N, bl.tune2.x), 1.0 - exp(-od));
     gEngView = vec3(od, cosB, N);
     od += engineTauBetween(op) * (0.5 + 0.5 * cosB);
-    return bl.elTune.w * boltCloudShade(od, N, cosB, r, op, engineTauFar(op), wD, r0, bl.elTune.y, bl.elTune.x);
+    return bl.elTune.w * boltCloudShade(od, N, cosB, r, op, engineTauFar(op), wD, r0, bl.elTune.y, bl.elTune.x,
+                               length(C + vec3(0.0, 0.0, 6371000.0 + pc.spare.x)) - 6371000.0);
 }
 
 void main()

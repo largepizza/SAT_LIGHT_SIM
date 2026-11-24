@@ -507,6 +507,18 @@ vec3 beamFinish(vec3 pW, float h, vec3 dir, CV2Field f, float dayness, float og,
     else od = max(odMarch, 0.5 * f.sigma * max(f.topH - h, 0.0) / max(dot(normalize(pW), dirS), 0.15));
     float cosB = dot(dir, dirS);
     vec3  ph   = vec3(phSum / Esum);
+    // THE DROPLET PHASE (2026-11-23, step 3 of the lighting audit): the beams' light scatters as the Sun's and the Moon's
+    // does (the key light's cv2.micro path): the Mie table at the sample's droplet size (or the ice lobe), the low orders,
+    // the diffuse field at the droplets' mean cosine. Its forward peak is capped as the Moon's (kCv2MoonMieCap): the beams
+    // carry the night view's lift too. The two HG lobes (phSum) remain only with the droplet phase off.
+    bool  drop = cv2.micro.x > 0.0 && cv2.ms.x > 0.5 && f.thin < 0.5;
+    vec3  shB  = vec3(0.0);
+    if (drop) {
+        float reff = cv2MicroReff(f.hf, f.topH, h), ice = cv2MicroIce(h);
+        shB = cv2MicroShape(reff, ice);
+        vec3 pWm = 8.0 * textureLod(cv2MieTex, vec2(acos(clamp(cosB, -1.0, 1.0)) * (1.0 / PI), cv2MicroRowV(reff)), 0.0).rgb;
+        ph = min(mix(pWm, vec3(0.45 * cv2HG(cosB, 0.995) + 0.55 * cv2HG(cosB, 0.55)), ice), vec3(kCv2MoonMieCap));
+    }
     // The ice's and the snow's halos round the satellites at one geometry (cv2IceOptics2, 2026-11-11: one frame, each table
     // row once; two calls here, inside the light loop, were one of the three loads of the merged march's 255 registers).
     float liq   = cv2.precip.w;
@@ -534,7 +546,9 @@ vec3 beamFinish(vec3 pW, float h, vec3 dir, CV2Field f, float dayness, float og,
     float msB = pMS * msOctaves(od);
     if (cv2.ms.x > 0.5 && f.thin < 0.5) {
         float odBkB = f.sigma * min(f.hf * max(f.topH - h, 0.0) / max(1.0 - f.hf, 0.05) / max(dot(normalize(pW), dirS), 0.1), cv2.ms.w);
-        msB = cv2.ms.z * cv2DiffuseField(od, odBkB, hV, cosB, cv2.ms.y, 1.0);
+        float tChB = od + odBkB;
+        msB = drop ? cv2.micro.w * tChB / (tChB + 2.0) * cv2DiffuseField(od, odBkB, hV, cosB, shB.z, 0.0) + min(cv2MicroOrders(od, cosB, shB), kCv2MoonMieCap)
+                   : cv2.ms.z * cv2DiffuseField(od, odBkB, hV, cosB, cv2.ms.y, 1.0);
     }
     return Esum * (ph * exp(-od) + msB * f.msBright)
          * SUN_INTENSITY * cv2.beam.z * vec3(1.0, 0.97, 0.92) * (1.0 - dayness);

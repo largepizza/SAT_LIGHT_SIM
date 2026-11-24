@@ -1538,6 +1538,7 @@ void SatelliteSim::recordLightning(VkCommandBuffer cmd, VulkanContext &ctx)
             const GpuCloudV2Params *cp = (const GpuCloudV2Params *)cv2ParamsMapped;
             L.phase = cp->phase;
             L.ms = glm::vec4(cv2LightningLight > 0.5f ? 1.0f : 0.0f, cp->ms.y, cp->ms.z, cp->ms.w);
+            L.drop = glm::vec4(cp->micro.x, cp->micro.y, 0.0f, 0.0f);   // the droplet phase (lightning.frag boltDropPhase)
         }
         L.tune = boltLightTune;
         float dbgLight = engineVolDebug.y;
@@ -1562,7 +1563,17 @@ void SatelliteSim::recordLightning(VkCommandBuffer cmd, VulkanContext &ctx)
             const double ts = (1.0 - f) * 2.945;       // (the far side of an opaque pixel: lightning.frag engineTauFar)
             const double C1 = (5.0 - std::exp(-ts)) / ((1.0 - gp) * ts + 4.0 / 3.0);
             const double J = std::max(5.0 - (2.0 / 3.0) * C1 - 3.0 - 0.3 * g * (C1 - 3.0), 0.0);
-            const double ref = (double)engineVolTune.y * ((double)L.phase.y * hg(-1.0, L.phase.x) + (double)L.phase.w * hg(-1.0, L.phase.z)) +
+            // The single scattering's phase at -1: the droplet phase (lightning.frag boltDropPhase, water: keep in step) or the
+            // two HG lobes.
+            double phB = (double)L.phase.y * hg(-1.0, L.phase.x) + (double)L.phase.w * hg(-1.0, L.phase.z);
+            if (L.drop.x > 0.0f)
+            {
+                const double d = 2.0 * std::clamp(10.0 * (double)L.drop.x, 4.0, 30.0);
+                const double wD = std::exp(-0.599085 / (d - 0.641583) - 0.665888), gHG = std::exp(-0.0990567 / (d - 1.67154));
+                const double gD = std::exp(-2.20679 / (d + 3.91029) - 0.428934), a = std::exp(3.62489 - 8.29288 / (d + 5.52825));
+                phB = (1.0 - wD) * hg(-1.0, gHG) + wD * hg(-1.0, gD) * (1.0 + a) / (1.0 + a * (1.0 + 2.0 * gD * gD) / 3.0);
+            }
+            const double ref = (double)engineVolTune.y * phB +
                                (double)L.ms.z * wD * 1.6 * J;
             L.elTune.w = (float)((double)engineVolTune.w * 0.85 / std::max(ref, 1e-3));
         }

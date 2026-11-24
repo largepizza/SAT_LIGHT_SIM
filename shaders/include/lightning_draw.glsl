@@ -52,6 +52,8 @@ layout(std140, set = 0, binding = 8) uniform BoltLight {
                   // the lit point its volume is read (m: engineLightAt), w the level: 0.85 / the formula's value for a thick face
                   // with the light behind the eye and no cloud between (so that face reads as it did by distance alone,
                   // whatever the cloud look's phase and diffuse-field numbers are; the host works it out each frame)
+    vec4 drop;    // (2026-11-23) the droplet phase: x the march's droplet size (cv2.micro.x; 0 = the two HG lobes of phase),
+                  // y the sea-level air temperature under the eye (cv2.micro.y, C), zw spare
     vec4 elVol[32];          // per engine light (elList's order): x its volume's slot, y the slot fading in over it (= x:
                              // none), z that one's weight, w the volume model's share of its cloud light (0 = by distance)
     vec4 fvPos[kFvSlots];    // per slot an engine light holds: where it was baked (ENU about the eye, m) ...
