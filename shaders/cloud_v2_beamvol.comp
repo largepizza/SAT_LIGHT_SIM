@@ -132,7 +132,8 @@ void main()
         float h0  = length(rel + vec3(0.0, 0.0, R_EARTH + eyeH)) - R_EARTH;   // the box's z = 0 here, above sea level
         float gH  = bvTerrainH(rel, eyeH, enuToEcef);   // the terrain (the sea: 0)
         vec4  v   = textureLod(bvLightTex, bvUVW(s, vec3(xy, gH - h0 + 30.0)), 0.0);
-        cv2BvGround[id] = uvec2(packHalf2x16(vec2(v.y, v.z)), packHalf2x16(vec2(v.w, 0.0)));
+        // (y's high half: the terrain's height in the box's z, for the next frame's ray maps: kMode 1 reads it, no trig)
+        cv2BvGround[id] = uvec2(packHalf2x16(vec2(v.y, v.z)), packHalf2x16(vec2(v.w, gH - h0)));
         return;
     }
 
@@ -293,10 +294,16 @@ void main()
             float sg = 0.0;
             if (abs(P.x) < kBvHalf && abs(P.y) < kBvHalf)
                 sg = textureLod(bvDensTex, bvUVW(s, P), 0.0).r;
-            if (!rock && zk < 9000.0) {
-                vec3  relP = bvSites[s].o.xyz + bvSites[s].ax.xyz * P.x + bvSites[s].ay.xyz * P.y + bvSites[s].az.xyz * P.z;
-                float hP = length(relP + vec3(0.0, 0.0, R_EARTH + eyeH)) - R_EARTH;
-                rock = hP < 9000.0 && hP < bvTerrainH(relP, eyeH, enuToEcef) - 350.0;   // (a level under it: the ground does not shade itself)
+            if (!rock && zk < 9000.0 && abs(P.x) < kBvHalf - kBvCellXY && abs(P.y) < kBvHalf - kBvCellXY) {
+                // The terrain's height in the box's z at P (the ground pass's last frame, bilinear): a level under it is
+                // rock (the ground does not shade itself).
+                vec2  fT = (P.xy + kBvHalf) / kBvCellXY - 0.5;
+                ivec2 iT = ivec2(floor(fT));
+                vec2  wT = fT - vec2(iT);
+                int   bT = int(s) * kBvNX * kBvNY + iT.y * kBvNX + iT.x;
+                float z00 = unpackHalf2x16(cv2BvGround[bT].y).y, z10 = unpackHalf2x16(cv2BvGround[bT + 1].y).y;
+                float z01 = unpackHalf2x16(cv2BvGround[bT + kBvNX].y).y, z11 = unpackHalf2x16(cv2BvGround[bT + kBvNX + 1].y).y;
+                rock = P.z < mix(mix(z00, z10, wT.x), mix(z01, z11, wT.x), wT.y) - 350.0;
             }
             if (rock) sg = max(sg, 0.05);   // ~opaque: 14 per 281 m level
             float odHere = od + 0.5 * sg * len;   // to the level's middle
