@@ -479,7 +479,10 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   opaque from there down; the height is the ground pass's (the elevation map, ~2.7 km pixels, stored in its free half
   as the box's z, read by the next frame's ray maps). Without the 350-m margin the ground shaded itself (Fairbanks' whole
   foreground dark). A slot that changes hands bakes its whole density that frame (`bvPad0`; else up to 4 frames of the
-  old site's cloud). Beyond the 4 boxes only the far layer and the merged lights' upper shafts remain.
+  old site's cloud). A busy site beyond the 4 boxes keeps the old ground spot (the CPU sorts its
+  beams to the front of the ground list, `pad1` their count; the loop runs over all of them only on a solar park, for
+  the panels' glints) and the merged lights' upper shafts; its clouds are lit only by the far layer (from high orbit).
+  More slots cost ~17 MB of video memory each (light + density) and ~0.2 ms of bake while a site holds them.
   Measured (3070 Ti, 1600x900, user settings, interleaved reps; 128 registers): the report's shot 1 GPU 33.51 -> 31.31 ms
   (p90 39.5 -> 35.5), shot 2 36.74 -> 34.20 (43.4 -> 39.3), time running 35.91 -> 34.09, orbit 400 km over Alaska's 5
   sites 22.57 -> 19.93 (sky -2.9: the spot loop over every ground pixel), Alps noon (no beams) 18.72 -> 18.67, image at
