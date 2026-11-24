@@ -134,6 +134,13 @@ buffer CV2FlashBuf {
     vec4     cv2VtUp[kCv2VtL * kCv2VtN * kCv2VtN];
     // Each slot's stamp (2026-10-27, cloud_v2_lightning.comp): the window cell it holds, the anchor's epoch, a visit count.
     uint     cv2VtStamp[kCv2VtL * kCv2VtN * kCv2VtN];
+    // The beam light volume at the GROUND (2026-11-24, cloud_v2_beamvol.comp kMode 4; sat_sky.frag lights the terrain and
+    // the sea with it: the sky set has no sampled image left): per box slot a 128 x 128 map of the box's columns, each at
+    // the terrain's height there: x = packHalf2x16(irradiance, Suns x 1024, every beam with all the cloud on its path;
+    // the direction toward the satellites' octahedral x), y = packHalf2x16(its octahedral y, 0). And per slot 4 vec4: the
+    // box's origin (observer-relative ENU; w 1 = a site), its x, y and z axes (observer ENU).
+    uvec2    cv2BvGround[4 * 128 * 128];
+    vec4     cv2BvHdr[4 * 4];
 #ifdef CV2_RAIN_ZONES
     // The heavy rain's LIGHTNING ZONES (2026-11-23, wave c32; cloud_v2_lightning.comp, its last workgroups, a 16th of
     // the globe a frame): per storm bin (6 x 256 x 256, ~39 km) 0 = none, else the raining column that passed the deep

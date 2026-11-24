@@ -41,6 +41,9 @@ layout(std430, set = 0, binding = 8) buffer TerrainFrame { vec4 terrainFrame; };
 #define BEAM_CLOUD_LIGHTS_BINDING 9
 #include "beam_cloud_lights.glsl"
 #include "beam_vol.glsl"
+#define CV2_FLASH_BINDING 12
+#define CV2_FLASH_WRITE
+#include "cloud_lightning.glsl"   // cv2BvGround / cv2BvHdr (kMode 4)
 
 layout(set = 0, binding = 29, rgba16f) uniform writeonly image3D bvLightImg;
 layout(set = 0, binding = 31, r32f)    uniform writeonly image3D bvDensImg;
@@ -95,12 +98,34 @@ uint bvCullBlock(uint s, vec3 Lb)
 
 void main()
 {
-    if (bvSiteCount == 0u) return;
     vec3  enuZ = normalize(pc.obsECEFDir.xyz);
     vec3  enuX = normalize(cross(vec3(0.0, 0.0, 1.0), enuZ));
     mat3  enuToEcef = mat3(enuX, cross(enuZ, enuX), enuZ);
     float eyeH = terrainFrame.x + 2.0;
 
+    if (kMode == 4u) {   // (runs with no site too: the frame after the last one clears the headers)
+        // ── GROUND ── (one thread a column of a slot: the light volume at the terrain's height there, for the sky pass)
+        uint id = gl_WorkGroupID.x * 64u + gl_LocalInvocationIndex;
+        uint s = id / uint(kBvNX * kBvNY), cI = id - s * uint(kBvNX * kBvNY);
+        if (s >= kBvSites) return;
+        if (cI == 0u) {
+            bool ok = s < bvSiteCount && bvSites[s].o.w > 0.5;
+            cv2BvHdr[s * 4u]      = vec4(bvSites[s].o.xyz, ok ? 1.0 : 0.0);
+            cv2BvHdr[s * 4u + 1u] = vec4(bvSites[s].ax.xyz, 0.0);
+            cv2BvHdr[s * 4u + 2u] = vec4(bvSites[s].ay.xyz, 0.0);
+            cv2BvHdr[s * 4u + 3u] = vec4(bvSites[s].az.xyz, 0.0);
+        }
+        if (s >= bvSiteCount || bvSites[s].o.w < 0.5) { cv2BvGround[id] = uvec2(0u); return; }
+        vec2  xy  = (vec2(float(cI % uint(kBvNX)), float(cI / uint(kBvNX))) + 0.5) * kBvCellXY - kBvHalf;
+        vec3  rel = bvSites[s].o.xyz + bvSites[s].ax.xyz * xy.x + bvSites[s].ay.xyz * xy.y;
+        float h0  = length(rel + vec3(0.0, 0.0, R_EARTH + eyeH)) - R_EARTH;   // the box's z = 0 here, above sea level
+        float gH  = max(cv2Ground(cv2Pos(rel, eyeH, enuToEcef).dirE), 0.0);   // the terrain (the sea: 0)
+        vec4  v   = textureLod(bvLightTex, bvUVW(s, vec3(xy, gH - h0 + 30.0)), 0.0);
+        cv2BvGround[id] = uvec2(packHalf2x16(vec2(v.y, v.z)), packHalf2x16(vec2(v.w, 0.0)));
+        return;
+    }
+
+    if (bvSiteCount == 0u) return;
     if (kMode == 3u) {
         // ── SHAFTS ── (one thread a screen tile's column: front to back through the light volume, two samples a depth slice;
         // the cloud along the VIEW is the march's, which reads this at its transmittance checkpoints)

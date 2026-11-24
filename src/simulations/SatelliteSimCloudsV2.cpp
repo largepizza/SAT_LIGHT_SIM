@@ -711,7 +711,7 @@ void SatelliteSim::createCloudsV2(VulkanContext &ctx)
         skyApPipeline = makeComputePipeline(ctx, "shaders/sky_ap.comp.spv", skyApPipeLayout);
     }
     cv2TshPipeline = makeComputePipeline(ctx, "shaders/cloud_v2_terrsun.comp.spv", cv2MarchPipeLayout);
-    for (uint32_t m = 0; m < 4; ++m)
+    for (uint32_t m = 0; m < 5; ++m)
     {
         const uint32_t spec[3] = {0u, 0u, m};
         cv2BvPipelines[m] = makeComputePipeline(ctx, "shaders/cloud_v2_beamvol.comp.spv", cv2MarchPipeLayout, spec, 3);
@@ -1057,7 +1057,7 @@ std::string SatelliteSim::reloadCloudsV2Shaders(VulkanContext &ctx, const std::s
     if (skyApPipeLayout)
         swap(skyApPipeline, "shaders/sky_ap.comp.spv", skyApPipeLayout, nullptr);
     swap(cv2TshPipeline, "shaders/cloud_v2_terrsun.comp.spv", cv2MarchPipeLayout, nullptr);
-    for (uint32_t m = 0; m < 4; ++m)
+    for (uint32_t m = 0; m < 5; ++m)
     {
         try
         {
@@ -3452,8 +3452,17 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
     cv2PassStampTo(cmd, 2);   // lightning: flashes, rain map, the Sun transmittance volume
     // The beam light volume (2026-11-24, cloud_v2_beamvol.comp): density (a quarter of each box's z levels), the beams' ray
     // maps, the gather. Timed with the terrain Sun-horizon map's stamp (pass "sun_horizon").
-    if (cv2BvSites > 0 && cv2BvPipelines[0] && cv2BvPipelines[1] && cv2BvPipelines[2] && cv2BvPipelines[3])
+    if (cv2BvSites == 0 && cv2BvHdrLive && cv2BvPipelines[4])
+    {   // the sites are gone: write the ground's headers off once (the sky pass lights the ground from them)
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2BvPipelines[4]);
+        vkCmdDispatch(cmd, kBvSites * kBvNX * kBvNY / 64, 1, 1);
+        memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        cv2BvHdrLive = false;
+    }
+    if (cv2BvSites > 0 && cv2BvPipelines[0] && cv2BvPipelines[1] && cv2BvPipelines[2] && cv2BvPipelines[3] && cv2BvPipelines[4])
     {
+        cv2BvHdrLive = true;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2BvPipelines[0]);
         vkCmdDispatch(cmd, kBvNX / 4, kBvNY / 4, 16u / 4u * cv2BvSites);
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
@@ -3470,6 +3479,8 @@ void SatelliteSim::recordCloudsV2(VkCommandBuffer cmd, VulkanContext &ctx, const
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2BvPipelines[4]);
+        vkCmdDispatch(cmd, kBvSites * kBvNX * kBvNY / 64, 1, 1);   // (every slot: an empty one writes its header off)
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cv2BvPipelines[3]);
         vkCmdDispatch(cmd, (kBvShX * kBvShY + 63) / 64, 1, 1);
         memoryBarrier(cmd, VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,

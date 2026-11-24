@@ -340,6 +340,35 @@ layout(location = 1) out float outDepthCopy;
 #define CV2_FLASH_BINDING 30
 #define CV2_SUN_CASC_FN
 #include "cloud_lightning.glsl"
+// The Reflect-Orbital beams' light on the ground (2026-11-24): the beam light volume (cloud_v2_beamvol.comp) at the terrain's
+// height, per busy site's box (cv2BvGround / cv2BvHdr, kMode 4), bilinear: the irradiance (Suns) with every beam's own
+// cloud shadow, and the direction toward the satellites (observer ENU). rel = the point - the eye. Box: +-40 km in 128
+// columns of 625 m (== beam_vol.glsl kBvHalf / kBvNX).
+bool bvGroundLight(vec3 rel, out float E, out vec3 L)
+{
+    E = 0.0; L = vec3(0.0, 0.0, 1.0);
+    for (int s = 0; s < 4; ++s) {
+        vec4 o = cv2BvHdr[s * 4];
+        if (o.w < 0.5) continue;
+        vec3 v = rel - o.xyz;
+        vec2 f = (vec2(dot(v, cv2BvHdr[s * 4 + 1].xyz), dot(v, cv2BvHdr[s * 4 + 2].xyz)) + 40000.0) / 625.0 - 0.5;
+        if (any(lessThan(f, vec2(0.0))) || any(greaterThan(f, vec2(126.99)))) continue;
+        ivec2 i0 = ivec2(floor(f));
+        vec2  w  = f - vec2(i0);
+        int   b  = s * 16384 + i0.y * 128 + i0.x;
+        uvec2 g00 = cv2BvGround[b], g10 = cv2BvGround[b + 1], g01 = cv2BvGround[b + 128], g11 = cv2BvGround[b + 129];
+        vec2  a00 = unpackHalf2x16(g00.x), a10 = unpackHalf2x16(g10.x), a01 = unpackHalf2x16(g01.x), a11 = unpackHalf2x16(g11.x);
+        float y00 = unpackHalf2x16(g00.y).x, y10 = unpackHalf2x16(g10.y).x, y01 = unpackHalf2x16(g01.y).x, y11 = unpackHalf2x16(g11.y).x;
+        vec2  ex = mix(mix(a00, a10, w.x), mix(a01, a11, w.x), w.y);       // (E, oct x)
+        float oy = mix(mix(y00, y10, w.x), mix(y01, y11, w.x), w.y);
+        E = ex.x * (1.0 / 1024.0);
+        vec3 dB = normalize(vec3(ex.y, oy, max(1.0 - abs(ex.y) - abs(oy), 0.0) + 1e-4));
+        L = cv2BvHdr[s * 4 + 1].xyz * dB.x + cv2BvHdr[s * 4 + 2].xyz * dB.y + cv2BvHdr[s * 4 + 3].xyz * dB.z;
+        return E > 0.0;
+    }
+    return false;
+}
+bool bvAnySite() { return cv2BvHdr[0].w > 0.5 || cv2BvHdr[4].w > 0.5 || cv2BvHdr[8].w > 0.5 || cv2BvHdr[12].w > 0.5; }
 #include "sky_agx.glsl"   // skyAgX: the tonemap (AgX)
 // The aerial-perspective volume (2026-10-25, sky_ap.comp): the atmosphere loop below, once per screen tile.
 #define SKY_AP_BINDING 33
@@ -6623,6 +6652,19 @@ void main() {
                         + tNight
                         + moonContribTerrain
                         + auroraContribTerrain;
+#if !defined(SKY_ENV) && !defined(SKY_LITE)
+        // The beams light the ground as the Sun does (2026-11-24, the beam light volume): the albedo x the irradiance (in
+        // Suns, every beam with its own cloud shadow) x the face's cosine toward the satellites, + the lit air's light
+        // (~0.12 of it on a flat face, the sky's share of a daylight), at the clouds' scale ("Beam light on cloud",
+        // cv2.beam.z): the ground under a beam reads as day, and the clouds over it match. Until 2026-11-24 a flat grey added
+        // to the colour (the spot loop below: the same on dark rock as on snow, no relief, no cloud shadow pattern).
+        {
+            float bvE; vec3 bvL;
+            if ((cloud.dbgDisableMask & 128u) == 0u && bvGroundLight(hitPt - obsPos, bvE, bvL))
+                surfColor += dayColor * vec3(1.0, 0.97, 0.92) * (bvE * cv2.beam.z * (1.0 - dayFrac))
+                           * (max(dot(shadingN, bvL), 0.0) + 0.12 * skyView * terrainAO);
+        }
+#endif
         // Flooded paddies (review 8): open water between the rice reflects the sky (Schlick, n = 1.33) and
         // glints the Sun, like the sea's sky reflection and glint, on the ground's own up vector.
 #if !defined(SKY_ENV) && !defined(SKY_LITE)
@@ -7287,8 +7329,17 @@ void main() {
             // normalised so a high Sun gives the old kSeaBase. It was kSeaBase x directSun (the cloud shadow alone):
             // the water glowed at noon strength and colour up to the terminator, and with the twilight exposure the
             // sea at sunset read cyan (user snap 1).
+            // + the beams' light into the water (2026-11-24, bvGroundLight: as the Sun's, at the clouds' scale).
+            vec3 bvSea = vec3(0.0);
+#if !defined(SKY_ENV) && !defined(SKY_LITE)
+            {
+                float bvE; vec3 bvL;
+                if ((cloud.dbgDisableMask & 128u) == 0u && bvGroundLight(hitPt - obsPos, bvE, bvL))
+                    bvSea = vec3(1.0, 0.97, 0.92) * (bvE * cv2.beam.z * (1.0 - dayFrac)) * (max(dot(surfUp, bvL), 0.0) + 0.12);
+            }
+#endif
             vec3 seaE = (sunSpecTint * sunTransMax * directSun * max(dot(surfUp, sunDir), 0.0)
-                       + skyAmbientTerrain * (0.4 * cloud.terrainErosion.w) * skyAmbGate) * (1.0 / 1.1);
+                       + skyAmbientTerrain * (0.4 * cloud.terrainErosion.w) * skyAmbGate + bvSea) * (1.0 / 1.1);
 #ifndef SKY_LITE
             vec3 refracted = mix(kSeaBase, vec3(0.055, 0.045, 0.03), gSeaFlood) * seaE + diff * kSeaWaterColor * 0.12 * seaE;
 #else
@@ -7297,6 +7348,8 @@ void main() {
 
             // Fresnel blend (distance-attenuated to prevent orbit-scale glowing ring)
             surfColor = mix(refracted, reflColor, reflStr);
+            // The beam-lit air mirrored (2026-11-24): the blue of a daylit sky over the water, ~the airlight of the lit column.
+            surfColor += reflStr * bvSea * vec3(0.05, 0.08, 0.13);
 
             // Wave-height crest shading: raised crests catch more water-color light
             float atten = max(1.0 - dist * dist * 1e-5, 0.0);
@@ -7637,7 +7690,10 @@ void main() {
         // (Kept in SKY_LITE — the ground-spot loop is bounded by groundBeamCount and measured
         // cheap; beams are a wanted feature and run fine at the Planetarium tier.)
 #if !defined(SKY_ENV) && !defined(SKY_LITE)   // the MAIN observer's ENU frame; Planetarium has no beams (bit 128)
-        if ((cloud.dbgDisableMask & 128u) == 0u) {
+        // (2026-11-24: with the beam light volume the beams light the ground above (bvGroundLight); this loop then runs only
+        // for a solar park's panels, whose glint is per beam.)
+        bool bvOn = bvAnySite();
+        if ((cloud.dbgDisableMask & 128u) == 0u && (!bvOn || solarCov > 0.0)) {
             const float kBeamGroundScale = 4e-8;
             // Normalized against the slider's default (0.05, see SatelliteSim.h) so existing
             // footprint brightness is unchanged at default gain, while still scaling together
@@ -7687,7 +7743,7 @@ void main() {
                 // solar park's dark glass takes its share), plus the panels' glass mirroring the satellite:
                 // the beam's light comes from one point, so the glint is a sharp path across the rows.
                 float bE = kBeamGroundScale * w * 2.0 * disk * skyGlowNorm;
-                surfColor += vec3(bE * solarDiffK);
+                if (!bvOn) surfColor += vec3(bE * solarDiffK);
                 if (solarCov > 0.0)
                     surfColor += vec3(bE * solarCov * solarGlint(solarN, -dir, solarOctDecode(groundBeams[bi].dirOct), solarS2));
             }

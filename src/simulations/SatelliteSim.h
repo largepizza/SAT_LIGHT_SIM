@@ -7169,7 +7169,7 @@ private:
     // the Sun shadow cascade, deleted 2026-10-13).
     // The beam light volume (2026-11-24, cloud_v2_beamvol.comp / include/beam_vol.glsl): march set bindings 29 (light,
     // storage), 30 (light, sampled), 31 (density, storage), 32 (density, sampled), 33 (the beams' ray maps).
-    VkPipeline cv2BvPipelines[4] = {VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE};   // density, ray maps, gather, shafts
+    VkPipeline cv2BvPipelines[5] = {};   // density, ray maps, gather, shafts, ground
     VkImage cv2BvLightImg = VK_NULL_HANDLE, cv2BvDensImg = VK_NULL_HANDLE;
     VkDeviceMemory cv2BvLightMem = VK_NULL_HANDLE, cv2BvDensMem = VK_NULL_HANDLE;
     VkImageView cv2BvLightView = VK_NULL_HANDLE, cv2BvDensView = VK_NULL_HANDLE;
@@ -7181,6 +7181,7 @@ private:
     uint32_t cv2BvSites = 0, cv2BvBeams = 0, cv2BvFrame = 0;   // this frame's fill (the dispatches' sizes)
     int bvSlotTarget[kBvSites] = {-1, -1, -1, -1};             // the reflector target each box slot holds (-1 = none)
     float cv2BeamVolOn = 1.0f;                                 // settings: clouds_v2.beam_volume
+    bool cv2BvHdrLive = false;                                 // the ground's site headers (flash buffer) hold a site
     VkPipeline cv2SunLutPipeline = VK_NULL_HANDLE;
     VkImage cv2SunLutImg = VK_NULL_HANDLE;
     VkDeviceMemory cv2SunLutMem = VK_NULL_HANDLE;
@@ -7243,7 +7244,8 @@ private:
     // + the heavy rain's lightning zones (wave c32, declared by cloud_v2_lightning.comp alone): cv2RainZone (6 x 256^2
     // storm bins) and cv2RainZoneReg (6 x 64^2 regions), one uint each.
     static constexpr VkDeviceSize kCv2FlashBufBytes = kCv2VtOffset + 5ull * 4 * 16 + 2ull * 5 * 32 * 32 * 16 + 5ull * 32 * 32 * 4
-                                                    + 6ull * 256 * 256 * 4 + 6ull * 64 * 64 * 4; // + ... cv2GroundSky, cv2VtHdr, cv2Vt, cv2VtUp, cv2VtStamp, cv2RainZone(Reg)
+                                                    + 4ull * 128 * 128 * 8 + 16ull * 16             // cv2BvGround, cv2BvHdr (2026-11-24)
+                                                    + 6ull * 256 * 256 * 4 + 6ull * 64 * 64 * 4; // + ... cv2GroundSky, cv2VtHdr, cv2Vt, cv2VtUp, cv2VtStamp, cv2BvGround, cv2BvHdr, cv2RainZone(Reg)
     VkDescriptorSetLayout cloudMarchDescLayout = VK_NULL_HANDLE;
     VkDescriptorPool cloudMarchDescPool = VK_NULL_HANDLE;
     VkDescriptorSet cloudMarchDescSet = VK_NULL_HANDLE;
