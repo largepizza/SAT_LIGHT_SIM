@@ -573,6 +573,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   on the visible half of the Earth, storms or not; it now skips the regions with no storm (the same flashes): ~3.5 ms
   less at 3780 km, ~2 ms at 540 km. Moonlit clouds' lighting runs in step across neighbouring pixels: ~2.5 ms less at
   3780 km over a moonlit night side, the image unchanged. 3780 km night view 49.7 -> 43.6 ms.
+- **City light lights clouds from below.** City-lit cloud is brightest at its base and fades up through the cloud,
+  glows through when seen from above, and changes with the angle you see it from, instead of a flat orange wash on
+  every cloud's lower half. Same overall level, same cost.
 - **Reflector beams and lightning light clouds the way the Sun does.** Beam-lit and flash-lit cloud scatter with the
   same droplet phase as sunlit and moonlit cloud: lobes under a beam get bright cores and dark edges instead of a flat
   wash, and beam-lit decks are brighter. Costs ~1 ms only where beams light cloud.

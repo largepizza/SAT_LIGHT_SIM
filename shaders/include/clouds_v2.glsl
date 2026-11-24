@@ -280,7 +280,8 @@ layout(std140, set = 0, binding = CV2_PARAMS_BINDING) uniform CloudV2Params {
     // halo crystals (tangent arcs), w unused
     vec4  optics;
     // (2026-11-10, grain) x "cdc_base_band": the occupancy clipmap bake's extra reads over the low field's base
-    // (cloud_v2_cdc.comp "THE BASE BAND"; 0 = off), yzw unused
+    // (cloud_v2_cdc.comp "THE BASE BAND"; 0 = off), y the city light from below's scale (2026-11-23, cloud_v2_march.comp
+    // "CITY LIGHT FROM BELOW": a thick deck's base seen from below keeps the old flat term's level), zw unused
     vec4  grain;
     // -- flowmaps (2026-11-10, issue_20261109_184801 "Hurricane rotation"; cv2CycFlowAt, cloud_v2_resolve.comp) --
     // flowP: x "Hurricane rotation" (the cloud texture's angular rate as a share of the surface wind's, 0 = off), y the

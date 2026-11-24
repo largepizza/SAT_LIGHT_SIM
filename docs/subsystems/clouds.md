@@ -453,6 +453,21 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   time won: shot 1 29.31 -> 29.55 ms, shot 2 32.00 -> 31.83, p90 +1.2 ms (the bakes cost what the march saved), and
   (ii) the deck under the beams went flat white: without the 150-m read no grid this coarse (400-m cells, 650-m knots)
   gives a lobe's top any depth toward the satellites. The three reads up the beam stay.
+  **City light from below (2026-11-23, step 4 of the lighting audit; issue_20261123_192207 "City cloud ambient light":
+  "looks very basic and not like it includes mie, phase"):** the night term in cloud_v2_march.comp ("CITY LIGHT FROM
+  BELOW") was a flat (cr / lum) x cityBrightness x 0.004 on the lower 45% of every column. Now the city's light enters
+  the BASE and climbs: e^-tauDown (down to the base, sigma x height above it) + ms.z x cv2DiffuseField(tauDown, tauUp,
+  hV, -dot(dir, up), ms.y, 1): a base lit most, a gradient up the cloud, a lit-from-below cloud glowing through when
+  seen from above, the view's angle to the light below (no field reads). Scale `cv2.grain.y` (host,
+  fillCloudsV2Params): 3 / its value at a thick base seen from below; x 3 matches the old clouds' mean level seen
+  side-on from the ground at the report (12.1 display levels; x1 7.2, x2 11.1, x4 16.4). The night map stays at mip 3
+  (39 km: the city light as the air spreads it): read at a blur of the sample's height (the geometric reach), a deck
+  1-2 km up offshore lost the coast's light and stood darker than the lit sky behind it. Registers 128: the march went
+  to 255 with `textureSize(earthNightTex)` in the mip, and with the gain as a literal 3.0 in the shader (2.0 and 4.0:
+  128); it lives on the host. Measured (3 interleaved reps): the report's view GPU 22.60 -> 22.84 / 22.18 ms (A-vs-A);
+  London at night from the ground 19.81 -> 19.66 / 19.40, from 400 km 18.28 -> 18.29 / 18.18. Mean levels at the
+  report's place: ground 12.1 -> 13.9, 6 km 18.2 -> 19.3, 400 km 6.4 -> 6.9 (p90 6.7 -> 8.7, tops over the cities).
+  Not done: the fog / dust, far layer and sky-dome copies of the city light keep their own models.
   **The droplet phase on beams (2026-11-23, step 3 of the lighting audit):** `beamFinish` scatters the beams' light as the
   key light's `cv2.micro` path does: the Mie table at the sample's droplet size (`cv2MicroReff` / `cv2MicroIce`), the
   low orders (`cv2MicroOrders`), the diffuse field at the droplets' mean cosine with the chord factor and `cv2.micro.w`,

@@ -2474,6 +2474,18 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
                         std::clamp(cv2DropletMsGain, 0.0f, 4.0f) * std::clamp(cv2MsDiffGain, 0.0f, 4.0f));
     // (z: "Cumulus tower spread", 2026-11-05: packed into shade's spare components, not a new member; a new vec4 once killed
     // the boot at rain_particles.vert's pipeline. clouds.md "Cumulus envelope".)
+    // (2026-11-23, step 4 of the lighting audit; written to grain.y below): the city light from below's scale (cloud_v2_march.comp "CITY LIGHT FROM
+    // BELOW"): 3 / its value at a thick deck's base seen from below (e^0 + ms.z x cv2DiffuseField(0, 20, 1, -1, ms.y, 1):
+    // keep in step). x 3: at issue_20261123_192207 (cumulus seen side-on from the ground) the clouds' mean level matches the
+    // old flat term's (12.1 display levels; x 1 gave 7.2, x 2 11.1, x 3 13.9, x 4 16.4).
+    float cityK = 1.0f;
+    {
+        const double g = p.ms.y, f = g * g, gp = g / (1.0 + g), ts = (1.0 - f) * 20.0;
+        const double C1 = (5.0 - std::exp(-ts)) / ((1.0 - gp) * ts + 4.0 / 3.0);
+        const double I1 = C1 - 3.0, I0 = 5.0 - (2.0 / 3.0) * C1 - 3.0;
+        const double D = 1.6 * std::max(I0 - 0.3 * g * I1, 0.0);
+        cityK = (float)(3.0 / (1.0 + (double)p.ms.z * D));
+    }
     p.shade = glm::vec4(std::clamp(cv2SkyLightHue, 0.0f, 1.0f), std::clamp(cv2MsSideEscape, 0.0f, 0.4f),
                         std::clamp(cv2CuEnvTowers, 0.0f, 0.9f), 0.0f);
     {   // w: the sea's cloud reflection (cloud_v2_searefl.comp), 0 = not run this frame, else 1 + 2 x the region it writes
@@ -2497,7 +2509,7 @@ void SatelliteSim::fillCloudsV2Params(VulkanContext &ctx, const CloudMarchPC &cp
     // The ice crystals' traced halo table (2026-11-10, optics; cv2_optics.glsl cv2IceOptics): off without the asset.
     p.optics = glm::vec4((cv2IceOpticsLoaded && cv2IceOpticsTable > 0.5f) ? 1.0f : 0.0f, std::clamp(cv2IceOpticsParry, 0.0f, 1.0f),
                          std::clamp(cv2IceOpticsColumns, 0.0f, 1.0f), 0.0f);
-    p.grain = glm::vec4(cv2CdcBaseBand > 0.5f ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
+    p.grain = glm::vec4(cv2CdcBaseBand > 0.5f ? 1.0f : 0.0f, cityK, 0.0f, 0.0f);   // y: the city light's scale (above)
     // THE CYCLONE FLOW MAP (2026-11-10, flowmaps; clouds_v2.glsl cv2CycFlowAt, cloud_v2_resolve.comp): its parameters, and
     // for the resolve's reprojection the cyclone the eye is deepest in (its axis, Earth-fixed; the read turn per frame at
     // the RMW, the shader scales it by the profile; the storm lock's shift per frame in Earth axes, as windShift above).

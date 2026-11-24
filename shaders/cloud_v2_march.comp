@@ -1704,13 +1704,28 @@ void main()
             // ── Night: city up-light, beams ──
             vec3 nightS = vec3(0.0);
             if (dayness < 0.9) {
-                if (f.hf < 0.45) {
+                // CITY LIGHT FROM BELOW (2026-11-23, step 4 of the lighting audit). The city is a light under the cloud: the
+                // night map at mip 3 (39 km: the city's light as the air spreads it; read at a blur of the sample's height,
+                // the geometric reach, a deck 1-2 km up offshore lost the coast's light and went darker than the lit sky
+                // behind it, issue_20261123_192207), its light entering the cloud's BASE and climbing through it: the direct share e^-tau down to the base, and
+                // the slab's diffuse field (cv2DiffuseField) with that depth toward the light, the depth up to the top beyond
+                // it, the view's angle to the light below (cosC: forward looking down through the cloud, backward looking up
+                // at a base) and the face's leak toward the eye. So a city lights a deck's base most, glows through a thin
+                // or a lit-from-below cloud seen from above, and the light is no longer cut off at 45% of the column's height.
+                // cv2.grain.y scales it (the host: 3 x the old flat term's level at a thick base seen from below, which matches the
+                // old clouds' level seen side-on from the ground, where most of a cloud seen is a few hundred metres up its base).
+                {
                     vec3  dE  = p.dirE;
                     vec2  uv  = vec2((atan(dE.y, dE.x) + PI) / (2.0 * PI), (0.5 * PI - asin(clamp(dE.z, -1.0, 1.0))) / PI);
                     vec3  cr  = textureLod(earthNightTex, uv, 3.0).rgb;
                     float lum = dot(cr, vec3(0.2126, 0.7152, 0.0722));
-                    nightS += (cr / max(lum, 0.001)) * cityBrightness(lum) * smoothstep(0.45, 0.0, f.hf)
-                            * (1.0 - dayness) * kCityUpwellStrength * cloud.ambientGain;
+                    if (lum > kNightFloor) {
+                        float tDn = f.sigma * f.hf * max(f.topH - p.h, 0.0) / max(1.0 - f.hf, 0.05);   // down to the base
+                        float tUp = f.sigma * max(f.topH - p.h, 0.0);                                  // up to the top
+                        float lC  = exp(-tDn) + cv2.ms.z * cv2DiffuseField(tDn, tUp, bH[bj], -dot(dir, up), cv2.ms.y, 1.0);
+                        nightS += (cr / lum) * cityBrightness(lum) * lC * cv2.grain.y
+                                * (1.0 - dayness) * kCityUpwellStrength * cloud.ambientGain;
+                    }
                 }
                 if (wantB) nightS += beamFinish(pW, p.h, dir, f, dayness, og, habRay, bE, bDir, bPh, odB, bH[bj]);
             }

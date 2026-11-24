@@ -1019,7 +1019,8 @@ struct GpuCloudV2Params
     // z "Ice optics: column share" (singly oriented columns among its halo crystals: tangent arcs, the circumscribed halo,
     // supra / infralateral arcs), w unused
     glm::vec4 optics;
-    glm::vec4 grain;         // (2026-11-10, grain) x "cdc_base_band" (the clipmap bake's base band, cloud_v2_cdc.comp), yzw unused
+    glm::vec4 grain;         // (2026-11-10, grain) x "cdc_base_band" (the clipmap bake's base band, cloud_v2_cdc.comp), y the city light
+                             // from below's scale (2026-11-23, cloud_v2_march.comp), zw unused
     // flowmaps (2026-11-10): the cyclone flow map's parameters and the resolve's reprojected cyclone (clouds_v2.glsl).
     glm::vec4 flowP, flowA, flowB, flowC;
     // (2026-11-10, storms) issues 20261110_185127 / 183113 (clouds_v2.glsl cv2StormGeom, cv2LowA, cv2Field): stormsA x the moat
