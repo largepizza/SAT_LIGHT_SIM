@@ -230,7 +230,10 @@ Location- and context-aware ambience on its own bus under the music (Settings â†
   instant is on). Measured (one ground stroke spawned 10 km off, nearest piece 9.63 km, the same kept source through
   `lightning thunder sim` in each mode; harness_runs 20261124_201911_c04_sound): first sound 0.16 s after the flash
   (instant), 3.01 s (3-s cap), 28.09 s (full trip); the roll 4.7 s and its energy the same in all three
-  (e_pushed 5.82); the layer at 0.9 at the first sound in each.
+  (e_pushed 5.82); the layer at 0.9 at the first sound in each. A Starship from 12.7 km (`launch next pad_dist_m=12000`,
+  harness_runs 20261124_210431_c04_d): instant, the roar at level 2.04 by T+5 (emitted 0.15 s earlier) and the near
+  bang sent; full trip, roar 0 at T+7 (it needs 37 s) with only the undelayed far rumble (0.21); 3-s cap, 2.04 again.
+  Switching the setting mid-launch can re-send a bang whose arrival time moves back past the step (harmless).
   **The delay is capped at 3 s when instant is off**: Sound tab "Distant sounds arrive within 3 s" (`audio.sound_quick`, on;
   `kSoundQuickS`): the front counts as arrived after min(distance, 1029 m), so a flash 20 km off rolls from 3 s after
   it, with its distance's level and cutoff; a strike inside 1 km keeps its exact flash-to-bang time. Off = the full
