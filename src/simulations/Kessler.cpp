@@ -2787,6 +2787,25 @@ std::vector<Event> stormSeedEvents(const World &w, double arriveT, uint64_t seed
         if (ty.passive || !w.rosterPresent(i, (int32_t)std::floor(arriveT - w.s.epoch)))
             continue;
         const double alt = o.R - kRMean;
+        // (2026-11-24, issue_20261124_194453) A sun-reflecting mirror is a 55-m film sail of 500 kg: the storm's
+        // thermosphere (x8 at 500 km) puts a drag torque on it that its wheels cannot hold (below), so most go out
+        // of control over the main phase whatever their shell. TypeInfo::stormLossP replaces the model for them.
+        if (ty.stormLossP > 0.0)
+        {
+            if (hash01(seed, i, 11) >= ty.stormLossP)
+                continue;
+            Event ev;
+            ev.kind = EV_KILL;
+            ev.origin = ORIGIN_SEED;
+            ev.a = i;
+            // Lost as the density surge builds and holds: front-loaded on the arrival (the wheels saturate within
+            // minutes of a face-on pass once the density is up), spread over the ~13-h main phase.
+            const double h2 = hash01(seed, i, 12);
+            ev.t = arriveT + 3600.0 * (0.5 + 12.5 * h2 * h2);
+            ev.seed = (uint32_t)(hash01(seed, i, 13) * 4294967295.0);
+            out.push_back(ev);
+            continue;
+        }
         double p = alt < 650e3 ? 0.015
                    : alt < 1100e3 ? 0.015 + 0.035 * (alt - 650e3) / 450e3
                    : alt < 5000e3 ? 0.08

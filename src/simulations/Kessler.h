@@ -166,6 +166,8 @@ struct TypeInfo
     double arrayShare = 0.0, radiatorShare = 0.0; // of its surface: which kinds of large pieces it leaves
     int kitKind = -1;       // a debris kit type: the kind it is (0 array, 1 radiator, 2 structure), else -1
     bool passive = false;   // never manoeuvres (debris)
+    double stormLossP = 0.0; // > 0: the Sun's Fury takes this share of the type out of control (a reflector's sail,
+                             // stormSeedEvents), in place of the altitude / inclination model
 };
 
 // A pool record: a dead satellite (forced tumble) or a fragment. Angles at t = 0 (J2000), rates per
