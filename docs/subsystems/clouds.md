@@ -2982,9 +2982,10 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   time does not show it: it needs the frame-to-frame 80-min step. Suspect: a plume brick built across a time-lapse
   step (`launchFillVisuals` brick builder: `B.sun.w = alb / sw`, `B.misc.w = eRef / sw`; the composite takes the brick
   as one more plume via bindings 27 / 28, header word 1 bit 31). Tried: no bricks while the sim step exceeds 10 s a frame
-  (the builder's slot test): frame 201 still 26.1, so the brick BUILD across the step is not it; the next suspects are
-  what `plume_bricks` / `plume_gain` gate besides the builder (the brick passes, the composite's bit-31 read of
-  brickLTex / brickTTex). Not fixed.
+  (the builder's slot test): frame 201 still 26.1, so the brick BUILD across the step is not it; the composite ignoring
+  the bricks' output (its bit-31 block off) keeps it too. So the many switches that remove it (launches, plume bricks,
+  plume gain, lightning light, lightning rate, the far layer, the march) do not share an obvious path: a fragile,
+  sequence-dependent state (a budget, an upload or a readback landing on that frame) is the likelier class. Not fixed.
 - **Lightning as LIGHT (2026-11-21, issue_20261121_163317; `include/flash_volume.glsl`, `cloud_v2_flashvol.comp`,
   `lightning.frag` boltLightAt, `SatelliteSim::boltLightAssign`).** A flash lights the cloud through the cloud around
   it, by the formula the march gives a cloud sample under a reflector beam (`beamFinish`): E (ph e^-od + ms D), with E the
