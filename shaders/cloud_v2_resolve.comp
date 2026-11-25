@@ -708,9 +708,17 @@ void main()
         float mf0 = smoothstep(6.0, 24.0, motionPx); float mf = mf0 * (1.0 - hConf);
         // S9: with no usable history the quarter grid's [1 2 1] tent still let the blue-noise tile's all-or-nothing rays
         // through as blotches (fast flight inside cloud): there the estimate widens to ~4x4 samples.
+        // Each tap is kept inside the filled region (the quarter grid's qs samples, texel centres 0.5 .. qs - 0.5): the
+        // texture is the whole grid's size, so a tap 1.5 samples past tqPos's clamp read the row and column just outside
+        // the region, which this block size never writes (2026-11-24, issue_20261124_195458 "Odd corner artifact": from
+        // orbit in motion, at 4 x 4 the last ~6 rows and ~8 columns showed samples left there long before, a bright
+        // orange band along the bottom and right edges).
         if (tentQ && mf > 0.0 && !cls) {
-            vec4 wide = 0.25 * (textureLod(newColorTex, (tqPos + vec2(-1.5, -1.5)) * tqIq, 0.0) + textureLod(newColorTex, (tqPos + vec2(1.5, -1.5)) * tqIq, 0.0) +
-                                textureLod(newColorTex, (tqPos + vec2(-1.5,  1.5)) * tqIq, 0.0) + textureLod(newColorTex, (tqPos + vec2(1.5,  1.5)) * tqIq, 0.0));
+            const vec2 wLo = vec2(0.5), wHi = vec2(qs) - 0.5;
+            vec4 wide = 0.25 * (textureLod(newColorTex, clamp(tqPos + vec2(-1.5, -1.5), wLo, wHi) * tqIq, 0.0) +
+                                textureLod(newColorTex, clamp(tqPos + vec2( 1.5, -1.5), wLo, wHi) * tqIq, 0.0) +
+                                textureLod(newColorTex, clamp(tqPos + vec2(-1.5,  1.5), wLo, wHi) * tqIq, 0.0) +
+                                textureLod(newColorTex, clamp(tqPos + vec2( 1.5,  1.5), wLo, wHi) * tqIq, 0.0));
             blur = mix(blur, 0.5 * (blur + wide), mf);
         }
         // Review 7: a full-rate pixel in motion leans on the tent by how much of this frame it takes (the
