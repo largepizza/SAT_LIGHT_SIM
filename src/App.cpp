@@ -217,8 +217,19 @@ void App::initWindow()
 void App::mainLoop()
 {
     lastTime = glfwGetTime();
-    while (!glfwWindowShouldClose(window) && !sim->wantsQuit())
+    for (;;)
     {
+        // A close (the window, Esc, the harness's quit) can be held by the sim while it finishes something that must
+        // not be cut off - a video still being written (issue_20261124_190229: closing then joined the writer inside
+        // cleanup with the window frozen). The window keeps drawing (with the writer's progress) until it lets go.
+        const bool windowClose = glfwWindowShouldClose(window) != 0;
+        if (windowClose || sim->wantsQuit())
+        {
+            if (!sim->holdQuit(windowClose))
+                break;
+            if (windowClose)
+                glfwSetWindowShouldClose(window, GLFW_FALSE);
+        }
         double frameStart = glfwGetTime();
         {
             FPROF_SCOPE("app.poll");

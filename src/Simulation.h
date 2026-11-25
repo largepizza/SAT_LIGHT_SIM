@@ -190,4 +190,8 @@ public:
     virtual float frameDt(float realDt) { return realDt; }
     // True once a harness script has finished (or ran `quit`): App leaves the main loop.
     virtual bool wantsQuit() const { return false; }
+    // The window was closed (closeAgain: by the player; false: wantsQuit) while the sim still has work that must not
+    // be cut off (a video being written). True = keep running frames: App clears the window's close flag and asks again
+    // next frame; a second close by the player passes closeAgain while held and should let go. Default: never holds.
+    virtual bool holdQuit(bool closeAgain) { (void)closeAgain; return false; }
 };

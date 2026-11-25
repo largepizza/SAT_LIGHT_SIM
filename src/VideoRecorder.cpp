@@ -64,9 +64,13 @@ bool VideoRecorder::start(VulkanContext &ctx, uint32_t srcW, uint32_t srcH, cons
     framesOut_ = 0;
     convertMs_ = encodeMs_ = maxEncodeMs_ = 0.0;
     workerFrames_ = 0;
+    workerStage_ = 0;
+    eosWall_ = closeStartWall_ = closeEndWall_ = doneWall_ = stopWall_ = 0.0;
+    audioHeldMaxS_ = 0.0;
     queue_.clear();
     endOfStream_ = false;
     workerDone_ = false;
+    cancel_ = false;
     workerErr_.clear();
     encoderName_.clear();
     err_.clear();
@@ -103,6 +107,30 @@ bool VideoRecorder::start(VulkanContext &ctx, uint32_t srcW, uint32_t srcH, cons
         int64_t index = 0, audioOut = 0;
         bool failed = false;
         std::deque<std::vector<float>> sound;
+        // Sound ahead of the video is held back and written as the video catches up (issue_20261124_190229). The sound
+        // runs on the device's clock while frames can stop coming for seconds (an HQ photo is never recorded; a slow
+        // scene in a lossless export): written as it came, the AAC track ran up to ~15 s ahead of the H.264 one, and
+        // Media Foundation's sink writer, which interleaves the two, blocked the one thread writing both - the file
+        // took ~80 s to finish, or never did. Held: at most kSoundLeadS ahead (kSoundHoldMaxS bounds the memory).
+        constexpr double kSoundLeadS = 0.5, kSoundHoldMaxS = 120.0;
+        std::deque<std::vector<float>> held;
+        int64_t heldFrames = 0;
+        auto writeSound = [&](bool all)
+        {
+            while (!held.empty())
+            {
+                const int64_t n = (int64_t)(held.front().size() / 2);
+                const double soundEnd = (double)(audioOut + n) / (double)cfg.audioRate;
+                if (!all && soundEnd > (double)index / cfg.fps + kSoundLeadS &&
+                    (double)heldFrames / (double)cfg.audioRate < kSoundHoldMaxS)
+                    break;
+                if (!failed && !enc->writeAudio(held.front().data(), (uint32_t)n))
+                    failed = true;
+                audioOut += n;
+                heldFrames -= n;
+                held.pop_front();
+            }
+        };
         for (;;)
         {
             Item it{};
@@ -120,13 +148,19 @@ bool VideoRecorder::start(VulkanContext &ctx, uint32_t srcW, uint32_t srcH, cons
                 else if (sound.empty())
                     break; // end of stream, all written
             }
-            for (const std::vector<float> &ch : sound)
+            for (std::vector<float> &ch : sound)
             {
-                if (!failed && !enc->writeAudio(ch.data(), (uint32_t)(ch.size() / 2)))
-                    failed = true;
-                audioOut += (int64_t)(ch.size() / 2);
+                heldFrames += (int64_t)(ch.size() / 2);
+                held.push_back(std::move(ch));
             }
             sound.clear();
+            if (cfg.audioRate > 0)
+            {
+                const double heldS = (double)heldFrames / (double)cfg.audioRate;
+                std::lock_guard<std::mutex> lk(mx_);
+                audioHeldMaxS_ = std::max(audioHeldMaxS_, heldS);
+            }
+            writeSound(false);
             if (failed)
             {
                 std::lock_guard<std::mutex> lk(mx_);
@@ -135,6 +169,11 @@ bool VideoRecorder::start(VulkanContext &ctx, uint32_t srcW, uint32_t srcH, cons
             }
             if (!haveItem)
                 continue;
+            if (cancel_.load())
+            {
+                cap_.release(it.slot); // shutdown(cancel): nothing more is written
+                continue;
+            }
             index += it.skip;
             const double t0 = wallNow();
             const FrameCapture::Slot &s = cap_.slot(it.slot);
@@ -145,6 +184,7 @@ bool VideoRecorder::start(VulkanContext &ctx, uint32_t srcW, uint32_t srcH, cons
             for (int r = 0; r < it.repeat && !failed; ++r)
                 if (!enc->write(y.data(), uv.data(), index++))
                     failed = true;
+            writeSound(false); // the video moved on: the sound up to it
             const double t2 = wallNow();
             std::lock_guard<std::mutex> lk(mx_);
             if (failed && workerErr_.empty())
@@ -156,8 +196,9 @@ bool VideoRecorder::start(VulkanContext &ctx, uint32_t srcW, uint32_t srcH, cons
             maxEncodeMs_ = std::max(maxEncodeMs_, (t2 - t1) * 1000.0);
             ++workerFrames_;
         }
+        writeSound(true); // the end: whatever is left
         // The sound track ends with the video: pad a short one with silence (a long one is cut by the players).
-        if (!failed && enc->hasAudio())
+        if (!failed && !cancel_.load() && enc->hasAudio())
         {
             const int64_t want = (int64_t)std::llround((double)index / cfg.fps * cfg.audioRate);
             std::vector<float> zeros(4096 * 2, 0.0f);
@@ -168,11 +209,23 @@ bool VideoRecorder::start(VulkanContext &ctx, uint32_t srcW, uint32_t srcH, cons
                 audioOut += n;
             }
         }
-        if (!enc->close())
         {
             std::lock_guard<std::mutex> lk(mx_);
-            if (workerErr_.empty())
+            closeStartWall_ = wallNow();
+        }
+        workerStage_ = 1;
+        const bool closed = enc->close();
+        {
+            std::lock_guard<std::mutex> lk(mx_);
+            closeEndWall_ = wallNow();
+            if (!closed && workerErr_.empty())
                 workerErr_ = enc->error();
+        }
+        workerStage_ = 2;
+        if (cancel_.load())
+        {
+            std::error_code rec;
+            fs::remove(fs::path(std::u8string(cfg.path.begin(), cfg.path.end())), rec); // cancelled: no half-written file left behind
         }
         workerDone_ = true;
     });
@@ -293,13 +346,15 @@ bool VideoRecorder::poll(VulkanContext &ctx)
         }
         cv_.notify_all();
         state_ = State::Finishing;
+        eosWall_ = wallNow();
     }
     if (state_ == State::Finishing && workerDone_.load())
     {
         thread_.join();
         cap_.destroy(ctx);
-        last_ = stats();
+        doneWall_ = wallNow();
         state_ = State::Idle;
+        last_ = stats();
         return true;
     }
     return false;
@@ -348,17 +403,24 @@ void VideoRecorder::stop()
     due_ = 0;
 }
 
-void VideoRecorder::shutdown(VulkanContext &ctx)
+bool VideoRecorder::shutdown(VulkanContext &ctx, double maxWaitS, bool cancel)
 {
     if (state_ == State::Idle)
-        return;
+        return true;
     stop();
+    if (cancel)
+        cancel_ = true;
     ctx.drainFrames();
-    // Everything recorded is complete now: hand it over, end the stream, wait for the file.
-    for (int guard = 0; guard < 100000 && state_ != State::Idle; ++guard)
+    // Everything recorded is complete now: hand it over, end the stream, wait for the file (at most maxWaitS).
+    const double until = wallNow() + std::max(0.0, maxWaitS);
+    while (state_ != State::Idle)
     {
         if (state_ == State::Finishing && !workerDone_.load())
+        {
+            if (wallNow() > until)
+                break;
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
         // completedFrame() lags frameIndex; after drainFrames every recorded copy is finished, so force-collect.
         if (state_ == State::Stopping)
         {
@@ -370,6 +432,22 @@ void VideoRecorder::shutdown(VulkanContext &ctx)
         }
         poll(ctx);
     }
+    if (state_ == State::Idle)
+        return !cancel;
+    // The writer is stuck (an encoder that never returns): never hold the app's exit on it. Its readback buffers are
+    // left alive (it may still read one) and the thread is let go; the process ends right after.
+    {
+        std::lock_guard<std::mutex> lk(mx_);
+        endOfStream_ = true;
+        if (workerErr_.empty())
+            workerErr_ = "the encoder did not finish (abandoned at exit)";
+    }
+    cv_.notify_all();
+    if (thread_.joinable())
+        thread_.detach();
+    last_ = stats();
+    state_ = State::Idle;
+    return false;
 }
 
 nlohmann::json VideoRecorder::stats() const
@@ -400,6 +478,17 @@ nlohmann::json VideoRecorder::stats() const
         j["encode_ms_max"] = maxEncodeMs_;
         if (!workerErr_.empty())
             j["error"] = workerErr_;
+        // The finish, stage by stage (seconds after stop(); -1 = not reached yet).
+        if (stopWall_ > 0.0)
+        {
+            auto after = [&](double t) { return t > 0.0 ? t - stopWall_ : -1.0; };
+            j["finish"] = {{"gpu_copies_s", after(eosWall_)},
+                           {"close_start_s", after(closeStartWall_)},
+                           {"close_end_s", after(closeEndWall_)},
+                           {"done_s", after(doneWall_)},
+                           {"finalize_s", closeStartWall_ > 0.0 && closeEndWall_ > 0.0 ? closeEndWall_ - closeStartWall_ : -1.0}};
+        }
+        j["audio_held_max_s"] = audioHeldMaxS_;
     }
     std::error_code ec;
     const auto sz = fs::file_size(fs::path(opt_.path), ec);

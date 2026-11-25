@@ -132,6 +132,29 @@ void SatelliteSim::videoToggle()
     screenshotToastWarn = false;
 }
 
+// ─── Closing while a video is busy ────────────────────────────────────────────────────────────────
+// App asks before it leaves the main loop (the window's close, Esc, the harness's quit). A recording is stopped and the
+// app keeps drawing - the badge shows the writer's progress - until the file is written; wantsQuit() then lets it go.
+// A second close by the player while held lets go at once: cleanup cancels the writer and deletes the partial file.
+bool SatelliteSim::holdQuit(bool closeAgain)
+{
+    if (!video_.busy())
+        return false;
+    if (quitHeldForVideo_)
+    {
+        if (!closeAgain)
+            return true;
+        videoCancelOnQuit_ = true;
+        Log::line("video: closed again while the video was written: cancelling it");
+        return false;
+    }
+    quitHeldForVideo_ = true;
+    if (video_.recording())
+        video_.stop();
+    Log::line("video: close asked while a video is busy: closing once it is written");
+    return true;
+}
+
 // ─── Per frame ────────────────────────────────────────────────────────────────────────────────────
 void SatelliteSim::videoFrameTick(float dt)
 {
@@ -240,13 +263,28 @@ void SatelliteSim::buildVideoHud(const UIInput &inp, UIRenderer &ui)
     (void)ui;
     if (!video_.busy() || videoByHarness_)
         return;
-    static char buf[96];
+    static char buf[192];
     const double s = video_.secondsRecorded();
     if (video_.recording())
         snprintf(buf, sizeof(buf), tx(Txt::FmtRecToStop), (int)s / 60, (int)s % 60,
                  keyDisplayName(keybindings[KB_VIDEO].key));
     else
-        snprintf(buf, sizeof(buf), tx(Txt::FmtWritingTheVideo));
+    {
+        // While the file is written: the frames written of those recorded, then the file's close (issue_20261124_190229).
+        const long long done = (long long)video_.framesWritten(), total = (long long)video_.framesTotal();
+        if (video_.finalizing())
+            snprintf(buf, sizeof(buf), "%s", tx(Txt::ValWritingTheVideoFinishing));
+        else if (total > 0)
+            snprintf(buf, sizeof(buf), tx(Txt::FmtWritingTheVideoFrames),
+                     (int)std::clamp(100.0 * (double)done / (double)total, 0.0, 99.0), std::min(done, total), total);
+        else
+            snprintf(buf, sizeof(buf), tx(Txt::FmtWritingTheVideo));
+        if (quitHeldForVideo_)
+        {
+            const size_t n = strlen(buf);
+            snprintf(buf + n, sizeof(buf) - n, "%s", tx(Txt::ValWritingTheVideoQuitWhenDone));
+        }
+    }
     Clay_String str{false, (int32_t)strlen(buf), buf};
     CLAY(CLAY_ID("VideoRecBadge"), {.layout = {.sizing = {CLAY_SIZING_FIT(0), CLAY_SIZING_FIT(0)}, .padding = {10, 10, 5, 5}},
                                     .backgroundColor = Pal::recActive,

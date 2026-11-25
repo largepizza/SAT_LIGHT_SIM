@@ -47,6 +47,22 @@ frame), `src/VideoEncoder.h/.cpp` (NV12 BT.709 limited range -> H.264 .mp4: Wind
   muted-offline. `VideoRecorder::tick` adds a frame's own dt before placing it and takes `start()`'s stall (~0.1 s,
   `stallS_`, wall clocks only) out of the second frame's dt (start runs in buildUI, before the tick): adding dt
   after placing, as before, held frame 0 for the stall and put the whole video ~0.1 s behind the wall clock.
+- **Finishing the file** (issue_20261124_190229, 2026-11-24). The worker holds sound that runs more than 0.5 s ahead
+  of the video it has written (`kSoundLeadS`; at most 120 s held) and writes it as the video catches up. Frames stop
+  for seconds while the sound runs on the device clock (an HQ photo is never recorded; a lossless export slower than
+  real time), and written as it came the AAC track ran seconds ahead of the H.264 one: Media Foundation's sink
+  writer, which interleaves the two, then stalled the one thread feeding both. Measured at the reporter's scene
+  (Iowa night beam site, RTX 3070 Ti, `--sound`, wall clock): a 10-s clip with an HQ photo inside it took **54.5 s**
+  from stop to file (the user's own 104-s clip 78 s; an earlier one never finished: no moov atom); with the sound
+  off, or without the photo, 0.1 s. `video stop` / the `video: done` log line carry `finish` (seconds after stop:
+  `gpu_copies_s`, `close_start_s`, `close_end_s`, `done_s`, `finalize_s`) and `audio_held_max_s`.
+- **Progress and closing.** While the file is written the badge reads "Writing the video... N% (a of b frames)", then
+  "finishing the file" (`VideoRecorder::framesWritten / framesTotal / finalizing`). A close (window, Esc, harness
+  `quit`) while a video is busy is held (`Simulation::holdQuit`, App's main loop): the recording stops, the app keeps
+  drawing with the badge until the file is written, then exits. A second close while held cancels: the worker drops
+  what is queued, closes and deletes the partial file. `VideoRecorder::shutdown(ctx, maxWaitS, cancel)` never holds
+  the exit on a stuck encoder: past `maxWaitS` (60 s; 5 s cancelling) the worker is detached and its readback
+  buffers leaked. (Before: cleanup waited up to 200 s with the window frozen, then the destructor joined forever.)
 - **`wait settle auto`** (harness) reuses FrameCapture as a 1/4-size probe of every settle frame (before the UI),
   compared 8 and 32 frames back. Do not stop on the 8-frame difference alone: Sun-shadow volumes and running means
   drift ~0.1 level per 8 frames for 160+ frames in storm views (the first cut stopped at ~30 frames there with
