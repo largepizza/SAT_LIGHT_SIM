@@ -410,6 +410,26 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     the rows and is the same with a row put on the limb itself (tried: the two rows either side of the limb snapped
     onto it, `qa/waves/20261121/evidence/c04/not_committed_limb_row_snap.patch`, no difference at any of 13 views), so it is the
     interpolation between rows, not the hold at the limb.
+  - **Open: the bright 1-px line on a ridge against a city-lit overcast at night** (wave 20261125 e4, the user's "seam
+    between terrain and sky"; evidence `qa/waves/20261125/evidence/e4/`). Chamonix 45.93 6.88 agl 300, az 200 el 14
+    fov 60, 2036-12-14T22:00Z, the Moon down, the user's settings, 1600x900: the sky row just above the ridge is +1.0
+    levels on average over the sky 3-7 rows up (p90 +3.1), in 12-15% of the ridge's columns > +2 (sky ~10 levels);
+    in those columns the three rows above the crest climb 21 / 26 / 34 against 15 with the sky TAA off, in the depth
+    texels' 2-px stair-steps (the TAA halves it). It is the deck CUT at the half-res scene depth, which stands a texel
+    or two proud of the full-res silhouette: on those columns `debugview cloudtrans` rises 108 -> 137 in the rows above
+    the crest, `cloudairsplit` and the opaque distance (`cloudalpha` r) collapse to the ridge's distance, so more of
+    the open sky column (the city glow along a long horizontal path) shows through. Knockouts: `volumetric_cloud_march`
+    and `scene_depth_pass` remove it (share > +2: 0.03 / 0.05), `atmosphere_loop` too (no glow); `fog_layer`,
+    `cirrus_march`, `clouds_v2.sky_ap 0` do not (0.15 / 0.15 / 0.12); sky TAA off doubles it (p90 +10.8). The same
+    mechanism's dusk fix (issue_20261022_180225, 2a890ef: `silDepthNear`, the cut share takes `airFront` in place of
+    the open-sky column) was lost in the 2026-10-31 mass revert aee0b24a and never re-landed; re-applied (with
+    `cityGlowFront` added for the night) it flags 4-5 rows above every crest, darkens the clean columns 15 -> 10 (a
+    dark band in place of the line) and leaves the bright columns at 30 of 34
+    (`qa/waves/20261125/evidence/e4/not_committed_silDepthNear_reland_fix2.patch`): not shipped. Clean: a moonlit
+    overcast over a ridge (60.008 -159.312 alt 1060, 2036-12-04T08Z: row above the crest -4 levels, an anti-aliasing
+    ramp, no overshoot), Anchorage's Chugach (12-04 08Z), a 20 deg/s pan and a 500 m/s walk there (a 2-3 px TAA ramp).
+    A fix belongs where the march is cut (the cloud texels whose depth texel is a crest the full-res ray misses), not
+    in the composite's background.
 - **Far field (orbit)**: a fractal presence from the cluster Perlin at 1x and 4x (3-90 km, `fz`), thresholded
   to the map's coverage (area ~ cov), replaces the sub-pixel cells' uniform haze as the cells stop resolving
   (`farK`), and clusters the near field a little (0.08) so orbit and ground agree on where the holes are.
