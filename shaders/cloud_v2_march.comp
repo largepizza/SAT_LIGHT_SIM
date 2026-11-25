@@ -1627,6 +1627,10 @@ void main()
                     if (tauD > 0.01) {
                         float tdD = 1.0 / (1.0 + 0.11 * tauD), muK = max(dot(up, sunDir), 0.0);
                         vec3  sDn = 2.0 * muK * max(min((0.5 + 0.75 * muK) * tdD, 1.0) - exp(-tauD / max(muK, 0.05)), 0.0) * sunCol;
+                        // A solar eclipse: the Moon's shadow on that sunlight too (2026-11-25, the release sweep's eclipse cell:
+                        // under a rain overcast at totality this term, the only sunlit one left ungated, lit the deck like
+                        // daylight over black ground; 197 -> ~100 levels). Exactly 1 outside the penumbra.
+                        if (cloud.moonMisc.y > 0.5) sDn *= eclipseSunVis((eye + rel) * 1e-3, sunDir, 0.0);
                         hU = hU * tdD + sDn;
                         hD = hD * tdD + cv2.amb.z * sDn;
                     }

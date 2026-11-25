@@ -537,6 +537,14 @@ EXPOSURE AND MOON section since 2026-10-06, key
   sideways light) — no colour grading. `skyExposure()` adapts to the observer's sky light (`moonEclipseSkyObs`, dayness
   x it), so totality is shown at about twilight's exposure (stars come out). Harness `state` moon block:
   `sky_light_frac`, `sky_exposure`. `scripts/eclipse_visuals.satcmd`.
+  **Under an overcast the deck's diffuse sunlight takes it too** (2026-11-25, the release sweep's eclipse cell, a rain
+  overcast at 21.75 S 138.31 E at 2037-07-13T02:42:56Z): the march's hemisphere ambient adds the Sun scattered down
+  through the deck above a sample (`sDn`, x `sunCol`, 2026-10-27), the one sunlit term left ungated. Knocking the key
+  and the sky light out together moved the totality overcast only 197 -> 193 levels; `sDn` x `eclipseSunVis` (blur 0,
+  exactly 1 outside the penumbra) takes it to ~110 (RGB 96 / 110 / 127, blue-grey), below the clear totality sky at
+  the same exposure (clouds knocked out: 158-174 / 172-183 / 188-190); the ground 3 / 3 / 6. Partial 02:25 (20% of
+  the Sun seen) 204 -> 187. 128 registers; GPU at totality 21.37 -> 21.14 ms (3 reps, noise). The overcast's remaining
+  light is the eclipsed air in front of and inside the deck (the sky model's), not the cloud's own lighting.
 - **The corona** (`solarCoronaAt`, sat_sky.frag, only near totality within `kCoronaMaxR` 9 R of the Sun): fibres along
   dipole field lines to a source surface at 2.5 R (radial beyond), each point mapped to its line's footpoint and the
   legacy cirrus volume (`cloudNoiseTex`) read on that circle — fine across the lines, stretched along them; footpoints
