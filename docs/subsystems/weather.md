@@ -1608,7 +1608,7 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   the listener: level = 270 x sqrt(length x weight / r^2 per second) per flash, with mean distance and pan, pushed to
   one of the synth's 8 voices (`pushEvent`, [voice, level, km, pan]; pink + brown noise, cutoff 5000 / (1 + km / 1.5)
   Hz, crackle within 4 km, a shared ~2-s rumble). The delay is capped at 3 s unless the Sound tab's "Distant sounds
-  arrive within 3 s" is off. A channel within 8 km also sends its STRIKE once, as the roll starts: a snap, a
+  arrive within 3 s" is off, and 0.15 s with "Sounds arrive instantly" (the default since 2026-11-24). A channel within 8 km also sends its STRIKE once, as the roll starts: a snap, a
   crackle and a boom shaped by the distance, and a loud roll is scaled by its own peak instead of being clamped (2026-11-21,
   sound.md "A close strike has a snap, a crackle and a boom"). So it follows the listener (toward a storm: sooner, compressed at most 3x; outrun: when
   the front catches up; paused: nothing, and it goes on at release; a > 5 km or > 20 s jump: silent) and time warp. Driver `thunder` (arriving within ~2 s, sounding, or within 4 s after) gates the layer, so it

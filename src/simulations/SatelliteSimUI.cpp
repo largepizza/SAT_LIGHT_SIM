@@ -4754,9 +4754,11 @@ void SatelliteSim::buildSettingsSoundTab(const UIInput &inp, UIRenderer &ui)
         snprintf(keyLine, sizeof(keyLine), "%s", k.rfind("Key: ", 0) == 0 ? k.c_str() + 5 : k.c_str());
     }
     uiKV("AmbKeyKV", 0, tx(Txt::LblKey), keyLine);
-    // Thunder and rocket noise wait for the speed of sound, at most 3 s (on) or however long it takes (off):
-    // thunderStep, launchSounds.
-    uiToggleRow(inp, ui, "SoundQuickChk", 0, tx(Txt::LblSoundQuick), ambSoundQuick, tx(Txt::TipSoundQuick));
+    // Thunder and rocket noise: with their event (on, the default since 2026-11-24), else they wait for the speed of
+    // sound, at most 3 s (the second row, on) or however long it takes (off): soundDelayCapS, thunderStep, launchSounds.
+    uiToggleRow(inp, ui, "SoundInstantChk", 0, tx(Txt::LblSoundInstant), ambSoundInstant, tx(Txt::TipSoundInstant));
+    if (!ambSoundInstant)
+        uiToggleRow(inp, ui, "SoundQuickChk", 0, tx(Txt::LblSoundQuick), ambSoundQuick, tx(Txt::TipSoundQuick));
 
     // ── Advanced: the mix ────────────────────────────────────────────────────
     if (!showAdvancedSettings)
@@ -9789,6 +9791,7 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         ambRootHz = a.value("ambience_root_hz", ambRootHz);
         ambRootFollowMusic = a.value("ambience_root_follow_music", ambRootFollowMusic);
         ambSoundQuick = a.value("sound_quick", ambSoundQuick);
+        ambSoundInstant = a.value("sound_instant", ambSoundInstant);
         if (a.contains("ambience_groups") && a["ambience_groups"].is_object())
             for (size_t g = 0; g < Ambience::groupNames().size() && g < 6; ++g)
                 ambGroupGain[g] = a["ambience_groups"].value(Ambience::groupNames()[g], ambGroupGain[g]);
@@ -10828,7 +10831,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"ambience_fade_out_scale", ambFadeOutScale},
         {"ambience_root_hz", ambRootHz},
         {"ambience_root_follow_music", ambRootFollowMusic},
-        {"sound_quick", ambSoundQuick}};
+        {"sound_quick", ambSoundQuick},
+        {"sound_instant", ambSoundInstant}};
     {
         nlohmann::json g = nlohmann::json::object();
         for (size_t k = 0; k < Ambience::groupNames().size() && k < 6; ++k)

@@ -80,6 +80,18 @@ Location- and context-aware ambience on its own bus under the music (Settings �
   overhead from the ground -6.4 → 0.84 for minutes, followed -16 → 1; a day-21 cascade night sky -1 .. -2 → 0. The
   intro rule and the 2 s / 6 s slews are unchanged. Open: dust and fireballs are not tested against cloud; a caught
   ship in its tower reads stage_mag ~-5 from 12 km (harmless at that map).
+  **Standing in a lit beam site raises the upwell (2026-11-24, issue_20261124_190033 "Being in proximity to reflect
+  targets needs to play upwell music").** Its beam source was only `glare_n`, the mirrors glaring ON SCREEN: in a site
+  the mirrors are overhead and the reporter looked at the lit ground (el -53 deg), so glare_n was ~0 and nothing rose;
+  `beam_site` / `beam` drive only the between-track layers. New driver `beam_near` (summed in the beam readback loop
+  beside `beam_site`, eased 1.5 s): each converged beam (1 / (1 + (aim / 10 deg)^2)) whose SITE is within 5 km of the
+  eye counts 1, smoothstep to 0 at 12 km (3-D distance, so high above a site counts less). Map 0.5 -> 0, 2 -> 0.6,
+  6 -> 0.9, 15 -> 1. Not `beam_site`: its 15-km full radius plus 25-km tail reads ~60 on the Topaz site from 50 km,
+  more than a dozen-beam site reads standing in it. Measured (the report's shot replayed, time at 1x, a track playing;
+  harness_runs 20261124_201911_c04_sound, 20261124_203607_c04_b): glare_n 0 throughout; beam_near 27 at 1 s, 97 at
+  9 s (site 31, 106 converged beams, 2.7 km off); target 1.0, the stem's gain 0.24 at 1 s and 1.0 at 9 s. Moved 51 km
+  north (500 m up): beam_near 3.8 after 8 s (the 1.5-s ease running out), 0.02 after 20 s, stem gain 0 (beam_site
+  still 34 there).
 - **The beam layers speak only BETWEEN tracks**, under the `music_gap` driver: 0 while a track plays,
   a triangle over the silent gap (0 at its start, 1 halfway, 0 at its end — a generous swell, never a
   cut when the song ends), 1 when no music is audible (player off or paused, music volume or the
@@ -206,7 +218,23 @@ Location- and context-aware ambience on its own bus under the music (Settings �
   heard once and whole at any frame time; a listener flying in faster than sound hears it compressed at most 3x; one
   outrunning it hears it when the front catches up; with time held `play` holds and goes on at release; a jump (> 5 km,
   > 20 s) or a flight in from beyond 45 km behind a front that already passed is silent.
-  **The delay is capped at 3 s by default**: Sound tab "Distant sounds arrive within 3 s" (`audio.sound_quick`, on;
+  **Sounds arrive instantly by default (2026-11-24, issue_20261124_192804)**: Sound tab "Sounds arrive instantly"
+  (`audio.sound_instant`, on; `soundDelayCapS()` = `kSoundInstantS` 0.15 s, else the 3-s cap below, else unbounded) is
+  the one cap every distance-delayed sound reads: the thunder front (`thunderStep`, the harness's `arrives_in_s` and
+  `arrive_s`), the rockets' retarded time (`launchSounds`) and their bangs (`launchThumps`). The collisions, the far
+  rumble and the far boom were never delayed. A roll still plays over its channel's path differences (its length is
+  the channel's shape, not a delay). Why 0.15 s and not 0: the thunder layer opens (0.1-s fade-in) only when a front
+  is within 700 m of arriving, so a cap of 0 would start a close strike's snap under the fade, and the roar's
+  retarded-time scan needs g(T) < 0 to find a crossing (with 0 it finds none and the roar goes silent). 0.15 s is
+  inside the ~0.1-0.2 s audio-visual sync tolerance. With it off, the 3-s toggle shows (Settings hides it while
+  instant is on). Measured (one ground stroke spawned 10 km off, nearest piece 9.63 km, the same kept source through
+  `lightning thunder sim` in each mode; harness_runs 20261124_201911_c04_sound): first sound 0.16 s after the flash
+  (instant), 3.01 s (3-s cap), 28.09 s (full trip); the roll 4.7 s and its energy the same in all three
+  (e_pushed 5.82); the layer at 0.9 at the first sound in each. A Starship from 12.7 km (`launch next pad_dist_m=12000`,
+  harness_runs 20261124_210431_c04_d): instant, the roar at level 2.04 by T+5 (emitted 0.15 s earlier) and the near
+  bang sent; full trip, roar 0 at T+7 (it needs 37 s) with only the undelayed far rumble (0.21); 3-s cap, 2.04 again.
+  Switching the setting mid-launch can re-send a bang whose arrival time moves back past the step (harmless).
+  **The delay is capped at 3 s when instant is off**: Sound tab "Distant sounds arrive within 3 s" (`audio.sound_quick`, on;
   `kSoundQuickS`): the front counts as arrived after min(distance, 1029 m), so a flash 20 km off rolls from 3 s after
   it, with its distance's level and cutoff; a strike inside 1 km keeps its exact flash-to-bang time. Off = the full
   3 s per km. The same cap is on the rockets' retarded time (`launchSounds`). Why a cap: in the report's storm the

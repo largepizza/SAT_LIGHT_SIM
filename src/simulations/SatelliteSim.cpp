@@ -2154,6 +2154,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         constexpr float kBeamSiteConvRad = 0.174533f; // radians(10) — the same converged/transiting
                                                       // boundary the cluster split below uses
         ambBeamSiteRaw = 0.0f;
+        ambBeamNearRaw = 0.0f;
 
         // ── Cloud-light identity (2026-08-12 rewrite) ─────────────────────────────────────────
         // See TrackedBeamLight in SatelliteSim.h for the full rationale. Summary: a light's
@@ -2387,6 +2388,10 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                 const float aim = beamsIn[s].aimErrorRad / kBeamSiteConvRad;
                 const float beyond = std::max(targetDistM - kBeamSiteNearM, 0.0f) / kBeamSiteFalloffM;
                 ambBeamSiteRaw += 1.0f / ((1.0f + aim * aim) * (1.0f + beyond * beyond));
+                // Standing IN a lit site (the music's upwell, 2026-11-24): converged beams whose site is within
+                // 5 km of the eye count 1, none past 12 km (the distance is 3-D: high above a site counts less).
+                const float nx = std::clamp((12000.0f - targetDistM) / 7000.0f, 0.0f, 1.0f);
+                ambBeamNearRaw += nx * nx * (3.0f - 2.0f * nx) / (1.0f + aim * aim);
             }
 
             // Ground-spot compaction: same range cutoff sat_sky.frag's loop applies, done ONCE
