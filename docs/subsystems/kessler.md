@@ -21,7 +21,7 @@ each bump kills with p 1/2 and may chain); then the cube-method engine carries t
 the epoch nothing differs from the plain sky** (every term is gated on the scenario's seconds). Settings > Launches &
 debris > THE SUN'S FURY: the toggle (`kessler.enabled`, default on), collision rate (`rate_multiplier`,
 x1 = physical), avoidance (`avoidance`, 0.9), horizon (`horizon_years`, 20), dust cloud brightness
-(`dust_gain`, x100), "Watch the next re-entry", live counts.
+(`dust_gain`, x1000 since the 2026-11-25 bake), "Watch the next re-entry", live counts.
 Default bookmark "The Sun's Fury" (Monument Valley, 06:30 UTC on the storm night, 1x).
 
 **Nor is it a graphics setting (2026-11-21, issue_20261121_160405 "Planetarium mode disables suns fury").** Nothing
@@ -236,7 +236,7 @@ other agents). After the change the fingerprint above is also what Potato shows 
   kFluxToFlare x pixel solid angle / (the point style's reference flare x 1.27 px^2 x the sky exposure without its
   EV)). The sky's own radiance is not physical at night (the night exposure is only 5.5x the day's), so a physical
   value in sky units is invisible at any gain. "Dust cloud brightness" (`kessler.dust_gain`, x1 .. x1000, default
-  x100): physically a cloud fades below the dark sky within minutes. **No pops** (issue 20261018_211013, day 81 at
+  x1000, the author's look; x100 before 2026-11-25): physically a cloud fades below the dark sky within minutes. **No pops** (issue 20261018_211013, day 81 at
   x1000: the budget was full and clouds near the cut snapped in and out as the view moved, and every cloud vanished
   at 3 h still bright): a cloud fades over the last 40% of its 3 h, and clouds near the budget's cut fade by
   priority between the cut and 3x it — never the first 60% of those kept. Harness `kessler state` -> `dust.clouds`

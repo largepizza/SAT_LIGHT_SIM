@@ -402,8 +402,19 @@ sea far ripple 1.7, ripple size 1.5, wave sharpness 0.1; the aurora sheet / stor
 extinction 0.18, mirror boost 1000; display automatic render scale OFF, clouds follow render scale OFF. A discrete GPU
 with >= 5.5 GiB now starts on High (= those defaults, 100% render scale). Check with `python tools/settings_defaults_diff.py
 <settings.json>` (it now also reads `settingClamp(...)`-wrapped loads and lists values outside their load range). Out of
-scope and left alone: `kessler.dust_gain` (the author runs x1000, default x100), `launches.after_storm`,
-`display.photo_scale`, `clouds.aurora_kp_manual` (unused while space weather is automatic).
+scope and left alone: `launches.after_storm`, `display.photo_scale`, `clouds.aurora_kp_manual` (unused while space
+weather is automatic).
+
+The 2026-11-25 bake (before v1.2) moved 77 look fields of `clouds.*`, `clouds_v2.*`, `photometry.*`, `kessler.*` and
+`launches.*` to the author's values (table: `qa/waves/20261125/evidence/s1/BAKE.md`), among them `kessler.dust_gain`
+x1000, `clouds_v2.beam_light` 280, the glare block and the storm shapes. The rules it kept: none of the fields
+`applyGraphicsPreset()` writes (none differed, so the High row is unchanged); nothing that feeds the Kessler prebake's
+`worldHash()` (engine settings, roster, deployment era: render-only `dust_gain` and the plume / streak look are not in
+it); a value on a discrete option keeps the option (`storm_cyc_arms` 0.11 -> 0, read as "by intensity" below 1;
+`glare_spikes` 8.38 -> 8, the shader rounds; `ice_optics_table` 0.94 already acts as 1 and stayed). `anvil_thick_km`
+0.05 is below its slider's 0.3 floor (set in dev mode): the slider clamps it only when moved. `clouds.drift_rate` went
+back to 6.5e-6, the rate `kCloudDriftPhaseDefault` was derived at. The launches tab's reset button carries the same
+plume / streak values (SatelliteSimLaunches.cpp).
 
 ---
 

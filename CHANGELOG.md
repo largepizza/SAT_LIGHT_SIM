@@ -792,6 +792,11 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - The cloud coverage and lighting defaults are the author's 2026-11-15 tune: density 0.5 (was 1.6) for white, puffy
   clouds that still darken under storms; coverage 0.75 / overcast at 0.54; multi-scatter side escape 0.33, strength
   0.34, extinction 0.13, diffuse gain 1.4; ground bounce 1.8; sky light 2.3; ambient 1.5; phase g 0.37.
+- The defaults are the author's 2026-11-25 tune: Sun's Fury dust clouds x1000 (was x100); beam light on cloud 280
+  (was 29) with less beam haze; satellite glare much softer and wider (gain 0.11, size 57 px); brighter moonlight;
+  rain amount 1 (was 3); storms that live 5x longer, with lower towers, thin anvils and no clear moat; hurricanes'
+  arm count follows their strength; a calmer sea (no far ripple, waves out to 45 km); thinner launch plumes with
+  shorter jellyfish trails; the cloud map drifts at 6.5e-6 again.
 - Scattered cumulus seen from above no longer have thinned, see-through skirts with dark contour lines round them at
   low cloud densities: the march no longer strides over thin cloud sheets when looking steeply down.
 - Saved times now show a different local time of day (the clock is real UTC; about 5 h 15 min earlier for the
