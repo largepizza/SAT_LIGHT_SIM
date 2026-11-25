@@ -284,7 +284,10 @@ other agents). After the change the fingerprint above is also what Potato shows 
   the shell model: 1.9% storm loss). The arc of beams over Nuuk becomes a broken string of single flares. **The shipped
   prebake is stale** (world 984125cb6235fb95 -> 7ac017dc3de7093b) until `tools/make_kessler_prebake.py` is rerun: the
   cascade is computed live meanwhile, 30 days in 7.5 s (0.27 s/day), 86 days in 33.4 s (3070 Ti machine, other agents
-  running), and selftest's `kessler prebake require=1` fails.
+  running), and selftest's `kessler prebake require=1` fails. `kessler fingerprint` at day 85.267 is identical across two launches
+  (events 7b5bafe1dbfd3ea4, pool 87aed1ab7d0c1257, roster 314b4b23ab7e69da). Cost on the storm night (old vs new build,
+  3 reps, 1600x900): orbit + flare + points +0.03 ms GPU, CPU +0.03 ms. Twelve stills ~1 s apart caught no more point
+  glints with the Fury than without (12 vs 18): a tumbling flat mirror's flash is brief and rare.
 - **The dust BANDS (2026-10-31, issue_20261030_175418 "Dust Clouds from kessler"; kesslerFillDust's ring pass):**
   past half an hour a breakup's dust has spread along its parent's orbit far past the point-like cloud the tube
   draws (the along-track sigma is `sv |4 sin(nt)/n - 3t|`: 2 900 km after 30 min for a 500 m/s kick, a whole orbit
