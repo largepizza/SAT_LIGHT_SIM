@@ -840,6 +840,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- **A solar eclipse darkens overcast skies too.** At totality under a cloud deck (the 2037 Great Australasian Eclipse
+  can be rainy) the clouds were lit like full daylight above black ground: the sunlight the deck lets through to the
+  clouds beneath it ignored the Moon's shadow. The overcast now goes dark blue-grey with the rest of the eclipse.
 - During a lunar eclipse the Moon's light now fades and turns red with its disc. The clouds, ground, sea and the
   moonlit sky were still lit grey-white as by a full Moon under a blood-red disc; at totality the night is now dark
   with the stars out, the clouds faintly lit red (the eclipsed Moon's light never drops below 4% of a full Moon,
