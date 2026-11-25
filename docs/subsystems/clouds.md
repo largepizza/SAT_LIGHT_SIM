@@ -457,7 +457,10 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   beam lighting bench points"; setting `clouds_v2.beam_volume`, default 1):** the beams' light is baked once a frame per
   busy site, each beam with ITS OWN cloud shadow, and every consumer reads it instead of looping over the clustered lights.
   The CPU (`SatelliteSim.cpp`, after the cloud-light emit) keeps up to 4 sites (`bvSlotTarget`: the beams' summed
-  irradiance / (1 + (distance / 150 km)^2); a site keeps its slot while among the best 8) and sends every converged
+  irradiance / (1 + (distance / 150 km)^2); a site keeps its slot while among the best 8, unless one of the best 4 has
+  none and outscores it 1.25x: with 8 or fewer lit sites, the usual case, "among the best 8" alone never gave a slot
+  back, and four far sites that took the boxes on a detour held them for good while the site under the eye kept only
+  the old ground spot and the merged shafts, ~1/4 of its light: issue_20261124_185832, ground 13 vs 55 levels) and sends every converged
   on-site beam of them (up to 512: ground point and direction in the site's frame, mean irradiance, footprint R) after
   the cloud lights in `BeamCloudLightBuf`. Each site is a box fixed in its frame (east / north / up at the target): +-200
   km, -2.5 .. 15.5 km, 128 x 128 x 64 cells, x / y asinh-warped (`beam_vol_warp.glsl`: 0.58 km at the site, 1.3 km 20 km
