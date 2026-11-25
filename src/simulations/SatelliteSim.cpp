@@ -8648,7 +8648,13 @@ void SatelliteSim::cleanup(VkDevice device)
     // members, so letting it outlive the object would be a use-after-free.
     if (ctx_)
     {
-        video_.shutdown(*ctx_); // a recording still running is finished, not lost
+        // A recording still running is finished, not lost (App held the close until it was written: holdQuit). Closed
+        // again while held: the rest is dropped and the half-written file deleted. Either way the exit is never held
+        // by a stuck encoder (issue_20261124_190229: the window froze in here, then was killed).
+        const bool cancel = videoCancelOnQuit_;
+        if (video_.busy() && !video_.shutdown(*ctx_, cancel ? 5.0 : 60.0, cancel))
+            Log::line(std::string("video: ") + (cancel ? "cancelled at exit " : "not finished at exit ") +
+                      video_.lastResult().dump());
         settleProbe_.destroy(*ctx_);
     }
     if (screenshotThread.joinable())

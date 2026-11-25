@@ -2491,7 +2491,8 @@ public:
     void onCursorPos(GLFWwindow *w, double x, double y) override;
     // Automation harness (docs/HARNESS.md, SatelliteSimHarness.cpp).
     float frameDt(float realDt) override;
-    bool wantsQuit() const override { return harnessQuit_; }
+    bool wantsQuit() const override { return harnessQuit_ || (quitHeldForVideo_ && !video_.busy()); }
+    bool holdQuit(bool closeAgain) override;   // SatelliteSimVideo.cpp: a video still being written holds the quit
     void onChar(GLFWwindow *w, unsigned int codepoint) override;
     // The console, a focused text field (Esc cancels the edit) and a playing / exporting cinematic (Esc stops it)
     // keep Esc from quitting the app.
@@ -8567,6 +8568,8 @@ private:
     bool videoByHarness_ = false;    // started by the harness: no REC badge, no toast
     bool hovVideoBtn = false;
     std::string videoLastFile_;
+    bool quitHeldForVideo_ = false;  // the app was asked to close while a video was busy: it closes once it is written
+    bool videoCancelOnQuit_ = false; // ...and was closed again while held: cleanup cancels the file instead
     void videoToggle();                                    // KB_VIDEO / the HUD button
     // sound: 0 off, 1 everything, 2 ambience only, -1 = videoSoundSetting.
     bool videoStart(const VideoRecordOptions &o, bool byHarness, std::string &err, int sound = -1);

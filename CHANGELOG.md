@@ -1046,6 +1046,10 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - A head-on collision's slow debris no longer bursts out of one point under the breakup as two mirrored
   fireball clusters: pieces knocked onto falling arcs now fly on and re-enter where their own arcs reach the
   atmosphere, minutes later and hundreds to thousands of km downrange (issue_20261104_015233).
+- A video recorded with sound no longer sticks on "Writing the video..." (up to minutes, or for good) after an HQ
+  photo was taken during it; the badge now shows how far the writing is (percent and frames, then "finishing the
+  file"), and closing the app while a video is written waits for it with the badge showing (close again to cancel
+  and delete the partial file) instead of freezing and being killed (issue_20261124_190229).
 
 ### Technical and modding
 

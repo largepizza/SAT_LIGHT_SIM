@@ -1237,6 +1237,9 @@ UI_TEXT(ToastVideoFailed, "Video failed: %.120s")
 UI_TEXT(ToastSavedS, "Saved %s (%.0f s)")
 UI_TEXT(FmtRecToStop, "REC  %d:%02d   %s to stop")
 UI_TEXT(FmtWritingTheVideo, "Writing the video...")
+UI_TEXT(FmtWritingTheVideoFrames, "Writing the video...  %d%%  (%lld of %lld frames)")
+UI_TEXT(ValWritingTheVideoFinishing, "Writing the video...  finishing the file")
+UI_TEXT(ValWritingTheVideoQuitWhenDone, "   - the app closes when it is written (close again to stop now)")
 
 // ── SatelliteSimReports.cpp ──
 UI_TEXT(ToastCouldNotWriteTheIssueReport, "Could not write the issue report (%s)")

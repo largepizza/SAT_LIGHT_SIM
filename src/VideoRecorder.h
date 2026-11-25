@@ -69,13 +69,22 @@ public:
     bool recordCopy(VkCommandBuffer cmd, VulkanContext &ctx, VkImage image, VkExtent2D ext, VkFormat fmt);
     // After the fence. Returns true on the frame the recording finished (then lastResult() holds its stats).
     bool poll(VulkanContext &ctx);
-    void shutdown(VulkanContext &ctx); // app exit: waits for the worker
+    // App exit: finishes the file and waits for the worker, at most maxWaitS. cancel: the player closed again while it
+    // was written - the frames not yet written are dropped, the file is closed and deleted. A worker still not done by
+    // then is detached (and its readback buffers leaked) rather than joined: the app's exit is never held by it.
+    // Returns false when the file was not finished.
+    bool shutdown(VulkanContext &ctx, double maxWaitS = 60.0, bool cancel = false);
 
     // The finished recording's numbers (file, frames, drops, encode cost, size), or the running ones.
     nlohmann::json stats() const;
     const nlohmann::json &lastResult() const { return last_; }
     double secondsRecorded() const { return (double)framesOut_ / opt_.fps; }
     const std::string &error() const { return err_; }
+    // While the file is written (after stop()): video frames written so far of those handed over, and whether the
+    // worker has reached the file's close (Media Foundation's Finalize / ffmpeg's mux), the last stage.
+    int64_t framesWritten() const { return framesOut_.load(); }
+    int64_t framesTotal() const { return framesIn_; }
+    bool finalizing() const { return workerStage_.load() >= 1; }
 
 private:
     struct Item
@@ -113,7 +122,13 @@ private:
     int64_t skipOwed_ = 0;                   // frame thread: repeats cut by the 2-s cap, given to the next item
     bool endOfStream_ = false;
     std::atomic<bool> workerDone_{false};
+    std::atomic<bool> cancel_{false};      // shutdown(cancel): drop what is queued, close and delete the file
     std::string workerErr_, encoderName_;
     double convertMs_ = 0.0, encodeMs_ = 0.0, maxEncodeMs_ = 0.0; // worker sums (under mx_ when read)
     int64_t workerFrames_ = 0;
+    // The finish's stages (wall seconds; 0 = not reached): stop() -> the last copy off the GPU (eos) -> the worker
+    // reaches close() -> close() returns -> poll() sees it (Idle). workerStage_: 0 writing, 1 closing, 2 closed.
+    std::atomic<int> workerStage_{0};
+    double eosWall_ = 0.0, closeStartWall_ = 0.0, closeEndWall_ = 0.0, doneWall_ = 0.0; // close*: under mx_
+    double audioHeldMaxS_ = 0.0; // worker: the most sound held back waiting for the video (under mx_ when read)
 };
