@@ -1459,7 +1459,9 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     reporter's shot 94). Knockout: `sparse_block_orbit_moving` 0 -> exactly 0; sky TAA off and the orbit render scale
     off change nothing. Suspect: the resolve's reconstruction of the block at the frame edge (the march places an edge
     block's ray at min(q K + off, size - 1), the resolve calls a texel new only where c % K == off; 1009 rows = 252
-    blocks + 1). Evidence `qa/waves/20261124/evidence/c07/` (gitignored).
+    blocks + 1). Rejecting the moved history reads within 1.5 texels of the frame edge only took the band from 109 to
+    81 levels: the history's clamp is a minor part, the edge's new-sample estimate the likelier source. Evidence
+    `qa/waves/20261124/evidence/c07/` (gitignored).
   - **THE ORBIT BLOCK'S GATE: the turn budget** (`clouds_v2.orbit_gate` 1; 0 = the gate of 2026-11-09 above, exactly;
     2026-11-22, issue_20261122_114811; SatelliteSimCloudsV2.cpp `fillCloudsV2Params`, "THE TURN BUDGET"; settings.json
     keys, no sliders; harness `state` -> `clouds_v2.orbit_gate`: `turn_px`, `debt_px`, `over`, `still_frames`, `still_s`,
