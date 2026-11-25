@@ -2134,8 +2134,12 @@ struct GpuCloudParams
     // -- light2 (12336 -> 12352, 2026-11-05): the white balance's reference sunlight (cloud_params.glsl wbRef): x its height
     // (m: 2000, < 0 = the eye's), y the Rayleigh gain it takes (light3: "Cloud sunlight Rayleigh"; 0 = the sky's), z / w the Sun sines of the low-Sun fade (off / full).
     glm::vec4 wbRef;
+    // -- moonTint (12352 -> 12368, 2026-11-24, issue_20261124_190627 "Moonlight during blood moons"): xyz the night key's
+    // colour at luminance 1 (a lunar eclipse's red, SatelliteSim::nightKeyTint; 1 otherwise), multiplied into every
+    // moonlit term's colour; w the Moon's eclipse light (luminance vs uneclipsed, already in moonDirENU.w).
+    glm::vec4 moonTint;
 };
-static_assert(sizeof(GpuCloudParams) == 12352, "GpuCloudParams layout mismatch");
+static_assert(sizeof(GpuCloudParams) == 12368, "GpuCloudParams layout mismatch");
 // sat_sky_minimal.frag declares only these two at their offsets (its SPIR-V budget): keep its CloudParamsSun in step.
 static_assert(offsetof(GpuCloudParams, skyScreenH) == 528, "sat_sky_minimal.frag CloudParamsSun.skyScreenH offset");
 static_assert(offsetof(GpuCloudParams, surgeInfo) == 11168, "sat_sky_minimal.frag CloudParamsSun.surgeInfo offset");
@@ -5178,6 +5182,7 @@ private:
     // supernova is up. The cloud passes take it as their push constants' moonDirENU; sat_sky.frag reads it from
     // CloudParams.nightKeyENU (w 0 = use the Moon). SatelliteSimStars.cpp.
     glm::vec4 nightKeyLightENU() const;
+    glm::vec3 nightKeyTint() const; // the night key's colour at luminance 1: the eclipsed Moon's tint, mixed with the supernova's white
     double snFlare = 0.0;
     void supernovaFill();                             // kesslerFillDust's finish: the supernova into kFireBuf
     harness::Status harnessStars(harness::Active &a);
@@ -8400,6 +8405,12 @@ private:
     float moonEclipseSolarObs = 1.0f;
     float moonEclipseSkyObs = 1.0f;   // the sky light's share at the observer in a solar eclipse (eclipse.glsl's blurred visibility)
     bool moonEclipseSolarPossible = false, moonEclipseLunarPossible = false;
+    // A lunar eclipse's light (2026-11-24): the disc's eclipse shading integrated over the disc, RGB vs the uneclipsed
+    // Moon (1 outside an eclipse). Its luminance scales moonDirENU.w; moonEclipseTint (its colour at luminance 1) tints the
+    // night key (cloud.moonTint). moonLightUneclipsed: moonDirENU.w before the eclipse (harness state).
+    glm::vec3 moonEclipseLight{1.0f};
+    glm::vec3 moonEclipseTint{1.0f};
+    float moonLightUneclipsed = 1.0f;
     glm::dvec3 moonGeoEciM(double t) const;
     double findEclipse(bool solar, double t0) const;                // orbit colour grade (Atmosphere tab, slot 219; the Artemis II photos)
     float auroraSheetGain = 1.7f;           // aurora sheets (Atmosphere tab, slots 215-218): strength, 0 = off

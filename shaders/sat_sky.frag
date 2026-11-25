@@ -208,6 +208,14 @@ layout(set = 0, binding = 8) uniform sampler3D cloudNoiseTex;
 #define NK_DECL(n) vec4 n = (cloud.nightKeyENU.w > 0.0 ? cloud.nightKeyENU : moonDirENU);
 #define NK(n) n
 #endif
+// NK_TINT (2026-11-24, issue_20261124_190627 "Moonlight during blood moons"): the night key's colour at luminance 1, a
+// lunar eclipse's red (CloudParams.moonTint; its brightness is already in moonDirENU.w / nightKeyENU.w). Every moonlit
+// term's colour takes it, as the disc's eclipse shading does. SKY_LITE (its size budget): white.
+#ifdef SKY_LITE
+#define NK_TINT vec3(1.0)
+#else
+#define NK_TINT cloud.moonTint.rgb
+#endif
 #include "aurora_oval.glsl"
 
 // ── Perf knockout toggles (profiling-only) ──────────────────────────────────────
@@ -3151,7 +3159,7 @@ void evalCloudLayer(
     vec3  moonDirECEF  = moonDir3.x * enuX + moonDir3.y * enuY + moonDir3.z * enuZ;
     float cloudMoonDot = dot(normalize(cECEF), moonDirECEF);
     float moonLit      = max(0.0, cloudMoonDot) * NK(nkF).w;
-    vec3  moonContrib  = vec3(0.92, 0.95, 1.0) * moonLit * cloud.moonGain;
+    vec3  moonContrib  = vec3(0.92, 0.95, 1.0) * NK_TINT * moonLit * cloud.moonGain;
 
     // ── Twilight sky ambient (flat 2D path) ──────────────────────────────────────────────────
     // Until this was added the flat layer had NO ambient term of any kind — its only light
@@ -6455,7 +6463,7 @@ void main() {
         float geoMoonDot       = dot(normalize(hitPt), moonDir3t);
         float moonHorizonGate  = smoothstep(-0.03, 0.02, geoMoonDot);
         float moonLitTerrain   = max(0.0, moonDot) * moonHorizonGate * NK(nkT).w;
-        vec3  moonContribTerrain = dayColor * vec3(0.92, 0.95, 1.0) * moonLitTerrain * cloud.moonGain;
+        vec3  moonContribTerrain = dayColor * vec3(0.92, 0.95, 1.0) * NK_TINT * moonLitTerrain * cloud.moonGain;
 #if !defined(SKY_ENV) && !defined(SKY_LITE)
         // The clouds' shadow on moonlit ground (2026-11-23, nightvol): by night the transmittance volume holds the night key's
         // light and cloud_march.comp writes ITS shadow to the ground's channel (cloudShadowT), only where the Sun is down.
@@ -6648,7 +6656,7 @@ void main() {
         // night sky (starlight + airglow), "Night sky light" (cloud.terrainErosion.z) as a fraction of
         // the full Moon overhead. Slightly cool, never the old blue. Both are negligible by day.
         float moonSkyK  = 0.15 * NK(nkT).w * smoothstep(-0.05, 0.3, geoMoonDot);
-        vec3 tNightSky  = dayColor * vec3(0.88, 0.93, 1.0) * (cloud.moonGain * (moonSkyK + cloud.terrainErosion.z) * skyView);
+        vec3 tNightSky  = dayColor * vec3(0.88, 0.93, 1.0) * (cloud.moonGain * (moonSkyK * NK_TINT + cloud.terrainErosion.z) * skyView);
         vec3 surfColor  = (tDirectSun + tSkyAmb + tNightSky) * terrainAO  // terrainAO darkens only the map/sky-lit surface
                         + tNight
                         + moonContribTerrain
@@ -7617,7 +7625,7 @@ void main() {
                 vec3  moonDirF = normalize(NK(nkS).xyz);
                 vec3  foamL = 0.8 * (sunSpecTint * directSun * max(dot(waveN, sunDir), 0.0)
                                      + skyAmbientTerrain * (0.4 * cloud.terrainErosion.w) * skyAmbGate
-                                     + vec3(0.92, 0.95, 1.0) * max(dot(waveN, moonDirF), 0.0)
+                                     + vec3(0.92, 0.95, 1.0) * NK_TINT * max(dot(waveN, moonDirF), 0.0)
                                        * smoothstep(-0.03, 0.02, dot(surfUp, moonDirF)) * NK(nkS).w * cloud.moonGain);
                 surfColor = mix(surfColor, foamL, foam);
             }
@@ -7649,7 +7657,7 @@ void main() {
                 vec3  moonDir3o = normalize(NK(nkG).xyz);
                 float mSpecPow  = 120.0;
                 float mNrm      = (mSpecPow + 8.0) / (PI * 8.0);
-                surfColor += pow(max(0.0, dot(reflect(dir, waveN), moonDir3o)), mSpecPow)
+                surfColor += pow(max(0.0, dot(reflect(dir, waveN), moonDir3o)), mSpecPow) * NK_TINT
                            * mNrm * NK(nkG).w * clamp(NK(nkG).z, 0.0, 1.0)
                            * 0.006 * (1.0 - dayFrac);
             }
@@ -8409,9 +8417,9 @@ void main() {
     {   // the moonlit sky: from the night key (the supernova's light scatters too); the Moon's glow below stays its own
         NK_DECL(nkA)
 #ifdef SKY_SUN_SHADOW
-        color += vec3(0.0025, 0.003, 0.004) * NK(nkA).w * clamp(NK(nkA).z, 0.0, 1.0) * nightAmt * atmosWeight * (moonSkyT + moonFrontK);
+        color += vec3(0.0025, 0.003, 0.004) * NK_TINT * NK(nkA).w * clamp(NK(nkA).z, 0.0, 1.0) * nightAmt * atmosWeight * (moonSkyT + moonFrontK);
 #else
-        color += vec3(0.0025, 0.003, 0.004) * NK(nkA).w * clamp(NK(nkA).z, 0.0, 1.0) * nightAmt * atmosWeight;
+        color += vec3(0.0025, 0.003, 0.004) * NK_TINT * NK(nkA).w * clamp(NK(nkA).z, 0.0, 1.0) * nightAmt * atmosWeight;
 #endif
     }
 
@@ -8431,18 +8439,18 @@ void main() {
         float corona = exp(-moonAngle * moonAngle / (2.0 * 0.012 * 0.012)) * nightAmt;
 #ifdef SKY_SUN_SHADOW
         float moonGlowK = hClip * (moonSkyT + moonFrontK) * moonFade * moonIllum * atmosWeight;
-        color += corona * vec3(0.92, 0.94, 1.00) * 0.04 * moonGlowK;
+        color += corona * vec3(0.92, 0.94, 1.00) * NK_TINT * 0.04 * moonGlowK;
 #else
-        color += hClip * moonFade * corona * vec3(0.92, 0.94, 1.00) * moonIllum * 0.04 * atmosWeight;
+        color += hClip * moonFade * corona * vec3(0.92, 0.94, 1.00) * NK_TINT * moonIllum * 0.04 * atmosWeight;
 #endif
 
         // Wide diffuse halo — scattered moonlight glow, atmosphere-only.
         float scale = 100.0;
         float halo  = exp(-moonAngle * moonAngle / (2.0 * 0.018 * 0.018 * scale * scale));
 #ifdef SKY_SUN_SHADOW
-        color += halo * vec3(0.88, 0.90, 1.00) * 0.012 * moonGlowK;
+        color += halo * vec3(0.88, 0.90, 1.00) * NK_TINT * 0.012 * moonGlowK;
 #else
-        color += hClip * moonFade * halo * vec3(0.88, 0.90, 1.00) * moonIllum * 0.012 * atmosWeight;
+        color += hClip * moonFade * halo * vec3(0.88, 0.90, 1.00) * NK_TINT * moonIllum * 0.012 * atmosWeight;
 #endif
     }
 

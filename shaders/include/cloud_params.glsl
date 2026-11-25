@@ -547,4 +547,7 @@ layout(set = 0, binding = CLOUD_PARAMS_BINDING) uniform CloudParams {
     // the old reference), y the clouds' "Cloud sunlight Rayleigh" the reference takes (light3; <= 0 = the sky's Rayleigh, no ozone), z / w the Sun's sine at the eye below which the adaptation is off / above which it is
     // full ("White balance holds to", the low-Sun fade).
     vec4  wbRef;
+    // -- moonTint (12352 -> 12368, 2026-11-24, issue_20261124_190627): xyz the night key's colour at luminance 1 (a lunar
+    // eclipse's red; 1 otherwise), x every moonlit term's colour; w the Moon's eclipse light (already in moonDirENU.w).
+    vec4  moonTint;
 } cloud;

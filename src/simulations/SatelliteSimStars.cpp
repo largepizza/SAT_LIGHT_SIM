@@ -286,6 +286,16 @@ glm::vec4 SatelliteSim::nightKeyLightENU() const
     return glm::vec4(dir, w);
 }
 
+// The night key's colour at luminance 1 (cloud.moonTint): the Moon's lunar-eclipse tint, mixed toward white by the
+// supernova's share of the key's light.
+glm::vec3 SatelliteSim::nightKeyTint() const
+{
+    const float wm = std::max(moonDirENU.w, 0.0f), ws = std::max(snLightK, 0.0f);
+    if (ws <= 0.0f || wm + ws <= 1e-9f)
+        return moonEclipseTint;
+    return (wm * moonEclipseTint + ws * glm::vec3(1.0f)) / (wm + ws);
+}
+
 double SatelliteSim::supernovaMagAt(double t, float *bv)
 {
     const double dt = t - kSupernovaT0;

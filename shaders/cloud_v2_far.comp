@@ -126,7 +126,7 @@ vec3 farLit(vec3 up, float hTop, float R, float tau, float relief, float msB, ve
     vec3  keyCol = sunCol * smoothstep(horizS - 0.004, horizS + 0.004, sunUp);
     vec3  keyDir = sunDir;
     if (dot(keyCol, keyCol) <= 0.0 && nightK > 0.0) {
-        keyCol = kMoonColor * pc.moonDirENU.w * cloud.moonGain * cv2.misc.y * nightK
+        keyCol = kMoonColor * cloud.moonTint.rgb * pc.moonDirENU.w * cloud.moonGain * cv2.misc.y * nightK
                * smoothstep(-0.05, 0.1, dot(up, moonDir));
         keyDir = moonDir;
     }

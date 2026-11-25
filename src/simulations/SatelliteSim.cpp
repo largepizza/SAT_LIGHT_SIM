@@ -3139,6 +3139,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.moonCenter = glm::vec4(moonCenterENUkm, moonAngR);
         cp.moonPole = glm::vec4(moonPoleENU, std::max(moonRelief, 0.0f));
         cp.moonPrime = glm::vec4(moonPrimeENU, moonShadows > 0.5f ? 1.0f : 0.0f);
+        cp.moonTint = glm::vec4(nightKeyTint(), glm::dot(moonEclipseLight, glm::vec3(0.2126f, 0.7152f, 0.0722f)));
         // y: 0 = no solar eclipse possible, else 1 + the observer's eclipse sky light (0..1), which sat_sky.frag's
         // exposure applies exactly as skyExposure() does (every `y > 0.5` test still reads it as the flag).
         cp.moonMisc = glm::vec4(moonEclipseSolarObs,
@@ -19204,6 +19205,51 @@ void SatelliteSim::updatePositions(double t, float dt)
         const double sepGeo = std::acos(std::clamp(glm::dot(glm::normalize(mE), sE), -1.0, 1.0));
         moonEclipseSolarPossible = sepGeo < glm::radians(2.0);                 // the Moon near the Sun
         moonEclipseLunarPossible = sepGeo > glm::radians(177.5);               // near the antisolar point
+        // A lunar eclipse's LIGHT (2026-11-24, issue_20261124_190627 "Moonlight during blood moons": the disc went red
+        // while the clouds and the sea stayed lit grey-white by a full Moon). The disc's own eclipse shading (sat_sky.frag
+        // "Lunar eclipse": per surface point the Sun's disc past the Earth's, enlarged 1/85 for the atmosphere, plus the
+        // umbra's refracted red) integrated over the face the eye sees, Lommel-Seeliger weighted, as RGB vs the uneclipsed
+        // Moon. Its luminance scales moonDirENU.w (every moonlit term: clouds, ground, sea, sky, halo, the stars' and
+        // satellites' dimming); its colour at luminance 1 tints the night key (cloud.moonTint). So the disc, the key and
+        // the moonlit sky agree: at totality ~0.007 (~5.4 mag) and red.
+        moonLightUneclipsed = moonDirENU.w;
+        moonEclipseLight = glm::vec3(1.0f);
+        moonEclipseTint = glm::vec3(1.0f);
+        if (moonEclipseLunarPossible)
+        {
+            const glm::dvec3 U = glm::normalize(glm::cross(tDir, std::abs(tDir.z) < 0.9 ? glm::dvec3(0, 0, 1) : glm::dvec3(1, 0, 0)));
+            const glm::dvec3 V = glm::cross(tDir, U);
+            constexpr int kN = 24;                                              // a 24 x 24 grid over the disc (~450 points)
+            glm::dvec3 lit(0.0);
+            double wSum = 0.0;
+            for (int i = 0; i < kN; ++i)
+                for (int j = 0; j < kN; ++j)
+                {
+                    const double x = (i + 0.5) / kN * 2.0 - 1.0, y = (j + 0.5) / kN * 2.0 - 1.0, r2 = x * x + y * y;
+                    if (r2 >= 1.0) continue;
+                    const double mu = std::sqrt(1.0 - r2);                      // toward the eye
+                    const glm::dvec3 nS = x * U + y * V - mu * tDir;
+                    const double mu0 = glm::dot(nS, sE);                        // toward the Sun
+                    if (mu0 <= 0.0) continue;
+                    const double D = 2.0 * mu0 / (mu0 + mu);                   // Lommel-Seeliger
+                    const glm::dvec3 pM = mE + nS * kMoonR;
+                    const double dE = glm::length(pM);
+                    const glm::dvec3 sMoon = glm::normalize(sE * 1.496e11 - pM);
+                    const double aE = std::asin(std::min(6446.0e3 / dE, 1.0));
+                    const double th = std::acos(std::clamp(glm::dot(-pM / dE, sMoon), -1.0, 1.0));
+                    const double l = 1.0 - discOverlapFrac(kSunAngR, aE, th);
+                    const double umb = glm::smoothstep(aE - kSunAngR, 0.3 * aE, aE - th);
+                    lit += D * l + glm::dvec3(1.0, 0.33, 0.12) * (0.025 * (1.0 - l) * glm::mix(1.0, 0.45, umb) * (mu0 + 0.3));
+                    wSum += D;
+                }
+            if (wSum > 0.0)
+            {
+                moonEclipseLight = glm::vec3(lit / wSum);
+                const float L = glm::dot(moonEclipseLight, glm::vec3(0.2126f, 0.7152f, 0.0722f));
+                moonEclipseTint = moonEclipseLight / std::max(L, 1e-6f);
+                moonDirENU.w *= std::clamp(L, 0.0f, 1.0f);
+            }
+        }
     }
 
     // ── Planets (Mercury..Uranus): heliocentric Keplerian ephemeris ──────────────────────────
