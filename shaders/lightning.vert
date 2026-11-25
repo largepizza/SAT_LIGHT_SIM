@@ -144,8 +144,12 @@ void main()
     float u   = (vi & 1) != 0 ? Lpx + hw : -hw;
     float w   = (vi & 2) != 0 ? hw : -hw;
     vec2  px  = P0 + ax * u + ay * w;
-    // (harness `lightning color knock=1`: no depth test, the quad at depth 0)
-    gl_Position = vec4(px / scr * 2.0 - 1.0, (int(bc.wet.z + 0.5) & 1) != 0 ? 0.0 : sceneDepthFromDistance(range), 1.0);
+    // (harness `lightning color knock=1`: no depth test, the quad at depth 0.) A piece seen through rain alone (bit 31,
+    // SatelliteSimLightning.cpp: under the cloud's base, the eye under it too) is not tested against the depth
+    // attachment either, which holds the opaque composite's distance (heavy rain is opaque within ~150 m): the fragment
+    // tests the scene depth (terrain, sea, meshes) itself.
+    bool rainOnly = (s.packed & 0x80000000u) != 0u;
+    gl_Position = vec4(px / scr * 2.0 - 1.0, ((int(bc.wet.z + 0.5) & 1) != 0 || rainOnly) ? 0.0 : sceneDepthFromDistance(range), 1.0);
     vLocal = vec2(u, w);
-    vSeg   = vec4(Lpx, range, 0.0, kind);
+    vSeg   = vec4(Lpx, range, rainOnly ? -1.0 : 0.0, kind);
 }

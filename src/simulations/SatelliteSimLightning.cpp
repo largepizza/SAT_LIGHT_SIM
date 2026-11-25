@@ -32,6 +32,9 @@
 // share; screen-blended on the sRGB target, read against the same frame without the channel). 0 = the shipped draw.
 // Not saved.
 int g_boltKnock = 0;
+// The time-warp history: wall seconds a flash the list showed stays drawn above 30x (SatelliteSim::boltHold_);
+// harness `lightning hold s=` (0 = none, the A/B).
+float g_boltHoldS = 0.3f;
 
 // Pack: bits 0-6 the flash's slot, 7-8 the order (0 main .. 3 tendril), 9-20 the arc (fraction of the tree's
 // longest arc, 12 bits), 21-30 f (where along its own branch, 10 bits; a sprite's tendril: top 0 .. tip 1).
@@ -383,7 +386,14 @@ void SatelliteSim::updateLightningBolts()
         if (n >= kCv2FlashMax)
             ++boltStatsCapFrames_;
     }
-    auto addFlash = [&](const float *e) {
+    // (the "through rain" floor: boltColourTune.rainFloor, 0 = the composite alone as before; the probe's base is the
+    // field's at ~1 km steps, so a piece must lie 200 m under it)
+    const bool rainFloorOn = boltColourTune.rainFloor > 0.0f && g_boltKnock == 0;
+    const float kBoltRainBelowBaseM = 200.0f;
+    bool frameChan = false, frameHeld = false;   // (harness `lightning stats`: frames_channel / _held)
+    // holdI >= 0 (time-warp history, boltHold_): drawn at least this bright, as at its first return stroke (the age
+    // the record carries still places the tree and its thunder).
+    auto addFlash = [&](const float *e, float holdI, bool listed) {
         if (boltFlashCount >= kBoltMaxFlashes)
             return;
         uint32_t id, seed;
@@ -391,6 +401,11 @@ void SatelliteSim::updateLightningBolts()
         std::memcpy(&seed, &e[9], 4);
         const int kind = (int)(e[7] + 0.5f);
         const float age = e[10];
+        const bool held = holdI > e[3];
+        if (std::max(holdI, e[3]) >= 0.05f && e[11] < 60000.0f)
+            (held ? frameHeld : frameChan) = true;
+        const float ageD = held ? 0.062f : age;   // (0.062: a frame into the first return stroke, branches lit)
+        const float inten = held ? holdI : e[3];
         auto it = boltTrees_.find(id);
         if (it == boltTrees_.end())
         {
@@ -435,7 +450,7 @@ void SatelliteSim::updateLightningBolts()
         BoltTree &t = it->second;
         t.lastFrame = boltFrame;
         boltDrawSegs(t, eye, pixAng);
-        if (boltStatsOn_ && id < 0xF0000000u)
+        if (boltStatsOn_ && listed && id < 0xF0000000u)
             boltStatNote(e, t, now, statDt, eye);
         if (boltSegCount + (uint32_t)t.draw.size() > kBoltMaxSegs)
         {
@@ -447,8 +462,8 @@ void SatelliteSim::updateLightningBolts()
         GpuBoltFlash &F = outF[slot];
         const glm::vec3 o = toEnu(t.originEcef - eye);
         const glm::vec3 u = toEnu(t.up), a1 = toEnu(t.t1), a2 = toEnu(t.t2);
-        F.o = glm::vec4(o, e[3]);
-        F.u = glm::vec4(u, age);
+        F.o = glm::vec4(o, inten);
+        F.u = glm::vec4(u, ageD);
         F.t1 = glm::vec4(a1, (float)kind);
         F.t2 = glm::vec4(a2, t.maxArc);
         // State: x the revealed arc (m): the stepped leader working down (kLeaderS) for a ground stroke, a spider
@@ -458,15 +473,15 @@ void SatelliteSim::updateLightningBolts()
         float reveal = 1e9f, brMul = 1.0f, leader = 0.0f;
         if (kind == 1)
         {
-            if (age < kLeader)
+            if (ageD < kLeader)
             {
-                reveal = t.mainArc * std::pow(std::max(age, 0.0f) / kLeader, 1.3f);
+                reveal = t.mainArc * std::pow(std::max(ageD, 0.0f) / kLeader, 1.3f);
                 leader = 1.0f;
             }
-            brMul = age < kLeader ? 0.0f : 0.2f + 0.8f * std::exp(-(age - kLeader) / 0.12f);
+            brMul = ageD < kLeader ? 0.0f : 0.2f + 0.8f * std::exp(-(ageD - kLeader) / 0.12f);
         }
         else if (kind != 2)
-            reveal = 150000.0f * std::max(age - kLeader + 0.03f, 0.0f);
+            reveal = 150000.0f * std::max(ageD - kLeader + 0.03f, 0.0f);
         F.m = glm::vec4(reveal, brMul, leader, 65535.0f);   // (w: no light volume yet; boltLightAssign)
         // Where the cloud glows: the origin, and where the channel leaves the cloud (a ground stroke) or the spreading
         // fronts of three arms (a spider: the light moves through the cloud with it).
@@ -506,15 +521,71 @@ void SatelliteSim::updateLightningBolts()
                                            (double)glm::length(pe)});
             }
         }
+        // Seen through rain alone (2026-11-24, issue_20261124_192804): a piece of channel under the cloud's base, seen
+        // from under that base too, has only the rain (and terrain) between it and the eye, never the storm's cloud.
+        // The cloud composite cannot tell rain from cloud (4.8 / km of heavy rain is opaque within ~150 m), so such a
+        // piece (bit 31) skips the composite's depth and is floored at the stroke's "through rain" level (lightning.frag).
+        const float eyeZ = (float)glm::dot(eye - t.originEcef, t.up);
+        const float rainZ = t.baseLocalZ - kBoltRainBelowBaseM;
+        const uint32_t rainEye = (rainFloorOn && eyeZ < t.baseLocalZ) ? 0x80000000u : 0u;
         for (const GpuBoltSeg &s : t.draw)
         {
             GpuBoltSeg &d = outS[boltSegCount++];
             d = s;
-            d.packed = s.packed | slot;
+            d.packed = s.packed | slot | ((rainEye != 0u && std::max(s.p0.z, s.p1.z) < rainZ) ? rainEye : 0u);
         }
     };
+    // Time-warp history (boltHold_): the wall time this frame took, as the sim time it added over the scale (so a
+    // video export, which steps the sim by its own frame time, holds as long in the video). A jump drops the history.
+    const float holdScale = timePaused ? 0.0f : kTimeScales[std::clamp(timeScaleIdx, 0, kNumTimeScales - 1)];
+    const bool holdOn = holdScale >= kBoltHoldMinScale;
+    {
+        const double dNow = boltHoldLastNow_ >= 0.0 ? std::abs(now - boltHoldLastNow_) : 0.0;
+        boltHoldLastNow_ = now;
+        const double wallDt = holdOn ? dNow / (double)holdScale : 0.0;
+        if (!holdOn || wallDt > 1.0)
+            boltHold_.clear();
+        else
+            for (auto &kv : boltHold_)
+                kv.second.wallS += wallDt;
+    }
+    auto boltHoldLevel = [&](const BoltHold &h) {
+        const float w = g_boltHoldS > 0.0f ? (float)h.wallS / g_boltHoldS : 1.0f;
+        return w >= 1.0f ? 0.0f : kBoltHoldI * (1.0f - w * w);
+    };
     for (uint32_t i = 0; i < n; ++i)
-        addFlash(f + i * kCv2FlashFloats);
+    {
+        const float *e = f + i * kCv2FlashFloats;
+        float holdI = -1.0f;
+        if (holdOn)
+        {
+            uint32_t id;
+            std::memcpy(&id, &e[8], 4);
+            BoltHold &h = boltHold_[id];
+            if (h.rec.empty())
+                h.rec.assign(e, e + kCv2FlashFloats);
+            h.frame = boltFrame;
+            holdI = boltHoldLevel(h);
+        }
+        addFlash(e, holdI, true);
+    }
+    // Held flashes the list no longer shows.
+    if (holdOn)
+        for (auto it = boltHold_.begin(); it != boltHold_.end();)
+        {
+            BoltHold &h = it->second;
+            if (h.frame != boltFrame)
+            {
+                const float holdI = boltHoldLevel(h);
+                if (holdI <= 0.0f)
+                {
+                    it = boltHold_.erase(it);
+                    continue;
+                }
+                addFlash(h.rec.data(), holdI, false);
+            }
+            ++it;
+        }
     // Flashes placed by the harness (`lightning spawn`): the same records, timed on the CPU with the shader's schedule.
     for (auto it = boltInjected_.begin(); it != boltInjected_.end();)
     {
@@ -572,7 +643,7 @@ void SatelliteSim::updateLightningBolts()
         injectedRecs.push_back(std::vector<float>(rec, rec + kCv2FlashFloats));
     }
     for (const std::vector<float> &rv : injectedRecs)
-        addFlash(rv.data());
+        addFlash(rv.data(), -1.0f, true);
 
     // Forget trees whose flash has ended (ids recur only in another slot).
     for (auto it = boltTrees_.begin(); it != boltTrees_.end();)
@@ -583,6 +654,8 @@ void SatelliteSim::updateLightningBolts()
     boltLightAssign(outF, eye);
     if (boltStatsOn_)
     {
+        boltStatsChanFrames_ += (frameChan || frameHeld) ? 1u : 0u;
+        boltStatsHeldFrames_ += (frameHeld && !frameChan) ? 1u : 0u;
         boltStatsMaxSegs_ = std::max(boltStatsMaxSegs_, boltSegCount);
         boltStatsMaxWants_ = std::max(boltStatsMaxWants_, (uint32_t)boltLightWants_.size());
         boltStatsMaxThunder_ = std::max(boltStatsMaxThunder_, (uint32_t)thunderSources_.size());
@@ -1515,7 +1588,8 @@ SatelliteSim::GpuBoltColour SatelliteSim::boltColourFill() const
                           std::clamp(t.sheathTaper, 0.05f, 4.0f));
     C.glow = glm::vec4(mixTo(t.glow, halo0) * (std::max(t.glowShare, 0.0f) * g1), 0.0f);
     C.glowWet = glm::vec4(mixTo(t.glowWet, halo0) * (std::max(t.wetShare, 0.0f) * g1), std::clamp(t.wetWide, 1.0f, 20.0f));
-    C.wet = glm::vec4(std::clamp(t.wetFloor, 0.0f, 1.0f), std::max(t.wetGain, 0.0f), (float)g_boltKnock, 0.0f);
+    C.wet = glm::vec4(std::clamp(t.wetFloor, 0.0f, 1.0f), std::max(t.wetGain, 0.0f), (float)g_boltKnock,
+                      std::clamp(t.rainFloor, 0.0f, 1.0f));
     C.air = glm::vec4((glm::max(t.air, glm::vec3(0.0f)) - glm::vec3(1.0f)) * g, 0.0f);
     C.cloud = glm::vec4(mixTo(t.cloud, cloud0), 0.0f);
     return C;

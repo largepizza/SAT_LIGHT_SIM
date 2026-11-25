@@ -117,7 +117,8 @@ layout(std140, set = 0, binding = 12) uniform BoltColour {
     vec4 glow;      // rgb the scattered glow in clear air x its share (the halo's luminance and energy); a spare
     vec4 glowWet;   // rgb the same through rain / cloud x its share; a how many times wider its core is
     vec4 wet;       // x the wet share of the glow anywhere, y + this x the share of the stroke's light the cloud
-                    // composite in front of it takes (rain shafts included); zw spare
+                    // composite in front of it takes (rain shafts included); z the harness knockouts; w the least a piece
+                    // seen through rain alone keeps of its light (SatelliteSimLightning.cpp: segment bit 31)
     vec4 air;       // rgb the air's optical depth per channel over the grey one's (boltAir), - 1, x gain; a spare
     vec4 cloud;     // rgb the flash's light on the cloud (mode 1); a spare
 } bc;

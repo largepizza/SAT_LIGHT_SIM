@@ -548,7 +548,17 @@ void main()
             outColor = vec4(clamp(tO / vSeg.y * 0.5, 0.0, 1.0), clamp(dot(gt, vec4(0.25)), 0.0, 1.0), nO, 0.0);
             return;
         }
-        x = (x + mix(gc, gw, clamp(bc.wet.x + bc.wet.y * (1.0 - vis), 0.0, 1.0))) * vis;
+        // Seen through rain alone (vSeg.z < 0: under the cloud's base, from under it): the composite cannot tell the rain
+        // from cloud and takes the whole channel behind 1-2 km of it. The terrain, the sea and meshes in front still hide
+        // it (the scene depth: this quad skipped the depth test); the rain leaves at least bc.wet.w of its light, and the
+        // wet glow's share follows what the composite took.
+        float visL = vis;
+        if (vSeg.z < -0.5) {
+            vec4 gd = textureGather(sceneDepthTex, uv, 0);
+            if (min(min(gd.x, gd.y), min(gd.z, gd.w)) < vSeg.y * 0.99 - 30.0) discard;
+            visL = max(vis, bc.wet.w);
+        }
+        x = (x + mix(gc, gw, clamp(bc.wet.x + bc.wet.y * (1.0 - vis), 0.0, 1.0))) * visL;
     }
     outColor = vec4(boltTonemap(x), 0.0);
 }

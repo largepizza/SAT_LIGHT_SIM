@@ -10356,6 +10356,7 @@ private:
         float wetWide = 3.0f;                   // its core x this
         float wetFloor = 0.0f;                  // the wet share anywhere (haze)
         float wetGain = 1.0f;                   // + this x the share of the stroke's light the rain / cloud in front takes
+        float rainFloor = 0.35f;                // a piece seen through rain alone (both under the base): at least this x its light
         glm::vec3 air{0.58f, 0.99f, 2.0f};      // the air's optical depth per channel over boltAir's grey one
         glm::vec3 cloud{0.68f, 0.64f, 1.0f};    // the flash's light on the cloud
     } boltColourTune;
@@ -10386,6 +10387,7 @@ private:
     bool boltStatsOn_ = false;
     double boltStatsLast_ = -1.0, boltStatsSimS_ = 0.0;
     uint64_t boltStatsFrames_ = 0, boltStatsCapFrames_ = 0, boltStatsSegDropFrames_ = 0;
+    uint64_t boltStatsChanFrames_ = 0, boltStatsHeldFrames_ = 0;   // frames drawing a channel within 60 km (lit >= 0.05) / one held
     uint32_t boltStatsMaxList_ = 0, boltStatsMaxSegs_ = 0, boltStatsMaxWants_ = 0, boltStatsMaxThunder_ = 0;
     std::unordered_map<uint32_t, BoltStat> boltStats_;
     void boltStatNote(const float *rec, const BoltTree &t, double now, float dtS, const glm::dvec3 &eye);
@@ -10417,6 +10419,15 @@ private:
     struct InjectedFlash { uint32_t id, seed; int kind; glm::dvec3 origin, ground; float base, top, strength, dur; double startS; };
     std::vector<InjectedFlash> boltInjected_;
     uint32_t boltInjectSerial_ = 0;
+    // Time-warp history (2026-11-24, issue_20261124_192804): above kBoltHoldMinScale every flash the list shows stays
+    // drawn for 0.3 s of WALL time (sim time / the scale; g_boltHoldS, harness `lightning hold s=`) from when it was
+    // first seen, as at its first return stroke, fading; at 60x a stroke lives ~1 frame, at 300x most fall between
+    // frames. 1x and 10x are untouched.
+    static constexpr float kBoltHoldMinScale = 30.0f;
+    static constexpr float kBoltHoldI = 0.8f;
+    struct BoltHold { std::vector<float> rec; double wallS = 0.0; uint32_t frame = 0; };
+    std::unordered_map<uint32_t, BoltHold> boltHold_;
+    double boltHoldLastNow_ = -1.0;
     // Rain, snow and diamond dust at the eye as particles (SatelliteSimRain.cpp, 2026-10-04).
     void createRainParticles(VulkanContext &ctx);
     void createRainPipeline(VulkanContext &ctx);
