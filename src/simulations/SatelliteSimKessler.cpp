@@ -40,10 +40,13 @@ constexpr uint64_t kStormSeed = 0x5EEDF0221ull;
 // (stormDensityGain 7) to ~4e-12 kg/m^3; at 7.6 km/s that is q ~1e-4 Pa on up to ~2800 m^2 of film, ~0.3 N, and a
 // centre-of-pressure offset of ~1 m (sag, asymmetric unfolding, the canted face aimed at a site) gives ~0.3 N m: a
 // small satellite's wheels (~1-5 N m s) saturate in seconds to minutes on a face-on pass, and the magnetorquers
-// that would dump the momentum fight a field disturbed by hundreds of nT. Only a mirror that safes edge-on in time
-// and rides out the ~13-h main phase keeps control: taken as one in five. Lost = dead to the engine (passive,
-// tumbling, no avoidance); drag then brings the sail down (cdAm ~3 m^2/kg: weeks, not years).
-constexpr double kFuryMirrorLossP = 0.8;
+// that would dump the momentum fight a field disturbed by hundreds of nT. A face-on sail cannot ride that out: only
+// a mirror that is already feathered edge-on to the flow (a few percent of the drag torque), or in the Earth's shadow
+// and safed, when the surge arrives keeps control through the ~13-h main phase: taken as one in twenty (2026-11-25,
+// the user: 95%; it was 0.8). The hash draw (stormSeedEvents channel 11) is a threshold, so the 95% lost include
+// every mirror the 80% lost. Lost = dead to the engine (passive, tumbling, no avoidance); drag then brings the sail
+// down (cdAm ~3 m^2/kg: weeks, not years).
+constexpr double kFuryMirrorLossP = 0.95;
 constexpr uint32_t kCacheMagic = 0x4B534C52u; // "RLSK"
 constexpr uint32_t kCacheVersion = 22; // (22: the Sun's Fury takes kFuryMirrorLossP of the sun-reflecting mirrors out of control, issue_20261124_194453, 2026-11-24; 21: a ballistic piece (perigee <= 120 km) dies where its arc reaches 100 km, not at the breakup, issue_20261104_015233, 2026-11-04; 20: momentum kept exactly: a catastrophic pair collision's records and small population shifted to the centre-of-mass velocity, its dust at that velocity, 2026-11-03; 19: a catastrophic pair collision's fragments keep a share of their parent's velocity relative to the centre of mass (beta = 1 - 0.8 u^1.5), 2026-10-30; 18: a catastrophic pair collision's fragments move toward the centre-of-mass velocity, 2026-10-29; 17: an engine pair collision's projectile placed on the target at the spread event time, 2026-10-24; 16: the 2020 benchmark shells left out of the deployment era by default, 2026-10-21; 15: the deployment era: roster born / gone seconds, 2026-10-20; 14: the GEO belt joins the roster, 2026-10-20; 13: an explosion's fragment count scales with a parent over 2 t) bump whenever the world's logic changes (4: round 2, large pieces + grid;
                                        // 12: steps on a fixed grid, seeded by their index; a step's events ordered)
