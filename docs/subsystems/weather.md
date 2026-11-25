@@ -1601,16 +1601,31 @@ lists its sections and topics with line numbers. New notes go next to the sectio
   -> 377 of 386, 300x 65 of 371 -> 354 of 355; 1x and 10x never hold. A held flash also lights the cloud (mode 1) but
   not the march's own flash light, and makes no second thunder source or strike mark. Harness: `lightning hold s=`
   (0 = none), `lightning stats` -> `frames_channel`, `frames_channel_held`.
-  **What lighting the terrain would take (2026-11-24, same issue; not built).** Today a flash lights only cloud
-  (lightning.frag mode 1: the glow by distance, or the flash light volumes, 16 slots); `bolt_ground.comp` only measures
-  the ground under a tree to fit it. The ground paths that exist: the engine lights' term in the same pass (mode 2: per
-  pixel from the half-res scene depth, albedo 0.15 x the cosine to the local up / (r^2 + r0^2), behind the composite's
-  transmittance and the air, no terrain shadow) and the beam light volume's ground (`bvGroundLight`, per box, cloud
-  shadowed, ~0.2 ms a bake, 4 boxes of ~17 MB). The cheapest version is the engine-light term for a flash's trunk
-  emitters (`F.e[2]`, `F.e[3]` at 40 / 80% down) in mode 1 for ground texels (~25 lines; mode 1 skips pixels with no
-  cloud in front today), estimated +0.05-0.15 ms while a flash is up, but unshadowed (a valley behind a ridge lit) and
-  not dimmed by the rain round the stroke, and its level against the cloud glow is a look call; the proper one is a
-  light-volume box per close ground stroke, sharing the beams' 4.
+  **Lightning on the ground (2026-11-25, same issue, wave e3; the user: "try cheap lightning lighting on the ground
+  first").** lightning.frag mode 1 (the flashes' light, drawn only while a flash is up: nothing with none) adds the
+  engine lights' unshadowed ground term to the ground and the sea the pixel shows: one place per pixel from the
+  half-res scene depth's ground texels (bilinear, only where they are the majority: the sky's pixels and the cloud
+  light's edge cut stay the cloud's), albedo 0.15, the local up as the normal, behind the composite's transmittance
+  (`cloudTargetB.g`) and the air (`boltAir`), x the flash's intensity now (`F.o.w`: the ground flickers with the return
+  strokes and the continuing current; a time-warp-held flash lights it too). A ground stroke's trunk is a straight line
+  source from where it leaves the cloud (`F.e[1]`) to its strike point (`BoltFlash.b.yzw`: the trunk's last vertex,
+  fitted to the drawn ground), `boltLineE` the closed-form integral of n.(X - P) / |X - P|^3 along it (core 30 m),
+  0.1 suns x m^2 per metre (`boltGroundTune.lineI`): ~6e-5 Suns (~7 lux) 1 km from a 2.3-km trunk, ~1.8e-6 (about a
+  full Moon) at 5 km. An in-cloud flash (or spider) is a point on the base under its origin, 20 suns x m^2 (`pointI`,
+  core 300 m). Lifted at night as the engine lights and the moonlight are (x moonGain / 2e-6: the night exposure is
+  not physical), x "Lightning glow" / its default 0.088. Rain: e^-(0.35 / km x the storm's strength x the distance to
+  the source) (`rainPerKm`; the strength rides in `m.w`'s fraction x 0.4, the light volumes' codes its integer part):
+  a proxy, the flash record carries no rain field. Not shadowed: no elevation map is bound in this pass, so a slope
+  behind a ridge is lit as if open (it shows only within ~2-3 km of a stroke; 6 km out the light is ~1/40 of a full
+  Moon), and slopes take the flat local up (no terrain normal), so the lit ground reads as a smooth pool. No wet-ground
+  sheen (the sky pass has no rain-wet ground). UBO: `bc.cloud.a` the line's intensity (0 = off), `bc.halo.a` the
+  point's, `bc.air.w` the rain per metre. Measured (1600x900, 3070 Ti): a stroke spawned 1.5 km out at shot 2's place
+  (2037-08-21, night) lifts the ground in view by 29 levels on average (max 89, 51% of the frame), from 600 m up by
+  37 (69%); shot 2's own stroke at 18 km lights a strip too small to see at the report's 8.5-deg field. Cost at shot 2
+  with its two flashes up (3 interleaved reps, the `satellite_star_draw` bucket that holds the lightning draw): 1.591
+  -> 1.617 ms (+0.03); with no flash 0.267 vs 0.269 (the pass is not drawn). The cloud march is untouched. Harness:
+  `lightning ground [level=] [line=] [point=] [rain=]`. The proper version (shadowed, rain-aware) would be a
+  light-volume box per close ground stroke, like the beams' (~0.2 ms a bake, the beams' 4 boxes).
   **Thunder is streamed from sound shells (2026-10-10, `addThunderSource` / `thunderStep`,
   SatelliteSimAmbience.cpp):** each flash's channel is kept as a source (pieces in Earth-fixed axes, up to 96 flashes, 150 s);
   its front travels at 343 m/s in sim time, and a playhead per source (2026-11-21, sound.md "Thunder is played by a

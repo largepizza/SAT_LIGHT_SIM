@@ -91,6 +91,29 @@ float boltGlow(float r)
     return (pow(1.0 + q2, -1.5) + 0.04 / (1.0 + r * r / 2.25e8)) * (1.0 - smoothstep(0.45 * kBoltGlowR, 0.8 * kBoltGlowR, r));
 }
 
+// The irradiance at P (normal n) from a straight channel A -> B of unit intensity per metre: the integral of
+// n.(X - P) / |X - P|^3 along it, in closed form (t along the line from P's foot, h its distance, softened by r0):
+// (a - b c) [t / (h^2 r)] + b [-1 / r] between the ends, a = n.(A - P), b = n.u, c = (A - P).u. >= 0 (the part of
+// a channel under P's horizon is not split off: a stroke stands over the ground it lights). A <= 1 m long: a point
+// of that length's intensity.
+float boltLineE(vec3 P, vec3 n, vec3 A, vec3 B, float r0)
+{
+    vec3  D  = A - P;
+    vec3  ab = B - A;
+    float L  = length(ab);
+    if (L < 1.0) {
+        float r2 = dot(D, D) + r0 * r0;
+        return max(dot(n, D), 0.0) / (r2 * sqrt(r2));
+    }
+    vec3  u  = ab / L;
+    float c  = dot(D, u);
+    float h2 = max(dot(D, D) - c * c, 0.0) + r0 * r0;
+    float a  = dot(n, D), b = dot(n, u);
+    float t0 = c, t1 = c + L;
+    float q0 = inversesqrt(t0 * t0 + h2), q1 = inversesqrt(t1 * t1 + h2);
+    return max((a - b * c) * (t1 * q1 - t0 * q0) / h2 + b * (q0 - q1), 0.0);
+}
+
 // The sky's tonemap (sat_sky.frag): the channels are added after it, screen-blended (lightning pipeline).
 vec3 boltTonemap(vec3 x)
 {
@@ -111,7 +134,8 @@ vec3 boltTonemap(vec3 x)
 // (gain 1) and past it, at the luminance of the colour it replaces.
 layout(std140, set = 0, binding = 12) uniform BoltColour {
     vec4 core;      // rgb the channel's colour; a the gain ("Lightning glow colour")
-    vec4 halo;      // rgb the Gaussian halo of 2026-10-05 (x 1 - gain: the scattered glow replaces it); a spare
+    vec4 halo;      // rgb the Gaussian halo of 2026-10-05 (x 1 - gain: the scattered glow replaces it); a the ground light's
+                    // in-cloud point (suns x m^2, lifted at night; boltGroundTune)
     vec4 sheath;    // rgb the corona sheath's colour (the core's luminance); a its radius round a main channel (m)
     vec4 sheathK;   // x its share of a main channel's light (x gain), y x this per branch order, z a stepped leader's
                     // share (x gain), w its radius x this per branch order
@@ -120,8 +144,10 @@ layout(std140, set = 0, binding = 12) uniform BoltColour {
     vec4 wet;       // x the wet share of the glow anywhere, y + this x the share of the stroke's light the cloud
                     // composite in front of it takes (rain shafts included); z the harness knockouts; w the least a piece
                     // seen through rain alone keeps of its light (SatelliteSimLightning.cpp: segment bit 31)
-    vec4 air;       // rgb the air's optical depth per channel over the grey one's (boltAir), - 1, x gain; a spare
-    vec4 cloud;     // rgb the flash's light on the cloud (mode 1); a spare
+    vec4 air;       // rgb the air's optical depth per channel over the grey one's (boltAir), - 1, x gain; a the ground
+                    // light's rain dimming per metre x the storm's strength
+    vec4 cloud;     // rgb the flash's light on the cloud (mode 1); a the ground light's line source (suns x m^2 per m,
+                    // lifted at night; 0 = no ground light)
 } bc;
 // What the air leaves of each channel, over boltAir's grey transmittance `air` (1 at gain 0).
 vec3 boltAirTint(float air) { return pow(vec3(max(air, 1e-6)), bc.air.rgb); }
