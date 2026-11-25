@@ -2972,11 +2972,16 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   presets 160-640) is FILLED with the path's mean extinction and the cloud's mean colour, not left
   transparent (that was the horizon "seeing through" the clouds).
 - **OPEN: a one-frame white Earth from far orbit in time-lapse** (issue_20261124_190819, wave 20261124 c07): replaying
-  the report's trail (6395 km, 1 day/s) every night-side cloud renders pure white with black gaps on ONE frame of 240
-  (deterministic: the same frame each replay; mean luma 26.1 vs 9.7). Gone with `clouds_v2.lightning_light` 0, with the
-  march knocked out, or with the far layer off; back with the defaults. lightning.frag's per-pixel light is gated to
-  cloud within 5000 km, so the suspects are the bake frame (`recordFlashVolumes` binds `fvPipeLayout`'s set 1 between
-  the cloud passes, on frames with a new emitter only) or an emitter placed far from its storm at 1 day/s. Not fixed.
+  the report's trail (6395 km, 1 day/s, ~80 min of sim a frame) the night side's clouds render pure white with black gaps
+  on ONE frame of 240 (frame 201, 2037-03-14 06:25Z; mean luma 26.1 vs 9.7; the same frame every replay after a
+  `report load`). The cloud composite's own radiance is white there (debugview cloudrad). It is NOT lightning.frag (the
+  whole draw discarded: still there) nor the flash-volume bake (skipped: still there). Gone with `launches.enabled` false,
+  `launches.plume_bricks` false or `launches.plume_gain` 0 (Starship launches from Starbase Louisiana at 06:14-06:22Z,
+  at night); `engine_light_volume` 0 keeps it. `lightning_light` 0 and `lightning_rate` 0 also remove it, unexplained
+  (no shared path found: likely an indirect effect on the plume list / brick budget). A `path goto` to the same pose and
+  time does not show it: it needs the frame-to-frame 80-min step. Suspect: a plume brick built across a time-lapse
+  step (`launchFillVisuals` brick builder: `B.sun.w = alb / sw`, `B.misc.w = eRef / sw`; the composite takes the brick
+  as one more plume via bindings 27 / 28, header word 1 bit 31). Not fixed.
 - **Lightning as LIGHT (2026-11-21, issue_20261121_163317; `include/flash_volume.glsl`, `cloud_v2_flashvol.comp`,
   `lightning.frag` boltLightAt, `SatelliteSim::boltLightAssign`).** A flash lights the cloud through the cloud around
   it, by the formula the march gives a cloud sample under a reflector beam (`beamFinish`): E (ph e^-od + ms D), with E the
