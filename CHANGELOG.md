@@ -594,6 +594,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
   up to are soft, as under a bright overcast, not crisp like the Sun's. About 2-2.5 ms faster in the busiest beam views
   (33.5 -> 31.3 and 36.7 -> 34.2 ms in the bench report), 2.6 ms from orbit over the beam sites, daytime unchanged.
   `clouds_v2.beam_volume` 0 restores the old beams.
+- **A reflector site you come back to lights up again.** After visiting other beam sites (or warping time past
+  them), the site you return to could keep only a faint spot of its beams' light on the ground and in the air, while
+  four sites far away held its place (issue_20261124_185832). The nearest, busiest sites now always win it back.
 - **Reflector beams and lightning light clouds the way the Sun does.** Beam-lit and flash-lit cloud scatter with the
   same droplet phase as sunlit and moonlit cloud: lobes under a beam get bright cores and dark edges instead of a flat
   wash, and beam-lit decks are brighter. Costs ~1 ms only where beams light cloud.

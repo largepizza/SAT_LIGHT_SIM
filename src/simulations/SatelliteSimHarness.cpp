@@ -2162,7 +2162,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                                          {"off_km", glm::length(glm::vec2(B->g)) / 1000.0},
                                          {"reach3_km", reachAt(3000.0f) / 1000.0}, {"reach10_km", reachAt(10000.0f) / 1000.0}});
                 }
-                slots.push_back({{"slot", k}, {"beams", cnt}, {"E_sum", S.az.w},
+                slots.push_back({{"slot", k}, {"site", bvSlotTarget[k]}, {"beams", cnt}, {"E_sum", S.az.w},
                                  {"dist_km", glm::length(glm::vec3(S.o)) / 1000.0},
                                  {"max_reach3_km", maxReach3 / 1000.0}, {"max_reach10_km", maxReach10 / 1000.0},
                                  {"top", beams}});

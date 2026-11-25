@@ -2723,8 +2723,8 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
 
         // ── The beam light volume's sites (2026-11-24, cloud_v2_beamvol.comp) ──────────────────────────────────────────
         // Up to kBvSites busy sites, by their beams' summed irradiance over (1 + (distance / 150 km)^2). A site keeps its
-        // slot while it stays among the 8 best (its box's density bake is spread over 4 frames: a slot that changed hands
-        // shows unshadowed light until it is baked again).
+        // slot while it stays among the 8 best, unless one of the kBvSites best has none and outscores it 1.25x (slots
+        // should not churn: a slot that changes hands bakes its whole density that frame, bvPad0).
         {
             const double invW = beamGain > 0.0f ? 1.0 / (1361.0 * (double)beamGain) : 0.0;
             std::unordered_map<int, double> siteE;
@@ -2755,8 +2755,26 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
                 bool have = false;
                 for (int k = 0; k < kBvSites; ++k) have = have || bvSlotTarget[k] == ti;
                 if (have) continue;
-                for (int k = 0; k < kBvSites; ++k)
-                    if (bvSlotTarget[k] < 0) { bvSlotTarget[k] = ti; cv2BvFullBake = true; break; }
+                int slot = -1;
+                for (int k = 0; k < kBvSites && slot < 0; ++k)
+                    if (bvSlotTarget[k] < 0) slot = k;
+                // A site among the best kBvSites without a box takes the slot of the weakest holder outside them, when it
+                // outscores it by 1.25x (issue_20261124_185832). "Keep while among the best 8" alone never gave a slot back
+                // while 8 or fewer sites were lit (the usual case): four far sites that took the boxes on a detour held
+                // them for good, and the site under the eye kept only the old ground spot.
+                if (slot < 0 && i < (size_t)kBvSites)
+                {
+                    double worst = 1e300;
+                    for (int k = 0; k < kBvSites; ++k)
+                        for (size_t j = kBvSites; j < cand.size(); ++j)
+                            if (cand[j].second == bvSlotTarget[k] && cand[j].first < worst)
+                            {
+                                worst = cand[j].first;
+                                slot = k;
+                            }
+                    if (slot >= 0 && cand[i].first < 1.25 * worst) slot = -1;
+                }
+                if (slot >= 0) { bvSlotTarget[slot] = ti; cv2BvFullBake = true; }
             }
             // Slots in order; an empty slot between two sites keeps its index (the boxes are stacked by slot).
             uint32_t nb = 0, ns = 0;
