@@ -1264,6 +1264,10 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     +11 MB, tstab walk 1.17 -> 1.20 / pitch 0.65 -> 0.71. **The HQ photo uses the direct path** (`requestPhoto` sets
     `cv2GodrayFroxels` 0 for its duration): per-pixel shafts, photo 3.9 -> 6.3 s at scale 2 (the direct path is +22 ms
     a frame at 1920x1009 0.67: never for play). The cinematic HQ export keeps the froxels.
+    **No froxel sample below the sea (2026-11-24, issue_20261124_185624):** a sample past the ray's sea-level hit takes
+    the surface's value. Past it, the terrain shadow map reads the inside of the Earth (T ~ 0) and the trilinear read of
+    the slice straddling the surface darkened the haze in front of it: sawtooth rings of constant distance from altitude
+    (terrain.md, "Rings round the nadir"). Land above sea level can still put a slice's far samples inside a hill.
   - **Flash buffer in device-local host-visible memory** (ON; `SATLIGHTSIM_FLASH_HOSTMEM=1` restores system RAM): the
     Sun shadow lattices were read across PCIe by every lit sample and sky pixel; sky -0.9..-2.3 ms.
   - **Mie** (`tools/make_mie_lut.py` -> `assets/textures/cloud_mie.rgba16f`, march binding 24): `mie_phase` = the physical

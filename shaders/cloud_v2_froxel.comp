@@ -52,10 +52,21 @@ void main()
     float th  = tan(pc.fovYRad * 0.5);
     vec3  dir = normalize(mat3(transpose(pc.skyView)) * vec3(ndc.x * th * pc.aspect, -ndc.y * th, -1.0));
     int nSub = (cv2.frox.w < 0.0) ? 4 : 2;
+    // No sample below the sea (2026-11-24, issue_20261124_185624 "Concentric ring artifact", 53.7 km over the Gulf of
+    // Thailand): a slice ~15% of its distance deep straddles the ray's end at the sea, and its samples past the surface
+    // read the terrain map's shadow (the inside of the Earth: T 0). The sky pass reads the volume trilinearly at its
+    // steps, all in front of the surface, so the air over the sea took a share of that underground darkness that grew
+    // across each slice and dropped at the next: sawtooth rings of constant distance round the nadir, in the Mie (the
+    // haze sits at the ray's low end; ~10% of it, 2-6 levels). A sample past the sea-level sphere takes the surface's
+    // value instead (what the air just above it gets). Land above sea level can still put a slice's far samples inside a
+    // hill (the volume has no surface of its own); the DEM is not bound here.
+    vec3  eyeF = vec3(0.0, 0.0, R_EARTH + terrainFrame.x + 2.0);
+    vec2  tSeaF = raySphere(eyeF, dir, R_EARTH);
+    float tMaxF = (tSeaF.x > 0.0) ? tSeaF.x : 1e30;
     float T = 0.0;
     [[dont_unroll]] for (int k = 0; k < nSub; ++k) {
-        float t  = cv2FroxDepth(float(g.z) + jit.z + (float(k) + 0.5) / float(nSub) - 0.5);
-        vec3  pE = dir * t + vec3(0.0, 0.0, R_EARTH + terrainFrame.x + 2.0);
+        float t  = min(cv2FroxDepth(float(g.z) + jit.z + (float(k) + 0.5) / float(nSub) - 0.5), tMaxF);
+        vec3  pE = dir * t + eyeF;
         T += cv2StvTFine(dir * t, length(pE) - R_EARTH) * cv2TerrSunTFine(dir * t);   // the clouds' and the terrain's shadows
     }
     cv2GodFrox[idx] = T / float(nSub);

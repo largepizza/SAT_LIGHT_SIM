@@ -831,6 +831,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - During a lunar eclipse the Moon's light now fades and turns red with its disc. The clouds, ground, sea and the
   moonlit sky were still lit grey-white as by a full Moon under a blood-red disc; at totality the night is now dark
   and faintly red, with the stars out.
+- Looking down at the sea from high altitude (tens of km) no longer shows broad concentric rings of lighter and
+  darker haze round the point below you (issue_20261124_185624). The cloud and terrain shadows on the air were sampled
+  partly inside the Earth past the sea surface, which darkened the haze in steps with distance.
 - Moving from orbit no longer draws a thin orange line along the bottom and right edges of the screen
   (issue_20261124_195458). The clouds' smoothing in motion read a few samples just outside the part of the image
   the cloud march fills at its coarsest rate, left there from an earlier view.
