@@ -3144,7 +3144,7 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
         cp.moonCenter = glm::vec4(moonCenterENUkm, moonAngR);
         cp.moonPole = glm::vec4(moonPoleENU, std::max(moonRelief, 0.0f));
         cp.moonPrime = glm::vec4(moonPrimeENU, moonShadows > 0.5f ? 1.0f : 0.0f);
-        cp.moonTint = glm::vec4(nightKeyTint(), glm::dot(moonEclipseLight, glm::vec3(0.2126f, 0.7152f, 0.0722f)));
+        cp.moonTint = glm::vec4(nightKeyTint(), moonEclipseLum);
         // y: 0 = no solar eclipse possible, else 1 + the observer's eclipse sky light (0..1), which sat_sky.frag's
         // exposure applies exactly as skyExposure() does (every `y > 0.5` test still reads it as the flag).
         cp.moonMisc = glm::vec4(moonEclipseSolarObs,
@@ -3251,7 +3251,30 @@ void SatelliteSim::recordCompute(VkCommandBuffer cmd, VulkanContext &ctx, float 
             cp.auroraOval = auroraGpu_.oval;
             cp.auroraSub = auroraGpu_.sub;
             cp.auroraOval2 = auroraGpu_.oval2;
+            // The aurora's LIGHT on the clouds, the ground and the sea (2026-11-25, issue_20261124_232008 "Aurora as key
+            // light?"). The aurora is an extended source overhead, not a point: a shadowed key would be the wrong model.
+            // auroraSkyLightCpu integrates the oval's green (557.7 nm, ~120 km) and red (630 nm, ~280 km: the red tops and
+            // the storm-time red glow) over the sky into the irradiance from above at the observer's ground point; it
+            // joins the moonless night sky's light (terrainErosion.z) wherever that is used, in the same units (a share
+            // of the full Moon overhead), coloured by its lines. Brighter storms grow faster than the band's weight
+            // (x its activity brightness^2: Kp 3 -> 1, Kp 9 -> ~5): ~0.01 of full Moon under an ordinary oval, a few
+            // tenths on the Sun's Fury night. One value for the view: faded out between 20 and 100 km of eye height
+            // (from orbit the oval lights only the ground under it, which one value cannot; review 28's ground glow
+            // lit the whole visible Earth). Off with the aurora (knockout 32, Potato) or "aurora_light" 0.
+            auroraLight = glm::vec3(0.0f);
+            auroraLightLines = glm::dvec2(0.0);
+            const float aurFade = 1.0f - glm::smoothstep(20000.0f, 100000.0f, obsHeightOffset);
+            if ((debugDisableMask & 32u) == 0u && auroraLightGain > 0.0f && auroraGain > 0.0f && aurFade > 0.0f)
+            {
+                auroraLightLines = auroraSkyLightCpu(auroraGpu_, glm::normalize(glm::dvec3(obsDir)), sunEcef, auroraStormRedGain);
+                const float b = auroraGpu_.oval2.x;
+                const float k = auroraLightGain * aurFade * (auroraGain / 0.1f) * b * b;
+                // the lines' colours at luminance 1 (kAuroraGroundColor, kAirglowRedColor), x their luminance per unit
+                auroraLight = k * (kAuroraLightGreen * (float)auroraLightLines.x * glm::vec3(0.15f, 1.0f, 0.35f) / 0.772f +
+                                   kAuroraLightRed * (float)auroraLightLines.y * glm::vec3(1.0f, 0.12f, 0.05f) / 0.302f);
+            }
         }
+        cp.auroraLight = glm::vec4(auroraLight, 0.0f);
         cp.stormStrength = stormStrength;
         cp.auroraGain = auroraGain;
         cp.auroraCloudGain = auroraCloudGain;
@@ -19220,6 +19243,7 @@ void SatelliteSim::updatePositions(double t, float dt)
         moonLightUneclipsed = moonDirENU.w;
         moonEclipseLight = glm::vec3(1.0f);
         moonEclipseTint = glm::vec3(1.0f);
+        moonEclipseLum = 1.0f;
         if (moonEclipseLunarPossible)
         {
             const glm::dvec3 U = glm::normalize(glm::cross(tDir, std::abs(tDir.z) < 0.9 ? glm::dvec3(0, 0, 1) : glm::dvec3(1, 0, 0)));
@@ -19243,7 +19267,7 @@ void SatelliteSim::updatePositions(double t, float dt)
                     const double aE = std::asin(std::min(6446.0e3 / dE, 1.0));
                     const double th = std::acos(std::clamp(glm::dot(-pM / dE, sMoon), -1.0, 1.0));
                     const double l = 1.0 - discOverlapFrac(kSunAngR, aE, th);
-                    const double umb = glm::smoothstep(aE - kSunAngR, 0.3 * aE, aE - th);
+                    const double umb = glm::smoothstep(aE - kSunAngR, 0.3 * aE, th);   // 0 at the umbra's edge .. 1 deep
                     lit += D * l + glm::dvec3(1.0, 0.33, 0.12) * (0.025 * (1.0 - l) * glm::mix(1.0, 0.45, umb) * (mu0 + 0.3));
                     wSum += D;
                 }
@@ -19252,7 +19276,12 @@ void SatelliteSim::updatePositions(double t, float dt)
                 moonEclipseLight = glm::vec3(lit / wSum);
                 const float L = glm::dot(moonEclipseLight, glm::vec3(0.2126f, 0.7152f, 0.0722f));
                 moonEclipseTint = moonEclipseLight / std::max(L, 1e-6f);
-                moonDirENU.w *= std::clamp(L, 0.0f, 1.0f);
+                // The light's floor (2026-11-25, the user: "min brightness is a good idea"): at the disc's own factor
+                // (~0.005 at totality) the night went black; "Moon light in eclipse, floor" (clouds.moon_eclipse_floor)
+                // keeps clouds and sea faintly red-lit. The tint and the disc are unchanged; max() keeps the partial
+                // phases monotonic and an uneclipsed Moon at 1.
+                moonEclipseLum = std::max(std::clamp(L, 0.0f, 1.0f), std::clamp(moonEclipseFloor, 0.0f, 1.0f));
+                moonDirENU.w *= moonEclipseLum;
             }
         }
     }

@@ -1584,7 +1584,8 @@ void main()
             // sky was already black (user snaps from 69 km, pass 13). Faded over the first ~5 deg of
             // the Sun's depression, so a cloud is no brighter than the sky drawn around it.
             float skyDusk = smoothstep(horizS - 0.09, horizS + 0.04, sunUp);
-            // + the moonless night sky (starlight, airglow): the terrain's "Night sky light"
+            // + the moonless night sky (starlight, airglow, and the aurora's light from above: cloud.auroraLight,
+            // 2026-11-25, integrated over the sky on the host): the terrain's "Night sky light"
             // (terrainErosion.z, a fraction of the full Moon overhead) on the moonlit sky's scale (0.03
             // here is the terrain's 0.15). Without it a night cloud was lit by the Moon alone, and on a
             // moonless night the clouds along the horizon were a black band in front of the airglow, darker
@@ -1593,7 +1594,7 @@ void main()
             // and the night has not begun.
             vec3  skyDay = skyZen * skyDusk * cv2.look.w * (1.0 + cv2.atmo.y * twi);
             vec3  skyNgt = moonKey * nightK * 0.03 * max(dot(up, moonDir), 0.0)
-                         + kMoonColor * cloud.moonGain * cv2.misc.y * (0.2 * cloud.terrainErosion.z);
+                         + (kMoonColor * cloud.terrainErosion.z + cloud.auroraLight.rgb) * (0.2 * cloud.moonGain * cv2.misc.y);
             // From below, the day's light is mostly neutral (ground albedo, horizon haze): 30% of the sky's hue.
             float skyLum = dot(skyDay, vec3(0.2126, 0.7152, 0.0722));
             vec3  ambS   = (mix(vec3(skyLum), skyDay, ambHue) * ambVis + skyDay * (ambLow * 0.3 * ambHue)
@@ -1898,7 +1899,7 @@ void main()
                     // slab over Denver read as a dust storm (user review 2, snapshot 2).
                     float cb  = clamp(max(lum - kNightFloor, 0.0) / 0.2, 0.0, 1.0);
                     S += (cr / max(lum, 0.001)) * cb * nightF * (fs + kDustCityK * fd) * kCityUpwellStrength * cloud.ambientGain
-                       + kMoonColor * cloud.moonGain * cv2.misc.y * (0.2 * cloud.terrainErosion.z) * nightF * (fd + fi);
+                       + (kMoonColor * cloud.terrainErosion.z + cloud.auroraLight.rgb) * (0.2 * cloud.moonGain * cv2.misc.y) * nightF * (fd + fi);
                 }
                 S *= alb;
                 float Ts = exp(-sg * dt);

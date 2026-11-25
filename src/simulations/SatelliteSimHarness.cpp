@@ -241,6 +241,10 @@ nlohmann::json SatelliteSim::auroraStateJson() const
         double mlt = std::atan2(glm::dot(up, e), glm::dot(up, m)) * 12.0 / 3.14159265;
         if (mlt < 0.0) mlt += 24.0;
         j["observer"] = {{"mlat_deg", mlat}, {"mlt_h", mlt}, {"oval_overhead", auroraOvalWeightCpu(auroraGpu_, up)}};
+        // The aurora's light from above (cloud.auroraLight, auroraSkyLightCpu): the lines' integrals and the RGB.
+        j["light"] = {{"green_int", auroraLightLines.x}, {"red_int", auroraLightLines.y},
+                      {"rgb", {auroraLight.x, auroraLight.y, auroraLight.z}},
+                      {"lum", glm::dot(auroraLight, glm::vec3(0.2126f, 0.7152f, 0.0722f))}};
     }
     return j;
 }
@@ -534,7 +538,7 @@ json SatelliteSim::harnessStateJson()
                  {"lunar_possible", moonEclipseLunarPossible},
                  {"lunar_eclipse_light", {moonEclipseLight.x, moonEclipseLight.y, moonEclipseLight.z}},
                  {"lunar_eclipse_tint", {moonEclipseTint.x, moonEclipseTint.y, moonEclipseTint.z}},
-                 {"brightness_vs_full_uneclipsed", moonLightUneclipsed}, {"night_key_w", nightKeyLightENU().w},
+                 {"brightness_vs_full_uneclipsed", moonLightUneclipsed}, {"eclipse_light_lum", moonEclipseLum}, {"eclipse_floor", moonEclipseFloor}, {"night_key_w", nightKeyLightENU().w},
                  {"libration_lon_deg", moonLibLonDeg}, {"libration_lat_deg", moonLibLatDeg}, {"pole_pa_deg", moonPolePADeg},
                  {"relief", moonRelief}, {"shadows", moonShadows}};
     {

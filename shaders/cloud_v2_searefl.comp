@@ -236,7 +236,7 @@ vec4 srTexel(ivec2 pix, ivec2 qSize, int wReg, bool histOk)
                 }
             }
             vec3  skyNgt = kMoonColor * cloud.moonTint.rgb * pc.moonDirENU.w * cloud.moonGain * cv2.misc.y * nightK * 0.03 * max(dot(up, moonDir), 0.0)
-                         + kMoonColor * cloud.moonGain * cv2.misc.y * (0.2 * cloud.terrainErosion.z);
+                         + (kMoonColor * cloud.terrainErosion.z + cloud.auroraLight.rgb) * (0.2 * cloud.moonGain * cv2.misc.y);
             float lU = dot(hU, vec3(0.2126, 0.7152, 0.0722)), lD = dot(hD, vec3(0.2126, 0.7152, 0.0722));
             vec3  ambS = (mix(vec3(lU), hU, ambHue) * ambVis + mix(vec3(lD), hD, ambHue) * (ambLow / 0.35)
                        + skyNgt * (ambVis + ambLow)) * f.ambient;

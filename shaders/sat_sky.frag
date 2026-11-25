@@ -216,6 +216,14 @@ layout(set = 0, binding = 8) uniform sampler3D cloudNoiseTex;
 #else
 #define NK_TINT cloud.moonTint.rgb
 #endif
+// AURORA_LIGHT (2026-11-25, issue_20261124_232008): the aurora's light from above (CloudParams.auroraLight, the host's
+// integral over the oval; RGB, a share of the full Moon overhead like "Night sky light"), added to the ground's night
+// sky light. 0 on ordinary nights. SKY_LITE (no aurora there): none.
+#ifdef SKY_LITE
+#define AURORA_LIGHT vec3(0.0)
+#else
+#define AURORA_LIGHT cloud.auroraLight.rgb
+#endif
 #include "aurora_oval.glsl"
 
 // ── Perf knockout toggles (profiling-only) ──────────────────────────────────────
@@ -5587,7 +5595,9 @@ void main() {
                 float aE  = asin(min(6446.0 / dE, 1.0));               // + 1/85 for the atmosphere (Danjon)
                 float th  = acos(clamp(dot(toE / dE, sM), -1.0, 1.0));
                 lunarLit  = 1.0 - discOverlapFrac(kSunAngR, aE, th);
-                float umb = smoothstep(aE - kSunAngR, 0.3 * aE, aE - th);
+                // 0 at the umbra's edge (th = aE - sun radius) .. 1 deep in it (th = 0.3 aE): the red dims toward the
+                // centre (it read `aE - th`, an inverted depth: the centre was red at full and the edge at 0.45).
+                float umb = smoothstep(aE - kSunAngR, 0.3 * aE, th);
                 lunarRed  = vec3(1.0, 0.33, 0.12) * 0.025 * (1.0 - lunarLit) * mix(1.0, 0.45, umb);
             }
 
@@ -6656,7 +6666,7 @@ void main() {
         // night sky (starlight + airglow), "Night sky light" (cloud.terrainErosion.z) as a fraction of
         // the full Moon overhead. Slightly cool, never the old blue. Both are negligible by day.
         float moonSkyK  = 0.15 * NK(nkT).w * smoothstep(-0.05, 0.3, geoMoonDot);
-        vec3 tNightSky  = dayColor * vec3(0.88, 0.93, 1.0) * (cloud.moonGain * (moonSkyK * NK_TINT + cloud.terrainErosion.z) * skyView);
+        vec3 tNightSky  = dayColor * vec3(0.88, 0.93, 1.0) * (cloud.moonGain * (moonSkyK * NK_TINT + cloud.terrainErosion.z + AURORA_LIGHT) * skyView);
         vec3 surfColor  = (tDirectSun + tSkyAmb + tNightSky) * terrainAO  // terrainAO darkens only the map/sky-lit surface
                         + tNight
                         + moonContribTerrain

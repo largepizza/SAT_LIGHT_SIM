@@ -10581,6 +10581,8 @@ void SatelliteSim::applySettingsJson(const nlohmann::json &j, bool isPatch)
         moonSizeScale = c.value("moon_size", moonSizeScale);
         sunSizeScale = settingClamp(c.value("sun_size", sunSizeScale), 0.25f, 4.0f);
         moonRelief = c.value("moon_relief", moonRelief);
+        moonEclipseFloor = settingClamp(c.value("moon_eclipse_floor", moonEclipseFloor), 0.0f, 1.0f);
+        auroraLightGain = settingClamp(c.value("aurora_light", auroraLightGain), 0.0f, 10.0f);
         moonShadows = c.value("moon_shadows", moonShadows);
         auroraSheetSpacingDeg = c.value("aurora_sheet_spacing_deg", auroraSheetSpacingDeg);
         auroraSheetCrisp = c.value("aurora_sheet_crisp", auroraSheetCrisp);
@@ -10922,6 +10924,8 @@ nlohmann::json SatelliteSim::buildSettingsJson()
         {"moon_size", moonSizeScale},
         {"sun_size", sunSizeScale},
         {"moon_relief", moonRelief},
+        {"moon_eclipse_floor", moonEclipseFloor},
+        {"aurora_light", auroraLightGain},
         {"moon_shadows", moonShadows},
         {"aurora_sheet_spacing_deg", auroraSheetSpacingDeg},
         {"aurora_sheet_crisp", auroraSheetCrisp},

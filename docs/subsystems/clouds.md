@@ -3121,6 +3121,22 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   ridge) still takes the sky's light; the cloud in front of the ground within a texel of a ridge loses its light.
 - **Key light**: the Sun, or at night the Moon through the same light march (`misc.y` x `moonGain`);
   sky ambient is occluded by the cloud above and by the sample's own density (detail on shaded sides).
+  **The aurora's light (2026-11-25, issue_20261124_232008 "Aurora as key light?"):** `CloudParams.auroraLight`
+  (RGB, a share of the full Moon overhead, the night sky light's units) joins `terrainErosion.z` wherever the
+  night sky light lights clouds (march ambient + dust/fog, far layer, lightning's ambient, sea reflection) and the
+  ground (sat_sky.frag `tNightSky`, `AURORA_LIGHT`; none in SKY_LITE). An extended source overhead, not a key: the
+  host (`auroraSkyLightCpu`, SpaceWeather.cpp) integrates the oval's column brightness (auroraOvalWeightCpu's band,
+  noise at its mean; green 557.7 nm as a layer at 120 km, red 630 nm at 280 km: the red tops + the storm-time red
+  glow) over the sky with the irradiance kernel h_eff / r^3 (8 rings of equal share x 16 azimuths a layer, 0 below
+  the horizon). In a great storm the green's share falls to 0.4. Scale x activity brightness^2 (`oval2.x`), x
+  `auroraGain` / 0.1, x `clouds.aurora_light` (1), per-line luminance 0.008 green / 0.012 red; faded out from 20 to
+  100 km of eye height (one value cannot light only the ground under the oval from orbit); 0 with the aurora
+  knocked out (bit 32, Potato). Measured: the Fury report view (Kp 10.9) 0.23 of full Moon, RGB 0.58 / 0.14 / 0.05,
+  ground 5.6 -> 22.5 red levels; interior Alaska, Kp 5 overhead green ~0.03 (a third of a quarter Moon); Seattle
+  Kp 5 0.0075 (ground +0 levels); no aurora 0. Cost: GPU 21.77 -> 21.70 ms (3 reps interleaved, noise), march 128
+  registers. History: a per-pixel ground glow (`auroraGlowAt`, `auroraGroundGain`, green only) was removed
+  2026-09-30 ("looks green and bad"), and the clouds' local aurora ambient (`auroraCloudGain`) went with clouds v1;
+  both UBO fields are still filled and unread.
   **Night (review 5):** the ambient carries the terrain's moonless "Night sky light" (`terrainErosion.z`,
   x 0.2 onto the moonlit-sky scale), ungated like the terrain's; and `sat_sky.frag` keeps the city glow's
   in-scatter IN FRONT of the clouds (`accumCityFront`, up to the cloud's distance from `cloudA.a`) out of
