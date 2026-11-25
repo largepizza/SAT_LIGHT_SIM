@@ -6481,7 +6481,7 @@ Status SatelliteSim::harnessExec(harness::Active &a)
                 pending += s.heard ? 0 : 1;
                 const double d = glm::length(s.origin - eye);
                 src.push_back({{"id", s.id}, {"age_s", nowS - s.t0}, {"dist_km", d / 1000.0}, {"extent_km", s.extentM / 1000.0f},
-                               {"arrives_in_s", std::min((d - s.extentM) / 343.0, ambSoundQuick ? kSoundQuickS : 1e18) - (nowS - s.t0)}, {"pieces", s.pts.size()},
+                               {"arrives_in_s", std::min((d - s.extentM) / 343.0, soundDelayCapS()) - (nowS - s.t0)}, {"pieces", s.pts.size()},
                                {"heard", s.heard}, {"state", s.done ? "done" : s.passed ? "passed" : s.play >= 0.0 ? "playing" : "pending"},
                                {"played_m", s.play}});
             }

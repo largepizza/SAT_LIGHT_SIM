@@ -566,6 +566,11 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 - **Distant sounds arrive within 3 s** (Settings > Sound, on by default). Thunder and rocket noise still take
   their distance at the speed of sound to reach you, but never longer than 3 seconds, so a flash 20 km away is heard
   while you are still looking at it. Turn it off for the full delay (3 s per km).
+- **Sounds arrive instantly** (Settings > Sound, on by default; issue_20261124_192804). Thunder, a rocket's roar and
+  its thumps are heard as they happen at any distance: the speed of sound is ignored (a roll still lasts as long as
+  its channel). Off: the delay above.
+- **The music swells in a beam site** (issue_20261124_190033). Standing among the ground spots of a lit Reflect
+  Orbital site raises the track's upwell stem, whichever way you look; it fades as you leave the site.
 - **Music.** A player with previous / pause / next and a gap between tracks; new tracks LEO Motif and BIOS, each
   with an "upwell" stem that rises when Reflect Orbital flares fill the screen. The music fades out toward
   geostationary altitude.

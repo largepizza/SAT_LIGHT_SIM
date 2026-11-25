@@ -26,6 +26,9 @@
 //                        beam counts 1 within 15 km of the camera, 1/(1 + (excess/25 km)^2) beyond
 //                        (~180 on the Topaz site, ~10 from 120 km away). Eased ~1.5 s. The site hum's
 //                        input.
+//   beam_near            standing IN a lit site (2026-11-24): converged beams whose site is within 5 km of
+//                        the eye (3-D), none past 12 km. Eased ~1.5 s. An upwell source ("music_upwell"):
+//                        in a site the mirrors are overhead, off screen, so glare_n alone never rose there.
 //   rocket_mag / stage_mag / fireball_mag / dust_mag   the upwell's other sources (2026-10-21): burning
 //                        engines, sunlit coasting stages, re-entry fireballs, collision dust — the summed apparent
 //                        flux of each kind, each source counted when on screen (soft frame edge) or near (rocket
@@ -172,6 +175,7 @@ void SatelliteSim::initAmbience()
     ambD_.tornado = a.registerDriver("tornado");
     ambD_.impact = a.registerDriver("impact");
     ambD_.rocket = a.registerDriver("rocket");
+    ambD_.beamNear = a.registerDriver("beam_near");
 
     std::string err;
     if (!a.load(kAmbiencePath, err))
@@ -465,6 +469,11 @@ void SatelliteSim::computeAmbienceContext(float dt)
                       ? ambBeamSiteRaw
                       : ambBeamSite + (ambBeamSiteRaw - ambBeamSite) * (1.0f - expf(-dt / 1.5f));
     a.set(ambD_.beamSite, ambBeamSite);
+    // In a lit site (the upwell's `beam_near` source): the same readback loop, eased the same way.
+    ambBeamNear = (ambBeamNear < 0.0f || dt <= 0.0f)
+                      ? ambBeamNearRaw
+                      : ambBeamNear + (ambBeamNearRaw - ambBeamNear) * (1.0f - expf(-dt / 1.5f));
+    a.set(ambD_.beamNear, ambBeamNear);
 
     // Music gap (see ambMusicGap in SatelliteSim.h). "Audible" is the player running AND the bus
     // actually carrying it: music volume 0, or the altitude fade in high orbit, count as no music.
@@ -862,9 +871,10 @@ void SatelliteSim::thunderStep(double now, const glm::dvec3 &eye, float realDt)
     FPROF_SCOPE("thunderStep");
     constexpr double kC = 343.0;
     constexpr float kGain = 270.0f;   // sqrt(m of channel / m^2 / s) -> the synth's level (~4 for a strike 1 km off)
-    // The delay: distance / 343 m/s, and with "Distant sounds arrive within 3 s" (the default) never more than that:
-    // the front counts as arrived once it has gone min(distance, 3 s of sound).
-    const double capM = ambSoundQuick ? kSoundQuickS * kC : 1e18;
+    // The delay: distance / 343 m/s, never more than soundDelayCapS(): the front counts as arrived once it has gone
+    // min(distance, the cap's metres of sound). "Sounds arrive instantly" (the default): 0.15 s, the roll starts with the
+    // flash and plays out over the channel's path differences; else "Distant sounds arrive within 3 s" or the full trip.
+    const double capM = soundDelayCapS() * kC;
     thunderRealT_ += std::max((double)realDt, 0.0);
     const bool resync = !thunderPrevValid_ || std::abs(now - thunderPrevS_) > 20.0 ||
                         glm::length(eye - thunderPrevEye_) > 5000.0;
@@ -1350,7 +1360,7 @@ harness::Status SatelliteSim::harnessThunder(harness::Active &a)
                 best = std::min(best, glm::dot(w, w));
             }
             dm = std::sqrt((double)best);
-            return std::min(dm, ambSoundQuick ? kSoundQuickS * kC : 1e18) - kC * (t - s.t0);
+            return std::min(dm, soundDelayCapS() * kC) - kC * (t - s.t0);
         };
         double lo = s.t0, hi = s.t0 + 200.0, dm = 0.0;
         if (f(lo, dm) <= 0.0)

@@ -11163,7 +11163,7 @@ std::vector<SatelliteSim::LaunchSound> SatelliteSim::launchSounds(double now, co
     if (!L.loaded)
         return out;
     constexpr double kC = 343.0;
-    const double capS = ambSoundQuick ? kSoundQuickS : 1e18; // the delay is capped ("Distant sounds arrive within 3 s")
+    const double capS = soundDelayCapS(); // "Sounds arrive instantly": 0.15 s; else at most 3 s, or the full trip
     const double hEye = glm::length(eyeEcef) - kR;
     const double airEar = 1.0 - glm::smoothstep(12000.0, 25000.0, hEye);
     for (uint64_t key : launchSoundCandidates(now, eyeEcef))
@@ -11371,7 +11371,7 @@ std::vector<SatelliteSim::LaunchThump> SatelliteSim::launchThumps(double nowP, d
             const double te = B.tL + e.tau;
             const glm::dvec3 rel = e.pos - eyeEcef;
             const double r = std::max(glm::length(rel), 50.0), h = glm::length(e.pos) - kR;
-            const double ta = te + std::min(r / kC, ambSoundQuick ? kSoundQuickS : 1e18);
+            const double ta = te + std::min(r / kC, soundDelayCapS());
             const double scale = e.kind == 0 ? 1.0 : e.kind == 1 ? 0.8 : 0.6;
             const double wFar = std::max(glm::smoothstep(8000.0, 40000.0, r), 1.0 - airEar);
             const double bass = 0.55 + 0.45 * k;

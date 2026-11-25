@@ -7716,6 +7716,15 @@ private:
     // minute later, if the listener is still there).
     bool ambSoundQuick = true;
     static constexpr double kSoundQuickS = 3.0;
+    // Sound tab "Sounds arrive instantly" (audio.sound_instant, default on since 2026-11-24, issue_20261124_192804): the
+    // speed of sound is ignored, every distance-delayed sound (thunder, the rockets' roar and thumps) starts with its
+    // event, kSoundInstantS after it at any distance; a thunder roll keeps its length (the channel's path differences).
+    // Not 0: the thunder / rocket layers open (0.1 s fade-in) as a front is about to arrive, so a strike's snap is not
+    // swallowed by the fade, and the roar's retarded-time search needs a sign change. Off: the delay above.
+    bool ambSoundInstant = true;
+    static constexpr double kSoundInstantS = 0.15;
+    // The longest a sound waits for its trip through the air: kSoundInstantS, kSoundQuickS, or unbounded.
+    double soundDelayCapS() const { return ambSoundInstant ? kSoundInstantS : ambSoundQuick ? kSoundQuickS : 1e18; }
     double thunderPrevS_ = 0.0, thunderRealT_ = 0.0;
     glm::dvec3 thunderPrevEye_{0.0};
     bool thunderPrevValid_ = false;
@@ -7766,7 +7775,7 @@ private:
             urban = -1, beam = -1, aurora = -1, wind = -1, cloud = -1, timeScale = -1, following = -1, intro = -1, veg = -1,
             forest = -1, desert = -1, ice = -1, speed = -1, eas = -1, glareN = -1, glareSum = -1, beamSite = -1, musicGap = -1, rain = -1,
             thunder = -1, rocketMag = -1, stageMag = -1, fireballMag = -1, dustMag = -1, gust = -1, surfaceWind = -1,
-            rainDriven = -1, tornado = -1, impact = -1, rocket = -1;
+            rainDriven = -1, tornado = -1, impact = -1, rocket = -1, beamNear = -1;
     } ambD_;
     // Collision sounds (2026-11-03, issue_20261030_180204; SatelliteSimAmbience.cpp impactStep): one hit on the "impact"
     // layer's synth per pair collision drawn up close (kCollVis) whose impact falls in the step's sim interval. The
@@ -7831,6 +7840,10 @@ private:
     // listener, accumulated in the beam readback loop (SatelliteSim.cpp), eased ~1.5 s here.
     float ambBeamSiteRaw = 0.0f;
     float ambBeamSite = -1.0f; // -1 = unset
+    // In a lit beam site (2026-11-24, issue_20261124_190033): converged beams whose site is within 5 km of the eye
+    // (none past 12 km), summed in the same loop, eased ~1.5 s. One of the music upwell's sources (`beam_near`).
+    float ambBeamNearRaw = 0.0f;
+    float ambBeamNear = -1.0f; // -1 = unset
     // Music vs the beam sound (2026-09-27, the user's rule): while a track plays, glare raises the
     // track's UPWELL stem (ambUpwellGain -> AudioSystem::setUpwellGain, mapped by ambience.json's
     // "music_upwell"); the beam pad and site hum speak only between tracks, under `music_gap` — a
