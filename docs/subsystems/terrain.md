@@ -165,11 +165,18 @@ Read it at the start of any terrain-related session before making changes.
   fallback; satellites/stars depth-tested against terrain (gl_FragDepth — since Phase 4 the unified log-distance
   encoding, see "Unified scene depth"; originally close terrain → [0, 0.5),
   sky → 1.0)
-- **OPEN: rings round the nadir from 54 km** (issue_20261124_185624, wave 20261124 c07; 11.61 N 102.99 E, 53.7 km, day):
-  sawtooth bands of 2-4 levels in the air over sea and land, centred under the eye. In the atmosphere loop's output
-  (gone with `atmosphere_loop` knocked out; the sea's debug channels are smooth) but NOT the step count (32 samples),
-  the AP volume (`sky_ap` 0), god rays, multiple scattering (off: stronger), haze aloft, the Sun's optical depth or the
-  sky TAA. Untested: the orbital terminator gate (from 40 km), the Earth's shadow / ozone terms, the Sun table per step.
+- **Rings round the nadir from altitude were the god-ray froxels' samples inside the Earth** (issue_20261124_185624,
+  2026-11-24; 11.61 N 102.99 E, 53.7 km, day): sawtooth bands of 2-6 levels in the air over the sea, centred under the
+  eye. Not the atmosphere loop's own sampling (step count 64, `sky_ap` 0, atmStepAttn's node switch: unchanged): in its
+  MIE in-scatter (Rayleigh off: still there; Mie off: gone), and only through the clouds'/terrain's shadow on the air read
+  from the froxel volume (`godray_froxels` 0 or `terrain_godrays` 0: gone). A froxel slice is ~15% of its distance deep;
+  its samples past the sea read the terrain shadow map inside the Earth (T ~ 0), and the loop's trilinear read at its
+  steps (all in front of the surface) took a share of that darkness that grew across each slice and dropped at the
+  next: rings of constant distance, in the Mie because the haze sits at the ray's low end (~10% of it). The froxel fill
+  now clamps its samples to the ray's sea-level hit (cloud_v2_froxel.comp). Ring measure at the report view (red, sea
+  band high-pass sd): 0.61 -> 0.23, the exact per-step path 0.24; 20 / 120 km at or under the exact path. Land above
+  sea level can still put a slice's far samples inside a hill (the froxel pass has no surface; open, fainter: land is
+  textured). Multiple scattering off made them stronger: it adds an unshadowed fill.
 - **The atmosphere loop's densities are INTEGRATED over each step** (2026-10-24, issue 20261023_230542 "Rings in the
   sky"): exp(-h / H) averaged exactly for a height linear from the step's start to its end (`atmHalfAvg3`, the start's
   exponentials carried from the last step's end: one vec3 exp a step, as before), split at the middle only for the step
