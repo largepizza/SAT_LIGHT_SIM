@@ -3001,6 +3001,13 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   the bricks' output (its bit-31 block off) keeps it too. So the many switches that remove it (launches, plume bricks,
   plume gain, lightning light, lightning rate, the far layer, the march) do not share an obvious path: a fragile,
   sequence-dependent state (a budget, an upload or a readback landing on that frame) is the likelier class. Not fixed.
+  **Round b (2026-11-24, wave d1):** a per-frame dump of every input the march, resolve and composite take (both UBOs, the
+  push constants, the flash-buffer read-back head, the dust / brick / engine counts) is byte-identical on frames 197-205
+  between a clean and a flashing replay of the same session: the cause is GPU-side state, not a host decision. It is
+  session-dependent: 0 of 13 replays flashed in a fresh app on a quiet machine, and a flashing session stopped after a
+  `shaders reload` of a byte-identical resolve. The composite without its dust / plume block still flashed (so not the
+  plume path); synchronization validation reported no hazard in the cloud passes; one frame in flight and a CPU-loaded
+  machine were clean. Evidence and the dump patch: `qa/waves/20261124/evidence/d1/` (gitignored).
 - **Lightning as LIGHT (2026-11-21, issue_20261121_163317; `include/flash_volume.glsl`, `cloud_v2_flashvol.comp`,
   `lightning.frag` boltLightAt, `SatelliteSim::boltLightAssign`).** A flash lights the cloud through the cloud around
   it, by the formula the march gives a cloud sample under a reflector beam (`beamFinish`): E (ph e^-od + ms D), with E the
