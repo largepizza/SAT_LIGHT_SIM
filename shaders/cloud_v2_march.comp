@@ -829,7 +829,7 @@ void main()
             if (li == 0) phRainSun = mix(phS, phRainSun, liqR); else phRainMoon = mix(phS, phRainMoon, liqR);
         }
     }
-    vec3  moonKey  = kMoonColor * pc.moonDirENU.w * cloud.moonGain * cv2.misc.y;
+    vec3  moonKey  = kMoonColor * cloud.moonTint.rgb * pc.moonDirENU.w * cloud.moonGain * cv2.misc.y;
 
     int   nL    = int(cv2.light.y);
     float lSeg0 = cv2.light.x / float(max(nL, 1));   // equal steps (kLightRatio 1)

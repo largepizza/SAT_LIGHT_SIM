@@ -479,6 +479,17 @@ EXPOSURE AND MOON section since 2026-10-06, key
 - **Lunar eclipses** per surface point: the Earth's disc (enlarged 1/85 for the atmosphere, Danjon) against the
   Sun's (seen from that point, with the Sun's 0.15-deg parallax from the Moon), penumbra -> umbra, and the
   umbra's red refracted light.
+- **A lunar eclipse dims and reddens the Moon's LIGHT, not only its disc** (2026-11-24, issue_20261124_190627
+  "Moonlight during blood moons": a red disc over clouds and sea lit grey-white as by a full Moon). `updatePositions`
+  integrates the disc's own eclipse shading (the bullet above, the same constants: `lunarLit`, `lunarRed`) over the
+  face the eye sees, a 24 x 24 grid Lommel-Seeliger weighted, into `moonEclipseLight` (RGB vs the uneclipsed Moon;
+  only while `moonEclipseLunarPossible`). Its luminance (Rec. 709) multiplies `moonDirENU.w`, so every moonlit term
+  (cloud key, ground, sea glint and foam, moonlit sky, halo, the stars' / satellites' / meteors' moon dimming, the
+  night key) takes it; its colour at luminance 1 (`nightKeyTint`, mixed to white by the supernova's share) is
+  `CloudParams.moonTint` (12352 -> 12368) and multiplies every moonlit colour (`NK_TINT` in sat_sky.frag, white in
+  SKY_LITE; `kMoonColor` x it in the march, far, lightning and sea-reflection passes). The disc itself does not
+  read `moonDirENU.w`, so it is not dimmed twice. Harness `state` -> `moon.lunar_eclipse_light` / `_tint`,
+  `brightness_vs_full` (eclipsed) and `brightness_vs_full_uneclipsed`, `night_key_w`.
 - **The Sun's angular radius is its TRUE one** (`sunAngRTrue` from `satphot::sunDistAuAt`, 0.2624 deg in July ..
   0.2711 in January; `cloud.taaJitter.w`, `kSunAngR` in sat_sky.frag): it decides total vs annular. It was a
   fixed 0.2667 deg.

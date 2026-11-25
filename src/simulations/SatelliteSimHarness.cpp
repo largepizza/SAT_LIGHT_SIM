@@ -532,6 +532,9 @@ json SatelliteSim::harnessStateJson()
                  {"drawn_radius_deg", glm::degrees(moonAngR)}, {"sun_radius_deg", glm::degrees(sunAngRTrue)},
                  {"sun_seen_frac", moonEclipseSolarObs}, {"sky_light_frac", moonEclipseSkyObs}, {"sky_exposure", skyExposure()}, {"solar_possible", moonEclipseSolarPossible},
                  {"lunar_possible", moonEclipseLunarPossible},
+                 {"lunar_eclipse_light", {moonEclipseLight.x, moonEclipseLight.y, moonEclipseLight.z}},
+                 {"lunar_eclipse_tint", {moonEclipseTint.x, moonEclipseTint.y, moonEclipseTint.z}},
+                 {"brightness_vs_full_uneclipsed", moonLightUneclipsed}, {"night_key_w", nightKeyLightENU().w},
                  {"libration_lon_deg", moonLibLonDeg}, {"libration_lat_deg", moonLibLatDeg}, {"pole_pa_deg", moonPolePADeg},
                  {"relief", moonRelief}, {"shadows", moonShadows}};
     {

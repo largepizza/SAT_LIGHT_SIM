@@ -812,6 +812,9 @@ satellites you can fly up to and inspect as real 3D models; and a sim clock that
 
 ### Fixed
 
+- During a lunar eclipse the Moon's light now fades and turns red with its disc. The clouds, ground, sea and the
+  moonlit sky were still lit grey-white as by a full Moon under a blood-red disc; at totality the night is now dark
+  and faintly red, with the stars out.
 - Changing the graphics preset or the Render scale right after turning Temporal anti-aliasing back on (with a
   render scale below 100%) no longer can close the app without a message. The old low-resolution sky target was
   freed while the previous frame was still drawing with it.

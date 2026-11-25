@@ -956,7 +956,7 @@ void main()
                 }
             }
             const vec3 kMoonCol = vec3(0.92, 0.95, 1.0);   // == kMoonColor (cloud_v2_march.comp)
-            vec3  moonKey = kMoonCol * pc.moonDirENU.w * cloud.moonGain * cv2.misc.y;
+            vec3  moonKey = kMoonCol * cloud.moonTint.rgb * pc.moonDirENU.w * cloud.moonGain * cv2.misc.y;
             vec3  key = vec3(0.0), kDir = sunENU;
             float isMoon = 0.0;
             vec3  sc = rlSunColorAt(eyeP, sunENU, BETA_R_BASE * cv2.atmo.x, BETA_M);
