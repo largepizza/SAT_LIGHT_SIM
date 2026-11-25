@@ -27,9 +27,23 @@
 #include <psapi.h>
 #endif
 #include <fstream>
+#include <cstdio>
+#ifndef _WIN32
+#include <sys/types.h>
+#endif
 
 namespace
 {
+// A 64-bit fseek on every platform (_fseeki64 is MSVC-only; GCC / Clang have fseeko with a 64-bit off_t).
+inline int kesslerSeek64(FILE *f, long long off, int whence)
+{
+#ifdef _WIN32
+    return _fseeki64(f, off, whence);
+#else
+    return fseeko(f, (off_t)off, whence);
+#endif
+}
+
 // 2037-07-14 09:30 UTC the flare, 2037-07-15 03:00 UTC the CME's arrival (17.5 h: Carrington's transit).
 constexpr double kFuryFlareT = 1184448600.0;
 constexpr double kFuryArriveT = 1184511600.0;
@@ -407,7 +421,7 @@ struct SatelliteSim::KesslerWorker
         {
             arch = std::fopen(p.string().c_str(), "r+b");
             if (arch)
-                _fseeki64(arch, (long long)(kArchHead + archCount * sizeof(kessler::SmallStream)), SEEK_SET);
+                kesslerSeek64(arch, (long long)(kArchHead + archCount * sizeof(kessler::SmallStream)), SEEK_SET);
         }
         if (arch)
             std::setvbuf(arch, nullptr, _IOFBF, 4u << 20);
@@ -1358,7 +1372,7 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
                 {
                     std::vector<char> buf(8u << 20);
                     std::setvbuf(f, buf.data(), _IOFBF, buf.size());
-                    _fseeki64(f, 40, SEEK_SET); // (the head: magic, version, hash, frontier, streams, pendingNext)
+                    kesslerSeek64(f, 40, SEEK_SET); // (the head: magic, version, hash, frontier, streams, pendingNext)
                     ok = wk->w.loadState(f, why) && wk->w.frontier == sh.frontier;
                     std::fclose(f);
                 }
@@ -1376,7 +1390,7 @@ void SatelliteSim::kesslerRestart(VulkanContext &ctx, const std::vector<kessler:
                     ok = a != nullptr;
                     if (ok)
                     {
-                        _fseeki64(a, (long long)kArchHead, SEEK_SET);
+                        kesslerSeek64(a, (long long)kArchHead, SEEK_SET);
                         std::vector<kessler::SmallStream> chunk(1u << 16);
                         uint64_t left = sh.streams;
                         while (ok && left > 0)
