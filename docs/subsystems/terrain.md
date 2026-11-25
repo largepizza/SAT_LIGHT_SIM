@@ -165,6 +165,11 @@ Read it at the start of any terrain-related session before making changes.
   fallback; satellites/stars depth-tested against terrain (gl_FragDepth — since Phase 4 the unified log-distance
   encoding, see "Unified scene depth"; originally close terrain → [0, 0.5),
   sky → 1.0)
+- **OPEN: rings round the nadir from 54 km** (issue_20261124_185624, wave 20261124 c07; 11.61 N 102.99 E, 53.7 km, day):
+  sawtooth bands of 2-4 levels in the air over sea and land, centred under the eye. In the atmosphere loop's output
+  (gone with `atmosphere_loop` knocked out; the sea's debug channels are smooth) but NOT the step count (32 samples),
+  the AP volume (`sky_ap` 0), god rays, multiple scattering (off: stronger), haze aloft, the Sun's optical depth or the
+  sky TAA. Untested: the orbital terminator gate (from 40 km), the Earth's shadow / ozone terms, the Sun table per step.
 - **The atmosphere loop's densities are INTEGRATED over each step** (2026-10-24, issue 20261023_230542 "Rings in the
   sky"): exp(-h / H) averaged exactly for a height linear from the step's start to its end (`atmHalfAvg3`, the start's
   exponentials carried from the last step's end: one vec3 exp a step, as before), split at the middle only for the step

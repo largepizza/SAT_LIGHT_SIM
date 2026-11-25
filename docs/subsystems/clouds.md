@@ -1456,6 +1456,15 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
     30.8, dense_850km 46.2 -> 29.1, stA_850km 50.3 -> 24.9); a 90 deg/s pan keeps most of base's cost (brk_300km 25.3 ->
     23.4, ovc_300km 34.2 -> 28.8, stA_300km 30.7 -> 27.6, sunset_300km 31.7 -> 27.5); time warp started from a settled
     view keeps the block (brk_300km 27.0 -> 20.7, dense_300km 35.5 -> 24.7, stA_300km 39.6 -> 24.0).
+    **OPEN: the block in motion lights the frame's edge** (issue_20261124_195458 "Odd corner artifact", wave 20261124 c07):
+    climbing 10 -> 257 km at night, the bottom 6 rows and the right ~8 columns of the full-resolution cloud grid show a
+    bright orange band (sunlit cloud colour over black; the bottom rows 100-110 levels over the rows 10 px in, the
+    reporter's shot 94). Knockout: `sparse_block_orbit_moving` 0 -> exactly 0; sky TAA off and the orbit render scale
+    off change nothing. Suspect: the resolve's reconstruction of the block at the frame edge (the march places an edge
+    block's ray at min(q K + off, size - 1), the resolve calls a texel new only where c % K == off; 1009 rows = 252
+    blocks + 1). Rejecting the moved history reads within 1.5 texels of the frame edge only took the band from 109 to
+    81 levels: the history's clamp is a minor part, the edge's new-sample estimate the likelier source. Evidence
+    `qa/waves/20261124/evidence/c07/` (gitignored).
   - **THE ORBIT BLOCK'S GATE: the turn budget** (`clouds_v2.orbit_gate` 1; 0 = the gate of 2026-11-09 above, exactly;
     2026-11-22, issue_20261122_114811; SatelliteSimCloudsV2.cpp `fillCloudsV2Params`, "THE TURN BUDGET"; settings.json
     keys, no sliders; harness `state` -> `clouds_v2.orbit_gate`: `turn_px`, `debt_px`, `over`, `still_frames`, `still_s`,
@@ -2976,6 +2985,12 @@ only as the stand-in when the volumetric march is knocked out (see HIGH LAYER be
   looking up through rain, review 3). A ray that runs out of budget (`misc.x`,
   presets 160-640) is FILLED with the path's mean extinction and the cloud's mean colour, not left
   transparent (that was the horizon "seeing through" the clouds).
+- **OPEN: a one-frame white Earth from far orbit in time-lapse** (issue_20261124_190819, wave 20261124 c07): replaying
+  the report's trail (6395 km, 1 day/s) every night-side cloud renders pure white with black gaps on ONE frame of 240
+  (deterministic: the same frame each replay; mean luma 26.1 vs 9.7). Gone with `clouds_v2.lightning_light` 0, with the
+  march knocked out, or with the far layer off; back with the defaults. lightning.frag's per-pixel light is gated to
+  cloud within 5000 km, so the suspects are the bake frame (`recordFlashVolumes` binds `fvPipeLayout`'s set 1 between
+  the cloud passes, on frames with a new emitter only) or an emitter placed far from its storm at 1 day/s. Not fixed.
 - **Lightning as LIGHT (2026-11-21, issue_20261121_163317; `include/flash_volume.glsl`, `cloud_v2_flashvol.comp`,
   `lightning.frag` boltLightAt, `SatelliteSim::boltLightAssign`).** A flash lights the cloud through the cloud around
   it, by the formula the march gives a cloud sample under a reflector beam (`beamFinish`): E (ph e^-od + ms D), with E the
