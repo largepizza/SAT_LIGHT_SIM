@@ -482,6 +482,27 @@ void main()
         vec3  cTint = bc.cloud.rgb * boltAirTint(opS > 1e-4 ? airS / opS : 1.0);
         x = vec3(0.0);
         uint n = uint(pc.params2.y + 0.5);
+        // The flashes' light on the ground and the sea (2026-11-25, weather.md "Lightning on the ground"): the engine
+        // lights' unshadowed term (albedo 0.15, the local up as the normal) at the ground this pixel shows, behind the
+        // cloud in front of it and the air; a ground stroke's trunk is a line from where it leaves the cloud to its
+        // strike point, an in-cloud flash a point on the base under it, each x its intensity now (the strokes' flicker)
+        // and dimmed by the storm's rain over the distance. One place per pixel: the half-res depth's ground texels,
+        // bilinearly (mostly ground, else none: the sky's pixels and the cloud light's edge cut are the cloud's).
+        float kG = 0.0;
+        vec3  Pg = vec3(0.0), nG = vec3(0.0, 0.0, 1.0);
+        if (bc.cloud.a > 0.0 || bc.halo.a > 0.0) {
+            vec4  gdG = textureGather(sceneDepthTex, uv, 0);
+            vec2  fg  = fract(uv * vec2(textureSize(sceneDepthTex, 0)) - 0.5);
+            vec4  wg4 = vec4((1.0 - fg.x) * fg.y, fg.x * fg.y, fg.x * (1.0 - fg.y), (1.0 - fg.x) * (1.0 - fg.y));
+            float wG = 0.0, tG = 0.0;
+            for (int k = 0; k < 4; ++k) if (gdG[k] < 1e29) { wG += wg4[k]; tG += wg4[k] * gdG[k]; }
+            if (wG > 0.5) {
+                tG /= wG;
+                Pg = dir * tG;
+                nG = normalize(Pg + vec3(0.0, 0.0, 6371000.0 + max(pc.spare.x, 0.0)));
+                kG = 0.15 * clamp(texture(cloudTargetB, uv).g, 0.0, 1.0) * boltAir(Pg, tG) * pc.params.x;
+            }
+        }
         for (uint fi = 0u; fi < n; ++fi) {
             BoltFlash F = bFlash[fi];
             if (F.o.w <= 0.01) continue;
@@ -497,6 +518,19 @@ void main()
                 float occ = cloudPointVisibilityAt(cloudTargetA, cloudTargetB, uv, length(H), 1.0);
                 x += vec3(0.55, 0.008, 0.02) * (pc.params.x * pc.params.y * 0.08 * F.o.w * g * occ);
                 continue;
+            }
+            if (kG > 0.0) {
+                bool  cgG = F.t1.w > 0.5 && F.t1.w < 1.5;
+                vec3  Bg  = F.b.yzw;
+                vec3  Ag  = cgG ? F.e[1].xyz : Bg;
+                vec3  dP  = Bg - Pg;
+                if (dot(dP, dP) < 1.6e9) {   // 40 km
+                    // (m.w = the light volumes' codes + 0.4 x the storm's strength)
+                    float rain = clamp((F.m.w - floor(F.m.w)) / 0.4, 0.0, 1.0);
+                    float E = cgG ? bc.cloud.a * boltLineE(Pg, nG, Ag, Bg, 30.0)
+                                  : bc.halo.a * boltLineE(Pg, nG, Bg, Bg, 300.0);
+                    x += bc.cloud.rgb * (kG * F.o.w * E * exp(-bc.air.w * rain * length(dP)));
+                }
             }
             if (!any) continue;
             for (int e = 0; e < 4; ++e) {

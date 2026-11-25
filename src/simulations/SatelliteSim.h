@@ -10391,6 +10391,18 @@ private:
         glm::vec3 air{0.58f, 0.99f, 2.0f};      // the air's optical depth per channel over boltAir's grey one
         glm::vec3 cloud{0.68f, 0.64f, 1.0f};    // the flash's light on the cloud
     } boltColourTune;
+    // The flashes' light on the ground (2026-11-25, issue_20261124_192804 "what would it take for them to illuminate
+    // terrain"; lightning.frag mode 1, weather.md "Lightning on the ground"): a ground stroke's trunk as a straight line
+    // source from where it leaves the cloud to the strike point, an in-cloud flash as a point on the base under it; the
+    // engine lights' unshadowed ground term (albedo 0.15, the local up), lifted at night as the moonlight is. Harness
+    // `lightning ground`.
+    struct BoltGroundTune
+    {
+        float level = 1.0f;          // x everything (0 = off)
+        float lineI = 0.1f;          // a ground stroke's channel: suns x m^2 per metre (~7 lux at 1 km, ~full Moon at 5 km)
+        float pointI = 20.0f;        // an in-cloud flash's light through the base: suns x m^2
+        float rainPerKm = 0.35f;     // the rain's dimming of the diffuse light, per km x the storm's strength
+    } boltGroundTune;
     VkBuffer boltColourBuf = VK_NULL_HANDLE;
     VkDeviceMemory boltColourMem = VK_NULL_HANDLE;
     void *boltColourMapped = nullptr;
@@ -10458,6 +10470,7 @@ private:
     static constexpr float kBoltHoldI = 0.8f;
     struct BoltHold { std::vector<float> rec; double wallS = 0.0; uint32_t frame = 0; };
     std::unordered_map<uint32_t, BoltHold> boltHold_;
+    float boltGroundRain_[kBoltMaxFlashes] = {};   // per flash slot this frame: the storm's strength (the ground light's rain)
     double boltHoldLastNow_ = -1.0;
     // Rain, snow and diamond dust at the eye as particles (SatelliteSimRain.cpp, 2026-10-04).
     void createRainParticles(VulkanContext &ctx);

@@ -483,7 +483,23 @@ void SatelliteSim::updateLightningBolts()
         else if (kind != 2)
             reveal = 150000.0f * std::max(ageD - kLeader + 0.03f, 0.0f);
         F.m = glm::vec4(reveal, brMul, leader, 65535.0f);
-        F.b = glm::vec4(t.baseLocalZ, 0.0f, 0.0f, 0.0f);   // (w: no light volume yet; boltLightAssign)
+        // (m.w: no light volume yet; boltLightAssign.) b: x the base; yzw the ground light's source (lightning.frag mode
+        // 1): a ground stroke's strike point (its trunk's last vertex, fitted to the drawn ground), else the point on the
+        // base under the origin.
+        glm::vec3 gSrc = o + u * t.baseLocalZ;
+        if (kind == 1)
+        {
+            glm::vec3 gl = t.groundLocal;
+            for (const bolt::Path &pth : t.tree.paths)
+                if ((pth.flags & bolt::kTrunk) && pth.count >= 2)
+                {
+                    gl = t.tree.verts[pth.first + (size_t)pth.count - 1].p;
+                    break;
+                }
+            gSrc = o + a1 * gl.x + a2 * gl.y + u * gl.z;
+        }
+        F.b = glm::vec4(t.baseLocalZ, gSrc);
+        boltGroundRain_[slot] = std::clamp(t.strength, 0.0f, 1.0f);
         // Where the cloud glows: the origin, and where the channel leaves the cloud (a ground stroke) or the spreading
         // fronts of three arms (a spider: the light moves through the cloud with it).
         glm::vec4 em[4] = {glm::vec4(o, 1.0f), glm::vec4(0.0f), glm::vec4(0.0f), glm::vec4(0.0f)};
@@ -655,6 +671,10 @@ void SatelliteSim::updateLightningBolts()
     boltGroundAsk(up * 6371000.0, E, N, up);
     // The cloud around the nearest emitters (this frame's bakes: recordFlashVolumes, inside recordCloudsV2).
     boltLightAssign(outF, eye);
+    // The ground light's rain (lightning.frag: the storm's strength, 0..1, as m.w's fraction x 0.4; the light volumes'
+    // codes are the integer part, read as uint(m.w + 0.5)).
+    for (uint32_t i = 0; i < boltFlashCount; ++i)
+        outF[i].m.w += 0.4f * boltGroundRain_[i];
     if (boltStatsOn_)
     {
         boltStatsChanFrames_ += (frameChan || frameHeld) ? 1u : 0u;
@@ -1585,7 +1605,14 @@ SatelliteSim::GpuBoltColour SatelliteSim::boltColourFill() const
     auto mixTo = [&](const glm::vec3 &hue, const glm::vec3 &was) { return glm::max(glm::mix(was, at(hue, was), g), glm::vec3(0.0f)); };
     GpuBoltColour C{};
     C.core = glm::vec4(mixTo(t.core, core0), g);
-    C.halo = glm::vec4(halo0 * (1.0f - g1), 0.0f);
+    // The ground light (boltGroundTune; the a channels were spare): lifted at night as the engine lights and the moonlight
+    // are (the night exposure is not physical: moonGain is the full Moon's light on the terrain, physically ~2e-6 Suns).
+    const BoltGroundTune &gt = boltGroundTune;
+    const float dayness = std::clamp((sunDirENU.w + 0.1f) / 0.3f, 0.0f, 1.0f);
+    // (x "Lightning glow" against its default 0.088: the slider scales the flashes' light, the ground's with the cloud's)
+    const float lift = glm::mix(1.0f, moonGain / 2.0e-6f, 1.0f - dayness) * std::max(gt.level, 0.0f) *
+                       std::max(cv2LightningGlow, 0.0f) / 0.088f;
+    C.halo = glm::vec4(halo0 * (1.0f - g1), std::max(gt.pointI, 0.0f) * lift);
     C.sheath = glm::vec4(at(t.sheath, core0), std::max(t.sheathM, 0.1f));
     C.sheathK = glm::vec4(std::max(t.sheathShare, 0.0f) * g, std::max(t.sheathOrder, 0.01f), std::max(t.sheathLeader, 0.0f) * g,
                           std::clamp(t.sheathTaper, 0.05f, 4.0f));
@@ -1594,7 +1621,8 @@ SatelliteSim::GpuBoltColour SatelliteSim::boltColourFill() const
     C.wet = glm::vec4(std::clamp(t.wetFloor, 0.0f, 1.0f), std::max(t.wetGain, 0.0f), (float)g_boltKnock,
                       std::clamp(t.rainFloor, 0.0f, 1.0f));
     C.air = glm::vec4((glm::max(t.air, glm::vec3(0.0f)) - glm::vec3(1.0f)) * g, 0.0f);
-    C.cloud = glm::vec4(mixTo(t.cloud, cloud0), 0.0f);
+    C.cloud = glm::vec4(mixTo(t.cloud, cloud0), std::max(gt.lineI, 0.0f) * lift);
+    C.air.w = std::max(gt.rainPerKm, 0.0f) * 1e-3f;
     return C;
 }
 
